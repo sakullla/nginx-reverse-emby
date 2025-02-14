@@ -33,8 +33,8 @@ systemctl stop nginx && apt purge -y nginx && rm -r /etc/systemd/system/nginx.se
 cp nginx.conf /etc/nginx/
 ```
 - 根据 [p.example.com.conf](conf.d/p.example.com.conf) 修改成你的域名跟要代理的emby,并将文件放到 /etc/nginx/conf.d 下面
-- p.example.com  修改为你的域名
-- emby.example.com 修改为要反代的域名
+  - p.example.com  修改为你的域名
+  - emby.example.com 修改为要反代的域名
 
 ## 3. 使用[acme](https://github.com/acmesh-official/acme.sh)申请SSL证书
 
