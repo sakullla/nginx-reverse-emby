@@ -32,9 +32,9 @@ mv y.example.com.conf /etc/nginx/conf.d/
 - 使用 standalone 模式为你的域名 p.example.com 申请 ECC 证书，并放到指定位置
 
 ```shell
-mkdir -p /etc/nginx/certs/p.example.com
-acme.sh --issue -d p.example.com  --standalone --keylength ec-256
-acme.sh --install-cert -d p.example.com --ecc --fullchain-file /etc/nginx/certs/p.example.com/cert --key-file /etc/nginx/certs/p.example.com/key --reloadcmd "nginx -s reload"
+mkdir -p /etc/nginx/certs/y.example.com
+acme.sh --issue -d y.example.com  --standalone --keylength ec-256
+acme.sh --install-cert -d y.example.com --ecc --fullchain-file /etc/nginx/certs/y.example.com/cert --key-file /etc/nginx/certs/y.example.com/key --reloadcmd "nginx -s reload"
 ```
 
 
