@@ -5,42 +5,37 @@
 - 支持代理多个emby，每次只要根据模板调整和申请证书即可
 - 暂时没有计划根据一键脚本进行配置
 
+**首次使用请查看[full.md](full.md)**
 
-## 1. 安装[Nginx](http://nginx.org/en/linux_packages.html)
+快速使用
 
-- Debian 10/11/12
-
-```
-apt install -y gnupg2 ca-certificates lsb-release debian-archive-keyring && curl https://nginx.org/keys/nginx_signing.key | gpg --dearmor > /usr/share/keyrings/nginx-archive-keyring.gpg && echo "deb [signed-by=/usr/share/keyrings/nginx-archive-keyring.gpg] http://nginx.org/packages/mainline/debian `lsb_release -cs` nginx" > /etc/apt/sources.list.d/nginx.list && echo -e "Package: *\nPin: origin nginx.org\nPin: release o=nginx\nPin-Priority: 900\n" > /etc/apt/preferences.d/99nginx && apt update -y && apt install -y nginx && mkdir -p /etc/systemd/system/nginx.service.d && echo -e "[Service]\nExecStartPost=/bin/sleep 0.1" > /etc/systemd/system/nginx.service.d/override.conf && systemctl daemon-reload && systemctl enable --now nginx
-```
-
-- Ubuntu 18.04/20.04/22.04
-
-```
-apt install -y gnupg2 ca-certificates lsb-release ubuntu-keyring && curl https://nginx.org/keys/nginx_signing.key | gpg --dearmor > /usr/share/keyrings/nginx-archive-keyring.gpg && echo "deb [signed-by=/usr/share/keyrings/nginx-archive-keyring.gpg] http://nginx.org/packages/mainline/ubuntu `lsb_release -cs` nginx" > /etc/apt/sources.list.d/nginx.list && echo -e "Package: *\nPin: origin nginx.org\nPin: release o=nginx\nPin-Priority: 900\n" > /etc/apt/preferences.d/99nginx && apt update -y && apt install -y nginx && mkdir -p /etc/systemd/system/nginx.service.d && echo -e "[Service]\nExecStartPost=/bin/sleep 0.1" > /etc/systemd/system/nginx.service.d/override.conf && systemctl daemon-reload && systemctl enable --now nginx
-```
-
-- 卸载Nginx
-
-```
-systemctl stop nginx && apt purge -y nginx && rm -r /etc/systemd/system/nginx.service.d/
-```
-
-## 2. 修改配置文件
-
-- 将项目里的[nginx.conf](nginx.conf) 复制到 /etc/nginx/
+- 将 [p.example.com.conf](conf.d/p.example.com.conf) 拷贝成你的域名配置 比如 y.example.com.conf
 ```shell
-cp nginx.conf /etc/nginx/
+cp p.example.com.conf y.example.com.conf
 ```
-- 根据 [p.example.com.conf](conf.d/p.example.com.conf) 修改成你的域名跟要代理的emby,并将文件放到 /etc/nginx/conf.d 下面
-  - p.example.com.conf 复制为你的配置配置文件
-  - p.example.com  修改为你的域名
-  - emby.example.com 修改为要反代的域名
 
-## 3. 使用[acme](https://github.com/acmesh-official/acme.sh)申请SSL证书
+- 将y.example.com.conf里面的 p.example.com 替换为 拷贝成你的域名配置 比如 y.example.com
+```shell
+sed -i 's/p.example.com/y.example.com/g' y.example.com.conf
+```
 
-- [点击查看详细步骤](acme.md)
-- SSL证书有效期是90天，acme每60天自动更新一次
+- 将y.example.com.conf里面的 emby.example.com 替换为要反代的域名 r.example.com
+```shell
+sed -i 's/emby.example.com/r.example.com/g' y.example.com.conf
+```
+
+- 将 y.example.com.conf 放到 /etc/nginx/conf.d 下面
+```shell
+mv y.example.com.conf /etc/nginx/conf.d/
+```
+
+- 使用 standalone 模式为你的域名 p.example.com 申请 ECC 证书，并放到指定位置
+
+```shell
+mkdir -p /etc/nginx/certs/p.example.com
+acme.sh --issue -d p.example.com  --standalone --keylength ec-256
+acme.sh --install-cert -d p.example.com --ecc --fullchain-file /etc/nginx/certs/p.example.com/cert --key-file /etc/nginx/certs/p.example.com/key --reloadcmd "nginx -s reload"
+```
 
 
 
