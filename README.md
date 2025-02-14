@@ -1,5 +1,4 @@
-# nginx-reverse-emby
-## nginx emby
+# nginx emby 反代指南 安装指南
 - 这是关于Emby 公费服/机场服的反代配置
 - 目前支持单个域名的反代。 以及307重定向的反代。对于301 302的重定向暂时没有验证。
 - 代理后的emby支持 http1.1\http2\http3 ipv4/ipv6访问
@@ -7,7 +6,7 @@
 - 暂时没有计划根据一键脚本进行配置
 
 
-1. 安装[Nginx](http://nginx.org/en/linux_packages.html)
+## 1. 安装[Nginx](http://nginx.org/en/linux_packages.html)
 
 - Debian 10/11/12
 
@@ -27,7 +26,8 @@ apt install -y gnupg2 ca-certificates lsb-release ubuntu-keyring && curl https:/
 systemctl stop nginx && apt purge -y nginx && rm -r /etc/systemd/system/nginx.service.d/
 ```
 
-2. 修改配置文件
+## 2. 修改配置文件
+
 - 将项目里的[nginx.conf](nginx.conf) 复制到 /etc/nginx/
 ```shell
 cp nginx.conf /etc/nginx/
@@ -36,7 +36,7 @@ cp nginx.conf /etc/nginx/
 - p.example.com  修改为你的域名
 - emby.example.com 修改为要反代的域名
 
-3. 使用[acme](https://github.com/acmesh-official/acme.sh)申请SSL证书
+## 3. 使用[acme](https://github.com/acmesh-official/acme.sh)申请SSL证书
 
 - [点击查看详细步骤](acme.md)
 - SSL证书有效期是90天，acme每60天自动更新一次
