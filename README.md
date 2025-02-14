@@ -7,7 +7,7 @@
 
 **首次使用请查看[full.md](full.md)**
 
-快速使用
+# 快速使用
 
 - 将 [p.example.com.conf](conf.d/p.example.com.conf) 拷贝成你的域名配置 比如 y.example.com.conf
 ```shell
