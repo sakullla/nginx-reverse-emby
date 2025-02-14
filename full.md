@@ -23,24 +23,24 @@ systemctl stop nginx && apt purge -y nginx && rm -r /etc/systemd/system/nginx.se
 ```shell
 cp nginx.conf /etc/nginx/
 ```
-- 将 [p.example.com.conf](conf.d/p.example.com.conf) 拷贝成你的域名配置 比如 y.example.com.conf
+- 将 [p.example.com.conf](conf.d/p.example.com.conf) 拷贝成你的域名配置 比如 you.example.com.conf
 ```shell
-cp p.example.com.conf y.example.com.conf
+cp p.example.com.conf you.example.com.conf
 ```
 
-- 将y.example.com.conf里面的 p.example.com 替换为 拷贝成你的域名配置 比如 y.example.com
+- 将you.example.com.conf里面的 p.example.com 替换为 拷贝成你的域名配置 比如 you.example.com
 ```shell
-sed -i 's/p.example.com/y.example.com/g' y.example.com.conf
+sed -i 's/p.example.com/you.example.com/g' you.example.com.conf
 ```
 
-- 将y.example.com.conf里面的 emby.example.com 替换为要反代的域名 r.example.com
+- 将you.example.com.conf里面的 embyou.example.com 替换为要反代的域名 r.example.com
 ```shell
-sed -i 's/emby.example.com/r.example.com/g' y.example.com.conf
+sed -i 's/embys.example.com/r.example.com/g' you.example.com.conf
 ```
 
-- 将 y.example.com.conf 放到 /etc/nginx/conf.d 下面
+- 将 you.example.com.conf 放到 /etc/nginx/conf.d 下面
 ```shell
-mv y.example.com.conf /etc/nginx/conf.d/
+mv you.example.com.conf /etc/nginx/conf.d/
 ```
 
 ## 3. 使用[acme](https://github.com/acmesh-official/acme.sh)申请SSL证书
@@ -71,18 +71,18 @@ acme.sh --upgrade --auto-upgrade
 acme.sh --set-default-ca --server letsencrypt
 ```
 
-- 使用 standalone 模式为 y.example.com 申请 ECC 证书，并放到指定位置
+- 使用 standalone 模式为 you.example.com 申请 ECC 证书，并放到指定位置
 
 ```shell
-mkdir -p /etc/nginx/certs/y.example.com
-acme.sh --issue -d y.example.com  --standalone --keylength ec-256
-acme.sh --install-cert -d y.example.com --ecc --fullchain-file /etc/nginx/certs/y.example.com/cert --key-file /etc/nginx/certs/y.example.com/key --reloadcmd "nginx -s reload"
+mkdir -p /etc/nginx/certs/you.example.com
+acme.sh --issue -d you.example.com  --standalone --keylength ec-256
+acme.sh --install-cert -d you.example.com --ecc --fullchain-file /etc/nginx/certs/you.example.com/cert --key-file /etc/nginx/certs/you.example.com/key --reloadcmd "nginx -s reload"
 ``````
 
 - 强制更新证书
 
 ```shell
-acme.sh --renew -d y.example.com--force --ecc
+acme.sh --renew -d you.example.com--force --ecc
 ```
 
 
