@@ -29,7 +29,7 @@ sed -i 's/emby.example.com/r.example.com/g' y.example.com.conf
 mv y.example.com.conf /etc/nginx/conf.d/
 ```
 
-- 使用 standalone 模式为你的域名 p.example.com 申请 ECC 证书，并放到指定位置
+- 使用 standalone 模式为你的域名 y.example.com 申请 ECC 证书，并放到指定位置
 
 ```shell
 mkdir -p /etc/nginx/certs/y.example.com
