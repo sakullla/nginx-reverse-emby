@@ -94,4 +94,5 @@ mkdir -p "/etc/nginx/certs/$you_domain"
     --key-file "/etc/nginx/certs/$you_domain/key" \
     --reloadcmd "nginx -s reload"
 
+nginx -s reload
 echo "反向代理设置完成！"
