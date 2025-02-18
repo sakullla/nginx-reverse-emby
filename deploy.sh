@@ -91,6 +91,18 @@ fi
 echo "移动 $you_domain.conf 到 /etc/nginx/conf.d/"
 mv "$you_domain.conf" /etc/nginx/conf.d/
 
+# 检查并安装 acme.sh
+echo "检查 acme.sh 是否已安装..."
+if [[ ! -f "$HOME/.acme.sh/acme.sh" ]]; then
+    echo "acme.sh 未安装，正在安装..."
+    apt install -y socat
+    curl https://get.acme.sh | sh
+    ~/.acme.sh/acme.sh --upgrade --auto-upgrade
+    ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt
+else
+    echo "acme.sh 已安装，跳过安装步骤。"
+fi
+
 # 申请并安装 ECC 证书
 echo "申请 ECC 证书..."
 mkdir -p "/etc/nginx/certs/$you_domain"
