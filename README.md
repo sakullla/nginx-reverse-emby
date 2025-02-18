@@ -8,7 +8,7 @@
 ```shell
 curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh | bash -s -- -y yourdomain.com -r backend.com
 ```
-或者
+或者交互式
 ```shell
 bash <(curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh)
 ```
