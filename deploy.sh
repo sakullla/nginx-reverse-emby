@@ -67,8 +67,8 @@ if [[ -z "$you_domain" || -z "$r_domain" ]]; then
     read -p "请输入你的域名 (默认: you.example.com): " input_you_domain
     read -p "请输入要反代emby的域名 (默认: r.example.com): " input_r_domain
     read -p "反代emby后端推流地址是否使用 HTTP? (默认: no, 输入 yes 则使用 HTTP): " input_http_backend
-    read -p "代理emby前端访问地址是否使用 HTTP? (默认: no, 输入 yes 则使用 HTTP): " input_http_frontend
-    read -p "代理emby前端端口号 (默认: 空, 例如 8443): " input_frontend_port
+    read -p "反代emby前端访问地址是否使用 HTTP? (默认: no, 输入 yes 则使用 HTTP): " input_http_frontend
+    read -p "反代emby前端端口号 (默认: 空, 例如 8443): " input_frontend_port
 
     you_domain="${input_you_domain:-you.example.com}"
     r_domain="${input_r_domain:-r.example.com}"
