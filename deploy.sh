@@ -2,34 +2,30 @@
 
 set -e
 
-# 解析命令行参数
-declare -A args
+# 初始化变量
+you_domain=""
+r_domain=""
+https_backend="yes"  # 默认使用 HTTPS
+
+# 解析参数
 while [[ "$#" -gt 0 ]]; do
     case "$1" in
-        -y|--you_domain) args[you_domain]="$2"; shift 2 ;;
-        -r|--r_domain) args[r_domain]="$2"; shift 2 ;;
-        -b|--https_backend) args[https_backend]="yes"; shift ;;
+        -y|--you_domain) you_domain="$2"; shift 2 ;;
+        -r|--r_domain) r_domain="$2"; shift 2 ;;
+        -b|--https_backend) https_backend="no"; shift ;;
         *) echo "未知参数: $1"; exit 1 ;;
     esac
 done
 
-# 交互式或参数传入
-default_you_domain="you.example.com"
-default_r_domain="r.example.com"
-default_https_backend="yes"
-
-you_domain="${args[you_domain]:-$default_you_domain}"
-r_domain="${args[r_domain]:-$default_r_domain}"
-https_backend="${args[https_backend]:-$default_https_backend}"
-
-if [[ -z "${args[you_domain]}" || -z "${args[r_domain]}" || -z "${args[https_backend]}" ]]; then
-    read -p "请输入你的域名 (默认: $default_you_domain): " input_you_domain
-    read -p "请输入要反代的域名 (默认: $default_r_domain): " input_r_domain
+# 交互模式
+if [[ -z "$you_domain" || -z "$r_domain" ]]; then
+    read -p "请输入你的域名 (默认: you.example.com): " input_you_domain
+    read -p "请输入要反代的域名 (默认: r.example.com): " input_r_domain
     read -p "后端推流地址是否使用 HTTPS? (默认: yes, 输入 no 则使用 HTTP): " input_https_backend
 
-    you_domain="${input_you_domain:-$default_you_domain}"
-    r_domain="${input_r_domain:-$default_r_domain}"
-    https_backend="${input_https_backend:-$default_https_backend}"
+    you_domain="${input_you_domain:-you.example.com}"
+    r_domain="${input_r_domain:-r.example.com}"
+    https_backend="${input_https_backend:-yes}"
 fi
 
 # 检查并安装 Nginx
