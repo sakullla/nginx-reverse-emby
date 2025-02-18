@@ -9,6 +9,25 @@ http_backend="no"  # 默认使用 HTTPS
 http_frontend="no"  # 默认前端也使用 HTTPS
 frontend_port=""  # 默认无端口
 
+# 显示帮助信息
+show_help() {
+    echo "用法: $0 [选项]"
+    echo "  -y, --you_domain      指定前端域名 (例如: example.com)"
+    echo "  -r, --r_domain        指定后端域名 (例如: backend.com)"
+    echo "  -b, --http_backend    使用 HTTP 连接到后端 (默认: 否)"
+    echo "  -f, --http_frontend   使用 HTTP 作为前端访问 (默认: 否)"
+    echo "  -p, --frontend_port   指定前端端口 (例如: 8443, 默认: 空)"
+    echo "  -h, --help            显示此帮助信息"
+    exit 0
+}
+
+# 初始化变量
+you_domain=""
+r_domain=""
+http_backend="no"  # 默认使用 HTTPS
+http_frontend="no"  # 默认前端也使用 HTTPS
+frontend_port=""  # 默认无端口
+
 # 解析参数
 while [[ "$#" -gt 0 ]]; do
     case "$1" in
@@ -30,6 +49,9 @@ while [[ "$#" -gt 0 ]]; do
             shift
             frontend_port="$1"
             ;;
+        -h|--help)
+            show_help
+            ;;
         *)
             echo "未知参数: $1"
             exit 1
@@ -40,6 +62,8 @@ done
 
 # 交互模式
 if [[ -z "$you_domain" || -z "$r_domain" ]]; then
+    echo "--- 交互模式: 配置反向代理 ---"
+    echo "输入参数或直接按 Enter 使用默认值。"
     read -p "请输入你的域名 (默认: you.example.com): " input_you_domain
     read -p "请输入要反代的域名 (默认: r.example.com): " input_r_domain
     read -p "后端推流地址是否使用 HTTP? (默认: no, 输入 yes 则使用 HTTP): " input_http_backend
