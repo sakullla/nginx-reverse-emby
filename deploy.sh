@@ -6,6 +6,7 @@ set -e
 you_domain=""
 r_domain=""
 http_backend="no"  # 默认使用 HTTPS
+http_frontend="no"  # 默认前端也使用 HTTPS
 
 # 解析参数
 while [[ "$#" -gt 0 ]]; do
@@ -21,6 +22,9 @@ while [[ "$#" -gt 0 ]]; do
         -b|--http_backend)
             http_backend="yes"
             ;;
+        -f|--http_frontend)
+            http_frontend="yes"
+            ;;
         *)
             echo "未知参数: $1"
             exit 1
@@ -34,10 +38,12 @@ if [[ -z "$you_domain" || -z "$r_domain" ]]; then
     read -p "请输入你的域名 (默认: you.example.com): " input_you_domain
     read -p "请输入要反代的域名 (默认: r.example.com): " input_r_domain
     read -p "后端推流地址是否使用 HTTP? (默认: no, 输入 yes 则使用 HTTP): " input_http_backend
+    read -p "前端访问地址是否使用 HTTP? (默认: no, 输入 yes 则使用 HTTP): " input_http_frontend
 
     you_domain="${input_you_domain:-you.example.com}"
     r_domain="${input_r_domain:-r.example.com}"
     http_backend="${input_http_backend:-no}"
+    http_frontend="${input_http_frontend:-no}"
 fi
 
 # 检查并安装 Nginx
@@ -79,10 +85,17 @@ curl -o /etc/nginx/nginx.conf https://raw.githubusercontent.com/sakullla/nginx-r
 # 下载并复制 p.example.com.conf 并修改
 echo "下载并创建 $you_domain 配置文件..."
 curl -o "$you_domain.conf" https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/conf.d/p.example.com.conf
+
+# 如果 http_frontend 选择使用 HTTP，先替换 https://emby.example.com
+if [[ "$http_frontend" == "yes" ]]; then
+    sed -i "s/https:\/\/emby.example.com/http:\/\/emby.example.com/g" "$you_domain.conf"
+fi
+
+# 替换域名信息
 sed -i "s/p.example.com/$you_domain/g" "$you_domain.conf"
 sed -i "s/emby.example.com/$r_domain/g" "$you_domain.conf"
 
-# 根据 http_backend 选择 http 或 https
+# 如果 http_backend 选择使用 HTTP，替换 https://$website
 if [[ "$http_backend" == "yes" ]]; then
     sed -i "s/https:\/\/\$website/http:\/\/\$website/g" "$you_domain.conf"
 fi
