@@ -11,7 +11,7 @@ frontend_port=""  # 默认无端口
 
 # 显示帮助信息
 show_help() {
-    echo "用法: $0 [选项]"
+    echo "用法:  [选项]"
     echo "  -y, --you_domain      指定前端域名 (例如: example.com)"
     echo "  -r, --r_domain        指定后端域名 (例如: backend.com)"
     echo "  -b, --http_backend    使用 HTTP 连接到后端 (默认: 否)"
