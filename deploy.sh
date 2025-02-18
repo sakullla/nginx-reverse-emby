@@ -5,7 +5,7 @@ set -e
 # 初始化变量
 you_domain=""
 r_domain=""
-https_backend="yes"  # 默认使用 HTTPS
+http_backend="no"  # 默认使用 HTTPS
 
 # 解析参数
 while [[ "$#" -gt 0 ]]; do
@@ -18,8 +18,8 @@ while [[ "$#" -gt 0 ]]; do
             shift
             r_domain="$1"
             ;;
-        -b|--https_backend)
-            https_backend="no"
+        -b|--http_backend)
+            http_backend="yes"
             ;;
         *)
             echo "未知参数: $1"
@@ -33,11 +33,11 @@ done
 if [[ -z "$you_domain" || -z "$r_domain" ]]; then
     read -p "请输入你的域名 (默认: you.example.com): " input_you_domain
     read -p "请输入要反代的域名 (默认: r.example.com): " input_r_domain
-    read -p "后端推流地址是否使用 HTTPS? (默认: yes, 输入 no 则使用 HTTP): " input_https_backend
+    read -p "后端推流地址是否使用 HTTP? (默认: no, 输入 yes 则使用 HTTP): " input_http_backend
 
     you_domain="${input_you_domain:-you.example.com}"
     r_domain="${input_r_domain:-r.example.com}"
-    https_backend="${input_https_backend:-yes}"
+    http_backend="${input_http_backend:-no}"
 fi
 
 # 检查并安装 Nginx
@@ -82,8 +82,8 @@ curl -o "$you_domain.conf" https://raw.githubusercontent.com/sakullla/nginx-reve
 sed -i "s/p.example.com/$you_domain/g" "$you_domain.conf"
 sed -i "s/emby.example.com/$r_domain/g" "$you_domain.conf"
 
-# 根据 https_backend 选择 http 或 https
-if [[ "$https_backend" == "no" ]]; then
+# 根据 http_backend 选择 http 或 https
+if [[ "$http_backend" == "yes" ]]; then
     sed -i "s/https:\/\/\$website/http:\/\/\$website/g" "$you_domain.conf"
 fi
 
