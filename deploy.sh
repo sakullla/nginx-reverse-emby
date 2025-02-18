@@ -75,13 +75,12 @@ mv "$you_domain.conf" /etc/nginx/conf.d/
 
 # 检查并安装 acme.sh
 echo "检查 acme.sh 是否已安装..."
-if ! command -v acme.sh &> /dev/null; then
+if [[ ! -f "$HOME/.acme.sh/acme.sh" ]]; then
     echo "acme.sh 未安装，正在安装..."
     apt install -y socat
     curl https://get.acme.sh | sh
-    source ~/.bashrc
-    acme.sh --upgrade --auto-upgrade
-    acme.sh --set-default-ca --server letsencrypt
+    ~/.acme.sh/acme.sh --upgrade --auto-upgrade
+    ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt
 else
     echo "acme.sh 已安装，跳过安装步骤。"
 fi
@@ -89,8 +88,8 @@ fi
 # 申请并安装 ECC 证书
 echo "申请 ECC 证书..."
 mkdir -p "/etc/nginx/certs/$you_domain"
-acme.sh --issue -d "$you_domain" --standalone --keylength ec-256
-acme.sh --install-cert -d "$you_domain" --ecc \
+~/.acme.sh/acme.sh --issue -d "$you_domain" --standalone --keylength ec-256
+~/.acme.sh/acme.sh --install-cert -d "$you_domain" --ecc \
     --fullchain-file "/etc/nginx/certs/$you_domain/cert" \
     --key-file "/etc/nginx/certs/$you_domain/key" \
     --reloadcmd "nginx -s reload"
