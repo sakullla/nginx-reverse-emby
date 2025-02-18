@@ -7,6 +7,7 @@ you_domain=""
 r_domain=""
 http_backend="no"  # 默认使用 HTTPS
 http_frontend="no"  # 默认前端也使用 HTTPS
+frontend_port=""  # 默认无端口
 
 # 解析参数
 while [[ "$#" -gt 0 ]]; do
@@ -25,6 +26,10 @@ while [[ "$#" -gt 0 ]]; do
         -f|--http_frontend)
             http_frontend="yes"
             ;;
+        -p|--frontend_port)
+            shift
+            frontend_port="$1"
+            ;;
         *)
             echo "未知参数: $1"
             exit 1
@@ -39,11 +44,13 @@ if [[ -z "$you_domain" || -z "$r_domain" ]]; then
     read -p "请输入要反代的域名 (默认: r.example.com): " input_r_domain
     read -p "后端推流地址是否使用 HTTP? (默认: no, 输入 yes 则使用 HTTP): " input_http_backend
     read -p "前端访问地址是否使用 HTTP? (默认: no, 输入 yes 则使用 HTTP): " input_http_frontend
+    read -p "前端端口号 (默认: 空, 例如 8443): " input_frontend_port
 
     you_domain="${input_you_domain:-you.example.com}"
     r_domain="${input_r_domain:-r.example.com}"
     http_backend="${input_http_backend:-no}"
     http_frontend="${input_http_frontend:-no}"
+    frontend_port="${input_frontend_port}"
 fi
 
 # 检查并安装 Nginx
@@ -89,6 +96,11 @@ curl -o "$you_domain.conf" https://raw.githubusercontent.com/sakullla/nginx-reve
 # 如果 http_frontend 选择使用 HTTP，先替换 https://emby.example.com
 if [[ "$http_frontend" == "yes" ]]; then
     sed -i "s/https:\/\/emby.example.com/http:\/\/emby.example.com/g" "$you_domain.conf"
+fi
+
+# 如果 frontend_port 不为空，修改 emby.example.com 加上端口
+if [[ -n "$frontend_port" ]]; then
+    sed -i "s/emby.example.com/emby.example.com:$frontend_port/g" "$you_domain.conf"
 fi
 
 # 替换域名信息
