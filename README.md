@@ -19,7 +19,7 @@ cp p.example.com.conf you.example.com.conf
 sed -i 's/p.example.com/you.example.com/g' you.example.com.conf
 ```
 
-- 将you.example.com.conf里面的 embyou.example.com 替换为要反代的域名 r.example.com
+- 将you.example.com.conf里面的 emby.example.com 替换为要反代的域名 r.example.com
 ```shell
 sed -i 's/emby.example.com/r.example.com/g' you.example.com.conf
 ```
