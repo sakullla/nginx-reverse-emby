@@ -10,11 +10,23 @@ https_backend="yes"  # 默认使用 HTTPS
 # 解析参数
 while [[ "$#" -gt 0 ]]; do
     case "$1" in
-        -y|--you_domain) you_domain="$2"; shift 2 ;;
-        -r|--r_domain) r_domain="$2"; shift 2 ;;
-        -b|--https_backend) https_backend="no"; shift ;;
-        *) echo "未知参数: $1"; exit 1 ;;
+        -y|--you_domain)
+            shift
+            you_domain="$1"
+            ;;
+        -r|--r_domain)
+            shift
+            r_domain="$1"
+            ;;
+        -b|--https_backend)
+            https_backend="no"
+            ;;
+        *)
+            echo "未知参数: $1"
+            exit 1
+            ;;
     esac
+    shift
 done
 
 # 交互模式
