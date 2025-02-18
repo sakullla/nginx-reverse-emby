@@ -4,9 +4,13 @@
 - 代理后的emby支持 http1.1\http2\http3 ipv4/ipv6访问
 - 支持代理多个emby，每次只要根据模板调整和申请证书即可
 
-一键部署脚本 将 you.example.com 替换成你的域名 backend.com 替换成你要反代的emby 
+# 一键部署脚本
 ```shell
 curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh | bash -s -- -y yourdomain.com -r backend.com
+```
+或者
+```shell
+bash <(curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh)
 ```
 
 
