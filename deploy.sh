@@ -13,10 +13,10 @@ frontend_port=""  # 默认无端口
 show_help() {
     echo "用法:  [选项]"
     echo "  -y, --you_domain      指定前端域名 (例如: example.com)"
-    echo "  -r, --r_domain        指定后端域名 (例如: backend.com)"
-    echo "  -b, --http_backend    代理emby使用 HTTP 连接到后端 (默认: 否)"
-    echo "  -f, --http_frontend   代理emby使用 HTTP 作为前端访问 (默认: 否)"
-    echo "  -p, --frontend_port   指定前端端口 (例如: 8443, 默认: 空)"
+    echo "  -r, --r_domain        指定反代emby域名 (例如: backend.com)"
+    echo "  -b, --http_backend    反代emby使用 HTTP 连接到后端 (默认: 否)"
+    echo "  -f, --http_frontend   反代emby使用 HTTP 作为前端访问 (默认: 否)"
+    echo "  -p, --frontend_port   反代emby指定前端端口 (例如: 8443, 默认: 空)"
     echo "  -h, --help            显示此帮助信息"
     exit 0
 }
@@ -65,8 +65,8 @@ if [[ -z "$you_domain" || -z "$r_domain" ]]; then
     echo "--- 交互模式: 配置反向代理 ---"
     echo "输入参数或直接按 Enter 使用默认值。"
     read -p "请输入你的域名 (默认: you.example.com): " input_you_domain
-    read -p "请输入要反代的域名 (默认: r.example.com): " input_r_domain
-    read -p "后端推流地址是否使用 HTTP? (默认: no, 输入 yes 则使用 HTTP): " input_http_backend
+    read -p "请输入要反代emby的域名 (默认: r.example.com): " input_r_domain
+    read -p "反代emby后端推流地址是否使用 HTTP? (默认: no, 输入 yes 则使用 HTTP): " input_http_backend
     read -p "代理emby前端访问地址是否使用 HTTP? (默认: no, 输入 yes 则使用 HTTP): " input_http_frontend
     read -p "代理emby前端端口号 (默认: 空, 例如 8443): " input_frontend_port
 
