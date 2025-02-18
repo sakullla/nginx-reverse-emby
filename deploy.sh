@@ -8,6 +8,7 @@ while [[ "$#" -gt 0 ]]; do
     case "$1" in
         -y|--you_domain) args[you_domain]="$2"; shift 2 ;;
         -r|--r_domain) args[r_domain]="$2"; shift 2 ;;
+        -b|--https_backend) args[https_backend]="yes"; shift ;;
         *) echo "未知参数: $1"; exit 1 ;;
     esac
 done
@@ -15,16 +16,20 @@ done
 # 交互式或参数传入
 default_you_domain="you.example.com"
 default_r_domain="r.example.com"
+default_https_backend="yes"
 
 you_domain="${args[you_domain]:-$default_you_domain}"
 r_domain="${args[r_domain]:-$default_r_domain}"
+https_backend="${args[https_backend]:-$default_https_backend}"
 
-if [[ -z "${args[you_domain]}" || -z "${args[r_domain]}" ]]; then
+if [[ -z "${args[you_domain]}" || -z "${args[r_domain]}" || -z "${args[https_backend]}" ]]; then
     read -p "请输入你的域名 (默认: $default_you_domain): " input_you_domain
     read -p "请输入要反代的域名 (默认: $default_r_domain): " input_r_domain
+    read -p "后端推流地址是否使用 HTTPS? (默认: yes, 输入 no 则使用 HTTP): " input_https_backend
 
     you_domain="${input_you_domain:-$default_you_domain}"
     r_domain="${input_r_domain:-$default_r_domain}"
+    https_backend="${input_https_backend:-$default_https_backend}"
 fi
 
 # 检查并安装 Nginx
@@ -69,21 +74,14 @@ curl -o "$you_domain.conf" https://raw.githubusercontent.com/sakullla/nginx-reve
 sed -i "s/p.example.com/$you_domain/g" "$you_domain.conf"
 sed -i "s/emby.example.com/$r_domain/g" "$you_domain.conf"
 
+# 根据 https_backend 选择 http 或 https
+if [[ "$https_backend" == "no" ]]; then
+    sed -i "s/https:\/\/\$website/http:\/\/\$website/g" "$you_domain.conf"
+fi
+
 # 移动配置文件到 /etc/nginx/conf.d/
 echo "移动 $you_domain.conf 到 /etc/nginx/conf.d/"
 mv "$you_domain.conf" /etc/nginx/conf.d/
-
-# 检查并安装 acme.sh
-echo "检查 acme.sh 是否已安装..."
-if [[ ! -f "$HOME/.acme.sh/acme.sh" ]]; then
-    echo "acme.sh 未安装，正在安装..."
-    apt install -y socat
-    curl https://get.acme.sh | sh
-    ~/.acme.sh/acme.sh --upgrade --auto-upgrade
-    ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt
-else
-    echo "acme.sh 已安装，跳过安装步骤。"
-fi
 
 # 申请并安装 ECC 证书
 echo "申请 ECC 证书..."
