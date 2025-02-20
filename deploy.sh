@@ -160,11 +160,13 @@ mkdir -p "/etc/nginx/certs/$you_domain"
 set +e
 output=$(~/.acme.sh/acme.sh --issue -d "$you_domain" --standalone --keylength ec-256 2>&1)
 status=$?
+echo "$output" | grep -q "Domains not changed"
+cert_status=$?
 echo "$output"
 set -e
 
 # 如果申请失败（非零退出状态），则退出脚本
-if [ $status -ne 0 ]; then
+if [ $status -ne 0 ] && [ $cert_status -ne 0 ]; then
     echo "证书申请失败，请检查错误信息！"
     exit 1
 fi
