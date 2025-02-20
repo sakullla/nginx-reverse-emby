@@ -155,11 +155,26 @@ fi
 # 申请并安装 ECC 证书
 echo "申请 ECC 证书..."
 mkdir -p "/etc/nginx/certs/$you_domain"
-~/.acme.sh/acme.sh --issue -d "$you_domain" --standalone --keylength ec-256
+
+# 申请证书
+output=$(~/.acme.sh/acme.sh --issue -d "$you_domain" --standalone --keylength ec-256 2>&1)
+status=$?
+
+echo "$output"
+
+# 如果申请失败（非零退出状态），则退出脚本
+if [ $status -ne 0 ]; then
+    echo "证书申请失败，请检查错误信息！"
+    exit 1
+fi
+
+# 安装证书
 ~/.acme.sh/acme.sh --install-cert -d "$you_domain" --ecc \
     --fullchain-file "/etc/nginx/certs/$you_domain/cert" \
     --key-file "/etc/nginx/certs/$you_domain/key" \
     --reloadcmd "nginx -s reload"
 
+echo "重新加载 Nginx..."
 nginx -s reload
+
 echo "反向代理设置完成！"
