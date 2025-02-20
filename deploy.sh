@@ -167,6 +167,7 @@ set -e
 # 如果申请失败（非零退出状态），则退出脚本
 if [ $status -ne 0 ] && [ $cert_status -ne 0 ]; then
     echo "证书申请失败，请检查错误信息！"
+    rm -f "/etc/nginx/conf.d/$you_domain.conf"
     exit 1
 fi
 
