@@ -163,6 +163,7 @@ status=$?
 echo "$output" | grep -q "Domains not changed"
 cert_status=$?
 set -e
+echo "$output"
 echo "$status"
 echo "$cert_status"
 # 如果申请失败（非零退出状态），则退出脚本
