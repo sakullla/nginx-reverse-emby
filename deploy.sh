@@ -172,6 +172,7 @@ if [ $status -ne 0 ] && [ $cert_status -ne 0 ]; then
 fi
 
 # 安装证书
+echo "安装证书..."
 ~/.acme.sh/acme.sh --install-cert -d "$you_domain" --ecc \
     --fullchain-file "/etc/nginx/certs/$you_domain/cert" \
     --key-file "/etc/nginx/certs/$you_domain/key" \
