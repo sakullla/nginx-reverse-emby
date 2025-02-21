@@ -59,12 +59,12 @@ if [[ -z "$you_domain" || -z "$r_domain" ]]; then
     echo -e "\n--- 交互模式: 配置反向代理 ---"
     echo "请按提示输入参数，或直接按 Enter 使用默认值"
     read -p "你的域名或者 IP [默认: you.example.com]: " input_you_domain
-    read -p "反代 Emby 的域名 [默认: r.example.com]: " input_r_domain
+    read -p "反代Emby的域名 [默认: r.example.com]: " input_r_domain
     read -p "你的前端访问端口 [默认: 443]: " input_you_frontend_port
-    read -p "反代 Emby 前端端口 [默认: 空]: " input_r_frontend_port
-    read -p "是否使用 HTTP 连接 Emby 后端? (yes/no) [默认: no]: " input_r_http_backend
-    read -p "是否使用 HTTP 作为前端访问? (yes/no) [默认: no]: " input_r_http_frontend
-    read -p "是否禁用 TLS? (yes/no) [默认: no]: " input_no_tls
+    read -p "反代Emby前端端口 [默认: 空]: " input_r_frontend_port
+    read -p "是否使用HTTP连接反代Emby后端? (yes/no) [默认: no]: " input_r_http_backend
+    read -p "是否使用HTTP连接反代Emby前端? (yes/no) [默认: no]: " input_r_http_frontend
+    read -p "是否禁用TLS? (yes/no) [默认: no]: " input_no_tls
 
     # 赋值默认值
     you_domain="${input_you_domain:-you.example.com}"
@@ -81,9 +81,9 @@ protocol=$( [[ "$no_tls" == "yes" ]] && echo "http" || echo "https" )
 url="${protocol}://${you_domain}:${you_frontend_port}"
 
 echo -e "\n------ 配置信息 ------"
+echo "🌍 访问地址: ${url}"
 echo "📌 你的域名: ${you_domain}"
 echo "🔄 反代 Emby 域名: ${r_domain}"
-echo "🌍 访问地址: ${url}"
 echo "🎯 反代前端端口: ${r_frontend_port:-未指定}"
 echo "🔗 后端使用 HTTP: $( [[ "$r_http_backend" == "yes" ]] && echo "✅ 是" || echo "❌ 否")"
 echo "💻 前端使用 HTTP: $( [[ "$r_http_frontend" == "yes" ]] && echo "✅ 是" || echo "❌ 否")"
