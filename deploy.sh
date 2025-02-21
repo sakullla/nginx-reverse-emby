@@ -77,10 +77,13 @@ if [[ -z "$you_domain" || -z "$r_domain" ]]; then
 fi
 
 # 美化输出配置信息
+protocol=$( [[ "$no_tls" == "yes" ]] && echo "http" || echo "https" )
+url="${protocol}://${you_domain}:${you_frontend_port}"
+
 echo -e "\n------ 配置信息 ------"
 echo "📌 你的域名: ${you_domain}"
 echo "🔄 反代 Emby 域名: ${r_domain}"
-echo "🌐 你的前端端口: ${you_frontend_port}"
+echo "🌍 访问地址: ${url}"
 echo "🎯 反代前端端口: ${r_frontend_port:-未指定}"
 echo "🔗 后端使用 HTTP: $( [[ "$r_http_backend" == "yes" ]] && echo "✅ 是" || echo "❌ 否")"
 echo "💻 前端使用 HTTP: $( [[ "$r_http_frontend" == "yes" ]] && echo "✅ 是" || echo "❌ 否")"
