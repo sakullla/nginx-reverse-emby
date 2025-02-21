@@ -126,7 +126,7 @@ download_domain_config="p.example.com"
 
 # 如果 $no_tls 选择使用 HTTP，则选择下载对应的模板
 if [[ "$no_tls" == "yes" ]]; then
-    you_domain_config="$you_domain.$you_frontend_port$"
+    you_domain_config="$you_domain.$you_frontend_port"
     download_domain_config="p.example.com.http"
 fi
 
