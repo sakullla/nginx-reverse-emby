@@ -4,86 +4,89 @@ set -e
 
 # 显示帮助信息
 show_help() {
-    echo "用法:  [选项]"
-    echo "  -y, --you_domain        请输入你的域名或者ip (例如: example.com)"
-    echo "  -r, --r_domain          指定反代emby域名 (例如: backend.com)"
-    echo "  -P, --you_frontend_port 指定前端访问端口 (例如: 8443, 默认: 443)"
-    echo "  -p, --r_frontend_port   反代emby指定前端端口 (例如: 8443, 默认: 空)"
-    echo "  -f, --r_http_frontend   反代emby使用 HTTP 作为前端访问 (默认: 否)"
-    echo "  -b, --r_http_backend    反代emby使用 HTTP 连接到后端 (默认: 否)"
-    echo "  -s, --no_tls            禁用TLS (默认: 否)"
-    echo "  -h, --help              显示此帮助信息"
+    cat << EOF
+用法: $(basename "$0") [选项]
+
+选项:
+  -y, --you-domain <域名>        你的域名或IP (例如: example.com)
+  -r, --r-domain <域名>          反代 Emby 的域名 (例如: backend.com)
+  -P, --you-frontend-port <端口>  你的前端访问端口 (默认: 443)
+  -p, --r-frontend-port <端口>    反代 Emby 前端端口 (默认: 空)
+  -f, --r-http-frontend          反代 Emby 使用 HTTP 作为前端访问 (默认: 否)
+  -b, --r-http-backend           反代 Emby 使用 HTTP 连接后端 (默认: 否)
+  -s, --no-tls                   禁用 TLS (默认: 否)
+  -h, --help                     显示帮助信息
+EOF
     exit 0
 }
 
 # 初始化变量
 you_domain=""
-no_tls="no"  # 默认启用 tls
-you_frontend_port=""  # 默认无端口
 r_domain=""
-r_http_backend="no"  # 默认使用 HTTPS
-r_http_frontend="no"  # 默认前端也使用 HTTPS
-r_frontend_port=""  # 默认无端口
+you_frontend_port="443"
+r_frontend_port=""
+r_http_backend="no"
+r_http_frontend="no"
+no_tls="no"
 
-# 解析参数
-while [[ "$#" -gt 0 ]]; do
+# 使用 `getopt` 解析参数
+TEMP=$(getopt -o y:r:P:p:bfsh --long you-domain:,r-domain:,you-frontend-port:,r-frontend-port:,r-http-frontend,r-http-backend,no-tls,help -n "$(basename "$0")" -- "$@")
+
+if [ $? -ne 0 ]; then
+    echo "参数解析失败，请检查输入的参数。"
+    exit 1
+fi
+
+eval set -- "$TEMP"
+
+while true; do
     case "$1" in
-        -y|--you_domain)
-            shift
-            you_domain="$1"
-            ;;
-        -r|--r_domain)
-            shift
-            r_domain="$1"
-            ;;
-        -b|--r_http_backend)
-            r_http_backend="yes"
-            ;;
-        -f|--r_http_frontend)
-            r_http_frontend="yes"
-            ;;
-        -p|--r_frontend_port)
-            shift
-            r_frontend_port="$1"
-            ;;
-        -s|--no_tls)
-            no_tls="yes"
-            ;;
-        -P|--you_frontend_port)
-            shift
-            you_frontend_port="$1"
-            ;;
-        -h|--help)
-            show_help
-            ;;
-        *)
-            echo "未知参数: $1"
-            exit 1
-            ;;
+        -y|--you-domain) you_domain="$2"; shift 2 ;;
+        -r|--r-domain) r_domain="$2"; shift 2 ;;
+        -P|--you-frontend-port) you_frontend_port="$2"; shift 2 ;;
+        -p|--r-frontend-port) r_frontend_port="$2"; shift 2 ;;
+        -b|--r-http-backend) r_http_backend="yes"; shift ;;
+        -f|--r-http-frontend) r_http_frontend="yes"; shift ;;
+        -s|--no-tls) no_tls="yes"; shift ;;
+        -h|--help) show_help; shift ;;
+        --) shift; break ;;
+        *) echo "错误: 未知参数 $1"; exit 1 ;;
     esac
-    shift
 done
 
-# 交互模式
+# 交互模式 (如果未提供必要参数)
 if [[ -z "$you_domain" || -z "$r_domain" ]]; then
-    echo "--- 交互模式: 配置反向代理 ---"
-    echo "输入参数或直接按 Enter 使用默认值。"
-    read -p "请输入你的域名或者ip (默认: you.example.com): " input_you_domain
-    read -p "请输入要反代emby的域名 (默认: r.example.com): " input_r_domain
-    read -p "请输入你的域名的端口号 (默认: 443): " input_you_frontend_port
-    read -p "请输入反代emby前端端口号 (默认: 空, 例如 8443): " input_frontend_port
-    read -p "反代emby后端推流地址是否使用 HTTP? (默认: no, 输入 yes 则使用 HTTP): " input_http_backend
-    read -p "反代emby前端访问地址是否使用 HTTP? (默认: no, 输入 yes 则使用 HTTP): " input_http_frontend
-    read -p "是否禁用tls (默认: no, 输入 yes 则禁用): " input_no_tls
+    echo "\n--- 交互模式: 配置反向代理 ---"
+    echo "请按提示输入参数，或直接按 Enter 使用默认值"
+    read -p "你的域名或者 IP [默认: you.example.com]: " input_you_domain
+    read -p "反代 Emby 的域名 [默认: r.example.com]: " input_r_domain
+    read -p "你的前端访问端口 [默认: 443]: " input_you_frontend_port
+    read -p "反代 Emby 前端端口 [默认: 空]: " input_r_frontend_port
+    read -p "是否使用 HTTP 连接 Emby 后端? (yes/no) [默认: no]: " input_r_http_backend
+    read -p "是否使用 HTTP 作为前端访问? (yes/no) [默认: no]: " input_r_http_frontend
+    read -p "是否禁用 TLS? (yes/no) [默认: no]: " input_no_tls
 
+    # 赋值默认值
     you_domain="${input_you_domain:-you.example.com}"
     r_domain="${input_r_domain:-r.example.com}"
-    you_frontend_port="${input_you_frontend_port}"
-    r_frontend_port="${input_frontend_port}"
-    r_http_backend="${input_http_backend:-no}"
-    r_http_frontend="${input_http_frontend:-no}"
+    you_frontend_port="${input_you_frontend_port:-443}"
+    r_frontend_port="${input_r_frontend_port}"
+    r_http_backend="${input_r_http_backend:-no}"
+    r_http_frontend="${input_r_http_frontend:-no}"
     no_tls="${input_no_tls:-no}"
 fi
+
+# 美化输出配置信息
+echo -e "\n------ 配置信息 ------"
+echo "📌 你的域名: ${you_domain}"
+echo "🔄 反代 Emby 域名: ${r_domain}"
+echo "🌐 你的前端端口: ${you_frontend_port}"
+echo "🎯 反代前端端口: ${r_frontend_port:-未指定}"
+echo "🔗 后端使用 HTTP: $( [[ "$r_http_backend" == "yes" ]] && echo "✅ 是" || echo "❌ 否")"
+echo "💻 前端使用 HTTP: $( [[ "$r_http_frontend" == "yes" ]] && echo "✅ 是" || echo "❌ 否")"
+echo "🔒 禁用 TLS: $( [[ "$no_tls" == "yes" ]] && echo "✅ 是" || echo "❌ 否")"
+echo "----------------------"
+
 
 # 检查并安装 Nginx
 echo "检查 Nginx 是否已安装..."
