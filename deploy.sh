@@ -83,13 +83,14 @@ url="${protocol}://${you_domain}:${you_frontend_port}"
 echo -e "\n------ 配置信息 ------"
 echo "🌍 访问地址: ${url}"
 echo "📌 你的域名: ${you_domain}"
-echo "📌 你的前端访问端口: ${you_frontend_port}"
-echo "🔄 反代Emby的域名: ${r_domain}"
-echo "🎯 反代Emby前端端口: ${r_frontend_port:-未指定}"
-echo "🔗 使用HTTP连接反代Emby后端: $( [[ "$r_http_backend" == "yes" ]] && echo "✅ 是" || echo "❌ 否")"
-echo "💻 使用HTTP连接反代Emby前端: $( [[ "$r_http_frontend" == "yes" ]] && echo "✅ 是" || echo "❌ 否")"
-echo "🔒 禁用TLS: $( [[ "$no_tls" == "yes" ]] && echo "✅ 是" || echo "❌ 否")"
+echo "🖥️ 你的前端访问端口: ${you_frontend_port}"
+echo "🔄 反代 Emby 的域名: ${r_domain}"
+echo "🎯 反代 Emby 前端端口: ${r_frontend_port:-未指定}"
+echo "🔗 使用 HTTP 连接反代 Emby 后端: $( [[ "$r_http_backend" == "yes" ]] && echo "✅ 是" || echo "❌ 否" )"
+echo "🛠️ 使用 HTTP 连接反代 Emby 前端: $( [[ "$r_http_frontend" == "yes" ]] && echo "✅ 是" || echo "❌ 否" )"
+echo "🔒 禁用 TLS: $( [[ "$no_tls" == "yes" ]] && echo "✅ 是" || echo "❌ 否" )"
 echo "----------------------"
+
 
 
 # 检查并安装 Nginx
