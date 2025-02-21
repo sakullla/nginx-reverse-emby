@@ -56,7 +56,7 @@ done
 
 # 交互模式 (如果未提供必要参数)
 if [[ -z "$you_domain" || -z "$r_domain" ]]; then
-    echo "--- 交互模式: 配置反向代理 ---"
+    echo -e "\n--- 交互模式: 配置反向代理 ---"
     echo "请按提示输入参数，或直接按 Enter 使用默认值"
     read -p "你的域名或者 IP [默认: you.example.com]: " input_you_domain
     read -p "反代 Emby 的域名 [默认: r.example.com]: " input_r_domain
