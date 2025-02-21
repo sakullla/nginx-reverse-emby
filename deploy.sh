@@ -5,7 +5,7 @@ set -e
 # 显示帮助信息
 show_help() {
     echo "用法:  [选项]"
-    echo "  -y, --you_domain        指定前端域名 (例如: example.com)"
+    echo "  -y, --you_domain        请输入你的域名或者ip (例如: example.com)"
     echo "  -r, --r_domain          指定反代emby域名 (例如: backend.com)"
     echo "  -P, --you_frontend_port 指定前端访问端口 (例如: 8443, 默认: 443)"
     echo "  -p, --r_frontend_port   反代emby指定前端端口 (例如: 8443, 默认: 空)"
@@ -68,7 +68,7 @@ done
 if [[ -z "$you_domain" || -z "$r_domain" ]]; then
     echo "--- 交互模式: 配置反向代理 ---"
     echo "输入参数或直接按 Enter 使用默认值。"
-    read -p "请输入你的域名 (默认: you.example.com): " input_you_domain
+    read -p "请输入你的域名或者ip (默认: you.example.com): " input_you_domain
     read -p "请输入要反代emby的域名 (默认: r.example.com): " input_r_domain
     read -p "请输入你的域名的端口号 (默认: 443): " input_you_frontend_port
     read -p "请输入反代emby前端端口号 (默认: 空, 例如 8443): " input_frontend_port
