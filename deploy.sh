@@ -166,16 +166,16 @@ if [[ "$no_tls" != "yes" ]]; then
     ACME_SH="$HOME/.acme.sh/acme.sh"
 
     # 检查并安装 acme.sh
-    echo "检查 acme.sh 是否已安装..."
-    if ! command -v acme.sh &>/dev/null; then
-        echo "acme.sh 未安装，正在安装..."
-        apt install -y socat
-        curl https://get.acme.sh | sh
-        "$ACME_SH" --upgrade --auto-upgrade
-        "$ACME_SH" --set-default-ca --server letsencrypt
-    else
-        echo "acme.sh 已安装，跳过安装步骤。"
-    fi
+   echo "检查 acme.sh 是否已安装..."
+   if [[ ! -f "$ACME_SH" ]]; then
+       echo "acme.sh 未安装，正在安装..."
+       apt install -y socat
+       curl https://get.acme.sh | sh
+       "$ACME_SH" --upgrade --auto-upgrade
+       "$ACME_SH" --set-default-ca --server letsencrypt
+   else
+       echo "acme.sh 已安装，跳过安装步骤。"
+   fi
 
     # 申请并安装 ECC 证书
     if ! "$ACME_SH" --list | grep -q "$you_domain"; then
