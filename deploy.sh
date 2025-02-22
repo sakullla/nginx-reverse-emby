@@ -189,13 +189,11 @@ if [[ "$no_tls" != "yes" ]]; then
     if ! "$ACME_SH" --info -d "$you_domain" | grep -q RealFullChainPath; then
         echo "ECC 证书未申请，正在申请..."
         mkdir -p "/etc/nginx/certs/$you_domain"
-        set +e
         "$ACME_SH" --issue -d "$you_domain" --standalone --keylength ec-256 || {
             echo "证书申请失败，请检查错误信息！"
             rm -f "/etc/nginx/conf.d/$you_domain_config.conf"
             exit 1
         }
-        set -e
     else
         echo "ECC 证书已申请，跳过申请步骤。"
     fi
