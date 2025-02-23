@@ -107,6 +107,7 @@ check_dependencies() {
   debian|devuan|kali)
       OS_NAME='debian'
       PM='apt'
+      GNUPG_PM='gnupg2'
       ;;
   ubuntu)
       OS_NAME='ubuntu'
@@ -137,44 +138,34 @@ echo "检查 Nginx 是否已安装..."
 if ! command -v nginx &> /dev/null; then
     echo "Nginx 未安装，正在安装..."
 
-    if [[ "$OS_NAME" == "debian" ]]; then
-        $PM install curl gnupg2 ca-certificates lsb-release debian-archive-keyring\
-            && curl https://nginx.org/keys/nginx_signing.key | gpg --dearmor > /usr/share/keyrings/nginx-archive-keyring.gpg \
-            && echo "deb [signed-by=/usr/share/keyrings/nginx-archive-keyring.gpg] http://nginx.org/packages/mainline/debian `lsb_release -cs` nginx" > /etc/apt/sources.list.d/nginx.list \
-            && echo -e "Package: *\nPin: origin nginx.org\nPin: release o=nginx\nPin-Priority: 900\n" > /etc/apt/preferences.d/99nginx \
-            && $PM update && $PM install -y nginx \
-            && mkdir -p /etc/systemd/system/nginx.service.d \
-            && echo -e "[Service]\nExecStartPost=/bin/sleep 0.1" > /etc/systemd/system/nginx.service.d/override.conf \
-            && systemctl daemon-reload && rm -f /etc/nginx/conf.d/default.conf \
-            && systemctl enable --now nginx
-    elif [[ "$OS_NAME" == "ubuntu" ]]; then
-        $PM install -y "$GNUPG_PM" ca-certificates lsb-release ubuntu-keyring \
-            && curl https://nginx.org/keys/nginx_signing.key | gpg --dearmor > /usr/share/keyrings/nginx-archive-keyring.gpg \
-            && echo "deb [signed-by=/usr/share/keyrings/nginx-archive-keyring.gpg] http://nginx.org/packages/mainline/ubuntu `lsb_release -cs` nginx" > /etc/apt/sources.list.d/nginx.list \
-            && echo -e "Package: *\nPin: origin nginx.org\nPin: release o=nginx\nPin-Priority: 900\n" > /etc/apt/preferences.d/99nginx \
-            && $PM update && $PM install -y nginx \
-            && mkdir -p /etc/systemd/system/nginx.service.d \
-            && echo -e "[Service]\nExecStartPost=/bin/sleep 0.1" > /etc/systemd/system/nginx.service.d/override.conf \
-            && systemctl daemon-reload && rm -f /etc/nginx/conf.d/default.conf \
-            && systemctl enable --now nginx
-     elif [[ "$OS_NAME" == "rhel" ]]; then
-        $PM install -y yum-utils \
-            && echo -e "[nginx-mainline]\nname=NGINX Mainline Repository\nbaseurl=https://nginx.org/packages/mainline/centos/\$releasever/\$basearch/\ngpgcheck=1\nenabled=1\ngpgkey=https://nginx.org/keys/nginx_signing.key" > /etc/yum.repos.d/nginx.repo \
-            && $PM install -y nginx \
-            && mkdir -p /etc/systemd/system/nginx.service.d \
-            && echo -e "[Service]\nExecStartPost=/bin/sleep 0.1" > /etc/systemd/system/nginx.service.d/override.conf \
-            && systemctl daemon-reload && rm -f /etc/nginx/conf.d/default.conf \
-            && systemctl enable --now nginx
-     elif [[ "$OS_NAME" == "arch" ]]; then
-        $PM -Sy --noconfirm nginx-mainline \
-            && mkdir -p /etc/systemd/system/nginx.service.d \
-            && echo -e "[Service]\nExecStartPost=/bin/sleep 0.1" > /etc/systemd/system/nginx.service.d/override.conf \
-            && systemctl daemon-reload && rm -f /etc/nginx/conf.d/default.conf \
-            && systemctl enable --now nginx
-     elif [[ "$OS_NAME" == "alpine" ]]; then
-        $PM update && $PM add --no-cache nginx-mainline \
-            && rc-update add nginx default && rm -f /etc/nginx/conf.d/default.conf \
-            && rc-service nginx start
+    if [[ "$OS_NAME" == "debian" || "$OS_NAME" == "ubuntu" ]]; then
+      $PM install -y "$GNUPG_PM" ca-certificates lsb-release "$OS_NAME-keyring" \
+        && curl https://nginx.org/keys/nginx_signing.key | gpg --dearmor > /usr/share/keyrings/nginx-archive-keyring.gpg \
+        && echo "deb [signed-by=/usr/share/keyrings/nginx-archive-keyring.gpg] http://nginx.org/packages/mainline/$OS_NAME `lsb_release -cs` nginx" > /etc/apt/sources.list.d/nginx.list \
+        && echo -e "Package: *\nPin: origin nginx.org\nPin: release o=nginx\nPin-Priority: 900\n" > /etc/apt/preferences.d/99nginx \
+        && $PM update && $PM install -y nginx \
+        && mkdir -p /etc/systemd/system/nginx.service.d \
+        && echo -e "[Service]\nExecStartPost=/bin/sleep 0.1" > /etc/systemd/system/nginx.service.d/override.conf \
+        && systemctl daemon-reload && rm -f /etc/nginx/conf.d/default.conf \
+        && systemctl enable --now nginx
+    elif [[ "$OS_NAME" == "rhel" ]]; then
+      $PM install -y yum-utils \
+          && echo -e "[nginx-mainline]\nname=NGINX Mainline Repository\nbaseurl=https://nginx.org/packages/mainline/centos/\$releasever/\$basearch/\ngpgcheck=1\nenabled=1\ngpgkey=https://nginx.org/keys/nginx_signing.key" > /etc/yum.repos.d/nginx.repo \
+          && $PM install -y nginx \
+          && mkdir -p /etc/systemd/system/nginx.service.d \
+          && echo -e "[Service]\nExecStartPost=/bin/sleep 0.1" > /etc/systemd/system/nginx.service.d/override.conf \
+          && systemctl daemon-reload && rm -f /etc/nginx/conf.d/default.conf \
+          && systemctl enable --now nginx
+    elif [[ "$OS_NAME" == "arch" ]]; then
+      $PM -Sy --noconfirm nginx-mainline \
+          && mkdir -p /etc/systemd/system/nginx.service.d \
+          && echo -e "[Service]\nExecStartPost=/bin/sleep 0.1" > /etc/systemd/system/nginx.service.d/override.conf \
+          && systemctl daemon-reload && rm -f /etc/nginx/conf.d/default.conf \
+          && systemctl enable --now nginx
+    elif [[ "$OS_NAME" == "alpine" ]]; then
+      $PM update && $PM add --no-cache nginx-mainline \
+          && rc-update add nginx default && rm -f /etc/nginx/conf.d/default.conf \
+          && rc-service nginx start
     else
         echo "不支持的操作系统，请手动安装 Nginx" >&2
         exit 1
