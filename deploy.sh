@@ -226,7 +226,7 @@ fi
 
 # 移动配置文件到 /etc/nginx/conf.d/
 echo "移动 $you_domain_config.conf 到 /etc/nginx/conf.d/"
-if [[ "$OS_NAME" == "ubuntu" ]];then
+if [[ "$OS_NAME" == "ubuntu" ]]; then
   rsync -av "$you_domain_config.conf" /etc/nginx/conf.d/
 else
   mv -f "$you_domain_config.conf" /etc/nginx/conf.d/
