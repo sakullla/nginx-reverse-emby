@@ -226,7 +226,7 @@ fi
 
 # 移动配置文件到 /etc/nginx/conf.d/
 echo "移动 $you_domain_config.conf 到 /etc/nginx/conf.d/"
-mv "$you_domain_config.conf" /etc/nginx/conf.d/
+mv -f "$you_domain_config.conf" /etc/nginx/conf.d/
 
 if [[ "$no_tls" != "yes" ]]; then
     ACME_SH="$HOME/.acme.sh/acme.sh"
