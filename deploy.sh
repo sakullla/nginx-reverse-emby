@@ -131,12 +131,12 @@ check_dependencies() {
       ;;
   esac
 }
-
+check_dependencies
 # 检查并安装 Nginx
 echo "检查 Nginx 是否已安装..."
 if ! command -v nginx &> /dev/null; then
     echo "Nginx 未安装，正在安装..."
-    check_dependencies
+
     if [[ "$OS_NAME" == "debian" ]]; then
         $PM install curl gnupg2 ca-certificates lsb-release debian-archive-keyring\
             && curl https://nginx.org/keys/nginx_signing.key | gpg --dearmor > /usr/share/keyrings/nginx-archive-keyring.gpg \
@@ -226,7 +226,12 @@ fi
 
 # 移动配置文件到 /etc/nginx/conf.d/
 echo "移动 $you_domain_config.conf 到 /etc/nginx/conf.d/"
-mv -f "$you_domain_config.conf" /etc/nginx/conf.d/
+if [[ "$OS_NAME" == "ubuntu" ]];then
+  rsync -av "$you_domain_config.conf" /etc/nginx/conf.d/
+else
+  mv -f "$you_domain_config.conf" /etc/nginx/conf.d/
+fi
+
 
 if [[ "$no_tls" != "yes" ]]; then
     ACME_SH="$HOME/.acme.sh/acme.sh"
