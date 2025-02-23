@@ -111,6 +111,7 @@ check_dependencies() {
   ubuntu)
       OS_NAME='ubuntu'
       PM='apt'
+      GNUPG_PM=$([[ ${VERSION_ID%%.*} -lt 22 ]] && echo "gnupg2" || echo "gnupg")
       ;;
   centos|fedora|rhel|almalinux|rocky|amzn)
       OS_NAME='rhel'
@@ -147,7 +148,7 @@ if ! command -v nginx &> /dev/null; then
             && systemctl daemon-reload && rm -f /etc/nginx/conf.d/default.conf \
             && systemctl enable --now nginx
     elif [[ "$OS_NAME" == "ubuntu" ]]; then
-        $PM install -y gnupg2 ca-certificates lsb-release ubuntu-keyring \
+        $PM install -y "$GNUPG_PM" ca-certificates lsb-release ubuntu-keyring \
             && curl https://nginx.org/keys/nginx_signing.key | gpg --dearmor > /usr/share/keyrings/nginx-archive-keyring.gpg \
             && echo "deb [signed-by=/usr/share/keyrings/nginx-archive-keyring.gpg] http://nginx.org/packages/mainline/ubuntu `lsb_release -cs` nginx" > /etc/apt/sources.list.d/nginx.list \
             && echo -e "Package: *\nPin: origin nginx.org\nPin: release o=nginx\nPin-Priority: 900\n" > /etc/apt/preferences.d/99nginx \
