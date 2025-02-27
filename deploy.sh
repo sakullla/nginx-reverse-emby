@@ -94,13 +94,6 @@ echo "----------------------"
 
 check_dependencies() {
 
-  #!/bin/bash
-  # 检查是否以 root 权限运行
-  if [ $(id -u) -ne 0 ]; then
-      echo "请使用 root 用户或通过 sudo 来运行此脚本。"
-      exit 1
-  fi
-
   if [[ ! -f '/etc/os-release' ]]; then
     echo "error: Don't use outdated Linux distributions."
     return 1
@@ -182,26 +175,6 @@ else
     echo "Nginx 已安装，跳过安装步骤。"
 fi
 
-
- # 检查 Nginx 的编译参数中是否包含 ngx_http_slice_module 模块
-if ! nginx -V 2>&1 | grep -q 'http_slice_module'; then
-    echo "Nginx不包含 ngx_http_slice_module 模块，将安装支持该模块的新版本......"
-
-    if [[ "$OS_NAME" == "debian" || "$OS_NAME" == "ubuntu" ]]; then
-      $PM install -y nginx-extras
-    elif [[ "$OS_NAME" == "rhel" ]]; then
-      $PM install -y nginx-mod-http-slice
-    elif [[ "$OS_NAME" == "arch" ]]; then
-      $PM -Sy --noconfirm nginx-mod-modules
-    elif [[ "$OS_NAME" == "alpine" ]]; then
-      $PM update && $PM add --no-cache nginx-full
-    else
-        echo "不支持的操作系统，请手动安装 ngx_http_slice_module" >&2
-        exit 1
-    fi
-else
-    echo "Nginx 已安装且包含 ngx_http_slice_module 模块，跳过申请步骤。"
-fi
 
 # 下载并复制 nginx.conf
 echo "下载并复制 nginx 配置文件..."
