@@ -73,8 +73,7 @@ chmod +x deploy.sh
 - 推荐使用以下 DNS 解析服务进行域名解析（以下仅为参考）：
 
     - [Cloudflare DNS](https://developers.cloudflare.com/dns/)（快速、免费，提供 DDoS 保护）
-    - [Google Public DNS](https://developers.google.com/speed/public-dns)（稳定、全球可用）
-    - [Quad9](https://www.quad9.net/)（增强安全性，防范恶意网站）
+
 
 ---
 
