@@ -28,7 +28,6 @@
 | `-P` | `--you-frontend-port <端口>` | 你的前端访问端口（默认: 443）               | `443`              |
 | `-p` | `--r-frontend-port <端口>`   | 反代 Emby 的前端端口（默认: 空）            | `8096`             |
 | `-f` | `--r-http-frontend` |  使用 HTTP 访问反代 Emby前端（默认: 使用 HTTPS），提供该参数则改为 HTTP | `提供该参数即生效` |
-| `-b` | `--r-http-backend` |  使用 HTTP 连接反代 Emby后端（默认: 使用 HTTPS），提供该参数则改为 HTTP | `提供该参数即生效` |
 | `-s` | `--no-tls` | 默认使用 HTTPS 进行反代（需要域名或自签证书），提供该参数则改为使用 HTTP | `提供该参数即生效` |
 | `-h` | `--help`                   | 显示帮助信息                          | `./deploy.sh -h`   |
 
@@ -55,7 +54,7 @@ bash <(curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/m
 ```bash
 curl -O https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh
 chmod +x deploy.sh
-./deploy.sh -y example.com -r backend.com -P 443 -p 8096 -f -b -s
+./deploy.sh -y example.com -r backend.com -P 443 -p 8096 -f -s
 ```
 
 ## 依赖项
