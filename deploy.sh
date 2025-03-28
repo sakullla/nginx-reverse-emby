@@ -13,7 +13,6 @@ show_help() {
   -P, --you-frontend-port <端口>  你的前端访问端口 (默认: 443)
   -p, --r-frontend-port <端口>    反代 Emby 前端端口 (默认: 空)
   -f, --r-http-frontend          反代 Emby 使用 HTTP 作为前端访问 (默认: 否)
-  -b, --r-http-backend           反代 Emby 使用 HTTP 连接后端 (默认: 否)
   -s, --no-tls                   禁用 TLS (默认: 否)
   -h, --help                     显示帮助信息
 EOF
@@ -25,12 +24,11 @@ you_domain=""
 r_domain=""
 you_frontend_port="443"
 r_frontend_port=""
-r_http_backend="no"
 r_http_frontend="no"
 no_tls="no"
 
 # 使用 `getopt` 解析参数
-TEMP=$(getopt -o y:r:P:p:bfsh --long you-domain:,r-domain:,you-frontend-port:,r-frontend-port:,r-http-frontend,r-http-backend,no-tls,help -n "$(basename "$0")" -- "$@")
+TEMP=$(getopt -o y:r:P:p:bfsh --long you-domain:,r-domain:,you-frontend-port:,r-frontend-port:,r-http-frontend,no-tls,help -n "$(basename "$0")" -- "$@")
 
 if [ $? -ne 0 ]; then
     echo "参数解析失败，请检查输入的参数。"
@@ -45,7 +43,6 @@ while true; do
         -r|--r-domain) r_domain="$2"; shift 2 ;;
         -P|--you-frontend-port) you_frontend_port="$2"; shift 2 ;;
         -p|--r-frontend-port) r_frontend_port="$2"; shift 2 ;;
-        -b|--r-http-backend) r_http_backend="yes"; shift ;;
         -f|--r-http-frontend) r_http_frontend="yes"; shift ;;
         -s|--no-tls) no_tls="yes"; shift ;;
         -h|--help) show_help; shift ;;
@@ -62,7 +59,6 @@ if [[ -z "$you_domain" || -z "$r_domain" ]]; then
     read -p "反代Emby的域名 [默认: r.example.com]: " input_r_domain
     read -p "你的前端访问端口 [默认: 443]: " input_you_frontend_port
     read -p "反代Emby前端端口 [默认: 空]: " input_r_frontend_port
-    read -p "是否使用HTTP连接反代Emby后端? (yes/no) [默认: no]: " input_r_http_backend
     read -p "是否使用HTTP连接反代Emby前端? (yes/no) [默认: no]: " input_r_http_frontend
     read -p "是否禁用TLS? (yes/no) [默认: no]: " input_no_tls
 
@@ -71,7 +67,6 @@ if [[ -z "$you_domain" || -z "$r_domain" ]]; then
     r_domain="${input_r_domain:-r.example.com}"
     you_frontend_port="${input_you_frontend_port:-443}"
     r_frontend_port="${input_r_frontend_port}"
-    r_http_backend="${input_r_http_backend:-no}"
     r_http_frontend="${input_r_http_frontend:-no}"
     no_tls="${input_no_tls:-no}"
 fi
@@ -86,7 +81,6 @@ echo "📌 你的域名: ${you_domain}"
 echo "🖥️  你的前端访问端口: ${you_frontend_port}"
 echo "🔄 反代 Emby 的域名: ${r_domain}"
 echo "🎯 反代 Emby 前端端口: ${r_frontend_port:-未指定}"
-echo "🔗 使用 HTTP 连接反代 Emby 后端: $( [[ "$r_http_backend" == "yes" ]] && echo "✅ 是" || echo "❌ 否" )"
 echo "🛠️  使用 HTTP 连接反代 Emby 前端: $( [[ "$r_http_frontend" == "yes" ]] && echo "✅ 是" || echo "❌ 否" )"
 echo "🔒 禁用 TLS: $( [[ "$no_tls" == "yes" ]] && echo "✅ 是" || echo "❌ 否" )"
 echo "----------------------"
@@ -212,10 +206,6 @@ fi
 sed -i "s/p.example.com/$you_domain/g" "$you_domain_config.conf"
 sed -i "s/emby.example.com/$r_domain/g" "$you_domain_config.conf"
 
-# 如果 r_http_backend 选择使用 HTTP，替换 https://$website
-if [[ "$r_http_backend" == "yes" ]]; then
-    sed -i "s/https:\/\/\$website/http:\/\/\$website/g" "$you_domain_config.conf"
-fi
 
 # 移动配置文件到 /etc/nginx/conf.d/
 echo "移动 $you_domain_config.conf 到 /etc/nginx/conf.d/"
