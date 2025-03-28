@@ -27,7 +27,29 @@ r_frontend_port=""
 r_http_frontend="no"
 no_tls="no"
 
-# 使用 `getopt` 解析参数
+# ===== 封装 URL 解析函数 =====
+parse_url() {
+    local url="$1"
+    local __proto __host __port
+
+    if [[ "$url" =~ ^(https?)://([^:/]+)(:([0-9]+))?$ ]]; then
+        __proto="${BASH_REMATCH[1]}"
+        __host="${BASH_REMATCH[2]}"
+        __port="${BASH_REMATCH[4]}"
+
+        eval "$2=\"$__host\""
+
+        if [[ "$2" == "you_domain" ]]; then
+            you_frontend_port="${__port:-$([[ "$__proto" == "https" ]] && echo 443 || echo 80)}"
+            no_tls=$([[ "$__proto" == "http" ]] && echo "yes" || echo "no")
+        elif [[ "$2" == "r_domain" ]]; then
+            r_frontend_port="${__port:-$([[ "$__proto" == "https" ]] && echo 443 || echo 80)}"
+            r_http_frontend=$([[ "$__proto" == "http" ]] && echo "yes" || echo "no")
+        fi
+    fi
+}
+
+# ===== 参数解析 =====
 TEMP=$(getopt -o y:r:P:p:bfsh --long you-domain:,r-domain:,you-frontend-port:,r-frontend-port:,r-http-frontend,no-tls,help -n "$(basename "$0")" -- "$@")
 
 if [ $? -ne 0 ]; then
@@ -51,18 +73,54 @@ while true; do
     esac
 done
 
-# 交互模式 (如果未提供必要参数)
+# ===== 自动解析域名中的 URL 协议和端口 =====
+[[ -n "$you_domain" ]] && parse_url "$you_domain" you_domain
+[[ -n "$r_domain" ]] && parse_url "$r_domain" r_domain
+
+# ===== 如果没有必要参数则进入交互模式 =====
 if [[ -z "$you_domain" || -z "$r_domain" ]]; then
     echo -e "\n--- 交互模式: 配置反向代理 ---"
     echo "请按提示输入参数，或直接按 Enter 使用默认值"
     read -p "你的域名或者 IP [默认: you.example.com]: " input_you_domain
     read -p "反代Emby的域名 [默认: r.example.com]: " input_r_domain
-    read -p "你的前端访问端口 [默认: 443]: " input_you_frontend_port
-    read -p "反代Emby前端端口 [默认: 空]: " input_r_frontend_port
-    read -p "是否使用HTTP连接反代Emby前端? (yes/no) [默认: no]: " input_r_http_frontend
-    read -p "是否禁用TLS? (yes/no) [默认: no]: " input_no_tls
 
-    # 赋值默认值
+    # 自动解析 input_you_domain
+    if [[ "$input_you_domain" =~ ^(https?)://([^:/]+)(:([0-9]+))?$ ]]; then
+        proto="${BASH_REMATCH[1]}"
+        host="${BASH_REMATCH[2]}"
+        port="${BASH_REMATCH[4]}"
+        input_you_domain="$host"
+        input_you_frontend_port="${port:-$([[ "$proto" == "https" ]] && echo 443 || echo 80)}"
+        input_no_tls=$([[ "$proto" == "http" ]] && echo "yes" || echo "no")
+    fi
+
+    # 自动解析 input_r_domain
+    if [[ "$input_r_domain" =~ ^(https?)://([^:/]+)(:([0-9]+))?$ ]]; then
+        r_proto="${BASH_REMATCH[1]}"
+        r_host="${BASH_REMATCH[2]}"
+        r_port="${BASH_REMATCH[4]}"
+        input_r_domain="$r_host"
+        input_r_frontend_port="${r_port:-$([[ "$r_proto" == "https" ]] && echo 443 || echo 80)}"
+        input_r_http_frontend=$([[ "$r_proto" == "http" ]] && echo "yes" || echo "no")
+    fi
+
+    if [[ -z "$input_you_frontend_port" ]]; then
+        read -p "你的前端访问端口 [默认: 443]: " input_you_frontend_port
+    fi
+
+    if [[ -z "$input_no_tls" ]]; then
+          read -p "是否禁用TLS? (yes/no) [默认: no]: " input_no_tls
+    fi
+
+    if [[ -z "$input_r_frontend_port"  ]]; then
+        read -p "反代Emby前端端口 [默认: 空]: " input_r_frontend_port
+    fi
+
+    if [[ -z "$input_r_http_frontend" ]]; then
+        read -p "是否使用HTTP连接反代Emby前端? (yes/no) [默认: no]: " input_r_http_frontend
+    fi
+
+    # 最终赋值
     you_domain="${input_you_domain:-you.example.com}"
     r_domain="${input_r_domain:-r.example.com}"
     you_frontend_port="${input_you_frontend_port:-443}"
