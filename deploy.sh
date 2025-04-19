@@ -14,6 +14,8 @@ show_help() {
   -p, --r-frontend-port <端口>    反代 Emby 前端端口 (默认: 空)
   -f, --r-http-frontend          反代 Emby 使用 HTTP 作为前端访问 (默认: 否)
   -s, --no-tls                   禁用 TLS (默认: 否)
+  -m, --cert-domain              TLS的证书域名，配置后需要自己将证书放到对应位置
+  -d, --parse-cert-domain        简单的从证书中解析出证书域名
   -h, --help                     显示帮助信息
 EOF
     exit 0
@@ -22,6 +24,8 @@ EOF
 # 初始化变量
 you_domain=""
 r_domain=""
+cert_domain=""
+parse_cert_domain="no"
 you_frontend_port="443"
 r_frontend_port=""
 r_http_frontend="no"
@@ -42,6 +46,11 @@ parse_url() {
         if [[ "$2" == "you_domain" ]]; then
             you_frontend_port="${__port:-$([[ "$__proto" == "https" ]] && echo 443 || echo 80)}"
             no_tls=$([[ "$__proto" == "http" ]] && echo "yes" || echo "no")
+
+            # 如果 parse_cert_domain 有值，设置 cert_domain
+            if [[ "$parse_cert_domain" == "yes" ]]; then
+                cert_domain=$(echo "$__host" | awk -F. '{n=split($0, a, "."); if (n >= 2) print a[n-1]"."a[n]; else print $0}')
+            fi
         elif [[ "$2" == "r_domain" ]]; then
             r_frontend_port="${__port:-$([[ "$__proto" == "https" ]] && echo 443 || echo 80)}"
             r_http_frontend=$([[ "$__proto" == "http" ]] && echo "yes" || echo "no")
@@ -67,6 +76,8 @@ while true; do
         -p|--r-frontend-port) r_frontend_port="$2"; shift 2 ;;
         -f|--r-http-frontend) r_http_frontend="yes"; shift ;;
         -s|--no-tls) no_tls="yes"; shift ;;
+        -m|--cert-domain ) cert_domain="$2"; shift 2 ;;
+        -d|--parse-cert-domain  ) parse_cert_domain="yes"; shift ;;
         -h|--help) show_help; shift ;;
         --) shift; break ;;
         *) echo "错误: 未知参数 $1"; exit 1 ;;
@@ -136,6 +147,7 @@ url="${protocol}://${you_domain}:${you_frontend_port}"
 echo -e "\n------ 配置信息 ------"
 echo "🌍 访问地址: ${url}"
 echo "📌 你的域名: ${you_domain}"
+echo "📌 你的证书域名: ${cert_domain}"
 echo "🖥️  你的前端访问端口: ${you_frontend_port}"
 echo "🔄 反代 Emby 的域名: ${r_domain}"
 echo "🎯 反代 Emby 前端端口: ${r_frontend_port:-未指定}"
@@ -185,7 +197,9 @@ check_dependencies() {
       ;;
   esac
 }
+
 check_dependencies
+
 # 检查并安装 Nginx
 echo "检查 Nginx 是否已安装..."
 if ! command -v nginx &> /dev/null; then
@@ -261,6 +275,12 @@ if [[ -n "$r_frontend_port" ]]; then
 fi
 
 # 替换域名信息
+
+# 如果 $cert_domain 不为空，则替换证书路径
+if [[ -n "$cert_domain" ]]; then
+    sed -i "s|/etc/nginx/certs/p\.example\.com/cert|/etc/nginx/certs/$cert_domain/cert|g; s|/etc/nginx/certs/p\.example\.com/key|/etc/nginx/certs/$cert_domain/key|g" "$you_domain_config.conf"
+fi
+
 sed -i "s/p.example.com/$you_domain/g" "$you_domain_config.conf"
 sed -i "s/emby.example.com/$r_domain/g" "$you_domain_config.conf"
 
@@ -274,7 +294,7 @@ else
 fi
 
 
-if [[ "$no_tls" != "yes" ]]; then
+if [[ -n "$cert_domain" || "$no_tls" != "yes" ]]; then
     ACME_SH="$HOME/.acme.sh/acme.sh"
 
     # 检查并安装 acme.sh
