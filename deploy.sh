@@ -59,7 +59,7 @@ parse_url() {
 }
 
 # ===== 参数解析 =====
-TEMP=$(getopt -o y:r:P:p:bfsh --long you-domain:,r-domain:,you-frontend-port:,r-frontend-port:,r-http-frontend,no-tls,help -n "$(basename "$0")" -- "$@")
+TEMP=$(getopt -o y:r:P:p:bfshmd --long you-domain:,r-domain:,you-frontend-port:,r-frontend-port:,r-http-frontend,no-tls,help,cert-domain,parse-cert-domain -n "$(basename "$0")" -- "$@")
 
 if [ $? -ne 0 ]; then
     echo "参数解析失败，请检查输入的参数。"
