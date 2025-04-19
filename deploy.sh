@@ -294,7 +294,7 @@ else
 fi
 
 
-if [[ -n "$cert_domain" || "$no_tls" != "yes" ]]; then
+if [[ -n "$cert_domain" && "$no_tls" != "yes" ]]; then
     ACME_SH="$HOME/.acme.sh/acme.sh"
 
     # 检查并安装 acme.sh
