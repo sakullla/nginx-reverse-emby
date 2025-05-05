@@ -226,7 +226,7 @@ if ! command -v nginx &> /dev/null; then
     elif [[ "$OS_NAME" == "alpine" ]]; then
       $PM update && $PM add --no-cache nginx-mainline \
           && rc-update add nginx default && rm -f /etc/nginx/conf.d/default.conf \
-          && rc-service nginx start
+          && rc-service nginx restart
     else
         echo "不支持的操作系统，请手动安装 Nginx" >&2
         exit 1
