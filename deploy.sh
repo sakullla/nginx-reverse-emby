@@ -212,7 +212,6 @@ if ! command -v nginx &> /dev/null; then
         && echo -e "Package: *\nPin: origin nginx.org\nPin: release o=nginx\nPin-Priority: 900\n" > /etc/apt/preferences.d/99nginx \
         && $PM update && $PM install -y nginx \
         && mkdir -p /etc/systemd/system/nginx.service.d \
-        && echo -e "[Service]\nExecStartPost=/bin/sleep 0.1" > /etc/systemd/system/nginx.service.d/override.conf \
         && systemctl daemon-reload && rm -f /etc/nginx/conf.d/default.conf \
         && systemctl enable --now nginx
     elif [[ "$OS_NAME" == "rhel" ]]; then
@@ -220,13 +219,11 @@ if ! command -v nginx &> /dev/null; then
           && echo -e "[nginx-mainline]\nname=NGINX Mainline Repository\nbaseurl=https://nginx.org/packages/mainline/centos/\$releasever/\$basearch/\ngpgcheck=1\nenabled=1\ngpgkey=https://nginx.org/keys/nginx_signing.key" > /etc/yum.repos.d/nginx.repo \
           && $PM install -y nginx \
           && mkdir -p /etc/systemd/system/nginx.service.d \
-          && echo -e "[Service]\nExecStartPost=/bin/sleep 0.1" > /etc/systemd/system/nginx.service.d/override.conf \
           && systemctl daemon-reload && rm -f /etc/nginx/conf.d/default.conf \
           && systemctl enable --now nginx
     elif [[ "$OS_NAME" == "arch" ]]; then
       $PM -Sy --noconfirm nginx-mainline \
           && mkdir -p /etc/systemd/system/nginx.service.d \
-          && echo -e "[Service]\nExecStartPost=/bin/sleep 0.1" > /etc/systemd/system/nginx.service.d/override.conf \
           && systemctl daemon-reload && rm -f /etc/nginx/conf.d/default.conf \
           && systemctl enable --now nginx
     elif [[ "$OS_NAME" == "alpine" ]]; then
