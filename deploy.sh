@@ -366,6 +366,7 @@ else
 fi
 
 vars=$(printf '${%s} ' $(env | cut -d= -f1))
+echo "当前环境变量 ${vars}"
 curl -s "$confhome/conf.d/$download_domain_config.conf" | envsubst "$vars" > "/etc/nginx/conf.d/${you_domain_config}.conf"
 
 
