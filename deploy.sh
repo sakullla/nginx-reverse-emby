@@ -1,6 +1,7 @@
 #!/bin/bash
 
 set -e
+confhome="https://github.com/sakullla/nginx-reverse-emby/blob/develop"
 
 # 显示帮助信息
 show_help() {
@@ -20,6 +21,63 @@ show_help() {
 EOF
     exit 0
 }
+
+
+is_in_china() {
+    if [ -z "$_loc" ]; then
+        # www.cloudflare.com/dash.cloudflare.com 国内访问的是美国服务器，而且部分地区被墙
+        # 没有ipv6 www.visa.cn
+        # 没有ipv6 www.bose.cn
+        # 没有ipv6 www.garmin.com.cn
+        # 备用 www.prologis.cn
+        # 备用 www.autodesk.com.cn
+        # 备用 www.keysight.com.cn
+        if ! _loc=$(curl -L http://www.qualcomm.cn/cdn-cgi/trace | grep '^loc=' | cut -d= -f2 | grep .); then
+            error_and_exit "Can not get location."
+        fi
+        echo "Location: $_loc" >&2
+    fi
+    [ "$_loc" = CN ]
+}
+
+has_ipv6() {
+  ip -6 addr show scope global | grep -q inet6
+}
+
+# 提取系统 DNS（排除回环地址、IPv6），作为 resolver 优先值
+get_system_dns() {
+  awk '/^nameserver/ {print $2}' /etc/resolv.conf \
+    | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' \
+    | grep -vE '^(127\.|0\.|255\.)' \
+    | xargs
+}
+
+# 根据国家选择默认公共 DNS
+get_default_dns() {
+  if is_in_china; then
+    echo "223.5.5.5 119.29.29.29"
+  else
+    echo "1.1.1.1 8.8.8.8"
+  fi
+}
+
+# 合并 resolver 值
+get_resolver_host() {
+  local system_dns
+  system_dns=$(get_system_dns)
+
+  if [[ -n "$system_dns" ]]; then
+    echo "$system_dns valid=60s"
+  else
+    echo "$(get_default_dns) valid=60s"
+  fi
+}
+
+# IPv6 设置
+get_ipv6_flag() {
+  has_ipv6 && echo "" || echo "ipv6=off"
+}
+
 
 # 初始化变量
 you_domain=""
@@ -144,16 +202,23 @@ fi
 protocol=$( [[ "$no_tls" == "yes" ]] && echo "http" || echo "https" )
 url="${protocol}://${you_domain}:${you_frontend_port}"
 
-echo -e "\n------ 配置信息 ------"
-echo "🌍 访问地址: ${url}"
-echo "📌 你的域名: ${you_domain}"
-echo "📌 你的证书域名: ${cert_domain}"
-echo "🖥️  你的前端访问端口: ${you_frontend_port}"
-echo "🔄 反代 Emby 的域名: ${r_domain}"
-echo "🎯 反代 Emby 前端端口: ${r_frontend_port:-未指定}"
-echo "🛠️  使用 HTTP 连接反代 Emby 前端: $( [[ "$r_http_frontend" == "yes" ]] && echo "✅ 是" || echo "❌ 否" )"
-echo "🔒 禁用 TLS: $( [[ "$no_tls" == "yes" ]] && echo "✅ 是" || echo "❌ 否" )"
-echo "----------------------"
+
+# 最终导出
+resolver="$(get_resolver_host) $(get_ipv6_flag)"
+
+
+echo -e "\n\e[1;34m🔧 Emby 反代配置信息\e[0m"
+echo "──────────────────────────────────────"
+printf "🌍 访问地址                  : %s\n" "$url"
+printf "📌 你的域名                 : %s\n" "$you_domain"
+printf "📜 证书域名                 : %s\n" "$cert_domain"
+printf "🖥️  前端访问端口             : %s\n" "$you_frontend_port"
+printf "🔄 反代 Emby 域名           : %s\n" "$r_domain"
+printf "🎯 Emby 前端端口            : %s\n" "${r_frontend_port:-未指定}"
+printf "🛠️  使用 HTTP 反代 Emby     : %s\n" "$( [[ "$r_http_frontend" == "yes" ]] && echo "✅ 是" || echo "❌ 否" )"
+printf "🔒 禁用 TLS                 : %s\n" "$( [[ "$no_tls" == "yes" ]] && echo "✅ 是" || echo "❌ 否" )"
+printf "🧠 DNS 配置                 : %s\n" "$resolver"
+echo "──────────────────────────────────────"
 
 
 check_dependencies() {
@@ -244,54 +309,62 @@ fi
 
 # 下载并复制 nginx.conf
 echo "下载并复制 nginx 配置文件..."
-curl -o /etc/nginx/nginx.conf https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/nginx.conf
+curl -o /etc/nginx/nginx.conf "$confhome/nginx.conf"
 
-you_domain_config="$you_domain"
+you_domain_config="$you_domain.$you_frontend_port"
 download_domain_config="p.example.com"
+default_you_frontend_port=443
 
 # 如果 $no_tls 选择使用 HTTP，则选择下载对应的模板
 if [[ "$no_tls" == "yes" ]]; then
-    you_domain_config="$you_domain.$you_frontend_port"
     download_domain_config="p.example.com.no_tls"
+    default_you_frontend_port=80
 fi
 
 # 下载并复制 p.example.com.conf 并修改
 echo "下载并创建 $you_domain_config 配置文件..."
-curl -o "$you_domain_config.conf" "https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/conf.d/$download_domain_config.conf"
+curl -o "$you_domain_config.conf" "$confhome/conf.d/$download_domain_config.conf"
 
-# 如果 you_frontend_port 不为空， 则替换端口
+# 反代域名
+export you_domain=${you_domain}
+export resolver=${resolver}
+# 反代端口
 if [[ -n "$you_frontend_port" ]]; then
-    sed -i "s/443/$you_frontend_port/g" "$you_domain_config.conf"
+    export you_frontend_port=${you_frontend_port}
+else
+    export you_frontend_port=${default_you_frontend_port}
 fi
 
 # 如果 r_http_frontend 选择使用 HTTP，先替换 https://emby.example.com
+# 构造 r_domain_full: 包括协议、端口（可选）
+# 判断协议
 if [[ "$r_http_frontend" == "yes" ]]; then
-    sed -i "s/https:\/\/emby.example.com/http:\/\/emby.example.com/g" "$you_domain_config.conf"
+  proto="http"
+else
+  proto="https"
 fi
 
 # 如果 r_frontend_port 不为空，修改 emby.example.com 加上端口
 if [[ -n "$r_frontend_port" ]]; then
-    sed -i "s/emby.example.com/emby.example.com:$r_frontend_port/g" "$you_domain_config.conf"
+  port=":$r_frontend_port"
+else
+  port=""
 fi
+
+# 最终拼接代理的emby域名
+r_domain_full="${proto}://${r_domain}${port}"
+export r_domain_full=${r_domain_full}
 
 # 替换域名信息
 
 # 如果 $cert_domain 不为空，则替换证书路径
 if [[ -n "$cert_domain" ]]; then
-    sed -i "s|/etc/nginx/certs/p\.example\.com/cert|/etc/nginx/certs/$cert_domain/cert|g; s|/etc/nginx/certs/p\.example\.com/key|/etc/nginx/certs/$cert_domain/key|g" "$you_domain_config.conf"
-fi
-
-sed -i "s/p.example.com/$you_domain/g" "$you_domain_config.conf"
-sed -i "s/emby.example.com/$r_domain/g" "$you_domain_config.conf"
-
-
-# 移动配置文件到 /etc/nginx/conf.d/
-echo "移动 $you_domain_config.conf 到 /etc/nginx/conf.d/"
-if [[ "$OS_NAME" == "ubuntu" ]]; then
-  rsync -av "$you_domain_config.conf" /etc/nginx/conf.d/
+  export cert_domain=${cert_domain}
 else
-  mv -f "$you_domain_config.conf" /etc/nginx/conf.d/
+  export cert_domain=${you_domain}
 fi
+
+curl -s "$confhome/conf.d/$download_domain_config.conf" | envsubst "/etc/nginx/conf.d/${you_domain_config}.conf"
 
 
 if [[ -z "$cert_domain" && "$no_tls" != "yes" ]]; then
