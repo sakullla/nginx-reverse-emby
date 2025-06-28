@@ -365,7 +365,7 @@ else
   export cert_domain=${you_domain}
 fi
 
-curl -s "$confhome/conf.d/$download_domain_config.conf" | envsubst "/etc/nginx/conf.d/${you_domain_config}.conf"
+curl -s "$confhome/conf.d/$download_domain_config.conf" | envsubst > "/etc/nginx/conf.d/${you_domain_config}.conf"
 
 
 if [[ -z "$cert_domain" && "$no_tls" != "yes" ]]; then
