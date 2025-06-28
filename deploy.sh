@@ -365,9 +365,9 @@ else
   export cert_domain=${you_domain}
 fi
 
-vars=$(printf '${%s} ' $(env | cut -d= -f1))
-echo "当前环境变量 ${vars}"
-curl -s "$confhome/conf.d/$download_domain_config.conf" | envsubst "$vars" > "/etc/nginx/conf.d/${you_domain_config}.conf"
+readarray -t vars < <(env | cut -d= -f1)
+subst_vars=$(printf '${%s} ' "${vars[@]}")
+curl -s "$confhome/conf.d/$download_domain_config.conf" | envsubst "$subst_vars" > "/etc/nginx/conf.d/${you_domain_config}.conf"
 
 
 if [[ -z "$cert_domain" && "$no_tls" != "yes" ]]; then
