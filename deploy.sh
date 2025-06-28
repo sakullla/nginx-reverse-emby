@@ -327,6 +327,7 @@ echo "下载并创建 $you_domain_config 配置文件..."
 
 # 反代域名
 export you_domain=${you_domain}
+# resolver
 export resolver=${resolver}
 # 反代端口
 if [[ -n "$you_frontend_port" ]]; then
