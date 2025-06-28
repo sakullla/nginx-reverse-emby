@@ -209,15 +209,15 @@ resolver="$(get_resolver_host) $(get_ipv6_flag)"
 
 echo -e "\n\e[1;34m🔧 Emby 反代配置信息\e[0m"
 echo "──────────────────────────────────────"
-printf "🌍 访问地址                  : %s\n" "$url"
+printf "🌍 访问地址                 : %s\n" "$url"
 printf "📌 你的域名                 : %s\n" "$you_domain"
 printf "📜 证书域名                 : %s\n" "$cert_domain"
-printf "🖥️  前端访问端口             : %s\n" "$you_frontend_port"
+printf "🖥️ 前端访问端口              : %s\n" "$you_frontend_port"
 printf "🔄 反代 Emby 域名           : %s\n" "$r_domain"
 printf "🎯 Emby 前端端口            : %s\n" "${r_frontend_port:-未指定}"
-printf "🛠️  使用 HTTP 反代 Emby     : %s\n" "$( [[ "$r_http_frontend" == "yes" ]] && echo "✅ 是" || echo "❌ 否" )"
-printf "🔒 禁用 TLS                 : %s\n" "$( [[ "$no_tls" == "yes" ]] && echo "✅ 是" || echo "❌ 否" )"
-printf "🧠 DNS 配置                 : %s\n" "$resolver"
+printf "🛠️ 使用 HTTP 反代 Emby      : %s\n" "$( [[ "$r_http_frontend" == "yes" ]] && echo "✅ 是" || echo "❌ 否" )"
+printf "🔒 禁用 TLS                : %s\n" "$( [[ "$no_tls" == "yes" ]] && echo "✅ 是" || echo "❌ 否" )"
+printf "🧠 DNS 配置                : %s\n" "$resolver"
 echo "──────────────────────────────────────"
 
 
@@ -309,6 +309,7 @@ fi
 
 # 下载并复制 nginx.conf
 echo "下载并复制 nginx 配置文件..."
+echo "下载地址 $confhome/nginx.conf"
 curl -o /etc/nginx/nginx.conf "$confhome/nginx.conf"
 
 you_domain_config="$you_domain.$you_frontend_port"
