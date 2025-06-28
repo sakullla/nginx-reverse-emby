@@ -216,8 +216,8 @@ printf "🖥️  前端访问端口             : %s\n" "$you_frontend_port"
 printf "🔄 反代 Emby 域名           : %s\n" "$r_domain"
 printf "🎯 Emby 前端端口            : %s\n" "${r_frontend_port:-未指定}"
 printf "🛠️  使用 HTTP 反代 Emby      : %s\n" "$( [[ "$r_http_frontend" == "yes" ]] && echo "✅ 是" || echo "❌ 否" )"
-printf " 🔒 禁用 TLS                : %s\n" "$( [[ "$no_tls" == "yes" ]] && echo "✅ 是" || echo "❌ 否" )"
-printf "🧠 DNS 配置                : %s\n" "$resolver"
+printf " 🔒禁用 TLS                 : %s\n" "$( [[ "$no_tls" == "yes" ]] && echo "✅ 是" || echo "❌ 否" )"
+printf "🧠 DNS 配置                 : %s\n" "$resolver"
 echo "──────────────────────────────────────"
 
 
