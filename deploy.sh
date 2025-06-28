@@ -1,7 +1,7 @@
 #!/bin/bash
 
 set -e
-confhome="https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/develop"
+confhome="https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main"
 
 # 显示帮助信息
 show_help() {
@@ -323,7 +323,7 @@ if [[ "$no_tls" == "yes" ]]; then
 fi
 
 # 下载并复制 p.example.com.conf 并修改
-echo "下载并创建 $you_domain_config 配置文件..."
+echo "下载并创建 $you_domain_config.conf 到 /etc/nginx/conf.d/"
 
 # 反代域名
 export you_domain=${you_domain}
