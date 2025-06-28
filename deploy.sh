@@ -360,9 +360,9 @@ export r_domain_full=${r_domain_full}
 
 # 如果 $cert_domain 不为空，则替换证书路径
 if [[ -n "$cert_domain" ]]; then
-  export cert_domain=${cert_domain}
+  export format_cert_domain=${cert_domain}
 else
-  export cert_domain=${you_domain}
+  export format_cert_domain=${you_domain}
 fi
 
 readarray -t vars < <(env | cut -d= -f1)
