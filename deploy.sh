@@ -336,7 +336,7 @@ echo "下载并创建 $you_domain_config.conf 到 /etc/nginx/conf.d/"
 
 # 反代域名
 export you_domain=${you_domain}
-export you_domain_path=${you_domain_path:-/}
+
 # resolver
 export resolver=${resolver}
 # 反代端口
@@ -352,6 +352,8 @@ if [[ -n "$you_domain_path" ]]; then
 else
   export you_domain_path_rewrite=""
 fi
+
+export you_domain_path=${you_domain_path:-/}
 
 # 如果 r_http_frontend 选择使用 HTTP，先替换 https://emby.example.com
 # 构造 r_domain_full: 包括协议、端口（可选）
