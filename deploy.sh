@@ -348,7 +348,7 @@ fi
 
 # 如果 $you_domain_path 不为空，加上重写path的指令
 if [[ -n "$you_domain_path" ]]; then
-  export you_domain_path_rewrite="rewrite ^${you_domain_path}/(.*)$ /$1 break;"
+  export you_domain_path_rewrite="rewrite ^${you_domain_path}/(.*)$ /\$1 break;"
 else
   export you_domain_path_rewrite=""
 fi
