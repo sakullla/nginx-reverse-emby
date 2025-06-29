@@ -1,7 +1,7 @@
 #!/bin/bash
 
 set -e
-confhome="https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main"
+confhome="https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/develop"
 
 # 显示帮助信息
 show_help() {
@@ -81,7 +81,9 @@ get_ipv6_flag() {
 
 # 初始化变量
 you_domain=""
+you_domain_path=""
 r_domain=""
+r_domain_path=""
 cert_domain=""
 parse_cert_domain="no"
 you_frontend_port="443"
@@ -92,19 +94,20 @@ no_tls="no"
 # ===== 封装 URL 解析函数 =====
 parse_url() {
     local url="$1"
-    local __proto __host __port
+    local __proto __host __port __path
 
-    if [[ "$url" =~ ^(https?)://([^:/]+)(:([0-9]+))?$ ]]; then
+    if [[ "$url" =~ ^(https?)://([^/:?#]+)(:([0-9]+))?(/[^?#]*)? ]]; then
         __proto="${BASH_REMATCH[1]}"
         __host="${BASH_REMATCH[2]}"
         __port="${BASH_REMATCH[4]}"
+        __path="${BASH_REMATCH[5]}"
 
         eval "$2=\"$__host\""
+        eval "$2_path=\"$__path\""
 
         if [[ "$2" == "you_domain" ]]; then
             you_frontend_port="${__port:-$([[ "$__proto" == "https" ]] && echo 443 || echo 80)}"
             no_tls=$([[ "$__proto" == "http" ]] && echo "yes" || echo "no")
-
             # 如果 parse_cert_domain 有值，设置 cert_domain
             if [[ "$parse_cert_domain" == "yes" ]]; then
                 cert_domain=$(echo "$__host" | awk -F. '{n=split($0, a, "."); if (n >= 2) print a[n-1]"."a[n]; else print $0}')
@@ -117,7 +120,7 @@ parse_url() {
 }
 
 # ===== 参数解析 =====
-TEMP=$(getopt -o y:r:P:p:bfshmd --long you-domain:,r-domain:,you-frontend-port:,r-frontend-port:,r-http-frontend,no-tls,help,cert-domain,parse-cert-domain -n "$(basename "$0")" -- "$@")
+TEMP=$(getopt -o y:r:P:p:bfshmd --long you-domain:,r-domain:,you-frontend-port:,r-frontend-port:,r-http-frontend,no-tls,help,cert-domain:,parse-cert-domain -n "$(basename "$0")" -- "$@")
 
 if [ $? -ne 0 ]; then
     echo "参数解析失败，请检查输入的参数。"
@@ -143,8 +146,8 @@ while true; do
 done
 
 # ===== 自动解析域名中的 URL 协议和端口 =====
-[[ -n "$you_domain" ]] && parse_url "$you_domain" you_domain
-[[ -n "$r_domain" ]] && parse_url "$r_domain" r_domain
+[[ -n "$you_domain" ]] && parse_url "$you_domain" you_domain you_domain_path
+[[ -n "$r_domain" ]] && parse_url "$r_domain" r_domain r_domain_path
 
 # ===== 如果没有必要参数则进入交互模式 =====
 if [[ -z "$you_domain" || -z "$r_domain" ]]; then
@@ -154,21 +157,25 @@ if [[ -z "$you_domain" || -z "$r_domain" ]]; then
     read -p "反代Emby的域名 [默认: r.example.com]: " input_r_domain
 
     # 自动解析 input_you_domain
-    if [[ "$input_you_domain" =~ ^(https?)://([^:/]+)(:([0-9]+))?$ ]]; then
+    if [[ "$input_you_domain" =~ ^(https?)://([^/:?#]+)(:([0-9]+))?(/[^?#]*)? ]]; then
         proto="${BASH_REMATCH[1]}"
         host="${BASH_REMATCH[2]}"
         port="${BASH_REMATCH[4]}"
+        path="${BASH_REMATCH[5]}"
         input_you_domain="$host"
+        input_you_domain_path="$path"
         input_you_frontend_port="${port:-$([[ "$proto" == "https" ]] && echo 443 || echo 80)}"
         input_no_tls=$([[ "$proto" == "http" ]] && echo "yes" || echo "no")
     fi
 
     # 自动解析 input_r_domain
-    if [[ "$input_r_domain" =~ ^(https?)://([^:/]+)(:([0-9]+))?$ ]]; then
+    if [[ "$input_r_domain" =~ ^(https?)://([^/:?#]+)(:([0-9]+))?(/[^?#]*)? ]]; then
         r_proto="${BASH_REMATCH[1]}"
         r_host="${BASH_REMATCH[2]}"
         r_port="${BASH_REMATCH[4]}"
+        r_path="${BASH_REMATCH[5]}"
         input_r_domain="$r_host"
+        input_r_domain_path="$r_path"
         input_r_frontend_port="${r_port:-$([[ "$r_proto" == "https" ]] && echo 443 || echo 80)}"
         input_r_http_frontend=$([[ "$r_proto" == "http" ]] && echo "yes" || echo "no")
     fi
@@ -191,7 +198,9 @@ if [[ -z "$you_domain" || -z "$r_domain" ]]; then
 
     # 最终赋值
     you_domain="${input_you_domain:-you.example.com}"
+    you_domain_path="${input_you_domain_path:}"
     r_domain="${input_r_domain:-r.example.com}"
+    r_domain_path="${input_r_domain_path:}"
     you_frontend_port="${input_you_frontend_port:-443}"
     r_frontend_port="${input_r_frontend_port}"
     r_http_frontend="${input_r_http_frontend:-no}"
@@ -200,7 +209,7 @@ fi
 
 # 美化输出配置信息
 protocol=$( [[ "$no_tls" == "yes" ]] && echo "http" || echo "https" )
-url="${protocol}://${you_domain}:${you_frontend_port}"
+url="${protocol}://${you_domain}:${you_frontend_port}${you_domain_path}"
 
 
 # 最终导出
@@ -327,6 +336,7 @@ echo "下载并创建 $you_domain_config.conf 到 /etc/nginx/conf.d/"
 
 # 反代域名
 export you_domain=${you_domain}
+export you_domain_path=${you_domain_path:-/}
 # resolver
 export resolver=${resolver}
 # 反代端口
@@ -353,7 +363,7 @@ else
 fi
 
 # 最终拼接代理的emby域名
-r_domain_full="${proto}://${r_domain}${port}"
+r_domain_full="${proto}://${r_domain}${port}${r_domain_path:-/}"
 export r_domain_full=${r_domain_full}
 
 # 替换域名信息
