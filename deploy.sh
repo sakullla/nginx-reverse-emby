@@ -372,7 +372,7 @@ else
 fi
 
 # 最终拼接代理的emby域名
-r_domain_full="${proto}://${r_domain}${port}${r_domain_path:-/}"
+r_domain_full="${proto}://${r_domain}${port}${r_domain_path}"
 export r_domain_full=${r_domain_full}
 
 # 替换域名信息
