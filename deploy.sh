@@ -346,6 +346,13 @@ else
     export you_frontend_port=${default_you_frontend_port}
 fi
 
+# 如果 $you_domain_path 不为空，加上重写path的指令
+if [[ -n "$you_domain_path" ]]; then
+  export you_domain_path_rewrite "rewrite ^${you_domain_path}/(.*)$ /$1 break;"
+else
+  export you_domain_path_rewrite ""
+fi
+
 # 如果 r_http_frontend 选择使用 HTTP，先替换 https://emby.example.com
 # 构造 r_domain_full: 包括协议、端口（可选）
 # 判断协议
