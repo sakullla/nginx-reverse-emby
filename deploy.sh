@@ -198,9 +198,9 @@ if [[ -z "$you_domain" || -z "$r_domain" ]]; then
 
     # 最终赋值
     you_domain="${input_you_domain:-you.example.com}"
-    you_domain_path="${input_you_domain_path:}"
+    you_domain_path="${input_you_domain_path}"
     r_domain="${input_r_domain:-r.example.com}"
-    r_domain_path="${input_r_domain_path:}"
+    r_domain_path="${input_r_domain_path}"
     you_frontend_port="${input_you_frontend_port:-443}"
     r_frontend_port="${input_r_frontend_port}"
     r_http_frontend="${input_r_http_frontend:-no}"
