@@ -110,7 +110,14 @@ parse_url() {
             no_tls=$([[ "$__proto" == "http" ]] && echo "yes" || echo "no")
             # 如果 parse_cert_domain 有值，设置 cert_domain
             if [[ "$parse_cert_domain" == "yes" ]]; then
-                cert_domain=$(echo "$__host" | awk -F. '{n=split($0, a, "."); if (n >= 2) print a[n-1]"."a[n]; else print $0}')
+                # 判断域名是否由三部分或更多部分组成 (即至少包含两个'.')
+                if [[ "$__host" == *.*.* ]]; then
+                    # 如果是，则去掉第一部分
+                    cert_domain="${__host#*.}"
+                else
+                    # 如果不是 (例如 example.com 或 localhost)，则保持原样
+                    cert_domain="$__host"
+                fi
             fi
         elif [[ "$2" == "r_domain" ]]; then
             r_frontend_port="${__port:-$([[ "$__proto" == "https" ]] && echo 443 || echo 80)}"
