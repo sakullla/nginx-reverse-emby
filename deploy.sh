@@ -46,8 +46,8 @@ has_ipv6() {
 
 # 提取 /etc/resolv.conf 中所有 nameserver 条目，支持 IPv4/IPv6
 get_system_dns() {
- # awk 提取IP，sed 进行格式化
- awk '/^nameserver/ {print $2}' /etc/resolv.conf | sed '/:/s/.*/[&]/' | xargs
+ # 使用 awk 的三元运算符进行判断和格式化
+ awk '/^nameserver/ { print ($2 ~ /:/ ? "["$2"]" : $2) }' /etc/resolv.conf | xargs
 }
 
 # 根据国家选择默认公共 DNS
