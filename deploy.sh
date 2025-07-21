@@ -44,12 +44,9 @@ has_ipv6() {
   ip -6 addr show scope global | grep -q inet6
 }
 
-# 提取系统 DNS（排除回环地址、IPv6），作为 resolver 优先值
+# 提取 /etc/resolv.conf 中所有 nameserver 条目，支持 IPv4/IPv6
 get_system_dns() {
-  awk '/^nameserver/ {print $2}' /etc/resolv.conf \
-    | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' \
-    | grep -vE '^(127\.|0\.|255\.)' \
-    | xargs
+  awk '/^nameserver/ {print $2}' /etc/resolv.conf | xargs
 }
 
 # 根据国家选择默认公共 DNS
