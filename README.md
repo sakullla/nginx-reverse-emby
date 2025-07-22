@@ -14,8 +14,6 @@
 
 * **🌍 全面的系统兼容**: 支持 Debian, Ubuntu, CentOS, Fedora, Arch, Alpine 等所有主流 Linux 发行版。
 
-* **👨‍💻 安全且用户友好**: 无需 root 登录，自动使用 sudo 提权。同时支持交互式向导和非交互式参数化部署。
-
 ## 🚀 快速开始：使用方法
 
 ### 在线执行
@@ -59,4 +57,4 @@ curl -sSL [https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/de
 
 ## 💬 反馈与贡献
 
-遇到问题或有改进建议？欢迎在 [GitHub Issues](https://www.google.com/search?q=https://github.com/sakullla/nginx-reverse-emby/issues) 中提出。
+遇到问题或有改进建议？欢迎在 [GitHub Issues](https://github.com/sakullla/nginx-reverse-emby/issues) 中提出。
