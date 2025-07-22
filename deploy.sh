@@ -143,20 +143,6 @@ parse_arguments() {
     you_domain=""; you_domain_path=""; you_frontend_port=""; no_tls=""
     r_domain=""; r_domain_path=""; r_frontend_port=""; r_http_frontend=""
 
-    # 参数预处理，解决 -dy 这样的组合参数问题
-    local args=()
-    for arg in "$@"; do
-        if [[ $arg == -* && $arg != -- && ${#arg} -gt 2 ]]; then
-            local i
-            for (( i=1; i<${#arg}; i++ )); do
-                args+=("-${arg:$i:1}")
-            done
-        else
-            args+=("$arg")
-        fi
-    done
-    set -- "${args[@]}"
-
     local TEMP
     TEMP=$(getopt -o y:r:m:R:dD:h --long you-domain:,r-domain:,cert-domain:,resolver:,parse-cert-domain,dns:,help -n "$(basename "$0")" -- "$@")
     if [ $? -ne 0 ]; then
@@ -198,6 +184,17 @@ parse_arguments() {
 # --- 2. 交互模式 ---
 prompt_interactive_mode() {
     if [[ -z "$you_domain" || -z "$r_domain" ]]; then
+        # 检查是否在交互式终端中运行
+        if [ ! -t 0 ]; then
+            echo "--------------------------------------------------------" >&2
+            echo -e "\e[1;31m错误: 无法进入交互模式。\e[0m" >&2
+            echo "此脚本似乎是通过管道 (pipe) 执行的，无法读取键盘输入。" >&2
+            echo "如果您想使用交互模式，请使用以下推荐命令：" >&2
+            echo -e "\e[1;32mbash <(curl -sSL [脚本URL])\e[0m" >&2
+            echo "--------------------------------------------------------" >&2
+            exit 1
+        fi
+
         echo -e "\n--- 交互模式: 配置反向代理 ---"
         local input_you_domain_full input_r_domain_full
         read -p "你的访问 URL (例如 https://app.your-domain.com): " input_you_domain_full
