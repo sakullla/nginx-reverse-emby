@@ -1,7 +1,7 @@
 #!/bin/bash
 
 set -e
-confhome="https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/develop"
+confhome="https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main"
 
 # 显示帮助信息
 show_help() {
