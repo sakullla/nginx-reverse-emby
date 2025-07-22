@@ -166,6 +166,9 @@ parse_arguments() {
     you_domain=""; you_domain_path=""; you_frontend_port=""; no_tls=""
     r_domain=""; r_domain_path=""; r_frontend_port=""; r_http_frontend=""
 
+    # --- [DEBUG] 打印原始参数 ---
+    echo "[DEBUG] 原始参数: $*"
+
     # --- 参数预处理，解决 -dy 这样的组合参数问题 ---
     local args=()
     for arg in "$@"; do
@@ -182,6 +185,9 @@ parse_arguments() {
     done
     # 用预处理过的参数列表替换原始参数列表
     set -- "${args[@]}"
+
+    # --- [DEBUG] 打印预处理后的参数 ---
+    echo "[DEBUG] 预处理后参数: $*"
 
 
     local TEMP
@@ -213,6 +219,25 @@ parse_arguments() {
     if [[ -n "$r_domain_full" ]]; then
         parse_url "$r_domain_full" "r_domain"
     fi
+
+    # --- [DEBUG] 打印最终解析出的所有变量值 ---
+    echo "--- [DEBUG] 参数解析完成 ---"
+    echo "you_domain_full: '$you_domain_full'"
+    echo "r_domain_full: '$r_domain_full'"
+    echo "cert_domain: '$cert_domain'"
+    echo "manual_resolver: '$manual_resolver'"
+    echo "parse_cert_domain: '$parse_cert_domain'"
+    echo "dns_provider: '$dns_provider'"
+    echo "--- URL 解析结果 ---"
+    echo "you_domain: '$you_domain'"
+    echo "you_domain_path: '$you_domain_path'"
+    echo "you_frontend_port: '$you_frontend_port'"
+    echo "no_tls: '$no_tls'"
+    echo "r_domain: '$r_domain'"
+    echo "r_domain_path: '$r_domain_path'"
+    echo "r_frontend_port: '$r_frontend_port'"
+    echo "r_http_frontend: '$r_http_frontend'"
+    echo "---------------------------"
 }
 
 # --- 2. 交互模式 ---
