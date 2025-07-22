@@ -1,459 +1,513 @@
 #!/bin/bash
 
-set -e
-confhome="https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main"
+# ===================================================================================
+#
+#           Nginx Reverse Proxy Deployment Script (Sudo-aware & Feature-complete)
+#
+# ===================================================================================
 
-# 显示帮助信息
+# --- 脚本严格模式 ---
+# set -e: 当任何命令失败时立即退出
+# set -o pipefail: 管道中任何一个命令失败，整个管道都算失败
+set -e
+set -o pipefail
+
+# --- 全局常量与变量 ---
+readonly CONF_HOME="https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/develop"
+SUDO='' # 将根据用户权限动态设置
+
+# --- 权限检查与 Sudo 设置 ---
+if [ "$(id -u)" -ne 0 ]; then
+    if ! command -v sudo >/dev/null; then
+        echo "错误: 此脚本需要以 root 权限运行，或者必须安装 'sudo'。" >&2
+        exit 1
+    fi
+    SUDO='sudo'
+    echo "信息: 检测到非 root 用户，将使用 'sudo' 获取权限。"
+fi
+
+# ===================================================================================
+#                                 辅助函数定义
+# ===================================================================================
+
+# --- 错误处理函数 ---
+handle_error() {
+    local exit_code=$?
+    local line_number=$1
+    echo >&2
+    echo "--------------------------------------------------------" >&2
+    echo "错误: 脚本在第 $line_number 行意外中止。" >&2
+    echo "退出码: $exit_code" >&2
+    echo "--------------------------------------------------------" >&2
+    exit "$exit_code"
+}
+
+# 注册错误处理的 trap
+trap 'handle_error $LINENO' ERR
+
+# --- 帮助信息函数 ---
 show_help() {
     cat << EOF
 用法: $(basename "$0") [选项]
 
+一个强大且安全的 Nginx 反向代理部署脚本 (支持 sudo)。
+
 选项:
-  -y, --you-domain <域名>        你的域名或IP (例如: example.com)
-  -r, --r-domain <域名>          反代 Emby 的域名 (例如: backend.com)
-  -P, --you-frontend-port <端口>  你的前端访问端口 (默认: 443)
-  -p, --r-frontend-port <端口>    反代 Emby 前端端口 (默认: 空)
-  -f, --r-http-frontend          反代 Emby 使用 HTTP 作为前端访问 (默认: 否)
-  -s, --no-tls                   禁用 TLS (默认: 否)
-  -m, --cert-domain              TLS的证书域名，配置后需要自己将证书放到对应位置
-  -d, --parse-cert-domain        简单的从证书中解析出证书域名
-  -h, --help                     显示帮助信息
+  -y, --you-domain <域名或URL>   你的域名或完整 URL (例如: https://app.example.com/emby)
+  -r, --r-domain <域名或URL>     反代 Emby 的域名或完整 URL (例如: http://127.0.0.1:8096)
+  -m, --cert-domain <域名>       手动指定用于 SSL 证书的域名 (例如: example.com)，用于泛域名证书。优先级最高。
+  -d, --parse-cert-domain         自动从访问域名中解析出根域名作为证书域名 (例如: 从 app.example.com 解析出 example.com)。
+  -D, --dns <provider>            使用 DNS API 模式申请证书 (例如: cf)。这是申请泛域名证书的【必须】选项。
+  -R, --resolver <DNS服务器>      手动指定 DNS 解析服务器 (例如: "8.8.8.8 1.1.1.1")
+  -h, --help                      显示此帮助信息
+
 EOF
     exit 0
 }
 
-
+# --- 网络和系统检测函数 ---
 is_in_china() {
     if [ -z "$_loc" ]; then
-        # www.cloudflare.com/dash.cloudflare.com 国内访问的是美国服务器，而且部分地区被墙
-        # 没有ipv6 www.visa.cn
-        # 没有ipv6 www.bose.cn
-        # 没有ipv6 www.garmin.com.cn
-        # 备用 www.prologis.cn
-        # 备用 www.autodesk.com.cn
-        # 备用 www.keysight.com.cn
-        if ! _loc=$(curl -L http://www.qualcomm.cn/cdn-cgi/trace | grep '^loc=' | cut -d= -f2 | grep .); then
-            error_and_exit "Can not get location."
+        if ! _loc=$(curl -m 5 -sL http://www.qualcomm.cn/cdn-cgi/trace | grep '^loc=' | cut -d= -f2); then
+            echo "警告: 无法确定地理位置，将使用默认 DNS。" >&2
+            return 1
         fi
-        echo "Location: $_loc" >&2
+        echo "信息: 检测到地理位置为 $_loc。" >&2
     fi
     [ "$_loc" = CN ]
 }
 
 has_ipv6() {
-  ip -6 addr show scope global | grep -q inet6
+    ip -6 addr show scope global | grep -q inet6
 }
 
-# 提取 /etc/resolv.conf 中所有 nameserver 条目，支持 IPv4/IPv6
 get_system_dns() {
- # 使用 awk 的三元运算符进行判断和格式化
- awk '/^nameserver/ { print ($2 ~ /:/ ? "["$2"]" : $2) }' /etc/resolv.conf | xargs
+    awk '/^nameserver/ { print ($2 ~ /:/ ? "["$2"]" : $2) }' /etc/resolv.conf | xargs
 }
 
-# 根据国家选择默认公共 DNS
 get_default_dns() {
-  if is_in_china; then
-    echo "223.5.5.5 119.29.29.29"
-  else
-    echo "1.1.1.1 8.8.8.8"
-  fi
-}
-
-# 合并 resolver 值
-get_resolver_host() {
-  local system_dns
-  system_dns=$(get_system_dns)
-
-  if [[ -n "$system_dns" ]]; then
-    echo "$system_dns valid=60s"
-  else
-    echo "$(get_default_dns) valid=60s"
-  fi
-}
-
-# IPv6 设置
-get_ipv6_flag() {
-  has_ipv6 && echo "" || echo "ipv6=off"
-}
-
-
-# 初始化变量
-you_domain=""
-you_domain_path=""
-r_domain=""
-r_domain_path=""
-cert_domain=""
-parse_cert_domain="no"
-you_frontend_port="443"
-r_frontend_port=""
-r_http_frontend="no"
-no_tls="no"
-
-# ===== 封装 URL 解析函数 =====
-parse_url() {
-    local url="$1"
-    local __proto __host __port __path
-
-    if [[ "$url" =~ ^(https?)://([^/:?#]+)(:([0-9]+))?(/[^?#]*)? ]]; then
-        __proto="${BASH_REMATCH[1]}"
-        __host="${BASH_REMATCH[2]}"
-        __port="${BASH_REMATCH[4]}"
-        __path="${BASH_REMATCH[5]}"
-
-        eval "$2=\"$__host\""
-        eval "$2_path=\"$__path\""
-
-        if [[ "$2" == "you_domain" ]]; then
-            you_frontend_port="${__port:-$([[ "$__proto" == "https" ]] && echo 443 || echo 80)}"
-            no_tls=$([[ "$__proto" == "http" ]] && echo "yes" || echo "no")
-            # 如果 parse_cert_domain 有值，设置 cert_domain
-            if [[ "$parse_cert_domain" == "yes" ]]; then
-                # 判断域名是否由三部分或更多部分组成 (即至少包含两个'.')
-                if [[ "$__host" == *.*.* ]]; then
-                    # 如果是，则去掉第一部分
-                    cert_domain="${__host#*.}"
-                else
-                    # 如果不是 (例如 example.com 或 localhost)，则保持原样
-                    cert_domain="$__host"
-                fi
-            fi
-        elif [[ "$2" == "r_domain" ]]; then
-            r_frontend_port="${__port:-$([[ "$__proto" == "https" ]] && echo 443 || echo 80)}"
-            r_http_frontend=$([[ "$__proto" == "http" ]] && echo "yes" || echo "no")
-        fi
+    if is_in_china; then
+        echo "223.5.5.5 119.29.29.29"
+    else
+        echo "1.1.1.1 8.8.8.8"
     fi
 }
 
-# ===== 参数解析 =====
-TEMP=$(getopt -o y:r:P:p:bfshmd --long you-domain:,r-domain:,you-frontend-port:,r-frontend-port:,r-http-frontend,no-tls,help,cert-domain:,parse-cert-domain -n "$(basename "$0")" -- "$@")
+get_resolver_host() {
+    local system_dns
+    system_dns=$(get_system_dns)
+    if [[ -n "$system_dns" ]]; then
+        echo "$system_dns"
+    else
+        echo "$(get_default_dns)"
+    fi
+}
 
-if [ $? -ne 0 ]; then
-    echo "参数解析失败，请检查输入的参数。"
-    exit 1
-fi
+get_ipv6_flag() {
+    if has_ipv6; then
+        echo ""
+    else
+        echo "ipv6=off"
+    fi
+}
 
-eval set -- "$TEMP"
+# --- URL 解析函数 ---
+parse_url() {
+    local url="$1"
+    local var_prefix="$2"
+    local proto host port path
 
-while true; do
-    case "$1" in
-        -y|--you-domain) you_domain="$2"; shift 2 ;;
-        -r|--r-domain) r_domain="$2"; shift 2 ;;
-        -P|--you-frontend-port) you_frontend_port="$2"; shift 2 ;;
-        -p|--r-frontend-port) r_frontend_port="$2"; shift 2 ;;
-        -f|--r-http-frontend) r_http_frontend="yes"; shift ;;
-        -s|--no-tls) no_tls="yes"; shift ;;
-        -m|--cert-domain ) cert_domain="$2"; shift 2 ;;
-        -d|--parse-cert-domain  ) parse_cert_domain="yes"; shift ;;
-        -h|--help) show_help; shift ;;
-        --) shift; break ;;
-        *) echo "错误: 未知参数 $1"; exit 1 ;;
-    esac
-done
-
-# ===== 自动解析域名中的 URL 协议和端口 =====
-[[ -n "$you_domain" ]] && parse_url "$you_domain" you_domain you_domain_path
-[[ -n "$r_domain" ]] && parse_url "$r_domain" r_domain r_domain_path
-
-# ===== 如果没有必要参数则进入交互模式 =====
-if [[ -z "$you_domain" || -z "$r_domain" ]]; then
-    echo -e "\n--- 交互模式: 配置反向代理 ---"
-    echo "请按提示输入参数，或直接按 Enter 使用默认值"
-    read -p "你的域名或者 IP [默认: you.example.com]: " input_you_domain
-    read -p "反代Emby的域名 [默认: r.example.com]: " input_r_domain
-
-    # 自动解析 input_you_domain
-    if [[ "$input_you_domain" =~ ^(https?)://([^/:?#]+)(:([0-9]+))?(/[^?#]*)? ]]; then
+    if [[ "$url" =~ ^(https?)://([^/:?#]+)(:([0-9]+))?(/[^?#]*)? ]]; then
         proto="${BASH_REMATCH[1]}"
         host="${BASH_REMATCH[2]}"
         port="${BASH_REMATCH[4]}"
         path="${BASH_REMATCH[5]}"
-        input_you_domain="$host"
-        input_you_domain_path="$path"
-        input_you_frontend_port="${port:-$([[ "$proto" == "https" ]] && echo 443 || echo 80)}"
-        input_no_tls=$([[ "$proto" == "http" ]] && echo "yes" || echo "no")
+
+        eval "${var_prefix}_domain=\"$host\""
+        eval "${var_prefix}_domain_path=\"$path\""
+
+        if [[ "$proto" == "https" ]]; then
+            eval "${var_prefix}_frontend_port=\"${port:-443}\""
+        else
+            eval "${var_prefix}_frontend_port=\"${port:-80}\""
+        fi
+
+        if [[ "$var_prefix" == "you_domain" ]]; then
+            if [[ "$proto" == "http" ]]; then
+                 eval "no_tls=\"yes\""
+            else
+                 eval "no_tls=\"no\""
+            fi
+        elif [[ "$var_prefix" == "r_domain" ]]; then
+            if [[ "$proto" == "http" ]]; then
+                 eval "r_http_frontend=\"yes\""
+            else
+                 eval "r_http_frontend=\"no\""
+            fi
+        fi
+    else
+        eval "${var_prefix}_domain=\"$url\""
     fi
-
-    # 自动解析 input_r_domain
-    if [[ "$input_r_domain" =~ ^(https?)://([^/:?#]+)(:([0-9]+))?(/[^?#]*)? ]]; then
-        r_proto="${BASH_REMATCH[1]}"
-        r_host="${BASH_REMATCH[2]}"
-        r_port="${BASH_REMATCH[4]}"
-        r_path="${BASH_REMATCH[5]}"
-        input_r_domain="$r_host"
-        input_r_domain_path="$r_path"
-        input_r_frontend_port="${r_port:-$([[ "$r_proto" == "https" ]] && echo 443 || echo 80)}"
-        input_r_http_frontend=$([[ "$r_proto" == "http" ]] && echo "yes" || echo "no")
-    fi
-
-    if [[ -z "$input_you_frontend_port" ]]; then
-        read -p "你的前端访问端口 [默认: 443]: " input_you_frontend_port
-    fi
-
-    if [[ -z "$input_no_tls" ]]; then
-          read -p "是否禁用TLS? (yes/no) [默认: no]: " input_no_tls
-    fi
-
-    if [[ -z "$input_r_frontend_port"  ]]; then
-        read -p "反代Emby前端端口 [默认: 空]: " input_r_frontend_port
-    fi
-
-    if [[ -z "$input_r_http_frontend" ]]; then
-        read -p "是否使用HTTP连接反代Emby前端? (yes/no) [默认: no]: " input_r_http_frontend
-    fi
-
-    # 最终赋值
-    you_domain="${input_you_domain:-you.example.com}"
-    you_domain_path="${input_you_domain_path}"
-    r_domain="${input_r_domain:-r.example.com}"
-    r_domain_path="${input_r_domain_path}"
-    you_frontend_port="${input_you_frontend_port:-443}"
-    r_frontend_port="${input_r_frontend_port}"
-    r_http_frontend="${input_r_http_frontend:-no}"
-    no_tls="${input_no_tls:-no}"
-fi
-
-# 美化输出配置信息
-protocol=$( [[ "$no_tls" == "yes" ]] && echo "http" || echo "https" )
-url="${protocol}://${you_domain}:${you_frontend_port}${you_domain_path}"
-
-
-# 最终导出
-resolver="$(get_resolver_host) $(get_ipv6_flag)"
-
-
-echo -e "\n\e[1;34m🔧 Emby 反代配置信息\e[0m"
-echo "──────────────────────────────────────"
-printf "🌍 访问地址: %s\n" "$url"
-printf "📌 你的域名: %s\n" "$you_domain"
-printf "📜 证书域名: %s\n" "$cert_domain"
-printf "🖥️  前端访问端口: %s\n" "$you_frontend_port"
-printf "🔄 反代 Emby 域名: %s\n" "$r_domain"
-printf "🎯 Emby 前端端口: %s\n" "${r_frontend_port:-未指定}"
-printf "🛠️  使用 HTTP 反代 Emby: %s\n" "$( [[ "$r_http_frontend" == "yes" ]] && echo "✅ 是" || echo "❌ 否" )"
-printf " 🔒禁用 TLS: %s\n" "$( [[ "$no_tls" == "yes" ]] && echo "✅ 是" || echo "❌ 否" )"
-printf "🧠 DNS 配置: %s\n" "$resolver"
-echo "──────────────────────────────────────"
-
-
-check_dependencies() {
-
-  if [[ ! -f '/etc/os-release' ]]; then
-    echo "error: Don't use outdated Linux distributions."
-    return 1
-  fi
-  source /etc/os-release
-  if [ -z "$ID" ]; then
-      echo -e "Unsupported Linux OS Type"
-      exit 1
-  fi
-
-  case "$ID" in
-  debian|devuan|kali)
-      OS_NAME='debian'
-      PM='apt'
-      GNUPG_PM='gnupg2'
-      ;;
-  ubuntu)
-      OS_NAME='ubuntu'
-      PM='apt'
-      GNUPG_PM=$([[ ${VERSION_ID%%.*} -lt 22 ]] && echo "gnupg2" || echo "gnupg")
-      ;;
-  centos|fedora|rhel|almalinux|rocky|amzn)
-      OS_NAME='rhel'
-      PM=$(command -v dnf >/dev/null && echo "dnf" || echo "yum")
-      ;;
-  arch|archarm)
-      OS_NAME='arch'
-      PM='pacman'
-      ;;
-  alpine)
-      OS_NAME='alpine'
-      PM='apk'
-      ;;
-  *)
-      OS_NAME="$ID"
-      PM='apt'
-      ;;
-  esac
 }
 
-check_dependencies
+# ===================================================================================
+#                                 核心逻辑函数
+# ===================================================================================
 
-# 检查并安装 Nginx
-echo "检查 Nginx 是否已安装..."
-if ! command -v nginx &> /dev/null; then
-    echo "Nginx 未安装，正在安装..."
+# --- 1. 解析命令行参数 ---
+parse_arguments() {
+    # 初始化变量
+    you_domain_full=""
+    r_domain_full=""
+    cert_domain=""
+    manual_resolver=""
+    parse_cert_domain="no"
+    dns_provider=""
+    you_domain=""; you_domain_path=""; you_frontend_port=""; no_tls=""
+    r_domain=""; r_domain_path=""; r_frontend_port=""; r_http_frontend=""
 
-    if [[ "$OS_NAME" == "debian" || "$OS_NAME" == "ubuntu" ]]; then
-      $PM install -y "$GNUPG_PM" ca-certificates lsb-release "$OS_NAME-keyring" \
-        && curl https://nginx.org/keys/nginx_signing.key | gpg --dearmor > /usr/share/keyrings/nginx-archive-keyring.gpg \
-        && echo "deb [signed-by=/usr/share/keyrings/nginx-archive-keyring.gpg] http://nginx.org/packages/mainline/$OS_NAME `lsb_release -cs` nginx" > /etc/apt/sources.list.d/nginx.list \
-        && echo -e "Package: *\nPin: origin nginx.org\nPin: release o=nginx\nPin-Priority: 900\n" > /etc/apt/preferences.d/99nginx \
-        && $PM update && $PM install -y nginx \
-        && mkdir -p /etc/systemd/system/nginx.service.d \
-        && echo -e "[Service]\nExecStartPost=/bin/sleep 0.1" > /etc/systemd/system/nginx.service.d/override.conf \
-        && systemctl daemon-reload && rm -f /etc/nginx/conf.d/default.conf \
-        && systemctl restart nginx
-    elif [[ "$OS_NAME" == "rhel" ]]; then
-      $PM install -y yum-utils \
-          && echo -e "[nginx-mainline]\nname=NGINX Mainline Repository\nbaseurl=https://nginx.org/packages/mainline/centos/\$releasever/\$basearch/\ngpgcheck=1\nenabled=1\ngpgkey=https://nginx.org/keys/nginx_signing.key" > /etc/yum.repos.d/nginx.repo \
-          && $PM install -y nginx \
-          && mkdir -p /etc/systemd/system/nginx.service.d \
-          && echo -e "[Service]\nExecStartPost=/bin/sleep 0.1" > /etc/systemd/system/nginx.service.d/override.conf \
-          && systemctl daemon-reload && rm -f /etc/nginx/conf.d/default.conf \
-          && systemctl restart nginx
-    elif [[ "$OS_NAME" == "arch" ]]; then
-      $PM -Sy --noconfirm nginx-mainline \
-          && mkdir -p /etc/systemd/system/nginx.service.d \
-          && echo -e "[Service]\nExecStartPost=/bin/sleep 0.1" > /etc/systemd/system/nginx.service.d/override.conf \
-          && systemctl daemon-reload && rm -f /etc/nginx/conf.d/default.conf \
-          && systemctl restart nginx
-    elif [[ "$OS_NAME" == "alpine" ]]; then
-      $PM update && $PM add --no-cache nginx-mainline \
-          && rc-update add nginx default && rm -f /etc/nginx/conf.d/default.conf \
-          && rc-service nginx restart
-    else
-        echo "不支持的操作系统，请手动安装 Nginx" >&2
+    local TEMP
+    TEMP=$(getopt -o y:r:m:R:dD:h --long you-domain:,r-domain:,cert-domain:,resolver:,parse-cert-domain,dns:,help -n "$(basename "$0")" -- "$@")
+    if [ $? -ne 0 ]; then
+        echo "错误: 参数解析失败。" >&2
         exit 1
     fi
-else
-    echo "Nginx 已安装，跳过安装步骤。"
-fi
+    eval set -- "$TEMP"
+    unset TEMP
 
+    while true; do
+        case "$1" in
+            -y|--you-domain) you_domain_full="$2"; shift 2 ;;
+            -r|--r-domain) r_domain_full="$2"; shift 2 ;;
+            -m|--cert-domain) cert_domain="$2"; shift 2 ;;
+            -d|--parse-cert-domain) parse_cert_domain="yes"; shift ;;
+            -D|--dns) dns_provider="$2"; shift 2 ;;
+            -R|--resolver) manual_resolver="$2"; shift 2 ;;
+            -h|--help) show_help; shift ;;
+            --) shift; break ;;
+            *) echo "错误: 未知参数 $1" >&2; exit 1 ;;
+        esac
+    done
 
-# 下载并复制 nginx.conf
-echo "下载并复制 nginx 配置文件..."
-echo "下载地址 $confhome/nginx.conf"
-curl -Lo /etc/nginx/nginx.conf "$confhome/nginx.conf"
+    if [[ -n "$you_domain_full" ]]; then
+        parse_url "$you_domain_full" "you_domain"
+    fi
+    if [[ -n "$r_domain_full" ]]; then
+        parse_url "$r_domain_full" "r_domain"
+    fi
+}
 
-you_domain_config="$you_domain.$you_frontend_port"
-download_domain_config="p.example.com"
-default_you_frontend_port=443
+# --- 2. 交互模式 ---
+prompt_interactive_mode() {
+    if [[ -z "$you_domain" || -z "$r_domain" ]]; then
+        echo -e "\n--- 交互模式: 配置反向代理 ---"
+        local input_you_domain_full input_r_domain_full
+        read -p "你的访问 URL (例如 https://app.your-domain.com): " input_you_domain_full
+        read -p "被代理的 Emby URL (例如 http://127.0.0.1:8096): " input_r_domain_full
 
-# 如果 $no_tls 选择使用 HTTP，则选择下载对应的模板
-if [[ "$no_tls" == "yes" ]]; then
-    download_domain_config="p.example.com.no_tls"
-    default_you_frontend_port=80
-fi
+        if [[ -n "$input_you_domain_full" ]]; then
+            parse_url "$input_you_domain_full" "you_domain"
+        fi
+        if [[ -n "$input_r_domain_full" ]]; then
+            parse_url "$input_r_domain_full" "r_domain"
+        fi
 
-# 下载并复制 p.example.com.conf 并修改
-echo "下载并创建 $you_domain_config.conf 到 /etc/nginx/conf.d/"
+        if [[ -z "$you_domain" || -z "$r_domain" ]]; then
+            echo "错误: 域名信息不能为空。" >&2
+            exit 1
+        fi
+    fi
+}
 
-# 1. 初始化一个用于存放变量名的数组（白名单）
-declare -a subst_var_names=()
+# --- 3. 显示摘要 ---
+display_summary() {
+    # 确定最终的证书域名
+    if [[ -n "$cert_domain" ]]; then
+        format_cert_domain="$cert_domain"
+    elif [[ "$parse_cert_domain" == "yes" ]]; then
+        if [[ "$you_domain" == *.*.* ]]; then
+            format_cert_domain="${you_domain#*.}"
+        else
+            format_cert_domain="$you_domain"
+        fi
+    else
+        format_cert_domain="$you_domain"
+    fi
 
-# 反代域名
-export you_domain=${you_domain}
-subst_var_names+=("you_domain")
+    # 确定最终的 DNS resolver
+    if [[ -n "$manual_resolver" ]]; then
+        resolver="$manual_resolver valid=60s"
+    else
+        resolver="$(get_resolver_host) $(get_ipv6_flag)"
+    fi
 
-# resolver
-export resolver=${resolver}
-subst_var_names+=("resolver")
+    local protocol url
+    protocol=$([[ "$no_tls" == "yes" ]] && echo "http" || echo "https")
+    url="${protocol}://${you_domain}${you_frontend_port:+:$you_frontend_port}${you_domain_path}"
 
-# 反代端口
-if [[ -n "$you_frontend_port" ]]; then
-    export you_frontend_port=${you_frontend_port}
-else
-    export you_frontend_port=${default_you_frontend_port}
-fi
-subst_var_names+=("you_frontend_port")
+    local r_proto r_url
+    r_proto=$([[ "$r_http_frontend" == "yes" ]] && echo "http" || echo "https")
+    r_url="${r_proto}://${r_domain}${r_frontend_port:+:$r_frontend_port}${r_domain_path}"
 
-# 如果 $you_domain_path 不为空，加上重写path的指令
-if [[ -n "$you_domain_path" ]]; then
-  export you_domain_path_rewrite="rewrite ^${you_domain_path}/(.*)$ ${r_domain_path}/\$1 break;"
-else
-  export you_domain_path_rewrite=""
-fi
-subst_var_names+=("you_domain_path_rewrite")
+    # 打印摘要
+    echo -e "\n\e[1;34m🔧 Nginx 反代配置信息\e[0m"
+    echo "──────────────────────────────────────────────"
+    printf "➡️  访问地址 (From): %s\n" "$url"
+    printf "⬅️  目标地址 (To):   %s\n" "$r_url"
+    echo "──────────────────────────────────────────────"
+    printf "📜 证书域名:         %s\n" "$format_cert_domain"
+    printf "🔒 是否禁用 TLS:       %s\n" "$([[ "$no_tls" == "yes" ]] && echo "✅ 是" || echo "❌ 否")"
+    printf "🧠 DNS 解析:          %s\n" "$resolver"
+    echo "──────────────────────────────────────────────"
+}
 
-export you_domain_path=${you_domain_path:-/}
-subst_var_names+=("you_domain_path")
+# --- 4. 安装依赖 (Nginx, acme.sh) ---
+install_dependencies() {
+    local OS_NAME PM GNUPG_PM
 
-# 如果 r_http_frontend 选择使用 HTTP，先替换 https://emby.example.com
-# 构造 r_domain_full: 包括协议、端口（可选）
-# 判断协议
-if [[ "$r_http_frontend" == "yes" ]]; then
-  proto="http"
-else
-  proto="https"
-fi
+    source /etc/os-release
+    case "$ID" in
+      debian|devuan|kali) OS_NAME='debian'; PM='apt-get'; GNUPG_PM='gnupg2' ;;
+      ubuntu) OS_NAME='ubuntu'; PM='apt-get'; GNUPG_PM=$([[ ${VERSION_ID%%.*} -lt 22 ]] && echo "gnupg2" || echo "gnupg") ;;
+      centos|fedora|rhel|almalinux|rocky|amzn) OS_NAME='rhel'; PM=$(command -v dnf >/dev/null && echo "dnf" || echo "yum") ;;
+      arch|archarm) OS_NAME='arch'; PM='pacman' ;;
+      alpine) OS_NAME='alpine'; PM='apk' ;;
+      *) echo "错误: 不支持的操作系统 '$ID'。" >&2; exit 1 ;;
+    esac
 
-# 如果 r_frontend_port 不为空，修改 emby.example.com 加上端口
-if [[ -n "$r_frontend_port" ]]; then
-  port=":$r_frontend_port"
-else
-  port=""
-fi
+    echo "INFO: 检查 Nginx..."
+    if ! command -v nginx &> /dev/null; then
+        echo "INFO: Nginx 未安装，正在从官方源为 '$OS_NAME' 安装..."
 
-# 最终拼接代理的emby域名
-r_domain_full="${proto}://${r_domain}${port}"
-export r_domain_full=${r_domain_full}
-subst_var_names+=("r_domain_full")
+        case "$OS_NAME" in
+          debian|ubuntu)
+              $SUDO "$PM" update
+              $SUDO "$PM" install -y "$GNUPG_PM" ca-certificates lsb-release "${OS_NAME}-keyring"
+              curl -sL https://nginx.org/keys/nginx_signing.key | $SUDO gpg --dearmor -o /usr/share/keyrings/nginx-archive-keyring.gpg
+              echo "deb [signed-by=/usr/share/keyrings/nginx-archive-keyring.gpg] http://nginx.org/packages/mainline/$OS_NAME `lsb_release -cs` nginx" | $SUDO tee /etc/apt/sources.list.d/nginx.list > /dev/null
+              echo -e "Package: *\nPin: origin nginx.org\nPin: release o=nginx\nPin-Priority: 900" | $SUDO tee /etc/apt/preferences.d/99nginx > /dev/null
+              $SUDO "$PM" update
+              $SUDO "$PM" install -y nginx
+              $SUDO mkdir -p /etc/systemd/system/nginx.service.d
+              echo -e "[Service]\nExecStartPost=/bin/sleep 0.1" | $SUDO tee /etc/systemd/system/nginx.service.d/override.conf > /dev/null
+              $SUDO systemctl daemon-reload
+              $SUDO rm -f /etc/nginx/conf.d/default.conf
+              $SUDO systemctl restart nginx
+              ;;
+          rhel)
+              $SUDO "$PM" install -y yum-utils
+              echo -e "[nginx-mainline]\nname=NGINX Mainline Repository\nbaseurl=https://nginx.org/packages/mainline/centos/\$releasever/\$basearch/\ngpgcheck=1\nenabled=1\ngpgkey=https://nginx.org/keys/nginx_signing.key" | $SUDO tee /etc/yum.repos.d/nginx.repo > /dev/null
+              $SUDO "$PM" install -y nginx
+              $SUDO mkdir -p /etc/systemd/system/nginx.service.d
+              echo -e "[Service]\nExecStartPost=/bin/sleep 0.1" | $SUDO tee /etc/systemd/system/nginx.service.d/override.conf > /dev/null
+              $SUDO systemctl daemon-reload
+              $SUDO rm -f /etc/nginx/conf.d/default.conf
+              $SUDO systemctl restart nginx
+              ;;
+          arch)
+              $SUDO "$PM" -Sy --noconfirm nginx-mainline
+              $SUDO mkdir -p /etc/systemd/system/nginx.service.d
+              echo -e "[Service]\nExecStartPost=/bin/sleep 0.1" | $SUDO tee /etc/systemd/system/nginx.service.d/override.conf > /dev/null
+              $SUDO systemctl daemon-reload
+              $SUDO rm -f /etc/nginx/conf.d/default.conf
+              $SUDO systemctl restart nginx
+              ;;
+          alpine)
+              $SUDO "$PM" update
+              $SUDO "$PM" add --no-cache nginx
+              $SUDO rc-update add nginx default
+              $SUDO rm -f /etc/nginx/conf.d/default.conf
+              $SUDO rc-service nginx restart
+              ;;
+        esac
+        echo "INFO: Nginx 安装完成。"
+    else
+        echo "INFO: Nginx 已安装。"
+    fi
 
-# 替换域名信息
-
-# 如果 $cert_domain 不为空，则替换证书路径
-if [[ -n "$cert_domain" ]]; then
-  export format_cert_domain=${cert_domain}
-else
-  export format_cert_domain=${you_domain}
-fi
-subst_var_names+=("format_cert_domain")
-
-# ======================= 自动生成替换列表的核心逻辑 =======================
-subst_vars=""
-for var_name in "${subst_var_names[@]}"; do
-    # 格式化成 '${VAR_NAME} ' 并拼接到字符串中
-    subst_vars+=" \${${var_name}}"
-done
-# 最终, subst_vars 会变成类似 '${DOMAIN_NAME} ${APP_PORT} ${ENABLE_CACHE} '
-# =========================================================================
-
-# 执行替换命令，传入动态生成的变量列表
-curl -Ls "$confhome/conf.d/$download_domain_config.conf" | envsubst "$subst_vars" > "/etc/nginx/conf.d/${you_domain_config}.conf"
-
-
-if [[ -z "$cert_domain" && "$no_tls" != "yes" ]]; then
     ACME_SH="$HOME/.acme.sh/acme.sh"
-
-    # 检查并安装 acme.sh
-   echo "检查 acme.sh 是否已安装..."
-   if [[ ! -f "$ACME_SH" ]]; then
-       echo "acme.sh 未安装，正在安装..."
-       apt install -y socat cron
-       curl https://get.acme.sh | sh
+    if [[ "$no_tls" != "yes" && ! -f "$ACME_SH" ]]; then
+       echo "INFO: 正在为当前用户安装 acme.sh..."
+       if ! command -v socat &> /dev/null; then
+            source /etc/os-release
+            case "$ID" in
+                debian|ubuntu|arch) $SUDO "$PM" install -y socat cron ;;
+                *) $SUDO "$PM" install -y socat cronie ;;
+            esac
+       fi
+       curl https://get.acme.sh | sh -s
        "$ACME_SH" --upgrade --auto-upgrade
        "$ACME_SH" --set-default-ca --server letsencrypt
-   else
-       echo "acme.sh 已安装，跳过安装步骤。"
-   fi
+       echo "INFO: acme.sh 安装完成。"
+    fi
+}
 
-    # 申请并安装 ECC 证书
-    if ! "$ACME_SH" --info -d "$you_domain" | grep -q RealFullChainPath; then
-        echo "ECC 证书未申请，正在申请..."
-        mkdir -p "/etc/nginx/certs/$you_domain"
+# --- 5. 生成 Nginx 配置 ---
+generate_nginx_config() {
+    echo "INFO: 正在生成 Nginx 配置文件..."
+    curl -sL "$CONF_HOME/nginx.conf" | $SUDO tee /etc/nginx/nginx.conf > /dev/null
 
-        "$ACME_SH" --issue -d "$you_domain" --standalone --keylength ec-256 || {
-            echo "证书申请失败，请检查错误信息！"
-            rm -f "/etc/nginx/conf.d/$you_domain_config.conf"
+    local download_domain_config
+    if [[ "$no_tls" == "yes" ]]; then
+        download_domain_config="p.example.com.no_tls.conf"
+    else
+        download_domain_config="p.example.com.conf"
+    fi
+
+    local -a subst_var_names=()
+    export you_domain; subst_var_names+=("you_domain")
+    export you_domain_path="${you_domain_path:-/}"; subst_var_names+=("you_domain_path")
+    export you_frontend_port; subst_var_names+=("you_frontend_port")
+    export resolver; subst_var_names+=("resolver")
+    export format_cert_domain; subst_var_names+=("format_cert_domain")
+
+    if [[ -n "$you_domain_path" && "$you_domain_path" != "/" ]]; then
+      export you_domain_path_rewrite="rewrite ^${you_domain_path}(.*)$ ${r_domain_path:-\/}\$1 break;"
+    else
+      export you_domain_path_rewrite=""
+    fi
+    subst_var_names+=("you_domain_path_rewrite")
+
+    local r_proto=$([[ "$r_http_frontend" == "yes" ]] && echo "http" || echo "https")
+    local r_port_str=$([[ -n "$r_frontend_port" ]] && echo ":$r_frontend_port" || echo "")
+    export r_domain_full="${r_proto}://${r_domain}${r_port_str}"
+    subst_var_names+=("r_domain_full")
+
+    local subst_vars
+    subst_vars=$(for var in "${subst_var_names[@]}"; do printf " \${%s}" "$var"; done)
+
+    local you_domain_config_filename="${you_domain}.${you_frontend_port}.conf"
+    curl -sL "$CONF_HOME/conf.d/$download_domain_config" | envsubst "$subst_vars" | $SUDO tee "/etc/nginx/conf.d/$you_domain_config_filename" > /dev/null
+
+    echo "INFO: 配置文件 '/etc/nginx/conf.d/$you_domain_config_filename' 已生成。"
+}
+
+# --- 6. 申请 SSL 证书 ---
+issue_certificate() {
+    if [[ "$no_tls" == "yes" ]]; then
+        echo "INFO: 已禁用 TLS，跳过证书申请。"
+        return
+    fi
+
+    ACME_SH="$HOME/.acme.sh/acme.sh"
+    local cert_path_base="/etc/nginx/certs/$format_cert_domain"
+    local cert_file_path="$cert_path_base/cert"
+
+    local is_wildcard="no"
+    if [[ "$format_cert_domain" != "$you_domain" ]]; then
+        is_wildcard="yes"
+    fi
+
+    # 场景 1: 泛域名场景，且用户已手动放置证书
+    if [[ "$is_wildcard" == "yes" ]] && [ -f "$cert_file_path" ]; then
+        echo "INFO: 检测到证书目录 '$cert_path_base' 已存在，将假定您已手动配置了正确的 (泛)域名证书。"
+        echo "INFO: 跳过证书申请和安装步骤。"
+        return
+    fi
+
+    # 决定申请模式
+    local issue_params=()
+    local main_domain_to_check="$you_domain"
+
+    if [[ -n "$dns_provider" ]]; then
+        # --- DNS API 模式 ---
+        if [[ "$is_wildcard" == "yes" ]]; then
+            main_domain_to_check="$format_cert_domain"
+            issue_params=(--issue --dns "$dns_provider" -d "$format_cert_domain" -d "*.$format_cert_domain")
+            echo "INFO: 准备使用 DNS API 为 '$format_cert_domain' 和 '*.$format_cert_domain' 申请泛域名证书..."
+        else
+            issue_params=(--issue --dns "$dns_provider" -d "$you_domain")
+            echo "INFO: 准备使用 DNS API 为 '$you_domain' 申请证书..."
+        fi
+
+        # 引导用户配置 API 密钥
+        echo "--------------------------------------------------------"
+        echo -e "\e[1;33m需要配置 DNS API 密钥\e[0m"
+        echo "acme.sh 需要 API 密钥来自动修改您的 DNS 记录以完成验证。"
+        echo "请参考 acme.sh 的官方文档获取您 DNS 提供商所需的变量："
+        echo "https://github.com/acmesh-official/acme.sh/wiki/dnsapi"
+        echo ""
+        if [[ "$dns_provider" == "cf" ]]; then
+            echo "示例: 对于 Cloudflare (cf)，您需要提供 CF_Token 和 CF_Account_ID。"
+            read -p "请输入您的 Cloudflare Token: " CF_Token
+            read -p "请输入您的 Cloudflare Account ID: " CF_Account_ID
+            export CF_Token
+            export CF_Account_ID
+        else
+            echo "请手动导出您 DNS 提供商 ('$dns_provider') 所需的环境变量。"
+            read -p "配置完成后，请按 Enter 键继续..."
+        fi
+        echo "--------------------------------------------------------"
+
+    else
+        # --- Standalone HTTP 模式 ---
+        if [[ "$is_wildcard" == "yes" ]]; then
+            echo "错误: 泛域名证书 (*.$format_cert_domain) 必须使用 DNS API 模式进行申请。" >&2
+            echo "请使用 --dns <provider> 参数 (例如 --dns cf) 并提供 API 密钥。" >&2
+            exit 1
+        fi
+        issue_params=(--issue --standalone -d "$you_domain")
+        echo "INFO: 准备使用 Standalone 模式为 '$you_domain' 申请证书..."
+    fi
+
+    # 检查证书是否已由 acme.sh 管理
+    if ! "$ACME_SH" --info -d "$main_domain_to_check" | grep -q RealFullChainPath; then
+        echo "INFO: 证书不存在，开始申请..."
+        $SUDO mkdir -p "$cert_path_base"
+
+        # 执行申请
+        "$ACME_SH" "${issue_params[@]}" --keylength ec-256 || {
+            echo "错误: 证书申请失败。" >&2
+            if [[ -z "$dns_provider" ]]; then
+                echo "对于 Standalone 模式，请检查：" >&2
+                echo "1. 域名 ('$you_domain') 是否已正确解析到本服务器的公网 IP 地址。" >&2
+                echo "2. 服务器的防火墙 (或云服务商安全组) 是否已放行 TCP 80 端口。" >&2
+                echo "3. 80 端口当前可能被 Nginx 或其他程序占用。请手动停止相关服务后重试。" >&2
+            else
+                echo "对于 DNS 模式，请检查：" >&2
+                echo "1. 您提供的 API 密钥是否正确且拥有修改 DNS 的权限。" >&2
+                echo "2. acme.sh 是否支持您的 DNS 提供商 ('$dns_provider')。" >&2
+            fi
+
+            local you_domain_config_filename="${you_domain}.${you_frontend_port}.conf"
+            echo "INFO: 正在清理本次生成的 Nginx 配置文件: $you_domain_config_filename" >&2
+            $SUDO rm -f "/etc/nginx/conf.d/$you_domain_config_filename"
+
             exit 1
         }
+        echo "INFO: 证书申请成功。"
     else
-        echo "ECC 证书已申请，跳过申请步骤。"
+        echo "INFO: 证书已由 acme.sh 管理，跳过申请步骤。"
     fi
 
     # 安装证书
-    echo "安装证书..."
-    "$ACME_SH" --install-cert -d "$you_domain" --ecc \
-        --fullchain-file "/etc/nginx/certs/$you_domain/cert" \
-        --key-file "/etc/nginx/certs/$you_domain/key" \
-        --reloadcmd "nginx -s reload" --force
+    echo "INFO: 正在安装证书到 Nginx 目录 '$cert_path_base'..."
+    "$ACME_SH" --install-cert -d "$main_domain_to_check" --ecc \
+        --fullchain-file "$cert_path_base/cert" \
+        --key-file "$cert_path_base/key" \
+        --reloadcmd "$SUDO nginx -s reload" --force
 
-    echo "证书安装完成！"
-fi
+    echo "INFO: 证书安装并部署完成。"
+}
 
 
-echo "重新加载 Nginx..."
-nginx -s reload
+# ===================================================================================
+#                                 主函数
+# ===================================================================================
+main() {
+    parse_arguments "$@"
+    prompt_interactive_mode
+    display_summary
+    install_dependencies
+    generate_nginx_config
+    issue_certificate
 
-echo "反向代理设置完成！"
+    echo "INFO: 正在检查 Nginx 配置并执行最终重载..."
+    $SUDO nginx -t
+    $SUDO nginx -s reload
+
+    echo -e "\n\e[1;32m✅ 恭喜！Nginx 反向代理部署成功！\e[0m"
+}
+
+# --- 脚本执行入口 ---
+main "$@"
