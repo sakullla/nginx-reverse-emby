@@ -389,9 +389,7 @@ else
   export format_cert_domain=${you_domain}
 fi
 
-readarray -t vars < <(env | cut -d= -f1)
-subst_vars=$(printf '${%s} ' "${vars[@]}")
-curl -Ls "$confhome/conf.d/$download_domain_config.conf" | envsubst "$subst_vars" > "/etc/nginx/conf.d/${you_domain_config}.conf"
+curl -Ls "$confhome/conf.d/$download_domain_config.conf" | envsubst > "/etc/nginx/conf.d/${you_domain_config}.conf"
 
 
 if [[ -z "$cert_domain" && "$no_tls" != "yes" ]]; then
