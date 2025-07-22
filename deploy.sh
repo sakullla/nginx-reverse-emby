@@ -170,14 +170,39 @@ parse_arguments() {
     if [[ -n "$you_domain_full" ]]; then
         local temp_port temp_proto
         IFS='|' read -r you_domain you_domain_path temp_port temp_proto < <(parse_url "$you_domain_full")
-        if [[ "$temp_proto" == "http" ]]; then no_tls="yes"; else no_tls="no"; fi
-        if [[ "$temp_proto" == "https" ]]; then you_frontend_port="${temp_port:-443}"; else you_frontend_port="${temp_port:-80}"; fi
+
+        # 首先，根据解析出的协议决定 TLS 设置
+        if [[ "$temp_proto" == "http" ]]; then
+            no_tls="yes"
+        else
+            # 如果协议是 https 或未指定，则默认启用 TLS
+            no_tls="no"
+        fi
+
+        # 然后，根据最终的 TLS 设置来决定默认端口
+        if [[ "$no_tls" == "no" ]]; then # HTTPS
+            you_frontend_port="${temp_port:-443}"
+        else # HTTP
+            you_frontend_port="${temp_port:-80}"
+        fi
     fi
     if [[ -n "$r_domain_full" ]]; then
         local temp_port temp_proto
         IFS='|' read -r r_domain r_domain_path temp_port temp_proto < <(parse_url "$r_domain_full")
-        if [[ "$temp_proto" == "http" ]]; then r_http_frontend="yes"; else r_http_frontend="no"; fi
-        if [[ "$temp_proto" == "https" ]]; then r_frontend_port="${temp_port:-443}"; else r_frontend_port="${temp_port:-80}"; fi
+
+        # 首先，根据解析出的协议决定后端协议
+        if [[ "$temp_proto" == "http" ]]; then
+            r_http_frontend="yes"
+        else
+            r_http_frontend="no"
+        fi
+
+        # 然后，根据最终的后端协议来决定默认端口
+        if [[ "$r_http_frontend" == "no" ]]; then # HTTPS
+            r_frontend_port="${temp_port:-443}"
+        else # HTTP
+            r_frontend_port="${temp_port:-80}"
+        fi
     fi
 }
 
@@ -203,14 +228,34 @@ prompt_interactive_mode() {
         if [[ -n "$input_you_domain_full" ]]; then
             local temp_port temp_proto
             IFS='|' read -r you_domain you_domain_path temp_port temp_proto < <(parse_url "$input_you_domain_full")
-            if [[ "$temp_proto" == "http" ]]; then no_tls="yes"; else no_tls="no"; fi
-            if [[ "$temp_proto" == "https" ]]; then you_frontend_port="${temp_port:-443}"; else you_frontend_port="${temp_port:-80}"; fi
+
+            if [[ "$temp_proto" == "http" ]]; then
+                no_tls="yes"
+            else
+                no_tls="no"
+            fi
+
+            if [[ "$no_tls" == "no" ]]; then # HTTPS
+                you_frontend_port="${temp_port:-443}"
+            else # HTTP
+                you_frontend_port="${temp_port:-80}"
+            fi
         fi
         if [[ -n "$input_r_domain_full" ]]; then
             local temp_port temp_proto
             IFS='|' read -r r_domain r_domain_path temp_port temp_proto < <(parse_url "$input_r_domain_full")
-            if [[ "$temp_proto" == "http" ]]; then r_http_frontend="yes"; else r_http_frontend="no"; fi
-            if [[ "$temp_proto" == "https" ]]; then r_frontend_port="${temp_port:-443}"; else r_frontend_port="${temp_port:-80}"; fi
+
+            if [[ "$temp_proto" == "http" ]]; then
+                r_http_frontend="yes"
+            else
+                r_http_frontend="no"
+            fi
+
+            if [[ "$r_http_frontend" == "no" ]]; then # HTTPS
+                r_frontend_port="${temp_port:-443}"
+            else # HTTP
+                r_frontend_port="${temp_port:-80}"
+            fi
         fi
 
         if [[ -z "$you_domain" || -z "$r_domain" ]]; then
