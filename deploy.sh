@@ -127,6 +127,48 @@ parse_url() {
     fi
 }
 
+# --- [新增] URL 输入处理辅助函数 ---
+process_url_input() {
+    local full_url="$1"
+    local domain_type="$2" # "you" or "r"
+
+    if [[ -z "$full_url" ]]; then
+        return
+    fi
+
+    local temp_domain temp_path temp_port temp_proto
+    IFS='|' read -r temp_domain temp_path temp_port temp_proto < <(parse_url "$full_url")
+
+    if [[ "$domain_type" == "you" ]]; then
+        you_domain="$temp_domain"
+        you_domain_path="$temp_path"
+        if [[ "$temp_proto" == "http" ]]; then
+            no_tls="yes"
+        else
+            no_tls="no"
+        fi
+        if [[ "$no_tls" == "no" ]]; then
+            you_frontend_port="${temp_port:-443}"
+        else
+            you_frontend_port="${temp_port:-80}"
+        fi
+    elif [[ "$domain_type" == "r" ]]; then
+        r_domain="$temp_domain"
+        r_domain_path="$temp_path"
+        if [[ "$temp_proto" == "http" ]]; then
+            r_http_frontend="yes"
+        else
+            r_http_frontend="no"
+        fi
+        if [[ "$r_http_frontend" == "no" ]]; then
+            r_frontend_port="${temp_port:-443}"
+        else
+            r_frontend_port="${temp_port:-80}"
+        fi
+    fi
+}
+
+
 # ===================================================================================
 #                                 核心逻辑函数
 # ===================================================================================
@@ -166,44 +208,9 @@ parse_arguments() {
         esac
     done
 
-    # 使用新的 parse_url 函数和 read 来安全地赋值
-    if [[ -n "$you_domain_full" ]]; then
-        local temp_port temp_proto
-        IFS='|' read -r you_domain you_domain_path temp_port temp_proto < <(parse_url "$you_domain_full")
-
-        # 首先，根据解析出的协议决定 TLS 设置
-        if [[ "$temp_proto" == "http" ]]; then
-            no_tls="yes"
-        else
-            # 如果协议是 https 或未指定，则默认启用 TLS
-            no_tls="no"
-        fi
-
-        # 然后，根据最终的 TLS 设置来决定默认端口
-        if [[ "$no_tls" == "no" ]]; then # HTTPS
-            you_frontend_port="${temp_port:-443}"
-        else # HTTP
-            you_frontend_port="${temp_port:-80}"
-        fi
-    fi
-    if [[ -n "$r_domain_full" ]]; then
-        local temp_port temp_proto
-        IFS='|' read -r r_domain r_domain_path temp_port temp_proto < <(parse_url "$r_domain_full")
-
-        # 首先，根据解析出的协议决定后端协议
-        if [[ "$temp_proto" == "http" ]]; then
-            r_http_frontend="yes"
-        else
-            r_http_frontend="no"
-        fi
-
-        # 然后，根据最终的后端协议来决定默认端口
-        if [[ "$r_http_frontend" == "no" ]]; then # HTTPS
-            r_frontend_port="${temp_port:-443}"
-        else # HTTP
-            r_frontend_port="${temp_port:-80}"
-        fi
-    fi
+    # 使用新的辅助函数处理 URL 输入
+    process_url_input "$you_domain_full" "you"
+    process_url_input "$r_domain_full" "r"
 }
 
 # --- 2. 交互模式 ---
@@ -225,38 +232,8 @@ prompt_interactive_mode() {
         read -p "你的访问 URL (例如 https://app.your-domain.com): " input_you_domain_full
         read -p "被代理的 Emby URL (例如 http://127.0.0.1:8096): " input_r_domain_full
 
-        if [[ -n "$input_you_domain_full" ]]; then
-            local temp_port temp_proto
-            IFS='|' read -r you_domain you_domain_path temp_port temp_proto < <(parse_url "$input_you_domain_full")
-
-            if [[ "$temp_proto" == "http" ]]; then
-                no_tls="yes"
-            else
-                no_tls="no"
-            fi
-
-            if [[ "$no_tls" == "no" ]]; then # HTTPS
-                you_frontend_port="${temp_port:-443}"
-            else # HTTP
-                you_frontend_port="${temp_port:-80}"
-            fi
-        fi
-        if [[ -n "$input_r_domain_full" ]]; then
-            local temp_port temp_proto
-            IFS='|' read -r r_domain r_domain_path temp_port temp_proto < <(parse_url "$input_r_domain_full")
-
-            if [[ "$temp_proto" == "http" ]]; then
-                r_http_frontend="yes"
-            else
-                r_http_frontend="no"
-            fi
-
-            if [[ "$r_http_frontend" == "no" ]]; then # HTTPS
-                r_frontend_port="${temp_port:-443}"
-            else # HTTP
-                r_frontend_port="${temp_port:-80}"
-            fi
-        fi
+        process_url_input "$input_you_domain_full" "you"
+        process_url_input "$input_r_domain_full" "r"
 
         if [[ -z "$you_domain" || -z "$r_domain" ]]; then
             echo "错误: 域名信息不能为空。" >&2
