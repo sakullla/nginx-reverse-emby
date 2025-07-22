@@ -111,42 +111,19 @@ get_ipv6_flag() {
     fi
 }
 
-# --- URL 解析函数 ---
+# --- URL 解析函数 (重构版，不再使用 eval) ---
 parse_url() {
     local url="$1"
-    local var_prefix="$2"
-    local proto host port path
-
+    # 此函数将通过 echo 输出结果，格式为: host path port proto
     if [[ "$url" =~ ^(https?)://([^/:?#]+)(:([0-9]+))?(/[^?#]*)? ]]; then
-        proto="${BASH_REMATCH[1]}"
-        host="${BASH_REMATCH[2]}"
-        port="${BASH_REMATCH[4]}"
-        path="${BASH_REMATCH[5]}"
-
-        eval "${var_prefix}_domain=\"$host\""
-        eval "${var_prefix}_domain_path=\"$path\""
-
-        if [[ "$proto" == "https" ]]; then
-            eval "${var_prefix}_frontend_port=\"${port:-443}\""
-        else
-            eval "${var_prefix}_frontend_port=\"${port:-80}\""
-        fi
-
-        if [[ "$var_prefix" == "you_domain" ]]; then
-            if [[ "$proto" == "http" ]]; then
-                 eval "no_tls=\"yes\""
-            else
-                 eval "no_tls=\"no\""
-            fi
-        elif [[ "$var_prefix" == "r_domain" ]]; then
-            if [[ "$proto" == "http" ]]; then
-                 eval "r_http_frontend=\"yes\""
-            else
-                 eval "r_http_frontend=\"no\""
-            fi
-        fi
+        local proto="${BASH_REMATCH[1]}"
+        local host="${BASH_REMATCH[2]}"
+        local port="${BASH_REMATCH[4]}"
+        local path="${BASH_REMATCH[5]}"
+        echo "$host $path $port $proto"
     else
-        eval "${var_prefix}_domain=\"$url\""
+        # 如果不匹配 URL，则假定整个字符串为域名
+        echo "$url '' '' ''"
     fi
 }
 
@@ -166,15 +143,10 @@ parse_arguments() {
     you_domain=""; you_domain_path=""; you_frontend_port=""; no_tls=""
     r_domain=""; r_domain_path=""; r_frontend_port=""; r_http_frontend=""
 
-    # --- [DEBUG] 打印原始参数 ---
-    echo "[DEBUG] 原始参数: $*"
-
-    # --- 参数预处理，解决 -dy 这样的组合参数问题 ---
+    # 参数预处理，解决 -dy 这样的组合参数问题
     local args=()
     for arg in "$@"; do
         if [[ $arg == -* && $arg != -- && ${#arg} -gt 2 ]]; then
-            # 这是一个组合短选项，例如 -dy
-            # 将其拆分为 -d -y
             local i
             for (( i=1; i<${#arg}; i++ )); do
                 args+=("-${arg:$i:1}")
@@ -183,12 +155,7 @@ parse_arguments() {
             args+=("$arg")
         fi
     done
-    # 用预处理过的参数列表替换原始参数列表
     set -- "${args[@]}"
-
-    # --- [DEBUG] 打印预处理后的参数 ---
-    echo "[DEBUG] 预处理后参数: $*"
-
 
     local TEMP
     TEMP=$(getopt -o y:r:m:R:dD:h --long you-domain:,r-domain:,cert-domain:,resolver:,parse-cert-domain,dns:,help -n "$(basename "$0")" -- "$@")
@@ -213,31 +180,19 @@ parse_arguments() {
         esac
     done
 
+    # 使用新的 parse_url 函数和 read 来安全地赋值
     if [[ -n "$you_domain_full" ]]; then
-        parse_url "$you_domain_full" "you_domain"
+        local temp_port temp_proto
+        read -r you_domain you_domain_path temp_port temp_proto < <(parse_url "$you_domain_full")
+        if [[ "$temp_proto" == "http" ]]; then no_tls="yes"; else no_tls="no"; fi
+        if [[ "$temp_proto" == "https" ]]; then you_frontend_port="${temp_port:-443}"; else you_frontend_port="${temp_port:-80}"; fi
     fi
     if [[ -n "$r_domain_full" ]]; then
-        parse_url "$r_domain_full" "r_domain"
+        local temp_port temp_proto
+        read -r r_domain r_domain_path temp_port temp_proto < <(parse_url "$r_domain_full")
+        if [[ "$temp_proto" == "http" ]]; then r_http_frontend="yes"; else r_http_frontend="no"; fi
+        if [[ "$temp_proto" == "https" ]]; then r_frontend_port="${temp_port:-443}"; else r_frontend_port="${temp_port:-80}"; fi
     fi
-
-    # --- [DEBUG] 打印最终解析出的所有变量值 ---
-    echo "--- [DEBUG] 参数解析完成 ---"
-    echo "you_domain_full: '$you_domain_full'"
-    echo "r_domain_full: '$r_domain_full'"
-    echo "cert_domain: '$cert_domain'"
-    echo "manual_resolver: '$manual_resolver'"
-    echo "parse_cert_domain: '$parse_cert_domain'"
-    echo "dns_provider: '$dns_provider'"
-    echo "--- URL 解析结果 ---"
-    echo "you_domain: '$you_domain'"
-    echo "you_domain_path: '$you_domain_path'"
-    echo "you_frontend_port: '$you_frontend_port'"
-    echo "no_tls: '$no_tls'"
-    echo "r_domain: '$r_domain'"
-    echo "r_domain_path: '$r_domain_path'"
-    echo "r_frontend_port: '$r_frontend_port'"
-    echo "r_http_frontend: '$r_http_frontend'"
-    echo "---------------------------"
 }
 
 # --- 2. 交互模式 ---
@@ -249,10 +204,16 @@ prompt_interactive_mode() {
         read -p "被代理的 Emby URL (例如 http://127.0.0.1:8096): " input_r_domain_full
 
         if [[ -n "$input_you_domain_full" ]]; then
-            parse_url "$input_you_domain_full" "you_domain"
+            local temp_port temp_proto
+            read -r you_domain you_domain_path temp_port temp_proto < <(parse_url "$input_you_domain_full")
+            if [[ "$temp_proto" == "http" ]]; then no_tls="yes"; else no_tls="no"; fi
+            if [[ "$temp_proto" == "https" ]]; then you_frontend_port="${temp_port:-443}"; else you_frontend_port="${temp_port:-80}"; fi
         fi
         if [[ -n "$input_r_domain_full" ]]; then
-            parse_url "$input_r_domain_full" "r_domain"
+            local temp_port temp_proto
+            read -r r_domain r_domain_path temp_port temp_proto < <(parse_url "$input_r_domain_full")
+            if [[ "$temp_proto" == "http" ]]; then r_http_frontend="yes"; else r_http_frontend="no"; fi
+            if [[ "$temp_proto" == "https" ]]; then r_frontend_port="${temp_port:-443}"; else r_frontend_port="${temp_port:-80}"; fi
         fi
 
         if [[ -z "$you_domain" || -z "$r_domain" ]]; then
@@ -485,8 +446,12 @@ issue_certificate() {
     else
         # --- Standalone HTTP 模式 ---
         if [[ "$is_wildcard" == "yes" ]]; then
-            echo "错误: 泛域名证书 (*.$format_cert_domain) 必须使用 DNS API 模式进行申请。" >&2
-            echo "请使用 --dns <provider> 参数 (例如 --dns cf) 并提供 API 密钥。" >&2
+            echo "--------------------------------------------------------" >&2
+            echo -e "\e[1;33m警告: 证书配置不匹配\e[0m" >&2
+            echo "您的 Nginx 配置需要一个泛域名证书 (*.$format_cert_domain)，但该证书目前不存在。" >&2
+            echo "泛域名证书必须使用 DNS API 模式进行申请。" >&2
+            echo "请使用 --dns <provider> 参数 (例如 --dns cf) 并提供 API 密钥后重试。" >&2
+            echo "--------------------------------------------------------" >&2
             exit 1
         fi
         issue_params=(--issue --standalone -d "$you_domain")
