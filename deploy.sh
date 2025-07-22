@@ -59,6 +59,8 @@ show_help() {
   -d, --parse-cert-domain         自动从访问域名中解析出根域名作为证书域名 (例如: 从 app.example.com 解析出 example.com)。
   -D, --dns <provider>            使用 DNS API 模式申请证书 (例如: cf)。这是申请泛域名证书的【必须】选项。
   -R, --resolver <DNS服务器>      手动指定 DNS 解析服务器 (例如: "8.8.8.8 1.1.1.1")
+  --cf-token <TOKEN>              (当 --dns cf 时) 您的 Cloudflare API Token。
+  --cf-account-id <ID>            (当 --dns cf 时) 您的 Cloudflare Account ID。
   -h, --help                      显示此帮助信息
 
 EOF
@@ -127,7 +129,7 @@ parse_url() {
     fi
 }
 
-# --- [新增] URL 输入处理辅助函数 ---
+# --- URL 输入处理辅助函数 ---
 process_url_input() {
     local full_url="$1"
     local domain_type="$2" # "you" or "r"
@@ -182,11 +184,13 @@ parse_arguments() {
     manual_resolver=""
     parse_cert_domain="no"
     dns_provider=""
+    cf_token=""
+    cf_account_id=""
     you_domain=""; you_domain_path=""; you_frontend_port=""; no_tls=""
     r_domain=""; r_domain_path=""; r_frontend_port=""; r_http_frontend=""
 
     local TEMP
-    TEMP=$(getopt -o y:r:m:R:dD:h --long you-domain:,r-domain:,cert-domain:,resolver:,parse-cert-domain,dns:,help -n "$(basename "$0")" -- "$@")
+    TEMP=$(getopt -o y:r:m:R:dD:h --long you-domain:,r-domain:,cert-domain:,resolver:,parse-cert-domain,dns:,cf-token:,cf-account-id:,help -n "$(basename "$0")" -- "$@")
     if [ $? -ne 0 ]; then
         echo "错误: 参数解析失败。" >&2
         exit 1
@@ -202,6 +206,8 @@ parse_arguments() {
             -d|--parse-cert-domain) parse_cert_domain="yes"; shift ;;
             -D|--dns) dns_provider="$2"; shift 2 ;;
             -R|--resolver) manual_resolver="$2"; shift 2 ;;
+            --cf-token) cf_token="$2"; shift 2 ;;
+            --cf-account-id) cf_account_id="$2"; shift 2 ;;
             -h|--help) show_help; shift ;;
             --) shift; break ;;
             *) echo "错误: 未知参数 $1" >&2; exit 1 ;;
@@ -279,7 +285,7 @@ display_summary() {
     printf "⬅️  目标地址 (To):   %s\n" "$r_url"
     echo "──────────────────────────────────────────────"
     printf "📜 证书域名:         %s\n" "$format_cert_domain"
-    printf "🔒 是否禁用 TLS:       %s\n" "$([[ "$no_tls" == "yes" ]] && echo "✅ 是" || echo "❌ 否")"
+    printf " 🔒是否禁用 TLS:       %s\n" "$([[ "$no_tls" == "yes" ]] && echo "✅ 是" || echo "❌ 否")"
     printf "🧠 DNS 解析:          %s\n" "$resolver"
     echo "──────────────────────────────────────────────"
 }
@@ -384,10 +390,14 @@ generate_nginx_config() {
     export resolver; subst_var_names+=("resolver")
     export format_cert_domain; subst_var_names+=("format_cert_domain")
 
+    # [优化] 重写规则生成逻辑
+    export you_domain_path_rewrite=""
+    # 仅当访问路径不是根目录时才生成重写规则
     if [[ -n "$you_domain_path" && "$you_domain_path" != "/" ]]; then
-      export you_domain_path_rewrite="rewrite ^${you_domain_path}(.*)$ ${r_domain_path:-\/}\$1 break;"
-    else
-      export you_domain_path_rewrite=""
+        # 如果后端路径为空，则默认为根目录 "/"
+        local target_path="${r_domain_path:-/}"
+        # 构造重写规则，注意 \$1 用于将 $1 传递给 Nginx
+        export you_domain_path_rewrite="rewrite ^${you_domain_path}(.*)\$ ${target_path}\$1 break;"
     fi
     subst_var_names+=("you_domain_path_rewrite")
 
@@ -444,33 +454,43 @@ issue_certificate() {
         fi
 
         # 引导用户配置 API 密钥
-        echo "--------------------------------------------------------"
-        echo -e "\e[1;33m需要配置 DNS API 密钥\e[0m"
-        echo "acme.sh 需要 API 密钥来自动修改您的 DNS 记录以完成验证。"
-        echo "请参考 acme.sh 的官方文档获取您 DNS 提供商所需的变量："
-        echo "https://github.com/acmesh-official/acme.sh/wiki/dnsapi"
-        echo ""
         if [[ "$dns_provider" == "cf" ]]; then
-            echo "示例: 对于 Cloudflare (cf)，您需要提供 CF_Token 和 CF_Account_ID。"
-            read -p "请输入您的 Cloudflare Token: " CF_Token
-            read -p "请输入您的 Cloudflare Account ID: " CF_Account_ID
-            export CF_Token
-            export CF_Account_ID
+            if [[ -n "$cf_token" && -n "$cf_account_id" ]]; then
+                export CF_Token="$cf_token"
+                export CF_Account_ID="$cf_account_id"
+                echo "INFO: 使用通过命令行参数传入的 Cloudflare API 凭据。"
+            elif [ ! -t 0 ]; then
+                echo "错误: 在非交互模式下，必须通过 --cf-token 和 --cf-account-id 参数提供 Cloudflare API 凭据。" >&2
+                exit 1
+            else
+                echo "--------------------------------------------------------"
+                echo -e "\e[1;33m需要配置 DNS API 密钥\e[0m"
+                echo "示例: 对于 Cloudflare (cf)，您需要提供 CF_Token 和 CF_Account_ID。"
+                read -p "请输入您的 Cloudflare Token: " CF_Token
+                read -p "请输入您的 Cloudflare Account ID: " CF_Account_ID
+                export CF_Token
+                export CF_Account_ID
+                echo "--------------------------------------------------------"
+            fi
         else
-            echo "请手动导出您 DNS 提供商 ('$dns_provider') 所需的环境变量。"
+            # 对于其他 DNS 提供商，仅在交互模式下提示
+            if [ ! -t 0 ]; then
+                 echo "错误: 在非交互模式下，请先手动导出您 DNS 提供商 ('$dns_provider') 所需的环境变量。" >&2
+                 exit 1
+            fi
+            echo "--------------------------------------------------------"
+            echo -e "\e[1;33m需要配置 DNS API 密钥\e[0m"
+            echo "请参考 acme.sh 官方文档，手动导出您 DNS 提供商 ('$dns_provider') 所需的环境变量。"
+            echo "https://github.com/acmesh-official/acme.sh/wiki/dnsapi"
             read -p "配置完成后，请按 Enter 键继续..."
+            echo "--------------------------------------------------------"
         fi
-        echo "--------------------------------------------------------"
 
     else
         # --- Standalone HTTP 模式 ---
         if [[ "$is_wildcard" == "yes" ]]; then
-            echo "--------------------------------------------------------" >&2
-            echo -e "\e[1;33m警告: 证书配置不匹配\e[0m" >&2
-            echo "您的 Nginx 配置需要一个泛域名证书 (*.$format_cert_domain)，但该证书目前不存在。" >&2
-            echo "泛域名证书必须使用 DNS API 模式进行申请。" >&2
-            echo "请使用 --dns <provider> 参数 (例如 --dns cf) 并提供 API 密钥后重试。" >&2
-            echo "--------------------------------------------------------" >&2
+            echo "错误: 泛域名证书 (*.$format_cert_domain) 必须使用 DNS API 模式进行申请。" >&2
+            echo "请使用 --dns <provider> 参数 (例如 --dns cf) 并提供 API 密钥。" >&2
             exit 1
         fi
         issue_params=(--issue --standalone -d "$you_domain")
