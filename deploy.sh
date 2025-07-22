@@ -10,7 +10,6 @@
 # set -e: 当任何命令失败时立即退出
 # set -o pipefail: 管道中任何一个命令失败，整个管道都算失败
 set -e
-set -o pipefail
 
 # --- 全局常量与变量 ---
 readonly CONF_HOME="https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/develop"
@@ -25,25 +24,6 @@ if [ "$(id -u)" -ne 0 ]; then
     SUDO='sudo'
     echo "信息: 检测到非 root 用户，将使用 'sudo' 获取权限。"
 fi
-
-# ===================================================================================
-#                                 辅助函数定义
-# ===================================================================================
-
-# --- 错误处理函数 ---
-handle_error() {
-    local exit_code=$?
-    local line_number=$1
-    echo >&2
-    echo "--------------------------------------------------------" >&2
-    echo "错误: 脚本在第 $line_number 行意外中止。" >&2
-    echo "退出码: $exit_code" >&2
-    echo "--------------------------------------------------------" >&2
-    exit "$exit_code"
-}
-
-# 注册错误处理的 trap
-trap 'handle_error $LINENO' ERR
 
 # --- 帮助信息函数 ---
 show_help() {
