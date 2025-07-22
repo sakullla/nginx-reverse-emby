@@ -1,7 +1,7 @@
 #!/bin/bash
 
 set -e
-confhome="https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main"
+confhome="https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/develop"
 
 # 显示帮助信息
 show_help() {
@@ -389,7 +389,9 @@ else
   export format_cert_domain=${you_domain}
 fi
 
-curl -Ls "$confhome/conf.d/$download_domain_config.conf" | envsubst > "/etc/nginx/conf.d/${you_domain_config}.conf"
+readarray -t vars < <(env | cut -d= -f1)
+subst_vars=$(printf '${%s} ' "${vars[@]}")
+curl -Ls "$confhome/conf.d/$download_domain_config.conf" | envsubst "$subst_vars" > "/etc/nginx/conf.d/${you_domain_config}.conf"
 
 
 if [[ -z "$cert_domain" && "$no_tls" != "yes" ]]; then
