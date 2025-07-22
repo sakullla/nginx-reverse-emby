@@ -114,16 +114,16 @@ get_ipv6_flag() {
 # --- URL 解析函数 (重构版，不再使用 eval) ---
 parse_url() {
     local url="$1"
-    # 此函数将通过 echo 输出结果，格式为: host path port proto
+    # 此函数将通过 echo 输出结果，格式为: host|path|port|proto
     if [[ "$url" =~ ^(https?)://([^/:?#]+)(:([0-9]+))?(/[^?#]*)? ]]; then
         local proto="${BASH_REMATCH[1]}"
         local host="${BASH_REMATCH[2]}"
         local port="${BASH_REMATCH[4]}"
         local path="${BASH_REMATCH[5]}"
-        echo "$host $path $port $proto"
+        echo "$host|$path|$port|$proto"
     else
         # 如果不匹配 URL，则假定整个字符串为域名
-        echo "$url '' '' ''"
+        echo "$url|||"
     fi
 }
 
@@ -183,13 +183,13 @@ parse_arguments() {
     # 使用新的 parse_url 函数和 read 来安全地赋值
     if [[ -n "$you_domain_full" ]]; then
         local temp_port temp_proto
-        read -r you_domain you_domain_path temp_port temp_proto < <(parse_url "$you_domain_full")
+        IFS='|' read -r you_domain you_domain_path temp_port temp_proto < <(parse_url "$you_domain_full")
         if [[ "$temp_proto" == "http" ]]; then no_tls="yes"; else no_tls="no"; fi
         if [[ "$temp_proto" == "https" ]]; then you_frontend_port="${temp_port:-443}"; else you_frontend_port="${temp_port:-80}"; fi
     fi
     if [[ -n "$r_domain_full" ]]; then
         local temp_port temp_proto
-        read -r r_domain r_domain_path temp_port temp_proto < <(parse_url "$r_domain_full")
+        IFS='|' read -r r_domain r_domain_path temp_port temp_proto < <(parse_url "$r_domain_full")
         if [[ "$temp_proto" == "http" ]]; then r_http_frontend="yes"; else r_http_frontend="no"; fi
         if [[ "$temp_proto" == "https" ]]; then r_frontend_port="${temp_port:-443}"; else r_frontend_port="${temp_port:-80}"; fi
     fi
@@ -205,13 +205,13 @@ prompt_interactive_mode() {
 
         if [[ -n "$input_you_domain_full" ]]; then
             local temp_port temp_proto
-            read -r you_domain you_domain_path temp_port temp_proto < <(parse_url "$input_you_domain_full")
+            IFS='|' read -r you_domain you_domain_path temp_port temp_proto < <(parse_url "$input_you_domain_full")
             if [[ "$temp_proto" == "http" ]]; then no_tls="yes"; else no_tls="no"; fi
             if [[ "$temp_proto" == "https" ]]; then you_frontend_port="${temp_port:-443}"; else you_frontend_port="${temp_port:-80}"; fi
         fi
         if [[ -n "$input_r_domain_full" ]]; then
             local temp_port temp_proto
-            read -r r_domain r_domain_path temp_port temp_proto < <(parse_url "$input_r_domain_full")
+            IFS='|' read -r r_domain r_domain_path temp_port temp_proto < <(parse_url "$input_r_domain_full")
             if [[ "$temp_proto" == "http" ]]; then r_http_frontend="yes"; else r_http_frontend="no"; fi
             if [[ "$temp_proto" == "https" ]]; then r_frontend_port="${temp_port:-443}"; else r_frontend_port="${temp_port:-80}"; fi
         fi
