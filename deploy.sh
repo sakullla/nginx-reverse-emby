@@ -324,7 +324,7 @@ fi
 # 下载并复制 nginx.conf
 echo "下载并复制 nginx 配置文件..."
 echo "下载地址 $confhome/nginx.conf"
-curl -o /etc/nginx/nginx.conf "$confhome/nginx.conf"
+curl -Lo /etc/nginx/nginx.conf "$confhome/nginx.conf"
 
 you_domain_config="$you_domain.$you_frontend_port"
 download_domain_config="p.example.com"
@@ -391,7 +391,7 @@ fi
 
 readarray -t vars < <(env | cut -d= -f1)
 subst_vars=$(printf '${%s} ' "${vars[@]}")
-curl -s "$confhome/conf.d/$download_domain_config.conf" | envsubst "$subst_vars" > "/etc/nginx/conf.d/${you_domain_config}.conf"
+curl -Ls "$confhome/conf.d/$download_domain_config.conf" | envsubst "$subst_vars" > "/etc/nginx/conf.d/${you_domain_config}.conf"
 
 
 if [[ -z "$cert_domain" && "$no_tls" != "yes" ]]; then
