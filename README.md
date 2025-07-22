@@ -23,7 +23,7 @@
 如果您不确定如何配置，或者希望通过向导一步步操作，请使用此命令。它会以交互模式启动，并询问您所有必要的信息。
 
 ```
-bash <(curl -sSL [https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh](https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh))
+bash <(curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh)
 ```
 
 #### 方式 B: 非交互模式 (自动化部署)
@@ -31,7 +31,7 @@ bash <(curl -sSL [https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/
 通过命令行参数传入所有配置，实现全自动部署。
 
 ```
-curl -sSL [https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh](https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh) | bash -s -- [选项]
+curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh)| bash -s -- [选项]
 ```
 
 ### 实用示例
@@ -41,7 +41,7 @@ curl -sSL [https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/de
 这是最常见的场景。脚本将为 `emby.yourdomain.com` 申请一个单域名证书，并反代到本地的 Emby 服务。
 
 ```
-curl -sSL [https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh](https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh) | bash -s -- -y [https://emby.yourdomain.com](https://emby.yourdomain.com) -r [http://127.0.0.1:8096](http://127.0.0.1:8096)
+curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh | bash -s -- -y https://emby.yourdomain.com -r http://emby.rerverdomain.com
 ```
 
 ## 📋 参数参考
