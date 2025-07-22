@@ -339,17 +339,24 @@ fi
 # 下载并复制 p.example.com.conf 并修改
 echo "下载并创建 $you_domain_config.conf 到 /etc/nginx/conf.d/"
 
+# 1. 初始化一个用于存放变量名的数组（白名单）
+declare -a subst_var_names=()
+
 # 反代域名
 export you_domain=${you_domain}
+subst_var_names+=("you_domain")
 
 # resolver
 export resolver=${resolver}
+subst_var_names+=("resolver")
+
 # 反代端口
 if [[ -n "$you_frontend_port" ]]; then
     export you_frontend_port=${you_frontend_port}
 else
     export you_frontend_port=${default_you_frontend_port}
 fi
+subst_var_names+=("you_frontend_port")
 
 # 如果 $you_domain_path 不为空，加上重写path的指令
 if [[ -n "$you_domain_path" ]]; then
@@ -357,8 +364,10 @@ if [[ -n "$you_domain_path" ]]; then
 else
   export you_domain_path_rewrite=""
 fi
+subst_var_names+=("you_domain_path_rewrite")
 
 export you_domain_path=${you_domain_path:-/}
+subst_var_names+=("you_domain_path")
 
 # 如果 r_http_frontend 选择使用 HTTP，先替换 https://emby.example.com
 # 构造 r_domain_full: 包括协议、端口（可选）
@@ -379,6 +388,7 @@ fi
 # 最终拼接代理的emby域名
 r_domain_full="${proto}://${r_domain}${port}"
 export r_domain_full=${r_domain_full}
+subst_var_names+=("r_domain_full")
 
 # 替换域名信息
 
@@ -388,9 +398,21 @@ if [[ -n "$cert_domain" ]]; then
 else
   export format_cert_domain=${you_domain}
 fi
+subst_var_names+=("format_cert_domain")
 
-readarray -t vars < <(env | cut -d= -f1)
-subst_vars=$(printf '${%s} ' "${vars[@]}")
+# ======================= 自动生成替换列表的核心逻辑 =======================
+subst_vars=""
+for var_name in "${subst_var_names[@]}"; do
+    # 格式化成 '${VAR_NAME} ' 并拼接到字符串中
+    subst_vars+=" \${${var_name}}"
+done
+# 最终, subst_vars 会变成类似 '${DOMAIN_NAME} ${APP_PORT} ${ENABLE_CACHE} '
+# =========================================================================
+
+# 检查生成的列表（用于调试，可以删除）
+echo "将要替换的变量列表: [$subst_vars]"
+
+# 执行替换命令，传入动态生成的变量列表
 curl -Ls "$confhome/conf.d/$download_domain_config.conf" | envsubst "$subst_vars" > "/etc/nginx/conf.d/${you_domain_config}.conf"
 
 
