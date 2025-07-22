@@ -10,9 +10,10 @@
 # set -e: 当任何命令失败时立即退出
 # set -o pipefail: 管道中任何一个命令失败，整个管道都算失败
 set -e
+set -o pipefail
 
 # --- 全局常量与变量 ---
-readonly CONF_HOME="https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/develop"
+readonly CONF_HOME="https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main"
 SUDO='' # 将根据用户权限动态设置
 
 # --- 权限检查与 Sudo 设置 ---
@@ -24,6 +25,25 @@ if [ "$(id -u)" -ne 0 ]; then
     SUDO='sudo'
     echo "信息: 检测到非 root 用户，将使用 'sudo' 获取权限。"
 fi
+
+# ===================================================================================
+#                                 辅助函数定义
+# ===================================================================================
+
+# --- 错误处理函数 ---
+handle_error() {
+    local exit_code=$?
+    local line_number=$1
+    echo >&2
+    echo "--------------------------------------------------------" >&2
+    echo "错误: 脚本在第 $line_number 行意外中止。" >&2
+    echo "退出码: $exit_code" >&2
+    echo "--------------------------------------------------------" >&2
+    exit "$exit_code"
+}
+
+# 注册错误处理的 trap
+trap 'handle_error $LINENO' ERR
 
 # --- 帮助信息函数 ---
 show_help() {
@@ -145,6 +165,24 @@ parse_arguments() {
     dns_provider=""
     you_domain=""; you_domain_path=""; you_frontend_port=""; no_tls=""
     r_domain=""; r_domain_path=""; r_frontend_port=""; r_http_frontend=""
+
+    # --- 参数预处理，解决 -dy 这样的组合参数问题 ---
+    local args=()
+    for arg in "$@"; do
+        if [[ $arg == -* && $arg != -- && ${#arg} -gt 2 ]]; then
+            # 这是一个组合短选项，例如 -dy
+            # 将其拆分为 -d -y
+            local i
+            for (( i=1; i<${#arg}; i++ )); do
+                args+=("-${arg:$i:1}")
+            done
+        else
+            args+=("$arg")
+        fi
+    done
+    # 用预处理过的参数列表替换原始参数列表
+    set -- "${args[@]}"
+
 
     local TEMP
     TEMP=$(getopt -o y:r:m:R:dD:h --long you-domain:,r-domain:,cert-domain:,resolver:,parse-cert-domain,dns:,help -n "$(basename "$0")" -- "$@")
@@ -431,7 +469,7 @@ issue_certificate() {
     fi
 
     # 检查证书是否已由 acme.sh 管理
-    if ! "$ACME_SH" --info -d "$main_domain_to_check" | grep -q RealFullChainPath; then
+    if ! "$ACME_SH" --info -d "$main_domain_to_check" 2>/dev/null | grep -q RealFullChainPath; then
         echo "INFO: 证书不存在，开始申请..."
         $SUDO mkdir -p "$cert_path_base"
 
