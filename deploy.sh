@@ -409,9 +409,6 @@ done
 # 最终, subst_vars 会变成类似 '${DOMAIN_NAME} ${APP_PORT} ${ENABLE_CACHE} '
 # =========================================================================
 
-# 检查生成的列表（用于调试，可以删除）
-echo "将要替换的变量列表: [$subst_vars]"
-
 # 执行替换命令，传入动态生成的变量列表
 curl -Ls "$confhome/conf.d/$download_domain_config.conf" | envsubst "$subst_vars" > "/etc/nginx/conf.d/${you_domain_config}.conf"
 
