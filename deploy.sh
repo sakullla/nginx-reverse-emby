@@ -440,17 +440,19 @@ issue_certificate() {
 
     # 决定申请模式
     local issue_params=()
-    local main_domain_to_check="$you_domain"
+    local main_domain_to_issue="$you_domain" # 默认申请单域名
 
     if [[ -n "$dns_provider" ]]; then
         # --- DNS API 模式 ---
+        local acme_dns_provider="dns_${dns_provider}"
+
         if [[ "$is_wildcard" == "yes" ]]; then
-            main_domain_to_check="$format_cert_domain"
-            issue_params=(--issue --dns "$dns_provider" -d "$format_cert_domain" -d "*.$format_cert_domain")
-            echo "INFO: 准备使用 DNS API 为 '$format_cert_domain' 和 '*.$format_cert_domain' 申请泛域名证书..."
+            main_domain_to_issue="$format_cert_domain"
+            issue_params=(--issue --dns "$acme_dns_provider" -d "$format_cert_domain" -d "*.$format_cert_domain")
+            echo "INFO: 准备使用 DNS API ($acme_dns_provider) 为 '$format_cert_domain' 和 '*.$format_cert_domain' 申请泛域名证书..."
         else
-            issue_params=(--issue --dns "$dns_provider" -d "$you_domain")
-            echo "INFO: 准备使用 DNS API 为 '$you_domain' 申请证书..."
+            issue_params=(--issue --dns "$acme_dns_provider" -d "$you_domain")
+            echo "INFO: 准备使用 DNS API ($acme_dns_provider) 为 '$you_domain' 申请证书..."
         fi
 
         # 引导用户配置 API 密钥
@@ -473,7 +475,6 @@ issue_certificate() {
                 echo "--------------------------------------------------------"
             fi
         else
-            # 对于其他 DNS 提供商，仅在交互模式下提示
             if [ ! -t 0 ]; then
                  echo "错误: 在非交互模式下，请先手动导出您 DNS 提供商 ('$dns_provider') 所需的环境变量。" >&2
                  exit 1
@@ -497,13 +498,13 @@ issue_certificate() {
         echo "INFO: 准备使用 Standalone 模式为 '$you_domain' 申请证书..."
     fi
 
-    # 检查证书是否已由 acme.sh 管理
-    if ! "$ACME_SH" --info -d "$main_domain_to_check" 2>/dev/null | grep -q RealFullChainPath; then
+    # [修正] 恢复先检查后申请的逻辑
+    if ! "$ACME_SH" --info -d "$main_domain_to_issue" 2>/dev/null | grep -q RealFullChainPath; then
         echo "INFO: 证书不存在，开始申请..."
         $SUDO mkdir -p "$cert_path_base"
 
         # 执行申请
-        "$ACME_SH" "${issue_params[@]}" --keylength ec-256 || {
+        "$ACME_SH" "${issue_params[@]}" --keylength ec-256 --force || {
             echo "错误: 证书申请失败。" >&2
             if [[ -z "$dns_provider" ]]; then
                 echo "对于 Standalone 模式，请检查：" >&2
@@ -524,15 +525,15 @@ issue_certificate() {
         }
         echo "INFO: 证书申请成功。"
     else
-        echo "INFO: 证书已由 acme.sh 管理，跳过申请步骤。"
+        echo "INFO: 证书已由 acme.sh 管理，将跳过申请步骤，直接进行安装/更新。"
     fi
 
     # 安装证书
     echo "INFO: 正在安装证书到 Nginx 目录 '$cert_path_base'..."
-    "$ACME_SH" --install-cert -d "$main_domain_to_check" --ecc \
+    "$ACME_SH" --install-cert -d "$main_domain_to_issue" --ecc \
         --fullchain-file "$cert_path_base/cert" \
         --key-file "$cert_path_base/key" \
-        --reloadcmd "$SUDO nginx -s reload" --force
+        --reloadcmd "$SUDO nginx -s reload"
 
     echo "INFO: 证书安装并部署完成。"
 }
