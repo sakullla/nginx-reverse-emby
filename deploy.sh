@@ -444,7 +444,6 @@ issue_certificate() {
 
     if [[ -n "$dns_provider" ]]; then
         # --- DNS API 模式 ---
-        # [修正] 自动为服务商简称添加 'dns_' 前缀
         local acme_dns_provider="dns_${dns_provider}"
 
         if [[ "$is_wildcard" == "yes" ]]; then
@@ -499,37 +498,42 @@ issue_certificate() {
         echo "INFO: 准备使用 Standalone 模式为 '$you_domain' 申请证书..."
     fi
 
-    # [优化] 直接执行申请/续期，让 acme.sh 自行判断
-    echo "INFO: 正在为 '$main_domain_to_issue' 申请或续期证书..."
-    $SUDO mkdir -p "$cert_path_base"
+    # [修正] 恢复先检查后申请的逻辑
+    if ! "$ACME_SH" --info -d "$main_domain_to_issue" 2>/dev/null | grep -q RealFullChainPath; then
+        echo "INFO: 证书不存在，开始申请..."
+        $SUDO mkdir -p "$cert_path_base"
 
-    # 执行申请
-    "$ACME_SH" "${issue_params[@]}" --keylength ec-256 || {
-        echo "错误: 证书申请失败。" >&2
-        if [[ -z "$dns_provider" ]]; then
-            echo "对于 Standalone 模式，请检查：" >&2
-            echo "1. 域名 ('$you_domain') 是否已正确解析到本服务器的公网 IP 地址。" >&2
-            echo "2. 服务器的防火墙 (或云服务商安全组) 是否已放行 TCP 80 端口。" >&2
-            echo "3. 80 端口当前可能被 Nginx 或其他程序占用。请手动停止相关服务后重试。" >&2
-        else
-            echo "对于 DNS 模式，请检查：" >&2
-            echo "1. 您提供的 API 密钥是否正确且拥有修改 DNS 的权限。" >&2
-            echo "2. acme.sh 是否支持您的 DNS 提供商 ('$dns_provider')。" >&2
-        fi
+        # 执行申请
+        "$ACME_SH" "${issue_params[@]}" --keylength ec-256 --force || {
+            echo "错误: 证书申请失败。" >&2
+            if [[ -z "$dns_provider" ]]; then
+                echo "对于 Standalone 模式，请检查：" >&2
+                echo "1. 域名 ('$you_domain') 是否已正确解析到本服务器的公网 IP 地址。" >&2
+                echo "2. 服务器的防火墙 (或云服务商安全组) 是否已放行 TCP 80 端口。" >&2
+                echo "3. 80 端口当前可能被 Nginx 或其他程序占用。请手动停止相关服务后重试。" >&2
+            else
+                echo "对于 DNS 模式，请检查：" >&2
+                echo "1. 您提供的 API 密钥是否正确且拥有修改 DNS 的权限。" >&2
+                echo "2. acme.sh 是否支持您的 DNS 提供商 ('$dns_provider')。" >&2
+            fi
 
-        local you_domain_config_filename="${you_domain}.${you_frontend_port}.conf"
-        echo "INFO: 正在清理本次生成的 Nginx 配置文件: $you_domain_config_filename" >&2
-        $SUDO rm -f "/etc/nginx/conf.d/$you_domain_config_filename"
+            local you_domain_config_filename="${you_domain}.${you_frontend_port}.conf"
+            echo "INFO: 正在清理本次生成的 Nginx 配置文件: $you_domain_config_filename" >&2
+            $SUDO rm -f "/etc/nginx/conf.d/$you_domain_config_filename"
 
-        exit 1
-    }
+            exit 1
+        }
+        echo "INFO: 证书申请成功。"
+    else
+        echo "INFO: 证书已由 acme.sh 管理，将跳过申请步骤，直接进行安装/更新。"
+    fi
 
     # 安装证书
     echo "INFO: 正在安装证书到 Nginx 目录 '$cert_path_base'..."
     "$ACME_SH" --install-cert -d "$main_domain_to_issue" --ecc \
         --fullchain-file "$cert_path_base/cert" \
         --key-file "$cert_path_base/key" \
-        --reloadcmd "$SUDO nginx -s reload" --force
+        --reloadcmd "$SUDO nginx -s reload"
 
     echo "INFO: 证书安装并部署完成。"
 }
