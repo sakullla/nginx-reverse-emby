@@ -444,13 +444,16 @@ issue_certificate() {
 
     if [[ -n "$dns_provider" ]]; then
         # --- DNS API 模式 ---
+        # [修正] 自动为服务商简称添加 'dns_' 前缀
+        local acme_dns_provider="dns_${dns_provider}"
+
         if [[ "$is_wildcard" == "yes" ]]; then
             main_domain_to_issue="$format_cert_domain"
-            issue_params=(--issue --dns "$dns_provider" -d "$format_cert_domain" -d "*.$format_cert_domain")
-            echo "INFO: 准备使用 DNS API 为 '$format_cert_domain' 和 '*.$format_cert_domain' 申请泛域名证书..."
+            issue_params=(--issue --dns "$acme_dns_provider" -d "$format_cert_domain" -d "*.$format_cert_domain")
+            echo "INFO: 准备使用 DNS API ($acme_dns_provider) 为 '$format_cert_domain' 和 '*.$format_cert_domain' 申请泛域名证书..."
         else
-            issue_params=(--issue --dns "$dns_provider" -d "$you_domain")
-            echo "INFO: 准备使用 DNS API 为 '$you_domain' 申请证书..."
+            issue_params=(--issue --dns "$acme_dns_provider" -d "$you_domain")
+            echo "INFO: 准备使用 DNS API ($acme_dns_provider) 为 '$you_domain' 申请证书..."
         fi
 
         # 引导用户配置 API 密钥
@@ -500,13 +503,8 @@ issue_certificate() {
     echo "INFO: 正在为 '$main_domain_to_issue' 申请或续期证书..."
     $SUDO mkdir -p "$cert_path_base"
 
-    # [新增] 构造完整命令并打印以供调试
-    local full_acme_cmd=("$ACME_SH" "${issue_params[@]}" --keylength ec-256 --force)
-    echo "INFO: 将要执行以下 acme.sh 命令:"
-    echo "    ${full_acme_cmd[*]}"
-
-    # 执行命令
-    "${full_acme_cmd[@]}" || {
+    # 执行申请
+    "$ACME_SH" "${issue_params[@]}" --keylength ec-256 || {
         echo "错误: 证书申请失败。" >&2
         if [[ -z "$dns_provider" ]]; then
             echo "对于 Standalone 模式，请检查：" >&2
