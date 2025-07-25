@@ -59,6 +59,7 @@ show_help() {
   -d, --parse-cert-domain         自动从访问域名中解析出根域名作为证书域名 (例如: 从 app.example.com 解析出 example.com)。
   -D, --dns <provider>            使用 DNS API 模式申请证书 (例如: cf)。这是申请泛域名证书的【必须】选项。
   -R, --resolver <DNS服务器>      手动指定 DNS 解析服务器 (例如: "8.8.8.8 1.1.1.1")
+  -c, --template-domain-config <路径或URL> 指定一个自定义的 Nginx 配置文件模板。
   --cf-token <TOKEN>              (当 --dns cf 时) 您的 Cloudflare API Token。
   --cf-account-id <ID>            (当 --dns cf 时) 您的 Cloudflare Account ID。
 
@@ -194,11 +195,12 @@ parse_arguments() {
     cf_account_id=""
     domain_to_remove=""
     force_yes="no"
+    template_domain_config_source=""
     you_domain=""; you_domain_path=""; you_frontend_port=""; no_tls=""
     r_domain=""; r_domain_path=""; r_frontend_port=""; r_http_frontend=""
 
     local TEMP
-    TEMP=$(getopt -o y:r:m:R:dD:hY --long you-domain:,r-domain:,cert-domain:,resolver:,parse-cert-domain,dns:,cf-token:,cf-account-id:,remove:,yes,help -n "$(basename "$0")" -- "$@")
+    TEMP=$(getopt -o y:r:m:R:dD:hYc: --long you-domain:,r-domain:,cert-domain:,resolver:,parse-cert-domain,dns:,cf-token:,cf-account-id:,remove:,yes,template-domain-config:,help -n "$(basename "$0")" -- "$@")
     if [ $? -ne 0 ]; then
         echo "错误: 参数解析失败。" >&2
         exit 1
@@ -214,6 +216,7 @@ parse_arguments() {
             -d|--parse-cert-domain) parse_cert_domain="yes"; shift ;;
             -D|--dns) dns_provider="$2"; shift 2 ;;
             -R|--resolver) manual_resolver="$2"; shift 2 ;;
+            -c|--template-domain-config) template_domain_config_source="$2"; shift 2 ;;
             --cf-token) cf_token="$2"; shift 2 ;;
             --cf-account-id) cf_account_id="$2"; shift 2 ;;
             --remove) domain_to_remove="$2"; shift 2 ;;
@@ -386,11 +389,26 @@ generate_nginx_config() {
     echo "INFO: 正在生成 Nginx 配置文件..."
     curl -sL "$CONF_HOME/nginx.conf" | $SUDO tee /etc/nginx/nginx.conf > /dev/null
 
-    local download_domain_config
-    if [[ "$no_tls" == "yes" ]]; then
-        download_domain_config="p.example.com.no_tls.conf"
+    local template_content
+    if [[ -n "$template_domain_config_source" ]]; then
+        echo "INFO: 使用用户提供的模板: $template_domain_config_source"
+        if [[ "$template_domain_config_source" == http* ]]; then
+            template_content=$(curl -sL "$template_domain_config_source")
+        elif [ -f "$template_domain_config_source" ]; then
+            template_content=$(cat "$template_domain_config_source")
+        else
+            echo "错误: 提供的模板 '$template_domain_config_source' 既不是有效的 URL 也不是本地文件。" >&2
+            exit 1
+        fi
     else
-        download_domain_config="p.example.com.conf"
+        local default_template_name
+        if [[ "$no_tls" == "yes" ]]; then
+            default_template_name="p.example.com.no_tls.conf"
+        else
+            default_template_name="p.example.com.conf"
+        fi
+        echo "INFO: 使用默认模板: $default_template_name"
+        template_content=$(curl -sL "$CONF_HOME/conf.d/$default_template_name")
     fi
 
     local -a subst_var_names=()
@@ -420,7 +438,7 @@ generate_nginx_config() {
     subst_vars=$(for var in "${subst_var_names[@]}"; do printf " \${%s}" "$var"; done)
 
     local you_domain_config_filename="${you_domain}.${you_frontend_port}.conf"
-    curl -sL "$CONF_HOME/conf.d/$download_domain_config" | envsubst "$subst_vars" | $SUDO tee "/etc/nginx/conf.d/$you_domain_config_filename" > /dev/null
+    echo "$template_content" | envsubst "$subst_vars" | $SUDO tee "/etc/nginx/conf.d/$you_domain_config_filename" > /dev/null
 
     echo "INFO: 配置文件 '/etc/nginx/conf.d/$you_domain_config_filename' 已生成。"
 }
