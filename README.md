@@ -74,17 +74,13 @@ curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/dep
 
 假设您希望使用 `*.my-cloud.net` 的泛域名证书来访问 `media-stream.my-cloud.net`。
 
-* `-d` 参数会自动从 `media-stream.my-cloud.net` 解析出 `my-cloud.net` 作为证书域名。
-
-* `--dns cf` 告诉脚本使用 Cloudflare 的 DNS API 来申请泛域名证书。
-
-* `--cf-token` 和 `--cf-account-id` 用于在非交互模式下提供 API 凭据。
+* `-dy` 参数组合会自动从 `media-stream.my-cloud.net` 解析出 `my-cloud.net` 作为证书域名。
+* **注意**: `--dns` 和 API 凭据参数（如 `--cf-token`）仅在**首次**为该泛域名申请证书时需要。`acme.sh` 会自动保存配置，后续为同一个泛域名下的其他服务（如 `files.my-cloud.net`）部署时，只需提供 `-dy` 参数即可，无需再次提供 DNS 和 API 信息。
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh | bash -s -- \
-  -y https://media-stream.my-cloud.net \
+  -dy https://media-stream.my-cloud.net \
   -r https://another-emby-provider.com \
-  -d \
   --dns cf \
   --cf-token "您的Cloudflare_API_Token" \
   --cf-account-id "您的Cloudflare_Account_ID"
