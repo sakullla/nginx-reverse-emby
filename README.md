@@ -87,7 +87,7 @@ curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/dep
 此命令将安全地查找并移除与 `my-media.your-domain.com` 相关的所有 Nginx 配置和证书。在非交互模式下，必须加上 `-Y` 进行确认。
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh | bash -s -- --remove [https://my-media.your-domain.com](https://my-media.your-domain.com) --yes
+curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh | bash -s -- --remove https://my-media.your-domain.com --yes
 ```
 
 ### 三、参数参考
