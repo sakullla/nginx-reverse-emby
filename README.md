@@ -111,4 +111,4 @@ curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/dep
 
 ## 💬 反馈与贡献
 
-遇到问题或有改进建议？欢迎在项目的 Issues 页面中提出。
+遇到问题或有改进建议？欢迎在 [GitHub Issues](https://github.com/sakullla/nginx-reverse-emby/issues) 中提出。
