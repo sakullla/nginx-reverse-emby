@@ -103,6 +103,7 @@ curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/dep
 | `-m` | `--cert-domain <域名>` | **(部署)** 手动指定证书的根域名，适合泛域名场景。 |
 | `-d` | `--parse-cert-domain` | **(部署)** 自动从 `-y` 提供的域名中解析出根域名。 |
 | `-D` | `--dns <服务商>` | **(部署)** 使用 DNS API 模式申请证书 (例如: `cf`)。 |
+| `-c` | `--template-domain-config <路径或URL>` | **(部署)** 指定一个自定义的 Nginx 配置文件模板。 |
 |      | `--cf-token <TOKEN>` | **(部署)** 提供 Cloudflare API Token。 |
 |      | `--cf-account-id <ID>` | **(部署)** 提供 Cloudflare Account ID。 |
 |      | `--remove <域名或URL>` | **(管理)** 移除指定域名或 URL 的所有相关配置和证书。 |
