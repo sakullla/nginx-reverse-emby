@@ -56,7 +56,7 @@ curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/dep
 
 #### 示例 1: 部署一个单域名 HTTPS 服务
 
-这是最常见的场景。此命令将为 `my-media.your-domain.com` 申请一个单域名证书，并反代到一个公网 Emby 服务。
+这是最常见的场景。此命令将为 `my-media.your-domain.com` 申请一个单域名证书，并反代到一个 Emby 服务。
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh | bash -s -- -y https://my-media.your-domain.com -r https://shared-emby.server.com
@@ -92,7 +92,7 @@ curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/dep
 
 #### 示例 4: 移除一个已部署的域名配置
 
-此命令将安全地查找并移除与 `my-media.your-domain.com` 相关的所有 Nginx 配置和证书。在非交互模式下，必须加上 `-Y` 进行确认。
+此命令将安全地查找并移除与 `my-media.your-domain.com` 相关的所有 Nginx 配置和证书。在非交互模式下，必须加上 `--yes` 进行确认。
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh | bash -s -- --remove https://my-media.your-domain.com --yes
