@@ -52,7 +52,7 @@ show_help() {
 
 一个强大且安全的 Nginx 反向代理部署脚本 (支持 sudo)。
 
-选项:
+部署选项:
   -y, --you-domain <域名或URL>   你的域名或完整 URL (例如: https://app.example.com/emby)
   -r, --r-domain <域名或URL>     反代 Emby 的域名或完整 URL (例如: http://127.0.0.1:8096)
   -m, --cert-domain <域名>       手动指定用于 SSL 证书的域名 (例如: example.com)，用于泛域名证书。优先级最高。
@@ -61,6 +61,12 @@ show_help() {
   -R, --resolver <DNS服务器>      手动指定 DNS 解析服务器 (例如: "8.8.8.8 1.1.1.1")
   --cf-token <TOKEN>              (当 --dns cf 时) 您的 Cloudflare API Token。
   --cf-account-id <ID>            (当 --dns cf 时) 您的 Cloudflare Account ID。
+
+移除选项:
+  --remove <域名或URL>         移除指定域名或 URL 的所有相关配置和证书。
+  -Y, --yes                       在非交互模式下，自动确认移除操作。
+
+其他选项:
   -h, --help                      显示此帮助信息
 
 EOF
@@ -186,11 +192,13 @@ parse_arguments() {
     dns_provider=""
     cf_token=""
     cf_account_id=""
+    domain_to_remove=""
+    force_yes="no"
     you_domain=""; you_domain_path=""; you_frontend_port=""; no_tls=""
     r_domain=""; r_domain_path=""; r_frontend_port=""; r_http_frontend=""
 
     local TEMP
-    TEMP=$(getopt -o y:r:m:R:dD:h --long you-domain:,r-domain:,cert-domain:,resolver:,parse-cert-domain,dns:,cf-token:,cf-account-id:,help -n "$(basename "$0")" -- "$@")
+    TEMP=$(getopt -o y:r:m:R:dD:hY --long you-domain:,r-domain:,cert-domain:,resolver:,parse-cert-domain,dns:,cf-token:,cf-account-id:,remove:,yes,help -n "$(basename "$0")" -- "$@")
     if [ $? -ne 0 ]; then
         echo "错误: 参数解析失败。" >&2
         exit 1
@@ -208,6 +216,8 @@ parse_arguments() {
             -R|--resolver) manual_resolver="$2"; shift 2 ;;
             --cf-token) cf_token="$2"; shift 2 ;;
             --cf-account-id) cf_account_id="$2"; shift 2 ;;
+            --remove) domain_to_remove="$2"; shift 2 ;;
+            -Y|--yes) force_yes="yes"; shift ;;
             -h|--help) show_help; shift ;;
             --) shift; break ;;
             *) echo "错误: 未知参数 $1" >&2; exit 1 ;;
@@ -285,7 +295,7 @@ display_summary() {
     printf "⬅️  目标地址 (To):   %s\n" "$r_url"
     echo "──────────────────────────────────────────────"
     printf "📜 证书域名:         %s\n" "$format_cert_domain"
-    printf " 🔒是否禁用 TLS:       %s\n" "$([[ "$no_tls" == "yes" ]] && echo "✅ 是" || echo "❌ 否")"
+    printf "🔒 是否禁用 TLS:       %s\n" "$([[ "$no_tls" == "yes" ]] && echo "✅ 是" || echo "❌ 否")"
     printf "🧠 DNS 解析:          %s\n" "$resolver"
     echo "──────────────────────────────────────────────"
 }
@@ -538,12 +548,134 @@ issue_certificate() {
     echo "INFO: 证书安装并部署完成。"
 }
 
+# --- [新增] 移除函数 ---
+remove_domain_config() {
+    local remove_url="$domain_to_remove"
+    echo "INFO: 正在为 '$remove_url' 查找相关配置..."
+
+    # 精确解析域名和端口
+    local domain port temp_path temp_proto
+    IFS='|' read -r domain temp_path port temp_proto < <(parse_url "$remove_url")
+
+    # 如果未解析出协议，则假定为 https
+    if [[ -z "$temp_proto" ]]; then
+        temp_proto="https"
+    fi
+
+    # 根据协议决定默认端口
+    if [[ "$temp_proto" == "https" ]]; then
+        port="${port:-443}"
+    else
+        port="${port:-80}"
+    fi
+
+    # 构造精确的配置文件名
+    local nginx_conf_file="/etc/nginx/conf.d/${domain}.${port}.conf"
+
+    if ! $SUDO [ -f "$nginx_conf_file" ]; then
+        echo "错误: 未找到与 '$domain' 在端口 '$port' 上的 Nginx 配置文件: $nginx_conf_file" >&2
+        exit 1
+    fi
+
+    # 智能判断是否使用 TLS
+    local uses_tls="no"
+    local remove_cert_domain=""
+    local cert_dir=""
+
+    if $SUDO grep -q "ssl_certificate" "$nginx_conf_file"; then
+        uses_tls="yes"
+        # [优化] 从 Nginx 配置中直接推断证书域名
+        local cert_full_path
+        cert_full_path=$($SUDO awk "/ssl_certificate / {print \$2}" "$nginx_conf_file" | head -n 1 | sed 's/;//')
+        local cert_parent_dir
+        cert_parent_dir=$(dirname "$cert_full_path")
+        remove_cert_domain=$(basename "$cert_parent_dir")
+        cert_dir="/etc/nginx/certs/$remove_cert_domain"
+    fi
+
+    echo "--------------------------------------------------------"
+    echo -e "\e[1;31m警告: 即将执行破坏性操作！\e[0m"
+    echo "将要为 '$domain' (端口: $port) 移除以下内容:"
+    echo "  - Nginx 配置文件: $nginx_conf_file"
+
+    local is_wildcard_setup="no"
+    if [[ "$uses_tls" == "yes" && "$domain" != "$remove_cert_domain" ]]; then
+        is_wildcard_setup="yes"
+    fi
+
+    if [[ "$uses_tls" == "yes" ]]; then
+        if [[ "$is_wildcard_setup" == "no" ]]; then
+            if [ -d "$cert_dir" ]; then
+                echo "  - Nginx 证书目录: $cert_dir"
+            fi
+            ACME_SH="$HOME/.acme.sh/acme.sh"
+            if [ -f "$ACME_SH" ]; then
+                 echo "  - acme.sh 证书记录 (针对域名: $domain)"
+            fi
+        else
+            echo -e "\e[1;33m  - 注意: 检测到泛域名证书配置，将不会删除共享的证书文件。\e[0m"
+        fi
+    fi
+    echo "--------------------------------------------------------"
+
+    # [修正] 智能确认流程
+    if [ ! -t 0 ]; then # 非交互模式
+        if [[ "$force_yes" != "yes" ]]; then
+            echo "错误: 在非交互模式下，移除操作必须使用 '-Y' 或 '--yes' 参数进行确认。" >&2
+            exit 1
+        fi
+        echo "INFO: 检测到 '--yes' 参数，将自动执行移除操作。"
+    else # 交互模式
+        read -p "此操作不可逆，请输入 'yes' 确认移除: " confirmation
+        if [[ "$confirmation" != "yes" ]]; then
+            echo "操作已取消。"
+            exit 0
+        fi
+    fi
+
+    echo "INFO: 开始移除..."
+    $SUDO rm -f "$nginx_conf_file"
+    echo "INFO: Nginx 配置文件已删除。"
+
+    if [[ "$uses_tls" == "yes" ]]; then
+        if [[ "$is_wildcard_setup" == "no" ]]; then
+            if [ -d "$cert_dir" ]; then
+                $SUDO rm -rf "$cert_dir"
+                echo "INFO: Nginx 证书目录已删除。"
+            fi
+
+            ACME_SH="$HOME/.acme.sh/acme.sh"
+            if [ -f "$ACME_SH" ]; then
+                "$ACME_SH" --remove -d "$domain" --ecc || echo "警告: 从 acme.sh 移除证书失败，可能记录已不存在。"
+                echo "INFO: acme.sh 证书记录已移除。"
+            fi
+        else
+            echo "INFO: 证书目录和 acme.sh 记录未被删除。"
+            echo "如果您确认不再需要此泛域名证书，请手动执行以下命令进行清理："
+            echo "  $HOME/.acme.sh/acme.sh --remove -d '$remove_cert_domain' --ecc"
+            echo "  $SUDO rm -rf '$cert_dir'"
+        fi
+    fi
+
+    echo "INFO: 正在检查 Nginx 配置并执行重载..."
+    $SUDO nginx -t
+    $SUDO nginx -s reload
+
+    echo -e "\n\e[1;32m✅ 域名 '$domain' 的相关配置已成功移除！\e[0m"
+}
+
 
 # ===================================================================================
 #                                 主函数
 # ===================================================================================
 main() {
     parse_arguments "$@"
+
+    if [[ -n "$domain_to_remove" ]]; then
+        remove_domain_config
+        exit 0
+    fi
+
     prompt_interactive_mode
     display_summary
     install_dependencies
