@@ -42,7 +42,6 @@ jobs:
         with:
           context: .
           push: true
-          # 确保 'tags:' 和下面的列表项使用正确的、纯空格的缩进
-          tags:
-            - ghcr.io/${{ github.repository }}:latest
-            - ghcr.io/${{ github.repository }}:${{ github.sha }}
+          tags: |
+            ghcr.io/${{ github.repository }}:latest
+            ghcr.io/${{ github.repository }}:${{ github.sha }}
