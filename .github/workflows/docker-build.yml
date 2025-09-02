@@ -44,9 +44,8 @@ jobs:
           context: .
           # 启用推送，将镜像推送到 GHCR
           push: true
-          # 定义镜像的标签
-          tags: |
+            # 定义镜像的标签
             # 使用 GHCR 格式：ghcr.io/所有者/仓库名:最新
-            ghcr.io/${{ github.repository }}:latest
+            - ghcr.io/${{ github.repository }}:latest
             # 添加一个基于提交 SHA 的标签
-            ghcr.io/${{ github.repository }}:${{ github.sha }}
+            - ghcr.io/${{ github.repository }}:${{ github.sha }}
