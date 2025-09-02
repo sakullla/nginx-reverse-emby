@@ -5,16 +5,16 @@ FROM nginx:latest
 RUN rm -f /etc/nginx/conf.d/default.conf
 
 # 复制自定义的 nginx.conf 文件 (如果你有的话)
-COPY nginx.conf /etc/nginx/nginx.conf
+COPY docker/nginx.conf /etc/nginx/nginx.conf
 
 # 创建一个专门存放配置模板的目录
 RUN mkdir -p /etc/nginx/templates/
 
 # 复制你的配置文件模板，并重命名为 default.conf 以方便脚本调用
-COPY default.conf.template /etc/nginx/templates/default.conf
+COPY docker/default.conf.template /etc/nginx/templates/default.conf
 
 # 复制你的动态配置脚本到入口点目录
-COPY 25-dynamic-reverse-proxy.sh /docker-entrypoint.d/
+COPY docker/25-dynamic-reverse-proxy.sh /docker-entrypoint.d/
 
 # 确保动态配置脚本是可执行的
 RUN chmod +x /docker-entrypoint.d/25-dynamic-reverse-proxy.sh
