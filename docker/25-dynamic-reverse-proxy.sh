@@ -17,42 +17,48 @@ if [ ! -f "$TEMPLATE_FILE" ]; then
     exit 1
 fi
 
-entrypoint_log "$0: 正在寻找 DOMAIN_N, PROXY_N, PORT_N 变量来生成 Nginx 配置。"
+entrypoint_log "$0: 正在寻找 PROXY_RULE_N 变量来生成 Nginx 配置。"
 template_content=$(cat "$TEMPLATE_FILE")
 
+config_count=0
 i=1
 while true; do
     # 构造环境变量名
-    DOMAIN_VAR="DOMAIN_${i}"
-    PROXY_VAR="PROXY_${i}"
-    PORT_VAR="PORT_${i}"
+    RULE_VAR="PROXY_RULE_${i}"
 
     # 动态获取环境变量的值
-    domain_val=$(eval echo "\$$DOMAIN_VAR")
-    proxy_val=$(eval echo "\$$PROXY_VAR")
-    port_val=$(eval echo "\$$PORT_VAR")
+    rule_val=$(eval echo "\$$RULE_VAR")
 
-    # 只要 DOMAIN 和 PROXY 存在，就继续处理
-    if [ -n "$domain_val" ] && [ -n "$proxy_val" ]; then
-        entrypoint_log "$0: 找到配对：DOMAIN_$i=$domain_val, PROXY_$i=$proxy_val"
+    # 如果找到了规则，就继续处理
+    if [ -n "$rule_val" ]; then
+        entrypoint_log "$0: 找到规则 PROXY_RULE_$i=$rule_val"
+
+        # 使用逗号分割前端和后端 URL
+        frontend_url=$(echo "$rule_val" | cut -d',' -f1)
+        backend_url=$(echo "$rule_val" | cut -d',' -f2-)
+
+        if [ -z "$frontend_url" ] || [ -z "$backend_url" ]; then
+            entrypoint_log "$0: 警告：跳过格式错误的规则 '$rule_val'"
+            i=$((i + 1))
+            continue
+        fi
+
+        entrypoint_log "$0: 正在处理: $frontend_url -> $backend_url"
 
         # 提取纯域名和路径
-        domain_name=$(echo "$domain_val" | sed -E 's|https?://([^/:]+).*|\1|')
-        domain_path=$(echo "$domain_val" | sed -E 's|https?://[^/]+(.*)|\1|')
+        domain_name=$(echo "$frontend_url" | sed -E 's|https?://([^/:]+).*|\1|')
+        domain_path=$(echo "$frontend_url" | sed -E 's|https?://[^/]+(.*)|\1|')
         if [ -z "$domain_path" ]; then
             domain_path="/"
         fi
 
-        # 获取前端端口，如果未提供 PORT_N，则默认为 80
-        if [ -z "$port_val" ]; then
+        # 从前端 URL 中提取端口，如果不存在则默认为 80
+        frontend_port=$(echo "$frontend_url" | sed -nE 's|https?://[^/:]+:([0-9]+).*|\1|p')
+        if [ -z "$frontend_port" ]; then
             frontend_port="80"
-            entrypoint_log "$0: PORT_$i 未设置，使用默认端口 80。"
-        else
-            frontend_port="$port_val"
-            entrypoint_log "$0: PORT_$i=$frontend_port"
         fi
 
-        # 获取解析器，如果没有则使用默认值
+        # 获取解析器
         resolver="${NGINX_LOCAL_RESOLVERS:-1.1.1.1}"
 
         # 替换模板中的变量
@@ -61,7 +67,7 @@ while true; do
             sed "s|\${domain_name}|$domain_name|g" | \
             sed "s|\${resolver}|$resolver|g" | \
             sed "s|\${domain_path}|$domain_path|g" | \
-            sed "s|\${proxy_target}|$proxy_val|g")
+            sed "s|\${proxy_target}|$backend_url|g")
 
         # 构造唯一的配置文件名
         config_filename="${domain_name}.${frontend_port}.conf"
@@ -69,6 +75,7 @@ while true; do
         # 将生成的块写入到它自己的文件中
         echo "$generated_block" > "/etc/nginx/conf.d/$config_filename"
         entrypoint_log "$0: Nginx 配置已生成: /etc/nginx/conf.d/$config_filename"
+        config_count=$((config_count + 1))
 
         i=$((i + 1))
     else
@@ -77,10 +84,10 @@ while true; do
     fi
 done
 
-if [ "$i" -eq 1 ]; then
-    entrypoint_log "$0: 未找到 DOMAIN_N/PROXY_N 配对。未生成任何 Nginx 配置。"
+if [ "$config_count" -eq 0 ]; then
+    entrypoint_log "$0: 未找到 PROXY_RULE_N 变量。未生成任何 Nginx 配置。"
 else
-    entrypoint_log "$0: 成功生成了 $((i-1)) 个 Nginx 配置。"
+    entrypoint_log "$0: 成功生成了 $config_count 个 Nginx 配置。"
 fi
 
 exit 0
