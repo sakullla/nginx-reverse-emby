@@ -47,11 +47,13 @@ while true; do
 
         # 提取纯域名和路径
         domain_name=$(echo "$frontend_url" | sed -E 's|https?://([^/:]+).*|\1|')
-        domain_path=$(echo "$frontend_url" | sed -E 's|https?://[^/]+(.*)|\1|')
+        domain_path=$(echo "$frontend_url" | sed -E 's|https?://[^/]+(/.*)|\1|;t;s|[^/]+(/.*)|\1|;t;d')
+
+        # If no path was matched, the variable will be empty.
+        # In that case, set it to the root path.
         if [ -z "$domain_path" ]; then
             domain_path="/"
         fi
-
 
         # 从前端 URL 中提取端口，如果不存在则默认为 80
         frontend_port=$(echo "$frontend_url" | sed -nE 's|https?://[^/:]+:([0-9]+).*|\1|p')
