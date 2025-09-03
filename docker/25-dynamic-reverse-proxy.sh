@@ -47,7 +47,7 @@ while true; do
 
         # 提取纯域名和路径
         domain_name=$(echo "$frontend_url" | sed -E 's|https?://([^/:]+).*|\1|')
-        domain_path=$(echo "$frontend_url" | sed -E 's|https?://[^/]+(.*)|\1|')
+        domain_path=$(echo "$frontend_url" | sed -E 's|https?://([^/]+)?(.*)|\2|')
         if [ -z "$domain_path" ]; then
             domain_path="/"
         fi
