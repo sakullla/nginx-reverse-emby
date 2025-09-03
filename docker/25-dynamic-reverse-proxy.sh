@@ -52,12 +52,13 @@ while true; do
             domain_path="/"
         fi
 
+
         # 从前端 URL 中提取端口，如果不存在则默认为 80
         frontend_port=$(echo "$frontend_url" | sed -nE 's|https?://[^/:]+:([0-9]+).*|\1|p')
         if [ -z "$frontend_port" ]; then
             frontend_port="80"
         fi
-
+         entrypoint_log "$0: Nginx domain_name: $config_filename domain_path: $domain_path nginx-resolver: $NGINX_LOCAL_RESOLVERS"
         # 获取解析器
         resolver="${NGINX_LOCAL_RESOLVERS:-1.1.1.1}"
 
