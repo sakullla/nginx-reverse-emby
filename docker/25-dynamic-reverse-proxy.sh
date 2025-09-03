@@ -47,7 +47,18 @@ while true; do
 
         # 提取纯域名和路径
         domain_name=$(echo "$frontend_url" | sed -E 's|https?://([^/:]+).*|\1|')
-        domain_path=$(echo "$frontend_url" | sed -E 's|https?://[^/]+(/.*)|\1|;t;s|[^/]+(/.*)|\1|;t;d')
+        domain_path="/"
+        # 检查 frontend_url 中是否包含一个斜杠（/）
+        if echo "$frontend_url" | grep -q "/"; then
+            # 如果有，就使用 sed 提取路径
+            domain_path=$(echo "$frontend_url" | sed -E 's|https?://[^/]+(.*)|\1|')
+        fi
+
+        # 如果 sed 失败或没有匹配到，domain_path 仍然是 "/"
+        # 如果 sed 成功，domain_path 会被正确赋值
+        if [ -z "$domain_path" ]; then
+            domain_path="/"
+        fi
 
         # If no path was matched, the variable will be empty.
         # In that case, set it to the root path.
