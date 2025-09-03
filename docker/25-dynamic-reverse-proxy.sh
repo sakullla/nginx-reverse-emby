@@ -47,7 +47,7 @@ while true; do
 
         # 提取纯域名和路径
         domain_name=$(echo "$frontend_url" | sed -E 's|https?://([^/:]+).*|\1|')
-        domain_path=$(echo "$frontend_url" | sed -E 's|https?://[^/]+(/.*)|\1|')
+        domain_path=$(echo "$frontend_url" | sed -E 's|https?://[^/]+(.*)|\1|')
         if [ -z "$domain_path" ]; then
             domain_path="/"
         fi
@@ -58,7 +58,7 @@ while true; do
         if [ -z "$frontend_port" ]; then
             frontend_port="80"
         fi
-         entrypoint_log "$0: Nginx domain_name: domain_name domain_path: $domain_path nginx-resolver: $NGINX_LOCAL_RESOLVERS"
+         entrypoint_log "$0: Nginx domain_name: $domain_name domain_path: $domain_path nginx-resolver: $NGINX_LOCAL_RESOLVERS"
         # 获取解析器
         resolver="${NGINX_LOCAL_RESOLVERS:-1.1.1.1}"
 
