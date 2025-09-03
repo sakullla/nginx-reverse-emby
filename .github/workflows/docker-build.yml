@@ -14,8 +14,8 @@ jobs:
 
     # --- 添加下面这个 permissions 块 ---
     permissions:
-      contents: read      # 允许检出代码 (read)
-      packages: write     # 允许推送 Docker 镜像 (write)
+      contents: read     # 允许检出代码 (read)
+      packages: write    # 允许推送 Docker 镜像 (write)
     # -----------------------------------
 
     steps:
@@ -31,6 +31,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Set short git commit SHA
+        id: vars
+        run: |
+          calculatedSha=$(git rev-parse --short ${{ github.sha }})
+          echo "COMMIT_SHORT_SHA=$calculatedSha" >> $GITHUB_ENV
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
@@ -41,4 +47,4 @@ jobs:
           push: true
           tags: |
             ghcr.io/${{ github.repository }}:latest
-            ghcr.io/${{ github.repository }}:${{ github.sha }}
+            ghcr.io/${{ github.repository }}:${{ env.COMMIT_SHORT_SHA }}
