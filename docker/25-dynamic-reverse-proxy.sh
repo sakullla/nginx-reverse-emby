@@ -17,6 +17,10 @@ if [ ! -f "$TEMPLATE_FILE" ]; then
     exit 1
 fi
 
+# 清空 /etc/nginx/conf.d/ 目录以防止旧配置残留
+entrypoint_log "$0: 正在清空 /etc/nginx/conf.d/ 目录..."
+rm -f /etc/nginx/conf.d/*
+
 entrypoint_log "$0: 正在寻找 PROXY_RULE_N 变量来生成 Nginx 配置。"
 template_content=$(cat "$TEMPLATE_FILE")
 
