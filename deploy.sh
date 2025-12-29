@@ -308,11 +308,12 @@ display_summary() {
     fi
 
     local protocol=$([[ "$no_tls" == "yes" ]] && echo "http" || echo "https")
+    local r_protocol=$([[ "$r_http_frontend" == "yes" ]] && echo "http" || echo "https")
 
     echo -e "\n${BLUE}🔧 Nginx 反代配置摘要${NC}"
     echo "──────────────────────────────────────────────"
     echo -e "➡️  前端访问: ${GREEN}${protocol}://${you_domain}:${you_frontend_port}${you_domain_path}${NC}"
-    echo -e "⬅️  后端源站: ${YELLOW}${r_http_frontend:+http://}${r_http_frontend:-https://}${r_domain}:${r_frontend_port}${r_domain_path}${NC}"
+    echo -e "⬅️  后端源站: ${YELLOW}${r_protocol}://${r_domain}:${r_frontend_port}${r_domain_path}${NC}"
     echo "──────────────────────────────────────────────"
     echo -e "📜 证书域名: ${format_cert_domain}"
     echo -e "🔒 TLS 状态: $([[ "$no_tls" == "yes" ]] && echo "${RED}禁用 (HTTP Only)${NC}" || echo "${GREEN}启用 (HTTPS)${NC}")"
