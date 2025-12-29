@@ -61,7 +61,8 @@ setup_env() {
     elif [[ -n "$GH_PROXY" ]]; then
         effective_gh_proxy="$GH_PROXY"
     elif is_in_china; then
-        effective_gh_proxy="https://ghproxy.net/"
+        # [修改] 默认使用 gh.llkk.cc 代理
+        effective_gh_proxy="https://gh.llkk.cc/"
     fi
 
     # 确保代理地址以 / 结尾 (如果非空)
@@ -147,7 +148,7 @@ show_help() {
   -D, --dns <provider>           (可选) 使用 DNS API 模式申请证书 (例如: cf)。泛域名必须使用此项。
   -R, --resolver <DNS服务器>      (可选) 手动指定 DNS 解析服务器 (例如: "8.8.8.8 1.1.1.1")
   -c, --template <路径或URL>      (可选) 指定自定义 Nginx 配置文件模板。
-  --gh-proxy <URL>               (可选) 指定 GitHub 加速代理 (例如: https://ghproxy.net/)。
+  --gh-proxy <URL>               (可选) 指定 GitHub 加速代理 (例如: https://gh.llkk.cc/)。
   --cf-token <TOKEN>             Cloudflare API Token (配合 --dns cf)。
   --cf-account-id <ID>           Cloudflare Account ID (配合 --dns cf)。
 
