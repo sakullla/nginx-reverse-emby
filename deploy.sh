@@ -126,7 +126,7 @@ show_help() {
 一个强大且安全的 Nginx 反向代理部署脚本 (支持 sudo)。
 
 部署选项:
-  -y, --you-domain <域名或URL>   你的访问域名或完整 URL (例如: https://app.example.com)
+  -y, --you-domain <域名或URL>   你的访问域名或完整 URL (例如: https://app.example.com 或 http://1.2.3.4)
   -r, --r-domain <域名或URL>     被代理的后端地址 (例如: http://127.0.0.1:8096)
   -m, --cert-domain <域名>       (可选) 手动指定 SSL 证书的主域名，用于泛域名证书。
   -d, --parse-cert-domain        (可选) 自动从 -y 域名中提取根域名作为证书域名。
@@ -286,16 +286,25 @@ prompt_interactive_mode() {
 
 # --- 3. 显示摘要 ---
 display_summary() {
-    if [[ -n "$cert_domain" ]]; then
+    # [优化] 逻辑合并：优先级 IP > 手动指定 > 自动解析 > 默认
+    if [[ "$you_domain" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+        # 1. 如果是 IP 地址
+        format_cert_domain="$you_domain"
+        if [[ "$no_tls" != "yes" ]]; then
+            log_info "检测到 IP 地址 ($you_domain)，将申请 Let's Encrypt short-lived (短期) 证书。"
+        fi
+    elif [[ -n "$cert_domain" ]]; then
+        # 2. 如果手动指定了证书域名 (-m)
         format_cert_domain="$cert_domain"
     elif [[ "$parse_cert_domain" == "yes" ]]; then
-        # 恢复原脚本的通配符匹配逻辑
+        # 3. 如果开启了自动解析 (-d)
         if [[ "$you_domain" == *.*.* ]]; then
              format_cert_domain="${you_domain#*.}"
         else
              format_cert_domain="$you_domain"
         fi
     else
+        # 4. 默认情况
         format_cert_domain="$you_domain"
     fi
 
@@ -415,6 +424,7 @@ install_dependencies() {
        if eval "$install_cmd"; then
            log_success "acme.sh 安装完成。"
            "$ACME_SH" --upgrade --auto-upgrade
+           # 默认使用 letsencrypt，支持 IP 证书 (2025+ policy)
            "$ACME_SH" --set-default-ca --server letsencrypt
        else
            log_error "acme.sh 安装失败，请检查网络连接。"
@@ -486,12 +496,27 @@ generate_nginx_config() {
 
 # --- 6. 证书申请 (还原 RealFullChainPath 逻辑) ---
 issue_certificate() {
-    if [[ "$no_tls" == "yes" ]]; then return; fi
+    if [[ "$no_tls" == "yes" ]]; then 
+        log_info "检测到非 TLS 配置，跳过证书申请步骤。"
+        return 
+    fi
 
     ACME_SH="$HOME/.acme.sh/acme.sh"
     local cert_path_base="/etc/nginx/certs/$format_cert_domain"
     local reload_cmd="$SUDO nginx -s reload"
     
+    local issue_extra_args=""
+    # [新增] 针对 IP 证书的特殊处理：强制 short-lived 逻辑（清理 DNS 参数，强制 Standalone）
+    if [[ "$you_domain" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+        log_info "检测到 IP 地址，将配置为 short-lived (短期) 证书模式..."
+        if [[ -n "$dns_provider" ]]; then
+            log_warn "IP 证书不支持 DNS 验证，已自动切换为 Standalone 模式。"
+            dns_provider=""
+        fi
+        # 强制添加 IP 证书所需参数
+        issue_extra_args="--certificate-profile shortlived --days 6"
+    fi
+
     # 使用 grep -q RealFullChainPath 判断证书是否已签发
     if ! "$ACME_SH" --info -d "$format_cert_domain" --ecc 2>/dev/null | grep -q RealFullChainPath; then
         log_info "证书不存在，开始申请..."
@@ -545,8 +570,9 @@ issue_certificate() {
                 fi
             fi
 
-            if ! "$ACME_SH" --issue --standalone -d "$you_domain" --keylength ec-256; then
-                log_error "证书申请失败。请检查域名解析。"
+            # [修改] 申请命令增加 issue_extra_args (仅在 IP 模式下有值)
+            if ! "$ACME_SH" --issue --standalone -d "$you_domain" --keylength ec-256 $issue_extra_args; then
+                log_error "证书申请失败。请检查域名/IP解析是否正确。"
                 if [ $nginx_stopped -eq 1 ]; then $SUDO systemctl start nginx; fi
                 exit 1
             fi
