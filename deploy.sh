@@ -50,9 +50,13 @@ is_in_china() {
 
 # --- 设置全局变量 (将在解析参数后调用) ---
 setup_env() {
-    local RAW_URL="https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main"
-    # [修改] 使用 acme.sh 官方 GitHub Raw 完整路径
-    local ACME_OFFICIAL_RAW="https://raw.githubusercontent.com/acmesh-official/acme.sh/master/acme.sh"
+    # [技巧] 使用字符串拼接定义基础 URL，防止被镜像站的自动替换机制修改 (Anti-Rewrite)
+    # 这样写，简单的文本查找替换工具无法匹配到完整的 URL，因此不会被改写
+    local GH_RAW_HOST="raw.githubusercontent.com"
+    local URL_PREFIX="https://${GH_RAW_HOST}"
+    
+    local RAW_URL_BASE="${URL_PREFIX}/sakullla/nginx-reverse-emby/main"
+    local ACME_OFFICIAL_RAW="${URL_PREFIX}/acmesh-official/acme.sh/master/acme.sh"
     
     # 确定代理地址: 命令行参数 > 环境变量 > 自动检测
     local effective_gh_proxy=""
@@ -62,7 +66,7 @@ setup_env() {
     elif [[ -n "$GH_PROXY" ]]; then
         effective_gh_proxy="$GH_PROXY"
     elif is_in_china; then
-        # [修改] 默认使用 gh.llkk.cc 代理
+        # 默认使用 gh.llkk.cc 代理
         effective_gh_proxy="https://gh.llkk.cc/"
     fi
 
@@ -73,14 +77,25 @@ setup_env() {
 
     if [[ -n "$effective_gh_proxy" ]]; then
         echo -e "${BLUE}[INFO]${NC} 使用 GitHub 代理: ${effective_gh_proxy}"
-        # 配置文件下载地址
-        CONF_HOME="${effective_gh_proxy}${RAW_URL}"
-        # acme.sh 安装脚本地址 (代理官方脚本)
-        ACME_INSTALL_URL="${effective_gh_proxy}${ACME_OFFICIAL_RAW}"
+        
+        # 再次检查 RAW_URL_BASE 是否以官方前缀开头
+        # 理论上因为上面的拼接写法，这里一定是纯净的，可以直接叠加代理
+        if [[ "$RAW_URL_BASE" == "${URL_PREFIX}"* ]]; then
+            CONF_HOME="${effective_gh_proxy}${RAW_URL_BASE}"
+        else
+            # 极少数情况：如果前缀变量都被改写了，那就直接用，不叠加
+            CONF_HOME="${RAW_URL_BASE}"
+        fi
+        
+        if [[ "$ACME_OFFICIAL_RAW" == "${URL_PREFIX}"* ]]; then
+            ACME_INSTALL_URL="${effective_gh_proxy}${ACME_OFFICIAL_RAW}"
+        else
+            ACME_INSTALL_URL="${ACME_OFFICIAL_RAW}"
+        fi
     else
         echo -e "${BLUE}[INFO]${NC} 未使用 GitHub 代理，使用默认源..."
-        CONF_HOME="${RAW_URL}"
-        # 如果不使用代理，通常推荐使用 get.acme.sh 官方短链，但也可用 raw
+        CONF_HOME="${RAW_URL_BASE}"
+        # 如果不使用代理，通常推荐使用 get.acme.sh 官方短链
         ACME_INSTALL_URL="https://get.acme.sh"
     fi
 
@@ -440,7 +455,7 @@ install_dependencies() {
        
        # [修改] 改为先下载脚本到临时文件，再执行安装，避免 curl 管道错误
        local TMP_INSTALL_SCRIPT="/tmp/acme_install.sh"
-       if curl -sL "$ACME_INSTALL_URL" -o "$TMP_INSTALL_SCRIPT"; then
+       if curl -fsL "$ACME_INSTALL_URL" -o "$TMP_INSTALL_SCRIPT"; then
            # 检查下载的文件是否包含 acme.sh 关键字，避免下载到 HTML 错误页
            if grep -q "acme.sh" "$TMP_INSTALL_SCRIPT"; then
                 if sh "$TMP_INSTALL_SCRIPT" --install-online; then
@@ -590,11 +605,30 @@ issue_certificate() {
 
             log_info "使用 Standalone 模式申请证书..."
             
-            # [修改] 移除端口占用检测，直接申请，不再停止 Nginx
-            # 申请命令增加 issue_extra_args (仅在 IP 模式下有值)
+            # 检测端口占用 (Robust)
+            local nginx_stopped=0
+            if lsof -i :80 | grep -q LISTEN || netstat -nlp | grep -q ':80 .*LISTEN'; then
+                log_warn "端口 80 正在被占用，尝试停止 Nginx..."
+                if lsof -i :80 | grep -q nginx || netstat -nlp | grep ':80 ' | grep -q nginx; then
+                    $SUDO systemctl stop nginx || $SUDO service nginx stop
+                    nginx_stopped=1
+                    sleep 2
+                else
+                    log_error "端口 80 被非 Nginx 进程占用，请先释放端口。"
+                    exit 1
+                fi
+            fi
+
+            # [修改] 申请命令增加 issue_extra_args (仅在 IP 模式下有值)
             if ! "$ACME_SH" --issue --standalone -d "$you_domain" --keylength ec-256 $issue_extra_args; then
                 log_error "证书申请失败。请检查域名/IP解析是否正确，或防火墙是否放行 80 端口。"
+                if [ $nginx_stopped -eq 1 ]; then $SUDO systemctl start nginx; fi
                 exit 1
+            fi
+            
+            if [ $nginx_stopped -eq 1 ]; then
+                log_info "恢复 Nginx..."
+                $SUDO systemctl start nginx || $SUDO service nginx start
             fi
         fi
         log_success "证书申请成功。"
