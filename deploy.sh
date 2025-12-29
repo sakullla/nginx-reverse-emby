@@ -654,12 +654,27 @@ remove_domain_config() {
     local temp_domain temp_port
     IFS='|' read -r _ temp_domain temp_port _ < <(parse_url "$target")
     
-    local conf_pattern="/etc/nginx/conf.d/${temp_domain}.*.conf"
+    # 根据是否指定端口来精确匹配配置文件
+    local conf_pattern
+    if [[ -n "$temp_port" ]]; then
+        # 指定了端口，精确匹配
+        conf_pattern="/etc/nginx/conf.d/${temp_domain}.${temp_port}.conf"
+        log_info "精确匹配: ${temp_domain}:${temp_port}"
+    else
+        # 未指定端口，匹配所有该域名的配置
+        conf_pattern="/etc/nginx/conf.d/${temp_domain}.*.conf"
+        log_info "匹配该域名的所有端口"
+    fi
+    
     local conf_files
     conf_files=$(ls $conf_pattern 2>/dev/null || true)
 
     if [[ -z "$conf_files" ]]; then
-        log_warn "未找到与 $temp_domain 相关的配置文件。"
+        if [[ -n "$temp_port" ]]; then
+            log_warn "未找到与 $temp_domain:$temp_port 相关的配置文件。"
+        else
+            log_warn "未找到与 $temp_domain 相关的配置文件。"
+        fi
         exit 0
     fi
 
