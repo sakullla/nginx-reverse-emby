@@ -48,30 +48,43 @@ is_in_china() {
     [ "$_loc" = CN ]
 }
 
-# --- 设置全局变量 (适配国内) ---
+# --- 设置全局变量 (将在解析参数后调用) ---
 setup_env() {
     local RAW_URL="https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main"
+    local ACME_OFFICIAL_RAW="https://raw.githubusercontent.com/acmesh-official/acme.sh/master/install.sh"
     
-    # [修改] ACME_INSTALL_URL 统一使用官方源，不再使用镜像
-    ACME_INSTALL_URL="https://get.acme.sh"
+    # 确定代理地址: 命令行参数 > 环境变量 > 自动检测
+    local effective_gh_proxy=""
+    
+    if [[ -n "$manual_gh_proxy" ]]; then
+        effective_gh_proxy="$manual_gh_proxy"
+    elif [[ -n "$GH_PROXY" ]]; then
+        effective_gh_proxy="$GH_PROXY"
+    elif is_in_china; then
+        effective_gh_proxy="https://ghproxy.net/"
+    fi
 
-    if is_in_china; then
-        echo -e "${BLUE}[INFO]${NC} 检测到中国大陆环境，配置文件下载将启用加速..."
-        # 使用 gh.llkk.cc 加速 GitHub 文件下载 (仅针对项目配置文件)
-        CONF_HOME="https://gh.llkk.cc//${RAW_URL}"
+    # 确保代理地址以 / 结尾 (如果非空)
+    if [[ -n "$effective_gh_proxy" && "$effective_gh_proxy" != */ ]]; then
+        effective_gh_proxy="${effective_gh_proxy}/"
+    fi
+
+    if [[ -n "$effective_gh_proxy" ]]; then
+        echo -e "${BLUE}[INFO]${NC} 使用 GitHub 代理: ${effective_gh_proxy}"
+        # 配置文件下载地址
+        CONF_HOME="${effective_gh_proxy}${RAW_URL}"
+        # acme.sh 安装脚本地址 (代理官方脚本)
+        ACME_INSTALL_URL="${effective_gh_proxy}${ACME_OFFICIAL_RAW}"
     else
-        echo -e "${BLUE}[INFO]${NC} 检测到海外环境，使用默认源..."
+        echo -e "${BLUE}[INFO]${NC} 未使用 GitHub 代理，使用默认源..."
         CONF_HOME="${RAW_URL}"
+        ACME_INSTALL_URL="https://get.acme.sh"
     fi
 
     readonly CONF_HOME
-    # [修改] 使用固定备份目录，覆盖旧备份
     readonly BACKUP_DIR="/etc/nginx/backup"
     readonly ACME_INSTALL_URL
 }
-
-# 初始化环境
-setup_env
 
 # ===================================================================================
 #                                 辅助函数
@@ -134,6 +147,7 @@ show_help() {
   -D, --dns <provider>           (可选) 使用 DNS API 模式申请证书 (例如: cf)。泛域名必须使用此项。
   -R, --resolver <DNS服务器>      (可选) 手动指定 DNS 解析服务器 (例如: "8.8.8.8 1.1.1.1")
   -c, --template <路径或URL>      (可选) 指定自定义 Nginx 配置文件模板。
+  --gh-proxy <URL>               (可选) 指定 GitHub 加速代理 (例如: https://ghproxy.net/)。
   --cf-token <TOKEN>             Cloudflare API Token (配合 --dns cf)。
   --cf-account-id <ID>           Cloudflare Account ID (配合 --dns cf)。
 
@@ -229,12 +243,13 @@ parse_arguments() {
     domain_to_remove=""
     force_yes="no"
     template_domain_config_source=""
+    manual_gh_proxy=""
 
     you_domain=""; you_domain_path=""; you_frontend_port=""; no_tls=""
     r_domain=""; r_domain_path=""; r_frontend_port=""; r_http_frontend=""
 
     local TEMP
-    if ! TEMP=$(getopt -o y:r:m:R:dD:hYc: --long you-domain:,r-domain:,cert-domain:,resolver:,parse-cert-domain,dns:,cf-token:,cf-account-id:,remove:,yes,template-domain-config:,help -n "$(basename "$0")" -- "$@"); then
+    if ! TEMP=$(getopt -o y:r:m:R:dD:hYc: --long you-domain:,r-domain:,cert-domain:,resolver:,parse-cert-domain,dns:,cf-token:,cf-account-id:,gh-proxy:,remove:,yes,template-domain-config:,help -n "$(basename "$0")" -- "$@"); then
         exit 1
     fi
     eval set -- "$TEMP"
@@ -249,6 +264,7 @@ parse_arguments() {
             -D|--dns) dns_provider="$2"; shift 2 ;;
             -R|--resolver) manual_resolver="$2"; shift 2 ;;
             -c|--template-domain-config) template_domain_config_source="$2"; shift 2 ;;
+            --gh-proxy) manual_gh_proxy="$2"; shift 2 ;;
             --cf-token) cf_token="$2"; shift 2 ;;
             --cf-account-id) cf_account_id="$2"; shift 2 ;;
             --remove) domain_to_remove="$2"; shift 2 ;;
@@ -419,8 +435,7 @@ install_dependencies() {
        log_info "正在为当前用户安装 acme.sh..."
        log_info "使用安装URL: $ACME_INSTALL_URL"
        
-       # [修改] 使用 setup_env 中定义的 ACME_INSTALL_URL (官方源)
-       # 并且直接 curl | sh 执行，避免 eval 问题
+       # [修改] 使用 setup_env 中定义的可靠 URL，并直接 curl | sh 执行，避免 eval 问题
        if curl -sL "$ACME_INSTALL_URL" | sh -s; then
            log_success "acme.sh 安装完成。"
            "$ACME_SH" --upgrade --auto-upgrade
@@ -647,6 +662,9 @@ main() {
         remove_domain_config
         exit 0
     fi
+
+    # 调用环境设置，因为依赖解析后的参数
+    setup_env
 
     prompt_interactive_mode
     display_summary
