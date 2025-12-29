@@ -2,50 +2,122 @@
 
 # ===================================================================================
 #
-#           Nginx Reverse Proxy Deployment Script (Sudo-aware & Feature-complete)
+#           Nginx Reverse Proxy Deployment Script (China Optimized & Robust)
 #
 # ===================================================================================
 
 # --- 脚本严格模式 ---
-# set -e: 当任何命令失败时立即退出
-# set -o pipefail: 管道中任何一个命令失败，整个管道都算失败
 set -e
 set -o pipefail
 
-# --- 全局常量与变量 ---
-readonly CONF_HOME="https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main"
-SUDO='' # 将根据用户权限动态设置
+# --- 颜色定义 ---
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
+NC='\033[0m' # No Color
 
-# --- 权限检查与 Sudo 设置 ---
+# --- 权限变量 ---
+SUDO=''
+
+# --- 权限检查 ---
 if [ "$(id -u)" -ne 0 ]; then
     if ! command -v sudo >/dev/null; then
-        echo "错误: 此脚本需要以 root 权限运行，或者必须安装 'sudo'。" >&2
+        echo -e "${RED}错误: 此脚本需要以 root 权限运行，或者必须安装 'sudo'。${NC}" >&2
         exit 1
     fi
     SUDO='sudo'
-    echo "信息: 检测到非 root 用户，将使用 'sudo' 获取权限。"
+    echo -e "${YELLOW}信息: 检测到非 root 用户，将使用 'sudo' 获取权限。${NC}"
 fi
 
 # ===================================================================================
-#                                 辅助函数定义
+#                                 基础检测与环境设置
 # ===================================================================================
 
-# --- 错误处理函数 ---
+# --- 检测是否在中国大陆 ---
+is_in_china() {
+    if [ -z "$_loc" ]; then
+        if _loc=$(curl -m 3 -sL https://www.cloudflare.com/cdn-cgi/trace | grep '^loc=' | cut -d= -f2); then
+            true
+        elif _loc=$(curl -m 3 -sL http://www.qualcomm.cn/cdn-cgi/trace | grep '^loc=' | cut -d= -f2); then
+            true
+        else
+            return 1
+        fi
+    fi
+    [ "$_loc" = CN ]
+}
+
+# --- 设置全局变量 (适配国内) ---
+setup_env() {
+    local RAW_URL="https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main"
+    
+    if is_in_china; then
+        echo -e "${BLUE}[INFO]${NC} 检测到中国大陆环境，正在启用加速配置..."
+        # 使用 ghproxy.net 加速 GitHub 文件下载
+        CONF_HOME="https://ghproxy.net/${RAW_URL}"
+        # acme.sh 国内专用安装脚本 (gitcode镜像)
+        ACME_INSTALL_CMD="curl -sL https://gitcode.net/cert/cn-acme.sh/-/raw/master/install.sh?inline=false | sh -s email=my@example.com"
+    else
+        echo -e "${BLUE}[INFO]${NC} 检测到海外环境，使用默认源..."
+        CONF_HOME="${RAW_URL}"
+        ACME_INSTALL_CMD="curl https://get.acme.sh | sh -s email=my@example.com"
+    fi
+
+    readonly CONF_HOME
+    readonly BACKUP_DIR="/etc/nginx/backup_$(date +%Y%m%d_%H%M%S)"
+}
+
+# 初始化环境
+setup_env
+
+# ===================================================================================
+#                                 辅助函数
+# ===================================================================================
+
+# --- 日志函数 (仅输出到屏幕) ---
+log_info() {
+    echo -e "${BLUE}[INFO]${NC} $1"
+}
+
+log_success() {
+    echo -e "${GREEN}[SUCCESS]${NC} $1"
+}
+
+log_warn() {
+    echo -e "${YELLOW}[WARN]${NC} $1"
+}
+
+log_error() {
+    echo -e "${RED}[ERROR]${NC} $1"
+}
+
+# --- 错误处理 ---
 handle_error() {
     local exit_code=$?
     local line_number=$1
     echo >&2
-    echo "--------------------------------------------------------" >&2
-    echo "错误: 脚本在第 $line_number 行意外中止。" >&2
-    echo "退出码: $exit_code" >&2
-    echo "--------------------------------------------------------" >&2
+    echo -e "${RED}--------------------------------------------------------${NC}" >&2
+    echo -e "${RED}错误: 脚本在第 $line_number 行意外中止。${NC}" >&2
+    echo -e "${RED}退出码: $exit_code${NC}" >&2
+    echo -e "${RED}--------------------------------------------------------${NC}" >&2
     exit "$exit_code"
 }
-
-# 注册错误处理的 trap
 trap 'handle_error $LINENO' ERR
 
-# --- 帮助信息函数 ---
+# --- 备份函数 ---
+backup_file() {
+    local file_path="$1"
+    if [ -f "$file_path" ]; then
+        $SUDO mkdir -p "$BACKUP_DIR"
+        local file_name
+        file_name=$(basename "$file_path")
+        $SUDO cp "$file_path" "$BACKUP_DIR/$file_name"
+        log_info "已备份文件 $file_path 至 $BACKUP_DIR/$file_name"
+    fi
+}
+
+# --- 帮助信息 ---
 show_help() {
     cat << EOF
 用法: $(basename "$0") [选项]
@@ -53,138 +125,97 @@ show_help() {
 一个强大且安全的 Nginx 反向代理部署脚本 (支持 sudo)。
 
 部署选项:
-  -y, --you-domain <域名或URL>   你的域名或完整 URL (例如: https://app.example.com/emby)
-  -r, --r-domain <域名或URL>     反代 Emby 的域名或完整 URL (例如: http://127.0.0.1:8096)
-  -m, --cert-domain <域名>       手动指定用于 SSL 证书的域名 (例如: example.com)，用于泛域名证书。优先级最高。
-  -d, --parse-cert-domain         自动从访问域名中解析出根域名作为证书域名 (例如: 从 app.example.com 解析出 example.com)。
-  -D, --dns <provider>            使用 DNS API 模式申请证书 (例如: cf)。这是申请泛域名证书的【必须】选项。
-  -R, --resolver <DNS服务器>      手动指定 DNS 解析服务器 (例如: "8.8.8.8 1.1.1.1")
-  -c, --template-domain-config <路径或URL> 指定一个自定义的 Nginx 配置文件模板。
-  --cf-token <TOKEN>              (当 --dns cf 时) 您的 Cloudflare API Token。
-  --cf-account-id <ID>            (当 --dns cf 时) 您的 Cloudflare Account ID。
+  -y, --you-domain <域名或URL>   你的访问域名或完整 URL (例如: https://app.example.com)
+  -r, --r-domain <域名或URL>     被代理的后端地址 (例如: http://127.0.0.1:8096)
+  -m, --cert-domain <域名>       (可选) 手动指定 SSL 证书的主域名，用于泛域名证书。
+  -d, --parse-cert-domain        (可选) 自动从 -y 域名中提取根域名作为证书域名。
+  -D, --dns <provider>           (可选) 使用 DNS API 模式申请证书 (例如: cf)。泛域名必须使用此项。
+  -R, --resolver <DNS服务器>      (可选) 手动指定 DNS 解析服务器 (例如: "8.8.8.8 1.1.1.1")
+  -c, --template <路径或URL>      (可选) 指定自定义 Nginx 配置文件模板。
+  --cf-token <TOKEN>             Cloudflare API Token (配合 --dns cf)。
+  --cf-account-id <ID>           Cloudflare Account ID (配合 --dns cf)。
 
-移除选项:
-  --remove <域名或URL>         移除指定域名或 URL 的所有相关配置和证书。
-  -Y, --yes                       在非交互模式下，自动确认移除操作。
+管理选项:
+  --remove <域名或URL>            移除指定域名的 Nginx 配置和证书。
+  -Y, --yes                      非交互模式下自动确认移除。
 
-其他选项:
-  -h, --help                      显示此帮助信息
+其他:
+  -h, --help                     显示此帮助信息。
 
 EOF
     exit 0
 }
 
-# --- 网络和系统检测函数 ---
-is_in_china() {
-    if [ -z "$_loc" ]; then
-        if ! _loc=$(curl -m 5 -sL http://www.qualcomm.cn/cdn-cgi/trace | grep '^loc=' | cut -d= -f2); then
-            echo "警告: 无法确定地理位置，将使用默认 DNS。" >&2
-            return 1
-        fi
-        echo "信息: 检测到地理位置为 $_loc。" >&2
-    fi
-    [ "$_loc" = CN ]
-}
-
+# --- DNS 和 IPv6 检测 ---
 has_ipv6() {
     ip -6 addr show scope global | grep -q inet6
 }
 
-get_system_dns() {
-    awk '/^nameserver/ { print ($2 ~ /:/ ? "["$2"]" : $2) }' /etc/resolv.conf | xargs
-}
-
-get_default_dns() {
-    if is_in_china; then
-        echo "223.5.5.5 119.29.29.29"
-    else
-        echo "1.1.1.1 8.8.8.8"
-    fi
-}
-
 get_resolver_host() {
     local system_dns
-    system_dns=$(get_system_dns)
+    system_dns=$(awk '/^nameserver/ { print ($2 ~ /:/ ? "["$2"]" : $2) }' /etc/resolv.conf 2>/dev/null | xargs)
+    
     if [[ -n "$system_dns" ]]; then
         echo "$system_dns"
     else
-        echo "$(get_default_dns)"
+        if is_in_china; then
+            echo "223.5.5.5 119.29.29.29"
+        else
+            echo "1.1.1.1 8.8.8.8"
+        fi
     fi
 }
 
-get_ipv6_flag() {
-    if has_ipv6; then
-        echo ""
-    else
-        echo "ipv6=off"
-    fi
-}
-
-# --- URL 解析函数 (重构版，不再使用 eval) ---
+# --- URL 解析 ---
 parse_url() {
     local url="$1"
-    # 此函数将通过 echo 输出结果，格式为: host|path|port|proto
     if [[ "$url" =~ ^(https?)://([^/:?#]+)(:([0-9]+))?(/[^?#]*)? ]]; then
-        local proto="${BASH_REMATCH[1]}"
-        local host="${BASH_REMATCH[2]}"
-        local port="${BASH_REMATCH[4]}"
-        local path="${BASH_REMATCH[5]}"
-        echo "$host|$path|$port|$proto"
+        echo "${BASH_REMATCH[1]}|${BASH_REMATCH[2]}|${BASH_REMATCH[4]}|${BASH_REMATCH[5]}"
     else
-        # 如果不匹配 URL，则假定整个字符串为域名
         echo "$url|||"
     fi
 }
 
-# --- URL 输入处理辅助函数 ---
 process_url_input() {
     local full_url="$1"
     local domain_type="$2" # "you" or "r"
 
-    if [[ -z "$full_url" ]]; then
-        return
-    fi
+    if [[ -z "$full_url" ]]; then return; fi
 
     local temp_domain temp_path temp_port temp_proto
-    IFS='|' read -r temp_domain temp_path temp_port temp_proto < <(parse_url "$full_url")
+    IFS='|' read -r temp_proto temp_domain temp_port temp_path < <(parse_url "$full_url")
 
+    if [[ -z "$temp_proto" ]]; then temp_proto="https"; fi 
+    
     if [[ "$domain_type" == "you" ]]; then
         you_domain="$temp_domain"
         you_domain_path="$temp_path"
         if [[ "$temp_proto" == "http" ]]; then
             no_tls="yes"
+            you_frontend_port="${temp_port:-80}"
         else
             no_tls="no"
-        fi
-        if [[ "$no_tls" == "no" ]]; then
             you_frontend_port="${temp_port:-443}"
-        else
-            you_frontend_port="${temp_port:-80}"
         fi
     elif [[ "$domain_type" == "r" ]]; then
         r_domain="$temp_domain"
         r_domain_path="$temp_path"
         if [[ "$temp_proto" == "http" ]]; then
             r_http_frontend="yes"
+            r_frontend_port="${temp_port:-80}"
         else
             r_http_frontend="no"
-        fi
-        if [[ "$r_http_frontend" == "no" ]]; then
             r_frontend_port="${temp_port:-443}"
-        else
-            r_frontend_port="${temp_port:-80}"
         fi
     fi
 }
 
-
 # ===================================================================================
-#                                 核心逻辑函数
+#                                 核心逻辑
 # ===================================================================================
 
-# --- 1. 解析命令行参数 ---
+# --- 1. 参数解析 ---
 parse_arguments() {
-    # 初始化变量
     you_domain_full=""
     r_domain_full=""
     cert_domain=""
@@ -196,13 +227,12 @@ parse_arguments() {
     domain_to_remove=""
     force_yes="no"
     template_domain_config_source=""
+
     you_domain=""; you_domain_path=""; you_frontend_port=""; no_tls=""
     r_domain=""; r_domain_path=""; r_frontend_port=""; r_http_frontend=""
 
     local TEMP
-    TEMP=$(getopt -o y:r:m:R:dD:hYc: --long you-domain:,r-domain:,cert-domain:,resolver:,parse-cert-domain,dns:,cf-token:,cf-account-id:,remove:,yes,template-domain-config:,help -n "$(basename "$0")" -- "$@")
-    if [ $? -ne 0 ]; then
-        echo "错误: 参数解析失败。" >&2
+    if ! TEMP=$(getopt -o y:r:m:R:dD:hYc: --long you-domain:,r-domain:,cert-domain:,resolver:,parse-cert-domain,dns:,cf-token:,cf-account-id:,remove:,yes,template-domain-config:,help -n "$(basename "$0")" -- "$@"); then
         exit 1
     fi
     eval set -- "$TEMP"
@@ -223,11 +253,10 @@ parse_arguments() {
             -Y|--yes) force_yes="yes"; shift ;;
             -h|--help) show_help; shift ;;
             --) shift; break ;;
-            *) echo "错误: 未知参数 $1" >&2; exit 1 ;;
+            *) log_error "未知参数 $1"; exit 1 ;;
         esac
     done
 
-    # 使用新的辅助函数处理 URL 输入
     process_url_input "$you_domain_full" "you"
     process_url_input "$r_domain_full" "r"
 }
@@ -235,27 +264,20 @@ parse_arguments() {
 # --- 2. 交互模式 ---
 prompt_interactive_mode() {
     if [[ -z "$you_domain" || -z "$r_domain" ]]; then
-        # 检查是否在交互式终端中运行
         if [ ! -t 0 ]; then
-            echo "--------------------------------------------------------" >&2
-            echo -e "\e[1;31m错误: 无法进入交互模式。\e[0m" >&2
-            echo "此脚本似乎是通过管道 (pipe) 执行的，无法读取键盘输入。" >&2
-            echo "如果您想使用交互模式，请使用以下推荐命令：" >&2
-            echo -e "\e[1;32mbash <(curl -sSL [脚本URL])\e[0m" >&2
-            echo "--------------------------------------------------------" >&2
+            log_error "无法进入交互模式。请提供 -y 和 -r 参数。"
             exit 1
         fi
 
-        echo -e "\n--- 交互模式: 配置反向代理 ---"
-        local input_you_domain_full input_r_domain_full
-        read -p "你的访问 URL (例如 https://app.your-domain.com): " input_you_domain_full
-        read -p "被代理的 Emby URL (例如 http://127.0.0.1:8096): " input_r_domain_full
+        echo -e "\n${BLUE}--- 交互模式: 配置反向代理 ---${NC}"
+        read -rp "请输入你的访问 URL (例如 https://emby.mysite.com): " input_you
+        read -rp "请输入后端 Emby URL (例如 http://127.0.0.1:8096): " input_r
 
-        process_url_input "$input_you_domain_full" "you"
-        process_url_input "$input_r_domain_full" "r"
+        process_url_input "$input_you" "you"
+        process_url_input "$input_r" "r"
 
         if [[ -z "$you_domain" || -z "$r_domain" ]]; then
-            echo "错误: 域名信息不能为空。" >&2
+            log_error "域名信息不能为空。"
             exit 1
         fi
     fi
@@ -263,51 +285,51 @@ prompt_interactive_mode() {
 
 # --- 3. 显示摘要 ---
 display_summary() {
-    # 确定最终的证书域名
     if [[ -n "$cert_domain" ]]; then
         format_cert_domain="$cert_domain"
     elif [[ "$parse_cert_domain" == "yes" ]]; then
+        # 恢复原脚本的通配符匹配逻辑
         if [[ "$you_domain" == *.*.* ]]; then
-            format_cert_domain="${you_domain#*.}"
+             format_cert_domain="${you_domain#*.}"
         else
-            format_cert_domain="$you_domain"
+             format_cert_domain="$you_domain"
         fi
     else
         format_cert_domain="$you_domain"
     fi
 
-    # 确定最终的 DNS resolver
     if [[ -n "$manual_resolver" ]]; then
         resolver="$manual_resolver valid=60s"
     else
-        resolver="$(get_resolver_host) $(get_ipv6_flag)"
+        local ipv6_flag=""
+        if ! has_ipv6; then ipv6_flag="ipv6=off"; fi
+        resolver="$(get_resolver_host) $ipv6_flag"
     fi
 
-    local protocol url
-    protocol=$([[ "$no_tls" == "yes" ]] && echo "http" || echo "https")
-    url="${protocol}://${you_domain}${you_frontend_port:+:$you_frontend_port}${you_domain_path}"
-
-    local r_proto r_url
-    r_proto=$([[ "$r_http_frontend" == "yes" ]] && echo "http" || echo "https")
-    r_url="${r_proto}://${r_domain}${r_frontend_port:+:$r_frontend_port}${r_domain_path}"
-
-    # 打印摘要
-    echo -e "\n\e[1;34m🔧 Nginx 反代配置信息\e[0m"
+    echo -e "\n${BLUE}🔧 Nginx 反代配置摘要${NC}"
     echo "──────────────────────────────────────────────"
-    printf "➡️  访问地址 (From): %s\n" "$url"
-    printf "⬅️  目标地址 (To):   %s\n" "$r_url"
+    echo -e "➡️  前端访问: ${GREEN}${no_tls:+http://}${no_tls:-https://}${you_domain}:${you_frontend_port}${you_domain_path}${NC}"
+    echo -e "⬅️  后端源站: ${YELLOW}${r_http_frontend:+http://}${r_http_frontend:-https://}${r_domain}:${r_frontend_port}${r_domain_path}${NC}"
     echo "──────────────────────────────────────────────"
-    printf "📜 证书域名:         %s\n" "$format_cert_domain"
-    printf "🔒 是否禁用 TLS:       %s\n" "$([[ "$no_tls" == "yes" ]] && echo "✅ 是" || echo "❌ 否")"
-    printf "🧠 DNS 解析:          %s\n" "$resolver"
+    echo -e "📜 证书域名: ${format_cert_domain}"
+    echo -e "🔒 TLS 状态: $([[ "$no_tls" == "yes" ]] && echo "${RED}禁用 (HTTP Only)${NC}" || echo "${GREEN}启用 (HTTPS)${NC}")"
+    echo -e "🧠 DNS 解析: ${resolver}"
+    echo -e "🌏 配置文件源: ${CONF_HOME}"
     echo "──────────────────────────────────────────────"
 }
 
-# --- 4. 安装依赖 (Nginx, acme.sh) ---
+# --- 4. 依赖安装 (完全还原原版 deploy.sh 逻辑) ---
 install_dependencies() {
     local OS_NAME PM GNUPG_PM
 
-    source /etc/os-release
+    if [ -f /etc/os-release ]; then
+        source /etc/os-release
+    else
+        log_error "无法读取 /etc/os-release，不支持的系统。"
+        exit 1
+    fi
+
+    # 严格按照原版 deploy.sh 的 case 逻辑，确保变量赋值一致
     case "$ID" in
       debian|devuan|kali) OS_NAME='debian'; PM='apt-get'; GNUPG_PM='gnupg2' ;;
       ubuntu) OS_NAME='ubuntu'; PM='apt-get'; GNUPG_PM=$([[ ${VERSION_ID%%.*} -lt 22 ]] && echo "gnupg2" || echo "gnupg") ;;
@@ -317,9 +339,9 @@ install_dependencies() {
       *) echo "错误: 不支持的操作系统 '$ID'。" >&2; exit 1 ;;
     esac
 
-    echo "INFO: 检查 Nginx..."
+    log_info "检查 Nginx..."
     if ! command -v nginx &> /dev/null; then
-        echo "INFO: Nginx 未安装，正在从官方源为 '$OS_NAME' 安装..."
+        log_info "Nginx 未安装，正在从官方源为 '$OS_NAME' 安装..."
 
         case "$OS_NAME" in
           debian|ubuntu)
@@ -362,330 +384,234 @@ install_dependencies() {
               $SUDO rc-service nginx restart
               ;;
         esac
-        echo "INFO: Nginx 安装完成。"
+        log_success "Nginx 安装完成。"
     else
-        echo "INFO: Nginx 已安装。"
+        log_info "Nginx 已安装。"
     fi
 
+    # 补充安装依赖工具 (socat 等)
+    if ! command -v socat &>/dev/null; then
+        log_info "安装 socat 等辅助工具..."
+        case "$OS_NAME" in
+            debian|ubuntu|arch) $SUDO "$PM" install -y socat cron ;;
+            *) $SUDO "$PM" install -y socat cronie ;;
+        esac
+    fi
+
+    # acme.sh 安装逻辑
     ACME_SH="$HOME/.acme.sh/acme.sh"
     if [[ "$no_tls" != "yes" && ! -f "$ACME_SH" ]]; then
-       echo "INFO: 正在为当前用户安装 acme.sh..."
-       if ! command -v socat &> /dev/null; then
-            source /etc/os-release
-            case "$ID" in
-                debian|ubuntu|arch) $SUDO "$PM" install -y socat cron ;;
-                *) $SUDO "$PM" install -y socat cronie ;;
-            esac
+       log_info "正在为当前用户安装 acme.sh..."
+       log_info "使用安装命令: $ACME_INSTALL_CMD"
+       
+       # 使用 setup_env 中定义的命令进行安装
+       if eval "$ACME_INSTALL_CMD"; then
+           log_success "acme.sh 安装完成。"
+           "$ACME_SH" --upgrade --auto-upgrade
+           "$ACME_SH" --set-default-ca --server letsencrypt
+       else
+           log_error "acme.sh 安装失败，请检查网络连接。"
+           exit 1
        fi
-       curl https://get.acme.sh | sh -s
-       "$ACME_SH" --upgrade --auto-upgrade
-       "$ACME_SH" --set-default-ca --server letsencrypt
-       echo "INFO: acme.sh 安装完成。"
     fi
 }
 
-# --- 5. 生成 Nginx 配置 ---
+# --- 5. 生成配置 ---
 generate_nginx_config() {
-    echo "INFO: 正在生成 Nginx 配置文件..."
-    curl -sL "$CONF_HOME/nginx.conf" | $SUDO tee /etc/nginx/nginx.conf > /dev/null
+    log_info "准备生成 Nginx 配置文件..."
+
+    local main_conf="/etc/nginx/nginx.conf"
+    if [ ! -f "$main_conf" ] || grep -q "include /etc/nginx/conf.d/\*.conf;" "$main_conf"; then
+        backup_file "$main_conf"
+        log_info "更新主配置文件 $main_conf (源: $CONF_HOME/nginx.conf)..."
+        # 使用 CONF_HOME (可能包含代理)
+        if ! curl -sL "$CONF_HOME/nginx.conf" | $SUDO tee "$main_conf" > /dev/null; then
+            log_error "下载 nginx.conf 失败，请检查网络或代理设置。"
+            exit 1
+        fi
+    fi
 
     local template_content
     if [[ -n "$template_domain_config_source" ]]; then
-        echo "INFO: 使用用户提供的模板: $template_domain_config_source"
         if [[ "$template_domain_config_source" == http* ]]; then
             template_content=$(curl -sL "$template_domain_config_source")
         elif [ -f "$template_domain_config_source" ]; then
             template_content=$(cat "$template_domain_config_source")
         else
-            echo "错误: 提供的模板 '$template_domain_config_source' 既不是有效的 URL 也不是本地文件。" >&2
+            log_error "指定的模板无效。"
             exit 1
         fi
     else
-        local default_template_name
-        if [[ "$no_tls" == "yes" ]]; then
-            default_template_name="p.example.com.no_tls.conf"
-        else
-            default_template_name="p.example.com.conf"
-        fi
-        echo "INFO: 使用默认模板: $default_template_name"
-        template_content=$(curl -sL "$CONF_HOME/conf.d/$default_template_name")
+        local tpl_name="p.example.com.conf"
+        [[ "$no_tls" == "yes" ]] && tpl_name="p.example.com.no_tls.conf"
+        
+        log_info "下载模板: $tpl_name (源: $CONF_HOME/conf.d/$tpl_name)..."
+        template_content=$(curl -sL "$CONF_HOME/conf.d/$tpl_name")
     fi
 
-    local -a subst_var_names=()
-    export you_domain; subst_var_names+=("you_domain")
-    export you_domain_path="${you_domain_path:-/}"; subst_var_names+=("you_domain_path")
-    export you_frontend_port; subst_var_names+=("you_frontend_port")
-    export resolver; subst_var_names+=("resolver")
-    export format_cert_domain; subst_var_names+=("format_cert_domain")
-
-    # [优化] 重写规则生成逻辑
-    export you_domain_path_rewrite=""
-    # 仅当访问路径不是根目录时才生成重写规则
-    if [[ -n "$you_domain_path" && "$you_domain_path" != "/" ]]; then
-        # 如果后端路径为空，则默认为根目录 "/"
-        local target_path="${r_domain_path:-/}"
-        # 构造重写规则，注意 \$1 用于将 $1 传递给 Nginx
-        export you_domain_path_rewrite="rewrite ^${you_domain_path}(.*)\$ ${target_path}\$1 break;"
-    fi
-    subst_var_names+=("you_domain_path_rewrite")
-
-    local r_proto=$([[ "$r_http_frontend" == "yes" ]] && echo "http" || echo "https")
-    local r_port_str=$([[ -n "$r_frontend_port" ]] && echo ":$r_frontend_port" || echo "")
-    export r_domain_full="${r_proto}://${r_domain}${r_port_str}"
-    subst_var_names+=("r_domain_full")
-
-    local subst_vars
-    subst_vars=$(for var in "${subst_var_names[@]}"; do printf " \${%s}" "$var"; done)
-
-    local you_domain_config_filename="${you_domain}.${you_frontend_port}.conf"
-    echo "$template_content" | envsubst "$subst_vars" | $SUDO tee "/etc/nginx/conf.d/$you_domain_config_filename" > /dev/null
-
-    echo "INFO: 配置文件 '/etc/nginx/conf.d/$you_domain_config_filename' 已生成。"
-}
-
-# --- 6. 申请 SSL 证书 ---
-issue_certificate() {
-    if [[ "$no_tls" == "yes" ]]; then
-        echo "INFO: 已禁用 TLS，跳过证书申请。"
-        return
-    fi
-
-    ACME_SH="$HOME/.acme.sh/acme.sh"
-    local cert_path_base="/etc/nginx/certs/$format_cert_domain"
-    local cert_file_path="$cert_path_base/cert"
-
-    local is_wildcard="no"
-    if [[ "$format_cert_domain" != "$you_domain" ]]; then
-        is_wildcard="yes"
-    fi
-
-    # 场景 1: 泛域名场景，且用户已手动放置证书
-    if [[ "$is_wildcard" == "yes" ]] && [ -f "$cert_file_path" ]; then
-        echo "INFO: 检测到证书目录 '$cert_path_base' 已存在，将假定您已手动配置了正确的 (泛)域名证书。"
-        echo "INFO: 跳过证书申请和安装步骤。"
-        return
-    fi
-
-    # 决定申请模式
-    local issue_params=()
-    local main_domain_to_issue="$you_domain" # 默认申请单域名
-
-    if [[ -n "$dns_provider" ]]; then
-        # --- DNS API 模式 ---
-        local acme_dns_provider="dns_${dns_provider}"
-
-        if [[ "$is_wildcard" == "yes" ]]; then
-            main_domain_to_issue="$format_cert_domain"
-            issue_params=(--issue --dns "$acme_dns_provider" -d "$format_cert_domain" -d "*.$format_cert_domain")
-            echo "INFO: 准备使用 DNS API ($acme_dns_provider) 为 '$format_cert_domain' 和 '*.$format_cert_domain' 申请泛域名证书..."
-        else
-            issue_params=(--issue --dns "$acme_dns_provider" -d "$you_domain")
-            echo "INFO: 准备使用 DNS API ($acme_dns_provider) 为 '$you_domain' 申请证书..."
-        fi
-
-        # 引导用户配置 API 密钥
-        if [[ "$dns_provider" == "cf" ]]; then
-            if [[ -n "$cf_token" && -n "$cf_account_id" ]]; then
-                export CF_Token="$cf_token"
-                export CF_Account_ID="$cf_account_id"
-                echo "INFO: 使用通过命令行参数传入的 Cloudflare API 凭据。"
-            elif [ ! -t 0 ]; then
-                echo "错误: 在非交互模式下，必须通过 --cf-token 和 --cf-account-id 参数提供 Cloudflare API 凭据。" >&2
-                exit 1
-            else
-                echo "--------------------------------------------------------"
-                echo -e "\e[1;33m需要配置 DNS API 密钥\e[0m"
-                echo "示例: 对于 Cloudflare (cf)，您需要提供 CF_Token 和 CF_Account_ID。"
-                read -p "请输入您的 Cloudflare Token: " CF_Token
-                read -p "请输入您的 Cloudflare Account ID: " CF_Account_ID
-                export CF_Token
-                export CF_Account_ID
-                echo "--------------------------------------------------------"
-            fi
-        else
-            if [ ! -t 0 ]; then
-                 echo "错误: 在非交互模式下，请先手动导出您 DNS 提供商 ('$dns_provider') 所需的环境变量。" >&2
-                 exit 1
-            fi
-            echo "--------------------------------------------------------"
-            echo -e "\e[1;33m需要配置 DNS API 密钥\e[0m"
-            echo "请参考 acme.sh 官方文档，手动导出您 DNS 提供商 ('$dns_provider') 所需的环境变量。"
-            echo "https://github.com/acmesh-official/acme.sh/wiki/dnsapi"
-            read -p "配置完成后，请按 Enter 键继续..."
-            echo "--------------------------------------------------------"
-        fi
-
-    else
-        # --- Standalone HTTP 模式 ---
-        if [[ "$is_wildcard" == "yes" ]]; then
-            echo "错误: 泛域名证书 (*.$format_cert_domain) 必须使用 DNS API 模式进行申请。" >&2
-            echo "请使用 --dns <provider> 参数 (例如 --dns cf) 并提供 API 密钥。" >&2
-            exit 1
-        fi
-        issue_params=(--issue --standalone -d "$you_domain")
-        echo "INFO: 准备使用 Standalone 模式为 '$you_domain' 申请证书..."
-    fi
-
-    # [修正] 恢复先检查后申请的逻辑
-    if ! "$ACME_SH" --info -d "$main_domain_to_issue" 2>/dev/null | grep -q RealFullChainPath; then
-        echo "INFO: 证书不存在，开始申请..."
-        $SUDO mkdir -p "$cert_path_base"
-
-        # 执行申请
-        "$ACME_SH" "${issue_params[@]}" --keylength ec-256 --force || {
-            echo "错误: 证书申请失败。" >&2
-            if [[ -z "$dns_provider" ]]; then
-                echo "对于 Standalone 模式，请检查：" >&2
-                echo "1. 域名 ('$you_domain') 是否已正确解析到本服务器的公网 IP 地址。" >&2
-                echo "2. 服务器的防火墙 (或云服务商安全组) 是否已放行 TCP 80 端口。" >&2
-                echo "3. 80 端口当前可能被 Nginx 或其他程序占用。请手动停止相关服务后重试。" >&2
-            else
-                echo "对于 DNS 模式，请检查：" >&2
-                echo "1. 您提供的 API 密钥是否正确且拥有修改 DNS 的权限。" >&2
-                echo "2. acme.sh 是否支持您的 DNS 提供商 ('$dns_provider')。" >&2
-            fi
-
-            local you_domain_config_filename="${you_domain}.${you_frontend_port}.conf"
-            echo "INFO: 正在清理本次生成的 Nginx 配置文件: $you_domain_config_filename" >&2
-            $SUDO rm -f "/etc/nginx/conf.d/$you_domain_config_filename"
-
-            exit 1
-        }
-        echo "INFO: 证书申请成功。"
-    else
-        echo "INFO: 证书已由 acme.sh 管理，将跳过申请步骤，直接进行安装/更新。"
-    fi
-
-    # 安装证书
-    echo "INFO: 正在安装证书到 Nginx 目录 '$cert_path_base'..."
-    "$ACME_SH" --install-cert -d "$main_domain_to_issue" --ecc \
-        --fullchain-file "$cert_path_base/cert" \
-        --key-file "$cert_path_base/key" \
-        --reloadcmd "$SUDO nginx -s reload"
-
-    echo "INFO: 证书安装并部署完成。"
-}
-
-# --- [新增] 移除函数 ---
-remove_domain_config() {
-    local remove_url="$domain_to_remove"
-    echo "INFO: 正在为 '$remove_url' 查找相关配置..."
-
-    # 精确解析域名和端口
-    local domain port temp_path temp_proto
-    IFS='|' read -r domain temp_path port temp_proto < <(parse_url "$remove_url")
-
-    # 如果未解析出协议，则假定为 https
-    if [[ -z "$temp_proto" ]]; then
-        temp_proto="https"
-    fi
-
-    # 根据协议决定默认端口
-    if [[ "$temp_proto" == "https" ]]; then
-        port="${port:-443}"
-    else
-        port="${port:-80}"
-    fi
-
-    # 构造精确的配置文件名
-    local nginx_conf_file="/etc/nginx/conf.d/${domain}.${port}.conf"
-
-    if ! $SUDO [ -f "$nginx_conf_file" ]; then
-        echo "错误: 未找到与 '$domain' 在端口 '$port' 上的 Nginx 配置文件: $nginx_conf_file" >&2
+    if [[ -z "$template_content" ]]; then
+        log_error "获取配置模板失败。"
         exit 1
     fi
 
-    # 智能判断是否使用 TLS
-    local uses_tls="no"
-    local remove_cert_domain=""
-    local cert_dir=""
-
-    if $SUDO grep -q "ssl_certificate" "$nginx_conf_file"; then
-        uses_tls="yes"
-        # [优化] 从 Nginx 配置中直接推断证书域名
-        local cert_full_path
-        cert_full_path=$($SUDO awk "/ssl_certificate / {print \$2}" "$nginx_conf_file" | head -n 1 | sed 's/;//')
-        local cert_parent_dir
-        cert_parent_dir=$(dirname "$cert_full_path")
-        remove_cert_domain=$(basename "$cert_parent_dir")
-        cert_dir="/etc/nginx/certs/$remove_cert_domain"
+    export you_domain_path_rewrite=""
+    if [[ -n "$you_domain_path" && "$you_domain_path" != "/" ]]; then
+        local target_path="${r_domain_path:-/}"
+        export you_domain_path_rewrite="rewrite ^${you_domain_path}(.*)\$ ${target_path}\$1 break;"
     fi
 
-    echo "--------------------------------------------------------"
-    echo -e "\e[1;31m警告: 即将执行破坏性操作！\e[0m"
-    echo "将要为 '$domain' (端口: $port) 移除以下内容:"
-    echo "  - Nginx 配置文件: $nginx_conf_file"
+    export you_domain you_frontend_port resolver format_cert_domain
+    export you_domain_path="${you_domain_path:-/}"
+    
+    local r_proto=$([[ "$r_http_frontend" == "yes" ]] && echo "http" || echo "https")
+    local r_port_str=$([[ -n "$r_frontend_port" ]] && echo ":$r_frontend_port" || echo "")
+    export r_domain_full="${r_proto}://${r_domain}${r_port_str}"
 
-    local is_wildcard_setup="no"
-    if [[ "$uses_tls" == "yes" && "$domain" != "$remove_cert_domain" ]]; then
-        is_wildcard_setup="yes"
+    local vars='$you_domain $you_frontend_port $resolver $format_cert_domain $you_domain_path $you_domain_path_rewrite $r_domain_full'
+
+    local conf_filename="${you_domain}.${you_frontend_port}.conf"
+    local conf_path="/etc/nginx/conf.d/$conf_filename"
+
+    backup_file "$conf_path"
+    
+    echo "$template_content" | envsubst "$vars" | $SUDO tee "$conf_path" > /dev/null
+    log_success "配置文件已生成: $conf_path"
+}
+
+# --- 6. 证书申请 ---
+issue_certificate() {
+    if [[ "$no_tls" == "yes" ]]; then return; fi
+
+    ACME_SH="$HOME/.acme.sh/acme.sh"
+    local cert_dir="/etc/nginx/certs/$format_cert_domain"
+    local cert_file="$cert_dir/cert"
+
+    if [[ "$format_cert_domain" != "$you_domain" ]] && [ -f "$cert_file" ]; then
+        log_info "检测到泛域名证书已存在，跳过申请。"
+        return
     fi
 
-    if [[ "$uses_tls" == "yes" ]]; then
-        if [[ "$is_wildcard_setup" == "no" ]]; then
-            if [ -d "$cert_dir" ]; then
-                echo "  - Nginx 证书目录: $cert_dir"
+    $SUDO mkdir -p "$cert_dir"
+
+    local reload_cmd="$SUDO nginx -s reload"
+
+    if "$ACME_SH" --list | grep -q "$format_cert_domain"; then
+        log_info "证书已在 acme.sh 管理列表中，跳过申请，直接尝试安装。"
+    else
+        if [[ -n "$dns_provider" ]]; then
+            # --- DNS 模式 ---
+            local dns_arg="dns_${dns_provider}"
+            local domains_arg="-d $format_cert_domain"
+            if [[ "$format_cert_domain" != "$you_domain" ]]; then
+                domains_arg="$domains_arg -d *.$format_cert_domain"
             fi
-            ACME_SH="$HOME/.acme.sh/acme.sh"
-            if [ -f "$ACME_SH" ]; then
-                 echo "  - acme.sh 证书记录 (针对域名: $domain)"
+            
+            if [[ "$dns_provider" == "cf" ]]; then
+                if [[ -n "$cf_token" ]]; then export CF_Token="$cf_token"; fi
+                if [[ -n "$cf_account_id" ]]; then export CF_Account_ID="$cf_account_id"; fi
+                
+                if [[ -z "$CF_Token" || -z "$CF_Account_ID" ]] && [ -t 0 ]; then
+                    echo -e "${YELLOW}请输入 Cloudflare API 凭据:${NC}"
+                    read -rp "Token: " CF_Token
+                    read -rp "Account ID: " CF_Account_ID
+                    export CF_Token CF_Account_ID
+                fi
+            fi
+
+            log_info "使用 DNS 模式 ($dns_provider) 申请证书..."
+            if ! "$ACME_SH" --issue --dns "$dns_arg" $domains_arg --keylength ec-256; then
+                log_error "证书申请失败。"
+                exit 1
             fi
         else
-            echo -e "\e[1;33m  - 注意: 检测到泛域名证书配置，将不会删除共享的证书文件。\e[0m"
+            # --- Standalone 模式 ---
+            if [[ "$format_cert_domain" != "$you_domain" ]]; then
+                log_error "泛域名证书必须使用 DNS 模式申请。"
+                exit 1
+            fi
+
+            log_info "使用 Standalone 模式申请证书..."
+            
+            # 检测端口占用 (Robust)
+            local nginx_stopped=0
+            if lsof -i :80 | grep -q LISTEN || netstat -nlp | grep -q ':80 .*LISTEN'; then
+                log_warn "端口 80 正在被占用..."
+                if lsof -i :80 | grep -q nginx || netstat -nlp | grep ':80 ' | grep -q nginx; then
+                    log_warn "Nginx 占用 80 端口，临时停止以进行证书验证..."
+                    $SUDO systemctl stop nginx || $SUDO service nginx stop
+                    nginx_stopped=1
+                    sleep 2
+                else
+                    log_error "端口 80 被非 Nginx 进程占用，请先释放端口。"
+                    exit 1
+                fi
+            fi
+
+            if ! "$ACME_SH" --issue --standalone -d "$you_domain" --keylength ec-256; then
+                log_error "证书申请失败。请检查域名解析。"
+                if [ $nginx_stopped -eq 1 ]; then $SUDO systemctl start nginx; fi
+                exit 1
+            fi
+            
+            if [ $nginx_stopped -eq 1 ]; then
+                log_info "恢复 Nginx..."
+                $SUDO systemctl start nginx || $SUDO service nginx start
+            fi
         fi
     fi
-    echo "--------------------------------------------------------"
 
-    # [修正] 智能确认流程
-    if [ ! -t 0 ]; then # 非交互模式
-        if [[ "$force_yes" != "yes" ]]; then
-            echo "错误: 在非交互模式下，移除操作必须使用 '-Y' 或 '--yes' 参数进行确认。" >&2
-            exit 1
-        fi
-        echo "INFO: 检测到 '--yes' 参数，将自动执行移除操作。"
-    else # 交互模式
-        read -p "此操作不可逆，请输入 'yes' 确认移除: " confirmation
-        if [[ "$confirmation" != "yes" ]]; then
-            echo "操作已取消。"
+    log_info "安装证书到 $cert_dir ..."
+    "$ACME_SH" --install-cert -d "$format_cert_domain" --ecc \
+        --fullchain-file "$cert_dir/cert" \
+        --key-file "$cert_dir/key" \
+        --reloadcmd "$reload_cmd"
+    
+    log_success "证书部署完成。"
+}
+
+# --- 7. 移除配置 ---
+remove_domain_config() {
+    local target="$domain_to_remove"
+    log_info "准备移除: $target"
+
+    local temp_domain temp_port
+    IFS='|' read -r _ temp_domain temp_port _ < <(parse_url "$target")
+    
+    local conf_pattern="/etc/nginx/conf.d/${temp_domain}.*.conf"
+    local conf_files
+    conf_files=$(ls $conf_pattern 2>/dev/null || true)
+
+    if [[ -z "$conf_files" ]]; then
+        log_warn "未找到与 $temp_domain 相关的配置文件。"
+        exit 0
+    fi
+
+    echo -e "${YELLOW}将移除以下文件:${NC}"
+    echo "$conf_files"
+    
+    if [[ "$force_yes" != "yes" ]]; then
+        read -rp "确认移除? [y/N] " confirm
+        if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
+            log_info "操作取消。"
             exit 0
         fi
     fi
 
-    echo "INFO: 开始移除..."
-    $SUDO rm -f "$nginx_conf_file"
-    echo "INFO: Nginx 配置文件已删除。"
+    for f in $conf_files; do
+        $SUDO rm -f "$f"
+        log_success "已删除: $f"
+    done
 
-    if [[ "$uses_tls" == "yes" ]]; then
-        if [[ "$is_wildcard_setup" == "no" ]]; then
-            if [ -d "$cert_dir" ]; then
-                $SUDO rm -rf "$cert_dir"
-                echo "INFO: Nginx 证书目录已删除。"
-            fi
-
-            ACME_SH="$HOME/.acme.sh/acme.sh"
-            if [ -f "$ACME_SH" ]; then
-                "$ACME_SH" --remove -d "$domain" --ecc || echo "警告: 从 acme.sh 移除证书失败，可能记录已不存在。"
-                echo "INFO: acme.sh 证书记录已移除。"
-            fi
-        else
-            echo "INFO: 证书目录和 acme.sh 记录未被删除。"
-            echo "如果您确认不再需要此泛域名证书，请手动执行以下命令进行清理："
-            echo "  $HOME/.acme.sh/acme.sh --remove -d '$remove_cert_domain' --ecc"
-            echo "  $SUDO rm -rf '$cert_dir'"
-        fi
-    fi
-
-    echo "INFO: 正在检查 Nginx 配置并执行重载..."
-    $SUDO nginx -t
-    $SUDO nginx -s reload
-
-    echo -e "\n\e[1;32m✅ 域名 '$domain' 的相关配置已成功移除！\e[0m"
+    log_warn "证书文件可能位于 /etc/nginx/certs/ 下，请根据需要手动清理。"
+    
+    $SUDO nginx -t && $SUDO nginx -s reload
+    log_success "配置移除完成，Nginx 已重载。"
 }
 
+# ===================================================================================
+#                                 主流程
+# ===================================================================================
 
-# ===================================================================================
-#                                 主函数
-# ===================================================================================
 main() {
     parse_arguments "$@"
 
@@ -699,13 +625,16 @@ main() {
     install_dependencies
     generate_nginx_config
     issue_certificate
-
-    echo "INFO: 正在检查 Nginx 配置并执行最终重载..."
-    $SUDO nginx -t
-    $SUDO nginx -s reload
-
-    echo -e "\n\e[1;32m✅ 恭喜！Nginx 反向代理部署成功！\e[0m"
+    
+    log_info "测试 Nginx 配置..."
+    if $SUDO nginx -t; then
+        $SUDO nginx -s reload
+        log_success "部署成功！"
+        echo -e "${GREEN}访问地址: ${no_tls:+http://}${no_tls:-https://}${you_domain}:${you_frontend_port}${you_domain_path}${NC}"
+    else
+        log_error "Nginx 配置测试失败。"
+        exit 1
+    fi
 }
 
-# --- 脚本执行入口 ---
 main "$@"
