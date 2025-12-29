@@ -19,10 +19,11 @@ server {
 
     # 动态生成的反向代理 location 块
     location ${domain_path} {
+        early_hints $early_hints;
         proxy_pass                            ${proxy_target};
         proxy_set_header Host                 $proxy_host;
 
-        proxy_http_version                    1.1;
+        proxy_http_version                    2;
         proxy_cache_bypass                    $http_upgrade;
         proxy_set_header Upgrade              $http_upgrade;
         proxy_set_header Connection           $connection_upgrade;
@@ -40,11 +41,12 @@ server {
     location ~  ^/backstream/(https?)/([^/]+)  {
         set $website                          $1://$2;
         rewrite ^/backstream/(https?)/([^/]+)(/.+)$  $3 break;
+        early_hints $early_hints;
         proxy_pass                            $website;
 
         proxy_set_header Host                 $proxy_host;
 
-        proxy_http_version                    1.1;
+        proxy_http_version                    2;
         proxy_cache_bypass                    $http_upgrade;
         proxy_set_header Upgrade              $http_upgrade;
         proxy_set_header Connection           $connection_upgrade;
@@ -63,9 +65,10 @@ server {
 
     location @handle_redirect {
         set $saved_redirect_location '$upstream_http_location';
+        early_hints $early_hints;
         proxy_pass $saved_redirect_location;
         proxy_set_header Host                 $proxy_host;
-        proxy_http_version                    1.1;
+        proxy_http_version                    2;
         proxy_cache_bypass                    $http_upgrade;
 
         proxy_ssl_server_name                 on;

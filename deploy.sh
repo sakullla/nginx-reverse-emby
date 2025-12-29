@@ -52,21 +52,22 @@ is_in_china() {
 setup_env() {
     local RAW_URL="https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main"
     
+    # [修改] ACME_INSTALL_URL 统一使用官方源，不再使用镜像
+    ACME_INSTALL_URL="https://get.acme.sh"
+
     if is_in_china; then
-        echo -e "${BLUE}[INFO]${NC} 检测到中国大陆环境，正在启用加速配置..."
-        # 使用 ghproxy.net 加速 GitHub 文件下载
+        echo -e "${BLUE}[INFO]${NC} 检测到中国大陆环境，配置文件下载将启用加速..."
+        # 使用 ghproxy.net 加速 GitHub 文件下载 (仅针对项目配置文件)
         CONF_HOME="https://ghproxy.net/${RAW_URL}"
-        # acme.sh 国内专用安装脚本 (gitcode镜像)
-        ACME_Base_Cmd="curl -sL https://gitcode.net/cert/cn-acme.sh/-/raw/master/install.sh?inline=false"
     else
         echo -e "${BLUE}[INFO]${NC} 检测到海外环境，使用默认源..."
         CONF_HOME="${RAW_URL}"
-        ACME_Base_Cmd="curl https://get.acme.sh"
     fi
 
     readonly CONF_HOME
     # [修改] 使用固定备份目录，覆盖旧备份
     readonly BACKUP_DIR="/etc/nginx/backup"
+    readonly ACME_INSTALL_URL
 }
 
 # 初始化环境
@@ -416,12 +417,11 @@ install_dependencies() {
     ACME_SH="$HOME/.acme.sh/acme.sh"
     if [[ "$no_tls" != "yes" && ! -f "$ACME_SH" ]]; then
        log_info "正在为当前用户安装 acme.sh..."
+       log_info "使用安装URL: $ACME_INSTALL_URL"
        
-       # 恢复为不带邮箱的安装命令
-       local install_cmd="$ACME_Base_Cmd | sh -s"
-       log_info "使用安装命令: $install_cmd"
-       
-       if eval "$install_cmd"; then
+       # [修改] 使用 setup_env 中定义的 ACME_INSTALL_URL (官方源)
+       # 并且直接 curl | sh 执行，避免 eval 问题
+       if curl -sL "$ACME_INSTALL_URL" | sh -s; then
            log_success "acme.sh 安装完成。"
            "$ACME_SH" --upgrade --auto-upgrade
            # 默认使用 letsencrypt，支持 IP 证书 (2025+ policy)
