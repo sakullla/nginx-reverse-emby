@@ -308,6 +308,7 @@ display_summary() {
     fi
 
     local protocol=$([[ "$no_tls" == "yes" ]] && echo "http" || echo "https")
+    # [修复] 显式判断后端协议，修复 http://no... 的显示错误
     local r_protocol=$([[ "$r_http_frontend" == "yes" ]] && echo "http" || echo "https")
 
     echo -e "\n${BLUE}🔧 Nginx 反代配置摘要${NC}"
@@ -631,7 +632,8 @@ main() {
     if $SUDO nginx -t; then
         $SUDO nginx -s reload
         log_success "部署成功！"
-        echo -e "${GREEN}访问地址: ${no_tls:+http://}${no_tls:-https://}${you_domain}:${you_frontend_port}${you_domain_path}${NC}"
+        local protocol=$([[ "$no_tls" == "yes" ]] && echo "http" || echo "https")
+        echo -e "${GREEN}访问地址: ${protocol}://${you_domain}:${you_frontend_port}${you_domain_path}${NC}"
     else
         log_error "Nginx 配置测试失败。"
         exit 1
