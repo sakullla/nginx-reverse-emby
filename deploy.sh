@@ -51,7 +51,8 @@ is_in_china() {
 # --- 设置全局变量 (将在解析参数后调用) ---
 setup_env() {
     local RAW_URL="https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main"
-    local ACME_OFFICIAL_RAW="https://raw.githubusercontent.com/acmesh-official/acme.sh/refs/heads/master/acme.sh"
+    # [修改] 使用 acme.sh 官方 GitHub Raw 完整路径
+    local ACME_OFFICIAL_RAW="https://raw.githubusercontent.com/acmesh-official/acme.sh/master/acme.sh"
     
     # 确定代理地址: 命令行参数 > 环境变量 > 自动检测
     local effective_gh_proxy=""
@@ -79,6 +80,7 @@ setup_env() {
     else
         echo -e "${BLUE}[INFO]${NC} 未使用 GitHub 代理，使用默认源..."
         CONF_HOME="${RAW_URL}"
+        # 如果不使用代理，通常推荐使用 get.acme.sh 官方短链，但也可用 raw
         ACME_INSTALL_URL="https://get.acme.sh"
     fi
 
@@ -436,14 +438,30 @@ install_dependencies() {
        log_info "正在为当前用户安装 acme.sh..."
        log_info "使用安装URL: $ACME_INSTALL_URL"
        
-       # [修改] 使用 setup_env 中定义的可靠 URL，并直接 curl | sh 执行，避免 eval 问题
-       if curl -sL "$ACME_INSTALL_URL" | sh -s; then
-           log_success "acme.sh 安装完成。"
-           "$ACME_SH" --upgrade --auto-upgrade
-           # 默认使用 letsencrypt，支持 IP 证书 (2025+ policy)
-           "$ACME_SH" --set-default-ca --server letsencrypt
+       # [修改] 改为先下载脚本到临时文件，再执行安装，避免 curl 管道错误
+       local TMP_INSTALL_SCRIPT="/tmp/acme_install.sh"
+       if curl -sL "$ACME_INSTALL_URL" -o "$TMP_INSTALL_SCRIPT"; then
+           # 检查下载的文件是否包含 acme.sh 关键字，避免下载到 HTML 错误页
+           if grep -q "acme.sh" "$TMP_INSTALL_SCRIPT"; then
+                if sh "$TMP_INSTALL_SCRIPT" --install-online; then
+                    log_success "acme.sh 安装完成。"
+                    rm -f "$TMP_INSTALL_SCRIPT"
+                    "$ACME_SH" --upgrade --auto-upgrade
+                    # 默认使用 letsencrypt，支持 IP 证书 (2025+ policy)
+                    "$ACME_SH" --set-default-ca --server letsencrypt
+                else
+                    log_error "acme.sh 安装脚本执行失败。"
+                    rm -f "$TMP_INSTALL_SCRIPT"
+                    exit 1
+                fi
+           else
+               log_error "下载的 acme.sh 安装脚本内容异常，可能是网络问题或代理错误。"
+               log_error "下载内容预览: $(head -n 5 "$TMP_INSTALL_SCRIPT")"
+               rm -f "$TMP_INSTALL_SCRIPT"
+               exit 1
+           fi
        else
-           log_error "acme.sh 安装失败，请检查网络连接。"
+           log_error "无法下载 acme.sh 安装脚本，请检查网络连接。"
            exit 1
        fi
     fi
@@ -572,30 +590,11 @@ issue_certificate() {
 
             log_info "使用 Standalone 模式申请证书..."
             
-            # 检测端口占用 (Robust)
-            local nginx_stopped=0
-            if lsof -i :80 | grep -q LISTEN || netstat -nlp | grep -q ':80 .*LISTEN'; then
-                log_warn "端口 80 正在被占用，尝试停止 Nginx..."
-                if lsof -i :80 | grep -q nginx || netstat -nlp | grep ':80 ' | grep -q nginx; then
-                    $SUDO systemctl stop nginx || $SUDO service nginx stop
-                    nginx_stopped=1
-                    sleep 2
-                else
-                    log_error "端口 80 被非 Nginx 进程占用，请先释放端口。"
-                    exit 1
-                fi
-            fi
-
-            # [修改] 申请命令增加 issue_extra_args (仅在 IP 模式下有值)
+            # [修改] 移除端口占用检测，直接申请，不再停止 Nginx
+            # 申请命令增加 issue_extra_args (仅在 IP 模式下有值)
             if ! "$ACME_SH" --issue --standalone -d "$you_domain" --keylength ec-256 $issue_extra_args; then
-                log_error "证书申请失败。请检查域名/IP解析是否正确。"
-                if [ $nginx_stopped -eq 1 ]; then $SUDO systemctl start nginx; fi
+                log_error "证书申请失败。请检查域名/IP解析是否正确，或防火墙是否放行 80 端口。"
                 exit 1
-            fi
-            
-            if [ $nginx_stopped -eq 1 ]; then
-                log_info "恢复 Nginx..."
-                $SUDO systemctl start nginx || $SUDO service nginx start
             fi
         fi
         log_success "证书申请成功。"
