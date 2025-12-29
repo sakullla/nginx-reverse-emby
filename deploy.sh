@@ -51,7 +51,7 @@ is_in_china() {
 # --- 设置全局变量 (将在解析参数后调用) ---
 setup_env() {
     local RAW_URL="https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main"
-    local ACME_OFFICIAL_RAW="https://raw.githubusercontent.com/acmesh-official/acme.sh/master/install.sh"
+    local ACME_OFFICIAL_RAW="https://raw.githubusercontent.com/acmesh-official/acme.sh/refs/heads/master/acme.sh"
     
     # 确定代理地址: 命令行参数 > 环境变量 > 自动检测
     local effective_gh_proxy=""
