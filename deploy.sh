@@ -57,11 +57,11 @@ setup_env() {
         # 使用 ghproxy.net 加速 GitHub 文件下载
         CONF_HOME="https://ghproxy.net/${RAW_URL}"
         # acme.sh 国内专用安装脚本 (gitcode镜像)
-        ACME_INSTALL_CMD="curl -sL https://gitcode.net/cert/cn-acme.sh/-/raw/master/install.sh?inline=false | sh -s email=my@example.com"
+        ACME_Base_Cmd="curl -sL https://gitcode.net/cert/cn-acme.sh/-/raw/master/install.sh?inline=false"
     else
         echo -e "${BLUE}[INFO]${NC} 检测到海外环境，使用默认源..."
         CONF_HOME="${RAW_URL}"
-        ACME_INSTALL_CMD="curl https://get.acme.sh | sh -s email=my@example.com"
+        ACME_Base_Cmd="curl https://get.acme.sh"
     fi
 
     readonly CONF_HOME
@@ -306,9 +306,12 @@ display_summary() {
         resolver="$(get_resolver_host) $ipv6_flag"
     fi
 
+    # [修复] 修复配置摘要显示错误，正确判断协议
+    local protocol=$([[ "$no_tls" == "yes" ]] && echo "http" || echo "https")
+
     echo -e "\n${BLUE}🔧 Nginx 反代配置摘要${NC}"
     echo "──────────────────────────────────────────────"
-    echo -e "➡️  前端访问: ${GREEN}${no_tls:+http://}${no_tls:-https://}${you_domain}:${you_frontend_port}${you_domain_path}${NC}"
+    echo -e "➡️  前端访问: ${GREEN}${protocol}://${you_domain}:${you_frontend_port}${you_domain_path}${NC}"
     echo -e "⬅️  后端源站: ${YELLOW}${r_http_frontend:+http://}${r_http_frontend:-https://}${r_domain}:${r_frontend_port}${r_domain_path}${NC}"
     echo "──────────────────────────────────────────────"
     echo -e "📜 证书域名: ${format_cert_domain}"
@@ -402,10 +405,14 @@ install_dependencies() {
     ACME_SH="$HOME/.acme.sh/acme.sh"
     if [[ "$no_tls" != "yes" && ! -f "$ACME_SH" ]]; then
        log_info "正在为当前用户安装 acme.sh..."
-       log_info "使用安装命令: $ACME_INSTALL_CMD"
+       
+       # [修复] 恢复为不带邮箱的安装命令，管道直接传给 sh -s
+       local install_cmd="$ACME_Base_Cmd | sh -s"
+       
+       log_info "使用安装命令: $install_cmd"
        
        # 使用 setup_env 中定义的命令进行安装
-       if eval "$ACME_INSTALL_CMD"; then
+       if eval "$install_cmd"; then
            log_success "acme.sh 安装完成。"
            "$ACME_SH" --upgrade --auto-upgrade
            "$ACME_SH" --set-default-ca --server letsencrypt
