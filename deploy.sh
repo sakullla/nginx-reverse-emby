@@ -65,7 +65,8 @@ setup_env() {
     fi
 
     readonly CONF_HOME
-    readonly BACKUP_DIR="/etc/nginx/backup_$(date +%Y%m%d_%H%M%S)"
+    # [修改] 使用固定备份目录，覆盖旧备份
+    readonly BACKUP_DIR="/etc/nginx/backup"
 }
 
 # 初始化环境
@@ -306,7 +307,6 @@ display_summary() {
         resolver="$(get_resolver_host) $ipv6_flag"
     fi
 
-    # [修复] 修复配置摘要显示错误，正确判断协议
     local protocol=$([[ "$no_tls" == "yes" ]] && echo "http" || echo "https")
 
     echo -e "\n${BLUE}🔧 Nginx 反代配置摘要${NC}"
@@ -406,12 +406,10 @@ install_dependencies() {
     if [[ "$no_tls" != "yes" && ! -f "$ACME_SH" ]]; then
        log_info "正在为当前用户安装 acme.sh..."
        
-       # [修复] 恢复为不带邮箱的安装命令，管道直接传给 sh -s
+       # 恢复为不带邮箱的安装命令
        local install_cmd="$ACME_Base_Cmd | sh -s"
-       
        log_info "使用安装命令: $install_cmd"
        
-       # 使用 setup_env 中定义的命令进行安装
        if eval "$install_cmd"; then
            log_success "acme.sh 安装完成。"
            "$ACME_SH" --upgrade --auto-upgrade
@@ -431,7 +429,6 @@ generate_nginx_config() {
     if [ ! -f "$main_conf" ] || grep -q "include /etc/nginx/conf.d/\*.conf;" "$main_conf"; then
         backup_file "$main_conf"
         log_info "更新主配置文件 $main_conf (源: $CONF_HOME/nginx.conf)..."
-        # 使用 CONF_HOME (可能包含代理)
         if ! curl -sL "$CONF_HOME/nginx.conf" | $SUDO tee "$main_conf" > /dev/null; then
             log_error "下载 nginx.conf 失败，请检查网络或代理设置。"
             exit 1
@@ -485,26 +482,19 @@ generate_nginx_config() {
     log_success "配置文件已生成: $conf_path"
 }
 
-# --- 6. 证书申请 ---
+# --- 6. 证书申请 (还原 RealFullChainPath 逻辑) ---
 issue_certificate() {
     if [[ "$no_tls" == "yes" ]]; then return; fi
 
     ACME_SH="$HOME/.acme.sh/acme.sh"
-    local cert_dir="/etc/nginx/certs/$format_cert_domain"
-    local cert_file="$cert_dir/cert"
-
-    if [[ "$format_cert_domain" != "$you_domain" ]] && [ -f "$cert_file" ]; then
-        log_info "检测到泛域名证书已存在，跳过申请。"
-        return
-    fi
-
-    $SUDO mkdir -p "$cert_dir"
-
+    local cert_path_base="/etc/nginx/certs/$format_cert_domain"
     local reload_cmd="$SUDO nginx -s reload"
+    
+    # 使用 grep -q RealFullChainPath 判断证书是否已签发
+    if ! "$ACME_SH" --info -d "$format_cert_domain" --ecc 2>/dev/null | grep -q RealFullChainPath; then
+        log_info "证书不存在，开始申请..."
+        $SUDO mkdir -p "$cert_path_base"
 
-    if "$ACME_SH" --list | grep -q "$format_cert_domain"; then
-        log_info "证书已在 acme.sh 管理列表中，跳过申请，直接尝试安装。"
-    else
         if [[ -n "$dns_provider" ]]; then
             # --- DNS 模式 ---
             local dns_arg="dns_${dns_provider}"
@@ -542,9 +532,8 @@ issue_certificate() {
             # 检测端口占用 (Robust)
             local nginx_stopped=0
             if lsof -i :80 | grep -q LISTEN || netstat -nlp | grep -q ':80 .*LISTEN'; then
-                log_warn "端口 80 正在被占用..."
+                log_warn "端口 80 正在被占用，尝试停止 Nginx..."
                 if lsof -i :80 | grep -q nginx || netstat -nlp | grep ':80 ' | grep -q nginx; then
-                    log_warn "Nginx 占用 80 端口，临时停止以进行证书验证..."
                     $SUDO systemctl stop nginx || $SUDO service nginx stop
                     nginx_stopped=1
                     sleep 2
@@ -565,15 +554,19 @@ issue_certificate() {
                 $SUDO systemctl start nginx || $SUDO service nginx start
             fi
         fi
+        log_success "证书申请成功。"
+    else
+        log_info "证书已由 acme.sh 管理，将跳过申请步骤，直接进行安装/更新。"
     fi
 
-    log_info "安装证书到 $cert_dir ..."
+    # 安装证书
+    log_info "正在安装证书到 Nginx 目录..."
     "$ACME_SH" --install-cert -d "$format_cert_domain" --ecc \
-        --fullchain-file "$cert_dir/cert" \
-        --key-file "$cert_dir/key" \
+        --fullchain-file "$cert_path_base/cert" \
+        --key-file "$cert_path_base/key" \
         --reloadcmd "$reload_cmd"
     
-    log_success "证书部署完成。"
+    log_success "证书安装并部署完成。"
 }
 
 # --- 7. 移除配置 ---
