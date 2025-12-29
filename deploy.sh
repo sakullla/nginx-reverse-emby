@@ -57,8 +57,8 @@ setup_env() {
 
     if is_in_china; then
         echo -e "${BLUE}[INFO]${NC} 检测到中国大陆环境，配置文件下载将启用加速..."
-        # 使用 ghproxy.net 加速 GitHub 文件下载 (仅针对项目配置文件)
-        CONF_HOME="https://ghproxy.net/${RAW_URL}"
+        # 使用 gh.llkk.cc 加速 GitHub 文件下载 (仅针对项目配置文件)
+        CONF_HOME="https://gh.llkk.cc//${RAW_URL}"
     else
         echo -e "${BLUE}[INFO]${NC} 检测到海外环境，使用默认源..."
         CONF_HOME="${RAW_URL}"
