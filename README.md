@@ -92,72 +92,72 @@ wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/de
 最简单的方式，一条命令完成所有配置：
 
 ```bash
-bash <(curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh) -y https://proxy.example.com -r https://backend-service.com
+curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh | bash -s -- -y https://proxy.example.com -r https://backend-service.com
 ```
 
 或使用 wget：
 ```bash
-bash <(wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh) -y https://proxy.example.com -r https://backend-service.com
+wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh | bash -s -- -y https://proxy.example.com -r https://backend-service.com
 ```
 
 ### 示例 2：一键部署（HTTP 服务，使用 IP）
 
 ```bash
-bash <(wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh) -y http://192.168.1.100:8080 -r http://internal-service.local:8096
+wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh | bash -s -- -y http://192.168.1.100:8080 -r http://internal-service.local:8096
 ```
 
 ### 示例 3：一键泛域名证书部署（Cloudflare DNS 验证）
 
 ```bash
-bash <(wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh) -y https://emby.media.com -r https://emby-backend.server.com -d --dns cf --cf-token "your_cloudflare_api_token" --cf-account-id "your_cloudflare_account_id"
+wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh | bash -s -- -y https://emby.media.com -r https://emby-backend.server.com -d --dns cf --cf-token "your_cloudflare_api_token" --cf-account-id "your_cloudflare_account_id"
 ```
 
 ### 示例 4：一键部署（自定义后端路径）
 
 ```bash
-bash <(wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh) -y https://my-proxy.com/app -r https://backend.com/streaming
+wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh | bash -s -- -y https://my-proxy.com/app -r https://backend.com/streaming
 ```
 
 ### 示例 5：一键部署（指定特定端口）
 
 ```bash
-bash <(wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh) -y https://proxy.example.com:9443 -r http://192.168.1.100:8096
+wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh | bash -s -- -y https://proxy.example.com:9443 -r http://192.168.1.100:8096
 ```
 
 ### 示例 6：一键部署（自定义 Nginx 模板）
 
 ```bash
-bash <(wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh) -y https://proxy.example.com -r https://backend.com -c https://example.com/my-nginx.conf
+wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh | bash -s -- -y https://proxy.example.com -r https://backend.com -c https://example.com/my-nginx.conf
 ```
 
 ### 示例 7：一键移除配置（精确到端口）
 
 ```bash
-bash <(wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh) --remove https://proxy.example.com:9443 --yes
+wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh | bash -s -- --remove https://proxy.example.com:9443 --yes
 ```
 
 或移除该域名的所有端口配置：
 
 ```bash
-bash <(wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh) --remove https://proxy.example.com --yes
+wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh | bash -s -- --remove https://proxy.example.com --yes
 ```
 
 ### 示例 8：泛域名多子域部署
 
 首次部署申请泛域名证书：
 ```bash
-bash <(wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh) -y https://emby.media.com -r https://backend.com -d --dns cf --cf-token "token" --cf-account-id "id"
+wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh | bash -s -- -y https://emby.media.com -r https://backend.com -d --dns cf --cf-token "token" --cf-account-id "id"
 ```
 
 后续为同一泛域名的其他子域部署（自动使用已有证书）：
 ```bash
-bash <(wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh) -y https://files.media.com -r https://another-backend.com -d
+wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh | bash -s -- -y https://files.media.com -r https://another-backend.com -d
 ```
 
 ### 示例 9：HTTPS 前端 + HTTP 后端混合
 
 ```bash
-bash <(wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh) -y https://public-proxy.example.com -r http://192.168.1.100:8080
+wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh | bash -s -- -y https://public-proxy.example.com -r http://192.168.1.100:8080
 ```
 
 ## 📖 参数完整参考
