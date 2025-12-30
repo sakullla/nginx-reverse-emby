@@ -474,12 +474,12 @@ get_template_content() {
         elif [ -f "$template_domain_config_source" ]; then
             cat "$template_domain_config_source"
         else
-            log_error "指定的模板无效。"
+            log_error "指定的模板无效。" >&2
             return 1
         fi
     else
         local tpl_name=$([[ "$no_tls" == "yes" ]] && echo "p.example.com.no_tls.conf" || echo "p.example.com.conf")
-        log_info "下载模板: $tpl_name (源: $CONF_HOME/conf.d/$tpl_name)..."
+        log_info "下载模板: $tpl_name (源: $CONF_HOME/conf.d/$tpl_name)..." >&2
         curl -sL "$CONF_HOME/conf.d/$tpl_name"
     fi
 }
