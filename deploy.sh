@@ -465,7 +465,6 @@ install_dependencies() {
        fi
     fi
 }
-}
 
 # --- 获取模板内容 ---
 get_template_content() {
