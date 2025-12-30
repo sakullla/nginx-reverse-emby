@@ -94,19 +94,19 @@ setup_env() {
 
 # --- 日志函数 (仅输出到屏幕) ---
 log_info() {
-    echo -e "${BLUE}[INFO]${NC} $1"
+    echo -e "${BLUE}[INFO]${NC} $1" >&2
 }
 
 log_success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $1"
+    echo -e "${GREEN}[SUCCESS]${NC} $1" >&2
 }
 
 log_warn() {
-    echo -e "${YELLOW}[WARN]${NC} $1"
+    echo -e "${YELLOW}[WARN]${NC} $1" >&2
 }
 
 log_error() {
-    echo -e "${RED}[ERROR]${NC} $1"
+    echo -e "${RED}[ERROR]${NC} $1" >&2
 }
 
 # --- 错误处理 ---
@@ -474,12 +474,12 @@ get_template_content() {
         elif [ -f "$template_domain_config_source" ]; then
             cat "$template_domain_config_source"
         else
-            log_error "指定的模板无效。" >&2
+            log_error "指定的模板无效。"
             return 1
         fi
     else
         local tpl_name=$([[ "$no_tls" == "yes" ]] && echo "p.example.com.no_tls.conf" || echo "p.example.com.conf")
-        log_info "下载模板: $tpl_name (源: $CONF_HOME/conf.d/$tpl_name)..." >&2
+        log_info "下载模板: $tpl_name (源: $CONF_HOME/conf.d/$tpl_name)..."
         curl -sL "$CONF_HOME/conf.d/$tpl_name"
     fi
 }
