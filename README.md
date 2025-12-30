@@ -258,29 +258,7 @@ bash deploy.sh -y https://proxy.example.com:443 -r https://backend1.com
 bash deploy.sh -y https://proxy.example.com:8443 -r https://backend2.com
 ```
 
-## 📝 配置示例
-
-### 完整的 Cloudflare DNS 泛域名部署
-
-```bash
-bash deploy.sh \
-  -y https://stream.mycloud.net \
-  -r https://private-emby.internal.net:8096 \
-  --parse-cert-domain \
-  --dns cf \
-  --cf-token "dnstok_xxxxxxx" \
-  --cf-account-id "account_xxxxxxx"
-```
-
-### 混合场景：HTTPS 前端 + HTTP 后端
-
-```bash
-bash deploy.sh \
-  -y https://public-proxy.example.com \
-  -r http://192.168.1.100:8080
-```
-
-## 🔐 安全建议
+##  安全建议
 
 1. **证书续期**: acme.sh 会自动配置 cron 任务进行续期，无需手动干预
 2. **备份配置**: 所有修改前都会备份至 `/etc/nginx/backup/`，修改失败时可恢复
