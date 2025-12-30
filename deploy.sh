@@ -59,15 +59,10 @@ setup_env() {
     local ACME_OFFICIAL_RAW="${URL_PREFIX}/acmesh-official/acme.sh/master/acme.sh"
     
     # 确定代理地址: 命令行参数 > 环境变量 > 自动检测
-    local effective_gh_proxy=""
-    
-    if [[ -n "$manual_gh_proxy" ]]; then
-        effective_gh_proxy="$manual_gh_proxy"
-    elif [[ -n "$GH_PROXY" ]]; then
-        effective_gh_proxy="$GH_PROXY"
-    elif is_in_china; then
-        # 默认使用 gh.llkk.cc 代理
-        effective_gh_proxy="https://gh.llkk.cc/"
+    local effective_gh_proxy="${manual_gh_proxy:-${GH_PROXY}}"
+    if [[ -z "$effective_gh_proxy" ]] && is_in_china; then
+        # 国内自动使用 gh.llkk.cc 代理
+        effective_gh_proxy="https://gh.llkk.cc"
     fi
 
     # 确保代理地址以 / 结尾 (如果非空)
@@ -76,26 +71,15 @@ setup_env() {
     fi
 
     if [[ -n "$effective_gh_proxy" ]]; then
-        echo -e "${BLUE}[INFO]${NC} 使用 GitHub 代理: ${effective_gh_proxy}"
+        log_info "使用 GitHub 代理: ${effective_gh_proxy}"
         
-        # 再次检查 RAW_URL_BASE 是否以官方前缀开头
-        # 理论上因为上面的拼接写法，这里一定是纯净的，可以直接叠加代理
-        if [[ "$RAW_URL_BASE" == "${URL_PREFIX}"* ]]; then
-            CONF_HOME="${effective_gh_proxy}${RAW_URL_BASE}"
-        else
-            # 极少数情况：如果前缀变量都被改写了，那就直接用，不叠加
-            CONF_HOME="${RAW_URL_BASE}"
-        fi
-        
-        if [[ "$ACME_OFFICIAL_RAW" == "${URL_PREFIX}"* ]]; then
-            ACME_INSTALL_URL="${effective_gh_proxy}${ACME_OFFICIAL_RAW}"
-        else
-            ACME_INSTALL_URL="${ACME_OFFICIAL_RAW}"
-        fi
+        # 通过代理获取配置 URL (理论上前缀一定是纯净的)
+        CONF_HOME="${effective_gh_proxy}${RAW_URL_BASE#${URL_PREFIX}/}"
+        ACME_INSTALL_URL="${effective_gh_proxy}${ACME_OFFICIAL_RAW#${URL_PREFIX}/}"
     else
-        echo -e "${BLUE}[INFO]${NC} 未使用 GitHub 代理，使用默认源..."
+        log_info "未使用 GitHub 代理，使用默认源..."
         CONF_HOME="${RAW_URL_BASE}"
-        # 如果不使用代理，通常推荐使用 get.acme.sh 官方短链
+        # 不使用代理时推荐使用 acme.sh 官方短链
         ACME_INSTALL_URL="https://get.acme.sh"
     fi
 
