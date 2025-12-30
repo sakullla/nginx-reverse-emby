@@ -73,9 +73,9 @@ setup_env() {
     if [[ -n "$effective_gh_proxy" ]]; then
         log_info "使用 GitHub 代理: ${effective_gh_proxy}"
         
-        # 通过代理获取配置 URL (理论上前缀一定是纯净的)
-        CONF_HOME="${effective_gh_proxy}${RAW_URL_BASE#${URL_PREFIX}/}"
-        ACME_INSTALL_URL="${effective_gh_proxy}${ACME_OFFICIAL_RAW#${URL_PREFIX}/}"
+        # 通过代理获取配置 URL (代理接收完整的 GitHub URL)
+        CONF_HOME="${effective_gh_proxy}${RAW_URL_BASE}"
+        ACME_INSTALL_URL="${effective_gh_proxy}${ACME_OFFICIAL_RAW}"
     else
         log_info "未使用 GitHub 代理，使用默认源..."
         CONF_HOME="${RAW_URL_BASE}"
@@ -561,6 +561,8 @@ issue_certificate() {
     fi
 
     # 安装证书
+    # 确保目标目录存在（处理 acme.sh 管理但目录缺失的情况）
+    $SUDO mkdir -p "$cert_path_base"
     log_info "正在安装证书到 Nginx 目录..."
     "$ACME_SH" --install-cert -d "$format_cert_domain" --ecc \
         --fullchain-file "$cert_path_base/cert" \
