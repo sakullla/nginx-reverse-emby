@@ -2,7 +2,7 @@
 
 `Nginx-Reverse-Emby` 是一个功能强大、高度自动化的 Bash 脚本，旨在为您一键配置 Nginx 反向代理。无论是代理 Emby、媒体服务器还是其他应用，都能提供稳定、高效的解决方案。
 
-脚本的核心优势在于智能的 URL 处理、全面的 SSL 证书支持、国内加速优化，以及完善的部署与管理功能。
+脚本的核心优势在于智能的 URL 处理、全面的 SSL 证书方案、国内加速优化，以及完善的部署与管理功能。
 
 ## ✨ 核心特性
 
@@ -10,6 +10,7 @@
 * **域名和 IP 混合支持**: 既支持标准域名部署，也支持直接使用 IP 地址
 * **自定义端口映射**: 前后端端口完全独立配置，精确到端口的版本管理
 * **协议自动识别**: 从 URL 自动判断 HTTP/HTTPS，支持混合代理
+* **路径重写**: 支持前后端路径不同时的自动重写
 
 ### 🛡️ 完整的 SSL/TLS 方案
 * **Standalone 模式**: HTTP-01 验证，单域名证书自动申请和续期
@@ -27,7 +28,6 @@
 ### 🌍 全球网络优化
 * **国内代理支持**: 自动检测并使用国内加速代理下载配置和工具
 * **灵活的 DNS 解析**: 支持手动指定 DNS 服务器，国内默认阿里云/腾讯云 DNS
-* **IPv6 智能适配**: 自动检测并优化 IPv6 支持
 
 ### 📋 完整的生命周期管理
 * **精确的配置管理**: 配置文件采用 `domain.port.conf` 命名，支持精确到端口的移除
@@ -35,7 +35,6 @@
 * **完整的备份**: 所有修改前自动备份至 `/etc/nginx/backup/`
 
 ### 🔄 高级代理功能
-* **路径重写**: 支持前后端路径不同时的自动重写
 * **完整 URL 构造**: 根据协议和端口自动拼接后端地址
 * **非交互和交互模式**: 支持向导式交互和完全自动化部署
 
@@ -130,7 +129,19 @@ wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/de
 wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh | bash -s -- -y https://proxy.example.com -r https://backend.com -c https://example.com/my-nginx.conf
 ```
 
-### 示例 7：一键移除配置（精确到端口）
+### 示例 7：一键部署（自定义 GitHub 代理）
+
+```bash
+wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh | bash -s -- -y https://proxy.example.com -r https://backend.com --gh-proxy https://gh.llkk.cc/
+```
+
+### 示例 8：一键部署（自定义 DNS 解析器）
+
+```bash
+wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh | bash -s -- -y https://proxy.example.com -r https://backend.com -R "8.8.8.8 8.8.4.4"
+```
+
+### 示例 9：一键移除配置（精确到端口）
 
 ```bash
 wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh | bash -s -- --remove https://proxy.example.com:9443 --yes
@@ -142,7 +153,7 @@ wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/de
 wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh | bash -s -- --remove https://proxy.example.com --yes
 ```
 
-### 示例 8：泛域名多子域部署
+### 示例 10：泛域名多子域部署
 
 首次部署申请泛域名证书：
 ```bash
@@ -154,7 +165,7 @@ wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/de
 wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh | bash -s -- -y https://files.media.com -r https://another-backend.com -d
 ```
 
-### 示例 9：HTTPS 前端 + HTTP 后端混合
+### 示例 11：HTTPS 前端 + HTTP 后端混合
 
 ```bash
 wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh | bash -s -- -y https://public-proxy.example.com -r http://192.168.1.100:8080
@@ -217,6 +228,33 @@ wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/de
 bash deploy.sh -y ... -r ... --gh-proxy https://gh.llkk.cc/
 ```
 
+### Q: 如何在纯 IPv6 环境中部署？
+
+**A**: 直接使用 IPv6 地址作为前端地址。脚本会自动处理方括号格式和短期证书申请：
+
+```bash
+# 简单部署
+bash deploy.sh -y https://[2400:db8::1] -r https://backend.com
+
+# 指定端口
+bash deploy.sh -y https://[2400:db8::1]:9443 -r https://backend.com
+
+# HTTP 方式
+bash deploy.sh -y http://[2400:db8::1]:8080 -r http://backend.com
+```
+
+### Q: IPv6 和 IPv4 如何混合使用？
+
+**A**: 完全支持混合部署，前端和后端可以分别使用 IPv4 或 IPv6：
+
+```bash
+# IPv6 前端 + IPv4 后端
+bash deploy.sh -y https://[2400:db8::1] -r https://192.168.1.100
+
+# IPv4 前端 + IPv6 后端
+bash deploy.sh -y https://203.0.113.1 -r https://[2400:db8::100]
+```
+
 ### Q: 如何为多个子域名使用同一个泛域名证书？
 
 **A**: 首次部署时申请泛域名证书，后续部署只需用 `-d` 自动识别即可：
@@ -231,10 +269,14 @@ bash deploy.sh -y https://files.media.com -r ... -d
 
 ### Q: 可以在 IP 地址上使用吗？
 
-**A**: 可以！IP 地址会自动申请 Let's Encrypt 短期证书（有效期 6 天，自动续期）：
+**A**: 可以！IP 地址（IPv4/IPv6）会自动申请 Let's Encrypt 短期证书（有效期 6 天，自动续期）：
 
 ```bash
+# IPv4 地址
 bash deploy.sh -y https://123.45.67.89 -r https://backend.com
+
+# IPv6 地址
+bash deploy.sh -y https://[2400:db8::1] -r https://backend.com
 ```
 
 ### Q: 如何修改已部署的配置？
@@ -256,6 +298,42 @@ bash deploy.sh -y https://proxy.example.com:443 -r https://backend1.com
 
 # 端口 8443（HTTPS）
 bash deploy.sh -y https://proxy.example.com:8443 -r https://backend2.com
+```
+
+### Q: IPv6 地址的格式是什么？
+
+**A**: IPv6 地址需要用方括号包裹。完整格式参考：
+
+```bash
+# 仅 IPv6 地址，使用默认 HTTPS 端口 (443)
+https://[2400:db8::1]
+
+# IPv6 地址 + 自定义端口
+https://[2400:db8::1]:9443
+
+# IPv6 地址 + 自定义端口 + 路径
+https://[2400:db8::1]:9443/app
+
+# HTTP 协议
+http://[2400:db8::1]:8080
+```
+
+### Q: 如何检查 IPv6 部署是否正确？
+
+**A**: 部署后可以通过以下方式验证：
+
+```bash
+# 检查 Nginx 配置
+nginx -t
+
+# 查看证书信息
+ls /etc/nginx/certs/
+
+# 测试 IPv6 连接（从支持 IPv6 的设备）
+curl -6 https://[2400:db8::1]
+
+# 或使用域名（如果有 DNS 配置）
+curl https://proxy.example.com
 ```
 
 ##  安全建议
@@ -282,6 +360,7 @@ bash deploy.sh -y https://proxy.example.com:8443 -r https://backend2.com
 - ✨ IP 地址短期证书支持
 - ✨ 国内 GitHub 代理自动优化
 - ✨ 完整的路径重写支持
+- ✨ IPv6 支持
 - 🐛 优化了 acme.sh 下载验证机制
 - 🐛 移除了端口 80 占用检测逻辑
 
