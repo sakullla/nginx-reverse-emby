@@ -147,12 +147,6 @@ wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/de
 wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh | bash -s -- --remove https://proxy.example.com:9443 --yes
 ```
 
-或移除该域名的所有端口配置：
-
-```bash
-wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh | bash -s -- --remove https://proxy.example.com --yes
-```
-
 ### 示例 10：泛域名多子域部署
 
 首次部署申请泛域名证书：
