@@ -681,56 +681,130 @@ issue_certificate_standalone() {
 
 # --- 7. 移除配置 ---
 remove_domain_config() {
-    local target="$domain_to_remove"
-    log_info "准备移除: $target"
+    local remove_url="$domain_to_remove"
+    log_info "正在为 '$remove_url' 查找相关配置..."
 
-    local temp_domain temp_port
-    IFS='|' read -r _ temp_domain temp_port _ < <(parse_url "$target")
-    
-    # 优化匹配：去除可能存在的方括号 (IPv6)
-    local clean_domain="${temp_domain//[\[\]]/}"
+    # 精确解析域名和端口
+    # 注意：parse_url 返回格式为 proto|domain|port|path
+    local domain port temp_path temp_proto
+    IFS='|' read -r temp_proto domain port temp_path < <(parse_url "$remove_url")
 
-    local conf_pattern
-    if [[ -n "$temp_port" ]]; then
-        conf_pattern="/etc/nginx/conf.d/${clean_domain}.${temp_port}.conf"
-        log_info "精确匹配: ${temp_domain}:${temp_port} (文件: ${clean_domain}.${temp_port}.conf)"
+    # 处理 IPv6 域名中的方括号 (用于匹配文件名)
+    local clean_domain="${domain//[\[\]]/}"
+
+    # 如果未解析出协议，则假定为 https
+    if [[ -z "$temp_proto" ]]; then
+        temp_proto="https"
+    fi
+
+    # 根据协议决定默认端口
+    if [[ "$temp_proto" == "https" ]]; then
+        port="${port:-443}"
     else
-        conf_pattern="/etc/nginx/conf.d/${clean_domain}.*.conf"
-        log_info "匹配该域名的所有端口 (文件: ${clean_domain}.*.conf)"
+        port="${port:-80}"
     fi
-    
-    local conf_files
-    conf_files=$(ls $conf_pattern 2>/dev/null || true)
 
-    if [[ -z "$conf_files" ]]; then
-        if [[ -n "$temp_port" ]]; then
-            log_warn "未找到与 $temp_domain:$temp_port 相关的配置文件。"
+    # 构造精确的配置文件名 (使用 clean_domain)
+    local nginx_conf_file="/etc/nginx/conf.d/${clean_domain}.${port}.conf"
+
+    if ! $SUDO [ -f "$nginx_conf_file" ]; then
+        log_error "未找到与 '$domain' ($clean_domain) 在端口 '$port' 上的 Nginx 配置文件: $nginx_conf_file"
+        # 找不到文件时，不强制退出，可能用户只是想清理残留证书，或者文件已经被删了一部分
+        # return 1 
+        # 但为了逻辑严谨，若连配置文件都没有，后续的逻辑依据也没了，这里还是退出比较好。
+        exit 1
+    fi
+
+    # 智能判断是否使用 TLS
+    local uses_tls="no"
+    local remove_cert_domain=""
+    local cert_dir=""
+
+    if $SUDO grep -q "ssl_certificate" "$nginx_conf_file"; then
+        uses_tls="yes"
+        # [优化] 从 Nginx 配置中直接推断证书域名
+        local cert_full_path
+        cert_full_path=$($SUDO awk "/ssl_certificate / {print \$2}" "$nginx_conf_file" | head -n 1 | sed 's/;//')
+        local cert_parent_dir
+        cert_parent_dir=$(dirname "$cert_full_path")
+        remove_cert_domain=$(basename "$cert_parent_dir")
+        cert_dir="/etc/nginx/certs/$remove_cert_domain"
+    fi
+
+    echo "--------------------------------------------------------"
+    echo -e "${RED}警告: 即将执行破坏性操作！${NC}"
+    echo "将要为 '$domain' (端口: $port) 移除以下内容:"
+    echo "  - Nginx 配置文件: $nginx_conf_file"
+
+    local is_wildcard_setup="no"
+    # 如果证书目录名与当前域名(去括号后)不一致，通常认为是共享/泛域名
+    if [[ "$uses_tls" == "yes" && "$clean_domain" != "$remove_cert_domain" ]]; then
+        is_wildcard_setup="yes"
+    fi
+
+    if [[ "$uses_tls" == "yes" ]]; then
+        if [[ "$is_wildcard_setup" == "no" ]]; then
+            if [ -d "$cert_dir" ]; then
+                echo "  - Nginx 证书目录: $cert_dir"
+            fi
+            ACME_SH="$HOME/.acme.sh/acme.sh"
+            if [ -f "$ACME_SH" ]; then
+                 echo "  - acme.sh 证书记录 (针对域名: $remove_cert_domain)"
+            fi
         else
-            log_warn "未找到与 $temp_domain 相关的配置文件。"
-        fi
-        exit 0
-    fi
-
-    echo -e "${YELLOW}将移除以下文件:${NC}"
-    echo "$conf_files"
-    
-    if [[ "$force_yes" != "yes" ]]; then
-        read -rp "确认移除? [y/N] " confirm
-        if [[ "$confirm" != "y" && "$confirm" != "Y" ]]; then
-            log_info "操作取消。"
-            exit 0
+            echo -e "${YELLOW}  - 注意: 检测到泛域名或共享证书配置 ($remove_cert_domain)，将不会删除共享的证书文件。${NC}"
         fi
     fi
+    echo "--------------------------------------------------------"
 
-    for f in $conf_files; do
-        $SUDO rm -f "$f"
-        log_success "已删除: $f"
-    done
+    # [修正] 智能确认流程
+    if [ ! -t 0 ]; then # 非交互模式
+        if [[ "$force_yes" != "yes" ]]; then
+            log_error "在非交互模式下，移除操作必须使用 '-Y' 或 '--yes' 参数进行确认。"
+            exit 1
+        fi
+        log_info "检测到 '--yes' 参数，将自动执行移除操作。"
+    else # 交互模式
+        if [[ "$force_yes" != "yes" ]]; then
+            read -rp "此操作不可逆，请输入 'yes' 确认移除: " confirmation
+            if [[ "$confirmation" != "yes" ]]; then
+                log_info "操作已取消。"
+                exit 0
+            fi
+        fi
+    fi
 
-    log_warn "证书文件可能位于 /etc/nginx/certs/ 下，请根据需要手动清理。"
-    
-    $SUDO nginx -t && $SUDO nginx -s reload
-    log_success "配置移除完成，Nginx 已重载。"
+    log_info "开始移除..."
+    $SUDO rm -f "$nginx_conf_file"
+    log_info "Nginx 配置文件已删除。"
+
+    if [[ "$uses_tls" == "yes" ]]; then
+        if [[ "$is_wildcard_setup" == "no" ]]; then
+            if [ -d "$cert_dir" ]; then
+                $SUDO rm -rf "$cert_dir"
+                log_info "Nginx 证书目录已删除。"
+            fi
+
+            ACME_SH="$HOME/.acme.sh/acme.sh"
+            if [ -f "$ACME_SH" ]; then
+                # 使用 remove_cert_domain (它来自配置文件路径，最准确)
+                "$ACME_SH" --remove -d "$remove_cert_domain" --ecc >/dev/null 2>&1 || log_warn "从 acme.sh 移除证书失败，可能记录已不存在。"
+                log_info "acme.sh 证书记录已移除。"
+            fi
+        else
+            log_info "证书目录和 acme.sh 记录未被删除。"
+            echo "如果您确认不再需要此证书，请手动执行以下命令进行清理："
+            echo "  $HOME/.acme.sh/acme.sh --remove -d '$remove_cert_domain' --ecc"
+            echo "  $SUDO rm -rf '$cert_dir'"
+        fi
+    fi
+
+    log_info "正在检查 Nginx 配置并执行重载..."
+    if test_and_reload_nginx; then
+        log_success "域名 '$domain' 的相关配置已成功移除！"
+    else
+        log_error "Nginx 配置测试失败，请检查配置文件。"
+    fi
 }
 
 # ===================================================================================
