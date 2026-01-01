@@ -51,7 +51,6 @@ is_in_china() {
 # --- 设置全局变量 (将在解析参数后调用) ---
 setup_env() {
     # [技巧] 使用字符串拼接定义基础 URL，防止被镜像站的自动替换机制修改 (Anti-Rewrite)
-    # 这样写，简单的文本查找替换工具无法匹配到完整的 URL，因此不会被改写
     local GH_RAW_HOST="raw.githubusercontent.com"
     local URL_PREFIX="https://${GH_RAW_HOST}"
     
@@ -73,7 +72,7 @@ setup_env() {
     if [[ -n "$effective_gh_proxy" ]]; then
         log_info "使用 GitHub 代理: ${effective_gh_proxy}"
         
-        # 通过代理获取配置 URL (代理接收完整的 GitHub URL)
+        # 通过代理获取配置 URL
         CONF_HOME="${effective_gh_proxy}${RAW_URL_BASE}"
         ACME_INSTALL_URL="${effective_gh_proxy}${ACME_OFFICIAL_RAW}"
     else
@@ -92,22 +91,11 @@ setup_env() {
 #                                 辅助函数
 # ===================================================================================
 
-# --- 日志函数 (仅输出到屏幕) ---
-log_info() {
-    echo -e "${BLUE}[INFO]${NC} $1" >&2
-}
-
-log_success() {
-    echo -e "${GREEN}[SUCCESS]${NC} $1" >&2
-}
-
-log_warn() {
-    echo -e "${YELLOW}[WARN]${NC} $1" >&2
-}
-
-log_error() {
-    echo -e "${RED}[ERROR]${NC} $1" >&2
-}
+# --- 日志函数 ---
+log_info() { echo -e "${BLUE}[INFO]${NC} $1" >&2; }
+log_success() { echo -e "${GREEN}[SUCCESS]${NC} $1" >&2; }
+log_warn() { echo -e "${YELLOW}[WARN]${NC} $1" >&2; }
+log_error() { echo -e "${RED}[ERROR]${NC} $1" >&2; }
 
 # --- 错误处理 ---
 handle_error() {
@@ -139,27 +127,26 @@ show_help() {
     cat << EOF
 用法: $(basename "$0") [选项]
 
-一个强大且安全的 Nginx 反向代理部署脚本 (支持 sudo)。
+一个强大且安全的 Nginx 反向代理部署脚本 (支持 sudo 和 IPv6)。
 
 部署选项:
-  -y, --you-domain <域名或URL>   你的访问域名或完整 URL (例如: https://app.example.com 或 http://1.2.3.4)
-  -r, --r-domain <域名或URL>     被代理的后端地址 (例如: http://127.0.0.1:8096)
-  -m, --cert-domain <域名>       (可选) 手动指定 SSL 证书的主域名，用于泛域名证书。
-  -d, --parse-cert-domain        (可选) 自动从 -y 域名中提取根域名作为证书域名。
-  -D, --dns <provider>           (可选) 使用 DNS API 模式申请证书 (例如: cf)。泛域名必须使用此项。
-  -R, --resolver <DNS服务器>      (可选) 手动指定 DNS 解析服务器 (例如: "8.8.8.8 1.1.1.1")
-  -c, --template <路径或URL>      (可选) 指定自定义 Nginx 配置文件模板。
-  --gh-proxy <URL>               (可选) 指定 GitHub 加速代理 (例如: https://gh.llkk.cc/)。
-  --cf-token <TOKEN>             Cloudflare API Token (配合 --dns cf)。
-  --cf-account-id <ID>           Cloudflare Account ID (配合 --dns cf)。
+  -y, --you-domain <URL>         你的访问域名或完整 URL (支持 IPv6, 如: https://[2400::1]:443)
+  -r, --r-domain <URL>           被代理的后端地址 (例如: http://127.0.0.1:8096)
+  -m, --cert-domain <域名>       (可选) 手动指定 SSL 证书的主域名。
+  -d, --parse-cert-domain        (可选) 自动提取根域名作为证书域名。
+  -D, --dns <provider>           (可选) 使用 DNS API 模式申请证书 (例如: cf)。
+  -R, --resolver <DNS>           (可选) 手动指定 DNS 解析服务器。
+  -c, --template <URL>           (可选) 指定自定义 Nginx 配置文件模板。
+  --gh-proxy <URL>               (可选) 指定 GitHub 加速代理。
+  --cf-token <TOKEN>             Cloudflare API Token。
+  --cf-account-id <ID>           Cloudflare Account ID。
 
 管理选项:
-  --remove <域名或URL>            移除指定域名的 Nginx 配置和证书。
+  --remove <URL>                 移除指定域名的 Nginx 配置和证书。
   -Y, --yes                      非交互模式下自动确认移除。
 
 其他:
   -h, --help                     显示此帮助信息。
-
 EOF
     exit 0
 }
@@ -184,14 +171,43 @@ get_resolver_host() {
     fi
 }
 
-# --- URL 解析 ---
+# --- URL 解析 (支持 IPv6) ---
 parse_url() {
     local url="$1"
-    if [[ "$url" =~ ^(https?)://([^/:?#]+)(:([0-9]+))?(/[^?#]*)? ]]; then
-        echo "${BASH_REMATCH[1]}|${BASH_REMATCH[2]}|${BASH_REMATCH[4]}|${BASH_REMATCH[5]}"
+    local proto domain port path
+
+    # 提取协议
+    if [[ "$url" =~ ^(https?):// ]]; then
+        proto="${BASH_REMATCH[1]}"
+        url="${url#*://}"
     else
-        echo "$url|||"
+        echo "$url|||" # 无协议则认为无效或纯域名(暂不支持无协议输入)
+        return
     fi
+
+    # 提取域名/IP (支持 [IPv6])
+    if [[ "$url" =~ ^\[([a-fA-F0-9:.]+)\] ]]; then
+        # IPv6 格式 [xxxx:xxxx]
+        domain="[${BASH_REMATCH[1]}]"
+        url="${url#*]}" # 移除匹配到的 [ipv6]
+    else
+        # IPv4 或 域名 (提取直到 : / ? #)
+        if [[ "$url" =~ ^([^/:?#]+) ]]; then
+            domain="${BASH_REMATCH[1]}"
+            url="${url#${domain}}"
+        fi
+    fi
+
+    # 提取端口
+    if [[ "$url" =~ ^:([0-9]+) ]]; then
+        port="${BASH_REMATCH[1]}"
+        url="${url#:${port}}"
+    fi
+
+    # 剩余部分为路径
+    path="$url"
+
+    echo "$proto|$domain|$port|$path"
 }
 
 # --- 下载文件 (带验证和重试) ---
@@ -218,9 +234,24 @@ get_protocol() {
     [[ "$1" == "yes" ]] && echo "http" || echo "https"
 }
 
-# --- 是否为 IP 地址 ---
+# --- 是否为 IP 地址 (支持 IPv4 和 IPv6) ---
 is_ip_address() {
-    [[ "$1" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]
+    local addr="$1"
+    # 移除可能存在的方括号
+    local clean_addr="${addr#[}"
+    clean_addr="${clean_addr%]}"
+
+    # IPv4 检查
+    if [[ "$clean_addr" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
+        return 0
+    fi
+    
+    # IPv6 检查 (简单启发式: 包含冒号)
+    if [[ "$clean_addr" =~ : ]]; then
+        return 0
+    fi
+    
+    return 1
 }
 
 process_url_input() {
@@ -311,7 +342,7 @@ prompt_interactive_mode() {
         fi
 
         echo -e "\n${BLUE}--- 交互模式: 配置反向代理 ---${NC}"
-        read -rp "请输入你的访问 URL (例如 https://emby.mysite.com): " input_you
+        read -rp "请输入你的访问 URL (例如 https://emby.mysite.com 或 https://[2400::1]): " input_you
         read -rp "请输入后端 Emby URL (例如 http://127.0.0.1:8096): " input_r
 
         process_url_input "$input_you" "you"
@@ -330,7 +361,7 @@ display_summary() {
     if is_ip_address "$you_domain"; then
         format_cert_domain="$you_domain"
         if [[ "$no_tls" != "yes" ]]; then
-            log_info "检测到 IP 地址，将申请 Let's Encrypt short-lived (短期) 证书。"
+            log_info "检测到 IP 地址 (含 IPv6)，将申请 Let's Encrypt short-lived (短期) 证书。"
         fi
     elif [[ -n "$cert_domain" ]]; then
         format_cert_domain="$cert_domain"
@@ -517,7 +548,9 @@ generate_nginx_config() {
 
     local vars='$you_domain $you_frontend_port $resolver $format_cert_domain $you_domain_path $you_domain_path_rewrite $r_domain_full'
 
-    local conf_filename="${you_domain}.${you_frontend_port}.conf"
+    # 优化文件名：如果是 IPv6，去除方括号
+    local clean_domain="${you_domain//[\[\]]/}"
+    local conf_filename="${clean_domain}.${you_frontend_port}.conf"
     local conf_path="/etc/nginx/conf.d/$conf_filename"
 
     backup_file "$conf_path"
@@ -526,7 +559,7 @@ generate_nginx_config() {
     log_success "配置文件已生成: $conf_path"
 }
 
-# --- 6. 证书申请 (还原 RealFullChainPath 逻辑) ---
+# --- 6. 证书申请 ---
 issue_certificate() {
     if [[ "$no_tls" == "yes" ]]; then 
         log_info "检测到非 TLS 配置，跳过证书申请步骤。"
@@ -538,8 +571,11 @@ issue_certificate() {
     local reload_cmd="$SUDO nginx -s reload"
     
     local issue_extra_args=""
-    # 针对 IP 证书的特殊处理
+    
+    # 针对 IP 证书 (含 IPv6) 的特殊处理
+    local is_ip=false
     if is_ip_address "$you_domain"; then
+        is_ip=true
         log_info "检测到 IP 地址，将配置为 short-lived (短期) 证书模式..."
         [[ -n "$dns_provider" ]] && { log_warn "IP 证书不支持 DNS 验证，已自动切换为 Standalone 模式。"; dns_provider=""; }
         issue_extra_args="--certificate-profile shortlived --days 6"
@@ -553,7 +589,7 @@ issue_certificate() {
         if [[ -n "$dns_provider" ]]; then
             issue_certificate_dns
         else
-            issue_certificate_standalone
+            issue_certificate_standalone "$is_ip"
         fi
         log_success "证书申请成功。"
     else
@@ -561,7 +597,6 @@ issue_certificate() {
     fi
 
     # 安装证书
-    # 确保目标目录存在（处理 acme.sh 管理但目录缺失的情况）
     $SUDO mkdir -p "$cert_path_base"
     log_info "正在安装证书到 Nginx 目录..."
     "$ACME_SH" --install-cert -d "$format_cert_domain" --ecc \
@@ -597,8 +632,10 @@ issue_certificate_dns() {
     }
 }
 
-# --- 证书申请：Standalone 模式 ---
+# --- 证书申请：Standalone 模式 (支持 IPv6) ---
 issue_certificate_standalone() {
+    local is_ip_mode="$1"
+    
     [[ "$format_cert_domain" != "$you_domain" ]] && {
         log_error "泛域名证书必须使用 DNS 模式申请。"
         exit 1
@@ -606,7 +643,15 @@ issue_certificate_standalone() {
 
     log_info "使用 Standalone 模式申请证书..."
     
-    if ! "$ACME_SH" --issue --standalone -d "$you_domain" --keylength ec-256 $issue_extra_args; then
+    # 针对 IPv6，acme.sh 需要纯 IP 地址 (不带方括号)
+    # 针对普通域名，保留原样
+    local acme_domain="$you_domain"
+    if [[ "$is_ip_mode" == "true" ]]; then
+        acme_domain="${you_domain#[}"
+        acme_domain="${acme_domain%]}"
+    fi
+    
+    if ! "$ACME_SH" --issue --standalone -d "$acme_domain" --keylength ec-256 $issue_extra_args; then
         log_error "证书申请失败。请检查域名/IP解析是否正确，或防火墙是否放行 80 端口。"
         exit 1
     fi
@@ -620,16 +665,16 @@ remove_domain_config() {
     local temp_domain temp_port
     IFS='|' read -r _ temp_domain temp_port _ < <(parse_url "$target")
     
-    # 根据是否指定端口来精确匹配配置文件
+    # 优化匹配：去除可能存在的方括号 (IPv6)
+    local clean_domain="${temp_domain//[\[\]]/}"
+
     local conf_pattern
     if [[ -n "$temp_port" ]]; then
-        # 指定了端口，精确匹配
-        conf_pattern="/etc/nginx/conf.d/${temp_domain}.${temp_port}.conf"
-        log_info "精确匹配: ${temp_domain}:${temp_port}"
+        conf_pattern="/etc/nginx/conf.d/${clean_domain}.${temp_port}.conf"
+        log_info "精确匹配: ${temp_domain}:${temp_port} (文件: ${clean_domain}.${temp_port}.conf)"
     else
-        # 未指定端口，匹配所有该域名的配置
-        conf_pattern="/etc/nginx/conf.d/${temp_domain}.*.conf"
-        log_info "匹配该域名的所有端口"
+        conf_pattern="/etc/nginx/conf.d/${clean_domain}.*.conf"
+        log_info "匹配该域名的所有端口 (文件: ${clean_domain}.*.conf)"
     fi
     
     local conf_files
@@ -670,7 +715,6 @@ remove_domain_config() {
 #                                 主流程
 # ===================================================================================
 
-# --- Nginx 配置测试和重载 ---
 test_and_reload_nginx() {
     log_info "测试 Nginx 配置..."
     if $SUDO nginx -t; then
