@@ -55,7 +55,7 @@ setup_env() {
     local URL_PREFIX="https://${GH_RAW_HOST}"
     
     local RAW_URL_BASE="${URL_PREFIX}/sakullla/nginx-reverse-emby/main"
-    local ACME_OFFICIAL_RAW="${URL_PREFIX}/acmesh-official/acme.sh/master/acme.sh"
+    local ACME_OFFICIAL_RAW="${URL_PREFIX}/acmesh-official/acme.sh/archive/master.tar.gz"
     
     # 确定代理地址: 命令行参数 > 环境变量 > 自动检测
     local effective_gh_proxy="${manual_gh_proxy:-${GH_PROXY}}"
@@ -74,16 +74,16 @@ setup_env() {
         
         # 通过代理获取配置 URL
         CONF_HOME="${effective_gh_proxy}${RAW_URL_BASE}"
-        ACME_INSTALL_URL="${effective_gh_proxy}${ACME_OFFICIAL_RAW}"
+        ACME_TAR_URL="${effective_gh_proxy}${ACME_OFFICIAL_RAW}"
     else
         log_info "未使用 GitHub 代理，使用默认源..."
         CONF_HOME="${RAW_URL_BASE}"
-        ACME_INSTALL_URL="${ACME_OFFICIAL_RAW}"
+        ACME_TAR_URL="${ACME_OFFICIAL_RAW}"
     fi
 
     readonly CONF_HOME
     readonly BACKUP_DIR="/etc/nginx/backup"
-    readonly ACME_INSTALL_URL
+    readonly ACME_TAR_URL
 }
 
 # ===================================================================================
