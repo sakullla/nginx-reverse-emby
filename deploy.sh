@@ -78,8 +78,7 @@ setup_env() {
     else
         log_info "未使用 GitHub 代理，使用默认源..."
         CONF_HOME="${RAW_URL_BASE}"
-        # 不使用代理时推荐使用 acme.sh 官方短链
-        ACME_INSTALL_URL="https://get.acme.sh"
+        ACME_INSTALL_URL="${ACME_OFFICIAL_RAW}"
     fi
 
     readonly CONF_HOME
