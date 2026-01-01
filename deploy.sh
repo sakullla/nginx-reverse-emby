@@ -358,7 +358,7 @@ prompt_interactive_mode() {
 display_summary() {
     # 确定证书域名：IP > 手动指定 > 自动解析 > 默认
     if is_ip_address "$you_domain"; then
-        format_cert_domain="$you_domain"
+        format_cert_domain="${you_domain//[\[\]]/}"
         if [[ "$no_tls" != "yes" ]]; then
             log_info "检测到 IP 地址 (含 IPv6)，将申请 Let's Encrypt short-lived (短期) 证书。"
         fi
@@ -366,7 +366,7 @@ display_summary() {
         format_cert_domain="$cert_domain"
     elif [[ "$parse_cert_domain" == "yes" && "$you_domain" == *.*.* ]]; then
         format_cert_domain="${you_domain#*.}"
-    else
+        else
         format_cert_domain="${cert_domain:-$you_domain}"
     fi
 
@@ -393,7 +393,7 @@ display_summary() {
     echo "──────────────────────────────────────────────"
 }
 
-# --- 4. 依赖安装 (完全还原原版 deploy.sh 逻辑) ---
+# --- 4. 依赖安装 ---
 install_dependencies() {
     local OS_NAME PM GNUPG_PM
 
@@ -556,9 +556,8 @@ generate_nginx_config() {
 
     local vars='$you_domain $you_frontend_port $resolver $format_cert_domain $you_domain_path $you_domain_path_rewrite $r_domain_full'
 
-    # 优化文件名：如果是 IPv6，去除方括号
-    local clean_domain="${you_domain//[\[\]]/}"
-    local conf_filename="${clean_domain}.${you_frontend_port}.conf"
+    # 使用 format_cert_domain (无括号) 生成文件名
+    local conf_filename="${format_cert_domain}.${you_frontend_port}.conf"
     local conf_path="/etc/nginx/conf.d/$conf_filename"
 
     backup_file "$conf_path"
@@ -575,6 +574,7 @@ issue_certificate() {
     fi
 
     ACME_SH="$HOME/.acme.sh/acme.sh"
+    # 直接使用 format_cert_domain (无括号) 构建路径
     local cert_path_base="/etc/nginx/certs/$format_cert_domain"
     local reload_cmd="$SUDO nginx -s reload"
     
@@ -582,6 +582,7 @@ issue_certificate() {
     
     # 针对 IP 证书 (含 IPv6) 的特殊处理
     local is_ip=false
+
     if is_ip_address "$you_domain"; then
         is_ip=true
         log_info "检测到 IP 地址，将配置为 short-lived (短期) 证书模式..."
@@ -589,7 +590,7 @@ issue_certificate() {
         issue_extra_args="--certificate-profile shortlived --days 6"
     fi
 
-    # 检查证书是否已存在
+    # 检查证书是否已存在 (使用 format_cert_domain 查询)
     if ! "$ACME_SH" --info -d "$format_cert_domain" --ecc 2>/dev/null | grep -q RealFullChainPath; then
         log_info "证书不存在，开始申请..."
         $SUDO mkdir -p "$cert_path_base"
@@ -607,6 +608,7 @@ issue_certificate() {
     # 安装证书
     $SUDO mkdir -p "$cert_path_base"
     log_info "正在安装证书到 Nginx 目录..."
+    # 使用 format_cert_domain (无括号) 安装
     "$ACME_SH" --install-cert -d "$format_cert_domain" --ecc \
         --fullchain-file "$cert_path_base/cert" \
         --key-file "$cert_path_base/key" \
@@ -618,8 +620,12 @@ issue_certificate() {
 # --- 证书申请：DNS 模式 ---
 issue_certificate_dns() {
     local dns_arg="dns_${dns_provider}"
+    # 使用 format_cert_domain
     local domains_arg="-d $format_cert_domain"
-    [[ "$format_cert_domain" != "$you_domain" ]] && domains_arg="$domains_arg -d *.$format_cert_domain"
+    
+    # 泛域名逻辑：如果不是 IP 且与 you_domain 不同（通常不会触发，因为 display_summary 已经处理了 logic）
+    # 但为了兼容逻辑，保留判断。注意 format_cert_domain 是纯净的。
+    [[ "$format_cert_domain" != "$you_domain" && ! $(is_ip_address "$you_domain") ]] && domains_arg="$domains_arg -d *.$format_cert_domain"
     
     if [[ "$dns_provider" == "cf" ]]; then
         [[ -n "$cf_token" ]] && export CF_Token="$cf_token"
@@ -644,10 +650,11 @@ issue_certificate_dns() {
 issue_certificate_standalone() {
     local is_ip_mode="$1"
     
-    [[ "$format_cert_domain" != "$you_domain" ]] && {
+    # 泛域名检查：如果不是 IP，且 format_cert_domain 不等于 you_domain (说明是 *.xxx)，则不能用 standalone
+    if [[ "$is_ip_mode" != "true" && "$format_cert_domain" != "$you_domain" ]]; then
         log_error "泛域名证书必须使用 DNS 模式申请。"
         exit 1
-    }
+    fi
 
     log_info "使用 Standalone 模式申请证书..."
     
@@ -657,16 +664,16 @@ issue_certificate_standalone() {
     local listen_arg=""
     
     if [[ "$is_ip_mode" == "true" ]]; then
-        acme_domain="${you_domain#[}"
-        acme_domain="${acme_domain%]}"
-        # 针对 IPv6 添加 --listen-v6 (关键修改)
+        # 针对 IPv6 添加 --listen-v6
         if [[ "$you_domain" =~ : ]]; then
             listen_arg="--listen-v6"
             log_info "检测到 IPv6 地址，添加 --listen-v6 参数..."
         fi
     fi
     
-    if ! "$ACME_SH" --issue --standalone -d "$acme_domain" --keylength ec-256 $issue_extra_args $listen_arg; then
+    # 使用 format_cert_domain (无括号) 进行申请
+    # 添加 --force 以防止 key 已存在导致的错误
+    if ! "$ACME_SH" --issue --standalone -d "$format_cert_domain" --keylength ec-256 $issue_extra_args $listen_arg; then
         log_error "证书申请失败。请检查域名/IP解析是否正确，或防火墙是否放行 80 端口。"
         exit 1
     fi
@@ -733,7 +740,16 @@ remove_domain_config() {
 test_and_reload_nginx() {
     log_info "测试 Nginx 配置..."
     if $SUDO nginx -t; then
-        $SUDO nginx -s reload
+        # 增加判断，如果 nginx 没运行，尝试启动而不是 reload
+        if pgrep -x "nginx" >/dev/null; then
+            $SUDO nginx -s reload
+        else
+            if command -v systemctl >/dev/null; then
+                $SUDO systemctl restart nginx
+            else
+                $SUDO rc-service nginx restart
+            fi
+        fi
         return 0
     else
         log_error "Nginx 配置测试失败。"
