@@ -654,12 +654,19 @@ issue_certificate_standalone() {
     # 针对 IPv6，acme.sh 需要纯 IP 地址 (不带方括号)
     # 针对普通域名，保留原样
     local acme_domain="$you_domain"
+    local listen_arg=""
+    
     if [[ "$is_ip_mode" == "true" ]]; then
         acme_domain="${you_domain#[}"
         acme_domain="${acme_domain%]}"
+        # 针对 IPv6 添加 --listen-v6 (关键修改)
+        if [[ "$you_domain" =~ : ]]; then
+            listen_arg="--listen-v6"
+            log_info "检测到 IPv6 地址，添加 --listen-v6 参数..."
+        fi
     fi
     
-    if ! "$ACME_SH" --issue --standalone -d "$acme_domain" --keylength ec-256 $issue_extra_args; then
+    if ! "$ACME_SH" --issue --standalone -d "$acme_domain" --keylength ec-256 $issue_extra_args $listen_arg; then
         log_error "证书申请失败。请检查域名/IP解析是否正确，或防火墙是否放行 80 端口。"
         exit 1
     fi
