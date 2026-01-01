@@ -55,7 +55,7 @@ setup_env() {
     local URL_PREFIX="https://${GH_RAW_HOST}"
     
     local RAW_URL_BASE="${URL_PREFIX}/sakullla/nginx-reverse-emby/main"
-    local ACME_OFFICIAL_RAW="${URL_PREFIX}/acmesh-official/acme.sh/archive/master.tar.gz"
+    local ACME_OFFICIAL_RAW="${URL_PREFIX}/acmesh-official/acme.sh/master/acme.sh"
     
     # 确定代理地址: 命令行参数 > 环境变量 > 自动检测
     local effective_gh_proxy="${manual_gh_proxy:-${GH_PROXY}}"
@@ -74,16 +74,16 @@ setup_env() {
         
         # 通过代理获取配置 URL
         CONF_HOME="${effective_gh_proxy}${RAW_URL_BASE}"
-        ACME_TAR_URL="${effective_gh_proxy}${ACME_OFFICIAL_RAW}"
+        ACME_INSTALL_URL="${effective_gh_proxy}${ACME_OFFICIAL_RAW}"
     else
         log_info "未使用 GitHub 代理，使用默认源..."
         CONF_HOME="${RAW_URL_BASE}"
-        ACME_TAR_URL="${ACME_OFFICIAL_RAW}"
+        ACME_INSTALL_URL="${ACME_OFFICIAL_RAW}"
     fi
 
     readonly CONF_HOME
     readonly BACKUP_DIR="/etc/nginx/backup"
-    readonly ACME_TAR_URL
+    readonly ACME_INSTALL_URL
 }
 
 # ===================================================================================
@@ -483,47 +483,23 @@ install_dependencies() {
         esac
     fi
 
-    # 确保 tar 存在
-    if ! command -v tar &>/dev/null; then
-        log_info "正在安装 tar..."
-        $SUDO "$PM" install -y tar
-    fi
-
+    # acme.sh 安装逻辑
     ACME_SH="$HOME/.acme.sh/acme.sh"
     if [[ "$no_tls" != "yes" && ! -f "$ACME_SH" ]]; then
-       log_info "正在为当前用户安装 acme.sh (完整版)..."
+       log_info "正在为当前用户安装 acme.sh... (URL: $ACME_INSTALL_URL)"
+       local TMP_INSTALL_SCRIPT="./acme.sh"
+       trap "rm -f '$TMP_INSTALL_SCRIPT'" RETURN
        
-       # 创建临时目录
-       local TMP_DIR
-       TMP_DIR=$(mktemp -d) || { log_error "无法创建临时目录"; exit 1; }
-       trap "rm -rf '$TMP_DIR'" RETURN
-       
-       log_info "下载 acme.sh 源码: $ACME_TAR_URL"
-       # 下载源码包 (包含 dnsapi)
-       if curl -L -o "$TMP_DIR/acme.tar.gz" "$ACME_TAR_URL"; then
-           # 解压
-           tar -xzf "$TMP_DIR/acme.tar.gz" -C "$TMP_DIR"
-           
-           # 找到解压目录 (acme.sh-master)
-           local EXTRACTED_DIR
-           EXTRACTED_DIR=$(find "$TMP_DIR" -maxdepth 1 -type d -name "acme.sh*" | head -n 1)
-           
-           if [[ -d "$EXTRACTED_DIR" ]]; then
-               # 执行安装，无需再 upgrade
-               if "$EXTRACTED_DIR/acme.sh" --install; then
-                   log_success "acme.sh 安装完成。"
-                   "$ACME_SH" --upgrade --auto-upgrade
-                   "$ACME_SH" --set-default-ca --server letsencrypt
-               else
-                   log_error "acme.sh 安装命令执行失败。"
-                   exit 1
-               fi
+       if download_with_verify "$ACME_INSTALL_URL" "$TMP_INSTALL_SCRIPT" "acme.sh"; then
+           if sh "$TMP_INSTALL_SCRIPT" --install-online; then
+               log_success "acme.sh 安装完成。"
+               "$ACME_SH" --upgrade --auto-upgrade
+               "$ACME_SH" --set-default-ca --server letsencrypt
            else
-               log_error "解压 acme.sh 失败，未找到目录。"
+               log_error "acme.sh 安装脚本执行失败。"
                exit 1
            fi
        else
-           log_error "无法下载 acme.sh 源码包，请检查网络。"
            exit 1
        fi
     fi
