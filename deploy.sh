@@ -452,7 +452,7 @@ install_dependencies() {
        trap "rm -f '$TMP_INSTALL_SCRIPT'" RETURN
        
        if download_with_verify "$ACME_INSTALL_URL" "$TMP_INSTALL_SCRIPT" "acme.sh"; then
-           if sh "$TMP_INSTALL_SCRIPT" --install-online; then
+           if sh "$TMP_INSTALL_SCRIPT" --install; then
                log_success "acme.sh 安装完成。"
                "$ACME_SH" --upgrade --auto-upgrade
                "$ACME_SH" --set-default-ca --server letsencrypt
