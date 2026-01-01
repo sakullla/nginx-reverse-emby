@@ -556,8 +556,8 @@ generate_nginx_config() {
 
     local vars='$you_domain $you_frontend_port $resolver $format_cert_domain $you_domain_path $you_domain_path_rewrite $r_domain_full'
 
-    # 使用 format_cert_domain (无括号) 生成文件名
-    local conf_filename="${format_cert_domain}.${you_frontend_port}.conf"
+    local clean_you_domain="${you_domain//[\[\]]/}"
+    local conf_filename="${clean_you_domain}.${you_frontend_port}.conf"
     local conf_path="/etc/nginx/conf.d/$conf_filename"
 
     backup_file "$conf_path"
