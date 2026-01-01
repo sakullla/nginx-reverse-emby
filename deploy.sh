@@ -469,8 +469,18 @@ install_dependencies() {
     if ! command -v socat &>/dev/null; then
         log_info "安装 socat 等辅助工具..."
         case "$OS_NAME" in
-            debian|ubuntu|arch) $SUDO "$PM" install -y socat cron ;;
-            *) $SUDO "$PM" install -y socat cronie ;;
+            debian|ubuntu|arch) $SUDO "$PM" install -y socat ;;
+            *) $SUDO "$PM" install -y socat ;;
+        esac
+    fi
+
+    if ! command -v crontab &>/dev/null; then
+        log_info "检测到 crontab 缺失，正在安装 cron..."
+        case "$OS_NAME" in
+            debian|ubuntu) $SUDO "$PM" install -y cron ;;
+            rhel) $SUDO "$PM" install -y cronie ;;
+            arch) $SUDO "$PM" -S --noconfirm cronie ;;
+            alpine) $SUDO "$PM" add --no-cache dcron ;;
         esac
     fi
 
@@ -478,12 +488,11 @@ install_dependencies() {
     ACME_SH="$HOME/.acme.sh/acme.sh"
     if [[ "$no_tls" != "yes" && ! -f "$ACME_SH" ]]; then
        log_info "正在为当前用户安装 acme.sh... (URL: $ACME_INSTALL_URL)"
-       
-       local TMP_INSTALL_SCRIPT="/tmp/acme_install.sh"
+       local TMP_INSTALL_SCRIPT="./acme.sh"
        trap "rm -f '$TMP_INSTALL_SCRIPT'" RETURN
        
        if download_with_verify "$ACME_INSTALL_URL" "$TMP_INSTALL_SCRIPT" "acme.sh"; then
-           if sh "$TMP_INSTALL_SCRIPT"; then
+           if sh "$TMP_INSTALL_SCRIPT" --install; then
                log_success "acme.sh 安装完成。"
                "$ACME_SH" --upgrade --auto-upgrade
                "$ACME_SH" --set-default-ca --server letsencrypt
