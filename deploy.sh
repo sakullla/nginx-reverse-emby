@@ -483,23 +483,47 @@ install_dependencies() {
         esac
     fi
 
-    # acme.sh 安装逻辑
+    # 确保 tar 存在
+    if ! command -v tar &>/dev/null; then
+        log_info "正在安装 tar..."
+        $SUDO "$PM" install -y tar
+    fi
+
     ACME_SH="$HOME/.acme.sh/acme.sh"
     if [[ "$no_tls" != "yes" && ! -f "$ACME_SH" ]]; then
-       log_info "正在为当前用户安装 acme.sh... (URL: $ACME_INSTALL_URL)"
-       local TMP_INSTALL_SCRIPT="./acme.sh"
-       trap "rm -f '$TMP_INSTALL_SCRIPT'" RETURN
+       log_info "正在为当前用户安装 acme.sh (完整版)..."
        
-       if download_with_verify "$ACME_INSTALL_URL" "$TMP_INSTALL_SCRIPT" "acme.sh"; then
-           if sh "$TMP_INSTALL_SCRIPT" --install; then
-               log_success "acme.sh 安装完成。"
-               "$ACME_SH" --upgrade --auto-upgrade
-               "$ACME_SH" --set-default-ca --server letsencrypt
+       # 创建临时目录
+       local TMP_DIR
+       TMP_DIR=$(mktemp -d) || { log_error "无法创建临时目录"; exit 1; }
+       trap "rm -rf '$TMP_DIR'" RETURN
+       
+       log_info "下载 acme.sh 源码: $ACME_TAR_URL"
+       # 下载源码包 (包含 dnsapi)
+       if curl -L -o "$TMP_DIR/acme.tar.gz" "$ACME_TAR_URL"; then
+           # 解压
+           tar -xzf "$TMP_DIR/acme.tar.gz" -C "$TMP_DIR"
+           
+           # 找到解压目录 (acme.sh-master)
+           local EXTRACTED_DIR
+           EXTRACTED_DIR=$(find "$TMP_DIR" -maxdepth 1 -type d -name "acme.sh*" | head -n 1)
+           
+           if [[ -d "$EXTRACTED_DIR" ]]; then
+               # 执行安装，无需再 upgrade
+               if "$EXTRACTED_DIR/acme.sh" --install; then
+                   log_success "acme.sh 安装完成。"
+                   "$ACME_SH" --upgrade --auto-upgrade
+                   "$ACME_SH" --set-default-ca --server letsencrypt
+               else
+                   log_error "acme.sh 安装命令执行失败。"
+                   exit 1
+               fi
            else
-               log_error "acme.sh 安装脚本执行失败。"
+               log_error "解压 acme.sh 失败，未找到目录。"
                exit 1
            fi
        else
+           log_error "无法下载 acme.sh 源码包，请检查网络。"
            exit 1
        fi
     fi
