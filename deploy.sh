@@ -374,7 +374,8 @@ display_summary() {
     if [[ -n "$manual_resolver" ]]; then
         resolver="$manual_resolver valid=60s"
     else
-        local ipv6_flag=$([[ $(has_ipv6) == true ]] && echo "" || echo "ipv6=off")
+        # 修正: has_ipv6 返回 exit code, 不输出文本
+        local ipv6_flag=$(has_ipv6 && echo "" || echo "ipv6=off")
         resolver="$(get_resolver_host) $ipv6_flag"
     fi
 
