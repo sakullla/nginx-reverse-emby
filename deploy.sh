@@ -341,7 +341,7 @@ prompt_interactive_mode() {
         fi
 
         echo -e "\n${BLUE}--- 交互模式: 配置反向代理 ---${NC}"
-        read -rp "请输入本 VPS 的访问地址 (本机的公网 IP 或者配置的域名, 例如 https://11.22.33.44:8888 或 https://emby.mysite.com): " input_you
+        read -rp "请输入访问的地址 (本机的公网 IP或者域名, 例如 https://11.22.33.44:8888 或 https://emby.mysite.com): " input_you
         read -rp "请输入要反代的 Emby 地址 (原本的 Emby 访问链接, 例如 https://emby.server.com): " input_r
 
         process_url_input "$input_you" "you"
