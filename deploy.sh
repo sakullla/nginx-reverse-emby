@@ -341,8 +341,8 @@ prompt_interactive_mode() {
         fi
 
         echo -e "\n${BLUE}--- 交互模式: 配置反向代理 ---${NC}"
-        read -rp "请输入你的访问 URL (例如 https://emby.mysite.com 或 https://[2400::1]): " input_you
-        read -rp "请输入后端 Emby URL (例如 http://127.0.0.1:8096): " input_r
+        read -rp "请输入你的访问地址 (即本机的公网 IP 或域名, 例如 https://emby.mysite.com, https://11.22.33.44:8888 或 https://[2400::1]:8888):" input_you
+        read -rp "请输入Emby 服务的完整地址 (被代理的服务地址, 例如 https://emby.server.com):" input_r
 
         process_url_input "$input_you" "you"
         process_url_input "$input_r" "r"
