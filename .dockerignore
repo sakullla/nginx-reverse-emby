@@ -1,0 +1,25 @@
+# Git
+.git
+.gitignore
+
+# Node
+panel/frontend/node_modules
+panel/frontend/.vite
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Temp
+*.tmp
+.cache

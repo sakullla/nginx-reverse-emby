@@ -375,3 +375,103 @@ curl https://proxy.example.com
 ## 💬 反馈与贡献
 
 遇到问题或有改进建议？欢迎在 [GitHub Issues](https://github.com/sakullla/nginx-reverse-emby/issues) 中提出。
+
+## Docker 面板部署（推荐）
+
+Docker 镜像已内置 Node.js 面板后端与前端页面。  
+启动时可以不再传 `PROXY_RULE_N`，直接在面板里新增/编辑/删除规则即可。
+
+### 1. 使用 Docker Compose 启动
+
+项目根目录已提供 `docker-compose.yaml`：
+
+```bash
+docker compose up -d --build
+```
+
+### 2. 访问面板
+
+- 默认地址：`http://<服务器IP>:8080/`
+- 面板 API 通过 Nginx 代理在 `/panel-api/*`
+
+### 3. 面板配置持久化
+
+`docker-compose.yaml` 已挂载卷：
+
+- 容器路径：`/opt/nginx-reverse-emby/panel/data`
+- 规则文件：`/opt/nginx-reverse-emby/panel/data/proxy_rules.csv`
+- 卷名：`nre_panel_data`
+
+即使重建容器，面板中保存的规则也会保留。
+
+### 4. 端口说明
+
+- `8080:8080` 用于访问控制面板。
+- `80:80` 用于默认反代入口。
+- 如果你在面板里配置了其它前端端口（如 `8096`），请在 `docker-compose.yaml` 追加端口映射，例如：`8096:8096`。
+
+### 5. 常用环境变量（可选）
+
+- `PANEL_ENABLED`：是否启用面板（默认 `1`）
+- `PANEL_PORT`：面板端口（默认 `8080`）
+- `PANEL_BACKEND_PORT`：面板后端端口（默认 `18081`）
+- `PANEL_RULES_FILE`：规则文件路径（默认 `/opt/nginx-reverse-emby/panel/data/proxy_rules.csv`）
+- `PANEL_AUTO_APPLY`：面板修改后自动应用并重载 Nginx（默认 `1`）
+- `PANEL_API_TOKEN`：可选，开启后调用 API 需携带 `X-Panel-Token`
+
+## Docker Deploy Modes (front_proxy vs direct)
+
+The Docker image now supports two runtime modes controlled by environment variables:
+
+- `PROXY_DEPLOY_MODE=front_proxy` (default)
+  - Intended for upstream Nginx/Caddy/Traefik TLS termination.
+  - Container serves HTTP reverse proxy blocks only.
+
+- `PROXY_DEPLOY_MODE=direct`
+  - Container handles HTTPS directly based on each frontend rule URL scheme.
+  - `https://...` frontend rules render TLS server blocks and require certificates.
+  - `http://...` frontend rules render HTTP-only blocks.
+  - IPv4/IPv6 frontend hosts are supported for certificate issuance (IP certs use short-lived profile).
+
+### Direct Mode Certificate Variables
+
+- `DIRECT_CERT_MODE=acme|manual` (default `acme`)
+- `DIRECT_CERT_DIR` (default `/etc/nginx/certs`)
+- `DIRECT_CERT_CLEANUP` (default `1`, removes stale certs when rules are deleted)
+- `ACME_EMAIL` (recommended)
+- `ACME_DNS_PROVIDER` (optional, e.g. `cf`)
+- `ACME_HOME` (default `/opt/acme.sh`)
+- `ACME_CA` (default `letsencrypt`)
+- `ACME_STANDALONE_STOP_NGINX` (default `1`)
+- `ACME_AUTO_RENEW` (default `1`)
+- `ACME_RENEW_INTERVAL` (seconds, default `86400`)
+
+Direct-mode ACME behavior now follows `deploy.sh`:
+- It checks existing ACME record first (`acme.sh --info ... --ecc`), then skips re-issue if already managed.
+- Both DNS and standalone issuance paths perform stale-record cleanup and retry once on first failure.
+- If `ACME_DNS_PROVIDER` is set but frontend host is an IP, it automatically falls back to standalone challenge.
+
+In `direct` mode, deleting an HTTPS rule triggers a config re-apply and stale cert cleanup for domains no longer used by any rule.
+
+Cloudflare DNS mode can use the standard acme.sh vars:
+- `CF_Token`
+- `CF_Account_ID`
+
+### Dockerfile Frontend Build
+
+Dockerfile now uses multi-stage build to compile `panel/frontend` during image build:
+
+- Stage 1 (`node:24-alpine`): `npm ci` + `npm run build`
+- Stage 2 (`nginx:latest`): copy built frontend artifacts and runtime scripts
+- Runtime `node` binary is provided from `node:24-bookworm-slim` for panel backend.
+
+If you run `direct` mode, map `443` as needed and persist cert data volumes, for example:
+
+```yaml
+ports:
+  - "80:80"
+  - "443:443"
+volumes:
+  - nre_certs:/etc/nginx/certs
+  - nre_acme:/opt/acme.sh
+```

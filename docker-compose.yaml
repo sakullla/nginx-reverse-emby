@@ -1,0 +1,15 @@
+services:
+  nginx-reverse-emby:
+    image: ghcr.io/sakullla/nginx-reverse-emby:latest
+    container_name: nginx-reverse-emby
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+      - "80:80"
+      # Direct mode example:
+      # - "443:443"
+    volumes:
+      - nre_panel_data:/opt/nginx-reverse-emby/panel/data
+
+volumes:
+  nre_panel_data:
