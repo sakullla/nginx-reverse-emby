@@ -99,71 +99,96 @@ async function handleDelete() {
 .id-cell {
   width: 60px;
   text-align: center;
+  font-weight: 600;
+  color: #8b5cf6;
+  font-size: 0.95rem;
+}
+
+.url-cell {
+  padding: 0.5rem 1rem !important;
 }
 
 .url-cell input {
   width: 100%;
-  padding: 0.5rem 0.75rem;
-  border: 1.5px solid #e2e8f0;
+  padding: 0.5rem 0.875rem;
+  border: 1.5px solid #e5e7eb;
   border-radius: 6px;
-  font-size: 0.85rem;
-  color: #1a202c;
+  font-size: 0.875rem;
+  color: #111827;
   transition: all 0.2s ease;
   background: #fafafa;
   box-sizing: border-box;
+  line-height: 1.5;
 }
 
 .url-cell input:focus {
   background: white;
-  color: #1a202c;
-  border-color: #667eea;
-  box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.1);
+  color: #111827;
+  border-color: #8b5cf6;
+  box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.08);
+  outline: none;
 }
 
 .url-cell input:disabled {
-  background: #f7fafc;
-  color: #718096;
+  background: #f9fafb;
+  color: #6b7280;
   cursor: not-allowed;
 }
 
 .action-cell {
-  width: 120px;
+  width: 140px;
+  padding: 0.5rem 1rem !important;
 }
 
 .button-group {
   display: flex;
   gap: 0.5rem;
   justify-content: center;
+  align-items: center;
 }
 
 .btn-small {
-  padding: 0.5rem 0.75rem;
-  font-size: 1rem;
-  min-width: 44px;
+  padding: 0.5rem 1rem;
+  font-size: 0.875rem;
+  min-width: 60px;
   border-radius: 6px;
-  line-height: 1;
+  line-height: 1.5;
+  font-weight: 600;
+  transition: all 0.2s ease;
+  border: none;
+  cursor: pointer;
+  color: white;
 }
 
 .btn-save {
-  background: linear-gradient(135deg, #48bb78 0%, #38a169 100%);
-  box-shadow: 0 2px 6px rgba(72, 187, 120, 0.25);
+  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+  box-shadow: 0 1px 3px rgba(16, 185, 129, 0.3);
 }
 
 .btn-save:hover:not(:disabled) {
-  box-shadow: 0 3px 10px rgba(72, 187, 120, 0.35);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px rgba(16, 185, 129, 0.4);
 }
 
 .btn-save:disabled {
-  background: #e2e8f0;
+  background: #d1d5db;
   box-shadow: none;
+  cursor: not-allowed;
+  opacity: 0.6;
 }
 
 .btn-delete {
-  background: linear-gradient(135deg, #f56565 0%, #e53e3e 100%);
-  box-shadow: 0 2px 6px rgba(245, 101, 101, 0.25);
+  background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+  box-shadow: 0 1px 3px rgba(239, 68, 68, 0.3);
 }
 
 .btn-delete:hover:not(:disabled) {
-  box-shadow: 0 3px 10px rgba(245, 101, 101, 0.35);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px rgba(239, 68, 68, 0.4);
+}
+
+.btn-delete:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
 }
 </style>

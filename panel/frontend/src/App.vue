@@ -47,7 +47,7 @@ onMounted(() => {
 
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', sans-serif;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 50%, #d946ef 100%);
   min-height: 100vh;
   padding: 1.5rem;
 }
@@ -128,10 +128,10 @@ input[type="text"],
 input[type="password"],
 input:not([type]) {
   padding: 0.75rem 1rem;
-  border: 1.5px solid #e2e8f0;
+  border: 2px solid #e5e7eb;
   border-radius: 8px;
   font-size: 0.9rem;
-  color: #1a202c;
+  color: #111827;
   transition: all 0.2s ease;
   background: #ffffff;
   font-family: inherit;
@@ -141,17 +141,17 @@ input[type="text"]:focus,
 input[type="password"]:focus,
 input:not([type]):focus {
   outline: none;
-  border-color: #667eea;
-  color: #1a202c;
+  border-color: #8b5cf6;
+  color: #111827;
   background: #ffffff;
-  box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.08);
+  box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.1);
 }
 
 input:disabled {
   opacity: 0.5;
   cursor: not-allowed;
-  background: #f7fafc;
-  color: #718096;
+  background: #f9fafb;
+  color: #6b7280;
 }
 
 button {
@@ -162,15 +162,15 @@ button {
   font-weight: 600;
   cursor: pointer;
   transition: all 0.2s ease;
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%);
   color: white;
-  box-shadow: 0 2px 8px rgba(102, 126, 234, 0.25);
+  box-shadow: 0 2px 8px rgba(139, 92, 246, 0.3);
   font-family: inherit;
 }
 
 button:hover:not(:disabled) {
   transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(102, 126, 234, 0.35);
+  box-shadow: 0 4px 12px rgba(139, 92, 246, 0.4);
 }
 
 button:active:not(:disabled) {
@@ -184,21 +184,21 @@ button:disabled {
 }
 
 button.secondary {
-  background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
-  box-shadow: 0 2px 8px rgba(245, 87, 108, 0.25);
+  background: linear-gradient(135deg, #ec4899 0%, #db2777 100%);
+  box-shadow: 0 2px 8px rgba(236, 72, 153, 0.3);
 }
 
 button.secondary:hover:not(:disabled) {
-  box-shadow: 0 4px 12px rgba(245, 87, 108, 0.35);
+  box-shadow: 0 4px 12px rgba(236, 72, 153, 0.4);
 }
 
 button.danger {
-  background: linear-gradient(135deg, #fa709a 0%, #fee140 100%);
-  box-shadow: 0 2px 8px rgba(250, 112, 154, 0.25);
+  background: linear-gradient(135deg, #f43f5e 0%, #e11d48 100%);
+  box-shadow: 0 2px 8px rgba(244, 63, 94, 0.3);
 }
 
 button.danger:hover:not(:disabled) {
-  box-shadow: 0 4px 12px rgba(250, 112, 154, 0.35);
+  box-shadow: 0 4px 12px rgba(244, 63, 94, 0.4);
 }
 
 table {
@@ -210,7 +210,7 @@ table {
 }
 
 thead {
-  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  background: linear-gradient(135deg, #8b5cf6 0%, #7c3aed 100%);
   color: white;
 }
 
@@ -234,16 +234,17 @@ th:last-child {
 }
 
 td {
-  padding: 0.875rem 1rem;
+  padding: 0.75rem 1rem;
   border-bottom: 1px solid #f0f0f0;
   font-size: 0.9rem;
   color: #4a5568;
+  vertical-align: middle;
 }
 
 td:first-child {
   padding-left: 1.25rem;
   font-weight: 600;
-  color: #667eea;
+  color: #8b5cf6;
 }
 
 td:last-child {
@@ -256,8 +257,7 @@ tbody tr {
 }
 
 tbody tr:hover {
-  background-color: #f7fafc;
-  transform: scale(1.001);
+  background-color: #faf5ff;
 }
 
 tbody tr:last-child td {
@@ -276,8 +276,8 @@ tbody tr:last-child td {
   width: 36px;
   height: 36px;
   margin: 0 auto 1rem;
-  border: 3px solid #e2e8f0;
-  border-top-color: #667eea;
+  border: 3px solid #e5e7eb;
+  border-top-color: #8b5cf6;
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
