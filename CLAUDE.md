@@ -1,157 +1,153 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file is the source-of-truth guide for AI coding agents working in this repository.
 
-## Project Overview
+## Project Summary
 
-**Nginx-Reverse-Emby** is a highly automated Bash script for one-click Nginx reverse proxy configuration. It supports IPv4/IPv6, automatic SSL certificate management via acme.sh (including Let's Encrypt short-lived certificates for IPs), and Docker containerization.
+Nginx-Reverse-Emby is a Bash-first automation project for one-command Nginx reverse proxy deployment. It supports:
+- IPv4/IPv6 frontend and backend URLs
+- Automatic TLS issuance/install via acme.sh
+- Optional DNS API validation (Cloudflare included)
+- Docker runtime config generation from `PROXY_RULE_N`
 
-## Development Commands
+Primary implementation lives in `deploy.sh`.
 
-### Testing the Deployment Script
+## Core Files
 
-```bash
-# Interactive mode
-bash deploy.sh
+- `deploy.sh`: full deploy/remove lifecycle
+- `conf.d/p.example.com.conf`: HTTPS template (HTTP/3 + QUIC)
+- `conf.d/p.example.com.no_tls.conf`: HTTP-only template
+- `nginx.conf`: host nginx main config template
+- `docker/25-dynamic-reverse-proxy.sh`: Docker entrypoint config generator
+- `docker/default.conf.template`: Docker server template
+- `docker/nginx.conf`: Docker nginx main config
+- `.github/workflows/docker-build.yml`: GHCR build/push
 
-# Non-interactive mode
-bash deploy.sh -y <frontend-url> -r <backend-url>
+## Runtime Flow (deploy.sh)
 
-# Example: HTTPS proxy
-bash deploy.sh -y https://proxy.example.com -r http://192.168.1.100:8096
+`main()` order:
+1. `parse_arguments`
+2. `remove_domain_config` branch if `--remove` is set
+3. `setup_env`
+4. `prompt_interactive_mode`
+5. `display_summary`
+6. `install_dependencies`
+7. `generate_nginx_config`
+8. `issue_certificate`
+9. `test_and_reload_nginx`
 
-# Example: IPv6 with short-lived IP certificate
-bash deploy.sh -y https://[2400:db8::1]:9443 -r https://backend.com
-```
+Script safety model:
+- `set -e`
+- `set -o pipefail`
+- `trap 'handle_error $LINENO' ERR`
+- automatic `sudo` fallback when not root
 
-### Docker Build and Test
+## CLI Arguments (actual implementation)
 
-```bash
-# Build image
-docker build -t nginx-reverse-emby .
+Supported options:
+- `-y, --you-domain <URL>`
+- `-r, --r-domain <URL>`
+- `-m, --cert-domain <domain>`
+- `-d, --parse-cert-domain`
+- `-D, --dns <provider>`
+- `-R, --resolver <dns list>`
+- `-c, --template-domain-config <path|url>`
+- `--gh-proxy <url>`
+- `--cf-token <token>`
+- `--cf-account-id <id>`
+- `--remove <URL>`
+- `-Y, --yes`
+- `-h, --help`
 
-# Run with proxy rules
-docker run -e PROXY_RULE_1="http://frontend.com,http://backend:8080" \
-           -e PROXY_RULE_2="http://api.frontend.com,http://api-backend:3000" \
-           ghcr.io/sakullla/nginx-reverse-emby:latest
-```
+Important behavior notes:
+- Long option is `--template-domain-config` (not `--template`).
+- `--remove` expects a full URL including scheme.
+- `parse_url()` format is `proto|domain|port|path`; bracketed IPv6 is supported.
+- `--parse-cert-domain` auto-root extraction is only applied when domain matches `*.*.*`.
 
-### Nginx Configuration Testing
+## Config Rendering Model
 
-```bash
-# Test Nginx configuration
-nginx -t
+Rendered target paths:
+- `/etc/nginx/conf.d/{clean_domain}.{port}.conf`
+- `/etc/nginx/certs/{format_cert_domain}/`
+- backup path: `/etc/nginx/backup/`
 
-# Check Nginx logs
-journalctl -u nginx -n 50
-```
+Template variables exported by `generate_nginx_config()`:
+- `${you_domain}`
+- `${you_frontend_port}`
+- `${resolver}`
+- `${format_cert_domain}`
+- `${you_domain_path}`
+- `${you_domain_path_rewrite}`
+- `${r_domain_full}`
 
-## Architecture
+Path behavior:
+- non-root frontend path generates rewrite rule automatically
+- backend URL is composed from protocol + host + optional port
 
-### Core Components
+## Certificate Behavior
 
-1. **deploy.sh** - Main deployment script with dual operation modes:
-   - Interactive mode: Wizard-style prompts for user input
-   - Non-interactive mode: Command-line arguments for automation
+- TLS disabled (`no_tls=yes`) skips certificate issuance.
+- IP frontends use short-lived profile: `--certificate-profile shortlived --days 6`.
+- DNS mode uses `issue_certificate_dns()`.
+- Standalone mode uses `issue_certificate_standalone()`.
+- Cloudflare mode consumes `CF_Token` and `CF_Account_ID`.
 
-2. **Configuration Templates** (conf `d/`):
-   - `p.example.com.conf` - HTTPS configuration template
-   - `p.example.com.no_tls.conf` - HTTP configuration template
-   - Templates use `envsubst` with variables like `${you_domain}`, `${r_domain_full}`, `${resolver}`
+## Remove Behavior
 
-3. **Docker Setup** (docker/):
-   - `25-dynamic-reverse-proxy.sh` - Entrypoint that reads `PROXY_RULE_N` env vars and generates configs
-   - `default.conf.template` - Docker-specific Nginx config template
+- resolves target by `domain + port`
+- requires explicit `--yes` in non-interactive mode
+- detects shared/wildcard cert usage and avoids unsafe deletion
+- validates nginx config before reload/restart
 
-### Deployment Flow
+## Docker Mode
 
-```
-1. Parameter Parsing → 2. Environment Setup → 3. Interactive Mode (optional)
-    ↓
-4. Dependency Installation → 5. Config Generation → 6. Certificate Issuance
-    ↓
-7. Nginx Reload
-```
+`docker/25-dynamic-reverse-proxy.sh`:
+- reads `PROXY_RULE_1`, `PROXY_RULE_2`, ...
+- rule format: `frontend_url,backend_url`
+- writes `/etc/nginx/conf.d/{domain}.{frontend_port}.conf`
+- stops scanning when first index is missing (no gaps allowed)
+- default resolver is `1.1.1.1`, override with `NGINX_LOCAL_RESOLVERS`
 
-### Key Functions in deploy.sh
+## Development Rules
 
-| Function | Purpose |
-|----------|---------|
-| `parse_arguments()` | Parses command-line options using getopt |
-| `parse_url()` | Parses URLs supporting IPv6 bracket format `[address]` |
-| `install_dependencies()` | Installs Nginx (from official source), acme.sh, socat, cron |
-| `generate_nginx_config()` | Renders templates via `envsubst` |
-| `issue_certificate()` | Obtains SSL certs (Standalone or DNS mode) |
-| `remove_domain_config()` | Safely removes config and certs |
+When editing `deploy.sh`:
+1. Keep strict mode and trap behavior intact.
+2. For new args, update getopt + help text + docs together.
+3. For new template vars, update export list and envsubst var list together.
+4. Preserve IPv6 bracket compatibility in URL parsing.
+5. Keep remove flow conservative around shared certs.
 
-### URL Parsing Format
+When editing templates:
+1. Keep variable names aligned with exports in `deploy.sh`.
+2. Validate both TLS and no-TLS templates.
+3. Re-check `proxy_redirect` and `/backstream` behavior.
 
-The `parse_url()` function outputs: `protocol|domain|port|path`
+When editing Docker entrypoint:
+1. Preserve `PROXY_RULE_N` compatibility.
+2. Consider current "contiguous index" stop behavior.
+3. Re-test domain path extraction edge cases.
 
-- IPv6 addresses are wrapped in brackets: `[2400:db8::1]`
-- Domain/IP extraction handles both bracketed IPv6 and regular IPv4/domain names
-- Protocol defaults to https if not specified
+## Validation Checklist
 
-### Configuration File Naming
+Host mode:
+1. `nginx -t`
+2. deploy HTTPS domain once
+3. deploy IPv6 URL once
+4. deploy HTTP(no TLS) once
+5. remove with `--remove https://domain:port --yes`
 
-Configs are named precisely as `{clean_domain}.{port}.conf` to allow multiple ports per domain:
-- `example.com.443.conf`
-- `example.com.8443.conf`
+Docker mode:
+1. `docker build -t nginx-reverse-emby .`
+2. run with contiguous `PROXY_RULE_1..N`
+3. verify generated file count and names
+4. verify path forwarding and redirects
 
-### Certificate Management
+## Known Documentation Drift
 
-| Mode | Use Case |
-|------|----------|
-| Standalone (HTTP-01) | Single domains and IP addresses |
-| DNS (DNS-01) | Wildcard certificates via Cloudflare API |
-| Short-lived | IP addresses (6-day validity, auto-renewed) |
+- Some docs mention `--template`; implementation uses `--template-domain-config`.
+- `--remove` examples without scheme are unsafe; use full URLs.
+- `--parse-cert-domain` behavior is stricter than generic "root extraction" wording.
+- Docker rule scanning is contiguous-only; gaps truncate processing.
 
-### Environment Variables
-
-| Variable | Description |
-|----------|-------------|
-| `CONF_HOME` | Remote config template base URL |
-| `ACME_INSTALL_URL` | acme.sh installation script URL |
-| `BACKUP_DIR` | Configuration backup directory (`/etc/nginx/backup`) |
-
-### Docker Environment Variables
-
-| Variable | Format |
-|----------|--------|
-| `PROXY_RULE_N` | `frontend-url,backend-url` (N = 1, 2, 3...) |
-| `NGINX_LOCAL_RESOLVERS` | DNS resolvers (default: `1.1.1.1`) |
-| `NGINX_ENTRYPOINT_QUIET_LOGS` | Set non-empty to suppress logs |
-
-## Code Conventions
-
-### Bash Scripting
-
-- Always use strict mode: `set -e; set -o pipefail`
-- Error handling with `trap 'handle_error $LINENO' ERR`
-- Use `$SUDO` variable for permission handling (auto-detects if sudo needed)
-- Log functions: `log_info`, `log_success`, `log_warn`, `log_error`
-- Color variables: `RED`, `GREEN`, `YELLOW`, `BLUE`, `NC`
-
-### Template Variables
-
-For `conf.d/` templates:
-- `${you_domain}` - Frontend domain/IP (IPv6 with brackets)
-- `${you_frontend_port}` - Frontend listening port
-- `${resolver}` - DNS resolver configuration
-- `${format_cert_domain}` - Certificate domain (clean, no brackets)
-- `${you_domain_path}` - Frontend path
-- `${you_domain_path_rewrite}` - Path rewrite rules
-- `${r_domain_full}` - Complete backend URL
-
-## File Locations
-
-| Path | Purpose |
-|------|---------|
-| `/etc/nginx/conf.d/{domain}.{port}.conf` | Site configuration |
-| `/etc/nginx/certs/{cert_domain}/` | SSL certificate storage |
-| `/etc/nginx/backup/` | Configuration backups |
-| `$HOME/.acme.sh/acme.sh` | acme.sh installation |
-
-## China Network Optimization
-
-The script automatically detects Chinese IP addresses via Cloudflare CDN trace and uses `gh.llkk.cc` proxy for GitHub resources. This can be overridden with `--gh-proxy`.
+If implementation changes any of these points, update `README.md`, `AGENTS.md`, and `CLAUDE.md` in the same patch.

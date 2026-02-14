@@ -1,0 +1,4 @@
+interface:
+  display_name: "Nginx Reverse Emby Guide"
+  short_description: "Maintenance guide for deploy.sh and proxy templates"
+  default_prompt: "Apply safe, behavior-accurate updates in this nginx-reverse-emby repository and keep docs synchronized with implementation."

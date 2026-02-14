@@ -1,243 +1,153 @@
-# AGENTS.md - Nginx-Reverse-Emby 项目指南
+# CLAUDE.md
 
-本文档面向 AI 编程助手，介绍本项目的架构、技术栈和开发约定。
+This file is the source-of-truth guide for AI coding agents working in this repository.
 
-## 项目概述
+## Project Summary
 
-**Nginx-Reverse-Emby** 是一个功能强大、高度自动化的 Bash 脚本项目，用于一键配置 Nginx 反向代理。项目主要针对 Emby/媒体服务器场景优化，但支持代理任何后端应用。
+Nginx-Reverse-Emby is a Bash-first automation project for one-command Nginx reverse proxy deployment. It supports:
+- IPv4/IPv6 frontend and backend URLs
+- Automatic TLS issuance/install via acme.sh
+- Optional DNS API validation (Cloudflare included)
+- Docker runtime config generation from `PROXY_RULE_N`
 
-### 核心功能
-- 智能 URL 处理（支持 IPv4/IPv6、域名、端口、路径）
-- 完整的 SSL/TLS 方案（自动申请和续期证书）
-- 国内网络加速优化（自动检测并使用 GitHub 代理）
-- 支持泛域名证书（DNS API 验证）
-- Docker 支持（动态反向代理配置）
+Primary implementation lives in `deploy.sh`.
 
-## 项目结构
+## Core Files
 
-```
-.
-├── deploy.sh                      # 主部署脚本（核心文件）
-├── nginx.conf                     # Nginx 主配置文件模板
-├── Dockerfile                     # Docker 镜像构建配置
-├── README.md                      # 项目文档（中文）
-├── AGENTS.md                      # 本文件
-├── conf.d/                        # Nginx 站点配置模板
-│   ├── p.example.com.conf         # HTTPS 配置模板
-│   └── p.example.com.no_tls.conf  # HTTP 配置模板
-├── docker/                        # Docker 相关文件
-│   ├── nginx.conf                 # Docker 版 Nginx 配置
-│   ├── default.conf.template      # Docker 版站点配置模板
-│   └── 25-dynamic-reverse-proxy.sh # Docker entrypoint 脚本
-└── .github/workflows/
-    └── docker-build.yml           # GitHub Actions CI/CD
-```
+- `deploy.sh`: full deploy/remove lifecycle
+- `conf.d/p.example.com.conf`: HTTPS template (HTTP/3 + QUIC)
+- `conf.d/p.example.com.no_tls.conf`: HTTP-only template
+- `nginx.conf`: host nginx main config template
+- `docker/25-dynamic-reverse-proxy.sh`: Docker entrypoint config generator
+- `docker/default.conf.template`: Docker server template
+- `docker/nginx.conf`: Docker nginx main config
+- `.github/workflows/docker-build.yml`: GHCR build/push
 
-## 技术栈
+## Runtime Flow (deploy.sh)
 
-### 主要技术
-- **Bash**: 核心部署脚本（Bash 4.0+）
-- **Nginx**: 反向代理服务器（官方 Mainline 版本）
-- **acme.sh**: SSL 证书申请和管理工具
-- **Docker**: 容器化部署支持
-- **GitHub Actions**: CI/CD 自动化
+`main()` order:
+1. `parse_arguments`
+2. `remove_domain_config` branch if `--remove` is set
+3. `setup_env`
+4. `prompt_interactive_mode`
+5. `display_summary`
+6. `install_dependencies`
+7. `generate_nginx_config`
+8. `issue_certificate`
+9. `test_and_reload_nginx`
 
-### 支持的 Linux 发行版
-- Debian/Ubuntu
-- CentOS/RHEL/Fedora/AlmaLinux/Rocky/Amazon Linux
-- Arch Linux
-- Alpine Linux
+Script safety model:
+- `set -e`
+- `set -o pipefail`
+- `trap 'handle_error $LINENO' ERR`
+- automatic `sudo` fallback when not root
 
-## 核心文件详解
+## CLI Arguments (actual implementation)
 
-### deploy.sh
-主部署脚本，支持两种运行模式：
+Supported options:
+- `-y, --you-domain <URL>`
+- `-r, --r-domain <URL>`
+- `-m, --cert-domain <domain>`
+- `-d, --parse-cert-domain`
+- `-D, --dns <provider>`
+- `-R, --resolver <dns list>`
+- `-c, --template-domain-config <path|url>`
+- `--gh-proxy <url>`
+- `--cf-token <token>`
+- `--cf-account-id <id>`
+- `--remove <URL>`
+- `-Y, --yes`
+- `-h, --help`
 
-1. **交互模式**: 引导用户输入参数
-   ```bash
-   bash deploy.sh
-   ```
+Important behavior notes:
+- Long option is `--template-domain-config` (not `--template`).
+- `--remove` expects a full URL including scheme.
+- `parse_url()` format is `proto|domain|port|path`; bracketed IPv6 is supported.
+- `--parse-cert-domain` auto-root extraction is only applied when domain matches `*.*.*`.
 
-2. **非交互模式**: 通过命令行参数自动化部署
-   ```bash
-   bash deploy.sh -y <前端URL> -r <后端URL> [其他选项]
-   ```
+## Config Rendering Model
 
-#### 关键函数
-- `parse_arguments()`: 解析命令行参数
-- `parse_url()`: 解析 URL（支持 IPv6 方括号格式）
-- `install_dependencies()`: 安装 Nginx、acme.sh、依赖工具
-- `generate_nginx_config()`: 使用 envsubst 渲染配置模板
-- `issue_certificate()`: 申请 SSL 证书（Standalone/DNS 模式）
-- `remove_domain_config()`: 移除配置和证书
+Rendered target paths:
+- `/etc/nginx/conf.d/{clean_domain}.{port}.conf`
+- `/etc/nginx/certs/{format_cert_domain}/`
+- backup path: `/etc/nginx/backup/`
 
-#### 环境变量
-- `CONF_HOME`: 配置文件远程基础 URL
-- `ACME_INSTALL_URL`: acme.sh 安装脚本 URL
-- `BACKUP_DIR`: 配置备份目录（默认 `/etc/nginx/backup`）
+Template variables exported by `generate_nginx_config()`:
+- `${you_domain}`
+- `${you_frontend_port}`
+- `${resolver}`
+- `${format_cert_domain}`
+- `${you_domain_path}`
+- `${you_domain_path_rewrite}`
+- `${r_domain_full}`
 
-### 配置模板（conf.d/）
+Path behavior:
+- non-root frontend path generates rewrite rule automatically
+- backend URL is composed from protocol + host + optional port
 
-模板使用 `envsubst` 进行变量替换，支持以下变量：
+## Certificate Behavior
 
-| 变量名 | 说明 |
-|--------|------|
-| `${you_domain}` | 前端域名/IP（含方括号的 IPv6） |
-| `${you_frontend_port}` | 前端监听端口 |
-| `${resolver}` | DNS 解析器配置 |
-| `${format_cert_domain}` | 证书域名（纯净的，无方括号） |
-| `${you_domain_path}` | 前端路径 |
-| `${you_domain_path_rewrite}` | 路径重写规则 |
-| `${r_domain_full}` | 后端完整 URL |
+- TLS disabled (`no_tls=yes`) skips certificate issuance.
+- IP frontends use short-lived profile: `--certificate-profile shortlived --days 6`.
+- DNS mode uses `issue_certificate_dns()`.
+- Standalone mode uses `issue_certificate_standalone()`.
+- Cloudflare mode consumes `CF_Token` and `CF_Account_ID`.
 
-### Docker 支持
+## Remove Behavior
 
-Docker 镜像使用环境变量动态生成配置：
+- resolves target by `domain + port`
+- requires explicit `--yes` in non-interactive mode
+- detects shared/wildcard cert usage and avoids unsafe deletion
+- validates nginx config before reload/restart
 
-```bash
-# 示例：运行 Docker 容器
-docker run -e PROXY_RULE_1="http://frontend.com,http://backend:8080" \
-           -e PROXY_RULE_2="http://api.frontend.com,http://api-backend:3000" \
-           ghcr.io/sakullla/nginx-reverse-emby:latest
-```
+## Docker Mode
 
-#### Docker 环境变量
-- `PROXY_RULE_N`: 第 N 条代理规则，格式为 `前端URL,后端URL`
-- `NGINX_LOCAL_RESOLVERS`: DNS 解析器（默认 `1.1.1.1`）
-- `NGINX_ENTRYPOINT_QUIET_LOGS`: 设置为非空值可抑制日志输出
+`docker/25-dynamic-reverse-proxy.sh`:
+- reads `PROXY_RULE_1`, `PROXY_RULE_2`, ...
+- rule format: `frontend_url,backend_url`
+- writes `/etc/nginx/conf.d/{domain}.{frontend_port}.conf`
+- stops scanning when first index is missing (no gaps allowed)
+- default resolver is `1.1.1.1`, override with `NGINX_LOCAL_RESOLVERS`
 
-## 代码风格指南
+## Development Rules
 
-### Bash 脚本规范
+When editing `deploy.sh`:
+1. Keep strict mode and trap behavior intact.
+2. For new args, update getopt + help text + docs together.
+3. For new template vars, update export list and envsubst var list together.
+4. Preserve IPv6 bracket compatibility in URL parsing.
+5. Keep remove flow conservative around shared certs.
 
-1. **严格模式**: 脚本开头启用严格模式
-   ```bash
-   set -e
-   set -o pipefail
-   ```
+When editing templates:
+1. Keep variable names aligned with exports in `deploy.sh`.
+2. Validate both TLS and no-TLS templates.
+3. Re-check `proxy_redirect` and `/backstream` behavior.
 
-2. **错误处理**: 使用 trap 捕获错误
-   ```bash
-   trap 'handle_error $LINENO' ERR
-   ```
+When editing Docker entrypoint:
+1. Preserve `PROXY_RULE_N` compatibility.
+2. Consider current "contiguous index" stop behavior.
+3. Re-test domain path extraction edge cases.
 
-3. **日志输出**: 使用统一的日志函数
-   ```bash
-   log_info "信息消息"
-   log_success "成功消息"
-   log_warn "警告消息"
-   log_error "错误消息"
-   ```
+## Validation Checklist
 
-4. **颜色定义**: 使用标准颜色变量
-   ```bash
-   RED='\033[0;31m'
-   GREEN='\033[0;32m'
-   YELLOW='\033[1;33m'
-   BLUE='\033[0;34m'
-   NC='\033[0m'
-   ```
+Host mode:
+1. `nginx -t`
+2. deploy HTTPS domain once
+3. deploy IPv6 URL once
+4. deploy HTTP(no TLS) once
+5. remove with `--remove https://domain:port --yes`
 
-5. **权限处理**: 支持 sudo 和 root 运行
-   ```bash
-   SUDO=''
-   if [ "$(id -u)" -ne 0 ]; then
-       SUDO='sudo'
-   fi
-   ```
+Docker mode:
+1. `docker build -t nginx-reverse-emby .`
+2. run with contiguous `PROXY_RULE_1..N`
+3. verify generated file count and names
+4. verify path forwarding and redirects
 
-### Nginx 配置规范
+## Known Documentation Drift
 
-1. 使用 `${variable}` 格式表示模板变量
-2. HTTP/3 和 QUIC 支持（端口模板变量需正确处理）
-3. 缓冲区优化配置（媒体流传输场景）
-4. 路径重写和重定向处理
+- Some docs mention `--template`; implementation uses `--template-domain-config`.
+- `--remove` examples without scheme are unsafe; use full URLs.
+- `--parse-cert-domain` behavior is stricter than generic "root extraction" wording.
+- Docker rule scanning is contiguous-only; gaps truncate processing.
 
-## 部署流程
-
-### 标准部署流程
-```
-1. 参数解析 → 2. 环境设置 → 3. 交互模式（可选）→ 4. 显示摘要
-    ↓
-5. 依赖安装 → 6. 生成配置 → 7. 申请证书 → 8. 重载 Nginx
-```
-
-### 关键配置路径
-| 路径 | 说明 |
-|------|------|
-| `/etc/nginx/conf.d/{domain}.{port}.conf` | 站点配置文件 |
-| `/etc/nginx/certs/{cert_domain}/` | SSL 证书目录 |
-| `/etc/nginx/backup/` | 配置备份目录 |
-| `$HOME/.acme.sh/acme.sh` | acme.sh 安装路径 |
-
-## 证书管理
-
-### 证书模式
-1. **Standalone 模式**: HTTP-01 验证，适用于单域名或 IP 地址
-2. **DNS 模式**: DNS-01 验证，支持泛域名证书
-
-### IP 地址证书
-- 自动申请 Let's Encrypt short-lived 证书（6 天有效期）
-- 自动续期（acme.sh cron 任务）
-
-### 泛域名证书
-- 首次部署需要 DNS API 凭据（如 Cloudflare Token）
-- 同一根域名的后续部署自动复用已有证书
-
-## 测试与验证
-
-### 手动测试命令
-```bash
-# 测试 Nginx 配置
-nginx -t
-
-# 检查证书信息
-ls -la /etc/nginx/certs/
-
-# 查看 Nginx 日志
-journalctl -u nginx -n 50
-
-# 测试 IPv6 连接
-curl -6 https://[2400:db8::1]
-```
-
-### Docker 本地测试
-```bash
-# 构建镜像
-docker build -t nginx-reverse-emby .
-
-# 运行测试
-docker run -e PROXY_RULE_1="http://localhost:8080,http://backend:8096" \
-           -p 8080:80 nginx-reverse-emby
-```
-
-## CI/CD
-
-GitHub Actions 工作流（`.github/workflows/docker-build.yml`）：
-- 触发条件: `main` 分支的 push
-- 构建并推送镜像到 GitHub Container Registry (ghcr.io)
-- 标签: `latest` 和短 commit SHA
-
-## 安全注意事项
-
-1. **备份机制**: 所有配置修改前自动备份到 `/etc/nginx/backup/`
-2. **证书续期**: acme.sh 自动配置 cron 任务，无需手动干预
-3. **防火墙**: 确保开放 80（HTTP 验证）和 443（HTTPS）端口
-4. **权限**: 脚本需要 root 或 sudo 权限执行
-5. **泛域名证书**: 移除配置时智能检测共享证书，避免误删
-
-## 修改建议
-
-### 添加新功能时的注意事项
-
-1. **URL 解析**: 如需修改 URL 解析逻辑，确保兼容 IPv6 方括号格式
-2. **模板变量**: 新增模板变量时，需在 `generate_nginx_config()` 中 export
-3. **依赖安装**: 新增系统依赖时，需为所有支持的发行版添加安装逻辑
-4. **错误处理**: 新增功能应包含适当的错误处理和日志输出
-
-### 常见问题排查
-
-1. **国内网络问题**: 自动检测并代理 GitHub 资源，可通过 `--gh-proxy` 手动指定
-2. **证书申请失败**: 检查防火墙、DNS 解析、80 端口占用
-3. **Nginx 配置错误**: 使用 `nginx -t` 测试配置
-4. **IPv6 问题**: 确保地址使用方括号包裹（如 `[2400:db8::1]`）
+If implementation changes any of these points, update `README.md`, `AGENTS.md`, and `CLAUDE.md` in the same patch.
