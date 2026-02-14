@@ -8,24 +8,6 @@ const api = axios.create({
   }
 })
 
-let apiToken = localStorage.getItem('nre_panel_token') || ''
-
-export function setApiToken(token) {
-  apiToken = token
-  localStorage.setItem('nre_panel_token', token)
-}
-
-export function getApiToken() {
-  return apiToken
-}
-
-api.interceptors.request.use(config => {
-  if (apiToken) {
-    config.headers['X-Panel-Token'] = apiToken
-  }
-  return config
-})
-
 api.interceptors.response.use(
   response => response,
   error => {

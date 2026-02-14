@@ -1,7 +1,5 @@
 <template>
   <div>
-    <h2>📋 代理规则列表</h2>
-    
     <div v-if="ruleStore.loading && !ruleStore.hasRules" class="loading">
       <div class="spinner"></div>
       <p>加载中...</p>
@@ -12,6 +10,12 @@
     </div>
 
     <table v-else>
+      <colgroup>
+        <col style="width: 60px" />
+        <col />
+        <col />
+        <col style="width: 120px" />
+      </colgroup>
       <thead>
         <tr>
           <th>ID</th>

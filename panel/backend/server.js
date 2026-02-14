@@ -11,7 +11,6 @@ const PORT = Number(process.env.PANEL_BACKEND_PORT || '18081');
 const RULES_FILE = process.env.PANEL_RULES_FILE || '/opt/nginx-reverse-emby/panel/data/proxy_rules.csv';
 const GENERATOR_SCRIPT = process.env.PANEL_GENERATOR_SCRIPT || '/docker-entrypoint.d/25-dynamic-reverse-proxy.sh';
 const NGINX_BIN = process.env.PANEL_NGINX_BIN || 'nginx';
-const API_TOKEN = process.env.PANEL_API_TOKEN || '';
 const AUTO_APPLY = /^(1|true|yes|on)$/i.test(process.env.PANEL_AUTO_APPLY || '1');
 
 function sendJson(res, statusCode, payload) {
@@ -128,11 +127,6 @@ function parseJsonBody(req) {
   });
 }
 
-function authorized(req) {
-  if (!API_TOKEN) return true;
-  return (req.headers['x-panel-token'] || '') === API_TOKEN;
-}
-
 function extractRuleId(urlPath) {
   const m = urlPath.match(/^\/api\/rules\/(\d+)$/);
   if (!m) return null;
@@ -144,11 +138,6 @@ async function handleRequest(req, res) {
 
   if (req.method === 'GET' && urlPath === '/api/health') {
     sendJson(res, 200, { ok: true });
-    return;
-  }
-
-  if (!authorized(req)) {
-    sendJson(res, 401, errorPayload('unauthorized'));
     return;
   }
 
