@@ -61,9 +61,11 @@ async function handleApply() {
 
 @media (max-width: 480px) {
   .apply-btn {
-    width: 100%;
-    height: 42px;
-    justify-content: center;
+    width: auto;
+    height: 36px;
+    padding: 0 var(--spacing-md);
+    font-size: 0.9rem;
+    flex: 1 1 auto;
   }
 }
 </style>
