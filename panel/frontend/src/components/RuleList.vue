@@ -42,14 +42,14 @@
         </template>
       </EmptyState>
 
-      <table v-else>
-        <colgroup>
+      <table v-else class="responsive-table">
+        <colgroup class="desktop-only">
           <col style="width: 60px" />
           <col />
           <col />
           <col style="width: 140px" />
         </colgroup>
-        <thead>
+        <thead class="desktop-only">
           <tr>
             <th>ID</th>
             <th>前端 URL</th>
@@ -57,7 +57,7 @@
             <th>操作</th>
           </tr>
         </thead>
-        <tbody>
+        <tbody class="table-body">
           <RuleItem
             v-for="rule in ruleStore.filteredRules"
             :key="rule.id"
@@ -76,3 +76,20 @@ import EmptyState from './base/EmptyState.vue'
 
 const ruleStore = useRuleStore()
 </script>
+
+<style scoped>
+@media (max-width: 768px) {
+  .desktop-only {
+    display: none;
+  }
+
+  .responsive-table {
+    display: block;
+    border: none;
+  }
+
+  .table-body {
+    display: block;
+  }
+}
+</style>

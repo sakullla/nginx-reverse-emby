@@ -147,9 +147,13 @@ input {
   .rule-form-inline {
     flex-direction: column;
     align-items: stretch;
+    gap: var(--spacing-sm);
   }
   .separator {
     display: none;
+  }
+  .add-button {
+    margin-top: var(--spacing-xs);
   }
 }
 </style>
