@@ -82,6 +82,53 @@ https://emby.example.com,http://192.168.1.10:8096
 docker compose up -d
 ```
 
+### 方式一的完整流程
+
+如果你只想下载 `docker-compose.yaml` 来启动，可以直接这样做：
+
+```bash
+mkdir -p nginx-reverse-emby
+cd nginx-reverse-emby
+curl -O https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/docker-compose.yaml
+mkdir -p data
+```
+
+然后编辑 `docker-compose.yaml`，至少修改：
+
+- `API_TOKEN`
+- `PROXY_RULE_1`（如果你想预置规则）
+- `ACME_DNS_PROVIDER`、`CF_Token`、`CF_Account_ID`（如果你要用 DNS 验证）
+
+启动：
+
+```bash
+docker compose up -d
+```
+
+查看容器状态：
+
+```bash
+docker compose ps
+```
+
+查看启动日志：
+
+```bash
+docker compose logs -f
+```
+
+访问面板：
+
+```text
+http://<你的服务器IP>:8080/
+```
+
+如果是公网服务器，至少确认这些端口已放行：
+
+- `8080`：管理面板
+- `80`：HTTP / ACME 验证
+- `443`：HTTPS
+
 默认数据目录：
 
 ```text
@@ -97,8 +144,7 @@ docker compose up -d
 ### 方式二：使用 docker run
 
 ```bash
-docker run \
-  -d \
+docker run -d \
   --name nginx-reverse-emby \
   --restart unless-stopped \
   --network host \
