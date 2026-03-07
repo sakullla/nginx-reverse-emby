@@ -103,6 +103,13 @@ nginx_is_running() {
     kill -0 "$nginx_pid" 2>/dev/null
 }
 
+nginx_is_pid1() {
+    nginx_pid_file="/var/run/nginx.pid"
+    [ -r "$nginx_pid_file" ] || return 1
+    nginx_pid=$(cat "$nginx_pid_file" 2>/dev/null || true)
+    [ "$nginx_pid" = "1" ]
+}
+
 ensure_acme_script() {
     if [ -x "$ACME_SCRIPT" ]; then return 0; fi
     mkdir -p "$ACME_HOME"
@@ -188,9 +195,13 @@ ensure_certificates_for_rules() {
     nginx_was_running=0
     if is_true "$ACME_STANDALONE_STOP_NGINX" && [ -z "$ACME_DNS_PROVIDER" ]; then
         if nginx_is_running; then
-            nginx_was_running=1
-            entrypoint_log "Stopping Nginx for acme standalone challenge..."
-            "$NGINX_BIN" -s stop >/dev/null 2>&1 || true
+            if nginx_is_pid1; then
+                entrypoint_log "Skipping Nginx stop for standalone challenge because nginx is the container main process"
+            else
+                nginx_was_running=1
+                entrypoint_log "Stopping Nginx for acme standalone challenge..."
+                "$NGINX_BIN" -s stop >/dev/null 2>&1 || true
+            fi
         fi
     fi
 
