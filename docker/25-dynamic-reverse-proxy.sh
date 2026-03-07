@@ -94,6 +94,14 @@ normalize_deploy_mode() {
     esac
 }
 
+nginx_is_running() {
+    nginx_pid_file="/var/run/nginx.pid"
+    [ -r "$nginx_pid_file" ] || return 1
+    nginx_pid=$(cat "$nginx_pid_file" 2>/dev/null || true)
+    [ -n "$nginx_pid" ] || return 1
+    kill -0 "$nginx_pid" 2>/dev/null
+}
+
 ensure_acme_script() {
     if [ -x "$ACME_SCRIPT" ]; then return 0; fi
     mkdir -p "$ACME_HOME"
@@ -144,10 +152,10 @@ issue_cert_with_acme() {
 
     if [ -n "$ACME_DNS_PROVIDER" ] && ! is_ip_address "$cert_domain_clean"; then
         entrypoint_log "Issuing via DNS: $ACME_DNS_PROVIDER for $cert_domain_clean"
-        "$ACME_SCRIPT" --issue --dns "dns_$ACME_DNS_PROVIDER" -d "$cert_domain_clean" --keylength ec-256
+        "$ACME_SCRIPT" --issue --server "$ACME_CA" --dns "dns_$ACME_DNS_PROVIDER" -d "$cert_domain_clean" --keylength ec-256
     else
         entrypoint_log "Issuing via Standalone for $cert_domain_clean"
-        issue_args="--standalone -d $cert_domain_clean --keylength ec-256"
+        issue_args="--server $ACME_CA --standalone -d $cert_domain_clean --keylength ec-256"
         if is_ip_address "$cert_domain_clean"; then
             issue_args="$issue_args --certificate-profile shortlived --days 6"
         fi
@@ -178,7 +186,7 @@ ensure_certificates_for_rules() {
     # 检查是否需要停 Nginx (Standalone 模式且非 DNS 模式)
     nginx_was_running=0
     if is_true "$ACME_STANDALONE_STOP_NGINX" && [ -z "$ACME_DNS_PROVIDER" ]; then
-        if pgrep -x nginx >/dev/null; then
+        if nginx_is_running; then
             nginx_was_running=1
             entrypoint_log "Stopping Nginx for acme standalone challenge..."
             "$NGINX_BIN" -s stop >/dev/null 2>&1 || true
