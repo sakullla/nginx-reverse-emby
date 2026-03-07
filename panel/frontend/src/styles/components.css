@@ -28,11 +28,12 @@ input[type="url"]:focus {
 
 /* Buttons */
 button {
-    padding: var(--spacing-sm) var(--spacing-lg);
+    padding: 0 var(--spacing-lg);
+    height: 44px;
     border: none;
-    border-radius: var(--radius-md);
-    font-size: var(--font-size-base);
-    font-weight: var(--font-weight-semibold);
+    border-radius: var(--radius-lg);
+    font-size: var(--font-size-sm);
+    font-weight: var(--font-weight-bold);
     cursor: pointer;
     transition: all var(--transition-base);
     background: var(--color-primary);
@@ -42,28 +43,42 @@ button {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: var(--spacing-xs);
+    gap: var(--spacing-sm);
 }
 
 button:hover:not(:disabled) {
-    transform: translateY(-1px);
-    box-shadow: var(--shadow-md);
-    filter: brightness(1.1);
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-lg);
+    filter: brightness(1.05);
+}
+
+button:active:not(:disabled) {
+    transform: translateY(0);
 }
 
 button:disabled {
-    opacity: 0.5;
+    opacity: 0.6;
     cursor: not-allowed;
 }
 
 button.secondary {
-    background: var(--color-secondary);
+    background: var(--color-bg-tertiary);
+    color: var(--color-text-primary);
+    border: 1px solid var(--color-border);
 }
+
+button.secondary:hover:not(:disabled) {
+    background: var(--color-bg-secondary);
+}
+
 button.danger {
     background: var(--color-danger);
+    box-shadow: 0 4px 12px rgba(244, 63, 94, 0.2);
 }
+
 button.success {
     background: var(--color-success);
+    box-shadow: 0 4px 12px rgba(16, 185, 129, 0.2);
 }
 
 /* Tables */

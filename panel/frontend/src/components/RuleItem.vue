@@ -52,7 +52,8 @@
     <Teleport to="body">
       <BaseModal
         v-model="showEditModal"
-        title="修改反向代理规则"
+        title="修改代理规则"
+        subtitle="更新您的前端转发规则或后端目标地址"
         :show-default-footer="false"
       >
         <RuleForm :initial-data="rule" @success="showEditModal = false" />
@@ -64,6 +65,7 @@
       <BaseModal
         v-model="showDeleteModal"
         title="确认删除规则"
+        subtitle="该操作将立即停止相关的流量转发"
         confirm-text="确认删除"
         confirm-variant="danger"
         :loading="isDeletingRule"

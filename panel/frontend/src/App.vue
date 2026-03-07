@@ -86,6 +86,7 @@
             <BaseModal
               v-model="showAddModal"
               title="新增反向代理规则"
+              subtitle="配置前端访问 URL 和后端转发目标"
               :show-default-footer="false"
             >
               <RuleForm @success="showAddModal = false" />
