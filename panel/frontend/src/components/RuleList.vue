@@ -92,25 +92,29 @@ const ruleStore = useRuleStore()
   margin-bottom: var(--spacing-md);
 }
 
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
 .list-controls {
-  margin-bottom: var(--spacing-xl);
+  margin-bottom: var(--spacing-2xl);
 }
 
 .search-box {
   position: relative;
-  max-width: 480px;
+  max-width: 520px;
 }
 
 .search-icon {
   position: absolute;
-  left: var(--spacing-md);
+  left: var(--spacing-lg);
   top: 50%;
   transform: translateY(-50%);
-  width: 20px;
-  height: 20px;
+  width: 18px;
+  height: 18px;
   color: var(--color-text-muted);
   pointer-events: none;
-  transition: color var(--transition-base);
+  transition: color 0.2s ease;
 }
 
 .search-box:focus-within .search-icon {
@@ -127,45 +131,53 @@ const ruleStore = useRuleStore()
 
 .search-input {
   width: 100%;
-  height: 48px;
-  padding: 0 var(--spacing-xl) 0 calc(var(--spacing-md) * 3);
+  height: 52px;
+  padding: 0 var(--spacing-xl) 0 calc(var(--spacing-lg) * 2.8);
   background: var(--color-bg-secondary);
-  border: 1px solid var(--color-border);
+  border: 1.5px solid var(--color-border);
   border-radius: var(--radius-xl);
-  font-size: var(--font-size-sm);
-  transition: all var(--transition-base);
-  box-shadow: var(--shadow-sm);
+  font-size: 0.95rem;
+  color: var(--color-text-primary);
+  transition: all 0.2s ease;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
+}
+
+.search-input::placeholder {
+  color: var(--color-text-muted);
+  opacity: 0.6;
 }
 
 .search-input:focus {
   background: var(--color-bg-primary);
   border-color: var(--color-primary);
-  box-shadow: 0 0 0 4px var(--color-primary-lighter);
-  transform: translateY(-1px);
+  box-shadow: 0 0 0 4px var(--color-primary-lighter), 0 2px 8px rgba(0, 0, 0, 0.08);
+  outline: none;
 }
 
 .clear-search {
   position: absolute;
-  right: var(--spacing-sm);
+  right: var(--spacing-md);
   top: 50%;
   transform: translateY(-50%);
-  background: var(--color-border-light);
+  background: var(--color-bg-tertiary);
   border: none;
-  width: 28px;
-  height: 28px;
+  width: 26px;
+  height: 26px;
   border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
   color: var(--color-text-muted);
   cursor: pointer;
-  font-size: 1.4rem;
-  transition: all var(--transition-base);
+  font-size: 1.3rem;
+  line-height: 1;
+  transition: all 0.2s ease;
 }
 
 .clear-search:hover {
   background: var(--color-danger-bg);
   color: var(--color-danger);
+  transform: translateY(-50%) scale(1.1);
 }
 
 .empty-hint {
@@ -176,17 +188,34 @@ const ruleStore = useRuleStore()
 
 .rules-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-  gap: var(--spacing-xl);
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: var(--spacing-2xl);
+}
+
+@media (max-width: 1200px) {
+  .rules-grid {
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: var(--spacing-xl);
+  }
 }
 
 @media (max-width: 768px) {
   .rules-grid {
     grid-template-columns: 1fr;
+    gap: var(--spacing-lg);
   }
 
   .search-box {
     max-width: 100%;
+  }
+
+  .search-input {
+    height: 48px;
+    font-size: 0.9rem;
+  }
+
+  .list-controls {
+    margin-bottom: var(--spacing-xl);
   }
 }
 </style>
