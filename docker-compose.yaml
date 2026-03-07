@@ -1,16 +1,25 @@
 services:
   nginx-reverse-emby:
-    image: ghcr.io/sakullla/nginx-reverse-emby:latest
+    build: .
     container_name: nginx-reverse-emby
-    restart: unless-stopped
-    ports:
-      - "8080:8080"
-      - "3000:3000"
-      # Direct mode example:
-      # - "80:80"
-      # - "443:443"
+    restart: always
+    network_mode: host
+    environment:
+      # 部署模式: direct (直连) 或 front_proxy (前置代理)
+      - PROXY_DEPLOY_MODE=direct
+      # 初始规则 (可选)
+      - PROXY_RULE_1=https://emby.example.com,http://192.168.1.10:8096
+      # API 控制台 Token
+      - API_TOKEN=admin
+      # ACME 邮箱 (用于证书申请)
+      - ACME_EMAIL=your@email.com
+      # DNS 提供商 (可选，如 dns_cf)
+      - ACME_DNS_PROVIDER=
     volumes:
-      - nre_panel_data:/opt/nginx-reverse-emby/panel/data
-
-volumes:
-  nre_panel_data:
+      # 统一映射所有持久化数据 (包含规则、证书、acme记录)
+      - ./data:/opt/nginx-reverse-emby/panel/data
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
