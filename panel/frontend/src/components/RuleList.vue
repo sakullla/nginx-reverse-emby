@@ -98,7 +98,7 @@ const ruleStore = useRuleStore()
 
 .search-box {
   position: relative;
-  max-width: 500px;
+  max-width: 480px;
 }
 
 .search-icon {
@@ -106,35 +106,42 @@ const ruleStore = useRuleStore()
   left: var(--spacing-md);
   top: 50%;
   transform: translateY(-50%);
-  width: 18px;
-  height: 18px;
+  width: 20px;
+  height: 20px;
   color: var(--color-text-muted);
   pointer-events: none;
+  transition: color var(--transition-base);
+}
+
+.search-box:focus-within .search-icon {
+  color: var(--color-primary);
 }
 
 .search-icon svg {
   width: 100%;
   height: 100%;
   stroke: currentColor;
-  stroke-width: 2.5;
+  stroke-width: 2.2;
   fill: none;
 }
 
 .search-input {
   width: 100%;
-  height: 44px;
-  padding: 0 var(--spacing-xl) 0 calc(var(--spacing-md) * 2.8);
+  height: 48px;
+  padding: 0 var(--spacing-xl) 0 calc(var(--spacing-md) * 3);
   background: var(--color-bg-secondary);
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-xl);
   font-size: var(--font-size-sm);
   transition: all var(--transition-base);
+  box-shadow: var(--shadow-sm);
 }
 
 .search-input:focus {
   background: var(--color-bg-primary);
   border-color: var(--color-primary);
-  box-shadow: 0 0 0 3px var(--color-primary-lighter);
+  box-shadow: 0 0 0 4px var(--color-primary-lighter);
+  transform: translateY(-1px);
 }
 
 .clear-search {
@@ -142,17 +149,23 @@ const ruleStore = useRuleStore()
   right: var(--spacing-sm);
   top: 50%;
   transform: translateY(-50%);
-  background: var(--color-bg-tertiary);
+  background: var(--color-border-light);
   border: none;
-  width: 24px;
-  height: 24px;
+  width: 28px;
+  height: 28px;
   border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
   color: var(--color-text-muted);
   cursor: pointer;
-  font-size: 1.2rem;
+  font-size: 1.4rem;
+  transition: all var(--transition-base);
+}
+
+.clear-search:hover {
+  background: var(--color-danger-bg);
+  color: var(--color-danger);
 }
 
 .empty-hint {
@@ -163,8 +176,8 @@ const ruleStore = useRuleStore()
 
 .rules-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
-  gap: var(--spacing-lg);
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: var(--spacing-xl);
 }
 
 @media (max-width: 768px) {

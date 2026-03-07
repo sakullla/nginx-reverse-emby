@@ -15,10 +15,13 @@
       <TokenAuth v-if="!ruleStore.isAuthenticated" />
 
       <template v-else>
-        <ThemeToggle />
-        <button @click="ruleStore.logout" class="floating-logout-btn" title="退出登录">
-          <svg viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4m7 14 5-5-5-5m5 5H9"/></svg>
-        </button>
+        <div class="top-nav-actions">
+          <ThemeToggle />
+          <button @click="ruleStore.logout" class="logout-btn" title="退出登录">
+            <svg viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4m7 14 5-5-5-5m5 5H9"/></svg>
+            <span class="logout-text">退出</span>
+          </button>
+        </div>
 
         <header class="app-header">
           <div class="header-content">
@@ -140,37 +143,45 @@ onMounted(async () => {
   margin-right: 4px;
 }
 
-.floating-logout-btn {
+.top-nav-actions {
   position: fixed;
   top: var(--spacing-lg);
-  right: calc(var(--spacing-lg) + 48px + 10px);
+  right: var(--spacing-lg);
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  z-index: var(--z-fixed, 100);
+}
+
+.logout-btn {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  width: 48px;
-  height: 48px;
+  gap: 8px;
+  height: 40px;
+  padding: 0 var(--spacing-md);
   background: var(--glass-bg);
   backdrop-filter: blur(var(--blur-md));
   color: var(--color-text-secondary);
   border: 1px solid var(--glass-border);
   border-radius: var(--radius-full);
   cursor: pointer;
-  z-index: var(--z-fixed, 100);
-  box-shadow: var(--shadow-md);
+  box-shadow: var(--shadow-sm);
   transition: all var(--transition-base);
+  font-weight: var(--font-weight-medium);
+  font-size: var(--font-size-sm);
 }
 
-.floating-logout-btn:hover {
+.logout-btn:hover {
   background: var(--color-danger-bg);
   color: var(--color-danger);
-  border-color: var(--color-danger);
-  transform: scale(1.1);
-  box-shadow: var(--shadow-lg);
+  border-color: var(--color-danger-light);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
 }
 
-.floating-logout-btn svg {
-  width: 20px;
-  height: 20px;
+.logout-btn svg {
+  width: 18px;
+  height: 18px;
   stroke: currentColor;
   stroke-width: 2.5;
   fill: none;
@@ -236,11 +247,20 @@ onMounted(async () => {
     font-size: 0.8rem;
   }
 
-  .floating-logout-btn {
-    top: var(--spacing-md);
-    right: calc(var(--spacing-md) + 40px + 8px);
-    width: 40px;
-    height: 40px;
+  .top-nav-actions {
+    top: var(--spacing-sm);
+    right: var(--spacing-sm);
+    gap: 6px;
+  }
+
+  .logout-btn {
+    height: 36px;
+    padding: 0 var(--spacing-sm);
+    gap: 4px;
+  }
+
+  .logout-text {
+    display: none;
   }
 }
 

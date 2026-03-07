@@ -124,28 +124,34 @@ tbody tr:last-child td {
 
 /* Theme Toggle */
 .theme-toggle {
-    position: fixed;
-    top: var(--spacing-lg);
-    right: var(--spacing-lg);
-    z-index: var(--z-fixed);
     background: var(--glass-bg);
     backdrop-filter: blur(var(--blur-md));
     border: 1px solid var(--glass-border);
     border-radius: var(--radius-full);
-    width: 48px;
-    height: 48px;
+    width: 40px;
+    height: 40px;
     display: flex;
     align-items: center;
     justify-content: center;
     cursor: pointer;
-    box-shadow: var(--shadow-md);
+    box-shadow: var(--shadow-sm);
     transition: all var(--transition-base);
-    font-size: 1.25rem;
+    font-size: 1.1rem;
+    padding: 0;
 }
 
 .theme-toggle:hover {
-    transform: scale(1.1) rotate(12deg);
-    box-shadow: var(--shadow-lg);
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-md);
+    background: var(--color-bg-secondary);
+}
+
+@media (max-width: 768px) {
+    .theme-toggle {
+        width: 36px;
+        height: 36px;
+        font-size: 1rem;
+    }
 }
 
 /* Custom Scrollbar */

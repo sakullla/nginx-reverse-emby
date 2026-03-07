@@ -104,7 +104,7 @@ body {
 }
 
 .stat-value {
-    font-size: var(--font-size-2xl);
+    font-size: var(--font-size-3xl);
     font-weight: var(--font-weight-bold);
     color: var(--color-heading);
     line-height: 1.1;
@@ -113,7 +113,7 @@ body {
 
 .stat-label {
     color: var(--color-text-secondary);
-    font-size: var(--font-size-sm);
+    font-size: var(--font-size-base);
     font-weight: var(--font-weight-medium);
 }
 
@@ -212,7 +212,11 @@ body {
     }
 
     .stat-value {
-        font-size: var(--font-size-lg);
+        font-size: var(--font-size-2xl);
+    }
+
+    .stat-label {
+        font-size: var(--font-size-sm);
     }
 
     .add-rule-section,
@@ -277,12 +281,12 @@ body {
     }
 
     .stat-value {
-        font-size: var(--font-size-base);
+        font-size: var(--font-size-xl);
         line-height: 1.2;
     }
 
     .stat-label {
-        font-size: 10px;
+        font-size: var(--font-size-xs);
         color: var(--color-text-tertiary);
     }
 
