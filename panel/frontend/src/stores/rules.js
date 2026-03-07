@@ -9,6 +9,8 @@ export const useRuleStore = defineStore("rules", () => {
   const error = ref(null);
   const statusMessage = ref(null);
   const searchQuery = ref("");
+  const selectedTags = ref([]);
+  const viewMode = ref(localStorage.getItem("rule_view_mode") || "grid");
 
   // 鉴权相关
   const token = ref(localStorage.getItem("panel_token") || "");
@@ -17,15 +19,31 @@ export const useRuleStore = defineStore("rules", () => {
 
   const hasRules = computed(() => rules.value.length > 0);
 
+  const allTags = computed(() => {
+    const tags = rules.value.flatMap((r) => r.tags || []);
+    return [...new Set(tags)].sort();
+  });
+
   const filteredRules = computed(() => {
-    if (!searchQuery.value) return rules.value;
-    const query = searchQuery.value.toLowerCase();
-    return rules.value.filter(
-      (rule) =>
-        rule.frontend_url.toLowerCase().includes(query) ||
-        rule.backend_url.toLowerCase().includes(query) ||
-        String(rule.id).includes(query),
-    );
+    let result = rules.value;
+
+    if (selectedTags.value.length > 0) {
+      result = result.filter((r) =>
+        selectedTags.value.some(tag => r.tags?.includes(tag))
+      );
+    }
+
+    if (searchQuery.value) {
+      const query = searchQuery.value.toLowerCase();
+      result = result.filter(
+        (rule) =>
+          rule.frontend_url.toLowerCase().includes(query) ||
+          rule.backend_url.toLowerCase().includes(query) ||
+          String(rule.id).includes(query),
+      );
+    }
+
+    return result;
   });
 
   async function checkAuth() {
@@ -104,11 +122,16 @@ export const useRuleStore = defineStore("rules", () => {
     }
   }
 
-  async function addRule(frontend_url, backend_url) {
+  async function addRule(frontend_url, backend_url, tags = [], enabled = true) {
     loading.value = true;
     error.value = null;
     try {
-      const newRule = await api.createRule(frontend_url, backend_url);
+      const newRule = await api.createRule(
+        frontend_url,
+        backend_url,
+        tags,
+        enabled,
+      );
       await loadRules();
       showSuccess("规则已新增");
       return newRule;
@@ -121,11 +144,11 @@ export const useRuleStore = defineStore("rules", () => {
     }
   }
 
-  async function modifyRule(id, frontend_url, backend_url) {
+  async function modifyRule(id, frontend_url, backend_url, tags, enabled) {
     loading.value = true;
     error.value = null;
     try {
-      await api.updateRule(id, frontend_url, backend_url);
+      await api.updateRule(id, frontend_url, backend_url, tags, enabled);
       await loadRules();
       showSuccess(`规则 ${id} 已更新`);
     } catch (err) {
@@ -193,10 +216,18 @@ export const useRuleStore = defineStore("rules", () => {
     statusMessage.value = null;
   }
 
+  function toggleViewMode() {
+    viewMode.value = viewMode.value === "grid" ? "list" : "grid";
+    localStorage.setItem("rule_view_mode", viewMode.value);
+  }
+
   return {
     rules,
     stats,
     searchQuery,
+    selectedTags,
+    allTags,
+    viewMode,
     filteredRules,
     loading,
     error,
@@ -218,5 +249,6 @@ export const useRuleStore = defineStore("rules", () => {
     showError,
     showInfo,
     clearStatus,
+    toggleViewMode,
   };
 });

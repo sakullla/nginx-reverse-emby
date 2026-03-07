@@ -33,7 +33,7 @@
               @click="confirm"
               :disabled="loading"
             >
-              <span v-if="loading" class="loading-spinner"></span>
+              <div v-if="loading" class="loading-spinner"></div>
               <span v-else>{{ confirmText }}</span>
             </button>
           </slot>
@@ -47,50 +47,17 @@
 import { onMounted, onUnmounted } from 'vue'
 
 const props = defineProps({
-  modelValue: {
-    type: Boolean,
-    default: false
-  },
-  title: {
-    type: String,
-    default: '确认'
-  },
-  subtitle: {
-    type: String,
-    default: ''
-  },
-  confirmText: {
-    type: String,
-    default: '确定'
-  },
-  cancelText: {
-    type: String,
-    default: '取消'
-  },
-  confirmVariant: {
-    type: String,
-    default: 'primary'
-  },
-  loading: {
-    type: Boolean,
-    default: false
-  },
-  showDefaultFooter: {
-    type: Boolean,
-    default: true
-  },
-  closeOnBackdrop: {
-    type: Boolean,
-    default: true
-  },
-  noPadding: {
-    type: Boolean,
-    default: false
-  },
-  mobileBottom: {
-    type: Boolean,
-    default: true
-  }
+  modelValue: { type: Boolean, default: false },
+  title: { type: String, default: '确认' },
+  subtitle: { type: String, default: '' },
+  confirmText: { type: String, default: '确定' },
+  cancelText: { type: String, default: '取消' },
+  confirmVariant: { type: String, default: 'primary' },
+  loading: { type: Boolean, default: false },
+  showDefaultFooter: { type: Boolean, default: true },
+  closeOnBackdrop: { type: Boolean, default: true },
+  noPadding: { type: Boolean, default: false },
+  mobileBottom: { type: Boolean, default: true }
 })
 
 const emit = defineEmits(['update:modelValue', 'confirm', 'close'])
@@ -101,93 +68,91 @@ const close = () => {
   emit('close')
 }
 
-const confirm = () => {
-  emit('confirm')
-}
+const confirm = () => { emit('confirm') }
 
 const handleBackdropClick = () => {
-  if (props.closeOnBackdrop) {
-    close()
-  }
+  if (props.closeOnBackdrop) close()
 }
 
-// Handle ESC key
 const handleEsc = (e) => {
-  if (e.key === 'Escape' && props.modelValue) {
-    close()
-  }
+  if (e.key === 'Escape' && props.modelValue) close()
 }
 
-onMounted(() => {
-  window.addEventListener('keydown', handleEsc)
-})
-
-onUnmounted(() => {
-  window.removeEventListener('keydown', handleEsc)
-})
+onMounted(() => { window.addEventListener('keydown', handleEsc) })
+onUnmounted(() => { window.removeEventListener('keydown', handleEsc) })
 </script>
 
 <style scoped>
 .modal-overlay {
   position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: var(--color-bg-overlay);
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(15, 23, 42, 0.4);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   display: flex;
   align-items: center;
   justify-content: center;
   z-index: var(--z-modal-backdrop, 1000);
-  padding: var(--spacing-lg);
-  transition: all var(--transition-base);
+  padding: var(--spacing-md);
+  animation: modal-overlay-in 0.2s ease-out;
+}
+
+@keyframes modal-overlay-in {
+  from {
+    opacity: 0;
+    backdrop-filter: blur(0px);
+  }
+  to {
+    opacity: 1;
+    backdrop-filter: blur(8px);
+  }
 }
 
 .modal-wrapper {
   background: var(--color-bg-card);
-  border: 1px solid var(--glass-border);
-  border-radius: var(--radius-2xl);
-  box-shadow: var(--shadow-2xl);
-  max-width: 500px;
+  border: 1px solid var(--color-border-light);
+  border-radius: var(--radius-xl);
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(0, 0, 0, 0.05);
+  max-width: 480px;
   width: 100%;
   max-height: 90vh;
   display: flex;
   flex-direction: column;
   position: relative;
   overflow: hidden;
-  animation: modal-appear 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+  animation: modal-scale-in 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
-@keyframes modal-appear {
-  from { opacity: 0; transform: scale(0.95) translateY(10px); }
-  to { opacity: 1; transform: scale(1) translateY(0); }
+@keyframes modal-scale-in {
+  from {
+    opacity: 0;
+    transform: scale(0.95) translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1) translateY(0);
+  }
 }
 
 .modal-header {
-  padding: var(--spacing-xl) var(--spacing-xl) var(--spacing-md);
+  padding: var(--spacing-lg) var(--spacing-lg) 0;
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: var(--spacing-md);
 }
 
-.header-main {
-  flex: 1;
-}
-
 .modal-title {
-  font-size: 1.35rem;
+  font-size: 1.25rem;
   font-weight: 800;
-  color: var(--color-heading);
+  color: var(--color-text-primary);
   margin: 0;
   letter-spacing: -0.02em;
 }
 
 .modal-subtitle {
-  font-size: 0.875rem;
-  color: var(--color-text-tertiary);
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
   margin: 4px 0 0;
   font-weight: 500;
 }
@@ -199,20 +164,38 @@ onUnmounted(() => {
   align-items: center;
   justify-content: center;
   background: var(--color-bg-secondary);
-  border: 1px solid var(--color-border-light);
-  border-radius: var(--radius-full);
-  color: var(--color-text-muted);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  color: var(--color-text-secondary);
   cursor: pointer;
-  transition: all var(--transition-base);
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
   padding: 0;
-  flex-shrink: 0;
+  position: relative;
+  overflow: hidden;
+}
+
+.modal-close-btn::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 0;
+  height: 0;
+  border-radius: 50%;
+  background: var(--color-danger-bg);
+  transform: translate(-50%, -50%);
+  transition: width 0.3s ease, height 0.3s ease;
+}
+
+.modal-close-btn:hover::before {
+  width: 100%;
+  height: 100%;
 }
 
 .modal-close-btn:hover {
-  background: var(--color-danger-bg);
   color: var(--color-danger);
-  border-color: var(--color-danger-light);
   transform: rotate(90deg);
+  border-color: var(--color-danger-light);
 }
 
 .modal-close-btn svg {
@@ -220,132 +203,136 @@ onUnmounted(() => {
   height: 20px;
   stroke: currentColor;
   stroke-width: 2.5;
+  position: relative;
+  z-index: 1;
 }
 
 .modal-body {
-  padding: var(--spacing-md) var(--spacing-xl) var(--spacing-xl);
+  padding: var(--spacing-lg);
   overflow-y: auto;
   flex: 1;
 }
 
-.modal-body.no-padding {
-  padding: 0;
-}
+.modal-body.no-padding { padding: 0; }
 
 .modal-footer {
-  padding: var(--spacing-lg) var(--spacing-xl);
+  padding: var(--spacing-md) var(--spacing-lg);
   background: var(--color-bg-secondary);
   border-top: 1px solid var(--color-border-light);
   display: flex;
   justify-content: flex-end;
-  gap: var(--spacing-md);
+  gap: var(--spacing-sm);
 }
 
 .btn-modal-cancel {
-  padding: 0 var(--spacing-xl);
-  height: 48px;
-  border-radius: var(--radius-lg);
-  background: transparent;
+  padding: 0 var(--spacing-lg);
+  height: 42px;
+  border-radius: var(--radius-md);
+  background: var(--color-bg-primary);
   color: var(--color-text-secondary);
   font-weight: 600;
+  font-size: 0.9rem;
   cursor: pointer;
-  transition: all var(--transition-base);
-  border: 1px solid transparent;
+  border: 1px solid var(--color-border);
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .btn-modal-cancel:hover {
-  background: var(--color-bg-tertiary);
+  background: var(--color-bg-secondary);
+  border-color: var(--color-border-dark);
   color: var(--color-text-primary);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+.btn-modal-cancel:active {
+  transform: translateY(0);
 }
 
 .btn-modal-confirm {
-  padding: 0 var(--spacing-2xl);
-  height: 48px;
-  border-radius: var(--radius-lg);
+  padding: 0 var(--spacing-xl);
+  height: 42px;
+  border-radius: var(--radius-md);
   color: white;
   font-weight: 700;
+  font-size: 0.9rem;
   cursor: pointer;
-  transition: all var(--transition-base);
   border: none;
-  box-shadow: var(--shadow-md);
   display: flex;
   align-items: center;
   justify-content: center;
-  min-width: 120px;
+  min-width: 90px;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  position: relative;
+  overflow: hidden;
 }
 
-.btn-modal-confirm.primary { background: var(--color-primary); }
-.btn-modal-confirm.primary:hover { background: var(--color-primary-dark); transform: translateY(-2px); box-shadow: var(--shadow-lg); }
+.btn-modal-confirm::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.2) 0%, rgba(255, 255, 255, 0) 100%);
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
 
-.btn-modal-confirm.danger { background: var(--color-danger); }
-.btn-modal-confirm.danger:hover { background: var(--color-danger-dark); transform: translateY(-2px); box-shadow: var(--shadow-lg); }
+.btn-modal-confirm:hover::before {
+  opacity: 1;
+}
 
-.btn-modal-confirm:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-  transform: none !important;
+.btn-modal-confirm.primary {
+  background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-dark) 100%);
+  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.3);
+}
+
+.btn-modal-confirm.primary:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(37, 99, 235, 0.4);
+}
+
+.btn-modal-confirm.primary:active {
+  transform: translateY(0);
+}
+
+.btn-modal-confirm.danger {
+  background: linear-gradient(135deg, var(--color-danger) 0%, var(--color-danger-dark) 100%);
+  box-shadow: 0 4px 12px rgba(239, 68, 68, 0.3);
+}
+
+.btn-modal-confirm.danger:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(239, 68, 68, 0.4);
+}
+
+.btn-modal-confirm.danger:active {
+  transform: translateY(0);
 }
 
 .loading-spinner {
-  width: 20px;
-  height: 20px;
-  border: 3px solid rgba(255,255,255,0.2);
+  width: 16px; height: 16px;
+  border: 2px solid rgba(255,255,255,0.3);
   border-top-color: white;
   border-radius: 50%;
   animation: modal-spin 0.8s linear infinite;
 }
 
-@keyframes modal-spin {
-  to { transform: rotate(360deg); }
-}
+@keyframes modal-spin { to { transform: rotate(360deg); } }
 
-/* Transitions */
-.modal-fade-enter-active,
-.modal-fade-leave-active {
-  transition: all 0.3s ease;
-}
+.modal-fade-enter-active, .modal-fade-leave-active { transition: opacity 0.2s ease; }
+.modal-fade-enter-from, .modal-fade-leave-to { opacity: 0; }
 
-.modal-fade-enter-from,
-.modal-fade-leave-to {
-  opacity: 0;
-}
-
-/* Responsive Styling */
 @media (max-width: 768px) {
-  .modal-overlay {
-    padding: 0;
-    align-items: flex-end;
-  }
-
+  .modal-overlay { padding: 0; align-items: flex-end; }
   .modal-wrapper.modal-mobile-bottom {
     max-width: 100%;
-    border-radius: var(--radius-2xl) var(--radius-2xl) 0 0;
-    max-height: 95vh;
-    animation: modal-slide-up 0.4s cubic-bezier(0.16, 1, 0.3, 1);
+    border-radius: var(--radius-xl) var(--radius-xl) 0 0;
+    animation: modal-slide-up 0.3s ease-out;
   }
-
-  @keyframes modal-slide-up {
-    from { transform: translateY(100%); }
-    to { transform: translateY(0); }
-  }
-
-  .modal-header {
-    padding: var(--spacing-lg) var(--spacing-lg) var(--spacing-sm);
-  }
-
-  .modal-body {
-    padding: var(--spacing-sm) var(--spacing-lg) var(--spacing-xl);
-  }
-
-  .modal-footer {
-    padding: var(--spacing-md) var(--spacing-lg) calc(var(--spacing-md) + env(safe-area-inset-bottom));
-    flex-direction: column-reverse;
-  }
-
-  .btn-modal-cancel,
-  .btn-modal-confirm {
-    width: 100%;
-    height: 52px;
-  }
+  @keyframes modal-slide-up { from { transform: translateY(100%); } to { transform: translateY(0); } }
+  .modal-footer { flex-direction: column-reverse; padding-bottom: calc(var(--spacing-md) + env(safe-area-inset-bottom)); }
+  .btn-modal-cancel, .btn-modal-confirm { width: 100%; height: 44px; }
 }
 </style>

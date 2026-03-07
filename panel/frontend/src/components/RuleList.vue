@@ -6,20 +6,25 @@
     </div>
 
     <template v-else>
-      <div class="list-controls" v-if="ruleStore.hasRules">
-        <div class="search-box">
-          <span class="search-icon">
-            <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-          </span>
-          <input
-            v-model="ruleStore.searchQuery"
-            type="text"
-            placeholder="搜索规则 ID、前端或后端 URL..."
-            class="search-input"
-          >
-          <button v-if="ruleStore.searchQuery" @click="ruleStore.searchQuery = ''" class="clear-search">
-            ×
+      <!-- 标签筛选行 -->
+      <div class="filter-row" v-if="ruleStore.hasRules && (ruleStore.selectedTags.length > 0 || ruleStore.searchQuery)">
+        <div class="active-filters" v-if="ruleStore.selectedTags.length > 0">
+          <div class="active-filter" v-for="tag in ruleStore.selectedTags" :key="tag">
+            <span class="filter-label">
+              <svg viewBox="0 0 24 24"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
+              {{ tag }}
+            </span>
+            <button @click="removeTag(tag)" class="clear-filter" title="移除此标签">
+              <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>
+          <button v-if="ruleStore.selectedTags.length > 1" @click="ruleStore.selectedTags = []" class="clear-all-btn" title="清除所有筛选">
+            清除全部
           </button>
+        </div>
+
+        <div class="results-count" v-if="ruleStore.searchQuery || ruleStore.selectedTags.length > 0">
+          找到 {{ ruleStore.filteredRules.length }} 条结果
         </div>
       </div>
 
@@ -31,7 +36,7 @@
       >
         <template #action>
           <p class="empty-hint">
-            点击上方的“添加规则”按钮开始
+            点击上方的"添加规则"按钮开始
           </p>
         </template>
       </EmptyState>
@@ -49,11 +54,12 @@
         </template>
       </EmptyState>
 
-      <div v-else class="rules-grid">
+      <div v-else :class="['rules-layout', `view-${ruleStore.viewMode}`]">
         <RuleItem
           v-for="rule in ruleStore.filteredRules"
           :key="rule.id"
           :rule="rule"
+          :view-mode="ruleStore.viewMode"
         />
       </div>
     </template>
@@ -66,6 +72,13 @@ import RuleItem from './RuleItem.vue'
 import EmptyState from './base/EmptyState.vue'
 
 const ruleStore = useRuleStore()
+
+const removeTag = (tag) => {
+  const index = ruleStore.selectedTags.indexOf(tag)
+  if (index > -1) {
+    ruleStore.selectedTags.splice(index, 1)
+  }
+}
 </script>
 
 <style scoped>
@@ -96,126 +109,151 @@ const ruleStore = useRuleStore()
   to { transform: rotate(360deg); }
 }
 
-.list-controls {
-  margin-bottom: var(--spacing-2xl);
+.filter-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-md);
+  flex-wrap: wrap;
+  margin-bottom: var(--spacing-lg);
+  padding: var(--spacing-sm) 0;
 }
 
-.search-box {
+.active-filters {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.active-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 38px;
+  padding: 0 8px 0 12px;
+  background: linear-gradient(135deg, var(--color-primary-bg) 0%, var(--color-primary-lighter) 100%);
+  border: 2px solid var(--color-primary-light);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.15);
   position: relative;
-  max-width: 520px;
 }
 
-.search-icon {
-  position: absolute;
-  left: var(--spacing-lg);
-  top: 50%;
-  transform: translateY(-50%);
-  width: 18px;
-  height: 18px;
-  color: var(--color-text-muted);
-  pointer-events: none;
-  transition: color 0.2s ease;
-}
-
-.search-box:focus-within .search-icon {
+.filter-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8rem;
+  font-weight: 600;
   color: var(--color-primary);
 }
 
-.search-icon svg {
-  width: 100%;
-  height: 100%;
+.filter-label svg {
+  width: 12px;
+  height: 12px;
   stroke: currentColor;
-  stroke-width: 2.2;
+  stroke-width: 2.5;
   fill: none;
 }
 
-.search-input {
-  width: 100%;
-  height: 52px;
-  padding: 0 var(--spacing-xl) 0 calc(var(--spacing-lg) * 2.8);
-  background: var(--color-bg-secondary);
-  border: 1.5px solid var(--color-border);
-  border-radius: var(--radius-xl);
-  font-size: 0.95rem;
-  color: var(--color-text-primary);
-  transition: all 0.2s ease;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.05);
-}
-
-.search-input::placeholder {
-  color: var(--color-text-muted);
-  opacity: 0.6;
-}
-
-.search-input:focus {
-  background: var(--color-bg-primary);
-  border-color: var(--color-primary);
-  box-shadow: 0 0 0 4px var(--color-primary-lighter), 0 2px 8px rgba(0, 0, 0, 0.08);
-  outline: none;
-}
-
-.clear-search {
-  position: absolute;
-  right: var(--spacing-md);
-  top: 50%;
-  transform: translateY(-50%);
-  background: var(--color-bg-tertiary);
+.clear-filter {
+  background: rgba(37, 99, 235, 0.15);
   border: none;
-  width: 26px;
-  height: 26px;
-  border-radius: 50%;
+  width: 20px;
+  height: 20px;
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--color-text-muted);
+  color: var(--color-primary);
   cursor: pointer;
-  font-size: 1.3rem;
-  line-height: 1;
-  transition: all 0.2s ease;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  flex-shrink: 0;
+  border-radius: 4px;
+  padding: 0;
 }
 
-.clear-search:hover {
+.clear-filter svg {
+  width: 12px;
+  height: 12px;
+  stroke: currentColor;
+  stroke-width: 2.5;
+  fill: none;
+}
+
+.clear-filter:hover {
+  background: var(--color-primary);
+  color: white;
+}
+
+.clear-filter:active {
+  transform: scale(0.9);
+}
+
+.clear-all-btn {
+  height: 38px;
+  padding: 0 14px;
+  background: var(--color-bg-secondary);
+  border: 2px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  white-space: nowrap;
+}
+
+.clear-all-btn:hover {
   background: var(--color-danger-bg);
+  border-color: var(--color-danger);
   color: var(--color-danger);
-  transform: translateY(-50%) scale(1.1);
 }
 
-.empty-hint {
+.clear-all-btn:active {
+  transform: scale(0.95);
+}
+
+.results-count {
+  font-size: 0.85rem;
   color: var(--color-text-muted);
-  font-size: var(--font-size-sm);
-  margin-top: var(--spacing-md);
+  white-space: nowrap;
 }
 
-.rules-grid {
+.rules-layout.view-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
-  gap: var(--spacing-2xl);
+  grid-template-columns: repeat(auto-fill, minmax(min(350px, 100%), 1fr));
+  gap: var(--spacing-xl);
 }
 
-@media (max-width: 1200px) {
-  .rules-grid {
-    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-    gap: var(--spacing-xl);
-  }
+.rules-layout.view-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
 }
 
 @media (max-width: 768px) {
-  .rules-grid {
+  .rules-layout.view-grid {
     grid-template-columns: 1fr;
-    gap: var(--spacing-lg);
+    gap: var(--spacing-md);
   }
 
-  .search-box {
-    max-width: 100%;
+  .filter-row {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--spacing-sm);
   }
 
-  .search-input {
-    height: 48px;
-    font-size: 0.9rem;
+  .active-filters {
+    width: 100%;
   }
 
-  .list-controls {
-    margin-bottom: var(--spacing-xl);
+  .results-count {
+    width: 100%;
+    text-align: left;
+  }
+
+  .active-filter {
+    flex: 0 0 auto;
   }
 }
 </style>

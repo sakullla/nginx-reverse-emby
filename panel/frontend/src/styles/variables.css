@@ -45,40 +45,40 @@
     --color-info-bg: #e0f2fe;
 
     /* Colors - Neutral (Modern Slate) */
-    --color-text-primary: #1e293b;
-    --color-text-secondary: #475569;
-    --color-text-tertiary: #64748b;
-    --color-text-muted: #94a3b8;
-    --color-text-disabled: #cbd5e1;
-    --color-heading: #0f172a;
+    --color-text-primary: #0f172a;
+    --color-text-secondary: #334155;
+    --color-text-tertiary: #475569;
+    --color-text-muted: #64748b;
+    --color-text-disabled: #94a3b8;
+    --color-heading: #020617;
 
     /* Colors - Background (Light Tech) */
     --color-bg-primary: #ffffff;
-    --color-bg-secondary: #f8fafc;
-    --color-bg-tertiary: #f1f5f9;
+    --color-bg-secondary: #f1f5f9;
+    --color-bg-tertiary: #e2e8f0;
     --color-bg-disabled: #f1f5f9;
-    --color-bg-overlay: rgba(15, 23, 42, 0.4);
-    --color-bg-app: #f1f5f9;
+    --color-bg-overlay: rgba(15, 23, 42, 0.45);
+    --color-bg-app: #f8fafc;
     --color-bg-card: #ffffff;
     --color-bg-panel: #ffffff;
 
     /* Colors - Border */
-    --color-border: #e2e8f0;
-    --color-border-light: #f1f5f9;
-    --color-border-dark: #cbd5e1;
+    --color-border: #cbd5e1;
+    --color-border-light: #e2e8f0;
+    --color-border-dark: #94a3b8;
     --color-border-focus: var(--color-primary);
 
     /* Glass Effects - Clean Cloud Style */
-    --glass-bg: rgba(255, 255, 255, 0.7);
+    --glass-bg: rgba(255, 255, 255, 0.85);
     --glass-border: rgba(255, 255, 255, 0.5);
-    --glass-shadow: 0 4px 10px rgba(0, 0, 0, 0.01);
+    --glass-shadow: 0 4px 12px rgba(0, 0, 0, 0.03);
 
     /* Gradients - Professional Blue */
-    --gradient-primary: linear-gradient(135deg, #3b82f6 0%, #1e40af 100%);
+    --gradient-primary: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
     --gradient-secondary: linear-gradient(135deg, #10b981 0%, #059669 100%);
     --gradient-accent: linear-gradient(135deg, #f43f5e 0%, #e11d48 100%);
-    --gradient-bg: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
-    --gradient-header: linear-gradient(to right, #1e293b, #334155);
+    --gradient-bg: linear-gradient(135deg, #f1f5f9 0%, #cbd5e1 100%);
+    --gradient-header: linear-gradient(to right, #0f172a, #1e293b);
 
     /* Spacing & Radii (Stay Modern Professional) */
     --spacing-xs: 0.5rem;
@@ -91,21 +91,39 @@
     --spacing-4xl: 4rem;
     --spacing-5xl: 5rem;
 
-    --radius-xs: 2px;
-    --radius-sm: 4px;
-    --radius-md: 6px;
-    --radius-lg: 8px;
-    --radius-xl: 10px;
-    --radius-2xl: 12px;
+    --radius-xs: 4px;
+    --radius-sm: 6px;
+    --radius-md: 8px;
+    --radius-lg: 12px;
+    --radius-xl: 16px;
+    --radius-2xl: 24px;
     --radius-full: 9999px;
 
-    /* Shadows - Minimalist */
-    --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.02);
-    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.02);
-    --shadow-md: 0 2px 4px rgba(0, 0, 0, 0.02);
-    --shadow-lg: 0 4px 6px rgba(0, 0, 0, 0.02);
-    --shadow-xl: 0 10px 15px rgba(0, 0, 0, 0.02);
-    --shadow-inner: inset 0 2px 4px 0 rgba(0, 0, 0, 0.03);
+    /* Tag Colors Palette */
+    --tag-1-bg: #eff6ff;
+    --tag-1-text: #2563eb;
+    --tag-2-bg: #ecfdf5;
+    --tag-2-text: #059669;
+    --tag-3-bg: #fef2f2;
+    --tag-3-text: #dc2626;
+    --tag-4-bg: #fff7ed;
+    --tag-4-text: #d97706;
+    --tag-5-bg: #faf5ff;
+    --tag-5-text: #9333ea;
+    --tag-6-bg: #f0fdfa;
+    --tag-6-text: #0d9488;
+
+    /* Shadows - Sharper and more distinct */
+    --shadow-xs: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+    --shadow-sm:
+        0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px -1px rgba(0, 0, 0, 0.1);
+    --shadow-md:
+        0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
+    --shadow-lg:
+        0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -4px rgba(0, 0, 0, 0.1);
+    --shadow-xl:
+        0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
+    --shadow-inner: inset 0 2px 4px 0 rgba(0, 0, 0, 0.05);
 
     /* Typography */
     --font-family:

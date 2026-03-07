@@ -269,6 +269,9 @@ cleanup_unused_certificates() {
 
 collect_rules() {
     output_file="$1"
+    RULES_JSON="${PANEL_RULES_JSON:-$DATA_ROOT/proxy_rules.json}"
+
+    # 首先处理环境变量中的规则 PROXY_RULE_1, PROXY_RULE_2...
     i=1
     while true; do
         rule_val=$(eval "printf '%s' \"\${PROXY_RULE_${i}:-}\"")
@@ -276,9 +279,26 @@ collect_rules() {
         printf '%s\n' "$rule_val" >> "$output_file"
         i=$((i + 1))
     done
-    if [ -f "$RULES_FILE" ]; then
+
+    # 从 JSON 文件中提取启用的规则并转换为 CSV 格式以便后续处理
+    if [ -f "$RULES_JSON" ]; then
+        node -e "
+            const fs = require('fs');
+            try {
+                const rules = JSON.parse(fs.readFileSync('$RULES_JSON', 'utf8'));
+                rules.filter(r => r.enabled !== false).forEach(r => {
+                    process.stdout.write(r.frontend_url + ',' + r.backend_url + '\n');
+                });
+            } catch (e) {
+                process.stderr.write('Error parsing rules.json: ' + e.message + '\n');
+                process.exit(1);
+            }
+        " >> "$output_file" || true
+    elif [ -f "$RULES_FILE" ]; then
+        # 回退逻辑: 如果没有 JSON 但有旧的 CSV
         grep -v '^\s*#' "$RULES_FILE" | grep -v '^\s*$' >> "$output_file" || true
     fi
+
     if [ -s "$output_file" ]; then
         awk '!seen[$0]++' "$output_file" > "${output_file}.tmp" && mv "${output_file}.tmp" "$output_file"
     fi

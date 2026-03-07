@@ -47,11 +47,15 @@ const mockRules = [
     id: 1,
     frontend_url: "https://emby.example.com",
     backend_url: "http://192.168.1.10:8096",
+    enabled: true,
+    tags: ["emby", "https"],
   },
   {
     id: 2,
     frontend_url: "https://jellyfin.example.com",
     backend_url: "http://192.168.1.11:8096",
+    enabled: false,
+    tags: ["jellyfin"],
   },
 ];
 
@@ -90,31 +94,49 @@ export async function fetchRules() {
   return data.rules || [];
 }
 
-export async function createRule(frontend_url, backend_url) {
+export async function createRule(
+  frontend_url,
+  backend_url,
+  tags = [],
+  enabled = true,
+) {
   if (isDev) {
     await sleep();
-    const newRule = { id: Date.now(), frontend_url, backend_url };
+    const newRule = {
+      id: Date.now(),
+      frontend_url,
+      backend_url,
+      tags,
+      enabled,
+    };
     mockRules.push(newRule);
     return newRule;
   }
   const { data } = await api.post(
     "/rules",
-    { frontend_url, backend_url },
+    { frontend_url, backend_url, tags, enabled },
     longRunningRequest,
   );
   return data.rule;
 }
 
-export async function updateRule(id, frontend_url, backend_url) {
+export async function updateRule(id, frontend_url, backend_url, tags, enabled) {
   if (isDev) {
     await sleep();
     const idx = mockRules.findIndex((r) => r.id === id);
-    if (idx !== -1) mockRules[idx] = { id, frontend_url, backend_url };
+    if (idx !== -1) {
+      const updated = { ...mockRules[idx] };
+      if (frontend_url !== undefined) updated.frontend_url = frontend_url;
+      if (backend_url !== undefined) updated.backend_url = backend_url;
+      if (tags !== undefined) updated.tags = tags;
+      if (enabled !== undefined) updated.enabled = enabled;
+      mockRules[idx] = updated;
+    }
     return mockRules[idx];
   }
   const { data } = await api.put(
     `/rules/${id}`,
-    { frontend_url, backend_url },
+    { frontend_url, backend_url, tags, enabled },
     longRunningRequest,
   );
   return data.rule;

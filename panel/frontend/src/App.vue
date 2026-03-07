@@ -70,12 +70,51 @@
                 <span class="icon-inline" v-html="icons.list"></span>
                 代理规则列表
               </h2>
+
+              <!-- 搜索框 -->
+              <div class="search-box" v-if="ruleStore.hasRules">
+                <span class="search-icon">
+                  <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                </span>
+                <input
+                  v-model="ruleStore.searchQuery"
+                  type="text"
+                  placeholder="搜索地址..."
+                  class="search-input"
+                >
+                <button v-if="ruleStore.searchQuery" @click="ruleStore.searchQuery = ''" class="clear-search">
+                  ×
+                </button>
+              </div>
+
               <div class="header-actions">
                 <button @click="showAddModal = true" class="add-rule-btn primary">
                   <span class="icon-inline" v-html="icons.plus"></span>
                   <span class="btn-text">添加规则</span>
                 </button>
                 <ActionBar />
+              </div>
+
+              <!-- 视图切换 -->
+              <div class="view-switcher" v-if="ruleStore.hasRules">
+                <button
+                  @click="ruleStore.viewMode = 'grid'"
+                  class="view-btn"
+                  :class="{ active: ruleStore.viewMode === 'grid' }"
+                  title="网格视图"
+                >
+                  <svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+                  <span>网格</span>
+                </button>
+                <button
+                  @click="ruleStore.viewMode = 'list'"
+                  class="view-btn"
+                  :class="{ active: ruleStore.viewMode === 'list' }"
+                  title="列表视图"
+                >
+                  <svg viewBox="0 0 24 24"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+                  <span>列表</span>
+                </button>
               </div>
             </div>
             <RuleList />
@@ -120,7 +159,7 @@ const icons = {
   activity: '<svg viewBox="0 0 24 24"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>',
   cpu: '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 1v3"/><path d="M15 1v3"/><path d="M9 20v3"/><path d="M15 20v3"/><path d="M20 9h3"/><path d="M20 15h3"/><path d="M1 9h3"/><path d="M1 15h3"/></svg>',
   plus: '<svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>',
-  list: '<svg viewBox="0 0 24 24"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>'
+  list: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>'
 }
 
 const activeRulesCount = computed(() => ruleStore.rules.length)
@@ -297,19 +336,33 @@ onMounted(async () => {
 .header-actions {
   display: flex;
   align-items: center;
-  gap: var(--spacing-md);
+  gap: var(--spacing-sm);
 }
 
 .add-rule-btn {
-  height: 40px;
+  height: 42px;
   padding: 0 var(--spacing-lg);
   font-weight: var(--font-weight-semibold);
-  font-size: var(--font-size-sm);
+  font-size: 0.875rem;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  border-radius: var(--radius-md);
-  transition: all var(--transition-base);
+  gap: 8px;
+  border-radius: var(--radius-full);
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  border: none;
+  background: linear-gradient(135deg, var(--color-primary) 0%, var(--color-primary-dark) 100%);
+  color: white;
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.25);
+}
+
+.add-rule-btn:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 16px rgba(37, 99, 235, 0.35);
+}
+
+.add-rule-btn:active {
+  transform: translateY(0);
+  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.25);
 }
 
 .btn-text {
@@ -334,6 +387,236 @@ onMounted(async () => {
 
   .add-rule-btn .btn-text {
     display: none;
+  }
+}
+
+/* 搜索框样式 */
+.search-box {
+  position: relative;
+  flex: 1;
+  max-width: 350px;
+  min-width: 180px;
+}
+
+.search-icon {
+  position: absolute;
+  left: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 18px;
+  height: 18px;
+  color: var(--color-text-muted);
+  pointer-events: none;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  z-index: 1;
+}
+
+.search-box:focus-within .search-icon {
+  color: var(--color-primary);
+  transform: translateY(-50%) scale(1.05);
+}
+
+.search-icon svg {
+  width: 100%;
+  height: 100%;
+  stroke: currentColor;
+  stroke-width: 2;
+  fill: none;
+}
+
+.search-input {
+  width: 100%;
+  height: 42px;
+  padding: 0 40px 0 44px;
+  background: var(--color-bg-secondary);
+  border: 1.5px solid transparent;
+  border-radius: var(--radius-full);
+  font-size: 0.875rem;
+  color: var(--color-text-primary);
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  font-weight: 500;
+}
+
+.search-input::placeholder {
+  color: var(--color-text-muted);
+  transition: color 0.2s ease;
+}
+
+.search-input:hover {
+  background: var(--color-bg-card);
+  border-color: var(--color-border-light);
+}
+
+.search-input:focus {
+  border-color: var(--color-primary);
+  background: var(--color-bg-card);
+  box-shadow: 0 0 0 4px var(--color-primary-lighter);
+  outline: none;
+}
+
+.search-input:focus::placeholder {
+  color: var(--color-text-disabled);
+}
+
+.clear-search {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: var(--color-text-muted);
+  border: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  cursor: pointer;
+  font-size: 0.9rem;
+  font-weight: 600;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  opacity: 0.7;
+}
+
+.clear-search:hover {
+  opacity: 1;
+  background: var(--color-danger);
+  transform: translateY(-50%) scale(1.1) rotate(90deg);
+}
+
+.clear-search:active {
+  transform: translateY(-50%) scale(0.9);
+}
+
+/* 视图切换样式 */
+.view-switcher {
+  display: flex;
+  background: var(--color-bg-secondary);
+  padding: 4px;
+  border-radius: var(--radius-full);
+  gap: 4px;
+  border: none;
+}
+
+.view-btn {
+  padding: 0;
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: transparent;
+  color: var(--color-text-muted);
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+  position: relative;
+}
+
+.view-btn span {
+  display: none;
+}
+
+.view-btn svg {
+  width: 18px;
+  height: 18px;
+  stroke: currentColor;
+  stroke-width: 2;
+  fill: none;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.view-btn:hover:not(.active) {
+  background: var(--color-bg-card);
+  color: var(--color-text-primary);
+}
+
+.view-btn:hover svg {
+  transform: scale(1.1);
+}
+
+.view-btn.active {
+  background: white;
+  color: var(--color-primary);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08), 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+.view-btn.active svg {
+  stroke-width: 2.2;
+}
+
+.view-btn.active:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1), 0 2px 4px rgba(0, 0, 0, 0.06);
+}
+
+@media (max-width: 768px) {
+  .search-box {
+    max-width: 42px;
+    min-width: 42px;
+    order: 2;
+  }
+
+  .search-box:focus-within {
+    max-width: 240px;
+    min-width: 180px;
+  }
+
+  .header-actions {
+    order: 3;
+    gap: 6px;
+  }
+
+  .view-switcher {
+    order: 4;
+  }
+
+  .section-header h2 {
+    order: 1;
+    width: auto;
+    font-size: 1.125rem;
+  }
+}
+
+@media (max-width: 480px) {
+  .section-header {
+    gap: var(--spacing-sm);
+  }
+
+  .section-header h2 {
+    width: 100%;
+    font-size: 1rem;
+  }
+
+  .add-rule-btn {
+    width: 42px;
+    height: 42px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  .add-rule-btn .icon-inline {
+    margin-right: 0;
+  }
+
+  .add-rule-btn .btn-text {
+    display: none;
+  }
+
+  .view-switcher {
+    padding: 3px;
+  }
+
+  .view-btn {
+    width: 34px;
+    height: 34px;
+  }
+
+  .view-btn svg {
+    width: 16px;
+    height: 16px;
   }
 }
 </style>

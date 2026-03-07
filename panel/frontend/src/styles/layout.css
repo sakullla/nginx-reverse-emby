@@ -161,8 +161,8 @@ body {
     margin-bottom: var(--spacing-xl);
     flex-wrap: wrap;
     gap: var(--spacing-md);
-    padding-bottom: var(--spacing-md);
-    border-bottom: 1px solid var(--color-border);
+    padding-bottom: 0;
+    border-bottom: none;
 }
 
 .section-header h2 {
@@ -251,7 +251,8 @@ body {
     }
 
     .container {
-        padding: 0 10px var(--spacing-xl);
+        padding: 0 8px var(--spacing-xl);
+        box-sizing: border-box;
     }
 
     .stats-grid {
@@ -288,6 +289,12 @@ body {
     .stat-label {
         font-size: var(--font-size-xs);
         color: var(--color-text-tertiary);
+    }
+
+    .add-rule-section,
+    .rules-section {
+        padding: 12px;
+        box-sizing: border-box;
     }
 
     .add-rule-section h2,

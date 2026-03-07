@@ -8,9 +8,11 @@ const { spawnSync } = require("child_process");
 
 const HOST = process.env.PANEL_BACKEND_HOST || "127.0.0.1";
 const PORT = Number(process.env.PANEL_BACKEND_PORT || "18081");
-const RULES_FILE =
-  process.env.PANEL_RULES_FILE ||
-  "/opt/nginx-reverse-emby/panel/data/proxy_rules.csv";
+const DATA_ROOT = "/opt/nginx-reverse-emby/panel/data";
+const RULES_JSON =
+  process.env.PANEL_RULES_JSON || path.join(DATA_ROOT, "proxy_rules.json");
+const RULES_CSV =
+  process.env.PANEL_RULES_FILE || path.join(DATA_ROOT, "proxy_rules.csv");
 const GENERATOR_SCRIPT =
   process.env.PANEL_GENERATOR_SCRIPT ||
   "/docker-entrypoint.d/25-dynamic-reverse-proxy.sh";
@@ -20,7 +22,7 @@ const AUTO_APPLY = /^(1|true|yes|on)$/i.test(
 );
 const NGINX_STATUS_URL =
   process.env.NGINX_STATUS_URL || "http://127.0.0.1:18080/nginx_status";
-const PANEL_TOKEN = process.env.API_TOKEN || ""; // 鉴权 Token，为空则不启用
+const PANEL_TOKEN = process.env.API_TOKEN || "";
 
 function sendJson(res, statusCode, payload) {
   const body = Buffer.from(JSON.stringify(payload), "utf8");
@@ -37,14 +39,12 @@ function errorPayload(message, details) {
   return payload;
 }
 
-// 鉴权检查
 function isAuthorized(req) {
-  if (!PANEL_TOKEN) return true; // 未配置 Token，跳过检查
+  if (!PANEL_TOKEN) return true;
   const token = req.headers["x-panel-token"];
   return token === PANEL_TOKEN;
 }
 
-// 解析 Nginx stub_status 文本
 function parseStubStatus(data) {
   const lines = data.split("\n");
   const activeMatch = lines[0].match(/\d+/);
@@ -81,46 +81,62 @@ function getNginxStats() {
   });
 }
 
-function ensureRulesFile() {
-  fs.mkdirSync(path.dirname(RULES_FILE), { recursive: true });
-  if (!fs.existsSync(RULES_FILE)) {
-    fs.writeFileSync(RULES_FILE, "", "utf8");
+function ensureDataDir() {
+  fs.mkdirSync(DATA_ROOT, { recursive: true });
+}
+
+function migrateCsvToJson() {
+  if (!fs.existsSync(RULES_JSON) && fs.existsSync(RULES_CSV)) {
+    console.log("Migrating proxy_rules.csv to proxy_rules.json...");
+    try {
+      const raw = fs.readFileSync(RULES_CSV, "utf8");
+      const lines = raw.split(/\r?\n/);
+      const rules = [];
+      let id = 1;
+
+      for (const lineRaw of lines) {
+        const line = lineRaw.trim();
+        if (!line || line.startsWith("#")) continue;
+        const commaIndex = line.indexOf(",");
+        if (commaIndex === -1) continue;
+        const frontend = line.slice(0, commaIndex).trim();
+        const backend = line.slice(commaIndex + 1).trim();
+        if (frontend && backend) {
+          rules.push({
+            id: id++,
+            frontend_url: frontend,
+            backend_url: backend,
+            enabled: true,
+            tags: [],
+          });
+        }
+      }
+      fs.writeFileSync(RULES_JSON, JSON.stringify(rules, null, 2), "utf8");
+      console.log(`Migration complete. ${rules.length} rules migrated.`);
+    } catch (err) {
+      console.error("Migration failed:", err);
+    }
   }
 }
 
-function loadRulePairs() {
-  ensureRulesFile();
-  const raw = fs.readFileSync(RULES_FILE, "utf8");
-  const lines = raw.split(/\r?\n/);
-  const pairs = [];
-
-  for (const lineRaw of lines) {
-    const line = lineRaw.trim();
-    if (!line || line.startsWith("#")) continue;
-    const commaIndex = line.indexOf(",");
-    if (commaIndex === -1) continue;
-    const frontend = line.slice(0, commaIndex).trim();
-    const backend = line.slice(commaIndex + 1).trim();
-    if (frontend && backend) pairs.push([frontend, backend]);
+function loadRules() {
+  ensureDataDir();
+  migrateCsvToJson();
+  if (!fs.existsSync(RULES_JSON)) {
+    return [];
   }
-
-  return pairs;
+  try {
+    const data = fs.readFileSync(RULES_JSON, "utf8");
+    return JSON.parse(data);
+  } catch (err) {
+    console.error("Error loading rules.json:", err);
+    return [];
+  }
 }
 
-function saveRulePairs(pairs) {
-  ensureRulesFile();
-  const content = pairs
-    .map(([frontend, backend]) => `${frontend},${backend}`)
-    .join("\n");
-  fs.writeFileSync(RULES_FILE, content ? `${content}\n` : "", "utf8");
-}
-
-function listRules() {
-  return loadRulePairs().map(([frontend_url, backend_url], idx) => ({
-    id: idx + 1,
-    frontend_url,
-    backend_url,
-  }));
+function saveRules(rules) {
+  ensureDataDir();
+  fs.writeFileSync(RULES_JSON, JSON.stringify(rules, null, 2), "utf8");
 }
 
 function validateUrl(value) {
@@ -162,9 +178,7 @@ function parseJsonBody(req) {
     req.setEncoding("utf8");
     req.on("data", (chunk) => {
       raw += chunk;
-      if (raw.length > 1024 * 1024) {
-        reject(new Error("request body too large"));
-      }
+      if (raw.length > 1024 * 1024) reject(new Error("request body too large"));
     });
     req.on("end", () => {
       if (!raw) {
@@ -190,14 +204,12 @@ function extractRuleId(urlPath) {
 async function handleRequest(req, res) {
   const urlPath = (req.url || "").split("?")[0];
 
-  // 1. 公开接口：验证 Token 是否有效 (用于前端检查)
   if (req.method === "GET" && urlPath === "/api/auth/verify") {
     const authorized = isAuthorized(req);
     sendJson(res, authorized ? 200 : 401, { ok: authorized });
     return;
   }
 
-  // 2. 鉴权拦截
   if (!isAuthorized(req)) {
     sendJson(
       res,
@@ -219,7 +231,7 @@ async function handleRequest(req, res) {
   }
 
   if (req.method === "GET" && urlPath === "/api/rules") {
-    sendJson(res, 200, { ok: true, rules: listRules() });
+    sendJson(res, 200, { ok: true, rules: loadRules() });
     return;
   }
 
@@ -245,6 +257,10 @@ async function handleRequest(req, res) {
       const body = await parseJsonBody(req);
       const frontend = String(body.frontend_url || "").trim();
       const backend = String(body.backend_url || "").trim();
+      const tags = Array.isArray(body.tags)
+        ? body.tags.map((t) => String(t).trim()).filter(Boolean)
+        : [];
+      const enabled = body.enabled !== false;
 
       if (!validateUrl(frontend) || !validateUrl(backend)) {
         sendJson(
@@ -257,14 +273,17 @@ async function handleRequest(req, res) {
         return;
       }
 
-      const pairs = loadRulePairs();
-      pairs.push([frontend, backend]);
-      saveRulePairs(pairs);
-      const created = {
-        id: pairs.length,
+      const rules = loadRules();
+      const maxId = rules.reduce((max, r) => Math.max(max, r.id), 0);
+      const newRule = {
+        id: maxId + 1,
         frontend_url: frontend,
         backend_url: backend,
+        enabled,
+        tags,
       };
+      rules.push(newRule);
+      saveRules(rules);
 
       if (AUTO_APPLY) {
         try {
@@ -281,8 +300,7 @@ async function handleRequest(req, res) {
           return;
         }
       }
-
-      sendJson(res, 201, { ok: true, rule: created });
+      sendJson(res, 201, { ok: true, rule: newRule });
     } catch (err) {
       sendJson(res, 400, errorPayload(String(err.message || err)));
     }
@@ -298,8 +316,26 @@ async function handleRequest(req, res) {
 
     try {
       const body = await parseJsonBody(req);
-      const frontend = String(body.frontend_url || "").trim();
-      const backend = String(body.backend_url || "").trim();
+      const rules = loadRules();
+      const index = rules.findIndex((r) => r.id === ruleId);
+      if (index === -1) {
+        sendJson(res, 404, errorPayload("rule id not found"));
+        return;
+      }
+
+      const frontend =
+        body.frontend_url !== undefined
+          ? String(body.frontend_url).trim()
+          : rules[index].frontend_url;
+      const backend =
+        body.backend_url !== undefined
+          ? String(body.backend_url).trim()
+          : rules[index].backend_url;
+      const tags = Array.isArray(body.tags)
+        ? body.tags.map((t) => String(t).trim()).filter(Boolean)
+        : rules[index].tags;
+      const enabled =
+        body.enabled !== undefined ? !!body.enabled : rules[index].enabled;
 
       if (!validateUrl(frontend) || !validateUrl(backend)) {
         sendJson(
@@ -312,14 +348,14 @@ async function handleRequest(req, res) {
         return;
       }
 
-      const pairs = loadRulePairs();
-      if (ruleId < 1 || ruleId > pairs.length) {
-        sendJson(res, 404, errorPayload("rule id not found"));
-        return;
-      }
-
-      pairs[ruleId - 1] = [frontend, backend];
-      saveRulePairs(pairs);
+      rules[index] = {
+        ...rules[index],
+        frontend_url: frontend,
+        backend_url: backend,
+        enabled,
+        tags,
+      };
+      saveRules(rules);
 
       if (AUTO_APPLY) {
         try {
@@ -336,11 +372,7 @@ async function handleRequest(req, res) {
           return;
         }
       }
-
-      sendJson(res, 200, {
-        ok: true,
-        rule: { id: ruleId, frontend_url: frontend, backend_url: backend },
-      });
+      sendJson(res, 200, { ok: true, rule: rules[index] });
     } catch (err) {
       sendJson(res, 400, errorPayload(String(err.message || err)));
     }
@@ -354,14 +386,15 @@ async function handleRequest(req, res) {
       return;
     }
 
-    const pairs = loadRulePairs();
-    if (ruleId < 1 || ruleId > pairs.length) {
+    const rules = loadRules();
+    const index = rules.findIndex((r) => r.id === ruleId);
+    if (index === -1) {
       sendJson(res, 404, errorPayload("rule id not found"));
       return;
     }
 
-    const deleted = pairs.splice(ruleId - 1, 1)[0];
-    saveRulePairs(pairs);
+    const deleted = rules.splice(index, 1)[0];
+    saveRules(rules);
 
     if (AUTO_APPLY) {
       try {
@@ -378,18 +411,15 @@ async function handleRequest(req, res) {
         return;
       }
     }
-
-    sendJson(res, 200, {
-      ok: true,
-      rule: { id: ruleId, frontend_url: deleted[0], backend_url: deleted[1] },
-    });
+    sendJson(res, 200, { ok: true, rule: deleted });
     return;
   }
 
   sendJson(res, 404, errorPayload("not found"));
 }
 
-ensureRulesFile();
+ensureDataDir();
+migrateCsvToJson();
 
 http
   .createServer((req, res) => {
