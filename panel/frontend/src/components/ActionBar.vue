@@ -81,5 +81,3 @@ async function handleApply() {
   }
 }
 </style>
-}
-</style>
