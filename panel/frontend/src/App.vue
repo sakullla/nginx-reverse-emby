@@ -244,7 +244,6 @@ onMounted(async () => {
   }
 }
 
-.floating-logout-btn {
 .initial-loading {
   position: fixed;
   top: 0;
