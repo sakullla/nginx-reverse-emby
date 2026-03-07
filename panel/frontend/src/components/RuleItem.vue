@@ -72,28 +72,37 @@
         @confirm="confirmDelete"
       >
         <div class="delete-confirm-content">
-          <div class="warning-icon-wrapper">
-            <svg viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
-          </div>
-          <h3 class="confirm-msg-title">确定要移除该规则吗？</h3>
-          <p class="confirm-msg-desc">此操作将立即从 Nginx 配置中移除，前端请求将不再转发。该操作不可撤销。</p>
-
-          <div class="rule-preview-box">
-            <div class="preview-row">
-              <span class="p-label">ID:</span>
-              <span class="p-value">#{{ rule.id }}</span>
+          <div class="warning-banner">
+            <div class="warning-icon-wrapper">
+              <svg viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
             </div>
-            <div class="preview-row">
-              <span class="p-label">前端:</span>
-              <span class="p-value">{{ rule.frontend_url }}</span>
+            <div class="warning-text">
+              <h3 class="confirm-msg-title">确定要移除该规则吗？</h3>
+              <p class="confirm-msg-desc">此操作不可撤销，前端请求将不再转发。</p>
+            </div>
+          </div>
+
+          <div class="rule-preview-card">
+            <div class="preview-header">
+              <span class="preview-badge">规则 #{{ rule.id }}</span>
+            </div>
+            <div class="preview-body">
+              <div class="preview-row">
+                <span class="p-label">前端 URL</span>
+                <span class="p-value">{{ rule.frontend_url }}</span>
+              </div>
+              <div class="preview-divider"></div>
+              <div class="preview-row">
+                <span class="p-label">后端 URL</span>
+                <span class="p-value">{{ rule.backend_url }}</span>
+              </div>
             </div>
           </div>
         </div>
       </BaseModal>
     </Teleport>
-  </div>
-</template>
-
+    </div>
+    </template>
 <script setup>
 import { ref } from 'vue'
 import { useRuleStore } from '../stores/rules'
@@ -372,74 +381,123 @@ const confirmDelete = async () => {
   fill: none;
 }
 
-/* Delete Modal Enhancements */
+/* Delete Modal Refinement */
 .delete-confirm-content {
-  text-align: center;
-  padding: var(--spacing-md) 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xl);
+  padding: var(--spacing-sm) 0;
+}
+
+.warning-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+  background: var(--color-danger-bg);
+  padding: var(--spacing-md) var(--spacing-lg);
+  border-radius: var(--radius-xl);
+  border: 1px solid var(--color-danger-light);
 }
 
 .warning-icon-wrapper {
-  width: 64px;
-  height: 64px;
-  background: var(--color-danger-bg);
+  width: 48px;
+  height: 48px;
+  background: white;
   color: var(--color-danger);
-  border-radius: 20px;
+  border-radius: var(--radius-lg);
   display: flex;
   align-items: center;
   justify-content: center;
-  margin: 0 auto var(--spacing-lg);
-  transform: rotate(-5deg);
+  flex-shrink: 0;
+  box-shadow: 0 4px 12px rgba(244, 63, 94, 0.1);
 }
 
 .warning-icon-wrapper svg {
-  width: 32px;
-  height: 32px;
+  width: 24px;
+  height: 24px;
   stroke: currentColor;
-  stroke-width: 2;
+  stroke-width: 2.2;
   fill: none;
 }
 
 .confirm-msg-title {
-  font-size: 1.25rem;
-  color: var(--color-heading);
-  margin-bottom: var(--spacing-sm);
+  font-size: 1.15rem;
+  font-weight: 800;
+  color: var(--color-danger-dark);
+  margin: 0;
+  letter-spacing: -0.01em;
 }
 
 .confirm-msg-desc {
-  color: var(--color-text-secondary);
-  font-size: var(--font-size-sm);
-  line-height: 1.6;
-  margin-bottom: var(--spacing-xl);
+  color: var(--color-danger);
+  font-size: 0.85rem;
+  font-weight: 500;
+  margin: 4px 0 0;
+  opacity: 0.85;
 }
 
-.rule-preview-box {
+.rule-preview-card {
   background: var(--color-bg-secondary);
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-xl);
+  overflow: hidden;
+}
+
+.preview-header {
+  padding: var(--spacing-sm) var(--spacing-md);
+  background: var(--color-bg-tertiary);
+  border-bottom: 1px solid var(--color-border-light);
+}
+
+.preview-badge {
+  font-size: 0.75rem;
+  font-weight: 800;
+  color: var(--color-text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.preview-body {
   padding: var(--spacing-md);
-  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
 }
 
 .preview-row {
   display: flex;
-  gap: 12px;
-  margin-bottom: 6px;
-  font-size: 0.9rem;
-  font-family: var(--font-family-mono);
+  flex-direction: column;
+  gap: 4px;
 }
 
-.preview-row:last-child {
-  margin-bottom: 0;
+.preview-divider {
+  height: 1px;
+  background: var(--color-border-light);
+  margin: 2px 0;
 }
 
 .p-label {
+  font-size: 0.7rem;
+  font-weight: 700;
   color: var(--color-text-muted);
-  width: 50px;
-  flex-shrink: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
 }
 
 .p-value {
+  font-size: 0.9rem;
+  font-family: var(--font-family-mono);
   color: var(--color-heading);
   word-break: break-all;
+  line-height: 1.4;
+  font-weight: 600;
+}
+
+@media (max-width: 768px) {
+  .warning-banner {
+    flex-direction: column;
+    text-align: center;
+    padding: var(--spacing-lg);
+  }
 }
 </style>
