@@ -1,284 +1,332 @@
 # Nginx-Reverse-Emby
 
-一个以 Bash 为核心的一键反向代理部署项目，面向 Nginx 主机部署和 Docker 运行时动态配置两种场景。
+一个面向 Emby、Jellyfin 和其他 HTTP 服务的反向代理项目。
 
-- 支持 IPv4 / IPv6 前后端 URL
-- 支持 acme.sh 自动申请和安装证书（含 DNS API / Cloudflare）
-- 支持 Docker 动态规则：`PROXY_RULE_N` + 面板规则文件
-- 支持 Docker 双模式：`front_proxy` / `direct`
+它提供两种使用方式：
 
----
+- 主机模式：直接在宿主机写入 Nginx 配置
+- Docker 模式：容器启动后按规则动态生成反代配置，并提供管理面板
 
-## 1. 项目结构与职责
+支持：
 
-核心实现在 `deploy.sh`，Docker 相关逻辑在 `docker/`，面板在 `panel/`。
+- IPv4 / IPv6 前端和后端 URL
+- `acme.sh` 自动申请和安装证书
+- DNS API 验证（含 Cloudflare）
+- Docker 环境变量规则 `PROXY_RULE_N`
+- 面板动态新增、编辑、删除、应用规则
 
-- `deploy.sh`：主机模式部署与移除主流程
-- `conf.d/p.example.com.conf`：TLS 模板（HTTP/3 + QUIC）
-- `conf.d/p.example.com.no_tls.conf`：HTTP 模板
-- `docker/25-dynamic-reverse-proxy.sh`：Docker 动态反代配置生成
-- `docker/15-panel-config.sh`：面板 nginx 配置渲染
-- `docker/20-panel-backend.sh`：面板后端启动
-- `panel/backend/server.js`：面板 API（`/api/rules`、`/api/apply`）
+## 推荐用法
 
----
+大多数场景直接使用仓库内置的 `docker-compose.yaml` 即可。
 
-## 2. 主机模式（deploy.sh）
+当前示例默认：
 
-### 2.1 执行流程
+- 使用镜像 `ghcr.io/sakullla/nginx-reverse-emby:latest`
+- 使用 `network_mode: host`
+- 使用 `PROXY_DEPLOY_MODE=direct`
+- 面板默认监听宿主机 `8080`
+- 反代规则直接占用宿主机 `80/443` 或规则中声明的监听端口
 
-`main()` 顺序：
-1. `parse_arguments`
-2. 若有 `--remove`，走 `remove_domain_config`
-3. `setup_env`
-4. `prompt_interactive_mode`
-5. `display_summary`
-6. `install_dependencies`
-7. `generate_nginx_config`
-8. `issue_certificate`
-9. `test_and_reload_nginx`
+启动：
 
-安全模型：
-- `set -e`
-- `set -o pipefail`
-- `trap 'handle_error $LINENO' ERR`
-- 非 root 自动走 sudo
+```bash
+docker compose up -d
+```
 
-### 2.2 快速开始
+面板地址：
+
+```text
+http://<你的服务器IP>:8080/
+```
+
+首次启动前，至少检查这几项：
+
+- 把 `API_TOKEN` 改成你自己的随机长字符串
+- 确认宿主机上的 `8080` 没被占用
+- 如果要让容器直接签发 HTTPS 证书，确认 `80` 和 `443` 可用
+
+## docker-compose.yaml 说明
+
+仓库内置示例的思路是“开箱即用，而不是最小配置”。
+
+你通常只需要改这几项：
+
+- `API_TOKEN`
+- `PROXY_RULE_1`（如果你想预置规则）
+- `ACME_EMAIL`（如果你希望显式填写）
+- `ACME_DNS_PROVIDER` 和对应 DNS 凭据（如果你要用 DNS 验证）
+
+规则格式固定为：
+
+```text
+frontend_url,backend_url
+```
+
+例如：
+
+```text
+https://emby.example.com,http://192.168.1.10:8096
+```
+
+注意：
+
+- `PROXY_RULE_1`、`PROXY_RULE_2`、`PROXY_RULE_3` 必须连续编号
+- 如果缺了某个编号，后面的规则不会继续读取
+- 仓库示例里默认把 `PROXY_RULE_1` 注释掉，避免你启动后立刻生成错误规则
+
+## Docker 快速开始
+
+### 方式一：直接使用 compose
+
+```bash
+docker compose up -d
+```
+
+默认数据目录：
+
+```text
+./data
+```
+
+其中会保存：
+
+- 面板规则文件
+- 已签发证书
+- `acme.sh` 工作目录
+
+### 方式二：使用 docker run
+
+```bash
+docker run \
+  -d \
+  --name nginx-reverse-emby \
+  --restart unless-stopped \
+  --network host \
+  -e PROXY_DEPLOY_MODE=direct \
+  -e API_TOKEN=change-this-token \
+  -v ${PWD}/data:/opt/nginx-reverse-emby/panel/data \
+  ghcr.io/sakullla/nginx-reverse-emby:latest
+```
+
+## 面板使用
+
+默认面板入口：
+
+```text
+http://<你的服务器IP>:8080/
+```
+
+面板支持：
+
+- 查看规则
+- 新增规则
+- 编辑规则
+- 删除规则
+- 手动应用配置
+
+默认开启自动应用，也就是新增、修改、删除规则后会自动执行：
+
+```text
+generate -> nginx -t -> nginx -s reload
+```
+
+如果你不想自动应用，可以设置：
+
+```bash
+PANEL_AUTO_APPLY=0
+```
+
+`API_TOKEN` 说明：
+
+- 留空时，面板接口不做鉴权
+- 仓库示例默认要求你显式设置它
+- 生产环境不要使用 `change-this-token` 这种示例值
+
+## Docker 两种模式
+
+### `direct`
+
+推荐给大多数用户，也是当前 `docker-compose.yaml` 默认值。
+
+特点：
+
+- 容器自己处理前端 HTTP / HTTPS
+- `https://` 规则会生成 TLS 配置
+- 可以直接在容器内申请和续期证书
+- 适合没有外层 Nginx / Caddy / Traefik 的场景
+
+### `front_proxy`
+
+适合已经有上游反向代理的场景。
+
+特点：
+
+- 容器内部只做 HTTP 反代
+- 外层代理负责 TLS
+- 实际监听端口由 `FRONT_PROXY_PORT` 控制，默认 `3000`
+
+示例：
+
+```yaml
+environment:
+  PROXY_DEPLOY_MODE: front_proxy
+  FRONT_PROXY_PORT: "3000"
+```
+
+说明：
+
+- 镜像内部实现默认值仍然是 `front_proxy`
+- 但仓库提供的 `docker-compose.yaml` 已经显式改成 `direct`
+
+## Docker 证书说明
+
+`direct` 模式下默认使用：
+
+```text
+DIRECT_CERT_MODE=acme
+```
+
+常用变量：
+
+- `ACME_EMAIL`
+- `ACME_CA`，默认 `letsencrypt`
+- `ACME_DNS_PROVIDER`
+- `CF_Token`
+- `CF_Account_ID`
+- `ACME_HOME`，默认 `/opt/nginx-reverse-emby/panel/data/.acme.sh`
+- `DIRECT_CERT_DIR`，默认 `/opt/nginx-reverse-emby/panel/data/certs`
+
+当前行为：
+
+- 容器内已经带 `cron` / `crontab`
+- `direct + acme` 下会自动启动后台续期循环
+- `acme.sh` 的工作目录固定在 `ACME_HOME`
+- 证书安装后会尝试执行 reload
+
+### 什么时候建议用 DNS 验证
+
+以下情况建议优先使用 DNS 验证：
+
+- 你通过面板在容器运行中热添加 HTTPS 规则
+- 你不想依赖 `80` 端口做 standalone 验证
+- 你使用 Cloudflare 之类的 DNS 提供商
+
+Cloudflare 示例：
+
+```yaml
+environment:
+  PROXY_DEPLOY_MODE: direct
+  ACME_DNS_PROVIDER: cf
+  CF_Token: xxxxxxxx
+  CF_Account_ID: xxxxxxxx
+```
+
+## 主机模式
+
+如果你不是想跑 Docker，而是想直接在宿主机写入 Nginx 配置，可以使用 `deploy.sh`。
 
 交互模式：
+
 ```bash
 bash <(curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh)
 ```
 
-非交互模式（HTTPS 示例）：
+非交互模式：
+
 ```bash
 curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh \
   | bash -s -- -y https://proxy.example.com -r http://127.0.0.1:8096
 ```
 
-移除规则（建议始终带 scheme）：
+删除规则：
+
 ```bash
 curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh \
   | bash -s -- --remove https://proxy.example.com:443 --yes
 ```
 
-### 2.3 参数（以实现为准）
+常用参数：
 
-| 短参数 | 长参数 | 说明 |
-|---|---|---|
-| `-y` | `--you-domain <URL>` | 前端访问 URL |
-| `-r` | `--r-domain <URL>` | 后端 URL |
-| `-m` | `--cert-domain <domain>` | 手动指定证书域名 |
-| `-d` | `--parse-cert-domain` | 按规则自动提取根域名（仅匹配 `*.*.*`） |
-| `-D` | `--dns <provider>` | DNS API 证书模式（如 `cf`） |
-| `-R` | `--resolver <dns list>` | 自定义解析器 |
-| `-c` | `--template-domain-config <path\|url>` | 自定义站点模板 |
-|  | `--gh-proxy <url>` | GitHub 代理地址 |
-|  | `--cf-token <token>` | Cloudflare Token |
-|  | `--cf-account-id <id>` | Cloudflare Account ID |
-|  | `--remove <URL>` | 按 `域名+端口` 精确移除 |
-| `-Y` | `--yes` | 非交互删除确认 |
-| `-h` | `--help` | 帮助 |
+| 参数 | 说明 |
+|---|---|
+| `-y`, `--you-domain <URL>` | 前端访问地址 |
+| `-r`, `--r-domain <URL>` | 后端地址 |
+| `-m`, `--cert-domain <domain>` | 手动指定证书域名 |
+| `-d`, `--parse-cert-domain` | 自动提取根域名，仅在匹配 `*.*.*` 时生效 |
+| `-D`, `--dns <provider>` | 使用 DNS API 验证 |
+| `-R`, `--resolver <dns list>` | 自定义解析器 |
+| `-c`, `--template-domain-config <path\|url>` | 自定义模板 |
+| `--remove <URL>` | 删除指定规则 |
+| `-Y`, `--yes` | 非交互删除确认 |
+| `-h`, `--help` | 显示帮助 |
 
-> 注意：真实长参数是 `--template-domain-config`，不是 `--template`。
+主机模式补充说明：
 
-### 2.4 关键行为
+- `http://` 前端不会申请证书
+- 前端是 IP 时会使用短期证书参数
+- 没配 `--dns` 时默认走 standalone
+- Cloudflare 需要 `CF_Token` 和 `CF_Account_ID`
+- `--template-domain-config` 才是真实参数名，不是 `--template`
 
-- URL 解析契约：`proto|domain|port|path`，支持带中括号 IPv6。
-- 配置文件输出：`/etc/nginx/conf.d/{clean_domain}.{port}.conf`。
-- 证书目录：`/etc/nginx/certs/{format_cert_domain}/`。
-- 前端非根路径会自动生成 rewrite。
-- 后端地址由协议 + 主机 + 可选端口拼接得到。
+## 常见问题
 
-### 2.5 证书行为
+### 为什么新增或删除 HTTPS 规则会比较慢
 
-- `no_tls=yes`（即前端 URL 为 `http://`）时跳过证书申请。
-- 前端为 IP（IPv4/IPv6）时使用短期证书参数：
-  `--certificate-profile shortlived --days 6`。
-- DNS 模式：`issue_certificate_dns()`。
-- Standalone 模式：`issue_certificate_standalone()`。
-- Cloudflare 变量：`CF_Token`、`CF_Account_ID`。
+因为后端可能还要顺序完成这些步骤：
 
-### 2.6 移除行为
+- 生成配置
+- 申请证书
+- 安装证书
+- `nginx -t`
+- `nginx -s reload`
 
-- 按 `domain + port` 定位配置文件。
-- 非交互模式必须显式 `--yes`。
-- 若证书被其他站点共用，会避免危险删除。
-- 删除后会执行 `nginx -t` 再 reload/restart。
+域名签证书本身就可能需要十几秒甚至更久。
 
----
+### 为什么面板统计里的“总请求数”偏大
 
-## 3. Docker 模式
+当前统计来自 nginx 全局请求，不只包含代理流量，也包含：
 
-### 3.1 启动
+- 面板静态资源
+- `/panel-api/*`
+- 其他进入 nginx 的请求
 
-仓库自带 `docker-compose.yaml`：
-```bash
-docker compose up -d --build
-```
+所以它不是纯代理请求数。
 
-默认暴露：
-- `8080:8080`（面板）
-- `3000:3000`（`front_proxy` 默认反代入口）
+### 为什么推荐 compose 示例使用 host 网络
 
-若使用 `direct`，通常需要映射 `80:80`，有 HTTPS 规则时还需要映射 `443:443`。
+因为这个项目在 `direct` 模式下本来就是要让容器直接监听前端端口。
 
-### 3.2 规则来源与格式
+使用 `network_mode: host` 的好处是：
 
-`docker/25-dynamic-reverse-proxy.sh` 会合并两类规则：
-1. 环境变量：`PROXY_RULE_1`, `PROXY_RULE_2`, ...
-2. 面板规则文件：`PANEL_RULES_FILE`（默认 `/opt/nginx-reverse-emby/panel/data/proxy_rules.csv`）
+- 配置更简单
+- 不需要为每条规则再单独考虑端口映射
+- 更符合“容器直接接管 80/443”的使用方式
 
-统一格式：
-```text
-frontend_url,backend_url
-```
+代价也很明确：
 
-**重要：环境变量扫描是连续下标模式。** 一旦缺失某个编号，会停止后续扫描。
+- 会直接占用宿主机端口
+- 不适合你还要在宿主机上跑另一套前端 Nginx 的场景
 
-### 3.3 部署模式
+### 为什么 `PROXY_RULE_1` 在 compose 里默认是注释的
 
-`PROXY_DEPLOY_MODE`：
+因为仓库示例应该优先保证“直接启动不出错”。
 
-- `front_proxy`（默认）
-  - 容器内仅 HTTP 反代
-  - 监听端口由 `FRONT_PROXY_PORT` 控制，默认 `3000`
-  - 前端规则中的 URL 端口不会决定实际监听端口
-  - 适合上游已终止 TLS 的场景（如外层 Nginx/Caddy/Traefik）
+如果默认塞入一条示例规则，很容易出现：
 
-- `direct`
-  - 根据前端 URL 协议生成 HTTP/HTTPS server
-  - `https://` 规则需要证书
-  - `http://` 规则走明文模板
+- 域名不是你的
+- 后端地址不是你的
+- 启动后立刻触发证书申请失败
+- 面板自动应用时报错
 
-### 3.4 Direct 模式证书
+所以默认留空更稳妥。
 
-核心变量：
-- `DIRECT_CERT_MODE=acme|manual`（默认 `acme`）
-- `DIRECT_CERT_DIR`（默认 `/etc/nginx/certs`）
-- `DIRECT_CERT_CLEANUP`（默认启用）
-- `ACME_EMAIL`
-- `ACME_DNS_PROVIDER`
-- `ACME_HOME`（默认 `/opt/nginx-reverse-emby/panel/data/.acme.sh`）
-- `ACME_CA`
-- `ACME_STANDALONE_STOP_NGINX`
-- `ACME_AUTO_RENEW`（默认启用）
-- `ACME_RENEW_INTERVAL`（秒，默认 `86400`）
+## 最低检查项
 
-行为要点：
-- 镜像内已安装 `cron`/`crontab`，避免 acme.sh 在证书初始化时因缺少 `crontab` 预检查失败。
-- 容器启动时会在 `PROXY_DEPLOY_MODE=direct` 且 `DIRECT_CERT_MODE=acme` 下启动后台续期循环，按 `ACME_RENEW_INTERVAL` 执行 `acme.sh --cron`。
-- direct ACME 的 install / issue / info / remove / cron 都固定使用 `ACME_HOME`，避免回落到 `/root/.acme.sh`。
-- direct 模式下，若面板热应用时需要走 standalone 且 `80` 端口已被实际监听占用，脚本会直接返回清晰错误；若 `80` 未被占用，即使 nginx 进程仍在运行也允许继续签发。
-- panel backend follows container stdout/stderr, and nginx apply/test output is captured instead of inheriting a redirected file descriptor.
-- Docker nginx logs target `/proc/1/fd/1` and `/proc/1/fd/2`, so `nginx -t` and reload commands work reliably from child processes.
-- ACME `install-cert` 的 reload hook 是 best-effort：当其他 HTTPS 规则的证书文件尚未准备好时不会中断当前证书安装，最终仍由面板 apply 的 `nginx -t -> reload` 统一校验。
-- Docker 内部监控 `nginx_status` 仅监听 `127.0.0.1:18080` / `[::1]:18080`，不会再因监控用途无条件占用宿主机 `80` 端口。
-- 面板前端对规则增删改与手动 apply 不再设置 Axios 超时，避免域名签证书耗时较长时前端先报 timeout、实际后端继续成功。
-- 先检查现有 acme.sh 记录，存在则跳过签发、直接安装证书文件。
-- DNS/Standalone 首次失败会清理残留后自动重试一次。
-- 若配置了 `ACME_DNS_PROVIDER` 但前端主机是 IP，会自动回退到 Standalone。
-- 删除 HTTPS 规则后，若域名不再被任何规则使用，可清理陈旧证书目录与 ACME 记录。
+建议至少检查：
 
-### 3.5 面板模式
-
-默认面板入口：`http://<host>:8080/`。
-
-- nginx 代理到后端 `PANEL_BACKEND_PORT`（默认 `18081`）
-- API 路由：
-  - `GET /api/rules`
-  - `POST /api/rules`
-  - `PUT /api/rules/:id`
-  - `DELETE /api/rules/:id`
-  - `POST /api/apply`
-- `PANEL_AUTO_APPLY` 默认开启：增删改规则后自动执行 `generate -> nginx -t -> nginx -s reload`
-
----
-
-## 4. 常见配置示例
-
-### 4.1 front_proxy（默认）
-
-```yaml
-services:
-  nginx-reverse-emby:
-    image: ghcr.io/sakullla/nginx-reverse-emby:latest
-    restart: unless-stopped
-    ports:
-      - "8080:8080"
-      - "3000:3000"
-    environment:
-      - PROXY_DEPLOY_MODE=front_proxy
-      - FRONT_PROXY_PORT=3000
-      - PROXY_RULE_1=https://proxy.example.com,http://emby:8096
-    volumes:
-      - nre_panel_data:/opt/nginx-reverse-emby/panel/data
-```
-
-### 4.2 direct（容器内自管 HTTPS）
-
-```yaml
-services:
-  nginx-reverse-emby:
-    image: ghcr.io/sakullla/nginx-reverse-emby:latest
-    restart: unless-stopped
-    ports:
-      - "8080:8080"
-      - "80:80"
-      - "443:443"
-    environment:
-      - PROXY_DEPLOY_MODE=direct
-      - DIRECT_CERT_MODE=acme
-      - ACME_EMAIL=admin@example.com
-      - ACME_DNS_PROVIDER=cf
-      - CF_Token=xxxxxxxx
-      - CF_Account_ID=xxxxxxxx
-      - PROXY_RULE_1=https://media.example.com,http://emby:8096
-    volumes:
-      - nre_panel_data:/opt/nginx-reverse-emby/panel/data
-      - nre_certs:/etc/nginx/certs
-      - nre_acme:/opt/acme.sh
-```
-
----
-
-## 5. 验证清单
-
-主机模式建议至少验证：
-1. `nginx -t`
-2. 部署一次 HTTPS 域名
-3. 部署一次 IPv6 URL
-4. 部署一次 HTTP（无 TLS）
-5. 执行一次 `--remove https://domain:port --yes`
-
-Docker 模式建议至少验证：
-1. `docker build -t nginx-reverse-emby .`
-2. 连续下标 `PROXY_RULE_1..N` 正常生效
-3. 面板可通过 `PANEL_PORT` 访问（默认 `8080`）
-4. `dynamic/` 下配置文件数量与命名正确
-5. 路径转发与重写符合预期
-6. `front_proxy` 在上游 TLS 终止场景可用，且监听端口符合 `FRONT_PROXY_PORT`
-7. `direct` 可完成 HTTPS 规则证书签发和安装
-8. 删规则后可清理陈旧证书目录/记录
-9. `DIRECT_CERT_MODE=acme` 时自动续期循环正常
-
----
-
-## 6. 已知文档偏差（历史）
-
-- 旧文档可能写成 `--template`，实现实际为 `--template-domain-config`。
-- `--remove` 示例若不带 scheme，容易造成匹配歧义；建议始终使用完整 URL。
-- `--parse-cert-domain` 不是通用“根域名提取”，只在匹配 `*.*.*` 时触发。
-- Docker 环境变量规则是“连续索引”策略，不支持跳号。
-
----
-
-## 7. 贡献与同步要求
-
-当实现行为发生变化时，请在同一补丁中同步更新：
-- `README.md`
-- `AGENTS.md`
-- `CLAUDE.md`
-
-并优先以 `deploy.sh` 与 `docker/25-dynamic-reverse-proxy.sh` 的实际实现作为事实依据。
+1. `docker compose up -d` 后容器正常启动
+2. `http://<你的服务器IP>:8080/` 可以打开面板
+3. 新增一条 HTTP 规则可以立即生效
+4. 新增一条 HTTPS 规则时证书可以正常签发和安装
+5. 删除规则后 nginx 仍能正常 `reload`
+6. 如果使用 `PROXY_RULE_N`，确认编号连续
