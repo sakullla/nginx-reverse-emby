@@ -171,6 +171,7 @@ frontend_url,backend_url
 - 容器启动时会在 `PROXY_DEPLOY_MODE=direct` 且 `DIRECT_CERT_MODE=acme` 下启动后台续期循环，按 `ACME_RENEW_INTERVAL` 执行 `acme.sh --cron`。
 - direct ACME 的 install / issue / info / remove / cron 都固定使用 `ACME_HOME`，避免回落到 `/root/.acme.sh`。
 - direct 模式下，若面板热应用时需要走 standalone 且 nginx 已在容器内占用 `80` 端口，脚本会直接返回清晰错误；此时应改用 `ACME_DNS_PROVIDER`，或先保存规则再重启容器。
+- panel backend follows container stdout/stderr, and nginx apply/test output is captured instead of inheriting a redirected file descriptor.
 - 先检查现有 acme.sh 记录，存在则跳过签发、直接安装证书文件。
 - DNS/Standalone 首次失败会清理残留后自动重试一次。
 - 若配置了 `ACME_DNS_PROVIDER` 但前端主机是 IP，会自动回退到 Standalone。

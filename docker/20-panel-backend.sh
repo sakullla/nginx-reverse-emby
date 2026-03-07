@@ -12,4 +12,4 @@ export PANEL_RULES_FILE="${PANEL_RULES_FILE:-/opt/nginx-reverse-emby/panel/data/
 mkdir -p "$(dirname "$PANEL_RULES_FILE")"
 touch "$PANEL_RULES_FILE"
 
-node /opt/nginx-reverse-emby/panel/backend/server.js > /var/log/panel-backend.log 2>&1 &
+node /opt/nginx-reverse-emby/panel/backend/server.js &

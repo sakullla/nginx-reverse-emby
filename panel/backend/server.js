@@ -133,18 +133,15 @@ function validateUrl(value) {
 }
 
 function runChecked(command, args) {
-  const useInheritedStdio = command === NGINX_BIN;
   const result = spawnSync(command, args, {
     encoding: "utf8",
-    stdio: useInheritedStdio ? "inherit" : ["ignore", "pipe", "pipe"],
+    stdio: ["ignore", "pipe", "pipe"],
   });
   if (result.error) {
     throw new Error(result.error.message);
   }
   if (result.status !== 0) {
-    const details = useInheritedStdio
-      ? `exit code ${result.status}`
-      : (result.stderr || result.stdout || `exit code ${result.status}`).trim();
+    const details = (result.stderr || result.stdout || `exit code ${result.status}`).trim();
     throw new Error(details);
   }
 }
