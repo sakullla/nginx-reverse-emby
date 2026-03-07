@@ -19,10 +19,10 @@ COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
 
 RUN set -eux; \
     if command -v apk >/dev/null 2>&1; then \
-        apk add --no-cache curl socat openssl ca-certificates; \
+        apk add --no-cache curl socat openssl ca-certificates cronie; \
     elif command -v apt-get >/dev/null 2>&1; then \
         apt-get update; \
-        apt-get install -y --no-install-recommends curl socat openssl ca-certificates; \
+        apt-get install -y --no-install-recommends curl socat openssl ca-certificates cron; \
         rm -rf /var/lib/apt/lists/*; \
     else \
         echo "Unsupported base image package manager" >&2; \
@@ -38,7 +38,8 @@ RUN set -eux; \
     mv /tmp/docker/15-panel-config.sh /docker-entrypoint.d/15-panel-config.sh; \
     mv /tmp/docker/20-panel-backend.sh /docker-entrypoint.d/20-panel-backend.sh; \
     mv /tmp/docker/25-dynamic-reverse-proxy.sh /docker-entrypoint.d/25-dynamic-reverse-proxy.sh; \
-    chmod +x /docker-entrypoint.d/15-panel-config.sh /docker-entrypoint.d/20-panel-backend.sh /docker-entrypoint.d/25-dynamic-reverse-proxy.sh; \
+    mv /tmp/docker/30-acme-renew.sh /docker-entrypoint.d/30-acme-renew.sh; \
+    chmod +x /docker-entrypoint.d/15-panel-config.sh /docker-entrypoint.d/20-panel-backend.sh /docker-entrypoint.d/25-dynamic-reverse-proxy.sh /docker-entrypoint.d/30-acme-renew.sh; \
     chmod +x /opt/nginx-reverse-emby/panel/backend/server.js; \
     rm -rf /tmp/docker
 

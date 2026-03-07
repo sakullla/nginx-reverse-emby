@@ -127,6 +127,8 @@ Path behavior:
 - direct cert handling supports `DIRECT_CERT_MODE=acme|manual` (default `acme`)
 - direct cert cleanup on rule removal can be controlled by `DIRECT_CERT_CLEANUP` (default enabled)
 - ACME envs: `ACME_EMAIL`, `ACME_DNS_PROVIDER`, `ACME_HOME`, `ACME_CA`, `ACME_STANDALONE_STOP_NGINX`
+- Docker image installs `cron`/`crontab` for acme.sh bootstrap
+- container startup launches an ACME renew loop for `direct + acme`, controlled by `ACME_AUTO_RENEW` and `ACME_RENEW_INTERVAL` (default `86400`)
 - direct ACME issuance checks existing acme.sh record first, then installs cert files (deploy.sh-aligned)
 - direct ACME DNS/standalone paths clean stale records and retry once on first issuance failure
 - when `ACME_DNS_PROVIDER` is set but frontend host is IP, direct mode falls back to standalone challenge
