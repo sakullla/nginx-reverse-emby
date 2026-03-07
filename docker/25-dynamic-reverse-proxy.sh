@@ -98,13 +98,22 @@ ensure_acme_script() {
     if [ -x "$ACME_SCRIPT" ]; then return 0; fi
     mkdir -p "$ACME_HOME"
     entrypoint_log "Installing acme.sh to $ACME_HOME..."
-    tmp_acme_install=$(mktemp)
+    tmp_acme_dir=$(mktemp -d)
+    tmp_acme_install="$tmp_acme_dir/acme.sh"
     if ! curl -fsSL "$ACME_INSTALL_URL" -o "$tmp_acme_install"; then
         entrypoint_log "error: failed to download acme.sh"
+        rm -rf "$tmp_acme_dir"
         return 1
     fi
-    sh "$tmp_acme_install" --install --home "$ACME_HOME" --config-home "$ACME_HOME" --cert-home "$ACME_HOME" ${ACME_EMAIL:+--accountemail "$ACME_EMAIL"}
-    rm -f "$tmp_acme_install"
+    chmod +x "$tmp_acme_install"
+    if ! (
+        cd "$tmp_acme_dir" &&
+        ./acme.sh --install --home "$ACME_HOME" --config-home "$ACME_HOME" --cert-home "$ACME_HOME" ${ACME_EMAIL:+--accountemail "$ACME_EMAIL"}
+    ); then
+        rm -rf "$tmp_acme_dir"
+        return 1
+    fi
+    rm -rf "$tmp_acme_dir"
     "$ACME_SCRIPT" --set-default-ca --server "$ACME_CA" >/dev/null 2>&1 || true
     return 0
 }
