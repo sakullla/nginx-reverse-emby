@@ -1,12 +1,18 @@
 <template>
-  <button @click="handleApply" :disabled="ruleStore.loading" class="apply-btn">
-    <span v-if="ruleStore.loading">⏳ 应用中...</span>
+  <BaseButton
+    variant="secondary"
+    :loading="ruleStore.loading"
+    @click="handleApply"
+    class="apply-btn"
+  >
+    <span v-if="ruleStore.loading">应用中...</span>
     <span v-else>🚀 应用配置</span>
-  </button>
+  </BaseButton>
 </template>
 
 <script setup>
 import { useRuleStore } from '../stores/rules'
+import BaseButton from './base/BaseButton.vue'
 
 const ruleStore = useRuleStore()
 

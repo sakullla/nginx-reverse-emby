@@ -5,9 +5,18 @@
       <p>加载中...</p>
     </div>
 
-    <div v-else-if="!ruleStore.hasRules" class="empty-state">
-      暂无规则，快来添加第一条吧！
-    </div>
+    <EmptyState
+      v-else-if="!ruleStore.hasRules"
+      icon="🎯"
+      title="还没有代理规则"
+      description="开始添加您的第一条反向代理规则,让流量管理变得简单高效!"
+    >
+      <template #action>
+        <p style="color: var(--color-text-muted); font-size: var(--font-size-sm);">
+          在上方表单中输入前端和后端 URL 即可添加规则
+        </p>
+      </template>
+    </EmptyState>
 
     <table v-else>
       <colgroup>
@@ -38,6 +47,7 @@
 <script setup>
 import { useRuleStore } from '../stores/rules'
 import RuleItem from './RuleItem.vue'
+import EmptyState from './base/EmptyState.vue'
 
 const ruleStore = useRuleStore()
 </script>

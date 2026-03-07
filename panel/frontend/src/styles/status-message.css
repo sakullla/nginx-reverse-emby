@@ -1,0 +1,96 @@
+/* Status Message Styles - Modern Design */
+.status-message {
+  position: fixed;
+  top: var(--spacing-xl);
+  right: var(--spacing-xl);
+  padding: var(--spacing-md) var(--spacing-xl);
+  border-radius: var(--radius-lg);
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-medium);
+  box-shadow: var(--shadow-xl);
+  z-index: var(--z-toast);
+  max-width: 400px;
+  word-wrap: break-word;
+  backdrop-filter: blur(var(--blur-md));
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+.status-message::before {
+  content: '';
+  width: 20px;
+  height: 20px;
+  border-radius: var(--radius-full);
+  flex-shrink: 0;
+}
+
+.status-message.success {
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.95) 0%, rgba(5, 150, 105, 0.95) 100%);
+  color: white;
+}
+
+.status-message.success::before {
+  background: white;
+  content: '✓';
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: var(--font-weight-bold);
+  color: var(--color-success);
+}
+
+.status-message.error {
+  background: linear-gradient(135deg, rgba(239, 68, 68, 0.95) 0%, rgba(220, 38, 38, 0.95) 100%);
+  color: white;
+}
+
+.status-message.error::before {
+  background: white;
+  content: '✕';
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: var(--font-weight-bold);
+  color: var(--color-danger);
+}
+
+.status-message.info {
+  background: linear-gradient(135deg, rgba(59, 130, 246, 0.95) 0%, rgba(37, 99, 235, 0.95) 100%);
+  color: white;
+}
+
+.status-message.info::before {
+  background: white;
+  content: 'i';
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: var(--font-weight-bold);
+  color: var(--color-info);
+}
+
+.status-message.warning {
+  background: linear-gradient(135deg, rgba(245, 158, 11, 0.95) 0%, rgba(217, 119, 6, 0.95) 100%);
+  color: white;
+}
+
+.status-message.warning::before {
+  background: white;
+  content: '!';
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: var(--font-weight-bold);
+  color: var(--color-warning);
+}
+
+@media (max-width: 768px) {
+  .status-message {
+    top: var(--spacing-md);
+    right: var(--spacing-md);
+    left: var(--spacing-md);
+    max-width: none;
+  }
+}

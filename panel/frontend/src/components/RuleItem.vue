@@ -32,7 +32,7 @@
           💾
         </button>
         <button
-          @click="handleDelete"
+          @click="showDeleteModal = true"
           class="btn-small btn-delete"
           :disabled="ruleStore.loading"
           title="删除规则"
@@ -42,11 +42,31 @@
       </div>
     </td>
   </tr>
+
+  <!-- 删除确认对话框 -->
+  <BaseModal
+    v-model="showDeleteModal"
+    title="确认删除"
+    confirm-text="删除"
+    confirm-variant="danger"
+    :loading="ruleStore.loading"
+    @confirm="handleDelete"
+  >
+    <p>确定要删除规则 <strong>{{ rule.id }}</strong> 吗？</p>
+    <div style="margin-top: var(--spacing-md); padding: var(--spacing-md); background: var(--color-bg-secondary); border-radius: var(--radius-md);">
+      <p style="margin-bottom: var(--spacing-xs);"><strong>前端:</strong> {{ rule.frontend_url }}</p>
+      <p><strong>后端:</strong> {{ rule.backend_url }}</p>
+    </div>
+    <p style="margin-top: var(--spacing-md); color: var(--color-text-muted); font-size: var(--font-size-sm);">
+      此操作无法撤销
+    </p>
+  </BaseModal>
 </template>
 
 <script setup>
 import { ref, computed, watch } from 'vue'
 import { useRuleStore } from '../stores/rules'
+import BaseModal from './base/BaseModal.vue'
 
 const props = defineProps({
   rule: {
@@ -58,6 +78,7 @@ const props = defineProps({
 const ruleStore = useRuleStore()
 const frontendUrl = ref(props.rule.frontend_url)
 const backendUrl = ref(props.rule.backend_url)
+const showDeleteModal = ref(false)
 
 const hasChanges = computed(() => {
   return frontendUrl.value !== props.rule.frontend_url ||
@@ -85,10 +106,9 @@ async function handleUpdate() {
 }
 
 async function handleDelete() {
-  if (!confirm(`确定要删除规则 ${props.rule.id} 吗？\n\n前端: ${props.rule.frontend_url}\n后端: ${props.rule.backend_url}`)) return
-
   try {
     await ruleStore.removeRule(props.rule.id)
+    showDeleteModal.value = false
   } catch (err) {
     // Error handled by store
   }
@@ -100,95 +120,100 @@ async function handleDelete() {
   width: 60px;
   text-align: center;
   font-weight: 600;
-  color: #8b5cf6;
-  font-size: 0.95rem;
+  color: var(--color-primary);
+  font-size: var(--font-size-base);
 }
 
 .url-cell {
-  padding: 0.5rem 1rem !important;
+  padding: var(--spacing-sm) var(--spacing-md) !important;
 }
 
 .url-cell input {
   width: 100%;
-  padding: 0.5rem 0.875rem;
-  border: 1.5px solid #e5e7eb;
-  border-radius: 6px;
-  font-size: 0.875rem;
-  color: #111827;
-  transition: all 0.2s ease;
-  background: #fafafa;
+  padding: var(--spacing-sm) var(--spacing-md);
+  border: 2px solid var(--color-border);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-primary);
+  transition: all var(--transition-base);
+  background: var(--color-bg-secondary);
   box-sizing: border-box;
-  line-height: 1.5;
+  line-height: var(--line-height-normal);
+  font-family: var(--font-family-mono);
+}
+
+.url-cell input:hover {
+  border-color: var(--color-border-dark);
 }
 
 .url-cell input:focus {
-  background: white;
-  color: #111827;
-  border-color: #8b5cf6;
-  box-shadow: 0 0 0 3px rgba(139, 92, 246, 0.08);
+  background: var(--color-bg-primary);
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.1);
   outline: none;
 }
 
 .url-cell input:disabled {
-  background: #f9fafb;
-  color: #6b7280;
+  background: var(--color-bg-disabled);
+  color: var(--color-text-disabled);
   cursor: not-allowed;
+  opacity: 0.6;
 }
 
 .action-cell {
   width: 140px;
-  padding: 0.5rem 1rem !important;
+  padding: var(--spacing-sm) var(--spacing-md) !important;
 }
 
 .button-group {
   display: flex;
-  gap: 0.5rem;
+  gap: var(--spacing-sm);
   justify-content: center;
   align-items: center;
 }
 
 .btn-small {
-  padding: 0.5rem 1rem;
-  font-size: 0.875rem;
+  padding: var(--spacing-sm) var(--spacing-md);
+  font-size: var(--font-size-sm);
   min-width: 60px;
-  border-radius: 6px;
-  line-height: 1.5;
-  font-weight: 600;
-  transition: all 0.2s ease;
+  border-radius: var(--radius-md);
+  line-height: 1;
+  font-weight: var(--font-weight-semibold);
+  transition: all var(--transition-base);
   border: none;
   cursor: pointer;
   color: white;
 }
 
 .btn-save {
-  background: linear-gradient(135deg, #10b981 0%, #059669 100%);
-  box-shadow: 0 1px 3px rgba(16, 185, 129, 0.3);
+  background: var(--gradient-success);
+  box-shadow: var(--shadow-success);
 }
 
 .btn-save:hover:not(:disabled) {
-  transform: translateY(-1px);
-  box-shadow: 0 2px 6px rgba(16, 185, 129, 0.4);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-lg);
 }
 
 .btn-save:disabled {
-  background: #d1d5db;
+  background: var(--color-border-dark);
   box-shadow: none;
   cursor: not-allowed;
-  opacity: 0.6;
+  opacity: 0.5;
 }
 
 .btn-delete {
-  background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
-  box-shadow: 0 1px 3px rgba(239, 68, 68, 0.3);
+  background: var(--gradient-danger);
+  box-shadow: var(--shadow-danger);
 }
 
 .btn-delete:hover:not(:disabled) {
-  transform: translateY(-1px);
-  box-shadow: 0 2px 6px rgba(239, 68, 68, 0.4);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-lg);
 }
 
 .btn-delete:disabled {
-  opacity: 0.6;
+  opacity: 0.5;
   cursor: not-allowed;
 }
 </style>
