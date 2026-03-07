@@ -20,6 +20,7 @@ const AUTO_APPLY = /^(1|true|yes|on)$/i.test(
 );
 const NGINX_STATUS_URL =
   process.env.NGINX_STATUS_URL || "http://127.0.0.1:80/nginx_status";
+const PANEL_TOKEN = process.env.API_TOKEN || ""; // 鉴权 Token，为空则不启用
 
 function sendJson(res, statusCode, payload) {
   const body = Buffer.from(JSON.stringify(payload), "utf8");
@@ -36,13 +37,15 @@ function errorPayload(message, details) {
   return payload;
 }
 
+// 鉴权检查
+function isAuthorized(req) {
+  if (!PANEL_TOKEN) return true; // 未配置 Token，跳过检查
+  const token = req.headers["x-panel-token"];
+  return token === PANEL_TOKEN;
+}
+
 // 解析 Nginx stub_status 文本
 function parseStubStatus(data) {
-  // 格式示例:
-  // Active connections: 2
-  // server accepts handled requests
-  //  10 10 10
-  // Reading: 0 Writing: 1 Waiting: 1
   const lines = data.split("\n");
   const activeMatch = lines[0].match(/\d+/);
   const requestsLine = lines[2].trim().split(/\s+/);
@@ -185,6 +188,23 @@ function extractRuleId(urlPath) {
 
 async function handleRequest(req, res) {
   const urlPath = (req.url || "").split("?")[0];
+
+  // 1. 公开接口：验证 Token 是否有效 (用于前端检查)
+  if (req.method === "GET" && urlPath === "/api/auth/verify") {
+    const authorized = isAuthorized(req);
+    sendJson(res, authorized ? 200 : 401, { ok: authorized });
+    return;
+  }
+
+  // 2. 鉴权拦截
+  if (!isAuthorized(req)) {
+    sendJson(
+      res,
+      401,
+      errorPayload("Unauthorized: Invalid or missing X-Panel-Token"),
+    );
+    return;
+  }
 
   if (req.method === "GET" && urlPath === "/api/health") {
     sendJson(res, 200, { ok: true });

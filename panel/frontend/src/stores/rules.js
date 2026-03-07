@@ -10,6 +10,10 @@ export const useRuleStore = defineStore("rules", () => {
   const statusMessage = ref(null);
   const searchQuery = ref("");
 
+  // 鉴权相关
+  const token = ref(localStorage.getItem("panel_token") || "");
+  const isAuthenticated = ref(false);
+
   const hasRules = computed(() => rules.value.length > 0);
 
   const filteredRules = computed(() => {
@@ -23,6 +27,48 @@ export const useRuleStore = defineStore("rules", () => {
     );
   });
 
+  async function checkAuth() {
+    if (!token.value) {
+      isAuthenticated.value = false;
+      return;
+    }
+    try {
+      const ok = await api.verifyToken(token.value);
+      isAuthenticated.value = ok;
+    } catch (err) {
+      isAuthenticated.value = false;
+      token.value = "";
+      localStorage.removeItem("panel_token");
+    }
+  }
+
+  async function login(inputToken) {
+    loading.value = true;
+    try {
+      const ok = await api.verifyToken(inputToken);
+      if (ok) {
+        token.value = inputToken;
+        isAuthenticated.value = true;
+        localStorage.setItem("panel_token", inputToken);
+        showSuccess("登录成功");
+        await loadRules();
+      }
+    } catch (err) {
+      showError("Token 无效或连接失败");
+      throw err;
+    } finally {
+      loading.value = false;
+    }
+  }
+
+  function logout() {
+    token.value = "";
+    isAuthenticated.value = false;
+    localStorage.removeItem("panel_token");
+    rules.value = [];
+    showInfo("已退出登录");
+  }
+
   async function loadStats() {
     try {
       stats.value = await api.fetchStats();
@@ -32,6 +78,7 @@ export const useRuleStore = defineStore("rules", () => {
   }
 
   async function loadRules() {
+    if (!isAuthenticated.value) return;
     loading.value = true;
     error.value = null;
     try {
@@ -143,6 +190,11 @@ export const useRuleStore = defineStore("rules", () => {
     error,
     statusMessage,
     hasRules,
+    isAuthenticated,
+    token,
+    checkAuth,
+    login,
+    logout,
     loadRules,
     loadStats,
     addRule,

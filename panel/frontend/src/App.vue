@@ -1,66 +1,76 @@
 <template>
   <div id="app">
-    <ThemeToggle />
+    <!-- 鉴权遮罩 -->
+    <TokenAuth v-if="!ruleStore.isAuthenticated" />
 
-    <header class="header">
-      <h1>✦ Nginx Reverse Proxy ✦</h1>
-      <p class="subtitle">现代化反向代理管理面板</p>
-    </header>
+    <template v-else>
+      <ThemeToggle />
 
-    <StatusMessage />
+      <header class="header">
+        <h1>
+          ✦ Nginx Reverse Proxy ✦
+          <button @click="ruleStore.logout" class="logout-btn" title="退出登录">
+            <svg viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4m7 14 5-5-5-5m5 5H9"/></svg>
+          </button>
+        </h1>
+        <p class="subtitle">现代化反向代理管理面板</p>
+      </header>
 
-    <main class="container">
-      <!-- 统计面板 -->
-      <section class="stats-grid">
-        <StatCard
-          :value="ruleStore.rules.length"
-          label="代理规则"
-          :icon="icons.layers"
-          variant="primary"
-        />
-        <StatCard
-          :value="activeRulesCount"
-          label="活跃规则"
-          :icon="icons.checkCircle"
-          variant="success"
-        />
-        <StatCard
-          :value="ruleStore.stats.totalRequests"
-          label="总请求数"
-          :icon="icons.activity"
-          variant="info"
-        />
-        <StatCard
-          :value="ruleStore.stats.status"
-          label="系统状态"
-          :icon="icons.cpu"
-          variant="secondary"
-        />
-      </section>
+      <StatusMessage />
 
-      <!-- 添加规则区域 -->
-      <section class="add-rule-section">
-        <div class="section-header">
-          <h2>
-            <span class="icon-inline" v-html="icons.plus"></span>
-            新增反向代理规则
-          </h2>
-        </div>
-        <RuleForm />
-      </section>
+      <main class="container">
+        <!-- 统计面板 -->
+        <section class="stats-grid">
+          <StatCard
+            :value="ruleStore.rules.length"
+            label="代理规则"
+            :icon="icons.layers"
+            variant="primary"
+          />
+          <StatCard
+            :value="activeRulesCount"
+            label="活跃规则"
+            :icon="icons.checkCircle"
+            variant="success"
+          />
+          <StatCard
+            :value="ruleStore.stats.totalRequests"
+            label="总请求数"
+            :icon="icons.activity"
+            variant="info"
+          />
+          <StatCard
+            :value="ruleStore.stats.status"
+            label="系统状态"
+            :icon="icons.cpu"
+            variant="secondary"
+          />
+        </section>
 
-      <!-- 规则列表区域 -->
-      <section class="rules-section">
-        <div class="section-header">
-          <h2>
-            <span class="icon-inline" v-html="icons.list"></span>
-            代理规则列表
-          </h2>
-          <ActionBar />
-        </div>
-        <RuleList />
-      </section>
-    </main>
+        <!-- 添加规则区域 -->
+        <section class="add-rule-section">
+          <div class="section-header">
+            <h2>
+              <span class="icon-inline" v-html="icons.plus"></span>
+              新增反向代理规则
+            </h2>
+          </div>
+          <RuleForm />
+        </section>
+
+        <!-- 规则列表区域 -->
+        <section class="rules-section">
+          <div class="section-header">
+            <h2>
+              <span class="icon-inline" v-html="icons.list"></span>
+              代理规则列表
+            </h2>
+            <ActionBar />
+          </div>
+          <RuleList />
+        </section>
+      </main>
+    </template>
   </div>
 </template>
 
@@ -73,10 +83,11 @@ import ActionBar from './components/ActionBar.vue'
 import RuleList from './components/RuleList.vue'
 import StatCard from './components/base/StatCard.vue'
 import ThemeToggle from './components/base/ThemeToggle.vue'
+import TokenAuth from './components/base/TokenAuth.vue'
 
 const ruleStore = useRuleStore()
 
-// SVG 图标定义 (Lucide 风格)
+// SVG 图标定义
 const icons = {
   layers: '<svg viewBox="0 0 24 24"><path d="m12.83 2.18a2 2 0 0 0 -1.66 0l-7.46 3.34a2 2 0 0 0 0 3.57l7.46 3.34a2 2 0 0 0 1.66 0l7.46-3.34a2 2 0 0 0 0-3.57z"/><path d="m3.08 11.87 7.75 3.5a2 2 0 0 0 1.66 0l7.75-3.5"/><path d="m3.08 16.3 7.75 3.5a2 2 0 0 0 1.66 0l7.75-3.5"/></svg>',
   checkCircle: '<svg viewBox="0 0 24 24"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>',
@@ -88,8 +99,11 @@ const icons = {
 
 const activeRulesCount = computed(() => ruleStore.rules.length)
 
-onMounted(() => {
-  ruleStore.loadRules()
+onMounted(async () => {
+  await ruleStore.checkAuth()
+  if (ruleStore.isAuthenticated) {
+    ruleStore.loadRules()
+  }
 })
 </script>
 
@@ -102,5 +116,36 @@ onMounted(() => {
   fill: none;
   vertical-align: text-bottom;
   margin-right: 4px;
+}
+
+.logout-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  margin-left: var(--spacing-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  vertical-align: middle;
+  transition: all var(--transition-base);
+}
+
+.logout-btn:hover {
+  background: var(--color-danger-bg);
+  color: var(--color-danger);
+  border-color: var(--color-danger);
+}
+
+.logout-btn svg {
+  width: 18px;
+  height: 18px;
+  stroke: currentColor;
+  stroke-width: 2;
+  fill: none;
 }
 </style>
