@@ -69,6 +69,7 @@ docker compose up -d
 
 本镜像默认使用 `acme.sh` 管理证书。
 当上一次失败残留了域名 key 或 ACME 状态时，Docker `direct` 和宿主机脚本都会在首次申请失败后清理状态，并带 `--force` 自动重试一次。
+如果你是从旧镜像升级上来，Docker `direct` 模式在发现所需 DNS hook 缺失时会自动重装 `acme.sh`，避免旧的持久化 `.acme.sh` 目录继续导致 `dns_cf` 一类错误。
 
 ### DNS API 验证 (以 Cloudflare 为例)
 如果你希望在不暴露 80 端口的情况下申请证书，建议使用 DNS 验证：

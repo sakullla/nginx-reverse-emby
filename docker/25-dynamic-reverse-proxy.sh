@@ -123,8 +123,12 @@ fail_standalone_if_port_80_in_use() {
     fi
 }
 
-ensure_acme_script() {
-    if [ -x "$ACME_SCRIPT" ]; then return 0; fi
+acme_dns_hook_path() {
+    [ -n "$ACME_DNS_PROVIDER" ] || return 1
+    printf '%s/dnsapi/dns_%s.sh' "$ACME_HOME" "$ACME_DNS_PROVIDER"
+}
+
+install_acme_script() {
     mkdir -p "$ACME_HOME"
     entrypoint_log "Installing acme.sh to $ACME_HOME..."
     tmp_acme_dir=$(mktemp -d)
@@ -147,12 +151,28 @@ ensure_acme_script() {
     return 0
 }
 
+ensure_acme_script() {
+    if [ -x "$ACME_SCRIPT" ]; then
+        if [ -n "$ACME_DNS_PROVIDER" ]; then
+            dns_hook=$(acme_dns_hook_path || true)
+            if [ -n "$dns_hook" ] && [ ! -f "$dns_hook" ]; then
+                entrypoint_log "Existing acme.sh install is missing dns_$ACME_DNS_PROVIDER hook, reinstalling..."
+                install_acme_script
+                return 0
+            fi
+        fi
+        return 0
+    fi
+    install_acme_script
+}
+
 cleanup_stale_acme_record() {
     cert_domain="$1"
     if [ ! -x "$ACME_SCRIPT" ]; then return 0; fi
     entrypoint_log "Cleaning up stale acme record for $cert_domain..."
     "$ACME_SCRIPT" --remove -d "$cert_domain" --ecc $ACME_COMMON_ARGS >/dev/null 2>&1 || true
     "$ACME_SCRIPT" --remove -d "$cert_domain" $ACME_COMMON_ARGS >/dev/null 2>&1 || true
+    rm -rf "$ACME_HOME/$cert_domain" "$ACME_HOME/${cert_domain}_ecc"
 }
 
 acme_cert_is_issued() {
