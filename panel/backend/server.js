@@ -19,7 +19,7 @@ const AUTO_APPLY = /^(1|true|yes|on)$/i.test(
   process.env.PANEL_AUTO_APPLY || "1",
 );
 const NGINX_STATUS_URL =
-  process.env.NGINX_STATUS_URL || "http://127.0.0.1:80/nginx_status";
+  process.env.NGINX_STATUS_URL || "http://127.0.0.1:18080/nginx_status";
 const PANEL_TOKEN = process.env.API_TOKEN || ""; // 鉴权 Token，为空则不启用
 
 function sendJson(res, statusCode, payload) {
@@ -141,7 +141,11 @@ function runChecked(command, args) {
     throw new Error(result.error.message);
   }
   if (result.status !== 0) {
-    const details = (result.stderr || result.stdout || `exit code ${result.status}`).trim();
+    const details = (
+      result.stderr ||
+      result.stdout ||
+      `exit code ${result.status}`
+    ).trim();
     throw new Error(details);
   }
 }
