@@ -1,23 +1,31 @@
 #!/usr/bin/env node
-'use strict';
+"use strict";
 
-const fs = require('fs');
-const http = require('http');
-const path = require('path');
-const { spawnSync } = require('child_process');
+const fs = require("fs");
+const http = require("http");
+const path = require("path");
+const { spawnSync } = require("child_process");
 
-const HOST = process.env.PANEL_BACKEND_HOST || '127.0.0.1';
-const PORT = Number(process.env.PANEL_BACKEND_PORT || '18081');
-const RULES_FILE = process.env.PANEL_RULES_FILE || '/opt/nginx-reverse-emby/panel/data/proxy_rules.csv';
-const GENERATOR_SCRIPT = process.env.PANEL_GENERATOR_SCRIPT || '/docker-entrypoint.d/25-dynamic-reverse-proxy.sh';
-const NGINX_BIN = process.env.PANEL_NGINX_BIN || 'nginx';
-const AUTO_APPLY = /^(1|true|yes|on)$/i.test(process.env.PANEL_AUTO_APPLY || '1');
+const HOST = process.env.PANEL_BACKEND_HOST || "127.0.0.1";
+const PORT = Number(process.env.PANEL_BACKEND_PORT || "18081");
+const RULES_FILE =
+  process.env.PANEL_RULES_FILE ||
+  "/opt/nginx-reverse-emby/panel/data/proxy_rules.csv";
+const GENERATOR_SCRIPT =
+  process.env.PANEL_GENERATOR_SCRIPT ||
+  "/docker-entrypoint.d/25-dynamic-reverse-proxy.sh";
+const NGINX_BIN = process.env.PANEL_NGINX_BIN || "nginx";
+const AUTO_APPLY = /^(1|true|yes|on)$/i.test(
+  process.env.PANEL_AUTO_APPLY || "1",
+);
+const NGINX_STATUS_URL =
+  process.env.NGINX_STATUS_URL || "http://127.0.0.1:80/nginx_status";
 
 function sendJson(res, statusCode, payload) {
-  const body = Buffer.from(JSON.stringify(payload), 'utf8');
+  const body = Buffer.from(JSON.stringify(payload), "utf8");
   res.writeHead(statusCode, {
-    'Content-Type': 'application/json; charset=utf-8',
-    'Content-Length': String(body.length),
+    "Content-Type": "application/json; charset=utf-8",
+    "Content-Length": String(body.length),
   });
   res.end(body);
 }
@@ -28,23 +36,65 @@ function errorPayload(message, details) {
   return payload;
 }
 
+// 解析 Nginx stub_status 文本
+function parseStubStatus(data) {
+  // 格式示例:
+  // Active connections: 2
+  // server accepts handled requests
+  //  10 10 10
+  // Reading: 0 Writing: 1 Waiting: 1
+  const lines = data.split("\n");
+  const activeMatch = lines[0].match(/\d+/);
+  const requestsLine = lines[2].trim().split(/\s+/);
+
+  return {
+    activeConnections: activeMatch ? activeMatch[0] : "0",
+    totalRequests: requestsLine.length >= 3 ? requestsLine[2] : "0",
+    status: "正常",
+  };
+}
+
+function getNginxStats() {
+  return new Promise((resolve) => {
+    http
+      .get(NGINX_STATUS_URL, (res) => {
+        let data = "";
+        res.on("data", (chunk) => (data += chunk));
+        res.on("end", () => {
+          try {
+            resolve(parseStubStatus(data));
+          } catch (e) {
+            resolve({
+              totalRequests: "0",
+              status: "获取失败",
+              error: e.message,
+            });
+          }
+        });
+      })
+      .on("error", (err) => {
+        resolve({ totalRequests: "0", status: "连接失败", error: err.message });
+      });
+  });
+}
+
 function ensureRulesFile() {
   fs.mkdirSync(path.dirname(RULES_FILE), { recursive: true });
   if (!fs.existsSync(RULES_FILE)) {
-    fs.writeFileSync(RULES_FILE, '', 'utf8');
+    fs.writeFileSync(RULES_FILE, "", "utf8");
   }
 }
 
 function loadRulePairs() {
   ensureRulesFile();
-  const raw = fs.readFileSync(RULES_FILE, 'utf8');
+  const raw = fs.readFileSync(RULES_FILE, "utf8");
   const lines = raw.split(/\r?\n/);
   const pairs = [];
 
   for (const lineRaw of lines) {
     const line = lineRaw.trim();
-    if (!line || line.startsWith('#')) continue;
-    const commaIndex = line.indexOf(',');
+    if (!line || line.startsWith("#")) continue;
+    const commaIndex = line.indexOf(",");
     if (commaIndex === -1) continue;
     const frontend = line.slice(0, commaIndex).trim();
     const backend = line.slice(commaIndex + 1).trim();
@@ -56,8 +106,10 @@ function loadRulePairs() {
 
 function saveRulePairs(pairs) {
   ensureRulesFile();
-  const content = pairs.map(([frontend, backend]) => `${frontend},${backend}`).join('\n');
-  fs.writeFileSync(RULES_FILE, content ? `${content}\n` : '', 'utf8');
+  const content = pairs
+    .map(([frontend, backend]) => `${frontend},${backend}`)
+    .join("\n");
+  fs.writeFileSync(RULES_FILE, content ? `${content}\n` : "", "utf8");
 }
 
 function listRules() {
@@ -71,7 +123,7 @@ function listRules() {
 function validateUrl(value) {
   try {
     const u = new URL(value);
-    return u.protocol === 'http:' || u.protocol === 'https:';
+    return u.protocol === "http:" || u.protocol === "https:";
   } catch {
     return false;
   }
@@ -80,10 +132,8 @@ function validateUrl(value) {
 function runChecked(command, args) {
   const useInheritedStdio = command === NGINX_BIN;
   const result = spawnSync(command, args, {
-    encoding: 'utf8',
-    // nginx -t/-s reload reads /dev/stdout and /dev/stderr from nginx.conf.
-    // Pipe stdio can fail with "No such device or address" in containers.
-    stdio: useInheritedStdio ? 'inherit' : ['ignore', 'pipe', 'pipe'],
+    encoding: "utf8",
+    stdio: useInheritedStdio ? "inherit" : ["ignore", "pipe", "pipe"],
   });
   if (result.error) {
     throw new Error(result.error.message);
@@ -98,21 +148,21 @@ function runChecked(command, args) {
 
 function applyNginxConfig() {
   runChecked(GENERATOR_SCRIPT, []);
-  runChecked(NGINX_BIN, ['-t']);
-  runChecked(NGINX_BIN, ['-s', 'reload']);
+  runChecked(NGINX_BIN, ["-t"]);
+  runChecked(NGINX_BIN, ["-s", "reload"]);
 }
 
 function parseJsonBody(req) {
   return new Promise((resolve, reject) => {
-    let raw = '';
-    req.setEncoding('utf8');
-    req.on('data', (chunk) => {
+    let raw = "";
+    req.setEncoding("utf8");
+    req.on("data", (chunk) => {
       raw += chunk;
       if (raw.length > 1024 * 1024) {
-        reject(new Error('request body too large'));
+        reject(new Error("request body too large"));
       }
     });
-    req.on('end', () => {
+    req.on("end", () => {
       if (!raw) {
         resolve({});
         return;
@@ -120,10 +170,10 @@ function parseJsonBody(req) {
       try {
         resolve(JSON.parse(raw));
       } catch {
-        reject(new Error('invalid JSON body'));
+        reject(new Error("invalid JSON body"));
       }
     });
-    req.on('error', (err) => reject(err));
+    req.on("error", (err) => reject(err));
   });
 }
 
@@ -134,49 +184,79 @@ function extractRuleId(urlPath) {
 }
 
 async function handleRequest(req, res) {
-  const urlPath = (req.url || '').split('?')[0];
+  const urlPath = (req.url || "").split("?")[0];
 
-  if (req.method === 'GET' && urlPath === '/api/health') {
+  if (req.method === "GET" && urlPath === "/api/health") {
     sendJson(res, 200, { ok: true });
     return;
   }
 
-  if (req.method === 'GET' && urlPath === '/api/rules') {
+  if (req.method === "GET" && urlPath === "/api/stats") {
+    const stats = await getNginxStats();
+    sendJson(res, 200, { ok: true, stats });
+    return;
+  }
+
+  if (req.method === "GET" && urlPath === "/api/rules") {
     sendJson(res, 200, { ok: true, rules: listRules() });
     return;
   }
 
-  if (req.method === 'POST' && urlPath === '/api/apply') {
+  if (req.method === "POST" && urlPath === "/api/apply") {
     try {
       applyNginxConfig();
-      sendJson(res, 200, { ok: true, message: 'applied' });
+      sendJson(res, 200, { ok: true, message: "applied" });
     } catch (err) {
-      sendJson(res, 400, errorPayload('failed to apply nginx config', String(err.message || err)));
+      sendJson(
+        res,
+        400,
+        errorPayload(
+          "failed to apply nginx config",
+          String(err.message || err),
+        ),
+      );
     }
     return;
   }
 
-  if (req.method === 'POST' && urlPath === '/api/rules') {
+  if (req.method === "POST" && urlPath === "/api/rules") {
     try {
       const body = await parseJsonBody(req);
-      const frontend = String(body.frontend_url || '').trim();
-      const backend = String(body.backend_url || '').trim();
+      const frontend = String(body.frontend_url || "").trim();
+      const backend = String(body.backend_url || "").trim();
 
       if (!validateUrl(frontend) || !validateUrl(backend)) {
-        sendJson(res, 400, errorPayload('frontend_url and backend_url must be valid http/https URLs'));
+        sendJson(
+          res,
+          400,
+          errorPayload(
+            "frontend_url and backend_url must be valid http/https URLs",
+          ),
+        );
         return;
       }
 
       const pairs = loadRulePairs();
       pairs.push([frontend, backend]);
       saveRulePairs(pairs);
-      const created = { id: pairs.length, frontend_url: frontend, backend_url: backend };
+      const created = {
+        id: pairs.length,
+        frontend_url: frontend,
+        backend_url: backend,
+      };
 
       if (AUTO_APPLY) {
         try {
           applyNginxConfig();
         } catch (err) {
-          sendJson(res, 400, errorPayload('rule saved but failed to apply nginx config', String(err.message || err)));
+          sendJson(
+            res,
+            400,
+            errorPayload(
+              "rule saved but failed to apply nginx config",
+              String(err.message || err),
+            ),
+          );
           return;
         }
       }
@@ -188,26 +268,32 @@ async function handleRequest(req, res) {
     return;
   }
 
-  if (req.method === 'PUT') {
+  if (req.method === "PUT") {
     const ruleId = extractRuleId(urlPath);
     if (!ruleId) {
-      sendJson(res, 404, errorPayload('not found'));
+      sendJson(res, 404, errorPayload("not found"));
       return;
     }
 
     try {
       const body = await parseJsonBody(req);
-      const frontend = String(body.frontend_url || '').trim();
-      const backend = String(body.backend_url || '').trim();
+      const frontend = String(body.frontend_url || "").trim();
+      const backend = String(body.backend_url || "").trim();
 
       if (!validateUrl(frontend) || !validateUrl(backend)) {
-        sendJson(res, 400, errorPayload('frontend_url and backend_url must be valid http/https URLs'));
+        sendJson(
+          res,
+          400,
+          errorPayload(
+            "frontend_url and backend_url must be valid http/https URLs",
+          ),
+        );
         return;
       }
 
       const pairs = loadRulePairs();
       if (ruleId < 1 || ruleId > pairs.length) {
-        sendJson(res, 404, errorPayload('rule id not found'));
+        sendJson(res, 404, errorPayload("rule id not found"));
         return;
       }
 
@@ -218,28 +304,38 @@ async function handleRequest(req, res) {
         try {
           applyNginxConfig();
         } catch (err) {
-          sendJson(res, 400, errorPayload('rule updated but failed to apply nginx config', String(err.message || err)));
+          sendJson(
+            res,
+            400,
+            errorPayload(
+              "rule updated but failed to apply nginx config",
+              String(err.message || err),
+            ),
+          );
           return;
         }
       }
 
-      sendJson(res, 200, { ok: true, rule: { id: ruleId, frontend_url: frontend, backend_url: backend } });
+      sendJson(res, 200, {
+        ok: true,
+        rule: { id: ruleId, frontend_url: frontend, backend_url: backend },
+      });
     } catch (err) {
       sendJson(res, 400, errorPayload(String(err.message || err)));
     }
     return;
   }
 
-  if (req.method === 'DELETE') {
+  if (req.method === "DELETE") {
     const ruleId = extractRuleId(urlPath);
     if (!ruleId) {
-      sendJson(res, 404, errorPayload('not found'));
+      sendJson(res, 404, errorPayload("not found"));
       return;
     }
 
     const pairs = loadRulePairs();
     if (ruleId < 1 || ruleId > pairs.length) {
-      sendJson(res, 404, errorPayload('rule id not found'));
+      sendJson(res, 404, errorPayload("rule id not found"));
       return;
     }
 
@@ -250,7 +346,14 @@ async function handleRequest(req, res) {
       try {
         applyNginxConfig();
       } catch (err) {
-        sendJson(res, 400, errorPayload('rule deleted but failed to apply nginx config', String(err.message || err)));
+        sendJson(
+          res,
+          400,
+          errorPayload(
+            "rule deleted but failed to apply nginx config",
+            String(err.message || err),
+          ),
+        );
         return;
       }
     }
@@ -262,13 +365,19 @@ async function handleRequest(req, res) {
     return;
   }
 
-  sendJson(res, 404, errorPayload('not found'));
+  sendJson(res, 404, errorPayload("not found"));
 }
 
 ensureRulesFile();
 
-http.createServer((req, res) => {
-  handleRequest(req, res).catch((err) => {
-    sendJson(res, 500, errorPayload('internal server error', String(err.message || err)));
-  });
-}).listen(PORT, HOST);
+http
+  .createServer((req, res) => {
+    handleRequest(req, res).catch((err) => {
+      sendJson(
+        res,
+        500,
+        errorPayload("internal server error", String(err.message || err)),
+      );
+    });
+  })
+  .listen(PORT, HOST);

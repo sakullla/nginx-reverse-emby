@@ -1,159 +1,197 @@
-/* CSS Variables - Refined Design System */
+/* CSS Variables - Refined Design System (Professional Tech Blue & Slate) */
 :root {
-  /* Colors - Primary (Soft Indigo) */
-  --color-primary: #6366f1;
-  --color-primary-dark: #4f46e5;
-  --color-primary-light: #818cf8;
-  --color-primary-lighter: #c7d2fe;
-  --color-primary-bg: #eef2ff;
-  --color-primary-hover: #4338ca;
+    /* Colors - Primary (Modern Tech Blue) */
+    --color-primary: #2563eb;
+    --color-primary-dark: #1d4ed8;
+    --color-primary-light: #60a5fa;
+    --color-primary-lighter: #dbeafe;
+    --color-primary-bg: #eff6ff;
+    --color-primary-hover: #1e40af;
 
-  /* Colors - Secondary (Emerald) */
-  --color-secondary: #10b981;
-  --color-secondary-dark: #059669;
-  --color-secondary-light: #34d399;
-  --color-secondary-bg: #d1fae5;
+    /* Colors - Secondary (Emerald) */
+    --color-secondary: #10b981;
+    --color-secondary-dark: #059669;
+    --color-secondary-light: #34d399;
+    --color-secondary-bg: #d1fae5;
 
-  /* Colors - Accent (Rose) */
-  --color-accent: #f43f5e;
-  --color-accent-dark: #e11d48;
-  --color-accent-light: #fb7185;
-  --color-accent-bg: #ffe4e6;
+    /* Colors - Accent (Rose) */
+    --color-accent: #f43f5e;
+    --color-accent-dark: #e11d48;
+    --color-accent-light: #fb7185;
+    --color-accent-bg: #ffe4e6;
 
-  /* Colors - Success */
-  --color-success: #10b981;
-  --color-success-dark: #059669;
-  --color-success-light: #34d399;
-  --color-success-bg: #d1fae5;
+    /* Colors - Success */
+    --color-success: #10b981;
+    --color-success-dark: #059669;
+    --color-success-light: #34d399;
+    --color-success-bg: #d1fae5;
 
-  /* Colors - Warning */
-  --color-warning: #f59e0b;
-  --color-warning-dark: #d97706;
-  --color-warning-light: #fbbf24;
-  --color-warning-bg: #fef3c7;
+    /* Colors - Warning */
+    --color-warning: #f59e0b;
+    --color-warning-dark: #d97706;
+    --color-warning-light: #fbbf24;
+    --color-warning-bg: #fef3c7;
 
-  /* Colors - Danger */
-  --color-danger: #ef4444;
-  --color-danger-dark: #dc2626;
-  --color-danger-light: #f87171;
-  --color-danger-bg: #fee2e2;
+    /* Colors - Danger */
+    --color-danger: #ef4444;
+    --color-danger-dark: #dc2626;
+    --color-danger-light: #f87171;
+    --color-danger-bg: #fee2e2;
 
-  /* Colors - Info */
-  --color-info: #3b82f6;
-  --color-info-dark: #2563eb;
-  --color-info-light: #60a5fa;
-  --color-info-bg: #dbeafe;
+    /* Colors - Info */
+    --color-info: #0ea5e9;
+    --color-info-dark: #0284c7;
+    --color-info-light: #7dd3fc;
+    --color-info-bg: #e0f2fe;
 
-  /* Colors - Neutral (Slate) */
-  --color-text-primary: #0f172a;
-  --color-text-secondary: #475569;
-  --color-text-tertiary: #64748b;
-  --color-text-muted: #94a3b8;
-  --color-text-disabled: #cbd5e1;
-  --color-heading: #1e293b;
+    /* Colors - Neutral (Modern Slate) */
+    --color-text-primary: #1e293b;
+    --color-text-secondary: #475569;
+    --color-text-tertiary: #64748b;
+    --color-text-muted: #94a3b8;
+    --color-text-disabled: #cbd5e1;
+    --color-heading: #0f172a;
 
-  /* Colors - Background */
-  --color-bg-primary: #ffffff;
-  --color-bg-secondary: #f8fafc;
-  --color-bg-tertiary: #f1f5f9;
-  --color-bg-disabled: #f1f5f9;
-  --color-bg-overlay: rgba(15, 23, 42, 0.6);
-  --color-bg-app: #f8fafc;
+    /* Colors - Background (Light Tech) */
+    --color-bg-primary: #ffffff;
+    --color-bg-secondary: #f8fafc;
+    --color-bg-tertiary: #f1f5f9;
+    --color-bg-disabled: #f1f5f9;
+    --color-bg-overlay: rgba(15, 23, 42, 0.4);
+    --color-bg-app: #f1f5f9;
+    --color-bg-card: #ffffff;
+    --color-bg-panel: #ffffff;
 
-  /* Colors - Border */
-  --color-border: #e2e8f0;
-  --color-border-light: #f1f5f9;
-  --color-border-dark: #cbd5e1;
-  --color-border-focus: var(--color-primary);
+    /* Colors - Border */
+    --color-border: #e2e8f0;
+    --color-border-light: #f1f5f9;
+    --color-border-dark: #cbd5e1;
+    --color-border-focus: var(--color-primary);
 
-  /* Gradients - Refined */
-  --gradient-primary: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  --gradient-secondary: linear-gradient(135deg, #10b981 0%, #059669 100%);
-  --gradient-accent: linear-gradient(135deg, #f43f5e 0%, #e11d48 100%);
-  --gradient-success: linear-gradient(135deg, #10b981 0%, #059669 100%);
-  --gradient-danger: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
-  --gradient-warning: linear-gradient(135deg, #f59e0b 0%, #d97706 100%);
-  --gradient-info: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
-  --gradient-bg: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-  --gradient-bg-light: linear-gradient(180deg, #f8fafc 0%, #e2e8f0 100%);
+    /* Glass Effects - Clean Cloud Style */
+    --glass-bg: rgba(255, 255, 255, 0.7);
+    --glass-border: rgba(255, 255, 255, 0.5);
+    --glass-shadow: 0 4px 10px rgba(0, 0, 0, 0.01);
 
-  /* Spacing - 4px base */
-  --spacing-xs: 0.5rem;    /* 8px */
-  --spacing-sm: 0.75rem;   /* 12px */
-  --spacing-md: 1rem;      /* 16px */
-  --spacing-lg: 1.5rem;    /* 24px */
-  --spacing-xl: 2rem;      /* 32px */
-  --spacing-2xl: 2.5rem;   /* 40px */
-  --spacing-3xl: 3rem;     /* 48px */
-  --spacing-4xl: 4rem;     /* 64px */
-  --spacing-5xl: 5rem;     /* 80px */
+    /* Gradients - Professional Blue */
+    --gradient-primary: linear-gradient(135deg, #3b82f6 0%, #1e40af 100%);
+    --gradient-secondary: linear-gradient(135deg, #10b981 0%, #059669 100%);
+    --gradient-accent: linear-gradient(135deg, #f43f5e 0%, #e11d48 100%);
+    --gradient-bg: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
+    --gradient-header: linear-gradient(to right, #1e293b, #334155);
 
-  /* Border Radius */
-  --radius-xs: 4px;
-  --radius-sm: 8px;
-  --radius-md: 12px;
-  --radius-lg: 16px;
-  --radius-xl: 20px;
-  --radius-2xl: 24px;
-  --radius-full: 9999px;
+    /* Spacing & Radii (Stay Modern Professional) */
+    --spacing-xs: 0.5rem;
+    --spacing-sm: 0.75rem;
+    --spacing-md: 1rem;
+    --spacing-lg: 1.5rem;
+    --spacing-xl: 2rem;
+    --spacing-2xl: 2.5rem;
+    --spacing-3xl: 3rem;
+    --spacing-4xl: 4rem;
+    --spacing-5xl: 5rem;
 
-  /* Shadows - Softer */
-  --shadow-xs: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
-  --shadow-sm: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px -1px rgba(0, 0, 0, 0.1);
-  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
-  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -4px rgba(0, 0, 0, 0.1);
-  --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
-  --shadow-2xl: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
-  --shadow-inner: inset 0 2px 4px 0 rgba(0, 0, 0, 0.05);
-  --shadow-colored-primary: 0 10px 15px -3px rgba(99, 102, 241, 0.2), 0 4px 6px -4px rgba(99, 102, 241, 0.15);
-  --shadow-colored-success: 0 10px 15px -3px rgba(16, 185, 129, 0.2), 0 4px 6px -4px rgba(16, 185, 129, 0.15);
-  --shadow-colored-danger: 0 10px 15px -3px rgba(239, 68, 68, 0.2), 0 4px 6px -4px rgba(239, 68, 68, 0.15);
+    --radius-xs: 2px;
+    --radius-sm: 4px;
+    --radius-md: 6px;
+    --radius-lg: 8px;
+    --radius-xl: 10px;
+    --radius-2xl: 12px;
+    --radius-full: 9999px;
 
-  /* Typography */
-  --font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Helvetica Neue', 'Arial', sans-serif;
-  --font-family-mono: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', 'Droid Sans Mono', 'Source Code Pro', monospace;
-  --font-size-xs: 0.75rem;   /* 12px */
-  --font-size-sm: 0.875rem;  /* 14px */
-  --font-size-base: 1rem;    /* 16px */
-  --font-size-md: 1.125rem;  /* 18px */
-  --font-size-lg: 1.25rem;   /* 20px */
-  --font-size-xl: 1.5rem;    /* 24px */
-  --font-size-2xl: 1.875rem; /* 30px */
-  --font-size-3xl: 2.25rem;  /* 36px */
-  --font-size-4xl: 3rem;     /* 48px */
-  --font-weight-light: 300;
-  --font-weight-normal: 400;
-  --font-weight-medium: 500;
-  --font-weight-semibold: 600;
-  --font-weight-bold: 700;
-  --font-weight-extrabold: 800;
-  --line-height-tight: 1.25;
-  --line-height-normal: 1.5;
-  --line-height-relaxed: 1.75;
-  --letter-spacing-tight: -0.025em;
-  --letter-spacing-normal: 0;
-  --letter-spacing-wide: 0.025em;
+    /* Shadows - Minimalist */
+    --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.02);
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.02);
+    --shadow-md: 0 2px 4px rgba(0, 0, 0, 0.02);
+    --shadow-lg: 0 4px 6px rgba(0, 0, 0, 0.02);
+    --shadow-xl: 0 10px 15px rgba(0, 0, 0, 0.02);
+    --shadow-inner: inset 0 2px 4px 0 rgba(0, 0, 0, 0.03);
 
-  /* Transitions */
-  --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
-  --transition-base: 200ms cubic-bezier(0.4, 0, 0.2, 1);
-  --transition-slow: 300ms cubic-bezier(0.4, 0, 0.2, 1);
-  --transition-slower: 500ms cubic-bezier(0.4, 0, 0.2, 1);
+    /* Typography */
+    --font-family:
+        "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+        sans-serif;
+    --font-size-3xl: 2.25rem;
+    --font-size-4xl: 3rem;
+    --font-weight-bold: 700;
+    --font-weight-extrabold: 800;
+    --line-height-tight: 1.2;
 
-  /* Z-index */
-  --z-base: 0;
-  --z-dropdown: 1000;
-  --z-sticky: 1100;
-  --z-fixed: 1200;
-  --z-modal-backdrop: 1300;
-  --z-modal: 1400;
-  --z-popover: 1500;
-  --z-tooltip: 1600;
-  --z-toast: 1700;
+    --transition-slow: 300ms cubic-bezier(0.4, 0, 0.2, 1);
+    --transition-base: 200ms cubic-bezier(0.4, 0, 0.2, 1);
+    --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+}
 
-  /* Blur Effects */
-  --blur-sm: 4px;
-  --blur-md: 8px;
-  --blur-lg: 16px;
-  --blur-xl: 24px;
+/* Dark Mode Overrides (Midnight Slate) */
+[data-theme="dark"] {
+    --color-text-primary: #f8fafc;
+    --color-text-secondary: #94a3b8;
+    --color-text-tertiary: #64748b;
+    --color-text-muted: #475569;
+    --color-heading: #f1f5f9;
+
+    --color-bg-primary: #0f172a;
+    --color-bg-secondary: #1e293b;
+    --color-bg-tertiary: #020617;
+    --color-bg-disabled: #1e293b;
+    --color-bg-overlay: rgba(0, 0, 0, 0.8);
+    --color-bg-app: #020617;
+    --color-bg-card: #1e293b;
+    --color-bg-panel: #1e293b;
+
+    --color-border: #334155;
+    --color-border-light: #1e293b;
+    --color-border-dark: #475569;
+
+    --glass-bg: rgba(15, 23, 42, 0.8);
+    --glass-border: rgba(255, 255, 255, 0.05);
+    --glass-shadow: 0 4px 10px rgba(0, 0, 0, 0.2);
+
+    --gradient-bg: linear-gradient(135deg, #020617 0%, #0f172a 100%);
+    --gradient-header: linear-gradient(to right, #f8fafc, #cbd5e1);
+}
+
+/* Anime/Sakura Theme (Refined & Harmonized) */
+[data-theme="anime"] {
+    --color-primary: #ff85a1;
+    --color-primary-dark: #ff4d6d;
+    --color-primary-light: #ffb3c1;
+    --color-primary-bg: #fff0f3;
+    --color-primary-hover: #ff758f;
+
+    /* Pastel Secondary Colors for Harmony */
+    --color-secondary: #98f5e1; /* Pastel Mint */
+    --color-success: #b7e4c7; /* Pastel Green */
+    --color-info: #bae1ff; /* Pastel Blue */
+    --color-warning: #ffcfd2; /* Pastel Peach */
+    --color-danger: #fbc4ab; /* Pastel Coral */
+
+    --color-text-primary: #594d5b;
+    --color-text-secondary: #8d7b93;
+    --color-text-tertiary: #b0a0b6;
+    --color-text-muted: #d0c4d3;
+    --color-heading: #6b4d57;
+
+    --color-bg-app: #fff0f3;
+    --color-bg-card: rgba(255, 255, 255, 0.6);
+    --color-bg-panel: rgba(255, 255, 255, 0.5);
+
+    --color-border: rgba(255, 133, 161, 0.2);
+    --color-border-light: rgba(255, 133, 161, 0.1);
+    --color-border-dark: rgba(255, 133, 161, 0.4);
+
+    --glass-bg: rgba(255, 255, 255, 0.45);
+    --glass-border: rgba(255, 255, 255, 0.8);
+    --glass-shadow: 0 8px 32px rgba(255, 133, 161, 0.05);
+
+    --gradient-bg: linear-gradient(
+        135deg,
+        #fff0f3 0%,
+        #fce1e8 50%,
+        #f3e5f5 100%
+    );
+    --gradient-primary: linear-gradient(135deg, #ff85a1 0%, #ff6b8b 100%);
+    --gradient-header: linear-gradient(to right, #ff85a1, #a18cd1);
+
+    --shadow-md: 0 4px 20px rgba(255, 133, 161, 0.1);
 }
