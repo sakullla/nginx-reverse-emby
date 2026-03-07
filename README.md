@@ -169,6 +169,7 @@ frontend_url,backend_url
 行为要点：
 - 镜像内已安装 `cron`/`crontab`，避免 acme.sh 在证书初始化时因缺少 `crontab` 预检查失败。
 - 容器启动时会在 `PROXY_DEPLOY_MODE=direct` 且 `DIRECT_CERT_MODE=acme` 下启动后台续期循环，按 `ACME_RENEW_INTERVAL` 执行 `acme.sh --cron`。
+- direct ACME 的 install / issue / info / remove / cron 都固定使用 `ACME_HOME`，避免回落到 `/root/.acme.sh`。
 - 先检查现有 acme.sh 记录，存在则跳过签发、直接安装证书文件。
 - DNS/Standalone 首次失败会清理残留后自动重试一次。
 - 若配置了 `ACME_DNS_PROVIDER` 但前端主机是 IP，会自动回退到 Standalone。

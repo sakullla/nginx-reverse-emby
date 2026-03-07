@@ -8,6 +8,7 @@ PROXY_DEPLOY_MODE="${PROXY_DEPLOY_MODE:-front_proxy}"
 DIRECT_CERT_MODE="${DIRECT_CERT_MODE:-acme}"
 ACME_AUTO_RENEW="${ACME_AUTO_RENEW:-1}"
 ACME_RENEW_INTERVAL="${ACME_RENEW_INTERVAL:-86400}"
+ACME_COMMON_ARGS="--home $ACME_HOME --config-home $ACME_HOME --cert-home $ACME_HOME"
 
 entrypoint_log() {
     if [ -z "${NGINX_ENTRYPOINT_QUIET_LOGS:-}" ]; then
@@ -65,7 +66,7 @@ fi
         fi
 
         entrypoint_log "Running scheduled acme.sh --cron"
-        if ! "$ACME_SCRIPT" --cron --home "$ACME_HOME" --config-home "$ACME_HOME" --cert-home "$ACME_HOME"; then
+        if ! "$ACME_SCRIPT" --cron $ACME_COMMON_ARGS; then
             entrypoint_log "acme.sh --cron failed"
         fi
     done

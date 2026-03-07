@@ -129,6 +129,7 @@ Path behavior:
 - ACME envs: `ACME_EMAIL`, `ACME_DNS_PROVIDER`, `ACME_HOME`, `ACME_CA`, `ACME_STANDALONE_STOP_NGINX`
 - Docker image installs `cron`/`crontab` for acme.sh bootstrap
 - container startup launches an ACME renew loop for `direct + acme`, controlled by `ACME_AUTO_RENEW` and `ACME_RENEW_INTERVAL` (default `86400`)
+- direct ACME commands pin `home/config-home/cert-home` to `ACME_HOME`, avoiding fallback to `/root/.acme.sh`
 - direct ACME issuance checks existing acme.sh record first, then installs cert files (deploy.sh-aligned)
 - direct ACME DNS/standalone paths clean stale records and retry once on first issuance failure
 - when `ACME_DNS_PROVIDER` is set but frontend host is IP, direct mode falls back to standalone challenge

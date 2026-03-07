@@ -27,6 +27,7 @@ ACME_DNS_PROVIDER="${ACME_DNS_PROVIDER:-}"
 ACME_EMAIL="${ACME_EMAIL:-}"
 ACME_STANDALONE_STOP_NGINX="${ACME_STANDALONE_STOP_NGINX:-1}"
 NGINX_BIN="${NGINX_BIN:-nginx}"
+ACME_COMMON_ARGS="--home $ACME_HOME --config-home $ACME_HOME --cert-home $ACME_HOME"
 
 entrypoint_log() {
     if [ -z "${NGINX_ENTRYPOINT_QUIET_LOGS:-}" ]; then
@@ -116,13 +117,13 @@ ensure_acme_script() {
     chmod +x "$tmp_acme_install"
     if ! (
         cd "$tmp_acme_dir" &&
-        ./acme.sh --install --home "$ACME_HOME" --config-home "$ACME_HOME" --cert-home "$ACME_HOME" ${ACME_EMAIL:+--accountemail "$ACME_EMAIL"}
+        ./acme.sh --install $ACME_COMMON_ARGS ${ACME_EMAIL:+--accountemail "$ACME_EMAIL"}
     ); then
         rm -rf "$tmp_acme_dir"
         return 1
     fi
     rm -rf "$tmp_acme_dir"
-    "$ACME_SCRIPT" --set-default-ca --server "$ACME_CA" >/dev/null 2>&1 || true
+    "$ACME_SCRIPT" --set-default-ca --server "$ACME_CA" $ACME_COMMON_ARGS >/dev/null 2>&1 || true
     return 0
 }
 
@@ -130,13 +131,13 @@ cleanup_stale_acme_record() {
     cert_domain="$1"
     if [ ! -x "$ACME_SCRIPT" ]; then return 0; fi
     entrypoint_log "Cleaning up stale acme record for $cert_domain..."
-    "$ACME_SCRIPT" --remove -d "$cert_domain" --ecc >/dev/null 2>&1 || true
-    "$ACME_SCRIPT" --remove -d "$cert_domain" >/dev/null 2>&1 || true
+    "$ACME_SCRIPT" --remove -d "$cert_domain" --ecc $ACME_COMMON_ARGS >/dev/null 2>&1 || true
+    "$ACME_SCRIPT" --remove -d "$cert_domain" $ACME_COMMON_ARGS >/dev/null 2>&1 || true
 }
 
 acme_cert_is_issued() {
     cert_domain="$1"
-    "$ACME_SCRIPT" --info -d "$cert_domain" --ecc 2>/dev/null | grep -q "RealFullChainPath"
+    "$ACME_SCRIPT" --info -d "$cert_domain" --ecc $ACME_COMMON_ARGS 2>/dev/null | grep -q "RealFullChainPath"
 }
 
 issue_cert_with_acme() {
@@ -152,10 +153,10 @@ issue_cert_with_acme() {
 
     if [ -n "$ACME_DNS_PROVIDER" ] && ! is_ip_address "$cert_domain_clean"; then
         entrypoint_log "Issuing via DNS: $ACME_DNS_PROVIDER for $cert_domain_clean"
-        "$ACME_SCRIPT" --issue --server "$ACME_CA" --dns "dns_$ACME_DNS_PROVIDER" -d "$cert_domain_clean" --keylength ec-256
+        "$ACME_SCRIPT" --issue $ACME_COMMON_ARGS --server "$ACME_CA" --dns "dns_$ACME_DNS_PROVIDER" -d "$cert_domain_clean" --keylength ec-256
     else
         entrypoint_log "Issuing via Standalone for $cert_domain_clean"
-        issue_args="--server $ACME_CA --standalone -d $cert_domain_clean --keylength ec-256"
+        issue_args="$ACME_COMMON_ARGS --server $ACME_CA --standalone -d $cert_domain_clean --keylength ec-256"
         if is_ip_address "$cert_domain_clean"; then
             issue_args="$issue_args --certificate-profile shortlived --days 6"
         fi
@@ -171,7 +172,7 @@ install_cert_files() {
     cert_domain_clean=$(normalize_cert_domain "$cert_domain")
     cert_target_dir="$DIRECT_CERT_DIR/$cert_domain_clean"
     mkdir -p "$cert_target_dir"
-    "$ACME_SCRIPT" --install-cert -d "$cert_domain_clean" --ecc \
+    "$ACME_SCRIPT" --install-cert -d "$cert_domain_clean" --ecc $ACME_COMMON_ARGS \
         --fullchain-file "$cert_target_dir/cert" \
         --key-file "$cert_target_dir/key" \
         --reloadcmd "sh -c '$NGINX_BIN -t && $NGINX_BIN -s reload || true'"
