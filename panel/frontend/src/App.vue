@@ -16,16 +16,9 @@
 
       <template v-else>
         <ThemeToggle />
-
-        <header class="header">
-          <h1>
-            ✦ Nginx Reverse Proxy ✦
-            <button @click="ruleStore.logout" class="logout-btn" title="退出登录">
-              <svg viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4m7 14 5-5-5-5m5 5H9"/></svg>
-            </button>
-          </h1>
-          <p class="subtitle">现代化反向代理管理面板</p>
-        </header>
+        <button @click="ruleStore.logout" class="floating-logout-btn" title="退出登录">
+          <svg viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4m7 14 5-5-5-5m5 5H9"/></svg>
+        </button>
 
         <main class="container">
           <!-- 统计面板 -->
@@ -136,37 +129,58 @@ onMounted(async () => {
   margin-right: 4px;
 }
 
-.logout-btn {
+.floating-logout-btn {
+  position: fixed;
+  top: 20px;
+  right: 70px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
-  height: 32px;
-  padding: 0;
-  margin-left: var(--spacing-sm);
-  background: transparent;
+  width: 40px;
+  height: 40px;
+  background: var(--color-bg-card);
   color: var(--color-text-secondary);
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
+  border-radius: var(--radius-md);
   cursor: pointer;
-  vertical-align: middle;
+  z-index: 100;
+  box-shadow: var(--shadow-sm);
   transition: all var(--transition-base);
 }
 
-.logout-btn:hover {
+.floating-logout-btn:hover {
   background: var(--color-danger-bg);
   color: var(--color-danger);
   border-color: var(--color-danger);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
 }
 
-.logout-btn svg {
-  width: 18px;
-  height: 18px;
+.floating-logout-btn svg {
+  width: 20px;
+  height: 20px;
   stroke: currentColor;
   stroke-width: 2;
   fill: none;
 }
 
+.container {
+  margin-top: 60px !important;
+}
+
+@media (max-width: 768px) {
+  .floating-logout-btn {
+    top: 15px;
+    right: 60px;
+    width: 36px;
+    height: 36px;
+  }
+
+  .container {
+    margin-top: 40px !important;
+  }
+}
+</style>
 /* 初始加载状态 */
 .initial-loading {
   position: fixed;
