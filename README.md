@@ -120,9 +120,9 @@ docker compose up -d --build
 
 默认暴露：
 - `8080:8080`（面板）
-- `80:80`（反代入口）
+- `3000:3000`（`front_proxy` 默认反代入口）
 
-若使用 `direct` 且有 HTTPS 规则，通常还需要映射 `443:443`。
+若使用 `direct`，通常需要映射 `80:80`，有 HTTPS 规则时还需要映射 `443:443`。
 
 ### 3.2 规则来源与格式
 
@@ -143,6 +143,8 @@ frontend_url,backend_url
 
 - `front_proxy`（默认）
   - 容器内仅 HTTP 反代
+  - 监听端口由 `FRONT_PROXY_PORT` 控制，默认 `3000`
+  - 前端规则中的 URL 端口不会决定实际监听端口
   - 适合上游已终止 TLS 的场景（如外层 Nginx/Caddy/Traefik）
 
 - `direct`
@@ -196,9 +198,10 @@ services:
     restart: unless-stopped
     ports:
       - "8080:8080"
-      - "80:80"
+      - "3000:3000"
     environment:
       - PROXY_DEPLOY_MODE=front_proxy
+      - FRONT_PROXY_PORT=3000
       - PROXY_RULE_1=https://proxy.example.com,http://emby:8096
     volumes:
       - nre_panel_data:/opt/nginx-reverse-emby/panel/data
@@ -246,7 +249,7 @@ Docker 模式建议至少验证：
 3. 面板可通过 `PANEL_PORT` 访问（默认 `8080`）
 4. `dynamic/` 下配置文件数量与命名正确
 5. 路径转发与重写符合预期
-6. `front_proxy` 在上游 TLS 终止场景可用
+6. `front_proxy` 在上游 TLS 终止场景可用，且监听端口符合 `FRONT_PROXY_PORT`
 7. `direct` 可完成 HTTPS 规则证书签发和安装
 8. 删规则后可清理陈旧证书目录/记录
 9. `DIRECT_CERT_MODE=acme` 时自动续期循环正常

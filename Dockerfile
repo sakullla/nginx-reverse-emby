@@ -45,4 +45,4 @@ RUN set -eux; \
 
 VOLUME ["/opt/nginx-reverse-emby/panel/data", "/etc/nginx/certs", "/opt/acme.sh"]
 
-EXPOSE 80 443 8080
+EXPOSE 3000 80 443 8080

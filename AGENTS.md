@@ -117,10 +117,11 @@ Path behavior:
 - reads `PROXY_RULE_1`, `PROXY_RULE_2`, ... (contiguous scan)
 - merges panel rules from `PANEL_RULES_FILE` (csv lines: `frontend_url,backend_url`)
 - rule format: `frontend_url,backend_url`
-- writes `/etc/nginx/conf.d/dynamic/{domain}.{frontend_port}.conf`
+- writes `/etc/nginx/conf.d/dynamic/{domain}.{effective_frontend_port}.conf`
 - env rule scan stops when first index is missing (no gaps allowed)
 - default resolver is `1.1.1.1`, override with `NGINX_LOCAL_RESOLVERS`
 - `PROXY_DEPLOY_MODE=front_proxy` keeps HTTP passthrough mode for upstream TLS termination
+- front proxy listen port is controlled by `FRONT_PROXY_PORT` (default `3000`), not by rule URL port
 - `PROXY_DEPLOY_MODE=direct` renders HTTP/HTTPS configs by frontend URL scheme
 - direct HTTPS mode uses per-domain cert files in `DIRECT_CERT_DIR` (default `/etc/nginx/certs`)
 - direct cert handling supports `DIRECT_CERT_MODE=acme|manual` (default `acme`)

@@ -8,6 +8,7 @@ DYNAMIC_DIR="/etc/nginx/conf.d/dynamic"
 RULES_FILE="${PANEL_RULES_FILE:-/opt/nginx-reverse-emby/panel/data/proxy_rules.csv}"
 RESOLVER="${NGINX_LOCAL_RESOLVERS:-1.1.1.1}"
 PROXY_DEPLOY_MODE="${PROXY_DEPLOY_MODE:-front_proxy}"
+FRONT_PROXY_PORT="${FRONT_PROXY_PORT:-3000}"
 DIRECT_CERT_MODE="${DIRECT_CERT_MODE:-acme}"
 DIRECT_CERT_DIR="${DIRECT_CERT_DIR:-/etc/nginx/certs}"
 DIRECT_CERT_CLEANUP="${DIRECT_CERT_CLEANUP:-1}"
@@ -93,6 +94,18 @@ normalize_deploy_mode() {
         *)
             entrypoint_log "$0: warning: unknown PROXY_DEPLOY_MODE='$PROXY_DEPLOY_MODE', fallback to 'front_proxy'"
             printf 'front_proxy'
+            ;;
+    esac
+}
+
+normalize_front_proxy_port() {
+    case "$FRONT_PROXY_PORT" in
+        ''|*[!0-9]*)
+            entrypoint_log "$0: warning: invalid FRONT_PROXY_PORT='$FRONT_PROXY_PORT', fallback to '3000'"
+            printf '3000'
+            ;;
+        *)
+            printf '%s' "$FRONT_PROXY_PORT"
             ;;
     esac
 }
@@ -436,6 +449,7 @@ if [ ! -f "$TEMPLATE_FILE" ]; then
 fi
 
 deploy_mode=$(normalize_deploy_mode)
+front_proxy_port=$(normalize_front_proxy_port)
 
 if [ "$deploy_mode" = "direct" ]; then
     if [ ! -f "$DIRECT_NO_TLS_TEMPLATE_FILE" ]; then
@@ -489,6 +503,10 @@ if [ -s "$tmp_rules" ]; then
 
         if [ -z "$domain_path" ]; then
             domain_path="/"
+        fi
+
+        if [ "$deploy_mode" = "front_proxy" ]; then
+            frontend_port="$front_proxy_port"
         fi
 
         config_filename="$(sanitize_domain "$domain_name").${frontend_port}.conf"

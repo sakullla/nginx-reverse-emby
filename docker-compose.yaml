@@ -5,8 +5,9 @@ services:
     restart: unless-stopped
     ports:
       - "8080:8080"
-      - "80:80"
+      - "3000:3000"
       # Direct mode example:
+      # - "80:80"
       # - "443:443"
     volumes:
       - nre_panel_data:/opt/nginx-reverse-emby/panel/data
