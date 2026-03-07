@@ -132,6 +132,7 @@ Path behavior:
 - direct ACME commands pin `home/config-home/cert-home` to `ACME_HOME`, avoiding fallback to `/root/.acme.sh`
 - direct runtime apply returns a clear error when standalone issuance would conflict with nginx already occupying port `80`
 - panel backend runs on container stdout/stderr; nginx apply commands are executed with captured stdio for reliable `/dev/stdout` logging
+- Docker nginx logging uses `/proc/1/fd/1` and `/proc/1/fd/2` so config tests from child processes do not depend on inherited `/dev/stdout`
 - direct ACME issuance checks existing acme.sh record first, then installs cert files (deploy.sh-aligned)
 - direct ACME DNS/standalone paths clean stale records and retry once on first issuance failure
 - when `ACME_DNS_PROVIDER` is set but frontend host is IP, direct mode falls back to standalone challenge
