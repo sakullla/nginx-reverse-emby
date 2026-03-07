@@ -130,7 +130,7 @@ Path behavior:
 - Docker image installs `cron`/`crontab` for acme.sh bootstrap
 - container startup launches an ACME renew loop for `direct + acme`, controlled by `ACME_AUTO_RENEW` and `ACME_RENEW_INTERVAL` (default `86400`)
 - direct ACME commands pin `home/config-home/cert-home` to `ACME_HOME`, avoiding fallback to `/root/.acme.sh`
-- direct runtime apply returns a clear error when standalone issuance would conflict with nginx already occupying port `80`
+- direct runtime apply checks actual port `80` listeners and only blocks standalone issuance when `80` is really in use
 - panel backend runs on container stdout/stderr; nginx apply commands are executed with captured stdio for reliable `/dev/stdout` logging
 - Docker nginx logging uses `/proc/1/fd/1` and `/proc/1/fd/2` so config tests from child processes do not depend on inherited `/dev/stdout`
 - direct ACME `install-cert` reload hooks are best-effort so one in-flight certificate installation does not fail because another rule's cert files are not ready yet

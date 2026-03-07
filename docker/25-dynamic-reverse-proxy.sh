@@ -95,19 +95,30 @@ normalize_deploy_mode() {
     esac
 }
 
-nginx_is_running() {
-    nginx_pid_file="/var/run/nginx.pid"
-    [ -r "$nginx_pid_file" ] || return 1
-    nginx_pid=$(cat "$nginx_pid_file" 2>/dev/null || true)
-    [ -n "$nginx_pid" ] || return 1
-    kill -0 "$nginx_pid" 2>/dev/null
+port_is_listening() {
+    port_hex=$(printf '%04X' "$1")
+    for proc_file in /proc/net/tcp /proc/net/tcp6; do
+        [ -r "$proc_file" ] || continue
+        if awk -v port_hex="$port_hex" '
+            $4 == "0A" {
+                split($2, local_addr, ":")
+                if (local_addr[2] == port_hex) {
+                    found = 1
+                }
+            }
+            END { exit(found ? 0 : 1) }
+        ' "$proc_file"; then
+            return 0
+        fi
+    done
+    return 1
 }
 
 
-fail_standalone_if_nginx_running() {
+fail_standalone_if_port_80_in_use() {
     cert_domain="$1"
-    if nginx_is_running; then
-        echo "[PROXY] error: cannot issue certificate for $cert_domain via standalone while nginx is already running and occupying port 80. Configure ACME_DNS_PROVIDER, pre-create the rule before container startup, or disable PANEL_AUTO_APPLY and restart after saving the rule." >&2
+    if port_is_listening 80; then
+        echo "[PROXY] error: cannot issue certificate for $cert_domain via standalone while port 80 is already in use. Configure ACME_DNS_PROVIDER, free port 80, pre-create the rule before container startup, or disable PANEL_AUTO_APPLY and restart after saving the rule." >&2
         return 1
     fi
 }
@@ -164,7 +175,7 @@ issue_cert_with_acme() {
         entrypoint_log "Issuing via DNS: $ACME_DNS_PROVIDER for $cert_domain_clean"
         "$ACME_SCRIPT" --issue $ACME_COMMON_ARGS --server "$ACME_CA" --dns "dns_$ACME_DNS_PROVIDER" -d "$cert_domain_clean" --keylength ec-256
     else
-        fail_standalone_if_nginx_running "$cert_domain_clean"
+        fail_standalone_if_port_80_in_use "$cert_domain_clean"
         entrypoint_log "Issuing via Standalone for $cert_domain_clean"
         issue_args="$ACME_COMMON_ARGS --server $ACME_CA --standalone -d $cert_domain_clean --keylength ec-256"
         if is_ip_address "$cert_domain_clean"; then

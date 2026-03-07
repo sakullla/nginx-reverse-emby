@@ -170,7 +170,7 @@ frontend_url,backend_url
 - 镜像内已安装 `cron`/`crontab`，避免 acme.sh 在证书初始化时因缺少 `crontab` 预检查失败。
 - 容器启动时会在 `PROXY_DEPLOY_MODE=direct` 且 `DIRECT_CERT_MODE=acme` 下启动后台续期循环，按 `ACME_RENEW_INTERVAL` 执行 `acme.sh --cron`。
 - direct ACME 的 install / issue / info / remove / cron 都固定使用 `ACME_HOME`，避免回落到 `/root/.acme.sh`。
-- direct 模式下，若面板热应用时需要走 standalone 且 nginx 已在容器内占用 `80` 端口，脚本会直接返回清晰错误；此时应改用 `ACME_DNS_PROVIDER`，或先保存规则再重启容器。
+- direct 模式下，若面板热应用时需要走 standalone 且 `80` 端口已被实际监听占用，脚本会直接返回清晰错误；若 `80` 未被占用，即使 nginx 进程仍在运行也允许继续签发。
 - panel backend follows container stdout/stderr, and nginx apply/test output is captured instead of inheriting a redirected file descriptor.
 - Docker nginx logs target `/proc/1/fd/1` and `/proc/1/fd/2`, so `nginx -t` and reload commands work reliably from child processes.
 - ACME `install-cert` 的 reload hook 是 best-effort：当其他 HTTPS 规则的证书文件尚未准备好时不会中断当前证书安装，最终仍由面板 apply 的 `nginx -t -> reload` 统一校验。
