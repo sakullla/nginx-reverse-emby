@@ -20,6 +20,17 @@
           <svg viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4m7 14 5-5-5-5m5 5H9"/></svg>
         </button>
 
+        <header class="app-header">
+          <div class="header-content">
+            <h1 class="logo-title">
+              <span class="logo-icon">✦</span>
+              Nginx Reverse Proxy
+              <span class="logo-icon">✦</span>
+            </h1>
+            <p class="logo-subtitle">现代化反向代理管理面板</p>
+          </div>
+        </header>
+
         <main class="container">
           <!-- 统计面板 -->
           <section class="stats-grid">
@@ -165,24 +176,75 @@ onMounted(async () => {
   fill: none;
 }
 
+.logo-icon {
+  font-size: 1.5rem;
+  opacity: 0.8;
+  -webkit-text-fill-color: initial;
+  color: var(--color-primary);
+}
+
+.logo-subtitle {
+  font-size: 0.9rem;
+  color: var(--color-text-tertiary);
+  margin: 4px 0 0;
+  font-weight: 500;
+}
+
+.app-header {
+  padding: 40px 0 20px;
+  text-align: center;
+  animation: fadeIn var(--transition-slow);
+}
+
+.header-content {
+  display: inline-block;
+}
+
+.logo-title {
+  font-size: 2rem;
+  font-weight: 800;
+  margin: 0;
+  letter-spacing: -0.025em;
+  background: var(--gradient-header);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+}
+
 .container {
-  margin-top: 80px !important;
+  margin-top: 0 !important;
 }
 
 @media (max-width: 768px) {
+  .app-header {
+    padding: 30px 0 10px;
+  }
+
+  .logo-title {
+    font-size: 1.5rem;
+    gap: 8px;
+  }
+
+  .logo-icon {
+    font-size: 1.2rem;
+  }
+
+  .logo-subtitle {
+    font-size: 0.8rem;
+  }
+
   .floating-logout-btn {
     top: var(--spacing-md);
     right: calc(var(--spacing-md) + 40px + 8px);
     width: 40px;
     height: 40px;
   }
-
-  .container {
-    margin-top: 60px !important;
-  }
 }
 
-/* 初始加载状态 */
+.floating-logout-btn {
 .initial-loading {
   position: fixed;
   top: 0;
