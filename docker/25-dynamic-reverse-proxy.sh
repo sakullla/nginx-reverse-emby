@@ -185,7 +185,7 @@ install_cert_files() {
     "$ACME_SCRIPT" --install-cert -d "$cert_domain_clean" --ecc $ACME_COMMON_ARGS \
         --fullchain-file "$cert_target_dir/cert" \
         --key-file "$cert_target_dir/key" \
-        --reloadcmd "sh -c '$NGINX_BIN -t && { [ -s /var/run/nginx.pid ] && $NGINX_BIN -s reload || true; }'"
+        --reloadcmd "sh -c '$NGINX_BIN -t >/dev/null 2>&1 && { [ -s /var/run/nginx.pid ] && $NGINX_BIN -s reload || true; }; true'"
 }
 
 ensure_certificates_for_rules() {
@@ -297,4 +297,3 @@ fi
 
 rm -f "$tmp_rules" "$tmp_certs"
 exit 0
-
