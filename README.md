@@ -1,477 +1,272 @@
-# Nginx-Reverse-Emby: 一站式 Nginx 反向代理部署脚本
+# Nginx-Reverse-Emby
 
-`Nginx-Reverse-Emby` 是一个功能强大、高度自动化的 Bash 脚本，旨在为您一键配置 Nginx 反向代理。无论是代理 Emby、媒体服务器还是其他应用，都能提供稳定、高效的解决方案。
+一个以 Bash 为核心的一键反向代理部署项目，面向 Nginx 主机部署和 Docker 运行时动态配置两种场景。
 
-脚本的核心优势在于智能的 URL 处理、全面的 SSL 证书方案、国内加速优化，以及完善的部署与管理功能。
+- 支持 IPv4 / IPv6 前后端 URL
+- 支持 acme.sh 自动申请和安装证书（含 DNS API / Cloudflare）
+- 支持 Docker 动态规则：`PROXY_RULE_N` + 面板规则文件
+- 支持 Docker 双模式：`front_proxy` / `direct`
 
-## ✨ 核心特性
+---
 
-### 🔧 灵活的部署配置
-* **域名和 IP 混合支持**: 既支持标准域名部署，也支持直接使用 IP 地址
-* **自定义端口映射**: 前后端端口完全独立配置，精确到端口的版本管理
-* **协议自动识别**: 从 URL 自动判断 HTTP/HTTPS，支持混合代理
-* **路径重写**: 支持前后端路径不同时的自动重写
+## 1. 项目结构与职责
 
-### 🛡️ 完整的 SSL/TLS 方案
-* **Standalone 模式**: HTTP-01 验证，单域名证书自动申请和续期
-* **DNS 验证模式**: DNS-01 验证，支持泛域名证书，包括：
-  * **Cloudflare**: 内置 Cloudflare API 支持
-  * **其他 DNS 提供商**: 通过 acme.sh 支持 100+ DNS 服务商
-* **IP 证书支持**: 检测到 IP 地址时自动申请短期证书 (Let's Encrypt short-lived)
+核心实现在 `deploy.sh`，Docker 相关逻辑在 `docker/`，面板在 `panel/`。
 
-### 🚀 一键自动化部署
-* **系统自动检测**: 自动识别 Linux 发行版（Debian/Ubuntu/CentOS/Fedora/Arch/Alpine）
-* **官方源安装**: 从 Nginx 官方源安装最新 Mainline 版本
-* **完整环境配置**: 自动安装 acme.sh、socat、cron 等依赖工具
-* **国内加速优化**: 国内自动使用 GitHub 代理（gh.llkk.cc），无需手动配置
+- `deploy.sh`：主机模式部署与移除主流程
+- `conf.d/p.example.com.conf`：TLS 模板（HTTP/3 + QUIC）
+- `conf.d/p.example.com.no_tls.conf`：HTTP 模板
+- `docker/25-dynamic-reverse-proxy.sh`：Docker 动态反代配置生成
+- `docker/15-panel-config.sh`：面板 nginx 配置渲染
+- `docker/20-panel-backend.sh`：面板后端启动
+- `panel/backend/server.js`：面板 API（`/api/rules`、`/api/apply`）
 
-### 🌍 全球网络优化
-* **国内代理支持**: 自动检测并使用国内加速代理下载配置和工具
-* **灵活的 DNS 解析**: 支持手动指定 DNS 服务器，国内默认阿里云/腾讯云 DNS
+---
 
-### 📋 完整的生命周期管理
-* **精确的配置管理**: 配置文件采用 `domain.port.conf` 命名，支持精确到端口的移除
-* **安全的卸载**: `--remove` 选项安全删除指定域名的配置和证书
-* **完整的备份**: 所有修改前自动备份至 `/etc/nginx/backup/`
+## 2. 主机模式（deploy.sh）
 
-### 🔄 高级代理功能
-* **完整 URL 构造**: 根据协议和端口自动拼接后端地址
-* **非交互和交互模式**: 支持向导式交互和完全自动化部署
+### 2.1 执行流程
 
-## 📋 系统要求
+`main()` 顺序：
+1. `parse_arguments`
+2. 若有 `--remove`，走 `remove_domain_config`
+3. `setup_env`
+4. `prompt_interactive_mode`
+5. `display_summary`
+6. `install_dependencies`
+7. `generate_nginx_config`
+8. `issue_certificate`
+9. `test_and_reload_nginx`
 
-* 一台拥有公网 IP 的 Linux 服务器（VPS/云服务器）
-* Root 权限或配置好的 sudo
-* 域名配置（如使用 HTTPS）并指向服务器 IP
-* (可选) DNS API 密钥（如使用泛域名证书）
+安全模型：
+- `set -e`
+- `set -o pipefail`
+- `trap 'handle_error $LINENO' ERR`
+- 非 root 自动走 sudo
 
-## 🚀 快速开始
+### 2.2 快速开始
 
-### 方式 A：交互模式（推荐新手）
-
-脚本自动进行所有配置，只需运行一条命令：
-
-**使用 curl（推荐）：**
+交互模式：
 ```bash
 bash <(curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh)
 ```
 
-**使用 wget：**
+非交互模式（HTTPS 示例）：
 ```bash
-bash <(wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh)
+curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh \
+  | bash -s -- -y https://proxy.example.com -r http://127.0.0.1:8096
 ```
 
-脚本会自动：
-1. 检测操作系统和网络环境
-2. 安装 Nginx（从官方源）
-3. 安装和配置 acme.sh（SSL 证书管理）
-4. 引导您输入访问地址和后端地址
-5. 自动申请 SSL 证书（如需要）
-6. 生成和部署 Nginx 配置
-7. 重新加载 Nginx 服务
-
-### 方式 B：非交互模式（自动化部署）
-
-提供所有参数，实现完全自动化：
-
-**使用 curl：**
+移除规则（建议始终带 scheme）：
 ```bash
-curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh | bash -s -- [选项]
+curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh \
+  | bash -s -- --remove https://proxy.example.com:443 --yes
 ```
 
-**使用 wget：**
-```bash
-wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh | bash -s -- [选项]
-```
-
-## 📚 使用示例
-
-### 示例 1：一键部署（HTTPS 单域名）
-
-最简单的方式，一条命令完成所有配置：
-
-```bash
-curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh | bash -s -- -y https://proxy.example.com -r https://backend-service.com
-```
-
-或使用 wget：
-```bash
-wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh | bash -s -- -y https://proxy.example.com -r https://backend-service.com
-```
-
-### 示例 2：一键部署（HTTP 服务，使用 IP）
-
-```bash
-wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh | bash -s -- -y http://192.168.1.100:8080 -r http://internal-service.local:8096
-```
-
-### 示例 3：一键泛域名证书部署（Cloudflare DNS 验证）
-
-```bash
-wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh | bash -s -- -y https://emby.media.com -r https://emby-backend.server.com -d --dns cf --cf-token "your_cloudflare_api_token" --cf-account-id "your_cloudflare_account_id"
-```
-
-### 示例 4：一键部署（自定义后端路径）
-
-```bash
-wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh | bash -s -- -y https://my-proxy.com/app -r https://backend.com/streaming
-```
-
-### 示例 5：一键部署（指定特定端口）
-
-```bash
-wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh | bash -s -- -y https://proxy.example.com:9443 -r http://192.168.1.100:8096
-```
-
-### 示例 6：一键部署（自定义 Nginx 模板）
-
-```bash
-wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh | bash -s -- -y https://proxy.example.com -r https://backend.com -c https://example.com/my-nginx.conf
-```
-
-### 示例 7：一键部署（自定义 GitHub 代理）
-
-```bash
-wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh | bash -s -- -y https://proxy.example.com -r https://backend.com --gh-proxy https://gh.llkk.cc/
-```
-
-### 示例 8：一键部署（自定义 DNS 解析器）
-
-```bash
-wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh | bash -s -- -y https://proxy.example.com -r https://backend.com -R "8.8.8.8 8.8.4.4"
-```
-
-### 示例 9：一键移除配置（精确到端口）
-
-```bash
-wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh | bash -s -- --remove https://proxy.example.com:9443 --yes
-```
-
-### 示例 10：泛域名多子域部署
-
-首次部署申请泛域名证书：
-```bash
-wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh | bash -s -- -y https://emby.media.com -r https://backend.com -d --dns cf --cf-token "token" --cf-account-id "id"
-```
-
-后续为同一泛域名的其他子域部署（自动使用已有证书）：
-```bash
-wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh | bash -s -- -y https://files.media.com -r https://another-backend.com -d
-```
-
-### 示例 11：HTTPS 前端 + HTTP 后端混合
-
-```bash
-wget -qO - https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh | bash -s -- -y https://public-proxy.example.com -r http://192.168.1.100:8080
-```
-
-## 📖 参数完整参考
-
-### 部署参数
-
-| 短选项 | 长选项 | 说明 |
-|--------|--------|------|
-| `-y` | `--you-domain <URL>` | **[必需]** 您的访问地址（支持 `https://domain:port/path` 格式） |
-| `-r` | `--r-domain <URL>` | **[必需]** 被代理的后端地址（同样支持完整 URL 格式） |
-| `-m` | `--cert-domain <域名>` | 手动指定证书域名，用于泛域名场景 |
-| `-d` | `--parse-cert-domain` | 从 `-y` 自动提取根域名作为证书域名 |
-| `-D` | `--dns <provider>` | 使用 DNS API 验证申请证书（如 `cf` 表示 Cloudflare） |
-| `-R` | `--resolver <DNS>` | 手动指定 DNS 解析服务器（如 `8.8.8.8 1.1.1.1`） |
-| `-c` | `--template <path/url>` | 指定自定义 Nginx 配置模板文件或 URL |
-|  | `--gh-proxy <URL>` | 指定 GitHub 代理地址（如 `https://gh.llkk.cc/`） |
-|  | `--cf-token <TOKEN>` | Cloudflare API Token（配合 `--dns cf`） |
-|  | `--cf-account-id <ID>` | Cloudflare Account ID（配合 `--dns cf`） |
-
-### 管理参数
-
-| 短选项 | 长选项 | 说明 |
-|--------|--------|------|
-|  | `--remove <URL>` | 移除指定域名/端口的配置和证书 |
-| `-Y` | `--yes` | 非交互模式下自动确认删除 |
-
-### 其他参数
-
-| 短选项 | 长选项 | 说明 |
-|--------|--------|------|
-| `-h` | `--help` | 显示帮助信息 |
-
-## 🔍 工作流程
-
-### 部署流程
-
-```
-1. 参数解析 → 2. 环境设置 → 3. 交互模式（可选）→ 4. 显示摘要
-    ↓
-5. 依赖安装 → 6. 生成配置 → 7. 申请证书 → 8. 重载 Nginx
-```
-
-### 关键配置位置
-
-* **Nginx 配置**: `/etc/nginx/conf.d/{domain}.{port}.conf`
-* **证书位置**: `/etc/nginx/certs/{cert_domain}/`
-* **备份目录**: `/etc/nginx/backup/`
-* **acme.sh**: `$HOME/.acme.sh/acme.sh`
-
-## 🛠️ 常见问题
-
-### Q: 国内用户无法访问 GitHub？
-
-**A**: 脚本自动检测国内环境并使用 `gh.llkk.cc` 代理。也可手动指定：
-
-```bash
-bash deploy.sh -y ... -r ... --gh-proxy https://gh.llkk.cc/
-```
-
-### Q: 如何在纯 IPv6 环境中部署？
-
-**A**: 直接使用 IPv6 地址作为前端地址。脚本会自动处理方括号格式和短期证书申请：
-
-```bash
-# 简单部署
-bash deploy.sh -y https://[2400:db8::1] -r https://backend.com
-
-# 指定端口
-bash deploy.sh -y https://[2400:db8::1]:9443 -r https://backend.com
-
-# HTTP 方式
-bash deploy.sh -y http://[2400:db8::1]:8080 -r http://backend.com
-```
-
-### Q: IPv6 和 IPv4 如何混合使用？
-
-**A**: 完全支持混合部署，前端和后端可以分别使用 IPv4 或 IPv6：
-
-```bash
-# IPv6 前端 + IPv4 后端
-bash deploy.sh -y https://[2400:db8::1] -r https://192.168.1.100
-
-# IPv4 前端 + IPv6 后端
-bash deploy.sh -y https://203.0.113.1 -r https://[2400:db8::100]
-```
-
-### Q: 如何为多个子域名使用同一个泛域名证书？
-
-**A**: 首次部署时申请泛域名证书，后续部署只需用 `-d` 自动识别即可：
-
-```bash
-# 首次：申请 *.media.com 证书
-bash deploy.sh -y https://emby.media.com -r ... -d --dns cf --cf-token ... --cf-account-id ...
-
-# 后续：自动识别使用已有证书
-bash deploy.sh -y https://files.media.com -r ... -d
-```
-
-### Q: 可以在 IP 地址上使用吗？
-
-**A**: 可以！IP 地址（IPv4/IPv6）会自动申请 Let's Encrypt 短期证书（有效期 6 天，自动续期）：
-
-```bash
-# IPv4 地址
-bash deploy.sh -y https://123.45.67.89 -r https://backend.com
-
-# IPv6 地址
-bash deploy.sh -y https://[2400:db8::1] -r https://backend.com
-```
-
-### Q: 如何修改已部署的配置？
-
-**A**: 先移除再重新部署：
-
-```bash
-bash deploy.sh --remove https://proxy.example.com:443 --yes
-bash deploy.sh -y https://proxy.example.com -r https://new-backend.com
-```
-
-### Q: 可以同一个域名的不同端口反代不同后端吗？
-
-**A**: 可以！每个配置会精确到端口：
-
-```bash
-# 端口 443（HTTPS）
-bash deploy.sh -y https://proxy.example.com:443 -r https://backend1.com
-
-# 端口 8443（HTTPS）
-bash deploy.sh -y https://proxy.example.com:8443 -r https://backend2.com
-```
-
-### Q: IPv6 地址的格式是什么？
-
-**A**: IPv6 地址需要用方括号包裹。完整格式参考：
-
-```bash
-# 仅 IPv6 地址，使用默认 HTTPS 端口 (443)
-https://[2400:db8::1]
-
-# IPv6 地址 + 自定义端口
-https://[2400:db8::1]:9443
-
-# IPv6 地址 + 自定义端口 + 路径
-https://[2400:db8::1]:9443/app
-
-# HTTP 协议
-http://[2400:db8::1]:8080
-```
-
-### Q: 如何检查 IPv6 部署是否正确？
-
-**A**: 部署后可以通过以下方式验证：
-
-```bash
-# 检查 Nginx 配置
-nginx -t
-
-# 查看证书信息
-ls /etc/nginx/certs/
-
-# 测试 IPv6 连接（从支持 IPv6 的设备）
-curl -6 https://[2400:db8::1]
-
-# 或使用域名（如果有 DNS 配置）
-curl https://proxy.example.com
-```
-
-##  安全建议
-
-1. **证书续期**: acme.sh 会自动配置 cron 任务进行续期，无需手动干预
-2. **备份配置**: 所有修改前都会备份至 `/etc/nginx/backup/`，修改失败时可恢复
-3. **日志检查**: 部署后检查 Nginx 日志确保无错误：
-   ```bash
-   nginx -t
-   journalctl -u nginx -n 50
-   ```
-4. **防火墙**: 确保开放 80（HTTP 验证）和 443（HTTPS）端口
-
-## 📞 支持与反馈
-
-* **问题报告**: [GitHub Issues](https://github.com/sakullla/nginx-reverse-emby/issues)
-* **功能建议**: 欢迎提交 Pull Request
-* **许可证**: 本项目遵循相关开源许可
-
-## 📄 更新日志
-
-### v2.0（当前版本）
-- ✨ 精确到端口的配置管理
-- ✨ IP 地址短期证书支持
-- ✨ 国内 GitHub 代理自动优化
-- ✨ 完整的路径重写支持
-- ✨ IPv6 支持
-- 🐛 优化了 acme.sh 下载验证机制
-- 🐛 移除了端口 80 占用检测逻辑
-
-### v1.0
-- 🎉 初始版本发布
-- 基础的域名反代和证书申请
-- Cloudflare DNS 验证支持
-| `-m` | `--cert-domain <域名>` | **(部署)** 手动指定证书的根域名，适合泛域名场景。 |
-| `-d` | `--parse-cert-domain` | **(部署)** 自动从 `-y` 提供的域名中解析出根域名。 |
-| `-D` | `--dns <服务商>` | **(部署)** 使用 DNS API 模式申请证书 (例如: `cf`)。 |
-| `-c` | `--template <路径或URL>` | **(部署)** 指定一个自定义的 Nginx 配置文件模板。 |
-|      | `--cf-token <TOKEN>` | **(部署)** 提供 Cloudflare API Token。 |
-|      | `--cf-account-id <ID>` | **(部署)** 提供 Cloudflare Account ID。 |
-|      | `--remove <域名或URL>` | **(管理)** 移除指定域名或 URL 的所有相关配置和证书。 |
-| `-Y` | `--yes` | **(管理)** 在非交互模式下，自动确认移除操作。 |
-| `-h` | `--help` | 显示帮助信息。 |
-
-## 💬 反馈与贡献
-
-遇到问题或有改进建议？欢迎在 [GitHub Issues](https://github.com/sakullla/nginx-reverse-emby/issues) 中提出。
-
-## Docker 面板部署（推荐）
-
-Docker 镜像已内置 Node.js 面板后端与前端页面。  
-启动时可以不再传 `PROXY_RULE_N`，直接在面板里新增/编辑/删除规则即可。
-
-### 1. 使用 Docker Compose 启动
-
-项目根目录已提供 `docker-compose.yaml`：
-
+### 2.3 参数（以实现为准）
+
+| 短参数 | 长参数 | 说明 |
+|---|---|---|
+| `-y` | `--you-domain <URL>` | 前端访问 URL |
+| `-r` | `--r-domain <URL>` | 后端 URL |
+| `-m` | `--cert-domain <domain>` | 手动指定证书域名 |
+| `-d` | `--parse-cert-domain` | 按规则自动提取根域名（仅匹配 `*.*.*`） |
+| `-D` | `--dns <provider>` | DNS API 证书模式（如 `cf`） |
+| `-R` | `--resolver <dns list>` | 自定义解析器 |
+| `-c` | `--template-domain-config <path\|url>` | 自定义站点模板 |
+|  | `--gh-proxy <url>` | GitHub 代理地址 |
+|  | `--cf-token <token>` | Cloudflare Token |
+|  | `--cf-account-id <id>` | Cloudflare Account ID |
+|  | `--remove <URL>` | 按 `域名+端口` 精确移除 |
+| `-Y` | `--yes` | 非交互删除确认 |
+| `-h` | `--help` | 帮助 |
+
+> 注意：真实长参数是 `--template-domain-config`，不是 `--template`。
+
+### 2.4 关键行为
+
+- URL 解析契约：`proto|domain|port|path`，支持带中括号 IPv6。
+- 配置文件输出：`/etc/nginx/conf.d/{clean_domain}.{port}.conf`。
+- 证书目录：`/etc/nginx/certs/{format_cert_domain}/`。
+- 前端非根路径会自动生成 rewrite。
+- 后端地址由协议 + 主机 + 可选端口拼接得到。
+
+### 2.5 证书行为
+
+- `no_tls=yes`（即前端 URL 为 `http://`）时跳过证书申请。
+- 前端为 IP（IPv4/IPv6）时使用短期证书参数：
+  `--certificate-profile shortlived --days 6`。
+- DNS 模式：`issue_certificate_dns()`。
+- Standalone 模式：`issue_certificate_standalone()`。
+- Cloudflare 变量：`CF_Token`、`CF_Account_ID`。
+
+### 2.6 移除行为
+
+- 按 `domain + port` 定位配置文件。
+- 非交互模式必须显式 `--yes`。
+- 若证书被其他站点共用，会避免危险删除。
+- 删除后会执行 `nginx -t` 再 reload/restart。
+
+---
+
+## 3. Docker 模式
+
+### 3.1 启动
+
+仓库自带 `docker-compose.yaml`：
 ```bash
 docker compose up -d --build
 ```
 
-### 2. 访问面板
+默认暴露：
+- `8080:8080`（面板）
+- `80:80`（反代入口）
 
-- 默认地址：`http://<服务器IP>:8080/`
-- 面板 API 通过 Nginx 代理在 `/panel-api/*`
+若使用 `direct` 且有 HTTPS 规则，通常还需要映射 `443:443`。
 
-### 3. 面板配置持久化
+### 3.2 规则来源与格式
 
-`docker-compose.yaml` 已挂载卷：
+`docker/25-dynamic-reverse-proxy.sh` 会合并两类规则：
+1. 环境变量：`PROXY_RULE_1`, `PROXY_RULE_2`, ...
+2. 面板规则文件：`PANEL_RULES_FILE`（默认 `/opt/nginx-reverse-emby/panel/data/proxy_rules.csv`）
 
-- 容器路径：`/opt/nginx-reverse-emby/panel/data`
-- 规则文件：`/opt/nginx-reverse-emby/panel/data/proxy_rules.csv`
-- 卷名：`nre_panel_data`
+统一格式：
+```text
+frontend_url,backend_url
+```
 
-即使重建容器，面板中保存的规则也会保留。
+**重要：环境变量扫描是连续下标模式。** 一旦缺失某个编号，会停止后续扫描。
 
-### 4. 端口说明
+### 3.3 部署模式
 
-- `8080:8080` 用于访问控制面板。
-- `80:80` 用于默认反代入口。
-- 如果你在面板里配置了其它前端端口（如 `8096`），请在 `docker-compose.yaml` 追加端口映射，例如：`8096:8096`。
+`PROXY_DEPLOY_MODE`：
 
-### 5. 常用环境变量（可选）
+- `front_proxy`（默认）
+  - 容器内仅 HTTP 反代
+  - 适合上游已终止 TLS 的场景（如外层 Nginx/Caddy/Traefik）
 
-- `PANEL_ENABLED`：是否启用面板（默认 `1`）
-- `PANEL_PORT`：面板端口（默认 `8080`）
-- `PANEL_BACKEND_PORT`：面板后端端口（默认 `18081`）
-- `PANEL_RULES_FILE`：规则文件路径（默认 `/opt/nginx-reverse-emby/panel/data/proxy_rules.csv`）
-- `PANEL_AUTO_APPLY`：面板修改后自动应用并重载 Nginx（默认 `1`）
-- `PANEL_API_TOKEN`：可选，开启后调用 API 需携带 `X-Panel-Token`
+- `direct`
+  - 根据前端 URL 协议生成 HTTP/HTTPS server
+  - `https://` 规则需要证书
+  - `http://` 规则走明文模板
 
-## Docker Deploy Modes (front_proxy vs direct)
+### 3.4 Direct 模式证书
 
-The Docker image now supports two runtime modes controlled by environment variables:
+核心变量：
+- `DIRECT_CERT_MODE=acme|manual`（默认 `acme`）
+- `DIRECT_CERT_DIR`（默认 `/etc/nginx/certs`）
+- `DIRECT_CERT_CLEANUP`（默认启用）
+- `ACME_EMAIL`
+- `ACME_DNS_PROVIDER`
+- `ACME_HOME`（默认 `/opt/acme.sh`）
+- `ACME_CA`
+- `ACME_STANDALONE_STOP_NGINX`
+- `ACME_AUTO_RENEW`（默认启用）
+- `ACME_RENEW_INTERVAL`（秒）
 
-- `PROXY_DEPLOY_MODE=front_proxy` (default)
-  - Intended for upstream Nginx/Caddy/Traefik TLS termination.
-  - Container serves HTTP reverse proxy blocks only.
+行为要点：
+- 先检查现有 acme.sh 记录，存在则跳过签发、直接安装证书文件。
+- DNS/Standalone 首次失败会清理残留后自动重试一次。
+- 若配置了 `ACME_DNS_PROVIDER` 但前端主机是 IP，会自动回退到 Standalone。
+- 删除 HTTPS 规则后，若域名不再被任何规则使用，可清理陈旧证书目录与 ACME 记录。
 
-- `PROXY_DEPLOY_MODE=direct`
-  - Container handles HTTPS directly based on each frontend rule URL scheme.
-  - `https://...` frontend rules render TLS server blocks and require certificates.
-  - `http://...` frontend rules render HTTP-only blocks.
-  - IPv4/IPv6 frontend hosts are supported for certificate issuance (IP certs use short-lived profile).
+### 3.5 面板模式
 
-### Direct Mode Certificate Variables
+默认面板入口：`http://<host>:8080/`。
 
-- `DIRECT_CERT_MODE=acme|manual` (default `acme`)
-- `DIRECT_CERT_DIR` (default `/etc/nginx/certs`)
-- `DIRECT_CERT_CLEANUP` (default `1`, removes stale certs when rules are deleted)
-- `ACME_EMAIL` (recommended)
-- `ACME_DNS_PROVIDER` (optional, e.g. `cf`)
-- `ACME_HOME` (default `/opt/acme.sh`)
-- `ACME_CA` (default `letsencrypt`)
-- `ACME_STANDALONE_STOP_NGINX` (default `1`)
-- `ACME_AUTO_RENEW` (default `1`)
-- `ACME_RENEW_INTERVAL` (seconds, default `86400`)
+- nginx 代理到后端 `PANEL_BACKEND_PORT`（默认 `18081`）
+- API 路由：
+  - `GET /api/rules`
+  - `POST /api/rules`
+  - `PUT /api/rules/:id`
+  - `DELETE /api/rules/:id`
+  - `POST /api/apply`
+- `PANEL_AUTO_APPLY` 默认开启：增删改规则后自动执行 `generate -> nginx -t -> nginx -s reload`
 
-Direct-mode ACME behavior now follows `deploy.sh`:
-- It checks existing ACME record first (`acme.sh --info ... --ecc`), then skips re-issue if already managed.
-- Both DNS and standalone issuance paths perform stale-record cleanup and retry once on first failure.
-- If `ACME_DNS_PROVIDER` is set but frontend host is an IP, it automatically falls back to standalone challenge.
+---
 
-In `direct` mode, deleting an HTTPS rule triggers a config re-apply and stale cert cleanup for domains no longer used by any rule.
+## 4. 常见配置示例
 
-Cloudflare DNS mode can use the standard acme.sh vars:
-- `CF_Token`
-- `CF_Account_ID`
-
-### Dockerfile Frontend Build
-
-Dockerfile now uses multi-stage build to compile `panel/frontend` during image build:
-
-- Stage 1 (`node:24-alpine`): `npm ci` + `npm run build`
-- Stage 2 (`nginx:latest`): copy built frontend artifacts and runtime scripts
-- Runtime `node` binary is provided from `node:24-bookworm-slim` for panel backend.
-
-If you run `direct` mode, map `443` as needed and persist cert data volumes, for example:
+### 4.1 front_proxy（默认）
 
 ```yaml
-ports:
-  - "80:80"
-  - "443:443"
-volumes:
-  - nre_certs:/etc/nginx/certs
-  - nre_acme:/opt/acme.sh
+services:
+  nginx-reverse-emby:
+    image: ghcr.io/sakullla/nginx-reverse-emby:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+      - "80:80"
+    environment:
+      - PROXY_DEPLOY_MODE=front_proxy
+      - PROXY_RULE_1=https://proxy.example.com,http://emby:8096
+    volumes:
+      - nre_panel_data:/opt/nginx-reverse-emby/panel/data
 ```
+
+### 4.2 direct（容器内自管 HTTPS）
+
+```yaml
+services:
+  nginx-reverse-emby:
+    image: ghcr.io/sakullla/nginx-reverse-emby:latest
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+      - "80:80"
+      - "443:443"
+    environment:
+      - PROXY_DEPLOY_MODE=direct
+      - DIRECT_CERT_MODE=acme
+      - ACME_EMAIL=admin@example.com
+      - ACME_DNS_PROVIDER=cf
+      - CF_Token=xxxxxxxx
+      - CF_Account_ID=xxxxxxxx
+      - PROXY_RULE_1=https://media.example.com,http://emby:8096
+    volumes:
+      - nre_panel_data:/opt/nginx-reverse-emby/panel/data
+      - nre_certs:/etc/nginx/certs
+      - nre_acme:/opt/acme.sh
+```
+
+---
+
+## 5. 验证清单
+
+主机模式建议至少验证：
+1. `nginx -t`
+2. 部署一次 HTTPS 域名
+3. 部署一次 IPv6 URL
+4. 部署一次 HTTP（无 TLS）
+5. 执行一次 `--remove https://domain:port --yes`
+
+Docker 模式建议至少验证：
+1. `docker build -t nginx-reverse-emby .`
+2. 连续下标 `PROXY_RULE_1..N` 正常生效
+3. 面板可通过 `PANEL_PORT` 访问（默认 `8080`）
+4. `dynamic/` 下配置文件数量与命名正确
+5. 路径转发与重写符合预期
+6. `front_proxy` 在上游 TLS 终止场景可用
+7. `direct` 可完成 HTTPS 规则证书签发和安装
+8. 删规则后可清理陈旧证书目录/记录
+9. `DIRECT_CERT_MODE=acme` 时自动续期循环正常
+
+---
+
+## 6. 已知文档偏差（历史）
+
+- 旧文档可能写成 `--template`，实现实际为 `--template-domain-config`。
+- `--remove` 示例若不带 scheme，容易造成匹配歧义；建议始终使用完整 URL。
+- `--parse-cert-domain` 不是通用“根域名提取”，只在匹配 `*.*.*` 时触发。
+- Docker 环境变量规则是“连续索引”策略，不支持跳号。
+
+---
+
+## 7. 贡献与同步要求
+
+当实现行为发生变化时，请在同一补丁中同步更新：
+- `README.md`
+- `AGENTS.md`
+- `CLAUDE.md`
+
+并优先以 `deploy.sh` 与 `docker/25-dynamic-reverse-proxy.sh` 的实际实现作为事实依据。

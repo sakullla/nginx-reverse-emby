@@ -1,6 +1,8 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file is the source-of-truth guide for AI coding agents working in this repository.
+This file is the source-of-truth operational guide for AI coding agents working in this repository.
+
+> Consistency rule: Keep this file aligned with `CLAUDE.md`. If implementation changes behavior, update `README.md`, `AGENTS.md`, and `CLAUDE.md` in the same patch.
 
 ## Project Summary
 
@@ -32,7 +34,7 @@ Primary implementation lives in `deploy.sh`.
 - `Dockerfile`: multi-stage image build (includes frontend build)
 - `.github/workflows/docker-build.yml`: GHCR build/push
 
-## Runtime Flow (deploy.sh)
+## Runtime Flow (`deploy.sh`)
 
 `main()` order:
 1. `parse_arguments`
@@ -70,7 +72,7 @@ Supported options:
 
 Important behavior notes:
 - Long option is `--template-domain-config` (not `--template`).
-- `--remove` expects a full URL including scheme.
+- `--remove` should use a full URL including scheme for deterministic matching.
 - `parse_url()` format is `proto|domain|port|path`; bracketed IPv6 is supported.
 - `--parse-cert-domain` auto-root extraction is only applied when domain matches `*.*.*`.
 
