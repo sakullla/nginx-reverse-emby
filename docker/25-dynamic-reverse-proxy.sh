@@ -7,7 +7,7 @@ DIRECT_NO_TLS_TEMPLATE_FILE="/etc/nginx/templates/default.direct.no_tls.conf"
 DIRECT_TLS_TEMPLATE_FILE="/etc/nginx/templates/default.direct.tls.conf"
 DYNAMIC_DIR="/etc/nginx/conf.d/dynamic"
 
-# 统一数据根目录
+# Data root
 DATA_ROOT="/opt/nginx-reverse-emby/panel/data"
 RULES_FILE="${PANEL_RULES_FILE:-$DATA_ROOT/proxy_rules.csv}"
 ACME_HOME="${ACME_HOME:-$DATA_ROOT/.acme.sh}"
@@ -103,11 +103,13 @@ nginx_is_running() {
     kill -0 "$nginx_pid" 2>/dev/null
 }
 
-nginx_is_pid1() {
-    nginx_pid_file="/var/run/nginx.pid"
-    [ -r "$nginx_pid_file" ] || return 1
-    nginx_pid=$(cat "$nginx_pid_file" 2>/dev/null || true)
-    [ "$nginx_pid" = "1" ]
+
+fail_standalone_if_nginx_running() {
+    cert_domain="$1"
+    if nginx_is_running; then
+        echo "[PROXY] error: cannot issue certificate for $cert_domain via standalone while nginx is already running and occupying port 80. Configure ACME_DNS_PROVIDER, pre-create the rule before container startup, or disable PANEL_AUTO_APPLY and restart after saving the rule." >&2
+        return 1
+    fi
 }
 
 ensure_acme_script() {
@@ -162,6 +164,7 @@ issue_cert_with_acme() {
         entrypoint_log "Issuing via DNS: $ACME_DNS_PROVIDER for $cert_domain_clean"
         "$ACME_SCRIPT" --issue $ACME_COMMON_ARGS --server "$ACME_CA" --dns "dns_$ACME_DNS_PROVIDER" -d "$cert_domain_clean" --keylength ec-256
     else
+        fail_standalone_if_nginx_running "$cert_domain_clean"
         entrypoint_log "Issuing via Standalone for $cert_domain_clean"
         issue_args="$ACME_COMMON_ARGS --server $ACME_CA --standalone -d $cert_domain_clean --keylength ec-256"
         if is_ip_address "$cert_domain_clean"; then
@@ -191,19 +194,6 @@ ensure_certificates_for_rules() {
 
     ensure_acme_script
 
-    # 检查是否需要停 Nginx (Standalone 模式且非 DNS 模式)
-    nginx_was_running=0
-    if is_true "$ACME_STANDALONE_STOP_NGINX" && [ -z "$ACME_DNS_PROVIDER" ]; then
-        if nginx_is_running; then
-            if nginx_is_pid1; then
-                entrypoint_log "Skipping Nginx stop for standalone challenge because nginx is the container main process"
-            else
-                nginx_was_running=1
-                entrypoint_log "Stopping Nginx for acme standalone challenge..."
-                "$NGINX_BIN" -s stop >/dev/null 2>&1 || true
-            fi
-        fi
-    fi
 
     while IFS= read -r cert_domain || [ -n "$cert_domain" ]; do
         cert_domain=$(trim_text "$cert_domain")
@@ -212,10 +202,6 @@ ensure_certificates_for_rules() {
         install_cert_files "$cert_domain"
     done < "$cert_domains_file"
 
-    if [ "$nginx_was_running" -eq 1 ]; then
-        entrypoint_log "Restarting Nginx..."
-        "$NGINX_BIN" >/dev/null 2>&1 || true
-    fi
 }
 
 cleanup_unused_certificates() {
@@ -311,3 +297,4 @@ fi
 
 rm -f "$tmp_rules" "$tmp_certs"
 exit 0
+
