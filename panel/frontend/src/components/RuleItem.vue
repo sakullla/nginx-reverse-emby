@@ -74,7 +74,7 @@
           <svg viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
         </div>
         <div class="confirm-text">
-          <p>确定要删除规则 <strong>#{{ rule.id }}</strong> 吗？</p>
+          <p class="confirm-title">确定要删除规则 <strong>#{{ rule.id }}</strong> 吗？</p>
           <div class="rule-details-preview">
             <div class="preview-item">
               <span class="label">前端:</span>
@@ -166,13 +166,15 @@ const confirmDelete = async () => {
 /* 删除弹窗样式 */
 .delete-confirm-content {
   display: flex;
-  gap: var(--spacing-lg);
-  align-items: flex-start;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 0 var(--spacing-sm);
 }
 
 .warning-icon {
-  width: 48px;
-  height: 48px;
+  width: 56px;
+  height: 56px;
   background: var(--color-danger-bg);
   color: var(--color-danger);
   border-radius: 50%;
@@ -180,28 +182,39 @@ const confirmDelete = async () => {
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
+  margin-bottom: var(--spacing-md);
+  box-shadow: 0 0 0 6px rgba(244, 63, 94, 0.1);
 }
 
 .warning-icon svg {
-  width: 24px;
-  height: 24px;
+  width: 28px;
+  height: 28px;
   stroke: currentColor;
   stroke-width: 2;
   fill: none;
 }
 
-.confirm-text p {
-  margin: 0 0 var(--spacing-sm) 0;
+.confirm-text {
+  width: 100%;
+}
+
+.confirm-title {
+  margin: 0 0 var(--spacing-md) 0;
+  font-size: 1.1rem;
+  color: var(--color-heading);
 }
 
 .rule-details-preview {
   background: var(--color-bg-secondary);
-  padding: var(--spacing-sm) var(--spacing-md);
+  padding: var(--spacing-md);
   border-radius: var(--radius-md);
-  border-left: 4px solid var(--color-danger);
   margin: var(--spacing-md) 0;
   font-size: 0.85rem;
   font-family: var(--font-family-mono);
+  text-align: left;
+  border: 1px solid var(--color-border-light);
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .preview-item {
@@ -212,7 +225,8 @@ const confirmDelete = async () => {
 
 .preview-item .label {
   color: var(--color-text-muted);
-  width: 40px;
+  width: 45px;
+  flex-shrink: 0;
 }
 
 .preview-item .value {
@@ -221,9 +235,9 @@ const confirmDelete = async () => {
 }
 
 .warning-note {
-  font-size: 0.8rem;
-  color: var(--color-text-muted);
-  font-style: italic;
+  font-size: 0.85rem;
+  color: var(--color-danger);
+  margin: var(--spacing-sm) 0 0 0;
 }
 
 .inline-input {

@@ -176,52 +176,93 @@ body {
 /* Responsive */
 @media (max-width: 1024px) {
     .container {
-        padding: 0 var(--spacing-md) var(--spacing-4xl);
+        padding: 0 var(--spacing-md) var(--spacing-3xl);
     }
 }
 
 @media (max-width: 768px) {
     .header {
-        margin-bottom: var(--spacing-xl);
-        padding: var(--spacing-xl) 0;
+        margin-bottom: var(--spacing-lg);
+        padding: var(--spacing-lg) 0;
     }
 
     .header h1 {
-        font-size: var(--font-size-2xl);
+        font-size: var(--font-size-xl);
+    }
+
+    .subtitle {
+        font-size: var(--font-size-sm);
     }
 
     .stats-grid {
         grid-template-columns: repeat(2, 1fr);
         gap: var(--spacing-sm);
+        margin-bottom: var(--spacing-xl);
     }
 
     .stat-card {
-        padding: var(--spacing-md);
+        padding: var(--spacing-sm);
     }
 
     .stat-icon {
-        width: 40px;
-        height: 40px;
-        font-size: 1.5rem;
+        width: 36px;
+        height: 36px;
     }
 
     .stat-value {
         font-size: var(--font-size-lg);
     }
 
+    .stat-label {
+        font-size: var(--font-size-xs);
+    }
+
     .add-rule-section,
     .rules-section {
-        padding: var(--spacing-lg);
+        padding: var(--spacing-md);
         border-radius: var(--radius-lg);
+        margin-bottom: var(--spacing-xl);
     }
-}
 
-@media (max-width: 480px) {
-    .stats-grid {
-        grid-template-columns: 1fr;
+    .section-header {
+        margin-bottom: var(--spacing-md);
+        padding-bottom: var(--spacing-sm);
     }
 
     .section-header h2 {
         font-size: var(--font-size-base);
+    }
+}
+
+@media (max-width: 480px) {
+    .container {
+        padding: 0 var(--spacing-sm) var(--spacing-2xl);
+    }
+
+    .stats-grid {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 6px;
+    }
+
+    .stat-card {
+        padding: 10px 8px;
+    }
+
+    .stat-icon {
+        width: 32px;
+        height: 32px;
+    }
+
+    .stat-content {
+        gap: 8px;
+    }
+
+    .stat-value {
+        font-size: var(--font-size-base);
+    }
+
+    .stat-label {
+        font-size: 10px;
+        white-space: nowrap;
     }
 }

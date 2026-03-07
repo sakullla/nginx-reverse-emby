@@ -7,6 +7,7 @@
         type="text"
         placeholder="前端 URL (如: https://example.com)"
         @input="errors.frontend = false"
+        :disabled="ruleStore.loading"
       />
       <transition name="fade">
         <div v-if="errors.frontend" class="error-tip">请填写此字段</div>
@@ -24,18 +25,22 @@
         type="text"
         placeholder="后端 URL (如: http://backend:8080)"
         @input="errors.backend = false"
+        :disabled="ruleStore.loading"
       />
       <transition name="fade">
         <div v-if="errors.backend" class="error-tip">请填写此字段</div>
       </transition>
     </div>
 
-    <button type="submit" :disabled="ruleStore.loading" class="add-button">
+    <button type="submit" :disabled="ruleStore.loading" class="add-button" :class="{ 'is-loading': ruleStore.loading }">
       <span v-if="!ruleStore.loading" class="btn-content">
         <span class="icon-btn" v-html="icons.plus"></span>
         添加规则
       </span>
-      <span v-else class="loading-mini"></span>
+      <span v-else class="btn-content">
+        <span class="loading-mini"></span>
+        正在应用配置...
+      </span>
     </button>
   </form>
 </template>
@@ -152,12 +157,19 @@ input {
   padding: 0 var(--spacing-lg);
   white-space: nowrap;
   flex-shrink: 0;
+  transition: all var(--transition-fast);
+}
+
+.add-button:disabled {
+  opacity: 0.8;
+  cursor: not-allowed;
 }
 
 .btn-content {
   display: flex;
   align-items: center;
-  gap: 6px;
+  justify-content: center;
+  gap: 8px;
 }
 
 .icon-btn :deep(svg) {
@@ -191,17 +203,32 @@ input {
   .rule-form-inline {
     flex-direction: column;
     align-items: stretch;
-    gap: var(--spacing-lg); /* 增加间距以容纳错误提示 */
+    gap: var(--spacing-md);
   }
   .separator {
     display: none;
   }
   .add-button {
     margin-top: var(--spacing-xs);
+    width: 100%;
   }
   .error-tip {
     top: auto;
     bottom: -18px;
+  }
+}
+
+@media (max-width: 480px) {
+  input {
+    height: 40px;
+    font-size: 0.9rem;
+  }
+  .add-button {
+    height: 42px;
+  }
+  .input-icon {
+    width: 14px;
+    height: 14px;
   }
 }
 </style>
