@@ -137,7 +137,7 @@ ensure_acme_script() {
     chmod +x "$tmp_acme_install"
     if ! (
         cd "$tmp_acme_dir" &&
-        ./acme.sh --install $ACME_COMMON_ARGS ${ACME_EMAIL:+--accountemail "$ACME_EMAIL"}
+        sh "$tmp_acme_install" --install-online --nocron $ACME_COMMON_ARGS ${ACME_EMAIL:+--accountemail "$ACME_EMAIL"}
     ); then
         rm -rf "$tmp_acme_dir"
         return 1
