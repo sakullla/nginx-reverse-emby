@@ -56,17 +56,6 @@
             />
           </section>
 
-          <!-- 添加规则区域 -->
-          <section class="add-rule-section">
-            <div class="section-header">
-              <h2>
-                <span class="icon-inline" v-html="icons.plus"></span>
-                新增反向代理规则
-              </h2>
-            </div>
-            <RuleForm />
-          </section>
-
           <!-- 规则列表区域 -->
           <section class="rules-section">
             <div class="section-header">
@@ -74,10 +63,27 @@
                 <span class="icon-inline" v-html="icons.list"></span>
                 代理规则列表
               </h2>
-              <ActionBar />
+              <div class="header-actions">
+                <button @click="showAddModal = true" class="add-rule-btn primary">
+                  <span class="icon-inline" v-html="icons.plus"></span>
+                  添加规则
+                </button>
+                <ActionBar />
+              </div>
             </div>
             <RuleList />
           </section>
+
+          <!-- 添加规则弹窗 -->
+          <Teleport to="body">
+            <BaseModal
+              v-model="showAddModal"
+              title="新增反向代理规则"
+              :show-default-footer="false"
+            >
+              <RuleForm @success="showAddModal = false" />
+            </BaseModal>
+          </Teleport>
         </main>
       </template>
     </template>
@@ -85,7 +91,7 @@
 </template>
 
 <script setup>
-import { onMounted, computed } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { useRuleStore } from './stores/rules'
 import StatusMessage from './components/StatusMessage.vue'
 import RuleForm from './components/RuleForm.vue'
@@ -94,8 +100,10 @@ import RuleList from './components/RuleList.vue'
 import StatCard from './components/base/StatCard.vue'
 import ThemeToggle from './components/base/ThemeToggle.vue'
 import TokenAuth from './components/base/TokenAuth.vue'
+import BaseModal from './components/base/BaseModal.vue'
 
 const ruleStore = useRuleStore()
+const showAddModal = ref(false)
 
 // SVG 图标定义
 const icons = {
@@ -187,5 +195,35 @@ onMounted(async () => {
 @keyframes rotation {
   0% { transform: rotate(0deg); }
   100% { transform: rotate(360deg); }
+}
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+}
+
+.add-rule-btn {
+  height: 40px;
+  padding: 0 var(--spacing-lg);
+  font-weight: var(--font-weight-semibold);
+  font-size: var(--font-size-sm);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+@media (max-width: 768px) {
+  .header-actions {
+    flex-direction: column;
+    align-items: stretch;
+    width: 100%;
+    gap: var(--spacing-sm);
+  }
+
+  .add-rule-btn {
+    width: 100%;
+    justify-content: center;
+    height: 46px;
+  }
 }
 </style>

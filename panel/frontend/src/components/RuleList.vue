@@ -1,30 +1,37 @@
 <template>
-  <div>
-    <div v-if="ruleStore.loading && !ruleStore.hasRules" class="loading">
+  <div class="rules-container">
+    <div v-if="ruleStore.loading && !ruleStore.hasRules" class="loading-state">
       <div class="spinner"></div>
-      <p>加载中...</p>
+      <p>正在获取代理规则...</p>
     </div>
 
     <template v-else>
-      <div class="search-container" v-if="ruleStore.hasRules">
-        <span class="search-icon">🔍</span>
-        <input
-          v-model="ruleStore.searchQuery"
-          type="text"
-          placeholder="搜索规则 ID、前端或后端 URL..."
-          class="search-input"
-        >
+      <div class="list-controls" v-if="ruleStore.hasRules">
+        <div class="search-box">
+          <span class="search-icon">
+            <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          </span>
+          <input
+            v-model="ruleStore.searchQuery"
+            type="text"
+            placeholder="搜索规则 ID、前端或后端 URL..."
+            class="search-input"
+          >
+          <button v-if="ruleStore.searchQuery" @click="ruleStore.searchQuery = ''" class="clear-search">
+            ×
+          </button>
+        </div>
       </div>
 
       <EmptyState
         v-if="!ruleStore.hasRules"
         icon="🎯"
         title="还没有代理规则"
-        description="开始添加您的第一条反向代理规则,让流量管理变得简单高效!"
+        description="开始添加您的第一条反向代理规则，让流量管理变得简单高效！"
       >
         <template #action>
-          <p style="color: var(--color-text-muted); font-size: var(--font-size-sm);">
-            在上方表单中输入前端和后端 URL 即可添加规则
+          <p class="empty-hint">
+            点击上方的“添加规则”按钮开始
           </p>
         </template>
       </EmptyState>
@@ -36,35 +43,19 @@
         :description="`未能找到包含 '${ruleStore.searchQuery}' 的规则。`"
       >
         <template #action>
-          <button @click="ruleStore.searchQuery = ''" class="secondary small">
-            重置搜索
+          <button @click="ruleStore.searchQuery = ''" class="btn secondary small">
+            重置搜索条件
           </button>
         </template>
       </EmptyState>
 
-      <table v-else class="responsive-table">
-        <colgroup class="desktop-only">
-          <col style="width: 60px" />
-          <col />
-          <col />
-          <col style="width: 140px" />
-        </colgroup>
-        <thead class="desktop-only">
-          <tr>
-            <th>ID</th>
-            <th>前端 URL</th>
-            <th>后端 URL</th>
-            <th>操作</th>
-          </tr>
-        </thead>
-        <tbody class="table-body">
-          <RuleItem
-            v-for="rule in ruleStore.filteredRules"
-            :key="rule.id"
-            :rule="rule"
-          />
-        </tbody>
-      </table>
+      <div v-else class="rules-grid">
+        <RuleItem
+          v-for="rule in ruleStore.filteredRules"
+          :key="rule.id"
+          :rule="rule"
+        />
+      </div>
     </template>
   </div>
 </template>
@@ -78,18 +69,111 @@ const ruleStore = useRuleStore()
 </script>
 
 <style scoped>
+.rules-container {
+  min-height: 200px;
+}
+
+.loading-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--spacing-4xl) 0;
+  color: var(--color-text-muted);
+}
+
+.spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid var(--color-border);
+  border-top-color: var(--color-primary);
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  margin-bottom: var(--spacing-md);
+}
+
+.list-controls {
+  margin-bottom: var(--spacing-xl);
+}
+
+.search-box {
+  position: relative;
+  max-width: 500px;
+}
+
+.search-icon {
+  position: absolute;
+  left: var(--spacing-md);
+  top: 50%;
+  transform: translateY(-50%);
+  width: 18px;
+  height: 18px;
+  color: var(--color-text-muted);
+  pointer-events: none;
+}
+
+.search-icon svg {
+  width: 100%;
+  height: 100%;
+  stroke: currentColor;
+  stroke-width: 2.5;
+  fill: none;
+}
+
+.search-input {
+  width: 100%;
+  height: 44px;
+  padding: 0 var(--spacing-xl) 0 calc(var(--spacing-md) * 2.8);
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  font-size: var(--font-size-sm);
+  transition: all var(--transition-base);
+}
+
+.search-input:focus {
+  background: var(--color-bg-primary);
+  border-color: var(--color-primary);
+  box-shadow: 0 0 0 3px var(--color-primary-lighter);
+}
+
+.clear-search {
+  position: absolute;
+  right: var(--spacing-sm);
+  top: 50%;
+  transform: translateY(-50%);
+  background: var(--color-bg-tertiary);
+  border: none;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  font-size: 1.2rem;
+}
+
+.empty-hint {
+  color: var(--color-text-muted);
+  font-size: var(--font-size-sm);
+  margin-top: var(--spacing-md);
+}
+
+.rules-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+  gap: var(--spacing-lg);
+}
+
 @media (max-width: 768px) {
-  .desktop-only {
-    display: none;
+  .rules-grid {
+    grid-template-columns: 1fr;
   }
 
-  .responsive-table {
-    display: block;
-    border: none;
-  }
-
-  .table-body {
-    display: block;
+  .search-box {
+    max-width: 100%;
   }
 }
 </style>
