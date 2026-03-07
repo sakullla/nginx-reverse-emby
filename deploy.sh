@@ -135,7 +135,8 @@ show_help() {
   -d, --parse-cert-domain        (可选) 自动提取根域名作为证书域名。
   -D, --dns <provider>           (可选) 使用 DNS API 模式申请证书 (例如: cf)。
   -R, --resolver <DNS>           (可选) 手动指定 DNS 解析服务器。
-  -c, --template <URL>           (可选) 指定自定义 Nginx 配置文件模板。
+  -c, --template-domain-config <URL>
+                                 (可选) 指定自定义 Nginx 配置文件模板。
   --gh-proxy <URL>               (可选) 指定 GitHub 加速代理。
   --cf-token <TOKEN>             Cloudflare API Token。
   --cf-account-id <ID>           Cloudflare Account ID。
@@ -226,6 +227,24 @@ download_with_verify() {
         log_error "无法下载: $url"
         return 1
     fi
+}
+
+# --- acme.sh: 判断证书是否可用 ---
+acme_cert_is_issued() {
+    local cert_domain="$1"
+    "$ACME_SH" --info -d "$cert_domain" --ecc 2>/dev/null | grep -q "RealFullChainPath"
+}
+
+# --- acme.sh: 清理失败后残留记录，避免二次申请报错 ---
+cleanup_stale_acme_record() {
+    local cert_domain="$1"
+    if [[ -z "$cert_domain" || ! -f "$ACME_SH" ]]; then
+        return 0
+    fi
+
+    log_warn "尝试清理 acme.sh 可能残留的证书状态..."
+    "$ACME_SH" --remove -d "$cert_domain" --ecc >/dev/null 2>&1 || true
+    "$ACME_SH" --remove -d "$cert_domain" >/dev/null 2>&1 || true
 }
 
 # --- 获取协议 ---
@@ -575,6 +594,11 @@ issue_certificate() {
     fi
 
     ACME_SH="$HOME/.acme.sh/acme.sh"
+    if [[ ! -f "$ACME_SH" ]]; then
+        log_error "未找到 acme.sh，请先完成依赖安装。"
+        return 1
+    fi
+
     # 直接使用 format_cert_domain (无括号) 构建路径
     local cert_path_base="/etc/nginx/certs/$format_cert_domain"
     local reload_cmd="$SUDO nginx -s reload"
@@ -592,14 +616,21 @@ issue_certificate() {
     fi
 
     # 检查证书是否已存在 (使用 format_cert_domain 查询)
-    if ! "$ACME_SH" --info -d "$format_cert_domain" --ecc 2>/dev/null | grep -q RealFullChainPath; then
+    if ! acme_cert_is_issued "$format_cert_domain"; then
         log_info "证书不存在，开始申请..."
         $SUDO mkdir -p "$cert_path_base"
+        cleanup_stale_acme_record "$format_cert_domain"
 
         if [[ -n "$dns_provider" ]]; then
-            issue_certificate_dns
+            if ! issue_certificate_dns; then
+                cleanup_stale_acme_record "$format_cert_domain"
+                return 1
+            fi
         else
-            issue_certificate_standalone "$is_ip"
+            if ! issue_certificate_standalone "$is_ip"; then
+                cleanup_stale_acme_record "$format_cert_domain"
+                return 1
+            fi
         fi
         log_success "证书申请成功。"
     else
@@ -610,12 +641,16 @@ issue_certificate() {
     $SUDO mkdir -p "$cert_path_base"
     log_info "正在安装证书到 Nginx 目录..."
     # 使用 format_cert_domain (无括号) 安装
-    "$ACME_SH" --install-cert -d "$format_cert_domain" --ecc \
+    if ! "$ACME_SH" --install-cert -d "$format_cert_domain" --ecc \
         --fullchain-file "$cert_path_base/cert" \
         --key-file "$cert_path_base/key" \
-        --reloadcmd "$reload_cmd"
-    
+        --reloadcmd "$reload_cmd"; then
+        log_error "证书安装失败。"
+        return 1
+    fi
+
     log_success "证书安装并部署完成。"
+    return 0
 }
 
 # --- 证书申请：DNS 模式 ---
@@ -641,10 +676,17 @@ issue_certificate_dns() {
     fi
 
     log_info "使用 DNS 模式 ($dns_provider) 申请证书..."
-    "$ACME_SH" --issue --dns "$dns_arg" $domains_arg --keylength ec-256 || {
-        log_error "证书申请失败。"
-        exit 1
-    }
+    if "$ACME_SH" --issue --dns "$dns_arg" $domains_arg --keylength ec-256; then
+        return 0
+    fi
+
+    log_warn "DNS 申请首次失败，清理残留状态后重试一次..."
+    cleanup_stale_acme_record "$format_cert_domain"
+    if ! "$ACME_SH" --issue --dns "$dns_arg" $domains_arg --keylength ec-256; then
+        log_error "证书申请失败（重试后仍失败）。"
+        return 1
+    fi
+    return 0
 }
 
 # --- 证书申请：Standalone 模式 (支持 IPv6) ---
@@ -654,14 +696,12 @@ issue_certificate_standalone() {
     # 泛域名检查：如果不是 IP，且 format_cert_domain 不等于 you_domain (说明是 *.xxx)，则不能用 standalone
     if [[ "$is_ip_mode" != "true" && "$format_cert_domain" != "$you_domain" ]]; then
         log_error "泛域名证书必须使用 DNS 模式申请。"
-        exit 1
+        return 1
     fi
 
     log_info "使用 Standalone 模式申请证书..."
     
-    # 针对 IPv6，acme.sh 需要纯 IP 地址 (不带方括号)
-    # 针对普通域名，保留原样
-    local acme_domain="$you_domain"
+    # 针对 IPv6，acme.sh 需要额外监听参数
     local listen_arg=""
     
     if [[ "$is_ip_mode" == "true" ]]; then
@@ -673,11 +713,18 @@ issue_certificate_standalone() {
     fi
     
     # 使用 format_cert_domain (无括号) 进行申请
-    # 添加 --force 以防止 key 已存在导致的错误
-    if ! "$ACME_SH" --issue --standalone -d "$format_cert_domain" --keylength ec-256 $issue_extra_args $listen_arg; then
-        log_error "证书申请失败。请检查域名/IP解析是否正确，或防火墙是否放行 80 端口。"
-        exit 1
+    if "$ACME_SH" --issue --standalone -d "$format_cert_domain" --keylength ec-256 $issue_extra_args $listen_arg; then
+        return 0
     fi
+
+    log_warn "Standalone 申请首次失败，清理残留状态后重试一次..."
+    cleanup_stale_acme_record "$format_cert_domain"
+    if ! "$ACME_SH" --issue --standalone -d "$format_cert_domain" --keylength ec-256 $issue_extra_args $listen_arg; then
+        log_error "证书申请失败（重试后仍失败）。请检查域名/IP解析是否正确，或防火墙是否放行 80 端口。"
+        return 1
+    fi
+
+    return 0
 }
 
 # --- 7. 移除配置 ---
@@ -689,6 +736,17 @@ remove_domain_config() {
     # 注意：parse_url 返回格式为 proto|domain|port|path
     local domain port temp_path temp_proto
     IFS='|' read -r temp_proto domain port temp_path < <(parse_url "$remove_url")
+
+    # 兼容无协议输入: example.com 或 [IPv6]
+    if [[ -z "$domain" && -n "$temp_proto" && "$temp_proto" != "http" && "$temp_proto" != "https" ]]; then
+        domain="$temp_proto"
+        temp_proto=""
+    fi
+
+    if [[ -z "$domain" ]]; then
+        log_error "无法解析待移除域名，请使用完整 URL（如 https://example.com:443）。"
+        exit 1
+    fi
 
     # 处理 IPv6 域名中的方括号 (用于匹配文件名)
     local clean_domain="${domain//[\[\]]/}"
@@ -720,16 +778,31 @@ remove_domain_config() {
     local uses_tls="no"
     local remove_cert_domain=""
     local cert_dir=""
+    local cert_full_path=""
+    local cert_shared="no"
 
     if $SUDO grep -q "ssl_certificate" "$nginx_conf_file"; then
         uses_tls="yes"
-        # [优化] 从 Nginx 配置中直接推断证书域名
-        local cert_full_path
+        # 从 Nginx 配置中直接推断证书域名
         cert_full_path=$($SUDO awk "/ssl_certificate / {print \$2}" "$nginx_conf_file" | head -n 1 | sed 's/;//')
-        local cert_parent_dir
-        cert_parent_dir=$(dirname "$cert_full_path")
-        remove_cert_domain=$(basename "$cert_parent_dir")
-        cert_dir="/etc/nginx/certs/$remove_cert_domain"
+        if [[ -z "$cert_full_path" ]]; then
+            log_warn "无法从配置中解析证书路径，将跳过证书删除，仅移除站点配置。"
+            cert_shared="yes"
+        else
+            local cert_parent_dir
+            cert_parent_dir=$(dirname "$cert_full_path")
+            remove_cert_domain=$(basename "$cert_parent_dir")
+            cert_dir="/etc/nginx/certs/$remove_cert_domain"
+
+            # 精确判断是否共享证书: 是否被其他 conf 引用
+            local current_conf_basename
+            current_conf_basename=$(basename "$nginx_conf_file")
+            local other_refs
+            other_refs=$($SUDO grep -Rsl -F "$cert_full_path" /etc/nginx/conf.d --exclude="$current_conf_basename" 2>/dev/null || true)
+            if [[ -n "$other_refs" ]]; then
+                cert_shared="yes"
+            fi
+        fi
     fi
 
     echo "--------------------------------------------------------"
@@ -737,23 +810,17 @@ remove_domain_config() {
     echo "将要为 '$domain' (端口: $port) 移除以下内容:"
     echo "  - Nginx 配置文件: $nginx_conf_file"
 
-    local is_wildcard_setup="no"
-    # 如果证书目录名与当前域名(去括号后)不一致，通常认为是共享/泛域名
-    if [[ "$uses_tls" == "yes" && "$clean_domain" != "$remove_cert_domain" ]]; then
-        is_wildcard_setup="yes"
-    fi
-
     if [[ "$uses_tls" == "yes" ]]; then
-        if [[ "$is_wildcard_setup" == "no" ]]; then
-            if [ -d "$cert_dir" ]; then
+        if [[ "$cert_shared" == "no" ]]; then
+            if $SUDO [ -d "$cert_dir" ]; then
                 echo "  - Nginx 证书目录: $cert_dir"
             fi
             ACME_SH="$HOME/.acme.sh/acme.sh"
-            if [ -f "$ACME_SH" ]; then
+            if [[ -n "$remove_cert_domain" && -f "$ACME_SH" ]]; then
                  echo "  - acme.sh 证书记录 (针对域名: $remove_cert_domain)"
             fi
         else
-            echo -e "${YELLOW}  - 注意: 检测到泛域名或共享证书配置 ($remove_cert_domain)，将不会删除共享的证书文件。${NC}"
+            echo -e "${YELLOW}  - 注意: 检测到共享证书 ($remove_cert_domain)，已被其他站点配置引用，将不会删除证书文件。${NC}"
         fi
     fi
     echo "--------------------------------------------------------"
@@ -780,21 +847,25 @@ remove_domain_config() {
     log_info "Nginx 配置文件已删除。"
 
     if [[ "$uses_tls" == "yes" ]]; then
-        if [[ "$is_wildcard_setup" == "no" ]]; then
-            if [ -d "$cert_dir" ]; then
+        if [[ "$cert_shared" == "no" ]]; then
+            if $SUDO [ -d "$cert_dir" ]; then
                 $SUDO rm -rf "$cert_dir"
                 log_info "Nginx 证书目录已删除。"
             fi
 
             ACME_SH="$HOME/.acme.sh/acme.sh"
-            if [ -f "$ACME_SH" ]; then
-                # 使用 remove_cert_domain (它来自配置文件路径，最准确)
-                "$ACME_SH" --remove -d "$remove_cert_domain" --ecc >/dev/null 2>&1 || log_warn "从 acme.sh 移除证书失败，可能记录已不存在。"
-                log_info "acme.sh 证书记录已移除。"
+            if [[ -n "$remove_cert_domain" && -f "$ACME_SH" ]]; then
+                # 优先删除 ECC 记录，失败再尝试默认类型，避免遗留
+                if "$ACME_SH" --remove -d "$remove_cert_domain" --ecc >/dev/null 2>&1 || \
+                   "$ACME_SH" --remove -d "$remove_cert_domain" >/dev/null 2>&1; then
+                    log_info "acme.sh 证书记录已移除。"
+                else
+                    log_warn "从 acme.sh 移除证书失败，可能记录已不存在。"
+                fi
             fi
         else
             log_info "证书目录和 acme.sh 记录未被删除。"
-            echo "如果您确认不再需要此证书，请手动执行以下命令进行清理："
+            echo "如果确认其他站点已不再引用此证书，请手动执行以下命令清理："
             echo "  $HOME/.acme.sh/acme.sh --remove -d '$remove_cert_domain' --ecc"
             echo "  $SUDO rm -rf '$cert_dir'"
         fi
@@ -845,7 +916,9 @@ main() {
     display_summary
     install_dependencies
     generate_nginx_config
-    issue_certificate
+    if ! issue_certificate; then
+        exit 1
+    fi
     
     if test_and_reload_nginx; then
         log_success "部署成功！"
