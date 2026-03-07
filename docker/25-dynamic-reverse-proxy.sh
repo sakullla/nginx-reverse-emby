@@ -173,7 +173,12 @@ issue_cert_with_acme() {
 
     if [ -n "$ACME_DNS_PROVIDER" ] && ! is_ip_address "$cert_domain_clean"; then
         entrypoint_log "Issuing via DNS: $ACME_DNS_PROVIDER for $cert_domain_clean"
-        "$ACME_SCRIPT" --issue $ACME_COMMON_ARGS --server "$ACME_CA" --dns "dns_$ACME_DNS_PROVIDER" -d "$cert_domain_clean" --keylength ec-256
+        if "$ACME_SCRIPT" --issue $ACME_COMMON_ARGS --server "$ACME_CA" --dns "dns_$ACME_DNS_PROVIDER" -d "$cert_domain_clean" --keylength ec-256; then
+            return 0
+        fi
+        entrypoint_log "Initial DNS issuance failed for $cert_domain_clean, retrying with --force after cleanup..."
+        cleanup_stale_acme_record "$cert_domain_clean"
+        "$ACME_SCRIPT" --issue --force $ACME_COMMON_ARGS --server "$ACME_CA" --dns "dns_$ACME_DNS_PROVIDER" -d "$cert_domain_clean" --keylength ec-256
     else
         fail_standalone_if_port_80_in_use "$cert_domain_clean"
         entrypoint_log "Issuing via Standalone for $cert_domain_clean"
@@ -184,7 +189,12 @@ issue_cert_with_acme() {
         if printf '%s' "$cert_domain_clean" | grep -q ':'; then
             issue_args="$issue_args --listen-v6"
         fi
-        "$ACME_SCRIPT" --issue $issue_args
+        if "$ACME_SCRIPT" --issue $issue_args; then
+            return 0
+        fi
+        entrypoint_log "Initial standalone issuance failed for $cert_domain_clean, retrying with --force after cleanup..."
+        cleanup_stale_acme_record "$cert_domain_clean"
+        "$ACME_SCRIPT" --issue --force $issue_args
     fi
 }
 

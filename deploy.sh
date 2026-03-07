@@ -53,10 +53,10 @@ setup_env() {
     # [技巧] 使用字符串拼接定义基础 URL，防止被镜像站的自动替换机制修改 (Anti-Rewrite)
     local GH_RAW_HOST="raw.githubusercontent.com"
     local URL_PREFIX="https://${GH_RAW_HOST}"
-    
+
     local RAW_URL_BASE="${URL_PREFIX}/sakullla/nginx-reverse-emby/main"
     local ACME_OFFICIAL_RAW="${URL_PREFIX}/acmesh-official/acme.sh/master/acme.sh"
-    
+
     # 确定代理地址: 命令行参数 > 环境变量 > 自动检测
     local effective_gh_proxy="${manual_gh_proxy:-${GH_PROXY}}"
     if [[ -z "$effective_gh_proxy" ]] && is_in_china; then
@@ -71,7 +71,7 @@ setup_env() {
 
     if [[ -n "$effective_gh_proxy" ]]; then
         log_info "使用 GitHub 代理: ${effective_gh_proxy}"
-        
+
         # 通过代理获取配置 URL
         CONF_HOME="${effective_gh_proxy}${RAW_URL_BASE}"
         ACME_INSTALL_URL="${effective_gh_proxy}${ACME_OFFICIAL_RAW}"
@@ -159,7 +159,7 @@ has_ipv6() {
 get_resolver_host() {
     local system_dns
     system_dns=$(awk '/^nameserver/ { print ($2 ~ /:/ ? "["$2"]" : $2) }' /etc/resolv.conf 2>/dev/null | xargs)
-    
+
     if [[ -n "$system_dns" ]]; then
         echo "$system_dns"
     else
@@ -215,7 +215,7 @@ download_with_verify() {
     local url="$1"
     local output="$2"
     local verify_keyword="$3"
-    
+
     if curl -fsL "$url" -o "$output"; then
         if [[ -z "$verify_keyword" ]] || grep -q "$verify_keyword" "$output"; then
             return 0
@@ -263,12 +263,12 @@ is_ip_address() {
     if [[ "$clean_addr" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; then
         return 0
     fi
-    
+
     # IPv6 检查 (简单启发式: 包含冒号)
     if [[ "$clean_addr" =~ : ]]; then
         return 0
     fi
-    
+
     return 1
 }
 
@@ -284,7 +284,7 @@ process_url_input() {
     temp_proto=${temp_proto:-https}
     local default_port=$([[ "$temp_proto" == "http" ]] && echo 80 || echo 443)
     local is_http=$([[ "$temp_proto" == "http" ]] && echo "yes" || echo "no")
-    
+
     if [[ "$domain_type" == "you" ]]; then
         you_domain="$temp_domain"
         you_domain_path="$temp_path"
@@ -509,7 +509,7 @@ install_dependencies() {
        log_info "正在为当前用户安装 acme.sh... (URL: $ACME_INSTALL_URL)"
        local TMP_INSTALL_SCRIPT="./acme.sh"
        trap "rm -f '$TMP_INSTALL_SCRIPT'" RETURN
-       
+
        if download_with_verify "$ACME_INSTALL_URL" "$TMP_INSTALL_SCRIPT" "acme.sh"; then
            if sh "$TMP_INSTALL_SCRIPT" --install-online; then
                log_success "acme.sh 安装完成。"
@@ -569,7 +569,7 @@ generate_nginx_config() {
 
     export you_domain you_frontend_port resolver format_cert_domain
     export you_domain_path="${you_domain_path:-/}"
-    
+
     local r_proto=$(get_protocol "$r_http_frontend")
     local r_port_str=$([[ -n "$r_frontend_port" ]] && echo ":$r_frontend_port" || echo "")
     export r_domain_full="${r_proto}://${r_domain}${r_port_str}"
@@ -581,16 +581,16 @@ generate_nginx_config() {
     local conf_path="/etc/nginx/conf.d/$conf_filename"
 
     backup_file "$conf_path"
-    
+
     echo "$template_content" | envsubst "$vars" | $SUDO tee "$conf_path" > /dev/null
     log_success "配置文件已生成: $conf_path"
 }
 
 # --- 6. 证书申请 ---
 issue_certificate() {
-    if [[ "$no_tls" == "yes" ]]; then 
+    if [[ "$no_tls" == "yes" ]]; then
         log_info "检测到非 TLS 配置，跳过证书申请步骤。"
-        return 
+        return
     fi
 
     ACME_SH="$HOME/.acme.sh/acme.sh"
@@ -602,9 +602,9 @@ issue_certificate() {
     # 直接使用 format_cert_domain (无括号) 构建路径
     local cert_path_base="/etc/nginx/certs/$format_cert_domain"
     local reload_cmd="$SUDO nginx -s reload"
-    
+
     local issue_extra_args=""
-    
+
     # 针对 IP 证书 (含 IPv6) 的特殊处理
     local is_ip=false
 
@@ -658,15 +658,15 @@ issue_certificate_dns() {
     local dns_arg="dns_${dns_provider}"
     # 使用 format_cert_domain
     local domains_arg="-d $format_cert_domain"
-    
+
     # 泛域名逻辑：如果不是 IP 且与 you_domain 不同（通常不会触发，因为 display_summary 已经处理了 logic）
     # 但为了兼容逻辑，保留判断。注意 format_cert_domain 是纯净的。
     [[ "$format_cert_domain" != "$you_domain" && ! $(is_ip_address "$you_domain") ]] && domains_arg="$domains_arg -d *.$format_cert_domain"
-    
+
     if [[ "$dns_provider" == "cf" ]]; then
         [[ -n "$cf_token" ]] && export CF_Token="$cf_token"
         [[ -n "$cf_account_id" ]] && export CF_Account_ID="$cf_account_id"
-        
+
         if [[ -z "$CF_Token" || -z "$CF_Account_ID" ]] && [ -t 0 ]; then
             echo -e "${YELLOW}请输入 Cloudflare API 凭据:${NC}"
             read -rp "Token: " CF_Token
@@ -680,9 +680,9 @@ issue_certificate_dns() {
         return 0
     fi
 
-    log_warn "DNS 申请首次失败，清理残留状态后重试一次..."
+    log_warn "DNS 申请首次失败，清理残留状态后使用 --force 重试一次..."
     cleanup_stale_acme_record "$format_cert_domain"
-    if ! "$ACME_SH" --issue --dns "$dns_arg" $domains_arg --keylength ec-256; then
+    if ! "$ACME_SH" --issue --force --dns "$dns_arg" $domains_arg --keylength ec-256; then
         log_error "证书申请失败（重试后仍失败）。"
         return 1
     fi
@@ -692,7 +692,7 @@ issue_certificate_dns() {
 # --- 证书申请：Standalone 模式 (支持 IPv6) ---
 issue_certificate_standalone() {
     local is_ip_mode="$1"
-    
+
     # 泛域名检查：如果不是 IP，且 format_cert_domain 不等于 you_domain (说明是 *.xxx)，则不能用 standalone
     if [[ "$is_ip_mode" != "true" && "$format_cert_domain" != "$you_domain" ]]; then
         log_error "泛域名证书必须使用 DNS 模式申请。"
@@ -700,10 +700,10 @@ issue_certificate_standalone() {
     fi
 
     log_info "使用 Standalone 模式申请证书..."
-    
+
     # 针对 IPv6，acme.sh 需要额外监听参数
     local listen_arg=""
-    
+
     if [[ "$is_ip_mode" == "true" ]]; then
         # 针对 IPv6 添加 --listen-v6
         if [[ "$you_domain" =~ : ]]; then
@@ -711,15 +711,15 @@ issue_certificate_standalone() {
             log_info "检测到 IPv6 地址，添加 --listen-v6 参数..."
         fi
     fi
-    
+
     # 使用 format_cert_domain (无括号) 进行申请
     if "$ACME_SH" --issue --standalone -d "$format_cert_domain" --keylength ec-256 $issue_extra_args $listen_arg; then
         return 0
     fi
 
-    log_warn "Standalone 申请首次失败，清理残留状态后重试一次..."
+    log_warn "Standalone 申请首次失败，清理残留状态后使用 --force 重试一次..."
     cleanup_stale_acme_record "$format_cert_domain"
-    if ! "$ACME_SH" --issue --standalone -d "$format_cert_domain" --keylength ec-256 $issue_extra_args $listen_arg; then
+    if ! "$ACME_SH" --issue --force --standalone -d "$format_cert_domain" --keylength ec-256 $issue_extra_args $listen_arg; then
         log_error "证书申请失败（重试后仍失败）。请检查域名/IP解析是否正确，或防火墙是否放行 80 端口。"
         return 1
     fi
@@ -769,7 +769,7 @@ remove_domain_config() {
     if ! $SUDO [ -f "$nginx_conf_file" ]; then
         log_error "未找到与 '$domain' ($clean_domain) 在端口 '$port' 上的 Nginx 配置文件: $nginx_conf_file"
         # 找不到文件时，不强制退出，可能用户只是想清理残留证书，或者文件已经被删了一部分
-        # return 1 
+        # return 1
         # 但为了逻辑严谨，若连配置文件都没有，后续的逻辑依据也没了，这里还是退出比较好。
         exit 1
     fi
@@ -919,7 +919,7 @@ main() {
     if ! issue_certificate; then
         exit 1
     fi
-    
+
     if test_and_reload_nginx; then
         log_success "部署成功！"
         local protocol=$(get_protocol "$no_tls")
