@@ -1,75 +1,85 @@
 <template>
   <div id="app">
-    <!-- 鉴权遮罩 -->
-    <TokenAuth v-if="!ruleStore.isAuthenticated" />
+    <!-- 初始检查中不显示内容，防止闪烁 -->
+    <template v-if="!ruleStore.isAuthReady">
+      <div class="initial-loading">
+        <div class="loader"></div>
+      </div>
+    </template>
 
     <template v-else>
-      <ThemeToggle />
-
-      <header class="header">
-        <h1>
-          ✦ Nginx Reverse Proxy ✦
-          <button @click="ruleStore.logout" class="logout-btn" title="退出登录">
-            <svg viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4m7 14 5-5-5-5m5 5H9"/></svg>
-          </button>
-        </h1>
-        <p class="subtitle">现代化反向代理管理面板</p>
-      </header>
-
+      <!-- 全局状态提示 -->
       <StatusMessage />
 
-      <main class="container">
-        <!-- 统计面板 -->
-        <section class="stats-grid">
-          <StatCard
-            :value="ruleStore.rules.length"
-            label="代理规则"
-            :icon="icons.layers"
-            variant="primary"
-          />
-          <StatCard
-            :value="activeRulesCount"
-            label="活跃规则"
-            :icon="icons.checkCircle"
-            variant="success"
-          />
-          <StatCard
-            :value="ruleStore.stats.totalRequests"
-            label="总请求数"
-            :icon="icons.activity"
-            variant="info"
-          />
-          <StatCard
-            :value="ruleStore.stats.status"
-            label="系统状态"
-            :icon="icons.cpu"
-            variant="secondary"
-          />
-        </section>
+      <!-- 鉴权遮罩 -->
+      <TokenAuth v-if="!ruleStore.isAuthenticated" />
 
-        <!-- 添加规则区域 -->
-        <section class="add-rule-section">
-          <div class="section-header">
-            <h2>
-              <span class="icon-inline" v-html="icons.plus"></span>
-              新增反向代理规则
-            </h2>
-          </div>
-          <RuleForm />
-        </section>
+      <template v-else>
+        <ThemeToggle />
 
-        <!-- 规则列表区域 -->
-        <section class="rules-section">
-          <div class="section-header">
-            <h2>
-              <span class="icon-inline" v-html="icons.list"></span>
-              代理规则列表
-            </h2>
-            <ActionBar />
-          </div>
-          <RuleList />
-        </section>
-      </main>
+        <header class="header">
+          <h1>
+            ✦ Nginx Reverse Proxy ✦
+            <button @click="ruleStore.logout" class="logout-btn" title="退出登录">
+              <svg viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4m7 14 5-5-5-5m5 5H9"/></svg>
+            </button>
+          </h1>
+          <p class="subtitle">现代化反向代理管理面板</p>
+        </header>
+
+        <main class="container">
+          <!-- 统计面板 -->
+          <section class="stats-grid">
+            <StatCard
+              :value="ruleStore.rules.length"
+              label="代理规则"
+              :icon="icons.layers"
+              variant="primary"
+            />
+            <StatCard
+              :value="activeRulesCount"
+              label="活跃规则"
+              :icon="icons.checkCircle"
+              variant="success"
+            />
+            <StatCard
+              :value="ruleStore.stats.totalRequests"
+              label="总请求数"
+              :icon="icons.activity"
+              variant="info"
+            />
+            <StatCard
+              :value="ruleStore.stats.status"
+              label="系统状态"
+              :icon="icons.cpu"
+              variant="secondary"
+            />
+          </section>
+
+          <!-- 添加规则区域 -->
+          <section class="add-rule-section">
+            <div class="section-header">
+              <h2>
+                <span class="icon-inline" v-html="icons.plus"></span>
+                新增反向代理规则
+              </h2>
+            </div>
+            <RuleForm />
+          </section>
+
+          <!-- 规则列表区域 -->
+          <section class="rules-section">
+            <div class="section-header">
+              <h2>
+                <span class="icon-inline" v-html="icons.list"></span>
+                代理规则列表
+              </h2>
+              <ActionBar />
+            </div>
+            <RuleList />
+          </section>
+        </main>
+      </template>
     </template>
   </div>
 </template>
@@ -147,5 +157,35 @@ onMounted(async () => {
   stroke: currentColor;
   stroke-width: 2;
   fill: none;
+}
+
+/* 初始加载状态 */
+.initial-loading {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--color-bg);
+  z-index: 9999;
+}
+
+.loader {
+  width: 48px;
+  height: 48px;
+  border: 5px solid var(--color-border);
+  border-bottom-color: var(--color-primary);
+  border-radius: 50%;
+  display: inline-block;
+  box-sizing: border-box;
+  animation: rotation 1s linear infinite;
+}
+
+@keyframes rotation {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
 }
 </style>

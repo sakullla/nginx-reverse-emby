@@ -13,6 +13,7 @@ export const useRuleStore = defineStore("rules", () => {
   // 鉴权相关
   const token = ref(localStorage.getItem("panel_token") || "");
   const isAuthenticated = ref(false);
+  const isAuthReady = ref(false);
 
   const hasRules = computed(() => rules.value.length > 0);
 
@@ -30,15 +31,26 @@ export const useRuleStore = defineStore("rules", () => {
   async function checkAuth() {
     if (!token.value) {
       isAuthenticated.value = false;
+      isAuthReady.value = true;
       return;
     }
     try {
       const ok = await api.verifyToken(token.value);
       isAuthenticated.value = ok;
+      if (!ok) {
+        token.value = "";
+        localStorage.removeItem("panel_token");
+        showError("登录令牌已过期，请重新登录");
+      }
     } catch (err) {
       isAuthenticated.value = false;
       token.value = "";
       localStorage.removeItem("panel_token");
+      if (err.message.includes("401")) {
+        showError("会话已过期，请重新登录");
+      }
+    } finally {
+      isAuthReady.value = true;
     }
   }
 
@@ -191,6 +203,7 @@ export const useRuleStore = defineStore("rules", () => {
     statusMessage,
     hasRules,
     isAuthenticated,
+    isAuthReady,
     token,
     checkAuth,
     login,
