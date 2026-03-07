@@ -59,10 +59,11 @@ async function handleApply() {
   animation: spin 0.8s linear infinite;
 }
 
-@media (max-width: 768px) {
+@media (max-width: 480px) {
   .apply-btn {
     width: 100%;
-    height: 46px;
+    height: 42px;
+    justify-content: center;
   }
 }
 </style>
