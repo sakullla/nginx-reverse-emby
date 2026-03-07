@@ -59,7 +59,7 @@
               <div class="header-actions">
                 <button @click="showAddModal = true" class="add-rule-btn primary">
                   <span class="icon-inline" v-html="icons.plus"></span>
-                  添加规则
+                  <span class="btn-text">添加规则</span>
                 </button>
                 <ActionBar />
               </div>
@@ -131,20 +131,21 @@ onMounted(async () => {
 
 .floating-logout-btn {
   position: fixed;
-  top: 20px;
-  right: 70px;
+  top: var(--spacing-lg);
+  right: calc(var(--spacing-lg) + 48px + 10px);
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 40px;
-  height: 40px;
-  background: var(--color-bg-card);
+  width: 48px;
+  height: 48px;
+  background: var(--glass-bg);
+  backdrop-filter: blur(var(--blur-md));
   color: var(--color-text-secondary);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
+  border: 1px solid var(--glass-border);
+  border-radius: var(--radius-full);
   cursor: pointer;
-  z-index: 100;
-  box-shadow: var(--shadow-sm);
+  z-index: var(--z-fixed, 100);
+  box-shadow: var(--shadow-md);
   transition: all var(--transition-base);
 }
 
@@ -152,32 +153,32 @@ onMounted(async () => {
   background: var(--color-danger-bg);
   color: var(--color-danger);
   border-color: var(--color-danger);
-  transform: translateY(-2px);
-  box-shadow: var(--shadow-md);
+  transform: scale(1.1);
+  box-shadow: var(--shadow-lg);
 }
 
 .floating-logout-btn svg {
   width: 20px;
   height: 20px;
   stroke: currentColor;
-  stroke-width: 2;
+  stroke-width: 2.5;
   fill: none;
 }
 
 .container {
-  margin-top: 60px !important;
+  margin-top: 80px !important;
 }
 
 @media (max-width: 768px) {
   .floating-logout-btn {
-    top: 15px;
-    right: 60px;
-    width: 36px;
-    height: 36px;
+    top: var(--spacing-md);
+    right: calc(var(--spacing-md) + 40px + 8px);
+    width: 40px;
+    height: 40px;
   }
 
   .container {
-    margin-top: 40px !important;
+    margin-top: 60px !important;
   }
 }
 
@@ -191,7 +192,7 @@ onMounted(async () => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: var(--color-bg);
+  background: var(--color-bg-primary);
   z-index: 9999;
 }
 
@@ -224,21 +225,33 @@ onMounted(async () => {
   font-size: var(--font-size-sm);
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
+  border-radius: var(--radius-md);
+  transition: all var(--transition-base);
 }
 
-@media (max-width: 768px) {
+.btn-text {
+  display: inline;
+}
+
+@media (max-width: 480px) {
   .header-actions {
-    flex-direction: column;
-    align-items: stretch;
-    width: 100%;
     gap: var(--spacing-sm);
   }
 
   .add-rule-btn {
-    width: 100%;
+    width: 40px;
+    height: 40px;
+    padding: 0;
     justify-content: center;
-    height: 46px;
+  }
+
+  .add-rule-btn .icon-inline {
+    margin-right: 0;
+  }
+
+  .add-rule-btn .btn-text {
+    display: none;
   }
 }
 </style>

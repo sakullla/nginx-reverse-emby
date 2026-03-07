@@ -3,10 +3,11 @@
     :disabled="ruleStore.loading"
     @click="handleApply"
     class="apply-btn success"
+    :title="ruleStore.loading ? '正在应用...' : '应用 Nginx 配置'"
   >
     <span v-if="!ruleStore.loading" class="btn-content">
       <span class="icon-btn" v-html="icons.zap"></span>
-      应用配置
+      <span class="btn-text">应用配置</span>
     </span>
     <span v-else class="loading-mini"></span>
   </button>
@@ -34,6 +35,8 @@ async function handleApply() {
 .apply-btn {
   height: 40px;
   padding: 0 var(--spacing-lg);
+  border-radius: var(--radius-md);
+  transition: all var(--transition-base);
 }
 
 .btn-content {
@@ -61,11 +64,22 @@ async function handleApply() {
 
 @media (max-width: 480px) {
   .apply-btn {
-    width: auto;
-    height: 36px;
-    padding: 0 var(--spacing-md);
-    font-size: 0.9rem;
-    flex: 1 1 auto;
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
   }
+
+  .btn-text {
+    display: none;
+  }
+
+  .btn-content {
+    gap: 0;
+  }
+}
+</style>
 }
 </style>
