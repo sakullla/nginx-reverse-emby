@@ -135,6 +135,7 @@ Path behavior:
 - Docker nginx logging uses `/proc/1/fd/1` and `/proc/1/fd/2` so config tests from child processes do not depend on inherited `/dev/stdout`
 - direct ACME `install-cert` reload hooks are best-effort so one in-flight certificate installation does not fail because another rule's cert files are not ready yet
 - Docker internal `nginx_status` listens on loopback `127.0.0.1:18080` / `[::1]:18080`, so status monitoring does not occupy host port `80`
+- panel frontend leaves rule mutations and manual apply requests without an Axios timeout so long ACME issuance does not falsely surface as client-side timeout
 - direct ACME issuance checks existing acme.sh record first, then installs cert files (deploy.sh-aligned)
 - direct ACME DNS/standalone paths clean stale records and retry once on first issuance failure
 - when `ACME_DNS_PROVIDER` is set but frontend host is IP, direct mode falls back to standalone challenge

@@ -13,6 +13,10 @@ const api = axios.create({
   },
 });
 
+const longRunningRequest = {
+  timeout: 0,
+};
+
 // 请求拦截器：注入 Token
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem("panel_token");
@@ -93,7 +97,11 @@ export async function createRule(frontend_url, backend_url) {
     mockRules.push(newRule);
     return newRule;
   }
-  const { data } = await api.post("/rules", { frontend_url, backend_url });
+  const { data } = await api.post(
+    "/rules",
+    { frontend_url, backend_url },
+    longRunningRequest,
+  );
   return data.rule;
 }
 
@@ -104,7 +112,11 @@ export async function updateRule(id, frontend_url, backend_url) {
     if (idx !== -1) mockRules[idx] = { id, frontend_url, backend_url };
     return mockRules[idx];
   }
-  const { data } = await api.put(`/rules/${id}`, { frontend_url, backend_url });
+  const { data } = await api.put(
+    `/rules/${id}`,
+    { frontend_url, backend_url },
+    longRunningRequest,
+  );
   return data.rule;
 }
 
@@ -114,7 +126,7 @@ export async function deleteRule(id) {
     const idx = mockRules.findIndex((r) => r.id === id);
     return mockRules.splice(idx, 1)[0];
   }
-  const { data } = await api.delete(`/rules/${id}`);
+  const { data } = await api.delete(`/rules/${id}`, longRunningRequest);
   return data.rule;
 }
 
@@ -123,7 +135,7 @@ export async function applyConfig() {
     await sleep(1500);
     return { ok: true };
   }
-  const { data } = await api.post("/apply");
+  const { data } = await api.post("/apply", {}, longRunningRequest);
   return data;
 }
 

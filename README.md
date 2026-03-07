@@ -175,6 +175,7 @@ frontend_url,backend_url
 - Docker nginx logs target `/proc/1/fd/1` and `/proc/1/fd/2`, so `nginx -t` and reload commands work reliably from child processes.
 - ACME `install-cert` 的 reload hook 是 best-effort：当其他 HTTPS 规则的证书文件尚未准备好时不会中断当前证书安装，最终仍由面板 apply 的 `nginx -t -> reload` 统一校验。
 - Docker 内部监控 `nginx_status` 仅监听 `127.0.0.1:18080` / `[::1]:18080`，不会再因监控用途无条件占用宿主机 `80` 端口。
+- 面板前端对规则增删改与手动 apply 不再设置 Axios 超时，避免域名签证书耗时较长时前端先报 timeout、实际后端继续成功。
 - 先检查现有 acme.sh 记录，存在则跳过签发、直接安装证书文件。
 - DNS/Standalone 首次失败会清理残留后自动重试一次。
 - 若配置了 `ACME_DNS_PROVIDER` 但前端主机是 IP，会自动回退到 Standalone。
