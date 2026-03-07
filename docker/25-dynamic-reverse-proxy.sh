@@ -175,7 +175,7 @@ install_cert_files() {
     "$ACME_SCRIPT" --install-cert -d "$cert_domain_clean" --ecc $ACME_COMMON_ARGS \
         --fullchain-file "$cert_target_dir/cert" \
         --key-file "$cert_target_dir/key" \
-        --reloadcmd "sh -c '$NGINX_BIN -t && $NGINX_BIN -s reload || true'"
+        --reloadcmd "sh -c '$NGINX_BIN -t && { [ -s /var/run/nginx.pid ] && $NGINX_BIN -s reload || true; }'"
 }
 
 ensure_certificates_for_rules() {
@@ -208,7 +208,7 @@ ensure_certificates_for_rules() {
 }
 
 cleanup_unused_certificates() {
-    [ ! is_true "$DIRECT_CERT_CLEANUP" ] && return 0
+    is_true "$DIRECT_CERT_CLEANUP" || return 0
     active_certs_file="$1"
 
     [ -f "$DIRECT_CERT_STATE_FILE" ] || {
