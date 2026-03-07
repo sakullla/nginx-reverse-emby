@@ -58,11 +58,44 @@
       </div>
     </td>
   </tr>
+
+  <!-- 删除确认弹窗 -->
+  <Teleport to="body">
+    <BaseModal
+      v-model="showDeleteModal"
+      title="确认删除"
+      confirm-text="确认删除"
+      confirm-variant="danger"
+      :loading="isDeletingRule"
+      @confirm="confirmDelete"
+    >
+      <div class="delete-confirm-content">
+        <div class="warning-icon">
+          <svg viewBox="0 0 24 24"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+        </div>
+        <div class="confirm-text">
+          <p>确定要删除规则 <strong>#{{ rule.id }}</strong> 吗？</p>
+          <div class="rule-details-preview">
+            <div class="preview-item">
+              <span class="label">前端:</span>
+              <span class="value">{{ rule.frontend_url }}</span>
+            </div>
+            <div class="preview-item">
+              <span class="label">后端:</span>
+              <span class="value">{{ rule.backend_url }}</span>
+            </div>
+          </div>
+          <p class="warning-note">此操作不可撤销，且会立即触发 Nginx 配置应用。</p>
+        </div>
+      </div>
+    </BaseModal>
+  </Teleport>
 </template>
 
 <script setup>
 import { ref, reactive } from 'vue'
 import { useRuleStore } from '../stores/rules'
+import BaseModal from './base/BaseModal.vue'
 
 const props = defineProps({
   rule: {
@@ -74,6 +107,8 @@ const props = defineProps({
 const ruleStore = useRuleStore()
 const isEditing = ref(false)
 const loading = ref(false)
+const showDeleteModal = ref(false)
+const isDeletingRule = ref(false)
 
 const editForm = reactive({
   frontend_url: '',
@@ -104,13 +139,19 @@ const handleSave = async () => {
   }
 }
 
-const handleDelete = async () => {
-  if (confirm(`确定要删除规则 ${props.rule.id} 吗？`)) {
-    try {
-      await ruleStore.removeRule(props.rule.id)
-    } catch (err) {
-      // 错误已由 store 处理
-    }
+const handleDelete = () => {
+  showDeleteModal.value = true
+}
+
+const confirmDelete = async () => {
+  isDeletingRule.value = true
+  try {
+    await ruleStore.removeRule(props.rule.id)
+    showDeleteModal.value = false
+  } catch (err) {
+    // 错误已由 store 处理
+  } finally {
+    isDeletingRule.value = false
   }
 }
 </script>
@@ -120,6 +161,69 @@ const handleDelete = async () => {
   font-family: var(--font-family-mono);
   font-size: 0.9rem;
   word-break: break-all;
+}
+
+/* 删除弹窗样式 */
+.delete-confirm-content {
+  display: flex;
+  gap: var(--spacing-lg);
+  align-items: flex-start;
+}
+
+.warning-icon {
+  width: 48px;
+  height: 48px;
+  background: var(--color-danger-bg);
+  color: var(--color-danger);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.warning-icon svg {
+  width: 24px;
+  height: 24px;
+  stroke: currentColor;
+  stroke-width: 2;
+  fill: none;
+}
+
+.confirm-text p {
+  margin: 0 0 var(--spacing-sm) 0;
+}
+
+.rule-details-preview {
+  background: var(--color-bg-secondary);
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-radius: var(--radius-md);
+  border-left: 4px solid var(--color-danger);
+  margin: var(--spacing-md) 0;
+  font-size: 0.85rem;
+  font-family: var(--font-family-mono);
+}
+
+.preview-item {
+  display: flex;
+  gap: var(--spacing-sm);
+  line-height: 1.6;
+}
+
+.preview-item .label {
+  color: var(--color-text-muted);
+  width: 40px;
+}
+
+.preview-item .value {
+  color: var(--color-text-primary);
+  word-break: break-all;
+}
+
+.warning-note {
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+  font-style: italic;
 }
 
 .inline-input {
