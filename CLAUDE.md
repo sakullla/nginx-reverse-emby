@@ -1,202 +1,215 @@
 # CLAUDE.md
 
-This file is the source-of-truth operational guide for AI coding agents working in this repository.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-> Consistency rule: Keep this file aligned with `AGENTS.md`. If implementation changes behavior, update `README.md`, `AGENTS.md`, and `CLAUDE.md` in the same patch.
+## Project Overview
 
-## Project Summary
+Nginx-Reverse-Emby is an automated reverse proxy solution designed for Emby, Jellyfin, and various HTTP services. It features a web management panel, automatic SSL certificate renewal with acme.sh, and IPv4/IPv6 dual-stack support.
 
-Nginx-Reverse-Emby is a Bash-first automation project for one-command Nginx reverse proxy deployment. It supports:
-- IPv4/IPv6 frontend and backend URLs
-- Automatic TLS issuance/install via acme.sh
-- Optional DNS API validation (Cloudflare included)
-- Docker runtime config generation from `PROXY_RULE_N` and panel-managed rule files
-- Docker dual-mode deployment via env (`front_proxy` and `direct` with optional ACME cert management)
+**Tech Stack:**
+- Frontend: Vue 3 + Vite + Pinia + Axios (SPA)
+- Backend: Node.js HTTP server (single file: `panel/backend/server.js`)
+- Infrastructure: Nginx + Shell scripts for automation
+- Deployment: Docker (multi-stage build)
 
-Primary implementation lives in `deploy.sh`.
+## Architecture
 
-## Core Files
+### Three-Layer Architecture
 
-- `deploy.sh`: full deploy/remove lifecycle
-- `conf.d/p.example.com.conf`: HTTPS template (HTTP/3 + QUIC)
-- `conf.d/p.example.com.no_tls.conf`: HTTP-only template
-- `nginx.conf`: host nginx main config template
-- `panel/backend/server.js`: Docker panel backend API
-- `panel/frontend/index.html`: Docker panel frontend
-- `docker/25-dynamic-reverse-proxy.sh`: Docker entrypoint config generator
-- `docker/15-panel-config.sh`: Docker panel nginx config renderer
-- `docker/20-panel-backend.sh`: Docker panel backend bootstrap
-- `docker/default.conf.template`: Docker server template
-- `docker/default.direct.no_tls.conf.template`: Docker direct mode HTTP template
-- `docker/default.direct.tls.conf.template`: Docker direct mode HTTPS template
-- `docker/panel.conf.template`: Docker panel server template
-- `docker/nginx.conf`: Docker nginx main config
-- `Dockerfile`: multi-stage image build (includes frontend build)
-- `.github/workflows/docker-build.yml`: GHCR build/push
+1. **Frontend Panel** (`panel/frontend/`)
+   - Vue 3 SPA with component-based architecture
+   - Pinia store (`src/stores/rules.js`) manages proxy rules and authentication state
+   - Components in `src/components/`: RuleList, RuleForm, RuleItem, TokenAuth, base components
+   - API client in `src/api/index.js` communicates with backend via REST
 
-## Runtime Flow (`deploy.sh`)
+2. **Backend Server** (`panel/backend/server.js`)
+   - Simple Node.js HTTP server (no framework dependencies)
+   - Manages proxy rules stored in JSON format (`/opt/nginx-reverse-emby/panel/data/proxy_rules.json`)
+   - Provides REST API: GET/POST/PUT/DELETE for rules, GET for stats
+   - Token-based authentication via `X-Panel-Token` header
+   - Triggers nginx config regeneration and reload after rule changes
 
-`main()` order:
-1. `parse_arguments`
-2. `remove_domain_config` branch if `--remove` is set
-3. `setup_env`
-4. `prompt_interactive_mode`
-5. `display_summary`
-6. `install_dependencies`
-7. `generate_nginx_config`
-8. `issue_certificate`
-9. `test_and_reload_nginx`
+3. **Infrastructure Layer** (`docker/` scripts)
+   - `25-dynamic-reverse-proxy.sh`: **Core script** - reads rules and generates nginx configs dynamically
+   - `20-panel-backend.sh`: Starts the Node.js backend server
+   - `15-panel-config.sh`: Initializes panel configuration
+   - `30-acme-renew.sh`: Manages SSL certificate renewal with acme.sh
+   - Nginx config templates: `default.conf.template`, `default.direct.*.conf.template`, `panel.conf.template`
 
-Script safety model:
-- `set -e`
-- `set -o pipefail`
-- `trap 'handle_error $LINENO' ERR`
-- automatic `sudo` fallback when not root
+### Data Flow
 
-## CLI Arguments (actual implementation)
+```
+User → Frontend Panel → Backend API → Rules JSON → 25-dynamic-reverse-proxy.sh → Nginx Config → nginx -t → nginx -s reload
+```
 
-Supported options:
-- `-y, --you-domain <URL>`
-- `-r, --r-domain <URL>`
-- `-m, --cert-domain <domain>`
-- `-d, --parse-cert-domain`
-- `-D, --dns <provider>`
-- `-R, --resolver <dns list>`
-- `-c, --template-domain-config <path|url>`
-- `--gh-proxy <url>`
-- `--cf-token <token>`
-- `--cf-account-id <id>`
-- `--remove <URL>`
-- `-Y, --yes`
-- `-h, --help`
+### Deployment Modes
 
-Important behavior notes:
-- Long option is `--template-domain-config` (not `--template`).
-- `--remove` should use a full URL including scheme for deterministic matching.
-- `parse_url()` format is `proto|domain|port|path`; bracketed IPv6 is supported.
-- `--parse-cert-domain` auto-root extraction is only applied when domain matches `*.*.*`.
+- **`direct` mode** (default): Container directly handles ports 80/443 and SSL termination
+- **`front_proxy` mode**: Container only does internal forwarding; external proxy handles SSL
 
-## Config Rendering Model
+### Key Directories
 
-Rendered target paths:
-- `/etc/nginx/conf.d/{clean_domain}.{port}.conf`
-- `/etc/nginx/certs/{format_cert_domain}/`
-- backup path: `/etc/nginx/backup/`
+- `/opt/nginx-reverse-emby/panel/data`: Persistent data (rules, certs, acme.sh state)
+- `/etc/nginx/conf.d/dynamic`: Generated nginx configs for each proxy rule
+- `/etc/nginx/templates`: Nginx config templates
 
-Template variables exported by `generate_nginx_config()`:
-- `${you_domain}`
-- `${you_frontend_port}`
-- `${resolver}`
-- `${format_cert_domain}`
-- `${you_domain_path}`
-- `${you_domain_path_rewrite}`
-- `${r_domain_full}`
+## Common Development Commands
 
-Path behavior:
-- non-root frontend path generates rewrite rule automatically
-- backend URL is composed from protocol + host + optional port
+### Frontend Development
 
-## Certificate Behavior
+```bash
+# Install dependencies
+cd panel/frontend && npm ci
 
-- TLS disabled (`no_tls=yes`) skips certificate issuance.
-- IP frontends use short-lived profile: `--certificate-profile shortlived --days 6`.
-- DNS mode uses `issue_certificate_dns()`.
-- Standalone mode uses `issue_certificate_standalone()`.
-- Cloudflare mode consumes `CF_Token` and `CF_Account_ID`.
+# Development server (with hot reload)
+npm run dev
 
-## Remove Behavior
+# Production build (outputs to dist/)
+npm run build
 
-- resolves target by `domain + port`
-- requires explicit `--yes` in non-interactive mode
-- detects shared/wildcard cert usage and avoids unsafe deletion
-- validates nginx config before reload/restart
+# Preview production build
+npm run preview
+```
 
-## Docker Mode
+### Docker Development
 
-`docker/25-dynamic-reverse-proxy.sh`:
-- reads `PROXY_RULE_1`, `PROXY_RULE_2`, ... (contiguous scan)
-- merges panel rules from `PANEL_RULES_FILE` (csv lines: `frontend_url,backend_url`)
-- rule format: `frontend_url,backend_url`
-- writes `/etc/nginx/conf.d/dynamic/{domain}.{effective_frontend_port}.conf`
-- env rule scan stops when first index is missing (no gaps allowed)
-- default resolver is `1.1.1.1`, override with `NGINX_LOCAL_RESOLVERS`
-- `PROXY_DEPLOY_MODE=front_proxy` keeps HTTP passthrough mode for upstream TLS termination
-- front proxy listen port is controlled by `FRONT_PROXY_PORT` (default `3000`), not by rule URL port
-- `PROXY_DEPLOY_MODE=direct` renders HTTP/HTTPS configs by frontend URL scheme
-- direct HTTPS mode uses per-domain cert files in `DIRECT_CERT_DIR` (default `/etc/nginx/certs`)
-- direct cert handling supports `DIRECT_CERT_MODE=acme|manual` (default `acme`)
-- direct cert cleanup on rule removal can be controlled by `DIRECT_CERT_CLEANUP` (default enabled)
-- ACME envs: `ACME_EMAIL`, `ACME_DNS_PROVIDER`, `ACME_HOME`, `ACME_CA`, `ACME_STANDALONE_STOP_NGINX`
-- Docker direct-mode acme bootstrap uses `acme.sh --install-online --nocron`, so DNS API hooks are available without depending on root `crontab`
-- container startup launches an ACME renew loop for `direct + acme`, controlled by `ACME_AUTO_RENEW` and `ACME_RENEW_INTERVAL` (default `86400`)
-- direct ACME commands pin `home/config-home/cert-home` to `ACME_HOME`, avoiding fallback to `/root/.acme.sh`
-- direct runtime apply checks actual port `80` listeners and only blocks standalone issuance when `80` is really in use
-- panel backend runs on container stdout/stderr; nginx apply commands are executed with captured stdio for reliable `/dev/stdout` logging
-- Docker nginx logging uses `/proc/1/fd/1` and `/proc/1/fd/2` so config tests from child processes do not depend on inherited `/dev/stdout`
-- direct ACME `install-cert` reload hooks are best-effort so one in-flight certificate installation does not fail because another rule's cert files are not ready yet
-- Docker internal `nginx_status` listens on loopback `127.0.0.1:18080` / `[::1]:18080`, so status monitoring does not occupy host port `80`
-- panel frontend leaves rule mutations and manual apply requests without an Axios timeout so long ACME issuance does not falsely surface as client-side timeout
-- direct ACME issuance checks existing acme.sh record first, then installs cert files (deploy.sh-aligned)
-- direct ACME startup self-heals older/broken installs by reinstalling `acme.sh` when the configured DNS hook file is missing
-- direct ACME DNS/standalone paths clean stale records and retry once with `--force` on first issuance failure
-- when `ACME_DNS_PROVIDER` is set but frontend host is IP, direct mode falls back to standalone challenge
-- auto renew loop envs: `ACME_AUTO_RENEW` and `ACME_RENEW_INTERVAL` (seconds)
+```bash
+# Build Docker image
+docker build -t nginx-reverse-emby .
 
-Panel mode:
-- default panel URL is `http://<host>:8080/` (`PANEL_PORT`)
-- panel API is proxied by nginx to backend `PANEL_BACKEND_PORT` (default `18081`)
-- panel mutations can auto-apply nginx config (`PANEL_AUTO_APPLY`, default enabled)
+# Run with docker-compose
+docker compose up -d
 
-## Development Rules
+# View logs
+docker compose logs -f
 
-When editing `deploy.sh`:
-1. Keep strict mode and trap behavior intact.
-2. For new args, update getopt + help text + docs together.
-3. For new template vars, update export list and envsubst var list together.
-4. Preserve IPv6 bracket compatibility in URL parsing.
-5. Keep remove flow conservative around shared certs.
+# Rebuild and restart
+docker compose up -d --build
 
-When editing templates:
-1. Keep variable names aligned with exports in `deploy.sh`.
-2. Validate both TLS and no-TLS templates.
-3. Re-check `proxy_redirect` and `/backstream` behavior.
+# Stop and remove
+docker compose down
+```
 
-When editing Docker entrypoint:
-1. Preserve `PROXY_RULE_N` compatibility.
-2. Keep current env "contiguous index" stop behavior.
-3. Keep panel file rule format `frontend_url,backend_url`.
-4. Re-test domain path extraction edge cases.
+### Nginx Operations
 
-When editing panel backend/frontend:
-1. Keep API routes `/api/rules` and `/api/apply` stable for frontend compatibility.
-2. Keep rule persistence compatible with `PANEL_RULES_FILE`.
-3. Ensure apply flow remains `generate -> nginx -t -> nginx -s reload`.
+```bash
+# Test nginx configuration
+nginx -t
 
-## Validation Checklist
+# Reload nginx (graceful)
+nginx -s reload
 
-Host mode:
-1. `nginx -t`
-2. deploy HTTPS domain once
-3. deploy IPv6 URL once
-4. deploy HTTP(no TLS) once
-5. remove with `--remove https://domain:port --yes`
+# View nginx error log
+tail -f /var/log/nginx/error.log
 
-Docker mode:
-1. `docker build -t nginx-reverse-emby .`
-2. run with contiguous `PROXY_RULE_1..N`
-3. verify panel is reachable from `PANEL_PORT` (default `8080`)
-4. verify generated file count and names in `/etc/nginx/conf.d/dynamic/`
-5. verify path forwarding and redirects
-6. verify `PROXY_DEPLOY_MODE=front_proxy` works behind upstream nginx (HTTP only)
-7. verify `PROXY_DEPLOY_MODE=direct` can issue/install certs for HTTPS rules
-8. verify deleting a rule cleans stale cert directory/record when direct mode is enabled
-9. verify auto renew loop runs when `DIRECT_CERT_MODE=acme`
+# Check nginx status endpoint
+curl http://127.0.0.1:18080/nginx_status
+```
 
-## Known Documentation Drift
+### Backend Development
 
-- Some docs mention `--template`; implementation uses `--template-domain-config`.
-- `--remove` examples without scheme are unsafe; use full URLs.
-- `--parse-cert-domain` behavior is stricter than generic "root extraction" wording.
-- Docker env rule scanning is contiguous-only; gaps truncate processing.
+```bash
+# Run backend server directly (for testing)
+cd panel/backend
+node server.js
 
-If implementation changes any of these points, update `README.md`, `AGENTS.md`, and `CLAUDE.md` in the same patch.
+# Environment variables for backend:
+# PANEL_BACKEND_PORT=18081
+# API_TOKEN=your-token
+# PANEL_AUTO_APPLY=1
+```
+
+### Testing Dynamic Proxy Generation
+
+```bash
+# Manually trigger proxy config generation
+/docker-entrypoint.d/25-dynamic-reverse-proxy.sh
+
+# Check generated configs
+ls -la /etc/nginx/conf.d/dynamic/
+
+# View a specific generated config
+cat /etc/nginx/conf.d/dynamic/rule_1.conf
+```
+
+## Important Implementation Details
+
+### Rule Format
+
+Proxy rules follow the format: `frontend_url,backend_url`
+
+Examples:
+- `https://emby.example.com,http://192.168.1.10:8096` (triggers SSL)
+- `http://files.example.com:81,http://10.0.0.5:8080` (custom port)
+- `https://jellyfin.me.com,http://[2001:db8::1]:8096` (IPv6 backend)
+
+### SSL Certificate Management
+
+- Certificates managed by `acme.sh` in `/opt/nginx-reverse-emby/panel/data/.acme.sh`
+- Supports HTTP-01 and DNS-01 validation (via DNS API providers like Cloudflare)
+- Auto-renewal configured via cron in `30-acme-renew.sh`
+- Certificate state tracked in `.state/active_cert_domains`
+
+### Authentication Flow
+
+1. Frontend checks for token in localStorage (`panel_token`)
+2. All API requests include `X-Panel-Token` header
+3. Backend validates token against `API_TOKEN` environment variable
+4. If token missing or invalid, frontend shows TokenAuth component
+
+### Config Generation Process
+
+The `25-dynamic-reverse-proxy.sh` script:
+1. Reads rules from `proxy_rules.csv` or `proxy_rules.json`
+2. Parses each rule's frontend_url (protocol, host, port, path)
+3. For HTTPS rules in `direct` mode: requests/installs SSL certificates
+4. Generates nginx config file per rule in `/etc/nginx/conf.d/dynamic/`
+5. Runs `nginx -t` to validate
+6. Executes `nginx -s reload` if validation passes
+
+## Debugging Tips
+
+### Frontend Issues
+
+- Check browser console for API errors
+- Verify token is set: `localStorage.getItem('panel_token')`
+- Check API endpoint: default is `/api` (proxied by nginx to backend)
+
+### Backend Issues
+
+- Check if server is running: `curl http://127.0.0.1:18081/api/rules`
+- Verify token: `curl -H "X-Panel-Token: your-token" http://127.0.0.1:18081/api/rules`
+- Check backend logs in Docker: `docker compose logs nginx-reverse-emby | grep server.js`
+
+### Nginx Issues
+
+- Always run `nginx -t` before reload
+- Check error log: `/var/log/nginx/error.log`
+- Verify generated configs: `ls /etc/nginx/conf.d/dynamic/`
+- Check if ports are listening: `netstat -tlnp | grep nginx`
+
+### SSL Certificate Issues
+
+- Check acme.sh logs: `cat /opt/nginx-reverse-emby/panel/data/.acme.sh/*.log`
+- Verify DNS records for domain validation
+- For DNS API: ensure provider credentials are set (e.g., `CF_Token`, `CF_Account_ID`)
+- Manual cert request: `$ACME_HOME/acme.sh --issue -d example.com --standalone`
+
+## Project-Specific Conventions
+
+- All user-facing text in Chinese (frontend, logs, error messages)
+- Backend uses CommonJS (`require`), frontend uses ES modules (`import`)
+- Frontend components use Composition API (`<script setup>`)
+- Shell scripts use POSIX-compliant syntax (no bashisms)
+- Environment variables prefixed by component: `PANEL_*`, `ACME_*`, `PROXY_*`
+- Data persistence: everything under `/opt/nginx-reverse-emby/panel/data`
+
+## Key Environment Variables
+
+- `API_TOKEN`: Panel authentication token (required in production)
+- `PROXY_DEPLOY_MODE`: `direct` or `front_proxy`
+- `PANEL_PORT`: Web panel port (default: 8080)
+- `PANEL_AUTO_APPLY`: Auto-apply config changes (default: 1)
+- `ACME_DNS_PROVIDER`: DNS provider for certificate validation (e.g., `cf`)
+- `ACME_EMAIL`: Email for Let's Encrypt notifications
+- `ACME_CA`: Certificate authority (default: `letsencrypt`)
