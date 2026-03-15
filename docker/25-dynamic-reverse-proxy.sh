@@ -445,16 +445,27 @@ if [ -s "$tmp_rules" ]; then
             backstream_config=''
         fi
 
-        sed -e "s|\${frontend_port}|$port|g" \
-            -e "s|\${domain_name}|$srv_name|g" \
-            -e "s|\${resolver}|$RESOLVER|g" \
-            -e "s|\${domain_path}|$path|g" \
-            -e "s|\${proxy_target}|$backend_url|g" \
-            -e "s|\${cert_dir}|$DIRECT_CERT_DIR|g" \
-            -e "s|\${cert_domain}|$cert_dom|g" \
-            -e "s|\${location_proxy_redirect}|$location_proxy_redirect|g" \
-            -e "s|\${backstream_config}|$backstream_config|g" \
-            "$template" > "$DYNAMIC_DIR/$conf_name"
+        # 使用 awk 处理多行替换，避免 sed 的转义问题
+        awk -v frontend_port="$port" \
+            -v domain_name="$srv_name" \
+            -v resolver="$RESOLVER" \
+            -v domain_path="$path" \
+            -v proxy_target="$backend_url" \
+            -v cert_dir="$DIRECT_CERT_DIR" \
+            -v cert_domain="$cert_dom" \
+            -v location_proxy_redirect="$location_proxy_redirect" \
+            -v backstream_config="$backstream_config" '
+            { gsub(/\${frontend_port}/, frontend_port) }
+            { gsub(/\${domain_name}/, domain_name) }
+            { gsub(/\${resolver}/, resolver) }
+            { gsub(/\${domain_path}/, domain_path) }
+            { gsub(/\${proxy_target}/, proxy_target) }
+            { gsub(/\${cert_dir}/, cert_dir) }
+            { gsub(/\${cert_domain}/, cert_domain) }
+            { gsub(/\${location_proxy_redirect}/, location_proxy_redirect) }
+            { gsub(/\${backstream_config}/, backstream_config) }
+            { print }
+        ' "$template" > "$DYNAMIC_DIR/$conf_name"
         entrypoint_log "Generated config for $domain (proxy_redirect: $proxy_redirect)"
     done < "$tmp_rules"
 fi
