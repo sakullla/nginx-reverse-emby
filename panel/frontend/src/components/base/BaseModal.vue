@@ -1,6 +1,6 @@
 <template>
   <Transition name="modal-fade">
-    <div v-if="modelValue" class="modal-overlay" @click="handleBackdropClick">
+    <div v-if="modelValue" class="modal-overlay" data-testid="modal-overlay" @click="handleBackdropClick">
       <div
         class="modal-wrapper"
         :class="{ 'modal-mobile-bottom': mobileBottom }"
@@ -12,7 +12,7 @@
             <h3 class="modal-title">{{ title }}</h3>
             <p v-if="subtitle" class="modal-subtitle">{{ subtitle }}</p>
           </div>
-          <button class="modal-close-btn" @click="close" aria-label="关闭">
+          <button class="modal-close-btn" data-testid="modal-close" @click="close" aria-label="关闭">
             <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
           </button>
         </div>
@@ -25,13 +25,14 @@
         <!-- Modal Footer -->
         <div class="modal-footer" v-if="$slots.footer || showDefaultFooter">
           <slot name="footer">
-            <button class="btn-modal-cancel" @click="close">
+            <button class="btn-modal-cancel" data-testid="modal-cancel" @click="close">
               {{ cancelText }}
             </button>
             <button
               :class="['btn-modal-confirm', confirmVariant]"
               @click="confirm"
               :disabled="loading"
+              data-testid="modal-confirm"
             >
               <div v-if="loading" class="loading-spinner"></div>
               <span v-else>{{ confirmText }}</span>

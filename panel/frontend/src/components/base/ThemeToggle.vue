@@ -1,5 +1,5 @@
 <template>
-  <button class="theme-toggle" @click="cycleTheme" :title="themeTitle">
+  <button class="theme-toggle" data-testid="theme-toggle" @click="cycleTheme" :title="themeTitle">
     <span v-if="currentTheme === 'light'">☀️</span>
     <span v-else-if="currentTheme === 'dark'">🌙</span>
     <span v-else-if="currentTheme === 'anime'">🌸</span>

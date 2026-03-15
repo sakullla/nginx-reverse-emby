@@ -1,6 +1,6 @@
 <template>
   <Transition name="fade">
-    <div v-if="ruleStore.statusMessage" :class="['status-message', ruleStore.statusMessage.type]">
+    <div v-if="ruleStore.statusMessage" data-testid="status-message" :class="['status-message', ruleStore.statusMessage.type]">
       {{ ruleStore.statusMessage.text }}
     </div>
   </Transition>

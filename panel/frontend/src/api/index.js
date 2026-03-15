@@ -223,7 +223,10 @@ export async function deleteRule(agentId, id) {
 export async function applyConfig(agentId) {
   if (isDev) {
     await sleep(1200)
-    return { ok: true, message: 'applied' }
+    if (agentId === 'local') {
+      return { ok: true, message: 'applied' }
+    }
+    return { ok: true, message: 'waiting for heartbeat' }
   }
   const { data } = await api.post(
     `/agents/${encodeURIComponent(agentId)}/apply`,

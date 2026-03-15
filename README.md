@@ -165,28 +165,36 @@ curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/dep
 
 ---
 
-## Master / Agent??? Agent?
+## Master / Agent（轻量 Agent）
 
-???????
+当前版本支持 **Master / Agent** 架构，适合在 Master 上集中管理多个 Nginx 节点。
 
-- **Master**????? Docker + ??
-- **Agent**?????????????? Docker??????
-- **NAT Agent**?Agent ??????? Master ???????????
-- **Master ????**?Master ???????????????????
+- **Master**：建议运行完整面板与后端服务，可直接用 Docker 部署，负责节点注册、规则管理、配置下发与心跳接收。
+- **Agent**：运行在目标主机上，只需要 Node.js 与本机 Nginx 管理脚本，不需要 Docker，也不需要部署面板，适合轻量化场景。
+- **NAT Agent**：Agent 可以位于 NAT 或内网后方，只需要能主动访问 Master；通过心跳轮询拉取期望配置，不要求 Master 反向直连。
+- **Master 本机节点**：Master 自己也会保留一个可直接管理的本机节点，可和远程 Agent 一起在面板中统一管理。
 
-### ?? Agent ??
+### Agent 最低要求
 
-- `node`
+- Node.js 18+
 - `curl`
-- ????? Nginx ?????`nginx -t`?`nginx -s reload`
+- 一个可由 Agent 调用的 Nginx 管理脚本（通常负责 `nginx -t` 与 `nginx -s reload`）
 
-### ??????
+### 快速加入 Agent
 
 ```bash
-/opt/nginx-reverse-emby/scripts/join-agent.sh   --master-url http://master.example.com:8080   --register-token change-this-register-token   --agent-name edge-01   --tags edge,emby   --apply-command '/usr/local/bin/nginx-reverse-emby-apply.sh'   --install-systemd
+/opt/nginx-reverse-emby/scripts/join-agent.sh \
+  --master-url http://master.example.com:8080 \
+  --register-token change-this-register-token \
+  --agent-name edge-01 \
+  --tags edge,emby \
+  --apply-command '/usr/local/bin/nginx-reverse-emby-apply.sh' \
+  --install-systemd
 ```
 
-### ??????
+脚本会生成轻量 Agent 配置，并启动 `scripts/light-agent.js`。Agent 会定时上报心跳、拉取 Master 下发的配置 revision，并在需要时执行本机 Nginx 管理脚本。
+
+### 示例文件
 
 - `AGENT_EXAMPLES.md`
 - `examples/light-agent.env.example`

@@ -14,7 +14,7 @@
       <template v-else>
         <div class="top-nav-actions">
           <ThemeToggle />
-          <button @click="ruleStore.logout" class="logout-btn" title="退出登录">
+          <button data-testid="logout-button" @click="ruleStore.logout" class="logout-btn" title="退出登录">
             <svg viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4m7 14 5-5-5-5m5 5H9"/></svg>
             <span class="logout-text">退出</span>
           </button>
@@ -63,7 +63,7 @@
                   <h2>Agent 节点</h2>
                   <p>选择一个节点后，即可管理它的代理规则。</p>
                 </div>
-                <button class="ghost-btn" @click="ruleStore.loadAgents">
+                <button class="ghost-btn" data-testid="refresh-agents" @click="ruleStore.loadAgents">
                   刷新节点
                 </button>
               </div>
@@ -74,6 +74,7 @@
                   :key="agent.id"
                   class="agent-card"
                   :class="{ active: ruleStore.selectedAgentId === agent.id }"
+                  :data-testid="`agent-card-${agent.id}`"
                   @click="handleSelectAgent(agent.id)"
                 >
                   <div class="agent-card-top">
@@ -103,6 +104,7 @@
                     <button
                       v-else
                       class="danger-link"
+                      data-testid="remove-agent"
                       @click.stop="handleRemoveAgent(agent)"
                     >
                       移除
@@ -125,12 +127,12 @@
                 </div>
               </div>
 
-              <div class="code-card">
+              <div class="code-card" data-testid="join-command">
                 <pre>{{ joinCommand }}</pre>
               </div>
 
               <div class="join-actions">
-                <button class="ghost-btn" @click="copyJoinCommand">复制命令</button>
+                <button class="ghost-btn" data-testid="copy-join-command" @click="copyJoinCommand">复制命令</button>
               </div>
 
               <ul class="join-tips">
@@ -159,6 +161,7 @@
                   </span>
                   <input
                     v-model="ruleStore.searchQuery"
+                    data-testid="rules-search-input"
                     type="text"
                     placeholder="搜索当前节点规则..."
                     class="search-input"
@@ -170,6 +173,7 @@
 
                 <button
                   @click="showAddModal = true"
+                  data-testid="add-rule-button"
                   class="primary-btn"
                   :disabled="!ruleStore.hasSelectedAgent"
                 >
@@ -179,7 +183,7 @@
               </div>
             </div>
 
-            <div class="stats-inline" v-if="ruleStore.hasSelectedAgent">
+            <div class="stats-inline" data-testid="agent-stats" v-if="ruleStore.hasSelectedAgent">
               <span>总请求数：{{ ruleStore.stats.totalRequests || '0' }}</span>
               <span>状态：{{ ruleStore.stats.status || '未知' }}</span>
             </div>

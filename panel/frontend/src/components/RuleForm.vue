@@ -1,5 +1,5 @@
 <template>
-  <form @submit.prevent="handleSubmit" class="rule-form-clean" novalidate>
+  <form @submit.prevent="handleSubmit" class="rule-form-clean" novalidate data-testid="rule-form">
     <!-- 地址配置区 -->
     <div class="form-group">
       <label class="field-label">前端访问地址</label>
@@ -7,7 +7,7 @@
         <div class="input-icon">
           <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>
         </div>
-        <input v-model="frontend_url" type="text" placeholder="https://emby.example.com" @input="errors.frontend = false" />
+        <input v-model="frontend_url" data-testid="frontend-url-input" type="text" placeholder="https://emby.example.com" @input="errors.frontend = false" />
       </div>
     </div>
 
@@ -17,7 +17,7 @@
         <div class="input-icon">
           <svg viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>
         </div>
-        <input v-model="backend_url" type="text" placeholder="http://192.168.1.10:8096" @input="errors.backend = false" />
+        <input v-model="backend_url" data-testid="backend-url-input" type="text" placeholder="http://192.168.1.10:8096" @input="errors.backend = false" />
       </div>
     </div>
 
@@ -32,6 +32,7 @@
           </span>
           <input
             v-model="tagInput"
+            data-testid="tag-input"
             type="text"
             placeholder="输入并回车..."
             @keydown.enter.prevent="addTag"
@@ -47,7 +48,7 @@
     <div class="switch-area">
       <label class="field-label">启用此规则</label>
       <label class="pro-toggle">
-        <input type="checkbox" v-model="enabled">
+        <input type="checkbox" data-testid="enabled-checkbox" v-model="enabled">
         <span class="pro-toggle-slider"></span>
       </label>
     </div>
@@ -58,14 +59,14 @@
         <span class="field-hint">关闭时，后端返回的重定向将直接传递给客户端</span>
       </label>
       <label class="pro-toggle">
-        <input type="checkbox" v-model="proxy_redirect">
+        <input type="checkbox" data-testid="proxy-redirect-checkbox" v-model="proxy_redirect">
         <span class="pro-toggle-slider"></span>
       </label>
     </div>
 
     <!-- 操作提交 -->
     <div class="form-footer-action">
-      <button type="submit" :disabled="ruleStore.loading" class="btn-full-primary">
+      <button type="submit" data-testid="rule-submit" :disabled="ruleStore.loading" class="btn-full-primary">
         <div v-if="ruleStore.loading" class="loading-spin"></div>
         <span v-else>{{ isEdit ? '保存修改' : '立即创建' }}</span>
       </button>

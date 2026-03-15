@@ -3,6 +3,7 @@
     :disabled="ruleStore.loading || !ruleStore.hasSelectedAgent"
     @click="handleApply"
     class="apply-btn success"
+    data-testid="apply-config-button"
     :title="buttonTitle"
   >
     <span v-if="!ruleStore.loading" class="btn-content">

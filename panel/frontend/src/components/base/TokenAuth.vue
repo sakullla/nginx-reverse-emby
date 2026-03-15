@@ -1,5 +1,5 @@
 <template>
-  <div class="auth-overlay">
+  <div class="auth-overlay" data-testid="login-screen">
     <div class="auth-card">
       <div class="auth-header">
         <div class="auth-icon-bg">
@@ -18,6 +18,7 @@
             </span>
             <input
               v-model="inputToken"
+              data-testid="login-token-input"
               type="password"
               placeholder="输入您的访问令牌..."
               autocomplete="current-password"
@@ -25,12 +26,12 @@
               :disabled="loading"
             />
             <transition name="fade">
-              <div v-if="showError" class="error-tip">令牌不能为空</div>
+              <div v-if="showError" class="error-tip" data-testid="login-error">令牌不能为空</div>
             </transition>
           </div>
         </div>
 
-        <button type="submit" :disabled="loading" class="auth-submit-btn primary">
+        <button type="submit" :disabled="loading" class="auth-submit-btn primary" data-testid="login-submit">
           <span v-if="!loading" class="btn-content">
             验证并进入
             <svg class="btn-arrow" viewBox="0 0 24 24"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>

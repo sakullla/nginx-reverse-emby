@@ -1,11 +1,11 @@
 <template>
-  <div :class="['rule-item-modern', `view-${viewMode}`, { 'is-disabled': !rule.enabled }]">
+  <div :class="['rule-item-modern', `view-${viewMode}`, { 'is-disabled': !rule.enabled }]" :data-testid="`rule-item-${rule.id}`">
     <div class="pro-card">
       <!-- Grid Layout -->
       <template v-if="viewMode === 'grid'">
         <div class="pro-card-header">
           <span class="pro-id">#{{ rule.id }}</span>
-          <button @click="toggleStatus" :class="['status-switch', rule.enabled ? 'active' : 'off']" :title="rule.enabled ? '点击停用' : '点击启用'">
+          <button data-testid="rule-toggle" @click="toggleStatus" :class="['status-switch', rule.enabled ? 'active' : 'off']" :title="rule.enabled ? '点击停用' : '点击启用'">
             <span class="switch-slider"></span>
           </button>
         </div>
@@ -31,6 +31,7 @@
             <span
               v-for="tag in rule.tags"
               :key="tag"
+              data-testid="rule-tag"
               :class="['pro-tag', getTagColorClass(tag), { 'tag-selected': ruleStore.selectedTags.includes(tag) }]"
               @click="filterByTag(tag)"
               :title="`点击筛选 '${tag}' 标签`"
@@ -41,11 +42,11 @@
         </div>
 
         <div class="pro-card-footer">
-          <button @click="showEditModal = true" class="tool-btn" title="编辑">
+          <button data-testid="rule-edit" @click="showEditModal = true" class="tool-btn" title="编辑">
             <svg viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
             <span>编辑</span>
           </button>
-          <button @click="handleDelete" class="tool-btn del" title="删除">
+          <button data-testid="rule-delete" @click="handleDelete" class="tool-btn del" title="删除">
             <svg viewBox="0 0 24 24"><path d="M3 6h18m-2 0v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6m3 0V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
             <span>删除</span>
           </button>
@@ -72,6 +73,7 @@
             <span
               v-for="tag in rule.tags"
               :key="tag"
+              data-testid="rule-tag"
               :class="['pro-tag tiny', getTagColorClass(tag), { 'tag-selected': ruleStore.selectedTags.includes(tag) }]"
               @click="filterByTag(tag)"
               :title="`点击筛选 '${tag}' 标签`"
@@ -81,11 +83,11 @@
           </div>
 
           <div class="list-actions">
-            <button @click="showEditModal = true" class="mini-btn">
+            <button data-testid="rule-edit" @click="showEditModal = true" class="mini-btn">
               <svg viewBox="0 0 24 24"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
               <span>编辑</span>
             </button>
-            <button @click="handleDelete" class="mini-btn del">
+            <button data-testid="rule-delete" @click="handleDelete" class="mini-btn del">
               <svg viewBox="0 0 24 24"><path d="M3 6h18m-2 0v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6m3 0V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
               <span>删除</span>
             </button>
