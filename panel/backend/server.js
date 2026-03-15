@@ -10,7 +10,8 @@ const { spawnSync } = require("child_process");
 
 const HOST = process.env.PANEL_BACKEND_HOST || "127.0.0.1";
 const PORT = Number(process.env.PANEL_BACKEND_PORT || "18081");
-const DATA_ROOT = "/opt/nginx-reverse-emby/panel/data";
+const DATA_ROOT =
+  process.env.PANEL_DATA_ROOT || "/opt/nginx-reverse-emby/panel/data";
 const ROLE = normalizeRole(process.env.PANEL_ROLE || "master");
 const RULES_JSON =
   process.env.PANEL_RULES_JSON || path.join(DATA_ROOT, "proxy_rules.json");
@@ -24,6 +25,8 @@ const GENERATOR_SCRIPT =
   process.env.PANEL_GENERATOR_SCRIPT ||
   "/docker-entrypoint.d/25-dynamic-reverse-proxy.sh";
 const NGINX_BIN = process.env.PANEL_NGINX_BIN || "nginx";
+const APPLY_COMMAND = process.env.PANEL_APPLY_COMMAND || "";
+const APPLY_COMMAND_ARGS = parseJsonArray(process.env.PANEL_APPLY_ARGS, []);
 const AUTO_APPLY = /^(1|true|yes|on)$/i.test(
   process.env.PANEL_AUTO_APPLY || "1",
 );
@@ -145,6 +148,16 @@ function validateUrl(value) {
     return u.protocol === "http:" || u.protocol === "https:";
   } catch {
     return false;
+  }
+}
+
+function parseJsonArray(value, fallback = []) {
+  if (!value) return fallback;
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.map((item) => String(item)) : fallback;
+  } catch {
+    return fallback;
   }
 }
 
@@ -359,6 +372,11 @@ function runChecked(command, args) {
 }
 
 function applyNginxConfig() {
+  if (APPLY_COMMAND) {
+    runChecked(APPLY_COMMAND, APPLY_COMMAND_ARGS);
+    return;
+  }
+
   runChecked(GENERATOR_SCRIPT, []);
   runChecked(NGINX_BIN, ["-t"]);
   runChecked(NGINX_BIN, ["-s", "reload"]);
