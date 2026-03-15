@@ -22,6 +22,26 @@ Agent 可以在 **NAT 后**，因为它通过心跳主动连接 Master 拉取规
   --install-systemd
 ```
 
+## 1.1) NAT 场景
+
+如果 Agent 在 NAT 后：
+
+- 不需要开放入站端口给 Master
+- `--agent-url` 可以留空
+- Agent 只要能主动访问 `--master-url` 即可
+
+示例：
+
+```bash
+/opt/nginx-reverse-emby/scripts/join-agent.sh \
+  --master-url http://master.example.com:8080 \
+  --register-token change-this-register-token \
+  --agent-name nat-edge-01 \
+  --tags nat,edge \
+  --apply-command '/usr/local/bin/nginx-reverse-emby-apply.sh' \
+  --install-systemd
+```
+
 ## 2) 示例 agent.env
 
 见：`examples/light-agent.env.example`

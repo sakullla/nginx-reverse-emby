@@ -6,36 +6,35 @@ services:
     network_mode: host
 
     environment:
-      # 默认模式：容器直接提供 HTTP / HTTPS。
+      # 部署模式：direct / front_proxy
       PROXY_DEPLOY_MODE: direct
 
-      # 如果你改回 front_proxy，可按需启用：
-      # FRONT_PROXY_PORT: "3000"
-
-      # 面板访问端口。
+      # 面板 / Master 角色
+      PANEL_ROLE: master
       PANEL_PORT: "8080"
 
-      # 面板鉴权 token。
-      # 生产环境请改成一个足够长且随机的值，不要使用示例值。
+      # 面板登录 token
       API_TOKEN: change-this-token
 
-      # 可选：预置一条规则。
-      # 规则格式：frontend_url,backend_url
+      # 轻量 Agent 注册 token（NAT Agent 使用）
+      MASTER_REGISTER_TOKEN: change-this-register-token
+
+      # 可选：预置一条本机规则
       # PROXY_RULE_1: https://emby.example.com,http://192.168.1.10:8096
 
-      # direct + acme 时常用变量，按需取消注释：
+      # 可选：Master 本机节点展示信息
+      # MASTER_LOCAL_AGENT_NAME: master-local
+      # MASTER_LOCAL_AGENT_TAGS: local,master
+
+      # direct + acme 常用参数
       # ACME_EMAIL: admin@example.com
       # ACME_CA: letsencrypt
       # PANEL_AUTO_APPLY: "1"
 
-      # 如果要使用 DNS 验证，再按你的提供商填写：
+      # DNS 验证示例（按需启用）
       # ACME_DNS_PROVIDER: cf
       # CF_Token: xxxxxxxx
       # CF_Account_ID: xxxxxxxx
-
-    # host 模式下不再使用 ports。
-    # 默认会直接占用宿主机上的 8080、80、443（以及你规则里实际监听的端口）。
-    # 如果改回 bridge 网络，再自行添加 ports 映射。
 
     volumes:
       - ./data:/opt/nginx-reverse-emby/panel/data

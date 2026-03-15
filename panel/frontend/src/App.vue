@@ -87,6 +87,10 @@
                   <div class="agent-meta">
                     <span>模式 {{ formatMode(agent.mode) }}</span>
                     <span>版本 {{ agent.version || '未知' }}</span>
+                    <span>修订 {{ agent.current_revision ?? 0 }} / {{ agent.desired_revision ?? 0 }}</span>
+                    <span v-if="agent.last_apply_status">
+                      应用结果：{{ formatApplyStatus(agent.last_apply_status) }}
+                    </span>
                     <span>{{ agent.last_seen_at ? `最近在线 ${formatTime(agent.last_seen_at)}` : '尚未上报' }}</span>
                   </div>
 
@@ -200,7 +204,7 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRuleStore } from './stores/rules'
 import StatusMessage from './components/StatusMessage.vue'
 import RuleForm from './components/RuleForm.vue'
@@ -213,6 +217,14 @@ import BaseModal from './components/base/BaseModal.vue'
 
 const ruleStore = useRuleStore()
 const showAddModal = ref(false)
+let refreshTimer = null
+
+function ensureRefreshTimer() {
+  if (refreshTimer) return
+  refreshTimer = window.setInterval(() => {
+    ruleStore.refreshClusterStatus()
+  }, 10000)
+}
 
 const icons = {
   nodes: '<svg viewBox="0 0 24 24"><circle cx="5" cy="7" r="3"/><circle cx="19" cy="7" r="3"/><circle cx="12" cy="17" r="3"/><line x1="7.5" y1="8.5" x2="10.5" y2="14"/><line x1="16.5" y1="8.5" x2="13.5" y2="14"/></svg>',
@@ -261,6 +273,12 @@ function formatMode(mode) {
   return mode || '未知'
 }
 
+function formatApplyStatus(status) {
+  if (status === 'success') return '成功'
+  if (status === 'error') return '失败'
+  return status || '未知'
+}
+
 function formatTime(value) {
   try {
     return new Date(value).toLocaleString()
@@ -271,8 +289,21 @@ function formatTime(value) {
 
 onMounted(async () => {
   await ruleStore.checkAuth()
-  if (ruleStore.isAuthenticated) {
-    await ruleStore.initialize()
+})
+
+watch(
+  () => ruleStore.isAuthenticated,
+  async (nextValue, prevValue) => {
+    if (nextValue && !prevValue) {
+      await ruleStore.initialize()
+      ensureRefreshTimer()
+    }
+  }
+)
+
+onUnmounted(() => {
+  if (refreshTimer) {
+    window.clearInterval(refreshTimer)
   }
 })
 </script>

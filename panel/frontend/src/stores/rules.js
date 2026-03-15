@@ -101,7 +101,6 @@ export const useRuleStore = defineStore('rules', () => {
         isAuthenticated.value = true
         localStorage.setItem('panel_token', inputToken)
         showSuccess('登录成功')
-        await initialize()
       }
     } catch (err) {
       showError('Token 无效或连接失败')
@@ -155,6 +154,18 @@ export const useRuleStore = defineStore('rules', () => {
     }
 
     return agents.value
+  }
+
+  async function refreshClusterStatus() {
+    if (!isAuthenticated.value) return
+    try {
+      await loadAgents()
+      if (selectedAgentId.value) {
+        await loadStats()
+      }
+    } catch (err) {
+      console.error('刷新集群状态失败:', err)
+    }
   }
 
   async function loadStats() {
@@ -385,6 +396,7 @@ export const useRuleStore = defineStore('rules', () => {
     logout,
     initialize,
     loadAgents,
+    refreshClusterStatus,
     loadRules,
     loadStats,
     loadSelectedAgentData,
