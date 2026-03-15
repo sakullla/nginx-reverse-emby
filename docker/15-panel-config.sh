@@ -6,7 +6,8 @@ if [ "${PANEL_ENABLED:-1}" = "0" ]; then
     exit 0
 fi
 
-template_file="/etc/nginx/templates/panel.conf.template"
+# 使用 /opt 目录下的模板，避免被 20-envsubst-on-templates.sh 处理
+template_file="/opt/nginx-reverse-emby/panel/panel.conf.template"
 output_file="/etc/nginx/conf.d/00-panel.conf"
 
 if [ ! -f "$template_file" ]; then
