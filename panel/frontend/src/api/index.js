@@ -3,6 +3,19 @@ import axios from 'axios'
 const isDev = import.meta.env.DEV
 const sleep = (ms = 500) => new Promise((resolve) => setTimeout(resolve, ms))
 
+function readDevMockFlags() {
+  if (!isDev || typeof window === 'undefined') return {}
+  try {
+    return JSON.parse(localStorage.getItem('panel_dev_mock_flags') || '{}')
+  } catch {
+    return {}
+  }
+}
+
+function createDevUnauthorizedError() {
+  return new Error('401 Unauthorized')
+}
+
 const api = axios.create({
   baseURL: '/panel-api',
   timeout: 10000,
@@ -94,6 +107,10 @@ function getMockStats(agentId) {
 export async function verifyToken(token) {
   if (isDev) {
     await sleep()
+    const flags = readDevMockFlags()
+    if (flags.force401OnVerify || token === 'expired-401') {
+      throw createDevUnauthorizedError()
+    }
     return token === 'admin'
   }
   const { data } = await api.get('/auth/verify', {

@@ -58,7 +58,7 @@
           </template>
         </EmptyState>
 
-        <div v-else :class="['rules-layout', `view-${ruleStore.viewMode}`]">
+        <div v-else data-testid="rules-layout" :class="['rules-layout', `view-${ruleStore.viewMode}`]">
           <RuleItem
             v-for="rule in ruleStore.filteredRules"
             :key="rule.id"

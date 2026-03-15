@@ -179,6 +179,14 @@
                 >
                   添加规则
                 </button>
+                <button
+                  data-testid="view-mode-toggle"
+                  class="ghost-btn"
+                  :disabled="!ruleStore.hasRules"
+                  @click="ruleStore.toggleViewMode()"
+                >
+                  {{ ruleStore.viewMode === 'grid' ? 'List' : 'Grid' }}
+                </button>
                 <ActionBar />
               </div>
             </div>

@@ -9,26 +9,26 @@
 - [x] 已覆盖前端 Mock 场景：登录、登出、Agent 管理、本机规则 CRUD、主题切换、Join 命令复制、本地 / 远程 apply 提示
 - [x] 已覆盖真实 backend 集成场景：NAT Agent 注册、心跳、离线、revision 同步、本机 apply 成功 / 失败
 - [x] backend 支持测试专用的 `PANEL_DATA_ROOT` 与 `PANEL_APPLY_COMMAND` 覆盖
+- [x] 错误 token 登录失败提示
+- [x] 401 后自动清理本地 token 并回到登录页
+- [x] grid / list 视图切换测试
+- [x] README / 示例文件 smoke tests
 
 ## 当前未完成
 
-- [ ] 错误 token 登录失败提示
-- [ ] 401 后自动清理本地 token 并回到登录页
 - [ ] 本机 apply 失败时的前端提示覆盖
-- [ ] grid / list 视图切换测试
 - [ ] 远程规则编辑 / 删除后 revision 递增前端链路
 - [ ] 多 Agent 并发心跳与恢复在线场景
-- [ ] README / 示例文件 smoke tests
 
 ## 检查项
 
 ### 认证
 - [x] 登录页渲染
 - [x] 正确 token 登录
+- [x] 错误 token 分支
 - [x] 刷新后保持登录态
+- [x] 401 回退登录
 - [x] 登出
-- [ ] 错误 token 分支
-- [ ] 401 回退登录
 
 ### 节点管理
 - [x] Agent 列表加载
@@ -50,7 +50,7 @@
 - [x] Join 命令复制
 - [x] 新增规则弹窗
 - [x] 删除确认弹窗
-- [ ] grid / list 视图切换
+- [x] grid / list 视图切换
 
 ### backend 集成
 - [x] NAT Agent 无 `agent_url` 仍可工作
@@ -61,6 +61,12 @@
 - [x] 远程 apply 返回“等待心跳应用”
 - [ ] 多 Agent 并发场景
 
+### 文档与示例
+- [x] README 的 Master / Agent 章节
+- [x] AGENT_EXAMPLES 示例
+- [x] `examples/light-agent.env.example` 字段检查
+- [x] `examples/light-agent.service.example` 路径与 service 结构检查
+
 ## 当前测试文件
 
 - `tests/e2e/auth.spec.js`
@@ -69,11 +75,11 @@
 - `tests/e2e/ui.spec.js`
 - `tests/e2e/backend.spec.js`
 - `tests/e2e/backend-helper.js`
+- `tests/e2e/docs-smoke.spec.js`
 
 ## 建议后续顺序
 
-1. 补错误 token / 401 分支
-2. 补 grid / list 视图切换
-3. 补远程规则编辑 / 删除后 revision 链路
-4. 补多 Agent 心跳与恢复在线
-5. 补 README / 示例文件 smoke tests
+1. 补本机 apply 失败的前端提示
+2. 补远程规则编辑 / 删除后 revision 链路
+3. 补多 Agent 心跳与恢复在线
+4. 补非法 URL 校验

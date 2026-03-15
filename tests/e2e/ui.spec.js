@@ -33,3 +33,17 @@ test('copies the join command and shows different apply feedback for local and r
   await page.getByTestId('apply-config-button').click()
   await expect(page.getByTestId('status-message')).toHaveClass(/info/)
 })
+
+
+test('toggles rule view mode and keeps it after reload', async ({ page }) => {
+  await login(page)
+
+  await expect(page.getByTestId('rules-layout')).toHaveClass(/view-grid/)
+  await page.getByTestId('view-mode-toggle').click()
+  await expect(page.getByTestId('rules-layout')).toHaveClass(/view-list/)
+
+  await page.reload()
+  await expect(page.getByTestId('rules-layout')).toHaveClass(/view-list/)
+  await page.getByTestId('view-mode-toggle').click()
+  await expect(page.getByTestId('rules-layout')).toHaveClass(/view-grid/)
+})

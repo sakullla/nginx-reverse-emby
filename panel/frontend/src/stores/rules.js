@@ -96,14 +96,19 @@ export const useRuleStore = defineStore('rules', () => {
     loading.value = true
     try {
       const ok = await api.verifyToken(inputToken)
-      if (ok) {
-        token.value = inputToken
-        isAuthenticated.value = true
-        localStorage.setItem('panel_token', inputToken)
-        showSuccess('登录成功')
+      if (!ok) {
+        showError('Token \u65e0\u6548\u6216\u8fde\u63a5\u5931\u8d25')
+        throw new Error('invalid token')
       }
+
+      token.value = inputToken
+      isAuthenticated.value = true
+      localStorage.setItem('panel_token', inputToken)
+      showSuccess('\u767b\u5f55\u6210\u529f')
     } catch (err) {
-      showError('Token 无效或连接失败')
+      if (!String(err?.message || '').includes('invalid token')) {
+        showError('Token \u65e0\u6548\u6216\u8fde\u63a5\u5931\u8d25')
+      }
       throw err
     } finally {
       loading.value = false
