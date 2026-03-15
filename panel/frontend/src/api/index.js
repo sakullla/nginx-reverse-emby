@@ -49,6 +49,7 @@ const mockRules = [
     backend_url: "http://192.168.1.10:8096",
     enabled: true,
     tags: ["emby", "https"],
+    proxy_redirect: true,
   },
   {
     id: 2,
@@ -56,6 +57,7 @@ const mockRules = [
     backend_url: "http://192.168.1.11:8096",
     enabled: false,
     tags: ["jellyfin"],
+    proxy_redirect: true,
   },
 ];
 
@@ -99,6 +101,7 @@ export async function createRule(
   backend_url,
   tags = [],
   enabled = true,
+  proxy_redirect = true,
 ) {
   if (isDev) {
     await sleep();
@@ -108,19 +111,27 @@ export async function createRule(
       backend_url,
       tags,
       enabled,
+      proxy_redirect,
     };
     mockRules.push(newRule);
     return newRule;
   }
   const { data } = await api.post(
     "/rules",
-    { frontend_url, backend_url, tags, enabled },
+    { frontend_url, backend_url, tags, enabled, proxy_redirect },
     longRunningRequest,
   );
   return data.rule;
 }
 
-export async function updateRule(id, frontend_url, backend_url, tags, enabled) {
+export async function updateRule(
+  id,
+  frontend_url,
+  backend_url,
+  tags,
+  enabled,
+  proxy_redirect,
+) {
   if (isDev) {
     await sleep();
     const idx = mockRules.findIndex((r) => r.id === id);
@@ -130,13 +141,14 @@ export async function updateRule(id, frontend_url, backend_url, tags, enabled) {
       if (backend_url !== undefined) updated.backend_url = backend_url;
       if (tags !== undefined) updated.tags = tags;
       if (enabled !== undefined) updated.enabled = enabled;
+      if (proxy_redirect !== undefined) updated.proxy_redirect = proxy_redirect;
       mockRules[idx] = updated;
     }
     return mockRules[idx];
   }
   const { data } = await api.put(
     `/rules/${id}`,
-    { frontend_url, backend_url, tags, enabled },
+    { frontend_url, backend_url, tags, enabled, proxy_redirect },
     longRunningRequest,
   );
   return data.rule;

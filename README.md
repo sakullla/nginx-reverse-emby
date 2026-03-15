@@ -14,6 +14,7 @@
 - 🔒 **自动化 SSL**：集成 `acme.sh`，支持 HTTP / DNS API（如 Cloudflare）自动申请并续期证书。
 - 🌐 **全栈协议支持**：完美支持 IPv4 / IPv6，适配各种复杂的网络环境。
 - ⚡ **动态响应**：基于模板的 Nginx 配置生成，修改规则后自动执行 `nginx -t` 与 `reload`，平滑无感。
+- 🔄 **智能重定向**：支持配置是否代理 302/307 重定向，适配 OAuth 等特殊场景需求。
 - 📦 **开箱即用**：预置最优化的 Nginx 配置，特别针对媒体流服务进行了调优。
 
 ---
@@ -56,6 +57,23 @@ docker compose up -d
 - **特定端口**：`http://files.example.com:81,http://10.0.0.5:8080`
 - **IPv6 后端**：`https://jellyfin.me.com,http://[2001:db8::1]:8096`
 
+### 302/307 重定向代理配置
+
+默认情况下，Nginx 会拦截并代理后端的 302/307 重定向响应，将重定向地址转换为前端地址。这在大多数场景下是期望的行为。
+
+但在某些特殊场景（如 OAuth 认证）中，你可能希望后端返回的重定向直接传递给客户端，不做转换。可以通过以下方式配置：
+
+**Docker 模式（面板配置）：**
+在管理面板的规则编辑表单中，找到「代理 302/307 重定向」开关，关闭即可。
+
+**主机模式（deploy.sh 脚本）：**
+使用 `--no-proxy-redirect` 参数禁用 302/307 代理：
+```bash
+# 禁用 302/307 代理，后端重定向将直接返回给客户端
+curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh | bash -s -- \
+  -y https://emby.example.com -r http://127.0.0.1:8096 --no-proxy-redirect
+```
+
 ### 部署模式 (PROXY_DEPLOY_MODE)
 
 | 模式 | 说明 | 适用场景 |
@@ -92,7 +110,24 @@ bash <(curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/m
 
 # 非交互式快捷添加
 curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh | bash -s -- -y https://emby.abc.com -r http://127.0.0.1:8096
+
+# 禁用 302/307 重定向代理（适用于 OAuth 等场景）
+curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh | bash -s -- \
+  -y https://emby.abc.com -r http://127.0.0.1:8096 --no-proxy-redirect
 ```
+
+### deploy.sh 参数说明
+
+| 参数 | 说明 | 示例 |
+| :--- | :--- | :--- |
+| `-y, --you-domain` | 前端访问地址 | `-y https://emby.example.com` |
+| `-r, --r-domain` | 后端目标地址 | `-r http://192.168.1.10:8096` |
+| `--no-proxy-redirect` | 禁用 302/307 代理 | `--no-proxy-redirect` |
+| `-d, --parse-cert-domain` | 自动提取根域名作为证书域名 | `-d` |
+| `-D, --dns` | 使用 DNS API 模式申请证书 | `-D cf` |
+| `--remove` | 移除指定域名的配置 | `--remove https://emby.example.com` |
+| `-Y, --yes` | 非交互模式下自动确认 | `-Y` |
+| `-h, --help` | 显示帮助信息 | `-h` |
 
 ---
 
@@ -111,6 +146,18 @@ curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/dep
 <details>
 <summary>如何备份我的规则和证书？</summary>
 只需备份挂载到容器 `/opt/nginx-reverse-emby/panel/data` 的宿主机目录即可。
+</details>
+
+<details>
+<summary>何时需要禁用 302/307 代理？</summary>
+
+默认情况下，Nginx 会拦截后端的 302/307 重定向并转换地址。但在以下场景建议禁用：
+
+- **CDN 回源场景**：需要保留原始重定向地址时
+- **多跳转链接**：后端返回的链接需要客户端直接访问时
+
+**Docker 模式**：在面板编辑规则，关闭「代理 302/307 重定向」开关  
+**主机模式**：使用 `--no-proxy-redirect` 参数
 </details>
 
 ---

@@ -122,7 +122,13 @@ export const useRuleStore = defineStore("rules", () => {
     }
   }
 
-  async function addRule(frontend_url, backend_url, tags = [], enabled = true) {
+  async function addRule(
+    frontend_url,
+    backend_url,
+    tags = [],
+    enabled = true,
+    proxy_redirect = true,
+  ) {
     loading.value = true;
     error.value = null;
     try {
@@ -131,6 +137,7 @@ export const useRuleStore = defineStore("rules", () => {
         backend_url,
         tags,
         enabled,
+        proxy_redirect,
       );
       await loadRules();
       showSuccess("规则已新增");
@@ -144,11 +151,25 @@ export const useRuleStore = defineStore("rules", () => {
     }
   }
 
-  async function modifyRule(id, frontend_url, backend_url, tags, enabled) {
+  async function modifyRule(
+    id,
+    frontend_url,
+    backend_url,
+    tags,
+    enabled,
+    proxy_redirect,
+  ) {
     loading.value = true;
     error.value = null;
     try {
-      await api.updateRule(id, frontend_url, backend_url, tags, enabled);
+      await api.updateRule(
+        id,
+        frontend_url,
+        backend_url,
+        tags,
+        enabled,
+        proxy_redirect,
+      );
       await loadRules();
       showSuccess(`规则 ${id} 已更新`);
     } catch (err) {

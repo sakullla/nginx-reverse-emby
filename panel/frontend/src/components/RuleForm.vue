@@ -52,6 +52,17 @@
       </label>
     </div>
 
+    <div class="switch-area">
+      <label class="field-label">
+        代理 302/307 重定向
+        <span class="field-hint">关闭时，后端返回的重定向将直接传递给客户端</span>
+      </label>
+      <label class="pro-toggle">
+        <input type="checkbox" v-model="proxy_redirect">
+        <span class="pro-toggle-slider"></span>
+      </label>
+    </div>
+
     <!-- 操作提交 -->
     <div class="form-footer-action">
       <button type="submit" :disabled="ruleStore.loading" class="btn-full-primary">
@@ -74,6 +85,7 @@ const isEdit = computed(() => !!props.initialData)
 const frontend_url = ref('')
 const backend_url = ref('')
 const enabled = ref(true)
+const proxy_redirect = ref(true)
 const tags = ref([])
 const tagInput = ref('')
 const isTagsFocused = ref(false)
@@ -85,6 +97,7 @@ onMounted(() => {
     frontend_url.value = props.initialData.frontend_url || ''
     backend_url.value = props.initialData.backend_url || ''
     enabled.value = props.initialData.enabled !== false
+    proxy_redirect.value = props.initialData.proxy_redirect !== false
     tags.value = Array.isArray(props.initialData.tags) ? [...props.initialData.tags] : []
   }
 })
@@ -110,9 +123,9 @@ const handleSubmit = async () => {
   errors.backend = !backend_url.value.trim()
   if (errors.frontend || errors.backend) return
   try {
-    const params = [props.initialData?.id, frontend_url.value.trim(), backend_url.value.trim(), [...tags.value], enabled.value]
+    const params = [props.initialData?.id, frontend_url.value.trim(), backend_url.value.trim(), [...tags.value], enabled.value, proxy_redirect.value]
     if (isEdit.value) await ruleStore.modifyRule(...params)
-    else await ruleStore.addRule(params[1], params[2], params[3], params[4])
+    else await ruleStore.addRule(params[1], params[2], params[3], params[4], params[5])
     emit('success')
   } catch (err) {}
 }
@@ -139,6 +152,14 @@ const handleSubmit = async () => {
   font-weight: 600;
   color: var(--color-text-secondary);
   margin-left: 2px;
+}
+
+.field-hint {
+  display: block;
+  font-size: 0.75rem;
+  font-weight: 400;
+  color: var(--color-text-muted);
+  margin-top: 2px;
 }
 
 /* 输入框重设：消除截图中的重影效果 */

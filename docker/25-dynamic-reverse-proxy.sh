@@ -281,13 +281,15 @@ collect_rules() {
     done
 
     # 从 JSON 文件中提取启用的规则并转换为 CSV 格式以便后续处理
+    # 格式: frontend_url,backend_url,proxy_redirect
     if [ -f "$RULES_JSON" ]; then
         node -e "
             const fs = require('fs');
             try {
                 const rules = JSON.parse(fs.readFileSync('$RULES_JSON', 'utf8'));
                 rules.filter(r => r.enabled !== false).forEach(r => {
-                    process.stdout.write(r.frontend_url + ',' + r.backend_url + '\n');
+                    const proxyRedirect = r.proxy_redirect !== false ? '1' : '0';
+                    process.stdout.write(r.frontend_url + ',' + r.backend_url + ',' + proxyRedirect + '\n');
                 });
             } catch (e) {
                 process.stderr.write('Error parsing rules.json: ' + e.message + '\n');
@@ -295,8 +297,10 @@ collect_rules() {
             }
         " >> "$output_file" || true
     elif [ -f "$RULES_FILE" ]; then
-        # 回退逻辑: 如果没有 JSON 但有旧的 CSV
-        grep -v '^\s*#' "$RULES_FILE" | grep -v '^\s*$' >> "$output_file" || true
+        # 回退逻辑: 如果没有 JSON 但有旧的 CSV，默认启用 proxy_redirect
+        grep -v '^\s*#' "$RULES_FILE" | grep -v '^\s*$' | while IFS= read -r line; do
+            printf '%s,1\n' "$line"
+        done >> "$output_file" || true
     fi
 
     if [ -s "$output_file" ]; then
@@ -314,8 +318,10 @@ tmp_certs=$(mktemp)
 collect_rules "$tmp_rules"
 
 if [ -s "$tmp_rules" ]; then
-    while IFS=, read -r frontend_url backend_url || [ -n "$frontend_url" ]; do
+    while IFS=, read -r frontend_url backend_url proxy_redirect || [ -n "$frontend_url" ]; do
         [ -z "$backend_url" ] && continue
+        # 默认为启用 proxy_redirect (1)
+        proxy_redirect=${proxy_redirect:-1}
         parsed=$(parse_frontend_url "$frontend_url" || continue)
 
         proto=$(echo "$parsed" | cut -d'|' -f1)
@@ -335,6 +341,110 @@ if [ -s "$tmp_rules" ]; then
             [ "$proto" = "https" ] && echo "$cert_dom" >> "$tmp_certs"
         fi
 
+        # 根据 proxy_redirect 生成配置
+        if [ "$proxy_redirect" = "1" ]; then
+            # 启用 proxy_redirect: 生成 302/307 处理配置
+            if [ "$deploy_mode" = "front_proxy" ]; then
+                location_proxy_redirect='        proxy_redirect ~^(https?)://([^:/]+(?::\d+)?)(/.+)$ $http_x_forwarded_proto://$http_x_forwarded_host:$http_x_forwarded_port/backstream/$1/$2$3;'
+            else
+                location_proxy_redirect='        proxy_redirect ~^(https?)://([^:/]+(?::\d+)?)(/.+)$ $scheme://$host:$server_port/backstream/$1/$2$3;'
+            fi
+            # 生成 backstream 配置
+            if [ "$deploy_mode" = "front_proxy" ]; then
+                backstream_config='    location ~  ^/backstream/(https?)/([^/]+)  {
+        set $website                          $1://$2;
+        rewrite ^/backstream/(https?)/([^/]+)(/.+)$  $3 break;
+        early_hints $early_hints;
+        proxy_pass                            $website;
+
+        proxy_set_header Host                 $proxy_host;
+
+        proxy_http_version                    1.1;
+        proxy_cache_bypass                    $http_upgrade;
+        proxy_set_header Upgrade              $http_upgrade;
+        proxy_set_header Connection           $connection_upgrade;
+
+        proxy_ssl_server_name                 on;
+
+        proxy_connect_timeout                 60s;
+        proxy_send_timeout                    60s;
+        proxy_read_timeout                    60s;
+
+        proxy_redirect ~^(https?)://([^:/]+(?::\d+)?)(/.+)$ $http_x_forwarded_proto://$http_x_forwarded_host:$http_x_forwarded_port/backstream/$1/$2$3;
+
+        proxy_intercept_errors on;
+        error_page 307 = @handle_redirect;
+    }
+
+    location @handle_redirect {
+        set $saved_redirect_location '"'"'$upstream_http_location'"'"';
+        early_hints $early_hints;
+        proxy_pass $saved_redirect_location;
+        proxy_set_header Host                 $proxy_host;
+        proxy_http_version                    1.1;
+        proxy_cache_bypass                    $http_upgrade;
+
+        proxy_ssl_server_name                 on;
+
+        proxy_set_header Upgrade              $http_upgrade;
+        proxy_set_header Connection           $connection_upgrade;
+
+        proxy_connect_timeout                 60s;
+        proxy_send_timeout                    60s;
+        proxy_read_timeout                    60s;
+    }
+'
+            else
+                backstream_config='    location ~ ^/backstream/(https?)/([^/]+) {
+        set $website $1://$2;
+        rewrite ^/backstream/(https?)/([^/]+)(/.+)$ $3 break;
+        early_hints $early_hints;
+        proxy_pass $website;
+
+        proxy_set_header Host $proxy_host;
+
+        proxy_http_version 1.1;
+        proxy_cache_bypass $http_upgrade;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+
+        proxy_ssl_server_name on;
+
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 60s;
+
+        proxy_redirect ~^(https?)://([^:/]+(?::\d+)?)(/.+)$ $scheme://$host:$server_port/backstream/$1/$2$3;
+
+        proxy_intercept_errors on;
+        error_page 307 = @handle_redirect;
+    }
+
+    location @handle_redirect {
+        set $saved_redirect_location '"'"'$upstream_http_location'"'"';
+        early_hints $early_hints;
+        proxy_pass $saved_redirect_location;
+        proxy_set_header Host $proxy_host;
+        proxy_http_version 1.1;
+        proxy_cache_bypass $http_upgrade;
+
+        proxy_ssl_server_name on;
+
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 60s;
+    }
+'
+            fi
+        else
+            # 禁用 proxy_redirect: 不生成 302/307 处理配置，使用默认的 proxy_redirect 行为
+            location_proxy_redirect='        # proxy_redirect disabled - passing redirects directly to client'
+            backstream_config=''
+        fi
+
         sed -e "s|\${frontend_port}|$port|g" \
             -e "s|\${domain_name}|$srv_name|g" \
             -e "s|\${resolver}|$RESOLVER|g" \
@@ -342,8 +452,10 @@ if [ -s "$tmp_rules" ]; then
             -e "s|\${proxy_target}|$backend_url|g" \
             -e "s|\${cert_dir}|$DIRECT_CERT_DIR|g" \
             -e "s|\${cert_domain}|$cert_dom|g" \
+            -e "s|\${location_proxy_redirect}|$location_proxy_redirect|g" \
+            -e "s|\${backstream_config}|$backstream_config|g" \
             "$template" > "$DYNAMIC_DIR/$conf_name"
-        entrypoint_log "Generated config for $domain"
+        entrypoint_log "Generated config for $domain (proxy_redirect: $proxy_redirect)"
     done < "$tmp_rules"
 fi
 

@@ -108,6 +108,7 @@ function migrateCsvToJson() {
             backend_url: backend,
             enabled: true,
             tags: [],
+            proxy_redirect: true,
           });
         }
       }
@@ -261,6 +262,7 @@ async function handleRequest(req, res) {
         ? body.tags.map((t) => String(t).trim()).filter(Boolean)
         : [];
       const enabled = body.enabled !== false;
+      const proxy_redirect = body.proxy_redirect !== false;
 
       if (!validateUrl(frontend) || !validateUrl(backend)) {
         sendJson(
@@ -281,6 +283,7 @@ async function handleRequest(req, res) {
         backend_url: backend,
         enabled,
         tags,
+        proxy_redirect,
       };
       rules.push(newRule);
       saveRules(rules);
@@ -336,6 +339,10 @@ async function handleRequest(req, res) {
         : rules[index].tags;
       const enabled =
         body.enabled !== undefined ? !!body.enabled : rules[index].enabled;
+      const proxy_redirect =
+        body.proxy_redirect !== undefined
+          ? !!body.proxy_redirect
+          : rules[index].proxy_redirect !== false;
 
       if (!validateUrl(frontend) || !validateUrl(backend)) {
         sendJson(
@@ -354,6 +361,7 @@ async function handleRequest(req, res) {
         backend_url: backend,
         enabled,
         tags,
+        proxy_redirect,
       };
       saveRules(rules);
 

@@ -137,6 +137,7 @@ show_help() {
   -R, --resolver <DNS>           (可选) 手动指定 DNS 解析服务器。
   -c, --template-domain-config <URL>
                                  (可选) 指定自定义 Nginx 配置文件模板。
+  --no-proxy-redirect            (可选) 禁用 302/307 重定向代理，后端重定向将直接返回给客户端。
   --gh-proxy <URL>               (可选) 指定 GitHub 加速代理。
   --cf-token <TOKEN>             Cloudflare API Token。
   --cf-account-id <ID>           Cloudflare Account ID。
@@ -315,13 +316,14 @@ parse_arguments() {
     domain_to_remove=""
     force_yes="no"
     template_domain_config_source=""
+    no_proxy_redirect="no"
     manual_gh_proxy=""
 
     you_domain=""; you_domain_path=""; you_frontend_port=""; no_tls=""
     r_domain=""; r_domain_path=""; r_frontend_port=""; r_http_frontend=""
 
     local TEMP
-    if ! TEMP=$(getopt -o y:r:m:R:dD:hYc: --long you-domain:,r-domain:,cert-domain:,resolver:,parse-cert-domain,dns:,cf-token:,cf-account-id:,gh-proxy:,remove:,yes,template-domain-config:,help -n "$(basename "$0")" -- "$@"); then
+    if ! TEMP=$(getopt -o y:r:m:R:dD:hYc: --long you-domain:,r-domain:,cert-domain:,resolver:,parse-cert-domain,dns:,cf-token:,cf-account-id:,gh-proxy:,remove:,yes,template-domain-config:,no-proxy-redirect,help -n "$(basename "$0")" -- "$@"); then
         exit 1
     fi
     eval set -- "$TEMP"
@@ -336,6 +338,7 @@ parse_arguments() {
             -D|--dns) dns_provider="$2"; shift 2 ;;
             -R|--resolver) manual_resolver="$2"; shift 2 ;;
             -c|--template-domain-config) template_domain_config_source="$2"; shift 2 ;;
+            --no-proxy-redirect) no_proxy_redirect="yes"; shift ;;
             --gh-proxy) manual_gh_proxy="$2"; shift 2 ;;
             --cf-token) cf_token="$2"; shift 2 ;;
             --cf-account-id) cf_account_id="$2"; shift 2 ;;
@@ -409,6 +412,7 @@ display_summary() {
     echo -e "📜 证书域名: ${format_cert_domain}"
     echo -e "🔒 TLS 状态: $([[ "$no_tls" == "yes" ]] && echo "${RED}禁用 (HTTP Only)${NC}" || echo "${GREEN}启用 (HTTPS)${NC}")"
     echo -e "🧠 DNS 解析: ${resolver}"
+    echo -e "🔄 302/307 代理: $([[ "$no_proxy_redirect" == "yes" ]] && echo "${RED}禁用${NC}" || echo "${GREEN}启用${NC}")"
     echo -e "🌏 配置文件源: ${CONF_HOME}"
     echo "──────────────────────────────────────────────"
 }
@@ -574,7 +578,69 @@ generate_nginx_config() {
     local r_port_str=$([[ -n "$r_frontend_port" ]] && echo ":$r_frontend_port" || echo "")
     export r_domain_full="${r_proto}://${r_domain}${r_port_str}"
 
-    local vars='$you_domain $you_frontend_port $resolver $format_cert_domain $you_domain_path $you_domain_path_rewrite $r_domain_full'
+    # 根据 no_proxy_redirect 设置生成配置
+    if [[ "$no_proxy_redirect" == "yes" ]]; then
+        # 禁用 302/307 代理
+        export location_proxy_redirect='        # proxy_redirect disabled - passing redirects directly to client'
+        export backstream_config=''
+        export handle_redirect_config=''
+    else
+        # 启用 302/307 代理（默认）
+        export location_proxy_redirect='        proxy_redirect ~^(https?)://([^:/]+(?::\d+)?)(/.+)$ $scheme://$server_name:$server_port/backstream/$1/$2$3;
+
+        proxy_intercept_errors on;
+        error_page 307 = @handle_redirect;'
+        export backstream_config='    location ~  ^/backstream/(https?)/([^/]+)  {
+        set $website                          $1://$2;
+        rewrite ^/backstream/(https?)/([^/]+)(/.+)$  $3 break;
+        early_hints $early_hints;
+        proxy_pass                            $website; #如果重定向的地址是http这里需要替换为http
+
+        proxy_set_header Host                 $proxy_host;
+
+        proxy_http_version                    1.1;
+        proxy_cache_bypass                    $http_upgrade;
+        proxy_ssl_server_name                 on;
+
+        proxy_set_header Upgrade              $http_upgrade;
+        proxy_set_header Connection           $connection_upgrade;
+
+        proxy_connect_timeout                 60s;
+        proxy_send_timeout                    60s;
+        proxy_read_timeout                    60s;
+
+        proxy_redirect ~^(https?)://([^:/]+(?::\d+)?)(/.+)$ $scheme://$server_name:$server_port/backstream/$1/$2$3;
+        set $rediret_scheme $1;
+        set $rediret_host $2;
+        sub_filter                            $proxy_host $host;
+        sub_filter '"'"'$rediret_scheme://$rediret_host'"'"' '"'"'$scheme://$server_name:$server_port/backstream/$rediret_scheme/$rediret_host'"'"';
+        sub_filter_once                       off;
+    }
+
+'
+        export handle_redirect_config='    location @handle_redirect {
+        set $saved_redirect_location '"'"'$upstream_http_location'"'"';
+        early_hints $early_hints;
+        proxy_pass $saved_redirect_location;
+        proxy_set_header Host                 $proxy_host;
+        proxy_http_version                    1.1;
+        proxy_cache_bypass                    $http_upgrade;
+
+        proxy_ssl_server_name                 on;
+
+        proxy_set_header Upgrade              $http_upgrade;
+        proxy_set_header Connection           $connection_upgrade;
+
+        proxy_connect_timeout                 60s;
+        proxy_send_timeout                    60s;
+        proxy_read_timeout                    60s;
+      
+    }
+
+'
+    fi
+
+    local vars='$you_domain $you_frontend_port $resolver $format_cert_domain $you_domain_path $you_domain_path_rewrite $r_domain_full $location_proxy_redirect $backstream_config $handle_redirect_config'
 
     local clean_you_domain="${you_domain//[\[\]]/}"
     local conf_filename="${clean_you_domain}.${you_frontend_port}.conf"
