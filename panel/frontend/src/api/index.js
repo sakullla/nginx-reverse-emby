@@ -1,180 +1,254 @@
-import axios from "axios";
+import axios from 'axios'
 
-// 检测是否为开发环境
-const isDev = import.meta.env.DEV;
-// 模拟延迟函数
-const sleep = (ms = 500) => new Promise((resolve) => setTimeout(resolve, ms));
+const isDev = import.meta.env.DEV
+const sleep = (ms = 500) => new Promise((resolve) => setTimeout(resolve, ms))
 
 const api = axios.create({
-  baseURL: "/panel-api",
+  baseURL: '/panel-api',
   timeout: 10000,
   headers: {
-    "Content-Type": "application/json",
-  },
-});
+    'Content-Type': 'application/json'
+  }
+})
 
 const longRunningRequest = {
-  timeout: 0,
-};
+  timeout: 0
+}
 
-// 请求拦截器：注入 Token
 api.interceptors.request.use((config) => {
-  const token = localStorage.getItem("panel_token");
+  const token = localStorage.getItem('panel_token')
   if (token) {
-    config.headers["X-Panel-Token"] = token;
+    config.headers['X-Panel-Token'] = token
   }
-  return config;
-});
+  return config
+})
 
 api.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response?.status === 401) {
-      localStorage.removeItem("panel_token");
+      localStorage.removeItem('panel_token')
     }
-    const message =
-      error.response?.data?.message || error.message || "请求失败";
-    const details = error.response?.data?.details;
-    return Promise.reject(
-      new Error(details ? `${message}: ${details}` : message),
-    );
-  },
-);
+    const message = error.response?.data?.message || error.message || '请求失败'
+    const details = error.response?.data?.details
+    return Promise.reject(new Error(details ? `${message}: ${details}` : message))
+  }
+)
 
-// --- Mock 数据开始 ---
-const mockRules = [
+const mockAgents = [
   {
-    id: 1,
-    frontend_url: "https://emby.example.com",
-    backend_url: "http://192.168.1.10:8096",
-    enabled: true,
-    tags: ["emby", "https"],
-    proxy_redirect: true,
+    id: 'local',
+    name: '本机 Agent',
+    agent_url: 'http://127.0.0.1:8080',
+    version: '1.0.0',
+    tags: ['local'],
+    mode: 'local',
+    status: 'online',
+    is_local: true,
+    last_seen_at: new Date().toISOString()
   },
   {
-    id: 2,
-    frontend_url: "https://jellyfin.example.com",
-    backend_url: "http://192.168.1.11:8096",
-    enabled: false,
-    tags: ["jellyfin"],
-    proxy_redirect: true,
-  },
-];
+    id: 'edge-1',
+    name: '边缘节点-01',
+    agent_url: 'http://edge-1.example.com:8080',
+    version: '1.0.0',
+    tags: ['edge', 'emby'],
+    mode: 'pull',
+    status: 'online',
+    is_local: false,
+    last_seen_at: new Date().toISOString()
+  }
+]
 
-const mockStats = {
-  totalRequests: "8.4K",
-  status: "正常 (Mock)",
-};
-// --- Mock 数据结束 ---
+const mockRulesByAgent = {
+  local: [
+    {
+      id: 1,
+      frontend_url: 'https://emby.example.com',
+      backend_url: 'http://192.168.1.10:8096',
+      enabled: true,
+      tags: ['emby', 'https'],
+      proxy_redirect: true
+    }
+  ],
+  'edge-1': [
+    {
+      id: 1,
+      frontend_url: 'https://jellyfin.example.com',
+      backend_url: 'http://192.168.1.11:8096',
+      enabled: true,
+      tags: ['jellyfin', 'edge'],
+      proxy_redirect: true
+    }
+  ]
+}
+
+function getMockStats(agentId) {
+  return {
+    activeConnections: agentId === 'local' ? '12' : '4',
+    totalRequests: agentId === 'local' ? '8.4K' : '1.3K',
+    status: '正常 (Mock)'
+  }
+}
 
 export async function verifyToken(token) {
   if (isDev) {
-    await sleep();
-    return token === "admin"; // 开发环境默认 admin 即可登录
+    await sleep()
+    return token === 'admin'
   }
-  const { data } = await api.get("/auth/verify", {
-    headers: { "X-Panel-Token": token },
-  });
-  return data.ok;
+  const { data } = await api.get('/auth/verify', {
+    headers: { 'X-Panel-Token': token }
+  })
+  return data.ok
 }
 
-export async function fetchStats() {
+export async function fetchSystemInfo() {
   if (isDev) {
-    await sleep();
-    return mockStats;
+    await sleep()
+    return {
+      role: 'master',
+      default_agent_id: 'local',
+      local_agent_enabled: true
+    }
   }
-  const { data } = await api.get("/stats");
-  return data.stats;
+  const { data } = await api.get('/info')
+  return data
 }
 
-export async function fetchRules() {
+export async function fetchAgents() {
   if (isDev) {
-    await sleep();
-    return [...mockRules];
+    await sleep()
+    return [...mockAgents]
   }
-  const { data } = await api.get("/rules");
-  return data.rules || [];
+  const { data } = await api.get('/agents')
+  return data.agents || []
+}
+
+export async function fetchAgentStats(agentId) {
+  if (isDev) {
+    await sleep()
+    return getMockStats(agentId)
+  }
+  const { data } = await api.get(`/agents/${encodeURIComponent(agentId)}/stats`)
+  return data.stats
+}
+
+export async function fetchRules(agentId) {
+  if (isDev) {
+    await sleep()
+    return [...(mockRulesByAgent[agentId] || [])]
+  }
+  const { data } = await api.get(`/agents/${encodeURIComponent(agentId)}/rules`)
+  return data.rules || []
 }
 
 export async function createRule(
+  agentId,
   frontend_url,
   backend_url,
   tags = [],
   enabled = true,
-  proxy_redirect = true,
+  proxy_redirect = true
 ) {
   if (isDev) {
-    await sleep();
-    const newRule = {
+    await sleep()
+    const nextRule = {
       id: Date.now(),
       frontend_url,
       backend_url,
       tags,
       enabled,
-      proxy_redirect,
-    };
-    mockRules.push(newRule);
-    return newRule;
+      proxy_redirect
+    }
+    mockRulesByAgent[agentId] = mockRulesByAgent[agentId] || []
+    mockRulesByAgent[agentId].push(nextRule)
+    return nextRule
   }
   const { data } = await api.post(
-    "/rules",
+    `/agents/${encodeURIComponent(agentId)}/rules`,
     { frontend_url, backend_url, tags, enabled, proxy_redirect },
-    longRunningRequest,
-  );
-  return data.rule;
+    longRunningRequest
+  )
+  return data.rule
 }
 
 export async function updateRule(
+  agentId,
   id,
   frontend_url,
   backend_url,
   tags,
   enabled,
-  proxy_redirect,
+  proxy_redirect
 ) {
   if (isDev) {
-    await sleep();
-    const idx = mockRules.findIndex((r) => r.id === id);
-    if (idx !== -1) {
-      const updated = { ...mockRules[idx] };
-      if (frontend_url !== undefined) updated.frontend_url = frontend_url;
-      if (backend_url !== undefined) updated.backend_url = backend_url;
-      if (tags !== undefined) updated.tags = tags;
-      if (enabled !== undefined) updated.enabled = enabled;
-      if (proxy_redirect !== undefined) updated.proxy_redirect = proxy_redirect;
-      mockRules[idx] = updated;
+    await sleep()
+    const list = mockRulesByAgent[agentId] || []
+    const index = list.findIndex((rule) => rule.id === id)
+    if (index !== -1) {
+      const nextRule = { ...list[index] }
+      if (frontend_url !== undefined) nextRule.frontend_url = frontend_url
+      if (backend_url !== undefined) nextRule.backend_url = backend_url
+      if (tags !== undefined) nextRule.tags = tags
+      if (enabled !== undefined) nextRule.enabled = enabled
+      if (proxy_redirect !== undefined) nextRule.proxy_redirect = proxy_redirect
+      list[index] = nextRule
+      return nextRule
     }
-    return mockRules[idx];
+    return null
   }
   const { data } = await api.put(
-    `/rules/${id}`,
+    `/agents/${encodeURIComponent(agentId)}/rules/${id}`,
     { frontend_url, backend_url, tags, enabled, proxy_redirect },
-    longRunningRequest,
-  );
-  return data.rule;
+    longRunningRequest
+  )
+  return data.rule
 }
 
-export async function deleteRule(id) {
+export async function deleteRule(agentId, id) {
   if (isDev) {
-    await sleep();
-    const idx = mockRules.findIndex((r) => r.id === id);
-    return mockRules.splice(idx, 1)[0];
+    await sleep()
+    const list = mockRulesByAgent[agentId] || []
+    const index = list.findIndex((rule) => rule.id === id)
+    if (index === -1) return null
+    return list.splice(index, 1)[0]
   }
-  const { data } = await api.delete(`/rules/${id}`, longRunningRequest);
-  return data.rule;
+  const { data } = await api.delete(
+    `/agents/${encodeURIComponent(agentId)}/rules/${id}`,
+    longRunningRequest
+  )
+  return data.rule
 }
 
-export async function applyConfig() {
+export async function applyConfig(agentId) {
   if (isDev) {
-    await sleep(1500);
-    return { ok: true };
+    await sleep(1200)
+    return { ok: true, message: 'applied' }
   }
-  const { data } = await api.post("/apply", {}, longRunningRequest);
-  return data;
+  const { data } = await api.post(
+    `/agents/${encodeURIComponent(agentId)}/apply`,
+    {},
+    longRunningRequest
+  )
+  return data
+}
+
+export async function deleteAgent(agentId) {
+  if (isDev) {
+    await sleep()
+    const index = mockAgents.findIndex((agent) => agent.id === agentId)
+    if (index !== -1) {
+      delete mockRulesByAgent[agentId]
+      return mockAgents.splice(index, 1)[0]
+    }
+    return null
+  }
+  const { data } = await api.delete(`/agents/${encodeURIComponent(agentId)}`)
+  return data.agent
 }
 
 export async function checkHealth() {
-  if (isDev) return { ok: true };
-  const { data } = await api.get("/health");
-  return data;
+  if (isDev) return { ok: true }
+  const { data } = await api.get('/health')
+  return data
 }

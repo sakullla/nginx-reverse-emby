@@ -14,6 +14,8 @@ FROM nginx:latest
 
 COPY docker/ /tmp/docker/
 COPY panel/backend/ /opt/nginx-reverse-emby/panel/backend/
+COPY scripts/ /opt/nginx-reverse-emby/scripts/
+COPY examples/ /opt/nginx-reverse-emby/examples/
 COPY --from=frontend-builder /build/dist /opt/nginx-reverse-emby/panel/frontend/
 COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
 
@@ -40,7 +42,7 @@ RUN set -eux; \
     mv /tmp/docker/25-dynamic-reverse-proxy.sh /docker-entrypoint.d/25-dynamic-reverse-proxy.sh; \
     mv /tmp/docker/30-acme-renew.sh /docker-entrypoint.d/30-acme-renew.sh; \
     chmod +x /docker-entrypoint.d/15-panel-config.sh /docker-entrypoint.d/20-panel-backend.sh /docker-entrypoint.d/25-dynamic-reverse-proxy.sh /docker-entrypoint.d/30-acme-renew.sh; \
-    chmod +x /opt/nginx-reverse-emby/panel/backend/server.js; \
+    chmod +x /opt/nginx-reverse-emby/panel/backend/server.js /opt/nginx-reverse-emby/scripts/*.sh; \
     rm -rf /tmp/docker
 
 # 统一数据持久化卷

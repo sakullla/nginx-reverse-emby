@@ -6,62 +6,67 @@
     </div>
 
     <template v-else>
-      <!-- 标签筛选行 -->
-      <div class="filter-row" v-if="ruleStore.hasRules && (ruleStore.selectedTags.length > 0 || ruleStore.searchQuery)">
-        <div class="active-filters" v-if="ruleStore.selectedTags.length > 0">
-          <div class="active-filter" v-for="tag in ruleStore.selectedTags" :key="tag">
-            <span class="filter-label">
-              <svg viewBox="0 0 24 24"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
-              {{ tag }}
-            </span>
-            <button @click="removeTag(tag)" class="clear-filter" title="移除此标签">
-              <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      <EmptyState
+        v-if="!ruleStore.hasSelectedAgent"
+        icon="🛰️"
+        title="请先选择 Agent 节点"
+        description="选择左侧节点后，即可查看并管理该节点的反向代理规则。"
+      />
+
+      <template v-else>
+        <div
+          v-if="ruleStore.hasRules && (ruleStore.selectedTags.length > 0 || ruleStore.searchQuery)"
+          class="filter-row"
+        >
+          <div v-if="ruleStore.selectedTags.length > 0" class="active-filters">
+            <div v-for="tag in ruleStore.selectedTags" :key="tag" class="active-filter">
+              <span class="filter-label">
+                <svg viewBox="0 0 24 24"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
+                {{ tag }}
+              </span>
+              <button @click="removeTag(tag)" class="clear-filter" title="移除此标签">
+                <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+              </button>
+            </div>
+            <button v-if="ruleStore.selectedTags.length > 1" @click="ruleStore.selectedTags = []" class="clear-all-btn">
+              清除全部
             </button>
           </div>
-          <button v-if="ruleStore.selectedTags.length > 1" @click="ruleStore.selectedTags = []" class="clear-all-btn" title="清除所有筛选">
-            清除全部
-          </button>
+
+          <div v-if="ruleStore.searchQuery || ruleStore.selectedTags.length > 0" class="results-count">
+            找到 {{ ruleStore.filteredRules.length }} 条结果
+          </div>
         </div>
 
-        <div class="results-count" v-if="ruleStore.searchQuery || ruleStore.selectedTags.length > 0">
-          找到 {{ ruleStore.filteredRules.length }} 条结果
-        </div>
-      </div>
-
-      <EmptyState
-        v-if="!ruleStore.hasRules"
-        icon="🎯"
-        title="还没有代理规则"
-        description="开始添加您的第一条反向代理规则，让流量管理变得简单高效！"
-      >
-        <template #action>
-          <p class="empty-hint">
-            点击上方的"添加规则"按钮开始
-          </p>
-        </template>
-      </EmptyState>
-
-      <EmptyState
-        v-else-if="ruleStore.filteredRules.length === 0"
-        icon="🔎"
-        title="没有找到匹配的规则"
-        :description="`未能找到包含 '${ruleStore.searchQuery}' 的规则。`"
-      >
-        <template #action>
-          <button @click="ruleStore.searchQuery = ''" class="btn secondary small">
-            重置搜索条件
-          </button>
-        </template>
-      </EmptyState>
-
-      <div v-else :class="['rules-layout', `view-${ruleStore.viewMode}`]">
-        <RuleItem
-          v-for="rule in ruleStore.filteredRules"
-          :key="rule.id"
-          :rule="rule"
-          :view-mode="ruleStore.viewMode"
+        <EmptyState
+          v-if="!ruleStore.hasRules"
+          icon="📋"
+          title="当前节点还没有代理规则"
+          description="点击上方“添加规则”，为当前 Agent 下发第一条反向代理规则。"
         />
-      </div>
+
+        <EmptyState
+          v-else-if="ruleStore.filteredRules.length === 0"
+          icon="🔍"
+          title="没有找到匹配的规则"
+          :description="`未找到包含 '${ruleStore.searchQuery}' 的规则，请调整搜索词或筛选标签。`"
+        >
+          <template #action>
+            <button @click="ruleStore.searchQuery = ''" class="btn secondary small">
+              重置搜索
+            </button>
+          </template>
+        </EmptyState>
+
+        <div v-else :class="['rules-layout', `view-${ruleStore.viewMode}`]">
+          <RuleItem
+            v-for="rule in ruleStore.filteredRules"
+            :key="rule.id"
+            :rule="rule"
+            :view-mode="ruleStore.viewMode"
+          />
+        </div>
+      </template>
     </template>
   </div>
 </template>
@@ -136,7 +141,6 @@ const removeTag = (tag) => {
   border: 2px solid var(--color-primary-light);
   border-radius: var(--radius-lg);
   box-shadow: 0 2px 8px rgba(37, 99, 235, 0.15);
-  position: relative;
 }
 
 .filter-label {
@@ -148,7 +152,8 @@ const removeTag = (tag) => {
   color: var(--color-primary);
 }
 
-.filter-label svg {
+.filter-label svg,
+.clear-filter svg {
   width: 12px;
   height: 12px;
   stroke: currentColor;
@@ -166,27 +171,8 @@ const removeTag = (tag) => {
   justify-content: center;
   color: var(--color-primary);
   cursor: pointer;
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-  flex-shrink: 0;
   border-radius: 4px;
   padding: 0;
-}
-
-.clear-filter svg {
-  width: 12px;
-  height: 12px;
-  stroke: currentColor;
-  stroke-width: 2.5;
-  fill: none;
-}
-
-.clear-filter:hover {
-  background: var(--color-primary);
-  color: white;
-}
-
-.clear-filter:active {
-  transform: scale(0.9);
 }
 
 .clear-all-btn {
@@ -199,18 +185,6 @@ const removeTag = (tag) => {
   font-weight: 600;
   color: var(--color-text-secondary);
   cursor: pointer;
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-  white-space: nowrap;
-}
-
-.clear-all-btn:hover {
-  background: var(--color-danger-bg);
-  border-color: var(--color-danger);
-  color: var(--color-danger);
-}
-
-.clear-all-btn:active {
-  transform: scale(0.95);
 }
 
 .results-count {
@@ -243,17 +217,9 @@ const removeTag = (tag) => {
     gap: var(--spacing-sm);
   }
 
-  .active-filters {
-    width: 100%;
-  }
-
   .results-count {
     width: 100%;
     text-align: left;
-  }
-
-  .active-filter {
-    flex: 0 0 auto;
   }
 }
 </style>
