@@ -21,7 +21,4 @@ export panel_backend_port
 
 envsubst '${panel_port} ${panel_backend_port}' < "$template_file" > "$output_file"
 
-# Remove the template file to prevent 20-envsubst-on-templates.sh from processing it again
-rm -f "$template_file"
-
 mkdir -p /opt/nginx-reverse-emby/panel/data
