@@ -327,6 +327,35 @@ export const useRuleStore = defineStore('rules', () => {
     }
   }
 
+  async function toggleRule(id, enabled) {
+    ensureAgentSelected()
+    const rule = rules.value.find((r) => r.id === id)
+    if (!rule) {
+      throw new Error('规则不存在')
+    }
+    loading.value = true
+    error.value = null
+    try {
+      await api.updateRule(
+        selectedAgentId.value,
+        id,
+        rule.frontend_url,
+        rule.backend_url,
+        rule.tags || [],
+        enabled,
+        rule.proxy_redirect !== false
+      )
+      await loadSelectedAgentData()
+      showSuccess(`规则 ${id} 已${enabled ? '启用' : '停用'}`)
+    } catch (err) {
+      error.value = err.message
+      showError(err.message)
+      throw err
+    } finally {
+      loading.value = false
+    }
+  }
+
   async function removeAgent(agentId) {
     loading.value = true
     error.value = null
@@ -410,6 +439,7 @@ export const useRuleStore = defineStore('rules', () => {
     modifyRule,
     removeRule,
     applyNginxConfig,
+    toggleRule,
     removeAgent,
     showSuccess,
     showError,

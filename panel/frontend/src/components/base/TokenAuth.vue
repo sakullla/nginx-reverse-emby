@@ -1,50 +1,59 @@
 <template>
-  <div class="auth-overlay" data-testid="login-screen">
+  <div class="auth-page">
     <div class="auth-card">
-      <div class="auth-header">
-        <div class="auth-icon-bg">
-          <svg viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+      <div class="auth-card__header">
+        <div class="auth-logo">
+          <div class="auth-logo__icon">
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+            </svg>
+          </div>
+          <h1 class="auth-logo__title">Nginx Proxy</h1>
+          <p class="auth-logo__subtitle">Master / Agent 控制台</p>
         </div>
-        <h1 class="auth-title">面板鉴权</h1>
-        <p class="auth-subtitle">请输入 API 令牌以解锁管理权限</p>
       </div>
 
-      <form @submit.prevent="handleLogin" class="auth-form" novalidate>
+      <form class="auth-form" @submit.prevent="handleLogin">
         <div class="form-group">
-          <label class="form-label">API 令牌</label>
-          <div class="input-wrapper" :class="{ 'has-error': showError }">
-            <span class="input-icon">
-              <svg viewBox="0 0 24 24"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.778-7.778zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3L15.5 7.5z"/></svg>
+          <label class="form-label">访问令牌</label>
+          <div class="input-wrapper">
+            <span class="input-wrapper__icon">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+                <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+              </svg>
             </span>
             <input
-              v-model="inputToken"
-              data-testid="login-token-input"
+              v-model="token"
               type="password"
-              placeholder="输入您的访问令牌..."
-              autocomplete="current-password"
-              @input="showError = false"
-              :disabled="loading"
-            />
-            <transition name="fade">
-              <div v-if="showError" class="error-tip" data-testid="login-error">令牌不能为空</div>
-            </transition>
+              class="input"
+              :class="{ 'input--error': error }"
+              placeholder="请输入访问令牌"
+              autofocus
+              @input="error = ''"
+            >
           </div>
+          <p v-if="error" class="form-error">{{ error }}</p>
         </div>
 
-        <button type="submit" :disabled="loading" class="auth-submit-btn primary" data-testid="login-submit">
-          <span v-if="!loading" class="btn-content">
-            验证并进入
-            <svg class="btn-arrow" viewBox="0 0 24 24"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>
-          </span>
-          <span v-else class="loading-spinner"></span>
+        <button 
+          type="submit" 
+          class="btn btn--primary btn--full btn--lg"
+          :disabled="loading"
+        >
+          <span v-if="loading" class="spinner spinner--sm"></span>
+          <span v-else>登录</span>
         </button>
       </form>
 
-      <div class="auth-footer">
-        <div class="footer-divider"></div>
-        <p class="footer-note">
-          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="16" x2="12" y2="12"/><line x1="12" y1="8" x2="12.01" y2="8"/></svg>
-          令牌由系统环境变量 <code>API_TOKEN</code> 配置
+      <div class="auth-card__footer">
+        <p class="auth-hint">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"/>
+            <line x1="12" y1="16" x2="12" y2="12"/>
+            <line x1="12" y1="8" x2="12.01" y2="8"/>
+          </svg>
+          令牌由管理员配置，请联系管理员获取
         </p>
       </div>
     </div>
@@ -56,21 +65,27 @@ import { ref } from 'vue'
 import { useRuleStore } from '../../stores/rules'
 
 const ruleStore = useRuleStore()
-const inputToken = ref('')
+
+const token = ref('')
+const error = ref('')
 const loading = ref(false)
-const showError = ref(false)
 
 const handleLogin = async () => {
-  if (!inputToken.value.trim()) {
-    showError.value = true
+  if (!token.value.trim()) {
+    error.value = '请输入访问令牌'
     return
   }
 
   loading.value = true
+  error.value = ''
+
   try {
-    await ruleStore.login(inputToken.value)
+    const success = await ruleStore.login(token.value.trim())
+    if (!success) {
+      error.value = '令牌无效，请检查后重试'
+    }
   } catch (err) {
-    // 错误已由 store 处理
+    error.value = '登录失败，请稍后重试'
   } finally {
     loading.value = false
   }
@@ -78,248 +93,83 @@ const handleLogin = async () => {
 </script>
 
 <style scoped>
-.auth-overlay {
-  position: fixed;
-  inset: 0;
+.auth-page {
+  min-height: 100vh;
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: var(--z-modal-backdrop, 1000);
-  background: var(--gradient-bg);
-  padding: var(--spacing-md);
-  backdrop-filter: blur(10px);
+  padding: var(--space-6);
+  background: var(--color-bg-canvas);
 }
 
 .auth-card {
   width: 100%;
-  max-width: 420px;
-  background: var(--color-bg-card);
-  padding: var(--spacing-3xl) var(--spacing-2xl);
+  max-width: 400px;
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-default);
   border-radius: var(--radius-2xl);
-  border: 1px solid var(--glass-border);
-  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.1);
-  animation: auth-appear 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+  box-shadow: var(--shadow-xl);
+  overflow: hidden;
 }
 
-@keyframes auth-appear {
-  from { opacity: 0; transform: translateY(20px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-.auth-header {
+.auth-card__header {
+  padding: var(--space-8) var(--space-6) var(--space-4);
   text-align: center;
-  margin-bottom: var(--spacing-2xl);
 }
 
-.auth-icon-bg {
+.auth-logo {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.auth-logo__icon {
   width: 64px;
   height: 64px;
-  background: var(--color-primary-bg);
-  color: var(--color-primary);
-  border-radius: 20px;
+  background: linear-gradient(135deg, var(--color-primary-500) 0%, var(--color-primary-700) 100%);
+  border-radius: var(--radius-xl);
   display: flex;
   align-items: center;
   justify-content: center;
-  margin: 0 auto var(--spacing-lg);
-  box-shadow: 0 8px 16px rgba(37, 99, 235, 0.1);
+  color: white;
+  box-shadow: var(--shadow-lg);
 }
 
-.auth-icon-bg svg {
-  width: 32px;
-  height: 32px;
-  stroke: currentColor;
-  stroke-width: 2;
-  fill: none;
-}
-
-.auth-title {
-  font-size: 1.75rem;
-  font-weight: 800;
+.auth-logo__title {
+  font-size: var(--text-2xl);
+  font-weight: var(--font-bold);
+  color: var(--color-text-primary);
   margin: 0;
   letter-spacing: -0.02em;
-  background: var(--gradient-header);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
 }
 
-.auth-subtitle {
+.auth-logo__subtitle {
+  font-size: var(--text-sm);
   color: var(--color-text-secondary);
-  font-size: 0.95rem;
-  margin-top: 8px;
-  font-weight: 500;
+  margin: 0;
 }
 
 .auth-form {
+  padding: var(--space-4) var(--space-6) var(--space-6);
   display: flex;
   flex-direction: column;
-  gap: var(--spacing-xl);
+  gap: var(--space-5);
 }
 
-.form-group {
+.auth-card__footer {
+  padding: var(--space-4) var(--space-6);
+  background: var(--color-bg-subtle);
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.auth-hint {
   display: flex;
-  flex-direction: column;
-  gap: var(--spacing-xs);
-}
-
-.form-label {
-  font-size: 0.8rem;
-  font-weight: 700;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
   color: var(--color-text-tertiary);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  margin-left: 4px;
-}
-
-.input-wrapper {
-  position: relative;
-}
-
-.input-icon {
-  position: absolute;
-  left: var(--spacing-md);
-  top: 50%;
-  transform: translateY(-50%);
-  width: 18px;
-  height: 18px;
-  color: var(--color-text-muted);
-  pointer-events: none;
-  z-index: 1;
-}
-
-.input-icon svg {
-  width: 100%;
-  height: 100%;
-  stroke: currentColor;
-  stroke-width: 2.2;
-  fill: none;
-}
-
-.auth-form input {
-  width: 100%;
-  height: 52px;
-  padding-left: calc(var(--spacing-md) * 3) !important;
-  background: var(--color-bg-secondary) !important;
-  border: 1px solid var(--color-border) !important;
-  border-radius: var(--radius-lg) !important;
-  font-size: var(--font-size-base) !important;
-  transition: all var(--transition-base) !important;
-}
-
-.auth-form input:focus {
-  background: var(--color-bg-primary) !important;
-  border-color: var(--color-primary) !important;
-  box-shadow: 0 0 0 4px var(--color-primary-lighter) !important;
-}
-
-.input-wrapper.has-error input {
-  border-color: var(--color-danger) !important;
-  background: var(--color-danger-bg) !important;
-  animation: shake 0.4s cubic-bezier(.36,.07,.19,.97) both;
-}
-
-.error-tip {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 4px;
-  color: var(--color-danger);
-  font-size: 0.75rem;
-  font-weight: 600;
-}
-
-.auth-submit-btn {
-  height: 52px;
-  width: 100%;
-  border-radius: var(--radius-lg);
-  font-size: 1rem;
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  box-shadow: 0 4px 12px rgba(37, 99, 235, 0.2);
-}
-
-.btn-content {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-}
-
-.btn-arrow {
-  width: 18px;
-  height: 18px;
-  stroke: currentColor;
-  stroke-width: 2.5;
-  fill: none;
-  transition: transform var(--transition-base);
-}
-
-.auth-submit-btn:hover .btn-arrow {
-  transform: translateX(4px);
-}
-
-.auth-footer {
-  margin-top: var(--spacing-2xl);
-}
-
-.footer-divider {
-  height: 1px;
-  background: linear-gradient(to right, transparent, var(--color-border), transparent);
-  margin-bottom: var(--spacing-lg);
-  opacity: 0.5;
-}
-
-.footer-note {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  font-size: 0.75rem;
-  color: var(--color-text-muted);
-  font-weight: 500;
-}
-
-.footer-note svg {
-  width: 14px;
-  height: 14px;
-  stroke: currentColor;
-  stroke-width: 2.2;
-  fill: none;
-}
-
-code {
-  background: var(--color-bg-secondary);
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-family: var(--font-family-mono);
-  color: var(--color-primary);
-  font-weight: 600;
-}
-
-@keyframes shake {
-  10%, 90% { transform: translate3d(-1px, 0, 0); }
-  20%, 80% { transform: translate3d(2px, 0, 0); }
-  30%, 50%, 70% { transform: translate3d(-4px, 0, 0); }
-  40%, 60% { transform: translate3d(4px, 0, 0); }
-}
-
-.loading-spinner {
-  width: 24px;
-  height: 24px;
-  border: 3px solid rgba(255, 255, 255, 0.2);
-  border-top-color: white;
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
-
-.fade-enter-active, .fade-leave-active { transition: opacity 0.2s; }
-.fade-enter-from, .fade-leave-to { opacity: 0; }
-
-@media (max-width: 480px) {
-  .auth-card {
-    padding: var(--spacing-xl) var(--spacing-lg);
-  }
+  margin: 0;
 }
 </style>

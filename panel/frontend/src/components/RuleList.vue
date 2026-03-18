@@ -1,225 +1,213 @@
 <template>
-  <div class="rules-container">
-    <div v-if="ruleStore.loading && !ruleStore.hasRules" class="loading-state">
-      <div class="spinner"></div>
-      <p>正在获取代理规则...</p>
+  <div class="rule-list">
+    <!-- Empty State - No Agent Selected -->
+    <div v-if="!ruleStore.hasSelectedAgent" class="empty-state">
+      <div class="empty-state__icon">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+          <circle cx="12" cy="7" r="4"/>
+        </svg>
+      </div>
+      <div class="empty-state__title">选择节点</div>
+      <div class="empty-state__description">
+        在左侧选择一个 Agent 节点以查看和管理其代理规则
+      </div>
     </div>
 
-    <template v-else>
-      <EmptyState
-        v-if="!ruleStore.hasSelectedAgent"
-        icon="🛰️"
-        title="请先选择 Agent 节点"
-        description="选择左侧节点后，即可查看并管理该节点的反向代理规则。"
+    <!-- Empty State - No Rules -->
+    <div v-else-if="!ruleStore.hasRules" class="empty-state">
+      <div class="empty-state__icon">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+          <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+        </svg>
+      </div>
+      <div class="empty-state__title">暂无规则</div>
+      <div class="empty-state__description">
+        该节点下还没有代理规则，点击上方按钮创建第一条规则
+      </div>
+    </div>
+
+    <!-- Empty State - No Search Results -->
+    <div v-else-if="ruleStore.filteredRules.length === 0" class="empty-state">
+      <div class="empty-state__icon">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <circle cx="11" cy="11" r="8"/>
+          <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+        </svg>
+      </div>
+      <div class="empty-state__title">无匹配结果</div>
+      <div class="empty-state__description">
+        没有找到与 "{{ ruleStore.searchQuery }}" 匹配的规则
+      </div>
+    </div>
+
+    <!-- Rules List -->
+    <div v-else class="rule-list__items">
+      <RuleItem
+        v-for="rule in ruleStore.filteredRules"
+        :key="rule.id"
+        :rule="rule"
+        @edit="handleEdit"
+        @delete="handleDelete"
       />
+    </div>
 
-      <template v-else>
-        <div
-          v-if="ruleStore.hasRules && (ruleStore.selectedTags.length > 0 || ruleStore.searchQuery)"
-          class="filter-row"
-        >
-          <div v-if="ruleStore.selectedTags.length > 0" class="active-filters">
-            <div v-for="tag in ruleStore.selectedTags" :key="tag" class="active-filter">
-              <span class="filter-label">
-                <svg viewBox="0 0 24 24"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
-                {{ tag }}
-              </span>
-              <button @click="removeTag(tag)" class="clear-filter" title="移除此标签">
-                <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-              </button>
-            </div>
-            <button v-if="ruleStore.selectedTags.length > 1" @click="ruleStore.selectedTags = []" class="clear-all-btn">
-              清除全部
+    <!-- Edit Modal -->
+    <Teleport to="body">
+      <BaseModal
+        v-if="editingRule"
+        v-model="showEditModal"
+        title="编辑代理规则"
+      >
+        <RuleForm :initial-data="editingRule" @success="showEditModal = false" />
+      </BaseModal>
+    </Teleport>
+
+    <!-- Delete Modal -->
+    <Teleport to="body">
+      <BaseModal
+        v-if="deletingRule"
+        v-model="showDeleteModal"
+        title="确认删除"
+      >
+        <div class="space-y-4">
+          <p class="text-sm text-secondary">
+            确定要删除这条代理规则吗？此操作无法撤销。
+          </p>
+          <div class="bg-subtle p-4 rounded-lg">
+            <div class="text-sm font-mono text-primary">{{ deletingRule.frontend_url }}</div>
+            <div class="text-xs text-tertiary mt-1">→ {{ deletingRule.backend_url }}</div>
+          </div>
+          <div class="flex justify-end gap-3">
+            <button 
+              class="btn btn--secondary" 
+              @click="showDeleteModal = false"
+            >
+              取消
+            </button>
+            <button 
+              class="btn btn--danger" 
+              :disabled="isDeleting"
+              @click="confirmDelete"
+            >
+              <span v-if="isDeleting" class="spinner spinner--sm mr-2"></span>
+              {{ isDeleting ? '删除中...' : '确认删除' }}
             </button>
           </div>
-
-          <div v-if="ruleStore.searchQuery || ruleStore.selectedTags.length > 0" class="results-count">
-            找到 {{ ruleStore.filteredRules.length }} 条结果
-          </div>
         </div>
-
-        <EmptyState
-          v-if="!ruleStore.hasRules"
-          icon="📋"
-          title="当前节点还没有代理规则"
-          description="点击上方“添加规则”，为当前 Agent 下发第一条反向代理规则。"
-        />
-
-        <EmptyState
-          v-else-if="ruleStore.filteredRules.length === 0"
-          icon="🔍"
-          title="没有找到匹配的规则"
-          :description="`未找到包含 '${ruleStore.searchQuery}' 的规则，请调整搜索词或筛选标签。`"
-        >
-          <template #action>
-            <button @click="ruleStore.searchQuery = ''" class="btn secondary small">
-              重置搜索
-            </button>
-          </template>
-        </EmptyState>
-
-        <div v-else data-testid="rules-layout" :class="['rules-layout', `view-${ruleStore.viewMode}`]">
-          <RuleItem
-            v-for="rule in ruleStore.filteredRules"
-            :key="rule.id"
-            :rule="rule"
-            :view-mode="ruleStore.viewMode"
-          />
-        </div>
-      </template>
-    </template>
+      </BaseModal>
+    </Teleport>
   </div>
 </template>
 
 <script setup>
+import { ref } from 'vue'
 import { useRuleStore } from '../stores/rules'
 import RuleItem from './RuleItem.vue'
-import EmptyState from './base/EmptyState.vue'
+import RuleForm from './RuleForm.vue'
+import BaseModal from './base/BaseModal.vue'
 
 const ruleStore = useRuleStore()
 
-const removeTag = (tag) => {
-  const index = ruleStore.selectedTags.indexOf(tag)
-  if (index > -1) {
-    ruleStore.selectedTags.splice(index, 1)
+const editingRule = ref(null)
+const deletingRule = ref(null)
+const showEditModal = ref(false)
+const showDeleteModal = ref(false)
+const isDeleting = ref(false)
+
+const handleEdit = (rule) => {
+  editingRule.value = rule
+  showEditModal.value = true
+}
+
+const handleDelete = (rule) => {
+  deletingRule.value = rule
+  showDeleteModal.value = true
+}
+
+const confirmDelete = async () => {
+  if (!deletingRule.value) return
+  isDeleting.value = true
+  try {
+    await ruleStore.removeRule(deletingRule.value.id)
+    showDeleteModal.value = false
+  } catch (err) {
+    // Error handled by store
+  } finally {
+    isDeleting.value = false
   }
 }
 </script>
 
 <style scoped>
-.rules-container {
+.rule-list {
   min-height: 200px;
 }
 
-.loading-state {
+.rule-list__items {
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: var(--spacing-4xl) 0;
-  color: var(--color-text-muted);
+  gap: var(--space-3);
 }
 
-.spinner {
-  width: 40px;
-  height: 40px;
-  border: 3px solid var(--color-border);
-  border-top-color: var(--color-primary);
-  border-radius: 50%;
-  animation: spin 1s linear infinite;
-  margin-bottom: var(--spacing-md);
+.space-y-4 > * + * {
+  margin-top: var(--space-4);
 }
 
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
-
-.filter-row {
+.flex {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--spacing-md);
-  flex-wrap: wrap;
-  margin-bottom: var(--spacing-lg);
-  padding: var(--spacing-sm) 0;
 }
 
-.active-filters {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
+.justify-end {
+  justify-content: flex-end;
 }
 
-.active-filter {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 38px;
-  padding: 0 8px 0 12px;
-  background: linear-gradient(135deg, var(--color-primary-bg) 0%, var(--color-primary-lighter) 100%);
-  border: 2px solid var(--color-primary-light);
+.gap-3 {
+  gap: var(--space-3);
+}
+
+.mr-2 {
+  margin-right: var(--space-2);
+}
+
+.mt-1 {
+  margin-top: var(--space-1);
+}
+
+.bg-subtle {
+  background: var(--color-bg-subtle);
+}
+
+.p-4 {
+  padding: var(--space-4);
+}
+
+.rounded-lg {
   border-radius: var(--radius-lg);
-  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.15);
 }
 
-.filter-label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 0.8rem;
-  font-weight: 600;
-  color: var(--color-primary);
+.text-sm {
+  font-size: var(--text-sm);
 }
 
-.filter-label svg,
-.clear-filter svg {
-  width: 12px;
-  height: 12px;
-  stroke: currentColor;
-  stroke-width: 2.5;
-  fill: none;
+.text-xs {
+  font-size: var(--text-xs);
 }
 
-.clear-filter {
-  background: rgba(37, 99, 235, 0.15);
-  border: none;
-  width: 20px;
-  height: 20px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--color-primary);
-  cursor: pointer;
-  border-radius: 4px;
-  padding: 0;
+.font-mono {
+  font-family: var(--font-mono);
 }
 
-.clear-all-btn {
-  height: 38px;
-  padding: 0 14px;
-  background: var(--color-bg-secondary);
-  border: 2px solid var(--color-border);
-  border-radius: var(--radius-lg);
-  font-size: 0.8rem;
-  font-weight: 600;
+.text-primary {
+  color: var(--color-text-primary);
+}
+
+.text-secondary {
   color: var(--color-text-secondary);
-  cursor: pointer;
 }
 
-.results-count {
-  font-size: 0.85rem;
-  color: var(--color-text-muted);
-  white-space: nowrap;
-}
-
-.rules-layout.view-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(350px, 100%), 1fr));
-  gap: var(--spacing-xl);
-}
-
-.rules-layout.view-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacing-md);
-}
-
-@media (max-width: 768px) {
-  .rules-layout.view-grid {
-    grid-template-columns: 1fr;
-    gap: var(--spacing-md);
-  }
-
-  .filter-row {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: var(--spacing-sm);
-  }
-
-  .results-count {
-    width: 100%;
-    text-align: left;
-  }
+.text-tertiary {
+  color: var(--color-text-tertiary);
 }
 </style>
