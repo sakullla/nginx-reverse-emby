@@ -42,8 +42,8 @@
       </div>
     </div>
 
-    <!-- Rules List -->
-    <div v-else class="rule-list__items">
+    <!-- Rules Grid -->
+    <div v-else class="rule-grid">
       <RuleItem
         v-for="rule in ruleStore.filteredRules"
         :key="rule.id"
@@ -80,14 +80,14 @@
             <div class="text-xs text-tertiary mt-1">→ {{ deletingRule.backend_url }}</div>
           </div>
           <div class="flex justify-end gap-3">
-            <button 
-              class="btn btn--secondary" 
+            <button
+              class="btn btn--secondary"
               @click="showDeleteModal = false"
             >
               取消
             </button>
-            <button 
-              class="btn btn--danger" 
+            <button
+              class="btn btn--danger"
               :disabled="isDeleting"
               @click="confirmDelete"
             >
@@ -145,10 +145,16 @@ const confirmDelete = async () => {
   min-height: 200px;
 }
 
-.rule-list__items {
-  display: flex;
-  flex-direction: column;
+.rule-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   gap: var(--space-3);
+}
+
+@media (max-width: 768px) {
+  .rule-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .space-y-4 > * + * {

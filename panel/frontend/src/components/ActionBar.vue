@@ -27,8 +27,8 @@ const buttonTitle = computed(() => {
 
 const buttonClass = computed(() => {
   return {
-    'btn--secondary': !ruleStore.hasSelectedAgent,
-    'btn--success': ruleStore.hasSelectedAgent && !ruleStore.loading,
+    'btn--ghost': true,
+    'btn--active': ruleStore.hasSelectedAgent && !ruleStore.loading,
     'btn--loading': ruleStore.loading
   }
 })

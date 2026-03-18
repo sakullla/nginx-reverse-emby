@@ -30,63 +30,65 @@
       <section class="stats-grid">
         <div class="stat-card">
           <div class="stat-card__icon stat-card__icon--blue">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <ellipse cx="12" cy="5" rx="9" ry="3"/>
-              <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>
               <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
             </svg>
           </div>
           <div class="stat-card__content">
-            <div class="stat-card__value">{{ ruleStore.agents.length }}</div>
             <div class="stat-card__label">Agent 节点</div>
+            <div class="stat-card__value">{{ ruleStore.agents.length }}</div>
           </div>
         </div>
 
         <div class="stat-card">
           <div class="stat-card__icon stat-card__icon--green">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <polyline points="22 4 12 14.01 9 11.01"/>
             </svg>
           </div>
           <div class="stat-card__content">
-            <div class="stat-card__value">{{ ruleStore.onlineAgentsCount }}</div>
             <div class="stat-card__label">在线节点</div>
+            <div class="stat-card__value">{{ ruleStore.onlineAgentsCount }}</div>
           </div>
         </div>
 
         <div class="stat-card">
           <div class="stat-card__icon stat-card__icon--purple">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
-              <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
             </svg>
           </div>
           <div class="stat-card__content">
-            <div class="stat-card__value">{{ ruleStore.rules.length }}</div>
             <div class="stat-card__label">代理规则</div>
+            <div class="stat-card__value">{{ ruleStore.rules.length }}</div>
           </div>
         </div>
 
         <div class="stat-card">
           <div class="stat-card__icon stat-card__icon--orange">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <circle cx="12" cy="12" r="10"/>
-              <line x1="12" y1="16" x2="12" y2="12"/>
-              <line x1="12" y1="8" x2="12.01" y2="8"/>
             </svg>
           </div>
           <div class="stat-card__content">
-            <div class="stat-card__value">{{ selectedAgentStatus }}</div>
             <div class="stat-card__label">当前状态</div>
+            <div class="stat-card__value">{{ selectedAgentStatus }}</div>
           </div>
         </div>
       </section>
 
+      <!-- Mobile Agent Selector -->
+      <MobileAgentSelector
+        :agents="ruleStore.agents"
+        :selected-agent-id="ruleStore.selectedAgentId"
+        @select="handleSelectAgent"
+      />
+
       <!-- Main Content Grid -->
       <div class="content-grid">
         <!-- Agents Panel -->
-        <div class="panel">
+        <div class="panel panel--desktop">
           <div class="panel__header">
             <div>
               <h2 class="panel__title">Agent 节点</h2>
@@ -152,51 +154,55 @@
                 {{ ruleStore.hasSelectedAgent ? `${ruleStore.filteredRules.length} 条规则` : '请先选择一个节点' }}
               </p>
             </div>
-            <div class="panel__actions">
-              <ActionBar />
-              <button
-                class="btn btn--icon btn--ghost tooltip"
-                :disabled="!ruleStore.hasSelectedAgent"
-                @click="showJoinModal = true"
-              >
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                  <polyline points="7 10 12 15 17 10"/>
-                  <line x1="12" y1="15" x2="12" y2="3"/>
-                </svg>
-                <span class="tooltip__content">下载加入脚本</span>
-              </button>
-              <button
-                class="btn btn--primary"
-                :disabled="!ruleStore.hasSelectedAgent"
-                @click="showAddModal = true"
-              >
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <line x1="12" y1="5" x2="12" y2="19"/>
-                  <line x1="5" y1="12" x2="19" y2="12"/>
-                </svg>
-                添加规则
-              </button>
+            <div class="panel__toolbar">
+              <!-- Search -->
+              <div v-if="ruleStore.hasSelectedAgent && ruleStore.hasRules" class="search-bar">
+                <div class="input-wrapper">
+                  <span class="input-wrapper__icon">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <circle cx="11" cy="11" r="8"/>
+                      <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                    </svg>
+                  </span>
+                  <input
+                    v-model="ruleStore.searchQuery"
+                    type="text"
+                    class="input input--sm"
+                    placeholder="搜索规则..."
+                  >
+                </div>
+              </div>
+
+              <div class="panel__actions">
+                <ActionBar />
+                <button
+                  class="btn btn--icon btn--ghost tooltip"
+                  :disabled="!ruleStore.hasSelectedAgent"
+                  @click="showJoinModal = true"
+                >
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                    <polyline points="7 10 12 15 17 10"/>
+                    <line x1="12" y1="15" x2="12" y2="3"/>
+                  </svg>
+                  <span class="tooltip__content">下载加入脚本</span>
+                </button>
+                <button
+                  class="btn btn--icon btn--ghost btn--ghost-primary tooltip"
+                  :disabled="!ruleStore.hasSelectedAgent"
+                  @click="showAddModal = true"
+                  style="border: 1px solid var(--color-primary); color: var(--color-primary);"
+                >
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <line x1="12" y1="5" x2="12" y2="19"/>
+                    <line x1="5" y1="12" x2="19" y2="12"/>
+                  </svg>
+                  <span class="tooltip__content">添加规则</span>
+                </button>
+              </div>
             </div>
           </div>
           <div class="panel__body">
-            <!-- Search -->
-            <div v-if="ruleStore.hasSelectedAgent && ruleStore.hasRules" class="search-bar">
-              <div class="input-wrapper">
-                <span class="input-wrapper__icon">
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <circle cx="11" cy="11" r="8"/>
-                    <line x1="21" y1="21" x2="16.65" y2="16.65"/>
-                  </svg>
-                </span>
-                <input
-                  v-model="ruleStore.searchQuery"
-                  type="text"
-                  class="input"
-                  placeholder="搜索规则..."
-                >
-              </div>
-            </div>
             <RuleList />
           </div>
         </div>
@@ -255,6 +261,7 @@ import ThemeToggle from './components/base/ThemeToggle.vue'
 import TokenAuth from './components/base/TokenAuth.vue'
 import BaseModal from './components/base/BaseModal.vue'
 import StatusMessage from './components/StatusMessage.vue'
+import MobileAgentSelector from './components/MobileAgentSelector.vue'
 
 const ruleStore = useRuleStore()
 const showAddModal = ref(false)
@@ -372,16 +379,17 @@ onUnmounted(() => {
 
 .logo {
   font-size: var(--text-2xl);
-  font-weight: var(--font-bold);
+  font-weight: 800;
   color: var(--color-text-primary);
   margin: 0;
-  letter-spacing: -0.02em;
+  letter-spacing: -0.03em;
 }
 
 .subtitle {
   font-size: var(--text-sm);
-  color: var(--color-text-secondary);
+  color: var(--color-text-tertiary);
   margin: 0;
+  font-weight: var(--font-medium);
 }
 
 .header-actions {
@@ -393,31 +401,31 @@ onUnmounted(() => {
 /* Stats Grid */
 .stats-grid {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: var(--space-5);
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: var(--space-4);
   margin-bottom: var(--space-6);
 }
 
 .stat-card {
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-xl);
-  padding: var(--space-5);
+  border-radius: var(--radius-lg);
+  padding: var(--space-4);
   display: flex;
   align-items: center;
-  gap: var(--space-4);
+  gap: var(--space-3);
   transition: all var(--duration-fast) var(--ease-default);
 }
 
 .stat-card:hover {
-  box-shadow: var(--shadow-md);
-  transform: translateY(-2px);
+  border-color: var(--color-border-strong);
+  box-shadow: var(--shadow-sm);
 }
 
 .stat-card__icon {
-  width: 48px;
-  height: 48px;
-  border-radius: var(--radius-xl);
+  width: 40px;
+  height: 40px;
+  border-radius: var(--radius-lg);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -425,23 +433,43 @@ onUnmounted(() => {
 }
 
 .stat-card__icon--blue {
-  background: var(--color-primary-subtle);
+  background: #eff6ff;
   color: var(--color-primary);
 }
 
+[data-theme="dark"] .stat-card__icon--blue {
+  background: #1e3a8a;
+  color: #60a5fa;
+}
+
 .stat-card__icon--green {
-  background: var(--color-success-50);
-  color: var(--color-success);
+  background: #ecfdf5;
+  color: #059669;
+}
+
+[data-theme="dark"] .stat-card__icon--green {
+  background: #064e3b;
+  color: #34d399;
 }
 
 .stat-card__icon--purple {
-  background: #faf5ff;
-  color: #9333ea;
+  background: #f5f3ff;
+  color: #7c3aed;
+}
+
+[data-theme="dark"] .stat-card__icon--purple {
+  background: #2e1065;
+  color: #a78bfa;
 }
 
 .stat-card__icon--orange {
-  background: var(--color-warning-50);
-  color: var(--color-warning);
+  background: #fffbeb;
+  color: #d97706;
+}
+
+[data-theme="dark"] .stat-card__icon--orange {
+  background: #78350f;
+  color: #fbbf24;
 }
 
 .stat-card__content {
@@ -449,61 +477,106 @@ onUnmounted(() => {
   min-width: 0;
 }
 
+.stat-card__label {
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+  font-weight: var(--font-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  line-height: 1.2;
+}
+
 .stat-card__value {
   font-size: var(--text-2xl);
   font-weight: var(--font-bold);
   color: var(--color-text-primary);
   line-height: var(--leading-tight);
-}
-
-.stat-card__label {
-  font-size: var(--text-sm);
-  color: var(--color-text-secondary);
   margin-top: var(--space-1);
 }
 
 /* Content Grid */
 .content-grid {
   display: grid;
-  grid-template-columns: 320px 1fr;
-  gap: var(--space-6);
+  grid-template-columns: 280px 1fr;
+  gap: var(--space-4);
+  align-items: start;
+}
+
+@media (max-width: 1024px) {
+  .content-grid {
+    grid-template-columns: 240px 1fr;
+  }
 }
 
 /* Panel */
 .panel {
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-xl);
+  border-radius: var(--radius-lg);
   display: flex;
   flex-direction: column;
   overflow: hidden;
+}
+
+.panel--desktop {
+  display: flex;
+}
+
+@media (max-width: 768px) {
+  .panel--desktop {
+    display: none;
+  }
 }
 
 .panel__header {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: var(--space-4) var(--space-5);
+  padding: var(--space-3) var(--space-4);
   border-bottom: 1px solid var(--color-border-subtle);
+  gap: var(--space-4);
 }
 
 .panel__title {
   font-size: var(--text-base);
-  font-weight: var(--font-semibold);
+  font-weight: var(--font-bold);
   color: var(--color-text-primary);
   margin: 0;
 }
 
 .panel__subtitle {
-  font-size: var(--text-sm);
+  font-size: var(--text-xs);
   color: var(--color-text-tertiary);
   margin: var(--space-1) 0 0;
+  font-weight: var(--font-medium);
 }
 
 .panel__actions {
   display: flex;
   align-items: center;
   gap: var(--space-2);
+}
+
+.panel__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-3);
+}
+
+.panel__toolbar .search-bar {
+  width: 200px;
+  margin: 0;
+}
+
+.panel__toolbar .input--sm {
+  padding: var(--space-2) var(--space-3);
+  padding-left: var(--space-8);
+  font-size: var(--text-sm);
+}
+
+.panel__toolbar .input-wrapper__icon {
+  left: var(--space-3);
 }
 
 .panel__body {
@@ -523,10 +596,11 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  padding: var(--space-3);
-  border-radius: var(--radius-lg);
+  padding: var(--space-4);
+  border-radius: var(--radius-md);
   cursor: pointer;
   transition: all var(--duration-fast) var(--ease-default);
+  border: 1px solid transparent;
 }
 
 .agent-item:hover {
@@ -535,13 +609,23 @@ onUnmounted(() => {
 
 .agent-item--active {
   background: var(--color-primary-subtle);
+  border: 1px solid var(--color-primary);
+}
+
+.agent-item--active .agent-item__name {
+  color: var(--color-primary);
+  font-weight: var(--font-semibold);
+}
+
+.agent-item--active .agent-item__url {
+  color: var(--color-primary-hover);
 }
 
 .agent-item__icon {
   width: 40px;
   height: 40px;
   background: var(--color-bg-subtle);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -550,8 +634,8 @@ onUnmounted(() => {
 }
 
 .agent-item--active .agent-item__icon {
-  background: var(--color-primary-200);
-  color: var(--color-primary);
+  background: var(--color-primary);
+  color: white;
 }
 
 .agent-item__content {
@@ -580,6 +664,25 @@ onUnmounted(() => {
 /* Search Bar */
 .search-bar {
   margin-bottom: var(--space-4);
+}
+
+.input-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.input-wrapper__icon {
+  position: absolute;
+  left: var(--space-3);
+  color: var(--color-text-tertiary);
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+}
+
+.input-wrapper .input {
+  padding-left: var(--space-10);
 }
 
 /* Empty State */
@@ -635,35 +738,99 @@ onUnmounted(() => {
 }
 
 /* Responsive */
-@media (max-width: 1280px) {
-  .stats-grid {
-    grid-template-columns: repeat(2, 1fr);
-  }
-}
-
-@media (max-width: 1024px) {
-  .content-grid {
-    grid-template-columns: 280px 1fr;
-  }
-}
-
 @media (max-width: 768px) {
-  .stats-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .content-grid {
-    grid-template-columns: 1fr;
+  .main-container {
+    padding: var(--space-4);
   }
 
   .dashboard-header {
     flex-direction: column;
     align-items: flex-start;
-    gap: var(--space-4);
+    gap: var(--space-3);
+    margin-bottom: var(--space-4);
+  }
+
+  .header-actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .stats-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: var(--space-3);
+    margin-bottom: var(--space-4);
+  }
+
+  .stat-card {
+    padding: var(--space-3);
+  }
+
+  .stat-card__icon {
+    width: 36px;
+    height: 36px;
+  }
+
+  .stat-card__value {
+    font-size: var(--text-lg);
+  }
+
+  .content-grid {
+    grid-template-columns: 1fr;
+    gap: var(--space-3);
+  }
+
+  .panel {
+    border-radius: var(--radius-lg);
+  }
+
+  .panel__header {
+    padding: var(--space-3) var(--space-4);
+    flex-wrap: wrap;
   }
 
   .panel__actions {
-    flex-wrap: wrap;
+    width: 100%;
+    margin-top: var(--space-2);
+  }
+
+  .panel__toolbar {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .panel__toolbar .search-bar {
+    width: 100%;
+    max-width: 200px;
+  }
+
+  .panel__body {
+    padding: var(--space-3);
+  }
+
+  .agent-list {
+    gap: var(--space-2);
+  }
+
+  .agent-item {
+    padding: var(--space-2-5);
+  }
+
+  .logo {
+    font-size: var(--text-xl);
+  }
+
+  .subtitle {
+    font-size: var(--text-xs);
+  }
+}
+
+@media (max-width: 480px) {
+  .stats-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .stat-card {
+    flex-direction: row;
   }
 }
 </style>
