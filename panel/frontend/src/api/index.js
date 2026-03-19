@@ -96,14 +96,25 @@ const serviceTypes = [
   { name: 'bookstack', port: 80, tags: ['wiki', 'bookstack'] },
 ]
 
-const domains = ['example.com', 'home.lab', 'svc.local', 'internal.io', 'dev.cloud']
+const domains = [
+  'homelab.mydomain.com',
+  'services.internal.company.io',
+  'infra.production.aws.cloud',
+  'apps.staging.devops.net',
+  'cluster.k8s.platform.local'
+]
+
+const envPrefixes = ['prod', 'staging', 'dev', 'test', '']
 
 function generateMockRules(count) {
   const rules = []
   for (let i = 1; i <= count; i++) {
     const svc = serviceTypes[i % serviceTypes.length]
     const domain = domains[i % domains.length]
-    const subdomain = `${svc.name}${Math.floor(i / serviceTypes.length) || ''}`
+    const env = envPrefixes[i % envPrefixes.length]
+    const instance = Math.floor(i / serviceTypes.length) || ''
+    const envPrefix = env ? `${env}.` : ''
+    const subdomain = `${svc.name}${instance}.${envPrefix}proxy`
     const ip = `192.168.${Math.floor(i / 50) + 1}.${(i % 50) + 10}`
     rules.push({
       id: i,

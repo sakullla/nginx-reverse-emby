@@ -80,16 +80,23 @@
         <!-- Main Layout -->
         <div class="app-layout">
           <!-- Sidebar -->
-          <aside class="sidebar" :class="{ 'sidebar--open': sidebarOpen }">
+          <aside class="sidebar" :class="{ 'sidebar--open': sidebarOpen, 'sidebar--collapsed': sidebarCollapsed }">
             <div class="sidebar__section">
               <div class="sidebar__section-header">
-                <span class="sidebar__section-title">Agent 节点</span>
-                <button @click="ruleStore.loadAgents" class="sidebar__section-action" title="刷新">
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polyline points="23 4 23 10 17 10"/>
-                    <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
-                  </svg>
-                </button>
+                <span class="sidebar__section-title" v-show="!sidebarCollapsed">Agent 节点</span>
+                <div class="sidebar__section-header-actions">
+                  <button @click="ruleStore.loadAgents" class="sidebar__section-action" title="刷新">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <polyline points="23 4 23 10 17 10"/>
+                      <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+                    </svg>
+                  </button>
+                  <button @click="toggleSidebarCollapse" class="sidebar__section-action sidebar__collapse-btn" :title="sidebarCollapsed ? '展开侧栏' : '收起侧栏'">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" :style="{ transform: sidebarCollapsed ? 'rotate(180deg)' : '' }">
+                      <polyline points="15 18 9 12 15 6"/>
+                    </svg>
+                  </button>
+                </div>
               </div>
 
               <div class="sidebar__agents">
@@ -99,13 +106,14 @@
                   class="sidebar__agent"
                   :class="{ 'sidebar__agent--active': ruleStore.selectedAgentId === agent.id }"
                   @click="handleSelectAgent(agent.id); sidebarOpen = false"
+                  :title="sidebarCollapsed ? agent.name : ''"
                 >
                   <div class="sidebar__agent-indicator" :class="agent.status === 'online' ? 'sidebar__agent-indicator--online' : 'sidebar__agent-indicator--offline'"></div>
-                  <div class="sidebar__agent-info">
+                  <div class="sidebar__agent-info" v-show="!sidebarCollapsed">
                     <div class="sidebar__agent-name">{{ agent.name }}</div>
                     <div class="sidebar__agent-meta">{{ agent.agent_url || '本机' }}</div>
                   </div>
-                  <div class="sidebar__agent-count" v-if="agent.id === ruleStore.selectedAgentId">
+                  <div class="sidebar__agent-count" v-if="agent.id === ruleStore.selectedAgentId && !sidebarCollapsed">
                     {{ ruleStore.rules.length }}
                   </div>
                 </div>
@@ -116,12 +124,12 @@
                     <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>
                     <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
                   </svg>
-                  <span>暂无节点</span>
+                  <span v-show="!sidebarCollapsed">暂无节点</span>
                 </div>
               </div>
             </div>
 
-            <div class="sidebar__footer">
+            <div class="sidebar__footer" v-show="!sidebarCollapsed">
               <div class="sidebar__status">
                 <div class="sidebar__status-dot" :class="ruleStore.selectedAgent?.status === 'online' ? 'sidebar__status-dot--online' : 'sidebar__status-dot--offline'"></div>
                 <span class="sidebar__status-text">
@@ -298,7 +306,13 @@ const showJoinModal = ref(false)
 const downloading = ref(false)
 const installOutput = ref('')
 const sidebarOpen = ref(false)
+const sidebarCollapsed = ref(localStorage.getItem('sidebar_collapsed') === 'true')
 let refreshTimer = null
+
+function toggleSidebarCollapse() {
+  sidebarCollapsed.value = !sidebarCollapsed.value
+  localStorage.setItem('sidebar_collapsed', sidebarCollapsed.value)
+}
 
 const activeRulesCount = computed(() => {
   return ruleStore.rules.filter(r => r.enabled).length
@@ -610,6 +624,16 @@ onUnmounted(() => {
   margin-bottom: var(--space-3);
 }
 
+.sidebar__section-header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+}
+
+.sidebar__collapse-btn svg {
+  transition: transform var(--duration-normal) var(--ease-bounce);
+}
+
 .sidebar__section-title {
   font-size: var(--text-xs);
   font-weight: var(--font-semibold);
@@ -765,6 +789,47 @@ onUnmounted(() => {
 .sidebar__status-text {
   font-size: var(--text-xs);
   color: var(--color-text-secondary);
+}
+
+/* Sidebar Collapsed State (Desktop only) */
+.sidebar--collapsed {
+  width: 64px;
+}
+
+.sidebar--collapsed .sidebar__section {
+  padding: var(--space-3) var(--space-2);
+}
+
+.sidebar--collapsed .sidebar__section-header {
+  justify-content: center;
+  margin-bottom: var(--space-2);
+}
+
+.sidebar--collapsed .sidebar__section-header-actions {
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.sidebar--collapsed .sidebar__agent {
+  justify-content: center;
+  padding: var(--space-2);
+}
+
+.sidebar--collapsed .sidebar__agent-info {
+  display: none;
+}
+
+.sidebar--collapsed .sidebar__agent-count {
+  display: none;
+}
+
+.sidebar--collapsed .sidebar__agent-indicator {
+  width: 8px;
+  height: 8px;
+}
+
+.sidebar--collapsed .sidebar__empty {
+  padding: var(--space-4);
 }
 
 /* ==========================================
@@ -974,7 +1039,7 @@ onUnmounted(() => {
     padding: 0 var(--space-8);
   }
 
-  .sidebar {
+  .sidebar:not(.sidebar--collapsed) {
     width: 340px;
   }
 
@@ -1005,7 +1070,7 @@ onUnmounted(() => {
    Responsive: Large Desktop (1440px - 2559px)
    ========================================== */
 @media (min-width: 1440px) and (max-width: 2559px) {
-  .sidebar {
+  .sidebar:not(.sidebar--collapsed) {
     width: 300px;
   }
 
@@ -1018,7 +1083,7 @@ onUnmounted(() => {
    Responsive: Desktop (1024px - 1439px)
    ========================================== */
 @media (max-width: 1439px) {
-  .sidebar {
+  .sidebar:not(.sidebar--collapsed) {
     width: 260px;
   }
 }
@@ -1039,11 +1104,44 @@ onUnmounted(() => {
     z-index: var(--z-fixed);
     transform: translateX(-100%);
     transition: transform var(--duration-normal) var(--ease-default);
-    width: 280px;
+    width: 280px !important;
   }
 
   .sidebar--open {
     transform: translateX(0);
+  }
+
+  .sidebar--collapsed {
+    width: 280px !important;
+  }
+
+  .sidebar--collapsed .sidebar__section {
+    padding: var(--space-4);
+  }
+
+  .sidebar--collapsed .sidebar__section-header {
+    justify-content: space-between;
+  }
+
+  .sidebar--collapsed .sidebar__section-header-actions {
+    flex-direction: row;
+  }
+
+  .sidebar--collapsed .sidebar__agent {
+    justify-content: flex-start;
+    padding: var(--space-3);
+  }
+
+  .sidebar--collapsed .sidebar__agent-info {
+    display: block;
+  }
+
+  .sidebar--collapsed .sidebar__agent-count {
+    display: block;
+  }
+
+  .sidebar__collapse-btn {
+    display: none;
   }
 
   .sidebar-overlay {
