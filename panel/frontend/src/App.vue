@@ -2,8 +2,15 @@
   <div id="app">
     <!-- Loading Screen -->
     <div v-if="!ruleStore.isAuthReady" class="loading-screen">
-      <div class="loader-ring"></div>
-      <p class="loading-text">加载中...</p>
+      <div class="loading-logo">
+        <div class="loading-logo__ring"></div>
+        <div class="loading-logo__core">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+          </svg>
+        </div>
+      </div>
+      <p class="loading-text">正在连接控制台...</p>
     </div>
 
     <!-- Token Auth -->
@@ -11,200 +18,213 @@
 
     <!-- Main Dashboard -->
     <template v-else>
-      <div class="main-container">
-      <!-- Header -->
-      <header class="dashboard-header">
-        <div class="header-left">
-          <h1 class="logo">Nginx Proxy</h1>
-          <p class="subtitle">Master / Agent 控制台</p>
-        </div>
-        <div class="header-actions">
-          <ThemeSelector />
-          <button @click="ruleStore.logout" class="btn btn--ghost">
-            退出
-          </button>
-        </div>
-      </header>
-
-      <!-- Stats Cards -->
-      <section class="stats-grid">
-        <div class="stat-card">
-          <div class="stat-card__icon stat-card__icon--blue">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <ellipse cx="12" cy="5" rx="9" ry="3"/>
-              <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
-            </svg>
-          </div>
-          <div class="stat-card__content">
-            <div class="stat-card__label">Agent 节点</div>
-            <div class="stat-card__value">{{ ruleStore.agents.length }}</div>
-          </div>
-        </div>
-
-        <div class="stat-card">
-          <div class="stat-card__icon stat-card__icon--green">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <polyline points="22 4 12 14.01 9 11.01"/>
-            </svg>
-          </div>
-          <div class="stat-card__content">
-            <div class="stat-card__label">在线节点</div>
-            <div class="stat-card__value">{{ ruleStore.onlineAgentsCount }}</div>
-          </div>
-        </div>
-
-        <div class="stat-card">
-          <div class="stat-card__icon stat-card__icon--purple">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
-            </svg>
-          </div>
-          <div class="stat-card__content">
-            <div class="stat-card__label">代理规则</div>
-            <div class="stat-card__value">{{ ruleStore.rules.length }}</div>
-          </div>
-        </div>
-
-        <div class="stat-card">
-          <div class="stat-card__icon stat-card__icon--orange">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="12" cy="12" r="10"/>
-            </svg>
-          </div>
-          <div class="stat-card__content">
-            <div class="stat-card__label">当前状态</div>
-            <div class="stat-card__value">{{ selectedAgentStatus }}</div>
-          </div>
-        </div>
-      </section>
-
-      <!-- Mobile Agent Selector -->
-      <MobileAgentSelector
-        :agents="ruleStore.agents"
-        :selected-agent-id="ruleStore.selectedAgentId"
-        @select="handleSelectAgent"
-      />
-
-      <!-- Main Content Grid -->
-      <div class="content-grid">
-        <!-- Agents Panel -->
-        <div class="panel panel--desktop">
-          <div class="panel__header">
-            <div>
-              <h2 class="panel__title">Agent 节点</h2>
-              <p class="panel__subtitle">选择节点管理规则</p>
-            </div>
-            <button @click="ruleStore.loadAgents" class="btn btn--ghost btn--icon tooltip">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <polyline points="23 4 23 10 17 10"/>
-                <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+      <div class="app-shell">
+        <!-- Top Navigation Bar -->
+        <nav class="topbar">
+          <div class="topbar__brand">
+            <div class="topbar__logo">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
               </svg>
-              <span class="tooltip__content">刷新</span>
+            </div>
+            <div class="topbar__title">
+              <span class="topbar__name">Nginx Proxy</span>
+              <span class="topbar__badge">Master</span>
+            </div>
+          </div>
+
+          <div class="topbar__center">
+            <div class="topbar__nav">
+              <button class="topbar__nav-item topbar__nav-item--active">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
+                  <rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>
+                </svg>
+                仪表盘
+              </button>
+              <button class="topbar__nav-item" @click="showJoinModal = true">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+                  <circle cx="8.5" cy="7" r="4"/>
+                  <line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/>
+                </svg>
+                加入节点
+              </button>
+            </div>
+          </div>
+
+          <div class="topbar__actions">
+            <ThemeSelector />
+            <div class="topbar__divider"></div>
+            <button @click="ruleStore.logout" class="topbar__action" title="退出登录">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+                <polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>
+              </svg>
             </button>
           </div>
-          <div class="panel__body">
-            <div v-if="ruleStore.agents.length" class="agent-list">
-              <div
-                v-for="agent in ruleStore.agents"
-                :key="agent.id"
-                class="agent-item"
-                :class="{ 'agent-item--active': ruleStore.selectedAgentId === agent.id }"
-                @click="handleSelectAgent(agent.id)"
-              >
-                <div class="agent-item__icon">
-                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        </nav>
+
+        <!-- Main Layout -->
+        <div class="app-layout">
+          <!-- Sidebar -->
+          <aside class="sidebar">
+            <div class="sidebar__section">
+              <div class="sidebar__section-header">
+                <span class="sidebar__section-title">Agent 节点</span>
+                <button @click="ruleStore.loadAgents" class="sidebar__section-action" title="刷新">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="23 4 23 10 17 10"/>
+                    <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+                  </svg>
+                </button>
+              </div>
+
+              <div class="sidebar__agents">
+                <div
+                  v-for="agent in ruleStore.agents"
+                  :key="agent.id"
+                  class="sidebar__agent"
+                  :class="{ 'sidebar__agent--active': ruleStore.selectedAgentId === agent.id }"
+                  @click="handleSelectAgent(agent.id)"
+                >
+                  <div class="sidebar__agent-indicator" :class="agent.status === 'online' ? 'sidebar__agent-indicator--online' : 'sidebar__agent-indicator--offline'"></div>
+                  <div class="sidebar__agent-info">
+                    <div class="sidebar__agent-name">{{ agent.name }}</div>
+                    <div class="sidebar__agent-meta">{{ agent.agent_url || '本机' }}</div>
+                  </div>
+                  <div class="sidebar__agent-count" v-if="agent.id === ruleStore.selectedAgentId">
+                    {{ ruleStore.rules.length }}
+                  </div>
+                </div>
+
+                <div v-if="!ruleStore.agents.length" class="sidebar__empty">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <ellipse cx="12" cy="5" rx="9" ry="3"/>
+                    <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>
+                    <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
+                  </svg>
+                  <span>暂无节点</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="sidebar__footer">
+              <div class="sidebar__status">
+                <div class="sidebar__status-dot" :class="ruleStore.selectedAgent?.status === 'online' ? 'sidebar__status-dot--online' : 'sidebar__status-dot--offline'"></div>
+                <span class="sidebar__status-text">
+                  {{ ruleStore.selectedAgent ? (ruleStore.selectedAgent.status === 'online' ? '服务正常运行' : '节点离线') : '未选择节点' }}
+                </span>
+              </div>
+            </div>
+          </aside>
+
+          <!-- Content Area -->
+          <main class="content">
+            <!-- Content Header -->
+            <div class="content__header">
+              <div class="content__header-left">
+                <div class="content__breadcrumb">
+                  <span class="content__breadcrumb-item">控制台</span>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="9 18 15 12 9 6"/>
+                  </svg>
+                  <span class="content__breadcrumb-item content__breadcrumb-item--active">
+                    {{ ruleStore.selectedAgent?.name || '代理规则' }}
+                  </span>
+                </div>
+                <h2 class="content__title">
+                  {{ ruleStore.selectedAgent?.name || '代理规则管理' }}
+                </h2>
+                <p class="content__subtitle">
+                  {{ ruleStore.hasSelectedAgent ? `共 ${ruleStore.rules.length} 条规则，${ruleStore.filteredRules.length} 条显示` : '请选择左侧节点管理规则' }}
+                </p>
+              </div>
+              <div class="content__header-right">
+                <div v-if="ruleStore.hasSelectedAgent && ruleStore.hasRules" class="content__search">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="11" cy="11" r="8"/>
+                    <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                  </svg>
+                  <input
+                    v-model="ruleStore.searchQuery"
+                    type="text"
+                    class="content__search-input"
+                    placeholder="搜索规则..."
+                  >
+                </div>
+                <button
+                  class="btn btn--primary"
+                  :disabled="!ruleStore.hasSelectedAgent"
+                  @click="showAddModal = true"
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                    <line x1="12" y1="5" x2="12" y2="19"/>
+                    <line x1="5" y1="12" x2="19" y2="12"/>
+                  </svg>
+                  添加规则
+                </button>
+              </div>
+            </div>
+
+            <!-- Stats Row -->
+            <div class="stats-row">
+              <div class="stat-pill">
+                <div class="stat-pill__icon stat-pill__icon--servers">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <rect x="2" y="2" width="20" height="8" rx="2" ry="2"/>
                     <rect x="2" y="14" width="20" height="8" rx="2" ry="2"/>
                     <line x1="6" y1="6" x2="6.01" y2="6"/>
                     <line x1="6" y1="18" x2="6.01" y2="18"/>
                   </svg>
                 </div>
-                <div class="agent-item__content">
-                  <div class="agent-item__name">{{ agent.name }}</div>
-                  <div class="agent-item__url">{{ agent.agent_url || '本机节点' }}</div>
-                </div>
-                <span 
-                  class="badge"
-                  :class="agent.status === 'online' ? 'badge--success' : 'badge--danger'"
-                >
-                  {{ agent.status === 'online' ? '在线' : '离线' }}
-                </span>
-              </div>
-            </div>
-            <div v-else class="empty-state">
-              <div class="empty-state__icon">
-                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                  <ellipse cx="12" cy="5" rx="9" ry="3"/>
-                  <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>
-                  <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
-                </svg>
-              </div>
-              <div class="empty-state__title">暂无节点</div>
-              <div class="empty-state__description">点击下载脚本添加新节点</div>
-            </div>
-          </div>
-        </div>
-
-        <!-- Rules Panel -->
-        <div class="panel">
-          <div class="panel__header">
-            <div>
-              <h2 class="panel__title">{{ ruleStore.selectedAgent?.name || '未选择节点' }}</h2>
-              <p class="panel__subtitle">
-                {{ ruleStore.hasSelectedAgent ? `${ruleStore.filteredRules.length} 条规则` : '请先选择一个节点' }}
-              </p>
-            </div>
-            <div class="panel__toolbar">
-              <!-- Search -->
-              <div v-if="ruleStore.hasSelectedAgent && ruleStore.hasRules" class="search-bar">
-                <div class="input-wrapper">
-                  <span class="input-wrapper__icon">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                      <circle cx="11" cy="11" r="8"/>
-                      <line x1="21" y1="21" x2="16.65" y2="16.65"/>
-                    </svg>
-                  </span>
-                  <input
-                    v-model="ruleStore.searchQuery"
-                    type="text"
-                    class="input input--sm"
-                    placeholder="搜索规则..."
-                  >
+                <div class="stat-pill__data">
+                  <span class="stat-pill__value">{{ ruleStore.agents.length }}</span>
+                  <span class="stat-pill__label">节点</span>
                 </div>
               </div>
-
-              <div class="panel__actions">
-                <ActionBar />
-                <button
-                  class="btn btn--icon btn--ghost tooltip"
-                  :disabled="!ruleStore.hasSelectedAgent"
-                  @click="showJoinModal = true"
-                >
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                    <polyline points="7 10 12 15 17 10"/>
-                    <line x1="12" y1="15" x2="12" y2="3"/>
+              <div class="stat-pill">
+                <div class="stat-pill__icon stat-pill__icon--online">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
+                    <polyline points="22 4 12 14.01 9 11.01"/>
                   </svg>
-                  <span class="tooltip__content">下载加入脚本</span>
-                </button>
-                <button
-                  class="btn btn--icon btn--ghost btn--ghost-primary tooltip"
-                  :disabled="!ruleStore.hasSelectedAgent"
-                  @click="showAddModal = true"
-                  style="border: 1px solid var(--color-primary); color: var(--color-primary);"
-                >
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <line x1="12" y1="5" x2="12" y2="19"/>
-                    <line x1="5" y1="12" x2="19" y2="12"/>
+                </div>
+                <div class="stat-pill__data">
+                  <span class="stat-pill__value">{{ ruleStore.onlineAgentsCount }}</span>
+                  <span class="stat-pill__label">在线</span>
+                </div>
+              </div>
+              <div class="stat-pill">
+                <div class="stat-pill__icon stat-pill__icon--rules">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+                    <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
                   </svg>
-                  <span class="tooltip__content">添加规则</span>
-                </button>
+                </div>
+                <div class="stat-pill__data">
+                  <span class="stat-pill__value">{{ ruleStore.rules.length }}</span>
+                  <span class="stat-pill__label">规则</span>
+                </div>
+              </div>
+              <div class="stat-pill">
+                <div class="stat-pill__icon stat-pill__icon--active">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+                  </svg>
+                </div>
+                <div class="stat-pill__data">
+                  <span class="stat-pill__value">{{ activeRulesCount }}</span>
+                  <span class="stat-pill__label">启用</span>
+                </div>
               </div>
             </div>
-          </div>
-          <div class="panel__body">
-            <RuleList />
-          </div>
+
+            <!-- Rules Content -->
+            <div class="rules-section">
+              <RuleList />
+            </div>
+          </main>
         </div>
       </div>
 
@@ -246,7 +266,6 @@
 
       <!-- Status Messages -->
       <StatusMessage />
-      </div>
     </template>
   </div>
 </template>
@@ -255,13 +274,11 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRuleStore } from './stores/rules'
 import RuleForm from './components/RuleForm.vue'
-import ActionBar from './components/ActionBar.vue'
 import RuleList from './components/RuleList.vue'
 import ThemeSelector from './components/base/ThemeSelector.vue'
 import TokenAuth from './components/base/TokenAuth.vue'
 import BaseModal from './components/base/BaseModal.vue'
 import StatusMessage from './components/StatusMessage.vue'
-import MobileAgentSelector from './components/MobileAgentSelector.vue'
 
 const ruleStore = useRuleStore()
 const showAddModal = ref(false)
@@ -270,9 +287,8 @@ const downloading = ref(false)
 const installOutput = ref('')
 let refreshTimer = null
 
-const selectedAgentStatus = computed(() => {
-  if (!ruleStore.selectedAgent) return '未选择'
-  return ruleStore.selectedAgent.status === 'online' ? '在线' : '离线'
+const activeRulesCount = computed(() => {
+  return ruleStore.rules.filter(r => r.enabled).length
 })
 
 const joinScriptUrl = computed(() => {
@@ -293,14 +309,10 @@ async function handleSelectAgent(agentId) {
 async function downloadScript() {
   downloading.value = true
   installOutput.value = ''
-
   try {
     const response = await fetch(joinScriptUrl.value)
-    if (!response.ok) {
-      throw new Error('下载失败')
-    }
+    if (!response.ok) throw new Error('下载失败')
     const scriptContent = await response.text()
-
     installOutput.value = `# 脚本已下载 (${scriptContent.length} 字节)
 # 请在目标机器上执行以下命令安装：
 
@@ -332,336 +344,308 @@ watch(
 )
 
 onUnmounted(() => {
-  if (refreshTimer) {
-    window.clearInterval(refreshTimer)
-  }
+  if (refreshTimer) window.clearInterval(refreshTimer)
 })
 </script>
 
 <style scoped>
-/* Loading Screen */
+/* ==========================================
+   Loading Screen
+   ========================================== */
 .loading-screen {
   min-height: 100vh;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: var(--space-5);
+  gap: var(--space-6);
   background: var(--theme-bg);
-  background-attachment: fixed;
 }
 
-.loader-ring {
-  width: 48px;
-  height: 48px;
+.loading-logo {
+  position: relative;
+  width: 64px;
+  height: 64px;
+}
+
+.loading-logo__ring {
+  position: absolute;
+  inset: 0;
   border: 3px solid var(--color-border-default);
   border-top-color: var(--color-primary);
   border-right-color: var(--color-primary-hover);
   border-radius: 50%;
-  animation: spin 0.8s ease-in-out infinite;
-  box-shadow: var(--shadow-md);
+  animation: spin 1s linear infinite;
+}
+
+.loading-logo__core {
+  position: absolute;
+  inset: 50%;
+  transform: translate(-50%, -50%);
+  color: var(--color-primary);
+  animation: pulse 1.5s ease-in-out infinite;
 }
 
 .loading-text {
   font-size: var(--text-sm);
   color: var(--color-text-tertiary);
-  animation: pulse 1.5s ease-in-out infinite;
+  letter-spacing: 0.05em;
 }
 
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
+@keyframes spin { to { transform: rotate(360deg); } }
 
-/* Header */
-.dashboard-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: var(--space-6);
-}
-
-.header-left {
+/* ==========================================
+   App Shell
+   ========================================== */
+.app-shell {
+  min-height: 100vh;
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
 }
 
-.logo {
-  font-size: var(--text-2xl);
-  font-weight: 800;
-  color: var(--color-text-primary);
-  margin: 0;
-  letter-spacing: -0.03em;
-}
-
-.subtitle {
-  font-size: var(--text-sm);
-  color: var(--color-text-tertiary);
-  margin: 0;
-  font-weight: var(--font-medium);
-}
-
-.header-actions {
+/* ==========================================
+   Top Navigation Bar
+   ========================================== */
+.topbar {
+  height: 56px;
   display: flex;
   align-items: center;
-  gap: var(--space-3);
-}
-
-/* Stats Grid */
-.stats-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-  gap: var(--space-4);
-  margin-bottom: var(--space-6);
-}
-
-.stat-card {
+  justify-content: space-between;
+  padding: 0 var(--space-5);
   background: var(--color-bg-surface);
-  border: 1.5px solid var(--color-border-default);
-  border-radius: var(--radius-2xl);
-  padding: var(--space-4);
+  border-bottom: 1px solid var(--color-border-default);
+  backdrop-filter: blur(16px);
+  position: sticky;
+  top: 0;
+  z-index: var(--z-sticky);
+}
+
+.topbar__brand {
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  transition: all var(--duration-normal) var(--ease-bounce);
-  backdrop-filter: blur(12px);
 }
 
-.stat-card:hover {
-  border-color: rgba(244, 114, 182, 0.3);
-  box-shadow: var(--shadow-md);
-  transform: translateY(-3px);
-}
-
-.stat-card__icon {
-  width: 44px;
-  height: 44px;
-  border-radius: var(--radius-xl);
+.topbar__logo {
+  width: 36px;
+  height: 36px;
+  background: var(--gradient-primary);
+  border-radius: var(--radius-lg);
   display: flex;
   align-items: center;
   justify-content: center;
-  flex-shrink: 0;
+  color: white;
+  box-shadow: var(--shadow-md);
 }
 
-.stat-card__icon--blue {
-  background: linear-gradient(135deg, rgba(192,132,252,0.15), rgba(129,140,248,0.15));
-  color: var(--color-primary);
-}
-
-[data-theme="dark"] .stat-card__icon--blue {
-  background: rgba(192, 132, 252, 0.15);
-  color: #e879f9;
-}
-
-.stat-card__icon--green {
-  background: rgba(52, 211, 153, 0.12);
-  color: #10b981;
-}
-
-[data-theme="dark"] .stat-card__icon--green {
-  background: rgba(52, 211, 153, 0.12);
-  color: #34d399;
-}
-
-.stat-card__icon--purple {
-  background: linear-gradient(135deg, rgba(244,114,182,0.12), rgba(192,132,252,0.12));
-  color: #c084fc;
-}
-
-[data-theme="dark"] .stat-card__icon--purple {
-  background: rgba(232, 121, 249, 0.12);
-  color: #e879f9;
-}
-
-.stat-card__icon--orange {
-  background: rgba(251, 146, 60, 0.12);
-  color: #f97316;
-}
-
-[data-theme="dark"] .stat-card__icon--orange {
-  background: rgba(251, 146, 60, 0.12);
-  color: #fb923c;
-}
-
-.stat-card__content {
-  flex: 1;
-  min-width: 0;
-}
-
-.stat-card__label {
-  font-size: var(--text-xs);
-  color: var(--color-text-secondary);
-  font-weight: var(--font-semibold);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  line-height: 1.2;
-}
-
-.stat-card__value {
-  font-size: var(--text-2xl);
-  font-weight: var(--font-bold);
-  color: var(--color-text-primary);
-  line-height: var(--leading-tight);
-  margin-top: var(--space-1);
-}
-
-/* Content Grid */
-.content-grid {
-  display: grid;
-  grid-template-columns: 280px 1fr;
-  gap: var(--space-4);
-  align-items: start;
-}
-
-@media (max-width: 1024px) {
-  .content-grid {
-    grid-template-columns: 240px 1fr;
-  }
-}
-
-/* Panel */
-.panel {
-  background: var(--color-bg-surface);
-  border: 1.5px solid var(--color-border-default);
-  border-radius: var(--radius-2xl);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  backdrop-filter: blur(12px);
-}
-
-.panel--desktop {
-  display: flex;
-}
-
-@media (max-width: 768px) {
-  .panel--desktop {
-    display: none;
-  }
-}
-
-.panel__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: var(--space-3) var(--space-4);
-  border-bottom: 1px solid var(--color-border-subtle);
-  gap: var(--space-4);
-}
-
-.panel__title {
-  font-size: var(--text-base);
-  font-weight: var(--font-bold);
-  color: var(--color-text-primary);
-  margin: 0;
-}
-
-.panel__subtitle {
-  font-size: var(--text-xs);
-  color: var(--color-text-tertiary);
-  margin: var(--space-1) 0 0;
-  font-weight: var(--font-medium);
-}
-
-.panel__actions {
+.topbar__title {
   display: flex;
   align-items: center;
   gap: var(--space-2);
 }
 
-.panel__toolbar {
+.topbar__name {
+  font-size: var(--text-base);
+  font-weight: var(--font-bold);
+  color: var(--color-text-primary);
+}
+
+.topbar__badge {
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  padding: 2px 8px;
+  background: var(--gradient-primary);
+  color: white;
+  border-radius: var(--radius-full);
+  letter-spacing: 0.03em;
+}
+
+.topbar__center {
   display: flex;
   align-items: center;
-  justify-content: flex-end;
+}
+
+.topbar__nav {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  background: var(--color-bg-subtle);
+  padding: var(--space-1);
+  border-radius: var(--radius-xl);
+}
+
+.topbar__nav-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  color: var(--color-text-secondary);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  transition: all var(--duration-normal) var(--ease-bounce);
+  border: none;
+  background: transparent;
+  font-family: inherit;
+}
+
+.topbar__nav-item:hover {
+  color: var(--color-text-primary);
+  background: var(--color-bg-hover);
+}
+
+.topbar__nav-item--active {
+  color: var(--color-text-inverse);
+  background: var(--gradient-primary);
+  box-shadow: var(--shadow-sm);
+}
+
+.topbar__actions {
+  display: flex;
+  align-items: center;
   gap: var(--space-3);
 }
 
-.panel__toolbar .search-bar {
-  width: 200px;
-  margin: 0;
+.topbar__divider {
+  width: 1px;
+  height: 24px;
+  background: var(--color-border-default);
 }
 
-.panel__toolbar .input--sm {
-  padding: var(--space-2) var(--space-3);
-  padding-left: var(--space-8);
-  font-size: var(--text-sm);
+.topbar__action {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-lg);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: all var(--duration-normal) var(--ease-bounce);
+  border: none;
+  background: transparent;
 }
 
-.panel__toolbar .input-wrapper__icon {
-  left: var(--space-3);
+.topbar__action:hover {
+  color: var(--color-danger);
+  background: var(--color-danger-50);
 }
 
-.panel__body {
+/* ==========================================
+   App Layout (Sidebar + Content)
+   ========================================== */
+.app-layout {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+}
+
+/* ==========================================
+   Sidebar
+   ========================================== */
+.sidebar {
+  width: 280px;
+  display: flex;
+  flex-direction: column;
+  background: var(--color-bg-surface);
+  border-right: 1px solid var(--color-border-default);
+  backdrop-filter: blur(12px);
+  flex-shrink: 0;
+}
+
+.sidebar__section {
   flex: 1;
   overflow-y: auto;
   padding: var(--space-4);
 }
 
-/* Agent List */
-.agent-list {
+.sidebar__section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-3);
+}
+
+.sidebar__section-title {
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  color: var(--color-text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.sidebar__section-action {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-md);
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: all var(--duration-normal) var(--ease-bounce);
+  border: none;
+  background: transparent;
+}
+
+.sidebar__section-action:hover {
+  color: var(--color-primary);
+  background: var(--color-bg-hover);
+}
+
+.sidebar__agents {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
 }
 
-.agent-item {
+.sidebar__agent {
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  padding: var(--space-4);
+  padding: var(--space-3);
   border-radius: var(--radius-xl);
   cursor: pointer;
   transition: all var(--duration-normal) var(--ease-bounce);
   border: 1.5px solid transparent;
 }
 
-.agent-item:hover {
+.sidebar__agent:hover {
   background: var(--color-bg-hover);
-  border-color: rgba(192, 132, 252, 0.15);
-  transform: translateX(4px);
+  border-color: var(--color-border-default);
+  transform: translateX(2px);
 }
 
-.agent-item--active {
-  background: linear-gradient(135deg, rgba(244,114,182,0.08), rgba(192,132,252,0.08));
-  border: 1.5px solid var(--color-primary);
+.sidebar__agent--active {
+  background: var(--color-primary-subtle);
+  border-color: var(--color-primary);
   box-shadow: var(--shadow-sm);
 }
 
-.agent-item--active .agent-item__name {
-  color: var(--color-primary);
-  font-weight: var(--font-semibold);
-}
-
-.agent-item--active .agent-item__url {
-  color: var(--color-primary-hover);
-}
-
-.agent-item__icon {
-  width: 40px;
-  height: 40px;
-  background: linear-gradient(135deg, rgba(252,231,243,0.5), rgba(243,232,255,0.5));
-  border-radius: var(--radius-lg);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--color-text-secondary);
+.sidebar__agent-indicator {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
   flex-shrink: 0;
-  border: 1px solid var(--color-border-subtle);
 }
 
-.agent-item--active .agent-item__icon {
-  background: var(--gradient-primary);
-  color: white;
-  border: none;
-  box-shadow: var(--shadow-md);
+.sidebar__agent-indicator--online {
+  background: var(--color-success);
+  box-shadow: 0 0 0 3px var(--color-success-50);
+  animation: pulse 2s ease-in-out infinite;
 }
 
-.agent-item__content {
+.sidebar__agent-indicator--offline {
+  background: var(--color-text-muted);
+}
+
+.sidebar__agent-info {
   flex: 1;
   min-width: 0;
 }
 
-.agent-item__name {
+.sidebar__agent-name {
   font-size: var(--text-sm);
   font-weight: var(--font-medium);
   color: var(--color-text-primary);
@@ -670,67 +654,250 @@ onUnmounted(() => {
   white-space: nowrap;
 }
 
-.agent-item__url {
+.sidebar__agent--active .sidebar__agent-name {
+  color: var(--color-primary);
+  font-weight: var(--font-semibold);
+}
+
+.sidebar__agent-meta {
   font-size: var(--text-xs);
   color: var(--color-text-tertiary);
-  margin-top: var(--space-0-5);
+  margin-top: 2px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-/* Search Bar */
-.search-bar {
-  margin-bottom: var(--space-4);
+.sidebar__agent-count {
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  padding: 2px 8px;
+  background: var(--gradient-primary);
+  color: white;
+  border-radius: var(--radius-full);
 }
 
-.input-wrapper {
-  position: relative;
+.sidebar__empty {
   display: flex;
-  align-items: center;
-}
-
-.input-wrapper__icon {
-  position: absolute;
-  left: var(--space-3);
-  color: var(--color-text-tertiary);
-  pointer-events: none;
-  display: flex;
-  align-items: center;
-}
-
-.input-wrapper .input {
-  padding-left: var(--space-10);
-}
-
-/* Empty State */
-.empty-state {
-  display: flex;
-  flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: var(--space-10) var(--space-6);
-  text-align: center;
-}
-
-.empty-state__icon {
+  gap: var(--space-2);
+  padding: var(--space-6);
   color: var(--color-text-muted);
-  margin-bottom: var(--space-4);
-}
-
-.empty-state__title {
-  font-size: var(--text-lg);
-  font-weight: var(--font-semibold);
-  color: var(--color-text-primary);
-  margin-bottom: var(--space-2);
-}
-
-.empty-state__description {
   font-size: var(--text-sm);
+}
+
+.sidebar__footer {
+  padding: var(--space-4);
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.sidebar__status {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2-5) var(--space-3);
+  background: var(--color-bg-subtle);
+  border-radius: var(--radius-lg);
+}
+
+.sidebar__status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.sidebar__status-dot--online {
+  background: var(--color-success);
+  box-shadow: 0 0 0 3px var(--color-success-50);
+}
+
+.sidebar__status-dot--offline {
+  background: var(--color-text-muted);
+}
+
+.sidebar__status-text {
+  font-size: var(--text-xs);
   color: var(--color-text-secondary);
 }
 
-/* Utility Classes */
+/* ==========================================
+   Content Area
+   ========================================== */
+.content {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.content__header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.content__header-left {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.content__breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+.content__breadcrumb-item--active {
+  color: var(--color-text-secondary);
+}
+
+.content__title {
+  font-size: var(--text-xl);
+  font-weight: var(--font-bold);
+  color: var(--color-text-primary);
+  margin: 0;
+}
+
+.content__subtitle {
+  font-size: var(--text-sm);
+  color: var(--color-text-tertiary);
+  margin: 0;
+}
+
+.content__header-right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.content__search {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-bg-surface);
+  border: 1.5px solid var(--color-border-default);
+  border-radius: var(--radius-xl);
+  transition: all var(--duration-normal) var(--ease-default);
+  backdrop-filter: blur(8px);
+}
+
+.content__search:focus-within {
+  border-color: var(--color-primary);
+  box-shadow: var(--shadow-focus);
+}
+
+.content__search svg {
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+}
+
+.content__search-input {
+  border: none;
+  background: transparent;
+  font-size: var(--text-sm);
+  color: var(--color-text-primary);
+  width: 180px;
+  outline: none;
+  font-family: inherit;
+}
+
+.content__search-input::placeholder {
+  color: var(--color-text-muted);
+}
+
+/* ==========================================
+   Stats Row
+   ========================================== */
+.stats-row {
+  display: flex;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+}
+
+.stat-pill {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-bg-surface);
+  border: 1.5px solid var(--color-border-default);
+  border-radius: var(--radius-xl);
+  backdrop-filter: blur(8px);
+  transition: all var(--duration-normal) var(--ease-bounce);
+}
+
+.stat-pill:hover {
+  border-color: var(--color-border-strong);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-sm);
+}
+
+.stat-pill__icon {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-lg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.stat-pill__icon--servers {
+  background: var(--color-primary-subtle);
+  color: var(--color-primary);
+}
+
+.stat-pill__icon--online {
+  background: var(--color-success-50);
+  color: var(--color-success);
+}
+
+.stat-pill__icon--rules {
+  background: var(--color-bg-subtle);
+  color: var(--color-text-secondary);
+}
+
+.stat-pill__icon--active {
+  background: linear-gradient(135deg, rgba(251,146,60,0.12), rgba(251,191,36,0.12));
+  color: var(--color-warning);
+}
+
+.stat-pill__data {
+  display: flex;
+  flex-direction: column;
+}
+
+.stat-pill__value {
+  font-size: var(--text-lg);
+  font-weight: var(--font-bold);
+  color: var(--color-text-primary);
+  line-height: 1;
+}
+
+.stat-pill__label {
+  font-size: var(--text-xs);
+  color: var(--color-text-tertiary);
+  margin-top: 2px;
+}
+
+/* ==========================================
+   Rules Section
+   ========================================== */
+.rules-section {
+  flex: 1;
+}
+
+/* ==========================================
+   Utility Classes
+   ========================================== */
 .space-y-4 > * + * { margin-top: var(--space-4); }
 .flex { display: flex; }
 .justify-end { justify-content: flex-end; }
@@ -747,108 +914,74 @@ onUnmounted(() => {
 .overflow-auto { overflow: auto; }
 .max-h-48 { max-height: 12rem; }
 
-/* Main Container - 限制最大宽度 */
-.main-container {
-  max-width: var(--container-max);
-  margin: 0 auto;
-  padding: var(--space-6);
-  width: 100%;
+/* ==========================================
+   Responsive
+   ========================================== */
+@media (max-width: 1024px) {
+  .sidebar {
+    width: 240px;
+  }
+
+  .topbar__nav {
+    display: none;
+  }
 }
 
-/* Responsive */
 @media (max-width: 768px) {
-  .main-container {
+  .sidebar {
+    display: none;
+  }
+
+  .topbar {
+    padding: 0 var(--space-4);
+  }
+
+  .topbar__title {
+    display: none;
+  }
+
+  .content {
     padding: var(--space-4);
   }
 
-  .dashboard-header {
+  .content__header {
     flex-direction: column;
     align-items: flex-start;
     gap: var(--space-3);
-    margin-bottom: var(--space-4);
   }
 
-  .header-actions {
+  .content__header-right {
     width: 100%;
-    justify-content: space-between;
-  }
-
-  .stats-grid {
-    grid-template-columns: repeat(2, 1fr);
-    gap: var(--space-3);
-    margin-bottom: var(--space-4);
-  }
-
-  .stat-card {
-    padding: var(--space-3);
-  }
-
-  .stat-card__icon {
-    width: 36px;
-    height: 36px;
-  }
-
-  .stat-card__value {
-    font-size: var(--text-lg);
-  }
-
-  .content-grid {
-    grid-template-columns: 1fr;
-    gap: var(--space-3);
-  }
-
-  .panel {
-    border-radius: var(--radius-lg);
-  }
-
-  .panel__header {
-    padding: var(--space-3) var(--space-4);
     flex-wrap: wrap;
   }
 
-  .panel__actions {
+  .content__search {
+    flex: 1;
+    min-width: 200px;
+  }
+
+  .content__search-input {
     width: 100%;
-    margin-top: var(--space-2);
   }
 
-  .panel__toolbar {
-    width: 100%;
-    justify-content: space-between;
-  }
-
-  .panel__toolbar .search-bar {
-    width: 100%;
-    max-width: 200px;
-  }
-
-  .panel__body {
-    padding: var(--space-3);
-  }
-
-  .agent-list {
+  .stats-row {
     gap: var(--space-2);
   }
 
-  .agent-item {
-    padding: var(--space-2-5);
-  }
-
-  .logo {
-    font-size: var(--text-xl);
-  }
-
-  .subtitle {
-    font-size: var(--text-xs);
+  .stat-pill {
+    flex: 1;
+    min-width: 140px;
   }
 }
 
 @media (max-width: 480px) {
-  .stats-grid {
-    grid-template-columns: 1fr;
+  .stats-row {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
   }
 
-  .stat-card {
-    flex-direction: row;
+  .stat-pill {
+    min-width: auto;
   }
 }
 </style>

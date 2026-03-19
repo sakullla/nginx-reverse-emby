@@ -142,13 +142,13 @@ const confirmDelete = async () => {
 
 <style scoped>
 .rule-list {
-  min-height: 200px;
+  min-height: 300px;
 }
 
 .rule-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-  gap: var(--space-3);
+  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+  gap: var(--space-4);
 }
 
 @media (max-width: 768px) {
@@ -157,63 +157,56 @@ const confirmDelete = async () => {
   }
 }
 
-.space-y-4 > * + * {
-  margin-top: var(--space-4);
-}
-
-.flex {
+/* Enhanced Empty State */
+.empty-state {
   display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-16) var(--space-6);
+  text-align: center;
 }
 
-.justify-end {
-  justify-content: flex-end;
+.empty-state__icon {
+  color: var(--color-primary);
+  opacity: 0.4;
+  margin-bottom: var(--space-5);
+  animation: float 4s ease-in-out infinite;
 }
 
-.gap-3 {
-  gap: var(--space-3);
-}
-
-.mr-2 {
-  margin-right: var(--space-2);
-}
-
-.mt-1 {
-  margin-top: var(--space-1);
-}
-
-.bg-subtle {
-  background: var(--color-bg-subtle);
-}
-
-.p-4 {
-  padding: var(--space-4);
-}
-
-.rounded-lg {
-  border-radius: var(--radius-lg);
-}
-
-.text-sm {
-  font-size: var(--text-sm);
-}
-
-.text-xs {
-  font-size: var(--text-xs);
-}
-
-.font-mono {
-  font-family: var(--font-mono);
-}
-
-.text-primary {
+.empty-state__title {
+  font-size: var(--text-xl);
+  font-weight: var(--font-bold);
   color: var(--color-text-primary);
+  margin-bottom: var(--space-2);
 }
 
-.text-secondary {
+.empty-state__description {
+  font-size: var(--text-sm);
   color: var(--color-text-secondary);
+  max-width: 360px;
+  line-height: 1.6;
 }
 
-.text-tertiary {
-  color: var(--color-text-tertiary);
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-8px); }
 }
+
+/* Utilities */
+.space-y-4 > * + * { margin-top: var(--space-4); }
+.flex { display: flex; }
+.justify-end { justify-content: flex-end; }
+.gap-3 { gap: var(--space-3); }
+.mr-2 { margin-right: var(--space-2); }
+.mt-1 { margin-top: var(--space-1); }
+.bg-subtle { background: var(--color-bg-subtle); }
+.p-4 { padding: var(--space-4); }
+.rounded-lg { border-radius: var(--radius-lg); }
+.text-sm { font-size: var(--text-sm); }
+.text-xs { font-size: var(--text-xs); }
+.font-mono { font-family: var(--font-mono); }
+.text-primary { color: var(--color-text-primary); }
+.text-secondary { color: var(--color-text-secondary); }
+.text-tertiary { color: var(--color-text-tertiary); }
 </style>
