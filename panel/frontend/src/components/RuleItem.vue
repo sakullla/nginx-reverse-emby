@@ -264,12 +264,13 @@ const toggleStatus = async () => {
 
 .rule-card__endpoint-value {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: var(--space-2);
   padding: var(--space-2) var(--space-3);
   background: var(--color-bg-subtle);
   border-radius: var(--radius-lg);
   border: 1px solid var(--color-border-subtle);
+  min-height: 40px;
 }
 
 .rule-card__endpoint-value svg {
@@ -281,8 +282,13 @@ const toggleStatus = async () => {
   font-family: var(--font-mono);
   font-size: var(--text-xs);
   color: var(--color-text-primary);
-  word-break: break-all;
-  line-height: 1.4;
+  overflow-wrap: break-word;
+  word-break: break-word;
+  line-height: 1.5;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
 }
 
 .rule-card__arrow {
