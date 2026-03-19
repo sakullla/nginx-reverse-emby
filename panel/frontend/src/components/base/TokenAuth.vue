@@ -99,21 +99,44 @@ const handleLogin = async () => {
   align-items: center;
   justify-content: center;
   padding: var(--space-6);
-  background: var(--color-bg-canvas);
+  background: var(--theme-bg);
+  background-attachment: fixed;
+  position: relative;
+}
+
+.auth-page::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background: radial-gradient(ellipse at 25% 25%, rgba(192, 132, 252, 0.08) 0%, transparent 50%),
+              radial-gradient(ellipse at 75% 75%, rgba(244, 114, 182, 0.06) 0%, transparent 50%);
+  opacity: var(--theme-decorator-opacity, 0.5);
+  animation: sparkle 6s ease-in-out infinite alternate;
+  pointer-events: none;
+}
+
+@keyframes sparkle {
+  0% { opacity: 0.3; }
+  50% { opacity: 0.6; }
+  100% { opacity: 0.3; }
 }
 
 .auth-card {
   width: 100%;
-  max-width: 400px;
+  max-width: 420px;
   background: var(--color-bg-surface);
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-2xl);
-  box-shadow: var(--shadow-xl);
+  border: 1.5px solid var(--color-border-default);
+  border-radius: var(--radius-3xl);
+  box-shadow: var(--shadow-2xl);
   overflow: hidden;
+  backdrop-filter: blur(20px);
+  animation: scaleIn 0.5s var(--ease-bounce);
+  position: relative;
+  z-index: 1;
 }
 
 .auth-card__header {
-  padding: var(--space-8) var(--space-6) var(--space-4);
+  padding: var(--space-10) var(--space-6) var(--space-5);
   text-align: center;
 }
 
@@ -121,19 +144,20 @@ const handleLogin = async () => {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: var(--space-3);
+  gap: var(--space-4);
 }
 
 .auth-logo__icon {
-  width: 64px;
-  height: 64px;
-  background: linear-gradient(135deg, var(--color-primary-500) 0%, var(--color-primary-700) 100%);
-  border-radius: var(--radius-xl);
+  width: 72px;
+  height: 72px;
+  background: var(--gradient-primary);
+  border-radius: var(--radius-2xl);
   display: flex;
   align-items: center;
   justify-content: center;
   color: white;
-  box-shadow: var(--shadow-lg);
+  box-shadow: var(--shadow-glow);
+  animation: float 4s ease-in-out infinite;
 }
 
 .auth-logo__title {
@@ -141,7 +165,10 @@ const handleLogin = async () => {
   font-weight: var(--font-bold);
   color: var(--color-text-primary);
   margin: 0;
-  letter-spacing: -0.02em;
+  background: var(--gradient-primary);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
 }
 
 .auth-logo__subtitle {
@@ -159,7 +186,7 @@ const handleLogin = async () => {
 
 .auth-card__footer {
   padding: var(--space-4) var(--space-6);
-  background: var(--color-bg-subtle);
+  background: var(--gradient-soft);
   border-top: 1px solid var(--color-border-subtle);
 }
 

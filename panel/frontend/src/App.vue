@@ -2,8 +2,8 @@
   <div id="app">
     <!-- Loading Screen -->
     <div v-if="!ruleStore.isAuthReady" class="loading-screen">
-      <div class="loader"></div>
-      <p>加载中...</p>
+      <div class="loader-ring"></div>
+      <p class="loading-text">加载中...</p>
     </div>
 
     <!-- Token Auth -->
@@ -19,7 +19,7 @@
           <p class="subtitle">Master / Agent 控制台</p>
         </div>
         <div class="header-actions">
-          <ThemeToggle />
+          <ThemeSelector />
           <button @click="ruleStore.logout" class="btn btn--ghost">
             退出
           </button>
@@ -257,7 +257,7 @@ import { useRuleStore } from './stores/rules'
 import RuleForm from './components/RuleForm.vue'
 import ActionBar from './components/ActionBar.vue'
 import RuleList from './components/RuleList.vue'
-import ThemeToggle from './components/base/ThemeToggle.vue'
+import ThemeSelector from './components/base/ThemeSelector.vue'
 import TokenAuth from './components/base/TokenAuth.vue'
 import BaseModal from './components/base/BaseModal.vue'
 import StatusMessage from './components/StatusMessage.vue'
@@ -346,17 +346,26 @@ onUnmounted(() => {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: var(--space-4);
-  background: var(--color-bg-canvas);
+  gap: var(--space-5);
+  background: var(--theme-bg);
+  background-attachment: fixed;
 }
 
-.loader {
-  width: 32px;
-  height: 32px;
-  border: 2px solid var(--color-border-default);
+.loader-ring {
+  width: 48px;
+  height: 48px;
+  border: 3px solid var(--color-border-default);
   border-top-color: var(--color-primary);
+  border-right-color: var(--color-primary-hover);
   border-radius: 50%;
-  animation: spin 0.8s linear infinite;
+  animation: spin 0.8s ease-in-out infinite;
+  box-shadow: var(--shadow-md);
+}
+
+.loading-text {
+  font-size: var(--text-sm);
+  color: var(--color-text-tertiary);
+  animation: pulse 1.5s ease-in-out infinite;
 }
 
 @keyframes spin {
@@ -408,24 +417,26 @@ onUnmounted(() => {
 
 .stat-card {
   background: var(--color-bg-surface);
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-lg);
+  border: 1.5px solid var(--color-border-default);
+  border-radius: var(--radius-2xl);
   padding: var(--space-4);
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  transition: all var(--duration-fast) var(--ease-default);
+  transition: all var(--duration-normal) var(--ease-bounce);
+  backdrop-filter: blur(12px);
 }
 
 .stat-card:hover {
-  border-color: var(--color-border-strong);
-  box-shadow: var(--shadow-sm);
+  border-color: rgba(244, 114, 182, 0.3);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-3px);
 }
 
 .stat-card__icon {
-  width: 40px;
-  height: 40px;
-  border-radius: var(--radius-lg);
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-xl);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -433,43 +444,43 @@ onUnmounted(() => {
 }
 
 .stat-card__icon--blue {
-  background: #eff6ff;
+  background: linear-gradient(135deg, rgba(192,132,252,0.15), rgba(129,140,248,0.15));
   color: var(--color-primary);
 }
 
 [data-theme="dark"] .stat-card__icon--blue {
-  background: #1e3a8a;
-  color: #60a5fa;
+  background: rgba(192, 132, 252, 0.15);
+  color: #e879f9;
 }
 
 .stat-card__icon--green {
-  background: #ecfdf5;
-  color: #059669;
+  background: rgba(52, 211, 153, 0.12);
+  color: #10b981;
 }
 
 [data-theme="dark"] .stat-card__icon--green {
-  background: #064e3b;
+  background: rgba(52, 211, 153, 0.12);
   color: #34d399;
 }
 
 .stat-card__icon--purple {
-  background: #f5f3ff;
-  color: #7c3aed;
+  background: linear-gradient(135deg, rgba(244,114,182,0.12), rgba(192,132,252,0.12));
+  color: #c084fc;
 }
 
 [data-theme="dark"] .stat-card__icon--purple {
-  background: #2e1065;
-  color: #a78bfa;
+  background: rgba(232, 121, 249, 0.12);
+  color: #e879f9;
 }
 
 .stat-card__icon--orange {
-  background: #fffbeb;
-  color: #d97706;
+  background: rgba(251, 146, 60, 0.12);
+  color: #f97316;
 }
 
 [data-theme="dark"] .stat-card__icon--orange {
-  background: #78350f;
-  color: #fbbf24;
+  background: rgba(251, 146, 60, 0.12);
+  color: #fb923c;
 }
 
 .stat-card__content {
@@ -511,11 +522,12 @@ onUnmounted(() => {
 /* Panel */
 .panel {
   background: var(--color-bg-surface);
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-lg);
+  border: 1.5px solid var(--color-border-default);
+  border-radius: var(--radius-2xl);
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  backdrop-filter: blur(12px);
 }
 
 .panel--desktop {
@@ -597,19 +609,22 @@ onUnmounted(() => {
   align-items: center;
   gap: var(--space-3);
   padding: var(--space-4);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-xl);
   cursor: pointer;
-  transition: all var(--duration-fast) var(--ease-default);
-  border: 1px solid transparent;
+  transition: all var(--duration-normal) var(--ease-bounce);
+  border: 1.5px solid transparent;
 }
 
 .agent-item:hover {
   background: var(--color-bg-hover);
+  border-color: rgba(192, 132, 252, 0.15);
+  transform: translateX(4px);
 }
 
 .agent-item--active {
-  background: var(--color-primary-subtle);
-  border: 1px solid var(--color-primary);
+  background: linear-gradient(135deg, rgba(244,114,182,0.08), rgba(192,132,252,0.08));
+  border: 1.5px solid var(--color-primary);
+  box-shadow: var(--shadow-sm);
 }
 
 .agent-item--active .agent-item__name {
@@ -624,18 +639,21 @@ onUnmounted(() => {
 .agent-item__icon {
   width: 40px;
   height: 40px;
-  background: var(--color-bg-subtle);
-  border-radius: var(--radius-md);
+  background: linear-gradient(135deg, rgba(252,231,243,0.5), rgba(243,232,255,0.5));
+  border-radius: var(--radius-lg);
   display: flex;
   align-items: center;
   justify-content: center;
   color: var(--color-text-secondary);
   flex-shrink: 0;
+  border: 1px solid var(--color-border-subtle);
 }
 
 .agent-item--active .agent-item__icon {
-  background: var(--color-primary);
+  background: var(--gradient-primary);
   color: white;
+  border: none;
+  box-shadow: var(--shadow-md);
 }
 
 .agent-item__content {

@@ -102,19 +102,38 @@ const toggleStatus = async () => {
 <style scoped>
 .rule-card {
   background: var(--color-bg-surface);
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-lg);
+  border: 1.5px solid var(--color-border-default);
+  border-radius: var(--radius-2xl);
   overflow: hidden;
-  transition: all var(--duration-fast) var(--ease-default);
+  transition: all var(--duration-normal) var(--ease-bounce);
+  backdrop-filter: blur(12px);
+  position: relative;
+}
+
+.rule-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: var(--gradient-primary);
+  opacity: 0;
+  transition: opacity var(--duration-normal) var(--ease-default);
 }
 
 .rule-card:hover {
-  border-color: var(--color-primary);
-  box-shadow: var(--shadow-sm);
+  border-color: var(--color-border-strong);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-4px);
+}
+
+.rule-card:hover::before {
+  opacity: 1;
 }
 
 .rule-card--disabled {
-  opacity: 0.7;
+  opacity: 0.6;
   background: var(--color-bg-subtle);
 }
 
@@ -128,7 +147,7 @@ const toggleStatus = async () => {
   align-items: center;
   justify-content: space-between;
   padding: var(--space-3) var(--space-4);
-  background: var(--color-bg-subtle);
+  background: var(--gradient-soft);
   border-bottom: 1px solid var(--color-border-subtle);
 }
 
@@ -146,6 +165,8 @@ const toggleStatus = async () => {
 
 .status-dot--active {
   background: var(--color-success);
+  box-shadow: 0 0 0 3px var(--color-success-50);
+  animation: pulse 2s ease-in-out infinite;
 }
 
 .status-dot--inactive {
@@ -200,6 +221,7 @@ const toggleStatus = async () => {
   justify-content: center;
   color: var(--color-primary);
   padding: var(--space-1) 0;
+  animation: float 3s ease-in-out infinite;
 }
 
 /* Footer */
@@ -209,28 +231,37 @@ const toggleStatus = async () => {
   flex-wrap: wrap;
   padding: var(--space-3) var(--space-4);
   border-top: 1px solid var(--color-border-subtle);
-  background: var(--color-bg-subtle);
+  background: var(--gradient-soft);
 }
 
 .tag {
   display: inline-flex;
   align-items: center;
-  padding: var(--space-1) var(--space-2);
+  padding: var(--space-1) var(--space-3);
   font-size: var(--text-xs);
-  background: var(--color-bg-surface);
-  color: var(--color-text-secondary);
+  background: var(--color-bg-subtle);
+  color: var(--color-primary);
   border-radius: var(--radius-full);
   border: 1px solid var(--color-border-default);
   font-weight: var(--font-medium);
+  backdrop-filter: blur(4px);
 }
 
 .btn--icon {
   padding: var(--space-1-5);
   width: 28px;
   height: 28px;
+  border-radius: var(--radius-lg);
+  transition: all var(--duration-normal) var(--ease-bounce);
+}
+
+.btn--icon:hover {
+  background: var(--color-bg-hover);
+  transform: scale(1.1);
 }
 
 .text-danger-hover:hover {
   color: var(--color-danger) !important;
+  background: var(--color-danger-50) !important;
 }
 </style>

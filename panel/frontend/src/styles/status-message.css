@@ -17,12 +17,15 @@
   gap: var(--space-3);
   padding: var(--space-3) var(--space-4);
   background: var(--color-bg-surface);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-xl);
   box-shadow: var(--shadow-lg);
+  border-left: 4px solid;
+  border: 1.5px solid var(--color-border-default);
   border-left: 4px solid;
   pointer-events: auto;
   animation: slideInRight var(--duration-normal) var(--ease-out);
   max-width: 400px;
+  backdrop-filter: blur(12px);
 }
 
 .status-message--success {

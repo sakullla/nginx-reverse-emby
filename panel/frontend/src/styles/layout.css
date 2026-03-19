@@ -266,18 +266,20 @@
 
 .stat-card {
   background: var(--color-bg-surface);
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-xl);
+  border: 1.5px solid var(--color-border-default);
+  border-radius: var(--radius-2xl);
   padding: var(--space-5);
   display: flex;
   align-items: center;
   gap: var(--space-4);
-  transition: all var(--duration-fast) var(--ease-default);
+  transition: all var(--duration-normal) var(--ease-bounce);
+  backdrop-filter: blur(12px);
 }
 
 .stat-card:hover {
   box-shadow: var(--shadow-md);
-  transform: translateY(-2px);
+  transform: translateY(-3px);
+  border-color: rgba(244, 114, 182, 0.3);
 }
 
 .stat-card__icon {
@@ -338,11 +340,12 @@
 /* Panel */
 .panel {
   background: var(--color-bg-surface);
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-xl);
+  border: 1.5px solid var(--color-border-default);
+  border-radius: var(--radius-2xl);
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  backdrop-filter: blur(12px);
 }
 
 .panel__header {
@@ -389,34 +392,42 @@
   align-items: center;
   gap: var(--space-3);
   padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-xl);
   cursor: pointer;
-  transition: all var(--duration-fast) var(--ease-default);
+  transition: all var(--duration-normal) var(--ease-bounce);
+  border: 1.5px solid transparent;
 }
 
 .list-item:hover {
   background: var(--color-bg-hover);
+  border-color: rgba(192, 132, 252, 0.15);
+  transform: translateX(4px);
 }
 
 .list-item--active {
-  background: var(--color-primary-subtle);
+  background: linear-gradient(135deg, rgba(244,114,182,0.08), rgba(192,132,252,0.08));
+  border-color: var(--color-primary);
+  box-shadow: var(--shadow-sm);
 }
 
 .list-item__icon {
   width: 40px;
   height: 40px;
-  background: var(--color-bg-subtle);
+  background: linear-gradient(135deg, rgba(252,231,243,0.5), rgba(243,232,255,0.5));
   border-radius: var(--radius-lg);
   display: flex;
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
   color: var(--color-text-secondary);
+  border: 1px solid var(--color-border-subtle);
 }
 
 .list-item--active .list-item__icon {
-  background: var(--color-primary-200);
-  color: var(--color-primary);
+  background: var(--gradient-primary);
+  color: white;
+  border: none;
+  box-shadow: var(--shadow-md);
 }
 
 .list-item__content {

@@ -53,7 +53,7 @@ const confirm = () => {
 <style scoped>
 .modal-enter-active,
 .modal-leave-active {
-  transition: opacity var(--duration-fast) var(--ease-default);
+  transition: opacity var(--duration-normal) var(--ease-default);
 }
 
 .modal-enter-from,
@@ -63,21 +63,21 @@ const confirm = () => {
 
 .modal-enter-active .modal,
 .modal-leave-active .modal {
-  transition: transform var(--duration-slow) var(--ease-out), 
-              opacity var(--duration-slow) var(--ease-out);
+  transition: transform var(--duration-slow) var(--ease-bounce), 
+              opacity var(--duration-slow) var(--ease-bounce);
 }
 
 .modal-enter-from .modal,
 .modal-leave-to .modal {
-  transform: scale(0.95);
+  transform: scale(0.9);
   opacity: 0;
 }
 
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(15, 23, 42, 0.5);
-  backdrop-filter: blur(4px);
+  background: rgba(37, 23, 54, 0.4);
+  backdrop-filter: blur(8px);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -87,7 +87,8 @@ const confirm = () => {
 
 .modal {
   background: var(--color-bg-surface);
-  border-radius: var(--radius-2xl);
+  border: 1.5px solid var(--color-border-default);
+  border-radius: var(--radius-3xl);
   box-shadow: var(--shadow-2xl);
   width: 100%;
   max-width: 480px;
@@ -95,6 +96,7 @@ const confirm = () => {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  backdrop-filter: blur(20px);
 }
 
 .modal--lg {
@@ -109,6 +111,7 @@ const confirm = () => {
   padding: var(--space-5) var(--space-6);
   border-bottom: 1px solid var(--color-border-subtle);
   flex-shrink: 0;
+  background: linear-gradient(135deg, rgba(252,231,243,0.15), rgba(243,232,255,0.15));
 }
 
 .modal__title {
@@ -130,15 +133,16 @@ const confirm = () => {
   justify-content: center;
   width: 36px;
   height: 36px;
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-full);
   color: var(--color-text-tertiary);
-  transition: all var(--duration-fast) var(--ease-default);
+  transition: all var(--duration-normal) var(--ease-bounce);
   flex-shrink: 0;
 }
 
 .modal__close:hover {
-  background: var(--color-bg-hover);
-  color: var(--color-text-primary);
+  background: rgba(251, 113, 133, 0.1);
+  color: var(--color-danger);
+  transform: rotate(90deg);
 }
 
 .modal__body {
@@ -154,7 +158,7 @@ const confirm = () => {
   gap: var(--space-3);
   padding: var(--space-4) var(--space-6);
   border-top: 1px solid var(--color-border-subtle);
-  background: var(--color-bg-subtle);
+  background: linear-gradient(135deg, rgba(252,231,243,0.2), rgba(243,232,255,0.2));
   flex-shrink: 0;
 }
 
@@ -166,12 +170,12 @@ const confirm = () => {
 
   .modal {
     max-height: calc(100vh - var(--space-8));
-    border-radius: var(--radius-2xl) var(--radius-2xl) 0 0;
+    border-radius: var(--radius-3xl) var(--radius-3xl) 0 0;
   }
 
   .modal-enter-active .modal,
   .modal-leave-active .modal {
-    transition: transform var(--duration-slow) var(--ease-out);
+    transition: transform var(--duration-slow) var(--ease-bounce);
   }
 
   .modal-enter-from .modal,

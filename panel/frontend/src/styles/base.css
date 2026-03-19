@@ -1,9 +1,5 @@
-/* Base Styles & Reset */
+/* Base Styles & Reset - Multi-Theme */
 
-/* Import Inter font */
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
-
-/* CSS Reset - Minimal */
 *, *::before, *::after {
   box-sizing: border-box;
   margin: 0;
@@ -22,12 +18,76 @@ body {
   font-size: var(--text-base);
   line-height: var(--leading-normal);
   color: var(--color-text-primary);
-  background-color: var(--color-bg-canvas);
+  background: var(--theme-bg);
+  background-attachment: fixed;
   min-height: 100vh;
   overflow-x: hidden;
+  position: relative;
+  transition: background 0.5s ease, color 0.3s ease;
 }
 
-/* Scrollbar Styling */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background: radial-gradient(ellipse at 30% 20%, rgba(192, 132, 252, 0.08) 0%, transparent 50%),
+              radial-gradient(ellipse at 70% 80%, rgba(244, 114, 182, 0.06) 0%, transparent 50%);
+  opacity: var(--theme-decorator-opacity, 0.5);
+  pointer-events: none;
+  z-index: 0;
+}
+
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image:
+    radial-gradient(2px 2px at 20% 30%, currentColor, transparent),
+    radial-gradient(2px 2px at 40% 70%, currentColor, transparent),
+    radial-gradient(1.5px 1.5px at 60% 20%, currentColor, transparent),
+    radial-gradient(2px 2px at 80% 50%, currentColor, transparent),
+    radial-gradient(1.5px 1.5px at 10% 80%, currentColor, transparent),
+    radial-gradient(2px 2px at 70% 90%, currentColor, transparent);
+  opacity: 0.04;
+  animation: sparkle 8s ease-in-out infinite alternate;
+  pointer-events: none;
+  z-index: 0;
+}
+
+[data-theme="cyberpunk"] body::after {
+  background-image:
+    radial-gradient(2px 2px at 20% 30%, #00f0ff, transparent),
+    radial-gradient(2px 2px at 40% 70%, #ff0055, transparent),
+    radial-gradient(1.5px 1.5px at 60% 20%, #00f0ff, transparent),
+    radial-gradient(2px 2px at 80% 50%, #ff0055, transparent),
+    radial-gradient(1.5px 1.5px at 10% 80%, #00f0ff, transparent),
+    radial-gradient(2px 2px at 70% 90%, #39ff14, transparent);
+  opacity: 0.12;
+}
+
+[data-theme="midnight"] body::after {
+  background-image:
+    radial-gradient(2px 2px at 20% 30%, #a78bfa, transparent),
+    radial-gradient(2px 2px at 40% 70%, #60a5fa, transparent),
+    radial-gradient(1.5px 1.5px at 60% 20%, #818cf8, transparent),
+    radial-gradient(2px 2px at 80% 50%, #a78bfa, transparent),
+    radial-gradient(1.5px 1.5px at 10% 80%, #60a5fa, transparent),
+    radial-gradient(2px 2px at 70% 90%, #818cf8, transparent);
+  opacity: 0.15;
+}
+
+@keyframes sparkle {
+  0% { opacity: 0.3; transform: translateY(0); }
+  50% { opacity: 0.6; transform: translateY(-5px); }
+  100% { opacity: 0.3; transform: translateY(0); }
+}
+
+#app {
+  position: relative;
+  z-index: 1;
+}
+
+/* Scrollbar */
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
@@ -38,29 +98,22 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--color-slate-300);
+  background: var(--color-border-default);
   border-radius: var(--radius-full);
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--color-slate-400);
-}
-
-[data-theme="dark"] ::-webkit-scrollbar-thumb {
-  background: var(--color-slate-600);
-}
-
-[data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
-  background: var(--color-slate-500);
+  background: var(--color-border-strong);
 }
 
 /* Selection */
 ::selection {
-  background: var(--color-primary-200);
-  color: var(--color-primary-900);
+  background: var(--color-primary);
+  color: var(--color-text-inverse);
+  opacity: 0.25;
 }
 
-/* Focus Visible */
+/* Focus */
 :focus-visible {
   outline: 2px solid var(--color-primary);
   outline-offset: 2px;
@@ -92,89 +145,15 @@ input, textarea, select {
 }
 
 /* Animations */
-@keyframes fadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-
-@keyframes slideUp {
-  from { 
-    opacity: 0;
-    transform: translateY(10px);
-  }
-  to { 
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@keyframes slideDown {
-  from { 
-    opacity: 0;
-    transform: translateY(-10px);
-  }
-  to { 
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@keyframes scaleIn {
-  from { 
-    opacity: 0;
-    transform: scale(0.95);
-  }
-  to { 
-    opacity: 1;
-    transform: scale(1);
-  }
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
-
-@keyframes pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.5; }
-}
-
-@keyframes bounce {
-  0%, 100% { transform: translateY(0); }
-  50% { transform: translateY(-4px); }
-}
-
-@keyframes shake {
-  0%, 100% { transform: translateX(0); }
-  25% { transform: translateX(-4px); }
-  75% { transform: translateX(4px); }
-}
-
-/* Utility Classes */
-.sr-only {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
-}
-
-.text-truncate {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.line-clamp-2 {
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes slideUp { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes slideDown { from { opacity: 0; transform: translateY(-12px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes scaleIn { from { opacity: 0; transform: scale(0.92); } to { opacity: 1; transform: scale(1); } }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
+@keyframes bounce { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
+@keyframes shake { 0%, 100% { transform: translateX(0); } 25% { transform: translateX(-4px); } 75% { transform: translateX(4px); } }
+@keyframes float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-6px); } }
 
 /* Status Indicators */
 .status-dot {
@@ -186,15 +165,16 @@ input, textarea, select {
 
 .status-dot--online {
   background: var(--color-success);
-  box-shadow: 0 0 0 2px var(--color-success-50);
+  box-shadow: 0 0 0 3px var(--color-success-50);
+  animation: pulse 2s ease-in-out infinite;
 }
 
 .status-dot--offline {
   background: var(--color-danger);
-  box-shadow: 0 0 0 2px var(--color-danger-50);
+  box-shadow: 0 0 0 3px var(--color-danger-50);
 }
 
 .status-dot--pending {
   background: var(--color-warning);
-  box-shadow: 0 0 0 2px var(--color-warning-50);
+  box-shadow: 0 0 0 3px var(--color-warning-50);
 }
