@@ -19,17 +19,29 @@
     <!-- Main Dashboard -->
     <template v-else>
       <div class="app-shell">
+        <!-- Mobile Sidebar Overlay -->
+        <div v-if="sidebarOpen" class="sidebar-overlay" @click="sidebarOpen = false"></div>
+
         <!-- Top Navigation Bar -->
         <nav class="topbar">
-          <div class="topbar__brand">
-            <div class="topbar__logo">
-              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-                <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+          <div class="topbar__left">
+            <button class="topbar__hamburger" @click="sidebarOpen = !sidebarOpen">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="3" y1="6" x2="21" y2="6"/>
+                <line x1="3" y1="12" x2="21" y2="12"/>
+                <line x1="3" y1="18" x2="21" y2="18"/>
               </svg>
-            </div>
-            <div class="topbar__title">
-              <span class="topbar__name">Nginx Proxy</span>
-              <span class="topbar__badge">Master</span>
+            </button>
+            <div class="topbar__brand">
+              <div class="topbar__logo">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                  <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+                </svg>
+              </div>
+              <div class="topbar__title">
+                <span class="topbar__name">Nginx Proxy</span>
+                <span class="topbar__badge">Master</span>
+              </div>
             </div>
           </div>
 
@@ -40,7 +52,7 @@
                   <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
                   <rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>
                 </svg>
-                仪表盘
+                <span>仪表盘</span>
               </button>
               <button class="topbar__nav-item" @click="showJoinModal = true">
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -48,7 +60,7 @@
                   <circle cx="8.5" cy="7" r="4"/>
                   <line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/>
                 </svg>
-                加入节点
+                <span>加入节点</span>
               </button>
             </div>
           </div>
@@ -68,7 +80,7 @@
         <!-- Main Layout -->
         <div class="app-layout">
           <!-- Sidebar -->
-          <aside class="sidebar">
+          <aside class="sidebar" :class="{ 'sidebar--open': sidebarOpen }">
             <div class="sidebar__section">
               <div class="sidebar__section-header">
                 <span class="sidebar__section-title">Agent 节点</span>
@@ -86,7 +98,7 @@
                   :key="agent.id"
                   class="sidebar__agent"
                   :class="{ 'sidebar__agent--active': ruleStore.selectedAgentId === agent.id }"
-                  @click="handleSelectAgent(agent.id)"
+                  @click="handleSelectAgent(agent.id); sidebarOpen = false"
                 >
                   <div class="sidebar__agent-indicator" :class="agent.status === 'online' ? 'sidebar__agent-indicator--online' : 'sidebar__agent-indicator--offline'"></div>
                   <div class="sidebar__agent-info">
@@ -162,7 +174,7 @@
                     <line x1="12" y1="5" x2="12" y2="19"/>
                     <line x1="5" y1="12" x2="19" y2="12"/>
                   </svg>
-                  添加规则
+                  <span>添加规则</span>
                 </button>
               </div>
             </div>
@@ -285,6 +297,7 @@ const showAddModal = ref(false)
 const showJoinModal = ref(false)
 const downloading = ref(false)
 const installOutput = ref('')
+const sidebarOpen = ref(false)
 let refreshTimer = null
 
 const activeRulesCount = computed(() => {
@@ -404,6 +417,13 @@ onUnmounted(() => {
 }
 
 /* ==========================================
+   Sidebar Overlay (Mobile)
+   ========================================== */
+.sidebar-overlay {
+  display: none;
+}
+
+/* ==========================================
    Top Navigation Bar
    ========================================== */
 .topbar {
@@ -418,6 +438,26 @@ onUnmounted(() => {
   position: sticky;
   top: 0;
   z-index: var(--z-sticky);
+  flex-shrink: 0;
+}
+
+.topbar__left {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.topbar__hamburger {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-lg);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  border: none;
+  background: transparent;
 }
 
 .topbar__brand {
@@ -436,6 +476,7 @@ onUnmounted(() => {
   justify-content: center;
   color: white;
   box-shadow: var(--shadow-md);
+  flex-shrink: 0;
 }
 
 .topbar__title {
@@ -488,6 +529,7 @@ onUnmounted(() => {
   border: none;
   background: transparent;
   font-family: inherit;
+  white-space: nowrap;
 }
 
 .topbar__nav-item:hover {
@@ -538,7 +580,7 @@ onUnmounted(() => {
 .app-layout {
   display: flex;
   flex: 1;
-  overflow: hidden;
+  min-height: 0;
 }
 
 /* ==========================================
@@ -552,6 +594,7 @@ onUnmounted(() => {
   border-right: 1px solid var(--color-border-default);
   backdrop-filter: blur(12px);
   flex-shrink: 0;
+  overflow: hidden;
 }
 
 .sidebar__section {
@@ -675,6 +718,7 @@ onUnmounted(() => {
   background: var(--gradient-primary);
   color: white;
   border-radius: var(--radius-full);
+  flex-shrink: 0;
 }
 
 .sidebar__empty {
@@ -690,6 +734,7 @@ onUnmounted(() => {
 .sidebar__footer {
   padding: var(--space-4);
   border-top: 1px solid var(--color-border-subtle);
+  flex-shrink: 0;
 }
 
 .sidebar__status {
@@ -705,6 +750,7 @@ onUnmounted(() => {
   width: 8px;
   height: 8px;
   border-radius: 50%;
+  flex-shrink: 0;
 }
 
 .sidebar__status-dot--online {
@@ -726,6 +772,7 @@ onUnmounted(() => {
    ========================================== */
 .content {
   flex: 1;
+  min-width: 0;
   overflow-y: auto;
   padding: var(--space-6);
   display: flex;
@@ -738,12 +785,14 @@ onUnmounted(() => {
   align-items: flex-end;
   justify-content: space-between;
   gap: var(--space-4);
+  flex-wrap: wrap;
 }
 
 .content__header-left {
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
+  min-width: 0;
 }
 
 .content__breadcrumb {
@@ -775,6 +824,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: var(--space-3);
+  flex-shrink: 0;
 }
 
 .content__search {
@@ -841,8 +891,8 @@ onUnmounted(() => {
 }
 
 .stat-pill__icon {
-  width: 32px;
-  height: 32px;
+  width: 36px;
+  height: 36px;
   border-radius: var(--radius-lg);
   display: flex;
   align-items: center;
@@ -876,7 +926,7 @@ onUnmounted(() => {
 }
 
 .stat-pill__value {
-  font-size: var(--text-lg);
+  font-size: var(--text-xl);
   font-weight: var(--font-bold);
   color: var(--color-text-primary);
   line-height: 1;
@@ -893,6 +943,7 @@ onUnmounted(() => {
    ========================================== */
 .rules-section {
   flex: 1;
+  min-width: 0;
 }
 
 /* ==========================================
@@ -915,73 +966,240 @@ onUnmounted(() => {
 .max-h-48 { max-height: 12rem; }
 
 /* ==========================================
-   Responsive
+   Responsive: 4K (2560px+)
    ========================================== */
-@media (max-width: 1024px) {
-  .sidebar {
-    width: 240px;
+@media (min-width: 2560px) {
+  .topbar {
+    height: 64px;
+    padding: 0 var(--space-8);
   }
 
-  .topbar__nav {
-    display: none;
+  .sidebar {
+    width: 340px;
+  }
+
+  .content {
+    padding: var(--space-8);
+    gap: var(--space-6);
+  }
+
+  .content__title {
+    font-size: var(--text-2xl);
+  }
+
+  .stat-pill {
+    padding: var(--space-4) var(--space-5);
+  }
+
+  .stat-pill__icon {
+    width: 44px;
+    height: 44px;
+  }
+
+  .stat-pill__value {
+    font-size: var(--text-2xl);
   }
 }
 
-@media (max-width: 768px) {
+/* ==========================================
+   Responsive: Large Desktop (1440px - 2559px)
+   ========================================== */
+@media (min-width: 1440px) and (max-width: 2559px) {
   .sidebar {
+    width: 300px;
+  }
+
+  .content {
+    padding: var(--space-6);
+  }
+}
+
+/* ==========================================
+   Responsive: Desktop (1024px - 1439px)
+   ========================================== */
+@media (max-width: 1439px) {
+  .sidebar {
+    width: 260px;
+  }
+}
+
+/* ==========================================
+   Responsive: Tablet (769px - 1023px)
+   ========================================== */
+@media (max-width: 1023px) {
+  .topbar__nav {
     display: none;
   }
 
+  .sidebar {
+    position: fixed;
+    top: 56px;
+    left: 0;
+    bottom: 0;
+    z-index: var(--z-fixed);
+    transform: translateX(-100%);
+    transition: transform var(--duration-normal) var(--ease-default);
+    width: 280px;
+  }
+
+  .sidebar--open {
+    transform: translateX(0);
+  }
+
+  .sidebar-overlay {
+    display: block;
+    position: fixed;
+    inset: 0;
+    top: 56px;
+    background: rgba(0, 0, 0, 0.3);
+    backdrop-filter: blur(4px);
+    z-index: calc(var(--z-fixed) - 1);
+  }
+
+  .topbar__hamburger {
+    display: flex;
+  }
+
+  .content {
+    padding: var(--space-5);
+  }
+
+  .stats-row {
+    gap: var(--space-2);
+  }
+}
+
+/* ==========================================
+   Responsive: Mobile (481px - 768px)
+   ========================================== */
+@media (max-width: 768px) {
   .topbar {
-    padding: 0 var(--space-4);
+    padding: 0 var(--space-3);
   }
 
   .topbar__title {
     display: none;
   }
 
+  .topbar__hamburger {
+    display: flex;
+  }
+
   .content {
     padding: var(--space-4);
+    gap: var(--space-4);
   }
 
   .content__header {
     flex-direction: column;
-    align-items: flex-start;
+    align-items: stretch;
     gap: var(--space-3);
   }
 
   .content__header-right {
-    width: 100%;
-    flex-wrap: wrap;
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-2);
   }
 
   .content__search {
-    flex: 1;
-    min-width: 200px;
+    width: 100%;
   }
 
   .content__search-input {
     width: 100%;
+    flex: 1;
+  }
+
+  .content__title {
+    font-size: var(--text-lg);
   }
 
   .stats-row {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
     gap: var(--space-2);
   }
 
   .stat-pill {
-    flex: 1;
-    min-width: 140px;
+    padding: var(--space-2-5) var(--space-3);
+  }
+
+  .stat-pill__icon {
+    width: 32px;
+    height: 32px;
+  }
+
+  .stat-pill__value {
+    font-size: var(--text-lg);
   }
 }
 
+/* ==========================================
+   Responsive: Small Mobile (<= 480px)
+   ========================================== */
 @media (max-width: 480px) {
+  .topbar {
+    height: 52px;
+    padding: 0 var(--space-2);
+  }
+
+  .topbar__logo {
+    width: 32px;
+    height: 32px;
+  }
+
+  .topbar__actions {
+    gap: var(--space-2);
+  }
+
+  .topbar__divider {
+    display: none;
+  }
+
+  .content {
+    padding: var(--space-3);
+    gap: var(--space-3);
+  }
+
+  .content__breadcrumb {
+    display: none;
+  }
+
+  .content__title {
+    font-size: var(--text-base);
+  }
+
+  .content__subtitle {
+    font-size: var(--text-xs);
+  }
+
   .stats-row {
-    display: grid;
     grid-template-columns: repeat(2, 1fr);
+    gap: var(--space-2);
   }
 
   .stat-pill {
-    min-width: auto;
+    padding: var(--space-2);
+    gap: var(--space-2);
+  }
+
+  .stat-pill__icon {
+    width: 28px;
+    height: 28px;
+  }
+
+  .stat-pill__icon svg {
+    width: 14px;
+    height: 14px;
+  }
+
+  .stat-pill__value {
+    font-size: var(--text-base);
+  }
+
+  .stat-pill__label {
+    font-size: 10px;
   }
 }
 </style>
