@@ -73,27 +73,53 @@ const mockAgents = [
   }
 ]
 
+const serviceTypes = [
+  { name: 'emby', port: 8096, tags: ['emby', 'media'] },
+  { name: 'jellyfin', port: 8096, tags: ['jellyfin', 'media'] },
+  { name: 'plex', port: 32400, tags: ['plex', 'media'] },
+  { name: 'navidrome', port: 4533, tags: ['music', 'navidrome'] },
+  { name: 'nextcloud', port: 8443, tags: ['cloud', 'nextcloud'] },
+  { name: 'gitea', port: 3000, tags: ['git', 'gitea'] },
+  { name: 'jenkins', port: 8080, tags: ['ci', 'jenkins'] },
+  { name: 'grafana', port: 3000, tags: ['monitor', 'grafana'] },
+  { name: 'prometheus', port: 9090, tags: ['monitor', 'prometheus'] },
+  { name: 'portainer', port: 9443, tags: ['docker', 'portainer'] },
+  { name: 'traefik', port: 8080, tags: ['proxy', 'traefik'] },
+  { name: 'minio', port: 9001, tags: ['storage', 'minio'] },
+  { name: 'vaultwarden', port: 80, tags: ['password', 'vaultwarden'] },
+  { name: 'homeassistant', port: 8123, tags: ['iot', 'home'] },
+  { name: 'pihole', port: 80, tags: ['dns', 'pihole'] },
+  { name: 'syncthing', port: 8384, tags: ['sync', 'syncthing'] },
+  { name: 'code-server', port: 8080, tags: ['ide', 'vscode'] },
+  { name: 'uptime-kuma', port: 3001, tags: ['monitor', 'uptime'] },
+  { name: 'wikijs', port: 3000, tags: ['wiki', 'docs'] },
+  { name: 'bookstack', port: 80, tags: ['wiki', 'bookstack'] },
+]
+
+const domains = ['example.com', 'home.lab', 'svc.local', 'internal.io', 'dev.cloud']
+
+function generateMockRules(count) {
+  const rules = []
+  for (let i = 1; i <= count; i++) {
+    const svc = serviceTypes[i % serviceTypes.length]
+    const domain = domains[i % domains.length]
+    const subdomain = `${svc.name}${Math.floor(i / serviceTypes.length) || ''}`
+    const ip = `192.168.${Math.floor(i / 50) + 1}.${(i % 50) + 10}`
+    rules.push({
+      id: i,
+      frontend_url: `https://${subdomain}.${domain}`,
+      backend_url: `http://${ip}:${svc.port}`,
+      enabled: i % 7 !== 0,
+      tags: [...svc.tags, i % 3 === 0 ? 'https' : 'http'],
+      proxy_redirect: true
+    })
+  }
+  return rules
+}
+
 const mockRulesByAgent = {
-  local: [
-    {
-      id: 1,
-      frontend_url: 'https://emby.example.com',
-      backend_url: 'http://192.168.1.10:8096',
-      enabled: true,
-      tags: ['emby', 'https'],
-      proxy_redirect: true
-    }
-  ],
-  'edge-1': [
-    {
-      id: 1,
-      frontend_url: 'https://jellyfin.example.com',
-      backend_url: 'http://192.168.1.11:8096',
-      enabled: true,
-      tags: ['jellyfin', 'edge'],
-      proxy_redirect: true
-    }
-  ]
+  local: generateMockRules(100),
+  'edge-1': generateMockRules(30).map(r => ({ ...r, id: r.id + 1000 }))
 }
 
 function getMockStats(agentId) {

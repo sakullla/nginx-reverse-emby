@@ -147,11 +147,34 @@ const confirmDelete = async () => {
 
 .rule-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 380px), 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr));
   gap: var(--space-4);
 }
 
-@media (max-width: 768px) {
+/* 4K: 4 columns with larger cards */
+@media (min-width: 2200px) {
+  .rule-grid {
+    grid-template-columns: repeat(4, 1fr);
+    gap: var(--space-5);
+  }
+}
+
+/* Large desktop: 3 columns */
+@media (min-width: 1600px) and (max-width: 2199px) {
+  .rule-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+/* Desktop: 2 columns */
+@media (min-width: 768px) and (max-width: 1599px) {
+  .rule-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+/* Mobile: 1 column */
+@media (max-width: 767px) {
   .rule-grid {
     grid-template-columns: 1fr;
   }
