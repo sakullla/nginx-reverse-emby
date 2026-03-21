@@ -48,6 +48,19 @@ api.interceptors.response.use(
   }
 )
 
+const mockAgentRegions = [
+  { prefix: 'hk', name: '香港', domain: 'hk.nodes.example.com' },
+  { prefix: 'sg', name: '新加坡', domain: 'sg.nodes.example.com' },
+  { prefix: 'jp', name: '日本', domain: 'jp.nodes.example.com' },
+  { prefix: 'us-west', name: '美西', domain: 'usw.nodes.example.com' },
+  { prefix: 'us-east', name: '美东', domain: 'use.nodes.example.com' },
+  { prefix: 'eu', name: '欧洲', domain: 'eu.nodes.example.com' },
+  { prefix: 'cn-bj', name: '北京', domain: 'bj.nodes.example.com' },
+  { prefix: 'cn-sh', name: '上海', domain: 'sh.nodes.example.com' },
+  { prefix: 'au', name: '澳大利亚', domain: 'au.nodes.example.com' },
+  { prefix: 'in', name: '印度', domain: 'in.nodes.example.com' },
+]
+
 const mockAgents = [
   {
     id: 'local',
@@ -70,7 +83,23 @@ const mockAgents = [
     status: 'online',
     is_local: false,
     last_seen_at: new Date().toISOString()
-  }
+  },
+  ...Array.from({ length: 30 }, (_, i) => {
+    const region = mockAgentRegions[i % mockAgentRegions.length]
+    const n = Math.floor(i / mockAgentRegions.length) + 1
+    const id = `${region.prefix}-${String(n).padStart(2, '0')}`
+    return {
+      id,
+      name: `${region.name}-${String(n).padStart(2, '0')}`,
+      agent_url: `http://${id}.${region.domain}:8080`,
+      version: '1.0.0',
+      tags: [region.prefix],
+      mode: 'pull',
+      status: i % 6 === 5 ? 'offline' : 'online',
+      is_local: false,
+      last_seen_at: new Date().toISOString()
+    }
+  })
 ]
 
 const serviceTypes = [
@@ -302,6 +331,38 @@ export async function deleteAgent(agentId) {
   }
   const { data } = await api.delete(`/agents/${encodeURIComponent(agentId)}`)
   return data.agent
+}
+
+export async function renameAgent(agentId, newName) {
+  if (isDev) {
+    await sleep()
+    const agent = mockAgents.find((a) => a.id === agentId)
+    if (agent) agent.name = newName
+    return agent
+  }
+  const { data } = await api.patch(`/agents/${encodeURIComponent(agentId)}`, { name: newName })
+  return data.agent
+}
+
+export async function fetchAllAgentsRules(agentIds) {
+  if (isDev) {
+    await sleep()
+    return agentIds.map((agentId) => ({
+      agentId,
+      rules: [...(mockRulesByAgent[agentId] || [])]
+    }))
+  }
+  const results = await Promise.allSettled(
+    agentIds.map((agentId) =>
+      api.get(`/agents/${encodeURIComponent(agentId)}/rules`).then(({ data }) => ({
+        agentId,
+        rules: data.rules || []
+      }))
+    )
+  )
+  return results
+    .filter((r) => r.status === 'fulfilled')
+    .map((r) => r.value)
 }
 
 export async function checkHealth() {

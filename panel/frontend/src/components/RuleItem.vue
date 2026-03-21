@@ -10,6 +10,7 @@
       <!-- Header: Status & Actions -->
       <div class="rule-card__header">
         <div class="rule-card__status">
+          <span class="rule-card__id">#{{ rule.id }}</span>
           <span class="rule-card__status-dot" :class="rule.enabled ? 'rule-card__status-dot--on' : 'rule-card__status-dot--off'"></span>
           <span class="rule-card__status-text">{{ rule.enabled ? '启用中' : '已停用' }}</span>
         </div>
@@ -120,7 +121,8 @@ const toggleStatus = async () => {
   border: 1.5px solid var(--color-border-default);
   border-radius: var(--radius-2xl);
   overflow: hidden;
-  transition: all var(--duration-normal) var(--ease-bounce);
+  transition: border-color var(--duration-normal) var(--ease-default),
+              box-shadow var(--duration-normal) var(--ease-default);
   backdrop-filter: blur(12px);
   position: relative;
 }
@@ -128,7 +130,6 @@ const toggleStatus = async () => {
 .rule-card:hover {
   border-color: var(--color-border-strong);
   box-shadow: var(--shadow-md);
-  transform: translateY(-3px);
 }
 
 .rule-card--disabled {
@@ -173,6 +174,19 @@ const toggleStatus = async () => {
   gap: var(--space-2);
 }
 
+.rule-card__id {
+  font-size: 10px;
+  font-weight: var(--font-semibold);
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  background: var(--color-bg-subtle);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 1px 5px;
+  letter-spacing: 0.02em;
+  flex-shrink: 0;
+}
+
 .rule-card__status-dot {
   width: 8px;
   height: 8px;
@@ -211,7 +225,7 @@ const toggleStatus = async () => {
   height: 28px;
   border-radius: var(--radius-md);
   cursor: pointer;
-  transition: all var(--duration-normal) var(--ease-bounce);
+  transition: all var(--duration-normal) var(--ease-default);
   border: none;
   background: transparent;
   color: var(--color-text-muted);

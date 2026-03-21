@@ -14,7 +14,12 @@
   font-weight: var(--font-medium);
   line-height: var(--leading-none);
   border-radius: var(--radius-full);
-  transition: all var(--duration-normal) var(--ease-bounce);
+  transition: background var(--duration-normal) var(--ease-bounce),
+              box-shadow var(--duration-normal) var(--ease-default),
+              border-color var(--duration-normal) var(--ease-default),
+              color var(--duration-normal) var(--ease-default),
+              filter var(--duration-normal) var(--ease-default),
+              transform var(--duration-normal) var(--ease-default);
   white-space: nowrap;
   position: relative;
   overflow: hidden;
@@ -136,13 +141,13 @@
   border-radius: var(--radius-2xl);
   box-shadow: var(--shadow-sm);
   backdrop-filter: blur(12px);
-  transition: all var(--duration-normal) var(--ease-default);
+  transition: border-color var(--duration-normal) var(--ease-default),
+              box-shadow var(--duration-normal) var(--ease-default);
 }
 
 .card:hover {
   box-shadow: var(--shadow-md);
   border-color: rgba(244, 114, 182, 0.3);
-  transform: translateY(-2px);
 }
 
 .card--no-hover:hover {
@@ -283,6 +288,9 @@
   color: var(--color-text-muted);
   pointer-events: none;
   transition: color var(--duration-fast) var(--ease-default);
+  z-index: 1;
+  display: flex;
+  align-items: center;
 }
 
 .input-wrapper .input {

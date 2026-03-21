@@ -62,10 +62,30 @@
                 </svg>
                 <span>加入节点</span>
               </button>
+              <button class="topbar__nav-item" @click="openGlobalSearch">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="11" cy="11" r="8"/>
+                  <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                </svg>
+                <span>全局搜索</span>
+              </button>
             </div>
           </div>
 
           <div class="topbar__actions">
+            <!-- Mobile quick actions (shown when topbar nav is hidden) -->
+            <button class="topbar__action topbar__nav-mobile" @click="openGlobalSearch" title="全局搜索">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+              </svg>
+            </button>
+            <button class="topbar__action topbar__nav-mobile" @click="showJoinModal = true" title="加入节点">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+                <circle cx="8.5" cy="7" r="4"/>
+                <line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/>
+              </svg>
+            </button>
             <ThemeSelector />
             <div class="topbar__divider"></div>
             <button @click="ruleStore.logout" class="topbar__action" title="退出登录">
@@ -108,8 +128,16 @@
                   v-model="agentSearchQuery"
                   type="text"
                   class="sidebar__search-input"
-                  placeholder="搜索节点..."
+                  placeholder="搜索节点名称、地址..."
                 >
+                <button v-if="agentSearchQuery" class="sidebar__search-clear" @click="agentSearchQuery = ''" title="清除">
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                    <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                  </svg>
+                </button>
+              </div>
+              <div v-if="!sidebarCollapsed && agentSearchQuery" class="sidebar__search-meta">
+                找到 <strong>{{ filteredAgents.length }}</strong> / {{ ruleStore.agents.length }} 个节点
               </div>
 
               <div class="sidebar__agents">
@@ -124,10 +152,32 @@
                   <div class="sidebar__agent-indicator" :class="agent.status === 'online' ? 'sidebar__agent-indicator--online' : 'sidebar__agent-indicator--offline'"></div>
                   <div class="sidebar__agent-info" v-show="!sidebarCollapsed">
                     <div class="sidebar__agent-name">{{ agent.name }}</div>
-                    <div class="sidebar__agent-meta">{{ agent.agent_url || '本机' }}</div>
+                    <div class="sidebar__agent-meta" :title="agent.agent_url">{{ formatAgentUrl(agent.agent_url) }}</div>
                   </div>
-                  <div class="sidebar__agent-count" v-if="agent.id === ruleStore.selectedAgentId && !sidebarCollapsed">
-                    {{ ruleStore.rules.length }}
+                  <div class="sidebar__agent-actions" v-show="!sidebarCollapsed" @click.stop>
+                    <button
+                      class="sidebar__agent-action"
+                      title="重命名"
+                      @click.stop="handleRenameAgent(agent)"
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                      </svg>
+                    </button>
+                    <button
+                      v-if="!agent.is_local"
+                      class="sidebar__agent-action sidebar__agent-action--danger"
+                      title="删除节点"
+                      @click.stop="handleDeleteAgent(agent)"
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="3 6 5 6 21 6"/>
+                        <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+                        <path d="M10 11v6M14 11v6"/>
+                        <path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/>
+                      </svg>
+                    </button>
                   </div>
                 </div>
 
@@ -149,13 +199,13 @@
               </div>
             </div>
 
-            <div class="sidebar__footer" v-show="!sidebarCollapsed">
-              <div class="sidebar__status">
-                <div class="sidebar__status-dot" :class="ruleStore.selectedAgent?.status === 'online' ? 'sidebar__status-dot--online' : 'sidebar__status-dot--offline'"></div>
-                <span class="sidebar__status-text">
-                  {{ ruleStore.selectedAgent ? (ruleStore.selectedAgent.status === 'online' ? '服务正常运行' : '节点离线') : '未选择节点' }}
-                </span>
-              </div>
+            <div class="sidebar__status-bar" v-show="!sidebarCollapsed">
+              <div class="sidebar__status-dot" :class="ruleStore.selectedAgent?.status === 'online' ? 'sidebar__status-dot--online' : 'sidebar__status-dot--offline'"></div>
+              <span class="sidebar__status-text">
+                {{ ruleStore.selectedAgent ? (ruleStore.selectedAgent.status === 'online' ? '正常' : '离线') : '未选择' }}
+              </span>
+              <span class="sidebar__status-sep">·</span>
+              <span class="sidebar__status-counts">{{ ruleStore.agents.length }} 节点 · {{ ruleStore.onlineAgentsCount }} 在线</span>
             </div>
           </aside>
 
@@ -190,7 +240,7 @@
                     v-model="ruleStore.searchQuery"
                     type="text"
                     class="content__search-input"
-                    placeholder="搜索规则..."
+                    placeholder="搜索 URL / 标签 / ID..."
                   >
                 </div>
                 <button
@@ -261,60 +311,262 @@
           large
         >
           <div class="join-modal">
-            <div class="join-modal__intro">
-              <p class="text-sm text-secondary">
-                命令直接从当前面板下载脚本，不依赖外部托管，并自动携带当前登录令牌。
-              </p>
-              <div class="join-modal__origin">
-                <span class="join-modal__origin-label">脚本地址</span>
-                <code class="text-xs text-tertiary break-all">{{ joinScriptUrl }}</code>
-              </div>
-            </div>
-
-            <div class="join-platforms">
+            <!-- Platform Tabs -->
+            <div class="join-tabs">
               <button
                 v-for="platform in joinPlatformCards"
                 :key="platform.id"
-                type="button"
-                class="join-platform"
-                @click="copyJoinCommand(platform)"
+                class="join-tab"
+                :class="{ 'join-tab--active': selectedJoinPlatform === platform.id }"
+                @click="selectedJoinPlatform = platform.id"
               >
-                <div class="join-platform__header">
-                  <div>
-                    <div class="join-platform__name">{{ platform.label }}</div>
-                    <div class="join-platform__hint">{{ platform.hint }}</div>
-                  </div>
-                  <span class="join-platform__copy">{{ copiedPlatform === platform.id ? '已复制' : '复制命令' }}</span>
-                </div>
-                <code class="join-platform__command">{{ platform.command }}</code>
+                <span class="join-tab__icon" v-html="platform.icon"></span>
+                <span>{{ platform.label }}</span>
               </button>
             </div>
 
-            <div class="join-modal__tips bg-subtle p-4 rounded-lg text-sm text-secondary">
-              <p>脚本会优先复用面板内置资源，并在支持的平台自动补齐 node / curl / nginx。</p>
-              <ul class="join-script-tips">
-                <li>Linux：自动注册 systemd 开机自启。</li>
-                <li>macOS：使用 <code>--install-launchd</code> 注册 launchd 自启；缺失依赖时会尝试使用 Homebrew。</li>
-                <li>Windows：复制 PowerShell 命令后可直接在已安装 WSL 的机器上执行。</li>
-              </ul>
+            <!-- Selected Platform Command -->
+            <div v-for="platform in joinPlatformCards" :key="platform.id">
+              <div v-if="selectedJoinPlatform === platform.id" class="join-command-block">
+                <div class="join-command-meta">
+                  <span class="join-command-hint">{{ platform.hint }}</span>
+                </div>
+                <div class="join-command-wrap">
+                  <div class="join-command-scroll">
+                    <code class="join-command-code">{{ platform.command }}</code>
+                  </div>
+                  <button class="join-command-copy" @click="copyJoinCommand(platform)">
+                    <svg v-if="copiedPlatform !== platform.id" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+                      <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+                    </svg>
+                    <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <polyline points="20 6 9 17 4 12"/>
+                    </svg>
+                    <span>{{ copiedPlatform === platform.id ? '已复制' : '复制' }}</span>
+                  </button>
+                </div>
+                <ol class="join-steps">
+                  <li v-for="step in platform.steps" :key="step" class="join-steps__item">{{ step }}</li>
+                </ol>
+              </div>
             </div>
 
             <div class="join-modal__actions">
-              <button class="btn btn--secondary" @click="copyText(joinScriptUrl, '脚本地址已复制')">复制脚本地址</button>
               <button class="btn btn--secondary" @click="showJoinModal = false">关闭</button>
             </div>
           </div>
         </BaseModal>
       </Teleport>
 
+      <!-- Rename Agent Modal -->
+      <Teleport to="body">
+        <BaseModal
+          v-if="renamingAgent"
+          v-model="showRenameModal"
+          title="重命名节点"
+        >
+          <div class="agent-modal">
+            <p class="agent-modal__desc">为节点 <strong>{{ renamingAgent.name }}</strong> 输入新名称：</p>
+            <div class="input-wrapper">
+              <span class="input-wrapper__icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                  <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                </svg>
+              </span>
+              <input
+                v-model="newAgentName"
+                type="text"
+                class="input"
+                placeholder="新节点名称"
+                @keydown.enter="confirmRename"
+              >
+            </div>
+            <div class="agent-modal__actions">
+              <button class="btn btn--secondary" @click="showRenameModal = false">取消</button>
+              <button class="btn btn--primary" :disabled="!newAgentName.trim() || ruleStore.loading" @click="confirmRename">
+                <span v-if="ruleStore.loading" class="spinner spinner--sm"></span>
+                <span v-else>确认重命名</span>
+              </button>
+            </div>
+          </div>
+        </BaseModal>
+      </Teleport>
+
+      <!-- Delete Agent Modal -->
+      <Teleport to="body">
+        <BaseModal
+          v-if="deletingAgent"
+          v-model="showDeleteAgentModal"
+          title="确认删除节点"
+        >
+          <div class="agent-modal">
+            <p class="agent-modal__desc">确定要删除节点 <strong>{{ deletingAgent.name }}</strong> 吗？</p>
+            <div class="agent-modal__warn">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                <line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/>
+              </svg>
+              <span>此操作将移除该节点及其所有规则，无法撤销。</span>
+            </div>
+            <div class="agent-modal__actions">
+              <button class="btn btn--secondary" @click="showDeleteAgentModal = false">取消</button>
+              <button class="btn btn--danger" :disabled="ruleStore.loading" @click="confirmDeleteAgent">
+                <span v-if="ruleStore.loading" class="spinner spinner--sm"></span>
+                <span v-else>确认删除</span>
+              </button>
+            </div>
+          </div>
+        </BaseModal>
+      </Teleport>
+
+      <!-- Global Search Overlay -->
+      <Teleport to="body">
+        <div v-if="showGlobalSearch" class="global-search-overlay" @click.self="showGlobalSearch = false">
+          <div class="global-search-panel">
+            <div class="global-search-header">
+              <div class="global-search-input-wrap">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                </svg>
+                <input
+                  ref="globalSearchInput"
+                  v-model="ruleStore.globalSearchQuery"
+                  type="text"
+                  class="global-search-input"
+                  placeholder="跨节点搜索规则（URL、标签）..."
+                  @input="debouncedGlobalSearch"
+                >
+                <button v-if="ruleStore.globalSearchQuery" class="global-search-clear" @click="ruleStore.globalSearchQuery = ''; ruleStore.globalSearchResults = []">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                  </svg>
+                </button>
+              </div>
+              <button class="global-search-close" @click="showGlobalSearch = false">关闭</button>
+            </div>
+
+            <!-- Global stats bar -->
+            <div class="global-search-stats">
+              <span class="global-search-stat">
+                <strong>{{ ruleStore.agents.length }}</strong> 个节点
+              </span>
+              <span class="global-search-stat-sep">·</span>
+              <span class="global-search-stat">
+                <strong>{{ ruleStore.onlineAgentsCount }}</strong> 在线
+              </span>
+              <span v-if="ruleStore.globalSearchQuery" class="global-search-stat-sep">·</span>
+              <span v-if="ruleStore.globalSearchQuery && !ruleStore.globalSearchLoading" class="global-search-stat">
+                找到 <strong>{{ ruleStore.globalSearchResults.reduce((s, g) => s + g.rules.length, 0) }}</strong> 条规则
+              </span>
+            </div>
+
+            <div class="global-search-body">
+              <!-- Loading -->
+              <div v-if="ruleStore.globalSearchLoading" class="global-search-loading">
+                <div class="spinner"></div>
+                <span>搜索中...</span>
+              </div>
+
+              <!-- No query -->
+              <div v-else-if="!ruleStore.globalSearchQuery" class="global-search-hint">
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                  <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                </svg>
+                <p>输入关键字搜索所有节点的代理规则</p>
+              </div>
+
+              <!-- No results -->
+              <div v-else-if="ruleStore.globalSearchResults.length === 0" class="global-search-hint">
+                <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                  <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                </svg>
+                <p>未找到匹配 "{{ ruleStore.globalSearchQuery }}" 的规则</p>
+              </div>
+
+              <!-- Results -->
+              <div v-else class="global-search-results">
+                <div
+                  v-for="group in ruleStore.globalSearchResults"
+                  :key="group.agentId"
+                  class="global-search-group"
+                >
+                  <div class="global-search-group-header">
+                    <div class="global-search-group-dot" :class="ruleStore.agents.find(a=>a.id===group.agentId)?.status === 'online' ? 'global-search-group-dot--online' : 'global-search-group-dot--offline'"></div>
+                    <span class="global-search-group-name">{{ group.agentName }}</span>
+                    <span class="global-search-group-count">{{ group.rules.length }} 条</span>
+                  </div>
+                  <div
+                    v-for="rule in group.rules"
+                    :key="rule.id"
+                    class="global-search-rule"
+                    @click="jumpToAgentRule(group.agentId, rule.id)"
+                  >
+                    <div class="global-search-rule-status" :class="rule.enabled ? 'global-search-rule-status--on' : 'global-search-rule-status--off'"></div>
+                    <div class="global-search-rule-info">
+                      <div class="global-search-rule-front">{{ rule.frontend_url }}</div>
+                      <div class="global-search-rule-back">→ {{ rule.backend_url }}</div>
+                    </div>
+                    <div class="global-search-rule-tags">
+                      <span v-for="tag in (rule.tags || []).slice(0,3)" :key="tag" class="tag tag--sm">{{ tag }}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </Teleport>
+
       <!-- Status Messages -->
       <StatusMessage />
+
+      <!-- Mobile Bottom Navigation -->
+      <nav class="mobile-bottom-nav">
+        <button class="mobile-bottom-nav__item mobile-bottom-nav__item--active">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/>
+            <rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>
+          </svg>
+          <span>仪表盘</span>
+        </button>
+        <button class="mobile-bottom-nav__item" @click="sidebarOpen = !sidebarOpen">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <ellipse cx="12" cy="5" rx="9" ry="3"/>
+            <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>
+            <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
+          </svg>
+          <span>节点</span>
+        </button>
+        <button class="mobile-bottom-nav__item" @click="openGlobalSearch">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          </svg>
+          <span>搜索</span>
+        </button>
+        <button class="mobile-bottom-nav__item" @click="showJoinModal = true">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/>
+            <circle cx="8.5" cy="7" r="4"/>
+            <line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/>
+          </svg>
+          <span>加入</span>
+        </button>
+        <button class="mobile-bottom-nav__item" @click="ruleStore.logout">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+            <polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>
+          </svg>
+          <span>退出</span>
+        </button>
+      </nav>
     </template>
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRuleStore } from './stores/rules'
 import RuleForm from './components/RuleForm.vue'
 import RuleList from './components/RuleList.vue'
@@ -330,12 +582,37 @@ const sidebarOpen = ref(false)
 const sidebarCollapsed = ref(localStorage.getItem('sidebar_collapsed') === 'true')
 const agentSearchQuery = ref('')
 const copiedPlatform = ref('')
+const selectedJoinPlatform = ref('linux')
 let refreshTimer = null
 let copyStateTimer = null
+
+// Agent rename/delete state
+const showRenameModal = ref(false)
+const renamingAgent = ref(null)
+const newAgentName = ref('')
+const showDeleteAgentModal = ref(false)
+const deletingAgent = ref(null)
+
+// Global search state
+const showGlobalSearch = ref(false)
+const globalSearchInput = ref(null)
+let globalSearchTimer = null
 
 function toggleSidebarCollapse() {
   sidebarCollapsed.value = !sidebarCollapsed.value
   localStorage.setItem('sidebar_collapsed', sidebarCollapsed.value)
+}
+
+function formatAgentUrl(url) {
+  if (!url) return '本机'
+  try {
+    const u = new URL(url)
+    const host = u.hostname
+    const port = u.port && u.port !== '80' && u.port !== '443' ? `:${u.port}` : ''
+    return `${host}${port}`
+  } catch {
+    return url.replace(/^https?:\/\//, '')
+  }
 }
 
 function shellQuote(value) {
@@ -398,22 +675,43 @@ const windowsJoinCommand = computed(() => {
 const joinPlatformCards = computed(() => {
   return [
     {
-      id: 'windows',
-      label: 'Windows',
-      hint: 'PowerShell + WSL，一键执行并注册 systemd',
-      command: windowsJoinCommand.value
+      id: 'linux',
+      label: 'Linux',
+      icon: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>',
+      hint: '自动安装依赖并注册 systemd 开机自启',
+      command: linuxJoinCommand.value,
+      steps: [
+        '确保目标主机已联网，具备 curl 与 bash',
+        '以 root 或 sudo 权限在目标主机上执行上方命令',
+        '脚本自动安装 Node.js、Nginx，并注册 systemd 服务开机自启',
+        '安装完成后节点将在数秒内自动出现在节点列表'
+      ]
     },
     {
       id: 'macos',
       label: 'macOS',
-      hint: '自动安装依赖（Homebrew）并注册 launchd',
-      command: macJoinCommand.value
+      icon: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20.94c1.5 0 2.75-.08 3.5-.2 1-.16 1.5-.5 1.5-1.24V9a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v10.5c0 .74.5 1.08 1.5 1.24.75.12 2 .2 3.5.2z"/><path d="M12 5V3"/></svg>',
+      hint: '自动安装依赖（Homebrew）并注册 launchd 自启',
+      command: macJoinCommand.value,
+      steps: [
+        '建议以当前用户（非 root）执行，避免 Homebrew 权限问题',
+        '若未安装 Homebrew，脚本将尝试自动安装',
+        '脚本安装 Node.js、Nginx，注册 launchd 开机自启项',
+        '安装完成后节点将在数秒内自动出现在节点列表'
+      ]
     },
     {
-      id: 'linux',
-      label: 'Linux',
-      hint: '自动安装依赖并注册 systemd 开机自启',
-      command: linuxJoinCommand.value
+      id: 'windows',
+      label: 'Windows',
+      icon: '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="8" height="8"/><rect x="13" y="3" width="8" height="8"/><rect x="3" y="13" width="8" height="8"/><rect x="13" y="13" width="8" height="8"/></svg>',
+      hint: 'PowerShell + WSL，需预先安装 WSL',
+      command: windowsJoinCommand.value,
+      steps: [
+        '需预先安装 WSL2（Win 10 2004+ / Win 11 原生支持）',
+        '以管理员权限打开 PowerShell，执行上方命令',
+        '命令将在 WSL2 环境内运行 Linux 安装流程',
+        '安装完成后节点将在数秒内自动出现在节点列表'
+      ]
     }
   ]
 })
@@ -427,6 +725,52 @@ function ensureRefreshTimer() {
 
 async function handleSelectAgent(agentId) {
   await ruleStore.selectAgent(agentId)
+}
+
+function handleRenameAgent(agent) {
+  renamingAgent.value = agent
+  newAgentName.value = agent.name
+  showRenameModal.value = true
+}
+
+async function confirmRename() {
+  if (!newAgentName.value.trim() || !renamingAgent.value) return
+  try {
+    await ruleStore.renameAgent(renamingAgent.value.id, newAgentName.value.trim())
+    showRenameModal.value = false
+  } catch {}
+}
+
+function handleDeleteAgent(agent) {
+  deletingAgent.value = agent
+  showDeleteAgentModal.value = true
+}
+
+async function confirmDeleteAgent() {
+  if (!deletingAgent.value) return
+  try {
+    await ruleStore.removeAgent(deletingAgent.value.id)
+    showDeleteAgentModal.value = false
+  } catch {}
+}
+
+async function openGlobalSearch() {
+  showGlobalSearch.value = true
+  await nextTick()
+  globalSearchInput.value?.focus()
+}
+
+function debouncedGlobalSearch() {
+  if (globalSearchTimer) clearTimeout(globalSearchTimer)
+  globalSearchTimer = setTimeout(() => {
+    ruleStore.performGlobalSearch(ruleStore.globalSearchQuery)
+  }, 400)
+}
+
+async function jumpToAgentRule(agentId, ruleId) {
+  showGlobalSearch.value = false
+  await ruleStore.selectAgent(agentId)
+  ruleStore.searchQuery = String(ruleId)
 }
 
 async function copyText(text, successMessage = '已复制') {
@@ -530,118 +874,169 @@ onUnmounted(() => {
   letter-spacing: 0.05em;
 }
 
-.join-script-tips {
-  margin: 0;
-  padding-left: 1.25rem;
-}
-
-.join-script-tips li + li {
-  margin-top: var(--space-1);
-}
-
 .join-modal {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
 }
 
-.join-modal__intro {
+/* Platform Tabs */
+.join-tabs {
   display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
+  gap: var(--space-2);
+  background: var(--color-bg-subtle);
+  padding: var(--space-1);
+  border-radius: var(--radius-xl);
 }
 
-.join-modal__origin {
+.join-tab {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: none;
+  border-radius: var(--radius-lg);
+  background: transparent;
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: background var(--duration-normal) var(--ease-default),
+              color var(--duration-normal) var(--ease-default);
+  font-family: inherit;
+}
+
+.join-tab:hover {
+  color: var(--color-text-primary);
+  background: var(--color-bg-hover);
+}
+
+.join-tab--active {
+  background: var(--color-bg-surface);
+  color: var(--color-primary);
+  box-shadow: var(--shadow-sm);
+}
+
+.join-tab__icon {
+  display: flex;
+  align-items: center;
+  color: inherit;
+}
+
+/* Command Block */
+.join-command-block {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-  padding: var(--space-3);
-  border-radius: var(--radius-xl);
+}
+
+.join-command-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.join-command-hint {
+  font-size: var(--text-xs);
+  color: var(--color-text-tertiary);
+}
+
+.join-command-wrap {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
   background: var(--color-bg-subtle);
-  border: 1px solid var(--color-border-default);
-}
-
-.join-modal__origin-label {
-  font-size: var(--text-xs);
-  font-weight: var(--font-semibold);
-  color: var(--color-text-tertiary);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-}
-
-.join-platforms {
-  display: grid;
-  gap: var(--space-3);
-}
-
-.join-platform {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-  width: 100%;
-  padding: var(--space-4);
   border: 1.5px solid var(--color-border-default);
-  border-radius: var(--radius-2xl);
-  background: var(--color-bg-surface);
-  text-align: left;
-  font-family: inherit;
+  border-radius: var(--radius-xl);
+  padding: var(--space-3) var(--space-4);
+}
+
+.join-command-scroll {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.join-command-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+.join-command-code {
+  display: block;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
   color: var(--color-text-primary);
-  cursor: pointer;
-  transition: all var(--duration-normal) var(--ease-bounce);
+  line-height: 1.7;
+  white-space: pre;
 }
 
-.join-platform:hover {
-  border-color: var(--color-primary);
-  box-shadow: var(--shadow-md);
-  transform: translateY(-2px);
-}
-
-.join-platform__header {
+.join-command-copy {
+  flex-shrink: 0;
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--space-3);
-}
-
-.join-platform__name {
-  font-size: var(--text-base);
-  font-weight: var(--font-semibold);
-}
-
-.join-platform__hint {
-  margin-top: var(--space-1);
-  font-size: var(--text-xs);
-  color: var(--color-text-tertiary);
-  line-height: 1.5;
-}
-
-.join-platform__copy {
-  padding: var(--space-1) var(--space-3);
-  border-radius: var(--radius-full);
-  background: var(--color-primary-subtle);
-  color: var(--color-primary);
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1-5) var(--space-3);
+  background: var(--gradient-primary);
+  color: white;
+  border: none;
+  border-radius: var(--radius-lg);
   font-size: var(--text-xs);
   font-weight: var(--font-semibold);
+  cursor: pointer;
+  transition: box-shadow var(--duration-normal) var(--ease-default),
+              filter var(--duration-normal) var(--ease-default);
+  font-family: inherit;
   white-space: nowrap;
 }
 
-.join-platform__command {
-  display: block;
-  padding: var(--space-3);
-  border-radius: var(--radius-xl);
-  background: var(--color-bg-subtle);
-  border: 1px solid var(--color-border-subtle);
-  color: var(--color-text-secondary);
-  font-size: var(--text-xs);
-  line-height: 1.7;
-  white-space: pre-wrap;
-  word-break: break-all;
+.join-command-copy:hover {
+  box-shadow: var(--shadow-glow);
+  filter: brightness(1.1);
 }
 
-.join-modal__tips {
+/* Install Steps */
+.join-steps {
+  list-style: none;
+  padding: var(--space-3) var(--space-4);
+  margin: 0;
+  background: var(--color-bg-subtle);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-lg);
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+  counter-reset: step-counter;
+}
+
+.join-steps__item {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2-5);
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+  counter-increment: step-counter;
+}
+
+.join-steps__item::before {
+  content: counter(step-counter);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  min-width: 16px;
+  font-size: 10px;
+  font-weight: var(--font-semibold);
+  font-family: var(--font-mono);
+  background: var(--gradient-primary);
+  color: white;
+  border-radius: 50%;
+  flex-shrink: 0;
+  margin-top: 1px;
 }
 
 .join-modal__actions {
@@ -656,9 +1051,10 @@ onUnmounted(() => {
    App Shell
    ========================================== */
 .app-shell {
-  min-height: 100vh;
+  height: 100dvh;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 
 /* ==========================================
@@ -770,7 +1166,8 @@ onUnmounted(() => {
   color: var(--color-text-secondary);
   border-radius: var(--radius-lg);
   cursor: pointer;
-  transition: all var(--duration-normal) var(--ease-bounce);
+  transition: background var(--duration-normal) var(--ease-default),
+              color var(--duration-normal) var(--ease-default);
   border: none;
   background: transparent;
   font-family: inherit;
@@ -809,7 +1206,8 @@ onUnmounted(() => {
   border-radius: var(--radius-lg);
   color: var(--color-text-secondary);
   cursor: pointer;
-  transition: all var(--duration-normal) var(--ease-bounce);
+  transition: background var(--duration-normal) var(--ease-default),
+              color var(--duration-normal) var(--ease-default);
   border: none;
   background: transparent;
 }
@@ -996,10 +1394,12 @@ onUnmounted(() => {
 .sidebar__agent-meta {
   font-size: var(--text-xs);
   color: var(--color-text-tertiary);
+  font-family: var(--font-mono);
   margin-top: 2px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  cursor: default;
 }
 
 .sidebar__agent-count {
@@ -1022,31 +1422,27 @@ onUnmounted(() => {
   font-size: var(--text-sm);
 }
 
-.sidebar__footer {
-  padding: var(--space-4);
+.sidebar__status-bar {
+  padding: var(--space-2-5) var(--space-4);
   border-top: 1px solid var(--color-border-subtle);
   flex-shrink: 0;
-}
-
-.sidebar__status {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: var(--space-2-5) var(--space-3);
   background: var(--color-bg-subtle);
-  border-radius: var(--radius-lg);
 }
 
 .sidebar__status-dot {
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   flex-shrink: 0;
 }
 
 .sidebar__status-dot--online {
   background: var(--color-success);
-  box-shadow: 0 0 0 3px var(--color-success-50);
+  box-shadow: 0 0 0 2px var(--color-success-50);
+  animation: pulse 2s ease-in-out infinite;
 }
 
 .sidebar__status-dot--offline {
@@ -1055,7 +1451,333 @@ onUnmounted(() => {
 
 .sidebar__status-text {
   font-size: var(--text-xs);
+  font-weight: var(--font-medium);
   color: var(--color-text-secondary);
+}
+
+.sidebar__status-sep {
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+}
+
+.sidebar__status-counts {
+  font-size: var(--text-xs);
+  color: var(--color-text-tertiary);
+  margin-left: auto;
+}
+
+/* Agent action buttons */
+.sidebar__agent-actions {
+  display: flex;
+  gap: var(--space-1);
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease-default);
+  flex-shrink: 0;
+}
+
+.sidebar__agent:hover .sidebar__agent-actions {
+  opacity: 1;
+}
+
+.sidebar__agent-action {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: var(--radius-sm);
+  border: none;
+  background: transparent;
+  color: var(--color-text-tertiary);
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-default);
+}
+
+.sidebar__agent-action:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-primary);
+}
+
+.sidebar__agent-action--danger:hover {
+  background: var(--color-danger-50);
+  color: var(--color-danger);
+}
+
+/* Agent modal */
+.agent-modal {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.agent-modal__desc {
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+}
+
+.agent-modal__warn {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-danger-50);
+  border: 1px solid var(--color-danger-100);
+  border-radius: var(--radius-lg);
+  font-size: var(--text-sm);
+  color: var(--color-danger);
+}
+
+.agent-modal__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-3);
+}
+
+/* Global Search Overlay */
+.global-search-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(4px);
+  z-index: var(--z-modal);
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 8vh;
+}
+
+.global-search-panel {
+  width: min(760px, 92vw);
+  max-height: 80vh;
+  background: var(--color-bg-surface-raised, var(--color-bg-surface));
+  border-radius: var(--radius-2xl);
+  border: 1.5px solid var(--color-border-default);
+  box-shadow: var(--shadow-2xl);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.global-search-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-5);
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.global-search-input-wrap {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  background: var(--color-bg-subtle);
+  border: 1.5px solid var(--color-border-default);
+  border-radius: var(--radius-xl);
+  padding: 0 var(--space-4);
+  height: 44px;
+  transition: border-color var(--duration-fast) var(--ease-default);
+}
+
+.global-search-input-wrap:focus-within {
+  border-color: var(--color-primary);
+  box-shadow: var(--shadow-focus);
+}
+
+.global-search-input-wrap svg {
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+}
+
+.global-search-input {
+  flex: 1;
+  border: none;
+  background: transparent;
+  font-size: var(--text-base);
+  color: var(--color-text-primary);
+  outline: none;
+}
+
+.global-search-input::placeholder {
+  color: var(--color-text-muted);
+}
+
+.global-search-clear {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: var(--color-bg-hover);
+  border-radius: var(--radius-full);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.global-search-close {
+  padding: var(--space-2) var(--space-4);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-lg);
+  background: transparent;
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-default);
+  flex-shrink: 0;
+}
+
+.global-search-close:hover {
+  background: var(--color-bg-hover);
+}
+
+.global-search-stats {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-5);
+  border-bottom: 1px solid var(--color-border-subtle);
+  background: var(--color-bg-subtle);
+}
+
+.global-search-stat {
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+}
+
+.global-search-stat strong {
+  color: var(--color-text-primary);
+  font-weight: var(--font-semibold);
+}
+
+.global-search-stat-sep {
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+}
+
+.global-search-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: var(--space-4);
+}
+
+.global-search-loading,
+.global-search-hint {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-4);
+  padding: var(--space-12) var(--space-6);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
+
+.global-search-results {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);
+}
+
+.global-search-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.global-search-group-header {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) 0;
+  margin-bottom: var(--space-1);
+}
+
+.global-search-group-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.global-search-group-dot--online { background: var(--color-success); }
+.global-search-group-dot--offline { background: var(--color-text-muted); }
+
+.global-search-group-name {
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  color: var(--color-text-primary);
+  flex: 1;
+}
+
+.global-search-group-count {
+  font-size: var(--text-xs);
+  color: var(--color-text-tertiary);
+  background: var(--color-bg-subtle);
+  padding: 2px 8px;
+  border-radius: var(--radius-full);
+}
+
+.global-search-rule {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-bg-subtle);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-default);
+}
+
+.global-search-rule:hover {
+  border-color: var(--color-primary);
+  background: var(--color-primary-subtle);
+  transform: translateX(2px);
+}
+
+.global-search-rule-status {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.global-search-rule-status--on { background: var(--color-success); }
+.global-search-rule-status--off { background: var(--color-text-muted); }
+
+.global-search-rule-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.global-search-rule-front {
+  font-size: var(--text-sm);
+  color: var(--color-text-primary);
+  font-weight: var(--font-medium);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.global-search-rule-back {
+  font-size: var(--text-xs);
+  color: var(--color-text-tertiary);
+  margin-top: 2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.global-search-rule-tags {
+  display: flex;
+  gap: var(--space-1);
+  flex-shrink: 0;
+}
+
+.tag--sm {
+  font-size: 10px;
+  padding: 1px 6px;
 }
 
 /* Sidebar Collapsed State (Desktop only) */
@@ -1213,12 +1935,12 @@ onUnmounted(() => {
   border: 1.5px solid var(--color-border-default);
   border-radius: var(--radius-xl);
   backdrop-filter: blur(8px);
-  transition: all var(--duration-normal) var(--ease-bounce);
+  transition: border-color var(--duration-normal) var(--ease-default),
+              box-shadow var(--duration-normal) var(--ease-default);
 }
 
 .stat-pill:hover {
   border-color: var(--color-border-strong);
-  transform: translateY(-2px);
   box-shadow: var(--shadow-sm);
 }
 
@@ -1573,6 +2295,166 @@ onUnmounted(() => {
 
   .stat-pill__label {
     font-size: 10px;
+  }
+}
+
+/* ==========================================
+   Mobile Bottom Navigation
+   ========================================== */
+.mobile-bottom-nav {
+  display: none;
+}
+
+@media (max-width: 768px) {
+  .mobile-bottom-nav {
+    display: flex;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 60px;
+    background: var(--color-bg-surface);
+    border-top: 1px solid var(--color-border-default);
+    backdrop-filter: blur(16px);
+    z-index: var(--z-sticky);
+    padding: 0 var(--space-2);
+    padding-bottom: env(safe-area-inset-bottom, 0);
+  }
+
+  .mobile-bottom-nav__item {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+    border: none;
+    background: transparent;
+    color: var(--color-text-muted);
+    font-size: 10px;
+    font-family: inherit;
+    cursor: pointer;
+    padding: var(--space-1) var(--space-2);
+    border-radius: var(--radius-lg);
+    transition: all var(--duration-fast) var(--ease-default);
+    position: relative;
+  }
+
+  .mobile-bottom-nav__item:active {
+    transform: scale(0.92);
+    background: var(--color-bg-hover);
+  }
+
+  .mobile-bottom-nav__item--active {
+    color: var(--color-primary);
+  }
+
+  .mobile-bottom-nav__item--active svg {
+    stroke: var(--color-primary);
+  }
+
+  .mobile-bottom-nav__badge {
+    position: absolute;
+    top: 4px;
+    right: calc(50% - 14px);
+    min-width: 16px;
+    height: 16px;
+    padding: 0 4px;
+    background: var(--gradient-primary);
+    color: white;
+    border-radius: var(--radius-full);
+    font-size: 10px;
+    font-weight: var(--font-bold);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    line-height: 1;
+  }
+
+  /* Push content up so bottom nav doesn't overlap */
+  .content {
+    padding-bottom: calc(60px + var(--space-4));
+  }
+
+  .app-shell .sidebar {
+    bottom: 60px;
+  }
+
+  .sidebar-overlay {
+    bottom: 60px !important;
+  }
+}
+
+/* ==========================================
+   Topbar mobile quick actions
+   ========================================== */
+.topbar__nav-mobile {
+  display: none;
+}
+
+@media (max-width: 1023px) {
+  .topbar__nav-mobile {
+    display: flex;
+  }
+}
+
+@media (max-width: 768px) {
+  /* Hide topbar mobile nav since bottom nav handles it */
+  .topbar__nav-mobile {
+    display: none;
+  }
+}
+
+/* ==========================================
+   Sidebar search rework
+   ========================================== */
+.sidebar__search-clear {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: var(--color-bg-hover);
+  border-radius: var(--radius-full);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: all var(--duration-fast) var(--ease-default);
+}
+
+.sidebar__search-clear:hover {
+  background: var(--color-danger-50);
+  color: var(--color-danger);
+}
+
+.sidebar__search-meta {
+  font-size: 11px;
+  color: var(--color-text-muted);
+  padding: 0 var(--space-1) var(--space-2);
+}
+
+.sidebar__search-meta strong {
+  color: var(--color-primary);
+  font-weight: var(--font-semibold);
+}
+
+/* ==========================================
+   Global search: full-screen on mobile
+   ========================================== */
+@media (max-width: 768px) {
+  .global-search-overlay {
+    padding-top: 0;
+    align-items: stretch;
+  }
+
+  .global-search-panel {
+    width: 100%;
+    max-height: calc(100vh - 60px);
+    border-radius: 0;
+    border-left: none;
+    border-right: none;
+    border-top: none;
   }
 }
 </style>

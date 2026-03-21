@@ -19,6 +19,11 @@ export const useRuleStore = defineStore('rules', () => {
   const isAuthenticated = ref(false)
   const isAuthReady = ref(false)
 
+  // Global search state
+  const globalSearchQuery = ref('')
+  const globalSearchResults = ref([]) // [{ agentId, agentName, rules: [] }]
+  const globalSearchLoading = ref(false)
+
   const selectedAgent = computed(() =>
     agents.value.find((agent) => agent.id === selectedAgentId.value) || null
   )
@@ -47,7 +52,8 @@ export const useRuleStore = defineStore('rules', () => {
       result = result.filter((rule) =>
         rule.frontend_url.toLowerCase().includes(query) ||
         rule.backend_url.toLowerCase().includes(query) ||
-        String(rule.id).includes(query)
+        String(rule.id).includes(query) ||
+        (rule.tags || []).some((tag) => tag.toLowerCase().includes(query))
       )
     }
 
@@ -374,6 +380,52 @@ export const useRuleStore = defineStore('rules', () => {
     }
   }
 
+  async function renameAgent(agentId, newName) {
+    loading.value = true
+    error.value = null
+    try {
+      const updated = await api.renameAgent(agentId, newName)
+      await loadAgents()
+      showSuccess(`节点已重命名为 ${newName}`)
+      return updated
+    } catch (err) {
+      error.value = err.message
+      showError(err.message)
+      throw err
+    } finally {
+      loading.value = false
+    }
+  }
+
+  async function performGlobalSearch(query) {
+    if (!query.trim()) {
+      globalSearchResults.value = []
+      return
+    }
+    globalSearchLoading.value = true
+    try {
+      const agentIds = agents.value.map((a) => a.id)
+      const allAgentRules = await api.fetchAllAgentsRules(agentIds)
+      const q = query.toLowerCase()
+      globalSearchResults.value = allAgentRules
+        .map(({ agentId, rules: agentRules }) => {
+          const agent = agents.value.find((a) => a.id === agentId)
+          const matched = agentRules.filter(
+            (r) =>
+              r.frontend_url.toLowerCase().includes(q) ||
+              r.backend_url.toLowerCase().includes(q) ||
+              (r.tags || []).some((t) => t.toLowerCase().includes(q))
+          )
+          return { agentId, agentName: agent?.name || agentId, rules: matched }
+        })
+        .filter((g) => g.rules.length > 0)
+    } catch (err) {
+      showError('全局搜索失败: ' + err.message)
+    } finally {
+      globalSearchLoading.value = false
+    }
+  }
+
   function showSuccess(message) {
     statusMessage.value = { type: 'success', text: message }
     setTimeout(() => {
@@ -425,6 +477,9 @@ export const useRuleStore = defineStore('rules', () => {
     isAuthenticated,
     isAuthReady,
     token,
+    globalSearchQuery,
+    globalSearchResults,
+    globalSearchLoading,
     checkAuth,
     login,
     logout,
@@ -441,6 +496,8 @@ export const useRuleStore = defineStore('rules', () => {
     applyNginxConfig,
     toggleRule,
     removeAgent,
+    renameAgent,
+    performGlobalSearch,
     showSuccess,
     showError,
     showInfo,
