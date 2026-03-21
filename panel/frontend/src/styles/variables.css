@@ -1,6 +1,10 @@
 /* Multi-Theme Design System - 5 Distinct Styles */
 /* Base variables (shared) */
 :root {
+  /* Default fonts - system CJK fonts as fallback when Google Fonts unavailable */
+  --font-sans: 'Noto Sans SC', 'Microsoft YaHei', 'PingFang SC', 'Hiragino Sans GB', 'WenQuanYi Micro Hei', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', 'Consolas', 'Courier New', monospace;
+
   /* Spacing */
   --space-0: 0;
   --space-0-5: 0.125rem;
@@ -82,7 +86,7 @@
    THEME 1:  二次元 Sakura (Pink/Purple Dreamy)
    ============================================= */
 [data-theme="sakura"] {
-  --font-sans: 'ZCOOL KuaiLe', 'Noto Sans SC', -apple-system, sans-serif;
+  --font-sans: 'ZCOOL KuaiLe', 'Noto Sans SC', 'Microsoft YaHei', 'PingFang SC', -apple-system, sans-serif;
   --font-mono: 'JetBrains Mono', Consolas, monospace;
 
   --color-primary: #c084fc;
@@ -302,7 +306,7 @@
    THEME 5:  Midnight (Dark Elegant Purple/Blue)
    ============================================= */
 [data-theme="midnight"] {
-  --font-sans: 'ZCOOL KuaiLe', 'Noto Sans SC', -apple-system, sans-serif;
+  --font-sans: 'ZCOOL KuaiLe', 'Noto Sans SC', 'Microsoft YaHei', 'PingFang SC', -apple-system, sans-serif;
   --font-mono: 'JetBrains Mono', Consolas, monospace;
 
   --color-primary: #a78bfa;
