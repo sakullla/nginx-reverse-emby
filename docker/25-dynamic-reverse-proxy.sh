@@ -2,10 +2,10 @@
 set -eu
 
 # --- 配置定义 ---
-TEMPLATE_FILE="/etc/nginx/templates/default.conf"
-DIRECT_NO_TLS_TEMPLATE_FILE="/etc/nginx/templates/default.direct.no_tls.conf"
-DIRECT_TLS_TEMPLATE_FILE="/etc/nginx/templates/default.direct.tls.conf"
-DYNAMIC_DIR="/etc/nginx/conf.d/dynamic"
+TEMPLATE_FILE="${NRE_TEMPLATE_FILE:-/etc/nginx/templates/default.conf}"
+DIRECT_NO_TLS_TEMPLATE_FILE="${NRE_DIRECT_NO_TLS_TEMPLATE_FILE:-/etc/nginx/templates/default.direct.no_tls.conf}"
+DIRECT_TLS_TEMPLATE_FILE="${NRE_DIRECT_TLS_TEMPLATE_FILE:-/etc/nginx/templates/default.direct.tls.conf}"
+DYNAMIC_DIR="${NRE_DYNAMIC_DIR:-/etc/nginx/conf.d/dynamic}"
 
 # Data root
 DATA_ROOT="/opt/nginx-reverse-emby/panel/data"

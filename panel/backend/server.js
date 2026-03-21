@@ -68,6 +68,34 @@ const LOCAL_AGENT_TAGS = normalizeTags(
     .filter(Boolean),
 );
 
+const PROJECT_ROOT = path.resolve(__dirname, "..", "..");
+const PUBLIC_AGENT_ASSETS = {
+  "light-agent.js": {
+    file: path.join(PROJECT_ROOT, "scripts", "light-agent.js"),
+    contentType: "application/javascript; charset=utf-8",
+  },
+  "light-agent-apply.sh": {
+    file: path.join(PROJECT_ROOT, "scripts", "light-agent-apply.sh"),
+    contentType: "application/x-sh; charset=utf-8",
+  },
+  "25-dynamic-reverse-proxy.sh": {
+    file: path.join(PROJECT_ROOT, "docker", "25-dynamic-reverse-proxy.sh"),
+    contentType: "application/x-sh; charset=utf-8",
+  },
+  "default.conf.template": {
+    file: path.join(PROJECT_ROOT, "docker", "default.conf.template"),
+    contentType: "text/plain; charset=utf-8",
+  },
+  "default.direct.no_tls.conf.template": {
+    file: path.join(PROJECT_ROOT, "docker", "default.direct.no_tls.conf.template"),
+    contentType: "text/plain; charset=utf-8",
+  },
+  "default.direct.tls.conf.template": {
+    file: path.join(PROJECT_ROOT, "docker", "default.direct.tls.conf.template"),
+    contentType: "text/plain; charset=utf-8",
+  },
+};
+
 function normalizeRole(value) {
   const role = String(value || "master").trim().toLowerCase();
   return role === "agent" ? "agent" : "master";
@@ -110,10 +138,63 @@ function sendJson(res, statusCode, payload) {
   res.end(body);
 }
 
+function sendText(res, statusCode, body, contentType = "text/plain; charset=utf-8") {
+  const payload = Buffer.from(String(body), "utf8");
+  res.writeHead(statusCode, {
+    "Content-Type": contentType,
+    "Content-Length": String(payload.length),
+    "Cache-Control": "no-store",
+  });
+  res.end(payload);
+}
+
 function errorPayload(message, details) {
   const payload = { ok: false, message };
   if (details) payload.details = details;
   return payload;
+}
+
+function escapeForDoubleQuotedShell(value) {
+  return String(value || "")
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')
+    .replace(/\$/g, "\\$")
+    .replace(/`/g, "\\`");
+}
+
+function getRequestBaseUrl(req) {
+  const proto = String(req.headers["x-forwarded-proto"] || "http")
+    .split(",")[0]
+    .trim() || "http";
+  const host = String(req.headers["x-forwarded-host"] || req.headers.host || "")
+    .split(",")[0]
+    .trim();
+  if (!host) {
+    return `${proto}://${HOST}:${PORT}`;
+  }
+  return `${proto}://${host}`;
+}
+
+function readPublicAgentAsset(assetName) {
+  const asset = PUBLIC_AGENT_ASSETS[assetName];
+  if (!asset) return null;
+  if (!fs.existsSync(asset.file)) {
+    throw new Error(`asset file not found: ${asset.file}`);
+  }
+  return {
+    ...asset,
+    body: fs.readFileSync(asset.file, "utf8"),
+  };
+}
+
+function buildJoinAgentScript(req) {
+  const joinScriptPath = path.join(PROJECT_ROOT, "scripts", "join-agent.sh");
+  const baseUrl = getRequestBaseUrl(req);
+  const assetBaseUrl = `${baseUrl}/panel-api/public/agent-assets`;
+  return fs
+    .readFileSync(joinScriptPath, "utf8")
+    .replace(/__DEFAULT_MASTER_URL__/g, escapeForDoubleQuotedShell(baseUrl))
+    .replace(/__DEFAULT_ASSET_BASE_URL__/g, escapeForDoubleQuotedShell(assetBaseUrl));
 }
 
 function parseJsonBody(req) {
@@ -757,6 +838,22 @@ async function handleLegacyLocalRules(req, res, urlPath) {
 }
 async function handleMasterApi(req, res) {
   const urlPath = (req.url || "").split("?")[0];
+
+  if (req.method === "GET" && urlPath === "/api/public/join-agent.sh") {
+    sendText(res, 200, buildJoinAgentScript(req), "application/x-sh; charset=utf-8");
+    return;
+  }
+
+  if (req.method === "GET" && urlPath.startsWith("/api/public/agent-assets/")) {
+    const assetName = decodeURIComponent(urlPath.slice("/api/public/agent-assets/".length));
+    const asset = readPublicAgentAsset(assetName);
+    if (!asset) {
+      sendJson(res, 404, errorPayload("asset not found"));
+      return;
+    }
+    sendText(res, 200, asset.body, asset.contentType);
+    return;
+  }
 
   if (req.method === "GET" && urlPath === "/api/auth/verify") {
     const authorized = isPanelAuthorized(req);

@@ -1,27 +1,52 @@
 #!/bin/sh
 set -eu
 
+DEFAULT_MASTER_URL="__DEFAULT_MASTER_URL__"
+DEFAULT_ASSET_BASE_URL="__DEFAULT_ASSET_BASE_URL__"
+UNSET_MASTER_SENTINEL="__JOIN_AGENT_DEFAULT_MASTER_URL__"
+UNSET_ASSET_BASE_URL_SENTINEL="__JOIN_AGENT_DEFAULT_ASSET_BASE_URL__"
+
+[ "$DEFAULT_MASTER_URL" = "$UNSET_MASTER_SENTINEL" ] && DEFAULT_MASTER_URL=""
+[ "$DEFAULT_ASSET_BASE_URL" = "$UNSET_ASSET_BASE_URL_SENTINEL" ] && DEFAULT_ASSET_BASE_URL=""
+case "$DEFAULT_MASTER_URL" in __DEFAULT_*__) DEFAULT_MASTER_URL="" ;; esac
+case "$DEFAULT_ASSET_BASE_URL" in __DEFAULT_*__) DEFAULT_ASSET_BASE_URL="" ;; esac
+
 usage() {
-    cat <<'EOF'
-Usage: join-agent.sh --master-url URL --register-token TOKEN --apply-command CMD [options]
+    cat <<EOF
+Usage: join-agent.sh --register-token TOKEN [options]
 
 Required:
-  --master-url URL         Master panel URL, e.g. http://master.example.com:8080
   --register-token TOKEN   Master registration token
-  --apply-command CMD      Local apply command; will receive RULES_JSON env
+
+Recommended one-click:
+  --install-systemd        Install and start the systemd service
+
+Behavior:
+  Automatically installs missing Node.js 18+, curl, and nginx when possible
+  (requires root or sudo and a supported package manager / Homebrew)
 
 Optional:
+  --master-url URL         Master panel URL (default: embedded panel URL or required when unavailable)
+  --asset-base-url URL     Panel-hosted asset base URL (default: embedded panel asset URL)
   --agent-name NAME        Agent node name, default: current hostname
   --agent-token TOKEN      Agent heartbeat token, default: auto-generated
   --agent-url URL          Optional public URL for direct access / display
-  --data-dir DIR           State/config directory, default: ./agent-data
+  --data-dir DIR           Install/state directory, default: ./agent-data
   --rules-file FILE        Rules JSON path, default: <data-dir>/proxy_rules.json
   --state-file FILE        Agent state file, default: <data-dir>/agent-state.json
   --interval-ms N          Heartbeat interval in ms, default: 10000
   --version VERSION        Agent version, default: 1
   --tags TAGS              Comma-separated tags, e.g. edge,emby
+  --apply-command CMD      Optional custom apply command; if omitted, installs the built-in nginx apply script
   --install-systemd        Install a systemd service for the lightweight agent
+  --install-launchd        Install and load a launchd agent on macOS
   -h, --help               Show help
+
+Examples:
+  curl -fsSL ${DEFAULT_MASTER_URL:-http://master.example.com:8080}/panel-api/public/join-agent.sh | bash -s -- --register-token change-this-register-token --install-systemd
+  join-agent.sh --register-token change-this-register-token --install-systemd
+  join-agent.sh --register-token change-this-register-token --install-launchd
+  join-agent.sh --master-url http://master.example.com:8080 --register-token change-this-register-token --apply-command '/usr/local/bin/custom-apply.sh'
 EOF
 }
 
@@ -48,7 +73,209 @@ PY
     date +%s | sha256sum | cut -d' ' -f1 | cut -c1-48
 }
 
-MASTER_URL=""
+absolute_path() {
+    target="$1"
+    case "$target" in
+        /*) printf '%s\n' "$target" ;;
+        *)
+            target_dir=$(dirname -- "$target")
+            target_name=$(basename -- "$target")
+            mkdir -p "$target_dir"
+            target_dir_abs=$(CDPATH= cd -- "$target_dir" && pwd)
+            printf '%s/%s\n' "$target_dir_abs" "$target_name"
+            ;;
+    esac
+}
+
+detect_platform() {
+    uname -s 2>/dev/null | tr '[:upper:]' '[:lower:]'
+}
+
+xml_escape() {
+    printf '%s' "$1" | sed \
+        -e 's/&/\&amp;/g' \
+        -e 's/</\&lt;/g' \
+        -e 's/>/\&gt;/g' \
+        -e "s/'/\&apos;/g" \
+        -e 's/"/\&quot;/g'
+}
+
+detect_node_bin() {
+    if command -v node >/dev/null 2>&1; then
+        printf '%s\n' "node"
+        return 0
+    fi
+    if command -v nodejs >/dev/null 2>&1; then
+        printf '%s\n' "nodejs"
+        return 0
+    fi
+    return 1
+}
+
+current_node_major() {
+    node_bin="$1"
+    "$node_bin" -p "process.versions.node.split('.')[0]" 2>/dev/null || true
+}
+
+require_root_or_sudo() {
+    if [ "$(id -u)" -eq 0 ]; then
+        printf '%s\n' ""
+        return 0
+    fi
+    if command -v sudo >/dev/null 2>&1; then
+        printf '%s\n' "sudo"
+        return 0
+    fi
+    return 1
+}
+
+install_runtime_packages() {
+    missing_node="$1"
+    missing_curl="$2"
+    missing_nginx="$3"
+    platform="$4"
+
+    [ "$missing_node$missing_curl$missing_nginx" != "000" ] || return 0
+
+    SUDO_BIN="$(require_root_or_sudo)" || {
+        echo "Missing runtime dependencies and automatic install requires root or sudo" >&2
+        echo "Please install Node.js 18+, curl, and nginx manually, or rerun as root." >&2
+        exit 1
+    }
+
+    echo "[JOIN] Missing dependencies detected. Attempting automatic installation..."
+
+    if [ "$platform" = "darwin" ] && command -v brew >/dev/null 2>&1; then
+        pkgs=""
+        [ "$missing_node" = "1" ] && pkgs="$pkgs node"
+        [ "$missing_curl" = "1" ] && pkgs="$pkgs curl"
+        [ "$missing_nginx" = "1" ] && pkgs="$pkgs nginx"
+        if [ -n "$pkgs" ]; then
+            brew update
+            brew install $pkgs
+        fi
+        return 0
+    fi
+
+    if command -v apt-get >/dev/null 2>&1; then
+        ${SUDO_BIN:+$SUDO_BIN }apt-get update
+        pkgs="ca-certificates"
+        [ "$missing_node" = "1" ] && pkgs="$pkgs nodejs"
+        [ "$missing_curl" = "1" ] && pkgs="$pkgs curl"
+        [ "$missing_nginx" = "1" ] && pkgs="$pkgs nginx"
+        ${SUDO_BIN:+$SUDO_BIN }apt-get install -y --no-install-recommends $pkgs
+        return 0
+    fi
+
+    if command -v dnf >/dev/null 2>&1; then
+        pkgs="ca-certificates"
+        [ "$missing_node" = "1" ] && pkgs="$pkgs nodejs"
+        [ "$missing_curl" = "1" ] && pkgs="$pkgs curl"
+        [ "$missing_nginx" = "1" ] && pkgs="$pkgs nginx"
+        ${SUDO_BIN:+$SUDO_BIN }dnf install -y $pkgs
+        return 0
+    fi
+
+    if command -v yum >/dev/null 2>&1; then
+        pkgs="ca-certificates"
+        [ "$missing_node" = "1" ] && pkgs="$pkgs nodejs"
+        [ "$missing_curl" = "1" ] && pkgs="$pkgs curl"
+        [ "$missing_nginx" = "1" ] && pkgs="$pkgs nginx"
+        ${SUDO_BIN:+$SUDO_BIN }yum install -y $pkgs
+        return 0
+    fi
+
+    if command -v apk >/dev/null 2>&1; then
+        pkgs="ca-certificates"
+        [ "$missing_node" = "1" ] && pkgs="$pkgs nodejs npm"
+        [ "$missing_curl" = "1" ] && pkgs="$pkgs curl"
+        [ "$missing_nginx" = "1" ] && pkgs="$pkgs nginx"
+        ${SUDO_BIN:+$SUDO_BIN }apk add --no-cache $pkgs
+        return 0
+    fi
+
+    if command -v zypper >/dev/null 2>&1; then
+        pkgs="ca-certificates"
+        [ "$missing_node" = "1" ] && pkgs="$pkgs nodejs18"
+        [ "$missing_curl" = "1" ] && pkgs="$pkgs curl"
+        [ "$missing_nginx" = "1" ] && pkgs="$pkgs nginx"
+        ${SUDO_BIN:+$SUDO_BIN }zypper --non-interactive install --no-recommends $pkgs
+        return 0
+    fi
+
+    if command -v pacman >/dev/null 2>&1; then
+        pkgs="ca-certificates"
+        [ "$missing_node" = "1" ] && pkgs="$pkgs nodejs"
+        [ "$missing_curl" = "1" ] && pkgs="$pkgs curl"
+        [ "$missing_nginx" = "1" ] && pkgs="$pkgs nginx"
+        ${SUDO_BIN:+$SUDO_BIN }pacman -Sy --noconfirm $pkgs
+        return 0
+    fi
+
+    echo "Automatic dependency installation is not supported on this system." >&2
+    echo "Please install Node.js 18+, curl, and nginx manually." >&2
+    [ "$platform" = "darwin" ] && echo "Tip: install Homebrew first, then rerun this script." >&2
+    exit 1
+}
+
+resolve_script_dir() {
+    script_path=${0:-}
+    [ -n "$script_path" ] || return 1
+    case "$script_path" in
+        /*) dir=$(dirname -- "$script_path") ;;
+        */*) dir=$(dirname -- "$script_path") ;;
+        *) dir="." ;;
+    esac
+    CDPATH= cd -- "$dir" 2>/dev/null && pwd
+}
+
+copy_or_download_asset() {
+    asset_name="$1"
+    dest_path="$2"
+    chmod_mode="$3"
+    local_path=""
+
+    case "$asset_name" in
+        light-agent.js)
+            [ -n "$SCRIPT_DIR" ] && local_path="$SCRIPT_DIR/light-agent.js"
+            ;;
+        light-agent-apply.sh)
+            [ -n "$SCRIPT_DIR" ] && local_path="$SCRIPT_DIR/light-agent-apply.sh"
+            ;;
+        25-dynamic-reverse-proxy.sh)
+            [ -n "$SCRIPT_DIR" ] && local_path="$SCRIPT_DIR/../docker/25-dynamic-reverse-proxy.sh"
+            ;;
+        default.conf.template)
+            [ -n "$SCRIPT_DIR" ] && local_path="$SCRIPT_DIR/../docker/default.conf.template"
+            ;;
+        default.direct.no_tls.conf.template)
+            [ -n "$SCRIPT_DIR" ] && local_path="$SCRIPT_DIR/../docker/default.direct.no_tls.conf.template"
+            ;;
+        default.direct.tls.conf.template)
+            [ -n "$SCRIPT_DIR" ] && local_path="$SCRIPT_DIR/../docker/default.direct.tls.conf.template"
+            ;;
+    esac
+
+    mkdir -p "$(dirname -- "$dest_path")"
+
+    if [ -n "$local_path" ] && [ -f "$local_path" ]; then
+        cp "$local_path" "$dest_path"
+        chmod "$chmod_mode" "$dest_path"
+        return 0
+    fi
+
+    [ -n "$ASSET_BASE_URL" ] || {
+        echo "Missing asset source for $asset_name. Re-run with --asset-base-url URL or download from the panel." >&2
+        exit 1
+    }
+
+    curl -fsSL "$ASSET_BASE_URL/$asset_name" -o "$dest_path"
+    chmod "$chmod_mode" "$dest_path"
+}
+
+MASTER_URL="$DEFAULT_MASTER_URL"
+ASSET_BASE_URL="$DEFAULT_ASSET_BASE_URL"
+PLATFORM="$(detect_platform)"
 REGISTER_TOKEN=""
 AGENT_NAME="${HOSTNAME:-$(hostname)}"
 AGENT_TOKEN=""
@@ -61,11 +288,13 @@ AGENT_VERSION="1"
 AGENT_TAGS=""
 APPLY_COMMAND=""
 INSTALL_SYSTEMD="0"
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+INSTALL_LAUNCHD="0"
+SCRIPT_DIR="$(resolve_script_dir 2>/dev/null || true)"
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --master-url) MASTER_URL="$2"; shift 2 ;;
+        --asset-base-url) ASSET_BASE_URL="$2"; shift 2 ;;
         --register-token) REGISTER_TOKEN="$2"; shift 2 ;;
         --agent-name) AGENT_NAME="$2"; shift 2 ;;
         --agent-token) AGENT_TOKEN="$2"; shift 2 ;;
@@ -78,26 +307,81 @@ while [ $# -gt 0 ]; do
         --tags) AGENT_TAGS="$2"; shift 2 ;;
         --apply-command) APPLY_COMMAND="$2"; shift 2 ;;
         --install-systemd) INSTALL_SYSTEMD="1"; shift 1 ;;
+        --install-launchd) INSTALL_LAUNCHD="1"; shift 1 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "Unknown argument: $1" >&2; usage >&2; exit 1 ;;
     esac
 done
 
-[ -n "$MASTER_URL" ] || { echo "Missing --master-url" >&2; exit 1; }
 [ -n "$REGISTER_TOKEN" ] || { echo "Missing --register-token" >&2; exit 1; }
-[ -n "$APPLY_COMMAND" ] || { echo "Missing --apply-command" >&2; exit 1; }
+[ -n "$MASTER_URL" ] || {
+    echo "Missing --master-url and no embedded panel URL is available" >&2
+    exit 1
+}
+[ "$INSTALL_SYSTEMD$INSTALL_LAUNCHD" != "11" ] || {
+    echo "Use either --install-systemd or --install-launchd, not both" >&2
+    exit 1
+}
 
-command -v node >/dev/null 2>&1 || { echo "node is required" >&2; exit 1; }
-command -v curl >/dev/null 2>&1 || { echo "curl is required" >&2; exit 1; }
+MISSING_NODE="0"
+MISSING_CURL="0"
+MISSING_NGINX="0"
+
+NODE_BIN="$(detect_node_bin || true)"
+[ -n "$NODE_BIN" ] || MISSING_NODE="1"
+command -v curl >/dev/null 2>&1 || MISSING_CURL="1"
+command -v nginx >/dev/null 2>&1 || MISSING_NGINX="1"
+
+install_runtime_packages "$MISSING_NODE" "$MISSING_CURL" "$MISSING_NGINX" "$PLATFORM"
+
+NODE_BIN="$(detect_node_bin || true)"
+[ -n "$NODE_BIN" ] || { echo "node is required after dependency installation" >&2; exit 1; }
+NODE_MAJOR="$(current_node_major "$NODE_BIN")"
+[ -n "$NODE_MAJOR" ] || { echo "unable to determine Node.js version" >&2; exit 1; }
+[ "$NODE_MAJOR" -ge 18 ] || {
+    echo "Node.js 18+ is required, but found version $NODE_MAJOR" >&2
+    echo "Please upgrade Node.js on this machine and retry." >&2
+    exit 1
+}
+
+command -v curl >/dev/null 2>&1 || { echo "curl is required after dependency installation" >&2; exit 1; }
+NGINX_BIN_PATH="$(command -v nginx || true)"
+[ -n "$NGINX_BIN_PATH" ] || { echo "nginx is required after dependency installation" >&2; exit 1; }
+NODE_BIN_PATH="$(command -v "$NODE_BIN" || true)"
+[ -n "$NODE_BIN_PATH" ] || { echo "unable to resolve node executable path" >&2; exit 1; }
 
 MASTER_URL="$(trim_slash "$MASTER_URL")"
+ASSET_BASE_URL="$(trim_slash "$ASSET_BASE_URL")"
 AGENT_URL="$(trim_slash "$AGENT_URL")"
 AGENT_TOKEN="${AGENT_TOKEN:-$(generate_token)}"
 mkdir -p "$DATA_DIR"
+DATA_DIR="$(CDPATH= cd -- "$DATA_DIR" && pwd)"
 
 RULES_FILE="${RULES_FILE:-$DATA_DIR/proxy_rules.json}"
 STATE_FILE="${STATE_FILE:-$DATA_DIR/agent-state.json}"
+RULES_FILE="$(absolute_path "$RULES_FILE")"
+STATE_FILE="$(absolute_path "$STATE_FILE")"
 ENV_FILE="$DATA_DIR/agent.env"
+BIN_DIR="$DATA_DIR/bin"
+RUNTIME_DIR="$DATA_DIR/runtime"
+LIGHT_AGENT_FILE="$BIN_DIR/light-agent.js"
+DEFAULT_APPLY_SCRIPT="$BIN_DIR/nginx-reverse-emby-apply.sh"
+GENERATOR_FILE="$RUNTIME_DIR/25-dynamic-reverse-proxy.sh"
+TEMPLATE_FILE="$RUNTIME_DIR/default.conf.template"
+DIRECT_NO_TLS_TEMPLATE_FILE="$RUNTIME_DIR/default.direct.no_tls.conf.template"
+DIRECT_TLS_TEMPLATE_FILE="$RUNTIME_DIR/default.direct.tls.conf.template"
+
+echo "[JOIN] Installing runtime assets to: $DATA_DIR"
+copy_or_download_asset light-agent.js "$LIGHT_AGENT_FILE" 755
+copy_or_download_asset light-agent-apply.sh "$DEFAULT_APPLY_SCRIPT" 755
+copy_or_download_asset 25-dynamic-reverse-proxy.sh "$GENERATOR_FILE" 755
+copy_or_download_asset default.conf.template "$TEMPLATE_FILE" 644
+copy_or_download_asset default.direct.no_tls.conf.template "$DIRECT_NO_TLS_TEMPLATE_FILE" 644
+copy_or_download_asset default.direct.tls.conf.template "$DIRECT_TLS_TEMPLATE_FILE" 644
+
+if [ -z "$APPLY_COMMAND" ]; then
+    APPLY_COMMAND="$DEFAULT_APPLY_SCRIPT"
+fi
 
 cat > "$ENV_FILE" <<EOF
 MASTER_PANEL_URL=$(shell_quote "$MASTER_URL")
@@ -110,10 +394,15 @@ AGENT_TAGS=$(shell_quote "$AGENT_TAGS")
 AGENT_HEARTBEAT_INTERVAL_MS=$(shell_quote "$INTERVAL_MS")
 RULES_JSON=$(shell_quote "$RULES_FILE")
 AGENT_STATE_FILE=$(shell_quote "$STATE_FILE")
+AGENT_HOME=$(shell_quote "$DATA_DIR")
+AGENT_RUNTIME_DIR=$(shell_quote "$RUNTIME_DIR")
+AGENT_GENERATOR_SCRIPT=$(shell_quote "$GENERATOR_FILE")
+AGENT_DEFAULT_APPLY_COMMAND=$(shell_quote "$DEFAULT_APPLY_SCRIPT")
 APPLY_COMMAND=$(shell_quote "$APPLY_COMMAND")
+NGINX_BIN=$(shell_quote "$NGINX_BIN_PATH")
 EOF
 
-PAYLOAD=$(node -e "const payload = {name: process.argv[1], agent_url: process.argv[2], agent_token: process.argv[3], version: process.argv[4], tags: process.argv[5] ? process.argv[5].split(',').map(v => v.trim()).filter(Boolean) : [], mode: 'pull', register_token: process.argv[6]}; process.stdout.write(JSON.stringify(payload));" "$AGENT_NAME" "$AGENT_URL" "$AGENT_TOKEN" "$AGENT_VERSION" "$AGENT_TAGS" "$REGISTER_TOKEN")
+PAYLOAD=$("$NODE_BIN" -e "const payload = {name: process.argv[1], agent_url: process.argv[2], agent_token: process.argv[3], version: process.argv[4], tags: process.argv[5] ? process.argv[5].split(',').map(v => v.trim()).filter(Boolean) : [], mode: 'pull', register_token: process.argv[6]}; process.stdout.write(JSON.stringify(payload));" "$AGENT_NAME" "$AGENT_URL" "$AGENT_TOKEN" "$AGENT_VERSION" "$AGENT_TAGS" "$REGISTER_TOKEN")
 
 echo "[JOIN] Writing agent env: $ENV_FILE"
 echo "[JOIN] Registering lightweight agent to: $MASTER_URL/panel-api/agents/register"
@@ -128,8 +417,11 @@ REGISTER_RESPONSE=$(curl -fsS \
 echo "[JOIN] Registered successfully: $REGISTER_RESPONSE"
 echo "[JOIN] Rules file: $RULES_FILE"
 echo "[JOIN] State file: $STATE_FILE"
+echo "[JOIN] Light agent: $LIGHT_AGENT_FILE"
+echo "[JOIN] Apply command: $APPLY_COMMAND"
 
 if [ "$INSTALL_SYSTEMD" = "1" ]; then
+    command -v systemctl >/dev/null 2>&1 || { echo "systemctl is required for --install-systemd" >&2; exit 1; }
     SERVICE_FILE="/etc/systemd/system/nginx-reverse-emby-agent.service"
     cat > "$SERVICE_FILE" <<EOF
 [Unit]
@@ -140,7 +432,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=$ENV_FILE
-ExecStart=$(command -v node) $SCRIPT_DIR/light-agent.js
+ExecStart=$NODE_BIN_PATH $LIGHT_AGENT_FILE
 Restart=always
 RestartSec=5
 
@@ -150,7 +442,44 @@ EOF
     systemctl daemon-reload
     systemctl enable --now nginx-reverse-emby-agent.service
     echo "[JOIN] Installed and started systemd service: nginx-reverse-emby-agent.service"
+elif [ "$INSTALL_LAUNCHD" = "1" ]; then
+    [ "$PLATFORM" = "darwin" ] || { echo "--install-launchd is only supported on macOS" >&2; exit 1; }
+    command -v launchctl >/dev/null 2>&1 || { echo "launchctl is required for --install-launchd" >&2; exit 1; }
+    LAUNCHD_DIR="$HOME/Library/LaunchAgents"
+    SERVICE_LABEL="com.nginx-reverse-emby.agent"
+    SERVICE_FILE="$LAUNCHD_DIR/$SERVICE_LABEL.plist"
+    START_COMMAND="set -a && . $(shell_quote "$ENV_FILE") && set +a && exec $(shell_quote "$NODE_BIN_PATH") $(shell_quote "$LIGHT_AGENT_FILE")"
+    mkdir -p "$LAUNCHD_DIR"
+    cat > "$SERVICE_FILE" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>$(xml_escape "$SERVICE_LABEL")</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>-lc</string>
+    <string>$(xml_escape "$START_COMMAND")</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>$(xml_escape "$DATA_DIR")</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>$(xml_escape "$DATA_DIR/agent.stdout.log")</string>
+  <key>StandardErrorPath</key>
+  <string>$(xml_escape "$DATA_DIR/agent.stderr.log")</string>
+</dict>
+</plist>
+EOF
+    launchctl unload "$SERVICE_FILE" >/dev/null 2>&1 || true
+    launchctl load -w "$SERVICE_FILE"
+    echo "[JOIN] Installed and loaded launchd agent: $SERVICE_LABEL"
 else
     echo "[JOIN] Start command:"
-    echo "  set -a && . $ENV_FILE && set +a && node $SCRIPT_DIR/light-agent.js"
+    echo "  set -a && . $ENV_FILE && set +a && $NODE_BIN_PATH $LIGHT_AGENT_FILE"
 fi

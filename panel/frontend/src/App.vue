@@ -99,9 +99,22 @@
                 </div>
               </div>
 
+              <div v-if="!sidebarCollapsed && ruleStore.agents.length" class="sidebar__search">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="11" cy="11" r="8"/>
+                  <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                </svg>
+                <input
+                  v-model="agentSearchQuery"
+                  type="text"
+                  class="sidebar__search-input"
+                  placeholder="搜索节点..."
+                >
+              </div>
+
               <div class="sidebar__agents">
                 <div
-                  v-for="agent in ruleStore.agents"
+                  v-for="agent in filteredAgents"
                   :key="agent.id"
                   class="sidebar__agent"
                   :class="{ 'sidebar__agent--active': ruleStore.selectedAgentId === agent.id }"
@@ -125,6 +138,13 @@
                     <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
                   </svg>
                   <span v-show="!sidebarCollapsed">暂无节点</span>
+                </div>
+                <div v-else-if="!filteredAgents.length" class="sidebar__empty">
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                    <circle cx="11" cy="11" r="7"/>
+                    <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                  </svg>
+                  <span v-show="!sidebarCollapsed">未找到匹配节点</span>
                 </div>
               </div>
             </div>
@@ -190,32 +210,6 @@
             <!-- Stats Row -->
             <div class="stats-row">
               <div class="stat-pill">
-                <div class="stat-pill__icon stat-pill__icon--servers">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <rect x="2" y="2" width="20" height="8" rx="2" ry="2"/>
-                    <rect x="2" y="14" width="20" height="8" rx="2" ry="2"/>
-                    <line x1="6" y1="6" x2="6.01" y2="6"/>
-                    <line x1="6" y1="18" x2="6.01" y2="18"/>
-                  </svg>
-                </div>
-                <div class="stat-pill__data">
-                  <span class="stat-pill__value">{{ ruleStore.agents.length }}</span>
-                  <span class="stat-pill__label">节点</span>
-                </div>
-              </div>
-              <div class="stat-pill">
-                <div class="stat-pill__icon stat-pill__icon--online">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/>
-                    <polyline points="22 4 12 14.01 9 11.01"/>
-                  </svg>
-                </div>
-                <div class="stat-pill__data">
-                  <span class="stat-pill__value">{{ ruleStore.onlineAgentsCount }}</span>
-                  <span class="stat-pill__label">在线</span>
-                </div>
-              </div>
-              <div class="stat-pill">
                 <div class="stat-pill__icon stat-pill__icon--rules">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
@@ -263,23 +257,52 @@
       <Teleport to="body">
         <BaseModal
           v-model="showJoinModal"
-          title="下载 Agent 加入脚本"
+          title="加入 Agent 节点"
+          large
         >
-          <div class="space-y-4">
-            <p class="text-sm text-secondary">
-              从 GitHub 下载最新的 Agent 加入脚本并安装到本机。
-            </p>
-            <div class="bg-subtle p-4 rounded-lg">
-              <code class="text-xs text-tertiary break-all">{{ joinScriptUrl }}</code>
+          <div class="join-modal">
+            <div class="join-modal__intro">
+              <p class="text-sm text-secondary">
+                命令直接从当前面板下载脚本，不依赖外部托管，并自动携带当前登录令牌。
+              </p>
+              <div class="join-modal__origin">
+                <span class="join-modal__origin-label">脚本地址</span>
+                <code class="text-xs text-tertiary break-all">{{ joinScriptUrl }}</code>
+              </div>
             </div>
-            <div class="flex justify-end gap-3">
-              <button class="btn btn--secondary" @click="showJoinModal = false">取消</button>
-              <button class="btn btn--primary" :disabled="downloading" @click="downloadScript">
-                <span v-if="downloading" class="spinner spinner--sm mr-2"></span>
-                {{ downloading ? '下载中...' : '下载脚本' }}
+
+            <div class="join-platforms">
+              <button
+                v-for="platform in joinPlatformCards"
+                :key="platform.id"
+                type="button"
+                class="join-platform"
+                @click="copyJoinCommand(platform)"
+              >
+                <div class="join-platform__header">
+                  <div>
+                    <div class="join-platform__name">{{ platform.label }}</div>
+                    <div class="join-platform__hint">{{ platform.hint }}</div>
+                  </div>
+                  <span class="join-platform__copy">{{ copiedPlatform === platform.id ? '已复制' : '复制命令' }}</span>
+                </div>
+                <code class="join-platform__command">{{ platform.command }}</code>
               </button>
             </div>
-            <pre v-if="installOutput" class="bg-subtle p-4 rounded-lg text-xs text-secondary overflow-auto max-h-48">{{ installOutput }}</pre>
+
+            <div class="join-modal__tips bg-subtle p-4 rounded-lg text-sm text-secondary">
+              <p>脚本会优先复用面板内置资源，并在支持的平台自动补齐 node / curl / nginx。</p>
+              <ul class="join-script-tips">
+                <li>Linux：自动注册 systemd 开机自启。</li>
+                <li>macOS：使用 <code>--install-launchd</code> 注册 launchd 自启；缺失依赖时会尝试使用 Homebrew。</li>
+                <li>Windows：复制 PowerShell 命令后可直接在已安装 WSL 的机器上执行。</li>
+              </ul>
+            </div>
+
+            <div class="join-modal__actions">
+              <button class="btn btn--secondary" @click="copyText(joinScriptUrl, '脚本地址已复制')">复制脚本地址</button>
+              <button class="btn btn--secondary" @click="showJoinModal = false">关闭</button>
+            </div>
           </div>
         </BaseModal>
       </Teleport>
@@ -303,23 +326,96 @@ import StatusMessage from './components/StatusMessage.vue'
 const ruleStore = useRuleStore()
 const showAddModal = ref(false)
 const showJoinModal = ref(false)
-const downloading = ref(false)
-const installOutput = ref('')
 const sidebarOpen = ref(false)
 const sidebarCollapsed = ref(localStorage.getItem('sidebar_collapsed') === 'true')
+const agentSearchQuery = ref('')
+const copiedPlatform = ref('')
 let refreshTimer = null
+let copyStateTimer = null
 
 function toggleSidebarCollapse() {
   sidebarCollapsed.value = !sidebarCollapsed.value
   localStorage.setItem('sidebar_collapsed', sidebarCollapsed.value)
 }
 
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, `'"'"'`)}'`
+}
+
+function powerShellQuote(value) {
+  return `'${String(value).replace(/'/g, "''")}'`
+}
+
+function resetCopyState() {
+  copiedPlatform.value = ''
+  if (copyStateTimer) {
+    window.clearTimeout(copyStateTimer)
+    copyStateTimer = null
+  }
+}
+
 const activeRulesCount = computed(() => {
   return ruleStore.rules.filter(r => r.enabled).length
 })
 
+const filteredAgents = computed(() => {
+  const query = agentSearchQuery.value.trim().toLowerCase()
+  if (!query) return ruleStore.agents
+
+  return ruleStore.agents.filter((agent) => {
+    const searchable = [
+      agent.name,
+      agent.agent_url,
+      agent.status,
+      Array.isArray(agent.tags) ? agent.tags.join(' ') : ''
+    ]
+
+    return searchable.some(item => String(item || '').toLowerCase().includes(query))
+  })
+})
+
 const joinScriptUrl = computed(() => {
-  return 'https://raw.githubusercontent.com/12976/nginx-reverse-emby/main/scripts/join-agent.sh'
+  return `${window.location.origin}/panel-api/public/join-agent.sh`
+})
+
+const joinRegisterToken = computed(() => {
+  return ruleStore.token || '<YOUR_TOKEN>'
+})
+
+const linuxJoinCommand = computed(() => {
+  return `curl -fsSL ${shellQuote(joinScriptUrl.value)} | bash -s -- --register-token ${shellQuote(joinRegisterToken.value)} --install-systemd`
+})
+
+const macJoinCommand = computed(() => {
+  return `curl -fsSL ${shellQuote(joinScriptUrl.value)} | bash -s -- --register-token ${shellQuote(joinRegisterToken.value)} --install-launchd`
+})
+
+const windowsJoinCommand = computed(() => {
+  const wslCommand = powerShellQuote(linuxJoinCommand.value)
+  return `powershell -NoProfile -ExecutionPolicy Bypass -Command "$cmd=${wslCommand}; if (-not (Get-Command wsl -ErrorAction SilentlyContinue)) { throw '请先安装 WSL'; }; wsl bash -lc $cmd"`
+})
+
+const joinPlatformCards = computed(() => {
+  return [
+    {
+      id: 'windows',
+      label: 'Windows',
+      hint: 'PowerShell + WSL，一键执行并注册 systemd',
+      command: windowsJoinCommand.value
+    },
+    {
+      id: 'macos',
+      label: 'macOS',
+      hint: '自动安装依赖（Homebrew）并注册 launchd',
+      command: macJoinCommand.value
+    },
+    {
+      id: 'linux',
+      label: 'Linux',
+      hint: '自动安装依赖并注册 systemd 开机自启',
+      command: linuxJoinCommand.value
+    }
+  ]
 })
 
 function ensureRefreshTimer() {
@@ -333,28 +429,42 @@ async function handleSelectAgent(agentId) {
   await ruleStore.selectAgent(agentId)
 }
 
-async function downloadScript() {
-  downloading.value = true
-  installOutput.value = ''
+async function copyText(text, successMessage = '已复制') {
+  const value = String(text || '')
   try {
-    const response = await fetch(joinScriptUrl.value)
-    if (!response.ok) throw new Error('下载失败')
-    const scriptContent = await response.text()
-    installOutput.value = `# 脚本已下载 (${scriptContent.length} 字节)
-# 请在目标机器上执行以下命令安装：
-
-curl -fsSL ${joinScriptUrl.value} | bash -s -- --master-url ${window.location.origin} --register-token <YOUR_TOKEN>
-
-# 或者保存脚本后手动执行：
-# curl -fsSL ${joinScriptUrl.value} -o join-agent.sh
-# chmod +x join-agent.sh
-# ./join-agent.sh --master-url ${window.location.origin} --register-token <YOUR_TOKEN>`
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value)
+    } else {
+      const textarea = document.createElement('textarea')
+      textarea.value = value
+      textarea.setAttribute('readonly', 'readonly')
+      textarea.style.position = 'fixed'
+      textarea.style.opacity = '0'
+      document.body.appendChild(textarea)
+      textarea.select()
+      document.execCommand('copy')
+      document.body.removeChild(textarea)
+    }
+    ruleStore.showSuccess(successMessage)
   } catch (err) {
-    installOutput.value = `错误: ${err.message}`
-  } finally {
-    downloading.value = false
+    ruleStore.showError('复制失败，请手动复制命令')
+    throw err
   }
 }
+
+async function copyJoinCommand(platform) {
+  await copyText(platform.command, `${platform.label} 命令已复制`)
+  copiedPlatform.value = platform.id
+  if (copyStateTimer) window.clearTimeout(copyStateTimer)
+  copyStateTimer = window.setTimeout(() => {
+    copiedPlatform.value = ''
+    copyStateTimer = null
+  }, 2000)
+}
+
+watch(showJoinModal, (visible) => {
+  if (!visible) resetCopyState()
+})
 
 onMounted(async () => {
   await ruleStore.checkAuth()
@@ -371,6 +481,7 @@ watch(
 )
 
 onUnmounted(() => {
+  resetCopyState()
   if (refreshTimer) window.clearInterval(refreshTimer)
 })
 </script>
@@ -417,6 +528,126 @@ onUnmounted(() => {
   font-size: var(--text-sm);
   color: var(--color-text-tertiary);
   letter-spacing: 0.05em;
+}
+
+.join-script-tips {
+  margin: 0;
+  padding-left: 1.25rem;
+}
+
+.join-script-tips li + li {
+  margin-top: var(--space-1);
+}
+
+.join-modal {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.join-modal__intro {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.join-modal__origin {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border-radius: var(--radius-xl);
+  background: var(--color-bg-subtle);
+  border: 1px solid var(--color-border-default);
+}
+
+.join-modal__origin-label {
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  color: var(--color-text-tertiary);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
+.join-platforms {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.join-platform {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  width: 100%;
+  padding: var(--space-4);
+  border: 1.5px solid var(--color-border-default);
+  border-radius: var(--radius-2xl);
+  background: var(--color-bg-surface);
+  text-align: left;
+  font-family: inherit;
+  color: var(--color-text-primary);
+  cursor: pointer;
+  transition: all var(--duration-normal) var(--ease-bounce);
+}
+
+.join-platform:hover {
+  border-color: var(--color-primary);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-2px);
+}
+
+.join-platform__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.join-platform__name {
+  font-size: var(--text-base);
+  font-weight: var(--font-semibold);
+}
+
+.join-platform__hint {
+  margin-top: var(--space-1);
+  font-size: var(--text-xs);
+  color: var(--color-text-tertiary);
+  line-height: 1.5;
+}
+
+.join-platform__copy {
+  padding: var(--space-1) var(--space-3);
+  border-radius: var(--radius-full);
+  background: var(--color-primary-subtle);
+  color: var(--color-primary);
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  white-space: nowrap;
+}
+
+.join-platform__command {
+  display: block;
+  padding: var(--space-3);
+  border-radius: var(--radius-xl);
+  background: var(--color-bg-subtle);
+  border: 1px solid var(--color-border-subtle);
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.join-modal__tips {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.join-modal__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-3);
 }
 
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -640,6 +871,42 @@ onUnmounted(() => {
   color: var(--color-text-tertiary);
   text-transform: uppercase;
   letter-spacing: 0.08em;
+}
+
+.sidebar__search {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2-5) var(--space-3);
+  margin-bottom: var(--space-3);
+  background: var(--color-bg-subtle);
+  border: 1.5px solid var(--color-border-default);
+  border-radius: var(--radius-xl);
+  transition: all var(--duration-normal) var(--ease-default);
+}
+
+.sidebar__search:focus-within {
+  border-color: var(--color-primary);
+  box-shadow: var(--shadow-focus);
+}
+
+.sidebar__search svg {
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+}
+
+.sidebar__search-input {
+  width: 100%;
+  border: none;
+  background: transparent;
+  outline: none;
+  font-size: var(--text-sm);
+  color: var(--color-text-primary);
+  font-family: inherit;
+}
+
+.sidebar__search-input::placeholder {
+  color: var(--color-text-muted);
 }
 
 .sidebar__section-action {
@@ -1198,6 +1465,14 @@ onUnmounted(() => {
     flex-direction: column;
     align-items: stretch;
     gap: var(--space-2);
+  }
+
+  .join-modal__actions {
+    flex-direction: column;
+  }
+
+  .join-modal__actions .btn {
+    width: 100%;
   }
 
   .content__search {

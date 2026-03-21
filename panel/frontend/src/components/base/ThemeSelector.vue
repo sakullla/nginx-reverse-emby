@@ -46,7 +46,7 @@ const themes = [
   },
   {
     id: 'cyberpunk',
-    emoji: '⚡',
+    emoji: ' ',
     label: '赛博朋克',
     preview: 'linear-gradient(135deg, #00f0ff, #ff0055)'
   },
