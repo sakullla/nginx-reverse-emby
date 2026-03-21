@@ -59,7 +59,7 @@ const LOCAL_AGENT_ENABLED =
   !/^(0|false|no|off)$/i.test(process.env.MASTER_LOCAL_AGENT_ENABLED || "1");
 const LOCAL_AGENT_ID = process.env.MASTER_LOCAL_AGENT_ID || "local";
 const LOCAL_AGENT_NAME =
-  process.env.MASTER_LOCAL_AGENT_NAME || `${os.hostname()} (����)`;
+  process.env.MASTER_LOCAL_AGENT_NAME || `${os.hostname()} (本机节点)`;
 const LOCAL_AGENT_URL = trimSlash(process.env.MASTER_LOCAL_AGENT_URL || "");
 const LOCAL_AGENT_TAGS = normalizeTags(
   (process.env.MASTER_LOCAL_AGENT_TAGS || "local")
@@ -166,12 +166,34 @@ function getRequestBaseUrl(req) {
   const proto = String(req.headers["x-forwarded-proto"] || "http")
     .split(",")[0]
     .trim() || "http";
-  const host = String(req.headers["x-forwarded-host"] || req.headers.host || "")
+  const forwardedHost = String(req.headers["x-forwarded-host"] || "")
     .split(",")[0]
     .trim();
+  const requestHost = String(req.headers.host || "")
+    .split(",")[0]
+    .trim();
+  const host = forwardedHost || requestHost;
+  const forwardedPort = String(req.headers["x-forwarded-port"] || "")
+    .split(",")[0]
+    .trim();
+
   if (!host) {
     return `${proto}://${HOST}:${PORT}`;
   }
+
+  if (host.includes(":")) {
+    return `${proto}://${host}`;
+  }
+
+  const normalizedPort = Number(forwardedPort);
+  const isDefaultPort =
+    (proto === "http" && normalizedPort === 80) ||
+    (proto === "https" && normalizedPort === 443);
+
+  if (Number.isFinite(normalizedPort) && normalizedPort > 0 && !isDefaultPort) {
+    return `${proto}://${host}:${normalizedPort}`;
+  }
+
   return `${proto}://${host}`;
 }
 
@@ -490,7 +512,7 @@ function parseStubStatus(data) {
   return {
     activeConnections: activeMatch ? activeMatch[0] : "0",
     totalRequests: requestsLine.length >= 3 ? requestsLine[2] : "0",
-    status: "����",
+    status: "本机节点",
   };
 }
 
@@ -517,7 +539,7 @@ function getNginxStats() {
         resolve({
           activeConnections: "0",
           totalRequests: "0",
-          status: "����ʧ��",
+          status: "本机节点异常",
           error: err.message,
         });
       });
@@ -1037,7 +1059,7 @@ async function handleMasterApi(req, res) {
   if (req.method === "PUT" && /^\/api\/agents\/[^/]+$/.test(urlPath)) {
     const agentId = extractAgentId(urlPath);
     if (agentId === LOCAL_AGENT_ID) {
-      sendJson(res, 400, errorPayload("local agent cannot be modified"));
+      sendJson(res, 400, errorPayload("本机节点不支持此操作"));
       return;
     }
 
@@ -1104,7 +1126,7 @@ async function handleMasterApi(req, res) {
   if (req.method === "PATCH" && /^\/api\/agents\/[^/]+$/.test(urlPath)) {
     const agentId = extractAgentId(urlPath);
     if (agentId === LOCAL_AGENT_ID) {
-      sendJson(res, 400, errorPayload("local agent cannot be modified"));
+      sendJson(res, 400, errorPayload("本机节点不支持此操作"));
       return;
     }
     try {
@@ -1118,7 +1140,7 @@ async function handleMasterApi(req, res) {
       if (body.name !== undefined) {
         const nextName = String(body.name).trim();
         if (!nextName) {
-          sendJson(res, 400, errorPayload("name cannot be empty"));
+          sendJson(res, 400, errorPayload("名称不能为空"));
           return;
         }
         agents[index] = { ...agents[index], name: nextName, updated_at: nowIso() };
@@ -1134,7 +1156,7 @@ async function handleMasterApi(req, res) {
   if (req.method === "DELETE" && /^\/api\/agents\/[^/]+$/.test(urlPath)) {
     const agentId = extractAgentId(urlPath);
     if (agentId === LOCAL_AGENT_ID) {
-      sendJson(res, 400, errorPayload("local agent cannot be deleted"));
+      sendJson(res, 400, errorPayload("本机节点不可删除"));
       return;
     }
     const agents = loadRegisteredAgents();
