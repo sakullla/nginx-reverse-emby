@@ -65,7 +65,7 @@ const mockAgents = [
   {
     id: 'local',
     name: '本机 Agent',
-    agent_url: 'http://127.0.0.1:8080',
+    agent_url: '',
     version: '1.0.0',
     tags: ['local'],
     mode: 'local',
@@ -79,7 +79,7 @@ const mockAgents = [
     agent_url: 'http://edge-1.example.com:8080',
     version: '1.0.0',
     tags: ['edge', 'emby'],
-    mode: 'pull',
+    mode: 'master',
     status: 'online',
     is_local: false,
     last_seen_at: new Date().toISOString()
@@ -88,16 +88,18 @@ const mockAgents = [
     const region = mockAgentRegions[i % mockAgentRegions.length]
     const n = Math.floor(i / mockAgentRegions.length) + 1
     const id = `${region.prefix}-${String(n).padStart(2, '0')}`
+    const isMasterMode = i % 5 === 0
     return {
       id,
       name: `${region.name}-${String(n).padStart(2, '0')}`,
-      agent_url: `http://${id}.${region.domain}:8080`,
+      agent_url: isMasterMode ? `http://${id}.${region.domain}:8080` : '',
       version: '1.0.0',
       tags: [region.prefix],
-      mode: 'pull',
+      mode: isMasterMode ? 'master' : 'pull',
       status: i % 6 === 5 ? 'offline' : 'online',
       is_local: false,
-      last_seen_at: new Date().toISOString()
+      last_seen_at: new Date().toISOString(),
+      last_seen_ip: `10.0.${Math.floor(i / 10) + 1}.${(i % 10) + 10}`
     }
   })
 ]

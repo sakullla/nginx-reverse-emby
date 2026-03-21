@@ -3,7 +3,8 @@
     "allow": [
       "Bash(gh pr view:*)",
       "mcp__acp__Write",
-      "mcp__acp__Edit"
+      "mcp__acp__Edit",
+      "mcp__idea__read_file"
     ]
   }
 }

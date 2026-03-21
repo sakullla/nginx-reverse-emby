@@ -50,6 +50,33 @@ function writeJson(file, value) {
   fs.writeFileSync(file, JSON.stringify(value, null, 2), 'utf8')
 }
 
+function safeLogDetails(details) {
+  if (details === undefined || details === null || details === '') return ''
+  if (typeof details === 'string') return details
+  try {
+    return JSON.stringify(details)
+  } catch {
+    return String(details)
+  }
+}
+
+function log(level, message, details) {
+  const line = `[agent][${nowIso()}][${String(level || 'info').toUpperCase()}] ${message}${
+    details === undefined || details === null || details === ''
+      ? ''
+      : ` ${safeLogDetails(details)}`
+  }`
+
+  const writer = level === 'error' ? console.error : console.log
+  writer(line)
+}
+
+function truncateText(value, maxLength = 1000) {
+  const text = String(value || '').trim()
+  if (!text || text.length <= maxLength) return text
+  return `${text.slice(0, maxLength)}...`
+}
+
 function requestJson(method, urlString, payload, headers = {}) {
   return new Promise((resolve, reject) => {
     const url = new URL(urlString)
@@ -170,6 +197,11 @@ function saveState(state) {
 
 async function registerAgent() {
   if (!REGISTER_TOKEN) return
+  log('info', 'registering agent to master', {
+    master: MASTER_URL,
+    name: AGENT_NAME,
+    tags: AGENT_TAGS
+  })
   await requestJson(
     'POST',
     `${MASTER_URL}/panel-api/agents/register`,
@@ -186,12 +218,17 @@ async function registerAgent() {
       'X-Register-Token': REGISTER_TOKEN
     }
   )
+  log('info', 'agent registered successfully')
 }
 
 function applyRules() {
   if (!APPLY_COMMAND) {
     throw new Error('APPLY_COMMAND is not configured')
   }
+  log('info', 'applying synced rules', {
+    rules_file: RULES_JSON,
+    apply_command: APPLY_COMMAND
+  })
   const result = spawnSync('/bin/sh', ['-lc', APPLY_COMMAND], {
     encoding: 'utf8',
     env: {
@@ -201,8 +238,11 @@ function applyRules() {
   })
   if (result.error) throw result.error
   if (result.status !== 0) {
-    throw new Error((result.stderr || result.stdout || `exit code ${result.status}`).trim())
+    throw new Error(
+      truncateText(result.stderr || result.stdout || `exit code ${result.status}`)
+    )
   }
+  return truncateText([result.stdout, result.stderr].filter(Boolean).join('\n'))
 }
 
 async function heartbeat(state) {
@@ -228,20 +268,49 @@ async function heartbeat(state) {
 
 async function runOnce() {
   const state = loadState()
+  log('info', 'sending heartbeat', {
+    current_revision: state.current_revision,
+    last_apply_status: state.last_apply_status
+  })
   const response = await heartbeat(state)
+  log('info', 'heartbeat acknowledged', {
+    desired_revision: response.sync?.desired_revision ?? state.current_revision,
+    current_revision: state.current_revision,
+    has_update: !!response.sync?.has_update
+  })
 
   if (response.sync?.has_update && Array.isArray(response.sync.rules)) {
+    const nextRevision = Number(response.sync.desired_revision) || state.current_revision
+    log('info', 'received rules update from master', {
+      desired_revision: nextRevision,
+      rules_count: response.sync.rules.length,
+      rules_file: RULES_JSON
+    })
     writeJson(RULES_JSON, response.sync.rules)
     try {
-      applyRules()
-      state.current_revision = Number(response.sync.desired_revision) || state.current_revision
+      const applyOutput = applyRules()
+      state.current_revision = nextRevision
       state.last_apply_status = 'success'
-      state.last_apply_message = `Applied at ${nowIso()}`
+      state.last_apply_message = truncateText(
+        applyOutput || `Applied successfully at ${nowIso()}`
+      )
+      log('info', 'rules applied successfully', {
+        current_revision: state.current_revision,
+        message: state.last_apply_message
+      })
     } catch (err) {
       state.last_apply_status = 'error'
-      state.last_apply_message = String(err.message || err)
+      state.last_apply_message = truncateText(String(err.message || err))
+      log('error', 'failed to apply synced rules', {
+        desired_revision: nextRevision,
+        message: state.last_apply_message
+      })
     }
     saveState(state)
+    log('info', 'reporting apply result to master', {
+      current_revision: state.current_revision,
+      last_apply_status: state.last_apply_status
+    })
     await heartbeat(state)
   } else {
     saveState(state)
@@ -254,6 +323,13 @@ async function main() {
   if (!MASTER_URL) throw new Error('MASTER_PANEL_URL is required')
   if (!AGENT_TOKEN) throw new Error('AGENT_TOKEN or AGENT_API_TOKEN is required')
 
+  log('info', 'starting lightweight agent', {
+    master: MASTER_URL,
+    name: AGENT_NAME,
+    interval_ms: HEARTBEAT_INTERVAL_MS,
+    rules_file: RULES_JSON,
+    state_file: STATE_FILE
+  })
   await registerAgent()
 
   const loop = async () => {
@@ -261,7 +337,7 @@ async function main() {
       const nextInterval = await runOnce()
       setTimeout(loop, nextInterval)
     } catch (err) {
-      console.error(`[agent] ${err.message || err}`)
+      log('error', 'heartbeat loop failed', String(err.message || err))
       setTimeout(loop, HEARTBEAT_INTERVAL_MS)
     }
   }
@@ -270,6 +346,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error(`[agent] fatal: ${err.message || err}`)
+  log('error', 'fatal', String(err.message || err))
   process.exit(1)
 })

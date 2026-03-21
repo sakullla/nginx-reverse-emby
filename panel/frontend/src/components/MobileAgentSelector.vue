@@ -39,7 +39,20 @@
             >
               <div class="mobile-selector__item-content">
                 <div class="mobile-selector__item-name">{{ agent.name }}</div>
-                <div class="mobile-selector__item-url">{{ agent.agent_url || '本机节点' }}</div>
+                <div class="mobile-selector__item-url">
+                  <span class="mobile-selector__mode-icon" :title="getAgentModeLabel(agent.mode)">
+                    <svg v-if="agent.mode === 'local'" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                      <rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
+                    </svg>
+                    <svg v-else-if="agent.mode === 'master'" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                      <rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/>
+                    </svg>
+                    <svg v-else width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                      <polyline points="8 17 12 21 16 17"/><line x1="12" y1="3" x2="12" y2="21"/>
+                    </svg>
+                  </span>
+                  <span>{{ getAgentUrlPart(agent.agent_url, agent.mode, agent.last_seen_ip) }}</span>
+                </div>
               </div>
               <span
                 class="badge"
@@ -70,6 +83,30 @@ const isOpen = ref(false)
 const selectedAgent = computed(() =>
   props.agents.find(a => a.id === props.selectedAgentId)
 )
+
+const getAgentModeLabel = (mode) => {
+  if (mode === 'local') return '本机节点'
+  if (mode === 'master') return '主控模式'
+  return '拉取模式'
+}
+
+const getAgentUrlPart = (url, mode, lastSeenIp) => {
+  if (!url) {
+    if (mode === 'local') return ''
+    if (lastSeenIp) return lastSeenIp
+    return ''
+  }
+  try {
+    const parsed = new URL(url)
+    const port =
+      parsed.port && parsed.port !== '80' && parsed.port !== '443'
+        ? `:${parsed.port}`
+        : ''
+    return `${parsed.hostname}${port}`
+  } catch {
+    return url.replace(/^https?:\/\//, '')
+  }
+}
 
 const selectAgent = (id) => {
   emit('select', id)
@@ -200,6 +237,16 @@ const selectAgent = (id) => {
   color: var(--color-text-tertiary);
   margin-top: var(--space-0-5);
   font-family: var(--font-mono);
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.mobile-selector__mode-icon {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+  opacity: 0.7;
 }
 
 @media (max-width: 768px) {
