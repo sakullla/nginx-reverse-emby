@@ -1,207 +1,342 @@
 <template>
-  <form @submit.prevent="handleSubmit" class="rule-form-inline" novalidate>
-    <div class="input-wrapper" :class="{ 'has-error': errors.frontend }">
-      <span class="input-icon" v-html="icons.globe"></span>
-      <input
-        v-model="frontend_url"
-        type="text"
-        placeholder="前端 URL (如: https://example.com)"
-        @input="errors.frontend = false"
-      />
-      <transition name="fade">
-        <div v-if="errors.frontend" class="error-tip">请填写此字段</div>
-      </transition>
+  <form @submit.prevent="handleSubmit" class="rule-form">
+    <!-- Frontend URL -->
+    <div class="form-group">
+      <label class="form-label form-label--required">前端访问地址</label>
+      <div class="input-wrapper">
+        <span class="input-wrapper__icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"/>
+            <line x1="2" y1="12" x2="22" y2="12"/>
+            <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+          </svg>
+        </span>
+        <input
+          v-model="form.frontend_url"
+          type="text"
+          class="input"
+          :class="{ 'input--error': errors.frontend_url }"
+          placeholder="https://emby.example.com"
+          @input="errors.frontend_url = ''"
+        >
+      </div>
+      <p v-if="errors.frontend_url" class="form-error">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="10"/>
+          <line x1="12" y1="8" x2="12" y2="12"/>
+          <line x1="12" y1="16" x2="12.01" y2="16"/>
+        </svg>
+        {{ errors.frontend_url }}
+      </p>
     </div>
 
-    <div class="separator">
-      <span class="arrow-svg" v-html="icons.arrowRight"></span>
+    <!-- Backend URL -->
+    <div class="form-group">
+      <label class="form-label form-label--required">后端目标地址</label>
+      <div class="input-wrapper">
+        <span class="input-wrapper__icon">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="2" y="2" width="20" height="8" rx="2" ry="2"/>
+            <rect x="2" y="14" width="20" height="8" rx="2" ry="2"/>
+            <line x1="6" y1="6" x2="6.01" y2="6"/>
+            <line x1="6" y1="18" x2="6.01" y2="18"/>
+          </svg>
+        </span>
+        <input
+          v-model="form.backend_url"
+          type="text"
+          class="input"
+          :class="{ 'input--error': errors.backend_url }"
+          placeholder="http://192.168.1.10:8096"
+          @input="errors.backend_url = ''"
+        >
+      </div>
+      <p v-if="errors.backend_url" class="form-error">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="10"/>
+          <line x1="12" y1="8" x2="12" y2="12"/>
+          <line x1="12" y1="16" x2="12.01" y2="16"/>
+        </svg>
+        {{ errors.backend_url }}
+      </p>
     </div>
 
-    <div class="input-wrapper" :class="{ 'has-error': errors.backend }">
-      <span class="input-icon" v-html="icons.server"></span>
-      <input
-        v-model="backend_url"
-        type="text"
-        placeholder="后端 URL (如: http://backend:8080)"
-        @input="errors.backend = false"
-      />
-      <transition name="fade">
-        <div v-if="errors.backend" class="error-tip">请填写此字段</div>
-      </transition>
+    <!-- Tags -->
+    <div class="form-group">
+      <label class="form-label">分类标签</label>
+      <div class="tag-input">
+        <div class="tag-input__container">
+          <span 
+            v-for="(tag, index) in form.tags" 
+            :key="tag" 
+            class="tag"
+          >
+            {{ tag }}
+            <button 
+              type="button"
+              class="tag__remove"
+              @click="removeTag(index)"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="18" y1="6" x2="6" y2="18"/>
+                <line x1="6" y1="6" x2="18" y2="18"/>
+              </svg>
+            </button>
+          </span>
+          <input
+            v-model="tagInput"
+            type="text"
+            class="tag-input__field"
+            placeholder="输入标签按回车..."
+            @keydown.enter.prevent="addTag"
+          >
+        </div>
+      </div>
     </div>
 
-    <button type="submit" :disabled="ruleStore.loading" class="add-button">
-      <span v-if="!ruleStore.loading" class="btn-content">
-        <span class="icon-btn" v-html="icons.plus"></span>
-        添加规则
-      </span>
-      <span v-else class="loading-mini"></span>
+    <!-- Toggles -->
+    <div class="form-group">
+      <div class="toggle-row">
+        <label class="toggle">
+          <input 
+            v-model="form.enabled" 
+            type="checkbox" 
+            class="toggle__input"
+          >
+          <span class="toggle__slider"></span>
+          <span class="toggle__label">启用此规则</span>
+        </label>
+      </div>
+
+      <div class="toggle-row">
+        <label class="toggle">
+          <input 
+            v-model="form.proxy_redirect" 
+            type="checkbox" 
+            class="toggle__input"
+          >
+          <span class="toggle__slider"></span>
+          <span class="toggle__label">
+            代理 302/307 重定向
+            <span class="form-hint">关闭时，后端返回的重定向将直接传递给客户端</span>
+          </span>
+        </label>
+      </div>
+    </div>
+
+    <!-- Submit -->
+    <button 
+      type="submit" 
+      class="btn btn--primary btn--full btn--lg"
+      :disabled="ruleStore.loading"
+    >
+      <span v-if="ruleStore.loading" class="spinner spinner--sm"></span>
+      <span v-else>{{ isEdit ? '保存修改' : '创建规则' }}</span>
     </button>
   </form>
 </template>
 
 <script setup>
-import { ref, reactive } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRuleStore } from '../stores/rules'
 
-const ruleStore = useRuleStore()
-const frontend_url = ref('')
-const backend_url = ref('')
-
-const errors = reactive({
-  frontend: false,
-  backend: false
+const props = defineProps({
+  initialData: { type: Object, default: null }
 })
 
-const icons = {
-  globe: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>',
-  server: '<svg viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/><line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/></svg>',
-  arrowRight: '<svg viewBox="0 0 24 24"><line x1="5" y1="12" x2="19" y2="12"/><polyline points="12 5 19 12 12 19"/></svg>',
-  plus: '<svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>'
+const emit = defineEmits(['success'])
+
+const ruleStore = useRuleStore()
+const isEdit = computed(() => !!props.initialData)
+
+const form = ref({
+  frontend_url: '',
+  backend_url: '',
+  tags: [],
+  enabled: true,
+  proxy_redirect: true
+})
+
+const tagInput = ref('')
+const errors = ref({
+  frontend_url: '',
+  backend_url: ''
+})
+
+onMounted(() => {
+  if (props.initialData) {
+    form.value = {
+      frontend_url: props.initialData.frontend_url || '',
+      backend_url: props.initialData.backend_url || '',
+      tags: Array.isArray(props.initialData.tags) ? [...props.initialData.tags] : [],
+      enabled: props.initialData.enabled !== false,
+      proxy_redirect: props.initialData.proxy_redirect !== false
+    }
+  }
+})
+
+const addTag = () => {
+  const tag = tagInput.value.trim()
+  if (tag && !form.value.tags.includes(tag)) {
+    form.value.tags.push(tag)
+  }
+  tagInput.value = ''
+}
+
+const removeTag = (index) => {
+  form.value.tags.splice(index, 1)
+}
+
+const validate = () => {
+  errors.value.frontend_url = ''
+  errors.value.backend_url = ''
+
+  if (!form.value.frontend_url.trim()) {
+    errors.value.frontend_url = '请输入前端访问地址'
+  }
+
+  if (!form.value.backend_url.trim()) {
+    errors.value.backend_url = '请输入后端目标地址'
+  }
+
+  return !errors.value.frontend_url && !errors.value.backend_url
 }
 
 const handleSubmit = async () => {
-  // 手动校验
-  errors.frontend = !frontend_url.value.trim()
-  errors.backend = !backend_url.value.trim()
-
-  if (errors.frontend || errors.backend) return
+  if (!validate()) return
 
   try {
-    await ruleStore.addRule(frontend_url.value, backend_url.value)
-    frontend_url.value = ''
-    backend_url.value = ''
+    const params = [
+      props.initialData?.id,
+      form.value.frontend_url.trim(),
+      form.value.backend_url.trim(),
+      [...form.value.tags],
+      form.value.enabled,
+      form.value.proxy_redirect
+    ]
+
+    if (isEdit.value) {
+      await ruleStore.modifyRule(...params)
+    } else {
+      await ruleStore.addRule(params[1], params[2], params[3], params[4], params[5])
+    }
+
+    emit('success')
   } catch (err) {
-    // 错误已由 store 处理
+    // Error handled by store
   }
 }
 </script>
 
 <style scoped>
-.rule-form-inline {
+.rule-form {
   display: flex;
-  align-items: center;
-  gap: var(--spacing-md);
-  width: 100%;
+  flex-direction: column;
+  gap: var(--space-5);
 }
 
-.input-wrapper {
-  position: relative;
+.tag-input {
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  transition: all var(--duration-fast) var(--ease-default);
+}
+
+.tag-input:focus-within {
+  border-color: var(--color-primary);
+  box-shadow: var(--shadow-focus);
+}
+
+.tag-input__container {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  align-items: center;
+  min-height: 44px;
+}
+
+.tag-input__field {
   flex: 1;
-}
-
-.input-icon {
-  position: absolute;
-  left: var(--spacing-md);
-  top: 50%;
-  transform: translateY(-50%);
-  width: 16px;
-  height: 16px;
-  pointer-events: none;
-  opacity: 0.5;
+  min-width: 120px;
+  border: none;
+  background: transparent;
+  padding: var(--space-1);
+  font-size: var(--text-sm);
   color: var(--color-text-primary);
-  z-index: 1;
+  outline: none;
 }
 
-.input-icon :deep(svg) {
-  width: 100%;
-  height: 100%;
-  stroke: currentColor;
-  stroke-width: 2;
-  fill: none;
-}
-
-input {
-  padding-left: calc(var(--spacing-md) * 2.8) !important;
-  height: 46px;
-  transition: all var(--transition-base);
-}
-
-.input-wrapper.has-error input {
-  border-color: var(--color-danger);
-  background: var(--color-danger-bg);
-  animation: shake 0.4s cubic-bezier(.36,.07,.19,.97) both;
-}
-
-.error-tip {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 4px;
-  color: var(--color-danger);
-  font-size: 0.7rem;
-  font-weight: var(--font-weight-medium);
-}
-
-.separator {
+.tag-input__field::placeholder {
   color: var(--color-text-muted);
-  opacity: 0.3;
-  width: 24px;
-  height: 24px;
 }
 
-.separator :deep(svg) {
-  width: 100%;
-  height: 100%;
-  stroke: currentColor;
-  stroke-width: 3;
-  fill: none;
+.toggle-row {
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--color-border-subtle);
 }
 
-.add-button {
-  height: 46px;
-  padding: 0 var(--spacing-lg);
-  white-space: nowrap;
-  flex-shrink: 0;
+.toggle-row:last-child {
+  border-bottom: none;
 }
 
-.btn-content {
+.toggle {
   display: flex;
-  align-items: center;
-  gap: 6px;
+  align-items: flex-start;
+  gap: var(--space-3);
+  cursor: pointer;
 }
 
-.icon-btn :deep(svg) {
-  width: 16px;
-  height: 16px;
-  stroke: currentColor;
-  stroke-width: 3;
-  fill: none;
+.toggle__input {
+  position: absolute;
+  opacity: 0;
 }
 
-.loading-mini {
-  width: 18px;
-  height: 18px;
-  border: 2px solid rgba(255,255,255,0.3);
-  border-top-color: #fff;
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
+.toggle__slider {
+  position: relative;
+  width: 44px;
+  height: 24px;
+  background: var(--color-slate-300);
+  border-radius: var(--radius-full);
+  transition: background var(--duration-fast) var(--ease-default);
+  flex-shrink: 0;
+  margin-top: 2px;
 }
 
-@keyframes shake {
-  10%, 90% { transform: translate3d(-1px, 0, 0); }
-  20%, 80% { transform: translate3d(2px, 0, 0); }
-  30%, 50%, 70% { transform: translate3d(-4px, 0, 0); }
-  40%, 60% { transform: translate3d(4px, 0, 0); }
+.toggle__slider::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 20px;
+  height: 20px;
+  background: white;
+  border-radius: var(--radius-full);
+  transition: transform var(--duration-fast) var(--ease-bounce);
+  box-shadow: var(--shadow-sm);
 }
 
-.fade-enter-active, .fade-leave-active { transition: opacity 0.2s; }
-.fade-enter-from, .fade-leave-to { opacity: 0; }
+.toggle__input:checked + .toggle__slider {
+  background: var(--color-success);
+}
 
-@media (max-width: 1024px) {
-  .rule-form-inline {
-    flex-direction: column;
-    align-items: stretch;
-    gap: var(--spacing-lg); /* 增加间距以容纳错误提示 */
-  }
-  .separator {
-    display: none;
-  }
-  .add-button {
-    margin-top: var(--spacing-xs);
-  }
-  .error-tip {
-    top: auto;
-    bottom: -18px;
-  }
+.toggle__input:checked + .toggle__slider::after {
+  transform: translateX(20px);
+}
+
+.toggle__input:focus-visible + .toggle__slider {
+  box-shadow: var(--shadow-focus);
+}
+
+.toggle__label {
+  font-size: var(--text-sm);
+  color: var(--color-text-primary);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.toggle__label .form-hint {
+  margin-top: 0;
 }
 </style>

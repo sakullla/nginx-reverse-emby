@@ -1,170 +1,59 @@
 <template>
-  <Transition name="modal">
-    <div v-if="modelValue" class="modal-backdrop" @click="handleBackdropClick">
-      <div class="modal-container" @click.stop>
-        <div class="modal-header">
-          <h3 class="modal-title">{{ title }}</h3>
-          <button class="modal-close" @click="close" aria-label="关闭">
-            <span>×</span>
-          </button>
-        </div>
-        <div class="modal-body">
-          <slot />
-        </div>
-        <div class="modal-footer" v-if="$slots.footer || showDefaultFooter">
-          <slot name="footer">
-            <BaseButton variant="secondary" @click="close">
-              取消
-            </BaseButton>
-            <BaseButton :variant="confirmVariant" @click="confirm" :loading="loading">
-              {{ confirmText }}
-            </BaseButton>
-          </slot>
+  <Teleport to="body">
+    <Transition name="modal">
+      <div v-if="modelValue" class="modal-backdrop" @click.self="close">
+        <div class="modal" :class="{ 'modal--lg': large }">
+          <div class="modal__header">
+            <div>
+              <h3 class="modal__title">{{ title }}</h3>
+              <p v-if="subtitle" class="modal__subtitle">{{ subtitle }}</p>
+            </div>
+            <button class="modal__close" @click="close">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="18" y1="6" x2="6" y2="18"/>
+                <line x1="6" y1="6" x2="18" y2="18"/>
+              </svg>
+            </button>
+          </div>
+          <div class="modal__body">
+            <slot />
+          </div>
+          <div v-if="showFooter" class="modal__footer">
+            <slot name="footer">
+              <button class="btn btn--secondary" @click="close">取消</button>
+              <button class="btn btn--primary" @click="confirm">确认</button>
+            </slot>
+          </div>
         </div>
       </div>
-    </div>
-  </Transition>
+    </Transition>
+  </Teleport>
 </template>
 
 <script setup>
-import BaseButton from './BaseButton.vue'
-
 defineProps({
-  modelValue: {
-    type: Boolean,
-    default: false
-  },
-  title: {
-    type: String,
-    default: '确认'
-  },
-  confirmText: {
-    type: String,
-    default: '确定'
-  },
-  confirmVariant: {
-    type: String,
-    default: 'primary'
-  },
-  loading: {
-    type: Boolean,
-    default: false
-  },
-  showDefaultFooter: {
-    type: Boolean,
-    default: true
-  },
-  closeOnBackdrop: {
-    type: Boolean,
-    default: true
-  }
+  modelValue: { type: Boolean, required: true },
+  title: { type: String, required: true },
+  subtitle: { type: String, default: '' },
+  large: { type: Boolean, default: false },
+  showFooter: { type: Boolean, default: false }
 })
 
-const emit = defineEmits(['update:modelValue', 'confirm', 'close'])
+const emit = defineEmits(['update:modelValue', 'confirm'])
 
 const close = () => {
   emit('update:modelValue', false)
-  emit('close')
 }
 
 const confirm = () => {
   emit('confirm')
 }
-
-const handleBackdropClick = () => {
-  if (props.closeOnBackdrop) {
-    close()
-  }
-}
 </script>
 
 <style scoped>
-.modal-backdrop {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: var(--color-bg-overlay);
-  backdrop-filter: blur(var(--blur-sm));
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: var(--z-modal-backdrop);
-  padding: var(--spacing-lg);
-}
-
-.modal-container {
-  background: var(--color-bg-primary);
-  border-radius: var(--radius-xl);
-  box-shadow: var(--shadow-2xl);
-  max-width: 500px;
-  width: 100%;
-  max-height: 90vh;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  z-index: var(--z-modal);
-}
-
-.modal-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: var(--spacing-xl);
-  border-bottom: 2px solid var(--color-border-light);
-}
-
-.modal-title {
-  font-size: var(--font-size-lg);
-  font-weight: var(--font-weight-semibold);
-  color: var(--color-heading);
-  margin: 0;
-}
-
-.modal-close {
-  background: none;
-  border: none;
-  font-size: var(--font-size-3xl);
-  line-height: 1;
-  color: var(--color-text-tertiary);
-  cursor: pointer;
-  padding: 0;
-  width: 32px;
-  height: 32px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--radius-md);
-  transition: all var(--transition-fast);
-}
-
-.modal-close:hover {
-  background: var(--color-bg-secondary);
-  color: var(--color-text-primary);
-}
-
-.modal-body {
-  padding: var(--spacing-xl);
-  overflow-y: auto;
-  flex: 1;
-  color: var(--color-text-secondary);
-  line-height: var(--line-height-relaxed);
-}
-
-.modal-footer {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: var(--spacing-md);
-  padding: var(--spacing-xl);
-  border-top: 2px solid var(--color-border-light);
-}
-
-/* Transitions */
 .modal-enter-active,
 .modal-leave-active {
-  transition: opacity var(--transition-base);
+  transition: opacity var(--duration-normal) var(--ease-default);
 }
 
 .modal-enter-from,
@@ -172,25 +61,126 @@ const handleBackdropClick = () => {
   opacity: 0;
 }
 
-.modal-enter-active .modal-container,
-.modal-leave-active .modal-container {
-  transition: transform var(--transition-base);
+.modal-enter-active .modal,
+.modal-leave-active .modal {
+  transition: transform var(--duration-slow) var(--ease-bounce), 
+              opacity var(--duration-slow) var(--ease-bounce);
 }
 
-.modal-enter-from .modal-container,
-.modal-leave-to .modal-container {
-  transform: scale(0.95);
+.modal-enter-from .modal,
+.modal-leave-to .modal {
+  transform: scale(0.9);
+  opacity: 0;
 }
 
-@media (max-width: 768px) {
-  .modal-container {
-    max-width: 100%;
-    max-height: 100vh;
-    border-radius: 0;
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(37, 23, 54, 0.4);
+  backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: var(--z-modal-backdrop);
+  padding: var(--space-4);
+}
+
+.modal {
+  background: var(--color-bg-surface);
+  border: 1.5px solid var(--color-border-default);
+  border-radius: var(--radius-3xl);
+  box-shadow: var(--shadow-2xl);
+  width: 100%;
+  max-width: 480px;
+  max-height: calc(100vh - var(--space-8));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  backdrop-filter: blur(20px);
+}
+
+.modal--lg {
+  max-width: 640px;
+}
+
+.modal__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-5) var(--space-6);
+  border-bottom: 1px solid var(--color-border-subtle);
+  flex-shrink: 0;
+  background: linear-gradient(135deg, rgba(252,231,243,0.15), rgba(243,232,255,0.15));
+}
+
+.modal__title {
+  font-size: var(--text-lg);
+  font-weight: var(--font-semibold);
+  color: var(--color-text-primary);
+  margin: 0;
+}
+
+.modal__subtitle {
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+  margin: var(--space-1) 0 0;
+}
+
+.modal__close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-full);
+  color: var(--color-text-tertiary);
+  transition: all var(--duration-normal) var(--ease-bounce);
+  flex-shrink: 0;
+}
+
+.modal__close:hover {
+  background: rgba(251, 113, 133, 0.1);
+  color: var(--color-danger);
+  transform: rotate(90deg);
+}
+
+.modal__body {
+  padding: var(--space-6);
+  overflow-y: auto;
+  flex: 1;
+}
+
+.modal__footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-6);
+  border-top: 1px solid var(--color-border-subtle);
+  background: linear-gradient(135deg, rgba(252,231,243,0.2), rgba(243,232,255,0.2));
+  flex-shrink: 0;
+}
+
+@media (max-width: 640px) {
+  .modal-backdrop {
+    padding: var(--space-4);
+    align-items: flex-end;
   }
 
-  .modal-backdrop {
-    padding: 0;
+  .modal {
+    max-height: calc(100vh - var(--space-8));
+    border-radius: var(--radius-3xl) var(--radius-3xl) 0 0;
+  }
+
+  .modal-enter-active .modal,
+  .modal-leave-active .modal {
+    transition: transform var(--duration-slow) var(--ease-bounce);
+  }
+
+  .modal-enter-from .modal,
+  .modal-leave-to .modal {
+    transform: translateY(100%);
   }
 }
 </style>

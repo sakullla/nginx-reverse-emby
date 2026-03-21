@@ -2,10 +2,10 @@
 set -eu
 
 # --- 配置定义 ---
-TEMPLATE_FILE="/etc/nginx/templates/default.conf"
-DIRECT_NO_TLS_TEMPLATE_FILE="/etc/nginx/templates/default.direct.no_tls.conf"
-DIRECT_TLS_TEMPLATE_FILE="/etc/nginx/templates/default.direct.tls.conf"
-DYNAMIC_DIR="/etc/nginx/conf.d/dynamic"
+TEMPLATE_FILE="${NRE_TEMPLATE_FILE:-/etc/nginx/templates/default.conf}"
+DIRECT_NO_TLS_TEMPLATE_FILE="${NRE_DIRECT_NO_TLS_TEMPLATE_FILE:-/etc/nginx/templates/default.direct.no_tls.conf}"
+DIRECT_TLS_TEMPLATE_FILE="${NRE_DIRECT_TLS_TEMPLATE_FILE:-/etc/nginx/templates/default.direct.tls.conf}"
+DYNAMIC_DIR="${NRE_DYNAMIC_DIR:-/etc/nginx/conf.d/dynamic}"
 
 # Data root
 DATA_ROOT="/opt/nginx-reverse-emby/panel/data"
@@ -123,8 +123,12 @@ fail_standalone_if_port_80_in_use() {
     fi
 }
 
-ensure_acme_script() {
-    if [ -x "$ACME_SCRIPT" ]; then return 0; fi
+acme_dns_hook_path() {
+    [ -n "$ACME_DNS_PROVIDER" ] || return 1
+    printf '%s/dnsapi/dns_%s.sh' "$ACME_HOME" "$ACME_DNS_PROVIDER"
+}
+
+install_acme_script() {
     mkdir -p "$ACME_HOME"
     entrypoint_log "Installing acme.sh to $ACME_HOME..."
     tmp_acme_dir=$(mktemp -d)
@@ -137,7 +141,7 @@ ensure_acme_script() {
     chmod +x "$tmp_acme_install"
     if ! (
         cd "$tmp_acme_dir" &&
-        ./acme.sh --install $ACME_COMMON_ARGS ${ACME_EMAIL:+--accountemail "$ACME_EMAIL"}
+        sh "$tmp_acme_install" --install-online --nocron $ACME_COMMON_ARGS ${ACME_EMAIL:+--accountemail "$ACME_EMAIL"}
     ); then
         rm -rf "$tmp_acme_dir"
         return 1
@@ -147,12 +151,28 @@ ensure_acme_script() {
     return 0
 }
 
+ensure_acme_script() {
+    if [ -x "$ACME_SCRIPT" ]; then
+        if [ -n "$ACME_DNS_PROVIDER" ]; then
+            dns_hook=$(acme_dns_hook_path || true)
+            if [ -n "$dns_hook" ] && [ ! -f "$dns_hook" ]; then
+                entrypoint_log "Existing acme.sh install is missing dns_$ACME_DNS_PROVIDER hook, reinstalling..."
+                install_acme_script
+                return 0
+            fi
+        fi
+        return 0
+    fi
+    install_acme_script
+}
+
 cleanup_stale_acme_record() {
     cert_domain="$1"
     if [ ! -x "$ACME_SCRIPT" ]; then return 0; fi
     entrypoint_log "Cleaning up stale acme record for $cert_domain..."
     "$ACME_SCRIPT" --remove -d "$cert_domain" --ecc $ACME_COMMON_ARGS >/dev/null 2>&1 || true
     "$ACME_SCRIPT" --remove -d "$cert_domain" $ACME_COMMON_ARGS >/dev/null 2>&1 || true
+    rm -rf "$ACME_HOME/$cert_domain" "$ACME_HOME/${cert_domain}_ecc"
 }
 
 acme_cert_is_issued() {
@@ -173,7 +193,12 @@ issue_cert_with_acme() {
 
     if [ -n "$ACME_DNS_PROVIDER" ] && ! is_ip_address "$cert_domain_clean"; then
         entrypoint_log "Issuing via DNS: $ACME_DNS_PROVIDER for $cert_domain_clean"
-        "$ACME_SCRIPT" --issue $ACME_COMMON_ARGS --server "$ACME_CA" --dns "dns_$ACME_DNS_PROVIDER" -d "$cert_domain_clean" --keylength ec-256
+        if "$ACME_SCRIPT" --issue $ACME_COMMON_ARGS --server "$ACME_CA" --dns "dns_$ACME_DNS_PROVIDER" -d "$cert_domain_clean" --keylength ec-256; then
+            return 0
+        fi
+        entrypoint_log "Initial DNS issuance failed for $cert_domain_clean, retrying with --force after cleanup..."
+        cleanup_stale_acme_record "$cert_domain_clean"
+        "$ACME_SCRIPT" --issue --force $ACME_COMMON_ARGS --server "$ACME_CA" --dns "dns_$ACME_DNS_PROVIDER" -d "$cert_domain_clean" --keylength ec-256
     else
         fail_standalone_if_port_80_in_use "$cert_domain_clean"
         entrypoint_log "Issuing via Standalone for $cert_domain_clean"
@@ -184,7 +209,12 @@ issue_cert_with_acme() {
         if printf '%s' "$cert_domain_clean" | grep -q ':'; then
             issue_args="$issue_args --listen-v6"
         fi
-        "$ACME_SCRIPT" --issue $issue_args
+        if "$ACME_SCRIPT" --issue $issue_args; then
+            return 0
+        fi
+        entrypoint_log "Initial standalone issuance failed for $cert_domain_clean, retrying with --force after cleanup..."
+        cleanup_stale_acme_record "$cert_domain_clean"
+        "$ACME_SCRIPT" --issue --force $issue_args
     fi
 }
 
@@ -239,6 +269,9 @@ cleanup_unused_certificates() {
 
 collect_rules() {
     output_file="$1"
+    RULES_JSON="${PANEL_RULES_JSON:-$DATA_ROOT/proxy_rules.json}"
+
+    # 首先处理环境变量中的规则 PROXY_RULE_1, PROXY_RULE_2...
     i=1
     while true; do
         rule_val=$(eval "printf '%s' \"\${PROXY_RULE_${i}:-}\"")
@@ -246,9 +279,30 @@ collect_rules() {
         printf '%s\n' "$rule_val" >> "$output_file"
         i=$((i + 1))
     done
-    if [ -f "$RULES_FILE" ]; then
-        grep -v '^\s*#' "$RULES_FILE" | grep -v '^\s*$' >> "$output_file" || true
+
+    # 从 JSON 文件中提取启用的规则并转换为 CSV 格式以便后续处理
+    # 格式: frontend_url,backend_url,proxy_redirect
+    if [ -f "$RULES_JSON" ]; then
+        node -e "
+            const fs = require('fs');
+            try {
+                const rules = JSON.parse(fs.readFileSync('$RULES_JSON', 'utf8'));
+                rules.filter(r => r.enabled !== false).forEach(r => {
+                    const proxyRedirect = r.proxy_redirect !== false ? '1' : '0';
+                    process.stdout.write(r.frontend_url + ',' + r.backend_url + ',' + proxyRedirect + '\n');
+                });
+            } catch (e) {
+                process.stderr.write('Error parsing rules.json: ' + e.message + '\n');
+                process.exit(1);
+            }
+        " >> "$output_file" || true
+    elif [ -f "$RULES_FILE" ]; then
+        # 回退逻辑: 如果没有 JSON 但有旧的 CSV，默认启用 proxy_redirect
+        grep -v '^\s*#' "$RULES_FILE" | grep -v '^\s*$' | while IFS= read -r line; do
+            printf '%s,1\n' "$line"
+        done >> "$output_file" || true
     fi
+
     if [ -s "$output_file" ]; then
         awk '!seen[$0]++' "$output_file" > "${output_file}.tmp" && mv "${output_file}.tmp" "$output_file"
     fi
@@ -264,8 +318,10 @@ tmp_certs=$(mktemp)
 collect_rules "$tmp_rules"
 
 if [ -s "$tmp_rules" ]; then
-    while IFS=, read -r frontend_url backend_url || [ -n "$frontend_url" ]; do
+    while IFS=, read -r frontend_url backend_url proxy_redirect || [ -n "$frontend_url" ]; do
         [ -z "$backend_url" ] && continue
+        # 默认为启用 proxy_redirect (1)
+        proxy_redirect=${proxy_redirect:-1}
         parsed=$(parse_frontend_url "$frontend_url" || continue)
 
         proto=$(echo "$parsed" | cut -d'|' -f1)
@@ -285,15 +341,132 @@ if [ -s "$tmp_rules" ]; then
             [ "$proto" = "https" ] && echo "$cert_dom" >> "$tmp_certs"
         fi
 
-        sed -e "s|\${frontend_port}|$port|g" \
-            -e "s|\${domain_name}|$srv_name|g" \
-            -e "s|\${resolver}|$RESOLVER|g" \
-            -e "s|\${domain_path}|$path|g" \
-            -e "s|\${proxy_target}|$backend_url|g" \
-            -e "s|\${cert_dir}|$DIRECT_CERT_DIR|g" \
-            -e "s|\${cert_domain}|$cert_dom|g" \
-            "$template" > "$DYNAMIC_DIR/$conf_name"
-        entrypoint_log "Generated config for $domain"
+        # 根据 proxy_redirect 生成配置
+        if [ "$proxy_redirect" = "1" ]; then
+            # 启用 proxy_redirect: 生成 302/307 处理配置
+            if [ "$deploy_mode" = "front_proxy" ]; then
+                location_proxy_redirect='        proxy_redirect ~^(https?)://([^:/]+(?::\d+)?)(/.+)$ $http_x_forwarded_proto://$http_x_forwarded_host:$http_x_forwarded_port/backstream/$1/$2$3;'
+            else
+                location_proxy_redirect='        proxy_redirect ~^(https?)://([^:/]+(?::\d+)?)(/.+)$ $scheme://$host:$server_port/backstream/$1/$2$3;'
+            fi
+            # 生成 backstream 配置
+            if [ "$deploy_mode" = "front_proxy" ]; then
+                backstream_config='    location ~  ^/backstream/(https?)/([^/]+)  {
+        set $website                          $1://$2;
+        rewrite ^/backstream/(https?)/([^/]+)(/.+)$  $3 break;
+        early_hints $early_hints;
+        proxy_pass                            $website;
+
+        proxy_set_header Host                 $proxy_host;
+
+        proxy_http_version                    1.1;
+        proxy_cache_bypass                    $http_upgrade;
+        proxy_set_header Upgrade              $http_upgrade;
+        proxy_set_header Connection           $connection_upgrade;
+
+        proxy_ssl_server_name                 on;
+
+        proxy_connect_timeout                 60s;
+        proxy_send_timeout                    60s;
+        proxy_read_timeout                    60s;
+
+        proxy_redirect ~^(https?)://([^:/]+(?::\d+)?)(/.+)$ $http_x_forwarded_proto://$http_x_forwarded_host:$http_x_forwarded_port/backstream/$1/$2$3;
+
+        proxy_intercept_errors on;
+        error_page 307 = @handle_redirect;
+    }
+
+    location @handle_redirect {
+        set $saved_redirect_location '"'"'$upstream_http_location'"'"';
+        early_hints $early_hints;
+        proxy_pass $saved_redirect_location;
+        proxy_set_header Host                 $proxy_host;
+        proxy_http_version                    1.1;
+        proxy_cache_bypass                    $http_upgrade;
+
+        proxy_ssl_server_name                 on;
+
+        proxy_set_header Upgrade              $http_upgrade;
+        proxy_set_header Connection           $connection_upgrade;
+
+        proxy_connect_timeout                 60s;
+        proxy_send_timeout                    60s;
+        proxy_read_timeout                    60s;
+    }
+'
+            else
+                backstream_config='    location ~ ^/backstream/(https?)/([^/]+) {
+        set $website $1://$2;
+        rewrite ^/backstream/(https?)/([^/]+)(/.+)$ $3 break;
+        early_hints $early_hints;
+        proxy_pass $website;
+
+        proxy_set_header Host $proxy_host;
+
+        proxy_http_version 1.1;
+        proxy_cache_bypass $http_upgrade;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+
+        proxy_ssl_server_name on;
+
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 60s;
+
+        proxy_redirect ~^(https?)://([^:/]+(?::\d+)?)(/.+)$ $scheme://$host:$server_port/backstream/$1/$2$3;
+
+        proxy_intercept_errors on;
+        error_page 307 = @handle_redirect;
+    }
+
+    location @handle_redirect {
+        set $saved_redirect_location '"'"'$upstream_http_location'"'"';
+        early_hints $early_hints;
+        proxy_pass $saved_redirect_location;
+        proxy_set_header Host $proxy_host;
+        proxy_http_version 1.1;
+        proxy_cache_bypass $http_upgrade;
+
+        proxy_ssl_server_name on;
+
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 60s;
+    }
+'
+            fi
+        else
+            # 禁用 proxy_redirect: 不生成 302/307 处理配置，使用默认的 proxy_redirect 行为
+            location_proxy_redirect='        # proxy_redirect disabled - passing redirects directly to client'
+            backstream_config=''
+        fi
+
+        # 使用 awk 处理多行替换，避免 sed 的转义问题
+        awk -v frontend_port="$port" \
+            -v domain_name="$srv_name" \
+            -v resolver="$RESOLVER" \
+            -v domain_path="$path" \
+            -v proxy_target="$backend_url" \
+            -v cert_dir="$DIRECT_CERT_DIR" \
+            -v cert_domain="$cert_dom" \
+            -v location_proxy_redirect="$location_proxy_redirect" \
+            -v backstream_config="$backstream_config" '
+            { gsub(/\${frontend_port}/, frontend_port) }
+            { gsub(/\${domain_name}/, domain_name) }
+            { gsub(/\${resolver}/, resolver) }
+            { gsub(/\${domain_path}/, domain_path) }
+            { gsub(/\${proxy_target}/, proxy_target) }
+            { gsub(/\${cert_dir}/, cert_dir) }
+            { gsub(/\${cert_domain}/, cert_domain) }
+            { gsub(/\${location_proxy_redirect}/, location_proxy_redirect) }
+            { gsub(/\${backstream_config}/, backstream_config) }
+            { print }
+        ' "$template" > "$DYNAMIC_DIR/$conf_name"
+        entrypoint_log "Generated config for $domain (proxy_redirect: $proxy_redirect)"
     done < "$tmp_rules"
 fi
 

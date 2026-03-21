@@ -1,378 +1,208 @@
-# Nginx-Reverse-Emby
+# Nginx-Reverse-Emby 🚀
 
-一个面向 Emby、Jellyfin 和其他 HTTP 服务的反向代理项目。
+[![Docker Build](https://github.com/sakullla/nginx-reverse-emby/actions/workflows/docker-build.yml/badge.svg)](https://github.com/sakullla/nginx-reverse-emby/actions/workflows/docker-build.yml)
+![Docker Pulls](https://img.shields.io/docker/pulls/sakullla/nginx-reverse-emby?color=blue)
 
-它提供两种使用方式：
+一个专为 Emby、Jellyfin 及各种 HTTP 服务设计的自动化反向代理解决方案。支持可视化面板管理、证书自动续期及 IPv4/IPv6 双栈。
 
-- 主机模式：直接在宿主机写入 Nginx 配置
-- Docker 模式：容器启动后按规则动态生成反代配置，并提供管理面板
+---
 
-支持：
+## ✨ 核心特性
 
-- IPv4 / IPv6 前端和后端 URL
-- `acme.sh` 自动申请和安装证书
-- DNS API 验证（含 Cloudflare）
-- Docker 环境变量规则 `PROXY_RULE_N`
-- 面板动态新增、编辑、删除、应用规则
+- 🛠 **双模式部署**：支持 Docker 容器化部署（推荐）和宿主机脚本直接部署。
+- 🖥 **可视化面板**：轻量级管理后端，支持规则的增删改查、即时应用及流量统计。
+- 🔒 **自动化 SSL**：集成 `acme.sh`，支持 HTTP / DNS API（如 Cloudflare）自动申请并续期证书。
+- 🌐 **全栈协议支持**：完美支持 IPv4 / IPv6，适配各种复杂的网络环境。
+- ⚡ **动态响应**：基于模板的 Nginx 配置生成，修改规则后自动执行 `nginx -t` 与 `reload`，平滑无感。
+- 🔄 **智能重定向**：支持配置是否代理 302/307 重定向，适配 OAuth 等特殊场景需求。
+- 📦 **开箱即用**：预置最优化的 Nginx 配置，特别针对媒体流服务进行了调优。
 
-## 推荐用法
+---
 
-大多数场景直接使用仓库内置的 `docker-compose.yaml` 即可。
+## 🚀 快速开始 (Docker 模式)
 
-当前示例默认：
+这是最推荐的部署方式，只需一个文件即可接管你的反代服务。
 
-- 使用镜像 `ghcr.io/sakullla/nginx-reverse-emby:latest`
-- 使用 `network_mode: host`
-- 使用 `PROXY_DEPLOY_MODE=direct`
-- 面板默认监听宿主机 `8080`
-- 反代规则直接占用宿主机 `80/443` 或规则中声明的监听端口
-
-启动：
-
+### 1. 准备工作
 ```bash
-docker compose up -d
-```
-
-面板地址：
-
-```text
-http://<你的服务器IP>:8080/
-```
-
-首次启动前，至少检查这几项：
-
-- 把 `API_TOKEN` 改成你自己的随机长字符串
-- 确认宿主机上的 `8080` 没被占用
-- 如果要让容器直接签发 HTTPS 证书，确认 `80` 和 `443` 可用
-
-## docker-compose.yaml 说明
-
-仓库内置示例的思路是“开箱即用，而不是最小配置”。
-
-你通常只需要改这几项：
-
-- `API_TOKEN`
-- `PROXY_RULE_1`（如果你想预置规则）
-- `ACME_EMAIL`（如果你希望显式填写）
-- `ACME_DNS_PROVIDER` 和对应 DNS 凭据（如果你要用 DNS 验证）
-
-规则格式固定为：
-
-```text
-frontend_url,backend_url
-```
-
-例如：
-
-```text
-https://emby.example.com,http://192.168.1.10:8096
-```
-
-注意：
-
-- `PROXY_RULE_1`、`PROXY_RULE_2`、`PROXY_RULE_3` 必须连续编号
-- 如果缺了某个编号，后面的规则不会继续读取
-- 仓库示例里默认把 `PROXY_RULE_1` 注释掉，避免你启动后立刻生成错误规则
-
-## Docker 快速开始
-
-### 方式一：直接使用 compose
-
-```bash
-docker compose up -d
-```
-
-### 方式一的完整流程
-
-如果你只想下载 `docker-compose.yaml` 来启动，可以直接这样做：
-
-```bash
-mkdir -p nginx-reverse-emby
-cd nginx-reverse-emby
+mkdir -p nginx-reverse-emby && cd nginx-reverse-emby
 curl -O https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/docker-compose.yaml
 mkdir -p data
 ```
 
-然后编辑 `docker-compose.yaml`，至少修改：
+### 2. 配置环境变量
+编辑 `docker-compose.yaml`，重点修改以下几项：
+- `API_TOKEN`: **务必修改**，用于面板接口鉴权。
+- `PROXY_RULE_1`: (可选) 预置第一条规则，格式为 `前端地址,后端地址`。
 
-- `API_TOKEN`
-- `PROXY_RULE_1`（如果你想预置规则）
-- `ACME_DNS_PROVIDER`、`CF_Token`、`CF_Account_ID`（如果你要用 DNS 验证）
-
-启动：
-
+### 3. 启动
 ```bash
 docker compose up -d
 ```
 
-查看容器状态：
+### 4. 访问面板
+打开浏览器访问：`http://<服务器IP>:8080`
+> **注意**：首次登录请使用你在环境变量中设置的 `API_TOKEN`。
 
+---
+
+## ⚙️ 配置指南
+
+### 规则格式
+无论是在面板添加还是通过环境变量预置，规则统一遵循：
+`frontend_url,backend_url`
+
+**示例：**
+- **标准 HTTPS**：`https://emby.example.com,http://192.168.1.10:8096` (会自动触发 SSL 申请)
+- **特定端口**：`http://files.example.com:81,http://10.0.0.5:8080`
+- **IPv6 后端**：`https://jellyfin.me.com,http://[2001:db8::1]:8096`
+
+### 302/307 重定向代理配置
+
+默认情况下，Nginx 会拦截并代理后端的 302/307 重定向响应，将重定向地址转换为前端地址。这在大多数场景下是期望的行为。
+
+但在某些特殊场景（如 OAuth 认证）中，你可能希望后端返回的重定向直接传递给客户端，不做转换。可以通过以下方式配置：
+
+**Docker 模式（面板配置）：**
+在管理面板的规则编辑表单中，找到「代理 302/307 重定向」开关，关闭即可。
+
+**主机模式（deploy.sh 脚本）：**
+使用 `--no-proxy-redirect` 参数禁用 302/307 代理：
 ```bash
-docker compose ps
+# 禁用 302/307 代理，后端重定向将直接返回给客户端
+curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh | bash -s -- \
+  -y https://emby.example.com -r http://127.0.0.1:8096 --no-proxy-redirect
 ```
 
-查看启动日志：
+### 部署模式 (PROXY_DEPLOY_MODE)
 
-```bash
-docker compose logs -f
-```
+| 模式 | 说明 | 适用场景 |
+| :--- | :--- | :--- |
+| `direct` (默认) | 容器直接接管 80/443 端口，处理 SSL 握手。 | **最推荐**。服务器无其他 Nginx，想一站式解决。 |
+| `front_proxy` | 容器仅做内部转发，SSL 由外层代理（如大内网前置机）处理。 | 已有上游 Nginx 或使用 CF 隧道。 |
 
-访问面板：
+---
 
-```text
-http://<你的服务器IP>:8080/
-```
+## 🔒 证书与域名验证
 
-如果是公网服务器，至少确认这些端口已放行：
+本镜像默认使用 `acme.sh` 管理证书。
+当上一次失败残留了域名 key 或 ACME 状态时，Docker `direct` 和宿主机脚本都会在首次申请失败后清理状态，并带 `--force` 自动重试一次。
+如果你是从旧镜像升级上来，Docker `direct` 模式在发现所需 DNS hook 缺失时会自动重装 `acme.sh`，避免旧的持久化 `.acme.sh` 目录继续导致 `dns_cf` 一类错误。
 
-- `8080`：管理面板
-- `80`：HTTP / ACME 验证
-- `443`：HTTPS
-
-默认数据目录：
-
-```text
-./data
-```
-
-其中会保存：
-
-- 面板规则文件
-- 已签发证书
-- `acme.sh` 工作目录
-
-### 方式二：使用 docker run
-
-```bash
-docker run -d \
-  --name nginx-reverse-emby \
-  --restart unless-stopped \
-  --network host \
-  -e PROXY_DEPLOY_MODE=direct \
-  -e API_TOKEN=change-this-token \
-  -v ${PWD}/data:/opt/nginx-reverse-emby/panel/data \
-  ghcr.io/sakullla/nginx-reverse-emby:latest
-```
-
-## 面板使用
-
-默认面板入口：
-
-```text
-http://<你的服务器IP>:8080/
-```
-
-面板支持：
-
-- 查看规则
-- 新增规则
-- 编辑规则
-- 删除规则
-- 手动应用配置
-
-默认开启自动应用，也就是新增、修改、删除规则后会自动执行：
-
-```text
-generate -> nginx -t -> nginx -s reload
-```
-
-如果你不想自动应用，可以设置：
-
-```bash
-PANEL_AUTO_APPLY=0
-```
-
-`API_TOKEN` 说明：
-
-- 留空时，面板接口不做鉴权
-- 仓库示例默认要求你显式设置它
-- 生产环境不要使用 `change-this-token` 这种示例值
-
-## Docker 两种模式
-
-### `direct`
-
-推荐给大多数用户，也是当前 `docker-compose.yaml` 默认值。
-
-特点：
-
-- 容器自己处理前端 HTTP / HTTPS
-- `https://` 规则会生成 TLS 配置
-- 可以直接在容器内申请和续期证书
-- 适合没有外层 Nginx / Caddy / Traefik 的场景
-
-### `front_proxy`
-
-适合已经有上游反向代理的场景。
-
-特点：
-
-- 容器内部只做 HTTP 反代
-- 外层代理负责 TLS
-- 实际监听端口由 `FRONT_PROXY_PORT` 控制，默认 `3000`
-
-示例：
-
+### DNS API 验证 (以 Cloudflare 为例)
+如果你希望在不暴露 80 端口的情况下申请证书，建议使用 DNS 验证：
 ```yaml
 environment:
-  PROXY_DEPLOY_MODE: front_proxy
-  FRONT_PROXY_PORT: "3000"
+  - ACME_DNS_PROVIDER=cf
+  - CF_Token=你的Cloudflare_Token
+  - CF_Account_ID=你的账号ID
 ```
 
-说明：
+---
 
-- 镜像内部实现默认值仍然是 `front_proxy`
-- 但仓库提供的 `docker-compose.yaml` 已经显式改成 `direct`
+## 🛠 主机模式 (非 Docker)
 
-## Docker 证书说明
-
-`direct` 模式下默认使用：
-
-```text
-DIRECT_CERT_MODE=acme
-```
-
-常用变量：
-
-- `ACME_EMAIL`
-- `ACME_CA`，默认 `letsencrypt`
-- `ACME_DNS_PROVIDER`
-- `CF_Token`
-- `CF_Account_ID`
-- `ACME_HOME`，默认 `/opt/nginx-reverse-emby/panel/data/.acme.sh`
-- `DIRECT_CERT_DIR`，默认 `/opt/nginx-reverse-emby/panel/data/certs`
-
-当前行为：
-
-- 容器内已经带 `cron` / `crontab`
-- `direct + acme` 下会自动启动后台续期循环
-- `acme.sh` 的工作目录固定在 `ACME_HOME`
-- 证书安装后会尝试执行 reload
-
-### 什么时候建议用 DNS 验证
-
-以下情况建议优先使用 DNS 验证：
-
-- 你通过面板在容器运行中热添加 HTTPS 规则
-- 你不想依赖 `80` 端口做 standalone 验证
-- 你使用 Cloudflare 之类的 DNS 提供商
-
-Cloudflare 示例：
-
-```yaml
-environment:
-  PROXY_DEPLOY_MODE: direct
-  ACME_DNS_PROVIDER: cf
-  CF_Token: xxxxxxxx
-  CF_Account_ID: xxxxxxxx
-```
-
-## 主机模式
-
-如果你不是想跑 Docker，而是想直接在宿主机写入 Nginx 配置，可以使用 `deploy.sh`。
-
-交互模式：
+如果你希望直接在宿主机运行，可以使用我们提供的交互式脚本：
 
 ```bash
+# 交互式安装/添加规则
 bash <(curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh)
+
+# 非交互式快捷添加
+curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh | bash -s -- -y https://emby.abc.com -r http://127.0.0.1:8096
+
+# 禁用 302/307 重定向代理（适用于 OAuth 等场景）
+curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh | bash -s -- \
+  -y https://emby.abc.com -r http://127.0.0.1:8096 --no-proxy-redirect
 ```
 
-非交互模式：
+### deploy.sh 参数说明
+
+| 参数 | 说明 | 示例 |
+| :--- | :--- | :--- |
+| `-y, --you-domain` | 前端访问地址 | `-y https://emby.example.com` |
+| `-r, --r-domain` | 后端目标地址 | `-r http://192.168.1.10:8096` |
+| `--no-proxy-redirect` | 禁用 302/307 代理 | `--no-proxy-redirect` |
+| `-d, --parse-cert-domain` | 自动提取根域名作为证书域名 | `-d` |
+| `-D, --dns` | 使用 DNS API 模式申请证书 | `-D cf` |
+| `--remove` | 移除指定域名的配置 | `--remove https://emby.example.com` |
+| `-Y, --yes` | 非交互模式下自动确认 | `-Y` |
+| `-h, --help` | 显示帮助信息 | `-h` |
+
+---
+
+## ❓ 常见问题 (FAQ)
+
+<details>
+<summary>为什么新增 HTTPS 规则后生效较慢？</summary>
+系统需要按序执行：生成配置 -> 申请证书 (ACME 验证) -> 安装证书 -> Nginx 测试 -> Reload。域名验证过程通常需要 10-30 秒。
+</details>
+
+<details>
+<summary>为什么推荐使用 host 网络模式？</summary>
+`network_mode: host` 可以让容器直接高效地监听宿主机端口，避免了繁琐的 Docker 端口映射，尤其是在处理 IPv6 和动态增加多端口规则时更具优势。
+</details>
+
+<details>
+<summary>如何备份我的规则和证书？</summary>
+只需备份挂载到容器 `/opt/nginx-reverse-emby/panel/data` 的宿主机目录即可。
+</details>
+
+<details>
+<summary>何时需要禁用 302/307 代理？</summary>
+
+默认情况下，Nginx 会拦截后端的 302/307 重定向并转换地址。但在以下场景建议禁用：
+
+- **CDN 回源场景**：需要保留原始重定向地址时
+- **多跳转链接**：后端返回的链接需要客户端直接访问时
+
+**Docker 模式**：在面板编辑规则，关闭「代理 302/307 重定向」开关  
+**主机模式**：使用 `--no-proxy-redirect` 参数
+</details>
+
+---
+⭐ 如果这个项目对你有帮助，请给一个 Star！
+
+---
+
+## Master / Agent（轻量 Agent）
+
+当前版本支持 **Master / Agent** 架构，适合在 Master 上集中管理多个 Nginx 节点。
+
+- **Master**：建议运行完整面板与后端服务，可直接用 Docker 部署，负责节点注册、规则管理、配置下发与心跳接收。
+- **Agent**：运行在目标主机上，只需要 Node.js 与本机 Nginx 管理脚本，不需要 Docker，也不需要部署面板，适合轻量化场景。
+- **NAT Agent**：Agent 可以位于 NAT 或内网后方，只需要能主动访问 Master；通过心跳轮询拉取期望配置，不要求 Master 反向直连。
+- **Master 本机节点**：Master 自己也会保留一个可直接管理的本机节点，可和远程 Agent 一起在面板中统一管理。
+
+### Agent 最低要求
+
+- Node.js 18+
+- `curl`
+- 一个可由 Agent 调用的 Nginx 管理脚本（通常负责 `nginx -t` 与 `nginx -s reload`）
+
+### 快速加入 Agent
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh \
-  | bash -s -- -y https://proxy.example.com -r http://127.0.0.1:8096
+curl -fsSL http://master.example.com:8080/panel-api/public/join-agent.sh | bash -s -- \
+  --register-token change-this-register-token \
+  --install-systemd
 ```
 
-删除规则：
+该脚本会直接从当前 Master 面板下载并安装轻量 Agent、默认 nginx apply 脚本、生成模板与运行资源，不依赖 GitHub 等外部托管。
+
+如果目标机器缺少 `Node.js 18+`、`curl` 或 `nginx`，脚本会尝试通过系统包管理器自动安装；因此建议使用 `root` 或具备 `sudo` 权限的用户执行。
+
+如需自定义本机 apply 逻辑，可额外追加：
 
 ```bash
-curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/deploy.sh \
-  | bash -s -- --remove https://proxy.example.com:443 --yes
+--apply-command '/usr/local/bin/nginx-reverse-emby-apply.sh'
 ```
 
-常用参数：
+脚本会生成轻量 Agent 配置，并启动 `scripts/light-agent.js`。Agent 会定时上报心跳、拉取 Master 下发的配置 revision，并在需要时执行本机 Nginx 管理脚本。
 
-| 参数 | 说明 |
-|---|---|
-| `-y`, `--you-domain <URL>` | 前端访问地址 |
-| `-r`, `--r-domain <URL>` | 后端地址 |
-| `-m`, `--cert-domain <domain>` | 手动指定证书域名 |
-| `-d`, `--parse-cert-domain` | 自动提取根域名，仅在匹配 `*.*.*` 时生效 |
-| `-D`, `--dns <provider>` | 使用 DNS API 验证 |
-| `-R`, `--resolver <dns list>` | 自定义解析器 |
-| `-c`, `--template-domain-config <path\|url>` | 自定义模板 |
-| `--remove <URL>` | 删除指定规则 |
-| `-Y`, `--yes` | 非交互删除确认 |
-| `-h`, `--help` | 显示帮助 |
+### 示例文件
 
-主机模式补充说明：
-
-- `http://` 前端不会申请证书
-- 前端是 IP 时会使用短期证书参数
-- 没配 `--dns` 时默认走 standalone
-- Cloudflare 需要 `CF_Token` 和 `CF_Account_ID`
-- `--template-domain-config` 才是真实参数名，不是 `--template`
-
-## 常见问题
-
-### 为什么新增或删除 HTTPS 规则会比较慢
-
-因为后端可能还要顺序完成这些步骤：
-
-- 生成配置
-- 申请证书
-- 安装证书
-- `nginx -t`
-- `nginx -s reload`
-
-域名签证书本身就可能需要十几秒甚至更久。
-
-### 为什么面板统计里的“总请求数”偏大
-
-当前统计来自 nginx 全局请求，不只包含代理流量，也包含：
-
-- 面板静态资源
-- `/panel-api/*`
-- 其他进入 nginx 的请求
-
-所以它不是纯代理请求数。
-
-### 为什么推荐 compose 示例使用 host 网络
-
-因为这个项目在 `direct` 模式下本来就是要让容器直接监听前端端口。
-
-使用 `network_mode: host` 的好处是：
-
-- 配置更简单
-- 不需要为每条规则再单独考虑端口映射
-- 更符合“容器直接接管 80/443”的使用方式
-
-代价也很明确：
-
-- 会直接占用宿主机端口
-- 不适合你还要在宿主机上跑另一套前端 Nginx 的场景
-
-### 为什么 `PROXY_RULE_1` 在 compose 里默认是注释的
-
-因为仓库示例应该优先保证“直接启动不出错”。
-
-如果默认塞入一条示例规则，很容易出现：
-
-- 域名不是你的
-- 后端地址不是你的
-- 启动后立刻触发证书申请失败
-- 面板自动应用时报错
-
-所以默认留空更稳妥。
-
-## 最低检查项
-
-建议至少检查：
-
-1. `docker compose up -d` 后容器正常启动
-2. `http://<你的服务器IP>:8080/` 可以打开面板
-3. 新增一条 HTTP 规则可以立即生效
-4. 新增一条 HTTPS 规则时证书可以正常签发和安装
-5. 删除规则后 nginx 仍能正常 `reload`
-6. 如果使用 `PROXY_RULE_N`，确认编号连续
+- `AGENT_EXAMPLES.md`
+- `examples/light-agent.env.example`
+- `examples/light-agent.service.example`
+- `examples/agent-apply.example.sh`
