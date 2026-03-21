@@ -147,9 +147,9 @@
                   class="sidebar__agent"
                   :class="{ 'sidebar__agent--active': ruleStore.selectedAgentId === agent.id }"
                   @click="handleSelectAgent(agent.id); sidebarOpen = false"
-                  :title="sidebarCollapsed ? agent.name : ''"
+                  :title="getAgentTooltip(agent)"
                 >
-                  <div class="sidebar__agent-indicator" :class="agent.status === 'online' ? 'sidebar__agent-indicator--online' : 'sidebar__agent-indicator--offline'"></div>
+                  <div class="sidebar__agent-indicator" :class="`sidebar__agent-indicator--${getAgentSyncStatus(agent)}`"></div>
                   <div class="sidebar__agent-info" v-show="!sidebarCollapsed">
                     <div class="sidebar__agent-name">{{ agent.name }}</div>
                     <div class="sidebar__agent-meta" :title="formatAgentUrl(agent.agent_url, agent.mode, agent.last_seen_ip)">
@@ -690,6 +690,27 @@ function resetCopyState() {
 const activeRulesCount = computed(() => {
   return ruleStore.rules.filter(r => r.enabled).length
 })
+
+// Returns the effective sync status of an agent for indicator/tooltip use.
+// Priority: offline > failed > pending > online
+function getAgentSyncStatus(agent) {
+  if (agent.status !== 'online') return 'offline'
+  const desired = agent.desired_revision ?? 0
+  const current = agent.current_revision ?? 0
+  if (desired > current) return 'pending'
+  const s = agent.last_apply_status
+  if (s !== null && s !== undefined && s !== 'success') return 'failed'
+  return 'online'
+}
+
+// Returns the tooltip text shown when hovering over an agent in the sidebar.
+function getAgentTooltip(agent) {
+  if (sidebarCollapsed.value) return agent.name
+  const status = getAgentSyncStatus(agent)
+  if (status === 'failed' && agent.last_apply_message) return `应用失败: ${agent.last_apply_message}`
+  if (status === 'pending') return '等待 Agent 心跳同步配置...'
+  return ''
+}
 
 const filteredAgents = computed(() => {
   const query = agentSearchQuery.value.trim().toLowerCase()
@@ -1424,6 +1445,17 @@ onUnmounted(() => {
   background: var(--color-primary);
   box-shadow: 0 0 0 3px var(--color-primary-subtle);
   animation: pulse 2s ease-in-out infinite;
+}
+
+.sidebar__agent-indicator--pending {
+  background: var(--color-warning);
+  box-shadow: 0 0 0 3px var(--color-warning-50);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.sidebar__agent-indicator--failed {
+  background: var(--color-danger);
+  box-shadow: 0 0 0 3px var(--color-danger-50);
 }
 
 .sidebar__agent-indicator--offline {

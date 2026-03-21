@@ -71,7 +71,12 @@ const mockAgents = [
     mode: 'local',
     status: 'online',
     is_local: true,
-    last_seen_at: new Date().toISOString()
+    last_seen_at: new Date().toISOString(),
+    // revisions match + success → 所有规则显示"已生效"
+    desired_revision: 5,
+    current_revision: 5,
+    last_apply_status: 'success',
+    last_apply_message: ''
   },
   {
     id: 'edge-1',
@@ -82,13 +87,37 @@ const mockAgents = [
     mode: 'master',
     status: 'online',
     is_local: false,
-    last_seen_at: new Date().toISOString()
+    last_seen_at: new Date().toISOString(),
+    // desired > current → 所有规则显示"待同步"
+    desired_revision: 3,
+    current_revision: 2,
+    last_apply_status: null,
+    last_apply_message: ''
+  },
+  {
+    id: 'edge-2',
+    name: '边缘节点-02',
+    agent_url: 'http://edge-2.example.com:8080',
+    version: '1.0.0',
+    tags: ['edge'],
+    mode: 'master',
+    status: 'online',
+    is_local: false,
+    last_seen_at: new Date().toISOString(),
+    // revisions match but apply failed → 所有规则显示"应用失败"
+    desired_revision: 2,
+    current_revision: 2,
+    last_apply_status: 'failed',
+    last_apply_message: 'nginx: configuration file test failed'
   },
   ...Array.from({ length: 30 }, (_, i) => {
     const region = mockAgentRegions[i % mockAgentRegions.length]
     const n = Math.floor(i / mockAgentRegions.length) + 1
     const id = `${region.prefix}-${String(n).padStart(2, '0')}`
     const isMasterMode = i % 5 === 0
+    const rev = i + 1
+    const applyFailed = i % 11 === 3
+    const isPending = i % 7 === 2
     return {
       id,
       name: `${region.name}-${String(n).padStart(2, '0')}`,
@@ -99,7 +128,11 @@ const mockAgents = [
       status: i % 6 === 5 ? 'offline' : 'online',
       is_local: false,
       last_seen_at: new Date().toISOString(),
-      last_seen_ip: `10.0.${Math.floor(i / 10) + 1}.${(i % 10) + 10}`
+      last_seen_ip: `10.0.${Math.floor(i / 10) + 1}.${(i % 10) + 10}`,
+      desired_revision: rev,
+      current_revision: isPending ? rev - 1 : rev,
+      last_apply_status: applyFailed ? 'failed' : 'success',
+      last_apply_message: applyFailed ? 'nginx config test failed' : ''
     }
   })
 ]
@@ -161,7 +194,8 @@ function generateMockRules(count) {
 
 const mockRulesByAgent = {
   local: generateMockRules(100),
-  'edge-1': generateMockRules(30).map(r => ({ ...r, id: r.id + 1000 }))
+  'edge-1': generateMockRules(30).map(r => ({ ...r, id: r.id + 1000 })),
+  'edge-2': generateMockRules(15).map(r => ({ ...r, id: r.id + 2000 }))
 }
 
 function getMockStats(agentId) {

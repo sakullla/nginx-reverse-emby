@@ -48,6 +48,7 @@
         v-for="rule in ruleStore.filteredRules"
         :key="rule.id"
         :rule="rule"
+        :agent="ruleStore.selectedAgent"
         @edit="handleEdit"
         @delete="handleDelete"
       />
