@@ -471,6 +471,7 @@ function sanitizeAgent(agent) {
     status: getAgentStatus(hydrated),
     error: hydrated.error || null,
     is_local: !!hydrated.is_local,
+    last_seen_ip: hydrated.last_seen_ip || null,
   };
 }
 
@@ -1016,6 +1017,11 @@ async function handleMasterApi(req, res) {
       const agent = ensureAgentState(agents[index]);
       agent.last_seen_at = nowIso();
       agent.updated_at = nowIso();
+      const remoteIp =
+        String(req.headers["x-forwarded-for"] || "").split(",")[0].trim() ||
+        req.socket.remoteAddress ||
+        "";
+      if (remoteIp) agent.last_seen_ip = remoteIp;
       agent.version = String(body.version || agent.version || "").trim();
       agent.tags = body.tags !== undefined ? normalizeTags(body.tags) : agent.tags;
       if (body.agent_url !== undefined) {
