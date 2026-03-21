@@ -71,27 +71,39 @@ const LOCAL_AGENT_TAGS = normalizeTags(
 const PROJECT_ROOT = path.resolve(__dirname, "..", "..");
 const PUBLIC_AGENT_ASSETS = {
   "light-agent.js": {
-    file: path.join(PROJECT_ROOT, "scripts", "light-agent.js"),
+    files: [path.join(PROJECT_ROOT, "scripts", "light-agent.js")],
     contentType: "application/javascript; charset=utf-8",
   },
   "light-agent-apply.sh": {
-    file: path.join(PROJECT_ROOT, "scripts", "light-agent-apply.sh"),
+    files: [path.join(PROJECT_ROOT, "scripts", "light-agent-apply.sh")],
     contentType: "application/x-sh; charset=utf-8",
   },
   "25-dynamic-reverse-proxy.sh": {
-    file: path.join(PROJECT_ROOT, "docker", "25-dynamic-reverse-proxy.sh"),
+    files: [
+      path.join(PROJECT_ROOT, "docker", "25-dynamic-reverse-proxy.sh"),
+      "/docker-entrypoint.d/25-dynamic-reverse-proxy.sh",
+    ],
     contentType: "application/x-sh; charset=utf-8",
   },
   "default.conf.template": {
-    file: path.join(PROJECT_ROOT, "docker", "default.conf.template"),
+    files: [
+      path.join(PROJECT_ROOT, "docker", "default.conf.template"),
+      "/etc/nginx/templates/default.conf",
+    ],
     contentType: "text/plain; charset=utf-8",
   },
   "default.direct.no_tls.conf.template": {
-    file: path.join(PROJECT_ROOT, "docker", "default.direct.no_tls.conf.template"),
+    files: [
+      path.join(PROJECT_ROOT, "docker", "default.direct.no_tls.conf.template"),
+      "/etc/nginx/templates/default.direct.no_tls.conf",
+    ],
     contentType: "text/plain; charset=utf-8",
   },
   "default.direct.tls.conf.template": {
-    file: path.join(PROJECT_ROOT, "docker", "default.direct.tls.conf.template"),
+    files: [
+      path.join(PROJECT_ROOT, "docker", "default.direct.tls.conf.template"),
+      "/etc/nginx/templates/default.direct.tls.conf",
+    ],
     contentType: "text/plain; charset=utf-8",
   },
 };
@@ -197,15 +209,29 @@ function getRequestBaseUrl(req) {
   return `${proto}://${host}`;
 }
 
+function resolvePublicAgentAssetFile(asset) {
+  const candidates = Array.isArray(asset.files)
+    ? asset.files
+    : asset.file
+      ? [asset.file]
+      : [];
+  return candidates.find((file) => file && fs.existsSync(file)) || null;
+}
+
 function readPublicAgentAsset(assetName) {
   const asset = PUBLIC_AGENT_ASSETS[assetName];
   if (!asset) return null;
-  if (!fs.existsSync(asset.file)) {
-    throw new Error(`asset file not found: ${asset.file}`);
+  const assetFile = resolvePublicAgentAssetFile(asset);
+  if (!assetFile) {
+    const knownFiles = (Array.isArray(asset.files) ? asset.files : [asset.file])
+      .filter(Boolean)
+      .join(", ");
+    throw new Error(`asset file not found: ${knownFiles}`);
   }
   return {
     ...asset,
-    body: fs.readFileSync(asset.file, "utf8"),
+    file: assetFile,
+    body: fs.readFileSync(assetFile, "utf8"),
   };
 }
 
