@@ -5,7 +5,7 @@ import * as api from '../api'
 export const useRuleStore = defineStore('rules', () => {
   const systemInfo = ref({ role: 'master', default_agent_id: null, local_agent_enabled: false })
   const agents = ref([])
-  const selectedAgentId = ref(localStorage.getItem('selected_agent_id') || '')
+  const selectedAgentId = ref('')
   const rules = ref([])
   const stats = ref({ totalRequests: '0', status: '未知' })
   const loading = ref(false)
@@ -62,11 +62,6 @@ export const useRuleStore = defineStore('rules', () => {
 
   function setSelectedAgent(agentId) {
     selectedAgentId.value = agentId || ''
-    if (selectedAgentId.value) {
-      localStorage.setItem('selected_agent_id', selectedAgentId.value)
-    } else {
-      localStorage.removeItem('selected_agent_id')
-    }
     selectedTags.value = []
     searchQuery.value = ''
   }
