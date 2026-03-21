@@ -166,12 +166,34 @@ function getRequestBaseUrl(req) {
   const proto = String(req.headers["x-forwarded-proto"] || "http")
     .split(",")[0]
     .trim() || "http";
-  const host = String(req.headers["x-forwarded-host"] || req.headers.host || "")
+  const forwardedHost = String(req.headers["x-forwarded-host"] || "")
     .split(",")[0]
     .trim();
+  const requestHost = String(req.headers.host || "")
+    .split(",")[0]
+    .trim();
+  const host = forwardedHost || requestHost;
+  const forwardedPort = String(req.headers["x-forwarded-port"] || "")
+    .split(",")[0]
+    .trim();
+
   if (!host) {
     return `${proto}://${HOST}:${PORT}`;
   }
+
+  if (host.includes(":")) {
+    return `${proto}://${host}`;
+  }
+
+  const normalizedPort = Number(forwardedPort);
+  const isDefaultPort =
+    (proto === "http" && normalizedPort === 80) ||
+    (proto === "https" && normalizedPort === 443);
+
+  if (Number.isFinite(normalizedPort) && normalizedPort > 0 && !isDefaultPort) {
+    return `${proto}://${host}:${normalizedPort}`;
+  }
+
   return `${proto}://${host}`;
 }
 
