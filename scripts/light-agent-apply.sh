@@ -17,6 +17,135 @@ NRE_TEMPLATE_FILE="${NRE_TEMPLATE_FILE:-$RUNTIME_DIR/default.conf.template}"
 NRE_DIRECT_NO_TLS_TEMPLATE_FILE="${NRE_DIRECT_NO_TLS_TEMPLATE_FILE:-$RUNTIME_DIR/default.direct.no_tls.conf.template}"
 NRE_DIRECT_TLS_TEMPLATE_FILE="${NRE_DIRECT_TLS_TEMPLATE_FILE:-$RUNTIME_DIR/default.direct.tls.conf.template}"
 
+is_true() {
+    case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
+        1|true|yes|on) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+normalize_mode() {
+    mode_raw=$(printf '%s' "${1:-direct}" | tr '[:upper:]' '[:lower:]' | tr '-' '_')
+    case "$mode_raw" in
+        front_proxy|front|upstream|proxy) printf 'front_proxy' ;;
+        direct|direct_tls|self_managed|host) printf 'direct' ;;
+        *) printf 'direct' ;;
+    esac
+}
+
+normalize_deploy_mode() {
+    if is_true "${AGENT_FOLLOW_MASTER_DEPLOY_MODE:-${AGENT_LOCAL_NODE:-0}}"; then
+        normalize_mode "${PROXY_DEPLOY_MODE:-direct}"
+        return 0
+    fi
+
+    printf 'direct'
+}
+
+expected_listen_ports() {
+    node -e '
+const fs = require("fs")
+const deployMode = String(process.env.PROXY_DEPLOY_MODE || "direct")
+  .trim()
+  .toLowerCase()
+  .replace(/-/g, "_") === "front_proxy"
+  ? "front_proxy"
+  : "direct"
+const frontProxyPort = String(process.env.FRONT_PROXY_PORT || "3000").trim() || "3000"
+
+let rules = []
+try {
+  rules = JSON.parse(fs.readFileSync(process.argv[1], "utf8"))
+} catch {
+  process.exit(0)
+}
+
+const ports = []
+for (const rule of Array.isArray(rules) ? rules : []) {
+  if (!rule || rule.enabled === false) continue
+  const frontendUrl = String(rule.frontend_url || "").trim()
+  if (!frontendUrl) continue
+
+  try {
+    const url = new URL(frontendUrl)
+    let port = url.port || (url.protocol === "https:" ? "443" : "80")
+    if (deployMode === "front_proxy") {
+      port = frontProxyPort
+    }
+    if (port) ports.push(String(port))
+  } catch {}
+}
+
+process.stdout.write([...new Set(ports)].join("\n"))
+' "$RULES_JSON"
+}
+
+port_is_listening() {
+    port="$1"
+
+    if command -v ss >/dev/null 2>&1; then
+        if ss -H -ltn 2>/dev/null | awk -v target_port="$port" '
+            {
+                local_addr = $4
+                gsub(/^\[|\]$/, "", local_addr)
+                split(local_addr, parts, ":")
+                if (parts[length(parts)] == target_port) {
+                    found = 1
+                }
+            }
+            END { exit(found ? 0 : 1) }
+        '; then
+            return 0
+        fi
+        return 1
+    fi
+
+    if command -v lsof >/dev/null 2>&1; then
+        if lsof -nP -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
+            return 0
+        fi
+        return 1
+    fi
+
+    if command -v netstat >/dev/null 2>&1; then
+        if netstat -ltn 2>/dev/null | awk -v target_port="$port" '
+            NR > 2 {
+                local_addr = $4
+                gsub(/^\[|\]$/, "", local_addr)
+                split(local_addr, parts, ":")
+                if (parts[length(parts)] == target_port) {
+                    found = 1
+                }
+            }
+            END { exit(found ? 0 : 1) }
+        '; then
+            return 0
+        fi
+        return 1
+    fi
+
+    if [ -r /proc/net/tcp ] || [ -r /proc/net/tcp6 ]; then
+        port_hex=$(printf '%04X' "$port")
+        for proc_file in /proc/net/tcp /proc/net/tcp6; do
+            [ -r "$proc_file" ] || continue
+            if awk -v port_hex="$port_hex" '
+                $4 == "0A" {
+                    split($2, local_addr, ":")
+                    if (local_addr[2] == port_hex) {
+                        found = 1
+                    }
+                }
+                END { exit(found ? 0 : 1) }
+            ' "$proc_file"; then
+                return 0
+            fi
+        done
+        return 1
+    fi
+
+    return 2
+}
+
 [ -f "$GENERATOR_SCRIPT" ] || { echo "Generator script not found: $GENERATOR_SCRIPT" >&2; exit 1; }
 [ -f "$NRE_TEMPLATE_FILE" ] || { echo "Template not found: $NRE_TEMPLATE_FILE" >&2; exit 1; }
 [ -f "$NRE_DIRECT_NO_TLS_TEMPLATE_FILE" ] || { echo "Template not found: $NRE_DIRECT_NO_TLS_TEMPLATE_FILE" >&2; exit 1; }
@@ -39,8 +168,10 @@ map $http_sec_fetch_mode $early_hints {
 }
 EOF
 
+resolved_deploy_mode=$(normalize_deploy_mode)
+
 export PANEL_RULES_JSON="$RULES_JSON"
-export PROXY_DEPLOY_MODE="${PROXY_DEPLOY_MODE:-front_proxy}"
+export PROXY_DEPLOY_MODE="$resolved_deploy_mode"
 export NRE_TEMPLATE_FILE
 export NRE_DIRECT_NO_TLS_TEMPLATE_FILE
 export NRE_DIRECT_TLS_TEMPLATE_FILE
@@ -51,5 +182,61 @@ export ACME_HOME="${ACME_HOME:-$AGENT_HOME/.acme.sh}"
 export NGINX_BIN="$NGINX_BIN_PATH"
 
 sh "$GENERATOR_SCRIPT"
+expected_ports=$(expected_listen_ports || true)
+echo "[AGENT] Apply mode: $resolved_deploy_mode"
+if [ -n "$expected_ports" ]; then
+    echo "[AGENT] Expected listen ports:"
+    printf '%s\n' "$expected_ports"
+else
+    echo "[AGENT] No enabled rules found; skipping port validation"
+fi
 "$NGINX_BIN_PATH" -t
 "$NGINX_BIN_PATH" -s reload
+
+tmp_effective_config=$(mktemp)
+if ! "$NGINX_BIN_PATH" -T >"$tmp_effective_config" 2>&1; then
+    cat "$tmp_effective_config" >&2
+    rm -f "$tmp_effective_config"
+    exit 1
+fi
+
+if ! grep -F "$NRE_DYNAMIC_DIR" "$tmp_effective_config" >/dev/null 2>&1 && \
+   ! grep -F "$NRE_INCLUDE_FILE" "$tmp_effective_config" >/dev/null 2>&1; then
+    echo "Generated configs are not part of the active nginx config: $NRE_DYNAMIC_DIR/*.conf" >&2
+    echo "Check whether nginx.conf includes /etc/nginx/conf.d/*.conf, or point NRE_INCLUDE_FILE to an already included path." >&2
+    rm -f "$tmp_effective_config"
+    exit 1
+fi
+
+if [ -n "$expected_ports" ]; then
+    missing_ports=""
+    port_check_skipped="0"
+    for port in $expected_ports; do
+        if port_is_listening "$port"; then
+            continue
+        fi
+
+        port_check_status=$?
+        if [ "$port_check_status" -eq 2 ]; then
+            port_check_skipped="1"
+            continue
+        fi
+
+        missing_ports="${missing_ports} ${port}"
+    done
+
+    if [ -n "$missing_ports" ]; then
+        echo "nginx reload succeeded, but expected listen ports are not active:${missing_ports}" >&2
+        echo "Check whether nginx loaded $NRE_INCLUDE_FILE and whether another service is occupying the target port." >&2
+        rm -f "$tmp_effective_config"
+        exit 1
+    fi
+
+    if [ "$port_check_skipped" = "1" ]; then
+        echo "[AGENT] Listen port probe skipped (ss/lsof/netstat unavailable); active config include was verified"
+    else
+        echo "[AGENT] Listen port probe passed"
+    fi
+fi
+
+rm -f "$tmp_effective_config"

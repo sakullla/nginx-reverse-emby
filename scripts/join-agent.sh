@@ -38,6 +38,8 @@ Optional:
   --version VERSION        Agent version, default: 1
   --tags TAGS              Comma-separated tags, e.g. edge,emby
   --apply-command CMD      Optional custom apply command; if omitted, installs the built-in nginx apply script
+  --deploy-mode MODE       direct or front_proxy; remote agents default to direct
+  --local-node             Follow the configured deploy mode like master's local node
   --install-systemd        Install a systemd service for the lightweight agent
   --install-launchd        Install and load a launchd agent on macOS
   -h, --help               Show help
@@ -46,12 +48,22 @@ Examples:
   curl -fsSL ${DEFAULT_MASTER_URL:-http://master.example.com:8080}/panel-api/public/join-agent.sh | bash -s -- --register-token change-this-register-token --install-systemd
   join-agent.sh --register-token change-this-register-token --install-systemd
   join-agent.sh --register-token change-this-register-token --install-launchd
+  join-agent.sh --register-token change-this-register-token --local-node --deploy-mode front_proxy
   join-agent.sh --master-url http://master.example.com:8080 --register-token change-this-register-token --apply-command '/usr/local/bin/custom-apply.sh'
 EOF
 }
 
 trim_slash() {
     printf '%s' "$1" | sed 's#/*$##'
+}
+
+normalize_deploy_mode() {
+    mode_raw=$(printf '%s' "${1:-direct}" | tr '[:upper:]' '[:lower:]' | tr '-' '_')
+    case "$mode_raw" in
+        front_proxy|front|upstream|proxy) printf 'front_proxy' ;;
+        direct|direct_tls|self_managed|host) printf 'direct' ;;
+        *) printf 'direct' ;;
+    esac
 }
 
 shell_quote() {
@@ -459,6 +471,8 @@ INTERVAL_MS="10000"
 AGENT_VERSION="1"
 AGENT_TAGS=""
 APPLY_COMMAND=""
+DEPLOY_MODE="${PROXY_DEPLOY_MODE:-direct}"
+LOCAL_NODE="0"
 INSTALL_SYSTEMD="0"
 INSTALL_LAUNCHD="0"
 SCRIPT_DIR="$(resolve_script_dir 2>/dev/null || true)"
@@ -478,6 +492,8 @@ while [ $# -gt 0 ]; do
         --version) AGENT_VERSION="$2"; shift 2 ;;
         --tags) AGENT_TAGS="$2"; shift 2 ;;
         --apply-command) APPLY_COMMAND="$2"; shift 2 ;;
+        --deploy-mode) DEPLOY_MODE="$2"; shift 2 ;;
+        --local-node) LOCAL_NODE="1"; shift 1 ;;
         --install-systemd) INSTALL_SYSTEMD="1"; shift 1 ;;
         --install-launchd) INSTALL_LAUNCHD="1"; shift 1 ;;
         -h|--help) usage; exit 0 ;;
@@ -539,6 +555,7 @@ MASTER_URL="$(trim_slash "$MASTER_URL")"
 ASSET_BASE_URL="$(trim_slash "$ASSET_BASE_URL")"
 AGENT_URL="$(trim_slash "$AGENT_URL")"
 AGENT_TOKEN="${AGENT_TOKEN:-$(generate_token)}"
+DEPLOY_MODE="$(normalize_deploy_mode "$DEPLOY_MODE")"
 mkdir -p "$DATA_DIR"
 DATA_DIR="$(CDPATH= cd -- "$DATA_DIR" && pwd)"
 
@@ -584,6 +601,8 @@ AGENT_RUNTIME_DIR=$(shell_quote "$RUNTIME_DIR")
 AGENT_GENERATOR_SCRIPT=$(shell_quote "$GENERATOR_FILE")
 AGENT_DEFAULT_APPLY_COMMAND=$(shell_quote "$DEFAULT_APPLY_SCRIPT")
 APPLY_COMMAND=$(shell_quote "$APPLY_COMMAND")
+PROXY_DEPLOY_MODE=$(shell_quote "$DEPLOY_MODE")
+AGENT_FOLLOW_MASTER_DEPLOY_MODE=$(shell_quote "$LOCAL_NODE")
 NGINX_BIN=$(shell_quote "$NGINX_BIN_PATH")
 EOF
 
