@@ -121,6 +121,18 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function logAgentEvent(agentOrId, message, details = null) {
+  const agentLabel =
+    typeof agentOrId === "object" && agentOrId
+      ? `${agentOrId.name || agentOrId.id || "unknown"} (${agentOrId.id || "unknown"})`
+      : String(agentOrId || "unknown");
+  if (details === null || details === undefined || details === "") {
+    console.log(`[agent] ${agentLabel} - ${message}`);
+    return;
+  }
+  console.log(`[agent] ${agentLabel} - ${message}`, details);
+}
+
 function ensureDataDir() {
   fs.mkdirSync(DATA_ROOT, { recursive: true });
   fs.mkdirSync(AGENT_RULES_DIR, { recursive: true });
@@ -300,6 +312,10 @@ function normalizeTags(tags) {
   ];
 }
 
+function resolveRemoteAgentMode(agentUrl) {
+  return trimSlash(agentUrl || "") ? "master" : "pull";
+}
+
 function normalizeRulePayload(body, fallback = {}, suggestedId = null) {
   const frontend =
     body.frontend_url !== undefined
@@ -412,7 +428,7 @@ function normalizeRevision(value) {
 }
 
 function ensureAgentState(agent) {
-  agent.mode = agent.mode || "pull";
+  agent.mode = agent.is_local ? "local" : resolveRemoteAgentMode(agent.agent_url);
   agent.desired_revision = normalizeRevision(agent.desired_revision);
   agent.current_revision = normalizeRevision(agent.current_revision);
   agent.last_apply_status = agent.last_apply_status || null;
@@ -615,6 +631,10 @@ async function syncAgentRules(agentId) {
   agents[index].desired_revision += 1;
   agents[index].updated_at = nowIso();
   saveRegisteredAgents(agents);
+  logAgentEvent(agents[index], "queued rules sync", {
+    desired_revision: agents[index].desired_revision,
+    rule_count: Array.isArray(rules) ? rules.length : 0,
+  });
   return {
     ok: true,
     mode: agents[index].mode,
@@ -937,7 +957,7 @@ async function handleMasterApi(req, res) {
       const agentToken = String(body.agent_token || "").trim();
       const version = String(body.version || "").trim();
       const tags = normalizeTags(body.tags || []);
-      const mode = body.mode === "direct" ? "direct" : "pull";
+      const mode = resolveRemoteAgentMode(agentUrl);
 
       if (!name) {
         sendJson(res, 400, errorPayload("name is required"));
@@ -986,6 +1006,11 @@ async function handleMasterApi(req, res) {
       }
 
       saveRegisteredAgents(agents);
+      logAgentEvent(agent, "registered/updated", {
+        mode: agent.mode,
+        agent_url: agent.agent_url || "",
+        tags: agent.tags || [],
+      });
       sendJson(res, 200, { ok: true, agent: sanitizeAgent(agent) });
     } catch (err) {
       sendJson(res, 400, errorPayload(String(err.message || err)));
@@ -1015,6 +1040,7 @@ async function handleMasterApi(req, res) {
       }
 
       const agent = ensureAgentState(agents[index]);
+      const previous = { ...agent };
       agent.last_seen_at = nowIso();
       agent.updated_at = nowIso();
       const remoteIp =
@@ -1031,6 +1057,7 @@ async function handleMasterApi(req, res) {
           return;
         }
         agent.agent_url = nextUrl;
+        agent.mode = resolveRemoteAgentMode(nextUrl);
       }
       agent.current_revision = normalizeRevision(
         body.current_revision !== undefined
@@ -1049,6 +1076,18 @@ async function handleMasterApi(req, res) {
 
       agents[index] = agent;
       saveRegisteredAgents(agents);
+      const hasRevisionChange = previous.current_revision !== agent.current_revision;
+      const hasApplyStatusChange =
+        previous.last_apply_status !== agent.last_apply_status ||
+        previous.last_apply_message !== agent.last_apply_message;
+      if (hasRevisionChange || hasApplyStatusChange) {
+        logAgentEvent(agent, "heartbeat updated state", {
+          current_revision: agent.current_revision,
+          desired_revision: agent.desired_revision,
+          last_apply_status: agent.last_apply_status,
+          last_apply_message: agent.last_apply_message,
+        });
+      }
       sendJson(res, 200, getAgentHeartbeatResponse(agent));
     } catch (err) {
       sendJson(res, 400, errorPayload(String(err.message || err)));
@@ -1133,12 +1172,7 @@ async function handleMasterApi(req, res) {
         name: nextName,
         agent_url: nextUrl,
         agent_token: nextToken,
-        mode:
-          body.mode !== undefined
-            ? body.mode === "direct"
-              ? "direct"
-              : "pull"
-            : agents[index].mode || "pull",
+        mode: resolveRemoteAgentMode(nextUrl),
         version:
           body.version !== undefined
             ? String(body.version).trim()

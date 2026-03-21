@@ -129,6 +129,178 @@ require_root_or_sudo() {
     return 1
 }
 
+run_root_cmd() {
+    if [ -n "${SUDO_BIN:-}" ]; then
+        "$SUDO_BIN" "$@"
+    else
+        "$@"
+    fi
+}
+
+nginx_supports_early_hints() {
+    command -v nginx >/dev/null 2>&1 || return 1
+
+    tmp_dir=$(mktemp -d)
+    tmp_conf="$tmp_dir/nginx.conf"
+    cat > "$tmp_conf" <<'EOF'
+events {}
+http {
+    map $http_sec_fetch_mode $early_hints {
+        default $http2$http3;
+    }
+
+    server {
+        listen 127.0.0.1:1;
+
+        location / {
+            early_hints $early_hints;
+            return 204;
+        }
+    }
+}
+EOF
+
+    if nginx -t -q -c "$tmp_conf" >/dev/null 2>&1; then
+        rm -rf "$tmp_dir"
+        return 0
+    fi
+
+    rm -rf "$tmp_dir"
+    return 1
+}
+
+restart_nginx_after_install() {
+    run_root_cmd rm -f /etc/nginx/conf.d/default.conf
+
+    if command -v systemctl >/dev/null 2>&1; then
+        run_root_cmd mkdir -p /etc/systemd/system/nginx.service.d
+        printf '%s\n' '[Service]' 'ExecStartPost=/bin/sleep 0.1' | run_root_cmd tee /etc/systemd/system/nginx.service.d/override.conf >/dev/null
+        run_root_cmd systemctl daemon-reload
+        run_root_cmd systemctl enable nginx >/dev/null 2>&1 || true
+        run_root_cmd systemctl restart nginx
+        return 0
+    fi
+
+    if command -v service >/dev/null 2>&1; then
+        run_root_cmd service nginx restart || run_root_cmd service nginx start
+        return 0
+    fi
+
+    if command -v rc-update >/dev/null 2>&1; then
+        run_root_cmd rc-update add nginx default >/dev/null 2>&1 || true
+    fi
+    if command -v rc-service >/dev/null 2>&1; then
+        run_root_cmd rc-service nginx restart || run_root_cmd rc-service nginx start
+    fi
+}
+
+install_mainline_nginx() {
+    platform="$1"
+    os_name=""
+    pm=""
+    gnupg_pm="gnupg"
+
+    if [ "$platform" = "darwin" ] && command -v brew >/dev/null 2>&1; then
+        brew update
+        brew install nginx
+        return 0
+    fi
+
+    [ -f /etc/os-release ] || {
+        echo "Unsupported system: missing /etc/os-release" >&2
+        exit 1
+    }
+    . /etc/os-release
+
+    case "$ID" in
+        debian|devuan|kali)
+            os_name="debian"
+            pm="apt-get"
+            gnupg_pm="gnupg2"
+            ;;
+        ubuntu)
+            os_name="ubuntu"
+            pm="apt-get"
+            gnupg_pm="gnupg"
+            ;;
+        centos|fedora|rhel|almalinux|rocky|amzn)
+            os_name="rhel"
+            if command -v dnf >/dev/null 2>&1; then
+                pm="dnf"
+            else
+                pm="yum"
+            fi
+            ;;
+        arch|archarm)
+            os_name="arch"
+            pm="pacman"
+            ;;
+        alpine)
+            os_name="alpine"
+            pm="apk"
+            ;;
+        opensuse*|sles)
+            os_name="suse"
+            pm="zypper"
+            ;;
+        *)
+            echo "Automatic nginx mainline installation is not supported on this system: $ID" >&2
+            exit 1
+            ;;
+    esac
+
+    echo "[JOIN] Installing or upgrading nginx mainline for $os_name..."
+
+    case "$os_name" in
+        debian|ubuntu)
+            SUDO="${SUDO_BIN:-}"
+            $SUDO "$pm" update
+            $SUDO "$pm" install -y "$gnupg_pm" ca-certificates lsb-release "${os_name}-keyring"
+            curl -sL https://nginx.org/keys/nginx_signing.key | $SUDO gpg --dearmor -o /usr/share/keyrings/nginx-archive-keyring.gpg
+            echo "deb [signed-by=/usr/share/keyrings/nginx-archive-keyring.gpg] http://nginx.org/packages/mainline/$os_name `lsb_release -cs` nginx" | $SUDO tee /etc/apt/sources.list.d/nginx.list > /dev/null
+            echo -e "Package: *\nPin: origin nginx.org\nPin: release o=nginx\nPin-Priority: 900" | $SUDO tee /etc/apt/preferences.d/99nginx > /dev/null
+            $SUDO "$pm" update
+            $SUDO "$pm" install -y nginx
+            $SUDO mkdir -p /etc/systemd/system/nginx.service.d
+            echo -e "[Service]\nExecStartPost=/bin/sleep 0.1" | $SUDO tee /etc/systemd/system/nginx.service.d/override.conf > /dev/null
+            $SUDO systemctl daemon-reload
+            $SUDO rm -f /etc/nginx/conf.d/default.conf
+            $SUDO systemctl restart nginx
+            ;;
+        rhel)
+            SUDO="${SUDO_BIN:-}"
+            $SUDO "$pm" install -y yum-utils
+            echo -e "[nginx-mainline]\nname=NGINX Mainline Repository\nbaseurl=https://nginx.org/packages/mainline/centos/\$releasever/\$basearch/\ngpgcheck=1\nenabled=1\ngpgkey=https://nginx.org/keys/nginx_signing.key" | $SUDO tee /etc/yum.repos.d/nginx.repo > /dev/null
+            $SUDO "$pm" install -y nginx
+            $SUDO mkdir -p /etc/systemd/system/nginx.service.d
+            echo -e "[Service]\nExecStartPost=/bin/sleep 0.1" | $SUDO tee /etc/systemd/system/nginx.service.d/override.conf > /dev/null
+            $SUDO systemctl daemon-reload
+            $SUDO rm -f /etc/nginx/conf.d/default.conf
+            $SUDO systemctl restart nginx
+            ;;
+        arch)
+            SUDO="${SUDO_BIN:-}"
+            $SUDO "$pm" -Sy --noconfirm nginx-mainline
+            $SUDO mkdir -p /etc/systemd/system/nginx.service.d
+            echo -e "[Service]\nExecStartPost=/bin/sleep 0.1" | $SUDO tee /etc/systemd/system/nginx.service.d/override.conf > /dev/null
+            $SUDO systemctl daemon-reload
+            $SUDO rm -f /etc/nginx/conf.d/default.conf
+            $SUDO systemctl restart nginx
+            ;;
+        alpine)
+            SUDO="${SUDO_BIN:-}"
+            $SUDO "$pm" add --no-cache nginx
+            $SUDO rc-update add nginx default
+            $SUDO rm -f /etc/nginx/conf.d/default.conf
+            $SUDO rc-service nginx restart
+            ;;
+        suse)
+            run_root_cmd "$pm" --non-interactive install --no-recommends nginx
+            restart_nginx_after_install
+            ;;
+    esac
+}
+
 install_runtime_packages() {
     missing_node="$1"
     missing_curl="$2"
@@ -158,12 +330,12 @@ install_runtime_packages() {
     fi
 
     if command -v apt-get >/dev/null 2>&1; then
-        ${SUDO_BIN:+$SUDO_BIN }apt-get update
+        run_root_cmd apt-get update
         pkgs="ca-certificates"
         [ "$missing_node" = "1" ] && pkgs="$pkgs nodejs"
         [ "$missing_curl" = "1" ] && pkgs="$pkgs curl"
-        [ "$missing_nginx" = "1" ] && pkgs="$pkgs nginx"
-        ${SUDO_BIN:+$SUDO_BIN }apt-get install -y --no-install-recommends $pkgs
+        run_root_cmd apt-get install -y --no-install-recommends $pkgs
+        [ "$missing_nginx" = "1" ] && install_mainline_nginx "$platform"
         return 0
     fi
 
@@ -171,8 +343,8 @@ install_runtime_packages() {
         pkgs="ca-certificates"
         [ "$missing_node" = "1" ] && pkgs="$pkgs nodejs"
         [ "$missing_curl" = "1" ] && pkgs="$pkgs curl"
-        [ "$missing_nginx" = "1" ] && pkgs="$pkgs nginx"
-        ${SUDO_BIN:+$SUDO_BIN }dnf install -y $pkgs
+        run_root_cmd dnf install -y $pkgs
+        [ "$missing_nginx" = "1" ] && install_mainline_nginx "$platform"
         return 0
     fi
 
@@ -180,8 +352,8 @@ install_runtime_packages() {
         pkgs="ca-certificates"
         [ "$missing_node" = "1" ] && pkgs="$pkgs nodejs"
         [ "$missing_curl" = "1" ] && pkgs="$pkgs curl"
-        [ "$missing_nginx" = "1" ] && pkgs="$pkgs nginx"
-        ${SUDO_BIN:+$SUDO_BIN }yum install -y $pkgs
+        run_root_cmd yum install -y $pkgs
+        [ "$missing_nginx" = "1" ] && install_mainline_nginx "$platform"
         return 0
     fi
 
@@ -189,8 +361,8 @@ install_runtime_packages() {
         pkgs="ca-certificates"
         [ "$missing_node" = "1" ] && pkgs="$pkgs nodejs npm"
         [ "$missing_curl" = "1" ] && pkgs="$pkgs curl"
-        [ "$missing_nginx" = "1" ] && pkgs="$pkgs nginx"
-        ${SUDO_BIN:+$SUDO_BIN }apk add --no-cache $pkgs
+        run_root_cmd apk add --no-cache $pkgs
+        [ "$missing_nginx" = "1" ] && install_mainline_nginx "$platform"
         return 0
     fi
 
@@ -198,8 +370,8 @@ install_runtime_packages() {
         pkgs="ca-certificates"
         [ "$missing_node" = "1" ] && pkgs="$pkgs nodejs18"
         [ "$missing_curl" = "1" ] && pkgs="$pkgs curl"
-        [ "$missing_nginx" = "1" ] && pkgs="$pkgs nginx"
-        ${SUDO_BIN:+$SUDO_BIN }zypper --non-interactive install --no-recommends $pkgs
+        run_root_cmd zypper --non-interactive install --no-recommends $pkgs
+        [ "$missing_nginx" = "1" ] && install_mainline_nginx "$platform"
         return 0
     fi
 
@@ -207,13 +379,13 @@ install_runtime_packages() {
         pkgs="ca-certificates"
         [ "$missing_node" = "1" ] && pkgs="$pkgs nodejs"
         [ "$missing_curl" = "1" ] && pkgs="$pkgs curl"
-        [ "$missing_nginx" = "1" ] && pkgs="$pkgs nginx"
-        ${SUDO_BIN:+$SUDO_BIN }pacman -Sy --noconfirm $pkgs
+        run_root_cmd pacman -Sy --noconfirm $pkgs
+        [ "$missing_nginx" = "1" ] && install_mainline_nginx "$platform"
         return 0
     fi
 
     echo "Automatic dependency installation is not supported on this system." >&2
-    echo "Please install Node.js 18+, curl, and nginx manually." >&2
+    echo "Please install Node.js 18+, curl, and nginx mainline manually." >&2
     [ "$platform" = "darwin" ] && echo "Tip: install Homebrew first, then rerun this script." >&2
     exit 1
 }
@@ -347,6 +519,19 @@ NODE_MAJOR="$(current_node_major "$NODE_BIN")"
 command -v curl >/dev/null 2>&1 || { echo "curl is required after dependency installation" >&2; exit 1; }
 NGINX_BIN_PATH="$(command -v nginx || true)"
 [ -n "$NGINX_BIN_PATH" ] || { echo "nginx is required after dependency installation" >&2; exit 1; }
+if ! nginx_supports_early_hints; then
+    echo "[JOIN] Detected nginx without early_hints support, upgrading to nginx mainline..." >&2
+    SUDO_BIN="$(require_root_or_sudo)" || {
+        echo "Upgrading nginx requires root or sudo" >&2
+        exit 1
+    }
+    install_mainline_nginx "$PLATFORM"
+    NGINX_BIN_PATH="$(command -v nginx || true)"
+    if ! nginx_supports_early_hints; then
+        echo "Installed nginx still does not support early_hints. Please install a newer nginx mainline release manually." >&2
+        exit 1
+    fi
+fi
 NODE_BIN_PATH="$(command -v "$NODE_BIN" || true)"
 [ -n "$NODE_BIN_PATH" ] || { echo "unable to resolve node executable path" >&2; exit 1; }
 

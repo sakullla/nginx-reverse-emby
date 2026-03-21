@@ -9,7 +9,7 @@
             </svg>
           </div>
           <h1 class="auth-logo__title">Nginx Proxy</h1>
-          <p class="auth-logo__subtitle">Master / Agent 控制台</p>
+          <p class="auth-logo__subtitle">集群控制台</p>
         </div>
       </div>
 
