@@ -4,15 +4,15 @@
     :class="{ 'rule-card--disabled': !rule.enabled }"
   >
     <!-- Gradient top accent bar -->
-    <div class="rule-card__accent" :class="rule.enabled ? 'rule-card__accent--active' : 'rule-card__accent--inactive'"></div>
+    <div class="rule-card__accent" :class="`rule-card__accent--${effectiveStatus}`"></div>
 
     <div class="rule-card__body">
       <!-- Header: Status & Actions -->
       <div class="rule-card__header">
         <div class="rule-card__status">
           <span class="rule-card__id">#{{ rule.id }}</span>
-          <span class="rule-card__status-dot" :class="rule.enabled ? 'rule-card__status-dot--on' : 'rule-card__status-dot--off'"></span>
-          <span class="rule-card__status-text">{{ rule.enabled ? '启用中' : '已停用' }}</span>
+          <span class="rule-card__status-dot" :class="`rule-card__status-dot--${effectiveStatus}`"></span>
+          <span class="rule-card__status-text" :class="`rule-card__status-text--${effectiveStatus}`">{{ statusLabel }}</span>
         </div>
         <div class="rule-card__actions">
           <button
@@ -96,15 +96,41 @@
 </template>
 
 <script setup>
+import { computed } from 'vue'
 import { useRuleStore } from '../stores/rules'
 
 const props = defineProps({
-  rule: { type: Object, required: true }
+  rule: { type: Object, required: true },
+  agent: { type: Object, default: null }
 })
 
 defineEmits(['edit', 'delete'])
 
 const ruleStore = useRuleStore()
+
+// Determine the effective status of this rule:
+// - 'disabled': rule is turned off
+// - 'active':   rule enabled and agent has fully applied the latest config
+// - 'pending':  rule enabled but agent hasn't synced the latest revision yet
+// - 'failed':   rule enabled, revisions match, but the last apply reported an error
+const effectiveStatus = computed(() => {
+  if (!props.rule.enabled) return 'disabled'
+  const a = props.agent
+  if (!a) return 'active'
+  const desired = a.desired_revision ?? 0
+  const current = a.current_revision ?? 0
+  if (desired > current) return 'pending'
+  const applyStatus = a.last_apply_status
+  if (applyStatus !== null && applyStatus !== undefined && applyStatus !== 'success') return 'failed'
+  return 'active'
+})
+
+const statusLabel = computed(() => ({
+  active: '已生效',
+  pending: '待同步',
+  failed: '应用失败',
+  disabled: '已停用'
+}[effectiveStatus.value]))
 
 const toggleStatus = async () => {
   try {
@@ -151,7 +177,15 @@ const toggleStatus = async () => {
   background: var(--gradient-primary);
 }
 
-.rule-card__accent--inactive {
+.rule-card__accent--pending {
+  background: var(--color-warning);
+}
+
+.rule-card__accent--failed {
+  background: var(--color-danger);
+}
+
+.rule-card__accent--disabled {
   background: var(--color-border-default);
 }
 
@@ -193,13 +227,24 @@ const toggleStatus = async () => {
   border-radius: 50%;
 }
 
-.rule-card__status-dot--on {
-  background: var(--color-primary);
-  box-shadow: 0 0 0 3px var(--color-primary-subtle);
+.rule-card__status-dot--active {
+  background: var(--color-success);
+  box-shadow: 0 0 0 3px var(--color-success-50);
   animation: pulse 2s ease-in-out infinite;
 }
 
-.rule-card__status-dot--off {
+.rule-card__status-dot--pending {
+  background: var(--color-warning);
+  box-shadow: 0 0 0 3px var(--color-warning-50);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.rule-card__status-dot--failed {
+  background: var(--color-danger);
+  box-shadow: 0 0 0 3px var(--color-danger-50);
+}
+
+.rule-card__status-dot--disabled {
   background: var(--color-text-muted);
 }
 
@@ -207,6 +252,18 @@ const toggleStatus = async () => {
   font-size: var(--text-xs);
   font-weight: var(--font-semibold);
   color: var(--color-text-secondary);
+}
+
+.rule-card__status-text--active {
+  color: var(--color-success);
+}
+
+.rule-card__status-text--pending {
+  color: var(--color-warning);
+}
+
+.rule-card__status-text--failed {
+  color: var(--color-danger);
 }
 
 .rule-card__actions {
