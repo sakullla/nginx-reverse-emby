@@ -98,6 +98,7 @@
 <script setup>
 import { computed } from 'vue'
 import { useRuleStore } from '../stores/rules'
+import { getRuleEffectiveStatus } from '../utils/syncStatus'
 
 const props = defineProps({
   rule: { type: Object, required: true },
@@ -108,22 +109,7 @@ defineEmits(['edit', 'delete'])
 
 const ruleStore = useRuleStore()
 
-// Determine the effective status of this rule:
-// - 'disabled': rule is turned off
-// - 'active':   rule enabled and agent has fully applied the latest config
-// - 'pending':  rule enabled but agent hasn't synced the latest revision yet
-// - 'failed':   rule enabled, revisions match, but the last apply reported an error
-const effectiveStatus = computed(() => {
-  if (!props.rule.enabled) return 'disabled'
-  const a = props.agent
-  if (!a) return 'active'
-  const desired = a.desired_revision ?? 0
-  const current = a.current_revision ?? 0
-  if (desired > current) return 'pending'
-  const applyStatus = a.last_apply_status
-  if (applyStatus !== null && applyStatus !== undefined && applyStatus !== 'success') return 'failed'
-  return 'active'
-})
+const effectiveStatus = computed(() => getRuleEffectiveStatus(props.rule, props.agent))
 
 const statusLabel = computed(() => ({
   active: '已生效',

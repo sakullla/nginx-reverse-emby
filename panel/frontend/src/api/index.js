@@ -75,6 +75,7 @@ const mockAgents = [
     // revisions match + success → 所有规则显示"已生效"
     desired_revision: 5,
     current_revision: 5,
+    last_apply_revision: 5,
     last_apply_status: 'success',
     last_apply_message: ''
   },
@@ -91,6 +92,7 @@ const mockAgents = [
     // desired > current → 所有规则显示"待同步"
     desired_revision: 3,
     current_revision: 2,
+    last_apply_revision: 2,
     last_apply_status: null,
     last_apply_message: ''
   },
@@ -107,6 +109,7 @@ const mockAgents = [
     // revisions match but apply failed → 所有规则显示"应用失败"
     desired_revision: 2,
     current_revision: 2,
+    last_apply_revision: 2,
     last_apply_status: 'failed',
     last_apply_message: 'nginx: configuration file test failed'
   },
@@ -131,6 +134,7 @@ const mockAgents = [
       last_seen_ip: `10.0.${Math.floor(i / 10) + 1}.${(i % 10) + 10}`,
       desired_revision: rev,
       current_revision: isPending ? rev - 1 : rev,
+      last_apply_revision: isPending ? rev - 1 : rev,
       last_apply_status: applyFailed ? 'failed' : 'success',
       last_apply_message: applyFailed ? 'nginx config test failed' : ''
     }
@@ -193,9 +197,20 @@ function generateMockRules(count) {
 }
 
 const mockRulesByAgent = {
-  local: generateMockRules(100),
-  'edge-1': generateMockRules(30).map(r => ({ ...r, id: r.id + 1000 })),
-  'edge-2': generateMockRules(15).map(r => ({ ...r, id: r.id + 2000 }))
+  local: generateMockRules(100).map((r, index) => ({
+    ...r,
+    revision: index < 80 ? 5 : 4
+  })),
+  'edge-1': generateMockRules(30).map((r, index) => ({
+    ...r,
+    id: r.id + 1000,
+    revision: r.enabled && index < 8 ? 3 : 2
+  })),
+  'edge-2': generateMockRules(15).map((r, index) => ({
+    ...r,
+    id: r.id + 2000,
+    revision: r.enabled && index < 5 ? 2 : 1
+  }))
 }
 
 function getMockStats(agentId) {
