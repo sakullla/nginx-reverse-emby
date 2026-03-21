@@ -88,7 +88,7 @@
             </button>
             <ThemeSelector />
             <div class="topbar__divider"></div>
-            <button @click="ruleStore.logout" class="topbar__action" title="退出登录">
+            <button @click="ruleStore.logout" class="topbar__action topbar__action--logout" title="退出登录">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
                 <polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>
@@ -261,25 +261,39 @@
             <div class="stats-row">
               <div class="stat-pill">
                 <div class="stat-pill__icon stat-pill__icon--rules">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
                     <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
                   </svg>
                 </div>
                 <div class="stat-pill__data">
-                  <span class="stat-pill__value">{{ ruleStore.rules.length }}</span>
-                  <span class="stat-pill__label">规则</span>
+                  <div class="stat-pill__row">
+                    <span class="stat-pill__value">{{ ruleStore.rules.length }}</span>
+                    <span class="stat-pill__unit">条</span>
+                  </div>
+                  <span class="stat-pill__label">代理规则</span>
                 </div>
               </div>
-              <div class="stat-pill">
+              <div class="stat-pill stat-pill--active">
                 <div class="stat-pill__icon stat-pill__icon--active">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
                   </svg>
                 </div>
                 <div class="stat-pill__data">
-                  <span class="stat-pill__value">{{ activeRulesCount }}</span>
-                  <span class="stat-pill__label">启用</span>
+                  <div class="stat-pill__row">
+                    <span class="stat-pill__value stat-pill__value--active">{{ activeRulesCount }}</span>
+                    <span class="stat-pill__unit stat-pill__unit--muted">/ {{ ruleStore.rules.length }}</span>
+                  </div>
+                  <div class="stat-pill__footer">
+                    <span class="stat-pill__label">已启用</span>
+                    <div class="stat-pill__bar-wrap">
+                      <div
+                        class="stat-pill__bar-fill"
+                        :style="{ width: ruleStore.rules.length ? (activeRulesCount / ruleStore.rules.length * 100) + '%' : '0%' }"
+                      ></div>
+                    </div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -326,7 +340,7 @@
             </div>
 
             <!-- Selected Platform Command -->
-            <div v-for="platform in joinPlatformCards" :key="platform.id">
+            <template v-for="platform in joinPlatformCards" :key="platform.id">
               <div v-if="selectedJoinPlatform === platform.id" class="join-command-block">
                 <div class="join-command-meta">
                   <span class="join-command-hint">{{ platform.hint }}</span>
@@ -350,7 +364,7 @@
                   <li v-for="step in platform.steps" :key="step" class="join-steps__item">{{ step }}</li>
                 </ol>
               </div>
-            </div>
+            </template>
 
             <div class="join-modal__actions">
               <button class="btn btn--secondary" @click="showJoinModal = false">关闭</button>
@@ -871,7 +885,6 @@ onUnmounted(() => {
 .loading-text {
   font-size: var(--text-sm);
   color: var(--color-text-tertiary);
-  letter-spacing: 0.05em;
 }
 
 .join-modal {
@@ -1213,6 +1226,11 @@ onUnmounted(() => {
 }
 
 .topbar__action:hover {
+  color: var(--color-text-primary);
+  background: var(--color-bg-hover);
+}
+
+.topbar__action--logout:hover {
   color: var(--color-danger);
   background: var(--color-danger-50);
 }
@@ -1267,8 +1285,6 @@ onUnmounted(() => {
   font-size: var(--text-xs);
   font-weight: var(--font-semibold);
   color: var(--color-text-tertiary);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
 }
 
 .sidebar__search {
@@ -1363,8 +1379,8 @@ onUnmounted(() => {
 }
 
 .sidebar__agent-indicator--online {
-  background: var(--color-success);
-  box-shadow: 0 0 0 3px var(--color-success-50);
+  background: var(--color-primary);
+  box-shadow: 0 0 0 3px var(--color-primary-subtle);
   animation: pulse 2s ease-in-out infinite;
 }
 
@@ -1440,8 +1456,8 @@ onUnmounted(() => {
 }
 
 .sidebar__status-dot--online {
-  background: var(--color-success);
-  box-shadow: 0 0 0 2px var(--color-success-50);
+  background: var(--color-primary);
+  box-shadow: 0 0 0 2px var(--color-primary-subtle);
   animation: pulse 2s ease-in-out infinite;
 }
 
@@ -1475,7 +1491,8 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 
-.sidebar__agent:hover .sidebar__agent-actions {
+.sidebar__agent:hover .sidebar__agent-actions,
+.sidebar__agent--active .sidebar__agent-actions {
   opacity: 1;
 }
 
@@ -1700,7 +1717,7 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 
-.global-search-group-dot--online { background: var(--color-success); }
+.global-search-group-dot--online { background: var(--color-primary); }
 .global-search-group-dot--offline { background: var(--color-text-muted); }
 
 .global-search-group-name {
@@ -1743,7 +1760,7 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 
-.global-search-rule-status--on { background: var(--color-success); }
+.global-search-rule-status--on { background: var(--color-primary); }
 .global-search-rule-status--off { background: var(--color-text-muted); }
 
 .global-search-rule-info {
@@ -1935,6 +1952,7 @@ onUnmounted(() => {
   border: 1.5px solid var(--color-border-default);
   border-radius: var(--radius-xl);
   backdrop-filter: blur(8px);
+  min-width: 140px;
   transition: border-color var(--duration-normal) var(--ease-default),
               box-shadow var(--duration-normal) var(--ease-default);
 }
@@ -1942,6 +1960,10 @@ onUnmounted(() => {
 .stat-pill:hover {
   border-color: var(--color-border-strong);
   box-shadow: var(--shadow-sm);
+}
+
+.stat-pill--active:hover {
+  border-color: var(--color-border-strong);
 }
 
 .stat-pill__icon {
@@ -1965,18 +1987,28 @@ onUnmounted(() => {
 }
 
 .stat-pill__icon--rules {
-  background: var(--color-bg-subtle);
-  color: var(--color-text-secondary);
+  background: var(--color-primary-subtle);
+  color: var(--color-primary);
 }
 
 .stat-pill__icon--active {
-  background: linear-gradient(135deg, rgba(251,146,60,0.12), rgba(251,191,36,0.12));
-  color: var(--color-warning);
+  background: var(--color-primary-subtle);
+  color: var(--color-primary);
 }
 
 .stat-pill__data {
   display: flex;
   flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.stat-pill__row {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-1);
+  line-height: 1;
 }
 
 .stat-pill__value {
@@ -1986,10 +2018,44 @@ onUnmounted(() => {
   line-height: 1;
 }
 
+.stat-pill__value--active {
+  color: var(--color-primary);
+}
+
+.stat-pill__unit {
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  color: var(--color-text-secondary);
+}
+
+.stat-pill__unit--muted {
+  color: var(--color-text-muted);
+}
+
 .stat-pill__label {
   font-size: var(--text-xs);
   color: var(--color-text-tertiary);
-  margin-top: 2px;
+}
+
+.stat-pill__footer {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.stat-pill__bar-wrap {
+  flex: 1;
+  height: 3px;
+  background: var(--color-bg-subtle);
+  border-radius: var(--radius-full);
+  overflow: hidden;
+}
+
+.stat-pill__bar-fill {
+  height: 100%;
+  background: var(--gradient-primary);
+  border-radius: var(--radius-full);
+  transition: width var(--duration-slow) var(--ease-out);
 }
 
 /* ==========================================

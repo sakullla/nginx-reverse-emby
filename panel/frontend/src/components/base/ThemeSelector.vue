@@ -22,7 +22,6 @@
           :class="{ 'theme-option--active': currentThemeId === theme.id }"
           @click="selectTheme(theme.id)"
         >
-          <span class="theme-option__preview" :style="{ background: theme.preview }"></span>
           <span class="theme-option__emoji">{{ theme.emoji }}</span>
           <span class="theme-option__label">{{ theme.label }}</span>
           <svg v-if="currentThemeId === theme.id" class="theme-option__check" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
@@ -40,33 +39,27 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 const themes = [
   {
     id: 'sakura',
-    emoji: ' ',
+    emoji: '🌸',
     label: '二次元',
     preview: 'linear-gradient(135deg, #ff6b9d, #c084fc, #818cf8)'
   },
   {
     id: 'cyberpunk',
-    emoji: ' ',
+    emoji: '⚡',
     label: '赛博朋克',
-    preview: 'linear-gradient(135deg, #00f0ff, #ff0055)'
+    preview: 'linear-gradient(135deg, #00d4e6, #7000f0, #ff1a6e)'
   },
   {
-    id: 'forest',
-    emoji: ' ',
-    label: '森林',
-    preview: 'linear-gradient(135deg, #22c55e, #14b8a6, #06b6d4)'
-  },
-  {
-    id: 'ocean',
-    emoji: ' ',
-    label: '海洋',
-    preview: 'linear-gradient(135deg, #3b82f6, #0ea5e9, #06b6d4)'
+    id: 'business',
+    emoji: '☀️',
+    label: '晴空',
+    preview: 'linear-gradient(135deg, #3b82f6, #2563eb, #1e40af)'
   },
   {
     id: 'midnight',
-    emoji: ' ',
+    emoji: '🌙',
     label: '暗夜',
-    preview: 'linear-gradient(135deg, #a78bfa, #818cf8, #60a5fa)'
+    preview: 'linear-gradient(135deg, #a5b4fc, #818cf8, #4f46e5)'
   }
 ]
 
@@ -173,8 +166,6 @@ onUnmounted(() => {
   font-weight: var(--font-semibold);
   color: var(--color-text-tertiary);
   padding: var(--space-2) var(--space-3);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
 }
 
 .theme-option {

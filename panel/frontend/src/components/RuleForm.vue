@@ -296,7 +296,7 @@ const handleSubmit = async () => {
   position: relative;
   width: 44px;
   height: 24px;
-  background: var(--color-slate-300);
+  background: var(--color-border-strong);
   border-radius: var(--radius-full);
   transition: background var(--duration-fast) var(--ease-default);
   flex-shrink: 0;
@@ -317,7 +317,7 @@ const handleSubmit = async () => {
 }
 
 .toggle__input:checked + .toggle__slider {
-  background: var(--color-success);
+  background: var(--color-primary);
 }
 
 .toggle__input:checked + .toggle__slider::after {

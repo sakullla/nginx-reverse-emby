@@ -1101,6 +1101,36 @@ async function handleMasterApi(req, res) {
     return;
   }
 
+  if (req.method === "PATCH" && /^\/api\/agents\/[^/]+$/.test(urlPath)) {
+    const agentId = extractAgentId(urlPath);
+    if (agentId === LOCAL_AGENT_ID) {
+      sendJson(res, 400, errorPayload("local agent cannot be modified"));
+      return;
+    }
+    try {
+      const body = await parseJsonBody(req);
+      const agents = loadRegisteredAgents();
+      const index = agents.findIndex((agent) => agent.id === agentId);
+      if (index === -1) {
+        sendJson(res, 404, errorPayload("agent not found"));
+        return;
+      }
+      if (body.name !== undefined) {
+        const nextName = String(body.name).trim();
+        if (!nextName) {
+          sendJson(res, 400, errorPayload("name cannot be empty"));
+          return;
+        }
+        agents[index] = { ...agents[index], name: nextName, updated_at: nowIso() };
+      }
+      saveRegisteredAgents(agents);
+      sendJson(res, 200, { ok: true, agent: sanitizeAgent(agents[index]) });
+    } catch (err) {
+      sendJson(res, 400, errorPayload(String(err.message || err)));
+    }
+    return;
+  }
+
   if (req.method === "DELETE" && /^\/api\/agents\/[^/]+$/.test(urlPath)) {
     const agentId = extractAgentId(urlPath);
     if (agentId === LOCAL_AGENT_ID) {
