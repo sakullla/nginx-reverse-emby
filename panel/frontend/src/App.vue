@@ -88,7 +88,7 @@
             </button>
             <ThemeSelector />
             <div class="topbar__divider"></div>
-            <button @click="ruleStore.logout" class="topbar__action" title="退出登录">
+            <button @click="ruleStore.logout" class="topbar__action topbar__action--logout" title="退出登录">
               <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
                 <polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>
@@ -340,7 +340,7 @@
             </div>
 
             <!-- Selected Platform Command -->
-            <div v-for="platform in joinPlatformCards" :key="platform.id">
+            <template v-for="platform in joinPlatformCards" :key="platform.id">
               <div v-if="selectedJoinPlatform === platform.id" class="join-command-block">
                 <div class="join-command-meta">
                   <span class="join-command-hint">{{ platform.hint }}</span>
@@ -364,7 +364,7 @@
                   <li v-for="step in platform.steps" :key="step" class="join-steps__item">{{ step }}</li>
                 </ol>
               </div>
-            </div>
+            </template>
 
             <div class="join-modal__actions">
               <button class="btn btn--secondary" @click="showJoinModal = false">关闭</button>
@@ -885,7 +885,6 @@ onUnmounted(() => {
 .loading-text {
   font-size: var(--text-sm);
   color: var(--color-text-tertiary);
-  letter-spacing: 0.05em;
 }
 
 .join-modal {
@@ -1227,6 +1226,11 @@ onUnmounted(() => {
 }
 
 .topbar__action:hover {
+  color: var(--color-text-primary);
+  background: var(--color-bg-hover);
+}
+
+.topbar__action--logout:hover {
   color: var(--color-danger);
   background: var(--color-danger-50);
 }
@@ -1281,8 +1285,6 @@ onUnmounted(() => {
   font-size: var(--text-xs);
   font-weight: var(--font-semibold);
   color: var(--color-text-tertiary);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
 }
 
 .sidebar__search {
@@ -1377,8 +1379,8 @@ onUnmounted(() => {
 }
 
 .sidebar__agent-indicator--online {
-  background: var(--color-success);
-  box-shadow: 0 0 0 3px var(--color-success-50);
+  background: var(--color-primary);
+  box-shadow: 0 0 0 3px var(--color-primary-subtle);
   animation: pulse 2s ease-in-out infinite;
 }
 
@@ -1454,8 +1456,8 @@ onUnmounted(() => {
 }
 
 .sidebar__status-dot--online {
-  background: var(--color-success);
-  box-shadow: 0 0 0 2px var(--color-success-50);
+  background: var(--color-primary);
+  box-shadow: 0 0 0 2px var(--color-primary-subtle);
   animation: pulse 2s ease-in-out infinite;
 }
 
@@ -1489,7 +1491,8 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 
-.sidebar__agent:hover .sidebar__agent-actions {
+.sidebar__agent:hover .sidebar__agent-actions,
+.sidebar__agent--active .sidebar__agent-actions {
   opacity: 1;
 }
 
@@ -1714,7 +1717,7 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 
-.global-search-group-dot--online { background: var(--color-success); }
+.global-search-group-dot--online { background: var(--color-primary); }
 .global-search-group-dot--offline { background: var(--color-text-muted); }
 
 .global-search-group-name {
@@ -1757,7 +1760,7 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 
-.global-search-rule-status--on { background: var(--color-success); }
+.global-search-rule-status--on { background: var(--color-primary); }
 .global-search-rule-status--off { background: var(--color-text-muted); }
 
 .global-search-rule-info {
@@ -1960,7 +1963,7 @@ onUnmounted(() => {
 }
 
 .stat-pill--active:hover {
-  border-color: rgba(251, 146, 60, 0.4);
+  border-color: var(--color-border-strong);
 }
 
 .stat-pill__icon {
@@ -1989,8 +1992,8 @@ onUnmounted(() => {
 }
 
 .stat-pill__icon--active {
-  background: linear-gradient(135deg, rgba(251,146,60,0.15), rgba(251,191,36,0.15));
-  color: var(--color-warning);
+  background: var(--color-primary-subtle);
+  color: var(--color-primary);
 }
 
 .stat-pill__data {
@@ -2016,7 +2019,7 @@ onUnmounted(() => {
 }
 
 .stat-pill__value--active {
-  color: var(--color-warning);
+  color: var(--color-primary);
 }
 
 .stat-pill__unit {
@@ -2050,7 +2053,7 @@ onUnmounted(() => {
 
 .stat-pill__bar-fill {
   height: 100%;
-  background: linear-gradient(90deg, var(--color-warning), rgba(251,191,36,0.8));
+  background: var(--gradient-primary);
   border-radius: var(--radius-full);
   transition: width var(--duration-slow) var(--ease-out);
 }

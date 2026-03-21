@@ -105,13 +105,13 @@ const confirm = () => {
 
 .modal__header {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
   gap: var(--space-4);
   padding: var(--space-5) var(--space-6);
   border-bottom: 1px solid var(--color-border-subtle);
   flex-shrink: 0;
-  background: linear-gradient(135deg, rgba(252,231,243,0.15), rgba(243,232,255,0.15));
+  background: var(--gradient-soft);
 }
 
 .modal__title {
@@ -140,7 +140,7 @@ const confirm = () => {
 }
 
 .modal__close:hover {
-  background: rgba(251, 113, 133, 0.1);
+  background: var(--color-danger-50);
   color: var(--color-danger);
   transform: rotate(90deg);
 }
@@ -158,7 +158,7 @@ const confirm = () => {
   gap: var(--space-3);
   padding: var(--space-4) var(--space-6);
   border-top: 1px solid var(--color-border-subtle);
-  background: linear-gradient(135deg, rgba(252,231,243,0.2), rgba(243,232,255,0.2));
+  background: var(--gradient-soft);
   flex-shrink: 0;
 }
 

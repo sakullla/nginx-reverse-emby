@@ -133,7 +133,7 @@ const toggleStatus = async () => {
 }
 
 .rule-card--disabled {
-  opacity: 0.6;
+  opacity: 0.65;
 }
 
 .rule-card--disabled:hover {
@@ -194,8 +194,8 @@ const toggleStatus = async () => {
 }
 
 .rule-card__status-dot--on {
-  background: var(--color-success);
-  box-shadow: 0 0 0 3px var(--color-success-50);
+  background: var(--color-primary);
+  box-shadow: 0 0 0 3px var(--color-primary-subtle);
   animation: pulse 2s ease-in-out infinite;
 }
 
@@ -207,8 +207,6 @@ const toggleStatus = async () => {
   font-size: var(--text-xs);
   font-weight: var(--font-semibold);
   color: var(--color-text-secondary);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
 }
 
 .rule-card__actions {
@@ -232,7 +230,7 @@ const toggleStatus = async () => {
 }
 
 .rule-card__action:hover {
-  transform: scale(1.15);
+  background: var(--color-bg-hover);
 }
 
 .rule-card__action--pause:hover {
@@ -269,10 +267,8 @@ const toggleStatus = async () => {
 
 .rule-card__endpoint-label {
   font-size: var(--text-xs);
-  font-weight: var(--font-semibold);
+  font-weight: var(--font-medium);
   color: var(--color-text-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
   margin-bottom: var(--space-1-5);
 }
 
@@ -312,7 +308,7 @@ const toggleStatus = async () => {
   color: var(--color-primary);
   flex-shrink: 0;
   margin-top: var(--space-5);
-  animation: float 3s ease-in-out infinite;
+  opacity: 0.7;
 }
 
 /* Footer */

@@ -342,7 +342,7 @@
   position: relative;
   width: 48px;
   height: 26px;
-  background: var(--color-slate-300);
+  background: var(--color-border-strong);
   border-radius: var(--radius-full);
   transition: all var(--duration-normal) var(--ease-bounce);
 }
@@ -431,16 +431,15 @@
   padding: var(--space-1) var(--space-3);
   font-size: var(--text-xs);
   font-weight: var(--font-medium);
-  background: linear-gradient(135deg, rgba(252,231,243,0.6), rgba(243,232,255,0.6));
+  background: var(--color-primary-subtle);
   color: var(--color-primary);
-  border: 1px solid rgba(192, 132, 252, 0.2);
+  border: 1px solid var(--color-border-default);
   border-radius: var(--radius-full);
   transition: all var(--duration-fast) var(--ease-default);
-  backdrop-filter: blur(4px);
 }
 
 .tag:hover {
-  background: linear-gradient(135deg, rgba(252,231,243,0.9), rgba(243,232,255,0.9));
+  background: var(--color-bg-hover);
   border-color: var(--color-primary);
   transform: scale(1.05);
 }
@@ -460,7 +459,7 @@
 
 .tag__remove:hover {
   opacity: 1;
-  background: rgba(251, 113, 133, 0.2);
+  background: var(--color-danger-50);
   color: var(--color-danger);
 }
 
