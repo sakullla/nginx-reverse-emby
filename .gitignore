@@ -4,3 +4,5 @@ panel/frontend/dist/
 playwright-report/
 test-results/
 .idea/
+.vscode/
+.ai/
