@@ -183,13 +183,19 @@ curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/dep
 ### 快速加入 Agent
 
 ```bash
-/opt/nginx-reverse-emby/scripts/join-agent.sh \
-  --master-url http://master.example.com:8080 \
+curl -fsSL http://master.example.com:8080/panel-api/public/join-agent.sh | bash -s -- \
   --register-token change-this-register-token \
-  --agent-name edge-01 \
-  --tags edge,emby \
-  --apply-command '/usr/local/bin/nginx-reverse-emby-apply.sh' \
   --install-systemd
+```
+
+该脚本会直接从当前 Master 面板下载并安装轻量 Agent、默认 nginx apply 脚本、生成模板与运行资源，不依赖 GitHub 等外部托管。
+
+如果目标机器缺少 `Node.js 18+`、`curl` 或 `nginx`，脚本会尝试通过系统包管理器自动安装；因此建议使用 `root` 或具备 `sudo` 权限的用户执行。
+
+如需自定义本机 apply 逻辑，可额外追加：
+
+```bash
+--apply-command '/usr/local/bin/nginx-reverse-emby-apply.sh'
 ```
 
 脚本会生成轻量 Agent 配置，并启动 `scripts/light-agent.js`。Agent 会定时上报心跳、拉取 Master 下发的配置 revision，并在需要时执行本机 Nginx 管理脚本。

@@ -13,13 +13,19 @@ Agent 可以位于 **NAT 后**，因为它通过心跳主动连接 Master 拉取
 ## 1）直接加入 Agent
 
 ```bash
-/opt/nginx-reverse-emby/scripts/join-agent.sh \
-  --master-url http://master.example.com:8080 \
+curl -fsSL http://master.example.com:8080/panel-api/public/join-agent.sh | bash -s -- \
   --register-token change-this-register-token \
-  --agent-name edge-01 \
-  --tags edge,emby \
-  --apply-command '/usr/local/bin/nginx-reverse-emby-apply.sh' \
   --install-systemd
+```
+
+默认流程会从 Master 面板下载 light-agent、默认 nginx apply 脚本与模板资源，不依赖外部托管。
+
+如果目标机器缺少 `Node.js 18+`、`curl` 或 `nginx`，安装脚本会尝试自动安装；建议使用 `root` 或具备 `sudo` 权限的用户执行。
+
+如需覆盖本机 apply 逻辑，可额外传入：
+
+```bash
+--apply-command '/usr/local/bin/nginx-reverse-emby-apply.sh'
 ```
 
 ## 1.1）NAT 场景
@@ -33,12 +39,10 @@ Agent 可以位于 **NAT 后**，因为它通过心跳主动连接 Master 拉取
 示例：
 
 ```bash
-/opt/nginx-reverse-emby/scripts/join-agent.sh \
-  --master-url http://master.example.com:8080 \
+curl -fsSL http://master.example.com:8080/panel-api/public/join-agent.sh | bash -s -- \
   --register-token change-this-register-token \
   --agent-name nat-edge-01 \
   --tags nat,edge \
-  --apply-command '/usr/local/bin/nginx-reverse-emby-apply.sh' \
   --install-systemd
 ```
 
