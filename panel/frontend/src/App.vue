@@ -152,7 +152,7 @@
                   <div class="sidebar__agent-indicator" :class="agent.status === 'online' ? 'sidebar__agent-indicator--online' : 'sidebar__agent-indicator--offline'"></div>
                   <div class="sidebar__agent-info" v-show="!sidebarCollapsed">
                     <div class="sidebar__agent-name">{{ agent.name }}</div>
-                    <div class="sidebar__agent-meta" :title="agent.agent_url">{{ formatAgentUrl(agent.agent_url) }}</div>
+                    <div class="sidebar__agent-meta" :title="agent.agent_url">{{ formatAgentUrl(agent.agent_url, agent.mode) }}</div>
                   </div>
                   <div class="sidebar__agent-actions" v-show="!sidebarCollapsed" @click.stop>
                     <button
@@ -617,8 +617,8 @@ function toggleSidebarCollapse() {
   localStorage.setItem('sidebar_collapsed', sidebarCollapsed.value)
 }
 
-function formatAgentUrl(url) {
-  if (!url) return '本机'
+function formatAgentUrl(url, mode) {
+  if (!url) return mode === 'local' ? '本机' : '未配置'
   try {
     const u = new URL(url)
     const host = u.hostname

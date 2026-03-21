@@ -40,7 +40,7 @@ map $http_sec_fetch_mode $early_hints {
 EOF
 
 export PANEL_RULES_JSON="$RULES_JSON"
-export PROXY_DEPLOY_MODE="${PROXY_DEPLOY_MODE:-direct}"
+export PROXY_DEPLOY_MODE="${PROXY_DEPLOY_MODE:-front_proxy}"
 export NRE_TEMPLATE_FILE
 export NRE_DIRECT_NO_TLS_TEMPLATE_FILE
 export NRE_DIRECT_TLS_TEMPLATE_FILE
