@@ -13,6 +13,8 @@ NGINX_BIN_PATH="${AGENT_NGINX_BIN:-${NGINX_BIN:-nginx}}"
 NRE_DYNAMIC_DIR="${NRE_DYNAMIC_DIR:-/etc/nginx/conf.d/dynamic}"
 NRE_INCLUDE_FILE="${NRE_INCLUDE_FILE:-/etc/nginx/conf.d/zz-nginx-reverse-emby-agent.include.conf}"
 NRE_GLOBALS_FILE="${NRE_GLOBALS_FILE:-/etc/nginx/conf.d/zz-nginx-reverse-emby-agent.globals.conf}"
+NRE_STATUS_CONF_FILE="${NRE_STATUS_CONF_FILE:-/etc/nginx/conf.d/zz-nginx-reverse-emby-agent.status.conf}"
+NRE_STATUS_PORT="${NRE_STATUS_PORT:-18080}"
 NRE_TEMPLATE_FILE="${NRE_TEMPLATE_FILE:-$RUNTIME_DIR/default.conf.template}"
 NRE_DIRECT_NO_TLS_TEMPLATE_FILE="${NRE_DIRECT_NO_TLS_TEMPLATE_FILE:-$RUNTIME_DIR/default.direct.no_tls.conf.template}"
 NRE_DIRECT_TLS_TEMPLATE_FILE="${NRE_DIRECT_TLS_TEMPLATE_FILE:-$RUNTIME_DIR/default.direct.tls.conf.template}"
@@ -151,7 +153,7 @@ port_is_listening() {
 [ -f "$NRE_DIRECT_NO_TLS_TEMPLATE_FILE" ] || { echo "Template not found: $NRE_DIRECT_NO_TLS_TEMPLATE_FILE" >&2; exit 1; }
 [ -f "$NRE_DIRECT_TLS_TEMPLATE_FILE" ] || { echo "Template not found: $NRE_DIRECT_TLS_TEMPLATE_FILE" >&2; exit 1; }
 
-mkdir -p "$NRE_DYNAMIC_DIR" "$(dirname "$NRE_INCLUDE_FILE")" "$(dirname "$NRE_GLOBALS_FILE")" "$AGENT_HOME/.state" "$AGENT_HOME/certs"
+mkdir -p "$NRE_DYNAMIC_DIR" "$(dirname "$NRE_INCLUDE_FILE")" "$(dirname "$NRE_GLOBALS_FILE")" "$(dirname "$NRE_STATUS_CONF_FILE")" "$AGENT_HOME/.state" "$AGENT_HOME/certs"
 
 cat > "$NRE_INCLUDE_FILE" <<EOF
 include $NRE_DYNAMIC_DIR/*.conf;
@@ -167,6 +169,25 @@ map $http_sec_fetch_mode $early_hints {
     navigate $http2$http3;
 }
 EOF
+
+if is_true "${NRE_ENABLE_NGINX_STATUS:-1}"; then
+    cat > "$NRE_STATUS_CONF_FILE" <<EOF
+server {
+    listen 127.0.0.1:${NRE_STATUS_PORT};
+    listen [::1]:${NRE_STATUS_PORT};
+
+    location = /nginx_status {
+        stub_status on;
+        access_log off;
+        allow 127.0.0.1;
+        allow ::1;
+        deny all;
+    }
+}
+EOF
+else
+    rm -f "$NRE_STATUS_CONF_FILE"
+fi
 
 resolved_deploy_mode=$(normalize_deploy_mode)
 

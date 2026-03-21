@@ -22,7 +22,7 @@ const HEARTBEAT_INTERVAL_MS = Number(process.env.AGENT_HEARTBEAT_INTERVAL_MS || 
 const RULES_JSON = process.env.RULES_JSON || path.resolve(process.cwd(), 'proxy_rules.json')
 const STATE_FILE = process.env.AGENT_STATE_FILE || path.resolve(process.cwd(), 'agent-state.json')
 const APPLY_COMMAND = process.env.APPLY_COMMAND || ''
-const NGINX_STATUS_URL = process.env.NGINX_STATUS_URL || ''
+const NGINX_STATUS_URL = process.env.NGINX_STATUS_URL || 'http://127.0.0.1:18080/nginx_status'
 
 function trimSlash(value) {
   return String(value || '').trim().replace(/\/+$/, '')
@@ -185,6 +185,7 @@ function fetchNginxStats() {
 function loadState() {
   return {
     current_revision: 0,
+    last_apply_revision: 0,
     last_apply_status: null,
     last_apply_message: '',
     ...readJson(STATE_FILE, {})
@@ -256,6 +257,7 @@ async function heartbeat(state) {
       version: AGENT_VERSION,
       tags: AGENT_TAGS,
       current_revision: state.current_revision,
+      last_apply_revision: state.last_apply_revision,
       last_apply_status: state.last_apply_status,
       last_apply_message: state.last_apply_message,
       stats
@@ -290,6 +292,7 @@ async function runOnce() {
     try {
       const applyOutput = applyRules()
       state.current_revision = nextRevision
+      state.last_apply_revision = nextRevision
       state.last_apply_status = 'success'
       state.last_apply_message = truncateText(
         applyOutput || `Applied successfully at ${nowIso()}`
@@ -299,6 +302,7 @@ async function runOnce() {
         message: state.last_apply_message
       })
     } catch (err) {
+      state.last_apply_revision = nextRevision
       state.last_apply_status = 'error'
       state.last_apply_message = truncateText(String(err.message || err))
       log('error', 'failed to apply synced rules', {

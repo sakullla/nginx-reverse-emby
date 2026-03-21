@@ -21,6 +21,9 @@ const AGENTS_JSON =
   process.env.PANEL_AGENTS_JSON || path.join(DATA_ROOT, "agents.json");
 const AGENT_RULES_DIR =
   process.env.PANEL_AGENT_RULES_DIR || path.join(DATA_ROOT, "agent_rules");
+const LOCAL_AGENT_STATE_JSON =
+  process.env.PANEL_LOCAL_AGENT_STATE_JSON ||
+  path.join(DATA_ROOT, "local_agent_state.json");
 const GENERATOR_SCRIPT =
   process.env.PANEL_GENERATOR_SCRIPT ||
   "/docker-entrypoint.d/25-dynamic-reverse-proxy.sh";
@@ -316,6 +319,25 @@ function resolveRemoteAgentMode(agentUrl) {
   return trimSlash(agentUrl || "") ? "master" : "pull";
 }
 
+function normalizeRuleRevision(value, fallback = 0) {
+  const parsed = Number(value);
+  if (Number.isFinite(parsed) && parsed >= 0) return parsed;
+  return normalizeRevision(fallback);
+}
+
+function normalizeStoredRule(rule, suggestedId = null) {
+  const normalized = normalizeRulePayload(rule || {}, rule || {}, suggestedId);
+  normalized.revision = normalizeRuleRevision(rule?.revision);
+  return normalized;
+}
+
+function getHighestRuleRevision(rules = []) {
+  return (Array.isArray(rules) ? rules : []).reduce(
+    (max, rule) => Math.max(max, normalizeRuleRevision(rule?.revision)),
+    0,
+  );
+}
+
 function normalizeRulePayload(body, fallback = {}, suggestedId = null) {
   const frontend =
     body.frontend_url !== undefined
@@ -398,11 +420,16 @@ function loadRulesForAgent(agentId) {
   if (agentId === LOCAL_AGENT_ID) {
     migrateCsvToJson();
   }
-  return readJsonFile(getRuleFileForAgent(agentId), []);
+  const rules = readJsonFile(getRuleFileForAgent(agentId), []);
+  if (!Array.isArray(rules)) return [];
+  return rules.map((rule, index) => normalizeStoredRule(rule, index + 1));
 }
 
 function saveRulesForAgent(agentId, rules) {
-  writeJsonFile(getRuleFileForAgent(agentId), rules);
+  const normalizedRules = Array.isArray(rules)
+    ? rules.map((rule, index) => normalizeStoredRule(rule, index + 1))
+    : [];
+  writeJsonFile(getRuleFileForAgent(agentId), normalizedRules);
 }
 
 function deleteRulesForAgent(agentId) {
@@ -422,6 +449,69 @@ function saveRegisteredAgents(agents) {
   writeJsonFile(AGENTS_JSON, agents);
 }
 
+function ensureLocalAgentState(state = {}) {
+  return {
+    desired_revision: normalizeRevision(state.desired_revision),
+    current_revision: normalizeRevision(state.current_revision),
+    last_apply_revision: normalizeRevision(
+      state.last_apply_revision,
+    ),
+    last_apply_status:
+      state.last_apply_status === undefined || state.last_apply_status === null
+        ? "success"
+        : String(state.last_apply_status || "").trim() || null,
+    last_apply_message: String(state.last_apply_message || ""),
+  };
+}
+
+function loadLocalAgentState() {
+  return ensureLocalAgentState(readJsonFile(LOCAL_AGENT_STATE_JSON, {}));
+}
+
+function saveLocalAgentState(state) {
+  writeJsonFile(LOCAL_AGENT_STATE_JSON, ensureLocalAgentState(state));
+}
+
+function getAgentLastApplyRevision(agent) {
+  const value =
+    agent?.last_apply_revision !== undefined
+      ? agent.last_apply_revision
+      : agent?.current_revision;
+  return normalizeRevision(value);
+}
+
+function getNextPendingRevision(agent) {
+  const desiredRevision = normalizeRevision(agent?.desired_revision);
+  const currentRevision = normalizeRevision(agent?.current_revision);
+  const lastApplyRevision = getAgentLastApplyRevision(agent);
+
+  if (desiredRevision > currentRevision && lastApplyRevision < desiredRevision) {
+    return desiredRevision;
+  }
+
+  return Math.max(desiredRevision, currentRevision) + 1;
+}
+
+function getDesiredRevisionForSync(agent, rules = [], options = {}) {
+  const desiredRevision = normalizeRevision(agent?.desired_revision);
+  const currentRevision = normalizeRevision(agent?.current_revision);
+  const highestRuleRevision = getHighestRuleRevision(rules);
+
+  if (desiredRevision > currentRevision) {
+    return Math.max(desiredRevision, highestRuleRevision);
+  }
+
+  if (highestRuleRevision > currentRevision) {
+    return highestRuleRevision;
+  }
+
+  if (options.force) {
+    return currentRevision + 1;
+  }
+
+  return desiredRevision;
+}
+
 function normalizeRevision(value) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
@@ -431,6 +521,11 @@ function ensureAgentState(agent) {
   agent.mode = agent.is_local ? "local" : resolveRemoteAgentMode(agent.agent_url);
   agent.desired_revision = normalizeRevision(agent.desired_revision);
   agent.current_revision = normalizeRevision(agent.current_revision);
+  agent.last_apply_revision = normalizeRevision(
+    agent.last_apply_revision !== undefined
+      ? agent.last_apply_revision
+      : agent.current_revision,
+  );
   agent.last_apply_status = agent.last_apply_status || null;
   agent.last_apply_message = agent.last_apply_message || "";
   agent.last_reported_stats = agent.last_reported_stats || null;
@@ -447,6 +542,7 @@ function getAgentStatus(agent) {
 function makeLocalAgent() {
   if (!LOCAL_AGENT_ENABLED) return null;
   const timestamp = nowIso();
+  const state = loadLocalAgentState();
   return {
     id: LOCAL_AGENT_ID,
     name: LOCAL_AGENT_NAME,
@@ -454,10 +550,11 @@ function makeLocalAgent() {
     version: AGENT_VERSION,
     tags: LOCAL_AGENT_TAGS,
     mode: "local",
-    desired_revision: 0,
-    current_revision: 0,
-    last_apply_status: "success",
-    last_apply_message: "",
+    desired_revision: state.desired_revision,
+    current_revision: state.current_revision,
+    last_apply_revision: state.last_apply_revision,
+    last_apply_status: state.last_apply_status,
+    last_apply_message: state.last_apply_message,
     last_reported_stats: null,
     status: "online",
     last_seen_at: timestamp,
@@ -478,6 +575,7 @@ function sanitizeAgent(agent) {
     mode: hydrated.mode,
     desired_revision: hydrated.desired_revision,
     current_revision: hydrated.current_revision,
+    last_apply_revision: hydrated.last_apply_revision,
     last_apply_status: hydrated.last_apply_status,
     last_apply_message: hydrated.last_apply_message,
     last_reported_stats: hydrated.last_reported_stats,
@@ -622,13 +720,22 @@ async function syncAgentRules(agentId) {
   if (!agent) throw new Error("agent not found");
   const rules = loadRulesForAgent(agentId);
   if (agentId === LOCAL_AGENT_ID) {
-    return { ok: true, rules };
+    const desiredRevision = getDesiredRevisionForSync(agent, rules);
+    if (desiredRevision > agent.desired_revision) {
+      saveLocalAgentState({
+        ...loadLocalAgentState(),
+        desired_revision: desiredRevision,
+      });
+    }
+    return { ok: true, rules, desired_revision: desiredRevision };
   }
   const agents = loadRegisteredAgents();
   const index = agents.findIndex((item) => item.id === agentId);
   if (index === -1) throw new Error("agent not found");
   agents[index] = ensureAgentState(agents[index]);
-  agents[index].desired_revision += 1;
+  agents[index].desired_revision = getDesiredRevisionForSync(agents[index], rules, {
+    force: true,
+  });
   agents[index].updated_at = nowIso();
   saveRegisteredAgents(agents);
   logAgentEvent(agents[index], "queued rules sync", {
@@ -648,8 +755,27 @@ async function applyAgent(agentId) {
   if (!agent) throw new Error("agent not found");
 
   if (agentId === LOCAL_AGENT_ID) {
-    applyNginxConfig();
-    return { ok: true, message: "applied" };
+    const rules = loadRulesForAgent(agentId);
+    const desiredRevision = getDesiredRevisionForSync(agent, rules, { force: true });
+    const nextState = {
+      ...loadLocalAgentState(),
+      desired_revision: desiredRevision,
+      last_apply_revision: desiredRevision,
+    };
+    try {
+      applyNginxConfig();
+      nextState.current_revision = desiredRevision;
+      nextState.last_apply_status = "success";
+      nextState.last_apply_message = "";
+      saveLocalAgentState(nextState);
+      return { ok: true, message: "applied", desired_revision: desiredRevision };
+    } catch (err) {
+      nextState.current_revision = agent.current_revision;
+      nextState.last_apply_status = "error";
+      nextState.last_apply_message = String(err.message || err);
+      saveLocalAgentState(nextState);
+      throw err;
+    }
   }
 
   const sync = await syncAgentRules(agentId);
@@ -793,9 +919,11 @@ async function handleLegacyLocalRules(req, res, urlPath) {
   if (req.method === "POST" && urlPath === "/api/rules") {
     try {
       const body = await parseJsonBody(req);
+      const agent = getAgentById(LOCAL_AGENT_ID);
       const rules = loadOrInitRules(LOCAL_AGENT_ID);
       const maxId = rules.reduce((max, rule) => Math.max(max, Number(rule.id) || 0), 0);
       const newRule = normalizeRulePayload(body, {}, maxId + 1);
+      newRule.revision = getNextPendingRevision(agent);
       rules.push(newRule);
       saveRulesForAgent(LOCAL_AGENT_ID, rules);
       if (AUTO_APPLY) {
@@ -824,6 +952,7 @@ async function handleLegacyLocalRules(req, res, urlPath) {
     try {
       const ruleId = Number(urlPath.split("/").pop());
       const body = await parseJsonBody(req);
+      const agent = getAgentById(LOCAL_AGENT_ID);
       const rules = loadOrInitRules(LOCAL_AGENT_ID);
       const index = rules.findIndex((rule) => Number(rule.id) === ruleId);
       if (index === -1) {
@@ -831,6 +960,7 @@ async function handleLegacyLocalRules(req, res, urlPath) {
         return;
       }
       rules[index] = normalizeRulePayload(body, rules[index], ruleId);
+      rules[index].revision = getNextPendingRevision(agent);
       saveRulesForAgent(LOCAL_AGENT_ID, rules);
       if (AUTO_APPLY) {
         try {
@@ -1064,6 +1194,15 @@ async function handleMasterApi(req, res) {
           ? body.current_revision
           : agent.current_revision,
       );
+      if (body.last_apply_revision !== undefined) {
+        agent.last_apply_revision = normalizeRevision(body.last_apply_revision);
+      } else {
+        agent.last_apply_revision = normalizeRevision(
+          agent.last_apply_revision !== undefined
+            ? agent.last_apply_revision
+            : agent.current_revision,
+        );
+      }
       if (body.last_apply_status !== undefined) {
         agent.last_apply_status = String(body.last_apply_status || "").trim() || null;
       }
@@ -1078,12 +1217,14 @@ async function handleMasterApi(req, res) {
       saveRegisteredAgents(agents);
       const hasRevisionChange = previous.current_revision !== agent.current_revision;
       const hasApplyStatusChange =
+        previous.last_apply_revision !== agent.last_apply_revision ||
         previous.last_apply_status !== agent.last_apply_status ||
         previous.last_apply_message !== agent.last_apply_message;
       if (hasRevisionChange || hasApplyStatusChange) {
         logAgentEvent(agent, "heartbeat updated state", {
           current_revision: agent.current_revision,
           desired_revision: agent.desired_revision,
+          last_apply_revision: agent.last_apply_revision,
           last_apply_status: agent.last_apply_status,
           last_apply_message: agent.last_apply_message,
         });
@@ -1271,6 +1412,7 @@ async function handleMasterApi(req, res) {
       const rules = loadOrInitRules(agentId);
       const maxId = rules.reduce((max, rule) => Math.max(max, Number(rule.id) || 0), 0);
       const newRule = normalizeRulePayload(body, {}, maxId + 1);
+      newRule.revision = getNextPendingRevision(agent);
       rules.push(newRule);
       saveRulesForAgent(agentId, rules);
 
@@ -1314,6 +1456,7 @@ async function handleMasterApi(req, res) {
         return;
       }
       rules[index] = normalizeRulePayload(body, rules[index], ruleId);
+      rules[index].revision = getNextPendingRevision(agent);
       saveRulesForAgent(agentId, rules);
 
       if (AUTO_APPLY) {

@@ -604,6 +604,7 @@ import ThemeSelector from './components/base/ThemeSelector.vue'
 import TokenAuth from './components/base/TokenAuth.vue'
 import BaseModal from './components/base/BaseModal.vue'
 import StatusMessage from './components/StatusMessage.vue'
+import { getAgentSyncStatus } from './utils/syncStatus'
 
 const ruleStore = useRuleStore()
 const showAddModal = ref(false)
@@ -690,18 +691,6 @@ function resetCopyState() {
 const activeRulesCount = computed(() => {
   return ruleStore.rules.filter(r => r.enabled).length
 })
-
-// Returns the effective sync status of an agent for indicator/tooltip use.
-// Priority: offline > failed > pending > online
-function getAgentSyncStatus(agent) {
-  if (agent.status !== 'online') return 'offline'
-  const desired = agent.desired_revision ?? 0
-  const current = agent.current_revision ?? 0
-  if (desired > current) return 'pending'
-  const s = agent.last_apply_status
-  if (s !== null && s !== undefined && s !== 'success') return 'failed'
-  return 'online'
-}
 
 // Returns the tooltip text shown when hovering over an agent in the sidebar.
 function getAgentTooltip(agent) {
