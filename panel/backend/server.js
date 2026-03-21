@@ -21,12 +21,26 @@ const AGENTS_JSON =
   process.env.PANEL_AGENTS_JSON || path.join(DATA_ROOT, "agents.json");
 const AGENT_RULES_DIR =
   process.env.PANEL_AGENT_RULES_DIR || path.join(DATA_ROOT, "agent_rules");
+const L4_RULES_DIR =
+  process.env.PANEL_L4_RULES_DIR || path.join(DATA_ROOT, "l4_agent_rules");
+const MANAGED_CERTS_JSON =
+  process.env.PANEL_MANAGED_CERTS_JSON ||
+  path.join(DATA_ROOT, "managed_certificates.json");
+const MANAGED_CERTS_DIR =
+  process.env.PANEL_MANAGED_CERTS_DIR ||
+  path.join(DATA_ROOT, "managed_certificates");
+const LOCAL_MANAGED_CERT_BUNDLE_JSON =
+  process.env.PANEL_LOCAL_MANAGED_CERT_BUNDLE_JSON ||
+  path.join(DATA_ROOT, "managed_cert_bundle.local.json");
 const LOCAL_AGENT_STATE_JSON =
   process.env.PANEL_LOCAL_AGENT_STATE_JSON ||
   path.join(DATA_ROOT, "local_agent_state.json");
 const GENERATOR_SCRIPT =
   process.env.PANEL_GENERATOR_SCRIPT ||
   "/docker-entrypoint.d/25-dynamic-reverse-proxy.sh";
+const MANAGED_CERT_HELPER_SCRIPT =
+  process.env.PANEL_MANAGED_CERT_HELPER_SCRIPT ||
+  path.resolve(__dirname, "..", "..", "scripts", "managed-cert-helper.sh");
 const NGINX_BIN = process.env.PANEL_NGINX_BIN || "nginx";
 const APPLY_COMMAND = process.env.PANEL_APPLY_COMMAND || "";
 const APPLY_COMMAND_ARGS = parseJsonArray(process.env.PANEL_APPLY_ARGS, []);
@@ -51,6 +65,21 @@ const AGENT_TAGS = normalizeTags(
     .map((item) => item.trim())
     .filter(Boolean),
 );
+const DEFAULT_AGENT_CAPABILITIES = normalizeCapabilities(
+  (process.env.AGENT_CAPABILITIES || "http_rules,local_acme,cert_install,l4")
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean),
+);
+const ACME_HOME =
+  process.env.ACME_HOME || path.join(DATA_ROOT, ".acme.sh");
+const ACME_CA = process.env.ACME_CA || "letsencrypt";
+const ACME_DNS_PROVIDER = String(process.env.ACME_DNS_PROVIDER || "").trim();
+const CF_TOKEN = String(process.env.CF_Token || process.env.CF_TOKEN || "").trim();
+const CF_ACCOUNT_ID = String(
+  process.env.CF_Account_ID || process.env.CF_ACCOUNT_ID || "",
+).trim();
+const MANAGED_CERTS_ENABLED = ACME_DNS_PROVIDER === "cf" && !!CF_TOKEN;
 const AGENT_HEARTBEAT_TIMEOUT_MS = Number(
   process.env.AGENT_HEARTBEAT_TIMEOUT_MS || "90000",
 );
@@ -139,6 +168,8 @@ function logAgentEvent(agentOrId, message, details = null) {
 function ensureDataDir() {
   fs.mkdirSync(DATA_ROOT, { recursive: true });
   fs.mkdirSync(AGENT_RULES_DIR, { recursive: true });
+  fs.mkdirSync(L4_RULES_DIR, { recursive: true });
+  fs.mkdirSync(MANAGED_CERTS_DIR, { recursive: true });
 }
 
 function readJsonFile(file, fallback) {
@@ -154,6 +185,12 @@ function readJsonFile(file, fallback) {
 function writeJsonFile(file, value) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify(value, null, 2), "utf8");
+}
+
+function removePath(targetPath) {
+  if (fs.existsSync(targetPath)) {
+    fs.rmSync(targetPath, { recursive: true, force: true });
+  }
 }
 
 function sendJson(res, statusCode, payload) {
@@ -315,6 +352,23 @@ function normalizeTags(tags) {
   ];
 }
 
+function normalizeCapabilities(capabilities) {
+  const allowed = new Set([
+    "http_rules",
+    "local_acme",
+    "cert_install",
+    "l4",
+  ]);
+
+  return [
+    ...new Set(
+      (Array.isArray(capabilities) ? capabilities : [])
+        .map((item) => String(item || "").trim())
+        .filter((item) => allowed.has(item)),
+    ),
+  ];
+}
+
 function resolveRemoteAgentMode(agentUrl) {
   return trimSlash(agentUrl || "") ? "master" : "pull";
 }
@@ -441,12 +495,307 @@ function deleteRulesForAgent(agentId) {
   if (fs.existsSync(file)) fs.unlinkSync(file);
 }
 
+function getL4RuleFileForAgent(agentId) {
+  return path.join(L4_RULES_DIR, `${agentId}.json`);
+}
+
+function normalizeHost(value) {
+  return String(value || "").trim().replace(/^\[(.*)\]$/, "$1");
+}
+
+function validatePort(value) {
+  const port = Number(value);
+  return Number.isInteger(port) && port >= 1 && port <= 65535;
+}
+
+function validateNetworkHost(value) {
+  const host = normalizeHost(value);
+  if (!host) return false;
+  if (/^[a-zA-Z0-9.-]+$/.test(host)) return true;
+  if (/^[0-9A-Fa-f:.]+$/.test(host)) return true;
+  return false;
+}
+
+function normalizeL4RuleRevision(value, fallback = 0) {
+  return normalizeRuleRevision(value, fallback);
+}
+
+function normalizeL4RulePayload(body, fallback = {}, suggestedId = null) {
+  const protocol = String(
+    body.protocol !== undefined ? body.protocol : fallback.protocol || "tcp",
+  )
+    .trim()
+    .toLowerCase();
+  const listenHost = normalizeHost(
+    body.listen_host !== undefined ? body.listen_host : fallback.listen_host || "0.0.0.0",
+  );
+  const upstreamHost = normalizeHost(
+    body.upstream_host !== undefined ? body.upstream_host : fallback.upstream_host,
+  );
+  const listenPort =
+    body.listen_port !== undefined ? Number(body.listen_port) : Number(fallback.listen_port);
+  const upstreamPort =
+    body.upstream_port !== undefined
+      ? Number(body.upstream_port)
+      : Number(fallback.upstream_port);
+  const name = String(body.name !== undefined ? body.name : fallback.name || "").trim();
+
+  if (!["tcp", "udp"].includes(protocol)) {
+    throw new Error("protocol must be tcp or udp");
+  }
+  if (!validateNetworkHost(listenHost)) {
+    throw new Error("listen_host must be a valid host or IP");
+  }
+  if (!validateNetworkHost(upstreamHost)) {
+    throw new Error("upstream_host must be a valid host or IP");
+  }
+  if (!validatePort(listenPort) || !validatePort(upstreamPort)) {
+    throw new Error("listen_port and upstream_port must be valid ports");
+  }
+
+  const parsedId =
+    body.id !== undefined
+      ? Number(body.id)
+      : fallback.id !== undefined
+        ? Number(fallback.id)
+        : Number(suggestedId);
+
+  return {
+    id:
+      Number.isFinite(parsedId) && parsedId > 0
+        ? parsedId
+        : Number(suggestedId) || 1,
+    name: name || `${protocol.toUpperCase()} ${listenPort}`,
+    protocol,
+    listen_host: listenHost,
+    listen_port: listenPort,
+    upstream_host: upstreamHost,
+    upstream_port: upstreamPort,
+    enabled:
+      body.enabled !== undefined ? !!body.enabled : fallback.enabled !== false,
+    tags:
+      body.tags !== undefined ? normalizeTags(body.tags) : normalizeTags(fallback.tags || []),
+  };
+}
+
+function normalizeStoredL4Rule(rule, suggestedId = null) {
+  const normalized = normalizeL4RulePayload(rule || {}, rule || {}, suggestedId);
+  normalized.revision = normalizeL4RuleRevision(rule?.revision);
+  return normalized;
+}
+
+function getHighestL4RuleRevision(rules = []) {
+  return (Array.isArray(rules) ? rules : []).reduce(
+    (max, rule) => Math.max(max, normalizeL4RuleRevision(rule?.revision)),
+    0,
+  );
+}
+
+function loadL4RulesForAgent(agentId) {
+  const rules = readJsonFile(getL4RuleFileForAgent(agentId), []);
+  if (!Array.isArray(rules)) return [];
+  return rules.map((rule, index) => normalizeStoredL4Rule(rule, index + 1));
+}
+
+function ensureUniqueL4Listen(rules, nextRule, excludeId = null) {
+  const conflict = (Array.isArray(rules) ? rules : []).find((rule) => {
+    if (!rule || Number(rule.id) === Number(excludeId)) return false;
+    return (
+      String(rule.protocol || "tcp") === String(nextRule.protocol || "tcp") &&
+      normalizeHost(rule.listen_host) === normalizeHost(nextRule.listen_host) &&
+      Number(rule.listen_port) === Number(nextRule.listen_port)
+    );
+  });
+  if (conflict) {
+    throw new Error(
+      `listen ${nextRule.protocol}:${nextRule.listen_host}:${nextRule.listen_port} conflicts with rule #${conflict.id}`,
+    );
+  }
+}
+
+function saveL4RulesForAgent(agentId, rules) {
+  const normalizedRules = Array.isArray(rules)
+    ? rules.map((rule, index) => normalizeStoredL4Rule(rule, index + 1))
+    : [];
+  writeJsonFile(getL4RuleFileForAgent(agentId), normalizedRules);
+}
+
+function deleteL4RulesForAgent(agentId) {
+  const file = getL4RuleFileForAgent(agentId);
+  if (fs.existsSync(file)) fs.unlinkSync(file);
+}
+
+function getCertStoreDir(domain) {
+  return path.join(MANAGED_CERTS_DIR, normalizeHost(domain));
+}
+
+function normalizeManagedCertificatePayload(body, fallback = {}, suggestedId = null) {
+  const domain = normalizeHost(
+    body.domain !== undefined ? body.domain : fallback.domain,
+  ).toLowerCase();
+  const targetAgentIds = [
+    ...new Set(
+      (body.target_agent_ids !== undefined
+        ? body.target_agent_ids
+        : fallback.target_agent_ids || []
+      )
+        .map((item) => String(item || "").trim())
+        .filter(Boolean),
+    ),
+  ];
+  const scope = String(body.scope !== undefined ? body.scope : fallback.scope || "domain")
+    .trim()
+    .toLowerCase();
+  const issuerMode = String(
+    body.issuer_mode !== undefined
+      ? body.issuer_mode
+      : fallback.issuer_mode || "master_cf_dns",
+  )
+    .trim()
+    .toLowerCase();
+
+  if (!domain || !validateNetworkHost(domain)) {
+    throw new Error("domain must be a valid domain or IP");
+  }
+  if (!["domain", "ip"].includes(scope)) {
+    throw new Error("scope must be domain or ip");
+  }
+  if (!["master_cf_dns", "local_http01"].includes(issuerMode)) {
+    throw new Error("issuer_mode must be master_cf_dns or local_http01");
+  }
+
+  const parsedId =
+    body.id !== undefined
+      ? Number(body.id)
+      : fallback.id !== undefined
+        ? Number(fallback.id)
+        : Number(suggestedId);
+
+  return {
+    id:
+      Number.isFinite(parsedId) && parsedId > 0
+        ? parsedId
+        : Number(suggestedId) || 1,
+    domain,
+    enabled:
+      body.enabled !== undefined ? !!body.enabled : fallback.enabled !== false,
+    scope,
+    issuer_mode: issuerMode,
+    target_agent_ids: targetAgentIds,
+    status: String(body.status !== undefined ? body.status : fallback.status || "pending"),
+    last_issue_at:
+      body.last_issue_at !== undefined
+        ? body.last_issue_at
+        : fallback.last_issue_at || null,
+    last_error:
+      body.last_error !== undefined ? String(body.last_error || "") : String(fallback.last_error || ""),
+  };
+}
+
+function normalizeStoredManagedCertificate(cert, suggestedId = null) {
+  const normalized = normalizeManagedCertificatePayload(cert || {}, cert || {}, suggestedId);
+  normalized.revision = normalizeRevision(cert?.revision);
+  return normalized;
+}
+
+function loadManagedCertificates() {
+  const certs = readJsonFile(MANAGED_CERTS_JSON, []);
+  if (!Array.isArray(certs)) return [];
+  return certs.map((cert, index) => normalizeStoredManagedCertificate(cert, index + 1));
+}
+
+function saveManagedCertificates(certs) {
+  const normalized = Array.isArray(certs)
+    ? certs.map((cert, index) => normalizeStoredManagedCertificate(cert, index + 1))
+    : [];
+  writeJsonFile(MANAGED_CERTS_JSON, normalized);
+}
+
+function getManagedCertificateById(certId) {
+  return loadManagedCertificates().find((item) => Number(item.id) === Number(certId)) || null;
+}
+
+function getHighestManagedCertificateRevisionForAgent(agentId) {
+  const agent = getAgentById(agentId);
+  if (!agent || !agentHasCapability(agent, "cert_install")) return 0;
+  return loadManagedCertificates().reduce((max, cert) => {
+    if (!cert.enabled) return max;
+    if (!Array.isArray(cert.target_agent_ids) || !cert.target_agent_ids.includes(agentId)) {
+      return max;
+    }
+    return Math.max(max, normalizeRevision(cert.revision));
+  }, 0);
+}
+
+function readManagedCertificateMaterial(domain) {
+  const certDir = getCertStoreDir(domain);
+  const certFile = path.join(certDir, "cert");
+  const keyFile = path.join(certDir, "key");
+  if (!fs.existsSync(certFile) || !fs.existsSync(keyFile)) return null;
+  return {
+    cert_pem: fs.readFileSync(certFile, "utf8"),
+    key_pem: fs.readFileSync(keyFile, "utf8"),
+  };
+}
+
+function buildManagedCertificateBundleForAgent(agentId) {
+  return loadManagedCertificates()
+    .filter((cert) => cert.enabled && cert.scope === "domain")
+    .filter((cert) => Array.isArray(cert.target_agent_ids) && cert.target_agent_ids.includes(agentId))
+    .map((cert) => {
+      const material = readManagedCertificateMaterial(cert.domain);
+      if (!material) return null;
+      return {
+        id: cert.id,
+        domain: cert.domain,
+        revision: normalizeRevision(cert.revision),
+        cert_pem: material.cert_pem,
+        key_pem: material.key_pem,
+      };
+    })
+    .filter(Boolean);
+}
+
+function getManagedCertBundleFileForAgent(agentId) {
+  if (agentId === LOCAL_AGENT_ID) return LOCAL_MANAGED_CERT_BUNDLE_JSON;
+  return path.join(AGENT_RULES_DIR, `${agentId}.managed-certs.json`);
+}
+
+function persistManagedCertificateBundleForAgent(agentId) {
+  writeJsonFile(getManagedCertBundleFileForAgent(agentId), buildManagedCertificateBundleForAgent(agentId));
+}
+
 function loadRegisteredAgents() {
   return readJsonFile(AGENTS_JSON, []);
 }
 
 function saveRegisteredAgents(agents) {
   writeJsonFile(AGENTS_JSON, agents);
+}
+
+function getNextGlobalRevision() {
+  const registered = loadRegisteredAgents();
+  const agentRevisions = registered.reduce(
+    (max, agent) =>
+      Math.max(
+        max,
+        normalizeRevision(agent?.desired_revision),
+        normalizeRevision(agent?.current_revision),
+        normalizeRevision(agent?.last_apply_revision),
+      ),
+    0,
+  );
+  const localState = loadLocalAgentState();
+  const localMax = Math.max(
+    normalizeRevision(localState?.desired_revision),
+    normalizeRevision(localState?.current_revision),
+    normalizeRevision(localState?.last_apply_revision),
+  );
+  const certMax = loadManagedCertificates().reduce(
+    (max, cert) => Math.max(max, normalizeRevision(cert?.revision)),
+    0,
+  );
+  return Math.max(agentRevisions, localMax, certMax) + 1;
 }
 
 function ensureLocalAgentState(state = {}) {
@@ -492,17 +841,24 @@ function getNextPendingRevision(agent) {
   return Math.max(desiredRevision, currentRevision) + 1;
 }
 
-function getDesiredRevisionForSync(agent, rules = [], options = {}) {
+function getDesiredRevisionForSync(agent, agentId, rules = [], options = {}) {
   const desiredRevision = normalizeRevision(agent?.desired_revision);
   const currentRevision = normalizeRevision(agent?.current_revision);
   const highestRuleRevision = getHighestRuleRevision(rules);
+  const highestL4Revision = getHighestL4RuleRevision(loadL4RulesForAgent(agentId));
+  const highestManagedCertRevision = getHighestManagedCertificateRevisionForAgent(agentId);
+  const highestConfigRevision = Math.max(
+    highestRuleRevision,
+    highestL4Revision,
+    highestManagedCertRevision,
+  );
 
   if (desiredRevision > currentRevision) {
-    return Math.max(desiredRevision, highestRuleRevision);
+    return Math.max(desiredRevision, highestConfigRevision);
   }
 
-  if (highestRuleRevision > currentRevision) {
-    return highestRuleRevision;
+  if (highestConfigRevision > currentRevision) {
+    return highestConfigRevision;
   }
 
   if (options.force) {
@@ -529,6 +885,13 @@ function ensureAgentState(agent) {
   agent.last_apply_status = agent.last_apply_status || null;
   agent.last_apply_message = agent.last_apply_message || "";
   agent.last_reported_stats = agent.last_reported_stats || null;
+  agent.capabilities = normalizeCapabilities(
+    agent.capabilities && agent.capabilities.length
+      ? agent.capabilities
+      : agent.is_local
+        ? DEFAULT_AGENT_CAPABILITIES
+        : ["http_rules"],
+  );
   return agent;
 }
 
@@ -537,6 +900,10 @@ function getAgentStatus(agent) {
   const lastSeen = Date.parse(agent.last_seen_at || "");
   if (!lastSeen) return "offline";
   return Date.now() - lastSeen <= AGENT_HEARTBEAT_TIMEOUT_MS ? "online" : "offline";
+}
+
+function agentHasCapability(agent, capability) {
+  return normalizeCapabilities(agent?.capabilities || []).includes(capability);
 }
 
 function makeLocalAgent() {
@@ -561,6 +928,7 @@ function makeLocalAgent() {
     created_at: timestamp,
     updated_at: timestamp,
     is_local: true,
+    capabilities: DEFAULT_AGENT_CAPABILITIES,
   };
 }
 
@@ -586,6 +954,7 @@ function sanitizeAgent(agent) {
     error: hydrated.error || null,
     is_local: !!hydrated.is_local,
     last_seen_ip: hydrated.last_seen_ip || null,
+    capabilities: normalizeCapabilities(hydrated.capabilities || []),
   };
 }
 
@@ -597,10 +966,11 @@ function getAgentById(agentId) {
   return agent ? ensureAgentState(agent) : null;
 }
 
-function runChecked(command, args) {
+function runChecked(command, args, extraEnv = {}) {
   const result = spawnSync(command, args, {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
+    env: { ...process.env, ...extraEnv },
   });
   if (result.error) {
     throw new Error(result.error.message);
@@ -615,15 +985,25 @@ function runChecked(command, args) {
   }
 }
 
+function prepareLocalManagedCertificateBundle() {
+  persistManagedCertificateBundleForAgent(LOCAL_AGENT_ID);
+  return getManagedCertBundleFileForAgent(LOCAL_AGENT_ID);
+}
+
 function applyNginxConfig() {
+  const extraEnv = {
+    PANEL_L4_RULES_JSON: getL4RuleFileForAgent(LOCAL_AGENT_ID),
+    PANEL_MANAGED_CERTS_SYNC_JSON: prepareLocalManagedCertificateBundle(),
+  };
+
   if (APPLY_COMMAND) {
-    runChecked(APPLY_COMMAND, APPLY_COMMAND_ARGS);
+    runChecked(APPLY_COMMAND, APPLY_COMMAND_ARGS, extraEnv);
     return;
   }
 
-  runChecked(GENERATOR_SCRIPT, []);
-  runChecked(NGINX_BIN, ["-t"]);
-  runChecked(NGINX_BIN, ["-s", "reload"]);
+  runChecked(GENERATOR_SCRIPT, [], extraEnv);
+  runChecked(NGINX_BIN, ["-t"], extraEnv);
+  runChecked(NGINX_BIN, ["-s", "reload"], extraEnv);
 }
 
 function isPanelAuthorized(req) {
@@ -715,12 +1095,106 @@ async function getAgentStats(agentId) {
   );
 }
 
+function assertManagedCertificateEnabled() {
+  if (!MANAGED_CERTS_ENABLED) {
+    throw new Error("managed certificates require ACME_DNS_PROVIDER=cf and CF_Token");
+  }
+}
+
+function updateManagedCertificate(certId, updater) {
+  const certs = loadManagedCertificates();
+  const index = certs.findIndex((item) => Number(item.id) === Number(certId));
+  if (index === -1) throw new Error("certificate not found");
+  certs[index] = updater({ ...certs[index] });
+  saveManagedCertificates(certs);
+  return certs[index];
+}
+
+function runManagedCertificateHelper(domain) {
+  const targetDir = getCertStoreDir(domain);
+  runChecked(
+    "sh",
+    [MANAGED_CERT_HELPER_SCRIPT, "issue", domain, targetDir],
+    {
+      ACME_HOME,
+      ACME_CA,
+      ACME_DNS_PROVIDER,
+      CF_Token: CF_TOKEN,
+      CF_Account_ID: CF_ACCOUNT_ID,
+      MANAGED_CERTS_DIR,
+    },
+  );
+}
+
+async function syncManagedCertificateTargets(cert) {
+  const targetIds = Array.isArray(cert?.target_agent_ids) ? cert.target_agent_ids : [];
+  for (const agentId of targetIds) {
+    const agent = getAgentById(agentId);
+    if (!agent) continue;
+    if (!agentHasCapability(agent, "cert_install")) continue;
+    if (agentId === LOCAL_AGENT_ID) {
+      persistManagedCertificateBundleForAgent(agentId);
+    }
+    if (AUTO_APPLY) {
+      await applyAgent(agentId);
+    }
+  }
+}
+
+function validateManagedCertificateTargets(cert) {
+  for (const agentId of cert.target_agent_ids || []) {
+    const agent = getAgentById(agentId);
+    if (!agent) {
+      throw new Error(`target agent not found: ${agentId}`);
+    }
+    if (!agentHasCapability(agent, "cert_install")) {
+      throw new Error(`target agent does not support certificate install: ${agent.name || agentId}`);
+    }
+  }
+}
+
+async function issueManagedCertificateById(certId, options = {}) {
+  const { bumpRevision = true } = options;
+  assertManagedCertificateEnabled();
+
+  let cert = getManagedCertificateById(certId);
+  if (!cert) throw new Error("certificate not found");
+  if (cert.scope !== "domain") {
+    throw new Error("only domain certificates can be managed by master");
+  }
+  if (!cert.enabled) {
+    throw new Error("certificate is disabled");
+  }
+
+  try {
+    runManagedCertificateHelper(cert.domain);
+    cert = updateManagedCertificate(certId, (current) => ({
+      ...current,
+      status: "active",
+      last_issue_at: nowIso(),
+      last_error: "",
+      revision: bumpRevision ? getNextGlobalRevision() : normalizeRevision(current.revision),
+    }));
+  } catch (err) {
+    cert = updateManagedCertificate(certId, (current) => ({
+      ...current,
+      status: "error",
+      last_error: String(err.message || err),
+      revision: bumpRevision ? getNextGlobalRevision() : normalizeRevision(current.revision),
+    }));
+    throw new Error(cert.last_error);
+  }
+
+  await syncManagedCertificateTargets(cert);
+  return cert;
+}
+
 async function syncAgentRules(agentId) {
   const agent = getAgentById(agentId);
   if (!agent) throw new Error("agent not found");
   const rules = loadRulesForAgent(agentId);
   if (agentId === LOCAL_AGENT_ID) {
-    const desiredRevision = getDesiredRevisionForSync(agent, rules);
+    const desiredRevision = getDesiredRevisionForSync(agent, agentId, rules);
     if (desiredRevision > agent.desired_revision) {
       saveLocalAgentState({
         ...loadLocalAgentState(),
@@ -733,7 +1207,7 @@ async function syncAgentRules(agentId) {
   const index = agents.findIndex((item) => item.id === agentId);
   if (index === -1) throw new Error("agent not found");
   agents[index] = ensureAgentState(agents[index]);
-  agents[index].desired_revision = getDesiredRevisionForSync(agents[index], rules, {
+  agents[index].desired_revision = getDesiredRevisionForSync(agents[index], agentId, rules, {
     force: true,
   });
   agents[index].updated_at = nowIso();
@@ -756,7 +1230,7 @@ async function applyAgent(agentId) {
 
   if (agentId === LOCAL_AGENT_ID) {
     const rules = loadRulesForAgent(agentId);
-    const desiredRevision = getDesiredRevisionForSync(agent, rules, { force: true });
+    const desiredRevision = getDesiredRevisionForSync(agent, agentId, rules, { force: true });
     const nextState = {
       ...loadLocalAgentState(),
       desired_revision: desiredRevision,
@@ -793,6 +1267,8 @@ function findRegisteredAgentByToken(token) {
 
 function getAgentHeartbeatResponse(agent) {
   const rules = loadRulesForAgent(agent.id);
+  const l4Rules = loadL4RulesForAgent(agent.id);
+  const certificates = buildManagedCertificateBundleForAgent(agent.id);
   const hasUpdate = agent.current_revision < agent.desired_revision;
   return {
     ok: true,
@@ -804,6 +1280,8 @@ function getAgentHeartbeatResponse(agent) {
       desired_revision: agent.desired_revision,
       current_revision: agent.current_revision,
       rules: hasUpdate ? rules : undefined,
+      l4_rules: hasUpdate ? l4Rules : undefined,
+      certificates: hasUpdate ? certificates : undefined,
     },
   };
 }
@@ -819,6 +1297,11 @@ function extractAgentId(urlPath) {
 
 function extractRuleId(urlPath) {
   const match = urlPath.match(/\/rules\/(\d+)$/);
+  return match ? Number(match[1]) : null;
+}
+
+function extractTrailingId(urlPath) {
+  const match = urlPath.match(/\/(\d+)$/);
   return match ? Number(match[1]) : null;
 }
 
@@ -846,6 +1329,7 @@ async function handleAgentApi(req, res) {
         version: AGENT_VERSION,
         role: "agent",
         tags: AGENT_TAGS,
+        capabilities: DEFAULT_AGENT_CAPABILITIES,
       },
       stats,
     });
@@ -861,6 +1345,7 @@ async function handleAgentApi(req, res) {
         version: AGENT_VERSION,
         role: "agent",
         tags: AGENT_TAGS,
+        capabilities: DEFAULT_AGENT_CAPABILITIES,
       },
     });
     return;
@@ -1066,6 +1551,9 @@ async function handleMasterApi(req, res) {
       role: ROLE,
       local_agent_enabled: LOCAL_AGENT_ENABLED,
       default_agent_id: getDefaultAgentId(),
+      managed_certificates_enabled: MANAGED_CERTS_ENABLED,
+      cf_token_configured: !!CF_TOKEN,
+      acme_dns_provider: ACME_DNS_PROVIDER || null,
     });
     return;
   }
@@ -1087,6 +1575,9 @@ async function handleMasterApi(req, res) {
       const agentToken = String(body.agent_token || "").trim();
       const version = String(body.version || "").trim();
       const tags = normalizeTags(body.tags || []);
+      const capabilities = normalizeCapabilities(
+        body.capabilities !== undefined ? body.capabilities : ["http_rules"],
+      );
       const mode = resolveRemoteAgentMode(agentUrl);
 
       if (!name) {
@@ -1117,6 +1608,7 @@ async function handleMasterApi(req, res) {
         agent.agent_token = agentToken;
         agent.version = version;
         agent.tags = tags;
+        agent.capabilities = capabilities;
         agent.mode = mode;
         agent.updated_at = timestamp;
       } else {
@@ -1127,6 +1619,7 @@ async function handleMasterApi(req, res) {
           agent_token: agentToken,
           version,
           tags,
+          capabilities,
           mode,
           last_seen_at: null,
           created_at: timestamp,
@@ -1180,6 +1673,9 @@ async function handleMasterApi(req, res) {
       if (remoteIp) agent.last_seen_ip = remoteIp;
       agent.version = String(body.version || agent.version || "").trim();
       agent.tags = body.tags !== undefined ? normalizeTags(body.tags) : agent.tags;
+      if (body.capabilities !== undefined) {
+        agent.capabilities = normalizeCapabilities(body.capabilities);
+      }
       if (body.agent_url !== undefined) {
         const nextUrl = trimSlash(body.agent_url || "");
         if (nextUrl && !validateUrl(nextUrl)) {
@@ -1319,6 +1815,10 @@ async function handleMasterApi(req, res) {
             ? String(body.version).trim()
             : agents[index].version,
         tags: body.tags !== undefined ? normalizeTags(body.tags) : agents[index].tags,
+        capabilities:
+          body.capabilities !== undefined
+            ? normalizeCapabilities(body.capabilities)
+            : agents[index].capabilities,
         updated_at: nowIso(),
       };
 
@@ -1352,6 +1852,13 @@ async function handleMasterApi(req, res) {
         }
         agents[index] = { ...agents[index], name: nextName, updated_at: nowIso() };
       }
+      if (body.capabilities !== undefined) {
+        agents[index] = {
+          ...agents[index],
+          capabilities: normalizeCapabilities(body.capabilities),
+          updated_at: nowIso(),
+        };
+      }
       saveRegisteredAgents(agents);
       sendJson(res, 200, { ok: true, agent: sanitizeAgent(agents[index]) });
     } catch (err) {
@@ -1375,6 +1882,8 @@ async function handleMasterApi(req, res) {
     const deleted = agents.splice(index, 1)[0];
     saveRegisteredAgents(agents);
     deleteRulesForAgent(agentId);
+    deleteL4RulesForAgent(agentId);
+    removePath(getManagedCertBundleFileForAgent(agentId));
     sendJson(res, 200, { ok: true, agent: sanitizeAgent(deleted) });
     return;
   }
@@ -1425,6 +1934,61 @@ async function handleMasterApi(req, res) {
             400,
             errorPayload(
               "rule saved but failed to sync/apply agent config",
+              String(err.message || err),
+            ),
+          );
+          return;
+        }
+      }
+
+      sendJson(res, 201, { ok: true, rule: newRule });
+    } catch (err) {
+      sendJson(res, 400, errorPayload(String(err.message || err)));
+    }
+    return;
+  }
+
+  if (req.method === "GET" && /^\/api\/agents\/[^/]+\/l4-rules$/.test(urlPath)) {
+    const agentId = extractAgentId(urlPath);
+    const agent = getAgentById(agentId);
+    if (!agent) {
+      sendJson(res, 404, errorPayload("agent not found"));
+      return;
+    }
+    sendJson(res, 200, { ok: true, rules: loadL4RulesForAgent(agentId) });
+    return;
+  }
+
+  if (req.method === "POST" && /^\/api\/agents\/[^/]+\/l4-rules$/.test(urlPath)) {
+    try {
+      const agentId = extractAgentId(urlPath);
+      const agent = getAgentById(agentId);
+      if (!agent) {
+        sendJson(res, 404, errorPayload("agent not found"));
+        return;
+      }
+      if (!agentHasCapability(agent, "l4")) {
+        sendJson(res, 400, errorPayload("agent does not support L4 rules"));
+        return;
+      }
+      const body = await parseJsonBody(req);
+      const rules = loadL4RulesForAgent(agentId);
+      const maxId = rules.reduce((max, rule) => Math.max(max, Number(rule.id) || 0), 0);
+      const newRule = normalizeL4RulePayload(body, {}, maxId + 1);
+      ensureUniqueL4Listen(rules, newRule);
+      newRule.revision = getNextPendingRevision(agent);
+      rules.push(newRule);
+      saveL4RulesForAgent(agentId, rules);
+
+      if (AUTO_APPLY) {
+        try {
+          await applyAgent(agentId);
+        } catch (err) {
+          sendJson(
+            res,
+            400,
+            errorPayload(
+              "L4 rule saved but failed to sync/apply agent config",
               String(err.message || err),
             ),
           );
@@ -1517,6 +2081,198 @@ async function handleMasterApi(req, res) {
       }
 
       sendJson(res, 200, { ok: true, rule: deleted });
+    } catch (err) {
+      sendJson(res, 400, errorPayload(String(err.message || err)));
+    }
+    return;
+  }
+
+  if (req.method === "PUT" && /^\/api\/agents\/[^/]+\/l4-rules\/\d+$/.test(urlPath)) {
+    try {
+      const agentId = extractAgentId(urlPath);
+      const agent = getAgentById(agentId);
+      if (!agent) {
+        sendJson(res, 404, errorPayload("agent not found"));
+        return;
+      }
+      if (!agentHasCapability(agent, "l4")) {
+        sendJson(res, 400, errorPayload("agent does not support L4 rules"));
+        return;
+      }
+      const ruleId = extractTrailingId(urlPath);
+      const body = await parseJsonBody(req);
+      const rules = loadL4RulesForAgent(agentId);
+      const index = rules.findIndex((rule) => Number(rule.id) === ruleId);
+      if (index === -1) {
+        sendJson(res, 404, errorPayload("rule id not found"));
+        return;
+      }
+      const nextRule = normalizeL4RulePayload(body, rules[index], ruleId);
+      ensureUniqueL4Listen(rules, nextRule, ruleId);
+      nextRule.revision = getNextPendingRevision(agent);
+      rules[index] = nextRule;
+      saveL4RulesForAgent(agentId, rules);
+
+      if (AUTO_APPLY) {
+        try {
+          await applyAgent(agentId);
+        } catch (err) {
+          sendJson(
+            res,
+            400,
+            errorPayload(
+              "L4 rule updated but failed to sync/apply agent config",
+              String(err.message || err),
+            ),
+          );
+          return;
+        }
+      }
+
+      sendJson(res, 200, { ok: true, rule: nextRule });
+    } catch (err) {
+      sendJson(res, 400, errorPayload(String(err.message || err)));
+    }
+    return;
+  }
+
+  if (req.method === "DELETE" && /^\/api\/agents\/[^/]+\/l4-rules\/\d+$/.test(urlPath)) {
+    try {
+      const agentId = extractAgentId(urlPath);
+      const agent = getAgentById(agentId);
+      if (!agent) {
+        sendJson(res, 404, errorPayload("agent not found"));
+        return;
+      }
+      const ruleId = extractTrailingId(urlPath);
+      const rules = loadL4RulesForAgent(agentId);
+      const index = rules.findIndex((rule) => Number(rule.id) === ruleId);
+      if (index === -1) {
+        sendJson(res, 404, errorPayload("rule id not found"));
+        return;
+      }
+      const deleted = rules.splice(index, 1)[0];
+      saveL4RulesForAgent(agentId, rules);
+
+      if (AUTO_APPLY) {
+        try {
+          await applyAgent(agentId);
+        } catch (err) {
+          sendJson(
+            res,
+            400,
+            errorPayload(
+              "L4 rule deleted but failed to sync/apply agent config",
+              String(err.message || err),
+            ),
+          );
+          return;
+        }
+      }
+
+      sendJson(res, 200, { ok: true, rule: deleted });
+    } catch (err) {
+      sendJson(res, 400, errorPayload(String(err.message || err)));
+    }
+    return;
+  }
+
+  if (req.method === "GET" && urlPath === "/api/certificates") {
+    sendJson(res, 200, { ok: true, certificates: loadManagedCertificates() });
+    return;
+  }
+
+  if (req.method === "POST" && urlPath === "/api/certificates") {
+    try {
+      const body = await parseJsonBody(req);
+      const certs = loadManagedCertificates();
+      const maxId = certs.reduce((max, cert) => Math.max(max, Number(cert.id) || 0), 0);
+      const nextCert = normalizeManagedCertificatePayload(body, {}, maxId + 1);
+      if (nextCert.scope === "domain" && nextCert.issuer_mode === "master_cf_dns") {
+        assertManagedCertificateEnabled();
+        validateManagedCertificateTargets(nextCert);
+      }
+      nextCert.revision = getNextGlobalRevision();
+      certs.push(nextCert);
+      saveManagedCertificates(certs);
+
+      let savedCert = nextCert;
+      if (nextCert.enabled && nextCert.scope === "domain" && nextCert.issuer_mode === "master_cf_dns") {
+        savedCert = await issueManagedCertificateById(nextCert.id, { bumpRevision: false });
+      }
+
+      sendJson(res, 201, { ok: true, certificate: savedCert });
+    } catch (err) {
+      sendJson(res, 400, errorPayload(String(err.message || err)));
+    }
+    return;
+  }
+
+  if (req.method === "PUT" && /^\/api\/certificates\/\d+$/.test(urlPath)) {
+    try {
+      const certId = extractTrailingId(urlPath);
+      const body = await parseJsonBody(req);
+      const certs = loadManagedCertificates();
+      const index = certs.findIndex((cert) => Number(cert.id) === certId);
+      if (index === -1) {
+        sendJson(res, 404, errorPayload("certificate not found"));
+        return;
+      }
+      const nextCert = normalizeManagedCertificatePayload(body, certs[index], certId);
+      if (nextCert.scope === "domain" && nextCert.issuer_mode === "master_cf_dns") {
+        assertManagedCertificateEnabled();
+        validateManagedCertificateTargets(nextCert);
+      }
+      nextCert.revision = getNextGlobalRevision();
+      certs[index] = nextCert;
+      saveManagedCertificates(certs);
+
+      let savedCert = nextCert;
+      if (nextCert.enabled && nextCert.scope === "domain" && nextCert.issuer_mode === "master_cf_dns") {
+        savedCert = await issueManagedCertificateById(certId, { bumpRevision: false });
+      } else {
+        await syncManagedCertificateTargets(nextCert);
+      }
+
+      sendJson(res, 200, { ok: true, certificate: savedCert });
+    } catch (err) {
+      sendJson(res, 400, errorPayload(String(err.message || err)));
+    }
+    return;
+  }
+
+  if (req.method === "DELETE" && /^\/api\/certificates\/\d+$/.test(urlPath)) {
+    try {
+      const certId = extractTrailingId(urlPath);
+      const certs = loadManagedCertificates();
+      const index = certs.findIndex((cert) => Number(cert.id) === certId);
+      if (index === -1) {
+        sendJson(res, 404, errorPayload("certificate not found"));
+        return;
+      }
+      const deleted = certs.splice(index, 1)[0];
+      saveManagedCertificates(certs);
+      removePath(getCertStoreDir(deleted.domain));
+      for (const agentId of deleted.target_agent_ids || []) {
+        if (agentId === LOCAL_AGENT_ID) {
+          persistManagedCertificateBundleForAgent(agentId);
+        }
+        if (AUTO_APPLY) {
+          await applyAgent(agentId);
+        }
+      }
+      sendJson(res, 200, { ok: true, certificate: deleted });
+    } catch (err) {
+      sendJson(res, 400, errorPayload(String(err.message || err)));
+    }
+    return;
+  }
+
+  if (req.method === "POST" && /^\/api\/certificates\/\d+\/issue$/.test(urlPath)) {
+    try {
+      const certId = extractTrailingId(urlPath.replace(/\/issue$/, ""));
+      const cert = await issueManagedCertificateById(certId, { bumpRevision: true });
+      sendJson(res, 200, { ok: true, certificate: cert });
     } catch (err) {
       sendJson(res, 400, errorPayload(String(err.message || err)));
     }

@@ -20,9 +20,18 @@ const AGENT_TAGS = (process.env.AGENT_TAGS || '')
 const AGENT_URL = trimSlash(process.env.AGENT_PUBLIC_URL || '')
 const HEARTBEAT_INTERVAL_MS = Number(process.env.AGENT_HEARTBEAT_INTERVAL_MS || '10000')
 const RULES_JSON = process.env.RULES_JSON || path.resolve(process.cwd(), 'proxy_rules.json')
+const L4_RULES_JSON = process.env.L4_RULES_JSON || path.resolve(process.cwd(), 'l4_rules.json')
+const MANAGED_CERTS_JSON =
+  process.env.MANAGED_CERTS_JSON || path.resolve(process.cwd(), 'managed_certificates.json')
 const STATE_FILE = process.env.AGENT_STATE_FILE || path.resolve(process.cwd(), 'agent-state.json')
 const APPLY_COMMAND = process.env.APPLY_COMMAND || ''
 const NGINX_STATUS_URL = process.env.NGINX_STATUS_URL || 'http://127.0.0.1:18080/nginx_status'
+const AGENT_CAPABILITIES = [...new Set(
+  (process.env.AGENT_CAPABILITIES || 'http_rules,local_acme,cert_install,l4')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean)
+)]
 
 function trimSlash(value) {
   return String(value || '').trim().replace(/\/+$/, '')
@@ -212,6 +221,7 @@ async function registerAgent() {
       agent_token: AGENT_TOKEN,
       version: AGENT_VERSION,
       tags: AGENT_TAGS,
+      capabilities: AGENT_CAPABILITIES,
       mode: 'pull',
       register_token: REGISTER_TOKEN
     },
@@ -234,7 +244,9 @@ function applyRules() {
     encoding: 'utf8',
     env: {
       ...process.env,
-      RULES_JSON
+      RULES_JSON,
+      L4_RULES_JSON,
+      MANAGED_CERTS_JSON
     }
   })
   if (result.error) throw result.error
@@ -256,6 +268,7 @@ async function heartbeat(state) {
       agent_url: AGENT_URL,
       version: AGENT_VERSION,
       tags: AGENT_TAGS,
+      capabilities: AGENT_CAPABILITIES,
       current_revision: state.current_revision,
       last_apply_revision: state.last_apply_revision,
       last_apply_status: state.last_apply_status,
@@ -289,6 +302,11 @@ async function runOnce() {
       rules_file: RULES_JSON
     })
     writeJson(RULES_JSON, response.sync.rules)
+    writeJson(L4_RULES_JSON, Array.isArray(response.sync.l4_rules) ? response.sync.l4_rules : [])
+    writeJson(
+      MANAGED_CERTS_JSON,
+      Array.isArray(response.sync.certificates) ? response.sync.certificates : []
+    )
     try {
       const applyOutput = applyRules()
       state.current_revision = nextRevision
@@ -332,6 +350,8 @@ async function main() {
     name: AGENT_NAME,
     interval_ms: HEARTBEAT_INTERVAL_MS,
     rules_file: RULES_JSON,
+    l4_rules_file: L4_RULES_JSON,
+    managed_certs_file: MANAGED_CERTS_JSON,
     state_file: STATE_FILE
   })
   await registerAgent()

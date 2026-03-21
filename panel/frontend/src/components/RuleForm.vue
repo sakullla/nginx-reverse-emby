@@ -187,6 +187,21 @@ const removeTag = (index) => {
   form.value.tags.splice(index, 1)
 }
 
+function isHttpAutoTag(t) {
+  return t === 'HTTP' || t === 'HTTPS' || /^:\d+$/.test(t)
+}
+
+function computeHttpAutoTags(urlStr) {
+  try {
+    const u = new URL(urlStr)
+    const proto = u.protocol === 'https:' ? 'HTTPS' : 'HTTP'
+    const port = u.port ? parseInt(u.port, 10) : (u.protocol === 'https:' ? 443 : 80)
+    return [proto, `:${port}`]
+  } catch {
+    return []
+  }
+}
+
 const validate = () => {
   errors.value.frontend_url = ''
   errors.value.backend_url = ''
@@ -206,11 +221,16 @@ const handleSubmit = async () => {
   if (!validate()) return
 
   try {
+    const url = form.value.frontend_url.trim()
+    const autoTags = computeHttpAutoTags(url)
+    const userTags = form.value.tags.filter(t => !isHttpAutoTag(t))
+    const finalTags = [...autoTags, ...userTags]
+
     const params = [
       props.initialData?.id,
-      form.value.frontend_url.trim(),
+      url,
       form.value.backend_url.trim(),
-      [...form.value.tags],
+      finalTags,
       form.value.enabled,
       form.value.proxy_redirect
     ]

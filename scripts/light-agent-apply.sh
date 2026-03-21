@@ -6,6 +6,8 @@ set -eu
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 AGENT_HOME="${AGENT_HOME:-$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)}"
+L4_RULES_JSON="${L4_RULES_JSON:-$AGENT_HOME/l4_rules.json}"
+MANAGED_CERTS_JSON="${MANAGED_CERTS_JSON:-$AGENT_HOME/managed_certificates.json}"
 RUNTIME_DIR="${AGENT_RUNTIME_DIR:-$AGENT_HOME/runtime}"
 GENERATOR_SCRIPT="${AGENT_GENERATOR_SCRIPT:-$RUNTIME_DIR/25-dynamic-reverse-proxy.sh}"
 NGINX_BIN_PATH="${AGENT_NGINX_BIN:-${NGINX_BIN:-nginx}}"
@@ -192,6 +194,8 @@ fi
 resolved_deploy_mode=$(normalize_deploy_mode)
 
 export PANEL_RULES_JSON="$RULES_JSON"
+export PANEL_L4_RULES_JSON="$L4_RULES_JSON"
+export PANEL_MANAGED_CERTS_SYNC_JSON="$MANAGED_CERTS_JSON"
 export PROXY_DEPLOY_MODE="$resolved_deploy_mode"
 export NRE_TEMPLATE_FILE
 export NRE_DIRECT_NO_TLS_TEMPLATE_FILE

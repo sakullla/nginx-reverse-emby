@@ -236,18 +236,23 @@
                     <polyline points="9 18 15 12 9 6"/>
                   </svg>
                   <span class="content__breadcrumb-item content__breadcrumb-item--active">
-                    {{ ruleStore.selectedAgent?.name || '代理规则' }}
+                    {{ ruleStore.selectedAgent?.name || '规则管理' }}
                   </span>
                 </div>
                 <h2 class="content__title">
-                  {{ ruleStore.selectedAgent?.name || '代理规则管理' }}
+                  {{ ruleStore.selectedAgent?.name || '规则管理' }}
                 </h2>
                 <p class="content__subtitle">
-                  {{ ruleStore.hasSelectedAgent ? `共 ${ruleStore.rules.length} 条规则，${ruleStore.filteredRules.length} 条显示` : '请选择左侧节点管理规则' }}
+                  <template v-if="ruleStore.hasSelectedAgent">
+                    <template v-if="activeTab === 'http'">HTTP 规则 {{ ruleStore.rules.length }} 条，启用 {{ activeRulesCount }} 条，显示 {{ ruleStore.filteredRules.length }} 条</template>
+                    <template v-else-if="activeTab === 'l4'">L4 规则 {{ ruleStore.l4Rules.length }} 条，启用 {{ activeL4Count }} 条，显示 {{ ruleStore.filteredL4Rules.length }} 条</template>
+                    <template v-else>统一证书 {{ ruleStore.certificates.length }} 项，启用 {{ activeCertsCount }} 项，显示 {{ ruleStore.filteredCertificates.length }} 项</template>
+                  </template>
+                  <template v-else>请选择左侧节点管理规则</template>
                 </p>
               </div>
               <div class="content__header-right">
-                <div v-if="ruleStore.hasSelectedAgent && ruleStore.hasRules" class="content__search">
+                <div v-if="activeTab === 'http' && ruleStore.hasSelectedAgent && ruleStore.hasRules" class="content__search">
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <circle cx="11" cy="11" r="8"/>
                     <line x1="21" y1="21" x2="16.65" y2="16.65"/>
@@ -259,7 +264,32 @@
                     placeholder="搜索 URL / 标签 / ID..."
                   >
                 </div>
+                <div v-else-if="activeTab === 'l4' && ruleStore.hasSelectedAgent && ruleStore.hasL4Rules" class="content__search">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="11" cy="11" r="8"/>
+                    <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                  </svg>
+                  <input
+                    v-model="ruleStore.l4SearchQuery"
+                    type="text"
+                    class="content__search-input"
+                    placeholder="搜索名称 / 协议 / 端口..."
+                  >
+                </div>
+                <div v-else-if="activeTab === 'certs' && ruleStore.certificates.length" class="content__search">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="11" cy="11" r="8"/>
+                    <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                  </svg>
+                  <input
+                    v-model="ruleStore.certSearchQuery"
+                    type="text"
+                    class="content__search-input"
+                    placeholder="搜索域名 / 标签..."
+                  >
+                </div>
                 <button
+                  v-if="activeTab === 'http'"
                   class="btn btn--primary"
                   :disabled="!ruleStore.hasSelectedAgent"
                   @click="showAddModal = true"
@@ -268,14 +298,37 @@
                     <line x1="12" y1="5" x2="12" y2="19"/>
                     <line x1="5" y1="12" x2="19" y2="12"/>
                   </svg>
-                  <span>添加规则</span>
+                  <span>添加 HTTP 规则</span>
+                </button>
+                <button
+                  v-else-if="activeTab === 'l4'"
+                  class="btn btn--primary"
+                  :disabled="!ruleStore.hasSelectedAgent"
+                  @click="showL4Modal = true"
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                    <line x1="12" y1="5" x2="12" y2="19"/>
+                    <line x1="5" y1="12" x2="19" y2="12"/>
+                  </svg>
+                  <span>添加 L4 规则</span>
+                </button>
+                <button
+                  v-else-if="activeTab === 'certs'"
+                  class="btn btn--primary"
+                  @click="showCertModal = true"
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                    <line x1="12" y1="5" x2="12" y2="19"/>
+                    <line x1="5" y1="12" x2="19" y2="12"/>
+                  </svg>
+                  <span>添加证书</span>
                 </button>
               </div>
             </div>
 
             <!-- Stats Row -->
             <div class="stats-row">
-              <div class="stat-pill">
+              <div class="stat-pill" :class="{ 'stat-pill--clickable': true, 'stat-pill--selected': activeTab === 'http' }" @click="activeTab = 'http'">
                 <div class="stat-pill__icon stat-pill__icon--rules">
                   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
@@ -287,49 +340,80 @@
                     <span class="stat-pill__value">{{ ruleStore.rules.length }}</span>
                     <span class="stat-pill__unit">条</span>
                   </div>
-                  <span class="stat-pill__label">代理规则</span>
+                  <span class="stat-pill__label">HTTP 规则</span>
                 </div>
               </div>
-              <div class="stat-pill stat-pill--active">
-                <div class="stat-pill__icon stat-pill__icon--active">
+              <div class="stat-pill" :class="{ 'stat-pill--clickable': true, 'stat-pill--selected': activeTab === 'l4' }" @click="activeTab = 'l4'">
+                <div class="stat-pill__icon stat-pill__icon--l4">
                   <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                    <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+                    <rect x="2" y="2" width="20" height="8" rx="2" ry="2"/>
+                    <rect x="2" y="14" width="20" height="8" rx="2" ry="2"/>
                   </svg>
                 </div>
                 <div class="stat-pill__data">
                   <div class="stat-pill__row">
-                    <span class="stat-pill__value stat-pill__value--active">{{ activeRulesCount }}</span>
-                    <span class="stat-pill__unit stat-pill__unit--muted">/ {{ ruleStore.rules.length }}</span>
+                    <span class="stat-pill__value">{{ ruleStore.l4Rules.length }}</span>
+                    <span class="stat-pill__unit">条</span>
                   </div>
-                  <div class="stat-pill__footer">
-                    <span class="stat-pill__label">已启用</span>
-                    <div class="stat-pill__bar-wrap">
-                      <div
-                        class="stat-pill__bar-fill"
-                        :style="{ width: ruleStore.rules.length ? (activeRulesCount / ruleStore.rules.length * 100) + '%' : '0%' }"
-                      ></div>
-                    </div>
+                  <span class="stat-pill__label">L4 规则</span>
+                </div>
+              </div>
+              <div class="stat-pill" :class="{ 'stat-pill--clickable': true, 'stat-pill--selected': activeTab === 'certs' }" @click="activeTab = 'certs'">
+                <div class="stat-pill__icon stat-pill__icon--certs">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+                    <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+                  </svg>
+                </div>
+                <div class="stat-pill__data">
+                  <div class="stat-pill__row">
+                    <span class="stat-pill__value">{{ ruleStore.certificates.length }}</span>
+                    <span class="stat-pill__unit">项</span>
                   </div>
+                  <span class="stat-pill__label">统一证书</span>
                 </div>
               </div>
             </div>
 
             <!-- Rules Content -->
             <div class="rules-section">
-              <RuleList />
+              <RuleList v-if="activeTab === 'http'" />
+              <L4RuleList v-else-if="activeTab === 'l4'" />
+              <CertificateList v-else-if="activeTab === 'certs'" @add="showCertModal = true" />
             </div>
           </main>
         </div>
       </div>
 
-      <!-- Add Rule Modal -->
+      <!-- Add HTTP Rule Modal -->
       <Teleport to="body">
         <BaseModal
           v-model="showAddModal"
-          title="添加代理规则"
+          title="添加 HTTP 规则"
           :subtitle="ruleStore.selectedAgent?.name ? `添加到: ${ruleStore.selectedAgent.name}` : ''"
         >
           <RuleForm @success="showAddModal = false" />
+        </BaseModal>
+      </Teleport>
+
+      <!-- Add L4 Rule Modal -->
+      <Teleport to="body">
+        <BaseModal
+          v-model="showL4Modal"
+          title="添加 L4 规则"
+          :subtitle="ruleStore.selectedAgent?.name ? `添加到: ${ruleStore.selectedAgent.name}` : ''"
+        >
+          <L4RuleForm @success="showL4Modal = false" />
+        </BaseModal>
+      </Teleport>
+
+      <!-- Add Certificate Modal -->
+      <Teleport to="body">
+        <BaseModal
+          v-model="showCertModal"
+          title="添加统一证书"
+        >
+          <CertificateForm @success="showCertModal = false" />
         </BaseModal>
       </Teleport>
 
@@ -488,7 +572,7 @@
               </span>
               <span v-if="ruleStore.globalSearchQuery" class="global-search-stat-sep">·</span>
               <span v-if="ruleStore.globalSearchQuery && !ruleStore.globalSearchLoading" class="global-search-stat">
-                找到 <strong>{{ ruleStore.globalSearchResults.reduce((s, g) => s + g.rules.length, 0) }}</strong> 条规则
+                找到 <strong>{{ ruleStore.globalSearchResults.reduce((s, g) => s + g.rules.length + (g.l4Rules?.length || 0) + (g.certificates?.length || 0), 0) }}</strong> 条结果
               </span>
             </div>
 
@@ -525,11 +609,11 @@
                   <div class="global-search-group-header">
                     <div class="global-search-group-dot" :class="ruleStore.agents.find(a=>a.id===group.agentId)?.status === 'online' ? 'global-search-group-dot--online' : 'global-search-group-dot--offline'"></div>
                     <span class="global-search-group-name">{{ group.agentName }}</span>
-                    <span class="global-search-group-count">{{ group.rules.length }} 条</span>
+                    <span class="global-search-group-count">{{ group.rules.length + (group.l4Rules?.length || 0) + (group.certificates?.length || 0) }} 条</span>
                   </div>
                   <div
                     v-for="rule in group.rules"
-                    :key="rule.id"
+                    :key="'http-' + rule.id"
                     class="global-search-rule"
                     @click="jumpToAgentRule(group.agentId, rule.id)"
                   >
@@ -540,6 +624,42 @@
                     </div>
                     <div class="global-search-rule-tags">
                       <span v-for="tag in (rule.tags || []).slice(0,3)" :key="tag" class="tag tag--sm">{{ tag }}</span>
+                    </div>
+                  </div>
+                  <div
+                    v-for="rule in (group.l4Rules || [])"
+                    :key="'l4-' + rule.id"
+                    class="global-search-rule"
+                    @click="jumpToAgentRule(group.agentId, rule.id, 'l4')"
+                  >
+                    <div class="global-search-rule-status" :class="rule.enabled ? 'global-search-rule-status--on' : 'global-search-rule-status--off'"></div>
+                    <div class="global-search-rule-info">
+                      <div class="global-search-rule-front">
+                        <span class="global-search-rule-proto">{{ rule.protocol?.toUpperCase() }}</span>
+                        {{ rule.listen_host }}:{{ rule.listen_port }}
+                      </div>
+                      <div class="global-search-rule-back">→ {{ rule.upstream_host }}:{{ rule.upstream_port }}</div>
+                    </div>
+                    <div class="global-search-rule-tags">
+                      <span v-for="tag in (rule.tags || []).slice(0,3)" :key="tag" class="tag tag--sm">{{ tag }}</span>
+                    </div>
+                  </div>
+                  <div
+                    v-for="cert in (group.certificates || [])"
+                    :key="'cert-' + cert.id"
+                    class="global-search-rule"
+                    @click="jumpToCert(group.agentId, cert.id)"
+                  >
+                    <div class="global-search-rule-status" :class="cert.status === 'active' && cert.enabled !== false ? 'global-search-rule-status--on' : 'global-search-rule-status--off'"></div>
+                    <div class="global-search-rule-info">
+                      <div class="global-search-rule-front">
+                        <span class="global-search-rule-proto">{{ cert.scope === 'ip' ? 'IP' : 'SSL' }}</span>
+                        {{ cert.domain }}
+                      </div>
+                      <div class="global-search-rule-back">{{ cert.issuer_mode === 'master_cf_dns' ? 'Master DNS' : '本地签发' }}</div>
+                    </div>
+                    <div class="global-search-rule-tags">
+                      <span v-for="tag in (cert.tags || []).slice(0,3)" :key="tag" class="tag tag--sm">{{ tag }}</span>
                     </div>
                   </div>
                 </div>
@@ -600,6 +720,10 @@ import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRuleStore } from './stores/rules'
 import RuleForm from './components/RuleForm.vue'
 import RuleList from './components/RuleList.vue'
+import L4RuleForm from './components/L4RuleForm.vue'
+import L4RuleList from './components/L4RuleList.vue'
+import CertificateForm from './components/CertificateForm.vue'
+import CertificateList from './components/CertificateList.vue'
 import ThemeSelector from './components/base/ThemeSelector.vue'
 import TokenAuth from './components/base/TokenAuth.vue'
 import BaseModal from './components/base/BaseModal.vue'
@@ -607,7 +731,10 @@ import StatusMessage from './components/StatusMessage.vue'
 import { getAgentSyncStatus } from './utils/syncStatus'
 
 const ruleStore = useRuleStore()
+const activeTab = ref('http')
 const showAddModal = ref(false)
+const showL4Modal = ref(false)
+const showCertModal = ref(false)
 const showJoinModal = ref(false)
 const sidebarOpen = ref(false)
 const sidebarCollapsed = ref(localStorage.getItem('sidebar_collapsed') === 'true')
@@ -690,6 +817,14 @@ function resetCopyState() {
 
 const activeRulesCount = computed(() => {
   return ruleStore.rules.filter(r => r.enabled).length
+})
+
+const activeL4Count = computed(() => {
+  return ruleStore.l4Rules.filter(r => r.enabled).length
+})
+
+const activeCertsCount = computed(() => {
+  return ruleStore.certificates.filter(c => c.enabled).length
 })
 
 // Returns the tooltip text shown when hovering over an agent in the sidebar.
@@ -833,10 +968,23 @@ function debouncedGlobalSearch() {
   }, 400)
 }
 
-async function jumpToAgentRule(agentId, ruleId) {
+async function jumpToAgentRule(agentId, ruleId, tab = 'http') {
   showGlobalSearch.value = false
   await ruleStore.selectAgent(agentId)
-  ruleStore.searchQuery = String(ruleId)
+  if (tab === 'l4') {
+    activeTab.value = 'l4'
+    ruleStore.l4SearchQuery = `#id=${ruleId}`
+  } else {
+    activeTab.value = 'http'
+    ruleStore.searchQuery = `#id=${ruleId}`
+  }
+}
+
+async function jumpToCert(agentId, certId) {
+  showGlobalSearch.value = false
+  await ruleStore.selectAgent(agentId)
+  activeTab.value = 'certs'
+  ruleStore.certSearchQuery = `#id=${certId}`
 }
 
 async function copyText(text, successMessage = '已复制') {
@@ -1871,6 +2019,19 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 
+.global-search-rule-proto {
+  display: inline-block;
+  font-size: 9px;
+  font-weight: var(--font-bold);
+  padding: 1px 4px;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  background: var(--color-primary-subtle);
+  color: var(--color-primary);
+  margin-right: var(--space-1);
+  vertical-align: middle;
+}
+
 .tag--sm {
   font-size: 10px;
   padding: 1px 6px;
@@ -2045,6 +2206,34 @@ onUnmounted(() => {
   border-color: var(--color-border-strong);
 }
 
+/* 可点击的 stat-pill (用于 Tab 切换) */
+.stat-pill--clickable {
+  cursor: pointer;
+  transition: all var(--duration-normal) var(--ease-default);
+}
+
+.stat-pill--clickable:hover {
+  border-color: var(--color-border-strong);
+  box-shadow: var(--shadow-sm);
+}
+
+/* 选中态 - Tab 被激活时显示 */
+.stat-pill--selected {
+  border-color: var(--color-primary) !important;
+  background: var(--color-primary-subtle);
+  box-shadow: var(--shadow-sm);
+}
+
+.stat-pill--selected .stat-pill__icon {
+  background: var(--color-primary);
+  color: white;
+}
+
+.stat-pill--selected .stat-pill__value,
+.stat-pill--selected .stat-pill__label {
+  color: var(--color-primary);
+}
+
 .stat-pill__icon {
   width: 36px;
   height: 36px;
@@ -2068,6 +2257,151 @@ onUnmounted(() => {
 .stat-pill__icon--rules {
   background: var(--color-primary-subtle);
   color: var(--color-primary);
+}
+
+.stat-pill__icon--l4 {
+  background: var(--color-warning-50);
+  color: var(--color-warning);
+}
+
+.stat-pill__icon--certs {
+  background: var(--color-success-50);
+  color: var(--color-success);
+}
+
+.stat-pill__icon--online {
+  background: var(--color-success-50);
+  color: var(--color-success);
+}
+
+.stat-pill__icon--active {
+  background: var(--color-primary-subtle);
+  color: var(--color-primary);
+}
+
+/* ==========================================
+   Tabs Bar
+   ========================================== */
+.tabs-bar {
+  display: flex;
+  gap: var(--space-2);
+  background: var(--color-bg-subtle);
+  padding: var(--space-1);
+  border-radius: var(--radius-xl);
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+/* ==========================================
+   Main Tabs Bar - 独立于 content 的 sticky 导航
+   ========================================== */
+.main-tabs-bar {
+  display: flex;
+  gap: var(--space-2);
+  padding: var(--space-3) var(--space-5);
+  background: var(--color-bg-primary);
+  border-bottom: 1px solid var(--color-border-default);
+  position: sticky;
+  top: 56px;
+  z-index: 50;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.main-tabs-bar__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  color: var(--color-text-secondary);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  transition: all var(--duration-normal) var(--ease-default);
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.main-tabs-bar__item:hover {
+  color: var(--color-text-primary);
+  background: var(--color-bg-hover);
+}
+
+.main-tabs-bar__item--active {
+  background: var(--color-bg-surface);
+  color: var(--color-primary);
+  box-shadow: var(--shadow-sm);
+  border: 1px solid var(--color-border-default);
+}
+
+.main-tabs-bar__badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  font-size: 10px;
+  font-weight: var(--font-semibold);
+  background: var(--gradient-primary);
+  color: white;
+  border-radius: var(--radius-full);
+}
+
+.main-tabs-bar__item--active .main-tabs-bar__badge {
+  background: var(--color-primary);
+}
+
+.tabs-bar__item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  color: var(--color-text-secondary);
+  border: none;
+  background: transparent;
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  transition: all var(--duration-normal) var(--ease-default);
+  font-family: inherit;
+  white-space: nowrap;
+}
+
+.tabs-bar__item:hover {
+  color: var(--color-text-primary);
+  background: var(--color-bg-hover);
+}
+
+.tabs-bar__item--active {
+  background: var(--color-bg-surface);
+  color: var(--color-primary);
+  box-shadow: var(--shadow-sm);
+}
+
+.tabs-bar__badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  font-size: 10px;
+  font-weight: var(--font-semibold);
+  background: var(--gradient-primary);
+  color: white;
+  border-radius: var(--radius-full);
+}
+
+.tabs-bar__item--active .tabs-bar__badge {
+  background: var(--color-primary);
 }
 
 .stat-pill__icon--active {
@@ -2294,6 +2628,12 @@ onUnmounted(() => {
 
   .content {
     padding: var(--space-5);
+    z-index: 1;
+  }
+
+  .main-tabs-bar {
+    left: 0;
+    padding: var(--space-2) var(--space-4);
   }
 
   .stats-row {
@@ -2320,6 +2660,7 @@ onUnmounted(() => {
   .content {
     padding: var(--space-4);
     gap: var(--space-4);
+    z-index: 1;
   }
 
   .content__header {
@@ -2372,6 +2713,15 @@ onUnmounted(() => {
 
   .stat-pill__value {
     font-size: var(--text-lg);
+  }
+
+  .main-tabs-bar {
+    left: 0;
+    padding: var(--space-2) var(--space-3);
+  }
+
+  .main-tabs-bar__item {
+    padding: var(--space-2) var(--space-3);
   }
 }
 

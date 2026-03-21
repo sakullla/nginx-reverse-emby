@@ -416,8 +416,168 @@ export async function fetchAllAgentsRules(agentIds) {
     .map((r) => r.value)
 }
 
+// L4 Rules
+const mockL4RulesByAgent = {
+  local: [
+    { id: 1, protocol: 'tcp', listen_host: '0.0.0.0', listen_port: 25565, upstream_host: '192.168.1.20', upstream_port: 25565, enabled: true, tags: ['TCP', ':25565', 'game'] }
+  ],
+  'edge-1': [
+    { id: 1, protocol: 'udp', listen_host: '0.0.0.0', listen_port: 51820, upstream_host: '10.0.0.20', upstream_port: 51820, enabled: true, tags: ['UDP', ':51820', 'vpn'] }
+  ]
+}
+let mockL4IdCounter = 1
+
+export async function fetchAllAgentsL4Rules(agentIds) {
+  if (isDev) {
+    await sleep()
+    return agentIds.map((agentId) => ({
+      agentId,
+      l4Rules: [...(mockL4RulesByAgent[agentId] || [])]
+    }))
+  }
+  const results = await Promise.allSettled(
+    agentIds.map((agentId) =>
+      api.get(`/agents/${encodeURIComponent(agentId)}/l4-rules`).then(({ data }) => ({
+        agentId,
+        l4Rules: data.rules || []
+      }))
+    )
+  )
+  return results
+    .filter((r) => r.status === 'fulfilled')
+    .map((r) => r.value)
+}
+
 export async function checkHealth() {
   if (isDev) return { ok: true }
   const { data } = await api.get('/health')
   return data
+}
+
+export async function fetchL4Rules(agentId) {
+  if (isDev) { await sleep(); return [...(mockL4RulesByAgent[agentId] || [])] }
+  const { data } = await api.get(`/agents/${encodeURIComponent(agentId)}/l4-rules`)
+  return data.rules || []
+}
+
+export async function createL4Rule(agentId, payload) {
+  if (isDev) {
+    await sleep()
+    const item = { ...payload, id: ++mockL4IdCounter }
+    mockL4RulesByAgent[agentId] = mockL4RulesByAgent[agentId] || []
+    mockL4RulesByAgent[agentId].push(item)
+    return item
+  }
+  const { data } = await api.post(`/agents/${encodeURIComponent(agentId)}/l4-rules`, payload, longRunningRequest)
+  return data.rule
+}
+
+export async function updateL4Rule(agentId, id, payload) {
+  if (isDev) {
+    await sleep()
+    const list = mockL4RulesByAgent[agentId] || []
+    const idx = list.findIndex((r) => r.id === id)
+    if (idx !== -1) { list[idx] = { ...list[idx], ...payload }; return list[idx] }
+    return null
+  }
+  const { data } = await api.put(`/agents/${encodeURIComponent(agentId)}/l4-rules/${id}`, payload, longRunningRequest)
+  return data.rule
+}
+
+export async function deleteL4Rule(agentId, id) {
+  if (isDev) {
+    await sleep()
+    const list = mockL4RulesByAgent[agentId] || []
+    const idx = list.findIndex((r) => r.id === id)
+    if (idx !== -1) return list.splice(idx, 1)[0]
+    return null
+  }
+  const { data } = await api.delete(`/agents/${encodeURIComponent(agentId)}/l4-rules/${id}`, longRunningRequest)
+  return data.rule
+}
+
+// Certificates (per-agent, like HTTP/L4)
+const mockCertsByAgent = {
+  local: [
+    { id: 1, domain: 'media.example.com', enabled: true, scope: 'domain', issuer_mode: 'master_cf_dns', status: 'active', last_issue_at: new Date().toISOString(), last_error: '', tags: ['media', 'streaming'] },
+    { id: 2, domain: 'pan.example.com', enabled: false, scope: 'domain', issuer_mode: 'master_cf_dns', status: 'active', last_issue_at: new Date().toISOString(), last_error: '', tags: ['cloud'] }
+  ],
+  'edge-1': [
+    { id: 1, domain: 'media.example.com', enabled: true, scope: 'domain', issuer_mode: 'master_cf_dns', status: 'active', last_issue_at: new Date().toISOString(), last_error: '', tags: ['media'] },
+    { id: 2, domain: '192.168.1.100', enabled: true, scope: 'ip', issuer_mode: 'local_http01', status: 'pending', last_issue_at: '', last_error: '', tags: ['internal'] }
+  ],
+  'edge-2': [
+    { id: 1, domain: 'media.example.com', enabled: true, scope: 'domain', issuer_mode: 'local_http01', status: 'error', last_issue_at: '', last_error: 'ACME challenge failed', tags: ['media'] }
+  ]
+}
+let mockCertIdCounter = 10
+
+export async function fetchCertificates(agentId) {
+  if (isDev) { await sleep(); return [...(mockCertsByAgent[agentId] || [])] }
+  const { data } = await api.get(`/agents/${encodeURIComponent(agentId)}/certificates`)
+  return data.certificates || []
+}
+
+export async function createCertificate(agentId, payload) {
+  if (isDev) {
+    await sleep()
+    const item = { ...payload, id: ++mockCertIdCounter, status: 'pending', last_issue_at: '', last_error: '' }
+    mockCertsByAgent[agentId] = mockCertsByAgent[agentId] || []
+    mockCertsByAgent[agentId].push(item)
+    return item
+  }
+  const { data } = await api.post(`/agents/${encodeURIComponent(agentId)}/certificates`, payload, longRunningRequest)
+  return data.certificate
+}
+
+export async function updateCertificate(agentId, id, payload) {
+  if (isDev) {
+    await sleep()
+    const list = mockCertsByAgent[agentId] || []
+    const idx = list.findIndex((c) => c.id === id)
+    if (idx !== -1) { list[idx] = { ...list[idx], ...payload }; return list[idx] }
+    return null
+  }
+  const { data } = await api.put(`/agents/${encodeURIComponent(agentId)}/certificates/${id}`, payload, longRunningRequest)
+  return data.certificate
+}
+
+export async function deleteCertificate(agentId, id) {
+  if (isDev) {
+    await sleep()
+    const list = mockCertsByAgent[agentId] || []
+    const idx = list.findIndex((c) => c.id === id)
+    if (idx !== -1) return list.splice(idx, 1)[0]
+    return null
+  }
+  const { data } = await api.delete(`/agents/${encodeURIComponent(agentId)}/certificates/${id}`, longRunningRequest)
+  return data.certificate
+}
+
+export async function issueCertificate(agentId, id) {
+  if (isDev) {
+    await sleep(800)
+    const list = mockCertsByAgent[agentId] || []
+    const idx = list.findIndex((c) => c.id === id)
+    if (idx !== -1) { list[idx] = { ...list[idx], status: 'active', last_issue_at: new Date().toISOString(), last_error: '' }; return list[idx] }
+    return null
+  }
+  const { data } = await api.post(`/agents/${encodeURIComponent(agentId)}/certificates/${id}/issue`, {}, longRunningRequest)
+  return data.certificate
+}
+
+export async function fetchAllAgentsCertificates(agentIds) {
+  if (isDev) {
+    await sleep()
+    return agentIds.map((agentId) => ({ agentId, certificates: [...(mockCertsByAgent[agentId] || [])] }))
+  }
+  const results = await Promise.allSettled(
+    agentIds.map((agentId) =>
+      api.get(`/agents/${encodeURIComponent(agentId)}/certificates`).then(({ data }) => ({
+        agentId,
+        certificates: data.certificates || []
+      }))
+    )
+  )
+  return results.filter((r) => r.status === 'fulfilled').map((r) => r.value)
 }
