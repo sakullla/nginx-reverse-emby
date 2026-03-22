@@ -76,6 +76,8 @@ const DEFAULT_AGENT_CAPABILITIES = normalizeCapabilities(
 );
 const ACME_HOME =
   process.env.ACME_HOME || path.join(DATA_ROOT, ".acme.sh");
+const ACME_SCRIPT = path.join(ACME_HOME, "acme.sh");
+const ACME_COMMON_ARGS = ["--home", ACME_HOME, "--config-home", ACME_HOME, "--cert-home", ACME_HOME];
 const ACME_CA = process.env.ACME_CA || "letsencrypt";
 const ACME_DNS_PROVIDER = String(process.env.ACME_DNS_PROVIDER || "").trim();
 const CF_TOKEN = String(process.env.CF_Token || process.env.CF_TOKEN || "").trim();
@@ -762,6 +764,19 @@ function getCertStoreDir(domain) {
   return path.join(MANAGED_CERTS_DIR, safeDomain);
 }
 
+function normalizeManagedCertificateAcmeInfo(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    Main_Domain: String(source.Main_Domain || ""),
+    KeyLength: String(source.KeyLength || ""),
+    SAN_Domains: String(source.SAN_Domains || ""),
+    Profile: String(source.Profile || ""),
+    CA: String(source.CA || ""),
+    Created: String(source.Created || ""),
+    Renew: String(source.Renew || ""),
+  };
+}
+
 function normalizeManagedCertificatePayload(body, fallback = {}, suggestedId = null) {
   const domain = normalizeHost(
     body.domain !== undefined ? body.domain : fallback.domain,
@@ -835,6 +850,10 @@ function normalizeManagedCertificatePayload(body, fallback = {}, suggestedId = n
       body.material_hash !== undefined
         ? String(body.material_hash || "")
         : String(fallback.material_hash || ""),
+    acme_info:
+      body.acme_info !== undefined
+        ? normalizeManagedCertificateAcmeInfo(body.acme_info)
+        : normalizeManagedCertificateAcmeInfo(fallback.acme_info || {}),
     tags:
       body.tags !== undefined ? normalizeTags(body.tags) : normalizeTags(fallback.tags || []),
   };
@@ -1112,6 +1131,58 @@ function getHighestManagedCertificateRevisionForAgent(agentId) {
   }, 0);
 }
 
+function getManagedCertificateAcmeName(domain) {
+  const normalizedDomain = normalizeHost(domain).toLowerCase();
+  return isWildcardDomain(normalizedDomain) ? normalizedDomain.slice(2) : normalizedDomain;
+}
+
+function readManagedCertificateAcmeInfo(domain) {
+  if (!fs.existsSync(ACME_SCRIPT)) {
+    return normalizeManagedCertificateAcmeInfo();
+  }
+
+  const result = spawnSync(ACME_SCRIPT, ["--list", ...ACME_COMMON_ARGS], {
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    env: process.env,
+  });
+
+  if (result.error || result.status !== 0) {
+    return normalizeManagedCertificateAcmeInfo();
+  }
+
+  const lines = String(result.stdout || "")
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (!lines.length) return normalizeManagedCertificateAcmeInfo();
+
+  const headers = lines[0].split(/\s+/);
+  const targetName = getManagedCertificateAcmeName(domain);
+  const row = lines.slice(1).find((line) => {
+    const columns = line.split(/\s+/);
+    const mainDomain = String(columns[0] || "").trim().toLowerCase();
+    return mainDomain === targetName;
+  });
+  if (!row) return normalizeManagedCertificateAcmeInfo();
+
+  const columns = row.split(/\s+/);
+  const mapped = {};
+  headers.forEach((header, index) => {
+    mapped[header] = columns[index] || "";
+  });
+
+  return normalizeManagedCertificateAcmeInfo({
+    Main_Domain: mapped.Main_Domain || mapped.Domain || targetName,
+    KeyLength: mapped.KeyLength || "",
+    SAN_Domains: mapped.SAN_Domains || "",
+    Profile: mapped.Profile || "",
+    CA: mapped.CA || "",
+    Created: mapped.Created || "",
+    Renew: mapped.Renew || "",
+  });
+}
+
 function readManagedCertificateMaterial(domain) {
   const certDir = getCertStoreDir(domain);
   const certFile = path.join(certDir, "cert");
@@ -1167,6 +1238,7 @@ function buildManagedCertificatePolicyForAgent(agentId) {
       status: cert.status,
       last_issue_at: cert.last_issue_at || null,
       last_error: cert.last_error || "",
+      acme_info: normalizeManagedCertificateAcmeInfo(cert.acme_info || {}),
       tags: normalizeTags(cert.tags || []),
       revision: normalizeRevision(cert.revision),
     }));
@@ -1712,12 +1784,14 @@ async function issueManagedCertificateById(certId, options = {}) {
   try {
     runManagedCertificateHelper(cert.domain, "issue");
     const materialHash = getManagedCertificateMaterialHash(cert.domain);
+    const acmeInfo = readManagedCertificateAcmeInfo(cert.domain);
     cert = updateManagedCertificate(certId, (current) => ({
       ...current,
       status: "active",
       last_issue_at: nowIso(),
       last_error: "",
       material_hash: materialHash || String(current.material_hash || ""),
+      acme_info: acmeInfo,
       revision: bumpRevision ? getNextGlobalRevision() : normalizeRevision(current.revision),
     }));
   } catch (err) {
@@ -1765,6 +1839,7 @@ async function renewManagedCertificateById(certId, options = {}) {
 
   const nextHash = getManagedCertificateMaterialHash(cert.domain);
   const changed = !!nextHash && nextHash !== previousHash;
+  const acmeInfo = readManagedCertificateAcmeInfo(cert.domain);
 
   cert = updateManagedCertificate(certId, (current) => ({
     ...current,
@@ -1772,6 +1847,7 @@ async function renewManagedCertificateById(certId, options = {}) {
     last_issue_at: changed ? nowIso() : current.last_issue_at || null,
     last_error: "",
     material_hash: nextHash || previousHash || String(current.material_hash || ""),
+    acme_info: acmeInfo,
     revision: changed ? getNextGlobalRevision() : normalizeRevision(current.revision),
   }));
 
