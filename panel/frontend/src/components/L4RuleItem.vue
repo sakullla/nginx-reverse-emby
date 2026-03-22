@@ -30,6 +30,22 @@
             </svg>
           </button>
           <button
+            class="rule-card__action rule-card__action--copy"
+            :class="{ copied: copySuccess }"
+            @click="copyRule"
+            title="复制规则"
+            :disabled="isCopying"
+          >
+            <svg v-if="isCopying" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"/>
+              <path d="M12 6v6l4 2"/>
+            </svg>
+            <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"/>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>
+            </svg>
+          </button>
+          <button
             class="rule-card__action rule-card__action--edit"
             @click="$emit('edit', rule)"
             title="编辑"
@@ -110,7 +126,7 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useRuleStore } from '../stores/rules'
 
 const props = defineProps({
@@ -171,6 +187,28 @@ const loadBalancingTitle = computed(() => {
   }
   return titles[lbStrategy.value] || '轮询'
 })
+
+// Copy functionality
+const isCopying = ref(false)
+const copySuccess = ref(false)
+
+const copyRule = async () => {
+  isCopying.value = true
+  try {
+    const listenAddr = `${props.rule.listen_host}:${props.rule.listen_port}`
+    const backendList = backends.value.map(b => `${b.host}:${b.port}`).join(', ')
+    const text = `${listenAddr} → ${backendList}`
+    await navigator.clipboard.writeText(text)
+    copySuccess.value = true
+    setTimeout(() => {
+      copySuccess.value = false
+    }, 2000)
+  } catch (err) {
+    console.error('复制失败:', err)
+  } finally {
+    isCopying.value = false
+  }
+}
 
 const toggleStatus = async () => {
   try {
@@ -313,6 +351,16 @@ const toggleStatus = async () => {
 }
 
 .rule-card__action--play:hover {
+  color: var(--color-success);
+  background: var(--color-success-50);
+}
+
+.rule-card__action--copy:hover {
+  color: var(--color-primary);
+  background: var(--color-primary-subtle);
+}
+
+.rule-card__action--copy.copied {
   color: var(--color-success);
   background: var(--color-success-50);
 }
