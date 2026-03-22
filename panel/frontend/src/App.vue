@@ -377,8 +377,8 @@
 
             <!-- Rules Content -->
             <div class="rules-section">
-              <RuleList v-if="activeTab === 'http'" />
-              <L4RuleList v-else-if="activeTab === 'l4'" />
+              <RuleList v-if="activeTab === 'http'" @add="showAddModal = true" />
+              <L4RuleList v-else-if="activeTab === 'l4'" @add="showL4Modal = true" />
               <CertificateList v-else-if="activeTab === 'certs'" @add="showCertModal = true" />
             </div>
           </main>
