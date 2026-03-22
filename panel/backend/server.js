@@ -32,6 +32,9 @@ const MANAGED_CERTS_DIR =
 const LOCAL_MANAGED_CERT_BUNDLE_JSON =
   process.env.PANEL_LOCAL_MANAGED_CERT_BUNDLE_JSON ||
   path.join(DATA_ROOT, "managed_cert_bundle.local.json");
+const LOCAL_MANAGED_CERT_POLICY_JSON =
+  process.env.PANEL_LOCAL_MANAGED_CERT_POLICY_JSON ||
+  path.join(DATA_ROOT, "managed_cert_policy.local.json");
 const LOCAL_AGENT_STATE_JSON =
   process.env.PANEL_LOCAL_AGENT_STATE_JSON ||
   path.join(DATA_ROOT, "local_agent_state.json");
@@ -503,6 +506,10 @@ function normalizeHost(value) {
   return String(value || "").trim().replace(/^\[(.*)\]$/, "$1");
 }
 
+function isWildcardDomain(value) {
+  return /^\*\.[a-zA-Z0-9.-]+$/.test(normalizeHost(value));
+}
+
 function validatePort(value) {
   const port = Number(value);
   return Number.isInteger(port) && port >= 1 && port <= 65535;
@@ -514,6 +521,59 @@ function validateNetworkHost(value) {
   if (/^[a-zA-Z0-9.-]+$/.test(host)) return true;
   if (/^[0-9A-Fa-f:.]+$/.test(host)) return true;
   return false;
+}
+
+function validateManagedCertificateHost(value, options = {}) {
+  const { allowWildcard = false } = options;
+  const host = normalizeHost(value);
+  if (!host) return false;
+  if (allowWildcard && isWildcardDomain(host)) return true;
+  return validateNetworkHost(host);
+}
+
+function isIpAddress(value) {
+  const host = normalizeHost(value);
+  if (!host) return false;
+  if (/^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/.test(host)) return true;
+  return /^[0-9A-Fa-f:.]+$/.test(host) && host.includes(":");
+}
+
+function parseRuleFrontendTarget(rule) {
+  try {
+    const frontendUrl = new URL(String(rule?.frontend_url || "").trim());
+    return {
+      protocol: frontendUrl.protocol,
+      hostname: normalizeHost(frontendUrl.hostname).toLowerCase(),
+    };
+  } catch {
+    return null;
+  }
+}
+
+function isExactManagedCertificateMatch(certDomain, host) {
+  return normalizeHost(certDomain).toLowerCase() === normalizeHost(host).toLowerCase();
+}
+
+function isWildcardManagedCertificateMatch(certDomain, host) {
+  const pattern = normalizeHost(certDomain).toLowerCase();
+  const target = normalizeHost(host).toLowerCase();
+  if (!isWildcardDomain(pattern)) return false;
+  const suffix = pattern.slice(2);
+  if (!target.endsWith(`.${suffix}`)) return false;
+  const targetParts = target.split(".");
+  const suffixParts = suffix.split(".");
+  return targetParts.length === suffixParts.length + 1;
+}
+
+function doesManagedCertificateMatchHost(cert, host) {
+  if (!cert || !host) return false;
+  if (cert.scope === "ip") {
+    return isExactManagedCertificateMatch(cert.domain, host);
+  }
+  return (
+    isExactManagedCertificateMatch(cert.domain, host) ||
+    isWildcardManagedCertificateMatch(cert.domain, host)
+  );
 }
 
 function normalizeL4RuleRevision(value, fallback = 0) {
@@ -685,7 +745,10 @@ function deleteL4RulesForAgent(agentId) {
 }
 
 function getCertStoreDir(domain) {
-  return path.join(MANAGED_CERTS_DIR, normalizeHost(domain));
+  const safeDomain = normalizeHost(domain)
+    .replace(/^\*\./, "_wildcard_.")
+    .replace(/[<>:"/\\|?*]/g, "_");
+  return path.join(MANAGED_CERTS_DIR, safeDomain);
 }
 
 function normalizeManagedCertificatePayload(body, fallback = {}, suggestedId = null) {
@@ -713,7 +776,7 @@ function normalizeManagedCertificatePayload(body, fallback = {}, suggestedId = n
     .trim()
     .toLowerCase();
 
-  if (!domain || !validateNetworkHost(domain)) {
+  if (!domain || !validateManagedCertificateHost(domain, { allowWildcard: scope === "domain" })) {
     throw new Error("domain must be a valid domain or IP");
   }
   if (!["domain", "ip"].includes(scope)) {
@@ -721,6 +784,15 @@ function normalizeManagedCertificatePayload(body, fallback = {}, suggestedId = n
   }
   if (!["master_cf_dns", "local_http01"].includes(issuerMode)) {
     throw new Error("issuer_mode must be master_cf_dns or local_http01");
+  }
+  if (scope === "ip" && issuerMode !== "local_http01") {
+    throw new Error("ip certificates must use local_http01");
+  }
+  if (scope === "ip" && isWildcardDomain(domain)) {
+    throw new Error("ip certificates do not support wildcard domains");
+  }
+  if (scope === "domain" && isWildcardDomain(domain) && issuerMode !== "master_cf_dns") {
+    throw new Error("wildcard domain certificates must use master_cf_dns");
   }
 
   const parsedId =
@@ -748,6 +820,8 @@ function normalizeManagedCertificatePayload(body, fallback = {}, suggestedId = n
         : fallback.last_issue_at || null,
     last_error:
       body.last_error !== undefined ? String(body.last_error || "") : String(fallback.last_error || ""),
+    tags:
+      body.tags !== undefined ? normalizeTags(body.tags) : normalizeTags(fallback.tags || []),
   };
 }
 
@@ -774,11 +848,248 @@ function getManagedCertificateById(certId) {
   return loadManagedCertificates().find((item) => Number(item.id) === Number(certId)) || null;
 }
 
+function getManagedCertificatesForAgent(agentId) {
+  return loadManagedCertificates().filter((cert) =>
+    Array.isArray(cert.target_agent_ids) && cert.target_agent_ids.includes(agentId),
+  );
+}
+
+function compareManagedCertificateMatchPriority(left, right, agentId) {
+  const leftWildcard = isWildcardDomain(left?.domain || "");
+  const rightWildcard = isWildcardDomain(right?.domain || "");
+  if (leftWildcard !== rightWildcard) return leftWildcard ? 1 : -1;
+
+  const leftTargetsAgent =
+    Array.isArray(left?.target_agent_ids) && left.target_agent_ids.includes(agentId);
+  const rightTargetsAgent =
+    Array.isArray(right?.target_agent_ids) && right.target_agent_ids.includes(agentId);
+  if (leftTargetsAgent !== rightTargetsAgent) return leftTargetsAgent ? -1 : 1;
+
+  return normalizeRevision(right?.revision) - normalizeRevision(left?.revision);
+}
+
+function buildManagedCertificateAutoTargetTag(agentId) {
+  return `auto_target:${String(agentId || "").trim()}`;
+}
+
+function hasManagedCertificateTag(cert, tag) {
+  return Array.isArray(cert?.tags) && cert.tags.includes(tag);
+}
+
+function isAutoManagedCertificate(cert) {
+  return hasManagedCertificateTag(cert, "auto");
+}
+
+function hasManagedCertificateAutoTarget(cert, agentId) {
+  const tag = buildManagedCertificateAutoTargetTag(agentId);
+  return Boolean(agentId) && hasManagedCertificateTag(cert, tag);
+}
+
+function addManagedCertificateAutoTarget(tags, agentId) {
+  if (!agentId) return normalizeTags(tags || []);
+  return normalizeTags([...(Array.isArray(tags) ? tags : []), buildManagedCertificateAutoTargetTag(agentId)]);
+}
+
+function removeManagedCertificateAutoTarget(tags, agentId) {
+  const targetTag = buildManagedCertificateAutoTargetTag(agentId);
+  return normalizeTags((Array.isArray(tags) ? tags : []).filter((tag) => tag !== targetTag));
+}
+
+function shouldRecycleManagedCertificateForAgent(cert, agentId) {
+  return isAutoManagedCertificate(cert) || hasManagedCertificateAutoTarget(cert, agentId);
+}
+
+function findBestManagedCertificateForHost(agentId, host, scope) {
+  return loadManagedCertificates()
+    .filter((cert) => cert.enabled !== false)
+    .filter((cert) => cert.scope === scope)
+    .filter((cert) => doesManagedCertificateMatchHost(cert, host))
+    .sort((left, right) => compareManagedCertificateMatchPriority(left, right, agentId))[0] || null;
+}
+
+function chooseAutoManagedCertificateIssuerMode(agent, host, scope) {
+  if (!agentHasCapability(agent, "cert_install")) {
+    throw new Error(`agent does not support unified certificate install: ${agent?.name || agent?.id || "unknown"}`);
+  }
+  if (scope === "ip") {
+    if (!agentHasCapability(agent, "local_acme")) {
+      throw new Error(`agent does not support local ACME issuance for IP HTTPS: ${agent.name || agent.id}`);
+    }
+    return "local_http01";
+  }
+  if (MANAGED_CERTS_ENABLED) {
+    return "master_cf_dns";
+  }
+  if (agentHasCapability(agent, "local_acme")) {
+    return "local_http01";
+  }
+  throw new Error(`no available unified certificate issuer for ${host}`);
+}
+
+async function ensureManagedCertificateForRule(agentId, rule, options = {}) {
+  const { applyNow = AUTO_APPLY } = options;
+  const target = parseRuleFrontendTarget(rule);
+  if (!target || target.protocol !== "https:") return null;
+
+  const agent = getAgentById(agentId);
+  if (!agent) throw new Error("agent not found");
+
+  const scope = isIpAddress(target.hostname) ? "ip" : "domain";
+  let cert = findBestManagedCertificateForHost(agentId, target.hostname, scope);
+  if (cert) {
+    if (!Array.isArray(cert.target_agent_ids) || !cert.target_agent_ids.includes(agentId)) {
+      const nextTargets = [...new Set([...(cert.target_agent_ids || []), agentId])];
+      const updated = normalizeManagedCertificatePayload(
+        {
+          ...cert,
+          target_agent_ids: nextTargets,
+          enabled: cert.enabled !== false,
+          tags: addManagedCertificateAutoTarget(cert.tags || [], agentId),
+        },
+        cert,
+        cert.id,
+      );
+      validateManagedCertificateTargets(updated);
+      const prepared = prepareManagedCertificateForSave(cert, updated);
+      prepared.revision = getNextGlobalRevision();
+      updateManagedCertificate(cert.id, () => prepared);
+      if (prepared.enabled && prepared.scope === "domain" && prepared.issuer_mode === "master_cf_dns") {
+        cert = await issueManagedCertificateById(cert.id, { bumpRevision: false, applyNow });
+      } else {
+        await syncManagedCertificateAgentIds(nextTargets, { applyNow });
+        cert = getManagedCertificateById(cert.id);
+      }
+    }
+    return cert;
+  }
+
+  const certs = loadManagedCertificates();
+  const maxId = certs.reduce((max, item) => Math.max(max, Number(item.id) || 0), 0);
+  const issuerMode = chooseAutoManagedCertificateIssuerMode(agent, target.hostname, scope);
+  const created = normalizeManagedCertificatePayload(
+    {
+      domain: target.hostname,
+      enabled: true,
+      scope,
+      issuer_mode: issuerMode,
+      target_agent_ids: [agentId],
+      tags: addManagedCertificateAutoTarget(
+        normalizeTags([...(Array.isArray(rule?.tags) ? rule.tags : []), "auto"]),
+        agentId,
+      ),
+    },
+    {},
+    maxId + 1,
+  );
+  validateManagedCertificateTargets(created);
+  const prepared = prepareManagedCertificateForSave(null, created);
+  certs.push({ ...prepared, revision: getNextGlobalRevision() });
+  saveManagedCertificates(certs);
+
+  if (prepared.scope === "domain" && prepared.issuer_mode === "master_cf_dns") {
+    return issueManagedCertificateById(prepared.id, { bumpRevision: false, applyNow });
+  }
+  await syncManagedCertificateAgentIds(prepared.target_agent_ids || [], { applyNow });
+  return getManagedCertificateById(prepared.id);
+}
+
+async function detachManagedCertificateFromAgent(certId, agentId, options = {}) {
+  const { applyNow = AUTO_APPLY } = options;
+  const certs = loadManagedCertificates();
+  const index = certs.findIndex((item) => Number(item.id) === Number(certId));
+  if (index === -1) return null;
+
+  const existing = certs[index];
+  if (!Array.isArray(existing.target_agent_ids) || !existing.target_agent_ids.includes(agentId)) {
+    return existing;
+  }
+
+  const remainingTargets = existing.target_agent_ids.filter((id) => id !== agentId);
+  if (remainingTargets.length > 0) {
+    const nextCert = normalizeManagedCertificatePayload(
+      {
+        ...existing,
+        target_agent_ids: remainingTargets,
+        tags: removeManagedCertificateAutoTarget(existing.tags || [], agentId),
+      },
+      existing,
+      certId,
+    );
+    nextCert.status = existing.status;
+    nextCert.last_issue_at = existing.last_issue_at || null;
+    nextCert.last_error = existing.last_error || "";
+    nextCert.revision = getNextGlobalRevision();
+    certs[index] = nextCert;
+    saveManagedCertificates(certs);
+    await syncManagedCertificateAgentIds(getManagedCertificateAffectedAgentIds(existing, nextCert), {
+      applyNow,
+    });
+    return nextCert;
+  }
+
+  if (!isAutoManagedCertificate(existing)) {
+    const nextCert = normalizeManagedCertificatePayload(
+      {
+        ...existing,
+        target_agent_ids: [],
+        tags: removeManagedCertificateAutoTarget(existing.tags || [], agentId),
+      },
+      existing,
+      certId,
+    );
+    nextCert.status = existing.status;
+    nextCert.last_issue_at = existing.last_issue_at || null;
+    nextCert.last_error = existing.last_error || "";
+    nextCert.revision = getNextGlobalRevision();
+    certs[index] = nextCert;
+    saveManagedCertificates(certs);
+    await syncManagedCertificateAgentIds(getManagedCertificateAffectedAgentIds(existing, nextCert), {
+      applyNow,
+    });
+    return nextCert;
+  }
+
+  const deleted = certs.splice(index, 1)[0];
+  saveManagedCertificates(certs);
+  removePath(getCertStoreDir(deleted.domain));
+  for (const targetAgentId of deleted.target_agent_ids || []) {
+    if (targetAgentId === LOCAL_AGENT_ID) {
+      persistManagedCertificateBundleForAgent(targetAgentId);
+      persistManagedCertificatePolicyForAgent(targetAgentId);
+    }
+    if (applyNow) {
+      await applyAgent(targetAgentId);
+    }
+  }
+  return deleted;
+}
+
+function hasMatchingHttpsRuleForCertificateInRules(rules, cert) {
+  return (Array.isArray(rules) ? rules : []).some((rule) => {
+    if (!rule || rule.enabled === false) return false;
+    const target = parseRuleFrontendTarget(rule);
+    if (!target || target.protocol !== "https:") return false;
+    return doesManagedCertificateMatchHost(cert, target.hostname);
+  });
+}
+
+async function cleanupUnusedManagedCertificatesForAgent(agentId, rules = null, options = {}) {
+  const currentCerts = getManagedCertificatesForAgent(agentId);
+  const removed = [];
+  const ruleSet = Array.isArray(rules) ? rules : loadRulesForAgent(agentId);
+  for (const cert of currentCerts) {
+    if (hasMatchingHttpsRuleForCertificateInRules(ruleSet, cert)) continue;
+    if (!shouldRecycleManagedCertificateForAgent(cert, agentId)) continue;
+    await detachManagedCertificateFromAgent(cert.id, agentId, options);
+    removed.push(cert.id);
+  }
+  return removed;
+}
+
 function getHighestManagedCertificateRevisionForAgent(agentId) {
   const agent = getAgentById(agentId);
   if (!agent || !agentHasCapability(agent, "cert_install")) return 0;
   return loadManagedCertificates().reduce((max, cert) => {
-    if (!cert.enabled) return max;
     if (!Array.isArray(cert.target_agent_ids) || !cert.target_agent_ids.includes(agentId)) {
       return max;
     }
@@ -815,13 +1126,39 @@ function buildManagedCertificateBundleForAgent(agentId) {
     .filter(Boolean);
 }
 
+function buildManagedCertificatePolicyForAgent(agentId) {
+  return loadManagedCertificates()
+    .filter((cert) => Array.isArray(cert.target_agent_ids) && cert.target_agent_ids.includes(agentId))
+    .map((cert) => ({
+      id: cert.id,
+      domain: cert.domain,
+      enabled: cert.enabled !== false,
+      scope: cert.scope,
+      issuer_mode: cert.issuer_mode,
+      status: cert.status,
+      last_issue_at: cert.last_issue_at || null,
+      last_error: cert.last_error || "",
+      tags: normalizeTags(cert.tags || []),
+      revision: normalizeRevision(cert.revision),
+    }));
+}
+
 function getManagedCertBundleFileForAgent(agentId) {
   if (agentId === LOCAL_AGENT_ID) return LOCAL_MANAGED_CERT_BUNDLE_JSON;
   return path.join(AGENT_RULES_DIR, `${agentId}.managed-certs.json`);
 }
 
+function getManagedCertPolicyFileForAgent(agentId) {
+  if (agentId === LOCAL_AGENT_ID) return LOCAL_MANAGED_CERT_POLICY_JSON;
+  return path.join(AGENT_RULES_DIR, `${agentId}.managed-certs.policy.json`);
+}
+
 function persistManagedCertificateBundleForAgent(agentId) {
   writeJsonFile(getManagedCertBundleFileForAgent(agentId), buildManagedCertificateBundleForAgent(agentId));
+}
+
+function persistManagedCertificatePolicyForAgent(agentId) {
+  writeJsonFile(getManagedCertPolicyFileForAgent(agentId), buildManagedCertificatePolicyForAgent(agentId));
 }
 
 function loadRegisteredAgents() {
@@ -1049,10 +1386,16 @@ function prepareLocalManagedCertificateBundle() {
   return getManagedCertBundleFileForAgent(LOCAL_AGENT_ID);
 }
 
+function prepareLocalManagedCertificatePolicy() {
+  persistManagedCertificatePolicyForAgent(LOCAL_AGENT_ID);
+  return getManagedCertPolicyFileForAgent(LOCAL_AGENT_ID);
+}
+
 function applyNginxConfig() {
   const extraEnv = {
     PANEL_L4_RULES_JSON: getL4RuleFileForAgent(LOCAL_AGENT_ID),
     PANEL_MANAGED_CERTS_SYNC_JSON: prepareLocalManagedCertificateBundle(),
+    PANEL_MANAGED_CERTS_POLICY_JSON: prepareLocalManagedCertificatePolicy(),
   };
 
   if (APPLY_COMMAND) {
@@ -1185,12 +1528,13 @@ function runManagedCertificateHelper(domain) {
   );
 }
 
-async function syncManagedCertificateTargets(cert) {
+async function syncManagedCertificateTargets(cert, options = {}) {
   const targetIds = Array.isArray(cert?.target_agent_ids) ? cert.target_agent_ids : [];
-  return syncManagedCertificateAgentIds(targetIds);
+  return syncManagedCertificateAgentIds(targetIds, options);
 }
 
-async function syncManagedCertificateAgentIds(agentIds) {
+async function syncManagedCertificateAgentIds(agentIds, options = {}) {
+  const { applyNow = AUTO_APPLY } = options;
   const targetIds = [...new Set((Array.isArray(agentIds) ? agentIds : []).filter(Boolean))];
   for (const agentId of targetIds) {
     const agent = getAgentById(agentId);
@@ -1198,9 +1542,13 @@ async function syncManagedCertificateAgentIds(agentIds) {
     if (!agentHasCapability(agent, "cert_install")) continue;
     if (agentId === LOCAL_AGENT_ID) {
       persistManagedCertificateBundleForAgent(agentId);
+      persistManagedCertificatePolicyForAgent(agentId);
     }
-    if (AUTO_APPLY) {
+    if (applyNow) {
       await applyAgent(agentId);
+      if (agentId === LOCAL_AGENT_ID) {
+        reconcileLocalHttp01CertificatesForAgent(getAgentById(agentId));
+      }
     }
   }
 }
@@ -1231,11 +1579,97 @@ function validateManagedCertificateTargets(cert) {
     if (!agentHasCapability(agent, "cert_install")) {
       throw new Error(`target agent does not support certificate install: ${agent.name || agentId}`);
     }
+    if (cert.issuer_mode === "local_http01" && !agentHasCapability(agent, "local_acme")) {
+      throw new Error(`target agent does not support local ACME issuance: ${agent.name || agentId}`);
+    }
+  }
+}
+
+function shouldResetManagedCertificateStatus(previousCert, nextCert) {
+  if (!previousCert) return nextCert.enabled !== false;
+  return (
+    previousCert.domain !== nextCert.domain ||
+    previousCert.scope !== nextCert.scope ||
+    previousCert.issuer_mode !== nextCert.issuer_mode ||
+    previousCert.enabled !== nextCert.enabled ||
+    JSON.stringify(previousCert.target_agent_ids || []) !==
+      JSON.stringify(nextCert.target_agent_ids || [])
+  );
+}
+
+function prepareManagedCertificateForSave(previousCert, nextCert) {
+  if (!shouldResetManagedCertificateStatus(previousCert, nextCert)) {
+    return nextCert;
+  }
+  return {
+    ...nextCert,
+    status: nextCert.enabled === false ? nextCert.status : "pending",
+    last_error: nextCert.enabled === false ? nextCert.last_error : "",
+  };
+}
+
+function hasMatchingHttpsRuleForCertificate(agentId, cert) {
+  return hasMatchingHttpsRuleForCertificateInRules(loadRulesForAgent(agentId), cert);
+}
+
+function reconcileLocalHttp01CertificatesForAgent(agent) {
+  if (!agent || !agent.id) return;
+  if (!agentHasCapability(agent, "cert_install") || !agentHasCapability(agent, "local_acme")) {
+    return;
+  }
+
+  const applyRevision = normalizeRevision(agent.last_apply_revision);
+  if (applyRevision <= 0) return;
+  if (!["success", "error"].includes(String(agent.last_apply_status || "").trim().toLowerCase())) {
+    return;
+  }
+
+  const certs = loadManagedCertificates();
+  const appliedAt = nowIso();
+  let changed = false;
+  const nextCerts = certs.map((cert) => {
+    if (
+      !cert ||
+      cert.enabled === false ||
+      cert.issuer_mode !== "local_http01" ||
+      !Array.isArray(cert.target_agent_ids) ||
+      !cert.target_agent_ids.includes(agent.id) ||
+      normalizeRevision(cert.revision) > applyRevision ||
+      !hasMatchingHttpsRuleForCertificate(agent.id, cert)
+    ) {
+      return cert;
+    }
+
+    if (agent.last_apply_status === "success") {
+      if (cert.status === "active" && !cert.last_error) return cert;
+      changed = true;
+      return {
+        ...cert,
+        status: "active",
+        last_issue_at: appliedAt,
+        last_error: "",
+      };
+    }
+
+    if (cert.status !== "pending") {
+      return cert;
+    }
+
+    changed = true;
+    return {
+      ...cert,
+      status: "error",
+      last_error: String(agent.last_apply_message || "agent apply failed"),
+    };
+  });
+
+  if (changed) {
+    saveManagedCertificates(nextCerts);
   }
 }
 
 async function issueManagedCertificateById(certId, options = {}) {
-  const { bumpRevision = true } = options;
+  const { bumpRevision = true, applyNow = AUTO_APPLY } = options;
   assertManagedCertificateEnabled();
 
   let cert = getManagedCertificateById(certId);
@@ -1266,7 +1700,80 @@ async function issueManagedCertificateById(certId, options = {}) {
     throw new Error(cert.last_error);
   }
 
-  await syncManagedCertificateTargets(cert);
+  await syncManagedCertificateTargets(cert, { applyNow });
+  return cert;
+}
+
+async function requestLocalHttp01CertificateById(certId, options = {}) {
+  const { agentId = null } = options;
+  let cert = getManagedCertificateById(certId);
+  if (!cert) throw new Error("certificate not found");
+  if (!cert.enabled) throw new Error("certificate is disabled");
+  if (cert.issuer_mode !== "local_http01") {
+    throw new Error("certificate is not configured for local_http01");
+  }
+
+  const requestedAgentIds = agentId
+    ? (Array.isArray(cert.target_agent_ids) ? cert.target_agent_ids : []).filter((id) => id === agentId)
+    : Array.isArray(cert.target_agent_ids)
+      ? cert.target_agent_ids
+      : [];
+
+  if (!requestedAgentIds.length) {
+    throw new Error("certificate is not assigned to the requested agent");
+  }
+
+  if (!agentId && requestedAgentIds.length > 1) {
+    throw new Error("local_http01 certificates must be issued from the per-agent endpoint");
+  }
+
+  for (const targetAgentId of requestedAgentIds) {
+    const agent = getAgentById(targetAgentId);
+    if (!agent) throw new Error(`target agent not found: ${targetAgentId}`);
+    if (!agentHasCapability(agent, "cert_install")) {
+      throw new Error(`target agent does not support certificate install: ${agent.name || targetAgentId}`);
+    }
+    if (!agentHasCapability(agent, "local_acme")) {
+      throw new Error(`target agent does not support local ACME issuance: ${agent.name || targetAgentId}`);
+    }
+    if (!hasMatchingHttpsRuleForCertificate(targetAgentId, cert)) {
+      throw new Error(
+        `no enabled HTTPS HTTP rule found for ${cert.domain} on agent ${agent.name || targetAgentId}`,
+      );
+    }
+  }
+
+  cert = updateManagedCertificate(certId, (current) => ({
+    ...current,
+    status: "pending",
+    last_error: "",
+    revision: getNextGlobalRevision(),
+  }));
+
+  for (const targetAgentId of requestedAgentIds) {
+    try {
+      await applyAgent(targetAgentId);
+    } catch (err) {
+      cert = updateManagedCertificate(certId, (current) => ({
+        ...current,
+        status: "error",
+        last_error: String(err.message || err),
+      }));
+      throw err;
+    }
+  }
+
+  if (requestedAgentIds.includes(LOCAL_AGENT_ID)) {
+    cert = updateManagedCertificate(certId, (current) => ({
+      ...current,
+      status: "active",
+      last_issue_at: nowIso(),
+      last_error: "",
+    }));
+  } else {
+    cert = getManagedCertificateById(certId);
+  }
+
   return cert;
 }
 
@@ -1350,6 +1857,7 @@ function getAgentHeartbeatResponse(agent) {
   const rules = loadRulesForAgent(agent.id);
   const l4Rules = loadL4RulesForAgent(agent.id);
   const certificates = buildManagedCertificateBundleForAgent(agent.id);
+  const certificatePolicies = buildManagedCertificatePolicyForAgent(agent.id);
   const hasUpdate = agent.current_revision < agent.desired_revision;
   return {
     ok: true,
@@ -1363,6 +1871,7 @@ function getAgentHeartbeatResponse(agent) {
       rules: hasUpdate ? rules : undefined,
       l4_rules: hasUpdate ? l4Rules : undefined,
       certificates: hasUpdate ? certificates : undefined,
+      certificate_policies: hasUpdate ? certificatePolicies : undefined,
     },
   };
 }
@@ -1490,8 +1999,22 @@ async function handleLegacyLocalRules(req, res, urlPath) {
       const maxId = rules.reduce((max, rule) => Math.max(max, Number(rule.id) || 0), 0);
       const newRule = normalizeRulePayload(body, {}, maxId + 1);
       newRule.revision = getNextPendingRevision(agent);
-      rules.push(newRule);
-      saveRulesForAgent(LOCAL_AGENT_ID, rules);
+      const nextRules = [...rules, newRule];
+      try {
+        await ensureManagedCertificateForRule(LOCAL_AGENT_ID, newRule, { applyNow: false });
+        await cleanupUnusedManagedCertificatesForAgent(LOCAL_AGENT_ID, nextRules, { applyNow: false });
+      } catch (err) {
+        sendJson(
+          res,
+          400,
+          errorPayload(
+            "rule validation failed during unified certificate preparation",
+            String(err.message || err),
+          ),
+        );
+        return;
+      }
+      saveRulesForAgent(LOCAL_AGENT_ID, nextRules);
       if (AUTO_APPLY) {
         try {
           await applyAgent(LOCAL_AGENT_ID);
@@ -1525,9 +2048,25 @@ async function handleLegacyLocalRules(req, res, urlPath) {
         sendJson(res, 404, errorPayload("rule id not found"));
         return;
       }
-      rules[index] = normalizeRulePayload(body, rules[index], ruleId);
-      rules[index].revision = getNextPendingRevision(agent);
-      saveRulesForAgent(LOCAL_AGENT_ID, rules);
+      const nextRule = normalizeRulePayload(body, rules[index], ruleId);
+      nextRule.revision = getNextPendingRevision(agent);
+      const nextRules = rules.slice();
+      nextRules[index] = nextRule;
+      try {
+        await ensureManagedCertificateForRule(LOCAL_AGENT_ID, nextRule, { applyNow: false });
+        await cleanupUnusedManagedCertificatesForAgent(LOCAL_AGENT_ID, nextRules, { applyNow: false });
+      } catch (err) {
+        sendJson(
+          res,
+          400,
+          errorPayload(
+            "rule validation failed during unified certificate preparation",
+            String(err.message || err),
+          ),
+        );
+        return;
+      }
+      saveRulesForAgent(LOCAL_AGENT_ID, nextRules);
       if (AUTO_APPLY) {
         try {
           await applyAgent(LOCAL_AGENT_ID);
@@ -1543,7 +2082,7 @@ async function handleLegacyLocalRules(req, res, urlPath) {
           return;
         }
       }
-      sendJson(res, 200, { ok: true, rule: rules[index] });
+      sendJson(res, 200, { ok: true, rule: nextRule });
     } catch (err) {
       sendJson(res, 400, errorPayload(String(err.message || err)));
     }
@@ -1551,31 +2090,51 @@ async function handleLegacyLocalRules(req, res, urlPath) {
   }
 
   if (req.method === "DELETE" && /^\/api\/rules\/\d+$/.test(urlPath)) {
-    const ruleId = Number(urlPath.split("/").pop());
-    const rules = loadOrInitRules(LOCAL_AGENT_ID);
-    const index = rules.findIndex((rule) => Number(rule.id) === ruleId);
-    if (index === -1) {
-      sendJson(res, 404, errorPayload("rule id not found"));
-      return;
-    }
-    const deleted = rules.splice(index, 1)[0];
-    saveRulesForAgent(LOCAL_AGENT_ID, rules);
-    if (AUTO_APPLY) {
+    try {
+      const ruleId = Number(urlPath.split("/").pop());
+      const rules = loadOrInitRules(LOCAL_AGENT_ID);
+      const index = rules.findIndex((rule) => Number(rule.id) === ruleId);
+      if (index === -1) {
+        sendJson(res, 404, errorPayload("rule id not found"));
+        return;
+      }
+      const deleted = rules[index];
+      const nextRules = rules.filter((_, ruleIndex) => ruleIndex !== index);
       try {
-        await applyAgent(LOCAL_AGENT_ID);
+        await cleanupUnusedManagedCertificatesForAgent(LOCAL_AGENT_ID, nextRules, {
+          applyNow: false,
+        });
       } catch (err) {
         sendJson(
           res,
           400,
           errorPayload(
-            "rule deleted but failed to apply nginx config",
+            "rule validation failed during unified certificate cleanup",
             String(err.message || err),
           ),
         );
         return;
       }
+      saveRulesForAgent(LOCAL_AGENT_ID, nextRules);
+      if (AUTO_APPLY) {
+        try {
+          await applyAgent(LOCAL_AGENT_ID);
+        } catch (err) {
+          sendJson(
+            res,
+            400,
+            errorPayload(
+              "rule deleted but failed to apply nginx config",
+              String(err.message || err),
+            ),
+          );
+          return;
+        }
+      }
+      sendJson(res, 200, { ok: true, rule: deleted });
+    } catch (err) {
+      sendJson(res, 400, errorPayload(String(err.message || err)));
     }
-    sendJson(res, 200, { ok: true, rule: deleted });
     return;
   }
 
@@ -1792,6 +2351,7 @@ async function handleMasterApi(req, res) {
 
       agents[index] = agent;
       saveRegisteredAgents(agents);
+      reconcileLocalHttp01CertificatesForAgent(agent);
       const hasRevisionChange = previous.current_revision !== agent.current_revision;
       const hasApplyStatusChange =
         previous.last_apply_revision !== agent.last_apply_revision ||
@@ -2003,8 +2563,22 @@ async function handleMasterApi(req, res) {
       const maxId = rules.reduce((max, rule) => Math.max(max, Number(rule.id) || 0), 0);
       const newRule = normalizeRulePayload(body, {}, maxId + 1);
       newRule.revision = getNextPendingRevision(agent);
-      rules.push(newRule);
-      saveRulesForAgent(agentId, rules);
+      const nextRules = [...rules, newRule];
+      try {
+        await ensureManagedCertificateForRule(agentId, newRule, { applyNow: false });
+        await cleanupUnusedManagedCertificatesForAgent(agentId, nextRules, { applyNow: false });
+      } catch (err) {
+        sendJson(
+          res,
+          400,
+          errorPayload(
+            "rule validation failed during unified certificate preparation",
+            String(err.message || err),
+          ),
+        );
+        return;
+      }
+      saveRulesForAgent(agentId, nextRules);
 
       if (AUTO_APPLY) {
         try {
@@ -2100,9 +2674,25 @@ async function handleMasterApi(req, res) {
         sendJson(res, 404, errorPayload("rule id not found"));
         return;
       }
-      rules[index] = normalizeRulePayload(body, rules[index], ruleId);
-      rules[index].revision = getNextPendingRevision(agent);
-      saveRulesForAgent(agentId, rules);
+      const nextRule = normalizeRulePayload(body, rules[index], ruleId);
+      nextRule.revision = getNextPendingRevision(agent);
+      const nextRules = rules.slice();
+      nextRules[index] = nextRule;
+      try {
+        await ensureManagedCertificateForRule(agentId, nextRule, { applyNow: false });
+        await cleanupUnusedManagedCertificatesForAgent(agentId, nextRules, { applyNow: false });
+      } catch (err) {
+        sendJson(
+          res,
+          400,
+          errorPayload(
+            "rule validation failed during unified certificate preparation",
+            String(err.message || err),
+          ),
+        );
+        return;
+      }
+      saveRulesForAgent(agentId, nextRules);
 
       if (AUTO_APPLY) {
         try {
@@ -2120,7 +2710,7 @@ async function handleMasterApi(req, res) {
         }
       }
 
-      sendJson(res, 200, { ok: true, rule: rules[index] });
+      sendJson(res, 200, { ok: true, rule: nextRule });
     } catch (err) {
       sendJson(res, 400, errorPayload(String(err.message || err)));
     }
@@ -2142,8 +2732,22 @@ async function handleMasterApi(req, res) {
         sendJson(res, 404, errorPayload("rule id not found"));
         return;
       }
-      const deleted = rules.splice(index, 1)[0];
-      saveRulesForAgent(agentId, rules);
+      const deleted = rules[index];
+      const nextRules = rules.filter((_, ruleIndex) => ruleIndex !== index);
+      try {
+        await cleanupUnusedManagedCertificatesForAgent(agentId, nextRules, { applyNow: false });
+      } catch (err) {
+        sendJson(
+          res,
+          400,
+          errorPayload(
+            "rule validation failed during unified certificate cleanup",
+            String(err.message || err),
+          ),
+        );
+        return;
+      }
+      saveRulesForAgent(agentId, nextRules);
 
       if (AUTO_APPLY) {
         try {
@@ -2258,6 +2862,206 @@ async function handleMasterApi(req, res) {
     return;
   }
 
+  if (req.method === "GET" && /^\/api\/agents\/[^/]+\/certificates$/.test(urlPath)) {
+    const agentId = extractAgentId(urlPath);
+    const agent = getAgentById(agentId);
+    if (!agent) {
+      sendJson(res, 404, errorPayload("agent not found"));
+      return;
+    }
+    sendJson(res, 200, { ok: true, certificates: getManagedCertificatesForAgent(agentId) });
+    return;
+  }
+
+  if (req.method === "POST" && /^\/api\/agents\/[^/]+\/certificates$/.test(urlPath)) {
+    try {
+      const agentId = extractAgentId(urlPath);
+      const agent = getAgentById(agentId);
+      if (!agent) {
+        sendJson(res, 404, errorPayload("agent not found"));
+        return;
+      }
+      const body = await parseJsonBody(req);
+      const certs = loadManagedCertificates();
+      const maxId = certs.reduce((max, cert) => Math.max(max, Number(cert.id) || 0), 0);
+      const nextCert = normalizeManagedCertificatePayload(
+        {
+          ...body,
+          target_agent_ids:
+            body.target_agent_ids !== undefined ? body.target_agent_ids : [agentId],
+        },
+        {},
+        maxId + 1,
+      );
+      validateManagedCertificateTargets(nextCert);
+      const preparedCert = prepareManagedCertificateForSave(null, nextCert);
+      if (preparedCert.scope === "domain" && preparedCert.issuer_mode === "master_cf_dns") {
+        assertManagedCertificateEnabled();
+      }
+      certs.push({ ...preparedCert, revision: getNextGlobalRevision() });
+      saveManagedCertificates(certs);
+
+      let savedCert = getManagedCertificateById(preparedCert.id);
+      if (savedCert.enabled && savedCert.scope === "domain" && savedCert.issuer_mode === "master_cf_dns") {
+        savedCert = await issueManagedCertificateById(savedCert.id, { bumpRevision: false });
+      } else {
+        await syncManagedCertificateAgentIds(savedCert.target_agent_ids || []);
+      }
+
+      sendJson(res, 201, { ok: true, certificate: savedCert });
+    } catch (err) {
+      sendJson(res, 400, errorPayload(String(err.message || err)));
+    }
+    return;
+  }
+
+  if (req.method === "PUT" && /^\/api\/agents\/[^/]+\/certificates\/\d+$/.test(urlPath)) {
+    try {
+      const agentId = extractAgentId(urlPath);
+      const agent = getAgentById(agentId);
+      if (!agent) {
+        sendJson(res, 404, errorPayload("agent not found"));
+        return;
+      }
+      const certId = extractTrailingId(urlPath);
+      const body = await parseJsonBody(req);
+      const certs = loadManagedCertificates();
+      const index = certs.findIndex(
+        (cert) =>
+          Number(cert.id) === certId &&
+          Array.isArray(cert.target_agent_ids) &&
+          cert.target_agent_ids.includes(agentId),
+      );
+      if (index === -1) {
+        sendJson(res, 404, errorPayload("certificate not found"));
+        return;
+      }
+      const previousCert = { ...certs[index] };
+      const nextCert = normalizeManagedCertificatePayload(
+        {
+          ...body,
+          target_agent_ids:
+            body.target_agent_ids !== undefined ? body.target_agent_ids : previousCert.target_agent_ids,
+        },
+        certs[index],
+        certId,
+      );
+      validateManagedCertificateTargets(nextCert);
+      const preparedCert = prepareManagedCertificateForSave(previousCert, nextCert);
+      if (preparedCert.scope === "domain" && preparedCert.issuer_mode === "master_cf_dns") {
+        assertManagedCertificateEnabled();
+      }
+      preparedCert.revision = getNextGlobalRevision();
+      certs[index] = preparedCert;
+      saveManagedCertificates(certs);
+
+      let savedCert = preparedCert;
+      const affectedAgentIds = getManagedCertificateAffectedAgentIds(previousCert, preparedCert);
+      const removedAgentIds = getManagedCertificateRemovedAgentIds(previousCert, preparedCert);
+      if (
+        preparedCert.enabled &&
+        preparedCert.scope === "domain" &&
+        preparedCert.issuer_mode === "master_cf_dns"
+      ) {
+        savedCert = await issueManagedCertificateById(certId, { bumpRevision: false });
+        if (removedAgentIds.length > 0) {
+          await syncManagedCertificateAgentIds(removedAgentIds);
+        }
+      } else {
+        await syncManagedCertificateAgentIds(affectedAgentIds);
+      }
+
+      sendJson(res, 200, { ok: true, certificate: savedCert });
+    } catch (err) {
+      sendJson(res, 400, errorPayload(String(err.message || err)));
+    }
+    return;
+  }
+
+  if (req.method === "DELETE" && /^\/api\/agents\/[^/]+\/certificates\/\d+$/.test(urlPath)) {
+    try {
+      const agentId = extractAgentId(urlPath);
+      const agent = getAgentById(agentId);
+      if (!agent) {
+        sendJson(res, 404, errorPayload("agent not found"));
+        return;
+      }
+      const certId = extractTrailingId(urlPath);
+      const certs = loadManagedCertificates();
+      const index = certs.findIndex(
+        (cert) =>
+          Number(cert.id) === certId &&
+          Array.isArray(cert.target_agent_ids) &&
+          cert.target_agent_ids.includes(agentId),
+      );
+      if (index === -1) {
+        sendJson(res, 404, errorPayload("certificate not found"));
+        return;
+      }
+
+      const existing = certs[index];
+      const remainingTargets = (existing.target_agent_ids || []).filter((id) => id !== agentId);
+      if (remainingTargets.length > 0) {
+        const normalizedCert = normalizeManagedCertificatePayload(
+          { ...existing, target_agent_ids: remainingTargets },
+          existing,
+          certId,
+        );
+        const nextCert = prepareManagedCertificateForSave(existing, normalizedCert);
+        nextCert.revision = getNextGlobalRevision();
+        certs[index] = nextCert;
+        saveManagedCertificates(certs);
+        await syncManagedCertificateAgentIds(
+          getManagedCertificateAffectedAgentIds(existing, nextCert),
+        );
+        sendJson(res, 200, { ok: true, certificate: { ...existing, target_agent_ids: [agentId] } });
+        return;
+      }
+
+      const deleted = certs.splice(index, 1)[0];
+      saveManagedCertificates(certs);
+      removePath(getCertStoreDir(deleted.domain));
+      for (const targetAgentId of deleted.target_agent_ids || []) {
+        if (targetAgentId === LOCAL_AGENT_ID) {
+          persistManagedCertificateBundleForAgent(targetAgentId);
+          persistManagedCertificatePolicyForAgent(targetAgentId);
+        }
+        if (AUTO_APPLY) {
+          await applyAgent(targetAgentId);
+        }
+      }
+      sendJson(res, 200, { ok: true, certificate: deleted });
+    } catch (err) {
+      sendJson(res, 400, errorPayload(String(err.message || err)));
+    }
+    return;
+  }
+
+  if (req.method === "POST" && /^\/api\/agents\/[^/]+\/certificates\/\d+\/issue$/.test(urlPath)) {
+    try {
+      const agentId = extractAgentId(urlPath);
+      const agent = getAgentById(agentId);
+      if (!agent) {
+        sendJson(res, 404, errorPayload("agent not found"));
+        return;
+      }
+      const certId = extractTrailingId(urlPath.replace(/\/issue$/, ""));
+      const cert = getManagedCertificatesForAgent(agentId).find((item) => Number(item.id) === certId);
+      if (!cert) {
+        sendJson(res, 404, errorPayload("certificate not found"));
+        return;
+      }
+      const issued =
+        cert.issuer_mode === "local_http01"
+          ? await requestLocalHttp01CertificateById(certId, { agentId })
+          : await issueManagedCertificateById(certId, { bumpRevision: true });
+      sendJson(res, 200, { ok: true, certificate: issued });
+    } catch (err) {
+      sendJson(res, 400, errorPayload(String(err.message || err)));
+    }
+    return;
+  }
+
   if (req.method === "GET" && urlPath === "/api/certificates") {
     sendJson(res, 200, { ok: true, certificates: loadManagedCertificates() });
     return;
@@ -2269,17 +3073,24 @@ async function handleMasterApi(req, res) {
       const certs = loadManagedCertificates();
       const maxId = certs.reduce((max, cert) => Math.max(max, Number(cert.id) || 0), 0);
       const nextCert = normalizeManagedCertificatePayload(body, {}, maxId + 1);
-      if (nextCert.scope === "domain" && nextCert.issuer_mode === "master_cf_dns") {
+      validateManagedCertificateTargets(nextCert);
+      const preparedCert = prepareManagedCertificateForSave(null, nextCert);
+      if (preparedCert.scope === "domain" && preparedCert.issuer_mode === "master_cf_dns") {
         assertManagedCertificateEnabled();
-        validateManagedCertificateTargets(nextCert);
       }
-      nextCert.revision = getNextGlobalRevision();
-      certs.push(nextCert);
+      preparedCert.revision = getNextGlobalRevision();
+      certs.push(preparedCert);
       saveManagedCertificates(certs);
 
-      let savedCert = nextCert;
-      if (nextCert.enabled && nextCert.scope === "domain" && nextCert.issuer_mode === "master_cf_dns") {
-        savedCert = await issueManagedCertificateById(nextCert.id, { bumpRevision: false });
+      let savedCert = preparedCert;
+      if (
+        preparedCert.enabled &&
+        preparedCert.scope === "domain" &&
+        preparedCert.issuer_mode === "master_cf_dns"
+      ) {
+        savedCert = await issueManagedCertificateById(preparedCert.id, { bumpRevision: false });
+      } else {
+        await syncManagedCertificateAgentIds(preparedCert.target_agent_ids || []);
       }
 
       sendJson(res, 201, { ok: true, certificate: savedCert });
@@ -2301,18 +3112,23 @@ async function handleMasterApi(req, res) {
       }
       const previousCert = { ...certs[index] };
       const nextCert = normalizeManagedCertificatePayload(body, certs[index], certId);
-      if (nextCert.scope === "domain" && nextCert.issuer_mode === "master_cf_dns") {
+      validateManagedCertificateTargets(nextCert);
+      const preparedCert = prepareManagedCertificateForSave(previousCert, nextCert);
+      if (preparedCert.scope === "domain" && preparedCert.issuer_mode === "master_cf_dns") {
         assertManagedCertificateEnabled();
-        validateManagedCertificateTargets(nextCert);
       }
-      nextCert.revision = getNextGlobalRevision();
-      certs[index] = nextCert;
+      preparedCert.revision = getNextGlobalRevision();
+      certs[index] = preparedCert;
       saveManagedCertificates(certs);
 
-      let savedCert = nextCert;
-      const affectedAgentIds = getManagedCertificateAffectedAgentIds(previousCert, nextCert);
-      const removedAgentIds = getManagedCertificateRemovedAgentIds(previousCert, nextCert);
-      if (nextCert.enabled && nextCert.scope === "domain" && nextCert.issuer_mode === "master_cf_dns") {
+      let savedCert = preparedCert;
+      const affectedAgentIds = getManagedCertificateAffectedAgentIds(previousCert, preparedCert);
+      const removedAgentIds = getManagedCertificateRemovedAgentIds(previousCert, preparedCert);
+      if (
+        preparedCert.enabled &&
+        preparedCert.scope === "domain" &&
+        preparedCert.issuer_mode === "master_cf_dns"
+      ) {
         savedCert = await issueManagedCertificateById(certId, { bumpRevision: false });
         if (removedAgentIds.length > 0) {
           await syncManagedCertificateAgentIds(removedAgentIds);
@@ -2343,6 +3159,7 @@ async function handleMasterApi(req, res) {
       for (const agentId of deleted.target_agent_ids || []) {
         if (agentId === LOCAL_AGENT_ID) {
           persistManagedCertificateBundleForAgent(agentId);
+          persistManagedCertificatePolicyForAgent(agentId);
         }
         if (AUTO_APPLY) {
           await applyAgent(agentId);
@@ -2358,7 +3175,15 @@ async function handleMasterApi(req, res) {
   if (req.method === "POST" && /^\/api\/certificates\/\d+\/issue$/.test(urlPath)) {
     try {
       const certId = extractTrailingId(urlPath.replace(/\/issue$/, ""));
-      const cert = await issueManagedCertificateById(certId, { bumpRevision: true });
+      const existing = getManagedCertificateById(certId);
+      if (!existing) {
+        sendJson(res, 404, errorPayload("certificate not found"));
+        return;
+      }
+      const cert =
+        existing.issuer_mode === "local_http01"
+          ? await requestLocalHttp01CertificateById(certId)
+          : await issueManagedCertificateById(certId, { bumpRevision: true });
       sendJson(res, 200, { ok: true, certificate: cert });
     } catch (err) {
       sendJson(res, 400, errorPayload(String(err.message || err)));

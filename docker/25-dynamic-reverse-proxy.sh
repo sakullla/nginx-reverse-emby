@@ -12,6 +12,7 @@ DATA_ROOT="/opt/nginx-reverse-emby/panel/data"
 RULES_FILE="${PANEL_RULES_FILE:-$DATA_ROOT/proxy_rules.csv}"
 L4_RULES_JSON="${PANEL_L4_RULES_JSON:-$DATA_ROOT/l4_rules.json}"
 MANAGED_CERTS_SYNC_JSON="${PANEL_MANAGED_CERTS_SYNC_JSON:-$DATA_ROOT/managed_cert_bundle.json}"
+MANAGED_CERTS_POLICY_JSON="${PANEL_MANAGED_CERTS_POLICY_JSON:-$DATA_ROOT/managed_cert_policy.json}"
 ACME_HOME="${ACME_HOME:-$DATA_ROOT/.acme.sh}"
 DIRECT_CERT_DIR="${DIRECT_CERT_DIR:-$DATA_ROOT/certs}"
 DIRECT_CERT_STATE_FILE="${DIRECT_CERT_STATE_FILE:-$DATA_ROOT/.state/active_cert_domains}"
@@ -133,6 +134,57 @@ fail_standalone_if_port_80_in_use() {
     fi
 }
 
+nginx_pid_is_running() {
+    if [ -s /var/run/nginx.pid ]; then
+        nginx_pid=$(cat /var/run/nginx.pid 2>/dev/null || true)
+        [ -n "$nginx_pid" ] && kill -0 "$nginx_pid" 2>/dev/null
+        return $?
+    fi
+    return 1
+}
+
+wait_for_port_release() {
+    port="$1"
+    retries="${2:-50}"
+    while [ "$retries" -gt 0 ]; do
+        if ! port_is_listening "$port"; then
+            return 0
+        fi
+        sleep 0.2
+        retries=$((retries - 1))
+    done
+    return 1
+}
+
+stop_nginx_for_standalone_acme() {
+    cert_domain="$1"
+    ACME_STOPPED_NGINX="0"
+    if ! port_is_listening 80; then
+        return 0
+    fi
+
+    if is_true "$ACME_STANDALONE_STOP_NGINX" && nginx_pid_is_running; then
+        entrypoint_log "Temporarily stopping nginx to issue standalone certificate for $cert_domain"
+        "$NGINX_BIN" -s quit >/dev/null 2>&1 || "$NGINX_BIN" -s stop >/dev/null 2>&1 || true
+        if ! wait_for_port_release 80; then
+            echo "[PROXY] error: failed to stop nginx before standalone issuance for $cert_domain" >&2
+            return 1
+        fi
+        ACME_STOPPED_NGINX="1"
+        return 0
+    fi
+
+    fail_standalone_if_port_80_in_use "$cert_domain"
+}
+
+restore_nginx_after_standalone_acme() {
+    if [ "${ACME_STOPPED_NGINX:-0}" = "1" ]; then
+        entrypoint_log "Starting nginx after standalone certificate issuance"
+        "$NGINX_BIN" >/dev/null 2>&1 || true
+        ACME_STOPPED_NGINX="0"
+    fi
+}
+
 acme_dns_hook_path() {
     [ -n "$ACME_DNS_PROVIDER" ] || return 1
     printf '%s/dnsapi/dns_%s.sh' "$ACME_HOME" "$ACME_DNS_PROVIDER"
@@ -192,6 +244,7 @@ acme_cert_is_issued() {
 
 issue_cert_with_acme() {
     cert_domain="$1"
+    issue_mode="${2:-auto}"
     cert_domain_clean=$(normalize_cert_domain "$cert_domain")
 
     if acme_cert_is_issued "$cert_domain_clean"; then
@@ -201,7 +254,7 @@ issue_cert_with_acme() {
 
     cleanup_stale_acme_record "$cert_domain_clean"
 
-    if [ -n "$ACME_DNS_PROVIDER" ] && ! is_ip_address "$cert_domain_clean"; then
+    if [ "$issue_mode" != "local_http01" ] && [ -n "$ACME_DNS_PROVIDER" ] && ! is_ip_address "$cert_domain_clean"; then
         entrypoint_log "Issuing via DNS: $ACME_DNS_PROVIDER for $cert_domain_clean"
         if "$ACME_SCRIPT" --issue $ACME_COMMON_ARGS --server "$ACME_CA" --dns "dns_$ACME_DNS_PROVIDER" -d "$cert_domain_clean" --keylength ec-256; then
             return 0
@@ -210,7 +263,7 @@ issue_cert_with_acme() {
         cleanup_stale_acme_record "$cert_domain_clean"
         "$ACME_SCRIPT" --issue --force $ACME_COMMON_ARGS --server "$ACME_CA" --dns "dns_$ACME_DNS_PROVIDER" -d "$cert_domain_clean" --keylength ec-256
     else
-        fail_standalone_if_port_80_in_use "$cert_domain_clean"
+        stop_nginx_for_standalone_acme "$cert_domain_clean"
         entrypoint_log "Issuing via Standalone for $cert_domain_clean"
         issue_args="$ACME_COMMON_ARGS --server $ACME_CA --standalone -d $cert_domain_clean --keylength ec-256"
         if is_ip_address "$cert_domain_clean"; then
@@ -220,11 +273,17 @@ issue_cert_with_acme() {
             issue_args="$issue_args --listen-v6"
         fi
         if "$ACME_SCRIPT" --issue $issue_args; then
+            restore_nginx_after_standalone_acme
             return 0
         fi
         entrypoint_log "Initial standalone issuance failed for $cert_domain_clean, retrying with --force after cleanup..."
         cleanup_stale_acme_record "$cert_domain_clean"
-        "$ACME_SCRIPT" --issue --force $issue_args
+        if "$ACME_SCRIPT" --issue --force $issue_args; then
+            restore_nginx_after_standalone_acme
+            return 0
+        fi
+        restore_nginx_after_standalone_acme
+        return 1
     fi
 }
 
@@ -246,10 +305,12 @@ ensure_certificates_for_rules() {
     ensure_acme_script
 
 
-    while IFS= read -r cert_domain || [ -n "$cert_domain" ]; do
+    while IFS='|' read -r issue_mode cert_domain || [ -n "$issue_mode$cert_domain" ]; do
+        issue_mode=$(trim_text "$issue_mode")
         cert_domain=$(trim_text "$cert_domain")
         [ -z "$cert_domain" ] && continue
-        issue_cert_with_acme "$cert_domain"
+        [ -n "$issue_mode" ] || issue_mode="auto"
+        issue_cert_with_acme "$cert_domain" "$issue_mode"
         install_cert_files "$cert_domain"
     done < "$cert_domains_file"
 
@@ -333,17 +394,79 @@ install_synced_certificate() {
     CERT_DOMAIN="$cert_domain" DIRECT_CERT_DIR="$DIRECT_CERT_DIR" MANAGED_CERTS_SYNC_JSON="$MANAGED_CERTS_SYNC_JSON" node -e "
         const fs = require('fs');
         const path = require('path');
-        const domain = process.env.CERT_DOMAIN;
+        const domain = String(process.env.CERT_DOMAIN || '').trim().toLowerCase();
         const bundleFile = process.env.MANAGED_CERTS_SYNC_JSON;
         const certRoot = process.env.DIRECT_CERT_DIR;
         const bundle = JSON.parse(fs.readFileSync(bundleFile, 'utf8'));
-        const item = (Array.isArray(bundle) ? bundle : []).find((entry) => String(entry.domain || '').trim() === domain);
+        const isWildcard = (value) => /^\\*\\.[a-z0-9.-]+$/i.test(String(value || '').trim());
+        const wildcardMatches = (pattern, host) => {
+            const normalizedPattern = String(pattern || '').trim().toLowerCase();
+            const normalizedHost = String(host || '').trim().toLowerCase();
+            if (!isWildcard(normalizedPattern)) return false;
+            const suffix = normalizedPattern.slice(2);
+            if (!normalizedHost.endsWith('.' + suffix)) return false;
+            return normalizedHost.split('.').length === suffix.split('.').length + 1;
+        };
+        const item = (Array.isArray(bundle) ? bundle : []).find((entry) => {
+            const entryDomain = String(entry.domain || '').trim().toLowerCase();
+            return entryDomain === domain || wildcardMatches(entryDomain, domain);
+        });
         if (!item || !item.cert_pem || !item.key_pem) process.exit(1);
         const targetDir = path.join(certRoot, domain);
         fs.mkdirSync(targetDir, { recursive: true });
         fs.writeFileSync(path.join(targetDir, 'cert'), String(item.cert_pem), 'utf8');
         fs.writeFileSync(path.join(targetDir, 'key'), String(item.key_pem), 'utf8');
     " >/dev/null 2>&1
+}
+
+resolve_managed_certificate_mode() {
+    cert_domain="$1"
+    [ -f "$MANAGED_CERTS_POLICY_JSON" ] || { printf 'absent'; return 0; }
+    CERT_DOMAIN="$cert_domain" MANAGED_CERTS_POLICY_JSON="$MANAGED_CERTS_POLICY_JSON" node -e "
+        const fs = require('fs');
+        const domain = String(process.env.CERT_DOMAIN || '').trim().toLowerCase();
+        const policyFile = process.env.MANAGED_CERTS_POLICY_JSON;
+        const isWildcard = (value) => /^\\*\\.[a-z0-9.-]+$/i.test(String(value || '').trim());
+        const wildcardMatches = (pattern, host) => {
+            const normalizedPattern = String(pattern || '').trim().toLowerCase();
+            const normalizedHost = String(host || '').trim().toLowerCase();
+            if (!isWildcard(normalizedPattern)) return false;
+            const suffix = normalizedPattern.slice(2);
+            if (!normalizedHost.endsWith('.' + suffix)) return false;
+            return normalizedHost.split('.').length === suffix.split('.').length + 1;
+        };
+        let policy = [];
+        try {
+            policy = JSON.parse(fs.readFileSync(policyFile, 'utf8'));
+        } catch {
+            process.stdout.write('absent');
+            process.exit(0);
+        }
+        const sorted = (Array.isArray(policy) ? policy : []).slice().sort((left, right) => {
+            const leftWildcard = isWildcard(left && left.domain);
+            const rightWildcard = isWildcard(right && right.domain);
+            if (leftWildcard !== rightWildcard) return leftWildcard ? 1 : -1;
+            return Number(right && right.revision || 0) - Number(left && left.revision || 0);
+        });
+        const item = sorted.find((entry) => {
+            const entryDomain = String(entry.domain || '').trim().toLowerCase();
+            return entryDomain === domain || wildcardMatches(entryDomain, domain);
+        });
+        if (!item) {
+            process.stdout.write('absent');
+            process.exit(0);
+        }
+        if (item.enabled === false) {
+            process.stdout.write('disabled');
+            process.exit(0);
+        }
+        const mode = String(item.issuer_mode || '').trim().toLowerCase();
+        if (mode === 'master_cf_dns' || mode === 'local_http01') {
+            process.stdout.write(mode);
+            process.exit(0);
+        }
+        process.stdout.write('absent');
+    "
 }
 
 generate_l4_configs() {
@@ -545,11 +668,30 @@ if [ -s "$tmp_rules" ]; then
             template=$([ "$proto" = "https" ] && echo "$DIRECT_TLS_TEMPLATE_FILE" || echo "$DIRECT_NO_TLS_TEMPLATE_FILE")
             if [ "$proto" = "https" ]; then
                 echo "$cert_dom" >> "$tmp_active_certs"
-                if ! install_synced_certificate "$cert_dom"; then
-                    echo "$cert_dom" >> "$tmp_issue_certs"
-                else
-                    entrypoint_log "Installed synced certificate for $cert_dom"
-                fi
+                cert_mode=$(resolve_managed_certificate_mode "$cert_dom")
+                case "$cert_mode" in
+                    master_cf_dns)
+                        if ! install_synced_certificate "$cert_dom"; then
+                            echo "[PROXY] error: managed certificate for $cert_dom is configured as master_cf_dns but no synced certificate material was found" >&2
+                            exit 1
+                        fi
+                        entrypoint_log "Installed synced certificate for $cert_dom"
+                        ;;
+                    local_http01)
+                        printf 'local_http01|%s\n' "$cert_dom" >> "$tmp_issue_certs"
+                        ;;
+                    disabled)
+                        echo "[PROXY] error: managed certificate for $cert_dom is disabled; enable the certificate or adjust the HTTPS rule" >&2
+                        exit 1
+                        ;;
+                    *)
+                        if ! install_synced_certificate "$cert_dom"; then
+                            printf 'auto|%s\n' "$cert_dom" >> "$tmp_issue_certs"
+                        else
+                            entrypoint_log "Installed synced certificate for $cert_dom"
+                        fi
+                        ;;
+                esac
             fi
         fi
 
