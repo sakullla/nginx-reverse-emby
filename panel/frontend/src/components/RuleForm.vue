@@ -229,15 +229,14 @@ const handleSubmit = async () => {
 
   try {
     const url = form.value.frontend_url.trim()
-    const autoTags = computeHttpAutoTags(url)
-    const userTags = form.value.tags.filter(t => !isHttpAutoTag(t))
-    const finalTags = [...autoTags, ...userTags]
+    // Ensure auto-tags are up-to-date before submit
+    updateAutoTags()
 
     const params = [
       props.initialData?.id,
       url,
       form.value.backend_url.trim(),
-      finalTags,
+      form.value.tags,
       form.value.enabled,
       form.value.proxy_redirect
     ]
