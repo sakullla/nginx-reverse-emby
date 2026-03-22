@@ -5,7 +5,12 @@
       "mcp__acp__Write",
       "mcp__acp__Edit",
       "mcp__idea__read_file",
-      "mcp__idea__list_directory_tree"
+      "mcp__idea__list_directory_tree",
+      "mcp__chrome-devtools__navigate_page",
+      "mcp__chrome-devtools__take_snapshot",
+      "mcp__chrome-devtools__click",
+      "mcp__chrome-devtools__evaluate_script",
+      "mcp__chrome-devtools__take_screenshot"
     ]
   }
 }

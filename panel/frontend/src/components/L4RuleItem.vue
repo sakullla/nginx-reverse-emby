@@ -76,14 +76,25 @@
           </svg>
         </div>
         <div class="rule-card__endpoint">
-          <div class="rule-card__endpoint-label">上游目标</div>
+          <div class="rule-card__endpoint-label">
+            上游目标
+            <span v-if="hasMultipleBackends" class="rule-card__backend-badge">
+              {{ backendCount }}个后端
+            </span>
+            <span class="rule-card__lb-badge" :title="loadBalancingTitle">
+              {{ loadBalancingLabel }}
+            </span>
+          </div>
           <div class="rule-card__endpoint-value">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <circle cx="12" cy="12" r="10"/>
               <line x1="2" y1="12" x2="22" y2="12"/>
               <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
             </svg>
-            <code>{{ rule.upstream_host }}:{{ rule.upstream_port }}</code>
+            <code v-if="!hasMultipleBackends">{{ primaryBackend }}</code>
+            <code v-else class="rule-card__backends-summary" :title="backendsTooltip">
+              {{ primaryBackend }} +{{ backendCount - 1 }}
+            </code>
           </div>
         </div>
       </div>
@@ -117,6 +128,49 @@ const statusLabel = computed(() => ({
   active: '已启用',
   disabled: '已停用'
 }[effectiveStatus.value]))
+
+// Multi-backend support
+const backends = computed(() => {
+  if (Array.isArray(props.rule.backends) && props.rule.backends.length > 0) {
+    return props.rule.backends
+  }
+  // Fallback to legacy single upstream
+  if (props.rule.upstream_host && props.rule.upstream_port) {
+    return [{ host: props.rule.upstream_host, port: props.rule.upstream_port, weight: 1 }]
+  }
+  return []
+})
+
+const backendCount = computed(() => backends.value.length)
+const hasMultipleBackends = computed(() => backendCount.value > 1)
+const primaryBackend = computed(() => {
+  const b = backends.value[0]
+  return b ? `${b.host}:${b.port}` : '-'
+})
+
+const backendsTooltip = computed(() => {
+  return backends.value.map((b, i) => `${i + 1}. ${b.host}:${b.port}${b.weight > 1 ? ` (权重${b.weight})` : ''}`).join('\n')
+})
+
+// Load balancing
+const lbStrategy = computed(() => props.rule.load_balancing?.strategy || 'round_robin')
+
+const loadBalancingLabel = computed(() => ({
+  round_robin: 'RR',
+  least_conn: 'LC',
+  random: 'RND',
+  hash: 'HASH'
+}[lbStrategy.value] || 'RR'))
+
+const loadBalancingTitle = computed(() => {
+  const titles = {
+    round_robin: '轮询 (Round Robin)',
+    least_conn: '最少连接 (Least Connections)',
+    random: '随机 (Random)',
+    hash: '哈希 (Hash)'
+  }
+  return titles[lbStrategy.value] || '轮询'
+})
 
 const toggleStatus = async () => {
   try {
@@ -371,6 +425,32 @@ const toggleStatus = async () => {
   color: var(--color-primary);
   border-radius: var(--radius-full);
   border: 1px solid var(--color-border-default);
+}
+
+/* Backend badges */
+.rule-card__backend-badge {
+  font-size: 9px;
+  font-weight: var(--font-bold);
+  padding: 1px 5px;
+  background: var(--color-success-50);
+  color: var(--color-success);
+  border-radius: var(--radius-sm);
+  margin-left: var(--space-2);
+}
+
+.rule-card__lb-badge {
+  font-size: 9px;
+  font-weight: var(--font-bold);
+  padding: 1px 5px;
+  background: var(--color-primary-subtle);
+  color: var(--color-primary);
+  border-radius: var(--radius-sm);
+  margin-left: var(--space-2);
+  cursor: help;
+}
+
+.rule-card__backends-summary {
+  cursor: help;
 }
 
 @keyframes pulse {

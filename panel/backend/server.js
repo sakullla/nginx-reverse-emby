@@ -520,6 +520,33 @@ function normalizeL4RuleRevision(value, fallback = 0) {
   return normalizeRuleRevision(value, fallback);
 }
 
+function normalizeL4Backends(backends, fallbackUpstreamHost, fallbackUpstreamPort) {
+  const validBackends = [];
+  const arr = Array.isArray(backends) ? backends : [];
+  for (const b of arr) {
+    const host = normalizeHost(b?.host || b?.address || "");
+    const port = Number(b?.port) || Number(fallbackUpstreamPort) || 0;
+    if (!host || !port) continue;
+    const weight = Number(b?.weight) || 1;
+    const resolve = b?.resolve === true || String(b?.resolve).toLowerCase() === "true";
+    validBackends.push({ host, port, weight, resolve });
+  }
+  return validBackends;
+}
+
+function normalizeL4LoadBalancing(lb, defaultStrategy = "round_robin") {
+  const strategy = String(lb?.strategy !== undefined ? lb.strategy : defaultStrategy).toLowerCase();
+  const validStrategies = ["round_robin", "least_conn", "random", "hash"];
+  const normalizedStrategy = validStrategies.includes(strategy) ? strategy : "round_robin";
+  const hashKey = normalizedStrategy === "hash" ? String(lb?.hash_key || "$remote_addr") : undefined;
+  const zoneSize = String(lb?.zone_size || "64k");
+  return {
+    strategy: normalizedStrategy,
+    hash_key: hashKey,
+    zone_size: zoneSize,
+  };
+}
+
 function normalizeL4RulePayload(body, fallback = {}, suggestedId = null) {
   const protocol = String(
     body.protocol !== undefined ? body.protocol : fallback.protocol || "tcp",
@@ -529,15 +556,8 @@ function normalizeL4RulePayload(body, fallback = {}, suggestedId = null) {
   const listenHost = normalizeHost(
     body.listen_host !== undefined ? body.listen_host : fallback.listen_host || "0.0.0.0",
   );
-  const upstreamHost = normalizeHost(
-    body.upstream_host !== undefined ? body.upstream_host : fallback.upstream_host,
-  );
   const listenPort =
     body.listen_port !== undefined ? Number(body.listen_port) : Number(fallback.listen_port);
-  const upstreamPort =
-    body.upstream_port !== undefined
-      ? Number(body.upstream_port)
-      : Number(fallback.upstream_port);
   const name = String(body.name !== undefined ? body.name : fallback.name || "").trim();
 
   if (!["tcp", "udp"].includes(protocol)) {
@@ -546,11 +566,8 @@ function normalizeL4RulePayload(body, fallback = {}, suggestedId = null) {
   if (!validateNetworkHost(listenHost)) {
     throw new Error("listen_host must be a valid host or IP");
   }
-  if (!validateNetworkHost(upstreamHost)) {
-    throw new Error("upstream_host must be a valid host or IP");
-  }
-  if (!validatePort(listenPort) || !validatePort(upstreamPort)) {
-    throw new Error("listen_port and upstream_port must be valid ports");
+  if (!validatePort(listenPort)) {
+    throw new Error("listen_port must be a valid port");
   }
 
   const parsedId =
@@ -559,6 +576,44 @@ function normalizeL4RulePayload(body, fallback = {}, suggestedId = null) {
       : fallback.id !== undefined
         ? Number(fallback.id)
         : Number(suggestedId);
+
+  // Support both legacy single upstream and new backends array
+  const legacyUpstreamHost = normalizeHost(
+    body.upstream_host !== undefined ? body.upstream_host : fallback.upstream_host,
+  );
+  const legacyUpstreamPort =
+    body.upstream_port !== undefined
+      ? Number(body.upstream_port)
+      : Number(fallback.upstream_port);
+
+  // Normalize backends array (takes precedence if provided)
+  const hasBackends = Array.isArray(body?.backends) && body.backends.length > 0;
+  const hasFallbackBackends = Array.isArray(fallback?.backends) && fallback.backends.length > 0;
+  const backends = hasBackends
+    ? normalizeL4Backends(body.backends, legacyUpstreamHost, legacyUpstreamPort)
+    : hasFallbackBackends
+      ? normalizeL4Backends(fallback.backends, legacyUpstreamHost, legacyUpstreamPort)
+      : [];
+
+  // If no backends array provided, use legacy single upstream as single backend
+  if (backends.length === 0 && legacyUpstreamHost && legacyUpstreamPort) {
+    backends.push({
+      host: legacyUpstreamHost,
+      port: legacyUpstreamPort,
+      weight: 1,
+      resolve: false,
+    });
+  }
+
+  if (backends.length === 0) {
+    throw new Error("at least one valid backend (upstream_host:upstream_port or backends) is required");
+  }
+
+  // Normalize load balancing settings
+  const loadBalancing = normalizeL4LoadBalancing(
+    body?.load_balancing !== undefined ? body.load_balancing : fallback?.load_balancing,
+    "round_robin",
+  );
 
   return {
     id:
@@ -569,8 +624,12 @@ function normalizeL4RulePayload(body, fallback = {}, suggestedId = null) {
     protocol,
     listen_host: listenHost,
     listen_port: listenPort,
-    upstream_host: upstreamHost,
-    upstream_port: upstreamPort,
+    // Keep legacy fields for backward compatibility
+    upstream_host: backends[0]?.host || legacyUpstreamHost,
+    upstream_port: backends[0]?.port || legacyUpstreamPort,
+    // New multi-backend fields
+    backends,
+    load_balancing: loadBalancing,
     enabled:
       body.enabled !== undefined ? !!body.enabled : fallback.enabled !== false,
     tags:

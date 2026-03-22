@@ -358,12 +358,6 @@ async function issue(cert) {
   display: flex;
   align-items: center;
   gap: var(--space-1);
-  opacity: 0;
-  transition: opacity var(--duration-fast) var(--ease-default);
-}
-
-.cert-card:hover .cert-card__actions {
-  opacity: 1;
 }
 
 .cert-card__action {
@@ -416,8 +410,8 @@ async function issue(cert) {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  flex: 1;
   min-width: 0;
+  max-width: 100%;
   padding: var(--space-2) var(--space-3);
   background: var(--color-bg-subtle);
   border-radius: var(--radius-lg);
