@@ -1,7 +1,7 @@
 <template>
   <Teleport to="body">
     <Transition name="modal">
-      <div v-if="modelValue" class="modal-backdrop">
+      <div v-if="modelValue" class="modal-backdrop" @keyup.esc="close">
         <div class="modal" :class="{ 'modal--lg': large }">
           <div class="modal__header">
             <div>
