@@ -777,6 +777,94 @@ function normalizeManagedCertificateAcmeInfo(value = {}) {
   };
 }
 
+function normalizeManagedCertificateReportStatus(value) {
+  const status = String(value || "").trim().toLowerCase();
+  return ["pending", "active", "error"].includes(status) ? status : "";
+}
+
+function normalizeManagedCertificateAgentReport(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    status: normalizeManagedCertificateReportStatus(source.status),
+    last_issue_at:
+      source.last_issue_at !== undefined && source.last_issue_at !== null && String(source.last_issue_at).trim()
+        ? String(source.last_issue_at)
+        : null,
+    last_error: String(source.last_error || ""),
+    material_hash: String(source.material_hash || ""),
+    acme_info: normalizeManagedCertificateAcmeInfo(source.acme_info || {}),
+    updated_at:
+      source.updated_at !== undefined && source.updated_at !== null && String(source.updated_at).trim()
+        ? String(source.updated_at)
+        : null,
+  };
+}
+
+function normalizeManagedCertificateAgentReports(value = {}, targetAgentIds = []) {
+  const source =
+    value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const allowedAgentIds = new Set(
+    (Array.isArray(targetAgentIds) ? targetAgentIds : [])
+      .map((item) => String(item || "").trim())
+      .filter(Boolean),
+  );
+  const reports = {};
+  for (const [agentIdRaw, report] of Object.entries(source)) {
+    const agentId = String(agentIdRaw || "").trim();
+    if (!agentId) continue;
+    if (allowedAgentIds.size > 0 && !allowedAgentIds.has(agentId)) continue;
+    reports[agentId] = normalizeManagedCertificateAgentReport(report);
+  }
+  return reports;
+}
+
+function getManagedCertificateAgentReport(cert, agentId) {
+  const normalizedAgentId = String(agentId || "").trim();
+  if (!normalizedAgentId) return null;
+  const reports =
+    cert?.agent_reports && typeof cert.agent_reports === "object"
+      ? cert.agent_reports
+      : null;
+  if (!reports || Array.isArray(reports)) return null;
+  return reports[normalizedAgentId]
+    ? normalizeManagedCertificateAgentReport(reports[normalizedAgentId])
+    : null;
+}
+
+function buildManagedCertificateViewForAgent(cert, agentId) {
+  const report = getManagedCertificateAgentReport(cert, agentId);
+  if (!report) return cert;
+
+  return {
+    ...cert,
+    status: report.status || cert.status,
+    last_issue_at: report.last_issue_at,
+    last_error: report.last_error,
+    material_hash: report.material_hash,
+    acme_info: normalizeManagedCertificateAcmeInfo(report.acme_info || {}),
+  };
+}
+
+function normalizeAgentManagedCertificateReportPayload(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  return {
+    id: Number.isFinite(Number(source.id)) && Number(source.id) > 0 ? Number(source.id) : null,
+    domain: normalizeHost(source.domain || "").toLowerCase(),
+    status: normalizeManagedCertificateReportStatus(source.status),
+    last_issue_at:
+      source.last_issue_at !== undefined && source.last_issue_at !== null && String(source.last_issue_at).trim()
+        ? String(source.last_issue_at)
+        : null,
+    last_error: String(source.last_error || ""),
+    material_hash: String(source.material_hash || ""),
+    acme_info: normalizeManagedCertificateAcmeInfo(source.acme_info || {}),
+    updated_at:
+      source.updated_at !== undefined && source.updated_at !== null && String(source.updated_at).trim()
+        ? String(source.updated_at)
+        : null,
+  };
+}
+
 function normalizeManagedCertificatePayload(body, fallback = {}, suggestedId = null) {
   const domain = normalizeHost(
     body.domain !== undefined ? body.domain : fallback.domain,
@@ -850,6 +938,10 @@ function normalizeManagedCertificatePayload(body, fallback = {}, suggestedId = n
       body.material_hash !== undefined
         ? String(body.material_hash || "")
         : String(fallback.material_hash || ""),
+    agent_reports:
+      body.agent_reports !== undefined
+        ? normalizeManagedCertificateAgentReports(body.agent_reports, targetAgentIds)
+        : normalizeManagedCertificateAgentReports(fallback.agent_reports || {}, targetAgentIds),
     acme_info:
       body.acme_info !== undefined
         ? normalizeManagedCertificateAcmeInfo(body.acme_info)
@@ -883,9 +975,11 @@ function getManagedCertificateById(certId) {
 }
 
 function getManagedCertificatesForAgent(agentId) {
-  return loadManagedCertificates().filter((cert) =>
-    Array.isArray(cert.target_agent_ids) && cert.target_agent_ids.includes(agentId),
-  );
+  return loadManagedCertificates()
+    .filter((cert) =>
+      Array.isArray(cert.target_agent_ids) && cert.target_agent_ids.includes(agentId),
+    )
+    .map((cert) => buildManagedCertificateViewForAgent(cert, agentId));
 }
 
 function compareManagedCertificateMatchPriority(left, right, agentId) {
@@ -1229,19 +1323,22 @@ function buildManagedCertificateBundleForAgent(agentId) {
 function buildManagedCertificatePolicyForAgent(agentId) {
   return loadManagedCertificates()
     .filter((cert) => Array.isArray(cert.target_agent_ids) && cert.target_agent_ids.includes(agentId))
-    .map((cert) => ({
+    .map((cert) => {
+      const view = buildManagedCertificateViewForAgent(cert, agentId);
+      return {
       id: cert.id,
       domain: cert.domain,
       enabled: cert.enabled !== false,
       scope: cert.scope,
       issuer_mode: cert.issuer_mode,
-      status: cert.status,
-      last_issue_at: cert.last_issue_at || null,
-      last_error: cert.last_error || "",
-      acme_info: normalizeManagedCertificateAcmeInfo(cert.acme_info || {}),
+      status: view.status,
+      last_issue_at: view.last_issue_at || null,
+      last_error: view.last_error || "",
+      acme_info: normalizeManagedCertificateAcmeInfo(view.acme_info || {}),
       tags: normalizeTags(cert.tags || []),
       revision: normalizeRevision(cert.revision),
-    }));
+      };
+    });
 }
 
 function getManagedCertBundleFileForAgent(agentId) {
@@ -1712,11 +1809,110 @@ function hasMatchingHttpsRuleForCertificate(agentId, cert) {
   return hasMatchingHttpsRuleForCertificateInRules(loadRulesForAgent(agentId), cert);
 }
 
-function reconcileLocalHttp01CertificatesForAgent(agent) {
+function updateManagedCertificateAgentReportSnapshot(cert, agentId, snapshot) {
+  const normalizedAgentId = String(agentId || "").trim();
+  if (!normalizedAgentId) return cert;
+  const nextSnapshot = normalizeManagedCertificateAgentReport(snapshot || {});
+  return {
+    ...cert,
+    agent_reports: {
+      ...(cert?.agent_reports && typeof cert.agent_reports === "object" && !Array.isArray(cert.agent_reports)
+        ? cert.agent_reports
+        : {}),
+      [normalizedAgentId]: nextSnapshot,
+    },
+  };
+}
+
+function findManagedCertificateReportForAgent(cert, reportsById, reportsByDomain) {
+  const certId = Number(cert?.id);
+  if (Number.isFinite(certId) && reportsById.has(certId)) {
+    return reportsById.get(certId);
+  }
+  const domainKey = normalizeHost(cert?.domain || "").toLowerCase();
+  return domainKey ? reportsByDomain.get(domainKey) || null : null;
+}
+
+function applyAgentManagedCertificateReports(agent, reports) {
+  if (!agent || !agent.id || !Array.isArray(reports) || !reports.length) {
+    return new Set();
+  }
+
+  const reportsById = new Map();
+  const reportsByDomain = new Map();
+  for (const report of reports) {
+    if (!report) continue;
+    if (Number.isFinite(Number(report.id)) && Number(report.id) > 0) {
+      reportsById.set(Number(report.id), report);
+    }
+    const domain = normalizeHost(report.domain || "").toLowerCase();
+    if (domain) {
+      reportsByDomain.set(domain, report);
+    }
+  }
+
+  const certs = loadManagedCertificates();
+  const updatedCertIds = new Set();
+  let changed = false;
+  const nextCerts = certs.map((cert) => {
+    if (
+      !cert ||
+      cert.issuer_mode !== "local_http01" ||
+      !Array.isArray(cert.target_agent_ids) ||
+      !cert.target_agent_ids.includes(agent.id)
+    ) {
+      return cert;
+    }
+
+    const report = findManagedCertificateReportForAgent(cert, reportsById, reportsByDomain);
+    if (!report) return cert;
+
+    updatedCertIds.add(Number(cert.id));
+
+    let nextCert = updateManagedCertificateAgentReportSnapshot(cert, agent.id, {
+      status: report.status,
+      last_issue_at: report.last_issue_at,
+      last_error: report.last_error,
+      material_hash: report.material_hash,
+      acme_info: report.acme_info,
+      updated_at: report.updated_at || nowIso(),
+    });
+
+    if ((cert.target_agent_ids || []).length === 1 && cert.target_agent_ids[0] === agent.id) {
+      nextCert = {
+        ...nextCert,
+        status: report.status || cert.status,
+        last_issue_at: report.last_issue_at,
+        last_error: report.last_error,
+        material_hash: report.material_hash,
+        acme_info: normalizeManagedCertificateAcmeInfo(report.acme_info || {}),
+      };
+    }
+
+    if (JSON.stringify(nextCert) === JSON.stringify(cert)) {
+      return cert;
+    }
+
+    changed = true;
+    return nextCert;
+  });
+
+  if (changed) {
+    saveManagedCertificates(nextCerts);
+  }
+
+  return updatedCertIds;
+}
+
+function reconcileLocalHttp01CertificatesForAgent(agent, options = {}) {
   if (!agent || !agent.id) return;
   if (!agentHasCapability(agent, "cert_install") || !agentHasCapability(agent, "local_acme")) {
     return;
   }
+
+  const reportedCertIds = new Set(
+    Array.isArray(options.reported_cert_ids) ? options.reported_cert_ids : [],
+  );
 
   const applyRevision = normalizeRevision(agent.last_apply_revision);
   if (applyRevision <= 0) return;
@@ -1734,6 +1930,7 @@ function reconcileLocalHttp01CertificatesForAgent(agent) {
       cert.issuer_mode !== "local_http01" ||
       !Array.isArray(cert.target_agent_ids) ||
       !cert.target_agent_ids.includes(agent.id) ||
+      reportedCertIds.has(Number(cert.id)) ||
       normalizeRevision(cert.revision) > applyRevision ||
       !hasMatchingHttpsRuleForCertificate(agent.id, cert)
     ) {
@@ -1741,14 +1938,25 @@ function reconcileLocalHttp01CertificatesForAgent(agent) {
     }
 
     if (agent.last_apply_status === "success") {
-      if (cert.status === "active" && !cert.last_error) return cert;
-      changed = true;
-      return {
-        ...cert,
+      const nextWithReport = updateManagedCertificateAgentReportSnapshot(cert, agent.id, {
+        status: "active",
+        last_issue_at: appliedAt,
+        last_error: "",
+        material_hash: cert.material_hash,
+        acme_info: cert.acme_info,
+        updated_at: appliedAt,
+      });
+      const nextCert = {
+        ...nextWithReport,
         status: "active",
         last_issue_at: appliedAt,
         last_error: "",
       };
+      if (JSON.stringify(nextCert) === JSON.stringify(cert)) {
+        return cert;
+      }
+      changed = true;
+      return nextCert;
     }
 
     if (cert.status !== "pending") {
@@ -1756,11 +1964,18 @@ function reconcileLocalHttp01CertificatesForAgent(agent) {
     }
 
     changed = true;
-    return {
+    return updateManagedCertificateAgentReportSnapshot({
       ...cert,
       status: "error",
       last_error: String(agent.last_apply_message || "agent apply failed"),
-    };
+    }, agent.id, {
+      status: "error",
+      last_issue_at: cert.last_issue_at || null,
+      last_error: String(agent.last_apply_message || "agent apply failed"),
+      material_hash: cert.material_hash,
+      acme_info: cert.acme_info,
+      updated_at: appliedAt,
+    });
   });
 
   if (changed) {
@@ -1898,10 +2113,23 @@ async function requestLocalHttp01CertificateById(certId, options = {}) {
   }
 
   cert = updateManagedCertificate(certId, (current) => ({
-    ...current,
-    status: "pending",
-    last_error: "",
-    revision: getNextGlobalRevision(),
+    ...requestedAgentIds.reduce(
+      (next, targetAgentId) =>
+        updateManagedCertificateAgentReportSnapshot(next, targetAgentId, {
+          status: "pending",
+          last_issue_at: getManagedCertificateAgentReport(current, targetAgentId)?.last_issue_at || null,
+          last_error: "",
+          material_hash: "",
+          acme_info: {},
+          updated_at: nowIso(),
+        }),
+      {
+        ...current,
+        status: "pending",
+        last_error: "",
+        revision: getNextGlobalRevision(),
+      },
+    ),
   }));
 
   for (const targetAgentId of requestedAgentIds) {
@@ -1909,7 +2137,14 @@ async function requestLocalHttp01CertificateById(certId, options = {}) {
       await applyAgent(targetAgentId);
     } catch (err) {
       cert = updateManagedCertificate(certId, (current) => ({
-        ...current,
+        ...updateManagedCertificateAgentReportSnapshot(current, targetAgentId, {
+          status: "error",
+          last_issue_at: getManagedCertificateAgentReport(current, targetAgentId)?.last_issue_at || null,
+          last_error: String(err.message || err),
+          material_hash: getManagedCertificateAgentReport(current, targetAgentId)?.material_hash || "",
+          acme_info: getManagedCertificateAgentReport(current, targetAgentId)?.acme_info || {},
+          updated_at: nowIso(),
+        }),
         status: "error",
         last_error: String(err.message || err),
       }));
@@ -1919,7 +2154,14 @@ async function requestLocalHttp01CertificateById(certId, options = {}) {
 
   if (requestedAgentIds.includes(LOCAL_AGENT_ID)) {
     cert = updateManagedCertificate(certId, (current) => ({
-      ...current,
+      ...updateManagedCertificateAgentReportSnapshot(current, LOCAL_AGENT_ID, {
+        status: "active",
+        last_issue_at: nowIso(),
+        last_error: "",
+        material_hash: String(current.material_hash || ""),
+        acme_info: current.acme_info || {},
+        updated_at: nowIso(),
+      }),
       status: "active",
       last_issue_at: nowIso(),
       last_error: "",
@@ -2576,7 +2818,15 @@ async function handleMasterApi(req, res) {
 
       agents[index] = agent;
       saveRegisteredAgents(agents);
-      reconcileLocalHttp01CertificatesForAgent(agent);
+      const managedCertificateReports = Array.isArray(body.managed_certificate_reports)
+        ? body.managed_certificate_reports
+            .map((report) => normalizeAgentManagedCertificateReportPayload(report))
+            .filter((report) => report.id || report.domain)
+        : [];
+      const reportedCertIds = applyAgentManagedCertificateReports(agent, managedCertificateReports);
+      reconcileLocalHttp01CertificatesForAgent(agent, {
+        reported_cert_ids: [...reportedCertIds],
+      });
       const hasRevisionChange = previous.current_revision !== agent.current_revision;
       const hasApplyStatusChange =
         previous.last_apply_revision !== agent.last_apply_revision ||
