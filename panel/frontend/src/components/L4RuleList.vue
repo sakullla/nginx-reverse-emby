@@ -32,11 +32,16 @@
         :rule="rule"
         @edit="handleEdit"
         @delete="handleDelete"
+        @copy="handleCopy"
       />
     </div>
 
     <BaseModal v-model="showEditModal" title="编辑 L4 规则" :subtitle="editingRule?.name">
       <L4RuleForm v-if="editingRule" :initial-data="editingRule" @success="showEditModal = false" />
+    </BaseModal>
+
+    <BaseModal v-model="showCopyModal" title="复制 L4 规则" :subtitle="copyingRule?.name">
+      <L4RuleForm v-if="copyingRule" :initial-data="copyingRule" @success="showCopyModal = false" />
     </BaseModal>
 
     <BaseModal v-model="showDeleteModal" title="确认删除" show-footer @confirm="confirmDelete">
@@ -59,10 +64,18 @@ const editingRule = ref(null)
 const deletingRule = ref(null)
 const showEditModal = ref(false)
 const showDeleteModal = ref(false)
+const copyingRule = ref(null)
+const showCopyModal = ref(false)
 
 function handleEdit(rule) {
   editingRule.value = rule
   showEditModal.value = true
+}
+
+function handleCopy(rule) {
+  const { id, ...copyData } = rule
+  copyingRule.value = copyData
+  showCopyModal.value = true
 }
 
 function handleDelete(rule) {

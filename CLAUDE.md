@@ -19,7 +19,7 @@ Nginx-Reverse-Emby is an automated reverse proxy solution designed for Emby, Jel
 1. **Frontend Panel** (`panel/frontend/`)
    - Vue 3 SPA with component-based architecture
    - Pinia store (`src/stores/rules.js`) manages proxy rules and authentication state
-   - Components in `src/components/`: RuleList, RuleForm, RuleItem, TokenAuth, base components
+   - Components in `src/components/`: RuleList, RuleForm, RuleItem, L4RuleList, L4RuleForm, CertificateList, TokenConfig
    - API client in `src/api/index.js` communicates with backend via REST
 
 2. **Backend Server** (`panel/backend/server.js`)
@@ -47,10 +47,17 @@ User → Frontend Panel → Backend API → Rules JSON → 25-dynamic-reverse-pr
 - **`direct` mode** (default): Container directly handles ports 80/443 and SSL termination
 - **`front_proxy` mode**: Container only does internal forwarding; external proxy handles SSL
 
+### Master/Agent Architecture
+
+- **Master**: Runs complete panel and backend, manages rules and config distribution
+- **Agent**: Lightweight node running on target hosts, requires only Node.js 18+ and Nginx
+- **NAT Agent**: Behind NAT/firewall, polls Master via heartbeat to pull configs (no inbound ports needed)
+
 ### Key Directories
 
 - `/opt/nginx-reverse-emby/panel/data`: Persistent data (rules, certs, acme.sh state)
 - `/etc/nginx/conf.d/dynamic`: Generated nginx configs for each proxy rule
+- `/etc/nginx/stream-conf.d/dynamic`: Generated nginx configs for L4 rules
 - `/etc/nginx/templates`: Nginx config templates
 
 ## Common Development Commands
@@ -134,28 +141,20 @@ cat /etc/nginx/conf.d/dynamic/rule_1.conf
 
 ## Important Implementation Details
 
-### Rule Format
-
-Proxy rules follow the format: `frontend_url,backend_url`
-
-Examples:
-- `https://emby.example.com,http://192.168.1.10:8096` (triggers SSL)
-- `http://files.example.com:81,http://10.0.0.5:8080` (custom port)
-- `https://jellyfin.me.com,http://[2001:db8::1]:8096` (IPv6 backend)
-
 ### SSL Certificate Management
 
 - Certificates managed by `acme.sh` in `/opt/nginx-reverse-emby/panel/data/.acme.sh`
 - Supports HTTP-01 and DNS-01 validation (via DNS API providers like Cloudflare)
 - Auto-renewal configured via cron in `30-acme-renew.sh`
 - Certificate state tracked in `.state/active_cert_domains`
+- Managed certificates: centralized cert management across agents (requires Cloudflare DNS API)
 
 ### Authentication Flow
 
 1. Frontend checks for token in localStorage (`panel_token`)
 2. All API requests include `X-Panel-Token` header
 3. Backend validates token against `API_TOKEN` environment variable
-4. If token missing or invalid, frontend shows TokenAuth component
+4. If token missing or invalid, frontend shows TokenConfig component
 
 ### Config Generation Process
 
@@ -167,18 +166,25 @@ The `25-dynamic-reverse-proxy.sh` script:
 5. Runs `nginx -t` to validate
 6. Executes `nginx -s reload` if validation passes
 
+### L4 (TCP/UDP) Proxy Rules
+
+- Stored in `l4_rules.json`
+- Generated configs placed in `/etc/nginx/stream-conf.d/dynamic/`
+- Supports TCP and UDP protocols
+- Requires nginx stream module
+
 ## Debugging Tips
 
 ### Frontend Issues
 
 - Check browser console for API errors
 - Verify token is set: `localStorage.getItem('panel_token')`
-- Check API endpoint: default is `/api` (proxied by nginx to backend)
+- Check API endpoint: default is `/panel-api` (proxied by nginx to backend)
 
 ### Backend Issues
 
-- Check if server is running: `curl http://127.0.0.1:18081/api/rules`
-- Verify token: `curl -H "X-Panel-Token: your-token" http://127.0.0.1:18081/api/rules`
+- Check if server is running: `curl http://127.0.0.1:18081/panel-api/rules`
+- Verify token: `curl -H "X-Panel-Token: your-token" http://127.0.0.1:18081/panel-api/rules`
 - Check backend logs in Docker: `docker compose logs nginx-reverse-emby | grep server.js`
 
 ### Nginx Issues
@@ -195,21 +201,41 @@ The `25-dynamic-reverse-proxy.sh` script:
 - For DNS API: ensure provider credentials are set (e.g., `CF_Token`, `CF_Account_ID`)
 - Manual cert request: `$ACME_HOME/acme.sh --issue -d example.com --standalone`
 
+### Agent Issues
+
+- Check agent heartbeat: agents must poll Master within `AGENT_HEARTBEAT_TIMEOUT_MS` (default 90s)
+- NAT agents: verify they can reach Master URL
+- Check agent logs: `journalctl -u light-agent -f` (if using systemd)
+- Verify agent registration: check `agents.json` on Master
+
 ## Project-Specific Conventions
 
 - All user-facing text in Chinese (frontend, logs, error messages)
 - Backend uses CommonJS (`require`), frontend uses ES modules (`import`)
 - Frontend components use Composition API (`<script setup>`)
-- Shell scripts use POSIX-compliant syntax (no bashisms)
-- Environment variables prefixed by component: `PANEL_*`, `ACME_*`, `PROXY_*`
+- Shell scripts use POSIX-compliant syntax (no bashisms) except `scripts/join-agent.sh` which is Bash-specific
+- Environment variables prefixed by component: `PANEL_*`, `ACME_*`, `PROXY_*`, `MASTER_*`, `AGENT_*`
 - Data persistence: everything under `/opt/nginx-reverse-emby/panel/data`
+- Frontend: 2-space indentation, single quotes, no semicolons
+- Backend: semicolons, defensive error handling
+- Components: `PascalCase.vue`, JS modules: `camelCase`
+- Commit style: Conventional Commits (e.g., `feat(panel):`, `fix(agent):`, `docs:`)
 
 ## Key Environment Variables
 
 - `API_TOKEN`: Panel authentication token (required in production)
 - `PROXY_DEPLOY_MODE`: `direct` or `front_proxy`
 - `PANEL_PORT`: Web panel port (default: 8080)
+- `PANEL_ROLE`: Node role - `master` or `agent`
 - `PANEL_AUTO_APPLY`: Auto-apply config changes (default: 1)
 - `ACME_DNS_PROVIDER`: DNS provider for certificate validation (e.g., `cf`)
 - `ACME_EMAIL`: Email for Let's Encrypt notifications
 - `ACME_CA`: Certificate authority (default: `letsencrypt`)
+- `CF_Token`: Cloudflare API Token (for DNS validation)
+- `CF_Account_ID`: Cloudflare Account ID (for DNS validation)
+- `MASTER_REGISTER_TOKEN`: Agent registration token
+- `MASTER_LOCAL_AGENT_NAME`: Master local node display name
+- `MASTER_LOCAL_AGENT_TAGS`: Master local node tags
+- `AGENT_NAME`: Agent node name
+- `AGENT_TAGS`: Agent node tags (comma-separated)
+- `AGENT_CAPABILITIES`: Agent capabilities (default: `http_rules,local_acme,cert_install,l4`)

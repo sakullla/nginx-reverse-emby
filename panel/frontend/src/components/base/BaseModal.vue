@@ -1,8 +1,8 @@
 <template>
   <Teleport to="body">
     <Transition name="modal">
-      <div v-if="modelValue" class="modal-backdrop" @click.self="close">
-        <div class="modal" :class="{ 'modal--lg': large }">
+      <div v-if="modelValue" class="modal-backdrop">
+        <div class="modal" :class="{ 'modal--lg': large }" tabindex="-1" ref="modalRef">
           <div class="modal__header">
             <div>
               <h3 class="modal__title">{{ title }}</h3>
@@ -31,7 +31,9 @@
 </template>
 
 <script setup>
-defineProps({
+import { ref, watch, onUnmounted } from 'vue'
+
+const props = defineProps({
   modelValue: { type: Boolean, required: true },
   title: { type: String, required: true },
   subtitle: { type: String, default: '' },
@@ -40,6 +42,7 @@ defineProps({
 })
 
 const emit = defineEmits(['update:modelValue', 'confirm'])
+const modalRef = ref(null)
 
 const close = () => {
   emit('update:modelValue', false)
@@ -48,6 +51,29 @@ const close = () => {
 const confirm = () => {
   emit('confirm')
 }
+
+// Handle ESC key to close modal
+const handleKeydown = (e) => {
+  if (e.key === 'Escape') {
+    close()
+  }
+}
+
+// Add/remove ESC listener when modal opens/closes
+watch(() => props.modelValue, (isOpen) => {
+  if (isOpen) {
+    setTimeout(() => {
+      modalRef.value?.focus()
+    }, 50)
+    document.addEventListener('keydown', handleKeydown)
+  } else {
+    document.removeEventListener('keydown', handleKeydown)
+  }
+}, { immediate: true })
+
+onUnmounted(() => {
+  document.removeEventListener('keydown', handleKeydown)
+})
 </script>
 
 <style scoped>

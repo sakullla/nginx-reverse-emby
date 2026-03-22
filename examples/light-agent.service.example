@@ -6,7 +6,8 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=/opt/nginx-reverse-emby-agent/agent.env
-ExecStart=/usr/bin/node /opt/nginx-reverse-emby/scripts/light-agent.js
+WorkingDirectory=/opt/nginx-reverse-emby-agent
+ExecStart=/usr/bin/node /opt/nginx-reverse-emby-agent/bin/light-agent.js
 Restart=always
 RestartSec=5
 

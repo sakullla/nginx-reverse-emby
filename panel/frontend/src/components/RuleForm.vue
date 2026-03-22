@@ -17,7 +17,7 @@
           class="input"
           :class="{ 'input--error': errors.frontend_url }"
           placeholder="https://emby.example.com"
-          @input="errors.frontend_url = ''"
+          @input="errors.frontend_url = ''; updateAutoTags()"
         >
       </div>
       <p v-if="errors.frontend_url" class="form-error">
@@ -147,7 +147,7 @@ const props = defineProps({
 const emit = defineEmits(['success'])
 
 const ruleStore = useRuleStore()
-const isEdit = computed(() => !!props.initialData)
+const isEdit = computed(() => !!props.initialData?.id)
 
 const form = ref({
   frontend_url: '',
@@ -191,6 +191,13 @@ function isHttpAutoTag(t) {
   return t === 'HTTP' || t === 'HTTPS' || /^:\d+$/.test(t)
 }
 
+function updateAutoTags() {
+  if (isEdit.value) return
+  const autoTags = computeHttpAutoTags(form.value.frontend_url)
+  const userTags = form.value.tags.filter(t => !isHttpAutoTag(t))
+  form.value.tags = [...autoTags, ...userTags]
+}
+
 function computeHttpAutoTags(urlStr) {
   try {
     const u = new URL(urlStr)
@@ -221,16 +228,11 @@ const handleSubmit = async () => {
   if (!validate()) return
 
   try {
-    const url = form.value.frontend_url.trim()
-    const autoTags = computeHttpAutoTags(url)
-    const userTags = form.value.tags.filter(t => !isHttpAutoTag(t))
-    const finalTags = [...autoTags, ...userTags]
-
     const params = [
       props.initialData?.id,
-      url,
+      form.value.frontend_url.trim(),
       form.value.backend_url.trim(),
-      finalTags,
+      form.value.tags,
       form.value.enabled,
       form.value.proxy_redirect
     ]
