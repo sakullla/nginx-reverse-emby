@@ -89,6 +89,9 @@ const AGENT_HEARTBEAT_TIMEOUT_MS = Number(
 const AGENT_POLL_INTERVAL_MS = Number(
   process.env.AGENT_POLL_INTERVAL_MS || "10000",
 );
+const MANAGED_CERT_RENEW_INTERVAL_MS = Number(
+  process.env.PANEL_MANAGED_CERT_RENEW_INTERVAL_MS || "86400000",
+);
 const LOCAL_AGENT_ENABLED =
   ROLE === "master" &&
   !/^(0|false|no|off)$/i.test(process.env.MASTER_LOCAL_AGENT_ENABLED || "1");
@@ -120,6 +123,13 @@ const PUBLIC_AGENT_ASSETS = {
     ],
     contentType: "application/x-sh; charset=utf-8",
   },
+  "30-acme-renew.sh": {
+    files: [
+      path.join(PROJECT_ROOT, "docker", "30-acme-renew.sh"),
+      "/docker-entrypoint.d/30-acme-renew.sh",
+    ],
+    contentType: "application/x-sh; charset=utf-8",
+  },
   "default.conf.template": {
     files: [
       path.join(PROJECT_ROOT, "docker", "default.conf.template"),
@@ -142,6 +152,7 @@ const PUBLIC_AGENT_ASSETS = {
     contentType: "text/plain; charset=utf-8",
   },
 };
+let isManagedCertificateRenewRunning = false;
 
 function normalizeRole(value) {
   const role = String(value || "master").trim().toLowerCase();
@@ -820,6 +831,10 @@ function normalizeManagedCertificatePayload(body, fallback = {}, suggestedId = n
         : fallback.last_issue_at || null,
     last_error:
       body.last_error !== undefined ? String(body.last_error || "") : String(fallback.last_error || ""),
+    material_hash:
+      body.material_hash !== undefined
+        ? String(body.material_hash || "")
+        : String(fallback.material_hash || ""),
     tags:
       body.tags !== undefined ? normalizeTags(body.tags) : normalizeTags(fallback.tags || []),
   };
@@ -1106,6 +1121,20 @@ function readManagedCertificateMaterial(domain) {
     cert_pem: fs.readFileSync(certFile, "utf8"),
     key_pem: fs.readFileSync(keyFile, "utf8"),
   };
+}
+
+function hashManagedCertificateMaterial(material) {
+  if (!material || !material.cert_pem || !material.key_pem) return "";
+  return crypto
+    .createHash("sha256")
+    .update(String(material.cert_pem))
+    .update("\n---\n")
+    .update(String(material.key_pem))
+    .digest("hex");
+}
+
+function getManagedCertificateMaterialHash(domain) {
+  return hashManagedCertificateMaterial(readManagedCertificateMaterial(domain));
 }
 
 function buildManagedCertificateBundleForAgent(agentId) {
@@ -1512,11 +1541,11 @@ function updateManagedCertificate(certId, updater) {
   return certs[index];
 }
 
-function runManagedCertificateHelper(domain) {
+function runManagedCertificateHelper(domain, command = "issue") {
   const targetDir = getCertStoreDir(domain);
   runChecked(
     "sh",
-    [MANAGED_CERT_HELPER_SCRIPT, "issue", domain, targetDir],
+    [MANAGED_CERT_HELPER_SCRIPT, command, domain, targetDir],
     {
       ACME_HOME,
       ACME_CA,
@@ -1682,12 +1711,14 @@ async function issueManagedCertificateById(certId, options = {}) {
   }
 
   try {
-    runManagedCertificateHelper(cert.domain);
+    runManagedCertificateHelper(cert.domain, "issue");
+    const materialHash = getManagedCertificateMaterialHash(cert.domain);
     cert = updateManagedCertificate(certId, (current) => ({
       ...current,
       status: "active",
       last_issue_at: nowIso(),
       last_error: "",
+      material_hash: materialHash || String(current.material_hash || ""),
       revision: bumpRevision ? getNextGlobalRevision() : normalizeRevision(current.revision),
     }));
   } catch (err) {
@@ -1702,6 +1733,54 @@ async function issueManagedCertificateById(certId, options = {}) {
 
   await syncManagedCertificateTargets(cert, { applyNow });
   return cert;
+}
+
+async function renewManagedCertificateById(certId, options = {}) {
+  const { applyNow = AUTO_APPLY } = options;
+  assertManagedCertificateEnabled();
+
+  let cert = getManagedCertificateById(certId);
+  if (!cert) throw new Error("certificate not found");
+  if (cert.scope !== "domain") {
+    throw new Error("only domain certificates can be managed by master");
+  }
+  if (cert.issuer_mode !== "master_cf_dns") {
+    throw new Error("certificate is not configured for master_cf_dns");
+  }
+  if (!cert.enabled) {
+    throw new Error("certificate is disabled");
+  }
+
+  const previousHash = String(cert.material_hash || "") || getManagedCertificateMaterialHash(cert.domain);
+
+  try {
+    runManagedCertificateHelper(cert.domain, "renew");
+  } catch (err) {
+    cert = updateManagedCertificate(certId, (current) => ({
+      ...current,
+      status: "error",
+      last_error: String(err.message || err),
+    }));
+    throw new Error(cert.last_error);
+  }
+
+  const nextHash = getManagedCertificateMaterialHash(cert.domain);
+  const changed = !!nextHash && nextHash !== previousHash;
+
+  cert = updateManagedCertificate(certId, (current) => ({
+    ...current,
+    status: "active",
+    last_issue_at: changed ? nowIso() : current.last_issue_at || null,
+    last_error: "",
+    material_hash: nextHash || previousHash || String(current.material_hash || ""),
+    revision: changed ? getNextGlobalRevision() : normalizeRevision(current.revision),
+  }));
+
+  if (changed) {
+    await syncManagedCertificateTargets(cert, { applyNow });
+  }
+
+  return { certificate: cert, changed };
 }
 
 async function requestLocalHttp01CertificateById(certId, options = {}) {
@@ -1846,6 +1925,65 @@ async function applyAgent(agentId) {
     message: "waiting for agent heartbeat to apply",
     ...sync,
   };
+}
+
+function listAutoRenewManagedCertificates() {
+  return loadManagedCertificates().filter(
+    (cert) =>
+      cert &&
+      cert.enabled !== false &&
+      cert.scope === "domain" &&
+      cert.issuer_mode === "master_cf_dns",
+  );
+}
+
+async function runManagedCertificateAutoRenewCycle() {
+  if (ROLE !== "master" || !MANAGED_CERTS_ENABLED) return;
+  if (!Number.isFinite(MANAGED_CERT_RENEW_INTERVAL_MS) || MANAGED_CERT_RENEW_INTERVAL_MS < 1) {
+    return;
+  }
+  if (isManagedCertificateRenewRunning) return;
+
+  isManagedCertificateRenewRunning = true;
+  try {
+    const certs = listAutoRenewManagedCertificates();
+    for (const cert of certs) {
+      try {
+        const result = await renewManagedCertificateById(cert.id, { applyNow: AUTO_APPLY });
+        if (result.changed) {
+          console.log(
+            `[cert] renewed master managed certificate for ${cert.domain} and synced assigned agents`,
+          );
+        }
+      } catch (err) {
+        console.error(
+          `[cert] auto renew failed for ${cert.domain}:`,
+          String(err.message || err),
+        );
+      }
+    }
+  } finally {
+    isManagedCertificateRenewRunning = false;
+  }
+}
+
+function startManagedCertificateAutoRenewLoop() {
+  if (ROLE !== "master" || !MANAGED_CERTS_ENABLED) return;
+  if (!Number.isFinite(MANAGED_CERT_RENEW_INTERVAL_MS) || MANAGED_CERT_RENEW_INTERVAL_MS < 1) {
+    return;
+  }
+
+  setTimeout(() => {
+    runManagedCertificateAutoRenewCycle().catch((err) => {
+      console.error("[cert] initial auto renew cycle failed:", String(err.message || err));
+    });
+  }, 10000);
+
+  setInterval(() => {
+    runManagedCertificateAutoRenewCycle().catch((err) => {
+      console.error("[cert] managed certificate auto renew cycle failed:", String(err.message || err));
+    });
+  }, MANAGED_CERT_RENEW_INTERVAL_MS);
 }
 
 function findRegisteredAgentByToken(token) {
@@ -3267,6 +3405,7 @@ async function handleRequest(req, res) {
 
 ensureDataDir();
 migrateCsvToJson();
+startManagedCertificateAutoRenewLoop();
 
 http
   .createServer((req, res) => {
