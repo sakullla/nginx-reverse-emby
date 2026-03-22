@@ -161,7 +161,7 @@ import { useRuleStore } from '../stores/rules'
 const props = defineProps({ initialData: { type: Object, default: null } })
 const emit = defineEmits(['success'])
 const ruleStore = useRuleStore()
-const isEdit = computed(() => !!props.initialData)
+const isEdit = computed(() => !!props.initialData?.id)
 
 // Generate unique ID for backend items
 let backendIdCounter = 0

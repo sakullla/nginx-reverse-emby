@@ -49,6 +49,7 @@
         :agent="ruleStore.selectedAgent"
         @edit="handleEdit"
         @delete="handleDelete"
+        @copy="handleCopy"
       />
     </div>
 
@@ -60,6 +61,17 @@
         title="编辑代理规则"
       >
         <RuleForm :initial-data="editingRule" @success="showEditModal = false" />
+      </BaseModal>
+    </Teleport>
+
+    <!-- Copy Modal -->
+    <Teleport to="body">
+      <BaseModal
+        v-if="copyingRule"
+        v-model="showCopyModal"
+        title="复制代理规则"
+      >
+        <RuleForm :initial-data="copyingRule" @success="showCopyModal = false" />
       </BaseModal>
     </Teleport>
 
@@ -116,10 +128,19 @@ const deletingRule = ref(null)
 const showEditModal = ref(false)
 const showDeleteModal = ref(false)
 const isDeleting = ref(false)
+const copyingRule = ref(null)
+const showCopyModal = ref(false)
 
 const handleEdit = (rule) => {
   editingRule.value = rule
   showEditModal.value = true
+}
+
+const handleCopy = (rule) => {
+  // Strip id so RuleForm treats it as new rule
+  const { id, ...copyData } = rule
+  copyingRule.value = copyData
+  showCopyModal.value = true
 }
 
 const handleDelete = (rule) => {

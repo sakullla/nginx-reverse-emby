@@ -147,7 +147,7 @@ const props = defineProps({
 const emit = defineEmits(['success'])
 
 const ruleStore = useRuleStore()
-const isEdit = computed(() => !!props.initialData)
+const isEdit = computed(() => !!props.initialData?.id)
 
 const form = ref({
   frontend_url: '',
