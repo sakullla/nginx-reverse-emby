@@ -1187,6 +1187,11 @@ function runManagedCertificateHelper(domain) {
 
 async function syncManagedCertificateTargets(cert) {
   const targetIds = Array.isArray(cert?.target_agent_ids) ? cert.target_agent_ids : [];
+  return syncManagedCertificateAgentIds(targetIds);
+}
+
+async function syncManagedCertificateAgentIds(agentIds) {
+  const targetIds = [...new Set((Array.isArray(agentIds) ? agentIds : []).filter(Boolean))];
   for (const agentId of targetIds) {
     const agent = getAgentById(agentId);
     if (!agent) continue;
@@ -1198,6 +1203,23 @@ async function syncManagedCertificateTargets(cert) {
       await applyAgent(agentId);
     }
   }
+}
+
+function getManagedCertificateAffectedAgentIds(previousCert, nextCert) {
+  return [
+    ...new Set([
+      ...(Array.isArray(previousCert?.target_agent_ids) ? previousCert.target_agent_ids : []),
+      ...(Array.isArray(nextCert?.target_agent_ids) ? nextCert.target_agent_ids : []),
+    ]),
+  ];
+}
+
+function getManagedCertificateRemovedAgentIds(previousCert, nextCert) {
+  const previousIds = Array.isArray(previousCert?.target_agent_ids) ? previousCert.target_agent_ids : [];
+  const nextIds = new Set(
+    Array.isArray(nextCert?.target_agent_ids) ? nextCert.target_agent_ids : [],
+  );
+  return [...new Set(previousIds.filter((agentId) => !nextIds.has(agentId)))];
 }
 
 function validateManagedCertificateTargets(cert) {
@@ -2277,6 +2299,7 @@ async function handleMasterApi(req, res) {
         sendJson(res, 404, errorPayload("certificate not found"));
         return;
       }
+      const previousCert = { ...certs[index] };
       const nextCert = normalizeManagedCertificatePayload(body, certs[index], certId);
       if (nextCert.scope === "domain" && nextCert.issuer_mode === "master_cf_dns") {
         assertManagedCertificateEnabled();
@@ -2287,10 +2310,15 @@ async function handleMasterApi(req, res) {
       saveManagedCertificates(certs);
 
       let savedCert = nextCert;
+      const affectedAgentIds = getManagedCertificateAffectedAgentIds(previousCert, nextCert);
+      const removedAgentIds = getManagedCertificateRemovedAgentIds(previousCert, nextCert);
       if (nextCert.enabled && nextCert.scope === "domain" && nextCert.issuer_mode === "master_cf_dns") {
         savedCert = await issueManagedCertificateById(certId, { bumpRevision: false });
+        if (removedAgentIds.length > 0) {
+          await syncManagedCertificateAgentIds(removedAgentIds);
+        }
       } else {
-        await syncManagedCertificateTargets(nextCert);
+        await syncManagedCertificateAgentIds(affectedAgentIds);
       }
 
       sendJson(res, 200, { ok: true, certificate: savedCert });

@@ -320,12 +320,11 @@ collect_rules() {
 
 collect_l4_rules() {
     output_file="$1"
-    # Output is now a structured format that generate_l4_configs will process directly from JSON
+    # Copy JSON content into the temp file so downstream parsing works with mktemp paths.
     if [ ! -f "$L4_RULES_JSON" ]; then
         return 0
     fi
-    # Just copy the JSON file path to output file for the generator to use directly
-    printf '%s' "$L4_RULES_JSON" > "$output_file"
+    cat "$L4_RULES_JSON" > "$output_file"
 }
 
 install_synced_certificate() {
@@ -354,12 +353,6 @@ generate_l4_configs() {
 
     [ -f "$rules_json_path" ] || return 0
     [ -s "$rules_json_path" ] || return 0
-
-    # Validate the file contains a JSON path
-    case "$rules_json_path" in
-        *.json) : ;;
-        *) entrypoint_log "L4 rules file is not JSON: $rules_json_path"; return 0 ;;
-    esac
 
     RESOLVER_LINE="$RESOLVER"
 
