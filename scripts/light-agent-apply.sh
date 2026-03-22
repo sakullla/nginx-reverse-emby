@@ -13,6 +13,7 @@ GENERATOR_SCRIPT="${AGENT_GENERATOR_SCRIPT:-$RUNTIME_DIR/25-dynamic-reverse-prox
 NGINX_BIN_PATH="${AGENT_NGINX_BIN:-${NGINX_BIN:-nginx}}"
 
 NRE_DYNAMIC_DIR="${NRE_DYNAMIC_DIR:-/etc/nginx/conf.d/dynamic}"
+NRE_STREAM_DYNAMIC_DIR="${NRE_STREAM_DYNAMIC_DIR:-/etc/nginx/stream-conf.d/dynamic}"
 NRE_INCLUDE_FILE="${NRE_INCLUDE_FILE:-/etc/nginx/conf.d/zz-nginx-reverse-emby-agent.include.conf}"
 NRE_GLOBALS_FILE="${NRE_GLOBALS_FILE:-/etc/nginx/conf.d/zz-nginx-reverse-emby-agent.globals.conf}"
 NRE_STATUS_CONF_FILE="${NRE_STATUS_CONF_FILE:-/etc/nginx/conf.d/zz-nginx-reverse-emby-agent.status.conf}"
@@ -82,6 +83,30 @@ for (const rule of Array.isArray(rules) ? rules : []) {
 
 process.stdout.write([...new Set(ports)].join("\n"))
 ' "$RULES_JSON"
+}
+
+expected_l4_listen_ports() {
+    node -e '
+const fs = require("fs")
+
+let rules = []
+try {
+  rules = JSON.parse(fs.readFileSync(process.argv[1], "utf8"))
+} catch {
+  process.exit(0)
+}
+
+const ports = []
+for (const rule of Array.isArray(rules) ? rules : []) {
+  if (!rule || rule.enabled === false) continue
+  const port = Number(rule.listen_port)
+  if (Number.isFinite(port) && port > 0) {
+    ports.push(String(port))
+  }
+}
+
+process.stdout.write([...new Set(ports)].join("\n"))
+' "$L4_RULES_JSON"
 }
 
 port_is_listening() {
@@ -155,7 +180,7 @@ port_is_listening() {
 [ -f "$NRE_DIRECT_NO_TLS_TEMPLATE_FILE" ] || { echo "Template not found: $NRE_DIRECT_NO_TLS_TEMPLATE_FILE" >&2; exit 1; }
 [ -f "$NRE_DIRECT_TLS_TEMPLATE_FILE" ] || { echo "Template not found: $NRE_DIRECT_TLS_TEMPLATE_FILE" >&2; exit 1; }
 
-mkdir -p "$NRE_DYNAMIC_DIR" "$(dirname "$NRE_INCLUDE_FILE")" "$(dirname "$NRE_GLOBALS_FILE")" "$(dirname "$NRE_STATUS_CONF_FILE")" "$AGENT_HOME/.state" "$AGENT_HOME/certs"
+mkdir -p "$NRE_DYNAMIC_DIR" "$NRE_STREAM_DYNAMIC_DIR" "$(dirname "$NRE_INCLUDE_FILE")" "$(dirname "$NRE_GLOBALS_FILE")" "$(dirname "$NRE_STATUS_CONF_FILE")" "$AGENT_HOME/.state" "$AGENT_HOME/certs"
 
 cat > "$NRE_INCLUDE_FILE" <<EOF
 include $NRE_DYNAMIC_DIR/*.conf;
@@ -207,12 +232,18 @@ export ACME_HOME="${ACME_HOME:-$AGENT_HOME/.acme.sh}"
 export NGINX_BIN="$NGINX_BIN_PATH"
 
 sh "$GENERATOR_SCRIPT"
-expected_ports=$(expected_listen_ports || true)
+expected_http_ports=$(expected_listen_ports || true)
+expected_l4_ports=$(expected_l4_listen_ports || true)
 echo "[AGENT] Apply mode: $resolved_deploy_mode"
-if [ -n "$expected_ports" ]; then
-    echo "[AGENT] Expected listen ports:"
-    printf '%s\n' "$expected_ports"
-else
+if [ -n "$expected_http_ports" ]; then
+    echo "[AGENT] Expected HTTP listen ports:"
+    printf '%s\n' "$expected_http_ports"
+fi
+if [ -n "$expected_l4_ports" ]; then
+    echo "[AGENT] Expected L4 listen ports:"
+    printf '%s\n' "$expected_l4_ports"
+fi
+if [ -z "$expected_http_ports" ] && [ -z "$expected_l4_ports" ]; then
     echo "[AGENT] No enabled rules found; skipping port validation"
 fi
 "$NGINX_BIN_PATH" -t
@@ -233,10 +264,20 @@ if ! grep -F "$NRE_DYNAMIC_DIR" "$tmp_effective_config" >/dev/null 2>&1 && \
     exit 1
 fi
 
-if [ -n "$expected_ports" ]; then
+if [ -n "$expected_l4_ports" ]; then
+    if ! grep -F "$NRE_STREAM_DYNAMIC_DIR" "$tmp_effective_config" >/dev/null 2>&1; then
+        echo "Generated L4 configs are not part of the active nginx config: $NRE_STREAM_DYNAMIC_DIR/*.conf" >&2
+        echo "Check whether nginx.conf includes /etc/nginx/stream-conf.d/*.conf and /etc/nginx/stream-conf.d/dynamic/*.conf." >&2
+        rm -f "$tmp_effective_config"
+        exit 1
+    fi
+fi
+
+combined_ports=$(printf '%s\n%s\n' "$expected_http_ports" "$expected_l4_ports" | awk 'NF && !seen[$0]++')
+if [ -n "$combined_ports" ]; then
     missing_ports=""
     port_check_skipped="0"
-    for port in $expected_ports; do
+    for port in $combined_ports; do
         if port_is_listening "$port"; then
             continue
         fi

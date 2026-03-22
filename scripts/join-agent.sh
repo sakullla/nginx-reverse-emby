@@ -141,6 +141,23 @@ require_root_or_sudo() {
     return 1
 }
 
+detect_nginx_conf_path() {
+    command -v nginx >/dev/null 2>&1 || return 1
+
+    conf_path=$(nginx -V 2>&1 | sed -n 's/.*--conf-path=\([^ ]*\).*/\1/p' | head -n 1)
+    if [ -n "$conf_path" ]; then
+        printf '%s\n' "$conf_path"
+        return 0
+    fi
+
+    [ -f /etc/nginx/nginx.conf ] && {
+        printf '%s\n' "/etc/nginx/nginx.conf"
+        return 0
+    }
+
+    return 1
+}
+
 run_root_cmd() {
     if [ -n "${SUDO_BIN:-}" ]; then
         "$SUDO_BIN" "$@"
@@ -203,6 +220,120 @@ restart_nginx_after_install() {
     fi
     if command -v rc-service >/dev/null 2>&1; then
         run_root_cmd rc-service nginx restart || run_root_cmd rc-service nginx start
+    fi
+}
+
+ensure_nginx_stream_support() {
+    node_bin_path="$1"
+    nginx_conf_path="$(detect_nginx_conf_path || true)"
+    [ -n "$nginx_conf_path" ] || {
+        echo "Unable to detect nginx.conf path automatically." >&2
+        exit 1
+    }
+    [ -f "$nginx_conf_path" ] || {
+        echo "nginx.conf not found: $nginx_conf_path" >&2
+        exit 1
+    }
+
+    SUDO_BIN="$(require_root_or_sudo)" || {
+        echo "Updating nginx.conf for agent mode requires root or sudo" >&2
+        exit 1
+    }
+
+    run_root_cmd mkdir -p /etc/nginx/stream-conf.d/dynamic /etc/nginx/conf.d/dynamic
+
+    tmp_script=$(mktemp)
+    cat > "$tmp_script" <<'EOF'
+const fs = require('fs')
+
+const mainConf = process.env.NGINX_MAIN_CONF_FILE
+let source = fs.readFileSync(mainConf, 'utf8')
+let changed = false
+
+function findBlockRange(text, blockName) {
+  const regex = new RegExp(`\\b${blockName}\\s*\\{`, 'm')
+  const match = regex.exec(text)
+  if (!match) return null
+
+  const openBrace = text.indexOf('{', match.index)
+  if (openBrace === -1) return null
+
+  let depth = 0
+  for (let i = openBrace; i < text.length; i++) {
+    const ch = text[i]
+    if (ch === '{') depth++
+    else if (ch === '}') {
+      depth--
+      if (depth === 0) {
+        return {
+          openBrace,
+          bodyStart: openBrace + 1,
+          bodyEnd: i,
+        }
+      }
+    }
+  }
+  return null
+}
+
+function ensureLinesInBlock(text, blockName, lines) {
+  const range = findBlockRange(text, blockName)
+  if (!range) return { text, found: false, changed: false }
+
+  const body = text.slice(range.bodyStart, range.bodyEnd)
+  const missing = lines.filter((line) => !body.includes(line))
+  if (missing.length === 0) return { text, found: true, changed: false }
+
+  const insertion = '\n' + missing.map((line) => `    ${line}`).join('\n') + '\n'
+  return {
+    text: text.slice(0, range.bodyEnd) + insertion + text.slice(range.bodyEnd),
+    found: true,
+    changed: true,
+  }
+}
+
+const streamLines = [
+  'include /etc/nginx/stream-conf.d/*.conf;',
+  'include /etc/nginx/stream-conf.d/dynamic/*.conf;',
+]
+
+const result = ensureLinesInBlock(source, 'stream', streamLines)
+if (result.found) {
+  if (result.changed) {
+    source = result.text
+    changed = true
+  }
+} else {
+  source = source.replace(/\s*$/, '\n') + `\nstream {\n    ${streamLines[0]}\n    ${streamLines[1]}\n}\n`
+  changed = true
+}
+
+if (changed) {
+  fs.writeFileSync(mainConf, source, 'utf8')
+  console.log(`[JOIN] Updated nginx main config for stream includes: ${mainConf}`)
+}
+EOF
+
+    if ! run_root_cmd env NGINX_MAIN_CONF_FILE="$nginx_conf_path" "$node_bin_path" "$tmp_script"; then
+        rm -f "$tmp_script"
+        echo "Failed to update nginx.conf for stream includes" >&2
+        exit 1
+    fi
+    rm -f "$tmp_script"
+
+    if ! run_root_cmd nginx -t; then
+        echo "nginx -t failed after updating nginx.conf" >&2
+        exit 1
+    fi
+
+    if command -v systemctl >/dev/null 2>&1; then
+        run_root_cmd systemctl reload nginx || run_root_cmd systemctl restart nginx
+    elif command -v service >/dev/null 2>&1; then
+        run_root_cmd service nginx reload || run_root_cmd service nginx restart
+    elif command -v rc-service >/dev/null 2>&1; then
+        run_root_cmd rc-service nginx reload || run_root_cmd rc-service nginx restart
+    else
+        run_root_cmd nginx -s reload
     fi
 }
 
@@ -550,6 +681,7 @@ if ! nginx_supports_early_hints; then
 fi
 NODE_BIN_PATH="$(command -v "$NODE_BIN" || true)"
 [ -n "$NODE_BIN_PATH" ] || { echo "unable to resolve node executable path" >&2; exit 1; }
+ensure_nginx_stream_support "$NODE_BIN_PATH"
 
 MASTER_URL="$(trim_slash "$MASTER_URL")"
 ASSET_BASE_URL="$(trim_slash "$ASSET_BASE_URL")"
