@@ -2701,11 +2701,7 @@ async function handleMasterApi(req, res) {
       }
 
       const agents = loadRegisteredAgents();
-      let agent =
-        agents.find((item) => item.agent_token === agentToken) ||
-        (agentUrl ? agents.find((item) => item.agent_url === agentUrl) : null) ||
-        agents.find((item) => item.name === name) ||
-        null;
+      let agent = agents.find((item) => item.agent_token === agentToken) || null;
       const timestamp = nowIso();
 
       if (agent) {
@@ -2753,16 +2749,13 @@ async function handleMasterApi(req, res) {
       const body = await parseJsonBody(req);
       const token =
         String(req.headers["x-agent-token"] || body.agent_token || "").trim();
-      const name = String(body.name || "").trim();
       if (!token) {
         sendJson(res, 401, errorPayload("Unauthorized: missing agent token"));
         return;
       }
 
       const agents = loadRegisteredAgents();
-      const index = agents.findIndex(
-        (agent) => agent.agent_token === token || (name && agent.name === name),
-      );
+      const index = agents.findIndex((agent) => agent.agent_token === token);
 
       if (index === -1) {
         sendJson(res, 404, errorPayload("agent not registered"));

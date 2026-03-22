@@ -484,20 +484,21 @@ resolve_managed_certificate_mode() {
 generate_l4_configs() {
     rules_json_path="$1"
     mkdir -p "$STREAM_DYNAMIC_DIR"
-    rm -f "$STREAM_DYNAMIC_DIR"/*.conf
-
-    [ -f "$rules_json_path" ] || return 0
-    [ -s "$rules_json_path" ] || return 0
+    if [ ! -f "$rules_json_path" ] || [ ! -s "$rules_json_path" ]; then
+        rm -f "$STREAM_DYNAMIC_DIR"/*.conf
+        return 0
+    fi
 
     RESOLVER_LINE="$RESOLVER"
+    tmp_stream_dir=$(mktemp -d "$STREAM_DYNAMIC_DIR/.tmp.XXXXXX")
 
-    node -e "
+    if ! node -e "
         const fs = require('fs');
         const path = require('path');
 
         const rulesJsonPath = '$rules_json_path';
-        const streamDynamicDir = '$STREAM_DYNAMIC_DIR';
-        const resolver = '$RESOLVER_LINE';
+        const streamDynamicDir = '$tmp_stream_dir';
+        const resolver = '$RESOLVER_LINE'.trim();
 
         function formatNetworkHost(host) {
             if (host.includes(':')) return '[' + host + ']';
@@ -524,7 +525,7 @@ generate_l4_configs() {
             return !isIpAddress(cleanHost);
         }
 
-        function formatBackend(backend, isFirst) {
+        function formatBackend(backend) {
             const host = formatNetworkHost(backend.host);
             const weight = backend.weight && backend.weight !== 1 ? ' weight=' + backend.weight : '';
             const resolve = needsResolve(backend.host) ? ' resolve' : '';
@@ -555,10 +556,10 @@ generate_l4_configs() {
         try {
             const rules = JSON.parse(fs.readFileSync(rulesJsonPath, 'utf8'));
             if (!Array.isArray(rules)) {
-                console.error('L4 rules is not an array');
-                process.exit(0);
+                throw new Error('L4 rules is not an array');
             }
 
+            let requiresResolver = false;
             rules.filter(r => r && r.enabled !== false).forEach((r, index) => {
                 const protocol = String(r.protocol || 'tcp').trim().toLowerCase();
                 const listenHost = String(r.listen_host || '0.0.0.0').trim();
@@ -589,6 +590,12 @@ generate_l4_configs() {
                 if (backends.length === 0) {
                     console.error('Skipping L4 rule ' + name + ': no valid backends');
                     return;
+                }
+                if (backends.some((backend) => needsResolve(backend.host))) {
+                    if (!resolver) {
+                        throw new Error('NGINX_LOCAL_RESOLVERS is required for hostname L4 backends');
+                    }
+                    requiresResolver = true;
                 }
 
                 // Get load balancing settings
@@ -638,11 +645,31 @@ generate_l4_configs() {
                 const backendList = backends.map(b => b.host + ':' + b.port).join(', ');
                 console.log('[PROXY] Generated L4 config for ' + protocol + ' ' + listenHost + ':' + listenPort + ' -> [' + backendList + '] (strategy: ' + lbStrategy + ')');
             });
+
+            if (requiresResolver) {
+                fs.writeFileSync(
+                    path.join(streamDynamicDir, '_resolver.conf'),
+                    [
+                        '# L4 hostname resolver',
+                        'resolver ' + resolver + ';',
+                        'resolver_timeout 5s;',
+                        ''
+                    ].join('\n'),
+                    'utf8'
+                );
+            }
         } catch (e) {
             console.error('Error generating L4 configs: ' + e.message);
             process.exit(1);
         }
-    " || true
+    "; then
+        rm -rf "$tmp_stream_dir"
+        return 1
+    fi
+
+    find "$STREAM_DYNAMIC_DIR" -maxdepth 1 -type f -name '*.conf' -delete
+    find "$tmp_stream_dir" -maxdepth 1 -type f -name '*.conf' -exec mv {} "$STREAM_DYNAMIC_DIR"/ \;
+    rmdir "$tmp_stream_dir"
 }
 
 # --- Main Flow ---
