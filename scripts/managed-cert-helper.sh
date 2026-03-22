@@ -45,6 +45,48 @@ ensure_acme() {
   fi
 }
 
+normalize_domain() {
+  value="$1"
+  value=${value#[}
+  value=${value%]}
+  printf '%s' "$value" | tr '[:upper:]' '[:lower:]'
+}
+
+is_wildcard_domain() {
+  case "$1" in
+    \*.*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+get_acme_cert_name() {
+  domain=$(normalize_domain "$1")
+  if is_wildcard_domain "$domain"; then
+    printf '%s' "${domain#*.}"
+    return 0
+  fi
+  printf '%s' "$domain"
+}
+
+cleanup_acme_record() {
+  cert_name="$1"
+  requested_domain="$2"
+
+  "$ACME_SCRIPT" --remove -d "$cert_name" --ecc $ACME_COMMON_ARGS >/dev/null 2>&1 || true
+  "$ACME_SCRIPT" --remove -d "$cert_name" $ACME_COMMON_ARGS >/dev/null 2>&1 || true
+
+  if [ "$requested_domain" != "$cert_name" ]; then
+    "$ACME_SCRIPT" --remove -d "$requested_domain" --ecc $ACME_COMMON_ARGS >/dev/null 2>&1 || true
+    "$ACME_SCRIPT" --remove -d "$requested_domain" $ACME_COMMON_ARGS >/dev/null 2>&1 || true
+  fi
+
+  rm -rf \
+    "$ACME_HOME/$cert_name" \
+    "$ACME_HOME/${cert_name}_ecc" \
+    "$ACME_HOME/$requested_domain" \
+    "$ACME_HOME/${requested_domain}_ecc"
+}
+
 issue_certificate() {
   [ -n "$DOMAIN" ] || { log "domain is required"; exit 1; }
   [ -n "$TARGET_DIR" ] || { log "target dir is required"; exit 1; }
@@ -55,22 +97,27 @@ issue_certificate() {
   export CF_Token="${CF_Token}"
   [ -n "${CF_Account_ID:-}" ] && export CF_Account_ID="${CF_Account_ID}"
 
+  requested_domain=$(normalize_domain "$DOMAIN")
+  cert_name=$(get_acme_cert_name "$requested_domain")
   mkdir -p "$TARGET_DIR"
 
-  if ! "$ACME_SCRIPT" --info -d "$DOMAIN" --ecc $ACME_COMMON_ARGS 2>/dev/null | grep -q "RealFullChainPath"; then
-    log "issuing certificate for $DOMAIN"
-    "$ACME_SCRIPT" --remove -d "$DOMAIN" --ecc $ACME_COMMON_ARGS >/dev/null 2>&1 || true
-    "$ACME_SCRIPT" --remove -d "$DOMAIN" $ACME_COMMON_ARGS >/dev/null 2>&1 || true
-    "$ACME_SCRIPT" --issue $ACME_COMMON_ARGS --server "$ACME_CA" --dns "dns_$ACME_DNS_PROVIDER" -d "$DOMAIN" --keylength ec-256
+  if ! "$ACME_SCRIPT" --info -d "$cert_name" --ecc $ACME_COMMON_ARGS 2>/dev/null | grep -q "RealFullChainPath"; then
+    log "issuing certificate for $requested_domain"
+    cleanup_acme_record "$cert_name" "$requested_domain"
+    if is_wildcard_domain "$requested_domain"; then
+      "$ACME_SCRIPT" --issue $ACME_COMMON_ARGS --server "$ACME_CA" --dns "dns_$ACME_DNS_PROVIDER" -d "$cert_name" -d "$requested_domain" --keylength ec-256
+    else
+      "$ACME_SCRIPT" --issue $ACME_COMMON_ARGS --server "$ACME_CA" --dns "dns_$ACME_DNS_PROVIDER" -d "$cert_name" --keylength ec-256
+    fi
   else
-    log "certificate already exists for $DOMAIN, reinstalling latest copy"
+    log "certificate already exists for $requested_domain, reinstalling latest copy"
   fi
 
-  "$ACME_SCRIPT" --install-cert -d "$DOMAIN" --ecc $ACME_COMMON_ARGS \
+  "$ACME_SCRIPT" --install-cert -d "$cert_name" --ecc $ACME_COMMON_ARGS \
     --fullchain-file "$TARGET_DIR/cert" \
     --key-file "$TARGET_DIR/key"
 
-  log "certificate ready: $DOMAIN -> $TARGET_DIR"
+  log "certificate ready: $requested_domain -> $TARGET_DIR"
 }
 
 case "$COMMAND" in
