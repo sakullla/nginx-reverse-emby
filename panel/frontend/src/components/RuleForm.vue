@@ -228,13 +228,9 @@ const handleSubmit = async () => {
   if (!validate()) return
 
   try {
-    const url = form.value.frontend_url.trim()
-    // Ensure auto-tags are up-to-date before submit
-    updateAutoTags()
-
     const params = [
       props.initialData?.id,
-      url,
+      form.value.frontend_url.trim(),
       form.value.backend_url.trim(),
       form.value.tags,
       form.value.enabled,
