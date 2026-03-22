@@ -17,7 +17,7 @@
           class="input"
           :class="{ 'input--error': errors.frontend_url }"
           placeholder="https://emby.example.com"
-          @input="errors.frontend_url = ''"
+          @input="errors.frontend_url = ''; updateAutoTags()"
         >
       </div>
       <p v-if="errors.frontend_url" class="form-error">
@@ -189,6 +189,13 @@ const removeTag = (index) => {
 
 function isHttpAutoTag(t) {
   return t === 'HTTP' || t === 'HTTPS' || /^:\d+$/.test(t)
+}
+
+function updateAutoTags() {
+  if (isEdit.value) return
+  const autoTags = computeHttpAutoTags(form.value.frontend_url)
+  const userTags = form.value.tags.filter(t => !isHttpAutoTag(t))
+  form.value.tags = [...autoTags, ...userTags]
 }
 
 function computeHttpAutoTags(urlStr) {
