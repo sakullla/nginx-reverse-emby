@@ -29,6 +29,7 @@ ACME_HOME="${ACME_HOME:-$DATA_ROOT/.acme.sh}"
 DIRECT_CERT_DIR="${DIRECT_CERT_DIR:-$DATA_ROOT/certs}"
 DIRECT_CERT_STATE_FILE="${DIRECT_CERT_STATE_FILE:-$DATA_ROOT/.state/active_cert_domains}"
 STREAM_DYNAMIC_DIR="${NRE_STREAM_DYNAMIC_DIR:-/etc/nginx/stream-conf.d/dynamic}"
+STREAM_RESOLVER_FILE="${NRE_STREAM_RESOLVER_FILE:-/etc/nginx/stream-conf.d/00-resolver.conf}"
 
 RESOLVER="${NGINX_LOCAL_RESOLVERS:-1.1.1.1}"
 PROXY_DEPLOY_MODE="${PROXY_DEPLOY_MODE:-front_proxy}"
@@ -645,10 +646,20 @@ generate_l4_configs() {
     " || true
 }
 
+write_stream_resolver_config() {
+    mkdir -p "$(dirname "$STREAM_RESOLVER_FILE")"
+    cat > "$STREAM_RESOLVER_FILE" <<EOF
+# Generated stream resolver
+resolver $RESOLVER;
+resolver_timeout 5s;
+EOF
+}
+
 # --- Main Flow ---
 deploy_mode=$(normalize_deploy_mode)
 mkdir -p "$DYNAMIC_DIR" "$DIRECT_CERT_DIR" "$STREAM_DYNAMIC_DIR"
 rm -f "$DYNAMIC_DIR"/*.conf
+write_stream_resolver_config
 
 tmp_rules=$(mktemp)
 tmp_issue_certs=$(mktemp)
