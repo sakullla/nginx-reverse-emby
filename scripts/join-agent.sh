@@ -22,7 +22,7 @@ Recommended one-click:
   --install-systemd        Install and start the systemd service
 
 Behavior:
-  Automatically installs missing Node.js 18+, curl, and nginx when possible
+  Automatically installs missing Node.js 18+, curl, nginx, openssl, and socat when possible
   (requires root or sudo and a supported package manager / Homebrew)
 
 Optional:
@@ -448,9 +448,11 @@ install_runtime_packages() {
     missing_node="$1"
     missing_curl="$2"
     missing_nginx="$3"
-    platform="$4"
+    missing_openssl="$4"
+    missing_socat="$5"
+    platform="$6"
 
-    [ "$missing_node$missing_curl$missing_nginx" != "000" ] || return 0
+    [ "$missing_node$missing_curl$missing_nginx$missing_openssl$missing_socat" != "00000" ] || return 0
 
     SUDO_BIN="$(require_root_or_sudo)" || {
         echo "Missing runtime dependencies and automatic install requires root or sudo" >&2
@@ -465,6 +467,8 @@ install_runtime_packages() {
         [ "$missing_node" = "1" ] && pkgs="$pkgs node"
         [ "$missing_curl" = "1" ] && pkgs="$pkgs curl"
         [ "$missing_nginx" = "1" ] && pkgs="$pkgs nginx"
+        [ "$missing_openssl" = "1" ] && pkgs="$pkgs openssl@3"
+        [ "$missing_socat" = "1" ] && pkgs="$pkgs socat"
         if [ -n "$pkgs" ]; then
             brew update
             brew install $pkgs
@@ -477,6 +481,8 @@ install_runtime_packages() {
         pkgs="ca-certificates"
         [ "$missing_node" = "1" ] && pkgs="$pkgs nodejs"
         [ "$missing_curl" = "1" ] && pkgs="$pkgs curl"
+        [ "$missing_openssl" = "1" ] && pkgs="$pkgs openssl"
+        [ "$missing_socat" = "1" ] && pkgs="$pkgs socat"
         run_root_cmd apt-get install -y --no-install-recommends $pkgs
         [ "$missing_nginx" = "1" ] && install_mainline_nginx "$platform"
         return 0
@@ -486,6 +492,8 @@ install_runtime_packages() {
         pkgs="ca-certificates"
         [ "$missing_node" = "1" ] && pkgs="$pkgs nodejs"
         [ "$missing_curl" = "1" ] && pkgs="$pkgs curl"
+        [ "$missing_openssl" = "1" ] && pkgs="$pkgs openssl"
+        [ "$missing_socat" = "1" ] && pkgs="$pkgs socat"
         run_root_cmd dnf install -y $pkgs
         [ "$missing_nginx" = "1" ] && install_mainline_nginx "$platform"
         return 0
@@ -495,6 +503,8 @@ install_runtime_packages() {
         pkgs="ca-certificates"
         [ "$missing_node" = "1" ] && pkgs="$pkgs nodejs"
         [ "$missing_curl" = "1" ] && pkgs="$pkgs curl"
+        [ "$missing_openssl" = "1" ] && pkgs="$pkgs openssl"
+        [ "$missing_socat" = "1" ] && pkgs="$pkgs socat"
         run_root_cmd yum install -y $pkgs
         [ "$missing_nginx" = "1" ] && install_mainline_nginx "$platform"
         return 0
@@ -504,6 +514,8 @@ install_runtime_packages() {
         pkgs="ca-certificates"
         [ "$missing_node" = "1" ] && pkgs="$pkgs nodejs npm"
         [ "$missing_curl" = "1" ] && pkgs="$pkgs curl"
+        [ "$missing_openssl" = "1" ] && pkgs="$pkgs openssl"
+        [ "$missing_socat" = "1" ] && pkgs="$pkgs socat"
         run_root_cmd apk add --no-cache $pkgs
         [ "$missing_nginx" = "1" ] && install_mainline_nginx "$platform"
         return 0
@@ -513,6 +525,8 @@ install_runtime_packages() {
         pkgs="ca-certificates"
         [ "$missing_node" = "1" ] && pkgs="$pkgs nodejs18"
         [ "$missing_curl" = "1" ] && pkgs="$pkgs curl"
+        [ "$missing_openssl" = "1" ] && pkgs="$pkgs openssl"
+        [ "$missing_socat" = "1" ] && pkgs="$pkgs socat"
         run_root_cmd zypper --non-interactive install --no-recommends $pkgs
         [ "$missing_nginx" = "1" ] && install_mainline_nginx "$platform"
         return 0
@@ -522,6 +536,8 @@ install_runtime_packages() {
         pkgs="ca-certificates"
         [ "$missing_node" = "1" ] && pkgs="$pkgs nodejs"
         [ "$missing_curl" = "1" ] && pkgs="$pkgs curl"
+        [ "$missing_openssl" = "1" ] && pkgs="$pkgs openssl"
+        [ "$missing_socat" = "1" ] && pkgs="$pkgs socat"
         run_root_cmd pacman -Sy --noconfirm $pkgs
         [ "$missing_nginx" = "1" ] && install_mainline_nginx "$platform"
         return 0
@@ -559,6 +575,9 @@ copy_or_download_asset() {
             ;;
         25-dynamic-reverse-proxy.sh)
             [ -n "$SCRIPT_DIR" ] && local_path="$SCRIPT_DIR/../docker/25-dynamic-reverse-proxy.sh"
+            ;;
+        30-acme-renew.sh)
+            [ -n "$SCRIPT_DIR" ] && local_path="$SCRIPT_DIR/../docker/30-acme-renew.sh"
             ;;
         default.conf.template)
             [ -n "$SCRIPT_DIR" ] && local_path="$SCRIPT_DIR/../docker/default.conf.template"
@@ -645,13 +664,17 @@ done
 MISSING_NODE="0"
 MISSING_CURL="0"
 MISSING_NGINX="0"
+MISSING_OPENSSL="0"
+MISSING_SOCAT="0"
 
 NODE_BIN="$(detect_node_bin || true)"
 [ -n "$NODE_BIN" ] || MISSING_NODE="1"
 command -v curl >/dev/null 2>&1 || MISSING_CURL="1"
 command -v nginx >/dev/null 2>&1 || MISSING_NGINX="1"
+command -v openssl >/dev/null 2>&1 || MISSING_OPENSSL="1"
+command -v socat >/dev/null 2>&1 || MISSING_SOCAT="1"
 
-install_runtime_packages "$MISSING_NODE" "$MISSING_CURL" "$MISSING_NGINX" "$PLATFORM"
+install_runtime_packages "$MISSING_NODE" "$MISSING_CURL" "$MISSING_NGINX" "$MISSING_OPENSSL" "$MISSING_SOCAT" "$PLATFORM"
 
 NODE_BIN="$(detect_node_bin || true)"
 [ -n "$NODE_BIN" ] || { echo "node is required after dependency installation" >&2; exit 1; }
@@ -666,6 +689,8 @@ NODE_MAJOR="$(current_node_major "$NODE_BIN")"
 command -v curl >/dev/null 2>&1 || { echo "curl is required after dependency installation" >&2; exit 1; }
 NGINX_BIN_PATH="$(command -v nginx || true)"
 [ -n "$NGINX_BIN_PATH" ] || { echo "nginx is required after dependency installation" >&2; exit 1; }
+command -v openssl >/dev/null 2>&1 || { echo "openssl is required after dependency installation" >&2; exit 1; }
+command -v socat >/dev/null 2>&1 || { echo "socat is required after dependency installation" >&2; exit 1; }
 if ! nginx_supports_early_hints; then
     echo "[JOIN] Detected nginx without early_hints support, upgrading to nginx mainline..." >&2
     SUDO_BIN="$(require_root_or_sudo)" || {
@@ -700,7 +725,9 @@ BIN_DIR="$DATA_DIR/bin"
 RUNTIME_DIR="$DATA_DIR/runtime"
 LIGHT_AGENT_FILE="$BIN_DIR/light-agent.js"
 DEFAULT_APPLY_SCRIPT="$BIN_DIR/nginx-reverse-emby-apply.sh"
+DEFAULT_RENEW_SCRIPT="$BIN_DIR/nginx-reverse-emby-renew.sh"
 GENERATOR_FILE="$RUNTIME_DIR/25-dynamic-reverse-proxy.sh"
+RENEW_LOOP_FILE="$RUNTIME_DIR/30-acme-renew.sh"
 TEMPLATE_FILE="$RUNTIME_DIR/default.conf.template"
 DIRECT_NO_TLS_TEMPLATE_FILE="$RUNTIME_DIR/default.direct.no_tls.conf.template"
 DIRECT_TLS_TEMPLATE_FILE="$RUNTIME_DIR/default.direct.tls.conf.template"
@@ -709,9 +736,12 @@ echo "[JOIN] Installing runtime assets to: $DATA_DIR"
 copy_or_download_asset light-agent.js "$LIGHT_AGENT_FILE" 755
 copy_or_download_asset light-agent-apply.sh "$DEFAULT_APPLY_SCRIPT" 755
 copy_or_download_asset 25-dynamic-reverse-proxy.sh "$GENERATOR_FILE" 755
+copy_or_download_asset 30-acme-renew.sh "$RENEW_LOOP_FILE" 755
 copy_or_download_asset default.conf.template "$TEMPLATE_FILE" 644
 copy_or_download_asset default.direct.no_tls.conf.template "$DIRECT_NO_TLS_TEMPLATE_FILE" 644
 copy_or_download_asset default.direct.tls.conf.template "$DIRECT_TLS_TEMPLATE_FILE" 644
+cp "$RENEW_LOOP_FILE" "$DEFAULT_RENEW_SCRIPT"
+chmod 755 "$DEFAULT_RENEW_SCRIPT"
 
 if [ -z "$APPLY_COMMAND" ]; then
     APPLY_COMMAND="$DEFAULT_APPLY_SCRIPT"
@@ -732,10 +762,17 @@ AGENT_HOME=$(shell_quote "$DATA_DIR")
 AGENT_RUNTIME_DIR=$(shell_quote "$RUNTIME_DIR")
 AGENT_GENERATOR_SCRIPT=$(shell_quote "$GENERATOR_FILE")
 AGENT_DEFAULT_APPLY_COMMAND=$(shell_quote "$DEFAULT_APPLY_SCRIPT")
+AGENT_DEFAULT_RENEW_COMMAND=$(shell_quote "$DEFAULT_RENEW_SCRIPT")
 APPLY_COMMAND=$(shell_quote "$APPLY_COMMAND")
 PROXY_DEPLOY_MODE=$(shell_quote "$DEPLOY_MODE")
 AGENT_FOLLOW_MASTER_DEPLOY_MODE=$(shell_quote "$LOCAL_NODE")
 NGINX_BIN=$(shell_quote "$NGINX_BIN_PATH")
+DATA_ROOT=$(shell_quote "$DATA_DIR")
+DIRECT_CERT_DIR=$(shell_quote "$DATA_DIR/certs")
+ACME_HOME=$(shell_quote "$DATA_DIR/.acme.sh")
+PANEL_MANAGED_CERTS_POLICY_JSON=$(shell_quote "$DATA_DIR/managed_certificates.policy.json")
+PANEL_MANAGED_CERTS_SYNC_JSON=$(shell_quote "$DATA_DIR/managed_certificates.json")
+ACME_RENEW_FOREGROUND='1'
 EOF
 
 PAYLOAD=$("$NODE_BIN" -e "const payload = {name: process.argv[1], agent_url: process.argv[2], agent_token: process.argv[3], version: process.argv[4], tags: process.argv[5] ? process.argv[5].split(',').map(v => v.trim()).filter(Boolean) : [], mode: 'pull', register_token: process.argv[6]}; process.stdout.write(JSON.stringify(payload));" "$AGENT_NAME" "$AGENT_URL" "$AGENT_TOKEN" "$AGENT_VERSION" "$AGENT_TAGS" "$REGISTER_TOKEN")
@@ -755,11 +792,17 @@ echo "[JOIN] Rules file: $RULES_FILE"
 echo "[JOIN] State file: $STATE_FILE"
 echo "[JOIN] Light agent: $LIGHT_AGENT_FILE"
 echo "[JOIN] Apply command: $APPLY_COMMAND"
+echo "[JOIN] Renew command: $DEFAULT_RENEW_SCRIPT"
 
 if [ "$INSTALL_SYSTEMD" = "1" ]; then
+    SUDO_BIN="$(require_root_or_sudo)" || {
+        echo "Installing systemd services requires root or sudo" >&2
+        exit 1
+    }
     command -v systemctl >/dev/null 2>&1 || { echo "systemctl is required for --install-systemd" >&2; exit 1; }
     SERVICE_FILE="/etc/systemd/system/nginx-reverse-emby-agent.service"
-    cat > "$SERVICE_FILE" <<EOF
+    RENEW_SERVICE_FILE="/etc/systemd/system/nginx-reverse-emby-agent-renew.service"
+    cat <<EOF | run_root_cmd tee "$SERVICE_FILE" >/dev/null
 [Unit]
 Description=Nginx Reverse Emby Lightweight Agent
 After=network-online.target
@@ -775,16 +818,35 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 EOF
-    systemctl daemon-reload
-    systemctl enable --now nginx-reverse-emby-agent.service
-    echo "[JOIN] Installed and started systemd service: nginx-reverse-emby-agent.service"
+    cat <<EOF | run_root_cmd tee "$RENEW_SERVICE_FILE" >/dev/null
+[Unit]
+Description=Nginx Reverse Emby Agent ACME Renew Loop
+After=network-online.target nginx-reverse-emby-agent.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=$ENV_FILE
+ExecStart=/bin/sh $DEFAULT_RENEW_SCRIPT
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    run_root_cmd systemctl daemon-reload
+    run_root_cmd systemctl enable --now nginx-reverse-emby-agent.service nginx-reverse-emby-agent-renew.service
+    echo "[JOIN] Installed and started systemd services: nginx-reverse-emby-agent.service, nginx-reverse-emby-agent-renew.service"
 elif [ "$INSTALL_LAUNCHD" = "1" ]; then
     [ "$PLATFORM" = "darwin" ] || { echo "--install-launchd is only supported on macOS" >&2; exit 1; }
     command -v launchctl >/dev/null 2>&1 || { echo "launchctl is required for --install-launchd" >&2; exit 1; }
     LAUNCHD_DIR="$HOME/Library/LaunchAgents"
     SERVICE_LABEL="com.nginx-reverse-emby.agent"
     SERVICE_FILE="$LAUNCHD_DIR/$SERVICE_LABEL.plist"
+    RENEW_LABEL="com.nginx-reverse-emby.agent.renew"
+    RENEW_SERVICE_FILE="$LAUNCHD_DIR/$RENEW_LABEL.plist"
     START_COMMAND="set -a && . $(shell_quote "$ENV_FILE") && set +a && exec $(shell_quote "$NODE_BIN_PATH") $(shell_quote "$LIGHT_AGENT_FILE")"
+    RENEW_COMMAND="set -a && . $(shell_quote "$ENV_FILE") && set +a && exec /bin/sh $(shell_quote "$DEFAULT_RENEW_SCRIPT")"
     mkdir -p "$LAUNCHD_DIR"
     cat > "$SERVICE_FILE" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -812,10 +874,39 @@ elif [ "$INSTALL_LAUNCHD" = "1" ]; then
 </dict>
 </plist>
 EOF
+    cat > "$RENEW_SERVICE_FILE" <<EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>$(xml_escape "$RENEW_LABEL")</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/sh</string>
+    <string>-lc</string>
+    <string>$(xml_escape "$RENEW_COMMAND")</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>$(xml_escape "$DATA_DIR")</string>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>$(xml_escape "$DATA_DIR/renew.stdout.log")</string>
+  <key>StandardErrorPath</key>
+  <string>$(xml_escape "$DATA_DIR/renew.stderr.log")</string>
+</dict>
+</plist>
+EOF
     launchctl unload "$SERVICE_FILE" >/dev/null 2>&1 || true
+    launchctl unload "$RENEW_SERVICE_FILE" >/dev/null 2>&1 || true
     launchctl load -w "$SERVICE_FILE"
-    echo "[JOIN] Installed and loaded launchd agent: $SERVICE_LABEL"
+    launchctl load -w "$RENEW_SERVICE_FILE"
+    echo "[JOIN] Installed and loaded launchd agents: $SERVICE_LABEL, $RENEW_LABEL"
 else
-    echo "[JOIN] Start command:"
+    echo "[JOIN] Start commands:"
     echo "  set -a && . $ENV_FILE && set +a && $NODE_BIN_PATH $LIGHT_AGENT_FILE"
+    echo "  set -a && . $ENV_FILE && set +a && /bin/sh $DEFAULT_RENEW_SCRIPT"
 fi

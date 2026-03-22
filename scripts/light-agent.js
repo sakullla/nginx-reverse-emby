@@ -23,6 +23,8 @@ const RULES_JSON = process.env.RULES_JSON || path.resolve(process.cwd(), 'proxy_
 const L4_RULES_JSON = process.env.L4_RULES_JSON || path.resolve(process.cwd(), 'l4_rules.json')
 const MANAGED_CERTS_JSON =
   process.env.MANAGED_CERTS_JSON || path.resolve(process.cwd(), 'managed_certificates.json')
+const MANAGED_CERTS_POLICY_JSON =
+  process.env.MANAGED_CERTS_POLICY_JSON || path.resolve(process.cwd(), 'managed_certificates.policy.json')
 const STATE_FILE = process.env.AGENT_STATE_FILE || path.resolve(process.cwd(), 'agent-state.json')
 const APPLY_COMMAND = process.env.APPLY_COMMAND || ''
 const NGINX_STATUS_URL = process.env.NGINX_STATUS_URL || 'http://127.0.0.1:18080/nginx_status'
@@ -246,7 +248,8 @@ function applyRules() {
       ...process.env,
       RULES_JSON,
       L4_RULES_JSON,
-      MANAGED_CERTS_JSON
+      MANAGED_CERTS_JSON,
+      MANAGED_CERTS_POLICY_JSON
     }
   })
   if (result.error) throw result.error
@@ -307,6 +310,10 @@ async function runOnce() {
       MANAGED_CERTS_JSON,
       Array.isArray(response.sync.certificates) ? response.sync.certificates : []
     )
+    writeJson(
+      MANAGED_CERTS_POLICY_JSON,
+      Array.isArray(response.sync.certificate_policies) ? response.sync.certificate_policies : []
+    )
     try {
       const applyOutput = applyRules()
       state.current_revision = nextRevision
@@ -352,6 +359,7 @@ async function main() {
     rules_file: RULES_JSON,
     l4_rules_file: L4_RULES_JSON,
     managed_certs_file: MANAGED_CERTS_JSON,
+    managed_cert_policy_file: MANAGED_CERTS_POLICY_JSON,
     state_file: STATE_FILE
   })
   await registerAgent()
