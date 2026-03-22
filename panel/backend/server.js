@@ -951,8 +951,45 @@ function normalizeManagedCertificatePayload(body, fallback = {}, suggestedId = n
   };
 }
 
+function getKnownManagedCertificateTargetAgentIds() {
+  const ids = new Set();
+  if (LOCAL_AGENT_ENABLED) {
+    ids.add(LOCAL_AGENT_ID);
+  }
+  for (const agent of loadRegisteredAgents()) {
+    const agentId = String(agent?.id || "").trim();
+    if (agentId) {
+      ids.add(agentId);
+    }
+  }
+  return ids;
+}
+
+function filterKnownManagedCertificateTargetAgentIds(agentIds, knownAgentIds = null) {
+  const allowedAgentIds =
+    knownAgentIds instanceof Set ? knownAgentIds : getKnownManagedCertificateTargetAgentIds();
+  return [
+    ...new Set(
+      (Array.isArray(agentIds) ? agentIds : [])
+        .map((item) => String(item || "").trim())
+        .filter((agentId) => agentId && allowedAgentIds.has(agentId)),
+    ),
+  ];
+}
+
 function normalizeStoredManagedCertificate(cert, suggestedId = null) {
-  const normalized = normalizeManagedCertificatePayload(cert || {}, cert || {}, suggestedId);
+  const knownAgentIds = getKnownManagedCertificateTargetAgentIds();
+  const normalized = normalizeManagedCertificatePayload(
+    {
+      ...(cert || {}),
+      target_agent_ids: filterKnownManagedCertificateTargetAgentIds(
+        cert?.target_agent_ids,
+        knownAgentIds,
+      ),
+    },
+    cert || {},
+    suggestedId,
+  );
   normalized.revision = normalizeRevision(cert?.revision);
   return normalized;
 }
@@ -960,7 +997,11 @@ function normalizeStoredManagedCertificate(cert, suggestedId = null) {
 function loadManagedCertificates() {
   const certs = readJsonFile(MANAGED_CERTS_JSON, []);
   if (!Array.isArray(certs)) return [];
-  return certs.map((cert, index) => normalizeStoredManagedCertificate(cert, index + 1));
+  const normalized = certs.map((cert, index) => normalizeStoredManagedCertificate(cert, index + 1));
+  if (JSON.stringify(certs) !== JSON.stringify(normalized)) {
+    writeJsonFile(MANAGED_CERTS_JSON, normalized);
+  }
+  return normalized;
 }
 
 function saveManagedCertificates(certs) {
@@ -3000,6 +3041,7 @@ async function handleMasterApi(req, res) {
     deleteRulesForAgent(agentId);
     deleteL4RulesForAgent(agentId);
     removePath(getManagedCertBundleFileForAgent(agentId));
+    removePath(getManagedCertPolicyFileForAgent(agentId));
     sendJson(res, 200, { ok: true, agent: sanitizeAgent(deleted) });
     return;
   }
