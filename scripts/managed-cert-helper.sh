@@ -87,7 +87,33 @@ cleanup_acme_record() {
     "$ACME_HOME/${requested_domain}_ecc"
 }
 
-issue_certificate() {
+has_certificate_record() {
+  cert_name="$1"
+  "$ACME_SCRIPT" --info -d "$cert_name" --ecc $ACME_COMMON_ARGS 2>/dev/null | grep -q "RealFullChainPath"
+}
+
+request_certificate() {
+  requested_domain="$1"
+  cert_name="$2"
+
+  cleanup_acme_record "$cert_name" "$requested_domain"
+  if is_wildcard_domain "$requested_domain"; then
+    "$ACME_SCRIPT" --issue $ACME_COMMON_ARGS --server "$ACME_CA" --dns "dns_$ACME_DNS_PROVIDER" -d "$cert_name" -d "$requested_domain" --keylength ec-256
+  else
+    "$ACME_SCRIPT" --issue $ACME_COMMON_ARGS --server "$ACME_CA" --dns "dns_$ACME_DNS_PROVIDER" -d "$cert_name" --keylength ec-256
+  fi
+}
+
+install_certificate_files() {
+  cert_name="$1"
+  target_dir="$2"
+
+  "$ACME_SCRIPT" --install-cert -d "$cert_name" --ecc $ACME_COMMON_ARGS \
+    --fullchain-file "$target_dir/cert" \
+    --key-file "$target_dir/key"
+}
+
+prepare_certificate_context() {
   [ -n "$DOMAIN" ] || { log "domain is required"; exit 1; }
   [ -n "$TARGET_DIR" ] || { log "target dir is required"; exit 1; }
   [ "$ACME_DNS_PROVIDER" = "cf" ] || { log "only Cloudflare dns provider is supported"; exit 1; }
@@ -100,32 +126,47 @@ issue_certificate() {
   requested_domain=$(normalize_domain "$DOMAIN")
   cert_name=$(get_acme_cert_name "$requested_domain")
   mkdir -p "$TARGET_DIR"
+}
 
-  if ! "$ACME_SCRIPT" --info -d "$cert_name" --ecc $ACME_COMMON_ARGS 2>/dev/null | grep -q "RealFullChainPath"; then
+issue_certificate() {
+  prepare_certificate_context
+
+  if ! has_certificate_record "$cert_name"; then
     log "issuing certificate for $requested_domain"
-    cleanup_acme_record "$cert_name" "$requested_domain"
-    if is_wildcard_domain "$requested_domain"; then
-      "$ACME_SCRIPT" --issue $ACME_COMMON_ARGS --server "$ACME_CA" --dns "dns_$ACME_DNS_PROVIDER" -d "$cert_name" -d "$requested_domain" --keylength ec-256
-    else
-      "$ACME_SCRIPT" --issue $ACME_COMMON_ARGS --server "$ACME_CA" --dns "dns_$ACME_DNS_PROVIDER" -d "$cert_name" --keylength ec-256
-    fi
+    request_certificate "$requested_domain" "$cert_name"
   else
     log "certificate already exists for $requested_domain, reinstalling latest copy"
   fi
 
-  "$ACME_SCRIPT" --install-cert -d "$cert_name" --ecc $ACME_COMMON_ARGS \
-    --fullchain-file "$TARGET_DIR/cert" \
-    --key-file "$TARGET_DIR/key"
+  install_certificate_files "$cert_name" "$TARGET_DIR"
 
   log "certificate ready: $requested_domain -> $TARGET_DIR"
+}
+
+renew_certificate() {
+  prepare_certificate_context
+
+  if has_certificate_record "$cert_name"; then
+    log "renewing certificate for $requested_domain"
+    "$ACME_SCRIPT" --renew -d "$cert_name" --ecc $ACME_COMMON_ARGS
+  else
+    log "no existing acme record for $requested_domain, issuing a new certificate"
+    request_certificate "$requested_domain" "$cert_name"
+  fi
+
+  install_certificate_files "$cert_name" "$TARGET_DIR"
+  log "certificate synced: $requested_domain -> $TARGET_DIR"
 }
 
 case "$COMMAND" in
   issue)
     issue_certificate
     ;;
+  renew)
+    renew_certificate
+    ;;
   *)
-    log "usage: $0 issue <domain> <target-dir>"
+    log "usage: $0 <issue|renew> <domain> <target-dir>"
     exit 1
     ;;
 esac
