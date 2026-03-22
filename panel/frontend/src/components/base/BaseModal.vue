@@ -1,7 +1,7 @@
 <template>
   <Teleport to="body">
     <Transition name="modal">
-      <div v-if="modelValue" class="modal-backdrop" ref="backdropRef" @click.self="close">
+      <div v-if="modelValue" class="modal-backdrop">
         <div class="modal" :class="{ 'modal--lg': large }" tabindex="-1" ref="modalRef">
           <div class="modal__header">
             <div>
