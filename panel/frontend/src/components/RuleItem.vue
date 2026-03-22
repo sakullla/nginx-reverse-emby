@@ -151,11 +151,27 @@ const statusLabel = computed(() => ({
 const isCopying = ref(false)
 const copySuccess = ref(false)
 
+const copyToClipboard = async (text) => {
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    await navigator.clipboard.writeText(text)
+  } else {
+    // Fallback for environments without clipboard API
+    const textarea = document.createElement('textarea')
+    textarea.value = text
+    textarea.style.position = 'fixed'
+    textarea.style.opacity = '0'
+    document.body.appendChild(textarea)
+    textarea.select()
+    document.execCommand('copy')
+    document.body.removeChild(textarea)
+  }
+}
+
 const copyRule = async () => {
   isCopying.value = true
   try {
     const text = `${props.rule.frontend_url} → ${props.rule.backend_url}`
-    await navigator.clipboard.writeText(text)
+    await copyToClipboard(text)
     copySuccess.value = true
     setTimeout(() => {
       copySuccess.value = false
