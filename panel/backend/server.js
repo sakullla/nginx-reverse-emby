@@ -1066,7 +1066,7 @@ async function detachManagedCertificateFromAgent(certId, agentId, options = {}) 
 
   const deleted = certs.splice(index, 1)[0];
   saveManagedCertificates(certs);
-  removePath(getCertStoreDir(deleted.domain));
+  cleanupManagedCertificateArtifacts(deleted.domain);
   for (const targetAgentId of deleted.target_agent_ids || []) {
     if (targetAgentId === LOCAL_AGENT_ID) {
       persistManagedCertificateBundleForAgent(targetAgentId);
@@ -1401,11 +1401,10 @@ function runChecked(command, args, extraEnv = {}) {
     throw new Error(result.error.message);
   }
   if (result.status !== 0) {
-    const details = (
-      result.stderr ||
-      result.stdout ||
-      `exit code ${result.status}`
-    ).trim();
+    const details = [result.stderr, result.stdout]
+      .filter((item) => typeof item === "string" && item.trim())
+      .join("\n")
+      .trim() || `exit code ${result.status}`;
     throw new Error(details);
   }
 }
@@ -1935,6 +1934,18 @@ function listAutoRenewManagedCertificates() {
       cert.scope === "domain" &&
       cert.issuer_mode === "master_cf_dns",
   );
+}
+
+function cleanupManagedCertificateArtifacts(domain) {
+  try {
+    runManagedCertificateHelper(domain, "remove");
+  } catch (err) {
+    console.error(
+      `[cert] failed to remove ACME artifacts for ${domain}:`,
+      String(err.message || err),
+    );
+  }
+  removePath(getCertStoreDir(domain));
 }
 
 async function runManagedCertificateAutoRenewCycle() {
@@ -3158,7 +3169,7 @@ async function handleMasterApi(req, res) {
 
       const deleted = certs.splice(index, 1)[0];
       saveManagedCertificates(certs);
-      removePath(getCertStoreDir(deleted.domain));
+      cleanupManagedCertificateArtifacts(deleted.domain);
       for (const targetAgentId of deleted.target_agent_ids || []) {
         if (targetAgentId === LOCAL_AGENT_ID) {
           persistManagedCertificateBundleForAgent(targetAgentId);
@@ -3293,7 +3304,7 @@ async function handleMasterApi(req, res) {
       }
       const deleted = certs.splice(index, 1)[0];
       saveManagedCertificates(certs);
-      removePath(getCertStoreDir(deleted.domain));
+      cleanupManagedCertificateArtifacts(deleted.domain);
       for (const agentId of deleted.target_agent_ids || []) {
         if (agentId === LOCAL_AGENT_ID) {
           persistManagedCertificateBundleForAgent(agentId);
