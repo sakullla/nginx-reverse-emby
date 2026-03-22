@@ -223,6 +223,35 @@ restart_nginx_after_install() {
     fi
 }
 
+has_ipv6() {
+    command -v ip >/dev/null 2>&1 || return 1
+    ip -6 addr show scope global 2>/dev/null | grep -q inet6
+}
+
+get_resolver_host() {
+    system_dns=$(awk '/^nameserver/ { print ($2 ~ /:/ ? "["$2"]" : $2) }' /etc/resolv.conf 2>/dev/null | xargs)
+    if [ -n "$system_dns" ]; then
+        printf '%s\n' "$system_dns"
+        return 0
+    fi
+
+    printf '%s\n' "1.1.1.1 8.8.8.8"
+}
+
+get_nginx_resolver() {
+    if [ -n "${NGINX_LOCAL_RESOLVERS:-}" ]; then
+        printf '%s\n' "$NGINX_LOCAL_RESOLVERS"
+        return 0
+    fi
+
+    resolver_hosts="$(get_resolver_host)"
+    if has_ipv6; then
+        printf '%s\n' "$resolver_hosts"
+    else
+        printf '%s ipv6=off\n' "$resolver_hosts"
+    fi
+}
+
 ensure_nginx_stream_support() {
     node_bin_path="$1"
     nginx_conf_path="$(detect_nginx_conf_path || true)"
@@ -239,6 +268,7 @@ ensure_nginx_stream_support() {
         echo "Updating nginx.conf for agent mode requires root or sudo" >&2
         exit 1
     }
+    stream_resolver="$(get_nginx_resolver)"
 
     run_root_cmd mkdir -p /etc/nginx/stream-conf.d/dynamic /etc/nginx/conf.d/dynamic
 
@@ -247,6 +277,7 @@ ensure_nginx_stream_support() {
 const fs = require('fs')
 
 const mainConf = process.env.NGINX_MAIN_CONF_FILE
+const streamResolver = String(process.env.NGINX_STREAM_RESOLVER || '').trim()
 let source = fs.readFileSync(mainConf, 'utf8')
 let changed = false
 
@@ -293,6 +324,12 @@ function ensureLinesInBlock(text, blockName, lines) {
 }
 
 const streamLines = [
+  ...(streamResolver
+    ? [
+        `resolver ${streamResolver};`,
+        'resolver_timeout 5s;',
+      ]
+    : []),
   'include /etc/nginx/stream-conf.d/*.conf;',
   'include /etc/nginx/stream-conf.d/dynamic/*.conf;',
 ]
@@ -304,7 +341,9 @@ if (result.found) {
     changed = true
   }
 } else {
-  source = source.replace(/\s*$/, '\n') + `\nstream {\n    ${streamLines[0]}\n    ${streamLines[1]}\n}\n`
+  source =
+    source.replace(/\s*$/, '\n') +
+    `\nstream {\n    ${streamLines.join('\n    ')}\n}\n`
   changed = true
 }
 
@@ -314,7 +353,7 @@ if (changed) {
 }
 EOF
 
-    if ! run_root_cmd env NGINX_MAIN_CONF_FILE="$nginx_conf_path" "$node_bin_path" "$tmp_script"; then
+    if ! run_root_cmd env NGINX_MAIN_CONF_FILE="$nginx_conf_path" NGINX_STREAM_RESOLVER="$stream_resolver" "$node_bin_path" "$tmp_script"; then
         rm -f "$tmp_script"
         echo "Failed to update nginx.conf for stream includes" >&2
         exit 1
