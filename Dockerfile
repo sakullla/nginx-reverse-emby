@@ -30,6 +30,7 @@ RUN set -eux; \
         echo "Unsupported base image package manager" >&2; \
         exit 1; \
     fi; \
+    find /tmp/docker /opt/nginx-reverse-emby/scripts -type f -name '*.sh' -exec sed -i 's/\r$//' {} +; \
     rm -f /etc/nginx/conf.d/default.conf; \
     mkdir -p /etc/nginx/templates /etc/nginx/conf.d/dynamic /opt/nginx-reverse-emby/panel/data; \
     mv /tmp/docker/nginx.conf /etc/nginx/nginx.conf; \

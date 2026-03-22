@@ -1,0 +1,746 @@
+<template>
+  <form class="rule-form" @submit.prevent="handleSubmit">
+    <!-- Protocol -->
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label form-label--required">协议</label>
+        <select v-model="form.protocol" class="input" @change="handleProtocolChange">
+          <option value="tcp">TCP</option>
+          <option value="udp">UDP</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Listen Address -->
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label form-label--required">监听地址</label>
+        <input v-model="form.listen_host" class="input" placeholder="0.0.0.0" @input="handleListenInput">
+      </div>
+      <div class="form-group">
+        <label class="form-label form-label--required">监听端口</label>
+        <input v-model.number="form.listen_port" class="input" type="number" min="1" max="65535" placeholder="25565" @input="updateAutoTags">
+      </div>
+    </div>
+
+    <!-- Load Balancing Strategy -->
+    <div class="form-group">
+      <label class="form-label">负载均衡策略</label>
+      <select v-model="form.load_balancing.strategy" class="input" @change="handleStrategyChange">
+        <option value="round_robin">轮询 (Round Robin)</option>
+        <option value="least_conn">最少连接 (Least Connections)</option>
+        <option value="random">随机 (Random)</option>
+        <option value="hash">哈希 (Hash)</option>
+      </select>
+    </div>
+
+    <!-- Hash Key (only when strategy is hash) -->
+    <div v-if="form.load_balancing.strategy === 'hash'" class="form-group">
+      <label class="form-label">哈希键</label>
+      <input v-model="form.load_balancing.hash_key" class="input" placeholder="$remote_addr">
+      <div class="form-help">例如: $remote_addr, $binary_remote_addr, $ssl_session_id</div>
+    </div>
+
+    <!-- Backends List -->
+    <div class="form-group">
+      <div class="backends-header">
+        <label class="form-label form-label--required">后端服务器</label>
+        <button type="button" class="btn btn--sm btn--secondary" @click="addBackend">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="12" y1="5" x2="12" y2="19"/>
+            <line x1="5" y1="12" x2="19" y2="12"/>
+          </svg>
+          添加后端
+        </button>
+      </div>
+
+      <div class="backends-list">
+        <div
+          v-for="(backend, index) in form.backends"
+          :key="backend.id"
+          class="backend-item"
+          :class="{ 'backend-item--dragging': draggingIndex === index }"
+        >
+          <div class="backend-drag-handle" @mousedown="startDrag(index)" title="拖动排序">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="9" cy="5" r="1"/>
+              <circle cx="9" cy="12" r="1"/>
+              <circle cx="9" cy="19" r="1"/>
+              <circle cx="15" cy="5" r="1"/>
+              <circle cx="15" cy="12" r="1"/>
+              <circle cx="15" cy="19" r="1"/>
+            </svg>
+          </div>
+
+          <div class="backend-fields--inline">
+            <input
+              v-model="backend.address"
+              class="input backend-address-input"
+              placeholder="IP:端口 或 域名:端口"
+              @blur="parseBackendAddress(index)"
+            >
+            <div class="backend-weight-wrapper">
+              <span class="backend-weight-label">权重</span>
+              <input
+                v-model.number="backend.weight"
+                class="input backend-weight-input"
+                type="number"
+                min="1"
+                max="100"
+              >
+            </div>
+          </div>
+
+          <button
+            v-if="form.backends.length > 1"
+            type="button"
+            class="btn btn--icon btn--danger-ghost"
+            @click="removeBackend(index)"
+            title="删除后端"
+          >
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="3 6 5 6 21 6"/>
+              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tags -->
+    <div class="form-group">
+      <label class="form-label">分类标签</label>
+      <div class="tag-input">
+        <div class="tag-input__container">
+          <span
+            v-for="(tag, index) in form.tags"
+            :key="tag"
+            class="tag"
+          >
+            {{ tag }}
+            <button
+              type="button"
+              class="tag__remove"
+              @click="removeTag(index)"
+            >
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="18" y1="6" x2="6" y2="18"/>
+                <line x1="6" y1="6" x2="18" y2="18"/>
+              </svg>
+            </button>
+          </span>
+          <input
+            v-model="tagInput"
+            type="text"
+            class="tag-input__field"
+            placeholder="输入标签按回车..."
+            @keydown.enter.prevent="addTag"
+          >
+        </div>
+      </div>
+    </div>
+
+    <!-- Enabled Toggle -->
+    <label class="toggle-row">
+      <input v-model="form.enabled" type="checkbox" class="toggle__input">
+      <span class="toggle__slider"></span>
+      <span class="toggle__label">启用规则</span>
+    </label>
+
+    <!-- Submit -->
+    <button type="submit" class="btn btn--primary btn--full" :disabled="ruleStore.loading">
+      {{ isEdit ? '保存修改' : '创建规则' }}
+    </button>
+  </form>
+</template>
+
+<script setup>
+import { computed, ref } from 'vue'
+import { useRuleStore } from '../stores/rules'
+
+const props = defineProps({ initialData: { type: Object, default: null } })
+const emit = defineEmits(['success'])
+const ruleStore = useRuleStore()
+const isEdit = computed(() => !!props.initialData)
+
+// Generate unique ID for backend items
+let backendIdCounter = 0
+
+// Check if value is an IP address (IPv4 or IPv6)
+function isIpAddress(value) {
+  if (!value) return false
+  // IPv4 check
+  if (/^(\d{1,3}\.){3}\d{1,3}$/.test(value)) return true
+  // IPv6 check (simplified - has colons and valid chars)
+  if (/^[0-9A-Fa-f:]+$/.test(value) && value.includes(':')) return true
+  return false
+}
+
+function createBackend(data = {}) {
+  const host = data.host || ''
+  const port = data.port || 0
+  const address = host && port ? `${host}:${port}` : (data.address || '')
+  return {
+    id: `b-${Date.now()}-${backendIdCounter++}`,
+    address,
+    host, // computed from address on parse
+    port, // computed from address on parse
+    weight: data.weight || 1,
+    resolve: data.resolve || false,
+  }
+}
+
+// Initialize form from initialData or defaults
+const initialBackends = props.initialData?.backends?.length > 0
+  ? props.initialData.backends.map(b => createBackend(b))
+  : (props.initialData?.upstream_host
+    ? [createBackend({
+        address: `${props.initialData.upstream_host}:${props.initialData.upstream_port || ''}`,
+        weight: 1,
+        resolve: false,
+      })]
+    : [createBackend()])
+
+const form = ref({
+  protocol: props.initialData?.protocol || 'tcp',
+  listen_host: props.initialData?.listen_host || '0.0.0.0',
+  listen_port: props.initialData?.listen_port || 0,
+  backends: initialBackends,
+  load_balancing: {
+    strategy: props.initialData?.load_balancing?.strategy || 'round_robin',
+    hash_key: props.initialData?.load_balancing?.hash_key || '$remote_addr',
+    zone_size: props.initialData?.load_balancing?.zone_size || '64k',
+  },
+  enabled: props.initialData?.enabled !== false,
+  tags: Array.isArray(props.initialData?.tags) ? [...props.initialData.tags] : []
+})
+
+const tagInput = ref('')
+const draggingIndex = ref(-1)
+
+const LB_TAG_MAP = { round_robin: 'RR', least_conn: 'LC', random: 'RND', hash: 'HASH' }
+const LB_TAG_SET = new Set(Object.values(LB_TAG_MAP))
+
+function isL4AutoTag(t) {
+  return t === 'TCP' || t === 'UDP' || /^:\d+$/.test(t) ||
+    /^(TCP|UDP) 监听端口 \d+/.test(t) ||
+    t.startsWith('监听端口') || t.startsWith('上游端口') ||
+    LB_TAG_SET.has(t)
+}
+
+function updateAutoTags() {
+  if (isEdit.value) return
+  const protocol = form.value.protocol.toUpperCase()
+  const listenPort = form.value.listen_port
+  const lbTag = LB_TAG_MAP[form.value.load_balancing.strategy]
+  form.value.tags = form.value.tags.filter(t => !isL4AutoTag(t))
+  const sysTags = [protocol, ...(listenPort ? [`:${listenPort}`] : []), ...(lbTag ? [lbTag] : [])]
+  form.value.tags = [...sysTags, ...form.value.tags]
+}
+
+function handleProtocolChange() {
+  if (!isEdit.value) updateAutoTags()
+}
+
+function handleStrategyChange() {
+  if (!isEdit.value) updateAutoTags()
+}
+
+function handleListenInput(e) {
+  const value = e.target.value.trim()
+  const match = value.match(/^(.+):(\d+)$/)
+  if (match) {
+    form.value.listen_host = match[1]
+    form.value.listen_port = parseInt(match[2], 10)
+    if (!isEdit.value) updateAutoTags()
+  }
+}
+
+// Backend management
+function addBackend() {
+  form.value.backends.push(createBackend())
+}
+
+function removeBackend(index) {
+  if (form.value.backends.length > 1) {
+    form.value.backends.splice(index, 1)
+  }
+}
+
+// Parse address field into host/port and auto-detect if DNS resolution is needed
+function parseBackendAddress(index) {
+  const backend = form.value.backends[index]
+  const address = backend.address?.trim() || ''
+
+  // Parse host:port format
+  const match = address.match(/^(.+):(\d+)$/)
+  if (match) {
+    backend.host = match[1]
+    backend.port = parseInt(match[2], 10)
+  } else {
+    backend.host = address
+    backend.port = 0
+  }
+
+  // Auto-detect if DNS resolution is needed (not an IP address)
+  const cleanHost = backend.host?.replace(/^\[|\]$/g, '') || ''
+  backend.resolve = !isIpAddress(cleanHost)
+}
+
+// Drag and drop for backend reordering
+function startDrag(index) {
+  draggingIndex.value = index
+  const handleMouseUp = () => {
+    draggingIndex.value = -1
+    document.removeEventListener('mouseup', handleMouseUp)
+    document.removeEventListener('mouseleave', handleMouseUp)
+  }
+  document.addEventListener('mouseup', handleMouseUp)
+  document.addEventListener('mouseleave', handleMouseUp)
+}
+
+// Tag management
+function addTag() {
+  const tag = tagInput.value.trim()
+  if (tag && !form.value.tags.includes(tag)) {
+    form.value.tags.push(tag)
+  }
+  tagInput.value = ''
+}
+
+function removeTag(index) {
+  form.value.tags.splice(index, 1)
+}
+
+// Build payload for API
+function buildPayload() {
+  // Ensure all backend addresses are parsed before building payload
+  form.value.backends.forEach((_, index) => parseBackendAddress(index))
+
+  const protocol = form.value.protocol.toUpperCase()
+  const listenPort = form.value.listen_port
+  const lbTag = LB_TAG_MAP[form.value.load_balancing.strategy]
+  const userTags = form.value.tags.filter(t => !isL4AutoTag(t))
+  const sysTags = [protocol, ...(listenPort ? [`:${listenPort}`] : []), ...(lbTag ? [lbTag] : [])]
+
+  // Filter out empty backends
+  const validBackends = form.value.backends
+    .filter(b => b.host && b.port)
+    .map(b => ({
+      host: b.host.trim(),
+      port: Number(b.port),
+      weight: Number(b.weight) || 1,
+      resolve: !!b.resolve,
+    }))
+
+  return {
+    protocol: form.value.protocol,
+    listen_host: form.value.listen_host.trim(),
+    listen_port: listenPort,
+    // Keep legacy fields for backward compatibility
+    upstream_host: validBackends[0]?.host || '',
+    upstream_port: validBackends[0]?.port || 0,
+    // New multi-backend fields
+    backends: validBackends,
+    load_balancing: {
+      strategy: form.value.load_balancing.strategy,
+      ...(form.value.load_balancing.strategy === 'hash'
+        ? { hash_key: form.value.load_balancing.hash_key || '$remote_addr' }
+        : {}),
+      zone_size: form.value.load_balancing.zone_size || '64k',
+    },
+    enabled: form.value.enabled,
+    tags: [...sysTags, ...userTags],
+  }
+}
+
+async function handleSubmit() {
+  // Parse all addresses first, then validate
+  form.value.backends.forEach((_, index) => parseBackendAddress(index))
+  const validBackends = form.value.backends.filter(b => b.host && b.port)
+  if (validBackends.length === 0) {
+    ruleStore.showError?.('至少需要一个有效的后端服务器')
+    return
+  }
+
+  const payload = buildPayload()
+  if (isEdit.value) {
+    await ruleStore.modifyL4Rule(props.initialData.id, payload)
+  } else {
+    await ruleStore.addL4Rule(payload)
+  }
+  emit('success')
+}
+</script>
+
+<style scoped>
+.rule-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.form-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: var(--space-3);
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.form-label {
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  color: var(--color-text-secondary);
+}
+
+.form-label--required::after {
+  content: ' *';
+  color: var(--color-danger);
+}
+
+.form-help {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+.input {
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-surface);
+  color: var(--color-text-primary);
+  font-size: var(--text-sm);
+  transition: all var(--duration-fast) var(--ease-default);
+}
+
+.input:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: var(--shadow-focus);
+}
+
+.input--narrow {
+  padding: var(--space-2);
+}
+
+/* Backends */
+.backends-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.backends-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.backend-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--color-bg-subtle);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-lg);
+  transition: all var(--duration-fast);
+}
+
+.backend-item:hover {
+  border-color: var(--color-border-strong);
+}
+
+.backend-item--dragging {
+  opacity: 0.5;
+}
+
+.backend-drag-handle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-1);
+  color: var(--color-text-muted);
+  cursor: grab;
+  border-radius: var(--radius-sm);
+}
+
+.backend-drag-handle:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text-secondary);
+}
+
+.backend-drag-handle:active {
+  cursor: grabbing;
+}
+
+.backend-fields {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.backend-row {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.backend-row .input:first-child {
+  flex: 1;
+}
+
+.backend-fields--inline {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.backend-address-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.backend-weight-wrapper {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  flex-shrink: 0;
+}
+
+.backend-weight-label {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
+.backend-weight-input {
+  width: 56px;
+  text-align: center;
+  padding: var(--space-2) var(--space-1);
+}
+
+.backend-options {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.backend-option {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+}
+
+.backend-checkbox {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
+.backend-checkbox input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--color-primary);
+}
+
+/* Buttons */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  border: none;
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-default);
+}
+
+.btn--sm {
+  padding: var(--space-1) var(--space-3);
+  font-size: var(--text-xs);
+}
+
+.btn--primary {
+  background: var(--gradient-primary);
+  color: white;
+}
+
+.btn--primary:hover:not(:disabled) {
+  opacity: 0.9;
+  transform: translateY(-1px);
+}
+
+.btn--secondary {
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-default);
+  color: var(--color-text-primary);
+}
+
+.btn--secondary:hover {
+  background: var(--color-bg-hover);
+  border-color: var(--color-border-strong);
+}
+
+.btn--danger-ghost {
+  background: transparent;
+  color: var(--color-text-muted);
+  padding: var(--space-2);
+}
+
+.btn--danger-ghost:hover {
+  color: var(--color-danger);
+  background: var(--color-danger-50);
+}
+
+.btn--icon {
+  padding: var(--space-2);
+  border-radius: var(--radius-md);
+}
+
+.btn--full {
+  width: 100%;
+  padding: var(--space-3);
+}
+
+.btn:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Tags */
+.tag-input {
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  transition: all var(--duration-fast) var(--ease-default);
+}
+
+.tag-input:focus-within {
+  border-color: var(--color-primary);
+  box-shadow: var(--shadow-focus);
+}
+
+.tag-input__container {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  align-items: center;
+  min-height: 44px;
+}
+
+.tag-input__field {
+  flex: 1;
+  min-width: 120px;
+  border: none;
+  background: transparent;
+  padding: var(--space-1);
+  font-size: var(--text-sm);
+  color: var(--color-text-primary);
+  outline: none;
+}
+
+.tag-input__field::placeholder {
+  color: var(--color-text-muted);
+}
+
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px 8px;
+  background: var(--color-bg-subtle);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-full);
+  font-size: var(--text-xs);
+  color: var(--color-text-primary);
+}
+
+.tag__remove {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  padding: 0;
+  border-radius: 50%;
+  transition: all var(--duration-fast);
+}
+
+.tag__remove:hover {
+  background: var(--color-danger-50);
+  color: var(--color-danger);
+}
+
+/* Toggle */
+.toggle-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  cursor: pointer;
+}
+
+.toggle__input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+}
+
+.toggle__slider {
+  position: relative;
+  width: 44px;
+  height: 24px;
+  background: var(--color-border-strong);
+  border-radius: var(--radius-full);
+  transition: all var(--duration-normal) var(--ease-bounce);
+  flex-shrink: 0;
+}
+
+.toggle__slider::after {
+  content: '';
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  background: white;
+  border-radius: var(--radius-full);
+  transition: all var(--duration-normal) var(--ease-bounce);
+  box-shadow: var(--shadow-sm);
+}
+
+.toggle__input:checked + .toggle__slider {
+  background: var(--gradient-primary);
+}
+
+.toggle__input:checked + .toggle__slider::after {
+  transform: translateX(20px);
+}
+
+.toggle__label {
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+}
+</style>

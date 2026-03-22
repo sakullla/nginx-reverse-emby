@@ -10,9 +10,12 @@ DYNAMIC_DIR="${NRE_DYNAMIC_DIR:-/etc/nginx/conf.d/dynamic}"
 # Data root
 DATA_ROOT="/opt/nginx-reverse-emby/panel/data"
 RULES_FILE="${PANEL_RULES_FILE:-$DATA_ROOT/proxy_rules.csv}"
+L4_RULES_JSON="${PANEL_L4_RULES_JSON:-$DATA_ROOT/l4_rules.json}"
+MANAGED_CERTS_SYNC_JSON="${PANEL_MANAGED_CERTS_SYNC_JSON:-$DATA_ROOT/managed_cert_bundle.json}"
 ACME_HOME="${ACME_HOME:-$DATA_ROOT/.acme.sh}"
 DIRECT_CERT_DIR="${DIRECT_CERT_DIR:-$DATA_ROOT/certs}"
 DIRECT_CERT_STATE_FILE="${DIRECT_CERT_STATE_FILE:-$DATA_ROOT/.state/active_cert_domains}"
+STREAM_DYNAMIC_DIR="${NRE_STREAM_DYNAMIC_DIR:-/etc/nginx/stream-conf.d/dynamic}"
 
 RESOLVER="${NGINX_LOCAL_RESOLVERS:-1.1.1.1}"
 PROXY_DEPLOY_MODE="${PROXY_DEPLOY_MODE:-front_proxy}"
@@ -55,6 +58,13 @@ process.stdout.write(u.protocol.slice(0, -1) + '|' + host + '|' + port + '|' + p
 }
 
 format_server_name() {
+    case "$1" in
+        *:*) printf '[%s]' "$1" ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
+
+format_network_host() {
     case "$1" in
         *:*) printf '[%s]' "$1" ;;
         *) printf '%s' "$1" ;;
@@ -308,14 +318,216 @@ collect_rules() {
     fi
 }
 
+collect_l4_rules() {
+    output_file="$1"
+    # Output is now a structured format that generate_l4_configs will process directly from JSON
+    if [ ! -f "$L4_RULES_JSON" ]; then
+        return 0
+    fi
+    # Just copy the JSON file path to output file for the generator to use directly
+    printf '%s' "$L4_RULES_JSON" > "$output_file"
+}
+
+install_synced_certificate() {
+    cert_domain="$1"
+    [ -f "$MANAGED_CERTS_SYNC_JSON" ] || return 1
+    CERT_DOMAIN="$cert_domain" DIRECT_CERT_DIR="$DIRECT_CERT_DIR" MANAGED_CERTS_SYNC_JSON="$MANAGED_CERTS_SYNC_JSON" node -e "
+        const fs = require('fs');
+        const path = require('path');
+        const domain = process.env.CERT_DOMAIN;
+        const bundleFile = process.env.MANAGED_CERTS_SYNC_JSON;
+        const certRoot = process.env.DIRECT_CERT_DIR;
+        const bundle = JSON.parse(fs.readFileSync(bundleFile, 'utf8'));
+        const item = (Array.isArray(bundle) ? bundle : []).find((entry) => String(entry.domain || '').trim() === domain);
+        if (!item || !item.cert_pem || !item.key_pem) process.exit(1);
+        const targetDir = path.join(certRoot, domain);
+        fs.mkdirSync(targetDir, { recursive: true });
+        fs.writeFileSync(path.join(targetDir, 'cert'), String(item.cert_pem), 'utf8');
+        fs.writeFileSync(path.join(targetDir, 'key'), String(item.key_pem), 'utf8');
+    " >/dev/null 2>&1
+}
+
+generate_l4_configs() {
+    rules_json_path="$1"
+    mkdir -p "$STREAM_DYNAMIC_DIR"
+    rm -f "$STREAM_DYNAMIC_DIR"/*.conf
+
+    [ -f "$rules_json_path" ] || return 0
+    [ -s "$rules_json_path" ] || return 0
+
+    # Validate the file contains a JSON path
+    case "$rules_json_path" in
+        *.json) : ;;
+        *) entrypoint_log "L4 rules file is not JSON: $rules_json_path"; return 0 ;;
+    esac
+
+    RESOLVER_LINE="$RESOLVER"
+
+    node -e "
+        const fs = require('fs');
+        const path = require('path');
+
+        const rulesJsonPath = '$rules_json_path';
+        const streamDynamicDir = '$STREAM_DYNAMIC_DIR';
+        const resolver = '$RESOLVER_LINE';
+
+        function formatNetworkHost(host) {
+            if (host.includes(':')) return '[' + host + ']';
+            return host;
+        }
+
+        function sanitizeDomain(domain) {
+            return domain.toLowerCase().replace(/[^a-z0-9._-]/g, '_');
+        }
+
+        function isIpAddress(value) {
+            if (!value) return false;
+            // IPv4 check
+            if (/^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/.test(value)) return true;
+            // IPv6 check (simplified - has colons and is hex-like)
+            if (/^[0-9A-Fa-f:.]+$/.test(value) && value.includes(':')) return true;
+            return false;
+        }
+
+        function needsResolve(host) {
+            if (!host) return false;
+            // Strip brackets for IPv6
+            const cleanHost = host.replace(/^\[|\]$/g, '');
+            return !isIpAddress(cleanHost);
+        }
+
+        function formatBackend(backend, isFirst) {
+            const host = formatNetworkHost(backend.host);
+            const weight = backend.weight && backend.weight !== 1 ? ' weight=' + backend.weight : '';
+            const resolve = needsResolve(backend.host) ? ' resolve' : '';
+            return '    server ' + host + ':' + backend.port + weight + resolve + ';';
+        }
+
+        function renderUpstreamBlock(name, backends, lbStrategy, lbHashKey, zoneSize) {
+            let lines = ['upstream ' + name + ' {'];
+            lines.push('    zone ' + name + ' ' + (zoneSize || '64k') + ';');
+
+            if (lbStrategy === 'least_conn') {
+                lines.push('    least_conn;');
+            } else if (lbStrategy === 'random') {
+                lines.push('    random;');
+            } else if (lbStrategy === 'hash') {
+                lines.push('    hash ' + (lbHashKey || '\$remote_addr') + ';');
+            }
+            // round_robin is default, no directive needed
+
+            backends.forEach((b, i) => {
+                lines.push(formatBackend(b, i === 0));
+            });
+
+            lines.push('}');
+            return lines.join('\n');
+        }
+
+        try {
+            const rules = JSON.parse(fs.readFileSync(rulesJsonPath, 'utf8'));
+            if (!Array.isArray(rules)) {
+                console.error('L4 rules is not an array');
+                process.exit(0);
+            }
+
+            rules.filter(r => r && r.enabled !== false).forEach((r, index) => {
+                const protocol = String(r.protocol || 'tcp').trim().toLowerCase();
+                const listenHost = String(r.listen_host || '0.0.0.0').trim();
+                const listenPort = String(r.listen_port || '').trim();
+                const name = String(r.name || (protocol + '-' + listenPort)).trim();
+
+                if (!listenPort) return;
+
+                // Get backends array
+                let backends = [];
+                if (Array.isArray(r.backends) && r.backends.length > 0) {
+                    backends = r.backends.filter(b => b && b.host && b.port).map(b => ({
+                        host: String(b.host).trim(),
+                        port: Number(b.port),
+                        weight: Number(b.weight) || 1,
+                        resolve: b.resolve === true
+                    }));
+                } else if (r.upstream_host && r.upstream_port) {
+                    // Fallback to legacy single upstream
+                    backends = [{
+                        host: String(r.upstream_host).trim(),
+                        port: Number(r.upstream_port),
+                        weight: 1,
+                        resolve: false
+                    }];
+                }
+
+                if (backends.length === 0) {
+                    console.error('Skipping L4 rule ' + name + ': no valid backends');
+                    return;
+                }
+
+                // Get load balancing settings
+                const lb = r.load_balancing || {};
+                const lbStrategy = String(lb.strategy || 'round_robin').toLowerCase();
+                const lbHashKey = lb.hash_key;
+                const zoneSize = lb.zone_size || '64k';
+
+                const ruleNameSanitized = sanitizeDomain(name);
+                const upstreamName = 'up_' + ruleNameSanitized + '_' + protocol + '_' + listenPort;
+                const confName = ruleNameSanitized + '.' + protocol + '.' + listenPort + '.conf';
+                const listenHostFmt = formatNetworkHost(listenHost);
+
+                // Build listen directive
+                const listenDirective = protocol === 'udp'
+                    ? '    listen ' + listenHostFmt + ':' + listenPort + ' udp reuseport;'
+                    : '    listen ' + listenHostFmt + ':' + listenPort + ';';
+
+                // Build proxy timeouts based on protocol
+                const proxyConnectTimeout = protocol === 'udp' ? '' : '\n    proxy_connect_timeout 10s;';
+                const proxyTimeout = protocol === 'udp'
+                    ? '    proxy_timeout 20s;'
+                    : '    proxy_timeout 10m;';
+
+                // Generate config
+                const configLines = [
+                    '# L4 Forward: ' + name,
+                    '# Protocol: ' + protocol.toUpperCase(),
+                    '# Listen: ' + listenHost + ':' + listenPort,
+                    '# Backends: ' + backends.length,
+                    '# Load Balancing: ' + lbStrategy,
+                    '',
+                    renderUpstreamBlock(upstreamName, backends, lbStrategy, lbHashKey, zoneSize),
+                    '',
+                    'server {',
+                    listenDirective,
+                    proxyConnectTimeout,
+                    proxyTimeout,
+                    '    proxy_pass ' + upstreamName + ';',
+                    '}',
+                    ''
+                ];
+
+                const configPath = path.join(streamDynamicDir, confName);
+                fs.writeFileSync(configPath, configLines.join('\n'), 'utf8');
+
+                const backendList = backends.map(b => b.host + ':' + b.port).join(', ');
+                console.log('[PROXY] Generated L4 config for ' + protocol + ' ' + listenHost + ':' + listenPort + ' -> [' + backendList + '] (strategy: ' + lbStrategy + ')');
+            });
+        } catch (e) {
+            console.error('Error generating L4 configs: ' + e.message);
+            process.exit(1);
+        }
+    " || true
+}
+
 # --- Main Flow ---
 deploy_mode=$(normalize_deploy_mode)
-mkdir -p "$DYNAMIC_DIR" "$DIRECT_CERT_DIR"
+mkdir -p "$DYNAMIC_DIR" "$DIRECT_CERT_DIR" "$STREAM_DYNAMIC_DIR"
 rm -f "$DYNAMIC_DIR"/*.conf
 
 tmp_rules=$(mktemp)
-tmp_certs=$(mktemp)
+tmp_issue_certs=$(mktemp)
+tmp_active_certs=$(mktemp)
+tmp_l4_rules=$(mktemp)
 collect_rules "$tmp_rules"
+collect_l4_rules "$tmp_l4_rules"
 
 if [ -s "$tmp_rules" ]; then
     while IFS=, read -r frontend_url backend_url proxy_redirect || [ -n "$frontend_url" ]; do
@@ -338,7 +550,14 @@ if [ -s "$tmp_rules" ]; then
         template="$TEMPLATE_FILE"
         if [ "$deploy_mode" = "direct" ]; then
             template=$([ "$proto" = "https" ] && echo "$DIRECT_TLS_TEMPLATE_FILE" || echo "$DIRECT_NO_TLS_TEMPLATE_FILE")
-            [ "$proto" = "https" ] && echo "$cert_dom" >> "$tmp_certs"
+            if [ "$proto" = "https" ]; then
+                echo "$cert_dom" >> "$tmp_active_certs"
+                if ! install_synced_certificate "$cert_dom"; then
+                    echo "$cert_dom" >> "$tmp_issue_certs"
+                else
+                    entrypoint_log "Installed synced certificate for $cert_dom"
+                fi
+            fi
         fi
 
         # 根据 proxy_redirect 生成配置
@@ -470,14 +689,23 @@ if [ -s "$tmp_rules" ]; then
     done < "$tmp_rules"
 fi
 
+generate_l4_configs "$tmp_l4_rules"
+
 if [ "$deploy_mode" = "direct" ]; then
-    if [ -s "$tmp_certs" ]; then
-        awk '!seen[$0]++' "$tmp_certs" > "${tmp_certs}.dedup"
-        ensure_certificates_for_rules "${tmp_certs}.dedup"
-        cleanup_unused_certificates "${tmp_certs}.dedup"
-        rm -f "${tmp_certs}.dedup"
+    if [ -s "$tmp_issue_certs" ]; then
+        awk '!seen[$0]++' "$tmp_issue_certs" > "${tmp_issue_certs}.dedup"
+        ensure_certificates_for_rules "${tmp_issue_certs}.dedup"
+        rm -f "${tmp_issue_certs}.dedup"
+    fi
+    if [ -s "$tmp_active_certs" ]; then
+        awk '!seen[$0]++' "$tmp_active_certs" > "${tmp_active_certs}.dedup"
+        cleanup_unused_certificates "${tmp_active_certs}.dedup"
+        rm -f "${tmp_active_certs}.dedup"
+    else
+        : > "$tmp_active_certs"
+        cleanup_unused_certificates "$tmp_active_certs"
     fi
 fi
 
-rm -f "$tmp_rules" "$tmp_certs"
+rm -f "$tmp_rules" "$tmp_issue_certs" "$tmp_active_certs" "$tmp_l4_rules"
 exit 0

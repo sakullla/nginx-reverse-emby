@@ -52,20 +52,21 @@
         </div>
       </div>
 
-      <!-- URL Mapping -->
+      <!-- Mapping: Listen -> Upstream -->
       <div class="rule-card__mapping">
         <div class="rule-card__endpoint">
           <div class="rule-card__endpoint-label">
-            <span class="rule-card__protocol" :class="`rule-card__protocol--${frontendProtocol}`">{{ frontendProtocol.toUpperCase() }}</span>
-            前端入口
+            <span class="rule-card__protocol" :class="`rule-card__protocol--${rule.protocol}`">{{ rule.protocol.toUpperCase() }}</span>
+            监听地址
           </div>
           <div class="rule-card__endpoint-value">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="12" cy="12" r="10"/>
-              <line x1="2" y1="12" x2="22" y2="12"/>
-              <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+              <rect x="2" y="2" width="20" height="8" rx="2" ry="2"/>
+              <rect x="2" y="14" width="20" height="8" rx="2" ry="2"/>
+              <line x1="6" y1="6" x2="6.01" y2="6"/>
+              <line x1="6" y1="18" x2="6.01" y2="18"/>
             </svg>
-            <code>{{ rule.frontend_url }}</code>
+            <code>{{ rule.listen_host }}:{{ rule.listen_port }}</code>
           </div>
         </div>
         <div class="rule-card__arrow">
@@ -75,15 +76,25 @@
           </svg>
         </div>
         <div class="rule-card__endpoint">
-          <div class="rule-card__endpoint-label">后端目标</div>
+          <div class="rule-card__endpoint-label">
+            上游目标
+            <span v-if="hasMultipleBackends" class="rule-card__backend-badge">
+              {{ backendCount }}个后端
+            </span>
+            <span class="rule-card__lb-badge" :title="loadBalancingTitle">
+              {{ loadBalancingLabel }}
+            </span>
+          </div>
           <div class="rule-card__endpoint-value">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <rect x="2" y="2" width="20" height="8" rx="2" ry="2"/>
-              <rect x="2" y="14" width="20" height="8" rx="2" ry="2"/>
-              <line x1="6" y1="6" x2="6.01" y2="6"/>
-              <line x1="6" y1="18" x2="6.01" y2="18"/>
+              <circle cx="12" cy="12" r="10"/>
+              <line x1="2" y1="12" x2="22" y2="12"/>
+              <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
             </svg>
-            <code>{{ rule.backend_url }}</code>
+            <code v-if="!hasMultipleBackends">{{ primaryBackend }}</code>
+            <code v-else class="rule-card__backends-summary" :title="backendsTooltip">
+              {{ primaryBackend }} +{{ backendCount - 1 }}
+            </code>
           </div>
         </div>
       </div>
@@ -101,37 +112,69 @@
 <script setup>
 import { computed } from 'vue'
 import { useRuleStore } from '../stores/rules'
-import { getRuleEffectiveStatus } from '../utils/syncStatus'
 
 const props = defineProps({
-  rule: { type: Object, required: true },
-  agent: { type: Object, default: null }
+  rule: { type: Object, required: true }
 })
 
-defineEmits(['edit', 'delete'])
+const emit = defineEmits(['edit', 'delete'])
 
 const ruleStore = useRuleStore()
 
-const effectiveStatus = computed(() => getRuleEffectiveStatus(props.rule, props.agent))
-
-// Extract protocol from frontend_url
-const frontendProtocol = computed(() => {
-  const url = props.rule.frontend_url || ''
-  if (url.startsWith('https://')) return 'https'
-  if (url.startsWith('http://')) return 'http'
-  return 'http'
-})
+// L4 rules use simple enabled/disabled status (no revision tracking)
+const effectiveStatus = computed(() => props.rule.enabled ? 'active' : 'disabled')
 
 const statusLabel = computed(() => ({
-  active: '已生效',
-  pending: '待同步',
-  failed: '应用失败',
+  active: '已启用',
   disabled: '已停用'
 }[effectiveStatus.value]))
 
+// Multi-backend support
+const backends = computed(() => {
+  if (Array.isArray(props.rule.backends) && props.rule.backends.length > 0) {
+    return props.rule.backends
+  }
+  // Fallback to legacy single upstream
+  if (props.rule.upstream_host && props.rule.upstream_port) {
+    return [{ host: props.rule.upstream_host, port: props.rule.upstream_port, weight: 1 }]
+  }
+  return []
+})
+
+const backendCount = computed(() => backends.value.length)
+const hasMultipleBackends = computed(() => backendCount.value > 1)
+const primaryBackend = computed(() => {
+  const b = backends.value[0]
+  return b ? `${b.host}:${b.port}` : '-'
+})
+
+const backendsTooltip = computed(() => {
+  return backends.value.map((b, i) => `${i + 1}. ${b.host}:${b.port}${b.weight > 1 ? ` (权重${b.weight})` : ''}`).join('\n')
+})
+
+// Load balancing
+const lbStrategy = computed(() => props.rule.load_balancing?.strategy || 'round_robin')
+
+const loadBalancingLabel = computed(() => ({
+  round_robin: 'RR',
+  least_conn: 'LC',
+  random: 'RND',
+  hash: 'HASH'
+}[lbStrategy.value] || 'RR'))
+
+const loadBalancingTitle = computed(() => {
+  const titles = {
+    round_robin: '轮询 (Round Robin)',
+    least_conn: '最少连接 (Least Connections)',
+    random: '随机 (Random)',
+    hash: '哈希 (Hash)'
+  }
+  return titles[lbStrategy.value] || '轮询'
+})
+
 const toggleStatus = async () => {
   try {
-    await ruleStore.toggleRule(props.rule.id, !props.rule.enabled)
+    await ruleStore.toggleL4Rule(props.rule.id, !props.rule.enabled)
   } catch (err) {
     // Error handled by store
   }
@@ -174,14 +217,6 @@ const toggleStatus = async () => {
   background: var(--gradient-primary);
 }
 
-.rule-card__accent--pending {
-  background: var(--color-warning);
-}
-
-.rule-card__accent--failed {
-  background: var(--color-danger);
-}
-
 .rule-card__accent--disabled {
   background: var(--color-border-default);
 }
@@ -196,7 +231,7 @@ const toggleStatus = async () => {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  margin-bottom: var(--space-4);
+  margin-bottom: var(--space-3);
 }
 
 .rule-card__status {
@@ -230,17 +265,6 @@ const toggleStatus = async () => {
   animation: pulse 2s ease-in-out infinite;
 }
 
-.rule-card__status-dot--pending {
-  background: var(--color-warning);
-  box-shadow: 0 0 0 3px var(--color-warning-50);
-  animation: pulse 1.5s ease-in-out infinite;
-}
-
-.rule-card__status-dot--failed {
-  background: var(--color-danger);
-  box-shadow: 0 0 0 3px var(--color-danger-50);
-}
-
 .rule-card__status-dot--disabled {
   background: var(--color-text-muted);
 }
@@ -255,12 +279,8 @@ const toggleStatus = async () => {
   color: var(--color-success);
 }
 
-.rule-card__status-text--pending {
-  color: var(--color-warning);
-}
-
-.rule-card__status-text--failed {
-  color: var(--color-danger);
+.rule-card__status-text--disabled {
+  color: var(--color-text-muted);
 }
 
 .rule-card__actions {
@@ -307,7 +327,7 @@ const toggleStatus = async () => {
   background: var(--color-danger-50);
 }
 
-/* URL Mapping */
+/* Mapping */
 .rule-card__mapping {
   display: flex;
   align-items: center;
@@ -337,14 +357,14 @@ const toggleStatus = async () => {
   font-family: var(--font-mono);
 }
 
-.rule-card__protocol--http {
+.rule-card__protocol--tcp {
   background: var(--color-primary-subtle);
   color: var(--color-primary);
 }
 
-.rule-card__protocol--https {
-  background: var(--color-success-50);
-  color: var(--color-success);
+.rule-card__protocol--udp {
+  background: var(--color-warning-50);
+  color: var(--color-warning);
 }
 
 .rule-card__endpoint-value {
@@ -361,6 +381,7 @@ const toggleStatus = async () => {
 .rule-card__endpoint-value svg {
   color: var(--color-text-muted);
   flex-shrink: 0;
+  margin-top: 2px;
 }
 
 .rule-card__endpoint-value code {
@@ -406,9 +427,30 @@ const toggleStatus = async () => {
   border: 1px solid var(--color-border-default);
 }
 
-@keyframes float {
-  0%, 100% { transform: translateY(0) translateX(0); }
-  50% { transform: translateY(-3px) translateX(2px); }
+/* Backend badges */
+.rule-card__backend-badge {
+  font-size: 9px;
+  font-weight: var(--font-bold);
+  padding: 1px 5px;
+  background: var(--color-success-50);
+  color: var(--color-success);
+  border-radius: var(--radius-sm);
+  margin-left: var(--space-2);
+}
+
+.rule-card__lb-badge {
+  font-size: 9px;
+  font-weight: var(--font-bold);
+  padding: 1px 5px;
+  background: var(--color-primary-subtle);
+  color: var(--color-primary);
+  border-radius: var(--radius-sm);
+  margin-left: var(--space-2);
+  cursor: help;
+}
+
+.rule-card__backends-summary {
+  cursor: help;
 }
 
 @keyframes pulse {
