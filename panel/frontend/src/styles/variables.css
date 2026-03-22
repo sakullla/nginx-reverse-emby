@@ -1,241 +1,310 @@
-/* CSS Variables - Refined Design System (Professional Tech Blue & Slate) */
+/* Multi-Theme Design System - 5 Distinct Styles */
+/* Base variables (shared) */
 :root {
-    /* Colors - Primary (Modern Tech Blue) */
-    --color-primary: #2563eb;
-    --color-primary-dark: #1d4ed8;
-    --color-primary-light: #60a5fa;
-    --color-primary-lighter: #dbeafe;
-    --color-primary-bg: #eff6ff;
-    --color-primary-hover: #1e40af;
+  /* Default fonts - system CJK fonts as fallback when Google Fonts unavailable */
+  --font-sans: 'Noto Sans SC', 'Microsoft YaHei', 'PingFang SC', 'Hiragino Sans GB', 'WenQuanYi Micro Hei', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', 'Consolas', 'Courier New', monospace;
 
-    /* Colors - Secondary (Emerald) */
-    --color-secondary: #10b981;
-    --color-secondary-dark: #059669;
-    --color-secondary-light: #34d399;
-    --color-secondary-bg: #d1fae5;
+  /* Spacing */
+  --space-0: 0;
+  --space-0-5: 0.125rem;
+  --space-1: 0.25rem;
+  --space-1-5: 0.375rem;
+  --space-2: 0.5rem;
+  --space-2-5: 0.625rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.25rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-10: 2.5rem;
+  --space-12: 3rem;
+  --space-16: 4rem;
+  --space-20: 5rem;
 
-    /* Colors - Accent (Rose) */
-    --color-accent: #f43f5e;
-    --color-accent-dark: #e11d48;
-    --color-accent-light: #fb7185;
-    --color-accent-bg: #ffe4e6;
+  /* Radius */
+  --radius-none: 0;
+  --radius-xs: 0.375rem;
+  --radius-sm: 0.5rem;
+  --radius-md: 0.75rem;
+  --radius-lg: 1rem;
+  --radius-xl: 1.25rem;
+  --radius-2xl: 1.5rem;
+  --radius-3xl: 2rem;
+  --radius-full: 9999px;
 
-    /* Colors - Success */
-    --color-success: #10b981;
-    --color-success-dark: #059669;
-    --color-success-light: #34d399;
-    --color-success-bg: #d1fae5;
+  /* Font Sizes */
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-lg: 1.125rem;
+  --text-xl: 1.25rem;
+  --text-2xl: 1.5rem;
+  --text-3xl: 1.875rem;
 
-    /* Colors - Warning */
-    --color-warning: #f59e0b;
-    --color-warning-dark: #d97706;
-    --color-warning-light: #fbbf24;
-    --color-warning-bg: #fef3c7;
+  /* Font Weights */
+  --font-normal: 400;
+  --font-medium: 500;
+  --font-semibold: 600;
+  --font-bold: 700;
 
-    /* Colors - Danger */
-    --color-danger: #ef4444;
-    --color-danger-dark: #dc2626;
-    --color-danger-light: #f87171;
-    --color-danger-bg: #fee2e2;
+  /* Line Heights */
+  --leading-none: 1;
+  --leading-tight: 1.25;
+  --leading-snug: 1.375;
+  --leading-normal: 1.5;
+  --leading-relaxed: 1.625;
 
-    /* Colors - Info */
-    --color-info: #0ea5e9;
-    --color-info-dark: #0284c7;
-    --color-info-light: #7dd3fc;
-    --color-info-bg: #e0f2fe;
+  /* Transitions */
+  --duration-fast: 150ms;
+  --duration-normal: 250ms;
+  --duration-slow: 400ms;
+  --duration-slower: 600ms;
+  --ease-default: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-in: cubic-bezier(0.4, 0, 1, 1);
+  --ease-out: cubic-bezier(0, 0, 0.2, 1);
+  --ease-bounce: cubic-bezier(0.34, 1.56, 0.64, 1);
 
-    /* Colors - Neutral (Modern Slate) */
-    --color-text-primary: #0f172a;
-    --color-text-secondary: #334155;
-    --color-text-tertiary: #475569;
-    --color-text-muted: #64748b;
-    --color-text-disabled: #94a3b8;
-    --color-heading: #020617;
+  /* Z-Index */
+  --z-base: 0;
+  --z-dropdown: 100;
+  --z-sticky: 200;
+  --z-fixed: 300;
+  --z-modal-backdrop: 400;
+  --z-modal: 500;
+  --z-popover: 600;
+  --z-tooltip: 700;
+  --z-toast: 800;
 
-    /* Colors - Background (Light Tech) */
-    --color-bg-primary: #ffffff;
-    --color-bg-secondary: #f1f5f9;
-    --color-bg-tertiary: #e2e8f0;
-    --color-bg-disabled: #f1f5f9;
-    --color-bg-overlay: rgba(15, 23, 42, 0.45);
-    --color-bg-app: #f8fafc;
-    --color-bg-card: #ffffff;
-    --color-bg-panel: #ffffff;
-
-    /* Colors - Border */
-    --color-border: #cbd5e1;
-    --color-border-light: #e2e8f0;
-    --color-border-dark: #94a3b8;
-    --color-border-focus: var(--color-primary);
-
-    /* Glass Effects - Clean Cloud Style */
-    --glass-bg: rgba(255, 255, 255, 0.85);
-    --glass-border: rgba(255, 255, 255, 0.5);
-    --glass-shadow: 0 4px 12px rgba(0, 0, 0, 0.03);
-
-    /* Gradients - Professional Blue */
-    --gradient-primary: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
-    --gradient-secondary: linear-gradient(135deg, #10b981 0%, #059669 100%);
-    --gradient-accent: linear-gradient(135deg, #f43f5e 0%, #e11d48 100%);
-    --gradient-bg: linear-gradient(135deg, #f1f5f9 0%, #cbd5e1 100%);
-    --gradient-header: linear-gradient(to right, #0f172a, #1e293b);
-
-    /* Spacing & Radii (Stay Modern Professional) */
-    --spacing-xs: 0.5rem;
-    --spacing-sm: 0.75rem;
-    --spacing-md: 1rem;
-    --spacing-lg: 1.5rem;
-    --spacing-xl: 2rem;
-    --spacing-2xl: 2.5rem;
-    --spacing-3xl: 3rem;
-    --spacing-4xl: 4rem;
-    --spacing-5xl: 5rem;
-
-    --radius-xs: 4px;
-    --radius-sm: 6px;
-    --radius-md: 8px;
-    --radius-lg: 12px;
-    --radius-xl: 16px;
-    --radius-2xl: 24px;
-    --radius-full: 9999px;
-
-    /* Tag Colors Palette */
-    --tag-1-bg: #eff6ff;
-    --tag-1-text: #2563eb;
-    --tag-2-bg: #ecfdf5;
-    --tag-2-text: #059669;
-    --tag-3-bg: #fef2f2;
-    --tag-3-text: #dc2626;
-    --tag-4-bg: #fff7ed;
-    --tag-4-text: #d97706;
-    --tag-5-bg: #faf5ff;
-    --tag-5-text: #9333ea;
-    --tag-6-bg: #f0fdfa;
-    --tag-6-text: #0d9488;
-
-    /* Shadows - Sharper and more distinct */
-    --shadow-xs: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
-    --shadow-sm:
-        0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px -1px rgba(0, 0, 0, 0.1);
-    --shadow-md:
-        0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -2px rgba(0, 0, 0, 0.1);
-    --shadow-lg:
-        0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -4px rgba(0, 0, 0, 0.1);
-    --shadow-xl:
-        0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.1);
-    --shadow-inner: inset 0 2px 4px 0 rgba(0, 0, 0, 0.05);
-
-    /* Typography */
-    --font-family:
-        "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-        sans-serif;
-    --font-size-xs: 0.75rem;
-    --font-size-sm: 0.875rem;
-    --font-size-base: 1rem;
-    --font-size-lg: 1.125rem;
-    --font-size-xl: 1.25rem;
-    --font-size-2xl: 1.5rem;
-    --font-size-3xl: 2.25rem;
-    --font-size-4xl: 3rem;
-    --font-size-5xl: 4rem;
-
-    --font-weight-normal: 400;
-    --font-weight-medium: 500;
-    --font-weight-semibold: 600;
-    --font-weight-bold: 700;
-    --font-weight-extrabold: 800;
-
-    --line-height-tight: 1.2;
-    --line-height-base: 1.5;
-    --line-height-relaxed: 1.625;
-
-    --letter-spacing-tight: -0.025em;
-    --letter-spacing-normal: 0em;
-    --letter-spacing-wide: 0.025em;
-
-    --blur-sm: 4px;
-    --blur-md: 8px;
-    --blur-lg: 12px;
-
-    --z-modal-backdrop: 1000;
-    --z-modal: 1010;
-    --z-toast: 1100;
-
-    --transition-slow: 300ms cubic-bezier(0.4, 0, 0.2, 1);
-    --transition-base: 200ms cubic-bezier(0.4, 0, 0.2, 1);
-    --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+  /* Layout */
+  --sidebar-width: 260px;
+  --header-height: 64px;
+  --container-max: 1440px;
 }
 
-/* Dark Mode Overrides (Midnight Slate) */
-[data-theme="dark"] {
-    --color-text-primary: #f8fafc;
-    --color-text-secondary: #94a3b8;
-    --color-text-tertiary: #64748b;
-    --color-text-muted: #475569;
-    --color-heading: #f1f5f9;
+/* =============================================
+   THEME 1: 二次元 (Lilac Purple · Dreamy Anime)
+   ============================================= */
+[data-theme="sakura"] {
+  --font-sans: 'ZCOOL KuaiLe', 'Noto Sans SC', 'Microsoft YaHei', 'PingFang SC', -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', Consolas, monospace;
 
-    --color-bg-primary: #0f172a;
-    --color-bg-secondary: #1e293b;
-    --color-bg-tertiary: #020617;
-    --color-bg-disabled: #1e293b;
-    --color-bg-overlay: rgba(0, 0, 0, 0.8);
-    --color-bg-app: #020617;
-    --color-bg-card: #1e293b;
-    --color-bg-panel: #1e293b;
+  /* 梦幻紫罗兰 — 动漫经典紫粉渐变 */
+  --color-primary: #c084fc;
+  --color-primary-hover: #a855f7;
+  --color-primary-active: #9333ea;
+  --color-primary-subtle: #faf5ff;
 
-    --color-border: #334155;
-    --color-border-light: #1e293b;
-    --color-border-dark: #475569;
+  /* 深紫文字 — 护眼对比度 ≥4.5:1，长期阅读不疲劳 */
+  --color-text-primary: #251736;
+  --color-text-secondary: #6b4e80;
+  --color-text-tertiary: #8c6ea0;
+  --color-text-muted: #c4a8d4;
+  --color-text-inverse: #ffffff;
 
-    --glass-bg: rgba(15, 23, 42, 0.8);
-    --glass-border: rgba(255, 255, 255, 0.05);
-    --glass-shadow: 0 4px 10px rgba(0, 0, 0, 0.2);
+  --color-bg-canvas: #fdf2f8;
+  --color-bg-surface: rgba(255, 255, 255, 0.82);
+  --color-bg-surface-raised: rgba(255, 255, 255, 0.94);
+  --color-bg-subtle: #fce7f3;
+  --color-bg-hover: #f9e0f2;
+  --color-bg-active: #f3d5ec;
 
-    --gradient-bg: linear-gradient(135deg, #020617 0%, #0f172a 100%);
-    --gradient-header: linear-gradient(to right, #f8fafc, #cbd5e1);
+  --color-border-subtle: rgba(192, 132, 252, 0.12);
+  --color-border-default: rgba(192, 132, 252, 0.22);
+  --color-border-strong: rgba(192, 132, 252, 0.38);
+
+  --color-success: #16a34a;
+  --color-success-50: rgba(22, 163, 74, 0.1);
+  --color-success-700: #15803d;
+  --color-danger: #e11d48;
+  --color-danger-50: rgba(225, 29, 72, 0.08);
+  --color-danger-100: rgba(225, 29, 72, 0.13);
+  --color-danger-700: #be123c;
+  --color-warning: #d97706;
+  --color-warning-50: rgba(217, 119, 6, 0.1);
+
+  --shadow-xs: 0 2px 8px rgba(192, 132, 252, 0.08);
+  --shadow-sm: 0 4px 12px rgba(192, 132, 252, 0.12);
+  --shadow-md: 0 8px 24px rgba(192, 132, 252, 0.15);
+  --shadow-lg: 0 12px 32px rgba(192, 132, 252, 0.18);
+  --shadow-xl: 0 20px 48px rgba(192, 132, 252, 0.22);
+  --shadow-2xl: 0 28px 64px rgba(192, 132, 252, 0.26);
+  --shadow-focus: 0 0 0 4px rgba(192, 132, 252, 0.22);
+  --shadow-glow: 0 0 20px rgba(244, 114, 182, 0.35), 0 0 40px rgba(192, 132, 252, 0.18);
+
+  --gradient-primary: linear-gradient(135deg, #ff6b9d 0%, #c084fc 50%, #818cf8 100%);
+  --gradient-soft: linear-gradient(135deg, #fce7f3 0%, #f3e8ff 50%, #e0e7ff 100%);
+
+  --theme-bg: linear-gradient(135deg, #fdf2f8 0%, #faf5ff 40%, #eef2ff 70%, #fdf2f8 100%);
+  --theme-decorator-opacity: 0.6;
 }
 
-/* Anime/Sakura Theme (Refined & Harmonized) */
-[data-theme="anime"] {
-    --color-primary: #ff85a1;
-    --color-primary-dark: #ff4d6d;
-    --color-primary-light: #ffb3c1;
-    --color-primary-bg: #fff0f3;
-    --color-primary-hover: #ff758f;
+/* =============================================
+   THEME 2: ⚡ 赛博朋克 (Neon Cyan · Electric Dark)
+   ============================================= */
+[data-theme="cyberpunk"] {
+  --font-sans: 'Noto Sans SC', 'Inter', -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', Consolas, monospace;
 
-    /* Pastel Secondary Colors for Harmony */
-    --color-secondary: #98f5e1; /* Pastel Mint */
-    --color-success: #b7e4c7; /* Pastel Green */
-    --color-info: #bae1ff; /* Pastel Blue */
-    --color-warning: #ffcfd2; /* Pastel Peach */
-    --color-danger: #fbc4ab; /* Pastel Coral */
+  --color-primary: #00d4e6;
+  --color-primary-hover: #00bcd4;
+  --color-primary-active: #00a5ba;
+  --color-primary-subtle: rgba(0, 212, 230, 0.08);
 
-    --color-text-primary: #594d5b;
-    --color-text-secondary: #8d7b93;
-    --color-text-tertiary: #b0a0b6;
-    --color-text-muted: #d0c4d3;
-    --color-heading: #6b4d57;
+  /* 次要文字降亮度，减少长时间阅读疲劳 */
+  --color-text-primary: #daf6fa;
+  --color-text-secondary: #52c8d8;
+  --color-text-tertiary: #1ea8bc;
+  --color-text-muted: #0d6e7e;
+  --color-text-inverse: #010e14;
 
-    --color-bg-app: #fff0f3;
-    --color-bg-card: rgba(255, 255, 255, 0.6);
-    --color-bg-panel: rgba(255, 255, 255, 0.5);
+  --color-bg-canvas: #020c14;
+  --color-bg-surface: rgba(3, 16, 26, 0.92);
+  --color-bg-surface-raised: rgba(5, 22, 38, 0.94);
+  --color-bg-subtle: rgba(0, 212, 230, 0.05);
+  --color-bg-hover: rgba(0, 212, 230, 0.09);
+  --color-bg-active: rgba(0, 212, 230, 0.15);
 
-    --color-border: rgba(255, 133, 161, 0.2);
-    --color-border-light: rgba(255, 133, 161, 0.1);
-    --color-border-dark: rgba(255, 133, 161, 0.4);
+  --color-border-subtle: rgba(0, 212, 230, 0.1);
+  --color-border-default: rgba(0, 212, 230, 0.2);
+  --color-border-strong: rgba(0, 212, 230, 0.44);
 
-    --glass-bg: rgba(255, 255, 255, 0.45);
-    --glass-border: rgba(255, 255, 255, 0.8);
-    --glass-shadow: 0 8px 32px rgba(255, 133, 161, 0.05);
+  --color-success: #2ee87a;
+  --color-success-50: rgba(46, 232, 122, 0.1);
+  --color-success-700: #18c058;
+  --color-danger: #ff1a6e;
+  --color-danger-50: rgba(255, 26, 110, 0.1);
+  --color-danger-100: rgba(255, 26, 110, 0.15);
+  --color-danger-700: #cc0055;
+  --color-warning: #f0c000;
+  --color-warning-50: rgba(240, 192, 0, 0.1);
 
-    --gradient-bg: linear-gradient(
-        135deg,
-        #fff0f3 0%,
-        #fce1e8 50%,
-        #f3e5f5 100%
-    );
-    --gradient-primary: linear-gradient(135deg, #ff85a1 0%, #ff6b8b 100%);
-    --gradient-header: linear-gradient(to right, #ff85a1, #a18cd1);
+  --shadow-xs: 0 0 10px rgba(0, 212, 230, 0.18);
+  --shadow-sm: 0 0 18px rgba(0, 212, 230, 0.24);
+  --shadow-md: 0 0 28px rgba(0, 212, 230, 0.3), 0 0 56px rgba(160, 0, 240, 0.12);
+  --shadow-lg: 0 0 40px rgba(0, 212, 230, 0.36), 0 0 80px rgba(160, 0, 240, 0.16);
+  --shadow-xl: 0 0 55px rgba(0, 212, 230, 0.42);
+  --shadow-2xl: 0 0 75px rgba(0, 212, 230, 0.48);
+  --shadow-focus: 0 0 0 2px rgba(0, 212, 230, 0.6), 0 0 20px rgba(0, 212, 230, 0.25);
+  --shadow-glow: 0 0 32px rgba(0, 212, 230, 0.55), 0 0 70px rgba(160, 0, 240, 0.28);
 
-    --shadow-md: 0 4px 20px rgba(255, 133, 161, 0.1);
+  --gradient-primary: linear-gradient(135deg, #00d4e6 0%, #7000f0 55%, #ff1a6e 100%);
+  --gradient-soft: linear-gradient(135deg, rgba(0,212,230,0.07) 0%, rgba(112,0,240,0.06) 50%, rgba(255,26,110,0.06) 100%);
+
+  --theme-bg: linear-gradient(135deg, #020c14 0%, #050f20 50%, #020c14 100%);
+  --theme-decorator-opacity: 0.88;
+}
+
+/* =============================================
+   THEME 3: ☀️ 晴空 (Professional Blue · Daytime)
+   ============================================= */
+[data-theme="business"] {
+  --font-sans: 'Noto Sans SC', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', Consolas, monospace;
+
+  /* 专业蓝 — Linear/Notion 风格，白天长时间使用 */
+  --color-primary: #2563eb;
+  --color-primary-hover: #1d4ed8;
+  --color-primary-active: #1e40af;
+  --color-primary-subtle: rgba(37, 99, 235, 0.07);
+
+  /* Slate 色阶文字 — 最高可读性，行业标准 */
+  --color-text-primary: #0f172a;
+  --color-text-secondary: #334155;
+  --color-text-tertiary: #64748b;
+  --color-text-muted: #94a3b8;
+  --color-text-inverse: #ffffff;
+
+  --color-bg-canvas: #f8fafc;
+  --color-bg-surface: rgba(255, 255, 255, 0.96);
+  --color-bg-surface-raised: rgba(255, 255, 255, 0.99);
+  --color-bg-subtle: #f1f5f9;
+  --color-bg-hover: #e2e8f0;
+  --color-bg-active: #cbd5e1;
+
+  --color-border-subtle: rgba(15, 23, 42, 0.06);
+  --color-border-default: rgba(15, 23, 42, 0.11);
+  --color-border-strong: rgba(15, 23, 42, 0.2);
+
+  --color-success: #16a34a;
+  --color-success-50: rgba(22, 163, 74, 0.08);
+  --color-success-700: #15803d;
+  --color-danger: #dc2626;
+  --color-danger-50: rgba(220, 38, 38, 0.07);
+  --color-danger-100: rgba(220, 38, 38, 0.11);
+  --color-danger-700: #b91c1c;
+  --color-warning: #d97706;
+  --color-warning-50: rgba(217, 119, 6, 0.08);
+
+  /* 物理投影，无发光效果 — 商务感 */
+  --shadow-xs: 0 1px 2px rgba(15, 23, 42, 0.05), 0 1px 3px rgba(15, 23, 42, 0.04);
+  --shadow-sm: 0 1px 3px rgba(15, 23, 42, 0.08), 0 2px 6px rgba(15, 23, 42, 0.05);
+  --shadow-md: 0 4px 12px rgba(15, 23, 42, 0.1), 0 2px 4px rgba(15, 23, 42, 0.06);
+  --shadow-lg: 0 8px 24px rgba(15, 23, 42, 0.12), 0 4px 8px rgba(15, 23, 42, 0.07);
+  --shadow-xl: 0 16px 40px rgba(15, 23, 42, 0.14), 0 6px 14px rgba(15, 23, 42, 0.08);
+  --shadow-2xl: 0 24px 56px rgba(15, 23, 42, 0.16), 0 10px 20px rgba(15, 23, 42, 0.09);
+  --shadow-focus: 0 0 0 3px rgba(37, 99, 235, 0.28);
+  --shadow-glow: 0 4px 16px rgba(37, 99, 235, 0.18), 0 1px 4px rgba(37, 99, 235, 0.1);
+
+  --gradient-primary: linear-gradient(135deg, #3b82f6 0%, #2563eb 45%, #1d4ed8 80%, #1e40af 100%);
+  --gradient-soft: linear-gradient(135deg, #f8fafc 0%, #f1f5f9 50%, #e2e8f0 100%);
+
+  --theme-bg: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+  --theme-decorator-opacity: 0.25;
+}
+
+/* =============================================
+   THEME 5: 暗夜 (Deep Black · Periwinkle)
+   ============================================= */
+[data-theme="midnight"] {
+  --font-sans: 'Noto Sans SC', 'Inter', -apple-system, sans-serif;
+  --font-mono: 'JetBrains Mono', Consolas, monospace;
+
+  --color-primary: #818cf8;
+  --color-primary-hover: #6366f1;
+  --color-primary-active: #4f46e5;
+  --color-primary-subtle: rgba(129, 140, 248, 0.1);
+
+  /* 参考 GitHub Dark 标准，text-primary 足够亮但不刺眼 */
+  --color-text-primary: #e6edf3;
+  --color-text-secondary: #8d96a0;
+  --color-text-tertiary: #5c6470;
+  --color-text-muted: #3d444d;
+  --color-text-inverse: #0f172a;
+
+  --color-bg-canvas: #0d1117;
+  --color-bg-surface: rgba(22, 27, 34, 0.9);
+  --color-bg-surface-raised: rgba(33, 38, 46, 0.92);
+  --color-bg-subtle: rgba(129, 140, 248, 0.07);
+  --color-bg-hover: rgba(129, 140, 248, 0.11);
+  --color-bg-active: rgba(129, 140, 248, 0.17);
+
+  --color-border-subtle: rgba(129, 140, 248, 0.08);
+  --color-border-default: rgba(129, 140, 248, 0.15);
+  --color-border-strong: rgba(129, 140, 248, 0.3);
+
+  --color-success: #3fb950;
+  --color-success-50: rgba(63, 185, 80, 0.1);
+  --color-success-700: #2ea043;
+  --color-danger: #f85149;
+  --color-danger-50: rgba(248, 81, 73, 0.1);
+  --color-danger-100: rgba(248, 81, 73, 0.15);
+  --color-danger-700: #da3633;
+  --color-warning: #d29922;
+  --color-warning-50: rgba(210, 153, 34, 0.1);
+
+  --shadow-xs: 0 2px 8px rgba(0, 0, 0, 0.5);
+  --shadow-sm: 0 4px 12px rgba(0, 0, 0, 0.5);
+  --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.55);
+  --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.6);
+  --shadow-xl: 0 20px 48px rgba(0, 0, 0, 0.65);
+  --shadow-2xl: 0 28px 64px rgba(0, 0, 0, 0.7);
+  --shadow-focus: 0 0 0 4px rgba(129, 140, 248, 0.22);
+  --shadow-glow: 0 0 22px rgba(129, 140, 248, 0.3), 0 0 44px rgba(99, 102, 241, 0.14);
+
+  --gradient-primary: linear-gradient(135deg, #a5b4fc 0%, #818cf8 38%, #6366f1 72%, #4f46e5 100%);
+  --gradient-soft: linear-gradient(135deg, rgba(129,140,248,0.09) 0%, rgba(99,102,241,0.11) 100%);
+
+  --theme-bg: linear-gradient(135deg, #0d1117 0%, #101827 50%, #0d1117 100%);
+  --theme-decorator-opacity: 0.7;
 }

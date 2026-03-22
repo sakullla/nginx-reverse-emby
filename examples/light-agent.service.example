@@ -1,0 +1,14 @@
+[Unit]
+Description=Nginx Reverse Emby Lightweight Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/opt/nginx-reverse-emby-agent/agent.env
+ExecStart=/usr/bin/node /opt/nginx-reverse-emby/scripts/light-agent.js
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

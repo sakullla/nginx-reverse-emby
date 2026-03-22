@@ -162,3 +162,47 @@ curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/dep
 
 ---
 ⭐ 如果这个项目对你有帮助，请给一个 Star！
+
+---
+
+## Master / Agent（轻量 Agent）
+
+当前版本支持 **Master / Agent** 架构，适合在 Master 上集中管理多个 Nginx 节点。
+
+- **Master**：建议运行完整面板与后端服务，可直接用 Docker 部署，负责节点注册、规则管理、配置下发与心跳接收。
+- **Agent**：运行在目标主机上，只需要 Node.js 与本机 Nginx 管理脚本，不需要 Docker，也不需要部署面板，适合轻量化场景。
+- **NAT Agent**：Agent 可以位于 NAT 或内网后方，只需要能主动访问 Master；通过心跳轮询拉取期望配置，不要求 Master 反向直连。
+- **Master 本机节点**：Master 自己也会保留一个可直接管理的本机节点，可和远程 Agent 一起在面板中统一管理。
+
+### Agent 最低要求
+
+- Node.js 18+
+- `curl`
+- 一个可由 Agent 调用的 Nginx 管理脚本（通常负责 `nginx -t` 与 `nginx -s reload`）
+
+### 快速加入 Agent
+
+```bash
+curl -fsSL http://master.example.com:8080/panel-api/public/join-agent.sh | bash -s -- \
+  --register-token change-this-register-token \
+  --install-systemd
+```
+
+该脚本会直接从当前 Master 面板下载并安装轻量 Agent、默认 nginx apply 脚本、生成模板与运行资源，不依赖 GitHub 等外部托管。
+
+如果目标机器缺少 `Node.js 18+`、`curl` 或 `nginx`，脚本会尝试通过系统包管理器自动安装；因此建议使用 `root` 或具备 `sudo` 权限的用户执行。
+
+如需自定义本机 apply 逻辑，可额外追加：
+
+```bash
+--apply-command '/usr/local/bin/nginx-reverse-emby-apply.sh'
+```
+
+脚本会生成轻量 Agent 配置，并启动 `scripts/light-agent.js`。Agent 会定时上报心跳、拉取 Master 下发的配置 revision，并在需要时执行本机 Nginx 管理脚本。
+
+### 示例文件
+
+- `AGENT_EXAMPLES.md`
+- `examples/light-agent.env.example`
+- `examples/light-agent.service.example`
+- `examples/agent-apply.example.sh`

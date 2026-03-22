@@ -1,17 +1,14 @@
 <template>
-  <div :class="['stat-card', variant]">
-    <div class="stat-content">
-      <div class="stat-icon" v-if="icon" v-html="icon"></div>
-      <div class="stat-details">
-        <div class="stat-value">{{ value }}</div>
-        <div class="stat-label">{{ label }}</div>
-      </div>
-    </div>
+  <div :class="['stat-card', colorClass]">
+    <div class="stat-value">{{ value }}</div>
+    <div class="stat-label">{{ label }}</div>
   </div>
 </template>
 
 <script setup>
-defineProps({
+import { computed } from 'vue'
+
+const props = defineProps({
   value: {
     type: [String, Number],
     required: true
@@ -24,25 +21,47 @@ defineProps({
     type: String,
     default: ''
   },
-  variant: {
+  color: {
     type: String,
-    default: 'primary',
-    validator: (value) => ['primary', 'secondary', 'success', 'info'].includes(value)
+    default: 'blue',
+    validator: (value) => ['blue', 'green', 'purple', 'gray'].includes(value)
   }
 })
+
+const colorClass = computed(() => `stat-${props.color}`)
 </script>
 
 <style scoped>
-.stat-icon :deep(svg) {
-  width: 24px;
-  height: 24px;
-  stroke: currentColor;
-  stroke-width: 2;
-  fill: none;
+.stat-card {
+  background: var(--color-bg-card);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: var(--spacing-lg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+  transition: box-shadow var(--transition-fast);
 }
 
-.stat-card.primary .stat-icon { color: var(--color-primary); }
-.stat-card.secondary .stat-icon { color: var(--color-secondary); }
-.stat-card.success .stat-icon { color: var(--color-success); }
-.stat-card.info .stat-icon { color: var(--color-info); }
+.stat-card:hover {
+  box-shadow: var(--shadow-sm);
+}
+
+.stat-value {
+  font-size: var(--font-size-2xl);
+  font-weight: var(--font-weight-bold);
+  color: var(--color-heading);
+  line-height: 1;
+}
+
+.stat-label {
+  font-size: var(--font-size-sm);
+  color: var(--color-text-muted);
+}
+
+/* Color Variants - Subtle */
+.stat-blue .stat-value { color: var(--color-primary); }
+.stat-green .stat-value { color: var(--color-success); }
+.stat-purple .stat-value { color: #9333ea; }
+.stat-gray .stat-value { color: var(--color-text-secondary); }
 </style>

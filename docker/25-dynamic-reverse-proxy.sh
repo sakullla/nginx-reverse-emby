@@ -2,17 +2,33 @@
 set -eu
 
 # --- 配置定义 ---
-TEMPLATE_FILE="/etc/nginx/templates/default.conf"
-DIRECT_NO_TLS_TEMPLATE_FILE="/etc/nginx/templates/default.direct.no_tls.conf"
-DIRECT_TLS_TEMPLATE_FILE="/etc/nginx/templates/default.direct.tls.conf"
-DYNAMIC_DIR="/etc/nginx/conf.d/dynamic"
+TEMPLATE_FILE="${NRE_TEMPLATE_FILE:-/etc/nginx/templates/default.conf}"
+DIRECT_NO_TLS_TEMPLATE_FILE="${NRE_DIRECT_NO_TLS_TEMPLATE_FILE:-/etc/nginx/templates/default.direct.no_tls.conf}"
+DIRECT_TLS_TEMPLATE_FILE="${NRE_DIRECT_TLS_TEMPLATE_FILE:-/etc/nginx/templates/default.direct.tls.conf}"
+DYNAMIC_DIR="${NRE_DYNAMIC_DIR:-/etc/nginx/conf.d/dynamic}"
 
 # Data root
 DATA_ROOT="/opt/nginx-reverse-emby/panel/data"
 RULES_FILE="${PANEL_RULES_FILE:-$DATA_ROOT/proxy_rules.csv}"
+L4_RULES_JSON="${PANEL_L4_RULES_JSON:-$DATA_ROOT/l4_rules.json}"
+if [ -n "${PANEL_MANAGED_CERTS_SYNC_JSON:-}" ]; then
+    MANAGED_CERTS_SYNC_JSON="$PANEL_MANAGED_CERTS_SYNC_JSON"
+elif [ -f "$DATA_ROOT/managed_cert_bundle.local.json" ]; then
+    MANAGED_CERTS_SYNC_JSON="$DATA_ROOT/managed_cert_bundle.local.json"
+else
+    MANAGED_CERTS_SYNC_JSON="$DATA_ROOT/managed_cert_bundle.json"
+fi
+if [ -n "${PANEL_MANAGED_CERTS_POLICY_JSON:-}" ]; then
+    MANAGED_CERTS_POLICY_JSON="$PANEL_MANAGED_CERTS_POLICY_JSON"
+elif [ -f "$DATA_ROOT/managed_cert_policy.local.json" ]; then
+    MANAGED_CERTS_POLICY_JSON="$DATA_ROOT/managed_cert_policy.local.json"
+else
+    MANAGED_CERTS_POLICY_JSON="$DATA_ROOT/managed_cert_policy.json"
+fi
 ACME_HOME="${ACME_HOME:-$DATA_ROOT/.acme.sh}"
 DIRECT_CERT_DIR="${DIRECT_CERT_DIR:-$DATA_ROOT/certs}"
 DIRECT_CERT_STATE_FILE="${DIRECT_CERT_STATE_FILE:-$DATA_ROOT/.state/active_cert_domains}"
+STREAM_DYNAMIC_DIR="${NRE_STREAM_DYNAMIC_DIR:-/etc/nginx/stream-conf.d/dynamic}"
 
 RESOLVER="${NGINX_LOCAL_RESOLVERS:-1.1.1.1}"
 PROXY_DEPLOY_MODE="${PROXY_DEPLOY_MODE:-front_proxy}"
@@ -55,6 +71,13 @@ process.stdout.write(u.protocol.slice(0, -1) + '|' + host + '|' + port + '|' + p
 }
 
 format_server_name() {
+    case "$1" in
+        *:*) printf '[%s]' "$1" ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
+
+format_network_host() {
     case "$1" in
         *:*) printf '[%s]' "$1" ;;
         *) printf '%s' "$1" ;;
@@ -123,6 +146,57 @@ fail_standalone_if_port_80_in_use() {
     fi
 }
 
+nginx_pid_is_running() {
+    if [ -s /var/run/nginx.pid ]; then
+        nginx_pid=$(cat /var/run/nginx.pid 2>/dev/null || true)
+        [ -n "$nginx_pid" ] && kill -0 "$nginx_pid" 2>/dev/null
+        return $?
+    fi
+    return 1
+}
+
+wait_for_port_release() {
+    port="$1"
+    retries="${2:-50}"
+    while [ "$retries" -gt 0 ]; do
+        if ! port_is_listening "$port"; then
+            return 0
+        fi
+        sleep 0.2
+        retries=$((retries - 1))
+    done
+    return 1
+}
+
+stop_nginx_for_standalone_acme() {
+    cert_domain="$1"
+    ACME_STOPPED_NGINX="0"
+    if ! port_is_listening 80; then
+        return 0
+    fi
+
+    if is_true "$ACME_STANDALONE_STOP_NGINX" && nginx_pid_is_running; then
+        entrypoint_log "Temporarily stopping nginx to issue standalone certificate for $cert_domain"
+        "$NGINX_BIN" -s quit >/dev/null 2>&1 || "$NGINX_BIN" -s stop >/dev/null 2>&1 || true
+        if ! wait_for_port_release 80; then
+            echo "[PROXY] error: failed to stop nginx before standalone issuance for $cert_domain" >&2
+            return 1
+        fi
+        ACME_STOPPED_NGINX="1"
+        return 0
+    fi
+
+    fail_standalone_if_port_80_in_use "$cert_domain"
+}
+
+restore_nginx_after_standalone_acme() {
+    if [ "${ACME_STOPPED_NGINX:-0}" = "1" ]; then
+        entrypoint_log "Starting nginx after standalone certificate issuance"
+        "$NGINX_BIN" >/dev/null 2>&1 || true
+        ACME_STOPPED_NGINX="0"
+    fi
+}
+
 acme_dns_hook_path() {
     [ -n "$ACME_DNS_PROVIDER" ] || return 1
     printf '%s/dnsapi/dns_%s.sh' "$ACME_HOME" "$ACME_DNS_PROVIDER"
@@ -182,6 +256,7 @@ acme_cert_is_issued() {
 
 issue_cert_with_acme() {
     cert_domain="$1"
+    issue_mode="${2:-auto}"
     cert_domain_clean=$(normalize_cert_domain "$cert_domain")
 
     if acme_cert_is_issued "$cert_domain_clean"; then
@@ -191,7 +266,7 @@ issue_cert_with_acme() {
 
     cleanup_stale_acme_record "$cert_domain_clean"
 
-    if [ -n "$ACME_DNS_PROVIDER" ] && ! is_ip_address "$cert_domain_clean"; then
+    if [ "$issue_mode" != "local_http01" ] && [ -n "$ACME_DNS_PROVIDER" ] && ! is_ip_address "$cert_domain_clean"; then
         entrypoint_log "Issuing via DNS: $ACME_DNS_PROVIDER for $cert_domain_clean"
         if "$ACME_SCRIPT" --issue $ACME_COMMON_ARGS --server "$ACME_CA" --dns "dns_$ACME_DNS_PROVIDER" -d "$cert_domain_clean" --keylength ec-256; then
             return 0
@@ -200,7 +275,7 @@ issue_cert_with_acme() {
         cleanup_stale_acme_record "$cert_domain_clean"
         "$ACME_SCRIPT" --issue --force $ACME_COMMON_ARGS --server "$ACME_CA" --dns "dns_$ACME_DNS_PROVIDER" -d "$cert_domain_clean" --keylength ec-256
     else
-        fail_standalone_if_port_80_in_use "$cert_domain_clean"
+        stop_nginx_for_standalone_acme "$cert_domain_clean"
         entrypoint_log "Issuing via Standalone for $cert_domain_clean"
         issue_args="$ACME_COMMON_ARGS --server $ACME_CA --standalone -d $cert_domain_clean --keylength ec-256"
         if is_ip_address "$cert_domain_clean"; then
@@ -210,11 +285,17 @@ issue_cert_with_acme() {
             issue_args="$issue_args --listen-v6"
         fi
         if "$ACME_SCRIPT" --issue $issue_args; then
+            restore_nginx_after_standalone_acme
             return 0
         fi
         entrypoint_log "Initial standalone issuance failed for $cert_domain_clean, retrying with --force after cleanup..."
         cleanup_stale_acme_record "$cert_domain_clean"
-        "$ACME_SCRIPT" --issue --force $issue_args
+        if "$ACME_SCRIPT" --issue --force $issue_args; then
+            restore_nginx_after_standalone_acme
+            return 0
+        fi
+        restore_nginx_after_standalone_acme
+        return 1
     fi
 }
 
@@ -236,10 +317,12 @@ ensure_certificates_for_rules() {
     ensure_acme_script
 
 
-    while IFS= read -r cert_domain || [ -n "$cert_domain" ]; do
+    while IFS='|' read -r issue_mode cert_domain || [ -n "$issue_mode$cert_domain" ]; do
+        issue_mode=$(trim_text "$issue_mode")
         cert_domain=$(trim_text "$cert_domain")
         [ -z "$cert_domain" ] && continue
-        issue_cert_with_acme "$cert_domain"
+        [ -n "$issue_mode" ] || issue_mode="auto"
+        issue_cert_with_acme "$cert_domain" "$issue_mode"
         install_cert_files "$cert_domain"
     done < "$cert_domains_file"
 
@@ -308,14 +391,271 @@ collect_rules() {
     fi
 }
 
+collect_l4_rules() {
+    output_file="$1"
+    # Copy JSON content into the temp file so downstream parsing works with mktemp paths.
+    if [ ! -f "$L4_RULES_JSON" ]; then
+        return 0
+    fi
+    cat "$L4_RULES_JSON" > "$output_file"
+}
+
+install_synced_certificate() {
+    cert_domain="$1"
+    [ -f "$MANAGED_CERTS_SYNC_JSON" ] || return 1
+    CERT_DOMAIN="$cert_domain" DIRECT_CERT_DIR="$DIRECT_CERT_DIR" MANAGED_CERTS_SYNC_JSON="$MANAGED_CERTS_SYNC_JSON" node -e "
+        const fs = require('fs');
+        const path = require('path');
+        const domain = String(process.env.CERT_DOMAIN || '').trim().toLowerCase();
+        const bundleFile = process.env.MANAGED_CERTS_SYNC_JSON;
+        const certRoot = process.env.DIRECT_CERT_DIR;
+        const bundle = JSON.parse(fs.readFileSync(bundleFile, 'utf8'));
+        const isWildcard = (value) => /^\\*\\.[a-z0-9.-]+$/i.test(String(value || '').trim());
+        const wildcardMatches = (pattern, host) => {
+            const normalizedPattern = String(pattern || '').trim().toLowerCase();
+            const normalizedHost = String(host || '').trim().toLowerCase();
+            if (!isWildcard(normalizedPattern)) return false;
+            const suffix = normalizedPattern.slice(2);
+            if (!normalizedHost.endsWith('.' + suffix)) return false;
+            return normalizedHost.split('.').length === suffix.split('.').length + 1;
+        };
+        const item = (Array.isArray(bundle) ? bundle : []).find((entry) => {
+            const entryDomain = String(entry.domain || '').trim().toLowerCase();
+            return entryDomain === domain || wildcardMatches(entryDomain, domain);
+        });
+        if (!item || !item.cert_pem || !item.key_pem) process.exit(1);
+        const targetDir = path.join(certRoot, domain);
+        fs.mkdirSync(targetDir, { recursive: true });
+        fs.writeFileSync(path.join(targetDir, 'cert'), String(item.cert_pem), 'utf8');
+        fs.writeFileSync(path.join(targetDir, 'key'), String(item.key_pem), 'utf8');
+    " >/dev/null 2>&1
+}
+
+resolve_managed_certificate_mode() {
+    cert_domain="$1"
+    [ -f "$MANAGED_CERTS_POLICY_JSON" ] || { printf 'absent'; return 0; }
+    CERT_DOMAIN="$cert_domain" MANAGED_CERTS_POLICY_JSON="$MANAGED_CERTS_POLICY_JSON" node -e "
+        const fs = require('fs');
+        const domain = String(process.env.CERT_DOMAIN || '').trim().toLowerCase();
+        const policyFile = process.env.MANAGED_CERTS_POLICY_JSON;
+        const isWildcard = (value) => /^\\*\\.[a-z0-9.-]+$/i.test(String(value || '').trim());
+        const wildcardMatches = (pattern, host) => {
+            const normalizedPattern = String(pattern || '').trim().toLowerCase();
+            const normalizedHost = String(host || '').trim().toLowerCase();
+            if (!isWildcard(normalizedPattern)) return false;
+            const suffix = normalizedPattern.slice(2);
+            if (!normalizedHost.endsWith('.' + suffix)) return false;
+            return normalizedHost.split('.').length === suffix.split('.').length + 1;
+        };
+        let policy = [];
+        try {
+            policy = JSON.parse(fs.readFileSync(policyFile, 'utf8'));
+        } catch {
+            process.stdout.write('absent');
+            process.exit(0);
+        }
+        const sorted = (Array.isArray(policy) ? policy : []).slice().sort((left, right) => {
+            const leftWildcard = isWildcard(left && left.domain);
+            const rightWildcard = isWildcard(right && right.domain);
+            if (leftWildcard !== rightWildcard) return leftWildcard ? 1 : -1;
+            return Number(right && right.revision || 0) - Number(left && left.revision || 0);
+        });
+        const item = sorted.find((entry) => {
+            const entryDomain = String(entry.domain || '').trim().toLowerCase();
+            return entryDomain === domain || wildcardMatches(entryDomain, domain);
+        });
+        if (!item) {
+            process.stdout.write('absent');
+            process.exit(0);
+        }
+        if (item.enabled === false) {
+            process.stdout.write('disabled');
+            process.exit(0);
+        }
+        const mode = String(item.issuer_mode || '').trim().toLowerCase();
+        if (mode === 'master_cf_dns' || mode === 'local_http01') {
+            process.stdout.write(mode);
+            process.exit(0);
+        }
+        process.stdout.write('absent');
+    "
+}
+
+generate_l4_configs() {
+    rules_json_path="$1"
+    mkdir -p "$STREAM_DYNAMIC_DIR"
+    rm -f "$STREAM_DYNAMIC_DIR"/*.conf
+
+    [ -f "$rules_json_path" ] || return 0
+    [ -s "$rules_json_path" ] || return 0
+
+    RESOLVER_LINE="$RESOLVER"
+
+    node -e "
+        const fs = require('fs');
+        const path = require('path');
+
+        const rulesJsonPath = '$rules_json_path';
+        const streamDynamicDir = '$STREAM_DYNAMIC_DIR';
+        const resolver = '$RESOLVER_LINE';
+
+        function formatNetworkHost(host) {
+            if (host.includes(':')) return '[' + host + ']';
+            return host;
+        }
+
+        function sanitizeDomain(domain) {
+            return domain.toLowerCase().replace(/[^a-z0-9._-]/g, '_');
+        }
+
+        function isIpAddress(value) {
+            if (!value) return false;
+            // IPv4 check
+            if (/^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/.test(value)) return true;
+            // IPv6 check (simplified - has colons and is hex-like)
+            if (/^[0-9A-Fa-f:.]+$/.test(value) && value.includes(':')) return true;
+            return false;
+        }
+
+        function needsResolve(host) {
+            if (!host) return false;
+            // Strip brackets for IPv6
+            const cleanHost = host.replace(/^\[|\]$/g, '');
+            return !isIpAddress(cleanHost);
+        }
+
+        function formatBackend(backend, isFirst) {
+            const host = formatNetworkHost(backend.host);
+            const weight = backend.weight && backend.weight !== 1 ? ' weight=' + backend.weight : '';
+            const resolve = needsResolve(backend.host) ? ' resolve' : '';
+            return '    server ' + host + ':' + backend.port + weight + resolve + ';';
+        }
+
+        function renderUpstreamBlock(name, backends, lbStrategy, lbHashKey, zoneSize) {
+            let lines = ['upstream ' + name + ' {'];
+            lines.push('    zone ' + name + ' ' + (zoneSize || '64k') + ';');
+
+            if (lbStrategy === 'least_conn') {
+                lines.push('    least_conn;');
+            } else if (lbStrategy === 'random') {
+                lines.push('    random;');
+            } else if (lbStrategy === 'hash') {
+                lines.push('    hash ' + (lbHashKey || '\$remote_addr') + ';');
+            }
+            // round_robin is default, no directive needed
+
+            backends.forEach((b, i) => {
+                lines.push(formatBackend(b, i === 0));
+            });
+
+            lines.push('}');
+            return lines.join('\n');
+        }
+
+        try {
+            const rules = JSON.parse(fs.readFileSync(rulesJsonPath, 'utf8'));
+            if (!Array.isArray(rules)) {
+                console.error('L4 rules is not an array');
+                process.exit(0);
+            }
+
+            rules.filter(r => r && r.enabled !== false).forEach((r, index) => {
+                const protocol = String(r.protocol || 'tcp').trim().toLowerCase();
+                const listenHost = String(r.listen_host || '0.0.0.0').trim();
+                const listenPort = String(r.listen_port || '').trim();
+                const name = String(r.name || (protocol + '-' + listenPort)).trim();
+
+                if (!listenPort) return;
+
+                // Get backends array
+                let backends = [];
+                if (Array.isArray(r.backends) && r.backends.length > 0) {
+                    backends = r.backends.filter(b => b && b.host && b.port).map(b => ({
+                        host: String(b.host).trim(),
+                        port: Number(b.port),
+                        weight: Number(b.weight) || 1,
+                        resolve: b.resolve === true
+                    }));
+                } else if (r.upstream_host && r.upstream_port) {
+                    // Fallback to legacy single upstream
+                    backends = [{
+                        host: String(r.upstream_host).trim(),
+                        port: Number(r.upstream_port),
+                        weight: 1,
+                        resolve: false
+                    }];
+                }
+
+                if (backends.length === 0) {
+                    console.error('Skipping L4 rule ' + name + ': no valid backends');
+                    return;
+                }
+
+                // Get load balancing settings
+                const lb = r.load_balancing || {};
+                const lbStrategy = String(lb.strategy || 'round_robin').toLowerCase();
+                const lbHashKey = lb.hash_key;
+                const zoneSize = lb.zone_size || '64k';
+
+                const ruleNameSanitized = sanitizeDomain(name);
+                const upstreamName = 'up_' + ruleNameSanitized + '_' + protocol + '_' + listenPort;
+                const confName = ruleNameSanitized + '.' + protocol + '.' + listenPort + '.conf';
+                const listenHostFmt = formatNetworkHost(listenHost);
+
+                // Build listen directive
+                const listenDirective = protocol === 'udp'
+                    ? '    listen ' + listenHostFmt + ':' + listenPort + ' udp reuseport;'
+                    : '    listen ' + listenHostFmt + ':' + listenPort + ';';
+
+                // Build proxy timeouts based on protocol
+                const proxyConnectTimeout = protocol === 'udp' ? '' : '\n    proxy_connect_timeout 10s;';
+                const proxyTimeout = protocol === 'udp'
+                    ? '    proxy_timeout 20s;'
+                    : '    proxy_timeout 10m;';
+
+                // Generate config
+                const configLines = [
+                    '# L4 Forward: ' + name,
+                    '# Protocol: ' + protocol.toUpperCase(),
+                    '# Listen: ' + listenHost + ':' + listenPort,
+                    '# Backends: ' + backends.length,
+                    '# Load Balancing: ' + lbStrategy,
+                    '',
+                    renderUpstreamBlock(upstreamName, backends, lbStrategy, lbHashKey, zoneSize),
+                    '',
+                    'server {',
+                    listenDirective,
+                    proxyConnectTimeout,
+                    proxyTimeout,
+                    '    proxy_pass ' + upstreamName + ';',
+                    '}',
+                    ''
+                ];
+
+                const configPath = path.join(streamDynamicDir, confName);
+                fs.writeFileSync(configPath, configLines.join('\n'), 'utf8');
+
+                const backendList = backends.map(b => b.host + ':' + b.port).join(', ');
+                console.log('[PROXY] Generated L4 config for ' + protocol + ' ' + listenHost + ':' + listenPort + ' -> [' + backendList + '] (strategy: ' + lbStrategy + ')');
+            });
+        } catch (e) {
+            console.error('Error generating L4 configs: ' + e.message);
+            process.exit(1);
+        }
+    " || true
+}
+
 # --- Main Flow ---
 deploy_mode=$(normalize_deploy_mode)
-mkdir -p "$DYNAMIC_DIR" "$DIRECT_CERT_DIR"
+mkdir -p "$DYNAMIC_DIR" "$DIRECT_CERT_DIR" "$STREAM_DYNAMIC_DIR"
 rm -f "$DYNAMIC_DIR"/*.conf
 
 tmp_rules=$(mktemp)
-tmp_certs=$(mktemp)
+tmp_issue_certs=$(mktemp)
+tmp_active_certs=$(mktemp)
+tmp_l4_rules=$(mktemp)
 collect_rules "$tmp_rules"
+collect_l4_rules "$tmp_l4_rules"
 
 if [ -s "$tmp_rules" ]; then
     while IFS=, read -r frontend_url backend_url proxy_redirect || [ -n "$frontend_url" ]; do
@@ -338,7 +678,33 @@ if [ -s "$tmp_rules" ]; then
         template="$TEMPLATE_FILE"
         if [ "$deploy_mode" = "direct" ]; then
             template=$([ "$proto" = "https" ] && echo "$DIRECT_TLS_TEMPLATE_FILE" || echo "$DIRECT_NO_TLS_TEMPLATE_FILE")
-            [ "$proto" = "https" ] && echo "$cert_dom" >> "$tmp_certs"
+            if [ "$proto" = "https" ]; then
+                echo "$cert_dom" >> "$tmp_active_certs"
+                cert_mode=$(resolve_managed_certificate_mode "$cert_dom")
+                case "$cert_mode" in
+                    master_cf_dns)
+                        if ! install_synced_certificate "$cert_dom"; then
+                            echo "[PROXY] error: managed certificate for $cert_dom is configured as master_cf_dns but no synced certificate material was found" >&2
+                            exit 1
+                        fi
+                        entrypoint_log "Installed synced certificate for $cert_dom"
+                        ;;
+                    local_http01)
+                        printf 'local_http01|%s\n' "$cert_dom" >> "$tmp_issue_certs"
+                        ;;
+                    disabled)
+                        echo "[PROXY] error: managed certificate for $cert_dom is disabled; enable the certificate or adjust the HTTPS rule" >&2
+                        exit 1
+                        ;;
+                    *)
+                        if ! install_synced_certificate "$cert_dom"; then
+                            printf 'auto|%s\n' "$cert_dom" >> "$tmp_issue_certs"
+                        else
+                            entrypoint_log "Installed synced certificate for $cert_dom"
+                        fi
+                        ;;
+                esac
+            fi
         fi
 
         # 根据 proxy_redirect 生成配置
@@ -470,14 +836,23 @@ if [ -s "$tmp_rules" ]; then
     done < "$tmp_rules"
 fi
 
+generate_l4_configs "$tmp_l4_rules"
+
 if [ "$deploy_mode" = "direct" ]; then
-    if [ -s "$tmp_certs" ]; then
-        awk '!seen[$0]++' "$tmp_certs" > "${tmp_certs}.dedup"
-        ensure_certificates_for_rules "${tmp_certs}.dedup"
-        cleanup_unused_certificates "${tmp_certs}.dedup"
-        rm -f "${tmp_certs}.dedup"
+    if [ -s "$tmp_issue_certs" ]; then
+        awk '!seen[$0]++' "$tmp_issue_certs" > "${tmp_issue_certs}.dedup"
+        ensure_certificates_for_rules "${tmp_issue_certs}.dedup"
+        rm -f "${tmp_issue_certs}.dedup"
+    fi
+    if [ -s "$tmp_active_certs" ]; then
+        awk '!seen[$0]++' "$tmp_active_certs" > "${tmp_active_certs}.dedup"
+        cleanup_unused_certificates "${tmp_active_certs}.dedup"
+        rm -f "${tmp_active_certs}.dedup"
+    else
+        : > "$tmp_active_certs"
+        cleanup_unused_certificates "$tmp_active_certs"
     fi
 fi
 
-rm -f "$tmp_rules" "$tmp_certs"
+rm -f "$tmp_rules" "$tmp_issue_certs" "$tmp_active_certs" "$tmp_l4_rules"
 exit 0

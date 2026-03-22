@@ -1,96 +1,152 @@
-/* Status Message Styles - Modern Design */
-.status-message {
+/* Status Message Toast Notifications */
+
+.status-message-container {
   position: fixed;
-  top: var(--spacing-xl);
-  right: var(--spacing-xl);
-  padding: var(--spacing-md) var(--spacing-xl);
-  border-radius: var(--radius-lg);
-  font-size: var(--font-size-base);
-  font-weight: var(--font-weight-medium);
-  box-shadow: var(--shadow-xl);
+  top: var(--space-4);
+  right: var(--space-4);
   z-index: var(--z-toast);
-  max-width: 400px;
-  word-wrap: break-word;
-  backdrop-filter: blur(var(--blur-md));
-  border: 1px solid rgba(255, 255, 255, 0.2);
   display: flex;
-  align-items: center;
-  gap: var(--spacing-sm);
+  flex-direction: column;
+  gap: var(--space-3);
+  pointer-events: none;
 }
 
-.status-message::before {
-  content: '';
+.status-message {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-bg-surface);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-lg);
+  border-left: 4px solid;
+  border: 1.5px solid var(--color-border-default);
+  border-left: 4px solid;
+  pointer-events: auto;
+  animation: slideInRight var(--duration-normal) var(--ease-out);
+  max-width: 400px;
+  backdrop-filter: blur(12px);
+}
+
+.status-message--success {
+  border-left-color: var(--color-success);
+}
+
+.status-message--error {
+  border-left-color: var(--color-danger);
+}
+
+.status-message--info {
+  border-left-color: var(--color-primary);
+}
+
+.status-message__icon {
+  flex-shrink: 0;
   width: 20px;
   height: 20px;
-  border-radius: var(--radius-full);
-  flex-shrink: 0;
 }
 
-.status-message.success {
-  background: linear-gradient(135deg, rgba(16, 185, 129, 0.95) 0%, rgba(5, 150, 105, 0.95) 100%);
-  color: white;
-}
-
-.status-message.success::before {
-  background: white;
-  content: '✓';
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: var(--font-weight-bold);
+.status-message--success .status-message__icon {
   color: var(--color-success);
 }
 
-.status-message.error {
-  background: linear-gradient(135deg, rgba(239, 68, 68, 0.95) 0%, rgba(220, 38, 38, 0.95) 100%);
-  color: white;
-}
-
-.status-message.error::before {
-  background: white;
-  content: '✕';
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: var(--font-weight-bold);
+.status-message--error .status-message__icon {
   color: var(--color-danger);
 }
 
-.status-message.info {
-  background: linear-gradient(135deg, rgba(59, 130, 246, 0.95) 0%, rgba(37, 99, 235, 0.95) 100%);
-  color: white;
+.status-message--info .status-message__icon {
+  color: var(--color-primary);
 }
 
-.status-message.info::before {
-  background: white;
-  content: 'i';
+.status-message__content {
+  flex: 1;
+  min-width: 0;
+}
+
+.status-message__text {
+  font-size: var(--text-sm);
+  color: var(--color-text-primary);
+  font-weight: var(--font-medium);
+}
+
+.status-message__close {
+  flex-shrink: 0;
+  width: 20px;
+  height: 20px;
   display: flex;
   align-items: center;
   justify-content: center;
-  font-weight: var(--font-weight-bold);
-  color: var(--color-info);
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: color var(--duration-fast) var(--ease-default);
 }
 
-.status-message.warning {
-  background: linear-gradient(135deg, rgba(245, 158, 11, 0.95) 0%, rgba(217, 119, 6, 0.95) 100%);
-  color: white;
+.status-message__close:hover {
+  color: var(--color-text-primary);
 }
 
-.status-message.warning::before {
-  background: white;
-  content: '!';
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-weight: var(--font-weight-bold);
-  color: var(--color-warning);
+/* Exit Animation */
+.status-message--exiting {
+  animation: slideOutRight var(--duration-normal) var(--ease-in) forwards;
 }
 
-@media (max-width: 768px) {
+@keyframes slideInRight {
+  from {
+    opacity: 0;
+    transform: translateX(100%);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes slideOutRight {
+  from {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(100%);
+  }
+}
+
+@media (max-width: 640px) {
+  .status-message-container {
+    top: auto;
+    bottom: var(--space-4);
+    left: var(--space-4);
+    right: var(--space-4);
+  }
+
   .status-message {
-    top: var(--spacing-md);
-    right: var(--spacing-md);
-    left: var(--spacing-md);
-    max-width: none;
+    max-width: 100%;
+  }
+
+  .status-message--exiting {
+    animation: slideOutDown var(--duration-normal) var(--ease-in) forwards;
+  }
+
+  @keyframes slideInRight {
+    from {
+      opacity: 0;
+      transform: translateY(100%);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes slideOutDown {
+    from {
+      opacity: 1;
+      transform: translateY(0);
+    }
+    to {
+      opacity: 0;
+      transform: translateY(100%);
+    }
   }
 }

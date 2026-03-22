@@ -1,3 +1,8 @@
-.vscode/
+node_modules/
+panel/frontend/node_modules/
+panel/frontend/dist/
+playwright-report/
+test-results/
 .idea/
+.vscode/
 .ai/

@@ -1,259 +1,236 @@
 <template>
-  <div class="rules-container">
-    <div v-if="ruleStore.loading && !ruleStore.hasRules" class="loading-state">
-      <div class="spinner"></div>
-      <p>正在获取代理规则...</p>
+  <div class="rule-list">
+    <!-- Empty State - No Agent Selected -->
+    <div v-if="!ruleStore.hasSelectedAgent" class="empty-state">
+      <div class="empty-state__icon">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+          <circle cx="12" cy="7" r="4"/>
+        </svg>
+      </div>
+      <div class="empty-state__title">选择节点</div>
+      <div class="empty-state__description">
+        在左侧选择一个 Agent 节点以查看和管理其代理规则
+      </div>
     </div>
 
-    <template v-else>
-      <!-- 标签筛选行 -->
-      <div class="filter-row" v-if="ruleStore.hasRules && (ruleStore.selectedTags.length > 0 || ruleStore.searchQuery)">
-        <div class="active-filters" v-if="ruleStore.selectedTags.length > 0">
-          <div class="active-filter" v-for="tag in ruleStore.selectedTags" :key="tag">
-            <span class="filter-label">
-              <svg viewBox="0 0 24 24"><path d="M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"/><line x1="7" y1="7" x2="7.01" y2="7"/></svg>
-              {{ tag }}
-            </span>
-            <button @click="removeTag(tag)" class="clear-filter" title="移除此标签">
-              <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    <!-- Empty State - No Rules -->
+    <div v-else-if="!ruleStore.hasRules" class="empty-state">
+      <div class="empty-state__icon">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+          <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+        </svg>
+      </div>
+      <div class="empty-state__title">暂无规则</div>
+      <button class="btn btn--primary btn--sm" @click="$emit('add')">添加第一条规则</button>
+    </div>
+
+    <!-- Empty State - No Search Results -->
+    <div v-else-if="ruleStore.filteredRules.length === 0" class="empty-state">
+      <div class="empty-state__icon">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+          <circle cx="11" cy="11" r="8"/>
+          <line x1="21" y1="21" x2="16.65" y2="16.65"/>
+        </svg>
+      </div>
+      <div class="empty-state__title">无匹配结果</div>
+      <div class="empty-state__description">
+        没有找到与 "{{ ruleStore.searchQuery }}" 匹配的规则
+      </div>
+    </div>
+
+    <!-- Rules Grid -->
+    <div v-else class="rule-grid">
+      <RuleItem
+        v-for="rule in ruleStore.filteredRules"
+        :key="rule.id"
+        :rule="rule"
+        :agent="ruleStore.selectedAgent"
+        @edit="handleEdit"
+        @delete="handleDelete"
+      />
+    </div>
+
+    <!-- Edit Modal -->
+    <Teleport to="body">
+      <BaseModal
+        v-if="editingRule"
+        v-model="showEditModal"
+        title="编辑代理规则"
+      >
+        <RuleForm :initial-data="editingRule" @success="showEditModal = false" />
+      </BaseModal>
+    </Teleport>
+
+    <!-- Delete Modal -->
+    <Teleport to="body">
+      <BaseModal
+        v-if="deletingRule"
+        v-model="showDeleteModal"
+        title="确认删除"
+      >
+        <div class="space-y-4">
+          <p class="text-sm text-secondary">
+            确定要删除这条代理规则吗？此操作无法撤销。
+          </p>
+          <div class="bg-subtle p-4 rounded-lg">
+            <div class="text-sm font-mono text-primary">{{ deletingRule.frontend_url }}</div>
+            <div class="text-xs text-tertiary mt-1">→ {{ deletingRule.backend_url }}</div>
+          </div>
+          <div class="flex justify-end gap-3">
+            <button
+              class="btn btn--secondary"
+              @click="showDeleteModal = false"
+            >
+              取消
+            </button>
+            <button
+              class="btn btn--danger"
+              :disabled="isDeleting"
+              @click="confirmDelete"
+            >
+              <span v-if="isDeleting" class="spinner spinner--sm mr-2"></span>
+              {{ isDeleting ? '删除中...' : '确认删除' }}
             </button>
           </div>
-          <button v-if="ruleStore.selectedTags.length > 1" @click="ruleStore.selectedTags = []" class="clear-all-btn" title="清除所有筛选">
-            清除全部
-          </button>
         </div>
-
-        <div class="results-count" v-if="ruleStore.searchQuery || ruleStore.selectedTags.length > 0">
-          找到 {{ ruleStore.filteredRules.length }} 条结果
-        </div>
-      </div>
-
-      <EmptyState
-        v-if="!ruleStore.hasRules"
-        icon="🎯"
-        title="还没有代理规则"
-        description="开始添加您的第一条反向代理规则，让流量管理变得简单高效！"
-      >
-        <template #action>
-          <p class="empty-hint">
-            点击上方的"添加规则"按钮开始
-          </p>
-        </template>
-      </EmptyState>
-
-      <EmptyState
-        v-else-if="ruleStore.filteredRules.length === 0"
-        icon="🔎"
-        title="没有找到匹配的规则"
-        :description="`未能找到包含 '${ruleStore.searchQuery}' 的规则。`"
-      >
-        <template #action>
-          <button @click="ruleStore.searchQuery = ''" class="btn secondary small">
-            重置搜索条件
-          </button>
-        </template>
-      </EmptyState>
-
-      <div v-else :class="['rules-layout', `view-${ruleStore.viewMode}`]">
-        <RuleItem
-          v-for="rule in ruleStore.filteredRules"
-          :key="rule.id"
-          :rule="rule"
-          :view-mode="ruleStore.viewMode"
-        />
-      </div>
-    </template>
+      </BaseModal>
+    </Teleport>
   </div>
 </template>
 
 <script setup>
+import { ref } from 'vue'
 import { useRuleStore } from '../stores/rules'
 import RuleItem from './RuleItem.vue'
-import EmptyState from './base/EmptyState.vue'
+import RuleForm from './RuleForm.vue'
+import BaseModal from './base/BaseModal.vue'
+
+defineEmits(['add'])
 
 const ruleStore = useRuleStore()
 
-const removeTag = (tag) => {
-  const index = ruleStore.selectedTags.indexOf(tag)
-  if (index > -1) {
-    ruleStore.selectedTags.splice(index, 1)
+const editingRule = ref(null)
+const deletingRule = ref(null)
+const showEditModal = ref(false)
+const showDeleteModal = ref(false)
+const isDeleting = ref(false)
+
+const handleEdit = (rule) => {
+  editingRule.value = rule
+  showEditModal.value = true
+}
+
+const handleDelete = (rule) => {
+  deletingRule.value = rule
+  showDeleteModal.value = true
+}
+
+const confirmDelete = async () => {
+  if (!deletingRule.value) return
+  isDeleting.value = true
+  try {
+    await ruleStore.removeRule(deletingRule.value.id)
+    showDeleteModal.value = false
+  } catch (err) {
+    // Error handled by store
+  } finally {
+    isDeleting.value = false
   }
 }
 </script>
 
 <style scoped>
-.rules-container {
-  min-height: 200px;
+.rule-list {
+  min-height: 300px;
 }
 
-.loading-state {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  padding: var(--spacing-4xl) 0;
-  color: var(--color-text-muted);
-}
-
-.spinner {
-  width: 40px;
-  height: 40px;
-  border: 3px solid var(--color-border);
-  border-top-color: var(--color-primary);
-  border-radius: 50%;
-  animation: spin 1s linear infinite;
-  margin-bottom: var(--spacing-md);
-}
-
-@keyframes spin {
-  to { transform: rotate(360deg); }
-}
-
-.filter-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--spacing-md);
-  flex-wrap: wrap;
-  margin-bottom: var(--spacing-lg);
-  padding: var(--spacing-sm) 0;
-}
-
-.active-filters {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-.active-filter {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  height: 38px;
-  padding: 0 8px 0 12px;
-  background: linear-gradient(135deg, var(--color-primary-bg) 0%, var(--color-primary-lighter) 100%);
-  border: 2px solid var(--color-primary-light);
-  border-radius: var(--radius-lg);
-  box-shadow: 0 2px 8px rgba(37, 99, 235, 0.15);
-  position: relative;
-}
-
-.filter-label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 0.8rem;
-  font-weight: 600;
-  color: var(--color-primary);
-}
-
-.filter-label svg {
-  width: 12px;
-  height: 12px;
-  stroke: currentColor;
-  stroke-width: 2.5;
-  fill: none;
-}
-
-.clear-filter {
-  background: rgba(37, 99, 235, 0.15);
-  border: none;
-  width: 20px;
-  height: 20px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--color-primary);
-  cursor: pointer;
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-  flex-shrink: 0;
-  border-radius: 4px;
-  padding: 0;
-}
-
-.clear-filter svg {
-  width: 12px;
-  height: 12px;
-  stroke: currentColor;
-  stroke-width: 2.5;
-  fill: none;
-}
-
-.clear-filter:hover {
-  background: var(--color-primary);
-  color: white;
-}
-
-.clear-filter:active {
-  transform: scale(0.9);
-}
-
-.clear-all-btn {
-  height: 38px;
-  padding: 0 14px;
-  background: var(--color-bg-secondary);
-  border: 2px solid var(--color-border);
-  border-radius: var(--radius-lg);
-  font-size: 0.8rem;
-  font-weight: 600;
-  color: var(--color-text-secondary);
-  cursor: pointer;
-  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-  white-space: nowrap;
-}
-
-.clear-all-btn:hover {
-  background: var(--color-danger-bg);
-  border-color: var(--color-danger);
-  color: var(--color-danger);
-}
-
-.clear-all-btn:active {
-  transform: scale(0.95);
-}
-
-.results-count {
-  font-size: 0.85rem;
-  color: var(--color-text-muted);
-  white-space: nowrap;
-}
-
-.rules-layout.view-grid {
+.rule-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(350px, 100%), 1fr));
-  gap: var(--spacing-xl);
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr));
+  gap: var(--space-4);
 }
 
-.rules-layout.view-list {
+/* 4K: 4 columns with larger cards */
+@media (min-width: 2200px) {
+  .rule-grid {
+    grid-template-columns: repeat(4, 1fr);
+    gap: var(--space-5);
+  }
+}
+
+/* Large desktop: 3 columns */
+@media (min-width: 1600px) and (max-width: 2199px) {
+  .rule-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+/* Desktop: 2 columns */
+@media (min-width: 768px) and (max-width: 1599px) {
+  .rule-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+/* Mobile: 1 column */
+@media (max-width: 767px) {
+  .rule-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Enhanced Empty State */
+.empty-state {
   display: flex;
   flex-direction: column;
-  gap: var(--spacing-md);
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-16) var(--space-6);
+  text-align: center;
 }
 
-@media (max-width: 768px) {
-  .rules-layout.view-grid {
-    grid-template-columns: 1fr;
-    gap: var(--spacing-md);
-  }
-
-  .filter-row {
-    flex-direction: column;
-    align-items: flex-start;
-    gap: var(--spacing-sm);
-  }
-
-  .active-filters {
-    width: 100%;
-  }
-
-  .results-count {
-    width: 100%;
-    text-align: left;
-  }
-
-  .active-filter {
-    flex: 0 0 auto;
-  }
+.empty-state__icon {
+  color: var(--color-primary);
+  opacity: 0.4;
+  margin-bottom: var(--space-5);
+  animation: float 4s ease-in-out infinite;
 }
+
+.empty-state__title {
+  font-size: var(--text-xl);
+  font-weight: var(--font-bold);
+  color: var(--color-text-primary);
+  margin-bottom: var(--space-2);
+}
+
+.empty-state__description {
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+  max-width: 360px;
+  line-height: 1.6;
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-8px); }
+}
+
+/* Utilities */
+.space-y-4 > * + * { margin-top: var(--space-4); }
+.flex { display: flex; }
+.justify-end { justify-content: flex-end; }
+.gap-3 { gap: var(--space-3); }
+.mr-2 { margin-right: var(--space-2); }
+.mt-1 { margin-top: var(--space-1); }
+.bg-subtle { background: var(--color-bg-subtle); }
+.p-4 { padding: var(--space-4); }
+.rounded-lg { border-radius: var(--radius-lg); }
+.text-sm { font-size: var(--text-sm); }
+.text-xs { font-size: var(--text-xs); }
+.font-mono { font-family: var(--font-mono); }
+.text-primary { color: var(--color-text-primary); }
+.text-secondary { color: var(--color-text-secondary); }
+.text-tertiary { color: var(--color-text-tertiary); }
 </style>
