@@ -23,9 +23,7 @@
         </svg>
       </div>
       <div class="empty-state__title">暂无规则</div>
-      <div class="empty-state__description">
-        该节点下还没有代理规则，点击上方按钮创建第一条规则
-      </div>
+      <button class="btn btn--primary btn--sm" @click="$emit('add')">添加第一条规则</button>
     </div>
 
     <!-- Empty State - No Search Results -->
@@ -108,6 +106,8 @@ import { useRuleStore } from '../stores/rules'
 import RuleItem from './RuleItem.vue'
 import RuleForm from './RuleForm.vue'
 import BaseModal from './base/BaseModal.vue'
+
+defineEmits(['add'])
 
 const ruleStore = useRuleStore()
 
