@@ -148,7 +148,16 @@ renew_certificate() {
 
   if has_certificate_record "$cert_name"; then
     log "renewing certificate for $requested_domain"
-    "$ACME_SCRIPT" --renew -d "$cert_name" --ecc $ACME_COMMON_ARGS
+    if renew_output=$("$ACME_SCRIPT" --renew -d "$cert_name" --ecc $ACME_COMMON_ARGS 2>&1); then
+      :
+    else
+      renew_status=$?
+      printf '%s\n' "$renew_output" >&2
+      if printf '%s' "$renew_output" | grep -q "Skipping\. Next renewal time is:"; then
+        renew_status=0
+      fi
+      [ "$renew_status" -eq 0 ] || exit "$renew_status"
+    fi
   else
     log "no existing acme record for $requested_domain, issuing a new certificate"
     request_certificate "$requested_domain" "$cert_name"

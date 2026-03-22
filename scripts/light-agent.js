@@ -6,6 +6,7 @@ const os = require('os')
 const path = require('path')
 const http = require('http')
 const https = require('https')
+const crypto = require('crypto')
 const { spawnSync } = require('child_process')
 
 const MASTER_URL = trimSlash(process.env.MASTER_PANEL_URL || '')
@@ -25,6 +26,10 @@ const MANAGED_CERTS_JSON =
   process.env.MANAGED_CERTS_JSON || path.resolve(process.cwd(), 'managed_certificates.json')
 const MANAGED_CERTS_POLICY_JSON =
   process.env.MANAGED_CERTS_POLICY_JSON || path.resolve(process.cwd(), 'managed_certificates.policy.json')
+const DIRECT_CERT_DIR = process.env.DIRECT_CERT_DIR || path.resolve(process.cwd(), 'certs')
+const ACME_HOME = process.env.ACME_HOME || path.resolve(process.cwd(), '.acme.sh')
+const ACME_SCRIPT = process.env.ACME_SCRIPT || path.join(ACME_HOME, 'acme.sh')
+const ACME_COMMON_ARGS = ['--home', ACME_HOME, '--config-home', ACME_HOME, '--cert-home', ACME_HOME]
 const STATE_FILE = process.env.AGENT_STATE_FILE || path.resolve(process.cwd(), 'agent-state.json')
 const APPLY_COMMAND = process.env.APPLY_COMMAND || ''
 const NGINX_STATUS_URL = process.env.NGINX_STATUS_URL || 'http://127.0.0.1:18080/nginx_status'
@@ -86,6 +91,149 @@ function truncateText(value, maxLength = 1000) {
   const text = String(value || '').trim()
   if (!text || text.length <= maxLength) return text
   return `${text.slice(0, maxLength)}...`
+}
+
+function normalizeHost(value) {
+  return String(value || '').trim().replace(/^\[(.*)\]$/, '$1')
+}
+
+function normalizeManagedCertificateAcmeInfo(value = {}) {
+  const source = value && typeof value === 'object' ? value : {}
+  return {
+    Main_Domain: String(source.Main_Domain || ''),
+    KeyLength: String(source.KeyLength || ''),
+    SAN_Domains: String(source.SAN_Domains || ''),
+    Profile: String(source.Profile || ''),
+    CA: String(source.CA || ''),
+    Created: String(source.Created || ''),
+    Renew: String(source.Renew || '')
+  }
+}
+
+function hasManagedCertificateAcmeInfo(acmeInfo) {
+  const normalized = normalizeManagedCertificateAcmeInfo(acmeInfo || {})
+  return Object.values(normalized).some((value) => String(value || '').trim())
+}
+
+function safeStatMtime(file) {
+  try {
+    return fs.statSync(file).mtimeMs || 0
+  } catch {
+    return 0
+  }
+}
+
+function hashManagedCertificateMaterial(domain) {
+  const certFile = path.join(DIRECT_CERT_DIR, domain, 'cert')
+  const keyFile = path.join(DIRECT_CERT_DIR, domain, 'key')
+  if (!fs.existsSync(certFile) || !fs.existsSync(keyFile)) {
+    return {
+      material_hash: '',
+      last_issue_at: null
+    }
+  }
+
+  const certPem = fs.readFileSync(certFile, 'utf8')
+  const keyPem = fs.readFileSync(keyFile, 'utf8')
+  const materialHash = crypto
+    .createHash('sha256')
+    .update(String(certPem))
+    .update('\n---\n')
+    .update(String(keyPem))
+    .digest('hex')
+  const mtimeMs = Math.max(safeStatMtime(certFile), safeStatMtime(keyFile))
+
+  return {
+    material_hash: materialHash,
+    last_issue_at: mtimeMs > 0 ? new Date(mtimeMs).toISOString() : null
+  }
+}
+
+function getManagedCertificateAcmeName(domain) {
+  const normalizedDomain = normalizeHost(domain).toLowerCase()
+  return normalizedDomain.startsWith('*.') ? normalizedDomain.slice(2) : normalizedDomain
+}
+
+function listLocalManagedCertificateAcmeInfo() {
+  if (!fs.existsSync(ACME_SCRIPT)) return new Map()
+
+  const result = spawnSync(ACME_SCRIPT, ['--list', ...ACME_COMMON_ARGS], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: process.env
+  })
+
+  if (result.error || result.status !== 0) {
+    return new Map()
+  }
+
+  const lines = String(result.stdout || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+  if (!lines.length) return new Map()
+
+  const headers = lines[0].split(/\s+/)
+  const reports = new Map()
+  for (const row of lines.slice(1)) {
+    const columns = row.split(/\s+/)
+    const mapped = {}
+    headers.forEach((header, index) => {
+      mapped[header] = columns[index] || ''
+    })
+    const mainDomain = String(mapped.Main_Domain || mapped.Domain || '').trim().toLowerCase()
+    if (!mainDomain) continue
+    reports.set(mainDomain, normalizeManagedCertificateAcmeInfo({
+      Main_Domain: mapped.Main_Domain || mapped.Domain || mainDomain,
+      KeyLength: mapped.KeyLength || '',
+      SAN_Domains: mapped.SAN_Domains || '',
+      Profile: mapped.Profile || '',
+      CA: mapped.CA || '',
+      Created: mapped.Created || '',
+      Renew: mapped.Renew || ''
+    }))
+  }
+
+  return reports
+}
+
+function buildManagedCertificateReports() {
+  const policies = readJson(MANAGED_CERTS_POLICY_JSON, [])
+  if (!Array.isArray(policies) || !policies.length) return []
+
+  const acmeInfoMap = listLocalManagedCertificateAcmeInfo()
+
+  return policies
+    .filter((policy) => policy && policy.enabled !== false)
+    .filter((policy) => String(policy.issuer_mode || '').trim().toLowerCase() === 'local_http01')
+    .map((policy) => {
+      const domain = normalizeHost(policy.domain || '').toLowerCase()
+      if (!domain) return null
+
+      const acmeInfo = acmeInfoMap.get(getManagedCertificateAcmeName(domain)) || normalizeManagedCertificateAcmeInfo()
+      const material = hashManagedCertificateMaterial(domain)
+      let status = String(policy.status || '').trim().toLowerCase()
+      if (!['pending', 'active', 'error'].includes(status)) {
+        status = 'pending'
+      }
+      if (material.material_hash || hasManagedCertificateAcmeInfo(acmeInfo)) {
+        status = 'active'
+      } else if (status === 'active') {
+        status = 'pending'
+      }
+
+      return {
+        id: Number.isFinite(Number(policy.id)) && Number(policy.id) > 0 ? Number(policy.id) : undefined,
+        domain,
+        status,
+        last_issue_at: material.last_issue_at,
+        last_error: status === 'active' ? '' : String(policy.last_error || ''),
+        material_hash: material.material_hash,
+        acme_info: acmeInfo,
+        updated_at: nowIso()
+      }
+    })
+    .filter(Boolean)
 }
 
 function requestJson(method, urlString, payload, headers = {}) {
@@ -263,6 +411,7 @@ function applyRules() {
 
 async function heartbeat(state) {
   const stats = await fetchNginxStats()
+  const managedCertificateReports = buildManagedCertificateReports()
   return requestJson(
     'POST',
     `${MASTER_URL}/panel-api/agents/heartbeat`,
@@ -276,7 +425,8 @@ async function heartbeat(state) {
       last_apply_revision: state.last_apply_revision,
       last_apply_status: state.last_apply_status,
       last_apply_message: state.last_apply_message,
-      stats
+      stats,
+      managed_certificate_reports: managedCertificateReports
     },
     {
       'X-Agent-Token': AGENT_TOKEN
