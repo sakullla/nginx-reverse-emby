@@ -78,6 +78,7 @@ curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/dep
 | `PANEL_PORT` | 面板端口 | `8080` |
 | `PANEL_ROLE` | 节点角色 `master` / `agent` | `master` |
 | `PROXY_DEPLOY_MODE` | 部署模式 `direct` / `front_proxy` | `direct` |
+| `FRONT_PROXY_PORT` | front_proxy 模式下容器监听端口 | `3000` |
 | `ACME_EMAIL` | Let's Encrypt 注册邮箱 | - |
 | `ACME_CA` | 证书颁发机构 | `letsencrypt` |
 | `ACME_DNS_PROVIDER` | DNS 验证提供商（如 `cf`） | - |

@@ -225,6 +225,7 @@ The `25-dynamic-reverse-proxy.sh` script:
 
 - `API_TOKEN`: Panel authentication token (required in production)
 - `PROXY_DEPLOY_MODE`: `direct` or `front_proxy`
+- `FRONT_PROXY_PORT`: Container listening port in `front_proxy` mode (default: 3000)
 - `PANEL_PORT`: Web panel port (default: 8080)
 - `PANEL_ROLE`: Node role - `master` or `agent`
 - `PANEL_AUTO_APPLY`: Auto-apply config changes (default: 1)
