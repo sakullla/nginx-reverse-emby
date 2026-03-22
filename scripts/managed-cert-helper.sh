@@ -158,6 +158,19 @@ renew_certificate() {
   log "certificate synced: $requested_domain -> $TARGET_DIR"
 }
 
+remove_certificate() {
+  [ -n "$DOMAIN" ] || { log "domain is required"; exit 1; }
+
+  ensure_acme
+  requested_domain=$(normalize_domain "$DOMAIN")
+  cert_name=$(get_acme_cert_name "$requested_domain")
+
+  log "removing certificate for $requested_domain"
+  cleanup_acme_record "$cert_name" "$requested_domain"
+  [ -n "$TARGET_DIR" ] && rm -rf "$TARGET_DIR"
+  log "certificate removed: $requested_domain"
+}
+
 case "$COMMAND" in
   issue)
     issue_certificate
@@ -165,8 +178,11 @@ case "$COMMAND" in
   renew)
     renew_certificate
     ;;
+  remove)
+    remove_certificate
+    ;;
   *)
-    log "usage: $0 <issue|renew> <domain> <target-dir>"
+    log "usage: $0 <issue|renew|remove> <domain> [target-dir]"
     exit 1
     ;;
 esac

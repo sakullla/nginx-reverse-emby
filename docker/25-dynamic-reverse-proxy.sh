@@ -11,8 +11,20 @@ DYNAMIC_DIR="${NRE_DYNAMIC_DIR:-/etc/nginx/conf.d/dynamic}"
 DATA_ROOT="/opt/nginx-reverse-emby/panel/data"
 RULES_FILE="${PANEL_RULES_FILE:-$DATA_ROOT/proxy_rules.csv}"
 L4_RULES_JSON="${PANEL_L4_RULES_JSON:-$DATA_ROOT/l4_rules.json}"
-MANAGED_CERTS_SYNC_JSON="${PANEL_MANAGED_CERTS_SYNC_JSON:-$DATA_ROOT/managed_cert_bundle.json}"
-MANAGED_CERTS_POLICY_JSON="${PANEL_MANAGED_CERTS_POLICY_JSON:-$DATA_ROOT/managed_cert_policy.json}"
+if [ -n "${PANEL_MANAGED_CERTS_SYNC_JSON:-}" ]; then
+    MANAGED_CERTS_SYNC_JSON="$PANEL_MANAGED_CERTS_SYNC_JSON"
+elif [ -f "$DATA_ROOT/managed_cert_bundle.local.json" ]; then
+    MANAGED_CERTS_SYNC_JSON="$DATA_ROOT/managed_cert_bundle.local.json"
+else
+    MANAGED_CERTS_SYNC_JSON="$DATA_ROOT/managed_cert_bundle.json"
+fi
+if [ -n "${PANEL_MANAGED_CERTS_POLICY_JSON:-}" ]; then
+    MANAGED_CERTS_POLICY_JSON="$PANEL_MANAGED_CERTS_POLICY_JSON"
+elif [ -f "$DATA_ROOT/managed_cert_policy.local.json" ]; then
+    MANAGED_CERTS_POLICY_JSON="$DATA_ROOT/managed_cert_policy.local.json"
+else
+    MANAGED_CERTS_POLICY_JSON="$DATA_ROOT/managed_cert_policy.json"
+fi
 ACME_HOME="${ACME_HOME:-$DATA_ROOT/.acme.sh}"
 DIRECT_CERT_DIR="${DIRECT_CERT_DIR:-$DATA_ROOT/certs}"
 DIRECT_CERT_STATE_FILE="${DIRECT_CERT_STATE_FILE:-$DATA_ROOT/.state/active_cert_domains}"
