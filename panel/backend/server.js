@@ -1690,7 +1690,7 @@ function getNginxStats() {
             resolve({
               activeConnections: "0",
               totalRequests: "0",
-              status: "��ȡʧ��",
+              status: "获取失败",
               error: e.message,
             });
           }

@@ -586,7 +586,7 @@ generate_nginx_config() {
         export handle_redirect_config=''
     else
         # 启用 302/307 代理（默认）
-        export location_proxy_redirect='        proxy_redirect ~^(https?)://([^:/]+(?::\d+)?)(/.+)$ $scheme://$server_name:$server_port/backstream/$1/$2$3;
+export location_proxy_redirect='        proxy_redirect ~^(https?)://([^:/]+(?::[0-9]+)?)(/.+)$ $scheme://$server_name:$server_port/backstream/$1/$2$3;
 
         proxy_intercept_errors on;
         error_page 307 = @handle_redirect;'
@@ -609,7 +609,7 @@ generate_nginx_config() {
         proxy_send_timeout                    60s;
         proxy_read_timeout                    60s;
 
-        proxy_redirect ~^(https?)://([^:/]+(?::\d+)?)(/.+)$ $scheme://$server_name:$server_port/backstream/$1/$2$3;
+        proxy_redirect ~^(https?)://([^:/]+(?::[0-9]+)?)(/.+)$ $scheme://$server_name:$server_port/backstream/$1/$2$3;
         set $rediret_scheme $1;
         set $rediret_host $2;
         sub_filter                            $proxy_host $host;
