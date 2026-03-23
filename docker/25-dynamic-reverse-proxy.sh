@@ -711,9 +711,9 @@ if [ -s "$tmp_rules" ]; then
         if [ "$proxy_redirect" = "1" ]; then
             # 启用 proxy_redirect: 生成 302/307 处理配置
             if [ "$deploy_mode" = "front_proxy" ]; then
-                location_proxy_redirect='        proxy_redirect ~^(https?)://([^:/]+(?::\d+)?)(/.+)$ $http_x_forwarded_proto://$http_x_forwarded_host:$http_x_forwarded_port/backstream/$1/$2$3;'
+        location_proxy_redirect='        proxy_redirect ~^(https?)://([^:/]+(?::[0-9]+)?)(/.+)$ $http_x_forwarded_proto://$http_x_forwarded_host:$http_x_forwarded_port/backstream/$1/$2$3;'
             else
-                location_proxy_redirect='        proxy_redirect ~^(https?)://([^:/]+(?::\d+)?)(/.+)$ $scheme://$host:$server_port/backstream/$1/$2$3;'
+        location_proxy_redirect='        proxy_redirect ~^(https?)://([^:/]+(?::[0-9]+)?)(/.+)$ $scheme://$host:$server_port/backstream/$1/$2$3;'
             fi
             # 生成 backstream 配置
             if [ "$deploy_mode" = "front_proxy" ]; then
@@ -736,7 +736,7 @@ if [ -s "$tmp_rules" ]; then
         proxy_send_timeout                    60s;
         proxy_read_timeout                    60s;
 
-        proxy_redirect ~^(https?)://([^:/]+(?::\d+)?)(/.+)$ $http_x_forwarded_proto://$http_x_forwarded_host:$http_x_forwarded_port/backstream/$1/$2$3;
+proxy_redirect ~^(https?)://([^:/]+(?::[0-9]+)?)(/.+)$ $http_x_forwarded_proto://$http_x_forwarded_host:$http_x_forwarded_port/backstream/$1/$2$3;
 
         proxy_intercept_errors on;
         error_page 307 = @handle_redirect;
@@ -780,7 +780,7 @@ if [ -s "$tmp_rules" ]; then
         proxy_send_timeout 60s;
         proxy_read_timeout 60s;
 
-        proxy_redirect ~^(https?)://([^:/]+(?::\d+)?)(/.+)$ $scheme://$host:$server_port/backstream/$1/$2$3;
+proxy_redirect ~^(https?)://([^:/]+(?::[0-9]+)?)(/.+)$ $scheme://$host:$server_port/backstream/$1/$2$3;
 
         proxy_intercept_errors on;
         error_page 307 = @handle_redirect;
@@ -821,15 +821,15 @@ if [ -s "$tmp_rules" ]; then
             -v cert_domain="$cert_dom" \
             -v location_proxy_redirect="$location_proxy_redirect" \
             -v backstream_config="$backstream_config" '
-            { gsub(/\${frontend_port}/, frontend_port) }
-            { gsub(/\${domain_name}/, domain_name) }
-            { gsub(/\${resolver}/, resolver) }
-            { gsub(/\${domain_path}/, domain_path) }
-            { gsub(/\${proxy_target}/, proxy_target) }
-            { gsub(/\${cert_dir}/, cert_dir) }
-            { gsub(/\${cert_domain}/, cert_domain) }
-            { gsub(/\${location_proxy_redirect}/, location_proxy_redirect) }
-            { gsub(/\${backstream_config}/, backstream_config) }
+            { gsub(/\$\{frontend_port\}/, frontend_port) }
+            { gsub(/\$\{domain_name\}/, domain_name) }
+            { gsub(/\$\{resolver\}/, resolver) }
+            { gsub(/\$\{domain_path\}/, domain_path) }
+            { gsub(/\$\{proxy_target\}/, proxy_target) }
+            { gsub(/\$\{cert_dir\}/, cert_dir) }
+            { gsub(/\$\{cert_domain\}/, cert_domain) }
+            { gsub(/\$\{location_proxy_redirect\}/, location_proxy_redirect) }
+            { gsub(/\$\{backstream_config\}/, backstream_config) }
             { print }
         ' "$template" > "$DYNAMIC_DIR/$conf_name"
         entrypoint_log "Generated config for $domain (proxy_redirect: $proxy_redirect)"

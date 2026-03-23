@@ -12,12 +12,13 @@ MANAGED_CERTS_POLICY_JSON="${MANAGED_CERTS_POLICY_JSON:-$AGENT_HOME/managed_cert
 RUNTIME_DIR="${AGENT_RUNTIME_DIR:-$AGENT_HOME/runtime}"
 GENERATOR_SCRIPT="${AGENT_GENERATOR_SCRIPT:-$RUNTIME_DIR/25-dynamic-reverse-proxy.sh}"
 NGINX_BIN_PATH="${AGENT_NGINX_BIN:-${NGINX_BIN:-nginx}}"
-
-NRE_DYNAMIC_DIR="${NRE_DYNAMIC_DIR:-/etc/nginx/conf.d/dynamic}"
-NRE_STREAM_DYNAMIC_DIR="${NRE_STREAM_DYNAMIC_DIR:-/etc/nginx/stream-conf.d/dynamic}"
-NRE_INCLUDE_FILE="${NRE_INCLUDE_FILE:-/etc/nginx/conf.d/zz-nginx-reverse-emby-agent.include.conf}"
-NRE_GLOBALS_FILE="${NRE_GLOBALS_FILE:-/etc/nginx/conf.d/zz-nginx-reverse-emby-agent.globals.conf}"
-NRE_STATUS_CONF_FILE="${NRE_STATUS_CONF_FILE:-/etc/nginx/conf.d/zz-nginx-reverse-emby-agent.status.conf}"
+NRE_HTTP_BASE_DIR="${NRE_HTTP_BASE_DIR:-$([ -d /etc/nginx/http.d ] && printf '%s' /etc/nginx/http.d || printf '%s' /etc/nginx/conf.d)}"
+NRE_STREAM_BASE_DIR="${NRE_STREAM_BASE_DIR:-$([ -d /etc/nginx/stream.d ] && printf '%s' /etc/nginx/stream.d || printf '%s' /etc/nginx/stream-conf.d)}"
+NRE_DYNAMIC_DIR="${NRE_DYNAMIC_DIR:-$NRE_HTTP_BASE_DIR/dynamic}"
+NRE_STREAM_DYNAMIC_DIR="${NRE_STREAM_DYNAMIC_DIR:-$NRE_STREAM_BASE_DIR/dynamic}"
+NRE_INCLUDE_FILE="${NRE_INCLUDE_FILE:-$NRE_HTTP_BASE_DIR/zz-nginx-reverse-emby-agent.include.conf}"
+NRE_GLOBALS_FILE="${NRE_GLOBALS_FILE:-$NRE_HTTP_BASE_DIR/zz-nginx-reverse-emby-agent.globals.conf}"
+NRE_STATUS_CONF_FILE="${NRE_STATUS_CONF_FILE:-$NRE_HTTP_BASE_DIR/zz-nginx-reverse-emby-agent.status.conf}"
 NRE_STATUS_PORT="${NRE_STATUS_PORT:-18080}"
 NRE_TEMPLATE_FILE="${NRE_TEMPLATE_FILE:-$RUNTIME_DIR/default.conf.template}"
 NRE_DIRECT_NO_TLS_TEMPLATE_FILE="${NRE_DIRECT_NO_TLS_TEMPLATE_FILE:-$RUNTIME_DIR/default.direct.no_tls.conf.template}"
@@ -46,6 +47,36 @@ normalize_deploy_mode() {
     fi
 
     printf 'direct'
+}
+
+nginx_supports_early_hints() {
+    tmp_dir=$(mktemp -d)
+    tmp_conf="$tmp_dir/nginx.conf"
+    cat > "$tmp_conf" <<'EOF'
+events {}
+http {
+    map $http_sec_fetch_mode $early_hints {
+        default $http2$http3;
+    }
+
+    server {
+        listen 127.0.0.1:1;
+
+        location / {
+            early_hints $early_hints;
+            return 204;
+        }
+    }
+}
+EOF
+
+    if "$NGINX_BIN_PATH" -t -q -c "$tmp_conf" >/dev/null 2>&1; then
+        rm -rf "$tmp_dir"
+        return 0
+    fi
+
+    rm -rf "$tmp_dir"
+    return 1
 }
 
 expected_listen_ports() {
@@ -187,16 +218,28 @@ cat > "$NRE_INCLUDE_FILE" <<EOF
 include $NRE_DYNAMIC_DIR/*.conf;
 EOF
 
+if nginx_supports_early_hints; then
+    NRE_ENABLE_EARLY_HINTS=1
+else
+    NRE_ENABLE_EARLY_HINTS=0
+    echo "[AGENT] nginx does not support early_hints; disabling that directive in generated configs"
+fi
+
 cat > "$NRE_GLOBALS_FILE" <<'EOF'
 map $http_upgrade $connection_upgrade {
     default upgrade;
     ""      close;
 }
+EOF
+
+if is_true "$NRE_ENABLE_EARLY_HINTS"; then
+    cat >> "$NRE_GLOBALS_FILE" <<'EOF'
 
 map $http_sec_fetch_mode $early_hints {
     navigate $http2$http3;
 }
 EOF
+fi
 
 if is_true "${NRE_ENABLE_NGINX_STATUS:-1}"; then
     cat > "$NRE_STATUS_CONF_FILE" <<EOF
@@ -234,6 +277,9 @@ export ACME_HOME="${ACME_HOME:-$AGENT_HOME/.acme.sh}"
 export NGINX_BIN="$NGINX_BIN_PATH"
 
 sh "$GENERATOR_SCRIPT"
+if ! is_true "$NRE_ENABLE_EARLY_HINTS"; then
+    find "$NRE_DYNAMIC_DIR" -type f -name '*.conf' -exec sed -i '/^[[:space:]]*early_hints \$early_hints;[[:space:]]*$/d' {} +
+fi
 expected_http_ports=$(expected_listen_ports || true)
 expected_l4_ports=$(expected_l4_listen_ports || true)
 echo "[AGENT] Apply mode: $resolved_deploy_mode"
