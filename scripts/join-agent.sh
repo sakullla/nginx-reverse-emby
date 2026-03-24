@@ -673,8 +673,9 @@ install_mainline_nginx() {
             pm="zypper"
             ;;
         *)
-            echo "Automatic nginx mainline installation is not supported on this system: $ID" >&2
-            exit 1
+            echo "[JOIN] Nginx mainline not supported on $ID, falling back to system nginx package..." >&2
+            install_system_nginx
+            return $?
             ;;
     esac
 
@@ -703,9 +704,9 @@ install_mainline_nginx() {
             restart_nginx_after_install
             ;;
         fedora)
-            echo "Automatic nginx mainline installation is not supported on Fedora by this script." >&2
-            echo "Please use a supported RHEL-compatible distribution (Rocky/Alma/CentOS Stream) or install nginx mainline manually." >&2
-            exit 1
+            echo "[JOIN] Nginx mainline not supported on Fedora, falling back to system nginx package..." >&2
+            install_system_nginx
+            return $?
             ;;
         arch)
             SUDO="${SUDO_BIN:-}"
@@ -736,10 +737,9 @@ install_mainline_nginx() {
             restart_nginx_after_install
             ;;
         opensuse_leap)
-            echo "Automatic nginx mainline installation is not supported on openSUSE Leap by this script." >&2
-            echo "Reason: the vendor nginx is not mainline, and current nginx.org SLES mainline packages require a newer OpenSSL ABI than Leap 15.6 provides." >&2
-            echo "Please use openSUSE Tumbleweed or install nginx mainline manually on Leap." >&2
-            exit 1
+            echo "[JOIN] Nginx mainline not supported on openSUSE Leap, falling back to system nginx package..." >&2
+            install_system_nginx
+            return $?
             ;;
         sles)
             sles_major="${VERSION_ID%%.*}"
@@ -753,11 +753,56 @@ install_mainline_nginx() {
             restart_nginx_after_install
             ;;
         suse)
-            echo "Automatic nginx mainline installation is not supported on this generic SUSE target." >&2
-            echo "Please use openSUSE Tumbleweed or install nginx mainline manually." >&2
-            exit 1
+            echo "[JOIN] Nginx mainline not supported on this SUSE target, falling back to system nginx package..." >&2
+            install_system_nginx
+            return $?
             ;;
     esac
+}
+
+install_system_nginx() {
+    echo "[JOIN] Attempting to install system nginx package..."
+
+    if command -v apt-get >/dev/null 2>&1; then
+        apt_get_noninteractive install -y --no-install-recommends nginx || return 1
+        restart_nginx_after_install
+        return 0
+    fi
+
+    if command -v dnf >/dev/null 2>&1; then
+        run_root_cmd dnf install -y nginx || return 1
+        restart_nginx_after_install
+        return 0
+    fi
+
+    if command -v yum >/dev/null 2>&1; then
+        run_root_cmd yum install -y nginx || return 1
+        restart_nginx_after_install
+        return 0
+    fi
+
+    if command -v zypper >/dev/null 2>&1; then
+        run_root_cmd zypper --non-interactive install --no-recommends nginx || return 1
+        restart_nginx_after_install
+        return 0
+    fi
+
+    if command -v pacman >/dev/null 2>&1; then
+        SUDO="${SUDO_BIN:-}"
+        $SUDO pacman -Sy --noconfirm nginx || return 1
+        restart_nginx_after_install
+        return 0
+    fi
+
+    if command -v apk >/dev/null 2>&1; then
+        SUDO="${SUDO_BIN:-}"
+        $SUDO apk add --no-cache nginx || return 1
+        restart_nginx_after_install
+        return 0
+    fi
+
+    echo "[JOIN] Unable to install nginx automatically. Please install nginx manually." >&2
+    return 1
 }
 
 install_runtime_packages() {
