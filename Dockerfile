@@ -32,17 +32,19 @@ RUN set -eux; \
     fi; \
     find /tmp/docker /opt/nginx-reverse-emby/scripts -type f -name '*.sh' -exec sed -i 's/\r$//' {} +; \
     rm -f /etc/nginx/conf.d/default.conf; \
-    mkdir -p /etc/nginx/templates /etc/nginx/conf.d/dynamic /opt/nginx-reverse-emby/panel/data; \
-    mv /tmp/docker/nginx.conf /etc/nginx/nginx.conf; \
+    mkdir -p /etc/nginx/templates /etc/nginx/conf.d/dynamic /etc/nginx/stream-conf.d/dynamic /opt/nginx-reverse-emby/panel/data /opt/nginx-reverse-emby/nginx; \
+    mv /tmp/docker/nginx.conf /opt/nginx-reverse-emby/nginx/nginx.conf.template; \
+    mv /tmp/docker/agent.nginx.conf.template /opt/nginx-reverse-emby/nginx/agent.nginx.conf.template; \
     mv /tmp/docker/default.conf.template /etc/nginx/templates/default.conf; \
     mv /tmp/docker/default.direct.no_tls.conf.template /etc/nginx/templates/default.direct.no_tls.conf; \
     mv /tmp/docker/default.direct.tls.conf.template /etc/nginx/templates/default.direct.tls.conf; \
     mv /tmp/docker/panel.conf.template /opt/nginx-reverse-emby/panel/panel.conf.template; \
+    mv /tmp/docker/10-nginx-config.sh /docker-entrypoint.d/10-nginx-config.sh; \
     mv /tmp/docker/15-panel-config.sh /docker-entrypoint.d/15-panel-config.sh; \
     mv /tmp/docker/20-panel-backend.sh /docker-entrypoint.d/20-panel-backend.sh; \
     mv /tmp/docker/25-dynamic-reverse-proxy.sh /docker-entrypoint.d/25-dynamic-reverse-proxy.sh; \
     mv /tmp/docker/30-acme-renew.sh /docker-entrypoint.d/30-acme-renew.sh; \
-    chmod +x /docker-entrypoint.d/15-panel-config.sh /docker-entrypoint.d/20-panel-backend.sh /docker-entrypoint.d/25-dynamic-reverse-proxy.sh /docker-entrypoint.d/30-acme-renew.sh; \
+    chmod +x /docker-entrypoint.d/10-nginx-config.sh /docker-entrypoint.d/15-panel-config.sh /docker-entrypoint.d/20-panel-backend.sh /docker-entrypoint.d/25-dynamic-reverse-proxy.sh /docker-entrypoint.d/30-acme-renew.sh; \
     chmod +x /opt/nginx-reverse-emby/panel/backend/server.js /opt/nginx-reverse-emby/scripts/*.sh; \
     rm -rf /tmp/docker
 

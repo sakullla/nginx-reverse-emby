@@ -1,9 +1,10 @@
 server {
     listen ${frontend_port} ssl;
-    listen [::]:${frontend_port} ssl;
+${listen_ipv6_line}
     http2 on;
 
     server_name ${domain_name};
+    client_max_body_size ${client_max_body_size};
 
     ssl_certificate ${cert_dir}/${cert_domain}/cert;
     ssl_certificate_key ${cert_dir}/${cert_domain}/key;
@@ -27,17 +28,19 @@ server {
         early_hints $early_hints;
         proxy_pass ${proxy_target};
         proxy_set_header Host $proxy_host;
+${forward_headers_config}
 
         proxy_http_version 1.1;
         proxy_cache_bypass $http_upgrade;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $connection_upgrade;
+        proxy_request_buffering off;
 
         proxy_ssl_server_name on;
 
         proxy_connect_timeout 60s;
-        proxy_send_timeout 60s;
-        proxy_read_timeout 60s;
+        proxy_send_timeout 3600s;
+        proxy_read_timeout 3600s;
 
 ${location_proxy_redirect}
     }

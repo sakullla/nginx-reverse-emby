@@ -23,6 +23,10 @@ NRE_STATUS_PORT="${NRE_STATUS_PORT:-18080}"
 NRE_TEMPLATE_FILE="${NRE_TEMPLATE_FILE:-$RUNTIME_DIR/default.conf.template}"
 NRE_DIRECT_NO_TLS_TEMPLATE_FILE="${NRE_DIRECT_NO_TLS_TEMPLATE_FILE:-$RUNTIME_DIR/default.direct.no_tls.conf.template}"
 NRE_DIRECT_TLS_TEMPLATE_FILE="${NRE_DIRECT_TLS_TEMPLATE_FILE:-$RUNTIME_DIR/default.direct.tls.conf.template}"
+NRE_MANAGE_NGINX_CONF="${NRE_MANAGE_NGINX_CONF:-1}"
+NRE_NGINX_CONF_TEMPLATE_FILE="${NRE_NGINX_CONF_TEMPLATE_FILE:-$RUNTIME_DIR/agent.nginx.conf.template}"
+NGINX_CLIENT_MAX_BODY_SIZE="${NGINX_CLIENT_MAX_BODY_SIZE:-5g}"
+NGINX_CLIENT_BODY_BUFFER_SIZE="${NGINX_CLIENT_BODY_BUFFER_SIZE:-512k}"
 
 is_true() {
     case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
@@ -30,6 +34,24 @@ is_true() {
         *) return 1 ;;
     esac
 }
+
+detect_nginx_conf_path() {
+    conf_path=$("$NGINX_BIN_PATH" -V 2>&1 | sed -n 's/.*--conf-path=\([^ ]*\).*/\1/p' | head -n 1)
+    if [ -n "$conf_path" ]; then
+        printf '%s\n' "$conf_path"
+        return 0
+    fi
+
+    [ -f /etc/nginx/nginx.conf ] && {
+        printf '%s\n' "/etc/nginx/nginx.conf"
+        return 0
+    }
+
+    printf '%s\n' "/etc/nginx/nginx.conf"
+}
+
+NRE_NGINX_CONF_FILE="${NRE_NGINX_CONF_FILE:-$(detect_nginx_conf_path)}"
+NRE_NGINX_CONF_BACKUP_FILE="${NRE_NGINX_CONF_BACKUP_FILE:-$AGENT_HOME/.state/original.nginx.conf}"
 
 normalize_mode() {
     mode_raw=$(printf '%s' "${1:-direct}" | tr '[:upper:]' '[:lower:]' | tr '-' '_')
@@ -47,6 +69,54 @@ normalize_deploy_mode() {
     fi
 
     printf 'direct'
+}
+
+supports_ipv6() {
+    if [ -n "${NGINX_ENABLE_IPV6:-}" ]; then
+        is_true "$NGINX_ENABLE_IPV6"
+        return $?
+    fi
+
+    node -e "
+        const net = require('net')
+        const server = net.createServer()
+        server.once('error', () => process.exit(1))
+        server.listen({ host: '::1', port: 0 }, () => {
+          server.close(() => process.exit(0))
+        })
+    " >/dev/null 2>&1
+}
+
+extract_preserved_load_modules() {
+    [ -f "$NRE_NGINX_CONF_FILE" ] || return 0
+    grep -E '^[[:space:]]*load_module[[:space:]].*;' "$NRE_NGINX_CONF_FILE" 2>/dev/null | awk 'NF && !seen[$0]++'
+}
+
+nginx_supports_stream() {
+    nginx_build_info=$("$NGINX_BIN_PATH" -V 2>&1 || true)
+    printf '%s' "$nginx_build_info" | grep -Eq -- '--with-stream(=dynamic)?' || return 1
+
+    tmp_dir=$(mktemp -d)
+    tmp_conf="$tmp_dir/nginx.conf"
+    preserved_load_modules=$(extract_preserved_load_modules || true)
+
+    {
+        printf '%s\n' 'include /etc/nginx/modules-enabled/*.conf;'
+        printf '%s\n' 'include /usr/share/nginx/modules/*.conf;'
+        if [ -n "$preserved_load_modules" ]; then
+            printf '%s\n' "$preserved_load_modules"
+        fi
+        printf '%s\n' 'events {}'
+        printf '%s\n' 'stream {' '    server { listen 127.0.0.1:1; }' '}'
+    } > "$tmp_conf"
+
+    if "$NGINX_BIN_PATH" -t -q -c "$tmp_conf" >/dev/null 2>&1; then
+        rm -rf "$tmp_dir"
+        return 0
+    fi
+
+    rm -rf "$tmp_dir"
+    return 1
 }
 
 nginx_supports_early_hints() {
@@ -77,6 +147,46 @@ EOF
 
     rm -rf "$tmp_dir"
     return 1
+}
+
+render_managed_nginx_conf() {
+    [ -f "$NRE_NGINX_CONF_TEMPLATE_FILE" ] || {
+        echo "Template not found: $NRE_NGINX_CONF_TEMPLATE_FILE" >&2
+        exit 1
+    }
+
+    preserved_load_modules=$(extract_preserved_load_modules || true)
+    stream_block=''
+    if nginx_supports_stream; then
+        stream_block="stream {
+    include $NRE_STREAM_BASE_DIR/*.conf;
+    include $NRE_STREAM_DYNAMIC_DIR/*.conf;
+}"
+    fi
+
+    mkdir -p "$(dirname "$NRE_NGINX_CONF_FILE")" "$(dirname "$NRE_NGINX_CONF_BACKUP_FILE")"
+    if [ -f "$NRE_NGINX_CONF_FILE" ] && [ ! -f "$NRE_NGINX_CONF_BACKUP_FILE" ]; then
+        cp "$NRE_NGINX_CONF_FILE" "$NRE_NGINX_CONF_BACKUP_FILE"
+    fi
+
+    awk \
+        -v preserved_load_modules="$preserved_load_modules" \
+        -v http_globals_file="$NRE_GLOBALS_FILE" \
+        -v http_base_dir="$NRE_HTTP_BASE_DIR" \
+        -v http_dynamic_dir="$NRE_DYNAMIC_DIR" \
+        -v nginx_client_max_body_size="$NGINX_CLIENT_MAX_BODY_SIZE" \
+        -v nginx_client_body_buffer_size="$NGINX_CLIENT_BODY_BUFFER_SIZE" \
+        -v stream_block="$stream_block" \
+        '
+        { gsub(/\$\{preserved_load_modules\}/, preserved_load_modules) }
+        { gsub(/\$\{http_globals_file\}/, http_globals_file) }
+        { gsub(/\$\{http_base_dir\}/, http_base_dir) }
+        { gsub(/\$\{http_dynamic_dir\}/, http_dynamic_dir) }
+        { gsub(/\$\{nginx_client_max_body_size\}/, nginx_client_max_body_size) }
+        { gsub(/\$\{nginx_client_body_buffer_size\}/, nginx_client_body_buffer_size) }
+        { gsub(/\$\{stream_block\}/, stream_block) }
+        { print }
+        ' "$NRE_NGINX_CONF_TEMPLATE_FILE" > "$NRE_NGINX_CONF_FILE"
 }
 
 expected_listen_ports() {
@@ -207,6 +317,14 @@ port_is_listening() {
     return 2
 }
 
+reload_or_start_nginx() {
+    if "$NGINX_BIN_PATH" -s reload >/dev/null 2>&1; then
+        return 0
+    fi
+
+    "$NGINX_BIN_PATH" -c "$NRE_NGINX_CONF_FILE"
+}
+
 [ -f "$GENERATOR_SCRIPT" ] || { echo "Generator script not found: $GENERATOR_SCRIPT" >&2; exit 1; }
 [ -f "$NRE_TEMPLATE_FILE" ] || { echo "Template not found: $NRE_TEMPLATE_FILE" >&2; exit 1; }
 [ -f "$NRE_DIRECT_NO_TLS_TEMPLATE_FILE" ] || { echo "Template not found: $NRE_DIRECT_NO_TLS_TEMPLATE_FILE" >&2; exit 1; }
@@ -214,9 +332,23 @@ port_is_listening() {
 
 mkdir -p "$NRE_DYNAMIC_DIR" "$NRE_STREAM_DYNAMIC_DIR" "$(dirname "$NRE_INCLUDE_FILE")" "$(dirname "$NRE_GLOBALS_FILE")" "$(dirname "$NRE_STATUS_CONF_FILE")" "$AGENT_HOME/.state" "$AGENT_HOME/certs"
 
-cat > "$NRE_INCLUDE_FILE" <<EOF
+if supports_ipv6; then
+    NRE_ENABLE_IPV6=1
+    status_listen_ipv6="    listen [::1]:${NRE_STATUS_PORT};"
+    status_allow_ipv6="        allow ::1;"
+else
+    NRE_ENABLE_IPV6=0
+    status_listen_ipv6=""
+    status_allow_ipv6=""
+fi
+
+if ! is_true "$NRE_MANAGE_NGINX_CONF"; then
+    cat > "$NRE_INCLUDE_FILE" <<EOF
 include $NRE_DYNAMIC_DIR/*.conf;
 EOF
+else
+    rm -f "$NRE_INCLUDE_FILE"
+fi
 
 if nginx_supports_early_hints; then
     NRE_ENABLE_EARLY_HINTS=1
@@ -245,13 +377,13 @@ if is_true "${NRE_ENABLE_NGINX_STATUS:-1}"; then
     cat > "$NRE_STATUS_CONF_FILE" <<EOF
 server {
     listen 127.0.0.1:${NRE_STATUS_PORT};
-    listen [::1]:${NRE_STATUS_PORT};
+${status_listen_ipv6}
 
     location = /nginx_status {
         stub_status on;
         access_log off;
         allow 127.0.0.1;
-        allow ::1;
+${status_allow_ipv6}
         deny all;
     }
 }
@@ -267,6 +399,8 @@ export PANEL_L4_RULES_JSON="$L4_RULES_JSON"
 export PANEL_MANAGED_CERTS_SYNC_JSON="$MANAGED_CERTS_JSON"
 export PANEL_MANAGED_CERTS_POLICY_JSON="$MANAGED_CERTS_POLICY_JSON"
 export PROXY_DEPLOY_MODE="$resolved_deploy_mode"
+PROXY_PASS_PROXY_HEADERS="${PROXY_PASS_PROXY_HEADERS:-0}"
+export PROXY_PASS_PROXY_HEADERS
 export NRE_TEMPLATE_FILE
 export NRE_DIRECT_NO_TLS_TEMPLATE_FILE
 export NRE_DIRECT_TLS_TEMPLATE_FILE
@@ -275,11 +409,18 @@ export DIRECT_CERT_DIR="${DIRECT_CERT_DIR:-$AGENT_HOME/certs}"
 export DIRECT_CERT_STATE_FILE="${DIRECT_CERT_STATE_FILE:-$AGENT_HOME/.state/active_cert_domains}"
 export ACME_HOME="${ACME_HOME:-$AGENT_HOME/.acme.sh}"
 export NGINX_BIN="$NGINX_BIN_PATH"
+export NGINX_ENABLE_IPV6="$NRE_ENABLE_IPV6"
+export NGINX_CLIENT_MAX_BODY_SIZE
 
 sh "$GENERATOR_SCRIPT"
 if ! is_true "$NRE_ENABLE_EARLY_HINTS"; then
     find "$NRE_DYNAMIC_DIR" -type f -name '*.conf' -exec sed -i '/^[[:space:]]*early_hints \$early_hints;[[:space:]]*$/d' {} +
 fi
+
+if is_true "$NRE_MANAGE_NGINX_CONF"; then
+    render_managed_nginx_conf
+fi
+
 expected_http_ports=$(expected_listen_ports || true)
 expected_l4_ports=$(expected_l4_listen_ports || true)
 echo "[AGENT] Apply mode: $resolved_deploy_mode"
@@ -294,20 +435,20 @@ fi
 if [ -z "$expected_http_ports" ] && [ -z "$expected_l4_ports" ]; then
     echo "[AGENT] No enabled rules found; skipping port validation"
 fi
-"$NGINX_BIN_PATH" -t
-"$NGINX_BIN_PATH" -s reload
+
+"$NGINX_BIN_PATH" -t -c "$NRE_NGINX_CONF_FILE"
+reload_or_start_nginx
 
 tmp_effective_config=$(mktemp)
-if ! "$NGINX_BIN_PATH" -T >"$tmp_effective_config" 2>&1; then
+if ! "$NGINX_BIN_PATH" -T -c "$NRE_NGINX_CONF_FILE" >"$tmp_effective_config" 2>&1; then
     cat "$tmp_effective_config" >&2
     rm -f "$tmp_effective_config"
     exit 1
 fi
 
-if ! grep -F "$NRE_DYNAMIC_DIR" "$tmp_effective_config" >/dev/null 2>&1 && \
-   ! grep -F "$NRE_INCLUDE_FILE" "$tmp_effective_config" >/dev/null 2>&1; then
+if ! grep -F "$NRE_DYNAMIC_DIR" "$tmp_effective_config" >/dev/null 2>&1; then
     echo "Generated configs are not part of the active nginx config: $NRE_DYNAMIC_DIR/*.conf" >&2
-    echo "Check whether nginx.conf includes /etc/nginx/conf.d/*.conf, or point NRE_INCLUDE_FILE to an already included path." >&2
+    echo "Check whether nginx.conf includes the generated HTTP dynamic directory." >&2
     rm -f "$tmp_effective_config"
     exit 1
 fi
@@ -315,7 +456,7 @@ fi
 if [ -n "$expected_l4_ports" ]; then
     if ! grep -F "$NRE_STREAM_DYNAMIC_DIR" "$tmp_effective_config" >/dev/null 2>&1; then
         echo "Generated L4 configs are not part of the active nginx config: $NRE_STREAM_DYNAMIC_DIR/*.conf" >&2
-        echo "Check whether nginx.conf includes /etc/nginx/stream-conf.d/*.conf and /etc/nginx/stream-conf.d/dynamic/*.conf." >&2
+        echo "Check whether nginx has stream support enabled and includes the generated stream dynamic directory." >&2
         rm -f "$tmp_effective_config"
         exit 1
     fi
@@ -341,7 +482,7 @@ if [ -n "$combined_ports" ]; then
 
     if [ -n "$missing_ports" ]; then
         echo "nginx reload succeeded, but expected listen ports are not active:${missing_ports}" >&2
-        echo "Check whether nginx loaded $NRE_INCLUDE_FILE and whether another service is occupying the target port." >&2
+        echo "Check whether nginx loaded $NRE_NGINX_CONF_FILE and whether another service is occupying the target port." >&2
         rm -f "$tmp_effective_config"
         exit 1
     fi

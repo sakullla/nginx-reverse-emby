@@ -17,9 +17,37 @@ fi
 
 panel_port="${PANEL_PORT:-8080}"
 panel_backend_port="${PANEL_BACKEND_PORT:-18081}"
+panel_client_max_body_size="${NGINX_CLIENT_MAX_BODY_SIZE:-5g}"
+
+supports_ipv6() {
+    if [ -n "${NGINX_ENABLE_IPV6:-}" ]; then
+        case "$(printf '%s' "$NGINX_ENABLE_IPV6" | tr '[:upper:]' '[:lower:]')" in
+            1|true|yes|on) return 0 ;;
+            *) return 1 ;;
+        esac
+    fi
+
+    node -e "
+        const net = require('net')
+        const server = net.createServer()
+        server.once('error', () => process.exit(1))
+        server.listen({ host: '::1', port: 0 }, () => {
+          server.close(() => process.exit(0))
+        })
+    " >/dev/null 2>&1
+}
+
+if supports_ipv6; then
+    panel_listen_ipv6_line="    listen [::]:${panel_port};"
+else
+    panel_listen_ipv6_line=""
+fi
+
 export panel_port
 export panel_backend_port
+export panel_client_max_body_size
+export panel_listen_ipv6_line
 
-envsubst '${panel_port} ${panel_backend_port}' < "$template_file" > "$output_file"
+envsubst '${panel_port} ${panel_backend_port} ${panel_client_max_body_size} ${panel_listen_ipv6_line}' < "$template_file" > "$output_file"
 
 mkdir -p /opt/nginx-reverse-emby/panel/data

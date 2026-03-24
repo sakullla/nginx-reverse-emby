@@ -1,9 +1,10 @@
 server {
     listen ${panel_port};
-    listen [::]:${panel_port};
+${panel_listen_ipv6_line}
 
     server_name _;
     charset utf-8;
+    client_max_body_size ${panel_client_max_body_size};
 
     root /opt/nginx-reverse-emby/panel/frontend;
     index index.html;
@@ -16,6 +17,11 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_request_buffering off;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
         proxy_pass http://127.0.0.1:${panel_backend_port}/api/;
     }
 
@@ -27,6 +33,11 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+        proxy_request_buffering off;
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
         proxy_pass http://127.0.0.1:${panel_backend_port}/agent-api/;
     }
 
