@@ -917,6 +917,9 @@ copy_or_download_asset() {
         default.direct.tls.conf.template)
             [ -n "$SCRIPT_DIR" ] && local_path="$SCRIPT_DIR/../docker/default.direct.tls.conf.template"
             ;;
+        agent.nginx.conf.template)
+            [ -n "$SCRIPT_DIR" ] && local_path="$SCRIPT_DIR/../docker/agent.nginx.conf.template"
+            ;;
     esac
 
     mkdir -p "$(dirname -- "$dest_path")"
@@ -1067,6 +1070,7 @@ RENEW_LOOP_FILE="$RUNTIME_DIR/30-acme-renew.sh"
 TEMPLATE_FILE="$RUNTIME_DIR/default.conf.template"
 DIRECT_NO_TLS_TEMPLATE_FILE="$RUNTIME_DIR/default.direct.no_tls.conf.template"
 DIRECT_TLS_TEMPLATE_FILE="$RUNTIME_DIR/default.direct.tls.conf.template"
+AGENT_NGINX_CONF_TEMPLATE_FILE="$RUNTIME_DIR/agent.nginx.conf.template"
 
 echo "[JOIN] Installing runtime assets to: $DATA_DIR"
 copy_or_download_asset light-agent.js "$LIGHT_AGENT_FILE" 755
@@ -1076,6 +1080,7 @@ copy_or_download_asset 30-acme-renew.sh "$RENEW_LOOP_FILE" 755
 copy_or_download_asset default.conf.template "$TEMPLATE_FILE" 644
 copy_or_download_asset default.direct.no_tls.conf.template "$DIRECT_NO_TLS_TEMPLATE_FILE" 644
 copy_or_download_asset default.direct.tls.conf.template "$DIRECT_TLS_TEMPLATE_FILE" 644
+copy_or_download_asset agent.nginx.conf.template "$AGENT_NGINX_CONF_TEMPLATE_FILE" 644
 cp "$RENEW_LOOP_FILE" "$DEFAULT_RENEW_SCRIPT"
 chmod 755 "$DEFAULT_RENEW_SCRIPT"
 
@@ -1101,10 +1106,12 @@ AGENT_STATE_FILE=$(shell_quote "$STATE_FILE")
 AGENT_HOME=$(shell_quote "$DATA_DIR")
 AGENT_RUNTIME_DIR=$(shell_quote "$RUNTIME_DIR")
 AGENT_GENERATOR_SCRIPT=$(shell_quote "$GENERATOR_FILE")
+NRE_NGINX_CONF_TEMPLATE_FILE=$(shell_quote "$AGENT_NGINX_CONF_TEMPLATE_FILE")
 AGENT_DEFAULT_APPLY_COMMAND=$(shell_quote "$DEFAULT_APPLY_SCRIPT")
 AGENT_DEFAULT_RENEW_COMMAND=$(shell_quote "$DEFAULT_RENEW_SCRIPT")
 APPLY_COMMAND=$(shell_quote "$APPLY_COMMAND")
 PROXY_DEPLOY_MODE=$(shell_quote "$DEPLOY_MODE")
+PROXY_PASS_PROXY_HEADERS=$(shell_quote "${PROXY_PASS_PROXY_HEADERS:-0}")
 AGENT_FOLLOW_MASTER_DEPLOY_MODE=$(shell_quote "$LOCAL_NODE")
 NGINX_BIN=$(shell_quote "$NGINX_BIN_PATH")
 DATA_ROOT=$(shell_quote "$DATA_DIR")
@@ -1112,6 +1119,9 @@ DIRECT_CERT_DIR=$(shell_quote "$DATA_DIR/certs")
 ACME_HOME=$(shell_quote "$DATA_DIR/.acme.sh")
 PANEL_MANAGED_CERTS_POLICY_JSON=$(shell_quote "$DATA_DIR/managed_certificates.policy.json")
 PANEL_MANAGED_CERTS_SYNC_JSON=$(shell_quote "$DATA_DIR/managed_certificates.json")
+NRE_MANAGE_NGINX_CONF='1'
+NGINX_CLIENT_MAX_BODY_SIZE='5g'
+NGINX_CLIENT_BODY_BUFFER_SIZE='512k'
 ACME_RENEW_FOREGROUND='1'
 EOF
 

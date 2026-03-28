@@ -153,6 +153,13 @@ const PUBLIC_AGENT_ASSETS = {
     ],
     contentType: "text/plain; charset=utf-8",
   },
+  "agent.nginx.conf.template": {
+    files: [
+      path.join(PROJECT_ROOT, "docker", "agent.nginx.conf.template"),
+      "/opt/nginx-reverse-emby/nginx/agent.nginx.conf.template",
+    ],
+    contentType: "text/plain; charset=utf-8",
+  },
 };
 let isManagedCertificateRenewRunning = false;
 

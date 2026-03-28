@@ -30,11 +30,12 @@ DIRECT_CERT_DIR="${DIRECT_CERT_DIR:-$DATA_ROOT/certs}"
 DIRECT_CERT_STATE_FILE="${DIRECT_CERT_STATE_FILE:-$DATA_ROOT/.state/active_cert_domains}"
 STREAM_DYNAMIC_DIR="${NRE_STREAM_DYNAMIC_DIR:-/etc/nginx/stream-conf.d/dynamic}"
 
-RESOLVER="${NGINX_LOCAL_RESOLVERS:-1.1.1.1}"
 PROXY_DEPLOY_MODE="${PROXY_DEPLOY_MODE:-front_proxy}"
+PROXY_PASS_PROXY_HEADERS="${PROXY_PASS_PROXY_HEADERS:-0}"
 FRONT_PROXY_PORT="${FRONT_PROXY_PORT:-3000}"
 DIRECT_CERT_MODE="${DIRECT_CERT_MODE:-acme}"
 DIRECT_CERT_CLEANUP="${DIRECT_CERT_CLEANUP:-1}"
+CLIENT_MAX_BODY_SIZE="${NGINX_CLIENT_MAX_BODY_SIZE:-5g}"
 
 ACME_SCRIPT="$ACME_HOME/acme.sh"
 ACME_INSTALL_URL="${ACME_INSTALL_URL:-https://raw.githubusercontent.com/acmesh-official/acme.sh/master/acme.sh}"
@@ -107,6 +108,51 @@ is_ip_address() {
     if printf '%s' "$value" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then return 0; fi
     if printf '%s' "$value" | grep -Eq '^[0-9A-Fa-f:.]+$' && printf '%s' "$value" | grep -q ':'; then return 0; fi
     return 1
+}
+
+supports_ipv6() {
+    if [ -n "${NGINX_ENABLE_IPV6:-}" ]; then
+        case "$(printf '%s' "$NGINX_ENABLE_IPV6" | tr '[:upper:]' '[:lower:]')" in
+            1|true|yes|on) return 0 ;;
+            *) return 1 ;;
+        esac
+    fi
+
+    node -e "
+        const net = require('net')
+        const server = net.createServer()
+        server.once('error', () => process.exit(1))
+        server.listen({ host: '::1', port: 0 }, () => {
+          server.close(() => process.exit(0))
+        })
+    " >/dev/null 2>&1
+}
+
+get_resolver() {
+    if [ -n "${NGINX_LOCAL_RESOLVERS:-}" ]; then
+        printf '%s\n' "$NGINX_LOCAL_RESOLVERS"
+        return 0
+    fi
+
+    resolver_hosts=$(awk '
+        BEGIN { first = 1 }
+        /^nameserver[[:space:]]+/ {
+            value = ($2 ~ /:/ ? "[" $2 "]" : $2)
+            if (!first) {
+                printf " "
+            }
+            printf "%s", value
+            first = 0
+        }
+    ' /etc/resolv.conf 2>/dev/null || true)
+
+    [ -n "$resolver_hosts" ] || resolver_hosts="1.1.1.1 8.8.8.8"
+
+    if supports_ipv6; then
+        printf '%s\n' "$resolver_hosts"
+    else
+        printf '%s ipv6=off\n' "$resolver_hosts"
+    fi
 }
 
 normalize_deploy_mode() {
@@ -647,8 +693,17 @@ generate_l4_configs() {
 
 # --- Main Flow ---
 deploy_mode=$(normalize_deploy_mode)
+RESOLVER="$(get_resolver)"
 mkdir -p "$DYNAMIC_DIR" "$DIRECT_CERT_DIR" "$STREAM_DYNAMIC_DIR"
 rm -f "$DYNAMIC_DIR"/*.conf
+
+if supports_ipv6; then
+    LISTEN_IPV6_TEMPLATE='    listen [::]:${frontend_port};'
+    LISTEN_IPV6_TLS_TEMPLATE='    listen [::]:${frontend_port} ssl;'
+else
+    LISTEN_IPV6_TEMPLATE=''
+    LISTEN_IPV6_TLS_TEMPLATE=''
+fi
 
 tmp_rules=$(mktemp)
 tmp_issue_certs=$(mktemp)
@@ -658,6 +713,11 @@ collect_rules "$tmp_rules"
 collect_l4_rules "$tmp_l4_rules"
 
 if [ -s "$tmp_rules" ]; then
+    pass_proxy_headers=0
+    if is_true "$PROXY_PASS_PROXY_HEADERS"; then
+        pass_proxy_headers=1
+    fi
+
     while IFS=, read -r frontend_url backend_url proxy_redirect || [ -n "$frontend_url" ]; do
         [ -z "$backend_url" ] && continue
         # 默认为启用 proxy_redirect (1)
@@ -708,6 +768,16 @@ if [ -s "$tmp_rules" ]; then
         fi
 
         # 根据 proxy_redirect 生成配置
+        if [ "$pass_proxy_headers" = "1" ]; then
+            forward_headers_config='        proxy_set_header X-Real-IP            $remote_addr;
+        proxy_set_header X-Forwarded-Host     $host;
+        proxy_set_header X-Forwarded-Port     $server_port;
+        proxy_set_header X-Forwarded-For      $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto    $scheme;'
+        else
+            forward_headers_config='        # proxy forwarding headers pass-through disabled'
+        fi
+
         if [ "$proxy_redirect" = "1" ]; then
             # 启用 proxy_redirect: 生成 302/307 处理配置
             if [ "$deploy_mode" = "front_proxy" ]; then
@@ -724,17 +794,19 @@ if [ -s "$tmp_rules" ]; then
         proxy_pass                            $website;
 
         proxy_set_header Host                 $proxy_host;
+${forward_headers_config}
 
         proxy_http_version                    1.1;
         proxy_cache_bypass                    $http_upgrade;
         proxy_set_header Upgrade              $http_upgrade;
         proxy_set_header Connection           $connection_upgrade;
+        proxy_request_buffering               off;
 
         proxy_ssl_server_name                 on;
 
         proxy_connect_timeout                 60s;
-        proxy_send_timeout                    60s;
-        proxy_read_timeout                    60s;
+        proxy_send_timeout                    3600s;
+        proxy_read_timeout                    3600s;
 
 proxy_redirect ~^(https?)://([^:/]+(?::[0-9]+)?)(/.+)$ $http_x_forwarded_proto://$http_x_forwarded_host:$http_x_forwarded_port/backstream/$1/$2$3;
 
@@ -747,6 +819,7 @@ proxy_redirect ~^(https?)://([^:/]+(?::[0-9]+)?)(/.+)$ $http_x_forwarded_proto:/
         early_hints $early_hints;
         proxy_pass $saved_redirect_location;
         proxy_set_header Host                 $proxy_host;
+${forward_headers_config}
         proxy_http_version                    1.1;
         proxy_cache_bypass                    $http_upgrade;
 
@@ -754,10 +827,11 @@ proxy_redirect ~^(https?)://([^:/]+(?::[0-9]+)?)(/.+)$ $http_x_forwarded_proto:/
 
         proxy_set_header Upgrade              $http_upgrade;
         proxy_set_header Connection           $connection_upgrade;
+        proxy_request_buffering               off;
 
         proxy_connect_timeout                 60s;
-        proxy_send_timeout                    60s;
-        proxy_read_timeout                    60s;
+        proxy_send_timeout                    3600s;
+        proxy_read_timeout                    3600s;
     }
 '
             else
@@ -768,17 +842,19 @@ proxy_redirect ~^(https?)://([^:/]+(?::[0-9]+)?)(/.+)$ $http_x_forwarded_proto:/
         proxy_pass $website;
 
         proxy_set_header Host $proxy_host;
+${forward_headers_config}
 
         proxy_http_version 1.1;
         proxy_cache_bypass $http_upgrade;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $connection_upgrade;
+        proxy_request_buffering off;
 
         proxy_ssl_server_name on;
 
         proxy_connect_timeout 60s;
-        proxy_send_timeout 60s;
-        proxy_read_timeout 60s;
+        proxy_send_timeout 3600s;
+        proxy_read_timeout 3600s;
 
 proxy_redirect ~^(https?)://([^:/]+(?::[0-9]+)?)(/.+)$ $scheme://$host:$server_port/backstream/$1/$2$3;
 
@@ -791,6 +867,7 @@ proxy_redirect ~^(https?)://([^:/]+(?::[0-9]+)?)(/.+)$ $scheme://$host:$server_p
         early_hints $early_hints;
         proxy_pass $saved_redirect_location;
         proxy_set_header Host $proxy_host;
+${forward_headers_config}
         proxy_http_version 1.1;
         proxy_cache_bypass $http_upgrade;
 
@@ -798,10 +875,11 @@ proxy_redirect ~^(https?)://([^:/]+(?::[0-9]+)?)(/.+)$ $scheme://$host:$server_p
 
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection $connection_upgrade;
+        proxy_request_buffering off;
 
         proxy_connect_timeout 60s;
-        proxy_send_timeout 60s;
-        proxy_read_timeout 60s;
+        proxy_send_timeout 3600s;
+        proxy_read_timeout 3600s;
     }
 '
             fi
@@ -817,8 +895,11 @@ proxy_redirect ~^(https?)://([^:/]+(?::[0-9]+)?)(/.+)$ $scheme://$host:$server_p
             -v resolver="$RESOLVER" \
             -v domain_path="$path" \
             -v proxy_target="$backend_url" \
+            -v client_max_body_size="$CLIENT_MAX_BODY_SIZE" \
             -v cert_dir="$DIRECT_CERT_DIR" \
             -v cert_domain="$cert_dom" \
+            -v listen_ipv6_line="$([ "$proto" = "https" ] && printf '%s' "$LISTEN_IPV6_TLS_TEMPLATE" || printf '%s' "$LISTEN_IPV6_TEMPLATE")" \
+            -v forward_headers_config="$forward_headers_config" \
             -v location_proxy_redirect="$location_proxy_redirect" \
             -v backstream_config="$backstream_config" '
             { gsub(/\$\{frontend_port\}/, frontend_port) }
@@ -826,13 +907,16 @@ proxy_redirect ~^(https?)://([^:/]+(?::[0-9]+)?)(/.+)$ $scheme://$host:$server_p
             { gsub(/\$\{resolver\}/, resolver) }
             { gsub(/\$\{domain_path\}/, domain_path) }
             { gsub(/\$\{proxy_target\}/, proxy_target) }
+            { gsub(/\$\{client_max_body_size\}/, client_max_body_size) }
             { gsub(/\$\{cert_dir\}/, cert_dir) }
             { gsub(/\$\{cert_domain\}/, cert_domain) }
+            { gsub(/\$\{listen_ipv6_line\}/, listen_ipv6_line) }
+            { gsub(/\$\{forward_headers_config\}/, forward_headers_config) }
             { gsub(/\$\{location_proxy_redirect\}/, location_proxy_redirect) }
             { gsub(/\$\{backstream_config\}/, backstream_config) }
             { print }
         ' "$template" > "$DYNAMIC_DIR/$conf_name"
-        entrypoint_log "Generated config for $domain (proxy_redirect: $proxy_redirect)"
+        entrypoint_log "Generated config for $domain (proxy_redirect: $proxy_redirect, pass_proxy_headers: $pass_proxy_headers)"
     done < "$tmp_rules"
 fi
 
