@@ -857,7 +857,7 @@ const joinScriptUrl = computed(() => {
 })
 
 const joinRegisterToken = computed(() => {
-  return ruleStore.token || '<YOUR_TOKEN>'
+  return ruleStore.systemInfo.master_register_token || ruleStore.token || '<YOUR_TOKEN>'
 })
 
 const linuxJoinCommand = computed(() => {
