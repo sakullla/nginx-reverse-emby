@@ -935,7 +935,8 @@ copy_or_download_asset() {
         exit 1
     }
 
-    curl -fsSL "$ASSET_BASE_URL/$asset_name" -o "$dest_path"
+    echo "[JOIN] Downloading $asset_name from $ASSET_BASE_URL ..." >&2
+    curl -fsSL --connect-timeout 15 --max-time 120 "$ASSET_BASE_URL/$asset_name" -o "$dest_path"
     chmod "$chmod_mode" "$dest_path"
 }
 
