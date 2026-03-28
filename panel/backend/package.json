@@ -1,0 +1,13 @@
+{
+  "name": "panel-backend",
+  "private": true,
+  "scripts": {
+    "test": "node --test \"tests/*.test.js\""
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.0.0"
+  },
+  "devDependencies": {
+    "fast-check": "^3.0.0"
+  }
+}

@@ -5,6 +5,7 @@
 # Node
 panel/frontend/node_modules
 panel/frontend/.vite
+panel/backend/node_modules
 
 # IDE
 .vscode

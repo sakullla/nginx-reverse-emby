@@ -10,7 +10,17 @@ RUN npm ci
 COPY panel/frontend/ ./
 RUN npm run build
 
-FROM nginx:latest
+# ---- backend dependency build stage ----
+FROM node:24-bookworm-slim AS backend-builder
+WORKDIR /build
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends python3 make g++ && \
+    rm -rf /var/lib/apt/lists/*
+COPY panel/backend/package*.json ./
+RUN npm ci --omit=dev
+# -----------------------------------------
+
+FROM nginx:1.27-bookworm
 
 COPY docker/ /tmp/docker/
 COPY panel/backend/ /opt/nginx-reverse-emby/panel/backend/
@@ -18,6 +28,7 @@ COPY scripts/ /opt/nginx-reverse-emby/scripts/
 COPY examples/ /opt/nginx-reverse-emby/examples/
 COPY --from=frontend-builder /build/dist /opt/nginx-reverse-emby/panel/frontend/
 COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
+COPY --from=backend-builder /build/node_modules /opt/nginx-reverse-emby/panel/backend/node_modules
 
 RUN set -eux; \
     if command -v apk >/dev/null 2>&1; then \
