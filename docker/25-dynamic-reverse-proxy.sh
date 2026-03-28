@@ -353,7 +353,7 @@ install_cert_files() {
     "$ACME_SCRIPT" --install-cert -d "$cert_domain_clean" --ecc $ACME_COMMON_ARGS \
         --fullchain-file "$cert_target_dir/cert" \
         --key-file "$cert_target_dir/key" \
-        --reloadcmd "sh -c '$NGINX_BIN -t >/dev/null 2>&1 && { [ -s /var/run/nginx.pid ] && $NGINX_BIN -s reload || true; }; true'"
+        --reloadcmd "sh -c '$NGINX_BIN -e /proc/1/fd/2 -t >/dev/null 2>&1 && { [ -s /var/run/nginx.pid ] && $NGINX_BIN -e /proc/1/fd/2 -s reload || true; }; true'"
 }
 
 ensure_certificates_for_rules() {
@@ -544,6 +544,7 @@ generate_l4_configs() {
         const rulesJsonPath = '$rules_json_path';
         const streamDynamicDir = '$STREAM_DYNAMIC_DIR';
         const resolver = '$RESOLVER_LINE';
+        const limitConnZonesFile = path.resolve(streamDynamicDir, '..', 'limit_conn_zones.inc');
 
         function formatNetworkHost(host) {
             if (host.includes(':')) return '[' + host + ']';
@@ -556,42 +557,48 @@ generate_l4_configs() {
 
         function isIpAddress(value) {
             if (!value) return false;
-            // IPv4 check
-            if (/^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/.test(value)) return true;
-            // IPv6 check (simplified - has colons and is hex-like)
-            if (/^[0-9A-Fa-f:.]+$/.test(value) && value.includes(':')) return true;
+            if (/^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+\$/.test(value)) return true;
+            if (/^[0-9A-Fa-f:.]+\$/.test(value) && value.includes(':')) return true;
             return false;
         }
 
         function needsResolve(host) {
             if (!host) return false;
-            // Strip brackets for IPv6
-            const cleanHost = host.replace(/^\[|\]$/g, '');
+            const cleanHost = host.replace(/^\[|\]\$/g, '');
             return !isIpAddress(cleanHost);
         }
 
-        function formatBackend(backend, isFirst) {
+        function formatBackend(backend, ruleTuning, lbStrategy) {
             const host = formatNetworkHost(backend.host);
             const weight = backend.weight && backend.weight !== 1 ? ' weight=' + backend.weight : '';
-            const resolve = needsResolve(backend.host) ? ' resolve' : '';
-            return '    server ' + host + ':' + backend.port + weight + resolve + ';';
+            const resolve = (backend.resolve === true || needsResolve(backend.host)) ? ' resolve' : '';
+            // backup is only supported with round_robin and least_conn
+            const supportsBackup = lbStrategy === 'round_robin' || lbStrategy === 'least_conn';
+            const backup = (supportsBackup && backend.backup === true) ? ' backup' : '';
+            // backend.max_conns takes priority, then rule-level tuning.upstream.max_conns
+            const mc = Number(backend.max_conns) || (ruleTuning && ruleTuning.upstream ? Number(ruleTuning.upstream.max_conns) : 0) || 0;
+            const maxConns = mc > 0 ? ' max_conns=' + mc : '';
+            const maxFails = ruleTuning && ruleTuning.upstream && ruleTuning.upstream.max_fails !== undefined
+                ? ' max_fails=' + ruleTuning.upstream.max_fails : '';
+            const failTimeout = ruleTuning && ruleTuning.upstream && ruleTuning.upstream.fail_timeout
+                ? ' fail_timeout=' + ruleTuning.upstream.fail_timeout : '';
+            return '    server ' + host + ':' + backend.port + weight + resolve + backup + maxConns + maxFails + failTimeout + ';';
         }
 
-        function renderUpstreamBlock(name, backends, lbStrategy, lbHashKey, zoneSize) {
+        function renderUpstreamBlock(name, backends, lbStrategy, lbHashKey, zoneSize, ruleTuning) {
             let lines = ['upstream ' + name + ' {'];
-            lines.push('    zone ' + name + ' ' + (zoneSize || '64k') + ';');
+            lines.push('    zone ' + name + ' ' + (zoneSize || '128k') + ';');
 
             if (lbStrategy === 'least_conn') {
                 lines.push('    least_conn;');
             } else if (lbStrategy === 'random') {
                 lines.push('    random;');
             } else if (lbStrategy === 'hash') {
-                lines.push('    hash ' + (lbHashKey || '\$remote_addr') + ';');
+                lines.push('    hash ' + (lbHashKey || '\$binary_remote_addr') + ';');
             }
-            // round_robin is default, no directive needed
 
-            backends.forEach((b, i) => {
-                lines.push(formatBackend(b, i === 0));
+            backends.forEach((b) => {
+                lines.push(formatBackend(b, ruleTuning, lbStrategy));
             });
 
             lines.push('}');
@@ -605,11 +612,18 @@ generate_l4_configs() {
                 process.exit(0);
             }
 
+            const limitConnZones = [];
+
             rules.filter(r => r && r.enabled !== false).forEach((r, index) => {
                 const protocol = String(r.protocol || 'tcp').trim().toLowerCase();
                 const listenHost = String(r.listen_host || '0.0.0.0').trim();
                 const listenPort = String(r.listen_port || '').trim();
                 const name = String(r.name || (protocol + '-' + listenPort)).trim();
+                const tuning = r.tuning || {};
+                const listen = tuning.listen || {};
+                const proxy = tuning.proxy || {};
+                const limitConn = tuning.limit_conn || {};
+                const proxyProtocol = tuning.proxy_protocol || {};
 
                 if (!listenPort) return;
 
@@ -620,15 +634,18 @@ generate_l4_configs() {
                         host: String(b.host).trim(),
                         port: Number(b.port),
                         weight: Number(b.weight) || 1,
-                        resolve: b.resolve === true
+                        resolve: b.resolve === true,
+                        backup: b.backup === true,
+                        max_conns: Number(b.max_conns) || 0
                     }));
                 } else if (r.upstream_host && r.upstream_port) {
-                    // Fallback to legacy single upstream
                     backends = [{
                         host: String(r.upstream_host).trim(),
                         port: Number(r.upstream_port),
                         weight: 1,
-                        resolve: false
+                        resolve: false,
+                        backup: false,
+                        max_conns: 0
                     }];
                 }
 
@@ -637,27 +654,92 @@ generate_l4_configs() {
                     return;
                 }
 
-                // Get load balancing settings
                 const lb = r.load_balancing || {};
                 const lbStrategy = String(lb.strategy || 'round_robin').toLowerCase();
                 const lbHashKey = lb.hash_key;
-                const zoneSize = lb.zone_size || '64k';
+                const zoneSize = lb.zone_size || '128k';
 
                 const ruleNameSanitized = sanitizeDomain(name);
                 const upstreamName = 'up_' + ruleNameSanitized + '_' + protocol + '_' + listenPort;
                 const confName = ruleNameSanitized + '.' + protocol + '.' + listenPort + '.conf';
                 const listenHostFmt = formatNetworkHost(listenHost);
 
-                // Build listen directive
-                const listenDirective = protocol === 'udp'
-                    ? '    listen ' + listenHostFmt + ':' + listenPort + ' udp reuseport;'
-                    : '    listen ' + listenHostFmt + ':' + listenPort + ';';
+                // Build listen directive with tuning
+                let listenFlags = '';
+                if (protocol === 'udp') listenFlags += ' udp';
+                if (listen.reuseport === true || (protocol === 'udp' && listen.reuseport !== false)) listenFlags += ' reuseport';
+                if (listen.backlog && Number(listen.backlog) > 0) listenFlags += ' backlog=' + listen.backlog;
+                if (listen.so_keepalive === true) listenFlags += ' so_keepalive=on';
+                if (protocol === 'tcp' && proxyProtocol.decode === true) listenFlags += ' proxy_protocol';
+                const listenDirective = '    listen ' + listenHostFmt + ':' + listenPort + listenFlags + ';';
 
-                // Build proxy timeouts based on protocol
-                const proxyConnectTimeout = protocol === 'udp' ? '' : '\n    proxy_connect_timeout 10s;';
-                const proxyTimeout = protocol === 'udp'
-                    ? '    proxy_timeout 20s;'
-                    : '    proxy_timeout 10m;';
+                // Server-level directives
+                const serverLines = [];
+                serverLines.push(listenDirective);
+
+                // When decoding PROXY Protocol, trust the same local/private proxy
+                // ranges as the HTTP real_ip config so downstream proxy_protocol forwarding
+                // can preserve the decoded client address instead of the immediate socket peer.
+                if (protocol === 'tcp' && proxyProtocol.decode === true) {
+                    [
+                        '10.0.0.0/8',
+                        '172.16.0.0/12',
+                        '192.168.0.0/16',
+                        '192.168.65.0/24',
+                        '127.0.0.1'
+                    ].forEach(cidr => {
+                        serverLines.push('    set_real_ip_from ' + cidr + ';');
+                    });
+                }
+
+                // tcp_nodelay (only meaningful for TCP, but nginx accepts it in stream)
+                if (listen.tcp_nodelay === false) {
+                    serverLines.push('    tcp_nodelay off;');
+                }
+
+                // proxy_connect_timeout
+                const connectTimeout = proxy.connect_timeout || (protocol === 'udp' ? '10s' : '10s');
+                serverLines.push('    proxy_connect_timeout ' + connectTimeout + ';');
+
+                // proxy_timeout (idle)
+                const idleTimeout = proxy.idle_timeout || (protocol === 'udp' ? '20s' : '10m');
+                serverLines.push('    proxy_timeout ' + idleTimeout + ';');
+
+                // proxy_buffer_size
+                const bufferSize = proxy.buffer_size || '16k';
+                if (bufferSize !== '16k') {
+                    serverLines.push('    proxy_buffer_size ' + bufferSize + ';');
+                }
+
+                // UDP-specific: proxy_requests / proxy_responses
+                if (protocol === 'udp') {
+                    if (proxy.udp_proxy_requests && Number(proxy.udp_proxy_requests) > 0) {
+                        serverLines.push('    proxy_requests ' + proxy.udp_proxy_requests + ';');
+                    }
+                    if (proxy.udp_proxy_responses && Number(proxy.udp_proxy_responses) > 0) {
+                        serverLines.push('    proxy_responses ' + proxy.udp_proxy_responses + ';');
+                    }
+                }
+
+                // limit_conn
+                const limitConnCount = limitConn.count ? Number(limitConn.count) : 0;
+                if (limitConnCount > 0) {
+                    const zoneName = 'lc_' + ruleNameSanitized + '_' + protocol + '_' + listenPort;
+                    const lcKey = limitConn.key || '\$binary_remote_addr';
+                    const lcZoneSize = limitConn.zone_size || '10m';
+                    limitConnZones.push('limit_conn_zone ' + lcKey + ' zone=' + zoneName + ':' + lcZoneSize + ';');
+                    serverLines.push('    limit_conn ' + zoneName + ' ' + limitConnCount + ';');
+                }
+
+                // access_log
+                serverLines.push('    access_log /proc/1/fd/1 l4_main;');
+
+                // proxy_protocol: send to upstream
+                if (protocol === 'tcp' && proxyProtocol.send === true) {
+                    serverLines.push('    proxy_protocol on;');
+                }
+
+                serverLines.push('    proxy_pass ' + upstreamName + ';');
 
                 // Generate config
                 const configLines = [
@@ -667,13 +749,10 @@ generate_l4_configs() {
                     '# Backends: ' + backends.length,
                     '# Load Balancing: ' + lbStrategy,
                     '',
-                    renderUpstreamBlock(upstreamName, backends, lbStrategy, lbHashKey, zoneSize),
+                    renderUpstreamBlock(upstreamName, backends, lbStrategy, lbHashKey, zoneSize, tuning),
                     '',
                     'server {',
-                    listenDirective,
-                    proxyConnectTimeout,
-                    proxyTimeout,
-                    '    proxy_pass ' + upstreamName + ';',
+                    ...serverLines,
                     '}',
                     ''
                 ];
@@ -681,9 +760,12 @@ generate_l4_configs() {
                 const configPath = path.join(streamDynamicDir, confName);
                 fs.writeFileSync(configPath, configLines.join('\n'), 'utf8');
 
-                const backendList = backends.map(b => b.host + ':' + b.port).join(', ');
+                const backendList = backends.map(b => b.host + ':' + b.port + (b.backup ? '(backup)' : '')).join(', ');
                 console.log('[PROXY] Generated L4 config for ' + protocol + ' ' + listenHost + ':' + listenPort + ' -> [' + backendList + '] (strategy: ' + lbStrategy + ')');
             });
+
+            // Write centralized limit_conn_zone file
+            fs.writeFileSync(limitConnZonesFile, limitConnZones.length > 0 ? limitConnZones.join('\n') + '\n' : '', 'utf8');
         } catch (e) {
             console.error('Error generating L4 configs: ' + e.message);
             process.exit(1);
@@ -696,6 +778,8 @@ deploy_mode=$(normalize_deploy_mode)
 RESOLVER="$(get_resolver)"
 mkdir -p "$DYNAMIC_DIR" "$DIRECT_CERT_DIR" "$STREAM_DYNAMIC_DIR"
 rm -f "$DYNAMIC_DIR"/*.conf
+# Ensure limit_conn_zones.inc exists (even empty) so nginx include doesn't fail
+touch "${NRE_STREAM_DYNAMIC_DIR:-/etc/nginx/stream-conf.d}/limit_conn_zones.inc"
 
 if supports_ipv6; then
     LISTEN_IPV6_TEMPLATE='    listen [::]:${frontend_port};'

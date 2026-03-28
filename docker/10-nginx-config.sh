@@ -50,3 +50,7 @@ awk \
     { gsub(/\$\{status_ipv6_allow\}/, status_ipv6_allow) }
     { print }
     ' "$template_file" > "$output_file"
+
+# Ensure stream-conf.d and limit_conn_zones.inc exist for nginx include
+mkdir -p /etc/nginx/stream-conf.d/dynamic
+touch /etc/nginx/stream-conf.d/limit_conn_zones.inc

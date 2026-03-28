@@ -45,6 +45,8 @@ const MANAGED_CERT_HELPER_SCRIPT =
   process.env.PANEL_MANAGED_CERT_HELPER_SCRIPT ||
   path.resolve(__dirname, "..", "..", "scripts", "managed-cert-helper.sh");
 const NGINX_BIN = process.env.PANEL_NGINX_BIN || "nginx";
+const NGINX_ERROR_LOG_FILE =
+  process.env.PANEL_NGINX_ERROR_LOG || "/proc/1/fd/2";
 const APPLY_COMMAND = process.env.PANEL_APPLY_COMMAND || "";
 const APPLY_COMMAND_ARGS = parseJsonArray(process.env.PANEL_APPLY_ARGS, []);
 const AUTO_APPLY = /^(1|true|yes|on)$/i.test(
@@ -596,6 +598,156 @@ function doesManagedCertificateMatchHost(cert, host) {
   );
 }
 
+// --- L4 Tuning Validation Helpers ---
+
+function isValidNginxTime(value) {
+  if (typeof value !== "string") return false;
+  return /^\d+[smhd]$/.test(value.trim());
+}
+
+function isValidNginxSize(value) {
+  if (typeof value !== "string") return false;
+  return /^\d+[km]$/i.test(value.trim());
+}
+
+function isNonNegativeInt(value) {
+  const n = Number(value);
+  return Number.isInteger(n) && n >= 0;
+}
+
+function isPositiveInt(value) {
+  const n = Number(value);
+  return Number.isInteger(n) && n > 0;
+}
+
+function isStrictBool(value) {
+  return value === true || value === false;
+}
+
+function normalizeNginxTime(value, defaultValue, fieldPath) {
+  if (value === undefined || value === null || value === "") return defaultValue;
+  const str = String(value).trim();
+  if (!isValidNginxTime(str)) {
+    throw new Error(`${fieldPath} must be a valid nginx time (e.g. 10s, 5m, 1h, 1d), got: ${str}`);
+  }
+  return str;
+}
+
+function normalizeNginxSize(value, defaultValue, fieldPath) {
+  if (value === undefined || value === null || value === "") return defaultValue;
+  const str = String(value).trim().toLowerCase();
+  if (!isValidNginxSize(str)) {
+    throw new Error(`${fieldPath} must be a valid nginx size (e.g. 16k, 1m), got: ${str}`);
+  }
+  return str;
+}
+
+function normalizeNonNegativeInt(value, defaultValue, fieldPath) {
+  if (value === undefined || value === null || value === "") return defaultValue;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 0) {
+    throw new Error(`${fieldPath} must be a non-negative integer, got: ${value}`);
+  }
+  return n;
+}
+
+function normalizeNullablePositiveInt(value, defaultValue, fieldPath) {
+  if (value === undefined || value === null || value === "") return defaultValue;
+  const n = Number(value);
+  if (!Number.isInteger(n) || n < 1) {
+    throw new Error(`${fieldPath} must be a positive integer or null, got: ${value}`);
+  }
+  return n;
+}
+
+function normalizeStrictBool(value, defaultValue, fieldPath) {
+  if (value === undefined || value === null || value === "") return defaultValue;
+  if (value === true || value === "true" || value === 1) return true;
+  if (value === false || value === "false" || value === 0) return false;
+  throw new Error(`${fieldPath} must be a boolean, got: ${value}`);
+}
+
+function buildDefaultL4Tuning(protocol) {
+  const isUdp = protocol === "udp";
+  return {
+    listen: {
+      reuseport: isUdp,
+      backlog: null,
+      so_keepalive: false,
+      tcp_nodelay: true,
+    },
+    proxy: {
+      connect_timeout: "10s",
+      idle_timeout: isUdp ? "20s" : "10m",
+      buffer_size: "16k",
+      udp_proxy_requests: isUdp ? null : undefined,
+      udp_proxy_responses: isUdp ? null : undefined,
+    },
+    upstream: {
+      max_conns: 0,
+      max_fails: 3,
+      fail_timeout: "30s",
+    },
+    limit_conn: {
+      key: "$binary_remote_addr",
+      count: null,
+      zone_size: "10m",
+    },
+    proxy_protocol: {
+      decode: false,
+      send: false,
+    },
+  };
+}
+
+function normalizeL4Tuning(tuning, protocol, prefix = "tuning") {
+  const defaults = buildDefaultL4Tuning(protocol);
+  const src = tuning && typeof tuning === "object" ? tuning : {};
+  const isUdp = protocol === "udp";
+
+  const listen = src.listen && typeof src.listen === "object" ? src.listen : {};
+  const proxy = src.proxy && typeof src.proxy === "object" ? src.proxy : {};
+  const upstream = src.upstream && typeof src.upstream === "object" ? src.upstream : {};
+  const limitConn = src.limit_conn && typeof src.limit_conn === "object" ? src.limit_conn : {};
+  const proxyProtocol = src.proxy_protocol && typeof src.proxy_protocol === "object" ? src.proxy_protocol : {};
+
+  const result = {
+    listen: {
+      reuseport: normalizeStrictBool(listen.reuseport, defaults.listen.reuseport, `${prefix}.listen.reuseport`),
+      backlog: normalizeNullablePositiveInt(listen.backlog, defaults.listen.backlog, `${prefix}.listen.backlog`),
+      so_keepalive: normalizeStrictBool(listen.so_keepalive, defaults.listen.so_keepalive, `${prefix}.listen.so_keepalive`),
+      tcp_nodelay: normalizeStrictBool(listen.tcp_nodelay, defaults.listen.tcp_nodelay, `${prefix}.listen.tcp_nodelay`),
+    },
+    proxy: {
+      connect_timeout: normalizeNginxTime(proxy.connect_timeout, defaults.proxy.connect_timeout, `${prefix}.proxy.connect_timeout`),
+      idle_timeout: normalizeNginxTime(proxy.idle_timeout, defaults.proxy.idle_timeout, `${prefix}.proxy.idle_timeout`),
+      buffer_size: normalizeNginxSize(proxy.buffer_size, defaults.proxy.buffer_size, `${prefix}.proxy.buffer_size`),
+    },
+    upstream: {
+      max_conns: normalizeNonNegativeInt(upstream.max_conns, defaults.upstream.max_conns, `${prefix}.upstream.max_conns`),
+      max_fails: normalizeNonNegativeInt(upstream.max_fails, defaults.upstream.max_fails, `${prefix}.upstream.max_fails`),
+      fail_timeout: normalizeNginxTime(upstream.fail_timeout, defaults.upstream.fail_timeout, `${prefix}.upstream.fail_timeout`),
+    },
+    limit_conn: {
+      key: String(limitConn.key || defaults.limit_conn.key).trim() || defaults.limit_conn.key,
+      count: normalizeNullablePositiveInt(limitConn.count, defaults.limit_conn.count, `${prefix}.limit_conn.count`),
+      zone_size: normalizeNginxSize(limitConn.zone_size, defaults.limit_conn.zone_size, `${prefix}.limit_conn.zone_size`),
+    },
+    proxy_protocol: {
+      decode: normalizeStrictBool(proxyProtocol.decode, defaults.proxy_protocol.decode, `${prefix}.proxy_protocol.decode`),
+      send: normalizeStrictBool(proxyProtocol.send, defaults.proxy_protocol.send, `${prefix}.proxy_protocol.send`),
+    },
+  };
+
+  // UDP-specific fields
+  if (isUdp) {
+    result.proxy.udp_proxy_requests = normalizeNullablePositiveInt(proxy.udp_proxy_requests, defaults.proxy.udp_proxy_requests, `${prefix}.proxy.udp_proxy_requests`);
+    result.proxy.udp_proxy_responses = normalizeNullablePositiveInt(proxy.udp_proxy_responses, defaults.proxy.udp_proxy_responses, `${prefix}.proxy.udp_proxy_responses`);
+  }
+
+  return result;
+}
+
 function normalizeL4RuleRevision(value, fallback = 0) {
   return normalizeRuleRevision(value, fallback);
 }
@@ -608,8 +760,17 @@ function normalizeL4Backends(backends, fallbackUpstreamHost, fallbackUpstreamPor
     const port = Number(b?.port) || Number(fallbackUpstreamPort) || 0;
     if (!host || !port) continue;
     const weight = Number(b?.weight) || 1;
-    const resolve = b?.resolve === true || String(b?.resolve).toLowerCase() === "true";
-    validBackends.push({ host, port, weight, resolve });
+    // Auto-detect resolve for domain hosts; explicit value takes precedence
+    const autoResolve = !isIpAddress(host);
+    const resolve = b?.resolve !== undefined
+      ? (b.resolve === true || String(b.resolve).toLowerCase() === "true")
+      : autoResolve;
+    const backup = b?.backup === true || String(b?.backup || "").toLowerCase() === "true";
+    const rawMaxConns = b?.max_conns !== undefined && b?.max_conns !== null && b?.max_conns !== "" ? Number(b.max_conns) : 0;
+    if (b?.max_conns !== undefined && b?.max_conns !== null && b?.max_conns !== "" && (!Number.isInteger(rawMaxConns) || rawMaxConns < 0)) {
+      throw new Error(`backends[].max_conns must be a non-negative integer, got: ${b.max_conns}`);
+    }
+    validBackends.push({ host, port, weight, resolve, backup, max_conns: rawMaxConns });
   }
   return validBackends;
 }
@@ -618,8 +779,8 @@ function normalizeL4LoadBalancing(lb, defaultStrategy = "round_robin") {
   const strategy = String(lb?.strategy !== undefined ? lb.strategy : defaultStrategy).toLowerCase();
   const validStrategies = ["round_robin", "least_conn", "random", "hash"];
   const normalizedStrategy = validStrategies.includes(strategy) ? strategy : "round_robin";
-  const hashKey = normalizedStrategy === "hash" ? String(lb?.hash_key || "$remote_addr") : undefined;
-  const zoneSize = String(lb?.zone_size || "64k");
+  const hashKey = normalizedStrategy === "hash" ? String(lb?.hash_key || "$binary_remote_addr") : undefined;
+  const zoneSize = String(lb?.zone_size || "128k");
   return {
     strategy: normalizedStrategy,
     hash_key: hashKey,
@@ -681,7 +842,9 @@ function normalizeL4RulePayload(body, fallback = {}, suggestedId = null) {
       host: legacyUpstreamHost,
       port: legacyUpstreamPort,
       weight: 1,
-      resolve: false,
+      resolve: !isIpAddress(legacyUpstreamHost),
+      backup: false,
+      max_conns: 0,
     });
   }
 
@@ -694,6 +857,18 @@ function normalizeL4RulePayload(body, fallback = {}, suggestedId = null) {
     body?.load_balancing !== undefined ? body.load_balancing : fallback?.load_balancing,
     "round_robin",
   );
+
+  // Validate backup compatibility: only round_robin and least_conn support backup
+  const hasBackupBackend = backends.some((b) => b.backup === true);
+  if (hasBackupBackend && !["round_robin", "least_conn"].includes(loadBalancing.strategy)) {
+    throw new Error(
+      `backup backends are not supported with ${loadBalancing.strategy} strategy (only round_robin and least_conn)`
+    );
+  }
+
+  // Normalize tuning: merge user input over defaults
+  const rawTuning = body?.tuning !== undefined ? body.tuning : fallback?.tuning;
+  const tuning = normalizeL4Tuning(rawTuning, protocol);
 
   return {
     id:
@@ -710,6 +885,7 @@ function normalizeL4RulePayload(body, fallback = {}, suggestedId = null) {
     // New multi-backend fields
     backends,
     load_balancing: loadBalancing,
+    tuning,
     enabled:
       body.enabled !== undefined ? !!body.enabled : fallback.enabled !== false,
     tags:
@@ -1642,15 +1818,170 @@ function applyNginxConfig() {
     PANEL_MANAGED_CERTS_SYNC_JSON: prepareLocalManagedCertificateBundle(),
     PANEL_MANAGED_CERTS_POLICY_JSON: prepareLocalManagedCertificatePolicy(),
   };
+  const nginxArgsBase = ["-e", NGINX_ERROR_LOG_FILE];
 
   if (APPLY_COMMAND) {
     runChecked(APPLY_COMMAND, APPLY_COMMAND_ARGS, extraEnv);
     return;
   }
 
-  runChecked(GENERATOR_SCRIPT, [], extraEnv);
-  runChecked(NGINX_BIN, ["-t"], extraEnv);
-  runChecked(NGINX_BIN, ["-s", "reload"], extraEnv);
+  // --- Diff-based apply with rollback ---
+  const streamDynamicDir = process.env.NRE_STREAM_DYNAMIC_DIR || "/etc/nginx/stream-conf.d/dynamic";
+  const streamBaseDir = path.dirname(streamDynamicDir);
+  const limitConnZonesFile = path.join(streamBaseDir, "limit_conn_zones.inc");
+  const dynamicDir = process.env.NRE_DYNAMIC_DIR || "/etc/nginx/conf.d/dynamic";
+  const backupSuffix = `.bak.${Date.now()}`;
+
+  // Snapshot current config files for diff comparison
+  function snapshotDir(dir) {
+    const snapshot = {};
+    try {
+      if (!fs.existsSync(dir)) return snapshot;
+      for (const file of fs.readdirSync(dir)) {
+        if (file.endsWith(".conf")) {
+          snapshot[file] = fs.readFileSync(path.join(dir, file), "utf8");
+        }
+      }
+    } catch { /* ignore */ }
+    return snapshot;
+  }
+
+  function snapshotFile(filePath) {
+    try {
+      if (fs.existsSync(filePath)) return fs.readFileSync(filePath, "utf8");
+    } catch { /* ignore */ }
+    return null;
+  }
+
+  function backupFile(filePath, suffix) {
+    const backupPath = filePath + suffix;
+    try {
+      if (fs.existsSync(filePath)) {
+        fs.copyFileSync(filePath, backupPath);
+      }
+    } catch { /* ignore */ }
+    return backupPath;
+  }
+
+  function restoreFile(backupPath, filePath) {
+    try {
+      if (fs.existsSync(backupPath)) {
+        fs.copyFileSync(backupPath, filePath);
+        fs.unlinkSync(backupPath);
+      }
+    } catch { /* ignore */ }
+  }
+
+  function backupDir(dir, suffix) {
+    const backupPath = dir + suffix;
+    try {
+      if (fs.existsSync(dir)) {
+        fs.cpSync(dir, backupPath, { recursive: true });
+      }
+    } catch { /* ignore */ }
+    return backupPath;
+  }
+
+  function restoreDir(backupPath, dir) {
+    try {
+      if (fs.existsSync(backupPath)) {
+        fs.rmSync(dir, { recursive: true, force: true });
+        fs.renameSync(backupPath, dir);
+      }
+    } catch { /* ignore */ }
+  }
+
+  function cleanupBackup(backupPath) {
+    try {
+      if (fs.existsSync(backupPath)) {
+        fs.rmSync(backupPath, { recursive: true, force: true });
+      }
+    } catch { /* ignore */ }
+  }
+
+  function diffSnapshots(before, after) {
+    const added = [];
+    const modified = [];
+    const removed = [];
+    for (const key of Object.keys(after)) {
+      if (!(key in before)) added.push(key);
+      else if (before[key] !== after[key]) modified.push(key);
+    }
+    for (const key of Object.keys(before)) {
+      if (!(key in after)) removed.push(key);
+    }
+    return { added, modified, removed, hasChanges: added.length + modified.length + removed.length > 0 };
+  }
+
+  // Take snapshots before generation
+  const beforeStream = snapshotDir(streamDynamicDir);
+  const beforeHttp = snapshotDir(dynamicDir);
+  const beforeLimitConn = snapshotFile(limitConnZonesFile);
+
+  // Backup current configs
+  const streamBackup = backupDir(streamDynamicDir, backupSuffix);
+  const httpBackup = backupDir(dynamicDir, backupSuffix);
+  const limitConnBackup = backupFile(limitConnZonesFile, backupSuffix);
+
+  try {
+    // Run generator
+    runChecked(GENERATOR_SCRIPT, [], extraEnv);
+
+    // Take snapshots after generation
+    const afterStream = snapshotDir(streamDynamicDir);
+    const afterHttp = snapshotDir(dynamicDir);
+    const afterLimitConn = snapshotFile(limitConnZonesFile);
+
+    const streamDiff = diffSnapshots(beforeStream, afterStream);
+    const httpDiff = diffSnapshots(beforeHttp, afterHttp);
+    const limitConnChanged = beforeLimitConn !== afterLimitConn;
+
+    if (!streamDiff.hasChanges && !httpDiff.hasChanges && !limitConnChanged) {
+      console.log("[apply] No config changes detected, skipping reload");
+      cleanupBackup(streamBackup);
+      cleanupBackup(httpBackup);
+      cleanupBackup(limitConnBackup);
+      return;
+    }
+
+    // Log change summary
+    const changes = [];
+    if (streamDiff.added.length) changes.push(`L4 added: ${streamDiff.added.length}`);
+    if (streamDiff.modified.length) changes.push(`L4 modified: ${streamDiff.modified.length}`);
+    if (streamDiff.removed.length) changes.push(`L4 removed: ${streamDiff.removed.length}`);
+    if (limitConnChanged) changes.push("limit_conn_zones updated");
+    if (httpDiff.added.length) changes.push(`HTTP added: ${httpDiff.added.length}`);
+    if (httpDiff.modified.length) changes.push(`HTTP modified: ${httpDiff.modified.length}`);
+    if (httpDiff.removed.length) changes.push(`HTTP removed: ${httpDiff.removed.length}`);
+    console.log(`[apply] Config changes: ${changes.join(", ")}`);
+
+    // Validate with nginx -t
+    try {
+      runChecked(NGINX_BIN, [...nginxArgsBase, "-t"], extraEnv);
+    } catch (testErr) {
+      // Rollback on validation failure
+      console.error("[apply] nginx -t failed, rolling back config");
+      restoreDir(streamBackup, streamDynamicDir);
+      restoreDir(httpBackup, dynamicDir);
+      restoreFile(limitConnBackup, limitConnZonesFile);
+      throw new Error(`nginx config validation failed: ${testErr.message}`);
+    }
+
+    // Reload
+    runChecked(NGINX_BIN, [...nginxArgsBase, "-s", "reload"], extraEnv);
+    console.log("[apply] nginx reloaded successfully");
+
+    // Cleanup backups
+    cleanupBackup(streamBackup);
+    cleanupBackup(httpBackup);
+    cleanupBackup(limitConnBackup);
+  } catch (err) {
+    // Ensure backups are cleaned up even on unexpected errors
+    cleanupBackup(streamBackup);
+    cleanupBackup(httpBackup);
+    cleanupBackup(limitConnBackup);
+    throw err;
+  }
 }
 
 function isPanelAuthorized(req) {

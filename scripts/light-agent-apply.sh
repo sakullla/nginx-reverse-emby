@@ -27,6 +27,7 @@ NRE_MANAGE_NGINX_CONF="${NRE_MANAGE_NGINX_CONF:-1}"
 NRE_NGINX_CONF_TEMPLATE_FILE="${NRE_NGINX_CONF_TEMPLATE_FILE:-$RUNTIME_DIR/agent.nginx.conf.template}"
 NGINX_CLIENT_MAX_BODY_SIZE="${NGINX_CLIENT_MAX_BODY_SIZE:-5g}"
 NGINX_CLIENT_BODY_BUFFER_SIZE="${NGINX_CLIENT_BODY_BUFFER_SIZE:-512k}"
+NGINX_ERROR_LOG_FILE="${NGINX_ERROR_LOG_FILE:-/proc/1/fd/2}"
 
 is_true() {
     case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
@@ -110,7 +111,7 @@ nginx_supports_stream() {
         printf '%s\n' 'stream {' '    server { listen 127.0.0.1:1; }' '}'
     } > "$tmp_conf"
 
-    if "$NGINX_BIN_PATH" -t -q -c "$tmp_conf" >/dev/null 2>&1; then
+    if "$NGINX_BIN_PATH" -e "$NGINX_ERROR_LOG_FILE" -t -q -c "$tmp_conf" >/dev/null 2>&1; then
         rm -rf "$tmp_dir"
         return 0
     fi
@@ -140,7 +141,7 @@ http {
 }
 EOF
 
-    if "$NGINX_BIN_PATH" -t -q -c "$tmp_conf" >/dev/null 2>&1; then
+    if "$NGINX_BIN_PATH" -e "$NGINX_ERROR_LOG_FILE" -t -q -c "$tmp_conf" >/dev/null 2>&1; then
         rm -rf "$tmp_dir"
         return 0
     fi
@@ -161,6 +162,15 @@ render_managed_nginx_conf() {
     stream_block=''
     if nginx_supports_stream; then
         stream_block="stream {
+    tcp_nodelay on;
+    proxy_socket_keepalive on;
+    proxy_buffer_size 16k;
+
+    log_format l4_main '\$remote_addr [\$time_local] \$protocol \$status '
+                       '\$bytes_sent \$bytes_received \$session_time '
+                       '\"\$upstream_addr\"';
+
+    include $NRE_STREAM_BASE_DIR/limit_conn_zones.inc;
     include $NRE_STREAM_BASE_DIR/*.conf;
     include $NRE_STREAM_DYNAMIC_DIR/*.conf;
 }"
@@ -195,7 +205,7 @@ install_managed_nginx_conf() {
     tmp_nginx_conf=$(mktemp "$nginx_conf_dir/.nginx.conf.tmp.XXXXXX")
     render_managed_nginx_conf "$tmp_nginx_conf"
 
-    if ! "$NGINX_BIN_PATH" -t -c "$tmp_nginx_conf"; then
+    if ! "$NGINX_BIN_PATH" -e "$NGINX_ERROR_LOG_FILE" -t -c "$tmp_nginx_conf"; then
         rm -f "$tmp_nginx_conf"
         exit 1
     fi
@@ -340,7 +350,7 @@ reload_or_start_nginx() {
         return 0
     fi
 
-    "$NGINX_BIN_PATH" -c "$NRE_NGINX_CONF_FILE"
+    "$NGINX_BIN_PATH" -e "$NGINX_ERROR_LOG_FILE" -c "$NRE_NGINX_CONF_FILE"
 }
 
 [ -f "$GENERATOR_SCRIPT" ] || { echo "Generator script not found: $GENERATOR_SCRIPT" >&2; exit 1; }
@@ -454,11 +464,11 @@ if [ -z "$expected_http_ports" ] && [ -z "$expected_l4_ports" ]; then
     echo "[AGENT] No enabled rules found; skipping port validation"
 fi
 
-"$NGINX_BIN_PATH" -t -c "$NRE_NGINX_CONF_FILE"
+"$NGINX_BIN_PATH" -e "$NGINX_ERROR_LOG_FILE" -t -c "$NRE_NGINX_CONF_FILE"
 reload_or_start_nginx
 
 tmp_effective_config=$(mktemp)
-if ! "$NGINX_BIN_PATH" -T -c "$NRE_NGINX_CONF_FILE" >"$tmp_effective_config" 2>&1; then
+if ! "$NGINX_BIN_PATH" -e "$NGINX_ERROR_LOG_FILE" -T -c "$NRE_NGINX_CONF_FILE" >"$tmp_effective_config" 2>&1; then
     cat "$tmp_effective_config" >&2
     rm -f "$tmp_effective_config"
     exit 1

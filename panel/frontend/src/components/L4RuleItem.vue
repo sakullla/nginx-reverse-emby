@@ -101,13 +101,20 @@
               <line x1="2" y1="12" x2="22" y2="12"/>
               <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
             </svg>
-            <code v-if="!hasMultipleBackends">{{ primaryBackend }}</code>
+            <code v-if="!hasMultipleBackends">{{ primaryBackend }}<span v-if="primaryIsBackup" class="rule-card__backup-tag">备用</span></code>
             <code v-else class="rule-card__backends-summary" :title="backendsTooltip">
               {{ primaryBackend }} +{{ backendCount - 1 }}
             </code>
           </div>
         </div>
       </div>
+    </div>
+
+    <!-- Tuning Summary Tags -->
+    <div v-if="tuningSummaryTags.length" class="rule-card__tuning">
+      <span v-for="tag in tuningSummaryTags" :key="tag" class="rule-card__tuning-tag">
+        {{ tag }}
+      </span>
     </div>
 
     <!-- Footer: Tags -->
@@ -159,7 +166,59 @@ const primaryBackend = computed(() => {
 })
 
 const backendsTooltip = computed(() => {
-  return backends.value.map((b, i) => `${i + 1}. ${b.host}:${b.port}${b.weight > 1 ? ` (权重${b.weight})` : ''}`).join('\n')
+  return backends.value.map((b, i) => {
+    let label = `${i + 1}. ${b.host}:${b.port}`
+    if (b.weight > 1) label += ` (权重${b.weight})`
+    if (b.backup) label += ' [备用]'
+    return label
+  }).join('\n')
+})
+
+const primaryIsBackup = computed(() => backends.value[0]?.backup === true)
+
+// Tuning summary: show compact tags for non-default values
+const tuningSummaryTags = computed(() => {
+  const t = props.rule.tuning
+  if (!t) return []
+  const tags = []
+  const protocol = props.rule.protocol || 'tcp'
+  const isUdp = protocol === 'udp'
+
+  // Timeouts
+  const defaultIdle = isUdp ? '20s' : '10m'
+  if (t.proxy?.idle_timeout && t.proxy.idle_timeout !== defaultIdle) {
+    tags.push(`超时:${t.proxy.idle_timeout}`)
+  }
+  if (t.proxy?.connect_timeout && t.proxy.connect_timeout !== '10s') {
+    tags.push(`连接:${t.proxy.connect_timeout}`)
+  }
+
+  // Connection limit
+  if (t.limit_conn?.count && Number(t.limit_conn.count) > 0) {
+    tags.push(`限连:${t.limit_conn.count}`)
+  }
+
+  // Health check
+  const mf = t.upstream?.max_fails
+  const ft = t.upstream?.fail_timeout
+  if ((mf !== undefined && mf !== 3) || (ft && ft !== '30s')) {
+    tags.push(`健检:${mf ?? 3}/${ft || '30s'}`)
+  }
+
+  // Listen options
+  if (t.listen?.reuseport === true && !isUdp) tags.push('reuseport')
+  if (t.listen?.so_keepalive === true) tags.push('keepalive')
+
+  // Buffer
+  if (t.proxy?.buffer_size && t.proxy.buffer_size !== '16k') {
+    tags.push(`buf:${t.proxy.buffer_size}`)
+  }
+
+  // Proxy Protocol
+  if (t.proxy_protocol?.decode) tags.push('PP接收')
+  if (t.proxy_protocol?.send) tags.push('PP发送')
+
+  return tags
 })
 
 // Load balancing
@@ -466,6 +525,38 @@ const toggleStatus = async () => {
 
 .rule-card__backends-summary {
   cursor: help;
+}
+
+/* Backup tag */
+.rule-card__backup-tag {
+  font-size: 9px;
+  font-weight: var(--font-bold);
+  padding: 1px 4px;
+  background: var(--color-warning-50);
+  color: var(--color-warning);
+  border-radius: var(--radius-sm);
+  margin-left: var(--space-1);
+  font-family: var(--font-sans, sans-serif);
+}
+
+/* Tuning summary */
+.rule-card__tuning {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  padding: var(--space-2) var(--space-4);
+  border-top: 1px solid var(--color-border-subtle);
+}
+
+.rule-card__tuning-tag {
+  font-size: 9px;
+  font-weight: var(--font-semibold);
+  padding: 1px 6px;
+  background: var(--color-bg-subtle);
+  color: var(--color-text-muted);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border-subtle);
+  font-family: var(--font-mono);
 }
 
 @keyframes pulse {

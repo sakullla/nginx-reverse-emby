@@ -167,7 +167,7 @@ install_cert_files() {
     "$ACME_SCRIPT" --install-cert -d "$cert_domain" --ecc $ACME_COMMON_ARGS \
         --fullchain-file "$cert_target_dir/cert" \
         --key-file "$cert_target_dir/key" \
-        --reloadcmd "sh -c '$NGINX_BIN -t >/dev/null 2>&1 && { [ -s /var/run/nginx.pid ] && $NGINX_BIN -s reload || true; }; true'"
+        --reloadcmd "sh -c '$NGINX_BIN -e /proc/1/fd/2 -t >/dev/null 2>&1 && { [ -s /var/run/nginx.pid ] && $NGINX_BIN -e /proc/1/fd/2 -s reload || true; }; true'"
 }
 
 renew_managed_local_http01_certs() {
