@@ -150,6 +150,8 @@ EOF
 }
 
 render_managed_nginx_conf() {
+    output_file="${1:-$NRE_NGINX_CONF_FILE}"
+
     [ -f "$NRE_NGINX_CONF_TEMPLATE_FILE" ] || {
         echo "Template not found: $NRE_NGINX_CONF_TEMPLATE_FILE" >&2
         exit 1
@@ -164,10 +166,7 @@ render_managed_nginx_conf() {
 }"
     fi
 
-    mkdir -p "$(dirname "$NRE_NGINX_CONF_FILE")" "$(dirname "$NRE_NGINX_CONF_BACKUP_FILE")"
-    if [ -f "$NRE_NGINX_CONF_FILE" ] && [ ! -f "$NRE_NGINX_CONF_BACKUP_FILE" ]; then
-        cp "$NRE_NGINX_CONF_FILE" "$NRE_NGINX_CONF_BACKUP_FILE"
-    fi
+    mkdir -p "$(dirname "$output_file")"
 
     awk \
         -v preserved_load_modules="$preserved_load_modules" \
@@ -186,7 +185,26 @@ render_managed_nginx_conf() {
         { gsub(/\$\{nginx_client_body_buffer_size\}/, nginx_client_body_buffer_size) }
         { gsub(/\$\{stream_block\}/, stream_block) }
         { print }
-        ' "$NRE_NGINX_CONF_TEMPLATE_FILE" > "$NRE_NGINX_CONF_FILE"
+        ' "$NRE_NGINX_CONF_TEMPLATE_FILE" > "$output_file"
+}
+
+install_managed_nginx_conf() {
+    nginx_conf_dir=$(dirname "$NRE_NGINX_CONF_FILE")
+    mkdir -p "$nginx_conf_dir" "$(dirname "$NRE_NGINX_CONF_BACKUP_FILE")"
+
+    tmp_nginx_conf=$(mktemp "$nginx_conf_dir/.nginx.conf.tmp.XXXXXX")
+    render_managed_nginx_conf "$tmp_nginx_conf"
+
+    if ! "$NGINX_BIN_PATH" -t -c "$tmp_nginx_conf"; then
+        rm -f "$tmp_nginx_conf"
+        exit 1
+    fi
+
+    if [ -f "$NRE_NGINX_CONF_FILE" ] && [ ! -f "$NRE_NGINX_CONF_BACKUP_FILE" ]; then
+        cp "$NRE_NGINX_CONF_FILE" "$NRE_NGINX_CONF_BACKUP_FILE"
+    fi
+
+    mv "$tmp_nginx_conf" "$NRE_NGINX_CONF_FILE"
 }
 
 expected_listen_ports() {
@@ -418,7 +436,7 @@ if ! is_true "$NRE_ENABLE_EARLY_HINTS"; then
 fi
 
 if is_true "$NRE_MANAGE_NGINX_CONF"; then
-    render_managed_nginx_conf
+    install_managed_nginx_conf
 fi
 
 expected_http_ports=$(expected_listen_ports || true)
