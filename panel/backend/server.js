@@ -3032,7 +3032,7 @@ async function handleMasterApi(req, res) {
   }
 
   if (req.method === "GET" && urlPath === "/api/info") {
-    sendJson(res, 200, {
+    const info = {
       ok: true,
       role: ROLE,
       local_agent_enabled: LOCAL_AGENT_ENABLED,
@@ -3040,7 +3040,11 @@ async function handleMasterApi(req, res) {
       managed_certificates_enabled: MANAGED_CERTS_ENABLED,
       cf_token_configured: !!CF_TOKEN,
       acme_dns_provider: ACME_DNS_PROVIDER || null,
-    });
+    };
+    if (isPanelAuthorized(req)) {
+      info.master_register_token = MASTER_REGISTER_TOKEN || null;
+    }
+    sendJson(res, 200, info);
     return;
   }
 
