@@ -37,7 +37,7 @@
     <!-- Hash Key (only when strategy is hash) -->
     <div v-if="form.load_balancing.strategy === 'hash'" class="form-group">
       <label class="form-label">哈希键</label>
-      <input v-model="form.load_balancing.hash_key" class="input" placeholder="$remote_addr">
+      <input v-model="form.load_balancing.hash_key" class="input" placeholder="$binary_remote_addr">
       <div class="form-help">例如: $remote_addr, $binary_remote_addr, $ssl_session_id</div>
     </div>
 
@@ -107,6 +107,174 @@
       </div>
     </div>
 
+    <!-- Advanced Parameters (collapsible) -->
+    <div class="advanced-section">
+      <button type="button" class="advanced-toggle" @click="showAdvanced = !showAdvanced">
+        <svg
+          width="14" height="14" viewBox="0 0 24 24" fill="none"
+          stroke="currentColor" stroke-width="2"
+          :class="{ 'advanced-toggle__icon--open': showAdvanced }"
+          class="advanced-toggle__icon"
+        >
+          <polyline points="9 18 15 12 9 6"/>
+        </svg>
+        高级参数
+        <span v-if="hasTuningChanges" class="advanced-toggle__badge">已配置</span>
+      </button>
+
+      <div v-if="showAdvanced" class="advanced-panel">
+        <!-- Timeouts -->
+        <div class="advanced-group">
+          <div class="advanced-group__title">超时设置</div>
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">proxy_connect_timeout</label>
+              <input v-model="form.tuning.proxy.connect_timeout" class="input" placeholder="10s">
+              <div class="form-help">如: 10s, 5m, 1h</div>
+            </div>
+            <div class="form-group">
+              <label class="form-label">proxy_timeout</label>
+              <input v-model="form.tuning.proxy.idle_timeout" class="input" :placeholder="form.protocol === 'udp' ? '20s' : '10m'">
+            </div>
+          </div>
+        </div>
+
+        <!-- Health Check -->
+        <div class="advanced-group">
+          <div class="advanced-group__title">健康检查</div>
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">max_fails</label>
+              <input v-model.number="form.tuning.upstream.max_fails" class="input" type="number" min="0" placeholder="3">
+            </div>
+            <div class="form-group">
+              <label class="form-label">fail_timeout</label>
+              <input v-model="form.tuning.upstream.fail_timeout" class="input" placeholder="30s">
+            </div>
+          </div>
+        </div>
+
+        <!-- Connection Limit -->
+        <div class="advanced-group">
+          <div class="advanced-group__title">连接限制</div>
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">limit_conn count</label>
+              <input v-model.number="form.tuning.limit_conn.count" class="input" type="number" min="0" placeholder="不限制">
+              <div class="form-help">每客户端最大并发连接数，留空不限制</div>
+            </div>
+            <div class="form-group">
+              <label class="form-label">limit_conn_zone key</label>
+              <input v-model="form.tuning.limit_conn.key" class="input" placeholder="$binary_remote_addr">
+            </div>
+            <div class="form-group">
+              <label class="form-label">zone_size</label>
+              <input v-model="form.tuning.limit_conn.zone_size" class="input" placeholder="10m">
+            </div>
+          </div>
+        </div>
+
+        <!-- Proxy Protocol -->
+        <div v-if="form.protocol === 'tcp'" class="advanced-group">
+          <div class="advanced-group__title">代理协议 (PROXY Protocol)</div>
+          <div class="advanced-checks">
+            <label class="backend-checkbox">
+              <input v-model="form.tuning.proxy_protocol.decode" type="checkbox">
+              <span>接收 PROXY Protocol</span>
+            </label>
+            <label class="backend-checkbox">
+              <input v-model="form.tuning.proxy_protocol.send" type="checkbox">
+              <span>发送 PROXY Protocol 到上游</span>
+            </label>
+          </div>
+          <div class="form-help">接收: 从客户端/前置代理解析真实 IP；发送: 向后端传递客户端真实 IP</div>
+        </div>
+
+        <!-- Listen Options -->
+        <div class="advanced-group">
+          <div class="advanced-group__title">监听选项</div>
+          <div class="advanced-checks">
+            <label class="backend-checkbox">
+              <input v-model="form.tuning.listen.reuseport" type="checkbox">
+              <span>reuseport</span>
+            </label>
+            <label class="backend-checkbox">
+              <input v-model="form.tuning.listen.tcp_nodelay" type="checkbox">
+              <span>tcp_nodelay</span>
+            </label>
+            <label class="backend-checkbox">
+              <input v-model="form.tuning.listen.so_keepalive" type="checkbox">
+              <span>so_keepalive</span>
+            </label>
+          </div>
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">backlog</label>
+              <input v-model.number="form.tuning.listen.backlog" class="input" type="number" min="0" placeholder="默认">
+            </div>
+          </div>
+        </div>
+
+        <!-- Buffer -->
+        <div class="advanced-group">
+          <div class="advanced-group__title">缓冲与上游</div>
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">proxy_buffer_size</label>
+              <input v-model="form.tuning.proxy.buffer_size" class="input" placeholder="16k">
+            </div>
+            <div class="form-group">
+              <label class="form-label">upstream max_conns</label>
+              <input v-model.number="form.tuning.upstream.max_conns" class="input" type="number" min="0" placeholder="0 (不限制)">
+            </div>
+          </div>
+        </div>
+
+        <!-- Backend Extensions (backup / max_conns per backend) -->
+        <div v-if="form.backends.length > 0" class="advanced-group">
+          <div class="advanced-group__title">后端扩展</div>
+          <div class="advanced-backends-list">
+            <div
+              v-for="(backend, index) in form.backends"
+              :key="'adv-' + backend.id"
+              class="advanced-backend-row"
+            >
+              <span class="advanced-backend-label">{{ backend.address || `backend ${index + 1}` }}</span>
+              <label class="backend-checkbox" title="backup server">
+                <input v-model="backend.backup" type="checkbox">
+                <span>backup</span>
+              </label>
+              <div class="backend-weight-wrapper">
+                <span class="backend-weight-label">max_conns</span>
+                <input
+                  v-model.number="backend.max_conns"
+                  class="input backend-weight-input"
+                  type="number"
+                  min="0"
+                  placeholder="0"
+                >
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- UDP-specific -->
+        <div v-if="form.protocol === 'udp'" class="advanced-group">
+          <div class="advanced-group__title">UDP 专属</div>
+          <div class="form-row">
+            <div class="form-group">
+              <label class="form-label">proxy_requests</label>
+              <input v-model.number="form.tuning.proxy.udp_proxy_requests" class="input" type="number" min="0" placeholder="默认">
+            </div>
+            <div class="form-group">
+              <label class="form-label">proxy_responses</label>
+              <input v-model.number="form.tuning.proxy.udp_proxy_responses" class="input" type="number" min="0" placeholder="默认">
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Tags -->
     <div class="form-group">
       <label class="form-label">分类标签</label>
@@ -155,7 +323,7 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRuleStore } from '../stores/rules'
 
 const props = defineProps({ initialData: { type: Object, default: null } })
@@ -163,15 +331,11 @@ const emit = defineEmits(['success'])
 const ruleStore = useRuleStore()
 const isEdit = computed(() => !!props.initialData?.id)
 
-// Generate unique ID for backend items
 let backendIdCounter = 0
 
-// Check if value is an IP address (IPv4 or IPv6)
 function isIpAddress(value) {
   if (!value) return false
-  // IPv4 check
   if (/^(\d{1,3}\.){3}\d{1,3}$/.test(value)) return true
-  // IPv6 check (simplified - has colons and valid chars)
   if (/^[0-9A-Fa-f:]+$/.test(value) && value.includes(':')) return true
   return false
 }
@@ -183,14 +347,62 @@ function createBackend(data = {}) {
   return {
     id: `b-${Date.now()}-${backendIdCounter++}`,
     address,
-    host, // computed from address on parse
-    port, // computed from address on parse
+    host,
+    port,
     weight: data.weight || 1,
     resolve: data.resolve || false,
+    backup: data.backup || false,
+    max_conns: data.max_conns || 0,
   }
 }
 
-// Initialize form from initialData or defaults
+function getDefaultTuning(protocol = 'tcp') {
+  const isUdp = protocol === 'udp'
+  return {
+    listen: {
+      reuseport: isUdp,
+      backlog: null,
+      so_keepalive: false,
+      tcp_nodelay: true,
+    },
+    proxy: {
+      connect_timeout: '10s',
+      idle_timeout: isUdp ? '20s' : '10m',
+      buffer_size: '16k',
+      udp_proxy_requests: null,
+      udp_proxy_responses: null,
+    },
+    upstream: {
+      max_conns: 0,
+      max_fails: 3,
+      fail_timeout: '30s',
+    },
+    limit_conn: {
+      key: '$binary_remote_addr',
+      count: null,
+      zone_size: '10m',
+    },
+    proxy_protocol: {
+      decode: false,
+      send: false,
+    },
+  }
+}
+
+function mergeTuning(saved, protocol) {
+  const defaults = getDefaultTuning(protocol)
+  if (!saved || typeof saved !== 'object') return defaults
+  return {
+    listen: { ...defaults.listen, ...saved.listen },
+    proxy: { ...defaults.proxy, ...saved.proxy },
+    upstream: { ...defaults.upstream, ...saved.upstream },
+    limit_conn: { ...defaults.limit_conn, ...saved.limit_conn },
+    proxy_protocol: { ...defaults.proxy_protocol, ...saved.proxy_protocol },
+  }
+}
+
+const initialProtocol = props.initialData?.protocol || 'tcp'
+
 const initialBackends = props.initialData?.backends?.length > 0
   ? props.initialData.backends.map(b => createBackend(b))
   : (props.initialData?.upstream_host
@@ -202,21 +414,60 @@ const initialBackends = props.initialData?.backends?.length > 0
     : [createBackend()])
 
 const form = ref({
-  protocol: props.initialData?.protocol || 'tcp',
+  protocol: initialProtocol,
   listen_host: props.initialData?.listen_host || '0.0.0.0',
   listen_port: props.initialData?.listen_port || 0,
   backends: initialBackends,
   load_balancing: {
     strategy: props.initialData?.load_balancing?.strategy || 'round_robin',
-    hash_key: props.initialData?.load_balancing?.hash_key || '$remote_addr',
-    zone_size: props.initialData?.load_balancing?.zone_size || '64k',
+    hash_key: props.initialData?.load_balancing?.hash_key || '$binary_remote_addr',
+    zone_size: props.initialData?.load_balancing?.zone_size || '128k',
   },
+  tuning: mergeTuning(props.initialData?.tuning, initialProtocol),
   enabled: props.initialData?.enabled !== false,
-  tags: Array.isArray(props.initialData?.tags) ? [...props.initialData.tags] : []
+  tags: Array.isArray(props.initialData?.tags) ? [...props.initialData.tags] : [],
 })
 
+const showAdvanced = ref(!!props.initialData?.tuning)
 const tagInput = ref('')
 const draggingIndex = ref(-1)
+
+// Detect if tuning has non-default values (including backend extensions)
+const hasTuningChanges = computed(() => {
+  const defaults = getDefaultTuning(form.value.protocol)
+  const t = form.value.tuning
+  const hasBackendExtensions = form.value.backends.some(b => b.backup || (b.max_conns && b.max_conns > 0))
+  return (
+    hasBackendExtensions ||
+    t.proxy.connect_timeout !== defaults.proxy.connect_timeout ||
+    t.proxy.idle_timeout !== defaults.proxy.idle_timeout ||
+    t.proxy.buffer_size !== defaults.proxy.buffer_size ||
+    t.upstream.max_conns !== defaults.upstream.max_conns ||
+    t.upstream.max_fails !== defaults.upstream.max_fails ||
+    t.upstream.fail_timeout !== defaults.upstream.fail_timeout ||
+    t.limit_conn.count !== defaults.limit_conn.count ||
+    t.listen.reuseport !== defaults.listen.reuseport ||
+    t.listen.tcp_nodelay !== defaults.listen.tcp_nodelay ||
+    t.listen.so_keepalive !== defaults.listen.so_keepalive ||
+    (t.listen.backlog !== null && t.listen.backlog !== defaults.listen.backlog) ||
+    t.proxy_protocol.decode !== defaults.proxy_protocol.decode ||
+    t.proxy_protocol.send !== defaults.proxy_protocol.send
+  )
+})
+
+// Clear UDP-specific fields when switching to TCP
+watch(() => form.value.protocol, (newProto) => {
+  if (newProto === 'tcp') {
+    form.value.tuning.proxy.udp_proxy_requests = null
+    form.value.tuning.proxy.udp_proxy_responses = null
+  }
+  // Update reuseport default on protocol change
+  const defaults = getDefaultTuning(newProto)
+  if (!showAdvanced.value) {
+    form.value.tuning.listen.reuseport = defaults.listen.reuseport
+    form.value.tuning.proxy.idle_timeout = defaults.proxy.idle_timeout
+  }
+})
 
 const LB_TAG_MAP = { round_robin: 'RR', least_conn: 'LC', random: 'RND', hash: 'HASH' }
 const LB_TAG_SET = new Set(Object.values(LB_TAG_MAP))
@@ -256,7 +507,6 @@ function handleListenInput(e) {
   }
 }
 
-// Backend management
 function addBackend() {
   form.value.backends.push(createBackend())
 }
@@ -267,12 +517,9 @@ function removeBackend(index) {
   }
 }
 
-// Parse address field into host/port and auto-detect if DNS resolution is needed
 function parseBackendAddress(index) {
   const backend = form.value.backends[index]
   const address = backend.address?.trim() || ''
-
-  // Parse host:port format
   const match = address.match(/^(.+):(\d+)$/)
   if (match) {
     backend.host = match[1]
@@ -281,13 +528,10 @@ function parseBackendAddress(index) {
     backend.host = address
     backend.port = 0
   }
-
-  // Auto-detect if DNS resolution is needed (not an IP address)
   const cleanHost = backend.host?.replace(/^\[|\]$/g, '') || ''
   backend.resolve = !isIpAddress(cleanHost)
 }
 
-// Drag and drop for backend reordering
 function startDrag(index) {
   draggingIndex.value = index
   const handleMouseUp = () => {
@@ -299,7 +543,6 @@ function startDrag(index) {
   document.addEventListener('mouseleave', handleMouseUp)
 }
 
-// Tag management
 function addTag() {
   const tag = tagInput.value.trim()
   if (tag && !form.value.tags.includes(tag)) {
@@ -312,9 +555,13 @@ function removeTag(index) {
   form.value.tags.splice(index, 1)
 }
 
-// Build payload for API
+function cleanValue(v) {
+  if (v === '' || v === null || v === undefined) return undefined
+  if (typeof v === 'number' && isNaN(v)) return undefined
+  return v
+}
+
 function buildPayload() {
-  // Ensure all backend addresses are parsed before building payload
   form.value.backends.forEach((_, index) => parseBackendAddress(index))
 
   const protocol = form.value.protocol.toUpperCase()
@@ -323,7 +570,6 @@ function buildPayload() {
   const userTags = form.value.tags.filter(t => !isL4AutoTag(t))
   const sysTags = [protocol, ...(listenPort ? [`:${listenPort}`] : []), ...(lbTag ? [lbTag] : [])]
 
-  // Filter out empty backends
   const validBackends = form.value.backends
     .filter(b => b.host && b.port)
     .map(b => ({
@@ -331,31 +577,69 @@ function buildPayload() {
       port: Number(b.port),
       weight: Number(b.weight) || 1,
       resolve: !!b.resolve,
+      backup: !!b.backup,
+      max_conns: Number(b.max_conns) || 0,
     }))
 
-  return {
+  const payload = {
     protocol: form.value.protocol,
     listen_host: form.value.listen_host.trim(),
     listen_port: listenPort,
-    // Keep legacy fields for backward compatibility
     upstream_host: validBackends[0]?.host || '',
     upstream_port: validBackends[0]?.port || 0,
-    // New multi-backend fields
     backends: validBackends,
     load_balancing: {
       strategy: form.value.load_balancing.strategy,
       ...(form.value.load_balancing.strategy === 'hash'
-        ? { hash_key: form.value.load_balancing.hash_key || '$remote_addr' }
+        ? { hash_key: form.value.load_balancing.hash_key || '$binary_remote_addr' }
         : {}),
-      zone_size: form.value.load_balancing.zone_size || '64k',
+      zone_size: form.value.load_balancing.zone_size || '128k',
     },
     enabled: form.value.enabled,
     tags: [...sysTags, ...userTags],
   }
+
+  // Only send tuning if advanced panel has non-default values or editing existing rule with tuning
+  if (showAdvanced.value && (hasTuningChanges.value || isEdit.value)) {
+    const t = form.value.tuning
+    const tuning = {
+      listen: {
+        reuseport: t.listen.reuseport,
+        backlog: cleanValue(t.listen.backlog),
+        so_keepalive: t.listen.so_keepalive,
+        tcp_nodelay: t.listen.tcp_nodelay,
+      },
+      proxy: {
+        connect_timeout: cleanValue(t.proxy.connect_timeout),
+        idle_timeout: cleanValue(t.proxy.idle_timeout),
+        buffer_size: cleanValue(t.proxy.buffer_size),
+      },
+      upstream: {
+        max_conns: cleanValue(t.upstream.max_conns),
+        max_fails: cleanValue(t.upstream.max_fails),
+        fail_timeout: cleanValue(t.upstream.fail_timeout),
+      },
+      limit_conn: {
+        key: cleanValue(t.limit_conn.key),
+        count: cleanValue(t.limit_conn.count),
+        zone_size: cleanValue(t.limit_conn.zone_size),
+      },
+      proxy_protocol: {
+        decode: t.proxy_protocol.decode,
+        send: t.proxy_protocol.send,
+      },
+    }
+    if (form.value.protocol === 'udp') {
+      tuning.proxy.udp_proxy_requests = cleanValue(t.proxy.udp_proxy_requests)
+      tuning.proxy.udp_proxy_responses = cleanValue(t.proxy.udp_proxy_responses)
+    }
+    payload.tuning = tuning
+  }
+
+  return payload
 }
 
 async function handleSubmit() {
-  // Parse all addresses first, then validate
   form.value.backends.forEach((_, index) => parseBackendAddress(index))
   const validBackends = form.value.backends.filter(b => b.host && b.port)
   if (validBackends.length === 0) {
@@ -424,10 +708,6 @@ async function handleSubmit() {
   box-shadow: var(--shadow-focus);
 }
 
-.input--narrow {
-  padding: var(--space-2);
-}
-
 /* Backends */
 .backends-header {
   display: flex;
@@ -479,34 +759,18 @@ async function handleSubmit() {
   cursor: grabbing;
 }
 
-.backend-fields {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  min-width: 0;
-}
-
-.backend-row {
-  display: flex;
-  gap: var(--space-2);
-}
-
-.backend-row .input:first-child {
-  flex: 1;
-}
-
 .backend-fields--inline {
   flex: 1;
   display: flex;
   align-items: center;
   gap: var(--space-2);
   min-width: 0;
+  flex-wrap: wrap;
 }
 
 .backend-address-input {
   flex: 1;
-  min-width: 0;
+  min-width: 120px;
 }
 
 .backend-weight-wrapper {
@@ -528,20 +792,6 @@ async function handleSubmit() {
   padding: var(--space-2) var(--space-1);
 }
 
-.backend-options {
-  display: flex;
-  align-items: center;
-  gap: var(--space-4);
-}
-
-.backend-option {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  font-size: var(--text-xs);
-  color: var(--color-text-secondary);
-}
-
 .backend-checkbox {
   display: flex;
   align-items: center;
@@ -549,12 +799,113 @@ async function handleSubmit() {
   font-size: var(--text-xs);
   color: var(--color-text-secondary);
   cursor: pointer;
+  flex-shrink: 0;
 }
 
 .backend-checkbox input[type="checkbox"] {
   width: 16px;
   height: 16px;
   accent-color: var(--color-primary);
+}
+
+/* Advanced Section */
+.advanced-section {
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.advanced-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-bg-subtle);
+  border: none;
+  cursor: pointer;
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  color: var(--color-text-secondary);
+  transition: all var(--duration-fast);
+}
+
+.advanced-toggle:hover {
+  background: var(--color-bg-hover);
+}
+
+.advanced-toggle__icon {
+  transition: transform var(--duration-fast);
+  flex-shrink: 0;
+}
+
+.advanced-toggle__icon--open {
+  transform: rotate(90deg);
+}
+
+.advanced-toggle__badge {
+  font-size: 9px;
+  font-weight: var(--font-bold);
+  padding: 1px 6px;
+  background: var(--color-primary-subtle);
+  color: var(--color-primary);
+  border-radius: var(--radius-sm);
+  margin-left: auto;
+}
+
+.advanced-panel {
+  padding: var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  border-top: 1px solid var(--color-border-default);
+}
+
+.advanced-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.advanced-group__title {
+  font-size: var(--text-xs);
+  font-weight: var(--font-semibold);
+  color: var(--color-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.advanced-checks {
+  display: flex;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+
+.advanced-backends-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.advanced-backend-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-bg-subtle);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.advanced-backend-label {
+  flex: 1;
+  min-width: 0;
+  font-size: var(--text-xs);
+  font-family: var(--font-mono);
+  color: var(--color-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Buttons */

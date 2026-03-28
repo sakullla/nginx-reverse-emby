@@ -1555,14 +1555,15 @@ onUnmounted(() => {
   padding: var(--space-3);
   border-radius: var(--radius-xl);
   cursor: pointer;
-  transition: all var(--duration-normal) var(--ease-bounce);
+  transition: background var(--duration-fast) var(--ease-default),
+              border-color var(--duration-fast) var(--ease-default),
+              box-shadow var(--duration-fast) var(--ease-default);
   border: 1.5px solid transparent;
 }
 
 .sidebar__agent:hover {
   background: var(--color-bg-hover);
   border-color: var(--color-border-default);
-  transform: translateX(2px);
 }
 
 .sidebar__agent--active {
