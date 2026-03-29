@@ -1,35 +1,37 @@
-FROM node:24-bookworm-slim AS node-runtime
+# syntax=docker/dockerfile:1.7
 
-FROM node:24-alpine AS frontend-builder
+FROM node:24-trixie-slim AS node-base
 
+FROM node-base AS frontend-builder
 WORKDIR /build
-
 COPY panel/frontend/package*.json ./
-RUN npm ci
-
+RUN --mount=type=cache,target=/root/.npm npm ci
 COPY panel/frontend/ ./
 RUN npm run build
 
-FROM nginx:latest
+FROM node-base AS backend-builder
+WORKDIR /build
+ENV NODE_ENV=production
+COPY panel/backend/package*.json ./
+COPY panel/backend/prisma ./prisma/
+COPY panel/backend/prisma.config.ts ./prisma.config.ts
+RUN --mount=type=cache,target=/root/.npm npm ci --omit=dev
+RUN npx prisma generate
+
+FROM nginx:1.29.7-trixie
 
 COPY docker/ /tmp/docker/
-COPY panel/backend/ /opt/nginx-reverse-emby/panel/backend/
 COPY scripts/ /opt/nginx-reverse-emby/scripts/
 COPY examples/ /opt/nginx-reverse-emby/examples/
 COPY --from=frontend-builder /build/dist /opt/nginx-reverse-emby/panel/frontend/
-COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
+COPY --from=backend-builder /usr/local/bin/node /usr/local/bin/node
+COPY --from=backend-builder /build/node_modules /opt/nginx-reverse-emby/panel/backend/node_modules
+COPY panel/backend/server.js panel/backend/storage.js panel/backend/storage-json.js panel/backend/storage-sqlite.js panel/backend/storage-prisma-core.js panel/backend/storage-prisma-worker.js /opt/nginx-reverse-emby/panel/backend/
 
 RUN set -eux; \
-    if command -v apk >/dev/null 2>&1; then \
-        apk add --no-cache curl socat openssl ca-certificates cronie; \
-    elif command -v apt-get >/dev/null 2>&1; then \
-        apt-get update; \
-        apt-get install -y --no-install-recommends curl socat openssl ca-certificates cron; \
-        rm -rf /var/lib/apt/lists/*; \
-    else \
-        echo "Unsupported base image package manager" >&2; \
-        exit 1; \
-    fi; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends socat cron; \
+    rm -rf /var/lib/apt/lists/*; \
     find /tmp/docker /opt/nginx-reverse-emby/scripts -type f -name '*.sh' -exec sed -i 's/\r$//' {} +; \
     rm -f /etc/nginx/conf.d/default.conf; \
     mkdir -p /etc/nginx/templates /etc/nginx/conf.d/dynamic /etc/nginx/stream-conf.d/dynamic /opt/nginx-reverse-emby/panel/data /opt/nginx-reverse-emby/nginx; \

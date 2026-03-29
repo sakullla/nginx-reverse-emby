@@ -1,0 +1,16 @@
+{
+  "name": "panel-backend",
+  "private": true,
+  "scripts": {
+    "test": "node -e \"require('./tests/property-roundtrip.test.js'); require('./tests/property-isolation.test.js'); require('./tests/property-revision.test.js'); require('./tests/property-compatibility.test.js')\"",
+    "prisma:generate": "prisma generate"
+  },
+  "dependencies": {
+    "@prisma/adapter-libsql": "^7.6.0",
+    "@prisma/client": "^7.6.0",
+    "prisma": "^7.6.0"
+  },
+  "devDependencies": {
+    "fast-check": "^3.0.0"
+  }
+}

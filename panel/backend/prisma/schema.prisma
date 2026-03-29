@@ -1,0 +1,105 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model Agent {
+  id                String  @id
+  name              String
+  agentUrl          String  @default("") @map("agent_url")
+  agentToken        String  @default("") @map("agent_token")
+  version           String  @default("")
+  tags              String  @default("[]")
+  capabilities      String  @default("[]")
+  mode              String  @default("pull")
+  desiredRevision   Int     @default(0) @map("desired_revision")
+  currentRevision   Int     @default(0) @map("current_revision")
+  lastApplyRevision Int     @default(0) @map("last_apply_revision")
+  lastApplyStatus   String? @map("last_apply_status")
+  lastApplyMessage  String  @default("") @map("last_apply_message")
+  lastReportedStats String? @map("last_reported_stats")
+  lastSeenAt        String? @map("last_seen_at")
+  lastSeenIp        String? @map("last_seen_ip")
+  createdAt         String? @map("created_at")
+  updatedAt         String? @map("updated_at")
+  error             String?
+  isLocal           Boolean @default(false) @map("is_local")
+
+  @@map("agents")
+}
+
+model Rule {
+  id            Int
+  agentId       String  @map("agent_id")
+  frontendUrl   String  @map("frontend_url")
+  backendUrl    String  @map("backend_url")
+  enabled       Boolean @default(true)
+  tags          String  @default("[]")
+  proxyRedirect Boolean @default(true) @map("proxy_redirect")
+  revision      Int     @default(0)
+
+  @@id([agentId, id])
+  @@index([agentId], map: "idx_rules_agent")
+  @@map("rules")
+}
+
+model L4Rule {
+  id            Int
+  agentId       String  @map("agent_id")
+  name          String  @default("")
+  protocol      String  @default("tcp")
+  listenHost    String  @default("0.0.0.0") @map("listen_host")
+  listenPort    Int     @map("listen_port")
+  upstreamHost  String  @default("") @map("upstream_host")
+  upstreamPort  Int     @default(0) @map("upstream_port")
+  backends      String  @default("[]")
+  loadBalancing String  @default("{}") @map("load_balancing")
+  tuning        String  @default("{}")
+  enabled       Boolean @default(true)
+  tags          String  @default("[]")
+  revision      Int     @default(0)
+
+  @@id([agentId, id])
+  @@index([agentId], map: "idx_l4_rules_agent")
+  @@map("l4_rules")
+}
+
+model ManagedCertificate {
+  id             Int     @id
+  domain         String
+  enabled        Boolean @default(true)
+  scope          String  @default("domain")
+  issuerMode     String  @default("master_cf_dns") @map("issuer_mode")
+  targetAgentIds String  @default("[]") @map("target_agent_ids")
+  status         String  @default("pending")
+  lastIssueAt    String? @map("last_issue_at")
+  lastError      String  @default("") @map("last_error")
+  materialHash   String  @default("") @map("material_hash")
+  agentReports   String  @default("{}") @map("agent_reports")
+  acmeInfo       String  @default("{}") @map("acme_info")
+  tags           String  @default("[]")
+  revision       Int     @default(0)
+
+  @@map("managed_certificates")
+}
+
+model LocalAgentState {
+  id                Int    @id
+  desiredRevision   Int    @default(0) @map("desired_revision")
+  currentRevision   Int    @default(0) @map("current_revision")
+  lastApplyRevision Int    @default(0) @map("last_apply_revision")
+  lastApplyStatus   String @default("success") @map("last_apply_status")
+  lastApplyMessage  String @default("") @map("last_apply_message")
+
+  @@map("local_agent_state")
+}
+
+model Meta {
+  key   String  @id
+  value String?
+
+  @@map("meta")
+}

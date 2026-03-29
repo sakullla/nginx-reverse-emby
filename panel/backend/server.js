@@ -7,6 +7,7 @@ const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
 const { spawnSync } = require("child_process");
+const storage = require("./storage");
 
 const HOST = process.env.PANEL_BACKEND_HOST || "127.0.0.1";
 const PORT = Number(process.env.PANEL_BACKEND_PORT || "18081");
@@ -15,8 +16,6 @@ const DATA_ROOT =
 const ROLE = normalizeRole(process.env.PANEL_ROLE || "master");
 const RULES_JSON =
   process.env.PANEL_RULES_JSON || path.join(DATA_ROOT, "proxy_rules.json");
-const RULES_CSV =
-  process.env.PANEL_RULES_FILE || path.join(DATA_ROOT, "proxy_rules.csv");
 const AGENTS_JSON =
   process.env.PANEL_AGENTS_JSON || path.join(DATA_ROOT, "agents.json");
 const AGENT_RULES_DIR =
@@ -101,7 +100,7 @@ const LOCAL_AGENT_ENABLED =
   !/^(0|false|no|off)$/i.test(process.env.MASTER_LOCAL_AGENT_ENABLED || "1");
 const LOCAL_AGENT_ID = process.env.MASTER_LOCAL_AGENT_ID || "local";
 const LOCAL_AGENT_NAME =
-  process.env.MASTER_LOCAL_AGENT_NAME || `${os.hostname()} (本机节点)`;
+  process.env.MASTER_LOCAL_AGENT_NAME || `${os.hostname()} (本地 Agent)`;
 const LOCAL_AGENT_URL = trimSlash(process.env.MASTER_LOCAL_AGENT_URL || "");
 const LOCAL_AGENT_TAGS = normalizeTags(
   (process.env.MASTER_LOCAL_AGENT_TAGS || "local")
@@ -455,74 +454,7 @@ function normalizeRulePayload(body, fallback = {}, suggestedId = null) {
         : fallback.proxy_redirect !== false,
   };
 }
-function migrateCsvToJson() {
-  if (!fs.existsSync(RULES_JSON) && fs.existsSync(RULES_CSV)) {
-    console.log("Migrating proxy_rules.csv to proxy_rules.json...");
-    try {
-      const raw = fs.readFileSync(RULES_CSV, "utf8");
-      const lines = raw.split(/\r?\n/);
-      const rules = [];
-      let id = 1;
 
-      for (const lineRaw of lines) {
-        const line = lineRaw.trim();
-        if (!line || line.startsWith("#")) continue;
-        const commaIndex = line.indexOf(",");
-        if (commaIndex === -1) continue;
-        const frontend = line.slice(0, commaIndex).trim();
-        const backend = line.slice(commaIndex + 1).trim();
-        if (!frontend || !backend) continue;
-        rules.push({
-          id: id++,
-          frontend_url: frontend,
-          backend_url: backend,
-          enabled: true,
-          tags: [],
-          proxy_redirect: true,
-        });
-      }
-
-      writeJsonFile(RULES_JSON, rules);
-      console.log(`Migration complete. ${rules.length} rules migrated.`);
-    } catch (err) {
-      console.error("Migration failed:", err);
-    }
-  }
-}
-
-function getRuleFileForAgent(agentId) {
-  if (agentId === LOCAL_AGENT_ID) return RULES_JSON;
-  return path.join(AGENT_RULES_DIR, `${agentId}.json`);
-}
-
-function loadRulesForAgent(agentId) {
-  if (agentId === LOCAL_AGENT_ID) {
-    migrateCsvToJson();
-  }
-  const rules = readJsonFile(getRuleFileForAgent(agentId), []);
-  if (!Array.isArray(rules)) return [];
-  return rules.map((rule, index) => normalizeStoredRule(rule, index + 1));
-}
-
-function saveRulesForAgent(agentId, rules) {
-  const normalizedRules = Array.isArray(rules)
-    ? rules.map((rule, index) => normalizeStoredRule(rule, index + 1))
-    : [];
-  writeJsonFile(getRuleFileForAgent(agentId), normalizedRules);
-}
-
-function deleteRulesForAgent(agentId) {
-  const file = getRuleFileForAgent(agentId);
-  if (agentId === LOCAL_AGENT_ID) {
-    writeJsonFile(file, []);
-    return;
-  }
-  if (fs.existsSync(file)) fs.unlinkSync(file);
-}
-
-function getL4RuleFileForAgent(agentId) {
-  return path.join(L4_RULES_DIR, `${agentId}.json`);
-}
 
 function normalizeHost(value) {
   return String(value || "").trim().replace(/^\[(.*)\]$/, "$1");
@@ -906,12 +838,6 @@ function getHighestL4RuleRevision(rules = []) {
   );
 }
 
-function loadL4RulesForAgent(agentId) {
-  const rules = readJsonFile(getL4RuleFileForAgent(agentId), []);
-  if (!Array.isArray(rules)) return [];
-  return rules.map((rule, index) => normalizeStoredL4Rule(rule, index + 1));
-}
-
 function ensureUniqueL4Listen(rules, nextRule, excludeId = null) {
   const conflict = (Array.isArray(rules) ? rules : []).find((rule) => {
     if (!rule || Number(rule.id) === Number(excludeId)) return false;
@@ -928,17 +854,7 @@ function ensureUniqueL4Listen(rules, nextRule, excludeId = null) {
   }
 }
 
-function saveL4RulesForAgent(agentId, rules) {
-  const normalizedRules = Array.isArray(rules)
-    ? rules.map((rule, index) => normalizeStoredL4Rule(rule, index + 1))
-    : [];
-  writeJsonFile(getL4RuleFileForAgent(agentId), normalizedRules);
-}
 
-function deleteL4RulesForAgent(agentId) {
-  const file = getL4RuleFileForAgent(agentId);
-  if (fs.existsSync(file)) fs.unlinkSync(file);
-}
 
 function getCertStoreDir(domain) {
   const safeDomain = normalizeHost(domain)
@@ -1139,7 +1055,7 @@ function getKnownManagedCertificateTargetAgentIds() {
   if (LOCAL_AGENT_ENABLED) {
     ids.add(LOCAL_AGENT_ID);
   }
-  for (const agent of loadRegisteredAgents()) {
+  for (const agent of storage.loadRegisteredAgents()) {
     const agentId = String(agent?.id || "").trim();
     if (agentId) {
       ids.add(agentId);
@@ -1177,29 +1093,14 @@ function normalizeStoredManagedCertificate(cert, suggestedId = null) {
   return normalized;
 }
 
-function loadManagedCertificates() {
-  const certs = readJsonFile(MANAGED_CERTS_JSON, []);
-  if (!Array.isArray(certs)) return [];
-  const normalized = certs.map((cert, index) => normalizeStoredManagedCertificate(cert, index + 1));
-  if (JSON.stringify(certs) !== JSON.stringify(normalized)) {
-    writeJsonFile(MANAGED_CERTS_JSON, normalized);
-  }
-  return normalized;
-}
 
-function saveManagedCertificates(certs) {
-  const normalized = Array.isArray(certs)
-    ? certs.map((cert, index) => normalizeStoredManagedCertificate(cert, index + 1))
-    : [];
-  writeJsonFile(MANAGED_CERTS_JSON, normalized);
-}
 
 function getManagedCertificateById(certId) {
-  return loadManagedCertificates().find((item) => Number(item.id) === Number(certId)) || null;
+  return storage.loadManagedCertificates().find((item) => Number(item.id) === Number(certId)) || null;
 }
 
 function getManagedCertificatesForAgent(agentId) {
-  return loadManagedCertificates()
+  return storage.loadManagedCertificates()
     .filter((cert) =>
       Array.isArray(cert.target_agent_ids) && cert.target_agent_ids.includes(agentId),
     )
@@ -1252,7 +1153,7 @@ function shouldRecycleManagedCertificateForAgent(cert, agentId) {
 }
 
 function findBestManagedCertificateForHost(agentId, host, scope) {
-  return loadManagedCertificates()
+  return storage.loadManagedCertificates()
     .filter((cert) => cert.enabled !== false)
     .filter((cert) => cert.scope === scope)
     .filter((cert) => doesManagedCertificateMatchHost(cert, host))
@@ -1303,7 +1204,7 @@ async function ensureManagedCertificateForRule(agentId, rule, options = {}) {
       );
       validateManagedCertificateTargets(updated);
       const prepared = prepareManagedCertificateForSave(cert, updated);
-      prepared.revision = getNextGlobalRevision();
+      prepared.revision = storage.getNextGlobalRevision();
       updateManagedCertificate(cert.id, () => prepared);
       if (prepared.enabled && prepared.scope === "domain" && prepared.issuer_mode === "master_cf_dns") {
         cert = await issueManagedCertificateById(cert.id, { bumpRevision: false, applyNow });
@@ -1315,7 +1216,7 @@ async function ensureManagedCertificateForRule(agentId, rule, options = {}) {
     return cert;
   }
 
-  const certs = loadManagedCertificates();
+  const certs = storage.loadManagedCertificates();
   const maxId = certs.reduce((max, item) => Math.max(max, Number(item.id) || 0), 0);
   const issuerMode = chooseAutoManagedCertificateIssuerMode(agent, target.hostname, scope);
   const created = normalizeManagedCertificatePayload(
@@ -1335,8 +1236,8 @@ async function ensureManagedCertificateForRule(agentId, rule, options = {}) {
   );
   validateManagedCertificateTargets(created);
   const prepared = prepareManagedCertificateForSave(null, created);
-  certs.push({ ...prepared, revision: getNextGlobalRevision() });
-  saveManagedCertificates(certs);
+  certs.push({ ...prepared, revision: storage.getNextGlobalRevision() });
+  storage.saveManagedCertificates(certs);
 
   if (prepared.scope === "domain" && prepared.issuer_mode === "master_cf_dns") {
     return issueManagedCertificateById(prepared.id, { bumpRevision: false, applyNow });
@@ -1347,7 +1248,7 @@ async function ensureManagedCertificateForRule(agentId, rule, options = {}) {
 
 async function detachManagedCertificateFromAgent(certId, agentId, options = {}) {
   const { applyNow = AUTO_APPLY } = options;
-  const certs = loadManagedCertificates();
+  const certs = storage.loadManagedCertificates();
   const index = certs.findIndex((item) => Number(item.id) === Number(certId));
   if (index === -1) return null;
 
@@ -1370,9 +1271,9 @@ async function detachManagedCertificateFromAgent(certId, agentId, options = {}) 
     nextCert.status = existing.status;
     nextCert.last_issue_at = existing.last_issue_at || null;
     nextCert.last_error = existing.last_error || "";
-    nextCert.revision = getNextGlobalRevision();
+    nextCert.revision = storage.getNextGlobalRevision();
     certs[index] = nextCert;
-    saveManagedCertificates(certs);
+    storage.saveManagedCertificates(certs);
     await syncManagedCertificateAgentIds(getManagedCertificateAffectedAgentIds(existing, nextCert), {
       applyNow,
     });
@@ -1392,9 +1293,9 @@ async function detachManagedCertificateFromAgent(certId, agentId, options = {}) 
     nextCert.status = existing.status;
     nextCert.last_issue_at = existing.last_issue_at || null;
     nextCert.last_error = existing.last_error || "";
-    nextCert.revision = getNextGlobalRevision();
+    nextCert.revision = storage.getNextGlobalRevision();
     certs[index] = nextCert;
-    saveManagedCertificates(certs);
+    storage.saveManagedCertificates(certs);
     await syncManagedCertificateAgentIds(getManagedCertificateAffectedAgentIds(existing, nextCert), {
       applyNow,
     });
@@ -1402,7 +1303,7 @@ async function detachManagedCertificateFromAgent(certId, agentId, options = {}) 
   }
 
   const deleted = certs.splice(index, 1)[0];
-  saveManagedCertificates(certs);
+  storage.saveManagedCertificates(certs);
   cleanupManagedCertificateArtifacts(deleted.domain);
   for (const targetAgentId of deleted.target_agent_ids || []) {
     if (targetAgentId === LOCAL_AGENT_ID) {
@@ -1428,7 +1329,7 @@ function hasMatchingHttpsRuleForCertificateInRules(rules, cert) {
 async function cleanupUnusedManagedCertificatesForAgent(agentId, rules = null, options = {}) {
   const currentCerts = getManagedCertificatesForAgent(agentId);
   const removed = [];
-  const ruleSet = Array.isArray(rules) ? rules : loadRulesForAgent(agentId);
+  const ruleSet = Array.isArray(rules) ? rules : storage.loadRulesForAgent(agentId);
   for (const cert of currentCerts) {
     if (hasMatchingHttpsRuleForCertificateInRules(ruleSet, cert)) continue;
     if (!shouldRecycleManagedCertificateForAgent(cert, agentId)) continue;
@@ -1441,7 +1342,7 @@ async function cleanupUnusedManagedCertificatesForAgent(agentId, rules = null, o
 function getHighestManagedCertificateRevisionForAgent(agentId) {
   const agent = getAgentById(agentId);
   if (!agent || !agentHasCapability(agent, "cert_install")) return 0;
-  return loadManagedCertificates().reduce((max, cert) => {
+  return storage.loadManagedCertificates().reduce((max, cert) => {
     if (!Array.isArray(cert.target_agent_ids) || !cert.target_agent_ids.includes(agentId)) {
       return max;
     }
@@ -1527,7 +1428,7 @@ function getManagedCertificateMaterialHash(domain) {
 }
 
 function buildManagedCertificateBundleForAgent(agentId) {
-  return loadManagedCertificates()
+  return storage.loadManagedCertificates()
     .filter((cert) => cert.enabled && cert.scope === "domain")
     .filter((cert) => Array.isArray(cert.target_agent_ids) && cert.target_agent_ids.includes(agentId))
     .map((cert) => {
@@ -1545,7 +1446,7 @@ function buildManagedCertificateBundleForAgent(agentId) {
 }
 
 function buildManagedCertificatePolicyForAgent(agentId) {
-  return loadManagedCertificates()
+  return storage.loadManagedCertificates()
     .filter((cert) => Array.isArray(cert.target_agent_ids) && cert.target_agent_ids.includes(agentId))
     .map((cert) => {
       const view = buildManagedCertificateViewForAgent(cert, agentId);
@@ -1583,39 +1484,6 @@ function persistManagedCertificatePolicyForAgent(agentId) {
   writeJsonFile(getManagedCertPolicyFileForAgent(agentId), buildManagedCertificatePolicyForAgent(agentId));
 }
 
-function loadRegisteredAgents() {
-  return readJsonFile(AGENTS_JSON, []);
-}
-
-function saveRegisteredAgents(agents) {
-  writeJsonFile(AGENTS_JSON, agents);
-}
-
-function getNextGlobalRevision() {
-  const registered = loadRegisteredAgents();
-  const agentRevisions = registered.reduce(
-    (max, agent) =>
-      Math.max(
-        max,
-        normalizeRevision(agent?.desired_revision),
-        normalizeRevision(agent?.current_revision),
-        normalizeRevision(agent?.last_apply_revision),
-      ),
-    0,
-  );
-  const localState = loadLocalAgentState();
-  const localMax = Math.max(
-    normalizeRevision(localState?.desired_revision),
-    normalizeRevision(localState?.current_revision),
-    normalizeRevision(localState?.last_apply_revision),
-  );
-  const certMax = loadManagedCertificates().reduce(
-    (max, cert) => Math.max(max, normalizeRevision(cert?.revision)),
-    0,
-  );
-  return Math.max(agentRevisions, localMax, certMax) + 1;
-}
-
 function ensureLocalAgentState(state = {}) {
   return {
     desired_revision: normalizeRevision(state.desired_revision),
@@ -1631,13 +1499,7 @@ function ensureLocalAgentState(state = {}) {
   };
 }
 
-function loadLocalAgentState() {
-  return ensureLocalAgentState(readJsonFile(LOCAL_AGENT_STATE_JSON, {}));
-}
 
-function saveLocalAgentState(state) {
-  writeJsonFile(LOCAL_AGENT_STATE_JSON, ensureLocalAgentState(state));
-}
 
 function getAgentLastApplyRevision(agent) {
   const value =
@@ -1663,7 +1525,7 @@ function getDesiredRevisionForSync(agent, agentId, rules = [], options = {}) {
   const desiredRevision = normalizeRevision(agent?.desired_revision);
   const currentRevision = normalizeRevision(agent?.current_revision);
   const highestRuleRevision = getHighestRuleRevision(rules);
-  const highestL4Revision = getHighestL4RuleRevision(loadL4RulesForAgent(agentId));
+  const highestL4Revision = getHighestL4RuleRevision(storage.loadL4RulesForAgent(agentId));
   const highestManagedCertRevision = getHighestManagedCertificateRevisionForAgent(agentId);
   const highestConfigRevision = Math.max(
     highestRuleRevision,
@@ -1727,7 +1589,7 @@ function agentHasCapability(agent, capability) {
 function makeLocalAgent() {
   if (!LOCAL_AGENT_ENABLED) return null;
   const timestamp = nowIso();
-  const state = loadLocalAgentState();
+  const state = storage.loadLocalAgentState();
   return {
     id: LOCAL_AGENT_ID,
     name: LOCAL_AGENT_NAME,
@@ -1780,7 +1642,7 @@ function getAgentById(agentId) {
   if (LOCAL_AGENT_ENABLED && agentId === LOCAL_AGENT_ID) {
     return makeLocalAgent();
   }
-  const agent = loadRegisteredAgents().find((item) => item.id === agentId) || null;
+  const agent = storage.loadRegisteredAgents().find((item) => item.id === agentId) || null;
   return agent ? ensureAgentState(agent) : null;
 }
 
@@ -1814,7 +1676,7 @@ function prepareLocalManagedCertificatePolicy() {
 
 function applyNginxConfig() {
   const extraEnv = {
-    PANEL_L4_RULES_JSON: getL4RuleFileForAgent(LOCAL_AGENT_ID),
+    PANEL_L4_RULES_JSON: path.join(L4_RULES_DIR, `${LOCAL_AGENT_ID}.json`),
     PANEL_MANAGED_CERTS_SYNC_JSON: prepareLocalManagedCertificateBundle(),
     PANEL_MANAGED_CERTS_POLICY_JSON: prepareLocalManagedCertificatePolicy(),
   };
@@ -2011,7 +1873,7 @@ function parseStubStatus(data) {
   return {
     activeConnections: activeMatch ? activeMatch[0] : "0",
     totalRequests: requestsLine.length >= 3 ? requestsLine[2] : "0",
-    status: "本机节点",
+    status: "运行中",
   };
 }
 
@@ -2028,7 +1890,7 @@ function getNginxStats() {
             resolve({
               activeConnections: "0",
               totalRequests: "0",
-              status: "获取失败",
+              status: "解析失败",
               error: e.message,
             });
           }
@@ -2038,14 +1900,14 @@ function getNginxStats() {
         resolve({
           activeConnections: "0",
           totalRequests: "0",
-          status: "本机节点异常",
+          status: "状态获取失败",
           error: err.message,
         });
       });
   });
 }
 async function hydrateAgents() {
-  const registered = loadRegisteredAgents();
+  const registered = storage.loadRegisteredAgents();
   const enriched = [];
 
   if (LOCAL_AGENT_ENABLED) {
@@ -2080,11 +1942,11 @@ function assertManagedCertificateEnabled() {
 }
 
 function updateManagedCertificate(certId, updater) {
-  const certs = loadManagedCertificates();
+  const certs = storage.loadManagedCertificates();
   const index = certs.findIndex((item) => Number(item.id) === Number(certId));
   if (index === -1) throw new Error("certificate not found");
   certs[index] = updater({ ...certs[index] });
-  saveManagedCertificates(certs);
+  storage.saveManagedCertificates(certs);
   return certs[index];
 }
 
@@ -2185,7 +2047,7 @@ function prepareManagedCertificateForSave(previousCert, nextCert) {
 }
 
 function hasMatchingHttpsRuleForCertificate(agentId, cert) {
-  return hasMatchingHttpsRuleForCertificateInRules(loadRulesForAgent(agentId), cert);
+  return hasMatchingHttpsRuleForCertificateInRules(storage.loadRulesForAgent(agentId), cert);
 }
 
 function updateManagedCertificateAgentReportSnapshot(cert, agentId, snapshot) {
@@ -2230,7 +2092,7 @@ function applyAgentManagedCertificateReports(agent, reports) {
     }
   }
 
-  const certs = loadManagedCertificates();
+  const certs = storage.loadManagedCertificates();
   const updatedCertIds = new Set();
   let changed = false;
   const nextCerts = certs.map((cert) => {
@@ -2277,7 +2139,7 @@ function applyAgentManagedCertificateReports(agent, reports) {
   });
 
   if (changed) {
-    saveManagedCertificates(nextCerts);
+    storage.saveManagedCertificates(nextCerts);
   }
 
   return updatedCertIds;
@@ -2299,7 +2161,7 @@ function reconcileLocalHttp01CertificatesForAgent(agent, options = {}) {
     return;
   }
 
-  const certs = loadManagedCertificates();
+  const certs = storage.loadManagedCertificates();
   const appliedAt = nowIso();
   let changed = false;
   const nextCerts = certs.map((cert) => {
@@ -2358,7 +2220,7 @@ function reconcileLocalHttp01CertificatesForAgent(agent, options = {}) {
   });
 
   if (changed) {
-    saveManagedCertificates(nextCerts);
+    storage.saveManagedCertificates(nextCerts);
   }
 }
 
@@ -2386,14 +2248,14 @@ async function issueManagedCertificateById(certId, options = {}) {
       last_error: "",
       material_hash: materialHash || String(current.material_hash || ""),
       acme_info: acmeInfo,
-      revision: bumpRevision ? getNextGlobalRevision() : normalizeRevision(current.revision),
+      revision: bumpRevision ? storage.getNextGlobalRevision() : normalizeRevision(current.revision),
     }));
   } catch (err) {
     cert = updateManagedCertificate(certId, (current) => ({
       ...current,
       status: "error",
       last_error: String(err.message || err),
-      revision: bumpRevision ? getNextGlobalRevision() : normalizeRevision(current.revision),
+      revision: bumpRevision ? storage.getNextGlobalRevision() : normalizeRevision(current.revision),
     }));
     throw new Error(cert.last_error);
   }
@@ -2442,7 +2304,7 @@ async function renewManagedCertificateById(certId, options = {}) {
     last_error: "",
     material_hash: nextHash || previousHash || String(current.material_hash || ""),
     acme_info: acmeInfo,
-    revision: changed ? getNextGlobalRevision() : normalizeRevision(current.revision),
+    revision: changed ? storage.getNextGlobalRevision() : normalizeRevision(current.revision),
   }));
 
   if (changed) {
@@ -2506,7 +2368,7 @@ async function requestLocalHttp01CertificateById(certId, options = {}) {
         ...current,
         status: "pending",
         last_error: "",
-        revision: getNextGlobalRevision(),
+        revision: storage.getNextGlobalRevision(),
       },
     ),
   }));
@@ -2555,18 +2417,18 @@ async function requestLocalHttp01CertificateById(certId, options = {}) {
 async function syncAgentRules(agentId) {
   const agent = getAgentById(agentId);
   if (!agent) throw new Error("agent not found");
-  const rules = loadRulesForAgent(agentId);
+  const rules = storage.loadRulesForAgent(agentId);
   if (agentId === LOCAL_AGENT_ID) {
     const desiredRevision = getDesiredRevisionForSync(agent, agentId, rules);
     if (desiredRevision > agent.desired_revision) {
-      saveLocalAgentState({
-        ...loadLocalAgentState(),
+      storage.saveLocalAgentState({
+        ...storage.loadLocalAgentState(),
         desired_revision: desiredRevision,
       });
     }
     return { ok: true, rules, desired_revision: desiredRevision };
   }
-  const agents = loadRegisteredAgents();
+  const agents = storage.loadRegisteredAgents();
   const index = agents.findIndex((item) => item.id === agentId);
   if (index === -1) throw new Error("agent not found");
   agents[index] = ensureAgentState(agents[index]);
@@ -2574,7 +2436,7 @@ async function syncAgentRules(agentId) {
     force: true,
   });
   agents[index].updated_at = nowIso();
-  saveRegisteredAgents(agents);
+  storage.saveRegisteredAgents(agents);
   logAgentEvent(agents[index], "queued rules sync", {
     desired_revision: agents[index].desired_revision,
     rule_count: Array.isArray(rules) ? rules.length : 0,
@@ -2592,10 +2454,10 @@ async function applyAgent(agentId) {
   if (!agent) throw new Error("agent not found");
 
   if (agentId === LOCAL_AGENT_ID) {
-    const rules = loadRulesForAgent(agentId);
+    const rules = storage.loadRulesForAgent(agentId);
     const desiredRevision = getDesiredRevisionForSync(agent, agentId, rules, { force: true });
     const nextState = {
-      ...loadLocalAgentState(),
+      ...storage.loadLocalAgentState(),
       desired_revision: desiredRevision,
       last_apply_revision: desiredRevision,
     };
@@ -2604,13 +2466,13 @@ async function applyAgent(agentId) {
       nextState.current_revision = desiredRevision;
       nextState.last_apply_status = "success";
       nextState.last_apply_message = "";
-      saveLocalAgentState(nextState);
+      storage.saveLocalAgentState(nextState);
       return { ok: true, message: "applied", desired_revision: desiredRevision };
     } catch (err) {
       nextState.current_revision = agent.current_revision;
       nextState.last_apply_status = "error";
       nextState.last_apply_message = String(err.message || err);
-      saveLocalAgentState(nextState);
+      storage.saveLocalAgentState(nextState);
       throw err;
     }
   }
@@ -2624,7 +2486,7 @@ async function applyAgent(agentId) {
 }
 
 function listAutoRenewManagedCertificates() {
-  return loadManagedCertificates().filter(
+  return storage.loadManagedCertificates().filter(
     (cert) =>
       cert &&
       cert.enabled !== false &&
@@ -2696,12 +2558,12 @@ function startManagedCertificateAutoRenewLoop() {
 
 function findRegisteredAgentByToken(token) {
   if (!token) return null;
-  return loadRegisteredAgents().find((agent) => agent.agent_token === token) || null;
+  return storage.loadRegisteredAgents().find((agent) => agent.agent_token === token) || null;
 }
 
 function getAgentHeartbeatResponse(agent) {
-  const rules = loadRulesForAgent(agent.id);
-  const l4Rules = loadL4RulesForAgent(agent.id);
+  const rules = storage.loadRulesForAgent(agent.id);
+  const l4Rules = storage.loadL4RulesForAgent(agent.id);
   const certificates = buildManagedCertificateBundleForAgent(agent.id);
   const certificatePolicies = buildManagedCertificatePolicyForAgent(agent.id);
   const hasUpdate = agent.current_revision < agent.desired_revision;
@@ -2742,7 +2604,7 @@ function extractTrailingId(urlPath) {
 }
 
 function loadOrInitRules(agentId) {
-  const rules = loadRulesForAgent(agentId);
+  const rules = storage.loadRulesForAgent(agentId);
   return Array.isArray(rules) ? rules : [];
 }
 
@@ -2788,7 +2650,7 @@ async function handleAgentApi(req, res) {
   }
 
   if (req.method === "GET" && urlPath === "/agent-api/rules") {
-    sendJson(res, 200, { ok: true, rules: loadRulesForAgent(LOCAL_AGENT_ID) });
+    sendJson(res, 200, { ok: true, rules: storage.loadRulesForAgent(LOCAL_AGENT_ID) });
     return;
   }
 
@@ -2802,7 +2664,7 @@ async function handleAgentApi(req, res) {
       const rules = body.rules.map((rule, index) =>
         normalizeRulePayload(rule, {}, index + 1),
       );
-      saveRulesForAgent(LOCAL_AGENT_ID, rules);
+      storage.saveRulesForAgent(LOCAL_AGENT_ID, rules);
       sendJson(res, 200, { ok: true, rules });
     } catch (err) {
       sendJson(res, 400, errorPayload(String(err.message || err)));
@@ -2833,7 +2695,7 @@ async function handleLegacyLocalRules(req, res, urlPath) {
   }
 
   if (req.method === "GET" && urlPath === "/api/rules") {
-    sendJson(res, 200, { ok: true, rules: loadRulesForAgent(LOCAL_AGENT_ID) });
+    sendJson(res, 200, { ok: true, rules: storage.loadRulesForAgent(LOCAL_AGENT_ID) });
     return;
   }
 
@@ -2860,7 +2722,7 @@ async function handleLegacyLocalRules(req, res, urlPath) {
         );
         return;
       }
-      saveRulesForAgent(LOCAL_AGENT_ID, nextRules);
+      storage.saveRulesForAgent(LOCAL_AGENT_ID, nextRules);
       if (AUTO_APPLY) {
         try {
           await applyAgent(LOCAL_AGENT_ID);
@@ -2912,7 +2774,7 @@ async function handleLegacyLocalRules(req, res, urlPath) {
         );
         return;
       }
-      saveRulesForAgent(LOCAL_AGENT_ID, nextRules);
+      storage.saveRulesForAgent(LOCAL_AGENT_ID, nextRules);
       if (AUTO_APPLY) {
         try {
           await applyAgent(LOCAL_AGENT_ID);
@@ -2961,7 +2823,7 @@ async function handleLegacyLocalRules(req, res, urlPath) {
         );
         return;
       }
-      saveRulesForAgent(LOCAL_AGENT_ID, nextRules);
+      storage.saveRulesForAgent(LOCAL_AGENT_ID, nextRules);
       if (AUTO_APPLY) {
         try {
           await applyAgent(LOCAL_AGENT_ID);
@@ -3083,7 +2945,7 @@ async function handleMasterApi(req, res) {
         return;
       }
 
-      const agents = loadRegisteredAgents();
+      const agents = storage.loadRegisteredAgents();
       let agent =
         agents.find((item) => item.agent_token === agentToken) ||
         (agentUrl ? agents.find((item) => item.agent_url === agentUrl) : null) ||
@@ -3118,7 +2980,7 @@ async function handleMasterApi(req, res) {
         agents.push(agent);
       }
 
-      saveRegisteredAgents(agents);
+      storage.saveRegisteredAgents(agents);
       logAgentEvent(agent, "registered/updated", {
         mode: agent.mode,
         agent_url: agent.agent_url || "",
@@ -3142,7 +3004,7 @@ async function handleMasterApi(req, res) {
         return;
       }
 
-      const agents = loadRegisteredAgents();
+      const agents = storage.loadRegisteredAgents();
       const index = agents.findIndex(
         (agent) => agent.agent_token === token || (name && agent.name === name),
       );
@@ -3200,7 +3062,7 @@ async function handleMasterApi(req, res) {
       }
 
       agents[index] = agent;
-      saveRegisteredAgents(agents);
+      storage.saveRegisteredAgents(agents);
       const managedCertificateReports = Array.isArray(body.managed_certificate_reports)
         ? body.managed_certificate_reports
             .map((report) => normalizeAgentManagedCertificateReportPayload(report))
@@ -3266,13 +3128,13 @@ async function handleMasterApi(req, res) {
   if (req.method === "PUT" && /^\/api\/agents\/[^/]+$/.test(urlPath)) {
     const agentId = extractAgentId(urlPath);
     if (agentId === LOCAL_AGENT_ID) {
-      sendJson(res, 400, errorPayload("本机节点不支持此操作"));
+      sendJson(res, 400, errorPayload("本地 Agent 不允许修改"));
       return;
     }
 
     try {
       const body = await parseJsonBody(req);
-      const agents = loadRegisteredAgents();
+      const agents = storage.loadRegisteredAgents();
       const index = agents.findIndex((agent) => agent.id === agentId);
       if (index === -1) {
         sendJson(res, 404, errorPayload("agent not found"));
@@ -3321,7 +3183,7 @@ async function handleMasterApi(req, res) {
         updated_at: nowIso(),
       };
 
-      saveRegisteredAgents(agents);
+      storage.saveRegisteredAgents(agents);
       sendJson(res, 200, { ok: true, agent: sanitizeAgent(agents[index]) });
     } catch (err) {
       sendJson(res, 400, errorPayload(String(err.message || err)));
@@ -3332,12 +3194,12 @@ async function handleMasterApi(req, res) {
   if (req.method === "PATCH" && /^\/api\/agents\/[^/]+$/.test(urlPath)) {
     const agentId = extractAgentId(urlPath);
     if (agentId === LOCAL_AGENT_ID) {
-      sendJson(res, 400, errorPayload("本机节点不支持此操作"));
+      sendJson(res, 400, errorPayload("本地 Agent 不允许修改"));
       return;
     }
     try {
       const body = await parseJsonBody(req);
-      const agents = loadRegisteredAgents();
+      const agents = storage.loadRegisteredAgents();
       const index = agents.findIndex((agent) => agent.id === agentId);
       if (index === -1) {
         sendJson(res, 404, errorPayload("agent not found"));
@@ -3358,7 +3220,7 @@ async function handleMasterApi(req, res) {
           updated_at: nowIso(),
         };
       }
-      saveRegisteredAgents(agents);
+      storage.saveRegisteredAgents(agents);
       sendJson(res, 200, { ok: true, agent: sanitizeAgent(agents[index]) });
     } catch (err) {
       sendJson(res, 400, errorPayload(String(err.message || err)));
@@ -3369,19 +3231,19 @@ async function handleMasterApi(req, res) {
   if (req.method === "DELETE" && /^\/api\/agents\/[^/]+$/.test(urlPath)) {
     const agentId = extractAgentId(urlPath);
     if (agentId === LOCAL_AGENT_ID) {
-      sendJson(res, 400, errorPayload("本机节点不可删除"));
+      sendJson(res, 400, errorPayload("本地 Agent 不允许删除"));
       return;
     }
-    const agents = loadRegisteredAgents();
+    const agents = storage.loadRegisteredAgents();
     const index = agents.findIndex((agent) => agent.id === agentId);
     if (index === -1) {
       sendJson(res, 404, errorPayload("agent not found"));
       return;
     }
     const deleted = agents.splice(index, 1)[0];
-    saveRegisteredAgents(agents);
-    deleteRulesForAgent(agentId);
-    deleteL4RulesForAgent(agentId);
+    storage.saveRegisteredAgents(agents);
+    storage.deleteRulesForAgent(agentId);
+    storage.deleteL4RulesForAgent(agentId);
     removePath(getManagedCertBundleFileForAgent(agentId));
     removePath(getManagedCertPolicyFileForAgent(agentId));
     sendJson(res, 200, { ok: true, agent: sanitizeAgent(deleted) });
@@ -3405,7 +3267,7 @@ async function handleMasterApi(req, res) {
       sendJson(res, 404, errorPayload("agent not found"));
       return;
     }
-    sendJson(res, 200, { ok: true, rules: loadRulesForAgent(agentId) });
+    sendJson(res, 200, { ok: true, rules: storage.loadRulesForAgent(agentId) });
     return;
   }
 
@@ -3437,7 +3299,7 @@ async function handleMasterApi(req, res) {
         );
         return;
       }
-      saveRulesForAgent(agentId, nextRules);
+      storage.saveRulesForAgent(agentId, nextRules);
 
       if (AUTO_APPLY) {
         try {
@@ -3469,7 +3331,7 @@ async function handleMasterApi(req, res) {
       sendJson(res, 404, errorPayload("agent not found"));
       return;
     }
-    sendJson(res, 200, { ok: true, rules: loadL4RulesForAgent(agentId) });
+    sendJson(res, 200, { ok: true, rules: storage.loadL4RulesForAgent(agentId) });
     return;
   }
 
@@ -3486,13 +3348,13 @@ async function handleMasterApi(req, res) {
         return;
       }
       const body = await parseJsonBody(req);
-      const rules = loadL4RulesForAgent(agentId);
+      const rules = storage.loadL4RulesForAgent(agentId);
       const maxId = rules.reduce((max, rule) => Math.max(max, Number(rule.id) || 0), 0);
       const newRule = normalizeL4RulePayload(body, {}, maxId + 1);
       ensureUniqueL4Listen(rules, newRule);
       newRule.revision = getNextPendingRevision(agent);
       rules.push(newRule);
-      saveL4RulesForAgent(agentId, rules);
+      storage.saveL4RulesForAgent(agentId, rules);
 
       if (AUTO_APPLY) {
         try {
@@ -3551,7 +3413,7 @@ async function handleMasterApi(req, res) {
         );
         return;
       }
-      saveRulesForAgent(agentId, nextRules);
+      storage.saveRulesForAgent(agentId, nextRules);
 
       if (AUTO_APPLY) {
         try {
@@ -3606,7 +3468,7 @@ async function handleMasterApi(req, res) {
         );
         return;
       }
-      saveRulesForAgent(agentId, nextRules);
+      storage.saveRulesForAgent(agentId, nextRules);
 
       if (AUTO_APPLY) {
         try {
@@ -3645,7 +3507,7 @@ async function handleMasterApi(req, res) {
       }
       const ruleId = extractTrailingId(urlPath);
       const body = await parseJsonBody(req);
-      const rules = loadL4RulesForAgent(agentId);
+      const rules = storage.loadL4RulesForAgent(agentId);
       const index = rules.findIndex((rule) => Number(rule.id) === ruleId);
       if (index === -1) {
         sendJson(res, 404, errorPayload("rule id not found"));
@@ -3655,7 +3517,7 @@ async function handleMasterApi(req, res) {
       ensureUniqueL4Listen(rules, nextRule, ruleId);
       nextRule.revision = getNextPendingRevision(agent);
       rules[index] = nextRule;
-      saveL4RulesForAgent(agentId, rules);
+      storage.saveL4RulesForAgent(agentId, rules);
 
       if (AUTO_APPLY) {
         try {
@@ -3689,14 +3551,14 @@ async function handleMasterApi(req, res) {
         return;
       }
       const ruleId = extractTrailingId(urlPath);
-      const rules = loadL4RulesForAgent(agentId);
+      const rules = storage.loadL4RulesForAgent(agentId);
       const index = rules.findIndex((rule) => Number(rule.id) === ruleId);
       if (index === -1) {
         sendJson(res, 404, errorPayload("rule id not found"));
         return;
       }
       const deleted = rules.splice(index, 1)[0];
-      saveL4RulesForAgent(agentId, rules);
+      storage.saveL4RulesForAgent(agentId, rules);
 
       if (AUTO_APPLY) {
         try {
@@ -3741,7 +3603,7 @@ async function handleMasterApi(req, res) {
         return;
       }
       const body = await parseJsonBody(req);
-      const certs = loadManagedCertificates();
+      const certs = storage.loadManagedCertificates();
       const maxId = certs.reduce((max, cert) => Math.max(max, Number(cert.id) || 0), 0);
       const nextCert = normalizeManagedCertificatePayload(
         {
@@ -3757,8 +3619,8 @@ async function handleMasterApi(req, res) {
       if (preparedCert.scope === "domain" && preparedCert.issuer_mode === "master_cf_dns") {
         assertManagedCertificateEnabled();
       }
-      certs.push({ ...preparedCert, revision: getNextGlobalRevision() });
-      saveManagedCertificates(certs);
+      certs.push({ ...preparedCert, revision: storage.getNextGlobalRevision() });
+      storage.saveManagedCertificates(certs);
 
       let savedCert = getManagedCertificateById(preparedCert.id);
       if (savedCert.enabled && savedCert.scope === "domain" && savedCert.issuer_mode === "master_cf_dns") {
@@ -3784,7 +3646,7 @@ async function handleMasterApi(req, res) {
       }
       const certId = extractTrailingId(urlPath);
       const body = await parseJsonBody(req);
-      const certs = loadManagedCertificates();
+      const certs = storage.loadManagedCertificates();
       const index = certs.findIndex(
         (cert) =>
           Number(cert.id) === certId &&
@@ -3810,9 +3672,9 @@ async function handleMasterApi(req, res) {
       if (preparedCert.scope === "domain" && preparedCert.issuer_mode === "master_cf_dns") {
         assertManagedCertificateEnabled();
       }
-      preparedCert.revision = getNextGlobalRevision();
+      preparedCert.revision = storage.getNextGlobalRevision();
       certs[index] = preparedCert;
-      saveManagedCertificates(certs);
+      storage.saveManagedCertificates(certs);
 
       let savedCert = preparedCert;
       const affectedAgentIds = getManagedCertificateAffectedAgentIds(previousCert, preparedCert);
@@ -3846,7 +3708,7 @@ async function handleMasterApi(req, res) {
         return;
       }
       const certId = extractTrailingId(urlPath);
-      const certs = loadManagedCertificates();
+      const certs = storage.loadManagedCertificates();
       const index = certs.findIndex(
         (cert) =>
           Number(cert.id) === certId &&
@@ -3867,9 +3729,9 @@ async function handleMasterApi(req, res) {
           certId,
         );
         const nextCert = prepareManagedCertificateForSave(existing, normalizedCert);
-        nextCert.revision = getNextGlobalRevision();
+        nextCert.revision = storage.getNextGlobalRevision();
         certs[index] = nextCert;
-        saveManagedCertificates(certs);
+        storage.saveManagedCertificates(certs);
         await syncManagedCertificateAgentIds(
           getManagedCertificateAffectedAgentIds(existing, nextCert),
         );
@@ -3878,7 +3740,7 @@ async function handleMasterApi(req, res) {
       }
 
       const deleted = certs.splice(index, 1)[0];
-      saveManagedCertificates(certs);
+      storage.saveManagedCertificates(certs);
       cleanupManagedCertificateArtifacts(deleted.domain);
       for (const targetAgentId of deleted.target_agent_ids || []) {
         if (targetAgentId === LOCAL_AGENT_ID) {
@@ -3922,14 +3784,14 @@ async function handleMasterApi(req, res) {
   }
 
   if (req.method === "GET" && urlPath === "/api/certificates") {
-    sendJson(res, 200, { ok: true, certificates: loadManagedCertificates() });
+    sendJson(res, 200, { ok: true, certificates: storage.loadManagedCertificates() });
     return;
   }
 
   if (req.method === "POST" && urlPath === "/api/certificates") {
     try {
       const body = await parseJsonBody(req);
-      const certs = loadManagedCertificates();
+      const certs = storage.loadManagedCertificates();
       const maxId = certs.reduce((max, cert) => Math.max(max, Number(cert.id) || 0), 0);
       const nextCert = normalizeManagedCertificatePayload(body, {}, maxId + 1);
       validateManagedCertificateTargets(nextCert);
@@ -3937,9 +3799,9 @@ async function handleMasterApi(req, res) {
       if (preparedCert.scope === "domain" && preparedCert.issuer_mode === "master_cf_dns") {
         assertManagedCertificateEnabled();
       }
-      preparedCert.revision = getNextGlobalRevision();
+      preparedCert.revision = storage.getNextGlobalRevision();
       certs.push(preparedCert);
-      saveManagedCertificates(certs);
+      storage.saveManagedCertificates(certs);
 
       let savedCert = preparedCert;
       if (
@@ -3963,7 +3825,7 @@ async function handleMasterApi(req, res) {
     try {
       const certId = extractTrailingId(urlPath);
       const body = await parseJsonBody(req);
-      const certs = loadManagedCertificates();
+      const certs = storage.loadManagedCertificates();
       const index = certs.findIndex((cert) => Number(cert.id) === certId);
       if (index === -1) {
         sendJson(res, 404, errorPayload("certificate not found"));
@@ -3976,9 +3838,9 @@ async function handleMasterApi(req, res) {
       if (preparedCert.scope === "domain" && preparedCert.issuer_mode === "master_cf_dns") {
         assertManagedCertificateEnabled();
       }
-      preparedCert.revision = getNextGlobalRevision();
+      preparedCert.revision = storage.getNextGlobalRevision();
       certs[index] = preparedCert;
-      saveManagedCertificates(certs);
+      storage.saveManagedCertificates(certs);
 
       let savedCert = preparedCert;
       const affectedAgentIds = getManagedCertificateAffectedAgentIds(previousCert, preparedCert);
@@ -4006,14 +3868,14 @@ async function handleMasterApi(req, res) {
   if (req.method === "DELETE" && /^\/api\/certificates\/\d+$/.test(urlPath)) {
     try {
       const certId = extractTrailingId(urlPath);
-      const certs = loadManagedCertificates();
+      const certs = storage.loadManagedCertificates();
       const index = certs.findIndex((cert) => Number(cert.id) === certId);
       if (index === -1) {
         sendJson(res, 404, errorPayload("certificate not found"));
         return;
       }
       const deleted = certs.splice(index, 1)[0];
-      saveManagedCertificates(certs);
+      storage.saveManagedCertificates(certs);
       cleanupManagedCertificateArtifacts(deleted.domain);
       for (const agentId of deleted.target_agent_ids || []) {
         if (agentId === LOCAL_AGENT_ID) {
@@ -4125,17 +3987,35 @@ async function handleRequest(req, res) {
 }
 
 ensureDataDir();
-migrateCsvToJson();
+storage.init(DATA_ROOT);
+storage.migrateFromJson(DATA_ROOT);
 startManagedCertificateAutoRenewLoop();
 
-http
-  .createServer((req, res) => {
-    handleRequest(req, res).catch((err) => {
-      sendJson(
-        res,
-        500,
-        errorPayload("internal server error", String(err.message || err)),
-      );
-    });
-  })
-  .listen(PORT, HOST);
+const server = http.createServer((req, res) => {
+  handleRequest(req, res).catch((err) => {
+    sendJson(
+      res,
+      500,
+      errorPayload("internal server error", String(err.message || err)),
+    );
+  });
+});
+
+server.listen(PORT, HOST, () => {
+  console.log(`Panel backend listening on ${HOST}:${PORT} (storage: ${process.env.PANEL_STORAGE_BACKEND || "sqlite"})`);
+});
+
+function gracefulShutdown(signal) {
+  console.log(`Received ${signal}, shutting down...`);
+  server.close(() => {
+    storage.close();
+    process.exit(0);
+  });
+  setTimeout(() => {
+    storage.close();
+    process.exit(1);
+  }, 5000);
+}
+
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+process.on("SIGINT", () => gracefulShutdown("SIGINT"));
