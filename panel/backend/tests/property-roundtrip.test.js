@@ -3,37 +3,17 @@
 const { describe, it, beforeEach, afterEach } = require("node:test");
 const assert = require("node:assert/strict");
 const fc = require("fast-check");
-const fs = require("fs");
-const os = require("os");
-const path = require("path");
+const {
+  SQLITE_TARGET,
+  canRunSqlite,
+  safeString,
+  loadFreshStorage,
+  closeQuietly,
+  dedupById,
+  getNumRuns,
+} = require("./helpers");
 
-// Guard: better-sqlite3 requires native compilation; skip gracefully if unavailable.
-let canRunSqlite = true;
-try {
-  const Database = require("better-sqlite3");
-  const testDb = new Database(":memory:");
-  testDb.close();
-} catch (_) {
-  canRunSqlite = false;
-}
-
-/**
- * Property 1: Data round-trip consistency
- *
- * For any valid data set D (rules, L4 rules, agents, managed certificates,
- * local agent state), executing save then load returns semantically equivalent
- * data (JSON columns equivalent after serialize-deserialize, booleans
- * equivalent after 1/0 conversion).
- *
- * **Validates: Requirements 3.1, 3.3, 3.5, 3.6, 3.7, 3.8, 4.1, 4.2, 4.3, 4.4, 4.5, 4.6, 5.1, 5.2, 5.3, 5.4, 5.5**
- */
-
-// ---------------------------------------------------------------------------
-// Arbitraries
-// ---------------------------------------------------------------------------
-
-const safeString = fc.string({ maxLength: 50 }).map((s) => s.replace(/\0/g, ""));
-const sqliteTarget = ":memory:";
+const NUM_RUNS = getNumRuns("roundtrip", 25);
 
 const ruleArb = fc.record({
   id: fc.integer({ min: 1, max: 10000 }),
@@ -146,12 +126,6 @@ function normStr(v) { return v || ""; }
 function normInt(v) { return v || 0; }
 
 /** Deduplicate rules by id (last wins) so the PRIMARY KEY constraint is met. */
-function dedup(arr, key = "id") {
-  const map = new Map();
-  for (const item of arr) map.set(item[key], item);
-  return [...map.values()];
-}
-
 /**
  * Build the expected rule object after a round-trip through SQLite.
  * Mirrors the transformations in saveRulesForAgent + loadRulesForAgent.
@@ -246,19 +220,15 @@ function expectedLocalState(s) {
 // Test suite
 // ---------------------------------------------------------------------------
 
-describe("Property 1: Data round-trip consistency", { skip: !canRunSqlite && "better-sqlite3 native bindings not available" }, () => {
+describe("Property 1: Data round-trip consistency", { skip: !canRunSqlite && "Prisma-backed SQLite adapter not available" }, () => {
   let storage;
 
   beforeEach(() => {
-    // Re-require storage-sqlite fresh for each test to reset module-level db
-    const modPath = require.resolve("../storage-sqlite");
-    delete require.cache[modPath];
-    storage = require("../storage-sqlite");
-    storage.init(sqliteTarget);
+    storage = loadFreshStorage("../storage-sqlite", SQLITE_TARGET);
   });
 
   afterEach(() => {
-    try { storage.close(); } catch (_) { /* ignore */ }
+    closeQuietly(storage);
   });
 
   it("rules round-trip: save then load returns semantically equivalent data", () => {
@@ -267,14 +237,14 @@ describe("Property 1: Data round-trip consistency", { skip: !canRunSqlite && "be
       fc.property(
         fc.array(ruleArb, { maxLength: 10 }),
         (rules) => {
-          const unique = dedup(rules);
+          const unique = dedupById(rules);
           storage.saveRulesForAgent(agentId, unique);
           const loaded = storage.loadRulesForAgent(agentId);
           const expected = unique.map((r) => expectedRule(r, agentId));
           assert.deepStrictEqual(loaded, expected);
         }
       ),
-      { numRuns: 50 }
+      { numRuns: NUM_RUNS }
     );
   });
 
@@ -284,14 +254,14 @@ describe("Property 1: Data round-trip consistency", { skip: !canRunSqlite && "be
       fc.property(
         fc.array(l4RuleArb, { maxLength: 10 }),
         (rules) => {
-          const unique = dedup(rules);
+          const unique = dedupById(rules);
           storage.saveL4RulesForAgent(agentId, unique);
           const loaded = storage.loadL4RulesForAgent(agentId);
           const expected = unique.map((r) => expectedL4Rule(r, agentId));
           assert.deepStrictEqual(loaded, expected);
         }
       ),
-      { numRuns: 50 }
+      { numRuns: NUM_RUNS }
     );
   });
 
@@ -300,7 +270,7 @@ describe("Property 1: Data round-trip consistency", { skip: !canRunSqlite && "be
       fc.property(
         fc.array(agentArb, { maxLength: 10 }),
         (agents) => {
-          const unique = dedup(agents);
+          const unique = dedupById(agents);
           storage.saveRegisteredAgents(unique);
           const loaded = storage.loadRegisteredAgents();
           const expected = unique.map((a) => expectedAgent(a));
@@ -310,7 +280,7 @@ describe("Property 1: Data round-trip consistency", { skip: !canRunSqlite && "be
           assert.deepStrictEqual(loaded, expected);
         }
       ),
-      { numRuns: 50 }
+      { numRuns: NUM_RUNS }
     );
   });
 
@@ -319,7 +289,7 @@ describe("Property 1: Data round-trip consistency", { skip: !canRunSqlite && "be
       fc.property(
         fc.array(certArb, { maxLength: 10 }),
         (certs) => {
-          const unique = dedup(certs);
+          const unique = dedupById(certs);
           storage.saveManagedCertificates(unique);
           const loaded = storage.loadManagedCertificates();
           const expected = unique.map((c) => expectedCert(c));
@@ -329,7 +299,7 @@ describe("Property 1: Data round-trip consistency", { skip: !canRunSqlite && "be
           assert.deepStrictEqual(loaded, expected);
         }
       ),
-      { numRuns: 50 }
+      { numRuns: NUM_RUNS }
     );
   });
 
@@ -341,7 +311,7 @@ describe("Property 1: Data round-trip consistency", { skip: !canRunSqlite && "be
         const expected = expectedLocalState(state);
         assert.deepStrictEqual(loaded, expected);
       }),
-      { numRuns: 50 }
+      { numRuns: NUM_RUNS }
     );
   });
 });

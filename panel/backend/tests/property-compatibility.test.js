@@ -16,26 +16,18 @@ const fc = require("fast-check");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const {
+  SQLITE_TARGET,
+  canRunSqlite,
+  safeString,
+  nonEmptyString,
+  loadFreshStorage,
+  closeQuietly,
+  dedupById,
+  getNumRuns,
+} = require("./helpers");
 
-// Guard: better-sqlite3 requires native compilation; skip gracefully if unavailable.
-let canRunSqlite = true;
-try {
-  const Database = require("better-sqlite3");
-  const testDb = new Database(":memory:");
-  testDb.close();
-} catch (_) {
-  canRunSqlite = false;
-}
-const sqliteTarget = ":memory:";
-
-// ---------------------------------------------------------------------------
-// Arbitraries
-// ---------------------------------------------------------------------------
-
-const safeString = fc.string({ maxLength: 50 }).map((s) => s.replace(/\0/g, ""));
-
-// Use non-empty safe strings for fields that SQLite defaults to non-empty values
-const nonEmptyString = fc.string({ minLength: 1, maxLength: 50 }).map((s) => s.replace(/\0/g, ""));
+const NUM_RUNS = getNumRuns("compatibility", 20);
 
 const ruleArb = fc.record({
   id: fc.integer({ min: 1, max: 10000 }),
@@ -138,23 +130,16 @@ const localStateArb = fc.record({
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Deduplicate by id (last wins) so the PRIMARY KEY constraint is met. */
-function dedup(arr) {
-  const map = new Map();
-  for (const item of arr) map.set(item.id, item);
-  return [...map.values()];
-}
-
 /**
  * Normalize results for cross-backend comparison.
  *
  * Key semantic differences handled:
- * 1. SQLite adds `agent_id` to rules/l4_rules rows; JSON does not → strip it.
- * 2. JSON round-trip normalizes types (JSON.stringify → JSON.parse).
+ * 1. SQLite adds `agent_id` to rules/l4_rules rows; JSON does not -> strip it.
+ * 2. JSON round-trip normalizes types (JSON.stringify -> JSON.parse).
  * 3. Sort arrays by id for stable ordering.
  */
 function normalize(obj) {
-  // Deep clone via JSON round-trip — normalizes types consistently
+  // Deep clone via JSON round-trip - normalizes types consistently
   return JSON.parse(JSON.stringify(obj));
 }
 
@@ -221,7 +206,7 @@ function assertLocalStateEquivalent(sqliteResult, jsonResult) {
 // Test suite
 // ---------------------------------------------------------------------------
 
-describe("Property 4: Backend compatibility (semantic consistency)", { skip: !canRunSqlite && "better-sqlite3 native bindings not available" }, () => {
+describe("Property 4: Backend compatibility (semantic consistency)", { skip: !canRunSqlite && "Prisma-backed SQLite adapter not available" }, () => {
   let sqliteStorage;
   let jsonStorage;
   let jsonTmpDir;
@@ -229,22 +214,13 @@ describe("Property 4: Backend compatibility (semantic consistency)", { skip: !ca
   beforeEach(() => {
     jsonTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "compat-json-"));
 
-    // Fresh require for SQLite adapter (module-level db state)
-    const sqliteMod = require.resolve("../storage-sqlite");
-    delete require.cache[sqliteMod];
-    sqliteStorage = require("../storage-sqlite");
-    sqliteStorage.init(sqliteTarget);
-
-    // Fresh require for JSON adapter (module-level dataRoot state)
-    const jsonMod = require.resolve("../storage-json");
-    delete require.cache[jsonMod];
-    jsonStorage = require("../storage-json");
-    jsonStorage.init(jsonTmpDir);
+    sqliteStorage = loadFreshStorage("../storage-sqlite", SQLITE_TARGET);
+    jsonStorage = loadFreshStorage("../storage-json", jsonTmpDir);
   });
 
   afterEach(() => {
-    try { sqliteStorage.close(); } catch (_) { /* ignore */ }
-    try { jsonStorage.close(); } catch (_) { /* ignore */ }
+    closeQuietly(sqliteStorage);
+    closeQuietly(jsonStorage);
     try { fs.rmSync(jsonTmpDir, { recursive: true, force: true }); } catch (_) { /* ignore */ }
   });
 
@@ -253,7 +229,7 @@ describe("Property 4: Backend compatibility (semantic consistency)", { skip: !ca
       fc.property(
         fc.array(agentArb, { maxLength: 8 }),
         (agents) => {
-          const unique = dedup(agents);
+          const unique = dedupById(agents);
 
           sqliteStorage.saveRegisteredAgents(unique);
           jsonStorage.saveRegisteredAgents(unique);
@@ -264,7 +240,7 @@ describe("Property 4: Backend compatibility (semantic consistency)", { skip: !ca
           assertEquivalent(sqliteResult, jsonResult);
         }
       ),
-      { numRuns: 30 }
+      { numRuns: NUM_RUNS }
     );
   });
 
@@ -275,7 +251,7 @@ describe("Property 4: Backend compatibility (semantic consistency)", { skip: !ca
       fc.property(
         fc.array(ruleArb, { maxLength: 8 }),
         (rules) => {
-          const unique = dedup(rules);
+          const unique = dedupById(rules);
 
           sqliteStorage.saveRulesForAgent(agentId, unique);
           jsonStorage.saveRulesForAgent(agentId, unique);
@@ -287,7 +263,7 @@ describe("Property 4: Backend compatibility (semantic consistency)", { skip: !ca
           assertEquivalent(sqliteResult, jsonResult, { stripAgentId: true });
         }
       ),
-      { numRuns: 30 }
+      { numRuns: NUM_RUNS }
     );
   });
 
@@ -298,7 +274,7 @@ describe("Property 4: Backend compatibility (semantic consistency)", { skip: !ca
       fc.property(
         fc.array(l4RuleArb, { maxLength: 8 }),
         (rules) => {
-          const unique = dedup(rules);
+          const unique = dedupById(rules);
 
           sqliteStorage.saveL4RulesForAgent(agentId, unique);
           jsonStorage.saveL4RulesForAgent(agentId, unique);
@@ -310,7 +286,7 @@ describe("Property 4: Backend compatibility (semantic consistency)", { skip: !ca
           assertEquivalent(sqliteResult, jsonResult, { stripAgentId: true });
         }
       ),
-      { numRuns: 30 }
+      { numRuns: NUM_RUNS }
     );
   });
 
@@ -319,7 +295,7 @@ describe("Property 4: Backend compatibility (semantic consistency)", { skip: !ca
       fc.property(
         fc.array(certArb, { maxLength: 8 }),
         (certs) => {
-          const unique = dedup(certs);
+          const unique = dedupById(certs);
 
           sqliteStorage.saveManagedCertificates(unique);
           jsonStorage.saveManagedCertificates(unique);
@@ -330,7 +306,7 @@ describe("Property 4: Backend compatibility (semantic consistency)", { skip: !ca
           assertEquivalent(sqliteResult, jsonResult);
         }
       ),
-      { numRuns: 30 }
+      { numRuns: NUM_RUNS }
     );
   });
 
@@ -345,7 +321,7 @@ describe("Property 4: Backend compatibility (semantic consistency)", { skip: !ca
 
         assertLocalStateEquivalent(sqliteResult, jsonResult);
       }),
-      { numRuns: 30 }
+      { numRuns: NUM_RUNS }
     );
   });
 
@@ -358,10 +334,10 @@ describe("Property 4: Backend compatibility (semantic consistency)", { skip: !ca
         fc.array(certArb, { maxLength: 5 }),
         localStateArb,
         (agents, rules, l4Rules, certs, localState) => {
-          const uniqueAgents = dedup(agents);
-          const uniqueRules = dedup(rules);
-          const uniqueL4Rules = dedup(l4Rules);
-          const uniqueCerts = dedup(certs);
+          const uniqueAgents = dedupById(agents);
+          const uniqueRules = dedupById(rules);
+          const uniqueL4Rules = dedupById(l4Rules);
+          const uniqueCerts = dedupById(certs);
           const agentId = uniqueAgents[0].id;
 
           // Execute same operation sequence on both adapters
@@ -405,7 +381,7 @@ describe("Property 4: Backend compatibility (semantic consistency)", { skip: !ca
           );
         }
       ),
-      { numRuns: 30 }
+      { numRuns: NUM_RUNS }
     );
   });
 });

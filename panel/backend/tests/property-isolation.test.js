@@ -3,36 +3,24 @@
 /**
  * Property 2: Agent data isolation
  *
- * For any two different agentIds A1 ≠ A2, performing saveRulesForAgent,
- * saveL4RulesForAgent, or deleteRulesForAgent on A1 does not affect
- * loadRulesForAgent(A2) or loadL4RulesForAgent(A2).
- *
- * **Validates: Requirements 6.1, 6.2, 6.3**
+ * For any two different agentIds A1 != A2, performing writes or deletes on A1
+ * must not change the persisted data for A2.
  */
 
 const { describe, it, beforeEach, afterEach } = require("node:test");
 const assert = require("node:assert/strict");
 const fc = require("fast-check");
-const fs = require("fs");
-const os = require("os");
-const path = require("path");
+const {
+  SQLITE_TARGET,
+  canRunSqlite,
+  safeString,
+  loadFreshStorage,
+  closeQuietly,
+  dedupById,
+  getNumRuns,
+} = require("./helpers");
 
-// Guard: better-sqlite3 requires native compilation; skip gracefully if unavailable.
-let canRunSqlite = true;
-try {
-  const Database = require("better-sqlite3");
-  const testDb = new Database(":memory:");
-  testDb.close();
-} catch (_) {
-  canRunSqlite = false;
-}
-
-// ---------------------------------------------------------------------------
-// Arbitraries
-// ---------------------------------------------------------------------------
-
-const safeString = fc.string({ maxLength: 50 }).map((s) => s.replace(/\0/g, ""));
-const sqliteTarget = ":memory:";
+const NUM_RUNS = getNumRuns("isolation", 30);
 
 const ruleArb = fc.record({
   id: fc.integer({ min: 1, max: 10000 }),
@@ -57,45 +45,28 @@ const l4RuleArb = fc.record({
       host: safeString,
       port: fc.integer({ min: 1, max: 65535 }),
     }),
-    { maxLength: 3 }
+    { maxLength: 3 },
   ),
   load_balancing: fc.record({
     method: fc.constantFrom("round_robin", "least_conn", "ip_hash"),
   }),
-  tuning: fc.record({ timeout: fc.integer({ min: 0, max: 300 }) }),
+  tuning: fc.record({
+    timeout: fc.integer({ min: 0, max: 300 }),
+  }),
   enabled: fc.boolean(),
   tags: fc.array(safeString, { maxLength: 5 }),
   revision: fc.integer({ min: 0, max: 1000 }),
 });
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/** Deduplicate by id (last wins) so the PRIMARY KEY constraint is met. */
-function dedup(arr) {
-  const map = new Map();
-  for (const item of arr) map.set(item.id, item);
-  return [...map.values()];
-}
-
-// ---------------------------------------------------------------------------
-// Test suite
-// ---------------------------------------------------------------------------
-
-describe("Property 2: Agent data isolation", { skip: !canRunSqlite && "better-sqlite3 native bindings not available" }, () => {
+describe("Property 2: Agent data isolation", { skip: !canRunSqlite && "Prisma-backed SQLite adapter not available" }, () => {
   let storage;
 
   beforeEach(() => {
-    // Re-require storage-sqlite fresh for each test to reset module-level db
-    const modPath = require.resolve("../storage-sqlite");
-    delete require.cache[modPath];
-    storage = require("../storage-sqlite");
-    storage.init(sqliteTarget);
+    storage = loadFreshStorage("../storage-sqlite", SQLITE_TARGET);
   });
 
   afterEach(() => {
-    try { storage.close(); } catch (_) { /* ignore */ }
+    closeQuietly(storage);
   });
 
   it("saveRulesForAgent(A1) does not affect loadRulesForAgent(A2)", () => {
@@ -106,22 +77,18 @@ describe("Property 2: Agent data isolation", { skip: !canRunSqlite && "better-sq
         (rules1, rules2) => {
           const a1 = "agent-a";
           const a2 = "agent-b";
-          const unique1 = dedup(rules1);
-          const unique2 = dedup(rules2);
+          const unique1 = dedupById(rules1);
+          const unique2 = dedupById(rules2);
 
-          // Save rules for A2 first
           storage.saveRulesForAgent(a2, unique2);
           const a2Before = storage.loadRulesForAgent(a2);
 
-          // Save rules for A1 — should not affect A2
           storage.saveRulesForAgent(a1, unique1);
-          const a2After = storage.loadRulesForAgent(a1);
-          const a2Check = storage.loadRulesForAgent(a2);
 
-          assert.deepStrictEqual(a2Check, a2Before);
-        }
+          assert.deepStrictEqual(storage.loadRulesForAgent(a2), a2Before);
+        },
       ),
-      { numRuns: 50 }
+      { numRuns: NUM_RUNS },
     );
   });
 
@@ -133,21 +100,18 @@ describe("Property 2: Agent data isolation", { skip: !canRunSqlite && "better-sq
         (rules1, rules2) => {
           const a1 = "agent-a";
           const a2 = "agent-b";
-          const unique1 = dedup(rules1);
-          const unique2 = dedup(rules2);
+          const unique1 = dedupById(rules1);
+          const unique2 = dedupById(rules2);
 
-          // Save L4 rules for A2 first
           storage.saveL4RulesForAgent(a2, unique2);
           const a2Before = storage.loadL4RulesForAgent(a2);
 
-          // Save L4 rules for A1 — should not affect A2
           storage.saveL4RulesForAgent(a1, unique1);
-          const a2Check = storage.loadL4RulesForAgent(a2);
 
-          assert.deepStrictEqual(a2Check, a2Before);
-        }
+          assert.deepStrictEqual(storage.loadL4RulesForAgent(a2), a2Before);
+        },
       ),
-      { numRuns: 50 }
+      { numRuns: NUM_RUNS },
     );
   });
 
@@ -159,26 +123,45 @@ describe("Property 2: Agent data isolation", { skip: !canRunSqlite && "better-sq
         (rules1, rules2) => {
           const a1 = "agent-a";
           const a2 = "agent-b";
-          const unique1 = dedup(rules1);
-          const unique2 = dedup(rules2);
+          const unique1 = dedupById(rules1);
+          const unique2 = dedupById(rules2);
 
-          // Save rules for both agents
           storage.saveRulesForAgent(a1, unique1);
           storage.saveRulesForAgent(a2, unique2);
           const a2Before = storage.loadRulesForAgent(a2);
 
-          // Delete A1's rules — should not affect A2
           storage.deleteRulesForAgent(a1);
-          const a2Check = storage.loadRulesForAgent(a2);
 
-          assert.deepStrictEqual(a2Check, a2Before);
-
-          // Verify A1 is actually empty
-          const a1Check = storage.loadRulesForAgent(a1);
-          assert.deepStrictEqual(a1Check, []);
-        }
+          assert.deepStrictEqual(storage.loadRulesForAgent(a2), a2Before);
+          assert.deepStrictEqual(storage.loadRulesForAgent(a1), []);
+        },
       ),
-      { numRuns: 50 }
+      { numRuns: NUM_RUNS },
+    );
+  });
+
+  it("deleteL4RulesForAgent(A1) does not affect loadL4RulesForAgent(A2)", () => {
+    fc.assert(
+      fc.property(
+        fc.array(l4RuleArb, { maxLength: 10 }),
+        fc.array(l4RuleArb, { maxLength: 10 }),
+        (rules1, rules2) => {
+          const a1 = "agent-a";
+          const a2 = "agent-b";
+          const unique1 = dedupById(rules1);
+          const unique2 = dedupById(rules2);
+
+          storage.saveL4RulesForAgent(a1, unique1);
+          storage.saveL4RulesForAgent(a2, unique2);
+          const a2Before = storage.loadL4RulesForAgent(a2);
+
+          storage.deleteL4RulesForAgent(a1);
+
+          assert.deepStrictEqual(storage.loadL4RulesForAgent(a2), a2Before);
+          assert.deepStrictEqual(storage.loadL4RulesForAgent(a1), []);
+        },
+      ),
+      { numRuns: NUM_RUNS },
     );
   });
 });

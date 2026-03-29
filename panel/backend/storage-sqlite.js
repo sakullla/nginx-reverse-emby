@@ -1,323 +1,357 @@
 "use strict";
 
+const fs = require("fs");
+const os = require("os");
 const path = require("path");
-const Database = require("better-sqlite3");
+const { Worker } = require("worker_threads");
 
-let db = null;
+const jsonStorage = require("./storage-json");
+
+const WORKER_PATH = path.join(__dirname, "storage-prisma-worker.js");
 const LOCAL_AGENT_ID = process.env.MASTER_LOCAL_AGENT_ID || "local";
+const WORKER_TIMEOUT_MS = 30000;
+const WORKER_BUFFER_BYTES = 10 * 1024 * 1024;
 
-const SCHEMA_SQL = `
-CREATE TABLE IF NOT EXISTS agents (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  agent_url TEXT DEFAULT '',
-  agent_token TEXT DEFAULT '',
-  version TEXT DEFAULT '',
-  tags TEXT DEFAULT '[]',
-  capabilities TEXT DEFAULT '[]',
-  mode TEXT DEFAULT 'pull',
-  desired_revision INTEGER DEFAULT 0,
-  current_revision INTEGER DEFAULT 0,
-  last_apply_revision INTEGER DEFAULT 0,
-  last_apply_status TEXT,
-  last_apply_message TEXT DEFAULT '',
-  last_reported_stats TEXT,
-  last_seen_at TEXT,
-  last_seen_ip TEXT,
-  created_at TEXT,
-  updated_at TEXT,
-  error TEXT,
-  is_local INTEGER DEFAULT 0
-);
+let state = createEmptyState();
+let worker = null;
 
-CREATE TABLE IF NOT EXISTS rules (
-  id INTEGER NOT NULL,
-  agent_id TEXT NOT NULL,
-  frontend_url TEXT NOT NULL,
-  backend_url TEXT NOT NULL,
-  enabled INTEGER DEFAULT 1,
-  tags TEXT DEFAULT '[]',
-  proxy_redirect INTEGER DEFAULT 1,
-  revision INTEGER DEFAULT 0,
-  PRIMARY KEY (agent_id, id)
-);
-CREATE INDEX IF NOT EXISTS idx_rules_agent ON rules(agent_id);
-
-CREATE TABLE IF NOT EXISTS l4_rules (
-  id INTEGER NOT NULL,
-  agent_id TEXT NOT NULL,
-  name TEXT DEFAULT '',
-  protocol TEXT DEFAULT 'tcp',
-  listen_host TEXT DEFAULT '0.0.0.0',
-  listen_port INTEGER NOT NULL,
-  upstream_host TEXT DEFAULT '',
-  upstream_port INTEGER DEFAULT 0,
-  backends TEXT DEFAULT '[]',
-  load_balancing TEXT DEFAULT '{}',
-  tuning TEXT DEFAULT '{}',
-  enabled INTEGER DEFAULT 1,
-  tags TEXT DEFAULT '[]',
-  revision INTEGER DEFAULT 0,
-  PRIMARY KEY (agent_id, id)
-);
-CREATE INDEX IF NOT EXISTS idx_l4_rules_agent ON l4_rules(agent_id);
-
-CREATE TABLE IF NOT EXISTS managed_certificates (
-  id INTEGER PRIMARY KEY,
-  domain TEXT NOT NULL,
-  enabled INTEGER DEFAULT 1,
-  scope TEXT DEFAULT 'domain',
-  issuer_mode TEXT DEFAULT 'master_cf_dns',
-  target_agent_ids TEXT DEFAULT '[]',
-  status TEXT DEFAULT 'pending',
-  last_issue_at TEXT,
-  last_error TEXT DEFAULT '',
-  material_hash TEXT DEFAULT '',
-  agent_reports TEXT DEFAULT '{}',
-  acme_info TEXT DEFAULT '{}',
-  tags TEXT DEFAULT '[]',
-  revision INTEGER DEFAULT 0
-);
-
-CREATE TABLE IF NOT EXISTS local_agent_state (
-  id INTEGER PRIMARY KEY CHECK (id = 1),
-  desired_revision INTEGER DEFAULT 0,
-  current_revision INTEGER DEFAULT 0,
-  last_apply_revision INTEGER DEFAULT 0,
-  last_apply_status TEXT DEFAULT 'success',
-  last_apply_message TEXT DEFAULT ''
-);
-
-CREATE TABLE IF NOT EXISTS meta (
-  key TEXT PRIMARY KEY,
-  value TEXT
-);
-`;
-
-function init(dataRoot) {
-  const dbPath = dataRoot === ":memory:"
-    ? ":memory:"
-    : path.join(dataRoot, "panel.db");
-  db = new Database(dbPath);
-  db.pragma("journal_mode = WAL");
-  db.exec(SCHEMA_SQL);
-  db.prepare("INSERT OR IGNORE INTO local_agent_state (id) VALUES (1)").run();
-  db.prepare("INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', '1')").run();
-}
-
-function loadRegisteredAgents() {
-  const rows = db.prepare("SELECT * FROM agents").all();
-  return rows.map((row) => ({
-    ...row,
-    tags: JSON.parse(row.tags || "[]"),
-    capabilities: JSON.parse(row.capabilities || "[]"),
-    last_reported_stats: row.last_reported_stats
-      ? JSON.parse(row.last_reported_stats)
-      : null,
-    is_local: row.is_local === 1,
-  }));
-}
-
-function saveRegisteredAgents(agents) {
-  const deleteAll = db.prepare("DELETE FROM agents");
-  const insert = db.prepare(
-    `INSERT INTO agents (id, name, agent_url, agent_token, version, tags, capabilities, mode,
-      desired_revision, current_revision, last_apply_revision,
-      last_apply_status, last_apply_message, last_reported_stats,
-      last_seen_at, last_seen_ip, created_at, updated_at, error, is_local)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  );
-  const transaction = db.transaction((agentList) => {
-    deleteAll.run();
-    for (const a of agentList) {
-      insert.run(
-        a.id, a.name, a.agent_url || "", a.agent_token || "",
-        a.version || "", JSON.stringify(a.tags || []),
-        JSON.stringify(a.capabilities || []), a.mode || "pull",
-        a.desired_revision || 0, a.current_revision || 0,
-        a.last_apply_revision || 0, a.last_apply_status || null,
-        a.last_apply_message || "",
-        a.last_reported_stats != null ? JSON.stringify(a.last_reported_stats) : null,
-        a.last_seen_at || null, a.last_seen_ip || null,
-        a.created_at || null, a.updated_at || null,
-        a.error || null, a.is_local ? 1 : 0
-      );
-    }
-  });
-  transaction(agents);
-}
-
-function loadRulesForAgent(agentId) {
-  const rows = db.prepare("SELECT * FROM rules WHERE agent_id = ? ORDER BY id").all(agentId);
-  return rows.map((row) => ({
-    ...row,
-    tags: JSON.parse(row.tags || "[]"),
-    enabled: row.enabled === 1,
-    proxy_redirect: row.proxy_redirect === 1,
-  }));
-}
-
-function saveRulesForAgent(agentId, rules) {
-  const deleteAll = db.prepare("DELETE FROM rules WHERE agent_id = ?");
-  const insert = db.prepare(
-    `INSERT INTO rules (id, agent_id, frontend_url, backend_url, enabled, tags, proxy_redirect, revision)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-  );
-  const transaction = db.transaction((agentId, ruleList) => {
-    deleteAll.run(agentId);
-    for (const r of ruleList) {
-      insert.run(
-        r.id, agentId, r.frontend_url, r.backend_url,
-        r.enabled ? 1 : 0, JSON.stringify(r.tags || []),
-        r.proxy_redirect ? 1 : 0, r.revision || 0
-      );
-    }
-  });
-  transaction(agentId, rules);
-}
-
-function deleteRulesForAgent(agentId) {
-  db.prepare("DELETE FROM rules WHERE agent_id = ?").run(agentId);
-}
-
-function loadL4RulesForAgent(agentId) {
-  const rows = db.prepare("SELECT * FROM l4_rules WHERE agent_id = ? ORDER BY id").all(agentId);
-  return rows.map((row) => ({
-    ...row,
-    backends: JSON.parse(row.backends || "[]"),
-    load_balancing: JSON.parse(row.load_balancing || "{}"),
-    tuning: JSON.parse(row.tuning || "{}"),
-    tags: JSON.parse(row.tags || "[]"),
-    enabled: row.enabled === 1,
-  }));
-}
-
-function saveL4RulesForAgent(agentId, rules) {
-  const deleteAll = db.prepare("DELETE FROM l4_rules WHERE agent_id = ?");
-  const insert = db.prepare(
-    `INSERT INTO l4_rules (id, agent_id, name, protocol, listen_host, listen_port,
-      upstream_host, upstream_port, backends, load_balancing, tuning, enabled, tags, revision)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  );
-  const transaction = db.transaction((agentId, ruleList) => {
-    deleteAll.run(agentId);
-    for (const r of ruleList) {
-      insert.run(
-        r.id, agentId, r.name || "", r.protocol || "tcp",
-        r.listen_host || "0.0.0.0", r.listen_port,
-        r.upstream_host || "", r.upstream_port || 0,
-        JSON.stringify(r.backends || []),
-        JSON.stringify(r.load_balancing || {}),
-        JSON.stringify(r.tuning || {}),
-        r.enabled ? 1 : 0, JSON.stringify(r.tags || []),
-        r.revision || 0
-      );
-    }
-  });
-  transaction(agentId, rules);
-}
-
-function deleteL4RulesForAgent(agentId) {
-  db.prepare("DELETE FROM l4_rules WHERE agent_id = ?").run(agentId);
-}
-
-function loadManagedCertificates() {
-  const rows = db.prepare("SELECT * FROM managed_certificates").all();
-  return rows.map((row) => ({
-    ...row,
-    target_agent_ids: JSON.parse(row.target_agent_ids || "[]"),
-    agent_reports: JSON.parse(row.agent_reports || "{}"),
-    acme_info: JSON.parse(row.acme_info || "{}"),
-    tags: JSON.parse(row.tags || "[]"),
-    enabled: row.enabled === 1,
-  }));
-}
-
-function saveManagedCertificates(certs) {
-  const deleteAll = db.prepare("DELETE FROM managed_certificates");
-  const insert = db.prepare(
-    `INSERT INTO managed_certificates (id, domain, enabled, scope, issuer_mode,
-      target_agent_ids, status, last_issue_at, last_error, material_hash,
-      agent_reports, acme_info, tags, revision)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  );
-  const transaction = db.transaction((certList) => {
-    deleteAll.run();
-    for (const c of certList) {
-      insert.run(
-        c.id, c.domain, c.enabled ? 1 : 0, c.scope || "domain",
-        c.issuer_mode || "master_cf_dns",
-        JSON.stringify(c.target_agent_ids || []),
-        c.status || "pending", c.last_issue_at || null,
-        c.last_error || "", c.material_hash || "",
-        JSON.stringify(c.agent_reports || {}),
-        JSON.stringify(c.acme_info || {}),
-        JSON.stringify(c.tags || []),
-        c.revision || 0
-      );
-    }
-  });
-  transaction(certs);
-}
-
-function loadLocalAgentState() {
-  const row = db.prepare("SELECT * FROM local_agent_state WHERE id = 1").get();
-  if (!row) {
-    return {
-      desired_revision: 0,
-      current_revision: 0,
-      last_apply_revision: 0,
-      last_apply_status: "success",
-      last_apply_message: "",
-    };
-  }
+function createEmptyState() {
   return {
-    desired_revision: row.desired_revision || 0,
-    current_revision: row.current_revision || 0,
-    last_apply_revision: row.last_apply_revision || 0,
-    last_apply_status: row.last_apply_status || "success",
-    last_apply_message: row.last_apply_message || "",
+    dataRoot: null,
+    tempDir: null,
+    agents: [],
+    rulesByAgent: new Map(),
+    l4RulesByAgent: new Map(),
+    managedCertificates: [],
+    localAgentState: defaultLocalAgentState(),
+    meta: {},
   };
 }
 
-function saveLocalAgentState(state) {
-  db.prepare(
-    `UPDATE local_agent_state SET
-      desired_revision = ?, current_revision = ?, last_apply_revision = ?,
-      last_apply_status = ?, last_apply_message = ?
-     WHERE id = 1`
-  ).run(
-    state.desired_revision || 0, state.current_revision || 0,
-    state.last_apply_revision || 0, state.last_apply_status || "success",
-    state.last_apply_message || ""
+function defaultLocalAgentState() {
+  return {
+    desired_revision: 0,
+    current_revision: 0,
+    last_apply_revision: 0,
+    last_apply_status: "success",
+    last_apply_message: "",
+  };
+}
+
+function clone(value) {
+  return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+}
+
+function safeRevision(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+}
+
+function normalizeAgent(agent) {
+  return {
+    id: agent.id,
+    name: agent.name,
+    agent_url: agent.agent_url || "",
+    agent_token: agent.agent_token || "",
+    version: agent.version || "",
+    tags: Array.isArray(agent.tags) ? clone(agent.tags) : [],
+    capabilities: Array.isArray(agent.capabilities) ? clone(agent.capabilities) : [],
+    mode: agent.mode || "pull",
+    desired_revision: safeRevision(agent.desired_revision),
+    current_revision: safeRevision(agent.current_revision),
+    last_apply_revision: safeRevision(agent.last_apply_revision),
+    last_apply_status: agent.last_apply_status || null,
+    last_apply_message: agent.last_apply_message || "",
+    last_reported_stats:
+      agent.last_reported_stats !== undefined && agent.last_reported_stats !== null
+        ? clone(agent.last_reported_stats)
+        : null,
+    last_seen_at: agent.last_seen_at || null,
+    last_seen_ip: agent.last_seen_ip || null,
+    created_at: agent.created_at || null,
+    updated_at: agent.updated_at || null,
+    error: agent.error || null,
+    is_local: !!agent.is_local,
+  };
+}
+
+function normalizeRule(agentId, rule) {
+  return {
+    id: Number(rule.id),
+    agent_id: String(agentId),
+    frontend_url: rule.frontend_url,
+    backend_url: rule.backend_url,
+    enabled: !!rule.enabled,
+    tags: Array.isArray(rule.tags) ? clone(rule.tags) : [],
+    proxy_redirect: !!rule.proxy_redirect,
+    revision: safeRevision(rule.revision),
+  };
+}
+
+function normalizeL4Rule(agentId, rule) {
+  return {
+    id: Number(rule.id),
+    agent_id: String(agentId),
+    name: rule.name || "",
+    protocol: rule.protocol || "tcp",
+    listen_host: rule.listen_host || "0.0.0.0",
+    listen_port: Number(rule.listen_port),
+    upstream_host: rule.upstream_host || "",
+    upstream_port: Number(rule.upstream_port || 0),
+    backends: Array.isArray(rule.backends) ? clone(rule.backends) : [],
+    load_balancing:
+      rule.load_balancing && typeof rule.load_balancing === "object"
+        ? clone(rule.load_balancing)
+        : {},
+    tuning:
+      rule.tuning && typeof rule.tuning === "object"
+        ? clone(rule.tuning)
+        : {},
+    enabled: !!rule.enabled,
+    tags: Array.isArray(rule.tags) ? clone(rule.tags) : [],
+    revision: safeRevision(rule.revision),
+  };
+}
+
+function normalizeManagedCertificate(cert) {
+  return {
+    id: Number(cert.id),
+    domain: cert.domain,
+    enabled: !!cert.enabled,
+    scope: cert.scope || "domain",
+    issuer_mode: cert.issuer_mode || "master_cf_dns",
+    target_agent_ids: Array.isArray(cert.target_agent_ids) ? clone(cert.target_agent_ids) : [],
+    status: cert.status || "pending",
+    last_issue_at: cert.last_issue_at || null,
+    last_error: cert.last_error || "",
+    material_hash: cert.material_hash || "",
+    agent_reports:
+      cert.agent_reports && typeof cert.agent_reports === "object"
+        ? clone(cert.agent_reports)
+        : {},
+    acme_info:
+      cert.acme_info && typeof cert.acme_info === "object"
+        ? clone(cert.acme_info)
+        : {},
+    tags: Array.isArray(cert.tags) ? clone(cert.tags) : [],
+    revision: safeRevision(cert.revision),
+  };
+}
+
+function normalizeLocalAgentState(stateValue) {
+  const nextState = stateValue && typeof stateValue === "object" ? stateValue : {};
+  return {
+    desired_revision: safeRevision(nextState.desired_revision),
+    current_revision: safeRevision(nextState.current_revision),
+    last_apply_revision: safeRevision(nextState.last_apply_revision),
+    last_apply_status: nextState.last_apply_status || "success",
+    last_apply_message: nextState.last_apply_message || "",
+  };
+}
+
+function ensureInitialized() {
+  if (!state.dataRoot) {
+    throw new Error("storage not initialized");
+  }
+}
+
+function ensureWorker() {
+  if (!worker) {
+    worker = new Worker(WORKER_PATH);
+    worker.unref();
+  }
+}
+
+function runWorker(op, payload = {}) {
+  ensureWorker();
+
+  const control = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 2);
+  const data = new SharedArrayBuffer(WORKER_BUFFER_BYTES);
+  const controlView = new Int32Array(control);
+
+  worker.postMessage({
+    request: { op, ...payload },
+    control,
+    data,
+  });
+
+  const waitResult = Atomics.wait(controlView, 0, 0, WORKER_TIMEOUT_MS);
+  if (waitResult === "timed-out") {
+    try {
+      worker.terminate();
+    } finally {
+      worker = null;
+    }
+    throw new Error(`Prisma storage worker timed out after ${WORKER_TIMEOUT_MS}ms`);
+  }
+
+  const length = Atomics.load(controlView, 1);
+  const raw = Buffer.from(new Uint8Array(data, 0, length)).toString("utf8");
+  const parsed = raw ? JSON.parse(raw) : { ok: false, error: "Empty Prisma worker response" };
+
+  if (!parsed.ok) {
+    throw new Error(parsed.error || "Prisma storage worker failed");
+  }
+
+  return parsed.result;
+}
+
+function resolveDataRoot(dataRoot) {
+  if (dataRoot === ":memory:") {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "panel-prisma-"));
+    return { dataRoot: tempDir, tempDir };
+  }
+  return { dataRoot, tempDir: null };
+}
+
+function applySnapshot(snapshot) {
+  state.agents = clone(snapshot?.agents || []);
+  state.rulesByAgent = new Map(
+    Object.entries(snapshot?.rulesByAgent || {}).map(([agentId, rules]) => [agentId, clone(rules || [])]),
   );
+  state.l4RulesByAgent = new Map(
+    Object.entries(snapshot?.l4RulesByAgent || {}).map(([agentId, rules]) => [agentId, clone(rules || [])]),
+  );
+  state.managedCertificates = clone(snapshot?.managedCertificates || []);
+  state.localAgentState = clone(snapshot?.localAgentState || defaultLocalAgentState());
+  state.meta = clone(snapshot?.meta || {});
+}
+
+function cleanupTempDir(tempDir) {
+  if (!tempDir || !fs.existsSync(tempDir)) {
+    return;
+  }
+
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    try {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+      return;
+    } catch (err) {
+      if (attempt === 19) {
+        throw err;
+      }
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+    }
+  }
+}
+
+function init(dataRoot) {
+  close();
+  const resolved = resolveDataRoot(dataRoot);
+  state.dataRoot = resolved.dataRoot;
+  state.tempDir = resolved.tempDir;
+  applySnapshot(runWorker("init", { dataRoot: state.dataRoot }));
+}
+
+function loadRegisteredAgents() {
+  ensureInitialized();
+  return clone(state.agents);
+}
+
+function saveRegisteredAgents(agents) {
+  ensureInitialized();
+  const nextAgents = Array.isArray(agents) ? clone(agents) : [];
+  runWorker("saveRegisteredAgents", { dataRoot: state.dataRoot, agents: nextAgents });
+  state.agents = nextAgents.map(normalizeAgent);
+}
+
+function loadRulesForAgent(agentId) {
+  ensureInitialized();
+  return clone(state.rulesByAgent.get(String(agentId)) || []);
+}
+
+function saveRulesForAgent(agentId, rules) {
+  ensureInitialized();
+  const key = String(agentId);
+  const nextRules = Array.isArray(rules) ? clone(rules) : [];
+  runWorker("saveRulesForAgent", { dataRoot: state.dataRoot, agentId: key, rules: nextRules });
+  state.rulesByAgent.set(key, nextRules.map((rule) => normalizeRule(key, rule)));
+}
+
+function deleteRulesForAgent(agentId) {
+  ensureInitialized();
+  const key = String(agentId);
+  runWorker("deleteRulesForAgent", { dataRoot: state.dataRoot, agentId: key });
+  state.rulesByAgent.delete(key);
+}
+
+function loadL4RulesForAgent(agentId) {
+  ensureInitialized();
+  return clone(state.l4RulesByAgent.get(String(agentId)) || []);
+}
+
+function saveL4RulesForAgent(agentId, rules) {
+  ensureInitialized();
+  const key = String(agentId);
+  const nextRules = Array.isArray(rules) ? clone(rules) : [];
+  runWorker("saveL4RulesForAgent", { dataRoot: state.dataRoot, agentId: key, rules: nextRules });
+  state.l4RulesByAgent.set(key, nextRules.map((rule) => normalizeL4Rule(key, rule)));
+}
+
+function deleteL4RulesForAgent(agentId) {
+  ensureInitialized();
+  const key = String(agentId);
+  runWorker("deleteL4RulesForAgent", { dataRoot: state.dataRoot, agentId: key });
+  state.l4RulesByAgent.delete(key);
+}
+
+function loadManagedCertificates() {
+  ensureInitialized();
+  return clone(state.managedCertificates);
+}
+
+function saveManagedCertificates(certs) {
+  ensureInitialized();
+  const nextCerts = Array.isArray(certs) ? clone(certs) : [];
+  runWorker("saveManagedCertificates", { dataRoot: state.dataRoot, certs: nextCerts });
+  state.managedCertificates = nextCerts.map(normalizeManagedCertificate);
+}
+
+function loadLocalAgentState() {
+  ensureInitialized();
+  return clone(state.localAgentState);
+}
+
+function saveLocalAgentState(localAgentState) {
+  ensureInitialized();
+  const nextState = localAgentState && typeof localAgentState === "object"
+    ? { ...defaultLocalAgentState(), ...clone(localAgentState) }
+    : defaultLocalAgentState();
+  runWorker("saveLocalAgentState", { dataRoot: state.dataRoot, state: nextState });
+  state.localAgentState = normalizeLocalAgentState(nextState);
 }
 
 function getNextGlobalRevision() {
-  const agentMax = db.prepare(
-    "SELECT MAX(MAX(desired_revision, current_revision, last_apply_revision)) as m FROM agents"
-  ).get();
-  const localMax = db.prepare(
-    "SELECT MAX(desired_revision, current_revision, last_apply_revision) as m FROM local_agent_state WHERE id = 1"
-  ).get();
-  const certMax = db.prepare(
-    "SELECT MAX(revision) as m FROM managed_certificates"
-  ).get();
-  const maxRev = Math.max(
-    agentMax?.m || 0,
-    localMax?.m || 0,
-    certMax?.m || 0
+  ensureInitialized();
+
+  const agentMax = state.agents.reduce((max, agent) => Math.max(
+    max,
+    safeRevision(agent?.desired_revision),
+    safeRevision(agent?.current_revision),
+    safeRevision(agent?.last_apply_revision),
+  ), 0);
+
+  const localMax = Math.max(
+    safeRevision(state.localAgentState?.desired_revision),
+    safeRevision(state.localAgentState?.current_revision),
+    safeRevision(state.localAgentState?.last_apply_revision),
   );
-  return Math.max(maxRev + 1, 1);
+
+  const certMax = state.managedCertificates.reduce(
+    (max, cert) => Math.max(max, safeRevision(cert?.revision)),
+    0,
+  );
+
+  return Math.max(agentMax, localMax, certMax, 0) + 1;
 }
 
-function migrateFromJson(dataRoot) {
-  const migrated = db.prepare("SELECT value FROM meta WHERE key = 'migrated_from_json'").get();
-  if (migrated) return false;
+function migrateFromJson() {
+  ensureInitialized();
+  if (state.meta.migrated_from_json) {
+    return false;
+  }
 
-  const fs = require("fs");
-  const jsonStorage = require("./storage-json");
-  const dataPath = (file) => path.join(dataRoot, file);
+  const dataPath = (file) => path.join(state.dataRoot, file);
   const agentRulesDir = dataPath("agent_rules");
   const l4RulesDir = dataPath("l4_agent_rules");
 
@@ -339,125 +373,46 @@ function migrateFromJson(dataRoot) {
     hasLocalStateFile ||
     agentRuleFiles.length > 0 ||
     l4RuleFiles.length > 0;
-  if (!hasOldData) return false;
 
-  jsonStorage.init(dataRoot);
-  const agentsData = jsonStorage.loadRegisteredAgents();
-  const managedCertsData = jsonStorage.loadManagedCertificates();
-  const localStateData = jsonStorage.loadLocalAgentState();
+  if (!hasOldData) {
+    return false;
+  }
 
-  const agentIdsFromJson = Array.isArray(agentsData) ? agentsData.map((agent) => agent.id) : [];
+  jsonStorage.init(state.dataRoot);
+  const agents = jsonStorage.loadRegisteredAgents();
+  const managedCertificates = jsonStorage.loadManagedCertificates();
+  const localAgentState = jsonStorage.loadLocalAgentState();
+
+  const agentIdsFromJson = Array.isArray(agents) ? agents.map((agent) => agent.id) : [];
   const agentIdsFromRuleFiles = agentRuleFiles.map((file) => file.replace(/\.json$/, ""));
   const agentIdsFromL4Files = l4RuleFiles.map((file) => file.replace(/\.json$/, ""));
-  const allAgentIds = [...new Set([LOCAL_AGENT_ID, ...agentIdsFromJson, ...agentIdsFromRuleFiles, ...agentIdsFromL4Files])];
+  const allAgentIds = [
+    ...new Set([LOCAL_AGENT_ID, ...agentIdsFromJson, ...agentIdsFromRuleFiles, ...agentIdsFromL4Files]),
+  ];
 
-  const insertAgent = db.prepare(
-    `INSERT OR REPLACE INTO agents (id, name, agent_url, agent_token, version, tags, capabilities, mode,
-      desired_revision, current_revision, last_apply_revision, last_apply_status, last_apply_message,
-      last_reported_stats, last_seen_at, last_seen_ip, created_at, updated_at, error, is_local)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  );
-  const insertRule = db.prepare(
-    `INSERT INTO rules (id, agent_id, frontend_url, backend_url, enabled, tags, proxy_redirect, revision)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
-  );
-  const insertL4Rule = db.prepare(
-    `INSERT INTO l4_rules (id, agent_id, name, protocol, listen_host, listen_port,
-      upstream_host, upstream_port, backends, load_balancing, tuning, enabled, tags, revision)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  );
-  const insertCert = db.prepare(
-    `INSERT INTO managed_certificates (id, domain, enabled, scope, issuer_mode,
-      target_agent_ids, status, last_issue_at, last_error, material_hash,
-      agent_reports, acme_info, tags, revision)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  );
+  const payload = {
+    agents: Array.isArray(agents) ? agents : [],
+    managedCertificates: Array.isArray(managedCertificates) ? managedCertificates : [],
+    localAgentState: localAgentState && typeof localAgentState === "object"
+      ? { ...defaultLocalAgentState(), ...localAgentState }
+      : defaultLocalAgentState(),
+    rulesByAgent: Object.fromEntries(allAgentIds.map((agentId) => [agentId, jsonStorage.loadRulesForAgent(agentId)])),
+    l4RulesByAgent: Object.fromEntries(allAgentIds.map((agentId) => [agentId, jsonStorage.loadL4RulesForAgent(agentId)])),
+  };
 
-  const transaction = db.transaction(() => {
-    if (Array.isArray(agentsData)) {
-      for (const a of agentsData) {
-        insertAgent.run(
-          a.id, a.name || "", a.agent_url || "", a.agent_token || "",
-          a.version || "", JSON.stringify(a.tags || []),
-          JSON.stringify(a.capabilities || []), a.mode || "pull",
-          a.desired_revision || 0, a.current_revision || 0,
-          a.last_apply_revision || 0, a.last_apply_status || null,
-          a.last_apply_message || "",
-          a.last_reported_stats != null ? JSON.stringify(a.last_reported_stats) : null,
-          a.last_seen_at || null, a.last_seen_ip || null,
-          a.created_at || null, a.updated_at || null,
-          a.error || null, a.is_local ? 1 : 0
-        );
-      }
-    }
-
-    for (const agentId of allAgentIds) {
-      const rules = jsonStorage.loadRulesForAgent(agentId);
-      for (const r of rules) {
-        insertRule.run(
-          r.id, agentId, r.frontend_url || "", r.backend_url || "",
-          r.enabled !== false ? 1 : 0, JSON.stringify(r.tags || []),
-          r.proxy_redirect !== false ? 1 : 0, r.revision || 0
-        );
-      }
-
-      const l4Rules = jsonStorage.loadL4RulesForAgent(agentId);
-      for (const r of l4Rules) {
-        insertL4Rule.run(
-          r.id, agentId, r.name || "", r.protocol || "tcp",
-          r.listen_host || "0.0.0.0", r.listen_port || 0,
-          r.upstream_host || "", r.upstream_port || 0,
-          JSON.stringify(r.backends || []),
-          JSON.stringify(r.load_balancing || {}),
-          JSON.stringify(r.tuning || {}),
-          r.enabled !== false ? 1 : 0, JSON.stringify(r.tags || []),
-          r.revision || 0
-        );
-      }
-    }
-
-    if (Array.isArray(managedCertsData)) {
-      for (const c of managedCertsData) {
-        insertCert.run(
-          c.id, c.domain || "", c.enabled !== false ? 1 : 0,
-          c.scope || "domain", c.issuer_mode || "master_cf_dns",
-          JSON.stringify(c.target_agent_ids || []),
-          c.status || "pending", c.last_issue_at || null,
-          c.last_error || "", c.material_hash || "",
-          JSON.stringify(c.agent_reports || {}),
-          JSON.stringify(c.acme_info || {}),
-          JSON.stringify(c.tags || []),
-          c.revision || 0
-        );
-      }
-    }
-
-    if (localStateData && typeof localStateData === "object") {
-      db.prepare(
-        `UPDATE local_agent_state SET
-          desired_revision = ?, current_revision = ?, last_apply_revision = ?,
-          last_apply_status = ?, last_apply_message = ?
-         WHERE id = 1`
-      ).run(
-        localStateData.desired_revision || 0,
-        localStateData.current_revision || 0,
-        localStateData.last_apply_revision || 0,
-        localStateData.last_apply_status || "success",
-        localStateData.last_apply_message || ""
-      );
-    }
-
-    db.prepare("INSERT INTO meta (key, value) VALUES ('migrated_from_json', ?)").run(new Date().toISOString());
-  });
-
-  transaction();
-  return true;
+  const result = runWorker("migrateFromJson", { dataRoot: state.dataRoot, payload });
+  applySnapshot(result.snapshot);
+  return !!result.migrated;
 }
 
 function close() {
-  if (db && db.open) {
-    db.close();
+  const tempDir = state.tempDir;
+  if (worker) {
+    worker.terminate();
+    worker = null;
   }
+  state = createEmptyState();
+  cleanupTempDir(tempDir);
 }
 
 module.exports = {

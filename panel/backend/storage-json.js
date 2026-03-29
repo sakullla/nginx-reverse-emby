@@ -141,7 +141,7 @@ function getNextGlobalRevision() {
   return Math.max(agentMax, localMax, certMax, 0) + 1;
 }
 
-/** Parse a revision value defensively — mirrors server.js normalizeRevision logic */
+/** Parse a revision value defensively - mirrors server.js normalizeRevision logic */
 function safeRevision(value) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;

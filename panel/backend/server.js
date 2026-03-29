@@ -100,7 +100,7 @@ const LOCAL_AGENT_ENABLED =
   !/^(0|false|no|off)$/i.test(process.env.MASTER_LOCAL_AGENT_ENABLED || "1");
 const LOCAL_AGENT_ID = process.env.MASTER_LOCAL_AGENT_ID || "local";
 const LOCAL_AGENT_NAME =
-  process.env.MASTER_LOCAL_AGENT_NAME || `${os.hostname()} (鏈満鑺傜偣)`;
+  process.env.MASTER_LOCAL_AGENT_NAME || `${os.hostname()} (本地 Agent)`;
 const LOCAL_AGENT_URL = trimSlash(process.env.MASTER_LOCAL_AGENT_URL || "");
 const LOCAL_AGENT_TAGS = normalizeTags(
   (process.env.MASTER_LOCAL_AGENT_TAGS || "local")
@@ -1873,7 +1873,7 @@ function parseStubStatus(data) {
   return {
     activeConnections: activeMatch ? activeMatch[0] : "0",
     totalRequests: requestsLine.length >= 3 ? requestsLine[2] : "0",
-    status: "鏈満鑺傜偣",
+    status: "运行中",
   };
 }
 
@@ -1890,7 +1890,7 @@ function getNginxStats() {
             resolve({
               activeConnections: "0",
               totalRequests: "0",
-              status: "鑾峰彇澶辫触",
+              status: "解析失败",
               error: e.message,
             });
           }
@@ -1900,7 +1900,7 @@ function getNginxStats() {
         resolve({
           activeConnections: "0",
           totalRequests: "0",
-          status: "鏈満鑺傜偣寮傚父",
+          status: "状态获取失败",
           error: err.message,
         });
       });
@@ -3128,7 +3128,7 @@ async function handleMasterApi(req, res) {
   if (req.method === "PUT" && /^\/api\/agents\/[^/]+$/.test(urlPath)) {
     const agentId = extractAgentId(urlPath);
     if (agentId === LOCAL_AGENT_ID) {
-      sendJson(res, 400, errorPayload("鏈満鑺傜偣涓嶆敮鎸佹鎿嶄綔"));
+      sendJson(res, 400, errorPayload("本地 Agent 不允许修改"));
       return;
     }
 
@@ -3194,7 +3194,7 @@ async function handleMasterApi(req, res) {
   if (req.method === "PATCH" && /^\/api\/agents\/[^/]+$/.test(urlPath)) {
     const agentId = extractAgentId(urlPath);
     if (agentId === LOCAL_AGENT_ID) {
-      sendJson(res, 400, errorPayload("鏈満鑺傜偣涓嶆敮鎸佹鎿嶄綔"));
+      sendJson(res, 400, errorPayload("本地 Agent 不允许修改"));
       return;
     }
     try {
@@ -3208,7 +3208,7 @@ async function handleMasterApi(req, res) {
       if (body.name !== undefined) {
         const nextName = String(body.name).trim();
         if (!nextName) {
-          sendJson(res, 400, errorPayload("鍚嶇О涓嶈兘涓虹┖"));
+          sendJson(res, 400, errorPayload("名称不能为空"));
           return;
         }
         agents[index] = { ...agents[index], name: nextName, updated_at: nowIso() };
@@ -3231,7 +3231,7 @@ async function handleMasterApi(req, res) {
   if (req.method === "DELETE" && /^\/api\/agents\/[^/]+$/.test(urlPath)) {
     const agentId = extractAgentId(urlPath);
     if (agentId === LOCAL_AGENT_ID) {
-      sendJson(res, 400, errorPayload("鏈満鑺傜偣涓嶅彲鍒犻櫎"));
+      sendJson(res, 400, errorPayload("本地 Agent 不允许删除"));
       return;
     }
     const agents = storage.loadRegisteredAgents();
