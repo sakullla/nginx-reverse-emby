@@ -4,238 +4,114 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Nginx-Reverse-Emby is an automated reverse proxy solution designed for Emby, Jellyfin, and various HTTP services. It features a web management panel, automatic SSL certificate renewal with acme.sh, and IPv4/IPv6 dual-stack support.
+`nginx-reverse-emby` is an automated nginx reverse-proxy solution with a web management panel, designed primarily for fronting Emby/Jellyfin and arbitrary HTTP/TCP services. It supports a **Master/Agent architecture** where a Master node manages rules centrally and pushes them to remote Agents via a polling heartbeat protocol.
 
-**Tech Stack:**
-- Frontend: Vue 3 + Vite + Pinia + Axios (SPA)
-- Backend: Node.js HTTP server (single file: `panel/backend/server.js`)
-- Infrastructure: Nginx + Shell scripts for automation
-- Deployment: Docker (multi-stage build)
+**Two deploy modes:**
+- `direct` — container binds ports 80/443, handles SSL via `acme.sh`
+- `front_proxy` — container runs behind an upstream proxy (Caddy/Nginx), listens on port 3000
+
+## Commands
+
+### Backend (Node.js API)
+```bash
+cd panel/backend
+node server.js                    # run locally
+node --check server.js            # syntax check
+npm test                          # run property-based tests (fast-check)
+npm run prisma:generate           # regenerate Prisma client after schema changes
+```
+
+### Frontend (Vue 3 / Vite)
+```bash
+cd panel/frontend
+npm ci                            # install deps
+npm run dev                       # dev server at http://localhost:5173
+npm run build                     # build to dist/
+npm run preview                   # preview built bundle
+```
+
+Dev server proxies `/panel-api` → `http://localhost:18081` (rewritten to `/api`), so the backend must be running for API calls to work. The frontend also has a **mock mode** (see `api/index.js`) for UI-only development.
+
+### Container
+```bash
+docker build -t nginx-reverse-emby .       # full multi-stage image build
+docker compose up -d                       # start the stack
+docker exec nginx-reverse-emby nginx -t   # validate nginx config inside container
+```
 
 ## Architecture
 
-### Three-Layer Architecture
-
-1. **Frontend Panel** (`panel/frontend/`)
-   - Vue 3 SPA with component-based architecture
-   - Pinia store (`src/stores/rules.js`) manages proxy rules and authentication state
-   - Components in `src/components/`: RuleList, RuleForm, RuleItem, L4RuleList, L4RuleForm, CertificateList, TokenConfig
-   - API client in `src/api/index.js` communicates with backend via REST
-
-2. **Backend Server** (`panel/backend/server.js`)
-   - Simple Node.js HTTP server (no framework dependencies)
-   - Manages proxy rules stored in JSON format (`/opt/nginx-reverse-emby/panel/data/proxy_rules.json`)
-   - Provides REST API: GET/POST/PUT/DELETE for rules, GET for stats
-   - Token-based authentication via `X-Panel-Token` header
-   - Triggers nginx config regeneration and reload after rule changes
-
-3. **Infrastructure Layer** (`docker/` scripts)
-   - `25-dynamic-reverse-proxy.sh`: **Core script** - reads rules and generates nginx configs dynamically
-   - `20-panel-backend.sh`: Starts the Node.js backend server
-   - `15-panel-config.sh`: Initializes panel configuration
-   - `30-acme-renew.sh`: Manages SSL certificate renewal with acme.sh
-   - Nginx config templates: `default.conf.template`, `default.direct.*.conf.template`, `panel.conf.template`
-
-### Data Flow
-
+### Request Flow
 ```
-User → Frontend Panel → Backend API → Rules JSON → 25-dynamic-reverse-proxy.sh → Nginx Config → nginx -t → nginx -s reload
+Browser (Vue SPA :8080)
+  → nginx (/panel-api/ → 127.0.0.1:18081/api/)
+    → server.js (raw Node.js HTTP, no framework)
+      → storage.js dispatcher
+          ├── storage-sqlite.js (default; Worker thread + Prisma)
+          └── storage-json.js (fallback; flat JSON files in panel/data/)
 ```
 
-### Deployment Modes
+### Rule Application Flow
+When a rule is saved and `PANEL_AUTO_APPLY=1` (default):
+1. `server.js` calls `spawnSync("25-dynamic-reverse-proxy.sh")`
+2. Script reads `proxy_rules.json` + `l4_rules.json`
+3. Issues/installs certs via `acme.sh`
+4. Generates `/etc/nginx/conf.d/dynamic/*.conf` (HTTP) and `/etc/nginx/stream-conf.d/dynamic/*.conf` (L4/TCP/UDP)
+5. Runs `nginx -t && nginx -s reload`
 
-- **`direct` mode** (default): Container directly handles ports 80/443 and SSL termination
-- **`front_proxy` mode**: Container only does internal forwarding; external proxy handles SSL
+### Remote Agent Sync (pull mode)
+1. Master sets `desired_revision` on agent record when rules change
+2. `light-agent.js` on remote host polls every 10s via heartbeat POST
+3. Master returns sync payload (rules, L4 rules, cert bundle, policy)
+4. Agent writes rule JSON files, runs `APPLY_COMMAND` (typically `light-agent-apply.sh`)
+5. Agent reports back `current_revision` and `last_apply_status`
 
-### Master/Agent Architecture
+### Storage Layer
+- **SQLite (default):** `storage-sqlite.js` maintains in-memory state for performance, uses a Worker thread (`storage-prisma-worker.js` → `storage-prisma-core.js`) for Prisma ORM writes to avoid blocking the event loop.
+- **JSON fallback:** `storage-json.js` writes flat JSON files to `panel/data/`. Controlled via `PANEL_STORAGE_BACKEND` env var (`sqlite` | `json`).
+- Prisma schema: `panel/backend/prisma/schema.prisma`. Models: `Agent`, `Rule`, `L4Rule`, `ManagedCertificate`, `LocalAgentState`, `Meta`.
 
-- **Master**: Runs complete panel and backend, manages rules and config distribution
-- **Agent**: Lightweight node running on target hosts, requires only Node.js 18+ and Nginx
-- **NAT Agent**: Behind NAT/firewall, polls Master via heartbeat to pull configs (no inbound ports needed)
-
-### Key Directories
-
-- `/opt/nginx-reverse-emby/panel/data`: Persistent data (rules, certs, acme.sh state)
-- `/etc/nginx/conf.d/dynamic`: Generated nginx configs for each proxy rule
-- `/etc/nginx/stream-conf.d/dynamic`: Generated nginx configs for L4 rules
-- `/etc/nginx/templates`: Nginx config templates
-
-## Common Development Commands
-
-### Frontend Development
-
-```bash
-# Install dependencies
-cd panel/frontend && npm ci
-
-# Development server (with hot reload)
-npm run dev
-
-# Production build (outputs to dist/)
-npm run build
-
-# Preview production build
-npm run preview
-```
-
-### Docker Development
-
-```bash
-# Build Docker image
-docker build -t nginx-reverse-emby .
-
-# Run with docker-compose
-docker compose up -d
-
-# View logs
-docker compose logs -f
-
-# Rebuild and restart
-docker compose up -d --build
-
-# Stop and remove
-docker compose down
-```
-
-### Nginx Operations
-
-```bash
-# Test nginx configuration
-nginx -t
-
-# Reload nginx (graceful)
-nginx -s reload
-
-# View nginx error log
-tail -f /var/log/nginx/error.log
-
-# Check nginx status endpoint
-curl http://127.0.0.1:18080/nginx_status
-```
-
-### Backend Development
-
-```bash
-# Run backend server directly (for testing)
-cd panel/backend
-node server.js
-
-# Environment variables for backend:
-# PANEL_BACKEND_PORT=18081
-# API_TOKEN=your-token
-# PANEL_AUTO_APPLY=1
-```
-
-### Testing Dynamic Proxy Generation
-
-```bash
-# Manually trigger proxy config generation
-/docker-entrypoint.d/25-dynamic-reverse-proxy.sh
-
-# Check generated configs
-ls -la /etc/nginx/conf.d/dynamic/
-
-# View a specific generated config
-cat /etc/nginx/conf.d/dynamic/rule_1.conf
-```
-
-## Important Implementation Details
-
-### SSL Certificate Management
-
-- Certificates managed by `acme.sh` in `/opt/nginx-reverse-emby/panel/data/.acme.sh`
-- Supports HTTP-01 and DNS-01 validation (via DNS API providers like Cloudflare)
-- Auto-renewal configured via cron in `30-acme-renew.sh`
-- Certificate state tracked in `.state/active_cert_domains`
-- Managed certificates: centralized cert management across agents (requires Cloudflare DNS API)
-
-### Authentication Flow
-
-1. Frontend checks for token in localStorage (`panel_token`)
-2. All API requests include `X-Panel-Token` header
-3. Backend validates token against `API_TOKEN` environment variable
-4. If token missing or invalid, frontend shows TokenConfig component
-
-### Config Generation Process
-
-The `25-dynamic-reverse-proxy.sh` script:
-1. Reads rules from `proxy_rules.csv` or `proxy_rules.json`
-2. Parses each rule's frontend_url (protocol, host, port, path)
-3. For HTTPS rules in `direct` mode: requests/installs SSL certificates
-4. Generates nginx config file per rule in `/etc/nginx/conf.d/dynamic/`
-5. Runs `nginx -t` to validate
-6. Executes `nginx -s reload` if validation passes
-
-### L4 (TCP/UDP) Proxy Rules
-
-- Stored in `l4_rules.json`
-- Generated configs placed in `/etc/nginx/stream-conf.d/dynamic/`
-- Supports TCP and UDP protocols
-- Requires nginx stream module
-
-## Debugging Tips
-
-### Frontend Issues
-
-- Check browser console for API errors
-- Verify token is set: `localStorage.getItem('panel_token')`
-- Check API endpoint: default is `/panel-api` (proxied by nginx to backend)
-
-### Backend Issues
-
-- Check if server is running: `curl http://127.0.0.1:18081/panel-api/rules`
-- Verify token: `curl -H "X-Panel-Token: your-token" http://127.0.0.1:18081/panel-api/rules`
-- Check backend logs in Docker: `docker compose logs nginx-reverse-emby | grep server.js`
-
-### Nginx Issues
-
-- Always run `nginx -t` before reload
-- Check error log: `/var/log/nginx/error.log`
-- Verify generated configs: `ls /etc/nginx/conf.d/dynamic/`
-- Check if ports are listening: `netstat -tlnp | grep nginx`
-
-### SSL Certificate Issues
-
-- Check acme.sh logs: `cat /opt/nginx-reverse-emby/panel/data/.acme.sh/*.log`
-- Verify DNS records for domain validation
-- For DNS API: ensure provider credentials are set (e.g., `CF_Token`, `CF_Account_ID`)
-- Manual cert request: `$ACME_HOME/acme.sh --issue -d example.com --standalone`
-
-### Agent Issues
-
-- Check agent heartbeat: agents must poll Master within `AGENT_HEARTBEAT_TIMEOUT_MS` (default 90s)
-- NAT agents: verify they can reach Master URL
-- Check agent logs: `journalctl -u light-agent -f` (if using systemd)
-- Verify agent registration: check `agents.json` on Master
-
-## Project-Specific Conventions
-
-- All user-facing text in Chinese (frontend, logs, error messages)
-- Backend uses CommonJS (`require`), frontend uses ES modules (`import`)
-- Frontend components use Composition API (`<script setup>`)
-- Shell scripts use POSIX-compliant syntax (no bashisms) except `scripts/join-agent.sh` which is Bash-specific
-- Environment variables prefixed by component: `PANEL_*`, `ACME_*`, `PROXY_*`, `MASTER_*`, `AGENT_*`
-- Data persistence: everything under `/opt/nginx-reverse-emby/panel/data`
-- Frontend: 2-space indentation, single quotes, no semicolons
-- Backend: semicolons, defensive error handling
-- Components: `PascalCase.vue`, JS modules: `camelCase`
-- Commit style: Conventional Commits (e.g., `feat(panel):`, `fix(agent):`, `docs:`)
+### Frontend State
+Single Pinia store (`useRuleStore` in `stores/rules.js`) manages all app state: auth, system info, agent list, selected agent, HTTP rules, L4 rules, certificates, and search/filter state. All API calls go through `api/index.js`.
 
 ## Key Environment Variables
 
-- `API_TOKEN`: Panel authentication token (required in production)
-- `PROXY_DEPLOY_MODE`: `direct` or `front_proxy`
-- `PANEL_PORT`: Web panel port (default: 8080)
-- `PANEL_ROLE`: Node role - `master` or `agent`
-- `PANEL_AUTO_APPLY`: Auto-apply config changes (default: 1)
-- `ACME_DNS_PROVIDER`: DNS provider for certificate validation (e.g., `cf`)
-- `ACME_EMAIL`: Email for Let's Encrypt notifications
-- `ACME_CA`: Certificate authority (default: `letsencrypt`)
-- `CF_Token`: Cloudflare API Token (for DNS validation)
-- `CF_Account_ID`: Cloudflare Account ID (for DNS validation)
-- `MASTER_REGISTER_TOKEN`: Agent registration token
-- `MASTER_LOCAL_AGENT_NAME`: Master local node display name
-- `MASTER_LOCAL_AGENT_TAGS`: Master local node tags
-- `AGENT_NAME`: Agent node name
-- `AGENT_TAGS`: Agent node tags (comma-separated)
-- `AGENT_CAPABILITIES`: Agent capabilities (default: `http_rules,local_acme,cert_install,l4`)
+| Prefix | Purpose |
+|--------|---------|
+| `PANEL_*` | Panel behavior: port, role (`master`/`agent`), data root, storage backend |
+| `PROXY_*` | Deploy mode, redirect/header behavior |
+| `MASTER_*` | Master-specific: register token, local agent config |
+| `AGENT_*` | Agent identity, polling behavior (used by `light-agent.js`) |
+| `ACME_*`, `CF_*` | Certificate issuance and DNS challenge |
+| `NGINX_*` | Nginx tuning: max body size, IPv6, resolvers |
+
+## API Conventions
+
+- All authenticated routes: `/api/` (token via `X-Panel-Token` header)
+- Public routes (agent join script, asset downloads): `/api/public/`
+- Frontend accesses everything through `/panel-api/` (nginx rewrites to `/api/`)
+
+## Testing
+
+Tests are in `panel/backend/tests/` and use `fast-check` for property-based testing:
+- `property-roundtrip.test.js` — storage read/write roundtrips
+- `property-isolation.test.js` — agent data isolation
+- `property-revision.test.js` — revision increment correctness
+- `property-compatibility.test.js` — JSON/SQLite storage compatibility
+
+Run a single test file:
+```bash
+cd panel/backend && node tests/property-roundtrip.test.js
+```
+
+## Commit Style
+
+Commits follow Conventional Commits: `type(scope): description`
+- Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`
+- Scopes: `nginx`, `backend`, `frontend`, `agent`, `panel`, `docker`
+
+## Security Notes
+
+- All write operations to `/api/` require `X-Panel-Token` authentication
+- Never log or expose API tokens, `MASTER_REGISTER_TOKEN`, or acme.sh credentials
+- `server.js` validates that agent IDs are alphanumeric only before using them in file paths
