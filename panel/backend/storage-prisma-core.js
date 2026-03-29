@@ -13,6 +13,11 @@ const DEFAULT_LOCAL_AGENT_STATE = Object.freeze({
   last_apply_status: "success",
   last_apply_message: "",
 });
+const CLIENT_STATE = {
+  client: null,
+  dataRoot: null,
+  initialized: false,
+};
 
 const SCHEMA_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS agents (
@@ -121,14 +126,36 @@ function createPrismaClient(dataRoot) {
   return new PrismaClient({ adapter });
 }
 
-async function withClient(dataRoot, handler) {
-  const client = createPrismaClient(dataRoot);
-  try {
-    await initializeDatabase(client);
-    return await handler(client);
-  } finally {
-    await client.$disconnect();
+async function closeClient() {
+  if (!CLIENT_STATE.client) {
+    return;
   }
+  await CLIENT_STATE.client.$disconnect();
+  CLIENT_STATE.client = null;
+  CLIENT_STATE.dataRoot = null;
+  CLIENT_STATE.initialized = false;
+}
+
+async function getClient(dataRoot) {
+  const normalizedRoot = normalizeRoot(dataRoot);
+  if (CLIENT_STATE.client && CLIENT_STATE.dataRoot === normalizedRoot) {
+    return CLIENT_STATE.client;
+  }
+
+  await closeClient();
+  CLIENT_STATE.client = createPrismaClient(normalizedRoot);
+  CLIENT_STATE.dataRoot = normalizedRoot;
+  CLIENT_STATE.initialized = false;
+  return CLIENT_STATE.client;
+}
+
+async function withClient(dataRoot, handler) {
+  const client = await getClient(dataRoot);
+  if (!CLIENT_STATE.initialized) {
+    await initializeDatabase(client);
+    CLIENT_STATE.initialized = true;
+  }
+  return handler(client);
 }
 
 async function initializeDatabase(client) {
@@ -544,4 +571,5 @@ module.exports = {
   saveManagedCertificates,
   saveLocalAgentState,
   migrateFromJsonPayload,
+  closeClient,
 };

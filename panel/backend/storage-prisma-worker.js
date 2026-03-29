@@ -34,6 +34,10 @@ const operations = {
     return null;
   },
   migrateFromJson: async ({ dataRoot, payload }) => core.migrateFromJsonPayload(dataRoot, payload),
+  close: async () => {
+    await core.closeClient();
+    return null;
+  },
 };
 
 function writeResponse(controlBuffer, dataBuffer, payload) {
@@ -44,7 +48,10 @@ function writeResponse(controlBuffer, dataBuffer, payload) {
   if (bytes.length > target.byteLength) {
     const fallback = Buffer.from(JSON.stringify({
       ok: false,
+      code: "RESPONSE_TOO_LARGE",
       error: `Prisma worker response exceeded ${target.byteLength} bytes`,
+      requiredBufferBytes: bytes.length,
+      currentBufferBytes: target.byteLength,
     }), "utf8");
     target.fill(0);
     target.set(fallback);

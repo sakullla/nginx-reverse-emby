@@ -10,10 +10,14 @@ const jsonStorage = require("./storage-json");
 const WORKER_PATH = path.join(__dirname, "storage-prisma-worker.js");
 const LOCAL_AGENT_ID = process.env.MASTER_LOCAL_AGENT_ID || "local";
 const WORKER_TIMEOUT_MS = 30000;
-const WORKER_BUFFER_BYTES = 10 * 1024 * 1024;
+const INITIAL_WORKER_BUFFER_BYTES = 256 * 1024;
 
 let state = createEmptyState();
 let worker = null;
+let workerControlBuffer = null;
+let workerDataBuffer = null;
+let workerControlView = null;
+let workerBufferBytes = 0;
 
 function createEmptyState() {
   return {
@@ -159,35 +163,67 @@ function ensureWorker() {
   if (!worker) {
     worker = new Worker(WORKER_PATH);
     worker.unref();
+    resizeWorkerBuffers(INITIAL_WORKER_BUFFER_BYTES);
   }
 }
 
-function runWorker(op, payload = {}) {
-  ensureWorker();
+function resetWorkerBuffers() {
+  workerControlBuffer = null;
+  workerDataBuffer = null;
+  workerControlView = null;
+  workerBufferBytes = 0;
+}
 
-  const control = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 2);
-  const data = new SharedArrayBuffer(WORKER_BUFFER_BYTES);
-  const controlView = new Int32Array(control);
+function resizeWorkerBuffers(nextSize) {
+  workerControlBuffer = new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 2);
+  workerDataBuffer = new SharedArrayBuffer(nextSize);
+  workerControlView = new Int32Array(workerControlBuffer);
+  workerBufferBytes = nextSize;
+}
+
+function disposeWorker() {
+  if (worker) {
+    worker.terminate();
+    worker = null;
+  }
+  resetWorkerBuffers();
+}
+
+function runWorker(op, payload = {}, attempt = 0) {
+  ensureWorker();
+  Atomics.store(workerControlView, 0, 0);
+  Atomics.store(workerControlView, 1, 0);
 
   worker.postMessage({
     request: { op, ...payload },
-    control,
-    data,
+    control: workerControlBuffer,
+    data: workerDataBuffer,
   });
 
-  const waitResult = Atomics.wait(controlView, 0, 0, WORKER_TIMEOUT_MS);
+  const waitResult = Atomics.wait(workerControlView, 0, 0, WORKER_TIMEOUT_MS);
   if (waitResult === "timed-out") {
-    try {
-      worker.terminate();
-    } finally {
-      worker = null;
-    }
+    disposeWorker();
     throw new Error(`Prisma storage worker timed out after ${WORKER_TIMEOUT_MS}ms`);
   }
 
-  const length = Atomics.load(controlView, 1);
-  const raw = Buffer.from(new Uint8Array(data, 0, length)).toString("utf8");
+  const length = Atomics.load(workerControlView, 1);
+  const raw = Buffer.from(new Uint8Array(workerDataBuffer, 0, length)).toString("utf8");
   const parsed = raw ? JSON.parse(raw) : { ok: false, error: "Empty Prisma worker response" };
+
+  if (
+    !parsed.ok &&
+    parsed.code === "RESPONSE_TOO_LARGE" &&
+    Number.isInteger(parsed.requiredBufferBytes) &&
+    parsed.requiredBufferBytes > workerBufferBytes &&
+    attempt < 3
+  ) {
+    let nextSize = workerBufferBytes;
+    while (nextSize < parsed.requiredBufferBytes) {
+      nextSize *= 2;
+    }
+    resizeWorkerBuffers(nextSize);
+    return runWorker(op, payload, attempt + 1);
+  }
 
   if (!parsed.ok) {
     throw new Error(parsed.error || "Prisma storage worker failed");
@@ -408,9 +444,13 @@ function migrateFromJson() {
 function close() {
   const tempDir = state.tempDir;
   if (worker) {
-    worker.terminate();
-    worker = null;
+    try {
+      runWorker("close");
+    } catch (_) {
+      // ignore worker shutdown errors and force termination below
+    }
   }
+  disposeWorker();
   state = createEmptyState();
   cleanupTempDir(tempDir);
 }
