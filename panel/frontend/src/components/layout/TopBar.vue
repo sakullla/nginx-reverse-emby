@@ -40,6 +40,7 @@
 </template>
 
 <script setup>
+import { computed } from 'vue'
 import { useAgent } from '../../context/AgentContext'
 import { useAgents } from '../../hooks/useAgents'
 import ThemeSelector from '../base/ThemeSelector.vue'
