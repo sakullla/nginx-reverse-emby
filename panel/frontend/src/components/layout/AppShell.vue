@@ -1,6 +1,10 @@
 <template>
   <div class="app-shell">
-    <TopBar />
+    <TopBar @open-search="searchOpen = true" />
+    <GlobalSearch
+      :open="searchOpen"
+      @update:open="searchOpen = $event"
+    />
     <div class="app-layout">
       <!-- Desktop sidebar -->
       <Sidebar v-if="!isMobile" />
@@ -19,8 +23,10 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import TopBar from './TopBar.vue'
 import Sidebar from './Sidebar.vue'
 import BottomNav from './BottomNav.vue'
+import GlobalSearch from '../GlobalSearch.vue'
 
 const mobileSidebarOpen = ref(false)
+const searchOpen = ref(false)
 const isMobile = ref(window.innerWidth < 1024)
 
 function checkMobile() {
