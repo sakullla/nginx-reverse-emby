@@ -20,6 +20,12 @@ const routes = [
         meta: { title: '节点管理' }
       },
       {
+        path: 'agents/:id',
+        name: 'agent-detail',
+        component: () => import('../pages/AgentDetailPage.vue'),
+        meta: { title: '节点详情' }
+      },
+      {
         path: 'rules',
         name: 'rules',
         component: () => import('../pages/RulesPage.vue'),
