@@ -276,9 +276,9 @@ const handleSubmit = async () => {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-2);
-  padding: var(--space-2);
+  padding: var(--space-1) var(--space-2);
   align-items: center;
-  min-height: 44px;
+  min-height: 36px;
 }
 
 .tag-input__field {

@@ -54,7 +54,7 @@
     </div>
 
     <!-- Rules card grid -->
-    <div v-else-if="selectedAgentId && filteredRules.length" class="rule-grid">
+    <div v-if="selectedAgentId && filteredRules.length" class="rule-grid">
       <div v-for="rule in filteredRules" :key="rule.id" class="rule-card">
         <div class="rule-card__header">
           <span class="rule-card__id">#{{ rule.id }}</span>
