@@ -99,6 +99,10 @@ watch(query, async (val) => {
   isLoading.value = true
   try {
     const agents = agentsData.value || []
+    if (!agents.length) {
+      results.value = []
+      return
+    }
     const searches = agents
       .filter(a => a.status !== 'offline')
       .map(agent =>
@@ -108,9 +112,9 @@ watch(query, async (val) => {
             agentName: agent.name,
             online: agent.status === 'online',
             rules: (rules || []).filter(r =>
-              r.frontend_url?.includes(val) ||
-              r.backend_url?.includes(val) ||
-              (r.tags || []).some(tag => tag.includes(val))
+              r.frontend_url?.toLowerCase().includes(val.toLowerCase()) ||
+              r.backend_url?.toLowerCase().includes(val.toLowerCase()) ||
+              (r.tags || []).some(tag => tag.toLowerCase().includes(val.toLowerCase()))
             )
           }))
           .catch(() => null)
@@ -120,7 +124,7 @@ watch(query, async (val) => {
   } finally {
     isLoading.value = false
   }
-}, { immediate: true })
+})
 
 function close() {
   emit('update:open', false)

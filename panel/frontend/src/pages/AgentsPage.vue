@@ -119,11 +119,13 @@
 <script setup>
 import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { useAgents } from '../hooks/useAgents'
+import { useAgents, useRenameAgent, useDeleteAgent } from '../hooks/useAgents'
 
 const router = useRouter()
 
 const { data, isLoading, refetch: loadAgents } = useAgents()
+const renameAgent = useRenameAgent()
+const deleteAgent = useDeleteAgent()
 const agents = computed(() => data.value ?? [])
 
 const showJoinModal = ref(false)
@@ -193,7 +195,11 @@ function startRename(agent) {
 }
 
 function confirmRename() {
+  if (renamingAgent.value && newAgentName.value.trim()) {
+    renameAgent.mutate({ agentId: renamingAgent.value.id, name: newAgentName.value.trim() })
+  }
   renamingAgent.value = null
+  newAgentName.value = ''
 }
 
 function startDelete(agent) {
@@ -201,7 +207,9 @@ function startDelete(agent) {
 }
 
 function confirmDelete() {
-  // delete logic here
+  if (deletingAgent.value) {
+    deleteAgent.mutate(deletingAgent.value.id)
+  }
   deletingAgent.value = null
 }
 </script>

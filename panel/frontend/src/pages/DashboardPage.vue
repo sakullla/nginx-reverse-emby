@@ -136,12 +136,11 @@ const { selectedAgentId } = useAgent()
 const onlineCount = computed(() => agents.value?.filter(a => a.status === 'online').length || 0)
 
 const rulesCount = computed(() => {
-  // This is a placeholder — actual rule counts come from agent-specific queries
-  return agents.value?.length * 5 || 0
+  return agents.value?.reduce((sum, a) => sum + (a.http_rules_count || 0), 0) || 0
 })
 
 const l4Count = computed(() => {
-  return agents.value?.length * 1 || 0
+  return agents.value?.reduce((sum, a) => sum + (a.l4_rules_count || 0), 0) || 0
 })
 
 const displayedAgents = computed(() => (agents.value || []).slice(0, 8))
