@@ -216,7 +216,7 @@ function confirmDelete() {
 .rules-page { max-width: 1000px; margin: 0 auto; }
 .rules-page__header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 1.5rem; gap: 1rem; }
 .rules-page__title { font-size: 1.5rem; font-weight: 700; margin: 0 0 0.25rem; color: var(--color-text-primary); }
-.rules-page__subtitle { font-size: 0.875rem; color: var(--color-text-tertiary); margin: 0; }
+.rules-page__subtitle { font-size: 0.875rem; color: var(--color-text-tertiary); margin: 0.375rem 0 0; }
 .rules-page__prompt, .rules-page__empty, .rules-page__loading { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.75rem; padding: 4rem 2rem; color: var(--color-text-muted); text-align: center; }
 .rules-page__prompt-hint { font-size: 0.875rem; color: var(--color-text-tertiary); }
 .rules-list { overflow-x: auto; }

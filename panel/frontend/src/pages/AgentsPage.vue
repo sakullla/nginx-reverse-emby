@@ -196,18 +196,18 @@ function confirmDelete() {
 .agents-page__subtitle {
   font-size: 0.875rem;
   color: var(--color-text-tertiary);
-  margin: 0;
+  margin: 0.375rem 0 0;
 }
 .agents-list {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: 0.5rem;
 }
 .agent-card {
   display: flex;
   align-items: center;
-  gap: 1rem;
-  padding: 1rem 1.25rem;
+  gap: 0.875rem;
+  padding: 0.75rem 1rem;
   background: var(--color-bg-surface);
   border: 1.5px solid var(--color-border-default);
   border-radius: var(--radius-xl);
@@ -228,7 +228,7 @@ function confirmDelete() {
 .agent-card__mode-badge { font-size: 0.75rem; padding: 1px 6px; background: var(--color-primary-subtle); color: var(--color-primary); border-radius: var(--radius-full); font-weight: 500; }
 .agent-card__url { font-size: 0.75rem; color: var(--color-text-tertiary); font-family: var(--font-mono); }
 .agent-card__actions { display: flex; gap: 0.5rem; }
-.agent-card__stats { display: flex; align-items: center; gap: 0.75rem; margin-top: 0.25rem; }
+.agent-card__stats { display: flex; align-items: center; gap: 0.75rem; margin-top: 0.375rem; }
 .agent-card__stat { display: flex; align-items: center; gap: 0.25rem; font-size: 0.75rem; color: var(--color-text-tertiary); }
 .agent-card__last-seen { font-size: 0.75rem; color: var(--color-text-muted); margin-left: auto; }
 /* Modals */
