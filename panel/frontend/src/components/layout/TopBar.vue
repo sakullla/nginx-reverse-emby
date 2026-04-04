@@ -23,6 +23,7 @@
         <span>全局搜索</span>
         <kbd>⌘K</kbd>
       </button>
+      <span class="topbar__current-agent">{{ currentAgentName }}</span>
     </div>
 
     <div class="topbar__actions">
@@ -39,7 +40,18 @@
 </template>
 
 <script setup>
+import { useAgent } from '../../context/AgentContext'
+import { useAgents } from '../../hooks/useAgents'
 import ThemeSelector from '../base/ThemeSelector.vue'
+
+const { selectedAgentId } = useAgent()
+const { data: agentsData } = useAgents()
+
+const currentAgentName = computed(() => {
+  if (!selectedAgentId.value || !agentsData.value) return '—'
+  const agent = agentsData.value.find(a => a.id === selectedAgentId.value)
+  return agent?.name || '—'
+})
 
 function handleLogout() {
   localStorage.removeItem('panel_token')
@@ -132,6 +144,13 @@ function handleLogout() {
   border: 1px solid var(--color-border-default);
   border-radius: 4px;
   font-family: var(--font-mono);
+}
+.topbar__current-agent {
+  font-size: 0.8rem;
+  color: var(--color-text-tertiary);
+  padding: 0.25rem 0.5rem;
+  background: var(--color-bg-subtle);
+  border-radius: var(--radius-md);
 }
 .topbar__actions {
   display: flex;
