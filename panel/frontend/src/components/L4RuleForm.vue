@@ -115,6 +115,39 @@
           </div>
         </div>
       </div>
+
+      <!-- Tags -->
+      <div class="form-group">
+        <label class="form-label">分类标签</label>
+        <div class="tag-input">
+          <div class="tag-input__container">
+            <span
+              v-for="(tag, index) in form.tags"
+              :key="tag"
+              class="tag"
+            >
+              {{ tag }}
+              <button
+                type="button"
+                class="tag__remove"
+                @click="removeTag(index)"
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <line x1="18" y1="6" x2="6" y2="18"/>
+                  <line x1="6" y1="6" x2="18" y2="18"/>
+                </svg>
+              </button>
+            </span>
+            <input
+              v-model="tagInput"
+              type="text"
+              class="tag-input__field"
+              placeholder="输入标签按回车..."
+              @keydown.enter.prevent="addTag"
+            >
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- Tab 2: Advanced Tuning -->
@@ -126,11 +159,11 @@
           <div class="form-group">
             <label class="form-label">proxy_connect_timeout</label>
             <input v-model="form.tuning.proxy.connect_timeout" class="input" placeholder="10s">
-            <div class="form-help">如: 10s, 5m, 1h</div>
           </div>
           <div class="form-group">
             <label class="form-label">proxy_timeout</label>
             <input v-model="form.tuning.proxy.idle_timeout" class="input" :placeholder="form.protocol === 'udp' ? '20s' : '10m'">
+            <div class="form-help">如: 10s, 5m, 1h</div>
           </div>
         </div>
       </div>
@@ -157,7 +190,6 @@
           <div class="form-group">
             <label class="form-label">limit_conn count</label>
             <input v-model.number="form.tuning.limit_conn.count" class="input" type="number" min="0" placeholder="不限制">
-            <div class="form-help">每客户端最大并发连接数，留空不限制</div>
           </div>
           <div class="form-group">
             <label class="form-label">limit_conn_zone key</label>
@@ -269,39 +301,6 @@
             <label class="form-label">proxy_responses</label>
             <input v-model.number="form.tuning.proxy.udp_proxy_responses" class="input" type="number" min="0" placeholder="默认">
           </div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Tags -->
-    <div class="form-group">
-      <label class="form-label">分类标签</label>
-      <div class="tag-input">
-        <div class="tag-input__container">
-          <span
-            v-for="(tag, index) in form.tags"
-            :key="tag"
-            class="tag"
-          >
-            {{ tag }}
-            <button
-              type="button"
-              class="tag__remove"
-              @click="removeTag(index)"
-            >
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <line x1="18" y1="6" x2="6" y2="18"/>
-                <line x1="6" y1="6" x2="18" y2="18"/>
-              </svg>
-            </button>
-          </span>
-          <input
-            v-model="tagInput"
-            type="text"
-            class="tag-input__field"
-            placeholder="输入标签按回车..."
-            @keydown.enter.prevent="addTag"
-          >
         </div>
       </div>
     </div>
