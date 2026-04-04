@@ -24,7 +24,7 @@
       <div class="form-row">
         <div class="form-group">
           <label class="form-label form-label--required">监听地址</label>
-          <input v-model="form.listen_host" class="input" placeholder="0.0.0.0" @input="handleListenInput">
+          <input v-model="form.listen_host" class="input" placeholder="0.0.0.0">
         </div>
         <div class="form-group">
           <label class="form-label form-label--required">监听端口</label>
@@ -543,16 +543,6 @@ function handleProtocolChange() {
 
 function handleStrategyChange() {
   if (!isEdit.value) updateAutoTags()
-}
-
-function handleListenInput(e) {
-  const value = e.target.value.trim()
-  const match = value.match(/^(.+):(\d+)$/)
-  if (match) {
-    form.value.listen_host = match[1]
-    form.value.listen_port = parseInt(match[2], 10)
-    if (!isEdit.value) updateAutoTags()
-  }
 }
 
 function addBackend() {

@@ -93,6 +93,8 @@ const query = ref('')
 const inputRef = ref(null)
 const results = ref([])
 const isLoading = ref(false)
+const searchDebounceTimer = ref(null)
+const searchId = ref(0)
 
 watch(() => props.open, (val) => {
   if (val) {
@@ -100,16 +102,24 @@ watch(() => props.open, (val) => {
   }
 })
 
-watch(query, async (val) => {
+watch(query, (val) => {
+  clearTimeout(searchDebounceTimer.value)
   if (!val?.trim()) {
     results.value = []
     return
   }
+  searchDebounceTimer.value = setTimeout(() => {
+    doSearch(val)
+  }, 250)
+})
+
+async function doSearch(val) {
+  const currentSearchId = ++searchId.value
   isLoading.value = true
   try {
     const agents = agentsData.value || []
     if (!agents.length) {
-      results.value = []
+      if (currentSearchId === searchId.value) results.value = []
       return
     }
     const searches = agents
@@ -121,6 +131,7 @@ watch(query, async (val) => {
           api.fetchCertificates(agent.id).catch(() => [])
         ])
           .then(([rules, l4Rules, certs]) => {
+            if (currentSearchId !== searchId.value) return null
             const q = val.toLowerCase()
             const matchedRules = (rules || []).filter(r =>
               r.frontend_url?.toLowerCase().includes(q) ||
@@ -149,11 +160,13 @@ watch(query, async (val) => {
           .catch(() => null)
       )
     const groupResults = await Promise.all(searches)
-    results.value = groupResults.filter(g => g && g.items.length > 0)
+    if (currentSearchId === searchId.value) {
+      results.value = groupResults.filter(g => g && g.items.length > 0)
+    }
   } finally {
-    isLoading.value = false
+    if (currentSearchId === searchId.value) isLoading.value = false
   }
-})
+}
 
 function close() {
   emit('update:open', false)

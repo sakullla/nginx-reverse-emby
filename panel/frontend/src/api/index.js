@@ -39,12 +39,16 @@ api.interceptors.request.use((config) => {
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401) {
+    const status = error.response?.status
+    if (status === 401) {
       localStorage.removeItem('panel_token')
     }
     const message = error.response?.data?.message || error.message || '请求失败'
     const details = error.response?.data?.details
-    return Promise.reject(new Error(details ? `${message}: ${details}` : message))
+    const err = new Error(details ? `${message}: ${details}` : message)
+    err.response = error.response
+    err.status = status
+    return Promise.reject(err)
   }
 )
 
