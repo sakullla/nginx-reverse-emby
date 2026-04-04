@@ -29,22 +29,38 @@ const longRunningRequest = {
 }
 
 api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('panel_token')
-  if (token) {
-    config.headers['X-Panel-Token'] = token
+  // Only inject stored token when caller did not already set X-Panel-Token
+  if (!config.headers['X-Panel-Token']) {
+    const token = localStorage.getItem('panel_token')
+    if (token) {
+      config.headers['X-Panel-Token'] = token
+    }
   }
   return config
 })
 
+import { onAuthChange, notifyAuthChange } from '../utils/authEvents'
+
+// Register so useAuthState can keep its reactive token in sync with 401s
+onAuthChange((token) => { _tokenRef = token })
+let _tokenRef = null
+export function setApiTokenRef(fn) { _tokenRef = fn }
+
 api.interceptors.response.use(
   (response) => response,
   (error) => {
-    if (error.response?.status === 401) {
+    const status = error.response?.status
+    if (status === 401) {
       localStorage.removeItem('panel_token')
+      if (_tokenRef) _tokenRef(null)
+      notifyAuthChange(null)
     }
     const message = error.response?.data?.message || error.message || '请求失败'
     const details = error.response?.data?.details
-    return Promise.reject(new Error(details ? `${message}: ${details}` : message))
+    const err = new Error(details ? `${message}: ${details}` : message)
+    err.response = error.response
+    err.status = status
+    return Promise.reject(err)
   }
 )
 
@@ -72,6 +88,8 @@ const mockAgents = [
     status: 'online',
     is_local: true,
     last_seen_at: new Date().toISOString(),
+    http_rules_count: 12,
+    l4_rules_count: 3,
     // revisions match + success → 所有规则显示"已生效"
     desired_revision: 5,
     current_revision: 5,
@@ -89,6 +107,8 @@ const mockAgents = [
     status: 'online',
     is_local: false,
     last_seen_at: new Date().toISOString(),
+    http_rules_count: 8,
+    l4_rules_count: 2,
     // desired > current → 所有规则显示"待同步"
     desired_revision: 3,
     current_revision: 2,
@@ -106,6 +126,8 @@ const mockAgents = [
     status: 'online',
     is_local: false,
     last_seen_at: new Date().toISOString(),
+    http_rules_count: 5,
+    l4_rules_count: 1,
     // revisions match but apply failed → 所有规则显示"应用失败"
     desired_revision: 2,
     current_revision: 2,
@@ -132,6 +154,8 @@ const mockAgents = [
       is_local: false,
       last_seen_at: new Date().toISOString(),
       last_seen_ip: `10.0.${Math.floor(i / 10) + 1}.${(i % 10) + 10}`,
+      http_rules_count: (i % 20) + 1,
+      l4_rules_count: (i % 8) + 1,
       desired_revision: rev,
       current_revision: isPending ? rev - 1 : rev,
       last_apply_revision: isPending ? rev - 1 : rev,

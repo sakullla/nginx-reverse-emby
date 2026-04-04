@@ -1,5 +1,3 @@
-# syntax=docker/dockerfile:1.7
-
 FROM node:24-trixie-slim AS node-base
 
 FROM node-base AS frontend-builder

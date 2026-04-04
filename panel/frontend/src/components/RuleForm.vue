@@ -2,7 +2,7 @@
   <form @submit.prevent="handleSubmit" class="rule-form">
     <!-- Frontend URL -->
     <div class="form-group">
-      <label class="form-label form-label--required">前端访问地址</label>
+      <label for="frontend-url" class="form-label form-label--required">前端访问地址</label>
       <div class="input-wrapper">
         <span class="input-wrapper__icon">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -12,6 +12,7 @@
           </svg>
         </span>
         <input
+          id="frontend-url"
           v-model="form.frontend_url"
           type="text"
           class="input"
@@ -32,7 +33,7 @@
 
     <!-- Backend URL -->
     <div class="form-group">
-      <label class="form-label form-label--required">后端目标地址</label>
+      <label for="backend-url" class="form-label form-label--required">后端目标地址</label>
       <div class="input-wrapper">
         <span class="input-wrapper__icon">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -43,6 +44,7 @@
           </svg>
         </span>
         <input
+          id="backend-url"
           v-model="form.backend_url"
           type="text"
           class="input"
@@ -63,16 +65,16 @@
 
     <!-- Tags -->
     <div class="form-group">
-      <label class="form-label">分类标签</label>
+      <label for="tag-input" class="form-label">分类标签</label>
       <div class="tag-input">
         <div class="tag-input__container">
-          <span 
-            v-for="(tag, index) in form.tags" 
-            :key="tag" 
+          <span
+            v-for="(tag, index) in form.tags"
+            :key="tag"
             class="tag"
           >
             {{ tag }}
-            <button 
+            <button
               type="button"
               class="tag__remove"
               @click="removeTag(index)"
@@ -84,6 +86,7 @@
             </button>
           </span>
           <input
+            id="tag-input"
             v-model="tagInput"
             type="text"
             class="tag-input__field"
@@ -125,12 +128,12 @@
     </div>
 
     <!-- Submit -->
-    <button 
-      type="submit" 
-      class="btn btn--primary btn--full btn--lg"
-      :disabled="ruleStore.loading"
+    <button
+      type="submit"
+      class="btn btn--primary btn--full"
+      :disabled="isLoading"
     >
-      <span v-if="ruleStore.loading" class="spinner spinner--sm"></span>
+      <span v-if="isLoading" class="spinner spinner--sm"></span>
       <span v-else>{{ isEdit ? '保存修改' : '创建规则' }}</span>
     </button>
   </form>
@@ -138,16 +141,20 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { useRuleStore } from '../stores/rules'
+import { useCreateRule, useUpdateRule } from '../hooks/useRules'
 
 const props = defineProps({
-  initialData: { type: Object, default: null }
+  initialData: { type: Object, default: null },
+  agentId: { type: [String, Object], required: true }
 })
 
 const emit = defineEmits(['success'])
 
-const ruleStore = useRuleStore()
+// Pass agentId directly - hooks use unref() to handle both strings and refs
+const createRule = useCreateRule(props.agentId)
+const updateRule = useUpdateRule(props.agentId)
 const isEdit = computed(() => !!props.initialData?.id)
+const isLoading = computed(() => createRule.isPending.value || updateRule.isPending.value)
 
 const form = ref({
   frontend_url: '',
@@ -228,24 +235,23 @@ const handleSubmit = async () => {
   if (!validate()) return
 
   try {
-    const params = [
-      props.initialData?.id,
-      form.value.frontend_url.trim(),
-      form.value.backend_url.trim(),
-      form.value.tags,
-      form.value.enabled,
-      form.value.proxy_redirect
-    ]
+    const payload = {
+      frontend_url: form.value.frontend_url.trim(),
+      backend_url: form.value.backend_url.trim(),
+      tags: form.value.tags,
+      enabled: form.value.enabled,
+      proxy_redirect: form.value.proxy_redirect
+    }
 
     if (isEdit.value) {
-      await ruleStore.modifyRule(...params)
+      await updateRule.mutateAsync({ id: props.initialData.id, ...payload })
     } else {
-      await ruleStore.addRule(params[1], params[2], params[3], params[4], params[5])
+      await createRule.mutateAsync(payload)
     }
 
     emit('success')
   } catch (err) {
-    // Error handled by store
+    errors.value.frontend_url = err?.message || '操作失败'
   }
 }
 </script>
@@ -254,111 +260,118 @@ const handleSubmit = async () => {
 .rule-form {
   display: flex;
   flex-direction: column;
-  gap: var(--space-5);
+  gap: var(--space-4);
 }
 
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.form-label {
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  color: var(--color-text-secondary);
+}
+
+.form-label--required::after {
+  content: ' *';
+  color: var(--color-danger);
+}
+
+.form-hint {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+.form-error {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-danger-50);
+  color: var(--color-danger);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+}
+
+.input {
+  width: 100%;
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  font-size: var(--text-sm);
+  color: var(--color-text-primary);
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  transition: all var(--duration-fast) var(--ease-default);
+  font-family: inherit;
+  box-sizing: border-box;
+}
+
+.input:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: var(--shadow-focus);
+}
+
+.input::placeholder {
+  color: var(--color-text-muted);
+}
+
+/* No input-wrapper icons — remove them */
+.input-wrapper { position: relative; overflow: hidden; }
+.input-wrapper__icon { position: absolute; left: var(--space-4); top: 50%; transform: translateY(-50%); color: var(--color-text-muted); pointer-events: none; display: flex; align-items: center; }
+.input-wrapper .input { padding-left: var(--space-10); }
+
+/* Tag input */
 .tag-input {
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-md);
   transition: all var(--duration-fast) var(--ease-default);
+  overflow: hidden;
 }
+.tag-input:focus-within { border-color: var(--color-primary); box-shadow: var(--shadow-focus); }
+.tag-input__container { display: flex; flex-wrap: wrap; gap: var(--space-2); padding: var(--space-1) var(--space-2); align-items: center; min-height: 36px; }
+.tag-input__field { flex: 1; min-width: 80px; border: none; background: transparent; padding: var(--space-1); font-size: var(--text-sm); color: var(--color-text-primary); outline: none; max-width: 100%; }
+.tag-input__field::placeholder { color: var(--color-text-muted); }
+.tag { display: inline-flex; align-items: center; gap: var(--space-1); padding: 2px 8px; background: var(--color-bg-subtle); border: 1px solid var(--color-border-default); border-radius: var(--radius-full); font-size: var(--text-xs); color: var(--color-text-primary); }
+.tag__remove { display: flex; align-items: center; justify-content: center; width: 14px; height: 14px; border: none; background: transparent; color: var(--color-text-muted); cursor: pointer; padding: 0; border-radius: 50%; transition: all var(--duration-fast); }
+.tag__remove:hover { background: var(--color-danger-50); color: var(--color-danger); }
 
-.tag-input:focus-within {
-  border-color: var(--color-primary);
-  box-shadow: var(--shadow-focus);
-}
+/* Toggles */
+.toggle-row { padding: var(--space-2) 0; border-bottom: 1px solid var(--color-border-subtle); }
+.toggle-row:last-child { border-bottom: none; }
+.toggle { display: flex; align-items: flex-start; gap: var(--space-3); cursor: pointer; }
+.toggle__input { position: absolute; opacity: 0; width: 0; height: 0; }
+.toggle__slider { position: relative; width: 44px; height: 24px; background: var(--color-border-strong); border-radius: var(--radius-full); transition: background var(--duration-fast) var(--ease-default); flex-shrink: 0; margin-top: 2px; }
+.toggle__slider::after { content: ''; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; background: white; border-radius: var(--radius-full); transition: transform var(--duration-fast) var(--ease-bounce); box-shadow: var(--shadow-sm); }
+.toggle__input:checked + .toggle__slider { background: var(--gradient-primary); }
+.toggle__input:checked + .toggle__slider::after { transform: translateX(20px); }
+.toggle__input:focus-visible + .toggle__slider { box-shadow: var(--shadow-focus); }
+.toggle__label { font-size: var(--text-sm); color: var(--color-text-primary); display: flex; flex-direction: column; gap: var(--space-1); }
+.toggle__label .form-hint { margin-top: 0; }
 
-.tag-input__container {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  padding: var(--space-2);
+/* Submit button — standard btn--primary, NOT --lg */
+.btn {
+  display: inline-flex;
   align-items: center;
-  min-height: 44px;
-}
-
-.tag-input__field {
-  flex: 1;
-  min-width: 120px;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
   border: none;
-  background: transparent;
-  padding: var(--space-1);
+  border-radius: var(--radius-md);
   font-size: var(--text-sm);
-  color: var(--color-text-primary);
-  outline: none;
-}
-
-.tag-input__field::placeholder {
-  color: var(--color-text-muted);
-}
-
-.toggle-row {
-  padding: var(--space-2) 0;
-  border-bottom: 1px solid var(--color-border-subtle);
-}
-
-.toggle-row:last-child {
-  border-bottom: none;
-}
-
-.toggle {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-3);
+  font-weight: var(--font-medium);
   cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-default);
+  font-family: inherit;
 }
-
-.toggle__input {
-  position: absolute;
-  opacity: 0;
-}
-
-.toggle__slider {
-  position: relative;
-  width: 44px;
-  height: 24px;
-  background: var(--color-border-strong);
-  border-radius: var(--radius-full);
-  transition: background var(--duration-fast) var(--ease-default);
-  flex-shrink: 0;
-  margin-top: 2px;
-}
-
-.toggle__slider::after {
-  content: '';
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 20px;
-  height: 20px;
-  background: white;
-  border-radius: var(--radius-full);
-  transition: transform var(--duration-fast) var(--ease-bounce);
-  box-shadow: var(--shadow-sm);
-}
-
-.toggle__input:checked + .toggle__slider {
-  background: var(--color-primary);
-}
-
-.toggle__input:checked + .toggle__slider::after {
-  transform: translateX(20px);
-}
-
-.toggle__input:focus-visible + .toggle__slider {
-  box-shadow: var(--shadow-focus);
-}
-
-.toggle__label {
-  font-size: var(--text-sm);
-  color: var(--color-text-primary);
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-}
-
-.toggle__label .form-hint {
-  margin-top: 0;
-}
+.btn--primary { background: var(--gradient-primary); color: white; }
+.btn--primary:hover:not(:disabled) { opacity: 0.9; transform: translateY(-1px); }
+.btn--full { width: 100%; }
+.btn:disabled { opacity: 0.6; cursor: not-allowed; }
 </style>

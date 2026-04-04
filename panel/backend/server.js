@@ -1635,6 +1635,8 @@ function sanitizeAgent(agent) {
     is_local: !!hydrated.is_local,
     last_seen_ip: hydrated.last_seen_ip || null,
     capabilities: normalizeCapabilities(hydrated.capabilities || []),
+    http_rules_count: typeof hydrated.http_rules_count === 'number' ? hydrated.http_rules_count : 0,
+    l4_rules_count: typeof hydrated.l4_rules_count === 'number' ? hydrated.l4_rules_count : 0,
   };
 }
 
@@ -1911,10 +1913,15 @@ async function hydrateAgents() {
   const enriched = [];
 
   if (LOCAL_AGENT_ENABLED) {
-    enriched.push(sanitizeAgent(makeLocalAgent()));
+    const localAgent = makeLocalAgent();
+    localAgent.http_rules_count = (storage.loadRulesForAgent(LOCAL_AGENT_ID) || []).length;
+    localAgent.l4_rules_count = (storage.loadL4RulesForAgent(LOCAL_AGENT_ID) || []).length;
+    enriched.push(sanitizeAgent(localAgent));
   }
 
   for (const agent of registered) {
+    agent.http_rules_count = (storage.loadRulesForAgent(agent.id) || []).length;
+    agent.l4_rules_count = (storage.loadL4RulesForAgent(agent.id) || []).length;
     enriched.push(sanitizeAgent(agent));
   }
 

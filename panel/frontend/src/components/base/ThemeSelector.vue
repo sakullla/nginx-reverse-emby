@@ -35,46 +35,19 @@
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-
-const themes = [
-  {
-    id: 'sakura',
-    emoji: '🌸',
-    label: '二次元',
-    preview: 'linear-gradient(135deg, #ff6b9d, #c084fc, #818cf8)'
-  },
-  {
-    id: 'cyberpunk',
-    emoji: '⚡',
-    label: '赛博朋克',
-    preview: 'linear-gradient(135deg, #00d4e6, #7000f0, #ff1a6e)'
-  },
-  {
-    id: 'business',
-    emoji: '☀️',
-    label: '晴空',
-    preview: 'linear-gradient(135deg, #3b82f6, #2563eb, #1e40af)'
-  },
-  {
-    id: 'midnight',
-    emoji: '🌙',
-    label: '暗夜',
-    preview: 'linear-gradient(135deg, #a5b4fc, #818cf8, #4f46e5)'
-  }
-]
+import { themes } from '../../context/ThemeContext'
+import { useTheme } from '../../context/ThemeContext'
 
 const isOpen = ref(false)
-const currentThemeId = ref('sakura')
 const selectorRef = ref(null)
+const { currentThemeId, setTheme } = useTheme()
 
 const currentTheme = computed(() => {
   return themes.find(t => t.id === currentThemeId.value) || themes[0]
 })
 
 const selectTheme = (id) => {
-  currentThemeId.value = id
-  document.documentElement.setAttribute('data-theme', id)
-  localStorage.setItem('theme', id)
+  setTheme(id)
   isOpen.value = false
 }
 
@@ -85,14 +58,6 @@ const handleClickOutside = (e) => {
 }
 
 onMounted(() => {
-  const saved = localStorage.getItem('theme')
-  if (saved && themes.some(t => t.id === saved)) {
-    currentThemeId.value = saved
-  } else {
-    const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches
-    currentThemeId.value = prefersDark ? 'midnight' : 'sakura'
-  }
-  document.documentElement.setAttribute('data-theme', currentThemeId.value)
   document.addEventListener('click', handleClickOutside)
 })
 
