@@ -148,14 +148,20 @@
 
 <script setup>
 import { ref, computed } from 'vue'
+import { useRoute } from 'vue-router'
 import { useAgent } from '../context/AgentContext'
 import { useRules, useCreateRule, useUpdateRule, useDeleteRule } from '../hooks/useRules'
 
+const route = useRoute()
 const { selectedAgentId } = useAgent()
-const { data: _rulesData, isLoading, refetch } = useRules(selectedAgentId)
-const createRule = useCreateRule(selectedAgentId)
-const updateRule = useUpdateRule(selectedAgentId)
-const deleteRule = useDeleteRule(selectedAgentId)
+
+// 优先从 URL query 获取，否则 fall back 到 AgentContext
+const agentId = computed(() => route.query.agentId || selectedAgentId.value)
+
+const { data: _rulesData, isLoading, refetch } = useRules(agentId)
+const createRule = useCreateRule(agentId)
+const updateRule = useUpdateRule(agentId)
+const deleteRule = useDeleteRule(agentId)
 const rules = computed(() => _rulesData.value ?? [])
 const showAddForm = ref(false)
 const editingRule = ref(null)
