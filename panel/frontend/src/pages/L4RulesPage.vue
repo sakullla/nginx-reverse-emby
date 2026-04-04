@@ -20,6 +20,7 @@
       </button>
     </div>
 
+    <!-- No agent selected -->
     <div v-if="!selectedAgentId" class="rules-page__prompt">
       <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
         <rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/>
@@ -27,6 +28,7 @@
       <p>请从侧边栏选择一个节点</p>
     </div>
 
+    <!-- Agent selected, no rules -->
     <div v-else-if="!rules.length && !isLoading" class="rules-page__empty">
       <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
         <rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/>
@@ -35,41 +37,55 @@
       <button class="btn btn-primary" @click="showAddForm = true">添加第一条规则</button>
     </div>
 
-    <div v-else-if="rules.length" class="rule-grid">
-      <div v-for="rule in rules" :key="rule.id" class="rule-card">
-        <div class="rule-card__header">
-          <div class="rule-card__icon">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/>
-            </svg>
-          </div>
-          <div class="rule-card__badges">
-            <span class="proto-badge" :class="rule.protocol === 'udp' ? 'proto-badge--udp' : 'proto-badge--tcp'">
-              {{ rule.protocol?.toUpperCase() }}
-            </span>
-            <span class="rule-card__status" :class="`rule-card__status--${getStatus(rule)}`">
-              {{ getStatusLabel(rule) }}
-            </span>
-          </div>
-        </div>
-        <div class="rule-card__url">:{{ rule.listen_port }}</div>
-        <div class="rule-card__backend">→ {{ rule.upstream_host }}:{{ rule.upstream_port }}</div>
-        <div class="rule-card__tags">
-          <span v-for="tag in (rule.tags || []).slice(0, 3)" :key="tag" class="tag">{{ tag }}</span>
-        </div>
-        <div class="rule-card__actions">
-          <button class="toggle toggle--sm" :class="{ 'toggle--on': rule.enabled }" @click="toggleRule(rule)">
-            <span class="toggle__knob"></span>
-          </button>
-          <button class="btn btn-secondary btn-sm" @click="startEdit(rule)">编辑</button>
-          <button class="btn btn-danger btn-sm" @click="startDelete(rule)">删除</button>
-        </div>
+    <!-- No search results -->
+    <div v-else-if="selectedAgentId && rules.length && !filteredRules.length" class="rules-page__prompt">
+      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+      </svg>
+      <p>没有匹配的 L4 规则</p>
+    </div>
+
+    <!-- Search and tag filter toolbar -->
+    <div v-if="selectedAgentId && rules.length" class="rules-page__toolbar">
+      <input v-model="searchQuery" class="search-input" placeholder="搜索协议 / 地址 / 端口 / 标签 / #id=...">
+      <div v-if="allTags.length" class="tag-filter">
+        <button v-for="tag in allTags" :key="tag" class="tag-filter__btn" :class="{ 'tag-filter__btn--active': selectedTags.includes(tag), 'tag-filter__btn--system': isSystemTag(tag) }" @click="toggleTag(tag)">{{ tag }}</button>
       </div>
     </div>
 
+    <!-- Rule card grid -->
+    <div v-if="selectedAgentId && filteredRules.length" class="rule-grid">
+      <L4RuleItem v-for="rule in filteredRules" :key="rule.id" :rule="rule" @edit="startEdit" @delete="startDelete" @copy="handleCopy" @toggle="toggleRule" />
+    </div>
+
+    <!-- Loading -->
     <div v-if="isLoading" class="rules-page__loading">
       <div class="spinner"></div>
     </div>
+
+    <!-- Add/Edit Modal -->
+    <Teleport to="body">
+      <div v-if="showAddForm || editingRule" class="modal-overlay" @click.self="closeForm">
+        <div class="modal modal--large">
+          <div class="modal__header">{{ editingRule ? '编辑 L4 规则' : '添加 L4 规则' }}</div>
+          <div class="modal__body">
+            <L4RuleForm :initial-data="editingRule" :agent-id="agentId" @success="closeForm" />
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- Copy Modal -->
+    <Teleport to="body">
+      <div v-if="showCopyModal" class="modal-overlay" @click.self="closeCopy">
+        <div class="modal modal--large">
+          <div class="modal__header">复制 L4 规则</div>
+          <div class="modal__body">
+            <L4RuleForm v-if="copyingRule" :initial-data="copyingRule" :agent-id="agentId" @success="closeCopy" />
+          </div>
+        </div>
+      </div>
+    </Teleport>
 
     <!-- Delete Modal -->
     <Teleport to="body">
@@ -86,52 +102,6 @@
         </div>
       </div>
     </Teleport>
-
-    <!-- Add Form Modal -->
-    <Teleport to="body">
-      <div v-if="showAddForm || editingRule" class="modal-overlay" @click.self="closeForm">
-        <div class="modal">
-          <div class="modal__header">{{ editingRule ? '编辑 L4 规则' : '添加 L4 规则' }}</div>
-          <div class="modal__body">
-            <div class="form-group">
-              <label>协议</label>
-              <select v-model="form.protocol" class="input-base">
-                <option value="tcp">TCP</option>
-                <option value="udp">UDP</option>
-              </select>
-            </div>
-            <div class="form-row">
-              <div class="form-group">
-                <label>监听地址</label>
-                <input v-model="form.listen_host" class="input-base" placeholder="0.0.0.0">
-              </div>
-              <div class="form-group form-group--port">
-                <label>端口</label>
-                <input v-model="form.listen_port" class="input-base" placeholder="25565">
-              </div>
-            </div>
-            <div class="form-row">
-              <div class="form-group">
-                <label>后端地址</label>
-                <input v-model="form.upstream_host" class="input-base" placeholder="192.168.1.100">
-              </div>
-              <div class="form-group form-group--port">
-                <label>端口</label>
-                <input v-model="form.upstream_port" class="input-base" placeholder="25565">
-              </div>
-            </div>
-            <div class="form-group">
-              <label>标签</label>
-              <input v-model="form.tags" class="input-base" placeholder="game, mc">
-            </div>
-          </div>
-          <div class="modal__footer">
-            <button class="btn btn-secondary" @click="closeForm">取消</button>
-            <button class="btn btn-primary" @click="submitForm">{{ editingRule ? '保存' : '添加' }}</button>
-          </div>
-        </div>
-      </div>
-    </Teleport>
   </div>
 </template>
 
@@ -140,11 +110,11 @@ import { ref, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAgent } from '../context/AgentContext'
 import { useL4Rules, useCreateL4Rule, useUpdateL4Rule, useDeleteL4Rule } from '../hooks/useL4Rules'
+import L4RuleForm from '../components/L4RuleForm.vue'
+import L4RuleItem from '../components/l4/L4RuleItem.vue'
 
 const route = useRoute()
 const { selectedAgentId } = useAgent()
-
-// 优先从 URL query 获取，否则 fall back 到 AgentContext
 const agentId = computed(() => route.query.agentId || selectedAgentId.value)
 
 const { data: _rulesData, isLoading } = useL4Rules(agentId)
@@ -152,77 +122,59 @@ const createL4Rule = useCreateL4Rule(agentId)
 const updateL4Rule = useUpdateL4Rule(agentId)
 const deleteL4Rule = useDeleteL4Rule(agentId)
 const rules = computed(() => _rulesData.value ?? [])
-const showAddForm = ref(false)
-const deletingRule = ref(null)
-const editingRule = ref(null)
-const form = ref({ protocol: 'tcp', listen_host: '0.0.0.0', listen_port: '', upstream_host: '', upstream_port: '', tags: '' })
+
+// Search and filter
+const searchQuery = ref('')
+const selectedTags = ref([])
+const SYSTEM_TAG_SET = new Set(['TCP', 'UDP', 'HTTP', 'HTTPS', 'RR', 'LC', 'RND', 'HASH'])
+function isSystemTag(tag) { return SYSTEM_TAG_SET.has(tag) || /^:\d+$/.test(tag) }
+function toggleTag(tag) {
+  const i = selectedTags.value.indexOf(tag)
+  if (i === -1) selectedTags.value.push(tag)
+  else selectedTags.value.splice(i, 1)
+}
+
+const filteredRules = computed(() => {
+  let result = rules.value
+  if (selectedTags.value.length > 0) {
+    result = result.filter(rule => selectedTags.value.some(tag => (rule.tags || []).includes(tag)))
+  }
+  const raw = searchQuery.value.trim()
+  if (!raw) return result
+  const idMatch = raw.match(/^#id=(\S+)$/)
+  if (idMatch) return result.filter(rule => String(rule.id) === idMatch[1])
+  const q = raw.toLowerCase()
+  return result.filter(rule =>
+    String(rule.protocol || '').toLowerCase().includes(q) ||
+    String(rule.listen_host || '').toLowerCase().includes(q) ||
+    String(rule.upstream_host || '').toLowerCase().includes(q) ||
+    String(rule.listen_port || '').includes(q) ||
+    (rule.tags || []).some(tag => String(tag).toLowerCase().includes(q))
+  )
+})
+
+const allTags = computed(() => {
+  const tagSet = new Set()
+  rules.value.forEach(rule => (rule.tags || []).forEach(tag => tagSet.add(tag)))
+  return [...tagSet].sort()
+})
 
 const enabledCount = computed(() => rules.value.filter(r => r.enabled).length)
 
-function getStatus(rule) {
-  if (!rule.enabled) return 'disabled'
-  if (rule.last_apply_status === 'failed') return 'failed'
-  return 'active'
-}
+// Modals
+const showAddForm = ref(false)
+const editingRule = ref(null)
+const copyingRule = ref(null)
+const showCopyModal = ref(false)
+const deletingRule = ref(null)
 
-function getStatusLabel(rule) {
-  if (!rule.enabled) return '已禁用'
-  if (rule.last_apply_status === 'failed') return '同步失败'
-  return '生效中'
-}
-
-function toggleRule(rule) {
-  updateL4Rule.mutate({ id: rule.id, enabled: !rule.enabled })
-}
-
-function startDelete(rule) {
-  deletingRule.value = rule
-}
-
-function startEdit(rule) {
-  editingRule.value = rule
-  form.value = {
-    protocol: rule.protocol,
-    listen_host: rule.listen_host,
-    listen_port: String(rule.listen_port),
-    upstream_host: rule.upstream_host,
-    upstream_port: String(rule.upstream_port),
-    tags: (rule.tags || []).join(', ')
-  }
-  showAddForm.value = true
-}
-
-function confirmDelete() {
-  if (deletingRule.value) {
-    deleteL4Rule.mutate(deletingRule.value.id)
-  }
-  deletingRule.value = null
-}
-
-function closeForm() {
-  showAddForm.value = false
-  editingRule.value = null
-}
-
-function submitForm() {
-  const payload = {
-    protocol: form.value.protocol,
-    listen_host: form.value.listen_host,
-    listen_port: Number(form.value.listen_port),
-    upstream_host: form.value.upstream_host,
-    upstream_port: Number(form.value.upstream_port),
-    tags: form.value.tags ? form.value.tags.split(',').map(t => t.trim()).filter(Boolean) : [],
-    enabled: editingRule.value ? editingRule.value.enabled : true
-  }
-  if (editingRule.value) {
-    updateL4Rule.mutate({ id: editingRule.value.id, ...payload })
-  } else {
-    createL4Rule.mutate(payload)
-  }
-  showAddForm.value = false
-  editingRule.value = null
-  form.value = { protocol: 'tcp', listen_host: '0.0.0.0', listen_port: '', upstream_host: '', upstream_port: '', tags: '' }
-}
+function startEdit(rule) { editingRule.value = rule }
+function handleCopy(rule) { const { id, ...rest } = rule; copyingRule.value = rest; showCopyModal.value = true }
+function startDelete(rule) { deletingRule.value = rule }
+function closeForm() { showAddForm.value = false; editingRule.value = null }
+function closeCopy() { showCopyModal.value = false; copyingRule.value = null }
+function toggleRule(rule) { updateL4Rule.mutate({ id: rule.id, enabled: !rule.enabled }) }
+function confirmDelete() { if (deletingRule.value) deleteL4Rule.mutate(deletingRule.value.id); deletingRule.value = null }
 </script>
 
 <style scoped>
@@ -231,52 +183,31 @@ function submitForm() {
 .rules-page__title { font-size: 1.5rem; font-weight: 700; margin: 0 0 0.25rem; color: var(--color-text-primary); }
 .rules-page__subtitle { font-size: 0.875rem; color: var(--color-text-tertiary); margin: 0; }
 .rules-page__prompt, .rules-page__empty, .rules-page__loading { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.75rem; padding: 4rem 2rem; color: var(--color-text-muted); text-align: center; }
+/* Toolbar */
+.rules-page__toolbar { display: flex; flex-direction: column; gap: 0.75rem; margin-bottom: 1.5rem; }
+.search-input { width: 100%; padding: 0.625rem 0.875rem; border-radius: var(--radius-lg); border: 1.5px solid var(--color-border-default); background: var(--color-bg-subtle); font-size: 0.875rem; color: var(--color-text-primary); outline: none; font-family: inherit; transition: border-color 0.15s; box-sizing: border-box; }
+.search-input:focus { border-color: var(--color-primary); }
+.search-input::placeholder { color: var(--color-text-muted); }
+.tag-filter { display: flex; gap: 0.25rem; flex-wrap: wrap; }
+.tag-filter__btn { font-size: 0.7rem; padding: 2px 8px; background: var(--color-bg-subtle); border: 1px solid var(--color-border-default); border-radius: var(--radius-full); color: var(--color-text-secondary); cursor: pointer; transition: all 0.15s; }
+.tag-filter__btn:hover { border-color: var(--color-border-strong); }
+.tag-filter__btn--active { background: var(--color-primary-subtle); border-color: var(--color-primary); color: var(--color-primary); }
+.tag-filter__btn--system { opacity: 0.6; font-family: var(--font-mono); }
 /* Card grid */
 .rule-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1rem; }
-/* Rule card */
-.rule-card { background: var(--color-bg-surface); border: 1.5px solid var(--color-border-default); border-radius: var(--radius-xl); padding: 1.25rem; display: flex; flex-direction: column; gap: 0.75rem; }
-.rule-card__header { display: flex; align-items: center; justify-content: space-between; }
-.rule-card__icon { color: var(--color-warning); }
-.rule-card__badges { display: flex; align-items: center; gap: 0.5rem; }
-.rule-card__status { font-size: 0.75rem; font-weight: 600; padding: 2px 8px; border-radius: var(--radius-full); }
-.rule-card__status--active { background: var(--color-success-50); color: var(--color-success); }
-.rule-card__status--disabled { background: var(--color-bg-subtle); color: var(--color-text-muted); }
-.rule-card__status--failed { background: var(--color-danger-50); color: var(--color-danger); }
-.rule-card__url { font-family: var(--font-mono); font-size: 1.25rem; font-weight: 700; color: var(--color-text-primary); }
-.rule-card__backend { font-family: var(--font-mono); font-size: 0.8125rem; color: var(--color-text-secondary); }
-.rule-card__tags { display: flex; gap: 0.25rem; flex-wrap: wrap; }
-.rule-card__actions { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; margin-top: auto; }
-/* Protocol badge */
-.proto-badge { display: inline-block; font-size: 0.7rem; font-weight: 700; padding: 2px 6px; border-radius: var(--radius-sm); font-family: var(--font-mono); }
-.proto-badge--tcp { background: var(--color-warning-50); color: var(--color-warning); }
-.proto-badge--udp { background: #f3e8ff; color: #7c3aed; }
-/* Tags */
-.tag { font-size: 0.75rem; padding: 2px 8px; background: var(--color-primary-subtle); color: var(--color-primary); border-radius: var(--radius-full); font-weight: 500; }
-/* Toggle */
-.toggle { width: 40px; height: 22px; border-radius: 11px; border: none; background: var(--color-bg-subtle); cursor: pointer; position: relative; transition: background 0.2s; padding: 0; flex-shrink: 0; }
-.toggle--on { background: var(--color-primary); }
-.toggle--sm { width: 36px; height: 20px; border-radius: 10px; }
-.toggle--sm .toggle__knob { width: 14px; height: 14px; }
-.toggle--sm.toggle--on .toggle__knob { transform: translateX(16px); }
-.toggle__knob { position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: white; transition: transform 0.2s; }
-/* Modals - standardized spacing */
+/* Modals */
 .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); backdrop-filter: blur(4px); z-index: var(--z-modal); display: flex; align-items: center; justify-content: center; }
 .modal { background: var(--color-bg-surface); border: 1.5px solid var(--color-border-default); border-radius: var(--radius-2xl); box-shadow: var(--shadow-xl); width: min(480px, 90vw); overflow: hidden; }
+.modal--large { width: min(600px, 92vw); }
 .modal__header { padding: 1rem 1.5rem; font-weight: 600; font-size: 1rem; border-bottom: 1px solid var(--color-border-subtle); }
 .modal__body { padding: 1.5rem; display: flex; flex-direction: column; gap: 1.25rem; }
 .modal__footer { padding: 1rem 1.5rem; display: flex; justify-content: flex-end; gap: 0.75rem; border-top: 1px solid var(--color-border-subtle); }
-.form-group { display: flex; flex-direction: column; gap: 0.5rem; }
-.form-group label { font-size: 0.875rem; font-weight: 500; color: var(--color-text-secondary); }
-.form-group--port { width: 100px; flex-shrink: 0; }
-.form-row { display: flex; gap: 0.75rem; }
-.input-base { width: 100%; padding: 0.625rem 0.875rem; border-radius: var(--radius-lg); border: 1.5px solid var(--color-border-default); background: var(--color-bg-subtle); font-size: 0.875rem; color: var(--color-text-primary); outline: none; font-family: inherit; transition: border-color 0.15s; box-sizing: border-box; }
-.input-base:focus { border-color: var(--color-primary); }
-select.input-base { appearance: auto; }
+/* Buttons (still used by header + empty state + delete modal) */
 .btn { padding: 0.5rem 1rem; border-radius: var(--radius-lg); font-size: 0.875rem; font-weight: 500; cursor: pointer; transition: all 0.15s; border: none; font-family: inherit; display: inline-flex; align-items: center; gap: 0.375rem; }
 .btn-primary { background: var(--gradient-primary); color: white; }
 .btn-secondary { background: var(--color-bg-subtle); color: var(--color-text-primary); border: 1px solid var(--color-border-default); }
 .btn-danger { background: var(--color-danger); color: white; }
-.btn-sm { padding: 0.25rem 0.75rem; font-size: 0.8125rem; }
+/* Spinner */
 .spinner { width: 24px; height: 24px; border: 2px solid var(--color-border-default); border-top-color: var(--color-primary); border-radius: 50%; animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 </style>
