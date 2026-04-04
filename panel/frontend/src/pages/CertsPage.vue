@@ -3,9 +3,16 @@
     <div class="certs-page__header">
       <div>
         <h1 class="certs-page__title">统一证书</h1>
-        <p class="certs-page__subtitle">{{ certificates.length }} 项证书 · {{ activeCount }} 生效中</p>
+        <p class="certs-page__subtitle">
+          <template v-if="selectedAgentId">
+            {{ certificates.length }} 项证书 · {{ activeCount }} 生效中
+          </template>
+          <template v-else>
+            请先选择一个节点
+          </template>
+        </p>
       </div>
-      <button class="btn btn-primary" @click="showAddForm = true">
+      <button v-if="selectedAgentId" class="btn btn-primary" @click="showAddForm = true">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
           <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
         </svg>
@@ -13,7 +20,15 @@
       </button>
     </div>
 
-    <div v-if="isLoading" class="certs-page__loading">
+    <div v-if="!selectedAgentId" class="certs-page__prompt">
+      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+        <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+      </svg>
+      <p>请从侧边栏选择一个节点</p>
+    </div>
+
+    <div v-else-if="isLoading" class="certs-page__loading">
       <div class="spinner"></div>
     </div>
 
@@ -112,9 +127,20 @@
 
 <script setup>
 import { ref, computed } from 'vue'
-import { useCertificates } from '../hooks/useCertificates'
+import { useRoute } from 'vue-router'
+import { useAgent } from '../context/AgentContext'
+import { useCertificates, useCreateCertificate, useUpdateCertificate, useDeleteCertificate, useIssueCertificate } from '../hooks/useCertificates'
 
-const { data: _certsData, isLoading } = useCertificates()
+const route = useRoute()
+const { selectedAgentId } = useAgent()
+
+const agentId = computed(() => route.query.agentId || selectedAgentId.value)
+
+const { data: _certsData, isLoading } = useCertificates(agentId)
+const createCertificate = useCreateCertificate(agentId)
+const updateCertificate = useUpdateCertificate(agentId)
+const deleteCertificate = useDeleteCertificate(agentId)
+const issueCertificate = useIssueCertificate(agentId)
 const certificates = computed(() => _certsData.value ?? [])
 const showAddForm = ref(false)
 const editingCert = ref(null)
@@ -138,7 +164,7 @@ function getIssuerLabel(mode) {
 }
 
 function issueCert(cert) {
-  // issueCertificate(cert.id)
+  issueCertificate.mutate(cert.id)
 }
 
 function startEdit(cert) {
@@ -157,10 +183,25 @@ function closeForm() {
 }
 
 function submitForm() {
+  const payload = {
+    domain: form.value.domain,
+    scope: form.value.scope,
+    issuer_mode: form.value.issuer_mode,
+    tags: form.value.tags ? form.value.tags.split(',').map(t => t.trim()).filter(Boolean) : [],
+    enabled: true
+  }
+  if (editingCert.value) {
+    updateCertificate.mutate({ id: editingCert.value.id, ...payload })
+  } else {
+    createCertificate.mutate(payload)
+  }
   closeForm()
 }
 
 function confirmDelete() {
+  if (deletingCert.value) {
+    deleteCertificate.mutate(deletingCert.value.id)
+  }
   deletingCert.value = null
 }
 </script>
@@ -188,12 +229,12 @@ function confirmDelete() {
 .tag { font-size: 0.75rem; padding: 2px 8px; background: var(--color-primary-subtle); color: var(--color-primary); border-radius: var(--radius-full); font-weight: 500; }
 .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); backdrop-filter: blur(4px); z-index: var(--z-modal); display: flex; align-items: center; justify-content: center; }
 .modal { background: var(--color-bg-surface); border: 1.5px solid var(--color-border-default); border-radius: var(--radius-2xl); box-shadow: var(--shadow-xl); width: min(480px, 90vw); overflow: hidden; }
-.modal__header { padding: 1rem 1.25rem; font-weight: 600; font-size: 1rem; border-bottom: 1px solid var(--color-border-subtle); }
-.modal__body { padding: 1.25rem; display: flex; flex-direction: column; gap: 1rem; }
-.modal__footer { padding: 1rem 1.25rem; display: flex; justify-content: flex-end; gap: 0.75rem; border-top: 1px solid var(--color-border-subtle); }
-.form-group { display: flex; flex-direction: column; gap: 0.375rem; }
+.modal__header { padding: 1rem 1.5rem; font-weight: 600; font-size: 1rem; border-bottom: 1px solid var(--color-border-subtle); }
+.modal__body { padding: 1.5rem; display: flex; flex-direction: column; gap: 1.25rem; }
+.modal__footer { padding: 1rem 1.5rem; display: flex; justify-content: flex-end; gap: 0.75rem; border-top: 1px solid var(--color-border-subtle); }
+.form-group { display: flex; flex-direction: column; gap: 0.5rem; }
 .form-group label { font-size: 0.875rem; font-weight: 500; color: var(--color-text-secondary); }
-.input-base { width: 100%; padding: 0.5rem 0.75rem; border-radius: var(--radius-lg); border: 1.5px solid var(--color-border-default); background: var(--color-bg-subtle); font-size: 0.875rem; color: var(--color-text-primary); outline: none; font-family: inherit; transition: border-color 0.15s; }
+.input-base { width: 100%; padding: 0.625rem 0.875rem; border-radius: var(--radius-lg); border: 1.5px solid var(--color-border-default); background: var(--color-bg-subtle); font-size: 0.875rem; color: var(--color-text-primary); outline: none; font-family: inherit; transition: border-color 0.15s; box-sizing: border-box; }
 .input-base:focus { border-color: var(--color-primary); }
 select.input-base { appearance: auto; }
 .btn { padding: 0.5rem 1rem; border-radius: var(--radius-lg); font-size: 0.875rem; font-weight: 500; cursor: pointer; transition: all 0.15s; border: none; font-family: inherit; display: inline-flex; align-items: center; gap: 0.375rem; }
