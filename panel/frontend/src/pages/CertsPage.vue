@@ -72,9 +72,15 @@
             <span v-for="tag in (cert.tags || [])" :key="tag" class="tag">{{ tag }}</span>
           </div>
           <div class="cert-card__actions">
-            <button v-if="cert.status === 'pending' || cert.status === 'error'" class="btn btn-primary btn-sm" @click="issueCert(cert)">签发</button>
-            <button class="btn btn-secondary btn-sm" @click="startEdit(cert)">编辑</button>
-            <button class="btn btn-danger btn-sm" @click="startDelete(cert)">删除</button>
+            <button v-if="cert.status === 'pending' || cert.status === 'error'" class="btn btn-primary btn-sm cert-card__action-primary" @click="issueCert(cert)">签发</button>
+            <div class="cert-card__action-group">
+              <button class="cert-card__action" title="编辑" @click="startEdit(cert)">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+              </button>
+              <button class="cert-card__action cert-card__action--delete" title="删除" @click="startDelete(cert)">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -228,24 +234,48 @@ function confirmDelete() {
 .search-input { width: 100%; padding: 0.625rem 0.875rem; border-radius: var(--radius-lg); border: 1.5px solid var(--color-border-default); background: var(--color-bg-subtle); font-size: 0.875rem; color: var(--color-text-primary); outline: none; font-family: inherit; transition: border-color 0.15s; box-sizing: border-box; }
 .search-input:focus { border-color: var(--color-primary); }
 .search-input::placeholder { color: var(--color-text-muted); }
+
+/* Cert grid */
 .cert-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1rem; }
-.cert-card { background: var(--color-bg-surface); border: 1.5px solid var(--color-border-default); border-radius: var(--radius-xl); padding: 1.25rem; display: flex; flex-direction: column; gap: 0.75rem; }
+
+/* Cert card — hover actions */
+.cert-card {
+  background: var(--color-bg-surface);
+  border: 1.5px solid var(--color-border-default);
+  border-radius: var(--radius-xl);
+  padding: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
 .cert-card__header { display: flex; align-items: center; justify-content: space-between; }
 .cert-card__icon { color: var(--color-success); }
 .cert-card__id { font-size: 0.75rem; font-family: var(--font-mono); color: var(--color-text-tertiary); }
+.cert-card__domain { font-size: 1rem; font-weight: 600; color: var(--color-text-primary); font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cert-card__meta { display: flex; gap: 0.5rem; font-size: 0.75rem; color: var(--color-text-tertiary); flex-wrap: wrap; }
+.cert-card__scope { background: var(--color-bg-subtle); padding: 1px 6px; border-radius: var(--radius-sm); }
+.cert-card__error { font-size: 0.75rem; color: var(--color-danger); background: var(--color-danger-50); padding: 0.25rem 0.5rem; border-radius: var(--radius-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cert-card__date { font-size: 0.75rem; color: var(--color-text-tertiary); }
+.cert-card__tags { display: flex; gap: 0.25rem; flex-wrap: wrap; }
+.tag { font-size: 0.75rem; padding: 2px 8px; background: var(--color-primary-subtle); color: var(--color-primary); border-radius: var(--radius-full); font-weight: 500; }
+
+/* Status badge */
 .cert-card__status { font-size: 0.75rem; font-weight: 600; padding: 2px 8px; border-radius: var(--radius-full); }
 .cert-card__status--active { background: var(--color-success-50); color: var(--color-success); }
 .cert-card__status--pending { background: var(--color-warning-50); color: var(--color-warning); }
 .cert-card__status--error { background: var(--color-danger-50); color: var(--color-danger); }
 .cert-card__status--inactive { background: var(--color-bg-subtle); color: var(--color-text-muted); }
-.cert-card__domain { font-size: 1rem; font-weight: 600; color: var(--color-text-primary); font-family: var(--font-mono); }
-.cert-card__meta { display: flex; gap: 0.5rem; font-size: 0.75rem; color: var(--color-text-tertiary); }
-.cert-card__scope { background: var(--color-bg-subtle); padding: 1px 6px; border-radius: var(--radius-sm); }
-.cert-card__error { font-size: 0.75rem; color: var(--color-danger); background: var(--color-danger-50); padding: 0.25rem 0.5rem; border-radius: var(--radius-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cert-card__date { font-size: 0.75rem; color: var(--color-text-tertiary); }
-.cert-card__tags { display: flex; gap: 0.25rem; flex-wrap: wrap; }
-.cert-card__actions { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: auto; }
-.tag { font-size: 0.75rem; padding: 2px 8px; background: var(--color-primary-subtle); color: var(--color-primary); border-radius: var(--radius-full); font-weight: 500; }
+
+/* Actions — hover reveal */
+.cert-card__actions { display: flex; align-items: center; gap: 0.5rem; margin-top: auto; }
+.cert-card__action-primary { /* 签发 always visible */ }
+.cert-card__action-group { display: flex; gap: 0.25rem; opacity: 0; transition: opacity 0.15s; }
+.cert-card:hover .cert-card__action-group { opacity: 1; }
+.cert-card__action { display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: var(--radius-md); border: none; background: transparent; color: var(--color-text-tertiary); cursor: pointer; transition: all 0.15s; }
+.cert-card__action:hover { background: var(--color-bg-hover); color: var(--color-text-primary); }
+.cert-card__action--delete:hover { background: var(--color-danger-50); color: var(--color-danger); }
+
+/* Modals — L4 style */
 .modal-overlay { position: fixed; inset: 0; background: rgba(37,23,54,0.4); backdrop-filter: blur(8px); z-index: var(--z-modal); display: flex; align-items: center; justify-content: center; padding: var(--space-4); }
 .modal { background: var(--color-bg-surface); border: 1.5px solid var(--color-border-default); border-radius: var(--radius-3xl); box-shadow: var(--shadow-2xl); width: min(480px, 90vw); max-height: calc(100vh - var(--space-8)); display: flex; flex-direction: column; overflow: hidden; }
 .modal--large { width: min(600px, 92vw); }
