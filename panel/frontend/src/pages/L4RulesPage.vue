@@ -105,7 +105,7 @@
                 <label>监听地址</label>
                 <input v-model="form.listen_host" class="input-base" placeholder="0.0.0.0">
               </div>
-              <div class="form-group" style="width: 100px">
+              <div class="form-group form-group--port">
                 <label>端口</label>
                 <input v-model="form.listen_port" class="input-base" placeholder="25565">
               </div>
@@ -115,7 +115,7 @@
                 <label>后端地址</label>
                 <input v-model="form.upstream_host" class="input-base" placeholder="192.168.1.100">
               </div>
-              <div class="form-group" style="width: 100px">
+              <div class="form-group form-group--port">
                 <label>端口</label>
                 <input v-model="form.upstream_port" class="input-base" placeholder="25565">
               </div>
@@ -267,6 +267,7 @@ function submitForm() {
 .modal__footer { padding: 1rem 1.5rem; display: flex; justify-content: flex-end; gap: 0.75rem; border-top: 1px solid var(--color-border-subtle); }
 .form-group { display: flex; flex-direction: column; gap: 0.5rem; }
 .form-group label { font-size: 0.875rem; font-weight: 500; color: var(--color-text-secondary); }
+.form-group--port { width: 100px; flex-shrink: 0; }
 .form-row { display: flex; gap: 0.75rem; }
 .input-base { width: 100%; padding: 0.625rem 0.875rem; border-radius: var(--radius-lg); border: 1.5px solid var(--color-border-default); background: var(--color-bg-subtle); font-size: 0.875rem; color: var(--color-text-primary); outline: none; font-family: inherit; transition: border-color 0.15s; box-sizing: border-box; }
 .input-base:focus { border-color: var(--color-primary); }
