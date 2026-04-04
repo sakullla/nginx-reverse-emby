@@ -1,11 +1,6 @@
 <template>
   <aside class="sidebar" :class="{ 'sidebar--collapsed': collapsed }">
     <div class="sidebar__header">
-      <div class="sidebar__logo" v-show="!collapsed">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-          <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
-        </svg>
-      </div>
       <span class="sidebar__brand" v-show="!collapsed">Nginx Proxy</span>
       <button class="sidebar__collapse-btn" @click="toggleCollapse" :title="collapsed ? '展开' : '折叠'">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" :class="{ 'rotate-180': collapsed }">

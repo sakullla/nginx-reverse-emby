@@ -5,12 +5,19 @@
         <h1 class="agents-page__title">节点管理</h1>
         <p class="agents-page__subtitle">{{ agents.length }} 个节点 · {{ onlineCount }} 在线· 累计 {{ totalHttpRules }} HTTP 规则 · 累计 {{ totalL4Rules }} L4 规则</p>
       </div>
-      <button class="btn btn-primary" @click="showJoinModal = true">
+      <div style="display:flex;gap:0.5rem">
+        <button v-if="selectedAgentId" class="btn btn-secondary" :disabled="applying" @click="handleApply">
+          <svg v-if="!applying" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+          <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></svg>
+          {{ applying ? '推送中...' : '推送配置' }}
+        </button>
+        <button class="btn btn-primary" @click="showJoinModal = true">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
           <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
         </svg>
         加入节点
       </button>
+      </div>
     </div>
 
     <!-- Agent List -->
@@ -120,9 +127,11 @@
 import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAgents, useRenameAgent, useDeleteAgent } from '../hooks/useAgents'
-import { fetchSystemInfo } from '../api'
+import { fetchSystemInfo, applyConfig } from '../api'
+import { useAgent } from '../context/AgentContext'
 
 const router = useRouter()
+const { selectedAgentId } = useAgent()
 
 const { data, isLoading, refetch: loadAgents } = useAgents()
 const renameAgent = useRenameAgent()
@@ -134,6 +143,17 @@ const selectedPlatform = ref('linux')
 const renamingAgent = ref(null)
 const newAgentName = ref('')
 const deletingAgent = ref(null)
+const applying = ref(false)
+
+async function handleApply() {
+  if (!selectedAgentId.value || applying.value) return
+  applying.value = true
+  try {
+    await applyConfig(selectedAgentId.value)
+  } finally {
+    applying.value = false
+  }
+}
 
 // Fetch system info for join command
 const systemInfo = ref(null)
