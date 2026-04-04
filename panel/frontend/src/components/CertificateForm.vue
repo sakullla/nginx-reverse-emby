@@ -96,8 +96,16 @@ const props = defineProps({
   agentId: { type: [String, Object], required: true }
 })
 const emit = defineEmits(['success'])
-const createCertificate = useCreateCertificate(props.agentId)
-const updateCertificate = useUpdateCertificate(props.agentId)
+
+// Wrap agentId to handle both plain strings (from prop passing) and ref-like objects
+const agentIdRef = computed(() => {
+  if (props.agentId && typeof props.agentId === 'object' && 'value' in props.agentId) {
+    return props.agentId
+  }
+  return { value: props.agentId }
+})
+const createCertificate = useCreateCertificate(agentIdRef)
+const updateCertificate = useUpdateCertificate(agentIdRef)
 const isEdit = computed(() => !!props.initialData?.id)
 const isLoading = computed(() => createCertificate.isPending.value || updateCertificate.isPending.value)
 

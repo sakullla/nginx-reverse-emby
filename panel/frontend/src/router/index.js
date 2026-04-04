@@ -1,8 +1,15 @@
 import { createRouter, createWebHistory } from 'vue-router'
+import { verifyToken } from '../api'
 
 const AppShell = () => import('../components/layout/AppShell.vue')
 
 const routes = [
+  {
+    path: '/login',
+    name: 'login',
+    component: () => import('../pages/LoginPage.vue'),
+    meta: { title: '登录' }
+  },
   {
     path: '/',
     component: AppShell,
@@ -68,6 +75,29 @@ const routes = [
 const router = createRouter({
   history: createWebHistory(),
   routes
+})
+
+// Auth guard - redirect to /login if no valid token
+router.beforeEach(async (to) => {
+  // Allow login route through
+  if (to.name === 'login') return true
+
+  const token = localStorage.getItem('panel_token')
+  if (!token) {
+    return { name: 'login' }
+  }
+
+  try {
+    const valid = await verifyToken(token)
+    if (!valid) {
+      localStorage.removeItem('panel_token')
+      return { name: 'login' }
+    }
+    return true
+  } catch {
+    // Network error or server unreachable - allow through in case server has no auth configured
+    return true
+  }
 })
 
 export default router

@@ -1635,6 +1635,8 @@ function sanitizeAgent(agent) {
     is_local: !!hydrated.is_local,
     last_seen_ip: hydrated.last_seen_ip || null,
     capabilities: normalizeCapabilities(hydrated.capabilities || []),
+    http_rules_count: typeof hydrated.http_rules_count === 'number' ? hydrated.http_rules_count : 0,
+    l4_rules_count: typeof hydrated.l4_rules_count === 'number' ? hydrated.l4_rules_count : 0,
   };
 }
 
