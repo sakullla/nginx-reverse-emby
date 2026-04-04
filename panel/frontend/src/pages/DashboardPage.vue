@@ -60,6 +60,52 @@
       </div>
     </div>
 
+    <div v-if="agents?.length" class="dashboard-section">
+      <div class="dashboard-section__header">
+        <h2 class="dashboard-section__title">节点状态</h2>
+        <RouterLink to="/agents" class="dashboard-section__link">查看全部 →</RouterLink>
+      </div>
+      <div class="dashboard-table-wrap">
+        <table class="dashboard-table">
+          <thead>
+            <tr>
+              <th>节点</th>
+              <th>状态</th>
+              <th>HTTP 规则</th>
+              <th>L4 规则</th>
+              <th>同步状态</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="agent in displayedAgents" :key="agent.id">
+              <td>
+                <div class="agent-cell">
+                  <span class="agent-cell__name">{{ agent.name }}</span>
+                  <span class="agent-cell__url">{{ agent.agent_url ? getHostname(agent.agent_url) : (agent.last_seen_ip || '—') }}</span>
+                </div>
+              </td>
+              <td>
+                <span class="status-badge" :class="`status-badge--${getStatus(agent)}`">
+                  {{ getStatusLabel(agent) }}
+                </span>
+              </td>
+              <td>
+                <span class="tag">{{ agent.http_rules_count || 0 }}</span>
+              </td>
+              <td>
+                <span class="tag">{{ agent.l4_rules_count || 0 }}</span>
+              </td>
+              <td>
+                <span class="sync-badge" :class="`sync-badge--${getSyncStatus(agent)}`">
+                  {{ getSyncLabel(agent) }}
+                </span>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
     <!-- Loading state -->
     <div v-if="isLoading" class="dashboard__loading">
       <div class="spinner"></div>
@@ -97,6 +143,33 @@ const rulesCount = computed(() => {
 const l4Count = computed(() => {
   return agents.value?.length * 1 || 0
 })
+
+const displayedAgents = computed(() => (agents.value || []).slice(0, 8))
+
+function getHostname(url) {
+  try { return url ? new URL(url).hostname : '' } catch { return '' }
+}
+
+function getStatus(agent) {
+  if (agent.status === 'offline') return 'offline'
+  if (agent.last_apply_status === 'failed') return 'failed'
+  if (agent.desired_revision > agent.current_revision) return 'pending'
+  return 'online'
+}
+
+function getStatusLabel(agent) {
+  return { online: '在线', offline: '离线', failed: '失败', pending: '同步中' }[getStatus(agent)] || '—'
+}
+
+function getSyncStatus(agent) {
+  if (agent.last_apply_status === 'failed') return 'failed'
+  if (agent.desired_revision > agent.current_revision) return 'pending'
+  return 'synced'
+}
+
+function getSyncLabel(agent) {
+  return { synced: '已同步', pending: '待同步', failed: '失败' }[getSyncStatus(agent)] || '—'
+}
 </script>
 
 <style scoped>
@@ -208,4 +281,25 @@ const l4Count = computed(() => {
   font-size: 0.875rem !important;
   color: var(--color-text-tertiary) !important;
 }
+.dashboard-section { background: var(--color-bg-surface); border: 1.5px solid var(--color-border-default); border-radius: var(--radius-2xl); overflow: hidden; margin-bottom: 2rem; }
+.dashboard-section__header { display: flex; align-items: center; justify-content: space-between; padding: 1rem 1.25rem; border-bottom: 1px solid var(--color-border-subtle); }
+.dashboard-section__title { font-size: 0.875rem; font-weight: 600; color: var(--color-text-primary); margin: 0; }
+.dashboard-section__link { font-size: 0.8rem; color: var(--color-primary); text-decoration: none; }
+.dashboard-table-wrap { overflow-x: auto; }
+.dashboard-table { width: 100%; border-collapse: collapse; }
+.dashboard-table th { text-align: left; padding: 0.6rem 1rem; font-size: 0.7rem; font-weight: 600; color: var(--color-text-tertiary); border-bottom: 1px solid var(--color-border-subtle); }
+.dashboard-table td { padding: 0.75rem 1rem; border-bottom: 1px solid var(--color-border-subtle); }
+.dashboard-table tr:last-child td { border-bottom: none; }
+.agent-cell__name { display: block; font-size: 0.875rem; font-weight: 500; color: var(--color-text-primary); }
+.agent-cell__url { display: block; font-size: 0.75rem; color: var(--color-text-tertiary); font-family: var(--font-mono); }
+.status-badge { display: inline-block; font-size: 0.7rem; padding: 2px 8px; border-radius: var(--radius-full); font-weight: 500; }
+.status-badge--online { background: var(--color-success-50); color: var(--color-success); }
+.status-badge--offline { background: var(--color-bg-subtle); color: var(--color-text-muted); }
+.status-badge--failed { background: var(--color-danger-50); color: var(--color-danger); }
+.status-badge--pending { background: var(--color-warning-50); color: var(--color-warning); }
+.tag { display: inline-block; font-size: 0.75rem; padding: 2px 6px; background: var(--color-primary-subtle); color: var(--color-primary); border-radius: var(--radius-full); font-weight: 500; }
+.sync-badge { display: inline-block; font-size: 0.7rem; padding: 2px 8px; border-radius: var(--radius-full); font-weight: 500; }
+.sync-badge--synced { background: var(--color-success-50); color: var(--color-success); }
+.sync-badge--pending { background: var(--color-warning-50); color: var(--color-warning); }
+.sync-badge--failed { background: var(--color-danger-50); color: var(--color-danger); }
 </style>
