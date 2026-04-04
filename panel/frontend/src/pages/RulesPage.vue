@@ -40,10 +40,27 @@
       <button class="btn btn-primary" @click="showAddForm = true">添加第一条规则</button>
     </div>
 
+    <!-- No search results -->
+    <div v-else-if="selectedAgentId && rules.length && !filteredRules.length" class="rules-page__empty">
+      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+      </svg>
+      <p>没有匹配的规则</p>
+    </div>
+
+    <!-- Search and tag filter toolbar -->
+    <div v-if="selectedAgentId && rules.length" class="rules-page__toolbar">
+      <input v-model="searchQuery" class="search-input" placeholder="搜索 URL / 标签 / #id=...">
+      <div v-if="allTags.length" class="tag-filter">
+        <button v-for="tag in allTags" :key="tag" class="tag-filter__btn" :class="{ 'tag-filter__btn--active': selectedTags.includes(tag), 'tag-filter__btn--system': isSystemTag(tag) }" @click="toggleTag(tag)">{{ tag }}</button>
+      </div>
+    </div>
+
     <!-- Rules card grid -->
-    <div v-else-if="selectedAgentId && rules.length" class="rule-grid">
-      <div v-for="rule in rules" :key="rule.id" class="rule-card">
+    <div v-else-if="selectedAgentId && filteredRules.length" class="rule-grid">
+      <div v-for="rule in filteredRules" :key="rule.id" class="rule-card">
         <div class="rule-card__header">
+          <span class="rule-card__id">#{{ rule.id }}</span>
           <div class="rule-card__icon">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
@@ -62,13 +79,14 @@
         <div class="rule-card__url">{{ rule.frontend_url }}</div>
         <div class="rule-card__backend">→ {{ rule.backend_url }}</div>
         <div class="rule-card__tags">
-          <span v-for="tag in (rule.tags || []).slice(0, 3)" :key="tag" class="tag">{{ tag }}</span>
+          <span v-for="tag in (rule.tags || [])" :key="tag" class="tag">{{ tag }}</span>
         </div>
         <div class="rule-card__actions">
           <button class="toggle toggle--sm" :class="{ 'toggle--on': rule.enabled }" @click="toggleRule(rule)">
             <span class="toggle__knob"></span>
           </button>
           <button class="btn btn-secondary btn-sm" @click="startEdit(rule)">编辑</button>
+          <button class="btn btn-secondary btn-sm" @click="handleCopy(rule)" title="复制">复制</button>
           <button class="btn btn-danger btn-sm" @click="startDelete(rule)">删除</button>
         </div>
       </div>
@@ -82,30 +100,22 @@
     <!-- Add/Edit Form Modal -->
     <Teleport to="body">
       <div v-if="showAddForm || editingRule" class="modal-overlay" @click.self="closeForm">
-        <div class="modal">
+        <div class="modal modal--large">
           <div class="modal__header">{{ editingRule ? '编辑规则' : '添加规则' }}</div>
           <div class="modal__body">
-            <div class="form-group">
-              <label>前端地址</label>
-              <input v-model="form.frontend_url" class="input-base" placeholder="https://example.com">
-            </div>
-            <div class="form-group">
-              <label>后端地址</label>
-              <input v-model="form.backend_url" class="input-base" placeholder="http://192.168.1.100:8096">
-            </div>
-            <div class="form-group">
-              <label>标签（逗号分隔）</label>
-              <input v-model="form.tags" class="input-base" placeholder="emby, media">
-            </div>
-            <div class="form-group form-group--check">
-              <label>
-                <input type="checkbox" v-model="form.enabled"> 启用规则
-              </label>
-            </div>
+            <RuleForm :initial-data="editingRule" :agent-id="agentId" @success="closeForm" />
           </div>
-          <div class="modal__footer">
-            <button class="btn btn-secondary" @click="closeForm">取消</button>
-            <button class="btn btn-primary" @click="submitForm">{{ editingRule ? '保存' : '添加' }}</button>
+        </div>
+      </div>
+    </Teleport>
+
+    <!-- Copy Modal -->
+    <Teleport to="body">
+      <div v-if="showCopyModal" class="modal-overlay" @click.self="closeForm">
+        <div class="modal modal--large">
+          <div class="modal__header">复制规则</div>
+          <div class="modal__body">
+            <RuleForm v-if="copyingRule" :initial-data="copyingRule" :agent-id="agentId" @success="closeForm" />
           </div>
         </div>
       </div>
@@ -134,6 +144,7 @@ import { ref, computed } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAgent } from '../context/AgentContext'
 import { useRules, useCreateRule, useUpdateRule, useDeleteRule } from '../hooks/useRules'
+import RuleForm from '../components/RuleForm.vue'
 
 const route = useRoute()
 const { selectedAgentId } = useAgent()
@@ -146,12 +157,50 @@ const createRule = useCreateRule(agentId)
 const updateRule = useUpdateRule(agentId)
 const deleteRule = useDeleteRule(agentId)
 const rules = computed(() => _rulesData.value ?? [])
-const showAddForm = ref(false)
-const editingRule = ref(null)
-const deletingRule = ref(null)
-const form = ref({ frontend_url: '', backend_url: '', tags: '', enabled: true })
+
+// Search and filter
+const searchQuery = ref('')
+const selectedTags = ref([])
+const SYSTEM_TAG_SET = new Set(['TCP', 'UDP', 'HTTP', 'HTTPS', 'RR', 'LC', 'RND', 'HASH'])
+function isSystemTag(tag) { return SYSTEM_TAG_SET.has(tag) || /^:\d+$/.test(tag) }
+function toggleTag(tag) {
+  const i = selectedTags.value.indexOf(tag)
+  if (i === -1) selectedTags.value.push(tag)
+  else selectedTags.value.splice(i, 1)
+}
+
+const filteredRules = computed(() => {
+  let result = rules.value
+  if (selectedTags.value.length > 0) {
+    result = result.filter(rule => selectedTags.value.some(tag => (rule.tags || []).includes(tag)))
+  }
+  const raw = searchQuery.value.trim()
+  if (!raw) return result
+  const idMatch = raw.match(/^#id=(\S+)$/)
+  if (idMatch) return result.filter(rule => String(rule.id) === idMatch[1])
+  const q = raw.toLowerCase()
+  return result.filter(rule =>
+    String(rule.frontend_url || '').toLowerCase().includes(q) ||
+    String(rule.backend_url || '').toLowerCase().includes(q) ||
+    String(rule.name || '').toLowerCase().includes(q) ||
+    (rule.tags || []).some(tag => String(tag).toLowerCase().includes(q))
+  )
+})
+
+const allTags = computed(() => {
+  const tagSet = new Set()
+  rules.value.forEach(rule => (rule.tags || []).forEach(tag => tagSet.add(tag)))
+  return [...tagSet].sort()
+})
 
 const enabledCount = computed(() => rules.value.filter(r => r.enabled).length)
+
+// Modals
+const showAddForm = ref(false)
+const editingRule = ref(null)
+const copyingRule = ref(null)
+const showCopyModal = ref(false)
+const deletingRule = ref(null)
 
 function getStatus(rule) {
   if (!rule.enabled) return 'disabled'
@@ -171,7 +220,12 @@ function toggleRule(rule) {
 
 function startEdit(rule) {
   editingRule.value = rule
-  form.value = { frontend_url: rule.frontend_url, backend_url: rule.backend_url, tags: (rule.tags || []).join(', '), enabled: rule.enabled }
+}
+
+function handleCopy(rule) {
+  const { id, ...rest } = rule
+  copyingRule.value = rest
+  showCopyModal.value = true
 }
 
 function startDelete(rule) {
@@ -181,22 +235,8 @@ function startDelete(rule) {
 function closeForm() {
   showAddForm.value = false
   editingRule.value = null
-  form.value = { frontend_url: '', backend_url: '', tags: '', enabled: true }
-}
-
-function submitForm() {
-  const payload = {
-    frontend_url: form.value.frontend_url,
-    backend_url: form.value.backend_url,
-    tags: form.value.tags ? form.value.tags.split(',').map(t => t.trim()).filter(Boolean) : [],
-    enabled: form.value.enabled
-  }
-  if (editingRule.value) {
-    updateRule.mutate({ id: editingRule.value.id, ...payload })
-  } else {
-    createRule.mutate(payload)
-  }
-  closeForm()
+  showCopyModal.value = false
+  copyingRule.value = null
 }
 
 function confirmDelete() {
@@ -214,11 +254,22 @@ function confirmDelete() {
 .rules-page__subtitle { font-size: 0.875rem; color: var(--color-text-tertiary); margin: 0; }
 .rules-page__prompt, .rules-page__empty, .rules-page__loading { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.75rem; padding: 4rem 2rem; color: var(--color-text-muted); text-align: center; }
 .rules-page__prompt-hint { font-size: 0.875rem; color: var(--color-text-tertiary); }
+/* Toolbar */
+.rules-page__toolbar { display: flex; flex-direction: column; gap: 0.75rem; margin-bottom: 1.5rem; }
+.search-input { width: 100%; padding: 0.625rem 0.875rem; border-radius: var(--radius-lg); border: 1.5px solid var(--color-border-default); background: var(--color-bg-subtle); font-size: 0.875rem; color: var(--color-text-primary); outline: none; font-family: inherit; transition: border-color 0.15s; box-sizing: border-box; }
+.search-input:focus { border-color: var(--color-primary); }
+.search-input::placeholder { color: var(--color-text-muted); }
+.tag-filter { display: flex; gap: 0.25rem; flex-wrap: wrap; }
+.tag-filter__btn { font-size: 0.7rem; padding: 2px 8px; background: var(--color-bg-subtle); border: 1px solid var(--color-border-default); border-radius: var(--radius-full); color: var(--color-text-secondary); cursor: pointer; transition: all 0.15s; }
+.tag-filter__btn:hover { border-color: var(--color-border-strong); }
+.tag-filter__btn--active { background: var(--color-primary-subtle); border-color: var(--color-primary); color: var(--color-primary); }
+.tag-filter__btn--system { opacity: 0.6; font-family: var(--font-mono); }
 /* Card grid */
 .rule-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1rem; }
 /* Rule card */
 .rule-card { background: var(--color-bg-surface); border: 1.5px solid var(--color-border-default); border-radius: var(--radius-xl); padding: 1.25rem; display: flex; flex-direction: column; gap: 0.75rem; }
 .rule-card__header { display: flex; align-items: center; justify-content: space-between; }
+.rule-card__id { font-size: 0.75rem; font-family: var(--font-mono); color: var(--color-text-tertiary); }
 .rule-card__icon { color: var(--color-primary); }
 .rule-card__badges { display: flex; align-items: center; gap: 0.5rem; }
 .rule-card__status { font-size: 0.75rem; font-weight: 600; padding: 2px 8px; border-radius: var(--radius-full); }
@@ -245,15 +296,10 @@ function confirmDelete() {
 /* Modals - standardized spacing */
 .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); backdrop-filter: blur(4px); z-index: var(--z-modal); display: flex; align-items: center; justify-content: center; }
 .modal { background: var(--color-bg-surface); border: 1.5px solid var(--color-border-default); border-radius: var(--radius-2xl); box-shadow: var(--shadow-xl); width: min(480px, 90vw); overflow: hidden; }
+.modal--large { width: min(600px, 92vw); }
 .modal__header { padding: 1rem 1.5rem; font-weight: 600; font-size: 1rem; border-bottom: 1px solid var(--color-border-subtle); }
 .modal__body { padding: 1.5rem; display: flex; flex-direction: column; gap: 1.25rem; }
 .modal__footer { padding: 1rem 1.5rem; display: flex; justify-content: flex-end; gap: 0.75rem; border-top: 1px solid var(--color-border-subtle); }
-.form-group { display: flex; flex-direction: column; gap: 0.5rem; }
-.form-group label { font-size: 0.875rem; font-weight: 500; color: var(--color-text-secondary); }
-.form-group--check { flex-direction: row; align-items: center; }
-.form-group--check label { display: flex; align-items: center; gap: 0.5rem; cursor: pointer; font-weight: normal; }
-.input-base { width: 100%; padding: 0.625rem 0.875rem; border-radius: var(--radius-lg); border: 1.5px solid var(--color-border-default); background: var(--color-bg-subtle); font-size: 0.875rem; color: var(--color-text-primary); outline: none; font-family: inherit; transition: border-color 0.15s; box-sizing: border-box; }
-.input-base:focus { border-color: var(--color-primary); }
 .btn { padding: 0.5rem 1rem; border-radius: var(--radius-lg); font-size: 0.875rem; font-weight: 500; cursor: pointer; transition: all 0.15s; border: none; font-family: inherit; display: inline-flex; align-items: center; gap: 0.375rem; }
 .btn-primary { background: var(--gradient-primary); color: white; }
 .btn-secondary { background: var(--color-bg-subtle); color: var(--color-text-primary); border: 1px solid var(--color-border-default); }
