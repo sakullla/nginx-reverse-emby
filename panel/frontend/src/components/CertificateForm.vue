@@ -81,7 +81,7 @@
       <span class="toggle__label">启用并参与分发</span>
     </label>
 
-    <button type="submit" class="btn btn--primary btn--full" :disabled="ruleStore.loading">
+    <button type="submit" class="btn btn--primary btn--full" :disabled="isLoading">
       {{ isEdit ? '保存修改' : '创建证书' }}
     </button>
   </form>
@@ -89,12 +89,17 @@
 
 <script setup>
 import { computed, ref } from 'vue'
-import { useRuleStore } from '../stores/rules'
+import { useCreateCertificate, useUpdateCertificate } from '../hooks/useCertificates'
 
-const props = defineProps({ initialData: { type: Object, default: null } })
+const props = defineProps({
+  initialData: { type: Object, default: null },
+  agentId: { type: [String, Object], required: true }
+})
 const emit = defineEmits(['success'])
-const ruleStore = useRuleStore()
-const isEdit = computed(() => !!props.initialData)
+const createCertificate = useCreateCertificate(props.agentId)
+const updateCertificate = useUpdateCertificate(props.agentId)
+const isEdit = computed(() => !!props.initialData?.id)
+const isLoading = computed(() => createCertificate.isPending.value || updateCertificate.isPending.value)
 
 const form = ref({
   domain: props.initialData?.domain || '',
@@ -132,12 +137,16 @@ async function handleSubmit() {
     return
   }
   const payload = { ...form.value, domain: form.value.domain.trim() }
-  if (isEdit.value) {
-    await ruleStore.modifyCertificate(props.initialData.id, payload)
-  } else {
-    await ruleStore.addCertificate(payload)
+  try {
+    if (isEdit.value) {
+      await updateCertificate.mutateAsync({ id: props.initialData.id, ...payload })
+    } else {
+      await createCertificate.mutateAsync(payload)
+    }
+    emit('success')
+  } catch (err) {
+    errors.value.domain = err?.message || '操作失败'
   }
-  emit('success')
 }
 </script>
 
