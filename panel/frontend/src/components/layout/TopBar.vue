@@ -229,7 +229,7 @@ function handleLogout() {
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-xl);
   z-index: var(--z-dropdown);
-  overflow: hidden;
+  overflow: visible;
 }
 .agent-switcher__search { padding: 0.5rem; border-bottom: 1px solid var(--color-border-subtle); }
 .agent-switcher__search-input {
@@ -239,6 +239,7 @@ function handleLogout() {
   background: var(--color-bg-subtle);
   font-size: 0.8rem; color: var(--color-text-primary);
   outline: none; font-family: inherit;
+  box-sizing: border-box;
 }
 .agent-switcher__search-input:focus { border-color: var(--color-primary); }
 .agent-switcher__list { max-height: 280px; overflow-y: auto; padding: 0.25rem; }

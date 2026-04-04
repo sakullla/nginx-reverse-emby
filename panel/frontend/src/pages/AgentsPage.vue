@@ -37,7 +37,8 @@
             </span>
           </div>
         </div>
-        <div class="agent-card__actions">
+        <div class="agent-card__actions" @click.stop>
+          <button class="btn btn-secondary btn-sm" @click="startRename(agent)">重命名</button>
           <button v-if="!agent.is_local" class="btn btn-danger btn-sm" @click="startDelete(agent)">删除</button>
         </div>
       </div>
@@ -78,6 +79,25 @@
       </div>
     </Teleport>
 
+    <!-- Rename Modal -->
+    <Teleport to="body">
+      <div v-if="renamingAgent" class="modal-overlay" @click.self="renamingAgent = null">
+        <div class="modal">
+          <div class="modal__header">重命名节点</div>
+          <div class="modal__body">
+            <div class="form-group">
+              <label>节点名称</label>
+              <input v-model="newAgentName" class="input-base" placeholder="输入节点名称" @keyup.enter="confirmRename" />
+            </div>
+          </div>
+          <div class="modal__footer">
+            <button class="btn btn-secondary" @click="renamingAgent = null">取消</button>
+            <button class="btn btn-primary" @click="confirmRename">保存</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
+
     <!-- Delete Modal -->
     <Teleport to="body">
       <div v-if="deletingAgent" class="modal-overlay" @click.self="deletingAgent = null">
@@ -108,6 +128,8 @@ const agents = computed(() => data.value ?? [])
 
 const showJoinModal = ref(false)
 const selectedPlatform = ref('linux')
+const renamingAgent = ref(null)
+const newAgentName = ref('')
 const deletingAgent = ref(null)
 
 const platforms = [
@@ -163,6 +185,15 @@ function getCurrentSteps() {
 
 async function copyCommand() {
   await navigator.clipboard.writeText(getCurrentCommand())
+}
+
+function startRename(agent) {
+  renamingAgent.value = agent
+  newAgentName.value = agent.name
+}
+
+function confirmRename() {
+  renamingAgent.value = null
 }
 
 function startDelete(agent) {
@@ -249,6 +280,10 @@ function confirmDelete() {
 .join-steps li { font-size: 0.875rem; color: var(--color-text-secondary); padding-left: 1.25rem; position: relative; }
 .join-steps li::before { content: counter(step) "."; counter-increment: step; position: absolute; left: 0; color: var(--color-primary); font-weight: 600; }
 .agents-page__loading, .agents-page__empty { display: flex; align-items: center; justify-content: center; padding: 3rem; color: var(--color-text-muted); }
+.form-group { display: flex; flex-direction: column; gap: 0.375rem; }
+.form-group label { font-size: 0.875rem; font-weight: 500; color: var(--color-text-secondary); }
+.input-base { width: 100%; padding: 0.5rem 0.75rem; border-radius: var(--radius-lg); border: 1.5px solid var(--color-border-default); background: var(--color-bg-subtle); font-size: 0.875rem; color: var(--color-text-primary); outline: none; font-family: inherit; box-sizing: border-box; transition: border-color 0.15s; }
+.input-base:focus { border-color: var(--color-primary); }
 .btn { padding: 0.5rem 1rem; border-radius: var(--radius-lg); font-size: 0.875rem; font-weight: 500; cursor: pointer; transition: all 0.15s; border: none; font-family: inherit; display: inline-flex; align-items: center; gap: 0.375rem; }
 .btn-primary { background: var(--gradient-primary); color: white; }
 .btn-secondary { background: var(--color-bg-subtle); color: var(--color-text-primary); border: 1px solid var(--color-border-default); }
