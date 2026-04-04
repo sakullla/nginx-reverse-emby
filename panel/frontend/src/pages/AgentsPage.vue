@@ -3,7 +3,7 @@
     <div class="agents-page__header">
       <div>
         <h1 class="agents-page__title">节点管理</h1>
-        <p class="agents-page__subtitle">{{ agents.length }} 个节点 · {{ onlineCount }} 在线</p>
+        <p class="agents-page__subtitle">{{ agents.length }} 个节点 · {{ onlineCount }} 在线· 累计 {{ totalHttpRules }} HTTP 规则 · 累计 {{ totalL4Rules }} L4 规则</p>
       </div>
       <button class="btn btn-primary" @click="showJoinModal = true">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
@@ -15,13 +15,26 @@
 
     <!-- Agent List -->
     <div class="agents-list">
-      <div v-for="agent in agents" :key="agent.id" class="agent-card">
+      <div v-for="agent in agents" :key="agent.id" class="agent-card" @click="router.push(`/agents/${agent.id}`)" style="cursor:pointer">
         <div class="agent-card__status" :class="`agent-card__status--${getStatus(agent)}`"></div>
         <div class="agent-card__info">
           <div class="agent-card__name">{{ agent.name }}</div>
           <div class="agent-card__meta">
             <span class="agent-card__mode-badge">{{ getModeLabel(agent.mode) }}</span>
             <span class="agent-card__url">{{ agent.agent_url ? getHostname(agent.agent_url) : (agent.last_seen_ip || '—') }}</span>
+          </div>
+          <div class="agent-card__stats">
+            <span class="agent-card__stat">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/></svg>
+              HTTP {{ agent.http_rules_count || 0 }}
+            </span>
+            <span class="agent-card__stat">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/></svg>
+              L4 {{ agent.l4_rules_count || 0 }}
+            </span>
+            <span class="agent-card__last-seen">
+              {{ timeAgo(agent.last_seen) }}
+            </span>
           </div>
         </div>
         <div class="agent-card__actions">
@@ -85,7 +98,10 @@
 
 <script setup>
 import { ref, computed } from 'vue'
+import { useRouter } from 'vue-router'
 import { useAgents } from '../hooks/useAgents'
+
+const router = useRouter()
 
 const { data, isLoading, refetch: loadAgents } = useAgents()
 const agents = computed(() => data.value ?? [])
@@ -102,6 +118,13 @@ const platforms = [
 
 const onlineCount = computed(() => agents.value.filter(a => a.status === 'online').length)
 
+const totalHttpRules = computed(() => {
+  return (agents.value || []).reduce((sum, a) => sum + (a.http_rules_count || 0), 0)
+})
+const totalL4Rules = computed(() => {
+  return (agents.value || []).reduce((sum, a) => sum + (a.l4_rules_count || 0), 0)
+})
+
 function getStatus(agent) {
   if (agent.status === 'offline') return 'offline'
   if (agent.last_apply_status === 'failed') return 'failed'
@@ -117,6 +140,17 @@ function getModeLabel(mode) {
   if (mode === 'local') return '本机'
   if (mode === 'master') return '主控'
   return '拉取'
+}
+
+function timeAgo(date) {
+  if (!date) return '—'
+  const seconds = Math.floor((Date.now() - new Date(date)) / 1000)
+  if (seconds < 60) return '刚刚'
+  const m = Math.floor(seconds / 60)
+  if (m < 60) return `${m}m`
+  const h = Math.floor(m / 60)
+  if (h < 24) return `${h}h`
+  return `${Math.floor(h / 24)}d`
 }
 
 function getCurrentCommand() {
@@ -194,6 +228,9 @@ function confirmDelete() {
 .agent-card__mode-badge { font-size: 0.75rem; padding: 1px 6px; background: var(--color-primary-subtle); color: var(--color-primary); border-radius: var(--radius-full); font-weight: 500; }
 .agent-card__url { font-size: 0.75rem; color: var(--color-text-tertiary); font-family: var(--font-mono); }
 .agent-card__actions { display: flex; gap: 0.5rem; }
+.agent-card__stats { display: flex; align-items: center; gap: 0.75rem; margin-top: 0.25rem; }
+.agent-card__stat { display: flex; align-items: center; gap: 0.25rem; font-size: 0.75rem; color: var(--color-text-tertiary); }
+.agent-card__last-seen { font-size: 0.75rem; color: var(--color-text-muted); margin-left: auto; }
 /* Modals */
 .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); backdrop-filter: blur(4px); z-index: var(--z-modal); display: flex; align-items: center; justify-content: center; }
 .modal { background: var(--color-bg-surface); border: 1.5px solid var(--color-border-default); border-radius: var(--radius-2xl); box-shadow: var(--shadow-xl); width: min(500px, 90vw); overflow: hidden; }
