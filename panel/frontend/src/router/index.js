@@ -77,16 +77,29 @@ const router = createRouter({
   routes
 })
 
-// Auth guard - redirect to /login if no valid token
+// Auth guard - redirect to /login if token is invalid; allow through if server has no auth configured
 router.beforeEach(async (to) => {
   // Allow login route through
   if (to.name === 'login') return true
 
   const token = localStorage.getItem('panel_token')
   if (!token) {
-    return { name: 'login' }
+    // No token stored — probe /api/info to check if the server requires auth
+    try {
+      const res = await fetch('/panel-api/info')
+      if (res.ok) {
+        // Server responded without auth → auth is disabled, allow through
+        return true
+      }
+      // Got a non-401 error (e.g. 404, 500) — allow through
+      return true
+    } catch {
+      // Network error — allow through so the app can show its own error state
+      return true
+    }
   }
 
+  // Token exists — verify it
   try {
     const valid = await verifyToken(token)
     if (!valid) {
@@ -95,7 +108,7 @@ router.beforeEach(async (to) => {
     }
     return true
   } catch {
-    // Network error or server unreachable - allow through in case server has no auth configured
+    // Network error during verify — allow through (server may be auth-disabled)
     return true
   }
 })

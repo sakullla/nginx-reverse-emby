@@ -97,13 +97,8 @@ const props = defineProps({
 })
 const emit = defineEmits(['success'])
 
-// Wrap agentId to handle both plain strings (from prop passing) and ref-like objects
-const agentIdRef = computed(() => {
-  if (props.agentId && typeof props.agentId === 'object' && 'value' in props.agentId) {
-    return props.agentId
-  }
-  return { value: props.agentId }
-})
+// Normalize agentId: supports plain strings (from prop auto-unwrap), ref-like objects, or computed refs from parent
+const agentIdRef = computed(() => ({ value: props.agentId?.value ?? props.agentId }))
 const createCertificate = useCreateCertificate(agentIdRef)
 const updateCertificate = useUpdateCertificate(agentIdRef)
 const isEdit = computed(() => !!props.initialData?.id)

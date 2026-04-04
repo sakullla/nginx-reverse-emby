@@ -338,16 +338,8 @@ const props = defineProps({
 })
 const emit = defineEmits(['success'])
 
-// Ensure agentId is always a ref-like object for the hooks
-// When parent passes a computed/ref, props.agentId IS that ref
-// When parent incorrectly passes a plain string, we wrap it
-const agentIdRef = computed(() => {
-  if (props.agentId && typeof props.agentId === 'object' && 'value' in props.agentId) {
-    return props.agentId  // Already ref-like, pass through
-  }
-  // String or undefined - wrap in ref-like object
-  return { value: props.agentId }
-})
+// Normalize agentId: supports plain strings (from prop auto-unwrap), ref-like objects, or computed refs from parent
+const agentIdRef = computed(() => ({ value: props.agentId?.value ?? props.agentId }))
 
 const createL4Rule = useCreateL4Rule(agentIdRef)
 const updateL4Rule = useUpdateL4Rule(agentIdRef)
