@@ -41,7 +41,7 @@
           </div>
           <div v-else class="global-search-results">
             <div v-for="group in results" :key="group.agentId" class="result-group">
-              <div class="result-group__header">
+              <div class="result-group__header" @click="navigateToResult(group.agentId)">
                 <div class="result-group__dot" :class="group.online ? 'result-group__dot--online' : 'result-group__dot--offline'"></div>
                 <span class="result-group__name">{{ group.agentName }}</span>
                 <span class="result-group__count">{{ group.rules.length }} 条</span>
@@ -69,22 +69,21 @@
 <script setup>
 import { ref, watch, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
+import { useAgents } from '../hooks/useAgents'
+import * as api from '../api'
 
 const props = defineProps({
-  open: { type: Boolean, default: false },
-  results: { type: Array, default: () => [] },
-  isLoading: { type: Boolean, default: false }
+  open: { type: Boolean, default: false }
 })
 
-const emit = defineEmits(['update:open', 'search', 'select'])
+const emit = defineEmits(['update:open', 'select'])
 
 const router = useRouter()
+const { data: agentsData } = useAgents()
 const query = ref('')
 const inputRef = ref(null)
-
-watch(query, (val) => {
-  emit('search', val)
-})
+const results = ref([])
+const isLoading = ref(false)
 
 watch(() => props.open, (val) => {
   if (val) {
@@ -92,9 +91,45 @@ watch(() => props.open, (val) => {
   }
 })
 
+watch(query, async (val) => {
+  if (!val?.trim()) {
+    results.value = []
+    return
+  }
+  isLoading.value = true
+  try {
+    const agents = agentsData.value || []
+    const searches = agents
+      .filter(a => a.status !== 'offline')
+      .map(agent =>
+        api.fetchRules(agent.id)
+          .then(rules => ({
+            agentId: agent.id,
+            agentName: agent.name,
+            online: agent.status === 'online',
+            rules: (rules || []).filter(r =>
+              r.frontend_url?.includes(val) ||
+              r.backend_url?.includes(val) ||
+              (r.tags || []).some(tag => tag.includes(val))
+            )
+          }))
+          .catch(() => null)
+      )
+    const groupResults = await Promise.all(searches)
+    results.value = groupResults.filter(g => g && g.rules.length > 0)
+  } finally {
+    isLoading.value = false
+  }
+}, { immediate: true })
+
 function close() {
   emit('update:open', false)
   query.value = ''
+}
+
+function navigateToResult(agentId) {
+  router.push({ path: '/rules', query: { agentId } })
+  close()
 }
 
 function navigateToRule(agentId, rule) {
