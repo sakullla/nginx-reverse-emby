@@ -125,12 +125,12 @@
     </div>
 
     <!-- Submit -->
-    <button 
-      type="submit" 
+    <button
+      type="submit"
       class="btn btn--primary btn--full btn--lg"
-      :disabled="ruleStore.loading"
+      :disabled="isLoading"
     >
-      <span v-if="ruleStore.loading" class="spinner spinner--sm"></span>
+      <span v-if="isLoading" class="spinner spinner--sm"></span>
       <span v-else>{{ isEdit ? '保存修改' : '创建规则' }}</span>
     </button>
   </form>
@@ -138,16 +138,19 @@
 
 <script setup>
 import { ref, computed, onMounted } from 'vue'
-import { useRuleStore } from '../stores/rules'
+import { useCreateRule, useUpdateRule } from '../hooks/useRules'
 
 const props = defineProps({
-  initialData: { type: Object, default: null }
+  initialData: { type: Object, default: null },
+  agentId: { type: [String, Object], required: true }
 })
 
 const emit = defineEmits(['success'])
 
-const ruleStore = useRuleStore()
+const createRule = useCreateRule(props.agentId)
+const updateRule = useUpdateRule(props.agentId)
 const isEdit = computed(() => !!props.initialData?.id)
+const isLoading = computed(() => createRule.isPending.value || updateRule.isPending.value)
 
 const form = ref({
   frontend_url: '',
@@ -228,24 +231,23 @@ const handleSubmit = async () => {
   if (!validate()) return
 
   try {
-    const params = [
-      props.initialData?.id,
-      form.value.frontend_url.trim(),
-      form.value.backend_url.trim(),
-      form.value.tags,
-      form.value.enabled,
-      form.value.proxy_redirect
-    ]
+    const payload = {
+      frontend_url: form.value.frontend_url.trim(),
+      backend_url: form.value.backend_url.trim(),
+      tags: form.value.tags,
+      enabled: form.value.enabled,
+      proxy_redirect: form.value.proxy_redirect
+    }
 
     if (isEdit.value) {
-      await ruleStore.modifyRule(...params)
+      await updateRule.mutateAsync({ id: props.initialData.id, ...payload })
     } else {
-      await ruleStore.addRule(params[1], params[2], params[3], params[4], params[5])
+      await createRule.mutateAsync(payload)
     }
 
     emit('success')
   } catch (err) {
-    // Error handled by store
+    errors.value.frontend_url = err?.message || '操作失败'
   }
 }
 </script>
