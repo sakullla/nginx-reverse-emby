@@ -9,14 +9,6 @@ export function useAgents() {
   })
 }
 
-export function useCreateAgent() {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: (payload) => api.createAgent(payload),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['agents'] })
-  })
-}
-
 export function useDeleteAgent() {
   const qc = useQueryClient()
   return useMutation({

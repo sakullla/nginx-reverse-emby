@@ -66,10 +66,13 @@
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
 import { useAgent } from '../../context/AgentContext'
 import { useAgents } from '../../hooks/useAgents'
 import ThemeSelector from '../base/ThemeSelector.vue'
 
+const router = useRouter()
+const route = useRoute()
 const { selectedAgentId, selectAgent: setSelectedAgentId } = useAgent()
 const { data: agentsData } = useAgents()
 
@@ -114,6 +117,10 @@ function getHostname(url) {
 
 function selectAgent(agent) {
   setSelectedAgentId(agent.id)
+  // Clear ?agentId= from URL so the page respects the context selection
+  if (route.query.agentId) {
+    router.replace({ query: { ...route.query, agentId: undefined } })
+  }
   agentDropdownOpen.value = false
   agentSearchQuery.value = ''
 }

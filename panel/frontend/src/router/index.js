@@ -95,8 +95,13 @@ router.beforeEach(async (to) => {
       return { name: 'login' }
     }
     return true
-  } catch {
-    // Network error — allow through so the app can show its own error state
+  } catch (err) {
+    // 401 from /auth/verify means token is invalid/expired — redirect to login
+    if (err?.response?.status === 401) {
+      localStorage.removeItem('panel_token')
+      return { name: 'login' }
+    }
+    // Other error (network, server unreachable) — allow through
     return true
   }
 })
