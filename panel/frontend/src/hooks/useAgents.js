@@ -8,7 +8,7 @@ export function useAgents() {
     queryKey: ['agents'],
     queryFn: api.fetchAgents,
     refetchInterval: () => hasToken.value ? 10_000 : false,
-    enabled: hasToken,
+    enabled: () => !!hasToken.value,
   })
 }
 
