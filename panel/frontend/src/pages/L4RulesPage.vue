@@ -64,6 +64,12 @@
             </td>
             <td>
               <div class="rules-table__actions">
+                <button class="btn-icon" title="编辑" @click="startEdit(rule)">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
+                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                  </svg>
+                </button>
                 <button class="btn-icon" title="删除" @click="startDelete(rule)">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <polyline points="3 6 5 6 21 6"/>
@@ -101,7 +107,7 @@
     <Teleport to="body">
       <div v-if="showAddForm" class="modal-overlay" @click.self="showAddForm = false">
         <div class="modal">
-          <div class="modal__header">添加 L4 规则</div>
+          <div class="modal__header">{{ editingRule ? '编辑 L4 规则' : '添加 L4 规则' }}</div>
           <div class="modal__body">
             <div class="form-group">
               <label>协议</label>
@@ -137,7 +143,7 @@
           </div>
           <div class="modal__footer">
             <button class="btn btn-secondary" @click="showAddForm = false">取消</button>
-            <button class="btn btn-primary" @click="submitForm">添加</button>
+            <button class="btn btn-primary" @click="submitForm">{{ editingRule ? '保存' : '添加' }}</button>
           </div>
         </div>
       </div>
@@ -164,6 +170,7 @@ const deleteL4Rule = useDeleteL4Rule(agentId)
 const rules = computed(() => _rulesData.value ?? [])
 const showAddForm = ref(false)
 const deletingRule = ref(null)
+const editingRule = ref(null)
 const form = ref({ protocol: 'tcp', listen_host: '0.0.0.0', listen_port: '', upstream_host: '', upstream_port: '', tags: '' })
 
 const enabledCount = computed(() => rules.value.filter(r => r.enabled).length)
@@ -174,6 +181,19 @@ function toggleRule(rule) {
 
 function startDelete(rule) {
   deletingRule.value = rule
+}
+
+function startEdit(rule) {
+  editingRule.value = rule
+  form.value = {
+    protocol: rule.protocol,
+    listen_host: rule.listen_host,
+    listen_port: String(rule.listen_port),
+    upstream_host: rule.upstream_host,
+    upstream_port: String(rule.upstream_port),
+    tags: (rule.tags || []).join(', ')
+  }
+  showAddForm.value = true
 }
 
 function confirmDelete() {
@@ -191,10 +211,15 @@ function submitForm() {
     upstream_host: form.value.upstream_host,
     upstream_port: Number(form.value.upstream_port),
     tags: form.value.tags ? form.value.tags.split(',').map(t => t.trim()).filter(Boolean) : [],
-    enabled: true
+    enabled: editingRule.value ? editingRule.value.enabled : true
   }
-  createL4Rule.mutate(payload)
+  if (editingRule.value) {
+    updateL4Rule.mutate({ id: editingRule.value.id, ...payload })
+  } else {
+    createL4Rule.mutate(payload)
+  }
   showAddForm.value = false
+  editingRule.value = null
   form.value = { protocol: 'tcp', listen_host: '0.0.0.0', listen_port: '', upstream_host: '', upstream_port: '', tags: '' }
 }
 </script>
