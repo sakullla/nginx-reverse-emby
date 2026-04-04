@@ -177,7 +177,7 @@ function getSyncLabel(agent) {
   margin: 0 auto;
 }
 .dashboard__header {
-  margin-bottom: 2rem;
+  margin-bottom: 2.5rem;
 }
 .dashboard__title {
   font-size: 1.5rem;
@@ -194,7 +194,7 @@ function getSyncLabel(agent) {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
   gap: 1rem;
-  margin-bottom: 2rem;
+  margin-bottom: 2.5rem;
 }
 .stat-card {
   display: flex;
@@ -280,7 +280,7 @@ function getSyncLabel(agent) {
   font-size: 0.875rem !important;
   color: var(--color-text-tertiary) !important;
 }
-.dashboard-section { background: var(--color-bg-surface); border: 1.5px solid var(--color-border-default); border-radius: var(--radius-2xl); overflow: hidden; margin-bottom: 2rem; }
+.dashboard-section { background: var(--color-bg-surface); border: 1.5px solid var(--color-border-default); border-radius: var(--radius-2xl); overflow: hidden; margin-bottom: 2.5rem; }
 .dashboard-section__header { display: flex; align-items: center; justify-content: space-between; padding: 1rem 1.25rem; border-bottom: 1px solid var(--color-border-subtle); }
 .dashboard-section__title { font-size: 0.875rem; font-weight: 600; color: var(--color-text-primary); margin: 0; }
 .dashboard-section__link { font-size: 0.8rem; color: var(--color-primary); text-decoration: none; }
