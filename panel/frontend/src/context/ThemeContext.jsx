@@ -1,8 +1,7 @@
-import { createContext, useContext, ref } from 'vue'
-
-const ThemeContext = createContext(null)
+import { provide, inject, ref } from 'vue'
 
 const THEMES = ['sakura', 'business', 'midnight']
+const ThemeContextKey = Symbol('ThemeContext')
 
 export function ThemeProvider({ children }) {
   const currentThemeId = ref(
@@ -20,15 +19,13 @@ export function ThemeProvider({ children }) {
   // Apply on init
   document.documentElement.setAttribute('data-theme', currentThemeId.value)
 
-  return (
-    <ThemeContext.Provider value={{ currentThemeId, setTheme, themes: THEMES }}>
-      {children}
-    </ThemeContext.Provider>
-  )
+  provide(ThemeContextKey, { currentThemeId, setTheme, themes: THEMES })
+
+  return children
 }
 
 export function useTheme() {
-  const ctx = useContext(ThemeContext)
+  const ctx = inject(ThemeContextKey)
   if (!ctx) throw new Error('useTheme must be used within ThemeProvider')
   return ctx
 }
