@@ -51,6 +51,10 @@
       <p>没有匹配的 L4 规则</p>
     </div>
 
+    <!-- Search toolbar -->
+    <div v-if="selectedAgentId && rules.length" class="rules-page__toolbar">
+      <input v-model="searchQuery" class="search-input" placeholder="搜索协议 / 地址 / 端口 / 标签 / #id=...">
+    </div>
 
     <!-- Rule card grid -->
     <div v-if="selectedAgentId && filteredRules.length" class="rule-grid">
