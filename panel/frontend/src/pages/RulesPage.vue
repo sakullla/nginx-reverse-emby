@@ -4,7 +4,7 @@
       <div class="rules-page__header-left">
         <h1 class="rules-page__title">HTTP 规则</h1>
         <p class="rules-page__subtitle">
-          <template v-if="selectedAgentId">
+          <template v-if="agentId">
             {{ rules.length }} 条规则 · 启用 {{ enabledCount }} 条
           </template>
           <template v-else>
@@ -13,14 +13,14 @@
         </p>
       </div>
       <div class="rules-page__header-right">
-        <div class="search-wrapper" v-if="selectedAgentId && rules.length" @click="focusSearch">
+        <div class="search-wrapper" v-if="agentId && rules.length" @click="focusSearch">
           <svg class="search-icon-btn" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
           <input ref="searchInputRef" v-model="searchQuery" class="search-input" placeholder="搜索 URL / 标签 / #id=...">
           <button v-if="searchQuery" class="clear-btn" @click.stop="searchQuery = ''">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
           </button>
         </div>
-        <button v-if="selectedAgentId" class="btn btn-primary" @click="showAddForm = true">
+        <button v-if="agentId" class="btn btn-primary" @click="showAddForm = true">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
             <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
           </svg>
@@ -30,7 +30,7 @@
     </div>
 
     <!-- No agent selected -->
-    <div v-if="!selectedAgentId" class="rules-page__prompt">
+    <div v-if="!agentId" class="rules-page__prompt">
       <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
         <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
         <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
@@ -40,7 +40,7 @@
     </div>
 
     <!-- Agent selected, no rules -->
-    <div v-else-if="selectedAgentId && !rules.length && !isLoading" class="rules-page__empty">
+    <div v-else-if="agentId && !rules.length && !isLoading" class="rules-page__empty">
       <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
         <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
         <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
@@ -50,7 +50,7 @@
     </div>
 
     <!-- No search results -->
-    <div v-else-if="selectedAgentId && rules.length && !filteredRules.length" class="rules-page__empty">
+    <div v-else-if="agentId && rules.length && !filteredRules.length" class="rules-page__empty">
       <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
         <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
       </svg>
@@ -58,7 +58,7 @@
     </div>
 
     <!-- Rules card grid -->
-    <div v-if="selectedAgentId && filteredRules.length" class="rule-grid">
+    <div v-if="agentId && filteredRules.length" class="rule-grid">
       <div v-for="rule in filteredRules" :key="rule.id" class="rule-card" :class="{ 'rule-card--disabled': !rule.enabled }">
         <div class="rule-card__header">
           <div class="rule-card__badges">

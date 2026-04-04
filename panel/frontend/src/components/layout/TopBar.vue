@@ -109,8 +109,11 @@ const agentDropdownOpen = ref(false)
 const agentSearchQuery = ref('')
 const agentSwitcherRef = ref(null)
 
-// Effective agent mirrors what the page uses: route param wins, else context selection
-const effectiveAgentId = computed(() => route.query.agentId || selectedAgentId.value)
+// Effective agent mirrors what the page uses: route.params.id (agent-detail) wins, then
+// route.query.agentId (list pages), then context selection
+const effectiveAgentId = computed(() =>
+  route.params.id || route.query.agentId || selectedAgentId.value
+)
 
 const currentAgentName = computed(() => {
   if (!effectiveAgentId.value || !agentsData.value) return '—'
@@ -148,8 +151,11 @@ function getHostname(url) {
 
 function selectAgent(agent) {
   setSelectedAgentId(agent.id)
-  // Clear ?agentId= from URL so the page respects the context selection
-  if (route.query.agentId) {
+  // If we're on an agent-detail page, navigate to the new agent's detail
+  if (route.name?.includes('agent-detail')) {
+    router.push({ name: 'agent-detail', params: { id: agent.id } })
+  } else if (route.query.agentId) {
+    // Clear ?agentId= so the page uses the context selection
     router.replace({ query: { ...route.query, agentId: undefined } })
   }
   agentDropdownOpen.value = false

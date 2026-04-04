@@ -74,6 +74,15 @@
   <div v-else-if="isLoading" class="agent-detail__loading">
     <div class="spinner"></div>
   </div>
+  <div v-else class="agent-detail__not-found">
+    <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+      <circle cx="12" cy="12" r="10"/>
+      <line x1="12" y1="8" x2="12" y2="12"/>
+      <line x1="12" y1="16" x2="12.01" y2="16"/>
+    </svg>
+    <p>节点不存在或已删除</p>
+    <RouterLink to="/agents" class="btn btn-secondary">返回节点管理</RouterLink>
+  </div>
 </template>
 
 <script setup>
@@ -163,6 +172,8 @@ function timeAgo(date) {
 .info-row span:first-child { color: var(--color-text-secondary); }
 .info-row span:last-child { color: var(--color-text-primary); font-weight: 500; }
 .agent-detail__loading { display: flex; justify-content: center; padding: 3rem; }
+.agent-detail__not-found { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1rem; padding: 4rem 2rem; color: var(--color-text-muted); text-align: center; }
+.agent-detail__not-found p { margin: 0; font-size: 1rem; }
 .spinner { width: 24px; height: 24px; border: 2px solid var(--color-border-default); border-top-color: var(--color-primary); border-radius: 50%; animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 .btn { padding: 0.5rem 1rem; border-radius: var(--radius-lg); font-size: 0.875rem; font-weight: 500; cursor: pointer; transition: all 0.15s; border: none; font-family: inherit; display: inline-flex; align-items: center; gap: 0.375rem; }

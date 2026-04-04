@@ -4,7 +4,7 @@
       <div class="certs-page__header-left">
         <h1 class="certs-page__title">统一证书</h1>
         <p class="certs-page__subtitle">
-          <template v-if="selectedAgentId">
+          <template v-if="agentId">
             {{ certificates.length }} 项证书 · {{ activeCount }} 生效中
           </template>
           <template v-else>
@@ -13,14 +13,14 @@
         </p>
       </div>
       <div class="certs-page__header-right">
-        <div class="search-wrapper" v-if="selectedAgentId && certificates.length" @click="focusSearch">
+        <div class="search-wrapper" v-if="agentId && certificates.length" @click="focusSearch">
           <svg class="search-icon-btn" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
           <input ref="searchInputRef" v-model="searchQuery" class="search-input" placeholder="搜索域名 / 标签 / #id=...">
           <button v-if="searchQuery" class="clear-btn" @click.stop="searchQuery = ''">
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
           </button>
         </div>
-        <button v-if="selectedAgentId" class="btn btn-primary" @click="showAddForm = true">
+        <button v-if="agentId" class="btn btn-primary" @click="showAddForm = true">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
             <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
           </svg>
@@ -29,7 +29,7 @@
       </div>
     </div>
 
-    <div v-if="!selectedAgentId" class="certs-page__prompt">
+    <div v-if="!agentId" class="certs-page__prompt">
       <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
         <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
         <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
