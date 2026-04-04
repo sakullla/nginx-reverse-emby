@@ -14,10 +14,13 @@ export const AgentProvider = defineComponent({
     // useAgents is owned here so we can validate whenever the agents list updates
     const { data: agentsData } = useAgents()
 
-    // Also load system info to get default_agent_id for initial selection
+    // Also load system info to get default_agent_id for initial selection (only when authenticated)
+    const hasToken = !!localStorage.getItem('panel_token')
     const { data: systemInfo } = (() => {
       const info = ref(null)
-      fetchSystemInfo().then(i => { info.value = i }).catch(() => {})
+      if (hasToken) {
+        fetchSystemInfo().then(i => { info.value = i }).catch(() => {})
+      }
       return { data: info }
     })()
 

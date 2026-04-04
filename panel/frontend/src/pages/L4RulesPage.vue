@@ -158,11 +158,9 @@ const searchQuery = ref('')
 const searchInputRef = ref(null)
 function focusSearch() { searchInputRef.value?.focus() }
 
-// Pre-fill search from global search navigation
+// Pre-fill search from global search navigation; reset when param is cleared
 watchEffect(() => {
-  if (route.query.search !== undefined) {
-    searchQuery.value = route.query.search
-  }
+  searchQuery.value = route.query.search ?? ''
 })
 
 const filteredRules = computed(() => {

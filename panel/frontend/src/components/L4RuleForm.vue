@@ -509,12 +509,6 @@ watch(() => form.value.protocol, (newProto) => {
     form.value.tuning.proxy.udp_proxy_requests = null
     form.value.tuning.proxy.udp_proxy_responses = null
   }
-  // Update reuseport default on protocol change
-  const defaults = getDefaultTuning(newProto)
-  if (!showAdvanced.value) {
-    form.value.tuning.listen.reuseport = defaults.listen.reuseport
-    form.value.tuning.proxy.idle_timeout = defaults.proxy.idle_timeout
-  }
 })
 
 const LB_TAG_MAP = { round_robin: 'RR', least_conn: 'LC', random: 'RND', hash: 'HASH' }
