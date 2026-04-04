@@ -154,7 +154,7 @@ async function handleSubmit() {
 .cert-form {
   display: flex;
   flex-direction: column;
-  gap: var(--space-5);
+  gap: var(--space-4);
 }
 
 .form-group {
@@ -187,18 +187,18 @@ async function handleSubmit() {
 
 .form-row {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
   gap: var(--space-3);
 }
 
 .input {
   width: 100%;
-  padding: var(--space-3) var(--space-4);
+  padding: var(--space-2) var(--space-3);
   font-size: var(--text-sm);
   color: var(--color-text-primary);
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
   transition: all var(--duration-fast) var(--ease-default);
   font-family: inherit;
 }
@@ -220,121 +220,51 @@ async function handleSubmit() {
   font-size: var(--text-xs);
   line-height: 1.6;
 }
-
-.cert-banner--warn {
-  background: var(--color-warning-50);
-  color: var(--color-warning);
-  border: 1px solid var(--color-warning);
-}
-
-.cert-banner--info {
-  background: var(--color-primary-subtle);
-  color: var(--color-primary);
-  border: 1px solid var(--color-primary);
-}
-
+.cert-banner--warn { background: var(--color-warning-50); color: var(--color-warning); border: 1px solid var(--color-warning); }
+.cert-banner--info { background: var(--color-primary-subtle); color: var(--color-primary); border: 1px solid var(--color-primary); }
 .cert-banner svg { flex-shrink: 0; margin-top: 1px; }
 
+/* Tag input */
 .tag-input {
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-md);
   transition: all var(--duration-fast) var(--ease-default);
-  max-width: 100%;
 }
-
-.tag-input:focus-within {
-  border-color: var(--color-primary);
-  box-shadow: var(--shadow-focus);
-}
-
-.tag-input__container {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-2);
-  padding: var(--space-1) var(--space-2);
-  align-items: center;
-  min-height: 36px;
-}
-
-.tag-input__field {
-  flex: 1;
-  min-width: 80px;
-  max-width: 200px;
-  border: none;
-  background: transparent;
-  padding: var(--space-1);
-  font-size: var(--text-sm);
-  color: var(--color-text-primary);
-  outline: none;
-}
-
+.tag-input:focus-within { border-color: var(--color-primary); box-shadow: var(--shadow-focus); }
+.tag-input__container { display: flex; flex-wrap: wrap; gap: var(--space-2); padding: var(--space-1) var(--space-2); align-items: center; min-height: 36px; }
+.tag-input__field { flex: 1; min-width: 80px; border: none; background: transparent; padding: var(--space-1); font-size: var(--text-sm); color: var(--color-text-primary); outline: none; }
 .tag-input__field::placeholder { color: var(--color-text-muted); }
-
-.tag {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-1);
-  padding: 2px 8px;
-  background: var(--color-bg-subtle);
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-full);
-  font-size: var(--text-xs);
-  color: var(--color-text-primary);
-}
-
-.tag__remove {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 14px;
-  height: 14px;
-  border: none;
-  background: transparent;
-  color: var(--color-text-muted);
-  cursor: pointer;
-  padding: 0;
-  border-radius: 50%;
-  transition: all var(--duration-fast);
-}
-
+.tag { display: inline-flex; align-items: center; gap: var(--space-1); padding: 2px 8px; background: var(--color-bg-subtle); border: 1px solid var(--color-border-default); border-radius: var(--radius-full); font-size: var(--text-xs); color: var(--color-text-primary); }
+.tag__remove { display: flex; align-items: center; justify-content: center; width: 14px; height: 14px; border: none; background: transparent; color: var(--color-text-muted); cursor: pointer; padding: 0; border-radius: 50%; transition: all var(--duration-fast); }
 .tag__remove:hover { background: var(--color-danger-50); color: var(--color-danger); }
 
-.toggle-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  cursor: pointer;
-  padding: var(--space-2) 0;
-}
-
+/* Toggle */
+.toggle-row { display: flex; align-items: center; gap: var(--space-3); cursor: pointer; padding: var(--space-2) 0; }
 .toggle__input { position: absolute; opacity: 0; width: 0; height: 0; }
-
-.toggle__slider {
-  position: relative;
-  width: 44px;
-  height: 24px;
-  background: var(--color-border-strong);
-  border-radius: var(--radius-full);
-  transition: all var(--duration-normal) var(--ease-bounce);
-  flex-shrink: 0;
-}
-
-.toggle__slider::after {
-  content: '';
-  position: absolute;
-  top: 3px;
-  left: 3px;
-  width: 18px;
-  height: 18px;
-  background: white;
-  border-radius: var(--radius-full);
-  transition: all var(--duration-normal) var(--ease-bounce);
-  box-shadow: var(--shadow-sm);
-}
-
+.toggle__slider { position: relative; width: 44px; height: 24px; background: var(--color-border-strong); border-radius: var(--radius-full); transition: all var(--duration-normal) var(--ease-bounce); flex-shrink: 0; }
+.toggle__slider::after { content: ''; position: absolute; top: 3px; left: 3px; width: 18px; height: 18px; background: white; border-radius: var(--radius-full); transition: all var(--duration-normal) var(--ease-bounce); box-shadow: var(--shadow-sm); }
 .toggle__input:checked + .toggle__slider { background: var(--gradient-primary); }
 .toggle__input:checked + .toggle__slider::after { transform: translateX(20px); }
-
 .toggle__label { font-size: var(--text-sm); color: var(--color-text-secondary); }
+
+/* Button — standard, NOT --lg */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  border: none;
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  cursor: pointer;
+  transition: all var(--duration-fast) var(--ease-default);
+  font-family: inherit;
+}
+.btn--primary { background: var(--gradient-primary); color: white; }
+.btn--primary:hover:not(:disabled) { opacity: 0.9; transform: translateY(-1px); }
+.btn--full { width: 100%; }
+.btn:disabled { opacity: 0.6; cursor: not-allowed; }
 </style>
