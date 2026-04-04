@@ -74,7 +74,7 @@ import { useAgent } from '../../context/AgentContext'
 import { useAgents } from '../../hooks/useAgents'
 import ThemeSelector from '../base/ThemeSelector.vue'
 
-const { selectedAgentId, setSelectedAgentId } = useAgent()
+const { selectedAgentId, selectAgent: setSelectedAgentId } = useAgent()
 const { data: agentsData } = useAgents()
 
 const agentDropdownOpen = ref(false)
