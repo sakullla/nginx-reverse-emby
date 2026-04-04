@@ -56,7 +56,7 @@
 
     <!-- Rule card grid -->
     <div v-if="selectedAgentId && filteredRules.length" class="rule-grid">
-      <L4RuleItem v-for="rule in filteredRules" :key="rule.id" :rule="rule" @edit="startEdit" @delete="startDelete" @copy="handleCopy" @toggle="toggleRule" />
+      <L4RuleItem v-for="rule in filteredRules" :key="rule.id" :rule="rule" :agent="selectedAgent" @edit="startEdit" @delete="startDelete" @copy="handleCopy" @toggle="toggleRule" />
     </div>
 
     <!-- Loading -->
@@ -135,6 +135,7 @@ import { ref, computed, watchEffect } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAgent } from '../context/AgentContext'
 import { useL4Rules, useCreateL4Rule, useUpdateL4Rule, useDeleteL4Rule } from '../hooks/useL4Rules'
+import { useAgents } from '../hooks/useAgents'
 import L4RuleForm from '../components/L4RuleForm.vue'
 import L4RuleItem from '../components/l4/L4RuleItem.vue'
 
@@ -143,6 +144,10 @@ const { selectedAgentId } = useAgent()
 const agentId = computed(() => route.query.agentId || selectedAgentId.value)
 
 const { data: _rulesData, isLoading } = useL4Rules(agentId)
+
+// Agents list for sync status derivation
+const { data: agentsData } = useAgents()
+const selectedAgent = computed(() => agentsData.value?.find(a => a.id === agentId.value))
 const createL4Rule = useCreateL4Rule(agentId)
 const updateL4Rule = useUpdateL4Rule(agentId)
 const deleteL4Rule = useDeleteL4Rule(agentId)

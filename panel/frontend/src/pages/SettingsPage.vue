@@ -37,15 +37,11 @@
       <div class="settings-section__body">
         <div class="info-row">
           <span class="info-label">角色</span>
-          <span class="info-value">{{ systemInfo.role || '—' }}</span>
-        </div>
-        <div class="info-row">
-          <span class="info-label">部署方式</span>
-          <span class="info-value">{{ systemInfo.deployMode || '—' }}</span>
+          <span class="info-value">{{ systemInfo?.role || '—' }}</span>
         </div>
         <div class="info-row">
           <span class="info-label">本地 Agent</span>
-          <span class="info-value">{{ systemInfo.local_agent_enabled ? '已启用' : '未启用' }}</span>
+          <span class="info-value">{{ systemInfo?.local_agent_enabled ? '已启用' : '未启用' }}</span>
         </div>
       </div>
     </section>
@@ -70,12 +66,16 @@
 </template>
 
 <script setup>
-import { ref } from 'vue'
+import { ref, onMounted } from 'vue'
 import { useTheme } from '../context/ThemeContext'
+import { fetchSystemInfo } from '../api'
 
 const { currentThemeId: currentTheme, setTheme, themes } = useTheme()
 
-const systemInfo = ref({ role: 'master', deployMode: 'direct', local_agent_enabled: true })
+const systemInfo = ref(null)
+onMounted(() => {
+  fetchSystemInfo().then(i => { systemInfo.value = i }).catch(() => {})
+})
 </script>
 
 <style scoped>

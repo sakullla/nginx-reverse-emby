@@ -174,6 +174,8 @@ import { ref, computed, watchEffect } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAgent } from '../context/AgentContext'
 import { useRules, useCreateRule, useUpdateRule, useDeleteRule } from '../hooks/useRules'
+import { useAgents } from '../hooks/useAgents'
+import { getRuleEffectiveStatus } from '../utils/syncStatus'
 import RuleForm from '../components/RuleForm.vue'
 
 const route = useRoute()
@@ -187,6 +189,10 @@ const createRule = useCreateRule(agentId)
 const updateRule = useUpdateRule(agentId)
 const deleteRule = useDeleteRule(agentId)
 const rules = computed(() => _rulesData.value ?? [])
+
+// Agents list for sync status derivation
+const { data: agentsData } = useAgents()
+const selectedAgent = computed(() => agentsData.value?.find(a => a.id === agentId.value))
 
 // Search
 const searchQuery = ref('')
@@ -224,15 +230,12 @@ const showCopyModal = ref(false)
 const deletingRule = ref(null)
 
 function getStatus(rule) {
-  if (!rule.enabled) return 'disabled'
-  if (rule.last_apply_status === 'failed') return 'failed'
-  return 'active'
+  return getRuleEffectiveStatus(rule, selectedAgent.value)
 }
 
 function getStatusLabel(rule) {
-  if (!rule.enabled) return '已禁用'
-  if (rule.last_apply_status === 'failed') return '同步失败'
-  return '生效中'
+  const status = getStatus(rule)
+  return { active: '生效中', pending: '待同步', failed: '同步失败', disabled: '已禁用' }[status] || '未知'
 }
 
 function toggleRule(rule) {

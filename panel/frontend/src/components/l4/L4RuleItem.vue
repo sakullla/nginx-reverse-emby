@@ -53,16 +53,13 @@
 
 <script setup>
 import { computed } from 'vue'
+import { getRuleEffectiveStatus } from '../../utils/syncStatus'
 
-const props = defineProps({ rule: { type: Object, required: true } })
+const props = defineProps({ rule: { type: Object, required: true }, agent: { type: Object, default: null } })
 defineEmits(['edit', 'delete', 'copy', 'toggle'])
 
-const status = computed(() => {
-  if (!props.rule.enabled) return 'disabled'
-  if (props.rule.last_apply_status === 'failed') return 'failed'
-  return 'active'
-})
-const statusLabel = computed(() => ({ active: '启用', disabled: '已禁用', failed: '同步失败' }[status.value]))
+const status = computed(() => getRuleEffectiveStatus(props.rule, props.agent))
+const statusLabel = computed(() => ({ active: '启用', pending: '待同步', failed: '同步失败', disabled: '已禁用' }[status.value] || '未知'))
 
 const backends = computed(() => {
   if (Array.isArray(props.rule.backends) && props.rule.backends.length > 0) return props.rule.backends

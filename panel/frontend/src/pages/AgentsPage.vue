@@ -120,6 +120,7 @@
 import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAgents, useRenameAgent, useDeleteAgent } from '../hooks/useAgents'
+import { fetchSystemInfo } from '../api'
 
 const router = useRouter()
 
@@ -134,11 +135,26 @@ const renamingAgent = ref(null)
 const newAgentName = ref('')
 const deletingAgent = ref(null)
 
-const platforms = [
-  { id: 'linux', label: 'Linux', command: 'curl -fsSL https://your-domain.com/panel-api/public/join-agent.sh | bash -s -- --register-token YOUR_TOKEN --install-systemd', steps: ['在目标主机上以 root 执行', '脚本自动安装 Node.js、Nginx、light-agent', '注册 systemd 开机自启服务', '节点自动出现在列表'] },
-  { id: 'macos', label: 'macOS', command: 'curl -fsSL https://your-domain.com/panel-api/public/join-agent.sh | bash -s -- --register-token YOUR_TOKEN --install-launchd', steps: ['以非 root 用户执行（避免 Homebrew 权限问题）', '脚本安装 Homebrew、Node.js、Nginx', '注册 launchd 开机自启'] },
-  { id: 'windows', label: 'Windows', command: '请使用 WSL2 环境安装', steps: ['需要 WSL2 环境', '在 PowerShell 中执行 WSL 命令安装'] }
-]
+// Fetch system info for join command
+const systemInfo = ref(null)
+fetchSystemInfo().then(info => { systemInfo.value = info }).catch(() => {})
+
+const joinCommands = computed(() => {
+  const origin = typeof window !== 'undefined' ? window.location.origin : ''
+  const token = systemInfo.value?.master_register_token || 'YOUR_TOKEN'
+  const base = `${origin}/panel-api`
+  return {
+    linux: `curl -fsSL ${base}/public/join-agent.sh | bash -s -- --register-token ${token} --install-systemd`,
+    macos: `curl -fsSL ${base}/public/join-agent.sh | bash -s -- --register-token ${token} --install-launchd`,
+    windows: '请使用 WSL2 环境安装'
+  }
+})
+
+const platforms = computed(() => [
+  { id: 'linux', label: 'Linux', command: joinCommands.value.linux, steps: ['在目标主机上以 root 执行', '脚本自动安装 Node.js、Nginx、light-agent', '注册 systemd 开机自启服务', '节点自动出现在列表'] },
+  { id: 'macos', label: 'macOS', command: joinCommands.value.macos, steps: ['以非 root 用户执行（避免 Homebrew 权限问题）', '脚本安装 Homebrew、Node.js、Nginx', '注册 launchd 开机自启'] },
+  { id: 'windows', label: 'Windows', command: joinCommands.value.windows, steps: ['需要 WSL2 环境', '在 PowerShell 中执行 WSL 命令安装'] }
+])
 
 const onlineCount = computed(() => agents.value.filter(a => a.status === 'online').length)
 
@@ -178,11 +194,11 @@ function timeAgo(date) {
 }
 
 function getCurrentCommand() {
-  return platforms.find(p => p.id === selectedPlatform.value)?.command || ''
+  return platforms.value.find(p => p.id === selectedPlatform.value)?.command || ''
 }
 
 function getCurrentSteps() {
-  return platforms.find(p => p.id === selectedPlatform.value)?.steps || []
+  return platforms.value.find(p => p.id === selectedPlatform.value)?.steps || []
 }
 
 async function copyCommand() {
