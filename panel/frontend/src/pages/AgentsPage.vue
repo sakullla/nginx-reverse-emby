@@ -55,7 +55,7 @@
 
     <!-- Join Modal -->
     <Teleport to="body">
-      <div v-if="showJoinModal" class="modal-overlay" @click.self="showJoinModal = false">
+      <div v-if="showJoinModal" class="modal-overlay">
         <div class="modal modal--lg">
           <div class="modal__header">
             <span>加入 Agent 节点</span>

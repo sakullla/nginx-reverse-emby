@@ -98,7 +98,7 @@
 
     <!-- Add/Edit Form Modal -->
     <Teleport to="body">
-      <div v-if="showAddForm || editingCert" class="modal-overlay" @click.self="closeForm">
+      <div v-if="showAddForm || editingCert" class="modal-overlay">
         <div class="modal modal--large">
           <div class="modal__header">
             <span>{{ editingCert ? '编辑证书' : '添加证书' }}</span>

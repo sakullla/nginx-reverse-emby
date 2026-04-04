@@ -100,7 +100,7 @@
 
     <!-- Add/Edit Form Modal -->
     <Teleport to="body">
-      <div v-if="showAddForm || editingRule" class="modal-overlay" @click.self="closeForm">
+      <div v-if="showAddForm || editingRule" class="modal-overlay">
         <div class="modal modal--large">
           <div class="modal__header">
             <span>{{ editingRule ? '编辑规则' : '添加规则' }}</span>
@@ -120,7 +120,7 @@
 
     <!-- Copy Modal -->
     <Teleport to="body">
-      <div v-if="showCopyModal" class="modal-overlay" @click.self="closeForm">
+      <div v-if="showCopyModal" class="modal-overlay">
         <div class="modal modal--large">
           <div class="modal__header">
             <span>复制规则</span>
