@@ -1,7 +1,7 @@
 <template>
   <div class="certs-page">
     <div class="certs-page__header">
-      <div>
+      <div class="certs-page__header-left">
         <h1 class="certs-page__title">统一证书</h1>
         <p class="certs-page__subtitle">
           <template v-if="selectedAgentId">
@@ -12,12 +12,18 @@
           </template>
         </p>
       </div>
-      <button v-if="selectedAgentId" class="btn btn-primary" @click="showAddForm = true">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-          <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
-        </svg>
-        添加证书
-      </button>
+      <div class="certs-page__header-right">
+        <div class="search-wrapper" v-if="selectedAgentId && certificates.length" @click="focusSearch">
+          <svg class="search-icon-btn" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input ref="searchInputRef" v-model="searchQuery" class="search-input" placeholder="搜索域名 / 标签 / #id=...">
+        </div>
+        <button v-if="selectedAgentId" class="btn btn-primary" @click="showAddForm = true">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+          </svg>
+          <span class="btn-text">添加证书</span>
+        </button>
+      </div>
     </div>
 
     <div v-if="!selectedAgentId" class="certs-page__prompt">
@@ -33,11 +39,6 @@
     </div>
 
     <template v-else-if="certificates.length">
-      <!-- Search toolbar -->
-      <div class="certs-page__toolbar">
-        <input v-model="searchQuery" class="search-input" placeholder="搜索域名 / 标签 / #id=...">
-      </div>
-
       <!-- No search results -->
       <div v-if="!filteredCerts.length" class="certs-page__empty">
         <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -50,15 +51,22 @@
       <div v-else class="cert-grid">
         <div v-for="cert in filteredCerts" :key="cert.id" class="cert-card">
           <div class="cert-card__header">
-            <div class="cert-card__icon">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
-                <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
-              </svg>
+            <div class="cert-card__header-left">
+              <span class="cert-card__id">#{{ cert.id }}</span>
+              <div class="cert-card__status" :class="`cert-card__status--${cert.status || 'inactive'}`">
+                {{ getStatusLabel(cert) }}
+              </div>
             </div>
-            <span class="cert-card__id">#{{ cert.id }}</span>
-            <div class="cert-card__status" :class="`cert-card__status--${cert.status || 'inactive'}`">
-              {{ getStatusLabel(cert) }}
+            <div class="cert-card__actions">
+              <button v-if="cert.status === 'pending' || cert.status === 'error'" class="cert-card__action cert-card__action--issue" title="签发" @click="issueCert(cert)">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+              </button>
+              <button class="cert-card__action" title="编辑" @click="startEdit(cert)">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+              </button>
+              <button class="cert-card__action cert-card__action--delete" title="删除" @click="startDelete(cert)">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+              </button>
             </div>
           </div>
           <div class="cert-card__domain">{{ cert.domain }}</div>
@@ -70,17 +78,6 @@
           <p v-if="cert.last_error" class="cert-card__error">{{ cert.last_error }}</p>
           <div class="cert-card__tags">
             <span v-for="tag in (cert.tags || [])" :key="tag" class="tag">{{ tag }}</span>
-          </div>
-          <div class="cert-card__actions">
-            <button v-if="cert.status === 'pending' || cert.status === 'error'" class="btn btn-primary btn-sm cert-card__action-primary" @click="issueCert(cert)">签发</button>
-            <div class="cert-card__action-group">
-              <button class="cert-card__action" title="编辑" @click="startEdit(cert)">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-              </button>
-              <button class="cert-card__action cert-card__action--delete" title="删除" @click="startDelete(cert)">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-              </button>
-            </div>
           </div>
         </div>
       </div>
@@ -164,6 +161,8 @@ const deletingCert = ref(null)
 
 // Search
 const searchQuery = ref('')
+const searchInputRef = ref(null)
+function focusSearch() { searchInputRef.value?.focus() }
 
 const filteredCerts = computed(() => {
   const raw = searchQuery.value.trim()
@@ -226,17 +225,55 @@ function confirmDelete() {
 
 <style scoped>
 .certs-page { max-width: 1200px; margin: 0 auto; }
-.certs-page__header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 1.5rem; gap: 1rem; }
+.certs-page__header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1.5rem; gap: 1rem; flex-wrap: wrap; }
+.certs-page__header-left { flex: 1; min-width: 0; }
+.certs-page__header-right { display: flex; align-items: center; gap: 0.75rem; flex-shrink: 0; }
 .certs-page__title { font-size: 1.5rem; font-weight: 700; margin: 0 0 0.25rem; color: var(--color-text-primary); }
 .certs-page__subtitle { font-size: 0.875rem; color: var(--color-text-tertiary); margin: 0; }
 .certs-page__loading, .certs-page__empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.75rem; padding: 4rem 2rem; color: var(--color-text-muted); text-align: center; }
 .certs-page__toolbar { margin-bottom: 1.5rem; }
-.search-input { width: 100%; padding: 0.625rem 0.875rem; border-radius: var(--radius-lg); border: 1.5px solid var(--color-border-default); background: var(--color-bg-subtle); font-size: 0.875rem; color: var(--color-text-primary); outline: none; font-family: inherit; transition: border-color 0.15s; box-sizing: border-box; }
-.search-input:focus { border-color: var(--color-primary); }
-.search-input::placeholder { color: var(--color-text-muted); }
 
 /* Cert grid */
 .cert-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1rem; }
+.search-wrapper { position: relative; display: flex; align-items: center; }
+.search-icon-btn { display: none; }
+.search-input { width: 200px; padding: 0.625rem 0.875rem; border-radius: var(--radius-lg); border: 1.5px solid var(--color-border-default); background: var(--color-bg-subtle); font-size: 0.875rem; color: var(--color-text-primary); outline: none; font-family: inherit; transition: border-color 0.15s, width 0.2s; box-sizing: border-box; }
+.search-input:focus { border-color: var(--color-primary); width: 280px; }
+.search-input::placeholder { color: var(--color-text-muted); }
+
+@media (max-width: 640px) {
+  .search-wrapper {
+    width: 36px;
+    height: 36px;
+    border-radius: var(--radius-lg);
+    border: 1.5px solid var(--color-border-default);
+    background: var(--color-bg-subtle);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .search-icon-btn { display: flex; color: var(--color-text-secondary); }
+  .search-input {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 200px;
+    height: 36px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s, width 0.2s;
+  }
+  .search-wrapper:focus-within {
+    width: 200px;
+  }
+  .search-wrapper:focus-within .search-input {
+    opacity: 1;
+    pointer-events: auto;
+    border-color: var(--color-primary);
+  }
+  .btn-text { display: none; }
+}
 
 /* Cert card — hover actions */
 .cert-card {
@@ -249,7 +286,7 @@ function confirmDelete() {
   gap: 0.75rem;
 }
 .cert-card__header { display: flex; align-items: center; justify-content: space-between; }
-.cert-card__icon { color: var(--color-success); }
+.cert-card__header-left { display: flex; align-items: center; gap: 0.5rem; }
 .cert-card__id { font-size: 0.75rem; font-family: var(--font-mono); color: var(--color-text-tertiary); }
 .cert-card__domain { font-size: 1rem; font-weight: 600; color: var(--color-text-primary); font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cert-card__meta { display: flex; gap: 0.5rem; font-size: 0.75rem; color: var(--color-text-tertiary); flex-wrap: wrap; }
@@ -267,20 +304,19 @@ function confirmDelete() {
 .cert-card__status--inactive { background: var(--color-bg-subtle); color: var(--color-text-muted); }
 
 /* Actions — hover reveal */
-.cert-card__actions { display: flex; align-items: center; gap: 0.5rem; margin-top: auto; }
-.cert-card__action-primary { /* 签发 always visible */ }
-.cert-card__action-group { display: flex; gap: 0.25rem; opacity: 0; transition: opacity 0.15s; }
-.cert-card:hover .cert-card__action-group { opacity: 1; }
+.cert-card__actions { display: flex; align-items: center; gap: 0.375rem; opacity: 0; transition: opacity 0.15s; }
+.cert-card:hover .cert-card__actions { opacity: 1; }
 .cert-card__action { display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: var(--radius-md); border: none; background: transparent; color: var(--color-text-tertiary); cursor: pointer; transition: all 0.15s; }
 .cert-card__action:hover { background: var(--color-bg-hover); color: var(--color-text-primary); }
 .cert-card__action--delete:hover { background: var(--color-danger-50); color: var(--color-danger); }
+.cert-card__action--issue:hover { background: var(--color-success-50); color: var(--color-success); }
 
 /* Modals — L4 style */
 .modal-overlay { position: fixed; inset: 0; background: rgba(37,23,54,0.4); backdrop-filter: blur(8px); z-index: var(--z-modal); display: flex; align-items: center; justify-content: center; padding: var(--space-4); }
 .modal { background: var(--color-bg-surface); border: 1.5px solid var(--color-border-default); border-radius: var(--radius-3xl); box-shadow: var(--shadow-2xl); width: min(480px, 90vw); max-height: calc(100vh - var(--space-8)); display: flex; flex-direction: column; overflow: hidden; }
 .modal--large { width: min(600px, 92vw); }
 .modal__header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); padding: var(--space-5) var(--space-6); border-bottom: 1px solid var(--color-border-subtle); flex-shrink: 0; background: var(--gradient-soft); font-weight: 600; font-size: var(--text-lg); color: var(--color-text-primary); }
-.modal__body { padding: var(--space-6); overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: var(--space-5); }
+.modal__body { padding: var(--space-6); overflow-x: hidden; overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: var(--space-5); }
 .modal__footer { padding: var(--space-4) var(--space-6); display: flex; justify-content: flex-end; gap: var(--space-3); border-top: 1px solid var(--color-border-subtle); flex-shrink: 0; }
 .modal__close { display: flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: var(--radius-full); color: var(--color-text-tertiary); transition: all var(--duration-normal) var(--ease-bounce); flex-shrink: 0; border: none; background: transparent; cursor: pointer; }
 .modal__close:hover { background: var(--color-danger-50); color: var(--color-danger); transform: rotate(90deg); }

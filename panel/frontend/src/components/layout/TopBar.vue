@@ -15,13 +15,12 @@
     </div>
 
     <div class="topbar__center">
-      <button class="topbar__search" @click="$emit('open-search')" title="全局搜索 (⌘K)">
+      <button class="topbar__search" @click="$emit('open-search')" title="全局搜索">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <circle cx="11" cy="11" r="8"/>
           <line x1="21" y1="21" x2="16.65" y2="16.65"/>
         </svg>
         <span>全局搜索</span>
-        <kbd>{{ isMac ? '⌘K' : 'Ctrl+K' }}</kbd>
       </button>
     </div>
 
@@ -80,7 +79,7 @@ const { data: agentsData } = useAgents()
 const agentDropdownOpen = ref(false)
 const agentSearchQuery = ref('')
 const agentSwitcherRef = ref(null)
-const isMac = ref(/Mac|iPod|iPhone|iPad/.test(navigator.platform))
+
 
 const currentAgentName = computed(() => {
   if (!selectedAgentId.value || !agentsData.value) return '—'
