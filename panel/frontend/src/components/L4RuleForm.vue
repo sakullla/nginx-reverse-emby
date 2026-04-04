@@ -1,275 +1,273 @@
 <template>
   <form class="rule-form" @submit.prevent="handleSubmit">
-    <!-- Protocol -->
-    <div class="form-row">
+    <!-- Tab Bar -->
+    <div class="form-tabs">
+      <button type="button" class="form-tabs__btn" :class="{ 'form-tabs__btn--active': activeTab === 'basic' }" @click="activeTab = 'basic'">基础配置</button>
+      <button type="button" class="form-tabs__btn" :class="{ 'form-tabs__btn--active': activeTab === 'advanced' }" @click="activeTab = 'advanced'">高级调优 <span v-if="hasAdvancedTuning" class="form-tabs__badge">已配置</span></button>
+      <button type="button" class="form-tabs__btn" :class="{ 'form-tabs__btn--active': activeTab === 'protocol' }" @click="activeTab = 'protocol'">协议与监听 <span v-if="hasProtocolTuning" class="form-tabs__badge">已配置</span></button>
+    </div>
+
+    <!-- Tab 1: Basic -->
+    <div v-if="activeTab === 'basic'" class="form-tab-panel">
+      <!-- Protocol -->
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label form-label--required">协议</label>
+          <select v-model="form.protocol" class="input" @change="handleProtocolChange">
+            <option value="tcp">TCP</option>
+            <option value="udp">UDP</option>
+          </select>
+        </div>
+      </div>
+
+      <!-- Listen Address -->
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label form-label--required">监听地址</label>
+          <input v-model="form.listen_host" class="input" placeholder="0.0.0.0" @input="handleListenInput">
+        </div>
+        <div class="form-group">
+          <label class="form-label form-label--required">监听端口</label>
+          <input v-model.number="form.listen_port" class="input" type="number" min="1" max="65535" placeholder="25565" @input="updateAutoTags">
+        </div>
+      </div>
+
+      <!-- Load Balancing Strategy -->
       <div class="form-group">
-        <label class="form-label form-label--required">协议</label>
-        <select v-model="form.protocol" class="input" @change="handleProtocolChange">
-          <option value="tcp">TCP</option>
-          <option value="udp">UDP</option>
+        <label class="form-label">负载均衡策略</label>
+        <select v-model="form.load_balancing.strategy" class="input" @change="handleStrategyChange">
+          <option value="round_robin">轮询 (Round Robin)</option>
+          <option value="least_conn">最少连接 (Least Connections)</option>
+          <option value="random">随机 (Random)</option>
+          <option value="hash">哈希 (Hash)</option>
         </select>
       </div>
-    </div>
 
-    <!-- Listen Address -->
-    <div class="form-row">
+      <!-- Hash Key (only when strategy is hash) -->
+      <div v-if="form.load_balancing.strategy === 'hash'" class="form-group">
+        <label class="form-label">哈希键</label>
+        <input v-model="form.load_balancing.hash_key" class="input" placeholder="$binary_remote_addr">
+        <div class="form-help">例如: $remote_addr, $binary_remote_addr, $ssl_session_id</div>
+      </div>
+
+      <!-- Backends List -->
       <div class="form-group">
-        <label class="form-label form-label--required">监听地址</label>
-        <input v-model="form.listen_host" class="input" placeholder="0.0.0.0" @input="handleListenInput">
-      </div>
-      <div class="form-group">
-        <label class="form-label form-label--required">监听端口</label>
-        <input v-model.number="form.listen_port" class="input" type="number" min="1" max="65535" placeholder="25565" @input="updateAutoTags">
-      </div>
-    </div>
-
-    <!-- Load Balancing Strategy -->
-    <div class="form-group">
-      <label class="form-label">负载均衡策略</label>
-      <select v-model="form.load_balancing.strategy" class="input" @change="handleStrategyChange">
-        <option value="round_robin">轮询 (Round Robin)</option>
-        <option value="least_conn">最少连接 (Least Connections)</option>
-        <option value="random">随机 (Random)</option>
-        <option value="hash">哈希 (Hash)</option>
-      </select>
-    </div>
-
-    <!-- Hash Key (only when strategy is hash) -->
-    <div v-if="form.load_balancing.strategy === 'hash'" class="form-group">
-      <label class="form-label">哈希键</label>
-      <input v-model="form.load_balancing.hash_key" class="input" placeholder="$binary_remote_addr">
-      <div class="form-help">例如: $remote_addr, $binary_remote_addr, $ssl_session_id</div>
-    </div>
-
-    <!-- Backends List -->
-    <div class="form-group">
-      <div class="backends-header">
-        <label class="form-label form-label--required">后端服务器</label>
-        <button type="button" class="btn btn--sm btn--secondary" @click="addBackend">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <line x1="12" y1="5" x2="12" y2="19"/>
-            <line x1="5" y1="12" x2="19" y2="12"/>
-          </svg>
-          添加后端
-        </button>
-      </div>
-
-      <div class="backends-list">
-        <div
-          v-for="(backend, index) in form.backends"
-          :key="backend.id"
-          class="backend-item"
-          :class="{ 'backend-item--dragging': draggingIndex === index }"
-        >
-          <div class="backend-drag-handle" @mousedown="startDrag(index)" title="拖动排序">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="9" cy="5" r="1"/>
-              <circle cx="9" cy="12" r="1"/>
-              <circle cx="9" cy="19" r="1"/>
-              <circle cx="15" cy="5" r="1"/>
-              <circle cx="15" cy="12" r="1"/>
-              <circle cx="15" cy="19" r="1"/>
+        <div class="backends-header">
+          <label class="form-label form-label--required">后端服务器</label>
+          <button type="button" class="btn btn--sm btn--secondary" @click="addBackend">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="12" y1="5" x2="12" y2="19"/>
+              <line x1="5" y1="12" x2="19" y2="12"/>
             </svg>
-          </div>
-
-          <div class="backend-fields--inline">
-            <input
-              v-model="backend.address"
-              class="input backend-address-input"
-              placeholder="IP:端口 或 域名:端口"
-              @blur="parseBackendAddress(index)"
-            >
-            <div class="backend-weight-wrapper">
-              <span class="backend-weight-label">权重</span>
-              <input
-                v-model.number="backend.weight"
-                class="input backend-weight-input"
-                type="number"
-                min="1"
-                max="100"
-              >
-            </div>
-          </div>
-
-          <button
-            v-if="form.backends.length > 1"
-            type="button"
-            class="btn btn--icon btn--danger-ghost"
-            @click="removeBackend(index)"
-            title="删除后端"
-          >
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <polyline points="3 6 5 6 21 6"/>
-              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-            </svg>
+            添加后端
           </button>
         </div>
-      </div>
-    </div>
 
-    <!-- Advanced Parameters (collapsible) -->
-    <div class="advanced-section">
-      <button type="button" class="advanced-toggle" @click="showAdvanced = !showAdvanced">
-        <svg
-          width="14" height="14" viewBox="0 0 24 24" fill="none"
-          stroke="currentColor" stroke-width="2"
-          :class="{ 'advanced-toggle__icon--open': showAdvanced }"
-          class="advanced-toggle__icon"
-        >
-          <polyline points="9 18 15 12 9 6"/>
-        </svg>
-        高级参数
-        <span v-if="hasTuningChanges" class="advanced-toggle__badge">已配置</span>
-      </button>
+        <div class="backends-list">
+          <div
+            v-for="(backend, index) in form.backends"
+            :key="backend.id"
+            class="backend-item"
+            :class="{ 'backend-item--dragging': draggingIndex === index }"
+          >
+            <div class="backend-drag-handle" @mousedown="startDrag(index)" title="拖动排序">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="9" cy="5" r="1"/>
+                <circle cx="9" cy="12" r="1"/>
+                <circle cx="9" cy="19" r="1"/>
+                <circle cx="15" cy="5" r="1"/>
+                <circle cx="15" cy="12" r="1"/>
+                <circle cx="15" cy="19" r="1"/>
+              </svg>
+            </div>
 
-      <div v-if="showAdvanced" class="advanced-panel">
-        <!-- Timeouts -->
-        <div class="advanced-group">
-          <div class="advanced-group__title">超时设置</div>
-          <div class="form-row">
-            <div class="form-group">
-              <label class="form-label">proxy_connect_timeout</label>
-              <input v-model="form.tuning.proxy.connect_timeout" class="input" placeholder="10s">
-              <div class="form-help">如: 10s, 5m, 1h</div>
-            </div>
-            <div class="form-group">
-              <label class="form-label">proxy_timeout</label>
-              <input v-model="form.tuning.proxy.idle_timeout" class="input" :placeholder="form.protocol === 'udp' ? '20s' : '10m'">
-            </div>
-          </div>
-        </div>
-
-        <!-- Health Check -->
-        <div class="advanced-group">
-          <div class="advanced-group__title">健康检查</div>
-          <div class="form-row">
-            <div class="form-group">
-              <label class="form-label">max_fails</label>
-              <input v-model.number="form.tuning.upstream.max_fails" class="input" type="number" min="0" placeholder="3">
-            </div>
-            <div class="form-group">
-              <label class="form-label">fail_timeout</label>
-              <input v-model="form.tuning.upstream.fail_timeout" class="input" placeholder="30s">
-            </div>
-          </div>
-        </div>
-
-        <!-- Connection Limit -->
-        <div class="advanced-group">
-          <div class="advanced-group__title">连接限制</div>
-          <div class="form-row">
-            <div class="form-group">
-              <label class="form-label">limit_conn count</label>
-              <input v-model.number="form.tuning.limit_conn.count" class="input" type="number" min="0" placeholder="不限制">
-              <div class="form-help">每客户端最大并发连接数，留空不限制</div>
-            </div>
-            <div class="form-group">
-              <label class="form-label">limit_conn_zone key</label>
-              <input v-model="form.tuning.limit_conn.key" class="input" placeholder="$binary_remote_addr">
-            </div>
-            <div class="form-group">
-              <label class="form-label">zone_size</label>
-              <input v-model="form.tuning.limit_conn.zone_size" class="input" placeholder="10m">
-            </div>
-          </div>
-        </div>
-
-        <!-- Proxy Protocol -->
-        <div v-if="form.protocol === 'tcp'" class="advanced-group">
-          <div class="advanced-group__title">代理协议 (PROXY Protocol)</div>
-          <div class="advanced-checks">
-            <label class="backend-checkbox">
-              <input v-model="form.tuning.proxy_protocol.decode" type="checkbox">
-              <span>接收 PROXY Protocol</span>
-            </label>
-            <label class="backend-checkbox">
-              <input v-model="form.tuning.proxy_protocol.send" type="checkbox">
-              <span>发送 PROXY Protocol 到上游</span>
-            </label>
-          </div>
-          <div class="form-help">接收: 从客户端/前置代理解析真实 IP；发送: 向后端传递客户端真实 IP</div>
-        </div>
-
-        <!-- Listen Options -->
-        <div class="advanced-group">
-          <div class="advanced-group__title">监听选项</div>
-          <div class="advanced-checks">
-            <label class="backend-checkbox">
-              <input v-model="form.tuning.listen.reuseport" type="checkbox">
-              <span>reuseport</span>
-            </label>
-            <label class="backend-checkbox">
-              <input v-model="form.tuning.listen.tcp_nodelay" type="checkbox">
-              <span>tcp_nodelay</span>
-            </label>
-            <label class="backend-checkbox">
-              <input v-model="form.tuning.listen.so_keepalive" type="checkbox">
-              <span>so_keepalive</span>
-            </label>
-          </div>
-          <div class="form-row">
-            <div class="form-group">
-              <label class="form-label">backlog</label>
-              <input v-model.number="form.tuning.listen.backlog" class="input" type="number" min="0" placeholder="默认">
-            </div>
-          </div>
-        </div>
-
-        <!-- Buffer -->
-        <div class="advanced-group">
-          <div class="advanced-group__title">缓冲与上游</div>
-          <div class="form-row">
-            <div class="form-group">
-              <label class="form-label">proxy_buffer_size</label>
-              <input v-model="form.tuning.proxy.buffer_size" class="input" placeholder="16k">
-            </div>
-            <div class="form-group">
-              <label class="form-label">upstream max_conns</label>
-              <input v-model.number="form.tuning.upstream.max_conns" class="input" type="number" min="0" placeholder="0 (不限制)">
-            </div>
-          </div>
-        </div>
-
-        <!-- Backend Extensions (backup / max_conns per backend) -->
-        <div v-if="form.backends.length > 0" class="advanced-group">
-          <div class="advanced-group__title">后端扩展</div>
-          <div class="advanced-backends-list">
-            <div
-              v-for="(backend, index) in form.backends"
-              :key="'adv-' + backend.id"
-              class="advanced-backend-row"
-            >
-              <span class="advanced-backend-label">{{ backend.address || `backend ${index + 1}` }}</span>
-              <label class="backend-checkbox" title="backup server">
-                <input v-model="backend.backup" type="checkbox">
-                <span>backup</span>
-              </label>
+            <div class="backend-fields--inline">
+              <input
+                v-model="backend.address"
+                class="input backend-address-input"
+                placeholder="IP:端口 或 域名:端口"
+                @blur="parseBackendAddress(index)"
+              >
               <div class="backend-weight-wrapper">
-                <span class="backend-weight-label">max_conns</span>
+                <span class="backend-weight-label">权重</span>
                 <input
-                  v-model.number="backend.max_conns"
+                  v-model.number="backend.weight"
                   class="input backend-weight-input"
                   type="number"
-                  min="0"
-                  placeholder="0"
+                  min="1"
+                  max="100"
                 >
               </div>
             </div>
+
+            <button
+              v-if="form.backends.length > 1"
+              type="button"
+              class="btn btn--icon btn--danger-ghost"
+              @click="removeBackend(index)"
+              title="删除后端"
+            >
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="3 6 5 6 21 6"/>
+                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+              </svg>
+            </button>
           </div>
         </div>
+      </div>
+    </div>
 
-        <!-- UDP-specific -->
-        <div v-if="form.protocol === 'udp'" class="advanced-group">
-          <div class="advanced-group__title">UDP 专属</div>
-          <div class="form-row">
-            <div class="form-group">
-              <label class="form-label">proxy_requests</label>
-              <input v-model.number="form.tuning.proxy.udp_proxy_requests" class="input" type="number" min="0" placeholder="默认">
+    <!-- Tab 2: Advanced Tuning -->
+    <div v-if="activeTab === 'advanced'" class="form-tab-panel">
+      <!-- Timeouts -->
+      <div class="advanced-group">
+        <div class="advanced-group__title">超时设置</div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">proxy_connect_timeout</label>
+            <input v-model="form.tuning.proxy.connect_timeout" class="input" placeholder="10s">
+            <div class="form-help">如: 10s, 5m, 1h</div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">proxy_timeout</label>
+            <input v-model="form.tuning.proxy.idle_timeout" class="input" :placeholder="form.protocol === 'udp' ? '20s' : '10m'">
+          </div>
+        </div>
+      </div>
+
+      <!-- Health Check -->
+      <div class="advanced-group">
+        <div class="advanced-group__title">健康检查</div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">max_fails</label>
+            <input v-model.number="form.tuning.upstream.max_fails" class="input" type="number" min="0" placeholder="3">
+          </div>
+          <div class="form-group">
+            <label class="form-label">fail_timeout</label>
+            <input v-model="form.tuning.upstream.fail_timeout" class="input" placeholder="30s">
+          </div>
+        </div>
+      </div>
+
+      <!-- Connection Limit -->
+      <div class="advanced-group">
+        <div class="advanced-group__title">连接限制</div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">limit_conn count</label>
+            <input v-model.number="form.tuning.limit_conn.count" class="input" type="number" min="0" placeholder="不限制">
+            <div class="form-help">每客户端最大并发连接数，留空不限制</div>
+          </div>
+          <div class="form-group">
+            <label class="form-label">limit_conn_zone key</label>
+            <input v-model="form.tuning.limit_conn.key" class="input" placeholder="$binary_remote_addr">
+          </div>
+          <div class="form-group">
+            <label class="form-label">zone_size</label>
+            <input v-model="form.tuning.limit_conn.zone_size" class="input" placeholder="10m">
+          </div>
+        </div>
+      </div>
+
+      <!-- Buffer -->
+      <div class="advanced-group">
+        <div class="advanced-group__title">缓冲与上游</div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">proxy_buffer_size</label>
+            <input v-model="form.tuning.proxy.buffer_size" class="input" placeholder="16k">
+          </div>
+          <div class="form-group">
+            <label class="form-label">upstream max_conns</label>
+            <input v-model.number="form.tuning.upstream.max_conns" class="input" type="number" min="0" placeholder="0 (不限制)">
+          </div>
+        </div>
+      </div>
+
+      <!-- Backend Extensions (backup / max_conns per backend) -->
+      <div v-if="form.backends.length > 0" class="advanced-group">
+        <div class="advanced-group__title">后端扩展</div>
+        <div class="advanced-backends-list">
+          <div
+            v-for="(backend, index) in form.backends"
+            :key="'adv-' + backend.id"
+            class="advanced-backend-row"
+          >
+            <span class="advanced-backend-label">{{ backend.address || `backend ${index + 1}` }}</span>
+            <label class="backend-checkbox" title="backup server">
+              <input v-model="backend.backup" type="checkbox">
+              <span>backup</span>
+            </label>
+            <div class="backend-weight-wrapper">
+              <span class="backend-weight-label">max_conns</span>
+              <input
+                v-model.number="backend.max_conns"
+                class="input backend-weight-input"
+                type="number"
+                min="0"
+                placeholder="0"
+              >
             </div>
-            <div class="form-group">
-              <label class="form-label">proxy_responses</label>
-              <input v-model.number="form.tuning.proxy.udp_proxy_responses" class="input" type="number" min="0" placeholder="默认">
-            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab 3: Protocol & Listen -->
+    <div v-if="activeTab === 'protocol'" class="form-tab-panel">
+      <!-- Proxy Protocol -->
+      <div v-if="form.protocol === 'tcp'" class="advanced-group">
+        <div class="advanced-group__title">代理协议 (PROXY Protocol)</div>
+        <div class="advanced-checks">
+          <label class="backend-checkbox">
+            <input v-model="form.tuning.proxy_protocol.decode" type="checkbox">
+            <span>接收 PROXY Protocol</span>
+          </label>
+          <label class="backend-checkbox">
+            <input v-model="form.tuning.proxy_protocol.send" type="checkbox">
+            <span>发送 PROXY Protocol 到上游</span>
+          </label>
+        </div>
+        <div class="form-help">接收: 从客户端/前置代理解析真实 IP；发送: 向后端传递客户端真实 IP</div>
+      </div>
+
+      <!-- Listen Options -->
+      <div class="advanced-group">
+        <div class="advanced-group__title">监听选项</div>
+        <div class="advanced-checks">
+          <label class="backend-checkbox">
+            <input v-model="form.tuning.listen.reuseport" type="checkbox">
+            <span>reuseport</span>
+          </label>
+          <label class="backend-checkbox">
+            <input v-model="form.tuning.listen.tcp_nodelay" type="checkbox">
+            <span>tcp_nodelay</span>
+          </label>
+          <label class="backend-checkbox">
+            <input v-model="form.tuning.listen.so_keepalive" type="checkbox">
+            <span>so_keepalive</span>
+          </label>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">backlog</label>
+            <input v-model.number="form.tuning.listen.backlog" class="input" type="number" min="0" placeholder="默认">
+          </div>
+        </div>
+      </div>
+
+      <!-- UDP-specific -->
+      <div v-if="form.protocol === 'udp'" class="advanced-group">
+        <div class="advanced-group__title">UDP 专属</div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">proxy_requests</label>
+            <input v-model.number="form.tuning.proxy.udp_proxy_requests" class="input" type="number" min="0" placeholder="默认">
+          </div>
+          <div class="form-group">
+            <label class="form-label">proxy_responses</label>
+            <input v-model.number="form.tuning.proxy.udp_proxy_responses" class="input" type="number" min="0" placeholder="默认">
           </div>
         </div>
       </div>
@@ -340,8 +338,20 @@ const props = defineProps({
   agentId: { type: [String, Object], required: true }
 })
 const emit = defineEmits(['success'])
-const createL4Rule = useCreateL4Rule(props.agentId)
-const updateL4Rule = useUpdateL4Rule(props.agentId)
+
+// Ensure agentId is always a ref-like object for the hooks
+// When parent passes a computed/ref, props.agentId IS that ref
+// When parent incorrectly passes a plain string, we wrap it
+const agentIdRef = computed(() => {
+  if (props.agentId && typeof props.agentId === 'object' && 'value' in props.agentId) {
+    return props.agentId  // Already ref-like, pass through
+  }
+  // String or undefined - wrap in ref-like object
+  return { value: props.agentId }
+})
+
+const createL4Rule = useCreateL4Rule(agentIdRef)
+const updateL4Rule = useUpdateL4Rule(agentIdRef)
 const isEdit = computed(() => !!props.initialData?.id)
 
 let backendIdCounter = 0
@@ -466,6 +476,41 @@ const hasTuningChanges = computed(() => {
     (t.listen.backlog !== null && t.listen.backlog !== defaults.listen.backlog) ||
     t.proxy_protocol.decode !== defaults.proxy_protocol.decode ||
     t.proxy_protocol.send !== defaults.proxy_protocol.send
+  )
+})
+
+const activeTab = ref('basic')
+
+const hasAdvancedTuning = computed(() => {
+  const defaults = getDefaultTuning(form.value.protocol)
+  const t = form.value.tuning
+  const hasBackendExtensions = form.value.backends.some(b => b.backup || (b.max_conns && b.max_conns > 0))
+  return (
+    hasBackendExtensions ||
+    t.proxy.connect_timeout !== defaults.proxy.connect_timeout ||
+    t.proxy.idle_timeout !== defaults.proxy.idle_timeout ||
+    t.proxy.buffer_size !== defaults.proxy.buffer_size ||
+    t.upstream.max_conns !== defaults.upstream.max_conns ||
+    t.upstream.max_fails !== defaults.upstream.max_fails ||
+    t.upstream.fail_timeout !== defaults.upstream.fail_timeout ||
+    t.limit_conn.count !== defaults.limit_conn.count
+  )
+})
+
+const hasProtocolTuning = computed(() => {
+  const defaults = getDefaultTuning(form.value.protocol)
+  const t = form.value.tuning
+  return (
+    t.proxy_protocol.decode !== defaults.proxy_protocol.decode ||
+    t.proxy_protocol.send !== defaults.proxy_protocol.send ||
+    t.listen.reuseport !== defaults.listen.reuseport ||
+    t.listen.tcp_nodelay !== defaults.listen.tcp_nodelay ||
+    t.listen.so_keepalive !== defaults.listen.so_keepalive ||
+    (t.listen.backlog !== null && t.listen.backlog !== defaults.listen.backlog) ||
+    (form.value.protocol === 'udp' && (
+      (t.proxy.udp_proxy_requests !== null && t.proxy.udp_proxy_requests !== defaults.proxy.udp_proxy_requests) ||
+      (t.proxy.udp_proxy_responses !== null && t.proxy.udp_proxy_responses !== defaults.proxy.udp_proxy_responses)
+    ))
   )
 })
 
@@ -827,57 +872,47 @@ async function handleSubmit() {
   accent-color: var(--color-primary);
 }
 
-/* Advanced Section */
-.advanced-section {
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-lg);
-  overflow: hidden;
+/* Tab Bar */
+.form-tabs {
+  display: flex;
+  border-bottom: 1px solid var(--color-border-default);
+  gap: 0;
+  margin-bottom: var(--space-4);
 }
 
-.advanced-toggle {
-  display: flex;
-  align-items: center;
-  gap: var(--space-2);
-  width: 100%;
+.form-tabs__btn {
   padding: var(--space-3) var(--space-4);
-  background: var(--color-bg-subtle);
   border: none;
+  background: transparent;
   cursor: pointer;
   font-size: var(--text-sm);
   font-weight: var(--font-medium);
-  color: var(--color-text-secondary);
+  color: var(--color-text-muted);
+  border-bottom: 2px solid transparent;
   transition: all var(--duration-fast);
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
 }
 
-.advanced-toggle:hover {
-  background: var(--color-bg-hover);
-}
+.form-tabs__btn:hover { color: var(--color-text-secondary); background: var(--color-bg-hover); }
+.form-tabs__btn--active { color: var(--color-primary); border-bottom-color: var(--color-primary); }
 
-.advanced-toggle__icon {
-  transition: transform var(--duration-fast);
-  flex-shrink: 0;
-}
-
-.advanced-toggle__icon--open {
-  transform: rotate(90deg);
-}
-
-.advanced-toggle__badge {
+.form-tabs__badge {
   font-size: 9px;
   font-weight: var(--font-bold);
   padding: 1px 6px;
   background: var(--color-primary-subtle);
   color: var(--color-primary);
   border-radius: var(--radius-sm);
-  margin-left: auto;
 }
 
-.advanced-panel {
-  padding: var(--space-4);
+/* Tab Panel */
+.form-tab-panel {
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
-  border-top: 1px solid var(--color-border-default);
+  margin-bottom: var(--space-4);
 }
 
 .advanced-group {
