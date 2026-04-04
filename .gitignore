@@ -6,3 +6,4 @@ test-results/
 .idea/
 .vscode/
 .ai/
+.claude/settings.local.json
