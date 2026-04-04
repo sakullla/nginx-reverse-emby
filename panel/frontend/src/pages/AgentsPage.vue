@@ -223,7 +223,7 @@ function confirmDelete() {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
-  margin-bottom: 1.5rem;
+  margin-bottom: 2rem;
   gap: 1rem;
 }
 .agents-page__title {
@@ -240,7 +240,7 @@ function confirmDelete() {
 .agents-list {
   display: flex;
   flex-direction: column;
-  gap: 0.5rem;
+  gap: 0.75rem;
 }
 .agent-card {
   display: flex;
