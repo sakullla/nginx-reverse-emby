@@ -1911,10 +1911,15 @@ async function hydrateAgents() {
   const enriched = [];
 
   if (LOCAL_AGENT_ENABLED) {
-    enriched.push(sanitizeAgent(makeLocalAgent()));
+    const localAgent = makeLocalAgent();
+    localAgent.http_rules_count = (storage.loadRulesForAgent(LOCAL_AGENT_ID) || []).length;
+    localAgent.l4_rules_count = (storage.loadL4RulesForAgent(LOCAL_AGENT_ID) || []).length;
+    enriched.push(sanitizeAgent(localAgent));
   }
 
   for (const agent of registered) {
+    agent.http_rules_count = (storage.loadRulesForAgent(agent.id) || []).length;
+    agent.l4_rules_count = (storage.loadL4RulesForAgent(agent.id) || []).length;
     enriched.push(sanitizeAgent(agent));
   }
 

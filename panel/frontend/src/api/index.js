@@ -72,6 +72,8 @@ const mockAgents = [
     status: 'online',
     is_local: true,
     last_seen_at: new Date().toISOString(),
+    http_rules_count: 12,
+    l4_rules_count: 3,
     // revisions match + success → 所有规则显示"已生效"
     desired_revision: 5,
     current_revision: 5,
@@ -89,6 +91,8 @@ const mockAgents = [
     status: 'online',
     is_local: false,
     last_seen_at: new Date().toISOString(),
+    http_rules_count: 8,
+    l4_rules_count: 2,
     // desired > current → 所有规则显示"待同步"
     desired_revision: 3,
     current_revision: 2,
@@ -106,6 +110,8 @@ const mockAgents = [
     status: 'online',
     is_local: false,
     last_seen_at: new Date().toISOString(),
+    http_rules_count: 5,
+    l4_rules_count: 1,
     // revisions match but apply failed → 所有规则显示"应用失败"
     desired_revision: 2,
     current_revision: 2,
@@ -132,6 +138,8 @@ const mockAgents = [
       is_local: false,
       last_seen_at: new Date().toISOString(),
       last_seen_ip: `10.0.${Math.floor(i / 10) + 1}.${(i % 10) + 10}`,
+      http_rules_count: (i % 20) + 1,
+      l4_rules_count: (i % 8) + 1,
       desired_revision: rev,
       current_revision: isPending ? rev - 1 : rev,
       last_apply_revision: isPending ? rev - 1 : rev,

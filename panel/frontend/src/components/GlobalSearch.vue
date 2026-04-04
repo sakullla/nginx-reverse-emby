@@ -44,18 +44,22 @@
               <div class="result-group__header" @click="navigateToResult(group.agentId)">
                 <div class="result-group__dot" :class="group.online ? 'result-group__dot--online' : 'result-group__dot--offline'"></div>
                 <span class="result-group__name">{{ group.agentName }}</span>
-                <span class="result-group__count">{{ group.rules.length }} 条</span>
+                <span class="result-group__count">{{ group.items.length }} 条</span>
               </div>
               <div
-                v-for="rule in group.rules"
-                :key="rule.id"
+                v-for="item in group.items"
+                :key="`${item._type}-${item.id}`"
                 class="result-item"
-                @click="navigateToRule(group.agentId, rule)"
+                @click="navigateToItem(group.agentId, item)"
               >
-                <div class="result-item__status" :class="rule.enabled ? 'on' : 'off'"></div>
+                <div class="result-item__type-badge" :class="`result-item__type-badge--${item._type}`">
+                  {{ typeLabel(item._type) }}
+                </div>
                 <div class="result-item__info">
-                  <div class="result-item__url">{{ rule.frontend_url }}</div>
-                  <div class="result-item__backend">→ {{ rule.backend_url }}</div>
+                  <div class="result-item__url">{{ item.frontend_url || item.domain || `${item.listen_host || ''}:${item.listen_port}` || `#${item.id}` }}</div>
+                  <div v-if="item._type === 'rule'" class="result-item__backend">→ {{ item.backend_url }}</div>
+                  <div v-else-if="item._type === 'l4'" class="result-item__backend">{{ item.protocol?.toUpperCase() }} {{ item.listen_host || '*' }}:{{ item.listen_port }} → {{ item.upstream_host }}:{{ item.upstream_port }}</div>
+                  <div v-else-if="item._type === 'cert'" class="result-item__backend">{{ getCertStatus(item) }}</div>
                 </div>
               </div>
             </div>
@@ -71,6 +75,11 @@ import { ref, watch, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAgents } from '../hooks/useAgents'
 import * as api from '../api'
+
+// Result type: 'rule' | 'l4' | 'cert'
+function makeResult(type, agentId, agentName, online, items) {
+  return { type, agentId, agentName, online, items }
+}
 
 const props = defineProps({
   open: { type: Boolean, default: false }
@@ -106,21 +115,41 @@ watch(query, async (val) => {
     const searches = agents
       .filter(a => a.status !== 'offline')
       .map(agent =>
-        api.fetchRules(agent.id)
-          .then(rules => ({
-            agentId: agent.id,
-            agentName: agent.name,
-            online: agent.status === 'online',
-            rules: (rules || []).filter(r =>
-              r.frontend_url?.toLowerCase().includes(val.toLowerCase()) ||
-              r.backend_url?.toLowerCase().includes(val.toLowerCase()) ||
-              (r.tags || []).some(tag => tag.toLowerCase().includes(val.toLowerCase()))
+        Promise.all([
+          api.fetchRules(agent.id).catch(() => []),
+          api.fetchL4Rules(agent.id).catch(() => []),
+          api.fetchCertificates(agent.id).catch(() => [])
+        ])
+          .then(([rules, l4Rules, certs]) => {
+            const q = val.toLowerCase()
+            const matchedRules = (rules || []).filter(r =>
+              r.frontend_url?.toLowerCase().includes(q) ||
+              r.backend_url?.toLowerCase().includes(q) ||
+              (r.tags || []).some(tag => tag.toLowerCase().includes(q))
             )
-          }))
+            const matchedL4 = (l4Rules || []).filter(r =>
+              String(r.protocol || '').toLowerCase().includes(q) ||
+              String(r.listen_host || '').toLowerCase().includes(q) ||
+              String(r.upstream_host || '').toLowerCase().includes(q) ||
+              String(r.listen_port || '').includes(q) ||
+              (r.tags || []).some(tag => tag.toLowerCase().includes(q))
+            )
+            const matchedCerts = (certs || []).filter(c =>
+              c.domain?.toLowerCase().includes(q) ||
+              (c.tags || []).some(tag => tag.toLowerCase().includes(q))
+            )
+            const items = [
+              ...matchedRules.map(r => ({ ...r, _type: 'rule' })),
+              ...matchedL4.map(r => ({ ...r, _type: 'l4' })),
+              ...matchedCerts.map(c => ({ ...c, _type: 'cert' }))
+            ]
+            if (!items.length) return null
+            return makeResult(null, agent.id, agent.name, agent.status === 'online', items)
+          })
           .catch(() => null)
       )
     const groupResults = await Promise.all(searches)
-    results.value = groupResults.filter(g => g && g.rules.length > 0)
+    results.value = groupResults.filter(g => g && g.items.length > 0)
   } finally {
     isLoading.value = false
   }
@@ -132,13 +161,29 @@ function close() {
 }
 
 function navigateToResult(agentId) {
-  router.push({ path: '/rules', query: { agentId } })
+  // Navigate to rules page for this agent; page will use ?search= to pre-fill
+  router.push({ path: '/rules', query: { agentId, search: query.value } })
   close()
 }
 
-function navigateToRule(agentId, rule) {
+function navigateToItem(agentId, item) {
   close()
-  router.push({ path: '/rules', query: { agentId, ruleId: String(rule.id) } })
+  const q = query.value
+  if (item._type === 'rule') {
+    router.push({ path: '/rules', query: { agentId, ruleId: String(item.id) } })
+  } else if (item._type === 'l4') {
+    router.push({ path: '/l4', query: { agentId, search: q } })
+  } else if (item._type === 'cert') {
+    router.push({ path: '/certs', query: { agentId, search: q } })
+  }
+}
+
+function typeLabel(type) {
+  return type === 'rule' ? 'HTTP' : type === 'l4' ? 'L4' : '证书'
+}
+
+function getCertStatus(cert) {
+  return cert.status === 'active' ? '生效中' : cert.status === 'pending' ? '待签发' : '未激活'
 }
 
 function handleKeydown(e) {
@@ -174,6 +219,10 @@ onUnmounted(() => document.removeEventListener('keydown', handleKeydown))
 .result-item__status { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 .result-item__status.on { background: var(--color-primary); }
 .result-item__status.off { background: var(--color-text-muted); }
+.result-item__type-badge { font-size: 0.625rem; font-weight: 700; padding: 1px 5px; border-radius: var(--radius-full); flex-shrink: 0; text-transform: uppercase; letter-spacing: 0.03em; }
+.result-item__type-badge--rule { background: #dbeafe; color: #1d4ed8; }
+.result-item__type-badge--l4 { background: #fce7f3; color: #9d174d; }
+.result-item__type-badge--cert { background: #d1fae5; color: #065f46; }
 .result-item__info { flex: 1; min-width: 0; }
 .result-item__url { font-size: 0.875rem; font-weight: 500; color: var(--color-text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .result-item__backend { font-size: 0.75rem; color: var(--color-text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

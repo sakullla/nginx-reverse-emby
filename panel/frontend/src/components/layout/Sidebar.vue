@@ -15,7 +15,7 @@
     </div>
     <!-- Navigation links -->
     <nav class="sidebar__nav" v-show="!collapsed">
-      <RouterLink to="/" class="sidebar__nav-item" active-class="sidebar__nav-item--active" exact>
+      <RouterLink to="/" class="sidebar__nav-item" :class="{ active: route.name === 'dashboard' }">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/>
         </svg>
@@ -59,7 +59,7 @@
 
     <!-- Collapsed nav icons -->
     <nav class="sidebar__nav sidebar__nav--collapsed" v-show="collapsed">
-      <RouterLink to="/" class="sidebar__nav-icon" title="首页" active-class="sidebar__nav-icon--active">
+      <RouterLink to="/" class="sidebar__nav-icon" title="首页" :class="{ 'sidebar__nav-icon--active': route.name === 'dashboard' }">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/>
         </svg>

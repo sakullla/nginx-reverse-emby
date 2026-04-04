@@ -140,7 +140,7 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, watchEffect } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAgent } from '../context/AgentContext'
 import { useCertificates, useDeleteCertificate, useIssueCertificate } from '../hooks/useCertificates'
@@ -163,6 +163,13 @@ const deletingCert = ref(null)
 const searchQuery = ref('')
 const searchInputRef = ref(null)
 function focusSearch() { searchInputRef.value?.focus() }
+
+// Pre-fill search from global search navigation
+watchEffect(() => {
+  if (route.query.search !== undefined) {
+    searchQuery.value = route.query.search
+  }
+})
 
 const filteredCerts = computed(() => {
   const raw = searchQuery.value.trim()

@@ -129,7 +129,7 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, watchEffect } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAgent } from '../context/AgentContext'
 import { useL4Rules, useCreateL4Rule, useUpdateL4Rule, useDeleteL4Rule } from '../hooks/useL4Rules'
@@ -150,6 +150,13 @@ const rules = computed(() => _rulesData.value ?? [])
 const searchQuery = ref('')
 const searchInputRef = ref(null)
 function focusSearch() { searchInputRef.value?.focus() }
+
+// Pre-fill search from global search navigation
+watchEffect(() => {
+  if (route.query.search !== undefined) {
+    searchQuery.value = route.query.search
+  }
+})
 
 const filteredRules = computed(() => {
   const raw = searchQuery.value.trim()
