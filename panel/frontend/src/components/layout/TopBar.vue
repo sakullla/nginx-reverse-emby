@@ -14,18 +14,14 @@
       </div>
     </div>
 
-    <div class="topbar__center">
-      <button class="topbar__search" @click="$emit('open-search')" title="全局搜索 (⌘K)">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+    <div class="topbar__actions">
+      <button class="topbar__action topbar__action--search" @click="$emit('open-search')" title="全局搜索 (Ctrl+K)">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <circle cx="11" cy="11" r="8"/>
           <line x1="21" y1="21" x2="16.65" y2="16.65"/>
         </svg>
-        <span>全局搜索</span>
-        <kbd>{{ isMac ? '⌘K' : 'Ctrl+K' }}</kbd>
       </button>
-    </div>
 
-    <div class="topbar__actions">
       <ThemeSelector />
 
       <!-- Agent Switcher Dropdown -->
@@ -80,7 +76,7 @@ const { data: agentsData } = useAgents()
 const agentDropdownOpen = ref(false)
 const agentSearchQuery = ref('')
 const agentSwitcherRef = ref(null)
-const isMac = ref(/Mac|iPod|iPhone|iPad/.test(navigator.platform))
+
 
 const currentAgentName = computed(() => {
   if (!selectedAgentId.value || !agentsData.value) return '—'
@@ -171,23 +167,6 @@ function handleLogout() {
   background: var(--gradient-primary); color: white;
   border-radius: var(--radius-full);
 }
-.topbar__center { display: flex; align-items: center; }
-.topbar__search {
-  display: flex; align-items: center; gap: 0.5rem;
-  padding: 0.5rem 1rem;
-  background: var(--color-bg-subtle);
-  border: 1.5px solid var(--color-border-default);
-  border-radius: var(--radius-xl);
-  color: var(--color-text-secondary); font-size: 0.875rem;
-  cursor: pointer; transition: all 0.25s; font-family: inherit;
-}
-.topbar__search:hover { border-color: var(--color-primary); color: var(--color-text-primary); }
-.topbar__search kbd {
-  font-size: 0.75rem; padding: 1px 5px;
-  background: var(--color-bg-surface);
-  border: 1px solid var(--color-border-default);
-  border-radius: 4px; font-family: var(--font-mono);
-}
 .topbar__actions { display: flex; align-items: center; gap: 0.5rem; }
 .topbar__action {
   display: flex; align-items: center; justify-content: center;
@@ -198,6 +177,10 @@ function handleLogout() {
 }
 .topbar__action:hover { color: var(--color-text-primary); background: var(--color-bg-hover); }
 .topbar__action--logout:hover { color: var(--color-danger); background: var(--color-danger-50); }
+.topbar__action--search:hover {
+  color: var(--color-text-primary);
+  background: var(--color-bg-hover);
+}
 
 /* Agent Switcher */
 .agent-switcher { position: relative; }
@@ -263,8 +246,6 @@ function handleLogout() {
 }
 
 @media (max-width: 768px) {
-  .topbar__search span, .topbar__search kbd { display: none; }
-  .topbar__center { display: none; }
   .agent-switcher__trigger { max-width: 120px; }
 }
 </style>

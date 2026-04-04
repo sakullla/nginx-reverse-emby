@@ -1,8 +1,21 @@
 <template>
   <aside class="sidebar" :class="{ 'sidebar--collapsed': collapsed }">
+    <div class="sidebar__header">
+      <div class="sidebar__logo">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+        </svg>
+      </div>
+      <span class="sidebar__brand" v-show="!collapsed">Nginx Proxy</span>
+      <button class="sidebar__collapse-btn" @click="toggleCollapse" :title="collapsed ? '展开' : '折叠'">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" :class="{ 'rotate-180': collapsed }">
+          <polyline points="15 18 9 12 15 6"/>
+        </svg>
+      </button>
+    </div>
     <!-- Navigation links -->
     <nav class="sidebar__nav" v-show="!collapsed">
-      <RouterLink to="/" class="sidebar__nav-item" active-class="sidebar__nav-item--active">
+      <RouterLink to="/" class="sidebar__nav-item" active-class="sidebar__nav-item--active" exact>
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/>
         </svg>
@@ -88,6 +101,11 @@ import { RouterLink, useRoute } from 'vue-router'
 
 const route = useRoute()
 const collapsed = ref(localStorage.getItem('sidebar_collapsed') === 'true')
+
+function toggleCollapse() {
+  collapsed.value = !collapsed.value
+  localStorage.setItem('sidebar_collapsed', String(collapsed.value))
+}
 </script>
 
 <style scoped>
@@ -105,12 +123,53 @@ const collapsed = ref(localStorage.getItem('sidebar_collapsed') === 'true')
   width: 64px;
 }
 
+/* Header */
+.sidebar__header {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.875rem 0.875rem 0.5rem;
+  border-bottom: 1px solid var(--color-border-subtle);
+  min-height: 56px;
+  box-sizing: border-box;
+}
+.sidebar__logo {
+  width: 32px; height: 32px;
+  background: var(--gradient-primary);
+  border-radius: var(--radius-lg);
+  display: flex; align-items: center; justify-content: center;
+  color: white; flex-shrink: 0;
+}
+.sidebar__brand {
+  font-size: 0.875rem; font-weight: 700;
+  color: var(--color-text-primary); flex: 1;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sidebar__collapse-btn {
+  display: flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px;
+  border-radius: var(--radius-md);
+  border: none; background: transparent;
+  color: var(--color-text-secondary); cursor: pointer;
+  transition: all 0.15s; flex-shrink: 0;
+}
+.sidebar__collapse-btn:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}
+.sidebar__collapse-btn svg {
+  transition: transform 0.2s;
+}
+.sidebar__collapse-btn svg.rotate-180 {
+  transform: rotate(180deg);
+}
+
 /* Navigation */
 .sidebar__nav {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 0.75rem 0.75rem 0.5rem;
+  padding: 0.5rem 0.75rem;
   border-bottom: 1px solid var(--color-border-subtle);
 }
 .sidebar__nav-item {

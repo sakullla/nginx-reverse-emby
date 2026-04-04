@@ -89,34 +89,28 @@ const systemInfo = ref({ role: 'master', deployMode: 'direct', local_agent_enabl
 .settings-section__body { padding: 1.25rem; display: flex; flex-direction: column; gap: 1rem; }
 
 /* Theme Grid */
-.theme-grid { display: flex; gap: 1rem; }
+.theme-grid { display: flex; gap: 0.5rem; flex-wrap: wrap; }
 .theme-option {
   display: flex;
-  flex-direction: column;
   align-items: center;
-  gap: 0.75rem;
-  padding: 1.25rem 1rem;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
   border: 1.5px solid var(--color-border-default);
-  border-radius: var(--radius-xl);
+  border-radius: var(--radius-lg);
   background: var(--color-bg-subtle);
   cursor: pointer;
   transition: all 0.2s var(--ease-default);
   position: relative;
-  min-width: 140px;
-  flex: 1;
 }
-.theme-option:hover { border-color: var(--color-primary); transform: translateY(-2px); }
+.theme-option:hover { border-color: var(--color-primary); transform: translateY(-1px); }
 .theme-option.active {
   border-color: var(--color-primary);
   background: var(--color-primary-subtle);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 20%, transparent);
-  transform: translateY(-2px);
+  transform: translateY(-1px);
 }
-.theme-option__label { font-size: 0.9375rem; font-weight: 600; color: var(--color-text-primary); }
+.theme-option__label { font-size: 0.875rem; font-weight: 500; color: var(--color-text-primary); }
 .theme-option__check {
-  position: absolute;
-  top: 0.5rem;
-  right: 0.5rem;
   color: var(--color-primary);
   animation: checkPop 0.3s var(--ease-bounce);
 }
@@ -127,8 +121,8 @@ const systemInfo = ref({ role: 'master', deployMode: 'direct', local_agent_enabl
 
 /* 4K adaptation */
 @media (min-width: 2560px) {
-  .theme-option { min-width: 180px; padding: 1.5rem 1.25rem; }
-  .theme-option__label { font-size: 1.0625rem; }
+  .theme-option { padding: 0.625rem 1rem; }
+  .theme-option__label { font-size: 1rem; }
   .settings-page { max-width: 900px; }
   .settings-page__title { font-size: 1.75rem; }
   .settings-section__title { font-size: 1.125rem; }

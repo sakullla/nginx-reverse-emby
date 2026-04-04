@@ -1,7 +1,7 @@
 <template>
   <div class="rules-page">
     <div class="rules-page__header">
-      <div>
+      <div class="rules-page__header-left">
         <h1 class="rules-page__title">L4 规则</h1>
         <p class="rules-page__subtitle">
           <template v-if="selectedAgentId">
@@ -12,12 +12,18 @@
           </template>
         </p>
       </div>
-      <button v-if="selectedAgentId" class="btn btn-primary" @click="showAddForm = true">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-          <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
-        </svg>
-        添加 L4 规则
-      </button>
+      <div class="rules-page__header-right">
+        <div class="search-wrapper" v-if="selectedAgentId && rules.length" @click="focusSearch">
+          <svg class="search-icon-btn" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+          <input ref="searchInputRef" v-model="searchQuery" class="search-input" placeholder="搜索协议 / 地址 / 端口 / 标签 / #id=...">
+        </div>
+        <button v-if="selectedAgentId" class="btn btn-primary" @click="showAddForm = true">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+          </svg>
+          <span class="btn-text">添加 L4 规则</span>
+        </button>
+      </div>
     </div>
 
     <!-- No agent selected -->
@@ -45,10 +51,6 @@
       <p>没有匹配的 L4 规则</p>
     </div>
 
-    <!-- Search toolbar -->
-    <div v-if="selectedAgentId && rules.length" class="rules-page__toolbar">
-      <input v-model="searchQuery" class="search-input" placeholder="搜索协议 / 地址 / 端口 / 标签 / #id=...">
-    </div>
 
     <!-- Rule card grid -->
     <div v-if="selectedAgentId && filteredRules.length" class="rule-grid">
@@ -62,7 +64,7 @@
 
     <!-- Add/Edit Modal -->
     <Teleport to="body">
-      <div v-if="showAddForm || editingRule" class="modal-overlay" @click.self="closeForm">
+      <div v-if="showAddForm || editingRule" class="modal-overlay">
         <div class="modal modal--large">
           <div class="modal__header">
             <span>{{ editingRule ? '编辑 L4 规则' : '添加 L4 规则' }}</span>
@@ -82,7 +84,7 @@
 
     <!-- Copy Modal -->
     <Teleport to="body">
-      <div v-if="showCopyModal" class="modal-overlay" @click.self="closeCopy">
+      <div v-if="showCopyModal" class="modal-overlay">
         <div class="modal modal--large">
           <div class="modal__header">
             <span>复制 L4 规则</span>
@@ -146,6 +148,8 @@ const rules = computed(() => _rulesData.value ?? [])
 
 // Search
 const searchQuery = ref('')
+const searchInputRef = ref(null)
+function focusSearch() { searchInputRef.value?.focus() }
 
 const filteredRules = computed(() => {
   const raw = searchQuery.value.trim()
@@ -182,23 +186,61 @@ function confirmDelete() { if (deletingRule.value) deleteL4Rule.mutate(deletingR
 
 <style scoped>
 .rules-page { max-width: 1200px; margin: 0 auto; }
-.rules-page__header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 2rem; gap: 1rem; }
+.rules-page__header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1.5rem; gap: 1rem; flex-wrap: wrap; }
+.rules-page__header-left { flex: 1; min-width: 0; }
+.rules-page__header-right { display: flex; align-items: center; gap: 0.75rem; flex-shrink: 0; }
 .rules-page__title { font-size: 1.5rem; font-weight: 700; margin: 0 0 0.25rem; color: var(--color-text-primary); }
 .rules-page__subtitle { font-size: 0.875rem; color: var(--color-text-tertiary); margin: 0; }
 .rules-page__prompt, .rules-page__empty, .rules-page__loading { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.75rem; padding: 4rem 2rem; color: var(--color-text-muted); text-align: center; }
 /* Toolbar */
 .rules-page__toolbar { margin-bottom: 1.5rem; }
-.search-input { width: 100%; padding: 0.625rem 0.875rem; border-radius: var(--radius-lg); border: 1.5px solid var(--color-border-default); background: var(--color-bg-subtle); font-size: 0.875rem; color: var(--color-text-primary); outline: none; font-family: inherit; transition: border-color 0.15s; box-sizing: border-box; }
-.search-input:focus { border-color: var(--color-primary); }
-.search-input::placeholder { color: var(--color-text-muted); }
 /* Card grid */
 .rule-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1rem; }
+.search-wrapper { position: relative; display: flex; align-items: center; }
+.search-icon-btn { display: none; }
+.search-input { width: 200px; padding: 0.625rem 0.875rem; border-radius: var(--radius-lg); border: 1.5px solid var(--color-border-default); background: var(--color-bg-subtle); font-size: 0.875rem; color: var(--color-text-primary); outline: none; font-family: inherit; transition: border-color 0.15s, width 0.2s; box-sizing: border-box; }
+.search-input:focus { border-color: var(--color-primary); width: 280px; }
+.search-input::placeholder { color: var(--color-text-muted); }
+
+@media (max-width: 640px) {
+  .search-wrapper {
+    width: 36px;
+    height: 36px;
+    border-radius: var(--radius-lg);
+    border: 1.5px solid var(--color-border-default);
+    background: var(--color-bg-subtle);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .search-icon-btn { display: flex; color: var(--color-text-secondary); }
+  .search-input {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 200px;
+    height: 36px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s, width 0.2s;
+  }
+  .search-wrapper:focus-within {
+    width: 200px;
+  }
+  .search-wrapper:focus-within .search-input {
+    opacity: 1;
+    pointer-events: auto;
+    border-color: var(--color-primary);
+  }
+  .btn-text { display: none; }
+}
 /* Modals */
 .modal-overlay { position: fixed; inset: 0; background: rgba(37,23,54,0.4); backdrop-filter: blur(8px); z-index: var(--z-modal); display: flex; align-items: center; justify-content: center; padding: var(--space-4); }
 .modal { background: var(--color-bg-surface); border: 1.5px solid var(--color-border-default); border-radius: var(--radius-3xl); box-shadow: var(--shadow-2xl); width: min(480px, 90vw); max-height: calc(100vh - var(--space-8)); display: flex; flex-direction: column; overflow: hidden; }
 .modal--large { width: min(600px, 92vw); }
 .modal__header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); padding: var(--space-5) var(--space-6); border-bottom: 1px solid var(--color-border-subtle); flex-shrink: 0; background: var(--gradient-soft); font-weight: 600; font-size: var(--text-lg); color: var(--color-text-primary); }
-.modal__body { padding: var(--space-6); overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: var(--space-5); }
+.modal__body { padding: var(--space-6); overflow-x: hidden; overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: var(--space-5); }
 .modal__footer { padding: var(--space-4) var(--space-6); display: flex; justify-content: flex-end; gap: var(--space-3); border-top: 1px solid var(--color-border-subtle); flex-shrink: 0; }
 .modal__close { display: flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: var(--radius-full); color: var(--color-text-tertiary); transition: all var(--duration-normal) var(--ease-bounce); flex-shrink: 0; border: none; background: transparent; cursor: pointer; }
 .modal__close:hover { background: var(--color-danger-50); color: var(--color-danger); transform: rotate(90deg); }

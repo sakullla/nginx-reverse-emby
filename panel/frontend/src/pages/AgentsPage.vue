@@ -291,17 +291,17 @@ function confirmDelete() {
   border-radius: var(--radius-lg);
   font-family: var(--font-mono);
   font-size: 0.8125rem;
-  overflow: hidden;
+  overflow-x: auto;
 }
 .join-command code {
   flex: 1;
   word-break: break-all;
-  overflow-x: hidden;
-  white-space: pre-wrap;
+  overflow-x: auto;
+  white-space: pre;
   color: var(--color-text-primary);
   line-height: 1.6;
 }
-.join-steps { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.5rem; }
+.join-steps { counter-reset: step; list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.5rem; }
 .join-steps li { font-size: 0.875rem; color: var(--color-text-secondary); padding-left: 1.25rem; position: relative; }
 .join-steps li::before { content: counter(step) "."; counter-increment: step; position: absolute; left: 0; color: var(--color-primary); font-weight: 600; }
 .agents-page__loading, .agents-page__empty { display: flex; align-items: center; justify-content: center; padding: 3rem; color: var(--color-text-muted); }

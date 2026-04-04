@@ -738,6 +738,7 @@ async function handleSubmit() {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+  min-width: 0;
 }
 
 .form-label {
@@ -757,6 +758,8 @@ async function handleSubmit() {
 }
 
 .input {
+  width: 100%;
+  min-width: 0;
   padding: var(--space-2) var(--space-3);
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-md);
@@ -764,6 +767,7 @@ async function handleSubmit() {
   color: var(--color-text-primary);
   font-size: var(--text-sm);
   transition: all var(--duration-fast) var(--ease-default);
+  box-sizing: border-box;
 }
 
 .input:focus {
@@ -1036,6 +1040,7 @@ async function handleSubmit() {
   border-radius: var(--radius-md);
   transition: all var(--duration-fast) var(--ease-default);
   max-width: 100%;
+  overflow: hidden;
 }
 
 .tag-input:focus-within {

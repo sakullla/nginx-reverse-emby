@@ -161,6 +161,7 @@ async function handleSubmit() {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
+  min-width: 0;
 }
 
 .form-label {
@@ -193,6 +194,7 @@ async function handleSubmit() {
 
 .input {
   width: 100%;
+  min-width: 0;
   padding: var(--space-2) var(--space-3);
   font-size: var(--text-sm);
   color: var(--color-text-primary);
@@ -201,6 +203,7 @@ async function handleSubmit() {
   border-radius: var(--radius-md);
   transition: all var(--duration-fast) var(--ease-default);
   font-family: inherit;
+  box-sizing: border-box;
 }
 
 .input:focus {
@@ -230,10 +233,11 @@ async function handleSubmit() {
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-md);
   transition: all var(--duration-fast) var(--ease-default);
+  overflow: hidden;
 }
 .tag-input:focus-within { border-color: var(--color-primary); box-shadow: var(--shadow-focus); }
 .tag-input__container { display: flex; flex-wrap: wrap; gap: var(--space-2); padding: var(--space-1) var(--space-2); align-items: center; min-height: 36px; }
-.tag-input__field { flex: 1; min-width: 80px; border: none; background: transparent; padding: var(--space-1); font-size: var(--text-sm); color: var(--color-text-primary); outline: none; }
+.tag-input__field { flex: 1; min-width: 80px; border: none; background: transparent; padding: var(--space-1); font-size: var(--text-sm); color: var(--color-text-primary); outline: none; max-width: 100%; }
 .tag-input__field::placeholder { color: var(--color-text-muted); }
 .tag { display: inline-flex; align-items: center; gap: var(--space-1); padding: 2px 8px; background: var(--color-bg-subtle); border: 1px solid var(--color-border-default); border-radius: var(--radius-full); font-size: var(--text-xs); color: var(--color-text-primary); }
 .tag__remove { display: flex; align-items: center; justify-content: center; width: 14px; height: 14px; border: none; background: transparent; color: var(--color-text-muted); cursor: pointer; padding: 0; border-radius: 50%; transition: all var(--duration-fast); }

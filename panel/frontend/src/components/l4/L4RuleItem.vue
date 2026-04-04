@@ -28,10 +28,15 @@
     </div>
     <div class="l4-card__mapping">
       <div class="l4-card__endpoint">
+        <span class="l4-card__url-icon">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+        </span>
         <code class="l4-card__addr">{{ rule.listen_host }}:{{ rule.listen_port }}</code>
       </div>
-      <span class="l4-card__arrow">→</span>
       <div class="l4-card__endpoint">
+        <span class="l4-card__url-icon">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/><path d="M12 5l7 7-7 7"/></svg>
+        </span>
         <code class="l4-card__addr" v-if="!hasMultipleBackends">{{ primaryBackend }}</code>
         <code class="l4-card__addr" v-else :title="backendsTooltip">{{ primaryBackend }} <span class="l4-card__more">+{{ backendCount - 1 }}</span></code>
         <span class="l4-card__lb" :title="lbTitle">{{ lbLabel }}</span>
@@ -128,10 +133,10 @@ const tuningTags = computed(() => {
 .l4-card__action:hover { background: var(--color-bg-hover); color: var(--color-text-primary); }
 .l4-card__action--delete:hover { background: var(--color-danger-50); color: var(--color-danger); }
 .l4-card__action--toggle:hover { background: var(--color-warning-50); color: var(--color-warning); }
-.l4-card__mapping { display: flex; align-items: center; gap: 0.75rem; }
-.l4-card__endpoint { display: flex; align-items: center; gap: 0.5rem; flex: 1; min-width: 0; }
-.l4-card__addr { font-family: var(--font-mono); font-size: 0.9375rem; font-weight: 600; color: var(--color-text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.l4-card__arrow { color: var(--color-text-muted); font-size: 0.875rem; flex-shrink: 0; }
+.l4-card__mapping { display: flex; flex-direction: column; gap: 0.375rem; }
+.l4-card__endpoint { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
+.l4-card__addr { font-family: var(--font-mono); font-size: 0.875rem; font-weight: 500; color: var(--color-text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.l4-card__url-icon { display: flex; align-items: center; justify-content: center; color: var(--color-text-tertiary); flex-shrink: 0; }
 .l4-card__more { color: var(--color-text-muted); font-weight: 400; }
 .l4-card__lb { font-size: 0.7rem; font-weight: 700; padding: 1px 6px; background: var(--color-primary-subtle); color: var(--color-primary); border-radius: var(--radius-sm); flex-shrink: 0; }
 .l4-card__tuning { display: flex; gap: 0.25rem; flex-wrap: wrap; }

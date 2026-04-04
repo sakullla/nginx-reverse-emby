@@ -137,8 +137,8 @@ function navigateToResult(agentId) {
 }
 
 function navigateToRule(agentId, rule) {
-  emit('select', { agentId, rule })
   close()
+  router.push({ path: '/rules', query: { agentId, ruleId: String(rule.id) } })
 }
 
 function handleKeydown(e) {
