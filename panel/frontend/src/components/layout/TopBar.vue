@@ -24,6 +24,21 @@
 
       <ThemeSelector />
 
+      <!-- Apply Config (for manual-apply mode) -->
+      <button
+        class="topbar__action topbar__action--apply"
+        :disabled="!selectedAgentId || applyLoading"
+        :title="selectedAgentId ? '推送配置到节点' : '先选择节点'"
+        @click="handleApply"
+      >
+        <svg v-if="!applyLoading" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polygon points="5 3 19 12 5 21 5 3"/>
+        </svg>
+        <svg v-else width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="spin">
+          <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+        </svg>
+      </button>
+
       <!-- Agent Switcher Dropdown -->
       <div class="agent-switcher" ref="agentSwitcherRef">
         <button class="agent-switcher__trigger" @click="agentDropdownOpen = !agentDropdownOpen">
@@ -71,12 +86,24 @@ import { useAgent } from '../../context/AgentContext'
 import { useAgents } from '../../hooks/useAgents'
 import { useAuthState } from '../../context/useAuthState'
 import ThemeSelector from '../base/ThemeSelector.vue'
+import { applyConfig } from '../../api'
 
 const router = useRouter()
 const route = useRoute()
 const { selectedAgentId, selectAgent: setSelectedAgentId } = useAgent()
 const { data: agentsData } = useAgents()
 const { clearToken } = useAuthState()
+const applyLoading = ref(false)
+
+async function handleApply() {
+  if (!selectedAgentId.value || applyLoading.value) return
+  applyLoading.value = true
+  try {
+    await applyConfig(selectedAgentId.value)
+  } finally {
+    applyLoading.value = false
+  }
+}
 
 const agentDropdownOpen = ref(false)
 const agentSearchQuery = ref('')
@@ -193,6 +220,11 @@ function handleLogout() {
   color: var(--color-text-primary);
   background: var(--color-bg-hover);
 }
+.topbar__action--apply { color: var(--color-success); }
+.topbar__action--apply:hover:not(:disabled) { color: var(--color-success); background: var(--color-success-50); }
+.topbar__action--apply:disabled { opacity: 0.4; cursor: not-allowed; }
+.spin { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
 
 /* Agent Switcher */
 .agent-switcher { position: relative; }

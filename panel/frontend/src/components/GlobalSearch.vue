@@ -117,7 +117,7 @@ async function doSearch(val) {
   const currentSearchId = ++searchId.value
   isLoading.value = true
   try {
-    const agents = (agentsData.value || []).filter(a => a.status !== 'offline')
+    const agents = agentsData.value || []
     if (!agents.length) {
       if (currentSearchId === searchId.value) results.value = []
       return
@@ -163,7 +163,7 @@ async function doSearch(val) {
         ...matchedCerts.map(c => ({ ...c, _type: 'cert' }))
       ]
       if (items.length) {
-        groupResults.push(makeResult(null, agent.id, agent.name, true, items))
+        groupResults.push(makeResult(null, agent.id, agent.name, agent.status === 'online', items))
       }
     }
     if (currentSearchId === searchId.value) results.value = groupResults
