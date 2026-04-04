@@ -11,7 +11,9 @@
       </div>
       <form class="login-form" @submit.prevent="handleLogin">
         <div class="form-group">
+          <label for="token-input" class="sr-only">访问令牌</label>
           <input
+            id="token-input"
             v-model="tokenInput"
             type="password"
             class="input"
@@ -206,5 +208,17 @@ async function handleLogin() {
 
 @keyframes spin {
   to { transform: rotate(360deg); }
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 </style>

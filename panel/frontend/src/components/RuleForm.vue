@@ -2,7 +2,7 @@
   <form @submit.prevent="handleSubmit" class="rule-form">
     <!-- Frontend URL -->
     <div class="form-group">
-      <label class="form-label form-label--required">前端访问地址</label>
+      <label for="frontend-url" class="form-label form-label--required">前端访问地址</label>
       <div class="input-wrapper">
         <span class="input-wrapper__icon">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -12,6 +12,7 @@
           </svg>
         </span>
         <input
+          id="frontend-url"
           v-model="form.frontend_url"
           type="text"
           class="input"
@@ -32,7 +33,7 @@
 
     <!-- Backend URL -->
     <div class="form-group">
-      <label class="form-label form-label--required">后端目标地址</label>
+      <label for="backend-url" class="form-label form-label--required">后端目标地址</label>
       <div class="input-wrapper">
         <span class="input-wrapper__icon">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -43,6 +44,7 @@
           </svg>
         </span>
         <input
+          id="backend-url"
           v-model="form.backend_url"
           type="text"
           class="input"
@@ -63,16 +65,16 @@
 
     <!-- Tags -->
     <div class="form-group">
-      <label class="form-label">分类标签</label>
+      <label for="tag-input" class="form-label">分类标签</label>
       <div class="tag-input">
         <div class="tag-input__container">
-          <span 
-            v-for="(tag, index) in form.tags" 
-            :key="tag" 
+          <span
+            v-for="(tag, index) in form.tags"
+            :key="tag"
             class="tag"
           >
             {{ tag }}
-            <button 
+            <button
               type="button"
               class="tag__remove"
               @click="removeTag(index)"
@@ -84,6 +86,7 @@
             </button>
           </span>
           <input
+            id="tag-input"
             v-model="tagInput"
             type="text"
             class="tag-input__field"
