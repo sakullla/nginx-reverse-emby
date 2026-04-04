@@ -17,7 +17,10 @@ export function useCreateRule(agentId) {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (payload) => api.createRule(unref(agentId), payload.frontend_url, payload.backend_url, payload.tags, payload.enabled, payload.proxy_redirect),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['rules', agentId] })
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['rules', agentId] })
+      qc.invalidateQueries({ queryKey: ['agents'] })
+    }
   })
 }
 
@@ -25,7 +28,10 @@ export function useUpdateRule(agentId) {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: ({ id, ...payload }) => api.updateRule(unref(agentId), id, payload.frontend_url, payload.backend_url, payload.tags, payload.enabled, payload.proxy_redirect),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['rules', agentId] })
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['rules', agentId] })
+      qc.invalidateQueries({ queryKey: ['agents'] })
+    }
   })
 }
 
@@ -33,6 +39,9 @@ export function useDeleteRule(agentId) {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (ruleId) => api.deleteRule(unref(agentId), ruleId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['rules', agentId] })
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['rules', agentId] })
+      qc.invalidateQueries({ queryKey: ['agents'] })
+    }
   })
 }

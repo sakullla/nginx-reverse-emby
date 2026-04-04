@@ -27,8 +27,8 @@
       <!-- Apply Config (for manual-apply mode) -->
       <button
         class="topbar__action topbar__action--apply"
-        :disabled="!selectedAgentId || applyLoading"
-        :title="selectedAgentId ? '推送配置到节点' : '先选择节点'"
+        :disabled="!effectiveAgentId || applyLoading"
+        :title="effectiveAgentId ? '推送配置到节点' : '先选择节点'"
         @click="handleApply"
       >
         <svg v-if="!applyLoading" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -96,10 +96,10 @@ const { clearToken } = useAuthState()
 const applyLoading = ref(false)
 
 async function handleApply() {
-  if (!selectedAgentId.value || applyLoading.value) return
+  if (!effectiveAgentId.value || applyLoading.value) return
   applyLoading.value = true
   try {
-    await applyConfig(selectedAgentId.value)
+    await applyConfig(effectiveAgentId.value)
   } finally {
     applyLoading.value = false
   }
