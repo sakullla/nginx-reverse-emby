@@ -117,52 +117,56 @@ async function doSearch(val) {
   const currentSearchId = ++searchId.value
   isLoading.value = true
   try {
-    const agents = agentsData.value || []
+    const agents = (agentsData.value || []).filter(a => a.status !== 'offline')
     if (!agents.length) {
       if (currentSearchId === searchId.value) results.value = []
       return
     }
-    const searches = agents
-      .filter(a => a.status !== 'offline')
-      .map(agent =>
-        Promise.all([
-          api.fetchRules(agent.id).catch(() => []),
-          api.fetchL4Rules(agent.id).catch(() => []),
-          api.fetchCertificates(agent.id).catch(() => [])
-        ])
-          .then(([rules, l4Rules, certs]) => {
-            if (currentSearchId !== searchId.value) return null
-            const q = val.toLowerCase()
-            const matchedRules = (rules || []).filter(r =>
-              r.frontend_url?.toLowerCase().includes(q) ||
-              r.backend_url?.toLowerCase().includes(q) ||
-              (r.tags || []).some(tag => tag.toLowerCase().includes(q))
-            )
-            const matchedL4 = (l4Rules || []).filter(r =>
-              String(r.protocol || '').toLowerCase().includes(q) ||
-              String(r.listen_host || '').toLowerCase().includes(q) ||
-              String(r.upstream_host || '').toLowerCase().includes(q) ||
-              String(r.listen_port || '').includes(q) ||
-              (r.tags || []).some(tag => tag.toLowerCase().includes(q))
-            )
-            const matchedCerts = (certs || []).filter(c =>
-              c.domain?.toLowerCase().includes(q) ||
-              (c.tags || []).some(tag => tag.toLowerCase().includes(q))
-            )
-            const items = [
-              ...matchedRules.map(r => ({ ...r, _type: 'rule' })),
-              ...matchedL4.map(r => ({ ...r, _type: 'l4' })),
-              ...matchedCerts.map(c => ({ ...c, _type: 'cert' }))
-            ]
-            if (!items.length) return null
-            return makeResult(null, agent.id, agent.name, agent.status === 'online', items)
-          })
-          .catch(() => null)
+    const agentIds = agents.map(a => a.id)
+    const [rulesResults, l4Results, certsResults] = await Promise.all([
+      api.fetchAllAgentsRules(agentIds).catch(() => []),
+      api.fetchAllAgentsL4Rules(agentIds).catch(() => []),
+      api.fetchAllAgentsCertificates(agentIds).catch(() => [])
+    ])
+    if (currentSearchId !== searchId.value) return
+
+    const rulesByAgent = Object.fromEntries(rulesResults.map(r => [r.agentId, r.rules || []]))
+    const l4ByAgent = Object.fromEntries(l4Results.map(r => [r.agentId, r.l4Rules || []]))
+    const certsByAgent = Object.fromEntries(certsResults.map(r => [r.agentId, r.certificates || []]))
+
+    const q = val.toLowerCase()
+    const groupResults = []
+    for (const agent of agents) {
+      const rules = rulesByAgent[agent.id] || []
+      const l4Rules = l4ByAgent[agent.id] || []
+      const certs = certsByAgent[agent.id] || []
+
+      const matchedRules = rules.filter(r =>
+        r.frontend_url?.toLowerCase().includes(q) ||
+        r.backend_url?.toLowerCase().includes(q) ||
+        (r.tags || []).some(tag => tag.toLowerCase().includes(q))
       )
-    const groupResults = await Promise.all(searches)
-    if (currentSearchId === searchId.value) {
-      results.value = groupResults.filter(g => g && g.items.length > 0)
+      const matchedL4 = l4Rules.filter(r =>
+        String(r.protocol || '').toLowerCase().includes(q) ||
+        String(r.listen_host || '').toLowerCase().includes(q) ||
+        String(r.upstream_host || '').toLowerCase().includes(q) ||
+        String(r.listen_port || '').includes(q) ||
+        (r.tags || []).some(tag => tag.toLowerCase().includes(q))
+      )
+      const matchedCerts = certs.filter(c =>
+        c.domain?.toLowerCase().includes(q) ||
+        (c.tags || []).some(tag => tag.toLowerCase().includes(q))
+      )
+      const items = [
+        ...matchedRules.map(r => ({ ...r, _type: 'rule' })),
+        ...matchedL4.map(r => ({ ...r, _type: 'l4' })),
+        ...matchedCerts.map(c => ({ ...c, _type: 'cert' }))
+      ]
+      if (items.length) {
+        groupResults.push(makeResult(null, agent.id, agent.name, true, items))
+      }
     }
+    if (currentSearchId === searchId.value) results.value = groupResults
   } finally {
     if (currentSearchId === searchId.value) isLoading.value = false
   }

@@ -40,7 +40,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAgent } from '../context/AgentContext'
-import { useRules } from '../hooks/useRules'
+import { useRules, useCreateRule, useUpdateRule } from '../hooks/useRules'
 
 const route = useRoute()
 const router = useRouter()
@@ -51,6 +51,9 @@ const rules = computed(() => _rulesData.value ?? [])
 const isNew = computed(() => route.params.id === undefined || route.params.id === 'new')
 const ruleId = computed(() => isNew.value ? null : Number(route.params.id))
 const rule = computed(() => rules.value.find(r => r.id === ruleId.value))
+
+const { mutateAsync: createRule } = useCreateRule(selectedAgentId)
+const { mutateAsync: updateRule } = useUpdateRule(selectedAgentId)
 
 const form = ref({ frontend_url: '', backend_url: '', tags: '', enabled: true })
 
@@ -65,8 +68,18 @@ onMounted(() => {
   }
 })
 
-function submit() {
-  // save rule
+async function submit() {
+  const payload = {
+    frontend_url: form.value.frontend_url,
+    backend_url: form.value.backend_url,
+    tags: form.value.tags.split(',').map(t => t.trim()).filter(Boolean),
+    enabled: form.value.enabled
+  }
+  if (isNew.value) {
+    await createRule(payload)
+  } else {
+    await updateRule({ id: ruleId.value, ...payload })
+  }
   router.back()
 }
 </script>
