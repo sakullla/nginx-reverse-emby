@@ -1,14 +1,19 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/vue-query'
 import * as api from '../api'
-import { computed } from 'vue'
+import { ref } from 'vue'
+
+// Shared reactive token ref — AgentContext updates it on login/logout
+const _hasToken = ref(false)
+export function setTokenState(token) {
+  _hasToken.value = !!token
+}
 
 export function useAgents() {
-  const hasToken = computed(() => !!localStorage.getItem('panel_token'))
   return useQuery({
     queryKey: ['agents'],
     queryFn: api.fetchAgents,
-    refetchInterval: hasToken.value ? 10_000 : false,
-    refetchOnWindowFocus: hasToken,
+    refetchInterval: () => _hasToken.value ? 10_000 : false,
+    enabled: _hasToken,
   })
 }
 

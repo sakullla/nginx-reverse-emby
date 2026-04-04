@@ -1,5 +1,5 @@
 import { defineComponent, h, provide, inject, ref, watch } from 'vue'
-import { useAgents } from '../hooks/useAgents'
+import { useAgents, setTokenState } from '../hooks/useAgents'
 import { fetchSystemInfo } from '../api'
 
 const AgentContextKey = Symbol('AgentContext')
@@ -14,15 +14,20 @@ export const AgentProvider = defineComponent({
     // useAgents is owned here so we can validate whenever the agents list updates
     const { data: agentsData } = useAgents()
 
-    // Also load system info to get default_agent_id for initial selection (only when authenticated)
-    const hasToken = !!localStorage.getItem('panel_token')
-    const { data: systemInfo } = (() => {
-      const info = ref(null)
-      if (hasToken) {
-        fetchSystemInfo().then(i => { info.value = i }).catch(() => {})
+    // Track token reactively so login changes are picked up without remounting
+    const tokenVal = ref(localStorage.getItem('panel_token'))
+    const systemInfo = ref(null)
+
+    // Re-read token whenever storage changes (login stores token, logout removes it)
+    watch(tokenVal, async (token) => {
+      setTokenState(token)
+      systemInfo.value = null
+      if (token) {
+        try {
+          systemInfo.value = await fetchSystemInfo()
+        } catch {}
       }
-      return { data: info }
-    })()
+    }, { immediate: true })
 
     // Validate selectedAgentId whenever agents list or systemInfo loads
     watch([agentsData, systemInfo], ([agents, info]) => {

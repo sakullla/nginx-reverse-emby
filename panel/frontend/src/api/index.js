@@ -29,9 +29,12 @@ const longRunningRequest = {
 }
 
 api.interceptors.request.use((config) => {
-  const token = localStorage.getItem('panel_token')
-  if (token) {
-    config.headers['X-Panel-Token'] = token
+  // Only inject stored token when caller did not already set X-Panel-Token
+  if (!config.headers['X-Panel-Token']) {
+    const token = localStorage.getItem('panel_token')
+    if (token) {
+      config.headers['X-Panel-Token'] = token
+    }
   }
   return config
 })

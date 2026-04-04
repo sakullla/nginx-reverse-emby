@@ -96,13 +96,10 @@ router.beforeEach(async (to) => {
     }
     return true
   } catch (err) {
-    // 401 from /auth/verify means token is invalid/expired — redirect to login
-    if (err?.response?.status === 401) {
-      localStorage.removeItem('panel_token')
-      return { name: 'login' }
-    }
-    // Other error (network, server unreachable) — allow through
-    return true
+    // Any verify error (401, 5xx, network failure) means auth state is uncertain —
+    // fail closed to avoid exposing protected UI under an invalid session.
+    localStorage.removeItem('panel_token')
+    return { name: 'login' }
   }
 })
 
