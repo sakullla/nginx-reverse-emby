@@ -276,7 +276,50 @@ Also at 4K, ensure the command block has proper line-height.
 
 ---
 
-## 9. L4 规则列表保持原样（已是标准）
+## 9. RuleForm / CertificateForm → L4RuleForm 样式统一
+
+### Problem
+- `RuleForm` (创建/编辑 HTTP 规则) 使用了大按钮 (`btn--lg`)、大圆角 (`radius-lg`)、大 padding (`space-3 space-4`) 和 input-wrapper icon 样式
+- `CertificateForm` (创建/编辑证书) 使用了类似的大号样式
+- `L4RuleForm` 使用更紧凑的样式：`btn--primary` (标准)、`radius-md`、紧凑间距 (`space-2/space-3`)
+
+### Solution
+改造 `RuleForm` 和 `CertificateForm`，使其与 `L4RuleForm` 视觉风格完全一致：
+
+**按钮统一为 L4 风格：**
+```css
+/* 替换 */
+.btn--primary.btn--full.btn--lg { ... }
+/* 改为 */
+.btn--primary { padding: var(--space-2) var(--space-4); }
+```
+
+**表单元素尺寸统一：**
+```css
+.input {
+  padding: var(--space-2) var(--space-3);  /* 原为 space-3 space-4 */
+  border-radius: var(--radius-md);             /* 原为 radius-lg */
+  font-size: var(--text-sm);
+}
+```
+
+**表单布局（与 L4RuleForm 一致）：**
+- `form-group`: `flex-direction: column; gap: var(--space-2)`
+- `form-row`: `grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: var(--space-3)`
+- 标签输入区域紧凑排列
+
+**提交按钮放在表单底部：**
+```html
+<button type="submit" class="btn btn--primary btn--full">
+```
+
+**注意：** `RuleForm` 的 `input-wrapper`（input 左侧图标）需要移除或重构为与 L4 一致的简洁样式。
+
+**Files:** `panel/frontend/src/components/RuleForm.vue`, `panel/frontend/src/components/CertificateForm.vue`
+
+---
+
+## 10. L4 规则列表保持原样（已是标准）
 
 L4RulesPage 和 L4RuleItem 已是目标风格，无需修改。
 
@@ -289,9 +332,10 @@ L4RulesPage 和 L4RuleItem 已是目标风格，无需修改。
 3. AgentsPage: join command overflow fix
 4. RulesPage: card style update to match L4
 5. CertsPage: card hover behavior
-6. Modal overflow + all modal @click.self removal
-7. Global responsive fixes (4K, mobile)
-8. Verify with Chrome DevTools at 375px, 1024px, 1920px, 2560px, 3840px
+6. **RuleForm + CertificateForm → L4RuleForm 样式统一**
+7. Modal overflow + all modal @click.self removal
+8. Global responsive fixes (4K, mobile)
+9. Verify with Chrome DevTools at 375px, 1024px, 1920px, 2560px, 3840px
 
 ---
 
@@ -302,4 +346,6 @@ L4RulesPage 和 L4RuleItem 已是目标风格，无需修改。
 - `panel/frontend/src/pages/AgentsPage.vue`
 - `panel/frontend/src/pages/RulesPage.vue`
 - `panel/frontend/src/pages/CertsPage.vue`
+- `panel/frontend/src/components/RuleForm.vue`
+- `panel/frontend/src/components/CertificateForm.vue`
 - `panel/frontend/src/styles/index.css` (global modal responsive)
