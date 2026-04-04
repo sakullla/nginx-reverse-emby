@@ -48,12 +48,6 @@ const routes = [
         meta: { title: 'L4 规则' }
       },
       {
-        path: 'l4/:id',
-        name: 'l4-detail',
-        component: () => import('../pages/L4RulesPage.vue'),
-        meta: { title: 'L4 规则详情' }
-      },
-      {
         path: 'certs',
         name: 'certs',
         component: () => import('../pages/CertsPage.vue'),

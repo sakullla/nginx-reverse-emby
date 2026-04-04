@@ -19,23 +19,36 @@ export const AgentProvider = defineComponent({
     // Track token reactively so login changes are picked up without remounting
     const { token: tokenVal, setToken } = useAuthState()
     const systemInfo = ref(null)
+    // Tracks whether fetchSystemInfo has completed (success or failure).
+    // This distinguishes "still loading" from "failed" so a transient /info error
+    // doesn't permanently block agent auto-selection.
+    const systemInfoAttempted = ref(false)
 
     // Re-read token whenever storage changes (login stores token, logout removes it)
     watch(tokenVal, async (token) => {
       systemInfo.value = null
+      systemInfoAttempted.value = false
       if (token) {
         try {
           systemInfo.value = await fetchSystemInfo()
         } catch {}
+        systemInfoAttempted.value = true
       }
     }, { immediate: true })
 
     // Validate selectedAgentId whenever agents list or systemInfo loads.
     // Always check the saved ID is still valid — if the selected agent was deleted,
     // reset even a user-chosen selection to avoid querying a dead agent ID.
-    // Only auto-select a fresh default when the user has not explicitly chosen.
+    // When the agent list goes empty, clear the selection so the next valid agent
+    // is picked up automatically.
     watch([agentsData, systemInfo], ([agents, info]) => {
-      if (!agents || agents.length === 0) return
+      // Clear selection when the last agent is removed
+      if (!agents || agents.length === 0) {
+        selectedAgentId.value = null
+        userChosen.value = false
+        localStorage.removeItem('selected_agent_id')
+        return
+      }
 
       const ids = new Set(agents.map(a => a.id))
       const currentValid = selectedAgentId.value && ids.has(selectedAgentId.value)
@@ -46,8 +59,9 @@ export const AgentProvider = defineComponent({
       // can auto-select a valid default below
       userChosen.value = false
 
-      // Wait for systemInfo before first auto-selection so backend default is honoured
-      if (!info && !selectedAgentId.value) return
+      // Only wait for systemInfo when we have no selection AND haven't attempted /info yet.
+      // Once attempted (even if failed), fall back to local/first so the UI stays usable.
+      if (!info && !systemInfoAttempted.value && !selectedAgentId.value) return
 
       const defaultId = info?.default_agent_id
         || agents.find(a => a.id === 'local')?.id
