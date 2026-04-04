@@ -282,8 +282,25 @@ function confirmDelete() {
 .join-tabs { display: flex; gap: 0.5rem; }
 .join-tab { flex: 1; padding: 0.5rem; border: none; border-radius: var(--radius-lg); background: var(--color-bg-subtle); color: var(--color-text-secondary); font-size: 0.875rem; cursor: pointer; transition: all 0.15s; font-family: inherit; }
 .join-tab.active { background: var(--color-primary); color: white; }
-.join-command { display: flex; align-items: center; gap: 0.75rem; padding: 0.75rem 1rem; background: var(--color-bg-subtle); border-radius: var(--radius-lg); font-family: var(--font-mono); font-size: 0.8125rem; }
-.join-command code { flex: 1; overflow-x: auto; color: var(--color-text-primary); }
+.join-command {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  background: var(--color-bg-subtle);
+  border-radius: var(--radius-lg);
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  overflow: hidden;
+}
+.join-command code {
+  flex: 1;
+  word-break: break-all;
+  overflow-x: hidden;
+  white-space: pre-wrap;
+  color: var(--color-text-primary);
+  line-height: 1.6;
+}
 .join-steps { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.5rem; }
 .join-steps li { font-size: 0.875rem; color: var(--color-text-secondary); padding-left: 1.25rem; position: relative; }
 .join-steps li::before { content: counter(step) "."; counter-increment: step; position: absolute; left: 0; color: var(--color-primary); font-weight: 600; }
