@@ -21,7 +21,7 @@
           <div class="agent-card__name">{{ agent.name }}</div>
           <div class="agent-card__meta">
             <span class="agent-card__mode-badge">{{ getModeLabel(agent.mode) }}</span>
-            <span class="agent-card__url">{{ agent.agent_url ? new URL(agent.agent_url).hostname : (agent.last_seen_ip || '—') }}</span>
+            <span class="agent-card__url">{{ agent.agent_url ? getHostname(agent.agent_url) : (agent.last_seen_ip || '—') }}</span>
           </div>
         </div>
         <div class="agent-card__actions">
@@ -87,7 +87,8 @@
 import { ref, computed } from 'vue'
 import { useAgents } from '../hooks/useAgents'
 
-const { data: agents = [], isLoading, refetch: loadAgents } = useAgents()
+const { data, isLoading, refetch: loadAgents } = useAgents()
+const agents = computed(() => data.value ?? [])
 
 const showJoinModal = ref(false)
 const selectedPlatform = ref('linux')
@@ -106,6 +107,10 @@ function getStatus(agent) {
   if (agent.last_apply_status === 'failed') return 'failed'
   if (agent.desired_revision > agent.current_revision) return 'pending'
   return 'online'
+}
+
+function getHostname(url) {
+  try { return url ? new URL(url).hostname : '' } catch { return '' }
 }
 
 function getModeLabel(mode) {

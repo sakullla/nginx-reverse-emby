@@ -45,7 +45,8 @@ import { useRules } from '../hooks/useRules'
 const route = useRoute()
 const router = useRouter()
 const { selectedAgentId } = useAgent()
-const { data: rules = [] } = useRules(selectedAgentId)
+const { data: _rulesData } = useRules(selectedAgentId)
+const rules = computed(() => _rulesData.value ?? [])
 
 const isNew = computed(() => route.params.id === undefined || route.params.id === 'new')
 const ruleId = computed(() => isNew.value ? null : Number(route.params.id))

@@ -1,12 +1,13 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/vue-query'
 import * as api from '../api'
-import { computed } from 'vue'
 
 export function useRules(agentId) {
   return useQuery({
     queryKey: ['rules', agentId],
-    queryFn: () => api.fetchRules(agentId.value),
-    enabled: computed(() => !!agentId.value)
+    queryFn: () => {
+      if (!agentId.value) return []
+      return api.fetchRules(agentId.value)
+    }
   })
 }
 

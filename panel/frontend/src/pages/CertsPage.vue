@@ -114,7 +114,8 @@
 import { ref, computed } from 'vue'
 import { useCertificates } from '../hooks/useCertificates'
 
-const { data: certificates = [], isLoading } = useCertificates()
+const { data: _certsData, isLoading } = useCertificates()
+const certificates = computed(() => _certsData.value ?? [])
 const showAddForm = ref(false)
 const editingCert = ref(null)
 const deletingCert = ref(null)

@@ -1,7 +1,12 @@
 <template>
-  <RouterView />
+  <AgentProvider>
+    <ThemeProvider>
+      <RouterView />
+    </ThemeProvider>
+  </AgentProvider>
 </template>
 
 <script setup>
-// App.vue is now a thin shell — all layout is in AppShell
+import { AgentProvider } from './context/AgentContext.js'
+import { ThemeProvider } from './context/ThemeContext.js'
 </script>

@@ -4,7 +4,7 @@
       <div>
         <h1 class="rules-page__title">HTTP 规则</h1>
         <p class="rules-page__subtitle">
-          <template v-if="selectedAgent">
+          <template v-if="selectedAgentId">
             {{ rules.length }} 条规则 · 启用 {{ enabledCount }} 条
           </template>
           <template v-else>
@@ -12,7 +12,7 @@
           </template>
         </p>
       </div>
-      <button v-if="selectedAgent" class="btn btn-primary" @click="showAddForm = true">
+      <button v-if="selectedAgentId" class="btn btn-primary" @click="showAddForm = true">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
           <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
         </svg>
@@ -21,7 +21,7 @@
     </div>
 
     <!-- No agent selected -->
-    <div v-if="!selectedAgent" class="rules-page__prompt">
+    <div v-if="!selectedAgentId" class="rules-page__prompt">
       <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
         <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
         <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
@@ -31,7 +31,7 @@
     </div>
 
     <!-- Agent selected, no rules -->
-    <div v-else-if="selectedAgent && !rules.length && !isLoading" class="rules-page__empty">
+    <div v-else-if="selectedAgentId && !rules.length && !isLoading" class="rules-page__empty">
       <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
         <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
         <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
@@ -41,7 +41,7 @@
     </div>
 
     <!-- Rules table -->
-    <div v-else-if="selectedAgent && rules.length" class="rules-list">
+    <div v-else-if="selectedAgentId && rules.length" class="rules-list">
       <table class="rules-table">
         <thead>
           <tr>
@@ -149,10 +149,14 @@
 <script setup>
 import { ref, computed } from 'vue'
 import { useAgent } from '../context/AgentContext'
-import { useRules } from '../hooks/useRules'
+import { useRules, useCreateRule, useUpdateRule, useDeleteRule } from '../hooks/useRules'
 
-const { selectedAgentId, selectedAgent } = useAgent()
-const { data: rules = [], isLoading, refetch } = useRules(selectedAgentId)
+const { selectedAgentId } = useAgent()
+const { data: _rulesData, isLoading, refetch } = useRules(selectedAgentId)
+const createRule = useCreateRule(selectedAgentId)
+const updateRule = useUpdateRule(selectedAgentId)
+const deleteRule = useDeleteRule(selectedAgentId)
+const rules = computed(() => _rulesData.value ?? [])
 const showAddForm = ref(false)
 const editingRule = ref(null)
 const deletingRule = ref(null)
@@ -161,8 +165,7 @@ const form = ref({ frontend_url: '', backend_url: '', tags: '', enabled: true })
 const enabledCount = computed(() => rules.value.filter(r => r.enabled).length)
 
 function toggleRule(rule) {
-  // toggle enabled state
-  rule.enabled = !rule.enabled
+  updateRule.mutate({ id: rule.id, enabled: !rule.enabled })
 }
 
 function startEdit(rule) {
@@ -181,11 +184,24 @@ function closeForm() {
 }
 
 function submitForm() {
-  // create or update rule
+  const payload = {
+    frontend_url: form.value.frontend_url,
+    backend_url: form.value.backend_url,
+    tags: form.value.tags ? form.value.tags.split(',').map(t => t.trim()).filter(Boolean) : [],
+    enabled: form.value.enabled
+  }
+  if (editingRule.value) {
+    updateRule.mutate({ id: editingRule.value.id, ...payload })
+  } else {
+    createRule.mutate(payload)
+  }
   closeForm()
 }
 
 function confirmDelete() {
+  if (deletingRule.value) {
+    deleteRule.mutate(deletingRule.value.id)
+  }
   deletingRule.value = null
 }
 </script>

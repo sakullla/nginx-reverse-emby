@@ -4,7 +4,7 @@
       <div>
         <h1 class="rules-page__title">L4 规则</h1>
         <p class="rules-page__subtitle">
-          <template v-if="selectedAgent">
+          <template v-if="selectedAgentId">
             {{ rules.length }} 条规则 · 启用 {{ enabledCount }} 条
           </template>
           <template v-else>
@@ -12,7 +12,7 @@
           </template>
         </p>
       </div>
-      <button v-if="selectedAgent" class="btn btn-primary" @click="showAddForm = true">
+      <button v-if="selectedAgentId" class="btn btn-primary" @click="showAddForm = true">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
           <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
         </svg>
@@ -20,7 +20,7 @@
       </button>
     </div>
 
-    <div v-if="!selectedAgent" class="rules-page__prompt">
+    <div v-if="!selectedAgentId" class="rules-page__prompt">
       <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
         <rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/>
       </svg>
@@ -50,7 +50,7 @@
         <tbody>
           <tr v-for="rule in rules" :key="rule.id" class="rules-table__row">
             <td>
-              <button class="toggle" :class="{ 'toggle--on': rule.enabled }">
+              <button class="toggle" :class="{ 'toggle--on': rule.enabled }" @click="toggleRule(rule)">
                 <span class="toggle__knob"></span>
               </button>
             </td>
@@ -64,7 +64,7 @@
             </td>
             <td>
               <div class="rules-table__actions">
-                <button class="btn-icon" title="删除">
+                <button class="btn-icon" title="删除" @click="startDelete(rule)">
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                     <polyline points="3 6 5 6 21 6"/>
                     <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
@@ -80,6 +80,22 @@
     <div v-if="isLoading" class="rules-page__loading">
       <div class="spinner"></div>
     </div>
+
+    <!-- Delete Modal -->
+    <Teleport to="body">
+      <div v-if="deletingRule" class="modal-overlay" @click.self="deletingRule = null">
+        <div class="modal">
+          <div class="modal__header">确认删除</div>
+          <div class="modal__body">
+            <p>确定删除规则 <strong>{{ deletingRule.listen_host }}:{{ deletingRule.listen_port }}</strong>？</p>
+          </div>
+          <div class="modal__footer">
+            <button class="btn btn-secondary" @click="deletingRule = null">取消</button>
+            <button class="btn btn-danger" @click="confirmDelete">删除</button>
+          </div>
+        </div>
+      </div>
+    </Teleport>
 
     <!-- Add Form Modal -->
     <Teleport to="body">
@@ -132,17 +148,48 @@
 <script setup>
 import { ref, computed } from 'vue'
 import { useAgent } from '../context/AgentContext'
-import { useL4Rules } from '../hooks/useL4Rules'
+import { useL4Rules, useCreateL4Rule, useUpdateL4Rule, useDeleteL4Rule } from '../hooks/useL4Rules'
 
-const { selectedAgentId, selectedAgent } = useAgent()
-const { data: rules = [], isLoading } = useL4Rules(selectedAgentId)
+const { selectedAgentId } = useAgent()
+const { data: _rulesData, isLoading } = useL4Rules(selectedAgentId)
+const createL4Rule = useCreateL4Rule(selectedAgentId)
+const updateL4Rule = useUpdateL4Rule(selectedAgentId)
+const deleteL4Rule = useDeleteL4Rule(selectedAgentId)
+const rules = computed(() => _rulesData.value ?? [])
 const showAddForm = ref(false)
+const deletingRule = ref(null)
 const form = ref({ protocol: 'tcp', listen_host: '0.0.0.0', listen_port: '', upstream_host: '', upstream_port: '', tags: '' })
 
 const enabledCount = computed(() => rules.value.filter(r => r.enabled).length)
 
+function toggleRule(rule) {
+  updateL4Rule.mutate({ id: rule.id, enabled: !rule.enabled })
+}
+
+function startDelete(rule) {
+  deletingRule.value = rule
+}
+
+function confirmDelete() {
+  if (deletingRule.value) {
+    deleteL4Rule.mutate(deletingRule.value.id)
+  }
+  deletingRule.value = null
+}
+
 function submitForm() {
+  const payload = {
+    protocol: form.value.protocol,
+    listen_host: form.value.listen_host,
+    listen_port: Number(form.value.listen_port),
+    upstream_host: form.value.upstream_host,
+    upstream_port: Number(form.value.upstream_port),
+    tags: form.value.tags ? form.value.tags.split(',').map(t => t.trim()).filter(Boolean) : [],
+    enabled: true
+  }
+  createL4Rule.mutate(payload)
   showAddForm.value = false
+  form.value = { protocol: 'tcp', listen_host: '0.0.0.0', listen_port: '', upstream_host: '', upstream_port: '', tags: '' }
 }
 </script>
 
@@ -185,6 +232,7 @@ select.input-base { appearance: auto; }
 .btn { padding: 0.5rem 1rem; border-radius: var(--radius-lg); font-size: 0.875rem; font-weight: 500; cursor: pointer; transition: all 0.15s; border: none; font-family: inherit; display: inline-flex; align-items: center; gap: 0.375rem; }
 .btn-primary { background: var(--gradient-primary); color: white; }
 .btn-secondary { background: var(--color-bg-subtle); color: var(--color-text-primary); border: 1px solid var(--color-border-default); }
+.btn-danger { background: var(--color-danger); color: white; }
 .spinner { width: 24px; height: 24px; border: 2px solid var(--color-border-default); border-top-color: var(--color-primary); border-radius: 50%; animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 </style>

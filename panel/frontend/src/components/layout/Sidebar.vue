@@ -1,8 +1,80 @@
 <template>
   <aside class="sidebar" :class="{ 'sidebar--collapsed': collapsed }">
-    <div class="sidebar__section">
+    <!-- Navigation links -->
+    <nav class="sidebar__nav" v-show="!collapsed">
+      <RouterLink to="/" class="sidebar__nav-item" active-class="sidebar__nav-item--active">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/>
+        </svg>
+        <span>首页</span>
+      </RouterLink>
+      <RouterLink to="/rules" class="sidebar__nav-item" active-class="sidebar__nav-item--active">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+          <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+        </svg>
+        <span>HTTP 规则</span>
+      </RouterLink>
+      <RouterLink to="/l4" class="sidebar__nav-item" active-class="sidebar__nav-item--active">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/>
+          <line x1="6" y1="6" x2="6.01" y2="6"/><line x1="6" y1="18" x2="6.01" y2="18"/>
+        </svg>
+        <span>L4 规则</span>
+      </RouterLink>
+      <RouterLink to="/certs" class="sidebar__nav-item" active-class="sidebar__nav-item--active">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+          <path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+        </svg>
+        <span>证书</span>
+      </RouterLink>
+      <RouterLink to="/settings" class="sidebar__nav-item" active-class="sidebar__nav-item--active">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+        </svg>
+        <span>设置</span>
+      </RouterLink>
+    </nav>
+
+    <!-- Collapsed nav icons -->
+    <nav class="sidebar__nav sidebar__nav--collapsed" v-show="collapsed">
+      <RouterLink to="/" class="sidebar__nav-icon" title="首页" active-class="sidebar__nav-icon--active">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/>
+        </svg>
+      </RouterLink>
+      <RouterLink to="/rules" class="sidebar__nav-icon" title="HTTP 规则" active-class="sidebar__nav-icon--active">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+          <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+        </svg>
+      </RouterLink>
+      <RouterLink to="/l4" class="sidebar__nav-icon" title="L4 规则" active-class="sidebar__nav-icon--active">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="2" y="2" width="20" height="8" rx="2" ry="2"/><rect x="2" y="14" width="20" height="8" rx="2" ry="2"/>
+        </svg>
+      </RouterLink>
+      <RouterLink to="/certs" class="sidebar__nav-icon" title="证书" active-class="sidebar__nav-icon--active">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+        </svg>
+      </RouterLink>
+      <RouterLink to="/settings" class="sidebar__nav-icon" title="设置" active-class="sidebar__nav-icon--active">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+        </svg>
+      </RouterLink>
+    </nav>
+
+    <!-- Agent section -->
+    <div class="sidebar__divider" v-show="!collapsed"></div>
+
+    <div class="sidebar__section" v-show="!collapsed">
       <div class="sidebar__section-header">
-        <span class="sidebar__section-title" v-show="!collapsed">Agent 节点</span>
+        <span class="sidebar__section-title">节点</span>
         <div class="sidebar__section-header-actions">
           <button @click="loadAgents()" class="sidebar__section-action" title="刷新">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -10,15 +82,15 @@
               <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
             </svg>
           </button>
-          <button @click="collapsed = !collapsed" class="sidebar__section-action sidebar__collapse-btn" :title="collapsed ? '展开' : '收起'">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" :style="{ transform: collapsed ? 'rotate(180deg)' : '' }">
+          <button @click="collapsed = !collapsed" class="sidebar__section-action sidebar__collapse-btn" title="收起">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
               <polyline points="15 18 9 12 15 6"/>
             </svg>
           </button>
         </div>
       </div>
 
-      <div v-if="!collapsed && agents.length" class="sidebar__search">
+      <div v-if="agents.length" class="sidebar__search">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <circle cx="11" cy="11" r="8"/>
           <line x1="21" y1="21" x2="16.65" y2="16.65"/>
@@ -46,7 +118,7 @@
           @click="selectAgent(agent.id)"
         >
           <div class="sidebar__agent-indicator" :class="`sidebar__agent-indicator--${getStatus(agent)}`"></div>
-          <div class="sidebar__agent-info" v-show="!collapsed">
+          <div class="sidebar__agent-info">
             <div class="sidebar__agent-name">{{ agent.name }}</div>
             <div class="sidebar__agent-meta">
               <span class="sidebar__agent-mode-icon">
@@ -60,10 +132,10 @@
                   <polyline points="8 17 12 21 16 17"/><line x1="12" y1="3" x2="12" y2="21"/>
                 </svg>
               </span>
-              <span>{{ agent.agent_url ? new URL(agent.agent_url).hostname : (agent.last_seen_ip || '') }}</span>
+              <span>{{ getHostname(agent.agent_url) || agent.last_seen_ip || '' }}</span>
             </div>
           </div>
-          <div class="sidebar__agent-actions" v-show="!collapsed" @click.stop>
+          <div class="sidebar__agent-actions" @click.stop>
             <button class="sidebar__agent-action" title="重命名" @click="startRename(agent)">
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/>
@@ -85,7 +157,7 @@
             <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"/>
             <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"/>
           </svg>
-          <span v-show="!collapsed">暂无节点</span>
+          <span>暂无节点</span>
         </div>
       </div>
     </div>
@@ -126,10 +198,14 @@
 
 <script setup>
 import { ref, computed } from 'vue'
-import { useAgents } from '../../hooks/useAgents'
+import { RouterLink } from 'vue-router'
+import { useAgents, useRenameAgent, useDeleteAgent } from '../../hooks/useAgents'
 import { useAgent } from '../../context/AgentContext'
 
-const { data: agents = [], refetch: loadAgents } = useAgents()
+const { data: _agentsData, refetch: loadAgents } = useAgents()
+const renameAgent = useRenameAgent()
+const deleteAgent = useDeleteAgent()
+const agents = computed(() => _agentsData.value ?? [])
 const { selectedAgentId, selectAgent } = useAgent()
 
 const collapsed = ref(localStorage.getItem('sidebar_collapsed') === 'true')
@@ -147,6 +223,10 @@ const filteredAgents = computed(() => {
   )
 })
 
+function getHostname(url) {
+  try { return url ? new URL(url).hostname : '' } catch { return '' }
+}
+
 function getStatus(agent) {
   if (agent.status === 'offline') return 'offline'
   if (agent.last_apply_status === 'failed') return 'failed'
@@ -159,10 +239,9 @@ function startRename(agent) {
   newName.value = agent.name
 }
 
-async function confirmRename() {
+function confirmRename() {
   if (!newName.value.trim() || !renamingAgent.value) return
-  // useRenameAgent would be called here — for now just update locally
-  renamingAgent.value.name = newName.value.trim()
+  renameAgent.mutate({ agentId: renamingAgent.value.id, name: newName.value.trim() })
   renamingAgent.value = null
 }
 
@@ -170,9 +249,9 @@ function startDelete(agent) {
   deletingAgent.value = agent
 }
 
-async function confirmDelete() {
+function confirmDelete() {
   if (!deletingAgent.value) return
-  // useDeleteAgent would be called here
+  deleteAgent.mutate(deletingAgent.value.id)
   deletingAgent.value = null
 }
 </script>
@@ -381,6 +460,67 @@ async function confirmDelete() {
   color: var(--color-text-muted);
   font-size: 0.875rem;
 }
+/* Navigation */
+.sidebar__nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0.75rem 0.75rem 0.5rem;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+.sidebar__nav-item {
+  display: flex;
+  align-items: center;
+  gap: 0.625rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--radius-lg);
+  color: var(--color-text-secondary);
+  text-decoration: none;
+  font-size: 0.875rem;
+  font-weight: 500;
+  transition: all 0.15s;
+}
+.sidebar__nav-item:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}
+.sidebar__nav-item--active {
+  background: var(--color-primary-subtle);
+  color: var(--color-primary);
+}
+.sidebar__nav--collapsed {
+  flex-direction: row;
+  justify-content: center;
+  padding: 0.5rem;
+  gap: 4px;
+  border-bottom: none;
+  flex-wrap: wrap;
+}
+.sidebar__nav-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--radius-lg);
+  color: var(--color-text-secondary);
+  text-decoration: none;
+  transition: all 0.15s;
+}
+.sidebar__nav-icon:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text-primary);
+}
+.sidebar__nav-icon--active {
+  background: var(--color-primary-subtle);
+  color: var(--color-primary);
+}
+.sidebar__divider {
+  height: 1px;
+  background: var(--color-border-subtle);
+  margin: 0 0.75rem;
+}
+
 /* Modals */
 .modal-overlay {
   position: fixed;

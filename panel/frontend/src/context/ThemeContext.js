@@ -1,4 +1,4 @@
-import { defineComponent, h, provide, inject, ref } from 'vue'
+import { defineComponent, provide, inject, ref } from 'vue'
 
 export const themes = [
   { id: 'sakura',   emoji: '🌸', label: '二次元' },
