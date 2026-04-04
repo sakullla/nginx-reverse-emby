@@ -15,7 +15,6 @@ app.use(VueQueryPlugin, {
     defaultOptions: {
       queries: {
         staleTime: 30_000,      // 30s before re-fetching
-        refetchInterval: 10_000  // poll every 10s for agents
       }
     }
   }

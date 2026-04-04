@@ -118,17 +118,10 @@
 </template>
 
 <script setup>
-import { computed, watch } from 'vue'
+import { computed } from 'vue'
 import { useAgents } from '../hooks/useAgents'
-import { useAgent } from '../context/AgentContext'
 
 const { data: agents, isLoading } = useAgents()
-const { selectedAgentId, validateSelectedAgent } = useAgent()
-
-// Validate selected agent when agents list loads — clears stale persisted IDs
-watch(agents, (newAgents) => {
-  if (newAgents?.length) validateSelectedAgent(newAgents)
-}, { immediate: true })
 
 const onlineCount = computed(() => agents.value?.filter(a => a.status === 'online').length || 0)
 

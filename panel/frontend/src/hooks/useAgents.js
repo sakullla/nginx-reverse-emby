@@ -5,7 +5,7 @@ export function useAgents() {
   return useQuery({
     queryKey: ['agents'],
     queryFn: api.fetchAgents,
-    refetchInterval: 10_000
+    refetchInterval: 10_000,
   })
 }
 

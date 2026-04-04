@@ -1,4 +1,5 @@
 import { defineComponent, h, provide, inject, ref, watch } from 'vue'
+import { useAgents } from '../hooks/useAgents'
 
 const AgentContextKey = Symbol('AgentContext')
 
@@ -8,26 +9,29 @@ export const AgentProvider = defineComponent({
     const savedId = localStorage.getItem('selected_agent_id')
     const selectedAgentId = ref(savedId || 'local')
 
-    // Validate and update selectedAgentId when agents list changes
-    function validateSelectedAgent(agents) {
+    // useAgents is owned here so we can validate whenever the agents list updates
+    const { data: agentsData } = useAgents()
+
+    // Validate and update selectedAgentId whenever agents list changes
+    watch(agentsData, (agents) => {
       if (!agents || agents.length === 0) return
       const ids = new Set(agents.map(a => a.id))
       if (!ids.has(selectedAgentId.value)) {
-        // Persisted ID is stale — fall back to default_agent_id or first available
+        // Persisted ID is stale — fall back to 'local' or first available
         const defaultId = agents.find(a => a.id === 'local')?.id
           || agents[0]?.id
           || 'local'
         selectedAgentId.value = defaultId
         localStorage.setItem('selected_agent_id', defaultId)
       }
-    }
+    }, { immediate: true })
 
     function selectAgent(id) {
       selectedAgentId.value = id
       localStorage.setItem('selected_agent_id', id)
     }
 
-    provide(AgentContextKey, { selectedAgentId, selectAgent, validateSelectedAgent })
+    provide(AgentContextKey, { selectedAgentId, selectAgent })
 
     return () => slots.default?.()
   }

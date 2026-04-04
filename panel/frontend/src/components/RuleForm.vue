@@ -147,11 +147,9 @@ const props = defineProps({
 
 const emit = defineEmits(['success'])
 
-// Normalize agentId: supports plain strings (from prop auto-unwrap), ref-like objects, or computed refs from parent
-const agentIdRef = computed(() => ({ value: props.agentId?.value ?? props.agentId }))
-
-const createRule = useCreateRule(agentIdRef)
-const updateRule = useUpdateRule(agentIdRef)
+// Pass agentId directly - hooks use unref() to handle both strings and refs
+const createRule = useCreateRule(props.agentId)
+const updateRule = useUpdateRule(props.agentId)
 const isEdit = computed(() => !!props.initialData?.id)
 const isLoading = computed(() => createRule.isPending.value || updateRule.isPending.value)
 
