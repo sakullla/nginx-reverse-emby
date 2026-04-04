@@ -42,12 +42,6 @@ const routes = [
         meta: { title: 'HTTP 规则' }
       },
       {
-        path: 'rules/:id',
-        name: 'rule-detail',
-        component: () => import('../pages/RuleDetailPage.vue'),
-        meta: { title: '规则详情' }
-      },
-      {
         path: 'l4',
         name: 'l4',
         component: () => import('../pages/L4RulesPage.vue'),
@@ -107,9 +101,9 @@ router.beforeEach(async (to) => {
       clearToken()
       return { name: 'login' }
     }
-    // For any other error, re-throw to let the navigation proceed and the page
-    // handle the error (e.g. showing an error state or retrying).
-    throw err
+    // For any other error (5xx, network), allow navigation to proceed so the
+    // page can surface the outage to the user rather than blocking the app entirely.
+    return true
   }
 })
 

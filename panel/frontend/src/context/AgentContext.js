@@ -31,23 +31,23 @@ export const AgentProvider = defineComponent({
     }, { immediate: true })
 
     // Validate selectedAgentId whenever agents list or systemInfo loads.
-    // Only auto-select when BOTH datasets are available and the user has not made
-    // an explicit choice (userChosen === false). This ensures systemInfo's
-    // default_agent_id is respected on fresh logins even if agents arrive first.
+    // Always check the saved ID is still valid — if the selected agent was deleted,
+    // reset even a user-chosen selection to avoid querying a dead agent ID.
+    // Only auto-select a fresh default when the user has not explicitly chosen.
     watch([agentsData, systemInfo], ([agents, info]) => {
       if (!agents || agents.length === 0) return
 
       const ids = new Set(agents.map(a => a.id))
       const currentValid = selectedAgentId.value && ids.has(selectedAgentId.value)
 
-      if (userChosen.value) return        // don't override user choice
-      if (currentValid) return             // already have a valid selection
+      if (currentValid) return               // selection is still valid, nothing to do
 
-      // Neither dataset was sufficient before — now that both may be here, pick a default
-      if (!agents || !agents.length) return
+      // Selected agent is gone (deleted or never existed) — clear userChosen so we
+      // can auto-select a valid default below
+      userChosen.value = false
 
       // Wait for systemInfo before first auto-selection so backend default is honoured
-      if (!info && !userChosen.value) return
+      if (!info && !selectedAgentId.value) return
 
       const defaultId = info?.default_agent_id
         || agents.find(a => a.id === 'local')?.id
