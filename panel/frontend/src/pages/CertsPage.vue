@@ -41,17 +41,8 @@
       <div class="spinner"></div>
     </div>
 
-    <template v-else-if="certificates.length">
-      <!-- No search results (skip when id exact match found) -->
-      <div v-else-if="!filteredCerts.length && !isIdExactMatch" class="certs-page__empty">
-        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-          <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
-        </svg>
-        <p>没有匹配的证书</p>
-      </div>
-
-      <!-- Cert grid -->
-      <div v-else class="cert-grid">
+    <!-- Cert grid -->
+    <div v-else-if="certificates.length && filteredCerts.length" class="cert-grid">
         <div v-for="cert in filteredCerts" :key="cert.id" class="cert-card">
           <div class="cert-card__header">
             <div class="cert-card__header-left">
@@ -84,7 +75,14 @@
           </div>
         </div>
       </div>
-    </template>
+
+    <!-- No search results (skip when id exact match found) -->
+    <div v-else-if="certificates.length && !filteredCerts.length && !isIdExactMatch" class="certs-page__empty">
+      <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+        <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+      </svg>
+      <p>没有匹配的证书</p>
+    </div>
 
     <!-- Empty state (no certificates at all) -->
     <div v-else class="certs-page__empty">

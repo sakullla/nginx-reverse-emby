@@ -658,7 +658,7 @@ function buildPayload() {
   }
 
   // Only send tuning if advanced panel has non-default values or editing existing rule with tuning
-  if (showAdvanced.value && (hasTuningChanges.value || isEdit.value)) {
+  if (hasTuningChanges.value || isEdit.value) {
     const t = form.value.tuning
     const tuning = {
       listen: {

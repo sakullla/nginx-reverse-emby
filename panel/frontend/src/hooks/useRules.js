@@ -14,7 +14,7 @@ export function useRules(agentId) {
 export function useCreateRule(agentId) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (payload) => api.createRule(agentId.value, payload),
+    mutationFn: (payload) => api.createRule(agentId.value, payload.frontend_url, payload.backend_url, payload.tags, payload.enabled, payload.proxy_redirect),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['rules', agentId] })
   })
 }
@@ -22,7 +22,7 @@ export function useCreateRule(agentId) {
 export function useUpdateRule(agentId) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ id, ...payload }) => api.updateRule(agentId.value, id, payload),
+    mutationFn: ({ id, ...payload }) => api.updateRule(agentId.value, id, payload.frontend_url, payload.backend_url, payload.tags, payload.enabled, payload.proxy_redirect),
     onSuccess: () => qc.invalidateQueries({ queryKey: ['rules', agentId] })
   })
 }

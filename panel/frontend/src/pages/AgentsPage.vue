@@ -33,7 +33,7 @@
               L4 {{ agent.l4_rules_count || 0 }}
             </span>
             <span class="agent-card__last-seen">
-              {{ timeAgo(agent.last_seen) }}
+              {{ timeAgo(agent.last_seen_at) }}
             </span>
           </div>
         </div>

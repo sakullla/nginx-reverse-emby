@@ -24,7 +24,7 @@
         <span class="stat-mini__label">L4 规则</span>
       </div>
       <div class="stat-mini">
-        <span class="stat-mini__value">{{ agent.last_seen ? timeAgo(agent.last_seen) : '—' }}</span>
+        <span class="stat-mini__value">{{ agent.last_seen_at ? timeAgo(agent.last_seen_at) : '—' }}</span>
         <span class="stat-mini__label">最后活跃</span>
       </div>
     </div>
@@ -65,7 +65,7 @@
           <div class="info-row"><span>版本</span><span>{{ agent.version || '—' }}</span></div>
           <div class="info-row"><span>角色</span><span>{{ getModeLabel(agent.mode) }}</span></div>
           <div class="info-row"><span>IP</span><span>{{ agent.last_seen_ip || '—' }}</span></div>
-          <div class="info-row"><span>最后活跃</span><span>{{ agent.last_seen ? new Date(agent.last_seen).toLocaleString() : '—' }}</span></div>
+          <div class="info-row"><span>最后活跃</span><span>{{ agent.last_seen_at ? new Date(agent.last_seen_at).toLocaleString() : '—' }}</span></div>
           <div class="info-row"><span>同步状态</span><span>{{ agent.last_apply_status || '—' }}</span></div>
         </div>
       </div>
