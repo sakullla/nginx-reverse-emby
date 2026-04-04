@@ -308,6 +308,15 @@
       </div>
     </div>
 
+    <div v-if="error" class="form-error">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <circle cx="12" cy="12" r="10"/>
+        <line x1="12" y1="8" x2="12" y2="12"/>
+        <line x1="12" y1="16" x2="12.01" y2="16"/>
+      </svg>
+      {{ error }}
+    </div>
+
     <!-- Enabled Toggle -->
     <label class="toggle-row">
       <input v-model="form.enabled" type="checkbox" class="toggle__input">
@@ -316,7 +325,7 @@
     </label>
 
     <!-- Submit -->
-    <button type="submit" class="btn btn--primary btn--full" :disabled="ruleStore.loading">
+    <button type="submit" class="btn btn--primary btn--full" :disabled="createL4Rule.isPending.value || updateL4Rule.isPending.value">
       {{ isEdit ? '保存修改' : '创建规则' }}
     </button>
   </form>
@@ -324,11 +333,15 @@
 
 <script setup>
 import { computed, ref, watch } from 'vue'
-import { useRuleStore } from '../stores/rules'
+import { useCreateL4Rule, useUpdateL4Rule } from '../hooks/useL4Rules'
 
-const props = defineProps({ initialData: { type: Object, default: null } })
+const props = defineProps({
+  initialData: { type: Object, default: null },
+  agentId: { type: [String, Object], required: true }
+})
 const emit = defineEmits(['success'])
-const ruleStore = useRuleStore()
+const createL4Rule = useCreateL4Rule(props.agentId)
+const updateL4Rule = useUpdateL4Rule(props.agentId)
 const isEdit = computed(() => !!props.initialData?.id)
 
 let backendIdCounter = 0
@@ -431,6 +444,7 @@ const form = ref({
 const showAdvanced = ref(!!props.initialData?.tuning)
 const tagInput = ref('')
 const draggingIndex = ref(-1)
+const error = ref('')
 
 // Detect if tuning has non-default values (including backend extensions)
 const hasTuningChanges = computed(() => {
@@ -640,20 +654,25 @@ function buildPayload() {
 }
 
 async function handleSubmit() {
+  error.value = ''
   form.value.backends.forEach((_, index) => parseBackendAddress(index))
   const validBackends = form.value.backends.filter(b => b.host && b.port)
   if (validBackends.length === 0) {
-    ruleStore.showError?.('至少需要一个有效的后端服务器')
+    error.value = '至少需要一个有效的后端服务器'
     return
   }
 
   const payload = buildPayload()
-  if (isEdit.value) {
-    await ruleStore.modifyL4Rule(props.initialData.id, payload)
-  } else {
-    await ruleStore.addL4Rule(payload)
+  try {
+    if (isEdit.value) {
+      await updateL4Rule.mutateAsync({ id: props.initialData.id, ...payload })
+    } else {
+      await createL4Rule.mutateAsync(payload)
+    }
+    emit('success')
+  } catch (e) {
+    error.value = e.message || '提交失败'
   }
-  emit('success')
 }
 </script>
 
@@ -1042,6 +1061,17 @@ async function handleSubmit() {
 .tag__remove:hover {
   background: var(--color-danger-50);
   color: var(--color-danger);
+}
+
+.form-error {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-danger-50);
+  color: var(--color-danger);
+  border-radius: var(--radius-md);
+  font-size: var(--text-sm);
 }
 
 /* Toggle */
