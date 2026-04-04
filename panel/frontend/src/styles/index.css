@@ -1,6 +1,10 @@
-/* Main Styles Entry Point */
-@import './variables.css';
-@import './base.css';
-@import './layout.css';
-@import './components.css';
-@import './status-message.css';
+@import './themes.css';
+
+/* Body base — theme is set via data-theme on <html> */
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  background: var(--color-bg-canvas);
+  color: var(--color-text-primary);
+  -webkit-font-smoothing: antialiased;
+}

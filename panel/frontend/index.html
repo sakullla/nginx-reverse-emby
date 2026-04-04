@@ -10,6 +10,16 @@
 </head>
 <body>
   <div id="app"></div>
+  <script>
+  // Prevent theme flash: read theme before first paint
+  (function() {
+    var t = localStorage.getItem('theme');
+    if (!t) {
+      t = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'midnight' : 'sakura';
+    }
+    document.documentElement.setAttribute('data-theme', t);
+  })();
+  </script>
   <script type="module" src="/src/main.js"></script>
 </body>
 </html>
