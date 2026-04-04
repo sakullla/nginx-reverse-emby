@@ -154,7 +154,7 @@ async function handleSubmit() {
 .cert-form {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--space-5);
 }
 
 .form-group {
@@ -190,6 +190,26 @@ async function handleSubmit() {
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
   gap: var(--space-3);
 }
+
+.input {
+  width: 100%;
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--text-sm);
+  color: var(--color-text-primary);
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-lg);
+  transition: all var(--duration-fast) var(--ease-default);
+  font-family: inherit;
+}
+
+.input:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: var(--shadow-focus);
+}
+
+.input::placeholder { color: var(--color-text-muted); }
 
 .cert-banner {
   display: flex;
@@ -285,6 +305,7 @@ async function handleSubmit() {
   align-items: center;
   gap: var(--space-3);
   cursor: pointer;
+  padding: var(--space-2) 0;
 }
 
 .toggle__input { position: absolute; opacity: 0; width: 0; height: 0; }

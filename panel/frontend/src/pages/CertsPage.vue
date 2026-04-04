@@ -94,7 +94,15 @@
     <Teleport to="body">
       <div v-if="showAddForm || editingCert" class="modal-overlay" @click.self="closeForm">
         <div class="modal modal--large">
-          <div class="modal__header">{{ editingCert ? '编辑证书' : '添加证书' }}</div>
+          <div class="modal__header">
+            <span>{{ editingCert ? '编辑证书' : '添加证书' }}</span>
+            <button class="modal__close" @click="closeForm">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="18" y1="6" x2="6" y2="18"/>
+                <line x1="6" y1="6" x2="18" y2="18"/>
+              </svg>
+            </button>
+          </div>
           <div class="modal__body">
             <CertificateForm :initial-data="editingCert" :agent-id="agentId" @success="closeForm" />
           </div>
@@ -106,7 +114,15 @@
     <Teleport to="body">
       <div v-if="deletingCert" class="modal-overlay" @click.self="deletingCert = null">
         <div class="modal">
-          <div class="modal__header">确认删除</div>
+          <div class="modal__header">
+            <span>确认删除</span>
+            <button class="modal__close" @click="deletingCert = null">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="18" y1="6" x2="6" y2="18"/>
+                <line x1="6" y1="6" x2="18" y2="18"/>
+              </svg>
+            </button>
+          </div>
           <div class="modal__body">
             <p>确定删除证书 <strong>{{ deletingCert.domain }}</strong>？</p>
           </div>
@@ -230,12 +246,14 @@ function confirmDelete() {
 .cert-card__tags { display: flex; gap: 0.25rem; flex-wrap: wrap; }
 .cert-card__actions { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-top: auto; }
 .tag { font-size: 0.75rem; padding: 2px 8px; background: var(--color-primary-subtle); color: var(--color-primary); border-radius: var(--radius-full); font-weight: 500; }
-.modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); backdrop-filter: blur(4px); z-index: var(--z-modal); display: flex; align-items: center; justify-content: center; }
-.modal { background: var(--color-bg-surface); border: 1.5px solid var(--color-border-default); border-radius: var(--radius-2xl); box-shadow: var(--shadow-xl); width: min(480px, 90vw); overflow: hidden; }
+.modal-overlay { position: fixed; inset: 0; background: rgba(37,23,54,0.4); backdrop-filter: blur(8px); z-index: var(--z-modal); display: flex; align-items: center; justify-content: center; padding: var(--space-4); }
+.modal { background: var(--color-bg-surface); border: 1.5px solid var(--color-border-default); border-radius: var(--radius-3xl); box-shadow: var(--shadow-2xl); width: min(480px, 90vw); max-height: calc(100vh - var(--space-8)); display: flex; flex-direction: column; overflow: hidden; }
 .modal--large { width: min(600px, 92vw); }
-.modal__header { padding: 1rem 1.5rem; font-weight: 600; font-size: 1rem; border-bottom: 1px solid var(--color-border-subtle); }
-.modal__body { padding: 1.5rem; display: flex; flex-direction: column; gap: 1.25rem; }
-.modal__footer { padding: 1rem 1.5rem; display: flex; justify-content: flex-end; gap: 0.75rem; border-top: 1px solid var(--color-border-subtle); }
+.modal__header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); padding: var(--space-5) var(--space-6); border-bottom: 1px solid var(--color-border-subtle); flex-shrink: 0; background: var(--gradient-soft); font-weight: 600; font-size: var(--text-lg); color: var(--color-text-primary); }
+.modal__body { padding: var(--space-6); overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: var(--space-5); }
+.modal__footer { padding: var(--space-4) var(--space-6); display: flex; justify-content: flex-end; gap: var(--space-3); border-top: 1px solid var(--color-border-subtle); flex-shrink: 0; }
+.modal__close { display: flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: var(--radius-full); color: var(--color-text-tertiary); transition: all var(--duration-normal) var(--ease-bounce); flex-shrink: 0; border: none; background: transparent; cursor: pointer; }
+.modal__close:hover { background: var(--color-danger-50); color: var(--color-danger); transform: rotate(90deg); }
 .btn { padding: 0.5rem 1rem; border-radius: var(--radius-lg); font-size: 0.875rem; font-weight: 500; cursor: pointer; transition: all 0.15s; border: none; font-family: inherit; display: inline-flex; align-items: center; gap: 0.375rem; }
 .btn-primary { background: var(--gradient-primary); color: white; }
 .btn-secondary { background: var(--color-bg-subtle); color: var(--color-text-primary); border: 1px solid var(--color-border-default); }

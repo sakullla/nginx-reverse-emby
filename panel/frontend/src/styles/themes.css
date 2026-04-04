@@ -103,8 +103,11 @@
   --shadow-sm: 0 4px 12px rgba(192, 132, 252, 0.12);
   --shadow-md: 0 8px 24px rgba(192, 132, 252, 0.15);
   --shadow-lg: 0 12px 32px rgba(192, 132, 252, 0.18);
+  --shadow-xl: 0 20px 48px rgba(192, 132, 252, 0.2);
+  --shadow-2xl: 0 24px 60px rgba(192, 132, 252, 0.24);
   --shadow-focus: 0 0 0 4px rgba(192, 132, 252, 0.22);
   --gradient-primary: linear-gradient(135deg, #ff6b9d 0%, #c084fc 50%, #818cf8 100%);
+  --gradient-soft: linear-gradient(135deg, rgba(255,255,255,0.9) 0%, rgba(252,231,243,0.95) 100%);
 }
 
 /* =============================================
@@ -138,8 +141,11 @@
   --shadow-sm: 0 1px 3px rgba(15, 23, 42, 0.08), 0 2px 6px rgba(15, 23, 42, 0.05);
   --shadow-md: 0 4px 12px rgba(15, 23, 42, 0.1), 0 2px 4px rgba(15, 23, 42, 0.06);
   --shadow-lg: 0 8px 24px rgba(15, 23, 42, 0.12), 0 4px 8px rgba(15, 23, 42, 0.07);
+  --shadow-xl: 0 12px 36px rgba(15, 23, 42, 0.15), 0 6px 12px rgba(15, 23, 42, 0.08);
+  --shadow-2xl: 0 20px 48px rgba(15, 23, 42, 0.18), 0 8px 16px rgba(15, 23, 42, 0.1);
   --shadow-focus: 0 0 0 3px rgba(37, 99, 235, 0.28);
   --gradient-primary: linear-gradient(135deg, #3b82f6 0%, #2563eb 45%, #1d4ed8 80%, #1e40af 100%);
+  --gradient-soft: linear-gradient(135deg, rgba(255,255,255,0.92) 0%, rgba(241,245,249,0.96) 100%);
 }
 
 /* =============================================
@@ -173,6 +179,9 @@
   --shadow-sm: 0 4px 12px rgba(0, 0, 0, 0.5);
   --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.55);
   --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.6);
+  --shadow-xl: 0 20px 48px rgba(0, 0, 0, 0.65);
+  --shadow-2xl: 0 24px 60px rgba(0, 0, 0, 0.7);
   --shadow-focus: 0 0 0 4px rgba(129, 140, 248, 0.22);
   --gradient-primary: linear-gradient(135deg, #a5b4fc 0%, #818cf8 38%, #6366f1 72%, #4f46e5 100%);
+  --gradient-soft: linear-gradient(135deg, rgba(33,38,46,0.95) 0%, rgba(22,27,34,0.98) 100%);
 }

@@ -292,6 +292,47 @@ const handleSubmit = async () => {
   font-size: var(--text-sm);
 }
 
+.input {
+  width: 100%;
+  padding: var(--space-3) var(--space-4);
+  font-size: var(--text-sm);
+  color: var(--color-text-primary);
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-lg);
+  transition: all var(--duration-fast) var(--ease-default);
+  font-family: inherit;
+}
+
+.input:focus {
+  outline: none;
+  border-color: var(--color-primary);
+  box-shadow: var(--shadow-focus);
+}
+
+.input::placeholder {
+  color: var(--color-text-muted);
+}
+
+.input-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.input-wrapper__icon {
+  position: absolute;
+  left: var(--space-4);
+  color: var(--color-text-muted);
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+}
+
+.input-wrapper .input {
+  padding-left: var(--space-10);
+}
+
 .tag-input {
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border-default);
@@ -330,6 +371,38 @@ const handleSubmit = async () => {
   color: var(--color-text-muted);
 }
 
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px 8px;
+  background: var(--color-bg-subtle);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-full);
+  font-size: var(--text-xs);
+  color: var(--color-text-primary);
+}
+
+.tag__remove {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  padding: 0;
+  border-radius: 50%;
+  transition: all var(--duration-fast);
+}
+
+.tag__remove:hover {
+  background: var(--color-danger-50);
+  color: var(--color-danger);
+}
+
 .toggle-row {
   padding: var(--space-2) 0;
   border-bottom: 1px solid var(--color-border-subtle);
@@ -349,6 +422,8 @@ const handleSubmit = async () => {
 .toggle__input {
   position: absolute;
   opacity: 0;
+  width: 0;
+  height: 0;
 }
 
 .toggle__slider {
@@ -365,10 +440,10 @@ const handleSubmit = async () => {
 .toggle__slider::after {
   content: '';
   position: absolute;
-  top: 2px;
-  left: 2px;
-  width: 20px;
-  height: 20px;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
   background: white;
   border-radius: var(--radius-full);
   transition: transform var(--duration-fast) var(--ease-bounce);
@@ -376,7 +451,7 @@ const handleSubmit = async () => {
 }
 
 .toggle__input:checked + .toggle__slider {
-  background: var(--color-primary);
+  background: var(--gradient-primary);
 }
 
 .toggle__input:checked + .toggle__slider::after {
