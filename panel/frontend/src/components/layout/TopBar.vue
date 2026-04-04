@@ -21,7 +21,7 @@
           <line x1="21" y1="21" x2="16.65" y2="16.65"/>
         </svg>
         <span>全局搜索</span>
-        <kbd>⌘K</kbd>
+        <kbd>{{ isMac ? '⌘K' : 'Ctrl+K' }}</kbd>
       </button>
     </div>
 
@@ -80,6 +80,7 @@ const { data: agentsData } = useAgents()
 const agentDropdownOpen = ref(false)
 const agentSearchQuery = ref('')
 const agentSwitcherRef = ref(null)
+const isMac = ref(/Mac|iPod|iPhone|iPad/.test(navigator.platform))
 
 const currentAgentName = computed(() => {
   if (!selectedAgentId.value || !agentsData.value) return '—'
