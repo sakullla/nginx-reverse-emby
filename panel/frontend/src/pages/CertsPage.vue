@@ -36,18 +36,6 @@
       <!-- Search toolbar -->
       <div class="certs-page__toolbar">
         <input v-model="searchQuery" class="search-input" placeholder="搜索域名 / 标签 / #id=...">
-        <div v-if="allTags.length" class="tag-filter">
-          <button
-            v-for="tag in allTags"
-            :key="tag"
-            class="tag-filter__btn"
-            :class="{
-              'tag-filter__btn--active': selectedTags.includes(tag),
-              'tag-filter__btn--system': isSystemTag(tag)
-            }"
-            @click="toggleTag(tag)"
-          >{{ tag }}</button>
-        </div>
       </div>
 
       <!-- No search results -->
@@ -152,42 +140,16 @@ const showAddForm = ref(false)
 const editingCert = ref(null)
 const deletingCert = ref(null)
 
-// Search and filter state
+// Search
 const searchQuery = ref('')
-const selectedTags = ref([])
-const SYSTEM_TAG_SET = new Set(['TCP', 'UDP', 'HTTP', 'HTTPS', 'RR', 'LC', 'RND', 'HASH'])
-
-function isSystemTag(tag) {
-  return SYSTEM_TAG_SET.has(tag) || /^:\d+$/.test(tag)
-}
-
-function toggleTag(tag) {
-  const i = selectedTags.value.indexOf(tag)
-  if (i === -1) selectedTags.value.push(tag)
-  else selectedTags.value.splice(i, 1)
-}
-
-const allTags = computed(() => {
-  const tagSet = new Set()
-  for (const cert of certificates.value) {
-    for (const tag of cert.tags || []) {
-      tagSet.add(tag)
-    }
-  }
-  return [...tagSet].sort()
-})
 
 const filteredCerts = computed(() => {
-  let result = certificates.value
-  if (selectedTags.value.length > 0) {
-    result = result.filter(cert => selectedTags.value.some(tag => (cert.tags || []).includes(tag)))
-  }
   const raw = searchQuery.value.trim()
-  if (!raw) return result
+  if (!raw) return certificates.value
   const idMatch = raw.match(/^#id=(\S+)$/)
-  if (idMatch) return result.filter(c => String(c.id) === idMatch[1])
+  if (idMatch) return certificates.value.filter(c => String(c.id) === idMatch[1])
   const q = raw.toLowerCase()
-  return result.filter(c =>
+  return certificates.value.filter(c =>
     c.domain.toLowerCase().includes(q) ||
     (c.tags || []).some(tag => String(tag).toLowerCase().includes(q))
   )
@@ -246,15 +208,10 @@ function confirmDelete() {
 .certs-page__title { font-size: 1.5rem; font-weight: 700; margin: 0 0 0.25rem; color: var(--color-text-primary); }
 .certs-page__subtitle { font-size: 0.875rem; color: var(--color-text-tertiary); margin: 0; }
 .certs-page__loading, .certs-page__empty { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.75rem; padding: 4rem 2rem; color: var(--color-text-muted); text-align: center; }
-.certs-page__toolbar { display: flex; flex-direction: column; gap: 0.75rem; margin-bottom: 1.5rem; }
+.certs-page__toolbar { margin-bottom: 1.5rem; }
 .search-input { width: 100%; padding: 0.625rem 0.875rem; border-radius: var(--radius-lg); border: 1.5px solid var(--color-border-default); background: var(--color-bg-subtle); font-size: 0.875rem; color: var(--color-text-primary); outline: none; font-family: inherit; transition: border-color 0.15s; box-sizing: border-box; }
 .search-input:focus { border-color: var(--color-primary); }
 .search-input::placeholder { color: var(--color-text-muted); }
-.tag-filter { display: flex; gap: 0.25rem; flex-wrap: wrap; }
-.tag-filter__btn { font-size: 0.7rem; padding: 2px 8px; background: var(--color-bg-subtle); border: 1px solid var(--color-border-default); border-radius: var(--radius-full); color: var(--color-text-secondary); cursor: pointer; transition: all 0.15s; }
-.tag-filter__btn:hover { border-color: var(--color-border-strong); }
-.tag-filter__btn--active { background: var(--color-primary-subtle); border-color: var(--color-primary); color: var(--color-primary); }
-.tag-filter__btn--system { opacity: 0.6; font-family: var(--font-mono); }
 .cert-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1rem; }
 .cert-card { background: var(--color-bg-surface); border: 1.5px solid var(--color-border-default); border-radius: var(--radius-xl); padding: 1.25rem; display: flex; flex-direction: column; gap: 0.75rem; }
 .cert-card__header { display: flex; align-items: center; justify-content: space-between; }

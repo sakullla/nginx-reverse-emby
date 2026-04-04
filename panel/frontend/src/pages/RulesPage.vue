@@ -48,12 +48,9 @@
       <p>没有匹配的规则</p>
     </div>
 
-    <!-- Search and tag filter toolbar -->
+    <!-- Search toolbar -->
     <div v-if="selectedAgentId && rules.length" class="rules-page__toolbar">
       <input v-model="searchQuery" class="search-input" placeholder="搜索 URL / 标签 / #id=...">
-      <div v-if="allTags.length" class="tag-filter">
-        <button v-for="tag in allTags" :key="tag" class="tag-filter__btn" :class="{ 'tag-filter__btn--active': selectedTags.includes(tag), 'tag-filter__btn--system': isSystemTag(tag) }" @click="toggleTag(tag)">{{ tag }}</button>
-      </div>
     </div>
 
     <!-- Rules card grid -->
@@ -158,39 +155,21 @@ const updateRule = useUpdateRule(agentId)
 const deleteRule = useDeleteRule(agentId)
 const rules = computed(() => _rulesData.value ?? [])
 
-// Search and filter
+// Search
 const searchQuery = ref('')
-const selectedTags = ref([])
-const SYSTEM_TAG_SET = new Set(['TCP', 'UDP', 'HTTP', 'HTTPS', 'RR', 'LC', 'RND', 'HASH'])
-function isSystemTag(tag) { return SYSTEM_TAG_SET.has(tag) || /^:\d+$/.test(tag) }
-function toggleTag(tag) {
-  const i = selectedTags.value.indexOf(tag)
-  if (i === -1) selectedTags.value.push(tag)
-  else selectedTags.value.splice(i, 1)
-}
 
 const filteredRules = computed(() => {
-  let result = rules.value
-  if (selectedTags.value.length > 0) {
-    result = result.filter(rule => selectedTags.value.some(tag => (rule.tags || []).includes(tag)))
-  }
   const raw = searchQuery.value.trim()
-  if (!raw) return result
+  if (!raw) return rules.value
   const idMatch = raw.match(/^#id=(\S+)$/)
-  if (idMatch) return result.filter(rule => String(rule.id) === idMatch[1])
+  if (idMatch) return rules.value.filter(rule => String(rule.id) === idMatch[1])
   const q = raw.toLowerCase()
-  return result.filter(rule =>
+  return rules.value.filter(rule =>
     String(rule.frontend_url || '').toLowerCase().includes(q) ||
     String(rule.backend_url || '').toLowerCase().includes(q) ||
     String(rule.name || '').toLowerCase().includes(q) ||
     (rule.tags || []).some(tag => String(tag).toLowerCase().includes(q))
   )
-})
-
-const allTags = computed(() => {
-  const tagSet = new Set()
-  rules.value.forEach(rule => (rule.tags || []).forEach(tag => tagSet.add(tag)))
-  return [...tagSet].sort()
 })
 
 const enabledCount = computed(() => rules.value.filter(r => r.enabled).length)
@@ -255,15 +234,10 @@ function confirmDelete() {
 .rules-page__prompt, .rules-page__empty, .rules-page__loading { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.75rem; padding: 4rem 2rem; color: var(--color-text-muted); text-align: center; }
 .rules-page__prompt-hint { font-size: 0.875rem; color: var(--color-text-tertiary); }
 /* Toolbar */
-.rules-page__toolbar { display: flex; flex-direction: column; gap: 0.75rem; margin-bottom: 1.5rem; }
+.rules-page__toolbar { margin-bottom: 1.5rem; }
 .search-input { width: 100%; padding: 0.625rem 0.875rem; border-radius: var(--radius-lg); border: 1.5px solid var(--color-border-default); background: var(--color-bg-subtle); font-size: 0.875rem; color: var(--color-text-primary); outline: none; font-family: inherit; transition: border-color 0.15s; box-sizing: border-box; }
 .search-input:focus { border-color: var(--color-primary); }
 .search-input::placeholder { color: var(--color-text-muted); }
-.tag-filter { display: flex; gap: 0.25rem; flex-wrap: wrap; }
-.tag-filter__btn { font-size: 0.7rem; padding: 2px 8px; background: var(--color-bg-subtle); border: 1px solid var(--color-border-default); border-radius: var(--radius-full); color: var(--color-text-secondary); cursor: pointer; transition: all 0.15s; }
-.tag-filter__btn:hover { border-color: var(--color-border-strong); }
-.tag-filter__btn--active { background: var(--color-primary-subtle); border-color: var(--color-primary); color: var(--color-primary); }
-.tag-filter__btn--system { opacity: 0.6; font-family: var(--font-mono); }
 /* Card grid */
 .rule-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1rem; }
 /* Rule card */

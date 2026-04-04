@@ -264,6 +264,7 @@ const handleSubmit = async () => {
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-md);
   transition: all var(--duration-fast) var(--ease-default);
+  max-width: 100%;
 }
 
 .tag-input:focus-within {
@@ -282,7 +283,8 @@ const handleSubmit = async () => {
 
 .tag-input__field {
   flex: 1;
-  min-width: 120px;
+  min-width: 80px;
+  max-width: 200px;
   border: none;
   background: transparent;
   padding: var(--space-1);
