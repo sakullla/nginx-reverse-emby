@@ -1,7 +1,7 @@
 <template>
   <aside class="sidebar" :class="{ 'sidebar--collapsed': collapsed }">
     <div class="sidebar__header">
-      <div class="sidebar__logo">
+      <div class="sidebar__logo" v-show="!collapsed">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
           <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
         </svg>
@@ -152,6 +152,9 @@ function toggleCollapse() {
   border: none; background: transparent;
   color: var(--color-text-secondary); cursor: pointer;
   transition: all 0.15s; flex-shrink: 0;
+}
+.sidebar--collapsed .sidebar__collapse-btn {
+  margin: 0 auto;
 }
 .sidebar__collapse-btn:hover {
   background: var(--color-bg-hover);

@@ -16,6 +16,9 @@
         <div class="search-wrapper" v-if="selectedAgentId && rules.length" @click="focusSearch">
           <svg class="search-icon-btn" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
           <input ref="searchInputRef" v-model="searchQuery" class="search-input" placeholder="搜索 URL / 标签 / #id=...">
+          <button v-if="searchQuery" class="clear-btn" @click.stop="searchQuery = ''">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
         </div>
         <button v-if="selectedAgentId" class="btn btn-primary" @click="showAddForm = true">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
@@ -264,15 +267,6 @@ function confirmDelete() {
   deletingRule.value = null
 }
 
-// Auto-open edit modal when navigated via ruleId query
-watchEffect(() => {
-  const ruleId = route.query.ruleId
-  if (!ruleId || !rules.value.length) return
-  const found = rules.value.find(r => String(r.id) === String(ruleId))
-  if (found) {
-    editingRule.value = found
-  }
-})
 </script>
 
 <style scoped>
@@ -288,9 +282,10 @@ watchEffect(() => {
 /* Search wrapper in header */
 .search-wrapper { display: flex; align-items: center; position: relative; }
 .search-icon-btn { display: none; }
-.search-input { width: 200px; padding: 0.5rem 0.75rem; border-radius: var(--radius-lg); border: 1.5px solid var(--color-border-default); background: var(--color-bg-subtle); font-size: 0.875rem; color: var(--color-text-primary); outline: none; font-family: inherit; transition: border-color 0.15s, width 0.2s; box-sizing: border-box; }
+.search-input { flex: 1; min-width: 0; padding: 0.5rem 2rem 0.5rem 0.75rem; border-radius: var(--radius-lg); border: 1.5px solid var(--color-border-default); background: var(--color-bg-subtle); font-size: 0.875rem; color: var(--color-text-primary); outline: none; font-family: inherit; transition: border-color 0.15s, width 0.2s; box-sizing: border-box; }
 .search-input:focus { border-color: var(--color-primary); width: 280px; }
 .search-input::placeholder { color: var(--color-text-muted); }
+.clear-btn { display: flex; align-items: center; justify-content: center; width: 18px; height: 18px; border: none; background: var(--color-bg-hover); border-radius: 50%; color: var(--color-text-secondary); cursor: pointer; flex-shrink: 0; padding: 0; position: absolute; right: 8px; z-index: 2; }
 
 @media (max-width: 640px) {
   .search-wrapper {
@@ -303,6 +298,7 @@ watchEffect(() => {
     display: flex;
     align-items: center;
     justify-content: center;
+    position: relative;
   }
   .search-icon-btn { display: flex; color: var(--color-text-secondary); }
   .search-input {
@@ -322,6 +318,18 @@ watchEffect(() => {
     opacity: 1;
     pointer-events: auto;
     border-color: var(--color-primary);
+  }
+  .search-wrapper:focus-within .clear-btn {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  .clear-btn {
+    opacity: 0;
+    pointer-events: none;
+    position: absolute;
+    right: 8px;
+    z-index: 2;
+    transition: opacity 0.2s;
   }
   .rules-page__header { gap: 0.5rem; }
   .btn-text { display: none; }

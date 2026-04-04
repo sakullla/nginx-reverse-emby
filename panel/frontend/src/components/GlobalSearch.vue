@@ -168,13 +168,12 @@ function navigateToResult(agentId) {
 
 function navigateToItem(agentId, item) {
   close()
-  const q = query.value
   if (item._type === 'rule') {
-    router.push({ path: '/rules', query: { agentId, ruleId: String(item.id) } })
+    router.push({ path: '/rules', query: { agentId, search: `#id=${item.id}` } })
   } else if (item._type === 'l4') {
-    router.push({ path: '/l4', query: { agentId, search: q } })
+    router.push({ path: '/l4', query: { agentId, search: `#id=${item.id}` } })
   } else if (item._type === 'cert') {
-    router.push({ path: '/certs', query: { agentId, search: q } })
+    router.push({ path: '/certs', query: { agentId, search: `#id=${item.id}` } })
   }
 }
 
