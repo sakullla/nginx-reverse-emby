@@ -89,7 +89,7 @@
 
     <!-- Add Form Modal -->
     <Teleport to="body">
-      <div v-if="showAddForm" class="modal-overlay" @click.self="showAddForm = false">
+      <div v-if="showAddForm || editingRule" class="modal-overlay" @click.self="closeForm">
         <div class="modal">
           <div class="modal__header">{{ editingRule ? '编辑 L4 规则' : '添加 L4 规则' }}</div>
           <div class="modal__body">
@@ -126,7 +126,7 @@
             </div>
           </div>
           <div class="modal__footer">
-            <button class="btn btn-secondary" @click="showAddForm = false">取消</button>
+            <button class="btn btn-secondary" @click="closeForm">取消</button>
             <button class="btn btn-primary" @click="submitForm">{{ editingRule ? '保存' : '添加' }}</button>
           </div>
         </div>
@@ -197,6 +197,11 @@ function confirmDelete() {
     deleteL4Rule.mutate(deletingRule.value.id)
   }
   deletingRule.value = null
+}
+
+function closeForm() {
+  showAddForm.value = false
+  editingRule.value = null
 }
 
 function submitForm() {
