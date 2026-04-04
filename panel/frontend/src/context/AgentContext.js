@@ -1,6 +1,7 @@
 import { defineComponent, h, provide, inject, ref, watch } from 'vue'
-import { useAgents, setTokenState } from '../hooks/useAgents'
+import { useAgents } from '../hooks/useAgents'
 import { fetchSystemInfo } from '../api'
+import { useAuthState } from './useAuthState'
 
 const AgentContextKey = Symbol('AgentContext')
 
@@ -15,12 +16,11 @@ export const AgentProvider = defineComponent({
     const { data: agentsData } = useAgents()
 
     // Track token reactively so login changes are picked up without remounting
-    const tokenVal = ref(localStorage.getItem('panel_token'))
+    const { token: tokenVal, setToken } = useAuthState()
     const systemInfo = ref(null)
 
     // Re-read token whenever storage changes (login stores token, logout removes it)
     watch(tokenVal, async (token) => {
-      setTokenState(token)
       systemInfo.value = null
       if (token) {
         try {

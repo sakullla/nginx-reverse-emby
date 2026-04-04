@@ -1,5 +1,8 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { verifyToken } from '../api'
+import { useAuthState } from '../context/useAuthState'
+
+const { clearToken } = useAuthState()
 
 const AppShell = () => import('../components/layout/AppShell.vue')
 
@@ -92,6 +95,7 @@ router.beforeEach(async (to) => {
     const valid = await verifyToken(token)
     if (!valid) {
       localStorage.removeItem('panel_token')
+      clearToken()
       return { name: 'login' }
     }
     return true
@@ -99,6 +103,7 @@ router.beforeEach(async (to) => {
     // Any verify error (401, 5xx, network failure) means auth state is uncertain —
     // fail closed to avoid exposing protected UI under an invalid session.
     localStorage.removeItem('panel_token')
+    clearToken()
     return { name: 'login' }
   }
 })

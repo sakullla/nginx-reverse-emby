@@ -1,19 +1,14 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/vue-query'
 import * as api from '../api'
-import { ref } from 'vue'
-
-// Shared reactive token ref — AgentContext updates it on login/logout
-const _hasToken = ref(false)
-export function setTokenState(token) {
-  _hasToken.value = !!token
-}
+import { useAuthState } from '../context/useAuthState'
 
 export function useAgents() {
+  const { hasToken } = useAuthState()
   return useQuery({
     queryKey: ['agents'],
     queryFn: api.fetchAgents,
-    refetchInterval: () => _hasToken.value ? 10_000 : false,
-    enabled: _hasToken,
+    refetchInterval: () => hasToken.value ? 10_000 : false,
+    enabled: hasToken,
   })
 }
 

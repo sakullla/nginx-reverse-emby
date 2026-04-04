@@ -39,12 +39,21 @@ api.interceptors.request.use((config) => {
   return config
 })
 
+import { onAuthChange, notifyAuthChange } from '../utils/authEvents'
+
+// Register so useAuthState can keep its reactive token in sync with 401s
+onAuthChange((token) => { _tokenRef = token })
+let _tokenRef = null
+export function setApiTokenRef(fn) { _tokenRef = fn }
+
 api.interceptors.response.use(
   (response) => response,
   (error) => {
     const status = error.response?.status
     if (status === 401) {
       localStorage.removeItem('panel_token')
+      if (_tokenRef) _tokenRef(null)
+      notifyAuthChange(null)
     }
     const message = error.response?.data?.message || error.message || '请求失败'
     const details = error.response?.data?.details

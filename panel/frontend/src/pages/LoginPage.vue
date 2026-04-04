@@ -34,8 +34,10 @@
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { verifyToken } from '../api'
+import { useAuthState } from '../context/useAuthState'
 
 const router = useRouter()
+const { setToken } = useAuthState()
 const tokenInput = ref('')
 const loading = ref(false)
 const error = ref('')
@@ -51,6 +53,7 @@ async function handleLogin() {
     const valid = await verifyToken(token)
     if (valid) {
       localStorage.setItem('panel_token', token)
+      setToken(token)
       router.push({ name: 'dashboard' })
     } else {
       error.value = '令牌无效'

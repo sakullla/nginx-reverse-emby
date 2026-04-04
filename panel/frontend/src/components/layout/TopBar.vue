@@ -42,7 +42,7 @@
               v-for="agent in filteredAgents"
               :key="agent.id"
               class="agent-switcher__item"
-              :class="{ active: agent.id === selectedAgentId }"
+              :class="{ active: agent.id === effectiveAgentId }"
               @click="selectAgent(agent)"
             >
               <span class="agent-switcher__dot" :class="`agent-switcher__dot--${getAgentStatus(agent)}`"></span>
@@ -69,27 +69,31 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { useAgent } from '../../context/AgentContext'
 import { useAgents } from '../../hooks/useAgents'
+import { useAuthState } from '../../context/useAuthState'
 import ThemeSelector from '../base/ThemeSelector.vue'
 
 const router = useRouter()
 const route = useRoute()
 const { selectedAgentId, selectAgent: setSelectedAgentId } = useAgent()
 const { data: agentsData } = useAgents()
+const { clearToken } = useAuthState()
 
 const agentDropdownOpen = ref(false)
 const agentSearchQuery = ref('')
 const agentSwitcherRef = ref(null)
 
+// Effective agent mirrors what the page uses: route param wins, else context selection
+const effectiveAgentId = computed(() => route.query.agentId || selectedAgentId.value)
 
 const currentAgentName = computed(() => {
-  if (!selectedAgentId.value || !agentsData.value) return '—'
-  const agent = agentsData.value.find(a => a.id === selectedAgentId.value)
+  if (!effectiveAgentId.value || !agentsData.value) return '—'
+  const agent = agentsData.value.find(a => a.id === effectiveAgentId.value)
   return agent?.name || '—'
 })
 
 const currentAgent = computed(() => {
-  if (!selectedAgentId.value || !agentsData.value) return null
-  return agentsData.value.find(a => a.id === selectedAgentId.value)
+  if (!effectiveAgentId.value || !agentsData.value) return null
+  return agentsData.value.find(a => a.id === effectiveAgentId.value)
 })
 
 const filteredAgents = computed(() => {
@@ -138,6 +142,7 @@ onUnmounted(() => document.removeEventListener('mousedown', handleClickOutside))
 function handleLogout() {
   localStorage.removeItem('panel_token')
   localStorage.removeItem('selected_agent_id')
+  clearToken()
   window.location.reload()
 }
 </script>
