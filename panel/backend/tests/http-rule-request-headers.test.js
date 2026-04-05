@@ -265,6 +265,30 @@ describe("HTTP rule request header normalization", () => {
     );
   });
 
+  it("rejects non-string custom header names", () => {
+    assert.throws(
+      () =>
+        normalizeRuleRequestHeaders(
+          {
+            custom_headers: [{ name: 123, value: "ok" }],
+          },
+          {},
+        ),
+      /string/i,
+    );
+
+    assert.throws(
+      () =>
+        normalizeRuleRequestHeaders(
+          {
+            custom_headers: [{ name: true, value: "ok" }],
+          },
+          {},
+        ),
+      /string/i,
+    );
+  });
+
   it("rejects explicit null custom header values", () => {
     assert.throws(
       () =>

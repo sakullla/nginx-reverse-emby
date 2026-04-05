@@ -1,7 +1,10 @@
 "use strict";
 
 function normalizeHeaderName(value) {
-  const name = String(value || "").trim();
+  if (typeof value !== "string") {
+    throw new Error("custom header name must be a string");
+  }
+  const name = value.trim();
   if (!/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name)) {
     throw new Error("custom header name is invalid");
   }
