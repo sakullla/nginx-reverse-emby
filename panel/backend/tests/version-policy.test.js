@@ -143,4 +143,32 @@ describe("version policy storage", () => {
       closeQuietly(sqliteStorage);
     }
   });
+
+  it("rejects invalid version policy payloads in the JSON backend without overwriting stored policies", () => {
+    const validPolicies = [
+      normalizeVersionPolicyPayload({
+        id: "stable",
+        channel: "stable",
+        desired_version: "1.2.3",
+        packages: [{ platform: "linux-amd64", url: "https://example.com/linux.tar.gz", sha256: "def" }],
+      }),
+    ];
+
+    jsonStorage.saveVersionPolicies(validPolicies);
+
+    assert.throws(
+      () => jsonStorage.saveVersionPolicies([{
+        id: "broken",
+        channel: "stable",
+        desired_version: "",
+        packages: [{ platform: "linux-amd64", url: "https://example.com/linux.tar.gz", sha256: "def" }],
+      }]),
+      /desired_version/i,
+    );
+
+    assert.deepStrictEqual(
+      jsonStorage.loadVersionPolicies(),
+      validPolicies,
+    );
+  });
 });

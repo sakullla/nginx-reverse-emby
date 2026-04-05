@@ -79,6 +79,13 @@ function sanitizeRelayListenersForStorage(listeners) {
   return sanitized;
 }
 
+function normalizeRelayListenersForSave(listeners) {
+  if (!Array.isArray(listeners)) {
+    return [];
+  }
+  return listeners.map((listener) => normalizeRelayListenerPayload(listener));
+}
+
 function sanitizeVersionPolicyForStorage(policy) {
   if (!policy || typeof policy !== "object") {
     return null;
@@ -108,6 +115,25 @@ function sanitizeVersionPoliciesForStorage(policies) {
   }
   sanitized.sort((a, b) => String(a.id).localeCompare(String(b.id)));
   return sanitized;
+}
+
+function normalizeVersionPoliciesForSave(policies) {
+  if (!Array.isArray(policies)) {
+    return [];
+  }
+
+  const normalized = [];
+  const seen = new Set();
+  for (const policy of policies) {
+    const next = normalizeVersionPolicyPayload(policy);
+    if (seen.has(next.id)) {
+      continue;
+    }
+    seen.add(next.id);
+    normalized.push(next);
+  }
+  normalized.sort((a, b) => String(a.id).localeCompare(String(b.id)));
+  return normalized;
 }
 
 function collectRelayListenerIdsExceptAgent(agentId) {
@@ -270,7 +296,7 @@ function loadRelayListenersForAgent(agentId) {
 }
 
 function saveRelayListenersForAgent(agentId, listeners) {
-  const nextListeners = sanitizeRelayListenersForStorage(listeners);
+  const nextListeners = normalizeRelayListenersForSave(listeners);
   assertRelayListenerIdsAreGloballyUnique(agentId, nextListeners);
   writeJsonFile(getRelayListenerFileForAgent(agentId), nextListeners);
 }
@@ -289,7 +315,7 @@ function loadVersionPolicies() {
 }
 
 function saveVersionPolicies(policies) {
-  writeJsonFile(getVersionPoliciesFile(), sanitizeVersionPoliciesForStorage(policies));
+  writeJsonFile(getVersionPoliciesFile(), normalizeVersionPoliciesForSave(policies));
 }
 
 function loadVersionPolicy() {

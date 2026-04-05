@@ -174,4 +174,37 @@ describe("relay listener storage", () => {
       closeQuietly(sqliteStorage);
     }
   });
+
+  it("rejects invalid relay listener payloads in the JSON backend without overwriting stored listeners", () => {
+    const validListeners = [
+      normalizeRelayListenerPayload({
+        id: 7,
+        agent_id: "agent-json",
+        name: "relay-a",
+        listen_host: "0.0.0.0",
+        listen_port: 18443,
+        pin_set: [{ type: "spki_sha256", value: "abc" }],
+      }),
+    ];
+
+    jsonStorage.saveRelayListenersForAgent("agent-json", validListeners);
+
+    assert.throws(
+      () => jsonStorage.saveRelayListenersForAgent("agent-json", [{
+        id: 8,
+        agent_id: "agent-json",
+        name: "relay-b",
+        listen_host: "0.0.0.0",
+        listen_port: 19443,
+        pin_set: [],
+        trusted_ca_certificate_ids: [],
+      }]),
+      /pin_set.*trusted_ca_certificate_ids/i,
+    );
+
+    assert.deepStrictEqual(
+      jsonStorage.loadRelayListenersForAgent("agent-json"),
+      validListeners,
+    );
+  });
 });
