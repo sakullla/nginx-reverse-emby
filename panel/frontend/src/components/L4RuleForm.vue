@@ -341,7 +341,7 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import { useCreateL4Rule, useUpdateL4Rule } from '../hooks/useL4Rules'
-import { useRelayListeners } from '../hooks/useRelayListeners'
+import { useAllRelayListeners } from '../hooks/useRelayListeners'
 import RelayChainInput from './RelayChainInput.vue'
 
 const props = defineProps({
@@ -353,7 +353,7 @@ const emit = defineEmits(['success'])
 // Pass agentId directly - hooks use unref() to handle both strings and refs
 const createL4Rule = useCreateL4Rule(props.agentId)
 const updateL4Rule = useUpdateL4Rule(props.agentId)
-const { data: relayListenersData } = useRelayListeners(props.agentId)
+const { data: relayListenersData } = useAllRelayListeners()
 const isEdit = computed(() => !!props.initialData?.id)
 const relayListeners = computed(() => relayListenersData.value ?? [])
 

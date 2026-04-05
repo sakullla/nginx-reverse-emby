@@ -514,17 +514,7 @@ function normalizeRelayChainPayload(value, options = {}) {
 
 function listAllRelayListenersById() {
   const listenersById = new Map();
-  const candidateAgentIds = new Set();
-  if (LOCAL_AGENT_ENABLED) {
-    candidateAgentIds.add(LOCAL_AGENT_ID);
-  }
-  for (const agent of storage.loadRegisteredAgents()) {
-    const agentId = String(agent?.id || "").trim();
-    if (agentId) {
-      candidateAgentIds.add(agentId);
-    }
-  }
-  for (const agentId of candidateAgentIds) {
+  for (const agentId of getAllKnownAgentIds()) {
     const listeners = storage.loadRelayListenersForAgent(agentId);
     for (const listener of Array.isArray(listeners) ? listeners : []) {
       const parsedId = Number(listener?.id);
@@ -535,6 +525,38 @@ function listAllRelayListenersById() {
     }
   }
   return listenersById;
+}
+
+function getAllKnownAgentIds() {
+  const candidateAgentIds = new Set();
+  if (LOCAL_AGENT_ENABLED) {
+    candidateAgentIds.add(LOCAL_AGENT_ID);
+  }
+  for (const agent of storage.loadRegisteredAgents()) {
+    const agentId = String(agent?.id || "").trim();
+    if (agentId) {
+      candidateAgentIds.add(agentId);
+    }
+  }
+  return candidateAgentIds;
+}
+
+function findRelayListenerReferenceAcrossAgents(listenerId) {
+  for (const knownAgentId of getAllKnownAgentIds()) {
+    const inUseByHttp = loadNormalizedRulesForAgent(knownAgentId).find((rule) =>
+      Array.isArray(rule.relay_chain) && rule.relay_chain.includes(listenerId),
+    );
+    if (inUseByHttp) {
+      return { protocol: "http", agentId: knownAgentId, ruleId: inUseByHttp.id };
+    }
+    const inUseByL4 = storage.loadL4RulesForAgent(knownAgentId).find((rule) =>
+      Array.isArray(rule.relay_chain) && rule.relay_chain.includes(listenerId),
+    );
+    if (inUseByL4) {
+      return { protocol: "l4", agentId: knownAgentId, ruleId: inUseByL4.id };
+    }
+  }
+  return null;
 }
 
 function isProxyHeadersGloballyDisabled() {
@@ -3920,18 +3942,16 @@ async function handleMasterApi(req, res) {
         return;
       }
 
-      const inUseByHttp = loadNormalizedRulesForAgent(agentId).find((rule) =>
-        Array.isArray(rule.relay_chain) && rule.relay_chain.includes(listenerId),
-      );
-      if (inUseByHttp) {
-        sendJson(res, 400, errorPayload(`relay listener ${listenerId} is referenced by HTTP rule #${inUseByHttp.id}`));
-        return;
-      }
-      const inUseByL4 = storage.loadL4RulesForAgent(agentId).find((rule) =>
-        Array.isArray(rule.relay_chain) && rule.relay_chain.includes(listenerId),
-      );
-      if (inUseByL4) {
-        sendJson(res, 400, errorPayload(`relay listener ${listenerId} is referenced by L4 rule #${inUseByL4.id}`));
+      const relayReference = findRelayListenerReferenceAcrossAgents(listenerId);
+      if (relayReference) {
+        const ruleType = relayReference.protocol === "http" ? "HTTP" : "L4";
+        sendJson(
+          res,
+          400,
+          errorPayload(
+            `relay listener ${listenerId} is referenced by ${ruleType} rule #${relayReference.ruleId} on agent ${relayReference.agentId}`,
+          ),
+        );
         return;
       }
 

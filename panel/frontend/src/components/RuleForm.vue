@@ -307,7 +307,7 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import { useCreateRule, useUpdateRule } from '../hooks/useRules'
-import { useRelayListeners } from '../hooks/useRelayListeners'
+import { useAllRelayListeners } from '../hooks/useRelayListeners'
 import { useAgent } from '../context/AgentContext'
 import RelayChainInput from './RelayChainInput.vue'
 
@@ -332,7 +332,7 @@ const { systemInfo } = useAgent()
 
 const createRule = useCreateRule(props.agentId)
 const updateRule = useUpdateRule(props.agentId)
-const { data: relayListenersData } = useRelayListeners(props.agentId)
+const { data: relayListenersData } = useAllRelayListeners()
 const isEdit = computed(() => !!props.initialData?.id)
 const isLoading = computed(() => createRule.isPending.value || updateRule.isPending.value)
 const proxyHeadersGloballyDisabled = computed(() => systemInfo.value?.proxy_headers_globally_disabled === true)

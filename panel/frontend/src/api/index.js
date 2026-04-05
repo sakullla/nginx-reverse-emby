@@ -709,6 +709,43 @@ export async function fetchRelayListeners(agentId) {
   return data.listeners || []
 }
 
+export async function fetchAllRelayListeners() {
+  if (isDev) {
+    await sleep()
+    const agentNameById = new Map(mockAgents.map((agent) => [String(agent.id), agent.name || agent.id]))
+    return Object.entries(mockRelayListenersByAgent).flatMap(([agentId, listeners]) =>
+      (listeners || []).map((listener) => ({
+        ...listener,
+        id: Number(listener.id),
+        agent_id: String(listener.agent_id || agentId),
+        agent_name: agentNameById.get(String(listener.agent_id || agentId)) || String(listener.agent_id || agentId)
+      }))
+    )
+  }
+  const agents = await fetchAgents()
+  const activeAgents = Array.isArray(agents)
+    ? agents.filter((agent) => String(agent?.id || '').trim())
+    : []
+  const agentNameById = new Map(
+    activeAgents.map((agent) => [String(agent.id), agent.name || agent.id])
+  )
+  const results = await Promise.allSettled(
+    activeAgents.map((agent) =>
+      fetchRelayListeners(agent.id).then((listeners) =>
+        (listeners || []).map((listener) => ({
+          ...listener,
+          id: Number(listener.id),
+          agent_id: String(listener.agent_id || agent.id),
+          agent_name: agentNameById.get(String(listener.agent_id || agent.id)) || String(listener.agent_id || agent.id)
+        }))
+      )
+    )
+  )
+  return results
+    .filter((item) => item.status === 'fulfilled')
+    .flatMap((item) => item.value)
+}
+
 export async function createRelayListener(agentId, payload) {
   if (isDev) {
     await sleep()

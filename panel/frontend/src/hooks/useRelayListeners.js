@@ -13,12 +13,20 @@ export function useRelayListeners(agentId) {
   })
 }
 
+export function useAllRelayListeners() {
+  return useQuery({
+    queryKey: ['relayListeners', 'all'],
+    queryFn: () => api.fetchAllRelayListeners()
+  })
+}
+
 export function useCreateRelayListener(agentId) {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (payload) => api.createRelayListener(unref(agentId), payload),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['relayListeners', agentId] })
+      qc.invalidateQueries({ queryKey: ['relayListeners', 'all'] })
       qc.invalidateQueries({ queryKey: ['agents'] })
     }
   })
@@ -30,6 +38,7 @@ export function useUpdateRelayListener(agentId) {
     mutationFn: ({ id, ...payload }) => api.updateRelayListener(unref(agentId), id, payload),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['relayListeners', agentId] })
+      qc.invalidateQueries({ queryKey: ['relayListeners', 'all'] })
       qc.invalidateQueries({ queryKey: ['agents'] })
     }
   })
@@ -41,6 +50,7 @@ export function useDeleteRelayListener(agentId) {
     mutationFn: (id) => api.deleteRelayListener(unref(agentId), id),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['relayListeners', agentId] })
+      qc.invalidateQueries({ queryKey: ['relayListeners', 'all'] })
       qc.invalidateQueries({ queryKey: ['agents'] })
     }
   })

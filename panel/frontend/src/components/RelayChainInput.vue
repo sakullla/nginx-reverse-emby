@@ -59,7 +59,8 @@ function formatListener(listener) {
   const name = listener?.name || `监听器 ${listener?.id}`
   const host = listener?.listen_host || '0.0.0.0'
   const port = listener?.listen_port || '-'
-  return `${name} (${host}:${port})`
+  const agentLabel = String(listener?.agent_name || listener?.agent_id || '').trim()
+  return `${agentLabel ? `[${agentLabel}] ` : ''}${name} (${host}:${port})`
 }
 
 function updateChain(next) {
