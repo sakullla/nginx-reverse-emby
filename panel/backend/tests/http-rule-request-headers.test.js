@@ -187,6 +187,23 @@ describe("HTTP rule request header normalization", () => {
     );
   });
 
+  it("treats unset PROXY_PASS_PROXY_HEADERS as globally disabled on /api/info", async () => {
+    await withBackendServer(
+      {
+        env: {
+          PANEL_ROLE: "master",
+        },
+      },
+      async ({ baseUrl }) => {
+        const response = await fetch(`${baseUrl}/api/info`);
+        assert.equal(response.status, 200);
+
+        const payload = await response.json();
+        assert.equal(payload.proxy_headers_globally_disabled, true);
+      },
+    );
+  });
+
   it("backfills request-header defaults on GET /agent-api/rules for legacy stored rules", async () => {
     await withBackendServer(
       {

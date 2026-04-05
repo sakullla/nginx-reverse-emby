@@ -461,7 +461,7 @@ function normalizeRulePayload(body, fallback = {}, suggestedId = null) {
 }
 
 function isProxyHeadersGloballyDisabled() {
-  return /^(0|false|no|off)$/i.test(String(process.env.PROXY_PASS_PROXY_HEADERS || "1"));
+  return /^(0|false|no|off)$/i.test(String(process.env.PROXY_PASS_PROXY_HEADERS || "0"));
 }
 
 
