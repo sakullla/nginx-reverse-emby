@@ -11,8 +11,10 @@ const { PrismaLibSql } = require("@prisma/adapter-libsql");
 const { loadFreshStorage, closeQuietly } = require("./helpers");
 
 const BACKEND_ROOT = path.resolve(__dirname, "..");
+const REPO_ROOT = path.resolve(BACKEND_ROOT, "..", "..");
 const MIGRATIONS_DIR = path.join(BACKEND_ROOT, "prisma", "migrations");
 const CORE_FILE = path.join(BACKEND_ROOT, "storage-prisma-core.js");
+const DOCKERFILE = path.join(REPO_ROOT, "Dockerfile");
 
 async function withPrismaClient(databasePath, fn) {
   const adapter = new PrismaLibSql({ url: pathToFileURL(databasePath).href });
@@ -48,6 +50,16 @@ describe("Prisma SQL migration flow", () => {
     assert.ok(
       migrationFiles.some((file) => /^0002_.+\.sql$/i.test(file)),
       "expected a schema version 2 migration file for request-header columns",
+    );
+  });
+
+  it("copies Prisma runtime migration files into the production image", () => {
+    const source = fs.readFileSync(DOCKERFILE, "utf8");
+
+    assert.match(
+      source,
+      /^COPY\s+panel\/backend\/prisma\/\s+\/opt\/nginx-reverse-emby\/panel\/backend\/prisma\/$/m,
+      "expected the runtime image to copy panel/backend/prisma/ for storage-prisma-core.js migrations",
     );
   });
 

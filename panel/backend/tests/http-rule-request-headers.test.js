@@ -190,6 +190,9 @@ async function generateNginxConfig(options = {}) {
     ...process.env,
     PANEL_DATA_ROOT: toPosixPath(dataRoot),
     PANEL_RULES_JSON: toPosixPath(rulesJsonPath),
+    NRE_HTTP_RULE_REQUEST_HEADERS_MODULE: toPosixPath(
+      path.join(repoRoot, "panel", "backend", "http-rule-request-headers.js"),
+    ),
     NRE_DYNAMIC_DIR: toPosixPath(dynamicDir),
     NRE_STREAM_DYNAMIC_DIR: toPosixPath(streamDynamicDir),
     DIRECT_CERT_DIR: toPosixPath(directCertDir),
@@ -254,6 +257,30 @@ async function generateNginxConfig(options = {}) {
 }
 
 describe("HTTP rule request header normalization", () => {
+  it("generator sources request-header normalization from the shared backend module", async () => {
+    const repoRoot = path.resolve(__dirname, "..", "..", "..");
+    const generatorScript = await fs.readFile(
+      path.join(repoRoot, "docker", "25-dynamic-reverse-proxy.sh"),
+      "utf8",
+    );
+
+    assert.match(generatorScript, /http-rule-request-headers\.js/);
+    assert.match(generatorScript, /require\([^)]*http-rule-request-headers\.js[^)]*\)/);
+    assert.doesNotMatch(generatorScript, /function normalizeRuleRequestHeaders\s*\(/);
+    assert.doesNotMatch(generatorScript, /function normalizeCustomHeaders\s*\(/);
+  });
+
+  it("runtime image copies the shared request-header module", async () => {
+    const repoRoot = path.resolve(__dirname, "..", "..", "..");
+    const dockerfile = await fs.readFile(path.join(repoRoot, "Dockerfile"), "utf8");
+
+    assert.match(dockerfile, /panel\/backend\/http-rule-request-headers\.js/);
+    assert.match(
+      dockerfile,
+      /COPY\s+panel\/backend\/[^\n]*http-rule-request-headers\.js[^\n]*\/opt\/nginx-reverse-emby\/panel\/backend\//,
+    );
+  });
+
   it("fills defaults for pass_proxy_headers, user_agent, and custom_headers", () => {
     const rule = normalizeRuleRequestHeaders({}, {});
 
