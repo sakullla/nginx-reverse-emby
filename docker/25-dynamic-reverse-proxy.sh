@@ -60,6 +60,10 @@ escape_sed_replacement() {
     printf '%s' "$1" | sed -e 's/[\/&]/\\&/g'
 }
 
+escape_awk_replacement() {
+    printf '%s' "$1" | sed -e 's/[\\&]/\\\\&/g'
+}
+
 parse_frontend_url() {
     node -e "let u; try { u = new URL(process.argv[1].trim()); } catch { process.exit(2); }
 if (u.protocol !== 'http:' && u.protocol !== 'https:') process.exit(2);
@@ -400,25 +404,78 @@ collect_rules() {
     output_file="$1"
     RULES_JSON="${PANEL_RULES_JSON:-$DATA_ROOT/proxy_rules.json}"
 
-    # 首先处理环境变量中的规则 PROXY_RULE_1, PROXY_RULE_2...
+    append_legacy_csv_rule() {
+        RULE_CSV_LINE="$1" node -e "
+            const raw = String(process.env.RULE_CSV_LINE || '').trim();
+            if (!raw) process.exit(0);
+            const parts = raw.split(',');
+            const frontendUrl = String(parts[0] || '').trim();
+            const backendUrl = String(parts[1] || '').trim();
+            if (!frontendUrl || !backendUrl) process.exit(0);
+            const proxyRedirectRaw = String(parts[2] || '').trim();
+            const proxyRedirect = proxyRedirectRaw
+                ? /^(1|true|yes|on)$/i.test(proxyRedirectRaw)
+                : true;
+            process.stdout.write(JSON.stringify({
+                frontend_url: frontendUrl,
+                backend_url: backendUrl,
+                proxy_redirect: proxyRedirect,
+                pass_proxy_headers: true,
+                user_agent: '',
+                custom_headers: [],
+            }) + '\n');
+        "
+    }
+
+    append_json_rule() {
+        RULE_JSON_LINE="$1" node -e "
+            const raw = String(process.env.RULE_JSON_LINE || '').trim();
+            if (!raw) process.exit(0);
+            const rule = JSON.parse(raw);
+            const frontendUrl = String(rule.frontend_url || '').trim();
+            const backendUrl = String(rule.backend_url || '').trim();
+            if (!frontendUrl || !backendUrl) process.exit(0);
+            process.stdout.write(JSON.stringify({
+                frontend_url: frontendUrl,
+                backend_url: backendUrl,
+                proxy_redirect: rule.proxy_redirect !== false,
+                pass_proxy_headers: rule.pass_proxy_headers !== false,
+                user_agent: typeof rule.user_agent === 'string' ? rule.user_agent : '',
+                custom_headers: Array.isArray(rule.custom_headers) ? rule.custom_headers : [],
+            }) + '\n');
+        "
+    }
+
+    # First process environment variable rules PROXY_RULE_1, PROXY_RULE_2...
     i=1
     while true; do
         rule_val=$(eval "printf '%s' \"\${PROXY_RULE_${i}:-}\"")
         [ -z "$rule_val" ] && break
-        printf '%s\n' "$rule_val" >> "$output_file"
+        case "$(trim_text "$rule_val")" in
+            \{*) append_json_rule "$rule_val" >> "$output_file" || true ;;
+            *) append_legacy_csv_rule "$rule_val" >> "$output_file" || true ;;
+        esac
         i=$((i + 1))
     done
 
-    # 从 JSON 文件中提取启用的规则并转换为 CSV 格式以便后续处理
-    # 格式: frontend_url,backend_url,proxy_redirect
+    # Extract enabled rules from JSON and serialize them as JSON Lines for downstream parsing.
     if [ -f "$RULES_JSON" ]; then
         node -e "
             const fs = require('fs');
             try {
                 const rules = JSON.parse(fs.readFileSync('$RULES_JSON', 'utf8'));
                 rules.filter(r => r.enabled !== false).forEach(r => {
-                    const proxyRedirect = r.proxy_redirect !== false ? '1' : '0';
-                    process.stdout.write(r.frontend_url + ',' + r.backend_url + ',' + proxyRedirect + '\n');
+                    const frontendUrl = String(r.frontend_url || '').trim();
+                    const backendUrl = String(r.backend_url || '').trim();
+                    if (!frontendUrl || !backendUrl) return;
+                    process.stdout.write(JSON.stringify({
+                        frontend_url: frontendUrl,
+                        backend_url: backendUrl,
+                        proxy_redirect: r.proxy_redirect !== false,
+                        pass_proxy_headers: r.pass_proxy_headers !== false,
+                        user_agent: typeof r.user_agent === 'string' ? r.user_agent : '',
+                        custom_headers: Array.isArray(r.custom_headers) ? r.custom_headers : [],
+                    }) + '\n');
                 });
             } catch (e) {
                 process.stderr.write('Error parsing rules.json: ' + e.message + '\n');
@@ -426,9 +483,9 @@ collect_rules() {
             }
         " >> "$output_file" || true
     elif [ -f "$RULES_FILE" ]; then
-        # 回退逻辑: 如果没有 JSON 但有旧的 CSV，默认启用 proxy_redirect
+        # Backward compatibility: convert legacy CSV rules to JSON Lines.
         grep -v '^\s*#' "$RULES_FILE" | grep -v '^\s*$' | while IFS= read -r line; do
-            printf '%s,1\n' "$line"
+            append_legacy_csv_rule "$line"
         done >> "$output_file" || true
     fi
 
@@ -797,15 +854,80 @@ collect_rules "$tmp_rules"
 collect_l4_rules "$tmp_l4_rules"
 
 if [ -s "$tmp_rules" ]; then
-    pass_proxy_headers=0
+    global_pass_proxy_headers_enabled=0
     if is_true "$PROXY_PASS_PROXY_HEADERS"; then
-        pass_proxy_headers=1
+        global_pass_proxy_headers_enabled=1
     fi
 
-    while IFS=, read -r frontend_url backend_url proxy_redirect || [ -n "$frontend_url" ]; do
+    while IFS= read -r rule_json || [ -n "$rule_json" ]; do
+        [ -z "$rule_json" ] && continue
+
+        rule_assignments=$(RULE_JSON_LINE="$rule_json" GLOBAL_PASS_PROXY_HEADERS_ENABLED="$global_pass_proxy_headers_enabled" node - <<'NODE'
+const rule = JSON.parse(String(process.env.RULE_JSON_LINE || '{}'));
+const shellQuote = (value) => "'" + String(value).replace(/'/g, "'\"'\"'") + "'";
+const escapeHeaderValue = (value) => String(value)
+  .replace(/\\/g, '\\\\')
+  .replace(/"/g, '\\"');
+const headers = new Map();
+const setHeader = (name, value) => {
+  const trimmedName = String(name || '').trim();
+  if (!trimmedName) return;
+  const key = trimmedName.toLowerCase();
+  if (headers.has(key)) headers.delete(key);
+  headers.set(key, { name: trimmedName, value: String(value) });
+};
+const frontendUrl = String(rule.frontend_url || '').trim();
+const backendUrl = String(rule.backend_url || '').trim();
+const proxyRedirect = rule.proxy_redirect !== false ? '1' : '0';
+const rulePassProxyHeaders = rule.pass_proxy_headers !== false ? '1' : '0';
+const globalPassProxyHeadersEnabled = String(process.env.GLOBAL_PASS_PROXY_HEADERS_ENABLED || '') === '1';
+
+setHeader('Host', '$proxy_host');
+setHeader('Upgrade', '$http_upgrade');
+setHeader('Connection', '$connection_upgrade');
+
+if (globalPassProxyHeadersEnabled && rule.pass_proxy_headers !== false) {
+  setHeader('X-Real-IP', '$remote_addr');
+  setHeader('X-Forwarded-Host', '$host');
+  setHeader('X-Forwarded-Port', '$server_port');
+  setHeader('X-Forwarded-For', '$proxy_add_x_forwarded_for');
+  setHeader('X-Forwarded-Proto', '$scheme');
+}
+
+const userAgent = typeof rule.user_agent === 'string' ? rule.user_agent.trim() : '';
+if (userAgent) {
+  setHeader('User-Agent', userAgent);
+}
+
+(Array.isArray(rule.custom_headers) ? rule.custom_headers : []).forEach((header) => {
+  const name = typeof (header && header.name) === 'string' ? header.name.trim() : '';
+  if (!name || !/^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/.test(name)) return;
+  const value = typeof (header && header.value) === 'string'
+    ? header.value
+    : String((header && header.value) ?? '');
+  setHeader(name, value);
+});
+
+const proxyHeadersConfig = Array.from(headers.values())
+  .map(({ name, value }) => '        proxy_set_header ' + name + ' "' + escapeHeaderValue(value) + '";')
+  .join('\n');
+
+const assignments = {
+  frontend_url: frontendUrl,
+  backend_url: backendUrl,
+  proxy_redirect: proxyRedirect,
+  rule_pass_proxy_headers: rulePassProxyHeaders,
+  proxy_headers_config: proxyHeadersConfig,
+};
+
+Object.entries(assignments).forEach(([key, value]) => {
+  process.stdout.write(key + '=' + shellQuote(value) + '\n');
+});
+NODE
+        ) || continue
+        eval "$rule_assignments"
+
         [ -z "$backend_url" ] && continue
-        # 默认为启用 proxy_redirect (1)
-        proxy_redirect=${proxy_redirect:-1}
         parsed=$(parse_frontend_url "$frontend_url" || continue)
 
         proto=$(echo "$parsed" | cut -d'|' -f1)
@@ -851,25 +973,12 @@ if [ -s "$tmp_rules" ]; then
             fi
         fi
 
-        # 根据 proxy_redirect 生成配置
-        if [ "$pass_proxy_headers" = "1" ]; then
-            forward_headers_config='        proxy_set_header X-Real-IP            $remote_addr;
-        proxy_set_header X-Forwarded-Host     $host;
-        proxy_set_header X-Forwarded-Port     $server_port;
-        proxy_set_header X-Forwarded-For      $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto    $scheme;'
-        else
-            forward_headers_config='        # proxy forwarding headers pass-through disabled'
-        fi
-
         if [ "$proxy_redirect" = "1" ]; then
-            # 启用 proxy_redirect: 生成 302/307 处理配置
             if [ "$deploy_mode" = "front_proxy" ]; then
-        location_proxy_redirect='        proxy_redirect ~^(https?)://([^:/]+(?::[0-9]+)?)(/.+)$ $http_x_forwarded_proto://$http_x_forwarded_host:$http_x_forwarded_port/backstream/$1/$2$3;'
+                location_proxy_redirect='        proxy_redirect ~^(https?)://([^:/]+(?::[0-9]+)?)(/.+)$ $http_x_forwarded_proto://$http_x_forwarded_host:$http_x_forwarded_port/backstream/$1/$2$3;'
             else
-        location_proxy_redirect='        proxy_redirect ~^(https?)://([^:/]+(?::[0-9]+)?)(/.+)$ $scheme://$host:$server_port/backstream/$1/$2$3;'
+                location_proxy_redirect='        proxy_redirect ~^(https?)://([^:/]+(?::[0-9]+)?)(/.+)$ $scheme://$host:$server_port/backstream/$1/$2$3;'
             fi
-            # 生成 backstream 配置
             if [ "$deploy_mode" = "front_proxy" ]; then
                 backstream_config='    location ~  ^/backstream/(https?)/([^/]+)  {
         set $website                          $1://$2;
@@ -877,13 +986,10 @@ if [ -s "$tmp_rules" ]; then
         early_hints $early_hints;
         proxy_pass                            $website;
 
-        proxy_set_header Host                 $proxy_host;
-${forward_headers_config}
+${proxy_headers_config}
 
         proxy_http_version                    1.1;
         proxy_cache_bypass                    $http_upgrade;
-        proxy_set_header Upgrade              $http_upgrade;
-        proxy_set_header Connection           $connection_upgrade;
         proxy_request_buffering               off;
 
         proxy_ssl_server_name                 on;
@@ -902,15 +1008,12 @@ proxy_redirect ~^(https?)://([^:/]+(?::[0-9]+)?)(/.+)$ $http_x_forwarded_proto:/
         set $saved_redirect_location '"'"'$upstream_http_location'"'"';
         early_hints $early_hints;
         proxy_pass $saved_redirect_location;
-        proxy_set_header Host                 $proxy_host;
-${forward_headers_config}
+${proxy_headers_config}
         proxy_http_version                    1.1;
         proxy_cache_bypass                    $http_upgrade;
 
         proxy_ssl_server_name                 on;
 
-        proxy_set_header Upgrade              $http_upgrade;
-        proxy_set_header Connection           $connection_upgrade;
         proxy_request_buffering               off;
 
         proxy_connect_timeout                 60s;
@@ -925,13 +1028,10 @@ ${forward_headers_config}
         early_hints $early_hints;
         proxy_pass $website;
 
-        proxy_set_header Host $proxy_host;
-${forward_headers_config}
+${proxy_headers_config}
 
         proxy_http_version 1.1;
         proxy_cache_bypass $http_upgrade;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection $connection_upgrade;
         proxy_request_buffering off;
 
         proxy_ssl_server_name on;
@@ -950,15 +1050,12 @@ proxy_redirect ~^(https?)://([^:/]+(?::[0-9]+)?)(/.+)$ $scheme://$host:$server_p
         set $saved_redirect_location '"'"'$upstream_http_location'"'"';
         early_hints $early_hints;
         proxy_pass $saved_redirect_location;
-        proxy_set_header Host $proxy_host;
-${forward_headers_config}
+${proxy_headers_config}
         proxy_http_version 1.1;
         proxy_cache_bypass $http_upgrade;
 
         proxy_ssl_server_name on;
 
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection $connection_upgrade;
         proxy_request_buffering off;
 
         proxy_connect_timeout 60s;
@@ -968,12 +1065,14 @@ ${forward_headers_config}
 '
             fi
         else
-            # 禁用 proxy_redirect: 不生成 302/307 处理配置，使用默认的 proxy_redirect 行为
             location_proxy_redirect='        # proxy_redirect disabled - passing redirects directly to client'
             backstream_config=''
         fi
 
-        # 使用 awk 处理多行替换，避免 sed 的转义问题
+        proxy_headers_config_awk=$(escape_awk_replacement "$proxy_headers_config")
+        location_proxy_redirect_awk=$(escape_awk_replacement "$location_proxy_redirect")
+        backstream_config_awk=$(escape_awk_replacement "$backstream_config")
+
         awk -v frontend_port="$port" \
             -v domain_name="$srv_name" \
             -v resolver="$RESOLVER" \
@@ -983,9 +1082,9 @@ ${forward_headers_config}
             -v cert_dir="$DIRECT_CERT_DIR" \
             -v cert_domain="$cert_dom" \
             -v listen_ipv6_line="$([ "$proto" = "https" ] && printf '%s' "$LISTEN_IPV6_TLS_TEMPLATE" || printf '%s' "$LISTEN_IPV6_TEMPLATE")" \
-            -v forward_headers_config="$forward_headers_config" \
-            -v location_proxy_redirect="$location_proxy_redirect" \
-            -v backstream_config="$backstream_config" '
+            -v proxy_headers_config="$proxy_headers_config_awk" \
+            -v location_proxy_redirect="$location_proxy_redirect_awk" \
+            -v backstream_config="$backstream_config_awk" '
             { gsub(/\$\{frontend_port\}/, frontend_port) }
             { gsub(/\$\{domain_name\}/, domain_name) }
             { gsub(/\$\{resolver\}/, resolver) }
@@ -995,12 +1094,12 @@ ${forward_headers_config}
             { gsub(/\$\{cert_dir\}/, cert_dir) }
             { gsub(/\$\{cert_domain\}/, cert_domain) }
             { gsub(/\$\{listen_ipv6_line\}/, listen_ipv6_line) }
-            { gsub(/\$\{forward_headers_config\}/, forward_headers_config) }
-            { gsub(/\$\{location_proxy_redirect\}/, location_proxy_redirect) }
             { gsub(/\$\{backstream_config\}/, backstream_config) }
+            { gsub(/\$\{proxy_headers_config\}/, proxy_headers_config) }
+            { gsub(/\$\{location_proxy_redirect\}/, location_proxy_redirect) }
             { print }
         ' "$template" > "$DYNAMIC_DIR/$conf_name"
-        entrypoint_log "Generated config for $domain (proxy_redirect: $proxy_redirect, pass_proxy_headers: $pass_proxy_headers)"
+        entrypoint_log "Generated config for $domain (proxy_redirect: $proxy_redirect, rule_pass_proxy_headers: $rule_pass_proxy_headers, global_pass_proxy_headers_enabled: $global_pass_proxy_headers_enabled)"
     done < "$tmp_rules"
 fi
 

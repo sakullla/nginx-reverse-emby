@@ -22,13 +22,10 @@ ${listen_ipv6_line}
     location ${domain_path} {
         early_hints $early_hints;
         proxy_pass                            ${proxy_target};
-        proxy_set_header Host                 $proxy_host;
-${forward_headers_config}
+${proxy_headers_config}
 
         proxy_http_version                    1.1;
         proxy_cache_bypass                    $http_upgrade;
-        proxy_set_header Upgrade              $http_upgrade;
-        proxy_set_header Connection           $connection_upgrade;
         proxy_request_buffering               off;
 
         proxy_ssl_server_name                 on;
