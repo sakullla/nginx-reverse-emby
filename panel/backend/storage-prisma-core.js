@@ -232,6 +232,10 @@ function stringifyJsonValue(value, fallback) {
   return JSON.stringify(value == null ? fallback : value);
 }
 
+function ensureArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
 function mapAgentFromDb(row) {
   return {
     id: row.id,
@@ -268,7 +272,7 @@ function mapRuleFromDb(row) {
     proxy_redirect: !!row.proxyRedirect,
     pass_proxy_headers: row.passProxyHeaders !== false,
     user_agent: row.userAgent || "",
-    custom_headers: parseJsonValue(row.customHeaders, []),
+    custom_headers: ensureArray(parseJsonValue(row.customHeaders, [])),
     revision: row.revision || 0,
   };
 }
@@ -363,7 +367,7 @@ function mapRuleToDb(agentId, rule) {
     proxyRedirect: rule.proxy_redirect !== false,
     passProxyHeaders: rule.pass_proxy_headers !== false,
     userAgent: String(rule.user_agent || ""),
-    customHeaders: stringifyJsonValue(rule.custom_headers, []),
+    customHeaders: stringifyJsonValue(ensureArray(rule.custom_headers), []),
     revision: Number(rule.revision || 0),
   };
 }

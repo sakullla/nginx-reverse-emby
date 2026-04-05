@@ -423,4 +423,39 @@ describe("Property 1: Data round-trip consistency", { skip: !canRunSqlite && "Pr
       try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) { /* ignore */ }
     }
   });
+
+  it("normalizes malformed custom_headers across save, restart, and reload", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "rules-custom-headers-"));
+    let firstStorage = null;
+    let restartedStorage = null;
+    try {
+      firstStorage = loadFreshStorage("../storage-sqlite", tmpDir);
+      firstStorage.saveRulesForAgent("agent-a", [{
+        id: 1,
+        frontend_url: "http://frontend.local",
+        backend_url: "http://backend.local",
+        enabled: true,
+        tags: [],
+        proxy_redirect: true,
+        pass_proxy_headers: true,
+        user_agent: "",
+        custom_headers: { bad: "shape" },
+        revision: 1,
+      }]);
+
+      const beforeRestart = firstStorage.loadRulesForAgent("agent-a");
+      assert.deepStrictEqual(beforeRestart[0].custom_headers, []);
+
+      closeQuietly(firstStorage);
+      firstStorage = null;
+
+      restartedStorage = loadFreshStorage("../storage-sqlite", tmpDir);
+      const afterRestart = restartedStorage.loadRulesForAgent("agent-a");
+      assert.deepStrictEqual(afterRestart[0].custom_headers, []);
+    } finally {
+      closeQuietly(firstStorage);
+      closeQuietly(restartedStorage);
+      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) { /* ignore */ }
+    }
+  });
 });
