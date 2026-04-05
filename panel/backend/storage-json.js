@@ -79,11 +79,14 @@ function sanitizeRelayListenersForStorage(listeners) {
   return sanitized;
 }
 
-function normalizeRelayListenersForSave(listeners) {
+function normalizeRelayListenersForSave(agentId, listeners) {
   if (!Array.isArray(listeners)) {
     return [];
   }
-  return listeners.map((listener) => normalizeRelayListenerPayload(listener));
+  return listeners.map((listener) => normalizeRelayListenerPayload({
+    ...(listener && typeof listener === "object" ? listener : {}),
+    agent_id: String(agentId),
+  }));
 }
 
 function sanitizeVersionPolicyForStorage(policy) {
@@ -296,7 +299,7 @@ function loadRelayListenersForAgent(agentId) {
 }
 
 function saveRelayListenersForAgent(agentId, listeners) {
-  const nextListeners = normalizeRelayListenersForSave(listeners);
+  const nextListeners = normalizeRelayListenersForSave(agentId, listeners);
   assertRelayListenerIdsAreGloballyUnique(agentId, nextListeners);
   writeJsonFile(getRelayListenerFileForAgent(agentId), nextListeners);
 }
@@ -323,8 +326,7 @@ function loadVersionPolicy() {
 }
 
 function saveVersionPolicy(policy) {
-  const nextPolicy = sanitizeVersionPolicyForStorage(policy);
-  saveVersionPolicies(nextPolicy ? [nextPolicy] : []);
+  saveVersionPolicies([normalizeVersionPolicyPayload(policy)]);
 }
 
 function getNextGlobalRevision() {

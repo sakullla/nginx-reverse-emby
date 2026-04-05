@@ -115,6 +115,40 @@ describe("relay listener storage", () => {
     }
   });
 
+  it("binds saved relay listeners to the method agentId in the JSON backend", () => {
+    jsonStorage.saveRelayListenersForAgent("agent-json", [
+      normalizeRelayListenerPayload({
+        id: 17,
+        agent_id: "wrong-agent",
+        name: "relay-a",
+        listen_host: "0.0.0.0",
+        listen_port: 18443,
+        pin_set: [{ type: "spki_sha256", value: "abc" }],
+      }),
+    ]);
+
+    assert.deepStrictEqual(
+      jsonStorage.loadRelayListenersForAgent("agent-json"),
+      [
+        {
+          id: 17,
+          agent_id: "agent-json",
+          name: "relay-a",
+          listen_host: "0.0.0.0",
+          listen_port: 18443,
+          enabled: true,
+          certificate_id: undefined,
+          tls_mode: "pin_or_ca",
+          pin_set: [{ type: "spki_sha256", value: "abc" }],
+          trusted_ca_certificate_ids: [],
+          allow_self_signed: false,
+          tags: [],
+          revision: 0,
+        },
+      ],
+    );
+  });
+
   it("enforces globally unique relay listener ids across agents in the JSON backend", () => {
     jsonStorage.saveRelayListenersForAgent("agent-a", [
       normalizeRelayListenerPayload({

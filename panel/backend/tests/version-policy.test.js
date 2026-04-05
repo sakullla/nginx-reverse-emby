@@ -171,4 +171,30 @@ describe("version policy storage", () => {
       validPolicies,
     );
   });
+
+  it("rejects invalid singular version policy saves in the JSON backend without overwriting stored policies", () => {
+    const validPolicy = normalizeVersionPolicyPayload({
+      id: "stable",
+      channel: "stable",
+      desired_version: "1.2.3",
+      packages: [{ platform: "linux-amd64", url: "https://example.com/linux.tar.gz", sha256: "def" }],
+    });
+
+    jsonStorage.saveVersionPolicy(validPolicy);
+
+    assert.throws(
+      () => jsonStorage.saveVersionPolicy({
+        id: "broken",
+        channel: "stable",
+        desired_version: "",
+        packages: [{ platform: "linux-amd64", url: "https://example.com/linux.tar.gz", sha256: "def" }],
+      }),
+      /desired_version/i,
+    );
+
+    assert.deepStrictEqual(
+      jsonStorage.loadVersionPolicies(),
+      [validPolicy],
+    );
+  });
 });
