@@ -665,9 +665,17 @@ const mockRelayListenersByAgent = {
 
 let mockRelayListenerIdCounter = 100
 
+function ensureDevRelayAgentExists(agentId) {
+  const exists = mockAgents.some((agent) => String(agent.id) === String(agentId))
+  if (!exists) {
+    throw new Error(`Agent not found: ${agentId}`)
+  }
+}
+
 export async function fetchRelayListeners(agentId) {
   if (isDev) {
     await sleep()
+    ensureDevRelayAgentExists(agentId)
     return [...(mockRelayListenersByAgent[agentId] || [])]
   }
   const { data } = await api.get(`/agents/${encodeURIComponent(agentId)}/relay-listeners`)
@@ -677,6 +685,7 @@ export async function fetchRelayListeners(agentId) {
 export async function createRelayListener(agentId, payload) {
   if (isDev) {
     await sleep()
+    ensureDevRelayAgentExists(agentId)
     const item = {
       id: `relay-${++mockRelayListenerIdCounter}`,
       agent_id: agentId,
@@ -698,6 +707,7 @@ export async function createRelayListener(agentId, payload) {
 export async function updateRelayListener(agentId, id, payload) {
   if (isDev) {
     await sleep()
+    ensureDevRelayAgentExists(agentId)
     const list = mockRelayListenersByAgent[agentId] || []
     const idx = list.findIndex((item) => String(item.id) === String(id))
     if (idx === -1) return null
@@ -715,6 +725,7 @@ export async function updateRelayListener(agentId, id, payload) {
 export async function deleteRelayListener(agentId, id) {
   if (isDev) {
     await sleep()
+    ensureDevRelayAgentExists(agentId)
     const list = mockRelayListenersByAgent[agentId] || []
     const idx = list.findIndex((item) => String(item.id) === String(id))
     if (idx === -1) return null

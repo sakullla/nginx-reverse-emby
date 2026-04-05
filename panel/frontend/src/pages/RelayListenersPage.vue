@@ -74,13 +74,21 @@
 import { computed, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAgent } from '../context/AgentContext'
+import { useAgents } from '../hooks/useAgents'
 import { useRelayListeners, useDeleteRelayListener } from '../hooks/useRelayListeners'
 import RelayListenerForm from '../components/RelayListenerForm.vue'
 
 const route = useRoute()
 const { selectedAgentId } = useAgent()
+const { data: agentsData } = useAgents()
 
-const agentId = computed(() => route.query.agentId || selectedAgentId.value)
+const selectedOrRouteAgentId = computed(() => route.query.agentId || selectedAgentId.value)
+const registeredAgentIds = computed(() => new Set((agentsData.value || []).map((agent) => String(agent.id))))
+const agentId = computed(() => {
+  const id = selectedOrRouteAgentId.value
+  if (!id) return null
+  return registeredAgentIds.value.has(String(id)) ? id : null
+})
 
 const { data: listenersData, isLoading } = useRelayListeners(agentId)
 const deleteRelayListener = useDeleteRelayListener(agentId)
