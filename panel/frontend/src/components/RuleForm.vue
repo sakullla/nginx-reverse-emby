@@ -236,7 +236,7 @@
                   class="input"
                   :class="{ 'input--error': headerErrors[index]?.name }"
                   placeholder="例如 Referer"
-                  @input="clearHeaderFieldError(index, 'name')"
+                  @input="handleCustomHeaderNameInput(index)"
                 >
                 <p v-if="headerErrors[index]?.name" class="field-error">{{ headerErrors[index].name }}</p>
               </div>
@@ -329,6 +329,7 @@ const activeTab = ref('basic')
 const form = ref(createDefaultForm())
 const tagInput = ref('')
 const headerErrors = ref([])
+const shouldValidateCustomHeaders = ref(false)
 const errors = ref({
   frontend_url: '',
   backend_url: '',
@@ -336,9 +337,15 @@ const errors = ref({
 })
 
 const hasRequestHeaderConfig = computed(() => {
+  const hasCustomHeaderConfig = form.value.custom_headers.some((item) => {
+    const name = String(item?.name || '').trim()
+    const value = item?.value == null ? '' : String(item.value).trim()
+    return Boolean(name || value)
+  })
+
   return Boolean(
     form.value.user_agent.trim()
-    || form.value.custom_headers.length
+    || hasCustomHeaderConfig
     || form.value.pass_proxy_headers === false
   )
 })
@@ -365,6 +372,7 @@ watch(
     form.value = createFormState(value)
     tagInput.value = ''
     headerErrors.value = form.value.custom_headers.map(() => ({ name: '', value: '' }))
+    shouldValidateCustomHeaders.value = false
     errors.value.frontend_url = ''
     errors.value.backend_url = ''
     errors.value.submit = ''
@@ -444,12 +452,26 @@ function addCustomHeader() {
 function removeCustomHeader(index) {
   form.value.custom_headers.splice(index, 1)
   headerErrors.value.splice(index, 1)
+
+  if (shouldValidateCustomHeaders.value) {
+    validateCustomHeaderRows()
+  }
 }
 
 function clearHeaderFieldError(index, field) {
   errors.value.submit = ''
   if (!headerErrors.value[index]) return
   headerErrors.value[index][field] = ''
+}
+
+function handleCustomHeaderNameInput(index) {
+  if (shouldValidateCustomHeaders.value) {
+    validateCustomHeaderRows()
+    errors.value.submit = ''
+    return
+  }
+
+  clearHeaderFieldError(index, 'name')
 }
 
 function isHttpAutoTag(tag) {
@@ -536,6 +558,7 @@ function validateCustomHeaderRows() {
 
 function validate() {
   errors.value.submit = ''
+  shouldValidateCustomHeaders.value = true
 
   const basicValid = validateBasicFields()
   const headersValid = validateCustomHeaderRows()
