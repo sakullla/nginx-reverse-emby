@@ -31,7 +31,7 @@ DIRECT_CERT_STATE_FILE="${DIRECT_CERT_STATE_FILE:-$DATA_ROOT/.state/active_cert_
 STREAM_DYNAMIC_DIR="${NRE_STREAM_DYNAMIC_DIR:-/etc/nginx/stream-conf.d/dynamic}"
 
 PROXY_DEPLOY_MODE="${PROXY_DEPLOY_MODE:-front_proxy}"
-PROXY_PASS_PROXY_HEADERS="${PROXY_PASS_PROXY_HEADERS:-0}"
+PROXY_PASS_PROXY_HEADERS="${PROXY_PASS_PROXY_HEADERS:-}"
 FRONT_PROXY_PORT="${FRONT_PROXY_PORT:-3000}"
 DIRECT_CERT_MODE="${DIRECT_CERT_MODE:-acme}"
 DIRECT_CERT_CLEANUP="${DIRECT_CERT_CLEANUP:-1}"
@@ -93,6 +93,10 @@ sanitize_domain() {
     printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9._-]/_/g'
 }
 
+sanitize_identifier() {
+    printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9_]/_/g'
+}
+
 normalize_cert_domain() {
     value="$1"
     value=${value#[}
@@ -103,6 +107,13 @@ normalize_cert_domain() {
 is_true() {
     case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
         1|true|yes|on) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+is_false() {
+    case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
+        0|false|no|off) return 0 ;;
         *) return 1 ;;
     esac
 }
@@ -854,39 +865,46 @@ collect_rules "$tmp_rules"
 collect_l4_rules "$tmp_l4_rules"
 
 if [ -s "$tmp_rules" ]; then
-    global_pass_proxy_headers_enabled=0
-    if is_true "$PROXY_PASS_PROXY_HEADERS"; then
-        global_pass_proxy_headers_enabled=1
+    global_proxy_headers_disabled=0
+    if is_false "$PROXY_PASS_PROXY_HEADERS"; then
+        global_proxy_headers_disabled=1
     fi
 
     while IFS= read -r rule_json || [ -n "$rule_json" ]; do
         [ -z "$rule_json" ] && continue
 
-        rule_assignments=$(RULE_JSON_LINE="$rule_json" GLOBAL_PASS_PROXY_HEADERS_ENABLED="$global_pass_proxy_headers_enabled" node - <<'NODE'
+        rule_assignments=$(RULE_JSON_LINE="$rule_json" GLOBAL_PROXY_HEADERS_DISABLED="$global_proxy_headers_disabled" node - <<'NODE'
 const rule = JSON.parse(String(process.env.RULE_JSON_LINE || '{}'));
 const shellQuote = (value) => "'" + String(value).replace(/'/g, "'\"'\"'") + "'";
+const LITERAL_DOLLAR_PLACEHOLDER = "__NRE_LITERAL_DOLLAR__";
 const escapeHeaderValue = (value) => String(value)
+  .replace(/[\u0000-\u001F\u007F]/g, ' ')
   .replace(/\\/g, '\\\\')
+  .replace(/\$/g, LITERAL_DOLLAR_PLACEHOLDER)
   .replace(/"/g, '\\"');
 const headers = new Map();
-const setHeader = (name, value) => {
+const setHeader = (name, value, options = {}) => {
   const trimmedName = String(name || '').trim();
   if (!trimmedName) return;
   const key = trimmedName.toLowerCase();
   if (headers.has(key)) headers.delete(key);
-  headers.set(key, { name: trimmedName, value: String(value) });
+  headers.set(key, {
+    name: trimmedName,
+    value: String(value),
+    literal: options.literal === true,
+  });
 };
 const frontendUrl = String(rule.frontend_url || '').trim();
 const backendUrl = String(rule.backend_url || '').trim();
 const proxyRedirect = rule.proxy_redirect !== false ? '1' : '0';
 const rulePassProxyHeaders = rule.pass_proxy_headers !== false ? '1' : '0';
-const globalPassProxyHeadersEnabled = String(process.env.GLOBAL_PASS_PROXY_HEADERS_ENABLED || '') === '1';
+const globalProxyHeadersDisabled = String(process.env.GLOBAL_PROXY_HEADERS_DISABLED || '') === '1';
 
 setHeader('Host', '$proxy_host');
 setHeader('Upgrade', '$http_upgrade');
 setHeader('Connection', '$connection_upgrade');
 
-if (globalPassProxyHeadersEnabled && rule.pass_proxy_headers !== false) {
+if (!globalProxyHeadersDisabled && rule.pass_proxy_headers !== false) {
   setHeader('X-Real-IP', '$remote_addr');
   setHeader('X-Forwarded-Host', '$host');
   setHeader('X-Forwarded-Port', '$server_port');
@@ -896,7 +914,7 @@ if (globalPassProxyHeadersEnabled && rule.pass_proxy_headers !== false) {
 
 const userAgent = typeof rule.user_agent === 'string' ? rule.user_agent.trim() : '';
 if (userAgent) {
-  setHeader('User-Agent', userAgent);
+  setHeader('User-Agent', userAgent, { literal: true });
 }
 
 (Array.isArray(rule.custom_headers) ? rule.custom_headers : []).forEach((header) => {
@@ -905,11 +923,11 @@ if (userAgent) {
   const value = typeof (header && header.value) === 'string'
     ? header.value
     : String((header && header.value) ?? '');
-  setHeader(name, value);
+  setHeader(name, value, { literal: true });
 });
 
 const proxyHeadersConfig = Array.from(headers.values())
-  .map(({ name, value }) => '        proxy_set_header ' + name + ' "' + escapeHeaderValue(value) + '";')
+  .map(({ name, value, literal }) => '        proxy_set_header ' + name + ' "' + (literal ? escapeHeaderValue(value) : value) + '";')
   .join('\n');
 
 const assignments = {
@@ -918,6 +936,7 @@ const assignments = {
   proxy_redirect: proxyRedirect,
   rule_pass_proxy_headers: rulePassProxyHeaders,
   proxy_headers_config: proxyHeadersConfig,
+  needs_literal_dollar_helper: proxyHeadersConfig.includes(LITERAL_DOLLAR_PLACEHOLDER) ? '1' : '0',
 };
 
 Object.entries(assignments).forEach(([key, value]) => {
@@ -940,6 +959,21 @@ NODE
         conf_name="$(sanitize_domain "$domain").${port}.conf"
         srv_name=$(format_server_name "$domain")
         cert_dom=$(normalize_cert_domain "$domain")
+        nginx_literal_helpers_config=''
+        if [ "${needs_literal_dollar_helper:-0}" = "1" ]; then
+            literal_dollar_var="nre_literal_dollar_$(sanitize_identifier "$(sanitize_domain "$domain")_${port}")"
+            proxy_headers_config=$(PROXY_HEADERS_CONFIG="$proxy_headers_config" LITERAL_DOLLAR_VAR="$literal_dollar_var" node - <<'NODE'
+const placeholder = "__NRE_LITERAL_DOLLAR__";
+const variableReference = "${" + String(process.env.LITERAL_DOLLAR_VAR || "") + "}";
+process.stdout.write(String(process.env.PROXY_HEADERS_CONFIG || "").split(placeholder).join(variableReference));
+NODE
+            )
+            nginx_literal_helpers_config="map \"\" \$${literal_dollar_var} {
+    default \"\$\";
+}
+
+"
+        fi
 
         template="$TEMPLATE_FILE"
         if [ "$deploy_mode" = "direct" ]; then
@@ -1069,6 +1103,7 @@ ${proxy_headers_config}
             backstream_config=''
         fi
 
+        nginx_literal_helpers_config_awk=$(escape_awk_replacement "$nginx_literal_helpers_config")
         proxy_headers_config_awk=$(escape_awk_replacement "$proxy_headers_config")
         location_proxy_redirect_awk=$(escape_awk_replacement "$location_proxy_redirect")
         backstream_config_awk=$(escape_awk_replacement "$backstream_config")
@@ -1082,6 +1117,7 @@ ${proxy_headers_config}
             -v cert_dir="$DIRECT_CERT_DIR" \
             -v cert_domain="$cert_dom" \
             -v listen_ipv6_line="$([ "$proto" = "https" ] && printf '%s' "$LISTEN_IPV6_TLS_TEMPLATE" || printf '%s' "$LISTEN_IPV6_TEMPLATE")" \
+            -v nginx_literal_helpers_config="$nginx_literal_helpers_config_awk" \
             -v proxy_headers_config="$proxy_headers_config_awk" \
             -v location_proxy_redirect="$location_proxy_redirect_awk" \
             -v backstream_config="$backstream_config_awk" '
@@ -1094,12 +1130,13 @@ ${proxy_headers_config}
             { gsub(/\$\{cert_dir\}/, cert_dir) }
             { gsub(/\$\{cert_domain\}/, cert_domain) }
             { gsub(/\$\{listen_ipv6_line\}/, listen_ipv6_line) }
+            { gsub(/\$\{nginx_literal_helpers_config\}/, nginx_literal_helpers_config) }
             { gsub(/\$\{backstream_config\}/, backstream_config) }
             { gsub(/\$\{proxy_headers_config\}/, proxy_headers_config) }
             { gsub(/\$\{location_proxy_redirect\}/, location_proxy_redirect) }
             { print }
         ' "$template" > "$DYNAMIC_DIR/$conf_name"
-        entrypoint_log "Generated config for $domain (proxy_redirect: $proxy_redirect, rule_pass_proxy_headers: $rule_pass_proxy_headers, global_pass_proxy_headers_enabled: $global_pass_proxy_headers_enabled)"
+        entrypoint_log "Generated config for $domain (proxy_redirect: $proxy_redirect, rule_pass_proxy_headers: $rule_pass_proxy_headers, global_proxy_headers_disabled: $global_proxy_headers_disabled)"
     done < "$tmp_rules"
 fi
 

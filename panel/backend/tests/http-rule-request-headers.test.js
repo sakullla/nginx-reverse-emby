@@ -141,6 +141,103 @@ async function withBackendServer(options, testFn) {
   }
 }
 
+function toPosixPath(filePath) {
+  return String(filePath).replace(/\\/g, "/");
+}
+
+function resolveShCommand() {
+  if (process.platform !== "win32") {
+    return "sh";
+  }
+  const candidates = [
+    "C:/Program Files/Git/bin/sh.exe",
+    "C:/Program Files/Git/usr/bin/sh.exe",
+  ];
+  const found = candidates.find((candidate) => require("node:fs").existsSync(candidate));
+  if (!found) {
+    throw new Error("unable to locate sh.exe for generator test");
+  }
+  return found;
+}
+
+async function generateNginxConfig(options = {}) {
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "nginx-rule-gen-"));
+  const dataRoot = path.join(tempRoot, "data");
+  const dynamicDir = path.join(tempRoot, "conf.d", "dynamic");
+  const streamDynamicDir = path.join(tempRoot, "stream-conf.d", "dynamic");
+  const directCertDir = path.join(tempRoot, "certs");
+  const rulesJsonPath = path.join(dataRoot, "proxy_rules.json");
+  const repoRoot = path.resolve(__dirname, "..", "..", "..");
+  const scriptPath = toPosixPath(path.join(repoRoot, "docker", "25-dynamic-reverse-proxy.sh"));
+  const templatePath = toPosixPath(path.join(repoRoot, "docker", "default.conf.template"));
+  const directNoTlsTemplatePath = toPosixPath(
+    path.join(repoRoot, "docker", "default.direct.no_tls.conf.template"),
+  );
+  const directTlsTemplatePath = toPosixPath(
+    path.join(repoRoot, "docker", "default.direct.tls.conf.template"),
+  );
+
+  await fs.mkdir(dynamicDir, { recursive: true });
+  await fs.mkdir(streamDynamicDir, { recursive: true });
+  await writeJson(rulesJsonPath, options.proxyRules || []);
+
+  const childEnv = {
+    ...process.env,
+    PANEL_DATA_ROOT: toPosixPath(dataRoot),
+    PANEL_RULES_JSON: toPosixPath(rulesJsonPath),
+    NRE_DYNAMIC_DIR: toPosixPath(dynamicDir),
+    NRE_STREAM_DYNAMIC_DIR: toPosixPath(streamDynamicDir),
+    DIRECT_CERT_DIR: toPosixPath(directCertDir),
+    NRE_TEMPLATE_FILE: templatePath,
+    NRE_DIRECT_NO_TLS_TEMPLATE_FILE: directNoTlsTemplatePath,
+    NRE_DIRECT_TLS_TEMPLATE_FILE: directTlsTemplatePath,
+    NGINX_LOCAL_RESOLVERS: "127.0.0.1",
+    NGINX_ENABLE_IPV6: "0",
+    NGINX_ENTRYPOINT_QUIET_LOGS: "1",
+    PROXY_DEPLOY_MODE: "front_proxy",
+    ...(options.env || {}),
+  };
+
+  if (!Object.prototype.hasOwnProperty.call(options.env || {}, "PROXY_PASS_PROXY_HEADERS")) {
+    delete childEnv.PROXY_PASS_PROXY_HEADERS;
+  }
+
+  const child = spawn(resolveShCommand(), [scriptPath], {
+    cwd: repoRoot,
+    env: childEnv,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", (chunk) => {
+    stdout += String(chunk);
+  });
+  child.stderr.on("data", (chunk) => {
+    stderr += String(chunk);
+  });
+
+  try {
+    const [exitCode, signal] = await once(child, "exit");
+    if (exitCode !== 0) {
+      throw new Error(
+        `generator exited with code ${exitCode} (${signal || "no-signal"}): ${stderr || stdout}`,
+      );
+    }
+
+    const generatedFiles = await fs.readdir(dynamicDir);
+    assert.equal(generatedFiles.length, 1, `expected one generated config, got: ${generatedFiles.join(", ")}`);
+
+    return {
+      stdout,
+      stderr,
+      config: await fs.readFile(path.join(dynamicDir, generatedFiles[0]), "utf8"),
+    };
+  } finally {
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+}
+
 describe("HTTP rule request header normalization", () => {
   it("fills defaults for pass_proxy_headers, user_agent, and custom_headers", () => {
     const rule = normalizeRuleRequestHeaders({}, {});
@@ -302,6 +399,83 @@ describe("HTTP rule request header normalization", () => {
     );
   });
 
+  it("generator honors rule-level proxy headers when PROXY_PASS_PROXY_HEADERS is unset", async () => {
+    const { config } = await generateNginxConfig({
+      proxyRules: [
+        {
+          frontend_url: "https://frontend.example.com",
+          backend_url: "http://backend.internal:8096",
+          proxy_redirect: true,
+          pass_proxy_headers: true,
+        },
+      ],
+    });
+
+    assert.match(config, /proxy_set_header X-Real-IP "\$remote_addr";/);
+    assert.match(config, /proxy_set_header X-Forwarded-For "\$proxy_add_x_forwarded_for";/);
+    assert.match(config, /proxy_set_header X-Forwarded-Proto "\$scheme";/);
+  });
+
+  it("generator treats PROXY_PASS_PROXY_HEADERS as a global disable override", async () => {
+    const { config } = await generateNginxConfig({
+      env: {
+        PROXY_PASS_PROXY_HEADERS: "0",
+      },
+      proxyRules: [
+        {
+          frontend_url: "https://frontend.example.com",
+          backend_url: "http://backend.internal:8096",
+          proxy_redirect: true,
+          pass_proxy_headers: true,
+          custom_headers: [{ name: "X-Test", value: "still-there" }],
+        },
+      ],
+    });
+
+    assert.doesNotMatch(config, /proxy_set_header X-Real-IP /);
+    assert.doesNotMatch(config, /proxy_set_header X-Forwarded-For /);
+    assert.match(config, /proxy_set_header X-Test "still-there";/);
+  });
+
+  it("generator renders literal header values safely for nginx", async () => {
+    const { config } = await generateNginxConfig({
+      proxyRules: [
+        {
+          frontend_url: "https://frontend.example.com",
+          backend_url: "http://backend.internal:8096",
+          proxy_redirect: true,
+          pass_proxy_headers: true,
+          user_agent: 'Agent $browser "quoted" \\ slash',
+          custom_headers: [
+            {
+              name: "X-Test",
+              value: 'start$evil\r\n        proxy_set_header X-Evil "oops";\u0007end\\tail',
+            },
+          ],
+        },
+      ],
+    });
+
+    const userAgentLine = config
+      .split(/\r?\n/)
+      .find((line) => line.includes("proxy_set_header User-Agent "));
+    const customHeaderLine = config
+      .split(/\r?\n/)
+      .find((line) => line.includes("proxy_set_header X-Test "));
+
+    assert.ok(userAgentLine, "expected User-Agent header line");
+    assert.ok(customHeaderLine, "expected X-Test header line");
+    assert.match(config, /map "" \$nre_literal_dollar_[A-Za-z0-9_]+ \{\s*default "\$";\s*\}/s);
+    assert.match(userAgentLine, /\$\{nre_literal_dollar_[A-Za-z0-9_]+\}browser/);
+    assert.match(customHeaderLine, /\$\{nre_literal_dollar_[A-Za-z0-9_]+\}evil/);
+    assert.ok(userAgentLine.includes('\\"quoted\\"'));
+    assert.ok(userAgentLine.includes("\\\\ slash"));
+    assert.ok(customHeaderLine.includes('\\"oops\\"'));
+    assert.match(customHeaderLine, /end\\\\+tail/);
+    assert.doesNotMatch(customHeaderLine, /[\u0000-\u001F\u007F]/);
+    assert.doesNotMatch(config, /^\s*proxy_set_header X-Evil /m);
+  });
+
   it("exposes proxy_headers_globally_disabled on /api/info in agent mode", async () => {
     await withBackendServer(
       {
@@ -339,7 +513,7 @@ describe("HTTP rule request header normalization", () => {
     );
   });
 
-  it("treats unset PROXY_PASS_PROXY_HEADERS as globally disabled on /api/info", async () => {
+  it("treats unset PROXY_PASS_PROXY_HEADERS as not globally disabled on /api/info", async () => {
     await withBackendServer(
       {
         env: {
@@ -351,12 +525,12 @@ describe("HTTP rule request header normalization", () => {
         assert.equal(response.status, 200);
 
         const payload = await response.json();
-        assert.equal(payload.proxy_headers_globally_disabled, true);
+        assert.equal(payload.proxy_headers_globally_disabled, false);
       },
     );
   });
 
-  it("treats non-truthy PROXY_PASS_PROXY_HEADERS values as globally disabled on /api/info", async () => {
+  it("treats unrecognized PROXY_PASS_PROXY_HEADERS values as not globally disabled on /api/info", async () => {
     await withBackendServer(
       {
         env: {
@@ -369,7 +543,7 @@ describe("HTTP rule request header normalization", () => {
         assert.equal(response.status, 200);
 
         const payload = await response.json();
-        assert.equal(payload.proxy_headers_globally_disabled, true);
+        assert.equal(payload.proxy_headers_globally_disabled, false);
       },
     );
   });
@@ -408,7 +582,7 @@ describe("HTTP rule request header normalization", () => {
           const response = await fetch(`${baseUrl}/api/info`);
           assert.equal(response.status, 200);
           const payload = await response.json();
-          assert.equal(payload.proxy_headers_globally_disabled, true);
+          assert.equal(payload.proxy_headers_globally_disabled, false);
           assert.equal(payload.local_agent_enabled, true);
         },
       );

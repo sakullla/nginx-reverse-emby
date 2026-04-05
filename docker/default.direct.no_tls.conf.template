@@ -1,3 +1,4 @@
+${nginx_literal_helpers_config}
 server {
     listen ${frontend_port};
 ${listen_ipv6_line}
