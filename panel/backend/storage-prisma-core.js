@@ -82,7 +82,7 @@ const SCHEMA_STATEMENTS = [
   )`,
   "CREATE INDEX IF NOT EXISTS idx_l4_rules_agent ON l4_rules(agent_id)",
   `CREATE TABLE IF NOT EXISTS relay_listeners (
-    id INTEGER NOT NULL,
+    id INTEGER PRIMARY KEY,
     agent_id TEXT NOT NULL,
     name TEXT DEFAULT '',
     listen_host TEXT DEFAULT '0.0.0.0',
@@ -94,8 +94,7 @@ const SCHEMA_STATEMENTS = [
     trusted_ca_certificate_ids TEXT DEFAULT '[]',
     allow_self_signed INTEGER DEFAULT 0,
     tags TEXT DEFAULT '[]',
-    revision INTEGER DEFAULT 0,
-    PRIMARY KEY (agent_id, id)
+    revision INTEGER DEFAULT 0
   )`,
   "CREATE INDEX IF NOT EXISTS idx_relay_listeners_agent ON relay_listeners(agent_id)",
   `CREATE TABLE IF NOT EXISTS managed_certificates (
@@ -517,6 +516,20 @@ function mapVersionPolicyFromDb(row) {
   });
 }
 
+function mapVersionPoliciesFromDb(rows) {
+  const normalized = [];
+  const seen = new Set();
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const policy = mapVersionPolicyFromDb(row);
+    if (!policy || seen.has(policy.id)) {
+      continue;
+    }
+    seen.add(policy.id);
+    normalized.push(policy);
+  }
+  return normalized;
+}
+
 function mapAgentToDb(agent) {
   return {
     id: String(agent.id),
@@ -649,14 +662,14 @@ function groupByAgent(rows, mapper) {
 }
 
 async function loadSnapshotFromClient(client) {
-  const [agents, rules, l4Rules, relayListeners, managedCertificates, localAgentState, versionPolicy, metaRows] = await Promise.all([
+  const [agents, rules, l4Rules, relayListeners, managedCertificates, localAgentState, versionPolicies, metaRows] = await Promise.all([
     client.agent.findMany({ orderBy: { id: "asc" } }),
     client.rule.findMany({ orderBy: [{ agentId: "asc" }, { id: "asc" }] }),
     client.l4Rule.findMany({ orderBy: [{ agentId: "asc" }, { id: "asc" }] }),
     client.relayListener.findMany({ orderBy: [{ agentId: "asc" }, { id: "asc" }] }),
     client.managedCertificate.findMany({ orderBy: { id: "asc" } }),
     client.localAgentState.findUnique({ where: { id: 1 } }),
-    client.versionPolicy.findFirst({ orderBy: { id: "asc" } }),
+    client.versionPolicy.findMany({ orderBy: { id: "asc" } }),
     client.meta.findMany(),
   ]);
 
@@ -667,7 +680,7 @@ async function loadSnapshotFromClient(client) {
     relayListenersByAgent: groupByAgent(relayListeners, mapRelayListenerFromDb),
     managedCertificates: managedCertificates.map(mapManagedCertificateFromDb),
     localAgentState: mapLocalAgentStateFromDb(localAgentState),
-    versionPolicy: mapVersionPolicyFromDb(versionPolicy),
+    versionPolicies: mapVersionPoliciesFromDb(versionPolicies),
     meta: Object.fromEntries(metaRows.map((row) => [row.key, row.value])),
   };
 }
@@ -775,11 +788,11 @@ async function saveLocalAgentState(dataRoot, state) {
   });
 }
 
-async function saveVersionPolicy(dataRoot, policy) {
+async function saveVersionPolicies(dataRoot, policies) {
   return withClient(dataRoot, async (client) => {
     await client.$transaction(async (tx) => {
       await tx.versionPolicy.deleteMany();
-      if (policy && typeof policy === "object") {
+      for (const policy of Array.isArray(policies) ? policies : []) {
         await tx.versionPolicy.create({ data: mapVersionPolicyToDb(policy) });
       }
     });
@@ -863,8 +876,13 @@ async function migrateFromJsonPayload(dataRoot, payload) {
         },
       });
 
-      if (payload?.versionPolicy && typeof payload.versionPolicy === "object") {
-        await tx.versionPolicy.create({ data: mapVersionPolicyToDb(payload.versionPolicy) });
+      const versionPolicies = Array.isArray(payload?.versionPolicies)
+        ? payload.versionPolicies
+        : payload?.versionPolicy && typeof payload.versionPolicy === "object"
+          ? [payload.versionPolicy]
+          : [];
+      for (const policy of versionPolicies) {
+        await tx.versionPolicy.create({ data: mapVersionPolicyToDb(policy) });
       }
 
       await tx.meta.upsert({
@@ -893,7 +911,7 @@ module.exports = {
   deleteRelayListenersForAgent,
   saveManagedCertificates,
   saveLocalAgentState,
-  saveVersionPolicy,
+  saveVersionPolicies,
   migrateFromJsonPayload,
   closeClient,
 };

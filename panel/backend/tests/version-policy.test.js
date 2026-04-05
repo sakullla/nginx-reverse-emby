@@ -40,36 +40,80 @@ describe("version policy storage", () => {
     }
   });
 
-  it("round-trips version policy in the JSON backend", () => {
-    const policy = normalizeVersionPolicyPayload({
-      id: "global",
-      channel: "stable",
-      desired_version: "1.2.3",
-      packages: [{ platform: "linux-amd64", url: "https://example.com/linux.tar.gz", sha256: "def" }],
-      tags: ["rollout"],
-    });
+  it("round-trips version policies in the JSON backend via plural APIs", () => {
+    const policies = [
+      normalizeVersionPolicyPayload({
+        id: "global",
+        channel: "stable",
+        desired_version: "1.2.3",
+        packages: [{ platform: "linux-amd64", url: "https://example.com/linux.tar.gz", sha256: "def" }],
+        tags: ["rollout"],
+      }),
+      normalizeVersionPolicyPayload({
+        id: "beta",
+        channel: "beta",
+        desired_version: "1.3.0-beta.1",
+        packages: [{ platform: "windows-amd64", url: "https://example.com/windows.zip", sha256: "abc" }],
+      }),
+    ];
 
-    jsonStorage.saveVersionPolicy(policy);
+    jsonStorage.saveVersionPolicies(policies);
 
-    assert.deepStrictEqual(jsonStorage.loadVersionPolicy(), policy);
+    assert.deepStrictEqual(jsonStorage.loadVersionPolicies(), [
+      policies[1],
+      policies[0],
+    ]);
   });
 
-  it("round-trips version policy in the SQLite backend", { skip: !canRunSqlite && "Prisma-backed SQLite adapter not available" }, () => {
+  it("round-trips version policies in the SQLite backend via plural APIs", { skip: !canRunSqlite && "Prisma-backed SQLite adapter not available" }, () => {
     const sqliteStorage = loadFreshStorage("../storage-sqlite", SQLITE_TARGET);
 
     try {
-      const policy = normalizeVersionPolicyPayload({
-        channel: "stable",
-        desired_version: "2.0.0",
-        packages: [{ platform: "darwin-arm64", url: "https://example.com/darwin.zip", sha256: "ghi" }],
-      });
+      const policies = [
+        normalizeVersionPolicyPayload({
+          channel: "stable",
+          desired_version: "2.0.0",
+          packages: [{ platform: "darwin-arm64", url: "https://example.com/darwin.zip", sha256: "ghi" }],
+        }),
+        normalizeVersionPolicyPayload({
+          id: "edge",
+          channel: "edge",
+          desired_version: "2.1.0-dev",
+          packages: [{ platform: "linux-amd64", url: "https://example.com/linux-dev.tar.gz", sha256: "xyz" }],
+        }),
+      ];
 
-      sqliteStorage.saveVersionPolicy(policy);
+      sqliteStorage.saveVersionPolicies(policies);
 
-      assert.deepStrictEqual(sqliteStorage.loadVersionPolicy(), policy);
+      assert.deepStrictEqual(sqliteStorage.loadVersionPolicies(), policies);
     } finally {
       closeQuietly(sqliteStorage);
     }
+  });
+
+  it("keeps singular version policy helpers backward-compatible with the first stored policy", () => {
+    const policies = [
+      normalizeVersionPolicyPayload({
+        id: "global",
+        channel: "stable",
+        desired_version: "1.2.3",
+        packages: [{ platform: "linux-amd64", url: "https://example.com/linux.tar.gz", sha256: "def" }],
+        tags: ["rollout"],
+      }),
+      normalizeVersionPolicyPayload({
+        id: "beta",
+        channel: "beta",
+        desired_version: "1.3.0-beta.1",
+        packages: [{ platform: "windows-amd64", url: "https://example.com/windows.zip", sha256: "abc" }],
+      }),
+    ];
+
+    jsonStorage.saveVersionPolicies(policies);
+
+    assert.deepStrictEqual(
+      jsonStorage.loadVersionPolicy(),
+      jsonStorage.loadVersionPolicies()[0],
+    );
   });
 
   it("preserves desired_version fields for agent and local agent state storage", { skip: !canRunSqlite && "Prisma-backed SQLite adapter not available" }, () => {

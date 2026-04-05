@@ -138,6 +138,10 @@ describe("Prisma SQL migration flow", () => {
         `);
         assert.equal(relayListenerTables.length, 1);
 
+        const relayListenerColumns = await client.$queryRawUnsafe(`PRAGMA table_info('relay_listeners')`);
+        const relayIdColumn = relayListenerColumns.find((column) => String(column.name || "") === "id");
+        assert.equal(Number(relayIdColumn.pk), 1);
+
         const versionPolicyTables = await client.$queryRawUnsafe(`
           SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'version_policy'
         `);

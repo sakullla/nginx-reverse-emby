@@ -114,4 +114,64 @@ describe("relay listener storage", () => {
       closeQuietly(sqliteStorage);
     }
   });
+
+  it("enforces globally unique relay listener ids across agents in the JSON backend", () => {
+    jsonStorage.saveRelayListenersForAgent("agent-a", [
+      normalizeRelayListenerPayload({
+        id: 99,
+        agent_id: "agent-a",
+        name: "relay-a",
+        listen_host: "0.0.0.0",
+        listen_port: 18443,
+        pin_set: [{ type: "spki_sha256", value: "abc" }],
+      }),
+    ]);
+
+    assert.throws(
+      () => jsonStorage.saveRelayListenersForAgent("agent-b", [
+        normalizeRelayListenerPayload({
+          id: 99,
+          agent_id: "agent-b",
+          name: "relay-b",
+          listen_host: "127.0.0.1",
+          listen_port: 19443,
+          trusted_ca_certificate_ids: [12],
+        }),
+      ]),
+      /relay listener id.*99/i,
+    );
+  });
+
+  it("enforces globally unique relay listener ids across agents in the SQLite backend", { skip: !canRunSqlite && "Prisma-backed SQLite adapter not available" }, () => {
+    const sqliteStorage = loadFreshStorage("../storage-sqlite", SQLITE_TARGET);
+
+    try {
+      sqliteStorage.saveRelayListenersForAgent("agent-a", [
+        normalizeRelayListenerPayload({
+          id: 101,
+          agent_id: "agent-a",
+          name: "relay-a",
+          listen_host: "0.0.0.0",
+          listen_port: 18443,
+          pin_set: [{ type: "spki_sha256", value: "abc" }],
+        }),
+      ]);
+
+      assert.throws(
+        () => sqliteStorage.saveRelayListenersForAgent("agent-b", [
+          normalizeRelayListenerPayload({
+            id: 101,
+            agent_id: "agent-b",
+            name: "relay-b",
+            listen_host: "127.0.0.1",
+            listen_port: 19443,
+            trusted_ca_certificate_ids: [12],
+          }),
+        ]),
+        /unique|constraint|relay listener id/i,
+      );
+    } finally {
+      closeQuietly(sqliteStorage);
+    }
+  });
 });

@@ -1,7 +1,7 @@
 ALTER TABLE agents ADD COLUMN desired_version TEXT DEFAULT '';
 ALTER TABLE local_agent_state ADD COLUMN desired_version TEXT DEFAULT '';
 CREATE TABLE IF NOT EXISTS relay_listeners (
-  id INTEGER NOT NULL,
+  id INTEGER PRIMARY KEY,
   agent_id TEXT NOT NULL,
   name TEXT DEFAULT '',
   listen_host TEXT DEFAULT '0.0.0.0',
@@ -13,8 +13,7 @@ CREATE TABLE IF NOT EXISTS relay_listeners (
   trusted_ca_certificate_ids TEXT DEFAULT '[]',
   allow_self_signed INTEGER DEFAULT 0,
   tags TEXT DEFAULT '[]',
-  revision INTEGER DEFAULT 0,
-  PRIMARY KEY (agent_id, id)
+  revision INTEGER DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_relay_listeners_agent ON relay_listeners(agent_id);
 CREATE TABLE IF NOT EXISTS version_policy (

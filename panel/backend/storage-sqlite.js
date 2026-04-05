@@ -32,7 +32,7 @@ function createEmptyState() {
     relayListenersByAgent: new Map(),
     managedCertificates: [],
     localAgentState: defaultLocalAgentState(),
-    versionPolicy: null,
+    versionPolicies: [],
     meta: {},
   };
 }
@@ -188,6 +188,26 @@ function normalizeVersionPolicy(policy) {
   return normalizeVersionPolicyPayload(clone(policy));
 }
 
+function normalizeVersionPolicies(policies) {
+  if (!Array.isArray(policies)) {
+    const single = normalizeVersionPolicy(policies);
+    return single ? [single] : [];
+  }
+
+  const normalized = [];
+  const seen = new Set();
+  for (const policy of policies) {
+    const next = normalizeVersionPolicy(policy);
+    if (!next || seen.has(next.id)) {
+      continue;
+    }
+    seen.add(next.id);
+    normalized.push(next);
+  }
+  normalized.sort((a, b) => String(a.id).localeCompare(String(b.id)));
+  return normalized;
+}
+
 function normalizeLocalAgentState(stateValue) {
   const nextState = stateValue && typeof stateValue === "object" ? stateValue : {};
   return {
@@ -300,7 +320,7 @@ function applySnapshot(snapshot) {
   );
   state.managedCertificates = clone(snapshot?.managedCertificates || []);
   state.localAgentState = clone(snapshot?.localAgentState || defaultLocalAgentState());
-  state.versionPolicy = clone(snapshot?.versionPolicy || null);
+  state.versionPolicies = clone(snapshot?.versionPolicies || []);
   state.meta = clone(snapshot?.meta || {});
 }
 
@@ -431,16 +451,25 @@ function deleteRelayListenersForAgent(agentId) {
   state.relayListenersByAgent.delete(key);
 }
 
-function loadVersionPolicy() {
+function loadVersionPolicies() {
   ensureInitialized();
-  return clone(state.versionPolicy);
+  return clone(state.versionPolicies);
+}
+
+function saveVersionPolicies(policies) {
+  ensureInitialized();
+  const nextPolicies = normalizeVersionPolicies(Array.isArray(policies) ? clone(policies) : []);
+  runWorker("saveVersionPolicies", { dataRoot: state.dataRoot, policies: nextPolicies });
+  state.versionPolicies = nextPolicies;
+}
+
+function loadVersionPolicy() {
+  return loadVersionPolicies()[0] || null;
 }
 
 function saveVersionPolicy(policy) {
-  ensureInitialized();
   const nextPolicy = policy && typeof policy === "object" ? clone(policy) : null;
-  runWorker("saveVersionPolicy", { dataRoot: state.dataRoot, policy: nextPolicy });
-  state.versionPolicy = normalizeVersionPolicy(nextPolicy);
+  saveVersionPolicies(nextPolicy ? [nextPolicy] : []);
 }
 
 function getNextGlobalRevision() {
@@ -487,7 +516,7 @@ function migrateFromJson() {
   const hasProxyRulesFile = fs.existsSync(dataPath("proxy_rules.json"));
   const hasManagedCertsFile = fs.existsSync(dataPath("managed_certificates.json"));
   const hasLocalStateFile = fs.existsSync(dataPath("local_agent_state.json"));
-  const hasVersionPolicyFile = fs.existsSync(dataPath("version_policy.json"));
+  const hasVersionPoliciesFile = fs.existsSync(dataPath("version_policies.json")) || fs.existsSync(dataPath("version_policy.json"));
   const agentRuleFiles = fs.existsSync(agentRulesDir)
     ? fs.readdirSync(agentRulesDir).filter((file) => file.endsWith(".json"))
     : [];
@@ -503,7 +532,7 @@ function migrateFromJson() {
     hasProxyRulesFile ||
     hasManagedCertsFile ||
     hasLocalStateFile ||
-    hasVersionPolicyFile ||
+    hasVersionPoliciesFile ||
     agentRuleFiles.length > 0 ||
     l4RuleFiles.length > 0 ||
     relayListenerFiles.length > 0;
@@ -540,7 +569,7 @@ function migrateFromJson() {
     rulesByAgent: Object.fromEntries(allAgentIds.map((agentId) => [agentId, jsonStorage.loadRulesForAgent(agentId)])),
     l4RulesByAgent: Object.fromEntries(allAgentIds.map((agentId) => [agentId, jsonStorage.loadL4RulesForAgent(agentId)])),
     relayListenersByAgent: Object.fromEntries(allAgentIds.map((agentId) => [agentId, jsonStorage.loadRelayListenersForAgent(agentId)])),
-    versionPolicy: jsonStorage.loadVersionPolicy(),
+    versionPolicies: jsonStorage.loadVersionPolicies(),
   };
 
   const result = runWorker("migrateFromJson", { dataRoot: state.dataRoot, payload });
@@ -579,6 +608,8 @@ module.exports = {
   loadRelayListenersForAgent,
   saveRelayListenersForAgent,
   deleteRelayListenersForAgent,
+  loadVersionPolicies,
+  saveVersionPolicies,
   loadVersionPolicy,
   saveVersionPolicy,
   getNextGlobalRevision,

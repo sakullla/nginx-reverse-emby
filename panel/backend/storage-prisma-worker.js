@@ -41,8 +41,8 @@ const operations = {
     await core.saveLocalAgentState(dataRoot, state);
     return null;
   },
-  saveVersionPolicy: async ({ dataRoot, policy }) => {
-    await core.saveVersionPolicy(dataRoot, policy);
+  saveVersionPolicies: async ({ dataRoot, policies }) => {
+    await core.saveVersionPolicies(dataRoot, policies);
     return null;
   },
   migrateFromJson: async ({ dataRoot, payload }) => core.migrateFromJsonPayload(dataRoot, payload),
