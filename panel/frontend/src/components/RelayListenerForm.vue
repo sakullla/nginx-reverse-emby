@@ -9,9 +9,9 @@
       <div class='form-group'>
         <label class='form-label'>TLS 模式</label>
         <select v-model='form.tls_mode' class='input'>
-          <option value='disabled'>关闭</option>
-          <option value='server'>服务端 TLS</option>
-          <option value='mtls'>双向 TLS</option>
+          <option value='pin_or_ca'>证书 Pin 或 CA</option>
+          <option value='pin_only'>仅证书 Pin</option>
+          <option value='ca_only'>仅 CA 信任链</option>
         </select>
       </div>
     </div>
@@ -32,7 +32,7 @@
       <label class='form-label'>监听证书</label>
       <select v-model='form.certificate_id' class='input'>
         <option :value='null'>不绑定证书</option>
-        <option v-for='cert in certificates' :key='cert.id' :value='String(cert.id)'>
+        <option v-for='cert in certificates' :key='cert.id' :value='cert.id'>
           #{{ cert.id }} {{ cert.domain }}
         </option>
       </select>
@@ -42,16 +42,24 @@
       <label class='form-label'>可信 CA 证书</label>
       <div class='checkbox-list'>
         <label v-for='cert in certificates' :key="`ca-${cert.id}`" class='checkbox-item'>
-          <input :checked='trustedCaSet.has(String(cert.id))' type='checkbox' @change='toggleTrustedCa(cert.id)'>
+          <input :checked='trustedCaSet.has(cert.id)' type='checkbox' @change='toggleTrustedCa(cert.id)'>
           <span>#{{ cert.id }} {{ cert.domain }}</span>
         </label>
       </div>
     </div>
 
     <div class='form-group'>
-      <label class='form-label'>Pin Set（每行一个）</label>
-      <textarea v-model='pinSetText' class='input textarea' placeholder='sha256/abc...'></textarea>
+      <label class='form-label'>Pin Set（每行一个，格式 type:value）</label>
+      <textarea v-model='pinSetText' class='input textarea' placeholder='spki_sha256:abc123'></textarea>
     </div>
+
+    <p v-if='errors.trust_material' class='form-error'>
+      {{ errors.trust_material }}
+    </p>
+
+    <p v-if='errors.submit' class='form-error'>
+      {{ errors.submit }}
+    </p>
 
     <div class='form-group'>
       <label class='form-label'>标签</label>
@@ -100,16 +108,23 @@ const form = ref(createDefaultForm())
 const tagsText = ref('')
 const pinSetText = ref('')
 const trustedCaSet = ref(new Set())
-const errors = ref({ name: '', listen_port: '' })
+const errors = ref({ name: '', listen_port: '', trust_material: '', submit: '' })
 
 watch(
   () => props.initialData,
   (value) => {
     form.value = createFormState(value)
     tagsText.value = (form.value.tags || []).join(', ')
-    pinSetText.value = (form.value.pin_set || []).join('\n')
-    trustedCaSet.value = new Set((form.value.trusted_ca_certificate_ids || []).map((id) => String(id)))
-    errors.value = { name: '', listen_port: '' }
+    pinSetText.value = (form.value.pin_set || [])
+      .map((item) => {
+        if (typeof item === 'string') {
+          return `spki_sha256:${item}`
+        }
+        return `${item.type}:${item.value}`
+      })
+      .join('\n')
+    trustedCaSet.value = new Set((form.value.trusted_ca_certificate_ids || []).map((id) => Number(id)))
+    errors.value = { name: '', listen_port: '', trust_material: '', submit: '' }
   },
   { immediate: true }
 )
@@ -121,7 +136,7 @@ function createDefaultForm() {
     listen_port: 0,
     enabled: true,
     certificate_id: null,
-    tls_mode: 'disabled',
+    tls_mode: 'pin_or_ca',
     pin_set: [],
     trusted_ca_certificate_ids: [],
     allow_self_signed: false,
@@ -136,9 +151,21 @@ function createFormState(initialData) {
     listen_host: initialData.listen_host || '0.0.0.0',
     listen_port: initialData.listen_port || 0,
     enabled: initialData.enabled !== false,
-    certificate_id: initialData.certificate_id == null ? null : String(initialData.certificate_id),
-    tls_mode: initialData.tls_mode || 'disabled',
-    pin_set: Array.isArray(initialData.pin_set) ? [...initialData.pin_set] : [],
+    certificate_id: initialData.certificate_id == null ? null : Number(initialData.certificate_id),
+    tls_mode: initialData.tls_mode || 'pin_or_ca',
+    pin_set: Array.isArray(initialData.pin_set)
+      ? initialData.pin_set
+        .map((item) => {
+          if (typeof item === 'string') {
+            return { type: 'spki_sha256', value: item }
+          }
+          return {
+            type: String(item?.type || '').trim(),
+            value: String(item?.value || '').trim()
+          }
+        })
+        .filter((item) => item.type && item.value)
+      : [],
     trusted_ca_certificate_ids: Array.isArray(initialData.trusted_ca_certificate_ids) ? [...initialData.trusted_ca_certificate_ids] : [],
     allow_self_signed: initialData.allow_self_signed === true,
     tags: Array.isArray(initialData.tags) ? [...initialData.tags] : []
@@ -146,22 +173,44 @@ function createFormState(initialData) {
 }
 
 function toggleTrustedCa(certId) {
-  const value = String(certId)
+  const value = Number(certId)
   const next = new Set(trustedCaSet.value)
   if (next.has(value)) next.delete(value)
   else next.add(value)
   trustedCaSet.value = next
 }
 
+function parsePinSetRows() {
+  return pinSetText.value
+    .split(/\r?\n/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map((row) => {
+      const separator = row.indexOf(':')
+      if (separator === -1) {
+        return { type: 'spki_sha256', value: row }
+      }
+      return {
+        type: row.slice(0, separator).trim(),
+        value: row.slice(separator + 1).trim()
+      }
+    })
+    .filter((item) => item.type && item.value)
+}
+
 function validate() {
-  errors.value = { name: '', listen_port: '' }
+  errors.value = { name: '', listen_port: '', trust_material: '', submit: '' }
   if (!form.value.name.trim()) {
     errors.value.name = '请输入监听器名称'
   }
   if (!Number.isInteger(form.value.listen_port) || form.value.listen_port < 1 || form.value.listen_port > 65535) {
     errors.value.listen_port = '监听端口必须在 1-65535 之间'
   }
-  return !errors.value.name && !errors.value.listen_port
+  const pinSet = parsePinSetRows()
+  if (pinSet.length === 0 && trustedCaSet.value.size === 0) {
+    errors.value.trust_material = 'Pin Set 与可信 CA 证书不能同时为空'
+  }
+  return !errors.value.name && !errors.value.listen_port && !errors.value.trust_material
 }
 
 async function handleSubmit() {
@@ -172,13 +221,10 @@ async function handleSubmit() {
     listen_host: form.value.listen_host.trim() || '0.0.0.0',
     listen_port: form.value.listen_port,
     enabled: form.value.enabled,
-    certificate_id: form.value.certificate_id == null ? null : form.value.certificate_id,
+    certificate_id: form.value.certificate_id == null ? null : Number(form.value.certificate_id),
     tls_mode: form.value.tls_mode,
-    pin_set: pinSetText.value
-      .split(/\r?\n/)
-      .map((item) => item.trim())
-      .filter(Boolean),
-    trusted_ca_certificate_ids: [...trustedCaSet.value],
+    pin_set: parsePinSetRows(),
+    trusted_ca_certificate_ids: [...trustedCaSet.value].map((id) => Number(id)),
     allow_self_signed: form.value.allow_self_signed,
     tags: tagsText.value
       .split(',')
@@ -194,7 +240,7 @@ async function handleSubmit() {
     }
     emit('success')
   } catch (err) {
-    errors.value.name = err?.message || '操作失败'
+    errors.value.submit = err?.message || '操作失败'
   }
 }
 </script>

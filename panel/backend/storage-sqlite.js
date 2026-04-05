@@ -118,6 +118,7 @@ function normalizeRule(agentId, rule) {
     enabled: !!rule.enabled,
     tags: Array.isArray(rule.tags) ? clone(rule.tags) : [],
     proxy_redirect: !!rule.proxy_redirect,
+    relay_chain: normalizeRelayChainIds(rule.relay_chain),
     pass_proxy_headers: rule.pass_proxy_headers !== false,
     user_agent: String(rule.user_agent || ""),
     custom_headers: sanitizeStoredCustomHeaders(rule.custom_headers),
@@ -144,6 +145,7 @@ function normalizeL4Rule(agentId, rule) {
       rule.tuning && typeof rule.tuning === "object"
         ? clone(rule.tuning)
         : {},
+    relay_chain: normalizeRelayChainIds(rule.relay_chain),
     enabled: !!rule.enabled,
     tags: Array.isArray(rule.tags) ? clone(rule.tags) : [],
     revision: safeRevision(rule.revision),
@@ -170,6 +172,9 @@ function normalizeManagedCertificate(cert) {
       cert.acme_info && typeof cert.acme_info === "object"
         ? clone(cert.acme_info)
         : {},
+    usage: String(cert.usage || "https"),
+    certificate_type: String(cert.certificate_type || "acme"),
+    self_signed: cert.self_signed === true,
     tags: Array.isArray(cert.tags) ? clone(cert.tags) : [],
     revision: safeRevision(cert.revision),
   };
@@ -206,6 +211,23 @@ function normalizeVersionPolicies(policies) {
     normalized.push(next);
   }
   normalized.sort((a, b) => String(a.id).localeCompare(String(b.id)));
+  return normalized;
+}
+
+function normalizeRelayChainIds(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const seen = new Set();
+  const normalized = [];
+  for (const entry of value) {
+    const parsed = Number(entry);
+    if (!Number.isInteger(parsed) || parsed <= 0 || seen.has(parsed)) {
+      continue;
+    }
+    seen.add(parsed);
+    normalized.push(parsed);
+  }
   return normalized;
 }
 

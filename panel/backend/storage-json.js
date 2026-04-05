@@ -38,7 +38,18 @@ function sanitizeRuleForStorage(rule) {
   }
   return {
     ...rule,
+    relay_chain: normalizeRelayChainIds(rule.relay_chain),
     custom_headers: sanitizeStoredCustomHeaders(rule.custom_headers),
+  };
+}
+
+function sanitizeL4RuleForStorage(rule) {
+  if (!rule || typeof rule !== "object") {
+    return rule;
+  }
+  return {
+    ...rule,
+    relay_chain: normalizeRelayChainIds(rule.relay_chain),
   };
 }
 
@@ -99,6 +110,23 @@ function sanitizeVersionPolicyForStorage(policy) {
   } catch (_) {
     return null;
   }
+}
+
+function normalizeRelayChainIds(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const seen = new Set();
+  const next = [];
+  for (const entry of value) {
+    const parsed = Number(entry);
+    if (!Number.isInteger(parsed) || parsed <= 0 || seen.has(parsed)) {
+      continue;
+    }
+    seen.add(parsed);
+    next.push(parsed);
+  }
+  return next;
 }
 
 function sanitizeVersionPoliciesForStorage(policies) {
@@ -251,11 +279,12 @@ function deleteRulesForAgent(agentId) {
 function loadL4RulesForAgent(agentId) {
   const rules = readJsonFile(getL4RuleFileForAgent(agentId), []);
   if (!Array.isArray(rules)) return [];
-  return rules;
+  return rules.map(sanitizeL4RuleForStorage);
 }
 
 function saveL4RulesForAgent(agentId, rules) {
-  writeJsonFile(getL4RuleFileForAgent(agentId), Array.isArray(rules) ? rules : []);
+  const nextRules = Array.isArray(rules) ? rules.map(sanitizeL4RuleForStorage) : [];
+  writeJsonFile(getL4RuleFileForAgent(agentId), nextRules);
 }
 
 function deleteL4RulesForAgent(agentId) {

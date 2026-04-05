@@ -55,6 +55,10 @@ describe("Prisma SQL migration flow", () => {
       migrationFiles.some((file) => /^0003_.+\.sql$/i.test(file)),
       "expected a schema version 3 migration file for relay listeners and version policy",
     );
+    assert.ok(
+      migrationFiles.some((file) => /^0005_.+\.sql$/i.test(file)),
+      "expected a schema version 5 migration file for relay chain and certificate extended fields",
+    );
   });
 
   it("copies Prisma runtime migration files into the production image", () => {
@@ -74,7 +78,7 @@ describe("Prisma SQL migration flow", () => {
     assert.doesNotMatch(source, /ALTER TABLE\s+rules\s+ADD\s+COLUMN\s+custom_headers/i);
   });
 
-  it("migrates legacy schema_version=1 rules tables to schema version 4", async () => {
+  it("migrates legacy schema_version=1 rules tables to schema version 5", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "panel-prisma-migration-"));
     const databasePath = path.join(tempDir, "panel.db");
 
@@ -117,13 +121,18 @@ describe("Prisma SQL migration flow", () => {
         const schemaVersionRows = await client.$queryRawUnsafe(`
           SELECT value FROM meta WHERE key = 'schema_version'
         `);
-        assert.equal(schemaVersionRows[0].value, "4");
+        assert.equal(schemaVersionRows[0].value, "5");
 
         const columns = await client.$queryRawUnsafe(`PRAGMA table_info('rules')`);
         const names = new Set(columns.map((column) => String(column.name || "")));
         assert.ok(names.has("pass_proxy_headers"));
         assert.ok(names.has("user_agent"));
         assert.ok(names.has("custom_headers"));
+        assert.ok(names.has("relay_chain"));
+
+        const l4Columns = await client.$queryRawUnsafe(`PRAGMA table_info('l4_rules')`);
+        const l4ColumnNames = new Set(l4Columns.map((column) => String(column.name || "")));
+        assert.ok(l4ColumnNames.has("relay_chain"));
 
         const agentColumns = await client.$queryRawUnsafe(`PRAGMA table_info('agents')`);
         const agentColumnNames = new Set(agentColumns.map((column) => String(column.name || "")));
@@ -147,6 +156,12 @@ describe("Prisma SQL migration flow", () => {
           SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'version_policy'
         `);
         assert.equal(versionPolicyTables.length, 1);
+
+        const certColumns = await client.$queryRawUnsafe(`PRAGMA table_info('managed_certificates')`);
+        const certColumnNames = new Set(certColumns.map((column) => String(column.name || "")));
+        assert.ok(certColumnNames.has("usage"));
+        assert.ok(certColumnNames.has("certificate_type"));
+        assert.ok(certColumnNames.has("self_signed"));
       });
     } finally {
       cleanupDirWithRetries(tempDir);

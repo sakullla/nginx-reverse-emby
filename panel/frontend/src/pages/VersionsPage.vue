@@ -53,8 +53,9 @@
                   <p v-if='errors.channel' class='form-error'>{{ errors.channel }}</p>
                 </div>
                 <div class='form-group'>
-                  <label class='form-label'>目标版本</label>
-                  <input v-model='form.desired_version' class='input' placeholder='1.2.3'>
+                  <label class='form-label form-label--required'>目标版本</label>
+                  <input v-model='form.desired_version' class='input' :class="{ 'input--error': errors.desired_version }" placeholder='1.2.3'>
+                  <p v-if='errors.desired_version' class='form-error'>{{ errors.desired_version }}</p>
                 </div>
               </div>
 
@@ -65,18 +66,21 @@
                 </div>
                 <div class='package-edit-list'>
                   <div v-for='(pkg, index) in form.packages' :key='`edit-${index}`' class='package-edit-item'>
-                    <input v-model='pkg.platform' class='input' placeholder='linux-amd64'>
-                    <input v-model='pkg.url' class='input' placeholder='https://...'>
-                    <input v-model='pkg.sha256' class='input' placeholder='sha256'>
+                    <input v-model='pkg.platform' class='input' :class="{ 'input--error': packageErrors[index]?.platform }" placeholder='linux-amd64'>
+                    <input v-model='pkg.url' class='input' :class="{ 'input--error': packageErrors[index]?.url }" placeholder='https://...'>
+                    <input v-model='pkg.sha256' class='input' :class="{ 'input--error': packageErrors[index]?.sha256 }" placeholder='sha256'>
                     <button type='button' class='icon-btn icon-btn--danger' @click='removePackage(index)'>删除</button>
                   </div>
                 </div>
+                <p v-if='errors.packages' class='form-error'>{{ errors.packages }}</p>
               </div>
 
               <div class='form-group'>
                 <label class='form-label'>标签（逗号分隔）</label>
                 <input v-model='tagsText' class='input' placeholder='rollout, canary'>
               </div>
+
+              <p v-if='errors.submit' class='form-error'>{{ errors.submit }}</p>
 
               <div class='modal__footer'>
                 <button type='button' class='btn btn-secondary' @click='closeForm'>取消</button>
@@ -128,7 +132,8 @@ const deletingPolicy = ref(null)
 
 const form = ref(createDefaultForm())
 const tagsText = ref('')
-const errors = ref({ channel: '' })
+const errors = ref({ channel: '', desired_version: '', packages: '', submit: '' })
+const packageErrors = ref([])
 
 function createDefaultForm() {
   return {
@@ -142,7 +147,8 @@ function openCreate() {
   editingPolicy.value = null
   form.value = createDefaultForm()
   tagsText.value = ''
-  errors.value.channel = ''
+  packageErrors.value = []
+  errors.value = { channel: '', desired_version: '', packages: '', submit: '' }
   showForm.value = true
 }
 
@@ -160,7 +166,8 @@ function openEdit(policy) {
       : []
   }
   tagsText.value = Array.isArray(policy.tags) ? policy.tags.join(', ') : ''
-  errors.value.channel = ''
+  packageErrors.value = form.value.packages.map(() => ({ platform: '', url: '', sha256: '' }))
+  errors.value = { channel: '', desired_version: '', packages: '', submit: '' }
   showForm.value = true
 }
 
@@ -171,18 +178,48 @@ function closeForm() {
 
 function addPackage() {
   form.value.packages.push({ platform: '', url: '', sha256: '' })
+  packageErrors.value.push({ platform: '', url: '', sha256: '' })
 }
 
 function removePackage(index) {
   form.value.packages.splice(index, 1)
+  packageErrors.value.splice(index, 1)
+}
+
+function validateForm() {
+  errors.value = { channel: '', desired_version: '', packages: '', submit: '' }
+  packageErrors.value = form.value.packages.map(() => ({ platform: '', url: '', sha256: '' }))
+
+  if (!form.value.channel.trim()) {
+    errors.value.channel = '请输入通道名'
+  }
+  if (!form.value.desired_version.trim()) {
+    errors.value.desired_version = '请输入目标版本'
+  }
+
+  let hasPackageError = false
+  form.value.packages.forEach((pkg, index) => {
+    const platform = String(pkg.platform || '').trim()
+    const url = String(pkg.url || '').trim()
+    const sha256 = String(pkg.sha256 || '').trim()
+    if (!platform || !url || !sha256) {
+      hasPackageError = true
+      packageErrors.value[index] = {
+        platform: platform ? '' : '缺少 platform',
+        url: url ? '' : '缺少 url',
+        sha256: sha256 ? '' : '缺少 sha256'
+      }
+    }
+  })
+  if (hasPackageError) {
+    errors.value.packages = '安装包行必须完整填写 platform / url / sha256'
+  }
+
+  return !errors.value.channel && !errors.value.desired_version && !errors.value.packages
 }
 
 async function submitPolicy() {
-  errors.value.channel = ''
-  if (!form.value.channel.trim()) {
-    errors.value.channel = '请输入通道名'
-    return
-  }
+  if (!validateForm()) return
 
   const payload = {
     channel: form.value.channel.trim(),
@@ -192,21 +229,23 @@ async function submitPolicy() {
         platform: String(pkg.platform || '').trim(),
         url: String(pkg.url || '').trim(),
         sha256: String(pkg.sha256 || '').trim()
-      }))
-      .filter((pkg) => pkg.platform || pkg.url || pkg.sha256),
+      })),
     tags: tagsText.value
       .split(',')
       .map((tag) => tag.trim())
       .filter(Boolean)
   }
 
-  if (editingPolicy.value?.id) {
-    await updatePolicy.mutateAsync({ id: editingPolicy.value.id, ...payload })
-  } else {
-    await createPolicy.mutateAsync(payload)
+  try {
+    if (editingPolicy.value?.id) {
+      await updatePolicy.mutateAsync({ id: editingPolicy.value.id, ...payload })
+    } else {
+      await createPolicy.mutateAsync(payload)
+    }
+    closeForm()
+  } catch (err) {
+    errors.value.submit = err?.message || '保存版本策略失败'
   }
-
-  closeForm()
 }
 
 function startDelete(policy) {

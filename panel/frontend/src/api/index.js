@@ -217,7 +217,8 @@ function generateMockRules(count) {
       proxy_redirect: true,
       pass_proxy_headers: true,
       user_agent: '',
-      custom_headers: []
+      custom_headers: [],
+      relay_chain: []
     })
   }
   return rules
@@ -463,10 +464,10 @@ export async function fetchAllAgentsRules(agentIds) {
 // L4 Rules
 const mockL4RulesByAgent = {
   local: [
-    { id: 1, protocol: 'tcp', listen_host: '0.0.0.0', listen_port: 25565, upstream_host: '192.168.1.20', upstream_port: 25565, enabled: true, tags: ['TCP', ':25565', 'game'] }
+    { id: 1, protocol: 'tcp', listen_host: '0.0.0.0', listen_port: 25565, upstream_host: '192.168.1.20', upstream_port: 25565, relay_chain: [], enabled: true, tags: ['TCP', ':25565', 'game'] }
   ],
   'edge-1': [
-    { id: 1, protocol: 'udp', listen_host: '0.0.0.0', listen_port: 51820, upstream_host: '10.0.0.20', upstream_port: 51820, enabled: true, tags: ['UDP', ':51820', 'vpn'] }
+    { id: 1, protocol: 'udp', listen_host: '0.0.0.0', listen_port: 51820, upstream_host: '10.0.0.20', upstream_port: 51820, relay_chain: [], enabled: true, tags: ['UDP', ':51820', 'vpn'] }
   ]
 }
 let mockL4IdCounter = 1
@@ -543,15 +544,15 @@ export async function deleteL4Rule(agentId, id) {
 // Certificates (per-agent, like HTTP/L4)
 const mockCertsByAgent = {
   local: [
-    { id: 1, domain: 'media.example.com', enabled: true, scope: 'domain', issuer_mode: 'master_cf_dns', status: 'active', last_issue_at: new Date().toISOString(), last_error: '', tags: ['media', 'streaming'] },
-    { id: 2, domain: 'pan.example.com', enabled: false, scope: 'domain', issuer_mode: 'master_cf_dns', status: 'active', last_issue_at: new Date().toISOString(), last_error: '', tags: ['cloud'] }
+    { id: 1, domain: 'media.example.com', enabled: true, scope: 'domain', issuer_mode: 'master_cf_dns', usage: 'https', certificate_type: 'acme', self_signed: false, status: 'active', last_issue_at: new Date().toISOString(), last_error: '', tags: ['media', 'streaming'] },
+    { id: 2, domain: 'pan.example.com', enabled: false, scope: 'domain', issuer_mode: 'master_cf_dns', usage: 'relay_tunnel', certificate_type: 'uploaded', self_signed: true, status: 'active', last_issue_at: new Date().toISOString(), last_error: '', tags: ['cloud'] }
   ],
   'edge-1': [
-    { id: 1, domain: 'media.example.com', enabled: true, scope: 'domain', issuer_mode: 'master_cf_dns', status: 'active', last_issue_at: new Date().toISOString(), last_error: '', tags: ['media'] },
-    { id: 2, domain: '192.168.1.100', enabled: true, scope: 'ip', issuer_mode: 'local_http01', status: 'pending', last_issue_at: '', last_error: '', tags: ['internal'] }
+    { id: 1, domain: 'media.example.com', enabled: true, scope: 'domain', issuer_mode: 'master_cf_dns', usage: 'https', certificate_type: 'acme', self_signed: false, status: 'active', last_issue_at: new Date().toISOString(), last_error: '', tags: ['media'] },
+    { id: 2, domain: '192.168.1.100', enabled: true, scope: 'ip', issuer_mode: 'local_http01', usage: 'relay_ca', certificate_type: 'internal_ca', self_signed: true, status: 'pending', last_issue_at: '', last_error: '', tags: ['internal'] }
   ],
   'edge-2': [
-    { id: 1, domain: 'media.example.com', enabled: true, scope: 'domain', issuer_mode: 'local_http01', status: 'error', last_issue_at: '', last_error: 'ACME challenge failed', tags: ['media'] }
+    { id: 1, domain: 'media.example.com', enabled: true, scope: 'domain', issuer_mode: 'local_http01', usage: 'mixed', certificate_type: 'acme', self_signed: false, status: 'error', last_issue_at: '', last_error: 'ACME challenge failed', tags: ['media'] }
   ]
 }
 let mockCertIdCounter = 10
@@ -629,15 +630,15 @@ export async function fetchAllAgentsCertificates(agentIds) {
 const mockRelayListenersByAgent = {
   local: [
     {
-      id: 'relay-local-1',
+      id: 1,
       agent_id: 'local',
-      name: '本地入口',
+      name: '????',
       listen_host: '0.0.0.0',
       listen_port: 9443,
       enabled: true,
       certificate_id: 1,
-      tls_mode: 'server',
-      pin_set: [],
+      tls_mode: 'pin_or_ca',
+      pin_set: [{ type: 'spki_sha256', value: 'local-pin-1' }],
       trusted_ca_certificate_ids: [],
       allow_self_signed: false,
       tags: ['relay', 'local'],
@@ -646,15 +647,15 @@ const mockRelayListenersByAgent = {
   ],
   'edge-1': [
     {
-      id: 'relay-edge-1',
+      id: 2,
       agent_id: 'edge-1',
-      name: '边缘入口',
+      name: '????',
       listen_host: '0.0.0.0',
       listen_port: 10443,
       enabled: true,
       certificate_id: 1,
-      tls_mode: 'mtls',
-      pin_set: ['sha256/edge1'],
+      tls_mode: 'ca_only',
+      pin_set: [{ type: 'spki_sha256', value: 'edge-pin-1' }],
       trusted_ca_certificate_ids: [1],
       allow_self_signed: false,
       tags: ['relay', 'edge'],
@@ -663,7 +664,33 @@ const mockRelayListenersByAgent = {
   ]
 }
 
-let mockRelayListenerIdCounter = 100
+let mockRelayListenerIdCounter = 2
+
+function normalizeMockRelayListenerPayload(payload = {}) {
+  const pinSet = Array.isArray(payload.pin_set)
+    ? payload.pin_set
+      .map((entry) => ({
+        type: String(entry?.type || '').trim(),
+        value: String(entry?.value || '').trim()
+      }))
+      .filter((entry) => entry.type && entry.value)
+    : []
+  const trustedCa = Array.isArray(payload.trusted_ca_certificate_ids)
+    ? [...new Set(payload.trusted_ca_certificate_ids
+      .map((id) => Number(id))
+      .filter((id) => Number.isInteger(id) && id > 0))]
+    : []
+  if (!pinSet.length && !trustedCa.length) {
+    throw new Error('pin_set and trusted_ca_certificate_ids cannot both be empty')
+  }
+  return {
+    ...payload,
+    certificate_id: payload.certificate_id == null ? null : Number(payload.certificate_id),
+    pin_set: pinSet,
+    trusted_ca_certificate_ids: trustedCa,
+    tls_mode: String(payload.tls_mode || 'pin_or_ca')
+  }
+}
 
 function ensureDevRelayAgentExists(agentId) {
   const exists = mockAgents.some((agent) => String(agent.id) === String(agentId))
@@ -686,11 +713,12 @@ export async function createRelayListener(agentId, payload) {
   if (isDev) {
     await sleep()
     ensureDevRelayAgentExists(agentId)
+    const normalizedPayload = normalizeMockRelayListenerPayload(payload)
     const item = {
-      id: `relay-${++mockRelayListenerIdCounter}`,
+      id: ++mockRelayListenerIdCounter,
       agent_id: agentId,
       revision: Date.now(),
-      ...payload
+      ...normalizedPayload
     }
     mockRelayListenersByAgent[agentId] = mockRelayListenersByAgent[agentId] || []
     mockRelayListenersByAgent[agentId].push(item)
@@ -711,7 +739,8 @@ export async function updateRelayListener(agentId, id, payload) {
     const list = mockRelayListenersByAgent[agentId] || []
     const idx = list.findIndex((item) => String(item.id) === String(id))
     if (idx === -1) return null
-    list[idx] = { ...list[idx], ...payload }
+    const normalizedPayload = normalizeMockRelayListenerPayload({ ...list[idx], ...payload })
+    list[idx] = { ...list[idx], ...normalizedPayload }
     return list[idx]
   }
   const { data } = await api.put(
@@ -760,6 +789,29 @@ const mockVersionPolicies = [
 
 let mockVersionPolicyIdCounter = 10
 
+function normalizeMockVersionPolicyPayload(payload = {}) {
+  const desiredVersion = String(payload.desired_version || '').trim()
+  if (!desiredVersion) {
+    throw new Error('desired_version is required')
+  }
+  const packages = Array.isArray(payload.packages)
+    ? payload.packages.map((item) => ({
+      platform: String(item?.platform || '').trim(),
+      url: String(item?.url || '').trim(),
+      sha256: String(item?.sha256 || '').trim()
+    }))
+    : []
+  const hasPartialPackage = packages.some((item) => !item.platform || !item.url || !item.sha256)
+  if (hasPartialPackage) {
+    throw new Error('packages entries require platform, url and sha256')
+  }
+  return {
+    ...payload,
+    desired_version: desiredVersion,
+    packages
+  }
+}
+
 export async function fetchVersionPolicies() {
   if (isDev) {
     await sleep()
@@ -772,7 +824,8 @@ export async function fetchVersionPolicies() {
 export async function createVersionPolicy(payload) {
   if (isDev) {
     await sleep()
-    const item = { id: `vp-${++mockVersionPolicyIdCounter}`, ...payload }
+    const normalizedPayload = normalizeMockVersionPolicyPayload(payload)
+    const item = { id: `vp-${++mockVersionPolicyIdCounter}`, ...normalizedPayload }
     mockVersionPolicies.push(item)
     return item
   }
@@ -785,7 +838,8 @@ export async function updateVersionPolicy(id, payload) {
     await sleep()
     const idx = mockVersionPolicies.findIndex((item) => String(item.id) === String(id))
     if (idx === -1) return null
-    mockVersionPolicies[idx] = { ...mockVersionPolicies[idx], ...payload }
+    const normalizedPayload = normalizeMockVersionPolicyPayload({ ...mockVersionPolicies[idx], ...payload })
+    mockVersionPolicies[idx] = { ...mockVersionPolicies[idx], ...normalizedPayload }
     return mockVersionPolicies[idx]
   }
   const { data } = await api.put(`/version-policies/${encodeURIComponent(id)}`, payload, longRunningRequest)

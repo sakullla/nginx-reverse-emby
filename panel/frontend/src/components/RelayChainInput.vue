@@ -3,7 +3,7 @@
     <div class='relay-chain__add'>
       <select v-model='pendingId' class='input' :disabled='disabled || !availableOptions.length'>
         <option value=''>选择 Relay 监听器...</option>
-        <option v-for='listener in availableOptions' :key='listener.id' :value='String(listener.id)'>
+        <option v-for='listener in availableOptions' :key='listener.id' :value='listener.id'>
           {{ formatListener(listener) }}
         </option>
       </select>
@@ -40,15 +40,17 @@ const emit = defineEmits(['update:modelValue'])
 
 const pendingId = ref('')
 
-const selectedIds = computed(() => (props.modelValue || []).map((id) => String(id)))
+const selectedIds = computed(() => (props.modelValue || [])
+  .map((id) => Number(id))
+  .filter((id) => Number.isInteger(id) && id > 0))
 
 const availableOptions = computed(() => {
   const selected = new Set(selectedIds.value)
-  return (props.listeners || []).filter((listener) => !selected.has(String(listener.id)))
+  return (props.listeners || []).filter((listener) => !selected.has(Number(listener.id)))
 })
 
 const selectedListeners = computed(() => {
-  const map = new Map((props.listeners || []).map((listener) => [String(listener.id), listener]))
+  const map = new Map((props.listeners || []).map((listener) => [Number(listener.id), listener]))
   return selectedIds.value
     .map((id) => map.get(id) || { id, name: `监听器 ${id}` })
 })
@@ -65,8 +67,9 @@ function updateChain(next) {
 }
 
 function addSelected() {
-  if (!pendingId.value) return
-  updateChain([...selectedIds.value, pendingId.value])
+  const nextId = Number(pendingId.value)
+  if (!Number.isInteger(nextId) || nextId <= 0) return
+  updateChain([...selectedIds.value, nextId])
   pendingId.value = ''
 }
 

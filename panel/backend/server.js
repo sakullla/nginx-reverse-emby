@@ -11,6 +11,8 @@ const storage = require("./storage");
 const {
   normalizeRuleRequestHeaders,
 } = require("./http-rule-request-headers");
+const { normalizeRelayListenerPayload } = require("./relay-listener-normalize");
+const { normalizeVersionPolicyPayload } = require("./version-policy-normalize");
 
 const HOST = process.env.PANEL_BACKEND_HOST || "127.0.0.1";
 const PORT = Number(process.env.PANEL_BACKEND_PORT || "18081");
@@ -440,6 +442,10 @@ function normalizeRulePayload(body, fallback = {}, suggestedId = null) {
         ? Number(fallback.id)
         : Number(suggestedId);
   const headerConfig = normalizeRuleRequestHeaders(body, fallback);
+  const relayChain = normalizeRelayChainPayload(
+    body.relay_chain !== undefined ? body.relay_chain : fallback.relay_chain,
+    { protocol: "tcp" },
+  );
 
   return {
     id:
@@ -456,8 +462,79 @@ function normalizeRulePayload(body, fallback = {}, suggestedId = null) {
       body.proxy_redirect !== undefined
         ? !!body.proxy_redirect
         : fallback.proxy_redirect !== false,
+    relay_chain: relayChain,
     ...headerConfig,
   };
+}
+
+function normalizeRelayChainPayload(value, options = {}) {
+  const relayChain = Array.isArray(value)
+    ? value
+    : value === undefined || value === null || value === ""
+      ? []
+      : [value];
+  const normalized = [];
+  const seen = new Set();
+  for (const entry of relayChain) {
+    const parsed = Number(entry);
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+      throw new Error("relay_chain entries must be positive integer listener IDs");
+    }
+    if (seen.has(parsed)) {
+      throw new Error("relay_chain entries must not contain duplicates");
+    }
+    seen.add(parsed);
+    normalized.push(parsed);
+  }
+
+  const protocol = String(options.protocol || "tcp").trim().toLowerCase();
+  if (protocol !== "tcp" && normalized.length > 0) {
+    throw new Error("relay_chain is only supported for tcp protocol");
+  }
+  if (normalized.length === 0) {
+    return [];
+  }
+
+  const relayListeners = listAllRelayListenersById();
+  for (const listenerId of normalized) {
+    const listener = relayListeners.get(listenerId);
+    if (!listener) {
+      throw new Error(`relay listener not found: ${listenerId}`);
+    }
+    if (listener.enabled === false) {
+      throw new Error(`relay listener is disabled: ${listenerId}`);
+    }
+    const ownerAgent = getAgentById(String(listener.agent_id || ""));
+    if (!ownerAgent) {
+      throw new Error(`relay listener belongs to unknown agent: ${listenerId}`);
+    }
+  }
+  return normalized;
+}
+
+function listAllRelayListenersById() {
+  const listenersById = new Map();
+  const candidateAgentIds = new Set();
+  if (LOCAL_AGENT_ENABLED) {
+    candidateAgentIds.add(LOCAL_AGENT_ID);
+  }
+  for (const agent of storage.loadRegisteredAgents()) {
+    const agentId = String(agent?.id || "").trim();
+    if (agentId) {
+      candidateAgentIds.add(agentId);
+    }
+  }
+  for (const agentId of candidateAgentIds) {
+    const listeners = storage.loadRelayListenersForAgent(agentId);
+    for (const listener of Array.isArray(listeners) ? listeners : []) {
+      const parsedId = Number(listener?.id);
+      if (!Number.isInteger(parsedId) || parsedId <= 0) {
+        continue;
+      }
+      listenersById.set(parsedId, listener);
+    }
+  }
+  return listenersById;
 }
 
 function isProxyHeadersGloballyDisabled() {
@@ -811,6 +888,10 @@ function normalizeL4RulePayload(body, fallback = {}, suggestedId = null) {
   // Normalize tuning: merge user input over defaults
   const rawTuning = body?.tuning !== undefined ? body.tuning : fallback?.tuning;
   const tuning = normalizeL4Tuning(rawTuning, protocol);
+  const relayChain = normalizeRelayChainPayload(
+    body.relay_chain !== undefined ? body.relay_chain : fallback.relay_chain,
+    { protocol },
+  );
 
   return {
     id:
@@ -828,6 +909,7 @@ function normalizeL4RulePayload(body, fallback = {}, suggestedId = null) {
     backends,
     load_balancing: loadBalancing,
     tuning,
+    relay_chain: relayChain,
     enabled:
       body.enabled !== undefined ? !!body.enabled : fallback.enabled !== false,
     tags:
@@ -853,6 +935,27 @@ function getHighestRelayListenerRevision(listeners = []) {
     (max, listener) => Math.max(max, normalizeRevision(listener?.revision)),
     0,
   );
+}
+
+function getNextRelayListenerId() {
+  let maxId = 0;
+  const candidateAgentIds = new Set();
+  if (LOCAL_AGENT_ENABLED) {
+    candidateAgentIds.add(LOCAL_AGENT_ID);
+  }
+  for (const agent of storage.loadRegisteredAgents()) {
+    const agentId = String(agent?.id || "").trim();
+    if (agentId) {
+      candidateAgentIds.add(agentId);
+    }
+  }
+  for (const agentId of candidateAgentIds) {
+    const listeners = storage.loadRelayListenersForAgent(agentId);
+    for (const listener of Array.isArray(listeners) ? listeners : []) {
+      maxId = Math.max(maxId, Number(listener?.id) || 0);
+    }
+  }
+  return maxId + 1;
 }
 
 function ensureUniqueL4Listen(rules, nextRule, excludeId = null) {
@@ -981,6 +1084,28 @@ function normalizeAgentManagedCertificateReportPayload(value = {}) {
   };
 }
 
+function normalizeManagedCertificateUsage(value, fallback = "https") {
+  const next = String(value === undefined ? fallback : value || "")
+    .trim()
+    .toLowerCase();
+  const allowed = new Set(["https", "relay_tunnel", "relay_ca", "mixed"]);
+  if (!allowed.has(next)) {
+    throw new Error("usage must be https, relay_tunnel, relay_ca, or mixed");
+  }
+  return next;
+}
+
+function normalizeManagedCertificateType(value, fallback = "acme") {
+  const next = String(value === undefined ? fallback : value || "")
+    .trim()
+    .toLowerCase();
+  const allowed = new Set(["acme", "uploaded", "internal_ca"]);
+  if (!allowed.has(next)) {
+    throw new Error("certificate_type must be acme, uploaded, or internal_ca");
+  }
+  return next;
+}
+
 function normalizeManagedCertificatePayload(body, fallback = {}, suggestedId = null) {
   const domain = normalizeHost(
     body.domain !== undefined ? body.domain : fallback.domain,
@@ -1064,6 +1189,18 @@ function normalizeManagedCertificatePayload(body, fallback = {}, suggestedId = n
         : normalizeManagedCertificateAcmeInfo(fallback.acme_info || {}),
     tags:
       body.tags !== undefined ? normalizeTags(body.tags) : normalizeTags(fallback.tags || []),
+    usage: normalizeManagedCertificateUsage(
+      body.usage !== undefined ? body.usage : fallback.usage,
+      "https",
+    ),
+    certificate_type: normalizeManagedCertificateType(
+      body.certificate_type !== undefined ? body.certificate_type : fallback.certificate_type,
+      "acme",
+    ),
+    self_signed:
+      body.self_signed !== undefined
+        ? !!body.self_signed
+        : fallback.self_signed === true,
   };
 }
 
@@ -3324,6 +3461,7 @@ async function handleMasterApi(req, res) {
     storage.saveRegisteredAgents(agents);
     storage.deleteRulesForAgent(agentId);
     storage.deleteL4RulesForAgent(agentId);
+    storage.deleteRelayListenersForAgent(agentId);
     removePath(getManagedCertBundleFileForAgent(agentId));
     removePath(getManagedCertPolicyFileForAgent(agentId));
     sendJson(res, 200, { ok: true, agent: sanitizeAgent(deleted) });
@@ -3657,6 +3795,246 @@ async function handleMasterApi(req, res) {
       }
 
       sendJson(res, 200, { ok: true, rule: deleted });
+    } catch (err) {
+      sendJson(res, 400, errorPayload(String(err.message || err)));
+    }
+    return;
+  }
+
+  if (req.method === "GET" && /^\/api\/agents\/[^/]+\/relay-listeners$/.test(urlPath)) {
+    const agentId = extractAgentId(urlPath);
+    const agent = getAgentById(agentId);
+    if (!agent) {
+      sendJson(res, 404, errorPayload("agent not found"));
+      return;
+    }
+    sendJson(res, 200, { ok: true, listeners: storage.loadRelayListenersForAgent(agentId) });
+    return;
+  }
+
+  if (req.method === "POST" && /^\/api\/agents\/[^/]+\/relay-listeners$/.test(urlPath)) {
+    try {
+      const agentId = extractAgentId(urlPath);
+      const agent = getAgentById(agentId);
+      if (!agent) {
+        sendJson(res, 404, errorPayload("agent not found"));
+        return;
+      }
+      const body = await parseJsonBody(req);
+      const listeners = storage.loadRelayListenersForAgent(agentId);
+      const nextListener = normalizeRelayListenerPayload({
+        ...(body || {}),
+        id: getNextRelayListenerId(),
+        agent_id: agentId,
+        revision: getNextPendingRevision(agent),
+      });
+      const nextListeners = [...listeners, nextListener];
+      storage.saveRelayListenersForAgent(agentId, nextListeners);
+
+      if (AUTO_APPLY) {
+        try {
+          await applyAgent(agentId);
+        } catch (err) {
+          sendJson(
+            res,
+            400,
+            errorPayload(
+              "relay listener saved but failed to sync/apply agent config",
+              String(err.message || err),
+            ),
+          );
+          return;
+        }
+      }
+
+      sendJson(res, 201, { ok: true, listener: nextListener });
+    } catch (err) {
+      sendJson(res, 400, errorPayload(String(err.message || err)));
+    }
+    return;
+  }
+
+  if (req.method === "PUT" && /^\/api\/agents\/[^/]+\/relay-listeners\/\d+$/.test(urlPath)) {
+    try {
+      const agentId = extractAgentId(urlPath);
+      const agent = getAgentById(agentId);
+      if (!agent) {
+        sendJson(res, 404, errorPayload("agent not found"));
+        return;
+      }
+      const listenerId = extractTrailingId(urlPath);
+      const body = await parseJsonBody(req);
+      const listeners = storage.loadRelayListenersForAgent(agentId);
+      const index = listeners.findIndex((listener) => Number(listener.id) === listenerId);
+      if (index === -1) {
+        sendJson(res, 404, errorPayload("relay listener not found"));
+        return;
+      }
+      const nextListener = normalizeRelayListenerPayload({
+        ...listeners[index],
+        ...(body || {}),
+        id: listenerId,
+        agent_id: agentId,
+        revision: getNextPendingRevision(agent),
+      });
+      const nextListeners = listeners.slice();
+      nextListeners[index] = nextListener;
+      storage.saveRelayListenersForAgent(agentId, nextListeners);
+
+      if (AUTO_APPLY) {
+        try {
+          await applyAgent(agentId);
+        } catch (err) {
+          sendJson(
+            res,
+            400,
+            errorPayload(
+              "relay listener updated but failed to sync/apply agent config",
+              String(err.message || err),
+            ),
+          );
+          return;
+        }
+      }
+
+      sendJson(res, 200, { ok: true, listener: nextListener });
+    } catch (err) {
+      sendJson(res, 400, errorPayload(String(err.message || err)));
+    }
+    return;
+  }
+
+  if (req.method === "DELETE" && /^\/api\/agents\/[^/]+\/relay-listeners\/\d+$/.test(urlPath)) {
+    try {
+      const agentId = extractAgentId(urlPath);
+      const agent = getAgentById(agentId);
+      if (!agent) {
+        sendJson(res, 404, errorPayload("agent not found"));
+        return;
+      }
+      const listenerId = extractTrailingId(urlPath);
+      const listeners = storage.loadRelayListenersForAgent(agentId);
+      const index = listeners.findIndex((listener) => Number(listener.id) === listenerId);
+      if (index === -1) {
+        sendJson(res, 404, errorPayload("relay listener not found"));
+        return;
+      }
+
+      const inUseByHttp = loadNormalizedRulesForAgent(agentId).find((rule) =>
+        Array.isArray(rule.relay_chain) && rule.relay_chain.includes(listenerId),
+      );
+      if (inUseByHttp) {
+        sendJson(res, 400, errorPayload(`relay listener ${listenerId} is referenced by HTTP rule #${inUseByHttp.id}`));
+        return;
+      }
+      const inUseByL4 = storage.loadL4RulesForAgent(agentId).find((rule) =>
+        Array.isArray(rule.relay_chain) && rule.relay_chain.includes(listenerId),
+      );
+      if (inUseByL4) {
+        sendJson(res, 400, errorPayload(`relay listener ${listenerId} is referenced by L4 rule #${inUseByL4.id}`));
+        return;
+      }
+
+      const deleted = listeners[index];
+      const nextListeners = listeners.filter((_, itemIndex) => itemIndex !== index);
+      storage.saveRelayListenersForAgent(agentId, nextListeners);
+
+      if (AUTO_APPLY) {
+        try {
+          await applyAgent(agentId);
+        } catch (err) {
+          sendJson(
+            res,
+            400,
+            errorPayload(
+              "relay listener deleted but failed to sync/apply agent config",
+              String(err.message || err),
+            ),
+          );
+          return;
+        }
+      }
+
+      sendJson(res, 200, { ok: true, listener: deleted });
+    } catch (err) {
+      sendJson(res, 400, errorPayload(String(err.message || err)));
+    }
+    return;
+  }
+
+  if (req.method === "GET" && urlPath === "/api/version-policies") {
+    sendJson(res, 200, { ok: true, policies: storage.loadVersionPolicies() });
+    return;
+  }
+
+  if (req.method === "POST" && urlPath === "/api/version-policies") {
+    try {
+      const body = await parseJsonBody(req);
+      const policies = storage.loadVersionPolicies();
+      const candidateId = String(
+        body?.id !== undefined
+          ? body.id
+          : body?.channel !== undefined
+            ? body.channel
+            : `policy-${Date.now()}`,
+      ).trim();
+      const policy = normalizeVersionPolicyPayload({
+        ...(body || {}),
+        id: candidateId || `policy-${Date.now()}`,
+      });
+      if (policies.some((item) => String(item.id) === String(policy.id))) {
+        sendJson(res, 400, errorPayload(`version policy id already exists: ${policy.id}`));
+        return;
+      }
+      const nextPolicies = [...policies, policy];
+      storage.saveVersionPolicies(nextPolicies);
+      sendJson(res, 201, { ok: true, policy });
+    } catch (err) {
+      sendJson(res, 400, errorPayload(String(err.message || err)));
+    }
+    return;
+  }
+
+  if (req.method === "PUT" && /^\/api\/version-policies\/[^/]+$/.test(urlPath)) {
+    try {
+      const policyIdMatch = urlPath.match(/^\/api\/version-policies\/([^/]+)$/);
+      const policyId = policyIdMatch ? decodeURIComponent(policyIdMatch[1]) : null;
+      const body = await parseJsonBody(req);
+      const policies = storage.loadVersionPolicies();
+      const index = policies.findIndex((item) => String(item.id) === String(policyId));
+      if (index === -1) {
+        sendJson(res, 404, errorPayload("version policy not found"));
+        return;
+      }
+      const nextPolicy = normalizeVersionPolicyPayload({
+        ...policies[index],
+        ...(body || {}),
+        id: policies[index].id,
+      });
+      const nextPolicies = policies.slice();
+      nextPolicies[index] = nextPolicy;
+      storage.saveVersionPolicies(nextPolicies);
+      sendJson(res, 200, { ok: true, policy: nextPolicy });
+    } catch (err) {
+      sendJson(res, 400, errorPayload(String(err.message || err)));
+    }
+    return;
+  }
+
+  if (req.method === "DELETE" && /^\/api\/version-policies\/[^/]+$/.test(urlPath)) {
+    try {
+      const policyIdMatch = urlPath.match(/^\/api\/version-policies\/([^/]+)$/);
+      const policyId = policyIdMatch ? decodeURIComponent(policyIdMatch[1]) : null;
+      const policies = storage.loadVersionPolicies();
+      const index = policies.findIndex((item) => String(item.id) === String(policyId));
+      if (index === -1) {
+        sendJson(res, 404, errorPayload("version policy not found"));
+        return;
+      }
+      const deleted = policies[index];
+      const nextPolicies = policies.filter((_, itemIndex) => itemIndex !== index);
+      storage.saveVersionPolicies(nextPolicies);
+      sendJson(res, 200, { ok: true, policy: deleted });
     } catch (err) {
       sendJson(res, 400, errorPayload(String(err.message || err)));
     }

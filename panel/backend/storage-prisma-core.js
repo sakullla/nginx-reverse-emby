@@ -17,11 +17,12 @@ const DEFAULT_LOCAL_AGENT_STATE = Object.freeze({
   last_apply_message: "",
   desired_version: "",
 });
-const CURRENT_SCHEMA_VERSION = "4";
+const CURRENT_SCHEMA_VERSION = "5";
 const MIGRATIONS_DIR = path.join(__dirname, "prisma", "migrations");
 const REQUEST_HEADERS_SCHEMA_VERSION = 2;
 const RELAY_VERSION_POLICY_SCHEMA_VERSION = 3;
 const AGENT_PLATFORM_SCHEMA_VERSION = 4;
+const RELAY_CHAIN_CERT_FIELDS_SCHEMA_VERSION = 5;
 const CLIENT_STATE = {
   client: null,
   dataRoot: null,
@@ -61,6 +62,7 @@ const SCHEMA_STATEMENTS = [
     enabled INTEGER DEFAULT 1,
     tags TEXT DEFAULT '[]',
     proxy_redirect INTEGER DEFAULT 1,
+    relay_chain TEXT DEFAULT '[]',
     revision INTEGER DEFAULT 0,
     PRIMARY KEY (agent_id, id)
   )`,
@@ -77,6 +79,7 @@ const SCHEMA_STATEMENTS = [
     backends TEXT DEFAULT '[]',
     load_balancing TEXT DEFAULT '{}',
     tuning TEXT DEFAULT '{}',
+    relay_chain TEXT DEFAULT '[]',
     enabled INTEGER DEFAULT 1,
     tags TEXT DEFAULT '[]',
     revision INTEGER DEFAULT 0,
@@ -112,6 +115,9 @@ const SCHEMA_STATEMENTS = [
     material_hash TEXT DEFAULT '',
     agent_reports TEXT DEFAULT '{}',
     acme_info TEXT DEFAULT '{}',
+    usage TEXT DEFAULT 'https',
+    certificate_type TEXT DEFAULT 'acme',
+    self_signed INTEGER DEFAULT 0,
     tags TEXT DEFAULT '[]',
     revision INTEGER DEFAULT 0
   )`,
@@ -206,12 +212,28 @@ async function readTableColumnNames(client, tableName) {
 
 async function inferSchemaVersionWithoutMeta(client) {
   const ruleColumns = await readTableColumnNames(client, "rules");
+  const l4RuleColumns = await readTableColumnNames(client, "l4_rules");
+  const managedCertificateColumns = await readTableColumnNames(client, "managed_certificates");
   const agentColumns = await readTableColumnNames(client, "agents");
   const localAgentStateColumns = await readTableColumnNames(client, "local_agent_state");
   const hasRequestHeaderColumns = ["pass_proxy_headers", "user_agent", "custom_headers"]
     .every((column) => ruleColumns.has(column));
   const hasVersionPolicyColumns = agentColumns.has("desired_version") && localAgentStateColumns.has("desired_version");
   const hasAgentPlatformColumn = agentColumns.has("platform");
+  const hasRelayChainColumns = ruleColumns.has("relay_chain") && l4RuleColumns.has("relay_chain");
+  const hasManagedCertificateExtendedColumns =
+    managedCertificateColumns.has("usage") &&
+    managedCertificateColumns.has("certificate_type") &&
+    managedCertificateColumns.has("self_signed");
+  if (
+    hasRequestHeaderColumns &&
+    hasVersionPolicyColumns &&
+    hasAgentPlatformColumn &&
+    hasRelayChainColumns &&
+    hasManagedCertificateExtendedColumns
+  ) {
+    return RELAY_CHAIN_CERT_FIELDS_SCHEMA_VERSION;
+  }
   if (hasRequestHeaderColumns && hasVersionPolicyColumns && hasAgentPlatformColumn) {
     return AGENT_PLATFORM_SCHEMA_VERSION;
   }
@@ -377,6 +399,23 @@ function ensureArray(value) {
   return Array.isArray(value) ? value : [];
 }
 
+function normalizeRelayChainIds(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const seen = new Set();
+  const normalized = [];
+  for (const entry of value) {
+    const parsed = Number(entry);
+    if (!Number.isInteger(parsed) || parsed <= 0 || seen.has(parsed)) {
+      continue;
+    }
+    seen.add(parsed);
+    normalized.push(parsed);
+  }
+  return normalized;
+}
+
 function sanitizeStoredCustomHeaders(value) {
   const headers = ensureArray(value);
   const seen = new Set();
@@ -433,6 +472,7 @@ function mapRuleFromDb(row) {
     enabled: !!row.enabled,
     tags: parseJsonValue(row.tags, []),
     proxy_redirect: !!row.proxyRedirect,
+    relay_chain: normalizeRelayChainIds(parseJsonValue(row.relayChain, [])),
     pass_proxy_headers: row.passProxyHeaders !== false,
     user_agent: row.userAgent || "",
     custom_headers: sanitizeStoredCustomHeaders(parseJsonValue(row.customHeaders, [])),
@@ -453,6 +493,7 @@ function mapL4RuleFromDb(row) {
     backends: parseJsonValue(row.backends, []),
     load_balancing: parseJsonValue(row.loadBalancing, {}),
     tuning: parseJsonValue(row.tuning, {}),
+    relay_chain: normalizeRelayChainIds(parseJsonValue(row.relayChain, [])),
     enabled: !!row.enabled,
     tags: parseJsonValue(row.tags, []),
     revision: row.revision || 0,
@@ -473,6 +514,9 @@ function mapManagedCertificateFromDb(row) {
     material_hash: row.materialHash || "",
     agent_reports: parseJsonValue(row.agentReports, {}),
     acme_info: parseJsonValue(row.acmeInfo, {}),
+    usage: row.usage || "https",
+    certificate_type: row.certificateType || "acme",
+    self_signed: !!row.selfSigned,
     tags: parseJsonValue(row.tags, []),
     revision: row.revision || 0,
   };
@@ -576,6 +620,7 @@ function mapRuleToDb(agentId, rule) {
     enabled: rule.enabled !== false,
     tags: stringifyJsonValue(rule.tags, []),
     proxyRedirect: rule.proxy_redirect !== false,
+    relayChain: stringifyJsonValue(normalizeRelayChainIds(rule.relay_chain), []),
     passProxyHeaders: rule.pass_proxy_headers !== false,
     userAgent: String(rule.user_agent || ""),
     customHeaders: stringifyJsonValue(sanitizeStoredCustomHeaders(rule.custom_headers), []),
@@ -596,6 +641,7 @@ function mapL4RuleToDb(agentId, rule) {
     backends: stringifyJsonValue(rule.backends, []),
     loadBalancing: stringifyJsonValue(rule.load_balancing, {}),
     tuning: stringifyJsonValue(rule.tuning, {}),
+    relayChain: stringifyJsonValue(normalizeRelayChainIds(rule.relay_chain), []),
     enabled: rule.enabled !== false,
     tags: stringifyJsonValue(rule.tags, []),
     revision: Number(rule.revision || 0),
@@ -616,6 +662,9 @@ function mapManagedCertificateToDb(cert) {
     materialHash: String(cert.material_hash || ""),
     agentReports: stringifyJsonValue(cert.agent_reports, {}),
     acmeInfo: stringifyJsonValue(cert.acme_info, {}),
+    usage: String(cert.usage || "https"),
+    certificateType: String(cert.certificate_type || "acme"),
+    selfSigned: cert.self_signed === true,
     tags: stringifyJsonValue(cert.tags, []),
     revision: Number(cert.revision || 0),
   };
