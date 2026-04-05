@@ -17,10 +17,11 @@ const DEFAULT_LOCAL_AGENT_STATE = Object.freeze({
   last_apply_message: "",
   desired_version: "",
 });
-const CURRENT_SCHEMA_VERSION = "3";
+const CURRENT_SCHEMA_VERSION = "4";
 const MIGRATIONS_DIR = path.join(__dirname, "prisma", "migrations");
 const REQUEST_HEADERS_SCHEMA_VERSION = 2;
 const RELAY_VERSION_POLICY_SCHEMA_VERSION = 3;
+const AGENT_PLATFORM_SCHEMA_VERSION = 4;
 const CLIENT_STATE = {
   client: null,
   dataRoot: null,
@@ -34,6 +35,7 @@ const SCHEMA_STATEMENTS = [
     agent_url TEXT DEFAULT '',
     agent_token TEXT DEFAULT '',
     version TEXT DEFAULT '',
+    platform TEXT DEFAULT '',
     desired_version TEXT DEFAULT '',
     tags TEXT DEFAULT '[]',
     capabilities TEXT DEFAULT '[]',
@@ -209,6 +211,10 @@ async function inferSchemaVersionWithoutMeta(client) {
   const hasRequestHeaderColumns = ["pass_proxy_headers", "user_agent", "custom_headers"]
     .every((column) => ruleColumns.has(column));
   const hasVersionPolicyColumns = agentColumns.has("desired_version") && localAgentStateColumns.has("desired_version");
+  const hasAgentPlatformColumn = agentColumns.has("platform");
+  if (hasRequestHeaderColumns && hasVersionPolicyColumns && hasAgentPlatformColumn) {
+    return AGENT_PLATFORM_SCHEMA_VERSION;
+  }
   if (hasRequestHeaderColumns && hasVersionPolicyColumns) {
     return RELAY_VERSION_POLICY_SCHEMA_VERSION;
   }
@@ -398,6 +404,7 @@ function mapAgentFromDb(row) {
     agent_url: row.agentUrl || "",
     agent_token: row.agentToken || "",
     version: row.version || "",
+    platform: row.platform || "",
     desired_version: row.desiredVersion || "",
     tags: parseJsonValue(row.tags, []),
     capabilities: parseJsonValue(row.capabilities, []),
@@ -537,6 +544,7 @@ function mapAgentToDb(agent) {
     agentUrl: String(agent.agent_url || ""),
     agentToken: String(agent.agent_token || ""),
     version: String(agent.version || ""),
+    platform: String(agent.platform || ""),
     desiredVersion: String(agent.desired_version || ""),
     tags: stringifyJsonValue(agent.tags, []),
     capabilities: stringifyJsonValue(agent.capabilities, []),

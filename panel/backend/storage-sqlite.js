@@ -86,6 +86,7 @@ function normalizeAgent(agent) {
     agent_url: agent.agent_url || "",
     agent_token: agent.agent_token || "",
     version: agent.version || "",
+    platform: String(agent.platform || ""),
     tags: Array.isArray(agent.tags) ? clone(agent.tags) : [],
     capabilities: Array.isArray(agent.capabilities) ? clone(agent.capabilities) : [],
     mode: agent.mode || "pull",

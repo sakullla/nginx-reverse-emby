@@ -848,6 +848,13 @@ function getHighestL4RuleRevision(rules = []) {
   );
 }
 
+function getHighestRelayListenerRevision(listeners = []) {
+  return (Array.isArray(listeners) ? listeners : []).reduce(
+    (max, listener) => Math.max(max, normalizeRevision(listener?.revision)),
+    0,
+  );
+}
+
 function ensureUniqueL4Listen(rules, nextRule, excludeId = null) {
   const conflict = (Array.isArray(rules) ? rules : []).find((rule) => {
     if (!rule || Number(rule.id) === Number(excludeId)) return false;
@@ -1536,10 +1543,14 @@ function getDesiredRevisionForSync(agent, agentId, rules = [], options = {}) {
   const currentRevision = normalizeRevision(agent?.current_revision);
   const highestRuleRevision = getHighestRuleRevision(rules);
   const highestL4Revision = getHighestL4RuleRevision(storage.loadL4RulesForAgent(agentId));
+  const highestRelayListenerRevision = getHighestRelayListenerRevision(
+    storage.loadRelayListenersForAgent(agentId),
+  );
   const highestManagedCertRevision = getHighestManagedCertificateRevisionForAgent(agentId);
   const highestConfigRevision = Math.max(
     highestRuleRevision,
     highestL4Revision,
+    highestRelayListenerRevision,
     highestManagedCertRevision,
   );
 
@@ -1565,6 +1576,8 @@ function normalizeRevision(value) {
 
 function ensureAgentState(agent) {
   agent.mode = agent.is_local ? "local" : resolveRemoteAgentMode(agent.agent_url);
+  agent.platform = String(agent.platform || "").trim();
+  agent.desired_version = String(agent.desired_version || "").trim();
   agent.desired_revision = normalizeRevision(agent.desired_revision);
   agent.current_revision = normalizeRevision(agent.current_revision);
   agent.last_apply_revision = normalizeRevision(
@@ -1605,6 +1618,7 @@ function makeLocalAgent() {
     name: LOCAL_AGENT_NAME,
     agent_url: LOCAL_AGENT_URL,
     version: AGENT_VERSION,
+    desired_version: state.desired_version,
     tags: LOCAL_AGENT_TAGS,
     mode: "local",
     desired_revision: state.desired_revision,
@@ -1629,6 +1643,8 @@ function sanitizeAgent(agent) {
     name: String(hydrated.name || "").trim(),
     agent_url: trimSlash(hydrated.agent_url || ""),
     version: String(hydrated.version || ""),
+    platform: String(hydrated.platform || ""),
+    desired_version: String(hydrated.desired_version || ""),
     tags: normalizeTags(hydrated.tags || []),
     mode: hydrated.mode,
     desired_revision: hydrated.desired_revision,
@@ -2578,11 +2594,42 @@ function findRegisteredAgentByToken(token) {
   return storage.loadRegisteredAgents().find((agent) => agent.agent_token === token) || null;
 }
 
+function resolveVersionPackageForAgent(agent) {
+  const desiredVersion = String(agent?.desired_version || "").trim();
+  const platform = String(agent?.platform || "").trim();
+  if (!desiredVersion || !platform) {
+    return null;
+  }
+  const policies = storage
+    .loadVersionPolicies()
+    .slice()
+    .sort((left, right) => String(left?.id || "").localeCompare(String(right?.id || "")));
+  // Deterministic minimal rule for Go agents:
+  // scan matching desired_version policies in stable sorted order and return
+  // the first package across all of them matching the agent platform.
+  for (const policy of policies) {
+    if (String(policy?.desired_version || "").trim() !== desiredVersion) {
+      continue;
+    }
+    const match = Array.isArray(policy.packages)
+      ? policy.packages.find(
+          (pkg) => String(pkg?.platform || "").trim() === platform,
+        ) || null
+      : null;
+    if (match) {
+      return match;
+    }
+  }
+  return null;
+}
+
 function getAgentHeartbeatResponse(agent) {
   const rules = loadNormalizedRulesForAgent(agent.id);
   const l4Rules = storage.loadL4RulesForAgent(agent.id);
+  const relayListeners = storage.loadRelayListenersForAgent(agent.id);
   const certificates = buildManagedCertificateBundleForAgent(agent.id);
   const certificatePolicies = buildManagedCertificatePolicyForAgent(agent.id);
+  const versionPackage = resolveVersionPackageForAgent(agent);
   const hasUpdate = agent.current_revision < agent.desired_revision;
   return {
     ok: true,
@@ -2595,6 +2642,10 @@ function getAgentHeartbeatResponse(agent) {
       current_revision: agent.current_revision,
       rules: hasUpdate ? rules : undefined,
       l4_rules: hasUpdate ? l4Rules : undefined,
+      relay_listeners: relayListeners,
+      desired_version: agent.desired_version || null,
+      version_package: versionPackage ? versionPackage.url : null,
+      version_sha256: versionPackage ? versionPackage.sha256 : null,
       certificates: hasUpdate ? certificates : undefined,
       certificate_policies: hasUpdate ? certificatePolicies : undefined,
     },
@@ -3047,7 +3098,12 @@ async function handleMasterApi(req, res) {
         req.socket.remoteAddress ||
         "";
       if (remoteIp) agent.last_seen_ip = remoteIp;
-      agent.version = String(body.version || agent.version || "").trim();
+      agent.version = String(
+        body.version !== undefined ? body.version : agent.version || "",
+      ).trim();
+      agent.platform = String(
+        body.platform !== undefined ? body.platform : agent.platform || "",
+      ).trim();
       agent.tags = body.tags !== undefined ? normalizeTags(body.tags) : agent.tags;
       if (body.capabilities !== undefined) {
         agent.capabilities = normalizeCapabilities(body.capabilities);

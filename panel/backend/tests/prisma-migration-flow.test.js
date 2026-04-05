@@ -74,7 +74,7 @@ describe("Prisma SQL migration flow", () => {
     assert.doesNotMatch(source, /ALTER TABLE\s+rules\s+ADD\s+COLUMN\s+custom_headers/i);
   });
 
-  it("migrates legacy schema_version=1 rules tables to schema version 3", async () => {
+  it("migrates legacy schema_version=1 rules tables to schema version 4", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "panel-prisma-migration-"));
     const databasePath = path.join(tempDir, "panel.db");
 
@@ -117,7 +117,7 @@ describe("Prisma SQL migration flow", () => {
         const schemaVersionRows = await client.$queryRawUnsafe(`
           SELECT value FROM meta WHERE key = 'schema_version'
         `);
-        assert.equal(schemaVersionRows[0].value, "3");
+        assert.equal(schemaVersionRows[0].value, "4");
 
         const columns = await client.$queryRawUnsafe(`PRAGMA table_info('rules')`);
         const names = new Set(columns.map((column) => String(column.name || "")));
@@ -128,6 +128,7 @@ describe("Prisma SQL migration flow", () => {
         const agentColumns = await client.$queryRawUnsafe(`PRAGMA table_info('agents')`);
         const agentColumnNames = new Set(agentColumns.map((column) => String(column.name || "")));
         assert.ok(agentColumnNames.has("desired_version"));
+        assert.ok(agentColumnNames.has("platform"));
 
         const localStateColumns = await client.$queryRawUnsafe(`PRAGMA table_info('local_agent_state')`);
         const localStateColumnNames = new Set(localStateColumns.map((column) => String(column.name || "")));

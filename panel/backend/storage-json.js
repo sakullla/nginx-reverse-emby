@@ -48,6 +48,7 @@ function normalizeAgentForStorage(agent) {
   }
   return {
     ...agent,
+    platform: String(agent.platform || ""),
     desired_version: String(agent.desired_version || ""),
   };
 }

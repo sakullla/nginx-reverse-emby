@@ -12,6 +12,7 @@ model Agent {
   agentUrl          String  @default("") @map("agent_url")
   agentToken        String  @default("") @map("agent_token")
   version           String  @default("")
+  platform          String  @default("")
   desiredVersion    String  @default("") @map("desired_version")
   tags              String  @default("[]")
   capabilities      String  @default("[]")
