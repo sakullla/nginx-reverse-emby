@@ -15,6 +15,8 @@ const DEFAULT_LOCAL_AGENT_STATE = Object.freeze({
   last_apply_message: "",
 });
 const CURRENT_SCHEMA_VERSION = "2";
+const MIGRATIONS_DIR = path.join(__dirname, "prisma", "migrations");
+const REQUEST_HEADERS_SCHEMA_VERSION = 2;
 const CLIENT_STATE = {
   client: null,
   dataRoot: null,
@@ -52,9 +54,6 @@ const SCHEMA_STATEMENTS = [
     enabled INTEGER DEFAULT 1,
     tags TEXT DEFAULT '[]',
     proxy_redirect INTEGER DEFAULT 1,
-    pass_proxy_headers INTEGER DEFAULT 1,
-    user_agent TEXT DEFAULT '',
-    custom_headers TEXT DEFAULT '[]',
     revision INTEGER DEFAULT 0,
     PRIMARY KEY (agent_id, id)
   )`,
@@ -106,6 +105,140 @@ const SCHEMA_STATEMENTS = [
     value TEXT
   )`,
 ];
+
+function parseSchemaVersion(value) {
+  const parsed = Number.parseInt(String(value ?? ""), 10);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function splitSqlStatements(sqlText) {
+  return String(sqlText || "")
+    .split(";")
+    .map((statement) => statement.trim())
+    .filter(Boolean);
+}
+
+function loadSqlMigrations() {
+  if (!fs.existsSync(MIGRATIONS_DIR)) {
+    return [];
+  }
+
+  const files = fs.readdirSync(MIGRATIONS_DIR, { withFileTypes: true })
+    .filter((entry) => entry.isFile())
+    .map((entry) => {
+      const match = entry.name.match(/^(\d+)_([a-z0-9_\-]+)\.sql$/i);
+      if (!match) {
+        return null;
+      }
+      return {
+        version: Number.parseInt(match[1], 10),
+        fileName: entry.name,
+        fullPath: path.join(MIGRATIONS_DIR, entry.name),
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.version - b.version);
+
+  const seenVersions = new Set();
+  const migrations = [];
+  for (const file of files) {
+    if (!Number.isInteger(file.version)) {
+      continue;
+    }
+    if (seenVersions.has(file.version)) {
+      throw new Error(`Duplicate Prisma SQL migration version: ${file.version}`);
+    }
+    seenVersions.add(file.version);
+    migrations.push({
+      version: file.version,
+      fileName: file.fileName,
+      sql: fs.readFileSync(file.fullPath, "utf8"),
+    });
+  }
+
+  return migrations;
+}
+
+async function readTableColumnNames(client, tableName) {
+  const rows = await client.$queryRawUnsafe(`PRAGMA table_info('${String(tableName)}')`);
+  return new Set(
+    (Array.isArray(rows) ? rows : [])
+      .map((row) => {
+        if (!row || typeof row !== "object") {
+          return "";
+        }
+        return String(row.name || row.column_name || "");
+      })
+      .filter(Boolean),
+  );
+}
+
+async function inferSchemaVersionWithoutMeta(client) {
+  const ruleColumns = await readTableColumnNames(client, "rules");
+  const hasRequestHeaderColumns = ["pass_proxy_headers", "user_agent", "custom_headers"]
+    .every((column) => ruleColumns.has(column));
+  return hasRequestHeaderColumns ? REQUEST_HEADERS_SCHEMA_VERSION : 1;
+}
+
+function isIgnorableSqlMigrationError(error) {
+  const message = String(error && error.message ? error.message : error);
+  return /duplicate column name/i.test(message) || /already exists/i.test(message);
+}
+
+async function applySqlMigration(client, migration) {
+  const statements = splitSqlStatements(migration.sql);
+  for (const statement of statements) {
+    try {
+      await client.$executeRawUnsafe(statement);
+    } catch (error) {
+      if (!isIgnorableSqlMigrationError(error)) {
+        throw error;
+      }
+    }
+  }
+
+  await client.meta.upsert({
+    where: { key: "schema_version" },
+    update: { value: String(migration.version) },
+    create: { key: "schema_version", value: String(migration.version) },
+  });
+}
+
+async function applyPendingSchemaMigrations(client) {
+  const migrations = loadSqlMigrations();
+  const targetVersion = parseSchemaVersion(CURRENT_SCHEMA_VERSION) || 0;
+  const latestMigrationVersion = migrations.length > 0
+    ? migrations[migrations.length - 1].version
+    : null;
+
+  const schemaVersionRow = await client.meta.findUnique({ where: { key: "schema_version" } });
+  let currentVersion = parseSchemaVersion(schemaVersionRow && schemaVersionRow.value);
+  if (currentVersion === null) {
+    currentVersion = await inferSchemaVersionWithoutMeta(client);
+  }
+
+  for (const migration of migrations) {
+    if (migration.version <= currentVersion) {
+      continue;
+    }
+    await applySqlMigration(client, migration);
+    currentVersion = migration.version;
+  }
+
+  const maxReachableVersion = latestMigrationVersion == null
+    ? currentVersion
+    : Math.max(currentVersion, latestMigrationVersion);
+  if (maxReachableVersion < targetVersion) {
+    throw new Error(`Missing Prisma SQL migration files for schema version ${targetVersion}`);
+  }
+
+  const finalVersion = Math.max(currentVersion, targetVersion);
+  await client.meta.upsert({
+    where: { key: "schema_version" },
+    update: { value: String(finalVersion) },
+    create: { key: "schema_version", value: String(finalVersion) },
+  });
+}
 
 function defaultLocalAgentState() {
   return { ...DEFAULT_LOCAL_AGENT_STATE };
@@ -167,8 +300,7 @@ async function initializeDatabase(client) {
   for (const statement of SCHEMA_STATEMENTS) {
     await client.$executeRawUnsafe(statement);
   }
-
-  await migrateRulesTableForRequestHeaders(client);
+  await applyPendingSchemaMigrations(client);
 
   await client.localAgentState.upsert({
     where: { id: 1 },
@@ -182,40 +314,6 @@ async function initializeDatabase(client) {
       lastApplyMessage: "",
     },
   });
-
-  await client.meta.upsert({
-    where: { key: "schema_version" },
-    update: { value: CURRENT_SCHEMA_VERSION },
-    create: { key: "schema_version", value: CURRENT_SCHEMA_VERSION },
-  });
-}
-
-async function migrateRulesTableForRequestHeaders(client) {
-  const rows = await client.$queryRawUnsafe("PRAGMA table_info('rules')");
-  const columnNames = new Set(
-    (Array.isArray(rows) ? rows : [])
-      .map((row) => {
-        if (!row || typeof row !== "object") {
-          return "";
-        }
-        return String(row.name || row.column_name || "");
-      })
-      .filter(Boolean),
-  );
-
-  if (!columnNames.has("pass_proxy_headers")) {
-    await client.$executeRawUnsafe("ALTER TABLE rules ADD COLUMN pass_proxy_headers INTEGER DEFAULT 1");
-  }
-  if (!columnNames.has("user_agent")) {
-    await client.$executeRawUnsafe("ALTER TABLE rules ADD COLUMN user_agent TEXT DEFAULT ''");
-  }
-  if (!columnNames.has("custom_headers")) {
-    await client.$executeRawUnsafe("ALTER TABLE rules ADD COLUMN custom_headers TEXT DEFAULT '[]'");
-  }
-
-  await client.$executeRawUnsafe("UPDATE rules SET pass_proxy_headers = 1 WHERE pass_proxy_headers IS NULL");
-  await client.$executeRawUnsafe("UPDATE rules SET user_agent = '' WHERE user_agent IS NULL");
-  await client.$executeRawUnsafe("UPDATE rules SET custom_headers = '[]' WHERE custom_headers IS NULL");
 }
 
 function parseJsonValue(value, fallback) {
