@@ -43,7 +43,7 @@
 3. master 本地节点也改为独立 Go local agent。
 4. 所有 agent 继续走现有 heartbeat pull 模型。
 5. relay 作为 Go agent 内置模块实现。
-6. 执行面逐步去 Nginx 化，最终由 Go proxy engine 接管 HTTP/TLS/WebSocket/L4 TCP。
+6. 执行面逐步去 Nginx 化，最终由 Go proxy engine 接管 HTTP/TLS/WebSocket/L4，覆盖 TCP 与 UDP 直连能力。
 7. 证书签发与装载也切到 Go，不再依赖 `acme.sh` 作为长期方案。
 8. agent 支持 Master 指定 `desired_version` 的自动更新。
 9. relay 继续采用“全局 RelayListener + 规则直接引用 listener 链”的对象模型。
@@ -81,7 +81,7 @@ Go agent 统一承担：
 - heartbeat 同步
 - 规则落盘与状态管理
 - HTTP proxy engine
-- L4 TCP engine
+- L4 engine
 - relay runtime
 - 证书签发与热更新
 - 自动更新与回滚
@@ -117,7 +117,7 @@ Go agent 统一承担：
 - `sync-client`
 - `config-store`
 - `proxy-engine`
-- `tcp-engine`
+- `l4-engine`
 - `relay-runtime`
 - `cert-manager`
 - `updater`
@@ -154,6 +154,7 @@ Go agent 统一承担：
 - `last_apply_message`
 - relay listener 状态
 - proxy engine 状态
+- l4 engine 状态
 
 拉取：
 
@@ -190,12 +191,13 @@ Go agent 统一承担：
 - `proxy_redirect` 的产品行为兼容
 - 将需要 relay 的 HTTP 请求转交 relay runtime
 
-### 5.5 tcp-engine
+### 5.5 l4-engine
 
 负责：
 
-- L4 TCP 监听
+- L4 TCP / UDP 监听
 - TCP 直连转发
+- UDP 直连转发
 - TCP relay 转发
 - 基本负载均衡
 - 基础超时与连接限制
@@ -283,7 +285,8 @@ HTTP：
 
 L4：
 
-- 第一版仅支持 `tcp`
+- `tcp` 与 `udp` 都支持直连
+- 仅 `tcp` 支持 `relay_chain`
 - `relay_chain` 为空时直接访问最终 upstream
 - `relay_chain` 非空时通过 relay runtime 建立多跳链
 
@@ -298,10 +301,16 @@ HTTP：
 
 L4 TCP：
 
-- Client -> tcp-engine(A)
-- tcp-engine(A) -> relay runtime(A)
+- Client -> l4-engine(A)
+- l4-engine(A) -> relay runtime(A)
 - relay A -> relay B -> ... -> final hop
 - final hop -> upstream
+
+L4 UDP：
+
+- Client -> l4-engine(A)
+- l4-engine(A) -> upstream
+- 第一版不支持 UDP relay
 
 客户端无感知。
 
@@ -344,27 +353,30 @@ L4 TCP：
 
 兼容的是行为，不是 Nginx 指令本身。
 
-## 9. L4 TCP Engine 设计
+## 9. L4 Engine 设计
 
 ### 9.1 保留的能力
 
 1. TCP listen
-2. TCP 直连上游
-3. 多 backend
-4. 基本负载均衡
-5. connect timeout
-6. idle timeout
-7. relay chain
-8. 基本连接限制
-9. 可选 PROXY protocol
+2. UDP listen
+3. TCP 直连上游
+4. UDP 直连上游
+5. 多 backend
+6. 基本负载均衡
+7. connect timeout
+8. idle timeout
+9. TCP relay chain
+10. 基本连接限制
+11. 可选 PROXY protocol
 
 ### 9.2 去掉的能力
 
 1. 只为 Nginx `stream` 指令存在的复杂 tuning
 2. 平台相关、跨平台不稳定的 socket 调优项
-3. 当前不再需要的 L4 特有 Nginx 配置字段
+3. UDP relay
+4. 当前不再需要的 L4 特有 Nginx 配置字段
 
-这意味着前后端 L4 数据模型需要收缩，以 Go 可稳定实现的能力集为准。
+这意味着前后端 L4 数据模型需要收缩，以 Go 可稳定实现的能力集为准：保留 UDP 直连，去掉 UDP relay。
 
 ## 10. TLS、Pin 与证书模型
 
@@ -525,7 +537,7 @@ Agent 上报扩展：
 - 当前版本
 - 当前平台
 - 更新状态
-- relay / proxy 引擎健康状态
+- relay / proxy / l4 引擎健康状态
 
 ## 14. 自动更新设计
 
@@ -610,7 +622,7 @@ Linux 与 Windows 在升级流程概念上统一，但平台适配层不同。
 建议上报：
 
 - proxy engine 状态
-- tcp engine 状态
+- l4 engine 状态
 - relay listener 状态
 - 最近成功时间
 - 最近错误
@@ -639,7 +651,7 @@ Linux 与 Windows 在升级流程概念上统一，但平台适配层不同。
 2. config-store 切换
 3. HTTP 代理与头处理
 4. `proxy_redirect` 行为
-5. TCP engine
+5. L4 engine
 6. relay 单跳 / 多跳
 7. pin / CA 校验
 8. 证书热更新
@@ -672,12 +684,12 @@ Linux 与 Windows 在升级流程概念上统一，但平台适配层不同。
 - local agent 模型
 - 基础 apply / reload 框架
 
-### 阶段 3：Go proxy engine / tcp-engine
+### 阶段 3：Go proxy engine / l4-engine
 
 - HTTP reverse proxy
 - TLS 终止
 - WebSocket
-- L4 TCP
+- L4 TCP / UDP 直连
 - 规则热加载
 
 ### 阶段 4：Go relay runtime
@@ -711,7 +723,7 @@ Linux 与 Windows 在升级流程概念上统一，但平台适配层不同。
 4. 所有 agent 继续使用 heartbeat pull 协议。
 5. relay 采用全局 RelayListener + 规则直接引用 listener 链。
 6. Go proxy engine 取代长期 Nginx 依赖。
-7. L4 仅保留跨平台可稳定实现的 TCP 能力。
+7. L4 保留跨平台可稳定实现的 TCP / UDP 直连能力，但 relay 仅支持 TCP。
 8. 证书签发与热更新也迁移到 Go。
 9. agent 自动更新采用 Master 指定 `desired_version` 的模型。
 10. Windows 支持、relay、多跳、本地节点、自动更新统一在一套 Go 执行面内完成。
