@@ -8,3 +8,8 @@ type HTTPProxyConfig struct {
 	FrontendOrigin  string
 	HeaderOverrides map[string]string
 }
+
+type L4Rule struct {
+	Protocol   string
+	RelayChain []int
+}
