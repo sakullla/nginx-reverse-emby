@@ -442,18 +442,76 @@ collect_rules() {
         RULE_JSON_LINE="$1" node -e "
             const raw = String(process.env.RULE_JSON_LINE || '').trim();
             if (!raw) process.exit(0);
-            const rule = JSON.parse(raw);
-            const frontendUrl = String(rule.frontend_url || '').trim();
-            const backendUrl = String(rule.backend_url || '').trim();
-            if (!frontendUrl || !backendUrl) process.exit(0);
-            process.stdout.write(JSON.stringify({
-                frontend_url: frontendUrl,
-                backend_url: backendUrl,
-                proxy_redirect: rule.proxy_redirect !== false,
-                pass_proxy_headers: rule.pass_proxy_headers !== false,
-                user_agent: typeof rule.user_agent === 'string' ? rule.user_agent : '',
-                custom_headers: Array.isArray(rule.custom_headers) ? rule.custom_headers : [],
-            }) + '\n');
+            function normalizeHeaderName(value) {
+                if (typeof value !== 'string') throw new Error('custom header name must be a string');
+                const name = value.trim();
+                if (!/^[!#$%&'*+.^_\`|~0-9A-Za-z-]+$/.test(name)) throw new Error('custom header name is invalid');
+                return name;
+            }
+            function normalizeHeaderValue(value) {
+                if (value === undefined || value === null) return '';
+                if (typeof value !== 'string') throw new Error('custom header value must be a string');
+                if (/[\u0000-\u001F\u007F]/.test(value)) throw new Error('custom header value contains control characters');
+                return value;
+            }
+            function normalizeCustomHeaders(input, options = {}) {
+                const rejectNullValues = options.rejectNullValues === true;
+                if (input === undefined) return [];
+                if (!Array.isArray(input)) throw new Error('custom_headers must be an array');
+                const seen = new Set();
+                return input.map((item) => {
+                    const name = normalizeHeaderName(item && item.name);
+                    const lowered = name.toLowerCase();
+                    if (lowered === 'user-agent') throw new Error('custom header User-Agent is reserved');
+                    if (seen.has(lowered)) throw new Error('duplicate custom header: ' + name);
+                    seen.add(lowered);
+                    if (rejectNullValues && item && item.value === null) {
+                        throw new Error('custom header value must be a string');
+                    }
+                    return { name, value: normalizeHeaderValue(item && item.value) };
+                });
+            }
+            function normalizeRuleRequestHeaders(body = {}, fallback = {}) {
+                let passProxyHeaders;
+                if (body.pass_proxy_headers !== undefined) {
+                    if (typeof body.pass_proxy_headers !== 'boolean') {
+                        throw new Error('pass_proxy_headers must be a boolean');
+                    }
+                    passProxyHeaders = body.pass_proxy_headers;
+                } else {
+                    passProxyHeaders = fallback.pass_proxy_headers !== false;
+                }
+                if (body.user_agent !== undefined && typeof body.user_agent !== 'string') {
+                    throw new Error('user_agent must be a string');
+                }
+                return {
+                    pass_proxy_headers: passProxyHeaders,
+                    user_agent: body.user_agent !== undefined
+                        ? normalizeHeaderValue(body.user_agent).trim()
+                        : normalizeHeaderValue(fallback.user_agent || '').trim(),
+                    custom_headers: body.custom_headers !== undefined
+                        ? normalizeCustomHeaders(body.custom_headers, { rejectNullValues: true })
+                        : normalizeCustomHeaders(fallback.custom_headers || []),
+                };
+            }
+            try {
+                const rule = JSON.parse(raw);
+                const frontendUrl = String(rule.frontend_url || '').trim();
+                const backendUrl = String(rule.backend_url || '').trim();
+                if (!frontendUrl || !backendUrl) process.exit(0);
+                const headerConfig = normalizeRuleRequestHeaders(rule, {});
+                process.stdout.write(JSON.stringify({
+                    frontend_url: frontendUrl,
+                    backend_url: backendUrl,
+                    proxy_redirect: rule.proxy_redirect !== false,
+                    pass_proxy_headers: headerConfig.pass_proxy_headers,
+                    user_agent: headerConfig.user_agent,
+                    custom_headers: headerConfig.custom_headers,
+                }) + '\n');
+            } catch (error) {
+                process.stderr.write('Skipping invalid JSON rule: ' + error.message + '\n');
+                process.exit(1);
+            }
         "
     }
 
@@ -473,20 +531,80 @@ collect_rules() {
     if [ -f "$RULES_JSON" ]; then
         node -e "
             const fs = require('fs');
+            function normalizeHeaderName(value) {
+                if (typeof value !== 'string') throw new Error('custom header name must be a string');
+                const name = value.trim();
+                if (!/^[!#$%&'*+.^_\`|~0-9A-Za-z-]+$/.test(name)) throw new Error('custom header name is invalid');
+                return name;
+            }
+            function normalizeHeaderValue(value) {
+                if (value === undefined || value === null) return '';
+                if (typeof value !== 'string') throw new Error('custom header value must be a string');
+                if (/[\u0000-\u001F\u007F]/.test(value)) throw new Error('custom header value contains control characters');
+                return value;
+            }
+            function normalizeCustomHeaders(input, options = {}) {
+                const rejectNullValues = options.rejectNullValues === true;
+                if (input === undefined) return [];
+                if (!Array.isArray(input)) throw new Error('custom_headers must be an array');
+                const seen = new Set();
+                return input.map((item) => {
+                    const name = normalizeHeaderName(item && item.name);
+                    const lowered = name.toLowerCase();
+                    if (lowered === 'user-agent') throw new Error('custom header User-Agent is reserved');
+                    if (seen.has(lowered)) throw new Error('duplicate custom header: ' + name);
+                    seen.add(lowered);
+                    if (rejectNullValues && item && item.value === null) {
+                        throw new Error('custom header value must be a string');
+                    }
+                    return { name, value: normalizeHeaderValue(item && item.value) };
+                });
+            }
+            function normalizeRuleRequestHeaders(body = {}, fallback = {}) {
+                let passProxyHeaders;
+                if (body.pass_proxy_headers !== undefined) {
+                    if (typeof body.pass_proxy_headers !== 'boolean') {
+                        throw new Error('pass_proxy_headers must be a boolean');
+                    }
+                    passProxyHeaders = body.pass_proxy_headers;
+                } else {
+                    passProxyHeaders = fallback.pass_proxy_headers !== false;
+                }
+                if (body.user_agent !== undefined && typeof body.user_agent !== 'string') {
+                    throw new Error('user_agent must be a string');
+                }
+                return {
+                    pass_proxy_headers: passProxyHeaders,
+                    user_agent: body.user_agent !== undefined
+                        ? normalizeHeaderValue(body.user_agent).trim()
+                        : normalizeHeaderValue(fallback.user_agent || '').trim(),
+                    custom_headers: body.custom_headers !== undefined
+                        ? normalizeCustomHeaders(body.custom_headers, { rejectNullValues: true })
+                        : normalizeCustomHeaders(fallback.custom_headers || []),
+                };
+            }
             try {
                 const rules = JSON.parse(fs.readFileSync('$RULES_JSON', 'utf8'));
-                rules.filter(r => r.enabled !== false).forEach(r => {
-                    const frontendUrl = String(r.frontend_url || '').trim();
-                    const backendUrl = String(r.backend_url || '').trim();
-                    if (!frontendUrl || !backendUrl) return;
-                    process.stdout.write(JSON.stringify({
-                        frontend_url: frontendUrl,
-                        backend_url: backendUrl,
-                        proxy_redirect: r.proxy_redirect !== false,
-                        pass_proxy_headers: r.pass_proxy_headers !== false,
-                        user_agent: typeof r.user_agent === 'string' ? r.user_agent : '',
-                        custom_headers: Array.isArray(r.custom_headers) ? r.custom_headers : [],
-                    }) + '\n');
+                if (!Array.isArray(rules)) {
+                    throw new Error('rules.json must contain an array');
+                }
+                rules.filter(r => r && r.enabled !== false).forEach(r => {
+                    try {
+                        const frontendUrl = String(r.frontend_url || '').trim();
+                        const backendUrl = String(r.backend_url || '').trim();
+                        if (!frontendUrl || !backendUrl) return;
+                        const headerConfig = normalizeRuleRequestHeaders(r, {});
+                        process.stdout.write(JSON.stringify({
+                            frontend_url: frontendUrl,
+                            backend_url: backendUrl,
+                            proxy_redirect: r.proxy_redirect !== false,
+                            pass_proxy_headers: headerConfig.pass_proxy_headers,
+                            user_agent: headerConfig.user_agent,
+                            custom_headers: headerConfig.custom_headers,
+                        }) + '\n');
+                    } catch (error) {
+                        process.stderr.write('Skipping invalid rule in rules.json: ' + error.message + '\n');
+                    }
                 });
             } catch (e) {
                 process.stderr.write('Error parsing rules.json: ' + e.message + '\n');
@@ -876,13 +994,19 @@ if [ -s "$tmp_rules" ]; then
         rule_assignments=$(RULE_JSON_LINE="$rule_json" GLOBAL_PROXY_HEADERS_DISABLED="$global_proxy_headers_disabled" node - <<'NODE'
 const rule = JSON.parse(String(process.env.RULE_JSON_LINE || '{}'));
 const shellQuote = (value) => "'" + String(value).replace(/'/g, "'\"'\"'") + "'";
-const LITERAL_DOLLAR_PLACEHOLDER = "__NRE_LITERAL_DOLLAR__";
-const escapeHeaderValue = (value) => String(value)
+const sanitizeIdentifier = (value) => String(value || '')
+  .toLowerCase()
+  .replace(/[^a-z0-9_]/g, '_')
+  .replace(/^_+|_+$/g, '') || 'rule';
+const literalDollarVar = 'nre_literal_dollar_' + sanitizeIdentifier(
+  String(rule.frontend_url || '') + '_' + String(rule.backend_url || '')
+);
+const escapeLiteralHeaderValue = (value) => String(value)
   .replace(/[\u0000-\u001F\u007F]/g, ' ')
   .replace(/\\/g, '\\\\')
-  .replace(/\$/g, LITERAL_DOLLAR_PLACEHOLDER)
   .replace(/"/g, '\\"');
 const headers = new Map();
+let needsLiteralDollarHelper = false;
 const setHeader = (name, value, options = {}) => {
   const trimmedName = String(name || '').trim();
   if (!trimmedName) return;
@@ -927,7 +1051,16 @@ if (userAgent) {
 });
 
 const proxyHeadersConfig = Array.from(headers.values())
-  .map(({ name, value, literal }) => '        proxy_set_header ' + name + ' "' + (literal ? escapeHeaderValue(value) : value) + '";')
+  .map(({ name, value, literal }) => {
+    if (!literal) {
+      return '        proxy_set_header ' + name + ' "' + value + '";';
+    }
+    const escapedValue = escapeLiteralHeaderValue(value);
+    const renderedValue = escapedValue.includes('$')
+      ? (needsLiteralDollarHelper = true, escapedValue.split('$').join('${' + literalDollarVar + '}'))
+      : escapedValue;
+    return '        proxy_set_header ' + name + ' "' + renderedValue + '";';
+  })
   .join('\n');
 
 const assignments = {
@@ -936,7 +1069,8 @@ const assignments = {
   proxy_redirect: proxyRedirect,
   rule_pass_proxy_headers: rulePassProxyHeaders,
   proxy_headers_config: proxyHeadersConfig,
-  needs_literal_dollar_helper: proxyHeadersConfig.includes(LITERAL_DOLLAR_PLACEHOLDER) ? '1' : '0',
+  needs_literal_dollar_helper: needsLiteralDollarHelper ? '1' : '0',
+  literal_dollar_var: literalDollarVar,
 };
 
 Object.entries(assignments).forEach(([key, value]) => {
@@ -961,13 +1095,6 @@ NODE
         cert_dom=$(normalize_cert_domain "$domain")
         nginx_literal_helpers_config=''
         if [ "${needs_literal_dollar_helper:-0}" = "1" ]; then
-            literal_dollar_var="nre_literal_dollar_$(sanitize_identifier "$(sanitize_domain "$domain")_${port}")"
-            proxy_headers_config=$(PROXY_HEADERS_CONFIG="$proxy_headers_config" LITERAL_DOLLAR_VAR="$literal_dollar_var" node - <<'NODE'
-const placeholder = "__NRE_LITERAL_DOLLAR__";
-const variableReference = "${" + String(process.env.LITERAL_DOLLAR_VAR || "") + "}";
-process.stdout.write(String(process.env.PROXY_HEADERS_CONFIG || "").split(placeholder).join(variableReference));
-NODE
-            )
             nginx_literal_helpers_config="map \"\" \$${literal_dollar_var} {
     default \"\$\";
 }

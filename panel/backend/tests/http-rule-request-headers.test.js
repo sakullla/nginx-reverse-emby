@@ -179,7 +179,12 @@ async function generateNginxConfig(options = {}) {
 
   await fs.mkdir(dynamicDir, { recursive: true });
   await fs.mkdir(streamDynamicDir, { recursive: true });
-  await writeJson(rulesJsonPath, options.proxyRules || []);
+  if (options.rawProxyRulesJson !== undefined) {
+    await fs.mkdir(path.dirname(rulesJsonPath), { recursive: true });
+    await fs.writeFile(rulesJsonPath, options.rawProxyRulesJson, "utf8");
+  } else {
+    await writeJson(rulesJsonPath, options.proxyRules || []);
+  }
 
   const childEnv = {
     ...process.env,
@@ -226,12 +231,22 @@ async function generateNginxConfig(options = {}) {
     }
 
     const generatedFiles = await fs.readdir(dynamicDir);
-    assert.equal(generatedFiles.length, 1, `expected one generated config, got: ${generatedFiles.join(", ")}`);
+    const expectedGeneratedFiles =
+      options.expectGeneratedFiles !== undefined ? options.expectGeneratedFiles : 1;
+    assert.equal(
+      generatedFiles.length,
+      expectedGeneratedFiles,
+      `expected ${expectedGeneratedFiles} generated config(s), got: ${generatedFiles.join(", ")}`,
+    );
 
     return {
       stdout,
       stderr,
-      config: await fs.readFile(path.join(dynamicDir, generatedFiles[0]), "utf8"),
+      generatedFiles,
+      config:
+        generatedFiles.length > 0
+          ? await fs.readFile(path.join(dynamicDir, generatedFiles[0]), "utf8")
+          : "",
     };
   } finally {
     await fs.rm(tempRoot, { recursive: true, force: true });
@@ -468,7 +483,7 @@ describe("HTTP rule request header normalization", () => {
           custom_headers: [
             {
               name: "X-Test",
-              value: 'start$evil\r\n        proxy_set_header X-Evil "oops";\u0007end\\tail',
+              value: 'start$evil "oops" end\\tail',
             },
           ],
         },
@@ -493,6 +508,115 @@ describe("HTTP rule request header normalization", () => {
     assert.match(customHeaderLine, /end\\\\+tail/);
     assert.doesNotMatch(customHeaderLine, /[\u0000-\u001F\u007F]/);
     assert.doesNotMatch(config, /^\s*proxy_set_header X-Evil /m);
+  });
+
+  it("generator preserves literal values containing the old sentinel text", async () => {
+    const { config } = await generateNginxConfig({
+      proxyRules: [
+        {
+          frontend_url: "https://frontend.example.com",
+          backend_url: "http://backend.internal:8096",
+          proxy_redirect: true,
+          pass_proxy_headers: true,
+          custom_headers: [
+            {
+              name: "X-Sentinel",
+              value: "before __NRE_LITERAL_DOLLAR__ after",
+            },
+          ],
+        },
+      ],
+    });
+
+    const sentinelLine = config
+      .split(/\r?\n/)
+      .find((line) => line.includes("proxy_set_header X-Sentinel "));
+
+    assert.ok(sentinelLine, "expected X-Sentinel header line");
+    assert.match(sentinelLine, /before __NRE_LITERAL_DOLLAR__ after/);
+    assert.doesNotMatch(config, /map "" \$nre_literal_dollar_[A-Za-z0-9_]+ \{/);
+  });
+
+  it("generator rejects invalid env-based request-header payloads that backend would reject", async () => {
+    const invalidEnvRules = [
+      {
+        name: "reserved User-Agent custom header",
+        rule: {
+          frontend_url: "https://frontend.example.com",
+          backend_url: "http://backend.internal:8096",
+          custom_headers: [{ name: "User-Agent", value: "bad" }],
+        },
+        errorPattern: /User-Agent/i,
+      },
+      {
+        name: "duplicate custom header names",
+        rule: {
+          frontend_url: "https://frontend.example.com",
+          backend_url: "http://backend.internal:8096",
+          custom_headers: [
+            { name: "X-Test", value: "one" },
+            { name: "x-test", value: "two" },
+          ],
+        },
+        errorPattern: /duplicate/i,
+      },
+      {
+        name: "non-array custom_headers",
+        rule: {
+          frontend_url: "https://frontend.example.com",
+          backend_url: "http://backend.internal:8096",
+          custom_headers: "x-test: value",
+        },
+        errorPattern: /array/i,
+      },
+      {
+        name: "control characters in custom header values",
+        rule: {
+          frontend_url: "https://frontend.example.com",
+          backend_url: "http://backend.internal:8096",
+          custom_headers: [{ name: "X-Test", value: "bad\u0007value" }],
+        },
+        errorPattern: /control characters/i,
+      },
+    ];
+
+    for (const invalidRule of invalidEnvRules) {
+      const { config, stderr, generatedFiles } = await generateNginxConfig({
+        env: {
+          PROXY_RULE_1: JSON.stringify(invalidRule.rule),
+        },
+        proxyRules: [],
+        expectGeneratedFiles: 0,
+      });
+
+      assert.equal(config, "", `${invalidRule.name}: expected no generated config text`);
+      assert.deepEqual(generatedFiles, [], `${invalidRule.name}: expected rule rejection`);
+      assert.match(stderr, invalidRule.errorPattern, `${invalidRule.name}: expected validation error`);
+    }
+  });
+
+  it("generator rejects invalid proxy_rules.json request-header payloads that backend would reject", async () => {
+    const { config, stderr, generatedFiles } = await generateNginxConfig({
+      rawProxyRulesJson: JSON.stringify([
+        {
+          frontend_url: "https://frontend.example.com",
+          backend_url: "http://backend.internal:8096",
+          proxy_redirect: true,
+          pass_proxy_headers: "false",
+        },
+        {
+          frontend_url: "https://frontend-2.example.com",
+          backend_url: "http://backend.internal:8097",
+          proxy_redirect: true,
+          user_agent: {},
+        },
+      ]),
+      expectGeneratedFiles: 0,
+    });
+
+    assert.equal(config, "");
+    assert.deepEqual(generatedFiles, []);
+    assert.match(stderr, /pass_proxy_headers must be a boolean|user_agent must be a string/i);
   });
 
   it("exposes proxy_headers_globally_disabled on /api/info in agent mode", async () => {
