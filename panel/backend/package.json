@@ -2,7 +2,7 @@
   "name": "panel-backend",
   "private": true,
   "scripts": {
-    "test": "node --test --test-concurrency=1 tests/property-roundtrip.test.js tests/property-isolation.test.js tests/property-revision.test.js tests/property-compatibility.test.js tests/http-rule-request-headers.test.js",
+    "test": "node tests/run-backend-tests.js",
     "prisma:generate": "prisma generate"
   },
   "dependencies": {
