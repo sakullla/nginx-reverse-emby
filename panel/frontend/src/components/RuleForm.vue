@@ -346,7 +346,7 @@ const hasRequestHeaderConfig = computed(() => {
   return Boolean(
     form.value.user_agent.trim()
     || hasCustomHeaderConfig
-    || form.value.pass_proxy_headers === false
+    || form.value.pass_proxy_headers === true
   )
 })
 
@@ -388,7 +388,7 @@ function createDefaultForm() {
     tags: [],
     enabled: true,
     proxy_redirect: true,
-    pass_proxy_headers: true,
+    pass_proxy_headers: false,
     user_agent: '',
     custom_headers: []
   }
