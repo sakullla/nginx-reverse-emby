@@ -461,7 +461,8 @@ function normalizeRulePayload(body, fallback = {}, suggestedId = null) {
 }
 
 function isProxyHeadersGloballyDisabled() {
-  return /^(0|false|no|off)$/i.test(String(process.env.PROXY_PASS_PROXY_HEADERS || "0"));
+  const value = String(process.env.PROXY_PASS_PROXY_HEADERS || "").toLowerCase();
+  return !/^(1|true|yes|on)$/.test(value);
 }
 
 
@@ -2578,7 +2579,7 @@ function findRegisteredAgentByToken(token) {
 }
 
 function getAgentHeartbeatResponse(agent) {
-  const rules = storage.loadRulesForAgent(agent.id);
+  const rules = loadNormalizedRulesForAgent(agent.id);
   const l4Rules = storage.loadL4RulesForAgent(agent.id);
   const certificates = buildManagedCertificateBundleForAgent(agent.id);
   const certificatePolicies = buildManagedCertificatePolicyForAgent(agent.id);

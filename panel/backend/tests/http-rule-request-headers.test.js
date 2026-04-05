@@ -66,6 +66,11 @@ async function withBackendServer(options, testFn) {
   if (options?.agents) {
     await writeJson(path.join(dataRoot, "agents.json"), options.agents);
   }
+  if (options?.agentRulesByAgentId && typeof options.agentRulesByAgentId === "object") {
+    for (const [agentId, rules] of Object.entries(options.agentRulesByAgentId)) {
+      await writeJson(path.join(dataRoot, "agent_rules", `${agentId}.json`), rules);
+    }
+  }
 
   const serverProcess = spawn(process.execPath, ["server.js"], {
     cwd: path.resolve(__dirname, ".."),
@@ -150,6 +155,19 @@ describe("HTTP rule request header normalization", () => {
     );
   });
 
+  it("rejects present non-array custom_headers payloads", () => {
+    assert.throws(
+      () =>
+        normalizeRuleRequestHeaders(
+          {
+            custom_headers: "x-test: value",
+          },
+          {},
+        ),
+      /array/i,
+    );
+  });
+
   it("exposes proxy_headers_globally_disabled on /api/info in agent mode", async () => {
     await withBackendServer(
       {
@@ -192,6 +210,24 @@ describe("HTTP rule request header normalization", () => {
       {
         env: {
           PANEL_ROLE: "master",
+        },
+      },
+      async ({ baseUrl }) => {
+        const response = await fetch(`${baseUrl}/api/info`);
+        assert.equal(response.status, 200);
+
+        const payload = await response.json();
+        assert.equal(payload.proxy_headers_globally_disabled, true);
+      },
+    );
+  });
+
+  it("treats non-truthy PROXY_PASS_PROXY_HEADERS values as globally disabled on /api/info", async () => {
+    await withBackendServer(
+      {
+        env: {
+          PANEL_ROLE: "master",
+          PROXY_PASS_PROXY_HEADERS: "banana",
         },
       },
       async ({ baseUrl }) => {
@@ -270,6 +306,60 @@ describe("HTTP rule request header normalization", () => {
         assert.equal(agentRule.pass_proxy_headers, true);
         assert.equal(agentRule.user_agent, "");
         assert.deepEqual(agentRule.custom_headers, []);
+      },
+    );
+  });
+
+  it("backfills request-header defaults in heartbeat sync payloads for legacy agent rules", async () => {
+    await withBackendServer(
+      {
+        env: {
+          PANEL_ROLE: "master",
+        },
+        agents: [
+          {
+            id: "remote-agent-1",
+            name: "remote-agent-1",
+            agent_token: "token-remote-agent-1",
+            desired_revision: 8,
+            current_revision: 1,
+            created_at: "2026-04-01T00:00:00.000Z",
+            updated_at: "2026-04-01T00:00:00.000Z",
+          },
+        ],
+        agentRulesByAgentId: {
+          "remote-agent-1": [
+            {
+              id: 1,
+              frontend_url: "https://frontend.example.com",
+              backend_url: "http://backend.internal:8096",
+              enabled: true,
+              tags: [],
+              proxy_redirect: true,
+              revision: 8,
+            },
+          ],
+        },
+      },
+      async ({ baseUrl }) => {
+        const response = await fetch(`${baseUrl}/api/agents/heartbeat`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-agent-token": "token-remote-agent-1",
+          },
+          body: JSON.stringify({
+            name: "remote-agent-1",
+            current_revision: 1,
+          }),
+        });
+        assert.equal(response.status, 200);
+
+        const payload = await response.json();
+        const rule = payload.sync.rules[0];
+        assert.equal(rule.pass_proxy_headers, true);
+        assert.equal(rule.user_agent, "");
+        assert.deepEqual(rule.custom_headers, []);
       },
     );
   });

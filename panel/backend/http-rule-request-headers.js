@@ -17,8 +17,12 @@ function normalizeHeaderValue(value) {
 }
 
 function normalizeCustomHeaders(input) {
+  if (input === undefined) return [];
+  if (!Array.isArray(input)) {
+    throw new Error("custom_headers must be an array");
+  }
   const seen = new Set();
-  return (Array.isArray(input) ? input : []).map((item) => {
+  return input.map((item) => {
     const name = normalizeHeaderName(item?.name);
     const lowered = name.toLowerCase();
     if (lowered === "user-agent") {
