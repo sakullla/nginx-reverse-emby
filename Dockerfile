@@ -24,7 +24,8 @@ COPY examples/ /opt/nginx-reverse-emby/examples/
 COPY --from=frontend-builder /build/dist /opt/nginx-reverse-emby/panel/frontend/
 COPY --from=backend-builder /usr/local/bin/node /usr/local/bin/node
 COPY --from=backend-builder /build/node_modules /opt/nginx-reverse-emby/panel/backend/node_modules
-COPY panel/backend/server.js panel/backend/storage.js panel/backend/storage-json.js panel/backend/storage-sqlite.js panel/backend/storage-prisma-core.js panel/backend/storage-prisma-worker.js /opt/nginx-reverse-emby/panel/backend/
+COPY panel/backend/server.js panel/backend/http-rule-request-headers.js panel/backend/storage.js panel/backend/storage-json.js panel/backend/storage-sqlite.js panel/backend/storage-prisma-core.js panel/backend/storage-prisma-worker.js /opt/nginx-reverse-emby/panel/backend/
+COPY panel/backend/prisma/ /opt/nginx-reverse-emby/panel/backend/prisma/
 
 RUN set -eux; \
     apt-get update; \

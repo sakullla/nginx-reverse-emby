@@ -29,6 +29,11 @@ const {
 
 const NUM_RUNS = getNumRuns("compatibility", 20);
 
+const customHeaderArb = fc.record({
+  name: fc.constantFrom("Referer", "X-Test", "Host", "X-Forwarded-For"),
+  value: safeString,
+});
+
 const ruleArb = fc.record({
   id: fc.integer({ min: 1, max: 10000 }),
   frontend_url: fc.webUrl(),
@@ -36,6 +41,9 @@ const ruleArb = fc.record({
   enabled: fc.boolean(),
   tags: fc.array(safeString, { maxLength: 5 }),
   proxy_redirect: fc.boolean(),
+  pass_proxy_headers: fc.boolean(),
+  user_agent: safeString,
+  custom_headers: fc.array(customHeaderArb, { maxLength: 4 }),
   revision: fc.integer({ min: 1, max: 1000 }),
 });
 

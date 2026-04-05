@@ -8,6 +8,9 @@ const path = require("path");
 const crypto = require("crypto");
 const { spawnSync } = require("child_process");
 const storage = require("./storage");
+const {
+  normalizeRuleRequestHeaders,
+} = require("./http-rule-request-headers");
 
 const HOST = process.env.PANEL_BACKEND_HOST || "127.0.0.1";
 const PORT = Number(process.env.PANEL_BACKEND_PORT || "18081");
@@ -436,6 +439,7 @@ function normalizeRulePayload(body, fallback = {}, suggestedId = null) {
       : fallback.id !== undefined
         ? Number(fallback.id)
         : Number(suggestedId);
+  const headerConfig = normalizeRuleRequestHeaders(body, fallback);
 
   return {
     id:
@@ -452,7 +456,13 @@ function normalizeRulePayload(body, fallback = {}, suggestedId = null) {
       body.proxy_redirect !== undefined
         ? !!body.proxy_redirect
         : fallback.proxy_redirect !== false,
+    ...headerConfig,
   };
+}
+
+function isProxyHeadersGloballyDisabled() {
+  const value = String(process.env.PROXY_PASS_PROXY_HEADERS || "").trim().toLowerCase();
+  return /^(0|false|no|off)$/.test(value);
 }
 
 
@@ -2569,7 +2579,7 @@ function findRegisteredAgentByToken(token) {
 }
 
 function getAgentHeartbeatResponse(agent) {
-  const rules = storage.loadRulesForAgent(agent.id);
+  const rules = loadNormalizedRulesForAgent(agent.id);
   const l4Rules = storage.loadL4RulesForAgent(agent.id);
   const certificates = buildManagedCertificateBundleForAgent(agent.id);
   const certificatePolicies = buildManagedCertificatePolicyForAgent(agent.id);
@@ -2615,6 +2625,12 @@ function loadOrInitRules(agentId) {
   return Array.isArray(rules) ? rules : [];
 }
 
+function loadNormalizedRulesForAgent(agentId) {
+  return loadOrInitRules(agentId).map((rule, index) =>
+    normalizeStoredRule(rule, index + 1),
+  );
+}
+
 async function handleAgentApi(req, res) {
   const urlPath = (req.url || "").split("?")[0];
 
@@ -2657,7 +2673,7 @@ async function handleAgentApi(req, res) {
   }
 
   if (req.method === "GET" && urlPath === "/agent-api/rules") {
-    sendJson(res, 200, { ok: true, rules: storage.loadRulesForAgent(LOCAL_AGENT_ID) });
+    sendJson(res, 200, { ok: true, rules: loadNormalizedRulesForAgent(LOCAL_AGENT_ID) });
     return;
   }
 
@@ -2702,7 +2718,7 @@ async function handleLegacyLocalRules(req, res, urlPath) {
   }
 
   if (req.method === "GET" && urlPath === "/api/rules") {
-    sendJson(res, 200, { ok: true, rules: storage.loadRulesForAgent(LOCAL_AGENT_ID) });
+    sendJson(res, 200, { ok: true, rules: loadNormalizedRulesForAgent(LOCAL_AGENT_ID) });
     return;
   }
 
@@ -2907,6 +2923,7 @@ async function handleMasterApi(req, res) {
       local_agent_enabled: LOCAL_AGENT_ENABLED,
       default_agent_id: getDefaultAgentId(),
       managed_certificates_enabled: MANAGED_CERTS_ENABLED,
+      proxy_headers_globally_disabled: isProxyHeadersGloballyDisabled(),
       cf_token_configured: !!CF_TOKEN,
       acme_dns_provider: ACME_DNS_PROVIDER || null,
     };
@@ -3274,7 +3291,7 @@ async function handleMasterApi(req, res) {
       sendJson(res, 404, errorPayload("agent not found"));
       return;
     }
-    sendJson(res, 200, { ok: true, rules: storage.loadRulesForAgent(agentId) });
+    sendJson(res, 200, { ok: true, rules: loadNormalizedRulesForAgent(agentId) });
     return;
   }
 
@@ -3982,6 +3999,7 @@ async function handleRequest(req, res) {
         role: ROLE,
         agent_name: AGENT_NAME,
         agent_url: AGENT_PUBLIC_URL,
+        proxy_headers_globally_disabled: isProxyHeadersGloballyDisabled(),
       });
       return;
     }

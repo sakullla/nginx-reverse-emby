@@ -2,10 +2,43 @@
 
 const fs = require("fs");
 const path = require("path");
+const { normalizeCustomHeaders } = require("./http-rule-request-headers");
 
 const LOCAL_AGENT_ID = process.env.MASTER_LOCAL_AGENT_ID || "local";
 
 let dataRoot = null;
+
+function sanitizeStoredCustomHeaders(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const seen = new Set();
+  const sanitized = [];
+  for (const header of value) {
+    try {
+      const normalized = normalizeCustomHeaders([header])[0];
+      const key = normalized.name.toLowerCase();
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      sanitized.push(normalized);
+    } catch (_) {
+      // drop malformed custom header rows at storage boundary
+    }
+  }
+  return sanitized;
+}
+
+function sanitizeRuleForStorage(rule) {
+  if (!rule || typeof rule !== "object") {
+    return rule;
+  }
+  return {
+    ...rule,
+    custom_headers: sanitizeStoredCustomHeaders(rule.custom_headers),
+  };
+}
 
 // --- Internal helpers (mirrors server.js readJsonFile/writeJsonFile) ---
 
@@ -51,11 +84,12 @@ function init(root) {
 function loadRulesForAgent(agentId) {
   const rules = readJsonFile(getRuleFileForAgent(agentId), []);
   if (!Array.isArray(rules)) return [];
-  return rules;
+  return rules.map(sanitizeRuleForStorage);
 }
 
 function saveRulesForAgent(agentId, rules) {
-  writeJsonFile(getRuleFileForAgent(agentId), Array.isArray(rules) ? rules : []);
+  const nextRules = Array.isArray(rules) ? rules.map(sanitizeRuleForStorage) : [];
+  writeJsonFile(getRuleFileForAgent(agentId), nextRules);
 }
 
 function deleteRulesForAgent(agentId) {

@@ -214,7 +214,10 @@ function generateMockRules(count) {
       backend_url: `http://${ip}:${svc.port}`,
       enabled: i % 7 !== 0,
       tags: [...svc.tags, i % 3 === 0 ? 'https' : 'http'],
-      proxy_redirect: true
+      proxy_redirect: true,
+      pass_proxy_headers: true,
+      user_agent: '',
+      custom_headers: []
     })
   }
   return rules
@@ -266,7 +269,8 @@ export async function fetchSystemInfo() {
     return {
       role: 'master',
       default_agent_id: 'local',
-      local_agent_enabled: true
+      local_agent_enabled: true,
+      proxy_headers_globally_disabled: false
     }
   }
   const { data } = await api.get('/info')
@@ -306,7 +310,10 @@ export async function createRule(
   backend_url,
   tags = [],
   enabled = true,
-  proxy_redirect = true
+  proxy_redirect = true,
+  pass_proxy_headers = true,
+  user_agent = '',
+  custom_headers = []
 ) {
   if (isDev) {
     await sleep()
@@ -316,7 +323,10 @@ export async function createRule(
       backend_url,
       tags,
       enabled,
-      proxy_redirect
+      proxy_redirect,
+      pass_proxy_headers,
+      user_agent,
+      custom_headers
     }
     mockRulesByAgent[agentId] = mockRulesByAgent[agentId] || []
     mockRulesByAgent[agentId].push(nextRule)
@@ -324,7 +334,7 @@ export async function createRule(
   }
   const { data } = await api.post(
     `/agents/${encodeURIComponent(agentId)}/rules`,
-    { frontend_url, backend_url, tags, enabled, proxy_redirect },
+    { frontend_url, backend_url, tags, enabled, proxy_redirect, pass_proxy_headers, user_agent, custom_headers },
     longRunningRequest
   )
   return data.rule
@@ -337,7 +347,10 @@ export async function updateRule(
   backend_url,
   tags,
   enabled,
-  proxy_redirect
+  proxy_redirect,
+  pass_proxy_headers,
+  user_agent,
+  custom_headers
 ) {
   if (isDev) {
     await sleep()
@@ -350,6 +363,9 @@ export async function updateRule(
       if (tags !== undefined) nextRule.tags = tags
       if (enabled !== undefined) nextRule.enabled = enabled
       if (proxy_redirect !== undefined) nextRule.proxy_redirect = proxy_redirect
+      if (pass_proxy_headers !== undefined) nextRule.pass_proxy_headers = pass_proxy_headers
+      if (user_agent !== undefined) nextRule.user_agent = user_agent
+      if (custom_headers !== undefined) nextRule.custom_headers = custom_headers
       list[index] = nextRule
       return nextRule
     }
@@ -357,7 +373,7 @@ export async function updateRule(
   }
   const { data } = await api.put(
     `/agents/${encodeURIComponent(agentId)}/rules/${id}`,
-    { frontend_url, backend_url, tags, enabled, proxy_redirect },
+    { frontend_url, backend_url, tags, enabled, proxy_redirect, pass_proxy_headers, user_agent, custom_headers },
     longRunningRequest
   )
   return data.rule
