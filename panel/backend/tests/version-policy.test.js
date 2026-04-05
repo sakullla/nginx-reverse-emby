@@ -197,4 +197,52 @@ describe("version policy storage", () => {
       [validPolicy],
     );
   });
+
+  it("rejects null singular version policy saves in the JSON backend without overwriting stored policies", () => {
+    const validPolicy = normalizeVersionPolicyPayload({
+      id: "stable",
+      channel: "stable",
+      desired_version: "1.2.3",
+      packages: [{ platform: "linux-amd64", url: "https://example.com/linux.tar.gz", sha256: "def" }],
+    });
+
+    jsonStorage.saveVersionPolicy(validPolicy);
+
+    assert.throws(
+      () => jsonStorage.saveVersionPolicy(null),
+      /must be an object/i,
+    );
+
+    assert.deepStrictEqual(
+      jsonStorage.loadVersionPolicies(),
+      [validPolicy],
+    );
+  });
+
+  it("rejects null singular version policy saves in the SQLite backend without overwriting stored policies", { skip: !canRunSqlite && "Prisma-backed SQLite adapter not available" }, () => {
+    const sqliteStorage = loadFreshStorage("../storage-sqlite", SQLITE_TARGET);
+
+    try {
+      const validPolicy = normalizeVersionPolicyPayload({
+        id: "stable",
+        channel: "stable",
+        desired_version: "1.2.3",
+        packages: [{ platform: "linux-amd64", url: "https://example.com/linux.tar.gz", sha256: "def" }],
+      });
+
+      sqliteStorage.saveVersionPolicy(validPolicy);
+
+      assert.throws(
+        () => sqliteStorage.saveVersionPolicy(null),
+        /must be an object/i,
+      );
+
+      assert.deepStrictEqual(
+        sqliteStorage.loadVersionPolicies(),
+        [validPolicy],
+      );
+    } finally {
+      closeQuietly(sqliteStorage);
+    }
+  });
 });

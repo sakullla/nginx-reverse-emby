@@ -21,6 +21,17 @@ function normalizeOptionalId(value, label) {
   return parsed;
 }
 
+function normalizeRequiredId(value, label) {
+  if (value === undefined || value === null || value === "") {
+    throw new TypeError(`${label} is required`);
+  }
+  const parsed = Number.parseInt(String(value), 10);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new TypeError(`${label} must be a non-negative integer`);
+  }
+  return parsed;
+}
+
 function normalizeRequiredString(value, label) {
   const next = String(value || "").trim();
   if (!next) {
@@ -84,6 +95,7 @@ function normalizeListenPort(value) {
 function normalizeRelayListenerPayload(payload) {
   const next = ensureObject(payload, "relay listener payload");
   const normalized = {
+    id: normalizeRequiredId(next.id, "id"),
     agent_id: normalizeRequiredString(next.agent_id, "agent_id"),
     name: normalizeRequiredString(next.name, "name"),
     listen_host: String(next.listen_host || "0.0.0.0").trim() || "0.0.0.0",
@@ -97,11 +109,6 @@ function normalizeRelayListenerPayload(payload) {
     tags: normalizeStringList(next.tags),
     revision: normalizeRevision(next.revision),
   };
-
-  const id = normalizeOptionalId(next.id, "id");
-  if (id !== undefined) {
-    normalized.id = id;
-  }
 
   if (
     normalized.pin_set.length === 0 &&

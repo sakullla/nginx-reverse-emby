@@ -11,6 +11,7 @@ const { loadFreshStorage, closeQuietly, SQLITE_TARGET, canRunSqlite } = require(
 describe("relay listener normalization", () => {
   it("normalizes a valid relay listener payload", () => {
     const listener = normalizeRelayListenerPayload({
+      id: 1,
       agent_id: "local",
       name: "relay-a",
       listen_host: "0.0.0.0",
@@ -27,9 +28,23 @@ describe("relay listener normalization", () => {
     assert.strictEqual(listener.revision, 0);
   });
 
+  it("rejects listeners without an id", () => {
+    assert.throws(
+      () => normalizeRelayListenerPayload({
+        agent_id: "local",
+        name: "relay-a",
+        listen_host: "0.0.0.0",
+        listen_port: 18443,
+        pin_set: [{ type: "spki_sha256", value: "abc" }],
+      }),
+      /id is required|id/i,
+    );
+  });
+
   it("rejects listeners when both pin_set and trusted_ca_certificate_ids are empty", () => {
     assert.throws(
       () => normalizeRelayListenerPayload({
+        id: 2,
         agent_id: "local",
         name: "relay-a",
         listen_host: "0.0.0.0",
@@ -234,6 +249,37 @@ describe("relay listener storage", () => {
         trusted_ca_certificate_ids: [],
       }]),
       /pin_set.*trusted_ca_certificate_ids/i,
+    );
+
+    assert.deepStrictEqual(
+      jsonStorage.loadRelayListenersForAgent("agent-json"),
+      validListeners,
+    );
+  });
+
+  it("rejects relay listeners without ids in the JSON backend without overwriting stored listeners", () => {
+    const validListeners = [
+      normalizeRelayListenerPayload({
+        id: 7,
+        agent_id: "agent-json",
+        name: "relay-a",
+        listen_host: "0.0.0.0",
+        listen_port: 18443,
+        pin_set: [{ type: "spki_sha256", value: "abc" }],
+      }),
+    ];
+
+    jsonStorage.saveRelayListenersForAgent("agent-json", validListeners);
+
+    assert.throws(
+      () => jsonStorage.saveRelayListenersForAgent("agent-json", [{
+        agent_id: "agent-json",
+        name: "relay-b",
+        listen_host: "0.0.0.0",
+        listen_port: 19443,
+        pin_set: [{ type: "spki_sha256", value: "abc" }],
+      }]),
+      /id is required|id/i,
     );
 
     assert.deepStrictEqual(

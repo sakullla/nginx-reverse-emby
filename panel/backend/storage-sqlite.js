@@ -468,8 +468,7 @@ function loadVersionPolicy() {
 }
 
 function saveVersionPolicy(policy) {
-  const nextPolicy = policy && typeof policy === "object" ? clone(policy) : null;
-  saveVersionPolicies(nextPolicy ? [nextPolicy] : []);
+  saveVersionPolicies([normalizeVersionPolicyPayload(clone(policy))]);
 }
 
 function getNextGlobalRevision() {
