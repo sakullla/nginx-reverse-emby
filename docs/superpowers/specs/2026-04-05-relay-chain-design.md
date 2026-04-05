@@ -1,189 +1,384 @@
-# 链式 Relay 与 Relay 证书管理设计
+# Go Agent / Relay / Proxy 统一执行面设计
 
 - 日期：2026-04-05
 - 状态：已完成设计，待用户 review spec
-- 范围：HTTP 规则、L4 TCP 规则、Relay Listener 对象、证书管理扩展、Master/Agent 同步、Agent apply/runtime
+- 范围：Go agent、Go local agent、Go proxy engine、Go relay runtime、Go updater、证书与规则控制面扩展
 
 ## 1. 背景
 
-当前项目已经具备以下能力：
+当前项目的控制面已经成熟：
 
-- Master/Agent 架构下发 HTTP 规则、L4 规则和证书策略
-- 面板统一管理规则、证书与 agent
-- Agent 通过 heartbeat 获取增量配置并执行 apply
-- Nginx 负责 HTTP 与 L4 入口代理
+- `panel/backend` 负责规则、证书、agent、revision、heartbeat 控制
+- `panel/frontend` 负责配置与可视化管理
+- Master/Agent 采用 heartbeat pull 模型
 
-当前缺失的能力是：在现有规则体系中增加一套“链式 relay”模型，让请求在内部链路上经过一跳或多跳 relay 节点后，再由最后一跳访问最终后端。客户端不感知 relay 的存在。
+当前执行面仍主要建立在以下组合上：
 
-目标流转示例：
+- Node / shell 脚本
+- Nginx HTTP / stream 配置生成
+- `acme.sh` 证书签发与安装
 
-- 客户端 -> A
-- A -> relay A
-- relay A -> relay B
-- relay B -> B 或最终 backend
+本次需求叠加了四个方向：
 
-其中内部 hop 之间通过证书与 pin/CA 信任建立 TLS 隧道。
+1. 支持链式 relay
+2. 支持 Windows 平台
+3. 支持 master 本地节点
+4. 支持 agent 自动更新
+
+如果继续沿用 `Node + shell + Nginx + acme.sh` 的执行面，这四个目标会相互叠加复杂度。尤其是：
+
+- relay 更适合在强类型网络程序中实现
+- Windows 不适合长期依赖 Nginx 作为执行引擎
+- 自动更新不适合建立在多进程脚本拼接模型上
+- 本地节点与远端节点如果继续用不同执行栈，迁移成本会持续放大
+
+因此本设计将执行面整体收敛为 Go。
 
 ## 2. 本次目标
 
 ### 2.1 本次要支持
 
-1. 增加全局 `RelayListener` 对象，归属于已注册 Agent。
-2. 一个 Agent 支持配置多个 Relay Listener。
-3. HTTP 规则与 L4 规则支持引用具体的 `relay_chain`。
-4. `relay_chain` 支持：
-   - 不经 relay
-   - 一跳 relay
-   - 多跳 relay
-5. HTTP 规则最终仍落到现有 `backend_url`。
-6. L4 规则第一版仅支持 `tcp` 使用 relay。
-7. 证书管理复用现有体系，并扩展 relay 隧道用途。
-8. Relay 证书支持：
-   - 自动签发
-   - 手动上传
-   - 自签名证书
-9. Relay TLS 信任支持：
-   - pin
-   - CA
-   - 两者组合策略
-10. 仅支持“已注册 Agent”作为 relay 节点。
-11. 保持现有 Master/Agent 下发与 apply 模型可扩展，不破坏现有无 relay 规则。
+1. 保持 `panel/backend` 和 `panel/frontend` 不迁移语言。
+2. 所有 agent/runtime 统一改为 Go。
+3. master 本地节点也改为独立 Go local agent。
+4. 所有 agent 继续走现有 heartbeat pull 模型。
+5. relay 作为 Go agent 内置模块实现。
+6. 执行面逐步去 Nginx 化，最终由 Go proxy engine 接管 HTTP/TLS/WebSocket/L4 TCP。
+7. 证书签发与装载也切到 Go，不再依赖 `acme.sh` 作为长期方案。
+8. agent 支持 Master 指定 `desired_version` 的自动更新。
+9. relay 继续采用“全局 RelayListener + 规则直接引用 listener 链”的对象模型。
+10. Windows 与 Linux 尽量共用同一套执行逻辑。
 
 ### 2.2 本次明确不做
 
-1. 不支持未注册外部节点作为 relay。
-2. 不支持 UDP relay。
-3. 不做端到端单隧道语义，采用逐跳 TLS。
-4. 不做自动故障绕行、动态选路、智能路由。
-5. 不做完整自建 PKI 平台，仅支持通过现有证书管理上传或生成所需证书材料。
-6. 不把多跳 relay 逻辑直接塞进复杂 Nginx 配置模板中实现。
+1. 不迁移 `panel/backend` 到 Go。
+2. 不迁移 `panel/frontend` 到 Go。
+3. 不保留 Nginx `stream` 特有调优指令兼容。
+4. 不做 UDP relay。
+5. 不做完整通用 Web 服务器，不以通用 Nginx 替代品为目标。
+6. 不做未注册外部节点作为 relay。
+7. 不做指令级 Nginx 完全兼容。
 
 ## 3. 推荐方案
 
-采用“全局 Relay Listener + 规则直接引用具体 listener 链”的方案。
+采用“Node 控制面 + Go 统一执行面”的方案。
 
-### 原因
+### 3.1 控制面保持不变
 
-1. 与需求完全一致：规则直接选择具体 relay listener，而不是选 Agent 模板。
-2. 支持一个 Agent 多个 relay listener，扩展性足够。
-3. 证书、pin、CA 信任可以清晰绑定到 listener，而不是散落在规则里。
-4. HTTP 与 L4 共用一套 relay 对象池，建模统一。
-5. 更契合现有 Master/Agent 控制面：规则、证书、listener 都是可下发对象。
+- `panel/backend` 继续负责：
+  - 规则管理
+  - 证书管理
+  - RelayListener 管理
+  - revision 管理
+  - heartbeat 协议
+  - agent 注册与状态展示
+- `panel/frontend` 继续作为唯一 UI
 
-### 不采用的方案
+### 3.2 执行面统一为 Go
 
-- 规则内嵌 relay 配置：
-  - 配置重复严重
-  - 不利于证书复用、轮换与审计
-- 引入额外 relay profile / 模板层：
-  - 第一版复杂度过高
-  - 当前没有足够收益
+Go agent 统一承担：
 
-## 4. 架构设计
+- heartbeat 同步
+- 规则落盘与状态管理
+- HTTP proxy engine
+- L4 TCP engine
+- relay runtime
+- 证书签发与热更新
+- 自动更新与回滚
 
-### 4.1 核心对象边界
+### 3.3 为什么不保留长期 Nginx 依赖
 
-新增独立对象：`RelayListener`
+1. Windows 平台下长期依赖 Nginx 不合适。
+2. relay、多跳 TLS、pin/CA 校验更适合在 Go 里统一实现。
+3. 现有执行链条太依赖模板和脚本，自动更新与跨平台适配成本高。
+4. L4 中 Nginx 特有指令已经不再要求保留。
 
-职责划分如下：
+## 4. 总体架构
 
-- `ManagedCertificate`
-  - 负责证书材料、签发方式、用途
-- `RelayListener`
-  - 负责某个 Agent 上监听什么地址端口、绑定哪个证书、用什么 TLS 信任策略
-- `Rule` / `L4Rule`
-  - 负责业务入口与最终后端
-  - 通过 `relay_chain` 引用具体 listener 链
+系统分为两层。
 
-为简化规则引用与多 Agent 编排，`RelayListener.id` 采用全局唯一语义，不做“每 Agent 内局部自增 ID”。
+### 4.1 控制面
 
-### 4.2 规则语义
+- `panel/backend`
+- `panel/frontend`
 
-HTTP 规则：
+控制面仍以当前数据模型为中心，只做以下扩展：
 
-- 入口仍由 A 上的现有 HTTP 规则承载
-- 当 `relay_chain` 为空时，行为与现在一致
-- 当 `relay_chain` 非空时，请求进入本地 relay runtime，再经多跳 relay 到达最后一跳，由最后一跳访问 `backend_url`
+- 增加 RelayListener 对象
+- 增加证书用途与签发模式
+- 增加版本管理与 `desired_version`
+- 增加 Go agent 能力上报与运行状态
 
-L4 规则：
+### 4.2 执行面
 
-- 第一版仅允许 `protocol=tcp` 时配置 `relay_chain`
-- 当 `relay_chain` 为空时，行为与现在一致
-- 当 `relay_chain` 非空时，TCP 连接进入本地 relay runtime，经多跳 relay 后由最后一跳访问最终 upstream
-- 最终 upstream 语义与当前规则保持一致，默认仍以现有主 upstream 字段或首个 backend 作为出口目标
+统一为一个 Go 二进制，逻辑上包含：
 
-### 4.3 数据流
+- `agent-core`
+- `sync-client`
+- `config-store`
+- `proxy-engine`
+- `tcp-engine`
+- `relay-runtime`
+- `cert-manager`
+- `updater`
 
-对客户端可见的入口：
+本地节点与远端节点都运行这同一套二进制。
 
-- 客户端 -> A
+## 5. Go Agent 模块划分
 
-内部 relay hop：
+### 5.1 agent-core
 
-- A runtime -> relay listener 1
-- relay listener 1 -> relay listener 2
-- ...
-- relay listener N -> 最终出口
+负责：
 
-出口语义：
+- 进程入口
+- 配置加载
+- 生命周期管理
+- heartbeat 调度
+- apply 调度
+- 模块热重载协调
+- 自动更新调度
 
-- HTTP：最后一跳访问规则的 `backend_url`
-- L4 TCP：最后一跳访问规则的 `upstream_host:upstream_port` 或主 backend
+### 5.2 sync-client
 
-客户端对 relay 无感知。
+继续走 heartbeat pull。
 
-## 5. 运行时方案
+上报：
 
-### 5.1 推荐实现
+- `agent_id`
+- `current_revision`
+- `desired_revision`
+- `version`
+- `platform`
+- `capabilities`
+- `last_apply_status`
+- `last_apply_message`
+- relay listener 状态
+- proxy engine 状态
 
-新增独立的 Node relay runtime，不把多跳 relay 协议逻辑硬编码进 Nginx 模板。
+拉取：
 
-Nginx 保持职责简单：
+- `rules`
+- `l4_rules`
+- `certificates`
+- `certificate_policies`
+- `relay_listeners`
+- `desired_version`
+- `version_package`
+- 其他 runtime 所需配置
 
-- HTTP/L4 入口接流量
-- 对于不使用 relay 的规则，继续直接代理
-- 对于使用 relay 的规则，把流量转发到本地 relay runtime
+### 5.3 config-store
 
-relay runtime 负责：
+负责本地持久化：
 
-- 建立逐跳 TLS 隧道
-- 校验 pin 与 CA
-- 按 `relay_chain` 执行一跳或多跳转发
-- 作为最后一跳访问最终 `backend_url` 或 TCP upstream
+- 当前生效配置
+- staging 配置
+- 当前 revision
+- 当前版本与上一个稳定版本
+- 证书与信任材料
+- relay runtime 配置
+- 自动更新元数据
 
-### 5.2 为什么不直接用 Nginx 多跳实现
+### 5.4 proxy-engine
 
-1. Nginx 更适合单跳 proxy，而不是多跳编排。
-2. 多跳 + pin + CA + HTTP/L4 统一支持会让模板和 shell 脚本变得不可维护。
-3. 逐跳握手、证书校验、错误定位、状态上报更适合在 Node runtime 中实现。
+负责：
 
-### 5.3 relay runtime 角色
+- HTTP reverse proxy
+- 基于 `frontend_url` 的路由
+- TLS 终止
+- WebSocket / Upgrade
+- 请求头改写
+- `proxy_redirect` 的产品行为兼容
+- 将需要 relay 的 HTTP 请求转交 relay runtime
 
-同一 runtime 内包含两个能力：
+### 5.5 tcp-engine
 
-- relay listener server
-  - 监听 `listen_host:listen_port`
-  - 持有 server 证书
-  - 接收上一跳隧道连接
-- relay dialer
-  - 按 `relay_chain` 向下一跳发起 TLS 连接
-  - 执行 pin / CA 校验
+负责：
 
-## 6. TLS 与信任模型
+- L4 TCP 监听
+- TCP 直连转发
+- TCP relay 转发
+- 基本负载均衡
+- 基础超时与连接限制
 
-### 6.1 总体原则
+### 5.6 relay-runtime
 
-采用逐跳 TLS，而不是端到端单一 TLS。
+负责：
+
+- RelayListener 监听
+- 下一跳 dial
+- 多跳 relay chain
+- hop 级 TLS
+- pin / CA 校验
+- 最后一跳回源
+
+### 5.7 cert-manager
+
+负责：
+
+- ACME 签发
+- 自签名证书生成
+- 手动导入证书装载
+- pin / fingerprint 计算
+- trust store 构建
+- 证书热更新
+
+### 5.8 updater
+
+负责：
+
+- 比对 `desired_version`
+- 下载对应平台包
+- 校验 hash / 签名
+- 原子替换
+- 重启与回滚
+
+## 6. 本地节点模型
+
+本地节点不再由 `panel/backend` 内嵌 apply。
+
+改为：
+
+- master 机器上额外运行一个 Go local agent
+- Go local agent 与远端 agent 使用相同 heartbeat 协议
+- `panel/backend` 仍将其视为 agent，只是 `is_local=true`
+
+这样可以统一：
+
+- revision
+- apply
+- relay
+- 自动更新
+- 证书签发与装载
+
+本地节点与远端节点的差异仅保留在：
+
+- 部署位置
+- 默认注册方式
+- 可选默认能力标签
+
+不再保留独立的 Node 本地执行逻辑。
+
+## 7. Relay 架构
+
+### 7.1 核心对象
+
+Relay 仍采用：
+
+- 全局 `RelayListener`
+- 规则直接引用 `relay_chain`
+
+### 7.2 RelayListener 语义
+
+`RelayListener` 归属于具体 Agent，一个 Agent 可以拥有多个 listener。
+
+建议 `RelayListener.id` 全局唯一，避免多 agent 链接引用时产生局部 ID 歧义。
+
+### 7.3 规则语义
+
+HTTP：
+
+- 保持现有 `backend_url`
+- `relay_chain` 为空时直接回源
+- `relay_chain` 非空时先进入 relay runtime，再由最后一跳访问 `backend_url`
+
+L4：
+
+- 第一版仅支持 `tcp`
+- `relay_chain` 为空时直接访问最终 upstream
+- `relay_chain` 非空时通过 relay runtime 建立多跳链
+
+### 7.4 典型流转
+
+HTTP：
+
+- Client -> Go proxy engine(A)
+- Go proxy engine(A) -> relay runtime(A)
+- relay A -> relay B -> ... -> final hop
+- final hop -> `backend_url`
+
+L4 TCP：
+
+- Client -> tcp-engine(A)
+- tcp-engine(A) -> relay runtime(A)
+- relay A -> relay B -> ... -> final hop
+- final hop -> upstream
+
+客户端无感知。
+
+## 8. Go Proxy Engine 设计
+
+### 8.1 目标
+
+目标不是重写一个通用 Nginx，而是实现本项目实际需要的入口代理能力。
+
+### 8.2 第一版必须支持
+
+1. Host/path 路由
+2. HTTP reverse proxy
+3. TLS 终止
+4. WebSocket / Upgrade
+5. 现有请求头透传与自定义 header 行为
+6. `User-Agent` 改写
+7. `proxy_redirect` 的现有产品语义尽量兼容
+8. relay chain 集成
+9. 证书热加载
+10. 基本访问日志与健康状态
+
+### 8.3 第一版不追求
+
+1. Nginx 指令级兼容
+2. 通用 rewrite 生态
+3. 静态站点能力
+4. Nginx 所有边缘优化特性
+5. HTTP/3 与与之相关的特定特性
+
+### 8.4 proxy_redirect 处理原则
+
+不追求复制 Nginx `proxy_redirect` 指令实现方式。
+
+改为在 Go 中直接实现产品行为：
+
+- 识别后端返回的 `Location`
+- 按当前入口 URL、Host、Scheme、Port 改写
+- 尽量维持当前用户可感知行为一致
+
+兼容的是行为，不是 Nginx 指令本身。
+
+## 9. L4 TCP Engine 设计
+
+### 9.1 保留的能力
+
+1. TCP listen
+2. TCP 直连上游
+3. 多 backend
+4. 基本负载均衡
+5. connect timeout
+6. idle timeout
+7. relay chain
+8. 基本连接限制
+9. 可选 PROXY protocol
+
+### 9.2 去掉的能力
+
+1. 只为 Nginx `stream` 指令存在的复杂 tuning
+2. 平台相关、跨平台不稳定的 socket 调优项
+3. 当前不再需要的 L4 特有 Nginx 配置字段
+
+这意味着前后端 L4 数据模型需要收缩，以 Go 可稳定实现的能力集为准。
+
+## 10. TLS、Pin 与证书模型
+
+### 10.1 总体原则
+
+relay 采用逐跳 TLS。
 
 每个 hop 独立完成：
 
-- TLS 建连
-- server 证书校验
+- 建链
+- 证书校验
 - pin / CA 信任判断
 
-### 6.2 支持的信任方式
-
-第一版支持以下模式：
+### 10.2 支持的信任模式
 
 - `pin_only`
 - `ca_only`
@@ -192,44 +387,38 @@ relay runtime 负责：
 
 默认推荐：`pin_or_ca`
 
-### 6.3 pin 模型
+### 10.3 pin 模型
 
-pin 使用集合而不是单值，便于证书轮换。
+pin 使用集合而不是单值，便于轮换。
 
 建议支持：
 
-- 证书指纹 pin
+- 证书指纹
 - SPKI / public key pin
 
-展示层优先向用户展示：
+### 10.4 证书用途
 
-- 证书 SHA-256 指纹
-- SPKI pin
+现有证书对象扩展用途：
 
-实现层优先推荐 SPKI pin，因为续签但复用同一密钥时更稳定。
+- `edge`
+- `relay_tunnel`
+- `relay_ca`
 
-### 6.4 CA 信任模型
+### 10.5 证书来源
 
-RelayListener 可以引用一组信任 CA 证书：
+Go cert-manager 统一支持：
 
-- `trusted_ca_certificate_ids`
+- ACME 自动签发
+- 手动上传 cert/key
+- 自签名证书
 
-这些 CA 证书也走现有证书管理体系。
+不再把 `acme.sh` 作为长期依赖。
 
-### 6.5 自签名证书
+## 11. 数据模型扩展
 
-第一版支持两种与 relay 直接相关的证书来源：
+### 11.1 RelayListener
 
-- 手动上传 `cert/key`
-- 平台生成自签名证书
-
-自签名证书场景下，推荐用 pin 作为第一版主要信任方式。
-
-## 7. 数据模型设计
-
-### 7.1 新增 RelayListener
-
-建议新增持久化对象 `RelayListener`：
+建议新增持久化对象：
 
 ```json
 {
@@ -249,28 +438,12 @@ RelayListener 可以引用一组信任 CA 证书：
   ],
   "trusted_ca_certificate_ids": [31],
   "allow_self_signed": true,
-  "tags": ["relay", "public"],
+  "tags": ["relay"],
   "revision": 3
 }
 ```
 
-字段定义：
-
-- `id`
-- `agent_id`
-- `name`
-- `listen_host`
-- `listen_port`
-- `enabled`
-- `certificate_id`
-- `tls_mode`
-- `pin_set`
-- `trusted_ca_certificate_ids`
-- `allow_self_signed`
-- `tags`
-- `revision`
-
-### 7.2 扩展 Rule
+### 11.2 Rule 扩展
 
 HTTP 规则新增：
 
@@ -280,13 +453,7 @@ HTTP 规则新增：
 }
 ```
 
-语义：
-
-- 数组中的值是具体 `RelayListener.id`
-- 顺序即 hop 顺序
-- 空数组表示不经 relay
-
-### 7.3 扩展 L4Rule
+### 11.3 L4Rule 扩展
 
 L4 规则新增：
 
@@ -296,302 +463,255 @@ L4 规则新增：
 }
 ```
 
-校验约束：
+并约束：
 
-- 仅 `protocol=tcp` 允许非空 `relay_chain`
+- 仅 `protocol=tcp` 可非空
 
-### 7.4 扩展 ManagedCertificate
+### 11.4 Agent 扩展
 
-现有证书对象新增 `usage` 或 `usages` 字段，至少支持：
+agent 状态需扩展：
 
-- `edge`
-- `relay_tunnel`
-- `relay_ca`
+- `version`
+- `platform`
+- `desired_version`
+- `last_update_status`
+- `last_update_message`
 
-并扩展来源 / 模式：
+## 12. API 扩展
 
-- `master_cf_dns`
-- `local_http01`
-- `manual_upload`
-- `self_signed`
-
-## 8. API 设计
-
-### 8.1 新增 RelayListener 接口
+### 12.1 RelayListener 接口
 
 - `GET /api/agents/:agentId/relay-listeners`
 - `POST /api/agents/:agentId/relay-listeners`
 - `PUT /api/agents/:agentId/relay-listeners/:id`
 - `DELETE /api/agents/:agentId/relay-listeners/:id`
 
-### 8.2 扩展现有规则接口
+### 12.2 规则接口扩展
 
-HTTP 规则：
-
-- `GET /api/agents/:agentId/rules`
-- `POST /api/agents/:agentId/rules`
-- `PUT /api/agents/:agentId/rules/:id`
-
-L4 规则：
-
-- `GET /api/agents/:agentId/l4-rules`
-- `POST /api/agents/:agentId/l4-rules`
-- `PUT /api/agents/:agentId/l4-rules/:id`
-
-扩展字段：
+HTTP / L4 规则接口扩展字段：
 
 - `relay_chain`
 
-### 8.3 扩展证书接口
+### 12.3 证书接口扩展
 
-证书管理接口新增：
-
-- 证书用途字段
-- 手动上传证书材料
-- 创建自签名证书
-- 返回可展示的 pin / fingerprint 信息
-
-## 9. Master/Agent 同步设计
-
-### 9.1 heartbeat 下发扩展
-
-现有 heartbeat `sync` 载荷已下发：
-
-- `rules`
-- `l4_rules`
-- `certificates`
-- `certificate_policies`
-
-本次扩展为：
-
-- `relay_listeners`
-- `relay_runtime_config` 或能生成该配置的等价字段
-
-### 9.2 下发原则
-
-对某个 Agent，只下发：
-
-- 属于该 Agent 的 relay listeners
-- 该 Agent 作为入口或中间 hop、最后一跳所需的证书材料
-- 该 Agent 需要信任的 CA / pin 信息
-- 该 Agent 需要消费的 HTTP / L4 relay chain 数据
-
-### 9.3 revision 设计
-
-以下任一变化都应推动对应 Agent 的 `desired_revision` 增长：
-
-- RelayListener 变更
-- 规则 `relay_chain` 变更
-- Relay 证书与信任材料变更
-
-## 10. Agent apply 设计
-
-### 10.1 apply 输入
-
-agent apply 阶段需要额外落盘：
-
-- `relay_listeners.json`
-- `relay_runtime.json`
-- relay 证书材料
-- relay trust 材料
-
-### 10.2 apply 输出
-
-1. 继续生成 Nginx HTTP / stream 配置。
-2. 对使用 relay 的规则，Nginx 不直接指向最终后端，而是指向本地 relay runtime。
-3. 生成 relay runtime 配置文件。
-4. reload 或重启 relay runtime。
-
-### 10.3 与现有脚本关系
-
-需要扩展：
-
-- `server.js`
-- `scripts/light-agent.js`
-- `scripts/light-agent-apply.sh`
-- `docker/25-dynamic-reverse-proxy.sh`
-
-其中 shell 脚本负责：
-
-- 配置落盘
-- 进程启动 / reload
-
-具体 relay 协议逻辑不放在 shell 里实现。
-
-## 11. 前端设计
-
-### 11.1 新增 Relay Listener 管理界面
-
-建议新增独立 UI 区域或页面，用于管理某个 Agent 上的 Relay Listener：
-
-- 名称
-- 监听地址
-- 监听端口
-- 证书
-- TLS 模式
-- pin
-- trusted CA
-- enabled
-
-### 11.2 HTTP / L4 规则表单扩展
-
-在 HTTP 与 L4 规则表单中新增 relay 配置区：
-
-- 是否启用 relay
-- relay chain 选择器
-- 直接选择具体 listener
-- 支持链路排序
-
-### 11.3 L4 表单限制
-
-当 `protocol=udp` 时：
-
-- relay UI 置灰
-- 显示“第一版仅支持 TCP relay”
-
-### 11.4 证书表单扩展
-
-证书管理页增加：
+证书管理增加：
 
 - 用途
-- 来源
-- 是否可作为 relay CA
+- 签发模式
 - pin / fingerprint 展示
+- 是否可作为 relay CA
 
-## 12. 校验规则
+### 12.4 版本接口
 
-### 12.1 RelayListener 校验
+控制面需新增版本管理能力，用于维护：
 
-1. `listen_host` 必须是合法 IP 或域名。
-2. `listen_port` 必须是合法端口。
-3. 同一 Agent 下 `listen_host + listen_port` 不允许冲突。
-4. `certificate_id` 必须存在且支持 `relay_tunnel`。
-5. `pin_set` 与 `trusted_ca_certificate_ids` 不能同时为空。
-6. `tls_mode` 必须是支持的枚举值。
+- 可用版本清单
+- 平台包下载地址
+- sha256 / 签名
+- agent 或 agent 组的 `desired_version`
 
-### 12.2 relay_chain 校验
+## 13. Heartbeat 与同步协议扩展
 
-1. 所有 listener 必须存在。
-2. 所有 listener 必须属于已注册 Agent。
-3. 所有 listener 必须 `enabled=true`。
-4. chain 中不允许同一 listener 重复出现。
-5. L4 非 TCP 时不允许设置 relay_chain。
+heartbeat `sync` 除现有字段外，扩展：
 
-### 12.3 证书校验
+- `relay_listeners`
+- `desired_version`
+- `version_package`
+- `version_sha256`
+- `min_supported_version`
 
-1. `relay_tunnel` 证书必须包含可供 runtime 使用的 cert/key 材料。
-2. `relay_ca` 证书必须能作为 trust anchor 消费。
-3. 自签名证书允许被引用，但必须由信任策略明确允许。
+Agent 上报扩展：
 
-## 13. 错误处理与可观测性
+- 当前版本
+- 当前平台
+- 更新状态
+- relay / proxy 引擎健康状态
 
-### 13.1 控制面错误
+## 14. 自动更新设计
 
-创建 / 保存阶段直接拦截：
+### 14.1 控制面策略
 
-- listener 不存在
-- listener 不可用
-- 证书用途不匹配
-- 非 TCP 使用 L4 relay
-- pin / CA 都为空
-- chain 自循环
+采用 Master 指定目标版本：
 
-### 13.2 运行时错误
+- 每个 agent 或 agent 组有 `desired_version`
+- agent 不自行追“最新”
 
-错误信息按 hop 定位，至少包括：
+### 14.2 agent 升级流程
+
+1. heartbeat 发现当前版本落后
+2. 在安全点执行升级，而不是在 apply 中途切换
+3. 下载平台包
+4. 校验 hash / 签名
+5. 写入待切换元数据
+6. 重启并切换版本
+7. 启动成功后上报
+8. 失败则回滚
+
+### 14.3 Windows 特殊性
+
+Windows 上不能直接覆盖正在运行的 exe，因此需要：
+
+- updater helper 或等价外部更新进程
+- 负责停进程、替换文件、拉起新版本
+
+Linux 与 Windows 在升级流程概念上统一，但平台适配层不同。
+
+## 15. 校验规则
+
+### 15.1 RelayListener
+
+1. `listen_host` 必须合法
+2. `listen_port` 必须合法
+3. 同一 agent 下监听地址端口不能冲突
+4. `certificate_id` 必须存在且支持 `relay_tunnel`
+5. `pin_set` 与 `trusted_ca_certificate_ids` 不能同时为空
+6. `tls_mode` 必须是受支持枚举
+
+### 15.2 relay_chain
+
+1. 所有 listener 必须存在
+2. 所有 listener 必须属于已注册 agent
+3. 所有 listener 必须启用
+4. 同一 listener 不允许在同一 chain 中重复出现
+5. L4 非 TCP 时不允许使用
+
+### 15.3 版本策略
+
+1. `desired_version` 必须能映射到当前平台可下载包
+2. 未知版本不能下发
+3. 低于 `min_supported_version` 的 agent 要在控制面可见
+
+## 16. 错误处理与可观测性
+
+### 16.1 控制面错误
+
+保存配置时直接拦截：
+
+- 非法 relay_chain
+- 非法证书用途
+- 非法升级目标
+- 非 TCP 的 L4 relay
+
+### 16.2 运行时错误
+
+至少应支持：
 
 - `hop 1 tls pin mismatch`
 - `hop 2 ca verify failed`
 - `hop 2 dial timeout`
-- `hop 3 certificate expired`
 - `exit backend dial failed`
+- `proxy bind failed`
+- `certificate load failed`
+- `update verify failed`
+- `rollback executed`
 
-### 13.3 状态上报
+### 16.3 状态上报
 
-第一版建议上报：
+建议上报：
 
-- RelayListener 最近握手状态
-- 最近错误
+- proxy engine 状态
+- tcp engine 状态
+- relay listener 状态
 - 最近成功时间
-- 当前 apply revision
-- 规则是否启用 relay
+- 最近错误
+- 当前 revision
+- 当前 version
+- 最近更新状态
 
-## 14. 测试设计
+## 17. 测试设计
 
-### 14.1 后端测试
+### 17.1 后端测试
 
 至少覆盖：
 
 1. RelayListener normalize / validate
-2. Rule / L4Rule `relay_chain` normalize / validate
-3. revision 增长逻辑
-4. 存储 roundtrip
-5. 存储兼容性
-6. chain 环检测
-7. 证书用途与 TLS 模式校验
+2. Rule / L4Rule 的 `relay_chain` 校验
+3. 证书用途校验
+4. 版本策略校验
+5. revision 增长逻辑
+6. 存储 roundtrip
 
-### 14.2 运行时测试
+### 17.2 Go agent 单元测试
 
 至少覆盖：
 
-1. 无 relay
-2. 一跳 relay
-3. 多跳 relay
-4. pin 成功 / 失败
-5. CA 成功 / 失败
-6. self-signed + pin 成功
-7. HTTP 出口访问 backend_url
-8. L4 TCP 出口访问 upstream
+1. heartbeat 同步
+2. config-store 切换
+3. HTTP 代理与头处理
+4. `proxy_redirect` 行为
+5. TCP engine
+6. relay 单跳 / 多跳
+7. pin / CA 校验
+8. 证书热更新
+9. updater 下载、校验、回滚
 
-### 14.3 集成验证
+### 17.3 跨平台测试
 
-最低验证命令：
+至少覆盖：
 
-- `cd panel/backend && npm test`
-- `cd panel/frontend && npm run build`
-- `docker build -t nginx-reverse-emby .`
+1. Linux remote agent
+2. Linux local agent
+3. Windows remote agent
+4. Windows 自动更新
+5. 混合 relay chain
 
-建议补充：
+## 18. 实施顺序
 
-- 多 agent / 多跳 relay 容器化 smoke test
+### 阶段 1：控制面扩展
 
-## 15. 实施边界与推荐顺序
+- RelayListener 模型
+- 证书用途扩展
+- agent 版本字段
+- 版本管理接口
+- 前端表单扩展
 
-### 15.1 推荐阶段
+### 阶段 2：Go agent 基础框架
 
-阶段 1：控制面建模
+- heartbeat pull
+- config-store
+- local agent 模型
+- 基础 apply / reload 框架
 
-- 新增 RelayListener
-- 扩展证书用途
-- 扩展 Rule / L4Rule 的 `relay_chain`
-- 完成前后端 CRUD
+### 阶段 3：Go proxy engine / tcp-engine
 
-阶段 2：同步与 apply
+- HTTP reverse proxy
+- TLS 终止
+- WebSocket
+- L4 TCP
+- 规则热加载
 
-- heartbeat payload 扩展
-- relay 配置落盘
-- runtime 配置生成
+### 阶段 4：Go relay runtime
 
-阶段 3：relay runtime
+- RelayListener
+- 多跳 relay
+- pin / CA
+- 最后一跳回源
 
-- TCP hop
-- TLS + pin / CA
-- HTTP 与 L4 TCP 转发
+### 阶段 5：Go cert-manager
 
-阶段 4：状态与补强
+- ACME
+- 手动导入
+- 自签名
+- 热更新
 
-- 错误上报
-- listener 状态展示
-- 证书轮换验证
+### 阶段 6：Go updater
 
-### 15.2 第一版最终结论
+- desired_version
+- 下载与校验
+- Linux / Windows 更新流程
+- 回滚
 
-第一版正式落地的推荐方案是：
+## 19. 最终结论
 
-1. 全局 `RelayListener` 对象。
-2. HTTP / L4 规则直接引用具体 listener 链。
-3. 证书管理复用现有体系，扩展 `relay_tunnel` 与 `relay_ca` 用途。
-4. 运行时采用独立 Node relay runtime，Nginx 只负责入口与本地转发。
-5. 第一版支持 HTTP + L4 TCP，支持 0 跳 / 1 跳 / 多跳 relay。
-6. 安全模型支持 pin 与 CA，默认推荐 `pin_or_ca`。
-7. relay 节点仅限已注册 Agent。
+本次设计的最终推荐方案是：
+
+1. 控制面继续保留 Node/Vue。
+2. 执行面统一迁移到 Go。
+3. master 本地节点也改为独立 Go local agent。
+4. 所有 agent 继续使用 heartbeat pull 协议。
+5. relay 采用全局 RelayListener + 规则直接引用 listener 链。
+6. Go proxy engine 取代长期 Nginx 依赖。
+7. L4 仅保留跨平台可稳定实现的 TCP 能力。
+8. 证书签发与热更新也迁移到 Go。
+9. agent 自动更新采用 Master 指定 `desired_version` 的模型。
+10. Windows 支持、relay、多跳、本地节点、自动更新统一在一套 Go 执行面内完成。
