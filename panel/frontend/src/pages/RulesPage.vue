@@ -100,6 +100,11 @@
             <code class="rule-card__backend">{{ rule.backend_url }}</code>
           </div>
         </div>
+        <div v-if="hasRequestHeaderIndicators(rule)" class="rule-card__meta-badges">
+          <span v-if="hasUserAgent(rule)" class="rule-card__meta-badge">UA</span>
+          <span v-if="hasCustomHeaders(rule)" class="rule-card__meta-badge">Headers</span>
+          <span v-if="hasIpForwardDisabled(rule)" class="rule-card__meta-badge rule-card__meta-badge--warning">No IP Forward</span>
+        </div>
         <div class="rule-card__tags">
           <span v-for="tag in (rule.tags || [])" :key="tag" class="tag">{{ tag }}</span>
         </div>
@@ -234,6 +239,22 @@ function getStatus(rule) {
 function getStatusLabel(rule) {
   const status = getStatus(rule)
   return { active: '生效中', pending: '待同步', failed: '同步失败', disabled: '已禁用' }[status] || '未知'
+}
+
+function hasUserAgent(rule) {
+  return Boolean(String(rule?.user_agent || '').trim())
+}
+
+function hasCustomHeaders(rule) {
+  return Array.isArray(rule?.custom_headers) && rule.custom_headers.length > 0
+}
+
+function hasIpForwardDisabled(rule) {
+  return rule?.pass_proxy_headers === false
+}
+
+function hasRequestHeaderIndicators(rule) {
+  return hasUserAgent(rule) || hasCustomHeaders(rule) || hasIpForwardDisabled(rule)
 }
 
 function toggleRule(rule) {
@@ -375,6 +396,9 @@ function confirmDelete() {
 
 /* Tags */
 .rule-card__tags { display: flex; gap: 0.375rem; flex-wrap: wrap; }
+.rule-card__meta-badges { display: flex; gap: 0.375rem; flex-wrap: wrap; }
+.rule-card__meta-badge { font-size: 0.7rem; padding: 2px 8px; background: var(--color-bg-subtle); color: var(--color-text-secondary); border: 1px solid var(--color-border-default); border-radius: var(--radius-full); font-weight: 600; }
+.rule-card__meta-badge--warning { background: var(--color-warning-50); color: var(--color-warning); border-color: transparent; }
 
 /* Protocol badge */
 .proto-badge { display: inline-block; font-size: 0.7rem; font-weight: 700; padding: 2px 6px; border-radius: var(--radius-sm); font-family: var(--font-mono); }
