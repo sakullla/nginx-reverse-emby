@@ -1,0 +1,118 @@
+"use strict";
+
+function ensureObject(value, label) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError(`${label} must be an object`);
+  }
+  return value;
+}
+
+function normalizeOptionalId(value, label) {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value === null) {
+    return null;
+  }
+  const parsed = Number.parseInt(String(value), 10);
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new TypeError(`${label} must be a non-negative integer`);
+  }
+  return parsed;
+}
+
+function normalizeRequiredString(value, label) {
+  const next = String(value || "").trim();
+  if (!next) {
+    throw new TypeError(`${label} is required`);
+  }
+  return next;
+}
+
+function normalizeStringList(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value
+    .map((entry) => String(entry || "").trim())
+    .filter(Boolean);
+}
+
+function normalizeTrustedCaCertificateIds(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const seen = new Set();
+  const ids = [];
+  for (const entry of value) {
+    const parsed = Number.parseInt(String(entry), 10);
+    if (!Number.isInteger(parsed) || parsed < 0 || seen.has(parsed)) {
+      continue;
+    }
+    seen.add(parsed);
+    ids.push(parsed);
+  }
+  return ids;
+}
+
+function normalizePinSet(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return value.map((entry) => {
+    const next = ensureObject(entry, "pin_set entry");
+    return {
+      type: normalizeRequiredString(next.type, "pin_set.type"),
+      value: normalizeRequiredString(next.value, "pin_set.value"),
+    };
+  });
+}
+
+function normalizeRevision(value) {
+  const parsed = Number.parseInt(String(value || 0), 10);
+  return Number.isInteger(parsed) && parsed >= 0 ? parsed : 0;
+}
+
+function normalizeListenPort(value) {
+  const parsed = Number.parseInt(String(value), 10);
+  if (!Number.isInteger(parsed) || parsed < 1 || parsed > 65535) {
+    throw new TypeError("listen_port must be an integer between 1 and 65535");
+  }
+  return parsed;
+}
+
+function normalizeRelayListenerPayload(payload) {
+  const next = ensureObject(payload, "relay listener payload");
+  const normalized = {
+    agent_id: normalizeRequiredString(next.agent_id, "agent_id"),
+    name: normalizeRequiredString(next.name, "name"),
+    listen_host: String(next.listen_host || "0.0.0.0").trim() || "0.0.0.0",
+    listen_port: normalizeListenPort(next.listen_port),
+    enabled: next.enabled !== false,
+    certificate_id: normalizeOptionalId(next.certificate_id, "certificate_id"),
+    tls_mode: String(next.tls_mode || "pin_or_ca").trim() || "pin_or_ca",
+    pin_set: normalizePinSet(next.pin_set),
+    trusted_ca_certificate_ids: normalizeTrustedCaCertificateIds(next.trusted_ca_certificate_ids),
+    allow_self_signed: !!next.allow_self_signed,
+    tags: normalizeStringList(next.tags),
+    revision: normalizeRevision(next.revision),
+  };
+
+  const id = normalizeOptionalId(next.id, "id");
+  if (id !== undefined) {
+    normalized.id = id;
+  }
+
+  if (
+    normalized.pin_set.length === 0 &&
+    normalized.trusted_ca_certificate_ids.length === 0
+  ) {
+    throw new TypeError("pin_set and trusted_ca_certificate_ids cannot both be empty");
+  }
+
+  return normalized;
+}
+
+module.exports = {
+  normalizeRelayListenerPayload,
+};

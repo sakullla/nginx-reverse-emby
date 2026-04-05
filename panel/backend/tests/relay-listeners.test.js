@@ -1,0 +1,117 @@
+"use strict";
+
+const { describe, it, beforeEach, afterEach } = require("node:test");
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const { normalizeRelayListenerPayload } = require("../relay-listener-normalize");
+const { loadFreshStorage, closeQuietly, SQLITE_TARGET, canRunSqlite } = require("./helpers");
+
+describe("relay listener normalization", () => {
+  it("normalizes a valid relay listener payload", () => {
+    const listener = normalizeRelayListenerPayload({
+      agent_id: "local",
+      name: "relay-a",
+      listen_host: "0.0.0.0",
+      listen_port: 18443,
+      certificate_id: 12,
+      tls_mode: "pin_or_ca",
+      pin_set: [{ type: "spki_sha256", value: "abc" }],
+    });
+
+    assert.strictEqual(listener.listen_port, 18443);
+    assert.strictEqual(listener.enabled, true);
+    assert.deepStrictEqual(listener.trusted_ca_certificate_ids, []);
+    assert.deepStrictEqual(listener.tags, []);
+    assert.strictEqual(listener.revision, 0);
+  });
+
+  it("rejects listeners when both pin_set and trusted_ca_certificate_ids are empty", () => {
+    assert.throws(
+      () => normalizeRelayListenerPayload({
+        agent_id: "local",
+        name: "relay-a",
+        listen_host: "0.0.0.0",
+        listen_port: 18443,
+        pin_set: [],
+        trusted_ca_certificate_ids: [],
+      }),
+      /pin_set.*trusted_ca_certificate_ids/i,
+    );
+  });
+});
+
+describe("relay listener storage", () => {
+  let jsonStorage;
+  let jsonTmpDir;
+
+  beforeEach(() => {
+    jsonTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "relay-json-"));
+    jsonStorage = loadFreshStorage("../storage-json", jsonTmpDir);
+  });
+
+  afterEach(() => {
+    closeQuietly(jsonStorage);
+    try {
+      fs.rmSync(jsonTmpDir, { recursive: true, force: true });
+    } catch (_) {
+      // ignore teardown noise
+    }
+  });
+
+  it("round-trips relay listeners in the JSON backend", () => {
+    const listeners = [
+      normalizeRelayListenerPayload({
+        id: 7,
+        agent_id: "agent-json",
+        name: "relay-a",
+        listen_host: "0.0.0.0",
+        listen_port: 18443,
+        certificate_id: 12,
+        tls_mode: "pin_or_ca",
+        pin_set: [{ type: "spki_sha256", value: "abc" }],
+        tags: ["prod"],
+        revision: 11,
+      }),
+    ];
+
+    jsonStorage.saveRelayListenersForAgent("agent-json", listeners);
+
+    assert.deepStrictEqual(
+      jsonStorage.loadRelayListenersForAgent("agent-json"),
+      listeners,
+    );
+  });
+
+  it("round-trips relay listeners in the SQLite backend", { skip: !canRunSqlite && "Prisma-backed SQLite adapter not available" }, () => {
+    const sqliteStorage = loadFreshStorage("../storage-sqlite", SQLITE_TARGET);
+
+    try {
+      const listeners = [
+        normalizeRelayListenerPayload({
+          id: 8,
+          agent_id: "agent-sqlite",
+          name: "relay-b",
+          listen_host: "127.0.0.1",
+          listen_port: 9443,
+          certificate_id: null,
+          tls_mode: "pin_or_ca",
+          trusted_ca_certificate_ids: [22],
+          allow_self_signed: false,
+          tags: ["edge"],
+          revision: 4,
+        }),
+      ];
+
+      sqliteStorage.saveRelayListenersForAgent("agent-sqlite", listeners);
+
+      assert.deepStrictEqual(
+        sqliteStorage.loadRelayListenersForAgent("agent-sqlite"),
+        listeners,
+      );
+    } finally {
+      closeQuietly(sqliteStorage);
+    }
+  });
+});

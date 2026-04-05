@@ -3,6 +3,8 @@
 const fs = require("fs");
 const path = require("path");
 const { normalizeCustomHeaders } = require("./http-rule-request-headers");
+const { normalizeRelayListenerPayload } = require("./relay-listener-normalize");
+const { normalizeVersionPolicyPayload } = require("./version-policy-normalize");
 
 const LOCAL_AGENT_ID = process.env.MASTER_LOCAL_AGENT_ID || "local";
 
@@ -40,6 +42,54 @@ function sanitizeRuleForStorage(rule) {
   };
 }
 
+function normalizeAgentForStorage(agent) {
+  if (!agent || typeof agent !== "object") {
+    return agent;
+  }
+  return {
+    ...agent,
+    desired_version: String(agent.desired_version || ""),
+  };
+}
+
+function normalizeLocalAgentStateForStorage(state) {
+  const next = state && typeof state === "object" ? state : {};
+  return {
+    desired_revision: safeRevision(next.desired_revision),
+    current_revision: safeRevision(next.current_revision),
+    last_apply_revision: safeRevision(next.last_apply_revision),
+    last_apply_status: next.last_apply_status || "success",
+    last_apply_message: next.last_apply_message || "",
+    desired_version: String(next.desired_version || ""),
+  };
+}
+
+function sanitizeRelayListenersForStorage(listeners) {
+  if (!Array.isArray(listeners)) {
+    return [];
+  }
+  const sanitized = [];
+  for (const listener of listeners) {
+    try {
+      sanitized.push(normalizeRelayListenerPayload(listener));
+    } catch (_) {
+      // drop malformed relay listeners at storage boundary
+    }
+  }
+  return sanitized;
+}
+
+function sanitizeVersionPolicyForStorage(policy) {
+  if (!policy || typeof policy !== "object") {
+    return null;
+  }
+  try {
+    return normalizeVersionPolicyPayload(policy);
+  } catch (_) {
+    return null;
+  }
+}
+
 // --- Internal helpers (mirrors server.js readJsonFile/writeJsonFile) ---
 
 function readJsonFile(filePath, fallback) {
@@ -72,6 +122,10 @@ function getL4RuleFileForAgent(agentId) {
   return path.join(dataRoot, "l4_agent_rules", `${agentId}.json`);
 }
 
+function getRelayListenerFileForAgent(agentId) {
+  return path.join(dataRoot, "relay_listeners", `${agentId}.json`);
+}
+
 // --- Storage interface ---
 
 function init(root) {
@@ -79,6 +133,7 @@ function init(root) {
   fs.mkdirSync(dataRoot, { recursive: true });
   fs.mkdirSync(path.join(dataRoot, "agent_rules"), { recursive: true });
   fs.mkdirSync(path.join(dataRoot, "l4_agent_rules"), { recursive: true });
+  fs.mkdirSync(path.join(dataRoot, "relay_listeners"), { recursive: true });
 }
 
 function loadRulesForAgent(agentId) {
@@ -119,11 +174,12 @@ function deleteL4RulesForAgent(agentId) {
 function loadRegisteredAgents() {
   const agents = readJsonFile(dataPath("agents.json"), []);
   if (!Array.isArray(agents)) return [];
-  return agents;
+  return agents.map(normalizeAgentForStorage);
 }
 
 function saveRegisteredAgents(agents) {
-  writeJsonFile(dataPath("agents.json"), Array.isArray(agents) ? agents : []);
+  const nextAgents = Array.isArray(agents) ? agents.map(normalizeAgentForStorage) : [];
+  writeJsonFile(dataPath("agents.json"), nextAgents);
 }
 
 function loadManagedCertificates() {
@@ -138,12 +194,35 @@ function saveManagedCertificates(certs) {
 
 function loadLocalAgentState() {
   const state = readJsonFile(dataPath("local_agent_state.json"), {});
-  if (!state || typeof state !== "object") return {};
-  return state;
+  if (!state || typeof state !== "object") return normalizeLocalAgentStateForStorage({});
+  return normalizeLocalAgentStateForStorage(state);
 }
 
 function saveLocalAgentState(state) {
-  writeJsonFile(dataPath("local_agent_state.json"), state || {});
+  writeJsonFile(dataPath("local_agent_state.json"), normalizeLocalAgentStateForStorage(state));
+}
+
+function loadRelayListenersForAgent(agentId) {
+  const listeners = readJsonFile(getRelayListenerFileForAgent(agentId), []);
+  return sanitizeRelayListenersForStorage(listeners);
+}
+
+function saveRelayListenersForAgent(agentId, listeners) {
+  writeJsonFile(getRelayListenerFileForAgent(agentId), sanitizeRelayListenersForStorage(listeners));
+}
+
+function deleteRelayListenersForAgent(agentId) {
+  const file = getRelayListenerFileForAgent(agentId);
+  if (fs.existsSync(file)) fs.unlinkSync(file);
+}
+
+function loadVersionPolicy() {
+  return sanitizeVersionPolicyForStorage(readJsonFile(dataPath("version_policy.json"), null));
+}
+
+function saveVersionPolicy(policy) {
+  const nextPolicy = sanitizeVersionPolicyForStorage(policy);
+  writeJsonFile(dataPath("version_policy.json"), nextPolicy);
 }
 
 function getNextGlobalRevision() {
@@ -172,7 +251,19 @@ function getNextGlobalRevision() {
     0,
   );
 
-  return Math.max(agentMax, localMax, certMax, 0) + 1;
+  const relayListenersDir = path.join(dataRoot, "relay_listeners");
+  const relayListenerFiles = fs.existsSync(relayListenersDir)
+    ? fs.readdirSync(relayListenersDir).filter((file) => file.endsWith(".json"))
+    : [];
+  const relayMax = relayListenerFiles.reduce((max, file) => {
+    const listeners = loadRelayListenersForAgent(file.replace(/\.json$/, ""));
+    return listeners.reduce(
+      (innerMax, listener) => Math.max(innerMax, safeRevision(listener?.revision)),
+      max,
+    );
+  }, 0);
+
+  return Math.max(agentMax, localMax, certMax, relayMax, 0) + 1;
 }
 
 /** Parse a revision value defensively - mirrors server.js normalizeRevision logic */
@@ -203,6 +294,11 @@ module.exports = {
   saveManagedCertificates,
   loadLocalAgentState,
   saveLocalAgentState,
+  loadRelayListenersForAgent,
+  saveRelayListenersForAgent,
+  deleteRelayListenersForAgent,
+  loadVersionPolicy,
+  saveVersionPolicy,
   getNextGlobalRevision,
   migrateFromJson,
   close,

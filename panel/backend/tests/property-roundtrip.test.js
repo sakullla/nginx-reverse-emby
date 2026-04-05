@@ -70,6 +70,7 @@ const agentArb = fc.record({
   agent_url: fc.webUrl(),
   agent_token: safeString,
   version: safeString,
+  desired_version: safeString,
   tags: fc.array(safeString, { maxLength: 5 }),
   capabilities: fc.array(safeString, { maxLength: 5 }),
   mode: fc.constantFrom("pull", "push"),
@@ -125,6 +126,7 @@ const localStateArb = fc.record({
   last_apply_revision: fc.integer({ min: 0, max: 1000 }),
   last_apply_status: fc.constantFrom("success", "error"),
   last_apply_message: safeString,
+  desired_version: safeString,
 });
 
 // ---------------------------------------------------------------------------
@@ -209,6 +211,7 @@ function expectedAgent(a) {
     agent_url: normStr(a.agent_url),
     agent_token: normStr(a.agent_token),
     version: normStr(a.version),
+    desired_version: normStr(a.desired_version),
     tags: a.tags || [],
     capabilities: a.capabilities || [],
     mode: normStr(a.mode) || "pull",
@@ -253,6 +256,7 @@ function expectedLocalState(s) {
     last_apply_revision: normInt(s.last_apply_revision),
     last_apply_status: normStr(s.last_apply_status) || "success",
     last_apply_message: normStr(s.last_apply_message),
+    desired_version: normStr(s.desired_version),
   };
 }
 

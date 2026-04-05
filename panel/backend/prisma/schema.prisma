@@ -12,6 +12,7 @@ model Agent {
   agentUrl          String  @default("") @map("agent_url")
   agentToken        String  @default("") @map("agent_token")
   version           String  @default("")
+  desiredVersion    String  @default("") @map("desired_version")
   tags              String  @default("[]")
   capabilities      String  @default("[]")
   mode              String  @default("pull")
@@ -89,6 +90,26 @@ model ManagedCertificate {
   @@map("managed_certificates")
 }
 
+model RelayListener {
+  id                      Int
+  agentId                 String  @map("agent_id")
+  name                    String  @default("")
+  listenHost              String  @default("0.0.0.0") @map("listen_host")
+  listenPort              Int     @map("listen_port")
+  enabled                 Boolean @default(true)
+  certificateId           Int?    @map("certificate_id")
+  tlsMode                 String  @default("pin_or_ca") @map("tls_mode")
+  pinSet                  String  @default("[]") @map("pin_set")
+  trustedCaCertificateIds String  @default("[]") @map("trusted_ca_certificate_ids")
+  allowSelfSigned         Boolean @default(false) @map("allow_self_signed")
+  tags                    String  @default("[]")
+  revision                Int     @default(0)
+
+  @@id([agentId, id])
+  @@index([agentId], map: "idx_relay_listeners_agent")
+  @@map("relay_listeners")
+}
+
 model LocalAgentState {
   id                Int    @id
   desiredRevision   Int    @default(0) @map("desired_revision")
@@ -96,8 +117,19 @@ model LocalAgentState {
   lastApplyRevision Int    @default(0) @map("last_apply_revision")
   lastApplyStatus   String @default("success") @map("last_apply_status")
   lastApplyMessage  String @default("") @map("last_apply_message")
+  desiredVersion    String @default("") @map("desired_version")
 
   @@map("local_agent_state")
+}
+
+model VersionPolicy {
+  id             String @id
+  channel        String @default("stable")
+  desiredVersion String @default("") @map("desired_version")
+  packages       String @default("[]")
+  tags           String @default("[]")
+
+  @@map("version_policy")
 }
 
 model Meta {

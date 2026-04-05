@@ -51,6 +51,10 @@ describe("Prisma SQL migration flow", () => {
       migrationFiles.some((file) => /^0002_.+\.sql$/i.test(file)),
       "expected a schema version 2 migration file for request-header columns",
     );
+    assert.ok(
+      migrationFiles.some((file) => /^0003_.+\.sql$/i.test(file)),
+      "expected a schema version 3 migration file for relay listeners and version policy",
+    );
   });
 
   it("copies Prisma runtime migration files into the production image", () => {
@@ -70,7 +74,7 @@ describe("Prisma SQL migration flow", () => {
     assert.doesNotMatch(source, /ALTER TABLE\s+rules\s+ADD\s+COLUMN\s+custom_headers/i);
   });
 
-  it("migrates legacy schema_version=1 rules tables to schema version 2", async () => {
+  it("migrates legacy schema_version=1 rules tables to schema version 3", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "panel-prisma-migration-"));
     const databasePath = path.join(tempDir, "panel.db");
 
@@ -113,13 +117,31 @@ describe("Prisma SQL migration flow", () => {
         const schemaVersionRows = await client.$queryRawUnsafe(`
           SELECT value FROM meta WHERE key = 'schema_version'
         `);
-        assert.equal(schemaVersionRows[0].value, "2");
+        assert.equal(schemaVersionRows[0].value, "3");
 
         const columns = await client.$queryRawUnsafe(`PRAGMA table_info('rules')`);
         const names = new Set(columns.map((column) => String(column.name || "")));
         assert.ok(names.has("pass_proxy_headers"));
         assert.ok(names.has("user_agent"));
         assert.ok(names.has("custom_headers"));
+
+        const agentColumns = await client.$queryRawUnsafe(`PRAGMA table_info('agents')`);
+        const agentColumnNames = new Set(agentColumns.map((column) => String(column.name || "")));
+        assert.ok(agentColumnNames.has("desired_version"));
+
+        const localStateColumns = await client.$queryRawUnsafe(`PRAGMA table_info('local_agent_state')`);
+        const localStateColumnNames = new Set(localStateColumns.map((column) => String(column.name || "")));
+        assert.ok(localStateColumnNames.has("desired_version"));
+
+        const relayListenerTables = await client.$queryRawUnsafe(`
+          SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'relay_listeners'
+        `);
+        assert.equal(relayListenerTables.length, 1);
+
+        const versionPolicyTables = await client.$queryRawUnsafe(`
+          SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'version_policy'
+        `);
+        assert.equal(versionPolicyTables.length, 1);
       });
     } finally {
       cleanupDirWithRetries(tempDir);

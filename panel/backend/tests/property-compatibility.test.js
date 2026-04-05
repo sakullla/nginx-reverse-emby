@@ -77,6 +77,7 @@ const agentArb = fc.record({
   agent_url: fc.webUrl(),
   agent_token: nonEmptyString,
   version: nonEmptyString,
+  desired_version: safeString,
   tags: fc.array(safeString, { maxLength: 5 }),
   capabilities: fc.array(safeString, { maxLength: 5 }),
   mode: fc.constantFrom("pull", "push"),
@@ -132,6 +133,7 @@ const localStateArb = fc.record({
   last_apply_revision: fc.integer({ min: 1, max: 1000 }),
   last_apply_status: fc.constantFrom("success", "error"),
   last_apply_message: nonEmptyString,
+  desired_version: safeString,
 });
 
 // ---------------------------------------------------------------------------
@@ -200,6 +202,7 @@ function assertLocalStateEquivalent(sqliteResult, jsonResult) {
     "last_apply_revision",
     "last_apply_status",
     "last_apply_message",
+    "desired_version",
   ];
   const s = {};
   const j = {};

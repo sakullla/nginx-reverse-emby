@@ -6,6 +6,8 @@ const { pathToFileURL } = require("url");
 const { PrismaClient } = require("@prisma/client");
 const { PrismaLibSql } = require("@prisma/adapter-libsql");
 const { normalizeCustomHeaders } = require("./http-rule-request-headers");
+const { normalizeRelayListenerPayload } = require("./relay-listener-normalize");
+const { normalizeVersionPolicyPayload } = require("./version-policy-normalize");
 
 const DEFAULT_LOCAL_AGENT_STATE = Object.freeze({
   desired_revision: 0,
@@ -13,10 +15,12 @@ const DEFAULT_LOCAL_AGENT_STATE = Object.freeze({
   last_apply_revision: 0,
   last_apply_status: "success",
   last_apply_message: "",
+  desired_version: "",
 });
-const CURRENT_SCHEMA_VERSION = "2";
+const CURRENT_SCHEMA_VERSION = "3";
 const MIGRATIONS_DIR = path.join(__dirname, "prisma", "migrations");
 const REQUEST_HEADERS_SCHEMA_VERSION = 2;
+const RELAY_VERSION_POLICY_SCHEMA_VERSION = 3;
 const CLIENT_STATE = {
   client: null,
   dataRoot: null,
@@ -30,6 +34,7 @@ const SCHEMA_STATEMENTS = [
     agent_url TEXT DEFAULT '',
     agent_token TEXT DEFAULT '',
     version TEXT DEFAULT '',
+    desired_version TEXT DEFAULT '',
     tags TEXT DEFAULT '[]',
     capabilities TEXT DEFAULT '[]',
     mode TEXT DEFAULT 'pull',
@@ -76,6 +81,23 @@ const SCHEMA_STATEMENTS = [
     PRIMARY KEY (agent_id, id)
   )`,
   "CREATE INDEX IF NOT EXISTS idx_l4_rules_agent ON l4_rules(agent_id)",
+  `CREATE TABLE IF NOT EXISTS relay_listeners (
+    id INTEGER NOT NULL,
+    agent_id TEXT NOT NULL,
+    name TEXT DEFAULT '',
+    listen_host TEXT DEFAULT '0.0.0.0',
+    listen_port INTEGER NOT NULL,
+    enabled INTEGER DEFAULT 1,
+    certificate_id INTEGER,
+    tls_mode TEXT DEFAULT 'pin_or_ca',
+    pin_set TEXT DEFAULT '[]',
+    trusted_ca_certificate_ids TEXT DEFAULT '[]',
+    allow_self_signed INTEGER DEFAULT 0,
+    tags TEXT DEFAULT '[]',
+    revision INTEGER DEFAULT 0,
+    PRIMARY KEY (agent_id, id)
+  )`,
+  "CREATE INDEX IF NOT EXISTS idx_relay_listeners_agent ON relay_listeners(agent_id)",
   `CREATE TABLE IF NOT EXISTS managed_certificates (
     id INTEGER PRIMARY KEY,
     domain TEXT NOT NULL,
@@ -98,7 +120,15 @@ const SCHEMA_STATEMENTS = [
     current_revision INTEGER DEFAULT 0,
     last_apply_revision INTEGER DEFAULT 0,
     last_apply_status TEXT DEFAULT 'success',
-    last_apply_message TEXT DEFAULT ''
+    last_apply_message TEXT DEFAULT '',
+    desired_version TEXT DEFAULT ''
+  )`,
+  `CREATE TABLE IF NOT EXISTS version_policy (
+    id TEXT PRIMARY KEY,
+    channel TEXT DEFAULT 'stable',
+    desired_version TEXT DEFAULT '',
+    packages TEXT DEFAULT '[]',
+    tags TEXT DEFAULT '[]'
   )`,
   `CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
@@ -175,8 +205,14 @@ async function readTableColumnNames(client, tableName) {
 
 async function inferSchemaVersionWithoutMeta(client) {
   const ruleColumns = await readTableColumnNames(client, "rules");
+  const agentColumns = await readTableColumnNames(client, "agents");
+  const localAgentStateColumns = await readTableColumnNames(client, "local_agent_state");
   const hasRequestHeaderColumns = ["pass_proxy_headers", "user_agent", "custom_headers"]
     .every((column) => ruleColumns.has(column));
+  const hasVersionPolicyColumns = agentColumns.has("desired_version") && localAgentStateColumns.has("desired_version");
+  if (hasRequestHeaderColumns && hasVersionPolicyColumns) {
+    return RELAY_VERSION_POLICY_SCHEMA_VERSION;
+  }
   return hasRequestHeaderColumns ? REQUEST_HEADERS_SCHEMA_VERSION : 1;
 }
 
@@ -312,6 +348,7 @@ async function initializeDatabase(client) {
       lastApplyRevision: 0,
       lastApplyStatus: "success",
       lastApplyMessage: "",
+      desiredVersion: "",
     },
   });
 }
@@ -362,6 +399,7 @@ function mapAgentFromDb(row) {
     agent_url: row.agentUrl || "",
     agent_token: row.agentToken || "",
     version: row.version || "",
+    desired_version: row.desiredVersion || "",
     tags: parseJsonValue(row.tags, []),
     capabilities: parseJsonValue(row.capabilities, []),
     mode: row.mode || "pull",
@@ -434,6 +472,24 @@ function mapManagedCertificateFromDb(row) {
   };
 }
 
+function mapRelayListenerFromDb(row) {
+  return normalizeRelayListenerPayload({
+    id: row.id,
+    agent_id: row.agentId,
+    name: row.name || "",
+    listen_host: row.listenHost || "0.0.0.0",
+    listen_port: row.listenPort,
+    enabled: !!row.enabled,
+    certificate_id: row.certificateId == null ? null : row.certificateId,
+    tls_mode: row.tlsMode || "pin_or_ca",
+    pin_set: parseJsonValue(row.pinSet, []),
+    trusted_ca_certificate_ids: parseJsonValue(row.trustedCaCertificateIds, []),
+    allow_self_signed: !!row.allowSelfSigned,
+    tags: parseJsonValue(row.tags, []),
+    revision: row.revision || 0,
+  });
+}
+
 function mapLocalAgentStateFromDb(row) {
   if (!row) {
     return defaultLocalAgentState();
@@ -444,7 +500,21 @@ function mapLocalAgentStateFromDb(row) {
     last_apply_revision: row.lastApplyRevision || 0,
     last_apply_status: row.lastApplyStatus || "success",
     last_apply_message: row.lastApplyMessage || "",
+    desired_version: row.desiredVersion || "",
   };
+}
+
+function mapVersionPolicyFromDb(row) {
+  if (!row) {
+    return null;
+  }
+  return normalizeVersionPolicyPayload({
+    id: row.id,
+    channel: row.channel || "stable",
+    desired_version: row.desiredVersion || "",
+    packages: parseJsonValue(row.packages, []),
+    tags: parseJsonValue(row.tags, []),
+  });
 }
 
 function mapAgentToDb(agent) {
@@ -454,6 +524,7 @@ function mapAgentToDb(agent) {
     agentUrl: String(agent.agent_url || ""),
     agentToken: String(agent.agent_token || ""),
     version: String(agent.version || ""),
+    desiredVersion: String(agent.desired_version || ""),
     tags: stringifyJsonValue(agent.tags, []),
     capabilities: stringifyJsonValue(agent.capabilities, []),
     mode: String(agent.mode || "pull"),
@@ -529,6 +600,42 @@ function mapManagedCertificateToDb(cert) {
   };
 }
 
+function mapRelayListenerToDb(agentId, listener) {
+  const normalized = normalizeRelayListenerPayload({
+    ...listener,
+    agent_id: String(agentId),
+  });
+  if (!Number.isInteger(normalized.id)) {
+    throw new TypeError("relay listener id is required for persistence");
+  }
+  return {
+    id: Number(normalized.id),
+    agentId: String(agentId),
+    name: String(normalized.name || ""),
+    listenHost: String(normalized.listen_host || "0.0.0.0"),
+    listenPort: Number(normalized.listen_port),
+    enabled: normalized.enabled !== false,
+    certificateId: normalized.certificate_id == null ? null : Number(normalized.certificate_id),
+    tlsMode: String(normalized.tls_mode || "pin_or_ca"),
+    pinSet: stringifyJsonValue(normalized.pin_set, []),
+    trustedCaCertificateIds: stringifyJsonValue(normalized.trusted_ca_certificate_ids, []),
+    allowSelfSigned: !!normalized.allow_self_signed,
+    tags: stringifyJsonValue(normalized.tags, []),
+    revision: Number(normalized.revision || 0),
+  };
+}
+
+function mapVersionPolicyToDb(policy) {
+  const normalized = normalizeVersionPolicyPayload(policy);
+  return {
+    id: String(normalized.id),
+    channel: String(normalized.channel || "stable"),
+    desiredVersion: String(normalized.desired_version || ""),
+    packages: stringifyJsonValue(normalized.packages, []),
+    tags: stringifyJsonValue(normalized.tags, []),
+  };
+}
+
 function groupByAgent(rows, mapper) {
   const grouped = {};
   for (const row of rows) {
@@ -542,12 +649,14 @@ function groupByAgent(rows, mapper) {
 }
 
 async function loadSnapshotFromClient(client) {
-  const [agents, rules, l4Rules, managedCertificates, localAgentState, metaRows] = await Promise.all([
+  const [agents, rules, l4Rules, relayListeners, managedCertificates, localAgentState, versionPolicy, metaRows] = await Promise.all([
     client.agent.findMany({ orderBy: { id: "asc" } }),
     client.rule.findMany({ orderBy: [{ agentId: "asc" }, { id: "asc" }] }),
     client.l4Rule.findMany({ orderBy: [{ agentId: "asc" }, { id: "asc" }] }),
+    client.relayListener.findMany({ orderBy: [{ agentId: "asc" }, { id: "asc" }] }),
     client.managedCertificate.findMany({ orderBy: { id: "asc" } }),
     client.localAgentState.findUnique({ where: { id: 1 } }),
+    client.versionPolicy.findFirst({ orderBy: { id: "asc" } }),
     client.meta.findMany(),
   ]);
 
@@ -555,8 +664,10 @@ async function loadSnapshotFromClient(client) {
     agents: agents.map(mapAgentFromDb),
     rulesByAgent: groupByAgent(rules, mapRuleFromDb),
     l4RulesByAgent: groupByAgent(l4Rules, mapL4RuleFromDb),
+    relayListenersByAgent: groupByAgent(relayListeners, mapRelayListenerFromDb),
     managedCertificates: managedCertificates.map(mapManagedCertificateFromDb),
     localAgentState: mapLocalAgentStateFromDb(localAgentState),
+    versionPolicy: mapVersionPolicyFromDb(versionPolicy),
     meta: Object.fromEntries(metaRows.map((row) => [row.key, row.value])),
   };
 }
@@ -610,6 +721,23 @@ async function deleteL4RulesForAgent(dataRoot, agentId) {
   });
 }
 
+async function saveRelayListenersForAgent(dataRoot, agentId, listeners) {
+  return withClient(dataRoot, async (client) => {
+    await client.$transaction(async (tx) => {
+      await tx.relayListener.deleteMany({ where: { agentId: String(agentId) } });
+      for (const listener of Array.isArray(listeners) ? listeners : []) {
+        await tx.relayListener.create({ data: mapRelayListenerToDb(agentId, listener) });
+      }
+    });
+  });
+}
+
+async function deleteRelayListenersForAgent(dataRoot, agentId) {
+  return withClient(dataRoot, async (client) => {
+    await client.relayListener.deleteMany({ where: { agentId: String(agentId) } });
+  });
+}
+
 async function saveManagedCertificates(dataRoot, certs) {
   return withClient(dataRoot, async (client) => {
     await client.$transaction(async (tx) => {
@@ -632,6 +760,7 @@ async function saveLocalAgentState(dataRoot, state) {
         lastApplyRevision: Number(next.last_apply_revision || 0),
         lastApplyStatus: String(next.last_apply_status || "success"),
         lastApplyMessage: String(next.last_apply_message || ""),
+        desiredVersion: String(next.desired_version || ""),
       },
       create: {
         id: 1,
@@ -640,7 +769,19 @@ async function saveLocalAgentState(dataRoot, state) {
         lastApplyRevision: Number(next.last_apply_revision || 0),
         lastApplyStatus: String(next.last_apply_status || "success"),
         lastApplyMessage: String(next.last_apply_message || ""),
+        desiredVersion: String(next.desired_version || ""),
       },
+    });
+  });
+}
+
+async function saveVersionPolicy(dataRoot, policy) {
+  return withClient(dataRoot, async (client) => {
+    await client.$transaction(async (tx) => {
+      await tx.versionPolicy.deleteMany();
+      if (policy && typeof policy === "object") {
+        await tx.versionPolicy.create({ data: mapVersionPolicyToDb(policy) });
+      }
     });
   });
 }
@@ -658,7 +799,9 @@ async function migrateFromJsonPayload(dataRoot, payload) {
     await client.$transaction(async (tx) => {
       await tx.rule.deleteMany();
       await tx.l4Rule.deleteMany();
+      await tx.relayListener.deleteMany();
       await tx.managedCertificate.deleteMany();
+      await tx.versionPolicy.deleteMany();
       await tx.agent.deleteMany();
 
       for (const agent of Array.isArray(payload?.agents) ? payload.agents : []) {
@@ -683,6 +826,15 @@ async function migrateFromJsonPayload(dataRoot, payload) {
         }
       }
 
+      const relayListenersByAgent = payload?.relayListenersByAgent && typeof payload.relayListenersByAgent === "object"
+        ? payload.relayListenersByAgent
+        : {};
+      for (const [agentId, listeners] of Object.entries(relayListenersByAgent)) {
+        for (const listener of Array.isArray(listeners) ? listeners : []) {
+          await tx.relayListener.create({ data: mapRelayListenerToDb(agentId, listener) });
+        }
+      }
+
       for (const cert of Array.isArray(payload?.managedCertificates) ? payload.managedCertificates : []) {
         await tx.managedCertificate.create({ data: mapManagedCertificateToDb(cert) });
       }
@@ -698,6 +850,7 @@ async function migrateFromJsonPayload(dataRoot, payload) {
           lastApplyRevision: Number(localState.last_apply_revision || 0),
           lastApplyStatus: String(localState.last_apply_status || "success"),
           lastApplyMessage: String(localState.last_apply_message || ""),
+          desiredVersion: String(localState.desired_version || ""),
         },
         create: {
           id: 1,
@@ -706,8 +859,13 @@ async function migrateFromJsonPayload(dataRoot, payload) {
           lastApplyRevision: Number(localState.last_apply_revision || 0),
           lastApplyStatus: String(localState.last_apply_status || "success"),
           lastApplyMessage: String(localState.last_apply_message || ""),
+          desiredVersion: String(localState.desired_version || ""),
         },
       });
+
+      if (payload?.versionPolicy && typeof payload.versionPolicy === "object") {
+        await tx.versionPolicy.create({ data: mapVersionPolicyToDb(payload.versionPolicy) });
+      }
 
       await tx.meta.upsert({
         where: { key: "migrated_from_json" },
@@ -731,8 +889,11 @@ module.exports = {
   deleteRulesForAgent,
   saveL4RulesForAgent,
   deleteL4RulesForAgent,
+  saveRelayListenersForAgent,
+  deleteRelayListenersForAgent,
   saveManagedCertificates,
   saveLocalAgentState,
+  saveVersionPolicy,
   migrateFromJsonPayload,
   closeClient,
 };
