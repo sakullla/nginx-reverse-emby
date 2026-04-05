@@ -9,36 +9,43 @@
       <button v-if='agentId' class='btn btn-primary' @click='showAddForm = true'>新建监听器</button>
     </div>
 
-    <div v-if='!agentId' class='relay-page__empty'>请在侧栏选择节点后管理 Relay 监听器</div>
-    <div v-else-if='isLoading' class='relay-page__empty'>加载中...</div>
-    <div v-else-if='!listeners.length' class='relay-page__empty'>暂无 Relay 监听器</div>
-    <p v-if='deleteError' class='relay-page__error'>{{ deleteError }}</p>
-
-    <div v-else class='relay-grid'>
-      <article v-for='listener in listeners' :key='listener.id' class='relay-card'>
-        <div class='relay-card__header'>
-          <div>
-            <h3 class='relay-card__title'>{{ listener.name }}</h3>
-            <p class='relay-card__addr'>{{ listener.listen_host }}:{{ listener.listen_port }}</p>
+    <template v-if='!agentId'>
+      <div class='relay-page__empty'>请在侧栏选择节点后管理 Relay 监听器</div>
+    </template>
+    <template v-else-if='isLoading'>
+      <div class='relay-page__empty'>加载中...</div>
+    </template>
+    <template v-else-if='!listeners.length'>
+      <div class='relay-page__empty'>暂无 Relay 监听器</div>
+    </template>
+    <template v-else>
+      <p v-if='deleteError' class='relay-page__error'>{{ deleteError }}</p>
+      <div class='relay-grid'>
+        <article v-for='listener in listeners' :key='listener.id' class='relay-card'>
+          <div class='relay-card__header'>
+            <div>
+              <h3 class='relay-card__title'>{{ listener.name }}</h3>
+              <p class='relay-card__addr'>{{ listener.listen_host }}:{{ listener.listen_port }}</p>
+            </div>
+            <div class='relay-card__actions'>
+              <button class='icon-btn' @click='startEdit(listener)'>编辑</button>
+              <button class='icon-btn icon-btn--danger' @click='startDelete(listener)'>删除</button>
+            </div>
           </div>
-          <div class='relay-card__actions'>
-            <button class='icon-btn' @click='startEdit(listener)'>编辑</button>
-            <button class='icon-btn icon-btn--danger' @click='startDelete(listener)'>删除</button>
+
+          <div class='relay-card__meta'>
+            <span class='badge'>{{ listener.enabled ? '已启用' : '已禁用' }}</span>
+            <span class='badge'>{{ listener.tls_mode || 'disabled' }}</span>
+            <span v-if='listener.certificate_id' class='badge'>证书 #{{ listener.certificate_id }}</span>
+            <span v-if='listener.allow_self_signed' class='badge badge--warn'>允许自签</span>
           </div>
-        </div>
 
-        <div class='relay-card__meta'>
-          <span class='badge'>{{ listener.enabled ? '已启用' : '已禁用' }}</span>
-          <span class='badge'>{{ listener.tls_mode || 'disabled' }}</span>
-          <span v-if='listener.certificate_id' class='badge'>证书 #{{ listener.certificate_id }}</span>
-          <span v-if='listener.allow_self_signed' class='badge badge--warn'>允许自签</span>
-        </div>
-
-        <div class='relay-card__tags'>
-          <span v-for='tag in listener.tags || []' :key='tag' class='tag'>{{ tag }}</span>
-        </div>
-      </article>
-    </div>
+          <div class='relay-card__tags'>
+            <span v-for='tag in listener.tags || []' :key='tag' class='tag'>{{ tag }}</span>
+          </div>
+        </article>
+      </div>
+    </template>
 
     <Teleport to='body'>
       <div v-if='showAddForm || editingListener' class='modal-overlay'>
