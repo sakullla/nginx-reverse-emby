@@ -15,6 +15,11 @@ const {
 
 const NUM_RUNS = getNumRuns("roundtrip", 25);
 
+const customHeaderArb = fc.record({
+  name: fc.constantFrom("Referer", "X-Test", "Host", "X-Forwarded-For"),
+  value: safeString,
+});
+
 const ruleArb = fc.record({
   id: fc.integer({ min: 1, max: 10000 }),
   frontend_url: fc.webUrl(),
@@ -22,6 +27,9 @@ const ruleArb = fc.record({
   enabled: fc.boolean(),
   tags: fc.array(safeString, { maxLength: 5 }),
   proxy_redirect: fc.boolean(),
+  pass_proxy_headers: fc.boolean(),
+  user_agent: safeString,
+  custom_headers: fc.array(customHeaderArb, { maxLength: 4 }),
   revision: fc.integer({ min: 0, max: 1000 }),
 });
 
@@ -139,6 +147,9 @@ function expectedRule(r, agentId) {
     enabled: !!r.enabled,
     tags: r.tags || [],
     proxy_redirect: !!r.proxy_redirect,
+    pass_proxy_headers: r.pass_proxy_headers !== false,
+    user_agent: r.user_agent || "",
+    custom_headers: r.custom_headers || [],
     revision: normInt(r.revision),
   };
 }

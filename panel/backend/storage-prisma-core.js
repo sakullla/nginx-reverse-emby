@@ -50,6 +50,9 @@ const SCHEMA_STATEMENTS = [
     enabled INTEGER DEFAULT 1,
     tags TEXT DEFAULT '[]',
     proxy_redirect INTEGER DEFAULT 1,
+    pass_proxy_headers INTEGER DEFAULT 1,
+    user_agent TEXT DEFAULT '',
+    custom_headers TEXT DEFAULT '[]',
     revision INTEGER DEFAULT 0,
     PRIMARY KEY (agent_id, id)
   )`,
@@ -232,6 +235,9 @@ function mapRuleFromDb(row) {
     enabled: !!row.enabled,
     tags: parseJsonValue(row.tags, []),
     proxy_redirect: !!row.proxyRedirect,
+    pass_proxy_headers: row.passProxyHeaders !== false,
+    user_agent: row.userAgent || "",
+    custom_headers: parseJsonValue(row.customHeaders, []),
     revision: row.revision || 0,
   };
 }
@@ -324,6 +330,9 @@ function mapRuleToDb(agentId, rule) {
     enabled: rule.enabled !== false,
     tags: stringifyJsonValue(rule.tags, []),
     proxyRedirect: rule.proxy_redirect !== false,
+    passProxyHeaders: rule.pass_proxy_headers !== false,
+    userAgent: String(rule.user_agent || ""),
+    customHeaders: stringifyJsonValue(rule.custom_headers, []),
     revision: Number(rule.revision || 0),
   };
 }

@@ -88,6 +88,9 @@ function normalizeRule(agentId, rule) {
     enabled: !!rule.enabled,
     tags: Array.isArray(rule.tags) ? clone(rule.tags) : [],
     proxy_redirect: !!rule.proxy_redirect,
+    pass_proxy_headers: rule.pass_proxy_headers !== false,
+    user_agent: String(rule.user_agent || ""),
+    custom_headers: Array.isArray(rule.custom_headers) ? clone(rule.custom_headers) : [],
     revision: safeRevision(rule.revision),
   };
 }

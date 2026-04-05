@@ -32,14 +32,17 @@ model Agent {
 }
 
 model Rule {
-  id            Int
-  agentId       String  @map("agent_id")
-  frontendUrl   String  @map("frontend_url")
-  backendUrl    String  @map("backend_url")
-  enabled       Boolean @default(true)
-  tags          String  @default("[]")
-  proxyRedirect Boolean @default(true) @map("proxy_redirect")
-  revision      Int     @default(0)
+  id               Int
+  agentId          String  @map("agent_id")
+  frontendUrl      String  @map("frontend_url")
+  backendUrl       String  @map("backend_url")
+  enabled          Boolean @default(true)
+  tags             String  @default("[]")
+  proxyRedirect    Boolean @default(true) @map("proxy_redirect")
+  passProxyHeaders Boolean @default(true) @map("pass_proxy_headers")
+  userAgent        String  @default("") @map("user_agent")
+  customHeaders    String  @default("[]") @map("custom_headers")
+  revision         Int     @default(0)
 
   @@id([agentId, id])
   @@index([agentId], map: "idx_rules_agent")
