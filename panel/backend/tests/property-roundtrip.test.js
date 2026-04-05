@@ -2,7 +2,13 @@
 
 const { describe, it, beforeEach, afterEach } = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
+const { pathToFileURL } = require("url");
 const fc = require("fast-check");
+const { PrismaClient } = require("@prisma/client");
+const { PrismaLibSql } = require("@prisma/adapter-libsql");
 const {
   SQLITE_TARGET,
   canRunSqlite,
@@ -227,6 +233,39 @@ function expectedLocalState(s) {
   };
 }
 
+async function seedLegacyRulesSchema(dataRoot) {
+  fs.mkdirSync(dataRoot, { recursive: true });
+  const adapter = new PrismaLibSql({
+    url: pathToFileURL(path.join(dataRoot, "panel.db")).href,
+  });
+  const client = new PrismaClient({ adapter });
+  try {
+    await client.$executeRawUnsafe(`CREATE TABLE IF NOT EXISTS rules (
+      id INTEGER NOT NULL,
+      agent_id TEXT NOT NULL,
+      frontend_url TEXT NOT NULL,
+      backend_url TEXT NOT NULL,
+      enabled INTEGER DEFAULT 1,
+      tags TEXT DEFAULT '[]',
+      proxy_redirect INTEGER DEFAULT 1,
+      revision INTEGER DEFAULT 0,
+      PRIMARY KEY (agent_id, id)
+    )`);
+    await client.$executeRawUnsafe(`CREATE TABLE IF NOT EXISTS meta (
+      key TEXT PRIMARY KEY,
+      value TEXT
+    )`);
+    await client.$executeRawUnsafe(
+      "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', '1')",
+    );
+    await client.$executeRawUnsafe(
+      "INSERT INTO rules (id, agent_id, frontend_url, backend_url, enabled, tags, proxy_redirect, revision) VALUES (1, 'legacy-agent', 'http://legacy.frontend', 'http://legacy.backend', 1, '[]', 1, 7)",
+    );
+  } finally {
+    await client.$disconnect();
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Test suite
 // ---------------------------------------------------------------------------
@@ -324,5 +363,64 @@ describe("Property 1: Data round-trip consistency", { skip: !canRunSqlite && "Pr
       }),
       { numRuns: NUM_RUNS }
     );
+  });
+
+  it("migrates legacy rules table and preserves request-header fields", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "legacy-rules-schema-"));
+    let migratedStorage = null;
+    try {
+      await seedLegacyRulesSchema(tmpDir);
+      migratedStorage = loadFreshStorage("../storage-sqlite", tmpDir);
+
+      const legacyRules = migratedStorage.loadRulesForAgent("legacy-agent");
+      assert.deepStrictEqual(legacyRules, [
+        {
+          id: 1,
+          agent_id: "legacy-agent",
+          frontend_url: "http://legacy.frontend",
+          backend_url: "http://legacy.backend",
+          enabled: true,
+          tags: [],
+          proxy_redirect: true,
+          pass_proxy_headers: true,
+          user_agent: "",
+          custom_headers: [],
+          revision: 7,
+        },
+      ]);
+
+      migratedStorage.saveRulesForAgent("legacy-agent", [{
+        id: 1,
+        frontend_url: "http://legacy.frontend",
+        backend_url: "http://legacy.backend",
+        enabled: true,
+        tags: [],
+        proxy_redirect: true,
+        pass_proxy_headers: false,
+        user_agent: "LegacyAgent/1.0",
+        custom_headers: [{ name: "X-Test", value: "migrated" }],
+        revision: 8,
+      }]);
+
+      const updatedRules = migratedStorage.loadRulesForAgent("legacy-agent");
+      assert.deepStrictEqual(updatedRules, [
+        {
+          id: 1,
+          agent_id: "legacy-agent",
+          frontend_url: "http://legacy.frontend",
+          backend_url: "http://legacy.backend",
+          enabled: true,
+          tags: [],
+          proxy_redirect: true,
+          pass_proxy_headers: false,
+          user_agent: "LegacyAgent/1.0",
+          custom_headers: [{ name: "X-Test", value: "migrated" }],
+          revision: 8,
+        },
+      ]);
+    } finally {
+      closeQuietly(migratedStorage);
+      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) { /* ignore */ }
+    }
   });
 });

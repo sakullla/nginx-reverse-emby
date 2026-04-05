@@ -13,6 +13,7 @@ const DEFAULT_LOCAL_AGENT_STATE = Object.freeze({
   last_apply_status: "success",
   last_apply_message: "",
 });
+const CURRENT_SCHEMA_VERSION = "2";
 const CLIENT_STATE = {
   client: null,
   dataRoot: null,
@@ -166,6 +167,8 @@ async function initializeDatabase(client) {
     await client.$executeRawUnsafe(statement);
   }
 
+  await migrateRulesTableForRequestHeaders(client);
+
   await client.localAgentState.upsert({
     where: { id: 1 },
     update: {},
@@ -181,9 +184,37 @@ async function initializeDatabase(client) {
 
   await client.meta.upsert({
     where: { key: "schema_version" },
-    update: {},
-    create: { key: "schema_version", value: "1" },
+    update: { value: CURRENT_SCHEMA_VERSION },
+    create: { key: "schema_version", value: CURRENT_SCHEMA_VERSION },
   });
+}
+
+async function migrateRulesTableForRequestHeaders(client) {
+  const rows = await client.$queryRawUnsafe("PRAGMA table_info('rules')");
+  const columnNames = new Set(
+    (Array.isArray(rows) ? rows : [])
+      .map((row) => {
+        if (!row || typeof row !== "object") {
+          return "";
+        }
+        return String(row.name || row.column_name || "");
+      })
+      .filter(Boolean),
+  );
+
+  if (!columnNames.has("pass_proxy_headers")) {
+    await client.$executeRawUnsafe("ALTER TABLE rules ADD COLUMN pass_proxy_headers INTEGER DEFAULT 1");
+  }
+  if (!columnNames.has("user_agent")) {
+    await client.$executeRawUnsafe("ALTER TABLE rules ADD COLUMN user_agent TEXT DEFAULT ''");
+  }
+  if (!columnNames.has("custom_headers")) {
+    await client.$executeRawUnsafe("ALTER TABLE rules ADD COLUMN custom_headers TEXT DEFAULT '[]'");
+  }
+
+  await client.$executeRawUnsafe("UPDATE rules SET pass_proxy_headers = 1 WHERE pass_proxy_headers IS NULL");
+  await client.$executeRawUnsafe("UPDATE rules SET user_agent = '' WHERE user_agent IS NULL");
+  await client.$executeRawUnsafe("UPDATE rules SET custom_headers = '[]' WHERE custom_headers IS NULL");
 }
 
 function parseJsonValue(value, fallback) {
