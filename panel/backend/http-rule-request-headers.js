@@ -41,7 +41,7 @@ function normalizeRuleRequestHeaders(body = {}, fallback = {}) {
     user_agent:
       body.user_agent !== undefined
         ? normalizeHeaderValue(body.user_agent).trim()
-        : String(fallback.user_agent || ""),
+        : normalizeHeaderValue(fallback.user_agent || "").trim(),
     custom_headers:
       body.custom_headers !== undefined
         ? normalizeCustomHeaders(body.custom_headers)
