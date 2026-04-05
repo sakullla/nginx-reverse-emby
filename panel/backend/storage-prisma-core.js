@@ -5,6 +5,7 @@ const path = require("path");
 const { pathToFileURL } = require("url");
 const { PrismaClient } = require("@prisma/client");
 const { PrismaLibSql } = require("@prisma/adapter-libsql");
+const { normalizeCustomHeaders } = require("./http-rule-request-headers");
 
 const DEFAULT_LOCAL_AGENT_STATE = Object.freeze({
   desired_revision: 0,
@@ -236,6 +237,26 @@ function ensureArray(value) {
   return Array.isArray(value) ? value : [];
 }
 
+function sanitizeStoredCustomHeaders(value) {
+  const headers = ensureArray(value);
+  const seen = new Set();
+  const sanitized = [];
+  for (const header of headers) {
+    try {
+      const normalized = normalizeCustomHeaders([header])[0];
+      const key = normalized.name.toLowerCase();
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      sanitized.push(normalized);
+    } catch (_) {
+      // drop malformed custom header rows at storage boundary
+    }
+  }
+  return sanitized;
+}
+
 function mapAgentFromDb(row) {
   return {
     id: row.id,
@@ -272,7 +293,7 @@ function mapRuleFromDb(row) {
     proxy_redirect: !!row.proxyRedirect,
     pass_proxy_headers: row.passProxyHeaders !== false,
     user_agent: row.userAgent || "",
-    custom_headers: ensureArray(parseJsonValue(row.customHeaders, [])),
+    custom_headers: sanitizeStoredCustomHeaders(parseJsonValue(row.customHeaders, [])),
     revision: row.revision || 0,
   };
 }
@@ -367,7 +388,7 @@ function mapRuleToDb(agentId, rule) {
     proxyRedirect: rule.proxy_redirect !== false,
     passProxyHeaders: rule.pass_proxy_headers !== false,
     userAgent: String(rule.user_agent || ""),
-    customHeaders: stringifyJsonValue(ensureArray(rule.custom_headers), []),
+    customHeaders: stringifyJsonValue(sanitizeStoredCustomHeaders(rule.custom_headers), []),
     revision: Number(rule.revision || 0),
   };
 }

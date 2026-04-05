@@ -6,6 +6,7 @@ const path = require("path");
 const { Worker } = require("worker_threads");
 
 const jsonStorage = require("./storage-json");
+const { normalizeCustomHeaders } = require("./http-rule-request-headers");
 
 const WORKER_PATH = path.join(__dirname, "storage-prisma-worker.js");
 const LOCAL_AGENT_ID = process.env.MASTER_LOCAL_AGENT_ID || "local";
@@ -51,6 +52,28 @@ function safeRevision(value) {
   return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
 }
 
+function sanitizeStoredCustomHeaders(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const seen = new Set();
+  const sanitized = [];
+  for (const header of value) {
+    try {
+      const normalized = normalizeCustomHeaders([header])[0];
+      const key = normalized.name.toLowerCase();
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      sanitized.push(normalized);
+    } catch (_) {
+      // drop malformed custom header rows at storage boundary
+    }
+  }
+  return sanitized;
+}
+
 function normalizeAgent(agent) {
   return {
     id: agent.id,
@@ -90,7 +113,7 @@ function normalizeRule(agentId, rule) {
     proxy_redirect: !!rule.proxy_redirect,
     pass_proxy_headers: rule.pass_proxy_headers !== false,
     user_agent: String(rule.user_agent || ""),
-    custom_headers: Array.isArray(rule.custom_headers) ? clone(rule.custom_headers) : [],
+    custom_headers: sanitizeStoredCustomHeaders(rule.custom_headers),
     revision: safeRevision(rule.revision),
   };
 }

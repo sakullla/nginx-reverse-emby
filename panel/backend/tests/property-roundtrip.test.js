@@ -9,6 +9,7 @@ const { pathToFileURL } = require("url");
 const fc = require("fast-check");
 const { PrismaClient } = require("@prisma/client");
 const { PrismaLibSql } = require("@prisma/adapter-libsql");
+const { normalizeCustomHeaders } = require("../http-rule-request-headers");
 const {
   SQLITE_TARGET,
   canRunSqlite,
@@ -139,6 +140,28 @@ const localStateArb = fc.record({
 function normStr(v) { return v || ""; }
 function normInt(v) { return v || 0; }
 
+function sanitizeStoredCustomHeaders(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const seen = new Set();
+  const sanitized = [];
+  for (const header of value) {
+    try {
+      const normalized = normalizeCustomHeaders([header])[0];
+      const key = normalized.name.toLowerCase();
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      sanitized.push(normalized);
+    } catch (_) {
+      // drop malformed rows
+    }
+  }
+  return sanitized;
+}
+
 /** Deduplicate rules by id (last wins) so the PRIMARY KEY constraint is met. */
 /**
  * Build the expected rule object after a round-trip through SQLite.
@@ -155,7 +178,7 @@ function expectedRule(r, agentId) {
     proxy_redirect: !!r.proxy_redirect,
     pass_proxy_headers: r.pass_proxy_headers !== false,
     user_agent: r.user_agent || "",
-    custom_headers: r.custom_headers || [],
+    custom_headers: sanitizeStoredCustomHeaders(r.custom_headers),
     revision: normInt(r.revision),
   };
 }
@@ -452,6 +475,48 @@ describe("Property 1: Data round-trip consistency", { skip: !canRunSqlite && "Pr
       restartedStorage = loadFreshStorage("../storage-sqlite", tmpDir);
       const afterRestart = restartedStorage.loadRulesForAgent("agent-a");
       assert.deepStrictEqual(afterRestart[0].custom_headers, []);
+    } finally {
+      closeQuietly(firstStorage);
+      closeQuietly(restartedStorage);
+      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) { /* ignore */ }
+    }
+  });
+
+  it("sanitizes malformed custom_headers entries across save, restart, and reload", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "rules-custom-headers-entries-"));
+    let firstStorage = null;
+    let restartedStorage = null;
+    try {
+      firstStorage = loadFreshStorage("../storage-sqlite", tmpDir);
+      firstStorage.saveRulesForAgent("agent-a", [{
+        id: 1,
+        frontend_url: "http://frontend.local",
+        backend_url: "http://backend.local",
+        enabled: true,
+        tags: [],
+        proxy_redirect: true,
+        pass_proxy_headers: true,
+        user_agent: "",
+        custom_headers: [
+          {},
+          { name: "X-Test", value: "one" },
+          { name: "x-test", value: "two" },
+          { name: "User-Agent", value: "bad" },
+          { name: 123, value: "bad" },
+          { name: "X-Bad", value: 42 },
+        ],
+        revision: 1,
+      }]);
+
+      const beforeRestart = firstStorage.loadRulesForAgent("agent-a");
+      assert.deepStrictEqual(beforeRestart[0].custom_headers, [{ name: "X-Test", value: "one" }]);
+
+      closeQuietly(firstStorage);
+      firstStorage = null;
+
+      restartedStorage = loadFreshStorage("../storage-sqlite", tmpDir);
+      const afterRestart = restartedStorage.loadRulesForAgent("agent-a");
+      assert.deepStrictEqual(afterRestart[0].custom_headers, [{ name: "X-Test", value: "one" }]);
     } finally {
       closeQuietly(firstStorage);
       closeQuietly(restartedStorage);
