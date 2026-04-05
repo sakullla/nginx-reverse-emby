@@ -3992,6 +3992,7 @@ async function handleRequest(req, res) {
         role: ROLE,
         agent_name: AGENT_NAME,
         agent_url: AGENT_PUBLIC_URL,
+        proxy_headers_globally_disabled: isProxyHeadersGloballyDisabled(),
       });
       return;
     }
