@@ -1,9 +1,9 @@
 package config
 
-import "github.com/sakullla/nginx-reverse-emby/go-agent/internal/app"
-
-type Config = app.Config
+type Config struct {
+	AgentID string
+}
 
 func Default() Config {
-	return app.Config{AgentID: "bootstrap"}
+	return Config{AgentID: "bootstrap"}
 }

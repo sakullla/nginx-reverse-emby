@@ -1,8 +1,8 @@
 package app
 
-type Config struct {
-	AgentID string
-}
+import "github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
+
+type Config = config.Config
 
 type App struct {
 	cfg Config
