@@ -9,7 +9,13 @@ function normalizeHeaderName(value) {
 }
 
 function normalizeHeaderValue(value) {
-  const normalized = String(value ?? "");
+  if (value === undefined || value === null) {
+    return "";
+  }
+  if (typeof value !== "string") {
+    throw new Error("custom header value must be a string");
+  }
+  const normalized = value;
   if (/[\u0000-\u001F\u007F]/.test(normalized)) {
     throw new Error("custom header value contains control characters");
   }
@@ -37,11 +43,18 @@ function normalizeCustomHeaders(input) {
 }
 
 function normalizeRuleRequestHeaders(body = {}, fallback = {}) {
+  let passProxyHeaders;
+  if (body.pass_proxy_headers !== undefined) {
+    if (typeof body.pass_proxy_headers !== "boolean") {
+      throw new Error("pass_proxy_headers must be a boolean");
+    }
+    passProxyHeaders = body.pass_proxy_headers;
+  } else {
+    passProxyHeaders = fallback.pass_proxy_headers !== false;
+  }
+
   return {
-    pass_proxy_headers:
-      body.pass_proxy_headers !== undefined
-        ? !!body.pass_proxy_headers
-        : fallback.pass_proxy_headers !== false,
+    pass_proxy_headers: passProxyHeaders,
     user_agent:
       body.user_agent !== undefined
         ? normalizeHeaderValue(body.user_agent).trim()

@@ -172,6 +172,56 @@ describe("HTTP rule request header normalization", () => {
     );
   });
 
+  it("rejects non-boolean pass_proxy_headers payloads", () => {
+    assert.throws(
+      () =>
+        normalizeRuleRequestHeaders(
+          {
+            pass_proxy_headers: "false",
+          },
+          {},
+        ),
+      /boolean/i,
+    );
+
+    assert.throws(
+      () =>
+        normalizeRuleRequestHeaders(
+          {
+            pass_proxy_headers: "0",
+          },
+          {},
+        ),
+      /boolean/i,
+    );
+  });
+
+  it("rejects non-string user_agent payloads", () => {
+    assert.throws(
+      () =>
+        normalizeRuleRequestHeaders(
+          {
+            user_agent: {},
+          },
+          {},
+        ),
+      /string/i,
+    );
+  });
+
+  it("rejects non-string custom header values", () => {
+    assert.throws(
+      () =>
+        normalizeRuleRequestHeaders(
+          {
+            custom_headers: [{ name: "x-test", value: [] }],
+          },
+          {},
+        ),
+      /string/i,
+    );
+  });
+
   it("exposes proxy_headers_globally_disabled on /api/info in agent mode", async () => {
     await withBackendServer(
       {
