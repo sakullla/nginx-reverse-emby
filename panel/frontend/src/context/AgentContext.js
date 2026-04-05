@@ -76,7 +76,7 @@ export const AgentProvider = defineComponent({
       localStorage.setItem('selected_agent_id', id)
     }
 
-    provide(AgentContextKey, { selectedAgentId, selectAgent })
+    provide(AgentContextKey, { selectedAgentId, selectAgent, systemInfo })
 
     return () => slots.default?.()
   }
