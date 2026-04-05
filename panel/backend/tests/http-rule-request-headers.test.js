@@ -55,6 +55,47 @@ async function writeJson(filePath, value) {
   await fs.writeFile(filePath, JSON.stringify(value, null, 2), "utf8");
 }
 
+function createDeterministicChildEnv(envOverrides, port, dataRoot) {
+  const passthroughKeys = [
+    "PATH",
+    "Path",
+    "PATHEXT",
+    "SystemRoot",
+    "SYSTEMROOT",
+    "WINDIR",
+    "windir",
+    "COMSPEC",
+    "TEMP",
+    "TMP",
+    "HOME",
+    "USERPROFILE",
+    "APPDATA",
+    "LOCALAPPDATA",
+    "ProgramData",
+    "PROGRAMDATA",
+  ];
+  const baseEnv = {};
+  for (const key of passthroughKeys) {
+    if (process.env[key] !== undefined) {
+      baseEnv[key] = process.env[key];
+    }
+  }
+  return {
+    ...baseEnv,
+    API_TOKEN: "",
+    AGENT_API_TOKEN: "",
+    MASTER_REGISTER_TOKEN: "",
+    PANEL_REGISTER_TOKEN: "",
+    PANEL_BACKEND_HOST: "127.0.0.1",
+    PANEL_BACKEND_PORT: String(port),
+    PANEL_DATA_ROOT: dataRoot,
+    PANEL_STORAGE_BACKEND: "json",
+    PROXY_PASS_PROXY_HEADERS: "",
+    MASTER_LOCAL_AGENT_ENABLED: "1",
+    ...envOverrides,
+  };
+}
+
 async function withBackendServer(options, testFn) {
   const port = await getFreePort();
   const dataRoot = await fs.mkdtemp(path.join(os.tmpdir(), "panel-http-rule-"));
@@ -74,18 +115,7 @@ async function withBackendServer(options, testFn) {
 
   const serverProcess = spawn(process.execPath, ["server.js"], {
     cwd: path.resolve(__dirname, ".."),
-    env: {
-      ...process.env,
-      API_TOKEN: "",
-      AGENT_API_TOKEN: "",
-      MASTER_REGISTER_TOKEN: "",
-      PANEL_REGISTER_TOKEN: "",
-      PANEL_BACKEND_HOST: "127.0.0.1",
-      PANEL_BACKEND_PORT: String(port),
-      PANEL_DATA_ROOT: dataRoot,
-      PANEL_STORAGE_BACKEND: "json",
-      ...envOverrides,
-    },
+    env: createDeterministicChildEnv(envOverrides, port, dataRoot),
     stdio: ["ignore", "pipe", "pipe"],
   });
 
@@ -209,12 +239,38 @@ describe("HTTP rule request header normalization", () => {
     );
   });
 
+  it("rejects explicit null user_agent payloads", () => {
+    assert.throws(
+      () =>
+        normalizeRuleRequestHeaders(
+          {
+            user_agent: null,
+          },
+          {},
+        ),
+      /string/i,
+    );
+  });
+
   it("rejects non-string custom header values", () => {
     assert.throws(
       () =>
         normalizeRuleRequestHeaders(
           {
             custom_headers: [{ name: "x-test", value: [] }],
+          },
+          {},
+        ),
+      /string/i,
+    );
+  });
+
+  it("rejects explicit null custom header values", () => {
+    assert.throws(
+      () =>
+        normalizeRuleRequestHeaders(
+          {
+            custom_headers: [{ name: "x-test", value: null }],
           },
           {},
         ),
@@ -310,6 +366,40 @@ describe("HTTP rule request header normalization", () => {
         assert.equal(payload.proxy_headers_globally_disabled, false);
       },
     );
+  });
+
+  it("isolates backend child env from ambient proxy-header and local-agent overrides", async () => {
+    const previousProxyPassProxyHeaders = process.env.PROXY_PASS_PROXY_HEADERS;
+    const previousMasterLocalAgentEnabled = process.env.MASTER_LOCAL_AGENT_ENABLED;
+    process.env.PROXY_PASS_PROXY_HEADERS = "true";
+    process.env.MASTER_LOCAL_AGENT_ENABLED = "0";
+    try {
+      await withBackendServer(
+        {
+          env: {
+            PANEL_ROLE: "master",
+          },
+        },
+        async ({ baseUrl }) => {
+          const response = await fetch(`${baseUrl}/api/info`);
+          assert.equal(response.status, 200);
+          const payload = await response.json();
+          assert.equal(payload.proxy_headers_globally_disabled, true);
+          assert.equal(payload.local_agent_enabled, true);
+        },
+      );
+    } finally {
+      if (previousProxyPassProxyHeaders === undefined) {
+        delete process.env.PROXY_PASS_PROXY_HEADERS;
+      } else {
+        process.env.PROXY_PASS_PROXY_HEADERS = previousProxyPassProxyHeaders;
+      }
+      if (previousMasterLocalAgentEnabled === undefined) {
+        delete process.env.MASTER_LOCAL_AGENT_ENABLED;
+      } else {
+        process.env.MASTER_LOCAL_AGENT_ENABLED = previousMasterLocalAgentEnabled;
+      }
+    }
   });
 
   it("backfills request-header defaults on GET /agent-api/rules for legacy stored rules", async () => {

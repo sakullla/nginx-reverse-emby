@@ -22,7 +22,8 @@ function normalizeHeaderValue(value) {
   return normalized;
 }
 
-function normalizeCustomHeaders(input) {
+function normalizeCustomHeaders(input, options = {}) {
+  const rejectNullValues = options.rejectNullValues === true;
   if (input === undefined) return [];
   if (!Array.isArray(input)) {
     throw new Error("custom_headers must be an array");
@@ -38,6 +39,9 @@ function normalizeCustomHeaders(input) {
       throw new Error(`duplicate custom header: ${name}`);
     }
     seen.add(lowered);
+    if (rejectNullValues && item && item.value === null) {
+      throw new Error("custom header value must be a string");
+    }
     return { name, value: normalizeHeaderValue(item?.value) };
   });
 }
@@ -53,6 +57,10 @@ function normalizeRuleRequestHeaders(body = {}, fallback = {}) {
     passProxyHeaders = fallback.pass_proxy_headers !== false;
   }
 
+  if (body.user_agent !== undefined && typeof body.user_agent !== "string") {
+    throw new Error("user_agent must be a string");
+  }
+
   return {
     pass_proxy_headers: passProxyHeaders,
     user_agent:
@@ -61,7 +69,7 @@ function normalizeRuleRequestHeaders(body = {}, fallback = {}) {
         : normalizeHeaderValue(fallback.user_agent || "").trim(),
     custom_headers:
       body.custom_headers !== undefined
-        ? normalizeCustomHeaders(body.custom_headers)
+        ? normalizeCustomHeaders(body.custom_headers, { rejectNullValues: true })
         : normalizeCustomHeaders(fallback.custom_headers || []),
   };
 }
