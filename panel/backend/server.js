@@ -8,6 +8,9 @@ const path = require("path");
 const crypto = require("crypto");
 const { spawnSync } = require("child_process");
 const storage = require("./storage");
+const {
+  normalizeRuleRequestHeaders,
+} = require("./http-rule-request-headers");
 
 const HOST = process.env.PANEL_BACKEND_HOST || "127.0.0.1";
 const PORT = Number(process.env.PANEL_BACKEND_PORT || "18081");
@@ -436,6 +439,7 @@ function normalizeRulePayload(body, fallback = {}, suggestedId = null) {
       : fallback.id !== undefined
         ? Number(fallback.id)
         : Number(suggestedId);
+  const headerConfig = normalizeRuleRequestHeaders(body, fallback);
 
   return {
     id:
@@ -452,7 +456,12 @@ function normalizeRulePayload(body, fallback = {}, suggestedId = null) {
       body.proxy_redirect !== undefined
         ? !!body.proxy_redirect
         : fallback.proxy_redirect !== false,
+    ...headerConfig,
   };
+}
+
+function isProxyHeadersGloballyDisabled() {
+  return /^(0|false|no|off)$/i.test(String(process.env.PROXY_PASS_PROXY_HEADERS || "1"));
 }
 
 
@@ -2907,6 +2916,7 @@ async function handleMasterApi(req, res) {
       local_agent_enabled: LOCAL_AGENT_ENABLED,
       default_agent_id: getDefaultAgentId(),
       managed_certificates_enabled: MANAGED_CERTS_ENABLED,
+      proxy_headers_globally_disabled: isProxyHeadersGloballyDisabled(),
       cf_token_configured: !!CF_TOKEN,
       acme_dns_provider: ACME_DNS_PROVIDER || null,
     };
