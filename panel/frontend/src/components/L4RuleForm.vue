@@ -148,6 +148,16 @@
           </div>
         </div>
       </div>
+
+      <div class="form-group">
+        <label class="form-label">Relay 链路</label>
+        <RelayChainInput
+          v-model="form.relay_chain"
+          :listeners="relayListeners"
+          :disabled="form.protocol === 'udp'"
+        />
+        <div class="form-help" v-if="form.protocol === 'udp'">UDP 当前不支持 Relay 链路，已强制直连</div>
+      </div>
     </div>
 
     <!-- Tab 2: Advanced Tuning -->
@@ -331,6 +341,8 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import { useCreateL4Rule, useUpdateL4Rule } from '../hooks/useL4Rules'
+import { useRelayListeners } from '../hooks/useRelayListeners'
+import RelayChainInput from './RelayChainInput.vue'
 
 const props = defineProps({
   initialData: { type: Object, default: null },
@@ -341,7 +353,9 @@ const emit = defineEmits(['success'])
 // Pass agentId directly - hooks use unref() to handle both strings and refs
 const createL4Rule = useCreateL4Rule(props.agentId)
 const updateL4Rule = useUpdateL4Rule(props.agentId)
+const { data: relayListenersData } = useRelayListeners(props.agentId)
 const isEdit = computed(() => !!props.initialData?.id)
+const relayListeners = computed(() => relayListenersData.value ?? [])
 
 let backendIdCounter = 0
 
@@ -438,6 +452,7 @@ const form = ref({
   tuning: mergeTuning(props.initialData?.tuning, initialProtocol),
   enabled: props.initialData?.enabled !== false,
   tags: Array.isArray(props.initialData?.tags) ? [...props.initialData.tags] : [],
+  relay_chain: Array.isArray(props.initialData?.relay_chain) ? [...props.initialData.relay_chain] : [],
 })
 
 const showAdvanced = ref(!!props.initialData?.tuning)
@@ -508,7 +523,9 @@ watch(() => form.value.protocol, (newProto) => {
   if (newProto === 'tcp') {
     form.value.tuning.proxy.udp_proxy_requests = null
     form.value.tuning.proxy.udp_proxy_responses = null
+    return
   }
+  form.value.relay_chain = []
 })
 
 const LB_TAG_MAP = { round_robin: 'RR', least_conn: 'LC', random: 'RND', hash: 'HASH' }
@@ -629,6 +646,7 @@ function buildPayload() {
     },
     enabled: form.value.enabled,
     tags: [...sysTags, ...userTags],
+    relay_chain: form.value.protocol === 'tcp' ? [...form.value.relay_chain] : [],
   }
 
   // Only send tuning if advanced panel has non-default values or editing existing rule with tuning

@@ -115,6 +115,15 @@
         </div>
       </div>
 
+      <div class="form-group">
+        <label class="form-label">Relay 链路</label>
+        <RelayChainInput
+          v-model="form.relay_chain"
+          :listeners="relayListeners"
+        />
+        <p class="form-hint">可选的多跳 Relay 转发顺序，不配置时为直接回源</p>
+      </div>
+
       <div class="settings-card">
         <div class="toggle-row">
           <label class="toggle">
@@ -298,7 +307,9 @@
 <script setup>
 import { computed, ref, watch } from 'vue'
 import { useCreateRule, useUpdateRule } from '../hooks/useRules'
+import { useRelayListeners } from '../hooks/useRelayListeners'
 import { useAgent } from '../context/AgentContext'
+import RelayChainInput from './RelayChainInput.vue'
 
 const UA_PRESETS = [
   { id: 'custom', label: '自定义', value: '' },
@@ -321,9 +332,11 @@ const { systemInfo } = useAgent()
 
 const createRule = useCreateRule(props.agentId)
 const updateRule = useUpdateRule(props.agentId)
+const { data: relayListenersData } = useRelayListeners(props.agentId)
 const isEdit = computed(() => !!props.initialData?.id)
 const isLoading = computed(() => createRule.isPending.value || updateRule.isPending.value)
 const proxyHeadersGloballyDisabled = computed(() => systemInfo.value?.proxy_headers_globally_disabled === true)
+const relayListeners = computed(() => relayListenersData.value ?? [])
 
 const activeTab = ref('basic')
 const form = ref(createDefaultForm())
@@ -390,7 +403,8 @@ function createDefaultForm() {
     proxy_redirect: true,
     pass_proxy_headers: false,
     user_agent: '',
-    custom_headers: []
+    custom_headers: [],
+    relay_chain: []
   }
 }
 
@@ -407,7 +421,8 @@ function createFormState(initialData) {
     proxy_redirect: initialData.proxy_redirect !== false,
     pass_proxy_headers: initialData.pass_proxy_headers !== false,
     user_agent: String(initialData.user_agent || ''),
-    custom_headers: normalizeCustomHeaders(initialData.custom_headers)
+    custom_headers: normalizeCustomHeaders(initialData.custom_headers),
+    relay_chain: Array.isArray(initialData.relay_chain) ? [...initialData.relay_chain] : []
   }
 }
 
@@ -587,7 +602,8 @@ async function handleSubmit() {
       custom_headers: form.value.custom_headers.map((item) => ({
         name: String(item.name || '').trim(),
         value: item.value ?? ''
-      }))
+      })),
+      relay_chain: Array.isArray(form.value.relay_chain) ? [...form.value.relay_chain] : []
     }
 
     if (isEdit.value) {

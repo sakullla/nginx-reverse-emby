@@ -25,7 +25,8 @@ export function useCreateRule(agentId) {
       payload.proxy_redirect,
       payload.pass_proxy_headers,
       payload.user_agent,
-      payload.custom_headers
+      payload.custom_headers,
+      payload.relay_chain
     ),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['rules', agentId] })
@@ -47,7 +48,8 @@ export function useUpdateRule(agentId) {
       payload.proxy_redirect,
       payload.pass_proxy_headers,
       payload.user_agent,
-      payload.custom_headers
+      payload.custom_headers,
+      payload.relay_chain
     ),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['rules', agentId] })

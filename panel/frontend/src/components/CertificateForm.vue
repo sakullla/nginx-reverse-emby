@@ -31,6 +31,26 @@
       </div>
     </div>
 
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">用途</label>
+        <select v-model="form.usage" class="input">
+          <option value="https">HTTPS</option>
+          <option value="relay_tunnel">Relay 隧道</option>
+          <option value="relay_ca">Relay CA</option>
+          <option value="mixed">混合用途</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">证书来源</label>
+        <select v-model="form.certificate_type" class="input">
+          <option value="acme">自动签发</option>
+          <option value="uploaded">手动上传</option>
+          <option value="internal_ca">内部 CA</option>
+        </select>
+      </div>
+    </div>
+
     <!-- Info banners -->
     <div v-if="form.scope === 'ip'" class="cert-banner cert-banner--warn">
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -81,6 +101,12 @@
       <span class="toggle__label">启用并参与分发</span>
     </label>
 
+    <label class="toggle-row">
+      <input v-model="form.self_signed" type="checkbox" class="toggle__input">
+      <span class="toggle__slider"></span>
+      <span class="toggle__label">标记为自签名证书</span>
+    </label>
+
     <button type="submit" class="btn btn--primary btn--full" :disabled="isLoading">
       {{ isEdit ? '保存修改' : '创建证书' }}
     </button>
@@ -107,6 +133,9 @@ const form = ref({
   domain: props.initialData?.domain || '',
   scope: props.initialData?.scope || 'domain',
   issuer_mode: props.initialData?.issuer_mode || 'master_cf_dns',
+  usage: props.initialData?.usage || 'https',
+  certificate_type: props.initialData?.certificate_type || 'acme',
+  self_signed: props.initialData?.self_signed === true,
   enabled: props.initialData?.enabled !== false,
   tags: Array.isArray(props.initialData?.tags) ? [...props.initialData.tags] : []
 })

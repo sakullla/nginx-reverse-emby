@@ -313,7 +313,8 @@ export async function createRule(
   proxy_redirect = true,
   pass_proxy_headers = true,
   user_agent = '',
-  custom_headers = []
+  custom_headers = [],
+  relay_chain = []
 ) {
   if (isDev) {
     await sleep()
@@ -326,7 +327,8 @@ export async function createRule(
       proxy_redirect,
       pass_proxy_headers,
       user_agent,
-      custom_headers
+      custom_headers,
+      relay_chain
     }
     mockRulesByAgent[agentId] = mockRulesByAgent[agentId] || []
     mockRulesByAgent[agentId].push(nextRule)
@@ -334,7 +336,7 @@ export async function createRule(
   }
   const { data } = await api.post(
     `/agents/${encodeURIComponent(agentId)}/rules`,
-    { frontend_url, backend_url, tags, enabled, proxy_redirect, pass_proxy_headers, user_agent, custom_headers },
+    { frontend_url, backend_url, tags, enabled, proxy_redirect, pass_proxy_headers, user_agent, custom_headers, relay_chain },
     longRunningRequest
   )
   return data.rule
@@ -350,7 +352,8 @@ export async function updateRule(
   proxy_redirect,
   pass_proxy_headers,
   user_agent,
-  custom_headers
+  custom_headers,
+  relay_chain
 ) {
   if (isDev) {
     await sleep()
@@ -366,6 +369,7 @@ export async function updateRule(
       if (pass_proxy_headers !== undefined) nextRule.pass_proxy_headers = pass_proxy_headers
       if (user_agent !== undefined) nextRule.user_agent = user_agent
       if (custom_headers !== undefined) nextRule.custom_headers = custom_headers
+      if (relay_chain !== undefined) nextRule.relay_chain = relay_chain
       list[index] = nextRule
       return nextRule
     }
@@ -373,7 +377,7 @@ export async function updateRule(
   }
   const { data } = await api.put(
     `/agents/${encodeURIComponent(agentId)}/rules/${id}`,
-    { frontend_url, backend_url, tags, enabled, proxy_redirect, pass_proxy_headers, user_agent, custom_headers },
+    { frontend_url, backend_url, tags, enabled, proxy_redirect, pass_proxy_headers, user_agent, custom_headers, relay_chain },
     longRunningRequest
   )
   return data.rule
@@ -620,4 +624,170 @@ export async function fetchAllAgentsCertificates(agentIds) {
     )
   )
   return results.filter((r) => r.status === 'fulfilled').map((r) => r.value)
+}
+
+const mockRelayListenersByAgent = {
+  local: [
+    {
+      id: 'relay-local-1',
+      agent_id: 'local',
+      name: '本地入口',
+      listen_host: '0.0.0.0',
+      listen_port: 9443,
+      enabled: true,
+      certificate_id: 1,
+      tls_mode: 'server',
+      pin_set: [],
+      trusted_ca_certificate_ids: [],
+      allow_self_signed: false,
+      tags: ['relay', 'local'],
+      revision: 1
+    }
+  ],
+  'edge-1': [
+    {
+      id: 'relay-edge-1',
+      agent_id: 'edge-1',
+      name: '边缘入口',
+      listen_host: '0.0.0.0',
+      listen_port: 10443,
+      enabled: true,
+      certificate_id: 1,
+      tls_mode: 'mtls',
+      pin_set: ['sha256/edge1'],
+      trusted_ca_certificate_ids: [1],
+      allow_self_signed: false,
+      tags: ['relay', 'edge'],
+      revision: 3
+    }
+  ]
+}
+
+let mockRelayListenerIdCounter = 100
+
+export async function fetchRelayListeners(agentId) {
+  if (isDev) {
+    await sleep()
+    return [...(mockRelayListenersByAgent[agentId] || [])]
+  }
+  const { data } = await api.get(`/agents/${encodeURIComponent(agentId)}/relay-listeners`)
+  return data.listeners || []
+}
+
+export async function createRelayListener(agentId, payload) {
+  if (isDev) {
+    await sleep()
+    const item = {
+      id: `relay-${++mockRelayListenerIdCounter}`,
+      agent_id: agentId,
+      revision: Date.now(),
+      ...payload
+    }
+    mockRelayListenersByAgent[agentId] = mockRelayListenersByAgent[agentId] || []
+    mockRelayListenersByAgent[agentId].push(item)
+    return item
+  }
+  const { data } = await api.post(
+    `/agents/${encodeURIComponent(agentId)}/relay-listeners`,
+    payload,
+    longRunningRequest
+  )
+  return data.listener
+}
+
+export async function updateRelayListener(agentId, id, payload) {
+  if (isDev) {
+    await sleep()
+    const list = mockRelayListenersByAgent[agentId] || []
+    const idx = list.findIndex((item) => String(item.id) === String(id))
+    if (idx === -1) return null
+    list[idx] = { ...list[idx], ...payload }
+    return list[idx]
+  }
+  const { data } = await api.put(
+    `/agents/${encodeURIComponent(agentId)}/relay-listeners/${encodeURIComponent(id)}`,
+    payload,
+    longRunningRequest
+  )
+  return data.listener
+}
+
+export async function deleteRelayListener(agentId, id) {
+  if (isDev) {
+    await sleep()
+    const list = mockRelayListenersByAgent[agentId] || []
+    const idx = list.findIndex((item) => String(item.id) === String(id))
+    if (idx === -1) return null
+    return list.splice(idx, 1)[0]
+  }
+  const { data } = await api.delete(
+    `/agents/${encodeURIComponent(agentId)}/relay-listeners/${encodeURIComponent(id)}`,
+    longRunningRequest
+  )
+  return data.listener
+}
+
+const mockVersionPolicies = [
+  {
+    id: 'stable',
+    channel: 'stable',
+    desired_version: '1.3.0',
+    packages: [
+      { platform: 'linux-amd64', url: 'https://example.com/stable/linux-amd64.tar.gz', sha256: 'abc123' },
+      { platform: 'linux-arm64', url: 'https://example.com/stable/linux-arm64.tar.gz', sha256: 'def456' }
+    ],
+    tags: ['default']
+  },
+  {
+    id: 'canary',
+    channel: 'canary',
+    desired_version: '1.4.0-rc1',
+    packages: [{ platform: 'linux-amd64', url: 'https://example.com/canary/linux-amd64.tar.gz', sha256: 'ghi789' }],
+    tags: ['test']
+  }
+]
+
+let mockVersionPolicyIdCounter = 10
+
+export async function fetchVersionPolicies() {
+  if (isDev) {
+    await sleep()
+    return [...mockVersionPolicies]
+  }
+  const { data } = await api.get('/version-policies')
+  return data.policies || []
+}
+
+export async function createVersionPolicy(payload) {
+  if (isDev) {
+    await sleep()
+    const item = { id: `vp-${++mockVersionPolicyIdCounter}`, ...payload }
+    mockVersionPolicies.push(item)
+    return item
+  }
+  const { data } = await api.post('/version-policies', payload, longRunningRequest)
+  return data.policy
+}
+
+export async function updateVersionPolicy(id, payload) {
+  if (isDev) {
+    await sleep()
+    const idx = mockVersionPolicies.findIndex((item) => String(item.id) === String(id))
+    if (idx === -1) return null
+    mockVersionPolicies[idx] = { ...mockVersionPolicies[idx], ...payload }
+    return mockVersionPolicies[idx]
+  }
+  const { data } = await api.put(`/version-policies/${encodeURIComponent(id)}`, payload, longRunningRequest)
+  return data.policy
+}
+
+export async function deleteVersionPolicy(id) {
+  if (isDev) {
+    await sleep()
+    const idx = mockVersionPolicies.findIndex((item) => String(item.id) === String(id))
+    if (idx === -1) return null
+    return mockVersionPolicies.splice(idx, 1)[0]
+  }
+  const { data } = await api.delete(`/version-policies/${encodeURIComponent(id)}`, longRunningRequest)
+  return data.policy
 }
