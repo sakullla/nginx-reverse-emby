@@ -50,6 +50,58 @@ async function waitForServer(url, serverProcess, readStderr) {
   throw new Error(`server did not become ready: ${url}`);
 }
 
+async function writeJson(filePath, value) {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, JSON.stringify(value, null, 2), "utf8");
+}
+
+async function withBackendServer(options, testFn) {
+  const port = await getFreePort();
+  const dataRoot = await fs.mkdtemp(path.join(os.tmpdir(), "panel-http-rule-"));
+  const envOverrides = options?.env || {};
+
+  if (options?.proxyRules) {
+    await writeJson(path.join(dataRoot, "proxy_rules.json"), options.proxyRules);
+  }
+  if (options?.agents) {
+    await writeJson(path.join(dataRoot, "agents.json"), options.agents);
+  }
+
+  const serverProcess = spawn(process.execPath, ["server.js"], {
+    cwd: path.resolve(__dirname, ".."),
+    env: {
+      ...process.env,
+      PANEL_BACKEND_HOST: "127.0.0.1",
+      PANEL_BACKEND_PORT: String(port),
+      PANEL_DATA_ROOT: dataRoot,
+      PANEL_STORAGE_BACKEND: "json",
+      ...envOverrides,
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+  const baseUrl = `http://127.0.0.1:${port}`;
+  let stderr = "";
+  serverProcess.stderr.on("data", (chunk) => {
+    stderr += String(chunk);
+  });
+
+  try {
+    await waitForServer(
+      `${baseUrl}${options?.readyPath || "/api/info"}`,
+      serverProcess,
+      () => stderr,
+    );
+    await testFn({ baseUrl });
+  } finally {
+    if (serverProcess.exitCode === null) {
+      serverProcess.kill("SIGTERM");
+      await once(serverProcess, "exit");
+    }
+    await fs.rm(dataRoot, { recursive: true, force: true });
+  }
+}
+
 describe("HTTP rule request header normalization", () => {
   it("fills defaults for pass_proxy_headers, user_agent, and custom_headers", () => {
     const rule = normalizeRuleRequestHeaders({}, {});
@@ -99,44 +151,109 @@ describe("HTTP rule request header normalization", () => {
   });
 
   it("exposes proxy_headers_globally_disabled on /api/info in agent mode", async () => {
-    const port = await getFreePort();
-    const dataRoot = await fs.mkdtemp(path.join(os.tmpdir(), "panel-agent-info-"));
-    const serverProcess = spawn(process.execPath, ["server.js"], {
-      cwd: path.resolve(__dirname, ".."),
-      env: {
-        ...process.env,
-        PANEL_ROLE: "agent",
-        PANEL_BACKEND_HOST: "127.0.0.1",
-        PANEL_BACKEND_PORT: String(port),
-        PANEL_DATA_ROOT: dataRoot,
-        PANEL_STORAGE_BACKEND: "json",
-        PROXY_PASS_PROXY_HEADERS: "0",
+    await withBackendServer(
+      {
+        env: {
+          PANEL_ROLE: "agent",
+          PROXY_PASS_PROXY_HEADERS: "0",
+        },
+        readyPath: "/api/health",
       },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+      async ({ baseUrl }) => {
+        const response = await fetch(`${baseUrl}/api/info`);
+        assert.equal(response.status, 200);
 
-    let stderr = "";
-    serverProcess.stderr.on("data", (chunk) => {
-      stderr += String(chunk);
-    });
+        const payload = await response.json();
+        assert.equal(payload.proxy_headers_globally_disabled, true);
+      },
+    );
+  });
 
-    try {
-      await waitForServer(
-        `http://127.0.0.1:${port}/api/health`,
-        serverProcess,
-        () => stderr,
-      );
-      const response = await fetch(`http://127.0.0.1:${port}/api/info`);
-      assert.equal(response.status, 200);
+  it("exposes proxy_headers_globally_disabled on /api/info in master mode", async () => {
+    await withBackendServer(
+      {
+        env: {
+          PANEL_ROLE: "master",
+          PROXY_PASS_PROXY_HEADERS: "0",
+        },
+      },
+      async ({ baseUrl }) => {
+        const response = await fetch(`${baseUrl}/api/info`);
+        assert.equal(response.status, 200);
 
-      const payload = await response.json();
-      assert.equal(payload.proxy_headers_globally_disabled, true);
-    } finally {
-      if (serverProcess.exitCode === null) {
-        serverProcess.kill("SIGTERM");
-        await once(serverProcess, "exit");
-      }
-      await fs.rm(dataRoot, { recursive: true, force: true });
-    }
+        const payload = await response.json();
+        assert.equal(payload.proxy_headers_globally_disabled, true);
+      },
+    );
+  });
+
+  it("backfills request-header defaults on GET /agent-api/rules for legacy stored rules", async () => {
+    await withBackendServer(
+      {
+        env: {
+          PANEL_ROLE: "agent",
+        },
+        readyPath: "/agent-api/health",
+        proxyRules: [
+          {
+            id: 1,
+            frontend_url: "https://frontend.example.com",
+            backend_url: "http://backend.internal:8096",
+            enabled: true,
+            tags: [],
+            proxy_redirect: true,
+            revision: 2,
+          },
+        ],
+      },
+      async ({ baseUrl }) => {
+        const response = await fetch(`${baseUrl}/agent-api/rules`);
+        assert.equal(response.status, 200);
+
+        const payload = await response.json();
+        const rule = payload.rules[0];
+        assert.equal(rule.pass_proxy_headers, true);
+        assert.equal(rule.user_agent, "");
+        assert.deepEqual(rule.custom_headers, []);
+      },
+    );
+  });
+
+  it("backfills request-header defaults on master rule GET APIs for legacy stored rules", async () => {
+    await withBackendServer(
+      {
+        env: {
+          PANEL_ROLE: "master",
+        },
+        proxyRules: [
+          {
+            id: 1,
+            frontend_url: "https://frontend.example.com",
+            backend_url: "http://backend.internal:8096",
+            enabled: true,
+            tags: [],
+            proxy_redirect: true,
+            revision: 4,
+          },
+        ],
+      },
+      async ({ baseUrl }) => {
+        const legacyResponse = await fetch(`${baseUrl}/api/rules`);
+        assert.equal(legacyResponse.status, 200);
+        const legacyPayload = await legacyResponse.json();
+        const legacyRule = legacyPayload.rules[0];
+        assert.equal(legacyRule.pass_proxy_headers, true);
+        assert.equal(legacyRule.user_agent, "");
+        assert.deepEqual(legacyRule.custom_headers, []);
+
+        const agentResponse = await fetch(`${baseUrl}/api/agents/local/rules`);
+        assert.equal(agentResponse.status, 200);
+        const agentPayload = await agentResponse.json();
+        const agentRule = agentPayload.rules[0];
+        assert.equal(agentRule.pass_proxy_headers, true);
+        assert.equal(agentRule.user_agent, "");
+        assert.deepEqual(agentRule.custom_headers, []);
+      },
+    );
   });
 });

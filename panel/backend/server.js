@@ -2624,6 +2624,12 @@ function loadOrInitRules(agentId) {
   return Array.isArray(rules) ? rules : [];
 }
 
+function loadNormalizedRulesForAgent(agentId) {
+  return loadOrInitRules(agentId).map((rule, index) =>
+    normalizeStoredRule(rule, index + 1),
+  );
+}
+
 async function handleAgentApi(req, res) {
   const urlPath = (req.url || "").split("?")[0];
 
@@ -2666,7 +2672,7 @@ async function handleAgentApi(req, res) {
   }
 
   if (req.method === "GET" && urlPath === "/agent-api/rules") {
-    sendJson(res, 200, { ok: true, rules: storage.loadRulesForAgent(LOCAL_AGENT_ID) });
+    sendJson(res, 200, { ok: true, rules: loadNormalizedRulesForAgent(LOCAL_AGENT_ID) });
     return;
   }
 
@@ -2711,7 +2717,7 @@ async function handleLegacyLocalRules(req, res, urlPath) {
   }
 
   if (req.method === "GET" && urlPath === "/api/rules") {
-    sendJson(res, 200, { ok: true, rules: storage.loadRulesForAgent(LOCAL_AGENT_ID) });
+    sendJson(res, 200, { ok: true, rules: loadNormalizedRulesForAgent(LOCAL_AGENT_ID) });
     return;
   }
 
@@ -3284,7 +3290,7 @@ async function handleMasterApi(req, res) {
       sendJson(res, 404, errorPayload("agent not found"));
       return;
     }
-    sendJson(res, 200, { ok: true, rules: storage.loadRulesForAgent(agentId) });
+    sendJson(res, 200, { ok: true, rules: loadNormalizedRulesForAgent(agentId) });
     return;
   }
 
