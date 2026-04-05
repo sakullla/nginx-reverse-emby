@@ -164,6 +164,109 @@ describe("relay listeners and version policies API", () => {
     );
   });
 
+  it("prevents disabling relay listeners when referenced by relay chains", async () => {
+    await withBackendServer(
+      {
+        agents: [
+          {
+            id: "edge-1",
+            name: "Edge-1",
+            agent_url: "http://edge-1:8080",
+            agent_token: "token-edge-1",
+            capabilities: ["http_rules", "l4"],
+          },
+          {
+            id: "edge-2",
+            name: "Edge-2",
+            agent_url: "http://edge-2:8080",
+            agent_token: "token-edge-2",
+            capabilities: ["http_rules", "l4"],
+          },
+        ],
+      },
+      async ({ baseUrl }) => {
+        const created = await jsonRequest(baseUrl, "POST", "/api/agents/edge-1/relay-listeners", {
+          name: "edge relay",
+          listen_host: "0.0.0.0",
+          listen_port: 10443,
+          enabled: true,
+          tls_mode: "pin_or_ca",
+          certificate_id: null,
+          pin_set: [{ type: "spki_sha256", value: "abc" }],
+          trusted_ca_certificate_ids: [],
+          allow_self_signed: false,
+          tags: ["relay"],
+        });
+        assert.equal(created.status, 201);
+        const listenerId = created.payload.listener.id;
+
+        const createdRule = await jsonRequest(baseUrl, "POST", "/api/agents/edge-2/rules", {
+          frontend_url: "http://cross.example.com",
+          backend_url: "http://127.0.0.1:8096",
+          relay_chain: [listenerId],
+        });
+        assert.equal(createdRule.status, 201);
+
+        const disableReferenced = await jsonRequest(
+          baseUrl,
+          "PUT",
+          `/api/agents/edge-1/relay-listeners/${listenerId}`,
+          { enabled: false },
+        );
+        assert.equal(disableReferenced.status, 400);
+      },
+    );
+  });
+
+  it("prevents deleting agent when its relay listener is referenced by other agents", async () => {
+    await withBackendServer(
+      {
+        agents: [
+          {
+            id: "edge-1",
+            name: "Edge-1",
+            agent_url: "http://edge-1:8080",
+            agent_token: "token-edge-1",
+            capabilities: ["http_rules", "l4"],
+          },
+          {
+            id: "edge-2",
+            name: "Edge-2",
+            agent_url: "http://edge-2:8080",
+            agent_token: "token-edge-2",
+            capabilities: ["http_rules", "l4"],
+          },
+        ],
+      },
+      async ({ baseUrl }) => {
+        const created = await jsonRequest(baseUrl, "POST", "/api/agents/edge-1/relay-listeners", {
+          name: "edge relay",
+          listen_host: "0.0.0.0",
+          listen_port: 10443,
+          enabled: true,
+          tls_mode: "pin_or_ca",
+          certificate_id: null,
+          pin_set: [{ type: "spki_sha256", value: "abc" }],
+          trusted_ca_certificate_ids: [],
+          allow_self_signed: false,
+          tags: ["relay"],
+        });
+        assert.equal(created.status, 201);
+        const listenerId = created.payload.listener.id;
+
+        const createdRule = await jsonRequest(baseUrl, "POST", "/api/agents/edge-2/rules", {
+          frontend_url: "http://cross.example.com",
+          backend_url: "http://127.0.0.1:8096",
+          relay_chain: [listenerId],
+        });
+        assert.equal(createdRule.status, 201);
+
+        const deleteAgent = await jsonRequest(baseUrl, "DELETE", "/api/agents/edge-1");
+        assert.equal(deleteAgent.status, 400);
+      },
+    );
+  });
+
   it("supports version policy CRUD with required desired_version", async () => {
     await withBackendServer({}, async ({ baseUrl }) => {
       const created = await jsonRequest(baseUrl, "POST", "/api/version-policies", {

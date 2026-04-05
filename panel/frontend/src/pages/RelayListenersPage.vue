@@ -12,6 +12,7 @@
     <div v-if='!agentId' class='relay-page__empty'>请在侧栏选择节点后管理 Relay 监听器</div>
     <div v-else-if='isLoading' class='relay-page__empty'>加载中...</div>
     <div v-else-if='!listeners.length' class='relay-page__empty'>暂无 Relay 监听器</div>
+    <p v-if='deleteError' class='relay-page__error'>{{ deleteError }}</p>
 
     <div v-else class='relay-grid'>
       <article v-for='listener in listeners' :key='listener.id' class='relay-card'>
@@ -97,6 +98,7 @@ const listeners = computed(() => listenersData.value ?? [])
 const showAddForm = ref(false)
 const editingListener = ref(null)
 const deletingListener = ref(null)
+const deleteError = ref('')
 
 function startEdit(listener) {
   editingListener.value = listener
@@ -104,6 +106,7 @@ function startEdit(listener) {
 
 function startDelete(listener) {
   deletingListener.value = listener
+  deleteError.value = ''
 }
 
 function closeForm() {
@@ -113,7 +116,14 @@ function closeForm() {
 
 function confirmDelete() {
   if (!deletingListener.value) return
-  deleteRelayListener.mutate(deletingListener.value.id)
+  deleteRelayListener.mutate(deletingListener.value.id, {
+    onSuccess: () => {
+      deleteError.value = ''
+    },
+    onError: (err) => {
+      deleteError.value = err?.message || '删除失败'
+    }
+  })
   deletingListener.value = null
 }
 </script>
@@ -147,6 +157,15 @@ function confirmDelete() {
   padding: var(--space-8);
   text-align: center;
   color: var(--color-text-muted);
+}
+
+.relay-page__error {
+  margin: 0 0 var(--space-4);
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md);
+  background: var(--color-danger-50);
+  color: var(--color-danger);
+  font-size: var(--text-sm);
 }
 
 .relay-grid {

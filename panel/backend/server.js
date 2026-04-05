@@ -541,8 +541,16 @@ function getAllKnownAgentIds() {
   return candidateAgentIds;
 }
 
-function findRelayListenerReferenceAcrossAgents(listenerId) {
+function findRelayListenerReferenceAcrossAgents(listenerId, options = {}) {
+  const excludeAgentIds = new Set(
+    (Array.isArray(options.excludeAgentIds) ? options.excludeAgentIds : [])
+      .map((id) => String(id || "").trim())
+      .filter(Boolean),
+  );
   for (const knownAgentId of getAllKnownAgentIds()) {
+    if (excludeAgentIds.has(String(knownAgentId))) {
+      continue;
+    }
     const inUseByHttp = loadNormalizedRulesForAgent(knownAgentId).find((rule) =>
       Array.isArray(rule.relay_chain) && rule.relay_chain.includes(listenerId),
     );
@@ -3479,6 +3487,27 @@ async function handleMasterApi(req, res) {
       sendJson(res, 404, errorPayload("agent not found"));
       return;
     }
+    const listeners = storage.loadRelayListenersForAgent(agentId);
+    for (const listener of listeners) {
+      const listenerId = Number(listener?.id);
+      if (!Number.isInteger(listenerId) || listenerId <= 0) {
+        continue;
+      }
+      const relayReference = findRelayListenerReferenceAcrossAgents(listenerId, {
+        excludeAgentIds: [agentId],
+      });
+      if (relayReference) {
+        const ruleType = relayReference.protocol === "http" ? "HTTP" : "L4";
+        sendJson(
+          res,
+          400,
+          errorPayload(
+            `cannot delete agent ${agentId}: relay listener ${listenerId} is referenced by ${ruleType} rule #${relayReference.ruleId} on agent ${relayReference.agentId}`,
+          ),
+        );
+        return;
+      }
+    }
     const deleted = agents.splice(index, 1)[0];
     storage.saveRegisteredAgents(agents);
     storage.deleteRulesForAgent(agentId);
@@ -3899,6 +3928,20 @@ async function handleMasterApi(req, res) {
         agent_id: agentId,
         revision: getNextPendingRevision(agent),
       });
+      if (nextListener.enabled === false) {
+        const relayReference = findRelayListenerReferenceAcrossAgents(listenerId);
+        if (relayReference) {
+          const ruleType = relayReference.protocol === "http" ? "HTTP" : "L4";
+          sendJson(
+            res,
+            400,
+            errorPayload(
+              `relay listener ${listenerId} is referenced by ${ruleType} rule #${relayReference.ruleId} on agent ${relayReference.agentId}; disable is not allowed`,
+            ),
+          );
+          return;
+        }
+      }
       const nextListeners = listeners.slice();
       nextListeners[index] = nextListener;
       storage.saveRelayListenersForAgent(agentId, nextListeners);
