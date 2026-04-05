@@ -76,6 +76,10 @@ async function withBackendServer(options, testFn) {
     cwd: path.resolve(__dirname, ".."),
     env: {
       ...process.env,
+      API_TOKEN: "",
+      AGENT_API_TOKEN: "",
+      MASTER_REGISTER_TOKEN: "",
+      PANEL_REGISTER_TOKEN: "",
       PANEL_BACKEND_HOST: "127.0.0.1",
       PANEL_BACKEND_PORT: String(port),
       PANEL_DATA_ROOT: dataRoot,
@@ -236,6 +240,24 @@ describe("HTTP rule request header normalization", () => {
 
         const payload = await response.json();
         assert.equal(payload.proxy_headers_globally_disabled, true);
+      },
+    );
+  });
+
+  it("keeps proxy headers enabled on /api/info when PROXY_PASS_PROXY_HEADERS is truthy", async () => {
+    await withBackendServer(
+      {
+        env: {
+          PANEL_ROLE: "master",
+          PROXY_PASS_PROXY_HEADERS: "true",
+        },
+      },
+      async ({ baseUrl }) => {
+        const response = await fetch(`${baseUrl}/api/info`);
+        assert.equal(response.status, 200);
+
+        const payload = await response.json();
+        assert.equal(payload.proxy_headers_globally_disabled, false);
       },
     );
   });
