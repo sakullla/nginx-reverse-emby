@@ -166,6 +166,7 @@ async function generateNginxConfig(options = {}) {
   const dynamicDir = path.join(tempRoot, "conf.d", "dynamic");
   const streamDynamicDir = path.join(tempRoot, "stream-conf.d", "dynamic");
   const directCertDir = path.join(tempRoot, "certs");
+  const directCertStateFile = path.join(tempRoot, ".state", "active_cert_domains");
   const rulesJsonPath = path.join(dataRoot, "proxy_rules.json");
   const repoRoot = path.resolve(__dirname, "..", "..", "..");
   const scriptPath = toPosixPath(path.join(repoRoot, "docker", "25-dynamic-reverse-proxy.sh"));
@@ -196,6 +197,7 @@ async function generateNginxConfig(options = {}) {
     NRE_DYNAMIC_DIR: toPosixPath(dynamicDir),
     NRE_STREAM_DYNAMIC_DIR: toPosixPath(streamDynamicDir),
     DIRECT_CERT_DIR: toPosixPath(directCertDir),
+    DIRECT_CERT_STATE_FILE: toPosixPath(directCertStateFile),
     NRE_TEMPLATE_FILE: templatePath,
     NRE_DIRECT_NO_TLS_TEMPLATE_FILE: directNoTlsTemplatePath,
     NRE_DIRECT_TLS_TEMPLATE_FILE: directTlsTemplatePath,
@@ -496,6 +498,25 @@ describe("HTTP rule request header normalization", () => {
 
     assert.doesNotMatch(config, /proxy_set_header X-Real-IP /);
     assert.doesNotMatch(config, /proxy_set_header X-Forwarded-For /);
+  });
+
+  it("generator fully renders IPv6 listen directives for direct-mode agent apply", async () => {
+    const { config } = await generateNginxConfig({
+      env: {
+        PROXY_DEPLOY_MODE: "direct",
+        NGINX_ENABLE_IPV6: "1",
+      },
+      proxyRules: [
+        {
+          frontend_url: "http://frontend.example.com",
+          backend_url: "http://backend.internal:8096",
+          proxy_redirect: true,
+        },
+      ],
+    });
+
+    assert.match(config, /listen \[::\]:80;/);
+    assert.doesNotMatch(config, /\$\{frontend_port\}/);
   });
 
   it("generator renders literal header values safely for nginx", async () => {

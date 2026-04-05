@@ -869,14 +869,6 @@ rm -f "$DYNAMIC_DIR"/*.conf
 # Ensure limit_conn_zones.inc exists (even empty) so nginx include doesn't fail
 touch "${NRE_STREAM_DYNAMIC_DIR:-/etc/nginx/stream-conf.d}/limit_conn_zones.inc"
 
-if supports_ipv6; then
-    LISTEN_IPV6_TEMPLATE='    listen [::]:${frontend_port};'
-    LISTEN_IPV6_TLS_TEMPLATE='    listen [::]:${frontend_port} ssl;'
-else
-    LISTEN_IPV6_TEMPLATE=''
-    LISTEN_IPV6_TLS_TEMPLATE=''
-fi
-
 tmp_rules=$(mktemp)
 tmp_issue_certs=$(mktemp)
 tmp_active_certs=$(mktemp)
@@ -995,6 +987,14 @@ NODE
         conf_name="$(sanitize_domain "$domain").${port}.conf"
         srv_name=$(format_server_name "$domain")
         cert_dom=$(normalize_cert_domain "$domain")
+        listen_ipv6_line=''
+        if supports_ipv6; then
+            if [ "$proto" = "https" ]; then
+                listen_ipv6_line=$(printf '    listen [::]:%s ssl;' "$port")
+            else
+                listen_ipv6_line=$(printf '    listen [::]:%s;' "$port")
+            fi
+        fi
         nginx_literal_helpers_config=''
         if [ "${needs_literal_dollar_helper:-0}" = "1" ]; then
             nginx_literal_helpers_config="map \"\" \$${literal_dollar_var} {
@@ -1145,7 +1145,7 @@ ${proxy_headers_config}
             -v client_max_body_size="$CLIENT_MAX_BODY_SIZE" \
             -v cert_dir="$DIRECT_CERT_DIR" \
             -v cert_domain="$cert_dom" \
-            -v listen_ipv6_line="$([ "$proto" = "https" ] && printf '%s' "$LISTEN_IPV6_TLS_TEMPLATE" || printf '%s' "$LISTEN_IPV6_TEMPLATE")" \
+            -v listen_ipv6_line="$listen_ipv6_line" \
             -v nginx_literal_helpers_config="$nginx_literal_helpers_config_awk" \
             -v proxy_headers_config="$proxy_headers_config_awk" \
             -v location_proxy_redirect="$location_proxy_redirect_awk" \
