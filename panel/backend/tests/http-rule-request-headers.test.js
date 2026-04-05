@@ -437,6 +437,25 @@ describe("HTTP rule request header normalization", () => {
     assert.match(config, /proxy_set_header X-Test "still-there";/);
   });
 
+  it("generator trims PROXY_PASS_PROXY_HEADERS before global disable checks", async () => {
+    const { config } = await generateNginxConfig({
+      env: {
+        PROXY_PASS_PROXY_HEADERS: " 0 ",
+      },
+      proxyRules: [
+        {
+          frontend_url: "https://frontend.example.com",
+          backend_url: "http://backend.internal:8096",
+          proxy_redirect: true,
+          pass_proxy_headers: true,
+        },
+      ],
+    });
+
+    assert.doesNotMatch(config, /proxy_set_header X-Real-IP /);
+    assert.doesNotMatch(config, /proxy_set_header X-Forwarded-For /);
+  });
+
   it("generator renders literal header values safely for nginx", async () => {
     const { config } = await generateNginxConfig({
       proxyRules: [
@@ -562,6 +581,24 @@ describe("HTTP rule request header normalization", () => {
 
         const payload = await response.json();
         assert.equal(payload.proxy_headers_globally_disabled, false);
+      },
+    );
+  });
+
+  it("treats whitespace-padded PROXY_PASS_PROXY_HEADERS values as globally disabled on /api/info", async () => {
+    await withBackendServer(
+      {
+        env: {
+          PANEL_ROLE: "master",
+          PROXY_PASS_PROXY_HEADERS: " false ",
+        },
+      },
+      async ({ baseUrl }) => {
+        const response = await fetch(`${baseUrl}/api/info`);
+        assert.equal(response.status, 200);
+
+        const payload = await response.json();
+        assert.equal(payload.proxy_headers_globally_disabled, true);
       },
     );
   });

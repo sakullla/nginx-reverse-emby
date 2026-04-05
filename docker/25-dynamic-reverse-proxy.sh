@@ -112,7 +112,7 @@ is_true() {
 }
 
 is_false() {
-    case "$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')" in
+    case "$(trim_text "$1" | tr '[:upper:]' '[:lower:]')" in
         0|false|no|off) return 0 ;;
         *) return 1 ;;
     esac
