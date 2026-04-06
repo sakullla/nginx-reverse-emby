@@ -10,8 +10,6 @@ describe("Go agent heartbeat API", () => {
       {
         env: {
           PANEL_ROLE: "master",
-          ACME_DNS_PROVIDER: "cf",
-          CF_Token: "test-token",
         },
         agents: [
           {
@@ -190,6 +188,8 @@ describe("Go agent heartbeat API", () => {
       {
         env: {
           PANEL_ROLE: "master",
+          ACME_DNS_PROVIDER: "cf",
+          CF_Token: "test-token",
         },
         agents: [
           {
@@ -551,6 +551,8 @@ describe("Go agent heartbeat API", () => {
       {
         env: {
           PANEL_ROLE: "master",
+          ACME_DNS_PROVIDER: "cf",
+          CF_Token: "test-token",
         },
         agents: [
           {
@@ -615,6 +617,21 @@ describe("Go agent heartbeat API", () => {
         assert.equal(updateResponse.status, 400);
         const updatePayload = await updateResponse.json();
         assert.match(updatePayload.message, /master_cf_dns certificates must target only the local master agent/i);
+
+        const invalidTypeResponse = await fetch(`${baseUrl}/api/certificates/91`, {
+          method: "PUT",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            target_agent_ids: ["local"],
+            certificate_type: "uploaded",
+          }),
+        });
+
+        assert.equal(invalidTypeResponse.status, 400);
+        const invalidTypePayload = await invalidTypeResponse.json();
+        assert.match(invalidTypePayload.message, /master_cf_dns certificates must use certificate_type=acme/i);
       },
     );
   });

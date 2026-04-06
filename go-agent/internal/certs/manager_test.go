@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"encoding/pem"
 	"math/big"
+	"os"
 	"path/filepath"
 	"testing"
 	"time"
@@ -109,6 +110,116 @@ func TestManagerApplyLoadsControlPlaneMaterial(t *testing.T) {
 	}
 }
 
+func TestManagerApplyRejectsUploadedCertificateWithoutBundlePEM(t *testing.T) {
+	t.Parallel()
+
+	manager := mustNewManager(t, t.TempDir())
+
+	err := manager.Apply(context.Background(), nil, []model.ManagedCertificatePolicy{
+		{
+			ID:              111,
+			Domain:          "uploaded-missing.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			CertificateType: "uploaded",
+			Usage:           "https",
+		},
+	})
+	if err == nil {
+		t.Fatal("expected uploaded certificate without bundle pem to fail")
+	}
+	if got := err.Error(); got != "certificate 111: uploaded certificates require control-plane PEM material" {
+		t.Fatalf("unexpected error: %q", got)
+	}
+}
+
+func TestManagerApplyUsesInternalCAPathEvenWhenBundlePEMExists(t *testing.T) {
+	t.Parallel()
+
+	bundle := mustCreateTLSMaterial(t, certificateSpec{commonName: "bundle.example.com"})
+	manager := mustNewManager(t, t.TempDir())
+
+	err := manager.Apply(context.Background(), []model.ManagedCertificateBundle{
+		{
+			ID:      112,
+			Domain:  "bundle.example.com",
+			CertPEM: string(bundle.CertPEM),
+			KeyPEM:  string(bundle.KeyPEM),
+		},
+	}, []model.ManagedCertificatePolicy{
+		{
+			ID:              112,
+			Domain:          "internal.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			CertificateType: "internal_ca",
+			Usage:           "relay_ca",
+			SelfSigned:      true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("apply failed: %v", err)
+	}
+
+	info, err := manager.CertificateInfo(112)
+	if err != nil {
+		t.Fatalf("certificate info failed: %v", err)
+	}
+	if info.Fingerprint == bundle.Fingerprint {
+		t.Fatal("expected internal_ca issuance path instead of bundle pem")
+	}
+}
+
+func TestManagerApplyUsesACMEPathEvenWhenBundlePEMExists(t *testing.T) {
+	t.Parallel()
+
+	bundle := mustCreateTLSMaterial(t, certificateSpec{commonName: "bundle.example.com"})
+	issued := mustCreateTLSMaterial(t, certificateSpec{commonName: "acme.example.com"})
+	fake := &fakeACMEIssuer{results: []acmeIssueResult{{CertPEM: issued.CertPEM, KeyPEM: issued.KeyPEM}}}
+	manager := mustNewManager(
+		t,
+		t.TempDir(),
+		withACMEIssuerFactory(func(request acmeIssueRequest) (acmeIssuer, error) {
+			return fake, nil
+		}),
+	)
+
+	err := manager.Apply(context.Background(), []model.ManagedCertificateBundle{
+		{
+			ID:      113,
+			Domain:  "bundle.example.com",
+			CertPEM: string(bundle.CertPEM),
+			KeyPEM:  string(bundle.KeyPEM),
+		},
+	}, []model.ManagedCertificatePolicy{
+		{
+			ID:              113,
+			Domain:          "acme.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			CertificateType: "acme",
+			Usage:           "https",
+		},
+	})
+	if err != nil {
+		t.Fatalf("apply failed: %v", err)
+	}
+	if len(fake.requests) != 1 {
+		t.Fatalf("expected one acme issuance request, got %d", len(fake.requests))
+	}
+
+	info, err := manager.CertificateInfo(113)
+	if err != nil {
+		t.Fatalf("certificate info failed: %v", err)
+	}
+	if info.Fingerprint != issued.Fingerprint {
+		t.Fatalf("expected acme-issued fingerprint, got %q want %q", info.Fingerprint, issued.Fingerprint)
+	}
+}
+
 func TestManagerApplyRejectsInvalidMaterialWithoutDroppingPreviousState(t *testing.T) {
 	t.Parallel()
 
@@ -199,6 +310,46 @@ func TestManagerTrustedCAPoolBuildsPoolFromCertificateIDs(t *testing.T) {
 	}
 	if !containsSubject(subjects, caTwo.Leaf.RawSubject) {
 		t.Fatal("expected second CA subject in pool")
+	}
+}
+
+func TestManagerServerCertificateRejectsCAOnlyUsage(t *testing.T) {
+	t.Parallel()
+
+	cert := mustCreateTLSMaterial(t, certificateSpec{commonName: "ca-only.example.com", isCA: true})
+	manager := mustNewManager(t, t.TempDir())
+
+	err := manager.Apply(context.Background(), []model.ManagedCertificateBundle{
+		{ID: 23, Domain: "ca-only.example.com", CertPEM: string(cert.CertPEM), KeyPEM: string(cert.KeyPEM)},
+	}, []model.ManagedCertificatePolicy{
+		{ID: 23, Domain: "ca-only.example.com", Enabled: true, Usage: "relay_ca", CertificateType: "uploaded"},
+	})
+	if err != nil {
+		t.Fatalf("apply failed: %v", err)
+	}
+
+	if _, err := manager.ServerCertificate(context.Background(), 23); err == nil {
+		t.Fatal("expected server certificate lookup to reject relay_ca usage")
+	}
+}
+
+func TestManagerTrustedCAPoolRejectsServerOnlyUsage(t *testing.T) {
+	t.Parallel()
+
+	cert := mustCreateTLSMaterial(t, certificateSpec{commonName: "https-only.example.com"})
+	manager := mustNewManager(t, t.TempDir())
+
+	err := manager.Apply(context.Background(), []model.ManagedCertificateBundle{
+		{ID: 24, Domain: "https-only.example.com", CertPEM: string(cert.CertPEM), KeyPEM: string(cert.KeyPEM)},
+	}, []model.ManagedCertificatePolicy{
+		{ID: 24, Domain: "https-only.example.com", Enabled: true, Usage: "https", CertificateType: "uploaded"},
+	})
+	if err != nil {
+		t.Fatalf("apply failed: %v", err)
+	}
+
+	if _, err := manager.TrustedCAPool(context.Background(), []int{24}); err == nil {
+		t.Fatal("expected trusted ca pool lookup to reject https-only usage")
 	}
 }
 
@@ -542,6 +693,46 @@ func TestManagerApplyRegeneratesInternalCAWhenPolicyDomainChanges(t *testing.T) 
 	}
 }
 
+func TestManagerApplyRecoversFromCorruptPersistedInternalCAMaterial(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	manager := mustNewManager(t, dataDir)
+	policy := model.ManagedCertificatePolicy{
+		ID:              553,
+		Domain:          "recover-internal.example.com",
+		Enabled:         true,
+		Scope:           "domain",
+		IssuerMode:      "local_http01",
+		CertificateType: "internal_ca",
+		Usage:           "relay_ca",
+		SelfSigned:      true,
+	}
+
+	if err := manager.Apply(context.Background(), nil, []model.ManagedCertificatePolicy{policy}); err != nil {
+		t.Fatalf("initial apply failed: %v", err)
+	}
+	before, err := manager.CertificateInfo(553)
+	if err != nil {
+		t.Fatalf("initial certificate info failed: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(dataDir, "certs", "managed", "553", "cert.pem"), []byte("broken"), 0600); err != nil {
+		t.Fatalf("corrupt cert write failed: %v", err)
+	}
+
+	if err := manager.Apply(context.Background(), nil, []model.ManagedCertificatePolicy{policy}); err != nil {
+		t.Fatalf("recovery apply failed: %v", err)
+	}
+	after, err := manager.CertificateInfo(553)
+	if err != nil {
+		t.Fatalf("recovered certificate info failed: %v", err)
+	}
+	if after.Fingerprint == before.Fingerprint {
+		t.Fatal("expected corrupt internal_ca material to be regenerated")
+	}
+}
+
 func TestManagerApplyReissuesACMEWhenPolicyDomainChanges(t *testing.T) {
 	t.Parallel()
 
@@ -597,6 +788,65 @@ func TestManagerApplyReissuesACMEWhenPolicyDomainChanges(t *testing.T) {
 	}
 	if info.Fingerprint != second.Fingerprint {
 		t.Fatalf("expected reissued fingerprint after domain change, got %q want %q", info.Fingerprint, second.Fingerprint)
+	}
+}
+
+func TestManagerApplyRecoversFromCorruptPersistedACMEMetadata(t *testing.T) {
+	t.Parallel()
+
+	first := mustCreateTLSMaterial(t, certificateSpec{
+		commonName: "recover-acme.example.com",
+		notBefore:  time.Now().Add(-time.Hour),
+		notAfter:   time.Now().Add(90 * 24 * time.Hour),
+	})
+	second := mustCreateTLSMaterial(t, certificateSpec{
+		commonName: "recover-acme.example.com",
+		notBefore:  time.Now().Add(-time.Hour),
+		notAfter:   time.Now().Add(90 * 24 * time.Hour),
+	})
+	fake := &fakeACMEIssuer{
+		results: []acmeIssueResult{
+			{CertPEM: first.CertPEM, KeyPEM: first.KeyPEM},
+			{CertPEM: second.CertPEM, KeyPEM: second.KeyPEM},
+		},
+	}
+	dataDir := t.TempDir()
+	manager := mustNewManager(
+		t,
+		dataDir,
+		withACMEIssuerFactory(func(request acmeIssueRequest) (acmeIssuer, error) {
+			return fake, nil
+		}),
+	)
+	policy := model.ManagedCertificatePolicy{
+		ID:              554,
+		Domain:          "recover-acme.example.com",
+		Enabled:         true,
+		Scope:           "domain",
+		IssuerMode:      "local_http01",
+		CertificateType: "acme",
+		Usage:           "https",
+	}
+
+	if err := manager.Apply(context.Background(), nil, []model.ManagedCertificatePolicy{policy}); err != nil {
+		t.Fatalf("initial apply failed: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "certs", "managed", "554", "local_metadata.json"), []byte("{not-json"), 0600); err != nil {
+		t.Fatalf("corrupt metadata write failed: %v", err)
+	}
+
+	if err := manager.Apply(context.Background(), nil, []model.ManagedCertificatePolicy{policy}); err != nil {
+		t.Fatalf("recovery apply failed: %v", err)
+	}
+	if len(fake.requests) != 2 {
+		t.Fatalf("expected corrupt persisted metadata to trigger reissuance, got %d calls", len(fake.requests))
+	}
+	info, err := manager.CertificateInfo(554)
+	if err != nil {
+		t.Fatalf("certificate info failed: %v", err)
+	}
+	if info.Fingerprint != second.Fingerprint {
+		t.Fatalf("expected reissued fingerprint after metadata corruption, got %q want %q", info.Fingerprint, second.Fingerprint)
 	}
 }
 

@@ -2255,6 +2255,9 @@ function getManagedCertificateRemovedAgentIds(previousCert, nextCert) {
 
 function validateManagedCertificateTargets(cert) {
   if (cert.issuer_mode === "master_cf_dns") {
+    if (cert.certificate_type !== "acme") {
+      throw new Error("master_cf_dns certificates must use certificate_type=acme");
+    }
     const targets = Array.isArray(cert.target_agent_ids) ? cert.target_agent_ids : [];
     if (!LOCAL_AGENT_ENABLED || targets.length !== 1 || targets[0] !== LOCAL_AGENT_ID) {
       throw new Error("master_cf_dns certificates must target only the local master agent");

@@ -15,6 +15,7 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -134,6 +135,9 @@ func (m *Manager) ServerCertificate(_ context.Context, certificateID int) (*tls.
 	if err != nil {
 		return nil, err
 	}
+	if !allowsServerUsage(entry.info.Usage) {
+		return nil, fmt.Errorf("certificate %d usage %q is not valid for server certificates", certificateID, entry.info.Usage)
+	}
 	cert := entry.certificate
 	return &cert, nil
 }
@@ -144,6 +148,9 @@ func (m *Manager) TrustedCAPool(_ context.Context, certificateIDs []int) (*x509.
 		entry, err := m.lookup(certificateID)
 		if err != nil {
 			return nil, err
+		}
+		if !allowsTrustUsage(entry.info.Usage) {
+			return nil, fmt.Errorf("certificate %d usage %q is not valid for trust pools", certificateID, entry.info.Usage)
 		}
 		for _, cert := range entry.parsedChain {
 			pool.AddCert(cert)
@@ -187,8 +194,8 @@ func (m *Manager) buildManagedCertificate(ctx context.Context, policy model.Mana
 			ID:              policy.ID,
 			Domain:          firstNonEmpty(policy.Domain, bundle.Domain),
 			Revision:        maxRevision(policy.Revision, bundle.Revision),
-			Usage:           firstNonEmpty(policy.Usage, "https"),
-			CertificateType: firstNonEmpty(policy.CertificateType, "acme"),
+			Usage:           normalizeUsage(policy.Usage),
+			CertificateType: normalizeCertificateType(policy.CertificateType),
 			SelfSigned:      policy.SelfSigned,
 			Scope:           policy.Scope,
 			IssuerMode:      policy.IssuerMode,
@@ -201,42 +208,35 @@ func (m *Manager) buildManagedCertificate(ctx context.Context, policy model.Mana
 }
 
 func (m *Manager) resolveMaterial(ctx context.Context, policy model.ManagedCertificatePolicy, bundle model.ManagedCertificateBundle) ([]byte, []byte, error) {
-	if strings.TrimSpace(bundle.CertPEM) != "" || strings.TrimSpace(bundle.KeyPEM) != "" {
+	switch normalizeCertificateType(policy.CertificateType) {
+	case "uploaded":
 		if strings.TrimSpace(bundle.CertPEM) == "" || strings.TrimSpace(bundle.KeyPEM) == "" {
-			return nil, nil, fmt.Errorf("bundle PEM material must include certificate and key")
+			return nil, nil, fmt.Errorf("uploaded certificates require control-plane PEM material")
 		}
 		return []byte(bundle.CertPEM), []byte(bundle.KeyPEM), nil
-	}
-
-	if policy.CertificateType == "internal_ca" {
+	case "internal_ca":
 		return m.loadOrIssueInternalCA(policy)
-	}
-	if isACMEPolicy(policy) {
+	case "acme":
 		return m.loadOrIssueACME(ctx, policy)
+	default:
+		return nil, nil, fmt.Errorf("unsupported certificate type %q", policy.CertificateType)
 	}
-
-	return nil, nil, fmt.Errorf("missing PEM material from control plane")
-}
-
-func isACMEPolicy(policy model.ManagedCertificatePolicy) bool {
-	if policy.CertificateType == "acme" {
-		return true
-	}
-	return policy.IssuerMode == "local_http01" || policy.IssuerMode == "master_cf_dns"
 }
 
 func (m *Manager) loadOrIssueInternalCA(policy model.ManagedCertificatePolicy) ([]byte, []byte, error) {
 	certPath := filepath.Join(m.materialDir(policy.ID), "cert.pem")
 	keyPath := filepath.Join(m.materialDir(policy.ID), "key.pem")
-	metadata, metadataErr := m.loadLocalMaterialMetadata(policy.ID)
+	metadata, metadataUsable, err := m.loadLocalMaterialMetadataIfUsable(policy.ID)
+	if err != nil {
+		return nil, nil, err
+	}
 
 	certPEM, certErr := os.ReadFile(certPath)
 	keyPEM, keyErr := os.ReadFile(keyPath)
-	if certErr == nil && keyErr == nil && metadataErr == nil && metadata.matchesPolicy(policy) {
+	if certErr == nil && keyErr == nil && metadataUsable && metadata.matchesPolicy(policy) {
 		if _, _, _, err := parseTLSMaterial(certPEM, keyPEM); err == nil {
 			return certPEM, keyPEM, nil
 		}
-		return nil, nil, fmt.Errorf("invalid persisted internal_ca material")
 	}
 	if !os.IsNotExist(certErr) && certErr != nil {
 		return nil, nil, certErr
@@ -244,24 +244,12 @@ func (m *Manager) loadOrIssueInternalCA(policy model.ManagedCertificatePolicy) (
 	if !os.IsNotExist(keyErr) && keyErr != nil {
 		return nil, nil, keyErr
 	}
-	if metadataErr != nil && !os.IsNotExist(metadataErr) {
-		return nil, nil, metadataErr
-	}
 
-	certPEM, keyPEM, err := issueInternalCA(policy)
+	certPEM, keyPEM, err = issueInternalCA(policy)
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := os.MkdirAll(m.materialDir(policy.ID), 0755); err != nil {
-		return nil, nil, err
-	}
-	if err := os.WriteFile(certPath, certPEM, 0600); err != nil {
-		return nil, nil, err
-	}
-	if err := os.WriteFile(keyPath, keyPEM, 0600); err != nil {
-		return nil, nil, err
-	}
-	if err := m.saveLocalMaterialMetadata(policy.ID, policyMetadata(policy)); err != nil {
+	if err := m.writeLocalMaterialFiles(policy.ID, certPEM, keyPEM, policyMetadata(policy)); err != nil {
 		return nil, nil, err
 	}
 	return certPEM, keyPEM, nil
@@ -384,19 +372,19 @@ func (m *Manager) loadPersistedACMEMaterial(certificateID int) (persistedACMEMat
 	registrationPayload, err := os.ReadFile(filepath.Join(m.materialDir(certificateID), "acme_registration.json"))
 	if err == nil {
 		var registrationResource registration.Resource
-		if err := json.Unmarshal(registrationPayload, &registrationResource); err != nil {
-			return persistedACMEMaterial{}, err
+		if err := json.Unmarshal(registrationPayload, &registrationResource); err == nil {
+			result.registration = &registrationResource
 		}
-		result.registration = &registrationResource
 	} else if !os.IsNotExist(err) {
 		return persistedACMEMaterial{}, err
 	}
 
-	metadata, err := m.loadLocalMaterialMetadata(certificateID)
-	if err == nil {
-		result.metadata = metadata
-	} else if !os.IsNotExist(err) {
+	metadata, metadataUsable, err := m.loadLocalMaterialMetadataIfUsable(certificateID)
+	if err != nil {
 		return persistedACMEMaterial{}, err
+	}
+	if metadataUsable {
+		result.metadata = metadata
 	}
 
 	return result, nil
@@ -407,14 +395,14 @@ func (m *Manager) savePersistedACMEMaterial(certificateID int, result acmeIssueR
 	if err := os.MkdirAll(materialDir, 0755); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(materialDir, "cert.pem"), result.CertPEM, 0600); err != nil {
+	if err := writeFileAtomically(filepath.Join(materialDir, "cert.pem"), result.CertPEM, 0600); err != nil {
 		return err
 	}
-	if err := os.WriteFile(filepath.Join(materialDir, "key.pem"), result.KeyPEM, 0600); err != nil {
+	if err := writeFileAtomically(filepath.Join(materialDir, "key.pem"), result.KeyPEM, 0600); err != nil {
 		return err
 	}
 	if len(result.AccountKeyPEM) > 0 {
-		if err := os.WriteFile(filepath.Join(materialDir, "acme_account_key.pem"), result.AccountKeyPEM, 0600); err != nil {
+		if err := writeFileAtomically(filepath.Join(materialDir, "acme_account_key.pem"), result.AccountKeyPEM, 0600); err != nil {
 			return err
 		}
 	}
@@ -423,7 +411,7 @@ func (m *Manager) savePersistedACMEMaterial(certificateID int, result acmeIssueR
 		if err != nil {
 			return err
 		}
-		if err := os.WriteFile(filepath.Join(materialDir, "acme_registration.json"), payload, 0600); err != nil {
+		if err := writeFileAtomically(filepath.Join(materialDir, "acme_registration.json"), payload, 0600); err != nil {
 			return err
 		}
 	}
@@ -447,7 +435,7 @@ func (m *Manager) saveLocalMaterialMetadata(certificateID int, metadata localMat
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(m.materialDir(certificateID), "local_metadata.json"), payload, 0600)
+	return writeFileAtomically(filepath.Join(m.materialDir(certificateID), "local_metadata.json"), payload, 0600)
 }
 
 func (m *Manager) materialDir(certificateID int) string {
@@ -560,7 +548,7 @@ func policyMetadata(policy model.ManagedCertificatePolicy) localMaterialMetadata
 		Domain:          policy.Domain,
 		Scope:           policy.Scope,
 		IssuerMode:      policy.IssuerMode,
-		CertificateType: policy.CertificateType,
+		CertificateType: normalizeCertificateType(policy.CertificateType),
 	}
 }
 
@@ -568,5 +556,112 @@ func (m localMaterialMetadata) matchesPolicy(policy model.ManagedCertificatePoli
 	return m.Domain == policy.Domain &&
 		m.Scope == policy.Scope &&
 		m.IssuerMode == policy.IssuerMode &&
-		m.CertificateType == policy.CertificateType
+		m.CertificateType == normalizeCertificateType(policy.CertificateType)
+}
+
+func normalizeCertificateType(value string) string {
+	return firstNonEmpty(value, "acme")
+}
+
+func normalizeUsage(value string) string {
+	return firstNonEmpty(value, "https")
+}
+
+func allowsServerUsage(usage string) bool {
+	switch normalizeUsage(usage) {
+	case "https", "relay_tunnel", "mixed":
+		return true
+	default:
+		return false
+	}
+}
+
+func allowsTrustUsage(usage string) bool {
+	switch normalizeUsage(usage) {
+	case "relay_ca", "mixed":
+		return true
+	default:
+		return false
+	}
+}
+
+func (m *Manager) loadLocalMaterialMetadataIfUsable(certificateID int) (localMaterialMetadata, bool, error) {
+	payload, err := os.ReadFile(filepath.Join(m.materialDir(certificateID), "local_metadata.json"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return localMaterialMetadata{}, false, nil
+		}
+		return localMaterialMetadata{}, false, err
+	}
+
+	var metadata localMaterialMetadata
+	if err := json.Unmarshal(payload, &metadata); err != nil {
+		return localMaterialMetadata{}, false, nil
+	}
+	return metadata, true, nil
+}
+
+func (m *Manager) writeLocalMaterialFiles(certificateID int, certPEM, keyPEM []byte, metadata localMaterialMetadata) error {
+	materialDir := m.materialDir(certificateID)
+	if err := os.MkdirAll(materialDir, 0755); err != nil {
+		return err
+	}
+	if err := writeFileAtomically(filepath.Join(materialDir, "cert.pem"), certPEM, 0600); err != nil {
+		return err
+	}
+	if err := writeFileAtomically(filepath.Join(materialDir, "key.pem"), keyPEM, 0600); err != nil {
+		return err
+	}
+	return m.saveLocalMaterialMetadata(certificateID, metadata)
+}
+
+func writeFileAtomically(targetPath string, payload []byte, perm os.FileMode) (retErr error) {
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+		return err
+	}
+
+	tempFile, err := os.CreateTemp(filepath.Dir(targetPath), filepath.Base(targetPath)+".tmp-*")
+	if err != nil {
+		return err
+	}
+	tempPath := tempFile.Name()
+	defer func() {
+		if retErr != nil {
+			_ = os.Remove(tempPath)
+		}
+	}()
+
+	if err := tempFile.Chmod(perm); err != nil {
+		_ = tempFile.Close()
+		return err
+	}
+	if _, err := tempFile.Write(payload); err != nil {
+		_ = tempFile.Close()
+		return err
+	}
+	if err := tempFile.Sync(); err != nil {
+		_ = tempFile.Close()
+		return err
+	}
+	if err := tempFile.Close(); err != nil {
+		return err
+	}
+
+	if err := renameReplace(tempPath, targetPath); err != nil {
+		return err
+	}
+	return nil
+}
+
+func renameReplace(sourcePath, targetPath string) error {
+	if err := os.Rename(sourcePath, targetPath); err == nil {
+		return nil
+	} else if runtime.GOOS == "windows" {
+		if removeErr := os.Remove(targetPath); removeErr != nil && !os.IsNotExist(removeErr) {
+			return err
+		}
+		return os.Rename(sourcePath, targetPath)
+	} else {
+		return err
+	}
 }
