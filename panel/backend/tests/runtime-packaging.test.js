@@ -53,6 +53,7 @@ describe("control-plane runtime packaging endpoints", () => {
           const infoPayload = await infoResponse.json();
           assert.equal(infoPayload.ok, true);
           assert.equal(infoPayload.role, "master");
+          assert.equal(infoPayload.local_apply_runtime, "go-agent");
 
           const scriptResponse = await fetch(`${baseUrl}/panel-api/public/join-agent.sh`);
           assert.equal(scriptResponse.status, 200);

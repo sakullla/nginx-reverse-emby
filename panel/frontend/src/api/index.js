@@ -269,6 +269,7 @@ export async function fetchSystemInfo() {
     await sleep()
     return {
       role: 'master',
+      local_apply_runtime: 'go-agent',
       default_agent_id: 'local',
       local_agent_enabled: true,
       proxy_headers_globally_disabled: false

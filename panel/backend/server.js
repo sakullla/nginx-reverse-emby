@@ -3202,6 +3202,7 @@ async function handleMasterApi(req, res) {
     const info = {
       ok: true,
       role: ROLE,
+      local_apply_runtime: "go-agent",
       local_agent_enabled: LOCAL_AGENT_ENABLED,
       default_agent_id: getDefaultAgentId(),
       managed_certificates_enabled: MANAGED_CERTS_ENABLED,
