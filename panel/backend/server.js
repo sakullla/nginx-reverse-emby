@@ -2853,7 +2853,7 @@ function getAgentHeartbeatResponse(agent) {
       l4_rules: hasUpdate ? l4Rules : undefined,
       relay_listeners: relayListeners,
       desired_version: agent.desired_version || null,
-      version_package: versionPackage ? versionPackage.url : null,
+      version_package: versionPackage ? { ...versionPackage } : null,
       version_sha256: versionPackage ? versionPackage.sha256 : null,
       certificates: hasUpdate ? certificates : undefined,
       certificate_policies: hasUpdate ? certificatePolicies : undefined,

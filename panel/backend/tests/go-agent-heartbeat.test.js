@@ -2,6 +2,8 @@
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
+const fsp = require("node:fs/promises");
+const path = require("node:path");
 const { withBackendServer } = require("./helpers");
 
 describe("Go agent heartbeat API", () => {
@@ -117,7 +119,11 @@ describe("Go agent heartbeat API", () => {
           },
         ]);
         assert.equal(payload.sync.desired_version, "1.2.3");
-        assert.equal(payload.sync.version_package, "https://example.com/agent-windows-a.zip");
+        assert.deepEqual(payload.sync.version_package, {
+          platform: "windows-amd64",
+          url: "https://example.com/agent-windows-a.zip",
+          sha256: "sha-windows-a",
+        });
         assert.equal(payload.sync.version_sha256, "sha-windows-a");
       },
     );
@@ -241,8 +247,160 @@ describe("Go agent heartbeat API", () => {
         assert.equal(response.status, 200);
         const payload = await response.json();
         assert.equal(payload.sync.desired_version, "3.0.0");
-        assert.equal(payload.sync.version_package, "https://example.com/windows-match.zip");
+        assert.deepEqual(payload.sync.version_package, {
+          platform: "windows-amd64",
+          url: "https://example.com/windows-match.zip",
+          sha256: "sha-windows-match",
+        });
         assert.equal(payload.sync.version_sha256, "sha-windows-match");
+      },
+    );
+  });
+
+  it("returns full sync payloads when a config update is pending", async () => {
+    await withBackendServer(
+      {
+        env: {
+          PANEL_ROLE: "master",
+        },
+        agents: [
+          {
+            id: "remote-agent-5",
+            name: "remote-agent-5",
+            agent_token: "token-remote-agent-5",
+            desired_revision: 6,
+            current_revision: 2,
+            desired_version: "4.0.0",
+            created_at: "2026-04-01T00:00:00.000Z",
+            updated_at: "2026-04-01T00:00:00.000Z",
+          },
+        ],
+        agentRulesByAgentId: {
+          "remote-agent-5": [
+            {
+              id: 1,
+              frontend_url: "https://frontend.example.com",
+              backend_url: "https://backend.example.com",
+              enabled: true,
+              tags: ["blue"],
+              proxy_redirect: true,
+              revision: 5,
+            },
+          ],
+        },
+        relayListenersByAgentId: {
+          "remote-agent-5": [
+            {
+              id: 12,
+              agent_id: "remote-agent-5",
+              name: "relay-primary",
+              listen_host: "0.0.0.0",
+              listen_port: 7001,
+              enabled: true,
+              tls_mode: "pin_or_ca",
+              pin_set: [
+                {
+                  type: "sha256",
+                  value: "relayhash",
+                },
+              ],
+              revision: 5,
+            },
+          ],
+        },
+        versionPolicies: [
+          {
+            id: "stable-sync",
+            channel: "stable",
+            desired_version: "4.0.0",
+            packages: [
+              {
+                platform: "linux-amd64",
+                url: "https://example.com/agent-linux.tar.gz",
+                sha256: "sha-linux-sync",
+              },
+            ],
+          },
+        ],
+      },
+      async ({ baseUrl, dataRoot }) => {
+        const l4Rules = [
+          {
+            id: 2,
+            agent_id: "remote-agent-5",
+            name: "tcp-service",
+            protocol: "tcp",
+            listen_host: "0.0.0.0",
+            listen_port: 9000,
+            upstream_host: "127.0.0.1",
+            upstream_port: 9001,
+            enabled: true,
+            tags: ["sync"],
+            revision: 4,
+          },
+        ];
+        await fsp.mkdir(path.join(dataRoot, "l4_agent_rules"), { recursive: true });
+        await fsp.writeFile(
+          path.join(dataRoot, "l4_agent_rules", "remote-agent-5.json"),
+          JSON.stringify(l4Rules, null, 2),
+          "utf8",
+        );
+
+        const certs = [
+          {
+            id: 21,
+            domain: "sync.example.com",
+            enabled: true,
+            scope: "domain",
+            issuer_mode: "local_http01",
+            target_agent_ids: ["remote-agent-5"],
+            status: "issued",
+            revision: 3,
+          },
+        ];
+        await fsp.writeFile(
+          path.join(dataRoot, "managed_certificates.json"),
+          JSON.stringify(certs, null, 2),
+          "utf8",
+        );
+        const certDir = path.join(dataRoot, "managed_certificates", "sync.example.com");
+        await fsp.mkdir(certDir, { recursive: true });
+        await fsp.writeFile(path.join(certDir, "cert"), "CERTIFICATE", "utf8");
+        await fsp.writeFile(path.join(certDir, "key"), "PRIVATEKEY", "utf8");
+
+        const response = await fetch(`${baseUrl}/api/agents/heartbeat`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-agent-token": "token-remote-agent-5",
+          },
+          body: JSON.stringify({
+            name: "remote-agent-5",
+            current_revision: 2,
+            version: "3.9.0",
+            platform: "linux-amd64",
+          }),
+        });
+
+        assert.equal(response.status, 200);
+        const payload = await response.json();
+        assert.equal(payload.sync.has_update, true);
+        assert.equal(payload.sync.desired_revision, 6);
+        assert.equal(typeof payload.sync.desired_revision, "number");
+        assert.ok(Array.isArray(payload.sync.rules));
+        assert.equal(payload.sync.rules[0].frontend_url, "https://frontend.example.com");
+        assert.ok(Array.isArray(payload.sync.l4_rules));
+        assert.equal(payload.sync.l4_rules[0].listen_port, 9000);
+        assert.ok(Array.isArray(payload.sync.relay_listeners));
+        assert.ok(Array.isArray(payload.sync.certificates));
+        assert.equal(payload.sync.certificates[0].domain, "sync.example.com");
+        assert.equal(payload.sync.desired_version, "4.0.0");
+        assert.deepEqual(payload.sync.version_package, {
+          platform: "linux-amd64",
+          url: "https://example.com/agent-linux.tar.gz",
+          sha256: "sha-linux-sync",
+        });
+        assert.equal(payload.sync.version_sha256, "sha-linux-sync");
       },
     );
   });
