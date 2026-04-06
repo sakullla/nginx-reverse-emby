@@ -23,12 +23,17 @@ type RelayApplier interface {
 }
 
 type httpRuntimeManager struct {
-	mu      sync.Mutex
-	runtime *proxy.Runtime
+	mu       sync.Mutex
+	runtime  *proxy.Runtime
+	provider proxy.TLSMaterialProvider
 }
 
 func newHTTPRuntimeManager() *httpRuntimeManager {
 	return &httpRuntimeManager{}
+}
+
+func newHTTPRuntimeManagerWithTLS(provider proxy.TLSMaterialProvider) *httpRuntimeManager {
+	return &httpRuntimeManager{provider: provider}
 }
 
 func (m *httpRuntimeManager) Apply(ctx context.Context, rules []model.HTTPRule) error {
@@ -42,14 +47,14 @@ func (m *httpRuntimeManager) Apply(ctx context.Context, rules []model.HTTPRule) 
 		}
 		return nil
 	}
-	bindings, err := proxy.BindingKeys(rules)
+	bindings, err := proxy.BindingKeys(ctx, rules, m.provider)
 	if err != nil {
 		return err
 	}
 
 	previous := m.runtime
 	if previous != nil && !httpBindingsOverlap(previous.BindingKeys(), bindings) {
-		runtime, err := proxy.Start(ctx, rules)
+		runtime, err := proxy.Start(ctx, rules, m.provider)
 		if err != nil {
 			return err
 		}
@@ -62,7 +67,7 @@ func (m *httpRuntimeManager) Apply(ctx context.Context, rules []model.HTTPRule) 
 		m.runtime = nil
 	}
 
-	runtime, err := proxy.Start(ctx, rules)
+	runtime, err := proxy.Start(ctx, rules, m.provider)
 	if err != nil {
 		return err
 	}

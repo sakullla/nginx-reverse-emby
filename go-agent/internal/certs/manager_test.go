@@ -111,6 +111,57 @@ func TestManagerApplyLoadsControlPlaneMaterial(t *testing.T) {
 	}
 }
 
+func TestManagerServerCertificateForHostPrefersExactMatch(t *testing.T) {
+	t.Parallel()
+
+	exact := mustCreateTLSMaterial(t, certificateSpec{commonName: "api.example.com"})
+	wildcard := mustCreateTLSMaterial(t, certificateSpec{commonName: "*.example.com"})
+	manager := mustNewManager(t, t.TempDir())
+
+	err := manager.Apply(context.Background(), []model.ManagedCertificateBundle{
+		{ID: 21, Domain: "*.example.com", Revision: 1, CertPEM: string(wildcard.CertPEM), KeyPEM: string(wildcard.KeyPEM)},
+		{ID: 22, Domain: "api.example.com", Revision: 2, CertPEM: string(exact.CertPEM), KeyPEM: string(exact.KeyPEM)},
+	}, []model.ManagedCertificatePolicy{
+		{ID: 21, Domain: "*.example.com", Enabled: true, Usage: "https", CertificateType: "uploaded", Scope: "domain", Revision: 1},
+		{ID: 22, Domain: "api.example.com", Enabled: true, Usage: "https", CertificateType: "uploaded", Scope: "domain", Revision: 2},
+	})
+	if err != nil {
+		t.Fatalf("apply failed: %v", err)
+	}
+
+	cert, err := manager.ServerCertificateForHost(context.Background(), "api.example.com")
+	if err != nil {
+		t.Fatalf("ServerCertificateForHost failed: %v", err)
+	}
+	if cert.Leaf == nil || cert.Leaf.Subject.CommonName != "api.example.com" {
+		t.Fatalf("expected exact-match certificate, got %+v", cert.Leaf)
+	}
+}
+
+func TestManagerServerCertificateForHostMatchesWildcard(t *testing.T) {
+	t.Parallel()
+
+	wildcard := mustCreateTLSMaterial(t, certificateSpec{commonName: "*.example.com"})
+	manager := mustNewManager(t, t.TempDir())
+
+	err := manager.Apply(context.Background(), []model.ManagedCertificateBundle{
+		{ID: 31, Domain: "*.example.com", Revision: 1, CertPEM: string(wildcard.CertPEM), KeyPEM: string(wildcard.KeyPEM)},
+	}, []model.ManagedCertificatePolicy{
+		{ID: 31, Domain: "*.example.com", Enabled: true, Usage: "https", CertificateType: "uploaded", Scope: "domain", Revision: 1},
+	})
+	if err != nil {
+		t.Fatalf("apply failed: %v", err)
+	}
+
+	cert, err := manager.ServerCertificateForHost(context.Background(), "edge.example.com")
+	if err != nil {
+		t.Fatalf("ServerCertificateForHost failed: %v", err)
+	}
+	if cert.Leaf == nil || cert.Leaf.Subject.CommonName != "*.example.com" {
+		t.Fatalf("expected wildcard certificate, got %+v", cert.Leaf)
+	}
+}
+
 func TestLegoACMEIssuerRespectsContextCancellation(t *testing.T) {
 	t.Parallel()
 

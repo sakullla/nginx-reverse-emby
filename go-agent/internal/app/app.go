@@ -77,7 +77,7 @@ func New(cfg Config) (*App, error) {
 		cfg,
 		st,
 		client,
-		newHTTPRuntimeManager(),
+		newHTTPRuntimeManagerWithTLS(certManager),
 		certManager,
 		newL4RuntimeManager(),
 		newRelayRuntimeManager(certManager),

@@ -91,6 +91,61 @@ func TestHTTPRuntimeManagerPreservesRunningServerOnInvalidReconfigure(t *testing
 	}
 }
 
+func TestHTTPRuntimeManagerServesHTTPSRulesWithTLSProvider(t *testing.T) {
+	provider := &testHTTPRuntimeTLSProvider{
+		certificates: map[string]tls.Certificate{
+			"edge.example.test": mustIssueTestTLSCertificate(t),
+		},
+	}
+	manager := newHTTPRuntimeManagerWithTLS(provider)
+	ctx := context.Background()
+	listenPort := pickFreeTCPPort(t)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer backend.Close()
+
+	rule := model.HTTPRule{
+		FrontendURL: fmt.Sprintf("https://edge.example.test:%d", listenPort),
+		BackendURL:  backend.URL,
+		Revision:    1,
+	}
+	if err := manager.Apply(ctx, []model.HTTPRule{rule}); err != nil {
+		t.Fatalf("failed to apply https runtime: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	address := fmt.Sprintf("https://127.0.0.1:%d/", listenPort)
+	for time.Now().Before(deadline) {
+		req, err := http.NewRequest(http.MethodGet, address, nil)
+		if err != nil {
+			t.Fatalf("failed to create request: %v", err)
+		}
+		req.Host = fmt.Sprintf("edge.example.test:%d", listenPort)
+
+		client := &http.Client{
+			Transport: &http.Transport{
+				TLSClientConfig: &tls.Config{
+					ServerName:         "edge.example.test",
+					InsecureSkipVerify: true,
+				},
+			},
+		}
+		resp, err := client.Do(req)
+		if err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusNoContent {
+				if err := manager.Close(); err != nil {
+					t.Fatalf("failed to close https manager: %v", err)
+				}
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for https runtime on port %d", listenPort)
+}
+
 func TestHTTPRuntimeManagerPreservesRunningServerWhenNewPortIsOccupied(t *testing.T) {
 	manager := newHTTPRuntimeManager()
 	ctx := context.Background()
@@ -242,6 +297,19 @@ func (p *testRelayTLSProvider) ServerCertificate(_ context.Context, certificateI
 
 func (p *testRelayTLSProvider) TrustedCAPool(_ context.Context, _ []int) (*x509.CertPool, error) {
 	return x509.NewCertPool(), nil
+}
+
+type testHTTPRuntimeTLSProvider struct {
+	certificates map[string]tls.Certificate
+}
+
+func (p *testHTTPRuntimeTLSProvider) ServerCertificateForHost(_ context.Context, host string) (*tls.Certificate, error) {
+	cert, ok := p.certificates[host]
+	if !ok {
+		return nil, fmt.Errorf("no server certificate available for host %q", host)
+	}
+	copyCert := cert
+	return &copyCert, nil
 }
 
 func mustIssueTestTLSCertificate(t *testing.T) tls.Certificate {

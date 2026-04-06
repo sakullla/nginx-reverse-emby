@@ -141,6 +141,15 @@ func (m *Manager) ServerCertificate(_ context.Context, certificateID int) (*tls.
 	return &cert, nil
 }
 
+func (m *Manager) ServerCertificateForHost(_ context.Context, host string) (*tls.Certificate, error) {
+	entry, err := m.lookupServerCertificateByHost(host)
+	if err != nil {
+		return nil, err
+	}
+	cert := entry.certificate
+	return &cert, nil
+}
+
 func (m *Manager) TrustedCAPool(_ context.Context, certificateIDs []int) (*x509.CertPool, error) {
 	pool := x509.NewCertPool()
 	for _, certificateID := range certificateIDs {
@@ -175,6 +184,43 @@ func (m *Manager) lookup(certificateID int) (*managedCertificate, error) {
 		return nil, fmt.Errorf("certificate %d not found", certificateID)
 	}
 	return entry, nil
+}
+
+func (m *Manager) lookupServerCertificateByHost(host string) (*managedCertificate, error) {
+	normalizedHost := normalizeCertificateHost(host)
+	if normalizedHost == "" {
+		return nil, fmt.Errorf("host is required")
+	}
+
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var best *managedCertificate
+	bestScore := -1
+	bestDomainLen := -1
+	var bestRevision int64 = -1
+
+	for _, entry := range m.active.byID {
+		if !allowsServerUsage(entry.info.Usage) {
+			continue
+		}
+		score := certificateHostMatchScore(entry.info, normalizedHost)
+		if score < 0 {
+			continue
+		}
+		domainLen := len(normalizeCertificateHost(entry.info.Domain))
+		if best == nil || score > bestScore || (score == bestScore && domainLen > bestDomainLen) || (score == bestScore && domainLen == bestDomainLen && entry.info.Revision > bestRevision) {
+			best = entry
+			bestScore = score
+			bestDomainLen = domainLen
+			bestRevision = entry.info.Revision
+		}
+	}
+
+	if best == nil {
+		return nil, fmt.Errorf("no server certificate available for host %q", normalizedHost)
+	}
+	return best, nil
 }
 
 func (m *Manager) buildManagedCertificate(ctx context.Context, policy model.ManagedCertificatePolicy, bundle model.ManagedCertificateBundle) (*managedCertificate, error) {
@@ -582,6 +628,43 @@ func allowsTrustUsage(usage string) bool {
 	default:
 		return false
 	}
+}
+
+func certificateHostMatchScore(info CertificateInfo, host string) int {
+	domain := normalizeCertificateHost(info.Domain)
+	if domain == "" || host == "" {
+		return -1
+	}
+	if strings.EqualFold(info.Scope, "ip") {
+		if domain == host {
+			return 3
+		}
+		return -1
+	}
+	if domain == host {
+		return 3
+	}
+	if wildcardCertificateMatchesHost(domain, host) {
+		return 2
+	}
+	return -1
+}
+
+func wildcardCertificateMatchesHost(domain, host string) bool {
+	if !strings.HasPrefix(domain, "*.") {
+		return false
+	}
+	suffix := strings.TrimPrefix(domain, "*.")
+	if suffix == "" || !strings.HasSuffix(host, "."+suffix) {
+		return false
+	}
+	hostParts := strings.Split(host, ".")
+	suffixParts := strings.Split(suffix, ".")
+	return len(hostParts) == len(suffixParts)+1
+}
+
+func normalizeCertificateHost(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
 }
 
 func (m *Manager) loadLocalMaterialMetadataIfUsable(certificateID int) (localMaterialMetadata, bool, error) {

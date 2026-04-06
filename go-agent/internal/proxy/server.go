@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"net"
@@ -16,6 +17,10 @@ import (
 
 type Server struct {
 	routes map[string]*routeEntry
+}
+
+type TLSMaterialProvider interface {
+	ServerCertificateForHost(context.Context, string) (*tls.Certificate, error)
 }
 
 type Runtime struct {
@@ -33,6 +38,8 @@ type routeEntry struct {
 type runtimeListenerSpec struct {
 	address    string
 	bindingKey string
+	scheme     string
+	hostnames  []string
 	listener   model.HTTPListener
 }
 
@@ -78,13 +85,13 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	http.NotFound(w, req)
 }
 
-func ValidateRules(rules []model.HTTPRule) error {
-	_, err := buildRuntimeListenerSpecs(rules)
+func ValidateRules(ctx context.Context, rules []model.HTTPRule, provider TLSMaterialProvider) error {
+	_, err := buildRuntimeListenerSpecs(ctx, rules, provider)
 	return err
 }
 
-func BindingKeys(rules []model.HTTPRule) ([]string, error) {
-	specs, err := buildRuntimeListenerSpecs(rules)
+func BindingKeys(ctx context.Context, rules []model.HTTPRule, provider TLSMaterialProvider) ([]string, error) {
+	specs, err := buildRuntimeListenerSpecs(ctx, rules, provider)
 	if err != nil {
 		return nil, err
 	}
@@ -96,8 +103,8 @@ func BindingKeys(rules []model.HTTPRule) ([]string, error) {
 	return keys, nil
 }
 
-func Start(ctx context.Context, rules []model.HTTPRule) (*Runtime, error) {
-	specs, err := buildRuntimeListenerSpecs(rules)
+func Start(ctx context.Context, rules []model.HTTPRule, provider TLSMaterialProvider) (*Runtime, error) {
+	specs, err := buildRuntimeListenerSpecs(ctx, rules, provider)
 	if err != nil {
 		return nil, err
 	}
@@ -106,10 +113,20 @@ func Start(ctx context.Context, rules []model.HTTPRule) (*Runtime, error) {
 		bindings: make([]string, 0, len(specs)),
 	}
 	for _, spec := range specs {
-		listener, err := net.Listen("tcp", spec.address)
+		baseListener, err := net.Listen("tcp", spec.address)
 		if err != nil {
 			_ = runtime.Close()
 			return nil, err
+		}
+		listener := net.Listener(baseListener)
+		if spec.scheme == "https" {
+			tlsListener, err := newTLSListener(ctx, baseListener, spec, provider)
+			if err != nil {
+				_ = baseListener.Close()
+				_ = runtime.Close()
+				return nil, err
+			}
+			listener = tlsListener
 		}
 
 		server := &http.Server{
@@ -165,9 +182,11 @@ func (r *Runtime) BindingKeys() []string {
 	return out
 }
 
-func buildRuntimeListenerSpecs(rules []model.HTTPRule) ([]runtimeListenerSpec, error) {
+func buildRuntimeListenerSpecs(ctx context.Context, rules []model.HTTPRule, provider TLSMaterialProvider) ([]runtimeListenerSpec, error) {
 	groups := make(map[string][]model.HTTPRule)
 	addresses := make(map[string]string)
+	schemes := make(map[string]string)
+	hosts := make(map[string]map[string]struct{})
 	order := make([]string, 0)
 
 	for _, rule := range rules {
@@ -178,15 +197,36 @@ func buildRuntimeListenerSpecs(rules []model.HTTPRule) ([]runtimeListenerSpec, e
 		if _, ok := groups[spec.key]; !ok {
 			order = append(order, spec.key)
 			addresses[spec.key] = spec.address
+			schemes[spec.key] = spec.scheme
+			hosts[spec.key] = make(map[string]struct{})
 		}
 		groups[spec.key] = append(groups[spec.key], rule)
+		if spec.scheme == "https" {
+			if provider == nil {
+				return nil, fmt.Errorf("http rule %q: https frontend is not supported without certificate bindings", rule.FrontendURL)
+			}
+			host := HostFromRule(rule)
+			if host == "" {
+				return nil, fmt.Errorf("http rule %q: frontend_url must include a host", rule.FrontendURL)
+			}
+			if _, err := provider.ServerCertificateForHost(ctx, host); err != nil {
+				return nil, fmt.Errorf("http rule %q: %w", rule.FrontendURL, err)
+			}
+			hosts[spec.key][host] = struct{}{}
+		}
 	}
 
 	specs := make([]runtimeListenerSpec, 0, len(order))
 	for _, key := range order {
+		hostnames := make([]string, 0, len(hosts[key]))
+		for host := range hosts[key] {
+			hostnames = append(hostnames, host)
+		}
 		specs = append(specs, runtimeListenerSpec{
 			address:    addresses[key],
 			bindingKey: key,
+			scheme:     schemes[key],
+			hostnames:  hostnames,
 			listener: model.HTTPListener{
 				Rules: groups[key],
 			},
@@ -198,6 +238,7 @@ func buildRuntimeListenerSpecs(rules []model.HTTPRule) ([]runtimeListenerSpec, e
 type runtimeRuleBinding struct {
 	key     string
 	address string
+	scheme  string
 }
 
 func runtimeRuleSpec(rule model.HTTPRule) (runtimeRuleBinding, error) {
@@ -225,7 +266,6 @@ func runtimeRuleSpec(rule model.HTTPRule) (runtimeRuleBinding, error) {
 	switch frontend.Scheme {
 	case "http":
 	case "https":
-		return runtimeRuleBinding{}, fmt.Errorf("http rule %q: https frontend is not supported without certificate bindings", rule.FrontendURL)
 	default:
 		return runtimeRuleBinding{}, fmt.Errorf("http rule %q: unsupported frontend scheme %q", rule.FrontendURL, frontend.Scheme)
 	}
@@ -237,7 +277,35 @@ func runtimeRuleSpec(rule model.HTTPRule) (runtimeRuleBinding, error) {
 	return runtimeRuleBinding{
 		key:     frontend.Scheme + ":" + port,
 		address: "0.0.0.0:" + port,
+		scheme:  frontend.Scheme,
 	}, nil
+}
+
+func newTLSListener(ctx context.Context, listener net.Listener, spec runtimeListenerSpec, provider TLSMaterialProvider) (net.Listener, error) {
+	if provider == nil {
+		return nil, fmt.Errorf("tls material provider is required")
+	}
+	allowedHosts := make(map[string]struct{}, len(spec.hostnames))
+	for _, host := range spec.hostnames {
+		allowedHosts[normalizeHost(host)] = struct{}{}
+	}
+	config := &tls.Config{
+		MinVersion: tls.VersionTLS12,
+		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			host := normalizeHost(hello.ServerName)
+			if host == "" && len(spec.hostnames) == 1 {
+				host = normalizeHost(spec.hostnames[0])
+			}
+			if host == "" {
+				return nil, fmt.Errorf("no tls server name available for listener %s", spec.bindingKey)
+			}
+			if _, ok := allowedHosts[host]; !ok {
+				return nil, fmt.Errorf("no certificate binding for host %q", host)
+			}
+			return provider.ServerCertificateForHost(ctx, host)
+		},
+	}
+	return tls.NewListener(listener, config), nil
 }
 
 func defaultPort(scheme string) int {
