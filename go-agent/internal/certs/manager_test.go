@@ -502,6 +502,104 @@ func TestManagerApplyPersistsLocallyIssuedACMEMaterialAcrossRecreation(t *testin
 	}
 }
 
+func TestManagerApplyRegeneratesInternalCAWhenPolicyDomainChanges(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	manager := mustNewManager(t, dataDir)
+
+	firstPolicy := model.ManagedCertificatePolicy{
+		ID:              551,
+		Domain:          "internal-one.example.com",
+		Enabled:         true,
+		Scope:           "domain",
+		IssuerMode:      "local_http01",
+		CertificateType: "internal_ca",
+		Usage:           "relay_ca",
+		SelfSigned:      true,
+	}
+	secondPolicy := firstPolicy
+	secondPolicy.Domain = "internal-two.example.com"
+
+	if err := manager.Apply(context.Background(), nil, []model.ManagedCertificatePolicy{firstPolicy}); err != nil {
+		t.Fatalf("first apply failed: %v", err)
+	}
+	firstInfo, err := manager.CertificateInfo(551)
+	if err != nil {
+		t.Fatalf("first certificate info failed: %v", err)
+	}
+
+	if err := manager.Apply(context.Background(), nil, []model.ManagedCertificatePolicy{secondPolicy}); err != nil {
+		t.Fatalf("second apply failed: %v", err)
+	}
+	secondInfo, err := manager.CertificateInfo(551)
+	if err != nil {
+		t.Fatalf("second certificate info failed: %v", err)
+	}
+
+	if firstInfo.Fingerprint == secondInfo.Fingerprint {
+		t.Fatal("expected internal_ca material to regenerate when policy domain changes")
+	}
+}
+
+func TestManagerApplyReissuesACMEWhenPolicyDomainChanges(t *testing.T) {
+	t.Parallel()
+
+	first := mustCreateTLSMaterial(t, certificateSpec{
+		commonName: "acme-old.example.com",
+		notBefore:  time.Now().Add(-time.Hour),
+		notAfter:   time.Now().Add(90 * 24 * time.Hour),
+	})
+	second := mustCreateTLSMaterial(t, certificateSpec{
+		commonName: "acme-new.example.com",
+		notBefore:  time.Now().Add(-time.Hour),
+		notAfter:   time.Now().Add(90 * 24 * time.Hour),
+	})
+	fake := &fakeACMEIssuer{
+		results: []acmeIssueResult{
+			{CertPEM: first.CertPEM, KeyPEM: first.KeyPEM},
+			{CertPEM: second.CertPEM, KeyPEM: second.KeyPEM},
+		},
+	}
+	manager := mustNewManager(
+		t,
+		t.TempDir(),
+		withACMEIssuerFactory(func(request acmeIssueRequest) (acmeIssuer, error) {
+			return fake, nil
+		}),
+	)
+
+	firstPolicy := model.ManagedCertificatePolicy{
+		ID:              552,
+		Domain:          "acme-old.example.com",
+		Enabled:         true,
+		Scope:           "domain",
+		IssuerMode:      "local_http01",
+		CertificateType: "acme",
+		Usage:           "https",
+	}
+	secondPolicy := firstPolicy
+	secondPolicy.Domain = "acme-new.example.com"
+
+	if err := manager.Apply(context.Background(), nil, []model.ManagedCertificatePolicy{firstPolicy}); err != nil {
+		t.Fatalf("first apply failed: %v", err)
+	}
+	if err := manager.Apply(context.Background(), nil, []model.ManagedCertificatePolicy{secondPolicy}); err != nil {
+		t.Fatalf("second apply failed: %v", err)
+	}
+
+	if len(fake.requests) != 2 {
+		t.Fatalf("expected domain change to trigger a second acme issuance, got %d calls", len(fake.requests))
+	}
+	info, err := manager.CertificateInfo(552)
+	if err != nil {
+		t.Fatalf("certificate info failed: %v", err)
+	}
+	if info.Fingerprint != second.Fingerprint {
+		t.Fatalf("expected reissued fingerprint after domain change, got %q want %q", info.Fingerprint, second.Fingerprint)
+	}
+}
+
 func TestManagerApplyRenewsExpiringACMECertificate(t *testing.T) {
 	t.Parallel()
 

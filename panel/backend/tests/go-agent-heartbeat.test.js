@@ -10,6 +10,8 @@ describe("Go agent heartbeat API", () => {
       {
         env: {
           PANEL_ROLE: "master",
+          ACME_DNS_PROVIDER: "cf",
+          CF_Token: "test-token",
         },
         agents: [
           {
@@ -540,6 +542,79 @@ describe("Go agent heartbeat API", () => {
         assert.equal(heartbeatPayload.sync.has_update, true);
         assert.equal(heartbeatPayload.sync.desired_revision, 7);
         assert.equal(heartbeatPayload.sync.relay_listeners[0].revision, 7);
+      },
+    );
+  });
+
+  it("rejects master_cf_dns certificates unless they target only the local master agent", async () => {
+    await withBackendServer(
+      {
+        env: {
+          PANEL_ROLE: "master",
+        },
+        agents: [
+          {
+            id: "remote-agent-9",
+            name: "remote-agent-9",
+            agent_token: "token-remote-agent-9",
+            desired_revision: 1,
+            current_revision: 1,
+            capabilities: ["cert_install", "local_acme"],
+            created_at: "2026-04-01T00:00:00.000Z",
+            updated_at: "2026-04-01T00:00:00.000Z",
+          },
+        ],
+        managedCertificates: [
+          {
+            id: 91,
+            domain: "local-only.example.com",
+            enabled: true,
+            scope: "domain",
+            issuer_mode: "master_cf_dns",
+            usage: "https",
+            certificate_type: "acme",
+            self_signed: false,
+            target_agent_ids: ["local"],
+            status: "pending",
+            revision: 1,
+          },
+        ],
+      },
+      async ({ baseUrl }) => {
+        const createResponse = await fetch(`${baseUrl}/api/certificates`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            domain: "remote-invalid.example.com",
+            enabled: true,
+            scope: "domain",
+            issuer_mode: "master_cf_dns",
+            usage: "https",
+            certificate_type: "acme",
+            self_signed: false,
+            target_agent_ids: ["remote-agent-9"],
+          }),
+        });
+
+        assert.equal(createResponse.status, 400);
+        const createPayload = await createResponse.json();
+        assert.match(createPayload.message, /master_cf_dns certificates must target only the local master agent/i);
+
+        const updateResponse = await fetch(`${baseUrl}/api/certificates/91`, {
+          method: "PUT",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            target_agent_ids: ["local", "remote-agent-9"],
+          }),
+        });
+
+        assert.equal(updateResponse.status, 400);
+        const updatePayload = await updateResponse.json();
+        assert.match(updatePayload.message, /master_cf_dns certificates must target only the local master agent/i);
       },
     );
   });

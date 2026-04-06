@@ -61,6 +61,14 @@ type persistedACMEMaterial struct {
 	keyPEM        []byte
 	accountKeyPEM []byte
 	registration  *registration.Resource
+	metadata      localMaterialMetadata
+}
+
+type localMaterialMetadata struct {
+	Domain          string `json:"domain"`
+	Scope           string `json:"scope"`
+	IssuerMode      string `json:"issuer_mode"`
+	CertificateType string `json:"certificate_type"`
 }
 
 func NewManager(dataDir string, opts ...Option) (*Manager, error) {
@@ -220,10 +228,11 @@ func isACMEPolicy(policy model.ManagedCertificatePolicy) bool {
 func (m *Manager) loadOrIssueInternalCA(policy model.ManagedCertificatePolicy) ([]byte, []byte, error) {
 	certPath := filepath.Join(m.materialDir(policy.ID), "cert.pem")
 	keyPath := filepath.Join(m.materialDir(policy.ID), "key.pem")
+	metadata, metadataErr := m.loadLocalMaterialMetadata(policy.ID)
 
 	certPEM, certErr := os.ReadFile(certPath)
 	keyPEM, keyErr := os.ReadFile(keyPath)
-	if certErr == nil && keyErr == nil {
+	if certErr == nil && keyErr == nil && metadataErr == nil && metadata.matchesPolicy(policy) {
 		if _, _, _, err := parseTLSMaterial(certPEM, keyPEM); err == nil {
 			return certPEM, keyPEM, nil
 		}
@@ -234,6 +243,9 @@ func (m *Manager) loadOrIssueInternalCA(policy model.ManagedCertificatePolicy) (
 	}
 	if !os.IsNotExist(keyErr) && keyErr != nil {
 		return nil, nil, keyErr
+	}
+	if metadataErr != nil && !os.IsNotExist(metadataErr) {
+		return nil, nil, metadataErr
 	}
 
 	certPEM, keyPEM, err := issueInternalCA(policy)
@@ -249,6 +261,9 @@ func (m *Manager) loadOrIssueInternalCA(policy model.ManagedCertificatePolicy) (
 	if err := os.WriteFile(keyPath, keyPEM, 0600); err != nil {
 		return nil, nil, err
 	}
+	if err := m.saveLocalMaterialMetadata(policy.ID, policyMetadata(policy)); err != nil {
+		return nil, nil, err
+	}
 	return certPEM, keyPEM, nil
 }
 
@@ -260,7 +275,7 @@ func (m *Manager) loadOrIssueACME(ctx context.Context, policy model.ManagedCerti
 
 	if len(persisted.certPEM) > 0 && len(persisted.keyPEM) > 0 {
 		tlsCert, _, _, err := parseTLSMaterial(persisted.certPEM, persisted.keyPEM)
-		if err == nil && tlsCert.Leaf != nil && !m.needsRenewal(tlsCert.Leaf) {
+		if err == nil && tlsCert.Leaf != nil && persisted.metadata.matchesPolicy(policy) && !m.needsRenewal(tlsCert.Leaf) {
 			return persisted.certPEM, persisted.keyPEM, nil
 		}
 	}
@@ -292,6 +307,9 @@ func (m *Manager) loadOrIssueACME(ctx context.Context, policy model.ManagedCerti
 	}
 
 	if err := m.savePersistedACMEMaterial(policy.ID, result); err != nil {
+		return nil, nil, err
+	}
+	if err := m.saveLocalMaterialMetadata(policy.ID, policyMetadata(policy)); err != nil {
 		return nil, nil, err
 	}
 	return result.CertPEM, result.KeyPEM, nil
@@ -374,6 +392,13 @@ func (m *Manager) loadPersistedACMEMaterial(certificateID int) (persistedACMEMat
 		return persistedACMEMaterial{}, err
 	}
 
+	metadata, err := m.loadLocalMaterialMetadata(certificateID)
+	if err == nil {
+		result.metadata = metadata
+	} else if !os.IsNotExist(err) {
+		return persistedACMEMaterial{}, err
+	}
+
 	return result, nil
 }
 
@@ -403,6 +428,26 @@ func (m *Manager) savePersistedACMEMaterial(certificateID int, result acmeIssueR
 		}
 	}
 	return nil
+}
+
+func (m *Manager) loadLocalMaterialMetadata(certificateID int) (localMaterialMetadata, error) {
+	payload, err := os.ReadFile(filepath.Join(m.materialDir(certificateID), "local_metadata.json"))
+	if err != nil {
+		return localMaterialMetadata{}, err
+	}
+	var metadata localMaterialMetadata
+	if err := json.Unmarshal(payload, &metadata); err != nil {
+		return localMaterialMetadata{}, err
+	}
+	return metadata, nil
+}
+
+func (m *Manager) saveLocalMaterialMetadata(certificateID int, metadata localMaterialMetadata) error {
+	payload, err := json.Marshal(metadata)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(m.materialDir(certificateID), "local_metadata.json"), payload, 0600)
 }
 
 func (m *Manager) materialDir(certificateID int) string {
@@ -508,4 +553,20 @@ func maxRevision(a, b int64) int64 {
 		return a
 	}
 	return b
+}
+
+func policyMetadata(policy model.ManagedCertificatePolicy) localMaterialMetadata {
+	return localMaterialMetadata{
+		Domain:          policy.Domain,
+		Scope:           policy.Scope,
+		IssuerMode:      policy.IssuerMode,
+		CertificateType: policy.CertificateType,
+	}
+}
+
+func (m localMaterialMetadata) matchesPolicy(policy model.ManagedCertificatePolicy) bool {
+	return m.Domain == policy.Domain &&
+		m.Scope == policy.Scope &&
+		m.IssuerMode == policy.IssuerMode &&
+		m.CertificateType == policy.CertificateType
 }
