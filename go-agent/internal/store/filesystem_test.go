@@ -1,6 +1,9 @@
 package store
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
@@ -94,5 +97,86 @@ func TestFilesystemStorePersistsRuntimeState(t *testing.T) {
 
 	if val := got.Metadata["session"]; val != "abc123" {
 		t.Fatalf("expected metadata session=abc123, got %q", val)
+	}
+}
+
+func TestFilesystemStoreWritesSeparateFiles(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewFilesystem(dir)
+	if err != nil {
+		t.Fatalf("NewFilesystem returned error: %v", err)
+	}
+
+	if err := s.SaveDesiredSnapshot(model.Snapshot{DesiredVersion: "desired"}); err != nil {
+		t.Fatalf("SaveDesiredSnapshot returned error: %v", err)
+	}
+	if err := s.SaveAppliedSnapshot(model.Snapshot{DesiredVersion: "applied"}); err != nil {
+		t.Fatalf("SaveAppliedSnapshot returned error: %v", err)
+	}
+	expected := model.RuntimeState{
+		NodeID: "node-b",
+	}
+	if err := s.SaveRuntimeState(expected); err != nil {
+		t.Fatalf("SaveRuntimeState returned error: %v", err)
+	}
+
+	readSnapshot := func(name string, dest interface{}) {
+		data, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatalf("ReadFile %s failed: %v", name, err)
+		}
+		if err := json.Unmarshal(data, dest); err != nil {
+			t.Fatalf("Unmarshal %s failed: %v", name, err)
+		}
+	}
+
+	var desired model.Snapshot
+	readSnapshot(desiredSnapshotFile, &desired)
+	if desired.DesiredVersion != "desired" {
+		t.Fatalf("desired file content mismatch: %s", desired.DesiredVersion)
+	}
+
+	var applied model.Snapshot
+	readSnapshot(appliedSnapshotFile, &applied)
+	if applied.DesiredVersion != "applied" {
+		t.Fatalf("applied file content mismatch: %s", applied.DesiredVersion)
+	}
+
+	var runtime model.RuntimeState
+	readSnapshot(runtimeStateFile, &runtime)
+	if runtime.NodeID != expected.NodeID {
+		t.Fatalf("runtime file content mismatch: %s", runtime.NodeID)
+	}
+}
+
+func TestInMemoryRuntimeStateCopiesMetadata(t *testing.T) {
+	s := NewInMemory()
+	original := map[string]string{
+		"key": "value",
+	}
+	if err := s.SaveRuntimeState(RuntimeState{
+		NodeID:   "node-x",
+		Metadata: original,
+	}); err != nil {
+		t.Fatalf("SaveRuntimeState returned error: %v", err)
+	}
+
+	original["key"] = "mutated"
+
+	loaded, err := s.LoadRuntimeState()
+	if err != nil {
+		t.Fatalf("LoadRuntimeState returned error: %v", err)
+	}
+	if got := loaded.Metadata["key"]; got != "value" {
+		t.Fatalf("metadata aliasing detected on load: %s", got)
+	}
+
+	loaded.Metadata["key"] = "changed-after-load"
+	newLoad, err := s.LoadRuntimeState()
+	if err != nil {
+		t.Fatalf("LoadRuntimeState returned error: %v", err)
+	}
+	if got := newLoad.Metadata["key"]; got != "value" {
+		t.Fatalf("metadata aliasing detected on subsequent load: %s", got)
 	}
 }

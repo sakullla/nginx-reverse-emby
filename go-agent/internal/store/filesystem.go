@@ -72,7 +72,39 @@ func (f *Filesystem) save(filename string, value interface{}) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(f.root, filename), data, 0644)
+	dstPath := filepath.Join(f.root, filename)
+	tmpFile, err := os.CreateTemp(f.root, filename+".tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmpFile.Name()
+
+	removeTemp := func() {
+		os.Remove(tmpPath)
+	}
+
+	if _, err := tmpFile.Write(data); err != nil {
+		tmpFile.Close()
+		removeTemp()
+		return err
+	}
+
+	if err := tmpFile.Sync(); err != nil {
+		tmpFile.Close()
+		removeTemp()
+		return err
+	}
+
+	if err := tmpFile.Close(); err != nil {
+		removeTemp()
+		return err
+	}
+
+	if err := os.Rename(tmpPath, dstPath); err != nil {
+		removeTemp()
+		return err
+	}
+	return nil
 }
 
 func (f *Filesystem) load(filename string, dest interface{}) error {

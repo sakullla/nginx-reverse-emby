@@ -58,14 +58,29 @@ func (s *InMemory) LoadAppliedSnapshot() (Snapshot, error) {
 func (s *InMemory) SaveRuntimeState(state RuntimeState) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.runtime = state
+	copyState := state
+	copyState.Metadata = copyMetadata(state.Metadata)
+	s.runtime = copyState
 	return nil
 }
 
 func (s *InMemory) LoadRuntimeState() (RuntimeState, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.runtime, nil
+	result := s.runtime
+	result.Metadata = copyMetadata(result.Metadata)
+	return result, nil
+}
+
+func copyMetadata(src map[string]string) map[string]string {
+	if src == nil {
+		return nil
+	}
+	dst := make(map[string]string, len(src))
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
 }
 
 func (s *InMemory) SaveSnapshot(snapshot Snapshot) error {
