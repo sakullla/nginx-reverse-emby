@@ -1673,17 +1673,20 @@ function buildManagedCertificatePolicyForAgent(agentId) {
     .map((cert) => {
       const view = buildManagedCertificateViewForAgent(cert, agentId);
       return {
-      id: cert.id,
-      domain: cert.domain,
-      enabled: cert.enabled !== false,
-      scope: cert.scope,
-      issuer_mode: cert.issuer_mode,
-      status: view.status,
-      last_issue_at: view.last_issue_at || null,
-      last_error: view.last_error || "",
-      acme_info: normalizeManagedCertificateAcmeInfo(view.acme_info || {}),
-      tags: normalizeTags(cert.tags || []),
-      revision: normalizeRevision(cert.revision),
+        id: cert.id,
+        domain: cert.domain,
+        enabled: cert.enabled !== false,
+        scope: cert.scope,
+        issuer_mode: cert.issuer_mode,
+        status: view.status,
+        last_issue_at: view.last_issue_at || null,
+        last_error: view.last_error || "",
+        acme_info: normalizeManagedCertificateAcmeInfo(view.acme_info || {}),
+        tags: normalizeTags(cert.tags || []),
+        revision: normalizeRevision(cert.revision),
+        usage: cert.usage,
+        certificate_type: cert.certificate_type,
+        self_signed: cert.self_signed === true,
       };
     });
 }
