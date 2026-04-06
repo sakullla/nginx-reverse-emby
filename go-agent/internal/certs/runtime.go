@@ -15,7 +15,6 @@ import (
 	"math/big"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -654,14 +653,5 @@ func writeFileAtomically(targetPath string, payload []byte, perm os.FileMode) (r
 }
 
 func renameReplace(sourcePath, targetPath string) error {
-	if err := os.Rename(sourcePath, targetPath); err == nil {
-		return nil
-	} else if runtime.GOOS == "windows" {
-		if removeErr := os.Remove(targetPath); removeErr != nil && !os.IsNotExist(removeErr) {
-			return err
-		}
-		return os.Rename(sourcePath, targetPath)
-	} else {
-		return err
-	}
+	return replaceFile(sourcePath, targetPath)
 }
