@@ -78,13 +78,11 @@ func (c *Client) Sync(ctx context.Context, request SyncRequest) (Snapshot, error
 	}
 
 	var reply struct {
-		Sync struct {
-			DesiredVersion string `json:"desired_version"`
-		} `json:"sync"`
+		Sync Snapshot `json:"sync"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&reply); err != nil {
 		return Snapshot{}, err
 	}
 
-	return Snapshot{DesiredVersion: reply.Sync.DesiredVersion}, nil
+	return reply.Sync, nil
 }

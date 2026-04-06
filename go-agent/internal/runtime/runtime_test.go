@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
@@ -20,7 +21,17 @@ func TestApplyFailureKeepsPreviousSnapshot(t *testing.T) {
 	}
 
 	r := newRuntimeWithActivator(failingActivator)
-	initial := model.Snapshot{DesiredVersion: "v1", Revision: 1}
+	initial := model.Snapshot{
+		DesiredVersion: "v1",
+		Revision:       1,
+		Certificates: []model.ManagedCertificateBundle{{
+			ID:       1,
+			Domain:   "sync.example.com",
+			Revision: 1,
+			CertPEM:  "CERT",
+			KeyPEM:   "KEY",
+		}},
+	}
 	if err := r.Apply(ctx, model.Snapshot{}, initial); err != nil {
 		t.Fatalf("priming apply failed: %v", err)
 	}
@@ -31,7 +42,7 @@ func TestApplyFailureKeepsPreviousSnapshot(t *testing.T) {
 	}
 
 	got := r.ActiveSnapshot()
-	if got != initial {
+	if !snapshotEqual(got, initial) {
 		t.Fatalf("active snapshot mutated on failure: got %+v want %+v", got, initial)
 	}
 
@@ -48,17 +59,44 @@ func TestApplyFailureKeepsPreviousSnapshot(t *testing.T) {
 func TestApplySuccessSwapsSnapshot(t *testing.T) {
 	r := New()
 	ctx := context.Background()
-	first := model.Snapshot{DesiredVersion: "stable", Revision: 1}
+	first := model.Snapshot{
+		DesiredVersion: "stable",
+		Revision:       1,
+		CertificatePolicies: []model.ManagedCertificatePolicy{{
+			ID:              7,
+			Domain:          "stable.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			Revision:        1,
+			Usage:           "https",
+			CertificateType: "uploaded",
+		}},
+	}
 	if err := r.Apply(ctx, model.Snapshot{}, first); err != nil {
 		t.Fatalf("priming apply failed: %v", err)
 	}
 
-	next := model.Snapshot{DesiredVersion: "stable-next", Revision: 2}
+	next := model.Snapshot{
+		DesiredVersion: "stable-next",
+		Revision:       2,
+		CertificatePolicies: []model.ManagedCertificatePolicy{{
+			ID:              8,
+			Domain:          "next.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			Revision:        2,
+			Usage:           "relay_ca",
+			CertificateType: "internal_ca",
+			SelfSigned:      true,
+		}},
+	}
 	if err := r.Apply(ctx, first, next); err != nil {
 		t.Fatalf("apply failed: %v", err)
 	}
 
-	if got := r.ActiveSnapshot(); got != next {
+	if got := r.ActiveSnapshot(); !snapshotEqual(got, next) {
 		t.Fatalf("active snapshot not updated on success: got %+v want %+v", got, next)
 	}
 
@@ -79,7 +117,17 @@ func TestApplySuccessSwapsSnapshot(t *testing.T) {
 func TestApplyPreviousMismatchReportsError(t *testing.T) {
 	r := New()
 	ctx := context.Background()
-	base := model.Snapshot{DesiredVersion: "base", Revision: 1}
+	base := model.Snapshot{
+		DesiredVersion: "base",
+		Revision:       1,
+		Certificates: []model.ManagedCertificateBundle{{
+			ID:       9,
+			Domain:   "base.example.com",
+			Revision: 1,
+			CertPEM:  "CERT",
+			KeyPEM:   "KEY",
+		}},
+	}
 	if err := r.Apply(ctx, model.Snapshot{}, base); err != nil {
 		t.Fatalf("priming apply failed: %v", err)
 	}
@@ -102,7 +150,17 @@ func TestApplyPreviousMismatchReportsError(t *testing.T) {
 func TestStateReturnsMetadataCopy(t *testing.T) {
 	r := New()
 	ctx := context.Background()
-	initial := model.Snapshot{DesiredVersion: "copy", Revision: 1}
+	initial := model.Snapshot{
+		DesiredVersion: "copy",
+		Revision:       1,
+		Certificates: []model.ManagedCertificateBundle{{
+			ID:       3,
+			Domain:   "copy.example.com",
+			Revision: 1,
+			CertPEM:  "CERT",
+			KeyPEM:   "KEY",
+		}},
+	}
 	if err := r.Apply(ctx, model.Snapshot{}, initial); err != nil {
 		t.Fatalf("priming apply failed: %v", err)
 	}
@@ -113,5 +171,96 @@ func TestStateReturnsMetadataCopy(t *testing.T) {
 	second := r.State()
 	if _, ok := second.Metadata["leak"]; ok {
 		t.Fatalf("metadata copy leaked: %v", second.Metadata)
+	}
+}
+
+func TestActiveSnapshotReturnsSliceIsolation(t *testing.T) {
+	r := New()
+	ctx := context.Background()
+	initial := model.Snapshot{
+		DesiredVersion: "copy",
+		Revision:       1,
+		Certificates: []model.ManagedCertificateBundle{{
+			ID:       3,
+			Domain:   "copy.example.com",
+			Revision: 1,
+			CertPEM:  "CERT",
+			KeyPEM:   "KEY",
+		}},
+		CertificatePolicies: []model.ManagedCertificatePolicy{{
+			ID:              4,
+			Domain:          "policy.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			Revision:        1,
+			Usage:           "https",
+			CertificateType: "uploaded",
+			Tags:            []string{"one"},
+		}},
+	}
+	if err := r.Apply(ctx, model.Snapshot{}, initial); err != nil {
+		t.Fatalf("priming apply failed: %v", err)
+	}
+
+	snap := r.ActiveSnapshot()
+	snap.Certificates[0].Domain = "mutated.example.com"
+	snap.CertificatePolicies[0].Tags[0] = "mutated"
+
+	current := r.ActiveSnapshot()
+	if current.Certificates[0].Domain != "copy.example.com" {
+		t.Fatalf("certificate slice leaked mutation: %+v", current.Certificates)
+	}
+	if current.CertificatePolicies[0].Tags[0] != "one" {
+		t.Fatalf("policy tags leaked mutation: %+v", current.CertificatePolicies)
+	}
+}
+
+func TestApplyMismatchErrorRedactsCertificateMaterial(t *testing.T) {
+	r := New()
+	ctx := context.Background()
+	base := model.Snapshot{
+		DesiredVersion: "base",
+		Revision:       1,
+		Certificates: []model.ManagedCertificateBundle{{
+			ID:       9,
+			Domain:   "base.example.com",
+			Revision: 1,
+			CertPEM:  "SECRET_CERT",
+			KeyPEM:   "SECRET_KEY",
+		}},
+	}
+	if err := r.Apply(ctx, model.Snapshot{}, base); err != nil {
+		t.Fatalf("priming apply failed: %v", err)
+	}
+
+	err := r.Apply(ctx, model.Snapshot{DesiredVersion: "mismatch", Revision: 999}, model.Snapshot{})
+	if err == nil {
+		t.Fatal("expected mismatch error")
+	}
+	if strings.Contains(err.Error(), "SECRET_CERT") || strings.Contains(err.Error(), "SECRET_KEY") {
+		t.Fatalf("mismatch error leaked certificate material: %v", err)
+	}
+}
+
+func TestActiveSnapshotPreservesExplicitEmptySlices(t *testing.T) {
+	r := New()
+	ctx := context.Background()
+	initial := model.Snapshot{
+		DesiredVersion:      "empty",
+		Revision:            1,
+		Certificates:        []model.ManagedCertificateBundle{},
+		CertificatePolicies: []model.ManagedCertificatePolicy{},
+	}
+	if err := r.Apply(ctx, model.Snapshot{}, initial); err != nil {
+		t.Fatalf("priming apply failed: %v", err)
+	}
+
+	snap := r.ActiveSnapshot()
+	if snap.Certificates == nil || len(snap.Certificates) != 0 {
+		t.Fatalf("expected explicit empty certificates slice, got %+v", snap.Certificates)
+	}
+	if snap.CertificatePolicies == nil || len(snap.CertificatePolicies) != 0 {
+		t.Fatalf("expected explicit empty certificate policies slice, got %+v", snap.CertificatePolicies)
 	}
 }

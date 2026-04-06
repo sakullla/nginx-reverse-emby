@@ -3,11 +3,13 @@ package app
 import (
 	"context"
 	"errors"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
 )
 
@@ -127,7 +129,29 @@ func TestRunKeepsRunningWhenAppliedSnapshotExists(t *testing.T) {
 func TestRunPersistsDesiredSnapshot(t *testing.T) {
 	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
 	mem := store.NewInMemory()
-	expected := Snapshot{DesiredVersion: "2.0"}
+	expected := Snapshot{
+		DesiredVersion: "2.0",
+		Revision:       9,
+		Certificates: []model.ManagedCertificateBundle{{
+			ID:       21,
+			Domain:   "sync.example.com",
+			Revision: 3,
+			CertPEM:  "CERTIFICATE",
+			KeyPEM:   "PRIVATEKEY",
+		}},
+		CertificatePolicies: []model.ManagedCertificatePolicy{{
+			ID:              21,
+			Domain:          "sync.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			Status:          "issued",
+			Revision:        3,
+			Usage:           "relay_ca",
+			CertificateType: "internal_ca",
+			SelfSigned:      true,
+		}},
+	}
 	client := newTestSyncClient(nil, syncResponse{snapshot: expected})
 	app := newAppWithDeps(cfg, mem, client)
 
@@ -143,8 +167,45 @@ func TestRunPersistsDesiredSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to load desired snapshot: %v", err)
 	}
-	if snap.DesiredVersion != expected.DesiredVersion {
-		t.Fatalf("expected desired %s, got %s", expected.DesiredVersion, snap.DesiredVersion)
+	if !reflect.DeepEqual(snap, expected) {
+		t.Fatalf("expected desired snapshot %+v, got %+v", expected, snap)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+}
+
+func TestRunPersistsExplicitEmptyCertificatePayloads(t *testing.T) {
+	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
+	mem := store.NewInMemory()
+	expected := Snapshot{
+		DesiredVersion:      "2.0",
+		Revision:            10,
+		Certificates:        []model.ManagedCertificateBundle{},
+		CertificatePolicies: []model.ManagedCertificatePolicy{},
+	}
+	client := newTestSyncClient(nil, syncResponse{snapshot: expected})
+	app := newAppWithDeps(cfg, mem, client)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- app.Run(ctx)
+	}()
+
+	waitForCalls(t, client, 1, time.Second)
+
+	snap, err := mem.LoadDesiredSnapshot()
+	if err != nil {
+		t.Fatalf("failed to load desired snapshot: %v", err)
+	}
+	if snap.Certificates == nil || len(snap.Certificates) != 0 {
+		t.Fatalf("expected explicit empty certificates slice, got %+v", snap.Certificates)
+	}
+	if snap.CertificatePolicies == nil || len(snap.CertificatePolicies) != 0 {
+		t.Fatalf("expected explicit empty certificate policies slice, got %+v", snap.CertificatePolicies)
 	}
 
 	cancel()
@@ -231,7 +292,7 @@ func TestRunRecordsSaveDesiredSnapshotFailures(t *testing.T) {
 		done <- app.Run(ctx)
 	}()
 
-	waitForRequest(t, client, time.Second) // initial request
+	waitForRequest(t, client, time.Second)  // initial request
 	waitForCalls(t, client, 2, time.Second) // second request triggers failure
 
 	state, err := fs.LoadRuntimeState()

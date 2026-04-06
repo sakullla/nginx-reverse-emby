@@ -63,6 +63,40 @@ func TestFilesystemStorePersistsDesiredSnapshot(t *testing.T) {
 	}
 }
 
+func TestFilesystemStorePreservesExplicitEmptyCertificateSlices(t *testing.T) {
+	dir := t.TempDir()
+	s, err := NewFilesystem(dir)
+	if err != nil {
+		t.Fatalf("NewFilesystem returned error: %v", err)
+	}
+
+	expected := model.Snapshot{
+		DesiredVersion:      "9.9.9",
+		Revision:            12,
+		Certificates:        []model.ManagedCertificateBundle{},
+		CertificatePolicies: []model.ManagedCertificatePolicy{},
+	}
+	if err := s.SaveDesiredSnapshot(expected); err != nil {
+		t.Fatalf("SaveDesiredSnapshot returned error: %v", err)
+	}
+
+	s2, err := NewFilesystem(dir)
+	if err != nil {
+		t.Fatalf("NewFilesystem returned error: %v", err)
+	}
+
+	got, err := s2.LoadDesiredSnapshot()
+	if err != nil {
+		t.Fatalf("LoadDesiredSnapshot returned error: %v", err)
+	}
+	if got.Certificates == nil || len(got.Certificates) != 0 {
+		t.Fatalf("expected explicit empty certificates slice, got %+v", got.Certificates)
+	}
+	if got.CertificatePolicies == nil || len(got.CertificatePolicies) != 0 {
+		t.Fatalf("expected explicit empty certificate policies slice, got %+v", got.CertificatePolicies)
+	}
+}
+
 func TestFilesystemStorePersistsRuntimeState(t *testing.T) {
 	dir := t.TempDir()
 	s, err := NewFilesystem(dir)

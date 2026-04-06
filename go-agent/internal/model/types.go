@@ -1,8 +1,10 @@
 package model
 
 type Snapshot struct {
-	DesiredVersion string
-	Revision       int64
+	DesiredVersion      string                     `json:"desired_version"`
+	Revision            int64                      `json:"desired_revision"`
+	Certificates        []ManagedCertificateBundle `json:"certificates"`
+	CertificatePolicies []ManagedCertificatePolicy `json:"certificate_policies"`
 }
 
 type RuntimeState struct {
