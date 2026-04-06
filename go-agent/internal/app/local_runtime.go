@@ -8,6 +8,7 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/l4"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxy"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 )
 
@@ -19,6 +20,66 @@ type L4Applier interface {
 type RelayApplier interface {
 	Apply(context.Context, []model.RelayListener) error
 	Close() error
+}
+
+type httpRuntimeManager struct {
+	mu      sync.Mutex
+	runtime *proxy.Runtime
+}
+
+func newHTTPRuntimeManager() *httpRuntimeManager {
+	return &httpRuntimeManager{}
+}
+
+func (m *httpRuntimeManager) Apply(ctx context.Context, rules []model.HTTPRule) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if len(rules) == 0 {
+		if m.runtime != nil {
+			_ = m.runtime.Close()
+			m.runtime = nil
+		}
+		return nil
+	}
+	bindings, err := proxy.BindingKeys(rules)
+	if err != nil {
+		return err
+	}
+
+	previous := m.runtime
+	if previous != nil && !httpBindingsOverlap(previous.BindingKeys(), bindings) {
+		runtime, err := proxy.Start(ctx, rules)
+		if err != nil {
+			return err
+		}
+		_ = previous.Close()
+		m.runtime = runtime
+		return nil
+	}
+	if previous != nil {
+		_ = previous.Close()
+		m.runtime = nil
+	}
+
+	runtime, err := proxy.Start(ctx, rules)
+	if err != nil {
+		return err
+	}
+	m.runtime = runtime
+	return nil
+}
+
+func (m *httpRuntimeManager) Close() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if m.runtime == nil {
+		return nil
+	}
+	err := m.runtime.Close()
+	m.runtime = nil
+	return err
 }
 
 type l4RuntimeManager struct {
@@ -155,4 +216,21 @@ func validateRelayListeners(ctx context.Context, listeners []model.RelayListener
 		}
 	}
 	return nil
+}
+
+func httpBindingsOverlap(left, right []string) bool {
+	if len(left) == 0 || len(right) == 0 {
+		return false
+	}
+
+	seen := make(map[string]struct{}, len(left))
+	for _, binding := range left {
+		seen[binding] = struct{}{}
+	}
+	for _, binding := range right {
+		if _, ok := seen[binding]; ok {
+			return true
+		}
+	}
+	return false
 }

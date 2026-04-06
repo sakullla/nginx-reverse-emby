@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"math/big"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -54,6 +56,78 @@ func TestL4RuntimeManagerPreservesRunningServerOnInvalidReconfigure(t *testing.T
 		t.Fatalf("failed to close l4 manager: %v", err)
 	}
 	waitForPortState(t, listenPort, false)
+}
+
+func TestHTTPRuntimeManagerPreservesRunningServerOnInvalidReconfigure(t *testing.T) {
+	manager := newHTTPRuntimeManager()
+	ctx := context.Background()
+	listenPort := pickFreeTCPPort(t)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer backend.Close()
+
+	initial := runtimeTestHTTPRule(listenPort, backend.URL)
+	if err := manager.Apply(ctx, []model.HTTPRule{initial}); err != nil {
+		t.Fatalf("failed to apply initial http runtime: %v", err)
+	}
+	assertHTTPRuntimeStatus(t, listenPort, http.StatusNoContent)
+
+	original := manager.runtime
+	bad := initial
+	bad.FrontendURL = fmt.Sprintf("https://edge.example.test:%d", listenPort)
+
+	err := manager.Apply(ctx, []model.HTTPRule{bad})
+	if err == nil || err.Error() != fmt.Sprintf(`http rule "https://edge.example.test:%d": https frontend is not supported without certificate bindings`, listenPort) {
+		t.Fatalf("expected invalid http reconfigure error, got %v", err)
+	}
+	if manager.runtime != original {
+		t.Fatal("expected existing http runtime to be preserved")
+	}
+	assertHTTPRuntimeStatus(t, listenPort, http.StatusNoContent)
+
+	if err := manager.Close(); err != nil {
+		t.Fatalf("failed to close http manager: %v", err)
+	}
+}
+
+func TestHTTPRuntimeManagerPreservesRunningServerWhenNewPortIsOccupied(t *testing.T) {
+	manager := newHTTPRuntimeManager()
+	ctx := context.Background()
+	activePort := pickFreeTCPPort(t)
+	occupiedPort := pickFreeTCPPort(t)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer backend.Close()
+
+	initial := runtimeTestHTTPRule(activePort, backend.URL)
+	if err := manager.Apply(ctx, []model.HTTPRule{initial}); err != nil {
+		t.Fatalf("failed to apply initial http runtime: %v", err)
+	}
+	assertHTTPRuntimeStatus(t, activePort, http.StatusNoContent)
+
+	occupied, err := net.Listen("tcp", fmt.Sprintf("0.0.0.0:%d", occupiedPort))
+	if err != nil {
+		t.Fatalf("failed to occupy port: %v", err)
+	}
+	defer occupied.Close()
+
+	original := manager.runtime
+	next := runtimeTestHTTPRule(occupiedPort, backend.URL)
+
+	err = manager.Apply(ctx, []model.HTTPRule{next})
+	if err == nil {
+		t.Fatal("expected occupied-port reconfigure to fail")
+	}
+	if manager.runtime != original {
+		t.Fatal("expected existing http runtime to be preserved when new port fails to bind")
+	}
+	assertHTTPRuntimeStatus(t, activePort, http.StatusNoContent)
+
+	if err := manager.Close(); err != nil {
+		t.Fatalf("failed to close http manager: %v", err)
+	}
 }
 
 func TestRelayRuntimeManagerPreservesRunningServerOnInvalidListenerReconfigure(t *testing.T) {
@@ -125,6 +199,14 @@ func TestRelayRuntimeManagerPreservesRunningServerOnMissingCertificateReconfigur
 		t.Fatalf("failed to close relay manager: %v", err)
 	}
 	waitForPortState(t, listenPort, false)
+}
+
+func runtimeTestHTTPRule(port int, backendURL string) model.HTTPRule {
+	return model.HTTPRule{
+		FrontendURL: fmt.Sprintf("http://edge.example.test:%d", port),
+		BackendURL:  backendURL,
+		Revision:    1,
+	}
 }
 
 func runtimeTestRelayListener(port int, certificateID int) model.RelayListener {
@@ -223,4 +305,30 @@ func waitForPortState(t *testing.T, port int, wantBusy bool) {
 		t.Fatalf("timed out waiting for port %d to become busy", port)
 	}
 	t.Fatalf("timed out waiting for port %d to become free", port)
+}
+
+func assertHTTPRuntimeStatus(t *testing.T, port int, wantStatus int) {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	address := fmt.Sprintf("http://127.0.0.1:%d/", port)
+	host := fmt.Sprintf("edge.example.test:%d", port)
+	for time.Now().Before(deadline) {
+		req, err := http.NewRequest(http.MethodGet, address, nil)
+		if err != nil {
+			t.Fatalf("failed to create runtime request: %v", err)
+		}
+		req.Host = host
+
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == wantStatus {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatalf("timed out waiting for http runtime on port %d to return %d", port, wantStatus)
 }

@@ -25,10 +25,16 @@ type CertificateApplier interface {
 	Apply(context.Context, []model.ManagedCertificateBundle, []model.ManagedCertificatePolicy) error
 }
 
+type HTTPApplier interface {
+	Apply(context.Context, []model.HTTPRule) error
+	Close() error
+}
+
 type App struct {
 	cfg          Config
 	syncClient   SyncClient
 	store        store.Store
+	httpApplier  HTTPApplier
 	certApplier  CertificateApplier
 	l4Applier    L4Applier
 	relayApplier RelayApplier
@@ -51,10 +57,11 @@ func New(cfg Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newAppWithDeps(
+	return newAppWithHTTPDeps(
 		cfg,
 		st,
 		client,
+		newHTTPRuntimeManager(),
 		certManager,
 		newL4RuntimeManager(),
 		newRelayRuntimeManager(certManager),
@@ -69,6 +76,18 @@ func newAppWithDeps(
 	l4Applier L4Applier,
 	relayApplier RelayApplier,
 ) *App {
+	return newAppWithHTTPDeps(cfg, st, client, nil, certApplier, l4Applier, relayApplier)
+}
+
+func newAppWithHTTPDeps(
+	cfg Config,
+	st store.Store,
+	client SyncClient,
+	httpApplier HTTPApplier,
+	certApplier CertificateApplier,
+	l4Applier L4Applier,
+	relayApplier RelayApplier,
+) *App {
 	if cfg.HeartbeatInterval <= 0 {
 		cfg.HeartbeatInterval = config.Default().HeartbeatInterval
 	}
@@ -76,6 +95,7 @@ func newAppWithDeps(
 		cfg:          cfg,
 		store:        st,
 		syncClient:   client,
+		httpApplier:  httpApplier,
 		certApplier:  certApplier,
 		l4Applier:    l4Applier,
 		relayApplier: relayApplier,
@@ -98,6 +118,9 @@ func (a *App) Run(ctx context.Context) error {
 		return err
 	}
 	if err := a.applyManagedCertificates(ctx, desired); err != nil {
+		return a.recordRuntimeError(&runtimeState, err)
+	}
+	if err := a.applyHTTPRules(ctx, desired); err != nil {
 		return a.recordRuntimeError(&runtimeState, err)
 	}
 	if err := a.applyRelayListeners(ctx, desired); err != nil {
@@ -149,6 +172,9 @@ func (a *App) syncOnce(ctx context.Context, req SyncRequest, runtimeState *store
 		return a.recordRuntimeError(runtimeState, err)
 	}
 	if err := a.applyManagedCertificates(ctx, snapshot); err != nil {
+		return a.recordRuntimeError(runtimeState, err)
+	}
+	if err := a.applyHTTPRules(ctx, snapshot); err != nil {
 		return a.recordRuntimeError(runtimeState, err)
 	}
 	if err := a.applyRelayListeners(ctx, snapshot); err != nil {
@@ -207,6 +233,13 @@ func (a *App) applyManagedCertificates(ctx context.Context, snapshot Snapshot) e
 	return a.certApplier.Apply(ctx, snapshot.Certificates, snapshot.CertificatePolicies)
 }
 
+func (a *App) applyHTTPRules(ctx context.Context, snapshot Snapshot) error {
+	if a.httpApplier == nil || snapshot.Rules == nil {
+		return nil
+	}
+	return a.httpApplier.Apply(ctx, snapshot.Rules)
+}
+
 func mergeSnapshotPayload(next, previous Snapshot) Snapshot {
 	merged := next
 	if next.Rules == nil {
@@ -242,6 +275,9 @@ func (a *App) applyRelayListeners(ctx context.Context, snapshot Snapshot) error 
 }
 
 func (a *App) closeLocalRuntimes() {
+	if a.httpApplier != nil {
+		_ = a.httpApplier.Close()
+	}
 	if a.relayApplier != nil {
 		_ = a.relayApplier.Close()
 	}

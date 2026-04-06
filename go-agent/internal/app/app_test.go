@@ -32,6 +32,9 @@ func TestNewBuildsRealWiring(t *testing.T) {
 	if app.syncClient == nil {
 		t.Fatal("expected sync client to be initialized")
 	}
+	if app.httpApplier == nil {
+		t.Fatal("expected http applier to be initialized")
+	}
 	if app.certApplier == nil {
 		t.Fatal("expected certificate applier to be initialized")
 	}
@@ -363,6 +366,10 @@ type relayApplyCall struct {
 	listeners []model.RelayListener
 }
 
+type httpApplyCall struct {
+	rules []model.HTTPRule
+}
+
 type testCertificateApplier struct {
 	mu       sync.Mutex
 	calls    []applyCall
@@ -452,6 +459,44 @@ func (a *testRelayApplier) snapshotCalls() []relayApplyCall {
 }
 
 func (a *testRelayApplier) Close() error {
+	return nil
+}
+
+type testHTTPApplier struct {
+	mu       sync.Mutex
+	calls    []httpApplyCall
+	applyErr error
+}
+
+func (a *testHTTPApplier) Apply(_ context.Context, rules []model.HTTPRule) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	var copied []model.HTTPRule
+	if rules != nil {
+		copied = make([]model.HTTPRule, len(rules))
+		copy(copied, rules)
+		for i, rule := range rules {
+			if rule.CustomHeaders != nil {
+				copied[i].CustomHeaders = make([]model.HTTPHeader, len(rule.CustomHeaders))
+				copy(copied[i].CustomHeaders, rule.CustomHeaders)
+			}
+		}
+	}
+	a.calls = append(a.calls, httpApplyCall{
+		rules: copied,
+	})
+	return a.applyErr
+}
+
+func (a *testHTTPApplier) snapshotCalls() []httpApplyCall {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := make([]httpApplyCall, len(a.calls))
+	copy(out, a.calls)
+	return out
+}
+
+func (a *testHTTPApplier) Close() error {
 	return nil
 }
 
@@ -834,6 +879,260 @@ func TestRunRecordsStartupCertificateHydrationFailuresInRuntimeState(t *testing.
 	}
 	if state.Metadata["last_sync_error"] != "startup cert apply failed" {
 		t.Fatalf("expected startup certificate apply failure metadata, got %v", state.Metadata)
+	}
+}
+
+func TestRunAppliesHTTPRulesFromSyncedSnapshot(t *testing.T) {
+	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
+	mem := store.NewInMemory()
+	expected := Snapshot{
+		DesiredVersion: "2.0",
+		Revision:       9,
+		Rules: []model.HTTPRule{{
+			FrontendURL:   "http://edge.example.test:18080",
+			BackendURL:    "http://127.0.0.1:8096",
+			ProxyRedirect: true,
+			Revision:      4,
+		}},
+	}
+	client := newTestSyncClient(nil, syncResponse{snapshot: expected})
+	httpApplier := &testHTTPApplier{}
+	app := newAppWithHTTPDeps(cfg, mem, client, httpApplier, nil, nil, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- app.Run(ctx)
+	}()
+
+	waitForCalls(t, client, 1, time.Second)
+
+	calls := httpApplier.snapshotCalls()
+	if len(calls) != 1 {
+		t.Fatalf("expected one http apply call, got %d", len(calls))
+	}
+	if !reflect.DeepEqual(calls[0].rules, expected.Rules) {
+		t.Fatalf("unexpected http rules: %+v", calls[0].rules)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+}
+
+func TestRunHydratesHTTPRulesFromStoredDesiredSnapshot(t *testing.T) {
+	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
+	mem := store.NewInMemory()
+	stored := Snapshot{
+		DesiredVersion: "stored",
+		Revision:       5,
+		Rules: []model.HTTPRule{{
+			FrontendURL:      "http://edge.example.test:18080",
+			BackendURL:       "http://127.0.0.1:8096",
+			PassProxyHeaders: true,
+			Revision:         4,
+		}},
+	}
+	if err := mem.SaveAppliedSnapshot(Snapshot{DesiredVersion: "baseline"}); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+	if err := mem.SaveDesiredSnapshot(stored); err != nil {
+		t.Fatalf("failed to seed desired snapshot: %v", err)
+	}
+
+	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{DesiredVersion: "ok"}})
+	httpApplier := &testHTTPApplier{}
+	app := newAppWithHTTPDeps(cfg, mem, client, httpApplier, nil, nil, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- app.Run(ctx)
+	}()
+
+	waitForCalls(t, client, 1, time.Second)
+
+	calls := httpApplier.snapshotCalls()
+	if len(calls) != 1 {
+		t.Fatalf("expected one startup http apply call, got %d", len(calls))
+	}
+	if !reflect.DeepEqual(calls[0].rules, stored.Rules) {
+		t.Fatalf("unexpected hydrated http rules: %+v", calls[0].rules)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+}
+
+func TestRunDoesNotApplyHTTPWhenHeartbeatOmitsPayload(t *testing.T) {
+	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
+	mem := store.NewInMemory()
+	stored := Snapshot{
+		DesiredVersion: "stored",
+		Revision:       5,
+		Rules: []model.HTTPRule{{
+			FrontendURL: "http://edge.example.test:18080",
+			BackendURL:  "http://127.0.0.1:8096",
+			Revision:    4,
+		}},
+	}
+	if err := mem.SaveAppliedSnapshot(Snapshot{DesiredVersion: "baseline"}); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+	if err := mem.SaveDesiredSnapshot(stored); err != nil {
+		t.Fatalf("failed to seed desired snapshot: %v", err)
+	}
+
+	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{DesiredVersion: "ok", Revision: 7}})
+	httpApplier := &testHTTPApplier{}
+	app := newAppWithHTTPDeps(cfg, mem, client, httpApplier, nil, nil, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- app.Run(ctx)
+	}()
+
+	waitForCalls(t, client, 1, time.Second)
+
+	calls := httpApplier.snapshotCalls()
+	if len(calls) != 1 {
+		t.Fatalf("expected only startup hydration call when heartbeat omits http rules, got %d", len(calls))
+	}
+
+	persisted, err := mem.LoadDesiredSnapshot()
+	if err != nil {
+		t.Fatalf("failed to load desired snapshot: %v", err)
+	}
+	if !reflect.DeepEqual(persisted.Rules, stored.Rules) {
+		t.Fatalf("expected stored http rules to be preserved, got %+v", persisted.Rules)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+}
+
+func TestRunAppliesExplicitEmptyHTTPRules(t *testing.T) {
+	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
+	mem := store.NewInMemory()
+	if err := mem.SaveAppliedSnapshot(Snapshot{DesiredVersion: "baseline"}); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+	stored := Snapshot{
+		DesiredVersion: "stored",
+		Revision:       5,
+		Rules: []model.HTTPRule{{
+			FrontendURL: "http://edge.example.test:18080",
+			BackendURL:  "http://127.0.0.1:8096",
+			Revision:    4,
+		}},
+	}
+	if err := mem.SaveDesiredSnapshot(stored); err != nil {
+		t.Fatalf("failed to seed desired snapshot: %v", err)
+	}
+
+	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{
+		DesiredVersion: "ok",
+		Revision:       7,
+		Rules:          []model.HTTPRule{},
+	}})
+	httpApplier := &testHTTPApplier{}
+	app := newAppWithHTTPDeps(cfg, mem, client, httpApplier, nil, nil, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- app.Run(ctx)
+	}()
+
+	waitForCalls(t, client, 1, time.Second)
+
+	calls := httpApplier.snapshotCalls()
+	if len(calls) != 2 {
+		t.Fatalf("expected startup and clear http apply calls, got %d", len(calls))
+	}
+	if calls[1].rules == nil || len(calls[1].rules) != 0 {
+		t.Fatalf("expected explicit empty http rules on clear, got %+v", calls[1].rules)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+}
+
+func TestRunRecordsHTTPApplyFailuresInRuntimeState(t *testing.T) {
+	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
+	mem := store.NewInMemory()
+	if err := mem.SaveAppliedSnapshot(Snapshot{DesiredVersion: "baseline"}); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+
+	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{
+		DesiredVersion: "2.0",
+		Revision:       9,
+		Rules:          []model.HTTPRule{},
+	}})
+	httpApplier := &testHTTPApplier{applyErr: errors.New("http apply failed")}
+	app := newAppWithHTTPDeps(cfg, mem, client, httpApplier, nil, nil, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- app.Run(ctx)
+	}()
+
+	waitForCalls(t, client, 1, time.Second)
+
+	state, err := mem.LoadRuntimeState()
+	if err != nil {
+		t.Fatalf("failed to load runtime state: %v", err)
+	}
+	if state.Metadata["last_sync_error"] != "http apply failed" {
+		t.Fatalf("expected http apply failure metadata, got %v", state.Metadata)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+}
+
+func TestRunRecordsStartupHTTPHydrationFailuresInRuntimeState(t *testing.T) {
+	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
+	mem := store.NewInMemory()
+	stored := Snapshot{
+		DesiredVersion: "stored",
+		Revision:       5,
+		Rules:          []model.HTTPRule{},
+	}
+	if err := mem.SaveDesiredSnapshot(stored); err != nil {
+		t.Fatalf("failed to seed desired snapshot: %v", err)
+	}
+
+	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{DesiredVersion: "ok"}})
+	httpApplier := &testHTTPApplier{applyErr: errors.New("startup http apply failed")}
+	app := newAppWithHTTPDeps(cfg, mem, client, httpApplier, nil, nil, nil)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	err := app.Run(ctx)
+	if err == nil || err.Error() != "startup http apply failed" {
+		t.Fatalf("expected startup http apply error, got %v", err)
+	}
+
+	state, loadErr := mem.LoadRuntimeState()
+	if loadErr != nil {
+		t.Fatalf("failed to load runtime state: %v", loadErr)
+	}
+	if state.Metadata["last_sync_error"] != "startup http apply failed" {
+		t.Fatalf("expected startup http apply failure metadata, got %v", state.Metadata)
 	}
 }
 
