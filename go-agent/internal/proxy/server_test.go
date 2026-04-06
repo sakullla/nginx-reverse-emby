@@ -201,6 +201,47 @@ func TestPassProxyHeadersUsesIncomingScheme(t *testing.T) {
 	}
 }
 
+func TestPassProxyHeadersDropsSpoofedForwardedFor(t *testing.T) {
+	var got string
+	var backend *httptest.Server
+	backend = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("X-Forwarded-For")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	listener := model.HTTPListener{
+		Rules: []model.HTTPRule{
+			{
+				FrontendURL:      "http://route.example",
+				BackendURL:       backend.URL,
+				PassProxyHeaders: true,
+			},
+		},
+	}
+
+	server := NewServer(listener)
+	proxy := httptest.NewServer(server)
+	defer proxy.Close()
+
+	req, err := http.NewRequest("GET", proxy.URL, nil)
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+	req.Host = "route.example"
+	req.Header.Set("X-Forwarded-For", "203.0.113.9")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("proxy request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if got != "127.0.0.1" {
+		t.Fatalf("expected sanitized forwarded-for header, got %q", got)
+	}
+}
+
 func TestServerDoesNotRewriteExternalLocation(t *testing.T) {
 	var backend *httptest.Server
 	backend = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

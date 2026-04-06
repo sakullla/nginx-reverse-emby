@@ -76,7 +76,7 @@ func newServer(listener model.HTTPListener, relayListeners []model.RelayListener
 		}
 		targetHost := normalizeHost(target.Host)
 
-		proxy := httputil.NewSingleHostReverseProxy(target)
+		proxy := &httputil.ReverseProxy{}
 		if len(rule.RelayChain) > 0 {
 			transport, err := newRelayTransport(rule, target, relayListenersByID, providers.Relay)
 			if err != nil {
@@ -84,13 +84,13 @@ func newServer(listener model.HTTPListener, relayListeners []model.RelayListener
 			}
 			proxy.Transport = transport
 		}
-		director := proxy.Director
-		proxy.Director = func(req *http.Request) {
-			incomingHost := req.Host
-			incomingScheme := requestScheme(req)
-			director(req)
-			if overrides := HeaderOverridesFromRule(rule, req, incomingHost, incomingScheme); len(overrides) > 0 {
-				ApplyHeaderOverrides(req, overrides)
+		proxy.Rewrite = func(preq *httputil.ProxyRequest) {
+			incomingHost := preq.In.Host
+			incomingScheme := requestScheme(preq.In)
+			preq.SetURL(target)
+			preq.Out.Host = preq.In.Host
+			if overrides := HeaderOverridesFromRule(rule, preq.In, incomingHost, incomingScheme); len(overrides) > 0 {
+				ApplyHeaderOverrides(preq.Out, overrides)
 			}
 		}
 

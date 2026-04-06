@@ -121,12 +121,7 @@ func passProxyHeaders(req *http.Request, incomingHost, incomingScheme string) ma
 	}
 	ip := clientIP(req.RemoteAddr)
 	if ip != "" {
-		xfwd := req.Header.Get("X-Forwarded-For")
-		if xfwd == "" {
-			values["X-Forwarded-For"] = ip
-		} else {
-			values["X-Forwarded-For"] = xfwd + ", " + ip
-		}
+		values["X-Forwarded-For"] = ip
 		values["X-Real-IP"] = ip
 	}
 	scheme := strings.TrimSpace(incomingScheme)
