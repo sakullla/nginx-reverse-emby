@@ -339,11 +339,28 @@ describe("Go agent heartbeat API", () => {
             status: "issued",
             revision: 3,
           },
+          {
+            id: 22,
+            domain: "192.0.2.44",
+            enabled: true,
+            scope: "ip",
+            issuer_mode: "local_http01",
+            usage: "https",
+            certificate_type: "uploaded",
+            self_signed: false,
+            target_agent_ids: ["remote-agent-5"],
+            status: "issued",
+            revision: 4,
+          },
         ],
         managedCertificateMaterial: {
           "sync.example.com": {
             cert_pem: "CERTIFICATE",
             key_pem: "PRIVATEKEY",
+          },
+          "192.0.2.44": {
+            cert_pem: "IP_CERTIFICATE",
+            key_pem: "IP_PRIVATEKEY",
           },
         },
         versionPolicies: [
@@ -390,6 +407,13 @@ describe("Go agent heartbeat API", () => {
         assert.equal(payload.sync.certificates[0].domain, "sync.example.com");
         assert.equal(payload.sync.certificates[0].cert_pem, "CERTIFICATE");
         assert.equal(payload.sync.certificates[0].key_pem, "PRIVATEKEY");
+        assert.deepEqual(payload.sync.certificates[1], {
+          id: 22,
+          domain: "192.0.2.44",
+          revision: 4,
+          cert_pem: "IP_CERTIFICATE",
+          key_pem: "IP_PRIVATEKEY",
+        });
         assert.ok(Array.isArray(payload.sync.certificate_policies));
         assert.deepEqual(payload.sync.certificate_policies[0], {
           id: 21,
@@ -414,6 +438,30 @@ describe("Go agent heartbeat API", () => {
           usage: "relay_ca",
           certificate_type: "internal_ca",
           self_signed: true,
+        });
+        assert.deepEqual(payload.sync.certificate_policies[1], {
+          id: 22,
+          domain: "192.0.2.44",
+          enabled: true,
+          scope: "ip",
+          issuer_mode: "local_http01",
+          status: "issued",
+          last_issue_at: null,
+          last_error: "",
+          acme_info: {
+            Main_Domain: "",
+            KeyLength: "",
+            SAN_Domains: "",
+            Profile: "",
+            CA: "",
+            Created: "",
+            Renew: "",
+          },
+          tags: [],
+          revision: 4,
+          usage: "https",
+          certificate_type: "uploaded",
+          self_signed: false,
         });
         assert.equal(payload.sync.desired_version, "4.0.0");
         assert.equal(payload.sync.version_package, "https://example.com/agent-linux.tar.gz");

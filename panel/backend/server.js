@@ -1651,7 +1651,7 @@ function getManagedCertificateMaterialHash(domain) {
 
 function buildManagedCertificateBundleForAgent(agentId) {
   return storage.loadManagedCertificates()
-    .filter((cert) => cert.enabled && cert.scope === "domain")
+    .filter((cert) => cert.enabled)
     .filter((cert) => Array.isArray(cert.target_agent_ids) && cert.target_agent_ids.includes(agentId))
     .map((cert) => {
       const material = readManagedCertificateMaterial(cert.domain);
