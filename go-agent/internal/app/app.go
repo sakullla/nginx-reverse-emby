@@ -26,10 +26,12 @@ type CertificateApplier interface {
 }
 
 type App struct {
-	cfg         Config
-	syncClient  SyncClient
-	store       store.Store
-	certApplier CertificateApplier
+	cfg          Config
+	syncClient   SyncClient
+	store        store.Store
+	certApplier  CertificateApplier
+	l4Applier    L4Applier
+	relayApplier RelayApplier
 }
 
 func New(cfg Config) (*App, error) {
@@ -49,22 +51,40 @@ func New(cfg Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newAppWithDeps(cfg, st, client, certManager), nil
+	return newAppWithDeps(
+		cfg,
+		st,
+		client,
+		certManager,
+		newL4RuntimeManager(),
+		newRelayRuntimeManager(certManager),
+	), nil
 }
 
-func newAppWithDeps(cfg Config, st store.Store, client SyncClient, certApplier CertificateApplier) *App {
+func newAppWithDeps(
+	cfg Config,
+	st store.Store,
+	client SyncClient,
+	certApplier CertificateApplier,
+	l4Applier L4Applier,
+	relayApplier RelayApplier,
+) *App {
 	if cfg.HeartbeatInterval <= 0 {
 		cfg.HeartbeatInterval = config.Default().HeartbeatInterval
 	}
 	return &App{
-		cfg:         cfg,
-		store:       st,
-		syncClient:  client,
-		certApplier: certApplier,
+		cfg:          cfg,
+		store:        st,
+		syncClient:   client,
+		certApplier:  certApplier,
+		l4Applier:    l4Applier,
+		relayApplier: relayApplier,
 	}
 }
 
 func (a *App) Run(ctx context.Context) error {
+	defer a.closeLocalRuntimes()
+
 	applied, err := a.store.LoadAppliedSnapshot()
 	if err != nil {
 		return err
@@ -78,6 +98,12 @@ func (a *App) Run(ctx context.Context) error {
 		return err
 	}
 	if err := a.applyManagedCertificates(ctx, desired); err != nil {
+		return a.recordRuntimeError(&runtimeState, err)
+	}
+	if err := a.applyRelayListeners(ctx, desired); err != nil {
+		return a.recordRuntimeError(&runtimeState, err)
+	}
+	if err := a.applyL4Rules(ctx, desired); err != nil {
 		return a.recordRuntimeError(&runtimeState, err)
 	}
 
@@ -123,6 +149,12 @@ func (a *App) syncOnce(ctx context.Context, req SyncRequest, runtimeState *store
 		return a.recordRuntimeError(runtimeState, err)
 	}
 	if err := a.applyManagedCertificates(ctx, snapshot); err != nil {
+		return a.recordRuntimeError(runtimeState, err)
+	}
+	if err := a.applyRelayListeners(ctx, snapshot); err != nil {
+		return a.recordRuntimeError(runtimeState, err)
+	}
+	if err := a.applyL4Rules(ctx, snapshot); err != nil {
 		return a.recordRuntimeError(runtimeState, err)
 	}
 	return a.clearRuntimeError(runtimeState)
@@ -193,4 +225,27 @@ func mergeSnapshotPayload(next, previous Snapshot) Snapshot {
 		merged.CertificatePolicies = previous.CertificatePolicies
 	}
 	return merged
+}
+
+func (a *App) applyL4Rules(ctx context.Context, snapshot Snapshot) error {
+	if a.l4Applier == nil || snapshot.L4Rules == nil {
+		return nil
+	}
+	return a.l4Applier.Apply(ctx, snapshot.L4Rules)
+}
+
+func (a *App) applyRelayListeners(ctx context.Context, snapshot Snapshot) error {
+	if a.relayApplier == nil || snapshot.RelayListeners == nil {
+		return nil
+	}
+	return a.relayApplier.Apply(ctx, snapshot.RelayListeners)
+}
+
+func (a *App) closeLocalRuntimes() {
+	if a.relayApplier != nil {
+		_ = a.relayApplier.Close()
+	}
+	if a.l4Applier != nil {
+		_ = a.l4Applier.Close()
+	}
 }
