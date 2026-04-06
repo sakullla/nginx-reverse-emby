@@ -480,6 +480,121 @@ func TestRelayPreservesHalfClose(t *testing.T) {
 	<-done
 }
 
+func TestDialTimesOutOnStalledHandshake(t *testing.T) {
+	withRelayTimeouts(50*time.Millisecond, 50*time.Millisecond, 50*time.Millisecond, 100*time.Millisecond, func() {
+		stallLn, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("failed to listen for stalled peer: %v", err)
+		}
+		defer stallLn.Close()
+
+		go func() {
+			conn, err := stallLn.Accept()
+			if err != nil {
+				return
+			}
+			defer conn.Close()
+			time.Sleep(250 * time.Millisecond)
+		}()
+
+		provider := newFakeTLSMaterialProvider()
+		_, hop := newRelayEndpoint(t, provider, 1, "relay-handshake-timeout", "pin_only", true, false)
+		hop.Address = stallLn.Addr().String()
+
+		_, err = Dial(context.Background(), "tcp", "127.0.0.1:9", []Hop{hop}, provider)
+		if err == nil {
+			t.Fatal("expected stalled handshake to time out")
+		}
+	})
+}
+
+func TestDialTimesOutOnStalledRelayResponse(t *testing.T) {
+	withRelayTimeouts(100*time.Millisecond, 100*time.Millisecond, 50*time.Millisecond, 100*time.Millisecond, func() {
+		provider := newFakeTLSMaterialProvider()
+		_, hop := newRelayEndpoint(t, provider, 1, "relay-frame-timeout", "pin_only", true, false)
+
+		stallLn, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("failed to listen for stalled relay: %v", err)
+		}
+		defer stallLn.Close()
+
+		go func() {
+			rawConn, err := stallLn.Accept()
+			if err != nil {
+				return
+			}
+			defer rawConn.Close()
+
+			tlsConfig, cfgErr := serverTLSConfig(context.Background(), provider, hop.Listener)
+			if cfgErr != nil {
+				return
+			}
+			tlsConn := tls.Server(rawConn, tlsConfig)
+			if cfgErr = tlsConn.Handshake(); cfgErr != nil {
+				return
+			}
+			_, _ = readRelayRequest(tlsConn)
+			time.Sleep(250 * time.Millisecond)
+		}()
+
+		hop.Address = stallLn.Addr().String()
+		if _, err := Dial(context.Background(), "tcp", "127.0.0.1:9", []Hop{hop}, provider); err == nil {
+			t.Fatal("expected stalled relay response to time out")
+		}
+	})
+}
+
+func TestIdleRelayConnectionTimesOut(t *testing.T) {
+	withRelayTimeouts(100*time.Millisecond, 100*time.Millisecond, 100*time.Millisecond, 50*time.Millisecond, func() {
+		backendLn, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("failed to listen backend: %v", err)
+		}
+		defer backendLn.Close()
+
+		go func() {
+			conn, err := backendLn.Accept()
+			if err != nil {
+				return
+			}
+			defer conn.Close()
+			time.Sleep(250 * time.Millisecond)
+		}()
+
+		provider := newFakeTLSMaterialProvider()
+		listener, hop := newRelayEndpoint(t, provider, 1, "relay-idle-timeout", "pin_only", true, false)
+
+		server, err := Start(context.Background(), []Listener{listener}, provider)
+		if err != nil {
+			t.Fatalf("Start returned error: %v", err)
+		}
+		defer server.Close()
+
+		conn, err := Dial(context.Background(), "tcp", backendLn.Addr().String(), []Hop{hop}, provider)
+		if err != nil {
+			t.Fatalf("Dial returned error: %v", err)
+		}
+		defer conn.Close()
+
+		readDone := make(chan error, 1)
+		go func() {
+			var buf [1]byte
+			_, readErr := conn.Read(buf[:])
+			readDone <- readErr
+		}()
+
+		select {
+		case err := <-readDone:
+			if err == nil {
+				t.Fatal("expected idle relay connection to close or time out")
+			}
+		case <-time.After(time.Second):
+			t.Fatal("idle relay connection did not time out")
+		}
+	})
+}
+
 func TestServerCloseStopsActiveRelayConnections(t *testing.T) {
 	backendLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -763,4 +878,24 @@ func pickFreeTCPPort(t *testing.T) int {
 	defer ln.Close()
 
 	return ln.Addr().(*net.TCPAddr).Port
+}
+
+func withRelayTimeouts(dial, handshake, frame, idle time.Duration, fn func()) {
+	prevDial := relayDialTimeout
+	prevHandshake := relayHandshakeTimeout
+	prevFrame := relayFrameTimeout
+	prevIdle := relayIdleTimeout
+
+	relayDialTimeout = dial
+	relayHandshakeTimeout = handshake
+	relayFrameTimeout = frame
+	relayIdleTimeout = idle
+	defer func() {
+		relayDialTimeout = prevDial
+		relayHandshakeTimeout = prevHandshake
+		relayFrameTimeout = prevFrame
+		relayIdleTimeout = prevIdle
+	}()
+
+	fn()
 }

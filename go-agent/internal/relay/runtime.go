@@ -102,33 +102,44 @@ func (s *Server) handleConn(rawConn net.Conn, listener Listener) {
 	}
 
 	clientConn := tls.Server(rawConn, tlsConfig)
-	if err := clientConn.HandshakeContext(s.ctx); err != nil {
+	if err := handshakeTLS(s.ctx, clientConn); err != nil {
 		return
 	}
 
-	request, err := readRelayRequest(clientConn)
+	var request relayRequest
+	err = withFrameDeadline(clientConn, func() error {
+		var readErr error
+		request, readErr = readRelayRequest(clientConn)
+		return readErr
+	})
 	if err != nil {
 		return
 	}
 	if !strings.EqualFold(request.Network, "tcp") {
-		_ = writeRelayResponse(clientConn, relayResponse{OK: false, Error: fmt.Sprintf("unsupported network %q", request.Network)})
+		_ = withFrameDeadline(clientConn, func() error {
+			return writeRelayResponse(clientConn, relayResponse{OK: false, Error: fmt.Sprintf("unsupported network %q", request.Network)})
+		})
 		return
 	}
 
 	upstream, err := s.openUpstream(request)
 	if err != nil {
-		_ = writeRelayResponse(clientConn, relayResponse{OK: false, Error: err.Error()})
+		_ = withFrameDeadline(clientConn, func() error {
+			return writeRelayResponse(clientConn, relayResponse{OK: false, Error: err.Error()})
+		})
 		return
 	}
 	s.trackConn(upstream)
 	defer s.untrackConn(upstream)
 	defer upstream.Close()
 
-	if err := writeRelayResponse(clientConn, relayResponse{OK: true}); err != nil {
+	if err := withFrameDeadline(clientConn, func() error {
+		return writeRelayResponse(clientConn, relayResponse{OK: true})
+	}); err != nil {
 		return
 	}
 
-	pipeBothWays(clientConn, upstream)
+	pipeBothWays(wrapIdleConn(clientConn), wrapIdleConn(upstream))
 }
 
 func (s *Server) openUpstream(request relayRequest) (net.Conn, error) {
@@ -143,8 +154,7 @@ func (s *Server) openUpstream(request relayRequest) (net.Conn, error) {
 		return nil, fmt.Errorf("invalid relay target %q: %w", request.Target, err)
 	}
 
-	var dialer net.Dialer
-	return dialer.DialContext(s.ctx, "tcp", request.Target)
+	return dialTCP(s.ctx, request.Target)
 }
 
 func Dial(ctx context.Context, network, target string, chain []Hop, provider TLSMaterialProvider) (net.Conn, error) {
@@ -174,14 +184,13 @@ func Dial(ctx context.Context, network, target string, chain []Hop, provider TLS
 		return nil, err
 	}
 
-	var dialer net.Dialer
-	rawConn, err := dialer.DialContext(ctx, "tcp", firstHop.Address)
+	rawConn, err := dialTCP(ctx, firstHop.Address)
 	if err != nil {
 		return nil, err
 	}
 
 	relayConn := tls.Client(rawConn, tlsConfig)
-	if err := relayConn.HandshakeContext(ctx); err != nil {
+	if err := handshakeTLS(ctx, relayConn); err != nil {
 		rawConn.Close()
 		return nil, err
 	}
@@ -191,12 +200,19 @@ func Dial(ctx context.Context, network, target string, chain []Hop, provider TLS
 		Target:  target,
 		Chain:   append([]Hop(nil), chain[1:]...),
 	}
-	if err := writeRelayRequest(relayConn, request); err != nil {
+	if err := withFrameDeadline(relayConn, func() error {
+		return writeRelayRequest(relayConn, request)
+	}); err != nil {
 		relayConn.Close()
 		return nil, err
 	}
 
-	response, err := readRelayResponse(relayConn)
+	var response relayResponse
+	err = withFrameDeadline(relayConn, func() error {
+		var readErr error
+		response, readErr = readRelayResponse(relayConn)
+		return readErr
+	})
 	if err != nil {
 		relayConn.Close()
 		return nil, err
