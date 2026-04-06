@@ -56,12 +56,10 @@ func (a *App) Run(ctx context.Context) error {
 		return err
 	}
 
-	if snapshot, err := a.syncOnce(ctx, applied); err != nil {
+	if _, err := a.syncOnce(ctx, applied); err != nil {
 		if applied.DesiredVersion == "" {
 			return err
 		}
-	} else {
-		applied = snapshot
 	}
 
 	ticker := time.NewTicker(a.cfg.HeartbeatInterval)
@@ -72,9 +70,7 @@ func (a *App) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			if snapshot, err := a.syncOnce(ctx, applied); err == nil {
-				applied = snapshot
-			}
+			a.syncOnce(ctx, applied)
 		}
 	}
 }
