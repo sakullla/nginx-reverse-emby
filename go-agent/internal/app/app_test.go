@@ -55,6 +55,50 @@ func TestRunReturnsErrorWithoutAppliedSnapshot(t *testing.T) {
 	}
 }
 
+func TestRunRefreshesCurrentRevisionFromRuntimeState(t *testing.T) {
+	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
+	mem := store.NewInMemory()
+	if err := mem.SaveAppliedSnapshot(Snapshot{DesiredVersion: "baseline"}); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+	if err := mem.SaveRuntimeState(store.RuntimeState{
+		Metadata: map[string]string{"current_revision": "100"},
+	}); err != nil {
+		t.Fatalf("failed to seed runtime state: %v", err)
+	}
+
+	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{DesiredVersion: "ok"}})
+	app := newAppWithDeps(cfg, mem, client)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- app.Run(ctx)
+	}()
+
+	req1 := waitForRequest(t, client, time.Second)
+	if req1.CurrentRevision != 100 {
+		t.Fatalf("expected first request revision 100, got %d", req1.CurrentRevision)
+	}
+
+	if err := mem.SaveRuntimeState(store.RuntimeState{
+		Metadata: map[string]string{"current_revision": "200"},
+	}); err != nil {
+		t.Fatalf("failed to update runtime state: %v", err)
+	}
+
+	req2 := waitForRequest(t, client, time.Second)
+	if req2.CurrentRevision != 200 {
+		t.Fatalf("expected second request revision 200, got %d", req2.CurrentRevision)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+}
+
 func TestRunKeepsRunningWhenAppliedSnapshotExists(t *testing.T) {
 	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
 	mem := store.NewInMemory()
@@ -164,6 +208,46 @@ func TestRunRecordsSyncErrorsInRuntimeState(t *testing.T) {
 	}
 }
 
+func TestRunRecordsSaveDesiredSnapshotFailures(t *testing.T) {
+	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
+	inner := store.NewInMemory()
+	fs := &failingStore{delegate: inner, failOnNthSave: 2}
+	if err := fs.SaveAppliedSnapshot(Snapshot{DesiredVersion: "baseline"}); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+	if err := fs.SaveRuntimeState(store.RuntimeState{
+		Metadata: map[string]string{"current_revision": "1"},
+	}); err != nil {
+		t.Fatalf("failed to seed runtime state: %v", err)
+	}
+
+	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{DesiredVersion: "ok"}})
+	app := newAppWithDeps(cfg, fs, client)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- app.Run(ctx)
+	}()
+
+	waitForRequest(t, client, time.Second) // initial request
+	waitForCalls(t, client, 2, time.Second) // second request triggers failure
+
+	state, err := fs.LoadRuntimeState()
+	if err != nil {
+		t.Fatalf("failed to load runtime state: %v", err)
+	}
+	if state.Metadata["last_sync_error"] != "persistence fail" {
+		t.Fatalf("expected persistence failure metadata, got %v", state.Metadata)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+}
+
 type syncResponse struct {
 	snapshot Snapshot
 	err      error
@@ -174,17 +258,23 @@ type testSyncClient struct {
 	responses []syncResponse
 	fallback  syncResponse
 	callCount int32
+	reqCh     chan SyncRequest
 }
 
 func newTestSyncClient(responses []syncResponse, fallback syncResponse) *testSyncClient {
 	return &testSyncClient{
 		responses: append([]syncResponse(nil), responses...),
 		fallback:  fallback,
+		reqCh:     make(chan SyncRequest, 16),
 	}
 }
 
-func (c *testSyncClient) Sync(_ context.Context, _ SyncRequest) (Snapshot, error) {
+func (c *testSyncClient) Sync(_ context.Context, request SyncRequest) (Snapshot, error) {
 	atomic.AddInt32(&c.callCount, 1)
+	select {
+	case c.reqCh <- request:
+	default:
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if len(c.responses) > 0 {
@@ -193,6 +283,16 @@ func (c *testSyncClient) Sync(_ context.Context, _ SyncRequest) (Snapshot, error
 		return resp.snapshot, resp.err
 	}
 	return c.fallback.snapshot, c.fallback.err
+}
+
+func waitForRequest(t *testing.T, client *testSyncClient, timeout time.Duration) SyncRequest {
+	select {
+	case req := <-client.reqCh:
+		return req
+	case <-time.After(timeout):
+		t.Fatalf("timed out waiting for sync request")
+	}
+	return SyncRequest{}
 }
 
 func waitForCalls(t *testing.T, client *testSyncClient, target int, timeout time.Duration) {
@@ -204,4 +304,38 @@ func waitForCalls(t *testing.T, client *testSyncClient, target int, timeout time
 		time.Sleep(1 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %d sync calls", target)
+}
+
+type failingStore struct {
+	delegate      store.Store
+	failOnNthSave int
+	saveCount     int
+}
+
+func (f *failingStore) SaveDesiredSnapshot(snapshot Snapshot) error {
+	f.saveCount++
+	if f.failOnNthSave > 0 && f.saveCount >= f.failOnNthSave {
+		return errors.New("persistence fail")
+	}
+	return f.delegate.SaveDesiredSnapshot(snapshot)
+}
+
+func (f *failingStore) LoadDesiredSnapshot() (Snapshot, error) {
+	return f.delegate.LoadDesiredSnapshot()
+}
+
+func (f *failingStore) SaveAppliedSnapshot(snapshot Snapshot) error {
+	return f.delegate.SaveAppliedSnapshot(snapshot)
+}
+
+func (f *failingStore) LoadAppliedSnapshot() (Snapshot, error) {
+	return f.delegate.LoadAppliedSnapshot()
+}
+
+func (f *failingStore) SaveRuntimeState(state store.RuntimeState) error {
+	return f.delegate.SaveRuntimeState(state)
+}
+
+func (f *failingStore) LoadRuntimeState() (store.RuntimeState, error) {
+	return f.delegate.LoadRuntimeState()
 }

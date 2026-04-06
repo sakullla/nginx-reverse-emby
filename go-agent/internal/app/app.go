@@ -57,13 +57,8 @@ func (a *App) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	runtimeState, err := a.store.LoadRuntimeState()
-	if err != nil {
-		return err
-	}
-	req := SyncRequest{CurrentRevision: currentRevisionFromMetadata(runtimeState.Metadata)}
 
-	if err := a.syncOnce(ctx, req, &runtimeState); err != nil {
+	if err := a.performSync(ctx); err != nil {
 		if applied.DesiredVersion == "" {
 			return err
 		}
@@ -77,9 +72,18 @@ func (a *App) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			a.syncOnce(ctx, req, &runtimeState)
+			a.performSync(ctx)
 		}
 	}
+}
+
+func (a *App) performSync(ctx context.Context) error {
+	runtimeState, err := a.store.LoadRuntimeState()
+	if err != nil {
+		return err
+	}
+	req := SyncRequest{CurrentRevision: currentRevisionFromMetadata(runtimeState.Metadata)}
+	return a.syncOnce(ctx, req, &runtimeState)
 }
 
 func (a *App) syncOnce(ctx context.Context, req SyncRequest, runtimeState *store.RuntimeState) error {
@@ -87,25 +91,23 @@ func (a *App) syncOnce(ctx context.Context, req SyncRequest, runtimeState *store
 	if err != nil {
 		return a.recordRuntimeError(runtimeState, err)
 	}
-	if err := a.clearRuntimeError(runtimeState); err != nil {
-		return err
-	}
 	if err := a.store.SaveDesiredSnapshot(snapshot); err != nil {
-		return err
+		return a.recordRuntimeError(runtimeState, err)
 	}
-	return nil
+	return a.clearRuntimeError(runtimeState)
 }
 
 func (a *App) recordRuntimeError(state *store.RuntimeState, syncErr error) error {
 	state.Metadata = ensureMetadata(state.Metadata)
 	state.Metadata["last_sync_error"] = syncErr.Error()
 	if err := a.store.SaveRuntimeState(*state); err != nil {
-		return err
+		return syncErr
 	}
 	return syncErr
 }
 
 func (a *App) clearRuntimeError(state *store.RuntimeState) error {
+	state.Metadata = ensureMetadata(state.Metadata)
 	delete(state.Metadata, "last_sync_error")
 	if err := a.store.SaveRuntimeState(*state); err != nil {
 		return err
