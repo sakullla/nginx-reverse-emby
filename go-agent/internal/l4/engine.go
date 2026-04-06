@@ -1,6 +1,9 @@
 package l4
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 type Rule struct {
 	Protocol   string
@@ -8,7 +11,7 @@ type Rule struct {
 }
 
 func ValidateRule(rule Rule) error {
-	if rule.Protocol == "udp" && len(rule.RelayChain) > 0 {
+	if strings.EqualFold(rule.Protocol, "udp") && len(rule.RelayChain) > 0 {
 		return fmt.Errorf("udp relay is not supported")
 	}
 	return nil
