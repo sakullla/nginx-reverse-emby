@@ -78,11 +78,46 @@ func (c *Client) Sync(ctx context.Context, request SyncRequest) (Snapshot, error
 	}
 
 	var reply struct {
-		Sync Snapshot `json:"sync"`
+		Sync struct {
+			Snapshot
+			VersionPackageURL  string                `json:"version_package"`
+			VersionPackageMeta *model.VersionPackage `json:"version_package_meta"`
+			VersionSHA256      string                `json:"version_sha256"`
+		} `json:"sync"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&reply); err != nil {
 		return Snapshot{}, err
 	}
 
-	return reply.Sync, nil
+	snapshot := reply.Sync.Snapshot
+	snapshot.VersionPackage = normalizeVersionPackage(
+		reply.Sync.VersionPackageMeta,
+		reply.Sync.VersionPackageURL,
+		reply.Sync.VersionSHA256,
+	)
+
+	return snapshot, nil
+}
+
+func normalizeVersionPackage(pkg *model.VersionPackage, rawURL, rawSHA256 string) *model.VersionPackage {
+	if pkg != nil {
+		copyValue := *pkg
+		if copyValue.URL == "" {
+			copyValue.URL = rawURL
+		}
+		if copyValue.SHA256 == "" {
+			copyValue.SHA256 = rawSHA256
+		}
+		if copyValue.URL == "" && copyValue.SHA256 == "" && copyValue.Platform == "" && copyValue.Filename == "" && copyValue.Size == 0 {
+			return nil
+		}
+		return &copyValue
+	}
+	if rawURL == "" && rawSHA256 == "" {
+		return nil
+	}
+	return &model.VersionPackage{
+		URL:    rawURL,
+		SHA256: rawSHA256,
+	}
 }

@@ -19,3 +19,9 @@ func TestNeedsUpdateFalseWhenDesiredEqualsCurrent(t *testing.T) {
 		t.Fatal("expected no update when desired equals current")
 	}
 }
+
+func TestErrRestartRequestedIsDefined(t *testing.T) {
+	if ErrRestartRequested == nil {
+		t.Fatal("expected restart sentinel error")
+	}
+}

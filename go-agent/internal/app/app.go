@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"errors"
+	"os"
 	"reflect"
 	stdruntime "runtime"
 	"time"
@@ -9,9 +11,11 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/certs"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	platformlinux "github.com/sakullla/nginx-reverse-emby/go-agent/internal/platform/linux"
 	agentruntime "github.com/sakullla/nginx-reverse-emby/go-agent/internal/runtime"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
 	agentsync "github.com/sakullla/nginx-reverse-emby/go-agent/internal/sync"
+	agentupdate "github.com/sakullla/nginx-reverse-emby/go-agent/internal/update"
 )
 
 type Config = config.Config
@@ -31,6 +35,11 @@ type HTTPApplier interface {
 	Close() error
 }
 
+type Updater interface {
+	Stage(context.Context, model.VersionPackage) (string, error)
+	Activate(stagedPath string, desiredVersion string) error
+}
+
 type App struct {
 	cfg          Config
 	syncClient   SyncClient
@@ -39,6 +48,7 @@ type App struct {
 	certApplier  CertificateApplier
 	l4Applier    L4Applier
 	relayApplier RelayApplier
+	updater      Updater
 	runtime      *agentruntime.Runtime
 }
 
@@ -59,7 +69,11 @@ func New(cfg Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newAppWithHTTPDeps(
+	executablePath, err := os.Executable()
+	if err != nil {
+		return nil, err
+	}
+	return newAppWithAllDeps(
 		cfg,
 		st,
 		client,
@@ -67,6 +81,14 @@ func New(cfg Config) (*App, error) {
 		certManager,
 		newL4RuntimeManager(),
 		newRelayRuntimeManager(certManager),
+		agentupdate.NewManager(
+			cfg.DataDir,
+			executablePath,
+			os.Args,
+			os.Environ(),
+			platformlinux.ExecReplacement,
+			nil,
+		),
 	), nil
 }
 
@@ -78,7 +100,7 @@ func newAppWithDeps(
 	l4Applier L4Applier,
 	relayApplier RelayApplier,
 ) *App {
-	return newAppWithHTTPDeps(cfg, st, client, nil, certApplier, l4Applier, relayApplier)
+	return newAppWithAllDeps(cfg, st, client, nil, certApplier, l4Applier, relayApplier, nil)
 }
 
 func newAppWithHTTPDeps(
@@ -89,6 +111,19 @@ func newAppWithHTTPDeps(
 	certApplier CertificateApplier,
 	l4Applier L4Applier,
 	relayApplier RelayApplier,
+) *App {
+	return newAppWithAllDeps(cfg, st, client, httpApplier, certApplier, l4Applier, relayApplier, nil)
+}
+
+func newAppWithAllDeps(
+	cfg Config,
+	st store.Store,
+	client SyncClient,
+	httpApplier HTTPApplier,
+	certApplier CertificateApplier,
+	l4Applier L4Applier,
+	relayApplier RelayApplier,
+	updater Updater,
 ) *App {
 	if cfg.HeartbeatInterval <= 0 {
 		cfg.HeartbeatInterval = config.Default().HeartbeatInterval
@@ -101,6 +136,7 @@ func newAppWithHTTPDeps(
 		certApplier:  certApplier,
 		l4Applier:    l4Applier,
 		relayApplier: relayApplier,
+		updater:      updater,
 	}
 	app.runtime = agentruntime.NewWithActivator(app.activateSnapshot)
 	return app
@@ -118,6 +154,9 @@ func (a *App) Run(ctx context.Context) error {
 	}
 
 	if err := a.performSync(ctx); err != nil {
+		if errors.Is(err, agentupdate.ErrRestartRequested) {
+			return nil
+		}
 		if applied.DesiredVersion == "" {
 			return err
 		}
@@ -131,7 +170,9 @@ func (a *App) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			a.performSync(ctx)
+			if err := a.performSync(ctx); errors.Is(err, agentupdate.ErrRestartRequested) {
+				return nil
+			}
 		}
 	}
 }
@@ -157,6 +198,9 @@ func (a *App) syncOnce(ctx context.Context, req SyncRequest) error {
 	persistedSnapshot := mergeSnapshotPayload(snapshot, existingDesired)
 	if err := a.store.SaveDesiredSnapshot(persistedSnapshot); err != nil {
 		return a.recordRuntimeError(err)
+	}
+	if err := a.handlePendingUpdate(ctx, snapshot); err != nil {
+		return err
 	}
 	previousApplied := a.runtime.ActiveSnapshot()
 	candidateApplied := mergeSnapshotPayload(snapshot, previousApplied)
@@ -338,4 +382,28 @@ func (a *App) closeLocalRuntimes() {
 	if a.l4Applier != nil {
 		_ = a.l4Applier.Close()
 	}
+}
+
+func (a *App) handlePendingUpdate(ctx context.Context, snapshot Snapshot) error {
+	if !agentupdate.NeedsUpdate(a.cfg.CurrentVersion, snapshot.DesiredVersion) {
+		return nil
+	}
+	if !agentupdate.HasValidPackage(snapshot.VersionPackage) {
+		return nil
+	}
+	if a.updater == nil {
+		return a.recordRuntimeError(errors.New("updater unavailable"))
+	}
+
+	stagedPath, err := a.updater.Stage(ctx, *snapshot.VersionPackage)
+	if err != nil {
+		return a.recordRuntimeError(err)
+	}
+	if err := a.updater.Activate(stagedPath, snapshot.DesiredVersion); err != nil {
+		if errors.Is(err, agentupdate.ErrRestartRequested) {
+			return err
+		}
+		return a.recordRuntimeError(err)
+	}
+	return agentupdate.ErrRestartRequested
 }

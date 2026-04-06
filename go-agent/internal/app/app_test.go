@@ -11,6 +11,7 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
+	agentupdate "github.com/sakullla/nginx-reverse-emby/go-agent/internal/update"
 )
 
 func TestNewBuildsRealWiring(t *testing.T) {
@@ -756,6 +757,168 @@ func TestRunDoesNotAdvancePersistedStateOrHeartbeatRevisionWhenRollbackFailsAfte
 	}
 }
 
+func TestPerformSyncTriggersUpdaterWhenDesiredVersionPackageIsPresent(t *testing.T) {
+	cfg := Config{CurrentVersion: "1.0.0"}
+	mem := store.NewInMemory()
+	previousApplied := Snapshot{
+		DesiredVersion: "1.0.0",
+		Revision:       7,
+	}
+	if err := mem.SaveAppliedSnapshot(previousApplied); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+	if err := mem.SaveRuntimeState(store.RuntimeState{
+		CurrentRevision: previousApplied.Revision,
+		Metadata: map[string]string{
+			"current_revision": "7",
+		},
+	}); err != nil {
+		t.Fatalf("failed to seed runtime state: %v", err)
+	}
+
+	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{
+		DesiredVersion: "2.0.0",
+		Revision:       9,
+		VersionPackage: &model.VersionPackage{
+			Platform: "linux-amd64",
+			URL:      "https://example.com/nre-agent",
+			SHA256:   "abc123",
+		},
+	}})
+	updater := &testUpdater{}
+	app := newAppWithDeps(cfg, mem, client, nil, nil, nil)
+	app.updater = updater
+
+	ctx := context.Background()
+	if err := app.runtime.Apply(ctx, Snapshot{}, previousApplied); err != nil {
+		t.Fatalf("failed to seed runtime: %v", err)
+	}
+
+	if err := app.performSync(ctx); !errors.Is(err, agentupdate.ErrRestartRequested) {
+		t.Fatalf("expected restart request, got %v", err)
+	}
+
+	req := waitForRequest(t, client, time.Second)
+	if req.CurrentRevision != 7 {
+		t.Fatalf("expected heartbeat request to report current revision 7, got %d", req.CurrentRevision)
+	}
+
+	if len(updater.calls) != 1 {
+		t.Fatalf("expected one updater call, got %d", len(updater.calls))
+	}
+	if updater.calls[0].desiredVersion != "2.0.0" {
+		t.Fatalf("expected updater desired version 2.0.0, got %q", updater.calls[0].desiredVersion)
+	}
+	if !reflect.DeepEqual(updater.calls[0].pkg, model.VersionPackage{
+		Platform: "linux-amd64",
+		URL:      "https://example.com/nre-agent",
+		SHA256:   "abc123",
+	}) {
+		t.Fatalf("unexpected updater package: %+v", updater.calls[0].pkg)
+	}
+
+	applied, err := mem.LoadAppliedSnapshot()
+	if err != nil {
+		t.Fatalf("failed to load applied snapshot: %v", err)
+	}
+	if !reflect.DeepEqual(applied, previousApplied) {
+		t.Fatalf("expected applied snapshot unchanged while handoff is pending, got %+v", applied)
+	}
+
+	state, err := mem.LoadRuntimeState()
+	if err != nil {
+		t.Fatalf("failed to load runtime state: %v", err)
+	}
+	if state.CurrentRevision != previousApplied.Revision {
+		t.Fatalf("expected current revision to remain %d, got %d", previousApplied.Revision, state.CurrentRevision)
+	}
+}
+
+func TestPerformSyncUpdaterStageFailureRecordsErrorWithoutFalseStateAdvance(t *testing.T) {
+	cfg := Config{CurrentVersion: "1.0.0"}
+	mem := store.NewInMemory()
+	previousApplied := Snapshot{
+		DesiredVersion: "1.0.0",
+		Revision:       7,
+	}
+	if err := mem.SaveAppliedSnapshot(previousApplied); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+	if err := mem.SaveRuntimeState(store.RuntimeState{
+		CurrentRevision: previousApplied.Revision,
+		Metadata: map[string]string{
+			"current_revision": "7",
+			"foo":              "bar",
+		},
+	}); err != nil {
+		t.Fatalf("failed to seed runtime state: %v", err)
+	}
+
+	client := newTestSyncClient([]syncResponse{
+		{snapshot: Snapshot{
+			DesiredVersion: "2.0.0",
+			Revision:       9,
+			VersionPackage: &model.VersionPackage{
+				Platform: "linux-amd64",
+				URL:      "https://example.com/nre-agent",
+				SHA256:   "abc123",
+			},
+		}},
+		{snapshot: Snapshot{DesiredVersion: "steady", Revision: 7}},
+	}, syncResponse{})
+	updater := &testUpdater{stageErr: errors.New("stage failed")}
+	app := newAppWithDeps(cfg, mem, client, nil, nil, nil)
+	app.updater = updater
+
+	ctx := context.Background()
+	if err := app.runtime.Apply(ctx, Snapshot{}, previousApplied); err != nil {
+		t.Fatalf("failed to seed runtime: %v", err)
+	}
+
+	if err := app.performSync(ctx); err == nil || err.Error() != "stage failed" {
+		t.Fatalf("expected staging failure, got %v", err)
+	}
+
+	req1 := waitForRequest(t, client, time.Second)
+	if req1.CurrentRevision != 7 {
+		t.Fatalf("expected first request revision 7, got %d", req1.CurrentRevision)
+	}
+
+	applied, err := mem.LoadAppliedSnapshot()
+	if err != nil {
+		t.Fatalf("failed to load applied snapshot: %v", err)
+	}
+	if !reflect.DeepEqual(applied, previousApplied) {
+		t.Fatalf("expected applied snapshot unchanged after staging failure, got %+v", applied)
+	}
+
+	state, err := mem.LoadRuntimeState()
+	if err != nil {
+		t.Fatalf("failed to load runtime state: %v", err)
+	}
+	if state.CurrentRevision != previousApplied.Revision {
+		t.Fatalf("expected persisted current revision %d, got %d", previousApplied.Revision, state.CurrentRevision)
+	}
+	if state.Metadata["current_revision"] != "7" {
+		t.Fatalf("expected persisted metadata current_revision 7, got %q", state.Metadata["current_revision"])
+	}
+	if state.Metadata["last_sync_error"] != "stage failed" {
+		t.Fatalf("expected staging failure metadata, got %v", state.Metadata)
+	}
+	if state.Metadata["foo"] != "bar" {
+		t.Fatalf("expected unrelated metadata preserved, got %v", state.Metadata)
+	}
+
+	if err := app.performSync(ctx); err != nil {
+		t.Fatalf("second performSync returned error: %v", err)
+	}
+
+	req2 := waitForRequest(t, client, time.Second)
+	if req2.CurrentRevision != 7 {
+		t.Fatalf("expected next heartbeat revision to stay fail-closed at 7, got %d", req2.CurrentRevision)
+	}
+}
+
 type syncResponse struct {
 	snapshot Snapshot
 	err      error
@@ -772,6 +935,11 @@ type l4ApplyCall struct {
 
 type relayApplyCall struct {
 	listeners []model.RelayListener
+}
+
+type updateCall struct {
+	desiredVersion string
+	pkg            model.VersionPackage
 }
 
 type httpApplyCall struct {
@@ -910,6 +1078,34 @@ func (a *testHTTPApplier) snapshotCalls() []httpApplyCall {
 
 func (a *testHTTPApplier) Close() error {
 	return nil
+}
+
+type testUpdater struct {
+	calls       []updateCall
+	stagedPath  string
+	stageErr    error
+	activateErr error
+}
+
+func (u *testUpdater) Stage(_ context.Context, pkg model.VersionPackage) (string, error) {
+	u.calls = append(u.calls, updateCall{
+		pkg: pkg,
+	})
+	if u.stageErr != nil {
+		return "", u.stageErr
+	}
+	if u.stagedPath == "" {
+		u.stagedPath = "staged/nre-agent"
+	}
+	return u.stagedPath, nil
+}
+
+func (u *testUpdater) Activate(_ string, desiredVersion string) error {
+	if len(u.calls) == 0 {
+		u.calls = append(u.calls, updateCall{})
+	}
+	u.calls[len(u.calls)-1].desiredVersion = desiredVersion
+	return u.activateErr
 }
 
 type testSyncClient struct {

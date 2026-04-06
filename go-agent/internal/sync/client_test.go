@@ -35,6 +35,7 @@ func TestHeartbeatSync(t *testing.T) {
 			Sync struct {
 				DesiredVersion      string                           `json:"desired_version"`
 				DesiredRevision     int64                            `json:"desired_revision"`
+				VersionPackageMeta  *model.VersionPackage            `json:"version_package_meta"`
 				Rules               []model.HTTPRule                 `json:"rules"`
 				L4Rules             []model.L4Rule                   `json:"l4_rules"`
 				RelayListeners      []model.RelayListener            `json:"relay_listeners"`
@@ -44,6 +45,7 @@ func TestHeartbeatSync(t *testing.T) {
 		}{Sync: struct {
 			DesiredVersion      string                           `json:"desired_version"`
 			DesiredRevision     int64                            `json:"desired_revision"`
+			VersionPackageMeta  *model.VersionPackage            `json:"version_package_meta"`
 			Rules               []model.HTTPRule                 `json:"rules"`
 			L4Rules             []model.L4Rule                   `json:"l4_rules"`
 			RelayListeners      []model.RelayListener            `json:"relay_listeners"`
@@ -52,6 +54,13 @@ func TestHeartbeatSync(t *testing.T) {
 		}{
 			DesiredVersion:  "1.2.3",
 			DesiredRevision: 42,
+			VersionPackageMeta: &model.VersionPackage{
+				URL:      "https://example.com/nre-agent-linux-amd64",
+				SHA256:   "abc123",
+				Platform: "linux-amd64",
+				Filename: "nre-agent-linux-amd64",
+				Size:     12345,
+			},
 			Rules: []model.HTTPRule{{
 				FrontendURL: "https://frontend.example.com",
 				BackendURL:  "http://127.0.0.1:8096",
@@ -123,6 +132,15 @@ func TestHeartbeatSync(t *testing.T) {
 	}
 	if snap.Revision != 42 {
 		t.Fatalf("expected revision=42, got %d", snap.Revision)
+	}
+	if !reflect.DeepEqual(snap.VersionPackage, &model.VersionPackage{
+		URL:      "https://example.com/nre-agent-linux-amd64",
+		SHA256:   "abc123",
+		Platform: "linux-amd64",
+		Filename: "nre-agent-linux-amd64",
+		Size:     12345,
+	}) {
+		t.Fatalf("unexpected version package payload: %+v", snap.VersionPackage)
 	}
 	if !reflect.DeepEqual(snap.Rules, []model.HTTPRule{{
 		FrontendURL: "https://frontend.example.com",
@@ -257,6 +275,9 @@ func TestHeartbeatSyncPreservesOmittedCertificatePayloadAsNil(t *testing.T) {
 	if snap.RelayListeners != nil {
 		t.Fatalf("expected nil relay listeners for omitted payload, got %+v", snap.RelayListeners)
 	}
+	if snap.VersionPackage != nil {
+		t.Fatalf("expected nil version package for omitted payload, got %+v", snap.VersionPackage)
+	}
 }
 
 func TestHeartbeatSyncPreservesExplicitEmptyCertificatePayloads(t *testing.T) {
@@ -287,5 +308,71 @@ func TestHeartbeatSyncPreservesExplicitEmptyCertificatePayloads(t *testing.T) {
 	}
 	if snap.CertificatePolicies == nil || len(snap.CertificatePolicies) != 0 {
 		t.Fatalf("expected explicit empty certificate policies slice, got %+v", snap.CertificatePolicies)
+	}
+}
+
+func TestHeartbeatSyncBuildsVersionPackageFromLegacyFields(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(
+			w,
+			`{"sync":{"desired_version":"1.2.3","desired_revision":7,"version_package":"https://example.com/nre-agent","version_sha256":"deadbeef"}}`,
+		)
+	}))
+	defer server.Close()
+
+	client := NewClient(ClientConfig{
+		MasterURL:      server.URL,
+		AgentToken:     "token",
+		AgentID:        "node",
+		AgentName:      "local",
+		CurrentVersion: "0.1.0",
+		Platform:       "linux-amd64",
+	}, server.Client())
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	snap, err := client.Sync(ctx, SyncRequest{CurrentRevision: 42})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if !reflect.DeepEqual(snap.VersionPackage, &model.VersionPackage{
+		URL:    "https://example.com/nre-agent",
+		SHA256: "deadbeef",
+	}) {
+		t.Fatalf("unexpected legacy version package payload: %+v", snap.VersionPackage)
+	}
+}
+
+func TestHeartbeatSyncPreservesVersionPackageMetadata(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"sync":{"desired_version":"2.0.0","desired_revision":11,"version_package":"https://example.com/nre-agent","version_sha256":"abc123","version_package_meta":{"platform":"linux-amd64","url":"https://example.com/nre-agent","sha256":"abc123"}}}`)
+	}))
+	defer server.Close()
+
+	client := NewClient(ClientConfig{
+		MasterURL:      server.URL,
+		AgentToken:     "token",
+		AgentID:        "node",
+		AgentName:      "local",
+		CurrentVersion: "0.1.0",
+		Platform:       "linux-amd64",
+	}, server.Client())
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	snap, err := client.Sync(ctx, SyncRequest{CurrentRevision: 7})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if !reflect.DeepEqual(snap.VersionPackage, &model.VersionPackage{
+		Platform: "linux-amd64",
+		URL:      "https://example.com/nre-agent",
+		SHA256:   "abc123",
+	}) {
+		t.Fatalf("unexpected version package payload: %+v", snap.VersionPackage)
 	}
 }

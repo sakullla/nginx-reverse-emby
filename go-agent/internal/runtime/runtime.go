@@ -104,6 +104,7 @@ func (r *Runtime) Apply(ctx context.Context, previous, next model.Snapshot) erro
 func isZeroSnapshot(s model.Snapshot) bool {
 	return s.DesiredVersion == "" &&
 		s.Revision == 0 &&
+		s.VersionPackage == nil &&
 		len(s.Rules) == 0 &&
 		len(s.L4Rules) == 0 &&
 		len(s.RelayListeners) == 0 &&
@@ -117,6 +118,10 @@ func snapshotEqual(left, right model.Snapshot) bool {
 
 func cloneSnapshot(snapshot model.Snapshot) model.Snapshot {
 	cloned := snapshot
+	if snapshot.VersionPackage != nil {
+		copyValue := *snapshot.VersionPackage
+		cloned.VersionPackage = &copyValue
+	}
 	if snapshot.Rules != nil {
 		cloned.Rules = make([]model.HTTPRule, len(snapshot.Rules))
 		copy(cloned.Rules, snapshot.Rules)
@@ -175,9 +180,10 @@ func cloneSnapshot(snapshot model.Snapshot) model.Snapshot {
 
 func describeSnapshot(snapshot model.Snapshot) string {
 	return fmt.Sprintf(
-		"revision=%d desired_version=%q certificates=%d certificate_policies=%d",
+		"revision=%d desired_version=%q has_version_package=%t certificates=%d certificate_policies=%d",
 		snapshot.Revision,
 		snapshot.DesiredVersion,
+		snapshot.VersionPackage != nil,
 		len(snapshot.Certificates),
 		len(snapshot.CertificatePolicies),
 	)
