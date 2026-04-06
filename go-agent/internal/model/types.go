@@ -4,6 +4,11 @@ type Snapshot struct {
 	DesiredVersion string
 }
 
+type RuntimeState struct {
+	NodeID   string            `json:"node_id,omitempty"`
+	Metadata map[string]string `json:"metadata,omitempty"`
+}
+
 type HTTPProxyConfig struct {
 	FrontendOrigin  string
 	HeaderOverrides map[string]string
