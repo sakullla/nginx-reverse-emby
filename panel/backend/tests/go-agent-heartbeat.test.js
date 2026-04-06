@@ -753,4 +753,130 @@ describe("Go agent heartbeat API", () => {
       },
     );
   });
+
+  it("allows uploaded relay certificates for cert_install agents without local_acme", async () => {
+    await withBackendServer(
+      {
+        env: {
+          PANEL_ROLE: "master",
+        },
+        agents: [
+          {
+            id: "remote-agent-relay",
+            name: "remote-agent-relay",
+            agent_token: "token-remote-agent-relay",
+            desired_revision: 1,
+            current_revision: 1,
+            capabilities: ["cert_install"],
+            created_at: "2026-04-01T00:00:00.000Z",
+            updated_at: "2026-04-01T00:00:00.000Z",
+          },
+        ],
+      },
+      async ({ baseUrl }) => {
+        const response = await fetch(`${baseUrl}/api/agents/remote-agent-relay/certificates`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            domain: "relay-uploaded.example.com",
+            enabled: true,
+            scope: "domain",
+            issuer_mode: "local_http01",
+            usage: "relay_tunnel",
+            certificate_type: "uploaded",
+            self_signed: true,
+          }),
+        });
+
+        assert.equal(response.status, 201);
+        const payload = await response.json();
+        assert.equal(payload.certificate.domain, "relay-uploaded.example.com");
+        assert.equal(payload.certificate.certificate_type, "uploaded");
+        assert.equal(payload.certificate.self_signed, true);
+        assert.deepEqual(payload.certificate.target_agent_ids, ["remote-agent-relay"]);
+
+        const acmeResponse = await fetch(`${baseUrl}/api/agents/remote-agent-relay/certificates`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            domain: "relay-acme.example.com",
+            enabled: true,
+            scope: "domain",
+            issuer_mode: "local_http01",
+            usage: "relay_tunnel",
+            certificate_type: "acme",
+            self_signed: false,
+          }),
+        });
+
+        assert.equal(acmeResponse.status, 400);
+        const acmePayload = await acmeResponse.json();
+        assert.match(acmePayload.message, /does not support local ACME issuance/i);
+      },
+    );
+  });
+
+  it("issues uploaded local_http01 certificates by syncing existing material", async () => {
+    await withBackendServer(
+      {
+        env: {
+          PANEL_ROLE: "master",
+        },
+        agents: [
+          {
+            id: "remote-agent-relay",
+            name: "remote-agent-relay",
+            agent_token: "token-remote-agent-relay",
+            desired_revision: 1,
+            current_revision: 1,
+            capabilities: ["cert_install"],
+            created_at: "2026-04-01T00:00:00.000Z",
+            updated_at: "2026-04-01T00:00:00.000Z",
+          },
+        ],
+        managedCertificates: [
+          {
+            id: 41,
+            domain: "relay-uploaded.example.com",
+            enabled: true,
+            scope: "domain",
+            issuer_mode: "local_http01",
+            usage: "relay_tunnel",
+            certificate_type: "uploaded",
+            self_signed: true,
+            target_agent_ids: ["remote-agent-relay"],
+            status: "pending",
+            revision: 3,
+          },
+        ],
+        managedCertificateMaterial: {
+          "relay-uploaded.example.com": {
+            cert_pem: "CERTIFICATE",
+            key_pem: "PRIVATEKEY",
+          },
+        },
+      },
+      async ({ baseUrl }) => {
+        const response = await fetch(`${baseUrl}/api/agents/remote-agent-relay/certificates/41/issue`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: "{}",
+        });
+
+        assert.equal(response.status, 200);
+        const payload = await response.json();
+        assert.equal(payload.certificate.id, 41);
+        assert.equal(payload.certificate.status, "active");
+        assert.equal(payload.certificate.last_error, "");
+        assert.ok(payload.certificate.last_issue_at);
+        assert.match(String(payload.certificate.material_hash || ""), /^[0-9a-f]{64}$/i);
+      },
+    );
+  });
 });

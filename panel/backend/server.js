@@ -2272,7 +2272,11 @@ function validateManagedCertificateTargets(cert) {
     if (!agentHasCapability(agent, "cert_install")) {
       throw new Error(`target agent does not support certificate install: ${agent.name || agentId}`);
     }
-    if (cert.issuer_mode === "local_http01" && !agentHasCapability(agent, "local_acme")) {
+    if (
+      cert.issuer_mode === "local_http01" &&
+      cert.certificate_type === "acme" &&
+      !agentHasCapability(agent, "local_acme")
+    ) {
       throw new Error(`target agent does not support local ACME issuance: ${agent.name || agentId}`);
     }
   }
@@ -2666,6 +2670,60 @@ async function requestLocalHttp01CertificateById(certId, options = {}) {
     cert = getManagedCertificateById(certId);
   }
 
+  return cert;
+}
+
+async function syncStaticLocalCertificateById(certId, options = {}) {
+  const { agentId = null } = options;
+  let cert = getManagedCertificateById(certId);
+  if (!cert) throw new Error("certificate not found");
+  if (!cert.enabled) throw new Error("certificate is disabled");
+  if (cert.issuer_mode !== "local_http01") {
+    throw new Error("certificate is not configured for local_http01");
+  }
+  if (cert.certificate_type === "acme") {
+    throw new Error("certificate requires local ACME issuance");
+  }
+
+  const requestedAgentIds = agentId
+    ? (Array.isArray(cert.target_agent_ids) ? cert.target_agent_ids : []).filter((id) => id === agentId)
+    : Array.isArray(cert.target_agent_ids)
+      ? cert.target_agent_ids
+      : [];
+
+  if (!requestedAgentIds.length) {
+    throw new Error("certificate is not assigned to the requested agent");
+  }
+
+  const materialHash = getManagedCertificateMaterialHash(cert.domain);
+  if (!materialHash) {
+    throw new Error("certificate material not found");
+  }
+
+  const issuedAt = nowIso();
+  cert = updateManagedCertificate(certId, (current) => {
+    let nextCert = {
+      ...current,
+      status: "active",
+      last_issue_at: issuedAt,
+      last_error: "",
+      material_hash: materialHash,
+      revision: storage.getNextGlobalRevision(),
+    };
+    for (const targetAgentId of requestedAgentIds) {
+      nextCert = updateManagedCertificateAgentReportSnapshot(nextCert, targetAgentId, {
+        status: "active",
+        last_issue_at: issuedAt,
+        last_error: "",
+        material_hash: materialHash,
+        acme_info: current.acme_info || {},
+        updated_at: issuedAt,
+      });
+    }
+    return nextCert;
+  });
+
+  await syncManagedCertificateAgentIds(requestedAgentIds);
   return cert;
 }
 
@@ -4390,7 +4448,9 @@ async function handleMasterApi(req, res) {
       }
       const issued =
         cert.issuer_mode === "local_http01"
-          ? await requestLocalHttp01CertificateById(certId, { agentId })
+          ? cert.certificate_type === "acme"
+            ? await requestLocalHttp01CertificateById(certId, { agentId })
+            : await syncStaticLocalCertificateById(certId, { agentId })
           : await issueManagedCertificateById(certId, { bumpRevision: true });
       sendJson(res, 200, { ok: true, certificate: issued });
     } catch (err) {
@@ -4519,7 +4579,9 @@ async function handleMasterApi(req, res) {
       }
       const cert =
         existing.issuer_mode === "local_http01"
-          ? await requestLocalHttp01CertificateById(certId)
+          ? existing.certificate_type === "acme"
+            ? await requestLocalHttp01CertificateById(certId)
+            : await syncStaticLocalCertificateById(certId)
           : await issueManagedCertificateById(certId, { bumpRevision: true });
       sendJson(res, 200, { ok: true, certificate: cert });
     } catch (err) {
