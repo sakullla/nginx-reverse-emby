@@ -64,6 +64,7 @@ func TestHeartbeatSync(t *testing.T) {
 			Rules: []model.HTTPRule{{
 				FrontendURL: "https://frontend.example.com",
 				BackendURL:  "http://127.0.0.1:8096",
+				RelayChain:  []int{31},
 				Revision:    2,
 			}},
 			L4Rules: []model.L4Rule{{
@@ -145,6 +146,7 @@ func TestHeartbeatSync(t *testing.T) {
 	if !reflect.DeepEqual(snap.Rules, []model.HTTPRule{{
 		FrontendURL: "https://frontend.example.com",
 		BackendURL:  "http://127.0.0.1:8096",
+		RelayChain:  []int{31},
 		Revision:    2,
 	}}) {
 		t.Fatalf("unexpected rules payload: %+v", snap.Rules)

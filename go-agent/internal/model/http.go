@@ -12,6 +12,7 @@ type HTTPRule struct {
 	PassProxyHeaders bool         `json:"pass_proxy_headers,omitempty"`
 	UserAgent        string       `json:"user_agent,omitempty"`
 	CustomHeaders    []HTTPHeader `json:"custom_headers,omitempty"`
+	RelayChain       []int        `json:"relay_chain,omitempty"`
 	Revision         int64        `json:"revision,omitempty"`
 }
 

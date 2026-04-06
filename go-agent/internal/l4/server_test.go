@@ -3,13 +3,24 @@ package l4
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/base64"
+	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"testing"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 )
 
 func TestServerCloseStopsTCPHandlers(t *testing.T) {
@@ -41,7 +52,7 @@ func TestServerCloseStopsTCPHandlers(t *testing.T) {
 		<-upstreamDone
 	}()
 
-	srv, err := NewServer(context.Background(), []model.L4Rule{rule})
+	srv, err := NewServer(context.Background(), []model.L4Rule{rule}, nil, nil)
 	if err != nil {
 		t.Fatalf("failed to start server: %v", err)
 	}
@@ -117,7 +128,7 @@ func TestTCPDirectProxy(t *testing.T) {
 		UpstreamPort: upstreamPort,
 	}
 
-	srv, err := NewServer(context.Background(), []model.L4Rule{rule})
+	srv, err := NewServer(context.Background(), []model.L4Rule{rule}, nil, nil)
 	if err != nil {
 		t.Fatalf("failed to start server: %v", err)
 	}
@@ -146,6 +157,73 @@ func TestTCPDirectProxy(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		// allow upstream goroutine to exit naturally
+	}
+}
+
+func TestTCPRelayProxy(t *testing.T) {
+	upstreamPort := pickFreeTCPPort(t)
+	upstreamAddress := fmt.Sprintf("127.0.0.1:%d", upstreamPort)
+
+	relayCert := mustIssueL4RelayCertificate(t, "relay.internal.test")
+	relayPort := pickFreeTCPPort(t)
+	relayRequests := make(chan l4RelayTestRequest, 1)
+	stopRelay := startL4RelayServer(t, fmt.Sprintf("127.0.0.1:%d", relayPort), relayCert, relayRequests)
+	defer stopRelay()
+
+	listenPort := pickFreeTCPPort(t)
+	rule := model.L4Rule{
+		Protocol:     "tcp",
+		ListenHost:   "127.0.0.1",
+		ListenPort:   listenPort,
+		UpstreamHost: "127.0.0.1",
+		UpstreamPort: upstreamPort,
+		RelayChain:   []int{51},
+	}
+
+	srv, err := NewServer(context.Background(), []model.L4Rule{rule}, []model.RelayListener{{
+		ID:         51,
+		AgentID:    "remote-relay-agent",
+		Name:       "relay-hop",
+		ListenHost: "127.0.0.1",
+		ListenPort: relayPort,
+		Enabled:    true,
+		TLSMode:    "pin_only",
+		PinSet: []model.RelayPin{{
+			Type:  "sha256",
+			Value: mustL4RelaySPKIPin(t, relayCert),
+		}},
+	}}, &testL4RelayProvider{})
+	if err != nil {
+		t.Fatalf("failed to start relay-backed l4 server: %v", err)
+	}
+	defer srv.Close()
+
+	client, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", listenPort))
+	if err != nil {
+		t.Fatalf("failed to dial relay-backed listener: %v", err)
+	}
+	defer client.Close()
+
+	payload := []byte("hello relay tcp")
+	if _, err := client.Write(payload); err != nil {
+		t.Fatalf("write to relay-backed proxy: %v", err)
+	}
+
+	reply := make([]byte, len(payload))
+	if _, err := io.ReadFull(client, reply); err != nil {
+		t.Fatalf("read from relay-backed proxy: %v", err)
+	}
+	if !bytes.Equal(payload, reply) {
+		t.Fatalf("relay-backed tcp payload mismatch; got %q", reply)
+	}
+
+	select {
+	case relayReq := <-relayRequests:
+		if relayReq.Target != upstreamAddress {
+			t.Fatalf("unexpected relay target %q", relayReq.Target)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected l4 tcp proxy to traverse relay listener")
 	}
 }
 
@@ -183,7 +261,7 @@ func TestUDPDirectProxy(t *testing.T) {
 		UpstreamPort: upstreamConn.LocalAddr().(*net.UDPAddr).Port,
 	}
 
-	srv, err := NewServer(context.Background(), []model.L4Rule{rule})
+	srv, err := NewServer(context.Background(), []model.L4Rule{rule}, nil, nil)
 	if err != nil {
 		t.Fatalf("failed to start server: %v", err)
 	}
@@ -247,7 +325,7 @@ func TestUDPDirectProxyHostnameBind(t *testing.T) {
 		UpstreamPort: upstreamConn.LocalAddr().(*net.UDPAddr).Port,
 	}
 
-	srv, err := NewServer(context.Background(), []model.L4Rule{rule})
+	srv, err := NewServer(context.Background(), []model.L4Rule{rule}, nil, nil)
 	if err != nil {
 		t.Fatalf("failed to start server: %v", err)
 	}
@@ -306,4 +384,151 @@ func pickFreeUDPPort(t *testing.T) int {
 	}
 	defer ln.Close()
 	return ln.LocalAddr().(*net.UDPAddr).Port
+}
+
+type testL4RelayProvider struct{}
+
+func (p *testL4RelayProvider) ServerCertificate(_ context.Context, certificateID int) (*tls.Certificate, error) {
+	return nil, fmt.Errorf("server certificate %d not available in l4 relay test provider", certificateID)
+}
+
+func (p *testL4RelayProvider) TrustedCAPool(_ context.Context, _ []int) (*x509.CertPool, error) {
+	return x509.NewCertPool(), nil
+}
+
+type l4RelayTestRequest struct {
+	Network string      `json:"network"`
+	Target  string      `json:"target"`
+	Chain   []relay.Hop `json:"chain,omitempty"`
+}
+
+func startL4RelayServer(
+	t *testing.T,
+	address string,
+	cert tls.Certificate,
+	requests chan<- l4RelayTestRequest,
+) func() {
+	t.Helper()
+
+	ln, err := tls.Listen("tcp", address, &tls.Config{
+		MinVersion:   tls.VersionTLS12,
+		Certificates: []tls.Certificate{cert},
+	})
+	if err != nil {
+		t.Fatalf("failed to start l4 relay test server: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		request, err := readL4RelayTestRequest(conn)
+		if err != nil {
+			return
+		}
+		requests <- request
+		if err := writeL4RelayTestResponse(conn, map[string]any{"ok": true}); err != nil {
+			return
+		}
+
+		buf := make([]byte, 1024)
+		n, err := conn.Read(buf)
+		if err != nil {
+			return
+		}
+		_, _ = conn.Write(buf[:n])
+	}()
+
+	return func() {
+		_ = ln.Close()
+		<-done
+	}
+}
+
+func readL4RelayTestRequest(conn net.Conn) (l4RelayTestRequest, error) {
+	payload, err := readL4RelayTestFrame(conn)
+	if err != nil {
+		return l4RelayTestRequest{}, err
+	}
+	var request l4RelayTestRequest
+	if err := json.Unmarshal(payload, &request); err != nil {
+		return l4RelayTestRequest{}, err
+	}
+	return request, nil
+}
+
+func writeL4RelayTestResponse(conn net.Conn, payload any) error {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	return writeL4RelayTestFrame(conn, data)
+}
+
+func readL4RelayTestFrame(conn net.Conn) ([]byte, error) {
+	var header [4]byte
+	if _, err := io.ReadFull(conn, header[:]); err != nil {
+		return nil, err
+	}
+	size := binary.BigEndian.Uint32(header[:])
+	data := make([]byte, size)
+	if _, err := io.ReadFull(conn, data); err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+func writeL4RelayTestFrame(conn net.Conn, payload []byte) error {
+	var header [4]byte
+	binary.BigEndian.PutUint32(header[:], uint32(len(payload)))
+	if _, err := conn.Write(header[:]); err != nil {
+		return err
+	}
+	_, err := conn.Write(payload)
+	return err
+}
+
+func mustIssueL4RelayCertificate(t *testing.T, host string) tls.Certificate {
+	t.Helper()
+
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("failed to generate private key: %v", err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject: pkix.Name{
+			CommonName: host,
+		},
+		DNSNames:    []string{host},
+		NotBefore:   time.Now().Add(-time.Hour),
+		NotAfter:    time.Now().Add(time.Hour),
+		KeyUsage:    x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &privateKey.PublicKey, privateKey)
+	if err != nil {
+		t.Fatalf("failed to create certificate: %v", err)
+	}
+	return tls.Certificate{
+		Certificate: [][]byte{der},
+		PrivateKey:  privateKey,
+		Leaf:        template,
+	}
+}
+
+func mustL4RelaySPKIPin(t *testing.T, cert tls.Certificate) string {
+	t.Helper()
+
+	parsed, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		t.Fatalf("failed to parse certificate: %v", err)
+	}
+	sum := sha256.Sum256(parsed.RawSubjectPublicKeyInfo)
+	return base64.StdEncoding.EncodeToString(sum[:])
 }

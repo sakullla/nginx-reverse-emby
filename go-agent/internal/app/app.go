@@ -6,6 +6,7 @@ import (
 	"os"
 	"reflect"
 	stdruntime "runtime"
+	"strings"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/certs"
@@ -33,6 +34,14 @@ type CertificateApplier interface {
 type HTTPApplier interface {
 	Apply(context.Context, []model.HTTPRule) error
 	Close() error
+}
+
+type HTTPRelayAwareApplier interface {
+	ApplyWithRelay(context.Context, []model.HTTPRule, []model.RelayListener) error
+}
+
+type L4RelayAwareApplier interface {
+	ApplyWithRelay(context.Context, []model.L4Rule, []model.RelayListener) error
 }
 
 type Updater interface {
@@ -79,7 +88,7 @@ func New(cfg Config) (*App, error) {
 		client,
 		newHTTPRuntimeManagerWithTLS(certManager),
 		certManager,
-		newL4RuntimeManager(),
+		newL4RuntimeManagerWithRelay(certManager),
 		newRelayRuntimeManager(certManager),
 		agentupdate.NewManager(
 			cfg.DataDir,
@@ -298,6 +307,9 @@ func (a *App) applyHTTPRules(ctx context.Context, snapshot Snapshot) error {
 	if a.httpApplier == nil || snapshot.Rules == nil {
 		return nil
 	}
+	if relayAware, ok := a.httpApplier.(HTTPRelayAwareApplier); ok {
+		return relayAware.ApplyWithRelay(ctx, snapshot.Rules, snapshot.RelayListeners)
+	}
 	return a.httpApplier.Apply(ctx, snapshot.Rules)
 }
 
@@ -330,7 +342,7 @@ func (a *App) activateSnapshot(ctx context.Context, previous, next Snapshot) err
 			return err
 		}
 	}
-	if !reflect.DeepEqual(previous.Rules, next.Rules) {
+	if !reflect.DeepEqual(previous.Rules, next.Rules) || httpRelayInputsChanged(previous, next) {
 		if err := a.applyHTTPRules(ctx, next); err != nil {
 			return err
 		}
@@ -340,7 +352,7 @@ func (a *App) activateSnapshot(ctx context.Context, previous, next Snapshot) err
 			return err
 		}
 	}
-	if !reflect.DeepEqual(previous.L4Rules, next.L4Rules) {
+	if !reflect.DeepEqual(previous.L4Rules, next.L4Rules) || l4RelayInputsChanged(previous, next) {
 		if err := a.applyL4Rules(ctx, next); err != nil {
 			return err
 		}
@@ -365,6 +377,9 @@ func (a *App) applyL4Rules(ctx context.Context, snapshot Snapshot) error {
 	if a.l4Applier == nil || snapshot.L4Rules == nil {
 		return nil
 	}
+	if relayAware, ok := a.l4Applier.(L4RelayAwareApplier); ok {
+		return relayAware.ApplyWithRelay(ctx, snapshot.L4Rules, snapshot.RelayListeners)
+	}
 	return a.l4Applier.Apply(ctx, snapshot.L4Rules)
 }
 
@@ -372,7 +387,49 @@ func (a *App) applyRelayListeners(ctx context.Context, snapshot Snapshot) error 
 	if a.relayApplier == nil || snapshot.RelayListeners == nil {
 		return nil
 	}
-	return a.relayApplier.Apply(ctx, snapshot.RelayListeners)
+	return a.relayApplier.Apply(ctx, localRelayListeners(snapshot.RelayListeners, a.cfg.AgentID, a.cfg.AgentName))
+}
+
+func httpRelayInputsChanged(previous, next Snapshot) bool {
+	if reflect.DeepEqual(previous.RelayListeners, next.RelayListeners) {
+		return false
+	}
+	for _, rule := range next.Rules {
+		if len(rule.RelayChain) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func l4RelayInputsChanged(previous, next Snapshot) bool {
+	if reflect.DeepEqual(previous.RelayListeners, next.RelayListeners) {
+		return false
+	}
+	for _, rule := range next.L4Rules {
+		if len(rule.RelayChain) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func localRelayListeners(listeners []model.RelayListener, agentID, agentName string) []model.RelayListener {
+	if listeners == nil {
+		return nil
+	}
+	identity := strings.TrimSpace(agentID)
+	fallback := strings.TrimSpace(agentName)
+	if identity == "" && fallback == "" {
+		return listeners
+	}
+	filtered := make([]model.RelayListener, 0, len(listeners))
+	for _, listener := range listeners {
+		if listener.AgentID == identity || (identity == "" && listener.AgentID == fallback) || listener.AgentID == fallback {
+			filtered = append(filtered, listener)
+		}
+	}
+	return filtered
 }
 
 func (a *App) closeLocalRuntimes() {

@@ -128,6 +128,124 @@ describe("Go agent heartbeat API", () => {
     );
   });
 
+  it("includes referenced remote relay listeners for HTTP relay chains", async () => {
+    await withBackendServer(
+      {
+        env: {
+          PANEL_ROLE: "master",
+        },
+        agents: [
+          {
+            id: "remote-agent-a",
+            name: "remote-agent-a",
+            agent_token: "token-remote-agent-a",
+            desired_revision: 5,
+            current_revision: 1,
+            created_at: "2026-04-01T00:00:00.000Z",
+            updated_at: "2026-04-01T00:00:00.000Z",
+          },
+          {
+            id: "remote-agent-b",
+            name: "remote-agent-b",
+            agent_token: "token-remote-agent-b",
+            desired_revision: 3,
+            current_revision: 1,
+            created_at: "2026-04-01T00:00:00.000Z",
+            updated_at: "2026-04-01T00:00:00.000Z",
+          },
+        ],
+        agentRulesByAgentId: {
+          "remote-agent-a": [
+            {
+              id: 9,
+              frontend_url: "http://edge-a.example.com",
+              backend_url: "http://127.0.0.1:8096",
+              relay_chain: [11, 22],
+              revision: 6,
+            },
+          ],
+        },
+        relayListenersByAgentId: {
+          "remote-agent-a": [
+            {
+              id: 11,
+              agent_id: "remote-agent-a",
+              name: "relay-a",
+              listen_host: "relay-a.example.com",
+              listen_port: 7443,
+              enabled: true,
+              tls_mode: "pin_only",
+              pin_set: [
+                {
+                  type: "sha256",
+                  value: "pin-a",
+                },
+              ],
+              revision: 4,
+            },
+          ],
+          "remote-agent-b": [
+            {
+              id: 22,
+              agent_id: "remote-agent-b",
+              name: "relay-b",
+              listen_host: "relay-b.example.com",
+              listen_port: 8443,
+              enabled: true,
+              tls_mode: "pin_only",
+              pin_set: [
+                {
+                  type: "sha256",
+                  value: "pin-b",
+                },
+              ],
+              revision: 7,
+            },
+          ],
+        },
+      },
+      async ({ baseUrl }) => {
+        const response = await fetch(`${baseUrl}/api/agents/heartbeat`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-agent-token": "token-remote-agent-a",
+          },
+          body: JSON.stringify({
+            name: "remote-agent-a",
+            current_revision: 1,
+            version: "1.0.0",
+            platform: "linux-amd64",
+          }),
+        });
+
+        assert.equal(response.status, 200);
+        const payload = await response.json();
+
+        assert.deepEqual(payload.sync.rules, [
+          {
+            id: 9,
+            frontend_url: "http://edge-a.example.com",
+            backend_url: "http://127.0.0.1:8096",
+            enabled: true,
+            tags: [],
+            proxy_redirect: true,
+            pass_proxy_headers: true,
+            user_agent: "",
+            custom_headers: [],
+            relay_chain: [11, 22],
+            revision: 6,
+          },
+        ]);
+        assert.deepEqual(
+          payload.sync.relay_listeners.map((listener) => listener.id),
+          [11, 22],
+        );
+        assert.equal(payload.sync.relay_listeners[1].agent_id, "remote-agent-b");
+      },
+    );
+  });
+
   it("persists heartbeat platform/version fields and exposes them on agent APIs", async () => {
     await withBackendServer(
       {

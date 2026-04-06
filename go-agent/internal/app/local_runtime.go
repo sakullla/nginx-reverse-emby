@@ -37,6 +37,10 @@ func newHTTPRuntimeManagerWithTLS(provider proxy.TLSMaterialProvider) *httpRunti
 }
 
 func (m *httpRuntimeManager) Apply(ctx context.Context, rules []model.HTTPRule) error {
+	return m.ApplyWithRelay(ctx, rules, nil)
+}
+
+func (m *httpRuntimeManager) ApplyWithRelay(ctx context.Context, rules []model.HTTPRule, relayListeners []model.RelayListener) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -47,14 +51,19 @@ func (m *httpRuntimeManager) Apply(ctx context.Context, rules []model.HTTPRule) 
 		}
 		return nil
 	}
-	bindings, err := proxy.BindingKeys(ctx, rules, m.provider)
+	providers := proxy.Providers{TLS: m.provider}
+	if relayProvider, ok := m.provider.(proxy.RelayMaterialProvider); ok {
+		providers.Relay = relayProvider
+	}
+
+	bindings, err := proxy.BindingKeys(ctx, rules, relayListeners, providers)
 	if err != nil {
 		return err
 	}
 
 	previous := m.runtime
 	if previous != nil && !httpBindingsOverlap(previous.BindingKeys(), bindings) {
-		runtime, err := proxy.Start(ctx, rules, m.provider)
+		runtime, err := proxy.Start(ctx, rules, relayListeners, providers)
 		if err != nil {
 			return err
 		}
@@ -67,7 +76,7 @@ func (m *httpRuntimeManager) Apply(ctx context.Context, rules []model.HTTPRule) 
 		m.runtime = nil
 	}
 
-	runtime, err := proxy.Start(ctx, rules, m.provider)
+	runtime, err := proxy.Start(ctx, rules, relayListeners, providers)
 	if err != nil {
 		return err
 	}
@@ -88,15 +97,24 @@ func (m *httpRuntimeManager) Close() error {
 }
 
 type l4RuntimeManager struct {
-	mu     sync.Mutex
-	server *l4.Server
+	mu       sync.Mutex
+	server   *l4.Server
+	provider relay.TLSMaterialProvider
 }
 
 func newL4RuntimeManager() *l4RuntimeManager {
 	return &l4RuntimeManager{}
 }
 
+func newL4RuntimeManagerWithRelay(provider relay.TLSMaterialProvider) *l4RuntimeManager {
+	return &l4RuntimeManager{provider: provider}
+}
+
 func (m *l4RuntimeManager) Apply(ctx context.Context, rules []model.L4Rule) error {
+	return m.ApplyWithRelay(ctx, rules, nil)
+}
+
+func (m *l4RuntimeManager) ApplyWithRelay(ctx context.Context, rules []model.L4Rule, relayListeners []model.RelayListener) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -107,7 +125,7 @@ func (m *l4RuntimeManager) Apply(ctx context.Context, rules []model.L4Rule) erro
 		}
 		return nil
 	}
-	if err := validateL4Rules(rules); err != nil {
+	if err := validateL4Rules(rules, relayListeners, m.provider); err != nil {
 		return err
 	}
 
@@ -117,7 +135,7 @@ func (m *l4RuntimeManager) Apply(ctx context.Context, rules []model.L4Rule) erro
 		m.server = nil
 	}
 
-	server, err := l4.NewServer(ctx, rules)
+	server, err := l4.NewServer(ctx, rules, relayListeners, m.provider)
 	if err != nil {
 		return err
 	}
@@ -188,7 +206,11 @@ func (m *relayRuntimeManager) Close() error {
 	return err
 }
 
-func validateL4Rules(rules []model.L4Rule) error {
+func validateL4Rules(rules []model.L4Rule, relayListeners []model.RelayListener, provider relay.TLSMaterialProvider) error {
+	relayListenersByID := make(map[int]model.RelayListener, len(relayListeners))
+	for _, listener := range relayListeners {
+		relayListenersByID[listener.ID] = listener
+	}
 	for _, rule := range rules {
 		if err := l4.ValidateRule(rule); err != nil {
 			return err
@@ -197,6 +219,23 @@ func validateL4Rules(rules []model.L4Rule) error {
 		case "tcp", "udp":
 		default:
 			return fmt.Errorf("unsupported protocol %q", rule.Protocol)
+		}
+		if len(rule.RelayChain) > 0 {
+			if provider == nil {
+				return fmt.Errorf("l4 rule %s:%d requires relay tls material provider", rule.ListenHost, rule.ListenPort)
+			}
+			for _, listenerID := range rule.RelayChain {
+				listener, ok := relayListenersByID[listenerID]
+				if !ok {
+					return fmt.Errorf("relay listener %d not found", listenerID)
+				}
+				if !listener.Enabled {
+					return fmt.Errorf("relay listener %d is disabled", listenerID)
+				}
+				if err := relay.ValidateListener(listener); err != nil {
+					return fmt.Errorf("relay listener %d: %w", listenerID, err)
+				}
+			}
 		}
 	}
 	return nil

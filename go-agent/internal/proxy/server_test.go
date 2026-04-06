@@ -1,13 +1,19 @@
 package proxy
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
+	"encoding/binary"
+	"encoding/json"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
@@ -16,6 +22,7 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 )
 
 func TestServerRoutesByHostAndRewritesLocation(t *testing.T) {
@@ -252,7 +259,7 @@ func TestStartServesHTTPRulesOnLocalListener(t *testing.T) {
 		FrontendURL:   fmt.Sprintf("http://edge.example.test:%d", port),
 		BackendURL:    backend.URL,
 		ProxyRedirect: true,
-	}}, nil)
+	}}, nil, Providers{})
 	if err != nil {
 		t.Fatalf("failed to start runtime: %v", err)
 	}
@@ -287,7 +294,7 @@ func TestStartRejectsHTTPSFrontendWithoutCertificateBinding(t *testing.T) {
 	_, err := Start(context.Background(), []model.HTTPRule{{
 		FrontendURL: "https://edge.example.test:9443",
 		BackendURL:  "http://127.0.0.1:8096",
-	}}, nil)
+	}}, nil, Providers{})
 	if err == nil || err.Error() != `http rule "https://edge.example.test:9443": https frontend is not supported without certificate bindings` {
 		t.Fatalf("expected https binding error, got %v", err)
 	}
@@ -309,7 +316,7 @@ func TestStartServesHTTPSRulesWithHostMatchedCertificate(t *testing.T) {
 	runtime, err := Start(context.Background(), []model.HTTPRule{{
 		FrontendURL: fmt.Sprintf("https://edge.example.test:%d", port),
 		BackendURL:  backend.URL,
-	}}, provider)
+	}}, nil, Providers{TLS: provider})
 	if err != nil {
 		t.Fatalf("failed to start https runtime: %v", err)
 	}
@@ -350,7 +357,7 @@ func TestStartRejectsHTTPSFrontendWithoutMatchingCertificate(t *testing.T) {
 	_, err := Start(context.Background(), []model.HTTPRule{{
 		FrontendURL: "https://edge.example.test:9443",
 		BackendURL:  "http://127.0.0.1:8096",
-	}}, provider)
+	}}, nil, Providers{TLS: provider})
 	if err == nil || err.Error() != `http rule "https://edge.example.test:9443": no server certificate available for host "edge.example.test"` {
 		t.Fatalf("expected missing https certificate error, got %v", err)
 	}
@@ -360,7 +367,7 @@ func TestStartRejectsUnsupportedBackendScheme(t *testing.T) {
 	_, err := Start(context.Background(), []model.HTTPRule{{
 		FrontendURL: "http://edge.example.test:18080",
 		BackendURL:  "ftp://127.0.0.1/resource",
-	}}, nil)
+	}}, nil, Providers{})
 	if err == nil || err.Error() != `http rule "http://edge.example.test:18080": backend_url must use http or https` {
 		t.Fatalf("expected backend scheme error, got %v", err)
 	}
@@ -370,9 +377,73 @@ func TestStartRejectsFrontendWithoutHostRoute(t *testing.T) {
 	_, err := Start(context.Background(), []model.HTTPRule{{
 		FrontendURL: "http://:18080",
 		BackendURL:  "http://127.0.0.1:8096",
-	}}, nil)
+	}}, nil, Providers{})
 	if err == nil || err.Error() != `http rule "http://:18080": frontend_url must include a host` {
 		t.Fatalf("expected frontend host error, got %v", err)
+	}
+}
+
+func TestStartServesHTTPRulesThroughRelayChain(t *testing.T) {
+	frontendPort := pickFreePort(t)
+	backendPort := pickFreePort(t)
+	backendAddress := fmt.Sprintf("127.0.0.1:%d", backendPort)
+
+	relayCert := mustIssueProxyTLSCertificate(t, "relay.internal.test")
+	relayPort := pickFreePort(t)
+	relayAccepted := make(chan relayTestRequest, 1)
+	relayStop := startTestRelayServer(t, fmt.Sprintf("127.0.0.1:%d", relayPort), relayCert, relayAccepted)
+	defer relayStop()
+
+	runtime, err := Start(
+		context.Background(),
+		[]model.HTTPRule{{
+			FrontendURL: fmt.Sprintf("http://edge.example.test:%d", frontendPort),
+			BackendURL:  "http://" + backendAddress,
+			RelayChain:  []int{41},
+		}},
+		[]model.RelayListener{{
+			ID:         41,
+			AgentID:    "remote-relay-agent",
+			Name:       "relay-hop",
+			ListenHost: "127.0.0.1",
+			ListenPort: relayPort,
+			Enabled:    true,
+			TLSMode:    "pin_only",
+			PinSet: []model.RelayPin{{
+				Type:  "sha256",
+				Value: mustSPKIPin(t, relayCert),
+			}},
+		}},
+		Providers{Relay: &testRuntimeMaterialProvider{}},
+	)
+	if err != nil {
+		t.Fatalf("failed to start relay-backed runtime: %v", err)
+	}
+	defer runtime.Close()
+
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/relay-check", frontendPort), nil)
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+	req.Host = fmt.Sprintf("edge.example.test:%d", frontendPort)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("relay-backed request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", resp.StatusCode)
+	}
+
+	select {
+	case relayReq := <-relayAccepted:
+		if relayReq.Target != backendAddress {
+			t.Fatalf("unexpected relay target %q", relayReq.Target)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected request to traverse relay listener")
 	}
 }
 
@@ -428,4 +499,128 @@ func mustIssueProxyTLSCertificate(t *testing.T, host string) tls.Certificate {
 		PrivateKey:  privateKey,
 		Leaf:        template,
 	}
+}
+
+type testRuntimeMaterialProvider struct{}
+
+func (p *testRuntimeMaterialProvider) ServerCertificateForHost(_ context.Context, host string) (*tls.Certificate, error) {
+	return nil, fmt.Errorf("no server certificate available for host %q", host)
+}
+
+func (p *testRuntimeMaterialProvider) ServerCertificate(_ context.Context, certificateID int) (*tls.Certificate, error) {
+	return nil, fmt.Errorf("server certificate %d not available in relay test provider", certificateID)
+}
+
+func (p *testRuntimeMaterialProvider) TrustedCAPool(_ context.Context, _ []int) (*x509.CertPool, error) {
+	return x509.NewCertPool(), nil
+}
+
+type relayTestRequest struct {
+	Network string      `json:"network"`
+	Target  string      `json:"target"`
+	Chain   []relay.Hop `json:"chain,omitempty"`
+}
+
+func startTestRelayServer(
+	t *testing.T,
+	address string,
+	cert tls.Certificate,
+	requests chan<- relayTestRequest,
+) func() {
+	t.Helper()
+
+	ln, err := tls.Listen("tcp", address, &tls.Config{
+		MinVersion:   tls.VersionTLS12,
+		Certificates: []tls.Certificate{cert},
+	})
+	if err != nil {
+		t.Fatalf("failed to start test relay server: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		relayReq, err := readRelayTestRequest(conn)
+		if err != nil {
+			return
+		}
+		requests <- relayReq
+
+		if err := writeRelayTestResponse(conn, map[string]any{"ok": true}); err != nil {
+			return
+		}
+
+		httpReq, err := http.ReadRequest(bufio.NewReader(conn))
+		if err != nil {
+			return
+		}
+		_ = httpReq.Body.Close()
+
+		_, _ = conn.Write([]byte("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n"))
+	}()
+
+	return func() {
+		_ = ln.Close()
+		<-done
+	}
+}
+
+func readRelayTestRequest(conn net.Conn) (relayTestRequest, error) {
+	payload, err := readRelayTestFrame(conn)
+	if err != nil {
+		return relayTestRequest{}, err
+	}
+	var request relayTestRequest
+	if err := json.Unmarshal(payload, &request); err != nil {
+		return relayTestRequest{}, err
+	}
+	return request, nil
+}
+
+func writeRelayTestResponse(conn net.Conn, payload any) error {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+	return writeRelayTestFrame(conn, data)
+}
+
+func readRelayTestFrame(conn net.Conn) ([]byte, error) {
+	var header [4]byte
+	if _, err := io.ReadFull(conn, header[:]); err != nil {
+		return nil, err
+	}
+	size := binary.BigEndian.Uint32(header[:])
+	data := make([]byte, size)
+	if _, err := io.ReadFull(conn, data); err != nil {
+		return nil, err
+	}
+	return data, nil
+}
+
+func writeRelayTestFrame(conn net.Conn, payload []byte) error {
+	var header [4]byte
+	binary.BigEndian.PutUint32(header[:], uint32(len(payload)))
+	if _, err := conn.Write(header[:]); err != nil {
+		return err
+	}
+	_, err := conn.Write(payload)
+	return err
+}
+
+func mustSPKIPin(t *testing.T, cert tls.Certificate) string {
+	t.Helper()
+
+	parsed, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		t.Fatalf("failed to parse certificate: %v", err)
+	}
+	sum := sha256.Sum256(parsed.RawSubjectPublicKeyInfo)
+	return base64.StdEncoding.EncodeToString(sum[:])
 }

@@ -2848,7 +2848,7 @@ function resolveVersionPackageForAgent(agent) {
 function getAgentHeartbeatResponse(agent) {
   const rules = loadNormalizedRulesForAgent(agent.id);
   const l4Rules = storage.loadL4RulesForAgent(agent.id);
-  const relayListeners = storage.loadRelayListenersForAgent(agent.id);
+  const relayListeners = loadRelayListenersForSync(agent.id, rules, l4Rules);
   const certificates = buildManagedCertificateBundleForAgent(agent.id);
   const certificatePolicies = buildManagedCertificatePolicyForAgent(agent.id);
   const versionPackage = resolveVersionPackageForAgent(agent);
@@ -2874,6 +2874,41 @@ function getAgentHeartbeatResponse(agent) {
       certificate_policies: hasUpdate ? certificatePolicies : undefined,
     },
   };
+}
+
+function loadRelayListenersForSync(agentId, rules = [], l4Rules = []) {
+  const allRelayListeners = listAllRelayListenersById();
+  const localRelayListeners = storage.loadRelayListenersForAgent(agentId);
+  const included = new Set();
+  const ordered = [];
+
+  const pushListener = (listener) => {
+    const listenerId = Number(listener?.id);
+    if (!Number.isInteger(listenerId) || listenerId <= 0 || included.has(listenerId)) {
+      return;
+    }
+    included.add(listenerId);
+    ordered.push(listener);
+  };
+
+  for (const listener of Array.isArray(localRelayListeners) ? localRelayListeners : []) {
+    pushListener(listener);
+  }
+
+  const addReferencedListeners = (relayChain) => {
+    for (const listenerId of Array.isArray(relayChain) ? relayChain : []) {
+      pushListener(allRelayListeners.get(Number(listenerId)));
+    }
+  };
+
+  for (const rule of Array.isArray(rules) ? rules : []) {
+    addReferencedListeners(rule?.relay_chain);
+  }
+  for (const rule of Array.isArray(l4Rules) ? l4Rules : []) {
+    addReferencedListeners(rule?.relay_chain);
+  }
+
+  return ordered;
 }
 
 function getDefaultAgentId() {

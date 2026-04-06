@@ -130,6 +130,10 @@ func cloneSnapshot(snapshot model.Snapshot) model.Snapshot {
 				cloned.Rules[i].CustomHeaders = make([]model.HTTPHeader, len(rule.CustomHeaders))
 				copy(cloned.Rules[i].CustomHeaders, rule.CustomHeaders)
 			}
+			if rule.RelayChain != nil {
+				cloned.Rules[i].RelayChain = make([]int, len(rule.RelayChain))
+				copy(cloned.Rules[i].RelayChain, rule.RelayChain)
+			}
 		}
 	}
 	if snapshot.L4Rules != nil {

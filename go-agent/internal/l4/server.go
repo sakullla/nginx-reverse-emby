@@ -11,7 +11,12 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 )
+
+type RelayMaterialProvider interface {
+	relay.TLSMaterialProvider
+}
 
 type Server struct {
 	ctx    context.Context
@@ -22,22 +27,40 @@ type Server struct {
 	tcpListeners []net.Listener
 	udpConns     []*net.UDPConn
 
+	relayListenersByID map[int]model.RelayListener
+	relayProvider      RelayMaterialProvider
+
 	tcpMu    sync.Mutex
 	tcpConns map[net.Conn]struct{}
 	closing  bool
 }
 
-func NewServer(ctx context.Context, rules []model.L4Rule) (*Server, error) {
+func NewServer(
+	ctx context.Context,
+	rules []model.L4Rule,
+	relayListeners []model.RelayListener,
+	relayProvider RelayMaterialProvider,
+) (*Server, error) {
 	ctx, cancel := context.WithCancel(ctx)
+	relayListenersByID := make(map[int]model.RelayListener, len(relayListeners))
+	for _, listener := range relayListeners {
+		relayListenersByID[listener.ID] = listener
+	}
 	s := &Server{
-		ctx:        ctx,
-		cancel:     cancel,
-		tcpConns:   make(map[net.Conn]struct{}),
-		udpConns:   nil,
-		tcpListeners: nil,
+		ctx:                ctx,
+		cancel:             cancel,
+		tcpConns:           make(map[net.Conn]struct{}),
+		udpConns:           nil,
+		tcpListeners:       nil,
+		relayListenersByID: relayListenersByID,
+		relayProvider:      relayProvider,
 	}
 	for _, rule := range rules {
 		if err := ValidateRule(rule); err != nil {
+			s.Close()
+			return nil, err
+		}
+		if err := s.validateRelayChain(rule); err != nil {
 			s.Close()
 			return nil, err
 		}
@@ -98,7 +121,7 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 	defer s.untrackTCPConn(client)
 	defer client.Close()
 
-	upstream, err := net.Dial("tcp", net.JoinHostPort(rule.UpstreamHost, strconv.Itoa(rule.UpstreamPort)))
+	upstream, err := s.dialTCPUpstream(rule)
 	if err != nil {
 		return
 	}
@@ -119,6 +142,18 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 	}()
 	<-done
 	<-done
+}
+
+func (s *Server) dialTCPUpstream(rule model.L4Rule) (net.Conn, error) {
+	target := net.JoinHostPort(rule.UpstreamHost, strconv.Itoa(rule.UpstreamPort))
+	if len(rule.RelayChain) == 0 {
+		return (&net.Dialer{}).DialContext(s.ctx, "tcp", target)
+	}
+	hops, err := s.resolveRelayHops(rule)
+	if err != nil {
+		return nil, err
+	}
+	return relay.Dial(s.ctx, "tcp", target, hops, s.relayProvider)
 }
 
 func (s *Server) startUDPListener(rule model.L4Rule) error {
@@ -245,4 +280,36 @@ func (s *Server) closeTCPConns() {
 	for conn := range conns {
 		conn.Close()
 	}
+}
+
+func (s *Server) validateRelayChain(rule model.L4Rule) error {
+	if len(rule.RelayChain) == 0 {
+		return nil
+	}
+	if s.relayProvider == nil {
+		return fmt.Errorf("l4 rule %s:%d requires relay tls material provider", rule.ListenHost, rule.ListenPort)
+	}
+	_, err := s.resolveRelayHops(rule)
+	return err
+}
+
+func (s *Server) resolveRelayHops(rule model.L4Rule) ([]relay.Hop, error) {
+	hops := make([]relay.Hop, 0, len(rule.RelayChain))
+	for _, listenerID := range rule.RelayChain {
+		listener, ok := s.relayListenersByID[listenerID]
+		if !ok {
+			return nil, fmt.Errorf("relay listener %d not found", listenerID)
+		}
+		if !listener.Enabled {
+			return nil, fmt.Errorf("relay listener %d is disabled", listenerID)
+		}
+		if err := relay.ValidateListener(listener); err != nil {
+			return nil, fmt.Errorf("relay listener %d: %w", listenerID, err)
+		}
+		hops = append(hops, relay.Hop{
+			Address:  net.JoinHostPort(listener.ListenHost, strconv.Itoa(listener.ListenPort)),
+			Listener: listener,
+		})
+	}
+	return hops, nil
 }
