@@ -86,7 +86,6 @@ func (s *Server) tcpAcceptLoop(ln net.Listener, rule model.L4Rule) {
 		}
 
 		s.trackTCPConn(conn)
-		s.trackTCPConn(conn)
 		s.wg.Add(1)
 		go func(c net.Conn) {
 			defer s.wg.Done()
