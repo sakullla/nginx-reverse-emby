@@ -1,6 +1,7 @@
 package certs
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/hex"
@@ -9,9 +10,15 @@ import (
 )
 
 func FingerprintFromPEM(certPEM []byte) (string, error) {
-	block, _ := pem.Decode(certPEM)
+	block, rest := pem.Decode(certPEM)
 	if block == nil {
-		return "", fmt.Errorf("invalid pem")
+		return "", fmt.Errorf("invalid certificate PEM")
+	}
+	if block.Type != "CERTIFICATE" {
+		return "", fmt.Errorf("expected CERTIFICATE PEM block")
+	}
+	if len(bytes.TrimSpace(rest)) > 0 {
+		return "", fmt.Errorf("certificate PEM must contain exactly one block")
 	}
 
 	cert, err := x509.ParseCertificate(block.Bytes)

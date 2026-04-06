@@ -13,14 +13,46 @@ import (
 	"time"
 )
 
-func TestFingerprintFromPEMReturnsValue(t *testing.T) {
+func TestFingerprintFromPEMRejectsInvalidPEM(t *testing.T) {
 	if _, err := FingerprintFromPEM([]byte("invalid")); err == nil {
 		t.Fatal("expected invalid cert pem to fail")
 	}
 }
 
 func TestFingerprintFromPEMReturnsSHA256OfDER(t *testing.T) {
-	key, err := rsa.GenerateKey(rand.Reader, 1024)
+	der, pemBytes := mustCreateCertPEM(t)
+	sum := sha256.Sum256(der)
+	expected := hex.EncodeToString(sum[:])
+
+	got, err := FingerprintFromPEM(pemBytes)
+	if err != nil {
+		t.Fatalf("fingerprint failed: %v", err)
+	}
+	if got != expected {
+		t.Fatalf("unexpected fingerprint: got %q want %q", got, expected)
+	}
+}
+
+func TestFingerprintFromPEMRejectsNonCertificateBlock(t *testing.T) {
+	block := pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: []byte{1, 2, 3}})
+	if _, err := FingerprintFromPEM(block); err == nil {
+		t.Fatal("expected non-certificate pem block to fail")
+	}
+}
+
+func TestFingerprintFromPEMRejectsExtraDataAfterCertificate(t *testing.T) {
+	_, certPEM := mustCreateCertPEM(t)
+	withExtra := append(certPEM, []byte("extra")...)
+
+	if _, err := FingerprintFromPEM(withExtra); err == nil {
+		t.Fatal("expected extra data after certificate pem to fail")
+	}
+}
+
+func mustCreateCertPEM(t *testing.T) ([]byte, []byte) {
+	t.Helper()
+
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("generate key: %v", err)
 	}
@@ -39,14 +71,5 @@ func TestFingerprintFromPEMReturnsSHA256OfDER(t *testing.T) {
 	}
 
 	pemBytes := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-	sum := sha256.Sum256(der)
-	expected := hex.EncodeToString(sum[:])
-
-	got, err := FingerprintFromPEM(pemBytes)
-	if err != nil {
-		t.Fatalf("fingerprint failed: %v", err)
-	}
-	if got != expected {
-		t.Fatalf("unexpected fingerprint: got %q want %q", got, expected)
-	}
+	return der, pemBytes
 }
