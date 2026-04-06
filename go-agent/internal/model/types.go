@@ -12,11 +12,6 @@ type RuntimeState struct {
 	Metadata        map[string]string `json:"metadata,omitempty"`
 }
 
-type L4Rule struct {
-	Protocol   string
-	RelayChain []int
-}
-
 type RelayListener struct {
 	TLSMode                 string
 	PinSet                  []string
