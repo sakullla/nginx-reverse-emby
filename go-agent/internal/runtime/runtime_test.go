@@ -13,7 +13,7 @@ import (
 func TestApplyFailureKeepsPreviousSnapshot(t *testing.T) {
 	ctx := context.Background()
 
-	failingActivator := func(previous, next model.Snapshot) error {
+	failingActivator := func(_ context.Context, previous, next model.Snapshot) error {
 		if next.Revision == 2 {
 			return errors.New("activation failed")
 		}

@@ -69,19 +69,19 @@ func TestRunReturnsErrorWithoutAppliedSnapshot(t *testing.T) {
 	}
 }
 
-func TestRunRefreshesCurrentRevisionFromRuntimeState(t *testing.T) {
+func TestRunTracksCurrentRevisionFromSuccessfulApplies(t *testing.T) {
 	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
 	mem := store.NewInMemory()
-	if err := mem.SaveAppliedSnapshot(Snapshot{DesiredVersion: "baseline"}); err != nil {
+	if err := mem.SaveAppliedSnapshot(Snapshot{DesiredVersion: "baseline", Revision: 100}); err != nil {
 		t.Fatalf("failed to seed applied snapshot: %v", err)
 	}
 	if err := mem.SaveRuntimeState(store.RuntimeState{
-		Metadata: map[string]string{"current_revision": "100"},
+		Metadata: map[string]string{"current_revision": "999"},
 	}); err != nil {
 		t.Fatalf("failed to seed runtime state: %v", err)
 	}
 
-	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{DesiredVersion: "ok"}})
+	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{DesiredVersion: "ok", Revision: 101}})
 	app := newAppWithDeps(cfg, mem, client, nil, nil, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -96,15 +96,9 @@ func TestRunRefreshesCurrentRevisionFromRuntimeState(t *testing.T) {
 		t.Fatalf("expected first request revision 100, got %d", req1.CurrentRevision)
 	}
 
-	if err := mem.SaveRuntimeState(store.RuntimeState{
-		Metadata: map[string]string{"current_revision": "200"},
-	}); err != nil {
-		t.Fatalf("failed to update runtime state: %v", err)
-	}
-
 	req2 := waitForRequest(t, client, time.Second)
-	if req2.CurrentRevision != 200 {
-		t.Fatalf("expected second request revision 200, got %d", req2.CurrentRevision)
+	if req2.CurrentRevision != 101 {
+		t.Fatalf("expected second request revision 101 after successful apply, got %d", req2.CurrentRevision)
 	}
 
 	cancel()
@@ -216,6 +210,247 @@ func TestRunPersistsDesiredSnapshot(t *testing.T) {
 	}
 }
 
+func TestRunPersistsAppliedSnapshotAfterSuccessfulSync(t *testing.T) {
+	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
+	mem := store.NewInMemory()
+	previousApplied := Snapshot{
+		DesiredVersion: "1.0",
+		Revision:       4,
+		Rules: []model.HTTPRule{{
+			FrontendURL: "http://old.example.test:18080",
+			BackendURL:  "http://127.0.0.1:8096",
+			Revision:    1,
+		}},
+	}
+	if err := mem.SaveAppliedSnapshot(previousApplied); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+
+	expected := Snapshot{
+		DesiredVersion: "2.0",
+		Revision:       9,
+		Rules: []model.HTTPRule{{
+			FrontendURL:   "http://edge.example.test:18080",
+			BackendURL:    "http://127.0.0.1:8096",
+			ProxyRedirect: true,
+			Revision:      4,
+		}},
+	}
+	client := newTestSyncClient(nil, syncResponse{snapshot: expected})
+	httpApplier := &testHTTPApplier{}
+	app := newAppWithHTTPDeps(cfg, mem, client, httpApplier, nil, nil, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- app.Run(ctx)
+	}()
+
+	waitForCalls(t, client, 1, time.Second)
+
+	applied, err := mem.LoadAppliedSnapshot()
+	if err != nil {
+		t.Fatalf("failed to load applied snapshot: %v", err)
+	}
+	if !reflect.DeepEqual(applied, expected) {
+		t.Fatalf("expected applied snapshot %+v, got %+v", expected, applied)
+	}
+
+	state, err := mem.LoadRuntimeState()
+	if err != nil {
+		t.Fatalf("failed to load runtime state: %v", err)
+	}
+	if state.CurrentRevision != expected.Revision {
+		t.Fatalf("expected current revision %d, got %d", expected.Revision, state.CurrentRevision)
+	}
+	if state.Metadata["current_revision"] != "9" {
+		t.Fatalf("expected metadata current_revision 9, got %q", state.Metadata["current_revision"])
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+}
+
+func TestRunMergesOmittedSyncFieldsOntoPreviouslyAppliedSnapshot(t *testing.T) {
+	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
+	mem := store.NewInMemory()
+	previousApplied := Snapshot{
+		DesiredVersion: "applied",
+		Revision:       4,
+		Rules: []model.HTTPRule{{
+			FrontendURL: "http://applied.example.test:18080",
+			BackendURL:  "http://127.0.0.1:8096",
+			Revision:    1,
+		}},
+		L4Rules: []model.L4Rule{{
+			Protocol:     "tcp",
+			ListenHost:   "127.0.0.1",
+			ListenPort:   9000,
+			UpstreamHost: "127.0.0.1",
+			UpstreamPort: 9001,
+			Revision:     1,
+		}},
+	}
+	if err := mem.SaveAppliedSnapshot(previousApplied); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+	previousDesired := Snapshot{
+		DesiredVersion: "desired",
+		Revision:       4,
+		Rules: []model.HTTPRule{{
+			FrontendURL: "http://desired.example.test:18080",
+			BackendURL:  "http://127.0.0.1:8096",
+			Revision:    2,
+		}},
+		L4Rules: previousApplied.L4Rules,
+	}
+	if err := mem.SaveDesiredSnapshot(previousDesired); err != nil {
+		t.Fatalf("failed to seed desired snapshot: %v", err)
+	}
+
+	synced := Snapshot{
+		DesiredVersion: "next",
+		Revision:       5,
+		L4Rules: []model.L4Rule{{
+			Protocol:     "tcp",
+			ListenHost:   "127.0.0.1",
+			ListenPort:   9100,
+			UpstreamHost: "127.0.0.1",
+			UpstreamPort: 9101,
+			Revision:     2,
+		}},
+	}
+	client := newTestSyncClient(nil, syncResponse{snapshot: synced})
+	httpApplier := &testHTTPApplier{}
+	l4Applier := &testL4Applier{}
+	app := newAppWithHTTPDeps(cfg, mem, client, httpApplier, nil, l4Applier, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- app.Run(ctx)
+	}()
+
+	waitForCalls(t, client, 1, time.Second)
+
+	if calls := httpApplier.snapshotCalls(); len(calls) != 1 {
+		t.Fatalf("expected only startup http apply call for omitted http payload, got %d", len(calls))
+	}
+
+	l4Calls := l4Applier.snapshotCalls()
+	if len(l4Calls) != 2 {
+		t.Fatalf("expected startup and sync l4 apply calls, got %d", len(l4Calls))
+	}
+	if !reflect.DeepEqual(l4Calls[1].rules, synced.L4Rules) {
+		t.Fatalf("unexpected synced l4 rules: %+v", l4Calls[1].rules)
+	}
+
+	desired, err := mem.LoadDesiredSnapshot()
+	if err != nil {
+		t.Fatalf("failed to load desired snapshot: %v", err)
+	}
+	if !reflect.DeepEqual(desired.Rules, previousDesired.Rules) {
+		t.Fatalf("expected desired http rules preserved from previous desired snapshot, got %+v", desired.Rules)
+	}
+
+	applied, err := mem.LoadAppliedSnapshot()
+	if err != nil {
+		t.Fatalf("failed to load applied snapshot: %v", err)
+	}
+	if !reflect.DeepEqual(applied.Rules, previousApplied.Rules) {
+		t.Fatalf("expected applied http rules preserved from previous applied snapshot, got %+v", applied.Rules)
+	}
+	if !reflect.DeepEqual(applied.L4Rules, synced.L4Rules) {
+		t.Fatalf("expected applied l4 rules updated from sync payload, got %+v", applied.L4Rules)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+}
+
+func TestRunDoesNotAdvanceAppliedSnapshotOrCurrentRevisionOnApplyFailure(t *testing.T) {
+	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
+	mem := store.NewInMemory()
+	previousApplied := Snapshot{
+		DesiredVersion: "stable",
+		Revision:       7,
+		Rules: []model.HTTPRule{{
+			FrontendURL: "http://stable.example.test:18080",
+			BackendURL:  "http://127.0.0.1:8096",
+			Revision:    1,
+		}},
+	}
+	if err := mem.SaveAppliedSnapshot(previousApplied); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+	if err := mem.SaveRuntimeState(store.RuntimeState{
+		CurrentRevision: previousApplied.Revision,
+		Metadata: map[string]string{
+			"current_revision": "7",
+			"foo":              "bar",
+		},
+	}); err != nil {
+		t.Fatalf("failed to seed runtime state: %v", err)
+	}
+
+	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{
+		DesiredVersion: "broken",
+		Revision:       9,
+		Rules: []model.HTTPRule{{
+			FrontendURL: "http://broken.example.test:18080",
+			BackendURL:  "http://127.0.0.1:8096",
+			Revision:    2,
+		}},
+	}})
+	httpApplier := &testHTTPApplier{
+		applyErr:   errors.New("http apply failed"),
+		failOnCall: 2,
+	}
+	app := newAppWithHTTPDeps(cfg, mem, client, httpApplier, nil, nil, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- app.Run(ctx)
+	}()
+
+	waitForCalls(t, client, 1, time.Second)
+
+	applied, err := mem.LoadAppliedSnapshot()
+	if err != nil {
+		t.Fatalf("failed to load applied snapshot: %v", err)
+	}
+	if !reflect.DeepEqual(applied, previousApplied) {
+		t.Fatalf("expected applied snapshot to stay unchanged on failure, got %+v", applied)
+	}
+
+	state, err := mem.LoadRuntimeState()
+	if err != nil {
+		t.Fatalf("failed to load runtime state: %v", err)
+	}
+	if state.CurrentRevision != previousApplied.Revision {
+		t.Fatalf("expected current revision %d after failed apply, got %d", previousApplied.Revision, state.CurrentRevision)
+	}
+	if state.Metadata["current_revision"] != "7" {
+		t.Fatalf("expected metadata current_revision 7 after failed apply, got %q", state.Metadata["current_revision"])
+	}
+	if state.Metadata["last_sync_error"] != "http apply failed" {
+		t.Fatalf("expected last_sync_error metadata, got %v", state.Metadata)
+	}
+	if state.Metadata["foo"] != "bar" {
+		t.Fatalf("expected unrelated metadata preserved, got %v", state.Metadata)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+}
+
 func TestRunPersistsExplicitEmptyCertificatePayloads(t *testing.T) {
 	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
 	mem := store.NewInMemory()
@@ -294,13 +529,16 @@ func TestRunRecordsSyncErrorsInRuntimeState(t *testing.T) {
 	}
 
 	waitForCalls(t, client, 2, time.Second)
-	current, err = mem.LoadRuntimeState()
-	if err != nil {
-		t.Fatalf("failed to load runtime state: %v", err)
-	}
-	if _, ok := current.Metadata["last_sync_error"]; ok {
-		t.Fatalf("expected failure metadata cleared, got %v", current.Metadata)
-	}
+	waitForRuntimeState(t, time.Second, func() bool {
+		current, err = mem.LoadRuntimeState()
+		if err != nil {
+			t.Fatalf("failed to load runtime state: %v", err)
+		}
+		_, ok := current.Metadata["last_sync_error"]
+		return !ok
+	}, func() string {
+		return "expected failure metadata cleared"
+	})
 
 	cancel()
 	if err := <-done; err != nil {
@@ -345,6 +583,176 @@ func TestRunRecordsSaveDesiredSnapshotFailures(t *testing.T) {
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatalf("Run returned error: %v", err)
+	}
+}
+
+func TestRunDoesNotAdvancePersistedRuntimeStateWhenSaveAppliedSnapshotFails(t *testing.T) {
+	cfg := Config{HeartbeatInterval: time.Hour}
+	inner := store.NewInMemory()
+	fs := &failingStore{delegate: inner, failOnNthAppliedSave: 2}
+
+	previousApplied := Snapshot{
+		DesiredVersion: "stable",
+		Revision:       7,
+		Rules: []model.HTTPRule{{
+			FrontendURL: "http://stable.example.test:18080",
+			BackendURL:  "http://127.0.0.1:8096",
+			Revision:    1,
+		}},
+	}
+	if err := fs.SaveAppliedSnapshot(previousApplied); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+	if err := fs.SaveRuntimeState(store.RuntimeState{
+		CurrentRevision: previousApplied.Revision,
+		Metadata: map[string]string{
+			"current_revision": "7",
+			"foo":              "bar",
+		},
+	}); err != nil {
+		t.Fatalf("failed to seed runtime state: %v", err)
+	}
+
+	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{
+		DesiredVersion: "next",
+		Revision:       9,
+		Rules: []model.HTTPRule{{
+			FrontendURL: "http://next.example.test:18080",
+			BackendURL:  "http://127.0.0.1:8096",
+			Revision:    2,
+		}},
+	}})
+	httpApplier := &testHTTPApplier{}
+	app := newAppWithHTTPDeps(cfg, fs, client, httpApplier, nil, nil, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- app.Run(ctx)
+	}()
+
+	waitForCalls(t, client, 1, time.Second)
+
+	applied, err := fs.LoadAppliedSnapshot()
+	if err != nil {
+		t.Fatalf("failed to load applied snapshot: %v", err)
+	}
+	if !reflect.DeepEqual(applied, previousApplied) {
+		t.Fatalf("expected applied snapshot unchanged after applied persistence failure, got %+v", applied)
+	}
+
+	state, err := fs.LoadRuntimeState()
+	if err != nil {
+		t.Fatalf("failed to load runtime state: %v", err)
+	}
+	if state.CurrentRevision != previousApplied.Revision {
+		t.Fatalf("expected persisted current revision %d, got %d", previousApplied.Revision, state.CurrentRevision)
+	}
+	if state.Metadata["current_revision"] != "7" {
+		t.Fatalf("expected persisted metadata current_revision 7, got %q", state.Metadata["current_revision"])
+	}
+	if state.Metadata["last_sync_error"] != "applied persistence fail" {
+		t.Fatalf("expected applied persistence error metadata, got %v", state.Metadata)
+	}
+	if state.Metadata["foo"] != "bar" {
+		t.Fatalf("expected unrelated metadata preserved, got %v", state.Metadata)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+}
+
+func TestRunDoesNotAdvancePersistedStateOrHeartbeatRevisionWhenRollbackFailsAfterSaveAppliedSnapshotFailure(t *testing.T) {
+	cfg := Config{HeartbeatInterval: time.Hour}
+	inner := store.NewInMemory()
+	fs := &failingStore{delegate: inner, failOnNthAppliedSave: 2}
+
+	previousApplied := Snapshot{
+		DesiredVersion: "stable",
+		Revision:       7,
+		Rules: []model.HTTPRule{{
+			FrontendURL: "http://stable.example.test:18080",
+			BackendURL:  "http://127.0.0.1:8096",
+			Revision:    1,
+		}},
+	}
+	if err := fs.SaveAppliedSnapshot(previousApplied); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+	if err := fs.SaveRuntimeState(store.RuntimeState{
+		CurrentRevision: previousApplied.Revision,
+		Metadata: map[string]string{
+			"current_revision": "7",
+			"foo":              "bar",
+		},
+	}); err != nil {
+		t.Fatalf("failed to seed runtime state: %v", err)
+	}
+
+	client := newTestSyncClient([]syncResponse{
+		{
+			snapshot: Snapshot{
+				DesiredVersion: "next",
+				Revision:       9,
+				Rules: []model.HTTPRule{{
+					FrontendURL: "http://next.example.test:18080",
+					BackendURL:  "http://127.0.0.1:8096",
+					Revision:    2,
+				}},
+			},
+		},
+		{snapshot: Snapshot{DesiredVersion: "steady", Revision: 7}},
+	}, syncResponse{})
+	httpApplier := &testHTTPApplier{
+		applyErr:   errors.New("rollback failed"),
+		failOnCall: 3,
+	}
+	app := newAppWithHTTPDeps(cfg, fs, client, httpApplier, nil, nil, nil)
+	ctx := context.Background()
+	if err := app.runtime.Apply(ctx, Snapshot{}, previousApplied); err != nil {
+		t.Fatalf("failed to seed runtime: %v", err)
+	}
+
+	if err := app.performSync(ctx); err == nil || err.Error() != "applied persistence fail" {
+		t.Fatalf("expected applied persistence failure, got %v", err)
+	}
+
+	req1 := waitForRequest(t, client, time.Second)
+	if req1.CurrentRevision != 7 {
+		t.Fatalf("expected first request revision 7, got %d", req1.CurrentRevision)
+	}
+
+	applied, err := fs.LoadAppliedSnapshot()
+	if err != nil {
+		t.Fatalf("failed to load applied snapshot: %v", err)
+	}
+	if !reflect.DeepEqual(applied, previousApplied) {
+		t.Fatalf("expected applied snapshot unchanged after rollback failure, got %+v", applied)
+	}
+
+	state, err := fs.LoadRuntimeState()
+	if err != nil {
+		t.Fatalf("failed to load runtime state: %v", err)
+	}
+	if state.CurrentRevision != previousApplied.Revision {
+		t.Fatalf("expected persisted current revision %d, got %d", previousApplied.Revision, state.CurrentRevision)
+	}
+	if state.Metadata["current_revision"] != "7" {
+		t.Fatalf("expected persisted metadata current_revision 7, got %q", state.Metadata["current_revision"])
+	}
+	if state.Metadata["last_sync_error"] != "applied persistence fail" {
+		t.Fatalf("expected applied persistence error metadata, got %v", state.Metadata)
+	}
+
+	if err := app.performSync(ctx); err != nil {
+		t.Fatalf("second performSync returned error: %v", err)
+	}
+
+	req2 := waitForRequest(t, client, time.Second)
+	if req2.CurrentRevision != 7 {
+		t.Fatalf("expected next heartbeat revision to stay fail-closed at 7, got %d", req2.CurrentRevision)
 	}
 }
 
@@ -463,9 +871,10 @@ func (a *testRelayApplier) Close() error {
 }
 
 type testHTTPApplier struct {
-	mu       sync.Mutex
-	calls    []httpApplyCall
-	applyErr error
+	mu         sync.Mutex
+	calls      []httpApplyCall
+	applyErr   error
+	failOnCall int
 }
 
 func (a *testHTTPApplier) Apply(_ context.Context, rules []model.HTTPRule) error {
@@ -485,7 +894,10 @@ func (a *testHTTPApplier) Apply(_ context.Context, rules []model.HTTPRule) error
 	a.calls = append(a.calls, httpApplyCall{
 		rules: copied,
 	})
-	return a.applyErr
+	if a.applyErr != nil && (a.failOnCall == 0 || len(a.calls) == a.failOnCall) {
+		return a.applyErr
+	}
+	return nil
 }
 
 func (a *testHTTPApplier) snapshotCalls() []httpApplyCall {
@@ -553,6 +965,17 @@ func waitForCalls(t *testing.T, client *testSyncClient, target int, timeout time
 	t.Fatalf("timed out waiting for %d sync calls", target)
 }
 
+func waitForRuntimeState(t *testing.T, timeout time.Duration, predicate func() bool, failureMessage func() string) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if predicate() {
+			return
+		}
+		time.Sleep(1 * time.Millisecond)
+	}
+	t.Fatal(failureMessage())
+}
+
 func TestRunAppliesManagedCertificatesFromSyncedSnapshot(t *testing.T) {
 	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
 	mem := store.NewInMemory()
@@ -608,7 +1031,7 @@ func TestRunAppliesManagedCertificatesFromSyncedSnapshot(t *testing.T) {
 	}
 }
 
-func TestRunHydratesManagedCertificatesFromStoredDesiredSnapshot(t *testing.T) {
+func TestRunHydratesManagedCertificatesFromStoredAppliedSnapshot(t *testing.T) {
 	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
 	mem := store.NewInMemory()
 	stored := Snapshot{
@@ -659,10 +1082,30 @@ func TestRunHydratesManagedCertificatesFromStoredDesiredSnapshot(t *testing.T) {
 			CertificateType: "uploaded",
 		}},
 	}
-	if err := mem.SaveAppliedSnapshot(Snapshot{DesiredVersion: "baseline"}); err != nil {
+	if err := mem.SaveAppliedSnapshot(stored); err != nil {
 		t.Fatalf("failed to seed applied snapshot: %v", err)
 	}
-	if err := mem.SaveDesiredSnapshot(stored); err != nil {
+	if err := mem.SaveDesiredSnapshot(Snapshot{
+		DesiredVersion: "desired",
+		Revision:       9,
+		Certificates: []model.ManagedCertificateBundle{{
+			ID:       99,
+			Domain:   "desired.example.com",
+			Revision: 9,
+			CertPEM:  "OTHER_CERTIFICATE",
+			KeyPEM:   "OTHER_PRIVATEKEY",
+		}},
+		CertificatePolicies: []model.ManagedCertificatePolicy{{
+			ID:              99,
+			Domain:          "desired.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			Revision:        9,
+			Usage:           "https",
+			CertificateType: "uploaded",
+		}},
+	}); err != nil {
 		t.Fatalf("failed to seed desired snapshot: %v", err)
 	}
 
@@ -738,9 +1181,6 @@ func TestRunDoesNotApplyManagedCertificatesWhenHeartbeatOmitsPayload(t *testing.
 func TestRunPreservesStoredManagedCertificatePayloadWhenHeartbeatOmitsFields(t *testing.T) {
 	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
 	mem := store.NewInMemory()
-	if err := mem.SaveAppliedSnapshot(Snapshot{DesiredVersion: "baseline"}); err != nil {
-		t.Fatalf("failed to seed applied snapshot: %v", err)
-	}
 	stored := Snapshot{
 		DesiredVersion: "stored",
 		Revision:       5,
@@ -761,6 +1201,9 @@ func TestRunPreservesStoredManagedCertificatePayloadWhenHeartbeatOmitsFields(t *
 			Usage:           "https",
 			CertificateType: "uploaded",
 		}},
+	}
+	if err := mem.SaveAppliedSnapshot(stored); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
 	}
 	if err := mem.SaveDesiredSnapshot(stored); err != nil {
 		t.Fatalf("failed to seed desired snapshot: %v", err)
@@ -857,8 +1300,8 @@ func TestRunRecordsStartupCertificateHydrationFailuresInRuntimeState(t *testing.
 		Revision:       5,
 		Certificates:   []model.ManagedCertificateBundle{},
 	}
-	if err := mem.SaveDesiredSnapshot(stored); err != nil {
-		t.Fatalf("failed to seed desired snapshot: %v", err)
+	if err := mem.SaveAppliedSnapshot(stored); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
 	}
 
 	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{DesiredVersion: "ok"}})
@@ -921,7 +1364,7 @@ func TestRunAppliesHTTPRulesFromSyncedSnapshot(t *testing.T) {
 	}
 }
 
-func TestRunHydratesHTTPRulesFromStoredDesiredSnapshot(t *testing.T) {
+func TestRunHydratesHTTPRulesFromStoredAppliedSnapshot(t *testing.T) {
 	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
 	mem := store.NewInMemory()
 	stored := Snapshot{
@@ -934,10 +1377,18 @@ func TestRunHydratesHTTPRulesFromStoredDesiredSnapshot(t *testing.T) {
 			Revision:         4,
 		}},
 	}
-	if err := mem.SaveAppliedSnapshot(Snapshot{DesiredVersion: "baseline"}); err != nil {
+	if err := mem.SaveAppliedSnapshot(stored); err != nil {
 		t.Fatalf("failed to seed applied snapshot: %v", err)
 	}
-	if err := mem.SaveDesiredSnapshot(stored); err != nil {
+	if err := mem.SaveDesiredSnapshot(Snapshot{
+		DesiredVersion: "desired",
+		Revision:       9,
+		Rules: []model.HTTPRule{{
+			FrontendURL: "http://desired.example.test:28080",
+			BackendURL:  "http://127.0.0.1:8097",
+			Revision:    9,
+		}},
+	}); err != nil {
 		t.Fatalf("failed to seed desired snapshot: %v", err)
 	}
 
@@ -979,7 +1430,7 @@ func TestRunDoesNotApplyHTTPWhenHeartbeatOmitsPayload(t *testing.T) {
 			Revision:    4,
 		}},
 	}
-	if err := mem.SaveAppliedSnapshot(Snapshot{DesiredVersion: "baseline"}); err != nil {
+	if err := mem.SaveAppliedSnapshot(stored); err != nil {
 		t.Fatalf("failed to seed applied snapshot: %v", err)
 	}
 	if err := mem.SaveDesiredSnapshot(stored); err != nil {
@@ -1020,9 +1471,6 @@ func TestRunDoesNotApplyHTTPWhenHeartbeatOmitsPayload(t *testing.T) {
 func TestRunAppliesExplicitEmptyHTTPRules(t *testing.T) {
 	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
 	mem := store.NewInMemory()
-	if err := mem.SaveAppliedSnapshot(Snapshot{DesiredVersion: "baseline"}); err != nil {
-		t.Fatalf("failed to seed applied snapshot: %v", err)
-	}
 	stored := Snapshot{
 		DesiredVersion: "stored",
 		Revision:       5,
@@ -1032,8 +1480,8 @@ func TestRunAppliesExplicitEmptyHTTPRules(t *testing.T) {
 			Revision:    4,
 		}},
 	}
-	if err := mem.SaveDesiredSnapshot(stored); err != nil {
-		t.Fatalf("failed to seed desired snapshot: %v", err)
+	if err := mem.SaveAppliedSnapshot(stored); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
 	}
 
 	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{
@@ -1111,8 +1559,8 @@ func TestRunRecordsStartupHTTPHydrationFailuresInRuntimeState(t *testing.T) {
 		Revision:       5,
 		Rules:          []model.HTTPRule{},
 	}
-	if err := mem.SaveDesiredSnapshot(stored); err != nil {
-		t.Fatalf("failed to seed desired snapshot: %v", err)
+	if err := mem.SaveAppliedSnapshot(stored); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
 	}
 
 	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{DesiredVersion: "ok"}})
@@ -1177,7 +1625,7 @@ func TestRunAppliesL4RulesFromSyncedSnapshot(t *testing.T) {
 	}
 }
 
-func TestRunHydratesL4RulesFromStoredDesiredSnapshot(t *testing.T) {
+func TestRunHydratesL4RulesFromStoredAppliedSnapshot(t *testing.T) {
 	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
 	mem := store.NewInMemory()
 	stored := Snapshot{
@@ -1192,10 +1640,21 @@ func TestRunHydratesL4RulesFromStoredDesiredSnapshot(t *testing.T) {
 			Revision:     4,
 		}},
 	}
-	if err := mem.SaveAppliedSnapshot(Snapshot{DesiredVersion: "baseline"}); err != nil {
+	if err := mem.SaveAppliedSnapshot(stored); err != nil {
 		t.Fatalf("failed to seed applied snapshot: %v", err)
 	}
-	if err := mem.SaveDesiredSnapshot(stored); err != nil {
+	if err := mem.SaveDesiredSnapshot(Snapshot{
+		DesiredVersion: "desired",
+		Revision:       9,
+		L4Rules: []model.L4Rule{{
+			Protocol:     "tcp",
+			ListenHost:   "127.0.0.2",
+			ListenPort:   9900,
+			UpstreamHost: "127.0.0.2",
+			UpstreamPort: 9901,
+			Revision:     9,
+		}},
+	}); err != nil {
 		t.Fatalf("failed to seed desired snapshot: %v", err)
 	}
 
@@ -1272,7 +1731,7 @@ func TestRunAppliesRelayListenersFromSyncedSnapshot(t *testing.T) {
 	}
 }
 
-func TestRunHydratesRelayListenersFromStoredDesiredSnapshot(t *testing.T) {
+func TestRunHydratesRelayListenersFromStoredAppliedSnapshot(t *testing.T) {
 	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
 	mem := store.NewInMemory()
 	stored := Snapshot{
@@ -1293,10 +1752,27 @@ func TestRunHydratesRelayListenersFromStoredDesiredSnapshot(t *testing.T) {
 			Revision: 7,
 		}},
 	}
-	if err := mem.SaveAppliedSnapshot(Snapshot{DesiredVersion: "baseline"}); err != nil {
+	if err := mem.SaveAppliedSnapshot(stored); err != nil {
 		t.Fatalf("failed to seed applied snapshot: %v", err)
 	}
-	if err := mem.SaveDesiredSnapshot(stored); err != nil {
+	if err := mem.SaveDesiredSnapshot(Snapshot{
+		DesiredVersion: "desired",
+		Revision:       9,
+		RelayListeners: []model.RelayListener{{
+			ID:         99,
+			AgentID:    "desired-agent",
+			Name:       "desired-relay",
+			ListenHost: "127.0.0.2",
+			ListenPort: 9444,
+			Enabled:    true,
+			TLSMode:    "pin_only",
+			PinSet: []model.RelayPin{{
+				Type:  "sha256",
+				Value: "desired-pin",
+			}},
+			Revision: 9,
+		}},
+	}); err != nil {
 		t.Fatalf("failed to seed desired snapshot: %v", err)
 	}
 
@@ -1387,9 +1863,6 @@ func TestRunDoesNotApplyRelayWhenHeartbeatOmitsPayload(t *testing.T) {
 func TestRunAppliesExplicitEmptyL4Rules(t *testing.T) {
 	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
 	mem := store.NewInMemory()
-	if err := mem.SaveAppliedSnapshot(Snapshot{DesiredVersion: "baseline"}); err != nil {
-		t.Fatalf("failed to seed applied snapshot: %v", err)
-	}
 	stored := Snapshot{
 		DesiredVersion: "stored",
 		Revision:       5,
@@ -1402,8 +1875,8 @@ func TestRunAppliesExplicitEmptyL4Rules(t *testing.T) {
 			Revision:     4,
 		}},
 	}
-	if err := mem.SaveDesiredSnapshot(stored); err != nil {
-		t.Fatalf("failed to seed desired snapshot: %v", err)
+	if err := mem.SaveAppliedSnapshot(stored); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
 	}
 
 	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{
@@ -1439,9 +1912,6 @@ func TestRunAppliesExplicitEmptyL4Rules(t *testing.T) {
 func TestRunAppliesExplicitEmptyRelayListeners(t *testing.T) {
 	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
 	mem := store.NewInMemory()
-	if err := mem.SaveAppliedSnapshot(Snapshot{DesiredVersion: "baseline"}); err != nil {
-		t.Fatalf("failed to seed applied snapshot: %v", err)
-	}
 	stored := Snapshot{
 		DesiredVersion: "stored",
 		Revision:       5,
@@ -1460,8 +1930,8 @@ func TestRunAppliesExplicitEmptyRelayListeners(t *testing.T) {
 			Revision: 7,
 		}},
 	}
-	if err := mem.SaveDesiredSnapshot(stored); err != nil {
-		t.Fatalf("failed to seed desired snapshot: %v", err)
+	if err := mem.SaveAppliedSnapshot(stored); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
 	}
 
 	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{
@@ -1576,8 +2046,8 @@ func TestRunRecordsStartupL4HydrationFailuresInRuntimeState(t *testing.T) {
 		Revision:       5,
 		L4Rules:        []model.L4Rule{},
 	}
-	if err := mem.SaveDesiredSnapshot(stored); err != nil {
-		t.Fatalf("failed to seed desired snapshot: %v", err)
+	if err := mem.SaveAppliedSnapshot(stored); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
 	}
 
 	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{DesiredVersion: "ok"}})
@@ -1609,8 +2079,8 @@ func TestRunRecordsStartupRelayHydrationFailuresInRuntimeState(t *testing.T) {
 		Revision:       5,
 		RelayListeners: []model.RelayListener{},
 	}
-	if err := mem.SaveDesiredSnapshot(stored); err != nil {
-		t.Fatalf("failed to seed desired snapshot: %v", err)
+	if err := mem.SaveAppliedSnapshot(stored); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
 	}
 
 	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{DesiredVersion: "ok"}})
@@ -1635,14 +2105,16 @@ func TestRunRecordsStartupRelayHydrationFailuresInRuntimeState(t *testing.T) {
 }
 
 type failingStore struct {
-	delegate      store.Store
-	failOnNthSave int
-	saveCount     int
+	delegate             store.Store
+	failOnNthSave        int
+	saveCount            int
+	failOnNthAppliedSave int
+	appliedSaveCount     int
 }
 
 func (f *failingStore) SaveDesiredSnapshot(snapshot Snapshot) error {
 	f.saveCount++
-	if f.failOnNthSave > 0 && f.saveCount >= f.failOnNthSave {
+	if f.failOnNthSave > 0 && f.saveCount == f.failOnNthSave {
 		return errors.New("persistence fail")
 	}
 	return f.delegate.SaveDesiredSnapshot(snapshot)
@@ -1653,6 +2125,10 @@ func (f *failingStore) LoadDesiredSnapshot() (Snapshot, error) {
 }
 
 func (f *failingStore) SaveAppliedSnapshot(snapshot Snapshot) error {
+	f.appliedSaveCount++
+	if f.failOnNthAppliedSave > 0 && f.appliedSaveCount == f.failOnNthAppliedSave {
+		return errors.New("applied persistence fail")
+	}
 	return f.delegate.SaveAppliedSnapshot(snapshot)
 }
 

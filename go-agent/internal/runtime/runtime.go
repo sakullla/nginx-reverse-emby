@@ -10,20 +10,20 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
-type activationFunc func(previous, next model.Snapshot) error
+type Activator func(ctx context.Context, previous, next model.Snapshot) error
 
 type Runtime struct {
 	mu             sync.RWMutex
 	activeSnapshot model.Snapshot
 	state          model.RuntimeState
-	activator      activationFunc
+	activator      Activator
 }
 
 func New() *Runtime {
-	return newRuntimeWithActivator(defaultActivator)
+	return NewWithActivator(nil)
 }
 
-func newRuntimeWithActivator(act activationFunc) *Runtime {
+func NewWithActivator(act Activator) *Runtime {
 	if act == nil {
 		act = defaultActivator
 	}
@@ -35,7 +35,11 @@ func newRuntimeWithActivator(act activationFunc) *Runtime {
 	}
 }
 
-func defaultActivator(previous, next model.Snapshot) error {
+func newRuntimeWithActivator(act Activator) *Runtime {
+	return NewWithActivator(act)
+}
+
+func defaultActivator(_ context.Context, previous, next model.Snapshot) error {
 	_ = previous
 	_ = next
 	return nil
@@ -80,7 +84,7 @@ func (r *Runtime) Apply(ctx context.Context, previous, next model.Snapshot) erro
 		)
 	}
 
-	if err := r.activator(previous, next); err != nil {
+	if err := r.activator(ctx, previous, next); err != nil {
 		r.state.Status = "error"
 		return err
 	}

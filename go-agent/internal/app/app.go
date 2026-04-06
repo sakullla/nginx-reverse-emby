@@ -2,13 +2,14 @@ package app
 
 import (
 	"context"
-	"runtime"
-	"strconv"
+	"reflect"
+	stdruntime "runtime"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/certs"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	agentruntime "github.com/sakullla/nginx-reverse-emby/go-agent/internal/runtime"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
 	agentsync "github.com/sakullla/nginx-reverse-emby/go-agent/internal/sync"
 )
@@ -38,6 +39,7 @@ type App struct {
 	certApplier  CertificateApplier
 	l4Applier    L4Applier
 	relayApplier RelayApplier
+	runtime      *agentruntime.Runtime
 }
 
 func New(cfg Config) (*App, error) {
@@ -51,7 +53,7 @@ func New(cfg Config) (*App, error) {
 		AgentID:        cfg.AgentID,
 		AgentName:      cfg.AgentName,
 		CurrentVersion: cfg.CurrentVersion,
-		Platform:       runtime.GOOS + "-" + runtime.GOARCH,
+		Platform:       stdruntime.GOOS + "-" + stdruntime.GOARCH,
 	}, nil)
 	certManager, err := certs.NewManager(cfg.DataDir)
 	if err != nil {
@@ -91,7 +93,7 @@ func newAppWithHTTPDeps(
 	if cfg.HeartbeatInterval <= 0 {
 		cfg.HeartbeatInterval = config.Default().HeartbeatInterval
 	}
-	return &App{
+	app := &App{
 		cfg:          cfg,
 		store:        st,
 		syncClient:   client,
@@ -100,6 +102,8 @@ func newAppWithHTTPDeps(
 		l4Applier:    l4Applier,
 		relayApplier: relayApplier,
 	}
+	app.runtime = agentruntime.NewWithActivator(app.activateSnapshot)
+	return app
 }
 
 func (a *App) Run(ctx context.Context) error {
@@ -109,25 +113,8 @@ func (a *App) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	runtimeState, err := a.store.LoadRuntimeState()
-	if err != nil {
-		return err
-	}
-	desired, err := a.store.LoadDesiredSnapshot()
-	if err != nil {
-		return err
-	}
-	if err := a.applyManagedCertificates(ctx, desired); err != nil {
-		return a.recordRuntimeError(&runtimeState, err)
-	}
-	if err := a.applyHTTPRules(ctx, desired); err != nil {
-		return a.recordRuntimeError(&runtimeState, err)
-	}
-	if err := a.applyRelayListeners(ctx, desired); err != nil {
-		return a.recordRuntimeError(&runtimeState, err)
-	}
-	if err := a.applyL4Rules(ctx, desired); err != nil {
-		return a.recordRuntimeError(&runtimeState, err)
+	if err := a.runtime.Apply(ctx, Snapshot{}, applied); err != nil {
+		return a.recordRuntimeError(err)
 	}
 
 	if err := a.performSync(ctx); err != nil {
@@ -150,58 +137,83 @@ func (a *App) Run(ctx context.Context) error {
 }
 
 func (a *App) performSync(ctx context.Context) error {
-	runtimeState, err := a.store.LoadRuntimeState()
+	applied, err := a.store.LoadAppliedSnapshot()
 	if err != nil {
 		return err
 	}
-	req := SyncRequest{CurrentRevision: currentRevisionFromMetadata(runtimeState.Metadata)}
-	return a.syncOnce(ctx, req, &runtimeState)
+	req := SyncRequest{CurrentRevision: int(applied.Revision)}
+	return a.syncOnce(ctx, req)
 }
 
-func (a *App) syncOnce(ctx context.Context, req SyncRequest, runtimeState *store.RuntimeState) error {
+func (a *App) syncOnce(ctx context.Context, req SyncRequest) error {
 	snapshot, err := a.syncClient.Sync(ctx, req)
 	if err != nil {
-		return a.recordRuntimeError(runtimeState, err)
+		return a.recordRuntimeError(err)
 	}
 	existingDesired, err := a.store.LoadDesiredSnapshot()
 	if err != nil {
-		return a.recordRuntimeError(runtimeState, err)
+		return a.recordRuntimeError(err)
 	}
 	persistedSnapshot := mergeSnapshotPayload(snapshot, existingDesired)
 	if err := a.store.SaveDesiredSnapshot(persistedSnapshot); err != nil {
-		return a.recordRuntimeError(runtimeState, err)
+		return a.recordRuntimeError(err)
 	}
-	if err := a.applyManagedCertificates(ctx, snapshot); err != nil {
-		return a.recordRuntimeError(runtimeState, err)
+	previousApplied := a.runtime.ActiveSnapshot()
+	candidateApplied := mergeSnapshotPayload(snapshot, previousApplied)
+	if err := a.runtime.Apply(ctx, previousApplied, candidateApplied); err != nil {
+		return a.recordRuntimeError(err)
 	}
-	if err := a.applyHTTPRules(ctx, snapshot); err != nil {
-		return a.recordRuntimeError(runtimeState, err)
+	if err := a.store.SaveAppliedSnapshot(candidateApplied); err != nil {
+		a.rollbackRuntime(ctx, previousApplied)
+		return a.recordPersistedRuntimeError(err)
 	}
-	if err := a.applyRelayListeners(ctx, snapshot); err != nil {
-		return a.recordRuntimeError(runtimeState, err)
+	if err := a.persistRuntimeState(true); err != nil {
+		a.rollbackRuntime(ctx, previousApplied)
+		_ = a.store.SaveAppliedSnapshot(previousApplied)
+		return a.recordPersistedRuntimeError(err)
 	}
-	if err := a.applyL4Rules(ctx, snapshot); err != nil {
-		return a.recordRuntimeError(runtimeState, err)
-	}
-	return a.clearRuntimeError(runtimeState)
+	return nil
 }
 
-func (a *App) recordRuntimeError(state *store.RuntimeState, syncErr error) error {
+func (a *App) recordRuntimeError(syncErr error) error {
+	state, err := a.runtimeStateForPersistence()
+	if err != nil {
+		return syncErr
+	}
 	state.Metadata = ensureMetadata(state.Metadata)
 	state.Metadata["last_sync_error"] = syncErr.Error()
-	if err := a.store.SaveRuntimeState(*state); err != nil {
+	if err := a.store.SaveRuntimeState(state); err != nil {
 		return syncErr
 	}
 	return syncErr
 }
 
-func (a *App) clearRuntimeError(state *store.RuntimeState) error {
+func (a *App) persistRuntimeState(clearLastSyncError bool) error {
+	state, err := a.runtimeStateForPersistence()
+	if err != nil {
+		return err
+	}
 	state.Metadata = ensureMetadata(state.Metadata)
-	delete(state.Metadata, "last_sync_error")
-	if err := a.store.SaveRuntimeState(*state); err != nil {
+	if clearLastSyncError {
+		delete(state.Metadata, "last_sync_error")
+	}
+	if err := a.store.SaveRuntimeState(state); err != nil {
 		return err
 	}
 	return nil
+}
+
+func (a *App) recordPersistedRuntimeError(syncErr error) error {
+	state, err := a.store.LoadRuntimeState()
+	if err != nil {
+		return syncErr
+	}
+	state.Metadata = ensureMetadata(state.Metadata)
+	state.Metadata["last_sync_error"] = syncErr.Error()
+	if err := a.store.SaveRuntimeState(state); err != nil {
+		return syncErr
+	}
+	return syncErr
 }
 
 func ensureMetadata(meta map[string]string) map[string]string {
@@ -211,16 +223,21 @@ func ensureMetadata(meta map[string]string) map[string]string {
 	return meta
 }
 
-func currentRevisionFromMetadata(meta map[string]string) int {
-	if meta == nil {
-		return 0
+func (a *App) runtimeStateForPersistence() (store.RuntimeState, error) {
+	existing, err := a.store.LoadRuntimeState()
+	if err != nil {
+		return store.RuntimeState{}, err
 	}
-	if raw, ok := meta["current_revision"]; ok {
-		if val, err := strconv.Atoi(raw); err == nil {
-			return val
-		}
+
+	current := a.runtime.State()
+	state := existing
+	state.Status = current.Status
+	state.CurrentRevision = current.CurrentRevision
+	state.Metadata = ensureMetadata(existing.Metadata)
+	for key, value := range current.Metadata {
+		state.Metadata[key] = value
 	}
-	return 0
+	return state, nil
 }
 
 func (a *App) applyManagedCertificates(ctx context.Context, snapshot Snapshot) error {
@@ -258,6 +275,43 @@ func mergeSnapshotPayload(next, previous Snapshot) Snapshot {
 		merged.CertificatePolicies = previous.CertificatePolicies
 	}
 	return merged
+}
+
+func (a *App) activateSnapshot(ctx context.Context, previous, next Snapshot) error {
+	if certificatesChanged(previous, next) {
+		if err := a.applyManagedCertificates(ctx, next); err != nil {
+			return err
+		}
+	}
+	if !reflect.DeepEqual(previous.Rules, next.Rules) {
+		if err := a.applyHTTPRules(ctx, next); err != nil {
+			return err
+		}
+	}
+	if !reflect.DeepEqual(previous.RelayListeners, next.RelayListeners) {
+		if err := a.applyRelayListeners(ctx, next); err != nil {
+			return err
+		}
+	}
+	if !reflect.DeepEqual(previous.L4Rules, next.L4Rules) {
+		if err := a.applyL4Rules(ctx, next); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func certificatesChanged(previous, next Snapshot) bool {
+	return !reflect.DeepEqual(previous.Certificates, next.Certificates) ||
+		!reflect.DeepEqual(previous.CertificatePolicies, next.CertificatePolicies)
+}
+
+func (a *App) rollbackRuntime(ctx context.Context, previousApplied Snapshot) {
+	currentApplied := a.runtime.ActiveSnapshot()
+	if reflect.DeepEqual(currentApplied, previousApplied) {
+		return
+	}
+	_ = a.runtime.Apply(ctx, currentApplied, previousApplied)
 }
 
 func (a *App) applyL4Rules(ctx context.Context, snapshot Snapshot) error {
