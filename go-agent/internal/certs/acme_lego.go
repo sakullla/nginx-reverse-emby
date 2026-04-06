@@ -22,10 +22,15 @@ func defaultACMEIssuerFactory(request acmeIssueRequest) (acmeIssuer, error) {
 type legoACMEIssuer struct{}
 
 func (legoACMEIssuer) Issue(ctx context.Context, request acmeIssueRequest) (acmeIssueResult, error) {
-	_ = ctx
+	if err := ctx.Err(); err != nil {
+		return acmeIssueResult{}, err
+	}
 
 	accountKey, accountKeyPEM, err := loadOrCreateACMEAccountKey(request.AccountKeyPEM)
 	if err != nil {
+		return acmeIssueResult{}, err
+	}
+	if err := ctx.Err(); err != nil {
 		return acmeIssueResult{}, err
 	}
 
@@ -42,6 +47,9 @@ func (legoACMEIssuer) Issue(ctx context.Context, request acmeIssueRequest) (acme
 
 	client, err := lego.NewClient(config)
 	if err != nil {
+		return acmeIssueResult{}, err
+	}
+	if err := ctx.Err(); err != nil {
 		return acmeIssueResult{}, err
 	}
 
@@ -66,6 +74,9 @@ func (legoACMEIssuer) Issue(ctx context.Context, request acmeIssueRequest) (acme
 	}
 
 	if user.registration == nil || user.registration.URI == "" {
+		if err := ctx.Err(); err != nil {
+			return acmeIssueResult{}, err
+		}
 		registrationResource, err := client.Registration.Register(registration.RegisterOptions{TermsOfServiceAgreed: true})
 		if err != nil {
 			return acmeIssueResult{}, err
@@ -78,6 +89,9 @@ func (legoACMEIssuer) Issue(ctx context.Context, request acmeIssueRequest) (acme
 		return acmeIssueResult{}, err
 	}
 
+	if err := ctx.Err(); err != nil {
+		return acmeIssueResult{}, err
+	}
 	resource, err := client.Certificate.Obtain(certificate.ObtainRequest{
 		Domains:    []string{request.Domain},
 		PrivateKey: existingKey,

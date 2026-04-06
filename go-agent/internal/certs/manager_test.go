@@ -10,6 +10,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/hex"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -107,6 +108,21 @@ func TestManagerApplyLoadsControlPlaneMaterial(t *testing.T) {
 	}
 	if info.Fingerprint != leaf.Fingerprint {
 		t.Fatalf("unexpected fingerprint: got %q want %q", info.Fingerprint, leaf.Fingerprint)
+	}
+}
+
+func TestLegoACMEIssuerRespectsContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	_, err := legoACMEIssuer{}.Issue(ctx, acmeIssueRequest{})
+	if err == nil {
+		t.Fatal("expected canceled context to return an error")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context cancellation error, got %v", err)
 	}
 }
 
