@@ -100,6 +100,9 @@ func (r *Runtime) Apply(ctx context.Context, previous, next model.Snapshot) erro
 func isZeroSnapshot(s model.Snapshot) bool {
 	return s.DesiredVersion == "" &&
 		s.Revision == 0 &&
+		len(s.Rules) == 0 &&
+		len(s.L4Rules) == 0 &&
+		len(s.RelayListeners) == 0 &&
 		len(s.Certificates) == 0 &&
 		len(s.CertificatePolicies) == 0
 }
@@ -110,6 +113,44 @@ func snapshotEqual(left, right model.Snapshot) bool {
 
 func cloneSnapshot(snapshot model.Snapshot) model.Snapshot {
 	cloned := snapshot
+	if snapshot.Rules != nil {
+		cloned.Rules = make([]model.HTTPRule, len(snapshot.Rules))
+		copy(cloned.Rules, snapshot.Rules)
+		for i, rule := range snapshot.Rules {
+			if rule.CustomHeaders != nil {
+				cloned.Rules[i].CustomHeaders = make([]model.HTTPHeader, len(rule.CustomHeaders))
+				copy(cloned.Rules[i].CustomHeaders, rule.CustomHeaders)
+			}
+		}
+	}
+	if snapshot.L4Rules != nil {
+		cloned.L4Rules = make([]model.L4Rule, len(snapshot.L4Rules))
+		copy(cloned.L4Rules, snapshot.L4Rules)
+		for i, rule := range snapshot.L4Rules {
+			if rule.RelayChain != nil {
+				cloned.L4Rules[i].RelayChain = make([]int, len(rule.RelayChain))
+				copy(cloned.L4Rules[i].RelayChain, rule.RelayChain)
+			}
+		}
+	}
+	if snapshot.RelayListeners != nil {
+		cloned.RelayListeners = make([]model.RelayListener, len(snapshot.RelayListeners))
+		copy(cloned.RelayListeners, snapshot.RelayListeners)
+		for i, listener := range snapshot.RelayListeners {
+			if listener.PinSet != nil {
+				cloned.RelayListeners[i].PinSet = make([]model.RelayPin, len(listener.PinSet))
+				copy(cloned.RelayListeners[i].PinSet, listener.PinSet)
+			}
+			if listener.TrustedCACertificateIDs != nil {
+				cloned.RelayListeners[i].TrustedCACertificateIDs = make([]int, len(listener.TrustedCACertificateIDs))
+				copy(cloned.RelayListeners[i].TrustedCACertificateIDs, listener.TrustedCACertificateIDs)
+			}
+			if listener.Tags != nil {
+				cloned.RelayListeners[i].Tags = make([]string, len(listener.Tags))
+				copy(cloned.RelayListeners[i].Tags, listener.Tags)
+			}
+		}
+	}
 	if snapshot.Certificates != nil {
 		cloned.Certificates = make([]model.ManagedCertificateBundle, len(snapshot.Certificates))
 		copy(cloned.Certificates, snapshot.Certificates)

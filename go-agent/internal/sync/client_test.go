@@ -35,17 +35,50 @@ func TestHeartbeatSync(t *testing.T) {
 			Sync struct {
 				DesiredVersion      string                           `json:"desired_version"`
 				DesiredRevision     int64                            `json:"desired_revision"`
+				Rules               []model.HTTPRule                 `json:"rules"`
+				L4Rules             []model.L4Rule                   `json:"l4_rules"`
+				RelayListeners      []model.RelayListener            `json:"relay_listeners"`
 				Certificates        []model.ManagedCertificateBundle `json:"certificates"`
 				CertificatePolicies []model.ManagedCertificatePolicy `json:"certificate_policies"`
 			} `json:"sync"`
 		}{Sync: struct {
 			DesiredVersion      string                           `json:"desired_version"`
 			DesiredRevision     int64                            `json:"desired_revision"`
+			Rules               []model.HTTPRule                 `json:"rules"`
+			L4Rules             []model.L4Rule                   `json:"l4_rules"`
+			RelayListeners      []model.RelayListener            `json:"relay_listeners"`
 			Certificates        []model.ManagedCertificateBundle `json:"certificates"`
 			CertificatePolicies []model.ManagedCertificatePolicy `json:"certificate_policies"`
 		}{
 			DesiredVersion:  "1.2.3",
 			DesiredRevision: 42,
+			Rules: []model.HTTPRule{{
+				FrontendURL: "https://frontend.example.com",
+				BackendURL:  "http://127.0.0.1:8096",
+				Revision:    2,
+			}},
+			L4Rules: []model.L4Rule{{
+				Protocol:     "tcp",
+				ListenHost:   "127.0.0.1",
+				ListenPort:   9000,
+				UpstreamHost: "127.0.0.1",
+				UpstreamPort: 9001,
+				Revision:     4,
+			}},
+			RelayListeners: []model.RelayListener{{
+				ID:         31,
+				AgentID:    "remote-agent-5",
+				Name:       "relay-a",
+				ListenHost: "127.0.0.1",
+				ListenPort: 9443,
+				Enabled:    true,
+				TLSMode:    "pin_only",
+				PinSet: []model.RelayPin{{
+					Type:  "sha256",
+					Value: "pin-value",
+				}},
+				Revision: 7,
+			}},
 			Certificates: []model.ManagedCertificateBundle{{
 				ID:       21,
 				Domain:   "sync.example.com",
@@ -90,6 +123,39 @@ func TestHeartbeatSync(t *testing.T) {
 	}
 	if snap.Revision != 42 {
 		t.Fatalf("expected revision=42, got %d", snap.Revision)
+	}
+	if !reflect.DeepEqual(snap.Rules, []model.HTTPRule{{
+		FrontendURL: "https://frontend.example.com",
+		BackendURL:  "http://127.0.0.1:8096",
+		Revision:    2,
+	}}) {
+		t.Fatalf("unexpected rules payload: %+v", snap.Rules)
+	}
+	if !reflect.DeepEqual(snap.L4Rules, []model.L4Rule{{
+		Protocol:     "tcp",
+		ListenHost:   "127.0.0.1",
+		ListenPort:   9000,
+		UpstreamHost: "127.0.0.1",
+		UpstreamPort: 9001,
+		Revision:     4,
+	}}) {
+		t.Fatalf("unexpected l4_rules payload: %+v", snap.L4Rules)
+	}
+	if !reflect.DeepEqual(snap.RelayListeners, []model.RelayListener{{
+		ID:         31,
+		AgentID:    "remote-agent-5",
+		Name:       "relay-a",
+		ListenHost: "127.0.0.1",
+		ListenPort: 9443,
+		Enabled:    true,
+		TLSMode:    "pin_only",
+		PinSet: []model.RelayPin{{
+			Type:  "sha256",
+			Value: "pin-value",
+		}},
+		Revision: 7,
+	}}) {
+		t.Fatalf("unexpected relay_listeners payload: %+v", snap.RelayListeners)
 	}
 	if !reflect.DeepEqual(snap.Certificates, []model.ManagedCertificateBundle{{
 		ID:       21,
@@ -181,6 +247,15 @@ func TestHeartbeatSyncPreservesOmittedCertificatePayloadAsNil(t *testing.T) {
 	}
 	if snap.CertificatePolicies != nil {
 		t.Fatalf("expected nil certificate policies for omitted payload, got %+v", snap.CertificatePolicies)
+	}
+	if snap.Rules != nil {
+		t.Fatalf("expected nil rules for omitted payload, got %+v", snap.Rules)
+	}
+	if snap.L4Rules != nil {
+		t.Fatalf("expected nil l4 rules for omitted payload, got %+v", snap.L4Rules)
+	}
+	if snap.RelayListeners != nil {
+		t.Fatalf("expected nil relay listeners for omitted payload, got %+v", snap.RelayListeners)
 	}
 }
 

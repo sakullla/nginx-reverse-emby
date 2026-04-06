@@ -118,7 +118,7 @@ func (a *App) syncOnce(ctx context.Context, req SyncRequest, runtimeState *store
 	if err != nil {
 		return a.recordRuntimeError(runtimeState, err)
 	}
-	persistedSnapshot := mergeManagedCertificatePayload(snapshot, existingDesired)
+	persistedSnapshot := mergeSnapshotPayload(snapshot, existingDesired)
 	if err := a.store.SaveDesiredSnapshot(persistedSnapshot); err != nil {
 		return a.recordRuntimeError(runtimeState, err)
 	}
@@ -175,8 +175,17 @@ func (a *App) applyManagedCertificates(ctx context.Context, snapshot Snapshot) e
 	return a.certApplier.Apply(ctx, snapshot.Certificates, snapshot.CertificatePolicies)
 }
 
-func mergeManagedCertificatePayload(next, previous Snapshot) Snapshot {
+func mergeSnapshotPayload(next, previous Snapshot) Snapshot {
 	merged := next
+	if next.Rules == nil {
+		merged.Rules = previous.Rules
+	}
+	if next.L4Rules == nil {
+		merged.L4Rules = previous.L4Rules
+	}
+	if next.RelayListeners == nil {
+		merged.RelayListeners = previous.RelayListeners
+	}
 	if next.Certificates == nil {
 		merged.Certificates = previous.Certificates
 	}

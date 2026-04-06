@@ -135,6 +135,33 @@ func TestRunPersistsDesiredSnapshot(t *testing.T) {
 	expected := Snapshot{
 		DesiredVersion: "2.0",
 		Revision:       9,
+		Rules: []model.HTTPRule{{
+			FrontendURL: "https://frontend.example.com",
+			BackendURL:  "http://127.0.0.1:8096",
+			Revision:    2,
+		}},
+		L4Rules: []model.L4Rule{{
+			Protocol:     "tcp",
+			ListenHost:   "127.0.0.1",
+			ListenPort:   9000,
+			UpstreamHost: "127.0.0.1",
+			UpstreamPort: 9001,
+			Revision:     4,
+		}},
+		RelayListeners: []model.RelayListener{{
+			ID:         31,
+			AgentID:    "remote-agent-5",
+			Name:       "relay-a",
+			ListenHost: "127.0.0.1",
+			ListenPort: 9443,
+			Enabled:    true,
+			TLSMode:    "pin_only",
+			PinSet: []model.RelayPin{{
+				Type:  "sha256",
+				Value: "pin-value",
+			}},
+			Revision: 7,
+		}},
 		Certificates: []model.ManagedCertificateBundle{{
 			ID:       21,
 			Domain:   "sync.example.com",
@@ -460,6 +487,33 @@ func TestRunHydratesManagedCertificatesFromStoredDesiredSnapshot(t *testing.T) {
 	stored := Snapshot{
 		DesiredVersion: "stored",
 		Revision:       5,
+		Rules: []model.HTTPRule{{
+			FrontendURL: "https://frontend.example.com",
+			BackendURL:  "http://127.0.0.1:8096",
+			Revision:    2,
+		}},
+		L4Rules: []model.L4Rule{{
+			Protocol:     "tcp",
+			ListenHost:   "127.0.0.1",
+			ListenPort:   9000,
+			UpstreamHost: "127.0.0.1",
+			UpstreamPort: 9001,
+			Revision:     4,
+		}},
+		RelayListeners: []model.RelayListener{{
+			ID:         31,
+			AgentID:    "remote-agent-5",
+			Name:       "relay-a",
+			ListenHost: "127.0.0.1",
+			ListenPort: 9443,
+			Enabled:    true,
+			TLSMode:    "pin_only",
+			PinSet: []model.RelayPin{{
+				Type:  "sha256",
+				Value: "pin-value",
+			}},
+			Revision: 7,
+		}},
 		Certificates: []model.ManagedCertificateBundle{{
 			ID:       41,
 			Domain:   "stored.example.com",
@@ -614,6 +668,15 @@ func TestRunPreservesStoredManagedCertificatePayloadWhenHeartbeatOmitsFields(t *
 	}
 	if !reflect.DeepEqual(persisted.CertificatePolicies, stored.CertificatePolicies) {
 		t.Fatalf("expected stored certificate policies to be preserved, got %+v", persisted.CertificatePolicies)
+	}
+	if !reflect.DeepEqual(persisted.Rules, stored.Rules) {
+		t.Fatalf("expected stored rules to be preserved, got %+v", persisted.Rules)
+	}
+	if !reflect.DeepEqual(persisted.L4Rules, stored.L4Rules) {
+		t.Fatalf("expected stored l4 rules to be preserved, got %+v", persisted.L4Rules)
+	}
+	if !reflect.DeepEqual(persisted.RelayListeners, stored.RelayListeners) {
+		t.Fatalf("expected stored relay listeners to be preserved, got %+v", persisted.RelayListeners)
 	}
 
 	cancel()

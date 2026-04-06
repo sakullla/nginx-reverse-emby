@@ -153,6 +153,40 @@ func TestStateReturnsMetadataCopy(t *testing.T) {
 	initial := model.Snapshot{
 		DesiredVersion: "copy",
 		Revision:       1,
+		Rules: []model.HTTPRule{{
+			FrontendURL: "https://frontend.example.com",
+			BackendURL:  "http://127.0.0.1:8096",
+			CustomHeaders: []model.HTTPHeader{{
+				Name:  "X-Test",
+				Value: "one",
+			}},
+			Revision: 1,
+		}},
+		L4Rules: []model.L4Rule{{
+			Protocol:     "tcp",
+			ListenHost:   "127.0.0.1",
+			ListenPort:   9000,
+			UpstreamHost: "127.0.0.1",
+			UpstreamPort: 9001,
+			RelayChain:   []int{1, 2},
+			Revision:     1,
+		}},
+		RelayListeners: []model.RelayListener{{
+			ID:         10,
+			AgentID:    "agent-a",
+			Name:       "relay-a",
+			ListenHost: "127.0.0.1",
+			ListenPort: 9443,
+			Enabled:    true,
+			TLSMode:    "pin_only",
+			PinSet: []model.RelayPin{{
+				Type:  "sha256",
+				Value: "pin-one",
+			}},
+			TrustedCACertificateIDs: []int{7},
+			Tags:                    []string{"tag-one"},
+			Revision:                1,
+		}},
 		Certificates: []model.ManagedCertificateBundle{{
 			ID:       3,
 			Domain:   "copy.example.com",
@@ -180,6 +214,40 @@ func TestActiveSnapshotReturnsSliceIsolation(t *testing.T) {
 	initial := model.Snapshot{
 		DesiredVersion: "copy",
 		Revision:       1,
+		Rules: []model.HTTPRule{{
+			FrontendURL: "https://frontend.example.com",
+			BackendURL:  "http://127.0.0.1:8096",
+			CustomHeaders: []model.HTTPHeader{{
+				Name:  "X-Test",
+				Value: "one",
+			}},
+			Revision: 1,
+		}},
+		L4Rules: []model.L4Rule{{
+			Protocol:     "tcp",
+			ListenHost:   "127.0.0.1",
+			ListenPort:   9000,
+			UpstreamHost: "127.0.0.1",
+			UpstreamPort: 9001,
+			RelayChain:   []int{1, 2},
+			Revision:     1,
+		}},
+		RelayListeners: []model.RelayListener{{
+			ID:         10,
+			AgentID:    "agent-a",
+			Name:       "relay-a",
+			ListenHost: "127.0.0.1",
+			ListenPort: 9443,
+			Enabled:    true,
+			TLSMode:    "pin_only",
+			PinSet: []model.RelayPin{{
+				Type:  "sha256",
+				Value: "pin-one",
+			}},
+			TrustedCACertificateIDs: []int{7},
+			Tags:                    []string{"tag-one"},
+			Revision:                1,
+		}},
 		Certificates: []model.ManagedCertificateBundle{{
 			ID:       3,
 			Domain:   "copy.example.com",
@@ -204,10 +272,30 @@ func TestActiveSnapshotReturnsSliceIsolation(t *testing.T) {
 	}
 
 	snap := r.ActiveSnapshot()
+	snap.Rules[0].CustomHeaders[0].Value = "mutated"
+	snap.L4Rules[0].RelayChain[0] = 99
+	snap.RelayListeners[0].PinSet[0].Value = "mutated"
+	snap.RelayListeners[0].TrustedCACertificateIDs[0] = 99
+	snap.RelayListeners[0].Tags[0] = "mutated"
 	snap.Certificates[0].Domain = "mutated.example.com"
 	snap.CertificatePolicies[0].Tags[0] = "mutated"
 
 	current := r.ActiveSnapshot()
+	if current.Rules[0].CustomHeaders[0].Value != "one" {
+		t.Fatalf("http rule slice leaked mutation: %+v", current.Rules)
+	}
+	if current.L4Rules[0].RelayChain[0] != 1 {
+		t.Fatalf("l4 relay_chain leaked mutation: %+v", current.L4Rules)
+	}
+	if current.RelayListeners[0].PinSet[0].Value != "pin-one" {
+		t.Fatalf("relay pin_set leaked mutation: %+v", current.RelayListeners)
+	}
+	if current.RelayListeners[0].TrustedCACertificateIDs[0] != 7 {
+		t.Fatalf("relay trusted ca leaked mutation: %+v", current.RelayListeners)
+	}
+	if current.RelayListeners[0].Tags[0] != "tag-one" {
+		t.Fatalf("relay tags leaked mutation: %+v", current.RelayListeners)
+	}
 	if current.Certificates[0].Domain != "copy.example.com" {
 		t.Fatalf("certificate slice leaked mutation: %+v", current.Certificates)
 	}
