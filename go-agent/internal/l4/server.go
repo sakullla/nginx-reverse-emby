@@ -21,11 +21,21 @@ type Server struct {
 
 	tcpListeners []net.Listener
 	udpConns     []*net.UDPConn
+
+	tcpMu    sync.Mutex
+	tcpConns map[net.Conn]struct{}
+	closing  bool
 }
 
 func NewServer(ctx context.Context, rules []model.L4Rule) (*Server, error) {
 	ctx, cancel := context.WithCancel(ctx)
-	s := &Server{ctx: ctx, cancel: cancel}
+	s := &Server{
+		ctx:        ctx,
+		cancel:     cancel,
+		tcpConns:   make(map[net.Conn]struct{}),
+		udpConns:   nil,
+		tcpListeners: nil,
+	}
 	for _, rule := range rules {
 		if err := ValidateRule(rule); err != nil {
 			s.Close()
@@ -75,6 +85,8 @@ func (s *Server) tcpAcceptLoop(ln net.Listener, rule model.L4Rule) {
 			continue
 		}
 
+		s.trackTCPConn(conn)
+		s.trackTCPConn(conn)
 		s.wg.Add(1)
 		go func(c net.Conn) {
 			defer s.wg.Done()
@@ -84,12 +96,15 @@ func (s *Server) tcpAcceptLoop(ln net.Listener, rule model.L4Rule) {
 }
 
 func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
+	defer s.untrackTCPConn(client)
 	defer client.Close()
 
 	upstream, err := net.Dial("tcp", net.JoinHostPort(rule.UpstreamHost, strconv.Itoa(rule.UpstreamPort)))
 	if err != nil {
 		return
 	}
+	s.trackTCPConn(upstream)
+	defer s.untrackTCPConn(upstream)
 	defer upstream.Close()
 
 	done := make(chan struct{}, 2)
@@ -108,10 +123,12 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 }
 
 func (s *Server) startUDPListener(rule model.L4Rule) error {
-	addr := &net.UDPAddr{
-		IP:   net.ParseIP(rule.ListenHost),
-		Port: rule.ListenPort,
+	addrStr := net.JoinHostPort(rule.ListenHost, strconv.Itoa(rule.ListenPort))
+	addr, err := net.ResolveUDPAddr("udp", addrStr)
+	if err != nil {
+		return err
 	}
+
 	conn, err := net.ListenUDP("udp", addr)
 	if err != nil {
 		return err
@@ -177,12 +194,56 @@ func (s *Server) Close() error {
 		s.cancel()
 	}
 
+	s.tcpMu.Lock()
+	s.closing = true
+	s.tcpMu.Unlock()
+
 	for _, ln := range s.tcpListeners {
 		ln.Close()
 	}
+	s.closeTCPConns()
 	for _, conn := range s.udpConns {
 		conn.Close()
 	}
 	s.wg.Wait()
 	return nil
+}
+
+func (s *Server) trackTCPConn(conn net.Conn) {
+	if conn == nil {
+		return
+	}
+	s.tcpMu.Lock()
+	if s.tcpConns == nil {
+		s.tcpConns = make(map[net.Conn]struct{})
+	}
+	closing := s.closing
+	if !closing {
+		s.tcpConns[conn] = struct{}{}
+	}
+	s.tcpMu.Unlock()
+
+	if closing {
+		conn.Close()
+	}
+}
+
+func (s *Server) untrackTCPConn(conn net.Conn) {
+	if conn == nil {
+		return
+	}
+	s.tcpMu.Lock()
+	defer s.tcpMu.Unlock()
+	delete(s.tcpConns, conn)
+}
+
+func (s *Server) closeTCPConns() {
+	s.tcpMu.Lock()
+	conns := s.tcpConns
+	s.tcpConns = nil
+	s.tcpMu.Unlock()
+
+	for conn := range conns {
+		conn.Close()
+	}
 }
