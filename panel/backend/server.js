@@ -2695,6 +2695,16 @@ async function syncStaticLocalCertificateById(certId, options = {}) {
     throw new Error("certificate is not assigned to the requested agent");
   }
 
+  for (const targetAgentId of requestedAgentIds) {
+    const targetAgent = getAgentById(targetAgentId);
+    if (!targetAgent) {
+      throw new Error(`target agent not found: ${targetAgentId}`);
+    }
+    if (!agentHasCapability(targetAgent, "cert_install")) {
+      throw new Error(`target agent does not support certificate install: ${targetAgent.name || targetAgentId}`);
+    }
+  }
+
   const materialHash = getManagedCertificateMaterialHash(cert.domain);
   if (!materialHash) {
     throw new Error("certificate material not found");

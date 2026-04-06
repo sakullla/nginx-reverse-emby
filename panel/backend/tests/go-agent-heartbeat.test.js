@@ -858,6 +858,10 @@ describe("Go agent heartbeat API", () => {
             cert_pem: "CERTIFICATE",
             key_pem: "PRIVATEKEY",
           },
+          "relay-internal.example.com": {
+            cert_pem: "INTERNAL_CERTIFICATE",
+            key_pem: "INTERNAL_PRIVATEKEY",
+          },
         },
       },
       async ({ baseUrl }) => {
@@ -876,6 +880,145 @@ describe("Go agent heartbeat API", () => {
         assert.equal(payload.certificate.last_error, "");
         assert.ok(payload.certificate.last_issue_at);
         assert.match(String(payload.certificate.material_hash || ""), /^[0-9a-f]{64}$/i);
+
+        const createInternalResponse = await fetch(`${baseUrl}/api/agents/remote-agent-relay/certificates`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            domain: "relay-internal.example.com",
+            enabled: true,
+            scope: "domain",
+            issuer_mode: "local_http01",
+            usage: "relay_ca",
+            certificate_type: "internal_ca",
+            self_signed: true,
+          }),
+        });
+
+        assert.equal(createInternalResponse.status, 201);
+        const createInternalPayload = await createInternalResponse.json();
+
+        const issueInternalResponse = await fetch(`${baseUrl}/api/certificates/${createInternalPayload.certificate.id}/issue`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: "{}",
+        });
+
+        assert.equal(issueInternalResponse.status, 200);
+        const issueInternalPayload = await issueInternalResponse.json();
+        assert.equal(issueInternalPayload.certificate.certificate_type, "internal_ca");
+        assert.equal(issueInternalPayload.certificate.status, "active");
+        assert.match(String(issueInternalPayload.certificate.material_hash || ""), /^[0-9a-f]{64}$/i);
+      },
+    );
+  });
+
+  it("rejects issuing static local_http01 certificates when target agent lacks cert_install", async () => {
+    await withBackendServer(
+      {
+        env: {
+          PANEL_ROLE: "master",
+        },
+        agents: [
+          {
+            id: "remote-agent-relay",
+            name: "remote-agent-relay",
+            agent_token: "token-remote-agent-relay",
+            desired_revision: 1,
+            current_revision: 1,
+            capabilities: [],
+            created_at: "2026-04-01T00:00:00.000Z",
+            updated_at: "2026-04-01T00:00:00.000Z",
+          },
+        ],
+        managedCertificates: [
+          {
+            id: 51,
+            domain: "relay-uploaded.example.com",
+            enabled: true,
+            scope: "domain",
+            issuer_mode: "local_http01",
+            usage: "relay_tunnel",
+            certificate_type: "uploaded",
+            self_signed: true,
+            target_agent_ids: ["remote-agent-relay"],
+            status: "pending",
+            revision: 3,
+          },
+        ],
+        managedCertificateMaterial: {
+          "relay-uploaded.example.com": {
+            cert_pem: "CERTIFICATE",
+            key_pem: "PRIVATEKEY",
+          },
+        },
+      },
+      async ({ baseUrl }) => {
+        const response = await fetch(`${baseUrl}/api/certificates/51/issue`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: "{}",
+        });
+
+        assert.equal(response.status, 400);
+        const payload = await response.json();
+        assert.match(payload.message, /does not support certificate install/i);
+      },
+    );
+  });
+
+  it("rejects issuing acme local_http01 certificates when target agent lacks local_acme", async () => {
+    await withBackendServer(
+      {
+        env: {
+          PANEL_ROLE: "master",
+        },
+        agents: [
+          {
+            id: "remote-agent-relay",
+            name: "remote-agent-relay",
+            agent_token: "token-remote-agent-relay",
+            desired_revision: 1,
+            current_revision: 1,
+            capabilities: ["cert_install"],
+            created_at: "2026-04-01T00:00:00.000Z",
+            updated_at: "2026-04-01T00:00:00.000Z",
+          },
+        ],
+        managedCertificates: [
+          {
+            id: 61,
+            domain: "relay-acme.example.com",
+            enabled: true,
+            scope: "domain",
+            issuer_mode: "local_http01",
+            usage: "relay_tunnel",
+            certificate_type: "acme",
+            self_signed: false,
+            target_agent_ids: ["remote-agent-relay"],
+            status: "pending",
+            revision: 3,
+          },
+        ],
+      },
+      async ({ baseUrl }) => {
+        const response = await fetch(`${baseUrl}/api/certificates/61/issue`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: "{}",
+        });
+
+        assert.equal(response.status, 400);
+        const payload = await response.json();
+        assert.match(payload.message, /does not support local ACME issuance/i);
       },
     );
   });
