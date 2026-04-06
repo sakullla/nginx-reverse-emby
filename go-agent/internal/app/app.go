@@ -199,7 +199,7 @@ func (a *App) syncOnce(ctx context.Context, req SyncRequest) error {
 	if err := a.store.SaveDesiredSnapshot(persistedSnapshot); err != nil {
 		return a.recordRuntimeError(err)
 	}
-	if err := a.handlePendingUpdate(ctx, snapshot); err != nil {
+	if err := a.handlePendingUpdate(ctx, persistedSnapshot); err != nil {
 		return err
 	}
 	previousApplied := a.runtime.ActiveSnapshot()
@@ -303,6 +303,9 @@ func (a *App) applyHTTPRules(ctx context.Context, snapshot Snapshot) error {
 
 func mergeSnapshotPayload(next, previous Snapshot) Snapshot {
 	merged := next
+	if next.VersionPackage == nil {
+		merged.VersionPackage = previous.VersionPackage
+	}
 	if next.Rules == nil {
 		merged.Rules = previous.Rules
 	}

@@ -824,6 +824,17 @@ func TestPerformSyncTriggersUpdaterWhenDesiredVersionPackageIsPresent(t *testing
 	if !reflect.DeepEqual(applied, previousApplied) {
 		t.Fatalf("expected applied snapshot unchanged while handoff is pending, got %+v", applied)
 	}
+	desired, err := mem.LoadDesiredSnapshot()
+	if err != nil {
+		t.Fatalf("failed to load desired snapshot: %v", err)
+	}
+	if !reflect.DeepEqual(desired.VersionPackage, &model.VersionPackage{
+		Platform: "linux-amd64",
+		URL:      "https://example.com/nre-agent",
+		SHA256:   "abc123",
+	}) {
+		t.Fatalf("expected desired snapshot to retain version package, got %+v", desired.VersionPackage)
+	}
 
 	state, err := mem.LoadRuntimeState()
 	if err != nil {
@@ -864,7 +875,7 @@ func TestPerformSyncUpdaterStageFailureRecordsErrorWithoutFalseStateAdvance(t *t
 				SHA256:   "abc123",
 			},
 		}},
-		{snapshot: Snapshot{DesiredVersion: "steady", Revision: 7}},
+		{snapshot: Snapshot{DesiredVersion: "2.0.0", Revision: 9}},
 	}, syncResponse{})
 	updater := &testUpdater{stageErr: errors.New("stage failed")}
 	app := newAppWithDeps(cfg, mem, client, nil, nil, nil)
@@ -909,13 +920,28 @@ func TestPerformSyncUpdaterStageFailureRecordsErrorWithoutFalseStateAdvance(t *t
 		t.Fatalf("expected unrelated metadata preserved, got %v", state.Metadata)
 	}
 
-	if err := app.performSync(ctx); err != nil {
-		t.Fatalf("second performSync returned error: %v", err)
+	desired, err := mem.LoadDesiredSnapshot()
+	if err != nil {
+		t.Fatalf("failed to load desired snapshot: %v", err)
+	}
+	if !reflect.DeepEqual(desired.VersionPackage, &model.VersionPackage{
+		Platform: "linux-amd64",
+		URL:      "https://example.com/nre-agent",
+		SHA256:   "abc123",
+	}) {
+		t.Fatalf("expected desired snapshot to persist version package across failures, got %+v", desired.VersionPackage)
+	}
+
+	if err := app.performSync(ctx); err == nil || err.Error() != "stage failed" {
+		t.Fatalf("expected second staging failure retry, got %v", err)
 	}
 
 	req2 := waitForRequest(t, client, time.Second)
 	if req2.CurrentRevision != 7 {
 		t.Fatalf("expected next heartbeat revision to stay fail-closed at 7, got %d", req2.CurrentRevision)
+	}
+	if len(updater.calls) != 2 {
+		t.Fatalf("expected updater retry on omitted package fields, got %d calls", len(updater.calls))
 	}
 }
 
