@@ -66,7 +66,7 @@ describe("Prisma SQL migration flow", () => {
 
     assert.match(
       source,
-      /^COPY\s+panel\/backend\/prisma\/\s+\/opt\/nginx-reverse-emby\/panel\/backend\/prisma\/$/m,
+      /^COPY\s+panel\/backend\/\s+\.\/panel\/backend\/$/m,
       "expected the runtime image to copy panel/backend/prisma/ for storage-prisma-core.js migrations",
     );
   });

@@ -115,56 +115,32 @@ const LOCAL_AGENT_TAGS = normalizeTags(
 );
 
 const PROJECT_ROOT = path.resolve(__dirname, "..", "..");
+const FRONTEND_DIST_DIR =
+  process.env.PANEL_FRONTEND_DIST_DIR ||
+  path.join(PROJECT_ROOT, "panel", "frontend", "dist");
+const PUBLIC_AGENT_ASSETS_DIR =
+  process.env.PANEL_PUBLIC_AGENT_ASSETS_DIR ||
+  path.join(PROJECT_ROOT, "panel", "public", "agent-assets");
 const PUBLIC_AGENT_ASSETS = {
-  "light-agent.js": {
-    files: [path.join(PROJECT_ROOT, "scripts", "light-agent.js")],
-    contentType: "application/javascript; charset=utf-8",
+  "nre-agent-linux-amd64": {
+    files: [path.join(PUBLIC_AGENT_ASSETS_DIR, "nre-agent-linux-amd64")],
+    contentType: "application/octet-stream",
+    binary: true,
   },
-  "light-agent-apply.sh": {
-    files: [path.join(PROJECT_ROOT, "scripts", "light-agent-apply.sh")],
-    contentType: "application/x-sh; charset=utf-8",
+  "nre-agent-linux-arm64": {
+    files: [path.join(PUBLIC_AGENT_ASSETS_DIR, "nre-agent-linux-arm64")],
+    contentType: "application/octet-stream",
+    binary: true,
   },
-  "25-dynamic-reverse-proxy.sh": {
-    files: [
-      path.join(PROJECT_ROOT, "docker", "25-dynamic-reverse-proxy.sh"),
-      "/docker-entrypoint.d/25-dynamic-reverse-proxy.sh",
-    ],
-    contentType: "application/x-sh; charset=utf-8",
+  "nre-agent-darwin-amd64": {
+    files: [path.join(PUBLIC_AGENT_ASSETS_DIR, "nre-agent-darwin-amd64")],
+    contentType: "application/octet-stream",
+    binary: true,
   },
-  "30-acme-renew.sh": {
-    files: [
-      path.join(PROJECT_ROOT, "docker", "30-acme-renew.sh"),
-      "/docker-entrypoint.d/30-acme-renew.sh",
-    ],
-    contentType: "application/x-sh; charset=utf-8",
-  },
-  "default.conf.template": {
-    files: [
-      path.join(PROJECT_ROOT, "docker", "default.conf.template"),
-      "/etc/nginx/templates/default.conf",
-    ],
-    contentType: "text/plain; charset=utf-8",
-  },
-  "default.direct.no_tls.conf.template": {
-    files: [
-      path.join(PROJECT_ROOT, "docker", "default.direct.no_tls.conf.template"),
-      "/etc/nginx/templates/default.direct.no_tls.conf",
-    ],
-    contentType: "text/plain; charset=utf-8",
-  },
-  "default.direct.tls.conf.template": {
-    files: [
-      path.join(PROJECT_ROOT, "docker", "default.direct.tls.conf.template"),
-      "/etc/nginx/templates/default.direct.tls.conf",
-    ],
-    contentType: "text/plain; charset=utf-8",
-  },
-  "agent.nginx.conf.template": {
-    files: [
-      path.join(PROJECT_ROOT, "docker", "agent.nginx.conf.template"),
-      "/opt/nginx-reverse-emby/nginx/agent.nginx.conf.template",
-    ],
-    contentType: "text/plain; charset=utf-8",
+  "nre-agent-darwin-arm64": {
+    files: [path.join(PUBLIC_AGENT_ASSETS_DIR, "nre-agent-darwin-arm64")],
+    contentType: "application/octet-stream",
+    binary: true,
   },
 };
 let isManagedCertificateRenewRunning = false;
@@ -222,23 +198,27 @@ function removePath(targetPath) {
   }
 }
 
-function sendJson(res, statusCode, payload) {
-  const body = Buffer.from(JSON.stringify(payload), "utf8");
-  res.writeHead(statusCode, {
-    "Content-Type": "application/json; charset=utf-8",
-    "Content-Length": String(body.length),
-  });
-  res.end(body);
-}
-
-function sendText(res, statusCode, body, contentType = "text/plain; charset=utf-8") {
-  const payload = Buffer.from(String(body), "utf8");
+function sendBody(res, statusCode, body, contentType, extraHeaders = {}) {
+  const payload = Buffer.isBuffer(body) ? body : Buffer.from(String(body), "utf8");
   res.writeHead(statusCode, {
     "Content-Type": contentType,
     "Content-Length": String(payload.length),
-    "Cache-Control": "no-store",
+    ...extraHeaders,
   });
   res.end(payload);
+}
+
+function sendJson(res, statusCode, payload) {
+  sendBody(
+    res,
+    statusCode,
+    JSON.stringify(payload),
+    "application/json; charset=utf-8",
+  );
+}
+
+function sendText(res, statusCode, body, contentType = "text/plain; charset=utf-8") {
+  sendBody(res, statusCode, body, contentType, { "Cache-Control": "no-store" });
 }
 
 function errorPayload(message, details) {
@@ -312,7 +292,7 @@ function readPublicAgentAsset(assetName) {
   return {
     ...asset,
     file: assetFile,
-    body: fs.readFileSync(assetFile, "utf8"),
+    body: asset.binary ? fs.readFileSync(assetFile) : fs.readFileSync(assetFile, "utf8"),
   };
 }
 
@@ -324,6 +304,65 @@ function buildJoinAgentScript(req) {
     .readFileSync(joinScriptPath, "utf8")
     .replace(/__DEFAULT_MASTER_URL__/g, escapeForDoubleQuotedShell(baseUrl))
     .replace(/__DEFAULT_ASSET_BASE_URL__/g, escapeForDoubleQuotedShell(assetBaseUrl));
+}
+
+function getStaticContentType(filePath) {
+  switch (path.extname(filePath).toLowerCase()) {
+    case ".css":
+      return "text/css; charset=utf-8";
+    case ".html":
+      return "text/html; charset=utf-8";
+    case ".ico":
+      return "image/x-icon";
+    case ".js":
+      return "application/javascript; charset=utf-8";
+    case ".json":
+      return "application/json; charset=utf-8";
+    case ".png":
+      return "image/png";
+    case ".svg":
+      return "image/svg+xml";
+    case ".txt":
+      return "text/plain; charset=utf-8";
+    default:
+      return "application/octet-stream";
+  }
+}
+
+function tryServeFrontend(req, res, urlPath) {
+  if ((req.method !== "GET" && req.method !== "HEAD") || !fs.existsSync(FRONTEND_DIST_DIR)) {
+    return false;
+  }
+
+  const relativePath =
+    urlPath === "/" ? "index.html" : urlPath.replace(/^\/+/, "");
+  const requestedFile = path.resolve(FRONTEND_DIST_DIR, relativePath);
+  const distRoot = path.resolve(FRONTEND_DIST_DIR);
+  if (!requestedFile.startsWith(`${distRoot}${path.sep}`) && requestedFile !== distRoot) {
+    sendJson(res, 403, errorPayload("forbidden"));
+    return true;
+  }
+
+  if (fs.existsSync(requestedFile) && fs.statSync(requestedFile).isFile()) {
+    sendBody(res, 200, fs.readFileSync(requestedFile), getStaticContentType(requestedFile), {
+      "Cache-Control": "public, max-age=300",
+    });
+    return true;
+  }
+
+  if (path.extname(relativePath)) {
+    return false;
+  }
+
+  const indexFile = path.join(FRONTEND_DIST_DIR, "index.html");
+  if (!fs.existsSync(indexFile)) {
+    return false;
+  }
+
+  sendBody(res, 200, fs.readFileSync(indexFile), "text/html; charset=utf-8", {
+    "Cache-Control": "no-store",
+  });
+  return true;
 }
 
 function parseJsonBody(req) {
@@ -3112,6 +3151,11 @@ async function handleLegacyLocalRules(req, res, urlPath) {
 async function handleMasterApi(req, res) {
   const urlPath = (req.url || "").split("?")[0];
 
+  if ((req.method === "GET" || req.method === "HEAD") && urlPath === "/api/health") {
+    sendJson(res, 200, { ok: true, role: ROLE });
+    return;
+  }
+
   if (req.method === "GET" && urlPath === "/api/public/join-agent.sh") {
     sendText(res, 200, buildJoinAgentScript(req), "application/x-sh; charset=utf-8");
     return;
@@ -3124,7 +3168,9 @@ async function handleMasterApi(req, res) {
       sendJson(res, 404, errorPayload("asset not found"));
       return;
     }
-    sendText(res, 200, asset.body, asset.contentType);
+    sendBody(res, 200, asset.body, asset.contentType, {
+      "Cache-Control": "public, max-age=300",
+    });
     return;
   }
 
@@ -3346,11 +3392,6 @@ async function handleMasterApi(req, res) {
       401,
       errorPayload("Unauthorized: Invalid or missing X-Panel-Token"),
     );
-    return;
-  }
-
-  if (req.method === "GET" && urlPath === "/api/health") {
-    sendJson(res, 200, { ok: true, role: ROLE });
     return;
   }
 
@@ -4462,11 +4503,23 @@ async function handleMasterApi(req, res) {
 }
 
 async function handleRequest(req, res) {
+  const [rawPath = "/", rawQuery = ""] = String(req.url || "").split("?");
+  if (rawPath === "/panel-api" || rawPath.startsWith("/panel-api/")) {
+    const apiPath = `/api${rawPath.slice("/panel-api".length) || ""}`;
+    req.url = rawQuery ? `${apiPath}?${rawQuery}` : apiPath;
+  }
+
   const urlPath = (req.url || "").split("?")[0];
 
   if (urlPath.startsWith("/agent-api/")) {
     await handleAgentApi(req, res);
     return;
+  }
+
+  if (ROLE !== "agent" && !urlPath.startsWith("/api/")) {
+    if (tryServeFrontend(req, res, urlPath)) {
+      return;
+    }
   }
 
   if (ROLE === "agent") {
@@ -4476,17 +4529,17 @@ async function handleRequest(req, res) {
       return;
     }
 
+    if ((req.method === "GET" || req.method === "HEAD") && urlPath === "/api/health") {
+      sendJson(res, 200, { ok: true, role: ROLE });
+      return;
+    }
+
     if (!isPanelAuthorized(req)) {
       sendJson(
         res,
         401,
         errorPayload("Unauthorized: Invalid or missing X-Panel-Token"),
       );
-      return;
-    }
-
-    if (req.method === "GET" && urlPath === "/api/health") {
-      sendJson(res, 200, { ok: true, role: ROLE });
       return;
     }
 

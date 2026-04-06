@@ -2,7 +2,7 @@
   "name": "panel-backend",
   "private": true,
   "scripts": {
-    "test": "node -e \"require('./tests/property-roundtrip.test.js'); require('./tests/property-isolation.test.js'); require('./tests/property-revision.test.js'); require('./tests/property-compatibility.test.js'); require('./tests/http-rule-request-headers.test.js'); require('./tests/go-agent-heartbeat.test.js'); require('./tests/relay-listeners.test.js'); require('./tests/version-policy.test.js'); require('./tests/relay-version-api.test.js'); require('./tests/prisma-migration-flow.test.js')\"",
+    "test": "node -e \"require('./tests/property-roundtrip.test.js'); require('./tests/property-isolation.test.js'); require('./tests/property-revision.test.js'); require('./tests/property-compatibility.test.js'); require('./tests/http-rule-request-headers.test.js'); require('./tests/go-agent-heartbeat.test.js'); require('./tests/relay-listeners.test.js'); require('./tests/version-policy.test.js'); require('./tests/relay-version-api.test.js'); require('./tests/runtime-packaging.test.js'); require('./tests/prisma-migration-flow.test.js')\"",
     "prisma:generate": "prisma generate"
   },
   "dependencies": {

@@ -11,9 +11,9 @@
 - **可视化面板**：轻量级管理界面，支持 HTTP/L4 规则增删改查、证书统一管理
 - **自动化 SSL**：集成 `acme.sh`，支持 HTTP/DNS API（如 Cloudflare）自动申请并续期证书
 - **全栈协议支持**：完美支持 IPv4/IPv6，适配各种网络环境
-- **动态响应**：基于模板的 Nginx 配置生成，修改规则后自动测试并 reload
-- **Master/Agent 架构**：支持集中管理多个 Nginx 节点，含 NAT Agent 支持
-
+- **???**?Node.js ?????? Vue ??????????? Nginx
+- **???**?Go `nre-agent` ?????????????????????????
+- **Master/Agent ??**????????? Agent ???? NAT / pull ??
 ## 快速开始
 
 ### Docker 模式（推荐）
@@ -38,7 +38,12 @@ environment:
 docker compose up -d
 ```
 
-访问面板：`http://<服务器IP>:8080`，使用 `API_TOKEN` 登录。
+??????????????
+
+- `http://<???IP>:3000`?????? API
+- `http://<???IP>/panel-api/health`??? smoke check ???????
+
+?? `API_TOKEN` ???????
 
 ### 主机模式（deploy.sh）
 
@@ -110,57 +115,66 @@ curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/dep
 
 首次申请失败后会自动清理残留状态并重试。
 
-## Master/Agent 架构
+## Master/Agent ??
 
-支持在 Master 上集中管理多个 Nginx 节点：
+???????????????
 
-- **Master**：运行完整面板与后端服务，负责规则管理与配置下发
-- **Agent**：运行在目标主机，轻量级，仅需 Node.js 18+ 与 Nginx
-- **NAT Agent**：位于内网后方，通过心跳轮询主动拉取配置，无需入站端口
+- **Control plane**?Node.js ?? + Vue ????? UI?API?????? Agent ??
+- **Execution plane**?????? Go `nre-agent`????????????????
+- **Pull / NAT Agent**?Agent ?????? Master???? Master ??????
 
-### 加入 Agent 节点
+### ?? Agent ??
+
+Linux?
 
 ```bash
-curl -fsSL http://master.example.com:8080/panel-api/public/join-agent.sh | bash -s -- \
+curl -fsSL http://master.example.com:3000/panel-api/public/join-agent.sh | sh -s -- \
   --register-token your-register-token \
   --install-systemd
 ```
 
-脚本会尽量自动安装缺失依赖（如 Node.js、curl、nginx、openssl、socat），并生成 `agent.env`、下载内置 apply/runtime 资源，最后注册 systemd 服务。
+macOS?
 
-常见可选参数：
+```bash
+curl -fsSL http://master.example.com:3000/panel-api/public/join-agent.sh | sh -s -- \
+  --register-token your-register-token \
+  --install-launchd
+```
+
+`join-agent.sh` ???????? Go `nre-agent` ?????? `agent.env`?? Master ?????????? systemd / launchd ???Windows ????? Go agent ????????????
+
+???????
 
 - `--agent-name edge-01`
 - `--tags edge,emby`
-- `--apply-command '/usr/local/bin/custom-apply.sh'`
-- `--local-node --deploy-mode front_proxy`
+- `--agent-url https://edge-01.example.com`
+- `--binary-url https://example.com/custom/nre-agent`
 
-### NAT Agent 示例
+### NAT / Pull Agent ??
 
 ```bash
-curl -fsSL http://master.example.com:8080/panel-api/public/join-agent.sh | bash -s -- \
+curl -fsSL http://master.example.com:3000/panel-api/public/join-agent.sh | sh -s -- \
   --register-token your-register-token \
   --agent-name nat-edge-01 \
   --tags nat,edge \
   --install-systemd
 ```
 
-NAT Agent 只要能主动访问 Master 即可，无需 Master 能访问 Agent。
+Pull Agent ??????? Master ????? Master ??? Agent?
 
-更多手工部署变量与示例文件见：
+?????
 
-- `AGENT_EXAMPLES.md`
-- `examples/light-agent.env.example`
-- `examples/light-agent.service.example`
+- `scripts/join-agent.sh`
+- `go-agent/`
 
 ## 常见问题
 
 <details>
 <summary>为什么推荐使用 host 网络模式？</summary>
 
-`network_mode: host` 让容器直接监听宿主机端口，避免 Docker 端口映射的复杂性，特别是在处理 IPv6 和动态多端口时更具优势。
+<summary>??? docker-compose ???? 3000 ? 80?</summary>
 
-</details>
+?????? Node.js ??????? `3000` ????? compose ?????? `80` ????????????????? `/panel-api/health` ? smoke check?
 
 <details>
 <summary>如何备份规则和证书？</summary>

@@ -166,14 +166,14 @@ const joinCommands = computed(() => {
   return {
     linux: `curl -fsSL ${base}/public/join-agent.sh | bash -s -- --register-token ${token} --install-systemd`,
     macos: `curl -fsSL ${base}/public/join-agent.sh | bash -s -- --register-token ${token} --install-launchd`,
-    windows: '请使用 WSL2 环境安装'
+    windows: 'Windows Go agent packaging is documented separately'
   }
 })
 
 const platforms = computed(() => [
-  { id: 'linux', label: 'Linux', command: joinCommands.value.linux, steps: ['在目标主机上以 root 执行', '脚本自动安装 Node.js、Nginx、light-agent', '注册 systemd 开机自启服务', '节点自动出现在列表'] },
-  { id: 'macos', label: 'macOS', command: joinCommands.value.macos, steps: ['以非 root 用户执行（避免 Homebrew 权限问题）', '脚本安装 Homebrew、Node.js、Nginx', '注册 launchd 开机自启'] },
-  { id: 'windows', label: 'Windows', command: joinCommands.value.windows, steps: ['需要 WSL2 环境', '在 PowerShell 中执行 WSL 命令安装'] }
+  { id: 'linux', label: 'Linux', command: joinCommands.value.linux, steps: ['??????????', '????? Go nre-agent ???', '??????? systemd ??', '?????????????'] },
+  { id: 'macos', label: 'macOS', command: joinCommands.value.macos, steps: ['??? macOS ??????', '????? Go nre-agent ???', '??????? launchd ??'] },
+  { id: 'windows', label: 'Windows', command: joinCommands.value.windows, steps: ['Windows ?????? Go agent ???'] }
 ])
 
 const onlineCount = computed(() => agents.value.filter(a => a.status === 'online').length)
