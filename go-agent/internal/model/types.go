@@ -11,9 +11,3 @@ type RuntimeState struct {
 	Status          string            `json:"status,omitempty"`
 	Metadata        map[string]string `json:"metadata,omitempty"`
 }
-
-type RelayListener struct {
-	TLSMode                 string
-	PinSet                  []string
-	TrustedCACertificateIDs []int
-}
