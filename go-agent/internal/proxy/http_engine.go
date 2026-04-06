@@ -43,7 +43,7 @@ func HostFromRule(rule model.HTTPRule) string {
 	return hostFromFrontendURL(rule.FrontendURL)
 }
 
-func HeaderOverridesFromRule(rule model.HTTPRule, req *http.Request) map[string]string {
+func HeaderOverridesFromRule(rule model.HTTPRule, req *http.Request, incomingHost, incomingScheme string) map[string]string {
 	if req == nil {
 		return nil
 	}
@@ -55,7 +55,7 @@ func HeaderOverridesFromRule(rule model.HTTPRule, req *http.Request) map[string]
 		overrides[hdr.Name] = hdr.Value
 	}
 	if rule.PassProxyHeaders {
-		for key, value := range passProxyHeaders(req) {
+		for key, value := range passProxyHeaders(req, incomingHost, incomingScheme) {
 			overrides[key] = value
 		}
 	}
@@ -101,14 +101,17 @@ func normalizeHost(value string) string {
 	return strings.ToLower(host)
 }
 
-func passProxyHeaders(req *http.Request) map[string]string {
+func passProxyHeaders(req *http.Request, incomingHost, incomingScheme string) map[string]string {
 	values := make(map[string]string)
 	if req == nil {
 		return values
 	}
-	host := req.Host
+	host := strings.TrimSpace(incomingHost)
 	if host == "" {
-		host = req.URL.Host
+		host = strings.TrimSpace(req.Host)
+		if host == "" && req.URL != nil {
+			host = strings.TrimSpace(req.URL.Host)
+		}
 	}
 	if host != "" {
 		values["X-Forwarded-Host"] = host
@@ -126,7 +129,11 @@ func passProxyHeaders(req *http.Request) map[string]string {
 		}
 		values["X-Real-IP"] = ip
 	}
-	values["X-Forwarded-Proto"] = requestScheme(req)
+	scheme := strings.TrimSpace(incomingScheme)
+	if scheme == "" {
+		scheme = requestScheme(req)
+	}
+	values["X-Forwarded-Proto"] = scheme
 	return values
 }
 
@@ -151,4 +158,28 @@ func requestScheme(req *http.Request) string {
 		return strings.ToLower(req.URL.Scheme)
 	}
 	return "http"
+}
+
+func makeModifyResponse(frontendOrigin string, proxyRedirect bool, backendHost string) func(*http.Response) error {
+	if !proxyRedirect {
+		return nil
+	}
+	return func(resp *http.Response) error {
+		location := resp.Header.Get("Location")
+		if location == "" || frontendOrigin == "" || backendHost == "" {
+			return nil
+		}
+		if shouldRewriteLocation(location, backendHost) {
+			resp.Header.Set("Location", rewriteLocation(location, frontendOrigin))
+		}
+		return nil
+	}
+}
+
+func shouldRewriteLocation(rawLocation, backendHost string) bool {
+	parsed, err := url.Parse(rawLocation)
+	if err != nil || parsed.Host == "" {
+		return false
+	}
+	return normalizeHost(parsed.Host) == normalizeHost(backendHost)
 }

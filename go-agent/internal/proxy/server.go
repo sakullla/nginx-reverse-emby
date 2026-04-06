@@ -13,7 +13,8 @@ type Server struct {
 }
 
 type routeEntry struct {
-	proxy *httputil.ReverseProxy
+	proxy       *httputil.ReverseProxy
+	backendHost string
 }
 
 func NewServer(listener model.HTTPListener) *Server {
@@ -27,20 +28,23 @@ func NewServer(listener model.HTTPListener) *Server {
 		if err != nil {
 			continue
 		}
+		targetHost := normalizeHost(target.Host)
 
 		proxy := httputil.NewSingleHostReverseProxy(target)
 		director := proxy.Director
 		proxy.Director = func(req *http.Request) {
+			incomingHost := req.Host
+			incomingScheme := requestScheme(req)
 			director(req)
-			if overrides := HeaderOverridesFromRule(rule, req); len(overrides) > 0 {
+			if overrides := HeaderOverridesFromRule(rule, req, incomingHost, incomingScheme); len(overrides) > 0 {
 				ApplyHeaderOverrides(req, overrides)
 			}
 		}
 
 		frontendOrigin := FrontendOriginFromRule(rule)
-		proxy.ModifyResponse = makeModifyResponse(frontendOrigin, rule.ProxyRedirect)
+		proxy.ModifyResponse = makeModifyResponse(frontendOrigin, rule.ProxyRedirect, targetHost)
 
-		s.routes[hostKey] = &routeEntry{proxy: proxy}
+		s.routes[hostKey] = &routeEntry{proxy: proxy, backendHost: targetHost}
 	}
 
 	return s
@@ -53,18 +57,4 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	http.NotFound(w, req)
-}
-
-func makeModifyResponse(frontendOrigin string, proxyRedirect bool) func(*http.Response) error {
-	if !proxyRedirect {
-		return nil
-	}
-	return func(resp *http.Response) error {
-		location := resp.Header.Get("Location")
-		if location == "" || frontendOrigin == "" {
-			return nil
-		}
-		resp.Header.Set("Location", rewriteLocation(location, frontendOrigin))
-		return nil
-	}
 }
