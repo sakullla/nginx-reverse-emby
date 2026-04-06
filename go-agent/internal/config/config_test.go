@@ -1,54 +1,48 @@
 package config
 
 import (
-	"go/ast"
-	"go/parser"
-	"go/token"
-	"path/filepath"
-	"runtime"
 	"testing"
+	"time"
 )
 
-func TestDefaultUsesBootstrapAgentID(t *testing.T) {
-	cfg := Default()
-
-	if cfg.AgentID != "bootstrap" {
-		t.Fatalf("expected bootstrap agent ID, got %q", cfg.AgentID)
+func TestLoadFromEnv(t *testing.T) {
+	t.Setenv("NRE_AGENT_ID", "agent-42")
+	t.Setenv("NRE_AGENT_NAME", "linux-agent")
+	t.Setenv("NRE_AGENT_TOKEN", "secret")
+	t.Setenv("NRE_MASTER_URL", "https://master.example.com/")
+	t.Setenv("NRE_DATA_DIR", "/tmp/nre-data")
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("expected success, got %v", err)
+	}
+	if cfg.AgentID != "agent-42" {
+		t.Fatalf("expected AgentID, got %q", cfg.AgentID)
+	}
+	if cfg.AgentName != "linux-agent" {
+		t.Fatalf("expected AgentName, got %q", cfg.AgentName)
+	}
+	if cfg.MasterURL != "https://master.example.com" {
+		t.Fatalf("expected trimmed master URL, got %q", cfg.MasterURL)
+	}
+	if cfg.DataDir != "/tmp/nre-data" {
+		t.Fatalf("expected data directory from env, got %q", cfg.DataDir)
+	}
+	if cfg.HeartbeatInterval != 30*time.Second {
+		t.Fatalf("expected default heartbeat, got %v", cfg.HeartbeatInterval)
 	}
 }
 
-func TestConfigPackageDeclaresConcreteConfigType(t *testing.T) {
-	_, currentFile, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("failed to resolve test file location")
+func TestLoadFromEnvRequiresMasterURLAndToken(t *testing.T) {
+	t.Setenv("NRE_AGENT_TOKEN", "secret")
+	if _, err := LoadFromEnv(); err == nil {
+		t.Fatal("expected error when NRE_MASTER_URL missing")
 	}
-
-	configFile := filepath.Join(filepath.Dir(currentFile), "config.go")
-	fileSet := token.NewFileSet()
-	file, err := parser.ParseFile(fileSet, configFile, nil, 0)
-	if err != nil {
-		t.Fatalf("ParseFile returned error: %v", err)
+	if _, err := LoadFromEnv(); err == nil {
+		t.Fatal("expected error when NRE_MASTER_URL missing")
 	}
-
-	for _, decl := range file.Decls {
-		genDecl, ok := decl.(*ast.GenDecl)
-		if !ok || genDecl.Tok != token.TYPE {
-			continue
-		}
-
-		for _, spec := range genDecl.Specs {
-			typeSpec, ok := spec.(*ast.TypeSpec)
-			if !ok || typeSpec.Name.Name != "Config" {
-				continue
-			}
-
-			if _, ok := typeSpec.Type.(*ast.StructType); ok {
-				return
-			}
-
-			t.Fatalf("expected Config to be declared as a struct in config.go")
-		}
+	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
+	t.Setenv("NRE_AGENT_TOKEN", "")
+	if _, err := LoadFromEnv(); err == nil {
+		t.Fatal("expected error when NRE_AGENT_TOKEN missing")
 	}
-
-	t.Fatal("expected config.go to declare type Config")
 }

@@ -11,7 +11,12 @@ import (
 )
 
 func main() {
-	runtimeApp, err := app.New(config.Default())
+	cfg, err := config.LoadFromEnv()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	runtimeApp, err := app.New(cfg)
 	if err != nil {
 		log.Fatal(err)
 	}
