@@ -13,8 +13,8 @@ type RuntimeState struct {
 }
 
 type HTTPProxyConfig struct {
-	FrontendOrigin  string
-	HeaderOverrides map[string]string
+	FrontendOrigin  string            `json:"frontend_origin,omitempty"`
+	HeaderOverrides map[string]string `json:"header_overrides,omitempty"`
 }
 
 type L4Rule struct {
