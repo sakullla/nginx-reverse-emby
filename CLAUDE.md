@@ -4,114 +4,147 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-`nginx-reverse-emby` is an automated nginx reverse-proxy solution with a web management panel, designed primarily for fronting Emby/Jellyfin and arbitrary HTTP/TCP services. It supports a **Master/Agent architecture** where a Master node manages rules centrally and pushes them to remote Agents via a polling heartbeat protocol.
+`nginx-reverse-emby` now uses a split architecture:
 
-**Two deploy modes:**
-- `direct` — container binds ports 80/443, handles SSL via `acme.sh`
-- `front_proxy` — container runs behind an upstream proxy (Caddy/Nginx), listens on port 3000
+- **Control plane:** Node.js backend + Vue frontend
+- **Execution plane:** Go `nre-agent`
+
+The control plane stores rules, certificates, agents, relay listeners, and version policy. Agents keep using the **heartbeat pull** model: registered agents poll the master, fetch desired state, and apply it locally.
+
+The repository is no longer centered around a bundled Nginx runtime for the control plane. The panel backend now serves:
+
+- the JSON API,
+- `/panel-api/*` aliases,
+- the built frontend bundle,
+- public agent assets such as `join-agent.sh` and Go binaries.
 
 ## Commands
 
 ### Backend (Node.js API)
 ```bash
 cd panel/backend
-node server.js                    # run locally
-node --check server.js            # syntax check
-npm test                          # run property-based tests (fast-check)
-npm run prisma:generate           # regenerate Prisma client after schema changes
+node server.js
+node --check server.js
+npm test
+npm run prisma:generate
 ```
 
 ### Frontend (Vue 3 / Vite)
 ```bash
 cd panel/frontend
-npm ci                            # install deps
-npm run dev                       # dev server at http://localhost:5173
-npm run build                     # build to dist/
-npm run preview                   # preview built bundle
+npm ci
+npm run dev
+npm run build
+npm run preview
 ```
 
-Dev server proxies `/panel-api` → `http://localhost:18081` (rewritten to `/api`), so the backend must be running for API calls to work. The frontend also has a **mock mode** (see `api/index.js`) for UI-only development.
+The Vite dev server proxies `/panel-api` requests to the backend. For local UI development, run the backend alongside the frontend dev server.
 
-### Container
+### Go Agent
 ```bash
-docker build -t nginx-reverse-emby .       # full multi-stage image build
-docker compose up -d                       # start the stack
-docker exec nginx-reverse-emby nginx -t   # validate nginx config inside container
+cd go-agent
+go test ./...
+go run ./cmd/nre-agent
 ```
+
+### Container / Runtime Packaging
+```bash
+docker build -t nginx-reverse-emby .
+docker compose up -d
+```
+
+The default image/runtime produced by this repository is the **control-plane container**. The Go agent is packaged as a separate execution-plane binary and exposed for download by remote or local agents.
 
 ## Architecture
 
-### Request Flow
-```
-Browser (Vue SPA :8080)
-  → nginx (/panel-api/ → 127.0.0.1:18081/api/)
-    → server.js (raw Node.js HTTP, no framework)
-      → storage.js dispatcher
-          ├── storage-sqlite.js (default; Worker thread + Prisma)
-          └── storage-json.js (fallback; flat JSON files in panel/data/)
+### Control-Plane Request Flow
+```text
+Browser
+  -> Node backend (server.js)
+    -> authenticated /api/* routes
+    -> /panel-api/* compatibility aliases
+    -> public agent asset routes
+    -> built frontend static files / SPA fallback
 ```
 
-### Rule Application Flow
-When a rule is saved and `PANEL_AUTO_APPLY=1` (default):
-1. `server.js` calls `spawnSync("25-dynamic-reverse-proxy.sh")`
-2. Script reads `proxy_rules.json` + `l4_rules.json`
-3. Issues/installs certs via `acme.sh`
-4. Generates `/etc/nginx/conf.d/dynamic/*.conf` (HTTP) and `/etc/nginx/stream-conf.d/dynamic/*.conf` (L4/TCP/UDP)
-5. Runs `nginx -t && nginx -s reload`
+### Agent Sync Flow (pull model)
+1. Master stores desired state and desired revisions
+2. A registered Go `nre-agent` sends heartbeat / sync requests to the master
+3. Master returns rules, L4 rules, relay listeners, certificates, and version/update information
+4. Agent applies the config locally and reports current status/revision back on later heartbeats
 
-### Remote Agent Sync (pull mode)
-1. Master sets `desired_revision` on agent record when rules change
-2. `light-agent.js` on remote host polls every 10s via heartbeat POST
-3. Master returns sync payload (rules, L4 rules, cert bundle, policy)
-4. Agent writes rule JSON files, runs `APPLY_COMMAND` (typically `light-agent-apply.sh`)
-5. Agent reports back `current_revision` and `last_apply_status`
+### Runtime Responsibilities
+
+**Node/Vue control plane**
+- API, auth, storage, revisioning, agent registry
+- relay listener and version policy management
+- agent asset publishing and join/bootstrap flow
+
+**Go execution plane**
+- heartbeat sync client
+- HTTP proxy engine
+- L4 direct proxying
+- TCP relay validation/runtime
+- certificate/runtime primitives
+- local-agent mode and update plumbing
+
+If you explicitly enable legacy local apply / Node-side execution paths, you must provide `PANEL_GENERATOR_SCRIPT` or `PANEL_APPLY_COMMAND`; the default control-plane image no longer bundles the old generator script.
 
 ### Storage Layer
-- **SQLite (default):** `storage-sqlite.js` maintains in-memory state for performance, uses a Worker thread (`storage-prisma-worker.js` → `storage-prisma-core.js`) for Prisma ORM writes to avoid blocking the event loop.
-- **JSON fallback:** `storage-json.js` writes flat JSON files to `panel/data/`. Controlled via `PANEL_STORAGE_BACKEND` env var (`sqlite` | `json`).
-- Prisma schema: `panel/backend/prisma/schema.prisma`. Models: `Agent`, `Rule`, `L4Rule`, `ManagedCertificate`, `LocalAgentState`, `Meta`.
+- **SQLite (default):** Prisma-backed storage with worker-thread helpers
+- **JSON fallback:** flat files in `panel/data/`
+
+Relevant backend files:
+- `panel/backend/server.js`
+- `panel/backend/storage.js`
+- `panel/backend/storage-json.js`
+- `panel/backend/storage-sqlite.js`
+- `panel/backend/storage-prisma-*.js`
 
 ### Frontend State
-Single Pinia store (`useRuleStore` in `stores/rules.js`) manages all app state: auth, system info, agent list, selected agent, HTTP rules, L4 rules, certificates, and search/filter state. All API calls go through `api/index.js`.
+The Vue SPA under `panel/frontend/src/` manages rules, agents, certificates, relay listeners, and version/update UI.
 
 ## Key Environment Variables
 
 | Prefix | Purpose |
 |--------|---------|
-| `PANEL_*` | Panel behavior: port, role (`master`/`agent`), data root, storage backend |
-| `PROXY_*` | Deploy mode, redirect/header behavior |
-| `MASTER_*` | Master-specific: register token, local agent config |
-| `AGENT_*` | Agent identity, polling behavior (used by `light-agent.js`) |
-| `ACME_*`, `CF_*` | Certificate issuance and DNS challenge |
-| `NGINX_*` | Nginx tuning: max body size, IPv6, resolvers |
+| `PANEL_*` | Panel host/port, storage backend, runtime behavior |
+| `MASTER_*` | Master register token, local-agent settings, version/update behavior |
+| `AGENT_*` | Go agent identity, polling, and sync settings |
+| `PROXY_*` | Proxy/runtime configuration shared with rules or local runtime behavior |
 
 ## API Conventions
 
-- All authenticated routes: `/api/` (token via `X-Panel-Token` header)
-- Public routes (agent join script, asset downloads): `/api/public/`
-- Frontend accesses everything through `/panel-api/` (nginx rewrites to `/api/`)
+- Authenticated API routes live under `/api/*`
+- Public bootstrap / asset routes live under `/api/public/*`
+- `/panel-api/*` aliases are also served directly by the Node backend for compatibility
+- Public health endpoint: `/panel-api/health`
 
 ## Testing
 
-Tests are in `panel/backend/tests/` and use `fast-check` for property-based testing:
-- `property-roundtrip.test.js` — storage read/write roundtrips
-- `property-isolation.test.js` — agent data isolation
-- `property-revision.test.js` — revision increment correctness
-- `property-compatibility.test.js` — JSON/SQLite storage compatibility
+Backend tests live in `panel/backend/tests/` and are primarily property/invariant based.
 
-Run a single test file:
+Common verification commands:
+
 ```bash
-cd panel/backend && node tests/property-roundtrip.test.js
+cd panel/backend && npm test
+cd panel/backend && node --check server.js
+cd panel/frontend && npm run build
+cd go-agent && go test ./...
+docker build -t nginx-reverse-emby .
 ```
 
 ## Commit Style
 
-Commits follow Conventional Commits: `type(scope): description`
-- Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`
-- Scopes: `nginx`, `backend`, `frontend`, `agent`, `panel`, `docker`
+Commits follow Conventional Commits, for example:
+
+- `feat(backend): ...`
+- `feat(go-agent): ...`
+- `fix(panel): ...`
+- `feat(runtime): ...`
 
 ## Security Notes
 
-- All write operations to `/api/` require `X-Panel-Token` authentication
-- Never log or expose API tokens, `MASTER_REGISTER_TOKEN`, or acme.sh credentials
-- `server.js` validates that agent IDs are alphanumeric only before using them in file paths
+- Never log or commit API tokens, register tokens, certificates, or files under `panel/data/`
+- Treat agent registration/update endpoints as sensitive
+- Keep public asset routes limited to bootstrap scripts and published agent binaries

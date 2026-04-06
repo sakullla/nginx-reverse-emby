@@ -43,8 +43,7 @@ const LOCAL_AGENT_STATE_JSON =
   process.env.PANEL_LOCAL_AGENT_STATE_JSON ||
   path.join(DATA_ROOT, "local_agent_state.json");
 const GENERATOR_SCRIPT =
-  process.env.PANEL_GENERATOR_SCRIPT ||
-  "/docker-entrypoint.d/25-dynamic-reverse-proxy.sh";
+  process.env.PANEL_GENERATOR_SCRIPT || "";
 const MANAGED_CERT_HELPER_SCRIPT =
   process.env.PANEL_MANAGED_CERT_HELPER_SCRIPT ||
   path.resolve(__dirname, "..", "..", "scripts", "managed-cert-helper.sh");
@@ -1919,6 +1918,10 @@ function applyNginxConfig() {
   if (APPLY_COMMAND) {
     runChecked(APPLY_COMMAND, APPLY_COMMAND_ARGS, extraEnv);
     return;
+  }
+
+  if (!GENERATOR_SCRIPT || !fs.existsSync(GENERATOR_SCRIPT)) {
+    throw new Error("no built-in local apply runtime is bundled; set PANEL_GENERATOR_SCRIPT or PANEL_APPLY_COMMAND");
   }
 
   // --- Diff-based apply with rollback ---

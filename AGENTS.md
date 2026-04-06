@@ -1,7 +1,7 @@
 # Repository Guidelines
 
 ## Project Structure & Module Organization
-The repo packages an Nginx-based reverse-proxy image plus a web control panel. Top-level runtime assets live in `docker/` (entrypoint scripts and Nginx templates), `conf.d/` (sample generated configs), `scripts/` (agent/join/apply helpers), and `examples/` (service and env examples). The panel is split into `panel/frontend/` (Vue 3 + Vite SPA, source in `src/`) and `panel/backend/` (Node API, Prisma schema in `prisma/`, property tests in `tests/`). `panel/data/` is runtime state; treat it as local data, not source.
+The repo ships a control-plane container (Node backend + Vue frontend) plus the Go `nre-agent` execution plane. Top-level runtime assets live in `docker/` (control-plane entrypoint scripts and legacy Nginx templates), `conf.d/` (sample generated configs), `scripts/` (agent/join helpers), and `examples/` (optional legacy examples, which may be empty after cleanup). The panel is split into `panel/frontend/` (Vue 3 + Vite SPA, source in `src/`) and `panel/backend/` (Node API, Prisma schema in `prisma/`, property tests in `tests/`). `panel/data/` is runtime state; treat it as local data, not source. Legacy Nginx-only tooling (like `deploy.sh`) is kept for optional standalone proxy nodes, not the default control-plane runtime.
 
 ## Build, Test, and Development Commands
 - `cd panel/frontend && npm run dev` - start the Vite UI locally.

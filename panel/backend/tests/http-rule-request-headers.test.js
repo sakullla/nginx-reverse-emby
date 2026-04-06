@@ -14,12 +14,14 @@ const {
 } = require("../http-rule-request-headers");
 
 const REPO_ROOT = path.resolve(__dirname, "..", "..", "..");
-const LEGACY_NGINX_GENERATOR_PATH = path.join(
-  REPO_ROOT,
-  "docker",
-  "25-dynamic-reverse-proxy.sh",
-);
-const HAS_LEGACY_NGINX_GENERATOR = fsSync.existsSync(LEGACY_NGINX_GENERATOR_PATH);
+// Opt-in legacy coverage: point this at a generator script if you want the
+// historical generator assertions to run in a legacy worktree.
+const LEGACY_NGINX_GENERATOR_PATH = String(
+  process.env.NRE_TEST_LEGACY_GENERATOR_SCRIPT || "",
+).trim();
+const HAS_LEGACY_NGINX_GENERATOR =
+  LEGACY_NGINX_GENERATOR_PATH !== "" &&
+  fsSync.existsSync(LEGACY_NGINX_GENERATOR_PATH);
 const itWithLegacyGenerator = HAS_LEGACY_NGINX_GENERATOR ? it : it.skip;
 
 async function getFreePort() {
