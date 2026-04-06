@@ -2,8 +2,6 @@
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
-const fsp = require("node:fs/promises");
-const path = require("node:path");
 const { withBackendServer } = require("./helpers");
 
 describe("Go agent heartbeat API", () => {
@@ -119,7 +117,8 @@ describe("Go agent heartbeat API", () => {
           },
         ]);
         assert.equal(payload.sync.desired_version, "1.2.3");
-        assert.deepEqual(payload.sync.version_package, {
+        assert.equal(payload.sync.version_package, "https://example.com/agent-windows-a.zip");
+        assert.deepEqual(payload.sync.version_package_meta, {
           platform: "windows-amd64",
           url: "https://example.com/agent-windows-a.zip",
           sha256: "sha-windows-a",
@@ -247,7 +246,8 @@ describe("Go agent heartbeat API", () => {
         assert.equal(response.status, 200);
         const payload = await response.json();
         assert.equal(payload.sync.desired_version, "3.0.0");
-        assert.deepEqual(payload.sync.version_package, {
+        assert.equal(payload.sync.version_package, "https://example.com/windows-match.zip");
+        assert.deepEqual(payload.sync.version_package_meta, {
           platform: "windows-amd64",
           url: "https://example.com/windows-match.zip",
           sha256: "sha-windows-match",
@@ -308,6 +308,41 @@ describe("Go agent heartbeat API", () => {
             },
           ],
         },
+        l4RulesByAgentId: {
+          "remote-agent-5": [
+            {
+              id: 2,
+              agent_id: "remote-agent-5",
+              name: "tcp-service",
+              protocol: "tcp",
+              listen_host: "0.0.0.0",
+              listen_port: 9000,
+              upstream_host: "127.0.0.1",
+              upstream_port: 9001,
+              enabled: true,
+              tags: ["sync"],
+              revision: 4,
+            },
+          ],
+        },
+        managedCertificates: [
+          {
+            id: 21,
+            domain: "sync.example.com",
+            enabled: true,
+            scope: "domain",
+            issuer_mode: "local_http01",
+            target_agent_ids: ["remote-agent-5"],
+            status: "issued",
+            revision: 3,
+          },
+        ],
+        managedCertificateMaterial: {
+          "sync.example.com": {
+            cert_pem: "CERTIFICATE",
+            key_pem: "PRIVATEKEY",
+          },
+        },
         versionPolicies: [
           {
             id: "stable-sync",
@@ -323,51 +358,7 @@ describe("Go agent heartbeat API", () => {
           },
         ],
       },
-      async ({ baseUrl, dataRoot }) => {
-        const l4Rules = [
-          {
-            id: 2,
-            agent_id: "remote-agent-5",
-            name: "tcp-service",
-            protocol: "tcp",
-            listen_host: "0.0.0.0",
-            listen_port: 9000,
-            upstream_host: "127.0.0.1",
-            upstream_port: 9001,
-            enabled: true,
-            tags: ["sync"],
-            revision: 4,
-          },
-        ];
-        await fsp.mkdir(path.join(dataRoot, "l4_agent_rules"), { recursive: true });
-        await fsp.writeFile(
-          path.join(dataRoot, "l4_agent_rules", "remote-agent-5.json"),
-          JSON.stringify(l4Rules, null, 2),
-          "utf8",
-        );
-
-        const certs = [
-          {
-            id: 21,
-            domain: "sync.example.com",
-            enabled: true,
-            scope: "domain",
-            issuer_mode: "local_http01",
-            target_agent_ids: ["remote-agent-5"],
-            status: "issued",
-            revision: 3,
-          },
-        ];
-        await fsp.writeFile(
-          path.join(dataRoot, "managed_certificates.json"),
-          JSON.stringify(certs, null, 2),
-          "utf8",
-        );
-        const certDir = path.join(dataRoot, "managed_certificates", "sync.example.com");
-        await fsp.mkdir(certDir, { recursive: true });
-        await fsp.writeFile(path.join(certDir, "cert"), "CERTIFICATE", "utf8");
-        await fsp.writeFile(path.join(certDir, "key"), "PRIVATEKEY", "utf8");
-
+      async ({ baseUrl }) => {
         const response = await fetch(`${baseUrl}/api/agents/heartbeat`, {
           method: "POST",
           headers: {
@@ -394,8 +385,11 @@ describe("Go agent heartbeat API", () => {
         assert.ok(Array.isArray(payload.sync.relay_listeners));
         assert.ok(Array.isArray(payload.sync.certificates));
         assert.equal(payload.sync.certificates[0].domain, "sync.example.com");
+        assert.equal(payload.sync.certificates[0].cert_pem, "CERTIFICATE");
+        assert.equal(payload.sync.certificates[0].key_pem, "PRIVATEKEY");
         assert.equal(payload.sync.desired_version, "4.0.0");
-        assert.deepEqual(payload.sync.version_package, {
+        assert.equal(payload.sync.version_package, "https://example.com/agent-linux.tar.gz");
+        assert.deepEqual(payload.sync.version_package_meta, {
           platform: "linux-amd64",
           url: "https://example.com/agent-linux.tar.gz",
           sha256: "sha-linux-sync",

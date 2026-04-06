@@ -161,6 +161,30 @@ async function withBackendServer(options, testFn) {
       await writeJson(path.join(dataRoot, "relay_listeners", `${agentId}.json`), listeners);
     }
   }
+  if (options?.l4RulesByAgentId && typeof options.l4RulesByAgentId === "object") {
+    for (const [agentId, rules] of Object.entries(options.l4RulesByAgentId)) {
+      await writeJson(path.join(dataRoot, "l4_agent_rules", `${agentId}.json`), rules);
+    }
+  }
+  if (options?.managedCertificates) {
+    await writeJson(
+      path.join(dataRoot, "managed_certificates.json"),
+      options.managedCertificates,
+    );
+  }
+  if (options?.managedCertificateMaterial && typeof options.managedCertificateMaterial === "object") {
+    for (const [domain, material] of Object.entries(options.managedCertificateMaterial)) {
+      if (!material) continue;
+      const certDir = path.join(dataRoot, "managed_certificates", domain);
+      await fsp.mkdir(certDir, { recursive: true });
+      if (material.cert_pem !== undefined) {
+        await fsp.writeFile(path.join(certDir, "cert"), String(material.cert_pem), "utf8");
+      }
+      if (material.key_pem !== undefined) {
+        await fsp.writeFile(path.join(certDir, "key"), String(material.key_pem), "utf8");
+      }
+    }
+  }
   if (options?.versionPolicies) {
     await writeJson(path.join(dataRoot, "version_policies.json"), options.versionPolicies);
   }

@@ -2839,6 +2839,7 @@ function getAgentHeartbeatResponse(agent) {
   const certificates = buildManagedCertificateBundleForAgent(agent.id);
   const certificatePolicies = buildManagedCertificatePolicyForAgent(agent.id);
   const versionPackage = resolveVersionPackageForAgent(agent);
+  const versionPackageMeta = versionPackage ? { ...versionPackage } : null;
   const hasUpdate = agent.current_revision < agent.desired_revision;
   return {
     ok: true,
@@ -2853,8 +2854,9 @@ function getAgentHeartbeatResponse(agent) {
       l4_rules: hasUpdate ? l4Rules : undefined,
       relay_listeners: relayListeners,
       desired_version: agent.desired_version || null,
-      version_package: versionPackage ? { ...versionPackage } : null,
-      version_sha256: versionPackage ? versionPackage.sha256 : null,
+      version_package: versionPackage ? versionPackage.url : null,
+      version_package_meta: versionPackageMeta,
+      version_sha256: versionPackageMeta ? versionPackageMeta.sha256 : null,
       certificates: hasUpdate ? certificates : undefined,
       certificate_policies: hasUpdate ? certificatePolicies : undefined,
     },
