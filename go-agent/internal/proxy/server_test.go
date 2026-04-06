@@ -16,15 +16,11 @@ func TestServerRoutesByHostAndRewritesLocation(t *testing.T) {
 	defer backend.Close()
 
 	listener := model.HTTPListener{
-		HTTPProxyConfig: model.HTTPProxyConfig{
-			FrontendOrigin: "https://frontend.example",
-		},
-		Routes: []model.HTTPRoute{
+		Rules: []model.HTTPRule{
 			{
-				Host:          "route.example",
-				BackendURL:     backend.URL,
-				ProxyRedirect:  true,
-				HeaderOverrides: map[string]string{},
+				FrontendURL:   "https://route.example",
+				BackendURL:    backend.URL,
+				ProxyRedirect: true,
 			},
 		},
 	}
@@ -55,7 +51,7 @@ func TestServerRoutesByHostAndRewritesLocation(t *testing.T) {
 		t.Fatalf("expected 302, got %d", resp.StatusCode)
 	}
 
-	if got := resp.Header.Get("Location"); got != "https://frontend.example/redirected" {
+	if got := resp.Header.Get("Location"); got != "https://route.example/redirected" {
 		t.Fatalf("unexpected location: %q", got)
 	}
 }
@@ -67,10 +63,10 @@ func TestServerReturns404ForUnknownHost(t *testing.T) {
 	defer backend.Close()
 
 	listener := model.HTTPListener{
-		Routes: []model.HTTPRoute{
+		Rules: []model.HTTPRule{
 			{
-				Host:      "route.example",
-				BackendURL: backend.URL,
+				FrontendURL: "https://route.example",
+				BackendURL:  backend.URL,
 			},
 		},
 	}
@@ -105,12 +101,12 @@ func TestServerAppliesHeaderOverrides(t *testing.T) {
 	defer backend.Close()
 
 	listener := model.HTTPListener{
-		Routes: []model.HTTPRoute{
+		Rules: []model.HTTPRule{
 			{
-				Host:        "header.example",
-				BackendURL:   backend.URL,
-				HeaderOverrides: map[string]string{
-					"X-Test-Header": "override-value",
+				FrontendURL: "https://header.example",
+				BackendURL:  backend.URL,
+				CustomHeaders: []model.HTTPHeader{
+					{Name: "X-Test-Header", Value: "override-value"},
 				},
 			},
 		},

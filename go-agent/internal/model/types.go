@@ -12,11 +12,6 @@ type RuntimeState struct {
 	Metadata        map[string]string `json:"metadata,omitempty"`
 }
 
-type HTTPProxyConfig struct {
-	FrontendOrigin  string            `json:"frontend_origin,omitempty"`
-	HeaderOverrides map[string]string `json:"header_overrides,omitempty"`
-}
-
 type L4Rule struct {
 	Protocol   string
 	RelayChain []int
