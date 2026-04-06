@@ -27,6 +27,10 @@ type Client struct {
 	client *http.Client
 }
 
+type SyncRequest struct {
+	CurrentRevision int
+}
+
 func NewClient(cfg ClientConfig, httpClient *http.Client) *Client {
 	if httpClient == nil {
 		httpClient = http.DefaultClient
@@ -35,7 +39,7 @@ func NewClient(cfg ClientConfig, httpClient *http.Client) *Client {
 	return &Client{cfg: cfg, client: httpClient}
 }
 
-func (c *Client) Sync(ctx context.Context, _ Snapshot) (Snapshot, error) {
+func (c *Client) Sync(ctx context.Context, request SyncRequest) (Snapshot, error) {
 	payload := struct {
 		Name            string `json:"name"`
 		AgentID         string `json:"agent_id"`
@@ -43,12 +47,12 @@ func (c *Client) Sync(ctx context.Context, _ Snapshot) (Snapshot, error) {
 		Version         string `json:"version"`
 		Platform        string `json:"platform"`
 	}{
-		Name:            c.cfg.AgentName,
-		AgentID:         c.cfg.AgentID,
-		CurrentRevision: 0,
-		Version:         c.cfg.CurrentVersion,
-		Platform:        c.cfg.Platform,
+		Name:     c.cfg.AgentName,
+		AgentID:  c.cfg.AgentID,
+		Version:  c.cfg.CurrentVersion,
+		Platform: c.cfg.Platform,
 	}
+	payload.CurrentRevision = request.CurrentRevision
 
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -56,14 +60,14 @@ func (c *Client) Sync(ctx context.Context, _ Snapshot) (Snapshot, error) {
 	}
 
 	endpoint := c.cfg.MasterURL + "/api/agents/heartbeat"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
 	if err != nil {
 		return Snapshot{}, err
 	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-agent-token", c.cfg.AgentToken)
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("x-agent-token", c.cfg.AgentToken)
 
-	resp, err := c.client.Do(req)
+	resp, err := c.client.Do(httpReq)
 	if err != nil {
 		return Snapshot{}, err
 	}

@@ -50,7 +50,7 @@ func TestHeartbeatSync(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	snap, err := client.Sync(ctx, Snapshot{DesiredVersion: "baseline"})
+	snap, err := client.Sync(ctx, SyncRequest{CurrentRevision: 42})
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -84,8 +84,8 @@ func TestHeartbeatSync(t *testing.T) {
 		if payload.Name != "local" || payload.Version != "0.1.0" || payload.Platform != "linux-amd64" {
 			t.Fatalf("unexpected payload %+v", payload)
 		}
-		if payload.CurrentRevision != 0 {
-			t.Fatalf("expected current_revision=0, got %d", payload.CurrentRevision)
+		if payload.CurrentRevision != 42 {
+			t.Fatalf("expected current_revision=42, got %d", payload.CurrentRevision)
 		}
 	case <-ctx.Done():
 		t.Fatalf("heartbeat not sent")

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"runtime"
+	"strconv"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
@@ -12,9 +13,10 @@ import (
 
 type Config = config.Config
 type Snapshot = store.Snapshot
+type SyncRequest = agentsync.SyncRequest
 
 type SyncClient interface {
-	Sync(context.Context, Snapshot) (Snapshot, error)
+	Sync(context.Context, SyncRequest) (Snapshot, error)
 }
 
 type App struct {
@@ -55,8 +57,13 @@ func (a *App) Run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	runtimeState, err := a.store.LoadRuntimeState()
+	if err != nil {
+		return err
+	}
+	req := SyncRequest{CurrentRevision: currentRevisionFromMetadata(runtimeState.Metadata)}
 
-	if _, err := a.syncOnce(ctx, applied); err != nil {
+	if err := a.syncOnce(ctx, req, &runtimeState); err != nil {
 		if applied.DesiredVersion == "" {
 			return err
 		}
@@ -70,18 +77,57 @@ func (a *App) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			a.syncOnce(ctx, applied)
+			a.syncOnce(ctx, req, &runtimeState)
 		}
 	}
 }
 
-func (a *App) syncOnce(ctx context.Context, applied Snapshot) (Snapshot, error) {
-	snapshot, err := a.syncClient.Sync(ctx, applied)
+func (a *App) syncOnce(ctx context.Context, req SyncRequest, runtimeState *store.RuntimeState) error {
+	snapshot, err := a.syncClient.Sync(ctx, req)
 	if err != nil {
-		return Snapshot{}, err
+		return a.recordRuntimeError(runtimeState, err)
+	}
+	if err := a.clearRuntimeError(runtimeState); err != nil {
+		return err
 	}
 	if err := a.store.SaveDesiredSnapshot(snapshot); err != nil {
-		return Snapshot{}, err
+		return err
 	}
-	return snapshot, nil
+	return nil
+}
+
+func (a *App) recordRuntimeError(state *store.RuntimeState, syncErr error) error {
+	state.Metadata = ensureMetadata(state.Metadata)
+	state.Metadata["last_sync_error"] = syncErr.Error()
+	if err := a.store.SaveRuntimeState(*state); err != nil {
+		return err
+	}
+	return syncErr
+}
+
+func (a *App) clearRuntimeError(state *store.RuntimeState) error {
+	delete(state.Metadata, "last_sync_error")
+	if err := a.store.SaveRuntimeState(*state); err != nil {
+		return err
+	}
+	return nil
+}
+
+func ensureMetadata(meta map[string]string) map[string]string {
+	if meta == nil {
+		return make(map[string]string)
+	}
+	return meta
+}
+
+func currentRevisionFromMetadata(meta map[string]string) int {
+	if meta == nil {
+		return 0
+	}
+	if raw, ok := meta["current_revision"]; ok {
+		if val, err := strconv.Atoi(raw); err == nil {
+			return val
+		}
+	}
+	return 0
 }
