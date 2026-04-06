@@ -292,9 +292,353 @@ func TestManagerApplyHotReloadSwapsActiveMaterial(t *testing.T) {
 	}
 }
 
+func TestManagerApplyIssuesACMECertificateUsingLocalHTTP01(t *testing.T) {
+	t.Parallel()
+
+	issued := mustCreateTLSMaterial(t, certificateSpec{commonName: "acme-http.example.com"})
+	fake := &fakeACMEIssuer{results: []acmeIssueResult{{CertPEM: issued.CertPEM, KeyPEM: issued.KeyPEM}}}
+	manager := mustNewManager(
+		t,
+		t.TempDir(),
+		withACMEIssuerFactory(func(request acmeIssueRequest) (acmeIssuer, error) {
+			return fake, nil
+		}),
+	)
+
+	err := manager.Apply(context.Background(), nil, []model.ManagedCertificatePolicy{
+		{
+			ID:              51,
+			Domain:          "acme-http.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			CertificateType: "acme",
+			Usage:           "https",
+		},
+	})
+	if err != nil {
+		t.Fatalf("apply failed: %v", err)
+	}
+
+	if len(fake.requests) != 1 {
+		t.Fatalf("expected one acme issuance request, got %d", len(fake.requests))
+	}
+	if fake.requests[0].ChallengeType != challengeTypeHTTP01 {
+		t.Fatalf("unexpected challenge type: %q", fake.requests[0].ChallengeType)
+	}
+	if fake.requests[0].IssuerMode != "local_http01" {
+		t.Fatalf("unexpected issuer mode: %q", fake.requests[0].IssuerMode)
+	}
+
+	info, err := manager.CertificateInfo(51)
+	if err != nil {
+		t.Fatalf("certificate info failed: %v", err)
+	}
+	if info.Fingerprint != issued.Fingerprint {
+		t.Fatalf("unexpected fingerprint: got %q want %q", info.Fingerprint, issued.Fingerprint)
+	}
+}
+
+func TestManagerApplyUsesDNSChallengeForMasterCFDNSOnLocalMaster(t *testing.T) {
+	t.Parallel()
+
+	issued := mustCreateTLSMaterial(t, certificateSpec{commonName: "acme-dns.example.com"})
+	fake := &fakeACMEIssuer{results: []acmeIssueResult{{CertPEM: issued.CertPEM, KeyPEM: issued.KeyPEM}}}
+	manager := mustNewManager(
+		t,
+		t.TempDir(),
+		WithNodeRole("master"),
+		WithLocalAgent(true),
+		WithCloudflareAPITokens("dns-token", ""),
+		withACMEIssuerFactory(func(request acmeIssueRequest) (acmeIssuer, error) {
+			return fake, nil
+		}),
+	)
+
+	err := manager.Apply(context.Background(), nil, []model.ManagedCertificatePolicy{
+		{
+			ID:              52,
+			Domain:          "acme-dns.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "master_cf_dns",
+			CertificateType: "acme",
+			Usage:           "https",
+		},
+	})
+	if err != nil {
+		t.Fatalf("apply failed: %v", err)
+	}
+
+	if len(fake.requests) != 1 {
+		t.Fatalf("expected one acme issuance request, got %d", len(fake.requests))
+	}
+	if fake.requests[0].ChallengeType != challengeTypeDNS01Cloudflare {
+		t.Fatalf("unexpected challenge type: %q", fake.requests[0].ChallengeType)
+	}
+	if fake.requests[0].CloudflareDNSAPIToken != "dns-token" {
+		t.Fatalf("unexpected cloudflare dns token: %q", fake.requests[0].CloudflareDNSAPIToken)
+	}
+	if fake.requests[0].CloudflareZoneAPIToken != "dns-token" {
+		t.Fatalf("unexpected cloudflare zone token: %q", fake.requests[0].CloudflareZoneAPIToken)
+	}
+}
+
+func TestManagerApplyRejectsMasterCFDNSOutsideLocalMaster(t *testing.T) {
+	t.Parallel()
+
+	manager := mustNewManager(t, t.TempDir())
+
+	err := manager.Apply(context.Background(), nil, []model.ManagedCertificatePolicy{
+		{
+			ID:              53,
+			Domain:          "remote-dns.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "master_cf_dns",
+			CertificateType: "acme",
+			Usage:           "https",
+		},
+	})
+	if err == nil {
+		t.Fatal("expected master_cf_dns apply to fail outside local master")
+	}
+	if got := err.Error(); got != "certificate 53: master_cf_dns issuance is only allowed on the local master agent" {
+		t.Fatalf("unexpected error: %q", got)
+	}
+}
+
+func TestManagerApplyRejectsMasterCFDNSWhenCloudflareCredentialsMissing(t *testing.T) {
+	t.Parallel()
+
+	manager := mustNewManager(
+		t,
+		t.TempDir(),
+		WithNodeRole("master"),
+		WithLocalAgent(true),
+	)
+
+	err := manager.Apply(context.Background(), nil, []model.ManagedCertificatePolicy{
+		{
+			ID:              54,
+			Domain:          "missing-creds.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "master_cf_dns",
+			CertificateType: "acme",
+			Usage:           "https",
+		},
+	})
+	if err == nil {
+		t.Fatal("expected missing credentials error")
+	}
+	if got := err.Error(); got != "certificate 54: cloudflare credentials are required for master_cf_dns issuance" {
+		t.Fatalf("unexpected error: %q", got)
+	}
+}
+
+func TestManagerApplyPersistsLocallyIssuedACMEMaterialAcrossRecreation(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	issued := mustCreateTLSMaterial(t, certificateSpec{
+		commonName: "persist-acme.example.com",
+		notBefore:  time.Now().Add(-time.Hour),
+		notAfter:   time.Now().Add(90 * 24 * time.Hour),
+	})
+	initialFactoryCalls := 0
+	manager := mustNewManager(
+		t,
+		dataDir,
+		withACMEIssuerFactory(func(request acmeIssueRequest) (acmeIssuer, error) {
+			initialFactoryCalls++
+			return &fakeACMEIssuer{results: []acmeIssueResult{{CertPEM: issued.CertPEM, KeyPEM: issued.KeyPEM}}}, nil
+		}),
+	)
+	policy := model.ManagedCertificatePolicy{
+		ID:              55,
+		Domain:          "persist-acme.example.com",
+		Enabled:         true,
+		Scope:           "domain",
+		IssuerMode:      "local_http01",
+		CertificateType: "acme",
+		Usage:           "https",
+	}
+
+	if err := manager.Apply(context.Background(), nil, []model.ManagedCertificatePolicy{policy}); err != nil {
+		t.Fatalf("initial apply failed: %v", err)
+	}
+	if initialFactoryCalls != 1 {
+		t.Fatalf("expected one initial issuance, got %d", initialFactoryCalls)
+	}
+
+	before, err := manager.CertificateInfo(55)
+	if err != nil {
+		t.Fatalf("initial certificate info failed: %v", err)
+	}
+
+	recreatedFactoryCalls := 0
+	recreated := mustNewManager(
+		t,
+		dataDir,
+		withACMEIssuerFactory(func(request acmeIssueRequest) (acmeIssuer, error) {
+			recreatedFactoryCalls++
+			return &fakeACMEIssuer{results: []acmeIssueResult{{Err: assertUnreachableError{message: "issuer should not be called when persisted acme material exists"}}}}, nil
+		}),
+	)
+	if err := recreated.Apply(context.Background(), nil, []model.ManagedCertificatePolicy{policy}); err != nil {
+		t.Fatalf("recreated apply failed: %v", err)
+	}
+	if recreatedFactoryCalls != 0 {
+		t.Fatalf("expected persisted material to avoid reissuance, got %d issuer calls", recreatedFactoryCalls)
+	}
+
+	after, err := recreated.CertificateInfo(55)
+	if err != nil {
+		t.Fatalf("recreated certificate info failed: %v", err)
+	}
+	if after.Fingerprint != before.Fingerprint {
+		t.Fatalf("expected persisted fingerprint, got %q want %q", after.Fingerprint, before.Fingerprint)
+	}
+}
+
+func TestManagerApplyRenewsExpiringACMECertificate(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 4, 6, 12, 0, 0, 0, time.UTC)
+	first := mustCreateTLSMaterial(t, certificateSpec{
+		commonName: "renew-acme.example.com",
+		notBefore:  now.Add(-24 * time.Hour),
+		notAfter:   now.Add(2 * time.Hour),
+	})
+	second := mustCreateTLSMaterial(t, certificateSpec{
+		commonName: "renew-acme.example.com",
+		notBefore:  now.Add(-time.Hour),
+		notAfter:   now.Add(90 * 24 * time.Hour),
+	})
+	fake := &fakeACMEIssuer{
+		results: []acmeIssueResult{
+			{CertPEM: first.CertPEM, KeyPEM: first.KeyPEM},
+			{CertPEM: second.CertPEM, KeyPEM: second.KeyPEM},
+		},
+	}
+	dataDir := t.TempDir()
+	manager := mustNewManager(
+		t,
+		dataDir,
+		withNow(func() time.Time { return now }),
+		withRenewBefore(24*time.Hour),
+		withACMEIssuerFactory(func(request acmeIssueRequest) (acmeIssuer, error) {
+			return fake, nil
+		}),
+	)
+	policy := model.ManagedCertificatePolicy{
+		ID:              56,
+		Domain:          "renew-acme.example.com",
+		Enabled:         true,
+		Scope:           "domain",
+		IssuerMode:      "local_http01",
+		CertificateType: "acme",
+		Usage:           "https",
+	}
+
+	if err := manager.Apply(context.Background(), nil, []model.ManagedCertificatePolicy{policy}); err != nil {
+		t.Fatalf("initial apply failed: %v", err)
+	}
+	if err := manager.Apply(context.Background(), nil, []model.ManagedCertificatePolicy{policy}); err != nil {
+		t.Fatalf("renewal apply failed: %v", err)
+	}
+
+	if len(fake.requests) != 2 {
+		t.Fatalf("expected two acme issuance calls, got %d", len(fake.requests))
+	}
+	info, err := manager.CertificateInfo(56)
+	if err != nil {
+		t.Fatalf("certificate info failed: %v", err)
+	}
+	if info.Fingerprint != second.Fingerprint {
+		t.Fatalf("expected renewed fingerprint, got %q want %q", info.Fingerprint, second.Fingerprint)
+	}
+}
+
+func TestManagerApplyPreservesPreviousStateOnACMEFailure(t *testing.T) {
+	t.Parallel()
+
+	stable := mustCreateTLSMaterial(t, certificateSpec{commonName: "stable.example.com"})
+	manager := mustNewManager(
+		t,
+		t.TempDir(),
+		withACMEIssuerFactory(func(request acmeIssueRequest) (acmeIssuer, error) {
+			return &fakeACMEIssuer{results: []acmeIssueResult{{Err: errSyntheticACMEFailure}}}, nil
+		}),
+	)
+
+	if err := manager.Apply(context.Background(), []model.ManagedCertificateBundle{
+		{
+			ID:      57,
+			Domain:  "stable.example.com",
+			CertPEM: string(stable.CertPEM),
+			KeyPEM:  string(stable.KeyPEM),
+		},
+	}, []model.ManagedCertificatePolicy{
+		{
+			ID:              57,
+			Domain:          "stable.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			CertificateType: "uploaded",
+			Usage:           "https",
+		},
+	}); err != nil {
+		t.Fatalf("initial apply failed: %v", err)
+	}
+
+	err := manager.Apply(context.Background(), []model.ManagedCertificateBundle{
+		{
+			ID:      57,
+			Domain:  "stable.example.com",
+			CertPEM: string(stable.CertPEM),
+			KeyPEM:  string(stable.KeyPEM),
+		},
+	}, []model.ManagedCertificatePolicy{
+		{
+			ID:              57,
+			Domain:          "stable.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			CertificateType: "uploaded",
+			Usage:           "https",
+		},
+		{
+			ID:              58,
+			Domain:          "broken-acme.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			CertificateType: "acme",
+			Usage:           "https",
+		},
+	})
+	if err == nil {
+		t.Fatal("expected acme apply failure")
+	}
+
+	info, err := manager.CertificateInfo(57)
+	if err != nil {
+		t.Fatalf("stable certificate info failed after acme error: %v", err)
+	}
+	if info.Fingerprint != stable.Fingerprint {
+		t.Fatalf("expected stable state to be preserved, got %q want %q", info.Fingerprint, stable.Fingerprint)
+	}
+}
+
 type certificateSpec struct {
 	commonName string
 	isCA       bool
+	notBefore  time.Time
+	notAfter   time.Time
 }
 
 type tlsMaterial struct {
@@ -304,10 +648,10 @@ type tlsMaterial struct {
 	Leaf        *x509.Certificate
 }
 
-func mustNewManager(t *testing.T, dataDir string) *Manager {
+func mustNewManager(t *testing.T, dataDir string, opts ...Option) *Manager {
 	t.Helper()
 
-	manager, err := NewManager(dataDir)
+	manager, err := NewManager(dataDir, opts...)
 	if err != nil {
 		t.Fatalf("new manager failed: %v", err)
 	}
@@ -325,8 +669,8 @@ func mustCreateTLSMaterial(t *testing.T, spec certificateSpec) tlsMaterial {
 	template := &x509.Certificate{
 		SerialNumber:          big.NewInt(time.Now().UnixNano()),
 		Subject:               pkix.Name{CommonName: spec.commonName},
-		NotBefore:             time.Now().Add(-time.Hour),
-		NotAfter:              time.Now().Add(24 * time.Hour),
+		NotBefore:             firstTime(spec.notBefore, time.Now().Add(-time.Hour)),
+		NotAfter:              firstTime(spec.notAfter, time.Now().Add(24*time.Hour)),
 		BasicConstraintsValid: true,
 		IsCA:                  spec.isCA,
 	}
@@ -382,3 +726,39 @@ func containsSubject(subjects [][]byte, subject []byte) bool {
 	}
 	return false
 }
+
+func firstTime(value, fallback time.Time) time.Time {
+	if value.IsZero() {
+		return fallback
+	}
+	return value
+}
+
+type fakeACMEIssuer struct {
+	requests []acmeIssueRequest
+	results  []acmeIssueResult
+}
+
+func (f *fakeACMEIssuer) Issue(_ context.Context, request acmeIssueRequest) (acmeIssueResult, error) {
+	f.requests = append(f.requests, request)
+	if len(f.results) == 0 {
+		return acmeIssueResult{}, assertUnreachableError{message: "unexpected acme issue call"}
+	}
+
+	result := f.results[0]
+	f.results = f.results[1:]
+	if result.Err != nil {
+		return acmeIssueResult{}, result.Err
+	}
+	return result, nil
+}
+
+type assertUnreachableError struct {
+	message string
+}
+
+func (e assertUnreachableError) Error() string {
+	return e.message
+}
+
+var errSyntheticACMEFailure = assertUnreachableError{message: "synthetic acme failure"}

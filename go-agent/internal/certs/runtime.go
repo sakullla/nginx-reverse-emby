@@ -9,6 +9,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"math/big"
@@ -18,6 +19,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/go-acme/lego/v4/registration"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
@@ -37,6 +40,7 @@ type CertificateInfo struct {
 
 type Manager struct {
 	dataDir string
+	cfg     managerConfig
 
 	mu     sync.RWMutex
 	active *activeState
@@ -52,20 +56,48 @@ type managedCertificate struct {
 	parsedChain []*x509.Certificate
 }
 
-func NewManager(dataDir string) (*Manager, error) {
+type persistedACMEMaterial struct {
+	certPEM       []byte
+	keyPEM        []byte
+	accountKeyPEM []byte
+	registration  *registration.Resource
+}
+
+func NewManager(dataDir string, opts ...Option) (*Manager, error) {
 	if strings.TrimSpace(dataDir) == "" {
 		return nil, fmt.Errorf("data directory is required")
 	}
 	if err := os.MkdirAll(filepath.Join(dataDir, "certs", "managed"), 0755); err != nil {
 		return nil, err
 	}
+
+	cfg := defaultManagerConfig()
+	for _, opt := range opts {
+		if opt != nil {
+			opt(&cfg)
+		}
+	}
+	if cfg.acme.http01Port == "" {
+		cfg.acme.http01Port = "80"
+	}
+	if cfg.acme.directoryURL == "" {
+		cfg.acme.directoryURL = defaultManagerConfig().acme.directoryURL
+	}
+	if cfg.now == nil {
+		cfg.now = time.Now
+	}
+	if cfg.issuerFactory == nil {
+		cfg.issuerFactory = defaultACMEIssuerFactory
+	}
+
 	return &Manager{
 		dataDir: dataDir,
+		cfg:     cfg,
 		active:  &activeState{byID: map[int]*managedCertificate{}},
 	}, nil
 }
 
-func (m *Manager) Apply(_ context.Context, bundles []model.ManagedCertificateBundle, policies []model.ManagedCertificatePolicy) error {
+func (m *Manager) Apply(ctx context.Context, bundles []model.ManagedCertificateBundle, policies []model.ManagedCertificatePolicy) error {
 	next := &activeState{byID: map[int]*managedCertificate{}}
 	bundleByID := make(map[int]model.ManagedCertificateBundle, len(bundles))
 	for _, bundle := range bundles {
@@ -76,7 +108,7 @@ func (m *Manager) Apply(_ context.Context, bundles []model.ManagedCertificateBun
 		if !policy.Enabled {
 			continue
 		}
-		managed, err := m.buildManagedCertificate(policy, bundleByID[policy.ID])
+		managed, err := m.buildManagedCertificate(ctx, policy, bundleByID[policy.ID])
 		if err != nil {
 			return fmt.Errorf("certificate %d: %w", policy.ID, err)
 		}
@@ -131,8 +163,8 @@ func (m *Manager) lookup(certificateID int) (*managedCertificate, error) {
 	return entry, nil
 }
 
-func (m *Manager) buildManagedCertificate(policy model.ManagedCertificatePolicy, bundle model.ManagedCertificateBundle) (*managedCertificate, error) {
-	certPEM, keyPEM, err := m.resolveMaterial(policy, bundle)
+func (m *Manager) buildManagedCertificate(ctx context.Context, policy model.ManagedCertificatePolicy, bundle model.ManagedCertificateBundle) (*managedCertificate, error) {
+	certPEM, keyPEM, err := m.resolveMaterial(ctx, policy, bundle)
 	if err != nil {
 		return nil, err
 	}
@@ -160,14 +192,29 @@ func (m *Manager) buildManagedCertificate(policy model.ManagedCertificatePolicy,
 	}, nil
 }
 
-func (m *Manager) resolveMaterial(policy model.ManagedCertificatePolicy, bundle model.ManagedCertificateBundle) ([]byte, []byte, error) {
+func (m *Manager) resolveMaterial(ctx context.Context, policy model.ManagedCertificatePolicy, bundle model.ManagedCertificateBundle) ([]byte, []byte, error) {
+	if strings.TrimSpace(bundle.CertPEM) != "" || strings.TrimSpace(bundle.KeyPEM) != "" {
+		if strings.TrimSpace(bundle.CertPEM) == "" || strings.TrimSpace(bundle.KeyPEM) == "" {
+			return nil, nil, fmt.Errorf("bundle PEM material must include certificate and key")
+		}
+		return []byte(bundle.CertPEM), []byte(bundle.KeyPEM), nil
+	}
+
 	if policy.CertificateType == "internal_ca" {
 		return m.loadOrIssueInternalCA(policy)
 	}
-	if strings.TrimSpace(bundle.CertPEM) == "" || strings.TrimSpace(bundle.KeyPEM) == "" {
-		return nil, nil, fmt.Errorf("missing PEM material from control plane")
+	if isACMEPolicy(policy) {
+		return m.loadOrIssueACME(ctx, policy)
 	}
-	return []byte(bundle.CertPEM), []byte(bundle.KeyPEM), nil
+
+	return nil, nil, fmt.Errorf("missing PEM material from control plane")
+}
+
+func isACMEPolicy(policy model.ManagedCertificatePolicy) bool {
+	if policy.CertificateType == "acme" {
+		return true
+	}
+	return policy.IssuerMode == "local_http01" || policy.IssuerMode == "master_cf_dns"
 }
 
 func (m *Manager) loadOrIssueInternalCA(policy model.ManagedCertificatePolicy) ([]byte, []byte, error) {
@@ -203,6 +250,159 @@ func (m *Manager) loadOrIssueInternalCA(policy model.ManagedCertificatePolicy) (
 		return nil, nil, err
 	}
 	return certPEM, keyPEM, nil
+}
+
+func (m *Manager) loadOrIssueACME(ctx context.Context, policy model.ManagedCertificatePolicy) ([]byte, []byte, error) {
+	persisted, err := m.loadPersistedACMEMaterial(policy.ID)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if len(persisted.certPEM) > 0 && len(persisted.keyPEM) > 0 {
+		tlsCert, _, _, err := parseTLSMaterial(persisted.certPEM, persisted.keyPEM)
+		if err == nil && tlsCert.Leaf != nil && !m.needsRenewal(tlsCert.Leaf) {
+			return persisted.certPEM, persisted.keyPEM, nil
+		}
+	}
+
+	request, err := m.newACMEIssueRequest(policy, persisted)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	issuer, err := m.cfg.issuerFactory(request)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	result, err := issuer.Issue(ctx, request)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if _, _, _, err := parseTLSMaterial(result.CertPEM, result.KeyPEM); err != nil {
+		return nil, nil, err
+	}
+
+	if len(result.AccountKeyPEM) == 0 {
+		result.AccountKeyPEM = persisted.accountKeyPEM
+	}
+	if result.Registration == nil {
+		result.Registration = persisted.registration
+	}
+
+	if err := m.savePersistedACMEMaterial(policy.ID, result); err != nil {
+		return nil, nil, err
+	}
+	return result.CertPEM, result.KeyPEM, nil
+}
+
+func (m *Manager) newACMEIssueRequest(policy model.ManagedCertificatePolicy, persisted persistedACMEMaterial) (acmeIssueRequest, error) {
+	request := acmeIssueRequest{
+		CertificateID:   policy.ID,
+		Domain:          policy.Domain,
+		Scope:           policy.Scope,
+		IssuerMode:      policy.IssuerMode,
+		DirectoryURL:    m.cfg.acme.directoryURL,
+		Email:           m.cfg.acme.email,
+		HTTP01Interface: m.cfg.acme.http01Interface,
+		HTTP01Port:      m.cfg.acme.http01Port,
+		ExistingKeyPEM:  persisted.keyPEM,
+		AccountKeyPEM:   persisted.accountKeyPEM,
+		Registration:    persisted.registration,
+	}
+
+	switch policy.IssuerMode {
+	case "local_http01":
+		request.ChallengeType = challengeTypeHTTP01
+	case "master_cf_dns":
+		if !m.cfg.localAgent || m.cfg.nodeRole != "master" {
+			return acmeIssueRequest{}, fmt.Errorf("master_cf_dns issuance is only allowed on the local master agent")
+		}
+		if strings.TrimSpace(m.cfg.acme.cloudflareDNSAPIToken) == "" {
+			return acmeIssueRequest{}, fmt.Errorf("cloudflare credentials are required for master_cf_dns issuance")
+		}
+		request.ChallengeType = challengeTypeDNS01Cloudflare
+		request.CloudflareDNSAPIToken = m.cfg.acme.cloudflareDNSAPIToken
+		request.CloudflareZoneAPIToken = firstNonEmpty(m.cfg.acme.cloudflareZoneAPIToken, m.cfg.acme.cloudflareDNSAPIToken)
+	default:
+		return acmeIssueRequest{}, fmt.Errorf("unsupported ACME issuer mode %q", policy.IssuerMode)
+	}
+
+	return request, nil
+}
+
+func (m *Manager) needsRenewal(leaf *x509.Certificate) bool {
+	if leaf == nil {
+		return true
+	}
+	return !leaf.NotAfter.After(m.cfg.now().Add(m.cfg.acme.renewBefore))
+}
+
+func (m *Manager) loadPersistedACMEMaterial(certificateID int) (persistedACMEMaterial, error) {
+	result := persistedACMEMaterial{}
+
+	certPEM, err := os.ReadFile(filepath.Join(m.materialDir(certificateID), "cert.pem"))
+	if err == nil {
+		result.certPEM = certPEM
+	} else if !os.IsNotExist(err) {
+		return persistedACMEMaterial{}, err
+	}
+
+	keyPEM, err := os.ReadFile(filepath.Join(m.materialDir(certificateID), "key.pem"))
+	if err == nil {
+		result.keyPEM = keyPEM
+	} else if !os.IsNotExist(err) {
+		return persistedACMEMaterial{}, err
+	}
+
+	accountKeyPEM, err := os.ReadFile(filepath.Join(m.materialDir(certificateID), "acme_account_key.pem"))
+	if err == nil {
+		result.accountKeyPEM = accountKeyPEM
+	} else if !os.IsNotExist(err) {
+		return persistedACMEMaterial{}, err
+	}
+
+	registrationPayload, err := os.ReadFile(filepath.Join(m.materialDir(certificateID), "acme_registration.json"))
+	if err == nil {
+		var registrationResource registration.Resource
+		if err := json.Unmarshal(registrationPayload, &registrationResource); err != nil {
+			return persistedACMEMaterial{}, err
+		}
+		result.registration = &registrationResource
+	} else if !os.IsNotExist(err) {
+		return persistedACMEMaterial{}, err
+	}
+
+	return result, nil
+}
+
+func (m *Manager) savePersistedACMEMaterial(certificateID int, result acmeIssueResult) error {
+	materialDir := m.materialDir(certificateID)
+	if err := os.MkdirAll(materialDir, 0755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(materialDir, "cert.pem"), result.CertPEM, 0600); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(materialDir, "key.pem"), result.KeyPEM, 0600); err != nil {
+		return err
+	}
+	if len(result.AccountKeyPEM) > 0 {
+		if err := os.WriteFile(filepath.Join(materialDir, "acme_account_key.pem"), result.AccountKeyPEM, 0600); err != nil {
+			return err
+		}
+	}
+	if result.Registration != nil {
+		payload, err := json.Marshal(result.Registration)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(materialDir, "acme_registration.json"), payload, 0600); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (m *Manager) materialDir(certificateID int) string {
