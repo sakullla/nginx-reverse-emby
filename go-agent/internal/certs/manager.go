@@ -1,7 +1,9 @@
 package certs
 
 import (
+	"crypto/sha256"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/pem"
 	"fmt"
 )
@@ -12,9 +14,11 @@ func FingerprintFromPEM(certPEM []byte) (string, error) {
 		return "", fmt.Errorf("invalid pem")
 	}
 
-	if _, err := x509.ParseCertificate(block.Bytes); err != nil {
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
 		return "", err
 	}
 
-	return "ok", nil
+	sum := sha256.Sum256(cert.Raw)
+	return hex.EncodeToString(sum[:]), nil
 }
