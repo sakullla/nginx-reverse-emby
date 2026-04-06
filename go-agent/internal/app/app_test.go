@@ -32,6 +32,9 @@ func TestNewBuildsRealWiring(t *testing.T) {
 	if app.syncClient == nil {
 		t.Fatal("expected sync client to be initialized")
 	}
+	if app.certApplier == nil {
+		t.Fatal("expected certificate applier to be initialized")
+	}
 }
 
 func TestRunReturnsErrorWithoutAppliedSnapshot(t *testing.T) {
@@ -39,7 +42,7 @@ func TestRunReturnsErrorWithoutAppliedSnapshot(t *testing.T) {
 	mem := store.NewInMemory()
 	errSync := errors.New("boom")
 	client := newTestSyncClient([]syncResponse{{err: errSync}}, syncResponse{})
-	app := newAppWithDeps(cfg, mem, client)
+	app := newAppWithDeps(cfg, mem, client, nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
@@ -70,7 +73,7 @@ func TestRunRefreshesCurrentRevisionFromRuntimeState(t *testing.T) {
 	}
 
 	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{DesiredVersion: "ok"}})
-	app := newAppWithDeps(cfg, mem, client)
+	app := newAppWithDeps(cfg, mem, client, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -108,7 +111,7 @@ func TestRunKeepsRunningWhenAppliedSnapshotExists(t *testing.T) {
 		t.Fatalf("failed to seed applied snapshot: %v", err)
 	}
 	client := newTestSyncClient(nil, syncResponse{err: errors.New("boom")})
-	app := newAppWithDeps(cfg, mem, client)
+	app := newAppWithDeps(cfg, mem, client, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -153,7 +156,7 @@ func TestRunPersistsDesiredSnapshot(t *testing.T) {
 		}},
 	}
 	client := newTestSyncClient(nil, syncResponse{snapshot: expected})
-	app := newAppWithDeps(cfg, mem, client)
+	app := newAppWithDeps(cfg, mem, client, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -187,7 +190,7 @@ func TestRunPersistsExplicitEmptyCertificatePayloads(t *testing.T) {
 		CertificatePolicies: []model.ManagedCertificatePolicy{},
 	}
 	client := newTestSyncClient(nil, syncResponse{snapshot: expected})
-	app := newAppWithDeps(cfg, mem, client)
+	app := newAppWithDeps(cfg, mem, client, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
@@ -235,7 +238,7 @@ func TestRunRecordsSyncErrorsInRuntimeState(t *testing.T) {
 		{snapshot: Snapshot{DesiredVersion: "new"}},
 	}, syncResponse{})
 
-	app := newAppWithDeps(cfg, mem, client)
+	app := newAppWithDeps(cfg, mem, client, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
@@ -283,7 +286,7 @@ func TestRunRecordsSaveDesiredSnapshotFailures(t *testing.T) {
 	}
 
 	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{DesiredVersion: "ok"}})
-	app := newAppWithDeps(cfg, fs, client)
+	app := newAppWithDeps(cfg, fs, client, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -312,6 +315,35 @@ func TestRunRecordsSaveDesiredSnapshotFailures(t *testing.T) {
 type syncResponse struct {
 	snapshot Snapshot
 	err      error
+}
+
+type applyCall struct {
+	bundles  []model.ManagedCertificateBundle
+	policies []model.ManagedCertificatePolicy
+}
+
+type testCertificateApplier struct {
+	mu       sync.Mutex
+	calls    []applyCall
+	applyErr error
+}
+
+func (a *testCertificateApplier) Apply(_ context.Context, bundles []model.ManagedCertificateBundle, policies []model.ManagedCertificatePolicy) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.calls = append(a.calls, applyCall{
+		bundles:  append([]model.ManagedCertificateBundle(nil), bundles...),
+		policies: append([]model.ManagedCertificatePolicy(nil), policies...),
+	})
+	return a.applyErr
+}
+
+func (a *testCertificateApplier) snapshotCalls() []applyCall {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	out := make([]applyCall, len(a.calls))
+	copy(out, a.calls)
+	return out
 }
 
 type testSyncClient struct {
@@ -365,6 +397,299 @@ func waitForCalls(t *testing.T, client *testSyncClient, target int, timeout time
 		time.Sleep(1 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for %d sync calls", target)
+}
+
+func TestRunAppliesManagedCertificatesFromSyncedSnapshot(t *testing.T) {
+	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
+	mem := store.NewInMemory()
+	expected := Snapshot{
+		DesiredVersion: "2.0",
+		Revision:       9,
+		Certificates: []model.ManagedCertificateBundle{{
+			ID:       21,
+			Domain:   "sync.example.com",
+			Revision: 3,
+			CertPEM:  "CERTIFICATE",
+			KeyPEM:   "PRIVATEKEY",
+		}},
+		CertificatePolicies: []model.ManagedCertificatePolicy{{
+			ID:              21,
+			Domain:          "sync.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			Status:          "issued",
+			Revision:        3,
+			Usage:           "relay_ca",
+			CertificateType: "internal_ca",
+			SelfSigned:      true,
+		}},
+	}
+	client := newTestSyncClient(nil, syncResponse{snapshot: expected})
+	applier := &testCertificateApplier{}
+	app := newAppWithDeps(cfg, mem, client, applier)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- app.Run(ctx)
+	}()
+
+	waitForCalls(t, client, 1, time.Second)
+
+	calls := applier.snapshotCalls()
+	if len(calls) != 1 {
+		t.Fatalf("expected one certificate apply call, got %d", len(calls))
+	}
+	if !reflect.DeepEqual(calls[0].bundles, expected.Certificates) {
+		t.Fatalf("unexpected bundles: %+v", calls[0].bundles)
+	}
+	if !reflect.DeepEqual(calls[0].policies, expected.CertificatePolicies) {
+		t.Fatalf("unexpected policies: %+v", calls[0].policies)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+}
+
+func TestRunHydratesManagedCertificatesFromStoredDesiredSnapshot(t *testing.T) {
+	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
+	mem := store.NewInMemory()
+	stored := Snapshot{
+		DesiredVersion: "stored",
+		Revision:       5,
+		Certificates: []model.ManagedCertificateBundle{{
+			ID:       41,
+			Domain:   "stored.example.com",
+			Revision: 1,
+			CertPEM:  "CERTIFICATE",
+			KeyPEM:   "PRIVATEKEY",
+		}},
+		CertificatePolicies: []model.ManagedCertificatePolicy{{
+			ID:              41,
+			Domain:          "stored.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			Revision:        1,
+			Usage:           "https",
+			CertificateType: "uploaded",
+		}},
+	}
+	if err := mem.SaveAppliedSnapshot(Snapshot{DesiredVersion: "baseline"}); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+	if err := mem.SaveDesiredSnapshot(stored); err != nil {
+		t.Fatalf("failed to seed desired snapshot: %v", err)
+	}
+
+	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{DesiredVersion: "ok"}})
+	applier := &testCertificateApplier{}
+	app := newAppWithDeps(cfg, mem, client, applier)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- app.Run(ctx)
+	}()
+
+	waitForCalls(t, client, 1, time.Second)
+
+	calls := applier.snapshotCalls()
+	if len(calls) < 1 {
+		t.Fatal("expected at least one certificate apply call")
+	}
+	if !reflect.DeepEqual(calls[0].bundles, stored.Certificates) {
+		t.Fatalf("unexpected hydrated bundles: %+v", calls[0].bundles)
+	}
+	if !reflect.DeepEqual(calls[0].policies, stored.CertificatePolicies) {
+		t.Fatalf("unexpected hydrated policies: %+v", calls[0].policies)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+}
+
+func TestRunDoesNotApplyManagedCertificatesWhenHeartbeatOmitsPayload(t *testing.T) {
+	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
+	mem := store.NewInMemory()
+	if err := mem.SaveAppliedSnapshot(Snapshot{DesiredVersion: "baseline"}); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+
+	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{DesiredVersion: "ok", Revision: 7}})
+	applier := &testCertificateApplier{}
+	app := newAppWithDeps(cfg, mem, client, applier)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- app.Run(ctx)
+	}()
+
+	waitForCalls(t, client, 1, time.Second)
+
+	if calls := applier.snapshotCalls(); len(calls) != 0 {
+		t.Fatalf("expected no certificate apply calls for omitted payload, got %d", len(calls))
+	}
+
+	snap, err := mem.LoadDesiredSnapshot()
+	if err != nil {
+		t.Fatalf("failed to load desired snapshot: %v", err)
+	}
+	if snap.Certificates != nil {
+		t.Fatalf("expected omitted certificate payload to stay nil when nothing was stored before, got %+v", snap.Certificates)
+	}
+	if snap.CertificatePolicies != nil {
+		t.Fatalf("expected omitted certificate policy payload to stay nil when nothing was stored before, got %+v", snap.CertificatePolicies)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+}
+
+func TestRunPreservesStoredManagedCertificatePayloadWhenHeartbeatOmitsFields(t *testing.T) {
+	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
+	mem := store.NewInMemory()
+	if err := mem.SaveAppliedSnapshot(Snapshot{DesiredVersion: "baseline"}); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+	stored := Snapshot{
+		DesiredVersion: "stored",
+		Revision:       5,
+		Certificates: []model.ManagedCertificateBundle{{
+			ID:       41,
+			Domain:   "stored.example.com",
+			Revision: 1,
+			CertPEM:  "CERTIFICATE",
+			KeyPEM:   "PRIVATEKEY",
+		}},
+		CertificatePolicies: []model.ManagedCertificatePolicy{{
+			ID:              41,
+			Domain:          "stored.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			Revision:        1,
+			Usage:           "https",
+			CertificateType: "uploaded",
+		}},
+	}
+	if err := mem.SaveDesiredSnapshot(stored); err != nil {
+		t.Fatalf("failed to seed desired snapshot: %v", err)
+	}
+
+	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{DesiredVersion: "ok", Revision: 7}})
+	applier := &testCertificateApplier{}
+	app := newAppWithDeps(cfg, mem, client, applier)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- app.Run(ctx)
+	}()
+
+	waitForCalls(t, client, 1, time.Second)
+
+	calls := applier.snapshotCalls()
+	if len(calls) < 1 {
+		t.Fatal("expected startup hydration call")
+	}
+	if len(calls) != 1 {
+		t.Fatalf("expected only startup hydration call when heartbeat omits payload, got %d", len(calls))
+	}
+
+	persisted, err := mem.LoadDesiredSnapshot()
+	if err != nil {
+		t.Fatalf("failed to load desired snapshot: %v", err)
+	}
+	if !reflect.DeepEqual(persisted.Certificates, stored.Certificates) {
+		t.Fatalf("expected stored certificates to be preserved, got %+v", persisted.Certificates)
+	}
+	if !reflect.DeepEqual(persisted.CertificatePolicies, stored.CertificatePolicies) {
+		t.Fatalf("expected stored certificate policies to be preserved, got %+v", persisted.CertificatePolicies)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+}
+
+func TestRunRecordsCertificateApplyFailuresInRuntimeState(t *testing.T) {
+	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
+	mem := store.NewInMemory()
+	if err := mem.SaveAppliedSnapshot(Snapshot{DesiredVersion: "baseline"}); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+
+	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{
+		DesiredVersion: "2.0",
+		Revision:       9,
+		Certificates:   []model.ManagedCertificateBundle{},
+	}})
+	applier := &testCertificateApplier{applyErr: errors.New("cert apply failed")}
+	app := newAppWithDeps(cfg, mem, client, applier)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- app.Run(ctx)
+	}()
+
+	waitForCalls(t, client, 1, time.Second)
+
+	state, err := mem.LoadRuntimeState()
+	if err != nil {
+		t.Fatalf("failed to load runtime state: %v", err)
+	}
+	if state.Metadata["last_sync_error"] != "cert apply failed" {
+		t.Fatalf("expected certificate apply failure metadata, got %v", state.Metadata)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+}
+
+func TestRunRecordsStartupCertificateHydrationFailuresInRuntimeState(t *testing.T) {
+	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
+	mem := store.NewInMemory()
+	stored := Snapshot{
+		DesiredVersion: "stored",
+		Revision:       5,
+		Certificates:   []model.ManagedCertificateBundle{},
+	}
+	if err := mem.SaveDesiredSnapshot(stored); err != nil {
+		t.Fatalf("failed to seed desired snapshot: %v", err)
+	}
+
+	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{DesiredVersion: "ok"}})
+	applier := &testCertificateApplier{applyErr: errors.New("startup cert apply failed")}
+	app := newAppWithDeps(cfg, mem, client, applier)
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	err := app.Run(ctx)
+	if err == nil || err.Error() != "startup cert apply failed" {
+		t.Fatalf("expected startup certificate apply error, got %v", err)
+	}
+
+	state, loadErr := mem.LoadRuntimeState()
+	if loadErr != nil {
+		t.Fatalf("failed to load runtime state: %v", loadErr)
+	}
+	if state.Metadata["last_sync_error"] != "startup cert apply failed" {
+		t.Fatalf("expected startup certificate apply failure metadata, got %v", state.Metadata)
+	}
 }
 
 type failingStore struct {

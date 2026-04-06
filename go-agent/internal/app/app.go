@@ -6,7 +6,9 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/certs"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
 	agentsync "github.com/sakullla/nginx-reverse-emby/go-agent/internal/sync"
 )
@@ -19,10 +21,15 @@ type SyncClient interface {
 	Sync(context.Context, SyncRequest) (Snapshot, error)
 }
 
+type CertificateApplier interface {
+	Apply(context.Context, []model.ManagedCertificateBundle, []model.ManagedCertificatePolicy) error
+}
+
 type App struct {
-	cfg        Config
-	syncClient SyncClient
-	store      store.Store
+	cfg         Config
+	syncClient  SyncClient
+	store       store.Store
+	certApplier CertificateApplier
 }
 
 func New(cfg Config) (*App, error) {
@@ -38,17 +45,22 @@ func New(cfg Config) (*App, error) {
 		CurrentVersion: cfg.CurrentVersion,
 		Platform:       runtime.GOOS + "-" + runtime.GOARCH,
 	}, nil)
-	return newAppWithDeps(cfg, st, client), nil
+	certManager, err := certs.NewManager(cfg.DataDir)
+	if err != nil {
+		return nil, err
+	}
+	return newAppWithDeps(cfg, st, client, certManager), nil
 }
 
-func newAppWithDeps(cfg Config, st store.Store, client SyncClient) *App {
+func newAppWithDeps(cfg Config, st store.Store, client SyncClient, certApplier CertificateApplier) *App {
 	if cfg.HeartbeatInterval <= 0 {
 		cfg.HeartbeatInterval = config.Default().HeartbeatInterval
 	}
 	return &App{
-		cfg:        cfg,
-		store:      st,
-		syncClient: client,
+		cfg:         cfg,
+		store:       st,
+		syncClient:  client,
+		certApplier: certApplier,
 	}
 }
 
@@ -56,6 +68,17 @@ func (a *App) Run(ctx context.Context) error {
 	applied, err := a.store.LoadAppliedSnapshot()
 	if err != nil {
 		return err
+	}
+	runtimeState, err := a.store.LoadRuntimeState()
+	if err != nil {
+		return err
+	}
+	desired, err := a.store.LoadDesiredSnapshot()
+	if err != nil {
+		return err
+	}
+	if err := a.applyManagedCertificates(ctx, desired); err != nil {
+		return a.recordRuntimeError(&runtimeState, err)
 	}
 
 	if err := a.performSync(ctx); err != nil {
@@ -91,7 +114,15 @@ func (a *App) syncOnce(ctx context.Context, req SyncRequest, runtimeState *store
 	if err != nil {
 		return a.recordRuntimeError(runtimeState, err)
 	}
-	if err := a.store.SaveDesiredSnapshot(snapshot); err != nil {
+	existingDesired, err := a.store.LoadDesiredSnapshot()
+	if err != nil {
+		return a.recordRuntimeError(runtimeState, err)
+	}
+	persistedSnapshot := mergeManagedCertificatePayload(snapshot, existingDesired)
+	if err := a.store.SaveDesiredSnapshot(persistedSnapshot); err != nil {
+		return a.recordRuntimeError(runtimeState, err)
+	}
+	if err := a.applyManagedCertificates(ctx, snapshot); err != nil {
 		return a.recordRuntimeError(runtimeState, err)
 	}
 	return a.clearRuntimeError(runtimeState)
@@ -132,4 +163,25 @@ func currentRevisionFromMetadata(meta map[string]string) int {
 		}
 	}
 	return 0
+}
+
+func (a *App) applyManagedCertificates(ctx context.Context, snapshot Snapshot) error {
+	if a.certApplier == nil {
+		return nil
+	}
+	if snapshot.Certificates == nil && snapshot.CertificatePolicies == nil {
+		return nil
+	}
+	return a.certApplier.Apply(ctx, snapshot.Certificates, snapshot.CertificatePolicies)
+}
+
+func mergeManagedCertificatePayload(next, previous Snapshot) Snapshot {
+	merged := next
+	if next.Certificates == nil {
+		merged.Certificates = previous.Certificates
+	}
+	if next.CertificatePolicies == nil {
+		merged.CertificatePolicies = previous.CertificatePolicies
+	}
+	return merged
 }
