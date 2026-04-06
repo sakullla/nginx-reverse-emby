@@ -73,6 +73,9 @@ func LoadFromEnv() (Config, error) {
 		if err != nil {
 			return Config{}, fmt.Errorf("invalid NRE_HEARTBEAT_INTERVAL: %w", err)
 		}
+		if dur <= 0 {
+			return Config{}, errors.New("NRE_HEARTBEAT_INTERVAL must be positive")
+		}
 		cfg.HeartbeatInterval = dur
 	}
 

@@ -37,12 +37,22 @@ func TestLoadFromEnvRequiresMasterURLAndToken(t *testing.T) {
 	if _, err := LoadFromEnv(); err == nil {
 		t.Fatal("expected error when NRE_MASTER_URL missing")
 	}
-	if _, err := LoadFromEnv(); err == nil {
-		t.Fatal("expected error when NRE_MASTER_URL missing")
-	}
 	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
 	t.Setenv("NRE_AGENT_TOKEN", "")
 	if _, err := LoadFromEnv(); err == nil {
 		t.Fatal("expected error when NRE_AGENT_TOKEN missing")
+	}
+}
+
+func TestLoadFromEnvRejectsNonPositiveHeartbeat(t *testing.T) {
+	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
+	t.Setenv("NRE_AGENT_TOKEN", "secret")
+	t.Setenv("NRE_HEARTBEAT_INTERVAL", "-5s")
+	if _, err := LoadFromEnv(); err == nil {
+		t.Fatal("expected error for non-positive heartbeat interval")
+	}
+	t.Setenv("NRE_HEARTBEAT_INTERVAL", "0s")
+	if _, err := LoadFromEnv(); err == nil {
+		t.Fatal("expected error for zero heartbeat interval")
 	}
 }
