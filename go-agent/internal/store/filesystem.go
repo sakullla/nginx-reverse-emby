@@ -8,9 +8,9 @@ import (
 )
 
 const (
-	desiredSnapshotFile = "desired_snapshot.json"
-	appliedSnapshotFile = "applied_snapshot.json"
-	runtimeStateFile    = "runtime_state.json"
+	desiredSnapshotFile = "desired-snapshot.json"
+	appliedSnapshotFile = "applied-snapshot.json"
+	runtimeStateFile    = "runtime-state.json"
 )
 
 type Filesystem struct {

@@ -67,3 +67,11 @@ func (s *InMemory) LoadRuntimeState() (RuntimeState, error) {
 	defer s.mu.RUnlock()
 	return s.runtime, nil
 }
+
+func (s *InMemory) SaveSnapshot(snapshot Snapshot) error {
+	return s.SaveDesiredSnapshot(snapshot)
+}
+
+func (s *InMemory) LoadSnapshot() (Snapshot, error) {
+	return s.LoadDesiredSnapshot()
+}

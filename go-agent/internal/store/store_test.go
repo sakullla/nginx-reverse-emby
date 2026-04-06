@@ -4,15 +4,11 @@ import "testing"
 
 func TestSaveSnapshotPersistsDesiredVersion(t *testing.T) {
 	s := NewInMemory()
-	if err := s.SaveDesiredSnapshot(Snapshot{DesiredVersion: "1.2.3"}); err != nil {
-		t.Fatalf("SaveDesiredSnapshot returned error: %v", err)
-	}
-
-	got, err := s.LoadDesiredSnapshot()
+	err := s.SaveSnapshot(Snapshot{DesiredVersion: "1.2.3"})
 	if err != nil {
-		t.Fatalf("LoadDesiredSnapshot returned error: %v", err)
+		t.Fatalf("SaveSnapshot returned error: %v", err)
 	}
-
+	got, _ := s.LoadSnapshot()
 	if got.DesiredVersion != "1.2.3" {
 		t.Fatalf("expected desired version 1.2.3, got %q", got.DesiredVersion)
 	}
