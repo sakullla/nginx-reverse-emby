@@ -111,16 +111,22 @@ func (s *Server) handleConn(rawConn net.Conn, listener Listener) {
 		return
 	}
 	if !strings.EqualFold(request.Network, "tcp") {
+		_ = writeRelayResponse(clientConn, relayResponse{OK: false, Error: fmt.Sprintf("unsupported network %q", request.Network)})
 		return
 	}
 
 	upstream, err := s.openUpstream(request)
 	if err != nil {
+		_ = writeRelayResponse(clientConn, relayResponse{OK: false, Error: err.Error()})
 		return
 	}
 	s.trackConn(upstream)
 	defer s.untrackConn(upstream)
 	defer upstream.Close()
+
+	if err := writeRelayResponse(clientConn, relayResponse{OK: true}); err != nil {
+		return
+	}
 
 	pipeBothWays(clientConn, upstream)
 }
@@ -163,7 +169,7 @@ func Dial(ctx context.Context, network, target string, chain []Hop, provider TLS
 		return nil, fmt.Errorf("relay hop address is required")
 	}
 
-	tlsConfig, err := clientTLSConfig(ctx, provider, firstHop.Listener, firstHop.Address)
+	tlsConfig, err := clientTLSConfig(ctx, provider, firstHop.Listener, firstHop.Address, firstHop.ServerName)
 	if err != nil {
 		return nil, err
 	}
@@ -188,6 +194,19 @@ func Dial(ctx context.Context, network, target string, chain []Hop, provider TLS
 	if err := writeRelayRequest(relayConn, request); err != nil {
 		relayConn.Close()
 		return nil, err
+	}
+
+	response, err := readRelayResponse(relayConn)
+	if err != nil {
+		relayConn.Close()
+		return nil, err
+	}
+	if !response.OK {
+		relayConn.Close()
+		if response.Error == "" {
+			return nil, fmt.Errorf("relay connection failed")
+		}
+		return nil, fmt.Errorf("relay connection failed: %s", response.Error)
 	}
 
 	return relayConn, nil
@@ -257,16 +276,38 @@ func pipeBothWays(left, right net.Conn) {
 
 	go func() {
 		_, _ = io.Copy(right, left)
-		_ = right.Close()
+		closeWrite(right)
+		closeRead(left)
 		done <- struct{}{}
 	}()
 
 	go func() {
 		_, _ = io.Copy(left, right)
-		_ = left.Close()
+		closeWrite(left)
+		closeRead(right)
 		done <- struct{}{}
 	}()
 
 	<-done
 	<-done
+}
+
+func closeWrite(conn net.Conn) {
+	if conn == nil {
+		return
+	}
+	if closer, ok := conn.(interface{ CloseWrite() error }); ok {
+		_ = closer.CloseWrite()
+		return
+	}
+	_ = conn.Close()
+}
+
+func closeRead(conn net.Conn) {
+	if conn == nil {
+		return
+	}
+	if closer, ok := conn.(interface{ CloseRead() error }); ok {
+		_ = closer.CloseRead()
+	}
 }

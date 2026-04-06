@@ -99,6 +99,62 @@ func TestValidateListener(t *testing.T) {
 			},
 			wantErr: "pin_set and trusted_ca_certificate_ids cannot both be empty",
 		},
+		{
+			name: "rejects invalid host shape",
+			listener: Listener{
+				ID:         1,
+				AgentID:    "agent-a",
+				Name:       "relay-a",
+				ListenHost: "bad host",
+				ListenPort: 18443,
+				Enabled:    true,
+				TLSMode:    "pin_only",
+				PinSet:     []model.RelayPin{validPin},
+			},
+			wantErr: "listen_host must be a valid IP address or hostname",
+		},
+		{
+			name: "rejects pin only without pins",
+			listener: Listener{
+				ID:                      1,
+				AgentID:                 "agent-a",
+				Name:                    "relay-a",
+				ListenHost:              "127.0.0.1",
+				ListenPort:              18443,
+				Enabled:                 true,
+				TLSMode:                 "pin_only",
+				TrustedCACertificateIDs: []int{1},
+			},
+			wantErr: "pin_only requires pin_set",
+		},
+		{
+			name: "rejects ca only without CA ids",
+			listener: Listener{
+				ID:         1,
+				AgentID:    "agent-a",
+				Name:       "relay-a",
+				ListenHost: "127.0.0.1",
+				ListenPort: 18443,
+				Enabled:    true,
+				TLSMode:    "ca_only",
+				PinSet:     []model.RelayPin{validPin},
+			},
+			wantErr: "ca_only requires trusted_ca_certificate_ids",
+		},
+		{
+			name: "rejects pin and ca without both",
+			listener: Listener{
+				ID:         1,
+				AgentID:    "agent-a",
+				Name:       "relay-a",
+				ListenHost: "127.0.0.1",
+				ListenPort: 18443,
+				Enabled:    true,
+				TLSMode:    "pin_and_ca",
+				PinSet:     []model.RelayPin{validPin},
+			},
+			wantErr: "pin_and_ca requires pin_set and trusted_ca_certificate_ids",
+		},
 	}
 
 	for _, tc := range tests {
@@ -180,6 +236,45 @@ func TestMultiHopRelayDataFlow(t *testing.T) {
 	defer conn.Close()
 
 	assertRoundTrip(t, conn, []byte("multi-hop"))
+}
+
+func TestDialSurfacesFinalTargetFailure(t *testing.T) {
+	provider := newFakeTLSMaterialProvider()
+	listener, hop := newRelayEndpoint(t, provider, 1, "relay-final-fail", "pin_only", true, false)
+
+	server, err := Start(context.Background(), []Listener{listener}, provider)
+	if err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+	defer server.Close()
+
+	target := net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", pickFreeTCPPort(t)))
+	conn, err := Dial(context.Background(), "tcp", target, []Hop{hop}, provider)
+	if err == nil {
+		conn.Close()
+		t.Fatal("expected final target dial failure")
+	}
+}
+
+func TestDialSurfacesDownstreamRelayFailure(t *testing.T) {
+	backendAddr, stopBackend := startTCPEchoServer(t)
+	defer stopBackend()
+
+	provider := newFakeTLSMaterialProvider()
+	listenerA, hopA := newRelayEndpoint(t, provider, 1, "relay-a", "pin_only", true, false)
+	_, hopB := newRelayEndpoint(t, provider, 2, "relay-b", "pin_only", true, false)
+
+	serverA, err := Start(context.Background(), []Listener{listenerA}, provider)
+	if err != nil {
+		t.Fatalf("failed to start first relay: %v", err)
+	}
+	defer serverA.Close()
+
+	conn, err := Dial(context.Background(), "tcp", backendAddr, []Hop{hopA, hopB}, provider)
+	if err == nil {
+		conn.Close()
+		t.Fatal("expected downstream relay dial failure")
+	}
 }
 
 func TestPinVerificationBehavior(t *testing.T) {
@@ -291,6 +386,100 @@ func TestPinOrCAVerificationAcceptsEither(t *testing.T) {
 	conn.Close()
 }
 
+func TestCAVerificationSupportsServerNameOverride(t *testing.T) {
+	backendAddr, stopBackend := startTCPEchoServer(t)
+	defer stopBackend()
+
+	provider := newFakeTLSMaterialProvider()
+	listener, hop := newRelayEndpointWithCert(t, provider, relayEndpointOptions{
+		id:           1,
+		name:         "relay-sni",
+		tlsMode:      "ca_only",
+		includeCA:    true,
+		serverName:   "relay.internal.test",
+		certDNSNames: []string{"relay.internal.test"},
+	})
+
+	server, err := Start(context.Background(), []Listener{listener}, provider)
+	if err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+	defer server.Close()
+
+	hop.ServerName = ""
+	if _, err := Dial(context.Background(), "tcp", backendAddr, []Hop{hop}, provider); err == nil {
+		t.Fatal("expected hostname mismatch without server-name override")
+	}
+
+	hop.ServerName = "relay.internal.test"
+	conn, err := Dial(context.Background(), "tcp", backendAddr, []Hop{hop}, provider)
+	if err != nil {
+		t.Fatalf("expected server-name override to succeed: %v", err)
+	}
+	conn.Close()
+}
+
+func TestRelayPreservesHalfClose(t *testing.T) {
+	backendLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen backend: %v", err)
+	}
+	defer backendLn.Close()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn, err := backendLn.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		payload, err := io.ReadAll(conn)
+		if err != nil {
+			return
+		}
+		_, _ = conn.Write(append([]byte("ack:"), payload...))
+	}()
+
+	provider := newFakeTLSMaterialProvider()
+	listener, hop := newRelayEndpoint(t, provider, 1, "relay-half-close", "pin_only", true, false)
+
+	server, err := Start(context.Background(), []Listener{listener}, provider)
+	if err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+	defer server.Close()
+
+	conn, err := Dial(context.Background(), "tcp", backendLn.Addr().String(), []Hop{hop}, provider)
+	if err != nil {
+		t.Fatalf("Dial returned error: %v", err)
+	}
+	defer conn.Close()
+
+	if _, err := conn.Write([]byte("request")); err != nil {
+		t.Fatalf("failed to write request: %v", err)
+	}
+
+	closeWriter, ok := conn.(interface{ CloseWrite() error })
+	if !ok {
+		t.Fatalf("relay connection does not support CloseWrite")
+	}
+	if err := closeWriter.CloseWrite(); err != nil {
+		t.Fatalf("CloseWrite failed: %v", err)
+	}
+
+	reply, err := io.ReadAll(conn)
+	if err != nil {
+		t.Fatalf("failed to read response after half-close: %v", err)
+	}
+	if !bytes.Equal(reply, []byte("ack:request")) {
+		t.Fatalf("unexpected half-close response: got %q", reply)
+	}
+
+	<-done
+}
+
 func TestServerCloseStopsActiveRelayConnections(t *testing.T) {
 	backendLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -392,49 +581,86 @@ func (p *fakeTLSMaterialProvider) TrustedCAPool(_ context.Context, certificateID
 }
 
 func newRelayEndpoint(t *testing.T, provider *fakeTLSMaterialProvider, id int, name, tlsMode string, includePin, includeCA bool) (Listener, Hop) {
+	return newRelayEndpointWithCert(t, provider, relayEndpointOptions{
+		id:         id,
+		name:       name,
+		tlsMode:    tlsMode,
+		includePin: includePin,
+		includeCA:  includeCA,
+		serverName: "127.0.0.1",
+		certIPs:    []net.IP{net.ParseIP("127.0.0.1")},
+		certDNSNames: []string{
+			"localhost",
+		},
+	})
+}
+
+type relayEndpointOptions struct {
+	id           int
+	name         string
+	tlsMode      string
+	includePin   bool
+	includeCA    bool
+	serverName   string
+	certIPs      []net.IP
+	certDNSNames []string
+}
+
+func newRelayEndpointWithCert(t *testing.T, provider *fakeTLSMaterialProvider, options relayEndpointOptions) (Listener, Hop) {
 	t.Helper()
 
-	certificateID := id * 10
-	caID := id * 100
-	cert, parsed := newServerCertificate(t)
+	certificateID := options.id * 10
+	caID := options.id * 100
+	cert, parsed := newServerCertificate(t, certificateOptions{
+		commonName: options.serverName,
+		ipAddrs:    options.certIPs,
+		dnsNames:   options.certDNSNames,
+	})
 
 	provider.mu.Lock()
 	provider.serverCerts[certificateID] = cert
-	if includeCA {
+	if options.includeCA {
 		provider.caCerts[caID] = []*x509.Certificate{parsed}
 	}
 	provider.mu.Unlock()
 
 	listener := Listener{
-		ID:            id,
-		AgentID:       fmt.Sprintf("agent-%d", id),
-		Name:          name,
+		ID:            options.id,
+		AgentID:       fmt.Sprintf("agent-%d", options.id),
+		Name:          options.name,
 		ListenHost:    "127.0.0.1",
 		ListenPort:    pickFreeTCPPort(t),
 		Enabled:       true,
 		CertificateID: &certificateID,
-		TLSMode:       tlsMode,
+		TLSMode:       options.tlsMode,
 		Tags:          []string{"relay"},
-		Revision:      int64(id),
+		Revision:      int64(options.id),
 	}
-	if includePin {
+	if options.includePin {
 		listener.PinSet = []model.RelayPin{{
 			Type:  "spki_sha256",
 			Value: spkiPin(t, parsed),
 		}}
 	}
-	if includeCA {
+	if options.includeCA {
 		listener.TrustedCACertificateIDs = []int{caID}
 		listener.AllowSelfSigned = true
 	}
 
 	return listener, Hop{
-		Address:  net.JoinHostPort(listener.ListenHost, fmt.Sprintf("%d", listener.ListenPort)),
-		Listener: listener,
+		Address:    net.JoinHostPort(listener.ListenHost, fmt.Sprintf("%d", listener.ListenPort)),
+		Listener:   listener,
+		ServerName: options.serverName,
 	}
 }
 
-func newServerCertificate(t *testing.T) (tls.Certificate, *x509.Certificate) {
+type certificateOptions struct {
+	commonName string
+	ipAddrs    []net.IP
+	dnsNames   []string
+}
+
+func newServerCertificate(t *testing.T, options certificateOptions) (tls.Certificate, *x509.Certificate) {
 	t.Helper()
 
 	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -445,7 +671,7 @@ func newServerCertificate(t *testing.T) (tls.Certificate, *x509.Certificate) {
 	template := &x509.Certificate{
 		SerialNumber: big.NewInt(time.Now().UnixNano()),
 		Subject: pkix.Name{
-			CommonName: "127.0.0.1",
+			CommonName: options.commonName,
 		},
 		NotBefore:             time.Now().Add(-time.Hour),
 		NotAfter:              time.Now().Add(24 * time.Hour),
@@ -453,8 +679,8 @@ func newServerCertificate(t *testing.T) (tls.Certificate, *x509.Certificate) {
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
 		IsCA:                  true,
-		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1")},
-		DNSNames:              []string{"localhost"},
+		IPAddresses:           append([]net.IP(nil), options.ipAddrs...),
+		DNSNames:              append([]string(nil), options.dnsNames...),
 	}
 
 	derBytes, err := x509.CreateCertificate(rand.Reader, template, template, &privateKey.PublicKey, privateKey)

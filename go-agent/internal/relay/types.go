@@ -11,8 +11,9 @@ import (
 type Listener = model.RelayListener
 
 type Hop struct {
-	Address  string   `json:"address"`
-	Listener Listener `json:"listener"`
+	Address    string   `json:"address"`
+	ServerName string   `json:"server_name,omitempty"`
+	Listener   Listener `json:"listener"`
 }
 
 type TLSMaterialProvider interface {

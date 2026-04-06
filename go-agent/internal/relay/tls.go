@@ -33,7 +33,7 @@ func serverTLSConfig(ctx context.Context, provider TLSMaterialProvider, listener
 	}, nil
 }
 
-func clientTLSConfig(ctx context.Context, provider TLSMaterialProvider, listener Listener, address string) (*tls.Config, error) {
+func clientTLSConfig(ctx context.Context, provider TLSMaterialProvider, listener Listener, address, serverNameOverride string) (*tls.Config, error) {
 	if provider == nil {
 		return nil, fmt.Errorf("tls material provider is required")
 	}
@@ -48,7 +48,7 @@ func clientTLSConfig(ctx context.Context, provider TLSMaterialProvider, listener
 		return nil, err
 	}
 
-	serverName, err := serverNameFromAddress(address)
+	serverName, err := verificationServerName(address, serverNameOverride)
 	if err != nil {
 		return nil, err
 	}
@@ -83,7 +83,11 @@ func clientTLSConfig(ctx context.Context, provider TLSMaterialProvider, listener
 	}, nil
 }
 
-func serverNameFromAddress(address string) (string, error) {
+func verificationServerName(address, override string) (string, error) {
+	if trimmed := strings.TrimSpace(override); trimmed != "" {
+		return trimmed, nil
+	}
+
 	host, _, err := net.SplitHostPort(address)
 	if err != nil {
 		return "", fmt.Errorf("invalid relay address %q: %w", address, err)
