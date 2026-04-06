@@ -69,9 +69,12 @@ func TestHeartbeatSync(t *testing.T) {
 		if req.Header.Get("x-agent-token") != "token" {
 			t.Fatal("missing x-agent-token header")
 		}
+		if !bytes.Contains(req.Body, []byte(`"current_revision"`)) {
+			t.Fatalf("expected current_revision in heartbeat payload")
+		}
 		var payload struct {
 			Name            string `json:"name"`
-			CurrentRevision string `json:"current_revision"`
+			CurrentRevision int    `json:"current_revision"`
 			Version         string `json:"version"`
 			Platform        string `json:"platform"`
 		}
@@ -81,8 +84,8 @@ func TestHeartbeatSync(t *testing.T) {
 		if payload.Name != "local" || payload.Version != "0.1.0" || payload.Platform != "linux-amd64" {
 			t.Fatalf("unexpected payload %+v", payload)
 		}
-		if payload.CurrentRevision != "" {
-			t.Fatalf("expected no current_revision, got %q", payload.CurrentRevision)
+		if payload.CurrentRevision != 0 {
+			t.Fatalf("expected current_revision=0, got %d", payload.CurrentRevision)
 		}
 	case <-ctx.Done():
 		t.Fatalf("heartbeat not sent")

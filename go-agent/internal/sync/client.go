@@ -37,15 +37,17 @@ func NewClient(cfg ClientConfig, httpClient *http.Client) *Client {
 
 func (c *Client) Sync(ctx context.Context, _ Snapshot) (Snapshot, error) {
 	payload := struct {
-		Name     string `json:"name"`
-		AgentID  string `json:"agent_id"`
-		Version  string `json:"version"`
-		Platform string `json:"platform"`
+		Name            string `json:"name"`
+		AgentID         string `json:"agent_id"`
+		CurrentRevision int    `json:"current_revision"`
+		Version         string `json:"version"`
+		Platform        string `json:"platform"`
 	}{
-		Name:     c.cfg.AgentName,
-		AgentID:  c.cfg.AgentID,
-		Version:  c.cfg.CurrentVersion,
-		Platform: c.cfg.Platform,
+		Name:            c.cfg.AgentName,
+		AgentID:         c.cfg.AgentID,
+		CurrentRevision: 0,
+		Version:         c.cfg.CurrentVersion,
+		Platform:        c.cfg.Platform,
 	}
 
 	data, err := json.Marshal(payload)
