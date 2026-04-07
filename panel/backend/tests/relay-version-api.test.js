@@ -94,6 +94,19 @@ describe("relay listeners and version policies API", () => {
             status: "issued",
             revision: 1,
           },
+          {
+            id: 42,
+            domain: "relay-ca.example.com",
+            enabled: true,
+            scope: "domain",
+            issuer_mode: "local_http01",
+            usage: "relay_ca",
+            certificate_type: "internal_ca",
+            self_signed: true,
+            target_agent_ids: ["edge-1"],
+            status: "issued",
+            revision: 1,
+          },
         ],
       },
       async ({ baseUrl }) => {
@@ -109,6 +122,8 @@ describe("relay listeners and version policies API", () => {
         });
         assert.equal(created.status, 201);
         assert.equal(created.payload.listener.tls_mode, "pin_and_ca");
+        assert.equal(created.payload.listener.certificate_id, 7);
+        assert.deepEqual(created.payload.listener.trusted_ca_certificate_ids, [42]);
 
         const invalid = await jsonRequest(baseUrl, "POST", "/api/agents/edge-1/relay-listeners", {
           name: "relay-missing-cert",
@@ -119,7 +134,7 @@ describe("relay listeners and version policies API", () => {
           pin_set: [{ type: "spki_sha256", value: "abc123" }],
         });
         assert.equal(invalid.status, 400);
-        assert.match(invalid.payload.message, /certificate_id is required|certificate/i);
+        assert.equal(invalid.payload.message, "certificate_id is required when relay listener is enabled");
       },
     );
   });

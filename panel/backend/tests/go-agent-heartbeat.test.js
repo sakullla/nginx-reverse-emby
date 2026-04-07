@@ -9,6 +9,7 @@ const {
   TEST_SERVER_CERT_PEM,
   TEST_SERVER_KEY_PEM,
   TEST_CA_CHAIN_PEM,
+  TEST_SERVER_CHAIN_PEM,
 } = require("./helpers");
 
 describe("Go agent heartbeat API", () => {
@@ -873,8 +874,28 @@ describe("Go agent heartbeat API", () => {
 
         const certPath = path.join(dataRoot, "managed_certificates", "relay-uploaded.example.com", "cert");
         const keyPath = path.join(dataRoot, "managed_certificates", "relay-uploaded.example.com", "key");
-        assert.match(await fs.promises.readFile(certPath, "utf8"), /BEGIN CERTIFICATE/);
-        assert.match(await fs.promises.readFile(keyPath, "utf8"), /BEGIN .*PRIVATE KEY/);
+        assert.equal(await fs.promises.readFile(certPath, "utf8"), TEST_SERVER_CHAIN_PEM);
+        assert.equal(await fs.promises.readFile(keyPath, "utf8"), TEST_SERVER_KEY_PEM);
+
+        const syncResponse = await fetch(`${baseUrl}/api/agents/heartbeat`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-agent-token": "token-remote-agent-relay",
+          },
+          body: JSON.stringify({
+            name: "remote-agent-relay",
+            current_revision: 1,
+          }),
+        });
+        assert.equal(syncResponse.status, 200);
+        const syncPayload = await syncResponse.json();
+        const uploaded = syncPayload.sync.certificates.find(
+          (cert) => cert.domain === "relay-uploaded.example.com",
+        );
+        assert.ok(uploaded, "expected uploaded relay certificate in sync payload");
+        assert.equal(uploaded.cert_pem, TEST_SERVER_CHAIN_PEM);
+        assert.equal(uploaded.key_pem, TEST_SERVER_KEY_PEM);
       },
     );
   });
