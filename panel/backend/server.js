@@ -1285,6 +1285,15 @@ function findGlobalRelayCA() {
   );
 }
 
+function isRelayCACandidateForStartup(cert) {
+  if (!cert) return false;
+  return (
+    normalizeHost(cert.domain || "").toLowerCase() === RELAY_CA_DOMAIN ||
+    cert.usage === "relay_ca" ||
+    hasManagedCertificateTag(cert, RELAY_CA_TAG)
+  );
+}
+
 function buildGlobalRelayCAPayload(nextId) {
   return normalizeManagedCertificatePayload(
     {
@@ -2966,7 +2975,13 @@ async function ensureGlobalRelayCA() {
   }
 
   const certs = storage.loadManagedCertificates();
-  const existingIndex = certs.findIndex((cert) => isSystemRelayCA(cert));
+  const candidateIndexes = certs
+    .map((cert, index) => (isRelayCACandidateForStartup(cert) ? index : -1))
+    .filter((index) => index >= 0);
+  if (candidateIndexes.length > 1) {
+    throw new Error("multiple relay ca candidates found; manual cleanup required");
+  }
+  const existingIndex = candidateIndexes.length === 1 ? candidateIndexes[0] : -1;
   let relayCA = null;
 
   if (existingIndex >= 0) {
