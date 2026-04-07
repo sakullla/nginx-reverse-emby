@@ -62,6 +62,40 @@ async function generateRelaySignedIntermediateBundle(relayCAKeyPem, relayCACertP
   };
 }
 
+async function generateUnrelatedIntermediateBundle() {
+  const intermediate = await selfsigned.generate(
+    [{ name: "commonName", value: "unrelated-intermediate.internal" }],
+    {
+      algorithm: "sha256",
+      days: 825,
+      extensions: [
+        { name: "basicConstraints", cA: true },
+        {
+          name: "keyUsage",
+          digitalSignature: true,
+          keyCertSign: true,
+          cRLSign: true,
+        },
+      ],
+    },
+  );
+  const leaf = await selfsigned.generate(
+    [{ name: "commonName", value: "relay-unrelated-chain.example.com" }],
+    {
+      algorithm: "sha256",
+      days: 825,
+      ca: {
+        key: intermediate.private,
+        cert: intermediate.cert,
+      },
+    },
+  );
+  return {
+    certificatePem: `${leaf.cert}\n${intermediate.cert}`,
+    privateKeyPem: leaf.private,
+  };
+}
+
 describe("relay listeners and version policies API", () => {
   it("supports relay listener CRUD for registered agents", async () => {
     await withBackendServer(
@@ -1109,6 +1143,72 @@ describe("relay listeners and version policies API", () => {
           {
             type: "spki_sha256",
             value: computeSpkiSha256(TEST_SERVER_CERT_PEM),
+          },
+        ]);
+      },
+    );
+  });
+
+  it("does not auto-trust relay ca when an unrelated intermediate chain merely appends relay ca pem", async () => {
+    await withBackendServer(
+      {
+        env: { PANEL_ROLE: "master" },
+        agents: [
+          {
+            id: "edge-1",
+            name: "edge-1",
+            agent_token: "token-edge-1",
+            desired_revision: 1,
+            current_revision: 1,
+            capabilities: ["cert_install", "http_rules", "l4"],
+            created_at: "2026-04-01T00:00:00.000Z",
+            updated_at: "2026-04-01T00:00:00.000Z",
+          },
+        ],
+      },
+      async ({ baseUrl, dataRoot }) => {
+        const certificates = await jsonRequest(baseUrl, "GET", "/api/certificates");
+        assert.equal(certificates.status, 200);
+        const relayCA = certificates.payload.certificates.find((cert) => cert.usage === "relay_ca");
+        assert.ok(relayCA);
+        const relayCAPem = await fsp.readFile(
+          path.join(dataRoot, "managed_certificates", relayCA.domain, "cert"),
+          "utf8",
+        );
+        const bundle = await generateUnrelatedIntermediateBundle();
+
+        const uploaded = await jsonRequest(baseUrl, "POST", "/api/agents/edge-1/certificates", {
+          domain: "relay-unrelated-chain.example.com",
+          enabled: true,
+          scope: "domain",
+          issuer_mode: "local_http01",
+          usage: "relay_tunnel",
+          certificate_type: "uploaded",
+          self_signed: false,
+          certificate_pem: bundle.certificatePem,
+          private_key_pem: bundle.privateKeyPem,
+          ca_pem: relayCAPem,
+        });
+        assert.equal(uploaded.status, 201);
+
+        const created = await jsonRequest(baseUrl, "POST", "/api/agents/edge-1/relay-listeners", {
+          name: "relay-unrelated-chain",
+          listen_host: "relay-unrelated-chain.example.com",
+          listen_port: 7443,
+          enabled: true,
+          certificate_source: "existing_certificate",
+          certificate_id: uploaded.payload.certificate.id,
+          trust_mode_source: "auto",
+        });
+
+        assert.equal(created.status, 201);
+        assert.equal(created.payload.listener.certificate_id, uploaded.payload.certificate.id);
+        assert.equal(created.payload.listener.tls_mode, "pin_only");
+        assert.deepEqual(created.payload.listener.trusted_ca_certificate_ids, []);
+        assert.deepEqual(created.payload.listener.pin_set, [
+          {
+            type: "spki_sha256",
+            value: computeSpkiSha256(bundle.certificatePem),
           },
         ]);
       },
