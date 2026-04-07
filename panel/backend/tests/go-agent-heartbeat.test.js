@@ -2,6 +2,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
+const crypto = require("node:crypto");
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const {
@@ -11,6 +12,12 @@ const {
   TEST_CA_CHAIN_PEM,
   TEST_SERVER_CHAIN_PEM,
 } = require("./helpers");
+
+function computeSpkiSha256(certPem) {
+  const key = crypto.createPublicKey(certPem);
+  const der = key.export({ type: "spki", format: "der" });
+  return crypto.createHash("sha256").update(der).digest("base64");
+}
 
 async function jsonRequest(baseUrl, method, path, body) {
   const response = await fetch(`${baseUrl}${path}`, {
@@ -336,7 +343,7 @@ describe("Go agent heartbeat API", () => {
             listen_port: 7443,
             enabled: true,
             certificate_id: RELAY_CERT_ID,
-            pin_set: [{ type: "sha256", value: "derived-pin" }],
+            trusted_ca_certificate_ids: [RELAY_CA_ID],
             certificate_source: "auto_relay_ca",
             trust_mode_source: "auto",
           },
@@ -359,8 +366,12 @@ describe("Go agent heartbeat API", () => {
           (listener) => listener.id === listenerId,
         );
         assert.ok(syncedListener);
+        const expectedPin = {
+          type: "spki_sha256",
+          value: computeSpkiSha256(TEST_SERVER_CERT_PEM),
+        };
         assert.equal(syncedListener.tls_mode, "pin_and_ca");
-        assert.equal(syncedListener.pin_set.length, 1);
+        assert.deepEqual(syncedListener.pin_set, [expectedPin]);
         assert.ok(syncedListener.trusted_ca_certificate_ids.includes(RELAY_CA_ID));
 
         const caPolicy = payload.sync.certificate_policies.find((policy) => policy.id === RELAY_CA_ID);
