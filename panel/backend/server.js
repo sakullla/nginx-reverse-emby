@@ -1324,18 +1324,18 @@ function buildCanonicalGlobalRelayCA(existingCert, certId) {
   );
 }
 
-function getGlobalRelayCAInvariantFields(cert, certId) {
-  const canonical = buildCanonicalGlobalRelayCA(cert, certId);
+function extractManagedCertificateInvariantFields(cert, certId) {
+  const normalized = normalizeManagedCertificatePayload(cert || {}, cert || {}, certId);
   return {
-    domain: canonical.domain,
-    enabled: canonical.enabled,
-    scope: canonical.scope,
-    issuer_mode: canonical.issuer_mode,
-    usage: canonical.usage,
-    certificate_type: canonical.certificate_type,
-    self_signed: canonical.self_signed,
-    target_agent_ids: canonical.target_agent_ids,
-    tags: canonical.tags,
+    domain: normalized.domain,
+    enabled: normalized.enabled,
+    scope: normalized.scope,
+    issuer_mode: normalized.issuer_mode,
+    usage: normalized.usage,
+    certificate_type: normalized.certificate_type,
+    self_signed: normalized.self_signed,
+    target_agent_ids: normalized.target_agent_ids,
+    tags: normalized.tags,
   };
 }
 
@@ -2971,9 +2971,12 @@ async function ensureGlobalRelayCA() {
 
   if (existingIndex >= 0) {
     const existing = certs[existingIndex];
-    const desiredInvariantFields = getGlobalRelayCAInvariantFields(existing, existing.id);
-    const currentInvariantFields = getGlobalRelayCAInvariantFields(
-      normalizeManagedCertificatePayload(existing, existing, existing.id),
+    const desiredInvariantFields = extractManagedCertificateInvariantFields(
+      buildCanonicalGlobalRelayCA(existing, existing.id),
+      existing.id,
+    );
+    const currentInvariantFields = extractManagedCertificateInvariantFields(
+      existing,
       existing.id,
     );
     if (JSON.stringify(desiredInvariantFields) !== JSON.stringify(currentInvariantFields)) {
