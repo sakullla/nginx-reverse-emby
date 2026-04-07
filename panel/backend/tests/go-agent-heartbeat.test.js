@@ -40,6 +40,7 @@ describe("Go agent heartbeat API", () => {
               listen_host: "0.0.0.0",
               listen_port: 7000,
               enabled: true,
+              certificate_id: 15,
               tls_mode: "pin_or_ca",
               pin_set: [
                 {
@@ -111,6 +112,7 @@ describe("Go agent heartbeat API", () => {
             listen_host: "0.0.0.0",
             listen_port: 7000,
             enabled: true,
+            certificate_id: 15,
             tls_mode: "pin_or_ca",
             pin_set: [
               {
@@ -182,6 +184,7 @@ describe("Go agent heartbeat API", () => {
               listen_host: "relay-a.example.com",
               listen_port: 7443,
               enabled: true,
+              certificate_id: 31,
               tls_mode: "pin_only",
               pin_set: [
                 {
@@ -200,6 +203,7 @@ describe("Go agent heartbeat API", () => {
               listen_host: "relay-b.example.com",
               listen_port: 8443,
               enabled: true,
+              certificate_id: 32,
               tls_mode: "pin_only",
               pin_set: [
                 {
@@ -629,6 +633,7 @@ describe("Go agent heartbeat API", () => {
               listen_host: "0.0.0.0",
               listen_port: 7443,
               enabled: true,
+              certificate_id: 19,
               tls_mode: "pin_or_ca",
               pin_set: [
                 {
@@ -795,6 +800,9 @@ describe("Go agent heartbeat API", () => {
             usage: "relay_tunnel",
             certificate_type: "uploaded",
             self_signed: true,
+            certificate_pem: TEST_SERVER_CERT_PEM,
+            private_key_pem: TEST_SERVER_KEY_PEM,
+            ca_pem: TEST_CA_CHAIN_PEM,
           }),
         });
 

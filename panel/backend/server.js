@@ -6,6 +6,7 @@ const http = require("http");
 const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
+const tls = require("tls");
 const { spawnSync } = require("child_process");
 const storage = require("./storage");
 const {
@@ -1577,6 +1578,18 @@ function getManagedCertificateAcmeName(domain) {
   return isWildcardDomain(normalizedDomain) ? normalizedDomain.slice(2) : normalizedDomain;
 }
 
+function normalizeUploadedPEMField(value) {
+  return value === undefined || value === null ? "" : String(value).trim();
+}
+
+function joinCertificatePEM(certificatePEM, caPEM) {
+  const parts = [
+    normalizeUploadedPEMField(certificatePEM),
+    normalizeUploadedPEMField(caPEM),
+  ].filter(Boolean);
+  return parts.join("\n");
+}
+
 function readManagedCertificateAcmeInfo(domain) {
   if (!fs.existsSync(ACME_SCRIPT)) {
     return normalizeManagedCertificateAcmeInfo();
@@ -1632,6 +1645,53 @@ function readManagedCertificateMaterial(domain) {
   return {
     cert_pem: fs.readFileSync(certFile, "utf8"),
     key_pem: fs.readFileSync(keyFile, "utf8"),
+  };
+}
+
+function writeManagedCertificateMaterial(domain, material) {
+  const certDir = getCertStoreDir(domain);
+  fs.mkdirSync(certDir, { recursive: true });
+  fs.writeFileSync(path.join(certDir, "cert"), String(material.cert_pem || ""), "utf8");
+  fs.writeFileSync(path.join(certDir, "key"), String(material.key_pem || ""), "utf8");
+}
+
+function resolveUploadedManagedCertificateMaterial(body, nextCert, previousCert = null) {
+  if (nextCert.certificate_type !== "uploaded") {
+    return null;
+  }
+
+  const certificatePEM = normalizeUploadedPEMField(body.certificate_pem);
+  const privateKeyPEM = normalizeUploadedPEMField(body.private_key_pem);
+  const caPEM = normalizeUploadedPEMField(body.ca_pem);
+  const previousMaterial = previousCert ? readManagedCertificateMaterial(previousCert.domain) : null;
+
+  if (!certificatePEM && !privateKeyPEM && !caPEM) {
+    if (previousMaterial?.cert_pem && previousMaterial?.key_pem) {
+      tls.createSecureContext({
+        cert: previousMaterial.cert_pem,
+        key: previousMaterial.key_pem,
+      });
+      return previousMaterial;
+    }
+    throw new Error("certificate_pem is required for uploaded certificates");
+  }
+
+  const certPEM = joinCertificatePEM(certificatePEM, caPEM);
+  if (!certPEM) {
+    throw new Error("certificate_pem is required for uploaded certificates");
+  }
+  if (!privateKeyPEM) {
+    throw new Error("private_key_pem is required for uploaded certificates");
+  }
+
+  tls.createSecureContext({
+    cert: certPEM,
+    key: privateKeyPEM,
+  });
+
+  return {
+    cert_pem: certPEM,
+    key_pem: privateKeyPEM,
   };
 }
 
@@ -2674,7 +2734,7 @@ async function requestLocalHttp01CertificateById(certId, options = {}) {
 }
 
 async function syncStaticLocalCertificateById(certId, options = {}) {
-  const { agentId = null } = options;
+  const { agentId = null, bumpRevision = true, applyNow = AUTO_APPLY } = options;
   let cert = getManagedCertificateById(certId);
   if (!cert) throw new Error("certificate not found");
   if (!cert.enabled) throw new Error("certificate is disabled");
@@ -2718,7 +2778,7 @@ async function syncStaticLocalCertificateById(certId, options = {}) {
       last_issue_at: issuedAt,
       last_error: "",
       material_hash: materialHash,
-      revision: storage.getNextGlobalRevision(),
+      revision: bumpRevision ? storage.getNextGlobalRevision() : normalizeRevision(current.revision),
     };
     for (const targetAgentId of requestedAgentIds) {
       nextCert = updateManagedCertificateAgentReportSnapshot(nextCert, targetAgentId, {
@@ -2733,7 +2793,7 @@ async function syncStaticLocalCertificateById(certId, options = {}) {
     return nextCert;
   });
 
-  await syncManagedCertificateAgentIds(requestedAgentIds);
+  await syncManagedCertificateAgentIds(requestedAgentIds, { applyNow });
   return cert;
 }
 
@@ -4299,16 +4359,26 @@ async function handleMasterApi(req, res) {
         maxId + 1,
       );
       validateManagedCertificateTargets(nextCert);
+      const uploadMaterial = resolveUploadedManagedCertificateMaterial(body, nextCert);
       const preparedCert = prepareManagedCertificateForSave(null, nextCert);
       if (preparedCert.scope === "domain" && preparedCert.issuer_mode === "master_cf_dns") {
         assertManagedCertificateEnabled();
       }
       certs.push({ ...preparedCert, revision: storage.getNextGlobalRevision() });
       storage.saveManagedCertificates(certs);
+      if (uploadMaterial) {
+        writeManagedCertificateMaterial(preparedCert.domain, uploadMaterial);
+      }
 
       let savedCert = getManagedCertificateById(preparedCert.id);
       if (savedCert.enabled && savedCert.scope === "domain" && savedCert.issuer_mode === "master_cf_dns") {
         savedCert = await issueManagedCertificateById(savedCert.id, { bumpRevision: false });
+      } else if (
+        savedCert.enabled &&
+        savedCert.issuer_mode === "local_http01" &&
+        savedCert.certificate_type === "uploaded"
+      ) {
+        savedCert = await syncStaticLocalCertificateById(savedCert.id, { bumpRevision: false });
       } else {
         await syncManagedCertificateAgentIds(savedCert.target_agent_ids || []);
       }
@@ -4352,6 +4422,7 @@ async function handleMasterApi(req, res) {
         certId,
       );
       validateManagedCertificateTargets(nextCert);
+      const uploadMaterial = resolveUploadedManagedCertificateMaterial(body, nextCert, previousCert);
       const preparedCert = prepareManagedCertificateForSave(previousCert, nextCert);
       if (preparedCert.scope === "domain" && preparedCert.issuer_mode === "master_cf_dns") {
         assertManagedCertificateEnabled();
@@ -4359,6 +4430,9 @@ async function handleMasterApi(req, res) {
       preparedCert.revision = storage.getNextGlobalRevision();
       certs[index] = preparedCert;
       storage.saveManagedCertificates(certs);
+      if (uploadMaterial) {
+        writeManagedCertificateMaterial(preparedCert.domain, uploadMaterial);
+      }
 
       let savedCert = preparedCert;
       const affectedAgentIds = getManagedCertificateAffectedAgentIds(previousCert, preparedCert);
@@ -4369,6 +4443,15 @@ async function handleMasterApi(req, res) {
         preparedCert.issuer_mode === "master_cf_dns"
       ) {
         savedCert = await issueManagedCertificateById(certId, { bumpRevision: false });
+        if (removedAgentIds.length > 0) {
+          await syncManagedCertificateAgentIds(removedAgentIds);
+        }
+      } else if (
+        preparedCert.enabled &&
+        preparedCert.issuer_mode === "local_http01" &&
+        preparedCert.certificate_type === "uploaded"
+      ) {
+        savedCert = await syncStaticLocalCertificateById(certId, { bumpRevision: false });
         if (removedAgentIds.length > 0) {
           await syncManagedCertificateAgentIds(removedAgentIds);
         }
@@ -4481,6 +4564,7 @@ async function handleMasterApi(req, res) {
       const maxId = certs.reduce((max, cert) => Math.max(max, Number(cert.id) || 0), 0);
       const nextCert = normalizeManagedCertificatePayload(body, {}, maxId + 1);
       validateManagedCertificateTargets(nextCert);
+      const uploadMaterial = resolveUploadedManagedCertificateMaterial(body, nextCert);
       const preparedCert = prepareManagedCertificateForSave(null, nextCert);
       if (preparedCert.scope === "domain" && preparedCert.issuer_mode === "master_cf_dns") {
         assertManagedCertificateEnabled();
@@ -4488,6 +4572,9 @@ async function handleMasterApi(req, res) {
       preparedCert.revision = storage.getNextGlobalRevision();
       certs.push(preparedCert);
       storage.saveManagedCertificates(certs);
+      if (uploadMaterial) {
+        writeManagedCertificateMaterial(preparedCert.domain, uploadMaterial);
+      }
 
       let savedCert = preparedCert;
       if (
@@ -4496,6 +4583,12 @@ async function handleMasterApi(req, res) {
         preparedCert.issuer_mode === "master_cf_dns"
       ) {
         savedCert = await issueManagedCertificateById(preparedCert.id, { bumpRevision: false });
+      } else if (
+        preparedCert.enabled &&
+        preparedCert.issuer_mode === "local_http01" &&
+        preparedCert.certificate_type === "uploaded"
+      ) {
+        savedCert = await syncStaticLocalCertificateById(preparedCert.id, { bumpRevision: false });
       } else {
         await syncManagedCertificateAgentIds(preparedCert.target_agent_ids || []);
       }
@@ -4520,6 +4613,7 @@ async function handleMasterApi(req, res) {
       const previousCert = { ...certs[index] };
       const nextCert = normalizeManagedCertificatePayload(body, certs[index], certId);
       validateManagedCertificateTargets(nextCert);
+      const uploadMaterial = resolveUploadedManagedCertificateMaterial(body, nextCert, previousCert);
       const preparedCert = prepareManagedCertificateForSave(previousCert, nextCert);
       if (preparedCert.scope === "domain" && preparedCert.issuer_mode === "master_cf_dns") {
         assertManagedCertificateEnabled();
@@ -4527,6 +4621,9 @@ async function handleMasterApi(req, res) {
       preparedCert.revision = storage.getNextGlobalRevision();
       certs[index] = preparedCert;
       storage.saveManagedCertificates(certs);
+      if (uploadMaterial) {
+        writeManagedCertificateMaterial(preparedCert.domain, uploadMaterial);
+      }
 
       let savedCert = preparedCert;
       const affectedAgentIds = getManagedCertificateAffectedAgentIds(previousCert, preparedCert);
@@ -4537,6 +4634,15 @@ async function handleMasterApi(req, res) {
         preparedCert.issuer_mode === "master_cf_dns"
       ) {
         savedCert = await issueManagedCertificateById(certId, { bumpRevision: false });
+        if (removedAgentIds.length > 0) {
+          await syncManagedCertificateAgentIds(removedAgentIds);
+        }
+      } else if (
+        preparedCert.enabled &&
+        preparedCert.issuer_mode === "local_http01" &&
+        preparedCert.certificate_type === "uploaded"
+      ) {
+        savedCert = await syncStaticLocalCertificateById(certId, { bumpRevision: false });
         if (removedAgentIds.length > 0) {
           await syncManagedCertificateAgentIds(removedAgentIds);
         }

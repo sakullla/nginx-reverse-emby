@@ -109,6 +109,15 @@ function normalizeRelayListenerPayload(payload) {
     tags: normalizeStringList(next.tags),
     revision: normalizeRevision(next.revision),
   };
+  const allowedTlsModes = new Set(["pin_only", "ca_only", "pin_or_ca", "pin_and_ca"]);
+
+  if (!allowedTlsModes.has(normalized.tls_mode)) {
+    throw new TypeError("tls_mode must be pin_only, ca_only, pin_or_ca, or pin_and_ca");
+  }
+
+  if (normalized.enabled && normalized.certificate_id == null) {
+    throw new TypeError("certificate_id is required when relay listener is enabled");
+  }
 
   if (
     normalized.pin_set.length === 0 &&

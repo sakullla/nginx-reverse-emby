@@ -35,9 +35,24 @@ describe("relay listener normalization", () => {
         name: "relay-a",
         listen_host: "0.0.0.0",
         listen_port: 18443,
+        certificate_id: 12,
         pin_set: [{ type: "spki_sha256", value: "abc" }],
       }),
       /id is required|id/i,
+    );
+  });
+
+  it("rejects enabled listeners without a certificate_id", () => {
+    assert.throws(
+      () => normalizeRelayListenerPayload({
+        id: 2,
+        agent_id: "local",
+        name: "relay-a",
+        listen_host: "0.0.0.0",
+        listen_port: 18443,
+        pin_set: [{ type: "spki_sha256", value: "abc" }],
+      }),
+      /certificate_id is required when relay listener is enabled/i,
     );
   });
 
@@ -49,6 +64,7 @@ describe("relay listener normalization", () => {
         name: "relay-a",
         listen_host: "0.0.0.0",
         listen_port: 18443,
+        certificate_id: 12,
         pin_set: [],
         trusted_ca_certificate_ids: [],
       }),
@@ -105,16 +121,16 @@ describe("relay listener storage", () => {
     try {
       const listeners = [
         normalizeRelayListenerPayload({
-          id: 8,
-          agent_id: "agent-sqlite",
-          name: "relay-b",
-          listen_host: "127.0.0.1",
-          listen_port: 9443,
-          certificate_id: null,
-          tls_mode: "pin_or_ca",
-          trusted_ca_certificate_ids: [22],
-          allow_self_signed: false,
-          tags: ["edge"],
+        id: 8,
+        agent_id: "agent-sqlite",
+        name: "relay-b",
+        listen_host: "127.0.0.1",
+        listen_port: 9443,
+        certificate_id: 22,
+        tls_mode: "pin_or_ca",
+        trusted_ca_certificate_ids: [22],
+        allow_self_signed: false,
+        tags: ["edge"],
           revision: 4,
         }),
       ];
@@ -138,6 +154,7 @@ describe("relay listener storage", () => {
         name: "relay-a",
         listen_host: "0.0.0.0",
         listen_port: 18443,
+        certificate_id: 12,
         pin_set: [{ type: "spki_sha256", value: "abc" }],
       }),
     ]);
@@ -152,7 +169,7 @@ describe("relay listener storage", () => {
           listen_host: "0.0.0.0",
           listen_port: 18443,
           enabled: true,
-          certificate_id: undefined,
+          certificate_id: 12,
           tls_mode: "pin_or_ca",
           pin_set: [{ type: "spki_sha256", value: "abc" }],
           trusted_ca_certificate_ids: [],
@@ -172,6 +189,7 @@ describe("relay listener storage", () => {
         name: "relay-a",
         listen_host: "0.0.0.0",
         listen_port: 18443,
+        certificate_id: 12,
         pin_set: [{ type: "spki_sha256", value: "abc" }],
       }),
     ]);
@@ -184,6 +202,7 @@ describe("relay listener storage", () => {
           name: "relay-b",
           listen_host: "127.0.0.1",
           listen_port: 19443,
+          certificate_id: 13,
           trusted_ca_certificate_ids: [12],
         }),
       ]),
@@ -202,6 +221,7 @@ describe("relay listener storage", () => {
           name: "relay-a",
           listen_host: "0.0.0.0",
           listen_port: 18443,
+          certificate_id: 12,
           pin_set: [{ type: "spki_sha256", value: "abc" }],
         }),
       ]);
@@ -209,14 +229,15 @@ describe("relay listener storage", () => {
       assert.throws(
         () => sqliteStorage.saveRelayListenersForAgent("agent-b", [
           normalizeRelayListenerPayload({
-            id: 101,
-            agent_id: "agent-b",
-            name: "relay-b",
-            listen_host: "127.0.0.1",
-            listen_port: 19443,
-            trusted_ca_certificate_ids: [12],
-          }),
-        ]),
+          id: 101,
+          agent_id: "agent-b",
+          name: "relay-b",
+          listen_host: "127.0.0.1",
+          listen_port: 19443,
+          certificate_id: 13,
+          trusted_ca_certificate_ids: [12],
+        }),
+      ]),
         /unique|constraint|relay listener id/i,
       );
     } finally {
@@ -232,6 +253,7 @@ describe("relay listener storage", () => {
         name: "relay-a",
         listen_host: "0.0.0.0",
         listen_port: 18443,
+        certificate_id: 12,
         pin_set: [{ type: "spki_sha256", value: "abc" }],
       }),
     ];
@@ -245,6 +267,7 @@ describe("relay listener storage", () => {
         name: "relay-b",
         listen_host: "0.0.0.0",
         listen_port: 19443,
+        certificate_id: 13,
         pin_set: [],
         trusted_ca_certificate_ids: [],
       }]),
@@ -265,6 +288,7 @@ describe("relay listener storage", () => {
         name: "relay-a",
         listen_host: "0.0.0.0",
         listen_port: 18443,
+        certificate_id: 12,
         pin_set: [{ type: "spki_sha256", value: "abc" }],
       }),
     ];
@@ -277,6 +301,7 @@ describe("relay listener storage", () => {
         name: "relay-b",
         listen_host: "0.0.0.0",
         listen_port: 19443,
+        certificate_id: 13,
         pin_set: [{ type: "spki_sha256", value: "abc" }],
       }]),
       /id is required|id/i,

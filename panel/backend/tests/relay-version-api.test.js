@@ -27,6 +27,21 @@ describe("relay listeners and version policies API", () => {
             capabilities: ["http_rules", "l4"],
           },
         ],
+        managedCertificates: [
+          {
+            id: 7,
+            domain: "relay-cert.example.com",
+            enabled: true,
+            scope: "domain",
+            issuer_mode: "local_http01",
+            usage: "relay_tunnel",
+            certificate_type: "uploaded",
+            self_signed: true,
+            target_agent_ids: ["edge-1"],
+            status: "issued",
+            revision: 1,
+          },
+        ],
       },
       async ({ baseUrl }) => {
         const created = await jsonRequest(baseUrl, "POST", "/api/agents/edge-1/relay-listeners", {
@@ -35,7 +50,7 @@ describe("relay listeners and version policies API", () => {
           listen_port: 10443,
           enabled: true,
           tls_mode: "pin_or_ca",
-          certificate_id: null,
+          certificate_id: 7,
           pin_set: [{ type: "spki_sha256", value: "abc" }],
           trusted_ca_certificate_ids: [],
           allow_self_signed: false,
@@ -201,6 +216,21 @@ describe("relay listeners and version policies API", () => {
             capabilities: ["http_rules", "l4"],
           },
         ],
+        managedCertificates: [
+          {
+            id: 7,
+            domain: "relay-cert.example.com",
+            enabled: true,
+            scope: "domain",
+            issuer_mode: "local_http01",
+            usage: "relay_tunnel",
+            certificate_type: "uploaded",
+            self_signed: true,
+            target_agent_ids: ["edge-1"],
+            status: "issued",
+            revision: 1,
+          },
+        ],
       },
       async ({ baseUrl }) => {
         const created = await jsonRequest(baseUrl, "POST", "/api/agents/edge-1/relay-listeners", {
@@ -209,7 +239,7 @@ describe("relay listeners and version policies API", () => {
           listen_port: 10443,
           enabled: true,
           tls_mode: "pin_or_ca",
-          certificate_id: null,
+          certificate_id: 7,
           pin_set: [{ type: "spki_sha256", value: "abc" }],
           trusted_ca_certificate_ids: [],
           allow_self_signed: false,
@@ -254,6 +284,21 @@ describe("relay listeners and version policies API", () => {
             capabilities: ["http_rules", "l4"],
           },
         ],
+        managedCertificates: [
+          {
+            id: 7,
+            domain: "relay-cert.example.com",
+            enabled: true,
+            scope: "domain",
+            issuer_mode: "local_http01",
+            usage: "relay_tunnel",
+            certificate_type: "uploaded",
+            self_signed: true,
+            target_agent_ids: ["edge-1"],
+            status: "issued",
+            revision: 1,
+          },
+        ],
       },
       async ({ baseUrl }) => {
         const created = await jsonRequest(baseUrl, "POST", "/api/agents/edge-1/relay-listeners", {
@@ -262,7 +307,7 @@ describe("relay listeners and version policies API", () => {
           listen_port: 10443,
           enabled: true,
           tls_mode: "pin_or_ca",
-          certificate_id: null,
+          certificate_id: 7,
           pin_set: [{ type: "spki_sha256", value: "abc" }],
           trusted_ca_certificate_ids: [],
           allow_self_signed: false,
@@ -308,6 +353,21 @@ describe("relay listeners and version policies API", () => {
             capabilities: ["http_rules", "l4"],
           },
         ],
+        managedCertificates: [
+          {
+            id: 7,
+            domain: "relay-cert.example.com",
+            enabled: true,
+            scope: "domain",
+            issuer_mode: "local_http01",
+            usage: "relay_tunnel",
+            certificate_type: "uploaded",
+            self_signed: true,
+            target_agent_ids: ["edge-1"],
+            status: "issued",
+            revision: 1,
+          },
+        ],
       },
       async ({ baseUrl }) => {
         const created = await jsonRequest(baseUrl, "POST", "/api/agents/edge-1/relay-listeners", {
@@ -316,7 +376,7 @@ describe("relay listeners and version policies API", () => {
           listen_port: 10443,
           enabled: true,
           tls_mode: "pin_or_ca",
-          certificate_id: null,
+          certificate_id: 7,
           pin_set: [{ type: "spki_sha256", value: "abc" }],
           trusted_ca_certificate_ids: [],
           allow_self_signed: false,
