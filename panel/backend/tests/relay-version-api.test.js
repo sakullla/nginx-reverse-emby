@@ -83,6 +83,24 @@ describe("relay listeners and version policies API", () => {
     );
   });
 
+  it("bootstraps a singleton global relay ca on startup", async () => {
+    await withBackendServer(
+      {
+        env: { PANEL_ROLE: "master" },
+      },
+      async ({ baseUrl }) => {
+        const response = await fetch(`${baseUrl}/api/certificates`);
+        assert.equal(response.status, 200);
+        const payload = await response.json();
+
+        const relayCAs = payload.certificates.filter((cert) => cert.usage === "relay_ca");
+        assert.equal(relayCAs.length, 1);
+        assert.equal(relayCAs[0].certificate_type, "internal_ca");
+        assert.equal(relayCAs[0].enabled, true);
+      },
+    );
+  });
+
   it("validates relay listener TLS modes and certificate requirements", async () => {
     await withBackendServer(
       {
@@ -150,6 +168,42 @@ describe("relay listeners and version policies API", () => {
         });
         assert.equal(invalid.status, 400);
         assert.equal(invalid.payload.message, "certificate_id is required when relay listener is enabled");
+      },
+    );
+  });
+
+  it("creates relay listeners with an auto-issued relay certificate and derived trust material", async () => {
+    await withBackendServer(
+      {
+        env: { PANEL_ROLE: "master" },
+        agents: [
+          {
+            id: "edge-1",
+            name: "edge-1",
+            agent_token: "token-edge-1",
+            desired_revision: 1,
+            current_revision: 1,
+            capabilities: ["cert_install", "http_rules", "l4"],
+            created_at: "2026-04-01T00:00:00.000Z",
+            updated_at: "2026-04-01T00:00:00.000Z",
+          },
+        ],
+      },
+      async ({ baseUrl }) => {
+        const response = await jsonRequest(baseUrl, "POST", "/api/agents/edge-1/relay-listeners", {
+          name: "relay-a",
+          listen_host: "relay-a.example.com",
+          listen_port: 7443,
+          enabled: true,
+          certificate_source: "auto_relay_ca",
+          trust_mode_source: "auto",
+        });
+
+        assert.equal(response.status, 201);
+        assert.ok(Number.isInteger(response.payload.listener.certificate_id));
+        assert.equal(response.payload.listener.tls_mode, "pin_and_ca");
+        assert.equal(response.payload.listener.pin_set.length, 1);
+        assert.ok(response.payload.listener.trusted_ca_certificate_ids.length >= 1);
       },
     );
   });

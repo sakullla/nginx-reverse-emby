@@ -258,6 +258,55 @@ describe("Go agent heartbeat API", () => {
     );
   });
 
+  it("syncs auto-derived relay trust material for relay-chain listeners", async () => {
+    await withBackendServer(
+      {
+        env: { PANEL_ROLE: "master" },
+        agents: [
+          {
+            id: "remote-agent-a",
+            name: "remote-agent-a",
+            agent_token: "token-remote-agent-a",
+            desired_revision: 3,
+            current_revision: 1,
+            capabilities: ["http_rules", "cert_install", "l4"],
+            created_at: "2026-04-01T00:00:00.000Z",
+            updated_at: "2026-04-01T00:00:00.000Z",
+          },
+        ],
+      },
+      async ({ baseUrl }) => {
+        await fetch(`${baseUrl}/api/agents/remote-agent-a/relay-listeners`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            name: "relay-a",
+            listen_host: "relay-a.example.com",
+            listen_port: 7443,
+            enabled: true,
+            certificate_source: "auto_relay_ca",
+            trust_mode_source: "auto",
+          }),
+        });
+
+        const heartbeat = await fetch(`${baseUrl}/api/agents/heartbeat`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-agent-token": "token-remote-agent-a",
+          },
+          body: JSON.stringify({ name: "remote-agent-a", current_revision: 1 }),
+        });
+
+        assert.equal(heartbeat.status, 200);
+        const payload = await heartbeat.json();
+        assert.equal(payload.sync.relay_listeners[0].tls_mode, "pin_and_ca");
+        assert.equal(payload.sync.relay_listeners[0].pin_set.length, 1);
+        assert.ok(payload.sync.relay_listeners[0].trusted_ca_certificate_ids.length >= 1);
+      },
+    );
+  });
+
   it("persists heartbeat platform/version fields and exposes them on agent APIs", async () => {
     await withBackendServer(
       {
