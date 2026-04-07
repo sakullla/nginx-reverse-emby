@@ -323,12 +323,12 @@ describe("Go agent heartbeat API", () => {
         ],
         managedCertificateMaterial: {
           "relay-ca.bootstrap": {
-            cert_pem: "CA_CERT",
-            key_pem: "CA_KEY",
+            cert_pem: TEST_CA_CHAIN_PEM,
+            key_pem: TEST_SERVER_KEY_PEM,
           },
           "relay-auto.example.com": {
-            cert_pem: "RELAY_CERT",
-            key_pem: "RELAY_KEY",
+            cert_pem: TEST_SERVER_CERT_PEM,
+            key_pem: TEST_SERVER_KEY_PEM,
           },
         },
       },
@@ -343,9 +343,14 @@ describe("Go agent heartbeat API", () => {
             listen_port: 7443,
             enabled: true,
             certificate_id: RELAY_CERT_ID,
-            trusted_ca_certificate_ids: [RELAY_CA_ID],
             certificate_source: "auto_relay_ca",
             trust_mode_source: "auto",
+            pin_set: [
+              {
+                type: "sha256",
+                value: "placeholder-pin",
+              },
+            ],
           },
         );
         assert.equal(create.status, 201);
