@@ -474,6 +474,57 @@ describe("relay listeners and version policies API", () => {
     );
   });
 
+  it("repairs a reserved relay ca candidate with invalid persisted enabled", async () => {
+    const existingMaterialHash = crypto
+      .createHash("sha256")
+      .update(TEST_SERVER_CERT_PEM)
+      .update("\n---\n")
+      .update(TEST_SERVER_KEY_PEM)
+      .digest("hex");
+
+    await withBackendServer(
+      {
+        env: { PANEL_ROLE: "master" },
+        managedCertificates: [
+          {
+            id: 59,
+            domain: "__relay-ca.internal",
+            enabled: 0,
+            scope: "domain",
+            issuer_mode: "local_http01",
+            usage: "relay_ca",
+            certificate_type: "internal_ca",
+            self_signed: true,
+            target_agent_ids: ["local"],
+            tags: ["system:relay-ca", "system"],
+            status: "active",
+            material_hash: existingMaterialHash,
+            last_issue_at: "2026-04-08T00:00:00.000Z",
+            revision: 95,
+          },
+        ],
+        managedCertificateMaterial: {
+          "__relay-ca.internal": {
+            cert_pem: TEST_SERVER_CERT_PEM,
+            key_pem: TEST_SERVER_KEY_PEM,
+          },
+        },
+      },
+      async ({ baseUrl }) => {
+        const response = await jsonRequest(baseUrl, "GET", "/api/certificates");
+        assert.equal(response.status, 200);
+        const certificates = response.payload.certificates;
+        assert.equal(certificates.length, 1);
+        const relayCA = certificates[0];
+        assert.equal(relayCA.id, 59);
+        assert.equal(relayCA.enabled, true);
+        assert.equal(relayCA.usage, "relay_ca");
+        assert.equal(relayCA.certificate_type, "internal_ca");
+        assert.equal(relayCA.material_hash, existingMaterialHash);
+      },
+    );
+  });
+
   it("fails startup when multiple relay ca candidates are persisted", async () => {
     await assert.rejects(
       withBackendServer(

@@ -1335,9 +1335,15 @@ function buildCanonicalGlobalRelayCA(existingCert, certId) {
 
 function extractManagedCertificateInvariantFields(cert, certId) {
   const source = cert && typeof cert === "object" ? cert : {};
+  const hasExplicitEnabled = Object.prototype.hasOwnProperty.call(source, "enabled");
   return {
     domain: normalizeHost(source.domain || "").toLowerCase(),
-    enabled: source.enabled !== false,
+    enabled:
+      typeof source.enabled === "boolean"
+        ? source.enabled
+        : hasExplicitEnabled
+          ? source.enabled
+          : true,
     scope: String(source.scope || "").trim().toLowerCase(),
     issuer_mode: String(source.issuer_mode || "").trim().toLowerCase(),
     usage: String(source.usage || "").trim().toLowerCase(),
