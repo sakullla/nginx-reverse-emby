@@ -387,8 +387,8 @@ describe("Go agent heartbeat API", () => {
         assert.ok(Array.isArray(payload.sync.certificates));
         const caMaterial = payload.sync.certificates.find((cert) => cert.id === RELAY_CA_ID);
         assert.ok(caMaterial);
-        assert.equal(caMaterial.cert_pem, "CA_CERT");
-        assert.equal(caMaterial.key_pem, "CA_KEY");
+        assert.equal(caMaterial.cert_pem, TEST_CA_CHAIN_PEM);
+        assert.equal(caMaterial.key_pem, TEST_SERVER_KEY_PEM);
       },
     );
   });
