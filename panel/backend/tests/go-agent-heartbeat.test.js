@@ -1,8 +1,15 @@
 "use strict";
 
+const fs = require("node:fs");
+const path = require("node:path");
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
-const { withBackendServer } = require("./helpers");
+const {
+  withBackendServer,
+  TEST_SERVER_CERT_PEM,
+  TEST_SERVER_KEY_PEM,
+  TEST_CA_CHAIN_PEM,
+} = require("./helpers");
 
 describe("Go agent heartbeat API", () => {
   it("returns relay listeners and platform-matched version sync payload fields", async () => {
@@ -816,6 +823,58 @@ describe("Go agent heartbeat API", () => {
         assert.equal(acmeResponse.status, 400);
         const acmePayload = await acmeResponse.json();
         assert.match(acmePayload.message, /does not support local ACME issuance/i);
+      },
+    );
+  });
+
+  it("creates uploaded relay certificates from PEM input and immediately syncs material", async () => {
+    await withBackendServer(
+      {
+        env: {
+          PANEL_ROLE: "master",
+        },
+        agents: [
+          {
+            id: "remote-agent-relay",
+            name: "remote-agent-relay",
+            agent_token: "token-remote-agent-relay",
+            desired_revision: 1,
+            current_revision: 1,
+            capabilities: ["cert_install"],
+            created_at: "2026-04-01T00:00:00.000Z",
+            updated_at: "2026-04-01T00:00:00.000Z",
+          },
+        ],
+      },
+      async ({ baseUrl, dataRoot }) => {
+        const response = await fetch(`${baseUrl}/api/agents/remote-agent-relay/certificates`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({
+            domain: "relay-uploaded.example.com",
+            enabled: true,
+            scope: "domain",
+            issuer_mode: "local_http01",
+            usage: "relay_tunnel",
+            certificate_type: "uploaded",
+            self_signed: true,
+            certificate_pem: TEST_SERVER_CERT_PEM,
+            private_key_pem: TEST_SERVER_KEY_PEM,
+            ca_pem: TEST_CA_CHAIN_PEM,
+          }),
+        });
+
+        assert.equal(response.status, 201);
+        const payload = await response.json();
+        assert.equal(payload.certificate.status, "active");
+        assert.match(String(payload.certificate.material_hash || ""), /^[0-9a-f]{64}$/i);
+
+        const certPath = path.join(dataRoot, "managed_certificates", "relay-uploaded.example.com", "cert");
+        const keyPath = path.join(dataRoot, "managed_certificates", "relay-uploaded.example.com", "key");
+        assert.match(await fs.promises.readFile(certPath, "utf8"), /BEGIN CERTIFICATE/);
+        assert.match(await fs.promises.readFile(keyPath, "utf8"), /BEGIN .*PRIVATE KEY/);
       },
     );
   });

@@ -68,6 +68,62 @@ describe("relay listeners and version policies API", () => {
     );
   });
 
+  it("validates relay listener TLS modes and certificate requirements", async () => {
+    await withBackendServer(
+      {
+        agents: [
+          {
+            id: "edge-1",
+            name: "Edge-1",
+            agent_url: "http://edge-1:8080",
+            agent_token: "token-edge-1",
+            capabilities: ["http_rules", "l4"],
+          },
+        ],
+        managedCertificates: [
+          {
+            id: 7,
+            domain: "relay-cert.example.com",
+            enabled: true,
+            scope: "domain",
+            issuer_mode: "local_http01",
+            usage: "relay_tunnel",
+            certificate_type: "uploaded",
+            self_signed: true,
+            target_agent_ids: ["edge-1"],
+            status: "issued",
+            revision: 1,
+          },
+        ],
+      },
+      async ({ baseUrl }) => {
+        const created = await jsonRequest(baseUrl, "POST", "/api/agents/edge-1/relay-listeners", {
+          name: "relay-both",
+          listen_host: "0.0.0.0",
+          listen_port: 19443,
+          enabled: true,
+          certificate_id: 7,
+          tls_mode: "pin_and_ca",
+          pin_set: [{ type: "spki_sha256", value: "abc123" }],
+          trusted_ca_certificate_ids: [42],
+        });
+        assert.equal(created.status, 201);
+        assert.equal(created.payload.listener.tls_mode, "pin_and_ca");
+
+        const invalid = await jsonRequest(baseUrl, "POST", "/api/agents/edge-1/relay-listeners", {
+          name: "relay-missing-cert",
+          listen_host: "0.0.0.0",
+          listen_port: 20443,
+          enabled: true,
+          tls_mode: "pin_only",
+          pin_set: [{ type: "spki_sha256", value: "abc123" }],
+        });
+        assert.equal(invalid.status, 400);
+        assert.match(invalid.payload.message, /certificate_id is required|certificate/i);
+      },
+    );
+  });
+
   it("rejects invalid relay listener and relay-chain payloads", async () => {
     await withBackendServer(
       {

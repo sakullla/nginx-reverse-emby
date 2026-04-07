@@ -8,6 +8,60 @@ const os = require("node:os");
 const path = require("node:path");
 const { once } = require("node:events");
 
+const TEST_SERVER_CERT_PEM = [
+  "-----BEGIN CERTIFICATE-----",
+  "MIIDHjCCAgagAwIBAgIBATANBgkqhkiG9w0BAQsFADA3MRAwDgYDVQQKEwdFeGFt",
+  "cGxlMSMwIQYDVQQDExpyZWxheS11cGxvYWRlZC5leGFtcGxlLmNvbTAeFw0yNjA0",
+  "MDcxMjIyNTBaFw0yNzA0MDcxMzIyNTBaMDcxEDAOBgNVBAoTB0V4YW1wbGUxIzAh",
+  "BgNVBAMTGnJlbGF5LXVwbG9hZGVkLmV4YW1wbGUuY29tMIIBIjANBgkqhkiG9w0B",
+  "AQEFAAOCAQ8AMIIBCgKCAQEA0hcW2zuWlArORHsxXrBpHZRE1efLBZNfWO82CnRZ",
+  "bprsBdrCfR5Or3Dt4oFjEabiUMCDrCfiOHLFU5ZpGBvfO8DgwTIZoGnWg1PsRODa",
+  "BKcHnQqeEG6vJDsiRhFbQTx4VSyNiPWMhjyeAm/lAQbWz2DDSeWlfabNASs8omk5",
+  "cMN/8/r+9Pp8LVET7KuoUMUOcOKU2xl8ltmnvQFjgtYUC1BO16/+/nFT6dlqiK8/",
+  "EBxNjAxx/Xh6FGDRP2AZ9ZnrapQUIjwCJ9xcGL/wq9QYSvFKb/gReZLsfV7dqWGU",
+  "hwWo7BklYMM+IgLMLyy4F3thGKy6y+x+l3iOOtVGghOFcQIDAQABozUwMzAOBgNV",
+  "HQ8BAf8EBAMCBaAwEwYDVR0lBAwwCgYIKwYBBQUHAwEwDAYDVR0TAQH/BAIwADAN",
+  "BgkqhkiG9w0BAQsFAAOCAQEAAhvnQ5IYccirbMbD6Rfb3yoeGqrZDl+z4rsH/xdV",
+  "9I2nw892r15DFai895l9mMrDXiV/f1QeaLnXeAW83QqDKl8o3liHwWewTHlWbzTi",
+  "6NeDoJD6HRm5q75/ZFDogvcYNHlLkh9Gn/cspQ1Fczx6eRQmmVcBUUTEmcXcgq22",
+  "yUZZwmoPRAzMt1EeppCUXQjWysIaYNPCHR/3v/BOkCRWGGfzQORZnTDuQCSaxfOq",
+  "91uFnE+AYY6B37M8cm1eLf4it9TONbJ/phBzgF+K3L+xawdvjYtZmxvRXunGyc/s",
+  "0TQ/740cIV74CZfpT6bKy3uyZdUDRJgrLkzXHB/8LDPGXw==",
+  "-----END CERTIFICATE-----",
+].join("\n");
+
+const TEST_SERVER_KEY_PEM = [
+  "-----BEGIN RSA PRIVATE KEY-----",
+  "MIIEowIBAAKCAQEA0hcW2zuWlArORHsxXrBpHZRE1efLBZNfWO82CnRZbprsBdrC",
+  "fR5Or3Dt4oFjEabiUMCDrCfiOHLFU5ZpGBvfO8DgwTIZoGnWg1PsRODaBKcHnQqe",
+  "EG6vJDsiRhFbQTx4VSyNiPWMhjyeAm/lAQbWz2DDSeWlfabNASs8omk5cMN/8/r+",
+  "9Pp8LVET7KuoUMUOcOKU2xl8ltmnvQFjgtYUC1BO16/+/nFT6dlqiK8/EBxNjAxx",
+  "/Xh6FGDRP2AZ9ZnrapQUIjwCJ9xcGL/wq9QYSvFKb/gReZLsfV7dqWGUhwWo7Bkl",
+  "YMM+IgLMLyy4F3thGKy6y+x+l3iOOtVGghOFcQIDAQABAoIBAGMbslQc4bWX/WNv",
+  "7EPbm9Lw4aI5NVy9f5LgUhGPfqr/WY2PfAVzOTJpZ0ddu2MV45itoNAjhoQTnIQI",
+  "pi5R47b4D+8D1/QFScVtXz3FBwR/2UcbvaJJ3MSOQuZkBLUbNjcUC/bKw46F5RKI",
+  "P7OCyu5MmwPu2mmSuQ4um+2QDyFitddURUmVuZ0KHwuwZ6IYZlXjmCxzp3Q7z3G6",
+  "1xIyFOchE7ZqujCfhqy/f870vGJY6uQNG3gDqws7bgoH7pSz2nF7Tjvggn2DhmVr",
+  "srk7nsg5rpC/eCW3+/RKj6VwbaZXBI/pV4v3T4KVak9jYhPU9jHCi8aXXKZN2Kqh",
+  "5hUcHeMCgYEA6Wy4ynPU8+eDrFBn61prv/83+hfDSs0i+ceKHDKOUUccCvyYhrZI",
+  "Sg1t+FlWWQYJqYF2G884lUFE3iyuIj/bSKMrQx0T9IoyG7KtYTQMPpF8mBWwDIAM",
+  "u41sK1WO4dqZmoLdbOrlgA1+mPKMyQLF/NYfVblbhXvnNcluNMqB3+cCgYEA5mij",
+  "CwRS+B0IMuMBEwlm1k0//GrL0FIWzPsda/IV8f7zC8odABCI/0sBuMmydMvdMoN9",
+  "KgZLsWEpysKoSoRDAS4+0zAmduaLaX2ROEniReRk3Lpf7PwjwtB8lPC+YZ5xhatu",
+  "dXcuB3YuCRdj9aD+hgzhkY/SgYzbC45ItAyqJOcCgYBEOnc5Fepk8ILYVxhI/sEH",
+  "+b2O6Gs47gUPJXgFDfHzZ+mWfIbIuXcfzhUaxmIq20zvstum/Ub4uX87wauUbz3V",
+  "WXxHvbQbgllrJyrugpwhnbzhZ1VyEeum1ouLjxKYiaDkPOQj9fTnHQqoAh2Mk7bz",
+  "VFMMZ4WM2s6WNi50V8zmeQKBgQCLks9RmSj5i/yvdrvr4EIfh2Q/cCJO66tMOMI1",
+  "5cxNb/ejKKgwpdOXcsR0QBqOjgBM3UIw9udbaFR8szZnDX/Zcz4ziHOEi1vgZ2RV",
+  "CMy9MgG3hF8fnA29sbYGM1/gmq6CHrsnBS8o7fotH7I51XDZm2v5VXpbaAw5D9QS",
+  "3akj+QKBgGCBwRL14RtajconTBh/QowmNUmaeDMmBxyGC9QvOSLC3ZUM9B6eM12x",
+  "HF8923sj3beaCiCy56zzqAaU/QQeFGaELTsq5s7erdd/yaoidFSNVz4EnP6kzbOy",
+  "diALOagj4y3F/FoGlUsGBI37Ae9s8OzkrFAO5FmzHXt6GvIOzqNy",
+  "-----END RSA PRIVATE KEY-----",
+].join("\n");
+
+const TEST_CA_CHAIN_PEM = TEST_SERVER_CERT_PEM;
+
 const SQLITE_TARGET = ":memory:";
 const safeString = fc.string({ maxLength: 50 }).map((s) => s.replace(/\0/g, ""));
 const nonEmptyString = fc.string({ minLength: 1, maxLength: 50 }).map((s) => s.replace(/\0/g, ""));
@@ -226,5 +280,8 @@ module.exports = {
   closeQuietly,
   dedupById,
   getNumRuns,
+  TEST_SERVER_CERT_PEM,
+  TEST_SERVER_KEY_PEM,
+  TEST_CA_CHAIN_PEM,
   withBackendServer,
 };
