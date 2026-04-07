@@ -1594,12 +1594,27 @@ function certificateChainUsesRelayCA(material, relayCA) {
   }
   const relayCAMaterial = readManagedCertificateMaterial(relayCA.domain);
   const relayCACert = tryReadLeafCertificate(relayCAMaterial?.cert_pem || "");
-  const leaf = tryReadLeafCertificate(material.cert_pem);
-  if (!relayCACert || !leaf) {
+  if (!relayCACert) {
     return false;
   }
   try {
-    return leaf.verify(relayCACert.publicKey);
+    const chain = splitPEMCertificates(material.cert_pem).map((pem) => new crypto.X509Certificate(pem));
+    if (chain.length === 1) {
+      return chain[0].verify(relayCACert.publicKey);
+    }
+    if (chain.length < 2) {
+      return false;
+    }
+    const root = chain[chain.length - 1];
+    if (root.fingerprint256 !== relayCACert.fingerprint256) {
+      return false;
+    }
+    for (let index = 0; index < chain.length - 1; index += 1) {
+      if (!chain[index].verify(chain[index + 1].publicKey)) {
+        return false;
+      }
+    }
+    return true;
   } catch (_) {
     return false;
   }

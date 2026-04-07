@@ -5,6 +5,7 @@ const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
 const fsp = require("node:fs/promises");
 const path = require("node:path");
+const selfsigned = require("selfsigned");
 const { TEST_SERVER_CERT_PEM, TEST_SERVER_KEY_PEM, withBackendServer } = require("./helpers");
 
 async function jsonRequest(baseUrl, method, path, body) {
@@ -21,6 +22,44 @@ function computeSpkiSha256(certPem) {
   const cert = new crypto.X509Certificate(certPem);
   const der = cert.publicKey.export({ type: "spki", format: "der" });
   return crypto.createHash("sha256").update(der).digest("base64");
+}
+
+async function generateRelaySignedIntermediateBundle(relayCAKeyPem, relayCACertPem) {
+  const intermediate = await selfsigned.generate(
+    [{ name: "commonName", value: "relay-intermediate.internal" }],
+    {
+      algorithm: "sha256",
+      days: 825,
+      ca: {
+        key: relayCAKeyPem,
+        cert: relayCACertPem,
+      },
+      extensions: [
+        { name: "basicConstraints", cA: true },
+        {
+          name: "keyUsage",
+          digitalSignature: true,
+          keyCertSign: true,
+          cRLSign: true,
+        },
+      ],
+    },
+  );
+  const leaf = await selfsigned.generate(
+    [{ name: "commonName", value: "relay-indirect.example.com" }],
+    {
+      algorithm: "sha256",
+      days: 825,
+      ca: {
+        key: intermediate.private,
+        cert: intermediate.cert,
+      },
+    },
+  );
+  return {
+    certificatePem: `${leaf.cert}\n${intermediate.cert}`,
+    privateKeyPem: leaf.private,
+  };
 }
 
 describe("relay listeners and version policies API", () => {
@@ -1070,6 +1109,77 @@ describe("relay listeners and version policies API", () => {
           {
             type: "spki_sha256",
             value: computeSpkiSha256(TEST_SERVER_CERT_PEM),
+          },
+        ]);
+      },
+    );
+  });
+
+  it("auto-trusts relay ca when an uploaded listener chain terminates at relay ca through an intermediate", async () => {
+    await withBackendServer(
+      {
+        env: { PANEL_ROLE: "master" },
+        agents: [
+          {
+            id: "edge-1",
+            name: "edge-1",
+            agent_token: "token-edge-1",
+            desired_revision: 1,
+            current_revision: 1,
+            capabilities: ["cert_install", "http_rules", "l4"],
+            created_at: "2026-04-01T00:00:00.000Z",
+            updated_at: "2026-04-01T00:00:00.000Z",
+          },
+        ],
+      },
+      async ({ baseUrl, dataRoot }) => {
+        const certificates = await jsonRequest(baseUrl, "GET", "/api/certificates");
+        assert.equal(certificates.status, 200);
+        const relayCA = certificates.payload.certificates.find((cert) => cert.usage === "relay_ca");
+        assert.ok(relayCA);
+
+        const relayCACertPem = await fsp.readFile(
+          path.join(dataRoot, "managed_certificates", relayCA.domain, "cert"),
+          "utf8",
+        );
+        const relayCAKeyPem = await fsp.readFile(
+          path.join(dataRoot, "managed_certificates", relayCA.domain, "key"),
+          "utf8",
+        );
+        const bundle = await generateRelaySignedIntermediateBundle(relayCAKeyPem, relayCACertPem);
+
+        const uploaded = await jsonRequest(baseUrl, "POST", "/api/agents/edge-1/certificates", {
+          domain: "relay-indirect.example.com",
+          enabled: true,
+          scope: "domain",
+          issuer_mode: "local_http01",
+          usage: "relay_tunnel",
+          certificate_type: "uploaded",
+          self_signed: false,
+          certificate_pem: bundle.certificatePem,
+          private_key_pem: bundle.privateKeyPem,
+          ca_pem: relayCACertPem,
+        });
+        assert.equal(uploaded.status, 201);
+
+        const created = await jsonRequest(baseUrl, "POST", "/api/agents/edge-1/relay-listeners", {
+          name: "relay-indirect",
+          listen_host: "relay-indirect.example.com",
+          listen_port: 7443,
+          enabled: true,
+          certificate_source: "existing_certificate",
+          certificate_id: uploaded.payload.certificate.id,
+          trust_mode_source: "auto",
+        });
+
+        assert.equal(created.status, 201);
+        assert.equal(created.payload.listener.certificate_id, uploaded.payload.certificate.id);
+        assert.equal(created.payload.listener.tls_mode, "pin_and_ca");
+        assert.deepEqual(created.payload.listener.trusted_ca_certificate_ids, [relayCA.id]);
+        assert.deepEqual(created.payload.listener.pin_set, [
+          {
+            type: "spki_sha256",
+            value: computeSpkiSha256(bundle.certificatePem),
           },
         ]);
       },
