@@ -1334,17 +1334,23 @@ function buildCanonicalGlobalRelayCA(existingCert, certId) {
 }
 
 function extractManagedCertificateInvariantFields(cert, certId) {
-  const normalized = normalizeManagedCertificatePayload(cert || {}, cert || {}, certId);
+  const source = cert && typeof cert === "object" ? cert : {};
   return {
-    domain: normalized.domain,
-    enabled: normalized.enabled,
-    scope: normalized.scope,
-    issuer_mode: normalized.issuer_mode,
-    usage: normalized.usage,
-    certificate_type: normalized.certificate_type,
-    self_signed: normalized.self_signed,
-    target_agent_ids: normalized.target_agent_ids,
-    tags: normalized.tags,
+    domain: normalizeHost(source.domain || "").toLowerCase(),
+    enabled: source.enabled !== false,
+    scope: String(source.scope || "").trim().toLowerCase(),
+    issuer_mode: String(source.issuer_mode || "").trim().toLowerCase(),
+    usage: String(source.usage || "").trim().toLowerCase(),
+    certificate_type: String(source.certificate_type || "").trim().toLowerCase(),
+    self_signed: source.self_signed === true,
+    target_agent_ids: [
+      ...new Set(
+        (Array.isArray(source.target_agent_ids) ? source.target_agent_ids : [])
+          .map((item) => String(item || "").trim())
+          .filter(Boolean),
+      ),
+    ],
+    tags: normalizeTags(source.tags || []),
   };
 }
 
