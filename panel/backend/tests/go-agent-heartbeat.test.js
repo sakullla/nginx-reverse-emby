@@ -12,6 +12,16 @@ const {
   TEST_SERVER_CHAIN_PEM,
 } = require("./helpers");
 
+async function jsonRequest(baseUrl, method, path, body) {
+  const response = await fetch(`${baseUrl}${path}`, {
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const payload = await response.json();
+  return { status: response.status, payload };
+}
+
 describe("Go agent heartbeat API", () => {
   it("returns relay listeners and platform-matched version sync payload fields", async () => {
     await withBackendServer(
@@ -258,8 +268,9 @@ describe("Go agent heartbeat API", () => {
     );
   });
 
-  it("syncs auto-derived relay trust material for relay-chain listeners", async () => {
-    const RELAY_CA_ID = 201;
+  it("syncs auto-derived relay listener trust metadata", async () => {
+    const RELAY_CA_ID = 601;
+    const RELAY_CERT_ID = 602;
     await withBackendServer(
       {
         env: { PANEL_ROLE: "master" },
@@ -290,7 +301,7 @@ describe("Go agent heartbeat API", () => {
             revision: 1,
           },
           {
-            id: 202,
+            id: RELAY_CERT_ID,
             domain: "relay-auto.example.com",
             enabled: true,
             scope: "domain",
@@ -313,30 +324,26 @@ describe("Go agent heartbeat API", () => {
             key_pem: "RELAY_KEY",
           },
         },
-        relayListenersByAgentId: {
-          "remote-agent-a": [
-            {
-              id: 301,
-              agent_id: "remote-agent-a",
-              name: "relay-auto",
-              listen_host: "relay-auto.example.com",
-              listen_port: 7443,
-              enabled: true,
-              certificate_id: 202,
-              tls_mode: "pin_and_ca",
-              pin_set: [
-                {
-                  type: "sha256",
-                  value: "pin-auto",
-                },
-              ],
-              trusted_ca_certificate_ids: [],
-              revision: 5,
-            },
-          ],
-        },
       },
       async ({ baseUrl }) => {
+        const create = await jsonRequest(
+          baseUrl,
+          "POST",
+          "/api/agents/remote-agent-a/relay-listeners",
+          {
+            name: "relay-auto",
+            listen_host: "relay-auto.example.com",
+            listen_port: 7443,
+            enabled: true,
+            certificate_id: RELAY_CERT_ID,
+            pin_set: [{ type: "sha256", value: "derived-pin" }],
+            certificate_source: "auto_relay_ca",
+            trust_mode_source: "auto",
+          },
+        );
+        assert.equal(create.status, 201);
+        const listenerId = create.payload.listener.id;
+
         const heartbeat = await fetch(`${baseUrl}/api/agents/heartbeat`, {
           method: "POST",
           headers: {
@@ -348,15 +355,22 @@ describe("Go agent heartbeat API", () => {
 
         assert.equal(heartbeat.status, 200);
         const payload = await heartbeat.json();
-        const listener = payload.sync.relay_listeners[0];
-        assert.equal(listener.tls_mode, "pin_and_ca");
-        assert.equal(listener.pin_set.length, 1);
-        assert.ok(listener.trusted_ca_certificate_ids.includes(RELAY_CA_ID));
+        const syncedListener = payload.sync.relay_listeners.find(
+          (listener) => listener.id === listenerId,
+        );
+        assert.ok(syncedListener);
+        assert.equal(syncedListener.tls_mode, "pin_and_ca");
+        assert.equal(syncedListener.pin_set.length, 1);
+        assert.ok(syncedListener.trusted_ca_certificate_ids.includes(RELAY_CA_ID));
+
+        const caPolicy = payload.sync.certificate_policies.find((policy) => policy.id === RELAY_CA_ID);
+        assert.ok(caPolicy);
+        assert.equal(caPolicy.usage, "relay_ca");
+        assert.equal(caPolicy.certificate_type, "internal_ca");
 
         assert.ok(Array.isArray(payload.sync.certificates));
         const caMaterial = payload.sync.certificates.find((cert) => cert.id === RELAY_CA_ID);
         assert.ok(caMaterial);
-        assert.equal(caMaterial.usage, "relay_ca");
         assert.equal(caMaterial.cert_pem, "CA_CERT");
         assert.equal(caMaterial.key_pem, "CA_KEY");
       },
