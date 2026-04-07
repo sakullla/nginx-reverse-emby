@@ -342,6 +342,25 @@ describe("Go agent heartbeat API", () => {
         assert.ok(caMaterial);
         assert.match(caMaterial.cert_pem, /BEGIN CERTIFICATE/);
         assert.match(caMaterial.key_pem, /BEGIN [A-Z ]*PRIVATE KEY/);
+
+        const listenerMaterial = payload.sync.certificates.find(
+          (cert) => cert.id === create.payload.listener.certificate_id,
+        );
+        assert.ok(listenerMaterial);
+        assert.match(listenerMaterial.cert_pem, /BEGIN CERTIFICATE/);
+        assert.match(listenerMaterial.key_pem, /BEGIN [A-Z ]*PRIVATE KEY/);
+        assert.notEqual(listenerMaterial.cert_pem, caMaterial.cert_pem);
+        assert.notEqual(listenerMaterial.key_pem, caMaterial.key_pem);
+
+        const relayCACert = new crypto.X509Certificate(caMaterial.cert_pem);
+        const listenerLeafCert = new crypto.X509Certificate(listenerMaterial.cert_pem);
+        assert.notEqual(listenerLeafCert.subject, relayCACert.subject);
+        assert.equal(listenerLeafCert.verify(relayCACert.publicKey), true);
+
+        const expectedLeafPin = computeSpkiSha256(listenerMaterial.cert_pem);
+        const relayCAPin = computeSpkiSha256(caMaterial.cert_pem);
+        assert.equal(syncedListener.pin_set[0].value, expectedLeafPin);
+        assert.notEqual(syncedListener.pin_set[0].value, relayCAPin);
       },
     );
   });

@@ -1652,9 +1652,13 @@ async function ensureRelayListenerCertificate(agentId, listener, previousListene
   storage.saveManagedCertificates(certs);
 
   const relayCAMaterial = readManagedCertificateMaterial(relayCA.domain);
-  if (relayCAMaterial?.cert_pem && relayCAMaterial?.key_pem) {
-    writeManagedCertificateMaterial(prepared.domain, relayCAMaterial);
+  if (!relayCAMaterial?.cert_pem || !relayCAMaterial?.key_pem) {
+    throw new Error("global relay ca material not found");
   }
+  writeManagedCertificateMaterial(
+    prepared.domain,
+    await generateLeafMaterialSignedByCA(prepared.domain, relayCAMaterial),
+  );
 
   const issued = await syncStaticLocalCertificateById(prepared.id, {
     agentId,
@@ -1934,6 +1938,26 @@ async function generateInternalCAMaterial(domain) {
           cRLSign: true,
         },
       ],
+    },
+  );
+  tls.createSecureContext({ cert: generated.cert, key: generated.private });
+  return {
+    cert_pem: generated.cert,
+    key_pem: generated.private,
+  };
+}
+
+async function generateLeafMaterialSignedByCA(domain, caMaterial) {
+  const commonName = String(domain || "").trim() || `relay-listener-${crypto.randomUUID()}`;
+  const generated = await selfsigned.generate(
+    [{ name: "commonName", value: commonName }],
+    {
+      algorithm: "sha256",
+      days: 825,
+      ca: {
+        key: String(caMaterial.key_pem || ""),
+        cert: String(caMaterial.cert_pem || ""),
+      },
     },
   );
   tls.createSecureContext({ cert: generated.cert, key: generated.private });

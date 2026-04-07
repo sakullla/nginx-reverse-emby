@@ -17,6 +17,12 @@ async function jsonRequest(baseUrl, method, path, body) {
   return { status: response.status, payload };
 }
 
+function computeSpkiSha256(certPem) {
+  const cert = new crypto.X509Certificate(certPem);
+  const der = cert.publicKey.export({ type: "spki", format: "der" });
+  return crypto.createHash("sha256").update(der).digest("base64");
+}
+
 describe("relay listeners and version policies API", () => {
   it("supports relay listener CRUD for registered agents", async () => {
     await withBackendServer(
@@ -716,7 +722,7 @@ describe("relay listeners and version policies API", () => {
           },
         ],
       },
-      async ({ baseUrl }) => {
+      async ({ baseUrl, dataRoot }) => {
         const response = await jsonRequest(baseUrl, "POST", "/api/agents/edge-1/relay-listeners", {
           name: "relay-a",
           listen_host: "relay-a.example.com",
@@ -731,6 +737,42 @@ describe("relay listeners and version policies API", () => {
         assert.equal(response.payload.listener.tls_mode, "pin_and_ca");
         assert.equal(response.payload.listener.pin_set.length, 1);
         assert.ok(response.payload.listener.trusted_ca_certificate_ids.length >= 1);
+
+        const certificates = await jsonRequest(baseUrl, "GET", "/api/certificates");
+        assert.equal(certificates.status, 200);
+        const relayCA = certificates.payload.certificates.find((cert) => cert.usage === "relay_ca");
+        const listenerCert = certificates.payload.certificates.find(
+          (cert) => cert.id === response.payload.listener.certificate_id,
+        );
+        assert.ok(relayCA);
+        assert.ok(listenerCert);
+        assert.notEqual(listenerCert.id, relayCA.id);
+        assert.equal(listenerCert.usage, "relay_tunnel");
+        assert.equal(listenerCert.certificate_type, "internal_ca");
+
+        const relayCAPath = path.join(dataRoot, "managed_certificates", relayCA.domain, "cert");
+        const relayCAKeyPath = path.join(dataRoot, "managed_certificates", relayCA.domain, "key");
+        const listenerCertPath = path.join(dataRoot, "managed_certificates", listenerCert.domain, "cert");
+        const listenerKeyPath = path.join(dataRoot, "managed_certificates", listenerCert.domain, "key");
+        const [relayCAPem, relayCAKeyPem, listenerPem, listenerKeyPem] = await Promise.all([
+          fsp.readFile(relayCAPath, "utf8"),
+          fsp.readFile(relayCAKeyPath, "utf8"),
+          fsp.readFile(listenerCertPath, "utf8"),
+          fsp.readFile(listenerKeyPath, "utf8"),
+        ]);
+
+        assert.notEqual(listenerPem, relayCAPem);
+        assert.notEqual(listenerKeyPem, relayCAKeyPem);
+
+        const relayCACert = new crypto.X509Certificate(relayCAPem);
+        const listenerLeafCert = new crypto.X509Certificate(listenerPem);
+        assert.notEqual(listenerLeafCert.subject, relayCACert.subject);
+        assert.equal(listenerLeafCert.verify(relayCACert.publicKey), true);
+
+        const expectedLeafPin = computeSpkiSha256(listenerPem);
+        const relayCAPin = computeSpkiSha256(relayCAPem);
+        assert.equal(response.payload.listener.pin_set[0].value, expectedLeafPin);
+        assert.notEqual(expectedLeafPin, relayCAPin);
       },
     );
   });
