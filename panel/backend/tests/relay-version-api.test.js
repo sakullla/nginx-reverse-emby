@@ -97,6 +97,7 @@ describe("relay listeners and version policies API", () => {
         assert.equal(relayCAs.length, 1);
         assert.equal(relayCAs[0].certificate_type, "internal_ca");
         assert.equal(relayCAs[0].enabled, true);
+        assert.equal(relayCAs[0].scope, "domain");
       },
     );
   });
@@ -200,10 +201,23 @@ describe("relay listeners and version policies API", () => {
         });
 
         assert.equal(response.status, 201);
-        assert.ok(Number.isInteger(response.payload.listener.certificate_id));
-        assert.equal(response.payload.listener.tls_mode, "pin_and_ca");
-        assert.equal(response.payload.listener.pin_set.length, 1);
-        assert.ok(response.payload.listener.trusted_ca_certificate_ids.length >= 1);
+        const listener = response.payload.listener;
+        assert.ok(Number.isInteger(listener.certificate_id) && listener.certificate_id > 0);
+        assert.equal(listener.tls_mode, "pin_and_ca");
+        assert.equal(listener.pin_set.length, 1);
+        const certificates = await jsonRequest(baseUrl, "GET", "/api/certificates");
+        assert.equal(certificates.status, 200);
+        const relayCA = certificates.payload.certificates.find((cert) => cert.usage === "relay_ca");
+        assert.ok(relayCA, "expected relay CA to exist");
+        assert.ok(listener.trusted_ca_certificate_ids.includes(relayCA.id));
+        const relayCert = certificates.payload.certificates.find(
+          (cert) => cert.id === listener.certificate_id,
+        );
+        assert.ok(relayCert, "expected the auto-issued listener certificate to exist");
+        assert.equal(relayCert.usage, "relay_tunnel");
+        assert.equal(relayCert.certificate_type, "internal_ca");
+        assert.ok(Array.isArray(relayCert.target_agent_ids));
+        assert.ok(relayCert.target_agent_ids.includes("edge-1"));
       },
     );
   });

@@ -259,6 +259,7 @@ describe("Go agent heartbeat API", () => {
   });
 
   it("syncs auto-derived relay trust material for relay-chain listeners", async () => {
+    const RELAY_CA_ID = 201;
     await withBackendServer(
       {
         env: { PANEL_ROLE: "master" },
@@ -274,21 +275,68 @@ describe("Go agent heartbeat API", () => {
             updated_at: "2026-04-01T00:00:00.000Z",
           },
         ],
+        managedCertificates: [
+          {
+            id: RELAY_CA_ID,
+            domain: "relay-ca.bootstrap",
+            enabled: true,
+            scope: "domain",
+            issuer_mode: "local_http01",
+            usage: "relay_ca",
+            certificate_type: "internal_ca",
+            self_signed: true,
+            target_agent_ids: ["remote-agent-a"],
+            status: "issued",
+            revision: 1,
+          },
+          {
+            id: 202,
+            domain: "relay-auto.example.com",
+            enabled: true,
+            scope: "domain",
+            issuer_mode: "local_http01",
+            usage: "relay_tunnel",
+            certificate_type: "internal_ca",
+            self_signed: true,
+            target_agent_ids: ["remote-agent-a"],
+            status: "issued",
+            revision: 1,
+          },
+        ],
+        managedCertificateMaterial: {
+          "relay-ca.bootstrap": {
+            cert_pem: "CA_CERT",
+            key_pem: "CA_KEY",
+          },
+          "relay-auto.example.com": {
+            cert_pem: "RELAY_CERT",
+            key_pem: "RELAY_KEY",
+          },
+        },
+        relayListenersByAgentId: {
+          "remote-agent-a": [
+            {
+              id: 301,
+              agent_id: "remote-agent-a",
+              name: "relay-auto",
+              listen_host: "relay-auto.example.com",
+              listen_port: 7443,
+              enabled: true,
+              certificate_id: 202,
+              tls_mode: "pin_and_ca",
+              pin_set: [
+                {
+                  type: "sha256",
+                  value: "pin-auto",
+                },
+              ],
+              trusted_ca_certificate_ids: [],
+              revision: 5,
+            },
+          ],
+        },
       },
       async ({ baseUrl }) => {
-        await fetch(`${baseUrl}/api/agents/remote-agent-a/relay-listeners`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            name: "relay-a",
-            listen_host: "relay-a.example.com",
-            listen_port: 7443,
-            enabled: true,
-            certificate_source: "auto_relay_ca",
-            trust_mode_source: "auto",
-          }),
-        });
-
         const heartbeat = await fetch(`${baseUrl}/api/agents/heartbeat`, {
           method: "POST",
           headers: {
@@ -300,9 +348,17 @@ describe("Go agent heartbeat API", () => {
 
         assert.equal(heartbeat.status, 200);
         const payload = await heartbeat.json();
-        assert.equal(payload.sync.relay_listeners[0].tls_mode, "pin_and_ca");
-        assert.equal(payload.sync.relay_listeners[0].pin_set.length, 1);
-        assert.ok(payload.sync.relay_listeners[0].trusted_ca_certificate_ids.length >= 1);
+        const listener = payload.sync.relay_listeners[0];
+        assert.equal(listener.tls_mode, "pin_and_ca");
+        assert.equal(listener.pin_set.length, 1);
+        assert.ok(listener.trusted_ca_certificate_ids.includes(RELAY_CA_ID));
+
+        assert.ok(Array.isArray(payload.sync.certificates));
+        const caMaterial = payload.sync.certificates.find((cert) => cert.id === RELAY_CA_ID);
+        assert.ok(caMaterial);
+        assert.equal(caMaterial.usage, "relay_ca");
+        assert.equal(caMaterial.cert_pem, "CA_CERT");
+        assert.equal(caMaterial.key_pem, "CA_KEY");
       },
     );
   });
