@@ -700,7 +700,7 @@ describe("relay listeners and version policies API", () => {
           pin_set: [{ type: "spki_sha256", value: "abc123" }],
         });
         assert.equal(invalid.status, 400);
-        assert.equal(invalid.payload.message, "target agent does not support certificate install: Edge-1");
+        assert.equal(invalid.payload.message, "certificate_id is required when relay listener is enabled");
       },
     );
   });
@@ -773,6 +773,352 @@ describe("relay listeners and version policies API", () => {
         const relayCAPin = computeSpkiSha256(relayCAPem);
         assert.equal(response.payload.listener.pin_set[0].value, expectedLeafPin);
         assert.notEqual(expectedLeafPin, relayCAPin);
+      },
+    );
+  });
+
+  it("auto-issues distinct stable listener certificates for duplicate-name listeners on the same agent", async () => {
+    await withBackendServer(
+      {
+        env: { PANEL_ROLE: "master" },
+        agents: [
+          {
+            id: "edge-1",
+            name: "edge-1",
+            agent_token: "token-edge-1",
+            desired_revision: 1,
+            current_revision: 1,
+            capabilities: ["cert_install", "http_rules", "l4"],
+            created_at: "2026-04-01T00:00:00.000Z",
+            updated_at: "2026-04-01T00:00:00.000Z",
+          },
+        ],
+      },
+      async ({ baseUrl, dataRoot }) => {
+        const first = await jsonRequest(baseUrl, "POST", "/api/agents/edge-1/relay-listeners", {
+          name: "shared-name",
+          listen_host: "relay-1.example.com",
+          listen_port: 7443,
+          enabled: true,
+          certificate_source: "auto_relay_ca",
+          trust_mode_source: "auto",
+        });
+        const second = await jsonRequest(baseUrl, "POST", "/api/agents/edge-1/relay-listeners", {
+          name: "shared-name",
+          listen_host: "relay-2.example.com",
+          listen_port: 8443,
+          enabled: true,
+          certificate_source: "auto_relay_ca",
+          trust_mode_source: "auto",
+        });
+
+        assert.equal(first.status, 201);
+        assert.equal(second.status, 201);
+        assert.notEqual(first.payload.listener.certificate_id, second.payload.listener.certificate_id);
+        assert.notEqual(first.payload.listener.pin_set[0].value, second.payload.listener.pin_set[0].value);
+
+        const certificates = await jsonRequest(baseUrl, "GET", "/api/certificates");
+        const firstCert = certificates.payload.certificates.find(
+          (cert) => cert.id === first.payload.listener.certificate_id,
+        );
+        const secondCert = certificates.payload.certificates.find(
+          (cert) => cert.id === second.payload.listener.certificate_id,
+        );
+        assert.ok(firstCert);
+        assert.ok(secondCert);
+        assert.equal(firstCert.domain, "listener-1.edge-1.relay.internal");
+        assert.equal(secondCert.domain, "listener-2.edge-1.relay.internal");
+
+        const [firstPem, secondPem] = await Promise.all([
+          fsp.readFile(path.join(dataRoot, "managed_certificates", firstCert.domain, "cert"), "utf8"),
+          fsp.readFile(path.join(dataRoot, "managed_certificates", secondCert.domain, "cert"), "utf8"),
+        ]);
+        assert.notEqual(firstPem, secondPem);
+      },
+    );
+  });
+
+  it("cleans up auto-issued listener certificates when the listener is deleted", async () => {
+    await withBackendServer(
+      {
+        env: { PANEL_ROLE: "master" },
+        agents: [
+          {
+            id: "edge-1",
+            name: "edge-1",
+            agent_token: "token-edge-1",
+            desired_revision: 1,
+            current_revision: 1,
+            capabilities: ["cert_install", "http_rules", "l4"],
+            created_at: "2026-04-01T00:00:00.000Z",
+            updated_at: "2026-04-01T00:00:00.000Z",
+          },
+        ],
+      },
+      async ({ baseUrl, dataRoot }) => {
+        const created = await jsonRequest(baseUrl, "POST", "/api/agents/edge-1/relay-listeners", {
+          name: "relay-delete",
+          listen_host: "relay-delete.example.com",
+          listen_port: 7443,
+          enabled: true,
+          certificate_source: "auto_relay_ca",
+          trust_mode_source: "auto",
+        });
+        assert.equal(created.status, 201);
+
+        const certificates = await jsonRequest(baseUrl, "GET", "/api/certificates");
+        const listenerCert = certificates.payload.certificates.find(
+          (cert) => cert.id === created.payload.listener.certificate_id,
+        );
+        assert.ok(listenerCert);
+
+        const deleted = await jsonRequest(
+          baseUrl,
+          "DELETE",
+          `/api/agents/edge-1/relay-listeners/${created.payload.listener.id}`,
+        );
+        assert.equal(deleted.status, 200);
+
+        const finalCertificates = await jsonRequest(baseUrl, "GET", "/api/certificates");
+        assert.equal(
+          finalCertificates.payload.certificates.some((cert) => cert.id === listenerCert.id),
+          false,
+        );
+        await assert.rejects(
+          fsp.access(path.join(dataRoot, "managed_certificates", listenerCert.domain, "cert")),
+        );
+      },
+    );
+  });
+
+  it("cleans up old auto-issued listener certificates when switching to a manual certificate", async () => {
+    await withBackendServer(
+      {
+        env: { PANEL_ROLE: "master" },
+        agents: [
+          {
+            id: "edge-1",
+            name: "edge-1",
+            agent_token: "token-edge-1",
+            desired_revision: 1,
+            current_revision: 1,
+            capabilities: ["cert_install", "http_rules", "l4"],
+            created_at: "2026-04-01T00:00:00.000Z",
+            updated_at: "2026-04-01T00:00:00.000Z",
+          },
+        ],
+        managedCertificates: [
+          {
+            id: 7,
+            domain: "relay-manual.example.com",
+            enabled: true,
+            scope: "domain",
+            issuer_mode: "local_http01",
+            usage: "relay_tunnel",
+            certificate_type: "uploaded",
+            self_signed: true,
+            target_agent_ids: ["edge-1"],
+            status: "active",
+            revision: 1,
+          },
+        ],
+        managedCertificateMaterial: {
+          "relay-manual.example.com": {
+            cert_pem: TEST_SERVER_CERT_PEM,
+            key_pem: TEST_SERVER_KEY_PEM,
+          },
+        },
+      },
+      async ({ baseUrl, dataRoot }) => {
+        const created = await jsonRequest(baseUrl, "POST", "/api/agents/edge-1/relay-listeners", {
+          name: "relay-swap",
+          listen_host: "relay-swap.example.com",
+          listen_port: 7443,
+          enabled: true,
+          certificate_source: "auto_relay_ca",
+          trust_mode_source: "auto",
+        });
+        assert.equal(created.status, 201);
+
+        const initialCertificates = await jsonRequest(baseUrl, "GET", "/api/certificates");
+        const autoCert = initialCertificates.payload.certificates.find(
+          (cert) => cert.id === created.payload.listener.certificate_id,
+        );
+        assert.ok(autoCert);
+
+        const updated = await jsonRequest(
+          baseUrl,
+          "PUT",
+          `/api/agents/edge-1/relay-listeners/${created.payload.listener.id}`,
+          {
+            certificate_source: "existing_certificate",
+            certificate_id: 7,
+            trust_mode_source: "auto",
+          },
+        );
+        assert.equal(updated.status, 200);
+        assert.equal(updated.payload.listener.certificate_id, 7);
+
+        const finalCertificates = await jsonRequest(baseUrl, "GET", "/api/certificates");
+        assert.equal(finalCertificates.payload.certificates.some((cert) => cert.id === autoCert.id), false);
+        await assert.rejects(
+          fsp.access(path.join(dataRoot, "managed_certificates", autoCert.domain, "cert")),
+        );
+      },
+    );
+  });
+
+  it("blocks deleting auto-issued listener certificates while listeners still reference them", async () => {
+    await withBackendServer(
+      {
+        env: { PANEL_ROLE: "master" },
+        agents: [
+          {
+            id: "edge-1",
+            name: "edge-1",
+            agent_token: "token-edge-1",
+            desired_revision: 1,
+            current_revision: 1,
+            capabilities: ["cert_install", "http_rules", "l4"],
+            created_at: "2026-04-01T00:00:00.000Z",
+            updated_at: "2026-04-01T00:00:00.000Z",
+          },
+        ],
+      },
+      async ({ baseUrl }) => {
+        const created = await jsonRequest(baseUrl, "POST", "/api/agents/edge-1/relay-listeners", {
+          name: "relay-protected",
+          listen_host: "relay-protected.example.com",
+          listen_port: 7443,
+          enabled: true,
+          certificate_source: "auto_relay_ca",
+          trust_mode_source: "auto",
+        });
+        assert.equal(created.status, 201);
+        const certId = created.payload.listener.certificate_id;
+
+        const agentDelete = await jsonRequest(
+          baseUrl,
+          "DELETE",
+          `/api/agents/edge-1/certificates/${certId}`,
+        );
+        assert.equal(agentDelete.status, 400);
+
+        const globalDelete = await jsonRequest(baseUrl, "DELETE", `/api/certificates/${certId}`);
+        assert.equal(globalDelete.status, 400);
+      },
+    );
+  });
+
+  it("derives pin-only trust for uploaded manual listener certificates outside the relay ca", async () => {
+    await withBackendServer(
+      {
+        env: { PANEL_ROLE: "master" },
+        agents: [
+          {
+            id: "edge-1",
+            name: "edge-1",
+            agent_token: "token-edge-1",
+            desired_revision: 1,
+            current_revision: 1,
+            capabilities: ["cert_install", "http_rules", "l4"],
+            created_at: "2026-04-01T00:00:00.000Z",
+            updated_at: "2026-04-01T00:00:00.000Z",
+          },
+        ],
+        managedCertificates: [
+          {
+            id: 7,
+            domain: "relay-uploaded.example.com",
+            enabled: true,
+            scope: "domain",
+            issuer_mode: "local_http01",
+            usage: "relay_tunnel",
+            certificate_type: "uploaded",
+            self_signed: true,
+            target_agent_ids: ["edge-1"],
+            status: "active",
+            revision: 1,
+          },
+        ],
+        managedCertificateMaterial: {
+          "relay-uploaded.example.com": {
+            cert_pem: TEST_SERVER_CERT_PEM,
+            key_pem: TEST_SERVER_KEY_PEM,
+          },
+        },
+      },
+      async ({ baseUrl }) => {
+        const created = await jsonRequest(baseUrl, "POST", "/api/agents/edge-1/relay-listeners", {
+          name: "relay-manual",
+          listen_host: "relay-manual.example.com",
+          listen_port: 7443,
+          enabled: true,
+          certificate_source: "existing_certificate",
+          certificate_id: 7,
+          trust_mode_source: "auto",
+        });
+
+        assert.equal(created.status, 201);
+        assert.equal(created.payload.listener.certificate_id, 7);
+        assert.equal(created.payload.listener.tls_mode, "pin_only");
+        assert.deepEqual(created.payload.listener.trusted_ca_certificate_ids, []);
+        assert.deepEqual(created.payload.listener.pin_set, [
+          {
+            type: "spki_sha256",
+            value: computeSpkiSha256(TEST_SERVER_CERT_PEM),
+          },
+        ]);
+      },
+    );
+  });
+
+  it("allows disabled manual relay listeners without forcing certificate issuance or cert_install", async () => {
+    await withBackendServer(
+      {
+        env: { PANEL_ROLE: "master" },
+        agents: [
+          {
+            id: "edge-1",
+            name: "edge-1",
+            agent_token: "token-edge-1",
+            desired_revision: 1,
+            current_revision: 1,
+            capabilities: ["http_rules", "l4"],
+            created_at: "2026-04-01T00:00:00.000Z",
+            updated_at: "2026-04-01T00:00:00.000Z",
+          },
+        ],
+      },
+      async ({ baseUrl }) => {
+        const created = await jsonRequest(baseUrl, "POST", "/api/agents/edge-1/relay-listeners", {
+          name: "relay-disabled",
+          listen_host: "relay-disabled.example.com",
+          listen_port: 7443,
+          enabled: false,
+          certificate_source: "existing_certificate",
+          trust_mode_source: "custom",
+          tls_mode: "pin_only",
+          pin_set: [{ type: "spki_sha256", value: "draft-pin" }],
+        });
+        assert.equal(created.status, 201);
+        assert.equal(created.payload.listener.certificate_id ?? null, null);
+
+        const updated = await jsonRequest(
+          baseUrl,
+          "PUT",
+          `/api/agents/edge-1/relay-listeners/${created.payload.listener.id}`,
+          {
+            enabled: false,
+            name: "relay-disabled-updated",
+            certificate_source: "existing_certificate",
+            trust_mode_source: "custom",
+            tls_mode: "pin_only",
+            pin_set: [{ type: "spki_sha256", value: "draft-pin-2" }],
+          },
+        );
+        assert.equal(updated.status, 200);
+        assert.equal(updated.payload.listener.certificate_id ?? null, null);
       },
     );
   });

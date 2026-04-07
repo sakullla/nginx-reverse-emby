@@ -1548,13 +1548,36 @@ function normalizeRelayListenerAutoDomainLabel(value, fallback) {
 }
 
 function relayListenerAutoCertificateDomain(listener, agentId) {
-  const listenerLabel = normalizeRelayListenerAutoDomainLabel(listener?.name, "relay");
   const agentLabel = normalizeRelayListenerAutoDomainLabel(agentId, "agent");
-  return `${listenerLabel}.${agentLabel}.relay.internal`;
+  const listenerId = Number(listener?.id);
+  if (!Number.isInteger(listenerId) || listenerId <= 0) {
+    throw new Error("relay listener id is required for auto-issued certificate identity");
+  }
+  return `listener-${listenerId}.${agentLabel}.relay.internal`;
+}
+
+function splitPEMCertificates(certPEM) {
+  return String(certPEM || "").match(/-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g) || [];
+}
+
+function readLeafCertificate(certPEM) {
+  const [leafPEM = ""] = splitPEMCertificates(certPEM);
+  if (!leafPEM) {
+    throw new Error("listener certificate leaf PEM not found");
+  }
+  return new crypto.X509Certificate(leafPEM);
+}
+
+function tryReadLeafCertificate(certPEM) {
+  try {
+    return readLeafCertificate(certPEM);
+  } catch (_) {
+    return null;
+  }
 }
 
 function deriveRelayPinSetFromCertificate(certPEM) {
-  const leaf = new crypto.X509Certificate(certPEM);
+  const leaf = readLeafCertificate(certPEM);
   const spkiDer = leaf.publicKey.export({ type: "spki", format: "der" });
   return [
     {
@@ -1564,25 +1587,146 @@ function deriveRelayPinSetFromCertificate(certPEM) {
   ];
 }
 
+function certificateChainUsesRelayCA(material, relayCA) {
+  if (!material?.cert_pem || !relayCA) {
+    return false;
+  }
+  const relayCAMaterial = readManagedCertificateMaterial(relayCA.domain);
+  const relayCACert = tryReadLeafCertificate(relayCAMaterial?.cert_pem || "");
+  const leaf = tryReadLeafCertificate(material.cert_pem);
+  if (!relayCACert || !leaf) {
+    return false;
+  }
+  try {
+    if (leaf.verify(relayCACert.publicKey)) {
+      return true;
+    }
+  } catch (_) {
+    // Fall through to chain matching checks below.
+  }
+  return splitPEMCertificates(material.cert_pem)
+    .slice(1)
+    .some((pem) => {
+      try {
+        return new crypto.X509Certificate(pem).fingerprint256 === relayCACert.fingerprint256;
+      } catch (_) {
+        return false;
+      }
+    });
+}
+
 function deriveRelayTrustMaterial(listener, certificate) {
   const material = readManagedCertificateMaterial(certificate?.domain);
-  if (!material?.cert_pem) {
-    throw new Error(`relay listener certificate material not found for listener ${listener?.id}`);
-  }
   const relayCA = findGlobalRelayCA();
-  if (!relayCA) {
-    throw new Error("global relay ca not found");
+  const pinSet = material?.cert_pem ? deriveRelayPinSetFromCertificate(material.cert_pem) : [];
+  const trustedCAIds =
+    relayCA && certificateChainUsesRelayCA(material, relayCA) ? [relayCA.id] : [];
+  if (pinSet.length > 0 && trustedCAIds.length > 0) {
+    return {
+      tls_mode: "pin_and_ca",
+      pin_set: pinSet,
+      trusted_ca_certificate_ids: trustedCAIds,
+      allow_self_signed: true,
+    };
   }
-  return {
-    tls_mode: "pin_and_ca",
-    pin_set: deriveRelayPinSetFromCertificate(material.cert_pem),
-    trusted_ca_certificate_ids: [relayCA.id],
-    allow_self_signed: true,
-  };
+  if (pinSet.length > 0) {
+    return {
+      tls_mode: "pin_only",
+      pin_set: pinSet,
+      trusted_ca_certificate_ids: [],
+      allow_self_signed: certificate?.self_signed === true,
+    };
+  }
+  if (trustedCAIds.length > 0) {
+    return {
+      tls_mode: "ca_only",
+      pin_set: [],
+      trusted_ca_certificate_ids: trustedCAIds,
+      allow_self_signed: true,
+    };
+  }
+  throw new Error(`unable to derive relay listener trust material for listener ${listener?.id}`);
+}
+
+function shouldAutoIssueRelayListenerCertificate(body, draftListener, previousListener = null) {
+  const certificateSource = String(body?.certificate_source || "").trim().toLowerCase();
+  if (draftListener?.enabled === false) {
+    return false;
+  }
+  if (certificateSource) {
+    return certificateSource === "auto_relay_ca" && draftListener?.certificate_id == null;
+  }
+  if (!previousListener) {
+    return false;
+  }
+  const previousCert = getManagedCertificateById(previousListener.certificate_id);
+  return isAutoRelayListenerCertificate(previousCert, previousListener.id) && draftListener?.certificate_id == null;
+}
+
+function findRelayListenersReferencingCertificate(certId, options = {}) {
+  const excludeListenerIds = new Set(
+    (Array.isArray(options.excludeListenerIds) ? options.excludeListenerIds : [])
+      .map((id) => Number(id))
+      .filter((id) => Number.isInteger(id) && id > 0),
+  );
+  const references = [];
+  for (const agentId of getAllKnownAgentIds()) {
+    const listeners = storage.loadRelayListenersForAgent(agentId);
+    for (const listener of Array.isArray(listeners) ? listeners : []) {
+      const listenerId = Number(listener?.id);
+      if (!Number.isInteger(listenerId) || listenerId <= 0 || excludeListenerIds.has(listenerId)) {
+        continue;
+      }
+      if (Number(listener?.certificate_id) !== Number(certId)) {
+        continue;
+      }
+      references.push({
+        agentId,
+        listenerId,
+        listener,
+      });
+    }
+  }
+  return references;
+}
+
+function assertManagedCertificateNotReferencedByRelayListener(cert) {
+  if (!isAutoRelayListenerCertificate(cert)) {
+    return;
+  }
+  const [reference] = findRelayListenersReferencingCertificate(cert.id);
+  if (!reference) {
+    return;
+  }
+  throw new Error(
+    `certificate ${cert.id} is referenced by relay listener ${reference.listenerId} on agent ${reference.agentId}`,
+  );
+}
+
+async function cleanupUnusedAutoRelayListenerCertificate(certId, options = {}) {
+  const { applyNow = false } = options;
+  const cert = getManagedCertificateById(certId);
+  if (!isAutoRelayListenerCertificate(cert)) {
+    return null;
+  }
+  if (findRelayListenersReferencingCertificate(certId).length > 0) {
+    return null;
+  }
+  const certs = storage.loadManagedCertificates();
+  const index = certs.findIndex((item) => Number(item.id) === Number(certId));
+  if (index === -1) {
+    return null;
+  }
+  const deleted = certs.splice(index, 1)[0];
+  storage.saveManagedCertificates(certs);
+  cleanupManagedCertificateArtifacts(deleted.domain);
+  await syncManagedCertificateAgentIds(deleted.target_agent_ids || [], { applyNow });
+  return deleted;
 }
 
 function shouldAutoDeriveRelayTrust(body, previousListener = null) {
   const hasOwn = (key) => Object.prototype.hasOwnProperty.call(body || {}, key);
+  const certificateSource = String(body?.certificate_source || "").trim().toLowerCase();
   const trustModeSource = String(body?.trust_mode_source || "").trim().toLowerCase();
   if (trustModeSource === "custom") {
     return false;
@@ -1598,16 +1742,21 @@ function shouldAutoDeriveRelayTrust(body, previousListener = null) {
   ) {
     return false;
   }
+  if (certificateSource === "auto_relay_ca") {
+    return true;
+  }
   if (!previousListener) {
-    return !hasOwn("certificate_id");
+    return false;
   }
-  if (hasOwn("certificate_id")) {
-    return body.certificate_id === null || body.certificate_id === "";
+  if (
+    !isAutoRelayListenerCertificate(
+      getManagedCertificateById(previousListener.certificate_id),
+      previousListener.id,
+    )
+  ) {
+    return false;
   }
-  return isAutoRelayListenerCertificate(
-    getManagedCertificateById(previousListener.certificate_id),
-    previousListener.id,
-  );
+  return !hasOwn("certificate_id");
 }
 
 async function ensureRelayListenerCertificate(agentId, listener, previousListener = null) {
@@ -4533,7 +4682,9 @@ async function handleMasterApi(req, res) {
         agent_id: agentId,
         revision: getNextPendingRevision(agent),
       });
-      draftListener.certificate_id = await ensureRelayListenerCertificate(agentId, draftListener);
+      if (shouldAutoIssueRelayListenerCertificate(body, draftListener)) {
+        draftListener.certificate_id = await ensureRelayListenerCertificate(agentId, draftListener);
+      }
       if (shouldAutoDeriveRelayTrust(body, null)) {
         Object.assign(
           draftListener,
@@ -4594,11 +4745,13 @@ async function handleMasterApi(req, res) {
         agent_id: agentId,
         revision: getNextPendingRevision(agent),
       });
-      draftListener.certificate_id = await ensureRelayListenerCertificate(
-        agentId,
-        draftListener,
-        currentListener,
-      );
+      if (shouldAutoIssueRelayListenerCertificate(body, draftListener, currentListener)) {
+        draftListener.certificate_id = await ensureRelayListenerCertificate(
+          agentId,
+          draftListener,
+          currentListener,
+        );
+      }
       if (shouldAutoDeriveRelayTrust(body, currentListener)) {
         Object.assign(
           draftListener,
@@ -4626,6 +4779,11 @@ async function handleMasterApi(req, res) {
       const nextListeners = listeners.slice();
       nextListeners[index] = nextListener;
       storage.saveRelayListenersForAgent(agentId, nextListeners);
+      if (currentListener.certificate_id !== nextListener.certificate_id) {
+        await cleanupUnusedAutoRelayListenerCertificate(currentListener.certificate_id, {
+          applyNow: false,
+        });
+      }
 
       if (AUTO_APPLY) {
         try {
@@ -4682,6 +4840,9 @@ async function handleMasterApi(req, res) {
       const deleted = listeners[index];
       const nextListeners = listeners.filter((_, itemIndex) => itemIndex !== index);
       storage.saveRelayListenersForAgent(agentId, nextListeners);
+      await cleanupUnusedAutoRelayListenerCertificate(deleted.certificate_id, {
+        applyNow: false,
+      });
 
       if (AUTO_APPLY) {
         try {
@@ -4948,6 +5109,7 @@ async function handleMasterApi(req, res) {
       }
 
       const existing = certs[index];
+      assertManagedCertificateNotReferencedByRelayListener(existing);
       const remainingTargets = (existing.target_agent_ids || []).filter((id) => id !== agentId);
       if (remainingTargets.length > 0) {
         const normalizedCert = normalizeManagedCertificatePayload(
@@ -5132,6 +5294,7 @@ async function handleMasterApi(req, res) {
       }
       const deleted = certs[index];
       assertCertificateIsNotSystemRelayCA(deleted);
+      assertManagedCertificateNotReferencedByRelayListener(deleted);
       certs.splice(index, 1);
       storage.saveManagedCertificates(certs);
       cleanupManagedCertificateArtifacts(deleted.domain);
