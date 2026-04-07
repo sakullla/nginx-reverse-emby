@@ -550,7 +550,8 @@ const mockCertsByAgent = {
   ],
   'edge-1': [
     { id: 1, domain: 'media.example.com', enabled: true, scope: 'domain', issuer_mode: 'master_cf_dns', usage: 'https', certificate_type: 'acme', self_signed: false, status: 'active', last_issue_at: new Date().toISOString(), last_error: '', tags: ['media'] },
-    { id: 2, domain: '192.168.1.100', enabled: true, scope: 'ip', issuer_mode: 'local_http01', usage: 'relay_ca', certificate_type: 'internal_ca', self_signed: true, status: 'pending', last_issue_at: '', last_error: '', tags: ['internal'] }
+    { id: 2, domain: '192.168.1.100', enabled: true, scope: 'ip', issuer_mode: 'local_http01', usage: 'relay_ca', certificate_type: 'internal_ca', self_signed: true, status: 'pending', last_issue_at: '', last_error: '', tags: ['internal'] },
+    { id: 3, domain: 'relay-uploaded.example.com', enabled: true, scope: 'domain', issuer_mode: 'local_http01', usage: 'relay_tunnel', certificate_type: 'uploaded', self_signed: true, status: 'active', last_issue_at: new Date().toISOString(), last_error: '', tags: ['relay', 'uploaded'] }
   ],
   'edge-2': [
     { id: 1, domain: 'media.example.com', enabled: true, scope: 'domain', issuer_mode: 'local_http01', usage: 'mixed', certificate_type: 'acme', self_signed: false, status: 'error', last_issue_at: '', last_error: 'ACME challenge failed', tags: ['media'] }
@@ -567,7 +568,13 @@ export async function fetchCertificates(agentId) {
 export async function createCertificate(agentId, payload) {
   if (isDev) {
     await sleep()
-    const item = { ...payload, id: ++mockCertIdCounter, status: 'pending', last_issue_at: '', last_error: '' }
+    const item = {
+      ...payload,
+      id: ++mockCertIdCounter,
+      status: payload.certificate_type === 'uploaded' ? 'active' : 'pending',
+      last_issue_at: payload.certificate_type === 'uploaded' ? new Date().toISOString() : '',
+      last_error: ''
+    }
     mockCertsByAgent[agentId] = mockCertsByAgent[agentId] || []
     mockCertsByAgent[agentId].push(item)
     return item
@@ -684,12 +691,19 @@ function normalizeMockRelayListenerPayload(payload = {}) {
   if (!pinSet.length && !trustedCa.length) {
     throw new Error('pin_set and trusted_ca_certificate_ids cannot both be empty')
   }
+  const tlsMode = String(payload.tls_mode || 'pin_or_ca')
+  if (!['pin_only', 'ca_only', 'pin_or_ca', 'pin_and_ca'].includes(tlsMode)) {
+    throw new Error('tls_mode must be pin_only, ca_only, pin_or_ca, or pin_and_ca')
+  }
+  if (payload.enabled !== false && payload.certificate_id == null) {
+    throw new Error('certificate_id is required when relay listener is enabled')
+  }
   return {
     ...payload,
     certificate_id: payload.certificate_id == null ? null : Number(payload.certificate_id),
     pin_set: pinSet,
     trusted_ca_certificate_ids: trustedCa,
-    tls_mode: String(payload.tls_mode || 'pin_or_ca')
+    tls_mode: tlsMode
   }
 }
 

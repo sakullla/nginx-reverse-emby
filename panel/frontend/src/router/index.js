@@ -51,7 +51,7 @@ const routes = [
         path: 'certs',
         name: 'certs',
         component: () => import('../pages/CertsPage.vue'),
-        meta: { title: '证书' }
+        meta: { title: '统一证书管理' }
       },
       {
         path: 'relay-listeners',

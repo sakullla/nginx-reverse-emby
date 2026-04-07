@@ -1,10 +1,10 @@
-﻿<template>
+<template>
   <div class='relay-page'>
     <div class='relay-page__header'>
       <div>
         <h1 class='relay-page__title'>Relay 监听器</h1>
-        <p class='relay-page__subtitle' v-if='agentId'>{{ listeners.length }} 个监听器</p>
-        <p class='relay-page__subtitle' v-else>请先选择一个节点</p>
+        <p v-if='agentId' class='relay-page__subtitle'>{{ listeners.length }} 个监听器 · 默认自动信任</p>
+        <p v-else class='relay-page__subtitle'>请先选择一个节点</p>
       </div>
       <button v-if='agentId' class='btn btn-primary' @click='showAddForm = true'>新建监听器</button>
     </div>
@@ -35,8 +35,8 @@
 
           <div class='relay-card__meta'>
             <span class='badge'>{{ listener.enabled ? '已启用' : '已禁用' }}</span>
-            <span class='badge'>{{ listener.tls_mode || 'disabled' }}</span>
-            <span v-if='listener.certificate_id' class='badge'>证书 #{{ listener.certificate_id }}</span>
+            <span class='badge'>{{ listener.certificate_id ? `证书 #${listener.certificate_id}` : '未绑定证书' }}</span>
+            <span class='badge'>{{ trustSummary(listener) }}</span>
             <span v-if='listener.allow_self_signed' class='badge badge--warn'>允许自签</span>
           </div>
 
@@ -106,6 +106,13 @@ const showAddForm = ref(false)
 const editingListener = ref(null)
 const deletingListener = ref(null)
 const deleteError = ref('')
+
+function trustSummary(listener) {
+  if (listener.tls_mode === 'pin_and_ca') return '自动（Pin + CA）'
+  if (listener.tls_mode === 'pin_only') return '仅 Pin'
+  if (listener.tls_mode === 'ca_only') return '仅 CA'
+  return '兼容模式'
+}
 
 function startEdit(listener) {
   editingListener.value = listener
@@ -304,7 +311,7 @@ function confirmDelete() {
 }
 
 .modal--large {
-  width: min(700px, 92vw);
+  width: min(760px, 94vw);
 }
 
 .modal__header {
