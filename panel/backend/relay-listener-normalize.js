@@ -92,7 +92,8 @@ function normalizeListenPort(value) {
   return parsed;
 }
 
-function normalizeRelayListenerPayload(payload) {
+function normalizeRelayListenerPayload(payload, options = {}) {
+  const allowDraft = options && options.allowDraft === true;
   const next = ensureObject(payload, "relay listener payload");
   const normalized = {
     id: normalizeRequiredId(next.id, "id"),
@@ -115,11 +116,12 @@ function normalizeRelayListenerPayload(payload) {
     throw new TypeError("tls_mode must be pin_only, ca_only, pin_or_ca, or pin_and_ca");
   }
 
-  if (normalized.enabled && normalized.certificate_id == null) {
+  if (!allowDraft && normalized.enabled && normalized.certificate_id == null) {
     throw new TypeError("certificate_id is required when relay listener is enabled");
   }
 
   if (
+    !allowDraft &&
     normalized.pin_set.length === 0 &&
     normalized.trusted_ca_certificate_ids.length === 0
   ) {
@@ -129,6 +131,11 @@ function normalizeRelayListenerPayload(payload) {
   return normalized;
 }
 
+function normalizeRelayListenerDraft(payload) {
+  return normalizeRelayListenerPayload(payload, { allowDraft: true });
+}
+
 module.exports = {
+  normalizeRelayListenerDraft,
   normalizeRelayListenerPayload,
 };

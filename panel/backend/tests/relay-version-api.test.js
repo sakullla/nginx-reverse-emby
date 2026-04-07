@@ -694,12 +694,12 @@ describe("relay listeners and version policies API", () => {
           pin_set: [{ type: "spki_sha256", value: "abc123" }],
         });
         assert.equal(invalid.status, 400);
-        assert.equal(invalid.payload.message, "certificate_id is required when relay listener is enabled");
+        assert.equal(invalid.payload.message, "target agent does not support certificate install: Edge-1");
       },
     );
   });
 
-  it("does not yet create relay listeners with an auto-issued relay certificate", async () => {
+  it("creates relay listeners with an auto-issued relay certificate and derived trust material", async () => {
     await withBackendServer(
       {
         env: { PANEL_ROLE: "master" },
@@ -726,8 +726,58 @@ describe("relay listeners and version policies API", () => {
           trust_mode_source: "auto",
         });
 
-        assert.equal(response.status, 400);
-        assert.equal(response.payload.message, "certificate_id is required when relay listener is enabled");
+        assert.equal(response.status, 201);
+        assert.ok(Number.isInteger(response.payload.listener.certificate_id));
+        assert.equal(response.payload.listener.tls_mode, "pin_and_ca");
+        assert.equal(response.payload.listener.pin_set.length, 1);
+        assert.ok(response.payload.listener.trusted_ca_certificate_ids.length >= 1);
+      },
+    );
+  });
+
+  it("blocks deleting relay listeners that are still referenced by a rule", async () => {
+    await withBackendServer(
+      {
+        env: { PANEL_ROLE: "master" },
+        agents: [
+          {
+            id: "edge-1",
+            name: "edge-1",
+            agent_token: "token-edge-1",
+            desired_revision: 1,
+            current_revision: 1,
+            capabilities: ["http_rules", "l4", "cert_install"],
+            created_at: "2026-04-01T00:00:00.000Z",
+            updated_at: "2026-04-01T00:00:00.000Z",
+          },
+        ],
+      },
+      async ({ baseUrl }) => {
+        const created = await jsonRequest(baseUrl, "POST", "/api/agents/edge-1/relay-listeners", {
+          name: "relay-shared",
+          listen_host: "relay-shared.example.com",
+          listen_port: 9443,
+          enabled: true,
+          certificate_source: "auto_relay_ca",
+          trust_mode_source: "auto",
+        });
+        assert.equal(created.status, 201);
+
+        const createdRule = await jsonRequest(baseUrl, "POST", "/api/agents/edge-1/rules", {
+          frontend_url: "http://edge.example.com",
+          backend_url: "http://127.0.0.1:8096",
+          relay_chain: [created.payload.listener.id],
+        });
+        assert.equal(createdRule.status, 201);
+
+        const deleted = await fetch(
+          `${baseUrl}/api/agents/edge-1/relay-listeners/${created.payload.listener.id}`,
+          {
+            method: "DELETE",
+          },
+        );
+
+        assert.equal(deleted.status, 400);
       },
     );
   });
