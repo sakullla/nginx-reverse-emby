@@ -15,7 +15,7 @@
         :class="{ 'form-tabs__btn--active': activeTab === 'headers' }"
         @click="activeTab = 'headers'"
       >
-        请求头
+        高级配置
         <span v-if="hasRequestHeaderConfig" class="form-tabs__badge">已配置</span>
       </button>
       <button
@@ -101,6 +101,22 @@
             {{ errors.backend_url }}
           </p>
         </div>
+
+        <!-- 使用说明 -->
+        <div class="address-help">
+          <div class="address-help__title">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"/>
+              <line x1="12" y1="16" x2="12" y2="12"/>
+              <line x1="12" y1="8" x2="12.01" y2="8"/>
+            </svg>
+            使用说明
+          </div>
+          <ul class="address-help__list">
+            <li><strong>前端访问地址</strong>：用户访问的公开地址（VPS 地址），需指向当前服务器的公网 IP 或域名</li>
+            <li><strong>后端目标地址</strong>：要代理的实际服务地址（如 Emby），可以是内网地址或其他服务器地址</li>
+          </ul>
+        </div>
       </div>
 
       <!-- 标签配置 -->
@@ -113,7 +129,6 @@
         </div>
 
         <div class="form-group form-group--block">
-          <label for="tag-input" class="form-label">标签</label>
           <div class="tag-input">
             <div class="tag-input__container">
               <span
@@ -168,8 +183,22 @@
               <span class="toggle__desc">启用后，该代理规则将生效并处理匹配的请求</span>
             </span>
           </label>
+        </div>
+      </div>
+    </div>
 
-          <label class="toggle toggle--simple" :class="{ 'toggle--active': form.proxy_redirect }">
+    <div v-else-if="activeTab === 'headers'" class="form-tab-panel">
+      <!-- 代理行为配置 -->
+      <div class="settings-card">
+        <div class="section-header">
+          <div>
+            <h3 class="section-title">代理行为</h3>
+            <p class="section-description">控制代理过程中的重定向和客户端 IP 透传行为</p>
+          </div>
+        </div>
+
+        <div class="toggle-group">
+          <label class="toggle toggle--card" :class="{ 'toggle--active': form.proxy_redirect }">
             <input
               v-model="form.proxy_redirect"
               type="checkbox"
@@ -181,49 +210,21 @@
               <span class="toggle__desc">开启时，后端返回的重定向地址会被重写为前端地址；关闭时直接透传给客户端</span>
             </span>
           </label>
-        </div>
-      </div>
 
-      <!-- 使用说明 -->
-      <div class="address-help">
-        <div class="address-help__title">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="10"/>
-            <line x1="12" y1="16" x2="12" y2="12"/>
-            <line x1="12" y1="8" x2="12.01" y2="8"/>
-          </svg>
-          使用说明
+          <label class="toggle toggle--card" :class="{ 'toggle--active': form.pass_proxy_headers, 'toggle--disabled': proxyHeadersGloballyDisabled }">
+            <input
+              v-model="form.pass_proxy_headers"
+              type="checkbox"
+              class="toggle__input"
+              :disabled="proxyHeadersGloballyDisabled"
+            >
+            <span class="toggle__slider"></span>
+            <span class="toggle__content">
+              <span class="toggle__label">透传客户端 IP</span>
+              <span class="toggle__desc">传递 X-Real-IP、X-Forwarded-Host、X-Forwarded-Port、X-Forwarded-For、X-Forwarded-Proto</span>
+            </span>
+          </label>
         </div>
-        <ul class="address-help__list">
-          <li><strong>前端访问地址</strong>：用户访问的公开地址（VPS 地址），需指向当前服务器的公网 IP 或域名</li>
-          <li><strong>后端目标地址</strong>：要代理的实际服务地址（如 Emby），可以是内网地址或其他服务器地址</li>
-        </ul>
-      </div>
-    </div>
-
-    <div v-else-if="activeTab === 'headers'" class="form-tab-panel">
-      <!-- 透传客户端 IP -->
-      <div class="settings-card" :class="{ 'settings-card--disabled': proxyHeadersGloballyDisabled }">
-        <div class="section-header">
-          <div>
-            <h3 class="section-title">透传客户端 IP</h3>
-            <p class="section-description">控制是否将客户端真实 IP 传递给后端服务</p>
-          </div>
-        </div>
-
-        <label class="toggle toggle--card" :class="{ 'toggle--active': form.pass_proxy_headers, 'toggle--disabled': proxyHeadersGloballyDisabled }">
-          <input
-            v-model="form.pass_proxy_headers"
-            type="checkbox"
-            class="toggle__input"
-            :disabled="proxyHeadersGloballyDisabled"
-          >
-          <span class="toggle__slider"></span>
-          <span class="toggle__content">
-            <span class="toggle__label">启用透传</span>
-            <span class="toggle__desc">传递 X-Real-IP、X-Forwarded-Host、X-Forwarded-Port、X-Forwarded-For、X-Forwarded-Proto</span>
-          </span>
-        </label>
 
         <div v-if="proxyHeadersGloballyDisabled" class="global-disabled-notice">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -253,11 +254,7 @@
                   {{ preset.label }}
                 </option>
               </select>
-              <svg class="select-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <polyline points="6 9 12 15 18 9"/>
-              </svg>
             </div>
-            <p class="form-help">选择常用 UA 预设，或选择"自定义"手动输入</p>
           </div>
 
           <div class="form-group">
@@ -270,7 +267,6 @@
               placeholder="留空表示不覆盖 User-Agent"
               @input="errors.submit = ''"
             >
-            <p class="form-help">可直接编辑上方预设的值，或输入自定义 UA</p>
           </div>
         </div>
       </div>
@@ -292,64 +288,60 @@
           </button>
         </div>
 
-        <div v-if="form.custom_headers.length" class="headers-list">
-          <div
-            v-for="(header, index) in form.custom_headers"
-            :key="`header-${index}`"
-            class="header-row"
-          >
-            <div class="header-row__fields">
-              <div class="form-group">
-                <label class="form-label">Header 名称</label>
+        <div v-if="form.custom_headers.length" class="headers-table">
+          <div class="headers-table__head">
+            <span class="headers-table__th">Header 名称</span>
+            <span class="headers-table__th">Header 值</span>
+            <span class="headers-table__th--action"></span>
+          </div>
+          <div class="headers-table__body">
+            <div
+              v-for="(header, index) in form.custom_headers"
+              :key="`header-${index}`"
+              class="headers-table__row"
+            >
+              <div class="headers-table__cell">
                 <input
                   v-model="header.name"
                   type="text"
-                  class="input"
+                  class="input input--compact"
                   :class="{ 'input--error': headerErrors[index]?.name }"
                   placeholder="例如 X-Custom-Header"
                   @input="handleCustomHeaderNameInput(index)"
                 >
                 <p v-if="headerErrors[index]?.name" class="field-error">{{ headerErrors[index].name }}</p>
               </div>
-
-              <div class="form-group">
-                <label class="form-label">Header 值</label>
+              <div class="headers-table__cell">
                 <input
                   v-model="header.value"
                   type="text"
-                  class="input"
+                  class="input input--compact"
                   :class="{ 'input--error': headerErrors[index]?.value }"
                   placeholder="例如 custom-value"
                   @input="clearHeaderFieldError(index, 'value')"
                 >
                 <p v-if="headerErrors[index]?.value" class="field-error">{{ headerErrors[index].value }}</p>
               </div>
+              <div class="headers-table__cell--action">
+                <button
+                  type="button"
+                  class="btn btn--icon btn--danger-ghost"
+                  title="删除 Header"
+                  @click="removeCustomHeader(index)"
+                >
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="3 6 5 6 21 6"/>
+                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                  </svg>
+                </button>
+              </div>
             </div>
-
-            <button
-              type="button"
-              class="btn btn--icon btn--danger-ghost"
-              title="删除 Header"
-              @click="removeCustomHeader(index)"
-            >
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <polyline points="3 6 5 6 21 6"/>
-                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
-              </svg>
-            </button>
           </div>
         </div>
 
         <div v-else class="empty-state">
-          <div class="empty-state__icon">
-            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
-              <path d="M12 2L2 7l10 5 10-5-10-5z"/>
-              <path d="M2 17l10 5 10-5"/>
-              <path d="M2 12l10 5 10-5"/>
-            </svg>
-          </div>
           <p class="empty-state__title">尚未配置自定义请求头</p>
-          <p class="empty-state__desc">点击右上角按钮添加自定义请求头</p>
+          <p class="empty-state__desc">点击右上角按钮添加</p>
         </div>
       </div>
     </div>
@@ -496,6 +488,7 @@ const hasRequestHeaderConfig = computed(() => {
     form.value.user_agent.trim()
     || hasCustomHeaderConfig
     || form.value.pass_proxy_headers === true
+    || form.value.proxy_redirect === false
   )
 })
 
@@ -763,18 +756,58 @@ async function handleSubmit() {
 .rule-form {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--space-3);
+}
+
+/* 1080p 屏幕优化 */
+@media (min-height: 900px) and (min-width: 1200px) {
+  .rule-form {
+    gap: var(--space-2);
+  }
+  .form-tabs {
+    margin-bottom: 0;
+  }
+  .form-tabs__btn {
+    padding: 6px var(--space-4);
+  }
+  .settings-card {
+    padding: var(--space-3);
+    gap: var(--space-2);
+  }
+  .form-group--block + .form-group--block {
+    margin-top: var(--space-2);
+  }
+  .form-tab-panel > .settings-card {
+    padding: var(--space-3);
+    gap: var(--space-2);
+  }
+  .form-tab-panel .toggle--card {
+    padding: 10px var(--space-3);
+  }
+  .address-help,
+  .relay-help {
+    padding: var(--space-2) var(--space-3);
+    margin-top: 0;
+  }
+  .address-help__list,
+  .relay-help__list {
+    line-height: 1.5;
+  }
+  .empty-state {
+    padding: var(--space-3);
+  }
 }
 
 .form-tabs {
   display: flex;
   border-bottom: 1px solid var(--color-border-default);
   gap: 0;
-  margin-bottom: var(--space-1);
+  margin-bottom: 0;
+  flex-shrink: 0;
 }
 
 .form-tabs__btn {
-  padding: var(--space-3) var(--space-4);
+  padding: var(--space-2) var(--space-4);
   border: none;
   background: transparent;
   cursor: pointer;
@@ -799,7 +832,7 @@ async function handleSubmit() {
 }
 
 .form-tabs__badge {
-  font-size: 9px;
+  font-size: 10px;
   font-weight: var(--font-bold);
   padding: 1px 6px;
   background: var(--color-primary-subtle);
@@ -810,26 +843,27 @@ async function handleSubmit() {
 .form-tab-panel {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
+  gap: var(--space-2);
 }
 
 .form-row {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-4);
+  gap: var(--space-2);
 }
 
 .form-group {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
+  gap: 4px;
   min-width: 0;
 }
 
 .form-label {
-  font-size: var(--text-sm);
+  font-size: 13px;
   font-weight: var(--font-medium);
   color: var(--color-text-secondary);
+  line-height: 1.4;
 }
 
 .form-label--required::after {
@@ -855,7 +889,7 @@ async function handleSubmit() {
 }
 
 .form-group--block + .form-group--block {
-  margin-top: var(--space-4);
+  margin-top: var(--space-2);
 }
 
 .form-label__hint {
@@ -869,37 +903,103 @@ async function handleSubmit() {
 .section-header {
   display: flex;
   flex-direction: column;
-  gap: var(--space-1);
+  gap: 2px;
 }
 
 .section-header--split {
   flex-direction: row;
-  align-items: flex-start;
+  align-items: center;
   justify-content: space-between;
-  gap: var(--space-3);
+  gap: var(--space-2);
 }
 
 .section-title {
   margin: 0;
-  font-size: var(--text-sm);
+  font-size: 14px;
   font-weight: var(--font-semibold);
   color: var(--color-text-primary);
+  line-height: 1.4;
 }
 
 .section-description {
   margin: 0;
-  font-size: var(--text-sm);
-  color: var(--color-text-secondary);
+  font-size: 13px;
+  color: var(--color-text-muted);
+  line-height: 1.4;
 }
 
 .settings-card {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
-  padding: var(--space-4);
+  gap: var(--space-2);
+  padding: var(--space-3);
   background: var(--color-bg-subtle);
   border: 1px solid var(--color-border-subtle);
-  border-radius: var(--radius-xl);
+  border-radius: var(--radius-lg);
+}
+
+/* 高级配置中的卡片更紧凑 */
+.form-tab-panel > .settings-card {
+  gap: var(--space-2);
+  padding: var(--space-3);
+}
+
+.form-tab-panel > .settings-card .section-header {
+  margin-bottom: 0;
+}
+
+.form-tab-panel > .settings-card .section-title {
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+}
+
+.form-tab-panel > .settings-card .section-description {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+/* 高级配置中的 toggle 更紧凑 */
+.toggle-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.form-tab-panel .toggle--card {
+  padding: 10px var(--space-3);
+  background: var(--color-bg-surface);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border-subtle);
+}
+
+.form-tab-panel .toggle--card .toggle__label {
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  color: var(--color-text-primary);
+}
+
+.form-tab-panel .toggle--card .toggle__desc {
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+  margin-top: var(--space-1);
+}
+
+/* 全局禁用状态的卡片 */
+.settings-card--disabled {
+  opacity: 0.75;
+}
+
+.global-disabled-notice {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 6px 10px;
+  background: var(--color-warning-50);
+  border: 1px solid var(--color-warning);
+  border-radius: var(--radius-md);
+  font-size: 12px;
+  color: var(--color-warning);
 }
 
 .form-error,
@@ -931,8 +1031,8 @@ async function handleSubmit() {
 .input {
   width: 100%;
   min-width: 0;
-  padding: var(--space-2) var(--space-3);
-  font-size: var(--text-sm);
+  padding: 6px 10px;
+  font-size: 14px;
   color: var(--color-text-primary);
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border-default);
@@ -940,6 +1040,7 @@ async function handleSubmit() {
   transition: all var(--duration-fast) var(--ease-default);
   font-family: inherit;
   box-sizing: border-box;
+  height: 34px;
 }
 
 .input:focus {
@@ -992,10 +1093,10 @@ async function handleSubmit() {
 .tag-input__container {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--space-2);
-  padding: var(--space-1) var(--space-2);
+  gap: 4px;
+  padding: 4px 6px;
   align-items: center;
-  min-height: 36px;
+  min-height: 32px;
 }
 
 .tag-input__field {
@@ -1180,14 +1281,103 @@ async function handleSubmit() {
   min-width: 0;
 }
 
-.empty-state {
-  padding: var(--space-4);
-  border: 1px dashed var(--color-border-default);
-  border-radius: var(--radius-lg);
+/* 表格样式请求头列表 - 简化设计 */
+.headers-table {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: transparent;
+}
+
+.headers-table__head {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-3);
+  background: transparent;
+  border-bottom: 1px solid var(--color-border-subtle);
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+  color: var(--color-text-muted);
+}
+
+.headers-table__th {
+  padding-left: var(--space-2);
+}
+
+.headers-table__th--action {
+  width: 36px;
   text-align: center;
+}
+
+.headers-table__body {
+  display: flex;
+  flex-direction: column;
+}
+
+.headers-table__row {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: var(--space-3);
+  align-items: center;
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-bg-surface);
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.headers-table__row:last-child {
+  border-bottom: none;
+}
+
+.headers-table__cell {
+  min-width: 0;
+}
+
+.headers-table__cell .input {
+  border-color: transparent;
+  background: var(--color-bg-subtle);
+  border-radius: var(--radius-md);
+}
+
+.headers-table__cell .input:focus {
+  border-color: var(--color-primary);
+  background: var(--color-bg-surface);
+}
+
+.headers-table__cell--action {
+  width: 36px;
+  display: flex;
+  justify-content: center;
+}
+
+.input--compact {
+  padding: var(--space-2) var(--space-3);
   font-size: var(--text-sm);
+}
+
+.empty-state {
+  padding: var(--space-3);
+  border: 1px dashed var(--color-border-default);
+  border-radius: var(--radius-md);
+  text-align: center;
+  font-size: 13px;
   color: var(--color-text-muted);
   background: var(--color-bg-surface);
+}
+
+.empty-state__title {
+  margin: var(--space-1) 0 0;
+  font-size: 13px;
+  font-weight: var(--font-medium);
+  color: var(--color-text-primary);
+}
+
+.empty-state__desc {
+  margin: 2px 0 0;
+  font-size: 12px;
+  color: var(--color-text-muted);
 }
 
 .btn {
@@ -1206,8 +1396,8 @@ async function handleSubmit() {
 }
 
 .btn--sm {
-  padding: var(--space-1) var(--space-3);
-  font-size: var(--text-xs);
+  padding: 4px 10px;
+  font-size: 12px;
 }
 
 .btn--icon {
@@ -1339,21 +1529,57 @@ async function handleSubmit() {
   background: var(--color-primary-subtle);
 }
 
-.relay-help {
-  padding: var(--space-4);
+.address-help {
+  margin-top: var(--space-2);
+  padding: var(--space-2) var(--space-3);
   background: var(--color-bg-subtle);
   border: 1px solid var(--color-border-subtle);
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-md);
+}
+
+.address-help__title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-1);
+  margin-bottom: var(--space-2);
+  font-size: 13px;
+  font-weight: var(--font-medium);
+  color: var(--color-text-primary);
+  line-height: 1.4;
+}
+
+.address-help__title svg {
+  color: var(--color-primary);
+}
+
+.address-help__list {
+  margin: 0;
+  padding-left: var(--space-4);
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+}
+
+.address-help__list li {
+  margin-bottom: var(--space-1);
+}
+
+.relay-help {
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-bg-subtle);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
 }
 
 .relay-help__title {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
-  margin-bottom: var(--space-3);
-  font-size: var(--text-sm);
+  gap: var(--space-1);
+  margin-bottom: var(--space-2);
+  font-size: 13px;
   font-weight: var(--font-medium);
   color: var(--color-text-primary);
+  line-height: 1.4;
 }
 
 .relay-help__title svg {
@@ -1362,10 +1588,10 @@ async function handleSubmit() {
 
 .relay-help__list {
   margin: 0;
-  padding-left: var(--space-5);
-  font-size: var(--text-sm);
+  padding-left: var(--space-4);
+  font-size: 13px;
   color: var(--color-text-secondary);
-  line-height: 1.8;
+  line-height: 1.5;
 }
 
 .relay-help__list li {
@@ -1396,19 +1622,16 @@ async function handleSubmit() {
   }
 
   .section-header {
-    margin-bottom: var(--space-3);
+    margin-bottom: var(--space-2);
   }
 
-  .address-help {
-    padding: var(--space-3);
-  }
-
+  .address-help,
   .relay-help {
     padding: var(--space-3);
   }
 
   .empty-state {
-    padding: var(--space-6) var(--space-3);
+    padding: var(--space-4) var(--space-3);
   }
 
   .toggle--card {
@@ -1426,33 +1649,139 @@ async function handleSubmit() {
   .header-row {
     padding: var(--space-2);
   }
+
+  .headers-table__head {
+    display: none;
+  }
+
+  .headers-table__row {
+    grid-template-columns: 1fr 1fr auto;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+  }
+
+  .headers-table__cell .input {
+    background: var(--color-bg-subtle);
+  }
 }
 
-@media (max-width: 480px) {
+/* iPhone 优化 */
+@media (max-width: 414px) {
+  .rule-form {
+    gap: var(--space-2);
+  }
+
   .form-tabs__btn {
     padding: var(--space-2) var(--space-3);
     font-size: var(--text-xs);
   }
 
   .form-tabs__badge {
-    display: none;
+    font-size: 8px;
+    padding: 0 4px;
   }
 
   .settings-card {
     padding: var(--space-3);
+    gap: var(--space-2);
     border-radius: var(--radius-lg);
   }
 
   .section-title {
-    font-size: var(--text-sm);
+    font-size: 14px;
   }
 
   .section-description {
-    font-size: var(--text-xs);
+    font-size: 13px;
   }
 
   .input {
     padding: var(--space-2) var(--space-3);
+    font-size: 14px;
+  }
+
+  .form-group--block + .form-group--block {
+    margin-top: var(--space-3);
+  }
+
+  .form-tab-panel > .settings-card {
+    padding: var(--space-3);
+    gap: var(--space-2);
+  }
+
+  .form-tab-panel .toggle--card {
+    padding: var(--space-3);
+  }
+
+  .address-help,
+  .relay-help {
+    padding: var(--space-3);
+  }
+
+  .address-help__list,
+  .relay-help__list {
+    font-size: 13px;
+    line-height: 1.5;
+    padding-left: var(--space-4);
+  }
+
+  .empty-state {
+    padding: var(--space-4) var(--space-3);
+  }
+
+  .empty-state__title {
+    font-size: var(--text-sm);
+  }
+
+  .empty-state__desc {
+    font-size: var(--text-xs);
+  }
+
+  .headers-table__head {
+    display: none;
+  }
+
+  .headers-table__row {
+    grid-template-columns: 1fr 1fr auto;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+  }
+
+  .btn--full {
+    padding: var(--space-3);
+    font-size: var(--text-sm);
+  }
+}
+
+/* iPhone SE 等小屏幕 */
+@media (max-width: 375px) and (max-height: 812px) {
+  .form-tabs__btn {
+    padding: var(--space-2) var(--space-2);
+    font-size: 11px;
+  }
+
+  .settings-card {
+    padding: var(--space-2);
+  }
+
+  .section-header {
+    gap: var(--space-1);
+  }
+
+  .section-title {
+    font-size: 13px;
+  }
+
+  .section-description {
+    font-size: 12px;
+  }
+
+  .input-wrapper__icon {
+    left: var(--space-3);
+  }
+
+  .input-wrapper .input {
+    padding-left: var(--space-8);
   }
 }
 </style>
