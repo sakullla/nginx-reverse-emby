@@ -637,6 +637,7 @@ function validateManagedCertificateHost(value, options = {}) {
   const { allowWildcard = false } = options;
   const host = normalizeHost(value);
   if (!host) return false;
+  if (host === "__relay-ca.internal") return true;
   if (allowWildcard && isWildcardDomain(host)) return true;
   return validateNetworkHost(host);
 }
@@ -1273,6 +1274,42 @@ function normalizeManagedCertificatePayload(body, fallback = {}, suggestedId = n
   };
 }
 
+const RELAY_CA_DOMAIN = "__relay-ca.internal";
+const RELAY_CA_TAG = "system:relay-ca";
+
+function findGlobalRelayCA() {
+  return (
+    storage
+      .loadManagedCertificates()
+      .find(
+        (cert) =>
+          cert.usage === "relay_ca" &&
+          cert.certificate_type === "internal_ca" &&
+          Array.isArray(cert.tags) &&
+          cert.tags.includes(RELAY_CA_TAG),
+      ) || null
+  );
+}
+
+function buildGlobalRelayCAPayload(nextId) {
+  return normalizeManagedCertificatePayload(
+    {
+      id: nextId,
+      domain: RELAY_CA_DOMAIN,
+      enabled: true,
+      scope: "domain",
+      issuer_mode: "local_http01",
+      usage: "relay_ca",
+      certificate_type: "internal_ca",
+      self_signed: true,
+      target_agent_ids: [LOCAL_AGENT_ID],
+      tags: [RELAY_CA_TAG, "system"],
+    },
+    {},
+    nextId,
+  );
+}
+
 function getKnownManagedCertificateTargetAgentIds() {
   const ids = new Set();
   if (LOCAL_AGENT_ENABLED) {
@@ -1350,6 +1387,17 @@ function buildManagedCertificateAutoTargetTag(agentId) {
 
 function hasManagedCertificateTag(cert, tag) {
   return Array.isArray(cert?.tags) && cert.tags.includes(tag);
+}
+
+function assertCertificateIsNotSystemRelayCA(cert) {
+  if (
+    cert &&
+    cert.usage === "relay_ca" &&
+    Array.isArray(cert.tags) &&
+    cert.tags.includes(RELAY_CA_TAG)
+  ) {
+    throw new Error("system relay ca cannot be deleted");
+  }
 }
 
 function isAutoManagedCertificate(cert) {
@@ -2795,6 +2843,33 @@ async function syncStaticLocalCertificateById(certId, options = {}) {
 
   await syncManagedCertificateAgentIds(requestedAgentIds, { applyNow });
   return cert;
+}
+
+async function ensureGlobalRelayCA() {
+  if (ROLE !== "master") {
+    return null;
+  }
+
+  const existing = findGlobalRelayCA();
+  if (existing) {
+    return existing;
+  }
+
+  const certs = storage.loadManagedCertificates();
+  const nextId = certs.reduce((max, cert) => Math.max(max, Number(cert.id) || 0), 0) + 1;
+  const prepared = prepareManagedCertificateForSave(null, buildGlobalRelayCAPayload(nextId));
+  prepared.revision = storage.getNextGlobalRevision();
+  certs.push(prepared);
+  storage.saveManagedCertificates(certs);
+
+  try {
+    return await syncStaticLocalCertificateById(prepared.id, { bumpRevision: false });
+  } catch (err) {
+    if (String(err.message || err) !== "certificate material not found") {
+      throw err;
+    }
+    return getManagedCertificateById(prepared.id);
+  }
 }
 
 async function syncAgentRules(agentId) {
@@ -4506,7 +4581,9 @@ async function handleMasterApi(req, res) {
         return;
       }
 
-      const deleted = certs.splice(index, 1)[0];
+      const deleted = certs[index];
+      assertCertificateIsNotSystemRelayCA(deleted);
+      certs.splice(index, 1);
       storage.saveManagedCertificates(certs);
       cleanupManagedCertificateArtifacts(deleted.domain);
       for (const targetAgentId of deleted.target_agent_ids || []) {
@@ -4666,7 +4743,9 @@ async function handleMasterApi(req, res) {
         sendJson(res, 404, errorPayload("certificate not found"));
         return;
       }
-      const deleted = certs.splice(index, 1)[0];
+      const deleted = certs[index];
+      assertCertificateIsNotSystemRelayCA(deleted);
+      certs.splice(index, 1);
       storage.saveManagedCertificates(certs);
       cleanupManagedCertificateArtifacts(deleted.domain);
       for (const agentId of deleted.target_agent_ids || []) {
@@ -4793,11 +4872,6 @@ async function handleRequest(req, res) {
   await handleMasterApi(req, res);
 }
 
-ensureDataDir();
-storage.init(DATA_ROOT);
-storage.migrateFromJson(DATA_ROOT);
-startManagedCertificateAutoRenewLoop();
-
 const server = http.createServer((req, res) => {
   handleRequest(req, res).catch((err) => {
     sendJson(
@@ -4808,9 +4882,17 @@ const server = http.createServer((req, res) => {
   });
 });
 
-server.listen(PORT, HOST, () => {
-  console.log(`Panel backend listening on ${HOST}:${PORT} (storage: ${process.env.PANEL_STORAGE_BACKEND || "sqlite"})`);
-});
+async function startServer() {
+  ensureDataDir();
+  storage.init(DATA_ROOT);
+  storage.migrateFromJson(DATA_ROOT);
+  await ensureGlobalRelayCA();
+  startManagedCertificateAutoRenewLoop();
+
+  server.listen(PORT, HOST, () => {
+    console.log(`Panel backend listening on ${HOST}:${PORT} (storage: ${process.env.PANEL_STORAGE_BACKEND || "sqlite"})`);
+  });
+}
 
 function gracefulShutdown(signal) {
   console.log(`Received ${signal}, shutting down...`);
@@ -4826,3 +4908,9 @@ function gracefulShutdown(signal) {
 
 process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
 process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+
+startServer().catch((err) => {
+  console.error("[startup] failed to initialize server:", String(err.message || err));
+  storage.close();
+  process.exit(1);
+});
