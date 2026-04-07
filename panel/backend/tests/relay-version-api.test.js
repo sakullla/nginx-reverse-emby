@@ -826,8 +826,9 @@ describe("relay listeners and version policies API", () => {
         );
         assert.ok(firstCert);
         assert.ok(secondCert);
-        assert.equal(firstCert.domain, "listener-1.edge-1.relay.internal");
-        assert.equal(secondCert.domain, "listener-2.edge-1.relay.internal");
+        assert.match(firstCert.domain, /^listener-1\.[a-z0-9-]+\.relay\.internal$/);
+        assert.match(secondCert.domain, /^listener-2\.[a-z0-9-]+\.relay\.internal$/);
+        assert.notEqual(firstCert.domain, secondCert.domain);
 
         const [firstPem, secondPem] = await Promise.all([
           fsp.readFile(path.join(dataRoot, "managed_certificates", firstCert.domain, "cert"), "utf8"),
@@ -1010,7 +1011,7 @@ describe("relay listeners and version policies API", () => {
     );
   });
 
-  it("derives pin-only trust for uploaded manual listener certificates outside the relay ca", async () => {
+  it("does not auto-trust relay ca when an unrelated uploaded leaf merely appends relay ca pem", async () => {
     await withBackendServer(
       {
         env: { PANEL_ROLE: "master" },
@@ -1026,41 +1027,43 @@ describe("relay listeners and version policies API", () => {
             updated_at: "2026-04-01T00:00:00.000Z",
           },
         ],
-        managedCertificates: [
-          {
-            id: 7,
-            domain: "relay-uploaded.example.com",
-            enabled: true,
-            scope: "domain",
-            issuer_mode: "local_http01",
-            usage: "relay_tunnel",
-            certificate_type: "uploaded",
-            self_signed: true,
-            target_agent_ids: ["edge-1"],
-            status: "active",
-            revision: 1,
-          },
-        ],
-        managedCertificateMaterial: {
-          "relay-uploaded.example.com": {
-            cert_pem: TEST_SERVER_CERT_PEM,
-            key_pem: TEST_SERVER_KEY_PEM,
-          },
-        },
       },
-      async ({ baseUrl }) => {
+      async ({ baseUrl, dataRoot }) => {
+        const certificates = await jsonRequest(baseUrl, "GET", "/api/certificates");
+        assert.equal(certificates.status, 200);
+        const relayCA = certificates.payload.certificates.find((cert) => cert.usage === "relay_ca");
+        assert.ok(relayCA);
+        const relayCAPem = await fsp.readFile(
+          path.join(dataRoot, "managed_certificates", relayCA.domain, "cert"),
+          "utf8",
+        );
+
+        const uploaded = await jsonRequest(baseUrl, "POST", "/api/agents/edge-1/certificates", {
+          domain: "relay-uploaded.example.com",
+          enabled: true,
+          scope: "domain",
+          issuer_mode: "local_http01",
+          usage: "relay_tunnel",
+          certificate_type: "uploaded",
+          self_signed: true,
+          certificate_pem: TEST_SERVER_CERT_PEM,
+          private_key_pem: TEST_SERVER_KEY_PEM,
+          ca_pem: relayCAPem,
+        });
+        assert.equal(uploaded.status, 201);
+
         const created = await jsonRequest(baseUrl, "POST", "/api/agents/edge-1/relay-listeners", {
           name: "relay-manual",
           listen_host: "relay-manual.example.com",
           listen_port: 7443,
           enabled: true,
           certificate_source: "existing_certificate",
-          certificate_id: 7,
+          certificate_id: uploaded.payload.certificate.id,
           trust_mode_source: "auto",
         });
 
         assert.equal(created.status, 201);
-        assert.equal(created.payload.listener.certificate_id, 7);
+        assert.equal(created.payload.listener.certificate_id, uploaded.payload.certificate.id);
         assert.equal(created.payload.listener.tls_mode, "pin_only");
         assert.deepEqual(created.payload.listener.trusted_ca_certificate_ids, []);
         assert.deepEqual(created.payload.listener.pin_set, [
@@ -1073,7 +1076,7 @@ describe("relay listeners and version policies API", () => {
     );
   });
 
-  it("allows disabled manual relay listeners without forcing certificate issuance or cert_install", async () => {
+  it("allows disabled auto relay listeners without forcing certificate issuance or trust derivation", async () => {
     await withBackendServer(
       {
         env: { PANEL_ROLE: "master" },
@@ -1096,10 +1099,8 @@ describe("relay listeners and version policies API", () => {
           listen_host: "relay-disabled.example.com",
           listen_port: 7443,
           enabled: false,
-          certificate_source: "existing_certificate",
-          trust_mode_source: "custom",
-          tls_mode: "pin_only",
-          pin_set: [{ type: "spki_sha256", value: "draft-pin" }],
+          certificate_source: "auto_relay_ca",
+          trust_mode_source: "auto",
         });
         assert.equal(created.status, 201);
         assert.equal(created.payload.listener.certificate_id ?? null, null);
@@ -1111,14 +1112,73 @@ describe("relay listeners and version policies API", () => {
           {
             enabled: false,
             name: "relay-disabled-updated",
-            certificate_source: "existing_certificate",
-            trust_mode_source: "custom",
-            tls_mode: "pin_only",
-            pin_set: [{ type: "spki_sha256", value: "draft-pin-2" }],
+            certificate_source: "auto_relay_ca",
+            trust_mode_source: "auto",
           },
         );
         assert.equal(updated.status, 200);
         assert.equal(updated.payload.listener.certificate_id ?? null, null);
+      },
+    );
+  });
+
+  it("delete then recreate does not reuse the prior auto certificate identity", async () => {
+    await withBackendServer(
+      {
+        env: { PANEL_ROLE: "master" },
+        agents: [
+          {
+            id: "edge-1",
+            name: "edge-1",
+            agent_token: "token-edge-1",
+            desired_revision: 1,
+            current_revision: 1,
+            capabilities: ["cert_install", "http_rules", "l4"],
+            created_at: "2026-04-01T00:00:00.000Z",
+            updated_at: "2026-04-01T00:00:00.000Z",
+          },
+        ],
+      },
+      async ({ baseUrl }) => {
+        const first = await jsonRequest(baseUrl, "POST", "/api/agents/edge-1/relay-listeners", {
+          name: "relay-recreate",
+          listen_host: "relay-recreate.example.com",
+          listen_port: 7443,
+          enabled: true,
+          certificate_source: "auto_relay_ca",
+          trust_mode_source: "auto",
+        });
+        assert.equal(first.status, 201);
+
+        const firstCertificates = await jsonRequest(baseUrl, "GET", "/api/certificates");
+        const firstCert = firstCertificates.payload.certificates.find(
+          (cert) => cert.id === first.payload.listener.certificate_id,
+        );
+        assert.ok(firstCert);
+
+        const deleted = await jsonRequest(
+          baseUrl,
+          "DELETE",
+          `/api/agents/edge-1/relay-listeners/${first.payload.listener.id}`,
+        );
+        assert.equal(deleted.status, 200);
+
+        const second = await jsonRequest(baseUrl, "POST", "/api/agents/edge-1/relay-listeners", {
+          name: "relay-recreate",
+          listen_host: "relay-recreate.example.com",
+          listen_port: 7443,
+          enabled: true,
+          certificate_source: "auto_relay_ca",
+          trust_mode_source: "auto",
+        });
+        assert.equal(second.status, 201);
+
+        const secondCertificates = await jsonRequest(baseUrl, "GET", "/api/certificates");
+        const secondCert = secondCertificates.payload.certificates.find(
+          (cert) => cert.id === second.payload.listener.certificate_id,
+        );
+        assert.ok(secondCert);
+        assert.notEqual(secondCert.domain, firstCert.domain);
       },
     );
   });

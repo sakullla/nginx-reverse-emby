@@ -1553,7 +1553,8 @@ function relayListenerAutoCertificateDomain(listener, agentId) {
   if (!Number.isInteger(listenerId) || listenerId <= 0) {
     throw new Error("relay listener id is required for auto-issued certificate identity");
   }
-  return `listener-${listenerId}.${agentLabel}.relay.internal`;
+  const nonce = String(crypto.randomUUID()).replace(/-/g, "").slice(0, 12).toLowerCase();
+  return `listener-${listenerId}.${agentLabel}-${nonce}.relay.internal`;
 }
 
 function splitPEMCertificates(certPEM) {
@@ -1598,21 +1599,10 @@ function certificateChainUsesRelayCA(material, relayCA) {
     return false;
   }
   try {
-    if (leaf.verify(relayCACert.publicKey)) {
-      return true;
-    }
+    return leaf.verify(relayCACert.publicKey);
   } catch (_) {
-    // Fall through to chain matching checks below.
+    return false;
   }
-  return splitPEMCertificates(material.cert_pem)
-    .slice(1)
-    .some((pem) => {
-      try {
-        return new crypto.X509Certificate(pem).fingerprint256 === relayCACert.fingerprint256;
-      } catch (_) {
-        return false;
-      }
-    });
 }
 
 function deriveRelayTrustMaterial(listener, certificate) {
@@ -1724,7 +1714,10 @@ async function cleanupUnusedAutoRelayListenerCertificate(certId, options = {}) {
   return deleted;
 }
 
-function shouldAutoDeriveRelayTrust(body, previousListener = null) {
+function shouldAutoDeriveRelayTrust(body, draftListener, previousListener = null) {
+  if (draftListener?.enabled === false) {
+    return false;
+  }
   const hasOwn = (key) => Object.prototype.hasOwnProperty.call(body || {}, key);
   const certificateSource = String(body?.certificate_source || "").trim().toLowerCase();
   const trustModeSource = String(body?.trust_mode_source || "").trim().toLowerCase();
@@ -4685,7 +4678,7 @@ async function handleMasterApi(req, res) {
       if (shouldAutoIssueRelayListenerCertificate(body, draftListener)) {
         draftListener.certificate_id = await ensureRelayListenerCertificate(agentId, draftListener);
       }
-      if (shouldAutoDeriveRelayTrust(body, null)) {
+      if (shouldAutoDeriveRelayTrust(body, draftListener, null)) {
         Object.assign(
           draftListener,
           deriveRelayTrustMaterial(
@@ -4752,7 +4745,7 @@ async function handleMasterApi(req, res) {
           currentListener,
         );
       }
-      if (shouldAutoDeriveRelayTrust(body, currentListener)) {
+      if (shouldAutoDeriveRelayTrust(body, draftListener, currentListener)) {
         Object.assign(
           draftListener,
           deriveRelayTrustMaterial(
