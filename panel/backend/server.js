@@ -7,6 +7,7 @@ const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
 const tls = require("tls");
+const selfsigned = require("selfsigned");
 const { spawnSync } = require("child_process");
 const storage = require("./storage");
 const {
@@ -19,6 +20,8 @@ const HOST = process.env.PANEL_BACKEND_HOST || "127.0.0.1";
 const PORT = Number(process.env.PANEL_BACKEND_PORT || "18081");
 const DATA_ROOT =
   process.env.PANEL_DATA_ROOT || "/opt/nginx-reverse-emby/panel/data";
+const RELAY_CA_DOMAIN = "__relay-ca.internal";
+const RELAY_CA_TAG = "system:relay-ca";
 const ROLE = normalizeRole(process.env.PANEL_ROLE || "master");
 const RULES_JSON =
   process.env.PANEL_RULES_JSON || path.join(DATA_ROOT, "proxy_rules.json");
@@ -637,7 +640,7 @@ function validateManagedCertificateHost(value, options = {}) {
   const { allowWildcard = false } = options;
   const host = normalizeHost(value);
   if (!host) return false;
-  if (host === "__relay-ca.internal") return true;
+  if (host === RELAY_CA_DOMAIN) return true;
   if (allowWildcard && isWildcardDomain(host)) return true;
   return validateNetworkHost(host);
 }
@@ -1274,20 +1277,11 @@ function normalizeManagedCertificatePayload(body, fallback = {}, suggestedId = n
   };
 }
 
-const RELAY_CA_DOMAIN = "__relay-ca.internal";
-const RELAY_CA_TAG = "system:relay-ca";
-
 function findGlobalRelayCA() {
   return (
     storage
       .loadManagedCertificates()
-      .find(
-        (cert) =>
-          cert.usage === "relay_ca" &&
-          cert.certificate_type === "internal_ca" &&
-          Array.isArray(cert.tags) &&
-          cert.tags.includes(RELAY_CA_TAG),
-      ) || null
+      .find((cert) => isSystemRelayCA(cert)) || null
   );
 }
 
@@ -1302,7 +1296,7 @@ function buildGlobalRelayCAPayload(nextId) {
       usage: "relay_ca",
       certificate_type: "internal_ca",
       self_signed: true,
-      target_agent_ids: [LOCAL_AGENT_ID],
+      target_agent_ids: LOCAL_AGENT_ENABLED ? [LOCAL_AGENT_ID] : [],
       tags: [RELAY_CA_TAG, "system"],
     },
     {},
@@ -1389,13 +1383,31 @@ function hasManagedCertificateTag(cert, tag) {
   return Array.isArray(cert?.tags) && cert.tags.includes(tag);
 }
 
-function assertCertificateIsNotSystemRelayCA(cert) {
-  if (
+function isSystemRelayCA(cert) {
+  return (
     cert &&
     cert.usage === "relay_ca" &&
-    Array.isArray(cert.tags) &&
-    cert.tags.includes(RELAY_CA_TAG)
-  ) {
+    cert.certificate_type === "internal_ca" &&
+    hasManagedCertificateTag(cert, RELAY_CA_TAG)
+  );
+}
+
+function usesReservedSystemRelayCAIdentity(cert) {
+  if (!cert) return false;
+  return normalizeHost(cert.domain || "").toLowerCase() === RELAY_CA_DOMAIN || hasManagedCertificateTag(cert, RELAY_CA_TAG);
+}
+
+function assertManagedCertificateMutationAllowed(previousCert, nextCert) {
+  if (isSystemRelayCA(previousCert)) {
+    throw new Error("system relay ca is managed automatically");
+  }
+  if (usesReservedSystemRelayCAIdentity(nextCert)) {
+    throw new Error("relay ca domain and system tag are reserved for the system relay ca");
+  }
+}
+
+function assertCertificateIsNotSystemRelayCA(cert) {
+  if (isSystemRelayCA(cert)) {
     throw new Error("system relay ca cannot be deleted");
   }
 }
@@ -1701,6 +1713,51 @@ function writeManagedCertificateMaterial(domain, material) {
   fs.mkdirSync(certDir, { recursive: true });
   fs.writeFileSync(path.join(certDir, "cert"), String(material.cert_pem || ""), "utf8");
   fs.writeFileSync(path.join(certDir, "key"), String(material.key_pem || ""), "utf8");
+}
+
+async function generateInternalCAMaterial(domain) {
+  const commonName = String(domain || "").trim() || `internal-ca-${crypto.randomUUID()}`;
+  const generated = await selfsigned.generate(
+    [{ name: "commonName", value: commonName }],
+    {
+      algorithm: "sha256",
+      days: 3650,
+      keySize: 2048,
+      extensions: [
+        { name: "basicConstraints", cA: true },
+        {
+          name: "keyUsage",
+          digitalSignature: true,
+          keyCertSign: true,
+          cRLSign: true,
+        },
+      ],
+    },
+  );
+  tls.createSecureContext({ cert: generated.cert, key: generated.private });
+  return {
+    cert_pem: generated.cert,
+    key_pem: generated.private,
+  };
+}
+
+async function ensureInternalCAMaterial(cert) {
+  const existingMaterial = readManagedCertificateMaterial(cert.domain);
+  if (existingMaterial?.cert_pem && existingMaterial?.key_pem) {
+    try {
+      tls.createSecureContext({
+        cert: existingMaterial.cert_pem,
+        key: existingMaterial.key_pem,
+      });
+      return existingMaterial;
+    } catch (_) {
+      // Re-issue invalid material on the control plane.
+    }
+  }
+
+  const nextMaterial = await generateInternalCAMaterial(cert.domain);
+  writeManagedCertificateMaterial(cert.domain, nextMaterial);
+  return nextMaterial;
 }
 
 function resolveUploadedManagedCertificateMaterial(body, nextCert, previousCert = null) {
@@ -2799,7 +2856,7 @@ async function syncStaticLocalCertificateById(certId, options = {}) {
       ? cert.target_agent_ids
       : [];
 
-  if (!requestedAgentIds.length) {
+  if (!requestedAgentIds.length && !(cert.certificate_type === "internal_ca" && !agentId)) {
     throw new Error("certificate is not assigned to the requested agent");
   }
 
@@ -2813,7 +2870,10 @@ async function syncStaticLocalCertificateById(certId, options = {}) {
     }
   }
 
-  const materialHash = getManagedCertificateMaterialHash(cert.domain);
+  let materialHash = getManagedCertificateMaterialHash(cert.domain);
+  if (!materialHash && cert.certificate_type === "internal_ca") {
+    materialHash = hashManagedCertificateMaterial(await ensureInternalCAMaterial(cert));
+  }
   if (!materialHash) {
     throw new Error("certificate material not found");
   }
@@ -2841,7 +2901,9 @@ async function syncStaticLocalCertificateById(certId, options = {}) {
     return nextCert;
   });
 
-  await syncManagedCertificateAgentIds(requestedAgentIds, { applyNow });
+  if (requestedAgentIds.length > 0) {
+    await syncManagedCertificateAgentIds(requestedAgentIds, { applyNow });
+  }
   return cert;
 }
 
@@ -2850,26 +2912,47 @@ async function ensureGlobalRelayCA() {
     return null;
   }
 
-  const existing = findGlobalRelayCA();
-  if (existing) {
-    return existing;
-  }
-
   const certs = storage.loadManagedCertificates();
-  const nextId = certs.reduce((max, cert) => Math.max(max, Number(cert.id) || 0), 0) + 1;
-  const prepared = prepareManagedCertificateForSave(null, buildGlobalRelayCAPayload(nextId));
-  prepared.revision = storage.getNextGlobalRevision();
-  certs.push(prepared);
-  storage.saveManagedCertificates(certs);
+  const existingIndex = certs.findIndex((cert) => isSystemRelayCA(cert));
+  let relayCA = null;
 
-  try {
-    return await syncStaticLocalCertificateById(prepared.id, { bumpRevision: false });
-  } catch (err) {
-    if (String(err.message || err) !== "certificate material not found") {
-      throw err;
+  if (existingIndex >= 0) {
+    const existing = certs[existingIndex];
+    const normalized = normalizeManagedCertificatePayload(
+      {
+        ...existing,
+        ...buildGlobalRelayCAPayload(existing.id),
+      },
+      existing,
+      existing.id,
+    );
+    const prepared = prepareManagedCertificateForSave(existing, normalized);
+    if (JSON.stringify(prepared) !== JSON.stringify(existing)) {
+      relayCA = {
+        ...prepared,
+        revision: storage.getNextGlobalRevision(),
+      };
+      certs[existingIndex] = relayCA;
+      storage.saveManagedCertificates(certs);
+    } else {
+      relayCA = existing;
     }
-    return getManagedCertificateById(prepared.id);
+  } else {
+    const nextId = certs.reduce((max, cert) => Math.max(max, Number(cert.id) || 0), 0) + 1;
+    relayCA = prepareManagedCertificateForSave(null, buildGlobalRelayCAPayload(nextId));
+    relayCA.revision = storage.getNextGlobalRevision();
+    certs.push(relayCA);
+    storage.saveManagedCertificates(certs);
   }
+
+  if (relayCA.status === "active" && getManagedCertificateMaterialHash(relayCA.domain)) {
+    return relayCA;
+  }
+
+  return await syncStaticLocalCertificateById(relayCA.id, {
+    bumpRevision: false,
+    applyNow: false,
+  });
 }
 
 async function syncAgentRules(agentId) {
@@ -4436,6 +4519,7 @@ async function handleMasterApi(req, res) {
       validateManagedCertificateTargets(nextCert);
       const uploadMaterial = resolveUploadedManagedCertificateMaterial(body, nextCert);
       const preparedCert = prepareManagedCertificateForSave(null, nextCert);
+      assertManagedCertificateMutationAllowed(null, preparedCert);
       if (preparedCert.scope === "domain" && preparedCert.issuer_mode === "master_cf_dns") {
         assertManagedCertificateEnabled();
       }
@@ -4499,6 +4583,7 @@ async function handleMasterApi(req, res) {
       validateManagedCertificateTargets(nextCert);
       const uploadMaterial = resolveUploadedManagedCertificateMaterial(body, nextCert, previousCert);
       const preparedCert = prepareManagedCertificateForSave(previousCert, nextCert);
+      assertManagedCertificateMutationAllowed(previousCert, preparedCert);
       if (preparedCert.scope === "domain" && preparedCert.issuer_mode === "master_cf_dns") {
         assertManagedCertificateEnabled();
       }
@@ -4643,6 +4728,7 @@ async function handleMasterApi(req, res) {
       validateManagedCertificateTargets(nextCert);
       const uploadMaterial = resolveUploadedManagedCertificateMaterial(body, nextCert);
       const preparedCert = prepareManagedCertificateForSave(null, nextCert);
+      assertManagedCertificateMutationAllowed(null, preparedCert);
       if (preparedCert.scope === "domain" && preparedCert.issuer_mode === "master_cf_dns") {
         assertManagedCertificateEnabled();
       }
@@ -4692,6 +4778,7 @@ async function handleMasterApi(req, res) {
       validateManagedCertificateTargets(nextCert);
       const uploadMaterial = resolveUploadedManagedCertificateMaterial(body, nextCert, previousCert);
       const preparedCert = prepareManagedCertificateForSave(previousCert, nextCert);
+      assertManagedCertificateMutationAllowed(previousCert, preparedCert);
       if (preparedCert.scope === "domain" && preparedCert.issuer_mode === "master_cf_dns") {
         assertManagedCertificateEnabled();
       }

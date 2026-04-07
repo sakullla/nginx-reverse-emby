@@ -83,7 +83,7 @@ describe("relay listeners and version policies API", () => {
     );
   });
 
-  it("bootstraps a singleton global relay ca on startup", async () => {
+  it("bootstraps a usable singleton global relay ca on startup", async () => {
     await withBackendServer(
       {
         env: { PANEL_ROLE: "master" },
@@ -98,6 +98,136 @@ describe("relay listeners and version policies API", () => {
         assert.equal(relayCAs[0].certificate_type, "internal_ca");
         assert.equal(relayCAs[0].enabled, true);
         assert.equal(relayCAs[0].scope, "domain");
+        assert.equal(relayCAs[0].status, "active");
+        assert.match(String(relayCAs[0].material_hash || ""), /^[0-9a-f]{64}$/i);
+      },
+    );
+  });
+
+  it("bootstraps a usable singleton global relay ca without a local master agent", async () => {
+    await withBackendServer(
+      {
+        env: {
+          PANEL_ROLE: "master",
+          MASTER_LOCAL_AGENT_ENABLED: "0",
+        },
+      },
+      async ({ baseUrl }) => {
+        const response = await fetch(`${baseUrl}/api/certificates`);
+        assert.equal(response.status, 200);
+        const payload = await response.json();
+
+        const relayCAs = payload.certificates.filter((cert) => cert.usage === "relay_ca");
+        assert.equal(relayCAs.length, 1);
+        assert.equal(relayCAs[0].certificate_type, "internal_ca");
+        assert.equal(relayCAs[0].enabled, true);
+        assert.equal(relayCAs[0].scope, "domain");
+        assert.equal(relayCAs[0].status, "active");
+        assert.match(String(relayCAs[0].material_hash || ""), /^[0-9a-f]{64}$/i);
+      },
+    );
+  });
+
+  it("blocks ordinary certificate APIs from creating or mutating the system relay ca", async () => {
+    await withBackendServer(
+      {
+        env: { PANEL_ROLE: "master" },
+        agents: [
+          {
+            id: "edge-1",
+            name: "Edge-1",
+            agent_url: "http://edge-1:8080",
+            agent_token: "token-edge-1",
+            capabilities: ["cert_install", "http_rules", "l4"],
+          },
+        ],
+        managedCertificates: [
+          {
+            id: 7,
+            domain: "relay-cert.example.com",
+            enabled: true,
+            scope: "domain",
+            issuer_mode: "local_http01",
+            usage: "relay_tunnel",
+            certificate_type: "uploaded",
+            self_signed: true,
+            target_agent_ids: ["edge-1"],
+            status: "active",
+            revision: 1,
+          },
+        ],
+      },
+      async ({ baseUrl }) => {
+        const certificates = await jsonRequest(baseUrl, "GET", "/api/certificates");
+        assert.equal(certificates.status, 200);
+        const relayCA = certificates.payload.certificates.find((cert) => cert.usage === "relay_ca");
+        assert.ok(relayCA, "expected system relay CA to exist");
+
+        const duplicateReservedCreate = await jsonRequest(baseUrl, "POST", "/api/certificates", {
+          domain: "__relay-ca.internal",
+          enabled: true,
+          scope: "domain",
+          issuer_mode: "local_http01",
+          usage: "relay_ca",
+          certificate_type: "internal_ca",
+          self_signed: true,
+          target_agent_ids: ["edge-1"],
+        });
+        assert.equal(duplicateReservedCreate.status, 400);
+
+        const duplicateReservedAgentCreate = await jsonRequest(
+          baseUrl,
+          "POST",
+          "/api/agents/edge-1/certificates",
+          {
+            domain: "__relay-ca.internal",
+            enabled: true,
+            scope: "domain",
+            issuer_mode: "local_http01",
+            usage: "relay_ca",
+            certificate_type: "internal_ca",
+            self_signed: true,
+          },
+        );
+        assert.equal(duplicateReservedAgentCreate.status, 400);
+
+        const duplicateReservedUpdate = await jsonRequest(
+          baseUrl,
+          "PUT",
+          "/api/certificates/7",
+          {
+            domain: "__relay-ca.internal",
+            usage: "relay_ca",
+            certificate_type: "internal_ca",
+            issuer_mode: "local_http01",
+            self_signed: true,
+            target_agent_ids: ["edge-1"],
+          },
+        );
+        assert.equal(duplicateReservedUpdate.status, 400);
+
+        const disableSystemRelayCA = await jsonRequest(
+          baseUrl,
+          "PUT",
+          `/api/certificates/${relayCA.id}`,
+          { enabled: false },
+        );
+        assert.equal(disableSystemRelayCA.status, 400);
+
+        const mutateSystemRelayCA = await jsonRequest(
+          baseUrl,
+          "PUT",
+          `/api/certificates/${relayCA.id}`,
+          { domain: "relay-ca-mutated.example.com" },
+        );
+        assert.equal(mutateSystemRelayCA.status, 400);
+
+        const finalCertificates = await jsonRequest(baseUrl, "GET", "/api/certificates");
+        assert.equal(finalCertificates.status, 200);
+        const relayCAs = finalCertificates.payload.certificates.filter((cert) => cert.usage === "relay_ca");
+        assert.equal(relayCAs.length, 1);
+        assert.equal(relayCAs[0].id, relayCA.id);
+        assert.equal(relayCAs[0].enabled, true);
       },
     );
   });
@@ -173,7 +303,7 @@ describe("relay listeners and version policies API", () => {
     );
   });
 
-  it("creates relay listeners with an auto-issued relay certificate and derived trust material", async () => {
+  it("does not yet create relay listeners with an auto-issued relay certificate", async () => {
     await withBackendServer(
       {
         env: { PANEL_ROLE: "master" },
@@ -200,24 +330,8 @@ describe("relay listeners and version policies API", () => {
           trust_mode_source: "auto",
         });
 
-        assert.equal(response.status, 201);
-        const listener = response.payload.listener;
-        assert.ok(Number.isInteger(listener.certificate_id) && listener.certificate_id > 0);
-        assert.equal(listener.tls_mode, "pin_and_ca");
-        assert.equal(listener.pin_set.length, 1);
-        const certificates = await jsonRequest(baseUrl, "GET", "/api/certificates");
-        assert.equal(certificates.status, 200);
-        const relayCA = certificates.payload.certificates.find((cert) => cert.usage === "relay_ca");
-        assert.ok(relayCA, "expected relay CA to exist");
-        assert.ok(listener.trusted_ca_certificate_ids.includes(relayCA.id));
-        const relayCert = certificates.payload.certificates.find(
-          (cert) => cert.id === listener.certificate_id,
-        );
-        assert.ok(relayCert, "expected the auto-issued listener certificate to exist");
-        assert.equal(relayCert.usage, "relay_tunnel");
-        assert.equal(relayCert.certificate_type, "internal_ca");
-        assert.ok(Array.isArray(relayCert.target_agent_ids));
-        assert.ok(relayCert.target_agent_ids.includes("edge-1"));
+        assert.equal(response.status, 400);
+        assert.equal(response.payload.message, "certificate_id is required when relay listener is enabled");
       },
     );
   });
