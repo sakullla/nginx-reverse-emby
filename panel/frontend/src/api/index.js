@@ -633,7 +633,7 @@ const mockRelayListenersByAgent = {
     {
       id: 1,
       agent_id: 'local',
-      name: '????',
+      name: '本地中继',
       listen_host: '0.0.0.0',
       listen_port: 9443,
       enabled: true,
@@ -650,7 +650,7 @@ const mockRelayListenersByAgent = {
     {
       id: 2,
       agent_id: 'edge-1',
-      name: '????',
+      name: '边缘中继',
       listen_host: '0.0.0.0',
       listen_port: 10443,
       enabled: true,

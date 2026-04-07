@@ -5,6 +5,7 @@
       <button type="button" class="form-tabs__btn" :class="{ 'form-tabs__btn--active': activeTab === 'basic' }" @click="activeTab = 'basic'">基础配置</button>
       <button type="button" class="form-tabs__btn" :class="{ 'form-tabs__btn--active': activeTab === 'advanced' }" @click="activeTab = 'advanced'">高级调优 <span v-if="hasAdvancedTuning" class="form-tabs__badge">已配置</span></button>
       <button type="button" class="form-tabs__btn" :class="{ 'form-tabs__btn--active': activeTab === 'protocol' }" @click="activeTab = 'protocol'">协议与监听 <span v-if="hasProtocolTuning" class="form-tabs__badge">已配置</span></button>
+      <button type="button" class="form-tabs__btn" :class="{ 'form-tabs__btn--active': activeTab === 'relay' }" @click="activeTab = 'relay'" :disabled="form.protocol === 'udp'">Relay 配置 <span v-if="hasRelayConfig" class="form-tabs__badge">已配置</span></button>
     </div>
 
     <!-- Tab 1: Basic -->
@@ -147,16 +148,6 @@
             >
           </div>
         </div>
-      </div>
-
-      <div class="form-group">
-        <label class="form-label">Relay 链路</label>
-        <RelayChainInput
-          v-model="form.relay_chain"
-          :listeners="relayListeners"
-          :disabled="form.protocol === 'udp'"
-        />
-        <div class="form-help" v-if="form.protocol === 'udp'">UDP 当前不支持 Relay 链路，已强制直连</div>
       </div>
     </div>
 
@@ -313,6 +304,106 @@
           </div>
         </div>
       </div>
+    </div>
+
+    <!-- Tab: Relay -->
+    <!-- Tab: Relay -->
+    <div v-else-if="activeTab === 'relay'" class="form-tab-panel">
+      <!-- UDP 不支持提示 -->
+      <div v-if="form.protocol === 'udp'" class="relay-disabled-notice">
+        <div class="relay-disabled-notice__icon">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <circle cx="12" cy="12" r="10"/>
+            <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
+          </svg>
+        </div>
+        <h3 class="relay-disabled-notice__title">UDP 协议不支持 Relay 链路</h3>
+        <p class="relay-disabled-notice__desc">当前 L4 规则使用 UDP 协议，流量将直接转发到后端服务，不经过 Relay 中转</p>
+      </div>
+
+      <template v-else>
+        <!-- 信息卡片 -->
+        <div class="relay-intro">
+          <div class="relay-intro__icon">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M8 12h8"/>
+              <path d="M6 8h12"/>
+              <path d="M10 16h4"/>
+              <circle cx="4" cy="12" r="2"/>
+              <circle cx="20" cy="12" r="2"/>
+            </svg>
+          </div>
+          <div class="relay-intro__content">
+            <h3 class="relay-intro__title">Relay 链路配置</h3>
+            <p class="relay-intro__desc">通过 Relay 监听器构建多跳转发链路，实现 TCP 流量中转和跨网络访问</p>
+          </div>
+        </div>
+
+        <!-- 提示信息 -->
+        <div v-if="!relayListeners.length" class="relay-alert relay-alert--warning">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+            <line x1="12" y1="9" x2="12" y2="13"/>
+            <line x1="12" y1="17" x2="12.01" y2="17"/>
+          </svg>
+          <span>当前没有可用的 Relay 监听器，请先创建监听器后再配置链路</span>
+        </div>
+
+        <div v-else-if="!form.relay_chain.length" class="relay-alert relay-alert--info">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"/>
+            <line x1="12" y1="16" x2="12" y2="12"/>
+            <line x1="12" y1="8" x2="12.01" y2="8"/>
+          </svg>
+          <span>当前为直连模式，TCP 流量将直接转发到后端服务，不经过 Relay 中转</span>
+        </div>
+
+        <!-- Relay 链路配置 -->
+        <div class="settings-card">
+          <div class="section-header section-header--split">
+            <div>
+              <h3 class="section-title">链路配置</h3>
+              <p class="section-description">按顺序添加 Relay 监听器，构建转发路径</p>
+            </div>
+            <router-link
+              v-if="relayListeners.length"
+              to="/relay-listeners"
+              class="relay-link"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+                <polyline points="15 3 21 3 21 9"/>
+                <line x1="10" y1="14" x2="21" y2="3"/>
+              </svg>
+              管理监听器
+            </router-link>
+          </div>
+
+          <RelayChainInput
+            v-model="form.relay_chain"
+            :listeners="relayListeners"
+          />
+        </div>
+
+        <!-- 使用说明 -->
+        <div class="relay-help">
+          <div class="relay-help__title">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"/>
+              <line x1="12" y1="16" x2="12" y2="12"/>
+              <line x1="12" y1="8" x2="12.01" y2="8"/>
+            </svg>
+            使用说明
+          </div>
+          <ul class="relay-help__list">
+            <li>Relay 链路仅支持 TCP 协议，UDP 流量无法使用中继</li>
+            <li>链路按顺序转发：客户端 → 中继节点 1 → 中继节点 2 → ... → 后端服务</li>
+            <li>每个中继节点需要配置对应的 Relay 监听器</li>
+            <li>可通过上下按钮调整链路顺序</li>
+            <li>链路越长延迟越高，建议根据网络拓扑合理规划</li>
+          </ul>
+        </div>
+      </template>
     </div>
 
     <div v-if="error" class="form-error">
@@ -516,6 +607,10 @@ const hasProtocolTuning = computed(() => {
       (t.proxy.udp_proxy_responses !== null && t.proxy.udp_proxy_responses !== defaults.proxy.udp_proxy_responses)
     ))
   )
+})
+
+const hasRelayConfig = computed(() => {
+  return Array.isArray(form.value.relay_chain) && form.value.relay_chain.length > 0
 })
 
 // Clear UDP-specific fields when switching to TCP
@@ -1156,5 +1251,160 @@ async function handleSubmit() {
 .toggle__label {
   font-size: var(--text-sm);
   color: var(--color-text-secondary);
+}
+
+/* Relay 配置样式 */
+.relay-disabled-notice {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-4);
+  padding: var(--space-10) var(--space-6);
+  background: var(--color-bg-subtle);
+  border: 2px dashed var(--color-border-default);
+  border-radius: var(--radius-xl);
+  text-align: center;
+}
+
+.relay-disabled-notice__icon {
+  color: var(--color-text-muted);
+  opacity: 0.5;
+}
+
+.relay-disabled-notice__title {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: var(--font-semibold);
+  color: var(--color-text-secondary);
+}
+
+.relay-disabled-notice__desc {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  max-width: 400px;
+}
+
+.relay-intro {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-5);
+  background: linear-gradient(135deg, var(--color-primary-subtle) 0%, var(--color-bg-surface) 100%);
+  border: 1px solid var(--color-primary-subtle);
+  border-radius: var(--radius-xl);
+}
+
+.relay-intro__icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  background: var(--gradient-primary);
+  border-radius: var(--radius-lg);
+  color: white;
+  flex-shrink: 0;
+}
+
+.relay-intro__content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.relay-intro__title {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: var(--font-semibold);
+  color: var(--color-text-primary);
+}
+
+.relay-intro__desc {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+}
+
+.relay-alert {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-lg);
+  font-size: var(--text-sm);
+}
+
+.relay-alert--warning {
+  background: var(--color-warning-50);
+  border: 1px solid var(--color-warning);
+  color: var(--color-warning);
+}
+
+.relay-alert--info {
+  background: var(--color-primary-subtle);
+  border: 1px solid var(--color-primary);
+  color: var(--color-primary);
+}
+
+.relay-link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-surface);
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  text-decoration: none;
+  transition: all var(--duration-fast);
+}
+
+.relay-link:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+  background: var(--color-primary-subtle);
+}
+
+.relay-help {
+  padding: var(--space-4);
+  background: var(--color-bg-subtle);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-lg);
+}
+
+.relay-help__title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  color: var(--color-text-primary);
+}
+
+.relay-help__title svg {
+  color: var(--color-primary);
+}
+
+.relay-help__list {
+  margin: 0;
+  padding-left: var(--space-5);
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+  line-height: 1.8;
+}
+
+.relay-help__list li {
+  margin-bottom: var(--space-1);
+}
+
+@media (max-width: 640px) {
+  .relay-intro {
+    flex-direction: column;
+    text-align: center;
+  }
 }
 </style>

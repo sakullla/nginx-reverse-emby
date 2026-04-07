@@ -18,152 +18,200 @@
         请求头
         <span v-if="hasRequestHeaderConfig" class="form-tabs__badge">已配置</span>
       </button>
+      <button
+        type="button"
+        class="form-tabs__btn"
+        :class="{ 'form-tabs__btn--active': activeTab === 'relay' }"
+        @click="activeTab = 'relay'"
+      >
+        Relay 配置
+        <span v-if="hasRelayConfig" class="form-tabs__badge">已配置</span>
+      </button>
     </div>
 
     <div v-if="activeTab === 'basic'" class="form-tab-panel">
-      <div class="form-group">
-        <label for="frontend-url" class="form-label form-label--required">前端访问地址</label>
-        <div class="input-wrapper">
-          <span class="input-wrapper__icon">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="12" cy="12" r="10"/>
-              <line x1="2" y1="12" x2="22" y2="12"/>
-              <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
-            </svg>
-          </span>
-          <input
-            id="frontend-url"
-            v-model="form.frontend_url"
-            type="text"
-            class="input"
-            :class="{ 'input--error': errors.frontend_url }"
-            placeholder="https://emby.example.com"
-            @input="handleFrontendUrlInput"
-          >
+      <!-- 地址配置卡片 -->
+      <div class="settings-card">
+        <div class="section-header">
+          <div>
+            <h3 class="section-title">地址配置</h3>
+            <p class="section-description">配置用户访问入口和代理目标服务</p>
+          </div>
         </div>
-        <p v-if="errors.frontend_url" class="form-error">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="10"/>
-            <line x1="12" y1="8" x2="12" y2="12"/>
-            <line x1="12" y1="16" x2="12.01" y2="16"/>
-          </svg>
-          {{ errors.frontend_url }}
-        </p>
-      </div>
 
-      <div class="form-group">
-        <label for="backend-url" class="form-label form-label--required">后端目标地址</label>
-        <div class="input-wrapper">
-          <span class="input-wrapper__icon">
-            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <rect x="2" y="2" width="20" height="8" rx="2" ry="2"/>
-              <rect x="2" y="14" width="20" height="8" rx="2" ry="2"/>
-              <line x1="6" y1="6" x2="6.01" y2="6"/>
-              <line x1="6" y1="18" x2="6.01" y2="18"/>
-            </svg>
-          </span>
-          <input
-            id="backend-url"
-            v-model="form.backend_url"
-            type="text"
-            class="input"
-            :class="{ 'input--error': errors.backend_url }"
-            placeholder="http://192.168.1.10:8096"
-            @input="handleBackendUrlInput"
-          >
-        </div>
-        <p v-if="errors.backend_url" class="form-error">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <circle cx="12" cy="12" r="10"/>
-            <line x1="12" y1="8" x2="12" y2="12"/>
-            <line x1="12" y1="16" x2="12.01" y2="16"/>
-          </svg>
-          {{ errors.backend_url }}
-        </p>
-      </div>
-
-      <div class="form-group">
-        <label for="tag-input" class="form-label">分类标签</label>
-        <div class="tag-input">
-          <div class="tag-input__container">
-            <span
-              v-for="(tag, index) in form.tags"
-              :key="tag"
-              class="tag"
-            >
-              {{ tag }}
-              <button
-                type="button"
-                class="tag__remove"
-                @click="removeTag(index)"
-              >
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                  <line x1="18" y1="6" x2="6" y2="18"/>
-                  <line x1="6" y1="6" x2="18" y2="18"/>
-                </svg>
-              </button>
+        <!-- 前端地址 -->
+        <div class="form-group form-group--block">
+          <label for="frontend-url" class="form-label form-label--required">前端访问地址</label>
+          <div class="input-wrapper">
+            <span class="input-wrapper__icon">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10"/>
+                <line x1="2" y1="12" x2="22" y2="12"/>
+                <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>
+              </svg>
             </span>
             <input
-              id="tag-input"
-              v-model="tagInput"
+              id="frontend-url"
+              v-model="form.frontend_url"
               type="text"
-              class="tag-input__field"
-              placeholder="输入标签按回车..."
-              @keydown.enter.prevent="addTag"
+              class="input"
+              :class="{ 'input--error': errors.frontend_url }"
+              placeholder="例如：https://emby.yourdomain.com"
+              @input="handleFrontendUrlInput"
             >
+          </div>
+          <p v-if="errors.frontend_url" class="form-error">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"/>
+              <line x1="12" y1="8" x2="12" y2="12"/>
+              <line x1="12" y1="16" x2="12.01" y2="16"/>
+            </svg>
+            {{ errors.frontend_url }}
+          </p>
+        </div>
+
+        <!-- 后端地址 -->
+        <div class="form-group form-group--block">
+          <label for="backend-url" class="form-label form-label--required">后端目标地址</label>
+          <div class="input-wrapper">
+            <span class="input-wrapper__icon">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect x="2" y="2" width="20" height="8" rx="2" ry="2"/>
+                <rect x="2" y="14" width="20" height="8" rx="2" ry="2"/>
+                <line x1="6" y1="6" x2="6.01" y2="6"/>
+                <line x1="6" y1="18" x2="6.01" y2="18"/>
+              </svg>
+            </span>
+            <input
+              id="backend-url"
+              v-model="form.backend_url"
+              type="text"
+              class="input"
+              :class="{ 'input--error': errors.backend_url }"
+              placeholder="例如：http://192.168.1.100:8096"
+              @input="handleBackendUrlInput"
+            >
+          </div>
+          <p v-if="errors.backend_url" class="form-error">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"/>
+              <line x1="12" y1="8" x2="12" y2="12"/>
+              <line x1="12" y1="16" x2="12.01" y2="16"/>
+            </svg>
+            {{ errors.backend_url }}
+          </p>
+        </div>
+      </div>
+
+      <!-- 标签配置 -->
+      <div class="settings-card">
+        <div class="section-header">
+          <div>
+            <h3 class="section-title">分类标签</h3>
+            <p class="section-description">为规则添加标签，便于分类管理和搜索</p>
+          </div>
+        </div>
+
+        <div class="form-group form-group--block">
+          <label for="tag-input" class="form-label">标签</label>
+          <div class="tag-input">
+            <div class="tag-input__container">
+              <span
+                v-for="(tag, index) in form.tags"
+                :key="tag"
+                class="tag"
+              >
+                {{ tag }}
+                <button
+                  type="button"
+                  class="tag__remove"
+                  @click="removeTag(index)"
+                >
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <line x1="18" y1="6" x2="6" y2="18"/>
+                    <line x1="6" y1="6" x2="18" y2="18"/>
+                  </svg>
+                </button>
+              </span>
+              <input
+                id="tag-input"
+                v-model="tagInput"
+                type="text"
+                class="tag-input__field"
+                placeholder="输入标签按回车添加..."
+                @keydown.enter.prevent="addTag"
+              >
+            </div>
           </div>
         </div>
       </div>
 
-      <div class="form-group">
-        <label class="form-label">Relay 链路</label>
-        <RelayChainInput
-          v-model="form.relay_chain"
-          :listeners="relayListeners"
-        />
-        <p class="form-hint">可选的多跳 Relay 转发顺序，不配置时为直接回源</p>
-      </div>
-
+      <!-- 规则状态 -->
       <div class="settings-card">
-        <div class="toggle-row">
-          <label class="toggle">
+        <div class="section-header">
+          <div>
+            <h3 class="section-title">规则状态</h3>
+            <p class="section-description">控制规则的启用状态和行为选项</p>
+          </div>
+        </div>
+
+        <div class="toggle-list toggle-list--simple">
+          <label class="toggle toggle--simple" :class="{ 'toggle--active': form.enabled }">
             <input
               v-model="form.enabled"
               type="checkbox"
               class="toggle__input"
             >
             <span class="toggle__slider"></span>
-            <span class="toggle__label">启用此规则</span>
+            <span class="toggle__content">
+              <span class="toggle__label">启用此规则</span>
+              <span class="toggle__desc">启用后，该代理规则将生效并处理匹配的请求</span>
+            </span>
           </label>
-        </div>
 
-        <div class="toggle-row">
-          <label class="toggle">
+          <label class="toggle toggle--simple" :class="{ 'toggle--active': form.proxy_redirect }">
             <input
               v-model="form.proxy_redirect"
               type="checkbox"
               class="toggle__input"
             >
             <span class="toggle__slider"></span>
-            <span class="toggle__label">
-              代理 302/307 重定向
-              <span class="form-hint">关闭时，后端返回的重定向将直接透传给客户端</span>
+            <span class="toggle__content">
+              <span class="toggle__label">代理 302/307 重定向</span>
+              <span class="toggle__desc">开启时，后端返回的重定向地址会被重写为前端地址；关闭时直接透传给客户端</span>
             </span>
           </label>
         </div>
       </div>
+
+      <!-- 使用说明 -->
+      <div class="address-help">
+        <div class="address-help__title">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"/>
+            <line x1="12" y1="16" x2="12" y2="12"/>
+            <line x1="12" y1="8" x2="12.01" y2="8"/>
+          </svg>
+          使用说明
+        </div>
+        <ul class="address-help__list">
+          <li><strong>前端访问地址</strong>：用户访问的公开地址（VPS 地址），需指向当前服务器的公网 IP 或域名</li>
+          <li><strong>后端目标地址</strong>：要代理的实际服务地址（如 Emby），可以是内网地址或其他服务器地址</li>
+        </ul>
+      </div>
     </div>
 
-    <div v-else class="form-tab-panel">
-      <div class="settings-card">
+    <div v-else-if="activeTab === 'headers'" class="form-tab-panel">
+      <!-- 透传客户端 IP -->
+      <div class="settings-card" :class="{ 'settings-card--disabled': proxyHeadersGloballyDisabled }">
         <div class="section-header">
           <div>
-            <h3 class="section-title">透传客户端 IP 与转发头</h3>
-            <p class="section-description">控制 X-Real-IP 与 X-Forwarded-* 请求头是否随该规则透传</p>
+            <h3 class="section-title">透传客户端 IP</h3>
+            <p class="section-description">控制是否将客户端真实 IP 传递给后端服务</p>
           </div>
         </div>
 
-        <label class="toggle" :class="{ 'toggle--disabled': proxyHeadersGloballyDisabled }">
+        <label class="toggle toggle--card" :class="{ 'toggle--active': form.pass_proxy_headers, 'toggle--disabled': proxyHeadersGloballyDisabled }">
           <input
             v-model="form.pass_proxy_headers"
             type="checkbox"
@@ -171,37 +219,49 @@
             :disabled="proxyHeadersGloballyDisabled"
           >
           <span class="toggle__slider"></span>
-          <span class="toggle__label">
-            透传客户端 IP 与转发头
-            <span class="form-hint">包含 X-Real-IP、X-Forwarded-Host、X-Forwarded-Port、X-Forwarded-For、X-Forwarded-Proto</span>
+          <span class="toggle__content">
+            <span class="toggle__label">启用透传</span>
+            <span class="toggle__desc">传递 X-Real-IP、X-Forwarded-Host、X-Forwarded-Port、X-Forwarded-For、X-Forwarded-Proto</span>
           </span>
         </label>
 
-        <p v-if="proxyHeadersGloballyDisabled" class="form-warning">
-          当前全局配置已禁用透传客户端 IP / X-Forwarded-* 头，此开关仅展示规则保存值，不会生效。
-        </p>
+        <div v-if="proxyHeadersGloballyDisabled" class="global-disabled-notice">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"/>
+            <line x1="12" y1="8" x2="12" y2="12"/>
+            <line x1="12" y1="16" x2="12.01" y2="16"/>
+          </svg>
+          <span>当前全局配置已禁用透传客户端 IP，此开关仅展示规则保存值，不会生效</span>
+        </div>
       </div>
 
+      <!-- User-Agent -->
       <div class="settings-card">
         <div class="section-header">
           <div>
             <h3 class="section-title">User-Agent</h3>
-            <p class="section-description">可选择预设 UA，也可以在下方继续编辑为自定义值</p>
+            <p class="section-description">覆盖请求中的 User-Agent 头，用于模拟特定客户端</p>
           </div>
         </div>
 
         <div class="form-row">
           <div class="form-group">
-            <label for="ua-preset" class="form-label">预设</label>
-            <select id="ua-preset" v-model="selectedUserAgentPreset" class="input">
-              <option v-for="preset in UA_PRESETS" :key="preset.id" :value="preset.id">
-                {{ preset.label }}
-              </option>
-            </select>
+            <label for="ua-preset" class="form-label">预设选择</label>
+            <div class="select-wrapper">
+              <select id="ua-preset" v-model="selectedUserAgentPreset" class="input">
+                <option v-for="preset in UA_PRESETS" :key="preset.id" :value="preset.id">
+                  {{ preset.label }}
+                </option>
+              </select>
+              <svg class="select-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <polyline points="6 9 12 15 18 9"/>
+              </svg>
+            </div>
+            <p class="form-help">选择常用 UA 预设，或选择"自定义"手动输入</p>
           </div>
 
           <div class="form-group">
-            <label for="user-agent" class="form-label">User-Agent 值</label>
+            <label for="user-agent" class="form-label">自定义值</label>
             <input
               id="user-agent"
               v-model="form.user_agent"
@@ -210,15 +270,17 @@
               placeholder="留空表示不覆盖 User-Agent"
               @input="errors.submit = ''"
             >
+            <p class="form-help">可直接编辑上方预设的值，或输入自定义 UA</p>
           </div>
         </div>
       </div>
 
+      <!-- 自定义请求头 -->
       <div class="settings-card">
         <div class="section-header section-header--split">
           <div>
             <h3 class="section-title">自定义请求头</h3>
-            <p class="section-description">可覆盖额外 Header，User-Agent 请使用上方独立字段</p>
+            <p class="section-description">添加额外的请求头，用于认证、标识等场景</p>
           </div>
 
           <button type="button" class="btn btn--secondary btn--sm" @click="addCustomHeader">
@@ -244,7 +306,7 @@
                   type="text"
                   class="input"
                   :class="{ 'input--error': headerErrors[index]?.name }"
-                  placeholder="例如 Referer"
+                  placeholder="例如 X-Custom-Header"
                   @input="handleCustomHeaderNameInput(index)"
                 >
                 <p v-if="headerErrors[index]?.name" class="field-error">{{ headerErrors[index].name }}</p>
@@ -257,7 +319,7 @@
                   type="text"
                   class="input"
                   :class="{ 'input--error': headerErrors[index]?.value }"
-                  placeholder="例如 https://example.com/"
+                  placeholder="例如 custom-value"
                   @input="clearHeaderFieldError(index, 'value')"
                 >
                 <p v-if="headerErrors[index]?.value" class="field-error">{{ headerErrors[index].value }}</p>
@@ -279,8 +341,82 @@
         </div>
 
         <div v-else class="empty-state">
-          尚未配置自定义请求头
+          <div class="empty-state__icon">
+            <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1">
+              <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+              <path d="M2 17l10 5 10-5"/>
+              <path d="M2 12l10 5 10-5"/>
+            </svg>
+          </div>
+          <p class="empty-state__title">尚未配置自定义请求头</p>
+          <p class="empty-state__desc">点击右上角按钮添加自定义请求头</p>
         </div>
+      </div>
+    </div>
+
+    <div v-else-if="activeTab === 'relay'" class="form-tab-panel">
+      <!-- 提示信息 -->
+      <div v-if="!relayListeners.length" class="relay-alert relay-alert--warning">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+          <line x1="12" y1="9" x2="12" y2="13"/>
+          <line x1="12" y1="17" x2="12.01" y2="17"/>
+        </svg>
+        <span>当前没有可用的 Relay 监听器，请先创建监听器后再配置链路</span>
+      </div>
+
+      <div v-else-if="!form.relay_chain.length" class="relay-alert relay-alert--info">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="10"/>
+          <line x1="12" y1="16" x2="12" y2="12"/>
+          <line x1="12" y1="8" x2="12.01" y2="8"/>
+        </svg>
+        <span>当前为直连模式，流量将直接转发到后端服务，不经过 Relay 中转</span>
+      </div>
+
+      <!-- Relay 链路配置 -->
+      <div class="settings-card">
+        <div class="section-header section-header--split">
+          <div>
+            <h3 class="section-title">链路配置</h3>
+            <p class="section-description">按顺序添加 Relay 监听器，构建转发路径</p>
+          </div>
+          <router-link
+            v-if="relayListeners.length"
+            to="/relay-listeners"
+            class="relay-link"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+              <polyline points="15 3 21 3 21 9"/>
+              <line x1="10" y1="14" x2="21" y2="3"/>
+            </svg>
+            管理监听器
+          </router-link>
+        </div>
+
+        <RelayChainInput
+          v-model="form.relay_chain"
+          :listeners="relayListeners"
+        />
+      </div>
+
+      <!-- 使用说明 -->
+      <div class="relay-help">
+        <div class="relay-help__title">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"/>
+            <line x1="12" y1="16" x2="12" y2="12"/>
+            <line x1="12" y1="8" x2="12.01" y2="8"/>
+          </svg>
+          使用说明
+        </div>
+        <ul class="relay-help__list">
+          <li>Relay 链路按顺序转发，客户端 → 中继节点 1 → 中继节点 2 → ... → 后端服务</li>
+          <li>每个中继节点需要配置对应的 Relay 监听器</li>
+          <li>可通过拖拽或上下按钮调整链路顺序</li>
+          <li>链路越长延迟越高，建议根据网络拓扑合理规划</li>
+        </ul>
       </div>
     </div>
 
@@ -361,6 +497,10 @@ const hasRequestHeaderConfig = computed(() => {
     || hasCustomHeaderConfig
     || form.value.pass_proxy_headers === true
   )
+})
+
+const hasRelayConfig = computed(() => {
+  return Array.isArray(form.value.relay_chain) && form.value.relay_chain.length > 0
 })
 
 const selectedUserAgentPreset = computed({
@@ -702,6 +842,30 @@ async function handleSubmit() {
   color: var(--color-text-muted);
 }
 
+.form-help-text {
+  margin: var(--space-2) 0 0 0;
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+}
+
+.form-group--block {
+  display: block;
+  width: 100%;
+}
+
+.form-group--block + .form-group--block {
+  margin-top: var(--space-4);
+}
+
+.form-label__hint {
+  display: block;
+  margin-top: var(--space-1);
+  font-size: var(--text-xs);
+  font-weight: var(--font-normal);
+  color: var(--color-text-muted);
+}
+
 .section-header {
   display: flex;
   flex-direction: column;
@@ -724,8 +888,8 @@ async function handleSubmit() {
 
 .section-description {
   margin: 0;
-  font-size: var(--text-xs);
-  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
 }
 
 .settings-card {
@@ -957,6 +1121,41 @@ async function handleSubmit() {
   gap: var(--space-1);
 }
 
+/* 简化版 Toggle - 用于规则状态 */
+.toggle-list--simple {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.toggle--simple {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  padding: var(--space-2) 0;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+
+.toggle--simple:last-child {
+  border-bottom: none;
+}
+
+.toggle--simple .toggle__content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.toggle--simple .toggle__label {
+  font-weight: var(--font-medium);
+}
+
+.toggle--simple .toggle__desc {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+  line-height: 1.5;
+}
+
 .headers-list {
   display: flex;
   flex-direction: column;
@@ -1056,6 +1255,123 @@ async function handleSubmit() {
   cursor: not-allowed;
 }
 
+/* 请求头配置样式 */
+
+.relay-intro {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-5);
+  background: linear-gradient(135deg, var(--color-primary-subtle) 0%, var(--color-bg-surface) 100%);
+  border: 1px solid var(--color-primary-subtle);
+  border-radius: var(--radius-xl);
+}
+
+.relay-intro__icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  background: var(--gradient-primary);
+  border-radius: var(--radius-lg);
+  color: white;
+  flex-shrink: 0;
+}
+
+.relay-intro__content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.relay-intro__title {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: var(--font-semibold);
+  color: var(--color-text-primary);
+}
+
+.relay-intro__desc {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+}
+
+.relay-alert {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-lg);
+  font-size: var(--text-sm);
+}
+
+.relay-alert--warning {
+  background: var(--color-warning-50);
+  border: 1px solid var(--color-warning);
+  color: var(--color-warning);
+}
+
+.relay-alert--info {
+  background: var(--color-primary-subtle);
+  border: 1px solid var(--color-primary);
+  color: var(--color-primary);
+}
+
+.relay-link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-surface);
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  text-decoration: none;
+  transition: all var(--duration-fast);
+}
+
+.relay-link:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+  background: var(--color-primary-subtle);
+}
+
+.relay-help {
+  padding: var(--space-4);
+  background: var(--color-bg-subtle);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-lg);
+}
+
+.relay-help__title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  color: var(--color-text-primary);
+}
+
+.relay-help__title svg {
+  color: var(--color-primary);
+}
+
+.relay-help__list {
+  margin: 0;
+  padding-left: var(--space-5);
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+  line-height: 1.8;
+}
+
+.relay-help__list li {
+  margin-bottom: var(--space-1);
+}
+
 @media (max-width: 720px) {
   .form-row,
   .header-row__fields {
@@ -1069,6 +1385,74 @@ async function handleSubmit() {
 
   .header-row .btn--icon {
     align-self: flex-end;
+  }
+
+  .form-tab-panel {
+    gap: var(--space-3);
+  }
+
+  .settings-card {
+    padding: var(--space-3);
+  }
+
+  .section-header {
+    margin-bottom: var(--space-3);
+  }
+
+  .address-help {
+    padding: var(--space-3);
+  }
+
+  .relay-help {
+    padding: var(--space-3);
+  }
+
+  .empty-state {
+    padding: var(--space-6) var(--space-3);
+  }
+
+  .toggle--card {
+    padding: var(--space-3);
+  }
+
+  .toggle--simple {
+    padding: var(--space-2) 0;
+  }
+
+  .headers-list {
+    gap: var(--space-2);
+  }
+
+  .header-row {
+    padding: var(--space-2);
+  }
+}
+
+@media (max-width: 480px) {
+  .form-tabs__btn {
+    padding: var(--space-2) var(--space-3);
+    font-size: var(--text-xs);
+  }
+
+  .form-tabs__badge {
+    display: none;
+  }
+
+  .settings-card {
+    padding: var(--space-3);
+    border-radius: var(--radius-lg);
+  }
+
+  .section-title {
+    font-size: var(--text-sm);
+  }
+
+  .section-description {
+    font-size: var(--text-xs);
+  }
+
+  .input {
+    padding: var(--space-2) var(--space-3);
   }
 }
 </style>
