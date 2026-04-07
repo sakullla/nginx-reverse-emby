@@ -1304,6 +1304,41 @@ function buildGlobalRelayCAPayload(nextId) {
   );
 }
 
+function buildCanonicalGlobalRelayCA(existingCert, certId) {
+  return normalizeManagedCertificatePayload(
+    {
+      ...(existingCert || {}),
+      id: certId,
+      domain: RELAY_CA_DOMAIN,
+      enabled: true,
+      scope: "domain",
+      issuer_mode: "local_http01",
+      usage: "relay_ca",
+      certificate_type: "internal_ca",
+      self_signed: true,
+      target_agent_ids: LOCAL_AGENT_ENABLED ? [LOCAL_AGENT_ID] : [],
+      tags: [RELAY_CA_TAG, "system"],
+    },
+    existingCert || {},
+    certId,
+  );
+}
+
+function getGlobalRelayCAInvariantFields(cert, certId) {
+  const canonical = buildCanonicalGlobalRelayCA(cert, certId);
+  return {
+    domain: canonical.domain,
+    enabled: canonical.enabled,
+    scope: canonical.scope,
+    issuer_mode: canonical.issuer_mode,
+    usage: canonical.usage,
+    certificate_type: canonical.certificate_type,
+    self_signed: canonical.self_signed,
+    target_agent_ids: canonical.target_agent_ids,
+    tags: canonical.tags,
+  };
+}
+
 function getKnownManagedCertificateTargetAgentIds() {
   const ids = new Set();
   if (LOCAL_AGENT_ENABLED) {
@@ -1400,6 +1435,9 @@ function usesReservedSystemRelayCAIdentity(cert) {
 function assertManagedCertificateMutationAllowed(previousCert, nextCert) {
   if (isSystemRelayCA(previousCert)) {
     throw new Error("system relay ca is managed automatically");
+  }
+  if (nextCert?.usage === "relay_ca") {
+    throw new Error("relay ca certificates are managed automatically");
   }
   if (usesReservedSystemRelayCAIdentity(nextCert)) {
     throw new Error("relay ca domain and system tag are reserved for the system relay ca");
@@ -1743,21 +1781,28 @@ async function generateInternalCAMaterial(domain) {
 
 async function ensureInternalCAMaterial(cert) {
   const existingMaterial = readManagedCertificateMaterial(cert.domain);
-  if (existingMaterial?.cert_pem && existingMaterial?.key_pem) {
-    try {
-      tls.createSecureContext({
-        cert: existingMaterial.cert_pem,
-        key: existingMaterial.key_pem,
-      });
-      return existingMaterial;
-    } catch (_) {
-      // Re-issue invalid material on the control plane.
-    }
+  if (isValidManagedCertificateMaterial(existingMaterial)) {
+    return existingMaterial;
   }
 
   const nextMaterial = await generateInternalCAMaterial(cert.domain);
   writeManagedCertificateMaterial(cert.domain, nextMaterial);
   return nextMaterial;
+}
+
+function isValidManagedCertificateMaterial(material) {
+  if (!material?.cert_pem || !material?.key_pem) {
+    return false;
+  }
+  try {
+    tls.createSecureContext({
+      cert: material.cert_pem,
+      key: material.key_pem,
+    });
+    return true;
+  } catch (_) {
+    return false;
+  }
 }
 
 function resolveUploadedManagedCertificateMaterial(body, nextCert, previousCert = null) {
@@ -1810,8 +1855,14 @@ function hashManagedCertificateMaterial(material) {
     .digest("hex");
 }
 
-function getManagedCertificateMaterialHash(domain) {
-  return hashManagedCertificateMaterial(readManagedCertificateMaterial(domain));
+function getManagedCertificateMaterialHash(domain, options = {}) {
+  const { validate = false } = options;
+  const material = readManagedCertificateMaterial(domain);
+  if (!material) return "";
+  if (validate && !isValidManagedCertificateMaterial(material)) {
+    return "";
+  }
+  return hashManagedCertificateMaterial(material);
 }
 
 function buildManagedCertificateBundleForAgent(agentId) {
@@ -2870,7 +2921,9 @@ async function syncStaticLocalCertificateById(certId, options = {}) {
     }
   }
 
-  let materialHash = getManagedCertificateMaterialHash(cert.domain);
+  let materialHash = getManagedCertificateMaterialHash(cert.domain, {
+    validate: cert.certificate_type === "internal_ca",
+  });
   if (!materialHash && cert.certificate_type === "internal_ca") {
     materialHash = hashManagedCertificateMaterial(await ensureInternalCAMaterial(cert));
   }
@@ -2918,18 +2971,15 @@ async function ensureGlobalRelayCA() {
 
   if (existingIndex >= 0) {
     const existing = certs[existingIndex];
-    const normalized = normalizeManagedCertificatePayload(
-      {
-        ...existing,
-        ...buildGlobalRelayCAPayload(existing.id),
-      },
-      existing,
+    const desiredInvariantFields = getGlobalRelayCAInvariantFields(existing, existing.id);
+    const currentInvariantFields = getGlobalRelayCAInvariantFields(
+      normalizeManagedCertificatePayload(existing, existing, existing.id),
       existing.id,
     );
-    const prepared = prepareManagedCertificateForSave(existing, normalized);
-    if (JSON.stringify(prepared) !== JSON.stringify(existing)) {
+    if (JSON.stringify(desiredInvariantFields) !== JSON.stringify(currentInvariantFields)) {
       relayCA = {
-        ...prepared,
+        ...existing,
+        ...desiredInvariantFields,
         revision: storage.getNextGlobalRevision(),
       };
       certs[existingIndex] = relayCA;
@@ -2945,7 +2995,10 @@ async function ensureGlobalRelayCA() {
     storage.saveManagedCertificates(certs);
   }
 
-  if (relayCA.status === "active" && getManagedCertificateMaterialHash(relayCA.domain)) {
+  if (
+    relayCA.status === "active" &&
+    getManagedCertificateMaterialHash(relayCA.domain, { validate: true })
+  ) {
     return relayCA;
   }
 

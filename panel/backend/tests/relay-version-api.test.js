@@ -2,7 +2,10 @@
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
-const { withBackendServer } = require("./helpers");
+const crypto = require("node:crypto");
+const fsp = require("node:fs/promises");
+const path = require("node:path");
+const { TEST_SERVER_CERT_PEM, TEST_SERVER_KEY_PEM, withBackendServer } = require("./helpers");
 
 async function jsonRequest(baseUrl, method, path, body) {
   const response = await fetch(`${baseUrl}${path}`, {
@@ -124,6 +127,7 @@ describe("relay listeners and version policies API", () => {
         assert.equal(relayCAs[0].scope, "domain");
         assert.equal(relayCAs[0].status, "active");
         assert.match(String(relayCAs[0].material_hash || ""), /^[0-9a-f]{64}$/i);
+        assert.deepEqual(relayCAs[0].target_agent_ids, []);
       },
     );
   });
@@ -191,6 +195,19 @@ describe("relay listeners and version policies API", () => {
         );
         assert.equal(duplicateReservedAgentCreate.status, 400);
 
+        const duplicateRoleCreate = await jsonRequest(baseUrl, "POST", "/api/certificates", {
+          domain: "different-relay-ca.example.com",
+          enabled: true,
+          scope: "domain",
+          issuer_mode: "local_http01",
+          usage: "relay_ca",
+          certificate_type: "internal_ca",
+          self_signed: true,
+          target_agent_ids: ["edge-1"],
+          tags: [],
+        });
+        assert.equal(duplicateRoleCreate.status, 400);
+
         const duplicateReservedUpdate = await jsonRequest(
           baseUrl,
           "PUT",
@@ -205,6 +222,22 @@ describe("relay listeners and version policies API", () => {
           },
         );
         assert.equal(duplicateReservedUpdate.status, 400);
+
+        const duplicateRoleUpdate = await jsonRequest(
+          baseUrl,
+          "PUT",
+          "/api/certificates/7",
+          {
+            domain: "relay-ca-via-update.example.com",
+            usage: "relay_ca",
+            certificate_type: "internal_ca",
+            issuer_mode: "local_http01",
+            self_signed: true,
+            target_agent_ids: ["edge-1"],
+            tags: [],
+          },
+        );
+        assert.equal(duplicateRoleUpdate.status, 400);
 
         const disableSystemRelayCA = await jsonRequest(
           baseUrl,
@@ -228,6 +261,115 @@ describe("relay listeners and version policies API", () => {
         assert.equal(relayCAs.length, 1);
         assert.equal(relayCAs[0].id, relayCA.id);
         assert.equal(relayCAs[0].enabled, true);
+      },
+    );
+  });
+
+  it("does not churn a healthy system relay ca on startup", async () => {
+    const existingMaterialHash = crypto
+      .createHash("sha256")
+      .update(TEST_SERVER_CERT_PEM)
+      .update("\n---\n")
+      .update(TEST_SERVER_KEY_PEM)
+      .digest("hex");
+
+    await withBackendServer(
+      {
+        env: { PANEL_ROLE: "master" },
+        managedCertificates: [
+          {
+            id: 41,
+            domain: "__relay-ca.internal",
+            enabled: true,
+            scope: "domain",
+            issuer_mode: "local_http01",
+            usage: "relay_ca",
+            certificate_type: "internal_ca",
+            self_signed: true,
+            target_agent_ids: ["local"],
+            tags: ["system:relay-ca", "system"],
+            status: "active",
+            material_hash: existingMaterialHash,
+            last_issue_at: "2026-04-08T00:00:00.000Z",
+            revision: 77,
+          },
+        ],
+        managedCertificateMaterial: {
+          "__relay-ca.internal": {
+            cert_pem: TEST_SERVER_CERT_PEM,
+            key_pem: TEST_SERVER_KEY_PEM,
+          },
+        },
+      },
+      async ({ baseUrl }) => {
+        const response = await jsonRequest(baseUrl, "GET", "/api/certificates");
+        assert.equal(response.status, 200);
+        const relayCA = response.payload.certificates.find((cert) => cert.usage === "relay_ca");
+        assert.ok(relayCA, "expected relay CA to exist");
+        assert.equal(relayCA.id, 41);
+        assert.equal(relayCA.revision, 77);
+        assert.equal(relayCA.status, "active");
+        assert.equal(relayCA.last_issue_at, "2026-04-08T00:00:00.000Z");
+        assert.equal(relayCA.material_hash, existingMaterialHash);
+      },
+    );
+  });
+
+  it("repairs corrupt persisted relay ca material during bootstrap", async () => {
+    const brokenMaterialHash = crypto
+      .createHash("sha256")
+      .update("BROKEN CERT")
+      .update("\n---\n")
+      .update("BROKEN KEY")
+      .digest("hex");
+
+    await withBackendServer(
+      {
+        env: { PANEL_ROLE: "master" },
+        managedCertificates: [
+          {
+            id: 55,
+            domain: "__relay-ca.internal",
+            enabled: true,
+            scope: "domain",
+            issuer_mode: "local_http01",
+            usage: "relay_ca",
+            certificate_type: "internal_ca",
+            self_signed: true,
+            target_agent_ids: ["local"],
+            tags: ["system:relay-ca", "system"],
+            status: "active",
+            material_hash: brokenMaterialHash,
+            last_issue_at: "2026-04-08T00:00:00.000Z",
+            revision: 91,
+          },
+        ],
+        managedCertificateMaterial: {
+          "__relay-ca.internal": {
+            cert_pem: "BROKEN CERT",
+            key_pem: "BROKEN KEY",
+          },
+        },
+      },
+      async ({ baseUrl, dataRoot }) => {
+        const response = await jsonRequest(baseUrl, "GET", "/api/certificates");
+        assert.equal(response.status, 200);
+        const relayCA = response.payload.certificates.find((cert) => cert.usage === "relay_ca");
+        assert.ok(relayCA, "expected relay CA to exist");
+        assert.equal(relayCA.status, "active");
+        assert.match(String(relayCA.material_hash || ""), /^[0-9a-f]{64}$/i);
+        assert.notEqual(relayCA.material_hash, brokenMaterialHash);
+
+        const certPath = path.join(dataRoot, "managed_certificates", "__relay-ca.internal", "cert");
+        const keyPath = path.join(dataRoot, "managed_certificates", "__relay-ca.internal", "key");
+        const [certPem, keyPem] = await Promise.all([
+          fsp.readFile(certPath, "utf8"),
+          fsp.readFile(keyPath, "utf8"),
+        ]);
+        assert.notEqual(certPem, "BROKEN CERT");
+        assert.notEqual(keyPem, "BROKEN KEY");
+        assert.match(certPem, /BEGIN CERTIFICATE/);
+        assert.match(keyPem, /BEGIN [A-Z ]*PRIVATE KEY/);
       },
     );
   });
