@@ -44,7 +44,7 @@
       <div v-else-if='isProtectedSystemRelayCA' class='cert-banner cert-banner--info'>
         当前证书是系统 Relay CA，由控制面统一维护并用于 Relay 自动信任链。
       </div>
-      <div v-else-if='isSystemManagedRelayListener' class='cert-banner cert-banner--info'>
+      <div v-else-if='showRelayListenerAutoIssueBanner' class='cert-banner cert-banner--info'>
         Relay 监听证书默认由控制面使用全局 Relay CA 自动签发并分发。
       </div>
       <div v-else-if='form.issuer_mode === "master_cf_dns"' class='cert-banner cert-banner--info'>
@@ -229,6 +229,14 @@ const errors = reactive({
 })
 const isProtectedSystemRelayCA = computed(() => isSystemRelayCA(props.initialData))
 const isSystemManagedRelayListener = computed(() => isSystemManagedRelayListenerCertificate(props.initialData))
+const isRelayListenerAutoIssueSelection = computed(() =>
+  !isEdit.value &&
+  form.value.usage === 'relay_tunnel' &&
+  form.value.certificate_type === 'internal_ca'
+)
+const showRelayListenerAutoIssueBanner = computed(() =>
+  isSystemManagedRelayListener.value || isRelayListenerAutoIssueSelection.value
+)
 
 function createInitialForm() {
   return {
