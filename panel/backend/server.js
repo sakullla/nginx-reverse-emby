@@ -3614,9 +3614,7 @@ function resolveVersionPackageForAgent(agent) {
 
 function getAgentHeartbeatResponse(agent) {
   const rules = loadNormalizedRulesForAgent(agent.id);
-  const l4Rules = (storage.loadL4RulesForAgent(agent.id) || []).map((rule, index) =>
-    normalizeStoredL4Rule(rule, index + 1),
-  );
+  const l4Rules = loadNormalizedL4RulesForAgent(agent.id);
   const relayListeners = loadRelayListenersForSync(agent.id, rules, l4Rules);
   const certificates = buildManagedCertificateBundleForAgent(agent.id, relayListeners);
   const certificatePolicies = buildManagedCertificatePolicyForAgent(agent.id, relayListeners);
@@ -3708,6 +3706,12 @@ function loadNormalizedRulesForAgent(agentId) {
   return loadOrInitRules(agentId).map((rule, index) =>
     normalizeStoredRule(rule, index + 1),
   );
+}
+
+function loadNormalizedL4RulesForAgent(agentId) {
+  const rules = storage.loadL4RulesForAgent(agentId);
+  const source = Array.isArray(rules) ? rules : [];
+  return source.map((rule, index) => normalizeStoredL4Rule(rule, index + 1));
 }
 
 async function handleAgentApi(req, res) {
@@ -4464,7 +4468,7 @@ async function handleMasterApi(req, res) {
       sendJson(res, 404, errorPayload("agent not found"));
       return;
     }
-    sendJson(res, 200, { ok: true, rules: storage.loadL4RulesForAgent(agentId) });
+    sendJson(res, 200, { ok: true, rules: loadNormalizedL4RulesForAgent(agentId) });
     return;
   }
 

@@ -253,18 +253,21 @@ function assertLocalStateEquivalent(sqliteResult, jsonResult) {
 describe("Property 4: Backend compatibility (semantic consistency)", { skip: !canRunSqlite && "Prisma-backed SQLite adapter not available" }, () => {
   let sqliteStorage;
   let jsonStorage;
+  let sqliteTmpDir;
   let jsonTmpDir;
 
   beforeEach(() => {
+    sqliteTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "compat-sqlite-"));
     jsonTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "compat-json-"));
 
-    sqliteStorage = loadFreshStorage("../storage-sqlite", SQLITE_TARGET);
+    sqliteStorage = loadFreshStorage("../storage-sqlite", sqliteTmpDir);
     jsonStorage = loadFreshStorage("../storage-json", jsonTmpDir);
   });
 
   afterEach(() => {
     closeQuietly(sqliteStorage);
     closeQuietly(jsonStorage);
+    try { fs.rmSync(sqliteTmpDir, { recursive: true, force: true }); } catch (_) { /* ignore */ }
     try { fs.rmSync(jsonTmpDir, { recursive: true, force: true }); } catch (_) { /* ignore */ }
   });
 

@@ -893,6 +893,84 @@ describe("Property 1: Data round-trip consistency", { skip: !canRunSqlite && "Pr
     );
   });
 
+  it("L4 GET API normalizes stored legacy-shaped rules on read", async () => {
+    await withBackendServer(
+      {
+        env: { PANEL_ROLE: "master", PANEL_AUTO_APPLY: "0" },
+        agents: [
+          {
+            id: "l4-get-normalize-agent",
+            name: "l4-get-normalize-agent",
+            agent_token: "token-l4-get-normalize-agent",
+            capabilities: ["l4"],
+            desired_revision: 5,
+            current_revision: 5,
+          },
+        ],
+        l4RulesByAgentId: {
+          "l4-get-normalize-agent": [
+            {
+              id: 3,
+              agent_id: "l4-get-normalize-agent",
+              name: "legacy-shaped-rule",
+              protocol: "tcp",
+              listen_host: "0.0.0.0",
+              listen_port: 9500,
+              upstream_host: "legacy-a.internal",
+              upstream_port: 9501,
+              backends: [
+                {
+                  host: "legacy-a.internal",
+                  port: 9501,
+                  weight: 12,
+                  resolve: true,
+                  backup: true,
+                  max_conns: 77,
+                },
+                {
+                  host: "legacy-b.internal",
+                  port: 9502,
+                  weight: 3,
+                },
+              ],
+              load_balancing: {
+                strategy: "least_conn",
+                hash_key: "$remote_addr",
+                zone_size: "256k",
+              },
+              tuning: {
+                proxy_protocol: {
+                  decode: true,
+                  send: false,
+                },
+              },
+              enabled: true,
+              tags: ["legacy"],
+              revision: 3,
+            },
+          ],
+        },
+      },
+      async ({ baseUrl }) => {
+        const response = await fetch(`${baseUrl}/api/agents/l4-get-normalize-agent/l4-rules`);
+        assert.equal(response.status, 200);
+        const payload = await response.json();
+        assert.equal(payload.rules.length, 1);
+        assert.deepStrictEqual(payload.rules[0].backends, [
+          { host: "legacy-a.internal", port: 9501 },
+          { host: "legacy-b.internal", port: 9502 },
+        ]);
+        assert.deepStrictEqual(payload.rules[0].load_balancing, {
+          strategy: "round_robin",
+        });
+        assert.deepStrictEqual(payload.rules[0].tuning.proxy_protocol, {
+          decode: true,
+          send: false,
+        });
+      },
+    );
+  });
+
   it("L4 API rejects UDP rules that set tuning.proxy_protocol", async () => {
     await withBackendServer(
       {
