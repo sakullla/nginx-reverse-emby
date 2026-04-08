@@ -256,6 +256,32 @@ func TestRelayRuntimeManagerPreservesRunningServerOnMissingCertificateReconfigur
 	waitForPortState(t, listenPort, false)
 }
 
+func TestApplyRelayListenersAcceptsAutoDerivedPinAndCA(t *testing.T) {
+	provider := &testRelayTLSProvider{
+		certificates: map[int]tls.Certificate{
+			1: mustIssueTestTLSCertificate(t),
+		},
+	}
+	manager := newRelayRuntimeManager(provider)
+	ctx := context.Background()
+	listenPort := pickFreeTCPPort(t)
+
+	listener := runtimeTestRelayListener(listenPort, 1)
+	listener.TLSMode = "pin_and_ca"
+	listener.TrustedCACertificateIDs = []int{101}
+	listener.AllowSelfSigned = true
+
+	if err := manager.Apply(ctx, []model.RelayListener{listener}); err != nil {
+		t.Fatalf("failed to apply auto-derived relay listener: %v", err)
+	}
+	waitForPortState(t, listenPort, true)
+
+	if err := manager.Close(); err != nil {
+		t.Fatalf("failed to close relay manager: %v", err)
+	}
+	waitForPortState(t, listenPort, false)
+}
+
 func runtimeTestHTTPRule(port int, backendURL string) model.HTTPRule {
 	return model.HTTPRule{
 		FrontendURL: fmt.Sprintf("http://edge.example.test:%d", port),

@@ -356,6 +356,28 @@ func TestPinAndCAVerificationRequiresBoth(t *testing.T) {
 	}
 }
 
+func TestPinAndCAVerificationWorksWithDerivedRelayMaterial(t *testing.T) {
+	backendAddr, stopBackend := startTCPEchoServer(t)
+	defer stopBackend()
+
+	provider := newFakeTLSMaterialProvider()
+	listener, hop := newRelayEndpoint(t, provider, 1, "relay-derived", "pin_and_ca", true, true)
+
+	server, err := Start(context.Background(), []Listener{listener}, provider)
+	if err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+	defer server.Close()
+
+	conn, err := Dial(context.Background(), "tcp", backendAddr, []Hop{hop}, provider)
+	if err != nil {
+		t.Fatalf("expected derived pin_and_ca verification to succeed: %v", err)
+	}
+	defer conn.Close()
+
+	assertRoundTrip(t, conn, []byte("derived-pin-and-ca"))
+}
+
 func TestPinOrCAVerificationAcceptsEither(t *testing.T) {
 	backendAddr, stopBackend := startTCPEchoServer(t)
 	defer stopBackend()
