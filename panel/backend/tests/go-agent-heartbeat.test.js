@@ -256,6 +256,8 @@ describe("Go agent heartbeat API", () => {
             id: 9,
             frontend_url: "http://edge-a.example.com",
             backend_url: "http://127.0.0.1:8096",
+            backends: [{ url: "http://127.0.0.1:8096" }],
+            load_balancing: { strategy: "round_robin" },
             enabled: true,
             tags: [],
             proxy_redirect: true,

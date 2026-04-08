@@ -511,22 +511,30 @@ function normalizeRulePayload(body, fallback = {}, suggestedId = null) {
     body.frontend_url !== undefined
       ? String(body.frontend_url).trim()
       : fallback.frontend_url;
+  const hasFallbackBackends = Array.isArray(fallback.backends) && fallback.backends.length > 0;
+  const fallbackFirstBackendUrl = hasFallbackBackends
+    ? String(fallback.backends[0]?.url || "").trim()
+    : String(fallback.backend_url || "").trim();
+  const fallbackIsMultiBackend = hasFallbackBackends && fallback.backends.length > 1;
   let backendSource;
   if (Array.isArray(body.backends)) {
     if (body.backends.length > 0) {
       backendSource = body.backends;
     } else if (body.backend_url !== undefined) {
       backendSource = [{ url: body.backend_url }];
-    } else if (Array.isArray(fallback.backends) && fallback.backends.length > 0) {
+    } else if (hasFallbackBackends) {
       backendSource = fallback.backends;
     } else {
       backendSource = [{ url: fallback.backend_url }];
     }
-  } else if (Array.isArray(fallback.backends) && fallback.backends.length > 0) {
-    backendSource = fallback.backends;
   } else if (body.backend_url !== undefined) {
-    backendSource = [{ url: body.backend_url }];
-  } else if (Array.isArray(fallback.backends)) {
+    const requestedBackendUrl = String(body.backend_url).trim();
+    const backendUrlChanged = requestedBackendUrl !== fallbackFirstBackendUrl;
+    const shouldForceSingleBackend = backendUrlChanged || !fallbackIsMultiBackend;
+    backendSource = shouldForceSingleBackend
+      ? [{ url: requestedBackendUrl }]
+      : fallback.backends;
+  } else if (hasFallbackBackends) {
     backendSource = fallback.backends;
   } else {
     backendSource = [{ url: fallback.backend_url }];
