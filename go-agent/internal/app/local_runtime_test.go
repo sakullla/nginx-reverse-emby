@@ -1,13 +1,17 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"fmt"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
@@ -16,6 +20,7 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 )
 
 func TestL4RuntimeManagerPreservesRunningServerOnInvalidReconfigure(t *testing.T) {
@@ -256,6 +261,58 @@ func TestRelayRuntimeManagerPreservesRunningServerOnMissingCertificateReconfigur
 	waitForPortState(t, listenPort, false)
 }
 
+func TestApplyRelayListenersAcceptsAutoDerivedPinAndCA(t *testing.T) {
+	backendAddr, stopBackend := startRuntimeTestTCPEchoServer(t)
+	defer stopBackend()
+
+	certificateID := 1
+	caID := 101
+	cert, parsed := mustIssueParsedTestTLSCertificate(t)
+	provider := &testRelayTLSProvider{
+		certificates: map[int]tls.Certificate{
+			certificateID: cert,
+		},
+		caCertificates: map[int][]*x509.Certificate{
+			caID: {parsed},
+		},
+	}
+	manager := newRelayRuntimeManager(provider)
+	ctx := context.Background()
+	listenPort := pickFreeTCPPort(t)
+
+	listener := runtimeTestRelayListener(listenPort, certificateID)
+	listener.TLSMode = "pin_and_ca"
+	listener.PinSet = []model.RelayPin{{
+		Type:  "spki_sha256",
+		Value: runtimeTestSPKIPin(t, parsed),
+	}}
+	listener.TrustedCACertificateIDs = []int{caID}
+	listener.AllowSelfSigned = true
+
+	if err := manager.Apply(ctx, []model.RelayListener{listener}); err != nil {
+		t.Fatalf("failed to apply auto-derived relay listener: %v", err)
+	}
+	waitForPortState(t, listenPort, true)
+
+	hop := relay.Hop{
+		Address:  fmt.Sprintf("%s:%d", listener.ListenHost, listener.ListenPort),
+		Listener: listener,
+	}
+	conn, err := relay.Dial(ctx, "tcp", backendAddr, []relay.Hop{hop}, provider)
+	if err != nil {
+		t.Fatalf("failed to dial through applied relay listener: %v", err)
+	}
+	runtimeTestAssertRoundTrip(t, conn, []byte("auto-derived-relay"))
+	if err := conn.Close(); err != nil {
+		t.Fatalf("failed to close relay connection: %v", err)
+	}
+
+	if err := manager.Close(); err != nil {
+		t.Fatalf("failed to close relay manager: %v", err)
+	}
+	waitForPortState(t, listenPort, false)
+}
+
 func runtimeTestHTTPRule(port int, backendURL string) model.HTTPRule {
 	return model.HTTPRule{
 		FrontendURL: fmt.Sprintf("http://edge.example.test:%d", port),
@@ -283,7 +340,8 @@ func runtimeTestRelayListener(port int, certificateID int) model.RelayListener {
 }
 
 type testRelayTLSProvider struct {
-	certificates map[int]tls.Certificate
+	certificates   map[int]tls.Certificate
+	caCertificates map[int][]*x509.Certificate
 }
 
 func (p *testRelayTLSProvider) ServerCertificate(_ context.Context, certificateID int) (*tls.Certificate, error) {
@@ -295,8 +353,20 @@ func (p *testRelayTLSProvider) ServerCertificate(_ context.Context, certificateI
 	return &copyCert, nil
 }
 
-func (p *testRelayTLSProvider) TrustedCAPool(_ context.Context, _ []int) (*x509.CertPool, error) {
-	return x509.NewCertPool(), nil
+func (p *testRelayTLSProvider) TrustedCAPool(_ context.Context, ids []int) (*x509.CertPool, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	pool := x509.NewCertPool()
+	for _, id := range ids {
+		for _, cert := range p.caCertificates[id] {
+			pool.AddCert(cert)
+		}
+	}
+	if len(pool.Subjects()) == 0 {
+		return nil, nil
+	}
+	return pool, nil
 }
 
 type testHTTPRuntimeTLSProvider struct {
@@ -313,6 +383,13 @@ func (p *testHTTPRuntimeTLSProvider) ServerCertificateForHost(_ context.Context,
 }
 
 func mustIssueTestTLSCertificate(t *testing.T) tls.Certificate {
+	t.Helper()
+
+	cert, _ := mustIssueParsedTestTLSCertificate(t)
+	return cert
+}
+
+func mustIssueParsedTestTLSCertificate(t *testing.T) (tls.Certificate, *x509.Certificate) {
 	t.Helper()
 
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -335,12 +412,16 @@ func mustIssueTestTLSCertificate(t *testing.T) tls.Certificate {
 	if err != nil {
 		t.Fatalf("failed to create certificate: %v", err)
 	}
+	parsed, err := x509.ParseCertificate(der)
+	if err != nil {
+		t.Fatalf("failed to parse certificate: %v", err)
+	}
 	cert := tls.Certificate{
 		Certificate: [][]byte{der},
 		PrivateKey:  privateKey,
-		Leaf:        template,
+		Leaf:        parsed,
 	}
-	return cert
+	return cert, parsed
 }
 
 func pickFreeTCPPort(t *testing.T) int {
@@ -399,4 +480,57 @@ func assertHTTPRuntimeStatus(t *testing.T, port int, wantStatus int) {
 	}
 
 	t.Fatalf("timed out waiting for http runtime on port %d to return %d", port, wantStatus)
+}
+
+func runtimeTestSPKIPin(t *testing.T, cert *x509.Certificate) string {
+	t.Helper()
+
+	sum := sha256.Sum256(cert.RawSubjectPublicKeyInfo)
+	return base64.StdEncoding.EncodeToString(sum[:])
+}
+
+func startRuntimeTestTCPEchoServer(t *testing.T) (string, func()) {
+	t.Helper()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to start tcp echo server: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				_, _ = io.Copy(c, c)
+			}(conn)
+		}
+	}()
+
+	return ln.Addr().String(), func() {
+		_ = ln.Close()
+		<-done
+	}
+}
+
+func runtimeTestAssertRoundTrip(t *testing.T, conn net.Conn, payload []byte) {
+	t.Helper()
+
+	if _, err := conn.Write(payload); err != nil {
+		t.Fatalf("failed to write payload: %v", err)
+	}
+
+	reply := make([]byte, len(payload))
+	if _, err := io.ReadFull(conn, reply); err != nil {
+		t.Fatalf("failed to read payload: %v", err)
+	}
+
+	if !bytes.Equal(reply, payload) {
+		t.Fatalf("payload mismatch: got %q want %q", reply, payload)
+	}
 }

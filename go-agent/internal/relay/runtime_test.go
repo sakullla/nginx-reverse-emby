@@ -356,6 +356,61 @@ func TestPinAndCAVerificationRequiresBoth(t *testing.T) {
 	}
 }
 
+func TestPinAndCAVerificationWorksWithDerivedRelayMaterial(t *testing.T) {
+	backendAddr, stopBackend := startTCPEchoServer(t)
+	defer stopBackend()
+
+	provider := newFakeTLSMaterialProvider()
+	certificateID := 10
+	caID := 100
+	cert, parsed := newServerCertificate(t, certificateOptions{
+		commonName: "127.0.0.1",
+		ipAddrs:    []net.IP{net.ParseIP("127.0.0.1")},
+		dnsNames:   []string{"localhost"},
+	})
+	derivedPin := spkiPin(t, parsed)
+
+	provider.mu.Lock()
+	provider.serverCerts[certificateID] = cert
+	provider.caCerts[caID] = []*x509.Certificate{parsed}
+	provider.mu.Unlock()
+
+	listener := Listener{
+		ID:                      1,
+		AgentID:                 "agent-1",
+		Name:                    "relay-derived",
+		ListenHost:              "127.0.0.1",
+		ListenPort:              pickFreeTCPPort(t),
+		Enabled:                 true,
+		CertificateID:           &certificateID,
+		TLSMode:                 "pin_and_ca",
+		PinSet:                  []model.RelayPin{{Type: "spki_sha256", Value: derivedPin}},
+		TrustedCACertificateIDs: []int{caID},
+		AllowSelfSigned:         true,
+		Tags:                    []string{"relay"},
+		Revision:                1,
+	}
+	hop := Hop{
+		Address:    net.JoinHostPort(listener.ListenHost, fmt.Sprintf("%d", listener.ListenPort)),
+		Listener:   listener,
+		ServerName: "127.0.0.1",
+	}
+
+	server, err := Start(context.Background(), []Listener{listener}, provider)
+	if err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+	defer server.Close()
+
+	conn, err := Dial(context.Background(), "tcp", backendAddr, []Hop{hop}, provider)
+	if err != nil {
+		t.Fatalf("expected derived pin_and_ca verification to succeed: %v", err)
+	}
+	defer conn.Close()
+
+	assertRoundTrip(t, conn, []byte("derived-pin-and-ca"))
+}
+
 func TestPinOrCAVerificationAcceptsEither(t *testing.T) {
 	backendAddr, stopBackend := startTCPEchoServer(t)
 	defer stopBackend()

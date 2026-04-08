@@ -2,6 +2,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
+const crypto = require("node:crypto");
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const {
@@ -11,6 +12,22 @@ const {
   TEST_CA_CHAIN_PEM,
   TEST_SERVER_CHAIN_PEM,
 } = require("./helpers");
+
+function computeSpkiSha256(certPem) {
+  const key = crypto.createPublicKey(certPem);
+  const der = key.export({ type: "spki", format: "der" });
+  return crypto.createHash("sha256").update(der).digest("base64");
+}
+
+async function jsonRequest(baseUrl, method, path, body) {
+  const response = await fetch(`${baseUrl}${path}`, {
+    method,
+    headers: { "Content-Type": "application/json" },
+    body: body === undefined ? undefined : JSON.stringify(body),
+  });
+  const payload = await response.json();
+  return { status: response.status, payload };
+}
 
 describe("Go agent heartbeat API", () => {
   it("returns relay listeners and platform-matched version sync payload fields", async () => {
@@ -258,7 +275,7 @@ describe("Go agent heartbeat API", () => {
     );
   });
 
-  it("syncs auto-derived relay trust material for relay-chain listeners", async () => {
+  it("syncs auto-derived relay listener trust metadata", async () => {
     await withBackendServer(
       {
         env: { PANEL_ROLE: "master" },
@@ -276,18 +293,23 @@ describe("Go agent heartbeat API", () => {
         ],
       },
       async ({ baseUrl }) => {
-        await fetch(`${baseUrl}/api/agents/remote-agent-a/relay-listeners`, {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({
-            name: "relay-a",
-            listen_host: "relay-a.example.com",
+        const create = await jsonRequest(
+          baseUrl,
+          "POST",
+          "/api/agents/remote-agent-a/relay-listeners",
+          {
+            name: "relay-auto",
+            listen_host: "relay-auto.example.com",
             listen_port: 7443,
             enabled: true,
             certificate_source: "auto_relay_ca",
             trust_mode_source: "auto",
-          }),
-        });
+          },
+        );
+        assert.equal(create.status, 201);
+        const listenerId = create.payload.listener.id;
+        const relayCAId = create.payload.listener.trusted_ca_certificate_ids[0];
+        assert.ok(Number.isInteger(relayCAId));
 
         const heartbeat = await fetch(`${baseUrl}/api/agents/heartbeat`, {
           method: "POST",
@@ -300,9 +322,45 @@ describe("Go agent heartbeat API", () => {
 
         assert.equal(heartbeat.status, 200);
         const payload = await heartbeat.json();
-        assert.equal(payload.sync.relay_listeners[0].tls_mode, "pin_and_ca");
-        assert.equal(payload.sync.relay_listeners[0].pin_set.length, 1);
-        assert.ok(payload.sync.relay_listeners[0].trusted_ca_certificate_ids.length >= 1);
+        const syncedListener = payload.sync.relay_listeners.find(
+          (listener) => listener.id === listenerId,
+        );
+        assert.ok(syncedListener);
+        assert.equal(syncedListener.tls_mode, "pin_and_ca");
+        assert.equal(syncedListener.pin_set.length, 1);
+        assert.equal(syncedListener.pin_set[0].type, "spki_sha256");
+        assert.match(syncedListener.pin_set[0].value, /^[A-Za-z0-9+/=]+$/);
+        assert.ok(syncedListener.trusted_ca_certificate_ids.includes(relayCAId));
+
+        const caPolicy = payload.sync.certificate_policies.find((policy) => policy.id === relayCAId);
+        assert.ok(caPolicy);
+        assert.equal(caPolicy.usage, "relay_ca");
+        assert.equal(caPolicy.certificate_type, "internal_ca");
+
+        assert.ok(Array.isArray(payload.sync.certificates));
+        const caMaterial = payload.sync.certificates.find((cert) => cert.id === relayCAId);
+        assert.ok(caMaterial);
+        assert.match(caMaterial.cert_pem, /BEGIN CERTIFICATE/);
+        assert.match(caMaterial.key_pem, /BEGIN [A-Z ]*PRIVATE KEY/);
+
+        const listenerMaterial = payload.sync.certificates.find(
+          (cert) => cert.id === create.payload.listener.certificate_id,
+        );
+        assert.ok(listenerMaterial);
+        assert.match(listenerMaterial.cert_pem, /BEGIN CERTIFICATE/);
+        assert.match(listenerMaterial.key_pem, /BEGIN [A-Z ]*PRIVATE KEY/);
+        assert.notEqual(listenerMaterial.cert_pem, caMaterial.cert_pem);
+        assert.notEqual(listenerMaterial.key_pem, caMaterial.key_pem);
+
+        const relayCACert = new crypto.X509Certificate(caMaterial.cert_pem);
+        const listenerLeafCert = new crypto.X509Certificate(listenerMaterial.cert_pem);
+        assert.notEqual(listenerLeafCert.subject, relayCACert.subject);
+        assert.equal(listenerLeafCert.verify(relayCACert.publicKey), true);
+
+        const expectedLeafPin = computeSpkiSha256(listenerMaterial.cert_pem);
+        const relayCAPin = computeSpkiSha256(caMaterial.cert_pem);
+        assert.equal(syncedListener.pin_set[0].value, expectedLeafPin);
+        assert.notEqual(syncedListener.pin_set[0].value, relayCAPin);
       },
     );
   });
@@ -513,7 +571,7 @@ describe("Go agent heartbeat API", () => {
             enabled: true,
             scope: "domain",
             issuer_mode: "local_http01",
-            usage: "relay_ca",
+            usage: "relay_tunnel",
             certificate_type: "internal_ca",
             self_signed: true,
             target_agent_ids: ["remote-agent-5"],
@@ -585,10 +643,16 @@ describe("Go agent heartbeat API", () => {
         assert.equal(payload.sync.l4_rules[0].listen_port, 9000);
         assert.ok(Array.isArray(payload.sync.relay_listeners));
         assert.ok(Array.isArray(payload.sync.certificates));
-        assert.equal(payload.sync.certificates[0].domain, "sync.example.com");
-        assert.equal(payload.sync.certificates[0].cert_pem, "CERTIFICATE");
-        assert.equal(payload.sync.certificates[0].key_pem, "PRIVATEKEY");
-        assert.deepEqual(payload.sync.certificates[1], {
+        const relayCaBundle = payload.sync.certificates.find((cert) => cert.id === 21);
+        assert.deepEqual(relayCaBundle, {
+          id: 21,
+          domain: "sync.example.com",
+          revision: 3,
+          cert_pem: "CERTIFICATE",
+          key_pem: "PRIVATEKEY",
+        });
+        const ipBundle = payload.sync.certificates.find((cert) => cert.id === 22);
+        assert.deepEqual(ipBundle, {
           id: 22,
           domain: "192.0.2.44",
           revision: 4,
@@ -596,7 +660,8 @@ describe("Go agent heartbeat API", () => {
           key_pem: "IP_PRIVATEKEY",
         });
         assert.ok(Array.isArray(payload.sync.certificate_policies));
-        assert.deepEqual(payload.sync.certificate_policies[0], {
+        const relayCaPolicy = payload.sync.certificate_policies.find((policy) => policy.id === 21);
+        assert.deepEqual(relayCaPolicy, {
           id: 21,
           domain: "sync.example.com",
           enabled: true,
@@ -616,11 +681,12 @@ describe("Go agent heartbeat API", () => {
           },
           tags: [],
           revision: 3,
-          usage: "relay_ca",
+          usage: "relay_tunnel",
           certificate_type: "internal_ca",
           self_signed: true,
         });
-        assert.deepEqual(payload.sync.certificate_policies[1], {
+        const ipPolicy = payload.sync.certificate_policies.find((policy) => policy.id === 22);
+        assert.deepEqual(ipPolicy, {
           id: 22,
           domain: "192.0.2.44",
           enabled: true,
@@ -1028,7 +1094,7 @@ describe("Go agent heartbeat API", () => {
             enabled: true,
             scope: "domain",
             issuer_mode: "local_http01",
-            usage: "relay_ca",
+            usage: "relay_tunnel",
             certificate_type: "internal_ca",
             self_signed: true,
           }),

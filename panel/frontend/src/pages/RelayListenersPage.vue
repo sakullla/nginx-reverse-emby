@@ -3,7 +3,7 @@
     <div class='relay-page__header'>
       <div>
         <h1 class='relay-page__title'>Relay 监听器</h1>
-        <p v-if='agentId' class='relay-page__subtitle'>{{ listeners.length }} 个监听器 · 默认自动信任</p>
+        <p v-if='agentId' class='relay-page__subtitle'>{{ listeners.length }} 个监听器 · 默认自动签发证书 · 自动 Relay CA + Pin 信任</p>
         <p v-else class='relay-page__subtitle'>请先选择一个节点</p>
       </div>
       <button v-if='agentId' class='btn btn-primary' @click='showAddForm = true'>新建监听器</button>
@@ -67,6 +67,7 @@
           <div class='modal__header'>确认删除</div>
           <div class='modal__body'>
             <p>确定删除监听器 <strong>{{ deletingListener.name }}</strong> 吗？</p>
+            <p class='relay-page__warning'>若该监听器已被规则引用，删除会被阻止。</p>
           </div>
           <div class='modal__footer'>
             <button class='btn btn-secondary' @click='deletingListener = null'>取消</button>
@@ -108,7 +109,8 @@ const deletingListener = ref(null)
 const deleteError = ref('')
 
 function trustSummary(listener) {
-  if (listener.tls_mode === 'pin_and_ca') return '自动（Pin + CA）'
+  if (listener.trust_mode_source === 'auto') return '自动 Relay CA + Pin'
+  if (listener.tls_mode === 'pin_and_ca') return 'Pin + CA'
   if (listener.tls_mode === 'pin_only') return '仅 Pin'
   if (listener.tls_mode === 'ca_only') return '仅 CA'
   return '兼容模式'
@@ -180,6 +182,12 @@ function confirmDelete() {
   background: var(--color-danger-50);
   color: var(--color-danger);
   font-size: var(--text-sm);
+}
+
+.relay-page__warning {
+  margin: var(--space-3) 0 0;
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
 }
 
 .relay-grid {

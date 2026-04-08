@@ -74,7 +74,12 @@
                 <path d='M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z' />
               </svg>
             </button>
-            <button class='cert-card__action cert-card__action--delete' title='删除' @click='startDelete(cert)'>
+            <button
+              v-if='!isSystemRelayCA(cert)'
+              class='cert-card__action cert-card__action--delete'
+              title='删除'
+              @click='startDelete(cert)'
+            >
               <svg width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'>
                 <polyline points='3 6 5 6 21 6' />
                 <path d='M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2' />
@@ -86,12 +91,13 @@
         <div class='cert-card__domain'>{{ cert.domain }}</div>
         <div class='cert-card__meta'>
           <span class='cert-card__scope'>{{ getCertificateUsageLabel(cert.usage) }}</span>
-          <span class='cert-card__issuer'>{{ getCertificateSourceLabel(cert.certificate_type) }}</span>
+          <span class='cert-card__issuer'>{{ getCertificateIssuerLabel(cert) }}</span>
           <span class='cert-card__issuer'>{{ cert.scope === 'ip' ? 'IP 证书' : '域名证书' }}</span>
           <span v-if='cert.last_issue_at' class='cert-card__date'>{{ formatDate(cert.last_issue_at) }}</span>
         </div>
         <p v-if='cert.last_error' class='cert-card__error'>{{ cert.last_error }}</p>
         <div class='cert-card__tags'>
+          <span v-if='isSystemRelayCA(cert)' class='tag tag--info'>系统 Relay CA</span>
           <span v-if='cert.self_signed' class='tag tag--warn'>自签</span>
           <span v-for='tag in cert.tags || []' :key='tag' class='tag'>{{ tag }}</span>
         </div>
@@ -167,7 +173,9 @@ import { useCertificates, useDeleteCertificate, useIssueCertificate } from '../h
 import CertificateForm from '../components/CertificateForm.vue'
 import {
   getCertificateSourceLabel,
-  getCertificateUsageLabel
+  getCertificateUsageLabel,
+  isSystemManagedRelayListenerCertificate,
+  isSystemRelayCA
 } from '../utils/certificateTemplates'
 
 const route = useRoute()
@@ -238,6 +246,13 @@ function getStatusLabel(cert) {
   return '未知'
 }
 
+function getCertificateIssuerLabel(cert) {
+  if (isSystemManagedRelayListenerCertificate(cert)) {
+    return '系统自动签发'
+  }
+  return getCertificateSourceLabel(cert?.certificate_type)
+}
+
 function issueCert(cert) {
   issueCertificate.mutate(cert.id)
 }
@@ -247,6 +262,9 @@ function startEdit(cert) {
 }
 
 function startDelete(cert) {
+  if (isSystemRelayCA(cert)) {
+    return
+  }
   deletingCert.value = cert
 }
 
@@ -345,6 +363,7 @@ function confirmDelete() {
 .cert-card__date { font-size: 0.75rem; color: var(--color-text-tertiary); }
 .cert-card__tags { display: flex; gap: 0.25rem; flex-wrap: wrap; }
 .tag { font-size: 0.75rem; padding: 2px 8px; background: var(--color-primary-subtle); color: var(--color-primary); border-radius: var(--radius-full); font-weight: 500; }
+.tag--info { background: var(--color-primary-subtle); color: var(--color-primary); }
 .tag--warn { background: var(--color-warning-50); color: var(--color-warning); }
 
 .cert-card__status { font-size: 0.75rem; font-weight: 600; padding: 2px 8px; border-radius: var(--radius-full); }

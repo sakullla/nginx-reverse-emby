@@ -92,7 +92,8 @@ function normalizeListenPort(value) {
   return parsed;
 }
 
-function normalizeRelayListenerPayload(payload) {
+function normalizeRelayListenerPayload(payload, options = {}) {
+  const allowDraft = options && options.allowDraft === true;
   const next = ensureObject(payload, "relay listener payload");
   const normalized = {
     id: normalizeRequiredId(next.id, "id"),
@@ -115,20 +116,39 @@ function normalizeRelayListenerPayload(payload) {
     throw new TypeError("tls_mode must be pin_only, ca_only, pin_or_ca, or pin_and_ca");
   }
 
-  if (normalized.enabled && normalized.certificate_id == null) {
+  if (!allowDraft && normalized.enabled && normalized.certificate_id == null) {
     throw new TypeError("certificate_id is required when relay listener is enabled");
   }
 
-  if (
-    normalized.pin_set.length === 0 &&
-    normalized.trusted_ca_certificate_ids.length === 0
-  ) {
-    throw new TypeError("pin_set and trusted_ca_certificate_ids cannot both be empty");
+  if (!allowDraft && normalized.enabled) {
+    if (normalized.tls_mode === "pin_and_ca") {
+      if (normalized.pin_set.length === 0 || normalized.trusted_ca_certificate_ids.length === 0) {
+        throw new TypeError("pin_and_ca requires both pin_set and trusted_ca_certificate_ids");
+      }
+    } else if (normalized.tls_mode === "pin_only") {
+      if (normalized.pin_set.length === 0) {
+        throw new TypeError("pin_only requires pin_set");
+      }
+    } else if (normalized.tls_mode === "ca_only") {
+      if (normalized.trusted_ca_certificate_ids.length === 0) {
+        throw new TypeError("ca_only requires trusted_ca_certificate_ids");
+      }
+    } else if (
+      normalized.pin_set.length === 0 &&
+      normalized.trusted_ca_certificate_ids.length === 0
+    ) {
+      throw new TypeError("pin_set and trusted_ca_certificate_ids cannot both be empty");
+    }
   }
 
   return normalized;
 }
 
+function normalizeRelayListenerDraft(payload) {
+  return normalizeRelayListenerPayload(payload, { allowDraft: true });
+}
+
 module.exports = {
+  normalizeRelayListenerDraft,
   normalizeRelayListenerPayload,
 };
