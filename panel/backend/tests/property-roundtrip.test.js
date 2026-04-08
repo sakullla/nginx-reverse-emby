@@ -781,4 +781,118 @@ describe("Property 1: Data round-trip consistency", { skip: !canRunSqlite && "Pr
       assert.deepStrictEqual(singleUpdated.rule.load_balancing, { strategy: "round_robin" });
     });
   });
+
+  it("L4 API trims backend/load_balancing shape for runtime payload compatibility", async () => {
+    await withBackendServer(
+      {
+        env: { PANEL_ROLE: "master", PANEL_AUTO_APPLY: "0" },
+        agents: [
+          {
+            id: "l4-shape-agent",
+            name: "l4-shape-agent",
+            agent_token: "token-l4-shape-agent",
+            capabilities: ["l4"],
+            desired_revision: 1,
+            current_revision: 1,
+          },
+        ],
+      },
+      async ({ baseUrl }) => {
+        const response = await fetch(`${baseUrl}/api/agents/l4-shape-agent/l4-rules`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            name: "trim-shape",
+            protocol: "tcp",
+            listen_host: "0.0.0.0",
+            listen_port: 9100,
+            backends: [
+              {
+                host: "127.0.0.1",
+                port: 9101,
+                weight: 20,
+                resolve: false,
+                backup: true,
+                max_conns: 200,
+              },
+              {
+                host: "backend-b.internal",
+                port: 9102,
+                weight: 5,
+                resolve: true,
+              },
+            ],
+            load_balancing: {
+              strategy: "least_conn",
+              hash_key: "$remote_addr",
+              zone_size: "256k",
+            },
+            tuning: {
+              proxy_protocol: {
+                decode: true,
+                send: false,
+              },
+            },
+            enabled: true,
+            tags: [],
+          }),
+        });
+        assert.equal(response.status, 201);
+        const created = await response.json();
+        assert.deepStrictEqual(created.rule.backends, [
+          { host: "127.0.0.1", port: 9101 },
+          { host: "backend-b.internal", port: 9102 },
+        ]);
+        assert.deepStrictEqual(created.rule.load_balancing, {
+          strategy: "round_robin",
+        });
+        assert.deepStrictEqual(created.rule.tuning.proxy_protocol, {
+          decode: true,
+          send: false,
+        });
+      },
+    );
+  });
+
+  it("L4 API rejects UDP rules that set tuning.proxy_protocol", async () => {
+    await withBackendServer(
+      {
+        env: { PANEL_ROLE: "master", PANEL_AUTO_APPLY: "0" },
+        agents: [
+          {
+            id: "udp-proxy-protocol-agent",
+            name: "udp-proxy-protocol-agent",
+            agent_token: "token-udp-proxy-protocol-agent",
+            capabilities: ["l4"],
+            desired_revision: 1,
+            current_revision: 1,
+          },
+        ],
+      },
+      async ({ baseUrl }) => {
+        const response = await fetch(`${baseUrl}/api/agents/udp-proxy-protocol-agent/l4-rules`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            name: "udp-invalid-proxy-protocol",
+            protocol: "udp",
+            listen_host: "0.0.0.0",
+            listen_port: 9200,
+            backends: [{ host: "127.0.0.1", port: 9201 }],
+            tuning: {
+              proxy_protocol: {
+                decode: true,
+                send: true,
+              },
+            },
+            enabled: true,
+            tags: [],
+          }),
+        });
+        assert.equal(response.status, 400);
+        const payload = await response.json();
+        assert.match(payload.message, /udp.*proxy_protocol/i);
+      },
+    );
+  });
 });

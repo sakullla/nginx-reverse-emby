@@ -925,32 +925,21 @@ function normalizeL4Backends(backends, fallbackUpstreamHost, fallbackUpstreamPor
     const host = normalizeHost(b?.host || b?.address || "");
     const port = Number(b?.port) || Number(fallbackUpstreamPort) || 0;
     if (!host || !port) continue;
-    const weight = Number(b?.weight) || 1;
-    // Auto-detect resolve for domain hosts; explicit value takes precedence
-    const autoResolve = !isIpAddress(host);
-    const resolve = b?.resolve !== undefined
-      ? (b.resolve === true || String(b.resolve).toLowerCase() === "true")
-      : autoResolve;
-    const backup = b?.backup === true || String(b?.backup || "").toLowerCase() === "true";
-    const rawMaxConns = b?.max_conns !== undefined && b?.max_conns !== null && b?.max_conns !== "" ? Number(b.max_conns) : 0;
-    if (b?.max_conns !== undefined && b?.max_conns !== null && b?.max_conns !== "" && (!Number.isInteger(rawMaxConns) || rawMaxConns < 0)) {
-      throw new Error(`backends[].max_conns must be a non-negative integer, got: ${b.max_conns}`);
-    }
-    validBackends.push({ host, port, weight, resolve, backup, max_conns: rawMaxConns });
+    validBackends.push({ host, port });
   }
   return validBackends;
 }
 
 function normalizeL4LoadBalancing(lb, defaultStrategy = "round_robin") {
-  const strategy = String(lb?.strategy !== undefined ? lb.strategy : defaultStrategy).toLowerCase();
-  const validStrategies = ["round_robin", "least_conn", "random", "hash"];
-  const normalizedStrategy = validStrategies.includes(strategy) ? strategy : "round_robin";
-  const hashKey = normalizedStrategy === "hash" ? String(lb?.hash_key || "$binary_remote_addr") : undefined;
-  const zoneSize = String(lb?.zone_size || "128k");
+  const strategy = String(
+    lb?.strategy !== undefined ? lb.strategy : defaultStrategy,
+  )
+    .trim()
+    .toLowerCase();
+  const normalizedStrategy =
+    strategy === "random" || strategy === "round_robin" ? strategy : "round_robin";
   return {
     strategy: normalizedStrategy,
-    hash_key: hashKey,
-    zone_size: zoneSize,
   };
 }
 
@@ -1024,12 +1013,13 @@ function normalizeL4RulePayload(body, fallback = {}, suggestedId = null) {
     "round_robin",
   );
 
-  // Validate backup compatibility: only round_robin and least_conn support backup
-  const hasBackupBackend = backends.some((b) => b.backup === true);
-  if (hasBackupBackend && !["round_robin", "least_conn"].includes(loadBalancing.strategy)) {
-    throw new Error(
-      `backup backends are not supported with ${loadBalancing.strategy} strategy (only round_robin and least_conn)`
-    );
+  if (
+    protocol === "udp" &&
+    body?.tuning &&
+    typeof body.tuning === "object" &&
+    body.tuning.proxy_protocol !== undefined
+  ) {
+    throw new Error("udp rules do not support tuning.proxy_protocol");
   }
 
   // Normalize tuning: merge user input over defaults
@@ -3634,7 +3624,9 @@ function resolveVersionPackageForAgent(agent) {
 
 function getAgentHeartbeatResponse(agent) {
   const rules = loadNormalizedRulesForAgent(agent.id);
-  const l4Rules = storage.loadL4RulesForAgent(agent.id);
+  const l4Rules = (storage.loadL4RulesForAgent(agent.id) || []).map((rule, index) =>
+    normalizeStoredL4Rule(rule, index + 1),
+  );
   const relayListeners = loadRelayListenersForSync(agent.id, rules, l4Rules);
   const certificates = buildManagedCertificateBundleForAgent(agent.id, relayListeners);
   const certificatePolicies = buildManagedCertificatePolicyForAgent(agent.id, relayListeners);
