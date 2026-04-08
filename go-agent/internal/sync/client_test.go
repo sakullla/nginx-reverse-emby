@@ -378,3 +378,62 @@ func TestHeartbeatSyncPreservesVersionPackageMetadata(t *testing.T) {
 		t.Fatalf("unexpected version package payload: %+v", snap.VersionPackage)
 	}
 }
+
+func TestHeartbeatSyncDecodesTypedHTTPAndL4BackendFields(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(
+			w,
+			`{"sync":{"desired_version":"2.0.0","desired_revision":99,"rules":[{"frontend_url":"https://frontend.example.com","backend_url":"http://legacy.example.internal:8096","backends":[{"url":"http://10.0.0.11:8096"},{"url":"http://10.0.0.12:8096"}],"load_balancing":{"strategy":"random"}}],"l4_rules":[{"protocol":"tcp","listen_host":"0.0.0.0","listen_port":9000,"upstream_host":"legacy-upstream.internal","upstream_port":9001,"backends":[{"host":"10.0.0.21","port":9001},{"host":"10.0.0.22","port":9002}],"load_balancing":{"strategy":"round_robin"},"tuning":{"proxy_protocol":{"decode":true,"send":false}}}]}}`,
+		)
+	}))
+	defer server.Close()
+
+	client := NewClient(ClientConfig{
+		MasterURL:      server.URL,
+		AgentToken:     "token",
+		AgentID:        "node",
+		AgentName:      "local",
+		CurrentVersion: "0.1.0",
+		Platform:       "linux-amd64",
+	}, server.Client())
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	snap, err := client.Sync(ctx, SyncRequest{CurrentRevision: 42})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if len(snap.Rules) != 1 {
+		t.Fatalf("expected one http rule, got %d", len(snap.Rules))
+	}
+	if !reflect.DeepEqual(snap.Rules[0].Backends, []model.HTTPBackend{
+		{URL: "http://10.0.0.11:8096"},
+		{URL: "http://10.0.0.12:8096"},
+	}) {
+		t.Fatalf("unexpected http backends: %+v", snap.Rules[0].Backends)
+	}
+	if snap.Rules[0].LoadBalancing.Strategy != "random" {
+		t.Fatalf("unexpected http load balancing strategy: %q", snap.Rules[0].LoadBalancing.Strategy)
+	}
+
+	if len(snap.L4Rules) != 1 {
+		t.Fatalf("expected one l4 rule, got %d", len(snap.L4Rules))
+	}
+	if !reflect.DeepEqual(snap.L4Rules[0].Backends, []model.L4Backend{
+		{Host: "10.0.0.21", Port: 9001},
+		{Host: "10.0.0.22", Port: 9002},
+	}) {
+		t.Fatalf("unexpected l4 backends: %+v", snap.L4Rules[0].Backends)
+	}
+	if snap.L4Rules[0].LoadBalancing.Strategy != "round_robin" {
+		t.Fatalf("unexpected l4 load balancing strategy: %q", snap.L4Rules[0].LoadBalancing.Strategy)
+	}
+	if !snap.L4Rules[0].Tuning.ProxyProtocol.Decode {
+		t.Fatalf("expected proxy_protocol.decode=true")
+	}
+	if snap.L4Rules[0].Tuning.ProxyProtocol.Send {
+		t.Fatalf("expected proxy_protocol.send=false")
+	}
+}

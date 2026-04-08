@@ -126,6 +126,10 @@ func cloneSnapshot(snapshot model.Snapshot) model.Snapshot {
 		cloned.Rules = make([]model.HTTPRule, len(snapshot.Rules))
 		copy(cloned.Rules, snapshot.Rules)
 		for i, rule := range snapshot.Rules {
+			if rule.Backends != nil {
+				cloned.Rules[i].Backends = make([]model.HTTPBackend, len(rule.Backends))
+				copy(cloned.Rules[i].Backends, rule.Backends)
+			}
 			if rule.CustomHeaders != nil {
 				cloned.Rules[i].CustomHeaders = make([]model.HTTPHeader, len(rule.CustomHeaders))
 				copy(cloned.Rules[i].CustomHeaders, rule.CustomHeaders)
@@ -140,6 +144,10 @@ func cloneSnapshot(snapshot model.Snapshot) model.Snapshot {
 		cloned.L4Rules = make([]model.L4Rule, len(snapshot.L4Rules))
 		copy(cloned.L4Rules, snapshot.L4Rules)
 		for i, rule := range snapshot.L4Rules {
+			if rule.Backends != nil {
+				cloned.L4Rules[i].Backends = make([]model.L4Backend, len(rule.Backends))
+				copy(cloned.L4Rules[i].Backends, rule.Backends)
+			}
 			if rule.RelayChain != nil {
 				cloned.L4Rules[i].RelayChain = make([]int, len(rule.RelayChain))
 				copy(cloned.L4Rules[i].RelayChain, rule.RelayChain)
