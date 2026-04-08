@@ -18,6 +18,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -178,7 +179,7 @@ func TestPassProxyHeadersUsesIncomingScheme(t *testing.T) {
 
 	server := NewServer(listener)
 	for _, entry := range server.routes {
-		entry.proxy.Transport = backend.Client().Transport
+		entry.transport = backend.Client().Transport.(*http.Transport).Clone()
 	}
 
 	proxy := httptest.NewServer(server)
@@ -198,6 +199,99 @@ func TestPassProxyHeadersUsesIncomingScheme(t *testing.T) {
 
 	if got != "http" {
 		t.Fatalf("expected http forwarded proto, got %q", got)
+	}
+}
+
+func TestStartRetriesHTTPRequestsAcrossBackends(t *testing.T) {
+	failures := 0
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		failures++
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Fatalf("response writer does not support hijack")
+		}
+		conn, _, err := hj.Hijack()
+		if err != nil {
+			t.Fatalf("hijack failed: %v", err)
+		}
+		_ = conn.Close()
+	}))
+	defer bad.Close()
+
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer good.Close()
+
+	port := pickFreePort(t)
+	runtime, err := Start(context.Background(), []model.HTTPRule{{
+		FrontendURL: fmt.Sprintf("http://edge.example.test:%d", port),
+		BackendURL:  bad.URL,
+		Backends: []model.HTTPBackend{
+			{URL: bad.URL},
+			{URL: good.URL},
+		},
+		LoadBalancing: model.LoadBalancing{Strategy: "round_robin"},
+	}}, nil, Providers{})
+	if err != nil {
+		t.Fatalf("failed to start runtime: %v", err)
+	}
+	defer runtime.Close()
+
+	req, err := http.NewRequest(http.MethodPost, fmt.Sprintf("http://127.0.0.1:%d/retry", port), io.NopCloser(strings.NewReader("payload")))
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+	req.Host = fmt.Sprintf("edge.example.test:%d", port)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("runtime request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read body: %v", err)
+	}
+	if string(body) != "ok" || failures == 0 {
+		t.Fatalf("expected retry to healthy backend; failures=%d body=%q", failures, string(body))
+	}
+}
+
+func TestNewServerReusesSharedTransportPoolOnRouteEntries(t *testing.T) {
+	listener := model.HTTPListener{
+		Rules: []model.HTTPRule{
+			{
+				FrontendURL: "http://edge.example.test:18080",
+				BackendURL:  "http://127.0.0.1:8081",
+				Backends: []model.HTTPBackend{
+					{URL: "http://127.0.0.1:8081"},
+					{URL: "http://127.0.0.1:8082"},
+				},
+				LoadBalancing: model.LoadBalancing{Strategy: "round_robin"},
+			},
+			{
+				FrontendURL: "http://edge-two.example.test:18080",
+				BackendURL:  "http://127.0.0.1:8083",
+				Backends: []model.HTTPBackend{
+					{URL: "http://127.0.0.1:8083"},
+				},
+			},
+		},
+	}
+
+	server := NewServer(listener)
+	first := server.routes["edge.example.test"]
+	second := server.routes["edge-two.example.test"]
+	if first == nil || second == nil {
+		t.Fatalf("expected route entries for both hosts")
+	}
+	if first.transport == nil || second.transport == nil {
+		t.Fatalf("expected shared transport on route entries")
+	}
+	if first.transport != second.transport {
+		t.Fatalf("expected route entries on one server to share transport pool")
 	}
 }
 
