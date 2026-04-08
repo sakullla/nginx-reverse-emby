@@ -554,7 +554,8 @@ const mockCertsByAgent = {
   'edge-1': [
     { id: 1, domain: 'media.example.com', enabled: true, scope: 'domain', issuer_mode: 'master_cf_dns', usage: 'https', certificate_type: 'acme', self_signed: false, status: 'active', last_issue_at: new Date().toISOString(), last_error: '', tags: ['media'] },
     { id: 2, domain: 'relay-edge-1.relay.internal', enabled: true, scope: 'domain', issuer_mode: 'local_http01', usage: 'relay_tunnel', certificate_type: 'internal_ca', self_signed: false, status: 'active', last_issue_at: new Date().toISOString(), last_error: '', tags: ['relay', 'listener:2', SYSTEM_RELAY_TUNNEL_TAG] },
-    { id: 3, domain: 'relay-uploaded.example.com', enabled: true, scope: 'domain', issuer_mode: 'local_http01', usage: 'relay_tunnel', certificate_type: 'uploaded', self_signed: true, status: 'active', last_issue_at: new Date().toISOString(), last_error: '', tags: ['relay', 'uploaded'] }
+    { id: 3, domain: 'relay-uploaded.example.com', enabled: true, scope: 'domain', issuer_mode: 'local_http01', usage: 'relay_tunnel', certificate_type: 'uploaded', self_signed: true, status: 'active', last_issue_at: new Date().toISOString(), last_error: '', tags: ['relay', 'uploaded'] },
+    { id: 4, domain: '__relay-ca.internal', enabled: true, scope: 'domain', issuer_mode: 'local_http01', usage: 'relay_ca', certificate_type: 'internal_ca', self_signed: true, status: 'active', last_issue_at: new Date().toISOString(), last_error: '', tags: ['system', SYSTEM_RELAY_CA_TAG] }
   ],
   'edge-2': [
     { id: 1, domain: 'media.example.com', enabled: true, scope: 'domain', issuer_mode: 'local_http01', usage: 'mixed', certificate_type: 'acme', self_signed: false, status: 'error', last_issue_at: '', last_error: 'ACME challenge failed', tags: ['media'] }
@@ -679,16 +680,18 @@ const mockRelayListenersByAgent = {
     {
       id: 1,
       agent_id: 'local',
-      name: '本地中继',
-      listen_host: '0.0.0.0',
-      listen_port: 9443,
+      name: 'relay-a',
+      listen_host: 'relay-a.example.com',
+      listen_port: 7443,
       enabled: true,
-      certificate_id: 1,
-      tls_mode: 'pin_or_ca',
-      pin_set: [{ type: 'spki_sha256', value: 'local-pin-1' }],
-      trusted_ca_certificate_ids: [],
-      allow_self_signed: false,
-      tags: ['relay', 'local'],
+      certificate_id: 3,
+      certificate_source: 'auto_relay_ca',
+      trust_mode_source: 'auto',
+      tls_mode: 'pin_and_ca',
+      pin_set: [{ type: 'spki_sha256', value: 'derived-pin-a' }],
+      trusted_ca_certificate_ids: [2],
+      allow_self_signed: true,
+      tags: ['relay', 'shared'],
       revision: 1
     }
   ],
@@ -696,16 +699,18 @@ const mockRelayListenersByAgent = {
     {
       id: 2,
       agent_id: 'edge-1',
-      name: '边缘中继',
-      listen_host: '0.0.0.0',
-      listen_port: 10443,
+      name: 'relay-b',
+      listen_host: 'relay-b.example.com',
+      listen_port: 8443,
       enabled: true,
-      certificate_id: 1,
-      tls_mode: 'ca_only',
-      pin_set: [{ type: 'spki_sha256', value: 'edge-pin-1' }],
-      trusted_ca_certificate_ids: [1],
-      allow_self_signed: false,
-      tags: ['relay', 'edge'],
+      certificate_id: 2,
+      certificate_source: 'auto_relay_ca',
+      trust_mode_source: 'auto',
+      tls_mode: 'pin_and_ca',
+      pin_set: [{ type: 'spki_sha256', value: 'derived-pin-b' }],
+      trusted_ca_certificate_ids: [4],
+      allow_self_signed: true,
+      tags: ['relay', 'shared'],
       revision: 3
     }
   ]
@@ -713,7 +718,43 @@ const mockRelayListenersByAgent = {
 
 let mockRelayListenerIdCounter = 2
 
-function normalizeMockRelayListenerPayload(payload = {}) {
+function findMockRelayListenerCertificate(agentId, certificateId) {
+  const certificates = mockCertsByAgent[agentId] || []
+  if (certificateId != null) {
+    const selected = certificates.find((cert) => Number(cert.id) === Number(certificateId))
+    if (selected) return selected
+  }
+  return certificates.find((cert) => cert.usage === 'relay_tunnel' && cert.certificate_type === 'internal_ca')
+    || certificates.find((cert) => cert.usage === 'relay_tunnel')
+    || certificates[0]
+    || null
+}
+
+function findMockRelayCA(agentId) {
+  const certificates = mockCertsByAgent[agentId] || []
+  return certificates.find((cert) => isMockSystemRelayCA(cert) || cert.usage === 'relay_ca')
+    || (mockCertsByAgent.local || []).find((cert) => isMockSystemRelayCA(cert) || cert.usage === 'relay_ca')
+    || null
+}
+
+function buildMockAutoPin(certificate) {
+  const source = String(certificate?.domain || certificate?.id || 'relay').toLowerCase()
+  const suffix = source
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .split('-')
+    .filter(Boolean)
+    .slice(-2)
+    .join('-') || 'relay'
+  return [{
+    type: 'spki_sha256',
+    value: `derived-pin-${suffix}`
+  }]
+}
+
+function normalizeMockRelayListenerPayload(agentId, payload = {}) {
+  const certificateSource = payload.certificate_source === 'existing_certificate' ? 'existing_certificate' : 'auto_relay_ca'
+  const trustModeSource = payload.trust_mode_source === 'custom' ? 'custom' : 'auto'
   const pinSet = Array.isArray(payload.pin_set)
     ? payload.pin_set
       .map((entry) => ({
@@ -727,22 +768,51 @@ function normalizeMockRelayListenerPayload(payload = {}) {
       .map((id) => Number(id))
       .filter((id) => Number.isInteger(id) && id > 0))]
     : []
-  if (!pinSet.length && !trustedCa.length) {
-    throw new Error('pin_set and trusted_ca_certificate_ids cannot both be empty')
-  }
-  const tlsMode = String(payload.tls_mode || 'pin_or_ca')
+  const certificate = certificateSource === 'existing_certificate' && payload.certificate_id == null
+    ? null
+    : findMockRelayListenerCertificate(agentId, payload.certificate_id)
+  const relayCA = findMockRelayCA(agentId)
+  const certificateId = certificate
+    ? Number(certificate.id)
+    : (payload.certificate_id == null ? null : Number(payload.certificate_id))
+  const tlsMode = String(payload.tls_mode || 'pin_and_ca')
   if (!['pin_only', 'ca_only', 'pin_or_ca', 'pin_and_ca'].includes(tlsMode)) {
     throw new Error('tls_mode must be pin_only, ca_only, pin_or_ca, or pin_and_ca')
   }
-  if (payload.enabled !== false && payload.certificate_id == null) {
+  if (payload.enabled !== false && certificateSource === 'existing_certificate' && certificateId == null) {
     throw new Error('certificate_id is required when relay listener is enabled')
   }
+  if (trustModeSource === 'custom') {
+    if (tlsMode === 'pin_only' && !pinSet.length) {
+      throw new Error('pin_only requires pin_set')
+    }
+    if (tlsMode === 'ca_only' && !trustedCa.length) {
+      throw new Error('ca_only requires trusted_ca_certificate_ids')
+    }
+    if (tlsMode === 'pin_and_ca' && (!pinSet.length || !trustedCa.length)) {
+      throw new Error('pin_and_ca requires both pin_set and trusted_ca_certificate_ids')
+    }
+    if (tlsMode === 'pin_or_ca' && !pinSet.length && !trustedCa.length) {
+      throw new Error('pin_or_ca requires pin_set or trusted_ca_certificate_ids')
+    }
+  }
+  const derivedPinSet = trustModeSource === 'auto'
+    ? buildMockAutoPin(certificate)
+    : pinSet
+  const derivedTrustedCa = trustModeSource === 'auto'
+    ? (relayCA ? [Number(relayCA.id)] : [])
+    : trustedCa
   return {
     ...payload,
-    certificate_id: payload.certificate_id == null ? null : Number(payload.certificate_id),
-    pin_set: pinSet,
-    trusted_ca_certificate_ids: trustedCa,
-    tls_mode: tlsMode
+    certificate_id: certificateId,
+    certificate_source: certificateSource,
+    trust_mode_source: trustModeSource,
+    pin_set: derivedPinSet,
+    trusted_ca_certificate_ids: derivedTrustedCa,
+    tls_mode: trustModeSource === 'auto' ? 'pin_and_ca' : tlsMode,
+    allow_self_signed: trustModeSource === 'auto'
+      ? true
+      : payload.allow_self_signed === true
   }
 }
 
@@ -804,7 +874,7 @@ export async function createRelayListener(agentId, payload) {
   if (isDev) {
     await sleep()
     ensureDevRelayAgentExists(agentId)
-    const normalizedPayload = normalizeMockRelayListenerPayload(payload)
+    const normalizedPayload = normalizeMockRelayListenerPayload(agentId, payload)
     const item = {
       id: ++mockRelayListenerIdCounter,
       agent_id: agentId,
@@ -830,7 +900,7 @@ export async function updateRelayListener(agentId, id, payload) {
     const list = mockRelayListenersByAgent[agentId] || []
     const idx = list.findIndex((item) => String(item.id) === String(id))
     if (idx === -1) return null
-    const normalizedPayload = normalizeMockRelayListenerPayload({ ...list[idx], ...payload })
+    const normalizedPayload = normalizeMockRelayListenerPayload(agentId, { ...list[idx], ...payload })
     list[idx] = { ...list[idx], ...normalizedPayload }
     return list[idx]
   }

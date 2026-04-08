@@ -3,19 +3,34 @@
     <div class='form-row'>
       <div class='form-group'>
         <label class='form-label form-label--required'>名称</label>
-        <input v-model='form.name' class='input' :class="{ 'input--error': errors.name }" placeholder='hk-ingress-01'>
+        <input v-model='form.name' class='input' :class="{ 'input--error': errors.name }" placeholder='relay-a'>
         <p v-if='errors.name' class='form-error'>{{ errors.name }}</p>
       </div>
       <div class='form-group'>
-        <label class='form-label form-label--required'>本监听器对外证书</label>
-        <select v-model='form.certificate_id' class='input' :class="{ 'input--error': errors.certificate_id }">
-          <option :value='null'>请选择证书</option>
-          <option v-for='cert in certificates' :key='cert.id' :value='cert.id'>
-            #{{ cert.id }} {{ cert.domain }}
-          </option>
+        <label class='form-label'>监听证书来源</label>
+        <select v-model='form.certificate_source' class='input'>
+          <option value='auto_relay_ca'>自动签发（Relay CA）</option>
+          <option value='existing_certificate'>绑定已有证书</option>
         </select>
-        <p v-if='errors.certificate_id' class='form-error'>{{ errors.certificate_id }}</p>
+        <p class='form-hint'>
+          默认由控制面自动签发 Relay 监听证书；只有高级场景才需要手动绑定已有证书。
+        </p>
       </div>
+    </div>
+
+    <div v-if='form.certificate_source === "auto_relay_ca"' class='auto-banner'>
+      <strong>默认路径：</strong> 自动签发（Relay CA） + 自动（Relay CA + Pin），无需手动维护 Pin / CA。
+    </div>
+
+    <div v-if='form.certificate_source === "existing_certificate"' class='form-group'>
+      <label class='form-label' :class="{ 'form-label--required': form.enabled }">绑定监听证书</label>
+      <select v-model='form.certificate_id' class='input' :class="{ 'input--error': errors.certificate_id }">
+        <option :value='null'>请选择证书</option>
+        <option v-for='cert in certificates' :key='cert.id' :value='cert.id'>
+          #{{ cert.id }} {{ cert.domain }}
+        </option>
+      </select>
+      <p v-if='errors.certificate_id' class='form-error'>{{ errors.certificate_id }}</p>
     </div>
 
     <div class='form-row'>
@@ -32,7 +47,7 @@
           min='1'
           max='65535'
           :class="{ 'input--error': errors.listen_port }"
-          placeholder='9443'
+          placeholder='7443'
         >
         <p v-if='errors.listen_port' class='form-error'>{{ errors.listen_port }}</p>
       </div>
@@ -40,27 +55,13 @@
 
     <div class='form-group'>
       <label class='form-label'>信任策略</label>
-      <select v-model='trustStrategy' class='input'>
-        <option value='auto'>自动（推荐）</option>
-        <option value='pin_only'>仅信任指定证书</option>
-        <option value='ca_only'>仅信任指定 CA</option>
+      <select v-model='form.trust_mode_source' class='input'>
+        <option value='auto'>自动（Relay CA + Pin）</option>
+        <option value='custom'>高级自定义</option>
       </select>
-      <p class='form-hint'>默认自动模式会根据你填写的 Pin Set / CA 自动选择最合适的 TLS 模式。</p>
-    </div>
-
-    <div v-if='trustStrategy !== "ca_only" || showAdvanced' class='form-group'>
-      <label class='form-label'>Pin Set（每行一个，格式 type:value）</label>
-      <textarea v-model='pinSetText' class='input textarea' placeholder='spki_sha256:abc123'></textarea>
-    </div>
-
-    <div v-if='trustStrategy !== "pin_only" || showAdvanced' class='form-group'>
-      <label class='form-label'>可信 CA 证书</label>
-      <div class='checkbox-list'>
-        <label v-for='cert in certificates' :key="`ca-${cert.id}`" class='checkbox-item'>
-          <input :checked='trustedCaSet.has(cert.id)' type='checkbox' @change='toggleTrustedCa(cert.id)'>
-          <span>#{{ cert.id }} {{ cert.domain }}</span>
-        </label>
-      </div>
+      <p class='form-hint'>
+        常规情况下保持自动即可；只有需要手工控制 TLS 模式、Pin 或 CA 时再切到高级自定义。
+      </p>
     </div>
 
     <label class='toggle-row'>
@@ -76,23 +77,45 @@
     </label>
 
     <button type='button' class='advanced-toggle' @click='showAdvanced = !showAdvanced'>
-      {{ showAdvanced ? '收起高级 TLS 设置' : '高级 TLS 设置' }}
+      {{ showAdvanced ? '收起高级设置' : '显示高级设置' }}
     </button>
 
-    <section v-if='showAdvanced' class='advanced-panel'>
-      <div class='form-group'>
-        <label class='form-label'>TLS 模式</label>
-        <select v-model='form.tls_mode' class='input'>
-          <option value='pin_or_ca'>证书 Pin 或 CA</option>
-          <option value='pin_only'>仅证书 Pin</option>
-          <option value='ca_only'>仅 CA 信任链</option>
-          <option value='pin_and_ca'>Pin + CA</option>
-        </select>
+    <section v-if='form.trust_mode_source === "custom" || showAdvanced' class='advanced-panel'>
+      <p class='form-hint'>
+        {{ form.trust_mode_source === 'auto'
+          ? '保持自动模式时，以下内容仅用于查看或预填；真正的信任材料仍以自动派生结果为准。'
+          : '高级自定义模式会直接提交你填写的 TLS 模式、Pin Set 和 CA 配置。' }}
+      </p>
+
+      <div class='form-row'>
+        <div class='form-group'>
+          <label class='form-label'>TLS 模式</label>
+          <select v-model='form.tls_mode' class='input'>
+            <option value='pin_and_ca'>Pin + CA</option>
+            <option value='pin_only'>仅证书 Pin</option>
+            <option value='ca_only'>仅 CA 信任链</option>
+            <option value='pin_or_ca'>证书 Pin 或 CA</option>
+          </select>
+        </div>
+        <div class='form-group'>
+          <label class='form-label'>标签</label>
+          <input v-model='tagsText' class='input' placeholder='relay, shared'>
+        </div>
       </div>
 
       <div class='form-group'>
-        <label class='form-label'>标签</label>
-        <input v-model='tagsText' class='input' placeholder='relay, hk, tls'>
+        <label class='form-label'>Pin Set（每行一个，格式 type:value）</label>
+        <textarea v-model='pinSetText' class='input textarea' placeholder='spki_sha256:abc123'></textarea>
+      </div>
+
+      <div class='form-group'>
+        <label class='form-label'>可信 CA 证书</label>
+        <div class='checkbox-list'>
+          <label v-for='cert in certificates' :key="`ca-${cert.id}`" class='checkbox-item'>
+            <input :checked='trustedCaSet.has(Number(cert.id))' type='checkbox' @change='toggleTrustedCa(cert.id)'>
+            <span>#{{ cert.id }} {{ cert.domain }}</span>
+          </label>
+        </div>
       </div>
     </section>
 
@@ -126,7 +149,6 @@ const isEdit = computed(() => !!props.initialData?.id)
 const isLoading = computed(() => createRelayListener.isPending.value || updateRelayListener.isPending.value)
 
 const form = ref(createDefaultForm())
-const trustStrategy = ref('auto')
 const showAdvanced = ref(false)
 const tagsText = ref('')
 const pinSetText = ref('')
@@ -143,20 +165,13 @@ watch(
   () => props.initialData,
   (value) => {
     form.value = createFormState(value)
-    trustStrategy.value = inferTrustStrategy(value)
-    showAdvanced.value = Boolean(value && isAdvancedTLSMode(value))
+    showAdvanced.value = false
     tagsText.value = (form.value.tags || []).join(', ')
     pinSetText.value = (form.value.pin_set || [])
       .map((item) => `${item.type}:${item.value}`)
       .join('\n')
     trustedCaSet.value = new Set((form.value.trusted_ca_certificate_ids || []).map((id) => Number(id)))
-    errors.value = {
-      name: '',
-      listen_port: '',
-      certificate_id: '',
-      trust_material: '',
-      submit: ''
-    }
+    resetErrors()
   },
   { immediate: true }
 )
@@ -164,10 +179,36 @@ watch(
 watch(
   certificates,
   (items) => {
-    if (isEdit.value || form.value.certificate_id != null || !items.length) {
+    if (!items.length) return
+    if (form.value.certificate_source === 'existing_certificate' && form.value.certificate_id == null) {
+      form.value.certificate_id = Number(items[0].id)
+    }
+  },
+  { immediate: true }
+)
+
+watch(
+  () => form.value.certificate_source,
+  (value) => {
+    if (value === 'auto_relay_ca' && !isEdit.value) {
+      form.value.certificate_id = null
       return
     }
-    form.value.certificate_id = Number(items[0].id)
+    if (value === 'existing_certificate' && form.value.certificate_id == null && certificates.value.length) {
+      form.value.certificate_id = Number(certificates.value[0].id)
+    }
+  }
+)
+
+watch(
+  () => form.value.trust_mode_source,
+  (value) => {
+    if (value === 'auto') {
+      form.value.tls_mode = 'pin_and_ca'
+      if (!isEdit.value) {
+        form.value.allow_self_signed = true
+      }
+    }
   },
   { immediate: true }
 )
@@ -179,12 +220,38 @@ function createDefaultForm() {
     listen_port: 0,
     enabled: true,
     certificate_id: null,
-    tls_mode: 'pin_or_ca',
+    certificate_source: 'auto_relay_ca',
+    trust_mode_source: 'auto',
+    tls_mode: 'pin_and_ca',
     pin_set: [],
     trusted_ca_certificate_ids: [],
-    allow_self_signed: false,
+    allow_self_signed: true,
     tags: []
   }
+}
+
+function inferCertificateSource(initialData) {
+  if (initialData?.certificate_source === 'auto_relay_ca' || initialData?.certificate_source === 'existing_certificate') {
+    return initialData.certificate_source
+  }
+  if (initialData?.trust_mode_source === 'auto') {
+    return 'auto_relay_ca'
+  }
+  if (initialData?.tls_mode === 'pin_and_ca' && initialData?.allow_self_signed === true) {
+    return 'auto_relay_ca'
+  }
+  return initialData ? 'existing_certificate' : 'auto_relay_ca'
+}
+
+function inferTrustModeSource(initialData) {
+  if (initialData?.trust_mode_source === 'auto' || initialData?.trust_mode_source === 'custom') {
+    return initialData.trust_mode_source
+  }
+  if (!initialData) return 'auto'
+  if (initialData.tls_mode === 'pin_and_ca' && initialData.allow_self_signed === true) {
+    return 'auto'
+  }
+  return 'custom'
 }
 
 function createFormState(initialData) {
@@ -195,7 +262,9 @@ function createFormState(initialData) {
     listen_port: initialData.listen_port || 0,
     enabled: initialData.enabled !== false,
     certificate_id: initialData.certificate_id == null ? null : Number(initialData.certificate_id),
-    tls_mode: initialData.tls_mode || 'pin_or_ca',
+    certificate_source: inferCertificateSource(initialData),
+    trust_mode_source: inferTrustModeSource(initialData),
+    tls_mode: initialData.tls_mode || 'pin_and_ca',
     pin_set: Array.isArray(initialData.pin_set)
       ? initialData.pin_set
         .map((item) => ({
@@ -204,21 +273,22 @@ function createFormState(initialData) {
         }))
         .filter((item) => item.type && item.value)
       : [],
-    trusted_ca_certificate_ids: Array.isArray(initialData.trusted_ca_certificate_ids) ? [...initialData.trusted_ca_certificate_ids] : [],
+    trusted_ca_certificate_ids: Array.isArray(initialData.trusted_ca_certificate_ids)
+      ? initialData.trusted_ca_certificate_ids.map((id) => Number(id)).filter((id) => Number.isInteger(id))
+      : [],
     allow_self_signed: initialData.allow_self_signed === true,
     tags: Array.isArray(initialData.tags) ? [...initialData.tags] : []
   }
 }
 
-function inferTrustStrategy(listener) {
-  if (!listener) return 'auto'
-  if (listener.tls_mode === 'pin_only') return 'pin_only'
-  if (listener.tls_mode === 'ca_only') return 'ca_only'
-  return 'auto'
-}
-
-function isAdvancedTLSMode(listener) {
-  return listener?.tls_mode === 'pin_or_ca' || listener?.tls_mode === 'pin_and_ca'
+function resetErrors() {
+  errors.value = {
+    name: '',
+    listen_port: '',
+    certificate_id: '',
+    trust_material: '',
+    submit: ''
+  }
 }
 
 function toggleTrustedCa(certId) {
@@ -247,29 +317,24 @@ function parsePinSetRows() {
     .filter((item) => item.type && item.value)
 }
 
-function resolveTLSPayload({ trustStrategy, pinSet, trustedCaIds, explicitTLSMode }) {
-  if (showAdvanced.value) {
-    return explicitTLSMode
+function validateCustomTrustMaterial(pinSet, trustedCaIds) {
+  if (form.value.tls_mode === 'pin_only' && pinSet.length === 0) {
+    return '仅 Pin 模式至少需要一个 Pin Set'
   }
-  if (trustStrategy === 'pin_only') return 'pin_only'
-  if (trustStrategy === 'ca_only') return 'ca_only'
-  if (explicitTLSMode === 'pin_or_ca' && pinSet.length && trustedCaIds.length) {
-    return 'pin_or_ca'
+  if (form.value.tls_mode === 'ca_only' && trustedCaIds.length === 0) {
+    return '仅 CA 模式至少需要一个可信 CA'
   }
-  if (pinSet.length && trustedCaIds.length) return 'pin_and_ca'
-  if (pinSet.length) return 'pin_only'
-  if (trustedCaIds.length) return 'ca_only'
-  throw new Error('自动信任策略至少需要 Pin 或 CA 之一')
+  if (form.value.tls_mode === 'pin_and_ca' && (pinSet.length === 0 || trustedCaIds.length === 0)) {
+    return 'Pin + CA 模式需要同时提供 Pin Set 和可信 CA'
+  }
+  if (form.value.tls_mode === 'pin_or_ca' && pinSet.length === 0 && trustedCaIds.length === 0) {
+    return '证书 Pin 或 CA 模式至少需要提供一项信任材料'
+  }
+  return ''
 }
 
 function validate() {
-  errors.value = {
-    name: '',
-    listen_port: '',
-    certificate_id: '',
-    trust_material: '',
-    submit: ''
-  }
+  resetErrors()
 
   if (!form.value.name.trim()) {
     errors.value.name = '请输入监听器名称'
@@ -277,20 +342,14 @@ function validate() {
   if (!Number.isInteger(form.value.listen_port) || form.value.listen_port < 1 || form.value.listen_port > 65535) {
     errors.value.listen_port = '监听端口必须在 1-65535 之间'
   }
-  if (form.value.enabled && form.value.certificate_id == null) {
+  if (form.value.enabled && form.value.certificate_source === 'existing_certificate' && form.value.certificate_id == null) {
     errors.value.certificate_id = '启用监听器时必须绑定监听证书'
   }
 
   const pinSet = parsePinSetRows()
   const trustedCaIds = [...trustedCaSet.value]
-  if (trustStrategy.value === 'pin_only' && pinSet.length === 0) {
-    errors.value.trust_material = '仅 Pin 模式至少需要一个 Pin Set'
-  }
-  if (trustStrategy.value === 'ca_only' && trustedCaIds.length === 0) {
-    errors.value.trust_material = '仅 CA 模式至少需要一个可信 CA'
-  }
-  if (trustStrategy.value === 'auto' && pinSet.length === 0 && trustedCaIds.length === 0) {
-    errors.value.trust_material = '自动模式至少需要 Pin Set 或可信 CA 之一'
+  if (form.value.trust_mode_source === 'custom') {
+    errors.value.trust_material = validateCustomTrustMaterial(pinSet, trustedCaIds)
   }
 
   return !errors.value.name && !errors.value.listen_port && !errors.value.certificate_id && !errors.value.trust_material
@@ -306,13 +365,12 @@ async function handleSubmit() {
     listen_host: form.value.listen_host.trim() || '0.0.0.0',
     listen_port: form.value.listen_port,
     enabled: form.value.enabled,
-    certificate_id: form.value.certificate_id == null ? null : Number(form.value.certificate_id),
-    tls_mode: resolveTLSPayload({
-      trustStrategy: trustStrategy.value,
-      pinSet,
-      trustedCaIds,
-      explicitTLSMode: form.value.tls_mode
-    }),
+    certificate_id: form.value.certificate_source === 'existing_certificate'
+      ? (form.value.certificate_id == null ? null : Number(form.value.certificate_id))
+      : (form.value.certificate_id == null ? null : Number(form.value.certificate_id)),
+    certificate_source: form.value.certificate_source,
+    trust_mode_source: form.value.trust_mode_source,
+    tls_mode: form.value.trust_mode_source === 'auto' ? 'pin_and_ca' : form.value.tls_mode,
     pin_set: pinSet,
     trusted_ca_certificate_ids: trustedCaIds,
     allow_self_signed: form.value.allow_self_signed,
@@ -369,6 +427,15 @@ async function handleSubmit() {
   margin: 0;
   font-size: var(--text-xs);
   color: var(--color-text-tertiary);
+}
+
+.auto-banner {
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-xl);
+  background: var(--color-bg-subtle);
+  border: 1px solid var(--color-border-subtle);
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
 }
 
 .form-error {
