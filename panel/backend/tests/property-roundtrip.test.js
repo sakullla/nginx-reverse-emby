@@ -1071,4 +1071,70 @@ describe("Property 1: Data round-trip consistency", { skip: !canRunSqlite && "Pr
       },
     );
   });
+
+  it("L4 API partial updates merge against sanitized legacy UDP fallback", async () => {
+    await withBackendServer(
+      {
+        env: { PANEL_ROLE: "master", PANEL_AUTO_APPLY: "0" },
+        agents: [
+          {
+            id: "udp-legacy-partial-update-agent",
+            name: "udp-legacy-partial-update-agent",
+            agent_token: "token-udp-legacy-partial-update-agent",
+            capabilities: ["l4"],
+            desired_revision: 1,
+            current_revision: 1,
+          },
+        ],
+        l4RulesByAgentId: {
+          "udp-legacy-partial-update-agent": [
+            {
+              id: 17,
+              agent_id: "udp-legacy-partial-update-agent",
+              name: "legacy-udp-invalid-fallback",
+              protocol: "udp",
+              listen_host: "0.0.0.0",
+              listen_port: 9600,
+              upstream_host: "127.0.0.1",
+              upstream_port: 9601,
+              backends: [{ host: "127.0.0.1", port: 9601, weight: 9, backup: true }],
+              load_balancing: { strategy: "hash", hash_key: "$remote_addr" },
+              tuning: {
+                proxy_protocol: {
+                  decode: true,
+                  send: true,
+                },
+              },
+              relay_chain: [12],
+              enabled: true,
+              tags: ["legacy"],
+              revision: 17,
+            },
+          ],
+        },
+      },
+      async ({ baseUrl }) => {
+        const response = await fetch(
+          `${baseUrl}/api/agents/udp-legacy-partial-update-agent/l4-rules/17`,
+          {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              enabled: false,
+            }),
+          },
+        );
+        assert.equal(response.status, 200);
+        const payload = await response.json();
+        assert.equal(payload.rule.enabled, false);
+        assert.deepStrictEqual(payload.rule.backends, [{ host: "127.0.0.1", port: 9601 }]);
+        assert.deepStrictEqual(payload.rule.load_balancing, { strategy: "round_robin" });
+        assert.deepStrictEqual(payload.rule.tuning.proxy_protocol, {
+          decode: false,
+          send: false,
+        });
+        assert.deepStrictEqual(payload.rule.relay_chain, []);
+      },
+    );
+  });
 });

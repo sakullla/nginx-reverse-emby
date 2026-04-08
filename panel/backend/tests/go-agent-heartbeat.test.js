@@ -801,6 +801,7 @@ describe("Go agent heartbeat API", () => {
                   send: true,
                 },
               },
+              relay_chain: [12, 22],
               enabled: true,
               tags: ["legacy-udp"],
               revision: 7,
@@ -824,6 +825,7 @@ describe("Go agent heartbeat API", () => {
           decode: false,
           send: false,
         });
+        assert.deepEqual(listPayload.rules[0].relay_chain, []);
 
         const heartbeatResponse = await fetch(`${baseUrl}/api/agents/heartbeat`, {
           method: "POST",
@@ -852,6 +854,7 @@ describe("Go agent heartbeat API", () => {
           decode: false,
           send: false,
         });
+        assert.deepEqual(heartbeatPayload.sync.l4_rules[0].relay_chain, []);
       },
     );
   });

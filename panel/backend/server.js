@@ -1051,6 +1051,7 @@ function normalizeStoredL4Rule(rule, suggestedId = null) {
     protocol === "udp"
       ? {
           ...source,
+          relay_chain: [],
           tuning: {
             ...(source.tuning && typeof source.tuning === "object" ? source.tuning : {}),
             proxy_protocol: {
@@ -4665,7 +4666,8 @@ async function handleMasterApi(req, res) {
         sendJson(res, 404, errorPayload("rule id not found"));
         return;
       }
-      const nextRule = normalizeL4RulePayload(body, rules[index], ruleId);
+      const fallbackRule = normalizeStoredL4Rule(rules[index], ruleId);
+      const nextRule = normalizeL4RulePayload(body, fallbackRule, ruleId);
       ensureUniqueL4Listen(rules, nextRule, ruleId);
       nextRule.revision = getNextPendingRevision(agent);
       rules[index] = nextRule;

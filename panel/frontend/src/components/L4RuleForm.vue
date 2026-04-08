@@ -79,16 +79,6 @@
                 placeholder="IP:端口 或 域名:端口"
                 @blur="parseBackendAddress(index)"
               >
-              <div class="backend-weight-wrapper">
-                <span class="backend-weight-label">权重</span>
-                <input
-                  v-model.number="backend.weight"
-                  class="input backend-weight-input"
-                  type="number"
-                  min="1"
-                  max="100"
-                >
-              </div>
             </div>
 
             <button
@@ -302,7 +292,6 @@ function createBackend(data = {}) {
     address,
     host,
     port,
-    weight: data.weight || 1,
     resolve: data.resolve || false,
     backup: data.backup || false,
     max_conns: data.max_conns || 0,
@@ -368,7 +357,6 @@ const initialBackends = props.initialData?.backends?.length > 0
   : (props.initialData?.upstream_host
     ? [createBackend({
         address: `${props.initialData.upstream_host}:${props.initialData.upstream_port || ''}`,
-        weight: 1,
         resolve: false,
       })]
     : [createBackend()])
@@ -546,10 +534,6 @@ function buildPayload() {
     .map(b => ({
       host: b.host.trim(),
       port: Number(b.port),
-      weight: Number(b.weight) || 1,
-      resolve: !!b.resolve,
-      backup: !!b.backup,
-      max_conns: Number(b.max_conns) || 0,
     }))
 
   const payload = {
