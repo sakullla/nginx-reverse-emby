@@ -934,4 +934,63 @@ describe("Property 1: Data round-trip consistency", { skip: !canRunSqlite && "Pr
       },
     );
   });
+
+  it("L4 API rejects UDP protocol updates when fallback tuning has proxy_protocol enabled", async () => {
+    await withBackendServer(
+      {
+        env: { PANEL_ROLE: "master", PANEL_AUTO_APPLY: "0" },
+        agents: [
+          {
+            id: "udp-fallback-proxy-protocol-agent",
+            name: "udp-fallback-proxy-protocol-agent",
+            agent_token: "token-udp-fallback-proxy-protocol-agent",
+            capabilities: ["l4"],
+            desired_revision: 1,
+            current_revision: 1,
+          },
+        ],
+      },
+      async ({ baseUrl }) => {
+        const createResponse = await fetch(
+          `${baseUrl}/api/agents/udp-fallback-proxy-protocol-agent/l4-rules`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              name: "tcp-initial-with-proxy-protocol",
+              protocol: "tcp",
+              listen_host: "0.0.0.0",
+              listen_port: 9400,
+              backends: [{ host: "127.0.0.1", port: 9401 }],
+              tuning: {
+                proxy_protocol: {
+                  decode: true,
+                  send: false,
+                },
+              },
+              enabled: true,
+              tags: [],
+            }),
+          },
+        );
+        assert.equal(createResponse.status, 201);
+        const created = await createResponse.json();
+        const ruleId = created.rule.id;
+
+        const updateResponse = await fetch(
+          `${baseUrl}/api/agents/udp-fallback-proxy-protocol-agent/l4-rules/${ruleId}`,
+          {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              protocol: "udp",
+            }),
+          },
+        );
+        assert.equal(updateResponse.status, 400);
+        const payload = await updateResponse.json();
+        assert.match(payload.message, /udp.*proxy_protocol/i);
+      },
+    );
+  });
 });

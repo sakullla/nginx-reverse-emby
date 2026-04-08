@@ -560,6 +560,33 @@ describe("Go agent heartbeat API", () => {
               listen_port: 9000,
               upstream_host: "127.0.0.1",
               upstream_port: 9001,
+              backends: [
+                {
+                  host: "127.0.0.1",
+                  port: 9001,
+                  weight: 10,
+                  resolve: false,
+                  backup: true,
+                  max_conns: 99,
+                },
+                {
+                  host: "backend-b.internal",
+                  port: 9002,
+                  weight: 5,
+                  resolve: true,
+                },
+              ],
+              load_balancing: {
+                strategy: "least_conn",
+                hash_key: "$remote_addr",
+                zone_size: "256k",
+              },
+              tuning: {
+                proxy_protocol: {
+                  decode: true,
+                  send: true,
+                },
+              },
               enabled: true,
               tags: ["sync"],
               revision: 4,
@@ -645,13 +672,14 @@ describe("Go agent heartbeat API", () => {
         assert.equal(payload.sync.l4_rules[0].listen_port, 9000);
         assert.deepEqual(payload.sync.l4_rules[0].backends, [
           { host: "127.0.0.1", port: 9001 },
+          { host: "backend-b.internal", port: 9002 },
         ]);
         assert.deepEqual(payload.sync.l4_rules[0].load_balancing, {
           strategy: "round_robin",
         });
         assert.deepEqual(payload.sync.l4_rules[0].tuning.proxy_protocol, {
-          decode: false,
-          send: false,
+          decode: true,
+          send: true,
         });
         assert.ok(Array.isArray(payload.sync.relay_listeners));
         assert.ok(Array.isArray(payload.sync.certificates));

@@ -1009,18 +1009,12 @@ function normalizeL4RulePayload(body, fallback = {}, suggestedId = null) {
     "round_robin",
   );
 
-  if (
-    protocol === "udp" &&
-    body?.tuning &&
-    typeof body.tuning === "object" &&
-    body.tuning.proxy_protocol !== undefined
-  ) {
-    throw new Error("udp rules do not support tuning.proxy_protocol");
-  }
-
   // Normalize tuning: merge user input over defaults
   const rawTuning = body?.tuning !== undefined ? body.tuning : fallback?.tuning;
   const tuning = normalizeL4Tuning(rawTuning, protocol);
+  if (protocol === "udp" && (tuning.proxy_protocol.decode || tuning.proxy_protocol.send)) {
+    throw new Error("udp rules do not support tuning.proxy_protocol");
+  }
   const relayChain = normalizeRelayChainPayload(
     body.relay_chain !== undefined ? body.relay_chain : fallback.relay_chain,
     { protocol },
