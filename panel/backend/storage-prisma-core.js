@@ -59,6 +59,8 @@ const SCHEMA_STATEMENTS = [
     agent_id TEXT NOT NULL,
     frontend_url TEXT NOT NULL,
     backend_url TEXT NOT NULL,
+    backends TEXT DEFAULT '[]',
+    load_balancing TEXT DEFAULT '{}',
     enabled INTEGER DEFAULT 1,
     tags TEXT DEFAULT '[]',
     proxy_redirect INTEGER DEFAULT 1,
@@ -303,6 +305,22 @@ async function applyPendingSchemaMigrations(client) {
   });
 }
 
+async function ensureHttpRuleMultiBackendColumns(client) {
+  const statements = [
+    "ALTER TABLE rules ADD COLUMN backends TEXT DEFAULT '[]'",
+    "ALTER TABLE rules ADD COLUMN load_balancing TEXT DEFAULT '{}'",
+  ];
+  for (const statement of statements) {
+    try {
+      await client.$executeRawUnsafe(statement);
+    } catch (error) {
+      if (!isIgnorableSqlMigrationError(error)) {
+        throw error;
+      }
+    }
+  }
+}
+
 function defaultLocalAgentState() {
   return { ...DEFAULT_LOCAL_AGENT_STATE };
 }
@@ -364,6 +382,7 @@ async function initializeDatabase(client) {
     await client.$executeRawUnsafe(statement);
   }
   await applyPendingSchemaMigrations(client);
+  await ensureHttpRuleMultiBackendColumns(client);
 
   await client.localAgentState.upsert({
     where: { id: 1 },
@@ -397,6 +416,36 @@ function stringifyJsonValue(value, fallback) {
 
 function ensureArray(value) {
   return Array.isArray(value) ? value : [];
+}
+
+function normalizeHttpLoadBalancingForStorage(value) {
+  const strategy = String(value?.strategy || "round_robin").trim().toLowerCase();
+  return {
+    strategy: strategy === "random" ? "random" : "round_robin",
+  };
+}
+
+function normalizeHttpBackendsForStorage(backends, backendUrl) {
+  const source = Array.isArray(backends) ? backends : [];
+  const normalized = [];
+  for (const backend of source) {
+    const rawUrl =
+      backend && typeof backend === "object" && backend.url !== undefined
+        ? backend.url
+        : backend;
+    const url = String(rawUrl || "").trim();
+    if (!url) {
+      continue;
+    }
+    normalized.push({ url });
+  }
+
+  if (normalized.length > 0) {
+    return normalized;
+  }
+
+  const legacy = String(backendUrl || "").trim();
+  return legacy ? [{ url: legacy }] : [];
 }
 
 function normalizeRelayChainIds(value) {
@@ -464,11 +513,14 @@ function mapAgentFromDb(row) {
 }
 
 function mapRuleFromDb(row) {
+  const backends = normalizeHttpBackendsForStorage(parseJsonValue(row.backends, []), row.backendUrl);
   return {
     id: row.id,
     agent_id: row.agentId,
     frontend_url: row.frontendUrl,
-    backend_url: row.backendUrl,
+    backend_url: backends[0] ? backends[0].url : row.backendUrl,
+    backends,
+    load_balancing: normalizeHttpLoadBalancingForStorage(parseJsonValue(row.loadBalancing, {})),
     enabled: !!row.enabled,
     tags: parseJsonValue(row.tags, []),
     proxy_redirect: !!row.proxyRedirect,
@@ -612,11 +664,14 @@ function mapAgentToDb(agent) {
 }
 
 function mapRuleToDb(agentId, rule) {
+  const backends = normalizeHttpBackendsForStorage(rule.backends, rule.backend_url);
   return {
     id: Number(rule.id),
     agentId: String(agentId),
     frontendUrl: String(rule.frontend_url),
-    backendUrl: String(rule.backend_url),
+    backendUrl: String(backends[0] ? backends[0].url : rule.backend_url || ""),
+    backends: stringifyJsonValue(backends, []),
+    loadBalancing: stringifyJsonValue(normalizeHttpLoadBalancingForStorage(rule.load_balancing), {}),
     enabled: rule.enabled !== false,
     tags: stringifyJsonValue(rule.tags, []),
     proxyRedirect: rule.proxy_redirect !== false,

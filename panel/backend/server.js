@@ -466,18 +466,63 @@ function getHighestRuleRevision(rules = []) {
   );
 }
 
+function normalizeHttpRuleBackends(backends, fallbackBackendUrl) {
+  const source = Array.isArray(backends) ? backends : [];
+  const normalized = [];
+  for (const backend of source) {
+    const urlCandidate =
+      backend && typeof backend === "object" && backend.url !== undefined
+        ? backend.url
+        : backend;
+    if (urlCandidate === undefined || urlCandidate === null) {
+      continue;
+    }
+    const url = String(urlCandidate).trim();
+    if (!validateUrl(url)) {
+      throw new Error("frontend_url and backend_url/backends[].url must be valid http/https URLs");
+    }
+    normalized.push({ url });
+  }
+
+  if (normalized.length > 0) {
+    return normalized;
+  }
+
+  const legacy = String(fallbackBackendUrl || "").trim();
+  if (!validateUrl(legacy)) {
+    throw new Error("frontend_url and backend_url/backends[].url must be valid http/https URLs");
+  }
+  return [{ url: legacy }];
+}
+
+function normalizeHttpRuleLoadBalancing(value, fallback = "round_robin") {
+  const rawStrategy =
+    value && typeof value === "object" && value.strategy !== undefined
+      ? value.strategy
+      : fallback;
+  const strategy = String(rawStrategy || "round_robin").trim().toLowerCase();
+  return {
+    strategy: strategy === "random" ? "random" : "round_robin",
+  };
+}
+
 function normalizeRulePayload(body, fallback = {}, suggestedId = null) {
   const frontend =
     body.frontend_url !== undefined
       ? String(body.frontend_url).trim()
       : fallback.frontend_url;
-  const backend =
-    body.backend_url !== undefined
-      ? String(body.backend_url).trim()
-      : fallback.backend_url;
+  const backendSource = Array.isArray(body.backends)
+    ? body.backends
+    : body.backend_url !== undefined
+      ? [{ url: body.backend_url }]
+      : Array.isArray(fallback.backends)
+        ? fallback.backends
+        : [{ url: fallback.backend_url }];
+  const backends = normalizeHttpRuleBackends(backendSource, fallback.backend_url);
+  const backend = backends[0].url;
 
-  if (!validateUrl(frontend) || !validateUrl(backend)) {
-    throw new Error("frontend_url and backend_url must be valid http/https URLs");
+  if (!validateUrl(frontend)) {
+    throw new Error("frontend_url and backend_url/backends[].url must be valid http/https URLs");
   }
 
   const parsedId =
@@ -507,6 +552,11 @@ function normalizeRulePayload(body, fallback = {}, suggestedId = null) {
       body.proxy_redirect !== undefined
         ? !!body.proxy_redirect
         : fallback.proxy_redirect !== false,
+    backends,
+    load_balancing: normalizeHttpRuleLoadBalancing(
+      body.load_balancing !== undefined ? body.load_balancing : fallback.load_balancing,
+      fallback?.load_balancing?.strategy || "round_robin",
+    ),
     relay_chain: relayChain,
     ...headerConfig,
   };

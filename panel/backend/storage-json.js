@@ -36,8 +36,12 @@ function sanitizeRuleForStorage(rule) {
   if (!rule || typeof rule !== "object") {
     return rule;
   }
+  const { backend_url, backends, load_balancing } = normalizeHttpRuleForStorage(rule);
   return {
     ...rule,
+    backend_url,
+    backends,
+    load_balancing,
     relay_chain: normalizeRelayChainIds(rule.relay_chain),
     custom_headers: sanitizeStoredCustomHeaders(rule.custom_headers),
   };
@@ -127,6 +131,40 @@ function normalizeRelayChainIds(value) {
     next.push(parsed);
   }
   return next;
+}
+
+function normalizeHttpRuleForStorage(rule) {
+  const sourceBackends = Array.isArray(rule.backends) ? rule.backends : [];
+  const backends = [];
+  for (const backend of sourceBackends) {
+    const rawUrl =
+      backend && typeof backend === "object" && backend.url !== undefined
+        ? backend.url
+        : backend;
+    const url = String(rawUrl || "").trim();
+    if (!url) {
+      continue;
+    }
+    backends.push({ url });
+  }
+
+  if (backends.length === 0) {
+    const legacy = String(rule.backend_url || "").trim();
+    if (legacy) {
+      backends.push({ url: legacy });
+    }
+  }
+
+  const strategy = String(rule?.load_balancing?.strategy || "round_robin")
+    .trim()
+    .toLowerCase();
+  return {
+    backend_url: backends[0] ? backends[0].url : String(rule.backend_url || ""),
+    backends,
+    load_balancing: {
+      strategy: strategy === "random" ? "random" : "round_robin",
+    },
+  };
 }
 
 function sanitizeVersionPoliciesForStorage(policies) {

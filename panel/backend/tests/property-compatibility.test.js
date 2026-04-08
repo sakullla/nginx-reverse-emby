@@ -174,6 +174,29 @@ function sortById(arr) {
   });
 }
 
+function normalizeHttpRuleShape(rows) {
+  return rows.map((row) => {
+    if (!row || typeof row !== "object" || typeof row.backend_url !== "string") {
+      return row;
+    }
+    const backends =
+      Array.isArray(row.backends) && row.backends.length > 0
+        ? row.backends.map((backend) => ({ url: String(backend?.url || "") }))
+        : [{ url: row.backend_url }];
+    const strategy = String(row?.load_balancing?.strategy || "round_robin")
+      .trim()
+      .toLowerCase();
+    return {
+      ...row,
+      backend_url: backends[0]?.url || row.backend_url,
+      backends,
+      load_balancing: {
+        strategy: strategy === "random" ? "random" : "round_robin",
+      },
+    };
+  });
+}
+
 /**
  * Compare two adapter results after normalization.
  * Strips agent_id, normalizes via JSON round-trip, sorts by id.
@@ -276,7 +299,11 @@ describe("Property 4: Backend compatibility (semantic consistency)", { skip: !ca
           const jsonResult = jsonStorage.loadRulesForAgent(agentId);
 
           // SQLite adds agent_id to each row; JSON does not
-          assertEquivalent(sqliteResult, jsonResult, { stripAgentId: true });
+          assertEquivalent(
+            normalizeHttpRuleShape(sqliteResult),
+            normalizeHttpRuleShape(jsonResult),
+            { stripAgentId: true },
+          );
         }
       ),
       { numRuns: NUM_RUNS }
@@ -378,9 +405,9 @@ describe("Property 4: Backend compatibility (semantic consistency)", { skip: !ca
             jsonStorage.loadRegisteredAgents()
           );
           assertEquivalent(
-            sqliteStorage.loadRulesForAgent(agentId),
-            jsonStorage.loadRulesForAgent(agentId),
-            { stripAgentId: true }
+            normalizeHttpRuleShape(sqliteStorage.loadRulesForAgent(agentId)),
+            normalizeHttpRuleShape(jsonStorage.loadRulesForAgent(agentId)),
+            { stripAgentId: true },
           );
           assertEquivalent(
             sqliteStorage.loadL4RulesForAgent(agentId),
@@ -399,5 +426,55 @@ describe("Property 4: Backend compatibility (semantic consistency)", { skip: !ca
       ),
       { numRuns: NUM_RUNS }
     );
+  });
+
+  it("HTTP rules with backends and legacy mirrors are semantically equivalent across JSON and Prisma core", async () => {
+    const agentId = "compat-http-multi-backend";
+    const prismaTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "compat-prisma-http-"));
+    const prismaCore = loadFreshStorage("../storage-prisma-core");
+    const payload = [
+      {
+        id: 11,
+        frontend_url: "https://frontend-11.example.com",
+        backend_url: "http://legacy-ignored.example.internal:9000",
+        backends: [
+          { url: "http://backend-11a.example.internal:8080" },
+          { url: "http://backend-11b.example.internal:8080" },
+        ],
+        load_balancing: { strategy: "RaNdOm" },
+        enabled: true,
+        tags: [],
+        proxy_redirect: true,
+        pass_proxy_headers: true,
+        user_agent: "",
+        custom_headers: [],
+        revision: 11,
+      },
+      {
+        id: 12,
+        frontend_url: "https://frontend-12.example.com",
+        backend_url: "http://legacy-only.example.internal:8096",
+        enabled: true,
+        tags: [],
+        proxy_redirect: true,
+        pass_proxy_headers: true,
+        user_agent: "",
+        custom_headers: [],
+        revision: 12,
+      },
+    ];
+
+    try {
+      jsonStorage.saveRulesForAgent(agentId, payload);
+      await prismaCore.saveRulesForAgent(prismaTmpDir, agentId, payload);
+      const prismaSnapshot = await prismaCore.loadSnapshot(prismaTmpDir);
+      const sqliteLikeResult = prismaSnapshot.rulesByAgent[agentId] || [];
+      const jsonResult = jsonStorage.loadRulesForAgent(agentId);
+
+      assertEquivalent(sqliteLikeResult, jsonResult, { stripAgentId: true });
+    } finally {
+      await prismaCore.closeClient();
+      try { fs.rmSync(prismaTmpDir, { recursive: true, force: true }); } catch (_) { /* ignore */ }
+    }
   });
 });

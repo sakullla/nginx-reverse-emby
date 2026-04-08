@@ -418,6 +418,8 @@ describe("Property 1: Data round-trip consistency", { skip: !canRunSqlite && "Pr
           agent_id: "legacy-agent",
           frontend_url: "http://legacy.frontend",
           backend_url: "http://legacy.backend",
+          backends: [{ url: "http://legacy.backend" }],
+          load_balancing: { strategy: "round_robin" },
           enabled: true,
           tags: [],
           proxy_redirect: true,
@@ -540,6 +542,108 @@ describe("Property 1: Data round-trip consistency", { skip: !canRunSqlite && "Pr
       closeQuietly(firstStorage);
       closeQuietly(restartedStorage);
       try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) { /* ignore */ }
+    }
+  });
+
+  it("HTTP rules: JSON and Prisma storage round-trip backends and legacy backend_url mirror", async () => {
+    const agentId = "http-multi-backend-agent";
+    const jsonDir = fs.mkdtempSync(path.join(os.tmpdir(), "http-rules-json-"));
+    const prismaDir = fs.mkdtempSync(path.join(os.tmpdir(), "http-rules-prisma-"));
+    const jsonStorage = loadFreshStorage("../storage-json", jsonDir);
+    const prismaCore = loadFreshStorage("../storage-prisma-core");
+
+    try {
+      const multiBackendRule = {
+        id: 1,
+        frontend_url: "https://frontend.example.com",
+        backend_url: "http://legacy-ignored.example.internal:9000",
+        backends: [
+          { url: "http://backend-a.example.internal:8080" },
+          { url: "http://backend-b.example.internal:8080" },
+        ],
+        load_balancing: { strategy: "RANDOM" },
+        enabled: true,
+        tags: [],
+        proxy_redirect: true,
+        pass_proxy_headers: true,
+        user_agent: "",
+        custom_headers: [],
+        revision: 3,
+      };
+      const legacyRule = {
+        id: 2,
+        frontend_url: "https://frontend-legacy.example.com",
+        backend_url: "http://legacy-only.example.internal:8096",
+        enabled: true,
+        tags: [],
+        proxy_redirect: true,
+        pass_proxy_headers: true,
+        user_agent: "",
+        custom_headers: [],
+        revision: 4,
+      };
+
+      jsonStorage.saveRulesForAgent(agentId, [multiBackendRule, legacyRule]);
+      const jsonLoaded = jsonStorage.loadRulesForAgent(agentId);
+      assert.deepStrictEqual(
+        jsonLoaded.map((rule) => ({
+          id: rule.id,
+          backend_url: rule.backend_url,
+          backends: rule.backends,
+          load_balancing: rule.load_balancing,
+        })),
+        [
+          {
+            id: 1,
+            backend_url: "http://backend-a.example.internal:8080",
+            backends: [
+              { url: "http://backend-a.example.internal:8080" },
+              { url: "http://backend-b.example.internal:8080" },
+            ],
+            load_balancing: { strategy: "random" },
+          },
+          {
+            id: 2,
+            backend_url: "http://legacy-only.example.internal:8096",
+            backends: [{ url: "http://legacy-only.example.internal:8096" }],
+            load_balancing: { strategy: "round_robin" },
+          },
+        ],
+      );
+
+      await prismaCore.saveRulesForAgent(prismaDir, agentId, [multiBackendRule, legacyRule]);
+      const snapshot = await prismaCore.loadSnapshot(prismaDir);
+      const prismaLoaded = snapshot.rulesByAgent[agentId] || [];
+      assert.deepStrictEqual(
+        prismaLoaded.map((rule) => ({
+          id: rule.id,
+          backend_url: rule.backend_url,
+          backends: rule.backends,
+          load_balancing: rule.load_balancing,
+        })),
+        [
+          {
+            id: 1,
+            backend_url: "http://backend-a.example.internal:8080",
+            backends: [
+              { url: "http://backend-a.example.internal:8080" },
+              { url: "http://backend-b.example.internal:8080" },
+            ],
+            load_balancing: { strategy: "random" },
+          },
+          {
+            id: 2,
+            backend_url: "http://legacy-only.example.internal:8096",
+            backends: [{ url: "http://legacy-only.example.internal:8096" }],
+            load_balancing: { strategy: "round_robin" },
+          },
+        ],
+      );
+    } finally {
+      closeQuietly(jsonStorage);
+      await prismaCore.closeClient();
+      try { fs.rmSync(jsonDir, { recursive: true, force: true }); } catch (_) { /* ignore */ }
+      try { fs.rmSync(prismaDir, { recursive: true, force: true }); } catch (_) { /* ignore */ }
     }
   });
 });

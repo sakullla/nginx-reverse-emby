@@ -10,6 +10,9 @@
 const { describe, it, beforeEach, afterEach } = require("node:test");
 const assert = require("node:assert/strict");
 const fc = require("fast-check");
+const fs = require("fs");
+const os = require("os");
+const path = require("path");
 const {
   SQLITE_TARGET,
   canRunSqlite,
@@ -171,5 +174,66 @@ describe("Property 2: Agent data isolation", { skip: !canRunSqlite && "Prisma-ba
       ),
       { numRuns: NUM_RUNS },
     );
+  });
+
+  it("HTTP backends/load_balancing save for A1 does not affect A2 across JSON and Prisma core", async () => {
+    const a1 = "agent-a";
+    const a2 = "agent-b";
+    const jsonDir = fs.mkdtempSync(path.join(os.tmpdir(), "isolation-json-http-"));
+    const prismaDir = fs.mkdtempSync(path.join(os.tmpdir(), "isolation-prisma-http-"));
+    const jsonStorage = loadFreshStorage("../storage-json", jsonDir);
+    const prismaCore = loadFreshStorage("../storage-prisma-core");
+
+    const a2Rules = [{
+      id: 1,
+      frontend_url: "https://frontend-a2.example.com",
+      backend_url: "http://backend-a2.example.internal:8080",
+      backends: [{ url: "http://backend-a2.example.internal:8080" }],
+      load_balancing: { strategy: "round_robin" },
+      enabled: true,
+      tags: [],
+      proxy_redirect: true,
+      pass_proxy_headers: true,
+      user_agent: "",
+      custom_headers: [],
+      revision: 1,
+    }];
+
+    const a1Rules = [{
+      id: 1,
+      frontend_url: "https://frontend-a1.example.com",
+      backend_url: "http://legacy-ignored.example.internal:9999",
+      backends: [
+        { url: "http://backend-a1a.example.internal:8080" },
+        { url: "http://backend-a1b.example.internal:8080" },
+      ],
+      load_balancing: { strategy: "random" },
+      enabled: true,
+      tags: [],
+      proxy_redirect: true,
+      pass_proxy_headers: true,
+      user_agent: "",
+      custom_headers: [],
+      revision: 2,
+    }];
+
+    try {
+      jsonStorage.saveRulesForAgent(a2, a2Rules);
+      await prismaCore.saveRulesForAgent(prismaDir, a2, a2Rules);
+
+      const jsonA2Before = jsonStorage.loadRulesForAgent(a2);
+      const prismaA2Before = (await prismaCore.loadSnapshot(prismaDir)).rulesByAgent[a2] || [];
+
+      jsonStorage.saveRulesForAgent(a1, a1Rules);
+      await prismaCore.saveRulesForAgent(prismaDir, a1, a1Rules);
+
+      assert.deepStrictEqual(jsonStorage.loadRulesForAgent(a2), jsonA2Before);
+      assert.deepStrictEqual((await prismaCore.loadSnapshot(prismaDir)).rulesByAgent[a2] || [], prismaA2Before);
+    } finally {
+      closeQuietly(jsonStorage);
+      await prismaCore.closeClient();
+      try { fs.rmSync(jsonDir, { recursive: true, force: true }); } catch (_) { /* ignore */ }
+      try { fs.rmSync(prismaDir, { recursive: true, force: true }); } catch (_) { /* ignore */ }
+    }
   });
 });
