@@ -511,13 +511,24 @@ function normalizeRulePayload(body, fallback = {}, suggestedId = null) {
     body.frontend_url !== undefined
       ? String(body.frontend_url).trim()
       : fallback.frontend_url;
-  const backendSource = Array.isArray(body.backends)
-    ? body.backends
-    : body.backend_url !== undefined
-      ? [{ url: body.backend_url }]
-      : Array.isArray(fallback.backends)
-        ? fallback.backends
-        : [{ url: fallback.backend_url }];
+  let backendSource;
+  if (Array.isArray(body.backends)) {
+    if (body.backends.length > 0) {
+      backendSource = body.backends;
+    } else if (body.backend_url !== undefined) {
+      backendSource = [{ url: body.backend_url }];
+    } else if (Array.isArray(fallback.backends) && fallback.backends.length > 0) {
+      backendSource = fallback.backends;
+    } else {
+      backendSource = [{ url: fallback.backend_url }];
+    }
+  } else if (body.backend_url !== undefined) {
+    backendSource = [{ url: body.backend_url }];
+  } else if (Array.isArray(fallback.backends)) {
+    backendSource = fallback.backends;
+  } else {
+    backendSource = [{ url: fallback.backend_url }];
+  }
   const backends = normalizeHttpRuleBackends(backendSource, fallback.backend_url);
   const backend = backends[0].url;
 

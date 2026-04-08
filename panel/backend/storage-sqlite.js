@@ -110,11 +110,14 @@ function normalizeAgent(agent) {
 }
 
 function normalizeRule(agentId, rule) {
+  const { backend_url, backends, load_balancing } = normalizeHttpRuleForStorage(rule);
   return {
     id: Number(rule.id),
     agent_id: String(agentId),
     frontend_url: rule.frontend_url,
-    backend_url: rule.backend_url,
+    backend_url,
+    backends,
+    load_balancing,
     enabled: !!rule.enabled,
     tags: Array.isArray(rule.tags) ? clone(rule.tags) : [],
     proxy_redirect: !!rule.proxy_redirect,
@@ -123,6 +126,40 @@ function normalizeRule(agentId, rule) {
     user_agent: String(rule.user_agent || ""),
     custom_headers: sanitizeStoredCustomHeaders(rule.custom_headers),
     revision: safeRevision(rule.revision),
+  };
+}
+
+function normalizeHttpRuleForStorage(rule) {
+  const sourceBackends = Array.isArray(rule.backends) ? rule.backends : [];
+  const backends = [];
+  for (const backend of sourceBackends) {
+    const rawUrl =
+      backend && typeof backend === "object" && backend.url !== undefined
+        ? backend.url
+        : backend;
+    const url = String(rawUrl || "").trim();
+    if (!url) {
+      continue;
+    }
+    backends.push({ url });
+  }
+
+  if (backends.length === 0) {
+    const legacy = String(rule.backend_url || "").trim();
+    if (legacy) {
+      backends.push({ url: legacy });
+    }
+  }
+
+  const strategy = String(rule?.load_balancing?.strategy || "round_robin")
+    .trim()
+    .toLowerCase();
+  return {
+    backend_url: backends[0] ? backends[0].url : String(rule.backend_url || ""),
+    backends,
+    load_balancing: {
+      strategy: strategy === "random" ? "random" : "round_robin",
+    },
   };
 }
 

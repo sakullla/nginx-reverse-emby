@@ -18,6 +18,7 @@ const {
   closeQuietly,
   dedupById,
   getNumRuns,
+  withBackendServer,
 } = require("./helpers");
 
 const NUM_RUNS = getNumRuns("roundtrip", 25);
@@ -176,11 +177,21 @@ function sanitizeStoredCustomHeaders(value) {
  * Mirrors the transformations in saveRulesForAgent + loadRulesForAgent.
  */
 function expectedRule(r, agentId) {
+  const backends = Array.isArray(r.backends) && r.backends.length > 0
+    ? r.backends
+      .map((backend) => ({ url: String(backend?.url || "") }))
+      .filter((backend) => backend.url.length > 0)
+    : [{ url: r.backend_url }];
+  const strategy = String(r?.load_balancing?.strategy || "round_robin").trim().toLowerCase();
   return {
     id: r.id,
     agent_id: agentId,
     frontend_url: r.frontend_url,
-    backend_url: r.backend_url,
+    backend_url: backends[0]?.url || r.backend_url,
+    backends,
+    load_balancing: {
+      strategy: strategy === "random" ? "random" : "round_robin",
+    },
     enabled: !!r.enabled,
     tags: r.tags || [],
     proxy_redirect: !!r.proxy_redirect,
@@ -452,6 +463,8 @@ describe("Property 1: Data round-trip consistency", { skip: !canRunSqlite && "Pr
           agent_id: "legacy-agent",
           frontend_url: "http://legacy.frontend",
           backend_url: "http://legacy.backend",
+          backends: [{ url: "http://legacy.backend" }],
+          load_balancing: { strategy: "round_robin" },
           enabled: true,
           tags: [],
           proxy_redirect: true,
@@ -645,5 +658,94 @@ describe("Property 1: Data round-trip consistency", { skip: !canRunSqlite && "Pr
       try { fs.rmSync(jsonDir, { recursive: true, force: true }); } catch (_) { /* ignore */ }
       try { fs.rmSync(prismaDir, { recursive: true, force: true }); } catch (_) { /* ignore */ }
     }
+  });
+
+  it("storage-sqlite wrapper preserves HTTP backends/load_balancing on immediate reads", () => {
+    const agentId = "sqlite-wrapper-http-backends";
+    const rule = {
+      id: 1,
+      frontend_url: "https://frontend.wrapper.example.com",
+      backend_url: "http://legacy-ignored.wrapper.internal:9000",
+      backends: [
+        { url: "http://backend-1.wrapper.internal:8080" },
+        { url: "http://backend-2.wrapper.internal:8080" },
+      ],
+      load_balancing: { strategy: "random" },
+      enabled: true,
+      tags: [],
+      proxy_redirect: true,
+      pass_proxy_headers: true,
+      user_agent: "",
+      custom_headers: [],
+      revision: 9,
+    };
+
+    storage.saveRulesForAgent(agentId, [rule]);
+    const loaded = storage.loadRulesForAgent(agentId);
+    assert.equal(loaded.length, 1);
+    assert.deepStrictEqual(loaded[0].backends, [
+      { url: "http://backend-1.wrapper.internal:8080" },
+      { url: "http://backend-2.wrapper.internal:8080" },
+    ]);
+    assert.deepStrictEqual(loaded[0].load_balancing, { strategy: "random" });
+    assert.equal(loaded[0].backend_url, "http://backend-1.wrapper.internal:8080");
+  });
+
+  it("HTTP API handles explicit backends: [] intentionally", async () => {
+    await withBackendServer({ env: { PANEL_AUTO_APPLY: "0" } }, async ({ baseUrl }) => {
+      const createResponse = await fetch(`${baseUrl}/api/rules`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          frontend_url: "https://frontend.empty-array.example.com",
+          backend_url: "http://legacy-create.example.internal:8096",
+          backends: [],
+          enabled: true,
+          tags: [],
+          proxy_redirect: true,
+        }),
+      });
+      assert.equal(createResponse.status, 201);
+      const created = await createResponse.json();
+      assert.deepStrictEqual(created.rule.backends, [{ url: "http://legacy-create.example.internal:8096" }]);
+      assert.equal(created.rule.backend_url, "http://legacy-create.example.internal:8096");
+
+      const createMultiResponse = await fetch(`${baseUrl}/api/rules`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          frontend_url: "https://frontend.multi.example.com",
+          backend_url: "http://legacy-ignored.example.internal:8096",
+          backends: [
+            { url: "http://backend-a.multi.internal:8080" },
+            { url: "http://backend-b.multi.internal:8080" },
+          ],
+          load_balancing: { strategy: "random" },
+          enabled: true,
+          tags: [],
+          proxy_redirect: true,
+        }),
+      });
+      assert.equal(createMultiResponse.status, 201);
+      const createdMulti = await createMultiResponse.json();
+      const multiRuleId = createdMulti.rule.id;
+
+      const updateResponse = await fetch(`${baseUrl}/api/rules/${multiRuleId}`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          backends: [],
+          tags: ["updated"],
+        }),
+      });
+      assert.equal(updateResponse.status, 200);
+      const updated = await updateResponse.json();
+      assert.deepStrictEqual(updated.rule.backends, [
+        { url: "http://backend-a.multi.internal:8080" },
+        { url: "http://backend-b.multi.internal:8080" },
+      ]);
+      assert.equal(updated.rule.backend_url, "http://backend-a.multi.internal:8080");
+      assert.deepStrictEqual(updated.rule.load_balancing, { strategy: "random" });
+    });
   });
 });
