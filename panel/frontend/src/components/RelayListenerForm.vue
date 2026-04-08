@@ -65,7 +65,12 @@
     </div>
 
     <label class='toggle-row'>
-      <input v-model='form.allow_self_signed' type='checkbox' class='toggle__input'>
+      <input
+        v-model='form.allow_self_signed'
+        type='checkbox'
+        class='toggle__input'
+        :disabled='form.trust_mode_source === "auto"'
+      >
       <span class='toggle__slider'></span>
       <span class='toggle__label'>允许上游使用自签名证书</span>
     </label>
@@ -83,14 +88,14 @@
     <section v-if='form.trust_mode_source === "custom" || showAdvanced' class='advanced-panel'>
       <p class='form-hint'>
         {{ form.trust_mode_source === 'auto'
-          ? '保持自动模式时，以下内容仅用于查看或预填；真正的信任材料仍以自动派生结果为准。'
+          ? '自动模式下会由系统派生 Relay CA + Pin；切回高级自定义后，下面这些字段才会参与编辑和提交。'
           : '高级自定义模式会直接提交你填写的 TLS 模式、Pin Set 和 CA 配置。' }}
       </p>
 
       <div class='form-row'>
         <div class='form-group'>
           <label class='form-label'>TLS 模式</label>
-          <select v-model='form.tls_mode' class='input'>
+          <select v-model='form.tls_mode' class='input' :disabled='form.trust_mode_source === "auto"'>
             <option value='pin_and_ca'>Pin + CA</option>
             <option value='pin_only'>仅证书 Pin</option>
             <option value='ca_only'>仅 CA 信任链</option>
@@ -105,14 +110,24 @@
 
       <div class='form-group'>
         <label class='form-label'>Pin Set（每行一个，格式 type:value）</label>
-        <textarea v-model='pinSetText' class='input textarea' placeholder='spki_sha256:abc123'></textarea>
+        <textarea
+          v-model='pinSetText'
+          class='input textarea'
+          placeholder='spki_sha256:abc123'
+          :disabled='form.trust_mode_source === "auto"'
+        ></textarea>
       </div>
 
       <div class='form-group'>
         <label class='form-label'>可信 CA 证书</label>
         <div class='checkbox-list'>
           <label v-for='cert in certificates' :key="`ca-${cert.id}`" class='checkbox-item'>
-            <input :checked='trustedCaSet.has(Number(cert.id))' type='checkbox' @change='toggleTrustedCa(cert.id)'>
+            <input
+              :checked='trustedCaSet.has(Number(cert.id))'
+              type='checkbox'
+              :disabled='form.trust_mode_source === "auto"'
+              @change='toggleTrustedCa(cert.id)'
+            >
             <span>#{{ cert.id }} {{ cert.domain }}</span>
           </label>
         </div>
@@ -189,12 +204,17 @@ watch(
 
 watch(
   () => form.value.certificate_source,
-  (value) => {
-    if (value === 'auto_relay_ca' && !isEdit.value) {
+  (value, oldValue) => {
+    if (value === 'auto_relay_ca') {
       form.value.certificate_id = null
       return
     }
-    if (value === 'existing_certificate' && form.value.certificate_id == null && certificates.value.length) {
+    if (
+      value === 'existing_certificate'
+      && form.value.certificate_id == null
+      && certificates.value.length
+      && oldValue !== undefined
+    ) {
       form.value.certificate_id = Number(certificates.value[0].id)
     }
   }
@@ -202,15 +222,16 @@ watch(
 
 watch(
   () => form.value.trust_mode_source,
-  (value) => {
+  (value, oldValue) => {
     if (value === 'auto') {
       form.value.tls_mode = 'pin_and_ca'
-      if (!isEdit.value) {
-        form.value.allow_self_signed = true
+      form.value.allow_self_signed = true
+      if (oldValue && oldValue !== 'auto') {
+        pinSetText.value = ''
+        trustedCaSet.value = new Set()
       }
     }
-  },
-  { immediate: true }
+  }
 )
 
 function createDefaultForm() {
@@ -234,12 +255,6 @@ function inferCertificateSource(initialData) {
   if (initialData?.certificate_source === 'auto_relay_ca' || initialData?.certificate_source === 'existing_certificate') {
     return initialData.certificate_source
   }
-  if (initialData?.trust_mode_source === 'auto') {
-    return 'auto_relay_ca'
-  }
-  if (initialData?.tls_mode === 'pin_and_ca' && initialData?.allow_self_signed === true) {
-    return 'auto_relay_ca'
-  }
   return initialData ? 'existing_certificate' : 'auto_relay_ca'
 }
 
@@ -248,9 +263,6 @@ function inferTrustModeSource(initialData) {
     return initialData.trust_mode_source
   }
   if (!initialData) return 'auto'
-  if (initialData.tls_mode === 'pin_and_ca' && initialData.allow_self_signed === true) {
-    return 'auto'
-  }
   return 'custom'
 }
 
@@ -292,6 +304,7 @@ function resetErrors() {
 }
 
 function toggleTrustedCa(certId) {
+  if (form.value.trust_mode_source === 'auto') return
   const value = Number(certId)
   const next = new Set(trustedCaSet.value)
   if (next.has(value)) next.delete(value)
@@ -358,8 +371,10 @@ function validate() {
 async function handleSubmit() {
   if (!validate()) return
 
-  const pinSet = parsePinSetRows()
-  const trustedCaIds = [...trustedCaSet.value].map((id) => Number(id))
+  const pinSet = form.value.trust_mode_source === 'auto' ? [] : parsePinSetRows()
+  const trustedCaIds = form.value.trust_mode_source === 'auto'
+    ? []
+    : [...trustedCaSet.value].map((id) => Number(id))
   const payload = {
     name: form.value.name.trim(),
     listen_host: form.value.listen_host.trim() || '0.0.0.0',
@@ -367,13 +382,13 @@ async function handleSubmit() {
     enabled: form.value.enabled,
     certificate_id: form.value.certificate_source === 'existing_certificate'
       ? (form.value.certificate_id == null ? null : Number(form.value.certificate_id))
-      : (form.value.certificate_id == null ? null : Number(form.value.certificate_id)),
+      : null,
     certificate_source: form.value.certificate_source,
     trust_mode_source: form.value.trust_mode_source,
     tls_mode: form.value.trust_mode_source === 'auto' ? 'pin_and_ca' : form.value.tls_mode,
     pin_set: pinSet,
     trusted_ca_certificate_ids: trustedCaIds,
-    allow_self_signed: form.value.allow_self_signed,
+    allow_self_signed: form.value.trust_mode_source === 'auto' ? true : form.value.allow_self_signed,
     tags: tagsText.value
       .split(',')
       .map((item) => item.trim())

@@ -110,7 +110,7 @@ const deleteError = ref('')
 
 function trustSummary(listener) {
   if (listener.trust_mode_source === 'auto') return '自动 Relay CA + Pin'
-  if (listener.tls_mode === 'pin_and_ca') return '自动（Pin + CA）'
+  if (listener.tls_mode === 'pin_and_ca') return 'Pin + CA'
   if (listener.tls_mode === 'pin_only') return '仅 Pin'
   if (listener.tls_mode === 'ca_only') return '仅 CA'
   return '兼容模式'
