@@ -522,6 +522,8 @@ function normalizeRulePayload(body, fallback = {}, suggestedId = null) {
     } else {
       backendSource = [{ url: fallback.backend_url }];
     }
+  } else if (Array.isArray(fallback.backends) && fallback.backends.length > 0) {
+    backendSource = fallback.backends;
   } else if (body.backend_url !== undefined) {
     backendSource = [{ url: body.backend_url }];
   } else if (Array.isArray(fallback.backends)) {

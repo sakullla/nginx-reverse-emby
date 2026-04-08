@@ -746,6 +746,23 @@ describe("Property 1: Data round-trip consistency", { skip: !canRunSqlite && "Pr
       ]);
       assert.equal(updated.rule.backend_url, "http://backend-a.multi.internal:8080");
       assert.deepStrictEqual(updated.rule.load_balancing, { strategy: "random" });
+
+      const legacyUpdateResponse = await fetch(`${baseUrl}/api/rules/${multiRuleId}`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          backend_url: "http://backend-a.multi.internal:8080",
+          tags: ["legacy-update-shape"],
+        }),
+      });
+      assert.equal(legacyUpdateResponse.status, 200);
+      const legacyUpdated = await legacyUpdateResponse.json();
+      assert.deepStrictEqual(legacyUpdated.rule.backends, [
+        { url: "http://backend-a.multi.internal:8080" },
+        { url: "http://backend-b.multi.internal:8080" },
+      ]);
+      assert.equal(legacyUpdated.rule.backend_url, "http://backend-a.multi.internal:8080");
+      assert.deepStrictEqual(legacyUpdated.rule.load_balancing, { strategy: "random" });
     });
   });
 });
