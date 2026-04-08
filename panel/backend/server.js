@@ -1073,22 +1073,28 @@ function cloneSerializable(value) {
 
 function preserveLegacyTcpFieldsOnPartialUpdate(existingRule, body, nextRule) {
   const source = existingRule && typeof existingRule === "object" ? existingRule : {};
-  const normalizedBody = body && typeof body === "object" ? body : {};
   const protocol = String(source.protocol || "").trim().toLowerCase();
   if (protocol !== "tcp") {
     return nextRule;
   }
 
-  const compatibilityTouched = [
-    "protocol",
-    "backends",
-    "upstream_host",
-    "upstream_port",
-    "load_balancing",
-    "tuning",
-    "relay_chain",
-  ].some((key) => Object.prototype.hasOwnProperty.call(normalizedBody, key));
-  if (compatibilityTouched) {
+  let fallbackNormalized;
+  try {
+    fallbackNormalized = normalizeStoredL4Rule(source, source.id);
+  } catch (_) {
+    return nextRule;
+  }
+  const normalizedUnchanged =
+    nextRule.protocol === fallbackNormalized.protocol &&
+    nextRule.listen_host === fallbackNormalized.listen_host &&
+    nextRule.listen_port === fallbackNormalized.listen_port &&
+    nextRule.upstream_host === fallbackNormalized.upstream_host &&
+    nextRule.upstream_port === fallbackNormalized.upstream_port &&
+    JSON.stringify(nextRule.backends) === JSON.stringify(fallbackNormalized.backends) &&
+    JSON.stringify(nextRule.load_balancing) === JSON.stringify(fallbackNormalized.load_balancing) &&
+    JSON.stringify(nextRule.tuning) === JSON.stringify(fallbackNormalized.tuning) &&
+    JSON.stringify(nextRule.relay_chain) === JSON.stringify(fallbackNormalized.relay_chain);
+  if (!normalizedUnchanged) {
     return nextRule;
   }
 
@@ -2439,7 +2445,7 @@ function getDesiredRevisionForSync(agent, agentId, rules = [], options = {}) {
   const desiredRevision = normalizeRevision(agent?.desired_revision);
   const currentRevision = normalizeRevision(agent?.current_revision);
   const highestRuleRevision = getHighestRuleRevision(rules);
-  const highestL4Revision = getHighestL4RuleRevision(storage.loadL4RulesForAgent(agentId));
+  const highestL4Revision = getHighestL4RuleRevision(loadNormalizedL4RulesForAgent(agentId));
   const highestRelayListenerRevision = getHighestRelayListenerRevision(
     storage.loadRelayListenersForAgent(agentId),
   );
@@ -4764,6 +4770,7 @@ async function handleMasterApi(req, res) {
       }
       const deleted = rules.splice(index, 1)[0];
       storage.saveL4RulesForAgent(agentId, rules);
+      const responseRule = normalizeStoredL4Rule(deleted, ruleId);
 
       if (AUTO_APPLY) {
         try {
@@ -4781,7 +4788,7 @@ async function handleMasterApi(req, res) {
         }
       }
 
-      sendJson(res, 200, { ok: true, rule: deleted });
+      sendJson(res, 200, { ok: true, rule: responseRule });
     } catch (err) {
       sendJson(res, 400, errorPayload(String(err.message || err)));
     }

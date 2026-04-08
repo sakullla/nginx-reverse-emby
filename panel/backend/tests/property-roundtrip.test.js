@@ -971,6 +971,61 @@ describe("Property 1: Data round-trip consistency", { skip: !canRunSqlite && "Pr
     );
   });
 
+  it("L4 API delete returns normalized response shape for legacy stored rules", async () => {
+    await withBackendServer(
+      {
+        env: { PANEL_ROLE: "master", PANEL_AUTO_APPLY: "0" },
+        agents: [
+          {
+            id: "l4-delete-normalize-agent",
+            name: "l4-delete-normalize-agent",
+            agent_token: "token-l4-delete-normalize-agent",
+            capabilities: ["l4"],
+            desired_revision: 5,
+            current_revision: 5,
+          },
+        ],
+        l4RulesByAgentId: {
+          "l4-delete-normalize-agent": [
+            {
+              id: 6,
+              agent_id: "l4-delete-normalize-agent",
+              name: "legacy-delete-shape",
+              protocol: "tcp",
+              listen_host: "0.0.0.0",
+              listen_port: 9510,
+              backends: [
+                { host: "legacy-a.internal", port: 9511, weight: 12, backup: true, max_conns: 77 },
+                { host: "legacy-b.internal", port: 9512, weight: 3 },
+              ],
+              load_balancing: { strategy: "hash", hash_key: "$remote_addr", zone_size: "256k" },
+              tuning: { proxy_protocol: { decode: true, send: false } },
+              enabled: true,
+              tags: ["legacy"],
+              revision: 6,
+            },
+          ],
+        },
+      },
+      async ({ baseUrl }) => {
+        const response = await fetch(`${baseUrl}/api/agents/l4-delete-normalize-agent/l4-rules/6`, {
+          method: "DELETE",
+        });
+        assert.equal(response.status, 200);
+        const payload = await response.json();
+        assert.deepStrictEqual(payload.rule.backends, [
+          { host: "legacy-a.internal", port: 9511 },
+          { host: "legacy-b.internal", port: 9512 },
+        ]);
+        assert.deepStrictEqual(payload.rule.load_balancing, { strategy: "round_robin" });
+        assert.deepStrictEqual(payload.rule.tuning.proxy_protocol, {
+          decode: true,
+          send: false,
+        });
+      },
+    );
+  });
+
   it("L4 API rejects UDP rules that set tuning.proxy_protocol", async () => {
     await withBackendServer(
       {
@@ -1203,6 +1258,44 @@ describe("Property 1: Data round-trip consistency", { skip: !canRunSqlite && "Pr
             method: "PUT",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
+              protocol: "tcp",
+              listen_host: "0.0.0.0",
+              listen_port: 9700,
+              upstream_host: "legacy-a.internal",
+              upstream_port: 9701,
+              backends: [
+                { host: "legacy-a.internal", port: 9701 },
+                { host: "legacy-b.internal", port: 9702 },
+              ],
+              load_balancing: { strategy: "round_robin" },
+              tuning: {
+                listen: {
+                  reuseport: false,
+                  backlog: null,
+                  so_keepalive: false,
+                  tcp_nodelay: true,
+                },
+                proxy: {
+                  connect_timeout: "10s",
+                  idle_timeout: "10m",
+                  buffer_size: "16k",
+                },
+                upstream: {
+                  max_conns: 0,
+                  max_fails: 3,
+                  fail_timeout: "30s",
+                },
+                limit_conn: {
+                  key: "$binary_remote_addr",
+                  count: null,
+                  zone_size: "10m",
+                },
+                proxy_protocol: {
+                  decode: true,
+                  send: false,
+                },
+              },
+              relay_chain: [],
               enabled: false,
             }),
           },

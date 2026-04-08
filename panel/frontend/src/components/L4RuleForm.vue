@@ -434,8 +434,12 @@ watch(() => form.value.protocol, (newProto) => {
     form.value.tuning.proxy.udp_proxy_responses = null
     return
   }
-  form.value.tuning.proxy_protocol.decode = false
-  form.value.tuning.proxy_protocol.send = false
+  const udpDefaults = getDefaultTuning('udp')
+  form.value.tuning.listen = { ...udpDefaults.listen }
+  form.value.tuning.proxy = { ...udpDefaults.proxy }
+  form.value.tuning.upstream = { ...udpDefaults.upstream }
+  form.value.tuning.limit_conn = { ...udpDefaults.limit_conn }
+  form.value.tuning.proxy_protocol = { ...udpDefaults.proxy_protocol }
   form.value.relay_chain = []
 })
 

@@ -870,8 +870,8 @@ describe("Go agent heartbeat API", () => {
             id: "malformed-l4-row-agent",
             name: "malformed-l4-row-agent",
             agent_token: "token-malformed-l4-row-agent",
-            desired_revision: 9,
-            current_revision: 1,
+            desired_revision: 0,
+            current_revision: 0,
             created_at: "2026-04-01T00:00:00.000Z",
             updated_at: "2026-04-01T00:00:00.000Z",
           },
@@ -900,7 +900,7 @@ describe("Go agent heartbeat API", () => {
               upstream_host: "",
               upstream_port: 0,
               enabled: true,
-              revision: 9,
+              revision: 99,
             },
           ],
         },
@@ -911,6 +911,16 @@ describe("Go agent heartbeat API", () => {
         const listPayload = await listResponse.json();
         assert.equal(listPayload.rules.length, 1);
         assert.equal(listPayload.rules[0].id, 41);
+
+        const applyResponse = await fetch(`${baseUrl}/api/agents/malformed-l4-row-agent/apply`, {
+          method: "POST",
+        });
+        assert.equal(applyResponse.status, 200);
+
+        const detailResponse = await fetch(`${baseUrl}/api/agents/malformed-l4-row-agent`);
+        assert.equal(detailResponse.status, 200);
+        const detailPayload = await detailResponse.json();
+        assert.equal(detailPayload.agent.desired_revision, 8);
 
         const heartbeatResponse = await fetch(`${baseUrl}/api/agents/heartbeat`, {
           method: "POST",
@@ -927,6 +937,7 @@ describe("Go agent heartbeat API", () => {
         });
         assert.equal(heartbeatResponse.status, 200);
         const heartbeatPayload = await heartbeatResponse.json();
+        assert.equal(heartbeatPayload.sync.desired_revision, 8);
         assert.ok(Array.isArray(heartbeatPayload.sync.l4_rules));
         assert.equal(heartbeatPayload.sync.l4_rules.length, 1);
         assert.equal(heartbeatPayload.sync.l4_rules[0].id, 41);
