@@ -74,7 +74,12 @@
                 <path d='M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z' />
               </svg>
             </button>
-            <button class='cert-card__action cert-card__action--delete' title='删除' @click='startDelete(cert)'>
+            <button
+              v-if='!isSystemRelayCA(cert)'
+              class='cert-card__action cert-card__action--delete'
+              title='删除'
+              @click='startDelete(cert)'
+            >
               <svg width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'>
                 <polyline points='3 6 5 6 21 6' />
                 <path d='M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2' />
@@ -168,7 +173,9 @@ import { useCertificates, useDeleteCertificate, useIssueCertificate } from '../h
 import CertificateForm from '../components/CertificateForm.vue'
 import {
   getCertificateSourceLabel,
-  getCertificateUsageLabel
+  getCertificateUsageLabel,
+  isSystemManagedRelayListenerCertificate,
+  isSystemRelayCA
 } from '../utils/certificateTemplates'
 
 const route = useRoute()
@@ -239,12 +246,8 @@ function getStatusLabel(cert) {
   return '未知'
 }
 
-function isSystemRelayCA(cert) {
-  return Array.isArray(cert?.tags) && cert.tags.includes('system:relay-ca')
-}
-
 function getCertificateIssuerLabel(cert) {
-  if (cert?.certificate_type === 'internal_ca' && cert?.usage === 'relay_tunnel') {
+  if (isSystemManagedRelayListenerCertificate(cert)) {
     return '系统自动签发'
   }
   return getCertificateSourceLabel(cert?.certificate_type)
@@ -259,6 +262,9 @@ function startEdit(cert) {
 }
 
 function startDelete(cert) {
+  if (isSystemRelayCA(cert)) {
+    return
+  }
   deletingCert.value = cert
 }
 

@@ -1,3 +1,6 @@
+export const SYSTEM_RELAY_CA_TAG = 'system:relay-ca'
+export const SYSTEM_RELAY_TUNNEL_TAG = 'system:auto-relay-tunnel'
+
 export const CERTIFICATE_TEMPLATES = [
   {
     id: 'https',
@@ -49,9 +52,25 @@ export const CERTIFICATE_TEMPLATES = [
   }
 ]
 
+function getCertificateTags(certificate) {
+  return Array.isArray(certificate?.tags) ? certificate.tags : []
+}
+
+export function isSystemRelayCA(certificate) {
+  return getCertificateTags(certificate).includes(SYSTEM_RELAY_CA_TAG)
+}
+
+export function isSystemManagedRelayListenerCertificate(certificate) {
+  return (
+    certificate?.usage === 'relay_tunnel' &&
+    certificate?.certificate_type === 'internal_ca' &&
+    getCertificateTags(certificate).includes(SYSTEM_RELAY_TUNNEL_TAG)
+  )
+}
+
 export function inferCertificateTemplate(certificate) {
   if (!certificate) return 'https'
-  if (certificate.certificate_type === 'internal_ca' && certificate.usage === 'relay_ca') {
+  if (isSystemRelayCA(certificate)) {
     return ''
   }
   if (certificate.certificate_type === 'internal_ca' && certificate.usage === 'relay_tunnel') {

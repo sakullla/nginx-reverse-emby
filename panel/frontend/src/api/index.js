@@ -2,6 +2,8 @@ import axios from 'axios'
 
 const isDev = import.meta.env.DEV
 const sleep = (ms = 500) => new Promise((resolve) => setTimeout(resolve, ms))
+const SYSTEM_RELAY_CA_TAG = 'system:relay-ca'
+const SYSTEM_RELAY_TUNNEL_TAG = 'system:auto-relay-tunnel'
 
 function readDevMockFlags() {
   if (!isDev || typeof window === 'undefined') return {}
@@ -546,12 +548,12 @@ export async function deleteL4Rule(agentId, id) {
 const mockCertsByAgent = {
   local: [
     { id: 1, domain: 'media.example.com', enabled: true, scope: 'domain', issuer_mode: 'master_cf_dns', usage: 'https', certificate_type: 'acme', self_signed: false, status: 'active', last_issue_at: new Date().toISOString(), last_error: '', tags: ['media', 'streaming'] },
-    { id: 2, domain: '__relay-ca.internal', enabled: true, scope: 'domain', issuer_mode: 'local_http01', usage: 'relay_ca', certificate_type: 'internal_ca', self_signed: true, status: 'active', last_issue_at: new Date().toISOString(), last_error: '', tags: ['system', 'system:relay-ca'] },
-    { id: 3, domain: 'relay-local.local.relay.internal', enabled: true, scope: 'domain', issuer_mode: 'local_http01', usage: 'relay_tunnel', certificate_type: 'internal_ca', self_signed: false, status: 'active', last_issue_at: new Date().toISOString(), last_error: '', tags: ['relay', 'listener:1'] }
+    { id: 2, domain: '__relay-ca.internal', enabled: true, scope: 'domain', issuer_mode: 'local_http01', usage: 'relay_ca', certificate_type: 'internal_ca', self_signed: true, status: 'active', last_issue_at: new Date().toISOString(), last_error: '', tags: ['system', SYSTEM_RELAY_CA_TAG] },
+    { id: 3, domain: 'relay-local.local.relay.internal', enabled: true, scope: 'domain', issuer_mode: 'local_http01', usage: 'relay_tunnel', certificate_type: 'internal_ca', self_signed: false, status: 'active', last_issue_at: new Date().toISOString(), last_error: '', tags: ['relay', 'listener:1', SYSTEM_RELAY_TUNNEL_TAG] }
   ],
   'edge-1': [
     { id: 1, domain: 'media.example.com', enabled: true, scope: 'domain', issuer_mode: 'master_cf_dns', usage: 'https', certificate_type: 'acme', self_signed: false, status: 'active', last_issue_at: new Date().toISOString(), last_error: '', tags: ['media'] },
-    { id: 2, domain: 'relay-edge-1.relay.internal', enabled: true, scope: 'domain', issuer_mode: 'local_http01', usage: 'relay_tunnel', certificate_type: 'internal_ca', self_signed: false, status: 'active', last_issue_at: new Date().toISOString(), last_error: '', tags: ['relay', 'listener:2'] },
+    { id: 2, domain: 'relay-edge-1.relay.internal', enabled: true, scope: 'domain', issuer_mode: 'local_http01', usage: 'relay_tunnel', certificate_type: 'internal_ca', self_signed: false, status: 'active', last_issue_at: new Date().toISOString(), last_error: '', tags: ['relay', 'listener:2', SYSTEM_RELAY_TUNNEL_TAG] },
     { id: 3, domain: 'relay-uploaded.example.com', enabled: true, scope: 'domain', issuer_mode: 'local_http01', usage: 'relay_tunnel', certificate_type: 'uploaded', self_signed: true, status: 'active', last_issue_at: new Date().toISOString(), last_error: '', tags: ['relay', 'uploaded'] }
   ],
   'edge-2': [
@@ -559,6 +561,18 @@ const mockCertsByAgent = {
   ]
 }
 let mockCertIdCounter = 10
+
+function hasMockCertificateTag(certificate, tag) {
+  return Array.isArray(certificate?.tags) && certificate.tags.includes(tag)
+}
+
+function isMockSystemRelayCA(certificate) {
+  return hasMockCertificateTag(certificate, SYSTEM_RELAY_CA_TAG)
+}
+
+function isMockSystemManagedRelayListenerPayload(payload) {
+  return payload?.usage === 'relay_tunnel' && payload?.certificate_type === 'internal_ca'
+}
 
 export async function fetchCertificates(agentId) {
   if (isDev) { await sleep(); return [...(mockCertsByAgent[agentId] || [])] }
@@ -569,11 +583,17 @@ export async function fetchCertificates(agentId) {
 export async function createCertificate(agentId, payload) {
   if (isDev) {
     await sleep()
+    const isSystemManagedRelayListener = isMockSystemManagedRelayListenerPayload(payload)
+    const tags = Array.isArray(payload.tags) ? [...payload.tags] : []
+    if (isSystemManagedRelayListener && !tags.includes(SYSTEM_RELAY_TUNNEL_TAG)) {
+      tags.push(SYSTEM_RELAY_TUNNEL_TAG)
+    }
     const item = {
       ...payload,
+      tags,
       id: ++mockCertIdCounter,
-      status: payload.certificate_type === 'uploaded' ? 'active' : 'pending',
-      last_issue_at: payload.certificate_type === 'uploaded' ? new Date().toISOString() : '',
+      status: payload.certificate_type === 'uploaded' || isSystemManagedRelayListener ? 'active' : 'pending',
+      last_issue_at: payload.certificate_type === 'uploaded' || isSystemManagedRelayListener ? new Date().toISOString() : '',
       last_error: ''
     }
     mockCertsByAgent[agentId] = mockCertsByAgent[agentId] || []
@@ -589,7 +609,24 @@ export async function updateCertificate(agentId, id, payload) {
     await sleep()
     const list = mockCertsByAgent[agentId] || []
     const idx = list.findIndex((c) => c.id === id)
-    if (idx !== -1) { list[idx] = { ...list[idx], ...payload }; return list[idx] }
+    if (idx !== -1) {
+      if (isMockSystemRelayCA(list[idx])) {
+        return list[idx]
+      }
+      const next = { ...list[idx], ...payload }
+      if (isMockSystemManagedRelayListenerPayload(next)) {
+        const tags = Array.isArray(next.tags) ? [...next.tags] : []
+        if (!tags.includes(SYSTEM_RELAY_TUNNEL_TAG)) {
+          tags.push(SYSTEM_RELAY_TUNNEL_TAG)
+        }
+        next.tags = tags
+        next.status = 'active'
+        next.last_issue_at = next.last_issue_at || new Date().toISOString()
+        next.last_error = ''
+      }
+      list[idx] = next
+      return list[idx]
+    }
     return null
   }
   const { data } = await api.put(`/agents/${encodeURIComponent(agentId)}/certificates/${id}`, payload, longRunningRequest)
@@ -601,6 +638,7 @@ export async function deleteCertificate(agentId, id) {
     await sleep()
     const list = mockCertsByAgent[agentId] || []
     const idx = list.findIndex((c) => c.id === id)
+    if (idx !== -1 && isMockSystemRelayCA(list[idx])) return null
     if (idx !== -1) return list.splice(idx, 1)[0]
     return null
   }

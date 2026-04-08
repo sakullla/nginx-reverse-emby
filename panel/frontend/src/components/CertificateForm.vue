@@ -3,9 +3,10 @@
     <section class='form-section'>
       <div class='section-heading'>
         <h3>用途模板</h3>
-        <p>先选最接近的场景，再补充域名与证书材料。</p>
+        <p v-if='isProtectedSystemRelayCA'>系统 Relay CA 由控制面维护，创建入口与用途切换已锁定。</p>
+        <p v-else>先选最接近的场景，再补充域名与证书材料。</p>
       </div>
-      <div class='template-grid'>
+      <div v-if='!isProtectedSystemRelayCA' class='template-grid'>
         <button
           v-for='template in CERTIFICATE_TEMPLATES'
           :key='template.id'
@@ -18,6 +19,9 @@
           <span>{{ template.description }}</span>
         </button>
       </div>
+      <div v-else class='cert-banner cert-banner--info'>
+        系统 Relay CA 始终保持固定身份与用途，当前窗口仅用于查看状态。
+      </div>
     </section>
 
     <section class='form-section'>
@@ -28,6 +32,7 @@
           class='input'
           :class="{ 'input--error': errors.domain }"
           placeholder='media.example.com 或 1.2.3.4'
+          :disabled='isProtectedSystemRelayCA'
           @input='errors.domain = ""'
         >
         <p v-if='errors.domain' class='form-error'>{{ errors.domain }}</p>
@@ -36,10 +41,10 @@
       <div v-if='form.scope === "ip"' class='cert-banner cert-banner--warn'>
         IP 证书仅支持节点本地签发。
       </div>
-      <div v-else-if='isSystemRelayCA' class='cert-banner cert-banner--info'>
+      <div v-else-if='isProtectedSystemRelayCA' class='cert-banner cert-banner--info'>
         当前证书是系统 Relay CA，由控制面统一维护并用于 Relay 自动信任链。
       </div>
-      <div v-else-if='form.usage === "relay_tunnel" && form.certificate_type === "internal_ca"' class='cert-banner cert-banner--info'>
+      <div v-else-if='isSystemManagedRelayListener' class='cert-banner cert-banner--info'>
         Relay 监听证书默认由控制面使用全局 Relay CA 自动签发并分发。
       </div>
       <div v-else-if='form.issuer_mode === "master_cf_dns"' class='cert-banner cert-banner--info'>
@@ -95,9 +100,10 @@
           <div class='tag-input__container'>
             <span v-for='(tag, index) in form.tags' :key='tag' class='tag'>
               {{ tag }}
-              <button type='button' class='tag__remove' @click='removeTag(index)'>×</button>
+              <button v-if='!isProtectedSystemRelayCA' type='button' class='tag__remove' @click='removeTag(index)'>×</button>
             </span>
             <input
+              v-if='!isProtectedSystemRelayCA'
               v-model='tagInput'
               type='text'
               class='tag-input__field'
@@ -109,29 +115,34 @@
       </div>
 
       <label class='toggle-row'>
-        <input v-model='form.enabled' type='checkbox' class='toggle__input'>
+        <input v-model='form.enabled' type='checkbox' class='toggle__input' :disabled='isProtectedSystemRelayCA'>
         <span class='toggle__slider'></span>
-        <span class='toggle__label'>启用并参与分发</span>
+        <span class='toggle__label'>{{ isProtectedSystemRelayCA ? '系统证书始终由控制面管理' : '启用并参与分发' }}</span>
       </label>
     </section>
 
     <section class='form-section form-section--compact'>
-      <button type='button' class='advanced-toggle' @click='showAdvanced = !showAdvanced'>
+      <button
+        v-if='!isProtectedSystemRelayCA'
+        type='button'
+        class='advanced-toggle'
+        @click='showAdvanced = !showAdvanced'
+      >
         {{ showAdvanced ? '收起高级证书设置' : '高级证书设置' }}
       </button>
 
-      <div v-if='showAdvanced' class='advanced-panel'>
+      <div v-if='showAdvanced || isProtectedSystemRelayCA' class='advanced-panel'>
         <div class='form-row'>
           <div class='form-group'>
             <label class='form-label'>证书类型</label>
-            <select v-model='form.scope' class='input' @change='handleScopeChange'>
+            <select v-model='form.scope' class='input' :disabled='isProtectedSystemRelayCA' @change='handleScopeChange'>
               <option value='domain'>域名证书</option>
               <option value='ip'>IP 证书</option>
             </select>
           </div>
           <div class='form-group'>
             <label class='form-label'>签发模式</label>
-            <select v-model='form.issuer_mode' class='input' :disabled='form.scope === "ip"'>
+            <select v-model='form.issuer_mode' class='input' :disabled='form.scope === "ip" || isProtectedSystemRelayCA'>
               <option value='master_cf_dns'>Master 统一签发 (DNS)</option>
               <option value='local_http01'>节点本地签发</option>
             </select>
@@ -141,16 +152,16 @@
         <div class='form-row'>
           <div class='form-group'>
             <label class='form-label'>用途</label>
-            <select v-model='form.usage' class='input'>
+            <select v-model='form.usage' class='input' :disabled='isProtectedSystemRelayCA'>
               <option value='https'>HTTPS</option>
               <option value='relay_tunnel'>Relay 隧道</option>
-              <option v-if='isSystemRelayCA' value='relay_ca'>系统 Relay CA</option>
+              <option v-if='isProtectedSystemRelayCA' value='relay_ca'>系统 Relay CA</option>
               <option value='mixed'>混合用途</option>
             </select>
           </div>
           <div class='form-group'>
             <label class='form-label'>证书来源</label>
-            <select v-model='form.certificate_type' class='input'>
+            <select v-model='form.certificate_type' class='input' :disabled='isProtectedSystemRelayCA'>
               <option value='acme'>自动签发</option>
               <option value='uploaded'>手动上传</option>
               <option value='internal_ca'>内部自签</option>
@@ -159,7 +170,7 @@
         </div>
 
         <label class='toggle-row'>
-          <input v-model='form.self_signed' type='checkbox' class='toggle__input'>
+          <input v-model='form.self_signed' type='checkbox' class='toggle__input' :disabled='isProtectedSystemRelayCA'>
           <span class='toggle__slider'></span>
           <span class='toggle__label'>标记为自签名证书</span>
         </label>
@@ -168,7 +179,11 @@
 
     <p v-if='errors.submit' class='form-error form-error--block'>{{ errors.submit }}</p>
 
-    <button type='submit' class='btn btn--primary btn--full' :disabled='isLoading'>
+    <div v-if='isProtectedSystemRelayCA' class='cert-banner cert-banner--info'>
+      系统 Relay CA 不提供前端保存或删除操作。
+    </div>
+
+    <button v-else type='submit' class='btn btn--primary btn--full' :disabled='isLoading'>
       {{ isEdit ? '保存修改' : '创建证书' }}
     </button>
   </form>
@@ -180,7 +195,9 @@ import { useCreateCertificate, useUpdateCertificate } from '../hooks/useCertific
 import {
   CERTIFICATE_TEMPLATES,
   applyCertificateTemplate,
-  inferCertificateTemplate
+  inferCertificateTemplate,
+  isSystemManagedRelayListenerCertificate,
+  isSystemRelayCA
 } from '../utils/certificateTemplates'
 
 const props = defineProps({
@@ -210,11 +227,8 @@ const errors = reactive({
   private_key_pem: '',
   submit: ''
 })
-const isSystemRelayCA = computed(() =>
-  form.value.usage === 'relay_ca' &&
-  form.value.certificate_type === 'internal_ca' &&
-  form.value.tags.includes('system:relay-ca')
-)
+const isProtectedSystemRelayCA = computed(() => isSystemRelayCA(props.initialData))
+const isSystemManagedRelayListener = computed(() => isSystemManagedRelayListenerCertificate(props.initialData))
 
 function createInitialForm() {
   return {
@@ -282,6 +296,9 @@ function validateUploadedFields() {
 }
 
 async function handleSubmit() {
+  if (isProtectedSystemRelayCA.value) {
+    return
+  }
   errors.domain = ''
   errors.submit = ''
 
