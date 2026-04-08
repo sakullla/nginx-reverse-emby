@@ -36,6 +36,12 @@
       <div v-if='form.scope === "ip"' class='cert-banner cert-banner--warn'>
         IP 证书仅支持节点本地签发。
       </div>
+      <div v-else-if='isSystemRelayCA' class='cert-banner cert-banner--info'>
+        当前证书是系统 Relay CA，由控制面统一维护并用于 Relay 自动信任链。
+      </div>
+      <div v-else-if='form.usage === "relay_tunnel" && form.certificate_type === "internal_ca"' class='cert-banner cert-banner--info'>
+        Relay 监听证书默认由控制面使用全局 Relay CA 自动签发并分发。
+      </div>
       <div v-else-if='form.issuer_mode === "master_cf_dns"' class='cert-banner cert-banner--info'>
         Master 统一签发需要已配置 Cloudflare DNS Token。
       </div>
@@ -138,7 +144,7 @@
             <select v-model='form.usage' class='input'>
               <option value='https'>HTTPS</option>
               <option value='relay_tunnel'>Relay 隧道</option>
-              <option value='relay_ca'>Relay CA</option>
+              <option v-if='isSystemRelayCA' value='relay_ca'>系统 Relay CA</option>
               <option value='mixed'>混合用途</option>
             </select>
           </div>
@@ -204,6 +210,11 @@ const errors = reactive({
   private_key_pem: '',
   submit: ''
 })
+const isSystemRelayCA = computed(() =>
+  form.value.usage === 'relay_ca' &&
+  form.value.certificate_type === 'internal_ca' &&
+  form.value.tags.includes('system:relay-ca')
+)
 
 function createInitialForm() {
   return {

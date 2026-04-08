@@ -86,12 +86,13 @@
         <div class='cert-card__domain'>{{ cert.domain }}</div>
         <div class='cert-card__meta'>
           <span class='cert-card__scope'>{{ getCertificateUsageLabel(cert.usage) }}</span>
-          <span class='cert-card__issuer'>{{ getCertificateSourceLabel(cert.certificate_type) }}</span>
+          <span class='cert-card__issuer'>{{ getCertificateIssuerLabel(cert) }}</span>
           <span class='cert-card__issuer'>{{ cert.scope === 'ip' ? 'IP 证书' : '域名证书' }}</span>
           <span v-if='cert.last_issue_at' class='cert-card__date'>{{ formatDate(cert.last_issue_at) }}</span>
         </div>
         <p v-if='cert.last_error' class='cert-card__error'>{{ cert.last_error }}</p>
         <div class='cert-card__tags'>
+          <span v-if='isSystemRelayCA(cert)' class='tag tag--info'>系统 Relay CA</span>
           <span v-if='cert.self_signed' class='tag tag--warn'>自签</span>
           <span v-for='tag in cert.tags || []' :key='tag' class='tag'>{{ tag }}</span>
         </div>
@@ -238,6 +239,17 @@ function getStatusLabel(cert) {
   return '未知'
 }
 
+function isSystemRelayCA(cert) {
+  return Array.isArray(cert?.tags) && cert.tags.includes('system:relay-ca')
+}
+
+function getCertificateIssuerLabel(cert) {
+  if (cert?.certificate_type === 'internal_ca' && cert?.usage === 'relay_tunnel') {
+    return '系统自动签发'
+  }
+  return getCertificateSourceLabel(cert?.certificate_type)
+}
+
 function issueCert(cert) {
   issueCertificate.mutate(cert.id)
 }
@@ -345,6 +357,7 @@ function confirmDelete() {
 .cert-card__date { font-size: 0.75rem; color: var(--color-text-tertiary); }
 .cert-card__tags { display: flex; gap: 0.25rem; flex-wrap: wrap; }
 .tag { font-size: 0.75rem; padding: 2px 8px; background: var(--color-primary-subtle); color: var(--color-primary); border-radius: var(--radius-full); font-weight: 500; }
+.tag--info { background: var(--color-primary-subtle); color: var(--color-primary); }
 .tag--warn { background: var(--color-warning-50); color: var(--color-warning); }
 
 .cert-card__status { font-size: 0.75rem; font-weight: 600; padding: 2px 8px; border-radius: var(--radius-full); }
