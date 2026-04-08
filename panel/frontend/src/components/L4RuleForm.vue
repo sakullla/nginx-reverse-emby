@@ -37,17 +37,8 @@
         <label class="form-label">负载均衡策略</label>
         <select v-model="form.load_balancing.strategy" class="input" @change="handleStrategyChange">
           <option value="round_robin">轮询 (Round Robin)</option>
-          <option value="least_conn">最少连接 (Least Connections)</option>
           <option value="random">随机 (Random)</option>
-          <option value="hash">哈希 (Hash)</option>
         </select>
-      </div>
-
-      <!-- Hash Key (only when strategy is hash) -->
-      <div v-if="form.load_balancing.strategy === 'hash'" class="form-group">
-        <label class="form-label">哈希键</label>
-        <input v-model="form.load_balancing.hash_key" class="input" placeholder="$binary_remote_addr">
-        <div class="form-help">例如: $remote_addr, $binary_remote_addr, $ssl_session_id</div>
       </div>
 
       <!-- Backends List -->
@@ -318,6 +309,13 @@ function createBackend(data = {}) {
   }
 }
 
+const SUPPORTED_L4_STRATEGIES = new Set(['round_robin', 'random'])
+
+function normalizeL4Strategy(value) {
+  const strategy = String(value || '').trim().toLowerCase()
+  return SUPPORTED_L4_STRATEGIES.has(strategy) ? strategy : 'round_robin'
+}
+
 function getDefaultTuning(protocol = 'tcp') {
   const isUdp = protocol === 'udp'
   return {
@@ -381,7 +379,7 @@ const form = ref({
   listen_port: props.initialData?.listen_port || 0,
   backends: initialBackends,
   load_balancing: {
-    strategy: props.initialData?.load_balancing?.strategy || 'round_robin',
+    strategy: normalizeL4Strategy(props.initialData?.load_balancing?.strategy),
     hash_key: props.initialData?.load_balancing?.hash_key || '$binary_remote_addr',
     zone_size: props.initialData?.load_balancing?.zone_size || '128k',
   },
@@ -451,7 +449,7 @@ watch(() => form.value.protocol, (newProto) => {
   form.value.relay_chain = []
 })
 
-const LB_TAG_MAP = { round_robin: 'RR', least_conn: 'LC', random: 'RND', hash: 'HASH' }
+const LB_TAG_MAP = { round_robin: 'RR', random: 'RND' }
 const LB_TAG_SET = new Set(Object.values(LB_TAG_MAP))
 
 function isL4AutoTag(t) {
@@ -476,6 +474,7 @@ function handleProtocolChange() {
 }
 
 function handleStrategyChange() {
+  form.value.load_balancing.strategy = normalizeL4Strategy(form.value.load_balancing.strategy)
   if (!isEdit.value) updateAutoTags()
 }
 
@@ -561,11 +560,7 @@ function buildPayload() {
     upstream_port: validBackends[0]?.port || 0,
     backends: validBackends,
     load_balancing: {
-      strategy: form.value.load_balancing.strategy,
-      ...(form.value.load_balancing.strategy === 'hash'
-        ? { hash_key: form.value.load_balancing.hash_key || '$binary_remote_addr' }
-        : {}),
-      zone_size: form.value.load_balancing.zone_size || '128k',
+      strategy: normalizeL4Strategy(form.value.load_balancing.strategy),
     },
     enabled: form.value.enabled,
     tags: [...sysTags, ...userTags],

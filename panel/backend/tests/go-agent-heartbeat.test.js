@@ -762,6 +762,100 @@ describe("Go agent heartbeat API", () => {
     );
   });
 
+  it("tolerates persisted legacy UDP proxy_protocol data on read paths", async () => {
+    await withBackendServer(
+      {
+        env: {
+          PANEL_ROLE: "master",
+        },
+        agents: [
+          {
+            id: "legacy-udp-read-agent",
+            name: "legacy-udp-read-agent",
+            agent_token: "token-legacy-udp-read-agent",
+            desired_revision: 8,
+            current_revision: 2,
+            created_at: "2026-04-01T00:00:00.000Z",
+            updated_at: "2026-04-01T00:00:00.000Z",
+          },
+        ],
+        l4RulesByAgentId: {
+          "legacy-udp-read-agent": [
+            {
+              id: 7,
+              agent_id: "legacy-udp-read-agent",
+              name: "legacy-udp-rule",
+              protocol: "udp",
+              listen_host: "0.0.0.0",
+              listen_port: 9550,
+              upstream_host: "127.0.0.1",
+              upstream_port: 9551,
+              backends: [
+                { host: "127.0.0.1", port: 9551, weight: 10, backup: true, max_conns: 9 },
+                { host: "backend-b.internal", port: 9552, weight: 5 },
+              ],
+              load_balancing: { strategy: "hash", hash_key: "$remote_addr", zone_size: "256k" },
+              tuning: {
+                proxy_protocol: {
+                  decode: true,
+                  send: true,
+                },
+              },
+              enabled: true,
+              tags: ["legacy-udp"],
+              revision: 7,
+            },
+          ],
+        },
+      },
+      async ({ baseUrl }) => {
+        const listResponse = await fetch(`${baseUrl}/api/agents/legacy-udp-read-agent/l4-rules`);
+        assert.equal(listResponse.status, 200);
+        const listPayload = await listResponse.json();
+        assert.equal(listPayload.rules.length, 1);
+        assert.deepEqual(listPayload.rules[0].backends, [
+          { host: "127.0.0.1", port: 9551 },
+          { host: "backend-b.internal", port: 9552 },
+        ]);
+        assert.deepEqual(listPayload.rules[0].load_balancing, {
+          strategy: "round_robin",
+        });
+        assert.deepEqual(listPayload.rules[0].tuning.proxy_protocol, {
+          decode: false,
+          send: false,
+        });
+
+        const heartbeatResponse = await fetch(`${baseUrl}/api/agents/heartbeat`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-agent-token": "token-legacy-udp-read-agent",
+          },
+          body: JSON.stringify({
+            name: "legacy-udp-read-agent",
+            current_revision: 2,
+            version: "1.0.0",
+            platform: "linux-amd64",
+          }),
+        });
+        assert.equal(heartbeatResponse.status, 200);
+        const heartbeatPayload = await heartbeatResponse.json();
+        assert.ok(Array.isArray(heartbeatPayload.sync.l4_rules));
+        assert.deepEqual(heartbeatPayload.sync.l4_rules[0].backends, [
+          { host: "127.0.0.1", port: 9551 },
+          { host: "backend-b.internal", port: 9552 },
+        ]);
+        assert.deepEqual(heartbeatPayload.sync.l4_rules[0].load_balancing, {
+          strategy: "round_robin",
+        });
+        assert.deepEqual(heartbeatPayload.sync.l4_rules[0].tuning.proxy_protocol, {
+          decode: false,
+          send: false,
+        });
+      },
+    );
+  });
+
   it("uses relay listener revisions when recalculating desired sync revision", async () => {
     await withBackendServer(
       {

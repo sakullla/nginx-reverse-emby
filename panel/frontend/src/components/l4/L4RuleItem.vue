@@ -76,8 +76,8 @@ const backendsTooltip = computed(() => backends.value.map((b, i) => {
   return s
 }).join('\n'))
 
-const LB_MAP = { round_robin: 'RR', least_conn: 'LC', random: 'RND', hash: 'HASH' }
-const LB_TITLES = { round_robin: '轮询 (Round Robin)', least_conn: '最少连接', random: '随机', hash: '哈希 (Hash)' }
+const LB_MAP = { round_robin: 'RR', random: 'RND' }
+const LB_TITLES = { round_robin: '轮询 (Round Robin)', random: '随机 (Random)' }
 const lbLabel = computed(() => LB_MAP[props.rule.load_balancing?.strategy] || 'RR')
 const lbTitle = computed(() => LB_TITLES[props.rule.load_balancing?.strategy] || '轮询')
 

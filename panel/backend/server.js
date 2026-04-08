@@ -1045,7 +1045,22 @@ function normalizeL4RulePayload(body, fallback = {}, suggestedId = null) {
 }
 
 function normalizeStoredL4Rule(rule, suggestedId = null) {
-  const normalized = normalizeL4RulePayload(rule || {}, rule || {}, suggestedId);
+  const source = rule && typeof rule === "object" ? rule : {};
+  const protocol = String(source.protocol || "").trim().toLowerCase();
+  const safeSource =
+    protocol === "udp"
+      ? {
+          ...source,
+          tuning: {
+            ...(source.tuning && typeof source.tuning === "object" ? source.tuning : {}),
+            proxy_protocol: {
+              decode: false,
+              send: false,
+            },
+          },
+        }
+      : source;
+  const normalized = normalizeL4RulePayload(safeSource, safeSource, suggestedId);
   normalized.revision = normalizeL4RuleRevision(rule?.revision);
   return normalized;
 }
