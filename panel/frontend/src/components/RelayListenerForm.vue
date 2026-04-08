@@ -64,6 +64,39 @@
       </p>
     </div>
 
+    <!-- Tags -->
+    <div class='form-group'>
+      <label class='form-label'>标签</label>
+      <div class='tag-input'>
+        <div class='tag-input__container'>
+          <span
+            v-for='(tag, index) in form.tags'
+            :key='tag'
+            class='tag'
+          >
+            {{ tag }}
+            <button
+              type='button'
+              class='tag__remove'
+              @click='removeTag(index)'
+            >
+              <svg width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'>
+                <line x1='18' y1='6' x2='6' y2='18'/>
+                <line x1='6' y1='6' x2='18' y2='18'/>
+              </svg>
+            </button>
+          </span>
+          <input
+            v-model='tagInput'
+            type='text'
+            class='tag-input__field'
+            placeholder='输入标签按回车...'
+            @keydown.enter.prevent='addTag'
+          >
+        </div>
+      </div>
+    </div>
+
     <label class='toggle-row'>
       <input
         v-model='form.allow_self_signed'
@@ -101,10 +134,6 @@
             <option value='ca_only'>仅 CA 信任链</option>
             <option value='pin_or_ca'>证书 Pin 或 CA</option>
           </select>
-        </div>
-        <div class='form-group'>
-          <label class='form-label'>标签</label>
-          <input v-model='tagsText' class='input' placeholder='relay, shared'>
         </div>
       </div>
 
@@ -165,7 +194,7 @@ const isLoading = computed(() => createRelayListener.isPending.value || updateRe
 
 const form = ref(createDefaultForm())
 const showAdvanced = ref(false)
-const tagsText = ref('')
+const tagInput = ref('')
 const pinSetText = ref('')
 const trustedCaSet = ref(new Set())
 const errors = ref({
@@ -181,7 +210,7 @@ watch(
   (value) => {
     form.value = createFormState(value)
     showAdvanced.value = false
-    tagsText.value = (form.value.tags || []).join(', ')
+    tagInput.value = ''
     pinSetText.value = (form.value.pin_set || [])
       .map((item) => `${item.type}:${item.value}`)
       .join('\n')
@@ -303,6 +332,18 @@ function resetErrors() {
   }
 }
 
+function addTag() {
+  const tag = tagInput.value.trim()
+  if (tag && !form.value.tags.includes(tag)) {
+    form.value.tags.push(tag)
+  }
+  tagInput.value = ''
+}
+
+function removeTag(index) {
+  form.value.tags.splice(index, 1)
+}
+
 function toggleTrustedCa(certId) {
   if (form.value.trust_mode_source === 'auto') return
   const value = Number(certId)
@@ -389,10 +430,7 @@ async function handleSubmit() {
     pin_set: pinSet,
     trusted_ca_certificate_ids: trustedCaIds,
     allow_self_signed: form.value.trust_mode_source === 'auto' ? true : form.value.allow_self_signed,
-    tags: tagsText.value
-      .split(',')
-      .map((item) => item.trim())
-      .filter(Boolean)
+    tags: [...form.value.tags]
   }
 
   try {
@@ -586,6 +624,78 @@ async function handleSubmit() {
 
 .btn--full {
   width: 100%;
+}
+
+/* Tag Input Styles */
+.tag-input {
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  transition: all var(--duration-fast) var(--ease-default);
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.tag-input:focus-within {
+  border-color: var(--color-primary);
+  box-shadow: var(--shadow-focus);
+}
+
+.tag-input__container {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-2);
+  align-items: center;
+  min-height: 36px;
+}
+
+.tag-input__field {
+  flex: 1;
+  min-width: 80px;
+  max-width: 200px;
+  border: none;
+  background: transparent;
+  padding: var(--space-1);
+  font-size: var(--text-sm);
+  color: var(--color-text-primary);
+  outline: none;
+}
+
+.tag-input__field::placeholder {
+  color: var(--color-text-muted);
+}
+
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: 2px 8px;
+  background: var(--color-bg-subtle);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-full);
+  font-size: var(--text-xs);
+  color: var(--color-text-primary);
+}
+
+.tag__remove {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border: none;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  padding: 0;
+  border-radius: 50%;
+  transition: all var(--duration-fast);
+}
+
+.tag__remove:hover {
+  background: var(--color-danger-50);
+  color: var(--color-danger);
 }
 
 @media (max-width: 720px) {

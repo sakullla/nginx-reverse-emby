@@ -3,7 +3,6 @@
     <!-- Tab Bar -->
     <div class="form-tabs">
       <button type="button" class="form-tabs__btn" :class="{ 'form-tabs__btn--active': activeTab === 'basic' }" @click="activeTab = 'basic'">基础配置</button>
-      <button type="button" class="form-tabs__btn" :class="{ 'form-tabs__btn--active': activeTab === 'advanced' }" @click="activeTab = 'advanced'">高级调优 <span v-if="hasAdvancedTuning" class="form-tabs__badge">已配置</span></button>
       <button type="button" class="form-tabs__btn" :class="{ 'form-tabs__btn--active': activeTab === 'protocol' }" @click="activeTab = 'protocol'">协议与监听 <span v-if="hasProtocolTuning" class="form-tabs__badge">已配置</span></button>
       <button type="button" class="form-tabs__btn" :class="{ 'form-tabs__btn--active': activeTab === 'relay' }" @click="activeTab = 'relay'" :disabled="form.protocol === 'udp'">Relay 配置 <span v-if="hasRelayConfig" class="form-tabs__badge">已配置</span></button>
     </div>
@@ -149,102 +148,27 @@
           </div>
         </div>
       </div>
-    </div>
 
-    <!-- Tab 2: Advanced Tuning -->
-    <div v-if="activeTab === 'advanced'" class="form-tab-panel">
-      <!-- Timeouts -->
-      <div class="advanced-group">
-        <div class="advanced-group__title">超时设置</div>
-        <div class="form-row">
-          <div class="form-group">
-            <label class="form-label">proxy_connect_timeout</label>
-            <input v-model="form.tuning.proxy.connect_timeout" class="input" placeholder="10s">
-          </div>
-          <div class="form-group">
-            <label class="form-label">proxy_timeout</label>
-            <input v-model="form.tuning.proxy.idle_timeout" class="input" :placeholder="form.protocol === 'udp' ? '20s' : '10m'">
-            <div class="form-help">如: 10s, 5m, 1h</div>
-          </div>
-        </div>
+      <div v-if="error" class="form-error">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="10"/>
+          <line x1="12" y1="8" x2="12" y2="12"/>
+          <line x1="12" y1="16" x2="12.01" y2="16"/>
+        </svg>
+        {{ error }}
       </div>
 
-      <!-- Health Check -->
-      <div class="advanced-group">
-        <div class="advanced-group__title">健康检查</div>
-        <div class="form-row">
-          <div class="form-group">
-            <label class="form-label">max_fails</label>
-            <input v-model.number="form.tuning.upstream.max_fails" class="input" type="number" min="0" placeholder="3">
-          </div>
-          <div class="form-group">
-            <label class="form-label">fail_timeout</label>
-            <input v-model="form.tuning.upstream.fail_timeout" class="input" placeholder="30s">
-          </div>
-        </div>
-      </div>
+      <!-- Enabled Toggle -->
+      <label class="toggle-row">
+        <input v-model="form.enabled" type="checkbox" class="toggle__input">
+        <span class="toggle__slider"></span>
+        <span class="toggle__label">启用规则</span>
+      </label>
 
-      <!-- Connection Limit -->
-      <div class="advanced-group">
-        <div class="advanced-group__title">连接限制</div>
-        <div class="form-row">
-          <div class="form-group">
-            <label class="form-label">limit_conn count</label>
-            <input v-model.number="form.tuning.limit_conn.count" class="input" type="number" min="0" placeholder="不限制">
-          </div>
-          <div class="form-group">
-            <label class="form-label">limit_conn_zone key</label>
-            <input v-model="form.tuning.limit_conn.key" class="input" placeholder="$binary_remote_addr">
-          </div>
-          <div class="form-group">
-            <label class="form-label">zone_size</label>
-            <input v-model="form.tuning.limit_conn.zone_size" class="input" placeholder="10m">
-          </div>
-        </div>
-      </div>
-
-      <!-- Buffer -->
-      <div class="advanced-group">
-        <div class="advanced-group__title">缓冲与上游</div>
-        <div class="form-row">
-          <div class="form-group">
-            <label class="form-label">proxy_buffer_size</label>
-            <input v-model="form.tuning.proxy.buffer_size" class="input" placeholder="16k">
-          </div>
-          <div class="form-group">
-            <label class="form-label">upstream max_conns</label>
-            <input v-model.number="form.tuning.upstream.max_conns" class="input" type="number" min="0" placeholder="0 (不限制)">
-          </div>
-        </div>
-      </div>
-
-      <!-- Backend Extensions (backup / max_conns per backend) -->
-      <div v-if="form.backends.length > 0" class="advanced-group">
-        <div class="advanced-group__title">后端扩展</div>
-        <div class="advanced-backends-list">
-          <div
-            v-for="(backend, index) in form.backends"
-            :key="'adv-' + backend.id"
-            class="advanced-backend-row"
-          >
-            <span class="advanced-backend-label">{{ backend.address || `backend ${index + 1}` }}</span>
-            <label class="backend-checkbox" title="backup server">
-              <input v-model="backend.backup" type="checkbox">
-              <span>backup</span>
-            </label>
-            <div class="backend-weight-wrapper">
-              <span class="backend-weight-label">max_conns</span>
-              <input
-                v-model.number="backend.max_conns"
-                class="input backend-weight-input"
-                type="number"
-                min="0"
-                placeholder="0"
-              >
-            </div>
-          </div>
-        </div>
-      </div>
+      <!-- Submit -->
+      <button type="submit" class="btn btn--primary btn--full" :disabled="createL4Rule.isPending.value || updateL4Rule.isPending.value">
+        {{ isEdit ? '保存修改' : '创建规则' }}
+      </button>
     </div>
 
     <!-- Tab 3: Protocol & Listen -->
@@ -264,49 +188,8 @@
         </div>
         <div class="form-help">接收: 从客户端/前置代理解析真实 IP；发送: 向后端传递客户端真实 IP</div>
       </div>
-
-      <!-- Listen Options -->
-      <div class="advanced-group">
-        <div class="advanced-group__title">监听选项</div>
-        <div class="advanced-checks">
-          <label class="backend-checkbox">
-            <input v-model="form.tuning.listen.reuseport" type="checkbox">
-            <span>reuseport</span>
-          </label>
-          <label class="backend-checkbox">
-            <input v-model="form.tuning.listen.tcp_nodelay" type="checkbox">
-            <span>tcp_nodelay</span>
-          </label>
-          <label class="backend-checkbox">
-            <input v-model="form.tuning.listen.so_keepalive" type="checkbox">
-            <span>so_keepalive</span>
-          </label>
-        </div>
-        <div class="form-row">
-          <div class="form-group">
-            <label class="form-label">backlog</label>
-            <input v-model.number="form.tuning.listen.backlog" class="input" type="number" min="0" placeholder="默认">
-          </div>
-        </div>
-      </div>
-
-      <!-- UDP-specific -->
-      <div v-if="form.protocol === 'udp'" class="advanced-group">
-        <div class="advanced-group__title">UDP 专属</div>
-        <div class="form-row">
-          <div class="form-group">
-            <label class="form-label">proxy_requests</label>
-            <input v-model.number="form.tuning.proxy.udp_proxy_requests" class="input" type="number" min="0" placeholder="默认">
-          </div>
-          <div class="form-group">
-            <label class="form-label">proxy_responses</label>
-            <input v-model.number="form.tuning.proxy.udp_proxy_responses" class="input" type="number" min="0" placeholder="默认">
-          </div>
-        </div>
-      </div>
     </div>
 
-    <!-- Tab: Relay -->
     <!-- Tab: Relay -->
     <div v-else-if="activeTab === 'relay'" class="form-tab-panel">
       <!-- UDP 不支持提示 -->
@@ -322,23 +205,6 @@
       </div>
 
       <template v-else>
-        <!-- 信息卡片 -->
-        <div class="relay-intro">
-          <div class="relay-intro__icon">
-            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <path d="M8 12h8"/>
-              <path d="M6 8h12"/>
-              <path d="M10 16h4"/>
-              <circle cx="4" cy="12" r="2"/>
-              <circle cx="20" cy="12" r="2"/>
-            </svg>
-          </div>
-          <div class="relay-intro__content">
-            <h3 class="relay-intro__title">Relay 链路配置</h3>
-            <p class="relay-intro__desc">通过 Relay 监听器构建多跳转发链路，实现 TCP 流量中转和跨网络访问</p>
-          </div>
-        </div>
-
         <!-- 提示信息 -->
         <div v-if="!relayListeners.length" class="relay-alert relay-alert--warning">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -405,27 +271,6 @@
         </div>
       </template>
     </div>
-
-    <div v-if="error" class="form-error">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <circle cx="12" cy="12" r="10"/>
-        <line x1="12" y1="8" x2="12" y2="12"/>
-        <line x1="12" y1="16" x2="12.01" y2="16"/>
-      </svg>
-      {{ error }}
-    </div>
-
-    <!-- Enabled Toggle -->
-    <label class="toggle-row">
-      <input v-model="form.enabled" type="checkbox" class="toggle__input">
-      <span class="toggle__slider"></span>
-      <span class="toggle__label">启用规则</span>
-    </label>
-
-    <!-- Submit -->
-    <button type="submit" class="btn btn--primary btn--full" :disabled="createL4Rule.isPending.value || updateL4Rule.isPending.value">
-      {{ isEdit ? '保存修改' : '创建规则' }}
-    </button>
   </form>
 </template>
 
@@ -546,7 +391,6 @@ const form = ref({
   relay_chain: Array.isArray(props.initialData?.relay_chain) ? [...props.initialData.relay_chain] : [],
 })
 
-const showAdvanced = ref(!!props.initialData?.tuning)
 const tagInput = ref('')
 const draggingIndex = ref(-1)
 const error = ref('')
@@ -575,22 +419,6 @@ const hasTuningChanges = computed(() => {
 })
 
 const activeTab = ref('basic')
-
-const hasAdvancedTuning = computed(() => {
-  const defaults = getDefaultTuning(form.value.protocol)
-  const t = form.value.tuning
-  const hasBackendExtensions = form.value.backends.some(b => b.backup || (b.max_conns && b.max_conns > 0))
-  return (
-    hasBackendExtensions ||
-    t.proxy.connect_timeout !== defaults.proxy.connect_timeout ||
-    t.proxy.idle_timeout !== defaults.proxy.idle_timeout ||
-    t.proxy.buffer_size !== defaults.proxy.buffer_size ||
-    t.upstream.max_conns !== defaults.upstream.max_conns ||
-    t.upstream.max_fails !== defaults.upstream.max_fails ||
-    t.upstream.fail_timeout !== defaults.upstream.fail_timeout ||
-    t.limit_conn.count !== defaults.limit_conn.count
-  )
-})
 
 const hasProtocolTuning = computed(() => {
   const defaults = getDefaultTuning(form.value.protocol)
@@ -1025,33 +853,6 @@ async function handleSubmit() {
   flex-wrap: wrap;
 }
 
-.advanced-backends-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-
-.advanced-backend-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-2) var(--space-3);
-  background: var(--color-bg-subtle);
-  border: 1px solid var(--color-border-subtle);
-  border-radius: var(--radius-md);
-}
-
-.advanced-backend-label {
-  flex: 1;
-  min-width: 0;
-  font-size: var(--text-xs);
-  font-family: var(--font-mono);
-  color: var(--color-text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 /* Buttons */
 .btn {
   display: inline-flex;
@@ -1286,47 +1087,6 @@ async function handleSubmit() {
   max-width: 400px;
 }
 
-.relay-intro {
-  display: flex;
-  align-items: center;
-  gap: var(--space-4);
-  padding: var(--space-5);
-  background: linear-gradient(135deg, var(--color-primary-subtle) 0%, var(--color-bg-surface) 100%);
-  border: 1px solid var(--color-primary-subtle);
-  border-radius: var(--radius-xl);
-}
-
-.relay-intro__icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 48px;
-  height: 48px;
-  background: var(--gradient-primary);
-  border-radius: var(--radius-lg);
-  color: white;
-  flex-shrink: 0;
-}
-
-.relay-intro__content {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-1);
-}
-
-.relay-intro__title {
-  margin: 0;
-  font-size: var(--text-lg);
-  font-weight: var(--font-semibold);
-  color: var(--color-text-primary);
-}
-
-.relay-intro__desc {
-  margin: 0;
-  font-size: var(--text-sm);
-  color: var(--color-text-secondary);
-}
-
 .relay-alert {
   display: flex;
   align-items: center;
@@ -1399,12 +1159,5 @@ async function handleSubmit() {
 
 .relay-help__list li {
   margin-bottom: var(--space-1);
-}
-
-@media (max-width: 640px) {
-  .relay-intro {
-    flex-direction: column;
-    text-align: center;
-  }
 }
 </style>

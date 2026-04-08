@@ -2,7 +2,7 @@
   <div class='certs-page'>
     <div class='certs-page__header'>
       <div class='certs-page__header-left'>
-        <h1 class='certs-page__title'>统一证书管理</h1>
+        <h1 class='certs-page__title'>证书管理</h1>
         <p class='certs-page__subtitle'>
           <template v-if='agentId'>
             {{ certificates.length }} 项证书 · {{ activeCount }} 生效中 · 模板优先创建
