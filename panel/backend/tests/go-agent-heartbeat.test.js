@@ -859,6 +859,81 @@ describe("Go agent heartbeat API", () => {
     );
   });
 
+  it("skips malformed persisted L4 rows without failing GET or heartbeat", async () => {
+    await withBackendServer(
+      {
+        env: {
+          PANEL_ROLE: "master",
+        },
+        agents: [
+          {
+            id: "malformed-l4-row-agent",
+            name: "malformed-l4-row-agent",
+            agent_token: "token-malformed-l4-row-agent",
+            desired_revision: 9,
+            current_revision: 1,
+            created_at: "2026-04-01T00:00:00.000Z",
+            updated_at: "2026-04-01T00:00:00.000Z",
+          },
+        ],
+        l4RulesByAgentId: {
+          "malformed-l4-row-agent": [
+            {
+              id: 41,
+              agent_id: "malformed-l4-row-agent",
+              name: "valid-rule",
+              protocol: "tcp",
+              listen_host: "0.0.0.0",
+              listen_port: 9800,
+              backends: [{ host: "127.0.0.1", port: 9801 }],
+              enabled: true,
+              revision: 8,
+            },
+            {
+              id: 42,
+              agent_id: "malformed-l4-row-agent",
+              name: "broken-rule",
+              protocol: "tcp",
+              listen_host: "",
+              listen_port: "not-a-port",
+              backends: [],
+              upstream_host: "",
+              upstream_port: 0,
+              enabled: true,
+              revision: 9,
+            },
+          ],
+        },
+      },
+      async ({ baseUrl }) => {
+        const listResponse = await fetch(`${baseUrl}/api/agents/malformed-l4-row-agent/l4-rules`);
+        assert.equal(listResponse.status, 200);
+        const listPayload = await listResponse.json();
+        assert.equal(listPayload.rules.length, 1);
+        assert.equal(listPayload.rules[0].id, 41);
+
+        const heartbeatResponse = await fetch(`${baseUrl}/api/agents/heartbeat`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-agent-token": "token-malformed-l4-row-agent",
+          },
+          body: JSON.stringify({
+            name: "malformed-l4-row-agent",
+            current_revision: 1,
+            version: "1.0.0",
+            platform: "linux-amd64",
+          }),
+        });
+        assert.equal(heartbeatResponse.status, 200);
+        const heartbeatPayload = await heartbeatResponse.json();
+        assert.ok(Array.isArray(heartbeatPayload.sync.l4_rules));
+        assert.equal(heartbeatPayload.sync.l4_rules.length, 1);
+        assert.equal(heartbeatPayload.sync.l4_rules[0].id, 41);
+      },
+    );
+  });
+
   it("uses relay listener revisions when recalculating desired sync revision", async () => {
     await withBackendServer(
       {

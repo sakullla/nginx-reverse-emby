@@ -1137,4 +1137,107 @@ describe("Property 1: Data round-trip consistency", { skip: !canRunSqlite && "Pr
       },
     );
   });
+
+  it("L4 API partial updates preserve legacy TCP metadata when untouched", async () => {
+    await withBackendServer(
+      {
+        env: { PANEL_ROLE: "master", PANEL_AUTO_APPLY: "0" },
+        agents: [
+          {
+            id: "tcp-legacy-partial-update-agent",
+            name: "tcp-legacy-partial-update-agent",
+            agent_token: "token-tcp-legacy-partial-update-agent",
+            capabilities: ["l4"],
+            desired_revision: 1,
+            current_revision: 1,
+          },
+        ],
+        l4RulesByAgentId: {
+          "tcp-legacy-partial-update-agent": [
+            {
+              id: 31,
+              agent_id: "tcp-legacy-partial-update-agent",
+              name: "legacy-tcp-with-extra-metadata",
+              protocol: "tcp",
+              listen_host: "0.0.0.0",
+              listen_port: 9700,
+              upstream_host: "legacy-a.internal",
+              upstream_port: 9701,
+              backends: [
+                {
+                  host: "legacy-a.internal",
+                  port: 9701,
+                  weight: 12,
+                  resolve: true,
+                  backup: true,
+                  max_conns: 55,
+                },
+                {
+                  host: "legacy-b.internal",
+                  port: 9702,
+                  weight: 4,
+                },
+              ],
+              load_balancing: {
+                strategy: "hash",
+                hash_key: "$remote_addr",
+                zone_size: "256k",
+              },
+              tuning: {
+                proxy_protocol: {
+                  decode: true,
+                  send: false,
+                },
+              },
+              enabled: true,
+              tags: ["legacy-tcp"],
+              revision: 31,
+            },
+          ],
+        },
+      },
+      async ({ baseUrl, dataRoot }) => {
+        const response = await fetch(
+          `${baseUrl}/api/agents/tcp-legacy-partial-update-agent/l4-rules/31`,
+          {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              enabled: false,
+            }),
+          },
+        );
+        assert.equal(response.status, 200);
+
+        const persisted = JSON.parse(
+          fs.readFileSync(
+            path.join(dataRoot, "l4_agent_rules", "tcp-legacy-partial-update-agent.json"),
+            "utf8",
+          ),
+        );
+        assert.equal(persisted.length, 1);
+        assert.equal(persisted[0].enabled, false);
+        assert.deepStrictEqual(persisted[0].backends, [
+          {
+            host: "legacy-a.internal",
+            port: 9701,
+            weight: 12,
+            resolve: true,
+            backup: true,
+            max_conns: 55,
+          },
+          {
+            host: "legacy-b.internal",
+            port: 9702,
+            weight: 4,
+          },
+        ]);
+        assert.deepStrictEqual(persisted[0].load_balancing, {
+          strategy: "hash",
+          hash_key: "$remote_addr",
+          zone_size: "256k",
+        });
+      },
+    );
+  });
 });

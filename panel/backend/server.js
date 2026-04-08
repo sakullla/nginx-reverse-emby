@@ -1066,6 +1066,44 @@ function normalizeStoredL4Rule(rule, suggestedId = null) {
   return normalized;
 }
 
+function cloneSerializable(value) {
+  if (value === undefined) return undefined;
+  return JSON.parse(JSON.stringify(value));
+}
+
+function preserveLegacyTcpFieldsOnPartialUpdate(existingRule, body, nextRule) {
+  const source = existingRule && typeof existingRule === "object" ? existingRule : {};
+  const normalizedBody = body && typeof body === "object" ? body : {};
+  const protocol = String(source.protocol || "").trim().toLowerCase();
+  if (protocol !== "tcp") {
+    return nextRule;
+  }
+
+  const compatibilityTouched = [
+    "protocol",
+    "backends",
+    "upstream_host",
+    "upstream_port",
+    "load_balancing",
+    "tuning",
+    "relay_chain",
+  ].some((key) => Object.prototype.hasOwnProperty.call(normalizedBody, key));
+  if (compatibilityTouched) {
+    return nextRule;
+  }
+
+  const merged = { ...nextRule };
+  if (source.backends !== undefined) merged.backends = cloneSerializable(source.backends);
+  if (source.load_balancing !== undefined) {
+    merged.load_balancing = cloneSerializable(source.load_balancing);
+  }
+  if (source.tuning !== undefined) merged.tuning = cloneSerializable(source.tuning);
+  if (source.relay_chain !== undefined) merged.relay_chain = cloneSerializable(source.relay_chain);
+  if (source.upstream_host !== undefined) merged.upstream_host = String(source.upstream_host || "");
+  if (source.upstream_port !== undefined) merged.upstream_port = Number(source.upstream_port) || 0;
+  return merged;
+}
+
 function getHighestL4RuleRevision(rules = []) {
   return (Array.isArray(rules) ? rules : []).reduce(
     (max, rule) => Math.max(max, normalizeL4RuleRevision(rule?.revision)),
@@ -3727,7 +3765,17 @@ function loadNormalizedRulesForAgent(agentId) {
 function loadNormalizedL4RulesForAgent(agentId) {
   const rules = storage.loadL4RulesForAgent(agentId);
   const source = Array.isArray(rules) ? rules : [];
-  return source.map((rule, index) => normalizeStoredL4Rule(rule, index + 1));
+  const normalized = [];
+  for (let index = 0; index < source.length; index += 1) {
+    try {
+      normalized.push(normalizeStoredL4Rule(source[index], index + 1));
+    } catch (err) {
+      console.warn(
+        `[l4] skipped malformed stored rule for agent ${agentId}: ${String(err?.message || err)}`,
+      );
+    }
+  }
+  return normalized;
 }
 
 async function handleAgentApi(req, res) {
@@ -4666,8 +4714,10 @@ async function handleMasterApi(req, res) {
         sendJson(res, 404, errorPayload("rule id not found"));
         return;
       }
-      const fallbackRule = normalizeStoredL4Rule(rules[index], ruleId);
-      const nextRule = normalizeL4RulePayload(body, fallbackRule, ruleId);
+      const existingRule = rules[index];
+      const fallbackRule = normalizeStoredL4Rule(existingRule, ruleId);
+      let nextRule = normalizeL4RulePayload(body, fallbackRule, ruleId);
+      nextRule = preserveLegacyTcpFieldsOnPartialUpdate(existingRule, body, nextRule);
       ensureUniqueL4Listen(rules, nextRule, ruleId);
       nextRule.revision = getNextPendingRevision(agent);
       rules[index] = nextRule;
