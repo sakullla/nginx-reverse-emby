@@ -260,6 +260,7 @@ import { computed, ref, watch } from 'vue'
 import { useCreateL4Rule, useUpdateL4Rule } from '../hooks/useL4Rules'
 import { useAllRelayListeners } from '../hooks/useRelayListeners'
 import RelayChainInput from './RelayChainInput.vue'
+import { getDefaultTuning, mergeTuning, resetTuningForProtocol } from './l4/tuningState'
 
 const props = defineProps({
   initialData: { type: Object, default: null },
@@ -303,51 +304,6 @@ const SUPPORTED_L4_STRATEGIES = new Set(['round_robin', 'random'])
 function normalizeL4Strategy(value) {
   const strategy = String(value || '').trim().toLowerCase()
   return SUPPORTED_L4_STRATEGIES.has(strategy) ? strategy : 'round_robin'
-}
-
-function getDefaultTuning(protocol = 'tcp') {
-  const isUdp = protocol === 'udp'
-  return {
-    listen: {
-      reuseport: isUdp,
-      backlog: null,
-      so_keepalive: false,
-      tcp_nodelay: true,
-    },
-    proxy: {
-      connect_timeout: '10s',
-      idle_timeout: isUdp ? '20s' : '10m',
-      buffer_size: '16k',
-      udp_proxy_requests: null,
-      udp_proxy_responses: null,
-    },
-    upstream: {
-      max_conns: 0,
-      max_fails: 3,
-      fail_timeout: '30s',
-    },
-    limit_conn: {
-      key: '$binary_remote_addr',
-      count: null,
-      zone_size: '10m',
-    },
-    proxy_protocol: {
-      decode: false,
-      send: false,
-    },
-  }
-}
-
-function mergeTuning(saved, protocol) {
-  const defaults = getDefaultTuning(protocol)
-  if (!saved || typeof saved !== 'object') return defaults
-  return {
-    listen: { ...defaults.listen, ...saved.listen },
-    proxy: { ...defaults.proxy, ...saved.proxy },
-    upstream: { ...defaults.upstream, ...saved.upstream },
-    limit_conn: { ...defaults.limit_conn, ...saved.limit_conn },
-    proxy_protocol: { ...defaults.proxy_protocol, ...saved.proxy_protocol },
-  }
 }
 
 const initialProtocol = props.initialData?.protocol || 'tcp'
@@ -427,20 +383,11 @@ const hasRelayConfig = computed(() => {
   return Array.isArray(form.value.relay_chain) && form.value.relay_chain.length > 0
 })
 
-// Clear UDP-specific fields when switching to TCP
 watch(() => form.value.protocol, (newProto) => {
-  if (newProto === 'tcp') {
-    form.value.tuning.proxy.udp_proxy_requests = null
-    form.value.tuning.proxy.udp_proxy_responses = null
-    return
+  form.value.tuning = resetTuningForProtocol(form.value.tuning, newProto)
+  if (newProto === 'udp') {
+    form.value.relay_chain = []
   }
-  const udpDefaults = getDefaultTuning('udp')
-  form.value.tuning.listen = { ...udpDefaults.listen }
-  form.value.tuning.proxy = { ...udpDefaults.proxy }
-  form.value.tuning.upstream = { ...udpDefaults.upstream }
-  form.value.tuning.limit_conn = { ...udpDefaults.limit_conn }
-  form.value.tuning.proxy_protocol = { ...udpDefaults.proxy_protocol }
-  form.value.relay_chain = []
 })
 
 const LB_TAG_MAP = { round_robin: 'RR', random: 'RND' }

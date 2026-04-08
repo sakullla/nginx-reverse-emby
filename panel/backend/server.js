@@ -1066,6 +1066,65 @@ function normalizeStoredL4Rule(rule, suggestedId = null) {
   return normalized;
 }
 
+function normalizeStoredL4RuleLenient(rule, suggestedId = null) {
+  try {
+    return normalizeStoredL4Rule(rule, suggestedId);
+  } catch (_) {
+    const source = rule && typeof rule === "object" ? rule : {};
+    const protocol = String(source.protocol || "").trim().toLowerCase() === "udp" ? "udp" : "tcp";
+    const listenHost = normalizeHost(source.listen_host);
+    const listenPort = Number(source.listen_port);
+    const backends = normalizeL4Backends(source.backends, source.upstream_host, source.upstream_port);
+    const tuningSource =
+      protocol === "udp"
+        ? {
+            ...(source.tuning && typeof source.tuning === "object" ? source.tuning : {}),
+            proxy_protocol: {
+              decode: false,
+              send: false,
+            },
+          }
+        : source.tuning;
+
+    let tuning;
+    try {
+      tuning = normalizeL4Tuning(tuningSource, protocol);
+    } catch (_) {
+      tuning = buildDefaultL4Tuning(protocol);
+    }
+
+    let relayChain;
+    try {
+      relayChain = normalizeRelayChainPayload(source.relay_chain, { protocol });
+    } catch (_) {
+      relayChain = [];
+    }
+
+    return {
+      id:
+        Number.isFinite(Number(source.id)) && Number(source.id) > 0
+          ? Number(source.id)
+          : Number(suggestedId) || 1,
+      name:
+        String(source.name || "").trim() ||
+        `${protocol.toUpperCase()} ${validatePort(listenPort) ? listenPort : "deleted"}`,
+      protocol,
+      listen_host: validateNetworkHost(listenHost) ? listenHost : "0.0.0.0",
+      listen_port: validatePort(listenPort) ? listenPort : 0,
+      upstream_host: backends[0]?.host || normalizeHost(source.upstream_host) || "",
+      upstream_port:
+        backends[0]?.port || (validatePort(Number(source.upstream_port)) ? Number(source.upstream_port) : 0),
+      backends,
+      load_balancing: normalizeL4LoadBalancing(source.load_balancing, "round_robin"),
+      tuning,
+      relay_chain: relayChain,
+      enabled: source.enabled !== false,
+      tags: normalizeTags(source.tags || []),
+      revision: normalizeL4RuleRevision(source.revision),
+    };
+  }
+}
+
 function cloneSerializable(value) {
   if (value === undefined) return undefined;
   return JSON.parse(JSON.stringify(value));
@@ -1146,12 +1205,21 @@ function getNextRelayListenerId() {
 }
 
 function ensureUniqueL4Listen(rules, nextRule, excludeId = null) {
-  const conflict = (Array.isArray(rules) ? rules : []).find((rule) => {
+  const conflict = (Array.isArray(rules) ? rules : []).find((rule, index) => {
     if (!rule || Number(rule.id) === Number(excludeId)) return false;
+    let comparableRule;
+    try {
+      comparableRule = normalizeStoredL4Rule(
+        rule,
+        Number.isFinite(Number(rule?.id)) && Number(rule.id) > 0 ? Number(rule.id) : index + 1,
+      );
+    } catch (_) {
+      return false;
+    }
     return (
-      String(rule.protocol || "tcp") === String(nextRule.protocol || "tcp") &&
-      normalizeHost(rule.listen_host) === normalizeHost(nextRule.listen_host) &&
-      Number(rule.listen_port) === Number(nextRule.listen_port)
+      String(comparableRule.protocol || "tcp") === String(nextRule.protocol || "tcp") &&
+      normalizeHost(comparableRule.listen_host) === normalizeHost(nextRule.listen_host) &&
+      Number(comparableRule.listen_port) === Number(nextRule.listen_port)
     );
   });
   if (conflict) {
@@ -4721,7 +4789,7 @@ async function handleMasterApi(req, res) {
         return;
       }
       const existingRule = rules[index];
-      const fallbackRule = normalizeStoredL4Rule(existingRule, ruleId);
+      const fallbackRule = normalizeStoredL4RuleLenient(existingRule, ruleId);
       let nextRule = normalizeL4RulePayload(body, fallbackRule, ruleId);
       nextRule = preserveLegacyTcpFieldsOnPartialUpdate(existingRule, body, nextRule);
       ensureUniqueL4Listen(rules, nextRule, ruleId);
@@ -4770,7 +4838,7 @@ async function handleMasterApi(req, res) {
       }
       const deleted = rules.splice(index, 1)[0];
       storage.saveL4RulesForAgent(agentId, rules);
-      const responseRule = normalizeStoredL4Rule(deleted, ruleId);
+      const responseRule = normalizeStoredL4RuleLenient(deleted, ruleId);
 
       if (AUTO_APPLY) {
         try {

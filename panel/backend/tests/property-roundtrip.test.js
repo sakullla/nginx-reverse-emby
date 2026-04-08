@@ -1026,6 +1026,172 @@ describe("Property 1: Data round-trip consistency", { skip: !canRunSqlite && "Pr
     );
   });
 
+  it("L4 API create and update ignore malformed stored rows skipped by normalized reads", async () => {
+    await withBackendServer(
+      {
+        env: { PANEL_ROLE: "master", PANEL_AUTO_APPLY: "0" },
+        agents: [
+          {
+            id: "l4-malformed-write-path-agent",
+            name: "l4-malformed-write-path-agent",
+            agent_token: "token-l4-malformed-write-path-agent",
+            capabilities: ["l4"],
+            desired_revision: 3,
+            current_revision: 3,
+          },
+        ],
+        l4RulesByAgentId: {
+          "l4-malformed-write-path-agent": [
+            {
+              id: 41,
+              agent_id: "l4-malformed-write-path-agent",
+              name: "visible-valid-rule",
+              protocol: "tcp",
+              listen_host: "0.0.0.0",
+              listen_port: 9001,
+              backends: [{ host: "127.0.0.1", port: 9002 }],
+              enabled: true,
+              revision: 41,
+            },
+            {
+              id: 42,
+              agent_id: "l4-malformed-write-path-agent",
+              name: "hidden-broken-rule",
+              protocol: "tcp",
+              listen_host: "0.0.0.0",
+              listen_port: 9000,
+              backends: [],
+              upstream_host: "",
+              upstream_port: 0,
+              enabled: true,
+              revision: 42,
+            },
+            {
+              id: 43,
+              agent_id: "l4-malformed-write-path-agent",
+              name: "hidden-broken-update-target",
+              protocol: "tcp",
+              listen_host: "0.0.0.0",
+              listen_port: 9005,
+              backends: [],
+              upstream_host: "",
+              upstream_port: 0,
+              enabled: true,
+              revision: 43,
+            },
+          ],
+        },
+      },
+      async ({ baseUrl }) => {
+        const createResponse = await fetch(
+          `${baseUrl}/api/agents/l4-malformed-write-path-agent/l4-rules`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              name: "replacement-for-hidden-broken-rule",
+              protocol: "tcp",
+              listen_host: "0.0.0.0",
+              listen_port: 9000,
+              backends: [{ host: "127.0.0.1", port: 9003 }],
+              enabled: true,
+              tags: [],
+            }),
+          },
+        );
+        assert.equal(createResponse.status, 201);
+        const createdPayload = await createResponse.json();
+        assert.equal(createdPayload.rule.listen_port, 9000);
+        assert.deepStrictEqual(createdPayload.rule.backends, [{ host: "127.0.0.1", port: 9003 }]);
+
+        const updateResponse = await fetch(
+          `${baseUrl}/api/agents/l4-malformed-write-path-agent/l4-rules/41`,
+          {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              listen_port: 9005,
+              backends: [{ host: "127.0.0.1", port: 9004 }],
+            }),
+          },
+        );
+        assert.equal(updateResponse.status, 200);
+        const updatedPayload = await updateResponse.json();
+        assert.equal(updatedPayload.rule.id, 41);
+        assert.equal(updatedPayload.rule.listen_port, 9005);
+        assert.deepStrictEqual(updatedPayload.rule.backends, [{ host: "127.0.0.1", port: 9004 }]);
+      },
+    );
+  });
+
+  it("L4 API delete succeeds for malformed stored rows that are skipped on read", async () => {
+    await withBackendServer(
+      {
+        env: { PANEL_ROLE: "master", PANEL_AUTO_APPLY: "0" },
+        agents: [
+          {
+            id: "l4-malformed-delete-agent",
+            name: "l4-malformed-delete-agent",
+            agent_token: "token-l4-malformed-delete-agent",
+            capabilities: ["l4"],
+            desired_revision: 4,
+            current_revision: 4,
+          },
+        ],
+        l4RulesByAgentId: {
+          "l4-malformed-delete-agent": [
+            {
+              id: 41,
+              agent_id: "l4-malformed-delete-agent",
+              name: "visible-valid-rule",
+              protocol: "tcp",
+              listen_host: "0.0.0.0",
+              listen_port: 9010,
+              backends: [{ host: "127.0.0.1", port: 9011 }],
+              enabled: true,
+              revision: 41,
+            },
+            {
+              id: 42,
+              agent_id: "l4-malformed-delete-agent",
+              name: "broken-delete-target",
+              protocol: "tcp",
+              listen_host: "0.0.0.0",
+              listen_port: "bad-port",
+              backends: [],
+              upstream_host: "",
+              upstream_port: 0,
+              enabled: true,
+              revision: 42,
+            },
+          ],
+        },
+      },
+      async ({ baseUrl }) => {
+        const deleteResponse = await fetch(
+          `${baseUrl}/api/agents/l4-malformed-delete-agent/l4-rules/42`,
+          {
+            method: "DELETE",
+          },
+        );
+        assert.equal(deleteResponse.status, 200);
+        const deletePayload = await deleteResponse.json();
+        assert.equal(deletePayload.rule.id, 42);
+        assert.equal(deletePayload.rule.name, "broken-delete-target");
+        assert.ok(Array.isArray(deletePayload.rule.backends));
+        assert.deepStrictEqual(deletePayload.rule.load_balancing, { strategy: "round_robin" });
+
+        const listResponse = await fetch(`${baseUrl}/api/agents/l4-malformed-delete-agent/l4-rules`);
+        assert.equal(listResponse.status, 200);
+        const listPayload = await listResponse.json();
+        assert.deepStrictEqual(
+          listPayload.rules.map((rule) => rule.id),
+          [41],
+        );
+      },
+    );
+  });
+
   it("L4 API rejects UDP rules that set tuning.proxy_protocol", async () => {
     await withBackendServer(
       {
