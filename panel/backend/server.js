@@ -4722,6 +4722,7 @@ async function handleMasterApi(req, res) {
       nextRule.revision = getNextPendingRevision(agent);
       rules[index] = nextRule;
       storage.saveL4RulesForAgent(agentId, rules);
+      const responseRule = normalizeStoredL4Rule(nextRule, ruleId);
 
       if (AUTO_APPLY) {
         try {
@@ -4739,7 +4740,7 @@ async function handleMasterApi(req, res) {
         }
       }
 
-      sendJson(res, 200, { ok: true, rule: nextRule });
+      sendJson(res, 200, { ok: true, rule: responseRule });
     } catch (err) {
       sendJson(res, 400, errorPayload(String(err.message || err)));
     }

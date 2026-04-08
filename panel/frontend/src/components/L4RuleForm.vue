@@ -434,6 +434,8 @@ watch(() => form.value.protocol, (newProto) => {
     form.value.tuning.proxy.udp_proxy_responses = null
     return
   }
+  form.value.tuning.proxy_protocol.decode = false
+  form.value.tuning.proxy_protocol.send = false
   form.value.relay_chain = []
 })
 
@@ -577,8 +579,8 @@ function buildPayload() {
         zone_size: cleanValue(t.limit_conn.zone_size),
       },
       proxy_protocol: {
-        decode: t.proxy_protocol.decode,
-        send: t.proxy_protocol.send,
+        decode: form.value.protocol === 'udp' ? false : t.proxy_protocol.decode,
+        send: form.value.protocol === 'udp' ? false : t.proxy_protocol.send,
       },
     }
     if (form.value.protocol === 'udp') {

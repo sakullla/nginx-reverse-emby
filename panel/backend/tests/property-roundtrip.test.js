@@ -1208,6 +1208,19 @@ describe("Property 1: Data round-trip consistency", { skip: !canRunSqlite && "Pr
           },
         );
         assert.equal(response.status, 200);
+        const payload = await response.json();
+        assert.equal(payload.rule.enabled, false);
+        assert.deepStrictEqual(payload.rule.backends, [
+          { host: "legacy-a.internal", port: 9701 },
+          { host: "legacy-b.internal", port: 9702 },
+        ]);
+        assert.deepStrictEqual(payload.rule.load_balancing, {
+          strategy: "round_robin",
+        });
+        assert.deepStrictEqual(payload.rule.tuning.proxy_protocol, {
+          decode: true,
+          send: false,
+        });
 
         const persisted = JSON.parse(
           fs.readFileSync(
