@@ -64,9 +64,14 @@ const l4RuleArb = fc.record({
     { maxLength: 3 }
   ),
   load_balancing: fc.record({
-    method: fc.constantFrom("round_robin", "least_conn", "ip_hash"),
+    strategy: fc.constantFrom("round_robin", "random"),
   }),
-  tuning: fc.record({ timeout: fc.integer({ min: 1, max: 300 }) }),
+  tuning: fc.record({
+    proxy_protocol: fc.record({
+      decode: fc.boolean(),
+      send: fc.boolean(),
+    }),
+  }),
   relay_chain: fc.uniqueArray(fc.integer({ min: 1, max: 50 }), { maxLength: 4 }),
   enabled: fc.boolean(),
   tags: fc.array(safeString, { maxLength: 5 }),

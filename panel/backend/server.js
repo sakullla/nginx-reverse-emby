@@ -996,10 +996,6 @@ function normalizeL4RulePayload(body, fallback = {}, suggestedId = null) {
     backends.push({
       host: legacyUpstreamHost,
       port: legacyUpstreamPort,
-      weight: 1,
-      resolve: !isIpAddress(legacyUpstreamHost),
-      backup: false,
-      max_conns: 0,
     });
   }
 

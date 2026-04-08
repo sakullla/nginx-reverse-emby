@@ -854,6 +854,45 @@ describe("Property 1: Data round-trip consistency", { skip: !canRunSqlite && "Pr
     );
   });
 
+  it("L4 API legacy upstream fallback normalizes to simple backend entries", async () => {
+    await withBackendServer(
+      {
+        env: { PANEL_ROLE: "master", PANEL_AUTO_APPLY: "0" },
+        agents: [
+          {
+            id: "l4-legacy-upstream-agent",
+            name: "l4-legacy-upstream-agent",
+            agent_token: "token-l4-legacy-upstream-agent",
+            capabilities: ["l4"],
+            desired_revision: 1,
+            current_revision: 1,
+          },
+        ],
+      },
+      async ({ baseUrl }) => {
+        const response = await fetch(`${baseUrl}/api/agents/l4-legacy-upstream-agent/l4-rules`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            name: "legacy-upstream-fallback",
+            protocol: "tcp",
+            listen_host: "0.0.0.0",
+            listen_port: 9300,
+            upstream_host: "legacy-upstream.internal",
+            upstream_port: 9301,
+            enabled: true,
+            tags: [],
+          }),
+        });
+        assert.equal(response.status, 201);
+        const created = await response.json();
+        assert.deepStrictEqual(created.rule.backends, [
+          { host: "legacy-upstream.internal", port: 9301 },
+        ]);
+      },
+    );
+  });
+
   it("L4 API rejects UDP rules that set tuning.proxy_protocol", async () => {
     await withBackendServer(
       {
