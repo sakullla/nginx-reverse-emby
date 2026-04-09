@@ -180,4 +180,91 @@ describe("Prisma SQL migration flow", () => {
       cleanupDirWithRetries(tempDir);
     }
   });
+
+  it("backfills relay listener bind/public endpoint fields from legacy listen_host/listen_port rows", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "panel-prisma-relay-listener-migration-"));
+    const databasePath = path.join(tempDir, "panel.db");
+
+    try {
+      await withPrismaClient(databasePath, async (client) => {
+        await client.$executeRawUnsafe(`CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)`);
+        await client.$executeRawUnsafe(`INSERT INTO meta (key, value) VALUES ('schema_version', '5')`);
+        await client.$executeRawUnsafe(`
+          CREATE TABLE rules (
+            id INTEGER NOT NULL,
+            agent_id TEXT NOT NULL,
+            frontend_url TEXT NOT NULL,
+            backend_url TEXT NOT NULL,
+            backends TEXT DEFAULT '[]',
+            load_balancing TEXT DEFAULT '{}',
+            enabled INTEGER DEFAULT 1,
+            tags TEXT DEFAULT '[]',
+            proxy_redirect INTEGER DEFAULT 1,
+            relay_chain TEXT DEFAULT '[]',
+            pass_proxy_headers INTEGER DEFAULT 1,
+            user_agent TEXT DEFAULT '',
+            custom_headers TEXT DEFAULT '[]',
+            revision INTEGER DEFAULT 0,
+            PRIMARY KEY (agent_id, id)
+          )
+        `);
+        await client.$executeRawUnsafe(`
+          CREATE TABLE relay_listeners (
+            id INTEGER PRIMARY KEY,
+            agent_id TEXT NOT NULL,
+            name TEXT DEFAULT '',
+            listen_host TEXT DEFAULT '0.0.0.0',
+            listen_port INTEGER NOT NULL,
+            enabled INTEGER DEFAULT 1,
+            certificate_id INTEGER,
+            tls_mode TEXT DEFAULT 'pin_or_ca',
+            pin_set TEXT DEFAULT '[]',
+            trusted_ca_certificate_ids TEXT DEFAULT '[]',
+            allow_self_signed INTEGER DEFAULT 0,
+            tags TEXT DEFAULT '[]',
+            revision INTEGER DEFAULT 0
+          )
+        `);
+        await client.$executeRawUnsafe(`
+          INSERT INTO relay_listeners (
+            id, agent_id, name, listen_host, listen_port, enabled, certificate_id, tls_mode, pin_set,
+            trusted_ca_certificate_ids, allow_self_signed, tags, revision
+          )
+          VALUES (
+            11, 'legacy-agent', 'legacy-relay', '10.0.1.5', 7443, 1, 15, 'pin_or_ca',
+            '[{"type":"spki_sha256","value":"abc123"}]', '[]', 0, '[]', 9
+          )
+        `);
+      });
+
+      const storage = loadFreshStorage("../storage-sqlite");
+      try {
+        storage.init(tempDir);
+        const listeners = storage.loadRelayListenersForAgent("legacy-agent");
+        assert.equal(listeners.length, 1);
+        assert.deepEqual(listeners[0].bind_hosts, ["10.0.1.5"]);
+        assert.equal(listeners[0].public_host, "10.0.1.5");
+        assert.equal(listeners[0].public_port, 7443);
+        assert.equal(listeners[0].listen_host, "10.0.1.5");
+      } finally {
+        closeQuietly(storage);
+      }
+
+      await withPrismaClient(databasePath, async (client) => {
+        const rows = await client.$queryRawUnsafe(`
+          SELECT bind_hosts, public_host, public_port, listen_host, listen_port
+          FROM relay_listeners
+          WHERE id = 11
+        `);
+        assert.equal(rows.length, 1);
+        assert.equal(String(rows[0].bind_hosts), "[\"10.0.1.5\"]");
+        assert.equal(String(rows[0].public_host), "10.0.1.5");
+        assert.equal(Number(rows[0].public_port), 7443);
+        assert.equal(String(rows[0].listen_host), "10.0.1.5");
+        assert.equal(Number(rows[0].listen_port), 7443);
+      });
+    } finally {
+      cleanupDirWithRetries(tempDir);
+    }
+  });
 });
