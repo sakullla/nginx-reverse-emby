@@ -86,8 +86,8 @@
                   <circle cx='20' cy='12' r='2'/>
                 </svg>
               </div>
-              <span class='relay-chain__node-label'>{{ listener.name || `监听器 ${listener.id}` }}</span>
-              <span class='relay-chain__node-meta'>{{ listener.listen_host || '0.0.0.0' }}:{{ listener.listen_port || '-' }}</span>
+              <span class='relay-chain__node-label'>{{ formatPublicEndpoint(listener) }}</span>
+              <span class='relay-chain__node-meta'>{{ formatListenerSecondary(listener) }}</span>
 
               <!-- 操作按钮 -->
               <div class='relay-chain__node-actions'>
@@ -219,10 +219,40 @@ const selectedListeners = computed(() => {
 
 function formatListener(listener) {
   const name = listener?.name || `监听器 ${listener?.id}`
-  const host = listener?.listen_host || '0.0.0.0'
-  const port = listener?.listen_port || '-'
+  const endpoint = formatPublicEndpoint(listener)
   const agentLabel = String(listener?.agent_name || listener?.agent_id || '').trim()
-  return `${agentLabel ? `[${agentLabel}] ` : ''}${name} (${host}:${port})`
+  return `${agentLabel ? `[${agentLabel}] ` : ''}${name} (${endpoint})`
+}
+
+function normalizePort(raw) {
+  const value = Number(raw)
+  return Number.isInteger(value) && value > 0 ? value : null
+}
+
+function resolveBindHosts(listener) {
+  if (Array.isArray(listener?.bind_hosts) && listener.bind_hosts.length) {
+    return listener.bind_hosts
+      .map((item) => String(item || '').trim())
+      .filter(Boolean)
+  }
+  const legacyHost = String(listener?.listen_host || '').trim()
+  return legacyHost ? [legacyHost] : []
+}
+
+function formatPublicEndpoint(listener) {
+  const publicHost = String(listener?.public_host || '').trim()
+  const bindHosts = resolveBindHosts(listener)
+  const host = publicHost || bindHosts[0] || '-'
+  const port = normalizePort(listener?.public_port) ?? normalizePort(listener?.listen_port)
+  return port ? `${host}:${port}` : host
+}
+
+function formatListenerSecondary(listener) {
+  const name = String(listener?.name || `监听器 ${listener?.id}`).trim()
+  const bindHosts = resolveBindHosts(listener)
+  const bindLabel = bindHosts.length ? bindHosts.join(', ') : '-'
+  const listenPort = normalizePort(listener?.listen_port)
+  return `${name} · bind ${listenPort ? `${bindLabel}:${listenPort}` : bindLabel}`
 }
 
 function updateChain(next) {

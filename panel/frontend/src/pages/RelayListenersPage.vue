@@ -38,7 +38,7 @@
       <article v-for='listener in listeners' :key='listener.id' class='relay-card' :class="{ 'relay-card--disabled': !listener.enabled }">
         <div class='relay-card__header'>
           <div class='relay-card__badges'>
-            <span class='relay-card__id'>#{{ listener.id }}</span>
+            <span class='relay-card__id'>#{{ listener.id }} · {{ listener.name }}</span>
             <span class='relay-card__status' :class="`relay-card__status--${statusClass(listener)}`">{{ statusLabel(listener) }}</span>
           </div>
           <div class='relay-card__actions'>
@@ -60,13 +60,13 @@
             <span class='relay-card__url-icon'>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
             </span>
-            <code class='relay-card__addr'>{{ listener.name }}</code>
+            <code class='relay-card__addr'>{{ formatPublicEndpoint(listener) }}</code>
           </div>
           <div class='relay-card__endpoint'>
             <span class='relay-card__url-icon'>
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/><path d="M12 5l7 7-7 7"/></svg>
             </span>
-            <code class='relay-card__addr'>{{ listener.listen_host }}:{{ listener.listen_port }}</code>
+            <code class='relay-card__addr'>{{ formatBindEndpoint(listener) }}</code>
           </div>
         </div>
 
@@ -177,6 +177,36 @@ function trustSummary(listener) {
   if (listener.tls_mode === 'pin_only') return '仅 Pin'
   if (listener.tls_mode === 'ca_only') return '仅 CA'
   return '兼容模式'
+}
+
+function normalizePort(port) {
+  const value = Number(port)
+  return Number.isInteger(value) && value > 0 ? value : null
+}
+
+function resolveBindHosts(listener) {
+  if (Array.isArray(listener?.bind_hosts) && listener.bind_hosts.length) {
+    return listener.bind_hosts
+      .map((item) => String(item || '').trim())
+      .filter(Boolean)
+  }
+  const legacyHost = String(listener?.listen_host || '').trim()
+  return legacyHost ? [legacyHost] : []
+}
+
+function formatPublicEndpoint(listener) {
+  const publicHost = String(listener?.public_host || '').trim()
+  const bindHosts = resolveBindHosts(listener)
+  const host = publicHost || bindHosts[0] || '-'
+  const port = normalizePort(listener?.public_port) ?? normalizePort(listener?.listen_port)
+  return port ? `${host}:${port}` : host
+}
+
+function formatBindEndpoint(listener) {
+  const bindHosts = resolveBindHosts(listener)
+  const bindLabel = bindHosts.length ? bindHosts.join(', ') : '-'
+  const listenPort = normalizePort(listener?.listen_port)
+  return listenPort ? `${bindLabel}:${listenPort}` : bindLabel
 }
 
 function startEdit(listener) {

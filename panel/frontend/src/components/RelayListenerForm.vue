@@ -35,8 +35,13 @@
 
     <div class='form-row'>
       <div class='form-group'>
-        <label class='form-label form-label--required'>监听地址</label>
-        <input v-model='form.listen_host' class='input' placeholder='0.0.0.0'>
+        <label class='form-label form-label--required'>绑定地址（每行一个）</label>
+        <textarea
+          v-model='form.bind_hosts_text'
+          class='input textarea'
+          placeholder='0.0.0.0&#10;127.0.0.1'
+        ></textarea>
+        <p class='form-hint'>将监听器绑定到多个地址时，每行填写一个 host。</p>
       </div>
       <div class='form-group'>
         <label class='form-label form-label--required'>监听端口</label>
@@ -51,6 +56,18 @@
         >
         <p v-if='errors.listen_port' class='form-error'>{{ errors.listen_port }}</p>
       </div>
+    </div>
+
+    <div class='form-group'>
+      <label class='form-label'>公网入口（可选）</label>
+      <input
+        v-model='form.public_endpoint'
+        class='input'
+        :class="{ 'input--error': errors.public_endpoint }"
+        placeholder='relay.example.com:7443'
+      >
+      <p class='form-hint'>支持空值、host、host:port。留空时由后端使用 bind/listen 默认值。</p>
+      <p v-if='errors.public_endpoint' class='form-error'>{{ errors.public_endpoint }}</p>
     </div>
 
     <div class='form-group'>
@@ -176,6 +193,12 @@
 import { computed, ref, watch } from 'vue'
 import { useCreateRelayListener, useUpdateRelayListener } from '../hooks/useRelayListeners'
 import { useCertificates } from '../hooks/useCertificates'
+import {
+  parsePublicEndpoint,
+  buildPublicEndpoint,
+  normalizeBindHosts,
+  buildBindHostsText
+} from './relay/endpointState.mjs'
 
 const props = defineProps({
   initialData: { type: Object, default: null },
@@ -199,6 +222,7 @@ const pinSetText = ref('')
 const trustedCaSet = ref(new Set())
 const errors = ref({
   name: '',
+  public_endpoint: '',
   listen_port: '',
   certificate_id: '',
   trust_material: '',
@@ -266,7 +290,8 @@ watch(
 function createDefaultForm() {
   return {
     name: '',
-    listen_host: '0.0.0.0',
+    bind_hosts_text: '0.0.0.0',
+    public_endpoint: '',
     listen_port: 0,
     enabled: true,
     certificate_id: null,
@@ -299,7 +324,12 @@ function createFormState(initialData) {
   if (!initialData) return createDefaultForm()
   return {
     name: initialData.name || '',
-    listen_host: initialData.listen_host || '0.0.0.0',
+    bind_hosts_text: buildBindHostsText(
+      Array.isArray(initialData.bind_hosts) && initialData.bind_hosts.length
+        ? initialData.bind_hosts
+        : [initialData.listen_host || '0.0.0.0']
+    ),
+    public_endpoint: buildPublicEndpoint(initialData),
     listen_port: initialData.listen_port || 0,
     enabled: initialData.enabled !== false,
     certificate_id: initialData.certificate_id == null ? null : Number(initialData.certificate_id),
@@ -325,6 +355,7 @@ function createFormState(initialData) {
 function resetErrors() {
   errors.value = {
     name: '',
+    public_endpoint: '',
     listen_port: '',
     certificate_id: '',
     trust_material: '',
@@ -389,9 +420,13 @@ function validateCustomTrustMaterial(pinSet, trustedCaIds) {
 
 function validate() {
   resetErrors()
+  const publicEndpoint = parsePublicEndpoint(form.value.public_endpoint)
 
   if (!form.value.name.trim()) {
     errors.value.name = '请输入监听器名称'
+  }
+  if (!publicEndpoint.isValid) {
+    errors.value.public_endpoint = '公网入口仅支持空值、host 或 host:port'
   }
   if (!Number.isInteger(form.value.listen_port) || form.value.listen_port < 1 || form.value.listen_port > 65535) {
     errors.value.listen_port = '监听端口必须在 1-65535 之间'
@@ -406,19 +441,25 @@ function validate() {
     errors.value.trust_material = validateCustomTrustMaterial(pinSet, trustedCaIds)
   }
 
-  return !errors.value.name && !errors.value.listen_port && !errors.value.certificate_id && !errors.value.trust_material
+  return !errors.value.name
+    && !errors.value.public_endpoint
+    && !errors.value.listen_port
+    && !errors.value.certificate_id
+    && !errors.value.trust_material
 }
 
 async function handleSubmit() {
   if (!validate()) return
 
+  const publicEndpoint = parsePublicEndpoint(form.value.public_endpoint)
+  const bindHosts = normalizeBindHosts(form.value.bind_hosts_text)
   const pinSet = form.value.trust_mode_source === 'auto' ? [] : parsePinSetRows()
   const trustedCaIds = form.value.trust_mode_source === 'auto'
     ? []
     : [...trustedCaSet.value].map((id) => Number(id))
   const payload = {
     name: form.value.name.trim(),
-    listen_host: form.value.listen_host.trim() || '0.0.0.0',
+    bind_hosts: bindHosts,
     listen_port: form.value.listen_port,
     enabled: form.value.enabled,
     certificate_id: form.value.certificate_source === 'existing_certificate'
@@ -431,6 +472,12 @@ async function handleSubmit() {
     trusted_ca_certificate_ids: trustedCaIds,
     allow_self_signed: form.value.trust_mode_source === 'auto' ? true : form.value.allow_self_signed,
     tags: [...form.value.tags]
+  }
+  if (publicEndpoint.publicHost) {
+    payload.public_host = publicEndpoint.publicHost
+  }
+  if (publicEndpoint.publicPort != null) {
+    payload.public_port = publicEndpoint.publicPort
   }
 
   try {
