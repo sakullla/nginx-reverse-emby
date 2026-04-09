@@ -22,10 +22,31 @@ describe("relay listener normalization", () => {
     });
 
     assert.strictEqual(listener.listen_port, 18443);
+    assert.deepStrictEqual(listener.bind_hosts, ["0.0.0.0"]);
+    assert.strictEqual(listener.public_host, "0.0.0.0");
+    assert.strictEqual(listener.public_port, 18443);
+    assert.strictEqual(listener.listen_host, "0.0.0.0");
     assert.strictEqual(listener.enabled, true);
     assert.deepStrictEqual(listener.trusted_ca_certificate_ids, []);
     assert.deepStrictEqual(listener.tags, []);
     assert.strictEqual(listener.revision, 0);
+  });
+
+  it("expands legacy listen_host/listen_port into bind/public fields", () => {
+    const listener = normalizeRelayListenerPayload({
+      id: 3,
+      agent_id: "local",
+      name: "relay-legacy",
+      listen_host: "127.0.0.1",
+      listen_port: 1443,
+      certificate_id: 12,
+      pin_set: [{ type: "spki_sha256", value: "abc" }],
+    });
+
+    assert.deepStrictEqual(listener.bind_hosts, ["127.0.0.1"]);
+    assert.strictEqual(listener.listen_host, "127.0.0.1");
+    assert.strictEqual(listener.public_host, "127.0.0.1");
+    assert.strictEqual(listener.public_port, 1443);
   });
 
   it("rejects listeners without an id", () => {
@@ -97,8 +118,11 @@ describe("relay listener storage", () => {
         id: 7,
         agent_id: "agent-json",
         name: "relay-a",
+        bind_hosts: ["0.0.0.0", "::"],
         listen_host: "0.0.0.0",
         listen_port: 18443,
+        public_host: "relay.example.com",
+        public_port: 443,
         certificate_id: 12,
         tls_mode: "pin_or_ca",
         pin_set: [{ type: "spki_sha256", value: "abc" }],
@@ -166,8 +190,11 @@ describe("relay listener storage", () => {
           id: 17,
           agent_id: "agent-json",
           name: "relay-a",
+          bind_hosts: ["0.0.0.0"],
           listen_host: "0.0.0.0",
           listen_port: 18443,
+          public_host: "0.0.0.0",
+          public_port: 18443,
           enabled: true,
           certificate_id: 12,
           tls_mode: "pin_or_ca",

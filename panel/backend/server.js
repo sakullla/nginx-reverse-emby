@@ -1728,12 +1728,17 @@ function normalizeRelayListenerAutoDomainLabel(value, fallback) {
 
 function relayListenerAutoCertificateDomain(listener, agentId) {
   const agentLabel = normalizeRelayListenerAutoDomainLabel(agentId, "agent");
+  const endpointHost =
+    String(listener?.public_host || "").trim() ||
+    String(Array.isArray(listener?.bind_hosts) ? listener.bind_hosts[0] : "").trim() ||
+    String(listener?.listen_host || "").trim();
+  const hostLabel = normalizeRelayListenerAutoDomainLabel(endpointHost, "listener");
   const listenerId = Number(listener?.id);
   if (!Number.isInteger(listenerId) || listenerId <= 0) {
     throw new Error("relay listener id is required for auto-issued certificate identity");
   }
   const nonce = String(crypto.randomUUID()).replace(/-/g, "").slice(0, 12).toLowerCase();
-  return `listener-${listenerId}.${agentLabel}-${nonce}.relay.internal`;
+  return `listener-${listenerId}.${hostLabel}.${agentLabel}-${nonce}.relay.internal`;
 }
 
 function splitPEMCertificates(certPEM) {

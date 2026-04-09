@@ -126,8 +126,11 @@ describe("Go agent heartbeat API", () => {
             id: 5,
             agent_id: "remote-agent-1",
             name: "emby-relay",
+            bind_hosts: ["0.0.0.0"],
             listen_host: "0.0.0.0",
             listen_port: 7000,
+            public_host: "0.0.0.0",
+            public_port: 7000,
             enabled: true,
             certificate_id: 15,
             tls_mode: "pin_or_ca",
@@ -198,8 +201,11 @@ describe("Go agent heartbeat API", () => {
               id: 11,
               agent_id: "remote-agent-a",
               name: "relay-a",
-              listen_host: "relay-a.example.com",
+              bind_hosts: ["10.0.0.10"],
+              listen_host: "10.0.0.10",
               listen_port: 7443,
+              public_host: "relay-a.example.com",
+              public_port: 7443,
               enabled: true,
               certificate_id: 31,
               tls_mode: "pin_only",
@@ -273,6 +279,14 @@ describe("Go agent heartbeat API", () => {
           [11, 22],
         );
         assert.equal(payload.sync.relay_listeners[1].agent_id, "remote-agent-b");
+        assert.deepEqual(payload.sync.relay_listeners[0].bind_hosts, ["10.0.0.10"]);
+        assert.equal(payload.sync.relay_listeners[0].public_host, "relay-a.example.com");
+        assert.equal(payload.sync.relay_listeners[0].public_port, 7443);
+        assert.equal(payload.sync.relay_listeners[0].listen_host, "10.0.0.10");
+        assert.equal(
+          payload.sync.relay_listeners[0].listen_host,
+          payload.sync.relay_listeners[0].bind_hosts[0],
+        );
       },
     );
   });
@@ -328,6 +342,10 @@ describe("Go agent heartbeat API", () => {
           (listener) => listener.id === listenerId,
         );
         assert.ok(syncedListener);
+        assert.ok(Array.isArray(syncedListener.bind_hosts));
+        assert.equal(syncedListener.listen_host, syncedListener.bind_hosts[0]);
+        assert.equal(syncedListener.public_host, "relay-auto.example.com");
+        assert.equal(syncedListener.public_port, 7443);
         assert.equal(syncedListener.tls_mode, "pin_and_ca");
         assert.equal(syncedListener.pin_set.length, 1);
         assert.equal(syncedListener.pin_set[0].type, "spki_sha256");

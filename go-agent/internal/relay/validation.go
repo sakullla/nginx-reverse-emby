@@ -14,21 +14,34 @@ const (
 )
 
 func ValidateListener(listener Listener) error {
-	listenHost := strings.TrimSpace(listener.ListenHost)
-	if listenHost == "" {
-		return fmt.Errorf("listen_host is required")
-	}
-	if !isValidListenHost(listenHost) {
-		return fmt.Errorf("listen_host must be a valid IP address or hostname")
-	}
-	if listener.ListenPort < 1 || listener.ListenPort > 65535 {
-		return fmt.Errorf("listen_port must be between 1 and 65535")
-	}
-	mode, err := normalizeTLSMode(listener.TLSMode)
+	normalized, err := normalizeListener(listener)
 	if err != nil {
 		return err
 	}
-	for _, pin := range listener.PinSet {
+
+	if normalized.ListenHost == "" {
+		return fmt.Errorf("listen_host is required")
+	}
+	for _, bindHost := range normalized.BindHosts {
+		if !isValidListenHost(bindHost) {
+			return fmt.Errorf("listen_host must be a valid IP address or hostname")
+		}
+	}
+	if normalized.PublicHost != "" && !isValidListenHost(normalized.PublicHost) {
+		return fmt.Errorf("public_host must be a valid IP address or hostname")
+	}
+	if normalized.ListenPort < 1 || normalized.ListenPort > 65535 {
+		return fmt.Errorf("listen_port must be between 1 and 65535")
+	}
+	if normalized.PublicPort < 1 || normalized.PublicPort > 65535 {
+		return fmt.Errorf("public_port must be between 1 and 65535")
+	}
+
+	mode, err := normalizeTLSMode(normalized.TLSMode)
+	if err != nil {
+		return err
+	}
+	for _, pin := range normalized.PinSet {
 		if !isSupportedPinType(pin.Type) {
 			return fmt.Errorf("unsupported pin type %q", pin.Type)
 		}
@@ -38,23 +51,63 @@ func ValidateListener(listener Listener) error {
 	}
 	switch mode {
 	case tlsModePinOnly:
-		if len(listener.PinSet) == 0 {
+		if len(normalized.PinSet) == 0 {
 			return fmt.Errorf("pin_only requires pin_set")
 		}
 	case tlsModeCAOnly:
-		if len(listener.TrustedCACertificateIDs) == 0 {
+		if len(normalized.TrustedCACertificateIDs) == 0 {
 			return fmt.Errorf("ca_only requires trusted_ca_certificate_ids")
 		}
 	case tlsModePinOrCA:
-		if len(listener.PinSet) == 0 && len(listener.TrustedCACertificateIDs) == 0 {
+		if len(normalized.PinSet) == 0 && len(normalized.TrustedCACertificateIDs) == 0 {
 			return fmt.Errorf("pin_set and trusted_ca_certificate_ids cannot both be empty")
 		}
 	case tlsModePinAndCA:
-		if len(listener.PinSet) == 0 || len(listener.TrustedCACertificateIDs) == 0 {
+		if len(normalized.PinSet) == 0 || len(normalized.TrustedCACertificateIDs) == 0 {
 			return fmt.Errorf("pin_and_ca requires pin_set and trusted_ca_certificate_ids")
 		}
 	}
 	return nil
+}
+
+func normalizeListener(listener Listener) (Listener, error) {
+	normalized := listener
+
+	bindHosts := make([]string, 0, len(listener.BindHosts))
+	seen := make(map[string]struct{}, len(listener.BindHosts))
+	for _, rawHost := range listener.BindHosts {
+		host := strings.TrimSpace(rawHost)
+		if host == "" {
+			continue
+		}
+		if _, ok := seen[host]; ok {
+			continue
+		}
+		seen[host] = struct{}{}
+		bindHosts = append(bindHosts, host)
+	}
+
+	listenHost := strings.TrimSpace(listener.ListenHost)
+	if len(bindHosts) == 0 && listenHost != "" {
+		bindHosts = append(bindHosts, listenHost)
+	}
+	if len(bindHosts) == 0 {
+		return Listener{}, fmt.Errorf("listen_host is required")
+	}
+
+	normalized.BindHosts = bindHosts
+	normalized.ListenHost = bindHosts[0]
+
+	publicHost := strings.TrimSpace(listener.PublicHost)
+	if publicHost == "" {
+		publicHost = normalized.ListenHost
+	}
+	normalized.PublicHost = publicHost
+	if normalized.PublicPort <= 0 {
+		normalized.PublicPort = normalized.ListenPort
+	}
+
+	return normalized, nil
 }
 
 func normalizeTLSMode(mode string) (string, error) {

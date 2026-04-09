@@ -59,6 +59,10 @@ describe("Prisma SQL migration flow", () => {
       migrationFiles.some((file) => /^0005_.+\.sql$/i.test(file)),
       "expected a schema version 5 migration file for relay chain and certificate extended fields",
     );
+    assert.ok(
+      migrationFiles.some((file) => /^0006_.+\.sql$/i.test(file)),
+      "expected a schema version 6 migration file for relay bind/public endpoint fields",
+    );
   });
 
   it("copies Prisma runtime migration files into the production image", () => {
@@ -78,7 +82,7 @@ describe("Prisma SQL migration flow", () => {
     assert.doesNotMatch(source, /ALTER TABLE\s+rules\s+ADD\s+COLUMN\s+custom_headers/i);
   });
 
-  it("migrates legacy schema_version=1 rules tables to schema version 5", async () => {
+  it("migrates legacy schema_version=1 rules tables to schema version 6", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "panel-prisma-migration-"));
     const databasePath = path.join(tempDir, "panel.db");
 
@@ -124,7 +128,7 @@ describe("Prisma SQL migration flow", () => {
         const schemaVersionRows = await client.$queryRawUnsafe(`
           SELECT value FROM meta WHERE key = 'schema_version'
         `);
-        assert.equal(schemaVersionRows[0].value, "5");
+        assert.equal(schemaVersionRows[0].value, "6");
 
         const columns = await client.$queryRawUnsafe(`PRAGMA table_info('rules')`);
         const names = new Set(columns.map((column) => String(column.name || "")));
@@ -156,6 +160,10 @@ describe("Prisma SQL migration flow", () => {
         const relayListenerColumns = await client.$queryRawUnsafe(`PRAGMA table_info('relay_listeners')`);
         const relayIdColumn = relayListenerColumns.find((column) => String(column.name || "") === "id");
         assert.equal(Number(relayIdColumn.pk), 1);
+        const relayListenerColumnNames = new Set(relayListenerColumns.map((column) => String(column.name || "")));
+        assert.ok(relayListenerColumnNames.has("bind_hosts"));
+        assert.ok(relayListenerColumnNames.has("public_host"));
+        assert.ok(relayListenerColumnNames.has("public_port"));
 
         const versionPolicyTables = await client.$queryRawUnsafe(`
           SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'version_policy'
@@ -167,6 +175,93 @@ describe("Prisma SQL migration flow", () => {
         assert.ok(certColumnNames.has("usage"));
         assert.ok(certColumnNames.has("certificate_type"));
         assert.ok(certColumnNames.has("self_signed"));
+      });
+    } finally {
+      cleanupDirWithRetries(tempDir);
+    }
+  });
+
+  it("backfills relay listener bind/public endpoint fields from legacy listen_host/listen_port rows", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "panel-prisma-relay-listener-migration-"));
+    const databasePath = path.join(tempDir, "panel.db");
+
+    try {
+      await withPrismaClient(databasePath, async (client) => {
+        await client.$executeRawUnsafe(`CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT)`);
+        await client.$executeRawUnsafe(`INSERT INTO meta (key, value) VALUES ('schema_version', '5')`);
+        await client.$executeRawUnsafe(`
+          CREATE TABLE rules (
+            id INTEGER NOT NULL,
+            agent_id TEXT NOT NULL,
+            frontend_url TEXT NOT NULL,
+            backend_url TEXT NOT NULL,
+            backends TEXT DEFAULT '[]',
+            load_balancing TEXT DEFAULT '{}',
+            enabled INTEGER DEFAULT 1,
+            tags TEXT DEFAULT '[]',
+            proxy_redirect INTEGER DEFAULT 1,
+            relay_chain TEXT DEFAULT '[]',
+            pass_proxy_headers INTEGER DEFAULT 1,
+            user_agent TEXT DEFAULT '',
+            custom_headers TEXT DEFAULT '[]',
+            revision INTEGER DEFAULT 0,
+            PRIMARY KEY (agent_id, id)
+          )
+        `);
+        await client.$executeRawUnsafe(`
+          CREATE TABLE relay_listeners (
+            id INTEGER PRIMARY KEY,
+            agent_id TEXT NOT NULL,
+            name TEXT DEFAULT '',
+            listen_host TEXT DEFAULT '0.0.0.0',
+            listen_port INTEGER NOT NULL,
+            enabled INTEGER DEFAULT 1,
+            certificate_id INTEGER,
+            tls_mode TEXT DEFAULT 'pin_or_ca',
+            pin_set TEXT DEFAULT '[]',
+            trusted_ca_certificate_ids TEXT DEFAULT '[]',
+            allow_self_signed INTEGER DEFAULT 0,
+            tags TEXT DEFAULT '[]',
+            revision INTEGER DEFAULT 0
+          )
+        `);
+        await client.$executeRawUnsafe(`
+          INSERT INTO relay_listeners (
+            id, agent_id, name, listen_host, listen_port, enabled, certificate_id, tls_mode, pin_set,
+            trusted_ca_certificate_ids, allow_self_signed, tags, revision
+          )
+          VALUES (
+            11, 'legacy-agent', 'legacy-relay', '10.0.1.5', 7443, 1, 15, 'pin_or_ca',
+            '[{"type":"spki_sha256","value":"abc123"}]', '[]', 0, '[]', 9
+          )
+        `);
+      });
+
+      const storage = loadFreshStorage("../storage-sqlite");
+      try {
+        storage.init(tempDir);
+        const listeners = storage.loadRelayListenersForAgent("legacy-agent");
+        assert.equal(listeners.length, 1);
+        assert.deepEqual(listeners[0].bind_hosts, ["10.0.1.5"]);
+        assert.equal(listeners[0].public_host, "10.0.1.5");
+        assert.equal(listeners[0].public_port, 7443);
+        assert.equal(listeners[0].listen_host, "10.0.1.5");
+      } finally {
+        closeQuietly(storage);
+      }
+
+      await withPrismaClient(databasePath, async (client) => {
+        const rows = await client.$queryRawUnsafe(`
+          SELECT bind_hosts, public_host, public_port, listen_host, listen_port
+          FROM relay_listeners
+          WHERE id = 11
+        `);
+        assert.equal(rows.length, 1);
+        assert.equal(String(rows[0].bind_hosts), "[\"10.0.1.5\"]");
+        assert.equal(String(rows[0].public_host), "10.0.1.5");
+        assert.equal(Number(rows[0].public_port), 7443);
+        assert.equal(String(rows[0].listen_host), "10.0.1.5");
+        assert.equal(Number(rows[0].listen_port), 7443);
       });
     } finally {
       cleanupDirWithRetries(tempDir);

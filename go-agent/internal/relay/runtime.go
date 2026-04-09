@@ -45,11 +45,16 @@ func Start(ctx context.Context, listeners []Listener, provider TLSMaterialProvid
 			server.Close()
 			return nil, fmt.Errorf("relay listener %d: %w", listener.ID, err)
 		}
-		if listener.CertificateID == nil {
+		normalized, err := normalizeListener(listener)
+		if err != nil {
+			server.Close()
+			return nil, fmt.Errorf("relay listener %d: %w", listener.ID, err)
+		}
+		if normalized.CertificateID == nil {
 			server.Close()
 			return nil, fmt.Errorf("relay listener %d: certificate_id is required", listener.ID)
 		}
-		if err := server.startListener(listener); err != nil {
+		if err := server.startListener(normalized); err != nil {
 			server.Close()
 			return nil, err
 		}
@@ -59,15 +64,17 @@ func Start(ctx context.Context, listeners []Listener, provider TLSMaterialProvid
 }
 
 func (s *Server) startListener(listener Listener) error {
-	addr := net.JoinHostPort(listener.ListenHost, strconv.Itoa(listener.ListenPort))
-	ln, err := net.Listen("tcp", addr)
-	if err != nil {
-		return err
-	}
+	for _, bindHost := range listener.BindHosts {
+		addr := net.JoinHostPort(bindHost, strconv.Itoa(listener.ListenPort))
+		ln, err := net.Listen("tcp", addr)
+		if err != nil {
+			return err
+		}
 
-	s.listeners = append(s.listeners, ln)
-	s.wg.Add(1)
-	go s.acceptLoop(ln, listener)
+		s.listeners = append(s.listeners, ln)
+		s.wg.Add(1)
+		go s.acceptLoop(ln, listener)
+	}
 	return nil
 }
 

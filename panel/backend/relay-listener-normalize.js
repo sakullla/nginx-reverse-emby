@@ -92,15 +92,48 @@ function normalizeListenPort(value) {
   return parsed;
 }
 
+function normalizeBindHosts(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const seen = new Set();
+  const normalized = [];
+  for (const entry of value) {
+    const host = String(entry || "").trim();
+    if (!host || seen.has(host)) {
+      continue;
+    }
+    seen.add(host);
+    normalized.push(host);
+  }
+  return normalized;
+}
+
 function normalizeRelayListenerPayload(payload, options = {}) {
   const allowDraft = options && options.allowDraft === true;
   const next = ensureObject(payload, "relay listener payload");
+  const listenPort = normalizeListenPort(next.listen_port);
+  const bindHosts = normalizeBindHosts(next.bind_hosts);
+  const legacyListenHost = String(next.listen_host || "").trim();
+  const normalizedBindHosts =
+    bindHosts.length > 0
+      ? bindHosts
+      : [legacyListenHost || "0.0.0.0"];
+  const listenHost = normalizedBindHosts[0];
+  const publicHost = String(next.public_host || "").trim() || listenHost;
+  const publicPort =
+    next.public_port === undefined || next.public_port === null || next.public_port === ""
+      ? listenPort
+      : normalizeListenPort(next.public_port);
   const normalized = {
     id: normalizeRequiredId(next.id, "id"),
     agent_id: normalizeRequiredString(next.agent_id, "agent_id"),
     name: normalizeRequiredString(next.name, "name"),
-    listen_host: String(next.listen_host || "0.0.0.0").trim() || "0.0.0.0",
-    listen_port: normalizeListenPort(next.listen_port),
+    bind_hosts: normalizedBindHosts,
+    listen_host: listenHost,
+    listen_port: listenPort,
+    public_host: publicHost,
+    public_port: publicPort,
     enabled: next.enabled !== false,
     certificate_id: normalizeOptionalId(next.certificate_id, "certificate_id"),
     tls_mode: String(next.tls_mode || "pin_or_ca").trim() || "pin_or_ca",

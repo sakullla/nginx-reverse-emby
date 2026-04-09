@@ -75,3 +75,44 @@ func TestSnapshotDecodePreservesHTTPAndL4BackendFields(t *testing.T) {
 		t.Fatalf("expected proxy_protocol.send=false")
 	}
 }
+
+func TestSnapshotDecodePreservesRelayBindAndPublicFields(t *testing.T) {
+	raw := []byte(`{
+		"desired_version":"2.1.0",
+		"desired_revision":91,
+		"relay_listeners":[
+			{
+				"id":31,
+				"agent_id":"remote-agent-5",
+				"name":"relay-a",
+				"listen_host":"127.0.0.1",
+				"bind_hosts":["127.0.0.1","127.0.0.2"],
+				"listen_port":9443,
+				"public_host":"relay.example.com",
+				"public_port":443,
+				"enabled":true,
+				"tls_mode":"pin_only",
+				"pin_set":[{"type":"sha256","value":"pin-value"}],
+				"revision":7
+			}
+		]
+	}`)
+
+	var snapshot Snapshot
+	if err := json.Unmarshal(raw, &snapshot); err != nil {
+		t.Fatalf("decode snapshot: %v", err)
+	}
+
+	if len(snapshot.RelayListeners) != 1 {
+		t.Fatalf("expected one relay listener, got %d", len(snapshot.RelayListeners))
+	}
+	if !reflect.DeepEqual(snapshot.RelayListeners[0].BindHosts, []string{"127.0.0.1", "127.0.0.2"}) {
+		t.Fatalf("unexpected relay bind_hosts: %+v", snapshot.RelayListeners[0].BindHosts)
+	}
+	if snapshot.RelayListeners[0].PublicHost != "relay.example.com" {
+		t.Fatalf("expected relay public_host relay.example.com, got %q", snapshot.RelayListeners[0].PublicHost)
+	}
+	if snapshot.RelayListeners[0].PublicPort != 443 {
+		t.Fatalf("expected relay public_port 443, got %d", snapshot.RelayListeners[0].PublicPort)
+	}
+}

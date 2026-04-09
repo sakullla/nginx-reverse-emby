@@ -764,8 +764,10 @@ const mockRelayListenersByAgent = {
       id: 1,
       agent_id: 'local',
       name: 'relay-a',
-      listen_host: 'relay-a.example.com',
+      bind_hosts: ['0.0.0.0', '127.0.0.1'],
       listen_port: 7443,
+      public_host: 'relay-a.example.com',
+      public_port: 7443,
       enabled: true,
       certificate_id: 3,
       certificate_source: 'auto_relay_ca',
@@ -783,8 +785,9 @@ const mockRelayListenersByAgent = {
       id: 2,
       agent_id: 'edge-1',
       name: 'relay-b',
-      listen_host: 'relay-b.example.com',
+      bind_hosts: ['0.0.0.0'],
       listen_port: 8443,
+      public_host: 'relay-b.example.com',
       enabled: true,
       certificate_id: 2,
       certificate_source: 'auto_relay_ca',
@@ -835,9 +838,55 @@ function buildMockAutoPin(certificate) {
   }]
 }
 
+function normalizeRelayPort(raw) {
+  if (raw == null || String(raw).trim() === '') return null
+  const value = Number(raw)
+  if (!Number.isInteger(value) || value < 1 || value > 65535) return null
+  return value
+}
+
+function normalizeRelayBindHosts(rawBindHosts, legacyListenHost) {
+  const source = Array.isArray(rawBindHosts)
+    ? rawBindHosts
+    : [rawBindHosts ?? legacyListenHost ?? '0.0.0.0']
+  const deduped = []
+  const seen = new Set()
+  for (const item of source) {
+    const host = String(item || '').trim()
+    if (!host || seen.has(host)) continue
+    seen.add(host)
+    deduped.push(host)
+  }
+  return deduped.length ? deduped : ['0.0.0.0']
+}
+
+function normalizeMockRelayListenerRecord(record = {}) {
+  const {
+    bind_hosts: rawBindHosts,
+    listen_host: legacyListenHost,
+    public_host: rawPublicHost,
+    public_port: rawPublicPort,
+    ...rest
+  } = record
+  const normalized = {
+    ...rest,
+    bind_hosts: normalizeRelayBindHosts(rawBindHosts, legacyListenHost)
+  }
+  const publicHost = String(rawPublicHost || '').trim()
+  const publicPort = normalizeRelayPort(rawPublicPort)
+  if (publicHost) normalized.public_host = publicHost
+  if (publicPort != null) normalized.public_port = publicPort
+  return normalized
+}
+
 function normalizeMockRelayListenerPayload(agentId, payload = {}) {
+  const normalizedRecord = normalizeMockRelayListenerRecord(payload)
   const certificateSource = payload.certificate_source === 'existing_certificate' ? 'existing_certificate' : 'auto_relay_ca'
   const trustModeSource = payload.trust_mode_source === 'custom' ? 'custom' : 'auto'
+  const hasPublicPortInput = payload.public_port != null && String(payload.public_port).trim() !== ''
+  if (hasPublicPortInput && normalizeRelayPort(payload.public_port) == null) {
+    throw new Error('public_port must be an integer between 1 and 65535')
+  }
   const pinSet = Array.isArray(payload.pin_set)
     ? payload.pin_set
       .map((entry) => ({
@@ -886,7 +935,7 @@ function normalizeMockRelayListenerPayload(agentId, payload = {}) {
     ? (relayCA ? [Number(relayCA.id)] : [])
     : trustedCa
   return {
-    ...payload,
+    ...normalizedRecord,
     certificate_id: certificateId,
     certificate_source: certificateSource,
     trust_mode_source: trustModeSource,
@@ -910,7 +959,7 @@ export async function fetchRelayListeners(agentId) {
   if (isDev) {
     await sleep()
     ensureDevRelayAgentExists(agentId)
-    return [...(mockRelayListenersByAgent[agentId] || [])]
+    return (mockRelayListenersByAgent[agentId] || []).map((item) => normalizeMockRelayListenerRecord(item))
   }
   const { data } = await api.get(`/agents/${encodeURIComponent(agentId)}/relay-listeners`)
   return data.listeners || []
@@ -922,7 +971,7 @@ export async function fetchAllRelayListeners() {
     const agentNameById = new Map(mockAgents.map((agent) => [String(agent.id), agent.name || agent.id]))
     return Object.entries(mockRelayListenersByAgent).flatMap(([agentId, listeners]) =>
       (listeners || []).map((listener) => ({
-        ...listener,
+        ...normalizeMockRelayListenerRecord(listener),
         id: Number(listener.id),
         agent_id: String(listener.agent_id || agentId),
         agent_name: agentNameById.get(String(listener.agent_id || agentId)) || String(listener.agent_id || agentId)
@@ -966,7 +1015,7 @@ export async function createRelayListener(agentId, payload) {
     }
     mockRelayListenersByAgent[agentId] = mockRelayListenersByAgent[agentId] || []
     mockRelayListenersByAgent[agentId].push(item)
-    return item
+    return normalizeMockRelayListenerRecord(item)
   }
   const { data } = await api.post(
     `/agents/${encodeURIComponent(agentId)}/relay-listeners`,
@@ -984,8 +1033,8 @@ export async function updateRelayListener(agentId, id, payload) {
     const idx = list.findIndex((item) => String(item.id) === String(id))
     if (idx === -1) return null
     const normalizedPayload = normalizeMockRelayListenerPayload(agentId, { ...list[idx], ...payload })
-    list[idx] = { ...list[idx], ...normalizedPayload }
-    return list[idx]
+    list[idx] = normalizeMockRelayListenerRecord({ ...list[idx], ...normalizedPayload })
+    return normalizeMockRelayListenerRecord(list[idx])
   }
   const { data } = await api.put(
     `/agents/${encodeURIComponent(agentId)}/relay-listeners/${encodeURIComponent(id)}`,

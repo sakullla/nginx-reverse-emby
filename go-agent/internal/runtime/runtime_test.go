@@ -196,6 +196,7 @@ func TestStateReturnsMetadataCopy(t *testing.T) {
 			AgentID:    "agent-a",
 			Name:       "relay-a",
 			ListenHost: "127.0.0.1",
+			BindHosts:  []string{"127.0.0.1", "127.0.0.2"},
 			ListenPort: 9443,
 			Enabled:    true,
 			TLSMode:    "pin_only",
@@ -277,6 +278,7 @@ func TestActiveSnapshotReturnsSliceIsolation(t *testing.T) {
 			AgentID:    "agent-a",
 			Name:       "relay-a",
 			ListenHost: "127.0.0.1",
+			BindHosts:  []string{"127.0.0.1", "127.0.0.2"},
 			ListenPort: 9443,
 			Enabled:    true,
 			TLSMode:    "pin_only",
@@ -316,6 +318,7 @@ func TestActiveSnapshotReturnsSliceIsolation(t *testing.T) {
 	snap.Rules[0].Backends[0].URL = "http://mutated.example.internal:8096"
 	snap.L4Rules[0].RelayChain[0] = 99
 	snap.L4Rules[0].Backends[0].Host = "mutated-host"
+	snap.RelayListeners[0].BindHosts[0] = "127.0.0.99"
 	snap.RelayListeners[0].PinSet[0].Value = "mutated"
 	snap.RelayListeners[0].TrustedCACertificateIDs[0] = 99
 	snap.RelayListeners[0].Tags[0] = "mutated"
@@ -334,6 +337,9 @@ func TestActiveSnapshotReturnsSliceIsolation(t *testing.T) {
 	}
 	if current.L4Rules[0].Backends[0].Host != "10.0.0.21" {
 		t.Fatalf("l4 backends leaked mutation: %+v", current.L4Rules[0].Backends)
+	}
+	if current.RelayListeners[0].BindHosts[0] != "127.0.0.1" {
+		t.Fatalf("relay bind_hosts leaked mutation: %+v", current.RelayListeners)
 	}
 	if current.RelayListeners[0].PinSet[0].Value != "pin-one" {
 		t.Fatalf("relay pin_set leaked mutation: %+v", current.RelayListeners)
