@@ -18,7 +18,9 @@
             </button>
           </td>
           <td class="rules-table__url">{{ rule.frontend_url }}</td>
-          <td class="rules-table__url rules-table__url--backend">{{ rule.backend_url }}</td>
+          <td class="rules-table__url rules-table__url--backend">
+            {{ formatBackend(rule) }}
+          </td>
           <td>
             <div class="rules-table__tags">
               <span v-for="tag in (rule.tags || [])" :key="tag" class="tag">{{ tag }}</span>
@@ -47,6 +49,22 @@
 </template>
 
 <script setup>
+function httpBackends(rule) {
+  if (Array.isArray(rule?.backends) && rule.backends.length > 0) {
+    return rule.backends
+      .map((backend) => String(backend?.url || '').trim())
+      .filter(Boolean)
+  }
+  return rule?.backend_url ? [String(rule.backend_url).trim()] : []
+}
+
+function formatBackend(rule) {
+  const backends = httpBackends(rule)
+  if (backends.length === 0) return '-'
+  if (backends.length === 1) return backends[0]
+  return `${backends[0]} +${backends.length - 1}`
+}
+
 defineProps({
   rules: { type: Array, default: () => [] }
 })

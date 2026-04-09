@@ -97,7 +97,9 @@
             <span class="rule-card__url-icon">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/><path d="M12 5l7 7-7 7"/></svg>
             </span>
-            <code class="rule-card__backend">{{ rule.backend_url }}</code>
+            <code class="rule-card__backend" :title="httpBackendsTooltip(rule)">
+              {{ formatHttpBackend(rule) }}
+            </code>
           </div>
         </div>
         <div v-if="hasRequestHeaderIndicators(rule)" class="rule-card__meta-badges">
@@ -204,6 +206,26 @@ const searchQuery = ref('')
 const searchInputRef = ref(null)
 function focusSearch() { searchInputRef.value?.focus() }
 
+function httpBackends(rule) {
+  if (Array.isArray(rule?.backends) && rule.backends.length > 0) {
+    return rule.backends
+      .map((backend) => String(backend?.url || '').trim())
+      .filter(Boolean)
+  }
+  return rule?.backend_url ? [String(rule.backend_url).trim()] : []
+}
+
+function formatHttpBackend(rule) {
+  const backends = httpBackends(rule)
+  if (backends.length === 0) return '-'
+  if (backends.length === 1) return backends[0]
+  return `${backends[0]} +${backends.length - 1}`
+}
+
+function httpBackendsTooltip(rule) {
+  return httpBackends(rule).join('\n')
+}
+
 // Pre-fill search from global search navigation; reset when param is cleared
 watchEffect(() => {
   searchQuery.value = route.query.search ?? ''
@@ -218,6 +240,7 @@ const filteredRules = computed(() => {
   return rules.value.filter(rule =>
     String(rule.frontend_url || '').toLowerCase().includes(q) ||
     String(rule.backend_url || '').toLowerCase().includes(q) ||
+    httpBackends(rule).some((backend) => backend.toLowerCase().includes(q)) ||
     String(rule.name || '').toLowerCase().includes(q) ||
     (rule.tags || []).some(tag => String(tag).toLowerCase().includes(q))
   )

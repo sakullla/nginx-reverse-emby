@@ -324,8 +324,6 @@ const form = ref({
   backends: initialBackends,
   load_balancing: {
     strategy: normalizeL4Strategy(props.initialData?.load_balancing?.strategy),
-    hash_key: props.initialData?.load_balancing?.hash_key || '$binary_remote_addr',
-    zone_size: props.initialData?.load_balancing?.zone_size || '128k',
   },
   tuning: mergeTuning(props.initialData?.tuning, initialProtocol),
   enabled: props.initialData?.enabled !== false,
