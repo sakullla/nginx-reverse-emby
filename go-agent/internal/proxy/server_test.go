@@ -362,6 +362,41 @@ func TestRouteEntryDoesNotRetryGenericTransportErrors(t *testing.T) {
 	}
 }
 
+func TestRouteEntryPropagatesCanceledResolveErrors(t *testing.T) {
+	cache := backends.NewCache(backends.Config{
+		Resolver: resolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}),
+	})
+	entry := &routeEntry{
+		rule: model.HTTPRule{
+			FrontendURL: "http://edge.example.test",
+			LoadBalancing: model.LoadBalancing{
+				Strategy: "round_robin",
+			},
+		},
+		backends: []httpBackend{
+			{target: mustParseBackendURL(t, "http://backend.example:8080"), backendHost: "backend.example"},
+		},
+		backendCache:   cache,
+		transport:      NewSharedTransport(),
+		selectionScope: "edge.example.test",
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	req := httptest.NewRequest(http.MethodGet, "http://edge.example.test/retry", nil).WithContext(ctx)
+	req.Host = "edge.example.test"
+	recorder := httptest.NewRecorder()
+
+	err := entry.serveHTTP(recorder, req)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled resolve error, got %v", err)
+	}
+}
+
 func TestRouteEntryRetriesUpstreamHeaderTimeouts(t *testing.T) {
 	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(200 * time.Millisecond)
@@ -993,4 +1028,10 @@ func mustParseBackendURL(t *testing.T, raw string) *url.URL {
 		t.Fatalf("failed to parse backend URL %q: %v", raw, err)
 	}
 	return parsed
+}
+
+type resolverFunc func(context.Context, string) ([]net.IPAddr, error)
+
+func (f resolverFunc) LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error) {
+	return f(ctx, host)
 }

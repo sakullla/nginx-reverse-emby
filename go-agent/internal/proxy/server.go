@@ -286,6 +286,11 @@ func (e *routeEntry) candidates(ctx context.Context) ([]httpCandidate, error) {
 		}
 		resolved, err := e.backendCache.Resolve(ctx, endpoint)
 		if err != nil {
+			if ctx != nil {
+				if ctxErr := ctx.Err(); ctxErr != nil && errors.Is(err, ctxErr) {
+					return nil, ctxErr
+				}
+			}
 			continue
 		}
 		for _, candidate := range resolved {
