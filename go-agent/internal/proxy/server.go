@@ -605,10 +605,13 @@ func cloneProxyRequest(req *http.Request, body []byte, candidate httpCandidate, 
 }
 
 func isBackendRetryable(req *http.Request, err error) bool {
+	if err == nil {
+		return false
+	}
 	if req != nil && req.Context().Err() != nil {
 		return false
 	}
-	return !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
+	return true
 }
 
 func backendRetryError(req *http.Request, err error) error {
@@ -616,12 +619,6 @@ func backendRetryError(req *http.Request, err error) error {
 		if ctxErr := req.Context().Err(); ctxErr != nil {
 			return ctxErr
 		}
-	}
-	if errors.Is(err, context.Canceled) {
-		return context.Canceled
-	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		return context.DeadlineExceeded
 	}
 	return err
 }

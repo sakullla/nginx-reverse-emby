@@ -326,6 +326,52 @@ func TestRouteEntryDoesNotRetryNonUpstreamUnavailableErrors(t *testing.T) {
 	}
 }
 
+func TestRouteEntryRetriesUpstreamHeaderTimeouts(t *testing.T) {
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+		_, _ = w.Write([]byte("slow"))
+	}))
+	defer slow.Close()
+
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer good.Close()
+
+	cache := backends.NewCache(backends.Config{})
+	transport := NewSharedTransport()
+	transport.ResponseHeaderTimeout = 50 * time.Millisecond
+	entry := &routeEntry{
+		rule: model.HTTPRule{
+			FrontendURL: "http://edge.example.test",
+			LoadBalancing: model.LoadBalancing{
+				Strategy: "round_robin",
+			},
+		},
+		backends: []httpBackend{
+			{target: mustParseBackendURL(t, slow.URL), backendHost: "127.0.0.1"},
+			{target: mustParseBackendURL(t, good.URL), backendHost: "127.0.0.1"},
+		},
+		backendCache:   cache,
+		transport:      transport,
+		selectionScope: "edge.example.test",
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "http://edge.example.test/retry", nil)
+	req.Host = "edge.example.test"
+	recorder := httptest.NewRecorder()
+
+	if err := entry.serveHTTP(recorder, req); err != nil {
+		t.Fatalf("expected timeout backend to be retried, got %v", err)
+	}
+	if body := recorder.Body.String(); body != "ok" {
+		t.Fatalf("expected healthy backend response, got %q", body)
+	}
+	if !cache.IsInBackoff(mustParseBackendURL(t, slow.URL).Host) {
+		t.Fatalf("expected timed out backend to be marked in backoff")
+	}
+}
+
 func TestServerPreservesSwitchingProtocolsUpgradeTunnel(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.EqualFold(r.Header.Get("Connection"), "Upgrade") {
