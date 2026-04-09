@@ -784,10 +784,11 @@ func TestStartServesHTTPRulesThroughRelayChain(t *testing.T) {
 	backendAddress := fmt.Sprintf("127.0.0.1:%d", backendPort)
 
 	relayCert := mustIssueProxyTLSCertificate(t, "relay.internal.test")
-	relayPort := pickFreePort(t)
+	relayPublicPort := pickFreePort(t)
 	relayAccepted := make(chan relayTestRequest, 1)
-	relayStop := startTestRelayServer(t, fmt.Sprintf("127.0.0.1:%d", relayPort), relayCert, relayAccepted)
+	relayStop := startTestRelayServer(t, fmt.Sprintf("127.0.0.1:%d", relayPublicPort), relayCert, relayAccepted)
 	defer relayStop()
+	relayListenPort := pickFreePort(t)
 
 	runtime, err := Start(
 		context.Background(),
@@ -800,8 +801,11 @@ func TestStartServesHTTPRulesThroughRelayChain(t *testing.T) {
 			ID:         41,
 			AgentID:    "remote-relay-agent",
 			Name:       "relay-hop",
-			ListenHost: "127.0.0.1",
-			ListenPort: relayPort,
+			ListenHost: "127.0.0.2",
+			BindHosts:  []string{"127.0.0.2"},
+			ListenPort: relayListenPort,
+			PublicHost: "127.0.0.1",
+			PublicPort: relayPublicPort,
 			Enabled:    true,
 			TLSMode:    "pin_only",
 			PinSet: []model.RelayPin{{
@@ -839,6 +843,71 @@ func TestStartServesHTTPRulesThroughRelayChain(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected request to traverse relay listener")
+	}
+}
+
+func TestResolveRelayHopsUsesPublicEndpointAndFallbacks(t *testing.T) {
+	rule := model.HTTPRule{
+		FrontendURL: "http://edge.example.test",
+		BackendURL:  "http://127.0.0.1:8096",
+		RelayChain:  []int{1, 2, 3},
+	}
+	listeners := []model.RelayListener{
+		{
+			ID:         1,
+			ListenHost: "10.0.0.10",
+			BindHosts:  []string{"10.0.0.20"},
+			ListenPort: 18443,
+			PublicHost: "relay-public.example.test",
+			PublicPort: 28443,
+			Enabled:    true,
+			TLSMode:    "pin_only",
+			PinSet:     []model.RelayPin{{Type: "sha256", Value: "pin-1"}},
+		},
+		{
+			ID:         2,
+			ListenHost: "10.1.0.10",
+			BindHosts:  []string{"bind-fallback.example.test", "10.1.0.20"},
+			ListenPort: 19443,
+			Enabled:    true,
+			TLSMode:    "pin_only",
+			PinSet:     []model.RelayPin{{Type: "sha256", Value: "pin-2"}},
+		},
+		{
+			ID:         3,
+			ListenHost: "listen-fallback.example.test",
+			ListenPort: 20443,
+			Enabled:    true,
+			TLSMode:    "pin_only",
+			PinSet:     []model.RelayPin{{Type: "sha256", Value: "pin-3"}},
+		},
+	}
+
+	hops, err := resolveRelayHops(rule, listeners)
+	if err != nil {
+		t.Fatalf("resolveRelayHops returned error: %v", err)
+	}
+	if len(hops) != 3 {
+		t.Fatalf("expected 3 relay hops, got %d", len(hops))
+	}
+
+	if got := hops[0].Address; got != "relay-public.example.test:28443" {
+		t.Fatalf("expected public endpoint for hop 1, got %q", got)
+	}
+	if got := hops[0].ServerName; got != "relay-public.example.test" {
+		t.Fatalf("expected public host server_name for hop 1, got %q", got)
+	}
+	if got := hops[1].Address; got != "bind-fallback.example.test:19443" {
+		t.Fatalf("expected bind host fallback for hop 2, got %q", got)
+	}
+	if got := hops[1].ServerName; got != "bind-fallback.example.test" {
+		t.Fatalf("expected bind host server_name for hop 2, got %q", got)
+	}
+	if got := hops[2].Address; got != "listen-fallback.example.test:20443" {
+		t.Fatalf("expected listen host fallback for hop 3, got %q", got)
+	}
+	if got := hops[2].ServerName; got != "listen-fallback.example.test" {
+		t.Fatalf("expected listen host server_name for hop 3, got %q", got)
 	}
 }
 

@@ -685,10 +685,33 @@ func (s *Server) resolveRelayHops(rule model.L4Rule) ([]relay.Hop, error) {
 		if err := relay.ValidateListener(listener); err != nil {
 			return nil, fmt.Errorf("relay listener %d: %w", listenerID, err)
 		}
+		host, port := relayHopDialEndpoint(listener)
 		hops = append(hops, relay.Hop{
-			Address:  net.JoinHostPort(listener.ListenHost, strconv.Itoa(listener.ListenPort)),
-			Listener: listener,
+			Address:    net.JoinHostPort(host, strconv.Itoa(port)),
+			ServerName: host,
+			Listener:   listener,
 		})
 	}
 	return hops, nil
+}
+
+func relayHopDialEndpoint(listener model.RelayListener) (string, int) {
+	host := strings.TrimSpace(listener.PublicHost)
+	if host == "" {
+		for _, bindHost := range listener.BindHosts {
+			if trimmed := strings.TrimSpace(bindHost); trimmed != "" {
+				host = trimmed
+				break
+			}
+		}
+	}
+	if host == "" {
+		host = strings.TrimSpace(listener.ListenHost)
+	}
+
+	port := listener.PublicPort
+	if port <= 0 {
+		port = listener.ListenPort
+	}
+	return host, port
 }
