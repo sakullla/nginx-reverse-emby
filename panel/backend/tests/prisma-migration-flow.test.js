@@ -113,6 +113,9 @@ describe("Prisma SQL migration flow", () => {
         assert.equal(rules[0].pass_proxy_headers, true);
         assert.equal(rules[0].user_agent, "");
         assert.deepEqual(rules[0].custom_headers, []);
+        assert.equal(rules[0].backend_url, "http://backend.internal:8096");
+        assert.deepEqual(rules[0].backends, [{ url: "http://backend.internal:8096" }]);
+        assert.deepEqual(rules[0].load_balancing, { strategy: "round_robin" });
       } finally {
         closeQuietly(storage);
       }
@@ -129,6 +132,8 @@ describe("Prisma SQL migration flow", () => {
         assert.ok(names.has("user_agent"));
         assert.ok(names.has("custom_headers"));
         assert.ok(names.has("relay_chain"));
+        assert.ok(names.has("backends"));
+        assert.ok(names.has("load_balancing"));
 
         const l4Columns = await client.$queryRawUnsafe(`PRAGMA table_info('l4_rules')`);
         const l4ColumnNames = new Set(l4Columns.map((column) => String(column.name || "")));

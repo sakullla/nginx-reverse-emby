@@ -38,6 +38,8 @@ model Rule {
   agentId          String  @map("agent_id")
   frontendUrl      String  @map("frontend_url")
   backendUrl       String  @map("backend_url")
+  backends         String  @default("[]")
+  loadBalancing    String  @default("{}") @map("load_balancing")
   enabled          Boolean @default(true)
   tags             String  @default("[]")
   proxyRedirect    Boolean @default(true) @map("proxy_redirect")

@@ -12,15 +12,19 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 )
@@ -178,7 +182,7 @@ func TestPassProxyHeadersUsesIncomingScheme(t *testing.T) {
 
 	server := NewServer(listener)
 	for _, entry := range server.routes {
-		entry.proxy.Transport = backend.Client().Transport
+		entry.transport = backend.Client().Transport.(*http.Transport).Clone()
 	}
 
 	proxy := httptest.NewServer(server)
@@ -198,6 +202,356 @@ func TestPassProxyHeadersUsesIncomingScheme(t *testing.T) {
 
 	if got != "http" {
 		t.Fatalf("expected http forwarded proto, got %q", got)
+	}
+}
+
+func TestStartRetriesHTTPRequestsAcrossBackends(t *testing.T) {
+	failures := 0
+	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		failures++
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Fatalf("response writer does not support hijack")
+		}
+		conn, _, err := hj.Hijack()
+		if err != nil {
+			t.Fatalf("hijack failed: %v", err)
+		}
+		_ = conn.Close()
+	}))
+	defer bad.Close()
+
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer good.Close()
+
+	port := pickFreePort(t)
+	runtime, err := Start(context.Background(), []model.HTTPRule{{
+		FrontendURL: fmt.Sprintf("http://edge.example.test:%d", port),
+		BackendURL:  bad.URL,
+		Backends: []model.HTTPBackend{
+			{URL: bad.URL},
+			{URL: good.URL},
+		},
+		LoadBalancing: model.LoadBalancing{Strategy: "round_robin"},
+	}}, nil, Providers{})
+	if err != nil {
+		t.Fatalf("failed to start runtime: %v", err)
+	}
+	defer runtime.Close()
+
+	req, err := http.NewRequest(http.MethodPost, fmt.Sprintf("http://127.0.0.1:%d/retry", port), io.NopCloser(strings.NewReader("payload")))
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+	req.Host = fmt.Sprintf("edge.example.test:%d", port)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("runtime request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read body: %v", err)
+	}
+	if string(body) != "ok" || failures == 0 {
+		t.Fatalf("expected retry to healthy backend; failures=%d body=%q", failures, string(body))
+	}
+}
+
+func TestCloneProxyRequestPreservesIncomingPathQueryAndFragment(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://frontend.example/incoming/path?client=1", nil)
+	req.Host = "frontend.example"
+	req.URL.Fragment = "client-fragment"
+	candidate := httpCandidate{
+		target: mustParseBackendURL(t, "https://backend.example/backend/path?backend=1#backend-fragment"),
+	}
+
+	out, err := cloneProxyRequest(req, nil, candidate, model.HTTPRule{})
+	if err != nil {
+		t.Fatalf("cloneProxyRequest failed: %v", err)
+	}
+
+	if out.URL.Scheme != "https" {
+		t.Fatalf("expected backend scheme to be applied, got %q", out.URL.Scheme)
+	}
+	if out.URL.Host != "backend.example" {
+		t.Fatalf("expected backend host to be applied, got %q", out.URL.Host)
+	}
+	if out.URL.Path != req.URL.Path {
+		t.Fatalf("expected incoming path %q to be preserved, got %q", req.URL.Path, out.URL.Path)
+	}
+	if out.URL.RawQuery != req.URL.RawQuery {
+		t.Fatalf("expected incoming query %q to be preserved, got %q", req.URL.RawQuery, out.URL.RawQuery)
+	}
+	if out.URL.Fragment != req.URL.Fragment {
+		t.Fatalf("expected incoming fragment %q to be preserved, got %q", req.URL.Fragment, out.URL.Fragment)
+	}
+}
+
+func TestRouteEntryDoesNotRetryNonUpstreamUnavailableErrors(t *testing.T) {
+	cache := backends.NewCache(backends.Config{})
+	entry := &routeEntry{
+		rule: model.HTTPRule{
+			FrontendURL: "http://edge.example.test",
+			LoadBalancing: model.LoadBalancing{
+				Strategy: "round_robin",
+			},
+		},
+		backends: []httpBackend{
+			{target: mustParseBackendURL(t, "http://127.0.0.1:18091"), backendHost: "127.0.0.1"},
+			{target: mustParseBackendURL(t, "http://127.0.0.1:18092"), backendHost: "127.0.0.1"},
+		},
+		backendCache:   cache,
+		transport:      NewSharedTransport(),
+		selectionScope: "edge.example.test",
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	req := httptest.NewRequest(http.MethodGet, "http://edge.example.test/retry", nil).WithContext(ctx)
+	req.Host = "edge.example.test"
+	recorder := httptest.NewRecorder()
+
+	err := entry.serveHTTP(recorder, req)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled request error, got %v", err)
+	}
+	if cache.IsInBackoff("127.0.0.1:18091") || cache.IsInBackoff("127.0.0.1:18092") {
+		t.Fatalf("expected non-upstream request errors to skip failure backoff marking")
+	}
+}
+
+func TestRouteEntryDoesNotRetryGenericTransportErrors(t *testing.T) {
+	sentinel := errors.New("synthetic dial error")
+	cache := backends.NewCache(backends.Config{})
+	transport := NewSharedTransport()
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		return nil, sentinel
+	}
+	entry := &routeEntry{
+		rule: model.HTTPRule{
+			FrontendURL: "http://edge.example.test",
+			LoadBalancing: model.LoadBalancing{
+				Strategy: "round_robin",
+			},
+		},
+		backends: []httpBackend{
+			{target: mustParseBackendURL(t, "http://127.0.0.1:18091"), backendHost: "127.0.0.1"},
+			{target: mustParseBackendURL(t, "http://127.0.0.1:18092"), backendHost: "127.0.0.1"},
+		},
+		backendCache:   cache,
+		transport:      transport,
+		selectionScope: "edge.example.test",
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "http://edge.example.test/retry", nil)
+	req.Host = "edge.example.test"
+	recorder := httptest.NewRecorder()
+
+	err := entry.serveHTTP(recorder, req)
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("expected sentinel transport error, got %v", err)
+	}
+	if cache.IsInBackoff("127.0.0.1:18091") || cache.IsInBackoff("127.0.0.1:18092") {
+		t.Fatalf("expected generic transport errors to skip failure backoff marking")
+	}
+}
+
+func TestRouteEntryPropagatesCanceledResolveErrors(t *testing.T) {
+	cache := backends.NewCache(backends.Config{
+		Resolver: resolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}),
+	})
+	entry := &routeEntry{
+		rule: model.HTTPRule{
+			FrontendURL: "http://edge.example.test",
+			LoadBalancing: model.LoadBalancing{
+				Strategy: "round_robin",
+			},
+		},
+		backends: []httpBackend{
+			{target: mustParseBackendURL(t, "http://backend.example:8080"), backendHost: "backend.example"},
+		},
+		backendCache:   cache,
+		transport:      NewSharedTransport(),
+		selectionScope: "edge.example.test",
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	req := httptest.NewRequest(http.MethodGet, "http://edge.example.test/retry", nil).WithContext(ctx)
+	req.Host = "edge.example.test"
+	recorder := httptest.NewRecorder()
+
+	err := entry.serveHTTP(recorder, req)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled resolve error, got %v", err)
+	}
+}
+
+func TestRouteEntryRetriesUpstreamHeaderTimeouts(t *testing.T) {
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+		_, _ = w.Write([]byte("slow"))
+	}))
+	defer slow.Close()
+
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer good.Close()
+
+	cache := backends.NewCache(backends.Config{})
+	transport := NewSharedTransport()
+	transport.ResponseHeaderTimeout = 50 * time.Millisecond
+	entry := &routeEntry{
+		rule: model.HTTPRule{
+			FrontendURL: "http://edge.example.test",
+			LoadBalancing: model.LoadBalancing{
+				Strategy: "round_robin",
+			},
+		},
+		backends: []httpBackend{
+			{target: mustParseBackendURL(t, slow.URL), backendHost: "127.0.0.1"},
+			{target: mustParseBackendURL(t, good.URL), backendHost: "127.0.0.1"},
+		},
+		backendCache:   cache,
+		transport:      transport,
+		selectionScope: "edge.example.test",
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "http://edge.example.test/retry", nil)
+	req.Host = "edge.example.test"
+	recorder := httptest.NewRecorder()
+
+	if err := entry.serveHTTP(recorder, req); err != nil {
+		t.Fatalf("expected timeout backend to be retried, got %v", err)
+	}
+	if body := recorder.Body.String(); body != "ok" {
+		t.Fatalf("expected healthy backend response, got %q", body)
+	}
+	if !cache.IsInBackoff(mustParseBackendURL(t, slow.URL).Host) {
+		t.Fatalf("expected timed out backend to be marked in backoff")
+	}
+}
+
+func TestServerPreservesSwitchingProtocolsUpgradeTunnel(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.EqualFold(r.Header.Get("Connection"), "Upgrade") {
+			t.Fatalf("expected upgrade connection header, got %q", r.Header.Get("Connection"))
+		}
+		if !strings.EqualFold(r.Header.Get("Upgrade"), "testproto") {
+			t.Fatalf("expected upgrade protocol header, got %q", r.Header.Get("Upgrade"))
+		}
+		hijacker, ok := w.(http.Hijacker)
+		if !ok {
+			t.Fatal("backend response writer does not support hijack")
+		}
+		conn, buf, err := hijacker.Hijack()
+		if err != nil {
+			t.Fatalf("backend hijack failed: %v", err)
+		}
+		_, _ = buf.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: testproto\r\n\r\n")
+		_ = buf.Flush()
+		_, _ = io.Copy(conn, conn)
+	}))
+	t.Cleanup(backend.CloseClientConnections)
+
+	listener := model.HTTPListener{
+		Rules: []model.HTTPRule{{
+			FrontendURL: "http://route.example",
+			BackendURL:  backend.URL,
+		}},
+	}
+	proxy := httptest.NewServer(NewServer(listener))
+	t.Cleanup(proxy.CloseClientConnections)
+
+	conn, err := net.Dial("tcp", strings.TrimPrefix(proxy.URL, "http://"))
+	if err != nil {
+		t.Fatalf("failed to dial proxy: %v", err)
+	}
+	defer conn.Close()
+	fail := func(format string, args ...any) {
+		_ = conn.Close()
+		proxy.CloseClientConnections()
+		backend.CloseClientConnections()
+		t.Fatalf(format, args...)
+	}
+
+	_, err = io.WriteString(conn, "GET /upgrade HTTP/1.1\r\nHost: route.example\r\nConnection: Upgrade\r\nUpgrade: testproto\r\n\r\n")
+	if err != nil {
+		fail("failed to write upgrade request: %v", err)
+	}
+
+	reader := bufio.NewReader(conn)
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	resp, err := http.ReadResponse(reader, &http.Request{Method: http.MethodGet})
+	if err != nil {
+		fail("failed to read upgrade response: %v", err)
+	}
+	_ = conn.SetReadDeadline(time.Time{})
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		fail("expected 101 response, got %d", resp.StatusCode)
+	}
+	if !strings.EqualFold(resp.Header.Get("Upgrade"), "testproto") {
+		fail("unexpected upgrade response header: %q", resp.Header.Get("Upgrade"))
+	}
+
+	payload := "ping-through-upgrade"
+	if _, err := io.WriteString(conn, payload); err != nil {
+		fail("failed to write upgrade payload: %v", err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	reply := make([]byte, len(payload))
+	if _, err := io.ReadFull(reader, reply); err != nil {
+		fail("failed to read upgraded payload: %v", err)
+	}
+	if string(reply) != payload {
+		fail("unexpected upgraded payload: got %q want %q", string(reply), payload)
+	}
+}
+
+func TestNewServerReusesSharedTransportPoolOnRouteEntries(t *testing.T) {
+	listener := model.HTTPListener{
+		Rules: []model.HTTPRule{
+			{
+				FrontendURL: "http://edge.example.test:18080",
+				BackendURL:  "http://127.0.0.1:8081",
+				Backends: []model.HTTPBackend{
+					{URL: "http://127.0.0.1:8081"},
+					{URL: "http://127.0.0.1:8082"},
+				},
+				LoadBalancing: model.LoadBalancing{Strategy: "round_robin"},
+			},
+			{
+				FrontendURL: "http://edge-two.example.test:18080",
+				BackendURL:  "http://127.0.0.1:8083",
+				Backends: []model.HTTPBackend{
+					{URL: "http://127.0.0.1:8083"},
+				},
+			},
+		},
+	}
+
+	server := NewServer(listener)
+	first := server.routes["edge.example.test"]
+	second := server.routes["edge-two.example.test"]
+	if first == nil || second == nil {
+		t.Fatalf("expected route entries for both hosts")
+	}
+	if first.transport == nil || second.transport == nil {
+		t.Fatalf("expected shared transport on route entries")
+	}
+	if first.transport != second.transport {
+		t.Fatalf("expected route entries on one server to share transport pool")
 	}
 }
 
@@ -664,4 +1018,20 @@ func mustSPKIPin(t *testing.T, cert tls.Certificate) string {
 	}
 	sum := sha256.Sum256(parsed.RawSubjectPublicKeyInfo)
 	return base64.StdEncoding.EncodeToString(sum[:])
+}
+
+func mustParseBackendURL(t *testing.T, raw string) *url.URL {
+	t.Helper()
+
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("failed to parse backend URL %q: %v", raw, err)
+	}
+	return parsed
+}
+
+type resolverFunc func(context.Context, string) ([]net.IPAddr, error)
+
+func (f resolverFunc) LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error) {
+	return f(ctx, host)
 }

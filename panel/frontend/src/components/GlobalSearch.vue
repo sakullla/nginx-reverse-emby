@@ -57,8 +57,8 @@
                 </div>
                 <div class="result-item__info">
                   <div class="result-item__url">{{ item.frontend_url || item.domain || `${item.listen_host || ''}:${item.listen_port}` || `#${item.id}` }}</div>
-                  <div v-if="item._type === 'rule'" class="result-item__backend">→ {{ item.backend_url }}</div>
-                  <div v-else-if="item._type === 'l4'" class="result-item__backend">{{ item.protocol?.toUpperCase() }} {{ item.listen_host || '*' }}:{{ item.listen_port }} → {{ item.upstream_host }}:{{ item.upstream_port }}</div>
+                  <div v-if="item._type === 'rule'" class="result-item__backend">→ {{ formatHttpBackend(item) }}</div>
+                  <div v-else-if="item._type === 'l4'" class="result-item__backend">{{ item.protocol?.toUpperCase() }} {{ item.listen_host || '*' }}:{{ item.listen_port }} → {{ formatL4Backend(item) }}</div>
                   <div v-else-if="item._type === 'cert'" class="result-item__backend">{{ getCertStatus(item) }}</div>
                 </div>
               </div>
@@ -95,6 +95,47 @@ const results = ref([])
 const isLoading = ref(false)
 const searchDebounceTimer = ref(null)
 const searchId = ref(0)
+
+function httpBackendUrls(rule) {
+  if (Array.isArray(rule?.backends) && rule.backends.length > 0) {
+    return rule.backends
+      .map((backend) => String(backend?.url || '').trim())
+      .filter(Boolean)
+  }
+  return rule?.backend_url ? [String(rule.backend_url).trim()] : []
+}
+
+function formatHttpBackend(rule) {
+  const backends = httpBackendUrls(rule)
+  if (backends.length === 0) return '-'
+  if (backends.length === 1) return backends[0]
+  return `${backends[0]} +${backends.length - 1}`
+}
+
+function l4BackendAddresses(rule) {
+  if (Array.isArray(rule?.backends) && rule.backends.length > 0) {
+    return rule.backends
+      .map((backend) => {
+        const host = String(backend?.host || '').trim()
+        const port = Number(backend?.port)
+        return host && Number.isInteger(port) && port > 0 ? `${host}:${port}` : ''
+      })
+      .filter(Boolean)
+  }
+
+  if (rule?.upstream_host && rule?.upstream_port) {
+    return [`${rule.upstream_host}:${rule.upstream_port}`]
+  }
+
+  return []
+}
+
+function formatL4Backend(rule) {
+  const backends = l4BackendAddresses(rule)
+  if (backends.length === 0) return '-'
+  if (backends.length === 1) return backends[0]
+  return `${backends[0]} +${backends.length - 1}`
+}
 
 watch(() => props.open, (val) => {
   if (val) {
@@ -144,12 +185,14 @@ async function doSearch(val) {
       const matchedRules = rules.filter(r =>
         r.frontend_url?.toLowerCase().includes(q) ||
         r.backend_url?.toLowerCase().includes(q) ||
+        httpBackendUrls(r).some((backend) => backend.toLowerCase().includes(q)) ||
         (r.tags || []).some(tag => tag.toLowerCase().includes(q))
       )
       const matchedL4 = l4Rules.filter(r =>
         String(r.protocol || '').toLowerCase().includes(q) ||
         String(r.listen_host || '').toLowerCase().includes(q) ||
         String(r.upstream_host || '').toLowerCase().includes(q) ||
+        l4BackendAddresses(r).some((backend) => backend.toLowerCase().includes(q)) ||
         String(r.listen_port || '').includes(q) ||
         (r.tags || []).some(tag => tag.toLowerCase().includes(q))
       )

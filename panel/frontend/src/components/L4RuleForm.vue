@@ -37,17 +37,8 @@
         <label class="form-label">负载均衡策略</label>
         <select v-model="form.load_balancing.strategy" class="input" @change="handleStrategyChange">
           <option value="round_robin">轮询 (Round Robin)</option>
-          <option value="least_conn">最少连接 (Least Connections)</option>
           <option value="random">随机 (Random)</option>
-          <option value="hash">哈希 (Hash)</option>
         </select>
-      </div>
-
-      <!-- Hash Key (only when strategy is hash) -->
-      <div v-if="form.load_balancing.strategy === 'hash'" class="form-group">
-        <label class="form-label">哈希键</label>
-        <input v-model="form.load_balancing.hash_key" class="input" placeholder="$binary_remote_addr">
-        <div class="form-help">例如: $remote_addr, $binary_remote_addr, $ssl_session_id</div>
       </div>
 
       <!-- Backends List -->
@@ -88,16 +79,6 @@
                 placeholder="IP:端口 或 域名:端口"
                 @blur="parseBackendAddress(index)"
               >
-              <div class="backend-weight-wrapper">
-                <span class="backend-weight-label">权重</span>
-                <input
-                  v-model.number="backend.weight"
-                  class="input backend-weight-input"
-                  type="number"
-                  min="1"
-                  max="100"
-                >
-              </div>
             </div>
 
             <button
@@ -279,6 +260,7 @@ import { computed, ref, watch } from 'vue'
 import { useCreateL4Rule, useUpdateL4Rule } from '../hooks/useL4Rules'
 import { useAllRelayListeners } from '../hooks/useRelayListeners'
 import RelayChainInput from './RelayChainInput.vue'
+import { getDefaultTuning, mergeTuning, resetTuningForProtocol } from './l4/tuningState'
 
 const props = defineProps({
   initialData: { type: Object, default: null },
@@ -311,56 +293,17 @@ function createBackend(data = {}) {
     address,
     host,
     port,
-    weight: data.weight || 1,
     resolve: data.resolve || false,
     backup: data.backup || false,
     max_conns: data.max_conns || 0,
   }
 }
 
-function getDefaultTuning(protocol = 'tcp') {
-  const isUdp = protocol === 'udp'
-  return {
-    listen: {
-      reuseport: isUdp,
-      backlog: null,
-      so_keepalive: false,
-      tcp_nodelay: true,
-    },
-    proxy: {
-      connect_timeout: '10s',
-      idle_timeout: isUdp ? '20s' : '10m',
-      buffer_size: '16k',
-      udp_proxy_requests: null,
-      udp_proxy_responses: null,
-    },
-    upstream: {
-      max_conns: 0,
-      max_fails: 3,
-      fail_timeout: '30s',
-    },
-    limit_conn: {
-      key: '$binary_remote_addr',
-      count: null,
-      zone_size: '10m',
-    },
-    proxy_protocol: {
-      decode: false,
-      send: false,
-    },
-  }
-}
+const SUPPORTED_L4_STRATEGIES = new Set(['round_robin', 'random'])
 
-function mergeTuning(saved, protocol) {
-  const defaults = getDefaultTuning(protocol)
-  if (!saved || typeof saved !== 'object') return defaults
-  return {
-    listen: { ...defaults.listen, ...saved.listen },
-    proxy: { ...defaults.proxy, ...saved.proxy },
-    upstream: { ...defaults.upstream, ...saved.upstream },
-    limit_conn: { ...defaults.limit_conn, ...saved.limit_conn },
-    proxy_protocol: { ...defaults.proxy_protocol, ...saved.proxy_protocol },
-  }
+function normalizeL4Strategy(value) {
+  const strategy = String(value || '').trim().toLowerCase()
+  return SUPPORTED_L4_STRATEGIES.has(strategy) ? strategy : 'round_robin'
 }
 
 const initialProtocol = props.initialData?.protocol || 'tcp'
@@ -370,7 +313,6 @@ const initialBackends = props.initialData?.backends?.length > 0
   : (props.initialData?.upstream_host
     ? [createBackend({
         address: `${props.initialData.upstream_host}:${props.initialData.upstream_port || ''}`,
-        weight: 1,
         resolve: false,
       })]
     : [createBackend()])
@@ -381,9 +323,7 @@ const form = ref({
   listen_port: props.initialData?.listen_port || 0,
   backends: initialBackends,
   load_balancing: {
-    strategy: props.initialData?.load_balancing?.strategy || 'round_robin',
-    hash_key: props.initialData?.load_balancing?.hash_key || '$binary_remote_addr',
-    zone_size: props.initialData?.load_balancing?.zone_size || '128k',
+    strategy: normalizeL4Strategy(props.initialData?.load_balancing?.strategy),
   },
   tuning: mergeTuning(props.initialData?.tuning, initialProtocol),
   enabled: props.initialData?.enabled !== false,
@@ -441,17 +381,14 @@ const hasRelayConfig = computed(() => {
   return Array.isArray(form.value.relay_chain) && form.value.relay_chain.length > 0
 })
 
-// Clear UDP-specific fields when switching to TCP
 watch(() => form.value.protocol, (newProto) => {
-  if (newProto === 'tcp') {
-    form.value.tuning.proxy.udp_proxy_requests = null
-    form.value.tuning.proxy.udp_proxy_responses = null
-    return
+  form.value.tuning = resetTuningForProtocol(form.value.tuning, newProto)
+  if (newProto === 'udp') {
+    form.value.relay_chain = []
   }
-  form.value.relay_chain = []
 })
 
-const LB_TAG_MAP = { round_robin: 'RR', least_conn: 'LC', random: 'RND', hash: 'HASH' }
+const LB_TAG_MAP = { round_robin: 'RR', random: 'RND' }
 const LB_TAG_SET = new Set(Object.values(LB_TAG_MAP))
 
 function isL4AutoTag(t) {
@@ -476,6 +413,7 @@ function handleProtocolChange() {
 }
 
 function handleStrategyChange() {
+  form.value.load_balancing.strategy = normalizeL4Strategy(form.value.load_balancing.strategy)
   if (!isEdit.value) updateAutoTags()
 }
 
@@ -547,10 +485,6 @@ function buildPayload() {
     .map(b => ({
       host: b.host.trim(),
       port: Number(b.port),
-      weight: Number(b.weight) || 1,
-      resolve: !!b.resolve,
-      backup: !!b.backup,
-      max_conns: Number(b.max_conns) || 0,
     }))
 
   const payload = {
@@ -561,11 +495,7 @@ function buildPayload() {
     upstream_port: validBackends[0]?.port || 0,
     backends: validBackends,
     load_balancing: {
-      strategy: form.value.load_balancing.strategy,
-      ...(form.value.load_balancing.strategy === 'hash'
-        ? { hash_key: form.value.load_balancing.hash_key || '$binary_remote_addr' }
-        : {}),
-      zone_size: form.value.load_balancing.zone_size || '128k',
+      strategy: normalizeL4Strategy(form.value.load_balancing.strategy),
     },
     enabled: form.value.enabled,
     tags: [...sysTags, ...userTags],
@@ -598,8 +528,8 @@ function buildPayload() {
         zone_size: cleanValue(t.limit_conn.zone_size),
       },
       proxy_protocol: {
-        decode: t.proxy_protocol.decode,
-        send: t.proxy_protocol.send,
+        decode: form.value.protocol === 'udp' ? false : t.proxy_protocol.decode,
+        send: form.value.protocol === 'udp' ? false : t.proxy_protocol.send,
       },
     }
     if (form.value.protocol === 'udp') {

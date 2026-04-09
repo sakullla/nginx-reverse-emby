@@ -41,7 +41,7 @@
         <div class="rules-preview">
           <div v-for="rule in httpRules.slice(0, 5)" :key="rule.id" class="rule-preview-item">
             <span class="rule-preview-item__url">{{ rule.frontend_url }}</span>
-            <span class="rule-preview-item__backend">→ {{ rule.backend_url }}</span>
+            <span class="rule-preview-item__backend">→ {{ formatHttpBackend(rule) }}</span>
           </div>
           <p v-if="!httpRules.length" class="empty-hint">暂无 HTTP 规则</p>
         </div>
@@ -54,7 +54,7 @@
         <div class="rules-preview">
           <div v-for="rule in l4Rules.slice(0, 5)" :key="rule.id" class="rule-preview-item">
             <span class="rule-preview-item__url">{{ rule.listen_host }}:{{ rule.listen_port }}</span>
-            <span class="rule-preview-item__backend">→ {{ rule.upstream_host }}:{{ rule.upstream_port }}</span>
+            <span class="rule-preview-item__backend">→ {{ formatL4Backend(rule) }}</span>
           </div>
           <p v-if="!l4Rules.length" class="empty-hint">暂无 L4 规则</p>
         </div>
@@ -113,6 +113,39 @@ const tabs = [
   { id: 'l4', label: 'L4 规则' },
   { id: 'info', label: '系统信息' }
 ]
+
+function firstHttpBackend(rule) {
+  if (Array.isArray(rule?.backends) && rule.backends.length > 0) {
+    const first = String(rule.backends[0]?.url || '').trim()
+    if (first) return first
+  }
+  return String(rule?.backend_url || '').trim()
+}
+
+function formatHttpBackend(rule) {
+  const first = firstHttpBackend(rule)
+  const count = Array.isArray(rule?.backends) && rule.backends.length > 0 ? rule.backends.length : (first ? 1 : 0)
+  if (!first) return '-'
+  return count > 1 ? `${first} +${count - 1}` : first
+}
+
+function firstL4Backend(rule) {
+  if (Array.isArray(rule?.backends) && rule.backends.length > 0) {
+    const backend = rule.backends[0]
+    if (backend?.host && backend?.port) return `${backend.host}:${backend.port}`
+  }
+  if (rule?.upstream_host && rule?.upstream_port) {
+    return `${rule.upstream_host}:${rule.upstream_port}`
+  }
+  return ''
+}
+
+function formatL4Backend(rule) {
+  const first = firstL4Backend(rule)
+  const count = Array.isArray(rule?.backends) && rule.backends.length > 0 ? rule.backends.length : (first ? 1 : 0)
+  if (!first) return '-'
+  return count > 1 ? `${first} +${count - 1}` : first
+}
 
 function getStatus(agent) {
   if (agent.status === 'offline') return 'offline'

@@ -3,9 +3,11 @@ package app
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"strings"
 	"sync"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/l4"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxy"
@@ -23,17 +25,26 @@ type RelayApplier interface {
 }
 
 type httpRuntimeManager struct {
-	mu       sync.Mutex
-	runtime  *proxy.Runtime
-	provider proxy.TLSMaterialProvider
+	mu        sync.Mutex
+	runtime   *proxy.Runtime
+	provider  proxy.TLSMaterialProvider
+	cache     *backends.Cache
+	transport *http.Transport
 }
 
 func newHTTPRuntimeManager() *httpRuntimeManager {
-	return &httpRuntimeManager{}
+	return &httpRuntimeManager{
+		cache:     backends.NewCache(backends.Config{}),
+		transport: proxy.NewSharedTransport(),
+	}
 }
 
 func newHTTPRuntimeManagerWithTLS(provider proxy.TLSMaterialProvider) *httpRuntimeManager {
-	return &httpRuntimeManager{provider: provider}
+	return &httpRuntimeManager{
+		provider:  provider,
+		cache:     backends.NewCache(backends.Config{}),
+		transport: proxy.NewSharedTransport(),
+	}
 }
 
 func (m *httpRuntimeManager) Apply(ctx context.Context, rules []model.HTTPRule) error {
@@ -63,7 +74,7 @@ func (m *httpRuntimeManager) ApplyWithRelay(ctx context.Context, rules []model.H
 
 	previous := m.runtime
 	if previous != nil && !httpBindingsOverlap(previous.BindingKeys(), bindings) {
-		runtime, err := proxy.Start(ctx, rules, relayListeners, providers)
+		runtime, err := proxy.StartWithResources(ctx, rules, relayListeners, providers, m.cache, m.transport)
 		if err != nil {
 			return err
 		}
@@ -76,7 +87,7 @@ func (m *httpRuntimeManager) ApplyWithRelay(ctx context.Context, rules []model.H
 		m.runtime = nil
 	}
 
-	runtime, err := proxy.Start(ctx, rules, relayListeners, providers)
+	runtime, err := proxy.StartWithResources(ctx, rules, relayListeners, providers, m.cache, m.transport)
 	if err != nil {
 		return err
 	}
@@ -99,15 +110,21 @@ func (m *httpRuntimeManager) Close() error {
 type l4RuntimeManager struct {
 	mu       sync.Mutex
 	server   *l4.Server
+	cache    *backends.Cache
 	provider relay.TLSMaterialProvider
 }
 
 func newL4RuntimeManager() *l4RuntimeManager {
-	return &l4RuntimeManager{}
+	return &l4RuntimeManager{
+		cache: backends.NewCache(backends.Config{}),
+	}
 }
 
 func newL4RuntimeManagerWithRelay(provider relay.TLSMaterialProvider) *l4RuntimeManager {
-	return &l4RuntimeManager{provider: provider}
+	return &l4RuntimeManager{
+		cache:    backends.NewCache(backends.Config{}),
+		provider: provider,
+	}
 }
 
 func (m *l4RuntimeManager) Apply(ctx context.Context, rules []model.L4Rule) error {
@@ -135,7 +152,7 @@ func (m *l4RuntimeManager) ApplyWithRelay(ctx context.Context, rules []model.L4R
 		m.server = nil
 	}
 
-	server, err := l4.NewServer(ctx, rules, relayListeners, m.provider)
+	server, err := l4.NewServerWithResources(ctx, rules, relayListeners, m.provider, m.cache)
 	if err != nil {
 		return err
 	}

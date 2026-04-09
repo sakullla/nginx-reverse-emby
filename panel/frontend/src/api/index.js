@@ -214,6 +214,8 @@ function generateMockRules(count) {
       id: i,
       frontend_url: `https://${subdomain}.${domain}`,
       backend_url: `http://${ip}:${svc.port}`,
+      backends: [{ url: `http://${ip}:${svc.port}` }],
+      load_balancing: { strategy: 'round_robin' },
       enabled: i % 7 !== 0,
       tags: [...svc.tags, i % 3 === 0 ? 'https' : 'http'],
       proxy_redirect: true,
@@ -224,6 +226,92 @@ function generateMockRules(count) {
     })
   }
   return rules
+}
+
+function normalizeHttpBackends(rule = {}) {
+  if (Array.isArray(rule.backends) && rule.backends.length > 0) {
+    return rule.backends
+      .map((backend) => ({ url: String(backend?.url || '').trim() }))
+      .filter((backend) => backend.url)
+  }
+
+  const backendUrl = String(rule.backend_url || '').trim()
+  return backendUrl ? [{ url: backendUrl }] : []
+}
+
+function normalizeHttpRule(rule = {}) {
+  const backends = normalizeHttpBackends(rule)
+  return {
+    ...rule,
+    backend_url: backends[0]?.url || String(rule.backend_url || '').trim(),
+    backends,
+    load_balancing: {
+      strategy: rule.load_balancing?.strategy === 'random' ? 'random' : 'round_robin'
+    }
+  }
+}
+
+function normalizeL4Backends(rule = {}) {
+  if (Array.isArray(rule.backends) && rule.backends.length > 0) {
+    return rule.backends
+      .map((backend) => ({
+        host: String(backend?.host || '').trim(),
+        port: Number(backend?.port)
+      }))
+      .filter((backend) => backend.host && Number.isInteger(backend.port) && backend.port > 0)
+  }
+
+  const host = String(rule.upstream_host || '').trim()
+  const port = Number(rule.upstream_port)
+  return host && Number.isInteger(port) && port > 0 ? [{ host, port }] : []
+}
+
+function normalizeL4Rule(rule = {}) {
+  const backends = normalizeL4Backends(rule)
+  return {
+    ...rule,
+    upstream_host: backends[0]?.host || String(rule.upstream_host || '').trim(),
+    upstream_port: backends[0]?.port || Number(rule.upstream_port) || 0,
+    backends,
+    load_balancing: {
+      strategy: rule.load_balancing?.strategy === 'random' ? 'random' : 'round_robin'
+    }
+  }
+}
+
+function normalizeHttpRulePayload(payloadOrFrontend, backend_url, tags, enabled, proxy_redirect, pass_proxy_headers, user_agent, custom_headers, relay_chain) {
+  if (payloadOrFrontend && typeof payloadOrFrontend === 'object' && !Array.isArray(payloadOrFrontend)) {
+    const payload = { ...payloadOrFrontend }
+    const backends = normalizeHttpBackends(payload)
+    return {
+      ...payload,
+      frontend_url: String(payload.frontend_url || '').trim(),
+      backend_url: backends[0]?.url || '',
+      backends,
+      load_balancing: {
+        strategy: payload.load_balancing?.strategy === 'random' ? 'random' : 'round_robin'
+      },
+      tags: Array.isArray(payload.tags) ? payload.tags : [],
+      enabled: payload.enabled !== false,
+      proxy_redirect: payload.proxy_redirect !== false,
+      pass_proxy_headers: payload.pass_proxy_headers === true,
+      user_agent: String(payload.user_agent || ''),
+      custom_headers: Array.isArray(payload.custom_headers) ? payload.custom_headers : [],
+      relay_chain: Array.isArray(payload.relay_chain) ? payload.relay_chain : []
+    }
+  }
+
+  return normalizeHttpRulePayload({
+    frontend_url: payloadOrFrontend,
+    backend_url,
+    tags,
+    enabled,
+    proxy_redirect,
+    pass_proxy_headers,
+    user_agent,
+    custom_headers,
+    relay_chain
+  })
 }
 
 const mockRulesByAgent = {
@@ -302,78 +390,40 @@ export async function fetchAgentStats(agentId) {
 export async function fetchRules(agentId) {
   if (isDev) {
     await sleep()
-    return [...(mockRulesByAgent[agentId] || [])]
+    return (mockRulesByAgent[agentId] || []).map((rule) => normalizeHttpRule(rule))
   }
   const { data } = await api.get(`/agents/${encodeURIComponent(agentId)}/rules`)
-  return data.rules || []
+  return (data.rules || []).map((rule) => normalizeHttpRule(rule))
 }
 
-export async function createRule(
-  agentId,
-  frontend_url,
-  backend_url,
-  tags = [],
-  enabled = true,
-  proxy_redirect = true,
-  pass_proxy_headers = true,
-  user_agent = '',
-  custom_headers = [],
-  relay_chain = []
-) {
+export async function createRule(agentId, payloadOrFrontend, ...legacyArgs) {
+  const payload = normalizeHttpRulePayload(payloadOrFrontend, ...legacyArgs)
   if (isDev) {
     await sleep()
-    const nextRule = {
+    const nextRule = normalizeHttpRule({
       id: Date.now(),
-      frontend_url,
-      backend_url,
-      tags,
-      enabled,
-      proxy_redirect,
-      pass_proxy_headers,
-      user_agent,
-      custom_headers,
-      relay_chain
-    }
+      ...payload
+    })
     mockRulesByAgent[agentId] = mockRulesByAgent[agentId] || []
     mockRulesByAgent[agentId].push(nextRule)
     return nextRule
   }
   const { data } = await api.post(
     `/agents/${encodeURIComponent(agentId)}/rules`,
-    { frontend_url, backend_url, tags, enabled, proxy_redirect, pass_proxy_headers, user_agent, custom_headers, relay_chain },
+    payload,
     longRunningRequest
   )
-  return data.rule
+  return normalizeHttpRule(data.rule)
 }
 
-export async function updateRule(
-  agentId,
-  id,
-  frontend_url,
-  backend_url,
-  tags,
-  enabled,
-  proxy_redirect,
-  pass_proxy_headers,
-  user_agent,
-  custom_headers,
-  relay_chain
-) {
+export async function updateRule(agentId, id, payloadOrFrontend, ...legacyArgs) {
+  const payload = normalizeHttpRulePayload(payloadOrFrontend, ...legacyArgs)
   if (isDev) {
     await sleep()
     const list = mockRulesByAgent[agentId] || []
     const index = list.findIndex((rule) => rule.id === id)
     if (index !== -1) {
-      const nextRule = { ...list[index] }
-      if (frontend_url !== undefined) nextRule.frontend_url = frontend_url
-      if (backend_url !== undefined) nextRule.backend_url = backend_url
-      if (tags !== undefined) nextRule.tags = tags
-      if (enabled !== undefined) nextRule.enabled = enabled
-      if (proxy_redirect !== undefined) nextRule.proxy_redirect = proxy_redirect
-      if (pass_proxy_headers !== undefined) nextRule.pass_proxy_headers = pass_proxy_headers
-      if (user_agent !== undefined) nextRule.user_agent = user_agent
-      if (custom_headers !== undefined) nextRule.custom_headers = custom_headers
-      if (relay_chain !== undefined) nextRule.relay_chain = relay_chain
+      const nextRule = normalizeHttpRule({ ...list[index], ...payload })
       list[index] = nextRule
       return nextRule
     }
@@ -381,10 +431,10 @@ export async function updateRule(
   }
   const { data } = await api.put(
     `/agents/${encodeURIComponent(agentId)}/rules/${id}`,
-    { frontend_url, backend_url, tags, enabled, proxy_redirect, pass_proxy_headers, user_agent, custom_headers, relay_chain },
+    payload,
     longRunningRequest
   )
-  return data.rule
+  return normalizeHttpRule(data.rule)
 }
 
 export async function deleteRule(agentId, id) {
@@ -448,14 +498,14 @@ export async function fetchAllAgentsRules(agentIds) {
     await sleep()
     return agentIds.map((agentId) => ({
       agentId,
-      rules: [...(mockRulesByAgent[agentId] || [])]
+      rules: (mockRulesByAgent[agentId] || []).map((rule) => normalizeHttpRule(rule))
     }))
   }
   const results = await Promise.allSettled(
     agentIds.map((agentId) =>
       api.get(`/agents/${encodeURIComponent(agentId)}/rules`).then(({ data }) => ({
         agentId,
-        rules: data.rules || []
+        rules: (data.rules || []).map((rule) => normalizeHttpRule(rule))
       }))
     )
   )
@@ -467,10 +517,40 @@ export async function fetchAllAgentsRules(agentIds) {
 // L4 Rules
 const mockL4RulesByAgent = {
   local: [
-    { id: 1, protocol: 'tcp', listen_host: '0.0.0.0', listen_port: 25565, upstream_host: '192.168.1.20', upstream_port: 25565, relay_chain: [], enabled: true, tags: ['TCP', ':25565', 'game'] }
+    {
+      id: 1,
+      protocol: 'tcp',
+      listen_host: '0.0.0.0',
+      listen_port: 25565,
+      upstream_host: '192.168.1.20',
+      upstream_port: 25565,
+      backends: [
+        { host: '192.168.1.20', port: 25565 },
+        { host: 'game-backup.ddns.example', port: 25565 }
+      ],
+      load_balancing: { strategy: 'round_robin' },
+      relay_chain: [],
+      enabled: true,
+      tags: ['TCP', ':25565', 'game']
+    }
   ],
   'edge-1': [
-    { id: 1, protocol: 'udp', listen_host: '0.0.0.0', listen_port: 51820, upstream_host: '10.0.0.20', upstream_port: 51820, relay_chain: [], enabled: true, tags: ['UDP', ':51820', 'vpn'] }
+    {
+      id: 1,
+      protocol: 'udp',
+      listen_host: '0.0.0.0',
+      listen_port: 51820,
+      upstream_host: '10.0.0.20',
+      upstream_port: 51820,
+      backends: [
+        { host: '10.0.0.20', port: 51820 },
+        { host: 'wireguard-edge.ddns.example', port: 51820 }
+      ],
+      load_balancing: { strategy: 'random' },
+      relay_chain: [],
+      enabled: true,
+      tags: ['UDP', ':51820', 'vpn']
+    }
   ]
 }
 let mockL4IdCounter = 1
@@ -480,14 +560,14 @@ export async function fetchAllAgentsL4Rules(agentIds) {
     await sleep()
     return agentIds.map((agentId) => ({
       agentId,
-      l4Rules: [...(mockL4RulesByAgent[agentId] || [])]
+      l4Rules: (mockL4RulesByAgent[agentId] || []).map((rule) => normalizeL4Rule(rule))
     }))
   }
   const results = await Promise.allSettled(
     agentIds.map((agentId) =>
       api.get(`/agents/${encodeURIComponent(agentId)}/l4-rules`).then(({ data }) => ({
         agentId,
-        l4Rules: data.rules || []
+        l4Rules: (data.rules || []).map((rule) => normalizeL4Rule(rule))
       }))
     )
   )
@@ -503,21 +583,21 @@ export async function checkHealth() {
 }
 
 export async function fetchL4Rules(agentId) {
-  if (isDev) { await sleep(); return [...(mockL4RulesByAgent[agentId] || [])] }
+  if (isDev) { await sleep(); return (mockL4RulesByAgent[agentId] || []).map((rule) => normalizeL4Rule(rule)) }
   const { data } = await api.get(`/agents/${encodeURIComponent(agentId)}/l4-rules`)
-  return data.rules || []
+  return (data.rules || []).map((rule) => normalizeL4Rule(rule))
 }
 
 export async function createL4Rule(agentId, payload) {
   if (isDev) {
     await sleep()
-    const item = { ...payload, id: ++mockL4IdCounter }
+    const item = normalizeL4Rule({ ...payload, id: ++mockL4IdCounter })
     mockL4RulesByAgent[agentId] = mockL4RulesByAgent[agentId] || []
     mockL4RulesByAgent[agentId].push(item)
     return item
   }
   const { data } = await api.post(`/agents/${encodeURIComponent(agentId)}/l4-rules`, payload, longRunningRequest)
-  return data.rule
+  return normalizeL4Rule(data.rule)
 }
 
 export async function updateL4Rule(agentId, id, payload) {
@@ -525,11 +605,14 @@ export async function updateL4Rule(agentId, id, payload) {
     await sleep()
     const list = mockL4RulesByAgent[agentId] || []
     const idx = list.findIndex((r) => r.id === id)
-    if (idx !== -1) { list[idx] = { ...list[idx], ...payload }; return list[idx] }
+    if (idx !== -1) {
+      list[idx] = normalizeL4Rule({ ...list[idx], ...payload })
+      return list[idx]
+    }
     return null
   }
   const { data } = await api.put(`/agents/${encodeURIComponent(agentId)}/l4-rules/${id}`, payload, longRunningRequest)
-  return data.rule
+  return normalizeL4Rule(data.rule)
 }
 
 export async function deleteL4Rule(agentId, id) {

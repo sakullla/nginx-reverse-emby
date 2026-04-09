@@ -70,27 +70,57 @@
           </p>
         </div>
 
-        <!-- 后端地址 -->
+        <div class="form-group">
+          <label class="form-label">负载均衡策略</label>
+          <div class="select-wrapper">
+            <select v-model="form.load_balancing.strategy" class="input">
+              <option value="round_robin">轮询 (Round Robin)</option>
+              <option value="random">随机 (Random)</option>
+            </select>
+          </div>
+        </div>
+
         <div class="form-group form-group--block">
-          <label for="backend-url" class="form-label form-label--required">后端目标地址</label>
-          <div class="input-wrapper">
-            <span class="input-wrapper__icon">
-              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <rect x="2" y="2" width="20" height="8" rx="2" ry="2"/>
-                <rect x="2" y="14" width="20" height="8" rx="2" ry="2"/>
-                <line x1="6" y1="6" x2="6.01" y2="6"/>
-                <line x1="6" y1="18" x2="6.01" y2="18"/>
-              </svg>
-            </span>
-            <input
-              id="backend-url"
-              v-model="form.backend_url"
-              type="text"
-              class="input"
-              :class="{ 'input--error': errors.backend_url }"
-              placeholder="例如：http://192.168.1.100:8096"
-              @input="handleBackendUrlInput"
+          <div class="backends-header">
+            <label class="form-label form-label--required">后端服务器</label>
+            <button type="button" class="btn btn--sm btn--secondary" @click="addBackend">
+              添加后端
+            </button>
+          </div>
+          <div class="backends-list">
+            <div
+              v-for="(backend, index) in form.backends"
+              :key="backend.id"
+              class="backend-item"
             >
+              <div class="input-wrapper backend-item__input">
+                <span class="input-wrapper__icon">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="2" y="2" width="20" height="8" rx="2" ry="2"/>
+                    <rect x="2" y="14" width="20" height="8" rx="2" ry="2"/>
+                    <line x1="6" y1="6" x2="6.01" y2="6"/>
+                    <line x1="6" y1="18" x2="6.01" y2="18"/>
+                  </svg>
+                </span>
+                <input
+                  :id="index === 0 ? 'backend-url' : undefined"
+                  v-model="backend.url"
+                  type="text"
+                  class="input"
+                  :class="{ 'input--error': errors.backend_url }"
+                  placeholder="例如：http://192.168.1.100:8096"
+                  @input="handleBackendUrlInput"
+                >
+              </div>
+              <button
+                v-if="form.backends.length > 1"
+                type="button"
+                class="btn btn--icon btn--danger-ghost"
+                @click="removeBackend(index)"
+              >
+                删除
+              </button>
+            </div>
           </div>
           <p v-if="errors.backend_url" class="form-error">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -114,7 +144,7 @@
           </div>
           <ul class="address-help__list">
             <li><strong>前端访问地址</strong>：用户访问的公开地址（VPS 地址），需指向当前服务器的公网 IP 或域名</li>
-            <li><strong>后端目标地址</strong>：要代理的实际服务地址（如 Emby），可以是内网地址或其他服务器地址</li>
+            <li><strong>后端服务器</strong>：要代理的实际服务地址（如 Emby），支持配置多个后端并按策略分发</li>
           </ul>
         </div>
       </div>
@@ -465,6 +495,8 @@ const isEdit = computed(() => !!props.initialData?.id)
 const isLoading = computed(() => createRule.isPending.value || updateRule.isPending.value)
 const proxyHeadersGloballyDisabled = computed(() => systemInfo.value?.proxy_headers_globally_disabled === true)
 const relayListeners = computed(() => relayListenersData.value ?? [])
+const SUPPORTED_HTTP_STRATEGIES = new Set(['round_robin', 'random'])
+let backendIdCounter = 0
 
 const activeTab = ref('basic')
 const form = ref(createDefaultForm())
@@ -530,7 +562,8 @@ watch(
 function createDefaultForm() {
   return {
     frontend_url: '',
-    backend_url: '',
+    backends: [createBackend()],
+    load_balancing: { strategy: 'round_robin' },
     tags: [],
     enabled: true,
     proxy_redirect: true,
@@ -541,6 +574,33 @@ function createDefaultForm() {
   }
 }
 
+function createBackend(data = {}) {
+  return {
+    id: `http-backend-${Date.now()}-${backendIdCounter++}`,
+    url: String(data?.url || '').trim()
+  }
+}
+
+function normalizeHttpStrategy(value) {
+  const strategy = String(value || '').trim().toLowerCase()
+  return SUPPORTED_HTTP_STRATEGIES.has(strategy) ? strategy : 'round_robin'
+}
+
+function normalizeHttpBackends(initialData) {
+  if (Array.isArray(initialData?.backends) && initialData.backends.length > 0) {
+    const backends = initialData.backends
+      .map((backend) => createBackend(backend))
+      .filter((backend) => backend.url)
+    if (backends.length > 0) return backends
+  }
+
+  if (initialData?.backend_url) {
+    return [createBackend({ url: initialData.backend_url })]
+  }
+
+  return [createBackend()]
+}
+
 function createFormState(initialData) {
   if (!initialData) {
     return createDefaultForm()
@@ -548,7 +608,10 @@ function createFormState(initialData) {
 
   return {
     frontend_url: initialData.frontend_url || '',
-    backend_url: initialData.backend_url || '',
+    backends: normalizeHttpBackends(initialData),
+    load_balancing: {
+      strategy: normalizeHttpStrategy(initialData.load_balancing?.strategy)
+    },
     tags: Array.isArray(initialData.tags) ? [...initialData.tags] : [],
     enabled: initialData.enabled !== false,
     proxy_redirect: initialData.proxy_redirect !== false,
@@ -577,6 +640,17 @@ function handleFrontendUrlInput() {
 function handleBackendUrlInput() {
   errors.value.backend_url = ''
   errors.value.submit = ''
+}
+
+function addBackend() {
+  form.value.backends.push(createBackend())
+}
+
+function removeBackend(index) {
+  if (form.value.backends.length > 1) {
+    form.value.backends.splice(index, 1)
+  }
+  handleBackendUrlInput()
 }
 
 function addTag() {
@@ -652,8 +726,11 @@ function validateBasicFields() {
     errors.value.frontend_url = '请输入前端访问地址'
   }
 
-  if (!form.value.backend_url.trim()) {
-    errors.value.backend_url = '请输入后端目标地址'
+  const validBackends = form.value.backends
+    .map((backend) => ({ url: String(backend?.url || '').trim() }))
+    .filter((backend) => backend.url)
+  if (validBackends.length === 0) {
+    errors.value.backend_url = '至少需要一个后端服务器'
   }
 
   return !errors.value.frontend_url && !errors.value.backend_url
@@ -724,9 +801,16 @@ async function handleSubmit() {
   if (!validate()) return
 
   try {
+    const validBackends = form.value.backends
+      .map((backend) => ({ url: String(backend?.url || '').trim() }))
+      .filter((backend) => backend.url)
     const payload = {
       frontend_url: form.value.frontend_url.trim(),
-      backend_url: form.value.backend_url.trim(),
+      backend_url: validBackends[0]?.url || '',
+      backends: validBackends,
+      load_balancing: {
+        strategy: normalizeHttpStrategy(form.value.load_balancing.strategy)
+      },
       tags: [...form.value.tags],
       enabled: form.value.enabled,
       proxy_redirect: form.value.proxy_redirect,
@@ -1075,6 +1159,35 @@ async function handleSubmit() {
 
 .input-wrapper .input {
   padding-left: var(--space-10);
+}
+
+.backends-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
+
+.backends-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.backend-item {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.backend-item__input {
+  flex: 1;
+  min-width: 0;
 }
 
 .tag-input {
@@ -1605,11 +1718,14 @@ async function handleSubmit() {
   }
 
   .section-header--split,
-  .header-row {
+  .header-row,
+  .backend-item,
+  .backends-header {
     flex-direction: column;
   }
 
-  .header-row .btn--icon {
+  .header-row .btn--icon,
+  .backend-item .btn--icon {
     align-self: flex-end;
   }
 

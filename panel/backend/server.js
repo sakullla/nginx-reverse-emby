@@ -466,18 +466,84 @@ function getHighestRuleRevision(rules = []) {
   );
 }
 
+function normalizeHttpRuleBackends(backends, fallbackBackendUrl) {
+  const source = Array.isArray(backends) ? backends : [];
+  const normalized = [];
+  for (const backend of source) {
+    const urlCandidate =
+      backend && typeof backend === "object" && backend.url !== undefined
+        ? backend.url
+        : backend;
+    if (urlCandidate === undefined || urlCandidate === null) {
+      continue;
+    }
+    const url = String(urlCandidate).trim();
+    if (!validateUrl(url)) {
+      throw new Error("frontend_url and backend_url/backends[].url must be valid http/https URLs");
+    }
+    normalized.push({ url });
+  }
+
+  if (normalized.length > 0) {
+    return normalized;
+  }
+
+  const legacy = String(fallbackBackendUrl || "").trim();
+  if (!validateUrl(legacy)) {
+    throw new Error("frontend_url and backend_url/backends[].url must be valid http/https URLs");
+  }
+  return [{ url: legacy }];
+}
+
+function normalizeHttpRuleLoadBalancing(value, fallback = "round_robin") {
+  const rawStrategy =
+    value && typeof value === "object" && value.strategy !== undefined
+      ? value.strategy
+      : fallback;
+  const strategy = String(rawStrategy || "round_robin").trim().toLowerCase();
+  return {
+    strategy: strategy === "random" ? "random" : "round_robin",
+  };
+}
+
 function normalizeRulePayload(body, fallback = {}, suggestedId = null) {
   const frontend =
     body.frontend_url !== undefined
       ? String(body.frontend_url).trim()
       : fallback.frontend_url;
-  const backend =
-    body.backend_url !== undefined
-      ? String(body.backend_url).trim()
-      : fallback.backend_url;
+  const hasFallbackBackends = Array.isArray(fallback.backends) && fallback.backends.length > 0;
+  const fallbackFirstBackendUrl = hasFallbackBackends
+    ? String(fallback.backends[0]?.url || "").trim()
+    : String(fallback.backend_url || "").trim();
+  const fallbackIsMultiBackend = hasFallbackBackends && fallback.backends.length > 1;
+  let backendSource;
+  if (Array.isArray(body.backends)) {
+    if (body.backends.length > 0) {
+      backendSource = body.backends;
+    } else if (body.backend_url !== undefined) {
+      backendSource = [{ url: body.backend_url }];
+    } else if (hasFallbackBackends) {
+      backendSource = fallback.backends;
+    } else {
+      backendSource = [{ url: fallback.backend_url }];
+    }
+  } else if (body.backend_url !== undefined) {
+    const requestedBackendUrl = String(body.backend_url).trim();
+    const backendUrlChanged = requestedBackendUrl !== fallbackFirstBackendUrl;
+    const shouldForceSingleBackend = backendUrlChanged || !fallbackIsMultiBackend;
+    backendSource = shouldForceSingleBackend
+      ? [{ url: requestedBackendUrl }]
+      : fallback.backends;
+  } else if (hasFallbackBackends) {
+    backendSource = fallback.backends;
+  } else {
+    backendSource = [{ url: fallback.backend_url }];
+  }
+  const backends = normalizeHttpRuleBackends(backendSource, fallback.backend_url);
+  const backend = backends[0].url;
 
-  if (!validateUrl(frontend) || !validateUrl(backend)) {
-    throw new Error("frontend_url and backend_url must be valid http/https URLs");
+  if (!validateUrl(frontend)) {
+    throw new Error("frontend_url and backend_url/backends[].url must be valid http/https URLs");
   }
 
   const parsedId =
@@ -507,6 +573,11 @@ function normalizeRulePayload(body, fallback = {}, suggestedId = null) {
       body.proxy_redirect !== undefined
         ? !!body.proxy_redirect
         : fallback.proxy_redirect !== false,
+    backends,
+    load_balancing: normalizeHttpRuleLoadBalancing(
+      body.load_balancing !== undefined ? body.load_balancing : fallback.load_balancing,
+      fallback?.load_balancing?.strategy || "round_robin",
+    ),
     relay_chain: relayChain,
     ...headerConfig,
   };
@@ -854,32 +925,21 @@ function normalizeL4Backends(backends, fallbackUpstreamHost, fallbackUpstreamPor
     const host = normalizeHost(b?.host || b?.address || "");
     const port = Number(b?.port) || Number(fallbackUpstreamPort) || 0;
     if (!host || !port) continue;
-    const weight = Number(b?.weight) || 1;
-    // Auto-detect resolve for domain hosts; explicit value takes precedence
-    const autoResolve = !isIpAddress(host);
-    const resolve = b?.resolve !== undefined
-      ? (b.resolve === true || String(b.resolve).toLowerCase() === "true")
-      : autoResolve;
-    const backup = b?.backup === true || String(b?.backup || "").toLowerCase() === "true";
-    const rawMaxConns = b?.max_conns !== undefined && b?.max_conns !== null && b?.max_conns !== "" ? Number(b.max_conns) : 0;
-    if (b?.max_conns !== undefined && b?.max_conns !== null && b?.max_conns !== "" && (!Number.isInteger(rawMaxConns) || rawMaxConns < 0)) {
-      throw new Error(`backends[].max_conns must be a non-negative integer, got: ${b.max_conns}`);
-    }
-    validBackends.push({ host, port, weight, resolve, backup, max_conns: rawMaxConns });
+    validBackends.push({ host, port });
   }
   return validBackends;
 }
 
 function normalizeL4LoadBalancing(lb, defaultStrategy = "round_robin") {
-  const strategy = String(lb?.strategy !== undefined ? lb.strategy : defaultStrategy).toLowerCase();
-  const validStrategies = ["round_robin", "least_conn", "random", "hash"];
-  const normalizedStrategy = validStrategies.includes(strategy) ? strategy : "round_robin";
-  const hashKey = normalizedStrategy === "hash" ? String(lb?.hash_key || "$binary_remote_addr") : undefined;
-  const zoneSize = String(lb?.zone_size || "128k");
+  const strategy = String(
+    lb?.strategy !== undefined ? lb.strategy : defaultStrategy,
+  )
+    .trim()
+    .toLowerCase();
+  const normalizedStrategy =
+    strategy === "random" || strategy === "round_robin" ? strategy : "round_robin";
   return {
     strategy: normalizedStrategy,
-    hash_key: hashKey,
-    zone_size: zoneSize,
   };
 }
 
@@ -936,10 +996,6 @@ function normalizeL4RulePayload(body, fallback = {}, suggestedId = null) {
     backends.push({
       host: legacyUpstreamHost,
       port: legacyUpstreamPort,
-      weight: 1,
-      resolve: !isIpAddress(legacyUpstreamHost),
-      backup: false,
-      max_conns: 0,
     });
   }
 
@@ -953,17 +1009,12 @@ function normalizeL4RulePayload(body, fallback = {}, suggestedId = null) {
     "round_robin",
   );
 
-  // Validate backup compatibility: only round_robin and least_conn support backup
-  const hasBackupBackend = backends.some((b) => b.backup === true);
-  if (hasBackupBackend && !["round_robin", "least_conn"].includes(loadBalancing.strategy)) {
-    throw new Error(
-      `backup backends are not supported with ${loadBalancing.strategy} strategy (only round_robin and least_conn)`
-    );
-  }
-
   // Normalize tuning: merge user input over defaults
   const rawTuning = body?.tuning !== undefined ? body.tuning : fallback?.tuning;
   const tuning = normalizeL4Tuning(rawTuning, protocol);
+  if (protocol === "udp" && (tuning.proxy_protocol.decode || tuning.proxy_protocol.send)) {
+    throw new Error("udp rules do not support tuning.proxy_protocol");
+  }
   const relayChain = normalizeRelayChainPayload(
     body.relay_chain !== undefined ? body.relay_chain : fallback.relay_chain,
     { protocol },
@@ -994,9 +1045,128 @@ function normalizeL4RulePayload(body, fallback = {}, suggestedId = null) {
 }
 
 function normalizeStoredL4Rule(rule, suggestedId = null) {
-  const normalized = normalizeL4RulePayload(rule || {}, rule || {}, suggestedId);
+  const source = rule && typeof rule === "object" ? rule : {};
+  const protocol = String(source.protocol || "").trim().toLowerCase();
+  const safeSource =
+    protocol === "udp"
+      ? {
+          ...source,
+          relay_chain: [],
+          tuning: {
+            ...(source.tuning && typeof source.tuning === "object" ? source.tuning : {}),
+            proxy_protocol: {
+              decode: false,
+              send: false,
+            },
+          },
+        }
+      : source;
+  const normalized = normalizeL4RulePayload(safeSource, safeSource, suggestedId);
   normalized.revision = normalizeL4RuleRevision(rule?.revision);
   return normalized;
+}
+
+function normalizeStoredL4RuleLenient(rule, suggestedId = null) {
+  try {
+    return normalizeStoredL4Rule(rule, suggestedId);
+  } catch (_) {
+    const source = rule && typeof rule === "object" ? rule : {};
+    const protocol = String(source.protocol || "").trim().toLowerCase() === "udp" ? "udp" : "tcp";
+    const listenHost = normalizeHost(source.listen_host);
+    const listenPort = Number(source.listen_port);
+    const backends = normalizeL4Backends(source.backends, source.upstream_host, source.upstream_port);
+    const tuningSource =
+      protocol === "udp"
+        ? {
+            ...(source.tuning && typeof source.tuning === "object" ? source.tuning : {}),
+            proxy_protocol: {
+              decode: false,
+              send: false,
+            },
+          }
+        : source.tuning;
+
+    let tuning;
+    try {
+      tuning = normalizeL4Tuning(tuningSource, protocol);
+    } catch (_) {
+      tuning = buildDefaultL4Tuning(protocol);
+    }
+
+    let relayChain;
+    try {
+      relayChain = normalizeRelayChainPayload(source.relay_chain, { protocol });
+    } catch (_) {
+      relayChain = [];
+    }
+
+    return {
+      id:
+        Number.isFinite(Number(source.id)) && Number(source.id) > 0
+          ? Number(source.id)
+          : Number(suggestedId) || 1,
+      name:
+        String(source.name || "").trim() ||
+        `${protocol.toUpperCase()} ${validatePort(listenPort) ? listenPort : "deleted"}`,
+      protocol,
+      listen_host: validateNetworkHost(listenHost) ? listenHost : "0.0.0.0",
+      listen_port: validatePort(listenPort) ? listenPort : 0,
+      upstream_host: backends[0]?.host || normalizeHost(source.upstream_host) || "",
+      upstream_port:
+        backends[0]?.port || (validatePort(Number(source.upstream_port)) ? Number(source.upstream_port) : 0),
+      backends,
+      load_balancing: normalizeL4LoadBalancing(source.load_balancing, "round_robin"),
+      tuning,
+      relay_chain: relayChain,
+      enabled: source.enabled !== false,
+      tags: normalizeTags(source.tags || []),
+      revision: normalizeL4RuleRevision(source.revision),
+    };
+  }
+}
+
+function cloneSerializable(value) {
+  if (value === undefined) return undefined;
+  return JSON.parse(JSON.stringify(value));
+}
+
+function preserveLegacyTcpFieldsOnPartialUpdate(existingRule, body, nextRule) {
+  const source = existingRule && typeof existingRule === "object" ? existingRule : {};
+  const protocol = String(source.protocol || "").trim().toLowerCase();
+  if (protocol !== "tcp") {
+    return nextRule;
+  }
+
+  let fallbackNormalized;
+  try {
+    fallbackNormalized = normalizeStoredL4Rule(source, source.id);
+  } catch (_) {
+    return nextRule;
+  }
+  const normalizedUnchanged =
+    nextRule.protocol === fallbackNormalized.protocol &&
+    nextRule.listen_host === fallbackNormalized.listen_host &&
+    nextRule.listen_port === fallbackNormalized.listen_port &&
+    nextRule.upstream_host === fallbackNormalized.upstream_host &&
+    nextRule.upstream_port === fallbackNormalized.upstream_port &&
+    JSON.stringify(nextRule.backends) === JSON.stringify(fallbackNormalized.backends) &&
+    JSON.stringify(nextRule.load_balancing) === JSON.stringify(fallbackNormalized.load_balancing) &&
+    JSON.stringify(nextRule.tuning) === JSON.stringify(fallbackNormalized.tuning) &&
+    JSON.stringify(nextRule.relay_chain) === JSON.stringify(fallbackNormalized.relay_chain);
+  if (!normalizedUnchanged) {
+    return nextRule;
+  }
+
+  const merged = { ...nextRule };
+  if (source.backends !== undefined) merged.backends = cloneSerializable(source.backends);
+  if (source.load_balancing !== undefined) {
+    merged.load_balancing = cloneSerializable(source.load_balancing);
+  }
+  if (source.tuning !== undefined) merged.tuning = cloneSerializable(source.tuning);
+  if (source.relay_chain !== undefined) merged.relay_chain = cloneSerializable(source.relay_chain);
+  if (source.upstream_host !== undefined) merged.upstream_host = String(source.upstream_host || "");
+  if (source.upstream_port !== undefined) merged.upstream_port = Number(source.upstream_port) || 0;
+  return merged;
 }
 
 function getHighestL4RuleRevision(rules = []) {
@@ -1035,12 +1205,21 @@ function getNextRelayListenerId() {
 }
 
 function ensureUniqueL4Listen(rules, nextRule, excludeId = null) {
-  const conflict = (Array.isArray(rules) ? rules : []).find((rule) => {
+  const conflict = (Array.isArray(rules) ? rules : []).find((rule, index) => {
     if (!rule || Number(rule.id) === Number(excludeId)) return false;
+    let comparableRule;
+    try {
+      comparableRule = normalizeStoredL4Rule(
+        rule,
+        Number.isFinite(Number(rule?.id)) && Number(rule.id) > 0 ? Number(rule.id) : index + 1,
+      );
+    } catch (_) {
+      return false;
+    }
     return (
-      String(rule.protocol || "tcp") === String(nextRule.protocol || "tcp") &&
-      normalizeHost(rule.listen_host) === normalizeHost(nextRule.listen_host) &&
-      Number(rule.listen_port) === Number(nextRule.listen_port)
+      String(comparableRule.protocol || "tcp") === String(nextRule.protocol || "tcp") &&
+      normalizeHost(comparableRule.listen_host) === normalizeHost(nextRule.listen_host) &&
+      Number(comparableRule.listen_port) === Number(nextRule.listen_port)
     );
   });
   if (conflict) {
@@ -2334,7 +2513,7 @@ function getDesiredRevisionForSync(agent, agentId, rules = [], options = {}) {
   const desiredRevision = normalizeRevision(agent?.desired_revision);
   const currentRevision = normalizeRevision(agent?.current_revision);
   const highestRuleRevision = getHighestRuleRevision(rules);
-  const highestL4Revision = getHighestL4RuleRevision(storage.loadL4RulesForAgent(agentId));
+  const highestL4Revision = getHighestL4RuleRevision(loadNormalizedL4RulesForAgent(agentId));
   const highestRelayListenerRevision = getHighestRelayListenerRevision(
     storage.loadRelayListenersForAgent(agentId),
   );
@@ -3563,7 +3742,7 @@ function resolveVersionPackageForAgent(agent) {
 
 function getAgentHeartbeatResponse(agent) {
   const rules = loadNormalizedRulesForAgent(agent.id);
-  const l4Rules = storage.loadL4RulesForAgent(agent.id);
+  const l4Rules = loadNormalizedL4RulesForAgent(agent.id);
   const relayListeners = loadRelayListenersForSync(agent.id, rules, l4Rules);
   const certificates = buildManagedCertificateBundleForAgent(agent.id, relayListeners);
   const certificatePolicies = buildManagedCertificatePolicyForAgent(agent.id, relayListeners);
@@ -3655,6 +3834,22 @@ function loadNormalizedRulesForAgent(agentId) {
   return loadOrInitRules(agentId).map((rule, index) =>
     normalizeStoredRule(rule, index + 1),
   );
+}
+
+function loadNormalizedL4RulesForAgent(agentId) {
+  const rules = storage.loadL4RulesForAgent(agentId);
+  const source = Array.isArray(rules) ? rules : [];
+  const normalized = [];
+  for (let index = 0; index < source.length; index += 1) {
+    try {
+      normalized.push(normalizeStoredL4Rule(source[index], index + 1));
+    } catch (err) {
+      console.warn(
+        `[l4] skipped malformed stored rule for agent ${agentId}: ${String(err?.message || err)}`,
+      );
+    }
+  }
+  return normalized;
 }
 
 async function handleAgentApi(req, res) {
@@ -4411,7 +4606,7 @@ async function handleMasterApi(req, res) {
       sendJson(res, 404, errorPayload("agent not found"));
       return;
     }
-    sendJson(res, 200, { ok: true, rules: storage.loadL4RulesForAgent(agentId) });
+    sendJson(res, 200, { ok: true, rules: loadNormalizedL4RulesForAgent(agentId) });
     return;
   }
 
@@ -4593,11 +4788,15 @@ async function handleMasterApi(req, res) {
         sendJson(res, 404, errorPayload("rule id not found"));
         return;
       }
-      const nextRule = normalizeL4RulePayload(body, rules[index], ruleId);
+      const existingRule = rules[index];
+      const fallbackRule = normalizeStoredL4RuleLenient(existingRule, ruleId);
+      let nextRule = normalizeL4RulePayload(body, fallbackRule, ruleId);
+      nextRule = preserveLegacyTcpFieldsOnPartialUpdate(existingRule, body, nextRule);
       ensureUniqueL4Listen(rules, nextRule, ruleId);
       nextRule.revision = getNextPendingRevision(agent);
       rules[index] = nextRule;
       storage.saveL4RulesForAgent(agentId, rules);
+      const responseRule = normalizeStoredL4Rule(nextRule, ruleId);
 
       if (AUTO_APPLY) {
         try {
@@ -4615,7 +4814,7 @@ async function handleMasterApi(req, res) {
         }
       }
 
-      sendJson(res, 200, { ok: true, rule: nextRule });
+      sendJson(res, 200, { ok: true, rule: responseRule });
     } catch (err) {
       sendJson(res, 400, errorPayload(String(err.message || err)));
     }
@@ -4639,6 +4838,7 @@ async function handleMasterApi(req, res) {
       }
       const deleted = rules.splice(index, 1)[0];
       storage.saveL4RulesForAgent(agentId, rules);
+      const responseRule = normalizeStoredL4RuleLenient(deleted, ruleId);
 
       if (AUTO_APPLY) {
         try {
@@ -4656,7 +4856,7 @@ async function handleMasterApi(req, res) {
         }
       }
 
-      sendJson(res, 200, { ok: true, rule: deleted });
+      sendJson(res, 200, { ok: true, rule: responseRule });
     } catch (err) {
       sendJson(res, 400, errorPayload(String(err.message || err)));
     }

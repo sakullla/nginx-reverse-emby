@@ -256,6 +256,8 @@ describe("Go agent heartbeat API", () => {
             id: 9,
             frontend_url: "http://edge-a.example.com",
             backend_url: "http://127.0.0.1:8096",
+            backends: [{ url: "http://127.0.0.1:8096" }],
+            load_balancing: { strategy: "round_robin" },
             enabled: true,
             tags: [],
             proxy_redirect: true,
@@ -558,6 +560,33 @@ describe("Go agent heartbeat API", () => {
               listen_port: 9000,
               upstream_host: "127.0.0.1",
               upstream_port: 9001,
+              backends: [
+                {
+                  host: "127.0.0.1",
+                  port: 9001,
+                  weight: 10,
+                  resolve: false,
+                  backup: true,
+                  max_conns: 99,
+                },
+                {
+                  host: "backend-b.internal",
+                  port: 9002,
+                  weight: 5,
+                  resolve: true,
+                },
+              ],
+              load_balancing: {
+                strategy: "least_conn",
+                hash_key: "$remote_addr",
+                zone_size: "256k",
+              },
+              tuning: {
+                proxy_protocol: {
+                  decode: true,
+                  send: true,
+                },
+              },
               enabled: true,
               tags: ["sync"],
               revision: 4,
@@ -641,6 +670,17 @@ describe("Go agent heartbeat API", () => {
         assert.equal(payload.sync.rules[0].frontend_url, "https://frontend.example.com");
         assert.ok(Array.isArray(payload.sync.l4_rules));
         assert.equal(payload.sync.l4_rules[0].listen_port, 9000);
+        assert.deepEqual(payload.sync.l4_rules[0].backends, [
+          { host: "127.0.0.1", port: 9001 },
+          { host: "backend-b.internal", port: 9002 },
+        ]);
+        assert.deepEqual(payload.sync.l4_rules[0].load_balancing, {
+          strategy: "round_robin",
+        });
+        assert.deepEqual(payload.sync.l4_rules[0].tuning.proxy_protocol, {
+          decode: true,
+          send: true,
+        });
         assert.ok(Array.isArray(payload.sync.relay_listeners));
         assert.ok(Array.isArray(payload.sync.certificates));
         const relayCaBundle = payload.sync.certificates.find((cert) => cert.id === 21);
@@ -718,6 +758,189 @@ describe("Go agent heartbeat API", () => {
           sha256: "sha-linux-sync",
         });
         assert.equal(payload.sync.version_sha256, "sha-linux-sync");
+      },
+    );
+  });
+
+  it("tolerates persisted legacy UDP proxy_protocol data on read paths", async () => {
+    await withBackendServer(
+      {
+        env: {
+          PANEL_ROLE: "master",
+        },
+        agents: [
+          {
+            id: "legacy-udp-read-agent",
+            name: "legacy-udp-read-agent",
+            agent_token: "token-legacy-udp-read-agent",
+            desired_revision: 8,
+            current_revision: 2,
+            created_at: "2026-04-01T00:00:00.000Z",
+            updated_at: "2026-04-01T00:00:00.000Z",
+          },
+        ],
+        l4RulesByAgentId: {
+          "legacy-udp-read-agent": [
+            {
+              id: 7,
+              agent_id: "legacy-udp-read-agent",
+              name: "legacy-udp-rule",
+              protocol: "udp",
+              listen_host: "0.0.0.0",
+              listen_port: 9550,
+              upstream_host: "127.0.0.1",
+              upstream_port: 9551,
+              backends: [
+                { host: "127.0.0.1", port: 9551, weight: 10, backup: true, max_conns: 9 },
+                { host: "backend-b.internal", port: 9552, weight: 5 },
+              ],
+              load_balancing: { strategy: "hash", hash_key: "$remote_addr", zone_size: "256k" },
+              tuning: {
+                proxy_protocol: {
+                  decode: true,
+                  send: true,
+                },
+              },
+              relay_chain: [12, 22],
+              enabled: true,
+              tags: ["legacy-udp"],
+              revision: 7,
+            },
+          ],
+        },
+      },
+      async ({ baseUrl }) => {
+        const listResponse = await fetch(`${baseUrl}/api/agents/legacy-udp-read-agent/l4-rules`);
+        assert.equal(listResponse.status, 200);
+        const listPayload = await listResponse.json();
+        assert.equal(listPayload.rules.length, 1);
+        assert.deepEqual(listPayload.rules[0].backends, [
+          { host: "127.0.0.1", port: 9551 },
+          { host: "backend-b.internal", port: 9552 },
+        ]);
+        assert.deepEqual(listPayload.rules[0].load_balancing, {
+          strategy: "round_robin",
+        });
+        assert.deepEqual(listPayload.rules[0].tuning.proxy_protocol, {
+          decode: false,
+          send: false,
+        });
+        assert.deepEqual(listPayload.rules[0].relay_chain, []);
+
+        const heartbeatResponse = await fetch(`${baseUrl}/api/agents/heartbeat`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-agent-token": "token-legacy-udp-read-agent",
+          },
+          body: JSON.stringify({
+            name: "legacy-udp-read-agent",
+            current_revision: 2,
+            version: "1.0.0",
+            platform: "linux-amd64",
+          }),
+        });
+        assert.equal(heartbeatResponse.status, 200);
+        const heartbeatPayload = await heartbeatResponse.json();
+        assert.ok(Array.isArray(heartbeatPayload.sync.l4_rules));
+        assert.deepEqual(heartbeatPayload.sync.l4_rules[0].backends, [
+          { host: "127.0.0.1", port: 9551 },
+          { host: "backend-b.internal", port: 9552 },
+        ]);
+        assert.deepEqual(heartbeatPayload.sync.l4_rules[0].load_balancing, {
+          strategy: "round_robin",
+        });
+        assert.deepEqual(heartbeatPayload.sync.l4_rules[0].tuning.proxy_protocol, {
+          decode: false,
+          send: false,
+        });
+        assert.deepEqual(heartbeatPayload.sync.l4_rules[0].relay_chain, []);
+      },
+    );
+  });
+
+  it("skips malformed persisted L4 rows without failing GET or heartbeat", async () => {
+    await withBackendServer(
+      {
+        env: {
+          PANEL_ROLE: "master",
+        },
+        agents: [
+          {
+            id: "malformed-l4-row-agent",
+            name: "malformed-l4-row-agent",
+            agent_token: "token-malformed-l4-row-agent",
+            desired_revision: 0,
+            current_revision: 0,
+            created_at: "2026-04-01T00:00:00.000Z",
+            updated_at: "2026-04-01T00:00:00.000Z",
+          },
+        ],
+        l4RulesByAgentId: {
+          "malformed-l4-row-agent": [
+            {
+              id: 41,
+              agent_id: "malformed-l4-row-agent",
+              name: "valid-rule",
+              protocol: "tcp",
+              listen_host: "0.0.0.0",
+              listen_port: 9800,
+              backends: [{ host: "127.0.0.1", port: 9801 }],
+              enabled: true,
+              revision: 8,
+            },
+            {
+              id: 42,
+              agent_id: "malformed-l4-row-agent",
+              name: "broken-rule",
+              protocol: "tcp",
+              listen_host: "",
+              listen_port: "not-a-port",
+              backends: [],
+              upstream_host: "",
+              upstream_port: 0,
+              enabled: true,
+              revision: 99,
+            },
+          ],
+        },
+      },
+      async ({ baseUrl }) => {
+        const listResponse = await fetch(`${baseUrl}/api/agents/malformed-l4-row-agent/l4-rules`);
+        assert.equal(listResponse.status, 200);
+        const listPayload = await listResponse.json();
+        assert.equal(listPayload.rules.length, 1);
+        assert.equal(listPayload.rules[0].id, 41);
+
+        const applyResponse = await fetch(`${baseUrl}/api/agents/malformed-l4-row-agent/apply`, {
+          method: "POST",
+        });
+        assert.equal(applyResponse.status, 200);
+
+        const detailResponse = await fetch(`${baseUrl}/api/agents/malformed-l4-row-agent`);
+        assert.equal(detailResponse.status, 200);
+        const detailPayload = await detailResponse.json();
+        assert.equal(detailPayload.agent.desired_revision, 8);
+
+        const heartbeatResponse = await fetch(`${baseUrl}/api/agents/heartbeat`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-agent-token": "token-malformed-l4-row-agent",
+          },
+          body: JSON.stringify({
+            name: "malformed-l4-row-agent",
+            current_revision: 1,
+            version: "1.0.0",
+            platform: "linux-amd64",
+          }),
+        });
+        assert.equal(heartbeatResponse.status, 200);
+        const heartbeatPayload = await heartbeatResponse.json();
+        assert.equal(heartbeatPayload.sync.desired_revision, 8);
+        assert.ok(Array.isArray(heartbeatPayload.sync.l4_rules));
+        assert.equal(heartbeatPayload.sync.l4_rules.length, 1);
+        assert.equal(heartbeatPayload.sync.l4_rules[0].id, 41);
       },
     );
   });

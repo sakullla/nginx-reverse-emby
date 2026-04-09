@@ -1,6 +1,7 @@
 package l4
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -16,6 +17,7 @@ import (
 	"io"
 	"math/big"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -157,6 +159,245 @@ func TestTCPDirectProxy(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		// allow upstream goroutine to exit naturally
+	}
+}
+
+func TestTCPProxyProtocolSendOnly(t *testing.T) {
+	upstreamLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen upstream: %v", err)
+	}
+	defer upstreamLn.Close()
+
+	upstreamObserved := make(chan proxyProtocolObservation, 1)
+	go acceptProxyProtocolConnection(t, upstreamLn, true, upstreamObserved)
+
+	srv, err := NewServer(context.Background(), []model.L4Rule{{
+		Protocol:   "tcp",
+		ListenHost: "127.0.0.1",
+		ListenPort: pickFreeTCPPort(t),
+		Backends: []model.L4Backend{
+			{Host: "127.0.0.1", Port: upstreamLn.Addr().(*net.TCPAddr).Port},
+		},
+		LoadBalancing: model.LoadBalancing{Strategy: "round_robin"},
+		Tuning: model.L4Tuning{
+			ProxyProtocol: model.L4ProxyProtocolTuning{Send: true},
+		},
+	}}, nil, nil)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	defer srv.Close()
+
+	client, err := net.Dial("tcp", srv.tcpListeners[0].Addr().String())
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	defer client.Close()
+
+	payload := []byte("hello proxy protocol")
+	if _, err := client.Write(payload); err != nil {
+		t.Fatalf("write payload: %v", err)
+	}
+	if tcpClient, ok := client.(*net.TCPConn); ok {
+		if err := tcpClient.CloseWrite(); err != nil {
+			t.Fatalf("close client write: %v", err)
+		}
+	}
+
+	observed := waitForProxyProtocolObservation(t, upstreamObserved)
+	expectedHeader := fmt.Sprintf(
+		"PROXY TCP4 %s %s %d %d\r\n",
+		client.LocalAddr().(*net.TCPAddr).IP.String(),
+		client.RemoteAddr().(*net.TCPAddr).IP.String(),
+		client.LocalAddr().(*net.TCPAddr).Port,
+		client.RemoteAddr().(*net.TCPAddr).Port,
+	)
+	if observed.Header != expectedHeader {
+		t.Fatalf("unexpected proxy header:\n got: %q\nwant: %q", observed.Header, expectedHeader)
+	}
+	if !bytes.Equal(observed.Payload, payload) {
+		t.Fatalf("unexpected upstream payload: got %q want %q", observed.Payload, payload)
+	}
+}
+
+func TestTCPProxyProtocolDecodeOnly(t *testing.T) {
+	upstreamLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen upstream: %v", err)
+	}
+	defer upstreamLn.Close()
+
+	upstreamObserved := make(chan proxyProtocolObservation, 1)
+	go acceptProxyProtocolConnection(t, upstreamLn, false, upstreamObserved)
+
+	srv, err := NewServer(context.Background(), []model.L4Rule{{
+		Protocol:   "tcp",
+		ListenHost: "127.0.0.1",
+		ListenPort: pickFreeTCPPort(t),
+		Backends: []model.L4Backend{
+			{Host: "127.0.0.1", Port: upstreamLn.Addr().(*net.TCPAddr).Port},
+		},
+		LoadBalancing: model.LoadBalancing{Strategy: "round_robin"},
+		Tuning: model.L4Tuning{
+			ProxyProtocol: model.L4ProxyProtocolTuning{Decode: true},
+		},
+	}}, nil, nil)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	defer srv.Close()
+
+	client, err := net.Dial("tcp", srv.tcpListeners[0].Addr().String())
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	defer client.Close()
+
+	payload := []byte("payload without proxy preface")
+	downstream := append([]byte("PROXY TCP4 198.51.100.10 203.0.113.20 12345 443\r\n"), payload...)
+	if _, err := client.Write(downstream); err != nil {
+		t.Fatalf("write payload: %v", err)
+	}
+	if tcpClient, ok := client.(*net.TCPConn); ok {
+		if err := tcpClient.CloseWrite(); err != nil {
+			t.Fatalf("close client write: %v", err)
+		}
+	}
+
+	observed := waitForProxyProtocolObservation(t, upstreamObserved)
+	if observed.Header != "" {
+		t.Fatalf("expected upstream payload without forwarded proxy header, got %q", observed.Header)
+	}
+	if !bytes.Equal(observed.Payload, payload) {
+		t.Fatalf("unexpected upstream payload: got %q want %q", observed.Payload, payload)
+	}
+}
+
+func TestTCPProxyProtocolDecodeAndSend(t *testing.T) {
+	upstreamLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen upstream: %v", err)
+	}
+	defer upstreamLn.Close()
+
+	upstreamObserved := make(chan proxyProtocolObservation, 1)
+	go acceptProxyProtocolConnection(t, upstreamLn, true, upstreamObserved)
+
+	srv, err := NewServer(context.Background(), []model.L4Rule{{
+		Protocol:   "tcp",
+		ListenHost: "127.0.0.1",
+		ListenPort: pickFreeTCPPort(t),
+		Backends: []model.L4Backend{
+			{Host: "127.0.0.1", Port: upstreamLn.Addr().(*net.TCPAddr).Port},
+		},
+		LoadBalancing: model.LoadBalancing{Strategy: "round_robin"},
+		Tuning: model.L4Tuning{
+			ProxyProtocol: model.L4ProxyProtocolTuning{Decode: true, Send: true},
+		},
+	}}, nil, nil)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	defer srv.Close()
+
+	client, err := net.Dial("tcp", srv.tcpListeners[0].Addr().String())
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	defer client.Close()
+
+	header := "PROXY TCP4 198.51.100.10 203.0.113.20 12345 443\r\n"
+	payload := []byte("payload with relayed tuple")
+	if _, err := client.Write(append([]byte(header), payload...)); err != nil {
+		t.Fatalf("write payload: %v", err)
+	}
+	if tcpClient, ok := client.(*net.TCPConn); ok {
+		if err := tcpClient.CloseWrite(); err != nil {
+			t.Fatalf("close client write: %v", err)
+		}
+	}
+
+	observed := waitForProxyProtocolObservation(t, upstreamObserved)
+	if observed.Header != header {
+		t.Fatalf("unexpected relayed proxy header:\n got: %q\nwant: %q", observed.Header, header)
+	}
+	if !bytes.Equal(observed.Payload, payload) {
+		t.Fatalf("unexpected upstream payload: got %q want %q", observed.Payload, payload)
+	}
+}
+
+func TestTCPDirectProxyRetriesNextBackend(t *testing.T) {
+	badPort := pickFreeTCPPort(t)
+	good := newTCPEchoListener(t)
+	defer good.Close()
+
+	srv, err := NewServer(context.Background(), []model.L4Rule{{
+		Protocol:   "tcp",
+		ListenHost: "127.0.0.1",
+		ListenPort: pickFreeTCPPort(t),
+		Backends: []model.L4Backend{
+			{Host: "127.0.0.1", Port: badPort},
+			{Host: "127.0.0.1", Port: good.Port()},
+		},
+		LoadBalancing: model.LoadBalancing{Strategy: "round_robin"},
+	}}, nil, nil)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	defer srv.Close()
+
+	conn, err := net.Dial("tcp", srv.tcpListeners[0].Addr().String())
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	defer conn.Close()
+
+	if _, err := conn.Write([]byte("hello")); err != nil {
+		t.Fatalf("write tcp payload: %v", err)
+	}
+	reply := make([]byte, 5)
+	if _, err := io.ReadFull(conn, reply); err != nil {
+		t.Fatalf("read tcp reply: %v", err)
+	}
+	if string(reply) != "hello" {
+		t.Fatalf("expected retry to healthy backend, got %q", string(reply))
+	}
+}
+
+func TestTCPDirectProxySupportsHostnameBackend(t *testing.T) {
+	good := newTCPEchoListener(t)
+	defer good.Close()
+
+	srv, err := NewServer(context.Background(), []model.L4Rule{{
+		Protocol:   "tcp",
+		ListenHost: "127.0.0.1",
+		ListenPort: pickFreeTCPPort(t),
+		Backends: []model.L4Backend{
+			{Host: "localhost", Port: good.Port()},
+		},
+		LoadBalancing: model.LoadBalancing{Strategy: "round_robin"},
+	}}, nil, nil)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	defer srv.Close()
+
+	conn, err := net.Dial("tcp", srv.tcpListeners[0].Addr().String())
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	defer conn.Close()
+
+	if _, err := conn.Write([]byte("host")); err != nil {
+		t.Fatalf("write tcp payload: %v", err)
+	}
+	reply := make([]byte, 4)
+	if _, err := io.ReadFull(conn, reply); err != nil {
+		t.Fatalf("read tcp reply: %v", err)
+	}
+	if string(reply) != "host" {
+		t.Fatalf("expected hostname backend echo, got %q", string(reply))
 	}
 }
 
@@ -366,6 +607,345 @@ func TestUDPDirectProxyHostnameBind(t *testing.T) {
 	}
 }
 
+func TestUDPProxyReusesSessionUpstreamSocket(t *testing.T) {
+	upstreamAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("resolve upstream addr: %v", err)
+	}
+	upstreamConn, err := net.ListenUDP("udp", upstreamAddr)
+	if err != nil {
+		t.Fatalf("listen udp upstream: %v", err)
+	}
+	defer upstreamConn.Close()
+
+	var seenPeersMu sync.Mutex
+	seenPeers := make(map[string]struct{})
+	go func() {
+		buf := make([]byte, 64)
+		for {
+			n, addr, err := upstreamConn.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			seenPeersMu.Lock()
+			if _, ok := seenPeers[addr.String()]; !ok {
+				seenPeers[addr.String()] = struct{}{}
+			}
+			seenPeersMu.Unlock()
+			_, _ = upstreamConn.WriteToUDP(buf[:n], addr)
+		}
+	}()
+
+	listenPort := pickFreeUDPPort(t)
+	srv, err := NewServer(context.Background(), []model.L4Rule{{
+		Protocol:   "udp",
+		ListenHost: "127.0.0.1",
+		ListenPort: listenPort,
+		Backends: []model.L4Backend{
+			{Host: "127.0.0.1", Port: upstreamConn.LocalAddr().(*net.UDPAddr).Port},
+		},
+		LoadBalancing: model.LoadBalancing{Strategy: "round_robin"},
+	}}, nil, nil)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	defer srv.Close()
+
+	client, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: listenPort})
+	if err != nil {
+		t.Fatalf("dial udp proxy: %v", err)
+	}
+	defer client.Close()
+
+	for _, payload := range [][]byte{[]byte("one"), []byte("two")} {
+		if _, err := client.Write(payload); err != nil {
+			t.Fatalf("write udp payload: %v", err)
+		}
+		reply := make([]byte, len(payload))
+		if err := client.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+			t.Fatalf("set udp read deadline: %v", err)
+		}
+		if _, err := io.ReadFull(client, reply); err != nil {
+			t.Fatalf("read udp reply: %v", err)
+		}
+		if !bytes.Equal(payload, reply) {
+			t.Fatalf("udp payload mismatch; got %q want %q", reply, payload)
+		}
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	if len(srv.udpSessions) != 1 {
+		t.Fatalf("expected a single reused udp session, got %d", len(srv.udpSessions))
+	}
+	seenPeersMu.Lock()
+	defer seenPeersMu.Unlock()
+	if len(seenPeers) != 1 {
+		t.Fatalf("expected upstream to observe one proxy peer, got %d", len(seenPeers))
+	}
+}
+
+func TestUDPProxyRetriesNextBackendAfterReplyTimeout(t *testing.T) {
+	silentAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("resolve silent upstream addr: %v", err)
+	}
+	silentConn, err := net.ListenUDP("udp", silentAddr)
+	if err != nil {
+		t.Fatalf("listen silent upstream: %v", err)
+	}
+	defer silentConn.Close()
+	go func() {
+		buf := make([]byte, 64)
+		for {
+			if _, _, err := silentConn.ReadFromUDP(buf); err != nil {
+				return
+			}
+		}
+	}()
+
+	goodAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("resolve good upstream addr: %v", err)
+	}
+	goodConn, err := net.ListenUDP("udp", goodAddr)
+	if err != nil {
+		t.Fatalf("listen good upstream: %v", err)
+	}
+	defer goodConn.Close()
+	go func() {
+		buf := make([]byte, 64)
+		for {
+			n, addr, err := goodConn.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			_, _ = goodConn.WriteToUDP(buf[:n], addr)
+		}
+	}()
+
+	listenPort := pickFreeUDPPort(t)
+	srv, err := NewServer(context.Background(), []model.L4Rule{{
+		Protocol:   "udp",
+		ListenHost: "127.0.0.1",
+		ListenPort: listenPort,
+		Backends: []model.L4Backend{
+			{Host: "127.0.0.1", Port: silentConn.LocalAddr().(*net.UDPAddr).Port},
+			{Host: "127.0.0.1", Port: goodConn.LocalAddr().(*net.UDPAddr).Port},
+		},
+		LoadBalancing: model.LoadBalancing{Strategy: "round_robin"},
+	}}, nil, nil)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	defer srv.Close()
+	srv.udpReplyTimeout = 200 * time.Millisecond
+
+	client, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: listenPort})
+	if err != nil {
+		t.Fatalf("dial udp proxy: %v", err)
+	}
+	defer client.Close()
+
+	if _, err := client.Write([]byte("one")); err != nil {
+		t.Fatalf("write first udp payload: %v", err)
+	}
+	if err := client.SetReadDeadline(time.Now().Add(400 * time.Millisecond)); err != nil {
+		t.Fatalf("set first udp read deadline: %v", err)
+	}
+	reply := make([]byte, 3)
+	if _, err := client.Read(reply); err == nil {
+		t.Fatalf("expected first udp read to time out against silent backend")
+	}
+
+	if _, err := client.Write([]byte("two")); err != nil {
+		t.Fatalf("write second udp payload: %v", err)
+	}
+	if err := client.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set second udp read deadline: %v", err)
+	}
+	if _, err := io.ReadFull(client, reply); err != nil {
+		t.Fatalf("read second udp reply: %v", err)
+	}
+	if string(reply) != "two" {
+		t.Fatalf("expected second udp payload to reach healthy backend, got %q", string(reply))
+	}
+	if !srv.cache.IsInBackoff(silentConn.LocalAddr().String()) {
+		t.Fatalf("expected silent backend to be placed into backoff")
+	}
+}
+
+func TestUDPProxyFailsOutstandingPacketAfterPartialReplies(t *testing.T) {
+	partialAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("resolve partial upstream addr: %v", err)
+	}
+	partialConn, err := net.ListenUDP("udp", partialAddr)
+	if err != nil {
+		t.Fatalf("listen partial upstream: %v", err)
+	}
+	defer partialConn.Close()
+	go func() {
+		buf := make([]byte, 64)
+		replyCount := 0
+		for {
+			n, addr, err := partialConn.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			if replyCount == 0 {
+				replyCount++
+				_, _ = partialConn.WriteToUDP(buf[:n], addr)
+			}
+		}
+	}()
+
+	goodAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("resolve good upstream addr: %v", err)
+	}
+	goodConn, err := net.ListenUDP("udp", goodAddr)
+	if err != nil {
+		t.Fatalf("listen good upstream: %v", err)
+	}
+	defer goodConn.Close()
+	go func() {
+		buf := make([]byte, 64)
+		for {
+			n, addr, err := goodConn.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			_, _ = goodConn.WriteToUDP(buf[:n], addr)
+		}
+	}()
+
+	listenPort := pickFreeUDPPort(t)
+	srv, err := NewServer(context.Background(), []model.L4Rule{{
+		Protocol:   "udp",
+		ListenHost: "127.0.0.1",
+		ListenPort: listenPort,
+		Backends: []model.L4Backend{
+			{Host: "127.0.0.1", Port: partialConn.LocalAddr().(*net.UDPAddr).Port},
+			{Host: "127.0.0.1", Port: goodConn.LocalAddr().(*net.UDPAddr).Port},
+		},
+		LoadBalancing: model.LoadBalancing{Strategy: "round_robin"},
+	}}, nil, nil)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	defer srv.Close()
+	srv.udpReplyTimeout = 200 * time.Millisecond
+
+	client, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: listenPort})
+	if err != nil {
+		t.Fatalf("dial udp proxy: %v", err)
+	}
+	defer client.Close()
+
+	if _, err := client.Write([]byte("one")); err != nil {
+		t.Fatalf("write first udp payload: %v", err)
+	}
+	if _, err := client.Write([]byte("two")); err != nil {
+		t.Fatalf("write second udp payload: %v", err)
+	}
+
+	reply := make([]byte, 3)
+	if err := client.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set first udp read deadline: %v", err)
+	}
+	if _, err := io.ReadFull(client, reply); err != nil {
+		t.Fatalf("read first udp reply: %v", err)
+	}
+	if string(reply) != "one" && string(reply) != "two" {
+		t.Fatalf("expected one partial-backend reply, got %q", string(reply))
+	}
+	if err := client.SetReadDeadline(time.Now().Add(400 * time.Millisecond)); err != nil {
+		t.Fatalf("set second udp read deadline: %v", err)
+	}
+	if _, err := client.Read(reply); err == nil {
+		t.Fatalf("expected outstanding second udp payload to time out")
+	}
+
+	if _, err := client.Write([]byte("tri")); err != nil {
+		t.Fatalf("write third udp payload: %v", err)
+	}
+	if err := client.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set third udp read deadline: %v", err)
+	}
+	if _, err := io.ReadFull(client, reply); err != nil {
+		t.Fatalf("read third udp reply: %v", err)
+	}
+	if string(reply) != "tri" {
+		t.Fatalf("expected failover after partial replies, got %q", string(reply))
+	}
+}
+
+func TestUDPProxyExpiresIdleSessions(t *testing.T) {
+	upstreamAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("resolve upstream addr: %v", err)
+	}
+	upstreamConn, err := net.ListenUDP("udp", upstreamAddr)
+	if err != nil {
+		t.Fatalf("listen udp upstream: %v", err)
+	}
+	defer upstreamConn.Close()
+	go func() {
+		buf := make([]byte, 64)
+		for {
+			n, addr, err := upstreamConn.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			_, _ = upstreamConn.WriteToUDP(buf[:n], addr)
+		}
+	}()
+
+	listenPort := pickFreeUDPPort(t)
+	srv, err := NewServer(context.Background(), []model.L4Rule{{
+		Protocol:   "udp",
+		ListenHost: "127.0.0.1",
+		ListenPort: listenPort,
+		Backends: []model.L4Backend{
+			{Host: "127.0.0.1", Port: upstreamConn.LocalAddr().(*net.UDPAddr).Port},
+		},
+		LoadBalancing: model.LoadBalancing{Strategy: "round_robin"},
+	}}, nil, nil)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	defer srv.Close()
+	srv.udpSessionIdleTimeout = 50 * time.Millisecond
+	srv.udpReplyTimeout = 50 * time.Millisecond
+
+	client, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: listenPort})
+	if err != nil {
+		t.Fatalf("dial udp proxy: %v", err)
+	}
+	defer client.Close()
+
+	if _, err := client.Write([]byte("bye")); err != nil {
+		t.Fatalf("write udp payload: %v", err)
+	}
+	reply := make([]byte, 3)
+	if err := client.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set udp read deadline: %v", err)
+	}
+	if _, err := io.ReadFull(client, reply); err != nil {
+		t.Fatalf("read udp reply: %v", err)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if len(srv.udpSessions) == 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("expected idle udp session to expire, still have %d sessions", len(srv.udpSessions))
+}
+
 func pickFreeTCPPort(t *testing.T) int {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
@@ -531,4 +1111,85 @@ func mustL4RelaySPKIPin(t *testing.T, cert tls.Certificate) string {
 	}
 	sum := sha256.Sum256(parsed.RawSubjectPublicKeyInfo)
 	return base64.StdEncoding.EncodeToString(sum[:])
+}
+
+type tcpEchoListener struct {
+	ln net.Listener
+}
+
+type proxyProtocolObservation struct {
+	Header  string
+	Payload []byte
+}
+
+func newTCPEchoListener(t *testing.T) *tcpEchoListener {
+	t.Helper()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen tcp echo: %v", err)
+	}
+
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				_, _ = io.Copy(c, c)
+			}(conn)
+		}
+	}()
+
+	return &tcpEchoListener{ln: ln}
+}
+
+func (l *tcpEchoListener) Close() error {
+	return l.ln.Close()
+}
+
+func (l *tcpEchoListener) Port() int {
+	return l.ln.Addr().(*net.TCPAddr).Port
+}
+
+func acceptProxyProtocolConnection(t *testing.T, ln net.Listener, readHeader bool, out chan<- proxyProtocolObservation) {
+	t.Helper()
+
+	conn, err := ln.Accept()
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+
+	reader := bufio.NewReader(conn)
+	observed := proxyProtocolObservation{}
+	if readHeader {
+		header, err := reader.ReadString('\n')
+		if err != nil {
+			t.Errorf("read proxy header: %v", err)
+			return
+		}
+		observed.Header = header
+	}
+	payload, err := io.ReadAll(reader)
+	if err != nil {
+		t.Errorf("read upstream payload: %v", err)
+		return
+	}
+	observed.Payload = payload
+	out <- observed
+}
+
+func waitForProxyProtocolObservation(t *testing.T, observed <-chan proxyProtocolObservation) proxyProtocolObservation {
+	t.Helper()
+
+	select {
+	case result := <-observed:
+		return result
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for upstream observation")
+		return proxyProtocolObservation{}
+	}
 }

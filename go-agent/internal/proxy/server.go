@@ -1,18 +1,21 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
-	"net/http/httputil"
 	"net/url"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 )
@@ -42,7 +45,16 @@ type Runtime struct {
 }
 
 type routeEntry struct {
-	proxy       *httputil.ReverseProxy
+	rule           model.HTTPRule
+	backends       []httpBackend
+	backendCache   *backends.Cache
+	transport      *http.Transport
+	modifyResp     func(*http.Response) error
+	selectionScope string
+}
+
+type httpBackend struct {
+	target      *url.URL
 	backendHost string
 }
 
@@ -55,11 +67,17 @@ type runtimeListenerSpec struct {
 }
 
 func NewServer(listener model.HTTPListener) *Server {
-	server, _ := newServer(listener, nil, Providers{})
+	server, _ := newServer(listener, nil, Providers{}, backends.NewCache(backends.Config{}), NewSharedTransport())
 	return server
 }
 
-func newServer(listener model.HTTPListener, relayListeners []model.RelayListener, providers Providers) (*Server, error) {
+func newServer(
+	listener model.HTTPListener,
+	relayListeners []model.RelayListener,
+	providers Providers,
+	backendCache *backends.Cache,
+	sharedTransport *http.Transport,
+) (*Server, error) {
 	s := &Server{routes: make(map[string]*routeEntry)}
 	relayListenersByID := make(map[int]model.RelayListener, len(relayListeners))
 	for _, relayListener := range relayListeners {
@@ -67,37 +85,30 @@ func newServer(listener model.HTTPListener, relayListeners []model.RelayListener
 	}
 	for _, rule := range listener.Rules {
 		hostKey := HostFromRule(rule)
-		if hostKey == "" || rule.BackendURL == "" {
+		if hostKey == "" {
 			continue
 		}
-		target, err := url.Parse(rule.BackendURL)
-		if err != nil {
+		targets, err := parseHTTPBackends(rule)
+		if err != nil || len(targets) == 0 {
 			continue
 		}
-		targetHost := normalizeHost(target.Host)
-
-		proxy := &httputil.ReverseProxy{}
+		transport := sharedTransport
 		if len(rule.RelayChain) > 0 {
-			transport, err := newRelayTransport(rule, target, relayListenersByID, providers.Relay)
+			transport, err = newRelayTransport(rule, relayListenersByID, providers.Relay, sharedTransport)
 			if err != nil {
 				return nil, err
-			}
-			proxy.Transport = transport
-		}
-		proxy.Rewrite = func(preq *httputil.ProxyRequest) {
-			incomingHost := preq.In.Host
-			incomingScheme := requestScheme(preq.In)
-			preq.SetURL(target)
-			preq.Out.Host = preq.In.Host
-			if overrides := HeaderOverridesFromRule(rule, preq.In, incomingHost, incomingScheme); len(overrides) > 0 {
-				ApplyHeaderOverrides(preq.Out, overrides)
 			}
 		}
 
 		frontendOrigin := FrontendOriginFromRule(rule)
-		proxy.ModifyResponse = makeModifyResponse(frontendOrigin, rule.ProxyRedirect, targetHost)
-
-		s.routes[hostKey] = &routeEntry{proxy: proxy, backendHost: targetHost}
+		s.routes[hostKey] = &routeEntry{
+			rule:           rule,
+			backends:       targets,
+			backendCache:   backendCache,
+			transport:      transport,
+			modifyResp:     makeModifyResponse(frontendOrigin, rule.ProxyRedirect, targets[0].backendHost),
+			selectionScope: hostKey,
+		}
 	}
 
 	return s, nil
@@ -106,7 +117,9 @@ func newServer(listener model.HTTPListener, relayListeners []model.RelayListener
 func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	host := normalizeHost(req.Host)
 	if entry, ok := s.routes[host]; ok {
-		entry.proxy.ServeHTTP(w, req)
+		if err := entry.serveHTTP(w, req); err != nil {
+			http.Error(w, "bad gateway", http.StatusBadGateway)
+		}
 		return
 	}
 	http.NotFound(w, req)
@@ -131,13 +144,30 @@ func BindingKeys(ctx context.Context, rules []model.HTTPRule, relayListeners []m
 }
 
 func Start(ctx context.Context, rules []model.HTTPRule, relayListeners []model.RelayListener, providers Providers) (*Runtime, error) {
+	return StartWithResources(ctx, rules, relayListeners, providers, nil, nil)
+}
+
+func StartWithResources(
+	ctx context.Context,
+	rules []model.HTTPRule,
+	relayListeners []model.RelayListener,
+	providers Providers,
+	backendCache *backends.Cache,
+	sharedTransport *http.Transport,
+) (*Runtime, error) {
 	specs, err := buildRuntimeListenerSpecs(ctx, rules, relayListeners, providers)
 	if err != nil {
 		return nil, err
 	}
+	if backendCache == nil {
+		backendCache = backends.NewCache(backends.Config{})
+	}
+	if sharedTransport == nil {
+		sharedTransport = NewSharedTransport()
+	}
 	servers := make([]*Server, 0, len(specs))
 	for _, spec := range specs {
-		server, err := newServer(spec.listener, relayListeners, providers)
+		server, err := newServer(spec.listener, relayListeners, providers, backendCache, sharedTransport)
 		if err != nil {
 			return nil, err
 		}
@@ -186,6 +216,99 @@ func Start(ctx context.Context, rules []model.HTTPRule, relayListeners []model.R
 	}
 
 	return runtime, nil
+}
+
+func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
+	bodyBytes, err := readReusableBody(req)
+	if err != nil {
+		return err
+	}
+	candidates, err := e.candidates(req.Context())
+	if err != nil {
+		return err
+	}
+	for _, candidate := range candidates {
+		attemptReq, err := cloneProxyRequest(req, bodyBytes, candidate, e.rule)
+		if err != nil {
+			return err
+		}
+		resp, err := e.transport.RoundTrip(attemptReq)
+		if err != nil {
+			if !isBackendRetryable(attemptReq, err) {
+				return backendRetryError(attemptReq, err)
+			}
+			e.backendCache.MarkFailure(candidate.target.Host)
+			continue
+		}
+		e.backendCache.MarkSuccess(candidate.target.Host)
+		defer resp.Body.Close()
+		if e.modifyResp != nil {
+			modify := makeModifyResponse(FrontendOriginFromRule(e.rule), e.rule.ProxyRedirect, candidate.backendHost)
+			if err := modify(resp); err != nil {
+				return err
+			}
+		}
+		if resp.StatusCode == http.StatusSwitchingProtocols {
+			return handleUpgradeResponse(w, attemptReq, resp)
+		}
+		copyResponse(w, resp)
+		return nil
+	}
+	return fmt.Errorf("all backends failed for %s", e.rule.FrontendURL)
+}
+
+type httpCandidate struct {
+	target      *url.URL
+	backendHost string
+}
+
+func (e *routeEntry) candidates(ctx context.Context) ([]httpCandidate, error) {
+	if e.backendCache == nil {
+		return nil, fmt.Errorf("backend cache is required")
+	}
+
+	placeholders := make([]backends.Candidate, 0, len(e.backends))
+	indexByID := make(map[string]int, len(e.backends))
+	for i := range e.backends {
+		id := strconv.Itoa(i)
+		placeholders = append(placeholders, backends.Candidate{Address: id})
+		indexByID[id] = i
+	}
+
+	strategy := e.rule.LoadBalancing.Strategy
+	orderedBackends := e.backendCache.Order(e.selectionScope, strategy, placeholders)
+	out := make([]httpCandidate, 0, len(e.backends))
+	for _, ordered := range orderedBackends {
+		backend := e.backends[indexByID[ordered.Address]]
+		endpoint := backends.Endpoint{
+			Host: backend.target.Hostname(),
+			Port: portWithDefault(backend.target),
+		}
+		resolved, err := e.backendCache.Resolve(ctx, endpoint)
+		if err != nil {
+			if ctx != nil {
+				if ctxErr := ctx.Err(); ctxErr != nil && errors.Is(err, ctxErr) {
+					return nil, ctxErr
+				}
+			}
+			continue
+		}
+		for _, candidate := range resolved {
+			if e.backendCache.IsInBackoff(candidate.Address) {
+				continue
+			}
+			target := cloneURL(backend.target)
+			target.Host = candidate.Address
+			out = append(out, httpCandidate{
+				target:      target,
+				backendHost: backend.backendHost,
+			})
+		}
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("no healthy backend candidates for %s", e.rule.FrontendURL)
+	}
+	return out, nil
 }
 
 func (r *Runtime) Close() error {
@@ -359,9 +482,9 @@ func newTLSListener(ctx context.Context, listener net.Listener, spec runtimeList
 
 func newRelayTransport(
 	rule model.HTTPRule,
-	target *url.URL,
 	relayListenersByID map[int]model.RelayListener,
 	provider RelayMaterialProvider,
+	base *http.Transport,
 ) (*http.Transport, error) {
 	if provider == nil {
 		return nil, fmt.Errorf("http rule %q: relay_chain requires relay tls material provider", rule.FrontendURL)
@@ -370,13 +493,9 @@ func newRelayTransport(
 	if err != nil {
 		return nil, err
 	}
-	transport := cloneDefaultTransport()
+	transport := cloneTransport(base)
 	transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-		targetAddr := strings.TrimSpace(addr)
-		if targetAddr == "" {
-			targetAddr = addressWithDefaultPort(target)
-		}
-		return relay.Dial(ctx, network, targetAddr, hops, provider)
+		return relay.Dial(ctx, network, strings.TrimSpace(addr), hops, provider)
 	}
 	return transport, nil
 }
@@ -412,6 +531,245 @@ func cloneDefaultTransport() *http.Transport {
 		return base.Clone()
 	}
 	return &http.Transport{}
+}
+
+func cloneTransport(base *http.Transport) *http.Transport {
+	if base != nil {
+		return base.Clone()
+	}
+	return cloneDefaultTransport()
+}
+
+func NewSharedTransport() *http.Transport {
+	transport := cloneDefaultTransport()
+	transport.MaxIdleConns = 256
+	transport.MaxIdleConnsPerHost = 64
+	transport.IdleConnTimeout = 90 * time.Second
+	transport.ResponseHeaderTimeout = 30 * time.Second
+	transport.ForceAttemptHTTP2 = true
+	return transport
+}
+
+func parseHTTPBackends(rule model.HTTPRule) ([]httpBackend, error) {
+	rawBackends := rule.Backends
+	if len(rawBackends) == 0 && rule.BackendURL != "" {
+		rawBackends = []model.HTTPBackend{{URL: rule.BackendURL}}
+	}
+	backendsOut := make([]httpBackend, 0, len(rawBackends))
+	for _, entry := range rawBackends {
+		rawURL := strings.TrimSpace(entry.URL)
+		if rawURL == "" {
+			continue
+		}
+		target, err := url.Parse(rawURL)
+		if err != nil {
+			return nil, err
+		}
+		backendsOut = append(backendsOut, httpBackend{
+			target:      target,
+			backendHost: normalizeHost(target.Host),
+		})
+	}
+	return backendsOut, nil
+}
+
+func readReusableBody(req *http.Request) ([]byte, error) {
+	if req == nil || req.Body == nil {
+		return nil, nil
+	}
+	defer req.Body.Close()
+	return io.ReadAll(req.Body)
+}
+
+func cloneProxyRequest(req *http.Request, body []byte, candidate httpCandidate, rule model.HTTPRule) (*http.Request, error) {
+	incomingHost := req.Host
+	incomingScheme := requestScheme(req)
+	out := req.Clone(req.Context())
+	out.URL = cloneURL(candidate.target)
+	out.URL.Path = req.URL.Path
+	out.URL.RawPath = req.URL.RawPath
+	out.URL.RawQuery = req.URL.RawQuery
+	out.URL.Fragment = req.URL.Fragment
+	out.URL.ForceQuery = req.URL.ForceQuery
+	out.RequestURI = ""
+	out.Host = req.Host
+	if body != nil {
+		out.Body = io.NopCloser(bytes.NewReader(body))
+		out.ContentLength = int64(len(body))
+		out.GetBody = func() (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(body)), nil
+		}
+	} else {
+		out.Body = nil
+		out.ContentLength = 0
+	}
+	if overrides := HeaderOverridesFromRule(rule, req, incomingHost, incomingScheme); len(overrides) > 0 {
+		ApplyHeaderOverrides(out, overrides)
+	}
+	return out, nil
+}
+
+func isBackendRetryable(req *http.Request, err error) bool {
+	if err == nil {
+		return false
+	}
+	if req != nil && req.Context().Err() != nil {
+		return false
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		return true
+	}
+	var timeoutErr interface{ Timeout() bool }
+	if errors.As(err, &timeoutErr) && timeoutErr.Timeout() {
+		return true
+	}
+	return false
+}
+
+func backendRetryError(req *http.Request, err error) error {
+	if req != nil {
+		if ctxErr := req.Context().Err(); ctxErr != nil {
+			return ctxErr
+		}
+	}
+	return err
+}
+
+func copyResponse(w http.ResponseWriter, resp *http.Response) {
+	copyHeaders(w.Header(), resp.Header)
+	w.WriteHeader(resp.StatusCode)
+	_, _ = io.Copy(w, resp.Body)
+}
+
+func handleUpgradeResponse(w http.ResponseWriter, req *http.Request, resp *http.Response) error {
+	reqUpType := upgradeType(req.Header)
+	respUpType := upgradeType(resp.Header)
+	if reqUpType == "" || respUpType == "" {
+		return fmt.Errorf("upgrade response missing protocol negotiation")
+	}
+	if !strings.EqualFold(reqUpType, respUpType) {
+		return fmt.Errorf("backend tried to switch protocol %q when %q was requested", respUpType, reqUpType)
+	}
+
+	backConn, ok := resp.Body.(io.ReadWriteCloser)
+	if !ok {
+		return fmt.Errorf("internal error: 101 switching protocols response with non-writable body")
+	}
+
+	conn, brw, err := http.NewResponseController(w).Hijack()
+	if err != nil {
+		if errors.Is(err, http.ErrNotSupported) {
+			return fmt.Errorf("can't switch protocols using non-Hijacker ResponseWriter type %T", w)
+		}
+		return fmt.Errorf("hijack failed on protocol switch: %w", err)
+	}
+	defer conn.Close()
+
+	backConnCloseCh := make(chan struct{})
+	go func() {
+		select {
+		case <-req.Context().Done():
+		case <-backConnCloseCh:
+		}
+		_ = backConn.Close()
+	}()
+	defer close(backConnCloseCh)
+
+	copyHeaders(w.Header(), resp.Header)
+	resp.Header = w.Header()
+	resp.Body = nil
+	if err := resp.Write(brw); err != nil {
+		return fmt.Errorf("response write: %w", err)
+	}
+	if err := brw.Flush(); err != nil {
+		return fmt.Errorf("response flush: %w", err)
+	}
+
+	errc := make(chan error, 2)
+	spc := switchProtocolCopier{user: conn, backend: backConn}
+	go spc.copyToBackend(errc)
+	go spc.copyFromBackend(errc)
+
+	err = <-errc
+	if err == nil {
+		err = <-errc
+	}
+	if err != nil && !errors.Is(err, errCopyDone) && !errors.Is(err, net.ErrClosed) {
+		return err
+	}
+	return nil
+}
+
+var errCopyDone = errors.New("hijacked connection copy complete")
+
+type switchProtocolCopier struct {
+	user, backend io.ReadWriter
+}
+
+func (c switchProtocolCopier) copyFromBackend(errc chan<- error) {
+	if _, err := io.Copy(c.user, c.backend); err != nil {
+		errc <- err
+		return
+	}
+	if wc, ok := c.user.(interface{ CloseWrite() error }); ok {
+		errc <- wc.CloseWrite()
+		return
+	}
+	errc <- errCopyDone
+}
+
+func (c switchProtocolCopier) copyToBackend(errc chan<- error) {
+	if _, err := io.Copy(c.backend, c.user); err != nil {
+		errc <- err
+		return
+	}
+	if wc, ok := c.backend.(interface{ CloseWrite() error }); ok {
+		errc <- wc.CloseWrite()
+		return
+	}
+	errc <- errCopyDone
+}
+
+func copyHeaders(dst, src http.Header) {
+	for key, values := range src {
+		for _, value := range values {
+			dst.Add(key, value)
+		}
+	}
+}
+
+func cloneURL(src *url.URL) *url.URL {
+	if src == nil {
+		return &url.URL{}
+	}
+	copyValue := *src
+	return &copyValue
+}
+
+func upgradeType(h http.Header) string {
+	for _, value := range h.Values("Connection") {
+		for _, token := range strings.Split(value, ",") {
+			if strings.EqualFold(strings.TrimSpace(token), "Upgrade") {
+				return h.Get("Upgrade")
+			}
+		}
+	}
+	return ""
+}
+
+func portWithDefault(target *url.URL) int {
+	if target == nil {
+		return 0
+	}
+	if target.Port() != "" {
+		port, _ := strconv.Atoi(target.Port())
+		return port
+	}
+	return defaultPort(target.Scheme)
 }
 
 func addressWithDefaultPort(target *url.URL) string {

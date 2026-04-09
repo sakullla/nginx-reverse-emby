@@ -63,6 +63,44 @@ func TestL4RuntimeManagerPreservesRunningServerOnInvalidReconfigure(t *testing.T
 	waitForPortState(t, listenPort, false)
 }
 
+func TestL4RuntimeManagerReusesSharedCacheAcrossReapply(t *testing.T) {
+	manager := newL4RuntimeManager()
+	ctx := context.Background()
+	listenPort := pickFreeTCPPort(t)
+	initialCache := manager.cache
+
+	firstRule := model.L4Rule{
+		Protocol:   "tcp",
+		ListenHost: "127.0.0.1",
+		ListenPort: listenPort,
+		Backends: []model.L4Backend{
+			{Host: "localhost", Port: pickFreeTCPPort(t)},
+		},
+		LoadBalancing: model.LoadBalancing{Strategy: "round_robin"},
+	}
+	if err := manager.Apply(ctx, []model.L4Rule{firstRule}); err != nil {
+		t.Fatalf("failed to apply initial l4 runtime: %v", err)
+	}
+
+	nextRule := firstRule
+	nextRule.Backends = []model.L4Backend{
+		{Host: "localhost", Port: pickFreeTCPPort(t)},
+		{Host: "127.0.0.1", Port: pickFreeTCPPort(t)},
+	}
+	nextRule.LoadBalancing = model.LoadBalancing{Strategy: "random"}
+	if err := manager.Apply(ctx, []model.L4Rule{nextRule}); err != nil {
+		t.Fatalf("failed to reapply l4 runtime: %v", err)
+	}
+
+	if manager.cache != initialCache {
+		t.Fatal("expected l4 backend cache to be reused across reapply")
+	}
+
+	if err := manager.Close(); err != nil {
+		t.Fatalf("failed to close l4 manager: %v", err)
+	}
+}
+
 func TestHTTPRuntimeManagerPreservesRunningServerOnInvalidReconfigure(t *testing.T) {
 	manager := newHTTPRuntimeManager()
 	ctx := context.Background()
@@ -184,6 +222,53 @@ func TestHTTPRuntimeManagerPreservesRunningServerWhenNewPortIsOccupied(t *testin
 		t.Fatal("expected existing http runtime to be preserved when new port fails to bind")
 	}
 	assertHTTPRuntimeStatus(t, activePort, http.StatusNoContent)
+
+	if err := manager.Close(); err != nil {
+		t.Fatalf("failed to close http manager: %v", err)
+	}
+}
+
+func TestHTTPRuntimeManagerReusesSharedCacheAndTransportAcrossReapply(t *testing.T) {
+	manager := newHTTPRuntimeManager()
+	ctx := context.Background()
+	listenPort := pickFreeTCPPort(t)
+	initialCache := manager.cache
+	initialTransport := manager.transport
+
+	firstBackend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("first"))
+	}))
+	defer firstBackend.Close()
+
+	secondBackend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("second"))
+	}))
+	defer secondBackend.Close()
+
+	firstRule := runtimeTestHTTPRule(listenPort, firstBackend.URL)
+	firstRule.Backends = []model.HTTPBackend{{URL: firstBackend.URL}}
+	firstRule.LoadBalancing = model.LoadBalancing{Strategy: "round_robin"}
+	if err := manager.Apply(ctx, []model.HTTPRule{firstRule}); err != nil {
+		t.Fatalf("failed to apply initial http runtime: %v", err)
+	}
+	assertHTTPRuntimeBody(t, listenPort, "first")
+
+	nextRule := runtimeTestHTTPRule(listenPort, firstBackend.URL)
+	nextRule.Backends = []model.HTTPBackend{
+		{URL: firstBackend.URL},
+		{URL: secondBackend.URL},
+	}
+	nextRule.LoadBalancing = model.LoadBalancing{Strategy: "random"}
+	if err := manager.Apply(ctx, []model.HTTPRule{nextRule}); err != nil {
+		t.Fatalf("failed to reapply http runtime: %v", err)
+	}
+
+	if manager.cache != initialCache {
+		t.Fatal("expected backend cache to be reused across reapply")
+	}
+	if manager.transport != initialTransport {
+		t.Fatal("expected shared transport to be reused across reapply")
+	}
 
 	if err := manager.Close(); err != nil {
 		t.Fatalf("failed to close http manager: %v", err)
@@ -480,6 +565,33 @@ func assertHTTPRuntimeStatus(t *testing.T, port int, wantStatus int) {
 	}
 
 	t.Fatalf("timed out waiting for http runtime on port %d to return %d", port, wantStatus)
+}
+
+func assertHTTPRuntimeBody(t *testing.T, port int, wantBody string) {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	address := fmt.Sprintf("http://127.0.0.1:%d/", port)
+	host := fmt.Sprintf("edge.example.test:%d", port)
+	for time.Now().Before(deadline) {
+		req, err := http.NewRequest(http.MethodGet, address, nil)
+		if err != nil {
+			t.Fatalf("failed to create runtime request: %v", err)
+		}
+		req.Host = host
+
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil {
+			body, readErr := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if readErr == nil && string(body) == wantBody {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	t.Fatalf("timed out waiting for http runtime on port %d to return body %q", port, wantBody)
 }
 
 func runtimeTestSPKIPin(t *testing.T, cert *x509.Certificate) string {
