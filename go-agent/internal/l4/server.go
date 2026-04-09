@@ -54,6 +54,8 @@ type udpSession struct {
 	targetAddr     string
 	pendingReplies int
 	awaitingSince  time.Time
+	ready          chan struct{}
+	initErr        error
 }
 
 func NewServer(
@@ -412,34 +414,45 @@ func (s *Server) sessionForPeer(rule model.L4Rule, listener *net.UDPConn, peer *
 
 	s.udpMu.Lock()
 	if existing := s.udpSessions[key]; existing != nil {
-		existing.lastActive = s.now()
+		ready := existing.ready
+		if ready == nil {
+			existing.lastActive = s.now()
+			s.udpMu.Unlock()
+			return existing, nil
+		}
 		s.udpMu.Unlock()
+		<-ready
+		if existing.initErr != nil {
+			return nil, existing.initErr
+		}
 		return existing, nil
-	}
-	s.udpMu.Unlock()
-
-	upstream, target, err := s.dialUDPUpstream(rule)
-	if err != nil {
-		return nil, err
 	}
 
 	session := &udpSession{
 		key:        key,
 		peer:       cloneUDPAddr(peer),
 		listener:   listener,
-		upstream:   upstream,
 		lastActive: s.now(),
-		targetAddr: target,
+		ready:      make(chan struct{}),
+	}
+	s.udpSessions[key] = session
+	s.udpMu.Unlock()
+
+	upstream, target, err := s.dialUDPUpstream(rule)
+	if err != nil {
+		s.udpMu.Lock()
+		session.initErr = err
+		delete(s.udpSessions, key)
+		close(session.ready)
+		s.udpMu.Unlock()
+		return nil, err
 	}
 
 	s.udpMu.Lock()
-	if existing := s.udpSessions[key]; existing != nil {
-		existing.lastActive = s.now()
-		s.udpMu.Unlock()
-		_ = upstream.Close()
-		return existing, nil
-	}
-	s.udpSessions[key] = session
+	session.upstream = upstream
+	session.targetAddr = target
+	close(session.ready)
+	session.ready = nil
 	s.udpMu.Unlock()
 
 	s.wg.Add(1)
