@@ -102,8 +102,11 @@ model RelayListener {
   id                      Int     @id
   agentId                 String  @map("agent_id")
   name                    String  @default("")
+  bindHosts               String  @default("[\"0.0.0.0\"]") @map("bind_hosts")
   listenHost              String  @default("0.0.0.0") @map("listen_host")
   listenPort              Int     @map("listen_port")
+  publicHost              String  @default("0.0.0.0") @map("public_host")
+  publicPort              Int     @default(443) @map("public_port")
   enabled                 Boolean @default(true)
   certificateId           Int?    @map("certificate_id")
   tlsMode                 String  @default("pin_or_ca") @map("tls_mode")

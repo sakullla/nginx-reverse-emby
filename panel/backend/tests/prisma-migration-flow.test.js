@@ -59,6 +59,10 @@ describe("Prisma SQL migration flow", () => {
       migrationFiles.some((file) => /^0005_.+\.sql$/i.test(file)),
       "expected a schema version 5 migration file for relay chain and certificate extended fields",
     );
+    assert.ok(
+      migrationFiles.some((file) => /^0006_.+\.sql$/i.test(file)),
+      "expected a schema version 6 migration file for relay bind/public endpoint fields",
+    );
   });
 
   it("copies Prisma runtime migration files into the production image", () => {
@@ -78,7 +82,7 @@ describe("Prisma SQL migration flow", () => {
     assert.doesNotMatch(source, /ALTER TABLE\s+rules\s+ADD\s+COLUMN\s+custom_headers/i);
   });
 
-  it("migrates legacy schema_version=1 rules tables to schema version 5", async () => {
+  it("migrates legacy schema_version=1 rules tables to schema version 6", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "panel-prisma-migration-"));
     const databasePath = path.join(tempDir, "panel.db");
 
@@ -124,7 +128,7 @@ describe("Prisma SQL migration flow", () => {
         const schemaVersionRows = await client.$queryRawUnsafe(`
           SELECT value FROM meta WHERE key = 'schema_version'
         `);
-        assert.equal(schemaVersionRows[0].value, "5");
+        assert.equal(schemaVersionRows[0].value, "6");
 
         const columns = await client.$queryRawUnsafe(`PRAGMA table_info('rules')`);
         const names = new Set(columns.map((column) => String(column.name || "")));
@@ -156,6 +160,10 @@ describe("Prisma SQL migration flow", () => {
         const relayListenerColumns = await client.$queryRawUnsafe(`PRAGMA table_info('relay_listeners')`);
         const relayIdColumn = relayListenerColumns.find((column) => String(column.name || "") === "id");
         assert.equal(Number(relayIdColumn.pk), 1);
+        const relayListenerColumnNames = new Set(relayListenerColumns.map((column) => String(column.name || "")));
+        assert.ok(relayListenerColumnNames.has("bind_hosts"));
+        assert.ok(relayListenerColumnNames.has("public_host"));
+        assert.ok(relayListenerColumnNames.has("public_port"));
 
         const versionPolicyTables = await client.$queryRawUnsafe(`
           SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'version_policy'

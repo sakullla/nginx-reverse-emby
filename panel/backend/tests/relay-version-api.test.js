@@ -140,10 +140,18 @@ describe("relay listeners and version policies API", () => {
         });
         assert.equal(created.status, 201);
         assert.equal(typeof created.payload.listener.id, "number");
+        assert.deepEqual(created.payload.listener.bind_hosts, ["0.0.0.0"]);
+        assert.equal(created.payload.listener.public_host, "0.0.0.0");
+        assert.equal(created.payload.listener.public_port, 10443);
+        assert.equal(created.payload.listener.listen_host, "0.0.0.0");
 
         const list = await jsonRequest(baseUrl, "GET", "/api/agents/edge-1/relay-listeners");
         assert.equal(list.status, 200);
         assert.equal(list.payload.listeners.length, 1);
+        assert.deepEqual(list.payload.listeners[0].bind_hosts, ["0.0.0.0"]);
+        assert.equal(list.payload.listeners[0].public_host, "0.0.0.0");
+        assert.equal(list.payload.listeners[0].public_port, 10443);
+        assert.equal(list.payload.listeners[0].listen_host, "0.0.0.0");
 
         const listenerId = created.payload.listener.id;
         const updated = await jsonRequest(
@@ -158,6 +166,10 @@ describe("relay listeners and version policies API", () => {
         );
         assert.equal(updated.status, 200);
         assert.equal(updated.payload.listener.name, "edge relay updated");
+        assert.deepEqual(updated.payload.listener.bind_hosts, ["0.0.0.0"]);
+        assert.equal(updated.payload.listener.public_host, "0.0.0.0");
+        assert.equal(updated.payload.listener.public_port, 10443);
+        assert.equal(updated.payload.listener.listen_host, "0.0.0.0");
 
         const deleted = await jsonRequest(baseUrl, "DELETE", `/api/agents/edge-1/relay-listeners/${listenerId}`);
         assert.equal(deleted.status, 200);
@@ -850,6 +862,48 @@ describe("relay listeners and version policies API", () => {
     );
   });
 
+  it("prefers public_host when selecting auto-issued relay certificate identity", async () => {
+    await withBackendServer(
+      {
+        env: { PANEL_ROLE: "master" },
+        agents: [
+          {
+            id: "edge-1",
+            name: "edge-1",
+            agent_token: "token-edge-1",
+            desired_revision: 1,
+            current_revision: 1,
+            capabilities: ["cert_install", "http_rules", "l4"],
+            created_at: "2026-04-01T00:00:00.000Z",
+            updated_at: "2026-04-01T00:00:00.000Z",
+          },
+        ],
+      },
+      async ({ baseUrl }) => {
+        const created = await jsonRequest(baseUrl, "POST", "/api/agents/edge-1/relay-listeners", {
+          name: "relay-identity",
+          bind_hosts: ["10.0.0.10", "127.0.0.1"],
+          listen_port: 7443,
+          public_host: "relay-public.example.com",
+          public_port: 443,
+          enabled: true,
+          certificate_source: "auto_relay_ca",
+          trust_mode_source: "auto",
+        });
+        assert.equal(created.status, 201);
+
+        const certificates = await jsonRequest(baseUrl, "GET", "/api/certificates");
+        assert.equal(certificates.status, 200);
+        const listenerCert = certificates.payload.certificates.find(
+          (cert) => cert.id === created.payload.listener.certificate_id,
+        );
+        assert.ok(listenerCert);
+        assert.match(listenerCert.domain, /relay-public-example-com/i);
+        assert.doesNotMatch(listenerCert.domain, /10-0-0-10/i);
+      },
+    );
+  });
+
   it("auto-issues distinct stable listener certificates for duplicate-name listeners on the same agent", async () => {
     await withBackendServer(
       {
@@ -899,8 +953,8 @@ describe("relay listeners and version policies API", () => {
         );
         assert.ok(firstCert);
         assert.ok(secondCert);
-        assert.match(firstCert.domain, /^listener-1\.[a-z0-9-]+\.relay\.internal$/);
-        assert.match(secondCert.domain, /^listener-2\.[a-z0-9-]+\.relay\.internal$/);
+        assert.match(firstCert.domain, /^listener-1\.[a-z0-9-]+\.[a-z0-9-]+\.relay\.internal$/);
+        assert.match(secondCert.domain, /^listener-2\.[a-z0-9-]+\.[a-z0-9-]+\.relay\.internal$/);
         assert.notEqual(firstCert.domain, secondCert.domain);
 
         const [firstPem, secondPem] = await Promise.all([

@@ -17,12 +17,13 @@ const DEFAULT_LOCAL_AGENT_STATE = Object.freeze({
   last_apply_message: "",
   desired_version: "",
 });
-const CURRENT_SCHEMA_VERSION = "5";
+const CURRENT_SCHEMA_VERSION = "6";
 const MIGRATIONS_DIR = path.join(__dirname, "prisma", "migrations");
 const REQUEST_HEADERS_SCHEMA_VERSION = 2;
 const RELAY_VERSION_POLICY_SCHEMA_VERSION = 3;
 const AGENT_PLATFORM_SCHEMA_VERSION = 4;
 const RELAY_CHAIN_CERT_FIELDS_SCHEMA_VERSION = 5;
+const RELAY_BIND_PUBLIC_ENDPOINT_SCHEMA_VERSION = 6;
 const CLIENT_STATE = {
   client: null,
   dataRoot: null,
@@ -92,8 +93,11 @@ const SCHEMA_STATEMENTS = [
     id INTEGER PRIMARY KEY,
     agent_id TEXT NOT NULL,
     name TEXT DEFAULT '',
+    bind_hosts TEXT DEFAULT '["0.0.0.0"]',
     listen_host TEXT DEFAULT '0.0.0.0',
     listen_port INTEGER NOT NULL,
+    public_host TEXT DEFAULT '0.0.0.0',
+    public_port INTEGER DEFAULT 443,
     enabled INTEGER DEFAULT 1,
     certificate_id INTEGER,
     tls_mode TEXT DEFAULT 'pin_or_ca',
@@ -215,6 +219,7 @@ async function readTableColumnNames(client, tableName) {
 async function inferSchemaVersionWithoutMeta(client) {
   const ruleColumns = await readTableColumnNames(client, "rules");
   const l4RuleColumns = await readTableColumnNames(client, "l4_rules");
+  const relayListenerColumns = await readTableColumnNames(client, "relay_listeners");
   const managedCertificateColumns = await readTableColumnNames(client, "managed_certificates");
   const agentColumns = await readTableColumnNames(client, "agents");
   const localAgentStateColumns = await readTableColumnNames(client, "local_agent_state");
@@ -227,6 +232,20 @@ async function inferSchemaVersionWithoutMeta(client) {
     managedCertificateColumns.has("usage") &&
     managedCertificateColumns.has("certificate_type") &&
     managedCertificateColumns.has("self_signed");
+  const hasRelayBindPublicColumns =
+    relayListenerColumns.has("bind_hosts") &&
+    relayListenerColumns.has("public_host") &&
+    relayListenerColumns.has("public_port");
+  if (
+    hasRequestHeaderColumns &&
+    hasVersionPolicyColumns &&
+    hasAgentPlatformColumn &&
+    hasRelayChainColumns &&
+    hasManagedCertificateExtendedColumns &&
+    hasRelayBindPublicColumns
+  ) {
+    return RELAY_BIND_PUBLIC_ENDPOINT_SCHEMA_VERSION;
+  }
   if (
     hasRequestHeaderColumns &&
     hasVersionPolicyColumns &&
@@ -579,8 +598,11 @@ function mapRelayListenerFromDb(row) {
     id: row.id,
     agent_id: row.agentId,
     name: row.name || "",
+    bind_hosts: parseJsonValue(row.bindHosts, []),
     listen_host: row.listenHost || "0.0.0.0",
     listen_port: row.listenPort,
+    public_host: row.publicHost || "",
+    public_port: row.publicPort,
     enabled: !!row.enabled,
     certificate_id: row.certificateId == null ? null : row.certificateId,
     tls_mode: row.tlsMode || "pin_or_ca",
@@ -737,8 +759,11 @@ function mapRelayListenerToDb(agentId, listener) {
     id: Number(normalized.id),
     agentId: String(agentId),
     name: String(normalized.name || ""),
+    bindHosts: stringifyJsonValue(normalized.bind_hosts, []),
     listenHost: String(normalized.listen_host || "0.0.0.0"),
     listenPort: Number(normalized.listen_port),
+    publicHost: String(normalized.public_host || normalized.listen_host || "0.0.0.0"),
+    publicPort: Number(normalized.public_port || normalized.listen_port),
     enabled: normalized.enabled !== false,
     certificateId: normalized.certificate_id == null ? null : Number(normalized.certificate_id),
     tlsMode: String(normalized.tls_mode || "pin_or_ca"),

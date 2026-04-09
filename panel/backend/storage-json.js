@@ -80,14 +80,17 @@ function normalizeLocalAgentStateForStorage(state) {
   };
 }
 
-function sanitizeRelayListenersForStorage(listeners) {
+function sanitizeRelayListenersForStorage(listeners, agentId = null) {
   if (!Array.isArray(listeners)) {
     return [];
   }
   const sanitized = [];
   for (const listener of listeners) {
     try {
-      sanitized.push(normalizeRelayListenerPayload(listener));
+      sanitized.push(normalizeRelayListenerPayload({
+        ...(listener && typeof listener === "object" ? listener : {}),
+        ...(agentId == null ? {} : { agent_id: String(agentId) }),
+      }));
     } catch (_) {
       // drop malformed relay listeners at storage boundary
     }
@@ -222,7 +225,7 @@ function collectRelayListenerIdsExceptAgent(agentId) {
       continue;
     }
     const listeners = readJsonFile(path.join(relayListenersDir, file), []);
-    for (const listener of sanitizeRelayListenersForStorage(listeners)) {
+    for (const listener of sanitizeRelayListenersForStorage(listeners, ownerAgentId)) {
       ids.set(listener.id, ownerAgentId);
     }
   }
@@ -363,7 +366,7 @@ function saveLocalAgentState(state) {
 
 function loadRelayListenersForAgent(agentId) {
   const listeners = readJsonFile(getRelayListenerFileForAgent(agentId), []);
-  return sanitizeRelayListenersForStorage(listeners);
+  return sanitizeRelayListenersForStorage(listeners, agentId);
 }
 
 function saveRelayListenersForAgent(agentId, listeners) {
