@@ -26,6 +26,9 @@ const NUM_RUNS = getNumRuns("revision", 30);
 const agentWithRevArb = fc.record({
   id: fc.uuid(),
   name: nonEmptyString,
+  version: nonEmptyString,
+  platform: nonEmptyString,
+  desired_version: nonEmptyString,
   desired_revision: fc.integer({ min: 0, max: 10000 }),
   current_revision: fc.integer({ min: 0, max: 10000 }),
   last_apply_revision: fc.integer({ min: 0, max: 10000 }),

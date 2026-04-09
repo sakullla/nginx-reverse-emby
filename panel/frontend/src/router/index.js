@@ -51,7 +51,19 @@ const routes = [
         path: 'certs',
         name: 'certs',
         component: () => import('../pages/CertsPage.vue'),
-        meta: { title: '证书' }
+        meta: { title: '证书管理' }
+      },
+      {
+        path: 'relay-listeners',
+        name: 'relay-listeners',
+        component: () => import('../pages/RelayListenersPage.vue'),
+        meta: { title: 'Relay 监听器' }
+      },
+      {
+        path: 'versions',
+        name: 'versions',
+        component: () => import('../pages/VersionsPage.vue'),
+        meta: { title: '版本策略' }
       },
       {
         path: 'settings',

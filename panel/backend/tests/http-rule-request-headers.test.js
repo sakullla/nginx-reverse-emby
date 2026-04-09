@@ -3,6 +3,7 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const { spawn } = require("node:child_process");
+const fsSync = require("node:fs");
 const fs = require("node:fs/promises");
 const net = require("node:net");
 const os = require("node:os");
@@ -11,6 +12,17 @@ const { once } = require("node:events");
 const {
   normalizeRuleRequestHeaders,
 } = require("../http-rule-request-headers");
+
+const REPO_ROOT = path.resolve(__dirname, "..", "..", "..");
+// Opt-in legacy coverage: point this at a generator script if you want the
+// historical generator assertions to run in a legacy worktree.
+const LEGACY_NGINX_GENERATOR_PATH = String(
+  process.env.NRE_TEST_LEGACY_GENERATOR_SCRIPT || "",
+).trim();
+const HAS_LEGACY_NGINX_GENERATOR =
+  LEGACY_NGINX_GENERATOR_PATH !== "" &&
+  fsSync.existsSync(LEGACY_NGINX_GENERATOR_PATH);
+const itWithLegacyGenerator = HAS_LEGACY_NGINX_GENERATOR ? it : it.skip;
 
 async function getFreePort() {
   const server = net.createServer();
@@ -168,8 +180,8 @@ async function generateNginxConfig(options = {}) {
   const directCertDir = path.join(tempRoot, "certs");
   const directCertStateFile = path.join(tempRoot, ".state", "active_cert_domains");
   const rulesJsonPath = path.join(dataRoot, "proxy_rules.json");
-  const repoRoot = path.resolve(__dirname, "..", "..", "..");
-  const scriptPath = toPosixPath(path.join(repoRoot, "docker", "25-dynamic-reverse-proxy.sh"));
+  const repoRoot = REPO_ROOT;
+  const scriptPath = toPosixPath(LEGACY_NGINX_GENERATOR_PATH);
   const templatePath = toPosixPath(path.join(repoRoot, "docker", "default.conf.template"));
   const directNoTlsTemplatePath = toPosixPath(
     path.join(repoRoot, "docker", "default.direct.no_tls.conf.template"),
@@ -259,10 +271,10 @@ async function generateNginxConfig(options = {}) {
 }
 
 describe("HTTP rule request header normalization", () => {
-  it("generator sources request-header normalization from the shared backend module", async () => {
-    const repoRoot = path.resolve(__dirname, "..", "..", "..");
+  itWithLegacyGenerator("generator sources request-header normalization from the shared backend module", async () => {
+    const repoRoot = REPO_ROOT;
     const generatorScript = await fs.readFile(
-      path.join(repoRoot, "docker", "25-dynamic-reverse-proxy.sh"),
+      LEGACY_NGINX_GENERATOR_PATH,
       "utf8",
     );
 
@@ -273,14 +285,10 @@ describe("HTTP rule request header normalization", () => {
   });
 
   it("runtime image copies the shared request-header module", async () => {
-    const repoRoot = path.resolve(__dirname, "..", "..", "..");
+    const repoRoot = REPO_ROOT;
     const dockerfile = await fs.readFile(path.join(repoRoot, "Dockerfile"), "utf8");
 
-    assert.match(dockerfile, /panel\/backend\/http-rule-request-headers\.js/);
-    assert.match(
-      dockerfile,
-      /COPY\s+panel\/backend\/[^\n]*http-rule-request-headers\.js[^\n]*\/opt\/nginx-reverse-emby\/panel\/backend\//,
-    );
+    assert.match(dockerfile, /COPY\s+panel\/backend\/\s+\.\/panel\/backend\//);
   });
 
   it("fills defaults for pass_proxy_headers, user_agent, and custom_headers", () => {
@@ -443,7 +451,7 @@ describe("HTTP rule request header normalization", () => {
     );
   });
 
-  it("generator honors rule-level proxy headers when PROXY_PASS_PROXY_HEADERS is unset", async () => {
+  itWithLegacyGenerator("generator honors rule-level proxy headers when PROXY_PASS_PROXY_HEADERS is unset", async () => {
     const { config } = await generateNginxConfig({
       proxyRules: [
         {
@@ -460,7 +468,7 @@ describe("HTTP rule request header normalization", () => {
     assert.match(config, /proxy_set_header X-Forwarded-Proto "\$scheme";/);
   });
 
-  it("generator treats PROXY_PASS_PROXY_HEADERS as a global disable override", async () => {
+  itWithLegacyGenerator("generator treats PROXY_PASS_PROXY_HEADERS as a global disable override", async () => {
     const { config } = await generateNginxConfig({
       env: {
         PROXY_PASS_PROXY_HEADERS: "0",
@@ -481,7 +489,7 @@ describe("HTTP rule request header normalization", () => {
     assert.match(config, /proxy_set_header X-Test "still-there";/);
   });
 
-  it("generator trims PROXY_PASS_PROXY_HEADERS before global disable checks", async () => {
+  itWithLegacyGenerator("generator trims PROXY_PASS_PROXY_HEADERS before global disable checks", async () => {
     const { config } = await generateNginxConfig({
       env: {
         PROXY_PASS_PROXY_HEADERS: " 0 ",
@@ -500,7 +508,7 @@ describe("HTTP rule request header normalization", () => {
     assert.doesNotMatch(config, /proxy_set_header X-Forwarded-For /);
   });
 
-  it("generator fully renders IPv6 listen directives for direct-mode agent apply", async () => {
+  itWithLegacyGenerator("generator fully renders IPv6 listen directives for direct-mode agent apply", async () => {
     const { config } = await generateNginxConfig({
       env: {
         PROXY_DEPLOY_MODE: "direct",
@@ -519,7 +527,7 @@ describe("HTTP rule request header normalization", () => {
     assert.doesNotMatch(config, /\$\{frontend_port\}/);
   });
 
-  it("generator renders literal header values safely for nginx", async () => {
+  itWithLegacyGenerator("generator renders literal header values safely for nginx", async () => {
     const { config } = await generateNginxConfig({
       proxyRules: [
         {
@@ -558,7 +566,7 @@ describe("HTTP rule request header normalization", () => {
     assert.doesNotMatch(config, /^\s*proxy_set_header X-Evil /m);
   });
 
-  it("generator preserves literal values containing the old sentinel text", async () => {
+  itWithLegacyGenerator("generator preserves literal values containing the old sentinel text", async () => {
     const { config } = await generateNginxConfig({
       proxyRules: [
         {
@@ -585,7 +593,7 @@ describe("HTTP rule request header normalization", () => {
     assert.doesNotMatch(config, /map "" \$nre_literal_dollar_[A-Za-z0-9_]+ \{/);
   });
 
-  it("generator rejects invalid env-based request-header payloads that backend would reject", async () => {
+  itWithLegacyGenerator("generator rejects invalid env-based request-header payloads that backend would reject", async () => {
     const invalidEnvRules = [
       {
         name: "reserved User-Agent custom header",
@@ -643,7 +651,7 @@ describe("HTTP rule request header normalization", () => {
     }
   });
 
-  it("generator rejects invalid proxy_rules.json request-header payloads that backend would reject", async () => {
+  itWithLegacyGenerator("generator rejects invalid proxy_rules.json request-header payloads that backend would reject", async () => {
     const { config, stderr, generatedFiles } = await generateNginxConfig({
       rawProxyRulesJson: JSON.stringify([
         {

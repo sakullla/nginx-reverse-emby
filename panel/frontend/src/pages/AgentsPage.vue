@@ -3,7 +3,7 @@
     <div class="agents-page__header">
       <div>
         <h1 class="agents-page__title">节点管理</h1>
-        <p class="agents-page__subtitle">{{ agents.length }} 个节点 · {{ onlineCount }} 在线· 累计 {{ totalHttpRules }} HTTP 规则 · 累计 {{ totalL4Rules }} L4 规则</p>
+        <p class="agents-page__subtitle">{{ agents.length }} 个节点 · {{ onlineCount }} 在线 · 累计 {{ totalHttpRules }} HTTP 规则 · 累计 {{ totalL4Rules }} L4 规则</p>
       </div>
       <div style="display:flex;gap:0.5rem">
         <button v-if="selectedAgentId" class="btn btn-secondary" :disabled="applying" @click="handleApply">
@@ -12,15 +12,14 @@
           {{ applying ? '推送中...' : '推送配置' }}
         </button>
         <button class="btn btn-primary" @click="showJoinModal = true">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
-          <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
-        </svg>
-        加入节点
-      </button>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+          </svg>
+          加入节点
+        </button>
       </div>
     </div>
 
-    <!-- Agent List -->
     <div class="agents-list">
       <div v-for="agent in agents" :key="agent.id" class="agent-card" @click="router.push(`/agents/${agent.id}`)" style="cursor:pointer">
         <div class="agent-card__status" :class="`agent-card__status--${getStatus(agent)}`"></div>
@@ -55,12 +54,10 @@
       </div>
     </div>
 
-    <!-- Loading -->
     <div v-if="isLoading" class="agents-page__loading">
       <div class="spinner"></div>
     </div>
 
-    <!-- Join Modal -->
     <Teleport to="body">
       <div v-if="showJoinModal" class="modal-overlay">
         <div class="modal modal--lg">
@@ -69,11 +66,9 @@
             <button class="modal__close" @click="showJoinModal = false">✕</button>
           </div>
           <div class="modal__body">
-            <!-- Platform tabs -->
             <div class="join-tabs">
               <button v-for="p in platforms" :key="p.id" class="join-tab" :class="{ active: selectedPlatform === p.id }" @click="selectedPlatform = p.id">{{ p.label }}</button>
             </div>
-            <!-- Command block -->
             <div class="join-command">
               <code>{{ getCurrentCommand() }}</code>
               <button class="btn btn-primary btn-sm" @click="copyCommand">复制</button>
@@ -86,7 +81,6 @@
       </div>
     </Teleport>
 
-    <!-- Rename Modal -->
     <Teleport to="body">
       <div v-if="renamingAgent" class="modal-overlay" @click.self="renamingAgent = null">
         <div class="modal">
@@ -105,13 +99,12 @@
       </div>
     </Teleport>
 
-    <!-- Delete Modal -->
     <Teleport to="body">
       <div v-if="deletingAgent" class="modal-overlay" @click.self="deletingAgent = null">
         <div class="modal">
           <div class="modal__header">确认删除</div>
           <div class="modal__body">
-            <p>确定删除节点 <strong>{{ deletingAgent.name }}</strong>？此操作无法撤销。</p>
+            <p>确定删除节点 <strong>{{ deletingAgent.name }}</strong> 吗？此操作无法撤销。</p>
           </div>
           <div class="modal__footer">
             <button class="btn btn-secondary" @click="deletingAgent = null">取消</button>
@@ -133,7 +126,7 @@ import { useAgent } from '../context/AgentContext'
 const router = useRouter()
 const { selectedAgentId } = useAgent()
 
-const { data, isLoading, refetch: loadAgents } = useAgents()
+const { data, isLoading } = useAgents()
 const renameAgent = useRenameAgent()
 const deleteAgent = useDeleteAgent()
 const agents = computed(() => data.value ?? [])
@@ -155,7 +148,6 @@ async function handleApply() {
   }
 }
 
-// Fetch system info for join command
 const systemInfo = ref(null)
 fetchSystemInfo().then(info => { systemInfo.value = info }).catch(() => {})
 
@@ -164,16 +156,16 @@ const joinCommands = computed(() => {
   const token = systemInfo.value?.master_register_token || 'YOUR_TOKEN'
   const base = `${origin}/panel-api`
   return {
-    linux: `curl -fsSL ${base}/public/join-agent.sh | bash -s -- --register-token ${token} --install-systemd`,
-    macos: `curl -fsSL ${base}/public/join-agent.sh | bash -s -- --register-token ${token} --install-launchd`,
-    windows: '请使用 WSL2 环境安装'
+    linux: `curl -fsSL ${base}/public/join-agent.sh | sh -s -- --register-token ${token} --install-systemd`,
+    macos: `curl -fsSL ${base}/public/join-agent.sh | sh -s -- --register-token ${token} --install-launchd`,
+    windows: 'Windows 目前请参考 README 手工安装 Go agent 并完成注册'
   }
 })
 
 const platforms = computed(() => [
-  { id: 'linux', label: 'Linux', command: joinCommands.value.linux, steps: ['在目标主机上以 root 执行', '脚本自动安装 Node.js、Nginx、light-agent', '注册 systemd 开机自启服务', '节点自动出现在列表'] },
-  { id: 'macos', label: 'macOS', command: joinCommands.value.macos, steps: ['以非 root 用户执行（避免 Homebrew 权限问题）', '脚本安装 Homebrew、Node.js、Nginx', '注册 launchd 开机自启'] },
-  { id: 'windows', label: 'Windows', command: joinCommands.value.windows, steps: ['需要 WSL2 环境', '在 PowerShell 中执行 WSL 命令安装'] }
+  { id: 'linux', label: 'Linux', command: joinCommands.value.linux, steps: ['在目标主机上执行命令', '脚本会下载 Go nre-agent 二进制', '自动注册并安装 systemd 服务', '节点上线后会出现在列表中'] },
+  { id: 'macos', label: 'macOS', command: joinCommands.value.macos, steps: ['在目标主机上执行命令', '脚本会下载 Go nre-agent 二进制', '自动注册并安装 launchd 服务'] },
+  { id: 'windows', label: 'Windows', command: joinCommands.value.windows, steps: ['准备单独构建或发布的 nre-agent.exe', '获取控制面的 register token 或已生成的 agent_token', '在 Windows 服务或计划任务中启动 agent 并确保可访问控制面'] }
 ])
 
 const onlineCount = computed(() => agents.value.filter(a => a.status === 'online').length)
@@ -306,7 +298,6 @@ function confirmDelete() {
 .agent-card__stats { display: flex; align-items: center; gap: 0.75rem; margin-top: 0.375rem; }
 .agent-card__stat { display: flex; align-items: center; gap: 0.25rem; font-size: 0.75rem; color: var(--color-text-tertiary); }
 .agent-card__last-seen { font-size: 0.75rem; color: var(--color-text-muted); margin-left: auto; }
-/* Modals */
 .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); backdrop-filter: blur(4px); z-index: var(--z-modal); display: flex; align-items: center; justify-content: center; }
 .modal { background: var(--color-bg-surface); border: 1.5px solid var(--color-border-default); border-radius: var(--radius-2xl); box-shadow: var(--shadow-xl); width: min(500px, 90vw); overflow: hidden; }
 .modal--lg { width: min(640px, 92vw); }
@@ -314,7 +305,6 @@ function confirmDelete() {
 .modal__close { background: none; border: none; font-size: 1rem; cursor: pointer; color: var(--color-text-muted); }
 .modal__body { padding: 1.5rem; display: flex; flex-direction: column; gap: 1.25rem; }
 .modal__footer { padding: 1rem 1.5rem; display: flex; justify-content: flex-end; gap: 0.75rem; border-top: 1px solid var(--color-border-subtle); }
-/* Join modal */
 .join-tabs { display: flex; gap: 0.5rem; }
 .join-tab { flex: 1; padding: 0.5rem; border: none; border-radius: var(--radius-lg); background: var(--color-bg-subtle); color: var(--color-text-secondary); font-size: 0.875rem; cursor: pointer; transition: all 0.15s; font-family: inherit; }
 .join-tab.active { background: var(--color-primary); color: white; }

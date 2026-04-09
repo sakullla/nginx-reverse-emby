@@ -41,6 +41,7 @@ const ruleArb = fc.record({
   enabled: fc.boolean(),
   tags: fc.array(safeString, { maxLength: 5 }),
   proxy_redirect: fc.boolean(),
+  relay_chain: fc.uniqueArray(fc.integer({ min: 1, max: 50 }), { maxLength: 4 }),
   pass_proxy_headers: fc.boolean(),
   user_agent: safeString,
   custom_headers: fc.array(customHeaderArb, { maxLength: 4 }),
@@ -63,9 +64,15 @@ const l4RuleArb = fc.record({
     { maxLength: 3 }
   ),
   load_balancing: fc.record({
-    method: fc.constantFrom("round_robin", "least_conn", "ip_hash"),
+    strategy: fc.constantFrom("round_robin", "random"),
   }),
-  tuning: fc.record({ timeout: fc.integer({ min: 1, max: 300 }) }),
+  tuning: fc.record({
+    proxy_protocol: fc.record({
+      decode: fc.boolean(),
+      send: fc.boolean(),
+    }),
+  }),
+  relay_chain: fc.uniqueArray(fc.integer({ min: 1, max: 50 }), { maxLength: 4 }),
   enabled: fc.boolean(),
   tags: fc.array(safeString, { maxLength: 5 }),
   revision: fc.integer({ min: 1, max: 1000 }),
@@ -77,6 +84,7 @@ const agentArb = fc.record({
   agent_url: fc.webUrl(),
   agent_token: nonEmptyString,
   version: nonEmptyString,
+  desired_version: safeString,
   tags: fc.array(safeString, { maxLength: 5 }),
   capabilities: fc.array(safeString, { maxLength: 5 }),
   mode: fc.constantFrom("pull", "push"),
@@ -122,6 +130,9 @@ const certArb = fc.record({
   material_hash: nonEmptyString,
   agent_reports: fc.constant({}),
   acme_info: fc.constant({}),
+  usage: fc.constantFrom("https", "relay_tunnel", "relay_ca", "mixed"),
+  certificate_type: fc.constantFrom("acme", "uploaded", "internal_ca"),
+  self_signed: fc.boolean(),
   tags: fc.array(safeString, { maxLength: 5 }),
   revision: fc.integer({ min: 1, max: 1000 }),
 });
@@ -132,6 +143,7 @@ const localStateArb = fc.record({
   last_apply_revision: fc.integer({ min: 1, max: 1000 }),
   last_apply_status: fc.constantFrom("success", "error"),
   last_apply_message: nonEmptyString,
+  desired_version: safeString,
 });
 
 // ---------------------------------------------------------------------------
@@ -164,6 +176,29 @@ function sortById(arr) {
   return [...arr].sort((a, b) => {
     if (typeof a.id === "string") return a.id.localeCompare(b.id);
     return a.id - b.id;
+  });
+}
+
+function normalizeHttpRuleShape(rows) {
+  return rows.map((row) => {
+    if (!row || typeof row !== "object" || typeof row.backend_url !== "string") {
+      return row;
+    }
+    const backends =
+      Array.isArray(row.backends) && row.backends.length > 0
+        ? row.backends.map((backend) => ({ url: String(backend?.url || "") }))
+        : [{ url: row.backend_url }];
+    const strategy = String(row?.load_balancing?.strategy || "round_robin")
+      .trim()
+      .toLowerCase();
+    return {
+      ...row,
+      backend_url: backends[0]?.url || row.backend_url,
+      backends,
+      load_balancing: {
+        strategy: strategy === "random" ? "random" : "round_robin",
+      },
+    };
   });
 }
 
@@ -200,6 +235,7 @@ function assertLocalStateEquivalent(sqliteResult, jsonResult) {
     "last_apply_revision",
     "last_apply_status",
     "last_apply_message",
+    "desired_version",
   ];
   const s = {};
   const j = {};
@@ -217,18 +253,21 @@ function assertLocalStateEquivalent(sqliteResult, jsonResult) {
 describe("Property 4: Backend compatibility (semantic consistency)", { skip: !canRunSqlite && "Prisma-backed SQLite adapter not available" }, () => {
   let sqliteStorage;
   let jsonStorage;
+  let sqliteTmpDir;
   let jsonTmpDir;
 
   beforeEach(() => {
+    sqliteTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "compat-sqlite-"));
     jsonTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "compat-json-"));
 
-    sqliteStorage = loadFreshStorage("../storage-sqlite", SQLITE_TARGET);
+    sqliteStorage = loadFreshStorage("../storage-sqlite", sqliteTmpDir);
     jsonStorage = loadFreshStorage("../storage-json", jsonTmpDir);
   });
 
   afterEach(() => {
     closeQuietly(sqliteStorage);
     closeQuietly(jsonStorage);
+    try { fs.rmSync(sqliteTmpDir, { recursive: true, force: true }); } catch (_) { /* ignore */ }
     try { fs.rmSync(jsonTmpDir, { recursive: true, force: true }); } catch (_) { /* ignore */ }
   });
 
@@ -268,7 +307,11 @@ describe("Property 4: Backend compatibility (semantic consistency)", { skip: !ca
           const jsonResult = jsonStorage.loadRulesForAgent(agentId);
 
           // SQLite adds agent_id to each row; JSON does not
-          assertEquivalent(sqliteResult, jsonResult, { stripAgentId: true });
+          assertEquivalent(
+            normalizeHttpRuleShape(sqliteResult),
+            normalizeHttpRuleShape(jsonResult),
+            { stripAgentId: true },
+          );
         }
       ),
       { numRuns: NUM_RUNS }
@@ -370,9 +413,9 @@ describe("Property 4: Backend compatibility (semantic consistency)", { skip: !ca
             jsonStorage.loadRegisteredAgents()
           );
           assertEquivalent(
-            sqliteStorage.loadRulesForAgent(agentId),
-            jsonStorage.loadRulesForAgent(agentId),
-            { stripAgentId: true }
+            normalizeHttpRuleShape(sqliteStorage.loadRulesForAgent(agentId)),
+            normalizeHttpRuleShape(jsonStorage.loadRulesForAgent(agentId)),
+            { stripAgentId: true },
           );
           assertEquivalent(
             sqliteStorage.loadL4RulesForAgent(agentId),
@@ -391,5 +434,55 @@ describe("Property 4: Backend compatibility (semantic consistency)", { skip: !ca
       ),
       { numRuns: NUM_RUNS }
     );
+  });
+
+  it("HTTP rules with backends and legacy mirrors are semantically equivalent across JSON and Prisma core", async () => {
+    const agentId = "compat-http-multi-backend";
+    const prismaTmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "compat-prisma-http-"));
+    const prismaCore = loadFreshStorage("../storage-prisma-core");
+    const payload = [
+      {
+        id: 11,
+        frontend_url: "https://frontend-11.example.com",
+        backend_url: "http://legacy-ignored.example.internal:9000",
+        backends: [
+          { url: "http://backend-11a.example.internal:8080" },
+          { url: "http://backend-11b.example.internal:8080" },
+        ],
+        load_balancing: { strategy: "RaNdOm" },
+        enabled: true,
+        tags: [],
+        proxy_redirect: true,
+        pass_proxy_headers: true,
+        user_agent: "",
+        custom_headers: [],
+        revision: 11,
+      },
+      {
+        id: 12,
+        frontend_url: "https://frontend-12.example.com",
+        backend_url: "http://legacy-only.example.internal:8096",
+        enabled: true,
+        tags: [],
+        proxy_redirect: true,
+        pass_proxy_headers: true,
+        user_agent: "",
+        custom_headers: [],
+        revision: 12,
+      },
+    ];
+
+    try {
+      jsonStorage.saveRulesForAgent(agentId, payload);
+      await prismaCore.saveRulesForAgent(prismaTmpDir, agentId, payload);
+      const prismaSnapshot = await prismaCore.loadSnapshot(prismaTmpDir);
+      const sqliteLikeResult = prismaSnapshot.rulesByAgent[agentId] || [];
+      const jsonResult = jsonStorage.loadRulesForAgent(agentId);
+
+      assertEquivalent(sqliteLikeResult, jsonResult, { stripAgentId: true });
+    } finally {
+      await prismaCore.closeClient();
+      try { fs.rmSync(prismaTmpDir, { recursive: true, force: true }); } catch (_) { /* ignore */ }
+    }
   });
 });

@@ -12,6 +12,8 @@ model Agent {
   agentUrl          String  @default("") @map("agent_url")
   agentToken        String  @default("") @map("agent_token")
   version           String  @default("")
+  platform          String  @default("")
+  desiredVersion    String  @default("") @map("desired_version")
   tags              String  @default("[]")
   capabilities      String  @default("[]")
   mode              String  @default("pull")
@@ -36,9 +38,12 @@ model Rule {
   agentId          String  @map("agent_id")
   frontendUrl      String  @map("frontend_url")
   backendUrl       String  @map("backend_url")
+  backends         String  @default("[]")
+  loadBalancing    String  @default("{}") @map("load_balancing")
   enabled          Boolean @default(true)
   tags             String  @default("[]")
   proxyRedirect    Boolean @default(true) @map("proxy_redirect")
+  relayChain       String  @default("[]") @map("relay_chain")
   passProxyHeaders Boolean @default(true) @map("pass_proxy_headers")
   userAgent        String  @default("") @map("user_agent")
   customHeaders    String  @default("[]") @map("custom_headers")
@@ -61,6 +66,7 @@ model L4Rule {
   backends      String  @default("[]")
   loadBalancing String  @default("{}") @map("load_balancing")
   tuning        String  @default("{}")
+  relayChain    String  @default("[]") @map("relay_chain")
   enabled       Boolean @default(true)
   tags          String  @default("[]")
   revision      Int     @default(0)
@@ -83,10 +89,35 @@ model ManagedCertificate {
   materialHash   String  @default("") @map("material_hash")
   agentReports   String  @default("{}") @map("agent_reports")
   acmeInfo       String  @default("{}") @map("acme_info")
+  usage          String  @default("https")
+  certificateType String @default("acme") @map("certificate_type")
+  selfSigned     Boolean @default(false) @map("self_signed")
   tags           String  @default("[]")
   revision       Int     @default(0)
 
   @@map("managed_certificates")
+}
+
+model RelayListener {
+  id                      Int     @id
+  agentId                 String  @map("agent_id")
+  name                    String  @default("")
+  bindHosts               String  @default("[]") @map("bind_hosts")
+  listenHost              String  @default("0.0.0.0") @map("listen_host")
+  listenPort              Int     @map("listen_port")
+  publicHost              String? @map("public_host")
+  publicPort              Int?    @map("public_port")
+  enabled                 Boolean @default(true)
+  certificateId           Int?    @map("certificate_id")
+  tlsMode                 String  @default("pin_or_ca") @map("tls_mode")
+  pinSet                  String  @default("[]") @map("pin_set")
+  trustedCaCertificateIds String  @default("[]") @map("trusted_ca_certificate_ids")
+  allowSelfSigned         Boolean @default(false) @map("allow_self_signed")
+  tags                    String  @default("[]")
+  revision                Int     @default(0)
+
+  @@index([agentId], map: "idx_relay_listeners_agent")
+  @@map("relay_listeners")
 }
 
 model LocalAgentState {
@@ -96,8 +127,19 @@ model LocalAgentState {
   lastApplyRevision Int    @default(0) @map("last_apply_revision")
   lastApplyStatus   String @default("success") @map("last_apply_status")
   lastApplyMessage  String @default("") @map("last_apply_message")
+  desiredVersion    String @default("") @map("desired_version")
 
   @@map("local_agent_state")
+}
+
+model VersionPolicy {
+  id             String @id
+  channel        String @default("stable")
+  desiredVersion String @default("") @map("desired_version")
+  packages       String @default("[]")
+  tags           String @default("[]")
+
+  @@map("version_policy")
 }
 
 model Meta {

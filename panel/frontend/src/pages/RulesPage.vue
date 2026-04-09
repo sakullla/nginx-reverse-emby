@@ -97,7 +97,9 @@
             <span class="rule-card__url-icon">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/><path d="M12 5l7 7-7 7"/></svg>
             </span>
-            <code class="rule-card__backend">{{ rule.backend_url }}</code>
+            <code class="rule-card__backend" :title="httpBackendsTooltip(rule)">
+              {{ formatHttpBackend(rule) }}
+            </code>
           </div>
         </div>
         <div v-if="hasRequestHeaderIndicators(rule)" class="rule-card__meta-badges">
@@ -204,6 +206,26 @@ const searchQuery = ref('')
 const searchInputRef = ref(null)
 function focusSearch() { searchInputRef.value?.focus() }
 
+function httpBackends(rule) {
+  if (Array.isArray(rule?.backends) && rule.backends.length > 0) {
+    return rule.backends
+      .map((backend) => String(backend?.url || '').trim())
+      .filter(Boolean)
+  }
+  return rule?.backend_url ? [String(rule.backend_url).trim()] : []
+}
+
+function formatHttpBackend(rule) {
+  const backends = httpBackends(rule)
+  if (backends.length === 0) return '-'
+  if (backends.length === 1) return backends[0]
+  return `${backends[0]} +${backends.length - 1}`
+}
+
+function httpBackendsTooltip(rule) {
+  return httpBackends(rule).join('\n')
+}
+
 // Pre-fill search from global search navigation; reset when param is cleared
 watchEffect(() => {
   searchQuery.value = route.query.search ?? ''
@@ -218,6 +240,7 @@ const filteredRules = computed(() => {
   return rules.value.filter(rule =>
     String(rule.frontend_url || '').toLowerCase().includes(q) ||
     String(rule.backend_url || '').toLowerCase().includes(q) ||
+    httpBackends(rule).some((backend) => backend.toLowerCase().includes(q)) ||
     String(rule.name || '').toLowerCase().includes(q) ||
     (rule.tags || []).some(tag => String(tag).toLowerCase().includes(q))
   )
@@ -409,12 +432,63 @@ function confirmDelete() {
 /* Modals — same as L4 style */
 .modal-overlay { position: fixed; inset: 0; background: rgba(37,23,54,0.4); backdrop-filter: blur(8px); z-index: var(--z-modal); display: flex; align-items: center; justify-content: center; padding: var(--space-4); }
 .modal { background: var(--color-bg-surface); border: 1.5px solid var(--color-border-default); border-radius: var(--radius-3xl); box-shadow: var(--shadow-2xl); width: min(480px, 90vw); max-height: calc(100vh - var(--space-8)); display: flex; flex-direction: column; overflow: hidden; }
-.modal--large { width: min(600px, 92vw); }
-.modal__header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); padding: var(--space-5) var(--space-6); border-bottom: 1px solid var(--color-border-subtle); flex-shrink: 0; background: var(--gradient-soft); font-weight: 600; font-size: var(--text-lg); color: var(--color-text-primary); }
-.modal__body { padding: var(--space-6); overflow-x: hidden; overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: var(--space-5); }
-.modal__footer { padding: var(--space-4) var(--space-6); display: flex; justify-content: flex-end; gap: var(--space-3); border-top: 1px solid var(--color-border-subtle); flex-shrink: 0; }
-.modal__close { display: flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: var(--radius-full); color: var(--color-text-tertiary); transition: all var(--duration-normal) var(--ease-bounce); flex-shrink: 0; border: none; background: transparent; cursor: pointer; }
+.modal--large { width: min(560px, 92vw); max-height: min(860px, calc(100vh - 40px)); }
+.modal__header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); padding: var(--space-4) var(--space-5); border-bottom: 1px solid var(--color-border-subtle); flex-shrink: 0; background: var(--gradient-soft); font-weight: 600; font-size: var(--text-base); color: var(--color-text-primary); }
+.modal__body { padding: var(--space-4) var(--space-5); overflow-x: hidden; overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: var(--space-4); }
+.modal__footer { padding: var(--space-4) var(--space-5); display: flex; justify-content: flex-end; gap: var(--space-3); border-top: 1px solid var(--color-border-subtle); flex-shrink: 0; }
+.modal__close { display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: var(--radius-full); color: var(--color-text-tertiary); transition: all var(--duration-normal) var(--ease-bounce); flex-shrink: 0; border: none; background: transparent; cursor: pointer; }
 .modal__close:hover { background: var(--color-danger-50); color: var(--color-danger); transform: rotate(90deg); }
+
+/* 1080p 屏幕优化 - 避免滚动条 */
+@media (min-height: 900px) and (min-width: 1200px) {
+  .modal--large {
+    width: 560px;
+    max-height: 820px;
+  }
+  .modal--large .modal__body {
+    overflow-y: visible;
+  }
+}
+
+/* iPhone 适配 */
+@media (max-width: 414px) {
+  .modal-overlay {
+    padding: var(--space-2);
+    align-items: flex-end;
+  }
+  .modal--large {
+    width: 100%;
+    max-height: calc(100vh - var(--space-4));
+    border-radius: var(--radius-2xl) var(--radius-2xl) 0 0;
+  }
+  .modal__header {
+    padding: var(--space-3) var(--space-4);
+    font-size: var(--text-sm);
+  }
+  .modal__body {
+    padding: var(--space-3) var(--space-4);
+    gap: var(--space-3);
+  }
+}
+
+/* iPhone SE 等小屏幕 */
+@media (max-width: 375px) and (max-height: 812px) {
+  .modal-overlay {
+    padding: 0;
+  }
+  .modal--large {
+    width: 100%;
+    height: 100%;
+    max-height: 100vh;
+    border-radius: 0;
+  }
+  .modal__header {
+    padding: var(--space-3) var(--space-4);
+  }
+  .modal__body {
+    padding: var(--space-3);
+  }
+}
 .btn { padding: 0.5rem 1rem; border-radius: var(--radius-lg); font-size: 0.875rem; font-weight: 500; cursor: pointer; transition: all 0.15s; border: none; font-family: inherit; display: inline-flex; align-items: center; gap: 0.375rem; }
 .btn-primary { background: var(--gradient-primary); color: white; }
 .btn-secondary { background: var(--color-bg-subtle); color: var(--color-text-primary); border: 1px solid var(--color-border-default); }

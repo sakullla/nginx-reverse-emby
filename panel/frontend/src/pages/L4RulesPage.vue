@@ -163,6 +163,24 @@ watchEffect(() => {
   searchQuery.value = route.query.search ?? ''
 })
 
+function l4BackendAddresses(rule) {
+  if (Array.isArray(rule?.backends) && rule.backends.length > 0) {
+    return rule.backends
+      .map((backend) => {
+        const host = String(backend?.host || '').trim()
+        const port = Number(backend?.port)
+        return host && Number.isInteger(port) && port > 0 ? `${host}:${port}` : ''
+      })
+      .filter(Boolean)
+  }
+
+  if (rule?.upstream_host && rule?.upstream_port) {
+    return [`${rule.upstream_host}:${rule.upstream_port}`]
+  }
+
+  return []
+}
+
 const filteredRules = computed(() => {
   const raw = searchQuery.value.trim()
   if (!raw) return rules.value
@@ -173,6 +191,7 @@ const filteredRules = computed(() => {
     String(rule.protocol || '').toLowerCase().includes(q) ||
     String(rule.listen_host || '').toLowerCase().includes(q) ||
     String(rule.upstream_host || '').toLowerCase().includes(q) ||
+    l4BackendAddresses(rule).some((address) => address.toLowerCase().includes(q)) ||
     String(rule.listen_port || '').includes(q) ||
     (rule.tags || []).some(tag => String(tag).toLowerCase().includes(q))
   )

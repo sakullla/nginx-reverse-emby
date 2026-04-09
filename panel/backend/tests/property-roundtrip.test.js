@@ -18,6 +18,7 @@ const {
   closeQuietly,
   dedupById,
   getNumRuns,
+  withBackendServer,
 } = require("./helpers");
 
 const NUM_RUNS = getNumRuns("roundtrip", 25);
@@ -34,6 +35,7 @@ const ruleArb = fc.record({
   enabled: fc.boolean(),
   tags: fc.array(safeString, { maxLength: 5 }),
   proxy_redirect: fc.boolean(),
+  relay_chain: fc.uniqueArray(fc.integer({ min: 1, max: 50 }), { maxLength: 4 }),
   pass_proxy_headers: fc.boolean(),
   user_agent: safeString,
   custom_headers: fc.array(customHeaderArb, { maxLength: 4 }),
@@ -59,6 +61,7 @@ const l4RuleArb = fc.record({
     method: fc.constantFrom("round_robin", "least_conn", "ip_hash"),
   }),
   tuning: fc.record({ timeout: fc.integer({ min: 0, max: 300 }) }),
+  relay_chain: fc.uniqueArray(fc.integer({ min: 1, max: 50 }), { maxLength: 4 }),
   enabled: fc.boolean(),
   tags: fc.array(safeString, { maxLength: 5 }),
   revision: fc.integer({ min: 0, max: 1000 }),
@@ -70,6 +73,8 @@ const agentArb = fc.record({
   agent_url: fc.webUrl(),
   agent_token: safeString,
   version: safeString,
+  platform: safeString,
+  desired_version: safeString,
   tags: fc.array(safeString, { maxLength: 5 }),
   capabilities: fc.array(safeString, { maxLength: 5 }),
   mode: fc.constantFrom("pull", "push"),
@@ -115,6 +120,9 @@ const certArb = fc.record({
   material_hash: safeString,
   agent_reports: fc.constant({}),
   acme_info: fc.constant({}),
+  usage: fc.constantFrom("https", "relay_tunnel", "relay_ca", "mixed"),
+  certificate_type: fc.constantFrom("acme", "uploaded", "internal_ca"),
+  self_signed: fc.boolean(),
   tags: fc.array(safeString, { maxLength: 5 }),
   revision: fc.integer({ min: 0, max: 1000 }),
 });
@@ -125,6 +133,7 @@ const localStateArb = fc.record({
   last_apply_revision: fc.integer({ min: 0, max: 1000 }),
   last_apply_status: fc.constantFrom("success", "error"),
   last_apply_message: safeString,
+  desired_version: safeString,
 });
 
 // ---------------------------------------------------------------------------
@@ -168,14 +177,25 @@ function sanitizeStoredCustomHeaders(value) {
  * Mirrors the transformations in saveRulesForAgent + loadRulesForAgent.
  */
 function expectedRule(r, agentId) {
+  const backends = Array.isArray(r.backends) && r.backends.length > 0
+    ? r.backends
+      .map((backend) => ({ url: String(backend?.url || "") }))
+      .filter((backend) => backend.url.length > 0)
+    : [{ url: r.backend_url }];
+  const strategy = String(r?.load_balancing?.strategy || "round_robin").trim().toLowerCase();
   return {
     id: r.id,
     agent_id: agentId,
     frontend_url: r.frontend_url,
-    backend_url: r.backend_url,
+    backend_url: backends[0]?.url || r.backend_url,
+    backends,
+    load_balancing: {
+      strategy: strategy === "random" ? "random" : "round_robin",
+    },
     enabled: !!r.enabled,
     tags: r.tags || [],
     proxy_redirect: !!r.proxy_redirect,
+    relay_chain: Array.isArray(r.relay_chain) ? [...r.relay_chain] : [],
     pass_proxy_headers: r.pass_proxy_headers !== false,
     user_agent: r.user_agent || "",
     custom_headers: sanitizeStoredCustomHeaders(r.custom_headers),
@@ -196,6 +216,7 @@ function expectedL4Rule(r, agentId) {
     backends: r.backends || [],
     load_balancing: r.load_balancing || {},
     tuning: r.tuning || {},
+    relay_chain: Array.isArray(r.relay_chain) ? [...r.relay_chain] : [],
     enabled: !!r.enabled,
     tags: r.tags || [],
     revision: normInt(r.revision),
@@ -209,6 +230,8 @@ function expectedAgent(a) {
     agent_url: normStr(a.agent_url),
     agent_token: normStr(a.agent_token),
     version: normStr(a.version),
+    platform: normStr(a.platform),
+    desired_version: normStr(a.desired_version),
     tags: a.tags || [],
     capabilities: a.capabilities || [],
     mode: normStr(a.mode) || "pull",
@@ -241,6 +264,9 @@ function expectedCert(c) {
     material_hash: normStr(c.material_hash),
     agent_reports: c.agent_reports || {},
     acme_info: c.acme_info || {},
+    usage: normStr(c.usage) || "https",
+    certificate_type: normStr(c.certificate_type) || "acme",
+    self_signed: !!c.self_signed,
     tags: c.tags || [],
     revision: normInt(c.revision),
   };
@@ -253,6 +279,7 @@ function expectedLocalState(s) {
     last_apply_revision: normInt(s.last_apply_revision),
     last_apply_status: normStr(s.last_apply_status) || "success",
     last_apply_message: normStr(s.last_apply_message),
+    desired_version: normStr(s.desired_version),
   };
 }
 
@@ -402,9 +429,12 @@ describe("Property 1: Data round-trip consistency", { skip: !canRunSqlite && "Pr
           agent_id: "legacy-agent",
           frontend_url: "http://legacy.frontend",
           backend_url: "http://legacy.backend",
+          backends: [{ url: "http://legacy.backend" }],
+          load_balancing: { strategy: "round_robin" },
           enabled: true,
           tags: [],
           proxy_redirect: true,
+          relay_chain: [],
           pass_proxy_headers: true,
           user_agent: "",
           custom_headers: [],
@@ -419,6 +449,7 @@ describe("Property 1: Data round-trip consistency", { skip: !canRunSqlite && "Pr
         enabled: true,
         tags: [],
         proxy_redirect: true,
+        relay_chain: [],
         pass_proxy_headers: false,
         user_agent: "LegacyAgent/1.0",
         custom_headers: [{ name: "X-Test", value: "migrated" }],
@@ -432,9 +463,12 @@ describe("Property 1: Data round-trip consistency", { skip: !canRunSqlite && "Pr
           agent_id: "legacy-agent",
           frontend_url: "http://legacy.frontend",
           backend_url: "http://legacy.backend",
+          backends: [{ url: "http://legacy.backend" }],
+          load_balancing: { strategy: "round_robin" },
           enabled: true,
           tags: [],
           proxy_redirect: true,
+          relay_chain: [],
           pass_proxy_headers: false,
           user_agent: "LegacyAgent/1.0",
           custom_headers: [{ name: "X-Test", value: "migrated" }],
@@ -522,5 +556,960 @@ describe("Property 1: Data round-trip consistency", { skip: !canRunSqlite && "Pr
       closeQuietly(restartedStorage);
       try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) { /* ignore */ }
     }
+  });
+
+  it("HTTP rules: JSON and Prisma storage round-trip backends and legacy backend_url mirror", async () => {
+    const agentId = "http-multi-backend-agent";
+    const jsonDir = fs.mkdtempSync(path.join(os.tmpdir(), "http-rules-json-"));
+    const prismaDir = fs.mkdtempSync(path.join(os.tmpdir(), "http-rules-prisma-"));
+    const jsonStorage = loadFreshStorage("../storage-json", jsonDir);
+    const prismaCore = loadFreshStorage("../storage-prisma-core");
+
+    try {
+      const multiBackendRule = {
+        id: 1,
+        frontend_url: "https://frontend.example.com",
+        backend_url: "http://legacy-ignored.example.internal:9000",
+        backends: [
+          { url: "http://backend-a.example.internal:8080" },
+          { url: "http://backend-b.example.internal:8080" },
+        ],
+        load_balancing: { strategy: "RANDOM" },
+        enabled: true,
+        tags: [],
+        proxy_redirect: true,
+        pass_proxy_headers: true,
+        user_agent: "",
+        custom_headers: [],
+        revision: 3,
+      };
+      const legacyRule = {
+        id: 2,
+        frontend_url: "https://frontend-legacy.example.com",
+        backend_url: "http://legacy-only.example.internal:8096",
+        enabled: true,
+        tags: [],
+        proxy_redirect: true,
+        pass_proxy_headers: true,
+        user_agent: "",
+        custom_headers: [],
+        revision: 4,
+      };
+
+      jsonStorage.saveRulesForAgent(agentId, [multiBackendRule, legacyRule]);
+      const jsonLoaded = jsonStorage.loadRulesForAgent(agentId);
+      assert.deepStrictEqual(
+        jsonLoaded.map((rule) => ({
+          id: rule.id,
+          backend_url: rule.backend_url,
+          backends: rule.backends,
+          load_balancing: rule.load_balancing,
+        })),
+        [
+          {
+            id: 1,
+            backend_url: "http://backend-a.example.internal:8080",
+            backends: [
+              { url: "http://backend-a.example.internal:8080" },
+              { url: "http://backend-b.example.internal:8080" },
+            ],
+            load_balancing: { strategy: "random" },
+          },
+          {
+            id: 2,
+            backend_url: "http://legacy-only.example.internal:8096",
+            backends: [{ url: "http://legacy-only.example.internal:8096" }],
+            load_balancing: { strategy: "round_robin" },
+          },
+        ],
+      );
+
+      await prismaCore.saveRulesForAgent(prismaDir, agentId, [multiBackendRule, legacyRule]);
+      const snapshot = await prismaCore.loadSnapshot(prismaDir);
+      const prismaLoaded = snapshot.rulesByAgent[agentId] || [];
+      assert.deepStrictEqual(
+        prismaLoaded.map((rule) => ({
+          id: rule.id,
+          backend_url: rule.backend_url,
+          backends: rule.backends,
+          load_balancing: rule.load_balancing,
+        })),
+        [
+          {
+            id: 1,
+            backend_url: "http://backend-a.example.internal:8080",
+            backends: [
+              { url: "http://backend-a.example.internal:8080" },
+              { url: "http://backend-b.example.internal:8080" },
+            ],
+            load_balancing: { strategy: "random" },
+          },
+          {
+            id: 2,
+            backend_url: "http://legacy-only.example.internal:8096",
+            backends: [{ url: "http://legacy-only.example.internal:8096" }],
+            load_balancing: { strategy: "round_robin" },
+          },
+        ],
+      );
+    } finally {
+      closeQuietly(jsonStorage);
+      await prismaCore.closeClient();
+      try { fs.rmSync(jsonDir, { recursive: true, force: true }); } catch (_) { /* ignore */ }
+      try { fs.rmSync(prismaDir, { recursive: true, force: true }); } catch (_) { /* ignore */ }
+    }
+  });
+
+  it("storage-sqlite wrapper preserves HTTP backends/load_balancing on immediate reads", () => {
+    const agentId = "sqlite-wrapper-http-backends";
+    const rule = {
+      id: 1,
+      frontend_url: "https://frontend.wrapper.example.com",
+      backend_url: "http://legacy-ignored.wrapper.internal:9000",
+      backends: [
+        { url: "http://backend-1.wrapper.internal:8080" },
+        { url: "http://backend-2.wrapper.internal:8080" },
+      ],
+      load_balancing: { strategy: "random" },
+      enabled: true,
+      tags: [],
+      proxy_redirect: true,
+      pass_proxy_headers: true,
+      user_agent: "",
+      custom_headers: [],
+      revision: 9,
+    };
+
+    storage.saveRulesForAgent(agentId, [rule]);
+    const loaded = storage.loadRulesForAgent(agentId);
+    assert.equal(loaded.length, 1);
+    assert.deepStrictEqual(loaded[0].backends, [
+      { url: "http://backend-1.wrapper.internal:8080" },
+      { url: "http://backend-2.wrapper.internal:8080" },
+    ]);
+    assert.deepStrictEqual(loaded[0].load_balancing, { strategy: "random" });
+    assert.equal(loaded[0].backend_url, "http://backend-1.wrapper.internal:8080");
+  });
+
+  it("HTTP API handles explicit backends: [] intentionally", async () => {
+    await withBackendServer({ env: { PANEL_AUTO_APPLY: "0" } }, async ({ baseUrl }) => {
+      const createResponse = await fetch(`${baseUrl}/api/rules`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          frontend_url: "https://frontend.empty-array.example.com",
+          backend_url: "http://legacy-create.example.internal:8096",
+          backends: [],
+          enabled: true,
+          tags: [],
+          proxy_redirect: true,
+        }),
+      });
+      assert.equal(createResponse.status, 201);
+      const created = await createResponse.json();
+      assert.deepStrictEqual(created.rule.backends, [{ url: "http://legacy-create.example.internal:8096" }]);
+      assert.equal(created.rule.backend_url, "http://legacy-create.example.internal:8096");
+
+      const createMultiResponse = await fetch(`${baseUrl}/api/rules`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          frontend_url: "https://frontend.multi.example.com",
+          backend_url: "http://legacy-ignored.example.internal:8096",
+          backends: [
+            { url: "http://backend-a.multi.internal:8080" },
+            { url: "http://backend-b.multi.internal:8080" },
+          ],
+          load_balancing: { strategy: "random" },
+          enabled: true,
+          tags: [],
+          proxy_redirect: true,
+        }),
+      });
+      assert.equal(createMultiResponse.status, 201);
+      const createdMulti = await createMultiResponse.json();
+      const multiRuleId = createdMulti.rule.id;
+
+      const updateResponse = await fetch(`${baseUrl}/api/rules/${multiRuleId}`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          backends: [],
+          tags: ["updated"],
+        }),
+      });
+      assert.equal(updateResponse.status, 200);
+      const updated = await updateResponse.json();
+      assert.deepStrictEqual(updated.rule.backends, [
+        { url: "http://backend-a.multi.internal:8080" },
+        { url: "http://backend-b.multi.internal:8080" },
+      ]);
+      assert.equal(updated.rule.backend_url, "http://backend-a.multi.internal:8080");
+      assert.deepStrictEqual(updated.rule.load_balancing, { strategy: "random" });
+
+      const legacyUpdateResponse = await fetch(`${baseUrl}/api/rules/${multiRuleId}`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          backend_url: "http://backend-a.multi.internal:8080",
+          tags: ["legacy-update-shape"],
+        }),
+      });
+      assert.equal(legacyUpdateResponse.status, 200);
+      const legacyUpdated = await legacyUpdateResponse.json();
+      assert.deepStrictEqual(legacyUpdated.rule.backends, [
+        { url: "http://backend-a.multi.internal:8080" },
+        { url: "http://backend-b.multi.internal:8080" },
+      ]);
+      assert.equal(legacyUpdated.rule.backend_url, "http://backend-a.multi.internal:8080");
+      assert.deepStrictEqual(legacyUpdated.rule.load_balancing, { strategy: "random" });
+
+      const singleUpdateResponse = await fetch(`${baseUrl}/api/rules/1`, {
+        method: "PUT",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          backend_url: "http://legacy-create-updated.example.internal:9090",
+          tags: ["single-backend-updated"],
+        }),
+      });
+      assert.equal(singleUpdateResponse.status, 200);
+      const singleUpdated = await singleUpdateResponse.json();
+      assert.deepStrictEqual(singleUpdated.rule.backends, [
+        { url: "http://legacy-create-updated.example.internal:9090" },
+      ]);
+      assert.equal(singleUpdated.rule.backend_url, "http://legacy-create-updated.example.internal:9090");
+      assert.deepStrictEqual(singleUpdated.rule.load_balancing, { strategy: "round_robin" });
+    });
+  });
+
+  it("L4 API trims backend/load_balancing shape for runtime payload compatibility", async () => {
+    await withBackendServer(
+      {
+        env: { PANEL_ROLE: "master", PANEL_AUTO_APPLY: "0" },
+        agents: [
+          {
+            id: "l4-shape-agent",
+            name: "l4-shape-agent",
+            agent_token: "token-l4-shape-agent",
+            capabilities: ["l4"],
+            desired_revision: 1,
+            current_revision: 1,
+          },
+        ],
+      },
+      async ({ baseUrl }) => {
+        const response = await fetch(`${baseUrl}/api/agents/l4-shape-agent/l4-rules`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            name: "trim-shape",
+            protocol: "tcp",
+            listen_host: "0.0.0.0",
+            listen_port: 9100,
+            backends: [
+              {
+                host: "127.0.0.1",
+                port: 9101,
+                weight: 20,
+                resolve: false,
+                backup: true,
+                max_conns: 200,
+              },
+              {
+                host: "backend-b.internal",
+                port: 9102,
+                weight: 5,
+                resolve: true,
+              },
+            ],
+            load_balancing: {
+              strategy: "least_conn",
+              hash_key: "$remote_addr",
+              zone_size: "256k",
+            },
+            tuning: {
+              proxy_protocol: {
+                decode: true,
+                send: false,
+              },
+            },
+            enabled: true,
+            tags: [],
+          }),
+        });
+        assert.equal(response.status, 201);
+        const created = await response.json();
+        assert.deepStrictEqual(created.rule.backends, [
+          { host: "127.0.0.1", port: 9101 },
+          { host: "backend-b.internal", port: 9102 },
+        ]);
+        assert.deepStrictEqual(created.rule.load_balancing, {
+          strategy: "round_robin",
+        });
+        assert.deepStrictEqual(created.rule.tuning.proxy_protocol, {
+          decode: true,
+          send: false,
+        });
+      },
+    );
+  });
+
+  it("L4 API legacy upstream fallback normalizes to simple backend entries", async () => {
+    await withBackendServer(
+      {
+        env: { PANEL_ROLE: "master", PANEL_AUTO_APPLY: "0" },
+        agents: [
+          {
+            id: "l4-legacy-upstream-agent",
+            name: "l4-legacy-upstream-agent",
+            agent_token: "token-l4-legacy-upstream-agent",
+            capabilities: ["l4"],
+            desired_revision: 1,
+            current_revision: 1,
+          },
+        ],
+      },
+      async ({ baseUrl }) => {
+        const response = await fetch(`${baseUrl}/api/agents/l4-legacy-upstream-agent/l4-rules`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            name: "legacy-upstream-fallback",
+            protocol: "tcp",
+            listen_host: "0.0.0.0",
+            listen_port: 9300,
+            upstream_host: "legacy-upstream.internal",
+            upstream_port: 9301,
+            enabled: true,
+            tags: [],
+          }),
+        });
+        assert.equal(response.status, 201);
+        const created = await response.json();
+        assert.deepStrictEqual(created.rule.backends, [
+          { host: "legacy-upstream.internal", port: 9301 },
+        ]);
+      },
+    );
+  });
+
+  it("L4 GET API normalizes stored legacy-shaped rules on read", async () => {
+    await withBackendServer(
+      {
+        env: { PANEL_ROLE: "master", PANEL_AUTO_APPLY: "0" },
+        agents: [
+          {
+            id: "l4-get-normalize-agent",
+            name: "l4-get-normalize-agent",
+            agent_token: "token-l4-get-normalize-agent",
+            capabilities: ["l4"],
+            desired_revision: 5,
+            current_revision: 5,
+          },
+        ],
+        l4RulesByAgentId: {
+          "l4-get-normalize-agent": [
+            {
+              id: 3,
+              agent_id: "l4-get-normalize-agent",
+              name: "legacy-shaped-rule",
+              protocol: "tcp",
+              listen_host: "0.0.0.0",
+              listen_port: 9500,
+              upstream_host: "legacy-a.internal",
+              upstream_port: 9501,
+              backends: [
+                {
+                  host: "legacy-a.internal",
+                  port: 9501,
+                  weight: 12,
+                  resolve: true,
+                  backup: true,
+                  max_conns: 77,
+                },
+                {
+                  host: "legacy-b.internal",
+                  port: 9502,
+                  weight: 3,
+                },
+              ],
+              load_balancing: {
+                strategy: "least_conn",
+                hash_key: "$remote_addr",
+                zone_size: "256k",
+              },
+              tuning: {
+                proxy_protocol: {
+                  decode: true,
+                  send: false,
+                },
+              },
+              enabled: true,
+              tags: ["legacy"],
+              revision: 3,
+            },
+          ],
+        },
+      },
+      async ({ baseUrl }) => {
+        const response = await fetch(`${baseUrl}/api/agents/l4-get-normalize-agent/l4-rules`);
+        assert.equal(response.status, 200);
+        const payload = await response.json();
+        assert.equal(payload.rules.length, 1);
+        assert.deepStrictEqual(payload.rules[0].backends, [
+          { host: "legacy-a.internal", port: 9501 },
+          { host: "legacy-b.internal", port: 9502 },
+        ]);
+        assert.deepStrictEqual(payload.rules[0].load_balancing, {
+          strategy: "round_robin",
+        });
+        assert.deepStrictEqual(payload.rules[0].tuning.proxy_protocol, {
+          decode: true,
+          send: false,
+        });
+      },
+    );
+  });
+
+  it("L4 API delete returns normalized response shape for legacy stored rules", async () => {
+    await withBackendServer(
+      {
+        env: { PANEL_ROLE: "master", PANEL_AUTO_APPLY: "0" },
+        agents: [
+          {
+            id: "l4-delete-normalize-agent",
+            name: "l4-delete-normalize-agent",
+            agent_token: "token-l4-delete-normalize-agent",
+            capabilities: ["l4"],
+            desired_revision: 5,
+            current_revision: 5,
+          },
+        ],
+        l4RulesByAgentId: {
+          "l4-delete-normalize-agent": [
+            {
+              id: 6,
+              agent_id: "l4-delete-normalize-agent",
+              name: "legacy-delete-shape",
+              protocol: "tcp",
+              listen_host: "0.0.0.0",
+              listen_port: 9510,
+              backends: [
+                { host: "legacy-a.internal", port: 9511, weight: 12, backup: true, max_conns: 77 },
+                { host: "legacy-b.internal", port: 9512, weight: 3 },
+              ],
+              load_balancing: { strategy: "hash", hash_key: "$remote_addr", zone_size: "256k" },
+              tuning: { proxy_protocol: { decode: true, send: false } },
+              enabled: true,
+              tags: ["legacy"],
+              revision: 6,
+            },
+          ],
+        },
+      },
+      async ({ baseUrl }) => {
+        const response = await fetch(`${baseUrl}/api/agents/l4-delete-normalize-agent/l4-rules/6`, {
+          method: "DELETE",
+        });
+        assert.equal(response.status, 200);
+        const payload = await response.json();
+        assert.deepStrictEqual(payload.rule.backends, [
+          { host: "legacy-a.internal", port: 9511 },
+          { host: "legacy-b.internal", port: 9512 },
+        ]);
+        assert.deepStrictEqual(payload.rule.load_balancing, { strategy: "round_robin" });
+        assert.deepStrictEqual(payload.rule.tuning.proxy_protocol, {
+          decode: true,
+          send: false,
+        });
+      },
+    );
+  });
+
+  it("L4 API create and update ignore malformed stored rows skipped by normalized reads", async () => {
+    await withBackendServer(
+      {
+        env: { PANEL_ROLE: "master", PANEL_AUTO_APPLY: "0" },
+        agents: [
+          {
+            id: "l4-malformed-write-path-agent",
+            name: "l4-malformed-write-path-agent",
+            agent_token: "token-l4-malformed-write-path-agent",
+            capabilities: ["l4"],
+            desired_revision: 3,
+            current_revision: 3,
+          },
+        ],
+        l4RulesByAgentId: {
+          "l4-malformed-write-path-agent": [
+            {
+              id: 41,
+              agent_id: "l4-malformed-write-path-agent",
+              name: "visible-valid-rule",
+              protocol: "tcp",
+              listen_host: "0.0.0.0",
+              listen_port: 9001,
+              backends: [{ host: "127.0.0.1", port: 9002 }],
+              enabled: true,
+              revision: 41,
+            },
+            {
+              id: 42,
+              agent_id: "l4-malformed-write-path-agent",
+              name: "hidden-broken-rule",
+              protocol: "tcp",
+              listen_host: "0.0.0.0",
+              listen_port: 9000,
+              backends: [],
+              upstream_host: "",
+              upstream_port: 0,
+              enabled: true,
+              revision: 42,
+            },
+            {
+              id: 43,
+              agent_id: "l4-malformed-write-path-agent",
+              name: "hidden-broken-update-target",
+              protocol: "tcp",
+              listen_host: "0.0.0.0",
+              listen_port: 9005,
+              backends: [],
+              upstream_host: "",
+              upstream_port: 0,
+              enabled: true,
+              revision: 43,
+            },
+          ],
+        },
+      },
+      async ({ baseUrl }) => {
+        const createResponse = await fetch(
+          `${baseUrl}/api/agents/l4-malformed-write-path-agent/l4-rules`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              name: "replacement-for-hidden-broken-rule",
+              protocol: "tcp",
+              listen_host: "0.0.0.0",
+              listen_port: 9000,
+              backends: [{ host: "127.0.0.1", port: 9003 }],
+              enabled: true,
+              tags: [],
+            }),
+          },
+        );
+        assert.equal(createResponse.status, 201);
+        const createdPayload = await createResponse.json();
+        assert.equal(createdPayload.rule.listen_port, 9000);
+        assert.deepStrictEqual(createdPayload.rule.backends, [{ host: "127.0.0.1", port: 9003 }]);
+
+        const updateResponse = await fetch(
+          `${baseUrl}/api/agents/l4-malformed-write-path-agent/l4-rules/41`,
+          {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              listen_port: 9005,
+              backends: [{ host: "127.0.0.1", port: 9004 }],
+            }),
+          },
+        );
+        assert.equal(updateResponse.status, 200);
+        const updatedPayload = await updateResponse.json();
+        assert.equal(updatedPayload.rule.id, 41);
+        assert.equal(updatedPayload.rule.listen_port, 9005);
+        assert.deepStrictEqual(updatedPayload.rule.backends, [{ host: "127.0.0.1", port: 9004 }]);
+      },
+    );
+  });
+
+  it("L4 API delete succeeds for malformed stored rows that are skipped on read", async () => {
+    await withBackendServer(
+      {
+        env: { PANEL_ROLE: "master", PANEL_AUTO_APPLY: "0" },
+        agents: [
+          {
+            id: "l4-malformed-delete-agent",
+            name: "l4-malformed-delete-agent",
+            agent_token: "token-l4-malformed-delete-agent",
+            capabilities: ["l4"],
+            desired_revision: 4,
+            current_revision: 4,
+          },
+        ],
+        l4RulesByAgentId: {
+          "l4-malformed-delete-agent": [
+            {
+              id: 41,
+              agent_id: "l4-malformed-delete-agent",
+              name: "visible-valid-rule",
+              protocol: "tcp",
+              listen_host: "0.0.0.0",
+              listen_port: 9010,
+              backends: [{ host: "127.0.0.1", port: 9011 }],
+              enabled: true,
+              revision: 41,
+            },
+            {
+              id: 42,
+              agent_id: "l4-malformed-delete-agent",
+              name: "broken-delete-target",
+              protocol: "tcp",
+              listen_host: "0.0.0.0",
+              listen_port: "bad-port",
+              backends: [],
+              upstream_host: "",
+              upstream_port: 0,
+              enabled: true,
+              revision: 42,
+            },
+          ],
+        },
+      },
+      async ({ baseUrl }) => {
+        const deleteResponse = await fetch(
+          `${baseUrl}/api/agents/l4-malformed-delete-agent/l4-rules/42`,
+          {
+            method: "DELETE",
+          },
+        );
+        assert.equal(deleteResponse.status, 200);
+        const deletePayload = await deleteResponse.json();
+        assert.equal(deletePayload.rule.id, 42);
+        assert.equal(deletePayload.rule.name, "broken-delete-target");
+        assert.ok(Array.isArray(deletePayload.rule.backends));
+        assert.deepStrictEqual(deletePayload.rule.load_balancing, { strategy: "round_robin" });
+
+        const listResponse = await fetch(`${baseUrl}/api/agents/l4-malformed-delete-agent/l4-rules`);
+        assert.equal(listResponse.status, 200);
+        const listPayload = await listResponse.json();
+        assert.deepStrictEqual(
+          listPayload.rules.map((rule) => rule.id),
+          [41],
+        );
+      },
+    );
+  });
+
+  it("L4 API rejects UDP rules that set tuning.proxy_protocol", async () => {
+    await withBackendServer(
+      {
+        env: { PANEL_ROLE: "master", PANEL_AUTO_APPLY: "0" },
+        agents: [
+          {
+            id: "udp-proxy-protocol-agent",
+            name: "udp-proxy-protocol-agent",
+            agent_token: "token-udp-proxy-protocol-agent",
+            capabilities: ["l4"],
+            desired_revision: 1,
+            current_revision: 1,
+          },
+        ],
+      },
+      async ({ baseUrl }) => {
+        const response = await fetch(`${baseUrl}/api/agents/udp-proxy-protocol-agent/l4-rules`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            name: "udp-invalid-proxy-protocol",
+            protocol: "udp",
+            listen_host: "0.0.0.0",
+            listen_port: 9200,
+            backends: [{ host: "127.0.0.1", port: 9201 }],
+            tuning: {
+              proxy_protocol: {
+                decode: true,
+                send: true,
+              },
+            },
+            enabled: true,
+            tags: [],
+          }),
+        });
+        assert.equal(response.status, 400);
+        const payload = await response.json();
+        assert.match(payload.message, /udp.*proxy_protocol/i);
+      },
+    );
+  });
+
+  it("L4 API rejects UDP protocol updates when fallback tuning has proxy_protocol enabled", async () => {
+    await withBackendServer(
+      {
+        env: { PANEL_ROLE: "master", PANEL_AUTO_APPLY: "0" },
+        agents: [
+          {
+            id: "udp-fallback-proxy-protocol-agent",
+            name: "udp-fallback-proxy-protocol-agent",
+            agent_token: "token-udp-fallback-proxy-protocol-agent",
+            capabilities: ["l4"],
+            desired_revision: 1,
+            current_revision: 1,
+          },
+        ],
+      },
+      async ({ baseUrl }) => {
+        const createResponse = await fetch(
+          `${baseUrl}/api/agents/udp-fallback-proxy-protocol-agent/l4-rules`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              name: "tcp-initial-with-proxy-protocol",
+              protocol: "tcp",
+              listen_host: "0.0.0.0",
+              listen_port: 9400,
+              backends: [{ host: "127.0.0.1", port: 9401 }],
+              tuning: {
+                proxy_protocol: {
+                  decode: true,
+                  send: false,
+                },
+              },
+              enabled: true,
+              tags: [],
+            }),
+          },
+        );
+        assert.equal(createResponse.status, 201);
+        const created = await createResponse.json();
+        const ruleId = created.rule.id;
+
+        const updateResponse = await fetch(
+          `${baseUrl}/api/agents/udp-fallback-proxy-protocol-agent/l4-rules/${ruleId}`,
+          {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              protocol: "udp",
+            }),
+          },
+        );
+        assert.equal(updateResponse.status, 400);
+        const payload = await updateResponse.json();
+        assert.match(payload.message, /udp.*proxy_protocol/i);
+      },
+    );
+  });
+
+  it("L4 API partial updates merge against sanitized legacy UDP fallback", async () => {
+    await withBackendServer(
+      {
+        env: { PANEL_ROLE: "master", PANEL_AUTO_APPLY: "0" },
+        agents: [
+          {
+            id: "udp-legacy-partial-update-agent",
+            name: "udp-legacy-partial-update-agent",
+            agent_token: "token-udp-legacy-partial-update-agent",
+            capabilities: ["l4"],
+            desired_revision: 1,
+            current_revision: 1,
+          },
+        ],
+        l4RulesByAgentId: {
+          "udp-legacy-partial-update-agent": [
+            {
+              id: 17,
+              agent_id: "udp-legacy-partial-update-agent",
+              name: "legacy-udp-invalid-fallback",
+              protocol: "udp",
+              listen_host: "0.0.0.0",
+              listen_port: 9600,
+              upstream_host: "127.0.0.1",
+              upstream_port: 9601,
+              backends: [{ host: "127.0.0.1", port: 9601, weight: 9, backup: true }],
+              load_balancing: { strategy: "hash", hash_key: "$remote_addr" },
+              tuning: {
+                proxy_protocol: {
+                  decode: true,
+                  send: true,
+                },
+              },
+              relay_chain: [12],
+              enabled: true,
+              tags: ["legacy"],
+              revision: 17,
+            },
+          ],
+        },
+      },
+      async ({ baseUrl }) => {
+        const response = await fetch(
+          `${baseUrl}/api/agents/udp-legacy-partial-update-agent/l4-rules/17`,
+          {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              enabled: false,
+            }),
+          },
+        );
+        assert.equal(response.status, 200);
+        const payload = await response.json();
+        assert.equal(payload.rule.enabled, false);
+        assert.deepStrictEqual(payload.rule.backends, [{ host: "127.0.0.1", port: 9601 }]);
+        assert.deepStrictEqual(payload.rule.load_balancing, { strategy: "round_robin" });
+        assert.deepStrictEqual(payload.rule.tuning.proxy_protocol, {
+          decode: false,
+          send: false,
+        });
+        assert.deepStrictEqual(payload.rule.relay_chain, []);
+      },
+    );
+  });
+
+  it("L4 API partial updates preserve legacy TCP metadata when untouched", async () => {
+    await withBackendServer(
+      {
+        env: { PANEL_ROLE: "master", PANEL_AUTO_APPLY: "0" },
+        agents: [
+          {
+            id: "tcp-legacy-partial-update-agent",
+            name: "tcp-legacy-partial-update-agent",
+            agent_token: "token-tcp-legacy-partial-update-agent",
+            capabilities: ["l4"],
+            desired_revision: 1,
+            current_revision: 1,
+          },
+        ],
+        l4RulesByAgentId: {
+          "tcp-legacy-partial-update-agent": [
+            {
+              id: 31,
+              agent_id: "tcp-legacy-partial-update-agent",
+              name: "legacy-tcp-with-extra-metadata",
+              protocol: "tcp",
+              listen_host: "0.0.0.0",
+              listen_port: 9700,
+              upstream_host: "legacy-a.internal",
+              upstream_port: 9701,
+              backends: [
+                {
+                  host: "legacy-a.internal",
+                  port: 9701,
+                  weight: 12,
+                  resolve: true,
+                  backup: true,
+                  max_conns: 55,
+                },
+                {
+                  host: "legacy-b.internal",
+                  port: 9702,
+                  weight: 4,
+                },
+              ],
+              load_balancing: {
+                strategy: "hash",
+                hash_key: "$remote_addr",
+                zone_size: "256k",
+              },
+              tuning: {
+                proxy_protocol: {
+                  decode: true,
+                  send: false,
+                },
+              },
+              enabled: true,
+              tags: ["legacy-tcp"],
+              revision: 31,
+            },
+          ],
+        },
+      },
+      async ({ baseUrl, dataRoot }) => {
+        const response = await fetch(
+          `${baseUrl}/api/agents/tcp-legacy-partial-update-agent/l4-rules/31`,
+          {
+            method: "PUT",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              protocol: "tcp",
+              listen_host: "0.0.0.0",
+              listen_port: 9700,
+              upstream_host: "legacy-a.internal",
+              upstream_port: 9701,
+              backends: [
+                { host: "legacy-a.internal", port: 9701 },
+                { host: "legacy-b.internal", port: 9702 },
+              ],
+              load_balancing: { strategy: "round_robin" },
+              tuning: {
+                listen: {
+                  reuseport: false,
+                  backlog: null,
+                  so_keepalive: false,
+                  tcp_nodelay: true,
+                },
+                proxy: {
+                  connect_timeout: "10s",
+                  idle_timeout: "10m",
+                  buffer_size: "16k",
+                },
+                upstream: {
+                  max_conns: 0,
+                  max_fails: 3,
+                  fail_timeout: "30s",
+                },
+                limit_conn: {
+                  key: "$binary_remote_addr",
+                  count: null,
+                  zone_size: "10m",
+                },
+                proxy_protocol: {
+                  decode: true,
+                  send: false,
+                },
+              },
+              relay_chain: [],
+              enabled: false,
+            }),
+          },
+        );
+        assert.equal(response.status, 200);
+        const payload = await response.json();
+        assert.equal(payload.rule.enabled, false);
+        assert.deepStrictEqual(payload.rule.backends, [
+          { host: "legacy-a.internal", port: 9701 },
+          { host: "legacy-b.internal", port: 9702 },
+        ]);
+        assert.deepStrictEqual(payload.rule.load_balancing, {
+          strategy: "round_robin",
+        });
+        assert.deepStrictEqual(payload.rule.tuning.proxy_protocol, {
+          decode: true,
+          send: false,
+        });
+
+        const persisted = JSON.parse(
+          fs.readFileSync(
+            path.join(dataRoot, "l4_agent_rules", "tcp-legacy-partial-update-agent.json"),
+            "utf8",
+          ),
+        );
+        assert.equal(persisted.length, 1);
+        assert.equal(persisted[0].enabled, false);
+        assert.deepStrictEqual(persisted[0].backends, [
+          {
+            host: "legacy-a.internal",
+            port: 9701,
+            weight: 12,
+            resolve: true,
+            backup: true,
+            max_conns: 55,
+          },
+          {
+            host: "legacy-b.internal",
+            port: 9702,
+            weight: 4,
+          },
+        ]);
+        assert.deepStrictEqual(persisted[0].load_balancing, {
+          strategy: "hash",
+          hash_key: "$remote_addr",
+          zone_size: "256k",
+        });
+      },
+    );
   });
 });

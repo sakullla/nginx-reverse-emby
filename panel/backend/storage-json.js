@@ -3,6 +3,8 @@
 const fs = require("fs");
 const path = require("path");
 const { normalizeCustomHeaders } = require("./http-rule-request-headers");
+const { normalizeRelayListenerPayload } = require("./relay-listener-normalize");
+const { normalizeVersionPolicyPayload } = require("./version-policy-normalize");
 
 const LOCAL_AGENT_ID = process.env.MASTER_LOCAL_AGENT_ID || "local";
 
@@ -34,10 +36,211 @@ function sanitizeRuleForStorage(rule) {
   if (!rule || typeof rule !== "object") {
     return rule;
   }
+  const { backend_url, backends, load_balancing } = normalizeHttpRuleForStorage(rule);
   return {
     ...rule,
+    backend_url,
+    backends,
+    load_balancing,
+    relay_chain: normalizeRelayChainIds(rule.relay_chain),
     custom_headers: sanitizeStoredCustomHeaders(rule.custom_headers),
   };
+}
+
+function sanitizeL4RuleForStorage(rule) {
+  if (!rule || typeof rule !== "object") {
+    return rule;
+  }
+  return {
+    ...rule,
+    relay_chain: normalizeRelayChainIds(rule.relay_chain),
+  };
+}
+
+function normalizeAgentForStorage(agent) {
+  if (!agent || typeof agent !== "object") {
+    return agent;
+  }
+  return {
+    ...agent,
+    platform: String(agent.platform || ""),
+    desired_version: String(agent.desired_version || ""),
+  };
+}
+
+function normalizeLocalAgentStateForStorage(state) {
+  const next = state && typeof state === "object" ? state : {};
+  return {
+    desired_revision: safeRevision(next.desired_revision),
+    current_revision: safeRevision(next.current_revision),
+    last_apply_revision: safeRevision(next.last_apply_revision),
+    last_apply_status: next.last_apply_status || "success",
+    last_apply_message: next.last_apply_message || "",
+    desired_version: String(next.desired_version || ""),
+  };
+}
+
+function sanitizeRelayListenersForStorage(listeners, agentId = null) {
+  if (!Array.isArray(listeners)) {
+    return [];
+  }
+  const sanitized = [];
+  for (const listener of listeners) {
+    try {
+      sanitized.push(normalizeRelayListenerPayload({
+        ...(listener && typeof listener === "object" ? listener : {}),
+        ...(agentId == null ? {} : { agent_id: String(agentId) }),
+      }));
+    } catch (_) {
+      // drop malformed relay listeners at storage boundary
+    }
+  }
+  return sanitized;
+}
+
+function normalizeRelayListenersForSave(agentId, listeners) {
+  if (!Array.isArray(listeners)) {
+    return [];
+  }
+  return listeners.map((listener) => normalizeRelayListenerPayload({
+    ...(listener && typeof listener === "object" ? listener : {}),
+    agent_id: String(agentId),
+  }));
+}
+
+function sanitizeVersionPolicyForStorage(policy) {
+  if (!policy || typeof policy !== "object") {
+    return null;
+  }
+  try {
+    return normalizeVersionPolicyPayload(policy);
+  } catch (_) {
+    return null;
+  }
+}
+
+function normalizeRelayChainIds(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const seen = new Set();
+  const next = [];
+  for (const entry of value) {
+    const parsed = Number(entry);
+    if (!Number.isInteger(parsed) || parsed <= 0 || seen.has(parsed)) {
+      continue;
+    }
+    seen.add(parsed);
+    next.push(parsed);
+  }
+  return next;
+}
+
+function normalizeHttpRuleForStorage(rule) {
+  const sourceBackends = Array.isArray(rule.backends) ? rule.backends : [];
+  const backends = [];
+  for (const backend of sourceBackends) {
+    const rawUrl =
+      backend && typeof backend === "object" && backend.url !== undefined
+        ? backend.url
+        : backend;
+    const url = String(rawUrl || "").trim();
+    if (!url) {
+      continue;
+    }
+    backends.push({ url });
+  }
+
+  if (backends.length === 0) {
+    const legacy = String(rule.backend_url || "").trim();
+    if (legacy) {
+      backends.push({ url: legacy });
+    }
+  }
+
+  const strategy = String(rule?.load_balancing?.strategy || "round_robin")
+    .trim()
+    .toLowerCase();
+  return {
+    backend_url: backends[0] ? backends[0].url : String(rule.backend_url || ""),
+    backends,
+    load_balancing: {
+      strategy: strategy === "random" ? "random" : "round_robin",
+    },
+  };
+}
+
+function sanitizeVersionPoliciesForStorage(policies) {
+  if (!Array.isArray(policies)) {
+    const single = sanitizeVersionPolicyForStorage(policies);
+    return single ? [single] : [];
+  }
+
+  const sanitized = [];
+  const seen = new Set();
+  for (const policy of policies) {
+    const normalized = sanitizeVersionPolicyForStorage(policy);
+    if (!normalized || seen.has(normalized.id)) {
+      continue;
+    }
+    seen.add(normalized.id);
+    sanitized.push(normalized);
+  }
+  sanitized.sort((a, b) => String(a.id).localeCompare(String(b.id)));
+  return sanitized;
+}
+
+function normalizeVersionPoliciesForSave(policies) {
+  if (!Array.isArray(policies)) {
+    return [];
+  }
+
+  const normalized = [];
+  const seen = new Set();
+  for (const policy of policies) {
+    const next = normalizeVersionPolicyPayload(policy);
+    if (seen.has(next.id)) {
+      continue;
+    }
+    seen.add(next.id);
+    normalized.push(next);
+  }
+  normalized.sort((a, b) => String(a.id).localeCompare(String(b.id)));
+  return normalized;
+}
+
+function collectRelayListenerIdsExceptAgent(agentId) {
+  const relayListenersDir = path.join(dataRoot, "relay_listeners");
+  if (!fs.existsSync(relayListenersDir)) {
+    return new Map();
+  }
+
+  const ids = new Map();
+  for (const file of fs.readdirSync(relayListenersDir)) {
+    if (!file.endsWith(".json")) {
+      continue;
+    }
+    const ownerAgentId = file.replace(/\.json$/, "");
+    if (ownerAgentId === String(agentId)) {
+      continue;
+    }
+    const listeners = readJsonFile(path.join(relayListenersDir, file), []);
+    for (const listener of sanitizeRelayListenersForStorage(listeners, ownerAgentId)) {
+      ids.set(listener.id, ownerAgentId);
+    }
+  }
+  return ids;
+}
+
+function assertRelayListenerIdsAreGloballyUnique(agentId, listeners) {
+  const idsInOtherAgents = collectRelayListenerIdsExceptAgent(agentId);
+  const seenInPayload = new Set();
+  for (const listener of listeners) {
+    if (seenInPayload.has(listener.id) || idsInOtherAgents.has(listener.id)) {
+      throw new Error(`relay listener id ${listener.id} must be globally unique`);
+    }
+    seenInPayload.add(listener.id);
+  }
 }
 
 // --- Internal helpers (mirrors server.js readJsonFile/writeJsonFile) ---
@@ -72,6 +275,18 @@ function getL4RuleFileForAgent(agentId) {
   return path.join(dataRoot, "l4_agent_rules", `${agentId}.json`);
 }
 
+function getRelayListenerFileForAgent(agentId) {
+  return path.join(dataRoot, "relay_listeners", `${agentId}.json`);
+}
+
+function getVersionPoliciesFile() {
+  return dataPath("version_policies.json");
+}
+
+function getLegacyVersionPolicyFile() {
+  return dataPath("version_policy.json");
+}
+
 // --- Storage interface ---
 
 function init(root) {
@@ -79,6 +294,7 @@ function init(root) {
   fs.mkdirSync(dataRoot, { recursive: true });
   fs.mkdirSync(path.join(dataRoot, "agent_rules"), { recursive: true });
   fs.mkdirSync(path.join(dataRoot, "l4_agent_rules"), { recursive: true });
+  fs.mkdirSync(path.join(dataRoot, "relay_listeners"), { recursive: true });
 }
 
 function loadRulesForAgent(agentId) {
@@ -104,11 +320,12 @@ function deleteRulesForAgent(agentId) {
 function loadL4RulesForAgent(agentId) {
   const rules = readJsonFile(getL4RuleFileForAgent(agentId), []);
   if (!Array.isArray(rules)) return [];
-  return rules;
+  return rules.map(sanitizeL4RuleForStorage);
 }
 
 function saveL4RulesForAgent(agentId, rules) {
-  writeJsonFile(getL4RuleFileForAgent(agentId), Array.isArray(rules) ? rules : []);
+  const nextRules = Array.isArray(rules) ? rules.map(sanitizeL4RuleForStorage) : [];
+  writeJsonFile(getL4RuleFileForAgent(agentId), nextRules);
 }
 
 function deleteL4RulesForAgent(agentId) {
@@ -119,11 +336,12 @@ function deleteL4RulesForAgent(agentId) {
 function loadRegisteredAgents() {
   const agents = readJsonFile(dataPath("agents.json"), []);
   if (!Array.isArray(agents)) return [];
-  return agents;
+  return agents.map(normalizeAgentForStorage);
 }
 
 function saveRegisteredAgents(agents) {
-  writeJsonFile(dataPath("agents.json"), Array.isArray(agents) ? agents : []);
+  const nextAgents = Array.isArray(agents) ? agents.map(normalizeAgentForStorage) : [];
+  writeJsonFile(dataPath("agents.json"), nextAgents);
 }
 
 function loadManagedCertificates() {
@@ -138,12 +356,48 @@ function saveManagedCertificates(certs) {
 
 function loadLocalAgentState() {
   const state = readJsonFile(dataPath("local_agent_state.json"), {});
-  if (!state || typeof state !== "object") return {};
-  return state;
+  if (!state || typeof state !== "object") return normalizeLocalAgentStateForStorage({});
+  return normalizeLocalAgentStateForStorage(state);
 }
 
 function saveLocalAgentState(state) {
-  writeJsonFile(dataPath("local_agent_state.json"), state || {});
+  writeJsonFile(dataPath("local_agent_state.json"), normalizeLocalAgentStateForStorage(state));
+}
+
+function loadRelayListenersForAgent(agentId) {
+  const listeners = readJsonFile(getRelayListenerFileForAgent(agentId), []);
+  return sanitizeRelayListenersForStorage(listeners, agentId);
+}
+
+function saveRelayListenersForAgent(agentId, listeners) {
+  const nextListeners = normalizeRelayListenersForSave(agentId, listeners);
+  assertRelayListenerIdsAreGloballyUnique(agentId, nextListeners);
+  writeJsonFile(getRelayListenerFileForAgent(agentId), nextListeners);
+}
+
+function deleteRelayListenersForAgent(agentId) {
+  const file = getRelayListenerFileForAgent(agentId);
+  if (fs.existsSync(file)) fs.unlinkSync(file);
+}
+
+function loadVersionPolicies() {
+  const versionPoliciesFile = getVersionPoliciesFile();
+  if (fs.existsSync(versionPoliciesFile)) {
+    return sanitizeVersionPoliciesForStorage(readJsonFile(versionPoliciesFile, []));
+  }
+  return sanitizeVersionPoliciesForStorage(readJsonFile(getLegacyVersionPolicyFile(), []));
+}
+
+function saveVersionPolicies(policies) {
+  writeJsonFile(getVersionPoliciesFile(), normalizeVersionPoliciesForSave(policies));
+}
+
+function loadVersionPolicy() {
+  return loadVersionPolicies()[0] || null;
+}
+
+function saveVersionPolicy(policy) {
+  saveVersionPolicies([normalizeVersionPolicyPayload(policy)]);
 }
 
 function getNextGlobalRevision() {
@@ -172,7 +426,19 @@ function getNextGlobalRevision() {
     0,
   );
 
-  return Math.max(agentMax, localMax, certMax, 0) + 1;
+  const relayListenersDir = path.join(dataRoot, "relay_listeners");
+  const relayListenerFiles = fs.existsSync(relayListenersDir)
+    ? fs.readdirSync(relayListenersDir).filter((file) => file.endsWith(".json"))
+    : [];
+  const relayMax = relayListenerFiles.reduce((max, file) => {
+    const listeners = loadRelayListenersForAgent(file.replace(/\.json$/, ""));
+    return listeners.reduce(
+      (innerMax, listener) => Math.max(innerMax, safeRevision(listener?.revision)),
+      max,
+    );
+  }, 0);
+
+  return Math.max(agentMax, localMax, certMax, relayMax, 0) + 1;
 }
 
 /** Parse a revision value defensively - mirrors server.js normalizeRevision logic */
@@ -203,6 +469,13 @@ module.exports = {
   saveManagedCertificates,
   loadLocalAgentState,
   saveLocalAgentState,
+  loadRelayListenersForAgent,
+  saveRelayListenersForAgent,
+  deleteRelayListenersForAgent,
+  loadVersionPolicies,
+  saveVersionPolicies,
+  loadVersionPolicy,
+  saveVersionPolicy,
   getNextGlobalRevision,
   migrateFromJson,
   close,

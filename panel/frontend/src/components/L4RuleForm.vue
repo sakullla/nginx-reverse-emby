@@ -3,8 +3,8 @@
     <!-- Tab Bar -->
     <div class="form-tabs">
       <button type="button" class="form-tabs__btn" :class="{ 'form-tabs__btn--active': activeTab === 'basic' }" @click="activeTab = 'basic'">基础配置</button>
-      <button type="button" class="form-tabs__btn" :class="{ 'form-tabs__btn--active': activeTab === 'advanced' }" @click="activeTab = 'advanced'">高级调优 <span v-if="hasAdvancedTuning" class="form-tabs__badge">已配置</span></button>
       <button type="button" class="form-tabs__btn" :class="{ 'form-tabs__btn--active': activeTab === 'protocol' }" @click="activeTab = 'protocol'">协议与监听 <span v-if="hasProtocolTuning" class="form-tabs__badge">已配置</span></button>
+      <button type="button" class="form-tabs__btn" :class="{ 'form-tabs__btn--active': activeTab === 'relay' }" @click="activeTab = 'relay'" :disabled="form.protocol === 'udp'">Relay 配置 <span v-if="hasRelayConfig" class="form-tabs__badge">已配置</span></button>
     </div>
 
     <!-- Tab 1: Basic -->
@@ -37,17 +37,8 @@
         <label class="form-label">负载均衡策略</label>
         <select v-model="form.load_balancing.strategy" class="input" @change="handleStrategyChange">
           <option value="round_robin">轮询 (Round Robin)</option>
-          <option value="least_conn">最少连接 (Least Connections)</option>
           <option value="random">随机 (Random)</option>
-          <option value="hash">哈希 (Hash)</option>
         </select>
-      </div>
-
-      <!-- Hash Key (only when strategy is hash) -->
-      <div v-if="form.load_balancing.strategy === 'hash'" class="form-group">
-        <label class="form-label">哈希键</label>
-        <input v-model="form.load_balancing.hash_key" class="input" placeholder="$binary_remote_addr">
-        <div class="form-help">例如: $remote_addr, $binary_remote_addr, $ssl_session_id</div>
       </div>
 
       <!-- Backends List -->
@@ -88,16 +79,6 @@
                 placeholder="IP:端口 或 域名:端口"
                 @blur="parseBackendAddress(index)"
               >
-              <div class="backend-weight-wrapper">
-                <span class="backend-weight-label">权重</span>
-                <input
-                  v-model.number="backend.weight"
-                  class="input backend-weight-input"
-                  type="number"
-                  min="1"
-                  max="100"
-                >
-              </div>
             </div>
 
             <button
@@ -148,102 +129,27 @@
           </div>
         </div>
       </div>
-    </div>
 
-    <!-- Tab 2: Advanced Tuning -->
-    <div v-if="activeTab === 'advanced'" class="form-tab-panel">
-      <!-- Timeouts -->
-      <div class="advanced-group">
-        <div class="advanced-group__title">超时设置</div>
-        <div class="form-row">
-          <div class="form-group">
-            <label class="form-label">proxy_connect_timeout</label>
-            <input v-model="form.tuning.proxy.connect_timeout" class="input" placeholder="10s">
-          </div>
-          <div class="form-group">
-            <label class="form-label">proxy_timeout</label>
-            <input v-model="form.tuning.proxy.idle_timeout" class="input" :placeholder="form.protocol === 'udp' ? '20s' : '10m'">
-            <div class="form-help">如: 10s, 5m, 1h</div>
-          </div>
-        </div>
+      <div v-if="error" class="form-error">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="10"/>
+          <line x1="12" y1="8" x2="12" y2="12"/>
+          <line x1="12" y1="16" x2="12.01" y2="16"/>
+        </svg>
+        {{ error }}
       </div>
 
-      <!-- Health Check -->
-      <div class="advanced-group">
-        <div class="advanced-group__title">健康检查</div>
-        <div class="form-row">
-          <div class="form-group">
-            <label class="form-label">max_fails</label>
-            <input v-model.number="form.tuning.upstream.max_fails" class="input" type="number" min="0" placeholder="3">
-          </div>
-          <div class="form-group">
-            <label class="form-label">fail_timeout</label>
-            <input v-model="form.tuning.upstream.fail_timeout" class="input" placeholder="30s">
-          </div>
-        </div>
-      </div>
+      <!-- Enabled Toggle -->
+      <label class="toggle-row">
+        <input v-model="form.enabled" type="checkbox" class="toggle__input">
+        <span class="toggle__slider"></span>
+        <span class="toggle__label">启用规则</span>
+      </label>
 
-      <!-- Connection Limit -->
-      <div class="advanced-group">
-        <div class="advanced-group__title">连接限制</div>
-        <div class="form-row">
-          <div class="form-group">
-            <label class="form-label">limit_conn count</label>
-            <input v-model.number="form.tuning.limit_conn.count" class="input" type="number" min="0" placeholder="不限制">
-          </div>
-          <div class="form-group">
-            <label class="form-label">limit_conn_zone key</label>
-            <input v-model="form.tuning.limit_conn.key" class="input" placeholder="$binary_remote_addr">
-          </div>
-          <div class="form-group">
-            <label class="form-label">zone_size</label>
-            <input v-model="form.tuning.limit_conn.zone_size" class="input" placeholder="10m">
-          </div>
-        </div>
-      </div>
-
-      <!-- Buffer -->
-      <div class="advanced-group">
-        <div class="advanced-group__title">缓冲与上游</div>
-        <div class="form-row">
-          <div class="form-group">
-            <label class="form-label">proxy_buffer_size</label>
-            <input v-model="form.tuning.proxy.buffer_size" class="input" placeholder="16k">
-          </div>
-          <div class="form-group">
-            <label class="form-label">upstream max_conns</label>
-            <input v-model.number="form.tuning.upstream.max_conns" class="input" type="number" min="0" placeholder="0 (不限制)">
-          </div>
-        </div>
-      </div>
-
-      <!-- Backend Extensions (backup / max_conns per backend) -->
-      <div v-if="form.backends.length > 0" class="advanced-group">
-        <div class="advanced-group__title">后端扩展</div>
-        <div class="advanced-backends-list">
-          <div
-            v-for="(backend, index) in form.backends"
-            :key="'adv-' + backend.id"
-            class="advanced-backend-row"
-          >
-            <span class="advanced-backend-label">{{ backend.address || `backend ${index + 1}` }}</span>
-            <label class="backend-checkbox" title="backup server">
-              <input v-model="backend.backup" type="checkbox">
-              <span>backup</span>
-            </label>
-            <div class="backend-weight-wrapper">
-              <span class="backend-weight-label">max_conns</span>
-              <input
-                v-model.number="backend.max_conns"
-                class="input backend-weight-input"
-                type="number"
-                min="0"
-                placeholder="0"
-              >
-            </div>
-          </div>
-        </div>
-      </div>
+      <!-- Submit -->
+      <button type="submit" class="btn btn--primary btn--full" :disabled="createL4Rule.isPending.value || updateL4Rule.isPending.value">
+        {{ isEdit ? '保存修改' : '创建规则' }}
+      </button>
     </div>
 
     <!-- Tab 3: Protocol & Listen -->
@@ -263,74 +169,98 @@
         </div>
         <div class="form-help">接收: 从客户端/前置代理解析真实 IP；发送: 向后端传递客户端真实 IP</div>
       </div>
-
-      <!-- Listen Options -->
-      <div class="advanced-group">
-        <div class="advanced-group__title">监听选项</div>
-        <div class="advanced-checks">
-          <label class="backend-checkbox">
-            <input v-model="form.tuning.listen.reuseport" type="checkbox">
-            <span>reuseport</span>
-          </label>
-          <label class="backend-checkbox">
-            <input v-model="form.tuning.listen.tcp_nodelay" type="checkbox">
-            <span>tcp_nodelay</span>
-          </label>
-          <label class="backend-checkbox">
-            <input v-model="form.tuning.listen.so_keepalive" type="checkbox">
-            <span>so_keepalive</span>
-          </label>
-        </div>
-        <div class="form-row">
-          <div class="form-group">
-            <label class="form-label">backlog</label>
-            <input v-model.number="form.tuning.listen.backlog" class="input" type="number" min="0" placeholder="默认">
-          </div>
-        </div>
-      </div>
-
-      <!-- UDP-specific -->
-      <div v-if="form.protocol === 'udp'" class="advanced-group">
-        <div class="advanced-group__title">UDP 专属</div>
-        <div class="form-row">
-          <div class="form-group">
-            <label class="form-label">proxy_requests</label>
-            <input v-model.number="form.tuning.proxy.udp_proxy_requests" class="input" type="number" min="0" placeholder="默认">
-          </div>
-          <div class="form-group">
-            <label class="form-label">proxy_responses</label>
-            <input v-model.number="form.tuning.proxy.udp_proxy_responses" class="input" type="number" min="0" placeholder="默认">
-          </div>
-        </div>
-      </div>
     </div>
 
-    <div v-if="error" class="form-error">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <circle cx="12" cy="12" r="10"/>
-        <line x1="12" y1="8" x2="12" y2="12"/>
-        <line x1="12" y1="16" x2="12.01" y2="16"/>
-      </svg>
-      {{ error }}
+    <!-- Tab: Relay -->
+    <div v-else-if="activeTab === 'relay'" class="form-tab-panel">
+      <!-- UDP 不支持提示 -->
+      <div v-if="form.protocol === 'udp'" class="relay-disabled-notice">
+        <div class="relay-disabled-notice__icon">
+          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <circle cx="12" cy="12" r="10"/>
+            <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
+          </svg>
+        </div>
+        <h3 class="relay-disabled-notice__title">UDP 协议不支持 Relay 链路</h3>
+        <p class="relay-disabled-notice__desc">当前 L4 规则使用 UDP 协议，流量将直接转发到后端服务，不经过 Relay 中转</p>
+      </div>
+
+      <template v-else>
+        <!-- 提示信息 -->
+        <div v-if="!relayListeners.length" class="relay-alert relay-alert--warning">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+            <line x1="12" y1="9" x2="12" y2="13"/>
+            <line x1="12" y1="17" x2="12.01" y2="17"/>
+          </svg>
+          <span>当前没有可用的 Relay 监听器，请先创建监听器后再配置链路</span>
+        </div>
+
+        <div v-else-if="!form.relay_chain.length" class="relay-alert relay-alert--info">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"/>
+            <line x1="12" y1="16" x2="12" y2="12"/>
+            <line x1="12" y1="8" x2="12.01" y2="8"/>
+          </svg>
+          <span>当前为直连模式，TCP 流量将直接转发到后端服务，不经过 Relay 中转</span>
+        </div>
+
+        <!-- Relay 链路配置 -->
+        <div class="settings-card">
+          <div class="section-header section-header--split">
+            <div>
+              <h3 class="section-title">链路配置</h3>
+              <p class="section-description">按顺序添加 Relay 监听器，构建转发路径</p>
+            </div>
+            <router-link
+              v-if="relayListeners.length"
+              to="/relay-listeners"
+              class="relay-link"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+                <polyline points="15 3 21 3 21 9"/>
+                <line x1="10" y1="14" x2="21" y2="3"/>
+              </svg>
+              管理监听器
+            </router-link>
+          </div>
+
+          <RelayChainInput
+            v-model="form.relay_chain"
+            :listeners="relayListeners"
+          />
+        </div>
+
+        <!-- 使用说明 -->
+        <div class="relay-help">
+          <div class="relay-help__title">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"/>
+              <line x1="12" y1="16" x2="12" y2="12"/>
+              <line x1="12" y1="8" x2="12.01" y2="8"/>
+            </svg>
+            使用说明
+          </div>
+          <ul class="relay-help__list">
+            <li>Relay 链路仅支持 TCP 协议，UDP 流量无法使用中继</li>
+            <li>链路按顺序转发：客户端 → 中继节点 1 → 中继节点 2 → ... → 后端服务</li>
+            <li>每个中继节点需要配置对应的 Relay 监听器</li>
+            <li>可通过上下按钮调整链路顺序</li>
+            <li>链路越长延迟越高，建议根据网络拓扑合理规划</li>
+          </ul>
+        </div>
+      </template>
     </div>
-
-    <!-- Enabled Toggle -->
-    <label class="toggle-row">
-      <input v-model="form.enabled" type="checkbox" class="toggle__input">
-      <span class="toggle__slider"></span>
-      <span class="toggle__label">启用规则</span>
-    </label>
-
-    <!-- Submit -->
-    <button type="submit" class="btn btn--primary btn--full" :disabled="createL4Rule.isPending.value || updateL4Rule.isPending.value">
-      {{ isEdit ? '保存修改' : '创建规则' }}
-    </button>
   </form>
 </template>
 
 <script setup>
 import { computed, ref, watch } from 'vue'
 import { useCreateL4Rule, useUpdateL4Rule } from '../hooks/useL4Rules'
+import { useAllRelayListeners } from '../hooks/useRelayListeners'
+import RelayChainInput from './RelayChainInput.vue'
+import { getDefaultTuning, mergeTuning, resetTuningForProtocol } from './l4/tuningState'
 
 const props = defineProps({
   initialData: { type: Object, default: null },
@@ -341,7 +271,9 @@ const emit = defineEmits(['success'])
 // Pass agentId directly - hooks use unref() to handle both strings and refs
 const createL4Rule = useCreateL4Rule(props.agentId)
 const updateL4Rule = useUpdateL4Rule(props.agentId)
+const { data: relayListenersData } = useAllRelayListeners()
 const isEdit = computed(() => !!props.initialData?.id)
+const relayListeners = computed(() => relayListenersData.value ?? [])
 
 let backendIdCounter = 0
 
@@ -361,56 +293,17 @@ function createBackend(data = {}) {
     address,
     host,
     port,
-    weight: data.weight || 1,
     resolve: data.resolve || false,
     backup: data.backup || false,
     max_conns: data.max_conns || 0,
   }
 }
 
-function getDefaultTuning(protocol = 'tcp') {
-  const isUdp = protocol === 'udp'
-  return {
-    listen: {
-      reuseport: isUdp,
-      backlog: null,
-      so_keepalive: false,
-      tcp_nodelay: true,
-    },
-    proxy: {
-      connect_timeout: '10s',
-      idle_timeout: isUdp ? '20s' : '10m',
-      buffer_size: '16k',
-      udp_proxy_requests: null,
-      udp_proxy_responses: null,
-    },
-    upstream: {
-      max_conns: 0,
-      max_fails: 3,
-      fail_timeout: '30s',
-    },
-    limit_conn: {
-      key: '$binary_remote_addr',
-      count: null,
-      zone_size: '10m',
-    },
-    proxy_protocol: {
-      decode: false,
-      send: false,
-    },
-  }
-}
+const SUPPORTED_L4_STRATEGIES = new Set(['round_robin', 'random'])
 
-function mergeTuning(saved, protocol) {
-  const defaults = getDefaultTuning(protocol)
-  if (!saved || typeof saved !== 'object') return defaults
-  return {
-    listen: { ...defaults.listen, ...saved.listen },
-    proxy: { ...defaults.proxy, ...saved.proxy },
-    upstream: { ...defaults.upstream, ...saved.upstream },
-    limit_conn: { ...defaults.limit_conn, ...saved.limit_conn },
-    proxy_protocol: { ...defaults.proxy_protocol, ...saved.proxy_protocol },
-  }
+function normalizeL4Strategy(value) {
+  const strategy = String(value || '').trim().toLowerCase()
+  return SUPPORTED_L4_STRATEGIES.has(strategy) ? strategy : 'round_robin'
 }
 
 const initialProtocol = props.initialData?.protocol || 'tcp'
@@ -420,7 +313,6 @@ const initialBackends = props.initialData?.backends?.length > 0
   : (props.initialData?.upstream_host
     ? [createBackend({
         address: `${props.initialData.upstream_host}:${props.initialData.upstream_port || ''}`,
-        weight: 1,
         resolve: false,
       })]
     : [createBackend()])
@@ -431,16 +323,14 @@ const form = ref({
   listen_port: props.initialData?.listen_port || 0,
   backends: initialBackends,
   load_balancing: {
-    strategy: props.initialData?.load_balancing?.strategy || 'round_robin',
-    hash_key: props.initialData?.load_balancing?.hash_key || '$binary_remote_addr',
-    zone_size: props.initialData?.load_balancing?.zone_size || '128k',
+    strategy: normalizeL4Strategy(props.initialData?.load_balancing?.strategy),
   },
   tuning: mergeTuning(props.initialData?.tuning, initialProtocol),
   enabled: props.initialData?.enabled !== false,
   tags: Array.isArray(props.initialData?.tags) ? [...props.initialData.tags] : [],
+  relay_chain: Array.isArray(props.initialData?.relay_chain) ? [...props.initialData.relay_chain] : [],
 })
 
-const showAdvanced = ref(!!props.initialData?.tuning)
 const tagInput = ref('')
 const draggingIndex = ref(-1)
 const error = ref('')
@@ -470,22 +360,6 @@ const hasTuningChanges = computed(() => {
 
 const activeTab = ref('basic')
 
-const hasAdvancedTuning = computed(() => {
-  const defaults = getDefaultTuning(form.value.protocol)
-  const t = form.value.tuning
-  const hasBackendExtensions = form.value.backends.some(b => b.backup || (b.max_conns && b.max_conns > 0))
-  return (
-    hasBackendExtensions ||
-    t.proxy.connect_timeout !== defaults.proxy.connect_timeout ||
-    t.proxy.idle_timeout !== defaults.proxy.idle_timeout ||
-    t.proxy.buffer_size !== defaults.proxy.buffer_size ||
-    t.upstream.max_conns !== defaults.upstream.max_conns ||
-    t.upstream.max_fails !== defaults.upstream.max_fails ||
-    t.upstream.fail_timeout !== defaults.upstream.fail_timeout ||
-    t.limit_conn.count !== defaults.limit_conn.count
-  )
-})
-
 const hasProtocolTuning = computed(() => {
   const defaults = getDefaultTuning(form.value.protocol)
   const t = form.value.tuning
@@ -503,15 +377,18 @@ const hasProtocolTuning = computed(() => {
   )
 })
 
-// Clear UDP-specific fields when switching to TCP
+const hasRelayConfig = computed(() => {
+  return Array.isArray(form.value.relay_chain) && form.value.relay_chain.length > 0
+})
+
 watch(() => form.value.protocol, (newProto) => {
-  if (newProto === 'tcp') {
-    form.value.tuning.proxy.udp_proxy_requests = null
-    form.value.tuning.proxy.udp_proxy_responses = null
+  form.value.tuning = resetTuningForProtocol(form.value.tuning, newProto)
+  if (newProto === 'udp') {
+    form.value.relay_chain = []
   }
 })
 
-const LB_TAG_MAP = { round_robin: 'RR', least_conn: 'LC', random: 'RND', hash: 'HASH' }
+const LB_TAG_MAP = { round_robin: 'RR', random: 'RND' }
 const LB_TAG_SET = new Set(Object.values(LB_TAG_MAP))
 
 function isL4AutoTag(t) {
@@ -536,6 +413,7 @@ function handleProtocolChange() {
 }
 
 function handleStrategyChange() {
+  form.value.load_balancing.strategy = normalizeL4Strategy(form.value.load_balancing.strategy)
   if (!isEdit.value) updateAutoTags()
 }
 
@@ -607,10 +485,6 @@ function buildPayload() {
     .map(b => ({
       host: b.host.trim(),
       port: Number(b.port),
-      weight: Number(b.weight) || 1,
-      resolve: !!b.resolve,
-      backup: !!b.backup,
-      max_conns: Number(b.max_conns) || 0,
     }))
 
   const payload = {
@@ -621,14 +495,11 @@ function buildPayload() {
     upstream_port: validBackends[0]?.port || 0,
     backends: validBackends,
     load_balancing: {
-      strategy: form.value.load_balancing.strategy,
-      ...(form.value.load_balancing.strategy === 'hash'
-        ? { hash_key: form.value.load_balancing.hash_key || '$binary_remote_addr' }
-        : {}),
-      zone_size: form.value.load_balancing.zone_size || '128k',
+      strategy: normalizeL4Strategy(form.value.load_balancing.strategy),
     },
     enabled: form.value.enabled,
     tags: [...sysTags, ...userTags],
+    relay_chain: form.value.protocol === 'tcp' ? [...form.value.relay_chain] : [],
   }
 
   // Only send tuning if advanced panel has non-default values or editing existing rule with tuning
@@ -657,8 +528,8 @@ function buildPayload() {
         zone_size: cleanValue(t.limit_conn.zone_size),
       },
       proxy_protocol: {
-        decode: t.proxy_protocol.decode,
-        send: t.proxy_protocol.send,
+        decode: form.value.protocol === 'udp' ? false : t.proxy_protocol.decode,
+        send: form.value.protocol === 'udp' ? false : t.proxy_protocol.send,
       },
     }
     if (form.value.protocol === 'udp') {
@@ -912,33 +783,6 @@ async function handleSubmit() {
   flex-wrap: wrap;
 }
 
-.advanced-backends-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-}
-
-.advanced-backend-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-2) var(--space-3);
-  background: var(--color-bg-subtle);
-  border: 1px solid var(--color-border-subtle);
-  border-radius: var(--radius-md);
-}
-
-.advanced-backend-label {
-  flex: 1;
-  min-width: 0;
-  font-size: var(--text-xs);
-  font-family: var(--font-mono);
-  color: var(--color-text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 /* Buttons */
 .btn {
   display: inline-flex;
@@ -1138,5 +982,112 @@ async function handleSubmit() {
 .toggle__label {
   font-size: var(--text-sm);
   color: var(--color-text-secondary);
+}
+
+/* Relay 配置样式 */
+.relay-disabled-notice {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-4);
+  padding: var(--space-10) var(--space-6);
+  background: var(--color-bg-subtle);
+  border: 2px dashed var(--color-border-default);
+  border-radius: var(--radius-xl);
+  text-align: center;
+}
+
+.relay-disabled-notice__icon {
+  color: var(--color-text-muted);
+  opacity: 0.5;
+}
+
+.relay-disabled-notice__title {
+  margin: 0;
+  font-size: var(--text-lg);
+  font-weight: var(--font-semibold);
+  color: var(--color-text-secondary);
+}
+
+.relay-disabled-notice__desc {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+  max-width: 400px;
+}
+
+.relay-alert {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-lg);
+  font-size: var(--text-sm);
+}
+
+.relay-alert--warning {
+  background: var(--color-warning-50);
+  border: 1px solid var(--color-warning);
+  color: var(--color-warning);
+}
+
+.relay-alert--info {
+  background: var(--color-primary-subtle);
+  border: 1px solid var(--color-primary);
+  color: var(--color-primary);
+}
+
+.relay-link {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-surface);
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  text-decoration: none;
+  transition: all var(--duration-fast);
+}
+
+.relay-link:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+  background: var(--color-primary-subtle);
+}
+
+.relay-help {
+  padding: var(--space-4);
+  background: var(--color-bg-subtle);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-lg);
+}
+
+.relay-help__title {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-3);
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  color: var(--color-text-primary);
+}
+
+.relay-help__title svg {
+  color: var(--color-primary);
+}
+
+.relay-help__list {
+  margin: 0;
+  padding-left: var(--space-5);
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+  line-height: 1.8;
+}
+
+.relay-help__list li {
+  margin-bottom: var(--space-1);
 }
 </style>

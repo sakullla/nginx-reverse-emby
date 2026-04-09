@@ -7,6 +7,8 @@ const { Worker } = require("worker_threads");
 
 const jsonStorage = require("./storage-json");
 const { normalizeCustomHeaders } = require("./http-rule-request-headers");
+const { normalizeRelayListenerPayload } = require("./relay-listener-normalize");
+const { normalizeVersionPolicyPayload } = require("./version-policy-normalize");
 
 const WORKER_PATH = path.join(__dirname, "storage-prisma-worker.js");
 const LOCAL_AGENT_ID = process.env.MASTER_LOCAL_AGENT_ID || "local";
@@ -27,8 +29,10 @@ function createEmptyState() {
     agents: [],
     rulesByAgent: new Map(),
     l4RulesByAgent: new Map(),
+    relayListenersByAgent: new Map(),
     managedCertificates: [],
     localAgentState: defaultLocalAgentState(),
+    versionPolicies: [],
     meta: {},
   };
 }
@@ -40,6 +44,7 @@ function defaultLocalAgentState() {
     last_apply_revision: 0,
     last_apply_status: "success",
     last_apply_message: "",
+    desired_version: "",
   };
 }
 
@@ -81,9 +86,11 @@ function normalizeAgent(agent) {
     agent_url: agent.agent_url || "",
     agent_token: agent.agent_token || "",
     version: agent.version || "",
+    platform: String(agent.platform || ""),
     tags: Array.isArray(agent.tags) ? clone(agent.tags) : [],
     capabilities: Array.isArray(agent.capabilities) ? clone(agent.capabilities) : [],
     mode: agent.mode || "pull",
+    desired_version: String(agent.desired_version || ""),
     desired_revision: safeRevision(agent.desired_revision),
     current_revision: safeRevision(agent.current_revision),
     last_apply_revision: safeRevision(agent.last_apply_revision),
@@ -103,18 +110,56 @@ function normalizeAgent(agent) {
 }
 
 function normalizeRule(agentId, rule) {
+  const { backend_url, backends, load_balancing } = normalizeHttpRuleForStorage(rule);
   return {
     id: Number(rule.id),
     agent_id: String(agentId),
     frontend_url: rule.frontend_url,
-    backend_url: rule.backend_url,
+    backend_url,
+    backends,
+    load_balancing,
     enabled: !!rule.enabled,
     tags: Array.isArray(rule.tags) ? clone(rule.tags) : [],
     proxy_redirect: !!rule.proxy_redirect,
+    relay_chain: normalizeRelayChainIds(rule.relay_chain),
     pass_proxy_headers: rule.pass_proxy_headers !== false,
     user_agent: String(rule.user_agent || ""),
     custom_headers: sanitizeStoredCustomHeaders(rule.custom_headers),
     revision: safeRevision(rule.revision),
+  };
+}
+
+function normalizeHttpRuleForStorage(rule) {
+  const sourceBackends = Array.isArray(rule.backends) ? rule.backends : [];
+  const backends = [];
+  for (const backend of sourceBackends) {
+    const rawUrl =
+      backend && typeof backend === "object" && backend.url !== undefined
+        ? backend.url
+        : backend;
+    const url = String(rawUrl || "").trim();
+    if (!url) {
+      continue;
+    }
+    backends.push({ url });
+  }
+
+  if (backends.length === 0) {
+    const legacy = String(rule.backend_url || "").trim();
+    if (legacy) {
+      backends.push({ url: legacy });
+    }
+  }
+
+  const strategy = String(rule?.load_balancing?.strategy || "round_robin")
+    .trim()
+    .toLowerCase();
+  return {
+    backend_url: backends[0] ? backends[0].url : String(rule.backend_url || ""),
+    backends,
+    load_balancing: {
+      strategy: strategy === "random" ? "random" : "round_robin",
+    },
   };
 }
 
@@ -137,6 +182,7 @@ function normalizeL4Rule(agentId, rule) {
       rule.tuning && typeof rule.tuning === "object"
         ? clone(rule.tuning)
         : {},
+    relay_chain: normalizeRelayChainIds(rule.relay_chain),
     enabled: !!rule.enabled,
     tags: Array.isArray(rule.tags) ? clone(rule.tags) : [],
     revision: safeRevision(rule.revision),
@@ -163,9 +209,63 @@ function normalizeManagedCertificate(cert) {
       cert.acme_info && typeof cert.acme_info === "object"
         ? clone(cert.acme_info)
         : {},
+    usage: String(cert.usage || "https"),
+    certificate_type: String(cert.certificate_type || "acme"),
+    self_signed: cert.self_signed === true,
     tags: Array.isArray(cert.tags) ? clone(cert.tags) : [],
     revision: safeRevision(cert.revision),
   };
+}
+
+function normalizeRelayListener(agentId, listener) {
+  return normalizeRelayListenerPayload({
+    ...clone(listener),
+    agent_id: String(agentId),
+  });
+}
+
+function normalizeVersionPolicy(policy) {
+  if (!policy || typeof policy !== "object") {
+    return null;
+  }
+  return normalizeVersionPolicyPayload(clone(policy));
+}
+
+function normalizeVersionPolicies(policies) {
+  if (!Array.isArray(policies)) {
+    const single = normalizeVersionPolicy(policies);
+    return single ? [single] : [];
+  }
+
+  const normalized = [];
+  const seen = new Set();
+  for (const policy of policies) {
+    const next = normalizeVersionPolicy(policy);
+    if (!next || seen.has(next.id)) {
+      continue;
+    }
+    seen.add(next.id);
+    normalized.push(next);
+  }
+  normalized.sort((a, b) => String(a.id).localeCompare(String(b.id)));
+  return normalized;
+}
+
+function normalizeRelayChainIds(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const seen = new Set();
+  const normalized = [];
+  for (const entry of value) {
+    const parsed = Number(entry);
+    if (!Number.isInteger(parsed) || parsed <= 0 || seen.has(parsed)) {
+      continue;
+    }
+    seen.add(parsed);
+    normalized.push(parsed);
+  }
+  return normalized;
 }
 
 function normalizeLocalAgentState(stateValue) {
@@ -176,6 +276,7 @@ function normalizeLocalAgentState(stateValue) {
     last_apply_revision: safeRevision(nextState.last_apply_revision),
     last_apply_status: nextState.last_apply_status || "success",
     last_apply_message: nextState.last_apply_message || "",
+    desired_version: String(nextState.desired_version || ""),
   };
 }
 
@@ -274,8 +375,12 @@ function applySnapshot(snapshot) {
   state.l4RulesByAgent = new Map(
     Object.entries(snapshot?.l4RulesByAgent || {}).map(([agentId, rules]) => [agentId, clone(rules || [])]),
   );
+  state.relayListenersByAgent = new Map(
+    Object.entries(snapshot?.relayListenersByAgent || {}).map(([agentId, listeners]) => [agentId, clone(listeners || [])]),
+  );
   state.managedCertificates = clone(snapshot?.managedCertificates || []);
   state.localAgentState = clone(snapshot?.localAgentState || defaultLocalAgentState());
+  state.versionPolicies = clone(snapshot?.versionPolicies || []);
   state.meta = clone(snapshot?.meta || {});
 }
 
@@ -383,6 +488,49 @@ function saveLocalAgentState(localAgentState) {
   state.localAgentState = normalizeLocalAgentState(nextState);
 }
 
+function loadRelayListenersForAgent(agentId) {
+  ensureInitialized();
+  return clone(state.relayListenersByAgent.get(String(agentId)) || []);
+}
+
+function saveRelayListenersForAgent(agentId, listeners) {
+  ensureInitialized();
+  const key = String(agentId);
+  const nextListeners = Array.isArray(listeners) ? clone(listeners) : [];
+  runWorker("saveRelayListenersForAgent", { dataRoot: state.dataRoot, agentId: key, listeners: nextListeners });
+  state.relayListenersByAgent.set(
+    key,
+    nextListeners.map((listener) => normalizeRelayListener(key, listener)),
+  );
+}
+
+function deleteRelayListenersForAgent(agentId) {
+  ensureInitialized();
+  const key = String(agentId);
+  runWorker("deleteRelayListenersForAgent", { dataRoot: state.dataRoot, agentId: key });
+  state.relayListenersByAgent.delete(key);
+}
+
+function loadVersionPolicies() {
+  ensureInitialized();
+  return clone(state.versionPolicies);
+}
+
+function saveVersionPolicies(policies) {
+  ensureInitialized();
+  const nextPolicies = normalizeVersionPolicies(Array.isArray(policies) ? clone(policies) : []);
+  runWorker("saveVersionPolicies", { dataRoot: state.dataRoot, policies: nextPolicies });
+  state.versionPolicies = nextPolicies;
+}
+
+function loadVersionPolicy() {
+  return loadVersionPolicies()[0] || null;
+}
+
+function saveVersionPolicy(policy) {
+  saveVersionPolicies([normalizeVersionPolicyPayload(clone(policy))]);
+}
+
 function getNextGlobalRevision() {
   ensureInitialized();
 
@@ -404,7 +552,12 @@ function getNextGlobalRevision() {
     0,
   );
 
-  return Math.max(agentMax, localMax, certMax, 0) + 1;
+  const relayMax = [...state.relayListenersByAgent.values()].reduce((max, listeners) => listeners.reduce(
+    (innerMax, listener) => Math.max(innerMax, safeRevision(listener?.revision)),
+    max,
+  ), 0);
+
+  return Math.max(agentMax, localMax, certMax, relayMax, 0) + 1;
 }
 
 function migrateFromJson() {
@@ -416,16 +569,21 @@ function migrateFromJson() {
   const dataPath = (file) => path.join(state.dataRoot, file);
   const agentRulesDir = dataPath("agent_rules");
   const l4RulesDir = dataPath("l4_agent_rules");
+  const relayListenersDir = dataPath("relay_listeners");
 
   const hasAgentsFile = fs.existsSync(dataPath("agents.json"));
   const hasProxyRulesFile = fs.existsSync(dataPath("proxy_rules.json"));
   const hasManagedCertsFile = fs.existsSync(dataPath("managed_certificates.json"));
   const hasLocalStateFile = fs.existsSync(dataPath("local_agent_state.json"));
+  const hasVersionPoliciesFile = fs.existsSync(dataPath("version_policies.json")) || fs.existsSync(dataPath("version_policy.json"));
   const agentRuleFiles = fs.existsSync(agentRulesDir)
     ? fs.readdirSync(agentRulesDir).filter((file) => file.endsWith(".json"))
     : [];
   const l4RuleFiles = fs.existsSync(l4RulesDir)
     ? fs.readdirSync(l4RulesDir).filter((file) => file.endsWith(".json"))
+    : [];
+  const relayListenerFiles = fs.existsSync(relayListenersDir)
+    ? fs.readdirSync(relayListenersDir).filter((file) => file.endsWith(".json"))
     : [];
 
   const hasOldData =
@@ -433,8 +591,10 @@ function migrateFromJson() {
     hasProxyRulesFile ||
     hasManagedCertsFile ||
     hasLocalStateFile ||
+    hasVersionPoliciesFile ||
     agentRuleFiles.length > 0 ||
-    l4RuleFiles.length > 0;
+    l4RuleFiles.length > 0 ||
+    relayListenerFiles.length > 0;
 
   if (!hasOldData) {
     return false;
@@ -448,8 +608,15 @@ function migrateFromJson() {
   const agentIdsFromJson = Array.isArray(agents) ? agents.map((agent) => agent.id) : [];
   const agentIdsFromRuleFiles = agentRuleFiles.map((file) => file.replace(/\.json$/, ""));
   const agentIdsFromL4Files = l4RuleFiles.map((file) => file.replace(/\.json$/, ""));
+  const agentIdsFromRelayListenerFiles = relayListenerFiles.map((file) => file.replace(/\.json$/, ""));
   const allAgentIds = [
-    ...new Set([LOCAL_AGENT_ID, ...agentIdsFromJson, ...agentIdsFromRuleFiles, ...agentIdsFromL4Files]),
+    ...new Set([
+      LOCAL_AGENT_ID,
+      ...agentIdsFromJson,
+      ...agentIdsFromRuleFiles,
+      ...agentIdsFromL4Files,
+      ...agentIdsFromRelayListenerFiles,
+    ]),
   ];
 
   const payload = {
@@ -460,6 +627,8 @@ function migrateFromJson() {
       : defaultLocalAgentState(),
     rulesByAgent: Object.fromEntries(allAgentIds.map((agentId) => [agentId, jsonStorage.loadRulesForAgent(agentId)])),
     l4RulesByAgent: Object.fromEntries(allAgentIds.map((agentId) => [agentId, jsonStorage.loadL4RulesForAgent(agentId)])),
+    relayListenersByAgent: Object.fromEntries(allAgentIds.map((agentId) => [agentId, jsonStorage.loadRelayListenersForAgent(agentId)])),
+    versionPolicies: jsonStorage.loadVersionPolicies(),
   };
 
   const result = runWorker("migrateFromJson", { dataRoot: state.dataRoot, payload });
@@ -495,6 +664,13 @@ module.exports = {
   saveManagedCertificates,
   loadLocalAgentState,
   saveLocalAgentState,
+  loadRelayListenersForAgent,
+  saveRelayListenersForAgent,
+  deleteRelayListenersForAgent,
+  loadVersionPolicies,
+  saveVersionPolicies,
+  loadVersionPolicy,
+  saveVersionPolicy,
   getNextGlobalRevision,
   migrateFromJson,
   close,

@@ -6,16 +6,25 @@ const http = require("http");
 const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
+const tls = require("tls");
+const selfsigned = require("selfsigned");
 const { spawnSync } = require("child_process");
 const storage = require("./storage");
 const {
   normalizeRuleRequestHeaders,
 } = require("./http-rule-request-headers");
+const {
+  normalizeRelayListenerDraft,
+  normalizeRelayListenerPayload,
+} = require("./relay-listener-normalize");
+const { normalizeVersionPolicyPayload } = require("./version-policy-normalize");
 
 const HOST = process.env.PANEL_BACKEND_HOST || "127.0.0.1";
 const PORT = Number(process.env.PANEL_BACKEND_PORT || "18081");
 const DATA_ROOT =
   process.env.PANEL_DATA_ROOT || "/opt/nginx-reverse-emby/panel/data";
+const RELAY_CA_DOMAIN = "__relay-ca.internal";
+const RELAY_CA_TAG = "system:relay-ca";
 const ROLE = normalizeRole(process.env.PANEL_ROLE || "master");
 const RULES_JSON =
   process.env.PANEL_RULES_JSON || path.join(DATA_ROOT, "proxy_rules.json");
@@ -41,8 +50,7 @@ const LOCAL_AGENT_STATE_JSON =
   process.env.PANEL_LOCAL_AGENT_STATE_JSON ||
   path.join(DATA_ROOT, "local_agent_state.json");
 const GENERATOR_SCRIPT =
-  process.env.PANEL_GENERATOR_SCRIPT ||
-  "/docker-entrypoint.d/25-dynamic-reverse-proxy.sh";
+  process.env.PANEL_GENERATOR_SCRIPT || "";
 const MANAGED_CERT_HELPER_SCRIPT =
   process.env.PANEL_MANAGED_CERT_HELPER_SCRIPT ||
   path.resolve(__dirname, "..", "..", "scripts", "managed-cert-helper.sh");
@@ -113,56 +121,32 @@ const LOCAL_AGENT_TAGS = normalizeTags(
 );
 
 const PROJECT_ROOT = path.resolve(__dirname, "..", "..");
+const FRONTEND_DIST_DIR =
+  process.env.PANEL_FRONTEND_DIST_DIR ||
+  path.join(PROJECT_ROOT, "panel", "frontend", "dist");
+const PUBLIC_AGENT_ASSETS_DIR =
+  process.env.PANEL_PUBLIC_AGENT_ASSETS_DIR ||
+  path.join(PROJECT_ROOT, "panel", "public", "agent-assets");
 const PUBLIC_AGENT_ASSETS = {
-  "light-agent.js": {
-    files: [path.join(PROJECT_ROOT, "scripts", "light-agent.js")],
-    contentType: "application/javascript; charset=utf-8",
+  "nre-agent-linux-amd64": {
+    files: [path.join(PUBLIC_AGENT_ASSETS_DIR, "nre-agent-linux-amd64")],
+    contentType: "application/octet-stream",
+    binary: true,
   },
-  "light-agent-apply.sh": {
-    files: [path.join(PROJECT_ROOT, "scripts", "light-agent-apply.sh")],
-    contentType: "application/x-sh; charset=utf-8",
+  "nre-agent-linux-arm64": {
+    files: [path.join(PUBLIC_AGENT_ASSETS_DIR, "nre-agent-linux-arm64")],
+    contentType: "application/octet-stream",
+    binary: true,
   },
-  "25-dynamic-reverse-proxy.sh": {
-    files: [
-      path.join(PROJECT_ROOT, "docker", "25-dynamic-reverse-proxy.sh"),
-      "/docker-entrypoint.d/25-dynamic-reverse-proxy.sh",
-    ],
-    contentType: "application/x-sh; charset=utf-8",
+  "nre-agent-darwin-amd64": {
+    files: [path.join(PUBLIC_AGENT_ASSETS_DIR, "nre-agent-darwin-amd64")],
+    contentType: "application/octet-stream",
+    binary: true,
   },
-  "30-acme-renew.sh": {
-    files: [
-      path.join(PROJECT_ROOT, "docker", "30-acme-renew.sh"),
-      "/docker-entrypoint.d/30-acme-renew.sh",
-    ],
-    contentType: "application/x-sh; charset=utf-8",
-  },
-  "default.conf.template": {
-    files: [
-      path.join(PROJECT_ROOT, "docker", "default.conf.template"),
-      "/etc/nginx/templates/default.conf",
-    ],
-    contentType: "text/plain; charset=utf-8",
-  },
-  "default.direct.no_tls.conf.template": {
-    files: [
-      path.join(PROJECT_ROOT, "docker", "default.direct.no_tls.conf.template"),
-      "/etc/nginx/templates/default.direct.no_tls.conf",
-    ],
-    contentType: "text/plain; charset=utf-8",
-  },
-  "default.direct.tls.conf.template": {
-    files: [
-      path.join(PROJECT_ROOT, "docker", "default.direct.tls.conf.template"),
-      "/etc/nginx/templates/default.direct.tls.conf",
-    ],
-    contentType: "text/plain; charset=utf-8",
-  },
-  "agent.nginx.conf.template": {
-    files: [
-      path.join(PROJECT_ROOT, "docker", "agent.nginx.conf.template"),
-      "/opt/nginx-reverse-emby/nginx/agent.nginx.conf.template",
-    ],
-    contentType: "text/plain; charset=utf-8",
+  "nre-agent-darwin-arm64": {
+    files: [path.join(PUBLIC_AGENT_ASSETS_DIR, "nre-agent-darwin-arm64")],
+    contentType: "application/octet-stream",
+    binary: true,
   },
 };
 let isManagedCertificateRenewRunning = false;
@@ -220,23 +204,27 @@ function removePath(targetPath) {
   }
 }
 
-function sendJson(res, statusCode, payload) {
-  const body = Buffer.from(JSON.stringify(payload), "utf8");
-  res.writeHead(statusCode, {
-    "Content-Type": "application/json; charset=utf-8",
-    "Content-Length": String(body.length),
-  });
-  res.end(body);
-}
-
-function sendText(res, statusCode, body, contentType = "text/plain; charset=utf-8") {
-  const payload = Buffer.from(String(body), "utf8");
+function sendBody(res, statusCode, body, contentType, extraHeaders = {}) {
+  const payload = Buffer.isBuffer(body) ? body : Buffer.from(String(body), "utf8");
   res.writeHead(statusCode, {
     "Content-Type": contentType,
     "Content-Length": String(payload.length),
-    "Cache-Control": "no-store",
+    ...extraHeaders,
   });
   res.end(payload);
+}
+
+function sendJson(res, statusCode, payload) {
+  sendBody(
+    res,
+    statusCode,
+    JSON.stringify(payload),
+    "application/json; charset=utf-8",
+  );
+}
+
+function sendText(res, statusCode, body, contentType = "text/plain; charset=utf-8") {
+  sendBody(res, statusCode, body, contentType, { "Cache-Control": "no-store" });
 }
 
 function errorPayload(message, details) {
@@ -310,7 +298,7 @@ function readPublicAgentAsset(assetName) {
   return {
     ...asset,
     file: assetFile,
-    body: fs.readFileSync(assetFile, "utf8"),
+    body: asset.binary ? fs.readFileSync(assetFile) : fs.readFileSync(assetFile, "utf8"),
   };
 }
 
@@ -322,6 +310,65 @@ function buildJoinAgentScript(req) {
     .readFileSync(joinScriptPath, "utf8")
     .replace(/__DEFAULT_MASTER_URL__/g, escapeForDoubleQuotedShell(baseUrl))
     .replace(/__DEFAULT_ASSET_BASE_URL__/g, escapeForDoubleQuotedShell(assetBaseUrl));
+}
+
+function getStaticContentType(filePath) {
+  switch (path.extname(filePath).toLowerCase()) {
+    case ".css":
+      return "text/css; charset=utf-8";
+    case ".html":
+      return "text/html; charset=utf-8";
+    case ".ico":
+      return "image/x-icon";
+    case ".js":
+      return "application/javascript; charset=utf-8";
+    case ".json":
+      return "application/json; charset=utf-8";
+    case ".png":
+      return "image/png";
+    case ".svg":
+      return "image/svg+xml";
+    case ".txt":
+      return "text/plain; charset=utf-8";
+    default:
+      return "application/octet-stream";
+  }
+}
+
+function tryServeFrontend(req, res, urlPath) {
+  if ((req.method !== "GET" && req.method !== "HEAD") || !fs.existsSync(FRONTEND_DIST_DIR)) {
+    return false;
+  }
+
+  const relativePath =
+    urlPath === "/" ? "index.html" : urlPath.replace(/^\/+/, "");
+  const requestedFile = path.resolve(FRONTEND_DIST_DIR, relativePath);
+  const distRoot = path.resolve(FRONTEND_DIST_DIR);
+  if (!requestedFile.startsWith(`${distRoot}${path.sep}`) && requestedFile !== distRoot) {
+    sendJson(res, 403, errorPayload("forbidden"));
+    return true;
+  }
+
+  if (fs.existsSync(requestedFile) && fs.statSync(requestedFile).isFile()) {
+    sendBody(res, 200, fs.readFileSync(requestedFile), getStaticContentType(requestedFile), {
+      "Cache-Control": "public, max-age=300",
+    });
+    return true;
+  }
+
+  if (path.extname(relativePath)) {
+    return false;
+  }
+
+  const indexFile = path.join(FRONTEND_DIST_DIR, "index.html");
+  if (!fs.existsSync(indexFile)) {
+    return false;
+  }
+
+  sendBody(res, 200, fs.readFileSync(indexFile), "text/html; charset=utf-8", {
+    "Cache-Control": "no-store",
+  });
+  return true;
 }
 
 function parseJsonBody(req) {
@@ -419,18 +466,84 @@ function getHighestRuleRevision(rules = []) {
   );
 }
 
+function normalizeHttpRuleBackends(backends, fallbackBackendUrl) {
+  const source = Array.isArray(backends) ? backends : [];
+  const normalized = [];
+  for (const backend of source) {
+    const urlCandidate =
+      backend && typeof backend === "object" && backend.url !== undefined
+        ? backend.url
+        : backend;
+    if (urlCandidate === undefined || urlCandidate === null) {
+      continue;
+    }
+    const url = String(urlCandidate).trim();
+    if (!validateUrl(url)) {
+      throw new Error("frontend_url and backend_url/backends[].url must be valid http/https URLs");
+    }
+    normalized.push({ url });
+  }
+
+  if (normalized.length > 0) {
+    return normalized;
+  }
+
+  const legacy = String(fallbackBackendUrl || "").trim();
+  if (!validateUrl(legacy)) {
+    throw new Error("frontend_url and backend_url/backends[].url must be valid http/https URLs");
+  }
+  return [{ url: legacy }];
+}
+
+function normalizeHttpRuleLoadBalancing(value, fallback = "round_robin") {
+  const rawStrategy =
+    value && typeof value === "object" && value.strategy !== undefined
+      ? value.strategy
+      : fallback;
+  const strategy = String(rawStrategy || "round_robin").trim().toLowerCase();
+  return {
+    strategy: strategy === "random" ? "random" : "round_robin",
+  };
+}
+
 function normalizeRulePayload(body, fallback = {}, suggestedId = null) {
   const frontend =
     body.frontend_url !== undefined
       ? String(body.frontend_url).trim()
       : fallback.frontend_url;
-  const backend =
-    body.backend_url !== undefined
-      ? String(body.backend_url).trim()
-      : fallback.backend_url;
+  const hasFallbackBackends = Array.isArray(fallback.backends) && fallback.backends.length > 0;
+  const fallbackFirstBackendUrl = hasFallbackBackends
+    ? String(fallback.backends[0]?.url || "").trim()
+    : String(fallback.backend_url || "").trim();
+  const fallbackIsMultiBackend = hasFallbackBackends && fallback.backends.length > 1;
+  let backendSource;
+  if (Array.isArray(body.backends)) {
+    if (body.backends.length > 0) {
+      backendSource = body.backends;
+    } else if (body.backend_url !== undefined) {
+      backendSource = [{ url: body.backend_url }];
+    } else if (hasFallbackBackends) {
+      backendSource = fallback.backends;
+    } else {
+      backendSource = [{ url: fallback.backend_url }];
+    }
+  } else if (body.backend_url !== undefined) {
+    const requestedBackendUrl = String(body.backend_url).trim();
+    const backendUrlChanged = requestedBackendUrl !== fallbackFirstBackendUrl;
+    const shouldForceSingleBackend = backendUrlChanged || !fallbackIsMultiBackend;
+    backendSource = shouldForceSingleBackend
+      ? [{ url: requestedBackendUrl }]
+      : fallback.backends;
+  } else if (hasFallbackBackends) {
+    backendSource = fallback.backends;
+  } else {
+    backendSource = [{ url: fallback.backend_url }];
+  }
+  const backends = normalizeHttpRuleBackends(backendSource, fallback.backend_url);
+  const backend = backends[0].url;
 
-  if (!validateUrl(frontend) || !validateUrl(backend)) {
-    throw new Error("frontend_url and backend_url must be valid http/https URLs");
+  if (!validateUrl(frontend)) {
+    throw new Error("frontend_url and backend_url/backends[].url must be valid http/https URLs");
   }
 
   const parsedId =
@@ -440,6 +553,10 @@ function normalizeRulePayload(body, fallback = {}, suggestedId = null) {
         ? Number(fallback.id)
         : Number(suggestedId);
   const headerConfig = normalizeRuleRequestHeaders(body, fallback);
+  const relayChain = normalizeRelayChainPayload(
+    body.relay_chain !== undefined ? body.relay_chain : fallback.relay_chain,
+    { protocol: "tcp" },
+  );
 
   return {
     id:
@@ -456,8 +573,114 @@ function normalizeRulePayload(body, fallback = {}, suggestedId = null) {
       body.proxy_redirect !== undefined
         ? !!body.proxy_redirect
         : fallback.proxy_redirect !== false,
+    backends,
+    load_balancing: normalizeHttpRuleLoadBalancing(
+      body.load_balancing !== undefined ? body.load_balancing : fallback.load_balancing,
+      fallback?.load_balancing?.strategy || "round_robin",
+    ),
+    relay_chain: relayChain,
     ...headerConfig,
   };
+}
+
+function normalizeRelayChainPayload(value, options = {}) {
+  const relayChain = Array.isArray(value)
+    ? value
+    : value === undefined || value === null || value === ""
+      ? []
+      : [value];
+  const normalized = [];
+  const seen = new Set();
+  for (const entry of relayChain) {
+    const parsed = Number(entry);
+    if (!Number.isInteger(parsed) || parsed <= 0) {
+      throw new Error("relay_chain entries must be positive integer listener IDs");
+    }
+    if (seen.has(parsed)) {
+      throw new Error("relay_chain entries must not contain duplicates");
+    }
+    seen.add(parsed);
+    normalized.push(parsed);
+  }
+
+  const protocol = String(options.protocol || "tcp").trim().toLowerCase();
+  if (protocol !== "tcp" && normalized.length > 0) {
+    throw new Error("relay_chain is only supported for tcp protocol");
+  }
+  if (normalized.length === 0) {
+    return [];
+  }
+
+  const relayListeners = listAllRelayListenersById();
+  for (const listenerId of normalized) {
+    const listener = relayListeners.get(listenerId);
+    if (!listener) {
+      throw new Error(`relay listener not found: ${listenerId}`);
+    }
+    if (listener.enabled === false) {
+      throw new Error(`relay listener is disabled: ${listenerId}`);
+    }
+    const ownerAgent = getAgentById(String(listener.agent_id || ""));
+    if (!ownerAgent) {
+      throw new Error(`relay listener belongs to unknown agent: ${listenerId}`);
+    }
+  }
+  return normalized;
+}
+
+function listAllRelayListenersById() {
+  const listenersById = new Map();
+  for (const agentId of getAllKnownAgentIds()) {
+    const listeners = storage.loadRelayListenersForAgent(agentId);
+    for (const listener of Array.isArray(listeners) ? listeners : []) {
+      const parsedId = Number(listener?.id);
+      if (!Number.isInteger(parsedId) || parsedId <= 0) {
+        continue;
+      }
+      listenersById.set(parsedId, listener);
+    }
+  }
+  return listenersById;
+}
+
+function getAllKnownAgentIds() {
+  const candidateAgentIds = new Set();
+  if (LOCAL_AGENT_ENABLED) {
+    candidateAgentIds.add(LOCAL_AGENT_ID);
+  }
+  for (const agent of storage.loadRegisteredAgents()) {
+    const agentId = String(agent?.id || "").trim();
+    if (agentId) {
+      candidateAgentIds.add(agentId);
+    }
+  }
+  return candidateAgentIds;
+}
+
+function findRelayListenerReferenceAcrossAgents(listenerId, options = {}) {
+  const excludeAgentIds = new Set(
+    (Array.isArray(options.excludeAgentIds) ? options.excludeAgentIds : [])
+      .map((id) => String(id || "").trim())
+      .filter(Boolean),
+  );
+  for (const knownAgentId of getAllKnownAgentIds()) {
+    if (excludeAgentIds.has(String(knownAgentId))) {
+      continue;
+    }
+    const inUseByHttp = loadNormalizedRulesForAgent(knownAgentId).find((rule) =>
+      Array.isArray(rule.relay_chain) && rule.relay_chain.includes(listenerId),
+    );
+    if (inUseByHttp) {
+      return { protocol: "http", agentId: knownAgentId, ruleId: inUseByHttp.id };
+    }
+    const inUseByL4 = storage.loadL4RulesForAgent(knownAgentId).find((rule) =>
+      Array.isArray(rule.relay_chain) && rule.relay_chain.includes(listenerId),
+    );
+    if (inUseByL4) {
+      return { protocol: "l4", agentId: knownAgentId, ruleId: inUseByL4.id };
+    }
+  }
+  return null;
 }
 
 function isProxyHeadersGloballyDisabled() {
@@ -491,6 +714,7 @@ function validateManagedCertificateHost(value, options = {}) {
   const { allowWildcard = false } = options;
   const host = normalizeHost(value);
   if (!host) return false;
+  if (host === RELAY_CA_DOMAIN) return true;
   if (allowWildcard && isWildcardDomain(host)) return true;
   return validateNetworkHost(host);
 }
@@ -701,32 +925,21 @@ function normalizeL4Backends(backends, fallbackUpstreamHost, fallbackUpstreamPor
     const host = normalizeHost(b?.host || b?.address || "");
     const port = Number(b?.port) || Number(fallbackUpstreamPort) || 0;
     if (!host || !port) continue;
-    const weight = Number(b?.weight) || 1;
-    // Auto-detect resolve for domain hosts; explicit value takes precedence
-    const autoResolve = !isIpAddress(host);
-    const resolve = b?.resolve !== undefined
-      ? (b.resolve === true || String(b.resolve).toLowerCase() === "true")
-      : autoResolve;
-    const backup = b?.backup === true || String(b?.backup || "").toLowerCase() === "true";
-    const rawMaxConns = b?.max_conns !== undefined && b?.max_conns !== null && b?.max_conns !== "" ? Number(b.max_conns) : 0;
-    if (b?.max_conns !== undefined && b?.max_conns !== null && b?.max_conns !== "" && (!Number.isInteger(rawMaxConns) || rawMaxConns < 0)) {
-      throw new Error(`backends[].max_conns must be a non-negative integer, got: ${b.max_conns}`);
-    }
-    validBackends.push({ host, port, weight, resolve, backup, max_conns: rawMaxConns });
+    validBackends.push({ host, port });
   }
   return validBackends;
 }
 
 function normalizeL4LoadBalancing(lb, defaultStrategy = "round_robin") {
-  const strategy = String(lb?.strategy !== undefined ? lb.strategy : defaultStrategy).toLowerCase();
-  const validStrategies = ["round_robin", "least_conn", "random", "hash"];
-  const normalizedStrategy = validStrategies.includes(strategy) ? strategy : "round_robin";
-  const hashKey = normalizedStrategy === "hash" ? String(lb?.hash_key || "$binary_remote_addr") : undefined;
-  const zoneSize = String(lb?.zone_size || "128k");
+  const strategy = String(
+    lb?.strategy !== undefined ? lb.strategy : defaultStrategy,
+  )
+    .trim()
+    .toLowerCase();
+  const normalizedStrategy =
+    strategy === "random" || strategy === "round_robin" ? strategy : "round_robin";
   return {
     strategy: normalizedStrategy,
-    hash_key: hashKey,
-    zone_size: zoneSize,
   };
 }
 
@@ -783,10 +996,6 @@ function normalizeL4RulePayload(body, fallback = {}, suggestedId = null) {
     backends.push({
       host: legacyUpstreamHost,
       port: legacyUpstreamPort,
-      weight: 1,
-      resolve: !isIpAddress(legacyUpstreamHost),
-      backup: false,
-      max_conns: 0,
     });
   }
 
@@ -800,17 +1009,16 @@ function normalizeL4RulePayload(body, fallback = {}, suggestedId = null) {
     "round_robin",
   );
 
-  // Validate backup compatibility: only round_robin and least_conn support backup
-  const hasBackupBackend = backends.some((b) => b.backup === true);
-  if (hasBackupBackend && !["round_robin", "least_conn"].includes(loadBalancing.strategy)) {
-    throw new Error(
-      `backup backends are not supported with ${loadBalancing.strategy} strategy (only round_robin and least_conn)`
-    );
-  }
-
   // Normalize tuning: merge user input over defaults
   const rawTuning = body?.tuning !== undefined ? body.tuning : fallback?.tuning;
   const tuning = normalizeL4Tuning(rawTuning, protocol);
+  if (protocol === "udp" && (tuning.proxy_protocol.decode || tuning.proxy_protocol.send)) {
+    throw new Error("udp rules do not support tuning.proxy_protocol");
+  }
+  const relayChain = normalizeRelayChainPayload(
+    body.relay_chain !== undefined ? body.relay_chain : fallback.relay_chain,
+    { protocol },
+  );
 
   return {
     id:
@@ -828,6 +1036,7 @@ function normalizeL4RulePayload(body, fallback = {}, suggestedId = null) {
     backends,
     load_balancing: loadBalancing,
     tuning,
+    relay_chain: relayChain,
     enabled:
       body.enabled !== undefined ? !!body.enabled : fallback.enabled !== false,
     tags:
@@ -836,9 +1045,128 @@ function normalizeL4RulePayload(body, fallback = {}, suggestedId = null) {
 }
 
 function normalizeStoredL4Rule(rule, suggestedId = null) {
-  const normalized = normalizeL4RulePayload(rule || {}, rule || {}, suggestedId);
+  const source = rule && typeof rule === "object" ? rule : {};
+  const protocol = String(source.protocol || "").trim().toLowerCase();
+  const safeSource =
+    protocol === "udp"
+      ? {
+          ...source,
+          relay_chain: [],
+          tuning: {
+            ...(source.tuning && typeof source.tuning === "object" ? source.tuning : {}),
+            proxy_protocol: {
+              decode: false,
+              send: false,
+            },
+          },
+        }
+      : source;
+  const normalized = normalizeL4RulePayload(safeSource, safeSource, suggestedId);
   normalized.revision = normalizeL4RuleRevision(rule?.revision);
   return normalized;
+}
+
+function normalizeStoredL4RuleLenient(rule, suggestedId = null) {
+  try {
+    return normalizeStoredL4Rule(rule, suggestedId);
+  } catch (_) {
+    const source = rule && typeof rule === "object" ? rule : {};
+    const protocol = String(source.protocol || "").trim().toLowerCase() === "udp" ? "udp" : "tcp";
+    const listenHost = normalizeHost(source.listen_host);
+    const listenPort = Number(source.listen_port);
+    const backends = normalizeL4Backends(source.backends, source.upstream_host, source.upstream_port);
+    const tuningSource =
+      protocol === "udp"
+        ? {
+            ...(source.tuning && typeof source.tuning === "object" ? source.tuning : {}),
+            proxy_protocol: {
+              decode: false,
+              send: false,
+            },
+          }
+        : source.tuning;
+
+    let tuning;
+    try {
+      tuning = normalizeL4Tuning(tuningSource, protocol);
+    } catch (_) {
+      tuning = buildDefaultL4Tuning(protocol);
+    }
+
+    let relayChain;
+    try {
+      relayChain = normalizeRelayChainPayload(source.relay_chain, { protocol });
+    } catch (_) {
+      relayChain = [];
+    }
+
+    return {
+      id:
+        Number.isFinite(Number(source.id)) && Number(source.id) > 0
+          ? Number(source.id)
+          : Number(suggestedId) || 1,
+      name:
+        String(source.name || "").trim() ||
+        `${protocol.toUpperCase()} ${validatePort(listenPort) ? listenPort : "deleted"}`,
+      protocol,
+      listen_host: validateNetworkHost(listenHost) ? listenHost : "0.0.0.0",
+      listen_port: validatePort(listenPort) ? listenPort : 0,
+      upstream_host: backends[0]?.host || normalizeHost(source.upstream_host) || "",
+      upstream_port:
+        backends[0]?.port || (validatePort(Number(source.upstream_port)) ? Number(source.upstream_port) : 0),
+      backends,
+      load_balancing: normalizeL4LoadBalancing(source.load_balancing, "round_robin"),
+      tuning,
+      relay_chain: relayChain,
+      enabled: source.enabled !== false,
+      tags: normalizeTags(source.tags || []),
+      revision: normalizeL4RuleRevision(source.revision),
+    };
+  }
+}
+
+function cloneSerializable(value) {
+  if (value === undefined) return undefined;
+  return JSON.parse(JSON.stringify(value));
+}
+
+function preserveLegacyTcpFieldsOnPartialUpdate(existingRule, body, nextRule) {
+  const source = existingRule && typeof existingRule === "object" ? existingRule : {};
+  const protocol = String(source.protocol || "").trim().toLowerCase();
+  if (protocol !== "tcp") {
+    return nextRule;
+  }
+
+  let fallbackNormalized;
+  try {
+    fallbackNormalized = normalizeStoredL4Rule(source, source.id);
+  } catch (_) {
+    return nextRule;
+  }
+  const normalizedUnchanged =
+    nextRule.protocol === fallbackNormalized.protocol &&
+    nextRule.listen_host === fallbackNormalized.listen_host &&
+    nextRule.listen_port === fallbackNormalized.listen_port &&
+    nextRule.upstream_host === fallbackNormalized.upstream_host &&
+    nextRule.upstream_port === fallbackNormalized.upstream_port &&
+    JSON.stringify(nextRule.backends) === JSON.stringify(fallbackNormalized.backends) &&
+    JSON.stringify(nextRule.load_balancing) === JSON.stringify(fallbackNormalized.load_balancing) &&
+    JSON.stringify(nextRule.tuning) === JSON.stringify(fallbackNormalized.tuning) &&
+    JSON.stringify(nextRule.relay_chain) === JSON.stringify(fallbackNormalized.relay_chain);
+  if (!normalizedUnchanged) {
+    return nextRule;
+  }
+
+  const merged = { ...nextRule };
+  if (source.backends !== undefined) merged.backends = cloneSerializable(source.backends);
+  if (source.load_balancing !== undefined) {
+    merged.load_balancing = cloneSerializable(source.load_balancing);
+  }
+  if (source.tuning !== undefined) merged.tuning = cloneSerializable(source.tuning);
+  if (source.relay_chain !== undefined) merged.relay_chain = cloneSerializable(source.relay_chain);
+  if (source.upstream_host !== undefined) merged.upstream_host = String(source.upstream_host || "");
+  if (source.upstream_port !== undefined) merged.upstream_port = Number(source.upstream_port) || 0;
+  return merged;
 }
 
 function getHighestL4RuleRevision(rules = []) {
@@ -848,13 +1176,50 @@ function getHighestL4RuleRevision(rules = []) {
   );
 }
 
+function getHighestRelayListenerRevision(listeners = []) {
+  return (Array.isArray(listeners) ? listeners : []).reduce(
+    (max, listener) => Math.max(max, normalizeRevision(listener?.revision)),
+    0,
+  );
+}
+
+function getNextRelayListenerId() {
+  let maxId = 0;
+  const candidateAgentIds = new Set();
+  if (LOCAL_AGENT_ENABLED) {
+    candidateAgentIds.add(LOCAL_AGENT_ID);
+  }
+  for (const agent of storage.loadRegisteredAgents()) {
+    const agentId = String(agent?.id || "").trim();
+    if (agentId) {
+      candidateAgentIds.add(agentId);
+    }
+  }
+  for (const agentId of candidateAgentIds) {
+    const listeners = storage.loadRelayListenersForAgent(agentId);
+    for (const listener of Array.isArray(listeners) ? listeners : []) {
+      maxId = Math.max(maxId, Number(listener?.id) || 0);
+    }
+  }
+  return maxId + 1;
+}
+
 function ensureUniqueL4Listen(rules, nextRule, excludeId = null) {
-  const conflict = (Array.isArray(rules) ? rules : []).find((rule) => {
+  const conflict = (Array.isArray(rules) ? rules : []).find((rule, index) => {
     if (!rule || Number(rule.id) === Number(excludeId)) return false;
+    let comparableRule;
+    try {
+      comparableRule = normalizeStoredL4Rule(
+        rule,
+        Number.isFinite(Number(rule?.id)) && Number(rule.id) > 0 ? Number(rule.id) : index + 1,
+      );
+    } catch (_) {
+      return false;
+    }
     return (
-      String(rule.protocol || "tcp") === String(nextRule.protocol || "tcp") &&
-      normalizeHost(rule.listen_host) === normalizeHost(nextRule.listen_host) &&
-      Number(rule.listen_port) === Number(nextRule.listen_port)
+      String(comparableRule.protocol || "tcp") === String(nextRule.protocol || "tcp") &&
+      normalizeHost(comparableRule.listen_host) === normalizeHost(nextRule.listen_host) &&
+      Number(comparableRule.listen_port) === Number(nextRule.listen_port)
     );
   });
   if (conflict) {
@@ -974,6 +1339,28 @@ function normalizeAgentManagedCertificateReportPayload(value = {}) {
   };
 }
 
+function normalizeManagedCertificateUsage(value, fallback = "https") {
+  const next = String(value === undefined ? fallback : value || "")
+    .trim()
+    .toLowerCase();
+  const allowed = new Set(["https", "relay_tunnel", "relay_ca", "mixed"]);
+  if (!allowed.has(next)) {
+    throw new Error("usage must be https, relay_tunnel, relay_ca, or mixed");
+  }
+  return next;
+}
+
+function normalizeManagedCertificateType(value, fallback = "acme") {
+  const next = String(value === undefined ? fallback : value || "")
+    .trim()
+    .toLowerCase();
+  const allowed = new Set(["acme", "uploaded", "internal_ca"]);
+  if (!allowed.has(next)) {
+    throw new Error("certificate_type must be acme, uploaded, or internal_ca");
+  }
+  return next;
+}
+
 function normalizeManagedCertificatePayload(body, fallback = {}, suggestedId = null) {
   const domain = normalizeHost(
     body.domain !== undefined ? body.domain : fallback.domain,
@@ -1057,6 +1444,101 @@ function normalizeManagedCertificatePayload(body, fallback = {}, suggestedId = n
         : normalizeManagedCertificateAcmeInfo(fallback.acme_info || {}),
     tags:
       body.tags !== undefined ? normalizeTags(body.tags) : normalizeTags(fallback.tags || []),
+    usage: normalizeManagedCertificateUsage(
+      body.usage !== undefined ? body.usage : fallback.usage,
+      "https",
+    ),
+    certificate_type: normalizeManagedCertificateType(
+      body.certificate_type !== undefined ? body.certificate_type : fallback.certificate_type,
+      "acme",
+    ),
+    self_signed:
+      body.self_signed !== undefined
+        ? !!body.self_signed
+        : fallback.self_signed === true,
+  };
+}
+
+function findGlobalRelayCA() {
+  return (
+    storage
+      .loadManagedCertificates()
+      .find((cert) => isSystemRelayCA(cert)) || null
+  );
+}
+
+function isRelayCACandidateForStartup(cert) {
+  if (!cert) return false;
+  return (
+    normalizeHost(cert.domain || "").toLowerCase() === RELAY_CA_DOMAIN ||
+    cert.usage === "relay_ca" ||
+    hasManagedCertificateTag(cert, RELAY_CA_TAG)
+  );
+}
+
+function buildGlobalRelayCAPayload(nextId) {
+  return normalizeManagedCertificatePayload(
+    {
+      id: nextId,
+      domain: RELAY_CA_DOMAIN,
+      enabled: true,
+      scope: "domain",
+      issuer_mode: "local_http01",
+      usage: "relay_ca",
+      certificate_type: "internal_ca",
+      self_signed: true,
+      target_agent_ids: LOCAL_AGENT_ENABLED ? [LOCAL_AGENT_ID] : [],
+      tags: [RELAY_CA_TAG, "system"],
+    },
+    {},
+    nextId,
+  );
+}
+
+function buildCanonicalGlobalRelayCA(existingCert, certId) {
+  return normalizeManagedCertificatePayload(
+    {
+      ...(existingCert || {}),
+      id: certId,
+      domain: RELAY_CA_DOMAIN,
+      enabled: true,
+      scope: "domain",
+      issuer_mode: "local_http01",
+      usage: "relay_ca",
+      certificate_type: "internal_ca",
+      self_signed: true,
+      target_agent_ids: LOCAL_AGENT_ENABLED ? [LOCAL_AGENT_ID] : [],
+      tags: [RELAY_CA_TAG, "system"],
+    },
+    existingCert || {},
+    certId,
+  );
+}
+
+function extractManagedCertificateInvariantFields(cert, certId) {
+  const source = cert && typeof cert === "object" ? cert : {};
+  const hasExplicitEnabled = Object.prototype.hasOwnProperty.call(source, "enabled");
+  return {
+    domain: normalizeHost(source.domain || "").toLowerCase(),
+    enabled:
+      typeof source.enabled === "boolean"
+        ? source.enabled
+        : hasExplicitEnabled
+          ? source.enabled
+          : true,
+    scope: String(source.scope || "").trim().toLowerCase(),
+    issuer_mode: String(source.issuer_mode || "").trim().toLowerCase(),
+    usage: String(source.usage || "").trim().toLowerCase(),
+    certificate_type: String(source.certificate_type || "").trim().toLowerCase(),
+    self_signed: source.self_signed === true,
+    target_agent_ids: [
+      ...new Set(
+        (Array.isArray(source.target_agent_ids) ? source.target_agent_ids : [])
+          .map((item) => String(item || "").trim())
+          .filter(Boolean),
+      ),
+    ],
+    tags: normalizeTags(source.tags || []),
   };
 }
 
@@ -1139,8 +1621,54 @@ function hasManagedCertificateTag(cert, tag) {
   return Array.isArray(cert?.tags) && cert.tags.includes(tag);
 }
 
+function isSystemRelayCA(cert) {
+  return (
+    cert &&
+    cert.usage === "relay_ca" &&
+    cert.certificate_type === "internal_ca" &&
+    hasManagedCertificateTag(cert, RELAY_CA_TAG)
+  );
+}
+
+function usesReservedSystemRelayCAIdentity(cert) {
+  if (!cert) return false;
+  return normalizeHost(cert.domain || "").toLowerCase() === RELAY_CA_DOMAIN || hasManagedCertificateTag(cert, RELAY_CA_TAG);
+}
+
+function assertManagedCertificateMutationAllowed(previousCert, nextCert) {
+  if (isSystemRelayCA(previousCert)) {
+    throw new Error("system relay ca is managed automatically");
+  }
+  if (nextCert?.usage === "relay_ca") {
+    throw new Error("relay ca certificates are managed automatically");
+  }
+  if (usesReservedSystemRelayCAIdentity(nextCert)) {
+    throw new Error("relay ca domain and system tag are reserved for the system relay ca");
+  }
+}
+
+function assertCertificateIsNotSystemRelayCA(cert) {
+  if (isSystemRelayCA(cert)) {
+    throw new Error("system relay ca cannot be deleted");
+  }
+}
+
 function isAutoManagedCertificate(cert) {
   return hasManagedCertificateTag(cert, "auto");
+}
+
+function hasRelayListenerCertificateTag(cert, listenerId) {
+  return hasManagedCertificateTag(cert, `listener:${Number(listenerId)}`);
+}
+
+function isAutoRelayListenerCertificate(cert, listenerId = null) {
+  return (
+    cert &&
+    cert.usage === "relay_tunnel" &&
+    cert.certificate_type === "internal_ca" &&
+    hasManagedCertificateTag(cert, "auto") &&
+    (listenerId == null || hasRelayListenerCertificateTag(cert, listenerId))
+  );
 }
 
 function hasManagedCertificateAutoTarget(cert, agentId) {
@@ -1187,6 +1715,298 @@ function chooseAutoManagedCertificateIssuerMode(agent, host, scope) {
     return "local_http01";
   }
   throw new Error(`no available unified certificate issuer for ${host}`);
+}
+
+function normalizeRelayListenerAutoDomainLabel(value, fallback) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return normalized || fallback;
+}
+
+function relayListenerAutoCertificateDomain(listener, agentId) {
+  const agentLabel = normalizeRelayListenerAutoDomainLabel(agentId, "agent");
+  const endpointHost =
+    String(listener?.public_host || "").trim() ||
+    String(Array.isArray(listener?.bind_hosts) ? listener.bind_hosts[0] : "").trim() ||
+    String(listener?.listen_host || "").trim();
+  const hostLabel = normalizeRelayListenerAutoDomainLabel(endpointHost, "listener");
+  const listenerId = Number(listener?.id);
+  if (!Number.isInteger(listenerId) || listenerId <= 0) {
+    throw new Error("relay listener id is required for auto-issued certificate identity");
+  }
+  const nonce = String(crypto.randomUUID()).replace(/-/g, "").slice(0, 12).toLowerCase();
+  return `listener-${listenerId}.${hostLabel}.${agentLabel}-${nonce}.relay.internal`;
+}
+
+function splitPEMCertificates(certPEM) {
+  return String(certPEM || "").match(/-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g) || [];
+}
+
+function readLeafCertificate(certPEM) {
+  const [leafPEM = ""] = splitPEMCertificates(certPEM);
+  if (!leafPEM) {
+    throw new Error("listener certificate leaf PEM not found");
+  }
+  return new crypto.X509Certificate(leafPEM);
+}
+
+function tryReadLeafCertificate(certPEM) {
+  try {
+    return readLeafCertificate(certPEM);
+  } catch (_) {
+    return null;
+  }
+}
+
+function deriveRelayPinSetFromCertificate(certPEM) {
+  const leaf = readLeafCertificate(certPEM);
+  const spkiDer = leaf.publicKey.export({ type: "spki", format: "der" });
+  return [
+    {
+      type: "spki_sha256",
+      value: crypto.createHash("sha256").update(spkiDer).digest("base64"),
+    },
+  ];
+}
+
+function certificateChainUsesRelayCA(material, relayCA) {
+  if (!material?.cert_pem || !relayCA) {
+    return false;
+  }
+  const relayCAMaterial = readManagedCertificateMaterial(relayCA.domain);
+  const relayCACert = tryReadLeafCertificate(relayCAMaterial?.cert_pem || "");
+  if (!relayCACert) {
+    return false;
+  }
+  try {
+    const chain = splitPEMCertificates(material.cert_pem).map((pem) => new crypto.X509Certificate(pem));
+    if (chain.length === 1) {
+      return chain[0].verify(relayCACert.publicKey);
+    }
+    if (chain.length < 2) {
+      return false;
+    }
+    const root = chain[chain.length - 1];
+    if (root.fingerprint256 !== relayCACert.fingerprint256) {
+      return false;
+    }
+    for (let index = 0; index < chain.length - 1; index += 1) {
+      if (!chain[index].verify(chain[index + 1].publicKey)) {
+        return false;
+      }
+    }
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function deriveRelayTrustMaterial(listener, certificate) {
+  const material = readManagedCertificateMaterial(certificate?.domain);
+  const relayCA = findGlobalRelayCA();
+  const pinSet = material?.cert_pem ? deriveRelayPinSetFromCertificate(material.cert_pem) : [];
+  const trustedCAIds =
+    relayCA && certificateChainUsesRelayCA(material, relayCA) ? [relayCA.id] : [];
+  if (pinSet.length > 0 && trustedCAIds.length > 0) {
+    return {
+      tls_mode: "pin_and_ca",
+      pin_set: pinSet,
+      trusted_ca_certificate_ids: trustedCAIds,
+      allow_self_signed: true,
+    };
+  }
+  if (pinSet.length > 0) {
+    return {
+      tls_mode: "pin_only",
+      pin_set: pinSet,
+      trusted_ca_certificate_ids: [],
+      allow_self_signed: certificate?.self_signed === true,
+    };
+  }
+  if (trustedCAIds.length > 0) {
+    return {
+      tls_mode: "ca_only",
+      pin_set: [],
+      trusted_ca_certificate_ids: trustedCAIds,
+      allow_self_signed: true,
+    };
+  }
+  throw new Error(`unable to derive relay listener trust material for listener ${listener?.id}`);
+}
+
+function shouldAutoIssueRelayListenerCertificate(body, draftListener, previousListener = null) {
+  const certificateSource = String(body?.certificate_source || "").trim().toLowerCase();
+  if (draftListener?.enabled === false) {
+    return false;
+  }
+  if (certificateSource) {
+    return certificateSource === "auto_relay_ca" && draftListener?.certificate_id == null;
+  }
+  if (!previousListener) {
+    return false;
+  }
+  const previousCert = getManagedCertificateById(previousListener.certificate_id);
+  return isAutoRelayListenerCertificate(previousCert, previousListener.id) && draftListener?.certificate_id == null;
+}
+
+function findRelayListenersReferencingCertificate(certId, options = {}) {
+  const excludeListenerIds = new Set(
+    (Array.isArray(options.excludeListenerIds) ? options.excludeListenerIds : [])
+      .map((id) => Number(id))
+      .filter((id) => Number.isInteger(id) && id > 0),
+  );
+  const references = [];
+  for (const agentId of getAllKnownAgentIds()) {
+    const listeners = storage.loadRelayListenersForAgent(agentId);
+    for (const listener of Array.isArray(listeners) ? listeners : []) {
+      const listenerId = Number(listener?.id);
+      if (!Number.isInteger(listenerId) || listenerId <= 0 || excludeListenerIds.has(listenerId)) {
+        continue;
+      }
+      if (Number(listener?.certificate_id) !== Number(certId)) {
+        continue;
+      }
+      references.push({
+        agentId,
+        listenerId,
+        listener,
+      });
+    }
+  }
+  return references;
+}
+
+function assertManagedCertificateNotReferencedByRelayListener(cert) {
+  if (!isAutoRelayListenerCertificate(cert)) {
+    return;
+  }
+  const [reference] = findRelayListenersReferencingCertificate(cert.id);
+  if (!reference) {
+    return;
+  }
+  throw new Error(
+    `certificate ${cert.id} is referenced by relay listener ${reference.listenerId} on agent ${reference.agentId}`,
+  );
+}
+
+async function cleanupUnusedAutoRelayListenerCertificate(certId, options = {}) {
+  const { applyNow = false } = options;
+  const cert = getManagedCertificateById(certId);
+  if (!isAutoRelayListenerCertificate(cert)) {
+    return null;
+  }
+  if (findRelayListenersReferencingCertificate(certId).length > 0) {
+    return null;
+  }
+  const certs = storage.loadManagedCertificates();
+  const index = certs.findIndex((item) => Number(item.id) === Number(certId));
+  if (index === -1) {
+    return null;
+  }
+  const deleted = certs.splice(index, 1)[0];
+  storage.saveManagedCertificates(certs);
+  cleanupManagedCertificateArtifacts(deleted.domain);
+  await syncManagedCertificateAgentIds(deleted.target_agent_ids || [], { applyNow });
+  return deleted;
+}
+
+function shouldAutoDeriveRelayTrust(body, draftListener, previousListener = null) {
+  if (draftListener?.enabled === false) {
+    return false;
+  }
+  const hasOwn = (key) => Object.prototype.hasOwnProperty.call(body || {}, key);
+  const certificateSource = String(body?.certificate_source || "").trim().toLowerCase();
+  const trustModeSource = String(body?.trust_mode_source || "").trim().toLowerCase();
+  if (trustModeSource === "custom") {
+    return false;
+  }
+  if (trustModeSource === "auto") {
+    return true;
+  }
+  if (
+    hasOwn("tls_mode") ||
+    hasOwn("pin_set") ||
+    hasOwn("trusted_ca_certificate_ids") ||
+    hasOwn("allow_self_signed")
+  ) {
+    return false;
+  }
+  if (certificateSource === "auto_relay_ca") {
+    return true;
+  }
+  if (!previousListener) {
+    return false;
+  }
+  if (
+    !isAutoRelayListenerCertificate(
+      getManagedCertificateById(previousListener.certificate_id),
+      previousListener.id,
+    )
+  ) {
+    return false;
+  }
+  return !hasOwn("certificate_id");
+}
+
+async function ensureRelayListenerCertificate(agentId, listener, previousListener = null) {
+  if (listener.certificate_id != null) {
+    return listener.certificate_id;
+  }
+
+  if (previousListener?.certificate_id != null) {
+    const previousCert = getManagedCertificateById(previousListener.certificate_id);
+    if (isAutoRelayListenerCertificate(previousCert, previousListener.id)) {
+      return previousListener.certificate_id;
+    }
+  }
+
+  const relayCA = findGlobalRelayCA();
+  if (!relayCA) {
+    throw new Error("global relay ca not found");
+  }
+
+  const certs = storage.loadManagedCertificates();
+  const nextId = certs.reduce((max, cert) => Math.max(max, Number(cert.id) || 0), 0) + 1;
+  const created = normalizeManagedCertificatePayload(
+    {
+      id: nextId,
+      domain: relayListenerAutoCertificateDomain(listener, agentId),
+      enabled: true,
+      scope: "domain",
+      issuer_mode: "local_http01",
+      usage: "relay_tunnel",
+      certificate_type: "internal_ca",
+      self_signed: false,
+      target_agent_ids: [agentId],
+      tags: normalizeTags(["relay", "auto", `listener:${listener.id}`]),
+    },
+    {},
+    nextId,
+  );
+  validateManagedCertificateTargets(created);
+  const prepared = prepareManagedCertificateForSave(null, created);
+  prepared.revision = storage.getNextGlobalRevision();
+  certs.push(prepared);
+  storage.saveManagedCertificates(certs);
+
+  const relayCAMaterial = readManagedCertificateMaterial(relayCA.domain);
+  if (!relayCAMaterial?.cert_pem || !relayCAMaterial?.key_pem) {
+    throw new Error("global relay ca material not found");
+  }
+  writeManagedCertificateMaterial(
+    prepared.domain,
+    await generateLeafMaterialSignedByCA(prepared.domain, relayCAMaterial),
+  );
+
+  const issued = await syncStaticLocalCertificateById(prepared.id, {
+    agentId,
+    bumpRevision: false,
+    applyNow: false,
+  });
+  return issued.id;
 }
 
 async function ensureManagedCertificateForRule(agentId, rule, options = {}) {
@@ -1365,6 +2185,18 @@ function getManagedCertificateAcmeName(domain) {
   return isWildcardDomain(normalizedDomain) ? normalizedDomain.slice(2) : normalizedDomain;
 }
 
+function normalizeUploadedPEMField(value) {
+  return value === undefined || value === null ? "" : String(value).trim();
+}
+
+function joinCertificatePEM(certificatePEM, caPEM) {
+  const parts = [
+    normalizeUploadedPEMField(certificatePEM),
+    normalizeUploadedPEMField(caPEM),
+  ].filter(Boolean);
+  return parts.join("\n");
+}
+
 function readManagedCertificateAcmeInfo(domain) {
   if (!fs.existsSync(ACME_SCRIPT)) {
     return normalizeManagedCertificateAcmeInfo();
@@ -1423,6 +2255,125 @@ function readManagedCertificateMaterial(domain) {
   };
 }
 
+function writeManagedCertificateMaterial(domain, material) {
+  const certDir = getCertStoreDir(domain);
+  fs.mkdirSync(certDir, { recursive: true });
+  fs.writeFileSync(path.join(certDir, "cert"), String(material.cert_pem || ""), "utf8");
+  fs.writeFileSync(path.join(certDir, "key"), String(material.key_pem || ""), "utf8");
+}
+
+async function generateInternalCAMaterial(domain) {
+  const commonName = String(domain || "").trim() || `internal-ca-${crypto.randomUUID()}`;
+  const generated = await selfsigned.generate(
+    [{ name: "commonName", value: commonName }],
+    {
+      algorithm: "sha256",
+      days: 3650,
+      keySize: 2048,
+      extensions: [
+        { name: "basicConstraints", cA: true },
+        {
+          name: "keyUsage",
+          digitalSignature: true,
+          keyCertSign: true,
+          cRLSign: true,
+        },
+      ],
+    },
+  );
+  tls.createSecureContext({ cert: generated.cert, key: generated.private });
+  return {
+    cert_pem: generated.cert,
+    key_pem: generated.private,
+  };
+}
+
+async function generateLeafMaterialSignedByCA(domain, caMaterial) {
+  const commonName = String(domain || "").trim() || `relay-listener-${crypto.randomUUID()}`;
+  const generated = await selfsigned.generate(
+    [{ name: "commonName", value: commonName }],
+    {
+      algorithm: "sha256",
+      days: 825,
+      ca: {
+        key: String(caMaterial.key_pem || ""),
+        cert: String(caMaterial.cert_pem || ""),
+      },
+    },
+  );
+  tls.createSecureContext({ cert: generated.cert, key: generated.private });
+  return {
+    cert_pem: generated.cert,
+    key_pem: generated.private,
+  };
+}
+
+async function ensureInternalCAMaterial(cert) {
+  const existingMaterial = readManagedCertificateMaterial(cert.domain);
+  if (isValidManagedCertificateMaterial(existingMaterial)) {
+    return existingMaterial;
+  }
+
+  const nextMaterial = await generateInternalCAMaterial(cert.domain);
+  writeManagedCertificateMaterial(cert.domain, nextMaterial);
+  return nextMaterial;
+}
+
+function isValidManagedCertificateMaterial(material) {
+  if (!material?.cert_pem || !material?.key_pem) {
+    return false;
+  }
+  try {
+    tls.createSecureContext({
+      cert: material.cert_pem,
+      key: material.key_pem,
+    });
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function resolveUploadedManagedCertificateMaterial(body, nextCert, previousCert = null) {
+  if (nextCert.certificate_type !== "uploaded") {
+    return null;
+  }
+
+  const certificatePEM = normalizeUploadedPEMField(body.certificate_pem);
+  const privateKeyPEM = normalizeUploadedPEMField(body.private_key_pem);
+  const caPEM = normalizeUploadedPEMField(body.ca_pem);
+  const previousMaterial = previousCert ? readManagedCertificateMaterial(previousCert.domain) : null;
+
+  if (!certificatePEM && !privateKeyPEM && !caPEM) {
+    if (previousMaterial?.cert_pem && previousMaterial?.key_pem) {
+      tls.createSecureContext({
+        cert: previousMaterial.cert_pem,
+        key: previousMaterial.key_pem,
+      });
+      return previousMaterial;
+    }
+    throw new Error("certificate_pem is required for uploaded certificates");
+  }
+
+  const certPEM = joinCertificatePEM(certificatePEM, caPEM);
+  if (!certPEM) {
+    throw new Error("certificate_pem is required for uploaded certificates");
+  }
+  if (!privateKeyPEM) {
+    throw new Error("private_key_pem is required for uploaded certificates");
+  }
+
+  tls.createSecureContext({
+    cert: certPEM,
+    key: privateKeyPEM,
+  });
+
+  return {
+    cert_pem: certPEM,
+    key_pem: privateKeyPEM,
+  };
+}
+
 function hashManagedCertificateMaterial(material) {
   if (!material || !material.cert_pem || !material.key_pem) return "";
   return crypto
@@ -1433,14 +2384,39 @@ function hashManagedCertificateMaterial(material) {
     .digest("hex");
 }
 
-function getManagedCertificateMaterialHash(domain) {
-  return hashManagedCertificateMaterial(readManagedCertificateMaterial(domain));
+function getManagedCertificateMaterialHash(domain, options = {}) {
+  const { validate = false } = options;
+  const material = readManagedCertificateMaterial(domain);
+  if (!material) return "";
+  if (validate && !isValidManagedCertificateMaterial(material)) {
+    return "";
+  }
+  return hashManagedCertificateMaterial(material);
 }
 
-function buildManagedCertificateBundleForAgent(agentId) {
+function getRelayListenerTrustedCertificateIds(relayListeners = []) {
+  const ids = new Set();
+  for (const listener of Array.isArray(relayListeners) ? relayListeners : []) {
+    for (const certId of Array.isArray(listener?.trusted_ca_certificate_ids)
+      ? listener.trusted_ca_certificate_ids
+      : []) {
+      const parsedId = Number(certId);
+      if (Number.isInteger(parsedId) && parsedId > 0) {
+        ids.add(parsedId);
+      }
+    }
+  }
+  return ids;
+}
+
+function buildManagedCertificateBundleForAgent(agentId, relayListeners = []) {
+  const relayTrustedCertIds = getRelayListenerTrustedCertificateIds(relayListeners);
   return storage.loadManagedCertificates()
-    .filter((cert) => cert.enabled && cert.scope === "domain")
-    .filter((cert) => Array.isArray(cert.target_agent_ids) && cert.target_agent_ids.includes(agentId))
+    .filter((cert) => cert.enabled)
+    .filter((cert) =>
+      relayTrustedCertIds.has(Number(cert.id)) ||
+      (Array.isArray(cert.target_agent_ids) && cert.target_agent_ids.includes(agentId)),
+    )
     .map((cert) => {
       const material = readManagedCertificateMaterial(cert.domain);
       if (!material) return null;
@@ -1455,23 +2431,30 @@ function buildManagedCertificateBundleForAgent(agentId) {
     .filter(Boolean);
 }
 
-function buildManagedCertificatePolicyForAgent(agentId) {
+function buildManagedCertificatePolicyForAgent(agentId, relayListeners = []) {
+  const relayTrustedCertIds = getRelayListenerTrustedCertificateIds(relayListeners);
   return storage.loadManagedCertificates()
-    .filter((cert) => Array.isArray(cert.target_agent_ids) && cert.target_agent_ids.includes(agentId))
+    .filter((cert) =>
+      relayTrustedCertIds.has(Number(cert.id)) ||
+      (Array.isArray(cert.target_agent_ids) && cert.target_agent_ids.includes(agentId)),
+    )
     .map((cert) => {
       const view = buildManagedCertificateViewForAgent(cert, agentId);
       return {
-      id: cert.id,
-      domain: cert.domain,
-      enabled: cert.enabled !== false,
-      scope: cert.scope,
-      issuer_mode: cert.issuer_mode,
-      status: view.status,
-      last_issue_at: view.last_issue_at || null,
-      last_error: view.last_error || "",
-      acme_info: normalizeManagedCertificateAcmeInfo(view.acme_info || {}),
-      tags: normalizeTags(cert.tags || []),
-      revision: normalizeRevision(cert.revision),
+        id: cert.id,
+        domain: cert.domain,
+        enabled: cert.enabled !== false,
+        scope: cert.scope,
+        issuer_mode: cert.issuer_mode,
+        status: view.status,
+        last_issue_at: view.last_issue_at || null,
+        last_error: view.last_error || "",
+        acme_info: normalizeManagedCertificateAcmeInfo(view.acme_info || {}),
+        tags: normalizeTags(cert.tags || []),
+        revision: normalizeRevision(cert.revision),
+        usage: cert.usage,
+        certificate_type: cert.certificate_type,
+        self_signed: cert.self_signed === true,
       };
     });
 }
@@ -1535,11 +2518,15 @@ function getDesiredRevisionForSync(agent, agentId, rules = [], options = {}) {
   const desiredRevision = normalizeRevision(agent?.desired_revision);
   const currentRevision = normalizeRevision(agent?.current_revision);
   const highestRuleRevision = getHighestRuleRevision(rules);
-  const highestL4Revision = getHighestL4RuleRevision(storage.loadL4RulesForAgent(agentId));
+  const highestL4Revision = getHighestL4RuleRevision(loadNormalizedL4RulesForAgent(agentId));
+  const highestRelayListenerRevision = getHighestRelayListenerRevision(
+    storage.loadRelayListenersForAgent(agentId),
+  );
   const highestManagedCertRevision = getHighestManagedCertificateRevisionForAgent(agentId);
   const highestConfigRevision = Math.max(
     highestRuleRevision,
     highestL4Revision,
+    highestRelayListenerRevision,
     highestManagedCertRevision,
   );
 
@@ -1565,6 +2552,8 @@ function normalizeRevision(value) {
 
 function ensureAgentState(agent) {
   agent.mode = agent.is_local ? "local" : resolveRemoteAgentMode(agent.agent_url);
+  agent.platform = String(agent.platform || "").trim();
+  agent.desired_version = String(agent.desired_version || "").trim();
   agent.desired_revision = normalizeRevision(agent.desired_revision);
   agent.current_revision = normalizeRevision(agent.current_revision);
   agent.last_apply_revision = normalizeRevision(
@@ -1605,6 +2594,7 @@ function makeLocalAgent() {
     name: LOCAL_AGENT_NAME,
     agent_url: LOCAL_AGENT_URL,
     version: AGENT_VERSION,
+    desired_version: state.desired_version,
     tags: LOCAL_AGENT_TAGS,
     mode: "local",
     desired_revision: state.desired_revision,
@@ -1629,6 +2619,8 @@ function sanitizeAgent(agent) {
     name: String(hydrated.name || "").trim(),
     agent_url: trimSlash(hydrated.agent_url || ""),
     version: String(hydrated.version || ""),
+    platform: String(hydrated.platform || ""),
+    desired_version: String(hydrated.desired_version || ""),
     tags: normalizeTags(hydrated.tags || []),
     mode: hydrated.mode,
     desired_revision: hydrated.desired_revision,
@@ -1697,6 +2689,10 @@ function applyNginxConfig() {
   if (APPLY_COMMAND) {
     runChecked(APPLY_COMMAND, APPLY_COMMAND_ARGS, extraEnv);
     return;
+  }
+
+  if (!GENERATOR_SCRIPT || !fs.existsSync(GENERATOR_SCRIPT)) {
+    throw new Error("no built-in local apply runtime is bundled; set PANEL_GENERATOR_SCRIPT or PANEL_APPLY_COMMAND");
   }
 
   // --- Diff-based apply with rollback ---
@@ -2026,6 +3022,16 @@ function getManagedCertificateRemovedAgentIds(previousCert, nextCert) {
 }
 
 function validateManagedCertificateTargets(cert) {
+  if (cert.issuer_mode === "master_cf_dns") {
+    if (cert.certificate_type !== "acme") {
+      throw new Error("master_cf_dns certificates must use certificate_type=acme");
+    }
+    const targets = Array.isArray(cert.target_agent_ids) ? cert.target_agent_ids : [];
+    if (!LOCAL_AGENT_ENABLED || targets.length !== 1 || targets[0] !== LOCAL_AGENT_ID) {
+      throw new Error("master_cf_dns certificates must target only the local master agent");
+    }
+  }
+
   for (const agentId of cert.target_agent_ids || []) {
     const agent = getAgentById(agentId);
     if (!agent) {
@@ -2034,7 +3040,11 @@ function validateManagedCertificateTargets(cert) {
     if (!agentHasCapability(agent, "cert_install")) {
       throw new Error(`target agent does not support certificate install: ${agent.name || agentId}`);
     }
-    if (cert.issuer_mode === "local_http01" && !agentHasCapability(agent, "local_acme")) {
+    if (
+      cert.issuer_mode === "local_http01" &&
+      cert.certificate_type === "acme" &&
+      !agentHasCapability(agent, "local_acme")
+    ) {
       throw new Error(`target agent does not support local ACME issuance: ${agent.name || agentId}`);
     }
   }
@@ -2431,6 +3441,134 @@ async function requestLocalHttp01CertificateById(certId, options = {}) {
   return cert;
 }
 
+async function syncStaticLocalCertificateById(certId, options = {}) {
+  const { agentId = null, bumpRevision = true, applyNow = AUTO_APPLY } = options;
+  let cert = getManagedCertificateById(certId);
+  if (!cert) throw new Error("certificate not found");
+  if (!cert.enabled) throw new Error("certificate is disabled");
+  if (cert.issuer_mode !== "local_http01") {
+    throw new Error("certificate is not configured for local_http01");
+  }
+  if (cert.certificate_type === "acme") {
+    throw new Error("certificate requires local ACME issuance");
+  }
+
+  const requestedAgentIds = agentId
+    ? (Array.isArray(cert.target_agent_ids) ? cert.target_agent_ids : []).filter((id) => id === agentId)
+    : Array.isArray(cert.target_agent_ids)
+      ? cert.target_agent_ids
+      : [];
+
+  if (!requestedAgentIds.length && !(cert.certificate_type === "internal_ca" && !agentId)) {
+    throw new Error("certificate is not assigned to the requested agent");
+  }
+
+  for (const targetAgentId of requestedAgentIds) {
+    const targetAgent = getAgentById(targetAgentId);
+    if (!targetAgent) {
+      throw new Error(`target agent not found: ${targetAgentId}`);
+    }
+    if (!agentHasCapability(targetAgent, "cert_install")) {
+      throw new Error(`target agent does not support certificate install: ${targetAgent.name || targetAgentId}`);
+    }
+  }
+
+  let materialHash = getManagedCertificateMaterialHash(cert.domain, {
+    validate: cert.certificate_type === "internal_ca",
+  });
+  if (!materialHash && cert.certificate_type === "internal_ca") {
+    materialHash = hashManagedCertificateMaterial(await ensureInternalCAMaterial(cert));
+  }
+  if (!materialHash) {
+    throw new Error("certificate material not found");
+  }
+
+  const issuedAt = nowIso();
+  cert = updateManagedCertificate(certId, (current) => {
+    let nextCert = {
+      ...current,
+      status: "active",
+      last_issue_at: issuedAt,
+      last_error: "",
+      material_hash: materialHash,
+      revision: bumpRevision ? storage.getNextGlobalRevision() : normalizeRevision(current.revision),
+    };
+    for (const targetAgentId of requestedAgentIds) {
+      nextCert = updateManagedCertificateAgentReportSnapshot(nextCert, targetAgentId, {
+        status: "active",
+        last_issue_at: issuedAt,
+        last_error: "",
+        material_hash: materialHash,
+        acme_info: current.acme_info || {},
+        updated_at: issuedAt,
+      });
+    }
+    return nextCert;
+  });
+
+  if (requestedAgentIds.length > 0) {
+    await syncManagedCertificateAgentIds(requestedAgentIds, { applyNow });
+  }
+  return cert;
+}
+
+async function ensureGlobalRelayCA() {
+  if (ROLE !== "master") {
+    return null;
+  }
+
+  const certs = storage.loadManagedCertificates();
+  const candidateIndexes = certs
+    .map((cert, index) => (isRelayCACandidateForStartup(cert) ? index : -1))
+    .filter((index) => index >= 0);
+  if (candidateIndexes.length > 1) {
+    throw new Error("multiple relay ca candidates found; manual cleanup required");
+  }
+  const existingIndex = candidateIndexes.length === 1 ? candidateIndexes[0] : -1;
+  let relayCA = null;
+
+  if (existingIndex >= 0) {
+    const existing = certs[existingIndex];
+    const desiredInvariantFields = extractManagedCertificateInvariantFields(
+      buildCanonicalGlobalRelayCA(existing, existing.id),
+      existing.id,
+    );
+    const currentInvariantFields = extractManagedCertificateInvariantFields(
+      existing,
+      existing.id,
+    );
+    if (JSON.stringify(desiredInvariantFields) !== JSON.stringify(currentInvariantFields)) {
+      relayCA = {
+        ...existing,
+        ...desiredInvariantFields,
+        revision: storage.getNextGlobalRevision(),
+      };
+      certs[existingIndex] = relayCA;
+      storage.saveManagedCertificates(certs);
+    } else {
+      relayCA = existing;
+    }
+  } else {
+    const nextId = certs.reduce((max, cert) => Math.max(max, Number(cert.id) || 0), 0) + 1;
+    relayCA = prepareManagedCertificateForSave(null, buildGlobalRelayCAPayload(nextId));
+    relayCA.revision = storage.getNextGlobalRevision();
+    certs.push(relayCA);
+    storage.saveManagedCertificates(certs);
+  }
+
+  if (
+    relayCA.status === "active" &&
+    getManagedCertificateMaterialHash(relayCA.domain, { validate: true })
+  ) {
+    return relayCA;
+  }
+
+  return await syncStaticLocalCertificateById(relayCA.id, {
+    bumpRevision: false,
+    applyNow: false,
+  });
+}
+
 async function syncAgentRules(agentId) {
   const agent = getAgentById(agentId);
   if (!agent) throw new Error("agent not found");
@@ -2578,11 +3716,43 @@ function findRegisteredAgentByToken(token) {
   return storage.loadRegisteredAgents().find((agent) => agent.agent_token === token) || null;
 }
 
+function resolveVersionPackageForAgent(agent) {
+  const desiredVersion = String(agent?.desired_version || "").trim();
+  const platform = String(agent?.platform || "").trim();
+  if (!desiredVersion || !platform) {
+    return null;
+  }
+  const policies = storage
+    .loadVersionPolicies()
+    .slice()
+    .sort((left, right) => String(left?.id || "").localeCompare(String(right?.id || "")));
+  // Deterministic minimal rule for Go agents:
+  // scan matching desired_version policies in stable sorted order and return
+  // the first package across all of them matching the agent platform.
+  for (const policy of policies) {
+    if (String(policy?.desired_version || "").trim() !== desiredVersion) {
+      continue;
+    }
+    const match = Array.isArray(policy.packages)
+      ? policy.packages.find(
+          (pkg) => String(pkg?.platform || "").trim() === platform,
+        ) || null
+      : null;
+    if (match) {
+      return match;
+    }
+  }
+  return null;
+}
+
 function getAgentHeartbeatResponse(agent) {
   const rules = loadNormalizedRulesForAgent(agent.id);
-  const l4Rules = storage.loadL4RulesForAgent(agent.id);
-  const certificates = buildManagedCertificateBundleForAgent(agent.id);
-  const certificatePolicies = buildManagedCertificatePolicyForAgent(agent.id);
+  const l4Rules = loadNormalizedL4RulesForAgent(agent.id);
+  const relayListeners = loadRelayListenersForSync(agent.id, rules, l4Rules);
+  const certificates = buildManagedCertificateBundleForAgent(agent.id, relayListeners);
+  const certificatePolicies = buildManagedCertificatePolicyForAgent(agent.id, relayListeners);
+  const versionPackage = resolveVersionPackageForAgent(agent);
+  const versionPackageMeta = versionPackage ? { ...versionPackage } : null;
   const hasUpdate = agent.current_revision < agent.desired_revision;
   return {
     ok: true,
@@ -2595,10 +3765,50 @@ function getAgentHeartbeatResponse(agent) {
       current_revision: agent.current_revision,
       rules: hasUpdate ? rules : undefined,
       l4_rules: hasUpdate ? l4Rules : undefined,
+      relay_listeners: relayListeners,
+      desired_version: agent.desired_version || null,
+      version_package: versionPackage ? versionPackage.url : null,
+      version_package_meta: versionPackageMeta,
+      version_sha256: versionPackageMeta ? versionPackageMeta.sha256 : null,
       certificates: hasUpdate ? certificates : undefined,
       certificate_policies: hasUpdate ? certificatePolicies : undefined,
     },
   };
+}
+
+function loadRelayListenersForSync(agentId, rules = [], l4Rules = []) {
+  const allRelayListeners = listAllRelayListenersById();
+  const localRelayListeners = storage.loadRelayListenersForAgent(agentId);
+  const included = new Set();
+  const ordered = [];
+
+  const pushListener = (listener) => {
+    const listenerId = Number(listener?.id);
+    if (!Number.isInteger(listenerId) || listenerId <= 0 || included.has(listenerId)) {
+      return;
+    }
+    included.add(listenerId);
+    ordered.push(listener);
+  };
+
+  for (const listener of Array.isArray(localRelayListeners) ? localRelayListeners : []) {
+    pushListener(listener);
+  }
+
+  const addReferencedListeners = (relayChain) => {
+    for (const listenerId of Array.isArray(relayChain) ? relayChain : []) {
+      pushListener(allRelayListeners.get(Number(listenerId)));
+    }
+  };
+
+  for (const rule of Array.isArray(rules) ? rules : []) {
+    addReferencedListeners(rule?.relay_chain);
+  }
+  for (const rule of Array.isArray(l4Rules) ? l4Rules : []) {
+    addReferencedListeners(rule?.relay_chain);
+  }
+
+  return ordered;
 }
 
 function getDefaultAgentId() {
@@ -2629,6 +3839,22 @@ function loadNormalizedRulesForAgent(agentId) {
   return loadOrInitRules(agentId).map((rule, index) =>
     normalizeStoredRule(rule, index + 1),
   );
+}
+
+function loadNormalizedL4RulesForAgent(agentId) {
+  const rules = storage.loadL4RulesForAgent(agentId);
+  const source = Array.isArray(rules) ? rules : [];
+  const normalized = [];
+  for (let index = 0; index < source.length; index += 1) {
+    try {
+      normalized.push(normalizeStoredL4Rule(source[index], index + 1));
+    } catch (err) {
+      console.warn(
+        `[l4] skipped malformed stored rule for agent ${agentId}: ${String(err?.message || err)}`,
+      );
+    }
+  }
+  return normalized;
 }
 
 async function handleAgentApi(req, res) {
@@ -2894,6 +4120,11 @@ async function handleLegacyLocalRules(req, res, urlPath) {
 async function handleMasterApi(req, res) {
   const urlPath = (req.url || "").split("?")[0];
 
+  if ((req.method === "GET" || req.method === "HEAD") && urlPath === "/api/health") {
+    sendJson(res, 200, { ok: true, role: ROLE });
+    return;
+  }
+
   if (req.method === "GET" && urlPath === "/api/public/join-agent.sh") {
     sendText(res, 200, buildJoinAgentScript(req), "application/x-sh; charset=utf-8");
     return;
@@ -2906,7 +4137,9 @@ async function handleMasterApi(req, res) {
       sendJson(res, 404, errorPayload("asset not found"));
       return;
     }
-    sendText(res, 200, asset.body, asset.contentType);
+    sendBody(res, 200, asset.body, asset.contentType, {
+      "Cache-Control": "public, max-age=300",
+    });
     return;
   }
 
@@ -2920,6 +4153,7 @@ async function handleMasterApi(req, res) {
     const info = {
       ok: true,
       role: ROLE,
+      local_apply_runtime: "go-agent",
       local_agent_enabled: LOCAL_AGENT_ENABLED,
       default_agent_id: getDefaultAgentId(),
       managed_certificates_enabled: MANAGED_CERTS_ENABLED,
@@ -3047,7 +4281,12 @@ async function handleMasterApi(req, res) {
         req.socket.remoteAddress ||
         "";
       if (remoteIp) agent.last_seen_ip = remoteIp;
-      agent.version = String(body.version || agent.version || "").trim();
+      agent.version = String(
+        body.version !== undefined ? body.version : agent.version || "",
+      ).trim();
+      agent.platform = String(
+        body.platform !== undefined ? body.platform : agent.platform || "",
+      ).trim();
       agent.tags = body.tags !== undefined ? normalizeTags(body.tags) : agent.tags;
       if (body.capabilities !== undefined) {
         agent.capabilities = normalizeCapabilities(body.capabilities);
@@ -3123,11 +4362,6 @@ async function handleMasterApi(req, res) {
       401,
       errorPayload("Unauthorized: Invalid or missing X-Panel-Token"),
     );
-    return;
-  }
-
-  if (req.method === "GET" && urlPath === "/api/health") {
-    sendJson(res, 200, { ok: true, role: ROLE });
     return;
   }
 
@@ -3264,10 +4498,32 @@ async function handleMasterApi(req, res) {
       sendJson(res, 404, errorPayload("agent not found"));
       return;
     }
+    const listeners = storage.loadRelayListenersForAgent(agentId);
+    for (const listener of listeners) {
+      const listenerId = Number(listener?.id);
+      if (!Number.isInteger(listenerId) || listenerId <= 0) {
+        continue;
+      }
+      const relayReference = findRelayListenerReferenceAcrossAgents(listenerId, {
+        excludeAgentIds: [agentId],
+      });
+      if (relayReference) {
+        const ruleType = relayReference.protocol === "http" ? "HTTP" : "L4";
+        sendJson(
+          res,
+          400,
+          errorPayload(
+            `cannot delete agent ${agentId}: relay listener ${listenerId} is referenced by ${ruleType} rule #${relayReference.ruleId} on agent ${relayReference.agentId}`,
+          ),
+        );
+        return;
+      }
+    }
     const deleted = agents.splice(index, 1)[0];
     storage.saveRegisteredAgents(agents);
     storage.deleteRulesForAgent(agentId);
     storage.deleteL4RulesForAgent(agentId);
+    storage.deleteRelayListenersForAgent(agentId);
     removePath(getManagedCertBundleFileForAgent(agentId));
     removePath(getManagedCertPolicyFileForAgent(agentId));
     sendJson(res, 200, { ok: true, agent: sanitizeAgent(deleted) });
@@ -3355,7 +4611,7 @@ async function handleMasterApi(req, res) {
       sendJson(res, 404, errorPayload("agent not found"));
       return;
     }
-    sendJson(res, 200, { ok: true, rules: storage.loadL4RulesForAgent(agentId) });
+    sendJson(res, 200, { ok: true, rules: loadNormalizedL4RulesForAgent(agentId) });
     return;
   }
 
@@ -3537,11 +4793,15 @@ async function handleMasterApi(req, res) {
         sendJson(res, 404, errorPayload("rule id not found"));
         return;
       }
-      const nextRule = normalizeL4RulePayload(body, rules[index], ruleId);
+      const existingRule = rules[index];
+      const fallbackRule = normalizeStoredL4RuleLenient(existingRule, ruleId);
+      let nextRule = normalizeL4RulePayload(body, fallbackRule, ruleId);
+      nextRule = preserveLegacyTcpFieldsOnPartialUpdate(existingRule, body, nextRule);
       ensureUniqueL4Listen(rules, nextRule, ruleId);
       nextRule.revision = getNextPendingRevision(agent);
       rules[index] = nextRule;
       storage.saveL4RulesForAgent(agentId, rules);
+      const responseRule = normalizeStoredL4Rule(nextRule, ruleId);
 
       if (AUTO_APPLY) {
         try {
@@ -3559,7 +4819,7 @@ async function handleMasterApi(req, res) {
         }
       }
 
-      sendJson(res, 200, { ok: true, rule: nextRule });
+      sendJson(res, 200, { ok: true, rule: responseRule });
     } catch (err) {
       sendJson(res, 400, errorPayload(String(err.message || err)));
     }
@@ -3583,6 +4843,7 @@ async function handleMasterApi(req, res) {
       }
       const deleted = rules.splice(index, 1)[0];
       storage.saveL4RulesForAgent(agentId, rules);
+      const responseRule = normalizeStoredL4RuleLenient(deleted, ruleId);
 
       if (AUTO_APPLY) {
         try {
@@ -3600,7 +4861,298 @@ async function handleMasterApi(req, res) {
         }
       }
 
-      sendJson(res, 200, { ok: true, rule: deleted });
+      sendJson(res, 200, { ok: true, rule: responseRule });
+    } catch (err) {
+      sendJson(res, 400, errorPayload(String(err.message || err)));
+    }
+    return;
+  }
+
+  if (req.method === "GET" && /^\/api\/agents\/[^/]+\/relay-listeners$/.test(urlPath)) {
+    const agentId = extractAgentId(urlPath);
+    const agent = getAgentById(agentId);
+    if (!agent) {
+      sendJson(res, 404, errorPayload("agent not found"));
+      return;
+    }
+    sendJson(res, 200, { ok: true, listeners: storage.loadRelayListenersForAgent(agentId) });
+    return;
+  }
+
+  if (req.method === "POST" && /^\/api\/agents\/[^/]+\/relay-listeners$/.test(urlPath)) {
+    try {
+      const agentId = extractAgentId(urlPath);
+      const agent = getAgentById(agentId);
+      if (!agent) {
+        sendJson(res, 404, errorPayload("agent not found"));
+        return;
+      }
+      const body = await parseJsonBody(req);
+      const listeners = storage.loadRelayListenersForAgent(agentId);
+      const draftListener = normalizeRelayListenerDraft({
+        ...(body || {}),
+        id: getNextRelayListenerId(),
+        agent_id: agentId,
+        revision: getNextPendingRevision(agent),
+      });
+      if (shouldAutoIssueRelayListenerCertificate(body, draftListener)) {
+        draftListener.certificate_id = await ensureRelayListenerCertificate(agentId, draftListener);
+      }
+      if (shouldAutoDeriveRelayTrust(body, draftListener, null)) {
+        Object.assign(
+          draftListener,
+          deriveRelayTrustMaterial(
+            draftListener,
+            getManagedCertificateById(draftListener.certificate_id),
+          ),
+        );
+      }
+      const nextListener = normalizeRelayListenerPayload(draftListener);
+      const nextListeners = [...listeners, nextListener];
+      storage.saveRelayListenersForAgent(agentId, nextListeners);
+
+      if (AUTO_APPLY) {
+        try {
+          await applyAgent(agentId);
+        } catch (err) {
+          sendJson(
+            res,
+            400,
+            errorPayload(
+              "relay listener saved but failed to sync/apply agent config",
+              String(err.message || err),
+            ),
+          );
+          return;
+        }
+      }
+
+      sendJson(res, 201, { ok: true, listener: nextListener });
+    } catch (err) {
+      sendJson(res, 400, errorPayload(String(err.message || err)));
+    }
+    return;
+  }
+
+  if (req.method === "PUT" && /^\/api\/agents\/[^/]+\/relay-listeners\/\d+$/.test(urlPath)) {
+    try {
+      const agentId = extractAgentId(urlPath);
+      const agent = getAgentById(agentId);
+      if (!agent) {
+        sendJson(res, 404, errorPayload("agent not found"));
+        return;
+      }
+      const listenerId = extractTrailingId(urlPath);
+      const body = await parseJsonBody(req);
+      const listeners = storage.loadRelayListenersForAgent(agentId);
+      const index = listeners.findIndex((listener) => Number(listener.id) === listenerId);
+      if (index === -1) {
+        sendJson(res, 404, errorPayload("relay listener not found"));
+        return;
+      }
+      const currentListener = listeners[index];
+      const draftListener = normalizeRelayListenerDraft({
+        ...listeners[index],
+        ...(body || {}),
+        id: listenerId,
+        agent_id: agentId,
+        revision: getNextPendingRevision(agent),
+      });
+      if (shouldAutoIssueRelayListenerCertificate(body, draftListener, currentListener)) {
+        draftListener.certificate_id = await ensureRelayListenerCertificate(
+          agentId,
+          draftListener,
+          currentListener,
+        );
+      }
+      if (shouldAutoDeriveRelayTrust(body, draftListener, currentListener)) {
+        Object.assign(
+          draftListener,
+          deriveRelayTrustMaterial(
+            draftListener,
+            getManagedCertificateById(draftListener.certificate_id),
+          ),
+        );
+      }
+      const nextListener = normalizeRelayListenerPayload(draftListener);
+      if (nextListener.enabled === false) {
+        const relayReference = findRelayListenerReferenceAcrossAgents(listenerId);
+        if (relayReference) {
+          const ruleType = relayReference.protocol === "http" ? "HTTP" : "L4";
+          sendJson(
+            res,
+            400,
+            errorPayload(
+              `relay listener ${listenerId} is referenced by ${ruleType} rule #${relayReference.ruleId} on agent ${relayReference.agentId}; disable is not allowed`,
+            ),
+          );
+          return;
+        }
+      }
+      const nextListeners = listeners.slice();
+      nextListeners[index] = nextListener;
+      storage.saveRelayListenersForAgent(agentId, nextListeners);
+      if (currentListener.certificate_id !== nextListener.certificate_id) {
+        await cleanupUnusedAutoRelayListenerCertificate(currentListener.certificate_id, {
+          applyNow: false,
+        });
+      }
+
+      if (AUTO_APPLY) {
+        try {
+          await applyAgent(agentId);
+        } catch (err) {
+          sendJson(
+            res,
+            400,
+            errorPayload(
+              "relay listener updated but failed to sync/apply agent config",
+              String(err.message || err),
+            ),
+          );
+          return;
+        }
+      }
+
+      sendJson(res, 200, { ok: true, listener: nextListener });
+    } catch (err) {
+      sendJson(res, 400, errorPayload(String(err.message || err)));
+    }
+    return;
+  }
+
+  if (req.method === "DELETE" && /^\/api\/agents\/[^/]+\/relay-listeners\/\d+$/.test(urlPath)) {
+    try {
+      const agentId = extractAgentId(urlPath);
+      const agent = getAgentById(agentId);
+      if (!agent) {
+        sendJson(res, 404, errorPayload("agent not found"));
+        return;
+      }
+      const listenerId = extractTrailingId(urlPath);
+      const listeners = storage.loadRelayListenersForAgent(agentId);
+      const index = listeners.findIndex((listener) => Number(listener.id) === listenerId);
+      if (index === -1) {
+        sendJson(res, 404, errorPayload("relay listener not found"));
+        return;
+      }
+
+      const relayReference = findRelayListenerReferenceAcrossAgents(listenerId);
+      if (relayReference) {
+        const ruleType = relayReference.protocol === "http" ? "HTTP" : "L4";
+        sendJson(
+          res,
+          400,
+          errorPayload(
+            `relay listener ${listenerId} is referenced by ${ruleType} rule #${relayReference.ruleId} on agent ${relayReference.agentId}`,
+          ),
+        );
+        return;
+      }
+
+      const deleted = listeners[index];
+      const nextListeners = listeners.filter((_, itemIndex) => itemIndex !== index);
+      storage.saveRelayListenersForAgent(agentId, nextListeners);
+      await cleanupUnusedAutoRelayListenerCertificate(deleted.certificate_id, {
+        applyNow: false,
+      });
+
+      if (AUTO_APPLY) {
+        try {
+          await applyAgent(agentId);
+        } catch (err) {
+          sendJson(
+            res,
+            400,
+            errorPayload(
+              "relay listener deleted but failed to sync/apply agent config",
+              String(err.message || err),
+            ),
+          );
+          return;
+        }
+      }
+
+      sendJson(res, 200, { ok: true, listener: deleted });
+    } catch (err) {
+      sendJson(res, 400, errorPayload(String(err.message || err)));
+    }
+    return;
+  }
+
+  if (req.method === "GET" && urlPath === "/api/version-policies") {
+    sendJson(res, 200, { ok: true, policies: storage.loadVersionPolicies() });
+    return;
+  }
+
+  if (req.method === "POST" && urlPath === "/api/version-policies") {
+    try {
+      const body = await parseJsonBody(req);
+      const policies = storage.loadVersionPolicies();
+      const candidateId = String(
+        body?.id !== undefined
+          ? body.id
+          : body?.channel !== undefined
+            ? body.channel
+            : `policy-${Date.now()}`,
+      ).trim();
+      const policy = normalizeVersionPolicyPayload({
+        ...(body || {}),
+        id: candidateId || `policy-${Date.now()}`,
+      });
+      if (policies.some((item) => String(item.id) === String(policy.id))) {
+        sendJson(res, 400, errorPayload(`version policy id already exists: ${policy.id}`));
+        return;
+      }
+      const nextPolicies = [...policies, policy];
+      storage.saveVersionPolicies(nextPolicies);
+      sendJson(res, 201, { ok: true, policy });
+    } catch (err) {
+      sendJson(res, 400, errorPayload(String(err.message || err)));
+    }
+    return;
+  }
+
+  if (req.method === "PUT" && /^\/api\/version-policies\/[^/]+$/.test(urlPath)) {
+    try {
+      const policyIdMatch = urlPath.match(/^\/api\/version-policies\/([^/]+)$/);
+      const policyId = policyIdMatch ? decodeURIComponent(policyIdMatch[1]) : null;
+      const body = await parseJsonBody(req);
+      const policies = storage.loadVersionPolicies();
+      const index = policies.findIndex((item) => String(item.id) === String(policyId));
+      if (index === -1) {
+        sendJson(res, 404, errorPayload("version policy not found"));
+        return;
+      }
+      const nextPolicy = normalizeVersionPolicyPayload({
+        ...policies[index],
+        ...(body || {}),
+        id: policies[index].id,
+      });
+      const nextPolicies = policies.slice();
+      nextPolicies[index] = nextPolicy;
+      storage.saveVersionPolicies(nextPolicies);
+      sendJson(res, 200, { ok: true, policy: nextPolicy });
+    } catch (err) {
+      sendJson(res, 400, errorPayload(String(err.message || err)));
+    }
+    return;
+  }
+
+  if (req.method === "DELETE" && /^\/api\/version-policies\/[^/]+$/.test(urlPath)) {
+    try {
+      const policyIdMatch = urlPath.match(/^\/api\/version-policies\/([^/]+)$/);
+      const policyId = policyIdMatch ? decodeURIComponent(policyIdMatch[1]) : null;
+      const policies = storage.loadVersionPolicies();
+      const index = policies.findIndex((item) => String(item.id) === String(policyId));
+      if (index === -1) {
+        sendJson(res, 404, errorPayload("version policy not found"));
+        return;
+      }
+      const deleted = policies[index];
+      const nextPolicies = policies.filter((_, itemIndex) => itemIndex !== index);
+      storage.saveVersionPolicies(nextPolicies);
+      sendJson(res, 200, { ok: true, policy: deleted });
     } catch (err) {
       sendJson(res, 400, errorPayload(String(err.message || err)));
     }
@@ -3639,16 +5191,27 @@ async function handleMasterApi(req, res) {
         maxId + 1,
       );
       validateManagedCertificateTargets(nextCert);
+      const uploadMaterial = resolveUploadedManagedCertificateMaterial(body, nextCert);
       const preparedCert = prepareManagedCertificateForSave(null, nextCert);
+      assertManagedCertificateMutationAllowed(null, preparedCert);
       if (preparedCert.scope === "domain" && preparedCert.issuer_mode === "master_cf_dns") {
         assertManagedCertificateEnabled();
       }
       certs.push({ ...preparedCert, revision: storage.getNextGlobalRevision() });
       storage.saveManagedCertificates(certs);
+      if (uploadMaterial) {
+        writeManagedCertificateMaterial(preparedCert.domain, uploadMaterial);
+      }
 
       let savedCert = getManagedCertificateById(preparedCert.id);
       if (savedCert.enabled && savedCert.scope === "domain" && savedCert.issuer_mode === "master_cf_dns") {
         savedCert = await issueManagedCertificateById(savedCert.id, { bumpRevision: false });
+      } else if (
+        savedCert.enabled &&
+        savedCert.issuer_mode === "local_http01" &&
+        savedCert.certificate_type === "uploaded"
+      ) {
+        savedCert = await syncStaticLocalCertificateById(savedCert.id, { bumpRevision: false });
       } else {
         await syncManagedCertificateAgentIds(savedCert.target_agent_ids || []);
       }
@@ -3692,13 +5255,18 @@ async function handleMasterApi(req, res) {
         certId,
       );
       validateManagedCertificateTargets(nextCert);
+      const uploadMaterial = resolveUploadedManagedCertificateMaterial(body, nextCert, previousCert);
       const preparedCert = prepareManagedCertificateForSave(previousCert, nextCert);
+      assertManagedCertificateMutationAllowed(previousCert, preparedCert);
       if (preparedCert.scope === "domain" && preparedCert.issuer_mode === "master_cf_dns") {
         assertManagedCertificateEnabled();
       }
       preparedCert.revision = storage.getNextGlobalRevision();
       certs[index] = preparedCert;
       storage.saveManagedCertificates(certs);
+      if (uploadMaterial) {
+        writeManagedCertificateMaterial(preparedCert.domain, uploadMaterial);
+      }
 
       let savedCert = preparedCert;
       const affectedAgentIds = getManagedCertificateAffectedAgentIds(previousCert, preparedCert);
@@ -3709,6 +5277,15 @@ async function handleMasterApi(req, res) {
         preparedCert.issuer_mode === "master_cf_dns"
       ) {
         savedCert = await issueManagedCertificateById(certId, { bumpRevision: false });
+        if (removedAgentIds.length > 0) {
+          await syncManagedCertificateAgentIds(removedAgentIds);
+        }
+      } else if (
+        preparedCert.enabled &&
+        preparedCert.issuer_mode === "local_http01" &&
+        preparedCert.certificate_type === "uploaded"
+      ) {
+        savedCert = await syncStaticLocalCertificateById(certId, { bumpRevision: false });
         if (removedAgentIds.length > 0) {
           await syncManagedCertificateAgentIds(removedAgentIds);
         }
@@ -3745,6 +5322,7 @@ async function handleMasterApi(req, res) {
       }
 
       const existing = certs[index];
+      assertManagedCertificateNotReferencedByRelayListener(existing);
       const remainingTargets = (existing.target_agent_ids || []).filter((id) => id !== agentId);
       if (remainingTargets.length > 0) {
         const normalizedCert = normalizeManagedCertificatePayload(
@@ -3763,7 +5341,9 @@ async function handleMasterApi(req, res) {
         return;
       }
 
-      const deleted = certs.splice(index, 1)[0];
+      const deleted = certs[index];
+      assertCertificateIsNotSystemRelayCA(deleted);
+      certs.splice(index, 1);
       storage.saveManagedCertificates(certs);
       cleanupManagedCertificateArtifacts(deleted.domain);
       for (const targetAgentId of deleted.target_agent_ids || []) {
@@ -3798,7 +5378,9 @@ async function handleMasterApi(req, res) {
       }
       const issued =
         cert.issuer_mode === "local_http01"
-          ? await requestLocalHttp01CertificateById(certId, { agentId })
+          ? cert.certificate_type === "acme"
+            ? await requestLocalHttp01CertificateById(certId, { agentId })
+            : await syncStaticLocalCertificateById(certId, { agentId })
           : await issueManagedCertificateById(certId, { bumpRevision: true });
       sendJson(res, 200, { ok: true, certificate: issued });
     } catch (err) {
@@ -3819,13 +5401,18 @@ async function handleMasterApi(req, res) {
       const maxId = certs.reduce((max, cert) => Math.max(max, Number(cert.id) || 0), 0);
       const nextCert = normalizeManagedCertificatePayload(body, {}, maxId + 1);
       validateManagedCertificateTargets(nextCert);
+      const uploadMaterial = resolveUploadedManagedCertificateMaterial(body, nextCert);
       const preparedCert = prepareManagedCertificateForSave(null, nextCert);
+      assertManagedCertificateMutationAllowed(null, preparedCert);
       if (preparedCert.scope === "domain" && preparedCert.issuer_mode === "master_cf_dns") {
         assertManagedCertificateEnabled();
       }
       preparedCert.revision = storage.getNextGlobalRevision();
       certs.push(preparedCert);
       storage.saveManagedCertificates(certs);
+      if (uploadMaterial) {
+        writeManagedCertificateMaterial(preparedCert.domain, uploadMaterial);
+      }
 
       let savedCert = preparedCert;
       if (
@@ -3834,6 +5421,12 @@ async function handleMasterApi(req, res) {
         preparedCert.issuer_mode === "master_cf_dns"
       ) {
         savedCert = await issueManagedCertificateById(preparedCert.id, { bumpRevision: false });
+      } else if (
+        preparedCert.enabled &&
+        preparedCert.issuer_mode === "local_http01" &&
+        preparedCert.certificate_type === "uploaded"
+      ) {
+        savedCert = await syncStaticLocalCertificateById(preparedCert.id, { bumpRevision: false });
       } else {
         await syncManagedCertificateAgentIds(preparedCert.target_agent_ids || []);
       }
@@ -3858,13 +5451,18 @@ async function handleMasterApi(req, res) {
       const previousCert = { ...certs[index] };
       const nextCert = normalizeManagedCertificatePayload(body, certs[index], certId);
       validateManagedCertificateTargets(nextCert);
+      const uploadMaterial = resolveUploadedManagedCertificateMaterial(body, nextCert, previousCert);
       const preparedCert = prepareManagedCertificateForSave(previousCert, nextCert);
+      assertManagedCertificateMutationAllowed(previousCert, preparedCert);
       if (preparedCert.scope === "domain" && preparedCert.issuer_mode === "master_cf_dns") {
         assertManagedCertificateEnabled();
       }
       preparedCert.revision = storage.getNextGlobalRevision();
       certs[index] = preparedCert;
       storage.saveManagedCertificates(certs);
+      if (uploadMaterial) {
+        writeManagedCertificateMaterial(preparedCert.domain, uploadMaterial);
+      }
 
       let savedCert = preparedCert;
       const affectedAgentIds = getManagedCertificateAffectedAgentIds(previousCert, preparedCert);
@@ -3875,6 +5473,15 @@ async function handleMasterApi(req, res) {
         preparedCert.issuer_mode === "master_cf_dns"
       ) {
         savedCert = await issueManagedCertificateById(certId, { bumpRevision: false });
+        if (removedAgentIds.length > 0) {
+          await syncManagedCertificateAgentIds(removedAgentIds);
+        }
+      } else if (
+        preparedCert.enabled &&
+        preparedCert.issuer_mode === "local_http01" &&
+        preparedCert.certificate_type === "uploaded"
+      ) {
+        savedCert = await syncStaticLocalCertificateById(certId, { bumpRevision: false });
         if (removedAgentIds.length > 0) {
           await syncManagedCertificateAgentIds(removedAgentIds);
         }
@@ -3898,7 +5505,10 @@ async function handleMasterApi(req, res) {
         sendJson(res, 404, errorPayload("certificate not found"));
         return;
       }
-      const deleted = certs.splice(index, 1)[0];
+      const deleted = certs[index];
+      assertCertificateIsNotSystemRelayCA(deleted);
+      assertManagedCertificateNotReferencedByRelayListener(deleted);
+      certs.splice(index, 1);
       storage.saveManagedCertificates(certs);
       cleanupManagedCertificateArtifacts(deleted.domain);
       for (const agentId of deleted.target_agent_ids || []) {
@@ -3927,7 +5537,9 @@ async function handleMasterApi(req, res) {
       }
       const cert =
         existing.issuer_mode === "local_http01"
-          ? await requestLocalHttp01CertificateById(certId)
+          ? existing.certificate_type === "acme"
+            ? await requestLocalHttp01CertificateById(certId)
+            : await syncStaticLocalCertificateById(certId)
           : await issueManagedCertificateById(certId, { bumpRevision: true });
       sendJson(res, 200, { ok: true, certificate: cert });
     } catch (err) {
@@ -3965,11 +5577,23 @@ async function handleMasterApi(req, res) {
 }
 
 async function handleRequest(req, res) {
+  const [rawPath = "/", rawQuery = ""] = String(req.url || "").split("?");
+  if (rawPath === "/panel-api" || rawPath.startsWith("/panel-api/")) {
+    const apiPath = `/api${rawPath.slice("/panel-api".length) || ""}`;
+    req.url = rawQuery ? `${apiPath}?${rawQuery}` : apiPath;
+  }
+
   const urlPath = (req.url || "").split("?")[0];
 
   if (urlPath.startsWith("/agent-api/")) {
     await handleAgentApi(req, res);
     return;
+  }
+
+  if (ROLE !== "agent" && !urlPath.startsWith("/api/")) {
+    if (tryServeFrontend(req, res, urlPath)) {
+      return;
+    }
   }
 
   if (ROLE === "agent") {
@@ -3979,17 +5603,17 @@ async function handleRequest(req, res) {
       return;
     }
 
+    if ((req.method === "GET" || req.method === "HEAD") && urlPath === "/api/health") {
+      sendJson(res, 200, { ok: true, role: ROLE });
+      return;
+    }
+
     if (!isPanelAuthorized(req)) {
       sendJson(
         res,
         401,
         errorPayload("Unauthorized: Invalid or missing X-Panel-Token"),
       );
-      return;
-    }
-
-    if (req.method === "GET" && urlPath === "/api/health") {
-      sendJson(res, 200, { ok: true, role: ROLE });
       return;
     }
 
@@ -4011,11 +5635,6 @@ async function handleRequest(req, res) {
   await handleMasterApi(req, res);
 }
 
-ensureDataDir();
-storage.init(DATA_ROOT);
-storage.migrateFromJson(DATA_ROOT);
-startManagedCertificateAutoRenewLoop();
-
 const server = http.createServer((req, res) => {
   handleRequest(req, res).catch((err) => {
     sendJson(
@@ -4026,9 +5645,17 @@ const server = http.createServer((req, res) => {
   });
 });
 
-server.listen(PORT, HOST, () => {
-  console.log(`Panel backend listening on ${HOST}:${PORT} (storage: ${process.env.PANEL_STORAGE_BACKEND || "sqlite"})`);
-});
+async function startServer() {
+  ensureDataDir();
+  storage.init(DATA_ROOT);
+  storage.migrateFromJson(DATA_ROOT);
+  await ensureGlobalRelayCA();
+  startManagedCertificateAutoRenewLoop();
+
+  server.listen(PORT, HOST, () => {
+    console.log(`Panel backend listening on ${HOST}:${PORT} (storage: ${process.env.PANEL_STORAGE_BACKEND || "sqlite"})`);
+  });
+}
 
 function gracefulShutdown(signal) {
   console.log(`Received ${signal}, shutting down...`);
@@ -4044,3 +5671,9 @@ function gracefulShutdown(signal) {
 
 process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
 process.on("SIGINT", () => gracefulShutdown("SIGINT"));
+
+startServer().catch((err) => {
+  console.error("[startup] failed to initialize server:", String(err.message || err));
+  storage.close();
+  process.exit(1);
+});

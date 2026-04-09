@@ -6,6 +6,8 @@ const { pathToFileURL } = require("url");
 const { PrismaClient } = require("@prisma/client");
 const { PrismaLibSql } = require("@prisma/adapter-libsql");
 const { normalizeCustomHeaders } = require("./http-rule-request-headers");
+const { normalizeRelayListenerPayload } = require("./relay-listener-normalize");
+const { normalizeVersionPolicyPayload } = require("./version-policy-normalize");
 
 const DEFAULT_LOCAL_AGENT_STATE = Object.freeze({
   desired_revision: 0,
@@ -13,10 +15,15 @@ const DEFAULT_LOCAL_AGENT_STATE = Object.freeze({
   last_apply_revision: 0,
   last_apply_status: "success",
   last_apply_message: "",
+  desired_version: "",
 });
-const CURRENT_SCHEMA_VERSION = "2";
+const CURRENT_SCHEMA_VERSION = "6";
 const MIGRATIONS_DIR = path.join(__dirname, "prisma", "migrations");
 const REQUEST_HEADERS_SCHEMA_VERSION = 2;
+const RELAY_VERSION_POLICY_SCHEMA_VERSION = 3;
+const AGENT_PLATFORM_SCHEMA_VERSION = 4;
+const RELAY_CHAIN_CERT_FIELDS_SCHEMA_VERSION = 5;
+const RELAY_BIND_PUBLIC_ENDPOINT_SCHEMA_VERSION = 6;
 const CLIENT_STATE = {
   client: null,
   dataRoot: null,
@@ -30,6 +37,8 @@ const SCHEMA_STATEMENTS = [
     agent_url TEXT DEFAULT '',
     agent_token TEXT DEFAULT '',
     version TEXT DEFAULT '',
+    platform TEXT DEFAULT '',
+    desired_version TEXT DEFAULT '',
     tags TEXT DEFAULT '[]',
     capabilities TEXT DEFAULT '[]',
     mode TEXT DEFAULT 'pull',
@@ -51,9 +60,12 @@ const SCHEMA_STATEMENTS = [
     agent_id TEXT NOT NULL,
     frontend_url TEXT NOT NULL,
     backend_url TEXT NOT NULL,
+    backends TEXT DEFAULT '[]',
+    load_balancing TEXT DEFAULT '{}',
     enabled INTEGER DEFAULT 1,
     tags TEXT DEFAULT '[]',
     proxy_redirect INTEGER DEFAULT 1,
+    relay_chain TEXT DEFAULT '[]',
     revision INTEGER DEFAULT 0,
     PRIMARY KEY (agent_id, id)
   )`,
@@ -70,12 +82,32 @@ const SCHEMA_STATEMENTS = [
     backends TEXT DEFAULT '[]',
     load_balancing TEXT DEFAULT '{}',
     tuning TEXT DEFAULT '{}',
+    relay_chain TEXT DEFAULT '[]',
     enabled INTEGER DEFAULT 1,
     tags TEXT DEFAULT '[]',
     revision INTEGER DEFAULT 0,
     PRIMARY KEY (agent_id, id)
   )`,
   "CREATE INDEX IF NOT EXISTS idx_l4_rules_agent ON l4_rules(agent_id)",
+  `CREATE TABLE IF NOT EXISTS relay_listeners (
+    id INTEGER PRIMARY KEY,
+    agent_id TEXT NOT NULL,
+    name TEXT DEFAULT '',
+    bind_hosts TEXT DEFAULT '[]',
+    listen_host TEXT DEFAULT '0.0.0.0',
+    listen_port INTEGER NOT NULL,
+    public_host TEXT,
+    public_port INTEGER,
+    enabled INTEGER DEFAULT 1,
+    certificate_id INTEGER,
+    tls_mode TEXT DEFAULT 'pin_or_ca',
+    pin_set TEXT DEFAULT '[]',
+    trusted_ca_certificate_ids TEXT DEFAULT '[]',
+    allow_self_signed INTEGER DEFAULT 0,
+    tags TEXT DEFAULT '[]',
+    revision INTEGER DEFAULT 0
+  )`,
+  "CREATE INDEX IF NOT EXISTS idx_relay_listeners_agent ON relay_listeners(agent_id)",
   `CREATE TABLE IF NOT EXISTS managed_certificates (
     id INTEGER PRIMARY KEY,
     domain TEXT NOT NULL,
@@ -89,6 +121,9 @@ const SCHEMA_STATEMENTS = [
     material_hash TEXT DEFAULT '',
     agent_reports TEXT DEFAULT '{}',
     acme_info TEXT DEFAULT '{}',
+    usage TEXT DEFAULT 'https',
+    certificate_type TEXT DEFAULT 'acme',
+    self_signed INTEGER DEFAULT 0,
     tags TEXT DEFAULT '[]',
     revision INTEGER DEFAULT 0
   )`,
@@ -98,7 +133,15 @@ const SCHEMA_STATEMENTS = [
     current_revision INTEGER DEFAULT 0,
     last_apply_revision INTEGER DEFAULT 0,
     last_apply_status TEXT DEFAULT 'success',
-    last_apply_message TEXT DEFAULT ''
+    last_apply_message TEXT DEFAULT '',
+    desired_version TEXT DEFAULT ''
+  )`,
+  `CREATE TABLE IF NOT EXISTS version_policy (
+    id TEXT PRIMARY KEY,
+    channel TEXT DEFAULT 'stable',
+    desired_version TEXT DEFAULT '',
+    packages TEXT DEFAULT '[]',
+    tags TEXT DEFAULT '[]'
   )`,
   `CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
@@ -175,8 +218,49 @@ async function readTableColumnNames(client, tableName) {
 
 async function inferSchemaVersionWithoutMeta(client) {
   const ruleColumns = await readTableColumnNames(client, "rules");
+  const l4RuleColumns = await readTableColumnNames(client, "l4_rules");
+  const relayListenerColumns = await readTableColumnNames(client, "relay_listeners");
+  const managedCertificateColumns = await readTableColumnNames(client, "managed_certificates");
+  const agentColumns = await readTableColumnNames(client, "agents");
+  const localAgentStateColumns = await readTableColumnNames(client, "local_agent_state");
   const hasRequestHeaderColumns = ["pass_proxy_headers", "user_agent", "custom_headers"]
     .every((column) => ruleColumns.has(column));
+  const hasVersionPolicyColumns = agentColumns.has("desired_version") && localAgentStateColumns.has("desired_version");
+  const hasAgentPlatformColumn = agentColumns.has("platform");
+  const hasRelayChainColumns = ruleColumns.has("relay_chain") && l4RuleColumns.has("relay_chain");
+  const hasManagedCertificateExtendedColumns =
+    managedCertificateColumns.has("usage") &&
+    managedCertificateColumns.has("certificate_type") &&
+    managedCertificateColumns.has("self_signed");
+  const hasRelayBindPublicColumns =
+    relayListenerColumns.has("bind_hosts") &&
+    relayListenerColumns.has("public_host") &&
+    relayListenerColumns.has("public_port");
+  if (
+    hasRequestHeaderColumns &&
+    hasVersionPolicyColumns &&
+    hasAgentPlatformColumn &&
+    hasRelayChainColumns &&
+    hasManagedCertificateExtendedColumns &&
+    hasRelayBindPublicColumns
+  ) {
+    return RELAY_BIND_PUBLIC_ENDPOINT_SCHEMA_VERSION;
+  }
+  if (
+    hasRequestHeaderColumns &&
+    hasVersionPolicyColumns &&
+    hasAgentPlatformColumn &&
+    hasRelayChainColumns &&
+    hasManagedCertificateExtendedColumns
+  ) {
+    return RELAY_CHAIN_CERT_FIELDS_SCHEMA_VERSION;
+  }
+  if (hasRequestHeaderColumns && hasVersionPolicyColumns && hasAgentPlatformColumn) {
+    return AGENT_PLATFORM_SCHEMA_VERSION;
+  }
+  if (hasRequestHeaderColumns && hasVersionPolicyColumns) {
+    return RELAY_VERSION_POLICY_SCHEMA_VERSION;
+  }
   return hasRequestHeaderColumns ? REQUEST_HEADERS_SCHEMA_VERSION : 1;
 }
 
@@ -240,6 +324,22 @@ async function applyPendingSchemaMigrations(client) {
   });
 }
 
+async function ensureHttpRuleMultiBackendColumns(client) {
+  const statements = [
+    "ALTER TABLE rules ADD COLUMN backends TEXT DEFAULT '[]'",
+    "ALTER TABLE rules ADD COLUMN load_balancing TEXT DEFAULT '{}'",
+  ];
+  for (const statement of statements) {
+    try {
+      await client.$executeRawUnsafe(statement);
+    } catch (error) {
+      if (!isIgnorableSqlMigrationError(error)) {
+        throw error;
+      }
+    }
+  }
+}
+
 function defaultLocalAgentState() {
   return { ...DEFAULT_LOCAL_AGENT_STATE };
 }
@@ -301,6 +401,7 @@ async function initializeDatabase(client) {
     await client.$executeRawUnsafe(statement);
   }
   await applyPendingSchemaMigrations(client);
+  await ensureHttpRuleMultiBackendColumns(client);
 
   await client.localAgentState.upsert({
     where: { id: 1 },
@@ -312,6 +413,7 @@ async function initializeDatabase(client) {
       lastApplyRevision: 0,
       lastApplyStatus: "success",
       lastApplyMessage: "",
+      desiredVersion: "",
     },
   });
 }
@@ -333,6 +435,53 @@ function stringifyJsonValue(value, fallback) {
 
 function ensureArray(value) {
   return Array.isArray(value) ? value : [];
+}
+
+function normalizeHttpLoadBalancingForStorage(value) {
+  const strategy = String(value?.strategy || "round_robin").trim().toLowerCase();
+  return {
+    strategy: strategy === "random" ? "random" : "round_robin",
+  };
+}
+
+function normalizeHttpBackendsForStorage(backends, backendUrl) {
+  const source = Array.isArray(backends) ? backends : [];
+  const normalized = [];
+  for (const backend of source) {
+    const rawUrl =
+      backend && typeof backend === "object" && backend.url !== undefined
+        ? backend.url
+        : backend;
+    const url = String(rawUrl || "").trim();
+    if (!url) {
+      continue;
+    }
+    normalized.push({ url });
+  }
+
+  if (normalized.length > 0) {
+    return normalized;
+  }
+
+  const legacy = String(backendUrl || "").trim();
+  return legacy ? [{ url: legacy }] : [];
+}
+
+function normalizeRelayChainIds(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const seen = new Set();
+  const normalized = [];
+  for (const entry of value) {
+    const parsed = Number(entry);
+    if (!Number.isInteger(parsed) || parsed <= 0 || seen.has(parsed)) {
+      continue;
+    }
+    seen.add(parsed);
+    normalized.push(parsed);
+  }
+  return normalized;
 }
 
 function sanitizeStoredCustomHeaders(value) {
@@ -362,6 +511,8 @@ function mapAgentFromDb(row) {
     agent_url: row.agentUrl || "",
     agent_token: row.agentToken || "",
     version: row.version || "",
+    platform: row.platform || "",
+    desired_version: row.desiredVersion || "",
     tags: parseJsonValue(row.tags, []),
     capabilities: parseJsonValue(row.capabilities, []),
     mode: row.mode || "pull",
@@ -381,14 +532,18 @@ function mapAgentFromDb(row) {
 }
 
 function mapRuleFromDb(row) {
+  const backends = normalizeHttpBackendsForStorage(parseJsonValue(row.backends, []), row.backendUrl);
   return {
     id: row.id,
     agent_id: row.agentId,
     frontend_url: row.frontendUrl,
-    backend_url: row.backendUrl,
+    backend_url: backends[0] ? backends[0].url : row.backendUrl,
+    backends,
+    load_balancing: normalizeHttpLoadBalancingForStorage(parseJsonValue(row.loadBalancing, {})),
     enabled: !!row.enabled,
     tags: parseJsonValue(row.tags, []),
     proxy_redirect: !!row.proxyRedirect,
+    relay_chain: normalizeRelayChainIds(parseJsonValue(row.relayChain, [])),
     pass_proxy_headers: row.passProxyHeaders !== false,
     user_agent: row.userAgent || "",
     custom_headers: sanitizeStoredCustomHeaders(parseJsonValue(row.customHeaders, [])),
@@ -409,6 +564,7 @@ function mapL4RuleFromDb(row) {
     backends: parseJsonValue(row.backends, []),
     load_balancing: parseJsonValue(row.loadBalancing, {}),
     tuning: parseJsonValue(row.tuning, {}),
+    relay_chain: normalizeRelayChainIds(parseJsonValue(row.relayChain, [])),
     enabled: !!row.enabled,
     tags: parseJsonValue(row.tags, []),
     revision: row.revision || 0,
@@ -429,9 +585,33 @@ function mapManagedCertificateFromDb(row) {
     material_hash: row.materialHash || "",
     agent_reports: parseJsonValue(row.agentReports, {}),
     acme_info: parseJsonValue(row.acmeInfo, {}),
+    usage: row.usage || "https",
+    certificate_type: row.certificateType || "acme",
+    self_signed: !!row.selfSigned,
     tags: parseJsonValue(row.tags, []),
     revision: row.revision || 0,
   };
+}
+
+function mapRelayListenerFromDb(row) {
+  return normalizeRelayListenerPayload({
+    id: row.id,
+    agent_id: row.agentId,
+    name: row.name || "",
+    bind_hosts: parseJsonValue(row.bindHosts, []),
+    listen_host: row.listenHost || "0.0.0.0",
+    listen_port: row.listenPort,
+    public_host: row.publicHost || "",
+    public_port: row.publicPort,
+    enabled: !!row.enabled,
+    certificate_id: row.certificateId == null ? null : row.certificateId,
+    tls_mode: row.tlsMode || "pin_or_ca",
+    pin_set: parseJsonValue(row.pinSet, []),
+    trusted_ca_certificate_ids: parseJsonValue(row.trustedCaCertificateIds, []),
+    allow_self_signed: !!row.allowSelfSigned,
+    tags: parseJsonValue(row.tags, []),
+    revision: row.revision || 0,
+  });
 }
 
 function mapLocalAgentStateFromDb(row) {
@@ -444,7 +624,35 @@ function mapLocalAgentStateFromDb(row) {
     last_apply_revision: row.lastApplyRevision || 0,
     last_apply_status: row.lastApplyStatus || "success",
     last_apply_message: row.lastApplyMessage || "",
+    desired_version: row.desiredVersion || "",
   };
+}
+
+function mapVersionPolicyFromDb(row) {
+  if (!row) {
+    return null;
+  }
+  return normalizeVersionPolicyPayload({
+    id: row.id,
+    channel: row.channel || "stable",
+    desired_version: row.desiredVersion || "",
+    packages: parseJsonValue(row.packages, []),
+    tags: parseJsonValue(row.tags, []),
+  });
+}
+
+function mapVersionPoliciesFromDb(rows) {
+  const normalized = [];
+  const seen = new Set();
+  for (const row of Array.isArray(rows) ? rows : []) {
+    const policy = mapVersionPolicyFromDb(row);
+    if (!policy || seen.has(policy.id)) {
+      continue;
+    }
+    seen.add(policy.id);
+    normalized.push(policy);
+  }
+  return normalized;
 }
 
 function mapAgentToDb(agent) {
@@ -454,6 +662,8 @@ function mapAgentToDb(agent) {
     agentUrl: String(agent.agent_url || ""),
     agentToken: String(agent.agent_token || ""),
     version: String(agent.version || ""),
+    platform: String(agent.platform || ""),
+    desiredVersion: String(agent.desired_version || ""),
     tags: stringifyJsonValue(agent.tags, []),
     capabilities: stringifyJsonValue(agent.capabilities, []),
     mode: String(agent.mode || "pull"),
@@ -476,14 +686,18 @@ function mapAgentToDb(agent) {
 }
 
 function mapRuleToDb(agentId, rule) {
+  const backends = normalizeHttpBackendsForStorage(rule.backends, rule.backend_url);
   return {
     id: Number(rule.id),
     agentId: String(agentId),
     frontendUrl: String(rule.frontend_url),
-    backendUrl: String(rule.backend_url),
+    backendUrl: String(backends[0] ? backends[0].url : rule.backend_url || ""),
+    backends: stringifyJsonValue(backends, []),
+    loadBalancing: stringifyJsonValue(normalizeHttpLoadBalancingForStorage(rule.load_balancing), {}),
     enabled: rule.enabled !== false,
     tags: stringifyJsonValue(rule.tags, []),
     proxyRedirect: rule.proxy_redirect !== false,
+    relayChain: stringifyJsonValue(normalizeRelayChainIds(rule.relay_chain), []),
     passProxyHeaders: rule.pass_proxy_headers !== false,
     userAgent: String(rule.user_agent || ""),
     customHeaders: stringifyJsonValue(sanitizeStoredCustomHeaders(rule.custom_headers), []),
@@ -504,6 +718,7 @@ function mapL4RuleToDb(agentId, rule) {
     backends: stringifyJsonValue(rule.backends, []),
     loadBalancing: stringifyJsonValue(rule.load_balancing, {}),
     tuning: stringifyJsonValue(rule.tuning, {}),
+    relayChain: stringifyJsonValue(normalizeRelayChainIds(rule.relay_chain), []),
     enabled: rule.enabled !== false,
     tags: stringifyJsonValue(rule.tags, []),
     revision: Number(rule.revision || 0),
@@ -524,8 +739,50 @@ function mapManagedCertificateToDb(cert) {
     materialHash: String(cert.material_hash || ""),
     agentReports: stringifyJsonValue(cert.agent_reports, {}),
     acmeInfo: stringifyJsonValue(cert.acme_info, {}),
+    usage: String(cert.usage || "https"),
+    certificateType: String(cert.certificate_type || "acme"),
+    selfSigned: cert.self_signed === true,
     tags: stringifyJsonValue(cert.tags, []),
     revision: Number(cert.revision || 0),
+  };
+}
+
+function mapRelayListenerToDb(agentId, listener) {
+  const normalized = normalizeRelayListenerPayload({
+    ...listener,
+    agent_id: String(agentId),
+  });
+  if (!Number.isInteger(normalized.id)) {
+    throw new TypeError("relay listener id is required for persistence");
+  }
+  return {
+    id: Number(normalized.id),
+    agentId: String(agentId),
+    name: String(normalized.name || ""),
+    bindHosts: stringifyJsonValue(normalized.bind_hosts, []),
+    listenHost: String(normalized.listen_host || "0.0.0.0"),
+    listenPort: Number(normalized.listen_port),
+    publicHost: String(normalized.public_host || normalized.listen_host || "0.0.0.0"),
+    publicPort: Number(normalized.public_port || normalized.listen_port),
+    enabled: normalized.enabled !== false,
+    certificateId: normalized.certificate_id == null ? null : Number(normalized.certificate_id),
+    tlsMode: String(normalized.tls_mode || "pin_or_ca"),
+    pinSet: stringifyJsonValue(normalized.pin_set, []),
+    trustedCaCertificateIds: stringifyJsonValue(normalized.trusted_ca_certificate_ids, []),
+    allowSelfSigned: !!normalized.allow_self_signed,
+    tags: stringifyJsonValue(normalized.tags, []),
+    revision: Number(normalized.revision || 0),
+  };
+}
+
+function mapVersionPolicyToDb(policy) {
+  const normalized = normalizeVersionPolicyPayload(policy);
+  return {
+    id: String(normalized.id),
+    channel: String(normalized.channel || "stable"),
+    desiredVersion: String(normalized.desired_version || ""),
+    packages: stringifyJsonValue(normalized.packages, []),
+    tags: stringifyJsonValue(normalized.tags, []),
   };
 }
 
@@ -542,12 +799,14 @@ function groupByAgent(rows, mapper) {
 }
 
 async function loadSnapshotFromClient(client) {
-  const [agents, rules, l4Rules, managedCertificates, localAgentState, metaRows] = await Promise.all([
+  const [agents, rules, l4Rules, relayListeners, managedCertificates, localAgentState, versionPolicies, metaRows] = await Promise.all([
     client.agent.findMany({ orderBy: { id: "asc" } }),
     client.rule.findMany({ orderBy: [{ agentId: "asc" }, { id: "asc" }] }),
     client.l4Rule.findMany({ orderBy: [{ agentId: "asc" }, { id: "asc" }] }),
+    client.relayListener.findMany({ orderBy: [{ agentId: "asc" }, { id: "asc" }] }),
     client.managedCertificate.findMany({ orderBy: { id: "asc" } }),
     client.localAgentState.findUnique({ where: { id: 1 } }),
+    client.versionPolicy.findMany({ orderBy: { id: "asc" } }),
     client.meta.findMany(),
   ]);
 
@@ -555,8 +814,10 @@ async function loadSnapshotFromClient(client) {
     agents: agents.map(mapAgentFromDb),
     rulesByAgent: groupByAgent(rules, mapRuleFromDb),
     l4RulesByAgent: groupByAgent(l4Rules, mapL4RuleFromDb),
+    relayListenersByAgent: groupByAgent(relayListeners, mapRelayListenerFromDb),
     managedCertificates: managedCertificates.map(mapManagedCertificateFromDb),
     localAgentState: mapLocalAgentStateFromDb(localAgentState),
+    versionPolicies: mapVersionPoliciesFromDb(versionPolicies),
     meta: Object.fromEntries(metaRows.map((row) => [row.key, row.value])),
   };
 }
@@ -610,6 +871,23 @@ async function deleteL4RulesForAgent(dataRoot, agentId) {
   });
 }
 
+async function saveRelayListenersForAgent(dataRoot, agentId, listeners) {
+  return withClient(dataRoot, async (client) => {
+    await client.$transaction(async (tx) => {
+      await tx.relayListener.deleteMany({ where: { agentId: String(agentId) } });
+      for (const listener of Array.isArray(listeners) ? listeners : []) {
+        await tx.relayListener.create({ data: mapRelayListenerToDb(agentId, listener) });
+      }
+    });
+  });
+}
+
+async function deleteRelayListenersForAgent(dataRoot, agentId) {
+  return withClient(dataRoot, async (client) => {
+    await client.relayListener.deleteMany({ where: { agentId: String(agentId) } });
+  });
+}
+
 async function saveManagedCertificates(dataRoot, certs) {
   return withClient(dataRoot, async (client) => {
     await client.$transaction(async (tx) => {
@@ -632,6 +910,7 @@ async function saveLocalAgentState(dataRoot, state) {
         lastApplyRevision: Number(next.last_apply_revision || 0),
         lastApplyStatus: String(next.last_apply_status || "success"),
         lastApplyMessage: String(next.last_apply_message || ""),
+        desiredVersion: String(next.desired_version || ""),
       },
       create: {
         id: 1,
@@ -640,7 +919,19 @@ async function saveLocalAgentState(dataRoot, state) {
         lastApplyRevision: Number(next.last_apply_revision || 0),
         lastApplyStatus: String(next.last_apply_status || "success"),
         lastApplyMessage: String(next.last_apply_message || ""),
+        desiredVersion: String(next.desired_version || ""),
       },
+    });
+  });
+}
+
+async function saveVersionPolicies(dataRoot, policies) {
+  return withClient(dataRoot, async (client) => {
+    await client.$transaction(async (tx) => {
+      await tx.versionPolicy.deleteMany();
+      for (const policy of Array.isArray(policies) ? policies : []) {
+        await tx.versionPolicy.create({ data: mapVersionPolicyToDb(policy) });
+      }
     });
   });
 }
@@ -658,7 +949,9 @@ async function migrateFromJsonPayload(dataRoot, payload) {
     await client.$transaction(async (tx) => {
       await tx.rule.deleteMany();
       await tx.l4Rule.deleteMany();
+      await tx.relayListener.deleteMany();
       await tx.managedCertificate.deleteMany();
+      await tx.versionPolicy.deleteMany();
       await tx.agent.deleteMany();
 
       for (const agent of Array.isArray(payload?.agents) ? payload.agents : []) {
@@ -683,6 +976,15 @@ async function migrateFromJsonPayload(dataRoot, payload) {
         }
       }
 
+      const relayListenersByAgent = payload?.relayListenersByAgent && typeof payload.relayListenersByAgent === "object"
+        ? payload.relayListenersByAgent
+        : {};
+      for (const [agentId, listeners] of Object.entries(relayListenersByAgent)) {
+        for (const listener of Array.isArray(listeners) ? listeners : []) {
+          await tx.relayListener.create({ data: mapRelayListenerToDb(agentId, listener) });
+        }
+      }
+
       for (const cert of Array.isArray(payload?.managedCertificates) ? payload.managedCertificates : []) {
         await tx.managedCertificate.create({ data: mapManagedCertificateToDb(cert) });
       }
@@ -698,6 +1000,7 @@ async function migrateFromJsonPayload(dataRoot, payload) {
           lastApplyRevision: Number(localState.last_apply_revision || 0),
           lastApplyStatus: String(localState.last_apply_status || "success"),
           lastApplyMessage: String(localState.last_apply_message || ""),
+          desiredVersion: String(localState.desired_version || ""),
         },
         create: {
           id: 1,
@@ -706,8 +1009,18 @@ async function migrateFromJsonPayload(dataRoot, payload) {
           lastApplyRevision: Number(localState.last_apply_revision || 0),
           lastApplyStatus: String(localState.last_apply_status || "success"),
           lastApplyMessage: String(localState.last_apply_message || ""),
+          desiredVersion: String(localState.desired_version || ""),
         },
       });
+
+      const versionPolicies = Array.isArray(payload?.versionPolicies)
+        ? payload.versionPolicies
+        : payload?.versionPolicy && typeof payload.versionPolicy === "object"
+          ? [payload.versionPolicy]
+          : [];
+      for (const policy of versionPolicies) {
+        await tx.versionPolicy.create({ data: mapVersionPolicyToDb(policy) });
+      }
 
       await tx.meta.upsert({
         where: { key: "migrated_from_json" },
@@ -731,8 +1044,11 @@ module.exports = {
   deleteRulesForAgent,
   saveL4RulesForAgent,
   deleteL4RulesForAgent,
+  saveRelayListenersForAgent,
+  deleteRelayListenersForAgent,
   saveManagedCertificates,
   saveLocalAgentState,
+  saveVersionPolicies,
   migrateFromJsonPayload,
   closeClient,
 };

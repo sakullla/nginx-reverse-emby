@@ -25,12 +25,24 @@ const operations = {
     await core.deleteL4RulesForAgent(dataRoot, agentId);
     return null;
   },
+  saveRelayListenersForAgent: async ({ dataRoot, agentId, listeners }) => {
+    await core.saveRelayListenersForAgent(dataRoot, agentId, listeners);
+    return null;
+  },
+  deleteRelayListenersForAgent: async ({ dataRoot, agentId }) => {
+    await core.deleteRelayListenersForAgent(dataRoot, agentId);
+    return null;
+  },
   saveManagedCertificates: async ({ dataRoot, certs }) => {
     await core.saveManagedCertificates(dataRoot, certs);
     return null;
   },
   saveLocalAgentState: async ({ dataRoot, state }) => {
     await core.saveLocalAgentState(dataRoot, state);
+    return null;
+  },
+  saveVersionPolicies: async ({ dataRoot, policies }) => {
+    await core.saveVersionPolicies(dataRoot, policies);
     return null;
   },
   migrateFromJson: async ({ dataRoot, payload }) => core.migrateFromJsonPayload(dataRoot, payload),

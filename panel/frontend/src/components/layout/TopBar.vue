@@ -266,4 +266,8 @@ function handleLogout() {
 @media (max-width: 768px) {
   .agent-switcher__trigger { max-width: 120px; }
 }
+
+@media (max-width: 640px) {
+  .topbar__title { display: none; }
+}
 </style>

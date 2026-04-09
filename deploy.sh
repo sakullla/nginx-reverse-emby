@@ -5,6 +5,8 @@
 #           Nginx Reverse Proxy Deployment Script (China Optimized & Robust)
 #
 # ===================================================================================
+# NOTE: Legacy helper for standalone Nginx nodes. The default runtime is the
+# control-plane container; use this script only for optional host-mode proxy.
 
 # --- 脚本严格模式 ---
 set -e
@@ -125,6 +127,8 @@ backup_file() {
 show_help() {
     cat << EOF
 用法: $(basename "$0") [选项]
+
+Note: legacy helper for standalone Nginx nodes. Use Docker/Compose control-plane runtime by default.
 
 一个强大且安全的 Nginx 反向代理部署脚本 (支持 sudo 和 IPv6)。
 
