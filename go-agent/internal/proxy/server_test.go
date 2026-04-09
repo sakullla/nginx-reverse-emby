@@ -12,16 +12,19 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 )
@@ -256,6 +259,146 @@ func TestStartRetriesHTTPRequestsAcrossBackends(t *testing.T) {
 	}
 	if string(body) != "ok" || failures == 0 {
 		t.Fatalf("expected retry to healthy backend; failures=%d body=%q", failures, string(body))
+	}
+}
+
+func TestCloneProxyRequestPreservesIncomingPathQueryAndFragment(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "http://frontend.example/incoming/path?client=1", nil)
+	req.Host = "frontend.example"
+	req.URL.Fragment = "client-fragment"
+	candidate := httpCandidate{
+		target: mustParseBackendURL(t, "https://backend.example/backend/path?backend=1#backend-fragment"),
+	}
+
+	out, err := cloneProxyRequest(req, nil, candidate, model.HTTPRule{})
+	if err != nil {
+		t.Fatalf("cloneProxyRequest failed: %v", err)
+	}
+
+	if out.URL.Scheme != "https" {
+		t.Fatalf("expected backend scheme to be applied, got %q", out.URL.Scheme)
+	}
+	if out.URL.Host != "backend.example" {
+		t.Fatalf("expected backend host to be applied, got %q", out.URL.Host)
+	}
+	if out.URL.Path != req.URL.Path {
+		t.Fatalf("expected incoming path %q to be preserved, got %q", req.URL.Path, out.URL.Path)
+	}
+	if out.URL.RawQuery != req.URL.RawQuery {
+		t.Fatalf("expected incoming query %q to be preserved, got %q", req.URL.RawQuery, out.URL.RawQuery)
+	}
+	if out.URL.Fragment != req.URL.Fragment {
+		t.Fatalf("expected incoming fragment %q to be preserved, got %q", req.URL.Fragment, out.URL.Fragment)
+	}
+}
+
+func TestRouteEntryDoesNotRetryNonUpstreamUnavailableErrors(t *testing.T) {
+	cache := backends.NewCache(backends.Config{})
+	entry := &routeEntry{
+		rule: model.HTTPRule{
+			FrontendURL: "http://edge.example.test",
+			LoadBalancing: model.LoadBalancing{
+				Strategy: "round_robin",
+			},
+		},
+		backends: []httpBackend{
+			{target: mustParseBackendURL(t, "http://127.0.0.1:18091"), backendHost: "127.0.0.1"},
+			{target: mustParseBackendURL(t, "http://127.0.0.1:18092"), backendHost: "127.0.0.1"},
+		},
+		backendCache:   cache,
+		transport:      NewSharedTransport(),
+		selectionScope: "edge.example.test",
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	req := httptest.NewRequest(http.MethodGet, "http://edge.example.test/retry", nil).WithContext(ctx)
+	req.Host = "edge.example.test"
+	recorder := httptest.NewRecorder()
+
+	err := entry.serveHTTP(recorder, req)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected canceled request error, got %v", err)
+	}
+	if cache.IsInBackoff("127.0.0.1:18091") || cache.IsInBackoff("127.0.0.1:18092") {
+		t.Fatalf("expected non-upstream request errors to skip failure backoff marking")
+	}
+}
+
+func TestServerPreservesSwitchingProtocolsUpgradeTunnel(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.EqualFold(r.Header.Get("Connection"), "Upgrade") {
+			t.Fatalf("expected upgrade connection header, got %q", r.Header.Get("Connection"))
+		}
+		if !strings.EqualFold(r.Header.Get("Upgrade"), "testproto") {
+			t.Fatalf("expected upgrade protocol header, got %q", r.Header.Get("Upgrade"))
+		}
+		hijacker, ok := w.(http.Hijacker)
+		if !ok {
+			t.Fatal("backend response writer does not support hijack")
+		}
+		conn, buf, err := hijacker.Hijack()
+		if err != nil {
+			t.Fatalf("backend hijack failed: %v", err)
+		}
+		_, _ = buf.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: testproto\r\n\r\n")
+		_ = buf.Flush()
+		_, _ = io.Copy(conn, conn)
+	}))
+	t.Cleanup(backend.CloseClientConnections)
+
+	listener := model.HTTPListener{
+		Rules: []model.HTTPRule{{
+			FrontendURL: "http://route.example",
+			BackendURL:  backend.URL,
+		}},
+	}
+	proxy := httptest.NewServer(NewServer(listener))
+	t.Cleanup(proxy.CloseClientConnections)
+
+	conn, err := net.Dial("tcp", strings.TrimPrefix(proxy.URL, "http://"))
+	if err != nil {
+		t.Fatalf("failed to dial proxy: %v", err)
+	}
+	defer conn.Close()
+	fail := func(format string, args ...any) {
+		_ = conn.Close()
+		proxy.CloseClientConnections()
+		backend.CloseClientConnections()
+		t.Fatalf(format, args...)
+	}
+
+	_, err = io.WriteString(conn, "GET /upgrade HTTP/1.1\r\nHost: route.example\r\nConnection: Upgrade\r\nUpgrade: testproto\r\n\r\n")
+	if err != nil {
+		fail("failed to write upgrade request: %v", err)
+	}
+
+	reader := bufio.NewReader(conn)
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	resp, err := http.ReadResponse(reader, &http.Request{Method: http.MethodGet})
+	if err != nil {
+		fail("failed to read upgrade response: %v", err)
+	}
+	_ = conn.SetReadDeadline(time.Time{})
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		fail("expected 101 response, got %d", resp.StatusCode)
+	}
+	if !strings.EqualFold(resp.Header.Get("Upgrade"), "testproto") {
+		fail("unexpected upgrade response header: %q", resp.Header.Get("Upgrade"))
+	}
+
+	payload := "ping-through-upgrade"
+	if _, err := io.WriteString(conn, payload); err != nil {
+		fail("failed to write upgrade payload: %v", err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	reply := make([]byte, len(payload))
+	if _, err := io.ReadFull(reader, reply); err != nil {
+		fail("failed to read upgraded payload: %v", err)
+	}
+	if string(reply) != payload {
+		fail("unexpected upgraded payload: got %q want %q", string(reply), payload)
 	}
 }
 
@@ -758,4 +901,14 @@ func mustSPKIPin(t *testing.T, cert tls.Certificate) string {
 	}
 	sum := sha256.Sum256(parsed.RawSubjectPublicKeyInfo)
 	return base64.StdEncoding.EncodeToString(sum[:])
+}
+
+func mustParseBackendURL(t *testing.T, raw string) *url.URL {
+	t.Helper()
+
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		t.Fatalf("failed to parse backend URL %q: %v", raw, err)
+	}
+	return parsed
 }

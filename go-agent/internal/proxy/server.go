@@ -234,6 +234,9 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 		}
 		resp, err := e.transport.RoundTrip(attemptReq)
 		if err != nil {
+			if !isBackendRetryable(attemptReq, err) {
+				return backendRetryError(attemptReq, err)
+			}
 			e.backendCache.MarkFailure(candidate.target.Host)
 			continue
 		}
@@ -244,6 +247,9 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 			if err := modify(resp); err != nil {
 				return err
 			}
+		}
+		if resp.StatusCode == http.StatusSwitchingProtocols {
+			return handleUpgradeResponse(w, attemptReq, resp)
 		}
 		copyResponse(w, resp)
 		return nil
@@ -575,6 +581,11 @@ func cloneProxyRequest(req *http.Request, body []byte, candidate httpCandidate, 
 	incomingScheme := requestScheme(req)
 	out := req.Clone(req.Context())
 	out.URL = cloneURL(candidate.target)
+	out.URL.Path = req.URL.Path
+	out.URL.RawPath = req.URL.RawPath
+	out.URL.RawQuery = req.URL.RawQuery
+	out.URL.Fragment = req.URL.Fragment
+	out.URL.ForceQuery = req.URL.ForceQuery
 	out.RequestURI = ""
 	out.Host = req.Host
 	if body != nil {
@@ -593,10 +604,121 @@ func cloneProxyRequest(req *http.Request, body []byte, candidate httpCandidate, 
 	return out, nil
 }
 
+func isBackendRetryable(req *http.Request, err error) bool {
+	if req != nil && req.Context().Err() != nil {
+		return false
+	}
+	return !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
+}
+
+func backendRetryError(req *http.Request, err error) error {
+	if req != nil {
+		if ctxErr := req.Context().Err(); ctxErr != nil {
+			return ctxErr
+		}
+	}
+	if errors.Is(err, context.Canceled) {
+		return context.Canceled
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return context.DeadlineExceeded
+	}
+	return err
+}
+
 func copyResponse(w http.ResponseWriter, resp *http.Response) {
 	copyHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, resp.Body)
+}
+
+func handleUpgradeResponse(w http.ResponseWriter, req *http.Request, resp *http.Response) error {
+	reqUpType := upgradeType(req.Header)
+	respUpType := upgradeType(resp.Header)
+	if reqUpType == "" || respUpType == "" {
+		return fmt.Errorf("upgrade response missing protocol negotiation")
+	}
+	if !strings.EqualFold(reqUpType, respUpType) {
+		return fmt.Errorf("backend tried to switch protocol %q when %q was requested", respUpType, reqUpType)
+	}
+
+	backConn, ok := resp.Body.(io.ReadWriteCloser)
+	if !ok {
+		return fmt.Errorf("internal error: 101 switching protocols response with non-writable body")
+	}
+
+	conn, brw, err := http.NewResponseController(w).Hijack()
+	if err != nil {
+		if errors.Is(err, http.ErrNotSupported) {
+			return fmt.Errorf("can't switch protocols using non-Hijacker ResponseWriter type %T", w)
+		}
+		return fmt.Errorf("hijack failed on protocol switch: %w", err)
+	}
+	defer conn.Close()
+
+	backConnCloseCh := make(chan struct{})
+	go func() {
+		select {
+		case <-req.Context().Done():
+		case <-backConnCloseCh:
+		}
+		_ = backConn.Close()
+	}()
+	defer close(backConnCloseCh)
+
+	copyHeaders(w.Header(), resp.Header)
+	resp.Header = w.Header()
+	resp.Body = nil
+	if err := resp.Write(brw); err != nil {
+		return fmt.Errorf("response write: %w", err)
+	}
+	if err := brw.Flush(); err != nil {
+		return fmt.Errorf("response flush: %w", err)
+	}
+
+	errc := make(chan error, 2)
+	spc := switchProtocolCopier{user: conn, backend: backConn}
+	go spc.copyToBackend(errc)
+	go spc.copyFromBackend(errc)
+
+	err = <-errc
+	if err == nil {
+		err = <-errc
+	}
+	if err != nil && !errors.Is(err, errCopyDone) && !errors.Is(err, net.ErrClosed) {
+		return err
+	}
+	return nil
+}
+
+var errCopyDone = errors.New("hijacked connection copy complete")
+
+type switchProtocolCopier struct {
+	user, backend io.ReadWriter
+}
+
+func (c switchProtocolCopier) copyFromBackend(errc chan<- error) {
+	if _, err := io.Copy(c.user, c.backend); err != nil {
+		errc <- err
+		return
+	}
+	if wc, ok := c.user.(interface{ CloseWrite() error }); ok {
+		errc <- wc.CloseWrite()
+		return
+	}
+	errc <- errCopyDone
+}
+
+func (c switchProtocolCopier) copyToBackend(errc chan<- error) {
+	if _, err := io.Copy(c.backend, c.user); err != nil {
+		errc <- err
+		return
+	}
+	if wc, ok := c.backend.(interface{ CloseWrite() error }); ok {
+		errc <- wc.CloseWrite()
+		return
+	}
+	errc <- errCopyDone
 }
 
 func copyHeaders(dst, src http.Header) {
@@ -613,6 +735,17 @@ func cloneURL(src *url.URL) *url.URL {
 	}
 	copyValue := *src
 	return &copyValue
+}
+
+func upgradeType(h http.Header) string {
+	for _, value := range h.Values("Connection") {
+		for _, token := range strings.Split(value, ",") {
+			if strings.EqualFold(strings.TrimSpace(token), "Upgrade") {
+				return h.Get("Upgrade")
+			}
+		}
+	}
+	return ""
 }
 
 func portWithDefault(target *url.URL) int {
