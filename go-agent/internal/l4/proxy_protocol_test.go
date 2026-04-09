@@ -37,6 +37,20 @@ func TestBuildProxyProtocolV2Frame(t *testing.T) {
 	}
 }
 
+func TestParseProxyProtocolV1Unknown(t *testing.T) {
+	header := []byte("PROXY UNKNOWN\r\npayload")
+	info, payload, err := parseProxyHeader(bytes.NewReader(header))
+	if err != nil {
+		t.Fatalf("parse v1 unknown: %v", err)
+	}
+	if info != nil {
+		t.Fatalf("expected UNKNOWN header to return no proxy tuple, got %#v", info)
+	}
+	if string(payload) != "payload" {
+		t.Fatalf("unexpected payload: %q", string(payload))
+	}
+}
+
 func mustTCPAddr(t *testing.T, raw string) *net.TCPAddr {
 	t.Helper()
 

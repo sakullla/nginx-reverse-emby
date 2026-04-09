@@ -46,12 +46,18 @@ func parseProxyProtocolV1(reader *bufio.Reader) (*proxyInfo, []byte, error) {
 	}
 
 	fields := strings.Fields(strings.TrimSuffix(line, "\r\n"))
-	if len(fields) != 6 || fields[0] != "PROXY" {
+	if len(fields) < 2 || fields[0] != "PROXY" {
 		return nil, nil, fmt.Errorf("invalid proxy protocol v1 header")
 	}
 	if fields[1] == "UNKNOWN" {
+		if len(fields) != 2 {
+			return nil, nil, fmt.Errorf("invalid proxy protocol v1 unknown header")
+		}
 		buffered, err := bufferedReaderBytes(reader)
 		return nil, buffered, err
+	}
+	if len(fields) != 6 {
+		return nil, nil, fmt.Errorf("invalid proxy protocol v1 header")
 	}
 
 	source, destination, err := parseProxyAddresses(fields[1], fields[2], fields[3], fields[4], fields[5])
