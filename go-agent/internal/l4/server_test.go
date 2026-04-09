@@ -609,6 +609,112 @@ func TestUDPProxyRetriesNextBackendAfterReplyTimeout(t *testing.T) {
 	}
 }
 
+func TestUDPProxyFailsOutstandingPacketAfterPartialReplies(t *testing.T) {
+	partialAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("resolve partial upstream addr: %v", err)
+	}
+	partialConn, err := net.ListenUDP("udp", partialAddr)
+	if err != nil {
+		t.Fatalf("listen partial upstream: %v", err)
+	}
+	defer partialConn.Close()
+	go func() {
+		buf := make([]byte, 64)
+		replyCount := 0
+		for {
+			n, addr, err := partialConn.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			if replyCount == 0 {
+				replyCount++
+				_, _ = partialConn.WriteToUDP(buf[:n], addr)
+			}
+		}
+	}()
+
+	goodAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("resolve good upstream addr: %v", err)
+	}
+	goodConn, err := net.ListenUDP("udp", goodAddr)
+	if err != nil {
+		t.Fatalf("listen good upstream: %v", err)
+	}
+	defer goodConn.Close()
+	go func() {
+		buf := make([]byte, 64)
+		for {
+			n, addr, err := goodConn.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			_, _ = goodConn.WriteToUDP(buf[:n], addr)
+		}
+	}()
+
+	listenPort := pickFreeUDPPort(t)
+	srv, err := NewServer(context.Background(), []model.L4Rule{{
+		Protocol:   "udp",
+		ListenHost: "127.0.0.1",
+		ListenPort: listenPort,
+		Backends: []model.L4Backend{
+			{Host: "127.0.0.1", Port: partialConn.LocalAddr().(*net.UDPAddr).Port},
+			{Host: "127.0.0.1", Port: goodConn.LocalAddr().(*net.UDPAddr).Port},
+		},
+		LoadBalancing: model.LoadBalancing{Strategy: "round_robin"},
+	}}, nil, nil)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	defer srv.Close()
+	srv.udpReplyTimeout = 200 * time.Millisecond
+
+	client, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: listenPort})
+	if err != nil {
+		t.Fatalf("dial udp proxy: %v", err)
+	}
+	defer client.Close()
+
+	if _, err := client.Write([]byte("one")); err != nil {
+		t.Fatalf("write first udp payload: %v", err)
+	}
+	if _, err := client.Write([]byte("two")); err != nil {
+		t.Fatalf("write second udp payload: %v", err)
+	}
+
+	reply := make([]byte, 3)
+	if err := client.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set first udp read deadline: %v", err)
+	}
+	if _, err := io.ReadFull(client, reply); err != nil {
+		t.Fatalf("read first udp reply: %v", err)
+	}
+	if string(reply) != "one" && string(reply) != "two" {
+		t.Fatalf("expected one partial-backend reply, got %q", string(reply))
+	}
+	if err := client.SetReadDeadline(time.Now().Add(400 * time.Millisecond)); err != nil {
+		t.Fatalf("set second udp read deadline: %v", err)
+	}
+	if _, err := client.Read(reply); err == nil {
+		t.Fatalf("expected outstanding second udp payload to time out")
+	}
+
+	if _, err := client.Write([]byte("tri")); err != nil {
+		t.Fatalf("write third udp payload: %v", err)
+	}
+	if err := client.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set third udp read deadline: %v", err)
+	}
+	if _, err := io.ReadFull(client, reply); err != nil {
+		t.Fatalf("read third udp reply: %v", err)
+	}
+	if string(reply) != "tri" {
+		t.Fatalf("expected failover after partial replies, got %q", string(reply))
+	}
+}
+
 func TestUDPProxyExpiresIdleSessions(t *testing.T) {
 	upstreamAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
 	if err != nil {

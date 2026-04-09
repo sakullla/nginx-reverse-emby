@@ -51,7 +51,8 @@ type udpSession struct {
 	upstream   *net.UDPConn
 	lastActive time.Time
 	targetAddr string
-	awaitingReply bool
+	pendingReplies int
+	awaitingSince  time.Time
 }
 
 func NewServer(
@@ -439,8 +440,12 @@ func (s *Server) markUDPSessionWrite(key string) {
 	s.udpMu.Lock()
 	defer s.udpMu.Unlock()
 	if session := s.udpSessions[key]; session != nil {
-		session.lastActive = s.now()
-		session.awaitingReply = true
+		now := s.now()
+		session.lastActive = now
+		session.pendingReplies++
+		if session.pendingReplies == 1 {
+			session.awaitingSince = now
+		}
 	}
 }
 
@@ -448,8 +453,16 @@ func (s *Server) markUDPSessionReply(key string) {
 	s.udpMu.Lock()
 	defer s.udpMu.Unlock()
 	if session := s.udpSessions[key]; session != nil {
-		session.lastActive = s.now()
-		session.awaitingReply = false
+		now := s.now()
+		session.lastActive = now
+		if session.pendingReplies > 0 {
+			session.pendingReplies--
+		}
+		if session.pendingReplies > 0 {
+			session.awaitingSince = now
+		} else {
+			session.awaitingSince = time.Time{}
+		}
 	}
 }
 
@@ -457,17 +470,17 @@ func (s *Server) shouldFailUDPSession(key string) bool {
 	s.udpMu.Lock()
 	defer s.udpMu.Unlock()
 	session := s.udpSessions[key]
-	if session == nil || !session.awaitingReply {
+	if session == nil || session.pendingReplies == 0 || session.awaitingSince.IsZero() {
 		return false
 	}
-	return s.now().Sub(session.lastActive) >= s.udpReplyTimeout
+	return s.now().Sub(session.awaitingSince) >= s.udpReplyTimeout
 }
 
 func (s *Server) shouldExpireUDPSession(key string) bool {
 	s.udpMu.Lock()
 	defer s.udpMu.Unlock()
 	session := s.udpSessions[key]
-	if session == nil || session.awaitingReply {
+	if session == nil || session.pendingReplies > 0 {
 		return false
 	}
 	return s.now().Sub(session.lastActive) >= s.udpSessionIdleTimeout
