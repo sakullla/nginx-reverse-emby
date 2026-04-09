@@ -326,6 +326,42 @@ func TestRouteEntryDoesNotRetryNonUpstreamUnavailableErrors(t *testing.T) {
 	}
 }
 
+func TestRouteEntryDoesNotRetryGenericTransportErrors(t *testing.T) {
+	sentinel := errors.New("synthetic dial error")
+	cache := backends.NewCache(backends.Config{})
+	transport := NewSharedTransport()
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		return nil, sentinel
+	}
+	entry := &routeEntry{
+		rule: model.HTTPRule{
+			FrontendURL: "http://edge.example.test",
+			LoadBalancing: model.LoadBalancing{
+				Strategy: "round_robin",
+			},
+		},
+		backends: []httpBackend{
+			{target: mustParseBackendURL(t, "http://127.0.0.1:18091"), backendHost: "127.0.0.1"},
+			{target: mustParseBackendURL(t, "http://127.0.0.1:18092"), backendHost: "127.0.0.1"},
+		},
+		backendCache:   cache,
+		transport:      transport,
+		selectionScope: "edge.example.test",
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "http://edge.example.test/retry", nil)
+	req.Host = "edge.example.test"
+	recorder := httptest.NewRecorder()
+
+	err := entry.serveHTTP(recorder, req)
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("expected sentinel transport error, got %v", err)
+	}
+	if cache.IsInBackoff("127.0.0.1:18091") || cache.IsInBackoff("127.0.0.1:18092") {
+		t.Fatalf("expected generic transport errors to skip failure backoff marking")
+	}
+}
+
 func TestRouteEntryRetriesUpstreamHeaderTimeouts(t *testing.T) {
 	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(200 * time.Millisecond)

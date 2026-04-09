@@ -611,7 +611,18 @@ func isBackendRetryable(req *http.Request, err error) bool {
 	if req != nil && req.Context().Err() != nil {
 		return false
 	}
-	return true
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		return true
+	}
+	var timeoutErr interface{ Timeout() bool }
+	if errors.As(err, &timeoutErr) && timeoutErr.Timeout() {
+		return true
+	}
+	return false
 }
 
 func backendRetryError(req *http.Request, err error) error {
