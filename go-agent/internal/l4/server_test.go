@@ -1,6 +1,7 @@
 package l4
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/rand"
@@ -158,6 +159,171 @@ func TestTCPDirectProxy(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		// allow upstream goroutine to exit naturally
+	}
+}
+
+func TestTCPProxyProtocolSendOnly(t *testing.T) {
+	upstreamLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen upstream: %v", err)
+	}
+	defer upstreamLn.Close()
+
+	upstreamObserved := make(chan proxyProtocolObservation, 1)
+	go acceptProxyProtocolConnection(t, upstreamLn, true, upstreamObserved)
+
+	srv, err := NewServer(context.Background(), []model.L4Rule{{
+		Protocol:   "tcp",
+		ListenHost: "127.0.0.1",
+		ListenPort: pickFreeTCPPort(t),
+		Backends: []model.L4Backend{
+			{Host: "127.0.0.1", Port: upstreamLn.Addr().(*net.TCPAddr).Port},
+		},
+		LoadBalancing: model.LoadBalancing{Strategy: "round_robin"},
+		Tuning: model.L4Tuning{
+			ProxyProtocol: model.L4ProxyProtocolTuning{Send: true},
+		},
+	}}, nil, nil)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	defer srv.Close()
+
+	client, err := net.Dial("tcp", srv.tcpListeners[0].Addr().String())
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	defer client.Close()
+
+	payload := []byte("hello proxy protocol")
+	if _, err := client.Write(payload); err != nil {
+		t.Fatalf("write payload: %v", err)
+	}
+	if tcpClient, ok := client.(*net.TCPConn); ok {
+		if err := tcpClient.CloseWrite(); err != nil {
+			t.Fatalf("close client write: %v", err)
+		}
+	}
+
+	observed := waitForProxyProtocolObservation(t, upstreamObserved)
+	expectedHeader := fmt.Sprintf(
+		"PROXY TCP4 %s %s %d %d\r\n",
+		client.LocalAddr().(*net.TCPAddr).IP.String(),
+		client.RemoteAddr().(*net.TCPAddr).IP.String(),
+		client.LocalAddr().(*net.TCPAddr).Port,
+		client.RemoteAddr().(*net.TCPAddr).Port,
+	)
+	if observed.Header != expectedHeader {
+		t.Fatalf("unexpected proxy header:\n got: %q\nwant: %q", observed.Header, expectedHeader)
+	}
+	if !bytes.Equal(observed.Payload, payload) {
+		t.Fatalf("unexpected upstream payload: got %q want %q", observed.Payload, payload)
+	}
+}
+
+func TestTCPProxyProtocolDecodeOnly(t *testing.T) {
+	upstreamLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen upstream: %v", err)
+	}
+	defer upstreamLn.Close()
+
+	upstreamObserved := make(chan proxyProtocolObservation, 1)
+	go acceptProxyProtocolConnection(t, upstreamLn, false, upstreamObserved)
+
+	srv, err := NewServer(context.Background(), []model.L4Rule{{
+		Protocol:   "tcp",
+		ListenHost: "127.0.0.1",
+		ListenPort: pickFreeTCPPort(t),
+		Backends: []model.L4Backend{
+			{Host: "127.0.0.1", Port: upstreamLn.Addr().(*net.TCPAddr).Port},
+		},
+		LoadBalancing: model.LoadBalancing{Strategy: "round_robin"},
+		Tuning: model.L4Tuning{
+			ProxyProtocol: model.L4ProxyProtocolTuning{Decode: true},
+		},
+	}}, nil, nil)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	defer srv.Close()
+
+	client, err := net.Dial("tcp", srv.tcpListeners[0].Addr().String())
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	defer client.Close()
+
+	payload := []byte("payload without proxy preface")
+	downstream := append([]byte("PROXY TCP4 198.51.100.10 203.0.113.20 12345 443\r\n"), payload...)
+	if _, err := client.Write(downstream); err != nil {
+		t.Fatalf("write payload: %v", err)
+	}
+	if tcpClient, ok := client.(*net.TCPConn); ok {
+		if err := tcpClient.CloseWrite(); err != nil {
+			t.Fatalf("close client write: %v", err)
+		}
+	}
+
+	observed := waitForProxyProtocolObservation(t, upstreamObserved)
+	if observed.Header != "" {
+		t.Fatalf("expected upstream payload without forwarded proxy header, got %q", observed.Header)
+	}
+	if !bytes.Equal(observed.Payload, payload) {
+		t.Fatalf("unexpected upstream payload: got %q want %q", observed.Payload, payload)
+	}
+}
+
+func TestTCPProxyProtocolDecodeAndSend(t *testing.T) {
+	upstreamLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen upstream: %v", err)
+	}
+	defer upstreamLn.Close()
+
+	upstreamObserved := make(chan proxyProtocolObservation, 1)
+	go acceptProxyProtocolConnection(t, upstreamLn, true, upstreamObserved)
+
+	srv, err := NewServer(context.Background(), []model.L4Rule{{
+		Protocol:   "tcp",
+		ListenHost: "127.0.0.1",
+		ListenPort: pickFreeTCPPort(t),
+		Backends: []model.L4Backend{
+			{Host: "127.0.0.1", Port: upstreamLn.Addr().(*net.TCPAddr).Port},
+		},
+		LoadBalancing: model.LoadBalancing{Strategy: "round_robin"},
+		Tuning: model.L4Tuning{
+			ProxyProtocol: model.L4ProxyProtocolTuning{Decode: true, Send: true},
+		},
+	}}, nil, nil)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	defer srv.Close()
+
+	client, err := net.Dial("tcp", srv.tcpListeners[0].Addr().String())
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	defer client.Close()
+
+	header := "PROXY TCP4 198.51.100.10 203.0.113.20 12345 443\r\n"
+	payload := []byte("payload with relayed tuple")
+	if _, err := client.Write(append([]byte(header), payload...)); err != nil {
+		t.Fatalf("write payload: %v", err)
+	}
+	if tcpClient, ok := client.(*net.TCPConn); ok {
+		if err := tcpClient.CloseWrite(); err != nil {
+			t.Fatalf("close client write: %v", err)
+		}
+	}
+
+	observed := waitForProxyProtocolObservation(t, upstreamObserved)
+	if observed.Header != header {
+		t.Fatalf("unexpected relayed proxy header:\n got: %q\nwant: %q", observed.Header, header)
+	}
+	if !bytes.Equal(observed.Payload, payload) {
+		t.Fatalf("unexpected upstream payload: got %q want %q", observed.Payload, payload)
 	}
 }
 
@@ -951,6 +1117,11 @@ type tcpEchoListener struct {
 	ln net.Listener
 }
 
+type proxyProtocolObservation struct {
+	Header  string
+	Payload []byte
+}
+
 func newTCPEchoListener(t *testing.T) *tcpEchoListener {
 	t.Helper()
 
@@ -981,4 +1152,44 @@ func (l *tcpEchoListener) Close() error {
 
 func (l *tcpEchoListener) Port() int {
 	return l.ln.Addr().(*net.TCPAddr).Port
+}
+
+func acceptProxyProtocolConnection(t *testing.T, ln net.Listener, readHeader bool, out chan<- proxyProtocolObservation) {
+	t.Helper()
+
+	conn, err := ln.Accept()
+	if err != nil {
+		return
+	}
+	defer conn.Close()
+
+	reader := bufio.NewReader(conn)
+	observed := proxyProtocolObservation{}
+	if readHeader {
+		header, err := reader.ReadString('\n')
+		if err != nil {
+			t.Errorf("read proxy header: %v", err)
+			return
+		}
+		observed.Header = header
+	}
+	payload, err := io.ReadAll(reader)
+	if err != nil {
+		t.Errorf("read upstream payload: %v", err)
+		return
+	}
+	observed.Payload = payload
+	out <- observed
+}
+
+func waitForProxyProtocolObservation(t *testing.T, observed <-chan proxyProtocolObservation) proxyProtocolObservation {
+	t.Helper()
+
+	select {
+	case result := <-observed:
+		return result
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for upstream observation")
+		return proxyProtocolObservation{}
+	}
 }

@@ -1,6 +1,7 @@
 package l4
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -29,11 +30,11 @@ type Server struct {
 	cache *backends.Cache
 	now   func() time.Time
 
-	tcpListeners []net.Listener
-	udpConns     []*net.UDPConn
-	udpMu        sync.Mutex
-	udpSessions  map[string]*udpSession
-	udpReplyTimeout      time.Duration
+	tcpListeners          []net.Listener
+	udpConns              []*net.UDPConn
+	udpMu                 sync.Mutex
+	udpSessions           map[string]*udpSession
+	udpReplyTimeout       time.Duration
 	udpSessionIdleTimeout time.Duration
 
 	relayListenersByID map[int]model.RelayListener
@@ -45,12 +46,12 @@ type Server struct {
 }
 
 type udpSession struct {
-	key        string
-	peer       *net.UDPAddr
-	listener   *net.UDPConn
-	upstream   *net.UDPConn
-	lastActive time.Time
-	targetAddr string
+	key            string
+	peer           *net.UDPAddr
+	listener       *net.UDPConn
+	upstream       *net.UDPConn
+	lastActive     time.Time
+	targetAddr     string
 	pendingReplies int
 	awaitingSince  time.Time
 }
@@ -80,18 +81,18 @@ func NewServerWithResources(
 		cache = backends.NewCache(backends.Config{})
 	}
 	s := &Server{
-		ctx:                ctx,
-		cancel:             cancel,
-		cache:              cache,
-		now:                time.Now,
-		tcpConns:           make(map[net.Conn]struct{}),
-		udpConns:           nil,
-		udpSessions:        make(map[string]*udpSession),
-		udpReplyTimeout:    time.Second,
+		ctx:                   ctx,
+		cancel:                cancel,
+		cache:                 cache,
+		now:                   time.Now,
+		tcpConns:              make(map[net.Conn]struct{}),
+		udpConns:              nil,
+		udpSessions:           make(map[string]*udpSession),
+		udpReplyTimeout:       time.Second,
 		udpSessionIdleTimeout: 30 * time.Second,
-		tcpListeners:       nil,
-		relayListenersByID: relayListenersByID,
-		relayProvider:      relayProvider,
+		tcpListeners:          nil,
+		relayListenersByID:    relayListenersByID,
+		relayProvider:         relayProvider,
 	}
 	for _, rule := range rules {
 		if err := ValidateRule(rule); err != nil {
@@ -159,6 +160,11 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 	defer s.untrackTCPConn(client)
 	defer client.Close()
 
+	downstreamSource, downstreamProxyInfo, err := s.prepareTCPDownstream(client, rule)
+	if err != nil {
+		return
+	}
+
 	upstream, err := s.dialTCPUpstream(rule)
 	if err != nil {
 		return
@@ -167,9 +173,13 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 	defer s.untrackTCPConn(upstream)
 	defer upstream.Close()
 
+	if err := s.writeTCPProxyHeader(upstream, client, downstreamProxyInfo, rule); err != nil {
+		return
+	}
+
 	done := make(chan struct{}, 2)
 	go func() {
-		io.Copy(upstream, client)
+		io.Copy(upstream, downstreamSource)
 		upstream.Close()
 		done <- struct{}{}
 	}()
@@ -180,6 +190,68 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 	}()
 	<-done
 	<-done
+}
+
+func (s *Server) prepareTCPDownstream(client net.Conn, rule model.L4Rule) (io.Reader, *proxyInfo, error) {
+	if !rule.Tuning.ProxyProtocol.Decode {
+		return client, nil, nil
+	}
+
+	reader := bufio.NewReader(client)
+	info, _, err := parseProxyHeader(reader)
+	if err != nil {
+		return nil, nil, err
+	}
+	return reader, info, nil
+}
+
+func (s *Server) writeTCPProxyHeader(upstream net.Conn, client net.Conn, decoded *proxyInfo, rule model.L4Rule) error {
+	if !rule.Tuning.ProxyProtocol.Send {
+		return nil
+	}
+
+	info := decoded
+	if info == nil {
+		source, destination, err := proxyInfoFromConn(client)
+		if err != nil {
+			return err
+		}
+		info = &proxyInfo{
+			Source:      source,
+			Destination: destination,
+			Version:     1,
+		}
+	}
+
+	header, err := buildProxyHeader(*info)
+	if err != nil {
+		return err
+	}
+	_, err = upstream.Write(header)
+	return err
+}
+
+func proxyInfoFromConn(conn net.Conn) (*net.TCPAddr, *net.TCPAddr, error) {
+	source, ok := conn.RemoteAddr().(*net.TCPAddr)
+	if !ok {
+		return nil, nil, fmt.Errorf("unsupported downstream source address type %T", conn.RemoteAddr())
+	}
+	destination, ok := conn.LocalAddr().(*net.TCPAddr)
+	if !ok {
+		return nil, nil, fmt.Errorf("unsupported downstream destination address type %T", conn.LocalAddr())
+	}
+	return cloneTCPAddr(source), cloneTCPAddr(destination), nil
+}
+
+func cloneTCPAddr(addr *net.TCPAddr) *net.TCPAddr {
+	if addr == nil {
+		return nil
+	}
+	out := *addr
+	if addr.IP != nil {
+		out.IP = append(net.IP(nil), addr.IP...)
+	}
+	return &out
 }
 
 func (s *Server) dialTCPUpstream(rule model.L4Rule) (net.Conn, error) {
