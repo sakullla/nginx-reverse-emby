@@ -80,7 +80,10 @@ func TestHeartbeatSync(t *testing.T) {
 				AgentID:    "remote-agent-5",
 				Name:       "relay-a",
 				ListenHost: "127.0.0.1",
+				BindHosts:  []string{"127.0.0.1", "127.0.0.2"},
 				ListenPort: 9443,
+				PublicHost: "relay.example.com",
+				PublicPort: 443,
 				Enabled:    true,
 				TLSMode:    "pin_only",
 				PinSet: []model.RelayPin{{
@@ -166,7 +169,10 @@ func TestHeartbeatSync(t *testing.T) {
 		AgentID:    "remote-agent-5",
 		Name:       "relay-a",
 		ListenHost: "127.0.0.1",
+		BindHosts:  []string{"127.0.0.1", "127.0.0.2"},
 		ListenPort: 9443,
+		PublicHost: "relay.example.com",
+		PublicPort: 443,
 		Enabled:    true,
 		TLSMode:    "pin_only",
 		PinSet: []model.RelayPin{{

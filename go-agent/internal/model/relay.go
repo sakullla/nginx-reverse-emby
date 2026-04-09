@@ -10,7 +10,10 @@ type RelayListener struct {
 	AgentID                 string     `json:"agent_id"`
 	Name                    string     `json:"name"`
 	ListenHost              string     `json:"listen_host"`
+	BindHosts               []string   `json:"bind_hosts"`
 	ListenPort              int        `json:"listen_port"`
+	PublicHost              string     `json:"public_host"`
+	PublicPort              int        `json:"public_port"`
 	Enabled                 bool       `json:"enabled"`
 	CertificateID           *int       `json:"certificate_id"`
 	TLSMode                 string     `json:"tls_mode"`

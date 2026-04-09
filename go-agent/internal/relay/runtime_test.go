@@ -178,6 +178,94 @@ func TestValidateListener(t *testing.T) {
 	}
 }
 
+func TestNormalizeListenerDerivesBindAndPublicFields(t *testing.T) {
+	t.Parallel()
+
+	normalized, err := normalizeListener(Listener{
+		ID:         1,
+		AgentID:    "agent-a",
+		Name:       "relay-a",
+		BindHosts:  []string{"127.0.0.1", "127.0.0.2"},
+		ListenPort: 18443,
+		Enabled:    true,
+		TLSMode:    "pin_only",
+		PinSet: []model.RelayPin{{
+			Type:  "spki_sha256",
+			Value: "cGlubmVk",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("normalizeListener returned error: %v", err)
+	}
+	if normalized.ListenHost != "127.0.0.1" {
+		t.Fatalf("expected listen_host mirror from bind_hosts, got %q", normalized.ListenHost)
+	}
+	if normalized.PublicHost != "127.0.0.1" {
+		t.Fatalf("expected public_host fallback to first bind host, got %q", normalized.PublicHost)
+	}
+	if normalized.PublicPort != 18443 {
+		t.Fatalf("expected public_port fallback to listen_port, got %d", normalized.PublicPort)
+	}
+}
+
+func TestNormalizeListenerFallsBackBindHostsFromListenHost(t *testing.T) {
+	t.Parallel()
+
+	normalized, err := normalizeListener(Listener{
+		ID:         1,
+		AgentID:    "agent-a",
+		Name:       "relay-a",
+		ListenHost: "127.0.0.1",
+		ListenPort: 18443,
+		Enabled:    true,
+		TLSMode:    "pin_only",
+		PinSet: []model.RelayPin{{
+			Type:  "spki_sha256",
+			Value: "cGlubmVk",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("normalizeListener returned error: %v", err)
+	}
+	if len(normalized.BindHosts) != 1 || normalized.BindHosts[0] != "127.0.0.1" {
+		t.Fatalf("expected bind_hosts fallback from listen_host, got %+v", normalized.BindHosts)
+	}
+}
+
+func TestStartBindsAllConfiguredHosts(t *testing.T) {
+	backendAddr, stopBackend := startTCPEchoServer(t)
+	defer stopBackend()
+
+	provider := newFakeTLSMaterialProvider()
+	listener, hop := newRelayEndpoint(t, provider, 1, "relay-bind-all", "pin_only", true, false)
+	listener.BindHosts = []string{"127.0.0.1", "127.0.0.2"}
+	listener.ListenHost = ""
+
+	server, err := Start(context.Background(), []Listener{listener}, provider)
+	if err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+	defer server.Close()
+
+	if len(server.listeners) != 2 {
+		t.Fatalf("expected two active listeners for bind_hosts, got %d", len(server.listeners))
+	}
+
+	for _, host := range listener.BindHosts {
+		testHop := hop
+		testHop.Address = net.JoinHostPort(host, fmt.Sprintf("%d", listener.ListenPort))
+		testHop.Listener = listener
+		testHop.ServerName = ""
+
+		conn, dialErr := Dial(context.Background(), "tcp", backendAddr, []Hop{testHop}, provider)
+		if dialErr != nil {
+			t.Fatalf("Dial returned error for host %s: %v", host, dialErr)
+		}
+		assertRoundTrip(t, conn, []byte("bind-all"))
+		conn.Close()
+	}
+}
+
 func TestDialRejectsUDP(t *testing.T) {
 	t.Parallel()
 

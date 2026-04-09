@@ -158,6 +158,10 @@ func cloneSnapshot(snapshot model.Snapshot) model.Snapshot {
 		cloned.RelayListeners = make([]model.RelayListener, len(snapshot.RelayListeners))
 		copy(cloned.RelayListeners, snapshot.RelayListeners)
 		for i, listener := range snapshot.RelayListeners {
+			if listener.BindHosts != nil {
+				cloned.RelayListeners[i].BindHosts = make([]string, len(listener.BindHosts))
+				copy(cloned.RelayListeners[i].BindHosts, listener.BindHosts)
+			}
 			if listener.PinSet != nil {
 				cloned.RelayListeners[i].PinSet = make([]model.RelayPin, len(listener.PinSet))
 				copy(cloned.RelayListeners[i].PinSet, listener.PinSet)
