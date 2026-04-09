@@ -27,11 +27,14 @@ type Server struct {
 	wg sync.WaitGroup
 
 	cache *backends.Cache
+	now   func() time.Time
 
 	tcpListeners []net.Listener
 	udpConns     []*net.UDPConn
 	udpMu        sync.Mutex
 	udpSessions  map[string]*udpSession
+	udpReplyTimeout      time.Duration
+	udpSessionIdleTimeout time.Duration
 
 	relayListenersByID map[int]model.RelayListener
 	relayProvider      RelayMaterialProvider
@@ -48,6 +51,7 @@ type udpSession struct {
 	upstream   *net.UDPConn
 	lastActive time.Time
 	targetAddr string
+	awaitingReply bool
 }
 
 func NewServer(
@@ -78,9 +82,12 @@ func NewServerWithResources(
 		ctx:                ctx,
 		cancel:             cancel,
 		cache:              cache,
+		now:                time.Now,
 		tcpConns:           make(map[net.Conn]struct{}),
 		udpConns:           nil,
 		udpSessions:        make(map[string]*udpSession),
+		udpReplyTimeout:    time.Second,
+		udpSessionIdleTimeout: 30 * time.Second,
 		tcpListeners:       nil,
 		relayListenersByID: relayListenersByID,
 		relayProvider:      relayProvider,
@@ -258,13 +265,13 @@ func (s *Server) proxyUDPPacket(listener *net.UDPConn, rule model.L4Rule, payloa
 	if err != nil {
 		return
 	}
-	_ = session.upstream.SetWriteDeadline(time.Now().Add(time.Second))
+	_ = session.upstream.SetWriteDeadline(s.now().Add(s.udpReplyTimeout))
 	if _, err := session.upstream.Write(payload); err != nil {
 		s.cache.MarkFailure(session.targetAddr)
 		s.closeUDPSession(session.key)
 		return
 	}
-	s.touchUDPSession(session.key)
+	s.markUDPSessionWrite(session.key)
 }
 
 func (s *Server) Close() error {
@@ -332,7 +339,7 @@ func (s *Server) sessionForPeer(rule model.L4Rule, listener *net.UDPConn, peer *
 
 	s.udpMu.Lock()
 	if existing := s.udpSessions[key]; existing != nil {
-		existing.lastActive = time.Now()
+		existing.lastActive = s.now()
 		s.udpMu.Unlock()
 		return existing, nil
 	}
@@ -348,13 +355,13 @@ func (s *Server) sessionForPeer(rule model.L4Rule, listener *net.UDPConn, peer *
 		peer:       cloneUDPAddr(peer),
 		listener:   listener,
 		upstream:   upstream,
-		lastActive: time.Now(),
+		lastActive: s.now(),
 		targetAddr: target,
 	}
 
 	s.udpMu.Lock()
 	if existing := s.udpSessions[key]; existing != nil {
-		existing.lastActive = time.Now()
+		existing.lastActive = s.now()
 		s.udpMu.Unlock()
 		_ = upstream.Close()
 		return existing, nil
@@ -386,7 +393,6 @@ func (s *Server) dialUDPUpstream(rule model.L4Rule) (*net.UDPConn, string, error
 			lastErr = err
 			continue
 		}
-		s.cache.MarkSuccess(candidate.Address)
 		return upstream, candidate.Address, nil
 	}
 	if lastErr != nil {
@@ -401,12 +407,19 @@ func (s *Server) pipeUDPReplies(session *udpSession) {
 
 	buf := make([]byte, 64*1024)
 	for {
-		if err := session.upstream.SetReadDeadline(time.Now().Add(250 * time.Millisecond)); err != nil {
+		if err := session.upstream.SetReadDeadline(s.now().Add(250 * time.Millisecond)); err != nil {
 			return
 		}
 		n, err := session.upstream.Read(buf)
 		if err != nil {
 			if ne, ok := err.(net.Error); ok && ne.Timeout() {
+				if s.shouldFailUDPSession(session.key) {
+					s.cache.MarkFailure(session.targetAddr)
+					return
+				}
+				if s.shouldExpireUDPSession(session.key) {
+					return
+				}
 				if s.ctx.Err() != nil {
 					return
 				}
@@ -414,19 +427,50 @@ func (s *Server) pipeUDPReplies(session *udpSession) {
 			}
 			return
 		}
-		s.touchUDPSession(session.key)
+		s.markUDPSessionReply(session.key)
+		s.cache.MarkSuccess(session.targetAddr)
 		if _, err := session.listener.WriteToUDP(buf[:n], session.peer); err != nil {
 			return
 		}
 	}
 }
 
-func (s *Server) touchUDPSession(key string) {
+func (s *Server) markUDPSessionWrite(key string) {
 	s.udpMu.Lock()
 	defer s.udpMu.Unlock()
 	if session := s.udpSessions[key]; session != nil {
-		session.lastActive = time.Now()
+		session.lastActive = s.now()
+		session.awaitingReply = true
 	}
+}
+
+func (s *Server) markUDPSessionReply(key string) {
+	s.udpMu.Lock()
+	defer s.udpMu.Unlock()
+	if session := s.udpSessions[key]; session != nil {
+		session.lastActive = s.now()
+		session.awaitingReply = false
+	}
+}
+
+func (s *Server) shouldFailUDPSession(key string) bool {
+	s.udpMu.Lock()
+	defer s.udpMu.Unlock()
+	session := s.udpSessions[key]
+	if session == nil || !session.awaitingReply {
+		return false
+	}
+	return s.now().Sub(session.lastActive) >= s.udpReplyTimeout
+}
+
+func (s *Server) shouldExpireUDPSession(key string) bool {
+	s.udpMu.Lock()
+	defer s.udpMu.Unlock()
+	session := s.udpSessions[key]
+	if session == nil || session.awaitingReply {
+		return false
+	}
+	return s.now().Sub(session.lastActive) >= s.udpSessionIdleTimeout
 }
 
 func (s *Server) closeUDPSession(key string) {

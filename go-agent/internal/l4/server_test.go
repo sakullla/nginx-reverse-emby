@@ -16,6 +16,7 @@ import (
 	"io"
 	"math/big"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -451,8 +452,8 @@ func TestUDPProxyReusesSessionUpstreamSocket(t *testing.T) {
 	}
 	defer upstreamConn.Close()
 
+	var seenPeersMu sync.Mutex
 	seenPeers := make(map[string]struct{})
-	seenPeerCh := make(chan string, 2)
 	go func() {
 		buf := make([]byte, 64)
 		for {
@@ -460,10 +461,11 @@ func TestUDPProxyReusesSessionUpstreamSocket(t *testing.T) {
 			if err != nil {
 				return
 			}
+			seenPeersMu.Lock()
 			if _, ok := seenPeers[addr.String()]; !ok {
 				seenPeers[addr.String()] = struct{}{}
-				seenPeerCh <- addr.String()
 			}
+			seenPeersMu.Unlock()
 			_, _ = upstreamConn.WriteToUDP(buf[:n], addr)
 		}
 	}()
@@ -510,9 +512,166 @@ func TestUDPProxyReusesSessionUpstreamSocket(t *testing.T) {
 	if len(srv.udpSessions) != 1 {
 		t.Fatalf("expected a single reused udp session, got %d", len(srv.udpSessions))
 	}
+	seenPeersMu.Lock()
+	defer seenPeersMu.Unlock()
 	if len(seenPeers) != 1 {
 		t.Fatalf("expected upstream to observe one proxy peer, got %d", len(seenPeers))
 	}
+}
+
+func TestUDPProxyRetriesNextBackendAfterReplyTimeout(t *testing.T) {
+	silentAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("resolve silent upstream addr: %v", err)
+	}
+	silentConn, err := net.ListenUDP("udp", silentAddr)
+	if err != nil {
+		t.Fatalf("listen silent upstream: %v", err)
+	}
+	defer silentConn.Close()
+	go func() {
+		buf := make([]byte, 64)
+		for {
+			if _, _, err := silentConn.ReadFromUDP(buf); err != nil {
+				return
+			}
+		}
+	}()
+
+	goodAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("resolve good upstream addr: %v", err)
+	}
+	goodConn, err := net.ListenUDP("udp", goodAddr)
+	if err != nil {
+		t.Fatalf("listen good upstream: %v", err)
+	}
+	defer goodConn.Close()
+	go func() {
+		buf := make([]byte, 64)
+		for {
+			n, addr, err := goodConn.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			_, _ = goodConn.WriteToUDP(buf[:n], addr)
+		}
+	}()
+
+	listenPort := pickFreeUDPPort(t)
+	srv, err := NewServer(context.Background(), []model.L4Rule{{
+		Protocol:   "udp",
+		ListenHost: "127.0.0.1",
+		ListenPort: listenPort,
+		Backends: []model.L4Backend{
+			{Host: "127.0.0.1", Port: silentConn.LocalAddr().(*net.UDPAddr).Port},
+			{Host: "127.0.0.1", Port: goodConn.LocalAddr().(*net.UDPAddr).Port},
+		},
+		LoadBalancing: model.LoadBalancing{Strategy: "round_robin"},
+	}}, nil, nil)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	defer srv.Close()
+	srv.udpReplyTimeout = 200 * time.Millisecond
+
+	client, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: listenPort})
+	if err != nil {
+		t.Fatalf("dial udp proxy: %v", err)
+	}
+	defer client.Close()
+
+	if _, err := client.Write([]byte("one")); err != nil {
+		t.Fatalf("write first udp payload: %v", err)
+	}
+	if err := client.SetReadDeadline(time.Now().Add(400 * time.Millisecond)); err != nil {
+		t.Fatalf("set first udp read deadline: %v", err)
+	}
+	reply := make([]byte, 3)
+	if _, err := client.Read(reply); err == nil {
+		t.Fatalf("expected first udp read to time out against silent backend")
+	}
+
+	if _, err := client.Write([]byte("two")); err != nil {
+		t.Fatalf("write second udp payload: %v", err)
+	}
+	if err := client.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set second udp read deadline: %v", err)
+	}
+	if _, err := io.ReadFull(client, reply); err != nil {
+		t.Fatalf("read second udp reply: %v", err)
+	}
+	if string(reply) != "two" {
+		t.Fatalf("expected second udp payload to reach healthy backend, got %q", string(reply))
+	}
+	if !srv.cache.IsInBackoff(silentConn.LocalAddr().String()) {
+		t.Fatalf("expected silent backend to be placed into backoff")
+	}
+}
+
+func TestUDPProxyExpiresIdleSessions(t *testing.T) {
+	upstreamAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("resolve upstream addr: %v", err)
+	}
+	upstreamConn, err := net.ListenUDP("udp", upstreamAddr)
+	if err != nil {
+		t.Fatalf("listen udp upstream: %v", err)
+	}
+	defer upstreamConn.Close()
+	go func() {
+		buf := make([]byte, 64)
+		for {
+			n, addr, err := upstreamConn.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			_, _ = upstreamConn.WriteToUDP(buf[:n], addr)
+		}
+	}()
+
+	listenPort := pickFreeUDPPort(t)
+	srv, err := NewServer(context.Background(), []model.L4Rule{{
+		Protocol:   "udp",
+		ListenHost: "127.0.0.1",
+		ListenPort: listenPort,
+		Backends: []model.L4Backend{
+			{Host: "127.0.0.1", Port: upstreamConn.LocalAddr().(*net.UDPAddr).Port},
+		},
+		LoadBalancing: model.LoadBalancing{Strategy: "round_robin"},
+	}}, nil, nil)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	defer srv.Close()
+	srv.udpSessionIdleTimeout = 50 * time.Millisecond
+	srv.udpReplyTimeout = 50 * time.Millisecond
+
+	client, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: listenPort})
+	if err != nil {
+		t.Fatalf("dial udp proxy: %v", err)
+	}
+	defer client.Close()
+
+	if _, err := client.Write([]byte("bye")); err != nil {
+		t.Fatalf("write udp payload: %v", err)
+	}
+	reply := make([]byte, 3)
+	if err := client.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set udp read deadline: %v", err)
+	}
+	if _, err := io.ReadFull(client, reply); err != nil {
+		t.Fatalf("read udp reply: %v", err)
+	}
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if len(srv.udpSessions) == 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("expected idle udp session to expire, still have %d sessions", len(srv.udpSessions))
 }
 
 func pickFreeTCPPort(t *testing.T) int {
