@@ -63,6 +63,44 @@ func TestL4RuntimeManagerPreservesRunningServerOnInvalidReconfigure(t *testing.T
 	waitForPortState(t, listenPort, false)
 }
 
+func TestL4RuntimeManagerReusesSharedCacheAcrossReapply(t *testing.T) {
+	manager := newL4RuntimeManager()
+	ctx := context.Background()
+	listenPort := pickFreeTCPPort(t)
+	initialCache := manager.cache
+
+	firstRule := model.L4Rule{
+		Protocol:   "tcp",
+		ListenHost: "127.0.0.1",
+		ListenPort: listenPort,
+		Backends: []model.L4Backend{
+			{Host: "localhost", Port: pickFreeTCPPort(t)},
+		},
+		LoadBalancing: model.LoadBalancing{Strategy: "round_robin"},
+	}
+	if err := manager.Apply(ctx, []model.L4Rule{firstRule}); err != nil {
+		t.Fatalf("failed to apply initial l4 runtime: %v", err)
+	}
+
+	nextRule := firstRule
+	nextRule.Backends = []model.L4Backend{
+		{Host: "localhost", Port: pickFreeTCPPort(t)},
+		{Host: "127.0.0.1", Port: pickFreeTCPPort(t)},
+	}
+	nextRule.LoadBalancing = model.LoadBalancing{Strategy: "random"}
+	if err := manager.Apply(ctx, []model.L4Rule{nextRule}); err != nil {
+		t.Fatalf("failed to reapply l4 runtime: %v", err)
+	}
+
+	if manager.cache != initialCache {
+		t.Fatal("expected l4 backend cache to be reused across reapply")
+	}
+
+	if err := manager.Close(); err != nil {
+		t.Fatalf("failed to close l4 manager: %v", err)
+	}
+}
+
 func TestHTTPRuntimeManagerPreservesRunningServerOnInvalidReconfigure(t *testing.T) {
 	manager := newHTTPRuntimeManager()
 	ctx := context.Background()

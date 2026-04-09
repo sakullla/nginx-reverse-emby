@@ -110,15 +110,21 @@ func (m *httpRuntimeManager) Close() error {
 type l4RuntimeManager struct {
 	mu       sync.Mutex
 	server   *l4.Server
+	cache    *backends.Cache
 	provider relay.TLSMaterialProvider
 }
 
 func newL4RuntimeManager() *l4RuntimeManager {
-	return &l4RuntimeManager{}
+	return &l4RuntimeManager{
+		cache: backends.NewCache(backends.Config{}),
+	}
 }
 
 func newL4RuntimeManagerWithRelay(provider relay.TLSMaterialProvider) *l4RuntimeManager {
-	return &l4RuntimeManager{provider: provider}
+	return &l4RuntimeManager{
+		cache:    backends.NewCache(backends.Config{}),
+		provider: provider,
+	}
 }
 
 func (m *l4RuntimeManager) Apply(ctx context.Context, rules []model.L4Rule) error {
@@ -146,7 +152,7 @@ func (m *l4RuntimeManager) ApplyWithRelay(ctx context.Context, rules []model.L4R
 		m.server = nil
 	}
 
-	server, err := l4.NewServer(ctx, rules, relayListeners, m.provider)
+	server, err := l4.NewServerWithResources(ctx, rules, relayListeners, m.provider, m.cache)
 	if err != nil {
 		return err
 	}
