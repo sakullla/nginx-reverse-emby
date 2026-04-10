@@ -40,7 +40,7 @@
 
 - 保留当前主路径能力：面板、agent 同步、HTTP 反代、L4、relay、证书管理、版本更新。
 - 删除大多数 legacy Nginx 本地 apply 路径作为主路径依赖。
-- `deploy.sh` 完全不动，不纳入本次改造范围，也不作为新架构入口。
+- `conf.d/`、仓库根目录 `nginx.conf`、`deploy.sh` 完全不动，不纳入本次改造范围，也不作为新架构入口。
 
 ### 2.6 ACME 目标
 
@@ -400,6 +400,8 @@ Go agent 升级为唯一数据面 runtime。Nginx 不再参与主路径 HTTP/L4/
 
 以下内容不纳入本次设计范围：
 
+- 修改 `conf.d/`
+- 修改仓库根目录 `nginx.conf`
 - 修改 `deploy.sh`
 - 将 `deploy.sh` 改造成新架构入口
 - 将 JSON backend 作为纯 Go 主路径标准
