@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -714,4 +715,16 @@ func relayHopDialEndpoint(listener model.RelayListener) (string, int) {
 		port = listener.ListenPort
 	}
 	return host, port
+}
+
+func RelayInputsChanged(rules []model.L4Rule, previousRelayListeners, nextRelayListeners []model.RelayListener) bool {
+	if reflect.DeepEqual(previousRelayListeners, nextRelayListeners) {
+		return false
+	}
+	for _, rule := range rules {
+		if len(rule.RelayChain) > 0 {
+			return true
+		}
+	}
+	return false
 }

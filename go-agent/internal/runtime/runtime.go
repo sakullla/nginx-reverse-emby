@@ -7,10 +7,50 @@ import (
 	"strconv"
 	"sync"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/l4"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 )
 
 type Activator func(ctx context.Context, previous, next model.Snapshot) error
+
+type SnapshotActivationHandlers struct {
+	ActivateManagedCertificates func(context.Context, []model.ManagedCertificateBundle, []model.ManagedCertificatePolicy) error
+	ActivateHTTPRules           func(context.Context, []model.HTTPRule, []model.RelayListener) error
+	ActivateRelayListeners      func(context.Context, []model.RelayListener) error
+	ActivateL4Rules             func(context.Context, []model.L4Rule, []model.RelayListener) error
+}
+
+func NewSnapshotActivator(handlers SnapshotActivationHandlers) Activator {
+	return func(ctx context.Context, previous, next model.Snapshot) error {
+		if certificatesChanged(previous, next) && handlers.ActivateManagedCertificates != nil {
+			if err := handlers.ActivateManagedCertificates(ctx, next.Certificates, next.CertificatePolicies); err != nil {
+				return err
+			}
+		}
+
+		if (httpRulesChanged(previous, next) || httpRelayInputsChanged(previous, next)) && handlers.ActivateHTTPRules != nil {
+			if err := handlers.ActivateHTTPRules(ctx, next.Rules, next.RelayListeners); err != nil {
+				return err
+			}
+		}
+
+		if relay.ListenersChanged(previous.RelayListeners, next.RelayListeners) && handlers.ActivateRelayListeners != nil {
+			if err := handlers.ActivateRelayListeners(ctx, next.RelayListeners); err != nil {
+				return err
+			}
+		}
+
+		if (l4RulesChanged(previous, next) || l4.RelayInputsChanged(next.L4Rules, previous.RelayListeners, next.RelayListeners)) &&
+			handlers.ActivateL4Rules != nil {
+			if err := handlers.ActivateL4Rules(ctx, next.L4Rules, next.RelayListeners); err != nil {
+				return err
+			}
+		}
+
+		return nil
+	}
+}
 
 type Runtime struct {
 	mu             sync.RWMutex
@@ -203,4 +243,29 @@ func describeSnapshot(snapshot model.Snapshot) string {
 		len(snapshot.Certificates),
 		len(snapshot.CertificatePolicies),
 	)
+}
+
+func certificatesChanged(previous, next model.Snapshot) bool {
+	return !reflect.DeepEqual(previous.Certificates, next.Certificates) ||
+		!reflect.DeepEqual(previous.CertificatePolicies, next.CertificatePolicies)
+}
+
+func httpRulesChanged(previous, next model.Snapshot) bool {
+	return !reflect.DeepEqual(previous.Rules, next.Rules)
+}
+
+func l4RulesChanged(previous, next model.Snapshot) bool {
+	return !reflect.DeepEqual(previous.L4Rules, next.L4Rules)
+}
+
+func httpRelayInputsChanged(previous, next model.Snapshot) bool {
+	if !relay.ListenersChanged(previous.RelayListeners, next.RelayListeners) {
+		return false
+	}
+	for _, rule := range next.Rules {
+		if len(rule.RelayChain) > 0 {
+			return true
+		}
+	}
+	return false
 }
