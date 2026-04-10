@@ -42,7 +42,7 @@ ENTRYPOINT ["/usr/local/bin/nre-agent"]
 FROM node:24-trixie-slim AS control-plane-runtime
 ENV NODE_ENV=production \
     PANEL_BACKEND_HOST=0.0.0.0 \
-    PANEL_BACKEND_PORT=3000
+    PANEL_BACKEND_PORT=8080
 WORKDIR /opt/nginx-reverse-emby
 COPY scripts/ ./scripts/
 COPY panel/backend/ ./panel/backend/
@@ -58,5 +58,5 @@ RUN set -eux; \
     mkdir -p ./panel/data
 
 VOLUME ["/opt/nginx-reverse-emby/panel/data"]
-EXPOSE 3000
+EXPOSE 8080
 CMD ["node", "/opt/nginx-reverse-emby/panel/backend/server.js"]

@@ -7,13 +7,12 @@ services:
     container_name: nginx-reverse-emby
     restart: unless-stopped
     ports:
-      - "3000:3000"
-      - "80:3000"
+      - "8080:8080"
 
     environment:
       PANEL_ROLE: master
       PANEL_BACKEND_HOST: 0.0.0.0
-      PANEL_BACKEND_PORT: "3000"
+      PANEL_BACKEND_PORT: "8080"
       MASTER_LOCAL_AGENT_ENABLED: "0"
 
       API_TOKEN: change-this-token

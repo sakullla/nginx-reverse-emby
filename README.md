@@ -27,8 +27,7 @@ mkdir -p data
 
 默认访问：
 
-- `http://<服务器 IP>:3000`
-- `http://<服务器 IP>/panel-api/health`
+- `http://<服务器 IP>:8080`
 
 请先在 `docker-compose.yaml` 中设置：
 
@@ -49,7 +48,7 @@ docker compose up -d
 ### Linux
 
 ```bash
-curl -fsSL http://master.example.com:3000/panel-api/public/join-agent.sh | sh -s -- \
+curl -fsSL http://master.example.com:8080/panel-api/public/join-agent.sh | sh -s -- \
   --register-token your-register-token \
   --install-systemd
 ```
@@ -57,7 +56,7 @@ curl -fsSL http://master.example.com:3000/panel-api/public/join-agent.sh | sh -s
 ### macOS
 
 ```bash
-curl -fsSL http://master.example.com:3000/panel-api/public/join-agent.sh | sh -s -- \
+curl -fsSL http://master.example.com:8080/panel-api/public/join-agent.sh | sh -s -- \
   --register-token your-register-token \
   --install-launchd
 ```
@@ -95,7 +94,7 @@ Windows 执行面同样使用 Go agent，但当前控制面镜像默认只公开
 
 ## Notes
 
-- 控制面容器默认监听 `3000`，Compose 同时把宿主机 `80` 映射到容器 `3000`，便于 smoke check。
+- 控制面容器默认监听 `8080`。
 - `/panel-api/*` 由 Node backend 直接提供，不再依赖 Nginx 做控制面反代。
 - Go agent 二进制会作为公开资产暴露在 `/panel-api/public/agent-assets/` 下，供 `join-agent.sh` 下载当前已打包的平台版本。
 - `deploy.sh` 仍保留为历史兼容的独立 Nginx 节点脚本，不是默认运行时路径。
