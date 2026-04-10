@@ -4,33 +4,33 @@
 
 **Goal:** Make the Docker master process start with built-in local agent capability so master can serve traffic without a second user-visible agent process.
 
-**Architecture:** Keep the existing remote `nre-agent` binary unchanged as the edge runtime. Add a control-plane-local runtime bridge that instantiates the existing `internal/app` runtime with a local sync source backed by the control-plane storage facade and writes local runtime state back into the shared control-plane data.
+**Architecture:** Keep the existing remote `nre-agent` binary unchanged as the edge runtime. Add a `panel/backend-go` local-runtime bridge that instantiates the existing `go-agent/internal/app` runtime with a local sync source backed by the control-plane storage facade and writes local runtime state back into the shared control-plane data.
 
-**Tech Stack:** Go 1.24, existing `go-agent/internal/app`, local snapshot bridge, shared SQLite-backed control-plane store.
+**Tech Stack:** Go 1.24, `panel/backend-go`, existing `go-agent/internal/app`, local snapshot bridge, shared SQLite-backed control-plane store.
 
 ---
 
 ## File Map
 
 **Create**
-- `go-agent/internal/controlplane/localagent/runtime.go`
-- `go-agent/internal/controlplane/localagent/sync_source.go`
-- `go-agent/internal/controlplane/localagent/state_sink.go`
-- `go-agent/internal/controlplane/localagent/runtime_test.go`
+- `panel/backend-go/internal/controlplane/localagent/runtime.go`
+- `panel/backend-go/internal/controlplane/localagent/sync_source.go`
+- `panel/backend-go/internal/controlplane/localagent/state_sink.go`
+- `panel/backend-go/internal/controlplane/localagent/runtime_test.go`
 
 **Modify**
-- `go-agent/internal/controlplane/app/app.go`
-- `go-agent/internal/controlplane/config/config.go`
-- `go-agent/internal/controlplane/http/handlers_info.go`
-- `go-agent/internal/controlplane/service/agents.go`
+- `panel/backend-go/internal/controlplane/app/app.go`
+- `panel/backend-go/internal/controlplane/config/config.go`
+- `panel/backend-go/internal/controlplane/http/handlers_info.go`
+- `panel/backend-go/internal/controlplane/service/agents.go`
 - `docker-compose.yaml`
 
 ### Task 1: Add local-agent config and lifecycle orchestration to the control-plane app
 
 **Files:**
-- Modify: `go-agent/internal/controlplane/config/config.go`
-- Modify: `go-agent/internal/controlplane/app/app.go`
-- Test: `go-agent/internal/controlplane/localagent/runtime_test.go`
+- Modify: `panel/backend-go/internal/controlplane/config/config.go`
+- Modify: `panel/backend-go/internal/controlplane/app/app.go`
+- Test: `panel/backend-go/internal/controlplane/localagent/runtime_test.go`
 
 - [ ] **Step 1: Write the failing lifecycle test**
 
@@ -52,7 +52,7 @@ func TestAppStartsEmbeddedLocalAgentWhenEnabled(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd go-agent && go test ./internal/controlplane/localagent -run TestAppStartsEmbeddedLocalAgentWhenEnabled -v`
+Run: `cd panel/backend-go && go test ./internal/controlplane/localagent -run TestAppStartsEmbeddedLocalAgentWhenEnabled -v`
 Expected: FAIL with `undefined: New`
 
 - [ ] **Step 3: Update app orchestration**
@@ -72,23 +72,23 @@ func New(cfg config.Config, handler http.Handler, startLocalAgent LocalAgentStar
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd go-agent && go test ./internal/controlplane/app ./internal/controlplane/localagent -v`
+Run: `cd panel/backend-go && go test ./internal/controlplane/app ./internal/controlplane/localagent -v`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add go-agent/internal/controlplane/app/app.go go-agent/internal/controlplane/config/config.go go-agent/internal/controlplane/localagent/runtime_test.go
+git add panel/backend-go/internal/controlplane/app/app.go panel/backend-go/internal/controlplane/config/config.go panel/backend-go/internal/controlplane/localagent/runtime_test.go
 git commit -m "feat(control-plane): add embedded local-agent lifecycle"
 ```
 
 ### Task 2: Build the local snapshot source and runtime-state sink
 
 **Files:**
-- Create: `go-agent/internal/controlplane/localagent/sync_source.go`
-- Create: `go-agent/internal/controlplane/localagent/state_sink.go`
-- Create: `go-agent/internal/controlplane/localagent/runtime.go`
-- Test: `go-agent/internal/controlplane/localagent/runtime_test.go`
+- Create: `panel/backend-go/internal/controlplane/localagent/sync_source.go`
+- Create: `panel/backend-go/internal/controlplane/localagent/state_sink.go`
+- Create: `panel/backend-go/internal/controlplane/localagent/runtime.go`
+- Test: `panel/backend-go/internal/controlplane/localagent/runtime_test.go`
 
 - [ ] **Step 1: Write the failing bridge test**
 
@@ -112,7 +112,7 @@ func TestLocalSyncSourceReturnsSnapshotFromControlPlaneStore(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd go-agent && go test ./internal/controlplane/localagent -run TestLocalSyncSourceReturnsSnapshotFromControlPlaneStore -v`
+Run: `cd panel/backend-go && go test ./internal/controlplane/localagent -run TestLocalSyncSourceReturnsSnapshotFromControlPlaneStore -v`
 Expected: FAIL with `undefined: NewSyncSource`
 
 - [ ] **Step 3: Implement the local sync source and state sink**
@@ -135,23 +135,23 @@ func NewSyncSource(store SnapshotStore, agentID string) *SyncSource {
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd go-agent && go test ./internal/controlplane/localagent -v`
+Run: `cd panel/backend-go && go test ./internal/controlplane/localagent -v`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add go-agent/internal/controlplane/localagent/sync_source.go go-agent/internal/controlplane/localagent/state_sink.go go-agent/internal/controlplane/localagent/runtime.go go-agent/internal/controlplane/localagent/runtime_test.go
+git add panel/backend-go/internal/controlplane/localagent/sync_source.go panel/backend-go/internal/controlplane/localagent/state_sink.go panel/backend-go/internal/controlplane/localagent/runtime.go panel/backend-go/internal/controlplane/localagent/runtime_test.go
 git commit -m "feat(control-plane): bridge embedded local agent to control-plane store"
 ```
 
 ### Task 3: Surface the embedded local-agent state through the API and Compose defaults
 
 **Files:**
-- Modify: `go-agent/internal/controlplane/http/handlers_info.go`
-- Modify: `go-agent/internal/controlplane/service/agents.go`
+- Modify: `panel/backend-go/internal/controlplane/http/handlers_info.go`
+- Modify: `panel/backend-go/internal/controlplane/service/agents.go`
 - Modify: `docker-compose.yaml`
-- Test: `go-agent/internal/controlplane/http/router_test.go`
+- Test: `panel/backend-go/internal/controlplane/http/router_test.go`
 
 - [ ] **Step 1: Write the failing API test**
 
@@ -183,7 +183,7 @@ func TestInfoAndAgentsReportEmbeddedLocalAgent(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd go-agent && go test ./internal/controlplane/http -run TestInfoAndAgentsReportEmbeddedLocalAgent -v`
+Run: `cd panel/backend-go && go test ./internal/controlplane/http -run TestInfoAndAgentsReportEmbeddedLocalAgent -v`
 Expected: FAIL because local runtime flags are not exposed
 
 - [ ] **Step 3: Update handlers and compose defaults**
@@ -207,7 +207,7 @@ environment:
 
 - [ ] **Step 4: Run tests and compose rendering**
 
-Run: `cd go-agent && go test ./internal/controlplane/http ./internal/controlplane/service -v`
+Run: `cd panel/backend-go && go test ./internal/controlplane/http ./internal/controlplane/service -v`
 Expected: PASS
 
 Run: `docker compose config`
@@ -216,6 +216,6 @@ Expected: PASS and `NRE_ENABLE_LOCAL_AGENT` is rendered
 - [ ] **Step 5: Commit**
 
 ```bash
-git add go-agent/internal/controlplane/http/handlers_info.go go-agent/internal/controlplane/service/agents.go docker-compose.yaml go-agent/internal/controlplane/http/router_test.go
+git add panel/backend-go/internal/controlplane/http/handlers_info.go panel/backend-go/internal/controlplane/service/agents.go docker-compose.yaml panel/backend-go/internal/controlplane/http/router_test.go
 git commit -m "feat(control-plane): enable embedded local agent by default"
 ```

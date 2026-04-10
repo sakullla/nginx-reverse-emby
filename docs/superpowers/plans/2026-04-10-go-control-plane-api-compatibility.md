@@ -2,59 +2,59 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace the Node control-plane with a Go binary that serves the Vue app, reads the existing SQLite data in place, and exposes API-compatible `/panel-api/*` and `/agent-api/*` endpoints.
+**Goal:** Replace `panel/backend/` with a Go control-plane under `panel/backend-go/` that serves the Vue app, reads the existing SQLite data in place, and exposes API-compatible `/panel-api/*` and `/agent-api/*` endpoints.
 
-**Architecture:** Keep everything inside the existing `go-agent` Go module so the new control-plane can reuse `internal/model`, cert helpers, and runtime code without cross-module duplication. Build a dedicated `internal/controlplane` package tree with config, storage, service, and HTTP layers; the HTTP layer owns contract compatibility while services own normalization, revision bumps, and persistence.
+**Architecture:** Build the control-plane as a separate Go codebase under `panel/backend-go/` so it cleanly replaces the current Node backend without polluting `go-agent/`. Inside `panel/backend-go/`, use a dedicated `internal/controlplane` package tree with config, storage, service, and HTTP layers; the HTTP layer owns contract compatibility while services own normalization, revision bumps, and persistence.
 
-**Tech Stack:** Go 1.24, stdlib `net/http`, existing `go-agent/internal/model`, SQLite access in Go, Vue static dist, shell-asset publishing.
+**Tech Stack:** Go 1.24, stdlib `net/http`, SQLite access in Go, Vue static dist, shell-asset publishing.
 
 ---
 
 ## File Map
 
 **Create**
-- `go-agent/cmd/nre-control-plane/main.go`
-- `go-agent/internal/controlplane/config/config.go`
-- `go-agent/internal/controlplane/app/app.go`
-- `go-agent/internal/controlplane/http/router.go`
-- `go-agent/internal/controlplane/http/auth.go`
-- `go-agent/internal/controlplane/http/handlers_info.go`
-- `go-agent/internal/controlplane/http/handlers_agents.go`
-- `go-agent/internal/controlplane/http/handlers_rules.go`
-- `go-agent/internal/controlplane/http/handlers_l4.go`
-- `go-agent/internal/controlplane/http/handlers_relay.go`
-- `go-agent/internal/controlplane/http/handlers_certs.go`
-- `go-agent/internal/controlplane/http/handlers_versions.go`
-- `go-agent/internal/controlplane/http/handlers_public.go`
-- `go-agent/internal/controlplane/http/static.go`
-- `go-agent/internal/controlplane/service/system.go`
-- `go-agent/internal/controlplane/service/agents.go`
-- `go-agent/internal/controlplane/service/rules.go`
-- `go-agent/internal/controlplane/service/l4.go`
-- `go-agent/internal/controlplane/service/relay.go`
-- `go-agent/internal/controlplane/service/certs.go`
-- `go-agent/internal/controlplane/service/versions.go`
-- `go-agent/internal/controlplane/service/public.go`
-- `go-agent/internal/controlplane/storage/sqlite_store.go`
-- `go-agent/internal/controlplane/storage/sqlite_models.go`
-- `go-agent/internal/controlplane/storage/sqlite_store_test.go`
-- `go-agent/internal/controlplane/http/router_test.go`
-- `go-agent/internal/controlplane/http/public_test.go`
-- `go-agent/internal/controlplane/service/rules_test.go`
+- `panel/backend-go/go.mod`
+- `panel/backend-go/go.sum`
+- `panel/backend-go/cmd/nre-control-plane/main.go`
+- `panel/backend-go/internal/controlplane/config/config.go`
+- `panel/backend-go/internal/controlplane/app/app.go`
+- `panel/backend-go/internal/controlplane/http/router.go`
+- `panel/backend-go/internal/controlplane/http/auth.go`
+- `panel/backend-go/internal/controlplane/http/handlers_info.go`
+- `panel/backend-go/internal/controlplane/http/handlers_agents.go`
+- `panel/backend-go/internal/controlplane/http/handlers_rules.go`
+- `panel/backend-go/internal/controlplane/http/handlers_l4.go`
+- `panel/backend-go/internal/controlplane/http/handlers_relay.go`
+- `panel/backend-go/internal/controlplane/http/handlers_certs.go`
+- `panel/backend-go/internal/controlplane/http/handlers_versions.go`
+- `panel/backend-go/internal/controlplane/http/handlers_public.go`
+- `panel/backend-go/internal/controlplane/http/static.go`
+- `panel/backend-go/internal/controlplane/service/system.go`
+- `panel/backend-go/internal/controlplane/service/agents.go`
+- `panel/backend-go/internal/controlplane/service/rules.go`
+- `panel/backend-go/internal/controlplane/service/l4.go`
+- `panel/backend-go/internal/controlplane/service/relay.go`
+- `panel/backend-go/internal/controlplane/service/certs.go`
+- `panel/backend-go/internal/controlplane/service/versions.go`
+- `panel/backend-go/internal/controlplane/service/public.go`
+- `panel/backend-go/internal/controlplane/storage/sqlite_store.go`
+- `panel/backend-go/internal/controlplane/storage/sqlite_models.go`
+- `panel/backend-go/internal/controlplane/storage/sqlite_store_test.go`
+- `panel/backend-go/internal/controlplane/http/router_test.go`
+- `panel/backend-go/internal/controlplane/http/public_test.go`
+- `panel/backend-go/internal/controlplane/service/rules_test.go`
 
 **Modify**
-- `go-agent/go.mod`
-- `go-agent/go.sum`
-- `go-agent/internal/model/types.go`
 - `Dockerfile`
 
 ### Task 1: Bootstrap the Go control-plane binary and config
 
 **Files:**
-- Create: `go-agent/cmd/nre-control-plane/main.go`
-- Create: `go-agent/internal/controlplane/config/config.go`
-- Create: `go-agent/internal/controlplane/app/app.go`
-- Test: `go-agent/internal/controlplane/config/config_test.go`
+- Create: `panel/backend-go/go.mod`
+- Create: `panel/backend-go/cmd/nre-control-plane/main.go`
+- Create: `panel/backend-go/internal/controlplane/config/config.go`
+- Create: `panel/backend-go/internal/controlplane/app/app.go`
+- Test: `panel/backend-go/internal/controlplane/config/config_test.go`
 
 - [ ] **Step 1: Write the failing config test**
 
@@ -79,7 +79,7 @@ func TestLoadFromEnvDefaultsMasterRuntime(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd go-agent && go test ./internal/controlplane/config -run TestLoadFromEnvDefaultsMasterRuntime -v`
+Run: `cd panel/backend-go && go test ./internal/controlplane/config -run TestLoadFromEnvDefaultsMasterRuntime -v`
 Expected: FAIL with `undefined: LoadFromEnv`
 
 - [ ] **Step 3: Write minimal config and app bootstrap**
@@ -119,22 +119,22 @@ func main() {
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd go-agent && go test ./internal/controlplane/config ./cmd/nre-control-plane -v`
+Run: `cd panel/backend-go && go test ./internal/controlplane/config ./cmd/nre-control-plane -v`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add go-agent/cmd/nre-control-plane/main.go go-agent/internal/controlplane/config/config.go go-agent/internal/controlplane/app/app.go go-agent/internal/controlplane/config/config_test.go
+git add panel/backend-go/go.mod panel/backend-go/cmd/nre-control-plane/main.go panel/backend-go/internal/controlplane/config/config.go panel/backend-go/internal/controlplane/app/app.go panel/backend-go/internal/controlplane/config/config_test.go
 git commit -m "feat(control-plane): add go control-plane bootstrap"
 ```
 
 ### Task 2: Implement SQLite compatibility store for agents, rules, and local state
 
 **Files:**
-- Create: `go-agent/internal/controlplane/storage/sqlite_store.go`
-- Create: `go-agent/internal/controlplane/storage/sqlite_models.go`
-- Test: `go-agent/internal/controlplane/storage/sqlite_store_test.go`
+- Create: `panel/backend-go/internal/controlplane/storage/sqlite_store.go`
+- Create: `panel/backend-go/internal/controlplane/storage/sqlite_models.go`
+- Test: `panel/backend-go/internal/controlplane/storage/sqlite_store_test.go`
 
 - [ ] **Step 1: Write the failing persistence test**
 
@@ -153,7 +153,7 @@ func TestStoreLoadsAgentsAndRulesFromExistingSQLite(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd go-agent && go test ./internal/controlplane/storage -run TestStoreLoadsAgentsAndRulesFromExistingSQLite -v`
+Run: `cd panel/backend-go && go test ./internal/controlplane/storage -run TestStoreLoadsAgentsAndRulesFromExistingSQLite -v`
 Expected: FAIL with `undefined: NewSQLiteStore`
 
 - [ ] **Step 3: Write minimal SQLite-backed store**
@@ -176,27 +176,27 @@ func NewSQLiteStore(dataRoot string, localAgentID string) (*SQLiteStore, error) 
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd go-agent && go test ./internal/controlplane/storage -v`
+Run: `cd panel/backend-go && go test ./internal/controlplane/storage -v`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add go-agent/internal/controlplane/storage/sqlite_store.go go-agent/internal/controlplane/storage/sqlite_models.go go-agent/internal/controlplane/storage/sqlite_store_test.go go-agent/go.mod go-agent/go.sum
+git add panel/backend-go/internal/controlplane/storage/sqlite_store.go panel/backend-go/internal/controlplane/storage/sqlite_models.go panel/backend-go/internal/controlplane/storage/sqlite_store_test.go panel/backend-go/go.mod panel/backend-go/go.sum
 git commit -m "feat(control-plane): add sqlite compatibility store"
 ```
 
 ### Task 3: Expose auth, system info, agents, and read-only rule APIs
 
 **Files:**
-- Create: `go-agent/internal/controlplane/http/router.go`
-- Create: `go-agent/internal/controlplane/http/auth.go`
-- Create: `go-agent/internal/controlplane/http/handlers_info.go`
-- Create: `go-agent/internal/controlplane/http/handlers_agents.go`
-- Create: `go-agent/internal/controlplane/http/handlers_rules.go`
-- Create: `go-agent/internal/controlplane/service/system.go`
-- Create: `go-agent/internal/controlplane/service/agents.go`
-- Test: `go-agent/internal/controlplane/http/router_test.go`
+- Create: `panel/backend-go/internal/controlplane/http/router.go`
+- Create: `panel/backend-go/internal/controlplane/http/auth.go`
+- Create: `panel/backend-go/internal/controlplane/http/handlers_info.go`
+- Create: `panel/backend-go/internal/controlplane/http/handlers_agents.go`
+- Create: `panel/backend-go/internal/controlplane/http/handlers_rules.go`
+- Create: `panel/backend-go/internal/controlplane/service/system.go`
+- Create: `panel/backend-go/internal/controlplane/service/agents.go`
+- Test: `panel/backend-go/internal/controlplane/http/router_test.go`
 
 - [ ] **Step 1: Write the failing HTTP contract test**
 
@@ -228,7 +228,7 @@ func TestRouterServesPanelAuthAndInfoEndpoints(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd go-agent && go test ./internal/controlplane/http -run TestRouterServesPanelAuthAndInfoEndpoints -v`
+Run: `cd panel/backend-go && go test ./internal/controlplane/http -run TestRouterServesPanelAuthAndInfoEndpoints -v`
 Expected: FAIL with `undefined: NewRouter`
 
 - [ ] **Step 3: Write minimal router and handlers**
@@ -258,26 +258,26 @@ func (d Dependencies) handleInfo(w http.ResponseWriter, r *http.Request) {
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd go-agent && go test ./internal/controlplane/http ./internal/controlplane/service -v`
+Run: `cd panel/backend-go && go test ./internal/controlplane/http ./internal/controlplane/service -v`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add go-agent/internal/controlplane/http/router.go go-agent/internal/controlplane/http/auth.go go-agent/internal/controlplane/http/handlers_info.go go-agent/internal/controlplane/http/handlers_agents.go go-agent/internal/controlplane/http/handlers_rules.go go-agent/internal/controlplane/service/system.go go-agent/internal/controlplane/service/agents.go go-agent/internal/controlplane/http/router_test.go
+git add panel/backend-go/internal/controlplane/http/router.go panel/backend-go/internal/controlplane/http/auth.go panel/backend-go/internal/controlplane/http/handlers_info.go panel/backend-go/internal/controlplane/http/handlers_agents.go panel/backend-go/internal/controlplane/http/handlers_rules.go panel/backend-go/internal/controlplane/service/system.go panel/backend-go/internal/controlplane/service/agents.go panel/backend-go/internal/controlplane/http/router_test.go
 git commit -m "feat(control-plane): add auth and read-only panel apis"
 ```
 
 ### Task 4: Add write APIs, heartbeat sync, public assets, and static frontend serving
 
 **Files:**
-- Create: `go-agent/internal/controlplane/http/handlers_l4.go`
-- Create: `go-agent/internal/controlplane/http/handlers_relay.go`
-- Create: `go-agent/internal/controlplane/http/handlers_certs.go`
-- Create: `go-agent/internal/controlplane/http/handlers_versions.go`
-- Create: `go-agent/internal/controlplane/http/handlers_public.go`
-- Create: `go-agent/internal/controlplane/http/static.go`
-- Create: `go-agent/internal/controlplane/http/public_test.go`
+- Create: `panel/backend-go/internal/controlplane/http/handlers_l4.go`
+- Create: `panel/backend-go/internal/controlplane/http/handlers_relay.go`
+- Create: `panel/backend-go/internal/controlplane/http/handlers_certs.go`
+- Create: `panel/backend-go/internal/controlplane/http/handlers_versions.go`
+- Create: `panel/backend-go/internal/controlplane/http/handlers_public.go`
+- Create: `panel/backend-go/internal/controlplane/http/static.go`
+- Create: `panel/backend-go/internal/controlplane/http/public_test.go`
 - Modify: `Dockerfile`
 
 - [ ] **Step 1: Write the failing contract test for join script and heartbeat**
@@ -307,7 +307,7 @@ func TestRouterServesJoinScriptAndHeartbeat(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd go-agent && go test ./internal/controlplane/http -run TestRouterServesJoinScriptAndHeartbeat -v`
+Run: `cd panel/backend-go && go test ./internal/controlplane/http -run TestRouterServesJoinScriptAndHeartbeat -v`
 Expected: FAIL with `404` or missing handler
 
 - [ ] **Step 3: Implement heartbeat, public assets, and SPA serving**
@@ -328,15 +328,15 @@ func (d Dependencies) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 }
 ```
 
-```go
+```dockerfile
 FROM debian:bookworm-slim AS control-plane-runtime
-COPY --from=go-builder /out/nre-control-plane /usr/local/bin/nre-control-plane
+COPY --from=backend-go-builder /out/nre-control-plane /usr/local/bin/nre-control-plane
 CMD ["/usr/local/bin/nre-control-plane"]
 ```
 
 - [ ] **Step 4: Run tests and image build**
 
-Run: `cd go-agent && go test ./internal/controlplane/... -v`
+Run: `cd panel/backend-go && go test ./internal/controlplane/... -v`
 Expected: PASS
 
 Run: `docker build -t nginx-reverse-emby:test --target control-plane-runtime .`
@@ -345,6 +345,6 @@ Expected: PASS
 - [ ] **Step 5: Commit**
 
 ```bash
-git add go-agent/internal/controlplane/http/handlers_l4.go go-agent/internal/controlplane/http/handlers_relay.go go-agent/internal/controlplane/http/handlers_certs.go go-agent/internal/controlplane/http/handlers_versions.go go-agent/internal/controlplane/http/handlers_public.go go-agent/internal/controlplane/http/static.go go-agent/internal/controlplane/http/public_test.go Dockerfile
+git add panel/backend-go/internal/controlplane/http/handlers_l4.go panel/backend-go/internal/controlplane/http/handlers_relay.go panel/backend-go/internal/controlplane/http/handlers_certs.go panel/backend-go/internal/controlplane/http/handlers_versions.go panel/backend-go/internal/controlplane/http/handlers_public.go panel/backend-go/internal/controlplane/http/static.go panel/backend-go/internal/controlplane/http/public_test.go Dockerfile
 git commit -m "feat(control-plane): add write apis and public assets"
 ```
