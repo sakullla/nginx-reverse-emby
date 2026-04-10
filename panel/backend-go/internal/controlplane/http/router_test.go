@@ -1,6 +1,7 @@
 package http
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -44,6 +45,115 @@ func (f fakeAgentService) ListHTTPRules(_ context.Context, agentID string) ([]se
 	return rules, nil
 }
 
+type fakeL4RuleService struct {
+	rules       map[string][]service.L4Rule
+	createdRule service.L4Rule
+	updatedRule service.L4Rule
+	deletedRule service.L4Rule
+}
+
+func (f fakeL4RuleService) List(_ context.Context, agentID string) ([]service.L4Rule, error) {
+	rules, ok := f.rules[agentID]
+	if !ok {
+		return nil, service.ErrAgentNotFound
+	}
+	return rules, nil
+}
+
+func (f fakeL4RuleService) Create(context.Context, string, service.L4RuleInput) (service.L4Rule, error) {
+	return f.createdRule, nil
+}
+
+func (f fakeL4RuleService) Update(context.Context, string, int, service.L4RuleInput) (service.L4Rule, error) {
+	return f.updatedRule, nil
+}
+
+func (f fakeL4RuleService) Delete(context.Context, string, int) (service.L4Rule, error) {
+	return f.deletedRule, nil
+}
+
+type fakeVersionPolicyService struct {
+	policies      []service.VersionPolicy
+	createdPolicy service.VersionPolicy
+	updatedPolicy service.VersionPolicy
+	deletedPolicy service.VersionPolicy
+}
+
+func (f fakeVersionPolicyService) List(context.Context) ([]service.VersionPolicy, error) {
+	return f.policies, nil
+}
+
+func (f fakeVersionPolicyService) Create(context.Context, service.VersionPolicyInput) (service.VersionPolicy, error) {
+	return f.createdPolicy, nil
+}
+
+func (f fakeVersionPolicyService) Update(context.Context, string, service.VersionPolicyInput) (service.VersionPolicy, error) {
+	return f.updatedPolicy, nil
+}
+
+func (f fakeVersionPolicyService) Delete(context.Context, string) (service.VersionPolicy, error) {
+	return f.deletedPolicy, nil
+}
+
+type fakeRelayListenerService struct {
+	listeners       map[string][]service.RelayListener
+	createdListener service.RelayListener
+	updatedListener service.RelayListener
+	deletedListener service.RelayListener
+}
+
+func (f fakeRelayListenerService) List(_ context.Context, agentID string) ([]service.RelayListener, error) {
+	listeners, ok := f.listeners[agentID]
+	if !ok {
+		return nil, service.ErrAgentNotFound
+	}
+	return listeners, nil
+}
+
+func (f fakeRelayListenerService) Create(context.Context, string, service.RelayListenerInput) (service.RelayListener, error) {
+	return f.createdListener, nil
+}
+
+func (f fakeRelayListenerService) Update(context.Context, string, int, service.RelayListenerInput) (service.RelayListener, error) {
+	return f.updatedListener, nil
+}
+
+func (f fakeRelayListenerService) Delete(context.Context, string, int) (service.RelayListener, error) {
+	return f.deletedListener, nil
+}
+
+type fakeCertificateService struct {
+	certificates       map[string][]service.ManagedCertificate
+	createdCertificate service.ManagedCertificate
+	updatedCertificate service.ManagedCertificate
+	deletedCertificate service.ManagedCertificate
+	issuedCertificate  service.ManagedCertificate
+}
+
+func (f fakeCertificateService) List(_ context.Context, agentID string) ([]service.ManagedCertificate, error) {
+	certs, ok := f.certificates[agentID]
+	if !ok {
+		return nil, service.ErrAgentNotFound
+	}
+	return certs, nil
+}
+
+func (f fakeCertificateService) Create(context.Context, string, service.ManagedCertificateInput) (service.ManagedCertificate, error) {
+	return f.createdCertificate, nil
+}
+
+func (f fakeCertificateService) Update(context.Context, string, int, service.ManagedCertificateInput) (service.ManagedCertificate, error) {
+	return f.updatedCertificate, nil
+}
+
+func (f fakeCertificateService) Delete(context.Context, string, int) (service.ManagedCertificate, error) {
+	return f.deletedCertificate, nil
+}
+
+func (f fakeCertificateService) Issue(context.Context, string, int) (service.ManagedCertificate, error) {
+	return f.issuedCertificate, nil
+}
+
 func TestRouterServesPanelAuthAndInfoEndpoints(t *testing.T) {
 	router, err := NewRouter(Dependencies{
 		Config: config.Config{
@@ -58,7 +168,11 @@ func TestRouterServesPanelAuthAndInfoEndpoints(t *testing.T) {
 				LocalAgentEnabled: true,
 			},
 		},
-		AgentService: fakeAgentService{},
+		AgentService:         fakeAgentService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
 	})
 	if err != nil {
 		t.Fatalf("NewRouter() error = %v", err)
@@ -144,6 +258,10 @@ func TestRouterServesAgentsAndRulesEndpoints(t *testing.T) {
 				}},
 			},
 		},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
 	})
 	if err != nil {
 		t.Fatalf("NewRouter() error = %v", err)
@@ -174,6 +292,286 @@ func TestRouterServesAgentsAndRulesEndpoints(t *testing.T) {
 	}
 }
 
+func TestRouterServesL4AndVersionPolicyEndpoints(t *testing.T) {
+	router, err := NewRouter(Dependencies{
+		Config: config.Config{PanelToken: "secret"},
+		SystemService: fakeSystemService{
+			info: service.SystemInfo{
+				Role:              "master",
+				LocalApplyRuntime: "go-agent",
+				DefaultAgentID:    "local",
+				LocalAgentEnabled: true,
+			},
+		},
+		AgentService: fakeAgentService{},
+		L4RuleService: fakeL4RuleService{
+			rules: map[string][]service.L4Rule{
+				"local": {{
+					ID:           1,
+					AgentID:      "local",
+					Name:         "TCP 8443",
+					Protocol:     "tcp",
+					ListenHost:   "0.0.0.0",
+					ListenPort:   8443,
+					UpstreamHost: "emby",
+					UpstreamPort: 8096,
+					Backends:     []service.L4Backend{{Host: "emby", Port: 8096}},
+					LoadBalancing: service.L4LoadBalancing{
+						Strategy: "round_robin",
+					},
+					Tuning: service.L4Tuning{
+						ProxyProtocol: service.L4ProxyProtocolTuning{},
+					},
+					RelayChain: []int{},
+					Enabled:    true,
+					Tags:       []string{},
+					Revision:   4,
+				}},
+			},
+			createdRule: service.L4Rule{ID: 2, AgentID: "local", Name: "TCP 9443", Protocol: "tcp", ListenHost: "0.0.0.0", ListenPort: 9443, UpstreamHost: "emby", UpstreamPort: 8096, Backends: []service.L4Backend{{Host: "emby", Port: 8096}}, LoadBalancing: service.L4LoadBalancing{Strategy: "round_robin"}, Tuning: service.L4Tuning{ProxyProtocol: service.L4ProxyProtocolTuning{}}, Enabled: true, Tags: []string{}, Revision: 5},
+			updatedRule: service.L4Rule{ID: 2, AgentID: "local", Name: "TCP 9443", Protocol: "tcp", ListenHost: "127.0.0.1", ListenPort: 9443, UpstreamHost: "emby", UpstreamPort: 8096, Backends: []service.L4Backend{{Host: "emby", Port: 8096}}, LoadBalancing: service.L4LoadBalancing{Strategy: "round_robin"}, Tuning: service.L4Tuning{ProxyProtocol: service.L4ProxyProtocolTuning{}}, Enabled: true, Tags: []string{"edge"}, Revision: 6},
+			deletedRule: service.L4Rule{ID: 2, AgentID: "local", Name: "TCP 9443", Protocol: "tcp", ListenHost: "127.0.0.1", ListenPort: 9443, UpstreamHost: "emby", UpstreamPort: 8096, Backends: []service.L4Backend{{Host: "emby", Port: 8096}}, LoadBalancing: service.L4LoadBalancing{Strategy: "round_robin"}, Tuning: service.L4Tuning{ProxyProtocol: service.L4ProxyProtocolTuning{}}, Enabled: true, Tags: []string{"edge"}, Revision: 6},
+		},
+		VersionPolicyService: fakeVersionPolicyService{
+			policies: []service.VersionPolicy{{
+				ID:             "stable",
+				Channel:        "stable",
+				DesiredVersion: "1.2.3",
+				Packages: []service.VersionPackage{{
+					Platform: "linux-amd64",
+					URL:      "https://example.com/nre-agent",
+					SHA256:   "abc123",
+				}},
+				Tags: []string{"default"},
+			}},
+			createdPolicy: service.VersionPolicy{ID: "beta", Channel: "beta", DesiredVersion: "1.3.0", Packages: []service.VersionPackage{{Platform: "linux-amd64", URL: "https://example.com/nre-agent-beta", SHA256: "def456"}}, Tags: []string{"canary"}},
+			updatedPolicy: service.VersionPolicy{ID: "beta", Channel: "beta", DesiredVersion: "1.3.1", Packages: []service.VersionPackage{{Platform: "linux-amd64", URL: "https://example.com/nre-agent-beta-2", SHA256: "ghi789"}}, Tags: []string{"canary"}},
+			deletedPolicy: service.VersionPolicy{ID: "beta", Channel: "beta", DesiredVersion: "1.3.1"},
+		},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	getL4Req := httptest.NewRequest(http.MethodGet, "/panel-api/agents/local/l4-rules", nil)
+	getL4Req.Header.Set("X-Panel-Token", "secret")
+	getL4Resp := httptest.NewRecorder()
+	router.ServeHTTP(getL4Resp, getL4Req)
+	if getL4Resp.Code != http.StatusOK {
+		t.Fatalf("GET /panel-api/agents/local/l4-rules = %d", getL4Resp.Code)
+	}
+
+	createL4Req := httptest.NewRequest(http.MethodPost, "/panel-api/agents/local/l4-rules", bytes.NewBufferString(`{"listen_port":9443,"upstream_host":"emby","upstream_port":8096}`))
+	createL4Req.Header.Set("X-Panel-Token", "secret")
+	createL4Req.Header.Set("Content-Type", "application/json")
+	createL4Resp := httptest.NewRecorder()
+	router.ServeHTTP(createL4Resp, createL4Req)
+	if createL4Resp.Code != http.StatusCreated {
+		t.Fatalf("POST /panel-api/agents/local/l4-rules = %d", createL4Resp.Code)
+	}
+
+	updateL4Req := httptest.NewRequest(http.MethodPut, "/panel-api/agents/local/l4-rules/2", bytes.NewBufferString(`{"listen_host":"127.0.0.1","tags":["edge"]}`))
+	updateL4Req.Header.Set("X-Panel-Token", "secret")
+	updateL4Req.Header.Set("Content-Type", "application/json")
+	updateL4Resp := httptest.NewRecorder()
+	router.ServeHTTP(updateL4Resp, updateL4Req)
+	if updateL4Resp.Code != http.StatusOK {
+		t.Fatalf("PUT /panel-api/agents/local/l4-rules/2 = %d", updateL4Resp.Code)
+	}
+
+	deleteL4Req := httptest.NewRequest(http.MethodDelete, "/panel-api/agents/local/l4-rules/2", nil)
+	deleteL4Req.Header.Set("X-Panel-Token", "secret")
+	deleteL4Resp := httptest.NewRecorder()
+	router.ServeHTTP(deleteL4Resp, deleteL4Req)
+	if deleteL4Resp.Code != http.StatusOK {
+		t.Fatalf("DELETE /panel-api/agents/local/l4-rules/2 = %d", deleteL4Resp.Code)
+	}
+
+	getPoliciesReq := httptest.NewRequest(http.MethodGet, "/panel-api/version-policies", nil)
+	getPoliciesReq.Header.Set("X-Panel-Token", "secret")
+	getPoliciesResp := httptest.NewRecorder()
+	router.ServeHTTP(getPoliciesResp, getPoliciesReq)
+	if getPoliciesResp.Code != http.StatusOK {
+		t.Fatalf("GET /panel-api/version-policies = %d", getPoliciesResp.Code)
+	}
+
+	createPolicyReq := httptest.NewRequest(http.MethodPost, "/panel-api/version-policies", bytes.NewBufferString(`{"id":"beta","channel":"beta","desired_version":"1.3.0","packages":[{"platform":"linux-amd64","url":"https://example.com/nre-agent-beta","sha256":"def456"}],"tags":["canary"]}`))
+	createPolicyReq.Header.Set("X-Panel-Token", "secret")
+	createPolicyReq.Header.Set("Content-Type", "application/json")
+	createPolicyResp := httptest.NewRecorder()
+	router.ServeHTTP(createPolicyResp, createPolicyReq)
+	if createPolicyResp.Code != http.StatusCreated {
+		t.Fatalf("POST /panel-api/version-policies = %d", createPolicyResp.Code)
+	}
+
+	updatePolicyReq := httptest.NewRequest(http.MethodPut, "/panel-api/version-policies/beta", bytes.NewBufferString(`{"desired_version":"1.3.1","packages":[{"platform":"linux-amd64","url":"https://example.com/nre-agent-beta-2","sha256":"ghi789"}],"tags":["canary"]}`))
+	updatePolicyReq.Header.Set("X-Panel-Token", "secret")
+	updatePolicyReq.Header.Set("Content-Type", "application/json")
+	updatePolicyResp := httptest.NewRecorder()
+	router.ServeHTTP(updatePolicyResp, updatePolicyReq)
+	if updatePolicyResp.Code != http.StatusOK {
+		t.Fatalf("PUT /panel-api/version-policies/beta = %d", updatePolicyResp.Code)
+	}
+
+	deletePolicyReq := httptest.NewRequest(http.MethodDelete, "/panel-api/version-policies/beta", nil)
+	deletePolicyReq.Header.Set("X-Panel-Token", "secret")
+	deletePolicyResp := httptest.NewRecorder()
+	router.ServeHTTP(deletePolicyResp, deletePolicyReq)
+	if deletePolicyResp.Code != http.StatusOK {
+		t.Fatalf("DELETE /panel-api/version-policies/beta = %d", deletePolicyResp.Code)
+	}
+}
+
+func TestRouterServesRelayListenerAndCertificateEndpoints(t *testing.T) {
+	router, err := NewRouter(Dependencies{
+		Config: config.Config{PanelToken: "secret"},
+		SystemService: fakeSystemService{
+			info: service.SystemInfo{
+				Role:              "master",
+				LocalApplyRuntime: "go-agent",
+				DefaultAgentID:    "local",
+				LocalAgentEnabled: true,
+			},
+		},
+		AgentService:         fakeAgentService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{
+			listeners: map[string][]service.RelayListener{
+				"local": {{
+					ID:                      1,
+					AgentID:                 "local",
+					Name:                    "relay-a",
+					BindHosts:               []string{"0.0.0.0"},
+					ListenHost:              "0.0.0.0",
+					ListenPort:              7443,
+					PublicHost:              "relay-a.example.com",
+					PublicPort:              7443,
+					Enabled:                 true,
+					CertificateID:           intPtr(11),
+					TLSMode:                 "pin_or_ca",
+					PinSet:                  []service.RelayPin{{Type: "spki_sha256", Value: "abc"}},
+					TrustedCACertificateIDs: []int{10},
+					AllowSelfSigned:         true,
+					Tags:                    []string{"relay"},
+					Revision:                3,
+				}},
+			},
+			createdListener: service.RelayListener{ID: 2, AgentID: "local", Name: "relay-b", BindHosts: []string{"0.0.0.0"}, ListenHost: "0.0.0.0", ListenPort: 8443, PublicHost: "relay-b.example.com", PublicPort: 8443, Enabled: true, CertificateID: intPtr(12), TLSMode: "pin_only", PinSet: []service.RelayPin{{Type: "spki_sha256", Value: "def"}}, TrustedCACertificateIDs: []int{}, AllowSelfSigned: false, Tags: []string{"edge"}, Revision: 4},
+			updatedListener: service.RelayListener{ID: 2, AgentID: "local", Name: "relay-b", BindHosts: []string{"127.0.0.1"}, ListenHost: "127.0.0.1", ListenPort: 8443, PublicHost: "relay-b.example.com", PublicPort: 8443, Enabled: true, CertificateID: intPtr(12), TLSMode: "ca_only", PinSet: []service.RelayPin{}, TrustedCACertificateIDs: []int{10}, AllowSelfSigned: true, Tags: []string{"edge"}, Revision: 5},
+			deletedListener: service.RelayListener{ID: 2, AgentID: "local", Name: "relay-b"},
+		},
+		CertificateService: fakeCertificateService{
+			certificates: map[string][]service.ManagedCertificate{
+				"local": {{
+					ID:              11,
+					Domain:          "relay-a.example.com",
+					Enabled:         true,
+					Scope:           "domain",
+					IssuerMode:      "local_http01",
+					TargetAgentIDs:  []string{"local"},
+					Status:          "active",
+					LastIssueAt:     "2026-04-10T00:00:00Z",
+					LastError:       "",
+					MaterialHash:    "hash1",
+					AgentReports:    map[string]service.ManagedCertificateAgentReport{},
+					ACMEInfo:        service.ManagedCertificateACMEInfo{},
+					Tags:            []string{"relay"},
+					Usage:           "relay_tunnel",
+					CertificateType: "uploaded",
+					SelfSigned:      false,
+					Revision:        6,
+				}},
+			},
+			createdCertificate: service.ManagedCertificate{ID: 12, Domain: "relay-b.example.com", Enabled: true, Scope: "domain", IssuerMode: "local_http01", TargetAgentIDs: []string{"local"}, Status: "pending", Tags: []string{"edge"}, Usage: "https", CertificateType: "acme", Revision: 7},
+			updatedCertificate: service.ManagedCertificate{ID: 12, Domain: "relay-b.example.com", Enabled: true, Scope: "domain", IssuerMode: "local_http01", TargetAgentIDs: []string{"local"}, Status: "active", Tags: []string{"edge"}, Usage: "https", CertificateType: "uploaded", Revision: 8},
+			deletedCertificate: service.ManagedCertificate{ID: 12, Domain: "relay-b.example.com"},
+			issuedCertificate:  service.ManagedCertificate{ID: 12, Domain: "relay-b.example.com", Status: "active", LastIssueAt: "2026-04-10T01:00:00Z"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	getListenersReq := httptest.NewRequest(http.MethodGet, "/panel-api/agents/local/relay-listeners", nil)
+	getListenersReq.Header.Set("X-Panel-Token", "secret")
+	getListenersResp := httptest.NewRecorder()
+	router.ServeHTTP(getListenersResp, getListenersReq)
+	if getListenersResp.Code != http.StatusOK {
+		t.Fatalf("GET /panel-api/agents/local/relay-listeners = %d", getListenersResp.Code)
+	}
+
+	createListenerReq := httptest.NewRequest(http.MethodPost, "/panel-api/agents/local/relay-listeners", bytes.NewBufferString(`{"name":"relay-b","listen_port":8443,"certificate_id":12,"pin_set":[{"type":"spki_sha256","value":"def"}]}`))
+	createListenerReq.Header.Set("X-Panel-Token", "secret")
+	createListenerReq.Header.Set("Content-Type", "application/json")
+	createListenerResp := httptest.NewRecorder()
+	router.ServeHTTP(createListenerResp, createListenerReq)
+	if createListenerResp.Code != http.StatusCreated {
+		t.Fatalf("POST /panel-api/agents/local/relay-listeners = %d", createListenerResp.Code)
+	}
+
+	updateListenerReq := httptest.NewRequest(http.MethodPut, "/panel-api/agents/local/relay-listeners/2", bytes.NewBufferString(`{"bind_hosts":["127.0.0.1"],"tls_mode":"ca_only","trusted_ca_certificate_ids":[10],"allow_self_signed":true}`))
+	updateListenerReq.Header.Set("X-Panel-Token", "secret")
+	updateListenerReq.Header.Set("Content-Type", "application/json")
+	updateListenerResp := httptest.NewRecorder()
+	router.ServeHTTP(updateListenerResp, updateListenerReq)
+	if updateListenerResp.Code != http.StatusOK {
+		t.Fatalf("PUT /panel-api/agents/local/relay-listeners/2 = %d", updateListenerResp.Code)
+	}
+
+	deleteListenerReq := httptest.NewRequest(http.MethodDelete, "/panel-api/agents/local/relay-listeners/2", nil)
+	deleteListenerReq.Header.Set("X-Panel-Token", "secret")
+	deleteListenerResp := httptest.NewRecorder()
+	router.ServeHTTP(deleteListenerResp, deleteListenerReq)
+	if deleteListenerResp.Code != http.StatusOK {
+		t.Fatalf("DELETE /panel-api/agents/local/relay-listeners/2 = %d", deleteListenerResp.Code)
+	}
+
+	getCertificatesReq := httptest.NewRequest(http.MethodGet, "/panel-api/agents/local/certificates", nil)
+	getCertificatesReq.Header.Set("X-Panel-Token", "secret")
+	getCertificatesResp := httptest.NewRecorder()
+	router.ServeHTTP(getCertificatesResp, getCertificatesReq)
+	if getCertificatesResp.Code != http.StatusOK {
+		t.Fatalf("GET /panel-api/agents/local/certificates = %d", getCertificatesResp.Code)
+	}
+
+	createCertificateReq := httptest.NewRequest(http.MethodPost, "/panel-api/agents/local/certificates", bytes.NewBufferString(`{"domain":"relay-b.example.com","scope":"domain","issuer_mode":"local_http01","certificate_type":"acme","target_agent_ids":["local"]}`))
+	createCertificateReq.Header.Set("X-Panel-Token", "secret")
+	createCertificateReq.Header.Set("Content-Type", "application/json")
+	createCertificateResp := httptest.NewRecorder()
+	router.ServeHTTP(createCertificateResp, createCertificateReq)
+	if createCertificateResp.Code != http.StatusCreated {
+		t.Fatalf("POST /panel-api/agents/local/certificates = %d", createCertificateResp.Code)
+	}
+
+	updateCertificateReq := httptest.NewRequest(http.MethodPut, "/panel-api/agents/local/certificates/12", bytes.NewBufferString(`{"certificate_type":"uploaded","status":"active"}`))
+	updateCertificateReq.Header.Set("X-Panel-Token", "secret")
+	updateCertificateReq.Header.Set("Content-Type", "application/json")
+	updateCertificateResp := httptest.NewRecorder()
+	router.ServeHTTP(updateCertificateResp, updateCertificateReq)
+	if updateCertificateResp.Code != http.StatusOK {
+		t.Fatalf("PUT /panel-api/agents/local/certificates/12 = %d", updateCertificateResp.Code)
+	}
+
+	issueCertificateReq := httptest.NewRequest(http.MethodPost, "/panel-api/agents/local/certificates/12/issue", bytes.NewBuffer(nil))
+	issueCertificateReq.Header.Set("X-Panel-Token", "secret")
+	issueCertificateResp := httptest.NewRecorder()
+	router.ServeHTTP(issueCertificateResp, issueCertificateReq)
+	if issueCertificateResp.Code != http.StatusOK {
+		t.Fatalf("POST /panel-api/agents/local/certificates/12/issue = %d", issueCertificateResp.Code)
+	}
+
+	deleteCertificateReq := httptest.NewRequest(http.MethodDelete, "/panel-api/agents/local/certificates/12", nil)
+	deleteCertificateReq.Header.Set("X-Panel-Token", "secret")
+	deleteCertificateResp := httptest.NewRecorder()
+	router.ServeHTTP(deleteCertificateResp, deleteCertificateReq)
+	if deleteCertificateResp.Code != http.StatusOK {
+		t.Fatalf("DELETE /panel-api/agents/local/certificates/12 = %d", deleteCertificateResp.Code)
+	}
+}
+
 func TestMapServiceErrorMapsAgentNotFound(t *testing.T) {
 	status, payload := mapServiceError(service.ErrAgentNotFound)
 	if status != http.StatusNotFound {
@@ -190,4 +588,8 @@ func TestMapServiceErrorMapsAgentNotFound(t *testing.T) {
 	if payload["message"] != "internal server error" {
 		t.Fatalf("payload = %+v", payload)
 	}
+}
+
+func intPtr(value int) *int {
+	return &value
 }

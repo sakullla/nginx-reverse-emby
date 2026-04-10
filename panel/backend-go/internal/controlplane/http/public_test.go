@@ -52,7 +52,11 @@ func TestRouterServesJoinScriptAndHeartbeat(t *testing.T) {
 				LocalAgentEnabled: true,
 			},
 		},
-		AgentService: fakeAgentService{},
+		AgentService:         fakeAgentService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
 	})
 	if err != nil {
 		t.Fatalf("NewRouter() error = %v", err)

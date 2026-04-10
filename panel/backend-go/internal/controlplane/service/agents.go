@@ -138,6 +138,10 @@ func (s *agentService) List(ctx context.Context) ([]AgentSummary, error) {
 		if err != nil {
 			return nil, err
 		}
+		localL4Rules, err := s.store.ListL4Rules(ctx, s.cfg.LocalAgentID)
+		if err != nil {
+			return nil, err
+		}
 		agents = append(agents, AgentSummary{
 			ID:                s.cfg.LocalAgentID,
 			Name:              s.cfg.LocalAgentName,
@@ -152,7 +156,7 @@ func (s *agentService) List(ctx context.Context) ([]AgentSummary, error) {
 			IsLocal:           true,
 			Capabilities:      append([]string(nil), defaultLocalCapabilities...),
 			HTTPRulesCount:    len(localRules),
-			L4RulesCount:      0,
+			L4RulesCount:      len(localL4Rules),
 		})
 	}
 
@@ -162,6 +166,10 @@ func (s *agentService) List(ctx context.Context) ([]AgentSummary, error) {
 		}
 
 		rules, err := s.store.ListHTTPRules(ctx, row.ID)
+		if err != nil {
+			return nil, err
+		}
+		l4Rules, err := s.store.ListL4Rules(ctx, row.ID)
 		if err != nil {
 			return nil, err
 		}
@@ -187,7 +195,7 @@ func (s *agentService) List(ctx context.Context) ([]AgentSummary, error) {
 			LastSeenIP:        row.LastSeenIP,
 			Capabilities:      parseStringArray(row.CapabilitiesJSON),
 			HTTPRulesCount:    len(rules),
-			L4RulesCount:      0,
+			L4RulesCount:      len(l4Rules),
 		})
 	}
 
@@ -377,6 +385,10 @@ func (s *agentService) summaryForRow(ctx context.Context, row storage.AgentRow) 
 	if err != nil {
 		return AgentSummary{}, err
 	}
+	l4Rules, err := s.store.ListL4Rules(ctx, row.ID)
+	if err != nil {
+		return AgentSummary{}, err
+	}
 
 	return AgentSummary{
 		ID:                row.ID,
@@ -399,7 +411,7 @@ func (s *agentService) summaryForRow(ctx context.Context, row storage.AgentRow) 
 		LastSeenIP:        row.LastSeenIP,
 		Capabilities:      parseStringArray(row.CapabilitiesJSON),
 		HTTPRulesCount:    len(rules),
-		L4RulesCount:      0,
+		L4RulesCount:      len(l4Rules),
 	}, nil
 }
 

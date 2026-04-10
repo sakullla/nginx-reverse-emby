@@ -7,7 +7,7 @@ RUN --mount=type=cache,target=/root/.npm npm ci
 COPY panel/frontend/ ./
 RUN npm run build
 
-FROM golang:1.24-bookworm AS go-builder
+FROM golang:1.26.2-bookworm AS go-builder
 WORKDIR /src/go-agent
 COPY go-agent/ ./
 RUN --mount=type=cache,target=/root/.cache/go-build \
@@ -22,7 +22,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o /out/nre-agent ./cmd/nre-agent
 
-FROM golang:1.24-bookworm AS backend-go-builder
+FROM golang:1.26.2-bookworm AS backend-go-builder
 WORKDIR /src/panel/backend-go
 COPY panel/backend-go/go.mod panel/backend-go/go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download

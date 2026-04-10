@@ -31,6 +31,38 @@ func (f fakeStore) SaveAgent(context.Context, storage.AgentRow) error {
 	return nil
 }
 
+func (f fakeStore) ListL4Rules(context.Context, string) ([]storage.L4RuleRow, error) {
+	return nil, nil
+}
+
+func (f fakeStore) ListVersionPolicies(context.Context) ([]storage.VersionPolicyRow, error) {
+	return nil, nil
+}
+
+func (f fakeStore) SaveL4Rules(context.Context, string, []storage.L4RuleRow) error {
+	return nil
+}
+
+func (f fakeStore) SaveVersionPolicies(context.Context, []storage.VersionPolicyRow) error {
+	return nil
+}
+
+func (f fakeStore) ListRelayListeners(context.Context, string) ([]storage.RelayListenerRow, error) {
+	return nil, nil
+}
+
+func (f fakeStore) ListManagedCertificates(context.Context) ([]storage.ManagedCertificateRow, error) {
+	return nil, nil
+}
+
+func (f fakeStore) SaveRelayListeners(context.Context, string, []storage.RelayListenerRow) error {
+	return nil
+}
+
+func (f fakeStore) SaveManagedCertificates(context.Context, []storage.ManagedCertificateRow) error {
+	return nil
+}
+
 func TestAgentServiceListSynthesizesLocalAgentAndRemoteStatus(t *testing.T) {
 	cfg := config.Config{
 		EnableLocalAgent:  true,

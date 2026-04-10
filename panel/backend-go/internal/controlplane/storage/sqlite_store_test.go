@@ -1,14 +1,15 @@
 package storage
 
 import (
-	"database/sql"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
 
-	_ "modernc.org/sqlite"
+	"github.com/glebarez/sqlite"
+	"gorm.io/gorm"
+	"gorm.io/gorm/logger"
 )
 
 func TestStoreLoadsAgentsAndRulesFromExistingSQLite(t *testing.T) {
@@ -19,7 +20,10 @@ func TestStoreLoadsAgentsAndRulesFromExistingSQLite(t *testing.T) {
 		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
 	t.Cleanup(func() {
-		_ = store.db.Close()
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
 	})
 
 	agents, err := store.ListAgents(t.Context())
@@ -41,17 +45,162 @@ func TestStoreLoadsAgentsAndRulesFromExistingSQLite(t *testing.T) {
 	}
 }
 
+func TestStorePersistsL4RulesAndVersionPolicies(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromCanonicalSchema(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	err = store.SaveL4Rules(t.Context(), "local", []L4RuleRow{{
+		ID:                8,
+		AgentID:           "local",
+		Name:              "TCP 8443",
+		Protocol:          "tcp",
+		ListenHost:        "0.0.0.0",
+		ListenPort:        8443,
+		UpstreamHost:      "emby",
+		UpstreamPort:      8096,
+		BackendsJSON:      `[{"host":"emby","port":8096}]`,
+		LoadBalancingJSON: `{"strategy":"round_robin"}`,
+		TuningJSON:        `{"proxy_protocol":{"decode":false,"send":false}}`,
+		RelayChainJSON:    `[]`,
+		Enabled:           true,
+		TagsJSON:          `["edge"]`,
+		Revision:          10,
+	}})
+	if err != nil {
+		t.Fatalf("SaveL4Rules() error = %v", err)
+	}
+
+	l4Rules, err := store.ListL4Rules(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListL4Rules() error = %v", err)
+	}
+	if len(l4Rules) != 1 || l4Rules[0].ListenPort != 8443 || l4Rules[0].Revision != 10 {
+		t.Fatalf("ListL4Rules() = %+v", l4Rules)
+	}
+
+	err = store.SaveVersionPolicies(t.Context(), []VersionPolicyRow{{
+		ID:             "stable",
+		Channel:        "stable",
+		DesiredVersion: "1.2.3",
+		PackagesJSON:   `[{"platform":"linux-amd64","url":"https://example.com/nre-agent","sha256":"abc123"}]`,
+		TagsJSON:       `["default"]`,
+	}})
+	if err != nil {
+		t.Fatalf("SaveVersionPolicies() error = %v", err)
+	}
+
+	policies, err := store.ListVersionPolicies(t.Context())
+	if err != nil {
+		t.Fatalf("ListVersionPolicies() error = %v", err)
+	}
+	if len(policies) != 1 || policies[0].ID != "stable" || policies[0].DesiredVersion != "1.2.3" {
+		t.Fatalf("ListVersionPolicies() = %+v", policies)
+	}
+}
+
+func TestStorePersistsRelayListenersAndManagedCertificates(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromCanonicalSchema(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	certID := 11
+	err = store.SaveRelayListeners(t.Context(), "local", []RelayListenerRow{{
+		ID:                      3,
+		AgentID:                 "local",
+		Name:                    "relay-a",
+		BindHostsJSON:           `["0.0.0.0"]`,
+		ListenHost:              "0.0.0.0",
+		ListenPort:              7443,
+		PublicHost:              "relay-a.example.com",
+		PublicPort:              7443,
+		Enabled:                 true,
+		CertificateID:           &certID,
+		TLSMode:                 "pin_or_ca",
+		PinSetJSON:              `[{"type":"spki_sha256","value":"abc"}]`,
+		TrustedCACertificateIDs: `[10]`,
+		AllowSelfSigned:         true,
+		TagsJSON:                `["relay"]`,
+		Revision:                12,
+	}})
+	if err != nil {
+		t.Fatalf("SaveRelayListeners() error = %v", err)
+	}
+
+	listeners, err := store.ListRelayListeners(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListRelayListeners() error = %v", err)
+	}
+	if len(listeners) != 1 || listeners[0].ID != 3 || listeners[0].CertificateID == nil || *listeners[0].CertificateID != 11 {
+		t.Fatalf("ListRelayListeners() = %+v", listeners)
+	}
+
+	err = store.SaveManagedCertificates(t.Context(), []ManagedCertificateRow{{
+		ID:              11,
+		Domain:          "relay-a.example.com",
+		Enabled:         true,
+		Scope:           "domain",
+		IssuerMode:      "local_http01",
+		TargetAgentIDs:  `["local"]`,
+		Status:          "active",
+		LastIssueAt:     "2026-04-10T00:00:00Z",
+		LastError:       "",
+		MaterialHash:    "hash-a",
+		AgentReports:    `{}`,
+		ACMEInfo:        `{}`,
+		Usage:           "relay_tunnel",
+		CertificateType: "uploaded",
+		SelfSigned:      false,
+		TagsJSON:        `["relay"]`,
+		Revision:        13,
+	}})
+	if err != nil {
+		t.Fatalf("SaveManagedCertificates() error = %v", err)
+	}
+
+	certs, err := store.ListManagedCertificates(t.Context())
+	if err != nil {
+		t.Fatalf("ListManagedCertificates() error = %v", err)
+	}
+	if len(certs) != 1 || certs[0].ID != 11 || certs[0].Domain != "relay-a.example.com" {
+		t.Fatalf("ListManagedCertificates() = %+v", certs)
+	}
+}
+
 func seedSQLiteFixtureFromCanonicalSchema(t *testing.T) string {
 	t.Helper()
 
 	dataRoot := t.TempDir()
 	dbPath := filepath.Join(dataRoot, "panel.db")
-	db, err := sql.Open("sqlite", "file:"+dbPath)
+	db, err := gorm.Open(sqlite.Open(dbPath), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
 	if err != nil {
-		t.Fatalf("sql.Open() error = %v", err)
+		t.Fatalf("gorm.Open() error = %v", err)
 	}
 	t.Cleanup(func() {
-		_ = db.Close()
+		sqlDB, dbErr := db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
 	})
 
 	repoRoot := repositoryRoot(t)
@@ -202,10 +351,10 @@ func splitSQLStatements(sqlText string) []string {
 	return statements
 }
 
-func execSQLiteStatement(t *testing.T, db *sql.DB, stmt string, allowDuplicate bool) {
+func execSQLiteStatement(t *testing.T, db *gorm.DB, stmt string, allowDuplicate bool) {
 	t.Helper()
 
-	if _, err := db.Exec(stmt); err != nil {
+	if err := db.Exec(stmt).Error; err != nil {
 		if allowDuplicate && isIgnorableMigrationError(err) {
 			return
 		}
