@@ -7,15 +7,6 @@ RUN --mount=type=cache,target=/root/.npm npm ci
 COPY panel/frontend/ ./
 RUN npm run build
 
-FROM node-base AS backend-builder
-WORKDIR /build
-ENV NODE_ENV=production
-COPY panel/backend/package*.json ./
-COPY panel/backend/prisma ./prisma/
-COPY panel/backend/prisma.config.ts ./prisma.config.ts
-RUN --mount=type=cache,target=/root/.npm npm ci --omit=dev
-RUN npx prisma generate
-
 FROM golang:1.24-bookworm AS go-builder
 WORKDIR /src/go-agent
 COPY go-agent/ ./
@@ -31,6 +22,15 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o /out/nre-agent ./cmd/nre-agent
 
+FROM golang:1.24-bookworm AS backend-go-builder
+WORKDIR /src/panel/backend-go
+COPY panel/backend-go/go.mod panel/backend-go/go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
+COPY panel/backend-go/ ./
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg/mod \
+    CGO_ENABLED=0 go build -o /out/nre-control-plane ./cmd/nre-control-plane
+
 FROM debian:bookworm-slim AS go-agent-runtime
 RUN set -eux; \
     apt-get update; \
@@ -39,24 +39,26 @@ RUN set -eux; \
 COPY --from=go-builder /out/nre-agent /usr/local/bin/nre-agent
 ENTRYPOINT ["/usr/local/bin/nre-agent"]
 
-FROM node:24-trixie-slim AS control-plane-runtime
-ENV NODE_ENV=production \
-    PANEL_BACKEND_HOST=0.0.0.0 \
+FROM debian:bookworm-slim AS control-plane-runtime
+ENV PANEL_BACKEND_HOST=0.0.0.0 \
     PANEL_BACKEND_PORT=8080
 WORKDIR /opt/nginx-reverse-emby
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates; \
+    rm -rf /var/lib/apt/lists/*
 COPY scripts/ ./scripts/
-COPY panel/backend/ ./panel/backend/
 COPY --from=frontend-builder /build/dist ./panel/frontend/dist/
-COPY --from=backend-builder /build/node_modules ./panel/backend/node_modules/
+COPY --from=backend-go-builder /out/nre-control-plane /usr/local/bin/nre-control-plane
 COPY --from=go-builder /out/nre-agent-linux-amd64 ./panel/public/agent-assets/nre-agent-linux-amd64
 COPY --from=go-builder /out/nre-agent-linux-arm64 ./panel/public/agent-assets/nre-agent-linux-arm64
 COPY --from=go-builder /out/nre-agent-darwin-amd64 ./panel/public/agent-assets/nre-agent-darwin-amd64
 COPY --from=go-builder /out/nre-agent-darwin-arm64 ./panel/public/agent-assets/nre-agent-darwin-arm64
 RUN set -eux; \
     find ./scripts -type f -name '*.sh' -exec sed -i 's/\r$//' {} +; \
-    chmod +x ./panel/backend/server.js ./scripts/*.sh ./panel/public/agent-assets/*; \
+    chmod +x /usr/local/bin/nre-control-plane ./scripts/*.sh ./panel/public/agent-assets/*; \
     mkdir -p ./panel/data
 
 VOLUME ["/opt/nginx-reverse-emby/panel/data"]
 EXPOSE 8080
-CMD ["node", "/opt/nginx-reverse-emby/panel/backend/server.js"]
+CMD ["/usr/local/bin/nre-control-plane"]

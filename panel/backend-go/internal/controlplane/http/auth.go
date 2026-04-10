@@ -22,6 +22,16 @@ func (d Dependencies) requirePanelToken(next http.Handler) http.Handler {
 	})
 }
 
+func (d Dependencies) isRegisterAuthorized(r *http.Request, registerToken string) bool {
+	if d.Config.RegisterToken == "" {
+		return true
+	}
+	if r.Header.Get("X-Register-Token") == d.Config.RegisterToken {
+		return true
+	}
+	return registerToken == d.Config.RegisterToken
+}
+
 func errorPayload(message string) map[string]any {
 	return map[string]any{
 		"ok":      false,

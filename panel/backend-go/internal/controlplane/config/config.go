@@ -10,7 +10,7 @@ import (
 
 const (
 	defaultListenAddr        = "0.0.0.0:8080"
-	defaultDataDir           = "/var/lib/nre-control-plane"
+	defaultDataDir           = "/opt/nginx-reverse-emby/panel/data"
 	defaultFrontendDistDir   = "/opt/nginx-reverse-emby/panel/frontend/dist"
 	defaultPublicAssetsDir   = "/opt/nginx-reverse-emby/panel/public/agent-assets"
 	defaultEnableLocalAgent  = true
@@ -48,36 +48,48 @@ func Default() Config {
 func LoadFromEnv() (Config, error) {
 	cfg := Default()
 
-	if val := strings.TrimSpace(os.Getenv("NRE_CONTROL_PLANE_ADDR")); val != "" {
+	if val := strings.TrimSpace(firstEnv("NRE_CONTROL_PLANE_ADDR", "")); val != "" {
 		cfg.ListenAddr = val
+	} else {
+		host := strings.TrimSpace(firstEnv("PANEL_BACKEND_HOST", ""))
+		port := strings.TrimSpace(firstEnv("PANEL_BACKEND_PORT", ""))
+		if host != "" || port != "" {
+			if host == "" {
+				host = "127.0.0.1"
+			}
+			if port == "" {
+				port = "8080"
+			}
+			cfg.ListenAddr = fmt.Sprintf("%s:%s", host, port)
+		}
 	}
-	if val := strings.TrimSpace(os.Getenv("NRE_CONTROL_PLANE_DATA_DIR")); val != "" {
+	if val := strings.TrimSpace(firstEnv("NRE_CONTROL_PLANE_DATA_DIR", "PANEL_DATA_ROOT")); val != "" {
 		cfg.DataDir = val
 	}
 
-	panelToken := strings.TrimSpace(os.Getenv("NRE_PANEL_TOKEN"))
+	panelToken := strings.TrimSpace(firstEnv("NRE_PANEL_TOKEN", "API_TOKEN"))
 	if panelToken == "" {
 		return Config{}, errors.New("NRE_PANEL_TOKEN is required")
 	}
 	cfg.PanelToken = panelToken
 
-	registerToken := strings.TrimSpace(os.Getenv("NRE_REGISTER_TOKEN"))
+	registerToken := strings.TrimSpace(firstEnv("NRE_REGISTER_TOKEN", "MASTER_REGISTER_TOKEN", "PANEL_REGISTER_TOKEN", "API_TOKEN"))
 	if registerToken == "" {
 		return Config{}, errors.New("NRE_REGISTER_TOKEN is required")
 	}
 	cfg.RegisterToken = registerToken
 
-	frontendDistDir := strings.TrimSpace(os.Getenv("NRE_FRONTEND_DIST_DIR"))
+	frontendDistDir := strings.TrimSpace(firstEnv("NRE_FRONTEND_DIST_DIR", "PANEL_FRONTEND_DIST_DIR"))
 	if frontendDistDir != "" {
 		cfg.FrontendDistDir = frontendDistDir
 	}
 
-	publicAssetsDir := strings.TrimSpace(os.Getenv("NRE_PUBLIC_AGENT_ASSETS_DIR"))
+	publicAssetsDir := strings.TrimSpace(firstEnv("NRE_PUBLIC_AGENT_ASSETS_DIR", "PANEL_PUBLIC_AGENT_ASSETS_DIR"))
 	if publicAssetsDir != "" {
 		cfg.PublicAgentAssetsDir = publicAssetsDir
 	}
 
-	if val := strings.TrimSpace(os.Getenv("NRE_ENABLE_LOCAL_AGENT")); val != "" {
+	if val := strings.TrimSpace(firstEnv("NRE_ENABLE_LOCAL_AGENT", "MASTER_LOCAL_AGENT_ENABLED")); val != "" {
 		enabled, err := parseBool(val)
 		if err != nil {
 			return Config{}, fmt.Errorf("invalid NRE_ENABLE_LOCAL_AGENT: %w", err)
@@ -102,6 +114,15 @@ func LoadFromEnv() (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func firstEnv(keys ...string) string {
+	for _, key := range keys {
+		if value := os.Getenv(key); strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func parseBool(value string) (bool, error) {

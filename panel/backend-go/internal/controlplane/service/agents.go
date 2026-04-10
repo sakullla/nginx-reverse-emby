@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -12,6 +14,7 @@ import (
 )
 
 var ErrAgentNotFound = errors.New("agent not found")
+var ErrAgentUnauthorized = errors.New("agent unauthorized")
 
 var defaultLocalCapabilities = []string{"http_rules", "local_acme", "cert_install", "l4"}
 
@@ -67,6 +70,42 @@ type HTTPRule struct {
 	UserAgent        string             `json:"user_agent"`
 	CustomHeaders    []HTTPCustomHeader `json:"custom_headers"`
 	Revision         int                `json:"revision"`
+}
+
+type HeartbeatRequest struct {
+	Name             string   `json:"name"`
+	AgentID          string   `json:"agent_id"`
+	CurrentRevision  int64    `json:"current_revision"`
+	Version          string   `json:"version"`
+	Platform         string   `json:"platform"`
+	AgentURL         string   `json:"agent_url"`
+	Tags             []string `json:"tags"`
+	Capabilities     []string `json:"capabilities"`
+	LastApplyStatus  string   `json:"last_apply_status"`
+	LastApplyMessage string   `json:"last_apply_message"`
+}
+
+type HeartbeatReply struct {
+	DesiredVersion      string     `json:"desired_version,omitempty"`
+	DesiredRevision     int64      `json:"desired_revision"`
+	CurrentRevision     int64      `json:"current_revision"`
+	Rules               []HTTPRule `json:"rules"`
+	L4Rules             []any      `json:"l4_rules"`
+	RelayListeners      []any      `json:"relay_listeners"`
+	Certificates        []any      `json:"certificates"`
+	CertificatePolicies []any      `json:"certificate_policies"`
+}
+
+type RegisterRequest struct {
+	Name          string   `json:"name"`
+	AgentURL      string   `json:"agent_url"`
+	AgentToken    string   `json:"agent_token"`
+	Version       string   `json:"version"`
+	Platform      string   `json:"platform"`
+	Tags          []string `json:"tags"`
+	Capabilities  []string `json:"capabilities"`
+	Mode          string   `json:"mode"`
+	RegisterToken string   `json:"register_token"`
 }
 
 type agentService struct {
@@ -155,6 +194,57 @@ func (s *agentService) List(ctx context.Context) ([]AgentSummary, error) {
 	return agents, nil
 }
 
+func (s *agentService) Register(ctx context.Context, request RegisterRequest, headerAgentToken string) (AgentSummary, error) {
+	name := strings.TrimSpace(request.Name)
+	if name == "" {
+		return AgentSummary{}, errors.New("name is required")
+	}
+
+	agentToken := strings.TrimSpace(request.AgentToken)
+	if agentToken == "" {
+		agentToken = strings.TrimSpace(headerAgentToken)
+	}
+	if agentToken == "" {
+		return AgentSummary{}, errors.New("agent_token is required")
+	}
+
+	rows, err := s.store.ListAgents(ctx)
+	if err != nil {
+		return AgentSummary{}, err
+	}
+
+	row := storage.AgentRow{
+		ID:               randomAgentID(),
+		DesiredVersion:   "",
+		TagsJSON:         marshalStringArray(request.Tags),
+		CapabilitiesJSON: marshalStringArray(defaultCapabilities(request.Capabilities)),
+		Mode:             defaultString(request.Mode, "pull"),
+		LastApplyStatus:  "success",
+	}
+	for _, existing := range rows {
+		if existing.AgentToken == agentToken || existing.Name == name {
+			row = existing
+			break
+		}
+	}
+
+	row.Name = name
+	row.AgentURL = strings.TrimSpace(request.AgentURL)
+	row.AgentToken = agentToken
+	row.Version = strings.TrimSpace(request.Version)
+	row.Platform = strings.TrimSpace(request.Platform)
+	row.TagsJSON = marshalStringArray(request.Tags)
+	row.CapabilitiesJSON = marshalStringArray(defaultCapabilities(request.Capabilities))
+	row.Mode = defaultString(request.Mode, "pull")
+	row.IsLocal = false
+
+	if err := s.store.SaveAgent(ctx, row); err != nil {
+		return AgentSummary{}, err
+	}
+
+	return s.summaryForRow(ctx, row)
+}
+
 func (s *agentService) ListHTTPRules(ctx context.Context, agentID string) ([]HTTPRule, error) {
 	if agentID == "" {
 		agentID = s.cfg.LocalAgentID
@@ -200,6 +290,58 @@ func (s *agentService) ListHTTPRules(ctx context.Context, agentID string) ([]HTT
 	return rules, nil
 }
 
+func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, agentToken string) (HeartbeatReply, error) {
+	if strings.TrimSpace(agentToken) == "" {
+		return HeartbeatReply{}, ErrAgentUnauthorized
+	}
+
+	row, err := s.findAgentByToken(ctx, agentToken)
+	if err != nil {
+		return HeartbeatReply{}, err
+	}
+
+	row.Version = defaultString(request.Version, row.Version)
+	row.Platform = defaultString(request.Platform, row.Platform)
+	if request.AgentURL != "" {
+		row.AgentURL = strings.TrimSpace(request.AgentURL)
+	}
+	if len(request.Tags) > 0 {
+		row.TagsJSON = marshalStringArray(request.Tags)
+	}
+	if len(request.Capabilities) > 0 {
+		row.CapabilitiesJSON = marshalStringArray(defaultCapabilities(request.Capabilities))
+	}
+	row.CurrentRevision = int(request.CurrentRevision)
+	row.LastApplyStatus = defaultString(request.LastApplyStatus, row.LastApplyStatus)
+	row.LastApplyMessage = request.LastApplyMessage
+	row.LastSeenAt = s.now().UTC().Format(time.RFC3339)
+
+	if err := s.store.SaveAgent(ctx, row); err != nil {
+		return HeartbeatReply{}, err
+	}
+
+	rules, err := s.ListHTTPRules(ctx, row.ID)
+	if err != nil {
+		return HeartbeatReply{}, err
+	}
+
+	hasUpdate := request.CurrentRevision < int64(row.DesiredRevision)
+	if !hasUpdate {
+		rules = []HTTPRule{}
+	}
+
+	return HeartbeatReply{
+		DesiredVersion:      row.DesiredVersion,
+		DesiredRevision:     int64(row.DesiredRevision),
+		CurrentRevision:     request.CurrentRevision,
+		Rules:               rules,
+		L4Rules:             []any{},
+		RelayListeners:      []any{},
+		Certificates:        []any{},
+		CertificatePolicies: []any{},
+	}, nil
+}
+
 func (s *agentService) ensureAgentExists(ctx context.Context, agentID string) error {
 	if s.cfg.EnableLocalAgent && agentID == s.cfg.LocalAgentID {
 		return nil
@@ -215,6 +357,50 @@ func (s *agentService) ensureAgentExists(ctx context.Context, agentID string) er
 		}
 	}
 	return ErrAgentNotFound
+}
+
+func (s *agentService) findAgentByToken(ctx context.Context, agentToken string) (storage.AgentRow, error) {
+	rows, err := s.store.ListAgents(ctx)
+	if err != nil {
+		return storage.AgentRow{}, err
+	}
+	for _, row := range rows {
+		if row.AgentToken == agentToken {
+			return row, nil
+		}
+	}
+	return storage.AgentRow{}, ErrAgentNotFound
+}
+
+func (s *agentService) summaryForRow(ctx context.Context, row storage.AgentRow) (AgentSummary, error) {
+	rules, err := s.store.ListHTTPRules(ctx, row.ID)
+	if err != nil {
+		return AgentSummary{}, err
+	}
+
+	return AgentSummary{
+		ID:                row.ID,
+		Name:              row.Name,
+		AgentURL:          row.AgentURL,
+		Version:           row.Version,
+		Platform:          row.Platform,
+		DesiredVersion:    row.DesiredVersion,
+		Tags:              parseStringArray(row.TagsJSON),
+		Mode:              defaultString(row.Mode, "pull"),
+		DesiredRevision:   row.DesiredRevision,
+		CurrentRevision:   row.CurrentRevision,
+		LastApplyRevision: row.LastApplyRevision,
+		LastApplyStatus:   row.LastApplyStatus,
+		LastApplyMessage:  row.LastApplyMessage,
+		LastSeenAt:        row.LastSeenAt,
+		Status:            s.agentStatus(row),
+		Error:             "",
+		IsLocal:           false,
+		LastSeenIP:        row.LastSeenIP,
+		Capabilities:      parseStringArray(row.CapabilitiesJSON),
+		HTTPRulesCount:    len(rules),
+		L4RulesCount:      0,
+	}, nil
 }
 
 func (s *agentService) agentStatus(row storage.AgentRow) string {
@@ -324,4 +510,27 @@ func parseCustomHeaders(raw string) []HTTPCustomHeader {
 		})
 	}
 	return normalized
+}
+
+func marshalStringArray(values []string) string {
+	data, err := json.Marshal(values)
+	if err != nil {
+		return "[]"
+	}
+	return string(data)
+}
+
+func defaultCapabilities(values []string) []string {
+	if len(values) == 0 {
+		return []string{"http_rules"}
+	}
+	return values
+}
+
+func randomAgentID() string {
+	var buffer [16]byte
+	if _, err := rand.Read(buffer[:]); err != nil {
+		return "agent-" + time.Now().UTC().Format("20060102150405")
+	}
+	return hex.EncodeToString(buffer[:])
 }

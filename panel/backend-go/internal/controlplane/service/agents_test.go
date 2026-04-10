@@ -27,6 +27,10 @@ func (f fakeStore) LoadLocalAgentState(context.Context) (storage.LocalAgentState
 	return f.localState, nil
 }
 
+func (f fakeStore) SaveAgent(context.Context, storage.AgentRow) error {
+	return nil
+}
+
 func TestAgentServiceListSynthesizesLocalAgentAndRemoteStatus(t *testing.T) {
 	cfg := config.Config{
 		EnableLocalAgent:  true,

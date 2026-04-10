@@ -29,6 +29,13 @@ func (f fakeAgentService) List(context.Context) ([]service.AgentSummary, error) 
 	return f.agents, nil
 }
 
+func (f fakeAgentService) Register(context.Context, service.RegisterRequest, string) (service.AgentSummary, error) {
+	if len(f.agents) == 0 {
+		return service.AgentSummary{}, service.ErrAgentNotFound
+	}
+	return f.agents[0], nil
+}
+
 func (f fakeAgentService) ListHTTPRules(_ context.Context, agentID string) ([]service.HTTPRule, error) {
 	rules, ok := f.rules[agentID]
 	if !ok {

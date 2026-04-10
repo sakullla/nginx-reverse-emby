@@ -17,6 +17,8 @@ type SystemService interface {
 type AgentService interface {
 	List(context.Context) ([]service.AgentSummary, error)
 	ListHTTPRules(context.Context, string) ([]service.HTTPRule, error)
+	Register(context.Context, service.RegisterRequest, string) (service.AgentSummary, error)
+	Heartbeat(context.Context, service.HeartbeatRequest, string) (service.HeartbeatReply, error)
 }
 
 type Dependencies struct {
@@ -36,9 +38,14 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 		mux.Handle(prefix+"/health", http.HandlerFunc(resolved.handleHealth))
 		mux.Handle(prefix+"/auth/verify", http.HandlerFunc(resolved.handleVerify))
 		mux.Handle(prefix+"/info", http.HandlerFunc(resolved.handleInfo))
+		mux.Handle(prefix+"/public/join-agent.sh", http.HandlerFunc(resolved.handleJoinAgentScript))
+		mux.Handle(prefix+"/public/agent-assets/", http.HandlerFunc(resolved.handlePublicAgentAsset))
+		mux.Handle(prefix+"/agents/register", http.HandlerFunc(resolved.handleRegisterAgent))
+		mux.Handle(prefix+"/agents/heartbeat", http.HandlerFunc(resolved.handleHeartbeat))
 		mux.Handle(prefix+"/agents", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgents)))
 		mux.Handle(prefix+"/agents/{agentID}/rules", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentRules)))
 	}
+	mux.Handle("/", resolved.staticHandler())
 
 	return mux, nil
 }
@@ -65,6 +72,8 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 
 func mapServiceError(err error) (int, map[string]any) {
 	switch {
+	case errors.Is(err, service.ErrAgentUnauthorized):
+		return http.StatusUnauthorized, errorPayload("Unauthorized: missing agent token")
 	case errors.Is(err, service.ErrAgentNotFound):
 		return http.StatusNotFound, errorPayload("agent not found")
 	default:
