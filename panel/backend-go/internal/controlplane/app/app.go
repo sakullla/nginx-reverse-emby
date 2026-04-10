@@ -12,6 +12,8 @@ import (
 
 type LocalAgentStarter func(context.Context) error
 
+var ErrLocalAgentExitedUnexpectedly = errors.New("embedded local agent exited unexpectedly")
+
 type App struct {
 	server           *http.Server
 	enableLocalAgent bool
@@ -36,10 +38,17 @@ func New(cfg config.Config, handler http.Handler, logger *log.Logger, startLocal
 func (a *App) Run(ctx context.Context) error {
 	if ctx.Err() != nil {
 		if a.enableLocalAgent && a.startLocalAgent != nil {
-			return a.startLocalAgent(ctx)
+			err := a.startLocalAgent(ctx)
+			if err == nil || errors.Is(err, context.Canceled) {
+				return nil
+			}
+			return err
 		}
 		return nil
 	}
+
+	runCtx, cancelRun := context.WithCancel(ctx)
+	defer cancelRun()
 
 	serverErrCh := make(chan error, 1)
 	go func() {
@@ -51,34 +60,70 @@ func (a *App) Run(ctx context.Context) error {
 		serverErrCh <- nil
 	}()
 
+	localEnabled := a.enableLocalAgent && a.startLocalAgent != nil
 	localAgentErrCh := make(chan error, 1)
-	if a.enableLocalAgent && a.startLocalAgent != nil {
+	if localEnabled {
 		go func() {
-			if err := a.startLocalAgent(ctx); err != nil {
-				localAgentErrCh <- err
-			}
+			localAgentErrCh <- a.startLocalAgent(runCtx)
 		}()
 	}
 
 	select {
 	case <-ctx.Done():
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := a.server.Shutdown(shutdownCtx); err != nil {
+		cancelRun()
+		serverErr := a.shutdownServerAndWait(serverErrCh)
+		localErr := waitLocalAgent(localAgentErrCh, localEnabled)
+		if serverErr != nil {
+			return serverErr
+		}
+		if localErr == nil || errors.Is(localErr, context.Canceled) {
+			return nil
+		}
+		return localErr
+	case err := <-serverErrCh:
+		cancelRun()
+		localErr := waitLocalAgent(localAgentErrCh, localEnabled)
+		if err != nil {
 			return err
 		}
-		return <-serverErrCh
-	case err := <-serverErrCh:
-		return err
-	case err := <-localAgentErrCh:
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if shutdownErr := a.server.Shutdown(shutdownCtx); shutdownErr != nil {
-			return shutdownErr
+		if ctx.Err() == nil {
+			if localErr != nil && !errors.Is(localErr, context.Canceled) {
+				return localErr
+			}
+			return errors.New("http server exited unexpectedly")
 		}
-		if serverErr := <-serverErrCh; serverErr != nil {
+		if localErr == nil || errors.Is(localErr, context.Canceled) {
+			return nil
+		}
+		return localErr
+	case err := <-localAgentErrCh:
+		cancelRun()
+		serverErr := a.shutdownServerAndWait(serverErrCh)
+		if serverErr != nil {
 			return serverErr
+		}
+		if err == nil {
+			return ErrLocalAgentExitedUnexpectedly
+		}
+		if errors.Is(err, context.Canceled) && ctx.Err() != nil {
+			return nil
 		}
 		return err
 	}
+}
+
+func waitLocalAgent(localAgentErrCh <-chan error, enabled bool) error {
+	if !enabled {
+		return nil
+	}
+	return <-localAgentErrCh
+}
+
+func (a *App) shutdownServerAndWait(serverErrCh <-chan error) error {
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := a.server.Shutdown(shutdownCtx); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		return err
+	}
+	return <-serverErrCh
 }
