@@ -100,6 +100,12 @@ type fakeRelayListenerService struct {
 	createdListener service.RelayListener
 	updatedListener service.RelayListener
 	deletedListener service.RelayListener
+	state           *fakeRelayListenerServiceState
+}
+
+type fakeRelayListenerServiceState struct {
+	createdInputs []service.RelayListenerInput
+	updatedInputs []service.RelayListenerInput
 }
 
 func (f fakeRelayListenerService) List(_ context.Context, agentID string) ([]service.RelayListener, error) {
@@ -110,11 +116,17 @@ func (f fakeRelayListenerService) List(_ context.Context, agentID string) ([]ser
 	return listeners, nil
 }
 
-func (f fakeRelayListenerService) Create(context.Context, string, service.RelayListenerInput) (service.RelayListener, error) {
+func (f fakeRelayListenerService) Create(_ context.Context, _ string, input service.RelayListenerInput) (service.RelayListener, error) {
+	if f.state != nil {
+		f.state.createdInputs = append(f.state.createdInputs, input)
+	}
 	return f.createdListener, nil
 }
 
-func (f fakeRelayListenerService) Update(context.Context, string, int, service.RelayListenerInput) (service.RelayListener, error) {
+func (f fakeRelayListenerService) Update(_ context.Context, _ string, _ int, input service.RelayListenerInput) (service.RelayListener, error) {
+	if f.state != nil {
+		f.state.updatedInputs = append(f.state.updatedInputs, input)
+	}
 	return f.updatedListener, nil
 }
 
@@ -569,6 +581,75 @@ func TestRouterServesRelayListenerAndCertificateEndpoints(t *testing.T) {
 	router.ServeHTTP(deleteCertificateResp, deleteCertificateReq)
 	if deleteCertificateResp.Code != http.StatusOK {
 		t.Fatalf("DELETE /panel-api/agents/local/certificates/12 = %d", deleteCertificateResp.Code)
+	}
+}
+
+func TestRouterRelayListenerWriteOnlyControlFieldsReachServiceButNotResponse(t *testing.T) {
+	state := &fakeRelayListenerServiceState{}
+	router, err := NewRouter(Dependencies{
+		Config: config.Config{PanelToken: "secret"},
+		SystemService: fakeSystemService{
+			info: service.SystemInfo{
+				Role:              "master",
+				LocalApplyRuntime: "go-agent",
+				DefaultAgentID:    "local",
+				LocalAgentEnabled: true,
+			},
+		},
+		AgentService:         fakeAgentService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{
+			state:           state,
+			createdListener: service.RelayListener{ID: 2, AgentID: "local", Name: "relay-b", BindHosts: []string{"0.0.0.0"}, ListenHost: "0.0.0.0", ListenPort: 8443, PublicHost: "relay-b.example.com", PublicPort: 8443, Enabled: true, CertificateID: intPtr(12), TLSMode: "pin_only", PinSet: []service.RelayPin{{Type: "spki_sha256", Value: "def"}}, TrustedCACertificateIDs: []int{}, AllowSelfSigned: false, Tags: []string{"edge"}, Revision: 4},
+			updatedListener: service.RelayListener{ID: 2, AgentID: "local", Name: "relay-b", BindHosts: []string{"127.0.0.1"}, ListenHost: "127.0.0.1", ListenPort: 8443, PublicHost: "relay-b.example.com", PublicPort: 8443, Enabled: true, CertificateID: intPtr(12), TLSMode: "pin_only", PinSet: []service.RelayPin{{Type: "spki_sha256", Value: "def"}}, TrustedCACertificateIDs: []int{}, AllowSelfSigned: false, Tags: []string{"edge"}, Revision: 5},
+		},
+		CertificateService: fakeCertificateService{},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	createReq := httptest.NewRequest(http.MethodPost, "/panel-api/agents/local/relay-listeners", bytes.NewBufferString(`{"name":"relay-b","listen_port":8443,"certificate_source":"auto_relay_ca","trust_mode_source":"auto"}`))
+	createReq.Header.Set("X-Panel-Token", "secret")
+	createReq.Header.Set("Content-Type", "application/json")
+	createResp := httptest.NewRecorder()
+	router.ServeHTTP(createResp, createReq)
+	if createResp.Code != http.StatusCreated {
+		t.Fatalf("POST /panel-api/agents/local/relay-listeners = %d", createResp.Code)
+	}
+	if len(state.createdInputs) != 1 {
+		t.Fatalf("len(state.createdInputs) = %d", len(state.createdInputs))
+	}
+	if state.createdInputs[0].CertificateSource == nil || *state.createdInputs[0].CertificateSource != "auto_relay_ca" {
+		t.Fatalf("created CertificateSource = %v", state.createdInputs[0].CertificateSource)
+	}
+	if state.createdInputs[0].TrustModeSource == nil || *state.createdInputs[0].TrustModeSource != "auto" {
+		t.Fatalf("created TrustModeSource = %v", state.createdInputs[0].TrustModeSource)
+	}
+	if bytes.Contains(createResp.Body.Bytes(), []byte("certificate_source")) || bytes.Contains(createResp.Body.Bytes(), []byte("trust_mode_source")) {
+		t.Fatalf("write-only fields leaked in create response: %s", createResp.Body.String())
+	}
+
+	updateReq := httptest.NewRequest(http.MethodPut, "/panel-api/agents/local/relay-listeners/2", bytes.NewBufferString(`{"certificate_source":"existing_certificate","certificate_id":12,"trust_mode_source":"custom","tls_mode":"pin_only","pin_set":[{"type":"spki_sha256","value":"def"}]}`))
+	updateReq.Header.Set("X-Panel-Token", "secret")
+	updateReq.Header.Set("Content-Type", "application/json")
+	updateResp := httptest.NewRecorder()
+	router.ServeHTTP(updateResp, updateReq)
+	if updateResp.Code != http.StatusOK {
+		t.Fatalf("PUT /panel-api/agents/local/relay-listeners/2 = %d", updateResp.Code)
+	}
+	if len(state.updatedInputs) != 1 {
+		t.Fatalf("len(state.updatedInputs) = %d", len(state.updatedInputs))
+	}
+	if state.updatedInputs[0].CertificateSource == nil || *state.updatedInputs[0].CertificateSource != "existing_certificate" {
+		t.Fatalf("updated CertificateSource = %v", state.updatedInputs[0].CertificateSource)
+	}
+	if state.updatedInputs[0].TrustModeSource == nil || *state.updatedInputs[0].TrustModeSource != "custom" {
+		t.Fatalf("updated TrustModeSource = %v", state.updatedInputs[0].TrustModeSource)
+	}
+	if bytes.Contains(updateResp.Body.Bytes(), []byte("certificate_source")) || bytes.Contains(updateResp.Body.Bytes(), []byte("trust_mode_source")) {
+		t.Fatalf("write-only fields leaked in update response: %s", updateResp.Body.String())
 	}
 }
 

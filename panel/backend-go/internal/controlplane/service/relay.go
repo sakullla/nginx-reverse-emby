@@ -52,6 +52,20 @@ type RelayListenerInput struct {
 	TrustedCACertificateIDs *[]int      `json:"trusted_ca_certificate_ids,omitempty"`
 	AllowSelfSigned         *bool       `json:"allow_self_signed,omitempty"`
 	Tags                    *[]string   `json:"tags,omitempty"`
+	CertificateSource       *string     `json:"certificate_source,omitempty"`
+	TrustModeSource         *string     `json:"trust_mode_source,omitempty"`
+}
+
+type relayNormalizeOptions struct {
+	AllowMissingCertificate bool
+	SkipTrustValidation     bool
+}
+
+type relayPreparation struct {
+	Listener            RelayListener
+	OriginalCertRows    []storage.ManagedCertificateRow
+	NextCertRows        []storage.ManagedCertificateRow
+	PersistCertificates bool
 }
 
 type relayService struct {
@@ -107,15 +121,26 @@ func (s *relayService) Create(ctx context.Context, agentID string, input RelayLi
 		}
 	}
 
-	listener, err := normalizeRelayListenerInput(input, RelayListener{}, maxID+1)
+	prepared, err := s.prepareRelayListener(ctx, resolvedID, input, RelayListener{}, maxID+1)
 	if err != nil {
 		return RelayListener{}, err
 	}
+	listener := prepared.Listener
 	listener.AgentID = resolvedID
 	listener.Revision = maxRevision + 1
 
+	if prepared.PersistCertificates {
+		if err := s.store.SaveManagedCertificates(ctx, prepared.NextCertRows); err != nil {
+			return RelayListener{}, err
+		}
+	}
 	rows = append(rows, relayListenerToRow(listener))
 	if err := s.store.SaveRelayListeners(ctx, resolvedID, rows); err != nil {
+		if prepared.PersistCertificates {
+			if rollbackErr := s.store.SaveManagedCertificates(ctx, prepared.OriginalCertRows); rollbackErr != nil {
+				return RelayListener{}, fmt.Errorf("%v (rollback failed: %v)", err, rollbackErr)
+			}
+		}
 		return RelayListener{}, err
 	}
 	return listener, nil
@@ -148,16 +173,48 @@ func (s *relayService) Update(ctx context.Context, agentID string, id int, input
 		return RelayListener{}, ErrRelayListenerNotFound
 	}
 
-	listener, err := normalizeRelayListenerInput(input, current, id)
+	prepared, err := s.prepareRelayListener(ctx, resolvedID, input, current, id)
 	if err != nil {
 		return RelayListener{}, err
+	}
+	listener := prepared.Listener
+	if current.Enabled && !listener.Enabled {
+		reference, err := s.findRelayListenerReference(ctx, listener.ID)
+		if err != nil {
+			return RelayListener{}, err
+		}
+		if reference != nil {
+			return RelayListener{}, fmt.Errorf(
+				"%w: relay listener %d is referenced by %s rule #%d on agent %s; disable is not allowed",
+				ErrInvalidArgument,
+				listener.ID,
+				reference.RuleType,
+				reference.RuleID,
+				reference.AgentID,
+			)
+		}
 	}
 	listener.AgentID = resolvedID
 	listener.Revision = maxRevision + 1
 
+	if prepared.PersistCertificates {
+		if err := s.store.SaveManagedCertificates(ctx, prepared.NextCertRows); err != nil {
+			return RelayListener{}, err
+		}
+	}
 	rows[targetIndex] = relayListenerToRow(listener)
 	if err := s.store.SaveRelayListeners(ctx, resolvedID, rows); err != nil {
+		if prepared.PersistCertificates {
+			if rollbackErr := s.store.SaveManagedCertificates(ctx, prepared.OriginalCertRows); rollbackErr != nil {
+				return RelayListener{}, fmt.Errorf("%v (rollback failed: %v)", err, rollbackErr)
+			}
+		}
 		return RelayListener{}, err
+	}
+	if current.CertificateID != nil && relayListenerCertificateChanged(current.CertificateID, listener.CertificateID) {
+		if err := s.cleanupUnusedAutoRelayListenerCertificate(ctx, *current.CertificateID); err != nil {
+			return RelayListener{}, err
+		}
 	}
 	return listener, nil
 }
@@ -185,11 +242,30 @@ func (s *relayService) Delete(ctx context.Context, agentID string, id int) (Rela
 	if targetIndex < 0 {
 		return RelayListener{}, ErrRelayListenerNotFound
 	}
+	reference, err := s.findRelayListenerReference(ctx, deleted.ID)
+	if err != nil {
+		return RelayListener{}, err
+	}
+	if reference != nil {
+		return RelayListener{}, fmt.Errorf(
+			"%w: relay listener %d is referenced by %s rule #%d on agent %s",
+			ErrInvalidArgument,
+			deleted.ID,
+			reference.RuleType,
+			reference.RuleID,
+			reference.AgentID,
+		)
+	}
 
 	next := append([]storage.RelayListenerRow(nil), rows[:targetIndex]...)
 	next = append(next, rows[targetIndex+1:]...)
 	if err := s.store.SaveRelayListeners(ctx, resolvedID, next); err != nil {
 		return RelayListener{}, err
+	}
+	if deleted.CertificateID != nil {
+		if err := s.cleanupUnusedAutoRelayListenerCertificate(ctx, *deleted.CertificateID); err != nil {
+			return RelayListener{}, err
+		}
 	}
 	return deleted, nil
 }
@@ -215,7 +291,90 @@ func (s *relayService) ensureAgentExists(ctx context.Context, agentID string) (s
 	return "", ErrAgentNotFound
 }
 
-func normalizeRelayListenerInput(input RelayListenerInput, fallback RelayListener, suggestedID int) (RelayListener, error) {
+func (s *relayService) prepareRelayListener(ctx context.Context, agentID string, input RelayListenerInput, fallback RelayListener, suggestedID int) (relayPreparation, error) {
+	certificateSource, err := normalizeRelayCertificateSource(input.CertificateSource)
+	if err != nil {
+		return relayPreparation{}, err
+	}
+	trustModeSource, err := normalizeRelayTrustModeSource(input.TrustModeSource)
+	if err != nil {
+		return relayPreparation{}, err
+	}
+
+	workingInput := input
+	if certificateSource == "auto_relay_ca" {
+		clearID := 0
+		workingInput.CertificateID = &clearID
+	}
+
+	draft, err := normalizeRelayListenerInput(workingInput, fallback, suggestedID, relayNormalizeOptions{
+		AllowMissingCertificate: certificateSource == "auto_relay_ca",
+		SkipTrustValidation:     trustModeSource == "auto",
+	})
+	if err != nil {
+		return relayPreparation{}, err
+	}
+
+	certRows, err := s.store.ListManagedCertificates(ctx)
+	if err != nil {
+		return relayPreparation{}, err
+	}
+	originalCertRows := append([]storage.ManagedCertificateRow(nil), certRows...)
+	persistCertificates := false
+	if draft.Enabled && certificateSource == "auto_relay_ca" && draft.CertificateID == nil {
+		if fallback.CertificateID != nil {
+			if existingAutoCert, _, ok := findManagedCertificateByID(certRows, *fallback.CertificateID); ok && isAutoRelayListenerCertificate(existingAutoCert, fallback.ID) {
+				workingInput.CertificateID = fallback.CertificateID
+			}
+		}
+		if workingInput.CertificateID == nil || *workingInput.CertificateID <= 0 {
+			certID, nextRows := ensureAutoRelayListenerCertificate(certRows, agentID, draft)
+			certRows = nextRows
+			persistCertificates = true
+			workingInput.CertificateID = &certID
+		}
+	}
+	if draft.Enabled && trustModeSource == "auto" {
+		selectedCertID := 0
+		switch {
+		case workingInput.CertificateID != nil && *workingInput.CertificateID > 0:
+			selectedCertID = *workingInput.CertificateID
+		case draft.CertificateID != nil:
+			selectedCertID = *draft.CertificateID
+		}
+		if selectedCertID <= 0 {
+			return relayPreparation{}, fmt.Errorf("%w: certificate_id is required when relay listener trust_mode_source is auto", ErrInvalidArgument)
+		}
+		selectedCert, _, ok := findManagedCertificateByID(certRows, selectedCertID)
+		if !ok {
+			return relayPreparation{}, fmt.Errorf("%w: certificate %d not found for relay listener", ErrInvalidArgument, selectedCertID)
+		}
+		if !containsString(selectedCert.TargetAgentIDs, agentID) {
+			return relayPreparation{}, fmt.Errorf("%w: certificate %d is not assigned to agent %s", ErrInvalidArgument, selectedCertID, agentID)
+		}
+		tlsMode, pinSet, trustedCAIDs, allowSelfSigned, err := deriveRelayTrustMaterial(selectedCert, certRows)
+		if err != nil {
+			return relayPreparation{}, err
+		}
+		workingInput.TLSMode = &tlsMode
+		workingInput.PinSet = &pinSet
+		workingInput.TrustedCACertificateIDs = &trustedCAIDs
+		workingInput.AllowSelfSigned = &allowSelfSigned
+	}
+
+	listener, err := normalizeRelayListenerInput(workingInput, fallback, suggestedID, relayNormalizeOptions{})
+	if err != nil {
+		return relayPreparation{}, err
+	}
+	return relayPreparation{
+		Listener:            listener,
+		OriginalCertRows:    originalCertRows,
+		NextCertRows:        certRows,
+		PersistCertificates: persistCertificates,
+	}, nil
+}
+
+func normalizeRelayListenerInput(input RelayListenerInput, fallback RelayListener, suggestedID int, options relayNormalizeOptions) (RelayListener, error) {
 	id := fallback.ID
 	if input.ID != nil && *input.ID > 0 {
 		id = *input.ID
@@ -331,25 +490,27 @@ func normalizeRelayListenerInput(input RelayListenerInput, fallback RelayListene
 	}
 
 	if enabled {
-		if certID == nil {
+		if certID == nil && !options.AllowMissingCertificate {
 			return RelayListener{}, fmt.Errorf("%w: certificate_id is required when relay listener is enabled", ErrInvalidArgument)
 		}
-		switch tlsMode {
-		case "pin_and_ca":
-			if len(pinSet) == 0 || len(trustedCAIDs) == 0 {
-				return RelayListener{}, fmt.Errorf("%w: pin_and_ca requires both pin_set and trusted_ca_certificate_ids", ErrInvalidArgument)
-			}
-		case "pin_only":
-			if len(pinSet) == 0 {
-				return RelayListener{}, fmt.Errorf("%w: pin_only requires pin_set", ErrInvalidArgument)
-			}
-		case "ca_only":
-			if len(trustedCAIDs) == 0 {
-				return RelayListener{}, fmt.Errorf("%w: ca_only requires trusted_ca_certificate_ids", ErrInvalidArgument)
-			}
-		default:
-			if len(pinSet) == 0 && len(trustedCAIDs) == 0 {
-				return RelayListener{}, fmt.Errorf("%w: pin_set and trusted_ca_certificate_ids cannot both be empty", ErrInvalidArgument)
+		if !options.SkipTrustValidation && certID != nil {
+			switch tlsMode {
+			case "pin_and_ca":
+				if len(pinSet) == 0 || len(trustedCAIDs) == 0 {
+					return RelayListener{}, fmt.Errorf("%w: pin_and_ca requires both pin_set and trusted_ca_certificate_ids", ErrInvalidArgument)
+				}
+			case "pin_only":
+				if len(pinSet) == 0 {
+					return RelayListener{}, fmt.Errorf("%w: pin_only requires pin_set", ErrInvalidArgument)
+				}
+			case "ca_only":
+				if len(trustedCAIDs) == 0 {
+					return RelayListener{}, fmt.Errorf("%w: ca_only requires trusted_ca_certificate_ids", ErrInvalidArgument)
+				}
+			default:
+				if len(pinSet) == 0 && len(trustedCAIDs) == 0 {
+					return RelayListener{}, fmt.Errorf("%w: pin_set and trusted_ca_certificate_ids cannot both be empty", ErrInvalidArgument)
+				}
 			}
 		}
 	}
@@ -372,6 +533,196 @@ func normalizeRelayListenerInput(input RelayListenerInput, fallback RelayListene
 		Tags:                    tags,
 		Revision:                fallback.Revision,
 	}, nil
+}
+
+func normalizeRelayCertificateSource(value *string) (string, error) {
+	normalized := strings.ToLower(strings.TrimSpace(pointerString(value)))
+	switch normalized {
+	case "", "auto_relay_ca", "existing_certificate":
+		return normalized, nil
+	default:
+		return "", fmt.Errorf("%w: certificate_source must be auto_relay_ca or existing_certificate", ErrInvalidArgument)
+	}
+}
+
+func normalizeRelayTrustModeSource(value *string) (string, error) {
+	normalized := strings.ToLower(strings.TrimSpace(pointerString(value)))
+	switch normalized {
+	case "", "auto", "custom":
+		return normalized, nil
+	default:
+		return "", fmt.Errorf("%w: trust_mode_source must be auto or custom", ErrInvalidArgument)
+	}
+}
+
+func ensureAutoRelayListenerCertificate(rows []storage.ManagedCertificateRow, agentID string, listener RelayListener) (int, []storage.ManagedCertificateRow) {
+	maxID := 0
+	maxRevision := 0
+	for _, row := range rows {
+		if row.ID > maxID {
+			maxID = row.ID
+		}
+		if row.Revision > maxRevision {
+			maxRevision = row.Revision
+		}
+	}
+
+	nextID := maxID + 1
+	autoCert := ManagedCertificate{
+		ID:              nextID,
+		Domain:          relayListenerAutoCertificateDomain(listener, agentID),
+		Enabled:         true,
+		Scope:           "domain",
+		IssuerMode:      "local_http01",
+		TargetAgentIDs:  []string{agentID},
+		Status:          "active",
+		Usage:           "relay_tunnel",
+		CertificateType: "internal_ca",
+		SelfSigned:      true,
+		Tags:            autoRelayListenerCertificateTags(listener.ID, agentID),
+		Revision:        maxRevision + 1,
+	}
+	autoCert.MaterialHash = stableManagedCertificateMaterialHash(autoCert)
+
+	nextRows := append([]storage.ManagedCertificateRow(nil), rows...)
+	nextRows = append(nextRows, managedCertificateToRow(autoCert))
+	return nextID, nextRows
+}
+
+func relayListenerAutoCertificateDomain(listener RelayListener, agentID string) string {
+	host := strings.TrimSpace(listener.PublicHost)
+	if host == "" && len(listener.BindHosts) > 0 {
+		host = strings.TrimSpace(listener.BindHosts[0])
+	}
+	if host == "" {
+		host = strings.TrimSpace(listener.ListenHost)
+	}
+	return fmt.Sprintf(
+		"listener-%d.%s.%s.relay.internal",
+		listener.ID,
+		normalizeRelayListenerDomainLabel(host, "listener"),
+		normalizeRelayListenerDomainLabel(agentID, "agent"),
+	)
+}
+
+func normalizeRelayListenerDomainLabel(value string, fallback string) string {
+	trimmed := strings.ToLower(strings.TrimSpace(value))
+	builder := strings.Builder{}
+	lastDash := false
+	for _, r := range trimmed {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			builder.WriteRune(r)
+			lastDash = false
+		case !lastDash:
+			builder.WriteByte('-')
+			lastDash = true
+		}
+	}
+	normalized := strings.Trim(builder.String(), "-")
+	if normalized == "" {
+		return fallback
+	}
+	return normalized
+}
+
+func relayListenerCertificateChanged(current *int, next *int) bool {
+	switch {
+	case current == nil && next == nil:
+		return false
+	case current == nil || next == nil:
+		return true
+	default:
+		return *current != *next
+	}
+}
+
+type relayRuleReference struct {
+	AgentID  string
+	RuleID   int
+	RuleType string
+}
+
+func (s *relayService) findRelayListenerReference(ctx context.Context, listenerID int) (*relayRuleReference, error) {
+	agentIDs, err := s.allKnownAgentIDs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, agentID := range agentIDs {
+		httpRules, err := s.store.ListHTTPRules(ctx, agentID)
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range httpRules {
+			if containsInt(parseIntArray(row.RelayChainJSON), listenerID) {
+				return &relayRuleReference{AgentID: agentID, RuleID: row.ID, RuleType: "HTTP"}, nil
+			}
+		}
+
+		l4Rules, err := s.store.ListL4Rules(ctx, agentID)
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range l4Rules {
+			if containsInt(parseIntArray(row.RelayChainJSON), listenerID) {
+				return &relayRuleReference{AgentID: agentID, RuleID: row.ID, RuleType: "L4"}, nil
+			}
+		}
+	}
+	return nil, nil
+}
+
+func (s *relayService) allKnownAgentIDs(ctx context.Context) ([]string, error) {
+	seen := map[string]struct{}{}
+	agentIDs := make([]string, 0)
+	if s.cfg.EnableLocalAgent && strings.TrimSpace(s.cfg.LocalAgentID) != "" {
+		seen[s.cfg.LocalAgentID] = struct{}{}
+		agentIDs = append(agentIDs, s.cfg.LocalAgentID)
+	}
+	rows, err := s.store.ListAgents(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		if _, ok := seen[row.ID]; ok || strings.TrimSpace(row.ID) == "" {
+			continue
+		}
+		seen[row.ID] = struct{}{}
+		agentIDs = append(agentIDs, row.ID)
+	}
+	return agentIDs, nil
+}
+
+func (s *relayService) cleanupUnusedAutoRelayListenerCertificate(ctx context.Context, certID int) error {
+	certRows, err := s.store.ListManagedCertificates(ctx)
+	if err != nil {
+		return err
+	}
+	cert, certIndex, ok := findManagedCertificateByID(certRows, certID)
+	if !ok || !isAutoRelayListenerCertificate(cert, 0) {
+		return nil
+	}
+	listeners, err := s.store.ListRelayListeners(ctx, "")
+	if err != nil {
+		return err
+	}
+	for _, row := range listeners {
+		if row.CertificateID != nil && *row.CertificateID == certID {
+			return nil
+		}
+	}
+	nextRows := append([]storage.ManagedCertificateRow(nil), certRows[:certIndex]...)
+	nextRows = append(nextRows, certRows[certIndex+1:]...)
+	return s.store.SaveManagedCertificates(ctx, nextRows)
+}
+
+func containsInt(values []int, target int) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeRelayPins(pins []RelayPin) []RelayPin {

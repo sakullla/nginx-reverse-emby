@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +15,11 @@ import (
 )
 
 var ErrCertificateNotFound = errors.New("certificate not found")
+
+const systemRelayCATag = "system:relay-ca"
+const systemTag = "system"
+const autoRelayListenerTag = "auto:relay-listener"
+const relayCADomainIdentity = "__relay-ca.internal"
 
 type ManagedCertificateACMEInfo struct {
 	MainDomain string `json:"Main_Domain"`
@@ -101,6 +108,7 @@ func (s *certificateService) List(ctx context.Context, agentID string) ([]Manage
 	for _, row := range rows {
 		cert := managedCertificateFromRow(row)
 		if containsString(cert.TargetAgentIDs, resolvedID) {
+			cert = overlayManagedCertificateForAgent(cert, resolvedID)
 			certs = append(certs, cert)
 		}
 	}
@@ -131,6 +139,9 @@ func (s *certificateService) Create(ctx context.Context, agentID string, input M
 
 	cert, err := normalizeManagedCertificateInput(input, ManagedCertificate{}, maxID+1, resolvedID)
 	if err != nil {
+		return ManagedCertificate{}, err
+	}
+	if err := assertManagedCertificateMutationAllowed(nil, cert); err != nil {
 		return ManagedCertificate{}, err
 	}
 	cert.Revision = maxRevision + 1
@@ -178,6 +189,9 @@ func (s *certificateService) Update(ctx context.Context, agentID string, id int,
 	if err != nil {
 		return ManagedCertificate{}, err
 	}
+	if err := assertManagedCertificateMutationAllowed(&current, next); err != nil {
+		return ManagedCertificate{}, err
+	}
 	next.Revision = maxRevision + 1
 	rows[targetIndex] = managedCertificateToRow(next)
 	if err := s.store.SaveManagedCertificates(ctx, rows); err != nil {
@@ -212,6 +226,9 @@ func (s *certificateService) Delete(ctx context.Context, agentID string, id int)
 	}
 	if targetIndex < 0 {
 		return ManagedCertificate{}, ErrCertificateNotFound
+	}
+	if isSystemRelayCACertificate(current) {
+		return ManagedCertificate{}, fmt.Errorf("%w: system relay ca cannot be deleted", ErrInvalidArgument)
 	}
 
 	if len(current.TargetAgentIDs) > 1 {
@@ -490,6 +507,138 @@ func managedCertificateToRow(cert ManagedCertificate) storage.ManagedCertificate
 		TagsJSON:        marshalJSON(cert.Tags, "[]"),
 		Revision:        cert.Revision,
 	}
+}
+
+func overlayManagedCertificateForAgent(cert ManagedCertificate, agentID string) ManagedCertificate {
+	report, ok := cert.AgentReports[agentID]
+	if !ok {
+		return cert
+	}
+	cert.Status = report.Status
+	cert.LastIssueAt = report.LastIssueAt
+	cert.LastError = report.LastError
+	cert.MaterialHash = report.MaterialHash
+	cert.ACMEInfo = report.ACMEInfo
+	return cert
+}
+
+func assertManagedCertificateMutationAllowed(previous *ManagedCertificate, next ManagedCertificate) error {
+	if previous != nil && isSystemRelayCACertificate(*previous) {
+		return fmt.Errorf("%w: system relay ca is managed automatically", ErrInvalidArgument)
+	}
+	if isReservedSystemRelayCANext(next) {
+		if usesReservedRelayCAIdentity(next) {
+			return fmt.Errorf("%w: relay ca domain and system tag are reserved for the system relay ca", ErrInvalidArgument)
+		}
+		return fmt.Errorf("%w: relay ca certificates are managed automatically", ErrInvalidArgument)
+	}
+	return nil
+}
+
+func isReservedSystemRelayCANext(cert ManagedCertificate) bool {
+	return cert.Usage == "relay_ca" || usesReservedRelayCAIdentity(cert)
+}
+
+func isSystemRelayCACertificate(cert ManagedCertificate) bool {
+	return cert.Usage == "relay_ca" || usesReservedRelayCATags(cert.Tags)
+}
+
+func usesReservedRelayCATags(tags []string) bool {
+	if containsString(tags, systemRelayCATag) {
+		return true
+	}
+	return containsString(tags, "relay-ca") && containsString(tags, systemTag)
+}
+
+func usesReservedRelayCAIdentity(cert ManagedCertificate) bool {
+	return strings.EqualFold(strings.TrimSpace(cert.Domain), relayCADomainIdentity) || usesReservedRelayCATags(cert.Tags)
+}
+
+func isAutoRelayListenerCertificate(cert ManagedCertificate, listenerID int) bool {
+	if cert.Usage != "relay_tunnel" || cert.CertificateType != "internal_ca" {
+		return false
+	}
+	if !containsString(cert.Tags, "auto") || !containsString(cert.Tags, autoRelayListenerTag) {
+		return false
+	}
+	if listenerID <= 0 {
+		return true
+	}
+	return containsString(cert.Tags, relayListenerTag(listenerID))
+}
+
+func relayListenerTag(listenerID int) string {
+	return fmt.Sprintf("listener:%d", listenerID)
+}
+
+func relayAgentTag(agentID string) string {
+	return fmt.Sprintf("agent:%s", strings.TrimSpace(agentID))
+}
+
+func autoRelayListenerCertificateTags(listenerID int, agentID string) []string {
+	return normalizeTags([]string{
+		"relay",
+		"auto",
+		autoRelayListenerTag,
+		relayListenerTag(listenerID),
+		relayAgentTag(agentID),
+	})
+}
+
+func findManagedCertificateByID(rows []storage.ManagedCertificateRow, certID int) (ManagedCertificate, int, bool) {
+	for index, row := range rows {
+		cert := managedCertificateFromRow(row)
+		if cert.ID == certID {
+			return cert, index, true
+		}
+	}
+	return ManagedCertificate{}, -1, false
+}
+
+func findRelayCACertificate(rows []storage.ManagedCertificateRow) (ManagedCertificate, bool) {
+	for _, row := range rows {
+		cert := managedCertificateFromRow(row)
+		if isSystemRelayCACertificate(cert) {
+			return cert, true
+		}
+	}
+	return ManagedCertificate{}, false
+}
+
+func deriveRelayTrustMaterial(cert ManagedCertificate, rows []storage.ManagedCertificateRow) (string, []RelayPin, []int, bool, error) {
+	pins := []RelayPin{syntheticRelayPin(cert)}
+	trustedCAIDs := []int{}
+	if relayCA, ok := findRelayCACertificate(rows); ok && cert.CertificateType == "internal_ca" {
+		trustedCAIDs = []int{relayCA.ID}
+	}
+	allowSelfSigned := cert.SelfSigned || len(trustedCAIDs) > 0
+	if len(pins) > 0 && len(trustedCAIDs) > 0 {
+		return "pin_and_ca", pins, trustedCAIDs, allowSelfSigned, nil
+	}
+	if len(pins) > 0 {
+		return "pin_only", pins, trustedCAIDs, allowSelfSigned, nil
+	}
+	if len(trustedCAIDs) > 0 {
+		return "ca_only", []RelayPin{}, trustedCAIDs, allowSelfSigned, nil
+	}
+	return "", nil, nil, false, fmt.Errorf("%w: unable to derive relay listener trust material for certificate %d", ErrInvalidArgument, cert.ID)
+}
+
+func syntheticRelayPin(cert ManagedCertificate) RelayPin {
+	material := strings.TrimSpace(cert.MaterialHash)
+	if material == "" {
+		material = stableManagedCertificateMaterialHash(cert)
+	}
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%d|%s|%s|%s", cert.ID, cert.Domain, material, cert.CertificateType)))
+	return RelayPin{
+		Type:  "spki_sha256",
+		Value: base64.StdEncoding.EncodeToString(sum[:]),
+	}
+}
+
+func stableManagedCertificateMaterialHash(cert ManagedCertificate) string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%d|%s|%s|%v|%s", cert.ID, cert.Domain, cert.Usage, cert.SelfSigned, strings.Join(cert.Tags, ","))))
+	return base64.StdEncoding.EncodeToString(sum[:])
 }
 
 func containsString(values []string, expected string) bool {
