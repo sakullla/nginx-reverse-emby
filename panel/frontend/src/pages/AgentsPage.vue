@@ -214,7 +214,27 @@ function getCurrentSteps() {
 }
 
 async function copyCommand() {
-  await navigator.clipboard.writeText(getCurrentCommand())
+  const text = getCurrentCommand()
+  try {
+    if (navigator.clipboard && window.isSecureContext) {
+      await navigator.clipboard.writeText(text)
+    } else {
+      // Fallback for non-secure contexts
+      const textarea = document.createElement('textarea')
+      textarea.value = text
+      textarea.style.position = 'fixed'
+      textarea.style.left = '-999999px'
+      document.body.appendChild(textarea)
+      textarea.select()
+      const success = document.execCommand('copy')
+      document.body.removeChild(textarea)
+      if (!success) throw new Error('execCommand failed')
+    }
+    alert('已复制到剪贴板')
+  } catch (err) {
+    console.error('Copy failed:', err)
+    alert('复制失败，请手动选择复制')
+  }
 }
 
 function startRename(agent) {
