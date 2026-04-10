@@ -147,7 +147,7 @@ func newAppWithAllDeps(
 		relayApplier: relayApplier,
 		updater:      updater,
 	}
-	app.runtime = agentruntime.NewWithActivator(app.activateSnapshot)
+	app.runtime = agentruntime.NewWithActivator(agentruntime.NewSnapshotActivator(app.snapshotActivationHandlers()))
 	return app
 }
 
@@ -336,35 +336,6 @@ func mergeSnapshotPayload(next, previous Snapshot) Snapshot {
 	return merged
 }
 
-func (a *App) activateSnapshot(ctx context.Context, previous, next Snapshot) error {
-	if certificatesChanged(previous, next) {
-		if err := a.applyManagedCertificates(ctx, next); err != nil {
-			return err
-		}
-	}
-	if !reflect.DeepEqual(previous.Rules, next.Rules) || httpRelayInputsChanged(previous, next) {
-		if err := a.applyHTTPRules(ctx, next); err != nil {
-			return err
-		}
-	}
-	if !reflect.DeepEqual(previous.RelayListeners, next.RelayListeners) {
-		if err := a.applyRelayListeners(ctx, next); err != nil {
-			return err
-		}
-	}
-	if !reflect.DeepEqual(previous.L4Rules, next.L4Rules) || l4RelayInputsChanged(previous, next) {
-		if err := a.applyL4Rules(ctx, next); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func certificatesChanged(previous, next Snapshot) bool {
-	return !reflect.DeepEqual(previous.Certificates, next.Certificates) ||
-		!reflect.DeepEqual(previous.CertificatePolicies, next.CertificatePolicies)
-}
-
 func (a *App) rollbackRuntime(ctx context.Context, previousApplied Snapshot) {
 	currentApplied := a.runtime.ActiveSnapshot()
 	if reflect.DeepEqual(currentApplied, previousApplied) {
@@ -390,28 +361,32 @@ func (a *App) applyRelayListeners(ctx context.Context, snapshot Snapshot) error 
 	return a.relayApplier.Apply(ctx, localRelayListeners(snapshot.RelayListeners, a.cfg.AgentID, a.cfg.AgentName))
 }
 
-func httpRelayInputsChanged(previous, next Snapshot) bool {
-	if reflect.DeepEqual(previous.RelayListeners, next.RelayListeners) {
-		return false
+func (a *App) snapshotActivationHandlers() agentruntime.SnapshotActivationHandlers {
+	return agentruntime.SnapshotActivationHandlers{
+		ActivateManagedCertificates: func(ctx context.Context, bundles []model.ManagedCertificateBundle, policies []model.ManagedCertificatePolicy) error {
+			return a.applyManagedCertificates(ctx, Snapshot{
+				Certificates:        bundles,
+				CertificatePolicies: policies,
+			})
+		},
+		ActivateHTTPRules: func(ctx context.Context, rules []model.HTTPRule, relayListeners []model.RelayListener) error {
+			return a.applyHTTPRules(ctx, Snapshot{
+				Rules:          rules,
+				RelayListeners: relayListeners,
+			})
+		},
+		ActivateRelayListeners: func(ctx context.Context, relayListeners []model.RelayListener) error {
+			return a.applyRelayListeners(ctx, Snapshot{
+				RelayListeners: relayListeners,
+			})
+		},
+		ActivateL4Rules: func(ctx context.Context, rules []model.L4Rule, relayListeners []model.RelayListener) error {
+			return a.applyL4Rules(ctx, Snapshot{
+				L4Rules:        rules,
+				RelayListeners: relayListeners,
+			})
+		},
 	}
-	for _, rule := range next.Rules {
-		if len(rule.RelayChain) > 0 {
-			return true
-		}
-	}
-	return false
-}
-
-func l4RelayInputsChanged(previous, next Snapshot) bool {
-	if reflect.DeepEqual(previous.RelayListeners, next.RelayListeners) {
-		return false
-	}
-	for _, rule := range next.L4Rules {
-		if len(rule.RelayChain) > 0 {
-			return true
-		}
-	}
-	return false
 }
 
 func localRelayListeners(listeners []model.RelayListener, agentID, agentName string) []model.RelayListener {

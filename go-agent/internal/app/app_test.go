@@ -945,6 +945,101 @@ func TestPerformSyncUpdaterStageFailureRecordsErrorWithoutFalseStateAdvance(t *t
 	}
 }
 
+func TestPerformSyncRelayListenerChangeReappliesHTTPRelayAndL4FromUnifiedSnapshotActivation(t *testing.T) {
+	cfg := Config{HeartbeatInterval: time.Hour}
+	mem := store.NewInMemory()
+
+	previousApplied := Snapshot{
+		DesiredVersion: "stable",
+		Revision:       7,
+		Rules: []model.HTTPRule{{
+			FrontendURL: "https://relay-http.example.com",
+			Backends: []model.HTTPBackend{
+				{URL: "http://10.0.0.10:8096"},
+			},
+			RelayChain: []int{51},
+		}},
+		L4Rules: []model.L4Rule{{
+			Protocol:   "tcp",
+			ListenHost: "127.0.0.1",
+			ListenPort: 19000,
+			Backends: []model.L4Backend{
+				{Host: "10.0.0.20", Port: 9000},
+			},
+			RelayChain: []int{51},
+		}},
+		RelayListeners: []model.RelayListener{{
+			ID:         51,
+			AgentID:    "agent-a",
+			Name:       "relay-a",
+			ListenHost: "127.0.0.1",
+			BindHosts:  []string{"127.0.0.1"},
+			ListenPort: 9443,
+			PublicHost: "relay-a.example.com",
+			PublicPort: 29443,
+			Enabled:    true,
+			TLSMode:    "pin_only",
+			PinSet: []model.RelayPin{{
+				Type:  "sha256",
+				Value: "pin-value",
+			}},
+		}},
+	}
+	if err := mem.SaveAppliedSnapshot(previousApplied); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+
+	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{
+		DesiredVersion: "stable",
+		Revision:       8,
+		RelayListeners: []model.RelayListener{{
+			ID:         51,
+			AgentID:    "agent-a",
+			Name:       "relay-a",
+			ListenHost: "127.0.0.1",
+			BindHosts:  []string{"127.0.0.1"},
+			ListenPort: 9443,
+			PublicHost: "relay-a.example.com",
+			PublicPort: 39443,
+			Enabled:    true,
+			TLSMode:    "pin_only",
+			PinSet: []model.RelayPin{{
+				Type:  "sha256",
+				Value: "pin-value",
+			}},
+		}},
+	}})
+	httpApplier := &testHTTPApplier{}
+	l4Applier := &testL4Applier{}
+	relayApplier := &testRelayApplier{}
+	app := newAppWithHTTPDeps(cfg, mem, client, httpApplier, nil, l4Applier, relayApplier)
+
+	ctx := context.Background()
+	if err := app.runtime.Apply(ctx, Snapshot{}, previousApplied); err != nil {
+		t.Fatalf("failed to seed runtime: %v", err)
+	}
+
+	if err := app.performSync(ctx); err != nil {
+		t.Fatalf("performSync returned error: %v", err)
+	}
+
+	httpCalls := httpApplier.snapshotCalls()
+	if len(httpCalls) != 2 {
+		t.Fatalf("expected startup and relay-change http apply calls, got %d", len(httpCalls))
+	}
+	l4Calls := l4Applier.snapshotCalls()
+	if len(l4Calls) != 2 {
+		t.Fatalf("expected startup and relay-change l4 apply calls, got %d", len(l4Calls))
+	}
+	relayCalls := relayApplier.snapshotCalls()
+	if len(relayCalls) != 2 {
+		t.Fatalf("expected startup and relay-change relay apply calls, got %d", len(relayCalls))
+	}
+	if got := relayCalls[1].listeners[0].PublicPort; got != 39443 {
+		t.Fatalf("expected updated relay listener to be applied, got public_port=%d", got)
+	}
+}
+
 type syncResponse struct {
 	snapshot Snapshot
 	err      error
