@@ -42,8 +42,9 @@ type Manager struct {
 	dataDir string
 	cfg     managerConfig
 
-	mu     sync.RWMutex
-	active *activeState
+	mu                 sync.RWMutex
+	active             *activeState
+	renewalLoopStarted sync.Once
 }
 
 type activeState struct {
@@ -98,11 +99,13 @@ func NewManager(dataDir string, opts ...Option) (*Manager, error) {
 		cfg.issuerFactory = defaultACMEIssuerFactory
 	}
 
-	return &Manager{
+	manager := &Manager{
 		dataDir: dataDir,
 		cfg:     cfg,
 		active:  &activeState{byID: map[int]*managedCertificate{}},
-	}, nil
+	}
+	manager.startRenewalLoop(context.Background())
+	return manager, nil
 }
 
 func (m *Manager) Apply(ctx context.Context, bundles []model.ManagedCertificateBundle, policies []model.ManagedCertificatePolicy) error {

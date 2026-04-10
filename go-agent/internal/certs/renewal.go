@@ -1,0 +1,130 @@
+package certs
+
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+)
+
+const renewalLoopInterval = 10 * time.Minute
+
+type renewalCandidate struct {
+	id   int
+	info CertificateInfo
+}
+
+func (m *Manager) startRenewalLoop(ctx context.Context) {
+	m.renewalLoopStarted.Do(func() {
+		go m.runRenewalLoop(ctx, renewalLoopInterval)
+	})
+}
+
+func (m *Manager) runRenewalLoop(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = renewalLoopInterval
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			_ = m.runRenewalLoopIteration(ctx)
+		}
+	}
+}
+
+func (m *Manager) runRenewalLoopIteration(ctx context.Context) error {
+	candidates := m.renewalCandidates()
+	var firstErr error
+	for _, candidate := range candidates {
+		if err := m.renewCertificate(ctx, candidate); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
+}
+
+func (m *Manager) renewalCandidates() []renewalCandidate {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	candidates := make([]renewalCandidate, 0, len(m.active.byID))
+	for id, entry := range m.active.byID {
+		if normalizeCertificateType(entry.info.CertificateType) != "acme" {
+			continue
+		}
+		if entry.info.IssuerMode != "local_http01" {
+			continue
+		}
+		if !m.needsRenewal(entry.certificate.Leaf) {
+			continue
+		}
+		candidates = append(candidates, renewalCandidate{id: id, info: entry.info})
+	}
+	return candidates
+}
+
+func (m *Manager) renewCertificate(ctx context.Context, candidate renewalCandidate) error {
+	policy := model.ManagedCertificatePolicy{
+		ID:              candidate.id,
+		Domain:          candidate.info.Domain,
+		Enabled:         true,
+		Scope:           candidate.info.Scope,
+		IssuerMode:      candidate.info.IssuerMode,
+		Status:          candidate.info.Status,
+		Revision:        candidate.info.Revision,
+		Usage:           normalizeUsage(candidate.info.Usage),
+		CertificateType: normalizeCertificateType(candidate.info.CertificateType),
+		SelfSigned:      candidate.info.SelfSigned,
+	}
+	certPEM, keyPEM, err := m.loadOrIssueACME(ctx, policy)
+	if err != nil {
+		m.recordRenewalFailure(candidate.id, err)
+		return fmt.Errorf("renew certificate %d: %w", candidate.id, err)
+	}
+
+	tlsCert, parsedChain, fingerprint, err := parseTLSMaterial(certPEM, keyPEM)
+	if err != nil {
+		m.recordRenewalFailure(candidate.id, err)
+		return fmt.Errorf("renew certificate %d: %w", candidate.id, err)
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	current, ok := m.active.byID[candidate.id]
+	if !ok {
+		return nil
+	}
+	if normalizeCertificateType(current.info.CertificateType) != "acme" || current.info.IssuerMode != "local_http01" {
+		return nil
+	}
+
+	updated := current.info
+	updated.Fingerprint = fingerprint
+	m.active.byID[candidate.id] = &managedCertificate{
+		info:        updated,
+		certificate: tlsCert,
+		parsedChain: parsedChain,
+	}
+	return nil
+}
+
+func (m *Manager) recordRenewalFailure(certificateID int, renewalErr error) {
+	state, _, err := m.loadManagedCertificateState(certificateID)
+	if err != nil {
+		return
+	}
+	if state.ACME == nil {
+		state.ACME = &model.ManagedCertificateACMEState{}
+	}
+	state.ACME.Renewal.LastAttemptAtUnix = m.cfg.now().Unix()
+	state.ACME.Renewal.LastAttemptStatus = "error"
+	state.ACME.Renewal.LastAttemptError = renewalErr.Error()
+	_ = m.saveManagedCertificateState(certificateID, state)
+}
