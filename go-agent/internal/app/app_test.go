@@ -452,6 +452,90 @@ func TestRunDoesNotAdvanceAppliedSnapshotOrCurrentRevisionOnApplyFailure(t *test
 	}
 }
 
+func TestAppRollsBackRuntimeAndPersistsLastSyncError(t *testing.T) {
+	cfg := Config{HeartbeatInterval: time.Hour}
+	mem := store.NewInMemory()
+	previousApplied := Snapshot{
+		DesiredVersion: "stable",
+		Revision:       7,
+		Rules: []model.HTTPRule{{
+			FrontendURL: "http://stable.example.test:18080",
+			BackendURL:  "http://127.0.0.1:8096",
+			Revision:    1,
+		}},
+	}
+	if err := mem.SaveAppliedSnapshot(previousApplied); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+	if err := mem.SaveRuntimeState(store.RuntimeState{
+		CurrentRevision: previousApplied.Revision,
+		Metadata: map[string]string{
+			"current_revision": "7",
+			"foo":              "bar",
+		},
+	}); err != nil {
+		t.Fatalf("failed to seed runtime state: %v", err)
+	}
+
+	nextSnapshot := Snapshot{
+		DesiredVersion: "next",
+		Revision:       9,
+		Rules: []model.HTTPRule{{
+			FrontendURL: "http://next.example.test:18080",
+			BackendURL:  "http://127.0.0.1:8096",
+			Revision:    2,
+		}},
+	}
+	client := newTestSyncClient(nil, syncResponse{snapshot: nextSnapshot})
+	httpApplier := &testHTTPApplier{
+		applyErr:   errors.New("activation failed"),
+		failOnCall: 2,
+	}
+	app := newAppWithHTTPDeps(cfg, mem, client, httpApplier, nil, nil, nil)
+
+	ctx := context.Background()
+	if err := app.runtime.Apply(ctx, Snapshot{}, previousApplied); err != nil {
+		t.Fatalf("failed to seed runtime: %v", err)
+	}
+
+	if err := app.performSync(ctx); err == nil || err.Error() != "activation failed" {
+		t.Fatalf("expected activation failure, got %v", err)
+	}
+
+	calls := httpApplier.snapshotCalls()
+	if len(calls) != 3 {
+		t.Fatalf("expected startup, failed apply, and rollback apply calls, got %d", len(calls))
+	}
+	if !reflect.DeepEqual(calls[2].rules, previousApplied.Rules) {
+		t.Fatalf("expected rollback call to restore previous rules, got %+v", calls[2].rules)
+	}
+
+	applied, err := mem.LoadAppliedSnapshot()
+	if err != nil {
+		t.Fatalf("failed to load applied snapshot: %v", err)
+	}
+	if !reflect.DeepEqual(applied, previousApplied) {
+		t.Fatalf("expected applied snapshot unchanged after failed activation, got %+v", applied)
+	}
+
+	state, err := mem.LoadRuntimeState()
+	if err != nil {
+		t.Fatalf("failed to load runtime state: %v", err)
+	}
+	if state.CurrentRevision != previousApplied.Revision {
+		t.Fatalf("expected persisted current revision %d, got %d", previousApplied.Revision, state.CurrentRevision)
+	}
+	if state.Metadata["current_revision"] != "7" {
+		t.Fatalf("expected persisted metadata current_revision 7, got %q", state.Metadata["current_revision"])
+	}
+	if state.Metadata["last_sync_error"] != "activation failed" {
+		t.Fatalf("expected activation failure metadata, got %v", state.Metadata)
+	}
+	if state.Metadata["foo"] != "bar" {
+		t.Fatalf("expected unrelated metadata preserved, got %v", state.Metadata)
+	}
+}
+
 func TestRunPersistsExplicitEmptyCertificatePayloads(t *testing.T) {
 	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
 	mem := store.NewInMemory()

@@ -214,14 +214,15 @@ func (a *App) syncOnce(ctx context.Context, req SyncRequest) error {
 	previousApplied := a.runtime.ActiveSnapshot()
 	candidateApplied := mergeSnapshotPayload(snapshot, previousApplied)
 	if err := a.runtime.Apply(ctx, previousApplied, candidateApplied); err != nil {
+		a.rollbackRuntime(ctx, candidateApplied, previousApplied)
 		return a.recordRuntimeError(err)
 	}
 	if err := a.store.SaveAppliedSnapshot(candidateApplied); err != nil {
-		a.rollbackRuntime(ctx, previousApplied)
+		a.rollbackRuntime(ctx, candidateApplied, previousApplied)
 		return a.recordPersistedRuntimeError(err)
 	}
 	if err := a.persistRuntimeState(true); err != nil {
-		a.rollbackRuntime(ctx, previousApplied)
+		a.rollbackRuntime(ctx, candidateApplied, previousApplied)
 		_ = a.store.SaveAppliedSnapshot(previousApplied)
 		return a.recordPersistedRuntimeError(err)
 	}
@@ -336,12 +337,11 @@ func mergeSnapshotPayload(next, previous Snapshot) Snapshot {
 	return merged
 }
 
-func (a *App) rollbackRuntime(ctx context.Context, previousApplied Snapshot) {
-	currentApplied := a.runtime.ActiveSnapshot()
-	if reflect.DeepEqual(currentApplied, previousApplied) {
+func (a *App) rollbackRuntime(ctx context.Context, previousApplied, targetApplied Snapshot) {
+	if reflect.DeepEqual(previousApplied, targetApplied) {
 		return
 	}
-	_ = a.runtime.Apply(ctx, currentApplied, previousApplied)
+	_ = a.runtime.Rollback(ctx, previousApplied, targetApplied)
 }
 
 func (a *App) applyL4Rules(ctx context.Context, snapshot Snapshot) error {

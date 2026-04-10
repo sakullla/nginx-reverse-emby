@@ -129,6 +129,25 @@ func (r *Runtime) Apply(ctx context.Context, previous, next model.Snapshot) erro
 		return err
 	}
 
+	r.setActiveSnapshotLocked(next)
+
+	return nil
+}
+
+func (r *Runtime) Rollback(ctx context.Context, previous, next model.Snapshot) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if err := r.activator(ctx, previous, next); err != nil {
+		r.state.Status = "error"
+		return err
+	}
+
+	r.setActiveSnapshotLocked(next)
+	return nil
+}
+
+func (r *Runtime) setActiveSnapshotLocked(next model.Snapshot) {
 	r.activeSnapshot = cloneSnapshot(next)
 	r.state.Status = "active"
 	r.state.CurrentRevision = next.Revision
@@ -137,8 +156,6 @@ func (r *Runtime) Apply(ctx context.Context, previous, next model.Snapshot) erro
 		r.state.Metadata = make(map[string]string)
 	}
 	r.state.Metadata["current_revision"] = strconv.FormatInt(next.Revision, 10)
-
-	return nil
 }
 
 func isZeroSnapshot(s model.Snapshot) bool {
