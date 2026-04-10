@@ -1,8 +1,6 @@
 package proxy
 
 import (
-	"context"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -50,24 +48,36 @@ func TestHTTPRuntimeAppliesHostHeadersProxyRedirectAndRoundRobin(t *testing.T) {
 	backendTwo := newBackend("two")
 	defer backendTwo.Close()
 
-	frontendPort := pickFreePort(t)
-	runtime, err := Start(context.Background(), []model.HTTPRule{{
-		FrontendURL: fmt.Sprintf("http://Panel.Example.Test:%d", frontendPort),
-		BackendURL:  backendOne.URL,
-		Backends: []model.HTTPBackend{
-			{URL: backendOne.URL},
-			{URL: backendTwo.URL},
-		},
-		PassProxyHeaders: true,
-		ProxyRedirect:    true,
-		LoadBalancing: model.LoadBalancing{
-			Strategy: "round_robin",
-		},
-	}}, nil, Providers{})
+	server := NewServer(model.HTTPListener{
+		Rules: []model.HTTPRule{{
+			FrontendURL: "http://Panel.Example.Test",
+			BackendURL:  backendOne.URL,
+			Backends: []model.HTTPBackend{
+				{URL: backendOne.URL},
+				{URL: backendTwo.URL},
+			},
+			PassProxyHeaders: true,
+			ProxyRedirect:    true,
+			LoadBalancing: model.LoadBalancing{
+				Strategy: "round_robin",
+			},
+		}},
+	})
+	proxy := httptest.NewServer(server)
+	defer proxy.Close()
+
+	proxyURL, err := url.Parse(proxy.URL)
 	if err != nil {
-		t.Fatalf("failed to start runtime: %v", err)
+		t.Fatalf("failed to parse proxy URL: %v", err)
 	}
-	defer runtime.Close()
+	frontendPort := proxyURL.Port()
+	if frontendPort == "" {
+		t.Fatalf("proxy URL does not include a port: %q", proxy.URL)
+	}
+
+	if _, err := strconv.Atoi(frontendPort); err != nil {
+		t.Fatalf("proxy URL port is invalid: %q", frontendPort)
+	}
 
 	client := &http.Client{
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
@@ -77,7 +87,7 @@ func TestHTTPRuntimeAppliesHostHeadersProxyRedirectAndRoundRobin(t *testing.T) {
 
 	send := func() *http.Response {
 		t.Helper()
-		req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/entry", frontendPort), nil)
+		req, err := http.NewRequest(http.MethodGet, proxy.URL+"/entry", nil)
 		if err != nil {
 			t.Fatalf("failed to create request: %v", err)
 		}
@@ -107,8 +117,8 @@ func TestHTTPRuntimeAppliesHostHeadersProxyRedirectAndRoundRobin(t *testing.T) {
 		if normalizeHost(parsed.Host) != "panel.example.test" {
 			t.Fatalf("expected frontend host in rewritten location, got %q", parsed.Host)
 		}
-		if parsed.Port() != strconv.Itoa(frontendPort) {
-			t.Fatalf("expected frontend port in rewritten location, got %q", parsed.Port())
+		if parsed.Port() != "" {
+			t.Fatalf("expected rewritten location without explicit port, got %q", parsed.Port())
 		}
 		return parsed.Path
 	}
@@ -139,7 +149,7 @@ func TestHTTPRuntimeAppliesHostHeadersProxyRedirectAndRoundRobin(t *testing.T) {
 	if headers.ForwardedProto != "http" {
 		t.Fatalf("expected X-Forwarded-Proto=http, got %q", headers.ForwardedProto)
 	}
-	if headers.ForwardedPort != strconv.Itoa(frontendPort) {
-		t.Fatalf("expected X-Forwarded-Port=%d, got %q", frontendPort, headers.ForwardedPort)
+	if headers.ForwardedPort != frontendPort {
+		t.Fatalf("expected X-Forwarded-Port=%s, got %q", frontendPort, headers.ForwardedPort)
 	}
 }
