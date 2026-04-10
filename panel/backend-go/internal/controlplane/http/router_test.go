@@ -227,6 +227,13 @@ func TestRouterServesPanelAuthAndInfoEndpoints(t *testing.T) {
 	if payload["role"] != "master" || payload["local_apply_runtime"] != "go-agent" {
 		t.Fatalf("unexpected info payload: %+v", payload)
 	}
+	if payload["default_agent_id"] != "local" {
+		t.Fatalf("default_agent_id = %v", payload["default_agent_id"])
+	}
+	localAgentEnabled, ok := payload["local_agent_enabled"].(bool)
+	if !ok || !localAgentEnabled {
+		t.Fatalf("local_agent_enabled = %v", payload["local_agent_enabled"])
+	}
 	if payload["master_register_token"] != "register-secret" {
 		t.Fatalf("master_register_token = %v", payload["master_register_token"])
 	}
@@ -285,6 +292,22 @@ func TestRouterServesAgentsAndRulesEndpoints(t *testing.T) {
 	router.ServeHTTP(agentsResp, agentsReq)
 	if agentsResp.Code != http.StatusOK {
 		t.Fatalf("GET /panel-api/agents = %d", agentsResp.Code)
+	}
+	var agentsPayload map[string]any
+	if err := json.Unmarshal(agentsResp.Body.Bytes(), &agentsPayload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	agentsValue, ok := agentsPayload["agents"].([]any)
+	if !ok || len(agentsValue) != 1 {
+		t.Fatalf("unexpected agents payload: %+v", agentsPayload)
+	}
+	agentValue, ok := agentsValue[0].(map[string]any)
+	if !ok {
+		t.Fatalf("agents[0] type = %T", agentsValue[0])
+	}
+	isLocal, ok := agentValue["is_local"].(bool)
+	if !ok || !isLocal {
+		t.Fatalf("agents[0].is_local = %v", agentValue["is_local"])
 	}
 
 	rulesReq := httptest.NewRequest(http.MethodGet, "/panel-api/agents/local/rules", nil)
