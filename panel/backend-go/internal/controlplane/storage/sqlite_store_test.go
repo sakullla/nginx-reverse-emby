@@ -242,6 +242,24 @@ func TestStoreLoadsLocalSnapshotWithHighestRelevantRevision(t *testing.T) {
 	}
 
 	if err := store.SaveManagedCertificates(t.Context(), []ManagedCertificateRow{{
+		ID:              10,
+		Domain:          "__relay-ca.internal",
+		Enabled:         true,
+		Scope:           "domain",
+		IssuerMode:      "local_http01",
+		TargetAgentIDs:  `[]`,
+		Status:          "active",
+		LastIssueAt:     "2026-04-09T00:00:00Z",
+		LastError:       "",
+		MaterialHash:    "hash-ca",
+		AgentReports:    `{}`,
+		ACMEInfo:        `{"Main_Domain":"__relay-ca.internal"}`,
+		Usage:           "relay_ca",
+		CertificateType: "internal_ca",
+		SelfSigned:      true,
+		TagsJSON:        `["system:relay-ca"]`,
+		Revision:        11,
+	}, {
 		ID:              11,
 		Domain:          "relay-a.example.com",
 		Enabled:         true,
@@ -262,6 +280,8 @@ func TestStoreLoadsLocalSnapshotWithHighestRelevantRevision(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("SaveManagedCertificates() error = %v", err)
 	}
+	writeManagedCertificateMaterial(t, dataRoot, "__relay-ca.internal", "relay-ca-cert", "relay-ca-key")
+	writeManagedCertificateMaterial(t, dataRoot, "relay-a.example.com", "listener-cert", "listener-key")
 
 	snapshot, err := store.LoadLocalSnapshot(t.Context(), "local")
 	if err != nil {
@@ -274,12 +294,24 @@ func TestStoreLoadsLocalSnapshotWithHighestRelevantRevision(t *testing.T) {
 	if snapshot.Revision != 13 {
 		t.Fatalf("Revision = %d", snapshot.Revision)
 	}
-	if len(snapshot.Rules) != 1 || len(snapshot.L4Rules) != 1 || len(snapshot.RelayListeners) != 1 || len(snapshot.CertificatePolicies) != 1 {
+	if len(snapshot.Rules) != 1 || len(snapshot.L4Rules) != 1 || len(snapshot.RelayListeners) != 1 {
 		t.Fatalf("snapshot payload = %+v", snapshot)
+	}
+	if len(snapshot.Certificates) != 2 {
+		t.Fatalf("Certificates = %+v", snapshot.Certificates)
+	}
+	if len(snapshot.CertificatePolicies) != 2 {
+		t.Fatalf("CertificatePolicies = %+v", snapshot.CertificatePolicies)
+	}
+	if snapshot.Certificates[0].ID != 10 || snapshot.Certificates[0].CertPEM != "relay-ca-cert" || snapshot.Certificates[0].KeyPEM != "relay-ca-key" {
+		t.Fatalf("Certificates[0] = %+v", snapshot.Certificates[0])
+	}
+	if snapshot.Certificates[1].ID != 11 || snapshot.Certificates[1].CertPEM != "listener-cert" || snapshot.Certificates[1].KeyPEM != "listener-key" {
+		t.Fatalf("Certificates[1] = %+v", snapshot.Certificates[1])
 	}
 }
 
-func TestStoreSavesLocalRuntimeStateIntoLocalAgentState(t *testing.T) {
+func TestStoreSavesSuccessfulLocalRuntimeStateIntoLocalAgentState(t *testing.T) {
 	dataRoot := seedSQLiteFixtureFromCanonicalSchema(t)
 
 	store, err := NewSQLiteStore(dataRoot, "local")
@@ -295,10 +327,7 @@ func TestStoreSavesLocalRuntimeStateIntoLocalAgentState(t *testing.T) {
 
 	err = store.SaveLocalRuntimeState(t.Context(), "local", RuntimeState{
 		CurrentRevision: 9,
-		Status:          "error",
-		Metadata: map[string]string{
-			"last_sync_error": "apply failed",
-		},
+		Status:          "active",
 	})
 	if err != nil {
 		t.Fatalf("SaveLocalRuntimeState() error = %v", err)
@@ -308,13 +337,13 @@ func TestStoreSavesLocalRuntimeStateIntoLocalAgentState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadLocalAgentState() error = %v", err)
 	}
-	if state.CurrentRevision != 9 || state.LastApplyRevision != 9 {
+	if state.CurrentRevision != 9 || state.LastApplyRevision != 9 || state.DesiredRevision != 9 {
 		t.Fatalf("LoadLocalAgentState() revisions = %+v", state)
 	}
-	if state.LastApplyStatus != "error" {
+	if state.LastApplyStatus != "success" {
 		t.Fatalf("LastApplyStatus = %q", state.LastApplyStatus)
 	}
-	if state.LastApplyMessage != "apply failed" {
+	if state.LastApplyMessage != "" {
 		t.Fatalf("LastApplyMessage = %q", state.LastApplyMessage)
 	}
 }
@@ -361,6 +390,21 @@ func seedSQLiteFixtureFromCanonicalSchema(t *testing.T) string {
 	}
 
 	return dataRoot
+}
+
+func writeManagedCertificateMaterial(t *testing.T, dataRoot string, domain string, certPEM string, keyPEM string) {
+	t.Helper()
+
+	certDir := filepath.Join(dataRoot, "managed_certificates", normalizeManagedCertificateHost(domain))
+	if err := os.MkdirAll(certDir, 0o755); err != nil {
+		t.Fatalf("os.MkdirAll(%q) error = %v", certDir, err)
+	}
+	if err := os.WriteFile(filepath.Join(certDir, "cert"), []byte(certPEM), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(cert) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(certDir, "key"), []byte(keyPEM), 0o644); err != nil {
+		t.Fatalf("os.WriteFile(key) error = %v", err)
+	}
 }
 
 func repositoryRoot(t *testing.T) string {

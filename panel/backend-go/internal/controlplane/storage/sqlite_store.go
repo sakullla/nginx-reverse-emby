@@ -30,6 +30,7 @@ type Store interface {
 
 type SQLiteStore struct {
 	db           *gorm.DB
+	dataRoot     string
 	localAgentID string
 }
 
@@ -43,7 +44,7 @@ func NewSQLiteStore(dataRoot string, localAgentID string) (*SQLiteStore, error) 
 		return nil, err
 	}
 
-	store := &SQLiteStore{db: db, localAgentID: localAgentID}
+	store := &SQLiteStore{db: db, dataRoot: dataRoot, localAgentID: localAgentID}
 	if err := store.initializeSchema(context.Background()); err != nil {
 		if sqlDB, dbErr := db.DB(); dbErr == nil {
 			_ = sqlDB.Close()
@@ -134,7 +135,7 @@ func (s *SQLiteStore) LoadLocalSnapshot(ctx context.Context, agentID string) (Sn
 		return Snapshot{}, err
 	}
 
-	relevantCertRows := filterManagedCertificatesForAgent(certRows, resolvedAgentID)
+	relevantCertRows := filterManagedCertificatesForAgent(certRows, resolvedAgentID, relayRows)
 	return Snapshot{
 		DesiredVersion:      localState.DesiredVersion,
 		Revision:            int64(computeDesiredRevision(localState, httpRows, l4Rows, relayRows, relevantCertRows)),
@@ -142,8 +143,8 @@ func (s *SQLiteStore) LoadLocalSnapshot(ctx context.Context, agentID string) (Sn
 		Rules:               snapshotHTTPRules(httpRows),
 		L4Rules:             snapshotL4Rules(l4Rows),
 		RelayListeners:      snapshotRelayListeners(relayRows),
-		Certificates:        []ManagedCertificateBundle{},
-		CertificatePolicies: snapshotCertificatePolicies(relevantCertRows),
+		Certificates:        s.snapshotCertificateBundles(relevantCertRows),
+		CertificatePolicies: snapshotCertificatePolicies(relevantCertRows, resolvedAgentID),
 	}, nil
 }
 
@@ -211,22 +212,20 @@ func (s *SQLiteStore) SaveLocalRuntimeState(ctx context.Context, agentID string,
 		return err
 	}
 
-	lastApplyStatus := strings.TrimSpace(runtimeState.Status)
+	lastApplyStatus := normalizeApplyStatus(runtimeState)
 	if lastApplyStatus == "" {
 		lastApplyStatus = currentState.LastApplyStatus
 	}
 
-	lastApplyMessage := ""
-	if runtimeState.Metadata != nil {
-		lastApplyMessage = strings.TrimSpace(runtimeState.Metadata["last_sync_error"])
-		if lastApplyMessage == "" {
-			lastApplyMessage = strings.TrimSpace(runtimeState.Metadata["last_apply_message"])
-		}
+	lastApplyMessage := normalizeApplyMessage(runtimeState, lastApplyStatus)
+	desiredRevision := currentState.DesiredRevision
+	if lastApplyStatus == "success" {
+		desiredRevision = maxInt(desiredRevision, int(runtimeState.CurrentRevision))
 	}
 
 	row := LocalAgentStateRow{
 		ID:                1,
-		DesiredRevision:   currentState.DesiredRevision,
+		DesiredRevision:   desiredRevision,
 		CurrentRevision:   int(runtimeState.CurrentRevision),
 		LastApplyRevision: int(runtimeState.CurrentRevision),
 		LastApplyStatus:   lastApplyStatus,
@@ -718,37 +717,77 @@ func snapshotRelayListeners(rows []RelayListenerRow) []RelayListener {
 	return listeners
 }
 
-func snapshotCertificatePolicies(rows []ManagedCertificateRow) []ManagedCertificatePolicy {
+func (s *SQLiteStore) snapshotCertificateBundles(rows []ManagedCertificateRow) []ManagedCertificateBundle {
+	bundles := make([]ManagedCertificateBundle, 0, len(rows))
+	for _, row := range rows {
+		if !row.Enabled {
+			continue
+		}
+		material, ok := s.readManagedCertificateMaterial(row.Domain)
+		if !ok {
+			continue
+		}
+		bundles = append(bundles, ManagedCertificateBundle{
+			ID:       row.ID,
+			Domain:   row.Domain,
+			Revision: int64(row.Revision),
+			CertPEM:  material.CertPEM,
+			KeyPEM:   material.KeyPEM,
+		})
+	}
+	return bundles
+}
+
+func snapshotCertificatePolicies(rows []ManagedCertificateRow, agentID string) []ManagedCertificatePolicy {
 	policies := make([]ManagedCertificatePolicy, 0, len(rows))
 	for _, row := range rows {
+		view := buildManagedCertificateViewForAgent(row, agentID)
 		policies = append(policies, ManagedCertificatePolicy{
-			ID:              row.ID,
-			Domain:          row.Domain,
-			Enabled:         row.Enabled,
-			Scope:           defaultString(row.Scope, "domain"),
-			IssuerMode:      defaultString(row.IssuerMode, "master_cf_dns"),
-			Status:          defaultString(row.Status, "pending"),
-			LastIssueAt:     row.LastIssueAt,
-			LastError:       row.LastError,
-			ACMEInfo:        parseManagedCertificateACMEInfo(row.ACMEInfo),
-			Tags:            parseStringSlice(row.TagsJSON),
-			Revision:        int64(row.Revision),
-			Usage:           defaultString(row.Usage, "https"),
-			CertificateType: defaultString(row.CertificateType, "acme"),
-			SelfSigned:      row.SelfSigned,
+			ID:              view.ID,
+			Domain:          view.Domain,
+			Enabled:         view.Enabled,
+			Scope:           defaultString(view.Scope, "domain"),
+			IssuerMode:      defaultString(view.IssuerMode, "master_cf_dns"),
+			Status:          defaultString(view.Status, "pending"),
+			LastIssueAt:     view.LastIssueAt,
+			LastError:       view.LastError,
+			ACMEInfo:        parseManagedCertificateACMEInfo(view.ACMEInfo),
+			Tags:            parseStringSlice(view.TagsJSON),
+			Revision:        int64(view.Revision),
+			Usage:           defaultString(view.Usage, "https"),
+			CertificateType: defaultString(view.CertificateType, "acme"),
+			SelfSigned:      view.SelfSigned,
 		})
 	}
 	return policies
 }
 
-func filterManagedCertificatesForAgent(rows []ManagedCertificateRow, agentID string) []ManagedCertificateRow {
+func filterManagedCertificatesForAgent(rows []ManagedCertificateRow, agentID string, relayRows []RelayListenerRow) []ManagedCertificateRow {
 	filtered := make([]ManagedCertificateRow, 0, len(rows))
+	trustedCertificateIDs := relayTrustedCertificateIDs(relayRows)
 	for _, row := range rows {
-		if containsString(parseStringSlice(row.TargetAgentIDs), agentID) {
+		if trustedCertificateIDs[row.ID] || containsString(parseStringSlice(row.TargetAgentIDs), agentID) {
 			filtered = append(filtered, row)
 		}
 	}
 	return filtered
+}
+
+func buildManagedCertificateViewForAgent(row ManagedCertificateRow, agentID string) ManagedCertificateRow {
+	report, ok := parseManagedCertificateAgentReport(row.AgentReports, agentID)
+	if !ok {
+		return row
+	}
+
+	view := row
+	if report.Status != "" {
+		view.Status = report.Status
+	}
+	view.LastIssueAt = report.LastIssueAt
+	view.LastError = report.LastError
+	view.MaterialHash = report.MaterialHash
+	view.ACMEInfo = marshalManagedCertificateACMEInfo(report.ACMEInfo)
+	return view
 }
 
 func resolveVersionPackage(rows []VersionPolicyRow, desiredVersion string) *VersionPackage {
@@ -862,6 +901,51 @@ func parseManagedCertificateACMEInfo(raw string) ManagedCertificateACMEInfo {
 	return info
 }
 
+func marshalManagedCertificateACMEInfo(info ManagedCertificateACMEInfo) string {
+	data, err := json.Marshal(info)
+	if err != nil {
+		return "{}"
+	}
+	return string(data)
+}
+
+type managedCertificateAgentReport struct {
+	Status       string                     `json:"status"`
+	LastIssueAt  string                     `json:"last_issue_at"`
+	LastError    string                     `json:"last_error"`
+	MaterialHash string                     `json:"material_hash"`
+	ACMEInfo     ManagedCertificateACMEInfo `json:"acme_info"`
+}
+
+func parseManagedCertificateAgentReport(raw string, agentID string) (managedCertificateAgentReport, bool) {
+	agentID = strings.TrimSpace(agentID)
+	if agentID == "" {
+		return managedCertificateAgentReport{}, false
+	}
+	var reports map[string]managedCertificateAgentReport
+	if err := json.Unmarshal([]byte(defaultString(raw, "{}")), &reports); err != nil {
+		return managedCertificateAgentReport{}, false
+	}
+	report, ok := reports[agentID]
+	if !ok {
+		return managedCertificateAgentReport{}, false
+	}
+	report.Status = normalizeManagedCertificateReportStatus(report.Status)
+	report.LastIssueAt = strings.TrimSpace(report.LastIssueAt)
+	report.LastError = report.LastError
+	report.MaterialHash = strings.TrimSpace(report.MaterialHash)
+	return report, true
+}
+
+func normalizeManagedCertificateReportStatus(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "pending", "active", "error":
+		return strings.ToLower(strings.TrimSpace(value))
+	default:
+		return ""
+	}
+}
+
 func parseVersionPackages(raw string) []VersionPackage {
 	var values []VersionPackage
 	if err := json.Unmarshal([]byte(defaultString(raw, "[]")), &values); err != nil {
@@ -915,6 +999,18 @@ func parseIntSlice(raw string) []int {
 	return normalized
 }
 
+func relayTrustedCertificateIDs(rows []RelayListenerRow) map[int]bool {
+	ids := make(map[int]bool)
+	for _, row := range rows {
+		for _, certID := range parseIntSlice(row.TrustedCACertificateIDs) {
+			if certID > 0 {
+				ids[certID] = true
+			}
+		}
+	}
+	return ids
+}
+
 func containsString(values []string, expected string) bool {
 	for _, value := range values {
 		if value == expected {
@@ -940,4 +1036,69 @@ func maxInt(values ...int) int {
 		}
 	}
 	return maxValue
+}
+
+type managedCertificateMaterial struct {
+	CertPEM string
+	KeyPEM  string
+}
+
+func (s *SQLiteStore) readManagedCertificateMaterial(domain string) (managedCertificateMaterial, bool) {
+	certDir := s.managedCertificateDirectory(domain)
+	certPEM, certErr := os.ReadFile(filepath.Join(certDir, "cert"))
+	keyPEM, keyErr := os.ReadFile(filepath.Join(certDir, "key"))
+	if certErr != nil || keyErr != nil {
+		return managedCertificateMaterial{}, false
+	}
+	return managedCertificateMaterial{
+		CertPEM: string(certPEM),
+		KeyPEM:  string(keyPEM),
+	}, true
+}
+
+func (s *SQLiteStore) managedCertificateDirectory(domain string) string {
+	return filepath.Join(s.dataRoot, "managed_certificates", normalizeManagedCertificateHost(domain))
+}
+
+func normalizeManagedCertificateHost(domain string) string {
+	normalized := strings.TrimSpace(domain)
+	if strings.HasPrefix(normalized, "[") && strings.HasSuffix(normalized, "]") && len(normalized) >= 2 {
+		normalized = normalized[1 : len(normalized)-1]
+	}
+	normalized = strings.ReplaceAll(normalized, "*.", "_wildcard_.")
+	replacer := strings.NewReplacer("<", "_", ">", "_", ":", "_", "\"", "_", "/", "_", "\\", "_", "|", "_", "?", "_", "*", "_")
+	return replacer.Replace(normalized)
+}
+
+func normalizeApplyStatus(runtimeState RuntimeState) string {
+	lastSyncError := ""
+	if runtimeState.Metadata != nil {
+		lastSyncError = strings.TrimSpace(runtimeState.Metadata["last_sync_error"])
+	}
+	if lastSyncError != "" {
+		return "error"
+	}
+	switch strings.ToLower(strings.TrimSpace(runtimeState.Status)) {
+	case "active":
+		return "success"
+	case "error":
+		return "error"
+	case "success":
+		return "success"
+	default:
+		return ""
+	}
+}
+
+func normalizeApplyMessage(runtimeState RuntimeState, applyStatus string) string {
+	if applyStatus != "error" {
+		return ""
+	}
+	if runtimeState.Metadata == nil {
+		return ""
+	}
+	if lastSyncError := strings.TrimSpace(runtimeState.Metadata["last_sync_error"]); lastSyncError != "" {
+		return lastSyncError
+	}
+	return strings.TrimSpace(runtimeState.Metadata["last_apply_message"])
 }
