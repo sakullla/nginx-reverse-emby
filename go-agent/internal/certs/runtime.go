@@ -407,29 +407,54 @@ func (m *Manager) loadPersistedACMEMaterial(certificateID int) (persistedACMEMat
 		return persistedACMEMaterial{}, err
 	}
 
-	accountKeyPEM, err := os.ReadFile(filepath.Join(m.materialDir(certificateID), "acme_account_key.pem"))
-	if err == nil {
-		result.accountKeyPEM = accountKeyPEM
-	} else if !os.IsNotExist(err) {
-		return persistedACMEMaterial{}, err
-	}
-
-	registrationPayload, err := os.ReadFile(filepath.Join(m.materialDir(certificateID), "acme_registration.json"))
-	if err == nil {
-		var registrationResource registration.Resource
-		if err := json.Unmarshal(registrationPayload, &registrationResource); err == nil {
-			result.registration = &registrationResource
-		}
-	} else if !os.IsNotExist(err) {
-		return persistedACMEMaterial{}, err
-	}
-
-	metadata, metadataUsable, err := m.loadLocalMaterialMetadataIfUsable(certificateID)
+	state, stateUsable, err := m.loadManagedCertificateState(certificateID)
 	if err != nil {
 		return persistedACMEMaterial{}, err
 	}
-	if metadataUsable {
-		result.metadata = metadata
+	if stateUsable {
+		if state.ACME != nil {
+			result.accountKeyPEM = append([]byte(nil), state.ACME.Account.KeyPEM...)
+			if len(state.ACME.Account.Registration) > 0 {
+				var registrationResource registration.Resource
+				if err := json.Unmarshal(state.ACME.Account.Registration, &registrationResource); err == nil {
+					result.registration = &registrationResource
+				}
+			}
+		}
+		if !isEmptyLocalMaterialMetadata(state.LocalMetadata) {
+			result.metadata = state.LocalMetadata
+		}
+	}
+
+	if len(result.accountKeyPEM) == 0 {
+		accountKeyPEM, err := os.ReadFile(filepath.Join(m.materialDir(certificateID), "acme_account_key.pem"))
+		if err == nil {
+			result.accountKeyPEM = accountKeyPEM
+		} else if !os.IsNotExist(err) {
+			return persistedACMEMaterial{}, err
+		}
+	}
+
+	if result.registration == nil {
+		registrationPayload, err := os.ReadFile(filepath.Join(m.materialDir(certificateID), "acme_registration.json"))
+		if err == nil {
+			var registrationResource registration.Resource
+			if err := json.Unmarshal(registrationPayload, &registrationResource); err == nil {
+				result.registration = &registrationResource
+			}
+		} else if !os.IsNotExist(err) {
+			return persistedACMEMaterial{}, err
+		}
+	}
+
+	if isEmptyLocalMaterialMetadata(result.metadata) {
+		metadata, metadataUsable, err := m.loadLocalMaterialMetadataIfUsable(certificateID)
+		if err != nil {
+			return persistedACMEMaterial{}, err
+		}
+		if metadataUsable {
+			result.metadata = metadata
+		}
 	}
 
 	return result, nil
@@ -460,6 +485,36 @@ func (m *Manager) savePersistedACMEMaterial(certificateID int, result acmeIssueR
 			return err
 		}
 	}
+
+	state, _, err := m.loadManagedCertificateState(certificateID)
+	if err != nil {
+		return err
+	}
+	if state.ACME == nil {
+		state.ACME = &model.ManagedCertificateACMEState{}
+	}
+	state.ACME.Account.KeyPEM = append([]byte(nil), result.AccountKeyPEM...)
+	state.ACME.Account.Registration = nil
+	if result.Registration != nil {
+		payload, err := json.Marshal(result.Registration)
+		if err != nil {
+			return err
+		}
+		state.ACME.Account.Registration = payload
+	}
+	if tlsCert, _, _, err := parseTLSMaterial(result.CertPEM, result.KeyPEM); err == nil && tlsCert.Leaf != nil {
+		state.ACME.Renewal.NotAfterUnix = tlsCert.Leaf.NotAfter.Unix()
+		state.ACME.Renewal.RenewAtUnix = tlsCert.Leaf.NotAfter.Add(-m.cfg.acme.renewBefore).Unix()
+		nowUnix := m.cfg.now().Unix()
+		state.ACME.Renewal.LastRenewedAtUnix = nowUnix
+		state.ACME.Renewal.LastAttemptAtUnix = nowUnix
+		state.ACME.Renewal.LastAttemptError = ""
+		state.ACME.Renewal.LastAttemptStatus = "success"
+		state.ACME.Renewal.LastAttemptNotAfter = tlsCert.Leaf.NotAfter.Unix()
+	}
+	if err := m.saveManagedCertificateState(certificateID, state); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -480,7 +535,15 @@ func (m *Manager) saveLocalMaterialMetadata(certificateID int, metadata localMat
 	if err != nil {
 		return err
 	}
-	return writeFileAtomically(filepath.Join(m.materialDir(certificateID), "local_metadata.json"), payload, 0600)
+	if err := writeFileAtomically(filepath.Join(m.materialDir(certificateID), "local_metadata.json"), payload, 0600); err != nil {
+		return err
+	}
+	state, _, err := m.loadManagedCertificateState(certificateID)
+	if err != nil {
+		return err
+	}
+	state.LocalMetadata = metadata
+	return m.saveManagedCertificateState(certificateID, state)
 }
 
 func (m *Manager) materialDir(certificateID int) string {
@@ -668,6 +731,14 @@ func normalizeCertificateHost(value string) string {
 }
 
 func (m *Manager) loadLocalMaterialMetadataIfUsable(certificateID int) (localMaterialMetadata, bool, error) {
+	state, stateUsable, err := m.loadManagedCertificateState(certificateID)
+	if err != nil {
+		return localMaterialMetadata{}, false, err
+	}
+	if stateUsable && !isEmptyLocalMaterialMetadata(state.LocalMetadata) {
+		return state.LocalMetadata, true, nil
+	}
+
 	payload, err := os.ReadFile(filepath.Join(m.materialDir(certificateID), "local_metadata.json"))
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -681,6 +752,13 @@ func (m *Manager) loadLocalMaterialMetadataIfUsable(certificateID int) (localMat
 		return localMaterialMetadata{}, false, nil
 	}
 	return metadata, true, nil
+}
+
+func isEmptyLocalMaterialMetadata(metadata localMaterialMetadata) bool {
+	return strings.TrimSpace(metadata.Domain) == "" &&
+		strings.TrimSpace(metadata.Scope) == "" &&
+		strings.TrimSpace(metadata.IssuerMode) == "" &&
+		strings.TrimSpace(metadata.CertificateType) == ""
 }
 
 func (m *Manager) writeLocalMaterialFiles(certificateID int, certPEM, keyPEM []byte, metadata localMaterialMetadata) error {
