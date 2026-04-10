@@ -185,6 +185,140 @@ func TestStorePersistsRelayListenersAndManagedCertificates(t *testing.T) {
 	}
 }
 
+func TestStoreLoadsLocalSnapshotWithHighestRelevantRevision(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromCanonicalSchema(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	if err := store.SaveL4Rules(t.Context(), "local", []L4RuleRow{{
+		ID:                8,
+		AgentID:           "local",
+		Name:              "TCP 8443",
+		Protocol:          "tcp",
+		ListenHost:        "0.0.0.0",
+		ListenPort:        8443,
+		UpstreamHost:      "emby",
+		UpstreamPort:      8096,
+		BackendsJSON:      `[{"host":"emby","port":8096}]`,
+		LoadBalancingJSON: `{"strategy":"round_robin"}`,
+		TuningJSON:        `{"proxy_protocol":{"decode":false,"send":false}}`,
+		RelayChainJSON:    `[3]`,
+		Enabled:           true,
+		TagsJSON:          `["edge"]`,
+		Revision:          10,
+	}}); err != nil {
+		t.Fatalf("SaveL4Rules() error = %v", err)
+	}
+
+	certID := 11
+	if err := store.SaveRelayListeners(t.Context(), "local", []RelayListenerRow{{
+		ID:                      3,
+		AgentID:                 "local",
+		Name:                    "relay-a",
+		BindHostsJSON:           `["0.0.0.0"]`,
+		ListenHost:              "0.0.0.0",
+		ListenPort:              7443,
+		PublicHost:              "relay-a.example.com",
+		PublicPort:              7443,
+		Enabled:                 true,
+		CertificateID:           &certID,
+		TLSMode:                 "pin_or_ca",
+		PinSetJSON:              `[{"type":"spki_sha256","value":"abc"}]`,
+		TrustedCACertificateIDs: `[10]`,
+		AllowSelfSigned:         true,
+		TagsJSON:                `["relay"]`,
+		Revision:                12,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners() error = %v", err)
+	}
+
+	if err := store.SaveManagedCertificates(t.Context(), []ManagedCertificateRow{{
+		ID:              11,
+		Domain:          "relay-a.example.com",
+		Enabled:         true,
+		Scope:           "domain",
+		IssuerMode:      "local_http01",
+		TargetAgentIDs:  `["local"]`,
+		Status:          "active",
+		LastIssueAt:     "2026-04-10T00:00:00Z",
+		LastError:       "",
+		MaterialHash:    "hash-a",
+		AgentReports:    `{}`,
+		ACMEInfo:        `{"Main_Domain":"relay-a.example.com"}`,
+		Usage:           "relay_tunnel",
+		CertificateType: "uploaded",
+		SelfSigned:      false,
+		TagsJSON:        `["relay"]`,
+		Revision:        13,
+	}}); err != nil {
+		t.Fatalf("SaveManagedCertificates() error = %v", err)
+	}
+
+	snapshot, err := store.LoadLocalSnapshot(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("LoadLocalSnapshot() error = %v", err)
+	}
+
+	if snapshot.DesiredVersion != "v1.2.3" {
+		t.Fatalf("DesiredVersion = %q", snapshot.DesiredVersion)
+	}
+	if snapshot.Revision != 13 {
+		t.Fatalf("Revision = %d", snapshot.Revision)
+	}
+	if len(snapshot.Rules) != 1 || len(snapshot.L4Rules) != 1 || len(snapshot.RelayListeners) != 1 || len(snapshot.CertificatePolicies) != 1 {
+		t.Fatalf("snapshot payload = %+v", snapshot)
+	}
+}
+
+func TestStoreSavesLocalRuntimeStateIntoLocalAgentState(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromCanonicalSchema(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	err = store.SaveLocalRuntimeState(t.Context(), "local", RuntimeState{
+		CurrentRevision: 9,
+		Status:          "error",
+		Metadata: map[string]string{
+			"last_sync_error": "apply failed",
+		},
+	})
+	if err != nil {
+		t.Fatalf("SaveLocalRuntimeState() error = %v", err)
+	}
+
+	state, err := store.LoadLocalAgentState(t.Context())
+	if err != nil {
+		t.Fatalf("LoadLocalAgentState() error = %v", err)
+	}
+	if state.CurrentRevision != 9 || state.LastApplyRevision != 9 {
+		t.Fatalf("LoadLocalAgentState() revisions = %+v", state)
+	}
+	if state.LastApplyStatus != "error" {
+		t.Fatalf("LastApplyStatus = %q", state.LastApplyStatus)
+	}
+	if state.LastApplyMessage != "apply failed" {
+		t.Fatalf("LastApplyMessage = %q", state.LastApplyMessage)
+	}
+}
+
 func seedSQLiteFixtureFromCanonicalSchema(t *testing.T) string {
 	t.Helper()
 
