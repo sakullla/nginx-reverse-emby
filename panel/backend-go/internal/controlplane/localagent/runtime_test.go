@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"testing"
 
+	goagentembedded "github.com/sakullla/nginx-reverse-emby/go-agent/embedded"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/app"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 )
@@ -18,6 +19,17 @@ type bridgeStoreStub struct {
 	saveLocalStateCalled bool
 }
 
+type embeddedRuntimeStub struct {
+	start func(context.Context) error
+}
+
+func (s embeddedRuntimeStub) Run(ctx context.Context) error {
+	if s.start != nil {
+		return s.start(ctx)
+	}
+	return nil
+}
+
 func (s *bridgeStoreStub) LoadLocalSnapshot(_ context.Context, agentID string) (Snapshot, error) {
 	s.loadAgentID = agentID
 	return s.snapshot, nil
@@ -28,6 +40,78 @@ func (s *bridgeStoreStub) SaveLocalRuntimeState(_ context.Context, agentID strin
 	s.savedState = state
 	s.saveLocalStateCalled = true
 	return nil
+}
+
+func TestNewRuntimeStartsEmbeddedRuntimeWithBridgeAdapters(t *testing.T) {
+	cfg := config.Default()
+	cfg.EnableLocalAgent = true
+	cfg.LocalAgentID = "local-test"
+	cfg.LocalAgentName = "local-test"
+
+	store := &bridgeStoreStub{
+		snapshot: Snapshot{
+			DesiredVersion: "1.2.3",
+			Revision:       15,
+		},
+	}
+
+	started := false
+	previousNewEmbeddedRuntime := newEmbeddedRuntime
+	t.Cleanup(func() {
+		newEmbeddedRuntime = previousNewEmbeddedRuntime
+	})
+
+	newEmbeddedRuntime = func(cfg goagentembedded.Config, source goagentembedded.SyncSource, sink goagentembedded.StateSink) (embeddedRuntimeRunner, error) {
+		if cfg.AgentID != "local-test" {
+			t.Fatalf("embedded runtime AgentID = %q", cfg.AgentID)
+		}
+		snapshot, err := source.Sync(t.Context(), goagentembedded.SyncRequest{CurrentRevision: 14})
+		if err != nil {
+			t.Fatalf("source.Sync() error = %v", err)
+		}
+		if snapshot.Revision != 15 {
+			t.Fatalf("source.Sync() revision = %d", snapshot.Revision)
+		}
+		if err := sink.Save(t.Context(), goagentembedded.RuntimeState{
+			CurrentRevision: 27,
+			Status:          "active",
+			Metadata: map[string]string{
+				"last_sync_error": "apply failed",
+			},
+		}); err != nil {
+			t.Fatalf("sink.Save() error = %v", err)
+		}
+		return embeddedRuntimeStub{
+			start: func(context.Context) error {
+				started = true
+				return nil
+			},
+		}, nil
+	}
+
+	runtime, err := NewRuntime(cfg, store)
+	if err != nil {
+		t.Fatalf("NewRuntime() error = %v", err)
+	}
+
+	if err := runtime.Start(t.Context()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if !started {
+		t.Fatal("embedded runtime was not started")
+	}
+	if store.loadAgentID != "local-test" {
+		t.Fatalf("LoadLocalSnapshot() agentID = %q", store.loadAgentID)
+	}
+	if !store.saveLocalStateCalled {
+		t.Fatal("SaveLocalRuntimeState() was not called")
+	}
+	if store.savedAgentID != "local-test" {
+		t.Fatalf("SaveLocalRuntimeState() agentID = %q", store.savedAgentID)
+	}
+	if store.savedState.CurrentRevision != 27 || store.savedState.Status != "active" {
+		t.Fatalf("SaveLocalRuntimeState() state = %+v", store.savedState)
+	}
 }
 
 func TestAppStartsEmbeddedLocalAgentWhenEnabled(t *testing.T) {

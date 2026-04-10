@@ -23,6 +23,8 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o /out/nre-agent ./cmd/nre-agent
 
 FROM golang:1.26.2-bookworm AS backend-go-builder
+WORKDIR /src
+COPY go-agent/ ./go-agent/
 WORKDIR /src/panel/backend-go
 COPY panel/backend-go/go.mod panel/backend-go/go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
