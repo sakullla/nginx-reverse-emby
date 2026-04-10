@@ -254,6 +254,7 @@ func TestRouterServesAgentsAndRulesEndpoints(t *testing.T) {
 			agents: []service.AgentSummary{{
 				ID:             "local",
 				Name:           "Local Agent",
+				Mode:           "local",
 				Status:         "online",
 				IsLocal:        true,
 				HTTPRulesCount: 1,
@@ -308,6 +309,9 @@ func TestRouterServesAgentsAndRulesEndpoints(t *testing.T) {
 	isLocal, ok := agentValue["is_local"].(bool)
 	if !ok || !isLocal {
 		t.Fatalf("agents[0].is_local = %v", agentValue["is_local"])
+	}
+	if agentValue["mode"] != "local" {
+		t.Fatalf("agents[0].mode = %v", agentValue["mode"])
 	}
 
 	rulesReq := httptest.NewRequest(http.MethodGet, "/panel-api/agents/local/rules", nil)
