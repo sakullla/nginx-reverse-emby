@@ -259,13 +259,33 @@ func l4RulesChanged(previous, next model.Snapshot) bool {
 }
 
 func httpRelayInputsChanged(previous, next model.Snapshot) bool {
-	if !relay.ListenersChanged(previous.RelayListeners, next.RelayListeners) {
-		return false
-	}
 	for _, rule := range next.Rules {
-		if len(rule.RelayChain) > 0 {
-			return true
+		for _, listenerID := range rule.RelayChain {
+			if relayListenerChangedByID(listenerID, previous.RelayListeners, next.RelayListeners) {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+func relayListenerChangedByID(listenerID int, previous, next []model.RelayListener) bool {
+	previousListener, previousOK := relayListenerByID(listenerID, previous)
+	nextListener, nextOK := relayListenerByID(listenerID, next)
+	if previousOK != nextOK {
+		return true
+	}
+	if !previousOK {
+		return false
+	}
+	return !reflect.DeepEqual(previousListener, nextListener)
+}
+
+func relayListenerByID(listenerID int, listeners []model.RelayListener) (model.RelayListener, bool) {
+	for _, listener := range listeners {
+		if listener.ID == listenerID {
+			return listener, true
+		}
+	}
+	return model.RelayListener{}, false
 }

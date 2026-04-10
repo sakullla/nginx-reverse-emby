@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"context"
-	"reflect"
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
@@ -11,14 +10,14 @@ import (
 func TestRuntimeActivatesHTTPRelayAndL4FromOneSnapshot(t *testing.T) {
 	ctx := context.Background()
 
-	var calls []string
+	calls := make(map[string]int)
 	var gotHTTPRelayPort int
 	var gotL4RelayPort int
 	var gotRelayPort int
 
 	r := NewWithActivator(NewSnapshotActivator(SnapshotActivationHandlers{
 		ActivateHTTPRules: func(_ context.Context, rules []model.HTTPRule, relayListeners []model.RelayListener) error {
-			calls = append(calls, "http")
+			calls["http"]++
 			if len(rules) != 1 {
 				t.Fatalf("expected one http rule, got %d", len(rules))
 			}
@@ -29,7 +28,7 @@ func TestRuntimeActivatesHTTPRelayAndL4FromOneSnapshot(t *testing.T) {
 			return nil
 		},
 		ActivateRelayListeners: func(_ context.Context, relayListeners []model.RelayListener) error {
-			calls = append(calls, "relay")
+			calls["relay"]++
 			if len(relayListeners) != 1 {
 				t.Fatalf("expected one relay listener for relay activation, got %d", len(relayListeners))
 			}
@@ -37,7 +36,7 @@ func TestRuntimeActivatesHTTPRelayAndL4FromOneSnapshot(t *testing.T) {
 			return nil
 		},
 		ActivateL4Rules: func(_ context.Context, rules []model.L4Rule, relayListeners []model.RelayListener) error {
-			calls = append(calls, "l4")
+			calls["l4"]++
 			if len(rules) != 1 {
 				t.Fatalf("expected one l4 rule, got %d", len(rules))
 			}
@@ -90,7 +89,7 @@ func TestRuntimeActivatesHTTPRelayAndL4FromOneSnapshot(t *testing.T) {
 		t.Fatalf("priming apply failed: %v", err)
 	}
 
-	calls = nil
+	calls = make(map[string]int)
 	next := previous
 	next.Revision = 2
 	next.RelayListeners = append([]model.RelayListener(nil), previous.RelayListeners...)
@@ -100,9 +99,8 @@ func TestRuntimeActivatesHTTPRelayAndL4FromOneSnapshot(t *testing.T) {
 		t.Fatalf("apply failed: %v", err)
 	}
 
-	wantCalls := []string{"http", "relay", "l4"}
-	if !reflect.DeepEqual(calls, wantCalls) {
-		t.Fatalf("unexpected activation sequence: got %v want %v", calls, wantCalls)
+	if calls["http"] != 1 || calls["relay"] != 1 || calls["l4"] != 1 {
+		t.Fatalf("expected one activation each for http/relay/l4, got %+v", calls)
 	}
 	if gotHTTPRelayPort != 39443 {
 		t.Fatalf("http activation did not receive updated relay listener: got port %d", gotHTTPRelayPort)
@@ -112,5 +110,100 @@ func TestRuntimeActivatesHTTPRelayAndL4FromOneSnapshot(t *testing.T) {
 	}
 	if gotL4RelayPort != 39443 {
 		t.Fatalf("l4 activation did not receive updated relay listener: got port %d", gotL4RelayPort)
+	}
+}
+
+func TestRuntimeSkipsHTTPAndL4ForUnrelatedRelayListenerChanges(t *testing.T) {
+	ctx := context.Background()
+
+	var httpCalls int
+	var relayCalls int
+	var l4Calls int
+
+	r := NewWithActivator(NewSnapshotActivator(SnapshotActivationHandlers{
+		ActivateHTTPRules: func(_ context.Context, _ []model.HTTPRule, _ []model.RelayListener) error {
+			httpCalls++
+			return nil
+		},
+		ActivateRelayListeners: func(_ context.Context, _ []model.RelayListener) error {
+			relayCalls++
+			return nil
+		},
+		ActivateL4Rules: func(_ context.Context, _ []model.L4Rule, _ []model.RelayListener) error {
+			l4Calls++
+			return nil
+		},
+	}))
+
+	previous := model.Snapshot{
+		DesiredVersion: "v1",
+		Revision:       1,
+		Rules: []model.HTTPRule{{
+			RelayChain: []int{1},
+		}},
+		L4Rules: []model.L4Rule{{
+			Protocol:   "tcp",
+			ListenHost: "127.0.0.1",
+			ListenPort: 19000,
+			Backends: []model.L4Backend{
+				{Host: "10.0.0.20", Port: 9000},
+			},
+			RelayChain: []int{1},
+		}},
+		RelayListeners: []model.RelayListener{
+			{
+				ID:         1,
+				ListenHost: "127.0.0.1",
+				BindHosts:  []string{"127.0.0.1"},
+				ListenPort: 9443,
+				PublicPort: 29443,
+				Enabled:    true,
+				TLSMode:    "pin_only",
+				PinSet: []model.RelayPin{{
+					Type:  "spki_sha256",
+					Value: "cGlubmVk",
+				}},
+			},
+			{
+				ID:         2,
+				ListenHost: "127.0.0.1",
+				BindHosts:  []string{"127.0.0.1"},
+				ListenPort: 9543,
+				PublicPort: 29543,
+				Enabled:    true,
+				TLSMode:    "pin_only",
+				PinSet: []model.RelayPin{{
+					Type:  "spki_sha256",
+					Value: "cGlubmVk",
+				}},
+			},
+		},
+	}
+
+	if err := r.Apply(ctx, model.Snapshot{}, previous); err != nil {
+		t.Fatalf("priming apply failed: %v", err)
+	}
+
+	httpCalls = 0
+	relayCalls = 0
+	l4Calls = 0
+
+	next := previous
+	next.Revision = 2
+	next.RelayListeners = append([]model.RelayListener(nil), previous.RelayListeners...)
+	next.RelayListeners[1].PublicPort = 39543
+
+	if err := r.Apply(ctx, previous, next); err != nil {
+		t.Fatalf("apply failed: %v", err)
+	}
+
+	if httpCalls != 0 {
+		t.Fatalf("expected no http activation for unrelated relay listener change, got %d", httpCalls)
+	}
+	if l4Calls != 0 {
+		t.Fatalf("expected no l4 activation for unrelated relay listener change, got %d", l4Calls)
+	}
+	if relayCalls != 1 {
+		t.Fatalf("expected relay activation on relay listener change, got %d", relayCalls)
 	}
 }

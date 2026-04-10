@@ -718,13 +718,33 @@ func relayHopDialEndpoint(listener model.RelayListener) (string, int) {
 }
 
 func RelayInputsChanged(rules []model.L4Rule, previousRelayListeners, nextRelayListeners []model.RelayListener) bool {
-	if reflect.DeepEqual(previousRelayListeners, nextRelayListeners) {
-		return false
-	}
 	for _, rule := range rules {
-		if len(rule.RelayChain) > 0 {
-			return true
+		for _, listenerID := range rule.RelayChain {
+			if relayListenerChangedByID(listenerID, previousRelayListeners, nextRelayListeners) {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+func relayListenerChangedByID(listenerID int, previous, next []model.RelayListener) bool {
+	previousListener, previousOK := relayListenerByID(listenerID, previous)
+	nextListener, nextOK := relayListenerByID(listenerID, next)
+	if previousOK != nextOK {
+		return true
+	}
+	if !previousOK {
+		return false
+	}
+	return !reflect.DeepEqual(previousListener, nextListener)
+}
+
+func relayListenerByID(listenerID int, listeners []model.RelayListener) (model.RelayListener, bool) {
+	for _, listener := range listeners {
+		if listener.ID == listenerID {
+			return listener, true
+		}
+	}
+	return model.RelayListener{}, false
 }
