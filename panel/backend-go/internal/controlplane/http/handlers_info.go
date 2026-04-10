@@ -1,0 +1,38 @@
+package http
+
+import "net/http"
+
+func (d Dependencies) handleHealth(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":   true,
+		"role": "master",
+	})
+}
+
+func (d Dependencies) handleVerify(w http.ResponseWriter, r *http.Request) {
+	authorized := d.isPanelAuthorized(r)
+	status := http.StatusOK
+	if !authorized {
+		status = http.StatusUnauthorized
+	}
+	writeJSON(w, status, map[string]any{
+		"ok":   authorized,
+		"role": "master",
+	})
+}
+
+func (d Dependencies) handleInfo(w http.ResponseWriter, r *http.Request) {
+	info := d.SystemService.Info(r.Context())
+	payload := map[string]any{
+		"ok":                              true,
+		"role":                            info.Role,
+		"local_apply_runtime":             info.LocalApplyRuntime,
+		"default_agent_id":                info.DefaultAgentID,
+		"local_agent_enabled":             info.LocalAgentEnabled,
+		"proxy_headers_globally_disabled": info.ProxyHeadersGloballyDisabled,
+	}
+	if d.isPanelAuthorized(r) && d.Config.RegisterToken != "" {
+		payload["master_register_token"] = d.Config.RegisterToken
+	}
+	writeJSON(w, http.StatusOK, payload)
+}

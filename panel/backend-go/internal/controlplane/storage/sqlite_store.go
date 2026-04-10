@@ -38,11 +38,16 @@ func (s *SQLiteStore) ListAgents(ctx context.Context) ([]AgentRow, error) {
 			version,
 			platform,
 			desired_version,
+			COALESCE(tags, '[]'),
+			COALESCE(capabilities, '[]'),
+			COALESCE(mode, 'pull'),
 			desired_revision,
 			current_revision,
 			last_apply_revision,
 			COALESCE(last_apply_status, ''),
 			COALESCE(last_apply_message, ''),
+			COALESCE(last_seen_at, ''),
+			COALESCE(last_seen_ip, ''),
 			is_local
 		FROM agents
 		ORDER BY id
@@ -63,11 +68,16 @@ func (s *SQLiteStore) ListAgents(ctx context.Context) ([]AgentRow, error) {
 			&row.Version,
 			&row.Platform,
 			&row.DesiredVersion,
+			&row.TagsJSON,
+			&row.CapabilitiesJSON,
+			&row.Mode,
 			&row.DesiredRevision,
 			&row.CurrentRevision,
 			&row.LastApplyRevision,
 			&row.LastApplyStatus,
 			&row.LastApplyMessage,
+			&row.LastSeenAt,
+			&row.LastSeenIP,
 			&row.IsLocal,
 		); err != nil {
 			return nil, err
@@ -89,7 +99,15 @@ func (s *SQLiteStore) ListHTTPRules(ctx context.Context, agentID string) ([]HTTP
 			agent_id,
 			frontend_url,
 			backend_url,
+			COALESCE(backends, '[]'),
+			COALESCE(load_balancing, '{}'),
 			enabled,
+			COALESCE(tags, '[]'),
+			proxy_redirect,
+			COALESCE(relay_chain, '[]'),
+			pass_proxy_headers,
+			COALESCE(user_agent, ''),
+			COALESCE(custom_headers, '[]'),
 			revision
 		FROM rules
 		WHERE agent_id = ?
@@ -108,7 +126,15 @@ func (s *SQLiteStore) ListHTTPRules(ctx context.Context, agentID string) ([]HTTP
 			&row.AgentID,
 			&row.FrontendURL,
 			&row.BackendURL,
+			&row.BackendsJSON,
+			&row.LoadBalancingJSON,
 			&row.Enabled,
+			&row.TagsJSON,
+			&row.ProxyRedirect,
+			&row.RelayChainJSON,
+			&row.PassProxyHeaders,
+			&row.UserAgent,
+			&row.CustomHeadersJSON,
 			&row.Revision,
 		); err != nil {
 			return nil, err
