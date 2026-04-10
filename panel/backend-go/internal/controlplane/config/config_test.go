@@ -32,11 +32,11 @@ func TestLoadFromEnvInfersRuntimeAssetDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadFromEnv() error = %v", err)
 	}
-	if cfg.FrontendDistDir == "" {
-		t.Fatalf("FrontendDistDir should not be empty")
+	if cfg.FrontendDistDir != "/opt/nginx-reverse-emby/panel/frontend/dist" {
+		t.Fatalf("FrontendDistDir = %q, want %q", cfg.FrontendDistDir, "/opt/nginx-reverse-emby/panel/frontend/dist")
 	}
-	if cfg.PublicAgentAssetsDir == "" {
-		t.Fatalf("PublicAgentAssetsDir should not be empty")
+	if cfg.PublicAgentAssetsDir != "/opt/nginx-reverse-emby/panel/public/agent-assets" {
+		t.Fatalf("PublicAgentAssetsDir = %q, want %q", cfg.PublicAgentAssetsDir, "/opt/nginx-reverse-emby/panel/public/agent-assets")
 	}
 }
 
