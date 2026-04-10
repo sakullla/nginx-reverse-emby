@@ -11,6 +11,8 @@ import (
 const (
 	defaultListenAddr        = "0.0.0.0:8080"
 	defaultDataDir           = "/var/lib/nre-control-plane"
+	defaultFrontendDistDir   = "/opt/nginx-reverse-emby/panel/frontend/dist"
+	defaultPublicAssetsDir   = "/opt/nginx-reverse-emby/panel/public/agent-assets"
 	defaultEnableLocalAgent  = true
 	defaultLocalAgentID      = "local"
 	defaultLocalAgentName    = "local"
@@ -32,12 +34,14 @@ type Config struct {
 
 func Default() Config {
 	return Config{
-		ListenAddr:        defaultListenAddr,
-		DataDir:           defaultDataDir,
-		EnableLocalAgent:  defaultEnableLocalAgent,
-		LocalAgentID:      defaultLocalAgentID,
-		LocalAgentName:    defaultLocalAgentName,
-		HeartbeatInterval: defaultHeartbeatInterval,
+		ListenAddr:           defaultListenAddr,
+		DataDir:              defaultDataDir,
+		FrontendDistDir:      defaultFrontendDistDir,
+		PublicAgentAssetsDir: defaultPublicAssetsDir,
+		EnableLocalAgent:     defaultEnableLocalAgent,
+		LocalAgentID:         defaultLocalAgentID,
+		LocalAgentName:       defaultLocalAgentName,
+		HeartbeatInterval:    defaultHeartbeatInterval,
 	}
 }
 
@@ -64,16 +68,14 @@ func LoadFromEnv() (Config, error) {
 	cfg.RegisterToken = registerToken
 
 	frontendDistDir := strings.TrimSpace(os.Getenv("NRE_FRONTEND_DIST_DIR"))
-	if frontendDistDir == "" {
-		return Config{}, errors.New("NRE_FRONTEND_DIST_DIR is required")
+	if frontendDistDir != "" {
+		cfg.FrontendDistDir = frontendDistDir
 	}
-	cfg.FrontendDistDir = frontendDistDir
 
 	publicAssetsDir := strings.TrimSpace(os.Getenv("NRE_PUBLIC_AGENT_ASSETS_DIR"))
-	if publicAssetsDir == "" {
-		return Config{}, errors.New("NRE_PUBLIC_AGENT_ASSETS_DIR is required")
+	if publicAssetsDir != "" {
+		cfg.PublicAgentAssetsDir = publicAssetsDir
 	}
-	cfg.PublicAgentAssetsDir = publicAssetsDir
 
 	if val := strings.TrimSpace(os.Getenv("NRE_ENABLE_LOCAL_AGENT")); val != "" {
 		enabled, err := parseBool(val)
