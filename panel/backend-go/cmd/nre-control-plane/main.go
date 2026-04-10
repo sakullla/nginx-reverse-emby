@@ -14,6 +14,10 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
+type localAgentRuntime interface {
+	Start(context.Context) error
+}
+
 func main() {
 	cfg, err := config.LoadFromEnv()
 	if err != nil {
@@ -36,6 +40,10 @@ var newHandler = func(cfg config.Config) (http.Handler, error) {
 	return httpapi.NewRouter(httpapi.Dependencies{Config: cfg})
 }
 
+var newLocalAgentRuntime = func(cfg config.Config, store localagent.Store) (localAgentRuntime, error) {
+	return localagent.NewRuntime(cfg, store)
+}
+
 var newLocalAgentStarter = func(cfg config.Config) (app.LocalAgentStarter, error) {
 	if !cfg.EnableLocalAgent {
 		return nil, nil
@@ -46,7 +54,7 @@ var newLocalAgentStarter = func(cfg config.Config) (app.LocalAgentStarter, error
 		return nil, err
 	}
 
-	runtime, err := localagent.NewRuntime(cfg, store)
+	runtime, err := newLocalAgentRuntime(cfg, store)
 	if err != nil {
 		return nil, err
 	}

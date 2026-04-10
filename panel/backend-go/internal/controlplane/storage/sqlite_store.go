@@ -54,6 +54,17 @@ func NewSQLiteStore(dataRoot string, localAgentID string) (*SQLiteStore, error) 
 	return store, nil
 }
 
+func (s *SQLiteStore) Close() error {
+	if s == nil || s.db == nil {
+		return nil
+	}
+	sqlDB, err := s.db.DB()
+	if err != nil {
+		return err
+	}
+	return sqlDB.Close()
+}
+
 func (s *SQLiteStore) ListAgents(ctx context.Context) ([]AgentRow, error) {
 	var agents []AgentRow
 	if err := s.db.WithContext(ctx).Order("id").Find(&agents).Error; err != nil {
