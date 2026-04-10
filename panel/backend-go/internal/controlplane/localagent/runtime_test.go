@@ -17,6 +17,7 @@ func TestAppStartsEmbeddedLocalAgentWhenEnabled(t *testing.T) {
 			EnableLocalAgent: true,
 		},
 		http.NewServeMux(),
+		nil,
 		func(context.Context) error {
 			started = true
 			return nil

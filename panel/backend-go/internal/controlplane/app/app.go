@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"log"
 	"net/http"
 	"time"
 
@@ -17,18 +18,29 @@ type App struct {
 	startLocalAgent  LocalAgentStarter
 }
 
-func New(cfg config.Config, handler http.Handler, startLocalAgent LocalAgentStarter) *App {
+func New(cfg config.Config, handler http.Handler, logger *log.Logger, startLocalAgent LocalAgentStarter) *App {
+	if logger == nil {
+		logger = log.Default()
+	}
 	return &App{
 		enableLocalAgent: cfg.EnableLocalAgent,
 		startLocalAgent:  startLocalAgent,
 		server: &http.Server{
-			Addr:    cfg.ListenAddr,
-			Handler: handler,
+			Addr:     cfg.ListenAddr,
+			Handler:  handler,
+			ErrorLog: logger,
 		},
 	}
 }
 
 func (a *App) Run(ctx context.Context) error {
+	if ctx.Err() != nil {
+		if a.enableLocalAgent && a.startLocalAgent != nil {
+			return a.startLocalAgent(ctx)
+		}
+		return nil
+	}
+
 	serverErrCh := make(chan error, 1)
 	go func() {
 		err := a.server.ListenAndServe()

@@ -22,7 +22,7 @@ func main() {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	if err := app.New(cfg, handler, nil).Run(ctx); err != nil {
+	if err := app.New(cfg, handler, nil, nil).Run(ctx); err != nil {
 		log.Fatal(err)
 	}
 }
