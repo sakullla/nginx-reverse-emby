@@ -421,7 +421,7 @@ func (m *Manager) loadPersistedACMEMaterial(certificateID int) (persistedACMEMat
 				}
 			}
 		}
-		if !isEmptyLocalMaterialMetadata(state.LocalMetadata) {
+		if isUsableLocalMaterialMetadata(state.LocalMetadata) {
 			result.metadata = state.LocalMetadata
 		}
 	}
@@ -447,7 +447,7 @@ func (m *Manager) loadPersistedACMEMaterial(certificateID int) (persistedACMEMat
 		}
 	}
 
-	if isEmptyLocalMaterialMetadata(result.metadata) {
+	if !isUsableLocalMaterialMetadata(result.metadata) {
 		metadata, metadataUsable, err := m.loadLocalMaterialMetadataIfUsable(certificateID)
 		if err != nil {
 			return persistedACMEMaterial{}, err
@@ -735,7 +735,7 @@ func (m *Manager) loadLocalMaterialMetadataIfUsable(certificateID int) (localMat
 	if err != nil {
 		return localMaterialMetadata{}, false, err
 	}
-	if stateUsable && !isEmptyLocalMaterialMetadata(state.LocalMetadata) {
+	if stateUsable && isUsableLocalMaterialMetadata(state.LocalMetadata) {
 		return state.LocalMetadata, true, nil
 	}
 
@@ -754,11 +754,11 @@ func (m *Manager) loadLocalMaterialMetadataIfUsable(certificateID int) (localMat
 	return metadata, true, nil
 }
 
-func isEmptyLocalMaterialMetadata(metadata localMaterialMetadata) bool {
-	return strings.TrimSpace(metadata.Domain) == "" &&
-		strings.TrimSpace(metadata.Scope) == "" &&
-		strings.TrimSpace(metadata.IssuerMode) == "" &&
-		strings.TrimSpace(metadata.CertificateType) == ""
+func isUsableLocalMaterialMetadata(metadata localMaterialMetadata) bool {
+	return strings.TrimSpace(metadata.Domain) != "" &&
+		strings.TrimSpace(metadata.Scope) != "" &&
+		strings.TrimSpace(metadata.IssuerMode) != "" &&
+		strings.TrimSpace(metadata.CertificateType) != ""
 }
 
 func (m *Manager) writeLocalMaterialFiles(certificateID int, certPEM, keyPEM []byte, metadata localMaterialMetadata) error {

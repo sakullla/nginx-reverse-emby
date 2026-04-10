@@ -876,6 +876,72 @@ func TestManagerApplyReusesManagedACMEStateOnRecreation(t *testing.T) {
 	}
 }
 
+func TestManagerApplyFallsBackToLegacyMetadataWhenManagedMetadataIsPartial(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC)
+	issued := mustCreateTLSMaterial(t, certificateSpec{
+		commonName: "partial-managed-metadata.example.com",
+		notBefore:  now.Add(-time.Hour),
+		notAfter:   now.Add(90 * 24 * time.Hour),
+	})
+	dataDir := t.TempDir()
+	policy := model.ManagedCertificatePolicy{
+		ID:              9053,
+		Domain:          "partial-managed-metadata.example.com",
+		Enabled:         true,
+		Scope:           "domain",
+		IssuerMode:      "local_http01",
+		CertificateType: "acme",
+		Usage:           "https",
+	}
+
+	initial := mustNewManager(
+		t,
+		dataDir,
+		withNow(func() time.Time { return now }),
+		withACMEIssuerFactory(func(request acmeIssueRequest) (acmeIssuer, error) {
+			return &fakeACMEIssuer{
+				results: []acmeIssueResult{
+					{CertPEM: issued.CertPEM, KeyPEM: issued.KeyPEM},
+				},
+			}, nil
+		}),
+	)
+	if err := initial.Apply(context.Background(), nil, []model.ManagedCertificatePolicy{policy}); err != nil {
+		t.Fatalf("initial apply failed: %v", err)
+	}
+
+	if err := initial.saveManagedCertificateState(policy.ID, managedCertificateState{
+		LocalMetadata: localMaterialMetadata{
+			Domain: policy.Domain,
+		},
+	}); err != nil {
+		t.Fatalf("write partial managed metadata failed: %v", err)
+	}
+
+	recreatedIssuerCalls := 0
+	recreated := mustNewManager(
+		t,
+		dataDir,
+		withNow(func() time.Time { return now }),
+		withACMEIssuerFactory(func(request acmeIssueRequest) (acmeIssuer, error) {
+			recreatedIssuerCalls++
+			return &fakeACMEIssuer{
+				results: []acmeIssueResult{
+					{Err: assertUnreachableError{message: "issuer should not be called when legacy metadata is complete"}},
+				},
+			}, nil
+		}),
+	)
+	if err := recreated.Apply(context.Background(), nil, []model.ManagedCertificatePolicy{policy}); err != nil {
+		t.Fatalf("recreated apply failed: %v", err)
+	}
+	if recreatedIssuerCalls != 0 {
+		t.Fatalf("expected zero issuer calls, got %d", recreatedIssuerCalls)
+	}
+}
+
 func TestManagerApplyRegeneratesInternalCAWhenPolicyDomainChanges(t *testing.T) {
 	t.Parallel()
 
