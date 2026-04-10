@@ -9,11 +9,13 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"math/big"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
@@ -717,6 +719,51 @@ func TestManagerApplyPersistsLocallyIssuedACMEMaterialAcrossRecreation(t *testin
 	}
 	if after.Fingerprint != before.Fingerprint {
 		t.Fatalf("expected persisted fingerprint, got %q want %q", after.Fingerprint, before.Fingerprint)
+	}
+}
+
+func TestManagedCertificateStateRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	manager := mustNewManager(t, t.TempDir())
+	certificateID := 9051
+	expected := managedCertificateState{
+		LocalMetadata: localMaterialMetadata{
+			Domain:          "state-roundtrip.example.com",
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			CertificateType: "acme",
+		},
+		ACME: &model.ManagedCertificateACMEState{
+			Account: model.ManagedCertificateACMEAccountState{
+				KeyPEM:       []byte("account-key"),
+				Registration: json.RawMessage(`{"uri":"https://acme-v02.api.letsencrypt.org/acme/acct/12345"}`),
+			},
+			Renewal: model.ManagedCertificateACMERenewalState{
+				NotAfterUnix:        1924905600,
+				RenewAtUnix:         1924041600,
+				LastRenewedAtUnix:   1921453200,
+				LastAttemptAtUnix:   1921453500,
+				LastAttemptError:    "rate-limited",
+				LastAttemptStatus:   "failed",
+				LastAttemptNotAfter: 1924905600,
+			},
+		},
+	}
+
+	if err := manager.saveManagedCertificateState(certificateID, expected); err != nil {
+		t.Fatalf("save managed certificate state failed: %v", err)
+	}
+
+	actual, ok, err := manager.loadManagedCertificateState(certificateID)
+	if err != nil {
+		t.Fatalf("load managed certificate state failed: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected managed certificate state to exist")
+	}
+	if !reflect.DeepEqual(actual, expected) {
+		t.Fatalf("managed certificate state mismatch: got %#v want %#v", actual, expected)
 	}
 }
 
