@@ -1,10 +1,13 @@
 package proxy
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 
@@ -48,36 +51,8 @@ func TestHTTPRuntimeAppliesHostHeadersProxyRedirectAndRoundRobin(t *testing.T) {
 	backendTwo := newBackend("two")
 	defer backendTwo.Close()
 
-	server := NewServer(model.HTTPListener{
-		Rules: []model.HTTPRule{{
-			FrontendURL: "http://Panel.Example.Test",
-			BackendURL:  backendOne.URL,
-			Backends: []model.HTTPBackend{
-				{URL: backendOne.URL},
-				{URL: backendTwo.URL},
-			},
-			PassProxyHeaders: true,
-			ProxyRedirect:    true,
-			LoadBalancing: model.LoadBalancing{
-				Strategy: "round_robin",
-			},
-		}},
-	})
-	proxy := httptest.NewServer(server)
-	defer proxy.Close()
-
-	proxyURL, err := url.Parse(proxy.URL)
-	if err != nil {
-		t.Fatalf("failed to parse proxy URL: %v", err)
-	}
-	frontendPort := proxyURL.Port()
-	if frontendPort == "" {
-		t.Fatalf("proxy URL does not include a port: %q", proxy.URL)
-	}
-
-	if _, err := strconv.Atoi(frontendPort); err != nil {
-		t.Fatalf("proxy URL port is invalid: %q", frontendPort)
-	}
+	runtime, frontendPort := startHTTPRuntimeWithRetry(t, backendOne.URL, backendTwo.URL)
+	defer runtime.Close()
 
 	client := &http.Client{
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
@@ -87,7 +62,7 @@ func TestHTTPRuntimeAppliesHostHeadersProxyRedirectAndRoundRobin(t *testing.T) {
 
 	send := func() *http.Response {
 		t.Helper()
-		req, err := http.NewRequest(http.MethodGet, proxy.URL+"/entry", nil)
+		req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/entry", frontendPort), nil)
 		if err != nil {
 			t.Fatalf("failed to create request: %v", err)
 		}
@@ -117,8 +92,8 @@ func TestHTTPRuntimeAppliesHostHeadersProxyRedirectAndRoundRobin(t *testing.T) {
 		if normalizeHost(parsed.Host) != "panel.example.test" {
 			t.Fatalf("expected frontend host in rewritten location, got %q", parsed.Host)
 		}
-		if parsed.Port() != "" {
-			t.Fatalf("expected rewritten location without explicit port, got %q", parsed.Port())
+		if parsed.Port() != strconv.Itoa(frontendPort) {
+			t.Fatalf("expected rewritten location to include frontend port %d, got %q", frontendPort, parsed.Port())
 		}
 		return parsed.Path
 	}
@@ -149,7 +124,39 @@ func TestHTTPRuntimeAppliesHostHeadersProxyRedirectAndRoundRobin(t *testing.T) {
 	if headers.ForwardedProto != "http" {
 		t.Fatalf("expected X-Forwarded-Proto=http, got %q", headers.ForwardedProto)
 	}
-	if headers.ForwardedPort != frontendPort {
-		t.Fatalf("expected X-Forwarded-Port=%s, got %q", frontendPort, headers.ForwardedPort)
+	if headers.ForwardedPort != strconv.Itoa(frontendPort) {
+		t.Fatalf("expected X-Forwarded-Port=%d, got %q", frontendPort, headers.ForwardedPort)
 	}
+}
+
+func startHTTPRuntimeWithRetry(t *testing.T, backendOneURL, backendTwoURL string) (*Runtime, int) {
+	t.Helper()
+
+	const maxAttempts = 20
+	var lastErr error
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		frontendPort := pickFreePort(t)
+		runtime, err := Start(context.Background(), []model.HTTPRule{{
+			FrontendURL: fmt.Sprintf("http://Panel.Example.Test:%d", frontendPort),
+			BackendURL:  backendOneURL,
+			Backends: []model.HTTPBackend{
+				{URL: backendOneURL},
+				{URL: backendTwoURL},
+			},
+			PassProxyHeaders: true,
+			ProxyRedirect:    true,
+			LoadBalancing: model.LoadBalancing{
+				Strategy: "round_robin",
+			},
+		}}, nil, Providers{})
+		if err == nil {
+			return runtime, frontendPort
+		}
+		lastErr = err
+		if !strings.Contains(err.Error(), "address already in use") {
+			t.Fatalf("failed to start runtime: %v", err)
+		}
+	}
+	t.Fatalf("failed to start runtime after %d attempts: %v", maxAttempts, lastErr)
+	return nil, 0
 }
