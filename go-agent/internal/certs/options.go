@@ -30,6 +30,8 @@ type acmeConfig struct {
 	cloudflareDNSAPIToken  string
 	cloudflareZoneAPIToken string
 	renewBefore            time.Duration
+	renewalLoopInterval    time.Duration
+	renewalAttemptTimeout  time.Duration
 }
 
 type acmeChallengeType string
@@ -86,6 +88,8 @@ func defaultManagerConfig() managerConfig {
 			cloudflareDNSAPIToken:  firstNonEmpty(strings.TrimSpace(os.Getenv("CLOUDFLARE_DNS_API_TOKEN")), strings.TrimSpace(os.Getenv("CF_DNS_API_TOKEN")), strings.TrimSpace(os.Getenv("CF_TOKEN")), strings.TrimSpace(os.Getenv("CF_Token"))),
 			cloudflareZoneAPIToken: strings.TrimSpace(os.Getenv("CLOUDFLARE_ZONE_API_TOKEN")),
 			renewBefore:            30 * 24 * time.Hour,
+			renewalLoopInterval:    10 * time.Minute,
+			renewalAttemptTimeout:  2 * time.Minute,
 		},
 		now:           time.Now,
 		issuerFactory: defaultACMEIssuerFactory,
@@ -149,6 +153,18 @@ func withNow(now func() time.Time) Option {
 func withRenewBefore(d time.Duration) Option {
 	return func(cfg *managerConfig) {
 		cfg.acme.renewBefore = d
+	}
+}
+
+func withRenewalLoopInterval(d time.Duration) Option {
+	return func(cfg *managerConfig) {
+		cfg.acme.renewalLoopInterval = d
+	}
+}
+
+func withRenewalAttemptTimeout(d time.Duration) Option {
+	return func(cfg *managerConfig) {
+		cfg.acme.renewalAttemptTimeout = d
 	}
 }
 

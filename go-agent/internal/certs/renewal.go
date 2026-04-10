@@ -8,8 +8,6 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
-const renewalLoopInterval = 10 * time.Minute
-
 type renewalCandidate struct {
 	id   int
 	info CertificateInfo
@@ -17,13 +15,17 @@ type renewalCandidate struct {
 
 func (m *Manager) startRenewalLoop(ctx context.Context) {
 	m.renewalLoopStarted.Do(func() {
-		go m.runRenewalLoop(ctx, renewalLoopInterval)
+		m.renewalWG.Add(1)
+		go func() {
+			defer m.renewalWG.Done()
+			m.runRenewalLoop(ctx, m.cfg.acme.renewalLoopInterval)
+		}()
 	})
 }
 
 func (m *Manager) runRenewalLoop(ctx context.Context, interval time.Duration) {
 	if interval <= 0 {
-		interval = renewalLoopInterval
+		interval = 10 * time.Minute
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -42,7 +44,14 @@ func (m *Manager) runRenewalLoopIteration(ctx context.Context) error {
 	candidates := m.renewalCandidates()
 	var firstErr error
 	for _, candidate := range candidates {
-		if err := m.renewCertificate(ctx, candidate); err != nil && firstErr == nil {
+		attemptCtx := ctx
+		cancel := func() {}
+		if timeout := m.cfg.acme.renewalAttemptTimeout; timeout > 0 {
+			attemptCtx, cancel = context.WithTimeout(ctx, timeout)
+		}
+		err := m.renewCertificate(attemptCtx, candidate)
+		cancel()
+		if err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}

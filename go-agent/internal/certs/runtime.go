@@ -45,6 +45,11 @@ type Manager struct {
 	mu                 sync.RWMutex
 	active             *activeState
 	renewalLoopStarted sync.Once
+	renewalCancel      context.CancelFunc
+	renewalWG          sync.WaitGroup
+	closeOnce          sync.Once
+	issuanceMu         sync.Mutex
+	issuanceByID       map[int]*sync.Mutex
 }
 
 type activeState struct {
@@ -99,13 +104,26 @@ func NewManager(dataDir string, opts ...Option) (*Manager, error) {
 		cfg.issuerFactory = defaultACMEIssuerFactory
 	}
 
+	renewalCtx, renewalCancel := context.WithCancel(context.Background())
 	manager := &Manager{
-		dataDir: dataDir,
-		cfg:     cfg,
-		active:  &activeState{byID: map[int]*managedCertificate{}},
+		dataDir:       dataDir,
+		cfg:           cfg,
+		active:        &activeState{byID: map[int]*managedCertificate{}},
+		renewalCancel: renewalCancel,
+		issuanceByID:  map[int]*sync.Mutex{},
 	}
-	manager.startRenewalLoop(context.Background())
+	manager.startRenewalLoop(renewalCtx)
 	return manager, nil
+}
+
+func (m *Manager) Close() error {
+	m.closeOnce.Do(func() {
+		if m.renewalCancel != nil {
+			m.renewalCancel()
+		}
+		m.renewalWG.Wait()
+	})
+	return nil
 }
 
 func (m *Manager) Apply(ctx context.Context, bundles []model.ManagedCertificateBundle, policies []model.ManagedCertificatePolicy) error {
@@ -304,6 +322,10 @@ func (m *Manager) loadOrIssueInternalCA(policy model.ManagedCertificatePolicy) (
 }
 
 func (m *Manager) loadOrIssueACME(ctx context.Context, policy model.ManagedCertificatePolicy) ([]byte, []byte, error) {
+	lock := m.issuanceLock(policy.ID)
+	lock.Lock()
+	defer lock.Unlock()
+
 	persisted, err := m.loadPersistedACMEMaterial(policy.ID)
 	if err != nil {
 		return nil, nil, err
@@ -349,6 +371,18 @@ func (m *Manager) loadOrIssueACME(ctx context.Context, policy model.ManagedCerti
 		return nil, nil, err
 	}
 	return result.CertPEM, result.KeyPEM, nil
+}
+
+func (m *Manager) issuanceLock(certificateID int) *sync.Mutex {
+	m.issuanceMu.Lock()
+	defer m.issuanceMu.Unlock()
+
+	if lock, ok := m.issuanceByID[certificateID]; ok {
+		return lock
+	}
+	lock := &sync.Mutex{}
+	m.issuanceByID[certificateID] = lock
+	return lock
 }
 
 func (m *Manager) newACMEIssueRequest(policy model.ManagedCertificatePolicy, persisted persistedACMEMaterial) (acmeIssueRequest, error) {

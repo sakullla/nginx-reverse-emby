@@ -36,6 +36,10 @@ type HTTPApplier interface {
 	Close() error
 }
 
+type certCloser interface {
+	Close() error
+}
+
 type HTTPRelayAwareApplier interface {
 	ApplyWithRelay(context.Context, []model.HTTPRule, []model.RelayListener) error
 }
@@ -408,6 +412,9 @@ func localRelayListeners(listeners []model.RelayListener, agentID, agentName str
 }
 
 func (a *App) closeLocalRuntimes() {
+	if closer, ok := a.certApplier.(certCloser); ok {
+		_ = closer.Close()
+	}
 	if a.httpApplier != nil {
 		_ = a.httpApplier.Close()
 	}

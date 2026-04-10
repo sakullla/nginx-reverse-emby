@@ -452,6 +452,32 @@ func TestRunDoesNotAdvanceAppliedSnapshotOrCurrentRevisionOnApplyFailure(t *test
 	}
 }
 
+func TestRunClosesCertificateApplierOnShutdown(t *testing.T) {
+	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
+	mem := store.NewInMemory()
+	if err := mem.SaveAppliedSnapshot(Snapshot{DesiredVersion: "baseline"}); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{DesiredVersion: "next", Revision: 2}})
+	certApplier := &testCertificateApplier{}
+	app := newAppWithDeps(cfg, mem, client, certApplier, nil, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- app.Run(ctx)
+	}()
+
+	waitForCalls(t, client, 1, time.Second)
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+	if got := certApplier.closeCount(); got != 1 {
+		t.Fatalf("expected certificate applier close to be called once, got %d", got)
+	}
+}
+
 func TestAppRollsBackRuntimeAndPersistsLastSyncError(t *testing.T) {
 	cfg := Config{HeartbeatInterval: time.Hour}
 	mem := store.NewInMemory()
@@ -1155,6 +1181,7 @@ type testCertificateApplier struct {
 	mu       sync.Mutex
 	calls    []applyCall
 	applyErr error
+	closed   int
 }
 
 func (a *testCertificateApplier) Apply(_ context.Context, bundles []model.ManagedCertificateBundle, policies []model.ManagedCertificatePolicy) error {
@@ -1176,7 +1203,16 @@ func (a *testCertificateApplier) snapshotCalls() []applyCall {
 }
 
 func (a *testCertificateApplier) Close() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.closed++
 	return nil
+}
+
+func (a *testCertificateApplier) closeCount() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.closed
 }
 
 type testL4Applier struct {
