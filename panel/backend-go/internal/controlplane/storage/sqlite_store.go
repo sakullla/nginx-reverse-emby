@@ -21,7 +21,7 @@ type SQLiteStore struct {
 }
 
 func NewSQLiteStore(dataRoot string, localAgentID string) (*SQLiteStore, error) {
-	db, err := sql.Open("sqlite", fmt.Sprintf("file:%s", filepath.Join(dataRoot, "panel.sqlite")))
+	db, err := sql.Open("sqlite", fmt.Sprintf("file:%s", filepath.Join(dataRoot, "panel.db")))
 	if err != nil {
 		return nil, err
 	}
