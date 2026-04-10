@@ -45,7 +45,6 @@ ENV NODE_ENV=production \
     PANEL_BACKEND_PORT=3000
 WORKDIR /opt/nginx-reverse-emby
 COPY scripts/ ./scripts/
-COPY examples/ ./examples/
 COPY panel/backend/ ./panel/backend/
 COPY --from=frontend-builder /build/dist ./panel/frontend/dist/
 COPY --from=backend-builder /build/node_modules ./panel/backend/node_modules/
