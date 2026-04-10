@@ -2,13 +2,14 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strconv"
-	"strings"
 	"sync"
+	"syscall"
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
@@ -153,10 +154,21 @@ func startHTTPRuntimeWithRetry(t *testing.T, backendOneURL, backendTwoURL string
 			return runtime, frontendPort
 		}
 		lastErr = err
-		if !strings.Contains(err.Error(), "address already in use") {
+		if !isAddressInUseError(err) {
 			t.Fatalf("failed to start runtime: %v", err)
 		}
 	}
 	t.Fatalf("failed to start runtime after %d attempts: %v", maxAttempts, lastErr)
 	return nil, 0
+}
+
+func isAddressInUseError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, syscall.EADDRINUSE) {
+		return true
+	}
+	var errno syscall.Errno
+	return errors.As(err, &errno) && errno == syscall.EADDRINUSE
 }
