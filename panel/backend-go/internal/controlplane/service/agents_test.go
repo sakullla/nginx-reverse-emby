@@ -117,6 +117,9 @@ func TestAgentServiceListSynthesizesLocalAgentAndRemoteStatus(t *testing.T) {
 	if agents[0].ID != "local" || !agents[0].IsLocal || agents[0].Status != "online" {
 		t.Fatalf("local agent = %+v", agents[0])
 	}
+	if agents[0].Mode != "local" {
+		t.Fatalf("local Mode = %q", agents[0].Mode)
+	}
 	if agents[0].HTTPRulesCount != 1 {
 		t.Fatalf("local HTTPRulesCount = %d", agents[0].HTTPRulesCount)
 	}
