@@ -3,6 +3,7 @@ package config
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadFromEnvDefaultsMasterRuntime(t *testing.T) {
@@ -175,5 +176,32 @@ func TestLoadFromEnvManagedDNSCertificatesDisabledWithoutCompleteCloudflareConfi
 				t.Fatalf("ManagedDNSCertificatesEnabled = true, want false")
 			}
 		})
+	}
+}
+
+func TestLoadFromEnvManagedCertificateRenewIntervalDefaultsTo24Hours(t *testing.T) {
+	t.Setenv("NRE_PANEL_TOKEN", "secret")
+	t.Setenv("NRE_REGISTER_TOKEN", "register-secret")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if cfg.ManagedCertificateRenewInterval != 24*time.Hour {
+		t.Fatalf("ManagedCertificateRenewInterval = %v", cfg.ManagedCertificateRenewInterval)
+	}
+}
+
+func TestLoadFromEnvParsesLegacyManagedCertificateRenewIntervalMillis(t *testing.T) {
+	t.Setenv("NRE_PANEL_TOKEN", "secret")
+	t.Setenv("NRE_REGISTER_TOKEN", "register-secret")
+	t.Setenv("PANEL_MANAGED_CERT_RENEW_INTERVAL_MS", "60000")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if cfg.ManagedCertificateRenewInterval != time.Minute {
+		t.Fatalf("ManagedCertificateRenewInterval = %v", cfg.ManagedCertificateRenewInterval)
 	}
 }

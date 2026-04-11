@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -17,32 +18,35 @@ const (
 	defaultLocalAgentID      = "local"
 	defaultLocalAgentName    = "local"
 	defaultHeartbeatInterval = 30 * time.Second
+	defaultManagedCertRenew  = 24 * time.Hour
 )
 
 type Config struct {
-	ListenAddr                    string
-	DataDir                       string
-	PanelToken                    string
-	RegisterToken                 string
-	FrontendDistDir               string
-	PublicAgentAssetsDir          string
-	EnableLocalAgent              bool
-	LocalAgentID                  string
-	LocalAgentName                string
-	HeartbeatInterval             time.Duration
-	ManagedDNSCertificatesEnabled bool
+	ListenAddr                      string
+	DataDir                         string
+	PanelToken                      string
+	RegisterToken                   string
+	FrontendDistDir                 string
+	PublicAgentAssetsDir            string
+	EnableLocalAgent                bool
+	LocalAgentID                    string
+	LocalAgentName                  string
+	HeartbeatInterval               time.Duration
+	ManagedCertificateRenewInterval time.Duration
+	ManagedDNSCertificatesEnabled   bool
 }
 
 func Default() Config {
 	return Config{
-		ListenAddr:           defaultListenAddr,
-		DataDir:              defaultDataDir,
-		FrontendDistDir:      defaultFrontendDistDir,
-		PublicAgentAssetsDir: defaultPublicAssetsDir,
-		EnableLocalAgent:     defaultEnableLocalAgent,
-		LocalAgentID:         defaultLocalAgentID,
-		LocalAgentName:       defaultLocalAgentName,
-		HeartbeatInterval:    defaultHeartbeatInterval,
+		ListenAddr:                      defaultListenAddr,
+		DataDir:                         defaultDataDir,
+		FrontendDistDir:                 defaultFrontendDistDir,
+		PublicAgentAssetsDir:            defaultPublicAssetsDir,
+		EnableLocalAgent:                defaultEnableLocalAgent,
+		LocalAgentID:                    defaultLocalAgentID,
+		LocalAgentName:                  defaultLocalAgentName,
+		HeartbeatInterval:               defaultHeartbeatInterval,
+		ManagedCertificateRenewInterval: defaultManagedCertRenew,
 	}
 }
 
@@ -112,6 +116,25 @@ func LoadFromEnv() (Config, error) {
 			return Config{}, errors.New("NRE_HEARTBEAT_INTERVAL must be positive")
 		}
 		cfg.HeartbeatInterval = dur
+	}
+	if val := strings.TrimSpace(os.Getenv("NRE_MANAGED_CERT_RENEW_INTERVAL")); val != "" {
+		dur, err := time.ParseDuration(val)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid NRE_MANAGED_CERT_RENEW_INTERVAL: %w", err)
+		}
+		if dur <= 0 {
+			return Config{}, errors.New("NRE_MANAGED_CERT_RENEW_INTERVAL must be positive")
+		}
+		cfg.ManagedCertificateRenewInterval = dur
+	} else if val := strings.TrimSpace(firstEnv("PANEL_MANAGED_CERT_RENEW_INTERVAL_MS")); val != "" {
+		ms, err := strconv.ParseInt(val, 10, 64)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid PANEL_MANAGED_CERT_RENEW_INTERVAL_MS: %w", err)
+		}
+		if ms <= 0 {
+			return Config{}, errors.New("PANEL_MANAGED_CERT_RENEW_INTERVAL_MS must be positive")
+		}
+		cfg.ManagedCertificateRenewInterval = time.Duration(ms) * time.Millisecond
 	}
 
 	acmeDNSProvider := strings.TrimSpace(firstEnv("ACME_DNS_PROVIDER"))

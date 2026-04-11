@@ -2682,6 +2682,64 @@ func TestNewCertificateServiceDoesNotAutoWireManagedDNSRenewalIssuer(t *testing.
 	}
 }
 
+func TestCertificateServiceRunRenewalPassUsesManagedDNSFallbackIssuer(t *testing.T) {
+	store := &relayCertStore{
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              48,
+			Domain:          "fallback.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "master_cf_dns",
+			TargetAgentIDs:  `["local"]`,
+			Status:          "pending",
+			ACMEInfo:        `{"Renew":"2026-04-10T00:00:00Z"}`,
+			CertificateType: "acme",
+			Usage:           "https",
+			Revision:        11,
+		}},
+	}
+	issuer := &fakeManagedCertificateRenewalIssuer{
+		results: map[int]managedCertificateRenewalResult{
+			48: {
+				Changed:      true,
+				LastIssueAt:  "2026-04-11T03:04:05Z",
+				MaterialHash: "fallback-hash",
+				ACMEInfo: ManagedCertificateACMEInfo{
+					MainDomain: "fallback.example.com",
+					Renew:      "2026-07-10T00:00:00Z",
+				},
+			},
+		},
+	}
+
+	previousFactory := newManagedCertificateRenewalIssuer
+	t.Cleanup(func() {
+		newManagedCertificateRenewalIssuer = previousFactory
+	})
+	newManagedCertificateRenewalIssuer = func() managedCertificateRenewalIssuer {
+		return issuer
+	}
+
+	svc := NewCertificateService(config.Config{
+		EnableLocalAgent:              true,
+		LocalAgentID:                  "local",
+		ManagedDNSCertificatesEnabled: true,
+	}, store)
+	svc.now = func() time.Time { return time.Date(2026, 4, 11, 0, 0, 0, 0, time.UTC) }
+
+	if err := svc.RunRenewalPass(context.Background()); err != nil {
+		t.Fatalf("RunRenewalPass() error = %v", err)
+	}
+	if len(issuer.calls) != 1 || issuer.calls[0] != 48 {
+		t.Fatalf("issuer calls = %+v", issuer.calls)
+	}
+
+	renewed := managedCertificateFromRow(store.managedCerts[0])
+	if renewed.Status != "active" || renewed.MaterialHash != "fallback-hash" {
+		t.Fatalf("renewed = %+v", renewed)
+	}
+}
+
 type fakeManagedCertificateRenewalIssuer struct {
 	calls   []int
 	results map[int]managedCertificateRenewalResult

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/localagent"
@@ -163,5 +164,38 @@ func TestInitializeControlPlaneBootstrapsGlobalRelayCA(t *testing.T) {
 	}
 	if bundle.CertPEM == "" || bundle.KeyPEM == "" {
 		t.Fatalf("relay CA bundle = %+v", bundle)
+	}
+}
+
+func TestStartManagedCertificateAutoRenewLoopRunsInitialPass(t *testing.T) {
+	cfg := config.Default()
+	cfg.ManagedDNSCertificatesEnabled = true
+	cfg.ManagedCertificateRenewInterval = time.Hour
+
+	previousRunner := runManagedCertificateRenewalPass
+	previousDelay := managedCertificateAutoRenewInitialDelay
+	t.Cleanup(func() {
+		runManagedCertificateRenewalPass = previousRunner
+		managedCertificateAutoRenewInitialDelay = previousDelay
+	})
+
+	called := make(chan struct{}, 1)
+	runManagedCertificateRenewalPass = func(context.Context, config.Config) error {
+		select {
+		case called <- struct{}{}:
+		default:
+		}
+		return nil
+	}
+	managedCertificateAutoRenewInitialDelay = 0
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	startManagedCertificateAutoRenewLoop(ctx, cfg, nil)
+
+	select {
+	case <-called:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for initial managed certificate renewal pass")
 	}
 }

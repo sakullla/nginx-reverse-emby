@@ -21,8 +21,14 @@ type managedCertificateRenewalResult struct {
 	Material     storage.ManagedCertificateBundle
 }
 
+var newManagedCertificateRenewalIssuer = newMasterCFDNSManagedCertificateIssuer
+
 func (s *certificateService) RunRenewalPass(ctx context.Context) error {
-	if s.renewalIssuer == nil {
+	issuer := s.renewalIssuer
+	if issuer == nil && s.cfg.ManagedDNSCertificatesEnabled {
+		issuer = newManagedCertificateRenewalIssuer()
+	}
+	if issuer == nil {
 		return nil
 	}
 
@@ -40,7 +46,7 @@ func (s *certificateService) RunRenewalPass(ctx context.Context) error {
 			continue
 		}
 
-		result, err := s.renewalIssuer.Renew(ctx, cert)
+		result, err := issuer.Renew(ctx, cert)
 		if err != nil {
 			next := cert
 			next.Status = "error"

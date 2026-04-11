@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/app"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
@@ -31,6 +32,7 @@ func main() {
 	if err := initializeControlPlane(ctx, cfg); err != nil {
 		log.Fatal(err)
 	}
+	startManagedCertificateAutoRenewLoop(ctx, cfg, nil)
 
 	application, err := newControlPlaneApp(cfg, nil)
 	if err != nil {
@@ -59,6 +61,56 @@ var initializeControlPlane = func(ctx context.Context, cfg config.Config) error 
 	}()
 
 	return service.NewRelayListenerService(cfg, store).Bootstrap(ctx)
+}
+
+var runManagedCertificateRenewalPass = func(ctx context.Context, cfg config.Config) error {
+	store, err := storage.NewSQLiteStore(cfg.DataDir, cfg.LocalAgentID)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = store.Close()
+	}()
+
+	return service.NewCertificateService(cfg, store).RunRenewalPass(ctx)
+}
+
+var managedCertificateAutoRenewInitialDelay = 10 * time.Second
+
+func startManagedCertificateAutoRenewLoop(ctx context.Context, cfg config.Config, logger *log.Logger) {
+	if !cfg.ManagedDNSCertificatesEnabled || cfg.ManagedCertificateRenewInterval <= 0 {
+		return
+	}
+	if logger == nil {
+		logger = log.Default()
+	}
+
+	go func() {
+		initialTimer := time.NewTimer(managedCertificateAutoRenewInitialDelay)
+		defer initialTimer.Stop()
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-initialTimer.C:
+			if err := runManagedCertificateRenewalPass(ctx, cfg); err != nil {
+				logger.Printf("[cert] initial auto renew cycle failed: %v", err)
+			}
+		}
+
+		ticker := time.NewTicker(cfg.ManagedCertificateRenewInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := runManagedCertificateRenewalPass(ctx, cfg); err != nil {
+					logger.Printf("[cert] managed certificate auto renew cycle failed: %v", err)
+				}
+			}
+		}
+	}()
 }
 
 var newLocalAgentStarter = func(cfg config.Config) (app.LocalAgentStarter, error) {
