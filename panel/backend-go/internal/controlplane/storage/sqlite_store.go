@@ -19,6 +19,7 @@ type Store interface {
 	ListL4Rules(context.Context, string) ([]L4RuleRow, error)
 	ListRelayListeners(context.Context, string) ([]RelayListenerRow, error)
 	LoadLocalAgentState(context.Context) (LocalAgentStateRow, error)
+	LoadAgentSnapshot(context.Context, string, AgentSnapshotInput) (Snapshot, error)
 	ListVersionPolicies(context.Context) ([]VersionPolicyRow, error)
 	ListManagedCertificates(context.Context) ([]ManagedCertificateRow, error)
 	SaveAgent(context.Context, AgentRow) error

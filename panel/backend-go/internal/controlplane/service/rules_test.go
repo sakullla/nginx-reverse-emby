@@ -58,6 +58,10 @@ func (f *fakeRuleStore) ListManagedCertificates(context.Context) ([]storage.Mana
 	return append([]storage.ManagedCertificateRow(nil), f.managedCerts...), nil
 }
 
+func (f *fakeRuleStore) LoadAgentSnapshot(context.Context, string, storage.AgentSnapshotInput) (storage.Snapshot, error) {
+	return storage.Snapshot{}, nil
+}
+
 func (f *fakeRuleStore) SaveManagedCertificates(_ context.Context, rows []storage.ManagedCertificateRow) error {
 	if err := popRuleStoreError(&f.saveManagedErrs); err != nil {
 		return err

@@ -26,8 +26,34 @@ func (d Dependencies) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":   true,
-		"sync": reply,
+		"sync": heartbeatSyncPayload(reply),
 	})
+}
+
+func heartbeatSyncPayload(reply service.HeartbeatReply) map[string]any {
+	payload := map[string]any{
+		"has_update":       reply.HasUpdate,
+		"desired_version":  reply.DesiredVersion,
+		"desired_revision": reply.DesiredRevision,
+		"current_revision": reply.CurrentRevision,
+		"relay_listeners":  reply.RelayListeners,
+	}
+	if reply.VersionPackage != "" {
+		payload["version_package"] = reply.VersionPackage
+	}
+	if reply.VersionPackageMeta != nil {
+		payload["version_package_meta"] = reply.VersionPackageMeta
+	}
+	if reply.VersionSHA256 != "" {
+		payload["version_sha256"] = reply.VersionSHA256
+	}
+	if reply.HasUpdate {
+		payload["rules"] = reply.Rules
+		payload["l4_rules"] = reply.L4Rules
+		payload["certificates"] = reply.Certificates
+		payload["certificate_policies"] = reply.CertificatePolicies
+	}
+	return payload
 }
 
 func (d Dependencies) handleJoinAgentScript(w http.ResponseWriter, r *http.Request) {

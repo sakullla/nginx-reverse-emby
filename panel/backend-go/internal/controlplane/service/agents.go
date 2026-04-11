@@ -93,11 +93,11 @@ type HeartbeatReply struct {
 	VersionPackage      string                             `json:"version_package,omitempty"`
 	VersionPackageMeta  *storage.VersionPackage            `json:"version_package_meta,omitempty"`
 	VersionSHA256       string                             `json:"version_sha256,omitempty"`
-	Rules               []storage.HTTPRule                 `json:"rules,omitempty"`
-	L4Rules             []storage.L4Rule                   `json:"l4_rules,omitempty"`
+	Rules               []storage.HTTPRule                 `json:"rules"`
+	L4Rules             []storage.L4Rule                   `json:"l4_rules"`
 	RelayListeners      []storage.RelayListener            `json:"relay_listeners"`
-	Certificates        []storage.ManagedCertificateBundle `json:"certificates,omitempty"`
-	CertificatePolicies []storage.ManagedCertificatePolicy `json:"certificate_policies,omitempty"`
+	Certificates        []storage.ManagedCertificateBundle `json:"certificates"`
+	CertificatePolicies []storage.ManagedCertificatePolicy `json:"certificate_policies"`
 }
 
 type RegisterRequest struct {
@@ -116,10 +116,6 @@ type agentService struct {
 	cfg   config.Config
 	store storage.Store
 	now   func() time.Time
-}
-
-type agentSnapshotLoader interface {
-	LoadAgentSnapshot(context.Context, string, storage.AgentSnapshotInput) (storage.Snapshot, error)
 }
 
 func NewAgentService(cfg config.Config, store storage.Store) *agentService {
@@ -368,11 +364,7 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 }
 
 func (s *agentService) loadHeartbeatSnapshot(ctx context.Context, row storage.AgentRow) (storage.Snapshot, error) {
-	loader, ok := any(s.store).(agentSnapshotLoader)
-	if !ok {
-		return storage.Snapshot{}, errors.New("store does not implement LoadAgentSnapshot")
-	}
-	return loader.LoadAgentSnapshot(ctx, row.ID, storage.AgentSnapshotInput{
+	return s.store.LoadAgentSnapshot(ctx, row.ID, storage.AgentSnapshotInput{
 		DesiredVersion:  row.DesiredVersion,
 		DesiredRevision: row.DesiredRevision,
 		CurrentRevision: row.CurrentRevision,

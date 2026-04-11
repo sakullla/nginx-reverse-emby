@@ -22,7 +22,8 @@ func (f fakeSystemService) Info(context.Context) service.SystemInfo {
 }
 
 type fakeAgentService struct {
-	agents []service.AgentSummary
+	agents          []service.AgentSummary
+	heartbeatReply  service.HeartbeatReply
 }
 
 func (f fakeAgentService) List(context.Context) ([]service.AgentSummary, error) {

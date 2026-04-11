@@ -52,6 +52,10 @@ func (s *relayCertStore) LoadLocalAgentState(context.Context) (storage.LocalAgen
 	return s.localState, nil
 }
 
+func (s *relayCertStore) LoadAgentSnapshot(context.Context, string, storage.AgentSnapshotInput) (storage.Snapshot, error) {
+	return storage.Snapshot{}, nil
+}
+
 func (s *relayCertStore) ListVersionPolicies(context.Context) ([]storage.VersionPolicyRow, error) {
 	return nil, nil
 }
