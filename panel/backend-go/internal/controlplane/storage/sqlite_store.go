@@ -26,6 +26,7 @@ type Store interface {
 	SaveRelayListeners(context.Context, string, []RelayListenerRow) error
 	SaveVersionPolicies(context.Context, []VersionPolicyRow) error
 	SaveManagedCertificates(context.Context, []ManagedCertificateRow) error
+	CleanupManagedCertificateMaterial(context.Context, []ManagedCertificateRow, []ManagedCertificateRow) error
 }
 
 type SQLiteStore struct {
@@ -355,39 +356,28 @@ func (s *SQLiteStore) SaveRelayListeners(ctx context.Context, agentID string, li
 }
 
 func (s *SQLiteStore) SaveManagedCertificates(ctx context.Context, certs []ManagedCertificateRow) error {
-	existingRows, err := s.ListManagedCertificates(ctx)
-	if err != nil {
-		return err
-	}
-	existingDomains := managedCertificateDomainSet(existingRows)
-
-	rows := make([]ManagedCertificateRow, 0, len(certs))
-	nextDomains := make(map[string]struct{}, len(certs))
-	for _, row := range certs {
-		normalizeManagedCertificateRow(&row)
-		rows = append(rows, row)
-		domain := strings.TrimSpace(row.Domain)
-		if domain == "" {
-			continue
-		}
-		nextDomains[normalizeManagedCertificateHost(domain)] = struct{}{}
-	}
-
-	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&ManagedCertificateRow{}).Error; err != nil {
 			return err
 		}
 
-		if len(rows) == 0 {
+		if len(certs) == 0 {
 			return nil
 		}
+		rows := make([]ManagedCertificateRow, 0, len(certs))
+		for _, row := range certs {
+			normalizeManagedCertificateRow(&row)
+			rows = append(rows, row)
+		}
 		return tx.Create(&rows).Error
-	}); err != nil {
-		return err
-	}
+	})
+}
 
+func (s *SQLiteStore) CleanupManagedCertificateMaterial(_ context.Context, previous []ManagedCertificateRow, next []ManagedCertificateRow) error {
+	previousDomains := managedCertificateDomainSet(previous)
+	nextDomains := managedCertificateDomainSet(next)
 	baseDir := filepath.Join(s.dataRoot, "managed_certificates")
-	for domain := range existingDomains {
+	for domain := range previousDomains {
 		if _, ok := nextDomains[domain]; ok {
 			continue
 		}

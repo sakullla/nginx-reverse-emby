@@ -163,6 +163,9 @@ func (s *certificateService) Create(ctx context.Context, agentID string, input M
 	if err := s.store.SaveManagedCertificates(ctx, rows); err != nil {
 		return ManagedCertificate{}, err
 	}
+	if err := s.store.CleanupManagedCertificateMaterial(ctx, current, rows); err != nil {
+		return ManagedCertificate{}, err
+	}
 	return cert, nil
 }
 
@@ -206,7 +209,12 @@ func (s *certificateService) Update(ctx context.Context, agentID string, id int,
 	}
 	next.Revision = maxRevision + 1
 	rows[targetIndex] = managedCertificateToRow(next)
+	originalRows := append([]storage.ManagedCertificateRow(nil), rows...)
+	originalRows[targetIndex] = managedCertificateToRow(current)
 	if err := s.store.SaveManagedCertificates(ctx, rows); err != nil {
+		return ManagedCertificate{}, err
+	}
+	if err := s.store.CleanupManagedCertificateMaterial(ctx, originalRows, rows); err != nil {
 		return ManagedCertificate{}, err
 	}
 	return next, nil
@@ -248,8 +256,12 @@ func (s *certificateService) Delete(ctx context.Context, agentID string, id int)
 		next := current
 		next.TargetAgentIDs = nextTargets
 		next.Revision = maxRevision + 1
+		originalRows := append([]storage.ManagedCertificateRow(nil), rows...)
 		rows[targetIndex] = managedCertificateToRow(next)
 		if err := s.store.SaveManagedCertificates(ctx, rows); err != nil {
+			return ManagedCertificate{}, err
+		}
+		if err := s.store.CleanupManagedCertificateMaterial(ctx, originalRows, rows); err != nil {
 			return ManagedCertificate{}, err
 		}
 		current.TargetAgentIDs = []string{resolvedID}
@@ -259,6 +271,9 @@ func (s *certificateService) Delete(ctx context.Context, agentID string, id int)
 	nextRows := append([]storage.ManagedCertificateRow(nil), rows[:targetIndex]...)
 	nextRows = append(nextRows, rows[targetIndex+1:]...)
 	if err := s.store.SaveManagedCertificates(ctx, nextRows); err != nil {
+		return ManagedCertificate{}, err
+	}
+	if err := s.store.CleanupManagedCertificateMaterial(ctx, rows, nextRows); err != nil {
 		return ManagedCertificate{}, err
 	}
 	return current, nil
@@ -296,8 +311,12 @@ func (s *certificateService) Issue(ctx context.Context, agentID string, id int) 
 	current.LastIssueAt = s.now().UTC().Format(time.RFC3339)
 	current.LastError = ""
 	current.Revision = maxRevision + 1
+	originalRows := append([]storage.ManagedCertificateRow(nil), rows...)
 	rows[targetIndex] = managedCertificateToRow(current)
 	if err := s.store.SaveManagedCertificates(ctx, rows); err != nil {
+		return ManagedCertificate{}, err
+	}
+	if err := s.store.CleanupManagedCertificateMaterial(ctx, originalRows, rows); err != nil {
 		return ManagedCertificate{}, err
 	}
 	return current, nil

@@ -244,7 +244,7 @@ func TestStoreSaveManagedCertificatesRemovesMaterialForDeletedDomains(t *testing
 	})
 
 	domain := "stale.example.com"
-	if err := store.SaveManagedCertificates(t.Context(), []ManagedCertificateRow{{
+	initialRows := []ManagedCertificateRow{{
 		ID:              101,
 		Domain:          domain,
 		Enabled:         true,
@@ -255,7 +255,8 @@ func TestStoreSaveManagedCertificatesRemovesMaterialForDeletedDomains(t *testing
 		Usage:           "https",
 		CertificateType: "uploaded",
 		Revision:        1,
-	}}); err != nil {
+	}}
+	if err := store.SaveManagedCertificates(t.Context(), initialRows); err != nil {
 		t.Fatalf("SaveManagedCertificates(initial) error = %v", err)
 	}
 	writeManagedCertificateMaterial(t, dataRoot, domain, "old-cert", "old-key")
@@ -268,8 +269,14 @@ func TestStoreSaveManagedCertificatesRemovesMaterialForDeletedDomains(t *testing
 	}
 
 	certDir := filepath.Join(dataRoot, "managed_certificates", normalizeManagedCertificateHost(domain))
+	if _, statErr := os.Stat(certDir); statErr != nil {
+		t.Fatalf("expected deleted cert dir to remain until explicit cleanup, stat error = %v", statErr)
+	}
+	if err := store.CleanupManagedCertificateMaterial(t.Context(), initialRows, []ManagedCertificateRow{}); err != nil {
+		t.Fatalf("CleanupManagedCertificateMaterial() error = %v", err)
+	}
 	if _, statErr := os.Stat(certDir); !errors.Is(statErr, os.ErrNotExist) {
-		t.Fatalf("expected deleted cert dir to be removed, stat error = %v", statErr)
+		t.Fatalf("expected deleted cert dir to be removed after cleanup, stat error = %v", statErr)
 	}
 	if _, ok := store.readManagedCertificateMaterial(domain); ok {
 		t.Fatalf("expected material for %q to be removed after delete", domain)

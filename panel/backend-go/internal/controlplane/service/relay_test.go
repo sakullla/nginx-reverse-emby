@@ -21,6 +21,7 @@ type relayCertStore struct {
 	saveManagedErr  error
 	saveManagedErrs []error
 	saveManagedCall int
+	cleanupCall     int
 }
 
 func (s *relayCertStore) ListAgents(context.Context) ([]storage.AgentRow, error) {
@@ -93,6 +94,11 @@ func (s *relayCertStore) SaveManagedCertificates(_ context.Context, rows []stora
 		return s.saveManagedErr
 	}
 	s.managedCerts = append([]storage.ManagedCertificateRow(nil), rows...)
+	return nil
+}
+
+func (s *relayCertStore) CleanupManagedCertificateMaterial(_ context.Context, _ []storage.ManagedCertificateRow, _ []storage.ManagedCertificateRow) error {
+	s.cleanupCall++
 	return nil
 }
 

@@ -18,6 +18,8 @@ type fakeRuleStore struct {
 
 	saveHTTPRulesErrs []error
 	saveManagedErrs   []error
+	materialByDomain  map[string]bool
+	cleanupCallCount  int
 }
 
 func (f *fakeRuleStore) ListAgents(context.Context) ([]storage.AgentRow, error) {
@@ -60,6 +62,28 @@ func (f *fakeRuleStore) SaveManagedCertificates(_ context.Context, rows []storag
 		return err
 	}
 	f.managedCerts = append([]storage.ManagedCertificateRow(nil), rows...)
+	return nil
+}
+
+func (f *fakeRuleStore) CleanupManagedCertificateMaterial(_ context.Context, previous []storage.ManagedCertificateRow, next []storage.ManagedCertificateRow) error {
+	f.cleanupCallCount++
+	if f.materialByDomain == nil {
+		return nil
+	}
+	nextDomains := make(map[string]struct{}, len(next))
+	for _, row := range next {
+		nextDomains[strings.TrimSpace(row.Domain)] = struct{}{}
+	}
+	for _, row := range previous {
+		domain := strings.TrimSpace(row.Domain)
+		if domain == "" {
+			continue
+		}
+		if _, ok := nextDomains[domain]; ok {
+			continue
+		}
+		delete(f.materialByDomain, domain)
+	}
 	return nil
 }
 
@@ -926,6 +950,67 @@ func TestRuleServiceCreateRollsBackManagedCertificatesWhenRuleSaveFails(t *testi
 	}
 	if len(store.managedCerts) != 0 {
 		t.Fatalf("managed certs should roll back, got %d rows", len(store.managedCerts))
+	}
+}
+
+func TestRuleServiceUpdateRollbackPreservesManagedCertificateMaterial(t *testing.T) {
+	store := &fakeRuleStore{
+		rulesByAgent: map[string][]storage.HTTPRuleRow{
+			"local": {{
+				ID:                1,
+				AgentID:           "local",
+				FrontendURL:       "https://stale-auto.example.com",
+				BackendURL:        "http://127.0.0.1:8096",
+				BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+				LoadBalancingJSON: `{"strategy":"round_robin"}`,
+				Enabled:           true,
+				TagsJSON:          `[]`,
+				ProxyRedirect:     true,
+				RelayChainJSON:    `[]`,
+				PassProxyHeaders:  true,
+				CustomHeadersJSON: `[]`,
+				Revision:          7,
+			}},
+		},
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              3,
+			Domain:          "stale-auto.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  `["local"]`,
+			TagsJSON:        `["auto","auto_target:local"]`,
+			Usage:           "https",
+			CertificateType: "acme",
+			Revision:        8,
+		}},
+		materialByDomain: map[string]bool{
+			"stale-auto.example.com": true,
+		},
+		saveHTTPRulesErrs: []error{errors.New("save rules failed")},
+	}
+	svc := NewRuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	_, err := svc.Update(context.Background(), "local", 1, HTTPRuleInput{
+		FrontendURL: stringPtrRule("http://stale-auto.example.com"),
+	})
+	if err == nil {
+		t.Fatal("Update() error = nil")
+	}
+	if len(store.managedCerts) != 1 {
+		t.Fatalf("managed certs should roll back, got %d rows", len(store.managedCerts))
+	}
+	if store.managedCerts[0].Domain != "stale-auto.example.com" {
+		t.Fatalf("managed cert domain after rollback = %q", store.managedCerts[0].Domain)
+	}
+	if !store.materialByDomain["stale-auto.example.com"] {
+		t.Fatalf("material was deleted during rollback path")
+	}
+	if store.cleanupCallCount != 0 {
+		t.Fatalf("cleanup should not run on rollback path, cleanupCallCount = %d", store.cleanupCallCount)
 	}
 }
 

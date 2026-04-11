@@ -34,6 +34,7 @@ type ruleStore interface {
 	SaveAgent(context.Context, storage.AgentRow) error
 	SaveHTTPRules(context.Context, string, []storage.HTTPRuleRow) error
 	SaveManagedCertificates(context.Context, []storage.ManagedCertificateRow) error
+	CleanupManagedCertificateMaterial(context.Context, []storage.ManagedCertificateRow, []storage.ManagedCertificateRow) error
 }
 
 type ruleService struct {
@@ -130,6 +131,11 @@ func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRule
 	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, rule.Revision); err != nil {
 		return HTTPRule{}, err
 	}
+	if certRowsChanged {
+		if err := s.store.CleanupManagedCertificateMaterial(ctx, originalCertRows, nextCertRows); err != nil {
+			return HTTPRule{}, err
+		}
+	}
 	return rule, nil
 }
 
@@ -205,6 +211,11 @@ func (s *ruleService) Update(ctx context.Context, agentID string, id int, input 
 	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, rule.Revision); err != nil {
 		return HTTPRule{}, err
 	}
+	if certRowsChanged {
+		if err := s.store.CleanupManagedCertificateMaterial(ctx, originalCertRows, nextCertRows); err != nil {
+			return HTTPRule{}, err
+		}
+	}
 	return rule, nil
 }
 
@@ -260,6 +271,11 @@ func (s *ruleService) Delete(ctx context.Context, agentID string, id int) (HTTPR
 	}
 	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, deleted.Revision+1); err != nil {
 		return HTTPRule{}, err
+	}
+	if certRowsChanged {
+		if err := s.store.CleanupManagedCertificateMaterial(ctx, originalCertRows, nextCertRows); err != nil {
+			return HTTPRule{}, err
+		}
 	}
 	return deleted, nil
 }

@@ -143,6 +143,11 @@ func (s *relayService) Create(ctx context.Context, agentID string, input RelayLi
 		}
 		return RelayListener{}, err
 	}
+	if prepared.PersistCertificates {
+		if err := s.store.CleanupManagedCertificateMaterial(ctx, prepared.OriginalCertRows, prepared.NextCertRows); err != nil {
+			return RelayListener{}, err
+		}
+	}
 	return listener, nil
 }
 
@@ -210,6 +215,11 @@ func (s *relayService) Update(ctx context.Context, agentID string, id int, input
 			}
 		}
 		return RelayListener{}, err
+	}
+	if prepared.PersistCertificates {
+		if err := s.store.CleanupManagedCertificateMaterial(ctx, prepared.OriginalCertRows, prepared.NextCertRows); err != nil {
+			return RelayListener{}, err
+		}
 	}
 	if current.CertificateID != nil && relayListenerCertificateChanged(current.CertificateID, listener.CertificateID) {
 		if err := s.cleanupUnusedAutoRelayListenerCertificate(ctx, *current.CertificateID); err != nil {
@@ -713,7 +723,10 @@ func (s *relayService) cleanupUnusedAutoRelayListenerCertificate(ctx context.Con
 	}
 	nextRows := append([]storage.ManagedCertificateRow(nil), certRows[:certIndex]...)
 	nextRows = append(nextRows, certRows[certIndex+1:]...)
-	return s.store.SaveManagedCertificates(ctx, nextRows)
+	if err := s.store.SaveManagedCertificates(ctx, nextRows); err != nil {
+		return err
+	}
+	return s.store.CleanupManagedCertificateMaterial(ctx, certRows, nextRows)
 }
 
 func containsInt(values []int, target int) bool {

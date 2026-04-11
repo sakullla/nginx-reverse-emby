@@ -63,6 +63,10 @@ func (f fakeStore) SaveManagedCertificates(context.Context, []storage.ManagedCer
 	return nil
 }
 
+func (f fakeStore) CleanupManagedCertificateMaterial(context.Context, []storage.ManagedCertificateRow, []storage.ManagedCertificateRow) error {
+	return nil
+}
+
 func TestAgentServiceListSynthesizesLocalAgentAndRemoteStatus(t *testing.T) {
 	cfg := config.Config{
 		EnableLocalAgent:  true,
