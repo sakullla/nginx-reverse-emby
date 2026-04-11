@@ -329,6 +329,9 @@ func (s *certificateService) Delete(ctx context.Context, agentID string, id int)
 	if isSystemRelayCACertificate(current) {
 		return ManagedCertificate{}, fmt.Errorf("%w: system relay ca cannot be deleted", ErrInvalidArgument)
 	}
+	if err := s.assertManagedCertificateNotReferencedByRelayListener(ctx, current); err != nil {
+		return ManagedCertificate{}, err
+	}
 
 	if len(current.TargetAgentIDs) > 1 {
 		nextTargets := removeString(current.TargetAgentIDs, resolvedID)
@@ -352,6 +355,24 @@ func (s *certificateService) Delete(ctx context.Context, agentID string, id int)
 	}
 	cleanupManagedCertificateMaterialBestEffort(ctx, s.store, rows, nextRows)
 	return current, nil
+}
+
+func (s *certificateService) assertManagedCertificateNotReferencedByRelayListener(ctx context.Context, cert ManagedCertificate) error {
+	if !isAutoRelayListenerCertificate(cert, 0) {
+		return nil
+	}
+
+	rows, err := s.store.ListRelayListeners(ctx, "")
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		if row.CertificateID == nil || *row.CertificateID != cert.ID {
+			continue
+		}
+		return fmt.Errorf("%w: certificate %d is referenced by relay listener %d on agent %s", ErrInvalidArgument, cert.ID, row.ID, strings.TrimSpace(row.AgentID))
+	}
+	return nil
 }
 
 func (s *certificateService) Issue(ctx context.Context, agentID string, id int) (ManagedCertificate, error) {

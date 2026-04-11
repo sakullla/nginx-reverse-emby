@@ -1361,6 +1361,129 @@ func TestCertificateServiceDeleteDetachesSingleAgentFromSharedCertificate(t *tes
 	}
 }
 
+func TestCertificateServiceDeleteRejectsReferencedAutoRelayListenerCertificate(t *testing.T) {
+	store := &relayCertStore{
+		relayByAgentID: map[string][]storage.RelayListenerRow{
+			"local": {{
+				ID:            4,
+				AgentID:       "local",
+				Name:          "relay-auto",
+				CertificateID: intPtrStorage(80),
+			}},
+		},
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              80,
+			Domain:          "relay-auto.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  `["local"]`,
+			Status:          "active",
+			Usage:           "relay_tunnel",
+			CertificateType: "internal_ca",
+			TagsJSON:        `["auto","auto:relay-listener","listener:4","agent:local"]`,
+			Revision:        5,
+		}},
+	}
+	svc := NewCertificateService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	_, err := svc.Delete(context.Background(), "local", 80)
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if err.Error() != "invalid argument: certificate 80 is referenced by relay listener 4 on agent local" {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if len(store.managedCerts) != 1 {
+		t.Fatalf("managed certs mutated unexpectedly: %+v", store.managedCerts)
+	}
+}
+
+func TestCertificateServiceDeleteRejectsReferencedSharedAutoRelayListenerCertificateDetach(t *testing.T) {
+	store := &relayCertStore{
+		relayByAgentID: map[string][]storage.RelayListenerRow{
+			"local": {{
+				ID:            5,
+				AgentID:       "local",
+				Name:          "relay-shared",
+				CertificateID: intPtrStorage(81),
+			}},
+		},
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              81,
+			Domain:          "relay-shared.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  `["local","edge-1"]`,
+			Status:          "active",
+			Usage:           "relay_tunnel",
+			CertificateType: "internal_ca",
+			TagsJSON:        `["auto","auto:relay-listener","listener:5","agent:local"]`,
+			Revision:        6,
+		}},
+	}
+	svc := NewCertificateService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	_, err := svc.Delete(context.Background(), "local", 81)
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if err.Error() != "invalid argument: certificate 81 is referenced by relay listener 5 on agent local" {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	remaining := managedCertificateFromRow(store.managedCerts[0])
+	if len(remaining.TargetAgentIDs) != 2 {
+		t.Fatalf("remaining.TargetAgentIDs = %+v", remaining.TargetAgentIDs)
+	}
+}
+
+func TestCertificateServiceDeleteAllowsReferencedNonAutoCertificate(t *testing.T) {
+	store := &relayCertStore{
+		relayByAgentID: map[string][]storage.RelayListenerRow{
+			"local": {{
+				ID:            6,
+				AgentID:       "local",
+				Name:          "relay-manual",
+				CertificateID: intPtrStorage(82),
+			}},
+		},
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              82,
+			Domain:          "manual.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  `["local"]`,
+			Status:          "active",
+			Usage:           "https",
+			CertificateType: "uploaded",
+			Revision:        7,
+		}},
+	}
+	svc := NewCertificateService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	deleted, err := svc.Delete(context.Background(), "local", 82)
+	if err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if deleted.ID != 82 {
+		t.Fatalf("deleted.ID = %d", deleted.ID)
+	}
+	if len(store.managedCerts) != 0 {
+		t.Fatalf("managed cert rows should be deleted: %+v", store.managedCerts)
+	}
+}
+
 func TestCertificateServiceDeleteSucceedsWhenCleanupFailsPostCommit(t *testing.T) {
 	store := &relayCertStore{
 		managedCerts: []storage.ManagedCertificateRow{{
