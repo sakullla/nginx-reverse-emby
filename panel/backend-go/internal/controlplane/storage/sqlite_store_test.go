@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -225,6 +226,78 @@ func TestStorePersistsRelayListenersAndManagedCertificates(t *testing.T) {
 	}
 	if len(certs) != 1 || certs[0].ID != 11 || certs[0].Domain != "relay-a.example.com" {
 		t.Fatalf("ListManagedCertificates() = %+v", certs)
+	}
+}
+
+func TestStoreSaveManagedCertificatesRemovesMaterialForDeletedDomains(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromCanonicalSchema(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	domain := "stale.example.com"
+	if err := store.SaveManagedCertificates(t.Context(), []ManagedCertificateRow{{
+		ID:              101,
+		Domain:          domain,
+		Enabled:         true,
+		Scope:           "domain",
+		IssuerMode:      "local_http01",
+		TargetAgentIDs:  `["local"]`,
+		Status:          "active",
+		Usage:           "https",
+		CertificateType: "uploaded",
+		Revision:        1,
+	}}); err != nil {
+		t.Fatalf("SaveManagedCertificates(initial) error = %v", err)
+	}
+	writeManagedCertificateMaterial(t, dataRoot, domain, "old-cert", "old-key")
+	if _, ok := store.readManagedCertificateMaterial(domain); !ok {
+		t.Fatalf("expected material for %q to exist before delete", domain)
+	}
+
+	if err := store.SaveManagedCertificates(t.Context(), []ManagedCertificateRow{}); err != nil {
+		t.Fatalf("SaveManagedCertificates(delete) error = %v", err)
+	}
+
+	certDir := filepath.Join(dataRoot, "managed_certificates", normalizeManagedCertificateHost(domain))
+	if _, statErr := os.Stat(certDir); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("expected deleted cert dir to be removed, stat error = %v", statErr)
+	}
+	if _, ok := store.readManagedCertificateMaterial(domain); ok {
+		t.Fatalf("expected material for %q to be removed after delete", domain)
+	}
+
+	if err := store.SaveManagedCertificates(t.Context(), []ManagedCertificateRow{{
+		ID:              102,
+		Domain:          domain,
+		Enabled:         true,
+		Scope:           "domain",
+		IssuerMode:      "local_http01",
+		TargetAgentIDs:  `["local"]`,
+		Status:          "pending",
+		Usage:           "https",
+		CertificateType: "uploaded",
+		Revision:        2,
+	}}); err != nil {
+		t.Fatalf("SaveManagedCertificates(recreate) error = %v", err)
+	}
+
+	snapshot, err := store.LoadLocalSnapshot(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("LoadLocalSnapshot() error = %v", err)
+	}
+	for _, bundle := range snapshot.Certificates {
+		if bundle.Domain == domain {
+			t.Fatalf("expected stale material for %q not to appear in snapshot: %+v", domain, bundle)
+		}
 	}
 }
 

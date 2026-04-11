@@ -606,11 +606,6 @@ func TestRuleServiceCreateHTTPSPrefersExactOverWildcardMatch(t *testing.T) {
 
 func TestRuleServiceCreateHTTPSDomainUsesMasterCFDNSWhenManagedDNSEnabled(t *testing.T) {
 	store := &fakeRuleStore{
-		agents: []storage.AgentRow{{
-			ID:               "edge-1",
-			Name:             "Edge 1",
-			CapabilitiesJSON: `["http_rules","cert_install"]`,
-		}},
 		rulesByAgent: map[string][]storage.HTTPRuleRow{},
 	}
 	svc := NewRuleService(config.Config{
@@ -619,7 +614,7 @@ func TestRuleServiceCreateHTTPSDomainUsesMasterCFDNSWhenManagedDNSEnabled(t *tes
 		ManagedDNSCertificatesEnabled: true,
 	}, store)
 
-	if _, err := svc.Create(context.Background(), "edge-1", HTTPRuleInput{
+	if _, err := svc.Create(context.Background(), "local", HTTPRuleInput{
 		FrontendURL: stringPtrRule("https://cf-managed.example.com"),
 		BackendURL:  stringPtrRule("http://127.0.0.1:8096"),
 	}); err != nil {
@@ -632,6 +627,36 @@ func TestRuleServiceCreateHTTPSDomainUsesMasterCFDNSWhenManagedDNSEnabled(t *tes
 	cert := managedCertificateFromRow(store.managedCerts[0])
 	if cert.IssuerMode != "master_cf_dns" {
 		t.Fatalf("issuer_mode = %q", cert.IssuerMode)
+	}
+}
+
+func TestRuleServiceCreateHTTPSRemoteDomainRejectsMasterCFDNSForNonLocalTarget(t *testing.T) {
+	store := &fakeRuleStore{
+		agents: []storage.AgentRow{{
+			ID:               "edge-1",
+			Name:             "Edge 1",
+			CapabilitiesJSON: `["http_rules","cert_install","local_acme"]`,
+		}},
+		rulesByAgent: map[string][]storage.HTTPRuleRow{},
+	}
+	svc := NewRuleService(config.Config{
+		EnableLocalAgent:              true,
+		LocalAgentID:                  "local",
+		ManagedDNSCertificatesEnabled: true,
+	}, store)
+
+	_, err := svc.Create(context.Background(), "edge-1", HTTPRuleInput{
+		FrontendURL: stringPtrRule("https://cf-managed.example.com"),
+		BackendURL:  stringPtrRule("http://127.0.0.1:8096"),
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if !strings.Contains(err.Error(), "master_cf_dns certificates must target only the local master agent") {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if len(store.managedCerts) != 0 {
+		t.Fatalf("managed cert count = %d", len(store.managedCerts))
 	}
 }
 

@@ -150,6 +150,9 @@ func (s *certificateService) Create(ctx context.Context, agentID string, input M
 	if err := assertManagedCertificateMutationAllowed(nil, cert); err != nil {
 		return ManagedCertificate{}, err
 	}
+	if err := assertManagedCertificateTargetingAllowed(s.cfg, cert); err != nil {
+		return ManagedCertificate{}, err
+	}
 	cert.Revision = maxRevision + 1
 
 	rows := make([]storage.ManagedCertificateRow, 0, len(current)+1)
@@ -196,6 +199,9 @@ func (s *certificateService) Update(ctx context.Context, agentID string, id int,
 		return ManagedCertificate{}, err
 	}
 	if err := assertManagedCertificateMutationAllowed(&current, next); err != nil {
+		return ManagedCertificate{}, err
+	}
+	if err := assertManagedCertificateTargetingAllowed(s.cfg, next); err != nil {
 		return ManagedCertificate{}, err
 	}
 	next.Revision = maxRevision + 1
@@ -537,6 +543,23 @@ func assertManagedCertificateMutationAllowed(previous *ManagedCertificate, next 
 			return fmt.Errorf("%w: relay ca domain and system tag are reserved for the system relay ca", ErrInvalidArgument)
 		}
 		return fmt.Errorf("%w: relay ca certificates are managed automatically", ErrInvalidArgument)
+	}
+	return nil
+}
+
+func assertManagedCertificateTargetingAllowed(cfg config.Config, cert ManagedCertificate) error {
+	if cert.IssuerMode != "master_cf_dns" {
+		return nil
+	}
+	if cert.CertificateType != "acme" {
+		return fmt.Errorf("%w: master_cf_dns certificates must use certificate_type=acme", ErrInvalidArgument)
+	}
+	localAgentID := strings.TrimSpace(cfg.LocalAgentID)
+	if localAgentID == "" {
+		return nil
+	}
+	if len(cert.TargetAgentIDs) != 1 || strings.TrimSpace(cert.TargetAgentIDs[0]) != localAgentID {
+		return fmt.Errorf("%w: master_cf_dns certificates must target only the local master agent", ErrInvalidArgument)
 	}
 	return nil
 }

@@ -400,6 +400,9 @@ func (s *ruleService) ensureManagedCertificateForRule(
 		next.Enabled = true
 		next.TargetAgentIDs = appendUniqueNormalized(next.TargetAgentIDs, agentID)
 		next.Tags = normalizeTagUnion(next.Tags, []string{managedCertificateAutoTargetTag(agentID)})
+		if err := assertManagedCertificateTargetingAllowed(s.cfg, next); err != nil {
+			return err
+		}
 		if err := assertManagedCertificateMutationAllowed(&cert, next); err != nil {
 			return err
 		}
@@ -423,6 +426,9 @@ func (s *ruleService) ensureManagedCertificateForRule(
 		Tags:            normalizeTagUnion(rule.Tags, []string{"auto", managedCertificateAutoTargetTag(agentID)}),
 		Usage:           "https",
 		CertificateType: "acme",
+	}
+	if err := assertManagedCertificateTargetingAllowed(s.cfg, next); err != nil {
+		return err
 	}
 	if err := assertManagedCertificateMutationAllowed(nil, next); err != nil {
 		return err

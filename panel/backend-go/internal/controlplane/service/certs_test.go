@@ -131,6 +131,89 @@ func TestCertificateServiceRejectsSystemRelayCAMutations(t *testing.T) {
 	}
 }
 
+func TestCertificateServiceRejectsInvalidMasterCFDNSTargeting(t *testing.T) {
+	store := &relayCertStore{
+		agents: []storage.AgentRow{{
+			ID:               "edge-1",
+			Name:             "Edge 1",
+			CapabilitiesJSON: `["http_rules","cert_install"]`,
+		}},
+	}
+	svc := NewCertificateService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	_, err := svc.Create(context.Background(), "edge-1", ManagedCertificateInput{
+		Domain:          stringPtr("remote.example.com"),
+		Scope:           stringPtr("domain"),
+		IssuerMode:      stringPtr("master_cf_dns"),
+		TargetAgentIDs:  &[]string{"edge-1"},
+		Usage:           stringPtr("https"),
+		CertificateType: stringPtr("acme"),
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if err.Error() != "invalid argument: master_cf_dns certificates must target only the local master agent" {
+		t.Fatalf("Create() error = %v", err)
+	}
+}
+
+func TestCertificateServiceRejectsNonACMEMasterCFDNSCertificate(t *testing.T) {
+	store := &relayCertStore{}
+	svc := NewCertificateService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	_, err := svc.Create(context.Background(), "local", ManagedCertificateInput{
+		Domain:          stringPtr("local.example.com"),
+		Scope:           stringPtr("domain"),
+		IssuerMode:      stringPtr("master_cf_dns"),
+		TargetAgentIDs:  &[]string{"local"},
+		Usage:           stringPtr("https"),
+		CertificateType: stringPtr("uploaded"),
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if err.Error() != "invalid argument: master_cf_dns certificates must use certificate_type=acme" {
+		t.Fatalf("Create() error = %v", err)
+	}
+}
+
+func TestCertificateServiceUpdateRejectsMasterCFDNSTargetExpansion(t *testing.T) {
+	store := &relayCertStore{
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              14,
+			Domain:          "local.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "master_cf_dns",
+			TargetAgentIDs:  `["local"]`,
+			Status:          "active",
+			Usage:           "https",
+			CertificateType: "acme",
+			Revision:        2,
+		}},
+	}
+	svc := NewCertificateService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	_, err := svc.Update(context.Background(), "local", 14, ManagedCertificateInput{
+		TargetAgentIDs: &[]string{"local", "edge-1"},
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if err.Error() != "invalid argument: master_cf_dns certificates must target only the local master agent" {
+		t.Fatalf("Update() error = %v", err)
+	}
+}
+
 func TestCertificateServiceDeleteDetachesSingleAgentFromSharedCertificate(t *testing.T) {
 	store := &relayCertStore{
 		managedCerts: []storage.ManagedCertificateRow{{

@@ -355,22 +355,47 @@ func (s *SQLiteStore) SaveRelayListeners(ctx context.Context, agentID string, li
 }
 
 func (s *SQLiteStore) SaveManagedCertificates(ctx context.Context, certs []ManagedCertificateRow) error {
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	existingRows, err := s.ListManagedCertificates(ctx)
+	if err != nil {
+		return err
+	}
+	existingDomains := managedCertificateDomainSet(existingRows)
+
+	rows := make([]ManagedCertificateRow, 0, len(certs))
+	nextDomains := make(map[string]struct{}, len(certs))
+	for _, row := range certs {
+		normalizeManagedCertificateRow(&row)
+		rows = append(rows, row)
+		domain := strings.TrimSpace(row.Domain)
+		if domain == "" {
+			continue
+		}
+		nextDomains[normalizeManagedCertificateHost(domain)] = struct{}{}
+	}
+
+	if err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&ManagedCertificateRow{}).Error; err != nil {
 			return err
 		}
 
-		if len(certs) == 0 {
+		if len(rows) == 0 {
 			return nil
 		}
-
-		rows := make([]ManagedCertificateRow, 0, len(certs))
-		for _, row := range certs {
-			normalizeManagedCertificateRow(&row)
-			rows = append(rows, row)
-		}
 		return tx.Create(&rows).Error
-	})
+	}); err != nil {
+		return err
+	}
+
+	baseDir := filepath.Join(s.dataRoot, "managed_certificates")
+	for domain := range existingDomains {
+		if _, ok := nextDomains[domain]; ok {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(baseDir, domain)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *SQLiteStore) initializeSchema(ctx context.Context) error {
@@ -1103,6 +1128,18 @@ func normalizeManagedCertificateHost(domain string) string {
 	normalized = strings.ReplaceAll(normalized, "*.", "_wildcard_.")
 	replacer := strings.NewReplacer("<", "_", ">", "_", ":", "_", "\"", "_", "/", "_", "\\", "_", "|", "_", "?", "_", "*", "_")
 	return replacer.Replace(normalized)
+}
+
+func managedCertificateDomainSet(rows []ManagedCertificateRow) map[string]struct{} {
+	domains := make(map[string]struct{}, len(rows))
+	for _, row := range rows {
+		domain := strings.TrimSpace(row.Domain)
+		if domain == "" {
+			continue
+		}
+		domains[normalizeManagedCertificateHost(domain)] = struct{}{}
+	}
+	return domains
 }
 
 func normalizeApplyStatus(runtimeState RuntimeState) string {
