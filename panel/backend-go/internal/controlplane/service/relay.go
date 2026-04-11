@@ -94,6 +94,39 @@ func NewRelayListenerService(cfg config.Config, store storage.Store) *relayServi
 	return &relayService{cfg: cfg, store: store}
 }
 
+func (s *relayService) Bootstrap(ctx context.Context) error {
+	rows, err := s.store.ListManagedCertificates(ctx)
+	if err != nil {
+		return err
+	}
+
+	_, nextRows, bundles, err := s.ensureGlobalRelayCA(ctx, rows)
+	if err != nil {
+		return err
+	}
+
+	rowsChanged := !managedCertificateRowsEqual(rows, nextRows)
+	if rowsChanged {
+		if err := s.store.SaveManagedCertificates(ctx, nextRows); err != nil {
+			return err
+		}
+	}
+	if len(bundles) > 0 {
+		if err := s.persistManagedCertificateMaterialBundles(ctx, bundles, rows, nextRows); err != nil {
+			if rowsChanged {
+				if rollbackErr := s.store.SaveManagedCertificates(ctx, rows); rollbackErr != nil {
+					return fmt.Errorf("%v (rollback failed: %v)", err, rollbackErr)
+				}
+			}
+			return err
+		}
+	}
+	if rowsChanged || len(bundles) > 0 {
+		cleanupManagedCertificateMaterialBestEffort(ctx, s.store, rows, nextRows)
+	}
+	return nil
+}
+
 func (s *relayService) List(ctx context.Context, agentID string) ([]RelayListener, error) {
 	resolvedID, err := s.ensureAgentExists(ctx, agentID)
 	if err != nil {

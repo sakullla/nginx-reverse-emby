@@ -121,3 +121,47 @@ func TestNewControlPlaneAppStartsEmbeddedLocalAgentWhenEnabled(t *testing.T) {
 		t.Fatal("embedded local agent starter was not invoked")
 	}
 }
+
+func TestInitializeControlPlaneBootstrapsGlobalRelayCA(t *testing.T) {
+	cfg := config.Default()
+	cfg.DataDir = t.TempDir()
+	cfg.EnableLocalAgent = true
+	cfg.LocalAgentID = "local"
+
+	if err := initializeControlPlane(context.Background(), cfg); err != nil {
+		t.Fatalf("initializeControlPlane() error = %v", err)
+	}
+
+	store, err := storage.NewSQLiteStore(cfg.DataDir, cfg.LocalAgentID)
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	certs, err := store.ListManagedCertificates(t.Context())
+	if err != nil {
+		t.Fatalf("ListManagedCertificates() error = %v", err)
+	}
+	if len(certs) != 1 {
+		t.Fatalf("len(certs) = %d", len(certs))
+	}
+	if certs[0].Domain != "__relay-ca.internal" || certs[0].Usage != "relay_ca" || certs[0].CertificateType != "internal_ca" {
+		t.Fatalf("relay CA row = %+v", certs[0])
+	}
+	if !certs[0].Enabled || certs[0].Status != "active" {
+		t.Fatalf("relay CA flags = %+v", certs[0])
+	}
+
+	bundle, ok, err := store.LoadManagedCertificateMaterial(t.Context(), "__relay-ca.internal")
+	if err != nil {
+		t.Fatalf("LoadManagedCertificateMaterial() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("expected persisted relay CA material")
+	}
+	if bundle.CertPEM == "" || bundle.KeyPEM == "" {
+		t.Fatalf("relay CA bundle = %+v", bundle)
+	}
+}

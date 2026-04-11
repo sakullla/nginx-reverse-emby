@@ -11,6 +11,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	httpapi "github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/http"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/localagent"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
@@ -27,6 +28,10 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	if err := initializeControlPlane(ctx, cfg); err != nil {
+		log.Fatal(err)
+	}
+
 	application, err := newControlPlaneApp(cfg, nil)
 	if err != nil {
 		log.Fatal(err)
@@ -42,6 +47,18 @@ var newHandler = func(cfg config.Config) (http.Handler, error) {
 
 var newLocalAgentRuntime = func(cfg config.Config, store localagent.Store) (localAgentRuntime, error) {
 	return localagent.NewRuntime(cfg, store)
+}
+
+var initializeControlPlane = func(ctx context.Context, cfg config.Config) error {
+	store, err := storage.NewSQLiteStore(cfg.DataDir, cfg.LocalAgentID)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = store.Close()
+	}()
+
+	return service.NewRelayListenerService(cfg, store).Bootstrap(ctx)
 }
 
 var newLocalAgentStarter = func(cfg config.Config) (app.LocalAgentStarter, error) {

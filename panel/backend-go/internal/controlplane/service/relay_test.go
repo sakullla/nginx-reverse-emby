@@ -380,6 +380,42 @@ func TestRelayServiceCreateAutoBootstrapsMissingGlobalRelayCA(t *testing.T) {
 	}
 }
 
+func TestRelayServiceBootstrapPersistsCanonicalRelayCAWhenMissing(t *testing.T) {
+	store := &relayCertStore{
+		relayByAgentID: map[string][]storage.RelayListenerRow{},
+		httpRulesByID:  map[string][]storage.HTTPRuleRow{},
+		l4RulesByID:    map[string][]storage.L4RuleRow{},
+	}
+	svc := NewRelayListenerService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	if err := svc.Bootstrap(context.Background()); err != nil {
+		t.Fatalf("Bootstrap() error = %v", err)
+	}
+	if len(store.managedCerts) != 1 {
+		t.Fatalf("len(store.managedCerts) = %d", len(store.managedCerts))
+	}
+
+	relayCA := managedCertificateFromRow(store.managedCerts[0])
+	if relayCA.Domain != "__relay-ca.internal" || relayCA.Usage != "relay_ca" || relayCA.CertificateType != "internal_ca" {
+		t.Fatalf("relayCA = %+v", relayCA)
+	}
+	if !relayCA.Enabled || !relayCA.SelfSigned || relayCA.Status != "active" {
+		t.Fatalf("relayCA flags = %+v", relayCA)
+	}
+	if len(relayCA.TargetAgentIDs) != 1 || relayCA.TargetAgentIDs[0] != "local" {
+		t.Fatalf("relayCA.TargetAgentIDs = %+v", relayCA.TargetAgentIDs)
+	}
+	if relayCA.MaterialHash == "" {
+		t.Fatalf("relayCA.MaterialHash = %q", relayCA.MaterialHash)
+	}
+	if _, ok := store.materialsByHost["__relay-ca.internal"]; !ok {
+		t.Fatal("expected relay CA material to be persisted")
+	}
+}
+
 func TestRelayServiceCreateAutoRejectsMultipleRelayCACandidates(t *testing.T) {
 	relayCA := mustCreateSelfSignedCA(t, "__relay-ca.internal")
 	svc := NewRelayListenerService(config.Config{
