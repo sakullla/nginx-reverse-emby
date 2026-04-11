@@ -2415,6 +2415,7 @@ func TestCertificateServiceDeleteSucceedsWhenCleanupFailsPostCommit(t *testing.T
 
 func TestCertificateServiceRunRenewalPassRenewsEligibleCloudflareCertificate(t *testing.T) {
 	now := time.Date(2026, 4, 11, 1, 2, 3, 0, time.UTC)
+	renewedMaterial := mustCreateSelfSignedCA(t, "Renew Eligible Material")
 	store := &relayCertStore{
 		managedCerts: []storage.ManagedCertificateRow{{
 			ID:              40,
@@ -2442,6 +2443,10 @@ func TestCertificateServiceRunRenewalPassRenewsEligibleCloudflareCertificate(t *
 					MainDomain: "media.example.com",
 					CA:         "LetsEncrypt",
 					Renew:      "2026-07-10T00:00:00Z",
+				},
+				Material: storage.ManagedCertificateBundle{
+					CertPEM: strings.TrimSpace(renewedMaterial.CertPEM),
+					KeyPEM:  strings.TrimSpace(renewedMaterial.KeyPEM),
 				},
 			},
 		},
@@ -2683,6 +2688,7 @@ func TestNewCertificateServiceDoesNotAutoWireManagedDNSRenewalIssuer(t *testing.
 }
 
 func TestCertificateServiceRunRenewalPassUsesManagedDNSFallbackIssuer(t *testing.T) {
+	renewedMaterial := mustCreateSelfSignedCA(t, "Renew Fallback Material")
 	store := &relayCertStore{
 		managedCerts: []storage.ManagedCertificateRow{{
 			ID:              48,
@@ -2707,6 +2713,10 @@ func TestCertificateServiceRunRenewalPassUsesManagedDNSFallbackIssuer(t *testing
 				ACMEInfo: ManagedCertificateACMEInfo{
 					MainDomain: "fallback.example.com",
 					Renew:      "2026-07-10T00:00:00Z",
+				},
+				Material: storage.ManagedCertificateBundle{
+					CertPEM: strings.TrimSpace(renewedMaterial.CertPEM),
+					KeyPEM:  strings.TrimSpace(renewedMaterial.KeyPEM),
 				},
 			},
 		},
@@ -2737,6 +2747,150 @@ func TestCertificateServiceRunRenewalPassUsesManagedDNSFallbackIssuer(t *testing
 	renewed := managedCertificateFromRow(store.managedCerts[0])
 	if renewed.Status != "active" || renewed.MaterialHash != "fallback-hash" {
 		t.Fatalf("renewed = %+v", renewed)
+	}
+}
+
+func TestCertificateServiceRunRenewalPassPersistsRenewedMaterialAndSyncsLocalTarget(t *testing.T) {
+	now := time.Date(2026, 4, 11, 4, 5, 6, 0, time.UTC)
+	oldMaterial := mustCreateSelfSignedCA(t, "Old Renewal Material")
+	newMaterial := mustCreateSelfSignedCA(t, "New Renewal Material")
+	store := &relayCertStore{
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              49,
+			Domain:          "renew-sync.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "master_cf_dns",
+			TargetAgentIDs:  `["local"]`,
+			Status:          "active",
+			LastIssueAt:     "2026-01-10T00:00:00Z",
+			LastError:       "",
+			MaterialHash:    "old-hash",
+			ACMEInfo:        `{"Main_Domain":"renew-sync.example.com","Renew":"2026-04-10T00:00:00Z"}`,
+			CertificateType: "acme",
+			Usage:           "https",
+			Revision:        12,
+		}},
+		materialsByHost: map[string]relayMaterial{
+			"renew-sync.example.com": oldMaterial,
+		},
+		localSnapshot: storage.Snapshot{Revision: 13},
+	}
+	issuer := &fakeManagedCertificateRenewalIssuer{
+		results: map[int]managedCertificateRenewalResult{
+			49: {
+				Changed:      true,
+				LastIssueAt:  "2026-04-11T04:05:06Z",
+				MaterialHash: "renewed-hash",
+				ACMEInfo: ManagedCertificateACMEInfo{
+					MainDomain: "renew-sync.example.com",
+					Renew:      "2026-07-10T00:00:00Z",
+				},
+				Material: storage.ManagedCertificateBundle{
+					CertPEM: strings.TrimSpace(newMaterial.CertPEM),
+					KeyPEM:  strings.TrimSpace(newMaterial.KeyPEM),
+				},
+			},
+		},
+	}
+	svc := newCertificateServiceWithRenewal(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store, issuer)
+	svc.now = func() time.Time { return now }
+
+	if err := svc.RunRenewalPass(context.Background()); err != nil {
+		t.Fatalf("RunRenewalPass() error = %v", err)
+	}
+
+	if store.saveMaterialCall != 1 {
+		t.Fatalf("saveMaterialCall = %d", store.saveMaterialCall)
+	}
+	if store.saveRuntimeCalls != 1 {
+		t.Fatalf("saveRuntimeCalls = %d", store.saveRuntimeCalls)
+	}
+	if store.savedRuntimeAgentID != "local" {
+		t.Fatalf("savedRuntimeAgentID = %q", store.savedRuntimeAgentID)
+	}
+	if store.savedRuntimeState.CurrentRevision != 13 || store.savedRuntimeState.LastApplyRevision != 13 {
+		t.Fatalf("savedRuntimeState = %+v", store.savedRuntimeState)
+	}
+	savedMaterial := store.materialsByHost["renew-sync.example.com"]
+	if savedMaterial.CertPEM != strings.TrimSpace(newMaterial.CertPEM) || savedMaterial.KeyPEM != strings.TrimSpace(newMaterial.KeyPEM) {
+		t.Fatalf("savedMaterial = %+v", savedMaterial)
+	}
+
+	renewed := managedCertificateFromRow(store.managedCerts[0])
+	if renewed.Status != "active" || renewed.MaterialHash != "renewed-hash" || renewed.Revision != 13 {
+		t.Fatalf("renewed = %+v", renewed)
+	}
+}
+
+func TestCertificateServiceRunRenewalPassRestoresPreviousMaterialWhenMetadataSaveFails(t *testing.T) {
+	oldMaterial := mustCreateSelfSignedCA(t, "Renew Rollback Old")
+	newMaterial := mustCreateSelfSignedCA(t, "Renew Rollback New")
+	store := &relayCertStore{
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              50,
+			Domain:          "renew-rollback.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "master_cf_dns",
+			TargetAgentIDs:  `["local"]`,
+			Status:          "active",
+			LastIssueAt:     "2026-01-10T00:00:00Z",
+			MaterialHash:    "old-hash",
+			ACMEInfo:        `{"Main_Domain":"renew-rollback.example.com","Renew":"2026-04-10T00:00:00Z"}`,
+			CertificateType: "acme",
+			Usage:           "https",
+			Revision:        5,
+		}},
+		materialsByHost: map[string]relayMaterial{
+			"renew-rollback.example.com": oldMaterial,
+		},
+		saveManagedErrs: []error{errors.New("save renewed metadata failed")},
+	}
+	issuer := &fakeManagedCertificateRenewalIssuer{
+		results: map[int]managedCertificateRenewalResult{
+			50: {
+				Changed:      true,
+				LastIssueAt:  "2026-04-11T05:06:07Z",
+				MaterialHash: "renewed-hash",
+				ACMEInfo: ManagedCertificateACMEInfo{
+					MainDomain: "renew-rollback.example.com",
+					Renew:      "2026-07-10T00:00:00Z",
+				},
+				Material: storage.ManagedCertificateBundle{
+					CertPEM: strings.TrimSpace(newMaterial.CertPEM),
+					KeyPEM:  strings.TrimSpace(newMaterial.KeyPEM),
+				},
+			},
+		},
+	}
+	svc := newCertificateServiceWithRenewal(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store, issuer)
+	svc.now = func() time.Time { return time.Date(2026, 4, 11, 5, 6, 7, 0, time.UTC) }
+
+	err := svc.RunRenewalPass(context.Background())
+	if err == nil {
+		t.Fatal("expected RunRenewalPass() to return error")
+	}
+
+	if store.saveMaterialCall != 2 {
+		t.Fatalf("saveMaterialCall = %d", store.saveMaterialCall)
+	}
+	if store.saveRuntimeCalls != 0 {
+		t.Fatalf("saveRuntimeCalls = %d", store.saveRuntimeCalls)
+	}
+	restored := store.materialsByHost["renew-rollback.example.com"]
+	if restored.CertPEM != oldMaterial.CertPEM || restored.KeyPEM != oldMaterial.KeyPEM {
+		t.Fatalf("restored = %+v", restored)
+	}
+	persisted := managedCertificateFromRow(store.managedCerts[0])
+	if persisted.MaterialHash != "old-hash" || persisted.Revision != 5 {
+		t.Fatalf("persisted = %+v", persisted)
 	}
 }
 

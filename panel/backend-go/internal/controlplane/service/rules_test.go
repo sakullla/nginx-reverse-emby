@@ -493,6 +493,52 @@ func TestRuleServiceCreateHTTPSAutoCreatesManagedCertificateForLocalOrRemoteAgen
 	}
 }
 
+func TestRuleServiceCreateHTTPSPersistsManagedCertificateInSQLiteStore(t *testing.T) {
+	dataRoot := t.TempDir()
+	store, err := storage.NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	svc := NewRuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	created, err := svc.Create(context.Background(), "local", HTTPRuleInput{
+		FrontendURL: stringPtrRule("https://sqlite.example.com"),
+		BackendURL:  stringPtrRule("http://127.0.0.1:8096"),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if created.ID != 1 {
+		t.Fatalf("Create() rule id = %d", created.ID)
+	}
+
+	certs, err := store.ListManagedCertificates(context.Background())
+	if err != nil {
+		t.Fatalf("ListManagedCertificates() error = %v", err)
+	}
+	if len(certs) != 1 {
+		t.Fatalf("managed cert count = %d", len(certs))
+	}
+
+	cert := managedCertificateFromRow(certs[0])
+	if cert.Domain != "sqlite.example.com" || cert.IssuerMode != "local_http01" || cert.Status != "pending" {
+		t.Fatalf("persisted cert = %+v", cert)
+	}
+	if len(cert.TargetAgentIDs) != 1 || cert.TargetAgentIDs[0] != "local" {
+		t.Fatalf("persisted target_agent_ids = %+v", cert.TargetAgentIDs)
+	}
+	if cert.Revision != 1 {
+		t.Fatalf("persisted cert revision = %d", cert.Revision)
+	}
+}
+
 func TestRuleServiceCreateHTTPRuleDoesNotProvisionManagedCertificate(t *testing.T) {
 	store := &fakeRuleStore{
 		rulesByAgent: map[string][]storage.HTTPRuleRow{},
