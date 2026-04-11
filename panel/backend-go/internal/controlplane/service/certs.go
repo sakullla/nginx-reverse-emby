@@ -355,31 +355,36 @@ func (s *certificateService) Delete(ctx context.Context, agentID string, id int)
 }
 
 func (s *certificateService) Issue(ctx context.Context, agentID string, id int) (ManagedCertificate, error) {
-	resolvedID, err := s.ensureAgentExists(ctx, agentID)
-	if err != nil {
-		return ManagedCertificate{}, err
-	}
-
 	rows, err := s.store.ListManagedCertificates(ctx)
 	if err != nil {
 		return ManagedCertificate{}, err
 	}
 
 	maxRevision := 0
-	targetIndex := -1
-	var current ManagedCertificate
-	for i, row := range rows {
+	for _, row := range rows {
 		if row.Revision > maxRevision {
 			maxRevision = row.Revision
 		}
-		cert := managedCertificateFromRow(row)
-		if cert.ID == id && containsString(cert.TargetAgentIDs, resolvedID) {
-			targetIndex = i
-			current = cert
-		}
 	}
-	if targetIndex < 0 {
+
+	current, targetIndex, ok := findManagedCertificateByID(rows, id)
+	if !ok {
 		return ManagedCertificate{}, ErrCertificateNotFound
+	}
+	requestedAgentID := strings.TrimSpace(agentID)
+	if current.IssuerMode == "local_http01" && current.CertificateType == "acme" {
+		return s.issueLocalHTTP01ACME(ctx, rows, targetIndex, current, maxRevision, requestedAgentID)
+	}
+
+	resolvedID := ""
+	if requestedAgentID != "" {
+		resolvedID, err = s.ensureAgentExists(ctx, requestedAgentID)
+		if err != nil {
+			return ManagedCertificate{}, err
+		}
+		if !containsString(current.TargetAgentIDs, resolvedID) {
+			return ManagedCertificate{}, ErrCertificateNotFound
+		}
 	}
 
 	if err := s.assertCertificateDistributionTargetsAllowed(ctx, current); err != nil {
@@ -472,6 +477,84 @@ func (s *certificateService) Issue(ctx context.Context, agentID string, id int) 
 	return current, nil
 }
 
+func (s *certificateService) issueLocalHTTP01ACME(ctx context.Context, rows []storage.ManagedCertificateRow, targetIndex int, current ManagedCertificate, maxRevision int, requestedAgentID string) (ManagedCertificate, error) {
+	if !current.Enabled {
+		return ManagedCertificate{}, fmt.Errorf("%w: certificate is disabled", ErrInvalidArgument)
+	}
+	if current.IssuerMode != "local_http01" {
+		return ManagedCertificate{}, fmt.Errorf("%w: certificate is not configured for local_http01", ErrInvalidArgument)
+	}
+
+	requestedTargetIDs := append([]string(nil), current.TargetAgentIDs...)
+	if requestedAgentID != "" {
+		resolvedID, err := s.ensureAgentExists(ctx, requestedAgentID)
+		if err != nil {
+			return ManagedCertificate{}, err
+		}
+		requestedTargetIDs = requestedTargetIDs[:0]
+		for _, targetAgentID := range current.TargetAgentIDs {
+			if strings.TrimSpace(targetAgentID) == resolvedID {
+				requestedTargetIDs = append(requestedTargetIDs, resolvedID)
+			}
+		}
+	}
+	if len(requestedTargetIDs) == 0 {
+		return ManagedCertificate{}, fmt.Errorf("%w: certificate is not assigned to the requested agent", ErrInvalidArgument)
+	}
+	if requestedAgentID == "" && len(requestedTargetIDs) > 1 {
+		return ManagedCertificate{}, fmt.Errorf("%w: local_http01 certificates must be issued from the per-agent endpoint", ErrInvalidArgument)
+	}
+
+	for _, targetAgentID := range requestedTargetIDs {
+		resolvedID, displayName, capabilities, err := s.resolveCertificateTarget(ctx, targetAgentID)
+		if errors.Is(err, ErrAgentNotFound) {
+			return ManagedCertificate{}, fmt.Errorf("%w: target agent not found: %s", ErrInvalidArgument, strings.TrimSpace(targetAgentID))
+		}
+		if err != nil {
+			return ManagedCertificate{}, err
+		}
+		if !agentHasCapability(capabilities, "cert_install") {
+			return ManagedCertificate{}, fmt.Errorf("%w: target agent does not support certificate install: %s", ErrInvalidArgument, displayName)
+		}
+		if !agentHasCapability(capabilities, "local_acme") {
+			return ManagedCertificate{}, fmt.Errorf("%w: target agent does not support local ACME issuance: %s", ErrInvalidArgument, displayName)
+		}
+
+		rules, err := s.store.ListHTTPRules(ctx, resolvedID)
+		if err != nil {
+			return ManagedCertificate{}, err
+		}
+		if !hasMatchingHTTPSRuleForCertificateInRows(rules, current) {
+			return ManagedCertificate{}, fmt.Errorf("%w: no enabled HTTPS HTTP rule found for %s on agent %s", ErrInvalidArgument, current.Domain, displayName)
+		}
+	}
+
+	now := s.now().UTC()
+	next := current
+	next.Status = "pending"
+	next.LastError = ""
+	next.Revision = maxRevision + 1
+	for _, targetAgentID := range requestedTargetIDs {
+		previousReport := current.AgentReports[strings.TrimSpace(targetAgentID)]
+		next = updateManagedCertificateAgentReport(next, targetAgentID, ManagedCertificateHeartbeatReport{
+			Status:       "pending",
+			LastIssueAt:  previousReport.LastIssueAt,
+			LastError:    "",
+			MaterialHash: "",
+			ACMEInfo:     ManagedCertificateACMEInfo{},
+			UpdatedAt:    now.Format(time.RFC3339),
+		}, now)
+	}
+
+	originalRows := append([]storage.ManagedCertificateRow(nil), rows...)
+	rows[targetIndex] = managedCertificateToRow(next)
+	if err := s.store.SaveManagedCertificates(ctx, rows); err != nil {
+		return ManagedCertificate{}, err
+	}
+	cleanupManagedCertificateMaterialBestEffort(ctx, s.store, originalRows, rows)
+	return next, nil
+}
+
 func (s *certificateService) assertManagedCertificateManualIssueAllowed(cert ManagedCertificate) error {
 	if cert.IssuerMode != "master_cf_dns" {
 		return fmt.Errorf("%w: certificate is not configured for master_cf_dns", ErrInvalidArgument)
@@ -555,7 +638,7 @@ func (s *certificateService) assertCertificateDistributionTargetsAllowed(ctx con
 		return nil
 	}
 	for _, targetAgentID := range cert.TargetAgentIDs {
-		resolved, capabilities, err := s.resolveCertificateTargetCapabilities(ctx, targetAgentID)
+		_, displayName, capabilities, err := s.resolveCertificateTarget(ctx, targetAgentID)
 		if errors.Is(err, ErrAgentNotFound) {
 			return fmt.Errorf("%w: target agent not found: %s", ErrInvalidArgument, strings.TrimSpace(targetAgentID))
 		}
@@ -563,31 +646,35 @@ func (s *certificateService) assertCertificateDistributionTargetsAllowed(ctx con
 			return err
 		}
 		if !agentHasCapability(capabilities, "cert_install") {
-			return fmt.Errorf("%w: target agent does not support certificate install: %s", ErrInvalidArgument, resolved)
+			return fmt.Errorf("%w: target agent does not support certificate install: %s", ErrInvalidArgument, displayName)
 		}
 	}
 	return nil
 }
 
-func (s *certificateService) resolveCertificateTargetCapabilities(ctx context.Context, agentID string) (string, []string, error) {
+func (s *certificateService) resolveCertificateTarget(ctx context.Context, agentID string) (string, string, []string, error) {
 	resolvedID := strings.TrimSpace(agentID)
 	if resolvedID == "" {
-		return "", nil, ErrAgentNotFound
+		return "", "", nil, ErrAgentNotFound
 	}
 	if s.cfg.EnableLocalAgent && resolvedID == s.cfg.LocalAgentID {
-		return resolvedID, append([]string(nil), defaultLocalCapabilities...), nil
+		return resolvedID, resolvedID, append([]string(nil), defaultLocalCapabilities...), nil
 	}
 
 	rows, err := s.store.ListAgents(ctx)
 	if err != nil {
-		return "", nil, err
+		return "", "", nil, err
 	}
 	for _, row := range rows {
 		if row.ID == resolvedID {
-			return resolvedID, parseStringArray(row.CapabilitiesJSON), nil
+			displayName := resolvedID
+			if strings.TrimSpace(row.Name) != "" {
+				displayName = strings.TrimSpace(row.Name)
+			}
+			return resolvedID, displayName, parseStringArray(row.CapabilitiesJSON), nil
 		}
 	}
-	return "", nil, ErrAgentNotFound
+	return "", "", nil, ErrAgentNotFound
 }
 
 func (s *certificateService) resolveUploadedMaterialForMutation(ctx context.Context, input ManagedCertificateInput, next ManagedCertificate, previous *ManagedCertificate) (storage.ManagedCertificateBundle, bool, error) {

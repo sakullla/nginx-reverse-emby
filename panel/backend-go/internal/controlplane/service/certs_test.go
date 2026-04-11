@@ -1016,7 +1016,7 @@ func TestCertificateServiceIssueMasterCFDNSRejectsIneligibleCertificates(t *test
 	}
 }
 
-func TestCertificateServiceIssueLocalHTTP01ACMEKeepsExistingBehavior(t *testing.T) {
+func TestCertificateServiceIssueLocalHTTP01ACMERejectsMultiTargetGenericIssue(t *testing.T) {
 	store := &relayCertStore{
 		managedCerts: []storage.ManagedCertificateRow{{
 			ID:              69,
@@ -1024,7 +1024,7 @@ func TestCertificateServiceIssueLocalHTTP01ACMEKeepsExistingBehavior(t *testing.
 			Enabled:         true,
 			Scope:           "domain",
 			IssuerMode:      "local_http01",
-			TargetAgentIDs:  `["local"]`,
+			TargetAgentIDs:  `["local","edge-1"]`,
 			Status:          "pending",
 			CertificateType: "acme",
 			Usage:           "https",
@@ -1036,15 +1036,199 @@ func TestCertificateServiceIssueLocalHTTP01ACMEKeepsExistingBehavior(t *testing.
 		LocalAgentID:     "local",
 	}, store, &fakeManagedCertificateRenewalIssuer{})
 
-	issued, err := svc.Issue(context.Background(), "local", 69)
+	_, err := svc.Issue(context.Background(), "", 69)
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Issue() error = %v", err)
+	}
+	if err.Error() != "invalid argument: local_http01 certificates must be issued from the per-agent endpoint" {
+		t.Fatalf("Issue() error = %v", err)
+	}
+}
+
+func TestCertificateServiceIssueLocalHTTP01ACMEPerAgentMarksOnlyRequestedAgentPendingAndBumpsRevision(t *testing.T) {
+	now := time.Date(2026, 4, 11, 12, 13, 14, 0, time.UTC)
+	store := &relayCertStore{
+		agents: []storage.AgentRow{{
+			ID:               "edge-1",
+			Name:             "Edge 1",
+			CapabilitiesJSON: `["http_rules","cert_install","local_acme"]`,
+		}},
+		httpRulesByID: map[string][]storage.HTTPRuleRow{
+			"edge-1": {{
+				ID:          1,
+				AgentID:     "edge-1",
+				FrontendURL: "https://media.example.com",
+				Enabled:     true,
+			}},
+		},
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              70,
+			Domain:          "media.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  `["edge-1","edge-2"]`,
+			Status:          "active",
+			LastIssueAt:     "2026-04-01T00:00:00Z",
+			LastError:       "stale error",
+			MaterialHash:    "global-hash",
+			AgentReports:    `{"edge-1":{"status":"active","last_issue_at":"2026-04-10T10:11:12Z","last_error":"edge error","material_hash":"edge-hash","acme_info":{"Main_Domain":"media.example.com","Profile":"default"},"updated_at":"2026-04-10T10:11:12Z"},"edge-2":{"status":"active","last_issue_at":"2026-04-09T09:08:07Z","last_error":"","material_hash":"edge-2-hash","acme_info":{"Main_Domain":"media.example.com","Profile":"other"},"updated_at":"2026-04-09T09:08:07Z"}}`,
+			ACMEInfo:        `{"Main_Domain":"media.example.com","Profile":"global"}`,
+			CertificateType: "acme",
+			Usage:           "https",
+			Revision:        8,
+		}},
+	}
+	svc := newCertificateServiceWithRenewal(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store, &fakeManagedCertificateRenewalIssuer{})
+	svc.now = func() time.Time { return now }
+
+	issued, err := svc.Issue(context.Background(), "edge-1", 70)
 	if err != nil {
 		t.Fatalf("Issue() error = %v", err)
 	}
-	if issued.Status != "active" {
+	if issued.Status != "pending" {
 		t.Fatalf("issued.Status = %q", issued.Status)
 	}
-	if issued.Revision != 4 {
+	if issued.LastError != "" {
+		t.Fatalf("issued.LastError = %q", issued.LastError)
+	}
+	if issued.LastIssueAt != "2026-04-01T00:00:00Z" {
+		t.Fatalf("issued.LastIssueAt = %q", issued.LastIssueAt)
+	}
+	if issued.Revision != 9 {
 		t.Fatalf("issued.Revision = %d", issued.Revision)
+	}
+
+	edge1 := issued.AgentReports["edge-1"]
+	if edge1.Status != "pending" {
+		t.Fatalf("edge-1 status = %q", edge1.Status)
+	}
+	if edge1.LastIssueAt != "2026-04-10T10:11:12Z" {
+		t.Fatalf("edge-1 last_issue_at = %q", edge1.LastIssueAt)
+	}
+	if edge1.LastError != "" {
+		t.Fatalf("edge-1 last_error = %q", edge1.LastError)
+	}
+	if edge1.MaterialHash != "" {
+		t.Fatalf("edge-1 material_hash = %q", edge1.MaterialHash)
+	}
+	if edge1.ACMEInfo != (ManagedCertificateACMEInfo{}) {
+		t.Fatalf("edge-1 acme_info = %+v", edge1.ACMEInfo)
+	}
+	if edge1.UpdatedAt != now.UTC().Format(time.RFC3339) {
+		t.Fatalf("edge-1 updated_at = %q", edge1.UpdatedAt)
+	}
+
+	edge2 := issued.AgentReports["edge-2"]
+	if edge2.Status != "active" {
+		t.Fatalf("edge-2 status = %q", edge2.Status)
+	}
+	if edge2.MaterialHash != "edge-2-hash" {
+		t.Fatalf("edge-2 material_hash = %q", edge2.MaterialHash)
+	}
+
+	persisted := managedCertificateFromRow(store.managedCerts[0])
+	if persisted.Status != "pending" {
+		t.Fatalf("persisted.Status = %q", persisted.Status)
+	}
+	if persisted.LastError != "" {
+		t.Fatalf("persisted.LastError = %q", persisted.LastError)
+	}
+	if persisted.Revision != 9 {
+		t.Fatalf("persisted.Revision = %d", persisted.Revision)
+	}
+	if persisted.AgentReports["edge-1"].Status != "pending" {
+		t.Fatalf("persisted edge-1 status = %q", persisted.AgentReports["edge-1"].Status)
+	}
+	if persisted.AgentReports["edge-2"].Status != "active" {
+		t.Fatalf("persisted edge-2 status = %q", persisted.AgentReports["edge-2"].Status)
+	}
+}
+
+func TestCertificateServiceIssueLocalHTTP01ACMERejectsTargetWithoutLocalACME(t *testing.T) {
+	store := &relayCertStore{
+		agents: []storage.AgentRow{{
+			ID:               "edge-1",
+			Name:             "Edge 1",
+			CapabilitiesJSON: `["http_rules","cert_install"]`,
+		}},
+		httpRulesByID: map[string][]storage.HTTPRuleRow{
+			"edge-1": {{
+				ID:          1,
+				AgentID:     "edge-1",
+				FrontendURL: "https://media.example.com",
+				Enabled:     true,
+			}},
+		},
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              71,
+			Domain:          "media.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  `["edge-1"]`,
+			Status:          "pending",
+			CertificateType: "acme",
+			Usage:           "https",
+			Revision:        3,
+		}},
+	}
+	svc := NewCertificateService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	_, err := svc.Issue(context.Background(), "edge-1", 71)
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Issue() error = %v", err)
+	}
+	if err.Error() != "invalid argument: target agent does not support local ACME issuance: Edge 1" {
+		t.Fatalf("Issue() error = %v", err)
+	}
+}
+
+func TestCertificateServiceIssueLocalHTTP01ACMERejectsTargetWithoutMatchingHTTPSRule(t *testing.T) {
+	store := &relayCertStore{
+		agents: []storage.AgentRow{{
+			ID:               "edge-1",
+			Name:             "Edge 1",
+			CapabilitiesJSON: `["http_rules","cert_install","local_acme"]`,
+		}},
+		httpRulesByID: map[string][]storage.HTTPRuleRow{
+			"edge-1": {{
+				ID:          1,
+				AgentID:     "edge-1",
+				FrontendURL: "http://media.example.com",
+				Enabled:     true,
+			}},
+		},
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              72,
+			Domain:          "media.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  `["edge-1"]`,
+			Status:          "pending",
+			CertificateType: "acme",
+			Usage:           "https",
+			Revision:        3,
+		}},
+	}
+	svc := NewCertificateService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	_, err := svc.Issue(context.Background(), "edge-1", 72)
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Issue() error = %v", err)
+	}
+	if err.Error() != "invalid argument: no enabled HTTPS HTTP rule found for media.example.com on agent Edge 1" {
+		t.Fatalf("Issue() error = %v", err)
 	}
 }
 

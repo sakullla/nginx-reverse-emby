@@ -163,8 +163,10 @@ type fakeCertificateService struct {
 }
 
 type fakeCertificateServiceState struct {
-	createInputs []service.ManagedCertificateInput
-	updateInputs []service.ManagedCertificateInput
+	createInputs  []service.ManagedCertificateInput
+	updateInputs  []service.ManagedCertificateInput
+	issueAgentIDs []string
+	issueIDs      []int
 }
 
 func (f fakeCertificateService) List(_ context.Context, agentID string) ([]service.ManagedCertificate, error) {
@@ -193,7 +195,11 @@ func (f fakeCertificateService) Delete(context.Context, string, int) (service.Ma
 	return f.deletedCertificate, nil
 }
 
-func (f fakeCertificateService) Issue(context.Context, string, int) (service.ManagedCertificate, error) {
+func (f fakeCertificateService) Issue(_ context.Context, agentID string, id int) (service.ManagedCertificate, error) {
+	if f.state != nil {
+		f.state.issueAgentIDs = append(f.state.issueAgentIDs, agentID)
+		f.state.issueIDs = append(f.state.issueIDs, id)
+	}
 	return f.issuedCertificate, nil
 }
 
@@ -795,6 +801,59 @@ func TestRouterCertificatePEMFieldsReachServiceOnCreateAndUpdate(t *testing.T) {
 	}
 	if state.updateInputs[0].CAPEM == nil || *state.updateInputs[0].CAPEM == "" {
 		t.Fatalf("update ca_pem missing: %+v", state.updateInputs[0])
+	}
+}
+
+func TestRouterCertificateIssueRoutesPassRequestedAgentContext(t *testing.T) {
+	state := &fakeCertificateServiceState{}
+	router, err := NewRouter(Dependencies{
+		Config: config.Config{PanelToken: "secret"},
+		SystemService: fakeSystemService{
+			info: service.SystemInfo{
+				Role:              "master",
+				LocalApplyRuntime: "go-agent",
+				DefaultAgentID:    "local",
+				LocalAgentEnabled: true,
+			},
+		},
+		AgentService:         fakeAgentService{},
+		RuleService:          fakeRuleService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService: fakeCertificateService{
+			state:             state,
+			issuedCertificate: service.ManagedCertificate{ID: 21, Domain: "media.example.com", Status: "pending"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	globalReq := httptest.NewRequest(http.MethodPost, "/panel-api/certificates/21/issue", bytes.NewBuffer(nil))
+	globalReq.Header.Set("X-Panel-Token", "secret")
+	globalResp := httptest.NewRecorder()
+	router.ServeHTTP(globalResp, globalReq)
+	if globalResp.Code != http.StatusOK {
+		t.Fatalf("POST /panel-api/certificates/21/issue = %d", globalResp.Code)
+	}
+
+	agentReq := httptest.NewRequest(http.MethodPost, "/panel-api/agents/local/certificates/21/issue", bytes.NewBuffer(nil))
+	agentReq.Header.Set("X-Panel-Token", "secret")
+	agentResp := httptest.NewRecorder()
+	router.ServeHTTP(agentResp, agentReq)
+	if agentResp.Code != http.StatusOK {
+		t.Fatalf("POST /panel-api/agents/local/certificates/21/issue = %d", agentResp.Code)
+	}
+
+	if len(state.issueAgentIDs) != 2 {
+		t.Fatalf("len(state.issueAgentIDs) = %d", len(state.issueAgentIDs))
+	}
+	if state.issueAgentIDs[0] != "" || state.issueIDs[0] != 21 {
+		t.Fatalf("global issue call = (%q, %d)", state.issueAgentIDs[0], state.issueIDs[0])
+	}
+	if state.issueAgentIDs[1] != "local" || state.issueIDs[1] != 21 {
+		t.Fatalf("agent issue call = (%q, %d)", state.issueAgentIDs[1], state.issueIDs[1])
 	}
 }
 
