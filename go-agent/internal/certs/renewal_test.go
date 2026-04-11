@@ -2,6 +2,7 @@ package certs
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -186,6 +187,74 @@ func TestLoadOrIssueACMESingleFlightsPerCertificateID(t *testing.T) {
 	}
 	if got := issuer.callCount(); got != 1 {
 		t.Fatalf("expected one issuance call for concurrent same-id issuance, got %d", got)
+	}
+}
+
+func TestRecordRenewalFailureDoesNotOverwriteNewerSuccess(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC)
+	issued := mustCreateTLSMaterial(t, certificateSpec{
+		commonName: "renew-failure-guard.example.com",
+		notBefore:  now.Add(-time.Hour),
+		notAfter:   now.Add(90 * 24 * time.Hour),
+	})
+	manager := mustNewManager(
+		t,
+		t.TempDir(),
+		withNow(func() time.Time { return now }),
+		withACMEIssuerFactory(func(request acmeIssueRequest) (acmeIssuer, error) {
+			return &fakeACMEIssuer{results: []acmeIssueResult{{CertPEM: issued.CertPEM, KeyPEM: issued.KeyPEM}}}, nil
+		}),
+	)
+	policy := model.ManagedCertificatePolicy{
+		ID:              9204,
+		Domain:          "renew-failure-guard.example.com",
+		Enabled:         true,
+		Scope:           "domain",
+		IssuerMode:      "local_http01",
+		CertificateType: "acme",
+		Usage:           "https",
+	}
+	if err := manager.Apply(context.Background(), nil, []model.ManagedCertificatePolicy{policy}); err != nil {
+		t.Fatalf("initial apply failed: %v", err)
+	}
+
+	lock := manager.issuanceLock(9204)
+	lock.Lock()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		manager.recordRenewalFailure(9204, errors.New("stale renewal error"), now.Add(-time.Minute))
+	}()
+	time.Sleep(20 * time.Millisecond)
+
+	stateWhileLocked, ok, err := manager.loadManagedCertificateState(9204)
+	if err != nil {
+		t.Fatalf("load state while locked failed: %v", err)
+	}
+	if !ok || stateWhileLocked.ACME == nil {
+		t.Fatal("expected managed acme state while lock held")
+	}
+	if got := stateWhileLocked.ACME.Renewal.LastAttemptStatus; got != "success" {
+		t.Fatalf("expected success status while lock held, got %q", got)
+	}
+
+	lock.Unlock()
+	<-done
+
+	finalState, ok, err := manager.loadManagedCertificateState(9204)
+	if err != nil {
+		t.Fatalf("load final state failed: %v", err)
+	}
+	if !ok || finalState.ACME == nil {
+		t.Fatal("expected final managed acme state")
+	}
+	if got := finalState.ACME.Renewal.LastAttemptStatus; got != "success" {
+		t.Fatalf("expected stale failure to not overwrite success, got %q", got)
+	}
+	if got := finalState.ACME.Renewal.LastAttemptError; got != "" {
+		t.Fatalf("expected no renewal error after stale failure, got %q", got)
 	}
 }
 

@@ -79,6 +79,7 @@ func (m *Manager) renewalCandidates() []renewalCandidate {
 }
 
 func (m *Manager) renewCertificate(ctx context.Context, candidate renewalCandidate) error {
+	attemptStartedAt := m.cfg.now()
 	policy := model.ManagedCertificatePolicy{
 		ID:              candidate.id,
 		Domain:          candidate.info.Domain,
@@ -93,13 +94,13 @@ func (m *Manager) renewCertificate(ctx context.Context, candidate renewalCandida
 	}
 	certPEM, keyPEM, err := m.loadOrIssueACME(ctx, policy)
 	if err != nil {
-		m.recordRenewalFailure(candidate.id, err)
+		m.recordRenewalFailure(candidate.id, err, attemptStartedAt)
 		return fmt.Errorf("renew certificate %d: %w", candidate.id, err)
 	}
 
 	tlsCert, parsedChain, fingerprint, err := parseTLSMaterial(certPEM, keyPEM)
 	if err != nil {
-		m.recordRenewalFailure(candidate.id, err)
+		m.recordRenewalFailure(candidate.id, err, attemptStartedAt)
 		return fmt.Errorf("renew certificate %d: %w", candidate.id, err)
 	}
 
@@ -124,13 +125,20 @@ func (m *Manager) renewCertificate(ctx context.Context, candidate renewalCandida
 	return nil
 }
 
-func (m *Manager) recordRenewalFailure(certificateID int, renewalErr error) {
+func (m *Manager) recordRenewalFailure(certificateID int, renewalErr error, attemptStartedAt time.Time) {
+	lock := m.issuanceLock(certificateID)
+	lock.Lock()
+	defer lock.Unlock()
+
 	state, _, err := m.loadManagedCertificateState(certificateID)
 	if err != nil {
 		return
 	}
 	if state.ACME == nil {
 		state.ACME = &model.ManagedCertificateACMEState{}
+	}
+	if state.ACME.Renewal.LastAttemptStatus == "success" && state.ACME.Renewal.LastAttemptAtUnix >= attemptStartedAt.Unix() {
+		return
 	}
 	state.ACME.Renewal.LastAttemptAtUnix = m.cfg.now().Unix()
 	state.ACME.Renewal.LastAttemptStatus = "error"
