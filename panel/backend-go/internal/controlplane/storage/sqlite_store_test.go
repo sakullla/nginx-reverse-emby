@@ -515,12 +515,12 @@ func TestStoreLoadsAgentSnapshotWithReferencedRelayListenersAndVersionPackage(t 
 		PublicHost:      "relay-b.example.com",
 		PublicPort:      8443,
 		Enabled:         true,
+		CertificateID:   intPointer(12),
 		TLSMode:         "pin_only",
 		PinSetJSON:      `[{"type":"sha256","value":"pin-b"}]`,
 		Revision:        7,
 		BindHostsJSON:   `["relay-b.example.com"]`,
 		TagsJSON:        `[]`,
-		CertificateID:   nil,
 		AllowSelfSigned: false,
 	}}); err != nil {
 		t.Fatalf("SaveRelayListeners(remote-agent-b) error = %v", err)
@@ -556,11 +556,27 @@ func TestStoreLoadsAgentSnapshotWithReferencedRelayListenersAndVersionPackage(t 
 		SelfSigned:      false,
 		TagsJSON:        `["relay"]`,
 		Revision:        6,
+	}, {
+		ID:              12,
+		Domain:          "relay-b.example.com",
+		Enabled:         true,
+		Scope:           "domain",
+		IssuerMode:      "local_http01",
+		TargetAgentIDs:  `["remote-agent-b"]`,
+		Status:          "active",
+		AgentReports:    `{}`,
+		ACMEInfo:        `{"Main_Domain":"relay-b.example.com"}`,
+		Usage:           "relay_tunnel",
+		CertificateType: "uploaded",
+		SelfSigned:      false,
+		TagsJSON:        `["relay"]`,
+		Revision:        7,
 	}}); err != nil {
 		t.Fatalf("SaveManagedCertificates() error = %v", err)
 	}
 	writeManagedCertificateMaterial(t, dataRoot, "__relay-ca.internal", "relay-ca-cert", "relay-ca-key")
 	writeManagedCertificateMaterial(t, dataRoot, "relay-a.example.com", "relay-a-cert", "relay-a-key")
+	writeManagedCertificateMaterial(t, dataRoot, "relay-b.example.com", "relay-b-cert", "relay-b-key")
 
 	if err := store.SaveVersionPolicies(t.Context(), []VersionPolicyRow{{
 		ID:             "stable-a",
@@ -603,11 +619,17 @@ func TestStoreLoadsAgentSnapshotWithReferencedRelayListenersAndVersionPackage(t 
 	if snapshot.RelayListeners[1].AgentID != "remote-agent-b" {
 		t.Fatalf("RelayListeners[1].AgentID = %q", snapshot.RelayListeners[1].AgentID)
 	}
-	if len(snapshot.Certificates) != 2 {
+	if len(snapshot.Certificates) != 3 {
 		t.Fatalf("Certificates = %+v", snapshot.Certificates)
 	}
-	if len(snapshot.CertificatePolicies) != 2 {
+	if len(snapshot.CertificatePolicies) != 3 {
 		t.Fatalf("CertificatePolicies = %+v", snapshot.CertificatePolicies)
+	}
+	if !containsCertificateID(snapshot.Certificates, 12) {
+		t.Fatalf("Certificates missing relay-b cert id 12: %+v", snapshot.Certificates)
+	}
+	if !containsPolicyID(snapshot.CertificatePolicies, 12) {
+		t.Fatalf("CertificatePolicies missing relay-b cert id 12: %+v", snapshot.CertificatePolicies)
 	}
 }
 
@@ -779,6 +801,28 @@ func writeManagedCertificateMaterial(t *testing.T, dataRoot string, domain strin
 	if err := os.WriteFile(filepath.Join(certDir, "key"), []byte(keyPEM), 0o644); err != nil {
 		t.Fatalf("os.WriteFile(key) error = %v", err)
 	}
+}
+
+func intPointer(value int) *int {
+	return &value
+}
+
+func containsCertificateID(values []ManagedCertificateBundle, expected int) bool {
+	for _, value := range values {
+		if value.ID == expected {
+			return true
+		}
+	}
+	return false
+}
+
+func containsPolicyID(values []ManagedCertificatePolicy, expected int) bool {
+	for _, value := range values {
+		if value.ID == expected {
+			return true
+		}
+	}
+	return false
 }
 
 func repositoryRoot(t *testing.T) string {

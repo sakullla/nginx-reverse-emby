@@ -949,9 +949,9 @@ func snapshotCertificatePolicies(rows []ManagedCertificateRow, agentID string) [
 
 func filterManagedCertificatesForAgent(rows []ManagedCertificateRow, agentID string, relayRows []RelayListenerRow) []ManagedCertificateRow {
 	filtered := make([]ManagedCertificateRow, 0, len(rows))
-	trustedCertificateIDs := relayTrustedCertificateIDs(relayRows)
+	referencedCertificateIDs := relayReferencedCertificateIDs(relayRows)
 	for _, row := range rows {
-		if trustedCertificateIDs[row.ID] || containsString(parseStringSlice(row.TargetAgentIDs), agentID) {
+		if referencedCertificateIDs[row.ID] || containsString(parseStringSlice(row.TargetAgentIDs), agentID) {
 			filtered = append(filtered, row)
 		}
 	}
@@ -1184,9 +1184,12 @@ func parseIntSlice(raw string) []int {
 	return normalized
 }
 
-func relayTrustedCertificateIDs(rows []RelayListenerRow) map[int]bool {
+func relayReferencedCertificateIDs(rows []RelayListenerRow) map[int]bool {
 	ids := make(map[int]bool)
 	for _, row := range rows {
+		if row.CertificateID != nil && *row.CertificateID > 0 {
+			ids[*row.CertificateID] = true
+		}
 		for _, certID := range parseIntSlice(row.TrustedCACertificateIDs) {
 			if certID > 0 {
 				ids[certID] = true
