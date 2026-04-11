@@ -641,6 +641,140 @@ func TestCertificateServiceUploadedIssueRejectsMissingMaterialAndSucceedsWhenPre
 	}
 }
 
+func TestCertificateServiceIssueLocalHTTP01InternalCABootstrapsMissingMaterialAndMarksActive(t *testing.T) {
+	now := time.Date(2026, 4, 11, 13, 14, 15, 0, time.UTC)
+	store := &relayCertStore{
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              58,
+			Domain:          "relay-internal.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  `["local"]`,
+			Status:          "pending",
+			CertificateType: "internal_ca",
+			Usage:           "relay_tunnel",
+			Revision:        9,
+		}},
+	}
+	svc := NewCertificateService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+	svc.now = func() time.Time { return now }
+
+	issued, err := svc.Issue(context.Background(), "local", 58)
+	if err != nil {
+		t.Fatalf("Issue() error = %v", err)
+	}
+	if issued.Status != "active" {
+		t.Fatalf("issued.Status = %q", issued.Status)
+	}
+	if issued.LastIssueAt != now.UTC().Format(time.RFC3339) {
+		t.Fatalf("issued.LastIssueAt = %q", issued.LastIssueAt)
+	}
+	if issued.LastError != "" {
+		t.Fatalf("issued.LastError = %q", issued.LastError)
+	}
+	if issued.MaterialHash == "" {
+		t.Fatal("issued.MaterialHash is empty")
+	}
+	if issued.Revision != 10 {
+		t.Fatalf("issued.Revision = %d", issued.Revision)
+	}
+
+	material, ok := store.materialsByHost["relay-internal.example.com"]
+	if !ok {
+		t.Fatalf("missing persisted material: %+v", store.materialsByHost)
+	}
+	bundle := storage.ManagedCertificateBundle{
+		Domain:  "relay-internal.example.com",
+		CertPEM: material.CertPEM,
+		KeyPEM:  material.KeyPEM,
+	}
+	if err := validateUploadedManagedCertificateBundle(bundle); err != nil {
+		t.Fatalf("persisted material invalid: %v", err)
+	}
+	expectedHash := hashManagedCertificateMaterial(strings.TrimSpace(material.CertPEM), strings.TrimSpace(material.KeyPEM))
+	if issued.MaterialHash != expectedHash {
+		t.Fatalf("issued.MaterialHash = %q, want %q", issued.MaterialHash, expectedHash)
+	}
+}
+
+func TestCertificateServiceIssueLocalHTTP01InternalCAGlobalIssueWithEmptyTargetsBootstrapsMaterial(t *testing.T) {
+	now := time.Date(2026, 4, 11, 14, 15, 16, 0, time.UTC)
+	store := &relayCertStore{
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              59,
+			Domain:          "__relay-ca.internal",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  `[]`,
+			Status:          "pending",
+			CertificateType: "internal_ca",
+			Usage:           "relay_ca",
+			SelfSigned:      true,
+			TagsJSON:        `["system:relay-ca","system"]`,
+			Revision:        11,
+		}},
+	}
+	svc := NewCertificateService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+	svc.now = func() time.Time { return now }
+
+	issued, err := svc.Issue(context.Background(), "", 59)
+	if err != nil {
+		t.Fatalf("Issue(global) error = %v", err)
+	}
+	if issued.Status != "active" {
+		t.Fatalf("issued.Status = %q", issued.Status)
+	}
+	if issued.LastIssueAt != now.UTC().Format(time.RFC3339) {
+		t.Fatalf("issued.LastIssueAt = %q", issued.LastIssueAt)
+	}
+	if issued.MaterialHash == "" {
+		t.Fatal("issued.MaterialHash is empty")
+	}
+	if issued.Revision != 12 {
+		t.Fatalf("issued.Revision = %d", issued.Revision)
+	}
+	if _, ok := store.materialsByHost["__relay-ca.internal"]; !ok {
+		t.Fatalf("missing persisted relay ca material: %+v", store.materialsByHost)
+	}
+}
+
+func TestCertificateServiceIssueLocalHTTP01InternalCARejectsDisabledCertificate(t *testing.T) {
+	store := &relayCertStore{
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              57,
+			Domain:          "disabled-internal.example.com",
+			Enabled:         false,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  `["local"]`,
+			Status:          "pending",
+			CertificateType: "internal_ca",
+			Usage:           "relay_tunnel",
+			Revision:        2,
+		}},
+	}
+	svc := NewCertificateService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	_, err := svc.Issue(context.Background(), "local", 57)
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Issue() error = %v", err)
+	}
+	if err.Error() != "invalid argument: certificate is disabled" {
+		t.Fatalf("Issue() error = %v", err)
+	}
+}
+
 func TestCertificateServiceIssueMasterCFDNSSuccessPersistsMaterialAndUpdatesState(t *testing.T) {
 	issuedMaterial := mustCreateSelfSignedCA(t, "master-issue-success.example.com")
 	store := &relayCertStore{

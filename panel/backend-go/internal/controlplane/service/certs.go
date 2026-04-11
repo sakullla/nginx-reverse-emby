@@ -426,6 +426,9 @@ func (s *certificateService) Issue(ctx context.Context, agentID string, id int) 
 	if current.IssuerMode == "local_http01" && current.CertificateType == "acme" {
 		return s.issueLocalHTTP01ACME(ctx, rows, targetIndex, current, maxRevision, requestedAgentID)
 	}
+	if current.IssuerMode == "local_http01" && current.CertificateType == "internal_ca" {
+		return s.issueLocalHTTP01InternalCA(ctx, rows, targetIndex, current, maxRevision, requestedAgentID)
+	}
 
 	resolvedID := ""
 	if requestedAgentID != "" {
@@ -526,6 +529,89 @@ func (s *certificateService) Issue(ctx context.Context, agentID string, id int) 
 	}
 	cleanupManagedCertificateMaterialBestEffort(ctx, s.store, originalRows, rows)
 	return current, nil
+}
+
+func (s *certificateService) issueLocalHTTP01InternalCA(ctx context.Context, rows []storage.ManagedCertificateRow, targetIndex int, current ManagedCertificate, maxRevision int, requestedAgentID string) (ManagedCertificate, error) {
+	if !current.Enabled {
+		return ManagedCertificate{}, fmt.Errorf("%w: certificate is disabled", ErrInvalidArgument)
+	}
+	if current.IssuerMode != "local_http01" {
+		return ManagedCertificate{}, fmt.Errorf("%w: certificate is not configured for local_http01", ErrInvalidArgument)
+	}
+
+	requestedTargetIDs := append([]string(nil), current.TargetAgentIDs...)
+	if requestedAgentID != "" {
+		requestedAgentID = strings.TrimSpace(requestedAgentID)
+		requestedTargetIDs = requestedTargetIDs[:0]
+		for _, targetAgentID := range current.TargetAgentIDs {
+			if strings.TrimSpace(targetAgentID) == requestedAgentID {
+				requestedTargetIDs = append(requestedTargetIDs, requestedAgentID)
+			}
+		}
+	}
+	if requestedAgentID != "" && len(requestedTargetIDs) == 0 {
+		return ManagedCertificate{}, fmt.Errorf("%w: certificate is not assigned to the requested agent", ErrInvalidArgument)
+	}
+
+	for _, targetAgentID := range requestedTargetIDs {
+		_, displayName, capabilities, err := s.resolveCertificateTarget(ctx, targetAgentID)
+		if errors.Is(err, ErrAgentNotFound) {
+			return ManagedCertificate{}, fmt.Errorf("%w: target agent not found: %s", ErrInvalidArgument, strings.TrimSpace(targetAgentID))
+		}
+		if err != nil {
+			return ManagedCertificate{}, err
+		}
+		if !agentHasCapability(capabilities, "cert_install") {
+			return ManagedCertificate{}, fmt.Errorf("%w: target agent does not support certificate install: %s", ErrInvalidArgument, displayName)
+		}
+	}
+
+	material, materialFound, err := s.store.LoadManagedCertificateMaterial(ctx, current.Domain)
+	if err != nil {
+		return ManagedCertificate{}, err
+	}
+	if !materialFound || validateUploadedManagedCertificateBundle(material) != nil {
+		previousMaterial := material
+		previousMaterialFound := materialFound
+		material, err = generateInternalCAMaterial(current.Domain)
+		if err != nil {
+			return ManagedCertificate{}, err
+		}
+		if err := s.store.SaveManagedCertificateMaterial(ctx, current.Domain, material); err != nil {
+			if restoreErr := s.restoreManagedCertificateMaterialAfterIssueFailure(ctx, current, previousMaterial, previousMaterialFound); restoreErr != nil {
+				return ManagedCertificate{}, fmt.Errorf("persist internal ca material: %w (restore failed: %v)", err, restoreErr)
+			}
+			return ManagedCertificate{}, err
+		}
+	}
+
+	now := s.now().UTC()
+	issuedAt := now.Format(time.RFC3339)
+	materialHash := hashManagedCertificateMaterial(strings.TrimSpace(material.CertPEM), strings.TrimSpace(material.KeyPEM))
+	next := current
+	next.Status = "active"
+	next.LastIssueAt = issuedAt
+	next.LastError = ""
+	next.MaterialHash = materialHash
+	next.Revision = maxRevision + 1
+	for _, targetAgentID := range requestedTargetIDs {
+		next = updateManagedCertificateAgentReport(next, targetAgentID, ManagedCertificateHeartbeatReport{
+			Status:       "active",
+			LastIssueAt:  issuedAt,
+			LastError:    "",
+			MaterialHash: materialHash,
+			ACMEInfo:     current.ACMEInfo,
+			UpdatedAt:    issuedAt,
+		}, now)
+	}
+
+	originalRows := append([]storage.ManagedCertificateRow(nil), rows...)
+	rows[targetIndex] = managedCertificateToRow(next)
+	if err := s.store.SaveManagedCertificates(ctx, rows); err != nil {
+		return ManagedCertificate{}, err
+	}
+	cleanupManagedCertificateMaterialBestEffort(ctx, s.store, originalRows, rows)
+	return next, nil
 }
 
 func (s *certificateService) issueLocalHTTP01ACME(ctx context.Context, rows []storage.ManagedCertificateRow, targetIndex int, current ManagedCertificate, maxRevision int, requestedAgentID string) (ManagedCertificate, error) {

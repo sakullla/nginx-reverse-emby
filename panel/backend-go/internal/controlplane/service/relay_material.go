@@ -55,6 +55,37 @@ func generateRelayLeafMaterial(domain string, caBundle storage.ManagedCertificat
 	}, nil
 }
 
+func generateInternalCAMaterial(domain string) (storage.ManagedCertificateBundle, error) {
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return storage.ManagedCertificateBundle{}, err
+	}
+	commonName := strings.TrimSpace(domain)
+	if commonName == "" {
+		commonName = fmt.Sprintf("internal-ca-%d", time.Now().UTC().UnixNano())
+	}
+	now := time.Now().UTC()
+	template := &x509.Certificate{
+		SerialNumber:          randomCertificateSerial(),
+		Subject:               pkix.Name{CommonName: commonName},
+		NotBefore:             now.Add(-time.Hour),
+		NotAfter:              now.Add(3650 * 24 * time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment | x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &privateKey.PublicKey, privateKey)
+	if err != nil {
+		return storage.ManagedCertificateBundle{}, err
+	}
+	return storage.ManagedCertificateBundle{
+		Domain:  strings.TrimSpace(domain),
+		CertPEM: string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})),
+		KeyPEM:  string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(privateKey)})),
+	}, nil
+}
+
 func parseCertificateSigner(certPEM string, keyPEM string) (*x509.Certificate, crypto.Signer, error) {
 	certBlock, _ := pem.Decode([]byte(certPEM))
 	if certBlock == nil {
