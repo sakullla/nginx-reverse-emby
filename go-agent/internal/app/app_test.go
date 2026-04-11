@@ -1178,10 +1178,12 @@ type httpApplyCall struct {
 }
 
 type testCertificateApplier struct {
-	mu       sync.Mutex
-	calls    []applyCall
-	applyErr error
-	closed   int
+	mu        sync.Mutex
+	calls     []applyCall
+	applyErr  error
+	reports   []model.ManagedCertificateReport
+	reportErr error
+	closed    int
 }
 
 func (a *testCertificateApplier) Apply(_ context.Context, bundles []model.ManagedCertificateBundle, policies []model.ManagedCertificatePolicy) error {
@@ -1200,6 +1202,17 @@ func (a *testCertificateApplier) snapshotCalls() []applyCall {
 	out := make([]applyCall, len(a.calls))
 	copy(out, a.calls)
 	return out
+}
+
+func (a *testCertificateApplier) ManagedCertificateReports(context.Context) ([]model.ManagedCertificateReport, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.reportErr != nil {
+		return nil, a.reportErr
+	}
+	out := make([]model.ManagedCertificateReport, len(a.reports))
+	copy(out, a.reports)
+	return out, nil
 }
 
 func (a *testCertificateApplier) Close() error {
@@ -1411,6 +1424,55 @@ func waitForRuntimeState(t *testing.T, timeout time.Duration, predicate func() b
 		time.Sleep(1 * time.Millisecond)
 	}
 	t.Fatal(failureMessage())
+}
+
+func TestPerformSyncIncludesApplyStatusAndManagedCertificateReports(t *testing.T) {
+	cfg := Config{CurrentVersion: "1.0.0"}
+	mem := store.NewInMemory()
+	applied := Snapshot{
+		DesiredVersion: "1.0.0",
+		Revision:       7,
+	}
+	if err := mem.SaveAppliedSnapshot(applied); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+	if err := mem.SaveRuntimeState(store.RuntimeState{
+		CurrentRevision: applied.Revision,
+		Metadata: map[string]string{
+			"current_revision":    "7",
+			"last_apply_revision": "6",
+			"last_apply_status":   "error",
+			"last_apply_message":  "previous apply failed",
+		},
+	}); err != nil {
+		t.Fatalf("failed to seed runtime state: %v", err)
+	}
+
+	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{DesiredVersion: "ok", Revision: 7}})
+	applier := &testCertificateApplier{
+		reports: []model.ManagedCertificateReport{{
+			ID:           21,
+			Domain:       "sync.example.com",
+			Status:       "active",
+			MaterialHash: "hash-21",
+		}},
+	}
+	app := newAppWithDeps(cfg, mem, client, applier, nil, nil)
+
+	if err := app.performSync(context.Background()); err != nil {
+		t.Fatalf("performSync() error = %v", err)
+	}
+
+	req := waitForRequest(t, client, time.Second)
+	if req.CurrentRevision != 7 {
+		t.Fatalf("CurrentRevision = %d", req.CurrentRevision)
+	}
+	if req.LastApplyRevision != 6 || req.LastApplyStatus != "error" || req.LastApplyMessage != "previous apply failed" {
+		t.Fatalf("unexpected apply metadata in sync request: %+v", req)
+	}
+	if len(req.ManagedCertificateReports) != 1 || req.ManagedCertificateReports[0].ID != 21 {
+		t.Fatalf("unexpected managed certificate reports in sync request: %+v", req.ManagedCertificateReports)
+	}
 }
 
 func TestRunAppliesManagedCertificatesFromSyncedSnapshot(t *testing.T) {

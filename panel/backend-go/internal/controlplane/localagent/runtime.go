@@ -69,7 +69,7 @@ type syncSourceAdapter struct {
 }
 
 func (a syncSourceAdapter) Sync(ctx context.Context, request goagentembedded.SyncRequest) (goagentembedded.Snapshot, error) {
-	snapshot, err := a.source.Sync(ctx, SyncRequest(request))
+	snapshot, err := a.source.Sync(ctx, SyncRequest{CurrentRevision: request.CurrentRevision})
 	if err != nil {
 		return goagentembedded.Snapshot{}, err
 	}

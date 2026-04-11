@@ -10,6 +10,17 @@ type ManagedCertificateBundle struct {
 	KeyPEM   string `json:"key_pem"`
 }
 
+type ManagedCertificateReport struct {
+	ID           int                        `json:"id,omitempty"`
+	Domain       string                     `json:"domain,omitempty"`
+	Status       string                     `json:"status,omitempty"`
+	LastIssueAt  string                     `json:"last_issue_at,omitempty"`
+	LastError    string                     `json:"last_error,omitempty"`
+	MaterialHash string                     `json:"material_hash,omitempty"`
+	ACMEInfo     ManagedCertificateACMEInfo `json:"acme_info,omitempty"`
+	UpdatedAt    string                     `json:"updated_at,omitempty"`
+}
+
 type ManagedCertificateACMEInfo struct {
 	MainDomain string `json:"Main_Domain"`
 	KeyLength  string `json:"KeyLength"`

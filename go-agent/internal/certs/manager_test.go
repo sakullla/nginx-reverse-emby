@@ -60,6 +60,52 @@ func TestFingerprintFromPEMRejectsExtraDataAfterCertificate(t *testing.T) {
 	}
 }
 
+func TestManagedCertificateReportsExposeLocalHTTP01MaterialState(t *testing.T) {
+	material := mustCreateTLSMaterial(t, certificateSpec{commonName: "sync.example.com"})
+	manager := mustNewManager(t, t.TempDir())
+
+	err := manager.Apply(context.Background(), []model.ManagedCertificateBundle{{
+		ID:       21,
+		Domain:   "sync.example.com",
+		Revision: 3,
+		CertPEM:  string(material.CertPEM),
+		KeyPEM:   string(material.KeyPEM),
+	}}, []model.ManagedCertificatePolicy{{
+		ID:              21,
+		Domain:          "sync.example.com",
+		Enabled:         true,
+		Scope:           "domain",
+		IssuerMode:      "local_http01",
+		Status:          "pending",
+		Revision:        3,
+		Usage:           "https",
+		CertificateType: "uploaded",
+		ACMEInfo: model.ManagedCertificateACMEInfo{
+			MainDomain: "sync.example.com",
+		},
+	}})
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+
+	reports, err := manager.ManagedCertificateReports(context.Background())
+	if err != nil {
+		t.Fatalf("ManagedCertificateReports() error = %v", err)
+	}
+	if len(reports) != 1 {
+		t.Fatalf("len(reports) = %d", len(reports))
+	}
+	if reports[0].ID != 21 || reports[0].Status != "active" {
+		t.Fatalf("unexpected report metadata: %+v", reports[0])
+	}
+	if reports[0].MaterialHash != hashManagedCertificateMaterial(material.CertPEM, material.KeyPEM) {
+		t.Fatalf("unexpected material hash: %+v", reports[0])
+	}
+	if reports[0].ACMEInfo.MainDomain != "sync.example.com" {
+		t.Fatalf("unexpected ACME info: %+v", reports[0].ACMEInfo)
+	}
+}
+
 func TestManagerApplyLoadsControlPlaneMaterial(t *testing.T) {
 	t.Parallel()
 

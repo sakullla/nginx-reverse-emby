@@ -127,7 +127,23 @@ func TestHeartbeatSync(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
-	snap, err := client.Sync(ctx, SyncRequest{CurrentRevision: 42})
+	snap, err := client.Sync(ctx, SyncRequest{
+		CurrentRevision:   42,
+		LastApplyRevision: 41,
+		LastApplyStatus:   "success",
+		LastApplyMessage:  "",
+		ManagedCertificateReports: []model.ManagedCertificateReport{{
+			ID:           21,
+			Domain:       "sync.example.com",
+			Status:       "active",
+			LastIssueAt:  "2026-04-11T00:00:00Z",
+			MaterialHash: "material-hash",
+			ACMEInfo: model.ManagedCertificateACMEInfo{
+				MainDomain: "sync.example.com",
+			},
+			UpdatedAt: "2026-04-11T00:00:00Z",
+		}},
+	})
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
@@ -226,10 +242,14 @@ func TestHeartbeatSync(t *testing.T) {
 			t.Fatalf("expected current_revision in heartbeat payload")
 		}
 		var payload struct {
-			Name            string `json:"name"`
-			CurrentRevision int    `json:"current_revision"`
-			Version         string `json:"version"`
-			Platform        string `json:"platform"`
+			Name                      string                           `json:"name"`
+			CurrentRevision           int                              `json:"current_revision"`
+			LastApplyRevision         int                              `json:"last_apply_revision"`
+			LastApplyStatus           string                           `json:"last_apply_status"`
+			LastApplyMessage          string                           `json:"last_apply_message"`
+			ManagedCertificateReports []model.ManagedCertificateReport `json:"managed_certificate_reports"`
+			Version                   string                           `json:"version"`
+			Platform                  string                           `json:"platform"`
 		}
 		if err := json.NewDecoder(bytes.NewReader(req.Body)).Decode(&payload); err != nil {
 			t.Fatalf("failed to decode payload: %v", err)
@@ -239,6 +259,12 @@ func TestHeartbeatSync(t *testing.T) {
 		}
 		if payload.CurrentRevision != 42 {
 			t.Fatalf("expected current_revision=42, got %d", payload.CurrentRevision)
+		}
+		if payload.LastApplyRevision != 41 || payload.LastApplyStatus != "success" || payload.LastApplyMessage != "" {
+			t.Fatalf("unexpected apply status payload %+v", payload)
+		}
+		if len(payload.ManagedCertificateReports) != 1 || payload.ManagedCertificateReports[0].ID != 21 {
+			t.Fatalf("unexpected managed_certificate_reports payload %+v", payload.ManagedCertificateReports)
 		}
 	case <-ctx.Done():
 		t.Fatalf("heartbeat not sent")

@@ -36,6 +36,7 @@ type CertificateInfo struct {
 	IssuerMode      string
 	Status          string
 	Fingerprint     string
+	ACMEInfo        model.ManagedCertificateACMEInfo
 }
 
 type Manager struct {
@@ -57,9 +58,10 @@ type activeState struct {
 }
 
 type managedCertificate struct {
-	info        CertificateInfo
-	certificate tls.Certificate
-	parsedChain []*x509.Certificate
+	info         CertificateInfo
+	certificate  tls.Certificate
+	parsedChain  []*x509.Certificate
+	materialHash string
 }
 
 type persistedACMEMaterial struct {
@@ -267,9 +269,11 @@ func (m *Manager) buildManagedCertificate(ctx context.Context, policy model.Mana
 			IssuerMode:      policy.IssuerMode,
 			Status:          policy.Status,
 			Fingerprint:     fingerprint,
+			ACMEInfo:        policy.ACMEInfo,
 		},
-		certificate: tlsCert,
-		parsedChain: parsedChain,
+		certificate:  tlsCert,
+		parsedChain:  parsedChain,
+		materialHash: hashManagedCertificateMaterial(certPEM, keyPEM),
 	}, nil
 }
 
@@ -669,6 +673,77 @@ func parseCertificateChain(certPEM []byte) ([]*x509.Certificate, error) {
 func fingerprintFromCertificate(cert *x509.Certificate) string {
 	sum := sha256Sum(cert.Raw)
 	return fmt.Sprintf("%x", sum)
+}
+
+func hashManagedCertificateMaterial(certPEM, keyPEM []byte) string {
+	if len(bytes.TrimSpace(certPEM)) == 0 || len(bytes.TrimSpace(keyPEM)) == 0 {
+		return ""
+	}
+	hash := sha256.New()
+	_, _ = hash.Write(certPEM)
+	_, _ = hash.Write([]byte("\n---\n"))
+	_, _ = hash.Write(keyPEM)
+	return fmt.Sprintf("%x", hash.Sum(nil))
+}
+
+func (m *Manager) ManagedCertificateReports(context.Context) ([]model.ManagedCertificateReport, error) {
+	m.mu.RLock()
+	entries := make([]*managedCertificate, 0, len(m.active.byID))
+	for _, entry := range m.active.byID {
+		if entry == nil || entry.info.IssuerMode != "local_http01" {
+			continue
+		}
+		entries = append(entries, entry)
+	}
+	m.mu.RUnlock()
+
+	reports := make([]model.ManagedCertificateReport, 0, len(entries))
+	for _, entry := range entries {
+		report := model.ManagedCertificateReport{
+			ID:           entry.info.ID,
+			Domain:       entry.info.Domain,
+			Status:       managedCertificateReportStatus(entry),
+			MaterialHash: entry.materialHash,
+			ACMEInfo:     entry.info.ACMEInfo,
+		}
+		state, ok, err := m.loadManagedCertificateState(entry.info.ID)
+		if err != nil {
+			return nil, err
+		}
+		if ok && state.ACME != nil {
+			if renewedAt := state.ACME.Renewal.LastRenewedAtUnix; renewedAt > 0 {
+				report.LastIssueAt = time.Unix(renewedAt, 0).UTC().Format(time.RFC3339)
+			}
+			if lastAttempt := state.ACME.Renewal.LastAttemptAtUnix; lastAttempt > 0 {
+				report.UpdatedAt = time.Unix(lastAttempt, 0).UTC().Format(time.RFC3339)
+			}
+			report.LastError = state.ACME.Renewal.LastAttemptError
+			if normalizeManagedCertificateReportStatus(state.ACME.Renewal.LastAttemptStatus) != "" {
+				report.Status = normalizeManagedCertificateReportStatus(state.ACME.Renewal.LastAttemptStatus)
+			}
+		}
+		reports = append(reports, report)
+	}
+	return reports, nil
+}
+
+func managedCertificateReportStatus(entry *managedCertificate) string {
+	if entry == nil {
+		return ""
+	}
+	if entry.materialHash != "" {
+		return "active"
+	}
+	return normalizeManagedCertificateReportStatus(entry.info.Status)
+}
+
+func normalizeManagedCertificateReportStatus(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "pending", "active", "error":
+		return strings.ToLower(strings.TrimSpace(value))
+	default:
+		return ""
+	}
 }
 
 func sha256Sum(raw []byte) [32]byte {

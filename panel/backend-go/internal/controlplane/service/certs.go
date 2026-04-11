@@ -7,6 +7,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
+	"reflect"
 	"strings"
 	"time"
 
@@ -32,6 +35,17 @@ type ManagedCertificateACMEInfo struct {
 }
 
 type ManagedCertificateAgentReport struct {
+	Status       string                     `json:"status"`
+	LastIssueAt  string                     `json:"last_issue_at"`
+	LastError    string                     `json:"last_error"`
+	MaterialHash string                     `json:"material_hash"`
+	ACMEInfo     ManagedCertificateACMEInfo `json:"acme_info"`
+	UpdatedAt    string                     `json:"updated_at"`
+}
+
+type ManagedCertificateHeartbeatReport struct {
+	ID           int                        `json:"id"`
+	Domain       string                     `json:"domain"`
 	Status       string                     `json:"status"`
 	LastIssueAt  string                     `json:"last_issue_at"`
 	LastError    string                     `json:"last_error"`
@@ -541,6 +555,230 @@ func overlayManagedCertificateForAgent(cert ManagedCertificate, agentID string) 
 	cert.MaterialHash = report.MaterialHash
 	cert.ACMEInfo = report.ACMEInfo
 	return cert
+}
+
+func normalizeManagedCertificateHeartbeatReports(reports []ManagedCertificateHeartbeatReport) []ManagedCertificateHeartbeatReport {
+	normalized := make([]ManagedCertificateHeartbeatReport, 0, len(reports))
+	for _, report := range reports {
+		next := ManagedCertificateHeartbeatReport{
+			Domain:       normalizeCertificateReportHost(report.Domain),
+			Status:       normalizeManagedCertificateReportStatus(report.Status),
+			LastIssueAt:  normalizeOptionalTimestamp(report.LastIssueAt),
+			LastError:    report.LastError,
+			MaterialHash: strings.TrimSpace(report.MaterialHash),
+			ACMEInfo:     report.ACMEInfo,
+			UpdatedAt:    normalizeOptionalTimestamp(report.UpdatedAt),
+		}
+		if report.ID > 0 {
+			next.ID = report.ID
+		}
+		if next.ID <= 0 && next.Domain == "" {
+			continue
+		}
+		normalized = append(normalized, next)
+	}
+	return normalized
+}
+
+func applyManagedCertificateHeartbeatReports(rows []storage.ManagedCertificateRow, agentID string, reports []ManagedCertificateHeartbeatReport, now time.Time) ([]storage.ManagedCertificateRow, map[int]struct{}, bool) {
+	if strings.TrimSpace(agentID) == "" || len(reports) == 0 {
+		return rows, map[int]struct{}{}, false
+	}
+
+	reportsByID := make(map[int]ManagedCertificateHeartbeatReport, len(reports))
+	reportsByDomain := make(map[string]ManagedCertificateHeartbeatReport, len(reports))
+	for _, report := range normalizeManagedCertificateHeartbeatReports(reports) {
+		if report.ID > 0 {
+			reportsByID[report.ID] = report
+		}
+		if report.Domain != "" {
+			reportsByDomain[report.Domain] = report
+		}
+	}
+
+	reportedCertIDs := make(map[int]struct{}, len(reportsByID))
+	changed := false
+	nextRows := append([]storage.ManagedCertificateRow(nil), rows...)
+	for index, row := range nextRows {
+		cert := managedCertificateFromRow(row)
+		if cert.IssuerMode != "local_http01" || !containsString(cert.TargetAgentIDs, agentID) {
+			continue
+		}
+		report, ok := findManagedCertificateHeartbeatReport(cert, reportsByID, reportsByDomain)
+		if !ok {
+			continue
+		}
+		reportedCertIDs[cert.ID] = struct{}{}
+		next := updateManagedCertificateAgentReport(cert, agentID, report, now)
+		if len(cert.TargetAgentIDs) == 1 && cert.TargetAgentIDs[0] == agentID {
+			next.Status = coalesceString(report.Status, cert.Status)
+			next.LastIssueAt = report.LastIssueAt
+			next.LastError = report.LastError
+			next.MaterialHash = report.MaterialHash
+			next.ACMEInfo = report.ACMEInfo
+		}
+		if !managedCertificateEqual(cert, next) {
+			nextRows[index] = managedCertificateToRow(next)
+			changed = true
+		}
+	}
+	return nextRows, reportedCertIDs, changed
+}
+
+func reconcileLocalHTTP01CertificatesForAgent(rows []storage.ManagedCertificateRow, agentID string, rules []storage.HTTPRuleRow, applyRevision int, applyStatus string, applyMessage string, reportedCertIDs map[int]struct{}, now time.Time) ([]storage.ManagedCertificateRow, bool) {
+	if strings.TrimSpace(agentID) == "" || applyRevision <= 0 {
+		return rows, false
+	}
+	status := strings.ToLower(strings.TrimSpace(applyStatus))
+	if status != "success" && status != "error" {
+		return rows, false
+	}
+
+	appliedAt := now.UTC().Format(time.RFC3339)
+	changed := false
+	nextRows := append([]storage.ManagedCertificateRow(nil), rows...)
+	for index, row := range nextRows {
+		cert := managedCertificateFromRow(row)
+		if !cert.Enabled || cert.IssuerMode != "local_http01" || !containsString(cert.TargetAgentIDs, agentID) {
+			continue
+		}
+		if _, ok := reportedCertIDs[cert.ID]; ok {
+			continue
+		}
+		if cert.Revision > applyRevision || !hasMatchingHTTPSRuleForCertificateInRows(rules, cert) {
+			continue
+		}
+
+		switch status {
+		case "success":
+			next := updateManagedCertificateAgentReport(cert, agentID, ManagedCertificateHeartbeatReport{
+				Status:       "active",
+				LastIssueAt:  appliedAt,
+				LastError:    "",
+				MaterialHash: cert.MaterialHash,
+				ACMEInfo:     cert.ACMEInfo,
+				UpdatedAt:    appliedAt,
+			}, now)
+			next.Status = "active"
+			next.LastIssueAt = appliedAt
+			next.LastError = ""
+			if !managedCertificateEqual(cert, next) {
+				nextRows[index] = managedCertificateToRow(next)
+				changed = true
+			}
+		case "error":
+			if cert.Status != "pending" {
+				continue
+			}
+			message := coalesceString(strings.TrimSpace(applyMessage), "agent apply failed")
+			next := cert
+			next.Status = "error"
+			next.LastError = message
+			next = updateManagedCertificateAgentReport(next, agentID, ManagedCertificateHeartbeatReport{
+				Status:       "error",
+				LastIssueAt:  cert.LastIssueAt,
+				LastError:    message,
+				MaterialHash: cert.MaterialHash,
+				ACMEInfo:     cert.ACMEInfo,
+				UpdatedAt:    appliedAt,
+			}, now)
+			if !managedCertificateEqual(cert, next) {
+				nextRows[index] = managedCertificateToRow(next)
+				changed = true
+			}
+		}
+	}
+	return nextRows, changed
+}
+
+func findManagedCertificateHeartbeatReport(cert ManagedCertificate, reportsByID map[int]ManagedCertificateHeartbeatReport, reportsByDomain map[string]ManagedCertificateHeartbeatReport) (ManagedCertificateHeartbeatReport, bool) {
+	if cert.ID > 0 {
+		if report, ok := reportsByID[cert.ID]; ok {
+			return report, true
+		}
+	}
+	report, ok := reportsByDomain[normalizeCertificateReportHost(cert.Domain)]
+	return report, ok
+}
+
+func updateManagedCertificateAgentReport(cert ManagedCertificate, agentID string, report ManagedCertificateHeartbeatReport, now time.Time) ManagedCertificate {
+	if cert.AgentReports == nil {
+		cert.AgentReports = map[string]ManagedCertificateAgentReport{}
+	}
+	updatedAt := report.UpdatedAt
+	if updatedAt == "" {
+		updatedAt = now.UTC().Format(time.RFC3339)
+	}
+	cert.AgentReports[strings.TrimSpace(agentID)] = ManagedCertificateAgentReport{
+		Status:       report.Status,
+		LastIssueAt:  report.LastIssueAt,
+		LastError:    report.LastError,
+		MaterialHash: report.MaterialHash,
+		ACMEInfo:     report.ACMEInfo,
+		UpdatedAt:    updatedAt,
+	}
+	return cert
+}
+
+func hasMatchingHTTPSRuleForCertificateInRows(rows []storage.HTTPRuleRow, cert ManagedCertificate) bool {
+	for _, row := range rows {
+		if !row.Enabled {
+			continue
+		}
+		target, ok := parseHTTPSRuleTarget(row.FrontendURL)
+		if !ok {
+			continue
+		}
+		if doesManagedCertificateMatchHost(cert, target) {
+			return true
+		}
+	}
+	return false
+}
+
+func parseHTTPSRuleTarget(frontendURL string) (string, bool) {
+	parsed, err := url.Parse(strings.TrimSpace(frontendURL))
+	if err != nil || !strings.EqualFold(parsed.Scheme, "https") {
+		return "", false
+	}
+	return normalizeCertificateReportHost(parsed.Hostname()), true
+}
+
+func normalizeCertificateReportHost(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return ""
+	}
+	if host, _, err := net.SplitHostPort(trimmed); err == nil {
+		trimmed = host
+	}
+	return strings.ToLower(normalizeCertificateHost(trimmed))
+}
+
+func normalizeOptionalTimestamp(value string) string {
+	return strings.TrimSpace(value)
+}
+
+func normalizeManagedCertificateReportStatus(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "pending", "active", "error":
+		return strings.ToLower(strings.TrimSpace(value))
+	default:
+		return ""
+	}
+}
+
+func managedCertificateEqual(left ManagedCertificate, right ManagedCertificate) bool {
+	return reflect.DeepEqual(left, right)
+}
+
+func coalesceString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func assertManagedCertificateMutationAllowed(previous *ManagedCertificate, next ManagedCertificate) error {

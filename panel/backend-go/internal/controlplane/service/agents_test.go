@@ -12,6 +12,7 @@ import (
 type fakeStore struct {
 	agents              []storage.AgentRow
 	rulesByID           map[string][]storage.HTTPRuleRow
+	managedCerts        []storage.ManagedCertificateRow
 	localState          storage.LocalAgentStateRow
 	savedAgent          storage.AgentRow
 	savedAgentCalls     int
@@ -67,14 +68,15 @@ func (f *fakeStore) ListRelayListeners(context.Context, string) ([]storage.Relay
 }
 
 func (f *fakeStore) ListManagedCertificates(context.Context) ([]storage.ManagedCertificateRow, error) {
-	return nil, nil
+	return append([]storage.ManagedCertificateRow(nil), f.managedCerts...), nil
 }
 
 func (f *fakeStore) SaveRelayListeners(context.Context, string, []storage.RelayListenerRow) error {
 	return nil
 }
 
-func (f *fakeStore) SaveManagedCertificates(context.Context, []storage.ManagedCertificateRow) error {
+func (f *fakeStore) SaveManagedCertificates(_ context.Context, rows []storage.ManagedCertificateRow) error {
+	f.managedCerts = append([]storage.ManagedCertificateRow(nil), rows...)
 	return nil
 }
 
@@ -387,5 +389,130 @@ func TestAgentServiceHeartbeatOmitsSyncPayloadWhenUpToDateButKeepsRelayListeners
 	}
 	if store.lastSnapshotInput.CurrentRevision != 7 || store.lastSnapshotInput.DesiredRevision != 1 {
 		t.Fatalf("snapshot input revision state = %+v", store.lastSnapshotInput)
+	}
+}
+
+func TestAgentServiceHeartbeatAppliesManagedCertificateReports(t *testing.T) {
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID:              "remote-cert",
+			Name:            "remote-cert",
+			AgentToken:      "token-remote-cert",
+			DesiredVersion:  "3.0.0",
+			DesiredRevision: 4,
+			CurrentRevision: 3,
+			LastApplyStatus: "success",
+		}},
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              21,
+			Domain:          "sync.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  `["remote-cert"]`,
+			Status:          "pending",
+			AgentReports:    `{}`,
+			ACMEInfo:        `{"Main_Domain":"sync.example.com"}`,
+			Usage:           "https",
+			CertificateType: "acme",
+			Revision:        4,
+		}},
+		snapshot: storage.Snapshot{DesiredVersion: "3.0.0", Revision: 4},
+	}
+	svc := NewAgentService(config.Config{}, store)
+	now := time.Date(2026, time.April, 11, 12, 0, 0, 0, time.UTC)
+	svc.now = func() time.Time { return now }
+
+	_, err := svc.Heartbeat(context.Background(), HeartbeatRequest{
+		CurrentRevision:   3,
+		LastApplyRevision: 4,
+		LastApplyStatus:   "success",
+		ManagedCertificateReports: []ManagedCertificateHeartbeatReport{{
+			ID:           21,
+			Domain:       "SYNC.EXAMPLE.COM",
+			Status:       "active",
+			LastIssueAt:  "2026-04-11T12:00:00Z",
+			LastError:    "",
+			MaterialHash: "hash-21",
+			ACMEInfo:     ManagedCertificateACMEInfo{MainDomain: "sync.example.com"},
+		}},
+	}, "token-remote-cert")
+	if err != nil {
+		t.Fatalf("Heartbeat() error = %v", err)
+	}
+
+	if len(store.managedCerts) != 1 {
+		t.Fatalf("managed cert rows = %+v", store.managedCerts)
+	}
+	cert := managedCertificateFromRow(store.managedCerts[0])
+	if cert.Status != "active" || cert.MaterialHash != "hash-21" {
+		t.Fatalf("unexpected updated cert = %+v", cert)
+	}
+	report, ok := cert.AgentReports["remote-cert"]
+	if !ok {
+		t.Fatalf("missing agent report in %+v", cert.AgentReports)
+	}
+	if report.Status != "active" || report.MaterialHash != "hash-21" {
+		t.Fatalf("unexpected agent report = %+v", report)
+	}
+}
+
+func TestAgentServiceHeartbeatReconcilesLocalHTTP01FromApplyStatus(t *testing.T) {
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID:              "remote-cert",
+			Name:            "remote-cert",
+			AgentToken:      "token-remote-cert",
+			DesiredVersion:  "3.0.0",
+			DesiredRevision: 4,
+			CurrentRevision: 3,
+			LastApplyStatus: "success",
+		}},
+		rulesByID: map[string][]storage.HTTPRuleRow{
+			"remote-cert": {{
+				ID:          9,
+				AgentID:     "remote-cert",
+				FrontendURL: "https://sync.example.com",
+				Enabled:     true,
+				Revision:    4,
+			}},
+		},
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              21,
+			Domain:          "sync.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  `["remote-cert"]`,
+			Status:          "pending",
+			MaterialHash:    "hash-21",
+			AgentReports:    `{}`,
+			ACMEInfo:        `{"Main_Domain":"sync.example.com"}`,
+			Usage:           "https",
+			CertificateType: "acme",
+			Revision:        4,
+		}},
+		snapshot: storage.Snapshot{DesiredVersion: "3.0.0", Revision: 4},
+	}
+	svc := NewAgentService(config.Config{}, store)
+	now := time.Date(2026, time.April, 11, 12, 30, 0, 0, time.UTC)
+	svc.now = func() time.Time { return now }
+
+	_, err := svc.Heartbeat(context.Background(), HeartbeatRequest{
+		CurrentRevision:   3,
+		LastApplyRevision: 4,
+		LastApplyStatus:   "success",
+	}, "token-remote-cert")
+	if err != nil {
+		t.Fatalf("Heartbeat() error = %v", err)
+	}
+
+	cert := managedCertificateFromRow(store.managedCerts[0])
+	if cert.Status != "active" || cert.LastError != "" {
+		t.Fatalf("unexpected reconciled cert = %+v", cert)
+	}
+	report := cert.AgentReports["remote-cert"]
+	if report.Status != "active" || report.LastIssueAt != now.Format(time.RFC3339) {
+		t.Fatalf("unexpected reconciled report = %+v", report)
 	}
 }

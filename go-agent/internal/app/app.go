@@ -6,6 +6,7 @@ import (
 	"os"
 	"reflect"
 	stdruntime "runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -29,6 +30,10 @@ type SyncClient interface {
 
 type CertificateApplier interface {
 	Apply(context.Context, []model.ManagedCertificateBundle, []model.ManagedCertificatePolicy) error
+}
+
+type ManagedCertificateReporter interface {
+	ManagedCertificateReports(context.Context) ([]model.ManagedCertificateReport, error)
 }
 
 type HTTPApplier interface {
@@ -195,8 +200,37 @@ func (a *App) performSync(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	req := SyncRequest{CurrentRevision: int(applied.Revision)}
+	req, err := a.syncRequest(ctx, applied)
+	if err != nil {
+		return err
+	}
 	return a.syncOnce(ctx, req)
+}
+
+func (a *App) syncRequest(ctx context.Context, applied Snapshot) (SyncRequest, error) {
+	req := SyncRequest{CurrentRevision: int(applied.Revision)}
+
+	state, err := a.store.LoadRuntimeState()
+	if err != nil {
+		return SyncRequest{}, err
+	}
+	meta := ensureMetadata(state.Metadata)
+	req.LastApplyRevision = int(parseInt64(meta["last_apply_revision"], applied.Revision))
+	req.LastApplyStatus = strings.TrimSpace(meta["last_apply_status"])
+	req.LastApplyMessage = meta["last_apply_message"]
+	if req.LastApplyStatus == "" {
+		req.LastApplyStatus = "success"
+	}
+
+	if reporter, ok := a.certApplier.(ManagedCertificateReporter); ok {
+		reports, err := reporter.ManagedCertificateReports(ctx)
+		if err != nil {
+			return SyncRequest{}, err
+		}
+		req.ManagedCertificateReports = reports
+	}
+
+	return req, nil
 }
 
 func (a *App) syncOnce(ctx context.Context, req SyncRequest) error {
@@ -240,6 +274,7 @@ func (a *App) recordRuntimeError(syncErr error) error {
 	}
 	state.Metadata = ensureMetadata(state.Metadata)
 	state.Metadata["last_sync_error"] = syncErr.Error()
+	setApplyMetadata(state.Metadata, a.runtime.ActiveSnapshot().Revision, "error", syncErr.Error())
 	if err := a.store.SaveRuntimeState(state); err != nil {
 		return syncErr
 	}
@@ -252,6 +287,7 @@ func (a *App) persistRuntimeState(clearLastSyncError bool) error {
 		return err
 	}
 	state.Metadata = ensureMetadata(state.Metadata)
+	setApplyMetadata(state.Metadata, a.runtime.ActiveSnapshot().Revision, "success", "")
 	if clearLastSyncError {
 		delete(state.Metadata, "last_sync_error")
 	}
@@ -268,6 +304,8 @@ func (a *App) recordPersistedRuntimeError(syncErr error) error {
 	}
 	state.Metadata = ensureMetadata(state.Metadata)
 	state.Metadata["last_sync_error"] = syncErr.Error()
+	currentRevision := parseInt64(state.Metadata["current_revision"], state.CurrentRevision)
+	setApplyMetadata(state.Metadata, currentRevision, "error", syncErr.Error())
 	if err := a.store.SaveRuntimeState(state); err != nil {
 		return syncErr
 	}
@@ -279,6 +317,20 @@ func ensureMetadata(meta map[string]string) map[string]string {
 		return make(map[string]string)
 	}
 	return meta
+}
+
+func setApplyMetadata(meta map[string]string, revision int64, status string, message string) {
+	meta["last_apply_revision"] = strconv.FormatInt(revision, 10)
+	meta["last_apply_status"] = status
+	meta["last_apply_message"] = message
+}
+
+func parseInt64(raw string, fallback int64) int64 {
+	value, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	if err != nil {
+		return fallback
+	}
+	return value
 }
 
 func (a *App) runtimeStateForPersistence() (store.RuntimeState, error) {

@@ -121,9 +121,10 @@ func (m *Manager) renewCertificate(ctx context.Context, candidate renewalCandida
 	updated := current.info
 	updated.Fingerprint = fingerprint
 	m.active.byID[candidate.id] = &managedCertificate{
-		info:        updated,
-		certificate: tlsCert,
-		parsedChain: parsedChain,
+		info:         updated,
+		certificate:  tlsCert,
+		parsedChain:  parsedChain,
+		materialHash: hashManagedCertificateMaterial(certPEM, keyPEM),
 	}
 	return nil
 }

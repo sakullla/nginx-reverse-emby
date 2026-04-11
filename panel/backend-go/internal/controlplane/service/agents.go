@@ -73,16 +73,18 @@ type HTTPRule struct {
 }
 
 type HeartbeatRequest struct {
-	Name             string   `json:"name"`
-	AgentID          string   `json:"agent_id"`
-	CurrentRevision  int64    `json:"current_revision"`
-	Version          string   `json:"version"`
-	Platform         string   `json:"platform"`
-	AgentURL         string   `json:"agent_url"`
-	Tags             []string `json:"tags"`
-	Capabilities     []string `json:"capabilities"`
-	LastApplyStatus  string   `json:"last_apply_status"`
-	LastApplyMessage string   `json:"last_apply_message"`
+	Name                      string                              `json:"name"`
+	AgentID                   string                              `json:"agent_id"`
+	CurrentRevision           int64                               `json:"current_revision"`
+	LastApplyRevision         int64                               `json:"last_apply_revision"`
+	Version                   string                              `json:"version"`
+	Platform                  string                              `json:"platform"`
+	AgentURL                  string                              `json:"agent_url"`
+	Tags                      []string                            `json:"tags"`
+	Capabilities              []string                            `json:"capabilities"`
+	LastApplyStatus           string                              `json:"last_apply_status"`
+	LastApplyMessage          string                              `json:"last_apply_message"`
+	ManagedCertificateReports []ManagedCertificateHeartbeatReport `json:"managed_certificate_reports"`
 }
 
 type HeartbeatReply struct {
@@ -324,11 +326,19 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 		row.CapabilitiesJSON = marshalStringArray(defaultCapabilities(request.Capabilities))
 	}
 	row.CurrentRevision = int(request.CurrentRevision)
+	if request.LastApplyRevision > 0 {
+		row.LastApplyRevision = int(request.LastApplyRevision)
+	} else if row.LastApplyRevision <= 0 {
+		row.LastApplyRevision = int(request.CurrentRevision)
+	}
 	row.LastApplyStatus = defaultString(request.LastApplyStatus, row.LastApplyStatus)
 	row.LastApplyMessage = request.LastApplyMessage
 	row.LastSeenAt = s.now().UTC().Format(time.RFC3339)
 
 	if err := s.store.SaveAgent(ctx, row); err != nil {
+		return HeartbeatReply{}, err
+	}
+	if err := s.reconcileManagedCertificatesFromHeartbeat(ctx, row, request); err != nil {
 		return HeartbeatReply{}, err
 	}
 
@@ -361,6 +371,24 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 		reply.CertificatePolicies = nil
 	}
 	return reply, nil
+}
+
+func (s *agentService) reconcileManagedCertificatesFromHeartbeat(ctx context.Context, row storage.AgentRow, request HeartbeatRequest) error {
+	rows, err := s.store.ListManagedCertificates(ctx)
+	if err != nil {
+		return err
+	}
+	rules, err := s.store.ListHTTPRules(ctx, row.ID)
+	if err != nil {
+		return err
+	}
+
+	nextRows, reportedCertIDs, changed := applyManagedCertificateHeartbeatReports(rows, row.ID, request.ManagedCertificateReports, s.now())
+	nextRows, reconciled := reconcileLocalHTTP01CertificatesForAgent(nextRows, row.ID, rules, row.LastApplyRevision, row.LastApplyStatus, row.LastApplyMessage, reportedCertIDs, s.now())
+	if !changed && !reconciled {
+		return nil
+	}
+	return s.store.SaveManagedCertificates(ctx, nextRows)
 }
 
 func (s *agentService) loadHeartbeatSnapshot(ctx context.Context, row storage.AgentRow) (storage.Snapshot, error) {
