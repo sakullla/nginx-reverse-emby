@@ -1232,6 +1232,64 @@ func TestCertificateServiceIssueLocalHTTP01ACMERejectsTargetWithoutMatchingHTTPS
 	}
 }
 
+func TestCertificateServiceIssueLocalHTTP01ACMERejectsRequestedAgentNotAssignedEvenIfAgentMissing(t *testing.T) {
+	store := &relayCertStore{
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              73,
+			Domain:          "media.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  `["edge-1"]`,
+			Status:          "pending",
+			CertificateType: "acme",
+			Usage:           "https",
+			Revision:        3,
+		}},
+	}
+	svc := NewCertificateService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	_, err := svc.Issue(context.Background(), "edge-2", 73)
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Issue() error = %v", err)
+	}
+	if err.Error() != "invalid argument: certificate is not assigned to the requested agent" {
+		t.Fatalf("Issue() error = %v", err)
+	}
+}
+
+func TestCertificateServiceIssueLocalHTTP01ACMEReturnsInvalidArgumentWhenSelectedTargetAgentMissing(t *testing.T) {
+	store := &relayCertStore{
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              74,
+			Domain:          "media.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  `["edge-1"]`,
+			Status:          "pending",
+			CertificateType: "acme",
+			Usage:           "https",
+			Revision:        3,
+		}},
+	}
+	svc := NewCertificateService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	_, err := svc.Issue(context.Background(), "edge-1", 74)
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Issue() error = %v", err)
+	}
+	if err.Error() != "invalid argument: target agent not found: edge-1" {
+		t.Fatalf("Issue() error = %v", err)
+	}
+}
+
 func TestCertificateServiceUploadedLocalHTTP01RequiresCertInstallCapableTargets(t *testing.T) {
 	ca := mustCreateSelfSignedCA(t, "Capabilities CA")
 	leaf := mustCreateLeafSignedByCA(t, "targets.example.com", ca)

@@ -487,14 +487,11 @@ func (s *certificateService) issueLocalHTTP01ACME(ctx context.Context, rows []st
 
 	requestedTargetIDs := append([]string(nil), current.TargetAgentIDs...)
 	if requestedAgentID != "" {
-		resolvedID, err := s.ensureAgentExists(ctx, requestedAgentID)
-		if err != nil {
-			return ManagedCertificate{}, err
-		}
+		requestedAgentID = strings.TrimSpace(requestedAgentID)
 		requestedTargetIDs = requestedTargetIDs[:0]
 		for _, targetAgentID := range current.TargetAgentIDs {
-			if strings.TrimSpace(targetAgentID) == resolvedID {
-				requestedTargetIDs = append(requestedTargetIDs, resolvedID)
+			if strings.TrimSpace(targetAgentID) == requestedAgentID {
+				requestedTargetIDs = append(requestedTargetIDs, requestedAgentID)
 			}
 		}
 	}
