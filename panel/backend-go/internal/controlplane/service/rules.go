@@ -28,6 +28,7 @@ type HTTPRuleInput struct {
 type ruleStore interface {
 	ListAgents(context.Context) ([]storage.AgentRow, error)
 	ListHTTPRules(context.Context, string) ([]storage.HTTPRuleRow, error)
+	ListRelayListeners(context.Context, string) ([]storage.RelayListenerRow, error)
 	SaveHTTPRules(context.Context, string, []storage.HTTPRuleRow) error
 }
 
@@ -86,7 +87,7 @@ func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRule
 		}
 	}
 
-	rule, err := normalizeHTTPRuleInput(input, HTTPRule{}, maxID+1)
+	rule, err := s.normalizeHTTPRuleInput(ctx, input, HTTPRule{}, maxID+1)
 	if err != nil {
 		return HTTPRule{}, err
 	}
@@ -137,7 +138,7 @@ func (s *ruleService) Update(ctx context.Context, agentID string, id int, input 
 		return HTTPRule{}, ErrRuleNotFound
 	}
 
-	rule, err := normalizeHTTPRuleInput(input, current, id)
+	rule, err := s.normalizeHTTPRuleInput(ctx, input, current, id)
 	if err != nil {
 		return HTTPRule{}, err
 	}
@@ -248,7 +249,7 @@ func (s *ruleService) allKnownAgentIDs(ctx context.Context) ([]string, error) {
 	return agentIDs, nil
 }
 
-func normalizeHTTPRuleInput(input HTTPRuleInput, fallback HTTPRule, suggestedID int) (HTTPRule, error) {
+func (s *ruleService) normalizeHTTPRuleInput(ctx context.Context, input HTTPRuleInput, fallback HTTPRule, suggestedID int) (HTTPRule, error) {
 	id := fallback.ID
 	if input.ID != nil && *input.ID > 0 {
 		id = *input.ID
@@ -305,6 +306,9 @@ func normalizeHTTPRuleInput(input HTTPRuleInput, fallback HTTPRule, suggestedID 
 	if input.RelayChain != nil {
 		relayChain = normalizeRelayChain(*input.RelayChain)
 	}
+	if err := s.validateRelayChain(ctx, relayChain); err != nil {
+		return HTTPRule{}, err
+	}
 
 	passProxyHeaders := true
 	if fallback.ID > 0 {
@@ -340,6 +344,46 @@ func normalizeHTTPRuleInput(input HTTPRuleInput, fallback HTTPRule, suggestedID 
 		CustomHeaders:    customHeaders,
 		Revision:         fallback.Revision,
 	}, nil
+}
+
+func (s *ruleService) validateRelayChain(ctx context.Context, relayChain []int) error {
+	if len(relayChain) == 0 {
+		return nil
+	}
+
+	listeners, err := s.store.ListRelayListeners(ctx, "")
+	if err != nil {
+		return err
+	}
+
+	listenersByID := make(map[int]storage.RelayListenerRow, len(listeners))
+	for _, listener := range listeners {
+		listenersByID[listener.ID] = listener
+	}
+
+	knownAgentIDs, err := s.allKnownAgentIDs(ctx)
+	if err != nil {
+		return err
+	}
+	knownAgents := make(map[string]struct{}, len(knownAgentIDs))
+	for _, agentID := range knownAgentIDs {
+		knownAgents[agentID] = struct{}{}
+	}
+
+	for _, listenerID := range relayChain {
+		listener, ok := listenersByID[listenerID]
+		if !ok {
+			return fmt.Errorf("%w: relay listener not found: %d", ErrInvalidArgument, listenerID)
+		}
+		if !listener.Enabled {
+			return fmt.Errorf("%w: relay listener is disabled: %d", ErrInvalidArgument, listenerID)
+		}
+		if _, ok := knownAgents[strings.TrimSpace(listener.AgentID)]; !ok {
+			return fmt.Errorf("%w: relay listener belongs to unknown agent: %d", ErrInvalidArgument, listenerID)
+		}
+	}
+
+	return nil
 }
 
 func normalizeHTTPBackendsInput(input HTTPRuleInput, fallback HTTPRule) ([]HTTPRuleBackend, error) {

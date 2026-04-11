@@ -11,6 +11,7 @@ import (
 type fakeRuleStore struct {
 	agents       []storage.AgentRow
 	rulesByAgent map[string][]storage.HTTPRuleRow
+	listeners    []storage.RelayListenerRow
 }
 
 func (f *fakeRuleStore) ListAgents(context.Context) ([]storage.AgentRow, error) {
@@ -26,8 +27,18 @@ func (f *fakeRuleStore) SaveHTTPRules(_ context.Context, agentID string, rows []
 	return nil
 }
 
+func (f *fakeRuleStore) ListRelayListeners(context.Context, string) ([]storage.RelayListenerRow, error) {
+	return append([]storage.RelayListenerRow(nil), f.listeners...), nil
+}
+
 func TestRuleServiceCreateNormalizesAndPersists(t *testing.T) {
 	store := &fakeRuleStore{
+		listeners: []storage.RelayListenerRow{{
+			ID:       7,
+			AgentID:  "local",
+			Enabled:  true,
+			Revision: 1,
+		}},
 		rulesByAgent: map[string][]storage.HTTPRuleRow{
 			"local": {{
 				ID:                1,
@@ -101,6 +112,17 @@ func TestRuleServiceUpdateNormalizesAndPersists(t *testing.T) {
 	store := &fakeRuleStore{
 		agents: []storage.AgentRow{{
 			ID: "edge",
+		}},
+		listeners: []storage.RelayListenerRow{{
+			ID:       5,
+			AgentID:  "local",
+			Enabled:  true,
+			Revision: 1,
+		}, {
+			ID:       6,
+			AgentID:  "edge",
+			Enabled:  true,
+			Revision: 2,
 		}},
 		rulesByAgent: map[string][]storage.HTTPRuleRow{
 			"local": {{
@@ -215,6 +237,28 @@ func TestRuleServiceDeletePersistsRemoval(t *testing.T) {
 	}
 	if store.rulesByAgent["local"][0].ID != 2 {
 		t.Fatalf("remaining rule = %+v", store.rulesByAgent["local"][0])
+	}
+}
+
+func TestRuleServiceCreateRejectsUnknownRelayChainListener(t *testing.T) {
+	store := &fakeRuleStore{
+		rulesByAgent: map[string][]storage.HTTPRuleRow{},
+	}
+	svc := NewRuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	_, err := svc.Create(context.Background(), "local", HTTPRuleInput{
+		FrontendURL: stringPtrRule("https://relay.example.com"),
+		BackendURL:  stringPtrRule("http://127.0.0.1:8096"),
+		RelayChain:  &[]int{999},
+	})
+	if err == nil {
+		t.Fatalf("Create() error = nil")
+	}
+	if err.Error() != "invalid argument: relay listener not found: 999" {
+		t.Fatalf("Create() error = %v", err)
 	}
 }
 
