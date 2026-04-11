@@ -147,8 +147,8 @@ func TestNewRuntimeStartsEmbeddedRuntimeWithBridgeAdapters(t *testing.T) {
 	if store.savedState.CurrentRevision != 27 || store.savedState.Status != "active" {
 		t.Fatalf("SaveLocalRuntimeState() state = %+v", store.savedState)
 	}
-	if store.savedState.LastApplyRevision != 13 || store.savedState.LastApplyStatus != "error" || store.savedState.LastApplyMessage != "apply failed" {
-		t.Fatalf("SaveLocalRuntimeState() apply metadata = %+v", store.savedState)
+	if store.savedState.LastApplyRevision != 0 || store.savedState.LastApplyStatus != "" || store.savedState.LastApplyMessage != "" {
+		t.Fatalf("SaveLocalRuntimeState() stale request apply metadata should not override runtime metadata = %+v", store.savedState)
 	}
 	if len(store.savedState.ManagedCertificateReports) != 1 || store.savedState.ManagedCertificateReports[0].ID != 21 {
 		t.Fatalf("SaveLocalRuntimeState() managed reports = %+v", store.savedState.ManagedCertificateReports)
@@ -378,6 +378,95 @@ func TestLocalStateSinkReconcilesLocalHTTP01FallbackForLocalAgent(t *testing.T) 
 			t.Fatalf("unexpected error fallback report: %+v", report)
 		}
 	})
+}
+
+func TestMergeRuntimeStateWithSyncRequestPreservesAuthoritativeMetadataApplyOutcome(t *testing.T) {
+	state := RuntimeState{
+		Metadata: map[string]string{
+			"last_sync_error":     "apply failed",
+			"last_apply_revision": "9",
+			"last_apply_status":   "error",
+			"last_apply_message":  "apply failed",
+		},
+	}
+	request := SyncRequest{
+		LastApplyRevision: 2,
+		LastApplyStatus:   "success",
+		LastApplyMessage:  "",
+		ManagedCertificateReports: []storage.ManagedCertificateReport{{
+			ID:     21,
+			Domain: "sync.example.com",
+			Status: "active",
+		}},
+	}
+
+	merged := mergeRuntimeStateWithSyncRequest(state, request)
+
+	if merged.LastApplyRevision != 0 || merged.LastApplyStatus != "" || merged.LastApplyMessage != "" {
+		t.Fatalf("merge unexpectedly overwrote authoritative metadata apply fields: %+v", merged)
+	}
+	if len(merged.ManagedCertificateReports) != 1 || merged.ManagedCertificateReports[0].ID != 21 {
+		t.Fatalf("merge did not preserve bridged managed certificate reports: %+v", merged.ManagedCertificateReports)
+	}
+}
+
+func TestLocalStateSinkMetadataErrorWinsOverStaleBridgeApplyStatus(t *testing.T) {
+	store := &bridgeStoreStub{
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              31,
+			Domain:          "stale-bridge.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  `["local"]`,
+			Status:          "pending",
+			AgentReports:    `{}`,
+			ACMEInfo:        `{"Main_Domain":"stale-bridge.example.com"}`,
+			Usage:           "https",
+			CertificateType: "acme",
+			Revision:        4,
+		}},
+		rulesByAgent: map[string][]storage.HTTPRuleRow{
+			"local": {{
+				ID:          31,
+				AgentID:     "local",
+				FrontendURL: "https://stale-bridge.example.com",
+				Enabled:     true,
+				Revision:    4,
+			}},
+		},
+	}
+
+	bridge := newSyncRequestBridge()
+	bridge.Store(SyncRequest{
+		LastApplyRevision: 4,
+		LastApplyStatus:   "success",
+		LastApplyMessage:  "",
+	})
+	sink := newStateSinkWithBridge(store, "local", bridge)
+
+	err := sink.Save(t.Context(), RuntimeState{
+		CurrentRevision: 4,
+		Status:          "active",
+		Metadata: map[string]string{
+			"last_sync_error":     "apply failed",
+			"last_apply_revision": "4",
+			"last_apply_status":   "error",
+			"last_apply_message":  "apply failed",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	cert := store.managedCerts[0]
+	if cert.Status != "error" || cert.LastError != "apply failed" {
+		t.Fatalf("stale bridge apply status incorrectly overrode metadata error: %+v", cert)
+	}
+	report := parseAgentReportForTest(t, cert.AgentReports, "local")
+	if report.Status != "error" || report.LastError != "apply failed" {
+		t.Fatalf("unexpected reconciled report from metadata error: %+v", report)
+	}
 }
 
 type managedCertificateAgentReportForTest struct {

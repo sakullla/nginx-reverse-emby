@@ -6,7 +6,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 
 	"github.com/glebarez/sqlite"
@@ -242,13 +241,14 @@ func (s *SQLiteStore) SaveLocalRuntimeState(ctx context.Context, agentID string,
 		return err
 	}
 
-	lastApplyStatus := normalizeApplyStatus(runtimeState)
+	outcome := NormalizeLocalApplyOutcome(runtimeState)
+	lastApplyStatus := outcome.Status
 	if lastApplyStatus == "" {
 		lastApplyStatus = currentState.LastApplyStatus
 	}
 
-	lastApplyMessage := normalizeApplyMessage(runtimeState, lastApplyStatus)
-	lastApplyRevision := normalizeApplyRevision(runtimeState)
+	lastApplyMessage := outcome.Message
+	lastApplyRevision := outcome.Revision
 	if lastApplyRevision <= 0 {
 		lastApplyRevision = runtimeState.CurrentRevision
 	}
@@ -1306,69 +1306,4 @@ func managedCertificateDomainSet(rows []ManagedCertificateRow) map[string]struct
 		domains[normalizeManagedCertificateHost(domain)] = struct{}{}
 	}
 	return domains
-}
-
-func normalizeApplyStatus(runtimeState RuntimeState) string {
-	if explicit := strings.ToLower(strings.TrimSpace(runtimeState.LastApplyStatus)); explicit != "" {
-		if explicit == "success" || explicit == "error" {
-			return explicit
-		}
-	}
-	lastSyncError := ""
-	if runtimeState.Metadata != nil {
-		lastSyncError = strings.TrimSpace(runtimeState.Metadata["last_sync_error"])
-	}
-	if lastSyncError != "" {
-		return "error"
-	}
-	switch strings.ToLower(strings.TrimSpace(runtimeState.Status)) {
-	case "active":
-		return "success"
-	case "error":
-		return "error"
-	case "success":
-		return "success"
-	default:
-		return ""
-	}
-}
-
-func normalizeApplyMessage(runtimeState RuntimeState, applyStatus string) string {
-	if applyStatus != "error" {
-		return ""
-	}
-	if explicit := strings.TrimSpace(runtimeState.LastApplyMessage); explicit != "" {
-		return explicit
-	}
-	if runtimeState.Metadata == nil {
-		return ""
-	}
-	if lastSyncError := strings.TrimSpace(runtimeState.Metadata["last_sync_error"]); lastSyncError != "" {
-		return lastSyncError
-	}
-	return strings.TrimSpace(runtimeState.Metadata["last_apply_message"])
-}
-
-func normalizeApplyRevision(runtimeState RuntimeState) int64 {
-	if runtimeState.LastApplyRevision > 0 {
-		return runtimeState.LastApplyRevision
-	}
-	if runtimeState.Metadata == nil {
-		return 0
-	}
-	value, err := parseInt64(strings.TrimSpace(runtimeState.Metadata["last_apply_revision"]))
-	if err != nil {
-		return 0
-	}
-	if value < 0 {
-		return 0
-	}
-	return value
-}
-
-func parseInt64(raw string) (int64, error) {
-	if strings.TrimSpace(raw) == "" {
-		return 0, nil
-	}
-	return strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
 }

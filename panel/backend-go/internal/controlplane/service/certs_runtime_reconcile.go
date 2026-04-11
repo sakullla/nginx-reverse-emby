@@ -29,15 +29,16 @@ func ReconcileManagedCertificatesFromLocalRuntimeState(ctx context.Context, stor
 		return err
 	}
 
+	outcome := storage.NormalizeLocalApplyOutcome(state)
 	reports := managedCertificateHeartbeatReportsFromRuntimeState(state.ManagedCertificateReports)
 	nextRows, reportedCertIDs, changed := applyManagedCertificateHeartbeatReports(rows, resolvedAgentID, reports, now)
 	nextRows, reconciled := reconcileLocalHTTP01CertificatesForAgent(
 		nextRows,
 		resolvedAgentID,
 		rules,
-		effectiveLocalApplyRevision(state),
-		effectiveLocalApplyStatus(state),
-		effectiveLocalApplyMessage(state),
+		int(outcome.Revision),
+		outcome.Status,
+		outcome.Message,
 		reportedCertIDs,
 		now,
 	)
@@ -74,22 +75,4 @@ func managedCertificateHeartbeatReportsFromRuntimeState(reports []storage.Manage
 		})
 	}
 	return converted
-}
-
-func effectiveLocalApplyRevision(state storage.RuntimeState) int {
-	if state.LastApplyRevision > 0 {
-		return int(state.LastApplyRevision)
-	}
-	if state.CurrentRevision > 0 {
-		return int(state.CurrentRevision)
-	}
-	return 0
-}
-
-func effectiveLocalApplyStatus(state storage.RuntimeState) string {
-	return strings.TrimSpace(state.LastApplyStatus)
-}
-
-func effectiveLocalApplyMessage(state storage.RuntimeState) string {
-	return state.LastApplyMessage
 }

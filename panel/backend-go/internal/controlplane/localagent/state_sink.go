@@ -2,6 +2,7 @@ package localagent
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
@@ -48,17 +49,38 @@ func (s *StateSink) Save(ctx context.Context, state RuntimeState) error {
 }
 
 func mergeRuntimeStateWithSyncRequest(state RuntimeState, request SyncRequest) RuntimeState {
-	if request.LastApplyRevision > 0 {
+	hasAuthoritativeApplyMetadata := hasAuthoritativeApplyMetadata(state.Metadata)
+
+	if !hasAuthoritativeApplyMetadata && state.LastApplyRevision <= 0 && request.LastApplyRevision > 0 {
 		state.LastApplyRevision = int64(request.LastApplyRevision)
 	}
-	if request.LastApplyStatus != "" {
+	if !hasAuthoritativeApplyMetadata && strings.TrimSpace(state.LastApplyStatus) == "" && strings.TrimSpace(request.LastApplyStatus) != "" {
 		state.LastApplyStatus = request.LastApplyStatus
 	}
-	if request.LastApplyMessage != "" {
+	if !hasAuthoritativeApplyMetadata && strings.TrimSpace(state.LastApplyMessage) == "" && strings.TrimSpace(request.LastApplyMessage) != "" {
 		state.LastApplyMessage = request.LastApplyMessage
 	}
-	if len(request.ManagedCertificateReports) > 0 {
+	if len(state.ManagedCertificateReports) == 0 && len(request.ManagedCertificateReports) > 0 {
 		state.ManagedCertificateReports = append([]storage.ManagedCertificateReport(nil), request.ManagedCertificateReports...)
 	}
 	return state
+}
+
+func hasAuthoritativeApplyMetadata(metadata map[string]string) bool {
+	if metadata == nil {
+		return false
+	}
+	if strings.TrimSpace(metadata["last_sync_error"]) != "" {
+		return true
+	}
+	if strings.TrimSpace(metadata["last_apply_status"]) != "" {
+		return true
+	}
+	if strings.TrimSpace(metadata["last_apply_revision"]) != "" {
+		return true
+	}
+	if strings.TrimSpace(metadata["last_apply_message"]) != "" {
+		return true
+	}
+	return false
 }
