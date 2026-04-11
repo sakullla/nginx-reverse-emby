@@ -8,7 +8,7 @@
 ## Runtime Architecture
 
 - 控制面：Go control-plane + Vue frontend
-- 执行面：Go `nre-agent`
+- 执行面：Go `go-agent`
 - 本地节点：Master 容器默认内嵌 local agent 能力
 - 同步模型：heartbeat pull
 - 版本更新：Master 下发 `desired_version`
