@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -1497,6 +1498,19 @@ func TestCertificateServiceGlobalCreateKeepsEmptyTargetAgentIDsWhenOmittedOrExpl
 	if len(createdOmitted.TargetAgentIDs) != 0 {
 		t.Fatalf("createdOmitted.TargetAgentIDs = %+v", createdOmitted.TargetAgentIDs)
 	}
+	if createdOmitted.TargetAgentIDs == nil {
+		t.Fatalf("createdOmitted.TargetAgentIDs should be empty slice, got nil")
+	}
+	rawOmitted, err := json.Marshal(createdOmitted)
+	if err != nil {
+		t.Fatalf("json.Marshal(createdOmitted) error = %v", err)
+	}
+	if strings.Contains(string(rawOmitted), `"target_agent_ids":null`) {
+		t.Fatalf("createdOmitted serialized null target_agent_ids: %s", rawOmitted)
+	}
+	if !strings.Contains(string(rawOmitted), `"target_agent_ids":[]`) {
+		t.Fatalf("createdOmitted missing empty target_agent_ids array: %s", rawOmitted)
+	}
 
 	createdExplicitEmpty, err := svc.Create(context.Background(), "", ManagedCertificateInput{
 		Domain:         stringPtr("global-empty.example.com"),
@@ -1508,6 +1522,19 @@ func TestCertificateServiceGlobalCreateKeepsEmptyTargetAgentIDsWhenOmittedOrExpl
 	}
 	if len(createdExplicitEmpty.TargetAgentIDs) != 0 {
 		t.Fatalf("createdExplicitEmpty.TargetAgentIDs = %+v", createdExplicitEmpty.TargetAgentIDs)
+	}
+	if createdExplicitEmpty.TargetAgentIDs == nil {
+		t.Fatalf("createdExplicitEmpty.TargetAgentIDs should be empty slice, got nil")
+	}
+	rawExplicitEmpty, err := json.Marshal(createdExplicitEmpty)
+	if err != nil {
+		t.Fatalf("json.Marshal(createdExplicitEmpty) error = %v", err)
+	}
+	if strings.Contains(string(rawExplicitEmpty), `"target_agent_ids":null`) {
+		t.Fatalf("createdExplicitEmpty serialized null target_agent_ids: %s", rawExplicitEmpty)
+	}
+	if !strings.Contains(string(rawExplicitEmpty), `"target_agent_ids":[]`) {
+		t.Fatalf("createdExplicitEmpty missing empty target_agent_ids array: %s", rawExplicitEmpty)
 	}
 }
 
@@ -1539,6 +1566,19 @@ func TestCertificateServiceGlobalUpdatePreservesExplicitEmptyTargetAgentIDs(t *t
 	}
 	if len(updated.TargetAgentIDs) != 0 {
 		t.Fatalf("updated.TargetAgentIDs = %+v", updated.TargetAgentIDs)
+	}
+	if updated.TargetAgentIDs == nil {
+		t.Fatalf("updated.TargetAgentIDs should be empty slice, got nil")
+	}
+	rawUpdated, err := json.Marshal(updated)
+	if err != nil {
+		t.Fatalf("json.Marshal(updated) error = %v", err)
+	}
+	if strings.Contains(string(rawUpdated), `"target_agent_ids":null`) {
+		t.Fatalf("updated serialized null target_agent_ids: %s", rawUpdated)
+	}
+	if !strings.Contains(string(rawUpdated), `"target_agent_ids":[]`) {
+		t.Fatalf("updated missing empty target_agent_ids array: %s", rawUpdated)
 	}
 	row := managedCertificateFromRow(store.managedCerts[0])
 	if len(row.TargetAgentIDs) != 0 {

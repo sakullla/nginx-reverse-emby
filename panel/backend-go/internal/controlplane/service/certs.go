@@ -864,6 +864,9 @@ func normalizeManagedCertificateInput(input ManagedCertificateInput, fallback Ma
 	if len(targetAgentIDs) == 0 && !allowEmptyTargets {
 		targetAgentIDs = []string{defaultAgentID}
 	}
+	if allowEmptyTargets && len(targetAgentIDs) == 0 {
+		targetAgentIDs = []string{}
+	}
 
 	status := strings.TrimSpace(pointerString(input.Status))
 	if status == "" {
