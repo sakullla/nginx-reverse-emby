@@ -132,9 +132,7 @@ func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRule
 		return HTTPRule{}, err
 	}
 	if certRowsChanged {
-		if err := s.store.CleanupManagedCertificateMaterial(ctx, originalCertRows, nextCertRows); err != nil {
-			return HTTPRule{}, err
-		}
+		cleanupManagedCertificateMaterialBestEffort(ctx, s.store, originalCertRows, nextCertRows)
 	}
 	return rule, nil
 }
@@ -212,9 +210,7 @@ func (s *ruleService) Update(ctx context.Context, agentID string, id int, input 
 		return HTTPRule{}, err
 	}
 	if certRowsChanged {
-		if err := s.store.CleanupManagedCertificateMaterial(ctx, originalCertRows, nextCertRows); err != nil {
-			return HTTPRule{}, err
-		}
+		cleanupManagedCertificateMaterialBestEffort(ctx, s.store, originalCertRows, nextCertRows)
 	}
 	return rule, nil
 }
@@ -273,9 +269,7 @@ func (s *ruleService) Delete(ctx context.Context, agentID string, id int) (HTTPR
 		return HTTPRule{}, err
 	}
 	if certRowsChanged {
-		if err := s.store.CleanupManagedCertificateMaterial(ctx, originalCertRows, nextCertRows); err != nil {
-			return HTTPRule{}, err
-		}
+		cleanupManagedCertificateMaterialBestEffort(ctx, s.store, originalCertRows, nextCertRows)
 	}
 	return deleted, nil
 }

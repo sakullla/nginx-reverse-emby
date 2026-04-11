@@ -249,6 +249,39 @@ func TestCertificateServiceDeleteDetachesSingleAgentFromSharedCertificate(t *tes
 	}
 }
 
+func TestCertificateServiceDeleteSucceedsWhenCleanupFailsPostCommit(t *testing.T) {
+	store := &relayCertStore{
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              33,
+			Domain:          "cleanup-failure.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  `["local"]`,
+			Status:          "active",
+			Usage:           "https",
+			CertificateType: "acme",
+			Revision:        7,
+		}},
+		cleanupErrs: []error{errors.New("cleanup failed")},
+	}
+	svc := NewCertificateService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	deleted, err := svc.Delete(context.Background(), "local", 33)
+	if err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if deleted.ID != 33 {
+		t.Fatalf("Delete() id = %d", deleted.ID)
+	}
+	if len(store.managedCerts) != 0 {
+		t.Fatalf("managed cert rows should stay committed after cleanup failure: %+v", store.managedCerts)
+	}
+}
+
 func TestCertificateServiceRunRenewalPassRenewsEligibleCloudflareCertificate(t *testing.T) {
 	now := time.Date(2026, 4, 11, 1, 2, 3, 0, time.UTC)
 	store := &relayCertStore{

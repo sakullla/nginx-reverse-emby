@@ -163,9 +163,7 @@ func (s *certificateService) Create(ctx context.Context, agentID string, input M
 	if err := s.store.SaveManagedCertificates(ctx, rows); err != nil {
 		return ManagedCertificate{}, err
 	}
-	if err := s.store.CleanupManagedCertificateMaterial(ctx, current, rows); err != nil {
-		return ManagedCertificate{}, err
-	}
+	cleanupManagedCertificateMaterialBestEffort(ctx, s.store, current, rows)
 	return cert, nil
 }
 
@@ -214,9 +212,7 @@ func (s *certificateService) Update(ctx context.Context, agentID string, id int,
 	if err := s.store.SaveManagedCertificates(ctx, rows); err != nil {
 		return ManagedCertificate{}, err
 	}
-	if err := s.store.CleanupManagedCertificateMaterial(ctx, originalRows, rows); err != nil {
-		return ManagedCertificate{}, err
-	}
+	cleanupManagedCertificateMaterialBestEffort(ctx, s.store, originalRows, rows)
 	return next, nil
 }
 
@@ -261,9 +257,7 @@ func (s *certificateService) Delete(ctx context.Context, agentID string, id int)
 		if err := s.store.SaveManagedCertificates(ctx, rows); err != nil {
 			return ManagedCertificate{}, err
 		}
-		if err := s.store.CleanupManagedCertificateMaterial(ctx, originalRows, rows); err != nil {
-			return ManagedCertificate{}, err
-		}
+		cleanupManagedCertificateMaterialBestEffort(ctx, s.store, originalRows, rows)
 		current.TargetAgentIDs = []string{resolvedID}
 		return current, nil
 	}
@@ -273,9 +267,7 @@ func (s *certificateService) Delete(ctx context.Context, agentID string, id int)
 	if err := s.store.SaveManagedCertificates(ctx, nextRows); err != nil {
 		return ManagedCertificate{}, err
 	}
-	if err := s.store.CleanupManagedCertificateMaterial(ctx, rows, nextRows); err != nil {
-		return ManagedCertificate{}, err
-	}
+	cleanupManagedCertificateMaterialBestEffort(ctx, s.store, rows, nextRows)
 	return current, nil
 }
 
@@ -316,9 +308,7 @@ func (s *certificateService) Issue(ctx context.Context, agentID string, id int) 
 	if err := s.store.SaveManagedCertificates(ctx, rows); err != nil {
 		return ManagedCertificate{}, err
 	}
-	if err := s.store.CleanupManagedCertificateMaterial(ctx, originalRows, rows); err != nil {
-		return ManagedCertificate{}, err
-	}
+	cleanupManagedCertificateMaterialBestEffort(ctx, s.store, originalRows, rows)
 	return current, nil
 }
 

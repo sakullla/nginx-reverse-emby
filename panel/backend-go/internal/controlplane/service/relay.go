@@ -144,9 +144,7 @@ func (s *relayService) Create(ctx context.Context, agentID string, input RelayLi
 		return RelayListener{}, err
 	}
 	if prepared.PersistCertificates {
-		if err := s.store.CleanupManagedCertificateMaterial(ctx, prepared.OriginalCertRows, prepared.NextCertRows); err != nil {
-			return RelayListener{}, err
-		}
+		cleanupManagedCertificateMaterialBestEffort(ctx, s.store, prepared.OriginalCertRows, prepared.NextCertRows)
 	}
 	return listener, nil
 }
@@ -217,9 +215,7 @@ func (s *relayService) Update(ctx context.Context, agentID string, id int, input
 		return RelayListener{}, err
 	}
 	if prepared.PersistCertificates {
-		if err := s.store.CleanupManagedCertificateMaterial(ctx, prepared.OriginalCertRows, prepared.NextCertRows); err != nil {
-			return RelayListener{}, err
-		}
+		cleanupManagedCertificateMaterialBestEffort(ctx, s.store, prepared.OriginalCertRows, prepared.NextCertRows)
 	}
 	if current.CertificateID != nil && relayListenerCertificateChanged(current.CertificateID, listener.CertificateID) {
 		if err := s.cleanupUnusedAutoRelayListenerCertificate(ctx, *current.CertificateID); err != nil {
@@ -726,7 +722,8 @@ func (s *relayService) cleanupUnusedAutoRelayListenerCertificate(ctx context.Con
 	if err := s.store.SaveManagedCertificates(ctx, nextRows); err != nil {
 		return err
 	}
-	return s.store.CleanupManagedCertificateMaterial(ctx, certRows, nextRows)
+	cleanupManagedCertificateMaterialBestEffort(ctx, s.store, certRows, nextRows)
+	return nil
 }
 
 func containsInt(values []int, target int) bool {

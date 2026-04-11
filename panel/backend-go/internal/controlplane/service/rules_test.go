@@ -18,6 +18,7 @@ type fakeRuleStore struct {
 
 	saveHTTPRulesErrs []error
 	saveManagedErrs   []error
+	cleanupErrs       []error
 	materialByDomain  map[string]bool
 	cleanupCallCount  int
 }
@@ -67,6 +68,9 @@ func (f *fakeRuleStore) SaveManagedCertificates(_ context.Context, rows []storag
 
 func (f *fakeRuleStore) CleanupManagedCertificateMaterial(_ context.Context, previous []storage.ManagedCertificateRow, next []storage.ManagedCertificateRow) error {
 	f.cleanupCallCount++
+	if err := popRuleStoreError(&f.cleanupErrs); err != nil {
+		return err
+	}
 	if f.materialByDomain == nil {
 		return nil
 	}
@@ -1011,6 +1015,59 @@ func TestRuleServiceUpdateRollbackPreservesManagedCertificateMaterial(t *testing
 	}
 	if store.cleanupCallCount != 0 {
 		t.Fatalf("cleanup should not run on rollback path, cleanupCallCount = %d", store.cleanupCallCount)
+	}
+}
+
+func TestRuleServiceDeleteSucceedsWhenCleanupFailsPostCommit(t *testing.T) {
+	store := &fakeRuleStore{
+		rulesByAgent: map[string][]storage.HTTPRuleRow{
+			"local": {{
+				ID:                1,
+				AgentID:           "local",
+				FrontendURL:       "https://stale-auto.example.com",
+				BackendURL:        "http://127.0.0.1:8096",
+				BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+				LoadBalancingJSON: `{"strategy":"round_robin"}`,
+				Enabled:           true,
+				TagsJSON:          `[]`,
+				ProxyRedirect:     true,
+				RelayChainJSON:    `[]`,
+				PassProxyHeaders:  true,
+				CustomHeadersJSON: `[]`,
+				Revision:          7,
+			}},
+		},
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              3,
+			Domain:          "stale-auto.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  `["local"]`,
+			TagsJSON:        `["auto","auto_target:local"]`,
+			Usage:           "https",
+			CertificateType: "acme",
+			Revision:        8,
+		}},
+		cleanupErrs: []error{errors.New("cleanup failed")},
+	}
+	svc := NewRuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	deleted, err := svc.Delete(context.Background(), "local", 1)
+	if err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if deleted.ID != 1 {
+		t.Fatalf("Delete() id = %d", deleted.ID)
+	}
+	if len(store.rulesByAgent["local"]) != 0 {
+		t.Fatalf("rules still persisted after delete: %+v", store.rulesByAgent["local"])
+	}
+	if len(store.managedCerts) != 0 {
+		t.Fatalf("managed certs should remain committed despite cleanup failure, got %d rows", len(store.managedCerts))
 	}
 }
 

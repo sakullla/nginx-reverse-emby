@@ -22,6 +22,7 @@ type relayCertStore struct {
 	saveManagedErrs []error
 	saveManagedCall int
 	cleanupCall     int
+	cleanupErrs     []error
 }
 
 func (s *relayCertStore) ListAgents(context.Context) ([]storage.AgentRow, error) {
@@ -99,6 +100,11 @@ func (s *relayCertStore) SaveManagedCertificates(_ context.Context, rows []stora
 
 func (s *relayCertStore) CleanupManagedCertificateMaterial(_ context.Context, _ []storage.ManagedCertificateRow, _ []storage.ManagedCertificateRow) error {
 	s.cleanupCall++
+	if len(s.cleanupErrs) > 0 {
+		err := s.cleanupErrs[0]
+		s.cleanupErrs = s.cleanupErrs[1:]
+		return err
+	}
 	return nil
 }
 
@@ -681,6 +687,55 @@ func TestRelayServiceDeleteCleansUpUnusedAutoCertificate(t *testing.T) {
 	}
 	if len(store.managedCerts) != 1 || store.managedCerts[0].ID != 10 {
 		t.Fatalf("managed certs after delete = %+v", store.managedCerts)
+	}
+}
+
+func TestRelayServiceCreateSucceedsWhenCleanupFailsPostCommit(t *testing.T) {
+	store := &relayCertStore{
+		relayByAgentID: map[string][]storage.RelayListenerRow{},
+		httpRulesByID:  map[string][]storage.HTTPRuleRow{},
+		l4RulesByID:    map[string][]storage.L4RuleRow{},
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              10,
+			Domain:          "__relay-ca.internal",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  `["local"]`,
+			Status:          "active",
+			MaterialHash:    "relay-ca-hash",
+			Usage:           "relay_ca",
+			CertificateType: "internal_ca",
+			SelfSigned:      true,
+			TagsJSON:        `["system:relay-ca","system"]`,
+			Revision:        3,
+		}},
+		cleanupErrs: []error{errors.New("cleanup failed")},
+	}
+	svc := NewRelayListenerService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	listener, err := svc.Create(context.Background(), "local", RelayListenerInput{
+		Name:              stringPtr("relay-auto"),
+		ListenPort:        intPtrService(7443),
+		PublicHost:        stringPtr("relay-auto.example.com"),
+		Enabled:           boolPtr(true),
+		CertificateSource: stringPtr("auto_relay_ca"),
+		TrustModeSource:   stringPtr("auto"),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if listener.CertificateID == nil {
+		t.Fatalf("listener.CertificateID = nil")
+	}
+	if len(store.relayByAgentID["local"]) != 1 {
+		t.Fatalf("listener rows not committed: %+v", store.relayByAgentID["local"])
+	}
+	if len(store.managedCerts) != 2 {
+		t.Fatalf("managed cert rows not committed: %+v", store.managedCerts)
 	}
 }
 
