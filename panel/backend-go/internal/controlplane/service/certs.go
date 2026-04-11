@@ -115,6 +115,18 @@ func newCertificateServiceWithRenewal(cfg config.Config, store storage.Store, is
 }
 
 func (s *certificateService) List(ctx context.Context, agentID string) ([]ManagedCertificate, error) {
+	if strings.TrimSpace(agentID) == "" {
+		rows, err := s.store.ListManagedCertificates(ctx)
+		if err != nil {
+			return nil, err
+		}
+		certs := make([]ManagedCertificate, 0, len(rows))
+		for _, row := range rows {
+			certs = append(certs, managedCertificateFromRow(row))
+		}
+		return certs, nil
+	}
+
 	resolvedID, err := s.ensureAgentExists(ctx, agentID)
 	if err != nil {
 		return nil, err
@@ -137,9 +149,13 @@ func (s *certificateService) List(ctx context.Context, agentID string) ([]Manage
 }
 
 func (s *certificateService) Create(ctx context.Context, agentID string, input ManagedCertificateInput) (ManagedCertificate, error) {
-	resolvedID, err := s.ensureAgentExists(ctx, agentID)
-	if err != nil {
-		return ManagedCertificate{}, err
+	resolvedID := strings.TrimSpace(agentID)
+	var err error
+	if resolvedID != "" {
+		resolvedID, err = s.ensureAgentExists(ctx, resolvedID)
+		if err != nil {
+			return ManagedCertificate{}, err
+		}
 	}
 
 	current, err := s.store.ListManagedCertificates(ctx)
@@ -208,9 +224,13 @@ func (s *certificateService) Create(ctx context.Context, agentID string, input M
 }
 
 func (s *certificateService) Update(ctx context.Context, agentID string, id int, input ManagedCertificateInput) (ManagedCertificate, error) {
-	resolvedID, err := s.ensureAgentExists(ctx, agentID)
-	if err != nil {
-		return ManagedCertificate{}, err
+	resolvedID := strings.TrimSpace(agentID)
+	var err error
+	if resolvedID != "" {
+		resolvedID, err = s.ensureAgentExists(ctx, resolvedID)
+		if err != nil {
+			return ManagedCertificate{}, err
+		}
 	}
 
 	rows, err := s.store.ListManagedCertificates(ctx)
@@ -226,7 +246,7 @@ func (s *certificateService) Update(ctx context.Context, agentID string, id int,
 			maxRevision = row.Revision
 		}
 		cert := managedCertificateFromRow(row)
-		if cert.ID == id && containsString(cert.TargetAgentIDs, resolvedID) {
+		if cert.ID == id && (resolvedID == "" || containsString(cert.TargetAgentIDs, resolvedID)) {
 			targetIndex = i
 			current = cert
 		}
@@ -235,7 +255,11 @@ func (s *certificateService) Update(ctx context.Context, agentID string, id int,
 		return ManagedCertificate{}, ErrCertificateNotFound
 	}
 
-	next, err := normalizeManagedCertificateInput(input, current, id, resolvedID)
+	defaultAgentID := resolvedID
+	if defaultAgentID == "" {
+		defaultAgentID = s.cfg.LocalAgentID
+	}
+	next, err := normalizeManagedCertificateInput(input, current, id, defaultAgentID)
 	if err != nil {
 		return ManagedCertificate{}, err
 	}
@@ -300,9 +324,13 @@ func (s *certificateService) Update(ctx context.Context, agentID string, id int,
 }
 
 func (s *certificateService) Delete(ctx context.Context, agentID string, id int) (ManagedCertificate, error) {
-	resolvedID, err := s.ensureAgentExists(ctx, agentID)
-	if err != nil {
-		return ManagedCertificate{}, err
+	resolvedID := strings.TrimSpace(agentID)
+	var err error
+	if resolvedID != "" {
+		resolvedID, err = s.ensureAgentExists(ctx, resolvedID)
+		if err != nil {
+			return ManagedCertificate{}, err
+		}
 	}
 
 	rows, err := s.store.ListManagedCertificates(ctx)
@@ -318,7 +346,7 @@ func (s *certificateService) Delete(ctx context.Context, agentID string, id int)
 			maxRevision = row.Revision
 		}
 		cert := managedCertificateFromRow(row)
-		if cert.ID == id && containsString(cert.TargetAgentIDs, resolvedID) {
+		if cert.ID == id && (resolvedID == "" || containsString(cert.TargetAgentIDs, resolvedID)) {
 			targetIndex = i
 			current = cert
 		}
@@ -333,7 +361,7 @@ func (s *certificateService) Delete(ctx context.Context, agentID string, id int)
 		return ManagedCertificate{}, err
 	}
 
-	if len(current.TargetAgentIDs) > 1 {
+	if resolvedID != "" && len(current.TargetAgentIDs) > 1 {
 		nextTargets := removeString(current.TargetAgentIDs, resolvedID)
 		next := current
 		next.TargetAgentIDs = nextTargets

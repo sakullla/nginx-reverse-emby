@@ -44,6 +44,12 @@ func (d Dependencies) handleAgentRules(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (d Dependencies) handleLocalRules(w http.ResponseWriter, r *http.Request) {
+	r = r.Clone(r.Context())
+	r.SetPathValue("agentID", d.Config.LocalAgentID)
+	d.handleAgentRules(w, r)
+}
+
 func (d Dependencies) handleAgentRule(w http.ResponseWriter, r *http.Request) {
 	agentID := r.PathValue("agentID")
 	ruleID, err := strconv.Atoi(r.PathValue("id"))
@@ -83,4 +89,10 @@ func (d Dependencies) handleAgentRule(w http.ResponseWriter, r *http.Request) {
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func (d Dependencies) handleLocalRule(w http.ResponseWriter, r *http.Request) {
+	r = r.Clone(r.Context())
+	r.SetPathValue("agentID", d.Config.LocalAgentID)
+	d.handleAgentRule(w, r)
 }

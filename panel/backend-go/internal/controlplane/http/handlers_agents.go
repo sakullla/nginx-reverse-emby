@@ -115,6 +115,12 @@ func (d Dependencies) handleAgentStats(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (d Dependencies) handleLocalStats(w http.ResponseWriter, r *http.Request) {
+	r = r.Clone(r.Context())
+	r.SetPathValue("agentID", d.Config.LocalAgentID)
+	d.handleAgentStats(w, r)
+}
+
 func (d Dependencies) handleApplyAgent(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.NotFound(w, r)
@@ -131,4 +137,10 @@ func (d Dependencies) handleApplyAgent(w http.ResponseWriter, r *http.Request) {
 		"ok":      true,
 		"message": result.Message,
 	})
+}
+
+func (d Dependencies) handleLocalApply(w http.ResponseWriter, r *http.Request) {
+	r = r.Clone(r.Context())
+	r.SetPathValue("agentID", d.Config.LocalAgentID)
+	d.handleApplyAgent(w, r)
 }

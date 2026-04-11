@@ -1361,6 +1361,126 @@ func TestCertificateServiceDeleteDetachesSingleAgentFromSharedCertificate(t *tes
 	}
 }
 
+func TestCertificateServiceGlobalListReturnsFullManagedCertificateSetWithoutOverlay(t *testing.T) {
+	store := &relayCertStore{
+		managedCerts: []storage.ManagedCertificateRow{
+			{
+				ID:             91,
+				Domain:         "shared.example.com",
+				Enabled:        true,
+				Scope:          "domain",
+				IssuerMode:     "local_http01",
+				TargetAgentIDs: `["local","edge-1"]`,
+				Status:         "pending",
+				AgentReports:   `{"local":{"status":"active","last_issue_at":"2026-04-10T12:00:00Z","last_error":"","material_hash":"local-hash"}}`,
+				Usage:          "https",
+				Revision:       3,
+			},
+			{
+				ID:             92,
+				Domain:         "edge-only.example.com",
+				Enabled:        true,
+				Scope:          "domain",
+				IssuerMode:     "local_http01",
+				TargetAgentIDs: `["edge-1"]`,
+				Status:         "active",
+				Usage:          "https",
+				Revision:       4,
+			},
+		},
+	}
+	svc := NewCertificateService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	certs, err := svc.List(context.Background(), "")
+	if err != nil {
+		t.Fatalf("List(global) error = %v", err)
+	}
+	if len(certs) != 2 {
+		t.Fatalf("len(certs) = %d", len(certs))
+	}
+	if certs[0].ID != 91 || certs[0].Status != "pending" {
+		t.Fatalf("certs[0] = %+v", certs[0])
+	}
+	if certs[1].ID != 92 {
+		t.Fatalf("certs[1] = %+v", certs[1])
+	}
+}
+
+func TestCertificateServiceGlobalUpdateCanMutateCertificateNotAssignedToLocalAgent(t *testing.T) {
+	store := &relayCertStore{
+		agents: []storage.AgentRow{{
+			ID:               "edge-1",
+			Name:             "Edge 1",
+			CapabilitiesJSON: `["http_rules","cert_install"]`,
+		}},
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              93,
+			Domain:          "edge-only.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  `["edge-1"]`,
+			Status:          "pending",
+			Usage:           "https",
+			CertificateType: "acme",
+			Revision:        5,
+		}},
+	}
+	svc := NewCertificateService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	updated, err := svc.Update(context.Background(), "", 93, ManagedCertificateInput{
+		Domain: stringPtr("edge-only-updated.example.com"),
+	})
+	if err != nil {
+		t.Fatalf("Update(global) error = %v", err)
+	}
+	if updated.Domain != "edge-only-updated.example.com" {
+		t.Fatalf("updated.Domain = %q", updated.Domain)
+	}
+	row := managedCertificateFromRow(store.managedCerts[0])
+	if row.Domain != "edge-only-updated.example.com" {
+		t.Fatalf("row.Domain = %q", row.Domain)
+	}
+}
+
+func TestCertificateServiceGlobalDeleteRemovesSharedCertificateCompletely(t *testing.T) {
+	store := &relayCertStore{
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              94,
+			Domain:          "shared-delete.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  `["local","edge-1"]`,
+			Status:          "active",
+			Usage:           "https",
+			CertificateType: "acme",
+			Revision:        7,
+		}},
+	}
+	svc := NewCertificateService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	deleted, err := svc.Delete(context.Background(), "", 94)
+	if err != nil {
+		t.Fatalf("Delete(global) error = %v", err)
+	}
+	if deleted.ID != 94 {
+		t.Fatalf("deleted.ID = %d", deleted.ID)
+	}
+	if len(store.managedCerts) != 0 {
+		t.Fatalf("managed cert rows should be fully deleted: %+v", store.managedCerts)
+	}
+}
+
 func TestCertificateServiceDeleteRejectsReferencedAutoRelayListenerCertificate(t *testing.T) {
 	store := &relayCertStore{
 		relayByAgentID: map[string][]storage.RelayListenerRow{

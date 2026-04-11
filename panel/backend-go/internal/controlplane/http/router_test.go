@@ -39,12 +39,12 @@ type fakeAgentService struct {
 }
 
 type fakeAgentServiceState struct {
-	updateAgentID string
-	updateInput   service.UpdateAgentRequest
-	deleteAgentID string
-	statsAgentID  string
-	applyAgentID  string
-	heartbeat     service.HeartbeatRequest
+	updateAgentID  string
+	updateInput    service.UpdateAgentRequest
+	deleteAgentID  string
+	statsAgentID   string
+	applyAgentID   string
+	heartbeat      service.HeartbeatRequest
 	heartbeatToken string
 }
 
@@ -156,9 +156,22 @@ type fakeRuleService struct {
 	createdRule service.HTTPRule
 	updatedRule service.HTTPRule
 	deletedRule service.HTTPRule
+	state       *fakeRuleServiceState
+}
+
+type fakeRuleServiceState struct {
+	listAgentIDs   []string
+	createAgentIDs []string
+	updateAgentIDs []string
+	updateIDs      []int
+	deleteAgentIDs []string
+	deleteIDs      []int
 }
 
 func (f fakeRuleService) List(_ context.Context, agentID string) ([]service.HTTPRule, error) {
+	if f.state != nil {
+		f.state.listAgentIDs = append(f.state.listAgentIDs, agentID)
+	}
 	rules, ok := f.rules[agentID]
 	if !ok {
 		return nil, service.ErrAgentNotFound
@@ -166,15 +179,26 @@ func (f fakeRuleService) List(_ context.Context, agentID string) ([]service.HTTP
 	return rules, nil
 }
 
-func (f fakeRuleService) Create(context.Context, string, service.HTTPRuleInput) (service.HTTPRule, error) {
+func (f fakeRuleService) Create(_ context.Context, agentID string, _ service.HTTPRuleInput) (service.HTTPRule, error) {
+	if f.state != nil {
+		f.state.createAgentIDs = append(f.state.createAgentIDs, agentID)
+	}
 	return f.createdRule, nil
 }
 
-func (f fakeRuleService) Update(context.Context, string, int, service.HTTPRuleInput) (service.HTTPRule, error) {
+func (f fakeRuleService) Update(_ context.Context, agentID string, id int, _ service.HTTPRuleInput) (service.HTTPRule, error) {
+	if f.state != nil {
+		f.state.updateAgentIDs = append(f.state.updateAgentIDs, agentID)
+		f.state.updateIDs = append(f.state.updateIDs, id)
+	}
 	return f.updatedRule, nil
 }
 
-func (f fakeRuleService) Delete(context.Context, string, int) (service.HTTPRule, error) {
+func (f fakeRuleService) Delete(_ context.Context, agentID string, id int) (service.HTTPRule, error) {
+	if f.state != nil {
+		f.state.deleteAgentIDs = append(f.state.deleteAgentIDs, agentID)
+		f.state.deleteIDs = append(f.state.deleteIDs, id)
+	}
 	return f.deletedRule, nil
 }
 
@@ -250,13 +274,22 @@ type fakeCertificateService struct {
 }
 
 type fakeCertificateServiceState struct {
-	createInputs  []service.ManagedCertificateInput
-	updateInputs  []service.ManagedCertificateInput
-	issueAgentIDs []string
-	issueIDs      []int
+	createInputs   []service.ManagedCertificateInput
+	createAgentIDs []string
+	updateInputs   []service.ManagedCertificateInput
+	updateAgentIDs []string
+	updateIDs      []int
+	deleteAgentIDs []string
+	deleteIDs      []int
+	listAgentIDs   []string
+	issueAgentIDs  []string
+	issueIDs       []int
 }
 
 func (f fakeCertificateService) List(_ context.Context, agentID string) ([]service.ManagedCertificate, error) {
+	if f.state != nil {
+		f.state.listAgentIDs = append(f.state.listAgentIDs, agentID)
+	}
 	certs, ok := f.certificates[agentID]
 	if !ok {
 		return nil, service.ErrAgentNotFound
@@ -264,21 +297,28 @@ func (f fakeCertificateService) List(_ context.Context, agentID string) ([]servi
 	return certs, nil
 }
 
-func (f fakeCertificateService) Create(_ context.Context, _ string, input service.ManagedCertificateInput) (service.ManagedCertificate, error) {
+func (f fakeCertificateService) Create(_ context.Context, agentID string, input service.ManagedCertificateInput) (service.ManagedCertificate, error) {
 	if f.state != nil {
+		f.state.createAgentIDs = append(f.state.createAgentIDs, agentID)
 		f.state.createInputs = append(f.state.createInputs, input)
 	}
 	return f.createdCertificate, nil
 }
 
-func (f fakeCertificateService) Update(_ context.Context, _ string, _ int, input service.ManagedCertificateInput) (service.ManagedCertificate, error) {
+func (f fakeCertificateService) Update(_ context.Context, agentID string, id int, input service.ManagedCertificateInput) (service.ManagedCertificate, error) {
 	if f.state != nil {
+		f.state.updateAgentIDs = append(f.state.updateAgentIDs, agentID)
+		f.state.updateIDs = append(f.state.updateIDs, id)
 		f.state.updateInputs = append(f.state.updateInputs, input)
 	}
 	return f.updatedCertificate, nil
 }
 
-func (f fakeCertificateService) Delete(context.Context, string, int) (service.ManagedCertificate, error) {
+func (f fakeCertificateService) Delete(_ context.Context, agentID string, id int) (service.ManagedCertificate, error) {
+	if f.state != nil {
+		f.state.deleteAgentIDs = append(f.state.deleteAgentIDs, agentID)
+		f.state.deleteIDs = append(f.state.deleteIDs, id)
+	}
 	return f.deletedCertificate, nil
 }
 
@@ -1340,6 +1380,251 @@ func TestRouterServesHTTPRuleCRUDAndValidation(t *testing.T) {
 	router.ServeHTTP(invalidIDResp, invalidIDReq)
 	if invalidIDResp.Code != http.StatusBadRequest {
 		t.Fatalf("PUT /panel-api/agents/local/rules/not-an-int = %d", invalidIDResp.Code)
+	}
+}
+
+func TestRouterLegacyLocalAPIRoutesMapToLocalAgent(t *testing.T) {
+	agentState := &fakeAgentServiceState{}
+	ruleState := &fakeRuleServiceState{}
+	router, err := NewRouter(Dependencies{
+		Config: config.Config{
+			PanelToken:   "secret",
+			LocalAgentID: "local-node",
+		},
+		SystemService: fakeSystemService{
+			info: service.SystemInfo{
+				Role:              "master",
+				LocalApplyRuntime: "go-agent",
+				DefaultAgentID:    "local-node",
+				LocalAgentEnabled: true,
+			},
+		},
+		AgentService: fakeAgentService{
+			applyResult: service.ApplyAgentResult{Message: "applied"},
+			statsByID: map[string]service.AgentStats{
+				"local-node": {"requests": "9"},
+			},
+			state: agentState,
+		},
+		RuleService: fakeRuleService{
+			rules: map[string][]service.HTTPRule{
+				"local-node": {{
+					ID:          7,
+					AgentID:     "local-node",
+					FrontendURL: "https://media.example.com",
+					BackendURL:  "http://emby:8096",
+				}},
+			},
+			createdRule: service.HTTPRule{ID: 8, AgentID: "local-node", FrontendURL: "https://new.example.com", BackendURL: "http://emby:8096"},
+			updatedRule: service.HTTPRule{ID: 8, AgentID: "local-node", FrontendURL: "https://updated.example.com", BackendURL: "http://emby:8096"},
+			deletedRule: service.HTTPRule{ID: 8, AgentID: "local-node", FrontendURL: "https://updated.example.com", BackendURL: "http://emby:8096"},
+			state:       ruleState,
+		},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	unauthorizedReq := httptest.NewRequest(http.MethodGet, "/api/rules", nil)
+	unauthorizedResp := httptest.NewRecorder()
+	router.ServeHTTP(unauthorizedResp, unauthorizedReq)
+	if unauthorizedResp.Code != http.StatusUnauthorized {
+		t.Fatalf("GET /api/rules without token = %d", unauthorizedResp.Code)
+	}
+
+	getRulesReq := httptest.NewRequest(http.MethodGet, "/api/rules", nil)
+	getRulesReq.Header.Set("X-Panel-Token", "secret")
+	getRulesResp := httptest.NewRecorder()
+	router.ServeHTTP(getRulesResp, getRulesReq)
+	if getRulesResp.Code != http.StatusOK {
+		t.Fatalf("GET /api/rules = %d", getRulesResp.Code)
+	}
+	var getRulesPayload map[string]any
+	if err := json.Unmarshal(getRulesResp.Body.Bytes(), &getRulesPayload); err != nil {
+		t.Fatalf("json.Unmarshal(get rules) error = %v", err)
+	}
+	if _, ok := getRulesPayload["rules"]; !ok {
+		t.Fatalf("GET /api/rules payload missing rules: %+v", getRulesPayload)
+	}
+
+	createRuleReq := httptest.NewRequest(http.MethodPost, "/api/rules", bytes.NewBufferString(`{"frontend_url":"https://new.example.com","backend_url":"http://emby:8096"}`))
+	createRuleReq.Header.Set("X-Panel-Token", "secret")
+	createRuleReq.Header.Set("Content-Type", "application/json")
+	createRuleResp := httptest.NewRecorder()
+	router.ServeHTTP(createRuleResp, createRuleReq)
+	if createRuleResp.Code != http.StatusCreated {
+		t.Fatalf("POST /api/rules = %d", createRuleResp.Code)
+	}
+
+	updateRuleReq := httptest.NewRequest(http.MethodPut, "/api/rules/8", bytes.NewBufferString(`{"frontend_url":"https://updated.example.com"}`))
+	updateRuleReq.Header.Set("X-Panel-Token", "secret")
+	updateRuleReq.Header.Set("Content-Type", "application/json")
+	updateRuleResp := httptest.NewRecorder()
+	router.ServeHTTP(updateRuleResp, updateRuleReq)
+	if updateRuleResp.Code != http.StatusOK {
+		t.Fatalf("PUT /api/rules/8 = %d", updateRuleResp.Code)
+	}
+
+	deleteRuleReq := httptest.NewRequest(http.MethodDelete, "/api/rules/8", nil)
+	deleteRuleReq.Header.Set("X-Panel-Token", "secret")
+	deleteRuleResp := httptest.NewRecorder()
+	router.ServeHTTP(deleteRuleResp, deleteRuleReq)
+	if deleteRuleResp.Code != http.StatusOK {
+		t.Fatalf("DELETE /api/rules/8 = %d", deleteRuleResp.Code)
+	}
+
+	statsReq := httptest.NewRequest(http.MethodGet, "/api/stats", nil)
+	statsReq.Header.Set("X-Panel-Token", "secret")
+	statsResp := httptest.NewRecorder()
+	router.ServeHTTP(statsResp, statsReq)
+	if statsResp.Code != http.StatusOK {
+		t.Fatalf("GET /api/stats = %d", statsResp.Code)
+	}
+	var statsPayload map[string]any
+	if err := json.Unmarshal(statsResp.Body.Bytes(), &statsPayload); err != nil {
+		t.Fatalf("json.Unmarshal(stats) error = %v", err)
+	}
+	if _, ok := statsPayload["stats"]; !ok {
+		t.Fatalf("GET /api/stats payload missing stats: %+v", statsPayload)
+	}
+
+	applyReq := httptest.NewRequest(http.MethodPost, "/api/apply", bytes.NewBufferString(`{}`))
+	applyReq.Header.Set("X-Panel-Token", "secret")
+	applyResp := httptest.NewRecorder()
+	router.ServeHTTP(applyResp, applyReq)
+	if applyResp.Code != http.StatusOK {
+		t.Fatalf("POST /api/apply = %d", applyResp.Code)
+	}
+	var applyPayload map[string]any
+	if err := json.Unmarshal(applyResp.Body.Bytes(), &applyPayload); err != nil {
+		t.Fatalf("json.Unmarshal(apply) error = %v", err)
+	}
+	if applyPayload["message"] != "applied" {
+		t.Fatalf("POST /api/apply payload = %+v", applyPayload)
+	}
+
+	if len(ruleState.listAgentIDs) == 0 || ruleState.listAgentIDs[0] != "local-node" {
+		t.Fatalf("rule list agent context = %+v", ruleState.listAgentIDs)
+	}
+	if len(ruleState.createAgentIDs) == 0 || ruleState.createAgentIDs[0] != "local-node" {
+		t.Fatalf("rule create agent context = %+v", ruleState.createAgentIDs)
+	}
+	if len(ruleState.updateAgentIDs) == 0 || ruleState.updateAgentIDs[0] != "local-node" || len(ruleState.updateIDs) == 0 || ruleState.updateIDs[0] != 8 {
+		t.Fatalf("rule update context = %+v %+v", ruleState.updateAgentIDs, ruleState.updateIDs)
+	}
+	if len(ruleState.deleteAgentIDs) == 0 || ruleState.deleteAgentIDs[0] != "local-node" || len(ruleState.deleteIDs) == 0 || ruleState.deleteIDs[0] != 8 {
+		t.Fatalf("rule delete context = %+v %+v", ruleState.deleteAgentIDs, ruleState.deleteIDs)
+	}
+	if agentState.statsAgentID != "local-node" {
+		t.Fatalf("stats agent context = %q", agentState.statsAgentID)
+	}
+	if agentState.applyAgentID != "local-node" {
+		t.Fatalf("apply agent context = %q", agentState.applyAgentID)
+	}
+}
+
+func TestRouterGlobalCertificateCRUDRoutesUseGlobalContext(t *testing.T) {
+	state := &fakeCertificateServiceState{}
+	for _, prefix := range []string{"/api", "/panel-api"} {
+		router, err := NewRouter(Dependencies{
+			Config: config.Config{PanelToken: "secret"},
+			SystemService: fakeSystemService{
+				info: service.SystemInfo{
+					Role:              "master",
+					LocalApplyRuntime: "go-agent",
+					DefaultAgentID:    "local",
+					LocalAgentEnabled: true,
+				},
+			},
+			AgentService:         fakeAgentService{},
+			RuleService:          fakeRuleService{},
+			L4RuleService:        fakeL4RuleService{},
+			VersionPolicyService: fakeVersionPolicyService{},
+			RelayListenerService: fakeRelayListenerService{},
+			CertificateService: fakeCertificateService{
+				certificates: map[string][]service.ManagedCertificate{
+					"": {{ID: 31, Domain: "global.example.com", Status: "pending"}},
+				},
+				createdCertificate: service.ManagedCertificate{ID: 32, Domain: "created.example.com", Status: "pending"},
+				updatedCertificate: service.ManagedCertificate{ID: 31, Domain: "updated.example.com", Status: "pending"},
+				deletedCertificate: service.ManagedCertificate{ID: 31, Domain: "updated.example.com", Status: "pending"},
+				state:              state,
+			},
+		})
+		if err != nil {
+			t.Fatalf("NewRouter() error = %v", err)
+		}
+
+		unauthorizedReq := httptest.NewRequest(http.MethodGet, prefix+"/certificates", nil)
+		unauthorizedResp := httptest.NewRecorder()
+		router.ServeHTTP(unauthorizedResp, unauthorizedReq)
+		if unauthorizedResp.Code != http.StatusUnauthorized {
+			t.Fatalf("GET %s/certificates without token = %d", prefix, unauthorizedResp.Code)
+		}
+
+		listReq := httptest.NewRequest(http.MethodGet, prefix+"/certificates", nil)
+		listReq.Header.Set("X-Panel-Token", "secret")
+		listResp := httptest.NewRecorder()
+		router.ServeHTTP(listResp, listReq)
+		if listResp.Code != http.StatusOK {
+			t.Fatalf("GET %s/certificates = %d", prefix, listResp.Code)
+		}
+		var listPayload map[string]any
+		if err := json.Unmarshal(listResp.Body.Bytes(), &listPayload); err != nil {
+			t.Fatalf("json.Unmarshal(list) error = %v", err)
+		}
+		if _, ok := listPayload["certificates"]; !ok {
+			t.Fatalf("GET %s/certificates payload missing certificates: %+v", prefix, listPayload)
+		}
+
+		createReq := httptest.NewRequest(http.MethodPost, prefix+"/certificates", bytes.NewBufferString(`{"domain":"created.example.com","issuer_mode":"local_http01"}`))
+		createReq.Header.Set("X-Panel-Token", "secret")
+		createReq.Header.Set("Content-Type", "application/json")
+		createResp := httptest.NewRecorder()
+		router.ServeHTTP(createResp, createReq)
+		if createResp.Code != http.StatusCreated {
+			t.Fatalf("POST %s/certificates = %d", prefix, createResp.Code)
+		}
+
+		updateReq := httptest.NewRequest(http.MethodPut, prefix+"/certificates/31", bytes.NewBufferString(`{"domain":"updated.example.com"}`))
+		updateReq.Header.Set("X-Panel-Token", "secret")
+		updateReq.Header.Set("Content-Type", "application/json")
+		updateResp := httptest.NewRecorder()
+		router.ServeHTTP(updateResp, updateReq)
+		if updateResp.Code != http.StatusOK {
+			t.Fatalf("PUT %s/certificates/31 = %d", prefix, updateResp.Code)
+		}
+
+		deleteReq := httptest.NewRequest(http.MethodDelete, prefix+"/certificates/31", nil)
+		deleteReq.Header.Set("X-Panel-Token", "secret")
+		deleteResp := httptest.NewRecorder()
+		router.ServeHTTP(deleteResp, deleteReq)
+		if deleteResp.Code != http.StatusOK {
+			t.Fatalf("DELETE %s/certificates/31 = %d", prefix, deleteResp.Code)
+		}
+	}
+
+	if len(state.listAgentIDs) != 2 || state.listAgentIDs[0] != "" || state.listAgentIDs[1] != "" {
+		t.Fatalf("list agent contexts = %+v", state.listAgentIDs)
+	}
+	if len(state.createAgentIDs) != 2 || state.createAgentIDs[0] != "" || state.createAgentIDs[1] != "" {
+		t.Fatalf("create agent contexts = %+v", state.createAgentIDs)
+	}
+	if len(state.updateAgentIDs) != 2 || state.updateAgentIDs[0] != "" || state.updateAgentIDs[1] != "" {
+		t.Fatalf("update agent contexts = %+v", state.updateAgentIDs)
+	}
+	if len(state.deleteAgentIDs) != 2 || state.deleteAgentIDs[0] != "" || state.deleteAgentIDs[1] != "" {
+		t.Fatalf("delete agent contexts = %+v", state.deleteAgentIDs)
+	}
+	if len(state.updateIDs) != 2 || state.updateIDs[0] != 31 || state.updateIDs[1] != 31 {
+		t.Fatalf("update ids = %+v", state.updateIDs)
+	}
+	if len(state.deleteIDs) != 2 || state.deleteIDs[0] != 31 || state.deleteIDs[1] != 31 {
+		t.Fatalf("delete ids = %+v", state.deleteIDs)
 	}
 }
 

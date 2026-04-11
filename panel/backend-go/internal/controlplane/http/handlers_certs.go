@@ -44,6 +44,12 @@ func (d Dependencies) handleCertificates(w http.ResponseWriter, r *http.Request)
 	}
 }
 
+func (d Dependencies) handleGlobalCertificates(w http.ResponseWriter, r *http.Request) {
+	r = r.Clone(r.Context())
+	r.SetPathValue("agentID", "")
+	d.handleCertificates(w, r)
+}
+
 func (d Dependencies) handleCertificate(w http.ResponseWriter, r *http.Request) {
 	agentID := r.PathValue("agentID")
 	certID, err := strconv.Atoi(r.PathValue("id"))
@@ -83,6 +89,12 @@ func (d Dependencies) handleCertificate(w http.ResponseWriter, r *http.Request) 
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func (d Dependencies) handleGlobalCertificate(w http.ResponseWriter, r *http.Request) {
+	r = r.Clone(r.Context())
+	r.SetPathValue("agentID", "")
+	d.handleCertificate(w, r)
 }
 
 func (d Dependencies) handleIssueCertificate(w http.ResponseWriter, r *http.Request) {
