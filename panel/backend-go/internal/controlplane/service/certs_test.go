@@ -710,6 +710,56 @@ func TestCertificateServiceIssueMasterCFDNSSuccessPersistsMaterialAndUpdatesStat
 	}
 }
 
+func TestCertificateServiceIssueMasterCFDNSSucceedsWhenRenewIsInFuture(t *testing.T) {
+	issuedMaterial := mustCreateSelfSignedCA(t, "master-issue-future-renew.example.com")
+	store := &relayCertStore{
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              66,
+			Domain:          "master-issue-future-renew.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "master_cf_dns",
+			TargetAgentIDs:  `["local"]`,
+			Status:          "active",
+			CertificateType: "acme",
+			Usage:           "https",
+			ACMEInfo:        `{"Main_Domain":"master-issue-future-renew.example.com","Renew":"2026-07-10T00:00:00Z"}`,
+			Revision:        11,
+		}},
+	}
+	issuer := &fakeManagedCertificateRenewalIssuer{
+		results: map[int]managedCertificateRenewalResult{
+			66: {
+				Changed:     true,
+				LastIssueAt: "2026-04-11T15:16:17Z",
+				Material: storage.ManagedCertificateBundle{
+					Domain:  "master-issue-future-renew.example.com",
+					CertPEM: issuedMaterial.CertPEM,
+					KeyPEM:  issuedMaterial.KeyPEM,
+				},
+			},
+		},
+	}
+	svc := newCertificateServiceWithRenewal(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store, issuer)
+
+	issued, err := svc.Issue(context.Background(), "local", 66)
+	if err != nil {
+		t.Fatalf("Issue() error = %v", err)
+	}
+	if issued.Status != "active" {
+		t.Fatalf("issued.Status = %q", issued.Status)
+	}
+	if issued.LastIssueAt != "2026-04-11T15:16:17Z" {
+		t.Fatalf("issued.LastIssueAt = %q", issued.LastIssueAt)
+	}
+	if issued.Revision != 12 {
+		t.Fatalf("issued.Revision = %d", issued.Revision)
+	}
+}
+
 func TestCertificateServiceIssueMasterCFDNSIssuerFailureRecordsErrorState(t *testing.T) {
 	store := &relayCertStore{
 		managedCerts: []storage.ManagedCertificateRow{{
@@ -850,6 +900,42 @@ func TestCertificateServiceIssueMasterCFDNSRejectsIneligibleCertificates(t *test
 				Usage:           "https",
 				Revision:        3,
 			},
+			{
+				ID:              65,
+				Domain:          "ip-scope.example.com",
+				Enabled:         true,
+				Scope:           "ip",
+				IssuerMode:      "master_cf_dns",
+				TargetAgentIDs:  `["local"]`,
+				Status:          "pending",
+				CertificateType: "acme",
+				Usage:           "https",
+				Revision:        4,
+			},
+			{
+				ID:              67,
+				Domain:          "wrong-target.example.com",
+				Enabled:         true,
+				Scope:           "domain",
+				IssuerMode:      "master_cf_dns",
+				TargetAgentIDs:  `["local","edge-1"]`,
+				Status:          "pending",
+				CertificateType: "acme",
+				Usage:           "https",
+				Revision:        5,
+			},
+			{
+				ID:              68,
+				Domain:          "wrong-issuer.example.com",
+				Enabled:         true,
+				Scope:           "domain",
+				IssuerMode:      "local_http01",
+				TargetAgentIDs:  `["local"]`,
+				Status:          "pending",
+				CertificateType: "acme",
+				Usage:           "https",
+				Revision:        6,
+			},
 		},
 	}
 	issuer := &fakeManagedCertificateRenewalIssuer{}
@@ -863,6 +949,15 @@ func TestCertificateServiceIssueMasterCFDNSRejectsIneligibleCertificates(t *test
 	}
 	if _, err := svc.Issue(context.Background(), "local", 64); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("Issue() wrong type cert error = %v", err)
+	}
+	if _, err := svc.Issue(context.Background(), "local", 65); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Issue() wrong scope cert error = %v", err)
+	}
+	if _, err := svc.Issue(context.Background(), "local", 67); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Issue() wrong target cert error = %v", err)
+	}
+	if _, err := svc.Issue(context.Background(), "local", 68); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Issue() wrong issuer mode cert error = %v", err)
 	}
 }
 

@@ -388,9 +388,12 @@ func (s *certificateService) Issue(ctx context.Context, agentID string, id int) 
 	if err := s.assertCertificateDistributionTargetsAllowed(ctx, current); err != nil {
 		return ManagedCertificate{}, err
 	}
+	if current.CertificateType == "acme" && current.IssuerMode != "master_cf_dns" {
+		return ManagedCertificate{}, fmt.Errorf("%w: certificate is not configured for master_cf_dns", ErrInvalidArgument)
+	}
 	if current.IssuerMode == "master_cf_dns" {
-		if !s.isManagedCertificateRenewalCandidate(current, s.now().UTC()) {
-			return ManagedCertificate{}, fmt.Errorf("%w: certificate is not eligible for master_cf_dns issue", ErrInvalidArgument)
+		if err := s.assertManagedCertificateManualIssueAllowed(current); err != nil {
+			return ManagedCertificate{}, err
 		}
 		if s.renewalIssuer == nil {
 			return ManagedCertificate{}, fmt.Errorf("%w: managed certificates require ACME_DNS_PROVIDER=cf and CF_Token", ErrInvalidArgument)
@@ -469,6 +472,22 @@ func (s *certificateService) Issue(ctx context.Context, agentID string, id int) 
 	}
 	cleanupManagedCertificateMaterialBestEffort(ctx, s.store, originalRows, rows)
 	return current, nil
+}
+
+func (s *certificateService) assertManagedCertificateManualIssueAllowed(cert ManagedCertificate) error {
+	if cert.IssuerMode != "master_cf_dns" {
+		return fmt.Errorf("%w: certificate is not configured for master_cf_dns", ErrInvalidArgument)
+	}
+	if !cert.Enabled {
+		return fmt.Errorf("%w: certificate is disabled", ErrInvalidArgument)
+	}
+	if cert.Scope != "domain" {
+		return fmt.Errorf("%w: only domain certificates can be managed by master", ErrInvalidArgument)
+	}
+	if err := assertManagedCertificateTargetingAllowed(s.cfg, cert); err != nil {
+		return err
+	}
+	return nil
 }
 
 func resolveManagedCertificateIssueMaterial(cert ManagedCertificate, result managedCertificateRenewalResult) (storage.ManagedCertificateBundle, error) {
