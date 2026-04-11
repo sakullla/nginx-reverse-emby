@@ -388,9 +388,6 @@ func (s *certificateService) Issue(ctx context.Context, agentID string, id int) 
 	if err := s.assertCertificateDistributionTargetsAllowed(ctx, current); err != nil {
 		return ManagedCertificate{}, err
 	}
-	if current.CertificateType == "acme" && current.IssuerMode != "master_cf_dns" {
-		return ManagedCertificate{}, fmt.Errorf("%w: certificate is not configured for master_cf_dns", ErrInvalidArgument)
-	}
 	if current.IssuerMode == "master_cf_dns" {
 		if err := s.assertManagedCertificateManualIssueAllowed(current); err != nil {
 			return ManagedCertificate{}, err

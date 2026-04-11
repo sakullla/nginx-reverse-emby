@@ -956,8 +956,37 @@ func TestCertificateServiceIssueMasterCFDNSRejectsIneligibleCertificates(t *test
 	if _, err := svc.Issue(context.Background(), "local", 67); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("Issue() wrong target cert error = %v", err)
 	}
-	if _, err := svc.Issue(context.Background(), "local", 68); !errors.Is(err, ErrInvalidArgument) {
-		t.Fatalf("Issue() wrong issuer mode cert error = %v", err)
+}
+
+func TestCertificateServiceIssueLocalHTTP01ACMEKeepsExistingBehavior(t *testing.T) {
+	store := &relayCertStore{
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              69,
+			Domain:          "local-http01-acme.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  `["local"]`,
+			Status:          "pending",
+			CertificateType: "acme",
+			Usage:           "https",
+			Revision:        3,
+		}},
+	}
+	svc := newCertificateServiceWithRenewal(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store, &fakeManagedCertificateRenewalIssuer{})
+
+	issued, err := svc.Issue(context.Background(), "local", 69)
+	if err != nil {
+		t.Fatalf("Issue() error = %v", err)
+	}
+	if issued.Status != "active" {
+		t.Fatalf("issued.Status = %q", issued.Status)
+	}
+	if issued.Revision != 4 {
+		t.Fatalf("issued.Revision = %d", issued.Revision)
 	}
 }
 
