@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
@@ -16,9 +17,15 @@ type SystemService interface {
 
 type AgentService interface {
 	List(context.Context) ([]service.AgentSummary, error)
-	ListHTTPRules(context.Context, string) ([]service.HTTPRule, error)
 	Register(context.Context, service.RegisterRequest, string) (service.AgentSummary, error)
 	Heartbeat(context.Context, service.HeartbeatRequest, string) (service.HeartbeatReply, error)
+}
+
+type RuleService interface {
+	List(context.Context, string) ([]service.HTTPRule, error)
+	Create(context.Context, string, service.HTTPRuleInput) (service.HTTPRule, error)
+	Update(context.Context, string, int, service.HTTPRuleInput) (service.HTTPRule, error)
+	Delete(context.Context, string, int) (service.HTTPRule, error)
 }
 
 type L4RuleService interface {
@@ -54,10 +61,35 @@ type Dependencies struct {
 	Config               config.Config
 	SystemService        SystemService
 	AgentService         AgentService
+	RuleService          RuleService
 	L4RuleService        L4RuleService
 	VersionPolicyService VersionPolicyService
 	RelayListenerService RelayListenerService
 	CertificateService   CertificateService
+}
+
+type legacyRuleListService interface {
+	ListHTTPRules(context.Context, string) ([]service.HTTPRule, error)
+}
+
+type agentRuleServiceAdapter struct {
+	agent legacyRuleListService
+}
+
+func (a agentRuleServiceAdapter) List(ctx context.Context, agentID string) ([]service.HTTPRule, error) {
+	return a.agent.ListHTTPRules(ctx, agentID)
+}
+
+func (a agentRuleServiceAdapter) Create(context.Context, string, service.HTTPRuleInput) (service.HTTPRule, error) {
+	return service.HTTPRule{}, fmt.Errorf("%w: rule service is read-only", service.ErrInvalidArgument)
+}
+
+func (a agentRuleServiceAdapter) Update(context.Context, string, int, service.HTTPRuleInput) (service.HTTPRule, error) {
+	return service.HTTPRule{}, fmt.Errorf("%w: rule service is read-only", service.ErrInvalidArgument)
+}
+
+func (a agentRuleServiceAdapter) Delete(context.Context, string, int) (service.HTTPRule, error) {
+	return service.HTTPRule{}, fmt.Errorf("%w: rule service is read-only", service.ErrInvalidArgument)
 }
 
 func NewRouter(deps Dependencies) (http.Handler, error) {
@@ -77,6 +109,7 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 		mux.Handle(prefix+"/agents/heartbeat", http.HandlerFunc(resolved.handleHeartbeat))
 		mux.Handle(prefix+"/agents", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgents)))
 		mux.Handle(prefix+"/agents/{agentID}/rules", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentRules)))
+		mux.Handle(prefix+"/agents/{agentID}/rules/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentRule)))
 		mux.Handle(prefix+"/agents/{agentID}/l4-rules", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentL4Rules)))
 		mux.Handle(prefix+"/agents/{agentID}/l4-rules/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentL4Rule)))
 		mux.Handle(prefix+"/agents/{agentID}/relay-listeners", resolved.requirePanelToken(http.HandlerFunc(resolved.handleRelayListeners)))
@@ -93,7 +126,13 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 }
 
 func (d Dependencies) withDefaults() (Dependencies, error) {
-	if d.SystemService != nil && d.AgentService != nil && d.L4RuleService != nil && d.VersionPolicyService != nil && d.RelayListenerService != nil && d.CertificateService != nil {
+	if d.RuleService == nil {
+		if legacy, ok := any(d.AgentService).(legacyRuleListService); ok {
+			d.RuleService = agentRuleServiceAdapter{agent: legacy}
+		}
+	}
+
+	if d.SystemService != nil && d.AgentService != nil && d.RuleService != nil && d.L4RuleService != nil && d.VersionPolicyService != nil && d.RelayListenerService != nil && d.CertificateService != nil {
 		return d, nil
 	}
 
@@ -107,6 +146,9 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 	}
 	if d.AgentService == nil {
 		d.AgentService = service.NewAgentService(d.Config, store)
+	}
+	if d.RuleService == nil {
+		d.RuleService = service.NewRuleService(d.Config, store)
 	}
 	if d.L4RuleService == nil {
 		d.L4RuleService = service.NewL4RuleService(d.Config, store)

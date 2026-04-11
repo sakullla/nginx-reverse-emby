@@ -53,6 +53,7 @@ func TestRouterServesJoinScriptAndHeartbeat(t *testing.T) {
 			},
 		},
 		AgentService:         fakeAgentService{},
+		RuleService:          fakeRuleService{},
 		L4RuleService:        fakeL4RuleService{},
 		VersionPolicyService: fakeVersionPolicyService{},
 		RelayListenerService: fakeRelayListenerService{},

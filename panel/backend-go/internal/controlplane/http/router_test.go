@@ -23,7 +23,6 @@ func (f fakeSystemService) Info(context.Context) service.SystemInfo {
 
 type fakeAgentService struct {
 	agents []service.AgentSummary
-	rules  map[string][]service.HTTPRule
 }
 
 func (f fakeAgentService) List(context.Context) ([]service.AgentSummary, error) {
@@ -35,14 +34,6 @@ func (f fakeAgentService) Register(context.Context, service.RegisterRequest, str
 		return service.AgentSummary{}, service.ErrAgentNotFound
 	}
 	return f.agents[0], nil
-}
-
-func (f fakeAgentService) ListHTTPRules(_ context.Context, agentID string) ([]service.HTTPRule, error) {
-	rules, ok := f.rules[agentID]
-	if !ok {
-		return nil, service.ErrAgentNotFound
-	}
-	return rules, nil
 }
 
 type fakeL4RuleService struct {
@@ -69,6 +60,33 @@ func (f fakeL4RuleService) Update(context.Context, string, int, service.L4RuleIn
 }
 
 func (f fakeL4RuleService) Delete(context.Context, string, int) (service.L4Rule, error) {
+	return f.deletedRule, nil
+}
+
+type fakeRuleService struct {
+	rules       map[string][]service.HTTPRule
+	createdRule service.HTTPRule
+	updatedRule service.HTTPRule
+	deletedRule service.HTTPRule
+}
+
+func (f fakeRuleService) List(_ context.Context, agentID string) ([]service.HTTPRule, error) {
+	rules, ok := f.rules[agentID]
+	if !ok {
+		return nil, service.ErrAgentNotFound
+	}
+	return rules, nil
+}
+
+func (f fakeRuleService) Create(context.Context, string, service.HTTPRuleInput) (service.HTTPRule, error) {
+	return f.createdRule, nil
+}
+
+func (f fakeRuleService) Update(context.Context, string, int, service.HTTPRuleInput) (service.HTTPRule, error) {
+	return f.updatedRule, nil
+}
+
+func (f fakeRuleService) Delete(context.Context, string, int) (service.HTTPRule, error) {
 	return f.deletedRule, nil
 }
 
@@ -181,6 +199,7 @@ func TestRouterServesPanelAuthAndInfoEndpoints(t *testing.T) {
 			},
 		},
 		AgentService:         fakeAgentService{},
+		RuleService:          fakeRuleService{},
 		L4RuleService:        fakeL4RuleService{},
 		VersionPolicyService: fakeVersionPolicyService{},
 		RelayListenerService: fakeRelayListenerService{},
@@ -259,6 +278,8 @@ func TestRouterServesAgentsAndRulesEndpoints(t *testing.T) {
 				IsLocal:        true,
 				HTTPRulesCount: 1,
 			}},
+		},
+		RuleService: fakeRuleService{
 			rules: map[string][]service.HTTPRule{
 				"local": {{
 					ID:               1,
@@ -343,6 +364,7 @@ func TestRouterServesL4AndVersionPolicyEndpoints(t *testing.T) {
 			},
 		},
 		AgentService: fakeAgentService{},
+		RuleService:  fakeRuleService{},
 		L4RuleService: fakeL4RuleService{
 			rules: map[string][]service.L4Rule{
 				"local": {{
@@ -475,6 +497,7 @@ func TestRouterServesRelayListenerAndCertificateEndpoints(t *testing.T) {
 			},
 		},
 		AgentService:         fakeAgentService{},
+		RuleService:          fakeRuleService{},
 		L4RuleService:        fakeL4RuleService{},
 		VersionPolicyService: fakeVersionPolicyService{},
 		RelayListenerService: fakeRelayListenerService{
@@ -624,6 +647,7 @@ func TestRouterRelayListenerWriteOnlyControlFieldsReachServiceButNotResponse(t *
 			},
 		},
 		AgentService:         fakeAgentService{},
+		RuleService:          fakeRuleService{},
 		L4RuleService:        fakeL4RuleService{},
 		VersionPolicyService: fakeVersionPolicyService{},
 		RelayListenerService: fakeRelayListenerService{
@@ -695,6 +719,133 @@ func TestMapServiceErrorMapsAgentNotFound(t *testing.T) {
 	}
 	if payload["message"] != "internal server error" {
 		t.Fatalf("payload = %+v", payload)
+	}
+}
+
+func TestRouterServesHTTPRuleCRUDAndValidation(t *testing.T) {
+	router, err := NewRouter(Dependencies{
+		Config: config.Config{PanelToken: "secret"},
+		SystemService: fakeSystemService{
+			info: service.SystemInfo{
+				Role:              "master",
+				LocalApplyRuntime: "go-agent",
+				DefaultAgentID:    "local",
+				LocalAgentEnabled: true,
+			},
+		},
+		AgentService: fakeAgentService{},
+		RuleService: fakeRuleService{
+			rules: map[string][]service.HTTPRule{
+				"local": {{
+					ID:               1,
+					AgentID:          "local",
+					FrontendURL:      "https://emby.example.com",
+					BackendURL:       "http://emby:8096",
+					Backends:         []service.HTTPRuleBackend{{URL: "http://emby:8096"}},
+					LoadBalancing:    service.HTTPLoadBalancing{Strategy: "round_robin"},
+					Enabled:          true,
+					Tags:             []string{"media"},
+					ProxyRedirect:    true,
+					RelayChain:       []int{},
+					PassProxyHeaders: true,
+					UserAgent:        "",
+					CustomHeaders:    []service.HTTPCustomHeader{},
+					Revision:         3,
+				}},
+			},
+			createdRule: service.HTTPRule{ID: 2, AgentID: "local", FrontendURL: "https://new.example.com", BackendURL: "http://emby:8096"},
+			updatedRule: service.HTTPRule{ID: 2, AgentID: "local", FrontendURL: "https://updated.example.com", BackendURL: "http://emby:8096"},
+			deletedRule: service.HTTPRule{ID: 2, AgentID: "local", FrontendURL: "https://updated.example.com", BackendURL: "http://emby:8096"},
+		},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/panel-api/agents/local/rules", nil)
+	getReq.Header.Set("X-Panel-Token", "secret")
+	getResp := httptest.NewRecorder()
+	router.ServeHTTP(getResp, getReq)
+	if getResp.Code != http.StatusOK {
+		t.Fatalf("GET /panel-api/agents/local/rules = %d", getResp.Code)
+	}
+	var getPayload map[string]any
+	if err := json.Unmarshal(getResp.Body.Bytes(), &getPayload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if ok, cast := getPayload["ok"].(bool); !cast || !ok {
+		t.Fatalf("GET ok = %v", getPayload["ok"])
+	}
+	if _, found := getPayload["rules"]; !found {
+		t.Fatalf("GET payload missing rules: %+v", getPayload)
+	}
+
+	createReq := httptest.NewRequest(http.MethodPost, "/panel-api/agents/local/rules", bytes.NewBufferString(`{"frontend_url":"https://new.example.com","backend_url":"http://emby:8096"}`))
+	createReq.Header.Set("X-Panel-Token", "secret")
+	createReq.Header.Set("Content-Type", "application/json")
+	createResp := httptest.NewRecorder()
+	router.ServeHTTP(createResp, createReq)
+	if createResp.Code != http.StatusCreated {
+		t.Fatalf("POST /panel-api/agents/local/rules = %d", createResp.Code)
+	}
+	var createPayload map[string]any
+	if err := json.Unmarshal(createResp.Body.Bytes(), &createPayload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if ok, cast := createPayload["ok"].(bool); !cast || !ok {
+		t.Fatalf("POST ok = %v", createPayload["ok"])
+	}
+	if _, found := createPayload["rule"]; !found {
+		t.Fatalf("POST payload missing rule: %+v", createPayload)
+	}
+
+	updateReq := httptest.NewRequest(http.MethodPut, "/panel-api/agents/local/rules/2", bytes.NewBufferString(`{"frontend_url":"https://updated.example.com"}`))
+	updateReq.Header.Set("X-Panel-Token", "secret")
+	updateReq.Header.Set("Content-Type", "application/json")
+	updateResp := httptest.NewRecorder()
+	router.ServeHTTP(updateResp, updateReq)
+	if updateResp.Code != http.StatusOK {
+		t.Fatalf("PUT /panel-api/agents/local/rules/2 = %d", updateResp.Code)
+	}
+	var updatePayload map[string]any
+	if err := json.Unmarshal(updateResp.Body.Bytes(), &updatePayload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if ok, cast := updatePayload["ok"].(bool); !cast || !ok {
+		t.Fatalf("PUT ok = %v", updatePayload["ok"])
+	}
+	if _, found := updatePayload["rule"]; !found {
+		t.Fatalf("PUT payload missing rule: %+v", updatePayload)
+	}
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/panel-api/agents/local/rules/2", nil)
+	deleteReq.Header.Set("X-Panel-Token", "secret")
+	deleteResp := httptest.NewRecorder()
+	router.ServeHTTP(deleteResp, deleteReq)
+	if deleteResp.Code != http.StatusOK {
+		t.Fatalf("DELETE /panel-api/agents/local/rules/2 = %d", deleteResp.Code)
+	}
+	var deletePayload map[string]any
+	if err := json.Unmarshal(deleteResp.Body.Bytes(), &deletePayload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if ok, cast := deletePayload["ok"].(bool); !cast || !ok {
+		t.Fatalf("DELETE ok = %v", deletePayload["ok"])
+	}
+	if _, found := deletePayload["rule"]; !found {
+		t.Fatalf("DELETE payload missing rule: %+v", deletePayload)
+	}
+
+	invalidIDReq := httptest.NewRequest(http.MethodPut, "/panel-api/agents/local/rules/not-an-int", bytes.NewBufferString(`{}`))
+	invalidIDReq.Header.Set("X-Panel-Token", "secret")
+	invalidIDResp := httptest.NewRecorder()
+	router.ServeHTTP(invalidIDResp, invalidIDReq)
+	if invalidIDResp.Code != http.StatusBadRequest {
+		t.Fatalf("PUT /panel-api/agents/local/rules/not-an-int = %d", invalidIDResp.Code)
 	}
 }
 

@@ -263,6 +263,30 @@ func (s *SQLiteStore) SaveAgent(ctx context.Context, row AgentRow) error {
 		Create(&row).Error
 }
 
+func (s *SQLiteStore) SaveHTTPRules(ctx context.Context, agentID string, rules []HTTPRuleRow) error {
+	if agentID == "" {
+		agentID = s.localAgentID
+	}
+
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("agent_id = ?", agentID).Delete(&HTTPRuleRow{}).Error; err != nil {
+			return err
+		}
+
+		if len(rules) == 0 {
+			return nil
+		}
+
+		rows := make([]HTTPRuleRow, 0, len(rules))
+		for _, row := range rules {
+			row.AgentID = agentID
+			normalizeHTTPRuleRow(&row)
+			rows = append(rows, row)
+		}
+		return tx.Create(&rows).Error
+	})
+}
+
 func (s *SQLiteStore) SaveL4Rules(ctx context.Context, agentID string, rules []L4RuleRow) error {
 	if agentID == "" {
 		agentID = s.localAgentID
