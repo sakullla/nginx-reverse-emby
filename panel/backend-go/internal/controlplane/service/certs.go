@@ -1410,7 +1410,7 @@ func overlayManagedCertificateForAgent(cert ManagedCertificate, agentID string) 
 	if !ok {
 		return cert
 	}
-	cert.Status = report.Status
+	cert.Status = coalesceString(report.Status, cert.Status)
 	cert.LastIssueAt = report.LastIssueAt
 	cert.LastError = report.LastError
 	cert.MaterialHash = report.MaterialHash

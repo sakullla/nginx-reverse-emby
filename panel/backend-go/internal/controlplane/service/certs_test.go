@@ -63,6 +63,50 @@ func TestCertificateServiceListOverlaysAgentReportFields(t *testing.T) {
 	}
 }
 
+func TestCertificateServiceListPreservesBaseStatusWhenAgentReportStatusEmpty(t *testing.T) {
+	store := &relayCertStore{
+		agents: []storage.AgentRow{{ID: "edge-1"}},
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:             22,
+			Domain:         "shared.example.com",
+			Enabled:        true,
+			Scope:          "domain",
+			IssuerMode:     "local_http01",
+			TargetAgentIDs: `["edge-1","edge-2"]`,
+			Status:         "pending",
+			LastIssueAt:    "2026-04-01T00:00:00Z",
+			LastError:      "old error",
+			MaterialHash:   "global-hash",
+			AgentReports:   `{"edge-1":{"status":"","last_issue_at":"2026-04-10T12:00:00Z","last_error":"","material_hash":"agent-hash","acme_info":{"Main_Domain":"shared.example.com","Profile":"default"}}}`,
+			ACMEInfo:       `{"Main_Domain":"global.example.com","Profile":"global"}`,
+			Usage:          "https",
+			Revision:       4,
+		}},
+	}
+	svc := NewCertificateService(config.Config{
+		LocalAgentID: "local",
+	}, store)
+
+	certs, err := svc.List(context.Background(), "edge-1")
+	if err != nil {
+		t.Fatalf("List() error = %v", err)
+	}
+	if len(certs) != 1 {
+		t.Fatalf("len(certs) = %d", len(certs))
+	}
+
+	cert := certs[0]
+	if cert.Status != "pending" {
+		t.Fatalf("cert.Status = %q", cert.Status)
+	}
+	if cert.LastIssueAt != "2026-04-10T12:00:00Z" {
+		t.Fatalf("cert.LastIssueAt = %q", cert.LastIssueAt)
+	}
+	if cert.MaterialHash != "agent-hash" {
+		t.Fatalf("cert.MaterialHash = %q", cert.MaterialHash)
+	}
+}
+
 func TestCertificateServiceRejectsSystemRelayCAMutations(t *testing.T) {
 	store := &relayCertStore{
 		managedCerts: []storage.ManagedCertificateRow{{
