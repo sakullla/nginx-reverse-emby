@@ -707,6 +707,58 @@ func TestStoreLoadAgentSnapshotSkipsMalformedL4Rows(t *testing.T) {
 	}
 }
 
+func TestStoreLoadAgentSnapshotKeepsEffectiveRevisionWhenCurrentMatches(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromCanonicalSchema(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	if err := store.SaveHTTPRules(t.Context(), "remote-stable", []HTTPRuleRow{{
+		ID:                101,
+		AgentID:           "remote-stable",
+		FrontendURL:       "https://stable.example.com",
+		BackendURL:        "http://127.0.0.1:8096",
+		BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+		LoadBalancingJSON: `{"strategy":"round_robin"}`,
+		Enabled:           true,
+		RelayChainJSON:    `[]`,
+		PassProxyHeaders:  true,
+		Revision:          2,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules() error = %v", err)
+	}
+
+	firstSnapshot, err := store.LoadAgentSnapshot(t.Context(), "remote-stable", AgentSnapshotInput{
+		DesiredRevision: 1,
+		CurrentRevision: 0,
+	})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot(first) error = %v", err)
+	}
+	if firstSnapshot.Revision != 2 {
+		t.Fatalf("first snapshot revision = %d", firstSnapshot.Revision)
+	}
+
+	secondSnapshot, err := store.LoadAgentSnapshot(t.Context(), "remote-stable", AgentSnapshotInput{
+		DesiredRevision: 1,
+		CurrentRevision: 2,
+	})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot(second) error = %v", err)
+	}
+	if secondSnapshot.Revision != 2 {
+		t.Fatalf("second snapshot revision = %d", secondSnapshot.Revision)
+	}
+}
+
 func TestStoreSavesSuccessfulLocalRuntimeStateIntoLocalAgentState(t *testing.T) {
 	dataRoot := seedSQLiteFixtureFromCanonicalSchema(t)
 

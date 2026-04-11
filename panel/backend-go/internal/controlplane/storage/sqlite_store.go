@@ -652,7 +652,7 @@ func computeDesiredRevision(
 	if highestConfigRevision > currentRevision {
 		return highestConfigRevision
 	}
-	return desiredRevision
+	return maxInt(desiredRevision, highestConfigRevision)
 }
 
 func normalizeRevision(value int) int {
