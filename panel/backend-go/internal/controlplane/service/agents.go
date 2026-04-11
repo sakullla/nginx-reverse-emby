@@ -955,7 +955,10 @@ func validateAgentURL(value string) bool {
 	if err != nil {
 		return false
 	}
-	return parsed.Scheme == "http" || parsed.Scheme == "https"
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return false
+	}
+	return strings.TrimSpace(parsed.Host) != ""
 }
 
 func resolveRemoteAgentMode(agentURL string) string {

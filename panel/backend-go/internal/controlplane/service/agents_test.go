@@ -261,13 +261,19 @@ func TestAgentServiceRegisterNormalizesURLAndDeduplicatesByURL(t *testing.T) {
 
 func TestAgentServiceRegisterRejectsInvalidURL(t *testing.T) {
 	svc := NewAgentService(config.Config{}, &fakeStore{})
-	_, err := svc.Register(context.Background(), RegisterRequest{
-		Name:       "Bad URL",
-		AgentURL:   "ftp://bad.example.com",
-		AgentToken: "token-bad",
-	}, "")
-	if err == nil || err.Error() != "agent_url must be a valid http/https URL" {
-		t.Fatalf("Register() error = %v", err)
+	for _, invalidURL := range []string{
+		"ftp://bad.example.com",
+		"http:example.com",
+		"http://",
+	} {
+		_, err := svc.Register(context.Background(), RegisterRequest{
+			Name:       "Bad URL",
+			AgentURL:   invalidURL,
+			AgentToken: "token-bad",
+		}, "")
+		if err == nil || err.Error() != "agent_url must be a valid http/https URL" {
+			t.Fatalf("Register(%q) error = %v", invalidURL, err)
+		}
 	}
 }
 
@@ -765,13 +771,19 @@ func TestAgentServiceHeartbeatRejectsInvalidURL(t *testing.T) {
 	}
 	svc := NewAgentService(config.Config{}, store)
 
-	_, err := svc.Heartbeat(context.Background(), HeartbeatRequest{
-		CurrentRevision: 1,
-		AgentURL:        "ftp://bad.example.com",
-		HasAgentURL:     true,
-	}, "token-remote-invalid-url")
-	if err == nil || err.Error() != "invalid argument: agent_url must be a valid http/https URL" {
-		t.Fatalf("Heartbeat() error = %v", err)
+	for _, invalidURL := range []string{
+		"ftp://bad.example.com",
+		"http:example.com",
+		"http://",
+	} {
+		_, err := svc.Heartbeat(context.Background(), HeartbeatRequest{
+			CurrentRevision: 1,
+			AgentURL:        invalidURL,
+			HasAgentURL:     true,
+		}, "token-remote-invalid-url")
+		if err == nil || err.Error() != "invalid argument: agent_url must be a valid http/https URL" {
+			t.Fatalf("Heartbeat(%q) error = %v", invalidURL, err)
+		}
 	}
 }
 
