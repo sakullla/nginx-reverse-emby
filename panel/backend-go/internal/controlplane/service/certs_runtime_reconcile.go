@@ -35,6 +35,7 @@ func ReconcileManagedCertificatesFromLocalRuntimeState(ctx context.Context, stor
 	nextRows, reconciled := reconcileLocalHTTP01CertificatesForAgent(
 		nextRows,
 		resolvedAgentID,
+		defaultLocalCapabilities,
 		rules,
 		int(outcome.Revision),
 		outcome.Status,

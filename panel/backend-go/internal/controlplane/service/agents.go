@@ -583,8 +583,9 @@ func (s *agentService) reconcileManagedCertificatesFromHeartbeat(ctx context.Con
 		return err
 	}
 
+	capabilities := parseStringArray(row.CapabilitiesJSON)
 	nextRows, reportedCertIDs, changed := applyManagedCertificateHeartbeatReports(rows, row.ID, request.ManagedCertificateReports, s.now())
-	nextRows, reconciled := reconcileLocalHTTP01CertificatesForAgent(nextRows, row.ID, rules, row.LastApplyRevision, row.LastApplyStatus, row.LastApplyMessage, reportedCertIDs, s.now())
+	nextRows, reconciled := reconcileLocalHTTP01CertificatesForAgent(nextRows, row.ID, capabilities, rules, row.LastApplyRevision, row.LastApplyStatus, row.LastApplyMessage, reportedCertIDs, s.now())
 	if !changed && !reconciled {
 		return nil
 	}

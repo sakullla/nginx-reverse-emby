@@ -1486,8 +1486,11 @@ func applyManagedCertificateHeartbeatReports(rows []storage.ManagedCertificateRo
 	return nextRows, reportedCertIDs, changed
 }
 
-func reconcileLocalHTTP01CertificatesForAgent(rows []storage.ManagedCertificateRow, agentID string, rules []storage.HTTPRuleRow, applyRevision int, applyStatus string, applyMessage string, reportedCertIDs map[int]struct{}, now time.Time) ([]storage.ManagedCertificateRow, bool) {
+func reconcileLocalHTTP01CertificatesForAgent(rows []storage.ManagedCertificateRow, agentID string, capabilities []string, rules []storage.HTTPRuleRow, applyRevision int, applyStatus string, applyMessage string, reportedCertIDs map[int]struct{}, now time.Time) ([]storage.ManagedCertificateRow, bool) {
 	if strings.TrimSpace(agentID) == "" || applyRevision <= 0 {
+		return rows, false
+	}
+	if !agentHasCapability(capabilities, "cert_install") || !agentHasCapability(capabilities, "local_acme") {
 		return rows, false
 	}
 	status := strings.ToLower(strings.TrimSpace(applyStatus))
