@@ -22,8 +22,8 @@ func (f fakeSystemService) Info(context.Context) service.SystemInfo {
 }
 
 type fakeAgentService struct {
-	agents          []service.AgentSummary
-	heartbeatReply  service.HeartbeatReply
+	agents         []service.AgentSummary
+	heartbeatReply service.HeartbeatReply
 }
 
 func (f fakeAgentService) List(context.Context) ([]service.AgentSummary, error) {
@@ -159,6 +159,12 @@ type fakeCertificateService struct {
 	updatedCertificate service.ManagedCertificate
 	deletedCertificate service.ManagedCertificate
 	issuedCertificate  service.ManagedCertificate
+	state              *fakeCertificateServiceState
+}
+
+type fakeCertificateServiceState struct {
+	createInputs []service.ManagedCertificateInput
+	updateInputs []service.ManagedCertificateInput
 }
 
 func (f fakeCertificateService) List(_ context.Context, agentID string) ([]service.ManagedCertificate, error) {
@@ -169,11 +175,17 @@ func (f fakeCertificateService) List(_ context.Context, agentID string) ([]servi
 	return certs, nil
 }
 
-func (f fakeCertificateService) Create(context.Context, string, service.ManagedCertificateInput) (service.ManagedCertificate, error) {
+func (f fakeCertificateService) Create(_ context.Context, _ string, input service.ManagedCertificateInput) (service.ManagedCertificate, error) {
+	if f.state != nil {
+		f.state.createInputs = append(f.state.createInputs, input)
+	}
 	return f.createdCertificate, nil
 }
 
-func (f fakeCertificateService) Update(context.Context, string, int, service.ManagedCertificateInput) (service.ManagedCertificate, error) {
+func (f fakeCertificateService) Update(_ context.Context, _ string, _ int, input service.ManagedCertificateInput) (service.ManagedCertificate, error) {
+	if f.state != nil {
+		f.state.updateInputs = append(f.state.updateInputs, input)
+	}
 	return f.updatedCertificate, nil
 }
 
@@ -702,6 +714,87 @@ func TestRouterRelayListenerWriteOnlyControlFieldsReachServiceButNotResponse(t *
 	}
 	if bytes.Contains(updateResp.Body.Bytes(), []byte("certificate_source")) || bytes.Contains(updateResp.Body.Bytes(), []byte("trust_mode_source")) {
 		t.Fatalf("write-only fields leaked in update response: %s", updateResp.Body.String())
+	}
+}
+
+func TestRouterCertificatePEMFieldsReachServiceOnCreateAndUpdate(t *testing.T) {
+	state := &fakeCertificateServiceState{}
+	router, err := NewRouter(Dependencies{
+		Config: config.Config{PanelToken: "secret"},
+		SystemService: fakeSystemService{
+			info: service.SystemInfo{
+				Role:              "master",
+				LocalApplyRuntime: "go-agent",
+				DefaultAgentID:    "local",
+				LocalAgentEnabled: true,
+			},
+		},
+		AgentService:         fakeAgentService{},
+		RuleService:          fakeRuleService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService: fakeCertificateService{
+			state:              state,
+			createdCertificate: service.ManagedCertificate{ID: 21, Domain: "uploaded.example.com"},
+			updatedCertificate: service.ManagedCertificate{ID: 21, Domain: "uploaded.example.com"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	createReq := httptest.NewRequest(http.MethodPost, "/panel-api/agents/local/certificates", bytes.NewBufferString(`{
+		"domain":"uploaded.example.com",
+		"issuer_mode":"local_http01",
+		"certificate_type":"uploaded",
+		"certificate_pem":"-----BEGIN CERTIFICATE-----\nCERT\n-----END CERTIFICATE-----",
+		"private_key_pem":"-----BEGIN PRIVATE KEY-----\nKEY\n-----END PRIVATE KEY-----",
+		"ca_pem":"-----BEGIN CERTIFICATE-----\nCA\n-----END CERTIFICATE-----"
+	}`))
+	createReq.Header.Set("X-Panel-Token", "secret")
+	createReq.Header.Set("Content-Type", "application/json")
+	createResp := httptest.NewRecorder()
+	router.ServeHTTP(createResp, createReq)
+	if createResp.Code != http.StatusCreated {
+		t.Fatalf("POST /panel-api/agents/local/certificates = %d", createResp.Code)
+	}
+	if len(state.createInputs) != 1 {
+		t.Fatalf("len(state.createInputs) = %d", len(state.createInputs))
+	}
+	if state.createInputs[0].CertificatePEM == nil || *state.createInputs[0].CertificatePEM == "" {
+		t.Fatalf("create certificate_pem missing: %+v", state.createInputs[0])
+	}
+	if state.createInputs[0].PrivateKeyPEM == nil || *state.createInputs[0].PrivateKeyPEM == "" {
+		t.Fatalf("create private_key_pem missing: %+v", state.createInputs[0])
+	}
+	if state.createInputs[0].CAPEM == nil || *state.createInputs[0].CAPEM == "" {
+		t.Fatalf("create ca_pem missing: %+v", state.createInputs[0])
+	}
+
+	updateReq := httptest.NewRequest(http.MethodPut, "/panel-api/agents/local/certificates/21", bytes.NewBufferString(`{
+		"certificate_pem":"-----BEGIN CERTIFICATE-----\nCERT2\n-----END CERTIFICATE-----",
+		"private_key_pem":"-----BEGIN PRIVATE KEY-----\nKEY2\n-----END PRIVATE KEY-----",
+		"ca_pem":"-----BEGIN CERTIFICATE-----\nCA2\n-----END CERTIFICATE-----"
+	}`))
+	updateReq.Header.Set("X-Panel-Token", "secret")
+	updateReq.Header.Set("Content-Type", "application/json")
+	updateResp := httptest.NewRecorder()
+	router.ServeHTTP(updateResp, updateReq)
+	if updateResp.Code != http.StatusOK {
+		t.Fatalf("PUT /panel-api/agents/local/certificates/21 = %d", updateResp.Code)
+	}
+	if len(state.updateInputs) != 1 {
+		t.Fatalf("len(state.updateInputs) = %d", len(state.updateInputs))
+	}
+	if state.updateInputs[0].CertificatePEM == nil || *state.updateInputs[0].CertificatePEM == "" {
+		t.Fatalf("update certificate_pem missing: %+v", state.updateInputs[0])
+	}
+	if state.updateInputs[0].PrivateKeyPEM == nil || *state.updateInputs[0].PrivateKeyPEM == "" {
+		t.Fatalf("update private_key_pem missing: %+v", state.updateInputs[0])
+	}
+	if state.updateInputs[0].CAPEM == nil || *state.updateInputs[0].CAPEM == "" {
+		t.Fatalf("update ca_pem missing: %+v", state.updateInputs[0])
 	}
 }
 

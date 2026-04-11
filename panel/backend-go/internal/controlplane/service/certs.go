@@ -88,6 +88,9 @@ type ManagedCertificateInput struct {
 	Tags            *[]string                                 `json:"tags,omitempty"`
 	Usage           *string                                   `json:"usage,omitempty"`
 	CertificateType *string                                   `json:"certificate_type,omitempty"`
+	CertificatePEM  *string                                   `json:"certificate_pem,omitempty"`
+	PrivateKeyPEM   *string                                   `json:"private_key_pem,omitempty"`
+	CAPEM           *string                                   `json:"ca_pem,omitempty"`
 	SelfSigned      *bool                                     `json:"self_signed,omitempty"`
 }
 
@@ -165,15 +168,41 @@ func (s *certificateService) Create(ctx context.Context, agentID string, input M
 	if err := assertManagedCertificateTargetingAllowed(s.cfg, cert); err != nil {
 		return ManagedCertificate{}, err
 	}
+	if err := s.assertCertificateDistributionTargetsAllowed(ctx, cert); err != nil {
+		return ManagedCertificate{}, err
+	}
+	uploadMaterial, hasUploadMaterial, err := s.resolveUploadedMaterialForMutation(ctx, input, cert, nil)
+	if err != nil {
+		return ManagedCertificate{}, err
+	}
+	if hasUploadMaterial {
+		cert.MaterialHash = hashManagedCertificateMaterial(uploadMaterial.CertPEM, uploadMaterial.KeyPEM)
+		if cert.Enabled && cert.IssuerMode == "local_http01" {
+			cert.Status = "active"
+			cert.LastIssueAt = s.now().UTC().Format(time.RFC3339)
+			cert.LastError = ""
+		}
+	}
 	cert.Revision = maxRevision + 1
 
+	originalRows := make([]storage.ManagedCertificateRow, 0, len(current))
 	rows := make([]storage.ManagedCertificateRow, 0, len(current)+1)
 	for _, row := range current {
+		originalRows = append(originalRows, row)
 		rows = append(rows, row)
 	}
 	rows = append(rows, managedCertificateToRow(cert))
 	if err := s.store.SaveManagedCertificates(ctx, rows); err != nil {
 		return ManagedCertificate{}, err
+	}
+	if hasUploadMaterial {
+		if err := s.store.SaveManagedCertificateMaterial(ctx, cert.Domain, uploadMaterial); err != nil {
+			if rollbackErr := s.store.SaveManagedCertificates(ctx, originalRows); rollbackErr != nil {
+				return ManagedCertificate{}, rollbackErr
+			}
+			cleanupManagedCertificateMaterialBestEffort(ctx, s.store, rows, originalRows)
+			return ManagedCertificate{}, err
+		}
 	}
 	cleanupManagedCertificateMaterialBestEffort(ctx, s.store, current, rows)
 	return cert, nil
@@ -217,12 +246,36 @@ func (s *certificateService) Update(ctx context.Context, agentID string, id int,
 	if err := assertManagedCertificateTargetingAllowed(s.cfg, next); err != nil {
 		return ManagedCertificate{}, err
 	}
+	if err := s.assertCertificateDistributionTargetsAllowed(ctx, next); err != nil {
+		return ManagedCertificate{}, err
+	}
+	uploadMaterial, hasUploadMaterial, err := s.resolveUploadedMaterialForMutation(ctx, input, next, &current)
+	if err != nil {
+		return ManagedCertificate{}, err
+	}
+	if hasUploadMaterial {
+		next.MaterialHash = hashManagedCertificateMaterial(uploadMaterial.CertPEM, uploadMaterial.KeyPEM)
+		if next.Enabled && next.IssuerMode == "local_http01" {
+			next.Status = "active"
+			next.LastIssueAt = s.now().UTC().Format(time.RFC3339)
+			next.LastError = ""
+		}
+	}
 	next.Revision = maxRevision + 1
 	rows[targetIndex] = managedCertificateToRow(next)
 	originalRows := append([]storage.ManagedCertificateRow(nil), rows...)
 	originalRows[targetIndex] = managedCertificateToRow(current)
 	if err := s.store.SaveManagedCertificates(ctx, rows); err != nil {
 		return ManagedCertificate{}, err
+	}
+	if hasUploadMaterial {
+		if err := s.store.SaveManagedCertificateMaterial(ctx, next.Domain, uploadMaterial); err != nil {
+			if rollbackErr := s.store.SaveManagedCertificates(ctx, originalRows); rollbackErr != nil {
+				return ManagedCertificate{}, rollbackErr
+			}
+			cleanupManagedCertificateMaterialBestEffort(ctx, s.store, rows, originalRows)
+			return ManagedCertificate{}, err
+		}
 	}
 	cleanupManagedCertificateMaterialBestEffort(ctx, s.store, originalRows, rows)
 	return next, nil
@@ -311,6 +364,22 @@ func (s *certificateService) Issue(ctx context.Context, agentID string, id int) 
 		return ManagedCertificate{}, ErrCertificateNotFound
 	}
 
+	if err := s.assertCertificateDistributionTargetsAllowed(ctx, current); err != nil {
+		return ManagedCertificate{}, err
+	}
+	if current.CertificateType == "uploaded" && current.IssuerMode == "local_http01" {
+		material, ok, err := s.store.LoadManagedCertificateMaterial(ctx, current.Domain)
+		if err != nil {
+			return ManagedCertificate{}, err
+		}
+		if !ok {
+			return ManagedCertificate{}, fmt.Errorf("%w: certificate material not found", ErrInvalidArgument)
+		}
+		if err := validateUploadedManagedCertificateBundle(material); err != nil {
+			return ManagedCertificate{}, err
+		}
+		current.MaterialHash = hashManagedCertificateMaterial(strings.TrimSpace(material.CertPEM), strings.TrimSpace(material.KeyPEM))
+	}
 	current.Status = "active"
 	current.LastIssueAt = s.now().UTC().Format(time.RFC3339)
 	current.LastError = ""
@@ -343,6 +412,89 @@ func (s *certificateService) ensureAgentExists(ctx context.Context, agentID stri
 		}
 	}
 	return "", ErrAgentNotFound
+}
+
+func (s *certificateService) assertCertificateDistributionTargetsAllowed(ctx context.Context, cert ManagedCertificate) error {
+	if !cert.Enabled || cert.IssuerMode != "local_http01" || cert.CertificateType != "uploaded" {
+		return nil
+	}
+	for _, targetAgentID := range cert.TargetAgentIDs {
+		resolved, capabilities, err := s.resolveCertificateTargetCapabilities(ctx, targetAgentID)
+		if errors.Is(err, ErrAgentNotFound) {
+			return fmt.Errorf("%w: target agent not found: %s", ErrInvalidArgument, strings.TrimSpace(targetAgentID))
+		}
+		if err != nil {
+			return err
+		}
+		if !agentHasCapability(capabilities, "cert_install") {
+			return fmt.Errorf("%w: target agent does not support certificate install: %s", ErrInvalidArgument, resolved)
+		}
+	}
+	return nil
+}
+
+func (s *certificateService) resolveCertificateTargetCapabilities(ctx context.Context, agentID string) (string, []string, error) {
+	resolvedID := strings.TrimSpace(agentID)
+	if resolvedID == "" {
+		return "", nil, ErrAgentNotFound
+	}
+	if s.cfg.EnableLocalAgent && resolvedID == s.cfg.LocalAgentID {
+		return resolvedID, append([]string(nil), defaultLocalCapabilities...), nil
+	}
+
+	rows, err := s.store.ListAgents(ctx)
+	if err != nil {
+		return "", nil, err
+	}
+	for _, row := range rows {
+		if row.ID == resolvedID {
+			return resolvedID, parseStringArray(row.CapabilitiesJSON), nil
+		}
+	}
+	return "", nil, ErrAgentNotFound
+}
+
+func (s *certificateService) resolveUploadedMaterialForMutation(ctx context.Context, input ManagedCertificateInput, next ManagedCertificate, previous *ManagedCertificate) (storage.ManagedCertificateBundle, bool, error) {
+	if next.CertificateType != "uploaded" {
+		return storage.ManagedCertificateBundle{}, false, nil
+	}
+
+	hasCertificate := input.CertificatePEM != nil
+	hasKey := input.PrivateKeyPEM != nil
+	hasCA := input.CAPEM != nil
+	if !hasCertificate && !hasKey && !hasCA {
+		if previous == nil {
+			return storage.ManagedCertificateBundle{}, false, fmt.Errorf("%w: certificate_pem is required for uploaded certificates", ErrInvalidArgument)
+		}
+		material, ok, err := s.store.LoadManagedCertificateMaterial(ctx, previous.Domain)
+		if err != nil {
+			return storage.ManagedCertificateBundle{}, false, err
+		}
+		if !ok {
+			return storage.ManagedCertificateBundle{}, false, fmt.Errorf("%w: certificate_pem is required for uploaded certificates", ErrInvalidArgument)
+		}
+		material.Domain = next.Domain
+		if err := validateUploadedManagedCertificateBundle(material); err != nil {
+			return storage.ManagedCertificateBundle{}, false, err
+		}
+		return material, true, nil
+	}
+
+	certificatePEM := normalizeUploadedPEMField(input.CertificatePEM)
+	privateKeyPEM := normalizeUploadedPEMField(input.PrivateKeyPEM)
+	caPEM := normalizeUploadedPEMField(input.CAPEM)
+	joinedCertificatePEM := joinUploadedCertificatePEM(certificatePEM, caPEM)
+	bundle := storage.ManagedCertificateBundle{
+		Domain:  next.Domain,
+		CertPEM: joinedCertificatePEM,
+		KeyPEM:  privateKeyPEM,
+	}
+	if err := validateUploadedManagedCertificateBundle(bundle); err != nil {
+		return storage.ManagedCertificateBundle{}, false, err
+	}
+	bundle.CertPEM = strings.TrimSpace(bundle.CertPEM)
+	bundle.KeyPEM = strings.TrimSpace(bundle.KeyPEM)
+	return bundle, true, nil
 }
 
 func normalizeManagedCertificateInput(input ManagedCertificateInput, fallback ManagedCertificate, suggestedID int, defaultAgentID string) (ManagedCertificate, error) {

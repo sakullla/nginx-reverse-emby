@@ -3,6 +3,8 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -211,6 +213,246 @@ func TestCertificateServiceUpdateRejectsMasterCFDNSTargetExpansion(t *testing.T)
 	}
 	if err.Error() != "invalid argument: master_cf_dns certificates must target only the local master agent" {
 		t.Fatalf("Update() error = %v", err)
+	}
+}
+
+func TestCertificateServiceCreateUploadedPersistsValidatedMaterialAndHash(t *testing.T) {
+	ca := mustCreateSelfSignedCA(t, "Upload Test CA")
+	leaf := mustCreateLeafSignedByCA(t, "uploaded.example.com", ca)
+
+	store := &relayCertStore{}
+	svc := NewCertificateService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	created, err := svc.Create(context.Background(), "local", ManagedCertificateInput{
+		Domain:          stringPtr("uploaded.example.com"),
+		Scope:           stringPtr("domain"),
+		IssuerMode:      stringPtr("local_http01"),
+		CertificateType: stringPtr("uploaded"),
+		Usage:           stringPtr("https"),
+		Enabled:         boolPtr(true),
+		CertificatePEM:  stringPtr(strings.TrimSpace(leaf.CertPEM)),
+		PrivateKeyPEM:   stringPtr(strings.TrimSpace(leaf.KeyPEM)),
+		CAPEM:           stringPtr(strings.TrimSpace(ca.CertPEM)),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	material, ok := store.materialsByHost["uploaded.example.com"]
+	if !ok {
+		t.Fatalf("missing persisted material: %+v", store.materialsByHost)
+	}
+	expectedCertPEM := fmt.Sprintf("%s\n%s", strings.TrimSpace(leaf.CertPEM), strings.TrimSpace(ca.CertPEM))
+	if strings.TrimSpace(material.CertPEM) != strings.TrimSpace(expectedCertPEM) {
+		t.Fatalf("persisted cert chain mismatch")
+	}
+	if strings.TrimSpace(material.KeyPEM) != strings.TrimSpace(leaf.KeyPEM) {
+		t.Fatalf("persisted key mismatch")
+	}
+	expectedHash := hashManagedCertificateMaterial(strings.TrimSpace(expectedCertPEM), strings.TrimSpace(leaf.KeyPEM))
+	if created.MaterialHash != expectedHash {
+		t.Fatalf("created.MaterialHash = %q, want %q", created.MaterialHash, expectedHash)
+	}
+	if created.Status != "active" {
+		t.Fatalf("created.Status = %q", created.Status)
+	}
+	if created.LastIssueAt == "" {
+		t.Fatalf("created.LastIssueAt is empty")
+	}
+}
+
+func TestCertificateServiceUpdateUploadedPreservesMaterialWhenPEMFieldsOmitted(t *testing.T) {
+	ca := mustCreateSelfSignedCA(t, "Upload Preserve CA")
+	leaf := mustCreateLeafSignedByCA(t, "preserve.example.com", ca)
+	persistedCert := strings.TrimSpace(leaf.CertPEM) + "\n" + strings.TrimSpace(ca.CertPEM)
+	persistedKey := strings.TrimSpace(leaf.KeyPEM)
+	persistedHash := hashManagedCertificateMaterial(persistedCert, persistedKey)
+
+	store := &relayCertStore{
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              31,
+			Domain:          "preserve.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  `["local"]`,
+			Status:          "active",
+			MaterialHash:    persistedHash,
+			CertificateType: "uploaded",
+			Usage:           "https",
+			Revision:        4,
+		}},
+		materialsByHost: map[string]relayMaterial{
+			"preserve.example.com": {CertPEM: persistedCert, KeyPEM: persistedKey},
+		},
+	}
+	svc := NewCertificateService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	updated, err := svc.Update(context.Background(), "local", 31, ManagedCertificateInput{
+		Tags: &[]string{"rotated"},
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	material := store.materialsByHost["preserve.example.com"]
+	if material.CertPEM != persistedCert || material.KeyPEM != persistedKey {
+		t.Fatalf("updated material changed unexpectedly: %+v", material)
+	}
+	if updated.MaterialHash != persistedHash {
+		t.Fatalf("updated.MaterialHash = %q, want %q", updated.MaterialHash, persistedHash)
+	}
+	if updated.Status != "active" {
+		t.Fatalf("updated.Status = %q", updated.Status)
+	}
+}
+
+func TestCertificateServiceUploadedCreateRejectsMissingOrInvalidMaterial(t *testing.T) {
+	store := &relayCertStore{}
+	svc := NewCertificateService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	_, err := svc.Create(context.Background(), "local", ManagedCertificateInput{
+		Domain:          stringPtr("missing.example.com"),
+		Scope:           stringPtr("domain"),
+		IssuerMode:      stringPtr("local_http01"),
+		CertificateType: stringPtr("uploaded"),
+		Usage:           stringPtr("https"),
+		Enabled:         boolPtr(true),
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Create() missing material error = %v", err)
+	}
+
+	_, err = svc.Create(context.Background(), "local", ManagedCertificateInput{
+		Domain:          stringPtr("invalid.example.com"),
+		Scope:           stringPtr("domain"),
+		IssuerMode:      stringPtr("local_http01"),
+		CertificateType: stringPtr("uploaded"),
+		Usage:           stringPtr("https"),
+		Enabled:         boolPtr(true),
+		CertificatePEM:  stringPtr("not-a-cert"),
+		PrivateKeyPEM:   stringPtr("not-a-key"),
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Create() invalid PEM error = %v", err)
+	}
+}
+
+func TestCertificateServiceUploadedUpdateRejectsMissingOrInvalidMaterial(t *testing.T) {
+	store := &relayCertStore{
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              39,
+			Domain:          "update-missing.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  `["local"]`,
+			Status:          "pending",
+			CertificateType: "uploaded",
+			Usage:           "https",
+			Revision:        2,
+		}},
+	}
+	svc := NewCertificateService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	_, err := svc.Update(context.Background(), "local", 39, ManagedCertificateInput{
+		Tags: &[]string{"keep-existing"},
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Update() missing material error = %v", err)
+	}
+
+	_, err = svc.Update(context.Background(), "local", 39, ManagedCertificateInput{
+		CertificatePEM: stringPtr("not-a-cert"),
+		PrivateKeyPEM:  stringPtr("not-a-key"),
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Update() invalid PEM error = %v", err)
+	}
+}
+
+func TestCertificateServiceUploadedIssueRejectsMissingMaterialAndSucceedsWhenPresent(t *testing.T) {
+	store := &relayCertStore{
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              41,
+			Domain:          "issue.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  `["local"]`,
+			Status:          "pending",
+			CertificateType: "uploaded",
+			Usage:           "https",
+			Revision:        3,
+		}},
+	}
+	svc := NewCertificateService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	if _, err := svc.Issue(context.Background(), "local", 41); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Issue() without material error = %v", err)
+	}
+
+	ca := mustCreateSelfSignedCA(t, "Issue CA")
+	leaf := mustCreateLeafSignedByCA(t, "issue.example.com", ca)
+	joined := strings.TrimSpace(leaf.CertPEM) + "\n" + strings.TrimSpace(ca.CertPEM)
+	store.materialsByHost = map[string]relayMaterial{
+		"issue.example.com": {CertPEM: joined, KeyPEM: strings.TrimSpace(leaf.KeyPEM)},
+	}
+
+	issued, err := svc.Issue(context.Background(), "local", 41)
+	if err != nil {
+		t.Fatalf("Issue() with material error = %v", err)
+	}
+	if issued.Status != "active" {
+		t.Fatalf("issued.Status = %q", issued.Status)
+	}
+	if issued.MaterialHash == "" {
+		t.Fatalf("issued.MaterialHash is empty")
+	}
+}
+
+func TestCertificateServiceUploadedLocalHTTP01RequiresCertInstallCapableTargets(t *testing.T) {
+	ca := mustCreateSelfSignedCA(t, "Capabilities CA")
+	leaf := mustCreateLeafSignedByCA(t, "targets.example.com", ca)
+
+	store := &relayCertStore{
+		agents: []storage.AgentRow{{
+			ID:               "edge-1",
+			Name:             "edge-1",
+			CapabilitiesJSON: `["http_rules"]`,
+		}},
+	}
+	svc := NewCertificateService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	_, err := svc.Create(context.Background(), "local", ManagedCertificateInput{
+		Domain:          stringPtr("targets.example.com"),
+		Scope:           stringPtr("domain"),
+		IssuerMode:      stringPtr("local_http01"),
+		CertificateType: stringPtr("uploaded"),
+		Usage:           stringPtr("https"),
+		TargetAgentIDs:  &[]string{"edge-1"},
+		CertificatePEM:  stringPtr(strings.TrimSpace(leaf.CertPEM)),
+		PrivateKeyPEM:   stringPtr(strings.TrimSpace(leaf.KeyPEM)),
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Create() missing cert_install capability error = %v", err)
 	}
 }
 
