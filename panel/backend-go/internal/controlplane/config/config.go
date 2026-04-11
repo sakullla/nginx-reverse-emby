@@ -20,16 +20,17 @@ const (
 )
 
 type Config struct {
-	ListenAddr           string
-	DataDir              string
-	PanelToken           string
-	RegisterToken        string
-	FrontendDistDir      string
-	PublicAgentAssetsDir string
-	EnableLocalAgent     bool
-	LocalAgentID         string
-	LocalAgentName       string
-	HeartbeatInterval    time.Duration
+	ListenAddr                    string
+	DataDir                       string
+	PanelToken                    string
+	RegisterToken                 string
+	FrontendDistDir               string
+	PublicAgentAssetsDir          string
+	EnableLocalAgent              bool
+	LocalAgentID                  string
+	LocalAgentName                string
+	HeartbeatInterval             time.Duration
+	ManagedDNSCertificatesEnabled bool
 }
 
 func Default() Config {
@@ -112,6 +113,10 @@ func LoadFromEnv() (Config, error) {
 		}
 		cfg.HeartbeatInterval = dur
 	}
+
+	acmeDNSProvider := strings.TrimSpace(firstEnv("ACME_DNS_PROVIDER"))
+	cfToken := strings.TrimSpace(firstEnv("CF_Token", "CF_TOKEN"))
+	cfg.ManagedDNSCertificatesEnabled = strings.EqualFold(acmeDNSProvider, "cf") && cfToken != ""
 
 	return cfg, nil
 }

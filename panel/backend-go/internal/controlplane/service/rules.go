@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/url"
 	"strings"
 
@@ -28,9 +29,11 @@ type HTTPRuleInput struct {
 type ruleStore interface {
 	ListAgents(context.Context) ([]storage.AgentRow, error)
 	ListHTTPRules(context.Context, string) ([]storage.HTTPRuleRow, error)
+	ListManagedCertificates(context.Context) ([]storage.ManagedCertificateRow, error)
 	ListRelayListeners(context.Context, string) ([]storage.RelayListenerRow, error)
 	SaveAgent(context.Context, storage.AgentRow) error
 	SaveHTTPRules(context.Context, string, []storage.HTTPRuleRow) error
+	SaveManagedCertificates(context.Context, []storage.ManagedCertificateRow) error
 }
 
 type ruleService struct {
@@ -95,8 +98,27 @@ func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRule
 	rule.AgentID = resolvedID
 	rule.Revision = maxRevision + 1
 
-	rows = append(rows, httpRuleToRow(rule))
-	if err := s.store.SaveHTTPRules(ctx, resolvedID, rows); err != nil {
+	nextRows := append(append([]storage.HTTPRuleRow(nil), rows...), httpRuleToRow(rule))
+	originalCertRows, nextCertRows, certRowsChanged, err := s.prepareManagedCertificatesForRuleMutation(
+		ctx,
+		resolvedID,
+		&rule,
+		httpRulesFromRows(nextRows),
+	)
+	if err != nil {
+		return HTTPRule{}, err
+	}
+	if certRowsChanged {
+		if err := s.store.SaveManagedCertificates(ctx, nextCertRows); err != nil {
+			return HTTPRule{}, err
+		}
+	}
+	if err := s.store.SaveHTTPRules(ctx, resolvedID, nextRows); err != nil {
+		if certRowsChanged {
+			if rollbackErr := s.store.SaveManagedCertificates(ctx, originalCertRows); rollbackErr != nil {
+				return HTTPRule{}, fmt.Errorf("%v (rollback failed: %v)", err, rollbackErr)
+			}
+		}
 		return HTTPRule{}, err
 	}
 	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, rule.Revision); err != nil {
@@ -149,8 +171,28 @@ func (s *ruleService) Update(ctx context.Context, agentID string, id int, input 
 	rule.AgentID = resolvedID
 	rule.Revision = maxRevision + 1
 
-	rows[targetIndex] = httpRuleToRow(rule)
-	if err := s.store.SaveHTTPRules(ctx, resolvedID, rows); err != nil {
+	nextRows := append([]storage.HTTPRuleRow(nil), rows...)
+	nextRows[targetIndex] = httpRuleToRow(rule)
+	originalCertRows, nextCertRows, certRowsChanged, err := s.prepareManagedCertificatesForRuleMutation(
+		ctx,
+		resolvedID,
+		&rule,
+		httpRulesFromRows(nextRows),
+	)
+	if err != nil {
+		return HTTPRule{}, err
+	}
+	if certRowsChanged {
+		if err := s.store.SaveManagedCertificates(ctx, nextCertRows); err != nil {
+			return HTTPRule{}, err
+		}
+	}
+	if err := s.store.SaveHTTPRules(ctx, resolvedID, nextRows); err != nil {
+		if certRowsChanged {
+			if rollbackErr := s.store.SaveManagedCertificates(ctx, originalCertRows); rollbackErr != nil {
+				return HTTPRule{}, fmt.Errorf("%v (rollback failed: %v)", err, rollbackErr)
+			}
+		}
 		return HTTPRule{}, err
 	}
 	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, rule.Revision); err != nil {
@@ -186,7 +228,26 @@ func (s *ruleService) Delete(ctx context.Context, agentID string, id int) (HTTPR
 
 	nextRows := append([]storage.HTTPRuleRow(nil), rows[:targetIndex]...)
 	nextRows = append(nextRows, rows[targetIndex+1:]...)
+	originalCertRows, nextCertRows, certRowsChanged, err := s.prepareManagedCertificatesForRuleMutation(
+		ctx,
+		resolvedID,
+		nil,
+		httpRulesFromRows(nextRows),
+	)
+	if err != nil {
+		return HTTPRule{}, err
+	}
+	if certRowsChanged {
+		if err := s.store.SaveManagedCertificates(ctx, nextCertRows); err != nil {
+			return HTTPRule{}, err
+		}
+	}
 	if err := s.store.SaveHTTPRules(ctx, resolvedID, nextRows); err != nil {
+		if certRowsChanged {
+			if rollbackErr := s.store.SaveManagedCertificates(ctx, originalCertRows); rollbackErr != nil {
+				return HTTPRule{}, fmt.Errorf("%v (rollback failed: %v)", err, rollbackErr)
+			}
+		}
 		return HTTPRule{}, err
 	}
 	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, deleted.Revision+1); err != nil {
@@ -278,6 +339,382 @@ func (s *ruleService) allKnownAgentIDs(ctx context.Context) ([]string, error) {
 		agentIDs = append(agentIDs, row.ID)
 	}
 	return agentIDs, nil
+}
+
+func (s *ruleService) prepareManagedCertificatesForRuleMutation(
+	ctx context.Context,
+	agentID string,
+	rule *HTTPRule,
+	nextRules []HTTPRule,
+) ([]storage.ManagedCertificateRow, []storage.ManagedCertificateRow, bool, error) {
+	originalRows, err := s.store.ListManagedCertificates(ctx)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	nextRows := append([]storage.ManagedCertificateRow(nil), originalRows...)
+	nextRevision := nextManagedCertificateRevision(nextRows)
+	if rule != nil {
+		if err := s.ensureManagedCertificateForRule(ctx, agentID, *rule, &nextRows, &nextRevision); err != nil {
+			return nil, nil, false, err
+		}
+	}
+	if err := s.cleanupUnusedManagedCertificatesForAgent(agentID, nextRules, &nextRows, &nextRevision); err != nil {
+		return nil, nil, false, err
+	}
+	return originalRows, nextRows, !managedCertificateRowsEqual(originalRows, nextRows), nil
+}
+
+func (s *ruleService) ensureManagedCertificateForRule(
+	ctx context.Context,
+	agentID string,
+	rule HTTPRule,
+	rows *[]storage.ManagedCertificateRow,
+	nextRevision *int,
+) error {
+	scheme, host, ok := parseRuleFrontendTarget(rule.FrontendURL)
+	if !ok || scheme != "https" {
+		return nil
+	}
+
+	scope := "domain"
+	if isIPAddress(host) {
+		scope = "ip"
+	}
+	cert, certIndex, found := findBestManagedCertificateForHost(*rows, agentID, host, scope)
+	if found {
+		if containsString(cert.TargetAgentIDs, agentID) {
+			return nil
+		}
+		next := cert
+		next.Enabled = true
+		next.TargetAgentIDs = appendUniqueNormalized(next.TargetAgentIDs, agentID)
+		next.Tags = normalizeTagUnion(next.Tags, []string{managedCertificateAutoTargetTag(agentID)})
+		if err := assertManagedCertificateMutationAllowed(&cert, next); err != nil {
+			return err
+		}
+		next.Revision = allocateManagedCertificateRevision(nextRevision)
+		(*rows)[certIndex] = managedCertificateToRow(next)
+		return nil
+	}
+
+	issuerMode, err := s.chooseAutoManagedCertificateIssuerMode(ctx, agentID, host, scope)
+	if err != nil {
+		return err
+	}
+	next := ManagedCertificate{
+		ID:              nextManagedCertificateID(*rows),
+		Domain:          host,
+		Enabled:         true,
+		Scope:           scope,
+		IssuerMode:      issuerMode,
+		TargetAgentIDs:  []string{agentID},
+		Status:          "pending",
+		Tags:            normalizeTagUnion(rule.Tags, []string{"auto", managedCertificateAutoTargetTag(agentID)}),
+		Usage:           "https",
+		CertificateType: "acme",
+	}
+	if err := assertManagedCertificateMutationAllowed(nil, next); err != nil {
+		return err
+	}
+	next.Revision = allocateManagedCertificateRevision(nextRevision)
+	*rows = append(*rows, managedCertificateToRow(next))
+	return nil
+}
+
+func (s *ruleService) cleanupUnusedManagedCertificatesForAgent(
+	agentID string,
+	rules []HTTPRule,
+	rows *[]storage.ManagedCertificateRow,
+	nextRevision *int,
+) error {
+	for index := 0; index < len(*rows); {
+		cert := managedCertificateFromRow((*rows)[index])
+		if !containsString(cert.TargetAgentIDs, agentID) || isSystemRelayCACertificate(cert) {
+			index++
+			continue
+		}
+		if hasMatchingHTTPSRuleForCertificate(rules, cert) || !shouldRecycleManagedCertificateForAgent(cert, agentID) {
+			index++
+			continue
+		}
+
+		next := cert
+		next.TargetAgentIDs = removeString(next.TargetAgentIDs, agentID)
+		next.Tags = removeString(next.Tags, managedCertificateAutoTargetTag(agentID))
+		if len(next.TargetAgentIDs) == 0 && isAutoManagedCertificate(next) {
+			*rows = append(append([]storage.ManagedCertificateRow(nil), (*rows)[:index]...), (*rows)[index+1:]...)
+			continue
+		}
+		if err := assertManagedCertificateMutationAllowed(&cert, next); err != nil {
+			return err
+		}
+		next.Revision = allocateManagedCertificateRevision(nextRevision)
+		(*rows)[index] = managedCertificateToRow(next)
+		index++
+	}
+	return nil
+}
+
+func (s *ruleService) chooseAutoManagedCertificateIssuerMode(
+	ctx context.Context,
+	agentID string,
+	host string,
+	scope string,
+) (string, error) {
+	agentName, capabilities, err := s.resolveAgentCapabilities(ctx, agentID)
+	if err != nil {
+		return "", err
+	}
+	if !agentHasCapability(capabilities, "cert_install") {
+		return "", fmt.Errorf("%w: agent does not support unified certificate install: %s", ErrInvalidArgument, agentName)
+	}
+	if scope == "ip" {
+		if !agentHasCapability(capabilities, "local_acme") {
+			return "", fmt.Errorf("%w: agent does not support local ACME issuance for IP HTTPS: %s", ErrInvalidArgument, agentName)
+		}
+		return "local_http01", nil
+	}
+	if s.cfg.ManagedDNSCertificatesEnabled {
+		return "master_cf_dns", nil
+	}
+	if agentHasCapability(capabilities, "local_acme") {
+		return "local_http01", nil
+	}
+	return "", fmt.Errorf("%w: no available unified certificate issuer for %s", ErrInvalidArgument, host)
+}
+
+func (s *ruleService) resolveAgentCapabilities(ctx context.Context, agentID string) (string, []string, error) {
+	if s.cfg.EnableLocalAgent && agentID == s.cfg.LocalAgentID {
+		return s.cfg.LocalAgentID, append([]string(nil), defaultLocalCapabilities...), nil
+	}
+	rows, err := s.store.ListAgents(ctx)
+	if err != nil {
+		return "", nil, err
+	}
+	for _, row := range rows {
+		if row.ID != agentID {
+			continue
+		}
+		name := strings.TrimSpace(row.Name)
+		if name == "" {
+			name = row.ID
+		}
+		return name, parseStringArray(row.CapabilitiesJSON), nil
+	}
+	return "", nil, ErrAgentNotFound
+}
+
+func httpRulesFromRows(rows []storage.HTTPRuleRow) []HTTPRule {
+	rules := make([]HTTPRule, 0, len(rows))
+	for _, row := range rows {
+		rules = append(rules, httpRuleFromRow(row))
+	}
+	return rules
+}
+
+func parseRuleFrontendTarget(frontendURL string) (string, string, bool) {
+	parsed, err := url.Parse(strings.TrimSpace(frontendURL))
+	if err != nil || parsed == nil {
+		return "", "", false
+	}
+	host := strings.ToLower(normalizeCertificateHost(parsed.Hostname()))
+	scheme := strings.ToLower(strings.TrimSpace(parsed.Scheme))
+	if host == "" || scheme == "" {
+		return "", "", false
+	}
+	return scheme, host, true
+}
+
+func normalizeCertificateHost(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if len(trimmed) >= 2 && strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+		return trimmed[1 : len(trimmed)-1]
+	}
+	return trimmed
+}
+
+func isIPAddress(host string) bool {
+	return net.ParseIP(normalizeCertificateHost(host)) != nil
+}
+
+func findBestManagedCertificateForHost(rows []storage.ManagedCertificateRow, agentID string, host string, scope string) (ManagedCertificate, int, bool) {
+	bestIndex := -1
+	var best ManagedCertificate
+	for index, row := range rows {
+		cert := managedCertificateFromRow(row)
+		if !cert.Enabled || cert.Scope != scope {
+			continue
+		}
+		if !doesManagedCertificateMatchHost(cert, host) {
+			continue
+		}
+		if bestIndex < 0 || compareManagedCertificateMatchPriority(cert, best, agentID) < 0 {
+			best = cert
+			bestIndex = index
+		}
+	}
+	if bestIndex < 0 {
+		return ManagedCertificate{}, -1, false
+	}
+	return best, bestIndex, true
+}
+
+func compareManagedCertificateMatchPriority(left ManagedCertificate, right ManagedCertificate, agentID string) int {
+	leftWildcard := isWildcardCertificateDomain(left.Domain)
+	rightWildcard := isWildcardCertificateDomain(right.Domain)
+	if leftWildcard != rightWildcard {
+		if leftWildcard {
+			return 1
+		}
+		return -1
+	}
+
+	leftTargetsAgent := containsString(left.TargetAgentIDs, agentID)
+	rightTargetsAgent := containsString(right.TargetAgentIDs, agentID)
+	if leftTargetsAgent != rightTargetsAgent {
+		if leftTargetsAgent {
+			return -1
+		}
+		return 1
+	}
+
+	return right.Revision - left.Revision
+}
+
+func doesManagedCertificateMatchHost(cert ManagedCertificate, host string) bool {
+	if cert.Scope == "ip" {
+		return isExactManagedCertificateMatch(cert.Domain, host)
+	}
+	return isExactManagedCertificateMatch(cert.Domain, host) || isWildcardManagedCertificateMatch(cert.Domain, host)
+}
+
+func isExactManagedCertificateMatch(certDomain string, host string) bool {
+	return strings.EqualFold(normalizeCertificateHost(certDomain), normalizeCertificateHost(host))
+}
+
+func isWildcardManagedCertificateMatch(certDomain string, host string) bool {
+	pattern := strings.ToLower(normalizeCertificateHost(certDomain))
+	target := strings.ToLower(normalizeCertificateHost(host))
+	if !isWildcardCertificateDomain(pattern) {
+		return false
+	}
+	suffix := strings.TrimPrefix(pattern, "*.")
+	if !strings.HasSuffix(target, "."+suffix) {
+		return false
+	}
+	targetParts := strings.Split(target, ".")
+	suffixParts := strings.Split(suffix, ".")
+	return len(targetParts) == len(suffixParts)+1
+}
+
+func isWildcardCertificateDomain(value string) bool {
+	normalized := normalizeCertificateHost(value)
+	if !strings.HasPrefix(normalized, "*.") {
+		return false
+	}
+	return len(normalized) > 2
+}
+
+func shouldRecycleManagedCertificateForAgent(cert ManagedCertificate, agentID string) bool {
+	return isAutoManagedCertificate(cert) || hasManagedCertificateAutoTarget(cert, agentID)
+}
+
+func isAutoManagedCertificate(cert ManagedCertificate) bool {
+	return containsString(cert.Tags, "auto")
+}
+
+func hasManagedCertificateAutoTarget(cert ManagedCertificate, agentID string) bool {
+	return containsString(cert.Tags, managedCertificateAutoTargetTag(agentID))
+}
+
+func managedCertificateAutoTargetTag(agentID string) string {
+	return fmt.Sprintf("auto_target:%s", strings.TrimSpace(agentID))
+}
+
+func hasMatchingHTTPSRuleForCertificate(rules []HTTPRule, cert ManagedCertificate) bool {
+	for _, rule := range rules {
+		if !rule.Enabled {
+			continue
+		}
+		scheme, host, ok := parseRuleFrontendTarget(rule.FrontendURL)
+		if !ok || scheme != "https" {
+			continue
+		}
+		if doesManagedCertificateMatchHost(cert, host) {
+			return true
+		}
+	}
+	return false
+}
+
+func nextManagedCertificateRevision(rows []storage.ManagedCertificateRow) int {
+	maxRevision := 0
+	for _, row := range rows {
+		if row.Revision > maxRevision {
+			maxRevision = row.Revision
+		}
+	}
+	return maxRevision + 1
+}
+
+func allocateManagedCertificateRevision(nextRevision *int) int {
+	revision := *nextRevision
+	*nextRevision = *nextRevision + 1
+	return revision
+}
+
+func nextManagedCertificateID(rows []storage.ManagedCertificateRow) int {
+	maxID := 0
+	for _, row := range rows {
+		if row.ID > maxID {
+			maxID = row.ID
+		}
+	}
+	return maxID + 1
+}
+
+func managedCertificateRowsEqual(left []storage.ManagedCertificateRow, right []storage.ManagedCertificateRow) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func appendUniqueNormalized(values []string, extra ...string) []string {
+	return normalizeTagUnion(values, extra)
+}
+
+func normalizeTagUnion(groups ...[]string) []string {
+	normalized := make([]string, 0)
+	seen := map[string]struct{}{}
+	for _, group := range groups {
+		for _, raw := range group {
+			value := strings.TrimSpace(raw)
+			if value == "" {
+				continue
+			}
+			if _, ok := seen[value]; ok {
+				continue
+			}
+			seen[value] = struct{}{}
+			normalized = append(normalized, value)
+		}
+	}
+	return normalized
+}
+
+func agentHasCapability(capabilities []string, capability string) bool {
+	for _, existing := range capabilities {
+		if strings.TrimSpace(existing) == capability {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *ruleService) normalizeHTTPRuleInput(ctx context.Context, input HTTPRuleInput, fallback HTTPRule, suggestedID int) (HTTPRule, error) {

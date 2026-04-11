@@ -96,3 +96,84 @@ func TestLoadFromEnvRejectsInvalidHeartbeatInterval(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadFromEnvManagedDNSCertificatesEnabled(t *testing.T) {
+	testCases := []struct {
+		name   string
+		setEnv func(*testing.T)
+	}{
+		{
+			name: "CF_Token",
+			setEnv: func(t *testing.T) {
+				t.Setenv("ACME_DNS_PROVIDER", "cf")
+				t.Setenv("CF_Token", "token")
+			},
+		},
+		{
+			name: "CF_TOKEN",
+			setEnv: func(t *testing.T) {
+				t.Setenv("ACME_DNS_PROVIDER", "cf")
+				t.Setenv("CF_TOKEN", "token")
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("NRE_PANEL_TOKEN", "secret")
+			t.Setenv("NRE_REGISTER_TOKEN", "register-secret")
+			tc.setEnv(t)
+
+			cfg, err := LoadFromEnv()
+			if err != nil {
+				t.Fatalf("LoadFromEnv() error = %v", err)
+			}
+			if !cfg.ManagedDNSCertificatesEnabled {
+				t.Fatalf("ManagedDNSCertificatesEnabled = false, want true")
+			}
+		})
+	}
+}
+
+func TestLoadFromEnvManagedDNSCertificatesDisabledWithoutCompleteCloudflareConfig(t *testing.T) {
+	testCases := []struct {
+		name   string
+		setEnv func(*testing.T)
+	}{
+		{
+			name: "missing provider",
+			setEnv: func(t *testing.T) {
+				t.Setenv("CF_Token", "token")
+			},
+		},
+		{
+			name: "wrong provider",
+			setEnv: func(t *testing.T) {
+				t.Setenv("ACME_DNS_PROVIDER", "route53")
+				t.Setenv("CF_Token", "token")
+			},
+		},
+		{
+			name: "missing token",
+			setEnv: func(t *testing.T) {
+				t.Setenv("ACME_DNS_PROVIDER", "cf")
+			},
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("NRE_PANEL_TOKEN", "secret")
+			t.Setenv("NRE_REGISTER_TOKEN", "register-secret")
+			tc.setEnv(t)
+
+			cfg, err := LoadFromEnv()
+			if err != nil {
+				t.Fatalf("LoadFromEnv() error = %v", err)
+			}
+			if cfg.ManagedDNSCertificatesEnabled {
+				t.Fatalf("ManagedDNSCertificatesEnabled = true, want false")
+			}
+		})
+	}
+}
