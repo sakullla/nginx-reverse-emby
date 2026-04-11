@@ -287,6 +287,10 @@ func (s *SQLiteStore) SaveAgent(ctx context.Context, row AgentRow) error {
 		Create(&row).Error
 }
 
+func (s *SQLiteStore) DeleteAgent(ctx context.Context, agentID string) error {
+	return s.db.WithContext(ctx).Where("id = ?", agentID).Delete(&AgentRow{}).Error
+}
+
 func (s *SQLiteStore) SaveHTTPRules(ctx context.Context, agentID string, rules []HTTPRuleRow) error {
 	if agentID == "" {
 		agentID = s.localAgentID
@@ -577,6 +581,7 @@ func normalizeAgentRow(row *AgentRow) {
 	row.Mode = defaultString(row.Mode, "pull")
 	row.LastApplyStatus = defaultString(row.LastApplyStatus, "")
 	row.LastApplyMessage = defaultString(row.LastApplyMessage, "")
+	row.LastReportedStatsJSON = defaultJSON(row.LastReportedStatsJSON, "{}")
 	row.LastSeenAt = defaultString(row.LastSeenAt, "")
 	row.LastSeenIP = defaultString(row.LastSeenIP, "")
 }

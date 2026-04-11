@@ -1,24 +1,25 @@
 package storage
 
 type AgentRow struct {
-	ID                string `gorm:"column:id;primaryKey"`
-	Name              string `gorm:"column:name"`
-	AgentURL          string `gorm:"column:agent_url"`
-	AgentToken        string `gorm:"column:agent_token"`
-	Version           string `gorm:"column:version"`
-	Platform          string `gorm:"column:platform"`
-	DesiredVersion    string `gorm:"column:desired_version"`
-	TagsJSON          string `gorm:"column:tags"`
-	CapabilitiesJSON  string `gorm:"column:capabilities"`
-	Mode              string `gorm:"column:mode"`
-	DesiredRevision   int    `gorm:"column:desired_revision"`
-	CurrentRevision   int    `gorm:"column:current_revision"`
-	LastApplyRevision int    `gorm:"column:last_apply_revision"`
-	LastApplyStatus   string `gorm:"column:last_apply_status"`
-	LastApplyMessage  string `gorm:"column:last_apply_message"`
-	LastSeenAt        string `gorm:"column:last_seen_at"`
-	LastSeenIP        string `gorm:"column:last_seen_ip"`
-	IsLocal           bool   `gorm:"column:is_local"`
+	ID                    string `gorm:"column:id;primaryKey"`
+	Name                  string `gorm:"column:name"`
+	AgentURL              string `gorm:"column:agent_url"`
+	AgentToken            string `gorm:"column:agent_token"`
+	Version               string `gorm:"column:version"`
+	Platform              string `gorm:"column:platform"`
+	DesiredVersion        string `gorm:"column:desired_version"`
+	TagsJSON              string `gorm:"column:tags"`
+	CapabilitiesJSON      string `gorm:"column:capabilities"`
+	Mode                  string `gorm:"column:mode"`
+	DesiredRevision       int    `gorm:"column:desired_revision"`
+	CurrentRevision       int    `gorm:"column:current_revision"`
+	LastApplyRevision     int    `gorm:"column:last_apply_revision"`
+	LastApplyStatus       string `gorm:"column:last_apply_status"`
+	LastApplyMessage      string `gorm:"column:last_apply_message"`
+	LastReportedStatsJSON string `gorm:"column:last_reported_stats"`
+	LastSeenAt            string `gorm:"column:last_seen_at"`
+	LastSeenIP            string `gorm:"column:last_seen_ip"`
+	IsLocal               bool   `gorm:"column:is_local"`
 }
 
 type HTTPRuleRow struct {

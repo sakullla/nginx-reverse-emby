@@ -23,7 +23,26 @@ func (f fakeSystemService) Info(context.Context) service.SystemInfo {
 
 type fakeAgentService struct {
 	agents         []service.AgentSummary
+	agentsByID     map[string]service.AgentSummary
 	heartbeatReply service.HeartbeatReply
+	updateAgent    service.AgentSummary
+	deleteAgent    service.AgentSummary
+	applyResult    service.ApplyAgentResult
+	statsByID      map[string]service.AgentStats
+	getErr         error
+	updateErr      error
+	deleteErr      error
+	statsErr       error
+	applyErr       error
+	state          *fakeAgentServiceState
+}
+
+type fakeAgentServiceState struct {
+	updateAgentID string
+	updateInput   service.UpdateAgentRequest
+	deleteAgentID string
+	statsAgentID  string
+	applyAgentID  string
 }
 
 func (f fakeAgentService) List(context.Context) ([]service.AgentSummary, error) {
@@ -35,6 +54,60 @@ func (f fakeAgentService) Register(context.Context, service.RegisterRequest, str
 		return service.AgentSummary{}, service.ErrAgentNotFound
 	}
 	return f.agents[0], nil
+}
+
+func (f fakeAgentService) Get(_ context.Context, agentID string) (service.AgentSummary, error) {
+	if f.getErr != nil {
+		return service.AgentSummary{}, f.getErr
+	}
+	if agent, ok := f.agentsByID[agentID]; ok {
+		return agent, nil
+	}
+	return service.AgentSummary{}, service.ErrAgentNotFound
+}
+
+func (f fakeAgentService) Update(_ context.Context, agentID string, input service.UpdateAgentRequest) (service.AgentSummary, error) {
+	if f.state != nil {
+		f.state.updateAgentID = agentID
+		f.state.updateInput = input
+	}
+	if f.updateErr != nil {
+		return service.AgentSummary{}, f.updateErr
+	}
+	return f.updateAgent, nil
+}
+
+func (f fakeAgentService) Delete(_ context.Context, agentID string) (service.AgentSummary, error) {
+	if f.state != nil {
+		f.state.deleteAgentID = agentID
+	}
+	if f.deleteErr != nil {
+		return service.AgentSummary{}, f.deleteErr
+	}
+	return f.deleteAgent, nil
+}
+
+func (f fakeAgentService) Stats(_ context.Context, agentID string) (service.AgentStats, error) {
+	if f.state != nil {
+		f.state.statsAgentID = agentID
+	}
+	if f.statsErr != nil {
+		return service.AgentStats{}, f.statsErr
+	}
+	if stats, ok := f.statsByID[agentID]; ok {
+		return stats, nil
+	}
+	return service.AgentStats{}, service.ErrAgentNotFound
+}
+
+func (f fakeAgentService) Apply(_ context.Context, agentID string) (service.ApplyAgentResult, error) {
+	if f.state != nil {
+		f.state.applyAgentID = agentID
+	}
+	if f.applyErr != nil {
+		return service.ApplyAgentResult{}, f.applyErr
+	}
+	return f.applyResult, nil
 }
 
 type fakeL4RuleService struct {
@@ -368,6 +441,133 @@ func TestRouterServesAgentsAndRulesEndpoints(t *testing.T) {
 	router.ServeHTTP(missingResp, missingReq)
 	if missingResp.Code != http.StatusNotFound {
 		t.Fatalf("GET /panel-api/agents/missing/rules = %d", missingResp.Code)
+	}
+}
+
+func TestRouterServesAgentControlEndpoints(t *testing.T) {
+	state := &fakeAgentServiceState{}
+	router, err := NewRouter(Dependencies{
+		Config: config.Config{PanelToken: "secret"},
+		SystemService: fakeSystemService{
+			info: service.SystemInfo{
+				Role:              "master",
+				LocalApplyRuntime: "go-agent",
+				DefaultAgentID:    "local",
+				LocalAgentEnabled: true,
+			},
+		},
+		AgentService: fakeAgentService{
+			agentsByID: map[string]service.AgentSummary{
+				"edge-1": {
+					ID:       "edge-1",
+					Name:     "Edge 1",
+					Mode:     "pull",
+					Status:   "online",
+					IsLocal:  false,
+					AgentURL: "",
+				},
+			},
+			updateAgent: service.AgentSummary{
+				ID:       "edge-1",
+				Name:     "Edge Renamed",
+				Mode:     "master",
+				Status:   "online",
+				IsLocal:  false,
+				AgentURL: "https://edge.example.com",
+			},
+			deleteAgent: service.AgentSummary{
+				ID:      "edge-1",
+				Name:    "Edge Renamed",
+				Status:  "online",
+				IsLocal: false,
+			},
+			statsByID: map[string]service.AgentStats{
+				"edge-1": {
+					"totalRequests": "42",
+					"status":        "运行中",
+				},
+			},
+			applyResult: service.ApplyAgentResult{
+				Message: "waiting for agent heartbeat to apply",
+			},
+			state: state,
+		},
+		RuleService:          fakeRuleService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	getReq := httptest.NewRequest(http.MethodGet, "/panel-api/agents/edge-1", nil)
+	getReq.Header.Set("X-Panel-Token", "secret")
+	getResp := httptest.NewRecorder()
+	router.ServeHTTP(getResp, getReq)
+	if getResp.Code != http.StatusOK {
+		t.Fatalf("GET /panel-api/agents/edge-1 = %d", getResp.Code)
+	}
+
+	patchReq := httptest.NewRequest(http.MethodPatch, "/panel-api/agents/edge-1", bytes.NewBufferString(`{"name":"Edge Renamed"}`))
+	patchReq.Header.Set("X-Panel-Token", "secret")
+	patchResp := httptest.NewRecorder()
+	router.ServeHTTP(patchResp, patchReq)
+	if patchResp.Code != http.StatusOK {
+		t.Fatalf("PATCH /panel-api/agents/edge-1 = %d", patchResp.Code)
+	}
+	if state.updateAgentID != "edge-1" || state.updateInput.Name == nil || *state.updateInput.Name != "Edge Renamed" {
+		t.Fatalf("PATCH update state = %+v", state)
+	}
+
+	putReq := httptest.NewRequest(http.MethodPut, "/panel-api/agents/edge-1", bytes.NewBufferString(`{"name":"Edge Renamed","agent_url":"https://edge.example.com","agent_token":"token-edge-1","version":"1.2.3","tags":["edge"],"capabilities":["http_rules","l4"]}`))
+	putReq.Header.Set("X-Panel-Token", "secret")
+	putResp := httptest.NewRecorder()
+	router.ServeHTTP(putResp, putReq)
+	if putResp.Code != http.StatusOK {
+		t.Fatalf("PUT /panel-api/agents/edge-1 = %d", putResp.Code)
+	}
+	if state.updateInput.AgentURL == nil || *state.updateInput.AgentURL != "https://edge.example.com" {
+		t.Fatalf("PUT update input = %+v", state.updateInput)
+	}
+
+	statsReq := httptest.NewRequest(http.MethodGet, "/api/agents/edge-1/stats", nil)
+	statsReq.Header.Set("X-Panel-Token", "secret")
+	statsResp := httptest.NewRecorder()
+	router.ServeHTTP(statsResp, statsReq)
+	if statsResp.Code != http.StatusOK {
+		t.Fatalf("GET /api/agents/edge-1/stats = %d", statsResp.Code)
+	}
+	var statsPayload map[string]any
+	if err := json.Unmarshal(statsResp.Body.Bytes(), &statsPayload); err != nil {
+		t.Fatalf("json.Unmarshal(stats) error = %v", err)
+	}
+	statsValue, ok := statsPayload["stats"].(map[string]any)
+	if !ok || statsValue["totalRequests"] != "42" || state.statsAgentID != "edge-1" {
+		t.Fatalf("stats payload/state = %+v / %+v", statsPayload, state)
+	}
+
+	applyReq := httptest.NewRequest(http.MethodPost, "/panel-api/agents/edge-1/apply", bytes.NewBufferString(`{}`))
+	applyReq.Header.Set("X-Panel-Token", "secret")
+	applyResp := httptest.NewRecorder()
+	router.ServeHTTP(applyResp, applyReq)
+	if applyResp.Code != http.StatusOK {
+		t.Fatalf("POST /panel-api/agents/edge-1/apply = %d", applyResp.Code)
+	}
+	if state.applyAgentID != "edge-1" {
+		t.Fatalf("apply state = %+v", state)
+	}
+
+	deleteReq := httptest.NewRequest(http.MethodDelete, "/panel-api/agents/edge-1", nil)
+	deleteReq.Header.Set("X-Panel-Token", "secret")
+	deleteResp := httptest.NewRecorder()
+	router.ServeHTTP(deleteResp, deleteReq)
+	if deleteResp.Code != http.StatusOK {
+		t.Fatalf("DELETE /panel-api/agents/edge-1 = %d", deleteResp.Code)
+	}
+	if state.deleteAgentID != "edge-1" {
+		t.Fatalf("delete state = %+v", state)
 	}
 }
 

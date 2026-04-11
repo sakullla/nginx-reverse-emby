@@ -17,7 +17,12 @@ type SystemService interface {
 
 type AgentService interface {
 	List(context.Context) ([]service.AgentSummary, error)
+	Get(context.Context, string) (service.AgentSummary, error)
 	Register(context.Context, service.RegisterRequest, string) (service.AgentSummary, error)
+	Update(context.Context, string, service.UpdateAgentRequest) (service.AgentSummary, error)
+	Delete(context.Context, string) (service.AgentSummary, error)
+	Stats(context.Context, string) (service.AgentStats, error)
+	Apply(context.Context, string) (service.ApplyAgentResult, error)
 	Heartbeat(context.Context, service.HeartbeatRequest, string) (service.HeartbeatReply, error)
 }
 
@@ -108,6 +113,9 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 		mux.Handle(prefix+"/agents/register", http.HandlerFunc(resolved.handleRegisterAgent))
 		mux.Handle(prefix+"/agents/heartbeat", http.HandlerFunc(resolved.handleHeartbeat))
 		mux.Handle(prefix+"/agents", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgents)))
+		mux.Handle(prefix+"/agents/{agentID}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgent)))
+		mux.Handle(prefix+"/agents/{agentID}/stats", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentStats)))
+		mux.Handle(prefix+"/agents/{agentID}/apply", resolved.requirePanelToken(http.HandlerFunc(resolved.handleApplyAgent)))
 		mux.Handle(prefix+"/agents/{agentID}/rules", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentRules)))
 		mux.Handle(prefix+"/agents/{agentID}/rules/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentRule)))
 		mux.Handle(prefix+"/agents/{agentID}/l4-rules", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentL4Rules)))

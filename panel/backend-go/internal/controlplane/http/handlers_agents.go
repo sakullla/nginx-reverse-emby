@@ -43,3 +43,86 @@ func (d Dependencies) handleAgents(w http.ResponseWriter, r *http.Request) {
 		"agents": agents,
 	})
 }
+
+func (d Dependencies) handleAgent(w http.ResponseWriter, r *http.Request) {
+	agentID := r.PathValue("agentID")
+
+	switch r.Method {
+	case http.MethodGet:
+		agent, err := d.AgentService.Get(r.Context(), agentID)
+		if err != nil {
+			status, payload := mapServiceError(err)
+			writeJSON(w, status, payload)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":    true,
+			"agent": agent,
+		})
+	case http.MethodPut, http.MethodPatch:
+		var payload service.UpdateAgentRequest
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeJSON(w, http.StatusBadRequest, errorPayload("invalid JSON body"))
+			return
+		}
+		agent, err := d.AgentService.Update(r.Context(), agentID, payload)
+		if err != nil {
+			status, body := mapServiceError(err)
+			writeJSON(w, status, body)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":    true,
+			"agent": agent,
+		})
+	case http.MethodDelete:
+		agent, err := d.AgentService.Delete(r.Context(), agentID)
+		if err != nil {
+			status, body := mapServiceError(err)
+			writeJSON(w, status, body)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"ok":    true,
+			"agent": agent,
+		})
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func (d Dependencies) handleAgentStats(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.NotFound(w, r)
+		return
+	}
+
+	stats, err := d.AgentService.Stats(r.Context(), r.PathValue("agentID"))
+	if err != nil {
+		status, payload := mapServiceError(err)
+		writeJSON(w, status, payload)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":    true,
+		"stats": stats,
+	})
+}
+
+func (d Dependencies) handleApplyAgent(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.NotFound(w, r)
+		return
+	}
+
+	result, err := d.AgentService.Apply(r.Context(), r.PathValue("agentID"))
+	if err != nil {
+		status, payload := mapServiceError(err)
+		writeJSON(w, status, payload)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":      true,
+		"message": result.Message,
+	})
+}

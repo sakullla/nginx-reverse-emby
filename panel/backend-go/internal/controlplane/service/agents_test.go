@@ -12,14 +12,21 @@ import (
 type fakeStore struct {
 	agents              []storage.AgentRow
 	rulesByID           map[string][]storage.HTTPRuleRow
+	l4RulesByID         map[string][]storage.L4RuleRow
+	relayByID           map[string][]storage.RelayListenerRow
 	managedCerts        []storage.ManagedCertificateRow
 	localState          storage.LocalAgentStateRow
 	savedAgent          storage.AgentRow
 	savedAgentCalls     int
+	deletedAgentID      string
 	snapshot            storage.Snapshot
+	localSnapshot       storage.Snapshot
 	loadSnapshotCalls   int
 	lastSnapshotAgentID string
 	lastSnapshotInput   storage.AgentSnapshotInput
+	savedRuntimeState   storage.RuntimeState
+	savedRuntimeAgentID string
+	saveRuntimeCalls    int
 }
 
 func (f *fakeStore) ListAgents(context.Context) ([]storage.AgentRow, error) {
@@ -47,15 +54,19 @@ func (f *fakeStore) SaveAgent(_ context.Context, row storage.AgentRow) error {
 	return nil
 }
 
-func (f *fakeStore) ListL4Rules(context.Context, string) ([]storage.L4RuleRow, error) {
-	return nil, nil
+func (f *fakeStore) ListL4Rules(_ context.Context, agentID string) ([]storage.L4RuleRow, error) {
+	return append([]storage.L4RuleRow(nil), f.l4RulesByID[agentID]...), nil
 }
 
 func (f *fakeStore) ListVersionPolicies(context.Context) ([]storage.VersionPolicyRow, error) {
 	return nil, nil
 }
 
-func (f *fakeStore) SaveL4Rules(context.Context, string, []storage.L4RuleRow) error {
+func (f *fakeStore) SaveL4Rules(_ context.Context, agentID string, rows []storage.L4RuleRow) error {
+	if f.l4RulesByID == nil {
+		f.l4RulesByID = map[string][]storage.L4RuleRow{}
+	}
+	f.l4RulesByID[agentID] = append([]storage.L4RuleRow(nil), rows...)
 	return nil
 }
 
@@ -63,15 +74,19 @@ func (f *fakeStore) SaveVersionPolicies(context.Context, []storage.VersionPolicy
 	return nil
 }
 
-func (f *fakeStore) ListRelayListeners(context.Context, string) ([]storage.RelayListenerRow, error) {
-	return nil, nil
+func (f *fakeStore) ListRelayListeners(_ context.Context, agentID string) ([]storage.RelayListenerRow, error) {
+	return append([]storage.RelayListenerRow(nil), f.relayByID[agentID]...), nil
 }
 
 func (f *fakeStore) ListManagedCertificates(context.Context) ([]storage.ManagedCertificateRow, error) {
 	return append([]storage.ManagedCertificateRow(nil), f.managedCerts...), nil
 }
 
-func (f *fakeStore) SaveRelayListeners(context.Context, string, []storage.RelayListenerRow) error {
+func (f *fakeStore) SaveRelayListeners(_ context.Context, agentID string, rows []storage.RelayListenerRow) error {
+	if f.relayByID == nil {
+		f.relayByID = map[string][]storage.RelayListenerRow{}
+	}
+	f.relayByID[agentID] = append([]storage.RelayListenerRow(nil), rows...)
 	return nil
 }
 
@@ -97,6 +112,37 @@ func (f *fakeStore) LoadAgentSnapshot(_ context.Context, agentID string, input s
 	f.lastSnapshotAgentID = agentID
 	f.lastSnapshotInput = input
 	return f.snapshot, nil
+}
+
+func (f *fakeStore) LoadLocalSnapshot(context.Context, string) (storage.Snapshot, error) {
+	return f.localSnapshot, nil
+}
+
+func (f *fakeStore) SaveHTTPRules(_ context.Context, agentID string, rows []storage.HTTPRuleRow) error {
+	if f.rulesByID == nil {
+		f.rulesByID = map[string][]storage.HTTPRuleRow{}
+	}
+	f.rulesByID[agentID] = append([]storage.HTTPRuleRow(nil), rows...)
+	return nil
+}
+
+func (f *fakeStore) SaveLocalRuntimeState(_ context.Context, agentID string, state storage.RuntimeState) error {
+	f.savedRuntimeAgentID = agentID
+	f.savedRuntimeState = state
+	f.saveRuntimeCalls++
+	return nil
+}
+
+func (f *fakeStore) DeleteAgent(_ context.Context, agentID string) error {
+	f.deletedAgentID = agentID
+	next := make([]storage.AgentRow, 0, len(f.agents))
+	for _, row := range f.agents {
+		if row.ID != agentID {
+			next = append(next, row)
+		}
+	}
+	f.agents = next
+	return nil
 }
 
 func TestAgentServiceListSynthesizesLocalAgentAndRemoteStatus(t *testing.T) {
@@ -522,5 +568,212 @@ func TestAgentServiceHeartbeatReconcilesLocalHTTP01FromApplyStatus(t *testing.T)
 	report := cert.AgentReports["remote-cert"]
 	if report.Status != "active" || report.LastIssueAt != now.Format(time.RFC3339) {
 		t.Fatalf("unexpected reconciled report = %+v", report)
+	}
+}
+
+func TestAgentServiceHeartbeatPersistsReportedStats(t *testing.T) {
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID:              "remote-stats",
+			Name:            "remote-stats",
+			AgentToken:      "token-remote-stats",
+			DesiredVersion:  "3.0.0",
+			DesiredRevision: 2,
+			CurrentRevision: 1,
+			LastApplyStatus: "success",
+		}},
+		snapshot: storage.Snapshot{DesiredVersion: "3.0.0", Revision: 2},
+	}
+	svc := NewAgentService(config.Config{}, store)
+
+	_, err := svc.Heartbeat(context.Background(), HeartbeatRequest{
+		CurrentRevision: 1,
+		Stats: AgentStats{
+			"totalRequests": "42",
+			"status":        "运行中",
+		},
+	}, "token-remote-stats")
+	if err != nil {
+		t.Fatalf("Heartbeat() error = %v", err)
+	}
+
+	if store.savedAgent.LastReportedStatsJSON == "" {
+		t.Fatalf("LastReportedStatsJSON was not persisted")
+	}
+	stats, err := svc.Stats(context.Background(), "remote-stats")
+	if err != nil {
+		t.Fatalf("Stats() error = %v", err)
+	}
+	if stats["totalRequests"] != "42" || stats["status"] != "运行中" {
+		t.Fatalf("Stats() = %+v", stats)
+	}
+}
+
+func TestAgentServiceUpdateRemoteAgentNormalizesFields(t *testing.T) {
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID:               "edge-1",
+			Name:             "Edge 1",
+			AgentToken:       "token-old",
+			Mode:             "pull",
+			CapabilitiesJSON: `["http_rules"]`,
+			TagsJSON:         `["old"]`,
+		}},
+	}
+	svc := NewAgentService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	name := "  Edge Renamed  "
+	agentURL := " https://edge.example.com/ "
+	agentToken := " token-new "
+	version := " 1.2.3 "
+	tags := []string{" edge ", "edge", "", "blue"}
+	capabilities := []string{"http_rules", "l4", "nope", "l4"}
+	agent, err := svc.Update(context.Background(), "edge-1", UpdateAgentRequest{
+		Name:         &name,
+		AgentURL:     &agentURL,
+		AgentToken:   &agentToken,
+		Version:      &version,
+		Tags:         &tags,
+		Capabilities: &capabilities,
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	if agent.Name != "Edge Renamed" {
+		t.Fatalf("agent.Name = %q", agent.Name)
+	}
+	if store.savedAgent.AgentURL != "https://edge.example.com" {
+		t.Fatalf("saved AgentURL = %q", store.savedAgent.AgentURL)
+	}
+	if store.savedAgent.AgentToken != "token-new" {
+		t.Fatalf("saved AgentToken = %q", store.savedAgent.AgentToken)
+	}
+	if store.savedAgent.Mode != "master" {
+		t.Fatalf("saved Mode = %q", store.savedAgent.Mode)
+	}
+	if store.savedAgent.TagsJSON != `["edge","blue"]` {
+		t.Fatalf("saved TagsJSON = %q", store.savedAgent.TagsJSON)
+	}
+	if store.savedAgent.CapabilitiesJSON != `["http_rules","l4"]` {
+		t.Fatalf("saved CapabilitiesJSON = %q", store.savedAgent.CapabilitiesJSON)
+	}
+}
+
+func TestAgentServiceDeleteRejectsReferencedRelayListenerAndCleansUpRemoteAgent(t *testing.T) {
+	cfg := config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}
+	store := &fakeStore{
+		agents: []storage.AgentRow{
+			{ID: "edge-a", Name: "edge-a", AgentToken: "token-a"},
+			{ID: "edge-b", Name: "edge-b", AgentToken: "token-b"},
+		},
+		relayByID: map[string][]storage.RelayListenerRow{
+			"edge-a": {{
+				ID:      7,
+				AgentID: "edge-a",
+				Name:    "relay-a",
+			}},
+		},
+		rulesByID: map[string][]storage.HTTPRuleRow{
+			"edge-a": {{ID: 1, AgentID: "edge-a"}},
+			"edge-b": {{
+				ID:             9,
+				AgentID:        "edge-b",
+				FrontendURL:    "https://relay.example.com",
+				RelayChainJSON: `[7]`,
+			}},
+		},
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"edge-a": {{ID: 2, AgentID: "edge-a"}},
+		},
+	}
+	svc := NewAgentService(cfg, store)
+
+	_, err := svc.Delete(context.Background(), "edge-a")
+	if err == nil || err.Error() != "invalid argument: cannot delete agent edge-a: relay listener 7 is referenced by HTTP rule #9 on agent edge-b" {
+		t.Fatalf("Delete() error = %v", err)
+	}
+
+	delete(store.rulesByID, "edge-b")
+	deleted, err := svc.Delete(context.Background(), "edge-a")
+	if err != nil {
+		t.Fatalf("Delete() second call error = %v", err)
+	}
+
+	if deleted.ID != "edge-a" {
+		t.Fatalf("deleted agent = %+v", deleted)
+	}
+	if store.deletedAgentID != "edge-a" {
+		t.Fatalf("DeleteAgent() called with %q", store.deletedAgentID)
+	}
+	if len(store.rulesByID["edge-a"]) != 0 || len(store.l4RulesByID["edge-a"]) != 0 || len(store.relayByID["edge-a"]) != 0 {
+		t.Fatalf("agent resources not cleaned up: rules=%+v l4=%+v relay=%+v", store.rulesByID["edge-a"], store.l4RulesByID["edge-a"], store.relayByID["edge-a"])
+	}
+}
+
+func TestAgentServiceStatsFallbackAndApplyBehavior(t *testing.T) {
+	cfg := config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+		LocalAgentName:   "Local",
+	}
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID:                    "edge-1",
+			Name:                  "edge-1",
+			AgentToken:            "token-edge-1",
+			Platform:              "linux-amd64",
+			DesiredVersion:        "1.2.3",
+			DesiredRevision:       2,
+			CurrentRevision:       1,
+			LastApplyStatus:       "success",
+			LastSeenAt:            time.Now().UTC().Format(time.RFC3339),
+			LastReportedStatsJSON: "",
+		}},
+		localState: storage.LocalAgentStateRow{
+			DesiredRevision: 1,
+			CurrentRevision: 1,
+		},
+		snapshot:      storage.Snapshot{DesiredVersion: "1.2.3", Revision: 5},
+		localSnapshot: storage.Snapshot{DesiredVersion: "1.2.3", Revision: 4},
+	}
+	svc := NewAgentService(cfg, store)
+
+	remoteStats, err := svc.Stats(context.Background(), "edge-1")
+	if err != nil {
+		t.Fatalf("Stats(remote) error = %v", err)
+	}
+	if remoteStats["totalRequests"] != "0" {
+		t.Fatalf("Stats(remote) = %+v", remoteStats)
+	}
+
+	localStats, err := svc.Stats(context.Background(), "local")
+	if err != nil {
+		t.Fatalf("Stats(local) error = %v", err)
+	}
+	if localStats["status"] != "运行中" {
+		t.Fatalf("Stats(local) = %+v", localStats)
+	}
+
+	remoteApply, err := svc.Apply(context.Background(), "edge-1")
+	if err != nil {
+		t.Fatalf("Apply(remote) error = %v", err)
+	}
+	if remoteApply.Message != "waiting for agent heartbeat to apply" || store.savedAgent.DesiredRevision != 5 {
+		t.Fatalf("Apply(remote) = %+v, savedAgent = %+v", remoteApply, store.savedAgent)
+	}
+
+	localApply, err := svc.Apply(context.Background(), "local")
+	if err != nil {
+		t.Fatalf("Apply(local) error = %v", err)
+	}
+	if localApply.Message != "applied" || store.savedRuntimeAgentID != "local" || store.savedRuntimeState.LastApplyRevision != 4 {
+		t.Fatalf("Apply(local) = %+v, runtime = %+v", localApply, store.savedRuntimeState)
 	}
 }

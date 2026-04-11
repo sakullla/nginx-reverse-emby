@@ -6,6 +6,8 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net/url"
 	"strings"
 	"time"
 
@@ -17,6 +19,27 @@ var ErrAgentNotFound = errors.New("agent not found")
 var ErrAgentUnauthorized = errors.New("agent unauthorized")
 
 var defaultLocalCapabilities = []string{"http_rules", "local_acme", "cert_install", "l4"}
+
+type agentStore interface {
+	ListAgents(context.Context) ([]storage.AgentRow, error)
+	ListHTTPRules(context.Context, string) ([]storage.HTTPRuleRow, error)
+	ListL4Rules(context.Context, string) ([]storage.L4RuleRow, error)
+	ListRelayListeners(context.Context, string) ([]storage.RelayListenerRow, error)
+	LoadLocalAgentState(context.Context) (storage.LocalAgentStateRow, error)
+	LoadAgentSnapshot(context.Context, string, storage.AgentSnapshotInput) (storage.Snapshot, error)
+	LoadLocalSnapshot(context.Context, string) (storage.Snapshot, error)
+	ListManagedCertificates(context.Context) ([]storage.ManagedCertificateRow, error)
+	SaveAgent(context.Context, storage.AgentRow) error
+	SaveHTTPRules(context.Context, string, []storage.HTTPRuleRow) error
+	SaveL4Rules(context.Context, string, []storage.L4RuleRow) error
+	SaveRelayListeners(context.Context, string, []storage.RelayListenerRow) error
+	SaveLocalRuntimeState(context.Context, string, storage.RuntimeState) error
+	SaveManagedCertificates(context.Context, []storage.ManagedCertificateRow) error
+	LoadManagedCertificateMaterial(context.Context, string) (storage.ManagedCertificateBundle, bool, error)
+	SaveManagedCertificateMaterial(context.Context, string, storage.ManagedCertificateBundle) error
+	CleanupManagedCertificateMaterial(context.Context, []storage.ManagedCertificateRow, []storage.ManagedCertificateRow) error
+	DeleteAgent(context.Context, string) error
+}
 
 type AgentSummary struct {
 	ID                string   `json:"id"`
@@ -82,6 +105,7 @@ type HeartbeatRequest struct {
 	AgentURL                  string                              `json:"agent_url"`
 	Tags                      []string                            `json:"tags"`
 	Capabilities              []string                            `json:"capabilities"`
+	Stats                     AgentStats                          `json:"stats"`
 	LastApplyStatus           string                              `json:"last_apply_status"`
 	LastApplyMessage          string                              `json:"last_apply_message"`
 	ManagedCertificateReports []ManagedCertificateHeartbeatReport `json:"managed_certificate_reports"`
@@ -114,13 +138,30 @@ type RegisterRequest struct {
 	RegisterToken string   `json:"register_token"`
 }
 
+type UpdateAgentRequest struct {
+	Name         *string   `json:"name,omitempty"`
+	AgentURL     *string   `json:"agent_url,omitempty"`
+	AgentToken   *string   `json:"agent_token,omitempty"`
+	Version      *string   `json:"version,omitempty"`
+	Tags         *[]string `json:"tags,omitempty"`
+	Capabilities *[]string `json:"capabilities,omitempty"`
+}
+
+type AgentStats map[string]any
+
+type ApplyAgentResult struct {
+	Message         string `json:"message"`
+	DesiredRevision int64  `json:"desired_revision,omitempty"`
+	Pending         bool   `json:"pending,omitempty"`
+}
+
 type agentService struct {
 	cfg   config.Config
-	store storage.Store
+	store agentStore
 	now   func() time.Time
 }
 
-func NewAgentService(cfg config.Config, store storage.Store) *agentService {
+func NewAgentService(cfg config.Config, store agentStore) *agentService {
 	return &agentService{
 		cfg:   cfg,
 		store: store,
@@ -136,34 +177,11 @@ func (s *agentService) List(ctx context.Context) ([]AgentSummary, error) {
 
 	agents := make([]AgentSummary, 0, len(rows)+1)
 	if s.cfg.EnableLocalAgent {
-		localState, err := s.store.LoadLocalAgentState(ctx)
+		summary, err := s.localSummary(ctx)
 		if err != nil {
 			return nil, err
 		}
-		localRules, err := s.store.ListHTTPRules(ctx, s.cfg.LocalAgentID)
-		if err != nil {
-			return nil, err
-		}
-		localL4Rules, err := s.store.ListL4Rules(ctx, s.cfg.LocalAgentID)
-		if err != nil {
-			return nil, err
-		}
-		agents = append(agents, AgentSummary{
-			ID:                s.cfg.LocalAgentID,
-			Name:              s.cfg.LocalAgentName,
-			DesiredVersion:    localState.DesiredVersion,
-			Mode:              "local",
-			DesiredRevision:   localState.DesiredRevision,
-			CurrentRevision:   localState.CurrentRevision,
-			LastApplyRevision: localState.LastApplyRevision,
-			LastApplyStatus:   localState.LastApplyStatus,
-			LastApplyMessage:  localState.LastApplyMessage,
-			Status:            "online",
-			IsLocal:           true,
-			Capabilities:      append([]string(nil), defaultLocalCapabilities...),
-			HTTPRulesCount:    len(localRules),
-			L4RulesCount:      len(localL4Rules),
-		})
+		agents = append(agents, summary)
 	}
 
 	for _, row := range rows {
@@ -171,41 +189,25 @@ func (s *agentService) List(ctx context.Context) ([]AgentSummary, error) {
 			continue
 		}
 
-		rules, err := s.store.ListHTTPRules(ctx, row.ID)
+		summary, err := s.summaryForRow(ctx, row)
 		if err != nil {
 			return nil, err
 		}
-		l4Rules, err := s.store.ListL4Rules(ctx, row.ID)
-		if err != nil {
-			return nil, err
-		}
-
-		agents = append(agents, AgentSummary{
-			ID:                row.ID,
-			Name:              row.Name,
-			AgentURL:          row.AgentURL,
-			Version:           row.Version,
-			Platform:          row.Platform,
-			DesiredVersion:    row.DesiredVersion,
-			Tags:              parseStringArray(row.TagsJSON),
-			Mode:              defaultString(row.Mode, "pull"),
-			DesiredRevision:   row.DesiredRevision,
-			CurrentRevision:   row.CurrentRevision,
-			LastApplyRevision: row.LastApplyRevision,
-			LastApplyStatus:   row.LastApplyStatus,
-			LastApplyMessage:  row.LastApplyMessage,
-			LastSeenAt:        row.LastSeenAt,
-			Status:            s.agentStatus(row),
-			Error:             "",
-			IsLocal:           false,
-			LastSeenIP:        row.LastSeenIP,
-			Capabilities:      parseStringArray(row.CapabilitiesJSON),
-			HTTPRulesCount:    len(rules),
-			L4RulesCount:      len(l4Rules),
-		})
+		agents = append(agents, summary)
 	}
 
 	return agents, nil
+}
+
+func (s *agentService) Get(ctx context.Context, agentID string) (AgentSummary, error) {
+	if s.cfg.EnableLocalAgent && agentID == s.cfg.LocalAgentID {
+		return s.localSummary(ctx)
+	}
+	row, err := s.findAgentByID(ctx, agentID)
+	if err != nil {
+		return AgentSummary{}, err
+	}
+	return s.summaryForRow(ctx, row)
 }
 
 func (s *agentService) Register(ctx context.Context, request RegisterRequest, headerAgentToken string) (AgentSummary, error) {
@@ -304,6 +306,172 @@ func (s *agentService) ListHTTPRules(ctx context.Context, agentID string) ([]HTT
 	return rules, nil
 }
 
+func (s *agentService) Update(ctx context.Context, agentID string, input UpdateAgentRequest) (AgentSummary, error) {
+	if s.cfg.EnableLocalAgent && agentID == s.cfg.LocalAgentID {
+		return AgentSummary{}, fmt.Errorf("%w: 本地 Agent 不允许修改", ErrInvalidArgument)
+	}
+
+	row, err := s.findAgentByID(ctx, agentID)
+	if err != nil {
+		return AgentSummary{}, err
+	}
+
+	name := strings.TrimSpace(row.Name)
+	if input.Name != nil {
+		name = strings.TrimSpace(*input.Name)
+	}
+	if name == "" {
+		return AgentSummary{}, fmt.Errorf("%w: name is required", ErrInvalidArgument)
+	}
+
+	agentURL := strings.TrimSpace(row.AgentURL)
+	if input.AgentURL != nil {
+		agentURL = trimTrailingSlash(*input.AgentURL)
+	}
+	if agentURL != "" && !validateAgentURL(agentURL) {
+		return AgentSummary{}, fmt.Errorf("%w: agent_url must be a valid http/https URL", ErrInvalidArgument)
+	}
+
+	agentToken := strings.TrimSpace(row.AgentToken)
+	if input.AgentToken != nil {
+		agentToken = strings.TrimSpace(*input.AgentToken)
+	}
+	if agentToken == "" {
+		return AgentSummary{}, fmt.Errorf("%w: agent_token is required", ErrInvalidArgument)
+	}
+
+	row.Name = name
+	row.AgentURL = agentURL
+	row.AgentToken = agentToken
+	row.Mode = resolveRemoteAgentMode(agentURL)
+	if input.Version != nil {
+		row.Version = strings.TrimSpace(*input.Version)
+	}
+	if input.Tags != nil {
+		row.TagsJSON = marshalStringArray(normalizeAgentTags(*input.Tags))
+	}
+	if input.Capabilities != nil {
+		row.CapabilitiesJSON = marshalStringArray(normalizeCapabilities(*input.Capabilities))
+	}
+
+	if err := s.store.SaveAgent(ctx, row); err != nil {
+		return AgentSummary{}, err
+	}
+	return s.summaryForRow(ctx, row)
+}
+
+func (s *agentService) Delete(ctx context.Context, agentID string) (AgentSummary, error) {
+	if s.cfg.EnableLocalAgent && agentID == s.cfg.LocalAgentID {
+		return AgentSummary{}, fmt.Errorf("%w: 本地 Agent 不允许删除", ErrInvalidArgument)
+	}
+
+	row, err := s.findAgentByID(ctx, agentID)
+	if err != nil {
+		return AgentSummary{}, err
+	}
+	deleted, err := s.summaryForRow(ctx, row)
+	if err != nil {
+		return AgentSummary{}, err
+	}
+
+	listeners, err := s.store.ListRelayListeners(ctx, agentID)
+	if err != nil {
+		return AgentSummary{}, err
+	}
+	for _, listener := range listeners {
+		if ref, err := s.findRelayListenerReference(ctx, agentID, listener.ID); err != nil {
+			return AgentSummary{}, err
+		} else if ref != nil {
+			return AgentSummary{}, fmt.Errorf("%w: cannot delete agent %s: relay listener %d is referenced by %s rule #%d on agent %s", ErrInvalidArgument, agentID, listener.ID, ref.RuleType, ref.RuleID, ref.AgentID)
+		}
+	}
+
+	if err := s.store.SaveHTTPRules(ctx, agentID, nil); err != nil {
+		return AgentSummary{}, err
+	}
+	if err := s.store.SaveL4Rules(ctx, agentID, nil); err != nil {
+		return AgentSummary{}, err
+	}
+	if err := s.store.SaveRelayListeners(ctx, agentID, nil); err != nil {
+		return AgentSummary{}, err
+	}
+	if err := s.store.DeleteAgent(ctx, agentID); err != nil {
+		return AgentSummary{}, err
+	}
+	return deleted, nil
+}
+
+func (s *agentService) Stats(ctx context.Context, agentID string) (AgentStats, error) {
+	if s.cfg.EnableLocalAgent && agentID == s.cfg.LocalAgentID {
+		return AgentStats{
+			"activeConnections": "0",
+			"totalRequests":     "0",
+			"status":            "运行中",
+		}, nil
+	}
+	row, err := s.findAgentByID(ctx, agentID)
+	if err != nil {
+		return nil, err
+	}
+	if stats := parseAgentStats(row.LastReportedStatsJSON); len(stats) > 0 {
+		return stats, nil
+	}
+	status := "离线"
+	if s.agentStatus(row) == "online" {
+		status = "运行中"
+	}
+	return AgentStats{
+		"totalRequests": "0",
+		"status":        status,
+	}, nil
+}
+
+func (s *agentService) Apply(ctx context.Context, agentID string) (ApplyAgentResult, error) {
+	if s.cfg.EnableLocalAgent && agentID == s.cfg.LocalAgentID {
+		snapshot, err := s.store.LoadLocalSnapshot(ctx, s.cfg.LocalAgentID)
+		if err != nil {
+			return ApplyAgentResult{}, err
+		}
+		if err := s.store.SaveLocalRuntimeState(ctx, s.cfg.LocalAgentID, storage.RuntimeState{
+			CurrentRevision:   snapshot.Revision,
+			Status:            "success",
+			LastApplyRevision: snapshot.Revision,
+			LastApplyStatus:   "success",
+		}); err != nil {
+			return ApplyAgentResult{}, err
+		}
+		return ApplyAgentResult{
+			Message:         "applied",
+			DesiredRevision: snapshot.Revision,
+		}, nil
+	}
+
+	row, err := s.findAgentByID(ctx, agentID)
+	if err != nil {
+		return ApplyAgentResult{}, err
+	}
+	snapshot, err := s.store.LoadAgentSnapshot(ctx, row.ID, storage.AgentSnapshotInput{
+		DesiredVersion:  row.DesiredVersion,
+		DesiredRevision: row.DesiredRevision,
+		CurrentRevision: row.CurrentRevision,
+		Platform:        row.Platform,
+	})
+	if err != nil {
+		return ApplyAgentResult{}, err
+	}
+	if row.DesiredRevision < int(snapshot.Revision) {
+		row.DesiredRevision = int(snapshot.Revision)
+		if err := s.store.SaveAgent(ctx, row); err != nil {
+			return ApplyAgentResult{}, err
+		}
+	}
+	return ApplyAgentResult{
+		Message:         "waiting for agent heartbeat to apply",
+		DesiredRevision: snapshot.Revision,
+		Pending:         true,
+	}, nil
+}
+
 func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, agentToken string) (HeartbeatReply, error) {
 	if strings.TrimSpace(agentToken) == "" {
 		return HeartbeatReply{}, ErrAgentUnauthorized
@@ -323,7 +491,10 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 		row.TagsJSON = marshalStringArray(request.Tags)
 	}
 	if len(request.Capabilities) > 0 {
-		row.CapabilitiesJSON = marshalStringArray(defaultCapabilities(request.Capabilities))
+		row.CapabilitiesJSON = marshalStringArray(normalizeCapabilities(request.Capabilities))
+	}
+	if request.Stats != nil {
+		row.LastReportedStatsJSON = marshalAgentStats(request.Stats)
 	}
 	row.CurrentRevision = int(request.CurrentRevision)
 	if request.LastApplyRevision > 0 {
@@ -430,6 +601,50 @@ func (s *agentService) findAgentByToken(ctx context.Context, agentToken string) 
 	return storage.AgentRow{}, ErrAgentNotFound
 }
 
+func (s *agentService) findAgentByID(ctx context.Context, agentID string) (storage.AgentRow, error) {
+	rows, err := s.store.ListAgents(ctx)
+	if err != nil {
+		return storage.AgentRow{}, err
+	}
+	for _, row := range rows {
+		if row.ID == agentID {
+			return row, nil
+		}
+	}
+	return storage.AgentRow{}, ErrAgentNotFound
+}
+
+func (s *agentService) localSummary(ctx context.Context) (AgentSummary, error) {
+	localState, err := s.store.LoadLocalAgentState(ctx)
+	if err != nil {
+		return AgentSummary{}, err
+	}
+	localRules, err := s.store.ListHTTPRules(ctx, s.cfg.LocalAgentID)
+	if err != nil {
+		return AgentSummary{}, err
+	}
+	localL4Rules, err := s.store.ListL4Rules(ctx, s.cfg.LocalAgentID)
+	if err != nil {
+		return AgentSummary{}, err
+	}
+	return AgentSummary{
+		ID:                s.cfg.LocalAgentID,
+		Name:              s.cfg.LocalAgentName,
+		DesiredVersion:    localState.DesiredVersion,
+		Mode:              "local",
+		DesiredRevision:   localState.DesiredRevision,
+		CurrentRevision:   localState.CurrentRevision,
+		LastApplyRevision: localState.LastApplyRevision,
+		LastApplyStatus:   localState.LastApplyStatus,
+		LastApplyMessage:  localState.LastApplyMessage,
+		Status:            "online",
+		IsLocal:           true,
+		Capabilities:      append([]string(nil), defaultLocalCapabilities...),
+		HTTPRulesCount:    len(localRules),
+		L4RulesCount:      len(localL4Rules),
+	}, nil
+}
+
 func (s *agentService) summaryForRow(ctx context.Context, row storage.AgentRow) (AgentSummary, error) {
 	rules, err := s.store.ListHTTPRules(ctx, row.ID)
 	if err != nil {
@@ -463,6 +678,67 @@ func (s *agentService) summaryForRow(ctx context.Context, row storage.AgentRow) 
 		HTTPRulesCount:    len(rules),
 		L4RulesCount:      len(l4Rules),
 	}, nil
+}
+
+type agentRelayRuleReference struct {
+	AgentID  string
+	RuleID   int
+	RuleType string
+}
+
+func (s *agentService) findRelayListenerReference(ctx context.Context, excludedAgentID string, listenerID int) (*agentRelayRuleReference, error) {
+	agentIDs, err := s.allKnownAgentIDs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, agentID := range agentIDs {
+		if agentID == excludedAgentID {
+			continue
+		}
+		httpRules, err := s.store.ListHTTPRules(ctx, agentID)
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range httpRules {
+			if containsInt(parseIntArray(row.RelayChainJSON), listenerID) {
+				return &agentRelayRuleReference{AgentID: agentID, RuleID: row.ID, RuleType: "HTTP"}, nil
+			}
+		}
+		l4Rules, err := s.store.ListL4Rules(ctx, agentID)
+		if err != nil {
+			return nil, err
+		}
+		for _, row := range l4Rules {
+			if containsInt(parseIntArray(row.RelayChainJSON), listenerID) {
+				return &agentRelayRuleReference{AgentID: agentID, RuleID: row.ID, RuleType: "L4"}, nil
+			}
+		}
+	}
+	return nil, nil
+}
+
+func (s *agentService) allKnownAgentIDs(ctx context.Context) ([]string, error) {
+	seen := map[string]struct{}{}
+	agentIDs := make([]string, 0)
+	if s.cfg.EnableLocalAgent && strings.TrimSpace(s.cfg.LocalAgentID) != "" {
+		seen[s.cfg.LocalAgentID] = struct{}{}
+		agentIDs = append(agentIDs, s.cfg.LocalAgentID)
+	}
+	rows, err := s.store.ListAgents(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		if strings.TrimSpace(row.ID) == "" {
+			continue
+		}
+		if _, ok := seen[row.ID]; ok {
+			continue
+		}
+		seen[row.ID] = struct{}{}
+		agentIDs = append(agentIDs, row.ID)
+	}
+	return agentIDs, nil
 }
 
 func (s *agentService) agentStatus(row storage.AgentRow) string {
@@ -587,6 +863,84 @@ func defaultCapabilities(values []string) []string {
 		return []string{"http_rules"}
 	}
 	return values
+}
+
+func normalizeAgentTags(values []string) []string {
+	seen := map[string]struct{}{}
+	normalized := make([]string, 0, len(values))
+	for _, value := range values {
+		item := strings.TrimSpace(value)
+		if item == "" {
+			continue
+		}
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		normalized = append(normalized, item)
+	}
+	return normalized
+}
+
+func normalizeCapabilities(values []string) []string {
+	allowed := map[string]struct{}{
+		"http_rules":   {},
+		"local_acme":   {},
+		"cert_install": {},
+		"l4":           {},
+	}
+	seen := map[string]struct{}{}
+	normalized := make([]string, 0, len(values))
+	for _, value := range values {
+		item := strings.TrimSpace(value)
+		if _, ok := allowed[item]; !ok {
+			continue
+		}
+		if _, ok := seen[item]; ok {
+			continue
+		}
+		seen[item] = struct{}{}
+		normalized = append(normalized, item)
+	}
+	return normalized
+}
+
+func parseAgentStats(raw string) AgentStats {
+	var stats AgentStats
+	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &stats); err != nil {
+		return nil
+	}
+	if len(stats) == 0 {
+		return nil
+	}
+	return stats
+}
+
+func marshalAgentStats(stats AgentStats) string {
+	data, err := json.Marshal(stats)
+	if err != nil {
+		return "{}"
+	}
+	return string(data)
+}
+
+func trimTrailingSlash(value string) string {
+	return strings.TrimRight(strings.TrimSpace(value), "/")
+}
+
+func validateAgentURL(value string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err != nil {
+		return false
+	}
+	return parsed.Scheme == "http" || parsed.Scheme == "https"
+}
+
+func resolveRemoteAgentMode(agentURL string) string {
+	if trimTrailingSlash(agentURL) != "" {
+		return "master"
+	}
+	return "pull"
 }
 
 func randomAgentID() string {
