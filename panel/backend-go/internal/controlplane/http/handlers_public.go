@@ -12,11 +12,19 @@ import (
 )
 
 func (d Dependencies) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
-	var payload service.HeartbeatRequest
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+	var body map[string]json.RawMessage
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorPayload("invalid JSON body"))
 		return
 	}
+	var payload service.HeartbeatRequest
+	if err := decodeRawMessageMap(body, &payload); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorPayload("invalid JSON body"))
+		return
+	}
+	_, payload.HasAgentURL = body["agent_url"]
+	_, payload.HasTags = body["tags"]
+	_, payload.HasCapabilities = body["capabilities"]
 	payload.LastSeenIP = remoteIPFromRequest(r)
 
 	reply, err := d.AgentService.Heartbeat(r.Context(), payload, r.Header.Get("X-Agent-Token"))

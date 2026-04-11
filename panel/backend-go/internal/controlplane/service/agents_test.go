@@ -271,6 +271,38 @@ func TestAgentServiceRegisterRejectsInvalidURL(t *testing.T) {
 	}
 }
 
+func TestAgentServiceRegisterCapabilitiesDefaultingByPresence(t *testing.T) {
+	storeOmitted := &fakeStore{}
+	svcOmitted := NewAgentService(config.Config{}, storeOmitted)
+	_, err := svcOmitted.Register(context.Background(), RegisterRequest{
+		Name:       "edge-omitted",
+		AgentURL:   "https://edge-omitted.example.com",
+		AgentToken: "token-omitted",
+	}, "")
+	if err != nil {
+		t.Fatalf("Register() omitted capabilities error = %v", err)
+	}
+	if storeOmitted.savedAgent.CapabilitiesJSON != `["http_rules"]` {
+		t.Fatalf("omitted capabilities saved as %q", storeOmitted.savedAgent.CapabilitiesJSON)
+	}
+
+	storeExplicitEmpty := &fakeStore{}
+	svcExplicitEmpty := NewAgentService(config.Config{}, storeExplicitEmpty)
+	_, err = svcExplicitEmpty.Register(context.Background(), RegisterRequest{
+		Name:            "edge-empty",
+		AgentURL:        "https://edge-empty.example.com",
+		AgentToken:      "token-empty",
+		Capabilities:    []string{},
+		HasCapabilities: true,
+	}, "")
+	if err != nil {
+		t.Fatalf("Register() empty capabilities error = %v", err)
+	}
+	if storeExplicitEmpty.savedAgent.CapabilitiesJSON != `[]` {
+		t.Fatalf("empty capabilities saved as %q", storeExplicitEmpty.savedAgent.CapabilitiesJSON)
+	}
+}
+
 func TestAgentServiceListHTTPRulesNormalizesStoredFields(t *testing.T) {
 	svc := NewAgentService(config.Config{
 		EnableLocalAgent: true,
@@ -391,8 +423,11 @@ func TestAgentServiceHeartbeatReturnsFullSnapshotSyncPayload(t *testing.T) {
 		Version:          "1.4.0",
 		Platform:         "windows-amd64",
 		AgentURL:         "http://remote-a:8080",
+		HasAgentURL:      true,
 		Tags:             []string{"edge"},
+		HasTags:          true,
 		Capabilities:     []string{"http_rules", "l4"},
+		HasCapabilities:  true,
 		LastApplyStatus:  "success",
 		LastApplyMessage: "",
 	}, "token-remote-a")
@@ -688,8 +723,11 @@ func TestAgentServiceHeartbeatNormalizesURLAndIP(t *testing.T) {
 	_, err := svc.Heartbeat(context.Background(), HeartbeatRequest{
 		CurrentRevision: 1,
 		AgentURL:        " https://edge-heartbeat.example.com/ ",
+		HasAgentURL:     true,
 		Tags:            []string{" edge ", "", "edge"},
+		HasTags:         true,
 		Capabilities:    []string{"http_rules", "l4", "bad"},
+		HasCapabilities: true,
 		LastSeenIP:      "203.0.113.9",
 	}, "token-remote-heartbeat")
 	if err != nil {
@@ -730,9 +768,56 @@ func TestAgentServiceHeartbeatRejectsInvalidURL(t *testing.T) {
 	_, err := svc.Heartbeat(context.Background(), HeartbeatRequest{
 		CurrentRevision: 1,
 		AgentURL:        "ftp://bad.example.com",
+		HasAgentURL:     true,
 	}, "token-remote-invalid-url")
 	if err == nil || err.Error() != "invalid argument: agent_url must be a valid http/https URL" {
 		t.Fatalf("Heartbeat() error = %v", err)
+	}
+}
+
+func TestAgentServiceHeartbeatClearsAgentURLAndListFieldsWhenPresentEmpty(t *testing.T) {
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID:               "remote-clear",
+			Name:             "remote-clear",
+			AgentToken:       "token-remote-clear",
+			DesiredVersion:   "3.0.0",
+			DesiredRevision:  2,
+			CurrentRevision:  1,
+			LastApplyStatus:  "success",
+			AgentURL:         "https://edge-clear.example.com",
+			Mode:             "master",
+			TagsJSON:         `["edge"]`,
+			CapabilitiesJSON: `["http_rules"]`,
+		}},
+		snapshot: storage.Snapshot{DesiredVersion: "3.0.0", Revision: 2},
+	}
+	svc := NewAgentService(config.Config{}, store)
+
+	_, err := svc.Heartbeat(context.Background(), HeartbeatRequest{
+		CurrentRevision: 1,
+		AgentURL:        "   ",
+		HasAgentURL:     true,
+		Tags:            []string{},
+		HasTags:         true,
+		Capabilities:    []string{},
+		HasCapabilities: true,
+	}, "token-remote-clear")
+	if err != nil {
+		t.Fatalf("Heartbeat() error = %v", err)
+	}
+
+	if store.savedAgent.AgentURL != "" {
+		t.Fatalf("saved AgentURL = %q", store.savedAgent.AgentURL)
+	}
+	if store.savedAgent.Mode != "pull" {
+		t.Fatalf("saved Mode = %q", store.savedAgent.Mode)
+	}
+	if store.savedAgent.TagsJSON != `[]` {
+		t.Fatalf("saved TagsJSON = %q", store.savedAgent.TagsJSON)
+	}
+	if store.savedAgent.CapabilitiesJSON != `[]` {
+		t.Fatalf("saved CapabilitiesJSON = %q", store.savedAgent.CapabilitiesJSON)
 	}
 }
 

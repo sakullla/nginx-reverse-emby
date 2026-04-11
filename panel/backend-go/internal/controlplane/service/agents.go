@@ -110,6 +110,9 @@ type HeartbeatRequest struct {
 	LastApplyStatus           string                              `json:"last_apply_status"`
 	LastApplyMessage          string                              `json:"last_apply_message"`
 	ManagedCertificateReports []ManagedCertificateHeartbeatReport `json:"managed_certificate_reports"`
+	HasAgentURL               bool                                `json:"-"`
+	HasTags                   bool                                `json:"-"`
+	HasCapabilities           bool                                `json:"-"`
 }
 
 type HeartbeatReply struct {
@@ -128,15 +131,16 @@ type HeartbeatReply struct {
 }
 
 type RegisterRequest struct {
-	Name          string   `json:"name"`
-	AgentURL      string   `json:"agent_url"`
-	AgentToken    string   `json:"agent_token"`
-	Version       string   `json:"version"`
-	Platform      string   `json:"platform"`
-	Tags          []string `json:"tags"`
-	Capabilities  []string `json:"capabilities"`
-	Mode          string   `json:"mode"`
-	RegisterToken string   `json:"register_token"`
+	Name            string   `json:"name"`
+	AgentURL        string   `json:"agent_url"`
+	AgentToken      string   `json:"agent_token"`
+	Version         string   `json:"version"`
+	Platform        string   `json:"platform"`
+	Tags            []string `json:"tags"`
+	Capabilities    []string `json:"capabilities"`
+	Mode            string   `json:"mode"`
+	RegisterToken   string   `json:"register_token"`
+	HasCapabilities bool     `json:"-"`
 }
 
 type UpdateAgentRequest struct {
@@ -234,11 +238,17 @@ func (s *agentService) Register(ctx context.Context, request RegisterRequest, he
 		return AgentSummary{}, err
 	}
 
+	hasCapabilities := request.HasCapabilities || len(request.Capabilities) > 0
+	capabilities := []string{"http_rules"}
+	if hasCapabilities {
+		capabilities = request.Capabilities
+	}
+
 	row := storage.AgentRow{
 		ID:               randomAgentID(),
 		DesiredVersion:   "",
 		TagsJSON:         marshalStringArray(normalizeAgentTags(request.Tags)),
-		CapabilitiesJSON: marshalStringArray(normalizeCapabilities(defaultCapabilities(request.Capabilities))),
+		CapabilitiesJSON: marshalStringArray(normalizeCapabilities(capabilities)),
 		Mode:             resolveRemoteAgentMode(agentURL),
 		LastApplyStatus:  "success",
 	}
@@ -258,7 +268,7 @@ func (s *agentService) Register(ctx context.Context, request RegisterRequest, he
 	row.Version = strings.TrimSpace(request.Version)
 	row.Platform = strings.TrimSpace(request.Platform)
 	row.TagsJSON = marshalStringArray(normalizeAgentTags(request.Tags))
-	row.CapabilitiesJSON = marshalStringArray(normalizeCapabilities(defaultCapabilities(request.Capabilities)))
+	row.CapabilitiesJSON = marshalStringArray(normalizeCapabilities(capabilities))
 	row.Mode = resolveRemoteAgentMode(agentURL)
 	row.IsLocal = false
 
@@ -492,18 +502,21 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 
 	row.Version = defaultString(request.Version, row.Version)
 	row.Platform = defaultString(request.Platform, row.Platform)
-	if request.AgentURL != "" {
+	hasAgentURL := request.HasAgentURL || strings.TrimSpace(request.AgentURL) != ""
+	if hasAgentURL {
 		agentURL := trimTrailingSlash(request.AgentURL)
-		if !validateAgentURL(agentURL) {
+		if agentURL != "" && !validateAgentURL(agentURL) {
 			return HeartbeatReply{}, fmt.Errorf("%w: agent_url must be a valid http/https URL", ErrInvalidArgument)
 		}
 		row.AgentURL = agentURL
 		row.Mode = resolveRemoteAgentMode(agentURL)
 	}
-	if request.Tags != nil {
+	hasTags := request.HasTags || len(request.Tags) > 0
+	if hasTags {
 		row.TagsJSON = marshalStringArray(normalizeAgentTags(request.Tags))
 	}
-	if request.Capabilities != nil {
+	hasCapabilities := request.HasCapabilities || len(request.Capabilities) > 0
+	if hasCapabilities {
 		row.CapabilitiesJSON = marshalStringArray(normalizeCapabilities(request.Capabilities))
 	}
 	if request.Stats != nil {
@@ -872,13 +885,6 @@ func marshalStringArray(values []string) string {
 		return "[]"
 	}
 	return string(data)
-}
-
-func defaultCapabilities(values []string) []string {
-	if len(values) == 0 {
-		return []string{"http_rules"}
-	}
-	return values
 }
 
 func normalizeAgentTags(values []string) []string {

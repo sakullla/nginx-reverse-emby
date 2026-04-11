@@ -8,11 +8,17 @@ import (
 )
 
 func (d Dependencies) handleRegisterAgent(w http.ResponseWriter, r *http.Request) {
-	var payload service.RegisterRequest
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+	var body map[string]json.RawMessage
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorPayload("invalid JSON body"))
 		return
 	}
+	var payload service.RegisterRequest
+	if err := decodeRawMessageMap(body, &payload); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorPayload("invalid JSON body"))
+		return
+	}
+	_, payload.HasCapabilities = body["capabilities"]
 	if !d.isRegisterAuthorized(r, payload.RegisterToken) {
 		writeJSON(w, http.StatusUnauthorized, errorPayload("Unauthorized: Invalid or missing register token"))
 		return
