@@ -115,6 +115,19 @@ func (s *SQLiteStore) LoadLocalAgentState(ctx context.Context) (LocalAgentStateR
 }
 
 func (s *SQLiteStore) LoadLocalSnapshot(ctx context.Context, agentID string) (Snapshot, error) {
+	localState, err := s.LoadLocalAgentState(ctx)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	return s.LoadAgentSnapshot(ctx, agentID, AgentSnapshotInput{
+		DesiredVersion:  localState.DesiredVersion,
+		DesiredRevision: localState.DesiredRevision,
+		CurrentRevision: localState.CurrentRevision,
+		Platform:        runtime.GOOS + "-" + runtime.GOARCH,
+	})
+}
+
+func (s *SQLiteStore) LoadAgentSnapshot(ctx context.Context, agentID string, input AgentSnapshotInput) (Snapshot, error) {
 	resolvedAgentID := s.resolveAgentID(agentID)
 
 	httpRows, err := s.ListHTTPRules(ctx, resolvedAgentID)
@@ -126,8 +139,9 @@ func (s *SQLiteStore) LoadLocalSnapshot(ctx context.Context, agentID string) (Sn
 	if err != nil {
 		return Snapshot{}, err
 	}
+	l4Rows = filterSyncL4RuleRows(l4Rows)
 
-	relayRows, err := s.ListRelayListeners(ctx, resolvedAgentID)
+	relayRows, err := s.loadRelayListenersForSync(ctx, resolvedAgentID, httpRows, l4Rows)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -142,16 +156,16 @@ func (s *SQLiteStore) LoadLocalSnapshot(ctx context.Context, agentID string) (Sn
 		return Snapshot{}, err
 	}
 
-	localState, err := s.LoadLocalAgentState(ctx)
-	if err != nil {
-		return Snapshot{}, err
+	relevantCertRows := filterManagedCertificatesForAgent(certRows, resolvedAgentID, relayRows)
+	revisionState := LocalAgentStateRow{
+		DesiredRevision: input.DesiredRevision,
+		CurrentRevision: input.CurrentRevision,
 	}
 
-	relevantCertRows := filterManagedCertificatesForAgent(certRows, resolvedAgentID, relayRows)
 	return Snapshot{
-		DesiredVersion:      localState.DesiredVersion,
-		Revision:            int64(computeDesiredRevision(localState, httpRows, l4Rows, relayRows, relevantCertRows)),
-		VersionPackage:      resolveVersionPackage(versionPolicies, localState.DesiredVersion),
+		DesiredVersion:      strings.TrimSpace(input.DesiredVersion),
+		Revision:            int64(computeDesiredRevision(revisionState, httpRows, l4Rows, relayRows, relevantCertRows)),
+		VersionPackage:      resolveVersionPackageForPlatform(versionPolicies, input.DesiredVersion, input.Platform),
 		Rules:               snapshotHTTPRules(httpRows),
 		L4Rules:             snapshotL4Rules(l4Rows),
 		RelayListeners:      snapshotRelayListeners(relayRows),
@@ -680,6 +694,122 @@ func highestManagedCertificateRevision(rows []ManagedCertificateRow) int {
 	return maxRevision
 }
 
+func (s *SQLiteStore) loadRelayListenersForSync(
+	ctx context.Context,
+	agentID string,
+	httpRows []HTTPRuleRow,
+	l4Rows []L4RuleRow,
+) ([]RelayListenerRow, error) {
+	localRows, err := s.ListRelayListeners(ctx, agentID)
+	if err != nil {
+		return nil, err
+	}
+
+	syncRows := append([]RelayListenerRow(nil), localRows...)
+	referencedIDs := referencedRelayListenerIDs(httpRows, l4Rows)
+	if len(referencedIDs) == 0 {
+		return syncRows, nil
+	}
+
+	included := make(map[int]struct{}, len(syncRows))
+	for _, row := range syncRows {
+		if row.ID > 0 {
+			included[row.ID] = struct{}{}
+		}
+	}
+
+	missingIDs := make([]int, 0, len(referencedIDs))
+	for _, listenerID := range referencedIDs {
+		if listenerID <= 0 {
+			continue
+		}
+		if _, ok := included[listenerID]; ok {
+			continue
+		}
+		included[listenerID] = struct{}{}
+		missingIDs = append(missingIDs, listenerID)
+	}
+	if len(missingIDs) == 0 {
+		return syncRows, nil
+	}
+
+	allRows, err := s.ListRelayListeners(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	rowsByID := make(map[int]RelayListenerRow, len(allRows))
+	for _, row := range allRows {
+		if row.ID <= 0 {
+			continue
+		}
+		rowsByID[row.ID] = row
+	}
+	for _, listenerID := range missingIDs {
+		if row, ok := rowsByID[listenerID]; ok {
+			syncRows = append(syncRows, row)
+		}
+	}
+	return syncRows, nil
+}
+
+func referencedRelayListenerIDs(httpRows []HTTPRuleRow, l4Rows []L4RuleRow) []int {
+	referenced := make([]int, 0)
+	seen := make(map[int]struct{})
+	addRelayChain := func(chainJSON string) {
+		for _, listenerID := range parseIntSlice(chainJSON) {
+			if listenerID <= 0 {
+				continue
+			}
+			if _, ok := seen[listenerID]; ok {
+				continue
+			}
+			seen[listenerID] = struct{}{}
+			referenced = append(referenced, listenerID)
+		}
+	}
+
+	for _, row := range httpRows {
+		addRelayChain(row.RelayChainJSON)
+	}
+	for _, row := range l4Rows {
+		addRelayChain(row.RelayChainJSON)
+	}
+	return referenced
+}
+
+func filterSyncL4RuleRows(rows []L4RuleRow) []L4RuleRow {
+	filtered := make([]L4RuleRow, 0, len(rows))
+	for _, row := range rows {
+		if isSyncL4RuleRowValid(row) {
+			filtered = append(filtered, row)
+		}
+	}
+	return filtered
+}
+
+func isSyncL4RuleRowValid(row L4RuleRow) bool {
+	if row.ListenPort < 1 || row.ListenPort > 65535 {
+		return false
+	}
+
+	protocol := strings.ToLower(strings.TrimSpace(row.Protocol))
+	if protocol == "" {
+		protocol = "tcp"
+	}
+	if protocol != "tcp" && protocol != "udp" {
+		return false
+	}
+
+	if len(parseL4Backends(row.BackendsJSON)) > 0 {
+		return true
+	}
+
+	if strings.TrimSpace(row.UpstreamHost) == "" {
+		return false
+	}
+	return row.UpstreamPort >= 1 && row.UpstreamPort <= 65535
+}
+
 func snapshotHTTPRules(rows []HTTPRuleRow) []HTTPRule {
 	rules := make([]HTTPRule, 0, len(rows))
 	for _, row := range rows {
@@ -695,6 +825,8 @@ func snapshotHTTPRules(rows []HTTPRuleRow) []HTTPRule {
 			backendURL = backends[0].URL
 		}
 		rules = append(rules, HTTPRule{
+			ID:               row.ID,
+			AgentID:          row.AgentID,
 			FrontendURL:      row.FrontendURL,
 			BackendURL:       backendURL,
 			Backends:         backends,
@@ -727,6 +859,9 @@ func snapshotL4Rules(rows []L4RuleRow) []L4Rule {
 			upstreamPort = backends[0].Port
 		}
 		rules = append(rules, L4Rule{
+			ID:            row.ID,
+			AgentID:       row.AgentID,
+			Name:          row.Name,
 			Protocol:      defaultString(row.Protocol, "tcp"),
 			ListenHost:    defaultString(row.ListenHost, "0.0.0.0"),
 			ListenPort:    row.ListenPort,
@@ -840,13 +975,13 @@ func buildManagedCertificateViewForAgent(row ManagedCertificateRow, agentID stri
 	return view
 }
 
-func resolveVersionPackage(rows []VersionPolicyRow, desiredVersion string) *VersionPackage {
+func resolveVersionPackageForPlatform(rows []VersionPolicyRow, desiredVersion string, platform string) *VersionPackage {
 	desiredVersion = strings.TrimSpace(desiredVersion)
-	if desiredVersion == "" {
+	platform = strings.TrimSpace(platform)
+	if desiredVersion == "" || platform == "" {
 		return nil
 	}
 
-	platform := runtime.GOOS + "-" + runtime.GOARCH
 	for _, row := range rows {
 		if strings.TrimSpace(row.DesiredVersion) != desiredVersion {
 			continue

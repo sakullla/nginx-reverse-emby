@@ -10,61 +10,83 @@ import (
 )
 
 type fakeStore struct {
-	agents     []storage.AgentRow
-	rulesByID  map[string][]storage.HTTPRuleRow
-	localState storage.LocalAgentStateRow
+	agents              []storage.AgentRow
+	rulesByID           map[string][]storage.HTTPRuleRow
+	localState          storage.LocalAgentStateRow
+	savedAgent          storage.AgentRow
+	savedAgentCalls     int
+	snapshot            storage.Snapshot
+	loadSnapshotCalls   int
+	lastSnapshotAgentID string
+	lastSnapshotInput   storage.AgentSnapshotInput
 }
 
-func (f fakeStore) ListAgents(context.Context) ([]storage.AgentRow, error) {
+func (f *fakeStore) ListAgents(context.Context) ([]storage.AgentRow, error) {
 	return append([]storage.AgentRow(nil), f.agents...), nil
 }
 
-func (f fakeStore) ListHTTPRules(_ context.Context, agentID string) ([]storage.HTTPRuleRow, error) {
+func (f *fakeStore) ListHTTPRules(_ context.Context, agentID string) ([]storage.HTTPRuleRow, error) {
 	return append([]storage.HTTPRuleRow(nil), f.rulesByID[agentID]...), nil
 }
 
-func (f fakeStore) LoadLocalAgentState(context.Context) (storage.LocalAgentStateRow, error) {
+func (f *fakeStore) LoadLocalAgentState(context.Context) (storage.LocalAgentStateRow, error) {
 	return f.localState, nil
 }
 
-func (f fakeStore) SaveAgent(context.Context, storage.AgentRow) error {
+func (f *fakeStore) SaveAgent(_ context.Context, row storage.AgentRow) error {
+	f.savedAgent = row
+	f.savedAgentCalls++
+	for i := range f.agents {
+		if f.agents[i].ID == row.ID {
+			f.agents[i] = row
+			return nil
+		}
+	}
+	f.agents = append(f.agents, row)
 	return nil
 }
 
-func (f fakeStore) ListL4Rules(context.Context, string) ([]storage.L4RuleRow, error) {
+func (f *fakeStore) ListL4Rules(context.Context, string) ([]storage.L4RuleRow, error) {
 	return nil, nil
 }
 
-func (f fakeStore) ListVersionPolicies(context.Context) ([]storage.VersionPolicyRow, error) {
+func (f *fakeStore) ListVersionPolicies(context.Context) ([]storage.VersionPolicyRow, error) {
 	return nil, nil
 }
 
-func (f fakeStore) SaveL4Rules(context.Context, string, []storage.L4RuleRow) error {
+func (f *fakeStore) SaveL4Rules(context.Context, string, []storage.L4RuleRow) error {
 	return nil
 }
 
-func (f fakeStore) SaveVersionPolicies(context.Context, []storage.VersionPolicyRow) error {
+func (f *fakeStore) SaveVersionPolicies(context.Context, []storage.VersionPolicyRow) error {
 	return nil
 }
 
-func (f fakeStore) ListRelayListeners(context.Context, string) ([]storage.RelayListenerRow, error) {
+func (f *fakeStore) ListRelayListeners(context.Context, string) ([]storage.RelayListenerRow, error) {
 	return nil, nil
 }
 
-func (f fakeStore) ListManagedCertificates(context.Context) ([]storage.ManagedCertificateRow, error) {
+func (f *fakeStore) ListManagedCertificates(context.Context) ([]storage.ManagedCertificateRow, error) {
 	return nil, nil
 }
 
-func (f fakeStore) SaveRelayListeners(context.Context, string, []storage.RelayListenerRow) error {
+func (f *fakeStore) SaveRelayListeners(context.Context, string, []storage.RelayListenerRow) error {
 	return nil
 }
 
-func (f fakeStore) SaveManagedCertificates(context.Context, []storage.ManagedCertificateRow) error {
+func (f *fakeStore) SaveManagedCertificates(context.Context, []storage.ManagedCertificateRow) error {
 	return nil
 }
 
-func (f fakeStore) CleanupManagedCertificateMaterial(context.Context, []storage.ManagedCertificateRow, []storage.ManagedCertificateRow) error {
+func (f *fakeStore) CleanupManagedCertificateMaterial(context.Context, []storage.ManagedCertificateRow, []storage.ManagedCertificateRow) error {
 	return nil
+}
+
+func (f *fakeStore) LoadAgentSnapshot(_ context.Context, agentID string, input storage.AgentSnapshotInput) (storage.Snapshot, error) {
+	f.loadSnapshotCalls++
+	f.lastSnapshotAgentID = agentID
+	f.lastSnapshotInput = input
+	return f.snapshot, nil
 }
 
 func TestAgentServiceListSynthesizesLocalAgentAndRemoteStatus(t *testing.T) {
@@ -76,7 +98,7 @@ func TestAgentServiceListSynthesizesLocalAgentAndRemoteStatus(t *testing.T) {
 	}
 
 	now := time.Date(2026, time.April, 10, 22, 0, 0, 0, time.UTC)
-	svc := NewAgentService(cfg, fakeStore{
+	svc := NewAgentService(cfg, &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:                "edge-1",
 			Name:              "Edge 1",
@@ -140,7 +162,7 @@ func TestAgentServiceListHTTPRulesNormalizesStoredFields(t *testing.T) {
 	svc := NewAgentService(config.Config{
 		EnableLocalAgent: true,
 		LocalAgentID:     "local",
-	}, fakeStore{
+	}, &fakeStore{
 		rulesByID: map[string][]storage.HTTPRuleRow{
 			"local": {{
 				ID:                1,
@@ -178,5 +200,192 @@ func TestAgentServiceListHTTPRulesNormalizesStoredFields(t *testing.T) {
 	}
 	if len(rule.CustomHeaders) != 1 || rule.CustomHeaders[0].Name != "X-Test" {
 		t.Fatalf("CustomHeaders = %+v", rule.CustomHeaders)
+	}
+}
+
+func TestAgentServiceHeartbeatReturnsFullSnapshotSyncPayload(t *testing.T) {
+	now := time.Date(2026, time.April, 11, 8, 30, 0, 0, time.UTC)
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID:              "remote-a",
+			Name:            "remote-a",
+			AgentToken:      "token-remote-a",
+			DesiredVersion:  "2.0.0",
+			DesiredRevision: 2,
+			CurrentRevision: 1,
+			LastApplyStatus: "success",
+		}},
+		snapshot: storage.Snapshot{
+			DesiredVersion: "2.0.0",
+			Revision:       8,
+			VersionPackage: &storage.VersionPackage{
+				Platform: "windows-amd64",
+				URL:      "https://example.com/agent-windows.zip",
+				SHA256:   "sha-windows",
+				Filename: "agent-windows.zip",
+				Size:     123,
+			},
+			Rules: []storage.HTTPRule{{
+				ID:          9,
+				FrontendURL: "https://edge.example.com",
+				BackendURL:  "http://127.0.0.1:8096",
+				RelayChain:  []int{11, 22},
+				Revision:    6,
+			}},
+			L4Rules: []storage.L4Rule{{
+				ID:           2,
+				Protocol:     "tcp",
+				ListenHost:   "0.0.0.0",
+				ListenPort:   9000,
+				UpstreamHost: "127.0.0.1",
+				UpstreamPort: 9001,
+				Revision:     6,
+			}},
+			RelayListeners: []storage.RelayListener{{
+				ID:         11,
+				AgentID:    "remote-a",
+				Name:       "relay-a",
+				ListenHost: "0.0.0.0",
+				ListenPort: 7443,
+				Revision:   4,
+			}},
+			Certificates: []storage.ManagedCertificateBundle{{
+				ID:       21,
+				Domain:   "__relay-ca.internal",
+				Revision: 7,
+				CertPEM:  "CERT",
+				KeyPEM:   "KEY",
+			}},
+			CertificatePolicies: []storage.ManagedCertificatePolicy{{
+				ID:              21,
+				Domain:          "__relay-ca.internal",
+				Enabled:         true,
+				Scope:           "domain",
+				IssuerMode:      "local_http01",
+				Status:          "active",
+				Revision:        7,
+				Usage:           "relay_ca",
+				CertificateType: "internal_ca",
+			}},
+		},
+	}
+
+	svc := NewAgentService(config.Config{}, store)
+	svc.now = func() time.Time { return now }
+
+	reply, err := svc.Heartbeat(context.Background(), HeartbeatRequest{
+		CurrentRevision:  1,
+		Version:          "1.4.0",
+		Platform:         "windows-amd64",
+		AgentURL:         "http://remote-a:8080",
+		Tags:             []string{"edge"},
+		Capabilities:     []string{"http_rules", "l4"},
+		LastApplyStatus:  "success",
+		LastApplyMessage: "",
+	}, "token-remote-a")
+	if err != nil {
+		t.Fatalf("Heartbeat() error = %v", err)
+	}
+
+	if !reply.HasUpdate {
+		t.Fatalf("HasUpdate = false, want true")
+	}
+	if reply.DesiredRevision != 8 {
+		t.Fatalf("DesiredRevision = %d", reply.DesiredRevision)
+	}
+	if reply.DesiredVersion != "2.0.0" {
+		t.Fatalf("DesiredVersion = %q", reply.DesiredVersion)
+	}
+	if reply.VersionPackage != "https://example.com/agent-windows.zip" || reply.VersionSHA256 != "sha-windows" {
+		t.Fatalf("version package fields = %q / %q", reply.VersionPackage, reply.VersionSHA256)
+	}
+	if reply.VersionPackageMeta == nil || reply.VersionPackageMeta.Platform != "windows-amd64" {
+		t.Fatalf("VersionPackageMeta = %+v", reply.VersionPackageMeta)
+	}
+	if len(reply.Rules) != 1 || len(reply.L4Rules) != 1 || len(reply.RelayListeners) != 1 {
+		t.Fatalf("sync arrays = %+v", reply)
+	}
+	if len(reply.Certificates) != 1 || len(reply.CertificatePolicies) != 1 {
+		t.Fatalf("cert sync arrays = %+v", reply)
+	}
+	if store.loadSnapshotCalls != 1 || store.lastSnapshotAgentID != "remote-a" {
+		t.Fatalf("LoadAgentSnapshot() calls = %d, agent_id = %q", store.loadSnapshotCalls, store.lastSnapshotAgentID)
+	}
+	if store.lastSnapshotInput.Platform != "windows-amd64" || store.lastSnapshotInput.DesiredVersion != "2.0.0" {
+		t.Fatalf("snapshot input = %+v", store.lastSnapshotInput)
+	}
+	if store.savedAgentCalls != 1 {
+		t.Fatalf("SaveAgent() calls = %d", store.savedAgentCalls)
+	}
+	if store.savedAgent.Version != "1.4.0" || store.savedAgent.Platform != "windows-amd64" || store.savedAgent.CurrentRevision != 1 {
+		t.Fatalf("saved agent metadata = %+v", store.savedAgent)
+	}
+	if store.savedAgent.LastSeenAt != now.Format(time.RFC3339) {
+		t.Fatalf("LastSeenAt = %q", store.savedAgent.LastSeenAt)
+	}
+}
+
+func TestAgentServiceHeartbeatReturnsEmptyArraysWhenUpToDate(t *testing.T) {
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID:              "remote-b",
+			Name:            "remote-b",
+			AgentToken:      "token-remote-b",
+			DesiredVersion:  "3.0.0",
+			DesiredRevision: 1,
+			CurrentRevision: 1,
+			LastApplyStatus: "success",
+		}},
+		snapshot: storage.Snapshot{
+			DesiredVersion: "3.0.0",
+			Revision:       7,
+			VersionPackage: &storage.VersionPackage{
+				Platform: "linux-amd64",
+				URL:      "https://example.com/agent-linux.tar.gz",
+				SHA256:   "sha-linux",
+			},
+			Rules:          []storage.HTTPRule{{ID: 1, FrontendURL: "https://a.example.com", BackendURL: "http://127.0.0.1:8096"}},
+			L4Rules:        []storage.L4Rule{{ID: 2, Protocol: "tcp", ListenHost: "0.0.0.0", ListenPort: 9000, UpstreamHost: "127.0.0.1", UpstreamPort: 9001}},
+			RelayListeners: []storage.RelayListener{{ID: 11, AgentID: "remote-b", Name: "relay-b", ListenHost: "0.0.0.0", ListenPort: 7443}},
+			Certificates:   []storage.ManagedCertificateBundle{{ID: 31, Domain: "relay.example.com", CertPEM: "CERT", KeyPEM: "KEY"}},
+			CertificatePolicies: []storage.ManagedCertificatePolicy{{
+				ID:              31,
+				Domain:          "relay.example.com",
+				Enabled:         true,
+				Scope:           "domain",
+				IssuerMode:      "local_http01",
+				Status:          "active",
+				Usage:           "relay_tunnel",
+				CertificateType: "uploaded",
+			}},
+		},
+	}
+	svc := NewAgentService(config.Config{}, store)
+
+	reply, err := svc.Heartbeat(context.Background(), HeartbeatRequest{
+		CurrentRevision: 7,
+		Platform:        "linux-amd64",
+	}, "token-remote-b")
+	if err != nil {
+		t.Fatalf("Heartbeat() error = %v", err)
+	}
+
+	if reply.HasUpdate {
+		t.Fatalf("HasUpdate = true, want false")
+	}
+	if reply.DesiredRevision != 7 || reply.DesiredVersion != "3.0.0" {
+		t.Fatalf("desired sync fields = %+v", reply)
+	}
+	if len(reply.Rules) != 0 || len(reply.L4Rules) != 0 || len(reply.RelayListeners) != 0 {
+		t.Fatalf("expected empty sync arrays when up-to-date: %+v", reply)
+	}
+	if len(reply.Certificates) != 0 || len(reply.CertificatePolicies) != 0 {
+		t.Fatalf("expected empty cert arrays when up-to-date: %+v", reply)
+	}
+	if reply.VersionPackage != "https://example.com/agent-linux.tar.gz" || reply.VersionSHA256 != "sha-linux" {
+		t.Fatalf("version package fields = %q / %q", reply.VersionPackage, reply.VersionSHA256)
+	}
+	if store.lastSnapshotInput.CurrentRevision != 7 || store.lastSnapshotInput.DesiredRevision != 1 {
+		t.Fatalf("snapshot input revision state = %+v", store.lastSnapshotInput)
 	}
 }

@@ -11,6 +11,13 @@ type Snapshot struct {
 	CertificatePolicies []ManagedCertificatePolicy `json:"certificate_policies"`
 }
 
+type AgentSnapshotInput struct {
+	DesiredVersion  string
+	DesiredRevision int
+	CurrentRevision int
+	Platform        string
+}
+
 type RuntimeState struct {
 	NodeID          string            `json:"node_id,omitempty"`
 	CurrentRevision int64             `json:"current_revision,omitempty"`
@@ -40,6 +47,8 @@ type LoadBalancing struct {
 }
 
 type HTTPRule struct {
+	ID               int           `json:"id,omitempty"`
+	AgentID          string        `json:"agent_id,omitempty"`
 	FrontendURL      string        `json:"frontend_url"`
 	BackendURL       string        `json:"backend_url"`
 	Backends         []HTTPBackend `json:"backends,omitempty"`
@@ -67,6 +76,9 @@ type L4Tuning struct {
 }
 
 type L4Rule struct {
+	ID            int           `json:"id,omitempty"`
+	AgentID       string        `json:"agent_id,omitempty"`
+	Name          string        `json:"name,omitempty"`
 	Protocol      string        `json:"protocol"`
 	ListenHost    string        `json:"listen_host"`
 	ListenPort    int           `json:"listen_port"`

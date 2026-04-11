@@ -13,10 +13,11 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
 func (f fakeAgentService) Heartbeat(context.Context, service.HeartbeatRequest, string) (service.HeartbeatReply, error) {
-	return service.HeartbeatReply{DesiredRevision: 12, Rules: []service.HTTPRule{}}, nil
+	return service.HeartbeatReply{DesiredRevision: 12, Rules: []storage.HTTPRule{}}, nil
 }
 
 func TestRouterServesJoinScriptAndHeartbeat(t *testing.T) {

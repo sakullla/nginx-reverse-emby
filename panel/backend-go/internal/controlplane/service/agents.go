@@ -86,14 +86,18 @@ type HeartbeatRequest struct {
 }
 
 type HeartbeatReply struct {
-	DesiredVersion      string     `json:"desired_version,omitempty"`
-	DesiredRevision     int64      `json:"desired_revision"`
-	CurrentRevision     int64      `json:"current_revision"`
-	Rules               []HTTPRule `json:"rules"`
-	L4Rules             []any      `json:"l4_rules"`
-	RelayListeners      []any      `json:"relay_listeners"`
-	Certificates        []any      `json:"certificates"`
-	CertificatePolicies []any      `json:"certificate_policies"`
+	HasUpdate           bool                               `json:"has_update"`
+	DesiredVersion      string                             `json:"desired_version"`
+	DesiredRevision     int64                              `json:"desired_revision"`
+	CurrentRevision     int64                              `json:"current_revision"`
+	VersionPackage      string                             `json:"version_package,omitempty"`
+	VersionPackageMeta  *storage.VersionPackage            `json:"version_package_meta,omitempty"`
+	VersionSHA256       string                             `json:"version_sha256,omitempty"`
+	Rules               []storage.HTTPRule                 `json:"rules"`
+	L4Rules             []storage.L4Rule                   `json:"l4_rules"`
+	RelayListeners      []storage.RelayListener            `json:"relay_listeners"`
+	Certificates        []storage.ManagedCertificateBundle `json:"certificates"`
+	CertificatePolicies []storage.ManagedCertificatePolicy `json:"certificate_policies"`
 }
 
 type RegisterRequest struct {
@@ -112,6 +116,10 @@ type agentService struct {
 	cfg   config.Config
 	store storage.Store
 	now   func() time.Time
+}
+
+type agentSnapshotLoader interface {
+	LoadAgentSnapshot(context.Context, string, storage.AgentSnapshotInput) (storage.Snapshot, error)
 }
 
 func NewAgentService(cfg config.Config, store storage.Store) *agentService {
@@ -328,26 +336,57 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 		return HeartbeatReply{}, err
 	}
 
-	rules, err := s.ListHTTPRules(ctx, row.ID)
+	snapshot, err := s.loadHeartbeatSnapshot(ctx, row)
 	if err != nil {
 		return HeartbeatReply{}, err
 	}
 
-	hasUpdate := request.CurrentRevision < int64(row.DesiredRevision)
-	if !hasUpdate {
-		rules = []HTTPRule{}
+	reply := HeartbeatReply{
+		HasUpdate:           request.CurrentRevision < snapshot.Revision,
+		DesiredVersion:      snapshot.DesiredVersion,
+		DesiredRevision:     snapshot.Revision,
+		CurrentRevision:     int64(row.CurrentRevision),
+		Rules:               snapshot.Rules,
+		L4Rules:             snapshot.L4Rules,
+		RelayListeners:      snapshot.RelayListeners,
+		Certificates:        snapshot.Certificates,
+		CertificatePolicies: snapshot.CertificatePolicies,
 	}
+	if snapshot.VersionPackage != nil {
+		pkgCopy := *snapshot.VersionPackage
+		reply.VersionPackage = pkgCopy.URL
+		reply.VersionSHA256 = pkgCopy.SHA256
+		reply.VersionPackageMeta = &pkgCopy
+	}
+	if !reply.HasUpdate {
+		reply.Rules = []storage.HTTPRule{}
+		reply.L4Rules = []storage.L4Rule{}
+		reply.RelayListeners = []storage.RelayListener{}
+		reply.Certificates = []storage.ManagedCertificateBundle{}
+		reply.CertificatePolicies = []storage.ManagedCertificatePolicy{}
+	}
+	return reply, nil
+}
 
-	return HeartbeatReply{
-		DesiredVersion:      row.DesiredVersion,
-		DesiredRevision:     int64(row.DesiredRevision),
-		CurrentRevision:     request.CurrentRevision,
-		Rules:               rules,
-		L4Rules:             []any{},
-		RelayListeners:      []any{},
-		Certificates:        []any{},
-		CertificatePolicies: []any{},
-	}, nil
+func (s *agentService) loadHeartbeatSnapshot(ctx context.Context, row storage.AgentRow) (storage.Snapshot, error) {
+	loader, ok := any(s.store).(agentSnapshotLoader)
+	if !ok {
+		return storage.Snapshot{
+			DesiredVersion:      row.DesiredVersion,
+			Revision:            int64(row.DesiredRevision),
+			Rules:               []storage.HTTPRule{},
+			L4Rules:             []storage.L4Rule{},
+			RelayListeners:      []storage.RelayListener{},
+			Certificates:        []storage.ManagedCertificateBundle{},
+			CertificatePolicies: []storage.ManagedCertificatePolicy{},
+		}, nil
+	}
+	return loader.LoadAgentSnapshot(ctx, row.ID, storage.AgentSnapshotInput{
+		DesiredVersion:  row.DesiredVersion,
+		DesiredRevision: row.DesiredRevision,
+		CurrentRevision: row.CurrentRevision,
+		Platform:        row.Platform,
+	})
 }
 
 func (s *agentService) ensureAgentExists(ctx context.Context, agentID string) error {

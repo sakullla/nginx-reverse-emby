@@ -434,6 +434,257 @@ func TestStoreLoadsLocalSnapshotWithHighestRelevantRevision(t *testing.T) {
 	}
 }
 
+func TestStoreLoadsAgentSnapshotWithReferencedRelayListenersAndVersionPackage(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromCanonicalSchema(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	if err := store.SaveAgent(t.Context(), AgentRow{
+		ID:              "remote-agent-a",
+		Name:            "remote-agent-a",
+		AgentToken:      "token-remote-agent-a",
+		DesiredVersion:  "1.2.3",
+		DesiredRevision: 5,
+		CurrentRevision: 1,
+		LastApplyStatus: "success",
+	}); err != nil {
+		t.Fatalf("SaveAgent(remote-agent-a) error = %v", err)
+	}
+	if err := store.SaveAgent(t.Context(), AgentRow{
+		ID:              "remote-agent-b",
+		Name:            "remote-agent-b",
+		AgentToken:      "token-remote-agent-b",
+		DesiredVersion:  "1.2.3",
+		DesiredRevision: 3,
+		CurrentRevision: 1,
+		LastApplyStatus: "success",
+	}); err != nil {
+		t.Fatalf("SaveAgent(remote-agent-b) error = %v", err)
+	}
+
+	if err := store.SaveHTTPRules(t.Context(), "remote-agent-a", []HTTPRuleRow{{
+		ID:                9,
+		AgentID:           "remote-agent-a",
+		FrontendURL:       "https://edge-a.example.com",
+		BackendURL:        "http://127.0.0.1:8096",
+		BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+		LoadBalancingJSON: `{"strategy":"round_robin"}`,
+		Enabled:           true,
+		RelayChainJSON:    `[11,22]`,
+		PassProxyHeaders:  true,
+		Revision:          6,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules() error = %v", err)
+	}
+
+	certID := 11
+	if err := store.SaveRelayListeners(t.Context(), "remote-agent-a", []RelayListenerRow{{
+		ID:                      11,
+		AgentID:                 "remote-agent-a",
+		Name:                    "relay-a",
+		BindHostsJSON:           `["10.0.0.10"]`,
+		ListenHost:              "10.0.0.10",
+		ListenPort:              7443,
+		PublicHost:              "relay-a.example.com",
+		PublicPort:              7443,
+		Enabled:                 true,
+		CertificateID:           &certID,
+		TLSMode:                 "pin_only",
+		PinSetJSON:              `[{"type":"sha256","value":"pin-a"}]`,
+		TrustedCACertificateIDs: `[10]`,
+		AllowSelfSigned:         true,
+		Revision:                4,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(remote-agent-a) error = %v", err)
+	}
+	if err := store.SaveRelayListeners(t.Context(), "remote-agent-b", []RelayListenerRow{{
+		ID:              22,
+		AgentID:         "remote-agent-b",
+		Name:            "relay-b",
+		ListenHost:      "relay-b.example.com",
+		ListenPort:      8443,
+		PublicHost:      "relay-b.example.com",
+		PublicPort:      8443,
+		Enabled:         true,
+		TLSMode:         "pin_only",
+		PinSetJSON:      `[{"type":"sha256","value":"pin-b"}]`,
+		Revision:        7,
+		BindHostsJSON:   `["relay-b.example.com"]`,
+		TagsJSON:        `[]`,
+		CertificateID:   nil,
+		AllowSelfSigned: false,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(remote-agent-b) error = %v", err)
+	}
+
+	if err := store.SaveManagedCertificates(t.Context(), []ManagedCertificateRow{{
+		ID:              10,
+		Domain:          "__relay-ca.internal",
+		Enabled:         true,
+		Scope:           "domain",
+		IssuerMode:      "local_http01",
+		TargetAgentIDs:  `[]`,
+		Status:          "active",
+		AgentReports:    `{}`,
+		ACMEInfo:        `{"Main_Domain":"__relay-ca.internal"}`,
+		Usage:           "relay_ca",
+		CertificateType: "internal_ca",
+		SelfSigned:      true,
+		TagsJSON:        `["system:relay-ca"]`,
+		Revision:        5,
+	}, {
+		ID:              11,
+		Domain:          "relay-a.example.com",
+		Enabled:         true,
+		Scope:           "domain",
+		IssuerMode:      "local_http01",
+		TargetAgentIDs:  `["remote-agent-a"]`,
+		Status:          "active",
+		AgentReports:    `{}`,
+		ACMEInfo:        `{"Main_Domain":"relay-a.example.com"}`,
+		Usage:           "relay_tunnel",
+		CertificateType: "uploaded",
+		SelfSigned:      false,
+		TagsJSON:        `["relay"]`,
+		Revision:        6,
+	}}); err != nil {
+		t.Fatalf("SaveManagedCertificates() error = %v", err)
+	}
+	writeManagedCertificateMaterial(t, dataRoot, "__relay-ca.internal", "relay-ca-cert", "relay-ca-key")
+	writeManagedCertificateMaterial(t, dataRoot, "relay-a.example.com", "relay-a-cert", "relay-a-key")
+
+	if err := store.SaveVersionPolicies(t.Context(), []VersionPolicyRow{{
+		ID:             "stable-a",
+		Channel:        "stable",
+		DesiredVersion: "1.2.3",
+		PackagesJSON:   `[{"platform":"windows-amd64","url":"https://example.com/agent-windows-a.zip","sha256":"sha-windows-a"}]`,
+		TagsJSON:       `[]`,
+	}, {
+		ID:             "stable-z",
+		Channel:        "stable",
+		DesiredVersion: "1.2.3",
+		PackagesJSON:   `[{"platform":"windows-amd64","url":"https://example.com/agent-windows-z.zip","sha256":"sha-windows-z"}]`,
+		TagsJSON:       `[]`,
+	}}); err != nil {
+		t.Fatalf("SaveVersionPolicies() error = %v", err)
+	}
+
+	snapshot, err := store.LoadAgentSnapshot(t.Context(), "remote-agent-a", AgentSnapshotInput{
+		DesiredVersion:  "1.2.3",
+		DesiredRevision: 5,
+		CurrentRevision: 1,
+		Platform:        "windows-amd64",
+	})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot() error = %v", err)
+	}
+
+	if snapshot.Revision != 7 {
+		t.Fatalf("Revision = %d", snapshot.Revision)
+	}
+	if snapshot.VersionPackage == nil || snapshot.VersionPackage.URL != "https://example.com/agent-windows-a.zip" || snapshot.VersionPackage.SHA256 != "sha-windows-a" {
+		t.Fatalf("VersionPackage = %+v", snapshot.VersionPackage)
+	}
+	if len(snapshot.RelayListeners) != 2 {
+		t.Fatalf("RelayListeners = %+v", snapshot.RelayListeners)
+	}
+	if snapshot.RelayListeners[0].ID != 11 || snapshot.RelayListeners[1].ID != 22 {
+		t.Fatalf("RelayListeners order/ids = %+v", snapshot.RelayListeners)
+	}
+	if snapshot.RelayListeners[1].AgentID != "remote-agent-b" {
+		t.Fatalf("RelayListeners[1].AgentID = %q", snapshot.RelayListeners[1].AgentID)
+	}
+	if len(snapshot.Certificates) != 2 {
+		t.Fatalf("Certificates = %+v", snapshot.Certificates)
+	}
+	if len(snapshot.CertificatePolicies) != 2 {
+		t.Fatalf("CertificatePolicies = %+v", snapshot.CertificatePolicies)
+	}
+}
+
+func TestStoreLoadAgentSnapshotSkipsMalformedL4Rows(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromCanonicalSchema(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	if err := store.SaveAgent(t.Context(), AgentRow{
+		ID:              "malformed-l4-agent",
+		Name:            "malformed-l4-agent",
+		AgentToken:      "token-malformed-l4-agent",
+		DesiredRevision: 0,
+		CurrentRevision: 0,
+		LastApplyStatus: "success",
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+
+	if err := store.SaveL4Rules(t.Context(), "malformed-l4-agent", []L4RuleRow{{
+		ID:                41,
+		AgentID:           "malformed-l4-agent",
+		Name:              "valid-rule",
+		Protocol:          "tcp",
+		ListenHost:        "0.0.0.0",
+		ListenPort:        9800,
+		BackendsJSON:      `[{"host":"127.0.0.1","port":9801}]`,
+		LoadBalancingJSON: `{"strategy":"round_robin"}`,
+		TuningJSON:        `{"proxy_protocol":{"decode":false,"send":false}}`,
+		RelayChainJSON:    `[]`,
+		Enabled:           true,
+		Revision:          8,
+	}, {
+		ID:                42,
+		AgentID:           "malformed-l4-agent",
+		Name:              "broken-rule",
+		Protocol:          "tcp",
+		ListenHost:        "",
+		ListenPort:        0,
+		BackendsJSON:      `[{"host":"","port":0}]`,
+		LoadBalancingJSON: `{}`,
+		TuningJSON:        `{}`,
+		RelayChainJSON:    `[]`,
+		Enabled:           true,
+		Revision:          99,
+	}}); err != nil {
+		t.Fatalf("SaveL4Rules() error = %v", err)
+	}
+
+	snapshot, err := store.LoadAgentSnapshot(t.Context(), "malformed-l4-agent", AgentSnapshotInput{
+		DesiredRevision: 0,
+		CurrentRevision: 0,
+	})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot() error = %v", err)
+	}
+
+	if snapshot.Revision != 8 {
+		t.Fatalf("Revision = %d", snapshot.Revision)
+	}
+	if len(snapshot.L4Rules) != 1 {
+		t.Fatalf("L4Rules = %+v", snapshot.L4Rules)
+	}
+	if snapshot.L4Rules[0].ID != 41 {
+		t.Fatalf("L4Rules[0] = %+v", snapshot.L4Rules[0])
+	}
+}
+
 func TestStoreSavesSuccessfulLocalRuntimeStateIntoLocalAgentState(t *testing.T) {
 	dataRoot := seedSQLiteFixtureFromCanonicalSchema(t)
 
