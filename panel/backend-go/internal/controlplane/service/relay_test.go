@@ -34,6 +34,12 @@ type relayCertStore struct {
 	managedCerts                    []storage.ManagedCertificateRow
 	materialsByHost                 map[string]relayMaterial
 	localState                      storage.LocalAgentStateRow
+	localSnapshot                   storage.Snapshot
+	savedAgent                      storage.AgentRow
+	savedAgentCalls                 int
+	savedRuntimeState               storage.RuntimeState
+	savedRuntimeAgentID             string
+	saveRuntimeCalls                int
 	saveRelayErr                    error
 	saveManagedErr                  error
 	saveManagedErrs                 []error
@@ -72,8 +78,24 @@ func (s *relayCertStore) LoadLocalAgentState(context.Context) (storage.LocalAgen
 	return s.localState, nil
 }
 
-func (s *relayCertStore) LoadAgentSnapshot(context.Context, string, storage.AgentSnapshotInput) (storage.Snapshot, error) {
-	return storage.Snapshot{}, nil
+func (s *relayCertStore) LoadAgentSnapshot(_ context.Context, agentID string, input storage.AgentSnapshotInput) (storage.Snapshot, error) {
+	maxRevision := 0
+	for _, row := range s.managedCerts {
+		if containsString(parseStringArray(row.TargetAgentIDs), strings.TrimSpace(agentID)) && row.Revision > maxRevision {
+			maxRevision = row.Revision
+		}
+	}
+	if input.DesiredRevision > maxRevision {
+		maxRevision = input.DesiredRevision
+	}
+	if input.CurrentRevision > maxRevision {
+		maxRevision = input.CurrentRevision
+	}
+	return storage.Snapshot{Revision: int64(maxRevision)}, nil
+}
+
+func (s *relayCertStore) LoadLocalSnapshot(context.Context, string) (storage.Snapshot, error) {
+	return s.localSnapshot, nil
 }
 
 func (s *relayCertStore) ListVersionPolicies(context.Context) ([]storage.VersionPolicyRow, error) {
@@ -84,7 +106,16 @@ func (s *relayCertStore) ListManagedCertificates(context.Context) ([]storage.Man
 	return append([]storage.ManagedCertificateRow(nil), s.managedCerts...), nil
 }
 
-func (s *relayCertStore) SaveAgent(context.Context, storage.AgentRow) error {
+func (s *relayCertStore) SaveAgent(_ context.Context, row storage.AgentRow) error {
+	s.savedAgent = row
+	s.savedAgentCalls++
+	for i := range s.agents {
+		if s.agents[i].ID == row.ID {
+			s.agents[i] = row
+			return nil
+		}
+	}
+	s.agents = append(s.agents, row)
 	return nil
 }
 
@@ -119,6 +150,13 @@ func (s *relayCertStore) SaveManagedCertificates(_ context.Context, rows []stora
 		return s.saveManagedErr
 	}
 	s.managedCerts = append([]storage.ManagedCertificateRow(nil), rows...)
+	return nil
+}
+
+func (s *relayCertStore) SaveLocalRuntimeState(_ context.Context, agentID string, state storage.RuntimeState) error {
+	s.savedRuntimeAgentID = agentID
+	s.savedRuntimeState = state
+	s.saveRuntimeCalls++
 	return nil
 }
 

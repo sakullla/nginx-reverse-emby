@@ -257,11 +257,11 @@ func TestCertificateServiceCreateUploadedPersistsValidatedMaterialAndHash(t *tes
 	if created.MaterialHash != expectedHash {
 		t.Fatalf("created.MaterialHash = %q, want %q", created.MaterialHash, expectedHash)
 	}
-	if created.Status != "pending" {
+	if created.Status != "active" {
 		t.Fatalf("created.Status = %q", created.Status)
 	}
-	if created.LastIssueAt != "" {
-		t.Fatalf("created.LastIssueAt = %q", created.LastIssueAt)
+	if created.LastIssueAt == "" {
+		t.Fatal("created.LastIssueAt is empty")
 	}
 }
 
@@ -308,11 +308,11 @@ func TestCertificateServiceUpdateUploadedPreservesMaterialWhenPEMFieldsOmitted(t
 	if updated.MaterialHash != persistedHash {
 		t.Fatalf("updated.MaterialHash = %q, want %q", updated.MaterialHash, persistedHash)
 	}
-	if updated.Status != "pending" {
+	if updated.Status != "active" {
 		t.Fatalf("updated.Status = %q", updated.Status)
 	}
-	if updated.LastIssueAt != "" {
-		t.Fatalf("updated.LastIssueAt = %q", updated.LastIssueAt)
+	if updated.LastIssueAt == "" {
+		t.Fatal("updated.LastIssueAt is empty")
 	}
 }
 
@@ -597,13 +597,20 @@ func TestCertificateServiceUploadedUpdateRejectsMissingOrInvalidMaterial(t *test
 
 func TestCertificateServiceUploadedIssueRejectsMissingMaterialAndSucceedsWhenPresent(t *testing.T) {
 	store := &relayCertStore{
+		agents: []storage.AgentRow{{
+			ID:               "edge-1",
+			Name:             "Edge 1",
+			DesiredRevision:  1,
+			CurrentRevision:  1,
+			CapabilitiesJSON: `["cert_install"]`,
+		}},
 		managedCerts: []storage.ManagedCertificateRow{{
 			ID:              41,
 			Domain:          "issue.example.com",
 			Enabled:         true,
 			Scope:           "domain",
 			IssuerMode:      "local_http01",
-			TargetAgentIDs:  `["local"]`,
+			TargetAgentIDs:  `["edge-1"]`,
 			Status:          "pending",
 			CertificateType: "uploaded",
 			Usage:           "https",
@@ -615,7 +622,7 @@ func TestCertificateServiceUploadedIssueRejectsMissingMaterialAndSucceedsWhenPre
 		LocalAgentID:     "local",
 	}, store)
 
-	if _, err := svc.Issue(context.Background(), "local", 41); !errors.Is(err, ErrInvalidArgument) {
+	if _, err := svc.Issue(context.Background(), "edge-1", 41); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("Issue() without material error = %v", err)
 	}
 
@@ -626,18 +633,26 @@ func TestCertificateServiceUploadedIssueRejectsMissingMaterialAndSucceedsWhenPre
 		"issue.example.com": {CertPEM: joined, KeyPEM: strings.TrimSpace(leaf.KeyPEM)},
 	}
 
-	issued, err := svc.Issue(context.Background(), "local", 41)
+	issued, err := svc.Issue(context.Background(), "edge-1", 41)
 	if err != nil {
 		t.Fatalf("Issue() with material error = %v", err)
 	}
-	if issued.Status != "pending" {
+	if issued.Status != "active" {
 		t.Fatalf("issued.Status = %q", issued.Status)
 	}
 	if issued.MaterialHash == "" {
 		t.Fatalf("issued.MaterialHash is empty")
 	}
-	if issued.LastIssueAt != "" {
-		t.Fatalf("issued.LastIssueAt = %q", issued.LastIssueAt)
+	if issued.LastIssueAt == "" {
+		t.Fatal("issued.LastIssueAt is empty")
+	}
+	report := issued.AgentReports["edge-1"]
+	if report.Status != "active" || report.MaterialHash != issued.MaterialHash {
+		t.Fatalf("agent report = %+v", report)
+	}
+	edge := relayAgentByID(t, store, "edge-1")
+	if edge.DesiredRevision != 4 {
+		t.Fatalf("edge.DesiredRevision = %d", edge.DesiredRevision)
 	}
 }
 
@@ -743,6 +758,122 @@ func TestCertificateServiceIssueLocalHTTP01InternalCAGlobalIssueWithEmptyTargets
 	}
 	if _, ok := store.materialsByHost["__relay-ca.internal"]; !ok {
 		t.Fatalf("missing persisted relay ca material: %+v", store.materialsByHost)
+	}
+}
+
+func TestCertificateServiceCreateMasterCFDNSIssuesImmediatelyWithoutExtraRevisionBump(t *testing.T) {
+	now := time.Date(2026, 4, 11, 16, 17, 18, 0, time.UTC)
+	ca := mustCreateSelfSignedCA(t, "Create Master CF DNS CA")
+	leaf := mustCreateLeafSignedByCA(t, "create-master.example.com", ca)
+	store := &relayCertStore{}
+	issuer := &fakeManagedCertificateRenewalIssuer{
+		results: map[int]managedCertificateRenewalResult{
+			1: {
+				LastIssueAt:  now.UTC().Format(time.RFC3339),
+				MaterialHash: "issued-hash",
+				Material: storage.ManagedCertificateBundle{
+					CertPEM: strings.TrimSpace(leaf.CertPEM) + "\n" + strings.TrimSpace(ca.CertPEM),
+					KeyPEM:  strings.TrimSpace(leaf.KeyPEM),
+				},
+				ACMEInfo: ManagedCertificateACMEInfo{
+					MainDomain: "create-master.example.com",
+					CA:         "LetsEncrypt",
+				},
+			},
+		},
+	}
+	svc := newCertificateServiceWithRenewal(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store, issuer)
+	svc.now = func() time.Time { return now }
+
+	created, err := svc.Create(context.Background(), "local", ManagedCertificateInput{
+		Domain:          stringPtr("create-master.example.com"),
+		Scope:           stringPtr("domain"),
+		IssuerMode:      stringPtr("master_cf_dns"),
+		TargetAgentIDs:  &[]string{"local"},
+		CertificateType: stringPtr("acme"),
+		Usage:           stringPtr("https"),
+		Enabled:         boolPtr(true),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if len(issuer.calls) != 1 || issuer.calls[0] != 1 {
+		t.Fatalf("issuer calls = %+v", issuer.calls)
+	}
+	if created.Status != "active" {
+		t.Fatalf("created.Status = %q", created.Status)
+	}
+	if created.Revision != 1 {
+		t.Fatalf("created.Revision = %d", created.Revision)
+	}
+	row := managedCertificateFromRow(store.managedCerts[0])
+	if row.Status != "active" || row.Revision != 1 || row.MaterialHash != "issued-hash" {
+		t.Fatalf("saved row = %+v", row)
+	}
+}
+
+func TestCertificateServiceUpdateUploadedSyncsRemovedAgentsWithoutExtraRevisionBump(t *testing.T) {
+	now := time.Date(2026, 4, 11, 18, 19, 20, 0, time.UTC)
+	ca := mustCreateSelfSignedCA(t, "Update Uploaded CA")
+	leaf := mustCreateLeafSignedByCA(t, "sync-update.example.com", ca)
+	store := &relayCertStore{
+		agents: []storage.AgentRow{{
+			ID:               "edge-1",
+			Name:             "Edge 1",
+			DesiredRevision:  1,
+			CurrentRevision:  1,
+			CapabilitiesJSON: `["cert_install"]`,
+		}},
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              96,
+			Domain:          "sync-update.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  `["local","edge-1"]`,
+			Status:          "pending",
+			CertificateType: "uploaded",
+			Usage:           "https",
+			Revision:        5,
+		}},
+		materialsByHost: map[string]relayMaterial{
+			"sync-update.example.com": {
+				CertPEM: strings.TrimSpace(leaf.CertPEM) + "\n" + strings.TrimSpace(ca.CertPEM),
+				KeyPEM:  strings.TrimSpace(leaf.KeyPEM),
+			},
+		},
+	}
+	svc := NewCertificateService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+	svc.now = func() time.Time { return now }
+
+	updated, err := svc.Update(context.Background(), "", 96, ManagedCertificateInput{
+		TargetAgentIDs: &[]string{"local"},
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if updated.Status != "active" {
+		t.Fatalf("updated.Status = %q", updated.Status)
+	}
+	if updated.Revision != 6 {
+		t.Fatalf("updated.Revision = %d", updated.Revision)
+	}
+	if updated.LastIssueAt != now.UTC().Format(time.RFC3339) {
+		t.Fatalf("updated.LastIssueAt = %q", updated.LastIssueAt)
+	}
+	row := managedCertificateFromRow(store.managedCerts[0])
+	if row.Revision != 6 || len(row.TargetAgentIDs) != 1 || row.TargetAgentIDs[0] != "local" {
+		t.Fatalf("saved row = %+v", row)
+	}
+	edge := relayAgentByID(t, store, "edge-1")
+	if edge.DesiredRevision != 6 {
+		t.Fatalf("edge.DesiredRevision = %d", edge.DesiredRevision)
 	}
 }
 
@@ -1461,6 +1592,338 @@ func TestCertificateServiceUploadedLocalHTTP01RequiresCertInstallCapableTargets(
 	}
 }
 
+func TestCertificateServiceCreateMasterCFDNSIssuesImmediatelyWithoutExtraRevision(t *testing.T) {
+	now := time.Date(2026, time.April, 11, 16, 17, 18, 0, time.UTC)
+	issuedMaterial := mustCreateSelfSignedCA(t, "issued.example.com")
+	store := &relayCertStore{
+		localSnapshot: storage.Snapshot{Revision: 1},
+	}
+	issuer := &fakeManagedCertificateRenewalIssuer{
+		results: map[int]managedCertificateRenewalResult{
+			1: {
+				LastIssueAt:  "2026-04-11T16:17:18Z",
+				MaterialHash: "issued-hash",
+				ACMEInfo: ManagedCertificateACMEInfo{
+					MainDomain: "issued.example.com",
+					Profile:    "default",
+				},
+				Material: storage.ManagedCertificateBundle{
+					CertPEM: strings.TrimSpace(issuedMaterial.CertPEM),
+					KeyPEM:  strings.TrimSpace(issuedMaterial.KeyPEM),
+				},
+			},
+		},
+	}
+	svc := newCertificateServiceWithRenewal(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store, issuer)
+	svc.now = func() time.Time { return now }
+
+	created, err := svc.Create(context.Background(), "local", ManagedCertificateInput{
+		Domain:          stringPtr("issued.example.com"),
+		Scope:           stringPtr("domain"),
+		IssuerMode:      stringPtr("master_cf_dns"),
+		CertificateType: stringPtr("acme"),
+		Usage:           stringPtr("https"),
+		Enabled:         boolPtr(true),
+		TargetAgentIDs:  &[]string{"local"},
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	if created.Status != "active" {
+		t.Fatalf("created.Status = %q", created.Status)
+	}
+	if created.LastIssueAt != "2026-04-11T16:17:18Z" {
+		t.Fatalf("created.LastIssueAt = %q", created.LastIssueAt)
+	}
+	if created.MaterialHash != "issued-hash" {
+		t.Fatalf("created.MaterialHash = %q", created.MaterialHash)
+	}
+	if created.Revision != 1 {
+		t.Fatalf("created.Revision = %d", created.Revision)
+	}
+	if store.saveRuntimeCalls != 1 {
+		t.Fatalf("saveRuntimeCalls = %d", store.saveRuntimeCalls)
+	}
+	if store.savedRuntimeAgentID != "local" {
+		t.Fatalf("savedRuntimeAgentID = %q", store.savedRuntimeAgentID)
+	}
+	if store.savedRuntimeState.CurrentRevision != 1 || store.savedRuntimeState.LastApplyRevision != 1 {
+		t.Fatalf("savedRuntimeState = %+v", store.savedRuntimeState)
+	}
+	persisted := managedCertificateFromRow(store.managedCerts[0])
+	if persisted.Revision != 1 || persisted.Status != "active" {
+		t.Fatalf("persisted = %+v", persisted)
+	}
+}
+
+func TestCertificateServiceCreateUploadedLocalHTTP01SyncsTargetsImmediatelyWithoutExtraRevision(t *testing.T) {
+	ca := mustCreateSelfSignedCA(t, "Create Upload CA")
+	leaf := mustCreateLeafSignedByCA(t, "created-upload.example.com", ca)
+	expectedCertPEM := strings.TrimSpace(leaf.CertPEM) + "\n" + strings.TrimSpace(ca.CertPEM)
+	expectedHash := hashManagedCertificateMaterial(expectedCertPEM, strings.TrimSpace(leaf.KeyPEM))
+	now := time.Date(2026, time.April, 11, 17, 18, 19, 0, time.UTC)
+
+	store := &relayCertStore{
+		agents: []storage.AgentRow{{
+			ID:               "edge-1",
+			Name:             "Edge 1",
+			CapabilitiesJSON: `["http_rules","cert_install"]`,
+			DesiredRevision:  0,
+		}},
+		localSnapshot: storage.Snapshot{Revision: 1},
+	}
+	svc := NewCertificateService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+	svc.now = func() time.Time { return now }
+
+	created, err := svc.Create(context.Background(), "", ManagedCertificateInput{
+		Domain:          stringPtr("created-upload.example.com"),
+		Scope:           stringPtr("domain"),
+		IssuerMode:      stringPtr("local_http01"),
+		CertificateType: stringPtr("uploaded"),
+		Usage:           stringPtr("https"),
+		Enabled:         boolPtr(true),
+		TargetAgentIDs:  &[]string{"local", "edge-1"},
+		CertificatePEM:  stringPtr(strings.TrimSpace(leaf.CertPEM)),
+		PrivateKeyPEM:   stringPtr(strings.TrimSpace(leaf.KeyPEM)),
+		CAPEM:           stringPtr(strings.TrimSpace(ca.CertPEM)),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	if created.Status != "active" {
+		t.Fatalf("created.Status = %q", created.Status)
+	}
+	if created.LastIssueAt != now.UTC().Format(time.RFC3339) {
+		t.Fatalf("created.LastIssueAt = %q", created.LastIssueAt)
+	}
+	if created.MaterialHash != expectedHash {
+		t.Fatalf("created.MaterialHash = %q, want %q", created.MaterialHash, expectedHash)
+	}
+	if created.Revision != 1 {
+		t.Fatalf("created.Revision = %d", created.Revision)
+	}
+	if store.saveRuntimeCalls != 1 {
+		t.Fatalf("saveRuntimeCalls = %d", store.saveRuntimeCalls)
+	}
+	if store.savedRuntimeState.CurrentRevision != 1 || store.savedRuntimeState.LastApplyRevision != 1 {
+		t.Fatalf("savedRuntimeState = %+v", store.savedRuntimeState)
+	}
+	if got := relayAgentByID(t, store, "edge-1").DesiredRevision; got != 1 {
+		t.Fatalf("edge-1 desired revision = %d", got)
+	}
+	persisted := managedCertificateFromRow(store.managedCerts[0])
+	if persisted.Revision != 1 || persisted.Status != "active" {
+		t.Fatalf("persisted = %+v", persisted)
+	}
+	if persisted.AgentReports["local"].Status != "active" || persisted.AgentReports["edge-1"].Status != "active" {
+		t.Fatalf("persisted.AgentReports = %+v", persisted.AgentReports)
+	}
+}
+
+func TestCertificateServiceCreateNonImmediateCertificateSyncsAssignedTargets(t *testing.T) {
+	store := &relayCertStore{
+		agents: []storage.AgentRow{{
+			ID:               "edge-1",
+			Name:             "Edge 1",
+			CapabilitiesJSON: `["http_rules","cert_install","local_acme"]`,
+			DesiredRevision:  0,
+		}},
+		localSnapshot: storage.Snapshot{Revision: 1},
+	}
+	svc := NewCertificateService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	created, err := svc.Create(context.Background(), "", ManagedCertificateInput{
+		Domain:          stringPtr("sync-create.example.com"),
+		Scope:           stringPtr("domain"),
+		IssuerMode:      stringPtr("local_http01"),
+		CertificateType: stringPtr("acme"),
+		Usage:           stringPtr("https"),
+		Enabled:         boolPtr(true),
+		TargetAgentIDs:  &[]string{"local", "edge-1"},
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	if created.Status != "pending" {
+		t.Fatalf("created.Status = %q", created.Status)
+	}
+	if created.Revision != 1 {
+		t.Fatalf("created.Revision = %d", created.Revision)
+	}
+	if store.saveRuntimeCalls != 1 {
+		t.Fatalf("saveRuntimeCalls = %d", store.saveRuntimeCalls)
+	}
+	if store.savedRuntimeState.CurrentRevision != 1 || store.savedRuntimeState.LastApplyRevision != 1 {
+		t.Fatalf("savedRuntimeState = %+v", store.savedRuntimeState)
+	}
+	if got := relayAgentByID(t, store, "edge-1").DesiredRevision; got != 1 {
+		t.Fatalf("edge-1 desired revision = %d", got)
+	}
+}
+
+func TestCertificateServiceUpdateUploadedLocalHTTP01SyncsCurrentAndRemovedTargetsWithoutExtraRevision(t *testing.T) {
+	ca := mustCreateSelfSignedCA(t, "Update Upload CA")
+	leaf := mustCreateLeafSignedByCA(t, "updated-upload.example.com", ca)
+	persistedCert := strings.TrimSpace(leaf.CertPEM) + "\n" + strings.TrimSpace(ca.CertPEM)
+	persistedKey := strings.TrimSpace(leaf.KeyPEM)
+	persistedHash := hashManagedCertificateMaterial(persistedCert, persistedKey)
+	now := time.Date(2026, time.April, 11, 18, 19, 20, 0, time.UTC)
+
+	store := &relayCertStore{
+		agents: []storage.AgentRow{
+			{
+				ID:               "edge-1",
+				Name:             "Edge 1",
+				CapabilitiesJSON: `["http_rules","cert_install"]`,
+				DesiredRevision:  0,
+			},
+			{
+				ID:               "edge-2",
+				Name:             "Edge 2",
+				CapabilitiesJSON: `["http_rules","cert_install"]`,
+				DesiredRevision:  0,
+			},
+		},
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              41,
+			Domain:          "updated-upload.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  `["local","edge-1"]`,
+			Status:          "active",
+			LastIssueAt:     "2026-04-10T00:00:00Z",
+			MaterialHash:    persistedHash,
+			AgentReports:    `{"local":{"status":"active"},"edge-1":{"status":"active"}}`,
+			CertificateType: "uploaded",
+			Usage:           "https",
+			Revision:        5,
+		}},
+		materialsByHost: map[string]relayMaterial{
+			"updated-upload.example.com": {CertPEM: persistedCert, KeyPEM: persistedKey},
+		},
+		localSnapshot: storage.Snapshot{Revision: 6},
+	}
+	svc := NewCertificateService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+	svc.now = func() time.Time { return now }
+
+	updated, err := svc.Update(context.Background(), "", 41, ManagedCertificateInput{
+		TargetAgentIDs: &[]string{"edge-2"},
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	if updated.Status != "active" {
+		t.Fatalf("updated.Status = %q", updated.Status)
+	}
+	if updated.LastIssueAt != now.UTC().Format(time.RFC3339) {
+		t.Fatalf("updated.LastIssueAt = %q", updated.LastIssueAt)
+	}
+	if updated.MaterialHash != persistedHash {
+		t.Fatalf("updated.MaterialHash = %q", updated.MaterialHash)
+	}
+	if updated.Revision != 6 {
+		t.Fatalf("updated.Revision = %d", updated.Revision)
+	}
+	if store.saveRuntimeCalls != 1 {
+		t.Fatalf("saveRuntimeCalls = %d", store.saveRuntimeCalls)
+	}
+	if store.savedRuntimeState.CurrentRevision != 6 || store.savedRuntimeState.LastApplyRevision != 6 {
+		t.Fatalf("savedRuntimeState = %+v", store.savedRuntimeState)
+	}
+	if got := relayAgentByID(t, store, "edge-1").DesiredRevision; got != 6 {
+		t.Fatalf("edge-1 desired revision = %d", got)
+	}
+	if got := relayAgentByID(t, store, "edge-2").DesiredRevision; got != 6 {
+		t.Fatalf("edge-2 desired revision = %d", got)
+	}
+	persisted := managedCertificateFromRow(store.managedCerts[0])
+	if persisted.Revision != 6 || persisted.Status != "active" {
+		t.Fatalf("persisted = %+v", persisted)
+	}
+	if len(persisted.TargetAgentIDs) != 1 || persisted.TargetAgentIDs[0] != "edge-2" {
+		t.Fatalf("persisted.TargetAgentIDs = %+v", persisted.TargetAgentIDs)
+	}
+}
+
+func TestCertificateServiceUpdateNonImmediateCertificateSyncsAffectedTargets(t *testing.T) {
+	store := &relayCertStore{
+		agents: []storage.AgentRow{
+			{
+				ID:               "edge-1",
+				Name:             "Edge 1",
+				CapabilitiesJSON: `["http_rules","cert_install","local_acme"]`,
+				DesiredRevision:  0,
+			},
+			{
+				ID:               "edge-2",
+				Name:             "Edge 2",
+				CapabilitiesJSON: `["http_rules","cert_install","local_acme"]`,
+				DesiredRevision:  0,
+			},
+		},
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              42,
+			Domain:          "sync-update.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  `["local","edge-1"]`,
+			Status:          "pending",
+			CertificateType: "acme",
+			Usage:           "https",
+			Revision:        5,
+		}},
+		localSnapshot: storage.Snapshot{Revision: 6},
+	}
+	svc := NewCertificateService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	updated, err := svc.Update(context.Background(), "", 42, ManagedCertificateInput{
+		TargetAgentIDs: &[]string{"edge-2"},
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	if updated.Status != "pending" {
+		t.Fatalf("updated.Status = %q", updated.Status)
+	}
+	if updated.Revision != 6 {
+		t.Fatalf("updated.Revision = %d", updated.Revision)
+	}
+	if store.saveRuntimeCalls != 1 {
+		t.Fatalf("saveRuntimeCalls = %d", store.saveRuntimeCalls)
+	}
+	if store.savedRuntimeState.CurrentRevision != 6 || store.savedRuntimeState.LastApplyRevision != 6 {
+		t.Fatalf("savedRuntimeState = %+v", store.savedRuntimeState)
+	}
+	if got := relayAgentByID(t, store, "edge-1").DesiredRevision; got != 6 {
+		t.Fatalf("edge-1 desired revision = %d", got)
+	}
+	if got := relayAgentByID(t, store, "edge-2").DesiredRevision; got != 6 {
+		t.Fatalf("edge-2 desired revision = %d", got)
+	}
+}
+
 func TestCertificateServiceDeleteDetachesSingleAgentFromSharedCertificate(t *testing.T) {
 	store := &relayCertStore{
 		managedCerts: []storage.ManagedCertificateRow{{
@@ -2165,4 +2628,15 @@ func (f *fakeManagedCertificateRenewalIssuer) Renew(_ context.Context, cert Mana
 		return managedCertificateRenewalResult{}, err
 	}
 	return f.results[cert.ID], nil
+}
+
+func relayAgentByID(t *testing.T, store *relayCertStore, agentID string) storage.AgentRow {
+	t.Helper()
+	for _, row := range store.agents {
+		if row.ID == agentID {
+			return row
+		}
+	}
+	t.Fatalf("agent %q not found in %+v", agentID, store.agents)
+	return storage.AgentRow{}
 }

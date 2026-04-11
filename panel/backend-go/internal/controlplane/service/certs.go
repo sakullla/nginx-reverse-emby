@@ -101,6 +101,11 @@ type certificateService struct {
 	renewalIssuer managedCertificateRenewalIssuer
 }
 
+type localManagedCertificateSyncStore interface {
+	LoadLocalSnapshot(context.Context, string) (storage.Snapshot, error)
+	SaveLocalRuntimeState(context.Context, string, storage.RuntimeState) error
+}
+
 func NewCertificateService(cfg config.Config, store storage.Store) *certificateService {
 	return newCertificateServiceWithRenewal(cfg, store, nil)
 }
@@ -221,7 +226,7 @@ func (s *certificateService) Create(ctx context.Context, agentID string, input M
 		}
 	}
 	cleanupManagedCertificateMaterialBestEffort(ctx, s.store, current, rows)
-	return cert, nil
+	return s.finishManagedCertificateMutation(ctx, rows, len(rows)-1, nil, cert, maxRevision)
 }
 
 func (s *certificateService) Update(ctx context.Context, agentID string, id int, input ManagedCertificateInput) (ManagedCertificate, error) {
@@ -322,7 +327,7 @@ func (s *certificateService) Update(ctx context.Context, agentID string, id int,
 		}
 	}
 	cleanupManagedCertificateMaterialBestEffort(ctx, s.store, originalRows, rows)
-	return next, nil
+	return s.finishManagedCertificateMutation(ctx, rows, targetIndex, &current, next, maxRevision)
 }
 
 func (s *certificateService) Delete(ctx context.Context, agentID string, id int) (ManagedCertificate, error) {
@@ -458,11 +463,11 @@ func (s *certificateService) Issue(ctx context.Context, agentID string, id int) 
 
 		issueResult, err := issuer.Issue(ctx, current)
 		if err != nil {
-			return s.failManagedCertificateIssue(ctx, rows, targetIndex, current, maxRevision, err)
+			return s.failManagedCertificateIssue(ctx, rows, targetIndex, current, maxRevision, err, true)
 		}
 		issuedMaterial, err := resolveManagedCertificateIssueMaterial(current, issueResult)
 		if err != nil {
-			return s.failManagedCertificateIssue(ctx, rows, targetIndex, current, maxRevision, err)
+			return s.failManagedCertificateIssue(ctx, rows, targetIndex, current, maxRevision, err, true)
 		}
 
 		previousMaterial, previousMaterialFound, err := s.store.LoadManagedCertificateMaterial(ctx, current.Domain)
@@ -473,7 +478,7 @@ func (s *certificateService) Issue(ctx context.Context, agentID string, id int) 
 			if restoreErr := s.restoreManagedCertificateMaterialAfterIssueFailure(ctx, current, previousMaterial, previousMaterialFound); restoreErr != nil {
 				return ManagedCertificate{}, fmt.Errorf("persist issued certificate material: %w (restore failed: %v)", err, restoreErr)
 			}
-			return s.failManagedCertificateIssue(ctx, rows, targetIndex, current, maxRevision, err)
+			return s.failManagedCertificateIssue(ctx, rows, targetIndex, current, maxRevision, err, true)
 		}
 
 		next := current
@@ -488,7 +493,7 @@ func (s *certificateService) Issue(ctx context.Context, agentID string, id int) 
 			next.MaterialHash = hashManagedCertificateMaterial(strings.TrimSpace(issuedMaterial.CertPEM), strings.TrimSpace(issuedMaterial.KeyPEM))
 		}
 		next.ACMEInfo = issueResult.ACMEInfo
-		next.Revision = maxRevision + 1
+		next.Revision = managedCertificateMutationRevision(current, maxRevision, true)
 		originalRows := append([]storage.ManagedCertificateRow(nil), rows...)
 		rows[targetIndex] = managedCertificateToRow(next)
 		if err := s.store.SaveManagedCertificates(ctx, rows); err != nil {
@@ -501,26 +506,11 @@ func (s *certificateService) Issue(ctx context.Context, agentID string, id int) 
 		return next, nil
 	}
 	if current.CertificateType == "uploaded" && current.IssuerMode == "local_http01" {
-		material, ok, err := s.store.LoadManagedCertificateMaterial(ctx, current.Domain)
-		if err != nil {
-			return ManagedCertificate{}, err
-		}
-		if !ok {
-			return ManagedCertificate{}, fmt.Errorf("%w: certificate material not found", ErrInvalidArgument)
-		}
-		if err := validateUploadedManagedCertificateBundle(material); err != nil {
-			return ManagedCertificate{}, err
-		}
-		current.MaterialHash = hashManagedCertificateMaterial(strings.TrimSpace(material.CertPEM), strings.TrimSpace(material.KeyPEM))
+		return s.syncStaticLocalCertificate(ctx, rows, targetIndex, current, maxRevision, resolvedID, true)
 	}
-	if current.CertificateType == "uploaded" && current.IssuerMode == "local_http01" {
-		current.Status = "pending"
-		current.LastError = ""
-	} else {
-		current.Status = "active"
-		current.LastIssueAt = s.now().UTC().Format(time.RFC3339)
-		current.LastError = ""
-	}
+	current.Status = "active"
+	current.LastIssueAt = s.now().UTC().Format(time.RFC3339)
+	current.LastError = ""
 	current.Revision = maxRevision + 1
 	originalRows := append([]storage.ManagedCertificateRow(nil), rows...)
 	rows[targetIndex] = managedCertificateToRow(current)
@@ -689,6 +679,315 @@ func (s *certificateService) issueLocalHTTP01ACME(ctx context.Context, rows []st
 	return next, nil
 }
 
+func (s *certificateService) finishManagedCertificateMutation(ctx context.Context, rows []storage.ManagedCertificateRow, targetIndex int, previous *ManagedCertificate, current ManagedCertificate, maxRevision int) (ManagedCertificate, error) {
+	affectedAgentIDs := append([]string(nil), current.TargetAgentIDs...)
+	removedAgentIDs := []string(nil)
+	if previous != nil {
+		affectedAgentIDs = unionManagedCertificateAgentIDs(previous.TargetAgentIDs, current.TargetAgentIDs)
+		removedAgentIDs = differenceManagedCertificateAgentIDs(previous.TargetAgentIDs, current.TargetAgentIDs)
+	}
+
+	if current.Enabled && current.Scope == "domain" && current.IssuerMode == "master_cf_dns" {
+		issued, err := s.issueManagedCertificateWithoutRevisionBump(ctx, rows, targetIndex, current, maxRevision)
+		if err != nil {
+			return ManagedCertificate{}, err
+		}
+		if err := s.syncManagedCertificateAgentIDs(ctx, removedAgentIDs, issued.Revision); err != nil {
+			return ManagedCertificate{}, err
+		}
+		return issued, nil
+	}
+	if current.Enabled && current.IssuerMode == "local_http01" && current.CertificateType == "uploaded" {
+		synced, err := s.syncStaticLocalCertificate(ctx, rows, targetIndex, current, maxRevision, "", false)
+		if err != nil {
+			return ManagedCertificate{}, err
+		}
+		if err := s.syncManagedCertificateAgentIDs(ctx, removedAgentIDs, synced.Revision); err != nil {
+			return ManagedCertificate{}, err
+		}
+		return synced, nil
+	}
+	if err := s.syncManagedCertificateAgentIDs(ctx, affectedAgentIDs, current.Revision); err != nil {
+		return ManagedCertificate{}, err
+	}
+	return current, nil
+}
+
+func (s *certificateService) issueManagedCertificateWithoutRevisionBump(ctx context.Context, rows []storage.ManagedCertificateRow, targetIndex int, current ManagedCertificate, maxRevision int) (ManagedCertificate, error) {
+	if err := s.assertCertificateDistributionTargetsAllowed(ctx, current); err != nil {
+		return ManagedCertificate{}, err
+	}
+	if err := s.assertManagedCertificateManualIssueAllowed(current); err != nil {
+		return ManagedCertificate{}, err
+	}
+
+	issuer := s.renewalIssuer
+	if issuer == nil && s.cfg.ManagedDNSCertificatesEnabled {
+		issuer = newMasterCFDNSManagedCertificateIssuer()
+	}
+	if issuer == nil {
+		return ManagedCertificate{}, fmt.Errorf("%w: managed certificates require ACME_DNS_PROVIDER=cf and CF_Token", ErrInvalidArgument)
+	}
+
+	issueResult, err := issuer.Issue(ctx, current)
+	if err != nil {
+		return s.failManagedCertificateIssue(ctx, rows, targetIndex, current, maxRevision, err, false)
+	}
+	issuedMaterial, err := resolveManagedCertificateIssueMaterial(current, issueResult)
+	if err != nil {
+		return s.failManagedCertificateIssue(ctx, rows, targetIndex, current, maxRevision, err, false)
+	}
+
+	previousMaterial, previousMaterialFound, err := s.store.LoadManagedCertificateMaterial(ctx, current.Domain)
+	if err != nil {
+		return ManagedCertificate{}, err
+	}
+	if err := s.store.SaveManagedCertificateMaterial(ctx, current.Domain, issuedMaterial); err != nil {
+		if restoreErr := s.restoreManagedCertificateMaterialAfterIssueFailure(ctx, current, previousMaterial, previousMaterialFound); restoreErr != nil {
+			return ManagedCertificate{}, fmt.Errorf("persist issued certificate material: %w (restore failed: %v)", err, restoreErr)
+		}
+		return s.failManagedCertificateIssue(ctx, rows, targetIndex, current, maxRevision, err, false)
+	}
+
+	next := current
+	next.Status = "active"
+	next.LastIssueAt = issueResult.LastIssueAt
+	if strings.TrimSpace(next.LastIssueAt) == "" {
+		next.LastIssueAt = s.now().UTC().Format(time.RFC3339)
+	}
+	next.LastError = ""
+	next.MaterialHash = issueResult.MaterialHash
+	if strings.TrimSpace(next.MaterialHash) == "" {
+		next.MaterialHash = hashManagedCertificateMaterial(strings.TrimSpace(issuedMaterial.CertPEM), strings.TrimSpace(issuedMaterial.KeyPEM))
+	}
+	next.ACMEInfo = issueResult.ACMEInfo
+	next.Revision = managedCertificateMutationRevision(current, maxRevision, false)
+
+	originalRows := append([]storage.ManagedCertificateRow(nil), rows...)
+	rows[targetIndex] = managedCertificateToRow(next)
+	if err := s.store.SaveManagedCertificates(ctx, rows); err != nil {
+		if restoreErr := s.restoreManagedCertificateMaterialAfterIssueFailure(ctx, current, previousMaterial, previousMaterialFound); restoreErr != nil {
+			return ManagedCertificate{}, fmt.Errorf("save issued certificate metadata: %w (restore failed: %v)", err, restoreErr)
+		}
+		return ManagedCertificate{}, err
+	}
+	cleanupManagedCertificateMaterialBestEffort(ctx, s.store, originalRows, rows)
+	if err := s.syncManagedCertificateAgentIDs(ctx, next.TargetAgentIDs, next.Revision); err != nil {
+		return ManagedCertificate{}, err
+	}
+	return next, nil
+}
+
+func (s *certificateService) syncStaticLocalCertificate(ctx context.Context, rows []storage.ManagedCertificateRow, targetIndex int, current ManagedCertificate, maxRevision int, requestedAgentID string, bumpRevision bool) (ManagedCertificate, error) {
+	if !current.Enabled {
+		return ManagedCertificate{}, fmt.Errorf("%w: certificate is disabled", ErrInvalidArgument)
+	}
+	if current.IssuerMode != "local_http01" {
+		return ManagedCertificate{}, fmt.Errorf("%w: certificate is not configured for local_http01", ErrInvalidArgument)
+	}
+	if current.CertificateType == "acme" {
+		return ManagedCertificate{}, fmt.Errorf("%w: certificate requires local ACME issuance", ErrInvalidArgument)
+	}
+
+	requestedTargetIDs := append([]string(nil), current.TargetAgentIDs...)
+	if requestedAgentID != "" {
+		requestedTargetIDs = requestedTargetIDs[:0]
+		for _, targetAgentID := range current.TargetAgentIDs {
+			if strings.TrimSpace(targetAgentID) == requestedAgentID {
+				requestedTargetIDs = append(requestedTargetIDs, requestedAgentID)
+			}
+		}
+	}
+	if len(requestedTargetIDs) == 0 {
+		return ManagedCertificate{}, fmt.Errorf("%w: certificate is not assigned to the requested agent", ErrInvalidArgument)
+	}
+	for _, targetAgentID := range requestedTargetIDs {
+		_, displayName, capabilities, err := s.resolveCertificateTarget(ctx, targetAgentID)
+		if errors.Is(err, ErrAgentNotFound) {
+			return ManagedCertificate{}, fmt.Errorf("%w: target agent not found: %s", ErrInvalidArgument, strings.TrimSpace(targetAgentID))
+		}
+		if err != nil {
+			return ManagedCertificate{}, err
+		}
+		if !agentHasCapability(capabilities, "cert_install") {
+			return ManagedCertificate{}, fmt.Errorf("%w: target agent does not support certificate install: %s", ErrInvalidArgument, displayName)
+		}
+	}
+
+	material, ok, err := s.store.LoadManagedCertificateMaterial(ctx, current.Domain)
+	if err != nil {
+		return ManagedCertificate{}, err
+	}
+	if !ok {
+		return ManagedCertificate{}, fmt.Errorf("%w: certificate material not found", ErrInvalidArgument)
+	}
+	if err := validateUploadedManagedCertificateBundle(material); err != nil {
+		return ManagedCertificate{}, err
+	}
+
+	now := s.now().UTC()
+	issuedAt := now.Format(time.RFC3339)
+	materialHash := hashManagedCertificateMaterial(material.CertPEM, material.KeyPEM)
+	next := current
+	next.Status = "active"
+	next.LastIssueAt = issuedAt
+	next.LastError = ""
+	next.MaterialHash = materialHash
+	next.Revision = managedCertificateMutationRevision(current, maxRevision, bumpRevision)
+	for _, targetAgentID := range requestedTargetIDs {
+		next = updateManagedCertificateAgentReport(next, targetAgentID, ManagedCertificateHeartbeatReport{
+			Status:       "active",
+			LastIssueAt:  issuedAt,
+			LastError:    "",
+			MaterialHash: materialHash,
+			ACMEInfo:     current.ACMEInfo,
+			UpdatedAt:    issuedAt,
+		}, now)
+	}
+
+	originalRows := append([]storage.ManagedCertificateRow(nil), rows...)
+	rows[targetIndex] = managedCertificateToRow(next)
+	if err := s.store.SaveManagedCertificates(ctx, rows); err != nil {
+		return ManagedCertificate{}, err
+	}
+	cleanupManagedCertificateMaterialBestEffort(ctx, s.store, originalRows, rows)
+	if err := s.syncManagedCertificateAgentIDs(ctx, requestedTargetIDs, next.Revision); err != nil {
+		return ManagedCertificate{}, err
+	}
+	return next, nil
+}
+
+func (s *certificateService) syncManagedCertificateAgentIDs(ctx context.Context, agentIDs []string, revision int) error {
+	seen := make(map[string]struct{}, len(agentIDs))
+	for _, agentID := range agentIDs {
+		resolvedID := strings.TrimSpace(agentID)
+		if resolvedID == "" {
+			continue
+		}
+		if _, ok := seen[resolvedID]; ok {
+			continue
+		}
+		seen[resolvedID] = struct{}{}
+
+		resolvedID, _, capabilities, err := s.resolveCertificateTarget(ctx, resolvedID)
+		if errors.Is(err, ErrAgentNotFound) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if !agentHasCapability(capabilities, "cert_install") {
+			continue
+		}
+		if s.cfg.EnableLocalAgent && resolvedID == s.cfg.LocalAgentID {
+			if err := s.applyLocalManagedCertificateSync(ctx); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, revision); err != nil {
+			if errors.Is(err, ErrAgentNotFound) {
+				continue
+			}
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *certificateService) applyLocalManagedCertificateSync(ctx context.Context) error {
+	localStore, ok := s.store.(localManagedCertificateSyncStore)
+	if !ok {
+		return fmt.Errorf("local managed certificate sync requires local snapshot support")
+	}
+	snapshot, err := localStore.LoadLocalSnapshot(ctx, s.cfg.LocalAgentID)
+	if err != nil {
+		return err
+	}
+	return localStore.SaveLocalRuntimeState(ctx, s.cfg.LocalAgentID, storage.RuntimeState{
+		CurrentRevision:   snapshot.Revision,
+		Status:            "success",
+		LastApplyRevision: snapshot.Revision,
+		LastApplyStatus:   "success",
+	})
+}
+
+func (s *certificateService) bumpRemoteDesiredRevision(ctx context.Context, agentID string, revision int) error {
+	if s.cfg.EnableLocalAgent && agentID == s.cfg.LocalAgentID {
+		return nil
+	}
+
+	rows, err := s.store.ListAgents(ctx)
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		if row.ID != agentID {
+			continue
+		}
+		if row.DesiredRevision < revision {
+			row.DesiredRevision = revision
+		}
+		return s.store.SaveAgent(ctx, row)
+	}
+	return ErrAgentNotFound
+}
+
+func managedCertificateMutationRevision(current ManagedCertificate, maxRevision int, bumpRevision bool) int {
+	if !bumpRevision {
+		return current.Revision
+	}
+	return maxRevision + 1
+}
+
+func unionManagedCertificateAgentIDs(previous []string, next []string) []string {
+	seen := make(map[string]struct{}, len(previous)+len(next))
+	combined := make([]string, 0, len(previous)+len(next))
+	for _, values := range [][]string{previous, next} {
+		for _, value := range values {
+			trimmed := strings.TrimSpace(value)
+			if trimmed == "" {
+				continue
+			}
+			if _, ok := seen[trimmed]; ok {
+				continue
+			}
+			seen[trimmed] = struct{}{}
+			combined = append(combined, trimmed)
+		}
+	}
+	return combined
+}
+
+func differenceManagedCertificateAgentIDs(previous []string, next []string) []string {
+	nextSet := make(map[string]struct{}, len(next))
+	for _, value := range next {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		nextSet[trimmed] = struct{}{}
+	}
+
+	removed := make([]string, 0, len(previous))
+	seen := make(map[string]struct{}, len(previous))
+	for _, value := range previous {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		if _, ok := nextSet[trimmed]; ok {
+			continue
+		}
+		if _, ok := seen[trimmed]; ok {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		removed = append(removed, trimmed)
+	}
+	return removed
+}
+
 func (s *certificateService) assertManagedCertificateManualIssueAllowed(cert ManagedCertificate) error {
 	if cert.IssuerMode != "master_cf_dns" {
 		return fmt.Errorf("%w: certificate is not configured for master_cf_dns", ErrInvalidArgument)
@@ -719,11 +1018,11 @@ func resolveManagedCertificateIssueMaterial(cert ManagedCertificate, result mana
 	return bundle, nil
 }
 
-func (s *certificateService) failManagedCertificateIssue(ctx context.Context, rows []storage.ManagedCertificateRow, targetIndex int, current ManagedCertificate, maxRevision int, issueErr error) (ManagedCertificate, error) {
+func (s *certificateService) failManagedCertificateIssue(ctx context.Context, rows []storage.ManagedCertificateRow, targetIndex int, current ManagedCertificate, maxRevision int, issueErr error, bumpRevision bool) (ManagedCertificate, error) {
 	failed := current
 	failed.Status = "error"
 	failed.LastError = issueErr.Error()
-	failed.Revision = maxRevision + 1
+	failed.Revision = managedCertificateMutationRevision(current, maxRevision, bumpRevision)
 
 	nextRows := append([]storage.ManagedCertificateRow(nil), rows...)
 	originalRows := append([]storage.ManagedCertificateRow(nil), rows...)
