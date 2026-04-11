@@ -873,6 +873,64 @@ func TestCertificateServiceIssueMasterCFDNSMaterialPersistenceFailureRestoresSta
 	}
 }
 
+func TestCertificateServiceIssueMasterCFDNSFirstIssueMaterialPersistenceFailureWithCleanupFailure(t *testing.T) {
+	issued := mustCreateSelfSignedCA(t, "master-issue-first-no-previous.example.com")
+	store := &relayCertStore{
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              72,
+			Domain:          "master-issue-first-no-previous.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "master_cf_dns",
+			TargetAgentIDs:  `["local"]`,
+			Status:          "pending",
+			LastError:       "",
+			MaterialHash:    "",
+			CertificateType: "acme",
+			Usage:           "https",
+			Revision:        6,
+		}},
+		saveMaterialErrs: []error{
+			errors.New("persist failed"),
+		},
+		saveMaterialPartialWriteOnError: true,
+		cleanupErrs:                     []error{errors.New("cleanup failed")},
+	}
+	issuer := &fakeManagedCertificateRenewalIssuer{
+		results: map[int]managedCertificateRenewalResult{
+			72: {
+				Changed:     true,
+				LastIssueAt: "2026-04-11T18:19:20Z",
+				Material: storage.ManagedCertificateBundle{
+					Domain:  "master-issue-first-no-previous.example.com",
+					CertPEM: issued.CertPEM,
+					KeyPEM:  issued.KeyPEM,
+				},
+			},
+		},
+	}
+	svc := newCertificateServiceWithRenewal(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store, issuer)
+
+	_, err := svc.Issue(context.Background(), "local", 72)
+	if err == nil {
+		t.Fatal("expected Issue() error")
+	}
+	if !strings.Contains(err.Error(), "restore failed: cleanup failed") {
+		t.Fatalf("Issue() error = %v", err)
+	}
+
+	row := managedCertificateFromRow(store.managedCerts[0])
+	if row.Status != "pending" || row.Revision != 6 || row.LastError != "" {
+		t.Fatalf("row changed unexpectedly after restore failure: %+v", row)
+	}
+	if store.saveManagedCall != 0 {
+		t.Fatalf("saveManagedCall = %d, want 0", store.saveManagedCall)
+	}
+}
+
 func TestCertificateServiceIssueMasterCFDNSRejectsIneligibleCertificates(t *testing.T) {
 	store := &relayCertStore{
 		managedCerts: []storage.ManagedCertificateRow{
@@ -1341,6 +1399,20 @@ func TestCertificateServiceRunRenewalPassStopsAfterIssuerFailure(t *testing.T) {
 	skipped := managedCertificateFromRow(store.managedCerts[2])
 	if skipped.Status != "pending" || skipped.Revision != 10 {
 		t.Fatalf("skipped = %+v", skipped)
+	}
+}
+
+func TestNewCertificateServiceDoesNotAutoWireManagedDNSRenewalIssuer(t *testing.T) {
+	t.Setenv("CF_TOKEN", "token")
+
+	svc := NewCertificateService(config.Config{
+		EnableLocalAgent:              true,
+		LocalAgentID:                  "local",
+		ManagedDNSCertificatesEnabled: true,
+	}, &relayCertStore{})
+
+	if svc.renewalIssuer != nil {
+		t.Fatal("renewalIssuer should not be auto-wired by default constructor")
 	}
 }
 

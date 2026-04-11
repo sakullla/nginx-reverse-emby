@@ -106,9 +106,6 @@ func NewCertificateService(cfg config.Config, store storage.Store) *certificateS
 }
 
 func newCertificateServiceWithRenewal(cfg config.Config, store storage.Store, issuer managedCertificateRenewalIssuer) *certificateService {
-	if issuer == nil && cfg.ManagedDNSCertificatesEnabled {
-		issuer = newMasterCFDNSManagedCertificateIssuer()
-	}
 	return &certificateService{
 		cfg:           cfg,
 		store:         store,
@@ -392,11 +389,15 @@ func (s *certificateService) Issue(ctx context.Context, agentID string, id int) 
 		if err := s.assertManagedCertificateManualIssueAllowed(current); err != nil {
 			return ManagedCertificate{}, err
 		}
-		if s.renewalIssuer == nil {
+		issuer := s.renewalIssuer
+		if issuer == nil && s.cfg.ManagedDNSCertificatesEnabled {
+			issuer = newMasterCFDNSManagedCertificateIssuer()
+		}
+		if issuer == nil {
 			return ManagedCertificate{}, fmt.Errorf("%w: managed certificates require ACME_DNS_PROVIDER=cf and CF_Token", ErrInvalidArgument)
 		}
 
-		issueResult, err := s.renewalIssuer.Issue(ctx, current)
+		issueResult, err := issuer.Issue(ctx, current)
 		if err != nil {
 			return s.failManagedCertificateIssue(ctx, rows, targetIndex, current, maxRevision, err)
 		}
@@ -521,13 +522,11 @@ func (s *certificateService) restoreManagedCertificateMaterialAfterIssueFailure(
 	if previousFound {
 		return s.store.SaveManagedCertificateMaterial(ctx, cert.Domain, previous)
 	}
-	cleanupManagedCertificateMaterialBestEffort(
+	return s.store.CleanupManagedCertificateMaterial(
 		ctx,
-		s.store,
 		[]storage.ManagedCertificateRow{managedCertificateToRow(cert)},
 		[]storage.ManagedCertificateRow{},
 	)
-	return nil
 }
 
 func (s *certificateService) ensureAgentExists(ctx context.Context, agentID string) (string, error) {
