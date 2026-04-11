@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -325,7 +327,7 @@ func TestAgentServiceHeartbeatReturnsFullSnapshotSyncPayload(t *testing.T) {
 	}
 }
 
-func TestAgentServiceHeartbeatReturnsEmptyArraysWhenUpToDate(t *testing.T) {
+func TestAgentServiceHeartbeatOmitsSyncPayloadWhenUpToDateButKeepsRelayListeners(t *testing.T) {
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
 			ID:              "remote-b",
@@ -376,14 +378,28 @@ func TestAgentServiceHeartbeatReturnsEmptyArraysWhenUpToDate(t *testing.T) {
 	if reply.DesiredRevision != 7 || reply.DesiredVersion != "3.0.0" {
 		t.Fatalf("desired sync fields = %+v", reply)
 	}
-	if len(reply.Rules) != 0 || len(reply.L4Rules) != 0 || len(reply.RelayListeners) != 0 {
-		t.Fatalf("expected empty sync arrays when up-to-date: %+v", reply)
+	if reply.Rules != nil || reply.L4Rules != nil || reply.Certificates != nil || reply.CertificatePolicies != nil {
+		t.Fatalf("expected non-relay sync payloads omitted when up-to-date: %+v", reply)
 	}
-	if len(reply.Certificates) != 0 || len(reply.CertificatePolicies) != 0 {
-		t.Fatalf("expected empty cert arrays when up-to-date: %+v", reply)
+	if len(reply.RelayListeners) != 1 || reply.RelayListeners[0].ID != 11 {
+		t.Fatalf("expected relay listeners to remain populated when up-to-date: %+v", reply.RelayListeners)
 	}
 	if reply.VersionPackage != "https://example.com/agent-linux.tar.gz" || reply.VersionSHA256 != "sha-linux" {
 		t.Fatalf("version package fields = %q / %q", reply.VersionPackage, reply.VersionSHA256)
+	}
+	encoded, err := json.Marshal(reply)
+	if err != nil {
+		t.Fatalf("json.Marshal(reply) error = %v", err)
+	}
+	encodedText := string(encoded)
+	if strings.Contains(encodedText, `"rules"`) ||
+		strings.Contains(encodedText, `"l4_rules"`) ||
+		strings.Contains(encodedText, `"certificates"`) ||
+		strings.Contains(encodedText, `"certificate_policies"`) {
+		t.Fatalf("unexpected sync keys encoded when up-to-date: %s", encodedText)
+	}
+	if !strings.Contains(encodedText, `"relay_listeners"`) {
+		t.Fatalf("expected relay_listeners key in encoded payload: %s", encodedText)
 	}
 	if store.lastSnapshotInput.CurrentRevision != 7 || store.lastSnapshotInput.DesiredRevision != 1 {
 		t.Fatalf("snapshot input revision state = %+v", store.lastSnapshotInput)

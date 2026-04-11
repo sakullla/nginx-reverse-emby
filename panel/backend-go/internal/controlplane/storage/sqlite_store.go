@@ -769,9 +769,15 @@ func referencedRelayListenerIDs(httpRows []HTTPRuleRow, l4Rows []L4RuleRow) []in
 	}
 
 	for _, row := range httpRows {
+		if !row.Enabled {
+			continue
+		}
 		addRelayChain(row.RelayChainJSON)
 	}
 	for _, row := range l4Rows {
+		if !row.Enabled {
+			continue
+		}
 		addRelayChain(row.RelayChainJSON)
 	}
 	return referenced
@@ -949,7 +955,7 @@ func snapshotCertificatePolicies(rows []ManagedCertificateRow, agentID string) [
 
 func filterManagedCertificatesForAgent(rows []ManagedCertificateRow, agentID string, relayRows []RelayListenerRow) []ManagedCertificateRow {
 	filtered := make([]ManagedCertificateRow, 0, len(rows))
-	referencedCertificateIDs := relayReferencedCertificateIDs(relayRows)
+	referencedCertificateIDs := relayTrustedCACertificateIDs(relayRows)
 	for _, row := range rows {
 		if referencedCertificateIDs[row.ID] || containsString(parseStringSlice(row.TargetAgentIDs), agentID) {
 			filtered = append(filtered, row)
@@ -1184,12 +1190,9 @@ func parseIntSlice(raw string) []int {
 	return normalized
 }
 
-func relayReferencedCertificateIDs(rows []RelayListenerRow) map[int]bool {
+func relayTrustedCACertificateIDs(rows []RelayListenerRow) map[int]bool {
 	ids := make(map[int]bool)
 	for _, row := range rows {
-		if row.CertificateID != nil && *row.CertificateID > 0 {
-			ids[*row.CertificateID] = true
-		}
 		for _, certID := range parseIntSlice(row.TrustedCACertificateIDs) {
 			if certID > 0 {
 				ids[certID] = true

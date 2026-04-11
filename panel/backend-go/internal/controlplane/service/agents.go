@@ -93,11 +93,11 @@ type HeartbeatReply struct {
 	VersionPackage      string                             `json:"version_package,omitempty"`
 	VersionPackageMeta  *storage.VersionPackage            `json:"version_package_meta,omitempty"`
 	VersionSHA256       string                             `json:"version_sha256,omitempty"`
-	Rules               []storage.HTTPRule                 `json:"rules"`
-	L4Rules             []storage.L4Rule                   `json:"l4_rules"`
+	Rules               []storage.HTTPRule                 `json:"rules,omitempty"`
+	L4Rules             []storage.L4Rule                   `json:"l4_rules,omitempty"`
 	RelayListeners      []storage.RelayListener            `json:"relay_listeners"`
-	Certificates        []storage.ManagedCertificateBundle `json:"certificates"`
-	CertificatePolicies []storage.ManagedCertificatePolicy `json:"certificate_policies"`
+	Certificates        []storage.ManagedCertificateBundle `json:"certificates,omitempty"`
+	CertificatePolicies []storage.ManagedCertificatePolicy `json:"certificate_policies,omitempty"`
 }
 
 type RegisterRequest struct {
@@ -359,11 +359,10 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 		reply.VersionPackageMeta = &pkgCopy
 	}
 	if !reply.HasUpdate {
-		reply.Rules = []storage.HTTPRule{}
-		reply.L4Rules = []storage.L4Rule{}
-		reply.RelayListeners = []storage.RelayListener{}
-		reply.Certificates = []storage.ManagedCertificateBundle{}
-		reply.CertificatePolicies = []storage.ManagedCertificatePolicy{}
+		reply.Rules = nil
+		reply.L4Rules = nil
+		reply.Certificates = nil
+		reply.CertificatePolicies = nil
 	}
 	return reply, nil
 }
@@ -371,15 +370,7 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 func (s *agentService) loadHeartbeatSnapshot(ctx context.Context, row storage.AgentRow) (storage.Snapshot, error) {
 	loader, ok := any(s.store).(agentSnapshotLoader)
 	if !ok {
-		return storage.Snapshot{
-			DesiredVersion:      row.DesiredVersion,
-			Revision:            int64(row.DesiredRevision),
-			Rules:               []storage.HTTPRule{},
-			L4Rules:             []storage.L4Rule{},
-			RelayListeners:      []storage.RelayListener{},
-			Certificates:        []storage.ManagedCertificateBundle{},
-			CertificatePolicies: []storage.ManagedCertificatePolicy{},
-		}, nil
+		return storage.Snapshot{}, errors.New("store does not implement LoadAgentSnapshot")
 	}
 	return loader.LoadAgentSnapshot(ctx, row.ID, storage.AgentSnapshotInput{
 		DesiredVersion:  row.DesiredVersion,
