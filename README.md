@@ -104,8 +104,8 @@ Windows 执行面同样使用 Go agent，但当前控制面镜像默认只公开
 常用验证命令：
 
 ```bash
-cd panel/backend && npm test
-cd panel/backend && node --check server.js
+cd panel/backend-go && go test ./...
+cd panel/backend-go && go run ./cmd/nre-control-plane
 cd panel/frontend && npm run build
 cd go-agent && go test ./...
 docker build -t nginx-reverse-emby .
