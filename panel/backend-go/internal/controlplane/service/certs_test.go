@@ -1481,6 +1481,71 @@ func TestCertificateServiceGlobalDeleteRemovesSharedCertificateCompletely(t *tes
 	}
 }
 
+func TestCertificateServiceGlobalCreateKeepsEmptyTargetAgentIDsWhenOmittedOrExplicitlyEmpty(t *testing.T) {
+	svc := NewCertificateService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, &relayCertStore{})
+
+	createdOmitted, err := svc.Create(context.Background(), "", ManagedCertificateInput{
+		Domain:     stringPtr("global-omitted.example.com"),
+		IssuerMode: stringPtr("local_http01"),
+	})
+	if err != nil {
+		t.Fatalf("Create(global omitted targets) error = %v", err)
+	}
+	if len(createdOmitted.TargetAgentIDs) != 0 {
+		t.Fatalf("createdOmitted.TargetAgentIDs = %+v", createdOmitted.TargetAgentIDs)
+	}
+
+	createdExplicitEmpty, err := svc.Create(context.Background(), "", ManagedCertificateInput{
+		Domain:         stringPtr("global-empty.example.com"),
+		IssuerMode:     stringPtr("local_http01"),
+		TargetAgentIDs: &[]string{},
+	})
+	if err != nil {
+		t.Fatalf("Create(global empty targets) error = %v", err)
+	}
+	if len(createdExplicitEmpty.TargetAgentIDs) != 0 {
+		t.Fatalf("createdExplicitEmpty.TargetAgentIDs = %+v", createdExplicitEmpty.TargetAgentIDs)
+	}
+}
+
+func TestCertificateServiceGlobalUpdatePreservesExplicitEmptyTargetAgentIDs(t *testing.T) {
+	store := &relayCertStore{
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              95,
+			Domain:          "global-update.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  `["edge-1"]`,
+			Status:          "pending",
+			Usage:           "https",
+			CertificateType: "acme",
+			Revision:        8,
+		}},
+	}
+	svc := NewCertificateService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	updated, err := svc.Update(context.Background(), "", 95, ManagedCertificateInput{
+		TargetAgentIDs: &[]string{},
+	})
+	if err != nil {
+		t.Fatalf("Update(global empty targets) error = %v", err)
+	}
+	if len(updated.TargetAgentIDs) != 0 {
+		t.Fatalf("updated.TargetAgentIDs = %+v", updated.TargetAgentIDs)
+	}
+	row := managedCertificateFromRow(store.managedCerts[0])
+	if len(row.TargetAgentIDs) != 0 {
+		t.Fatalf("row.TargetAgentIDs = %+v", row.TargetAgentIDs)
+	}
+}
+
 func TestCertificateServiceDeleteRejectsReferencedAutoRelayListenerCertificate(t *testing.T) {
 	store := &relayCertStore{
 		relayByAgentID: map[string][]storage.RelayListenerRow{

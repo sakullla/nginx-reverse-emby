@@ -174,7 +174,8 @@ func (s *certificateService) Create(ctx context.Context, agentID string, input M
 		}
 	}
 
-	cert, err := normalizeManagedCertificateInput(input, ManagedCertificate{}, maxID+1, resolvedID)
+	allowEmptyTargets := resolvedID == ""
+	cert, err := normalizeManagedCertificateInput(input, ManagedCertificate{}, maxID+1, resolvedID, allowEmptyTargets)
 	if err != nil {
 		return ManagedCertificate{}, err
 	}
@@ -259,7 +260,8 @@ func (s *certificateService) Update(ctx context.Context, agentID string, id int,
 	if defaultAgentID == "" {
 		defaultAgentID = s.cfg.LocalAgentID
 	}
-	next, err := normalizeManagedCertificateInput(input, current, id, defaultAgentID)
+	allowEmptyTargets := resolvedID == ""
+	next, err := normalizeManagedCertificateInput(input, current, id, defaultAgentID, allowEmptyTargets)
 	if err != nil {
 		return ManagedCertificate{}, err
 	}
@@ -805,7 +807,7 @@ func (s *certificateService) resolveUploadedMaterialForMutation(ctx context.Cont
 	return bundle, true, nil
 }
 
-func normalizeManagedCertificateInput(input ManagedCertificateInput, fallback ManagedCertificate, suggestedID int, defaultAgentID string) (ManagedCertificate, error) {
+func normalizeManagedCertificateInput(input ManagedCertificateInput, fallback ManagedCertificate, suggestedID int, defaultAgentID string, allowEmptyTargets bool) (ManagedCertificate, error) {
 	id := fallback.ID
 	if input.ID != nil && *input.ID > 0 {
 		id = *input.ID
@@ -859,7 +861,7 @@ func normalizeManagedCertificateInput(input ManagedCertificateInput, fallback Ma
 	if input.TargetAgentIDs != nil {
 		targetAgentIDs = normalizeTags(*input.TargetAgentIDs)
 	}
-	if len(targetAgentIDs) == 0 {
+	if len(targetAgentIDs) == 0 && !allowEmptyTargets {
 		targetAgentIDs = []string{defaultAgentID}
 	}
 
