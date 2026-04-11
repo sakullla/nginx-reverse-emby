@@ -488,6 +488,8 @@ func (s *certificateService) resolveUploadedMaterialForMutation(ctx context.Cont
 	certificatePEM := normalizeUploadedPEMField(input.CertificatePEM)
 	privateKeyPEM := normalizeUploadedPEMField(input.PrivateKeyPEM)
 	caPEM := normalizeUploadedPEMField(input.CAPEM)
+	certificateFromPreviousRaw := false
+	caFromPreviousRaw := false
 
 	if previous == nil {
 		joinedCertificatePEM := joinUploadedCertificatePEM(certificatePEM, caPEM)
@@ -499,8 +501,6 @@ func (s *certificateService) resolveUploadedMaterialForMutation(ctx context.Cont
 		if err := validateUploadedManagedCertificateBundle(bundle); err != nil {
 			return storage.ManagedCertificateBundle{}, false, err
 		}
-		bundle.CertPEM = strings.TrimSpace(bundle.CertPEM)
-		bundle.KeyPEM = strings.TrimSpace(bundle.KeyPEM)
 		return bundle, true, nil
 	}
 
@@ -518,16 +518,36 @@ func (s *certificateService) resolveUploadedMaterialForMutation(ctx context.Cont
 		}
 		if !hasCertificate {
 			certificatePEM = previousLeafPEM
+			certificateFromPreviousRaw = true
 		}
 		if !hasKey {
-			privateKeyPEM = strings.TrimSpace(previousMaterial.KeyPEM)
+			privateKeyPEM = previousMaterial.KeyPEM
 		}
 		if !hasCA {
 			caPEM = previousCAPEM
+			caFromPreviousRaw = true
 		}
 	}
 
-	joinedCertificatePEM := joinUploadedCertificatePEM(certificatePEM, caPEM)
+	joinedCertificatePEM := ""
+	switch {
+	case certificateFromPreviousRaw && caFromPreviousRaw:
+		joinedCertificatePEM = certificatePEM + caPEM
+	case certificateFromPreviousRaw:
+		if strings.TrimSpace(caPEM) == "" {
+			joinedCertificatePEM = certificatePEM
+		} else {
+			joinedCertificatePEM = certificatePEM + "\n" + strings.TrimSpace(caPEM)
+		}
+	case caFromPreviousRaw:
+		if strings.TrimSpace(certificatePEM) == "" {
+			joinedCertificatePEM = caPEM
+		} else {
+			joinedCertificatePEM = strings.TrimSpace(certificatePEM) + caPEM
+		}
+	default:
+		joinedCertificatePEM = joinUploadedCertificatePEM(certificatePEM, caPEM)
+	}
 	bundle := storage.ManagedCertificateBundle{
 		Domain:  next.Domain,
 		CertPEM: joinedCertificatePEM,
@@ -536,8 +556,6 @@ func (s *certificateService) resolveUploadedMaterialForMutation(ctx context.Cont
 	if err := validateUploadedManagedCertificateBundle(bundle); err != nil {
 		return storage.ManagedCertificateBundle{}, false, err
 	}
-	bundle.CertPEM = strings.TrimSpace(bundle.CertPEM)
-	bundle.KeyPEM = strings.TrimSpace(bundle.KeyPEM)
 	return bundle, true, nil
 }
 

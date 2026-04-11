@@ -364,6 +364,58 @@ func TestCertificateServiceUpdateUploadedMergesOmittedPEMFieldsFromPreviousMater
 	}
 }
 
+func TestCertificateServiceUpdateUploadedOmittedFieldsPreserveRawBytesAndHash(t *testing.T) {
+	ca := mustCreateSelfSignedCA(t, "Upload Raw Preserve CA")
+	leaf := mustCreateLeafSignedByCA(t, "raw-preserve.example.com", ca)
+	leafPEM := strings.TrimSpace(leaf.CertPEM)
+	caPEM := strings.TrimSpace(ca.CertPEM)
+	preservedCert := leafPEM + "\n\n\n" + caPEM + "\n"
+	preservedKey := strings.TrimSpace(leaf.KeyPEM)
+	preservedHash := hashManagedCertificateMaterial(preservedCert, preservedKey)
+
+	store := &relayCertStore{
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              33,
+			Domain:          "raw-preserve.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  `["local"]`,
+			Status:          "pending",
+			MaterialHash:    preservedHash,
+			CertificateType: "uploaded",
+			Usage:           "https",
+			Revision:        6,
+		}},
+		materialsByHost: map[string]relayMaterial{
+			"raw-preserve.example.com": {CertPEM: preservedCert, KeyPEM: preservedKey},
+		},
+	}
+	svc := NewCertificateService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	updated, err := svc.Update(context.Background(), "local", 33, ManagedCertificateInput{
+		PrivateKeyPEM: stringPtr(preservedKey),
+		Tags:          &[]string{"metadata-only"},
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	material := store.materialsByHost["raw-preserve.example.com"]
+	if material.CertPEM != preservedCert {
+		t.Fatalf("material.CertPEM changed unexpectedly")
+	}
+	if material.KeyPEM != preservedKey {
+		t.Fatalf("material.KeyPEM changed unexpectedly")
+	}
+	if updated.MaterialHash != preservedHash {
+		t.Fatalf("updated.MaterialHash = %q, want %q", updated.MaterialHash, preservedHash)
+	}
+}
+
 func TestCertificateServiceUpdateUploadedSameDomainRestoreMaterialOnPersistenceFailure(t *testing.T) {
 	oldCA := mustCreateSelfSignedCA(t, "Upload Rollback CA old")
 	oldLeaf := mustCreateLeafSignedByCA(t, "rollback.example.com", oldCA)

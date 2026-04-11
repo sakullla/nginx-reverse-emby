@@ -2,7 +2,6 @@ package service
 
 import (
 	"crypto/tls"
-	"encoding/pem"
 	"fmt"
 	"strings"
 
@@ -47,25 +46,19 @@ func validateUploadedManagedCertificateBundle(bundle storage.ManagedCertificateB
 }
 
 func splitUploadedCertificatePEM(certPEM string) (string, string, error) {
-	rest := []byte(strings.TrimSpace(certPEM))
-	blocks := make([]string, 0, 2)
-	for len(rest) > 0 {
-		block, next := pem.Decode(rest)
-		if block == nil {
-			return "", "", fmt.Errorf("%w: invalid uploaded certificate material", ErrInvalidArgument)
-		}
-		if block.Type != "CERTIFICATE" {
-			return "", "", fmt.Errorf("%w: invalid uploaded certificate material", ErrInvalidArgument)
-		}
-		blocks = append(blocks, strings.TrimSpace(string(pem.EncodeToMemory(block))))
-		rest = bytesTrimSpace(next)
-	}
-	if len(blocks) == 0 {
+	raw := certPEM
+	beginMarker := "-----BEGIN CERTIFICATE-----"
+	endMarker := "-----END CERTIFICATE-----"
+	beginIndex := strings.Index(raw, beginMarker)
+	if beginIndex < 0 {
 		return "", "", fmt.Errorf("%w: invalid uploaded certificate material", ErrInvalidArgument)
 	}
-	leaf := blocks[0]
-	if len(blocks) == 1 {
-		return leaf, "", nil
+	endIndexRelative := strings.Index(raw[beginIndex:], endMarker)
+	if endIndexRelative < 0 {
+		return "", "", fmt.Errorf("%w: invalid uploaded certificate material", ErrInvalidArgument)
 	}
-	return leaf, strings.Join(blocks[1:], "\n"), nil
+	endIndex := beginIndex + endIndexRelative + len(endMarker)
+	leaf := raw[:endIndex]
+	ca := raw[endIndex:]
+	return leaf, ca, nil
 }
