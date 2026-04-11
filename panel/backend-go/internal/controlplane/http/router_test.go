@@ -1386,144 +1386,148 @@ func TestRouterServesHTTPRuleCRUDAndValidation(t *testing.T) {
 func TestRouterLegacyLocalAPIRoutesMapToLocalAgent(t *testing.T) {
 	agentState := &fakeAgentServiceState{}
 	ruleState := &fakeRuleServiceState{}
-	router, err := NewRouter(Dependencies{
-		Config: config.Config{
-			PanelToken:   "secret",
-			LocalAgentID: "local-node",
-		},
-		SystemService: fakeSystemService{
-			info: service.SystemInfo{
-				Role:              "master",
-				LocalApplyRuntime: "go-agent",
-				DefaultAgentID:    "local-node",
-				LocalAgentEnabled: true,
+	for _, prefix := range []string{"/api", "/panel-api"} {
+		agentState = &fakeAgentServiceState{}
+		ruleState = &fakeRuleServiceState{}
+		router, err := NewRouter(Dependencies{
+			Config: config.Config{
+				PanelToken:   "secret",
+				LocalAgentID: "local-node",
 			},
-		},
-		AgentService: fakeAgentService{
-			applyResult: service.ApplyAgentResult{Message: "applied"},
-			statsByID: map[string]service.AgentStats{
-				"local-node": {"requests": "9"},
+			SystemService: fakeSystemService{
+				info: service.SystemInfo{
+					Role:              "master",
+					LocalApplyRuntime: "go-agent",
+					DefaultAgentID:    "local-node",
+					LocalAgentEnabled: true,
+				},
 			},
-			state: agentState,
-		},
-		RuleService: fakeRuleService{
-			rules: map[string][]service.HTTPRule{
-				"local-node": {{
-					ID:          7,
-					AgentID:     "local-node",
-					FrontendURL: "https://media.example.com",
-					BackendURL:  "http://emby:8096",
-				}},
+			AgentService: fakeAgentService{
+				applyResult: service.ApplyAgentResult{Message: "applied"},
+				statsByID: map[string]service.AgentStats{
+					"local-node": {"requests": "9"},
+				},
+				state: agentState,
 			},
-			createdRule: service.HTTPRule{ID: 8, AgentID: "local-node", FrontendURL: "https://new.example.com", BackendURL: "http://emby:8096"},
-			updatedRule: service.HTTPRule{ID: 8, AgentID: "local-node", FrontendURL: "https://updated.example.com", BackendURL: "http://emby:8096"},
-			deletedRule: service.HTTPRule{ID: 8, AgentID: "local-node", FrontendURL: "https://updated.example.com", BackendURL: "http://emby:8096"},
-			state:       ruleState,
-		},
-		L4RuleService:        fakeL4RuleService{},
-		VersionPolicyService: fakeVersionPolicyService{},
-		RelayListenerService: fakeRelayListenerService{},
-		CertificateService:   fakeCertificateService{},
-	})
-	if err != nil {
-		t.Fatalf("NewRouter() error = %v", err)
-	}
+			RuleService: fakeRuleService{
+				rules: map[string][]service.HTTPRule{
+					"local-node": {{
+						ID:          7,
+						AgentID:     "local-node",
+						FrontendURL: "https://media.example.com",
+						BackendURL:  "http://emby:8096",
+					}},
+				},
+				createdRule: service.HTTPRule{ID: 8, AgentID: "local-node", FrontendURL: "https://new.example.com", BackendURL: "http://emby:8096"},
+				updatedRule: service.HTTPRule{ID: 8, AgentID: "local-node", FrontendURL: "https://updated.example.com", BackendURL: "http://emby:8096"},
+				deletedRule: service.HTTPRule{ID: 8, AgentID: "local-node", FrontendURL: "https://updated.example.com", BackendURL: "http://emby:8096"},
+				state:       ruleState,
+			},
+			L4RuleService:        fakeL4RuleService{},
+			VersionPolicyService: fakeVersionPolicyService{},
+			RelayListenerService: fakeRelayListenerService{},
+			CertificateService:   fakeCertificateService{},
+		})
+		if err != nil {
+			t.Fatalf("NewRouter() error = %v", err)
+		}
 
-	unauthorizedReq := httptest.NewRequest(http.MethodGet, "/api/rules", nil)
-	unauthorizedResp := httptest.NewRecorder()
-	router.ServeHTTP(unauthorizedResp, unauthorizedReq)
-	if unauthorizedResp.Code != http.StatusUnauthorized {
-		t.Fatalf("GET /api/rules without token = %d", unauthorizedResp.Code)
-	}
+		unauthorizedReq := httptest.NewRequest(http.MethodGet, prefix+"/rules", nil)
+		unauthorizedResp := httptest.NewRecorder()
+		router.ServeHTTP(unauthorizedResp, unauthorizedReq)
+		if unauthorizedResp.Code != http.StatusUnauthorized {
+			t.Fatalf("GET %s/rules without token = %d", prefix, unauthorizedResp.Code)
+		}
 
-	getRulesReq := httptest.NewRequest(http.MethodGet, "/api/rules", nil)
-	getRulesReq.Header.Set("X-Panel-Token", "secret")
-	getRulesResp := httptest.NewRecorder()
-	router.ServeHTTP(getRulesResp, getRulesReq)
-	if getRulesResp.Code != http.StatusOK {
-		t.Fatalf("GET /api/rules = %d", getRulesResp.Code)
-	}
-	var getRulesPayload map[string]any
-	if err := json.Unmarshal(getRulesResp.Body.Bytes(), &getRulesPayload); err != nil {
-		t.Fatalf("json.Unmarshal(get rules) error = %v", err)
-	}
-	if _, ok := getRulesPayload["rules"]; !ok {
-		t.Fatalf("GET /api/rules payload missing rules: %+v", getRulesPayload)
-	}
+		getRulesReq := httptest.NewRequest(http.MethodGet, prefix+"/rules", nil)
+		getRulesReq.Header.Set("X-Panel-Token", "secret")
+		getRulesResp := httptest.NewRecorder()
+		router.ServeHTTP(getRulesResp, getRulesReq)
+		if getRulesResp.Code != http.StatusOK {
+			t.Fatalf("GET %s/rules = %d", prefix, getRulesResp.Code)
+		}
+		var getRulesPayload map[string]any
+		if err := json.Unmarshal(getRulesResp.Body.Bytes(), &getRulesPayload); err != nil {
+			t.Fatalf("json.Unmarshal(get rules) error = %v", err)
+		}
+		if _, ok := getRulesPayload["rules"]; !ok {
+			t.Fatalf("GET %s/rules payload missing rules: %+v", prefix, getRulesPayload)
+		}
 
-	createRuleReq := httptest.NewRequest(http.MethodPost, "/api/rules", bytes.NewBufferString(`{"frontend_url":"https://new.example.com","backend_url":"http://emby:8096"}`))
-	createRuleReq.Header.Set("X-Panel-Token", "secret")
-	createRuleReq.Header.Set("Content-Type", "application/json")
-	createRuleResp := httptest.NewRecorder()
-	router.ServeHTTP(createRuleResp, createRuleReq)
-	if createRuleResp.Code != http.StatusCreated {
-		t.Fatalf("POST /api/rules = %d", createRuleResp.Code)
-	}
+		createRuleReq := httptest.NewRequest(http.MethodPost, prefix+"/rules", bytes.NewBufferString(`{"frontend_url":"https://new.example.com","backend_url":"http://emby:8096"}`))
+		createRuleReq.Header.Set("X-Panel-Token", "secret")
+		createRuleReq.Header.Set("Content-Type", "application/json")
+		createRuleResp := httptest.NewRecorder()
+		router.ServeHTTP(createRuleResp, createRuleReq)
+		if createRuleResp.Code != http.StatusCreated {
+			t.Fatalf("POST %s/rules = %d", prefix, createRuleResp.Code)
+		}
 
-	updateRuleReq := httptest.NewRequest(http.MethodPut, "/api/rules/8", bytes.NewBufferString(`{"frontend_url":"https://updated.example.com"}`))
-	updateRuleReq.Header.Set("X-Panel-Token", "secret")
-	updateRuleReq.Header.Set("Content-Type", "application/json")
-	updateRuleResp := httptest.NewRecorder()
-	router.ServeHTTP(updateRuleResp, updateRuleReq)
-	if updateRuleResp.Code != http.StatusOK {
-		t.Fatalf("PUT /api/rules/8 = %d", updateRuleResp.Code)
-	}
+		updateRuleReq := httptest.NewRequest(http.MethodPut, prefix+"/rules/8", bytes.NewBufferString(`{"frontend_url":"https://updated.example.com"}`))
+		updateRuleReq.Header.Set("X-Panel-Token", "secret")
+		updateRuleReq.Header.Set("Content-Type", "application/json")
+		updateRuleResp := httptest.NewRecorder()
+		router.ServeHTTP(updateRuleResp, updateRuleReq)
+		if updateRuleResp.Code != http.StatusOK {
+			t.Fatalf("PUT %s/rules/8 = %d", prefix, updateRuleResp.Code)
+		}
 
-	deleteRuleReq := httptest.NewRequest(http.MethodDelete, "/api/rules/8", nil)
-	deleteRuleReq.Header.Set("X-Panel-Token", "secret")
-	deleteRuleResp := httptest.NewRecorder()
-	router.ServeHTTP(deleteRuleResp, deleteRuleReq)
-	if deleteRuleResp.Code != http.StatusOK {
-		t.Fatalf("DELETE /api/rules/8 = %d", deleteRuleResp.Code)
-	}
+		deleteRuleReq := httptest.NewRequest(http.MethodDelete, prefix+"/rules/8", nil)
+		deleteRuleReq.Header.Set("X-Panel-Token", "secret")
+		deleteRuleResp := httptest.NewRecorder()
+		router.ServeHTTP(deleteRuleResp, deleteRuleReq)
+		if deleteRuleResp.Code != http.StatusOK {
+			t.Fatalf("DELETE %s/rules/8 = %d", prefix, deleteRuleResp.Code)
+		}
 
-	statsReq := httptest.NewRequest(http.MethodGet, "/api/stats", nil)
-	statsReq.Header.Set("X-Panel-Token", "secret")
-	statsResp := httptest.NewRecorder()
-	router.ServeHTTP(statsResp, statsReq)
-	if statsResp.Code != http.StatusOK {
-		t.Fatalf("GET /api/stats = %d", statsResp.Code)
-	}
-	var statsPayload map[string]any
-	if err := json.Unmarshal(statsResp.Body.Bytes(), &statsPayload); err != nil {
-		t.Fatalf("json.Unmarshal(stats) error = %v", err)
-	}
-	if _, ok := statsPayload["stats"]; !ok {
-		t.Fatalf("GET /api/stats payload missing stats: %+v", statsPayload)
-	}
+		statsReq := httptest.NewRequest(http.MethodGet, prefix+"/stats", nil)
+		statsReq.Header.Set("X-Panel-Token", "secret")
+		statsResp := httptest.NewRecorder()
+		router.ServeHTTP(statsResp, statsReq)
+		if statsResp.Code != http.StatusOK {
+			t.Fatalf("GET %s/stats = %d", prefix, statsResp.Code)
+		}
+		var statsPayload map[string]any
+		if err := json.Unmarshal(statsResp.Body.Bytes(), &statsPayload); err != nil {
+			t.Fatalf("json.Unmarshal(stats) error = %v", err)
+		}
+		if _, ok := statsPayload["stats"]; !ok {
+			t.Fatalf("GET %s/stats payload missing stats: %+v", prefix, statsPayload)
+		}
 
-	applyReq := httptest.NewRequest(http.MethodPost, "/api/apply", bytes.NewBufferString(`{}`))
-	applyReq.Header.Set("X-Panel-Token", "secret")
-	applyResp := httptest.NewRecorder()
-	router.ServeHTTP(applyResp, applyReq)
-	if applyResp.Code != http.StatusOK {
-		t.Fatalf("POST /api/apply = %d", applyResp.Code)
-	}
-	var applyPayload map[string]any
-	if err := json.Unmarshal(applyResp.Body.Bytes(), &applyPayload); err != nil {
-		t.Fatalf("json.Unmarshal(apply) error = %v", err)
-	}
-	if applyPayload["message"] != "applied" {
-		t.Fatalf("POST /api/apply payload = %+v", applyPayload)
-	}
+		applyReq := httptest.NewRequest(http.MethodPost, prefix+"/apply", bytes.NewBufferString(`{}`))
+		applyReq.Header.Set("X-Panel-Token", "secret")
+		applyResp := httptest.NewRecorder()
+		router.ServeHTTP(applyResp, applyReq)
+		if applyResp.Code != http.StatusOK {
+			t.Fatalf("POST %s/apply = %d", prefix, applyResp.Code)
+		}
+		var applyPayload map[string]any
+		if err := json.Unmarshal(applyResp.Body.Bytes(), &applyPayload); err != nil {
+			t.Fatalf("json.Unmarshal(apply) error = %v", err)
+		}
+		if applyPayload["message"] != "applied" {
+			t.Fatalf("POST %s/apply payload = %+v", prefix, applyPayload)
+		}
 
-	if len(ruleState.listAgentIDs) == 0 || ruleState.listAgentIDs[0] != "local-node" {
-		t.Fatalf("rule list agent context = %+v", ruleState.listAgentIDs)
-	}
-	if len(ruleState.createAgentIDs) == 0 || ruleState.createAgentIDs[0] != "local-node" {
-		t.Fatalf("rule create agent context = %+v", ruleState.createAgentIDs)
-	}
-	if len(ruleState.updateAgentIDs) == 0 || ruleState.updateAgentIDs[0] != "local-node" || len(ruleState.updateIDs) == 0 || ruleState.updateIDs[0] != 8 {
-		t.Fatalf("rule update context = %+v %+v", ruleState.updateAgentIDs, ruleState.updateIDs)
-	}
-	if len(ruleState.deleteAgentIDs) == 0 || ruleState.deleteAgentIDs[0] != "local-node" || len(ruleState.deleteIDs) == 0 || ruleState.deleteIDs[0] != 8 {
-		t.Fatalf("rule delete context = %+v %+v", ruleState.deleteAgentIDs, ruleState.deleteIDs)
-	}
-	if agentState.statsAgentID != "local-node" {
-		t.Fatalf("stats agent context = %q", agentState.statsAgentID)
-	}
-	if agentState.applyAgentID != "local-node" {
-		t.Fatalf("apply agent context = %q", agentState.applyAgentID)
+		if len(ruleState.listAgentIDs) == 0 || ruleState.listAgentIDs[0] != "local-node" {
+			t.Fatalf("rule list agent context = %+v", ruleState.listAgentIDs)
+		}
+		if len(ruleState.createAgentIDs) == 0 || ruleState.createAgentIDs[0] != "local-node" {
+			t.Fatalf("rule create agent context = %+v", ruleState.createAgentIDs)
+		}
+		if len(ruleState.updateAgentIDs) == 0 || ruleState.updateAgentIDs[0] != "local-node" || len(ruleState.updateIDs) == 0 || ruleState.updateIDs[0] != 8 {
+			t.Fatalf("rule update context = %+v %+v", ruleState.updateAgentIDs, ruleState.updateIDs)
+		}
+		if len(ruleState.deleteAgentIDs) == 0 || ruleState.deleteAgentIDs[0] != "local-node" || len(ruleState.deleteIDs) == 0 || ruleState.deleteIDs[0] != 8 {
+			t.Fatalf("rule delete context = %+v %+v", ruleState.deleteAgentIDs, ruleState.deleteIDs)
+		}
+		if agentState.statsAgentID != "local-node" {
+			t.Fatalf("stats agent context = %q", agentState.statsAgentID)
+		}
+		if agentState.applyAgentID != "local-node" {
+			t.Fatalf("apply agent context = %q", agentState.applyAgentID)
+		}
 	}
 }
 
