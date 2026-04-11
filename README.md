@@ -130,6 +130,7 @@ docker compose config
 
 要求：
 
-- `/panel-api/health`、`/panel-api/info`、`/panel-api/agents`、`/panel-api/public/join-agent.sh` 全部返回 2xx
-- Master 容器启动后能正常拉起内嵌 local agent
+- `/panel-api/health`、`/panel-api/info`、`/panel-api/agents`、`/panel-api/agents/local/rules`、`/panel-api/certificates`、`/panel-api/version-policies`、`/panel-api/public/join-agent.sh` 全部返回 2xx
+- `/panel-api/agents` 中必须能看到 `id=local` 且 `is_local=true`
+- `join-agent.sh` 必须继续指向 `/panel-api/public/agent-assets/`
 - 复制数据中的 `panel.db`、managed certificate material 与本地状态都能被纯 Go 控制面直接读取

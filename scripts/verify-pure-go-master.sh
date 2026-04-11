@@ -50,8 +50,19 @@ until curl -fsS "http://127.0.0.1:${HOST_PORT}/panel-api/health" >/dev/null 2>&1
 done
 
 curl -fsS -H "X-Panel-Token: ${PANEL_TOKEN}" "http://127.0.0.1:${HOST_PORT}/panel-api/health" >/dev/null
-curl -fsS -H "X-Panel-Token: ${PANEL_TOKEN}" "http://127.0.0.1:${HOST_PORT}/panel-api/info" >/dev/null
-curl -fsS -H "X-Panel-Token: ${PANEL_TOKEN}" "http://127.0.0.1:${HOST_PORT}/panel-api/agents" >/dev/null
-curl -fsS "http://127.0.0.1:${HOST_PORT}/panel-api/public/join-agent.sh" >/dev/null
+INFO_JSON="$(curl -fsS -H "X-Panel-Token: ${PANEL_TOKEN}" "http://127.0.0.1:${HOST_PORT}/panel-api/info")"
+AGENTS_JSON="$(curl -fsS -H "X-Panel-Token: ${PANEL_TOKEN}" "http://127.0.0.1:${HOST_PORT}/panel-api/agents")"
+RULES_JSON="$(curl -fsS -H "X-Panel-Token: ${PANEL_TOKEN}" "http://127.0.0.1:${HOST_PORT}/panel-api/agents/local/rules")"
+CERTS_JSON="$(curl -fsS -H "X-Panel-Token: ${PANEL_TOKEN}" "http://127.0.0.1:${HOST_PORT}/panel-api/certificates")"
+POLICIES_JSON="$(curl -fsS -H "X-Panel-Token: ${PANEL_TOKEN}" "http://127.0.0.1:${HOST_PORT}/panel-api/version-policies")"
+JOIN_SCRIPT="$(curl -fsS "http://127.0.0.1:${HOST_PORT}/panel-api/public/join-agent.sh")"
+
+echo "$INFO_JSON" | grep '"local_apply_runtime":"go-agent"' >/dev/null
+echo "$AGENTS_JSON" | grep '"id":"local"' >/dev/null
+echo "$AGENTS_JSON" | grep '"is_local":true' >/dev/null
+echo "$RULES_JSON" | grep '"rules"' >/dev/null
+echo "$CERTS_JSON" | grep '"certificates"' >/dev/null
+echo "$POLICIES_JSON" | grep '"policies"' >/dev/null
+echo "$JOIN_SCRIPT" | grep '/panel-api/public/agent-assets' >/dev/null
 
 echo "pure-go master verification passed for ${DATA_DIR}"
