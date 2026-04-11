@@ -178,8 +178,7 @@ func (s *certificateService) Create(ctx context.Context, agentID string, input M
 	if hasUploadMaterial {
 		cert.MaterialHash = hashManagedCertificateMaterial(uploadMaterial.CertPEM, uploadMaterial.KeyPEM)
 		if cert.Enabled && cert.IssuerMode == "local_http01" {
-			cert.Status = "active"
-			cert.LastIssueAt = s.now().UTC().Format(time.RFC3339)
+			cert.Status = "pending"
 			cert.LastError = ""
 		}
 	}
@@ -256,8 +255,7 @@ func (s *certificateService) Update(ctx context.Context, agentID string, id int,
 	if hasUploadMaterial {
 		next.MaterialHash = hashManagedCertificateMaterial(uploadMaterial.CertPEM, uploadMaterial.KeyPEM)
 		if next.Enabled && next.IssuerMode == "local_http01" {
-			next.Status = "active"
-			next.LastIssueAt = s.now().UTC().Format(time.RFC3339)
+			next.Status = "pending"
 			next.LastError = ""
 		}
 	}
@@ -380,9 +378,14 @@ func (s *certificateService) Issue(ctx context.Context, agentID string, id int) 
 		}
 		current.MaterialHash = hashManagedCertificateMaterial(strings.TrimSpace(material.CertPEM), strings.TrimSpace(material.KeyPEM))
 	}
-	current.Status = "active"
-	current.LastIssueAt = s.now().UTC().Format(time.RFC3339)
-	current.LastError = ""
+	if current.CertificateType == "uploaded" && current.IssuerMode == "local_http01" {
+		current.Status = "pending"
+		current.LastError = ""
+	} else {
+		current.Status = "active"
+		current.LastIssueAt = s.now().UTC().Format(time.RFC3339)
+		current.LastError = ""
+	}
 	current.Revision = maxRevision + 1
 	originalRows := append([]storage.ManagedCertificateRow(nil), rows...)
 	rows[targetIndex] = managedCertificateToRow(current)

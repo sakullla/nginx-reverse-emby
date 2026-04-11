@@ -256,11 +256,11 @@ func TestCertificateServiceCreateUploadedPersistsValidatedMaterialAndHash(t *tes
 	if created.MaterialHash != expectedHash {
 		t.Fatalf("created.MaterialHash = %q, want %q", created.MaterialHash, expectedHash)
 	}
-	if created.Status != "active" {
+	if created.Status != "pending" {
 		t.Fatalf("created.Status = %q", created.Status)
 	}
-	if created.LastIssueAt == "" {
-		t.Fatalf("created.LastIssueAt is empty")
+	if created.LastIssueAt != "" {
+		t.Fatalf("created.LastIssueAt = %q", created.LastIssueAt)
 	}
 }
 
@@ -307,8 +307,11 @@ func TestCertificateServiceUpdateUploadedPreservesMaterialWhenPEMFieldsOmitted(t
 	if updated.MaterialHash != persistedHash {
 		t.Fatalf("updated.MaterialHash = %q, want %q", updated.MaterialHash, persistedHash)
 	}
-	if updated.Status != "active" {
+	if updated.Status != "pending" {
 		t.Fatalf("updated.Status = %q", updated.Status)
+	}
+	if updated.LastIssueAt != "" {
+		t.Fatalf("updated.LastIssueAt = %q", updated.LastIssueAt)
 	}
 }
 
@@ -417,11 +420,14 @@ func TestCertificateServiceUploadedIssueRejectsMissingMaterialAndSucceedsWhenPre
 	if err != nil {
 		t.Fatalf("Issue() with material error = %v", err)
 	}
-	if issued.Status != "active" {
+	if issued.Status != "pending" {
 		t.Fatalf("issued.Status = %q", issued.Status)
 	}
 	if issued.MaterialHash == "" {
 		t.Fatalf("issued.MaterialHash is empty")
+	}
+	if issued.LastIssueAt != "" {
+		t.Fatalf("issued.LastIssueAt = %q", issued.LastIssueAt)
 	}
 }
 
