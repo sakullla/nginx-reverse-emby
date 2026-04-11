@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
@@ -362,14 +363,14 @@ func (s *relayService) prepareRelayListener(ctx context.Context, agentID string,
 			workingInput.CertificateID = fallback.CertificateID
 		}
 		if workingInput.CertificateID == nil || *workingInput.CertificateID <= 0 {
-			certID, nextRows, materialBundle, err := s.ensureAutoRelayListenerCertificate(ctx, certRows, agentID, draft)
+			certID, nextRows, nextBundles, err := s.ensureAutoRelayListenerCertificate(ctx, certRows, agentID, draft)
 			if err != nil {
 				return relayPreparation{}, err
 			}
 			certRows = nextRows
 			persistCertificates = true
 			workingInput.CertificateID = &certID
-			materialBundles = append(materialBundles, materialBundle)
+			materialBundles = append(materialBundles, nextBundles...)
 		}
 	}
 	if shouldDeriveTrust {
@@ -684,10 +685,28 @@ func (s *relayService) persistManagedCertificateMaterialBundles(ctx context.Cont
 	return nil
 }
 
-func (s *relayService) ensureAutoRelayListenerCertificate(ctx context.Context, rows []storage.ManagedCertificateRow, agentID string, listener RelayListener) (int, []storage.ManagedCertificateRow, storage.ManagedCertificateBundle, error) {
+func (s *relayService) ensureAutoRelayListenerCertificate(ctx context.Context, rows []storage.ManagedCertificateRow, agentID string, listener RelayListener) (int, []storage.ManagedCertificateRow, []storage.ManagedCertificateBundle, error) {
 	maxID := 0
-	maxRevision := 0
 	for _, row := range rows {
+		if row.ID > maxID {
+			maxID = row.ID
+		}
+	}
+
+	relayCA, nextRows, bundles, err := s.ensureGlobalRelayCA(ctx, rows)
+	if err != nil {
+		return 0, nil, nil, err
+	}
+	relayCABundle, ok, err := loadManagedCertificateMaterial(ctx, s.store, relayCA.Domain, bundles)
+	if err != nil {
+		return 0, nil, nil, err
+	}
+	if !ok || strings.TrimSpace(relayCABundle.CertPEM) == "" || strings.TrimSpace(relayCABundle.KeyPEM) == "" {
+		return 0, nil, nil, fmt.Errorf("%w: global relay ca material not found", ErrInvalidArgument)
+	}
+
+	maxRevision := 0
+	for _, row := range nextRows {
 		if row.ID > maxID {
 			maxID = row.ID
 		}
@@ -695,19 +714,7 @@ func (s *relayService) ensureAutoRelayListenerCertificate(ctx context.Context, r
 			maxRevision = row.Revision
 		}
 	}
-
 	nextID := maxID + 1
-	relayCA, ok := findRelayCACertificate(rows)
-	if !ok {
-		return 0, nil, storage.ManagedCertificateBundle{}, fmt.Errorf("%w: global relay ca not found", ErrInvalidArgument)
-	}
-	relayCABundle, ok, err := s.store.LoadManagedCertificateMaterial(ctx, relayCA.Domain)
-	if err != nil {
-		return 0, nil, storage.ManagedCertificateBundle{}, err
-	}
-	if !ok || strings.TrimSpace(relayCABundle.CertPEM) == "" || strings.TrimSpace(relayCABundle.KeyPEM) == "" {
-		return 0, nil, storage.ManagedCertificateBundle{}, fmt.Errorf("%w: global relay ca material not found", ErrInvalidArgument)
-	}
 	autoCert := ManagedCertificate{
 		ID:              nextID,
 		Domain:          relayListenerAutoCertificateDomain(listener, agentID),
@@ -724,15 +731,157 @@ func (s *relayService) ensureAutoRelayListenerCertificate(ctx context.Context, r
 	}
 	materialBundle, err := generateRelayLeafMaterial(autoCert.Domain, relayCABundle)
 	if err != nil {
-		return 0, nil, storage.ManagedCertificateBundle{}, err
+		return 0, nil, nil, err
 	}
 	materialBundle.ID = autoCert.ID
 	materialBundle.Revision = int64(autoCert.Revision)
 	autoCert.MaterialHash = hashManagedCertificateMaterial(materialBundle.CertPEM, materialBundle.KeyPEM)
 
-	nextRows := append([]storage.ManagedCertificateRow(nil), rows...)
 	nextRows = append(nextRows, managedCertificateToRow(autoCert))
-	return nextID, nextRows, materialBundle, nil
+	bundles = append(bundles, materialBundle)
+	return nextID, nextRows, bundles, nil
+}
+
+func (s *relayService) ensureGlobalRelayCA(ctx context.Context, rows []storage.ManagedCertificateRow) (ManagedCertificate, []storage.ManagedCertificateRow, []storage.ManagedCertificateBundle, error) {
+	maxID := 0
+	maxRevision := 0
+	candidateIndexes := make([]int, 0)
+	for index, row := range rows {
+		if row.ID > maxID {
+			maxID = row.ID
+		}
+		if row.Revision > maxRevision {
+			maxRevision = row.Revision
+		}
+		if isRelayCACandidateForStartup(managedCertificateFromRow(row)) {
+			candidateIndexes = append(candidateIndexes, index)
+		}
+	}
+	if len(candidateIndexes) > 1 {
+		return ManagedCertificate{}, nil, nil, fmt.Errorf("%w: multiple relay ca candidates found; manual cleanup required", ErrInvalidArgument)
+	}
+
+	nextRows := append([]storage.ManagedCertificateRow(nil), rows...)
+	bundles := make([]storage.ManagedCertificateBundle, 0, 1)
+	relayCA := ManagedCertificate{}
+	relayCAIndex := -1
+	if len(candidateIndexes) == 1 {
+		relayCAIndex = candidateIndexes[0]
+		current := managedCertificateFromRow(nextRows[relayCAIndex])
+		canonical := s.buildCanonicalGlobalRelayCA(current, current.ID)
+		if !managedCertificateInvariantFieldsEqual(current, canonical) {
+			canonical.Status = current.Status
+			canonical.LastIssueAt = current.LastIssueAt
+			canonical.LastError = current.LastError
+			canonical.MaterialHash = current.MaterialHash
+			canonical.AgentReports = current.AgentReports
+			canonical.ACMEInfo = current.ACMEInfo
+			canonical.Revision = maxRevision + 1
+			nextRows[relayCAIndex] = managedCertificateToRow(canonical)
+			maxRevision = canonical.Revision
+			relayCA = canonical
+		} else {
+			relayCA = current
+		}
+	} else {
+		relayCA = s.buildCanonicalGlobalRelayCA(ManagedCertificate{}, maxID+1)
+		relayCA.Revision = maxRevision + 1
+		nextRows = append(nextRows, managedCertificateToRow(relayCA))
+		relayCAIndex = len(nextRows) - 1
+		maxRevision = relayCA.Revision
+	}
+
+	material, ok, err := s.store.LoadManagedCertificateMaterial(ctx, relayCA.Domain)
+	if err != nil {
+		return ManagedCertificate{}, nil, nil, err
+	}
+	if relayCA.Status == "active" && ok && validateUploadedManagedCertificateBundle(material) == nil {
+		return relayCA, nextRows, bundles, nil
+	}
+
+	if !ok || validateUploadedManagedCertificateBundle(material) != nil {
+		material, err = generateInternalCAMaterial(relayCA.Domain)
+		if err != nil {
+			return ManagedCertificate{}, nil, nil, err
+		}
+		bundles = append(bundles, material)
+	}
+
+	now := time.Now().UTC()
+	issuedAt := now.Format(time.RFC3339)
+	materialHash := hashManagedCertificateMaterial(strings.TrimSpace(material.CertPEM), strings.TrimSpace(material.KeyPEM))
+	relayCA.Status = "active"
+	relayCA.LastIssueAt = issuedAt
+	relayCA.LastError = ""
+	relayCA.MaterialHash = materialHash
+	for _, targetAgentID := range relayCA.TargetAgentIDs {
+		relayCA = updateManagedCertificateAgentReport(relayCA, targetAgentID, ManagedCertificateHeartbeatReport{
+			Status:       "active",
+			LastIssueAt:  issuedAt,
+			LastError:    "",
+			MaterialHash: materialHash,
+			ACMEInfo:     relayCA.ACMEInfo,
+			UpdatedAt:    issuedAt,
+		}, now)
+	}
+	nextRows[relayCAIndex] = managedCertificateToRow(relayCA)
+	return relayCA, nextRows, bundles, nil
+}
+
+func isRelayCACandidateForStartup(cert ManagedCertificate) bool {
+	return strings.EqualFold(strings.TrimSpace(cert.Domain), relayCADomainIdentity) || cert.Usage == "relay_ca" || usesReservedRelayCATags(cert.Tags)
+}
+
+func (s *relayService) buildCanonicalGlobalRelayCA(existing ManagedCertificate, certID int) ManagedCertificate {
+	targetAgentIDs := []string{}
+	if s.cfg.EnableLocalAgent && strings.TrimSpace(s.cfg.LocalAgentID) != "" {
+		targetAgentIDs = []string{strings.TrimSpace(s.cfg.LocalAgentID)}
+	}
+	return ManagedCertificate{
+		ID:              certID,
+		Domain:          relayCADomainIdentity,
+		Enabled:         true,
+		Scope:           "domain",
+		IssuerMode:      "local_http01",
+		TargetAgentIDs:  targetAgentIDs,
+		Status:          existing.Status,
+		LastIssueAt:     existing.LastIssueAt,
+		LastError:       existing.LastError,
+		MaterialHash:    existing.MaterialHash,
+		AgentReports:    existing.AgentReports,
+		ACMEInfo:        existing.ACMEInfo,
+		Tags:            normalizeTags([]string{systemRelayCATag, systemTag}),
+		Usage:           "relay_ca",
+		CertificateType: "internal_ca",
+		SelfSigned:      true,
+		Revision:        existing.Revision,
+	}
+}
+
+func managedCertificateInvariantFieldsEqual(left ManagedCertificate, right ManagedCertificate) bool {
+	if !strings.EqualFold(strings.TrimSpace(left.Domain), strings.TrimSpace(right.Domain)) {
+		return false
+	}
+	if left.Enabled != right.Enabled || left.Scope != right.Scope || left.IssuerMode != right.IssuerMode {
+		return false
+	}
+	if left.Usage != right.Usage || left.CertificateType != right.CertificateType || left.SelfSigned != right.SelfSigned {
+		return false
+	}
+	if len(left.TargetAgentIDs) != len(right.TargetAgentIDs) || len(left.Tags) != len(right.Tags) {
+		return false
+	}
+	for index, value := range left.TargetAgentIDs {
+		if value != right.TargetAgentIDs[index] {
+			return false
+		}
+	}
+	for index, value := range left.Tags {
+		if value != right.Tags[index] {
+			return false
+		}
+	}
+	return true
 }
 
 func relayListenerAutoCertificateDomain(listener RelayListener, agentID string) string {
