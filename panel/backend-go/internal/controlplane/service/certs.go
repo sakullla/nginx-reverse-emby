@@ -925,8 +925,21 @@ func (s *certificateService) bumpRemoteDesiredRevision(ctx context.Context, agen
 		if row.ID != agentID {
 			continue
 		}
-		if row.DesiredRevision < revision {
-			row.DesiredRevision = revision
+		snapshot, err := s.store.LoadAgentSnapshot(ctx, row.ID, storage.AgentSnapshotInput{
+			DesiredVersion:  row.DesiredVersion,
+			DesiredRevision: row.DesiredRevision,
+			CurrentRevision: row.CurrentRevision,
+			Platform:        row.Platform,
+		})
+		if err != nil {
+			return err
+		}
+		nextRevision := revision
+		if int(snapshot.Revision) > nextRevision {
+			nextRevision = int(snapshot.Revision)
+		}
+		if row.DesiredRevision < nextRevision {
+			row.DesiredRevision = nextRevision
 		}
 		return s.store.SaveAgent(ctx, row)
 	}

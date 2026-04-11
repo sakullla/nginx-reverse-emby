@@ -601,7 +601,7 @@ func TestCertificateServiceUploadedIssueRejectsMissingMaterialAndSucceedsWhenPre
 			ID:               "edge-1",
 			Name:             "Edge 1",
 			DesiredRevision:  1,
-			CurrentRevision:  1,
+			CurrentRevision:  8,
 			CapabilitiesJSON: `["cert_install"]`,
 		}},
 		managedCerts: []storage.ManagedCertificateRow{{
@@ -651,7 +651,7 @@ func TestCertificateServiceUploadedIssueRejectsMissingMaterialAndSucceedsWhenPre
 		t.Fatalf("agent report = %+v", report)
 	}
 	edge := relayAgentByID(t, store, "edge-1")
-	if edge.DesiredRevision != 4 {
+	if edge.DesiredRevision != 8 {
 		t.Fatalf("edge.DesiredRevision = %d", edge.DesiredRevision)
 	}
 }
@@ -824,7 +824,7 @@ func TestCertificateServiceUpdateUploadedSyncsRemovedAgentsWithoutExtraRevisionB
 			ID:               "edge-1",
 			Name:             "Edge 1",
 			DesiredRevision:  1,
-			CurrentRevision:  1,
+			CurrentRevision:  8,
 			CapabilitiesJSON: `["cert_install"]`,
 		}},
 		managedCerts: []storage.ManagedCertificateRow{{
@@ -872,7 +872,7 @@ func TestCertificateServiceUpdateUploadedSyncsRemovedAgentsWithoutExtraRevisionB
 		t.Fatalf("saved row = %+v", row)
 	}
 	edge := relayAgentByID(t, store, "edge-1")
-	if edge.DesiredRevision != 6 {
+	if edge.DesiredRevision != 8 {
 		t.Fatalf("edge.DesiredRevision = %d", edge.DesiredRevision)
 	}
 }
