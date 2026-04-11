@@ -1211,6 +1211,98 @@ func TestRelayServiceDeleteCleansUpUnusedAutoCertificate(t *testing.T) {
 	}
 }
 
+func TestRelayServiceDeleteThenRecreateAutoCertificateUsesFreshIdentityDomain(t *testing.T) {
+	relayCA := mustCreateSelfSignedCA(t, "__relay-ca.internal")
+	store := &relayCertStore{
+		relayByAgentID: map[string][]storage.RelayListenerRow{"local": {}},
+		httpRulesByID: map[string][]storage.HTTPRuleRow{},
+		l4RulesByID:   map[string][]storage.L4RuleRow{},
+		materialsByHost: map[string]relayMaterial{
+			"__relay-ca.internal": relayCA,
+		},
+		managedCerts: []storage.ManagedCertificateRow{
+			{
+				ID:              10,
+				Domain:          "__relay-ca.internal",
+				Enabled:         true,
+				Scope:           "domain",
+				IssuerMode:      "local_http01",
+				TargetAgentIDs:  `["local"]`,
+				Status:          "active",
+				MaterialHash:    "relay-ca-hash",
+				Usage:           "relay_ca",
+				CertificateType: "internal_ca",
+				SelfSigned:      true,
+				TagsJSON:        `["system:relay-ca","system"]`,
+				Revision:        1,
+			},
+		},
+	}
+	svc := NewRelayListenerService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	originalNonce := relayListenerAutoCertificateNonce
+	defer func() { relayListenerAutoCertificateNonce = originalNonce }()
+	nonces := []string{"oldnonce0001", "newnonce0002"}
+	relayListenerAutoCertificateNonce = func() string {
+		value := nonces[0]
+		nonces = nonces[1:]
+		return value
+	}
+
+	first, err := svc.Create(context.Background(), "local", RelayListenerInput{
+		Name:              stringPtr("relay-a"),
+		ListenPort:        intPtrService(7443),
+		PublicHost:        stringPtr("relay-a.example.com"),
+		Enabled:           boolPtr(true),
+		CertificateSource: stringPtr("auto_relay_ca"),
+		TrustModeSource:   stringPtr("auto"),
+	})
+	if err != nil {
+		t.Fatalf("first Create() error = %v", err)
+	}
+	if first.CertificateID == nil || *first.CertificateID != 11 {
+		t.Fatalf("first.CertificateID = %v", first.CertificateID)
+	}
+	firstAutoCert := managedCertificateFromRow(store.managedCerts[1])
+	if firstAutoCert.Domain != "listener-1.relay-a-example-com.local-oldnonce0001.relay.internal" {
+		t.Fatalf("firstAutoCert.Domain = %q", firstAutoCert.Domain)
+	}
+
+	deleted, err := svc.Delete(context.Background(), "local", 1)
+	if err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if deleted.ID != 1 {
+		t.Fatalf("deleted.ID = %d", deleted.ID)
+	}
+
+	recreated, err := svc.Create(context.Background(), "local", RelayListenerInput{
+		Name:              stringPtr("relay-a"),
+		ListenPort:        intPtrService(7443),
+		PublicHost:        stringPtr("relay-a.example.com"),
+		Enabled:           boolPtr(true),
+		CertificateSource: stringPtr("auto_relay_ca"),
+		TrustModeSource:   stringPtr("auto"),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if recreated.CertificateID == nil || *recreated.CertificateID != 11 {
+		t.Fatalf("recreated.CertificateID = %v", recreated.CertificateID)
+	}
+
+	autoCert := managedCertificateFromRow(store.managedCerts[1])
+	if autoCert.Domain == firstAutoCert.Domain {
+		t.Fatalf("autoCert.Domain reused deleted identity %q", autoCert.Domain)
+	}
+	if autoCert.Domain != "listener-1.relay-a-example-com.local-newnonce0002.relay.internal" {
+		t.Fatalf("autoCert.Domain = %q", autoCert.Domain)
+	}
+}
+
 func TestRelayServiceCreateSucceedsWhenCleanupFailsPostCommit(t *testing.T) {
 	relayCA := mustCreateSelfSignedCA(t, "__relay-ca.internal")
 	store := &relayCertStore{

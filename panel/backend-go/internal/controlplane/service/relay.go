@@ -2,7 +2,9 @@ package service
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -12,6 +14,14 @@ import (
 )
 
 var ErrRelayListenerNotFound = errors.New("relay listener not found")
+
+var relayListenerAutoCertificateNonce = func() string {
+	var buf [6]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return "000000000000"
+	}
+	return hex.EncodeToString(buf[:])
+}
 
 type RelayPin struct {
 	Type  string `json:"type"`
@@ -734,10 +744,11 @@ func relayListenerAutoCertificateDomain(listener RelayListener, agentID string) 
 		host = strings.TrimSpace(listener.ListenHost)
 	}
 	return fmt.Sprintf(
-		"listener-%d.%s.%s.relay.internal",
+		"listener-%d.%s.%s-%s.relay.internal",
 		listener.ID,
 		normalizeRelayListenerDomainLabel(host, "listener"),
 		normalizeRelayListenerDomainLabel(agentID, "agent"),
+		relayListenerAutoCertificateNonce(),
 	)
 }
 
