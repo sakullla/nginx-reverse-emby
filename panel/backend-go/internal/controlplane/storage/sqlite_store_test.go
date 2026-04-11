@@ -1062,6 +1062,7 @@ func seedSQLiteFixtureFromCanonicalSchema(t *testing.T) string {
 		}
 	})
 
+	// Canonical Go-owned compatibility baseline lives in storage/testdata.
 	for _, stmt := range loadFixtureSQLStatements(t, filepath.Join("testdata", "schema_base.sql")) {
 		execSQLiteStatement(t, db, stmt, false)
 	}
