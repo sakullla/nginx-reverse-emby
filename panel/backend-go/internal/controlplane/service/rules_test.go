@@ -443,6 +443,59 @@ func TestRuleServiceCreateHTTPRuleDoesNotProvisionManagedCertificate(t *testing.
 	}
 }
 
+func TestRuleServiceCreateHTTPRuleDoesNotCleanupStaleAutoManagedCertificate(t *testing.T) {
+	store := &fakeRuleStore{
+		rulesByAgent: map[string][]storage.HTTPRuleRow{},
+		managedCerts: []storage.ManagedCertificateRow{
+			{
+				ID:              1,
+				Domain:          "manual.example.com",
+				Enabled:         true,
+				Scope:           "domain",
+				IssuerMode:      "local_http01",
+				TargetAgentIDs:  `["local"]`,
+				TagsJSON:        `["manual"]`,
+				Usage:           "https",
+				CertificateType: "acme",
+				Revision:        4,
+			},
+			{
+				ID:              2,
+				Domain:          "stale-auto.example.com",
+				Enabled:         true,
+				Scope:           "domain",
+				IssuerMode:      "local_http01",
+				TargetAgentIDs:  `["local"]`,
+				TagsJSON:        `["auto","auto_target:local"]`,
+				Usage:           "https",
+				CertificateType: "acme",
+				Revision:        5,
+			},
+		},
+	}
+	before := append([]storage.ManagedCertificateRow(nil), store.managedCerts...)
+	svc := NewRuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	if _, err := svc.Create(context.Background(), "local", HTTPRuleInput{
+		FrontendURL: stringPtrRule("http://plain.example.com"),
+		BackendURL:  stringPtrRule("http://127.0.0.1:8096"),
+	}); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	if len(store.managedCerts) != len(before) {
+		t.Fatalf("managed cert count changed: before=%d after=%d", len(before), len(store.managedCerts))
+	}
+	for i := range before {
+		if store.managedCerts[i] != before[i] {
+			t.Fatalf("managed cert[%d] changed unexpectedly: before=%+v after=%+v", i, before[i], store.managedCerts[i])
+		}
+	}
+}
+
 func TestRuleServiceCreateHTTPSReusesMatchingCertificateAndAddsAutoTarget(t *testing.T) {
 	store := &fakeRuleStore{
 		agents: []storage.AgentRow{{

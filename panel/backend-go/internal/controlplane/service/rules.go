@@ -99,18 +99,24 @@ func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRule
 	rule.Revision = maxRevision + 1
 
 	nextRows := append(append([]storage.HTTPRuleRow(nil), rows...), httpRuleToRow(rule))
-	originalCertRows, nextCertRows, certRowsChanged, err := s.prepareManagedCertificatesForRuleMutation(
-		ctx,
-		resolvedID,
-		&rule,
-		httpRulesFromRows(nextRows),
-	)
-	if err != nil {
-		return HTTPRule{}, err
-	}
-	if certRowsChanged {
-		if err := s.store.SaveManagedCertificates(ctx, nextCertRows); err != nil {
+	certRowsChanged := false
+	var originalCertRows []storage.ManagedCertificateRow
+	var nextCertRows []storage.ManagedCertificateRow
+	if scheme, _, ok := parseRuleFrontendTarget(rule.FrontendURL); ok && scheme == "https" {
+		originalCertRows, nextCertRows, certRowsChanged, err = s.prepareManagedCertificatesForRuleMutation(
+			ctx,
+			resolvedID,
+			&rule,
+			httpRulesFromRows(nextRows),
+			false,
+		)
+		if err != nil {
 			return HTTPRule{}, err
+		}
+		if certRowsChanged {
+			if err := s.store.SaveManagedCertificates(ctx, nextCertRows); err != nil {
+				return HTTPRule{}, err
+			}
 		}
 	}
 	if err := s.store.SaveHTTPRules(ctx, resolvedID, nextRows); err != nil {
@@ -178,6 +184,7 @@ func (s *ruleService) Update(ctx context.Context, agentID string, id int, input 
 		resolvedID,
 		&rule,
 		httpRulesFromRows(nextRows),
+		true,
 	)
 	if err != nil {
 		return HTTPRule{}, err
@@ -233,6 +240,7 @@ func (s *ruleService) Delete(ctx context.Context, agentID string, id int) (HTTPR
 		resolvedID,
 		nil,
 		httpRulesFromRows(nextRows),
+		true,
 	)
 	if err != nil {
 		return HTTPRule{}, err
@@ -346,6 +354,7 @@ func (s *ruleService) prepareManagedCertificatesForRuleMutation(
 	agentID string,
 	rule *HTTPRule,
 	nextRules []HTTPRule,
+	cleanupUnused bool,
 ) ([]storage.ManagedCertificateRow, []storage.ManagedCertificateRow, bool, error) {
 	originalRows, err := s.store.ListManagedCertificates(ctx)
 	if err != nil {
@@ -358,8 +367,10 @@ func (s *ruleService) prepareManagedCertificatesForRuleMutation(
 			return nil, nil, false, err
 		}
 	}
-	if err := s.cleanupUnusedManagedCertificatesForAgent(agentID, nextRules, &nextRows, &nextRevision); err != nil {
-		return nil, nil, false, err
+	if cleanupUnused {
+		if err := s.cleanupUnusedManagedCertificatesForAgent(agentID, nextRules, &nextRows, &nextRevision); err != nil {
+			return nil, nil, false, err
+		}
 	}
 	return originalRows, nextRows, !managedCertificateRowsEqual(originalRows, nextRows), nil
 }
