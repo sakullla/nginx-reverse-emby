@@ -332,7 +332,7 @@ func TestCertificateServiceRunRenewalPassRecordsIssuerFailure(t *testing.T) {
 	}
 }
 
-func TestCertificateServiceRunRenewalPassContinuesAfterIssuerFailure(t *testing.T) {
+func TestCertificateServiceRunRenewalPassStopsAfterIssuerFailure(t *testing.T) {
 	now := time.Date(2026, 4, 11, 0, 0, 0, 0, time.UTC)
 	store := &relayCertStore{
 		managedCerts: []storage.ManagedCertificateRow{
@@ -401,7 +401,7 @@ func TestCertificateServiceRunRenewalPassContinuesAfterIssuerFailure(t *testing.
 	if err == nil {
 		t.Fatal("expected RunRenewalPass() to return first renewal error")
 	}
-	if len(issuer.calls) != 2 || issuer.calls[0] != 45 || issuer.calls[1] != 46 {
+	if len(issuer.calls) != 1 || issuer.calls[0] != 45 {
 		t.Fatalf("issuer calls = %+v", issuer.calls)
 	}
 
@@ -411,7 +411,7 @@ func TestCertificateServiceRunRenewalPassContinuesAfterIssuerFailure(t *testing.
 	}
 
 	second := managedCertificateFromRow(store.managedCerts[1])
-	if second.Status != "active" || second.MaterialHash != "after" || second.Revision != 11 {
+	if second.Status != "pending" || second.MaterialHash != "before" || second.Revision != 9 {
 		t.Fatalf("second = %+v", second)
 	}
 

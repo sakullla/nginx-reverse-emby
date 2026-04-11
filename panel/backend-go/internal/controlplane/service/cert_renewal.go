@@ -32,8 +32,6 @@ func (s *certificateService) RunRenewalPass(ctx context.Context) error {
 	now := s.now().UTC()
 	maxRevision := highestManagedCertificateRevisionForService(rows)
 	changed := false
-	var firstErr error
-
 	for index, row := range rows {
 		cert := managedCertificateFromRow(row)
 		if !s.isManagedCertificateRenewalCandidate(cert, now) {
@@ -47,10 +45,12 @@ func (s *certificateService) RunRenewalPass(ctx context.Context) error {
 			next.LastError = err.Error()
 			rows[index] = managedCertificateToRow(next)
 			changed = true
-			if firstErr == nil {
-				firstErr = fmt.Errorf("renew certificate %d: %w", cert.ID, err)
+			if changed {
+				if saveErr := s.store.SaveManagedCertificates(ctx, rows); saveErr != nil {
+					return saveErr
+				}
 			}
-			continue
+			return fmt.Errorf("renew certificate %d: %w", cert.ID, err)
 		}
 
 		next := cert
@@ -82,7 +82,7 @@ func (s *certificateService) RunRenewalPass(ctx context.Context) error {
 			return err
 		}
 	}
-	return firstErr
+	return nil
 }
 
 func (s *certificateService) isManagedCertificateRenewalCandidate(cert ManagedCertificate, now time.Time) bool {
