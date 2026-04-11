@@ -79,7 +79,10 @@ func (m *Manager) renewalCandidates() []renewalCandidate {
 }
 
 func (m *Manager) renewCertificate(ctx context.Context, candidate renewalCandidate) error {
-	attemptStartedAt := m.cfg.now()
+	lock := m.issuanceLock(candidate.id)
+	lock.Lock()
+	defer lock.Unlock()
+
 	policy := model.ManagedCertificatePolicy{
 		ID:              candidate.id,
 		Domain:          candidate.info.Domain,
@@ -92,15 +95,15 @@ func (m *Manager) renewCertificate(ctx context.Context, candidate renewalCandida
 		CertificateType: normalizeCertificateType(candidate.info.CertificateType),
 		SelfSigned:      candidate.info.SelfSigned,
 	}
-	certPEM, keyPEM, err := m.loadOrIssueACME(ctx, policy)
+	certPEM, keyPEM, err := m.loadOrIssueACMEUnlocked(ctx, policy)
 	if err != nil {
-		m.recordRenewalFailure(candidate.id, err, attemptStartedAt)
+		m.recordRenewalFailureLocked(candidate.id, err)
 		return fmt.Errorf("renew certificate %d: %w", candidate.id, err)
 	}
 
 	tlsCert, parsedChain, fingerprint, err := parseTLSMaterial(certPEM, keyPEM)
 	if err != nil {
-		m.recordRenewalFailure(candidate.id, err, attemptStartedAt)
+		m.recordRenewalFailureLocked(candidate.id, err)
 		return fmt.Errorf("renew certificate %d: %w", candidate.id, err)
 	}
 
@@ -125,20 +128,20 @@ func (m *Manager) renewCertificate(ctx context.Context, candidate renewalCandida
 	return nil
 }
 
-func (m *Manager) recordRenewalFailure(certificateID int, renewalErr error, attemptStartedAt time.Time) {
+func (m *Manager) recordRenewalFailure(certificateID int, renewalErr error) {
 	lock := m.issuanceLock(certificateID)
 	lock.Lock()
 	defer lock.Unlock()
+	m.recordRenewalFailureLocked(certificateID, renewalErr)
+}
 
+func (m *Manager) recordRenewalFailureLocked(certificateID int, renewalErr error) {
 	state, _, err := m.loadManagedCertificateState(certificateID)
 	if err != nil {
 		return
 	}
 	if state.ACME == nil {
 		state.ACME = &model.ManagedCertificateACMEState{}
-	}
-	if state.ACME.Renewal.LastAttemptStatus == "success" && state.ACME.Renewal.LastAttemptAtUnix >= attemptStartedAt.Unix() {
-		return
 	}
 	state.ACME.Renewal.LastAttemptAtUnix = m.cfg.now().Unix()
 	state.ACME.Renewal.LastAttemptStatus = "error"

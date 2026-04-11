@@ -325,7 +325,10 @@ func (m *Manager) loadOrIssueACME(ctx context.Context, policy model.ManagedCerti
 	lock := m.issuanceLock(policy.ID)
 	lock.Lock()
 	defer lock.Unlock()
+	return m.loadOrIssueACMEUnlocked(ctx, policy)
+}
 
+func (m *Manager) loadOrIssueACMEUnlocked(ctx context.Context, policy model.ManagedCertificatePolicy) ([]byte, []byte, error) {
 	persisted, err := m.loadPersistedACMEMaterial(policy.ID)
 	if err != nil {
 		return nil, nil, err

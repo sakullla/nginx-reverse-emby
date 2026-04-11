@@ -2,7 +2,6 @@ package certs
 
 import (
 	"context"
-	"errors"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -190,26 +189,49 @@ func TestLoadOrIssueACMESingleFlightsPerCertificateID(t *testing.T) {
 	}
 }
 
-func TestRecordRenewalFailureDoesNotOverwriteNewerSuccess(t *testing.T) {
+func TestRenewalFailureDoesNotOverwriteConcurrentApplySuccess(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC)
-	issued := mustCreateTLSMaterial(t, certificateSpec{
-		commonName: "renew-failure-guard.example.com",
+	initial := mustCreateTLSMaterial(t, certificateSpec{
+		commonName: "renew-race.example.com",
+		notBefore:  now.Add(-24 * time.Hour),
+		notAfter:   now.Add(2 * time.Hour),
+	})
+	renewed := mustCreateTLSMaterial(t, certificateSpec{
+		commonName: "renew-race.example.com",
 		notBefore:  now.Add(-time.Hour),
 		notAfter:   now.Add(90 * 24 * time.Hour),
 	})
+	renewalStarted := make(chan struct{})
+	releaseRenewal := make(chan struct{})
+	issuer := &sequencedIssuer{
+		onIssue: func(call int) acmeIssueResult {
+			switch call {
+			case 1:
+				return acmeIssueResult{CertPEM: initial.CertPEM, KeyPEM: initial.KeyPEM}
+			case 2:
+				close(renewalStarted)
+				<-releaseRenewal
+				return acmeIssueResult{Err: assertUnreachableError{message: "synthetic renewal failure"}}
+			case 3:
+				return acmeIssueResult{CertPEM: renewed.CertPEM, KeyPEM: renewed.KeyPEM}
+			default:
+				return acmeIssueResult{Err: assertUnreachableError{message: "unexpected extra issuance call"}}
+			}
+		},
+	}
 	manager := mustNewManager(
 		t,
 		t.TempDir(),
 		withNow(func() time.Time { return now }),
 		withACMEIssuerFactory(func(request acmeIssueRequest) (acmeIssuer, error) {
-			return &fakeACMEIssuer{results: []acmeIssueResult{{CertPEM: issued.CertPEM, KeyPEM: issued.KeyPEM}}}, nil
+			return issuer, nil
 		}),
 	)
 	policy := model.ManagedCertificatePolicy{
 		ID:              9204,
-		Domain:          "renew-failure-guard.example.com",
+		Domain:          "renew-race.example.com",
 		Enabled:         true,
 		Scope:           "domain",
 		IssuerMode:      "local_http01",
@@ -220,28 +242,25 @@ func TestRecordRenewalFailureDoesNotOverwriteNewerSuccess(t *testing.T) {
 		t.Fatalf("initial apply failed: %v", err)
 	}
 
-	lock := manager.issuanceLock(9204)
-	lock.Lock()
-	done := make(chan struct{})
+	renewalDone := make(chan error, 1)
 	go func() {
-		defer close(done)
-		manager.recordRenewalFailure(9204, errors.New("stale renewal error"), now.Add(-time.Minute))
+		renewalDone <- manager.runRenewalLoopIteration(context.Background())
 	}()
-	time.Sleep(20 * time.Millisecond)
 
-	stateWhileLocked, ok, err := manager.loadManagedCertificateState(9204)
-	if err != nil {
-		t.Fatalf("load state while locked failed: %v", err)
-	}
-	if !ok || stateWhileLocked.ACME == nil {
-		t.Fatal("expected managed acme state while lock held")
-	}
-	if got := stateWhileLocked.ACME.Renewal.LastAttemptStatus; got != "success" {
-		t.Fatalf("expected success status while lock held, got %q", got)
-	}
+	<-renewalStarted
 
-	lock.Unlock()
-	<-done
+	applyDone := make(chan error, 1)
+	go func() {
+		applyDone <- manager.Apply(context.Background(), nil, []model.ManagedCertificatePolicy{policy})
+	}()
+
+	close(releaseRenewal)
+	if err := <-renewalDone; err == nil {
+		t.Fatal("expected renewal iteration to report error")
+	}
+	if err := <-applyDone; err != nil {
+		t.Fatalf("concurrent apply failed: %v", err)
+	}
 
 	finalState, ok, err := manager.loadManagedCertificateState(9204)
 	if err != nil {
@@ -251,10 +270,10 @@ func TestRecordRenewalFailureDoesNotOverwriteNewerSuccess(t *testing.T) {
 		t.Fatal("expected final managed acme state")
 	}
 	if got := finalState.ACME.Renewal.LastAttemptStatus; got != "success" {
-		t.Fatalf("expected stale failure to not overwrite success, got %q", got)
+		t.Fatalf("expected concurrent apply success to remain authoritative, got %q", got)
 	}
 	if got := finalState.ACME.Renewal.LastAttemptError; got != "" {
-		t.Fatalf("expected no renewal error after stale failure, got %q", got)
+		t.Fatalf("expected no lingering renewal error after apply success, got %q", got)
 	}
 }
 
@@ -313,4 +332,24 @@ func (i *blockingIssuer) Issue(_ context.Context, _ acmeIssueRequest) (acmeIssue
 
 func (i *blockingIssuer) callCount() int {
 	return int(i.started.Load())
+}
+
+type sequencedIssuer struct {
+	mu      sync.Mutex
+	calls   int
+	onIssue func(call int) acmeIssueResult
+}
+
+func (i *sequencedIssuer) Issue(_ context.Context, _ acmeIssueRequest) (acmeIssueResult, error) {
+	i.mu.Lock()
+	i.calls++
+	call := i.calls
+	handler := i.onIssue
+	i.mu.Unlock()
+
+	result := handler(call)
+	if result.Err != nil {
+		return acmeIssueResult{}, result.Err
+	}
+	return result, nil
 }
