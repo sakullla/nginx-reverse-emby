@@ -4,7 +4,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -1063,11 +1062,10 @@ func seedSQLiteFixtureFromCanonicalSchema(t *testing.T) string {
 		}
 	})
 
-	repoRoot := repositoryRoot(t)
-	for _, stmt := range loadControlPlaneBaseSchemaStatements(t, repoRoot) {
+	for _, stmt := range loadFixtureSQLStatements(t, filepath.Join("testdata", "schema_base.sql")) {
 		execSQLiteStatement(t, db, stmt, false)
 	}
-	for _, stmt := range loadPrismaMigrationStatements(t, repoRoot) {
+	for _, stmt := range loadFixtureSQLStatements(t, filepath.Join("testdata", "schema_migrations.sql")) {
 		execSQLiteStatement(t, db, stmt, true)
 	}
 
@@ -1126,112 +1124,17 @@ func containsPolicyID(values []ManagedCertificatePolicy, expected int) bool {
 	return false
 }
 
-func repositoryRoot(t *testing.T) string {
+func loadFixtureSQLStatements(t *testing.T, fixturePath string) []string {
 	t.Helper()
 
-	_, filePath, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("runtime.Caller() failed")
-	}
-
-	return filepath.Clean(filepath.Join(filepath.Dir(filePath), "..", "..", "..", "..", ".."))
-}
-
-func loadControlPlaneBaseSchemaStatements(t *testing.T, repoRoot string) []string {
-	t.Helper()
-
-	sourcePath := filepath.Join(repoRoot, "panel", "backend", "storage-prisma-core.js")
-	sourceBytes, err := os.ReadFile(sourcePath)
+	sqlBytes, err := os.ReadFile(fixturePath)
 	if err != nil {
-		t.Fatalf("os.ReadFile(%q) error = %v", sourcePath, err)
+		t.Fatalf("os.ReadFile(%q) error = %v", fixturePath, err)
 	}
 
-	source := string(sourceBytes)
-	const startMarker = "const SCHEMA_STATEMENTS = ["
-	start := strings.Index(source, startMarker)
-	if start < 0 {
-		t.Fatalf("SCHEMA_STATEMENTS not found in %s", sourcePath)
-	}
-
-	body := source[start+len(startMarker):]
-	end := strings.Index(body, "];")
-	if end < 0 {
-		t.Fatalf("SCHEMA_STATEMENTS terminator not found in %s", sourcePath)
-	}
-
-	var statements []string
-	for i := 0; i < end; i++ {
-		delimiter := body[i]
-		if delimiter != '`' && delimiter != '"' && delimiter != '\'' {
-			continue
-		}
-
-		statement, nextIndex, ok := readJavaScriptStringLiteral(body, i)
-		if !ok {
-			t.Fatalf("failed to parse schema statement in %s", sourcePath)
-		}
-		trimmed := strings.TrimSpace(statement)
-		if trimmed != "" {
-			statements = append(statements, trimmed)
-		}
-		i = nextIndex - 1
-	}
-
+	statements := splitSQLStatements(string(sqlBytes))
 	if len(statements) == 0 {
-		t.Fatalf("no schema statements parsed from %s", sourcePath)
-	}
-	return statements
-}
-
-func readJavaScriptStringLiteral(source string, start int) (string, int, bool) {
-	delimiter := source[start]
-	var builder strings.Builder
-	escaped := false
-
-	for i := start + 1; i < len(source); i++ {
-		ch := source[i]
-		if escaped {
-			builder.WriteByte(ch)
-			escaped = false
-			continue
-		}
-		if ch == '\\' && delimiter != '`' {
-			escaped = true
-			continue
-		}
-		if ch == delimiter {
-			return builder.String(), i + 1, true
-		}
-		builder.WriteByte(ch)
-	}
-
-	return "", 0, false
-}
-
-func loadPrismaMigrationStatements(t *testing.T, repoRoot string) []string {
-	t.Helper()
-
-	migrationsDir := filepath.Join(repoRoot, "panel", "backend", "prisma", "migrations")
-	entries, err := os.ReadDir(migrationsDir)
-	if err != nil {
-		t.Fatalf("os.ReadDir(%q) error = %v", migrationsDir, err)
-	}
-
-	var statements []string
-	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".sql" {
-			continue
-		}
-		sqlPath := filepath.Join(migrationsDir, entry.Name())
-		sqlBytes, err := os.ReadFile(sqlPath)
-		if err != nil {
-			t.Fatalf("os.ReadFile(%q) error = %v", sqlPath, err)
-		}
-		statements = append(statements, splitSQLStatements(string(sqlBytes))...)
-	}
-
-	if len(statements) == 0 {
-		t.Fatalf("no Prisma migration statements found in %s", migrationsDir)
+		t.Fatalf("no SQL statements found in %s", fixturePath)
 	}
 	return statements
 }
