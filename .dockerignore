@@ -6,8 +6,6 @@
 panel/frontend/node_modules
 panel/frontend/.vite
 panel/frontend/dist
-panel/backend/node_modules
-panel/backend/tests
 
 # Local specs / IDE
 .kiro
