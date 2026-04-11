@@ -38,22 +38,27 @@ type RelayListener struct {
 }
 
 type RelayListenerInput struct {
-	ID                      *int        `json:"id,omitempty"`
-	Name                    *string     `json:"name,omitempty"`
-	BindHosts               *[]string   `json:"bind_hosts,omitempty"`
-	ListenHost              *string     `json:"listen_host,omitempty"`
-	ListenPort              *int        `json:"listen_port,omitempty"`
-	PublicHost              *string     `json:"public_host,omitempty"`
-	PublicPort              *int        `json:"public_port,omitempty"`
-	Enabled                 *bool       `json:"enabled,omitempty"`
-	CertificateID           *int        `json:"certificate_id,omitempty"`
-	TLSMode                 *string     `json:"tls_mode,omitempty"`
-	PinSet                  *[]RelayPin `json:"pin_set,omitempty"`
-	TrustedCACertificateIDs *[]int      `json:"trusted_ca_certificate_ids,omitempty"`
-	AllowSelfSigned         *bool       `json:"allow_self_signed,omitempty"`
-	Tags                    *[]string   `json:"tags,omitempty"`
-	CertificateSource       *string     `json:"certificate_source,omitempty"`
-	TrustModeSource         *string     `json:"trust_mode_source,omitempty"`
+	ID                         *int        `json:"id,omitempty"`
+	Name                       *string     `json:"name,omitempty"`
+	BindHosts                  *[]string   `json:"bind_hosts,omitempty"`
+	ListenHost                 *string     `json:"listen_host,omitempty"`
+	ListenPort                 *int        `json:"listen_port,omitempty"`
+	PublicHost                 *string     `json:"public_host,omitempty"`
+	PublicPort                 *int        `json:"public_port,omitempty"`
+	Enabled                    *bool       `json:"enabled,omitempty"`
+	CertificateID              *int        `json:"certificate_id,omitempty"`
+	TLSMode                    *string     `json:"tls_mode,omitempty"`
+	PinSet                     *[]RelayPin `json:"pin_set,omitempty"`
+	TrustedCACertificateIDs    *[]int      `json:"trusted_ca_certificate_ids,omitempty"`
+	AllowSelfSigned            *bool       `json:"allow_self_signed,omitempty"`
+	Tags                       *[]string   `json:"tags,omitempty"`
+	CertificateSource          *string     `json:"certificate_source,omitempty"`
+	TrustModeSource            *string     `json:"trust_mode_source,omitempty"`
+	HasCertificateID           bool        `json:"-"`
+	HasTLSMode                 bool        `json:"-"`
+	HasPinSet                  bool        `json:"-"`
+	HasTrustedCACertificateIDs bool        `json:"-"`
+	HasAllowSelfSigned         bool        `json:"-"`
 }
 
 type relayNormalizeOptions struct {
@@ -436,7 +441,7 @@ func shouldAutoDeriveRelayTrust(
 	case "auto":
 		return true
 	}
-	if input.TLSMode != nil || input.PinSet != nil || input.TrustedCACertificateIDs != nil || input.AllowSelfSigned != nil {
+	if input.hasExplicitRelayTrustFields() {
 		return false
 	}
 	if certificateSource == "auto_relay_ca" {
@@ -445,7 +450,7 @@ func shouldAutoDeriveRelayTrust(
 	if fallback.ID <= 0 || !previousUsesAutoCert {
 		return false
 	}
-	return input.CertificateID == nil
+	return !input.hasCertificateIDField()
 }
 
 func normalizeRelayListenerInput(input RelayListenerInput, fallback RelayListener, suggestedID int, options relayNormalizeOptions) (RelayListener, error) {
@@ -521,8 +526,8 @@ func normalizeRelayListenerInput(input RelayListenerInput, fallback RelayListene
 		value := *fallback.CertificateID
 		certID = &value
 	}
-	if input.CertificateID != nil {
-		if *input.CertificateID > 0 {
+	if input.hasCertificateIDField() {
+		if input.CertificateID != nil && *input.CertificateID > 0 {
 			value := *input.CertificateID
 			certID = &value
 		} else {
@@ -607,6 +612,33 @@ func normalizeRelayListenerInput(input RelayListenerInput, fallback RelayListene
 		Tags:                    tags,
 		Revision:                fallback.Revision,
 	}, nil
+}
+
+func (input RelayListenerInput) hasCertificateIDField() bool {
+	return input.HasCertificateID || input.CertificateID != nil
+}
+
+func (input RelayListenerInput) hasTLSModeField() bool {
+	return input.HasTLSMode || input.TLSMode != nil
+}
+
+func (input RelayListenerInput) hasPinSetField() bool {
+	return input.HasPinSet || input.PinSet != nil
+}
+
+func (input RelayListenerInput) hasTrustedCACertificateIDsField() bool {
+	return input.HasTrustedCACertificateIDs || input.TrustedCACertificateIDs != nil
+}
+
+func (input RelayListenerInput) hasAllowSelfSignedField() bool {
+	return input.HasAllowSelfSigned || input.AllowSelfSigned != nil
+}
+
+func (input RelayListenerInput) hasExplicitRelayTrustFields() bool {
+	return input.hasTLSModeField() ||
+		input.hasPinSetField() ||
+		input.hasTrustedCACertificateIDsField() ||
+		input.hasAllowSelfSignedField()
 }
 
 func normalizeRelayCertificateSource(value *string) (string, error) {

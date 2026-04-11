@@ -24,11 +24,21 @@ func (d Dependencies) handleRelayListeners(w http.ResponseWriter, r *http.Reques
 			"listeners": listeners,
 		})
 	case http.MethodPost:
-		var payload service.RelayListenerInput
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		var body map[string]json.RawMessage
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, errorPayload("invalid JSON body"))
 			return
 		}
+		var payload service.RelayListenerInput
+		if err := decodeRawMessageMap(body, &payload); err != nil {
+			writeJSON(w, http.StatusBadRequest, errorPayload("invalid JSON body"))
+			return
+		}
+		_, payload.HasCertificateID = body["certificate_id"]
+		_, payload.HasTLSMode = body["tls_mode"]
+		_, payload.HasPinSet = body["pin_set"]
+		_, payload.HasTrustedCACertificateIDs = body["trusted_ca_certificate_ids"]
+		_, payload.HasAllowSelfSigned = body["allow_self_signed"]
 		listener, err := d.RelayListenerService.Create(r.Context(), agentID, payload)
 		if err != nil {
 			status, body := mapServiceError(err)
@@ -54,11 +64,21 @@ func (d Dependencies) handleRelayListener(w http.ResponseWriter, r *http.Request
 
 	switch r.Method {
 	case http.MethodPut:
-		var payload service.RelayListenerInput
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		var body map[string]json.RawMessage
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeJSON(w, http.StatusBadRequest, errorPayload("invalid JSON body"))
 			return
 		}
+		var payload service.RelayListenerInput
+		if err := decodeRawMessageMap(body, &payload); err != nil {
+			writeJSON(w, http.StatusBadRequest, errorPayload("invalid JSON body"))
+			return
+		}
+		_, payload.HasCertificateID = body["certificate_id"]
+		_, payload.HasTLSMode = body["tls_mode"]
+		_, payload.HasPinSet = body["pin_set"]
+		_, payload.HasTrustedCACertificateIDs = body["trusted_ca_certificate_ids"]
+		_, payload.HasAllowSelfSigned = body["allow_self_signed"]
 		listener, err := d.RelayListenerService.Update(r.Context(), agentID, listenerID, payload)
 		if err != nil {
 			status, body := mapServiceError(err)

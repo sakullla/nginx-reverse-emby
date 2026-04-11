@@ -995,6 +995,94 @@ func TestRouterRelayListenerWriteOnlyControlFieldsReachServiceButNotResponse(t *
 	}
 }
 
+func TestRouterRelayListenerDecodeTracksExplicitNullAndTrustFieldPresence(t *testing.T) {
+	state := &fakeRelayListenerServiceState{}
+	router, err := NewRouter(Dependencies{
+		Config: config.Config{PanelToken: "secret"},
+		SystemService: fakeSystemService{
+			info: service.SystemInfo{
+				Role:              "master",
+				LocalApplyRuntime: "go-agent",
+				DefaultAgentID:    "local",
+				LocalAgentEnabled: true,
+			},
+		},
+		AgentService:         fakeAgentService{},
+		RuleService:          fakeRuleService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{
+			state:           state,
+			createdListener: service.RelayListener{ID: 2, AgentID: "local", Name: "relay-b"},
+			updatedListener: service.RelayListener{ID: 2, AgentID: "local", Name: "relay-b"},
+		},
+		CertificateService: fakeCertificateService{},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	createReq := httptest.NewRequest(http.MethodPost, "/panel-api/agents/local/relay-listeners", bytes.NewBufferString(`{
+		"name":"relay-b",
+		"listen_port":8443,
+		"certificate_source":"auto_relay_ca",
+		"certificate_id":null,
+		"tls_mode":null,
+		"pin_set":null,
+		"trusted_ca_certificate_ids":null,
+		"allow_self_signed":null
+	}`))
+	createReq.Header.Set("X-Panel-Token", "secret")
+	createReq.Header.Set("Content-Type", "application/json")
+	createResp := httptest.NewRecorder()
+	router.ServeHTTP(createResp, createReq)
+	if createResp.Code != http.StatusCreated {
+		t.Fatalf("POST /panel-api/agents/local/relay-listeners = %d", createResp.Code)
+	}
+	if len(state.createdInputs) != 1 {
+		t.Fatalf("len(state.createdInputs) = %d", len(state.createdInputs))
+	}
+	created := state.createdInputs[0]
+	if !created.HasCertificateID || created.CertificateID != nil {
+		t.Fatalf("created certificate_id presence/value = has:%v value:%v", created.HasCertificateID, created.CertificateID)
+	}
+	if !created.HasTLSMode || created.TLSMode != nil {
+		t.Fatalf("created tls_mode presence/value = has:%v value:%v", created.HasTLSMode, created.TLSMode)
+	}
+	if !created.HasPinSet || created.PinSet != nil {
+		t.Fatalf("created pin_set presence/value = has:%v value:%v", created.HasPinSet, created.PinSet)
+	}
+	if !created.HasTrustedCACertificateIDs || created.TrustedCACertificateIDs != nil {
+		t.Fatalf("created trusted_ca_certificate_ids presence/value = has:%v value:%v", created.HasTrustedCACertificateIDs, created.TrustedCACertificateIDs)
+	}
+	if !created.HasAllowSelfSigned || created.AllowSelfSigned != nil {
+		t.Fatalf("created allow_self_signed presence/value = has:%v value:%v", created.HasAllowSelfSigned, created.AllowSelfSigned)
+	}
+
+	updateReq := httptest.NewRequest(http.MethodPut, "/panel-api/agents/local/relay-listeners/2", bytes.NewBufferString(`{
+		"certificate_source":"auto_relay_ca",
+		"certificate_id":null,
+		"pin_set":[]
+	}`))
+	updateReq.Header.Set("X-Panel-Token", "secret")
+	updateReq.Header.Set("Content-Type", "application/json")
+	updateResp := httptest.NewRecorder()
+	router.ServeHTTP(updateResp, updateReq)
+	if updateResp.Code != http.StatusOK {
+		t.Fatalf("PUT /panel-api/agents/local/relay-listeners/2 = %d", updateResp.Code)
+	}
+	if len(state.updatedInputs) != 1 {
+		t.Fatalf("len(state.updatedInputs) = %d", len(state.updatedInputs))
+	}
+	updated := state.updatedInputs[0]
+	if !updated.HasCertificateID || updated.CertificateID != nil {
+		t.Fatalf("updated certificate_id presence/value = has:%v value:%v", updated.HasCertificateID, updated.CertificateID)
+	}
+	if !updated.HasPinSet || updated.PinSet == nil || len(*updated.PinSet) != 0 {
+		t.Fatalf("updated pin_set presence/value = has:%v value:%v", updated.HasPinSet, updated.PinSet)
+	}
+}
+
 func TestRouterCertificatePEMFieldsReachServiceOnCreateAndUpdate(t *testing.T) {
 	state := &fakeCertificateServiceState{}
 	router, err := NewRouter(Dependencies{

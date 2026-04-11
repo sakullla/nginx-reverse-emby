@@ -668,6 +668,92 @@ func TestRelayServiceUpdateAutoRelayCAKeepsExplicitCertificateID(t *testing.T) {
 	}
 }
 
+func TestRelayServiceUpdateAutoRelayCAWithExplicitNullCertificateIDReplacesManualCertificate(t *testing.T) {
+	relayCA := mustCreateSelfSignedCA(t, "__relay-ca.internal")
+	store := &relayCertStore{
+		relayByAgentID: map[string][]storage.RelayListenerRow{
+			"local": {{
+				ID:                      1,
+				AgentID:                 "local",
+				Name:                    "relay-a",
+				BindHostsJSON:           `["0.0.0.0"]`,
+				ListenHost:              "0.0.0.0",
+				ListenPort:              7443,
+				PublicHost:              "relay-a.example.com",
+				PublicPort:              7443,
+				Enabled:                 true,
+				CertificateID:           intPtrStorage(20),
+				TLSMode:                 "pin_only",
+				PinSetJSON:              `[{"type":"spki_sha256","value":"manual-pin"}]`,
+				TrustedCACertificateIDs: `[]`,
+				AllowSelfSigned:         true,
+				Revision:                2,
+			}},
+		},
+		httpRulesByID: map[string][]storage.HTTPRuleRow{},
+		l4RulesByID:   map[string][]storage.L4RuleRow{},
+		materialsByHost: map[string]relayMaterial{
+			"__relay-ca.internal": relayCA,
+		},
+		managedCerts: []storage.ManagedCertificateRow{
+			{
+				ID:              10,
+				Domain:          "__relay-ca.internal",
+				Enabled:         true,
+				Scope:           "domain",
+				IssuerMode:      "local_http01",
+				TargetAgentIDs:  `["local"]`,
+				Status:          "active",
+				MaterialHash:    "relay-ca-hash",
+				Usage:           "relay_ca",
+				CertificateType: "internal_ca",
+				SelfSigned:      true,
+				TagsJSON:        `["system:relay-ca","system"]`,
+				Revision:        1,
+			},
+			{
+				ID:              20,
+				Domain:          "manual.example.com",
+				Enabled:         true,
+				Scope:           "domain",
+				IssuerMode:      "local_http01",
+				TargetAgentIDs:  `["local"]`,
+				Status:          "active",
+				MaterialHash:    "manual-hash",
+				Usage:           "relay_tunnel",
+				CertificateType: "uploaded",
+				SelfSigned:      true,
+				Revision:        3,
+			},
+		},
+	}
+	svc := NewRelayListenerService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	listener, err := svc.Update(context.Background(), "local", 1, RelayListenerInput{
+		CertificateSource: stringPtr("auto_relay_ca"),
+		HasCertificateID:  true,
+		TrustModeSource:   stringPtr("auto"),
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if listener.CertificateID == nil || *listener.CertificateID == 20 {
+		t.Fatalf("listener.CertificateID = %v, want auto-issued cert id", listener.CertificateID)
+	}
+	if listener.TLSMode != "pin_and_ca" {
+		t.Fatalf("listener.TLSMode = %q", listener.TLSMode)
+	}
+	if len(listener.TrustedCACertificateIDs) != 1 || listener.TrustedCACertificateIDs[0] != 10 {
+		t.Fatalf("listener.TrustedCACertificateIDs = %+v", listener.TrustedCACertificateIDs)
+	}
+	if len(store.managedCerts) != 3 {
+		t.Fatalf("len(store.managedCerts) = %d", len(store.managedCerts))
+	}
+}
+
 func TestRelayServiceUpdateExistingAutoCertWithoutTrustFieldsAutoDerivesTrust(t *testing.T) {
 	relayCA := mustCreateSelfSignedCA(t, "__relay-ca.internal")
 	autoMaterial := mustCreateLeafSignedByCA(t, "listener-1.relay.internal", relayCA)
@@ -756,6 +842,97 @@ func TestRelayServiceUpdateExistingAutoCertWithoutTrustFieldsAutoDerivesTrust(t 
 	}
 	if !listener.AllowSelfSigned {
 		t.Fatalf("listener.AllowSelfSigned = false")
+	}
+}
+
+func TestRelayServiceUpdateExistingAutoCertWithExplicitNullTrustFieldSuppressesAutoDerive(t *testing.T) {
+	relayCA := mustCreateSelfSignedCA(t, "__relay-ca.internal")
+	autoMaterial := mustCreateLeafSignedByCA(t, "listener-1.relay.internal", relayCA)
+	store := &relayCertStore{
+		relayByAgentID: map[string][]storage.RelayListenerRow{
+			"local": {{
+				ID:                      1,
+				AgentID:                 "local",
+				Name:                    "relay-a",
+				BindHostsJSON:           `["0.0.0.0"]`,
+				ListenHost:              "0.0.0.0",
+				ListenPort:              7443,
+				PublicHost:              "relay-a.example.com",
+				PublicPort:              7443,
+				Enabled:                 true,
+				CertificateID:           intPtrStorage(11),
+				TLSMode:                 "pin_only",
+				PinSetJSON:              `[{"type":"spki_sha256","value":"stale-pin"}]`,
+				TrustedCACertificateIDs: `[]`,
+				AllowSelfSigned:         false,
+				Revision:                2,
+			}},
+		},
+		httpRulesByID: map[string][]storage.HTTPRuleRow{},
+		l4RulesByID:   map[string][]storage.L4RuleRow{},
+		materialsByHost: map[string]relayMaterial{
+			"__relay-ca.internal":       relayCA,
+			"listener-1.relay.internal": autoMaterial,
+		},
+		managedCerts: []storage.ManagedCertificateRow{
+			{
+				ID:              10,
+				Domain:          "__relay-ca.internal",
+				Enabled:         true,
+				Scope:           "domain",
+				IssuerMode:      "local_http01",
+				TargetAgentIDs:  `["local"]`,
+				Status:          "active",
+				MaterialHash:    hashRelayMaterial(relayCA.CertPEM, relayCA.KeyPEM),
+				Usage:           "relay_ca",
+				CertificateType: "internal_ca",
+				SelfSigned:      true,
+				TagsJSON:        `["system:relay-ca","system"]`,
+				Revision:        1,
+			},
+			{
+				ID:              11,
+				Domain:          "listener-1.relay.internal",
+				Enabled:         true,
+				Scope:           "domain",
+				IssuerMode:      "local_http01",
+				TargetAgentIDs:  `["local"]`,
+				Status:          "active",
+				MaterialHash:    hashRelayMaterial(autoMaterial.CertPEM, autoMaterial.KeyPEM),
+				Usage:           "relay_tunnel",
+				CertificateType: "internal_ca",
+				SelfSigned:      false,
+				TagsJSON:        `["auto","auto:relay-listener","listener:1","agent:local"]`,
+				Revision:        2,
+			},
+		},
+	}
+	svc := NewRelayListenerService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	listener, err := svc.Update(context.Background(), "local", 1, RelayListenerInput{
+		Name:       stringPtr("relay-a-renamed"),
+		HasTLSMode: true,
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if listener.CertificateID == nil || *listener.CertificateID != 11 {
+		t.Fatalf("listener.CertificateID = %v", listener.CertificateID)
+	}
+	if listener.TLSMode != "pin_only" {
+		t.Fatalf("listener.TLSMode = %q", listener.TLSMode)
+	}
+	if len(listener.PinSet) != 1 || listener.PinSet[0].Value != "stale-pin" {
+		t.Fatalf("listener.PinSet = %+v", listener.PinSet)
+	}
+	if len(listener.TrustedCACertificateIDs) != 0 {
+		t.Fatalf("listener.TrustedCACertificateIDs = %+v", listener.TrustedCACertificateIDs)
+	}
+	if listener.AllowSelfSigned {
+		t.Fatalf("listener.AllowSelfSigned = true")
 	}
 }
 
