@@ -27,6 +27,17 @@ func (f *fakeRuleStore) SaveHTTPRules(_ context.Context, agentID string, rows []
 	return nil
 }
 
+func (f *fakeRuleStore) SaveAgent(_ context.Context, row storage.AgentRow) error {
+	for i, agent := range f.agents {
+		if agent.ID == row.ID {
+			f.agents[i] = row
+			return nil
+		}
+	}
+	f.agents = append(f.agents, row)
+	return nil
+}
+
 func (f *fakeRuleStore) ListRelayListeners(context.Context, string) ([]storage.RelayListenerRow, error) {
 	return append([]storage.RelayListenerRow(nil), f.listeners...), nil
 }
@@ -259,6 +270,45 @@ func TestRuleServiceCreateRejectsUnknownRelayChainListener(t *testing.T) {
 	}
 	if err.Error() != "invalid argument: relay listener not found: 999" {
 		t.Fatalf("Create() error = %v", err)
+	}
+}
+
+func TestRuleServiceCreateUpdatesRemoteAgentDesiredRevision(t *testing.T) {
+	store := &fakeRuleStore{
+		agents: []storage.AgentRow{{
+			ID:              "edge-1",
+			Name:            "Edge 1",
+			DesiredRevision: 4,
+			CurrentRevision: 2,
+		}},
+		rulesByAgent: map[string][]storage.HTTPRuleRow{
+			"edge-1": {{
+				ID:          1,
+				AgentID:     "edge-1",
+				FrontendURL: "https://existing.example.com",
+				BackendURL:  "http://127.0.0.1:8096",
+				Revision:    4,
+			}},
+		},
+	}
+	svc := NewRuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	rule, err := svc.Create(context.Background(), "edge-1", HTTPRuleInput{
+		FrontendURL: stringPtrRule("https://new.example.com"),
+		BackendURL:  stringPtrRule("http://127.0.0.1:8096"),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	if rule.Revision != 5 {
+		t.Fatalf("Create() revision = %d", rule.Revision)
+	}
+	if store.agents[0].DesiredRevision != 5 {
+		t.Fatalf("remote desired_revision = %d", store.agents[0].DesiredRevision)
 	}
 }
 

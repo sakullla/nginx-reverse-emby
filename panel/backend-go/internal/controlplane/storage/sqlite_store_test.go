@@ -108,6 +108,49 @@ func TestStorePersistsL4RulesAndVersionPolicies(t *testing.T) {
 	}
 }
 
+func TestStorePersistsHTTPRules(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromCanonicalSchema(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	err = store.SaveHTTPRules(t.Context(), "local", []HTTPRuleRow{{
+		ID:                9,
+		AgentID:           "local",
+		FrontendURL:       "https://updated.example.com",
+		BackendURL:        "http://emby:8096",
+		BackendsJSON:      `[{"url":"http://emby:8096"}]`,
+		LoadBalancingJSON: `{"strategy":"round_robin"}`,
+		Enabled:           true,
+		TagsJSON:          `["http"]`,
+		ProxyRedirect:     true,
+		RelayChainJSON:    `[]`,
+		PassProxyHeaders:  false,
+		UserAgent:         "",
+		CustomHeadersJSON: `[]`,
+		Revision:          14,
+	}})
+	if err != nil {
+		t.Fatalf("SaveHTTPRules() error = %v", err)
+	}
+
+	rules, err := store.ListHTTPRules(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListHTTPRules() error = %v", err)
+	}
+	if len(rules) != 1 || rules[0].ID != 9 || rules[0].FrontendURL != "https://updated.example.com" || rules[0].Revision != 14 {
+		t.Fatalf("ListHTTPRules() = %+v", rules)
+	}
+}
+
 func TestStorePersistsRelayListenersAndManagedCertificates(t *testing.T) {
 	dataRoot := seedSQLiteFixtureFromCanonicalSchema(t)
 

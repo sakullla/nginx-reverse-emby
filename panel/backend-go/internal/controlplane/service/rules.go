@@ -29,6 +29,7 @@ type ruleStore interface {
 	ListAgents(context.Context) ([]storage.AgentRow, error)
 	ListHTTPRules(context.Context, string) ([]storage.HTTPRuleRow, error)
 	ListRelayListeners(context.Context, string) ([]storage.RelayListenerRow, error)
+	SaveAgent(context.Context, storage.AgentRow) error
 	SaveHTTPRules(context.Context, string, []storage.HTTPRuleRow) error
 }
 
@@ -98,6 +99,9 @@ func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRule
 	if err := s.store.SaveHTTPRules(ctx, resolvedID, rows); err != nil {
 		return HTTPRule{}, err
 	}
+	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, rule.Revision); err != nil {
+		return HTTPRule{}, err
+	}
 	return rule, nil
 }
 
@@ -149,6 +153,9 @@ func (s *ruleService) Update(ctx context.Context, agentID string, id int, input 
 	if err := s.store.SaveHTTPRules(ctx, resolvedID, rows); err != nil {
 		return HTTPRule{}, err
 	}
+	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, rule.Revision); err != nil {
+		return HTTPRule{}, err
+	}
 	return rule, nil
 }
 
@@ -182,6 +189,9 @@ func (s *ruleService) Delete(ctx context.Context, agentID string, id int) (HTTPR
 	if err := s.store.SaveHTTPRules(ctx, resolvedID, nextRows); err != nil {
 		return HTTPRule{}, err
 	}
+	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, deleted.Revision+1); err != nil {
+		return HTTPRule{}, err
+	}
 	return deleted, nil
 }
 
@@ -204,6 +214,27 @@ func (s *ruleService) ensureAgentExists(ctx context.Context, agentID string) (st
 		}
 	}
 	return "", ErrAgentNotFound
+}
+
+func (s *ruleService) bumpRemoteDesiredRevision(ctx context.Context, agentID string, revision int) error {
+	if s.cfg.EnableLocalAgent && agentID == s.cfg.LocalAgentID {
+		return nil
+	}
+
+	rows, err := s.store.ListAgents(ctx)
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		if row.ID != agentID {
+			continue
+		}
+		if row.DesiredRevision < revision {
+			row.DesiredRevision = revision
+		}
+		return s.store.SaveAgent(ctx, row)
+	}
+	return ErrAgentNotFound
 }
 
 func (s *ruleService) listRulesAcrossAllAgents(ctx context.Context) ([]storage.HTTPRuleRow, error) {

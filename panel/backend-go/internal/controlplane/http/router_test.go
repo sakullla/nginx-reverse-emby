@@ -784,6 +784,14 @@ func TestRouterServesHTTPRuleCRUDAndValidation(t *testing.T) {
 		t.Fatalf("GET payload missing rules: %+v", getPayload)
 	}
 
+	getAliasReq := httptest.NewRequest(http.MethodGet, "/api/agents/local/rules", nil)
+	getAliasReq.Header.Set("X-Panel-Token", "secret")
+	getAliasResp := httptest.NewRecorder()
+	router.ServeHTTP(getAliasResp, getAliasReq)
+	if getAliasResp.Code != http.StatusOK {
+		t.Fatalf("GET /api/agents/local/rules = %d", getAliasResp.Code)
+	}
+
 	createReq := httptest.NewRequest(http.MethodPost, "/panel-api/agents/local/rules", bytes.NewBufferString(`{"frontend_url":"https://new.example.com","backend_url":"http://emby:8096"}`))
 	createReq.Header.Set("X-Panel-Token", "secret")
 	createReq.Header.Set("Content-Type", "application/json")
