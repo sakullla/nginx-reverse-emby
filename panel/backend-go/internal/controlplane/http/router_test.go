@@ -822,6 +822,9 @@ func TestRouterCertificateIssueRoutesPassRequestedAgentContext(t *testing.T) {
 		VersionPolicyService: fakeVersionPolicyService{},
 		RelayListenerService: fakeRelayListenerService{},
 		CertificateService: fakeCertificateService{
+			certificates: map[string][]service.ManagedCertificate{
+				"local": {{ID: 21, Domain: "media.example.com", Status: "pending"}},
+			},
 			state:             state,
 			issuedCertificate: service.ManagedCertificate{ID: 21, Domain: "media.example.com", Status: "pending"},
 		},
@@ -854,6 +857,55 @@ func TestRouterCertificateIssueRoutesPassRequestedAgentContext(t *testing.T) {
 	}
 	if state.issueAgentIDs[1] != "local" || state.issueIDs[1] != 21 {
 		t.Fatalf("agent issue call = (%q, %d)", state.issueAgentIDs[1], state.issueIDs[1])
+	}
+}
+
+func TestRouterCertificateIssuePerAgentMissingAgentReturnsNotFoundBeforeIssue(t *testing.T) {
+	state := &fakeCertificateServiceState{}
+	router, err := NewRouter(Dependencies{
+		Config: config.Config{PanelToken: "secret"},
+		SystemService: fakeSystemService{
+			info: service.SystemInfo{
+				Role:              "master",
+				LocalApplyRuntime: "go-agent",
+				DefaultAgentID:    "local",
+				LocalAgentEnabled: true,
+			},
+		},
+		AgentService:         fakeAgentService{},
+		RuleService:          fakeRuleService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService: fakeCertificateService{
+			certificates: map[string][]service.ManagedCertificate{
+				"local": {{ID: 21, Domain: "media.example.com", Status: "pending"}},
+			},
+			state:             state,
+			issuedCertificate: service.ManagedCertificate{ID: 21, Domain: "media.example.com", Status: "pending"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/panel-api/agents/missing/certificates/21/issue", bytes.NewBuffer(nil))
+	req.Header.Set("X-Panel-Token", "secret")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("POST /panel-api/agents/missing/certificates/21/issue = %d", resp.Code)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if payload["message"] != "agent not found" {
+		t.Fatalf("payload = %+v", payload)
+	}
+	if len(state.issueAgentIDs) != 0 {
+		t.Fatalf("issue should not be called, got %+v", state.issueAgentIDs)
 	}
 }
 

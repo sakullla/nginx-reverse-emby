@@ -1232,8 +1232,13 @@ func TestCertificateServiceIssueLocalHTTP01ACMERejectsTargetWithoutMatchingHTTPS
 	}
 }
 
-func TestCertificateServiceIssueLocalHTTP01ACMERejectsRequestedAgentNotAssignedEvenIfAgentMissing(t *testing.T) {
+func TestCertificateServiceIssueLocalHTTP01ACMERejectsRequestedAgentNotAssigned(t *testing.T) {
 	store := &relayCertStore{
+		agents: []storage.AgentRow{{
+			ID:               "edge-2",
+			Name:             "Edge 2",
+			CapabilitiesJSON: `["http_rules","cert_install","local_acme"]`,
+		}},
 		managedCerts: []storage.ManagedCertificateRow{{
 			ID:              73,
 			Domain:          "media.example.com",

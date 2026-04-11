@@ -97,6 +97,13 @@ func (d Dependencies) handleIssueCertificate(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusBadRequest, errorPayload("invalid certificate id"))
 		return
 	}
+	if agentID != "" {
+		if _, err := d.CertificateService.List(r.Context(), agentID); err != nil {
+			status, body := mapServiceError(err)
+			writeJSON(w, status, body)
+			return
+		}
+	}
 
 	cert, err := d.CertificateService.Issue(r.Context(), agentID, certID)
 	if err != nil {
