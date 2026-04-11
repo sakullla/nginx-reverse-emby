@@ -631,10 +631,7 @@ func TestRunRecordsSyncErrorsInRuntimeState(t *testing.T) {
 	}()
 
 	waitForCalls(t, client, 1, time.Second)
-	current, err := mem.LoadRuntimeState()
-	if err != nil {
-		t.Fatalf("failed to load runtime state: %v", err)
-	}
+	current := waitForLastSyncError(t, time.Second, mem.LoadRuntimeState, "boom")
 	if current.Metadata["last_sync_error"] != "boom" {
 		t.Fatalf("expected failure metadata, got %v", current.Metadata)
 	}
@@ -644,10 +641,11 @@ func TestRunRecordsSyncErrorsInRuntimeState(t *testing.T) {
 
 	waitForCalls(t, client, 2, time.Second)
 	waitForRuntimeState(t, time.Second, func() bool {
-		current, err = mem.LoadRuntimeState()
+		updated, err := mem.LoadRuntimeState()
 		if err != nil {
 			t.Fatalf("failed to load runtime state: %v", err)
 		}
+		current = updated
 		_, ok := current.Metadata["last_sync_error"]
 		return !ok
 	}, func() string {
@@ -686,10 +684,7 @@ func TestRunRecordsSaveDesiredSnapshotFailures(t *testing.T) {
 	waitForRequest(t, client, time.Second)  // initial request
 	waitForCalls(t, client, 2, time.Second) // second request triggers failure
 
-	state, err := fs.LoadRuntimeState()
-	if err != nil {
-		t.Fatalf("failed to load runtime state: %v", err)
-	}
+	state := waitForLastSyncError(t, time.Second, fs.LoadRuntimeState, "persistence fail")
 	if state.Metadata["last_sync_error"] != "persistence fail" {
 		t.Fatalf("expected persistence failure metadata, got %v", state.Metadata)
 	}
@@ -1432,6 +1427,24 @@ func waitForRuntimeState(t *testing.T, timeout time.Duration, predicate func() b
 	t.Fatal(failureMessage())
 }
 
+func waitForLastSyncError(t *testing.T, timeout time.Duration, load func() (store.RuntimeState, error), expected string) store.RuntimeState {
+	t.Helper()
+
+	var state store.RuntimeState
+	waitForRuntimeState(t, timeout, func() bool {
+		current, err := load()
+		if err != nil {
+			t.Fatalf("failed to load runtime state: %v", err)
+		}
+		state = current
+		return current.Metadata["last_sync_error"] == expected
+	}, func() string {
+		return "expected last_sync_error metadata to be persisted"
+	})
+
+	return state
+}
+
 func TestPerformSyncIncludesApplyStatusAndManagedCertificateReports(t *testing.T) {
 	cfg := Config{CurrentVersion: "1.0.0"}
 	mem := store.NewInMemory()
@@ -1783,10 +1796,7 @@ func TestRunRecordsCertificateApplyFailuresInRuntimeState(t *testing.T) {
 
 	waitForCalls(t, client, 1, time.Second)
 
-	state, err := mem.LoadRuntimeState()
-	if err != nil {
-		t.Fatalf("failed to load runtime state: %v", err)
-	}
+	state := waitForLastSyncError(t, time.Second, mem.LoadRuntimeState, "cert apply failed")
 	if state.Metadata["last_sync_error"] != "cert apply failed" {
 		t.Fatalf("expected certificate apply failure metadata, got %v", state.Metadata)
 	}
@@ -2042,10 +2052,7 @@ func TestRunRecordsHTTPApplyFailuresInRuntimeState(t *testing.T) {
 
 	waitForCalls(t, client, 1, time.Second)
 
-	state, err := mem.LoadRuntimeState()
-	if err != nil {
-		t.Fatalf("failed to load runtime state: %v", err)
-	}
+	state := waitForLastSyncError(t, time.Second, mem.LoadRuntimeState, "http apply failed")
 	if state.Metadata["last_sync_error"] != "http apply failed" {
 		t.Fatalf("expected http apply failure metadata, got %v", state.Metadata)
 	}
@@ -2492,10 +2499,7 @@ func TestRunRecordsL4ApplyFailuresInRuntimeState(t *testing.T) {
 
 	waitForCalls(t, client, 1, time.Second)
 
-	state, err := mem.LoadRuntimeState()
-	if err != nil {
-		t.Fatalf("failed to load runtime state: %v", err)
-	}
+	state := waitForLastSyncError(t, time.Second, mem.LoadRuntimeState, "l4 apply failed")
 	if state.Metadata["last_sync_error"] != "l4 apply failed" {
 		t.Fatalf("expected l4 apply failure metadata, got %v", state.Metadata)
 	}
@@ -2529,10 +2533,7 @@ func TestRunRecordsRelayApplyFailuresInRuntimeState(t *testing.T) {
 
 	waitForCalls(t, client, 1, time.Second)
 
-	state, err := mem.LoadRuntimeState()
-	if err != nil {
-		t.Fatalf("failed to load runtime state: %v", err)
-	}
+	state := waitForLastSyncError(t, time.Second, mem.LoadRuntimeState, "relay apply failed")
 	if state.Metadata["last_sync_error"] != "relay apply failed" {
 		t.Fatalf("expected relay apply failure metadata, got %v", state.Metadata)
 	}
