@@ -322,32 +322,29 @@ func (s *relayService) prepareRelayListener(ctx context.Context, agentID string,
 		return relayPreparation{}, err
 	}
 
-	workingInput := input
-	if certificateSource == "auto_relay_ca" {
-		clearID := 0
-		workingInput.CertificateID = &clearID
-	}
-
-	draft, err := normalizeRelayListenerInput(workingInput, fallback, suggestedID, relayNormalizeOptions{
-		AllowMissingCertificate: certificateSource == "auto_relay_ca",
-		SkipTrustValidation:     trustModeSource == "auto",
-	})
-	if err != nil {
-		return relayPreparation{}, err
-	}
-
 	certRows, err := s.store.ListManagedCertificates(ctx)
 	if err != nil {
 		return relayPreparation{}, err
 	}
 	originalCertRows := append([]storage.ManagedCertificateRow(nil), certRows...)
+
+	draft, err := normalizeRelayListenerInput(input, fallback, suggestedID, relayNormalizeOptions{
+		AllowMissingCertificate: true,
+		SkipTrustValidation:     true,
+	})
+	if err != nil {
+		return relayPreparation{}, err
+	}
+	previousUsesAutoCert := relayListenerUsesAutoCertificate(certRows, fallback)
+	shouldIssueCert := shouldAutoIssueRelayListenerCertificate(certificateSource, draft, previousUsesAutoCert)
+	shouldDeriveTrust := shouldAutoDeriveRelayTrust(trustModeSource, certificateSource, input, draft, fallback, previousUsesAutoCert)
+
+	workingInput := input
 	persistCertificates := false
 	materialBundles := make([]storage.ManagedCertificateBundle, 0)
-	if draft.Enabled && certificateSource == "auto_relay_ca" && draft.CertificateID == nil {
-		if fallback.CertificateID != nil {
-			if existingAutoCert, _, ok := findManagedCertificateByID(certRows, *fallback.CertificateID); ok && isAutoRelayListenerCertificate(existingAutoCert, fallback.ID) {
-				workingInput.CertificateID = fallback.CertificateID
-			}
+	if shouldIssueCert {
+		if previousUsesAutoCert && fallback.CertificateID != nil {
+			workingInput.CertificateID = fallback.CertificateID
 		}
 		if workingInput.CertificateID == nil || *workingInput.CertificateID <= 0 {
 			certID, nextRows, materialBundle, err := s.ensureAutoRelayListenerCertificate(ctx, certRows, agentID, draft)
@@ -360,7 +357,7 @@ func (s *relayService) prepareRelayListener(ctx context.Context, agentID string,
 			materialBundles = append(materialBundles, materialBundle)
 		}
 	}
-	if draft.Enabled && trustModeSource == "auto" {
+	if shouldDeriveTrust {
 		selectedCertID := 0
 		switch {
 		case workingInput.CertificateID != nil && *workingInput.CertificateID > 0:
@@ -399,6 +396,56 @@ func (s *relayService) prepareRelayListener(ctx context.Context, agentID string,
 		MaterialBundles:     materialBundles,
 		PersistCertificates: persistCertificates,
 	}, nil
+}
+
+func relayListenerUsesAutoCertificate(rows []storage.ManagedCertificateRow, listener RelayListener) bool {
+	if listener.ID <= 0 || listener.CertificateID == nil {
+		return false
+	}
+	cert, _, ok := findManagedCertificateByID(rows, *listener.CertificateID)
+	if !ok {
+		return false
+	}
+	return isAutoRelayListenerCertificate(cert, listener.ID)
+}
+
+func shouldAutoIssueRelayListenerCertificate(certificateSource string, draft RelayListener, previousUsesAutoCert bool) bool {
+	if !draft.Enabled {
+		return false
+	}
+	if certificateSource != "" {
+		return certificateSource == "auto_relay_ca" && draft.CertificateID == nil
+	}
+	return previousUsesAutoCert && draft.CertificateID == nil
+}
+
+func shouldAutoDeriveRelayTrust(
+	trustModeSource string,
+	certificateSource string,
+	input RelayListenerInput,
+	draft RelayListener,
+	fallback RelayListener,
+	previousUsesAutoCert bool,
+) bool {
+	if !draft.Enabled {
+		return false
+	}
+	switch trustModeSource {
+	case "custom":
+		return false
+	case "auto":
+		return true
+	}
+	if input.TLSMode != nil || input.PinSet != nil || input.TrustedCACertificateIDs != nil || input.AllowSelfSigned != nil {
+		return false
+	}
+	if certificateSource == "auto_relay_ca" {
+		return true
+	}
+	if fallback.ID <= 0 || !previousUsesAutoCert {
+		return false
+	}
+	return input.CertificateID == nil
 }
 
 func normalizeRelayListenerInput(input RelayListenerInput, fallback RelayListener, suggestedID int, options relayNormalizeOptions) (RelayListener, error) {
