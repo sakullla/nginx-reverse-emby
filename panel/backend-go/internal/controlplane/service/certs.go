@@ -106,6 +106,9 @@ func NewCertificateService(cfg config.Config, store storage.Store) *certificateS
 }
 
 func newCertificateServiceWithRenewal(cfg config.Config, store storage.Store, issuer managedCertificateRenewalIssuer) *certificateService {
+	if issuer == nil && cfg.ManagedDNSCertificatesEnabled {
+		issuer = newMasterCFDNSManagedCertificateIssuer()
+	}
 	return &certificateService{
 		cfg:           cfg,
 		store:         store,
@@ -385,6 +388,58 @@ func (s *certificateService) Issue(ctx context.Context, agentID string, id int) 
 	if err := s.assertCertificateDistributionTargetsAllowed(ctx, current); err != nil {
 		return ManagedCertificate{}, err
 	}
+	if current.IssuerMode == "master_cf_dns" {
+		if !s.isManagedCertificateRenewalCandidate(current, s.now().UTC()) {
+			return ManagedCertificate{}, fmt.Errorf("%w: certificate is not eligible for master_cf_dns issue", ErrInvalidArgument)
+		}
+		if s.renewalIssuer == nil {
+			return ManagedCertificate{}, fmt.Errorf("%w: managed certificates require ACME_DNS_PROVIDER=cf and CF_Token", ErrInvalidArgument)
+		}
+
+		issueResult, err := s.renewalIssuer.Issue(ctx, current)
+		if err != nil {
+			return s.failManagedCertificateIssue(ctx, rows, targetIndex, current, maxRevision, err)
+		}
+		issuedMaterial, err := resolveManagedCertificateIssueMaterial(current, issueResult)
+		if err != nil {
+			return s.failManagedCertificateIssue(ctx, rows, targetIndex, current, maxRevision, err)
+		}
+
+		previousMaterial, previousMaterialFound, err := s.store.LoadManagedCertificateMaterial(ctx, current.Domain)
+		if err != nil {
+			return ManagedCertificate{}, err
+		}
+		if err := s.store.SaveManagedCertificateMaterial(ctx, current.Domain, issuedMaterial); err != nil {
+			if restoreErr := s.restoreManagedCertificateMaterialAfterIssueFailure(ctx, current, previousMaterial, previousMaterialFound); restoreErr != nil {
+				return ManagedCertificate{}, fmt.Errorf("persist issued certificate material: %w (restore failed: %v)", err, restoreErr)
+			}
+			return s.failManagedCertificateIssue(ctx, rows, targetIndex, current, maxRevision, err)
+		}
+
+		next := current
+		next.Status = "active"
+		next.LastIssueAt = issueResult.LastIssueAt
+		if strings.TrimSpace(next.LastIssueAt) == "" {
+			next.LastIssueAt = s.now().UTC().Format(time.RFC3339)
+		}
+		next.LastError = ""
+		next.MaterialHash = issueResult.MaterialHash
+		if strings.TrimSpace(next.MaterialHash) == "" {
+			next.MaterialHash = hashManagedCertificateMaterial(strings.TrimSpace(issuedMaterial.CertPEM), strings.TrimSpace(issuedMaterial.KeyPEM))
+		}
+		next.ACMEInfo = issueResult.ACMEInfo
+		next.Revision = maxRevision + 1
+		originalRows := append([]storage.ManagedCertificateRow(nil), rows...)
+		rows[targetIndex] = managedCertificateToRow(next)
+		if err := s.store.SaveManagedCertificates(ctx, rows); err != nil {
+			if restoreErr := s.restoreManagedCertificateMaterialAfterIssueFailure(ctx, current, previousMaterial, previousMaterialFound); restoreErr != nil {
+				return ManagedCertificate{}, fmt.Errorf("save issued certificate metadata: %w (restore failed: %v)", err, restoreErr)
+			}
+			return ManagedCertificate{}, err
+		}
+		cleanupManagedCertificateMaterialBestEffort(ctx, s.store, originalRows, rows)
+		return next, nil
+	}
 	if current.CertificateType == "uploaded" && current.IssuerMode == "local_http01" {
 		material, ok, err := s.store.LoadManagedCertificateMaterial(ctx, current.Domain)
 		if err != nil {
@@ -414,6 +469,49 @@ func (s *certificateService) Issue(ctx context.Context, agentID string, id int) 
 	}
 	cleanupManagedCertificateMaterialBestEffort(ctx, s.store, originalRows, rows)
 	return current, nil
+}
+
+func resolveManagedCertificateIssueMaterial(cert ManagedCertificate, result managedCertificateRenewalResult) (storage.ManagedCertificateBundle, error) {
+	bundle := result.Material
+	bundle.Domain = cert.Domain
+	bundle.CertPEM = strings.TrimSpace(bundle.CertPEM)
+	bundle.KeyPEM = strings.TrimSpace(bundle.KeyPEM)
+	if bundle.CertPEM == "" || bundle.KeyPEM == "" {
+		return storage.ManagedCertificateBundle{}, fmt.Errorf("%w: issuer did not return certificate material", ErrInvalidArgument)
+	}
+	if err := validateUploadedManagedCertificateBundle(bundle); err != nil {
+		return storage.ManagedCertificateBundle{}, err
+	}
+	return bundle, nil
+}
+
+func (s *certificateService) failManagedCertificateIssue(ctx context.Context, rows []storage.ManagedCertificateRow, targetIndex int, current ManagedCertificate, maxRevision int, issueErr error) (ManagedCertificate, error) {
+	failed := current
+	failed.Status = "error"
+	failed.LastError = issueErr.Error()
+	failed.Revision = maxRevision + 1
+
+	nextRows := append([]storage.ManagedCertificateRow(nil), rows...)
+	originalRows := append([]storage.ManagedCertificateRow(nil), rows...)
+	nextRows[targetIndex] = managedCertificateToRow(failed)
+	if err := s.store.SaveManagedCertificates(ctx, nextRows); err != nil {
+		return ManagedCertificate{}, err
+	}
+	cleanupManagedCertificateMaterialBestEffort(ctx, s.store, originalRows, nextRows)
+	return ManagedCertificate{}, issueErr
+}
+
+func (s *certificateService) restoreManagedCertificateMaterialAfterIssueFailure(ctx context.Context, cert ManagedCertificate, previous storage.ManagedCertificateBundle, previousFound bool) error {
+	if previousFound {
+		return s.store.SaveManagedCertificateMaterial(ctx, cert.Domain, previous)
+	}
+	cleanupManagedCertificateMaterialBestEffort(
+		ctx,
+		s.store,
+		[]storage.ManagedCertificateRow{managedCertificateToRow(cert)},
+		[]storage.ManagedCertificateRow{},
+	)
+	return nil
 }
 
 func (s *certificateService) ensureAgentExists(ctx context.Context, agentID string) (string, error) {

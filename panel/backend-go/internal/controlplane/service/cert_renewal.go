@@ -9,6 +9,7 @@ import (
 )
 
 type managedCertificateRenewalIssuer interface {
+	Issue(context.Context, ManagedCertificate) (managedCertificateRenewalResult, error)
 	Renew(context.Context, ManagedCertificate) (managedCertificateRenewalResult, error)
 }
 
@@ -17,6 +18,7 @@ type managedCertificateRenewalResult struct {
 	LastIssueAt  string
 	MaterialHash string
 	ACMEInfo     ManagedCertificateACMEInfo
+	Material     storage.ManagedCertificateBundle
 }
 
 func (s *certificateService) RunRenewalPass(ctx context.Context) error {
