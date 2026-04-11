@@ -1677,7 +1677,7 @@ func isReservedSystemRelayCANext(cert ManagedCertificate) bool {
 }
 
 func isSystemRelayCACertificate(cert ManagedCertificate) bool {
-	return cert.Usage == "relay_ca" || usesReservedRelayCATags(cert.Tags)
+	return cert.Usage == "relay_ca" || usesReservedRelayCAIdentity(cert)
 }
 
 func usesReservedRelayCATags(tags []string) bool {

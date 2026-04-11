@@ -309,6 +309,51 @@ func TestRelayServiceCreateAutoIssuesCertificateAndDerivesTrust(t *testing.T) {
 	}
 }
 
+func TestRelayServiceCreateAutoUsesLegacyRelayCADomainIdentityCandidate(t *testing.T) {
+	relayCA := mustCreateSelfSignedCA(t, "__relay-ca.internal")
+	store := &relayCertStore{
+		relayByAgentID: map[string][]storage.RelayListenerRow{},
+		httpRulesByID:  map[string][]storage.HTTPRuleRow{},
+		l4RulesByID:    map[string][]storage.L4RuleRow{},
+		materialsByHost: map[string]relayMaterial{
+			"__relay-ca.internal": relayCA,
+		},
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              10,
+			Domain:          "__relay-ca.internal",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  `["local"]`,
+			Status:          "active",
+			MaterialHash:    "relay-ca-hash",
+			Usage:           "https",
+			CertificateType: "internal_ca",
+			SelfSigned:      true,
+			Revision:        3,
+		}},
+	}
+	svc := NewRelayListenerService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	listener, err := svc.Create(context.Background(), "local", RelayListenerInput{
+		Name:              stringPtr("relay-legacy-ca"),
+		ListenPort:        intPtrService(7443),
+		PublicHost:        stringPtr("relay-legacy-ca.example.com"),
+		Enabled:           boolPtr(true),
+		CertificateSource: stringPtr("auto_relay_ca"),
+		TrustModeSource:   stringPtr("auto"),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if listener.CertificateID == nil || *listener.CertificateID != 11 {
+		t.Fatalf("listener.CertificateID = %v", listener.CertificateID)
+	}
+}
+
 func TestRelayServiceCreateAutoRelayCAWithoutTrustModeSourceAutoDerivesTrust(t *testing.T) {
 	relayCA := mustCreateSelfSignedCA(t, "__relay-ca.internal")
 	store := &relayCertStore{

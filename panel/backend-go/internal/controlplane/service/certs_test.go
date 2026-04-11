@@ -134,6 +134,36 @@ func TestCertificateServiceRejectsSystemRelayCAMutations(t *testing.T) {
 	}
 }
 
+func TestCertificateServiceTreatsLegacyRelayCADomainIdentityAsSystemManaged(t *testing.T) {
+	store := &relayCertStore{
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              12,
+			Domain:          "__relay-ca.internal",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  `["local"]`,
+			Status:          "active",
+			CertificateType: "internal_ca",
+			Usage:           "https",
+			Revision:        4,
+		}},
+	}
+	svc := NewCertificateService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	if _, err := svc.Update(context.Background(), "local", 12, ManagedCertificateInput{
+		Enabled: boolPtr(false),
+	}); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if _, err := svc.Delete(context.Background(), "local", 12); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Delete() error = %v", err)
+	}
+}
+
 func TestCertificateServiceRejectsInvalidMasterCFDNSTargeting(t *testing.T) {
 	store := &relayCertStore{
 		agents: []storage.AgentRow{{
