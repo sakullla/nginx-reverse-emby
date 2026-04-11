@@ -98,9 +98,21 @@ func (d Dependencies) handleIssueCertificate(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	if agentID != "" {
-		if _, err := d.CertificateService.List(r.Context(), agentID); err != nil {
+		certs, err := d.CertificateService.List(r.Context(), agentID)
+		if err != nil {
 			status, body := mapServiceError(err)
 			writeJSON(w, status, body)
+			return
+		}
+		found := false
+		for _, cert := range certs {
+			if cert.ID == certID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			writeJSON(w, http.StatusNotFound, errorPayload("certificate not found"))
 			return
 		}
 	}

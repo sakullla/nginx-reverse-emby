@@ -546,25 +546,43 @@ func TestRouterServesRelayListenerAndCertificateEndpoints(t *testing.T) {
 		},
 		CertificateService: fakeCertificateService{
 			certificates: map[string][]service.ManagedCertificate{
-				"local": {{
-					ID:              11,
-					Domain:          "relay-a.example.com",
-					Enabled:         true,
-					Scope:           "domain",
-					IssuerMode:      "local_http01",
-					TargetAgentIDs:  []string{"local"},
-					Status:          "active",
-					LastIssueAt:     "2026-04-10T00:00:00Z",
-					LastError:       "",
-					MaterialHash:    "hash1",
-					AgentReports:    map[string]service.ManagedCertificateAgentReport{},
-					ACMEInfo:        service.ManagedCertificateACMEInfo{},
-					Tags:            []string{"relay"},
-					Usage:           "relay_tunnel",
-					CertificateType: "uploaded",
-					SelfSigned:      false,
-					Revision:        6,
-				}},
+				"local": {
+					{
+						ID:              11,
+						Domain:          "relay-a.example.com",
+						Enabled:         true,
+						Scope:           "domain",
+						IssuerMode:      "local_http01",
+						TargetAgentIDs:  []string{"local"},
+						Status:          "active",
+						LastIssueAt:     "2026-04-10T00:00:00Z",
+						LastError:       "",
+						MaterialHash:    "hash1",
+						AgentReports:    map[string]service.ManagedCertificateAgentReport{},
+						ACMEInfo:        service.ManagedCertificateACMEInfo{},
+						Tags:            []string{"relay"},
+						Usage:           "relay_tunnel",
+						CertificateType: "uploaded",
+						SelfSigned:      false,
+						Revision:        6,
+					},
+					{
+						ID:              12,
+						Domain:          "relay-b.example.com",
+						Enabled:         true,
+						Scope:           "domain",
+						IssuerMode:      "local_http01",
+						TargetAgentIDs:  []string{"local"},
+						Status:          "pending",
+						AgentReports:    map[string]service.ManagedCertificateAgentReport{},
+						ACMEInfo:        service.ManagedCertificateACMEInfo{},
+						Tags:            []string{"edge"},
+						Usage:           "https",
+						CertificateType: "acme",
+						SelfSigned:      false,
+						Revision:        7,
+					},
+				},
 			},
 			createdCertificate: service.ManagedCertificate{ID: 12, Domain: "relay-b.example.com", Enabled: true, Scope: "domain", IssuerMode: "local_http01", TargetAgentIDs: []string{"local"}, Status: "pending", Tags: []string{"edge"}, Usage: "https", CertificateType: "acme", Revision: 7},
 			updatedCertificate: service.ManagedCertificate{ID: 12, Domain: "relay-b.example.com", Enabled: true, Scope: "domain", IssuerMode: "local_http01", TargetAgentIDs: []string{"local"}, Status: "active", Tags: []string{"edge"}, Usage: "https", CertificateType: "uploaded", Revision: 8},
@@ -902,6 +920,55 @@ func TestRouterCertificateIssuePerAgentMissingAgentReturnsNotFoundBeforeIssue(t 
 		t.Fatalf("json.Unmarshal() error = %v", err)
 	}
 	if payload["message"] != "agent not found" {
+		t.Fatalf("payload = %+v", payload)
+	}
+	if len(state.issueAgentIDs) != 0 {
+		t.Fatalf("issue should not be called, got %+v", state.issueAgentIDs)
+	}
+}
+
+func TestRouterCertificateIssuePerAgentUnassignedCertificateReturnsNotFoundBeforeIssue(t *testing.T) {
+	state := &fakeCertificateServiceState{}
+	router, err := NewRouter(Dependencies{
+		Config: config.Config{PanelToken: "secret"},
+		SystemService: fakeSystemService{
+			info: service.SystemInfo{
+				Role:              "master",
+				LocalApplyRuntime: "go-agent",
+				DefaultAgentID:    "local",
+				LocalAgentEnabled: true,
+			},
+		},
+		AgentService:         fakeAgentService{},
+		RuleService:          fakeRuleService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService: fakeCertificateService{
+			certificates: map[string][]service.ManagedCertificate{
+				"local": {{ID: 22, Domain: "other.example.com", Status: "pending"}},
+			},
+			state:             state,
+			issuedCertificate: service.ManagedCertificate{ID: 21, Domain: "media.example.com", Status: "pending"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/panel-api/agents/local/certificates/21/issue", bytes.NewBuffer(nil))
+	req.Header.Set("X-Panel-Token", "secret")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("POST /panel-api/agents/local/certificates/21/issue = %d", resp.Code)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if payload["message"] != "certificate not found" {
 		t.Fatalf("payload = %+v", payload)
 	}
 	if len(state.issueAgentIDs) != 0 {
