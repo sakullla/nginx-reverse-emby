@@ -106,6 +106,7 @@ type HeartbeatRequest struct {
 	Tags                      []string                            `json:"tags"`
 	Capabilities              []string                            `json:"capabilities"`
 	Stats                     AgentStats                          `json:"stats"`
+	LastSeenIP                string                              `json:"last_seen_ip"`
 	LastApplyStatus           string                              `json:"last_apply_status"`
 	LastApplyMessage          string                              `json:"last_apply_message"`
 	ManagedCertificateReports []ManagedCertificateHeartbeatReport `json:"managed_certificate_reports"`
@@ -215,6 +216,10 @@ func (s *agentService) Register(ctx context.Context, request RegisterRequest, he
 	if name == "" {
 		return AgentSummary{}, errors.New("name is required")
 	}
+	agentURL := trimTrailingSlash(request.AgentURL)
+	if agentURL != "" && !validateAgentURL(agentURL) {
+		return AgentSummary{}, errors.New("agent_url must be a valid http/https URL")
+	}
 
 	agentToken := strings.TrimSpace(request.AgentToken)
 	if agentToken == "" {
@@ -232,26 +237,29 @@ func (s *agentService) Register(ctx context.Context, request RegisterRequest, he
 	row := storage.AgentRow{
 		ID:               randomAgentID(),
 		DesiredVersion:   "",
-		TagsJSON:         marshalStringArray(request.Tags),
-		CapabilitiesJSON: marshalStringArray(defaultCapabilities(request.Capabilities)),
-		Mode:             defaultString(request.Mode, "pull"),
+		TagsJSON:         marshalStringArray(normalizeAgentTags(request.Tags)),
+		CapabilitiesJSON: marshalStringArray(normalizeCapabilities(defaultCapabilities(request.Capabilities))),
+		Mode:             resolveRemoteAgentMode(agentURL),
 		LastApplyStatus:  "success",
 	}
 	for _, existing := range rows {
-		if existing.AgentToken == agentToken || existing.Name == name {
+		existingAgentURL := trimTrailingSlash(existing.AgentURL)
+		if existing.AgentToken == agentToken ||
+			(existingAgentURL != "" && existingAgentURL == agentURL) ||
+			existing.Name == name {
 			row = existing
 			break
 		}
 	}
 
 	row.Name = name
-	row.AgentURL = strings.TrimSpace(request.AgentURL)
+	row.AgentURL = agentURL
 	row.AgentToken = agentToken
 	row.Version = strings.TrimSpace(request.Version)
 	row.Platform = strings.TrimSpace(request.Platform)
-	row.TagsJSON = marshalStringArray(request.Tags)
-	row.CapabilitiesJSON = marshalStringArray(defaultCapabilities(request.Capabilities))
-	row.Mode = defaultString(request.Mode, "pull")
+	row.TagsJSON = marshalStringArray(normalizeAgentTags(request.Tags))
+	row.CapabilitiesJSON = marshalStringArray(normalizeCapabilities(defaultCapabilities(request.Capabilities)))
+	row.Mode = resolveRemoteAgentMode(agentURL)
 	row.IsLocal = false
 
 	if err := s.store.SaveAgent(ctx, row); err != nil {
@@ -485,16 +493,24 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 	row.Version = defaultString(request.Version, row.Version)
 	row.Platform = defaultString(request.Platform, row.Platform)
 	if request.AgentURL != "" {
-		row.AgentURL = strings.TrimSpace(request.AgentURL)
+		agentURL := trimTrailingSlash(request.AgentURL)
+		if !validateAgentURL(agentURL) {
+			return HeartbeatReply{}, fmt.Errorf("%w: agent_url must be a valid http/https URL", ErrInvalidArgument)
+		}
+		row.AgentURL = agentURL
+		row.Mode = resolveRemoteAgentMode(agentURL)
 	}
-	if len(request.Tags) > 0 {
-		row.TagsJSON = marshalStringArray(request.Tags)
+	if request.Tags != nil {
+		row.TagsJSON = marshalStringArray(normalizeAgentTags(request.Tags))
 	}
-	if len(request.Capabilities) > 0 {
+	if request.Capabilities != nil {
 		row.CapabilitiesJSON = marshalStringArray(normalizeCapabilities(request.Capabilities))
 	}
 	if request.Stats != nil {
 		row.LastReportedStatsJSON = marshalAgentStats(request.Stats)
+	}
+	if strings.TrimSpace(request.LastSeenIP) != "" {
+		row.LastSeenIP = strings.TrimSpace(request.LastSeenIP)
 	}
 	row.CurrentRevision = int(request.CurrentRevision)
 	if request.LastApplyRevision > 0 {

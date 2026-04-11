@@ -214,6 +214,63 @@ func TestAgentServiceListSynthesizesLocalAgentAndRemoteStatus(t *testing.T) {
 	}
 }
 
+func TestAgentServiceRegisterNormalizesURLAndDeduplicatesByURL(t *testing.T) {
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID:               "edge-existing",
+			Name:             "Edge Existing",
+			AgentURL:         "https://edge.example.com",
+			AgentToken:       "token-old",
+			CapabilitiesJSON: `["http_rules"]`,
+			TagsJSON:         `["old"]`,
+			Mode:             "master",
+		}},
+	}
+	svc := NewAgentService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	agent, err := svc.Register(context.Background(), RegisterRequest{
+		Name:         "Edge New",
+		AgentURL:     " https://edge.example.com/ ",
+		AgentToken:   "token-new",
+		Tags:         []string{" edge ", "edge", "", "blue"},
+		Capabilities: []string{"http_rules", "l4", "bad", "l4"},
+	}, "")
+	if err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	if agent.ID != "edge-existing" {
+		t.Fatalf("Register() reused wrong row: %+v", agent)
+	}
+	if store.savedAgent.AgentURL != "https://edge.example.com" {
+		t.Fatalf("saved AgentURL = %q", store.savedAgent.AgentURL)
+	}
+	if store.savedAgent.Mode != "master" {
+		t.Fatalf("saved Mode = %q", store.savedAgent.Mode)
+	}
+	if store.savedAgent.TagsJSON != `["edge","blue"]` {
+		t.Fatalf("saved TagsJSON = %q", store.savedAgent.TagsJSON)
+	}
+	if store.savedAgent.CapabilitiesJSON != `["http_rules","l4"]` {
+		t.Fatalf("saved CapabilitiesJSON = %q", store.savedAgent.CapabilitiesJSON)
+	}
+}
+
+func TestAgentServiceRegisterRejectsInvalidURL(t *testing.T) {
+	svc := NewAgentService(config.Config{}, &fakeStore{})
+	_, err := svc.Register(context.Background(), RegisterRequest{
+		Name:       "Bad URL",
+		AgentURL:   "ftp://bad.example.com",
+		AgentToken: "token-bad",
+	}, "")
+	if err == nil || err.Error() != "agent_url must be a valid http/https URL" {
+		t.Fatalf("Register() error = %v", err)
+	}
+}
+
 func TestAgentServiceListHTTPRulesNormalizesStoredFields(t *testing.T) {
 	svc := NewAgentService(config.Config{
 		EnableLocalAgent: true,
@@ -606,6 +663,76 @@ func TestAgentServiceHeartbeatPersistsReportedStats(t *testing.T) {
 	}
 	if stats["totalRequests"] != "42" || stats["status"] != "运行中" {
 		t.Fatalf("Stats() = %+v", stats)
+	}
+}
+
+func TestAgentServiceHeartbeatNormalizesURLAndIP(t *testing.T) {
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID:               "remote-heartbeat",
+			Name:             "remote-heartbeat",
+			AgentToken:       "token-remote-heartbeat",
+			DesiredVersion:   "3.0.0",
+			DesiredRevision:  2,
+			CurrentRevision:  1,
+			LastApplyStatus:  "success",
+			CapabilitiesJSON: `["http_rules"]`,
+			TagsJSON:         `["old"]`,
+			LastSeenIP:       "",
+			Mode:             "pull",
+		}},
+		snapshot: storage.Snapshot{DesiredVersion: "3.0.0", Revision: 2},
+	}
+	svc := NewAgentService(config.Config{}, store)
+
+	_, err := svc.Heartbeat(context.Background(), HeartbeatRequest{
+		CurrentRevision: 1,
+		AgentURL:        " https://edge-heartbeat.example.com/ ",
+		Tags:            []string{" edge ", "", "edge"},
+		Capabilities:    []string{"http_rules", "l4", "bad"},
+		LastSeenIP:      "203.0.113.9",
+	}, "token-remote-heartbeat")
+	if err != nil {
+		t.Fatalf("Heartbeat() error = %v", err)
+	}
+
+	if store.savedAgent.AgentURL != "https://edge-heartbeat.example.com" {
+		t.Fatalf("saved AgentURL = %q", store.savedAgent.AgentURL)
+	}
+	if store.savedAgent.Mode != "master" {
+		t.Fatalf("saved Mode = %q", store.savedAgent.Mode)
+	}
+	if store.savedAgent.LastSeenIP != "203.0.113.9" {
+		t.Fatalf("saved LastSeenIP = %q", store.savedAgent.LastSeenIP)
+	}
+	if store.savedAgent.TagsJSON != `["edge"]` {
+		t.Fatalf("saved TagsJSON = %q", store.savedAgent.TagsJSON)
+	}
+	if store.savedAgent.CapabilitiesJSON != `["http_rules","l4"]` {
+		t.Fatalf("saved CapabilitiesJSON = %q", store.savedAgent.CapabilitiesJSON)
+	}
+}
+
+func TestAgentServiceHeartbeatRejectsInvalidURL(t *testing.T) {
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID:              "remote-invalid-url",
+			Name:            "remote-invalid-url",
+			AgentToken:      "token-remote-invalid-url",
+			DesiredVersion:  "3.0.0",
+			DesiredRevision: 2,
+			CurrentRevision: 1,
+			LastApplyStatus: "success",
+		}},
+	}
+	svc := NewAgentService(config.Config{}, store)
+
+	_, err := svc.Heartbeat(context.Background(), HeartbeatRequest{
+		CurrentRevision: 1,
+		AgentURL:        "ftp://bad.example.com",
+	}, "token-remote-invalid-url")
+	if err == nil || err.Error() != "invalid argument: agent_url must be a valid http/https URL" {
+		t.Fatalf("Heartbeat() error = %v", err)
 	}
 }
 

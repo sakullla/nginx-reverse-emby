@@ -2,6 +2,7 @@ package http
 
 import (
 	"encoding/json"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -16,6 +17,7 @@ func (d Dependencies) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, errorPayload("invalid JSON body"))
 		return
 	}
+	payload.LastSeenIP = remoteIPFromRequest(r)
 
 	reply, err := d.AgentService.Heartbeat(r.Context(), payload, r.Header.Get("X-Agent-Token"))
 	if err != nil {
@@ -28,6 +30,22 @@ func (d Dependencies) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 		"ok":   true,
 		"sync": heartbeatSyncPayload(reply),
 	})
+}
+
+func remoteIPFromRequest(r *http.Request) string {
+	forwarded := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-For"), ",")[0])
+	if forwarded != "" {
+		return forwarded
+	}
+	remoteAddr := strings.TrimSpace(r.RemoteAddr)
+	if remoteAddr == "" {
+		return ""
+	}
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err == nil {
+		return strings.TrimSpace(host)
+	}
+	return remoteAddr
 }
 
 func heartbeatSyncPayload(reply service.HeartbeatReply) map[string]any {

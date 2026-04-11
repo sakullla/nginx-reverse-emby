@@ -25,6 +25,7 @@ type fakeAgentService struct {
 	agents         []service.AgentSummary
 	agentsByID     map[string]service.AgentSummary
 	heartbeatReply service.HeartbeatReply
+	heartbeatErr   error
 	updateAgent    service.AgentSummary
 	deleteAgent    service.AgentSummary
 	applyResult    service.ApplyAgentResult
@@ -43,6 +44,8 @@ type fakeAgentServiceState struct {
 	deleteAgentID string
 	statsAgentID  string
 	applyAgentID  string
+	heartbeat     service.HeartbeatRequest
+	heartbeatToken string
 }
 
 func (f fakeAgentService) List(context.Context) ([]service.AgentSummary, error) {
@@ -54,6 +57,17 @@ func (f fakeAgentService) Register(context.Context, service.RegisterRequest, str
 		return service.AgentSummary{}, service.ErrAgentNotFound
 	}
 	return f.agents[0], nil
+}
+
+func (f fakeAgentService) Heartbeat(_ context.Context, req service.HeartbeatRequest, token string) (service.HeartbeatReply, error) {
+	if f.state != nil {
+		f.state.heartbeat = req
+		f.state.heartbeatToken = token
+	}
+	if f.heartbeatErr != nil {
+		return service.HeartbeatReply{}, f.heartbeatErr
+	}
+	return f.heartbeatReply, nil
 }
 
 func (f fakeAgentService) Get(_ context.Context, agentID string) (service.AgentSummary, error) {

@@ -2,7 +2,6 @@ package http
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -15,10 +14,6 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
-
-func (f fakeAgentService) Heartbeat(context.Context, service.HeartbeatRequest, string) (service.HeartbeatReply, error) {
-	return f.heartbeatReply, nil
-}
 
 func TestRouterServesJoinScriptAndHeartbeat(t *testing.T) {
 	distDir := filepath.Join(t.TempDir(), "dist")
@@ -39,6 +34,7 @@ func TestRouterServesJoinScriptAndHeartbeat(t *testing.T) {
 		t.Fatalf("WriteFile(agent asset) error = %v", err)
 	}
 
+	state := &fakeAgentServiceState{}
 	router, err := NewRouter(Dependencies{
 		Config: config.Config{
 			PanelToken:           "secret",
@@ -53,7 +49,10 @@ func TestRouterServesJoinScriptAndHeartbeat(t *testing.T) {
 				LocalAgentEnabled: true,
 			},
 		},
-		AgentService:         fakeAgentService{heartbeatReply: service.HeartbeatReply{DesiredRevision: 12, Rules: []storage.HTTPRule{}}},
+		AgentService: fakeAgentService{
+			heartbeatReply: service.HeartbeatReply{DesiredRevision: 12, Rules: []storage.HTTPRule{}},
+			state:          state,
+		},
 		RuleService:          fakeRuleService{},
 		L4RuleService:        fakeL4RuleService{},
 		VersionPolicyService: fakeVersionPolicyService{},
@@ -97,6 +96,7 @@ func TestRouterServesJoinScriptAndHeartbeat(t *testing.T) {
 	}
 	heartbeatReq.Header.Set("Content-Type", "application/json")
 	heartbeatReq.Header.Set("X-Agent-Token", "agent-token")
+	heartbeatReq.Header.Set("X-Forwarded-For", "203.0.113.10, 198.51.100.8")
 	heartbeatResp, err := http.DefaultClient.Do(heartbeatReq)
 	if err != nil {
 		t.Fatalf("POST heartbeat error = %v", err)
@@ -113,6 +113,12 @@ func TestRouterServesJoinScriptAndHeartbeat(t *testing.T) {
 	}
 	if heartbeatPayload.Sync.DesiredRevision != 12 {
 		t.Fatalf("heartbeat desired revision = %d", heartbeatPayload.Sync.DesiredRevision)
+	}
+	if state.heartbeatToken != "agent-token" {
+		t.Fatalf("heartbeat token = %q", state.heartbeatToken)
+	}
+	if state.heartbeat.LastSeenIP != "203.0.113.10" {
+		t.Fatalf("heartbeat LastSeenIP = %q", state.heartbeat.LastSeenIP)
 	}
 
 	assetResp, err := http.Get(server.URL + "/assets/app.js")
@@ -145,7 +151,7 @@ func TestRouterServesJoinScriptAndHeartbeat(t *testing.T) {
 
 func TestHeartbeatResponseOmitsNoUpdateFieldsButKeepsRelayListeners(t *testing.T) {
 	router, err := NewRouter(Dependencies{
-		Config:       config.Config{PanelToken: "secret"},
+		Config:        config.Config{PanelToken: "secret"},
 		SystemService: fakeSystemService{},
 		AgentService: fakeAgentService{heartbeatReply: service.HeartbeatReply{
 			HasUpdate:       false,
@@ -198,7 +204,7 @@ func TestHeartbeatResponseOmitsNoUpdateFieldsButKeepsRelayListeners(t *testing.T
 
 func TestHeartbeatResponseIncludesEmptyArraysWhenUpdateClearsState(t *testing.T) {
 	router, err := NewRouter(Dependencies{
-		Config:       config.Config{PanelToken: "secret"},
+		Config:        config.Config{PanelToken: "secret"},
 		SystemService: fakeSystemService{},
 		AgentService: fakeAgentService{heartbeatReply: service.HeartbeatReply{
 			HasUpdate:           true,
@@ -245,5 +251,41 @@ func TestHeartbeatResponseIncludesEmptyArraysWhenUpdateClearsState(t *testing.T)
 		if !ok || len(arrayValue) != 0 {
 			t.Fatalf("expected %s to be an empty array, got %#v", key, value)
 		}
+	}
+}
+
+func TestHeartbeatUsesRemoteAddrHostWhenForwardedMissing(t *testing.T) {
+	state := &fakeAgentServiceState{}
+	router, err := NewRouter(Dependencies{
+		Config:        config.Config{PanelToken: "secret"},
+		SystemService: fakeSystemService{},
+		AgentService: fakeAgentService{
+			heartbeatReply: service.HeartbeatReply{DesiredRevision: 2},
+			state:          state,
+		},
+		RuleService:          fakeRuleService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/panel-api/agents/heartbeat", bytes.NewBufferString(`{"current_revision":1}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Agent-Token", "agent-token")
+	req.RemoteAddr = "198.51.100.7:12345"
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("POST heartbeat = %d", resp.Code)
+	}
+	if state.heartbeatToken != "agent-token" {
+		t.Fatalf("heartbeat token = %q", state.heartbeatToken)
+	}
+	if state.heartbeat.LastSeenIP != "198.51.100.7" {
+		t.Fatalf("heartbeat LastSeenIP = %q", state.heartbeat.LastSeenIP)
 	}
 }
