@@ -380,6 +380,29 @@ func TestRelayServiceCreateAutoBootstrapsMissingGlobalRelayCA(t *testing.T) {
 	}
 }
 
+func TestNormalizeRelayListenerInputDeduplicatesBindHosts(t *testing.T) {
+	listener, err := normalizeRelayListenerInput(RelayListenerInput{
+		Name:       stringPtr("relay-bind-hosts"),
+		ListenPort: intPtrService(7443),
+		BindHosts:  &[]string{"0.0.0.0", " 0.0.0.0 ", "127.0.0.1", ""},
+	}, RelayListener{}, 1, relayNormalizeOptions{
+		AllowMissingCertificate: true,
+		SkipTrustValidation:     true,
+	})
+	if err != nil {
+		t.Fatalf("normalizeRelayListenerInput() error = %v", err)
+	}
+	if len(listener.BindHosts) != 2 {
+		t.Fatalf("listener.BindHosts = %+v", listener.BindHosts)
+	}
+	if listener.BindHosts[0] != "0.0.0.0" || listener.BindHosts[1] != "127.0.0.1" {
+		t.Fatalf("listener.BindHosts = %+v", listener.BindHosts)
+	}
+	if listener.ListenHost != "0.0.0.0" {
+		t.Fatalf("listener.ListenHost = %q", listener.ListenHost)
+	}
+}
+
 func TestRelayServiceBootstrapPersistsCanonicalRelayCAWhenMissing(t *testing.T) {
 	store := &relayCertStore{
 		relayByAgentID: map[string][]storage.RelayListenerRow{},
@@ -426,7 +449,7 @@ func TestRelayServiceCreateAutoRejectsMultipleRelayCACandidates(t *testing.T) {
 		httpRulesByID:  map[string][]storage.HTTPRuleRow{},
 		l4RulesByID:    map[string][]storage.L4RuleRow{},
 		materialsByHost: map[string]relayMaterial{
-			"__relay-ca.internal": relayCA,
+			"__relay-ca.internal":         relayCA,
 			"legacy-relay-ca.example.com": relayCA,
 		},
 		managedCerts: []storage.ManagedCertificateRow{
@@ -1448,8 +1471,8 @@ func TestRelayServiceDeleteThenRecreateAutoCertificateUsesFreshIdentityDomain(t 
 	relayCA := mustCreateSelfSignedCA(t, "__relay-ca.internal")
 	store := &relayCertStore{
 		relayByAgentID: map[string][]storage.RelayListenerRow{"local": {}},
-		httpRulesByID: map[string][]storage.HTTPRuleRow{},
-		l4RulesByID:   map[string][]storage.L4RuleRow{},
+		httpRulesByID:  map[string][]storage.HTTPRuleRow{},
+		l4RulesByID:    map[string][]storage.L4RuleRow{},
 		materialsByHost: map[string]relayMaterial{
 			"__relay-ca.internal": relayCA,
 		},

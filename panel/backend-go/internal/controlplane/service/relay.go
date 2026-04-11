@@ -3,8 +3,8 @@ package service
 import (
 	"context"
 	"crypto/rand"
-	"encoding/json"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -524,7 +524,7 @@ func normalizeRelayListenerInput(input RelayListenerInput, fallback RelayListene
 
 	bindHosts := append([]string(nil), fallback.BindHosts...)
 	if input.BindHosts != nil {
-		bindHosts = normalizeTags(*input.BindHosts)
+		bindHosts = normalizeRelayBindHosts(*input.BindHosts)
 	}
 	listenHost := strings.TrimSpace(pointerString(input.ListenHost))
 	if listenHost == "" {
@@ -1068,6 +1068,23 @@ func normalizeRelayPins(pins []RelayPin) []RelayPin {
 			Type:  strings.TrimSpace(pin.Type),
 			Value: strings.TrimSpace(pin.Value),
 		})
+	}
+	return normalized
+}
+
+func normalizeRelayBindHosts(values []string) []string {
+	seen := map[string]struct{}{}
+	normalized := make([]string, 0, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		if _, exists := seen[trimmed]; exists {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		normalized = append(normalized, trimmed)
 	}
 	return normalized
 }
