@@ -2,6 +2,7 @@ package localagent
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"reflect"
 	"testing"
@@ -9,6 +10,7 @@ import (
 	goagentembedded "github.com/sakullla/nginx-reverse-emby/go-agent/embedded"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/app"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
 type bridgeStoreStub struct {
@@ -17,6 +19,9 @@ type bridgeStoreStub struct {
 	savedAgentID         string
 	savedState           RuntimeState
 	saveLocalStateCalled bool
+	managedCerts         []storage.ManagedCertificateRow
+	rulesByAgent         map[string][]storage.HTTPRuleRow
+	saveManagedCalled    bool
 }
 
 type embeddedRuntimeStub struct {
@@ -39,6 +44,20 @@ func (s *bridgeStoreStub) SaveLocalRuntimeState(_ context.Context, agentID strin
 	s.savedAgentID = agentID
 	s.savedState = state
 	s.saveLocalStateCalled = true
+	return nil
+}
+
+func (s *bridgeStoreStub) ListManagedCertificates(context.Context) ([]storage.ManagedCertificateRow, error) {
+	return append([]storage.ManagedCertificateRow(nil), s.managedCerts...), nil
+}
+
+func (s *bridgeStoreStub) ListHTTPRules(_ context.Context, agentID string) ([]storage.HTTPRuleRow, error) {
+	return append([]storage.HTTPRuleRow(nil), s.rulesByAgent[agentID]...), nil
+}
+
+func (s *bridgeStoreStub) SaveManagedCertificates(_ context.Context, rows []storage.ManagedCertificateRow) error {
+	s.managedCerts = append([]storage.ManagedCertificateRow(nil), rows...)
+	s.saveManagedCalled = true
 	return nil
 }
 
@@ -65,7 +84,23 @@ func TestNewRuntimeStartsEmbeddedRuntimeWithBridgeAdapters(t *testing.T) {
 		if cfg.AgentID != "local-test" {
 			t.Fatalf("embedded runtime AgentID = %q", cfg.AgentID)
 		}
-		snapshot, err := source.Sync(t.Context(), goagentembedded.SyncRequest{CurrentRevision: 14})
+		request := mustDecodeEmbeddedSyncRequest(t, `{
+			"CurrentRevision": 14,
+			"LastApplyRevision": 13,
+			"LastApplyStatus": "error",
+			"LastApplyMessage": "apply failed",
+			"ManagedCertificateReports": [
+				{
+					"id": 21,
+					"domain": "sync.example.com",
+					"status": "active",
+					"last_issue_at": "2026-04-11T12:00:00Z",
+					"material_hash": "hash-21",
+					"acme_info": {"Main_Domain":"sync.example.com"}
+				}
+			]
+		}`)
+		snapshot, err := source.Sync(t.Context(), request)
 		if err != nil {
 			t.Fatalf("source.Sync() error = %v", err)
 		}
@@ -111,6 +146,12 @@ func TestNewRuntimeStartsEmbeddedRuntimeWithBridgeAdapters(t *testing.T) {
 	}
 	if store.savedState.CurrentRevision != 27 || store.savedState.Status != "active" {
 		t.Fatalf("SaveLocalRuntimeState() state = %+v", store.savedState)
+	}
+	if store.savedState.LastApplyRevision != 13 || store.savedState.LastApplyStatus != "error" || store.savedState.LastApplyMessage != "apply failed" {
+		t.Fatalf("SaveLocalRuntimeState() apply metadata = %+v", store.savedState)
+	}
+	if len(store.savedState.ManagedCertificateReports) != 1 || store.savedState.ManagedCertificateReports[0].ID != 21 {
+		t.Fatalf("SaveLocalRuntimeState() managed reports = %+v", store.savedState.ManagedCertificateReports)
 	}
 }
 
@@ -185,4 +226,187 @@ func TestLocalStateSinkPersistsRuntimeStateToControlPlaneStore(t *testing.T) {
 	if !reflect.DeepEqual(store.savedState, state) {
 		t.Fatalf("SaveLocalRuntimeState() state = %+v", store.savedState)
 	}
+}
+
+func TestLocalStateSinkPersistsManagedCertificateReportForLocalAgent(t *testing.T) {
+	store := &bridgeStoreStub{
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              21,
+			Domain:          "sync.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  `["local"]`,
+			Status:          "pending",
+			AgentReports:    `{}`,
+			ACMEInfo:        `{"Main_Domain":"sync.example.com"}`,
+			Usage:           "https",
+			CertificateType: "acme",
+			Revision:        4,
+		}},
+	}
+	sink := NewStateSink(store, "local")
+	state := RuntimeState{
+		CurrentRevision:   4,
+		LastApplyRevision: 4,
+		LastApplyStatus:   "success",
+		ManagedCertificateReports: []storage.ManagedCertificateReport{{
+			ID:           21,
+			Domain:       "SYNC.EXAMPLE.COM",
+			Status:       "active",
+			LastIssueAt:  "2026-04-11T12:00:00Z",
+			MaterialHash: "hash-21",
+			ACMEInfo: storage.ManagedCertificateACMEInfo{
+				MainDomain: "sync.example.com",
+			},
+		}},
+	}
+
+	if err := sink.Save(t.Context(), state); err != nil {
+		t.Fatalf("Save() error = %v", err)
+	}
+
+	if !store.saveManagedCalled {
+		t.Fatal("SaveManagedCertificates() was not called")
+	}
+	if len(store.managedCerts) != 1 {
+		t.Fatalf("managedCerts = %+v", store.managedCerts)
+	}
+
+	cert := store.managedCerts[0]
+	if cert.Status != "active" || cert.MaterialHash != "hash-21" {
+		t.Fatalf("managed cert overlay fields not updated: %+v", cert)
+	}
+	report := parseAgentReportForTest(t, cert.AgentReports, "local")
+	if report.Status != "active" || report.MaterialHash != "hash-21" {
+		t.Fatalf("agent report not updated: %+v", report)
+	}
+}
+
+func TestLocalStateSinkReconcilesLocalHTTP01FallbackForLocalAgent(t *testing.T) {
+	t.Run("success", func(t *testing.T) {
+		store := &bridgeStoreStub{
+			managedCerts: []storage.ManagedCertificateRow{{
+				ID:              22,
+				Domain:          "fallback.example.com",
+				Enabled:         true,
+				Scope:           "domain",
+				IssuerMode:      "local_http01",
+				TargetAgentIDs:  `["local"]`,
+				Status:          "pending",
+				MaterialHash:    "hash-22",
+				AgentReports:    `{}`,
+				ACMEInfo:        `{"Main_Domain":"fallback.example.com"}`,
+				Usage:           "https",
+				CertificateType: "acme",
+				Revision:        4,
+			}},
+			rulesByAgent: map[string][]storage.HTTPRuleRow{
+				"local": {{
+					ID:          8,
+					AgentID:     "local",
+					FrontendURL: "https://fallback.example.com",
+					Enabled:     true,
+					Revision:    4,
+				}},
+			},
+		}
+		sink := NewStateSink(store, "local")
+
+		if err := sink.Save(t.Context(), RuntimeState{
+			CurrentRevision:   4,
+			LastApplyRevision: 4,
+			LastApplyStatus:   "success",
+		}); err != nil {
+			t.Fatalf("Save() error = %v", err)
+		}
+
+		cert := store.managedCerts[0]
+		if cert.Status != "active" || cert.LastError != "" {
+			t.Fatalf("unexpected success fallback cert: %+v", cert)
+		}
+		report := parseAgentReportForTest(t, cert.AgentReports, "local")
+		if report.Status != "active" || report.LastIssueAt == "" {
+			t.Fatalf("unexpected success fallback report: %+v", report)
+		}
+	})
+
+	t.Run("error", func(t *testing.T) {
+		store := &bridgeStoreStub{
+			managedCerts: []storage.ManagedCertificateRow{{
+				ID:              23,
+				Domain:          "error.example.com",
+				Enabled:         true,
+				Scope:           "domain",
+				IssuerMode:      "local_http01",
+				TargetAgentIDs:  `["local"]`,
+				Status:          "pending",
+				MaterialHash:    "hash-23",
+				AgentReports:    `{}`,
+				ACMEInfo:        `{"Main_Domain":"error.example.com"}`,
+				Usage:           "https",
+				CertificateType: "acme",
+				Revision:        4,
+			}},
+			rulesByAgent: map[string][]storage.HTTPRuleRow{
+				"local": {{
+					ID:          9,
+					AgentID:     "local",
+					FrontendURL: "https://error.example.com",
+					Enabled:     true,
+					Revision:    4,
+				}},
+			},
+		}
+		sink := NewStateSink(store, "local")
+
+		if err := sink.Save(t.Context(), RuntimeState{
+			CurrentRevision:   4,
+			LastApplyRevision: 4,
+			LastApplyStatus:   "error",
+			LastApplyMessage:  "apply failed",
+		}); err != nil {
+			t.Fatalf("Save() error = %v", err)
+		}
+
+		cert := store.managedCerts[0]
+		if cert.Status != "error" || cert.LastError != "apply failed" {
+			t.Fatalf("unexpected error fallback cert: %+v", cert)
+		}
+		report := parseAgentReportForTest(t, cert.AgentReports, "local")
+		if report.Status != "error" || report.LastError != "apply failed" {
+			t.Fatalf("unexpected error fallback report: %+v", report)
+		}
+	})
+}
+
+type managedCertificateAgentReportForTest struct {
+	Status       string `json:"status"`
+	LastIssueAt  string `json:"last_issue_at"`
+	LastError    string `json:"last_error"`
+	MaterialHash string `json:"material_hash"`
+}
+
+func parseAgentReportForTest(t *testing.T, raw string, agentID string) managedCertificateAgentReportForTest {
+	t.Helper()
+
+	var reports map[string]managedCertificateAgentReportForTest
+	if err := json.Unmarshal([]byte(raw), &reports); err != nil {
+		t.Fatalf("json.Unmarshal(agent_reports) error = %v", err)
+	}
+	report, ok := reports[agentID]
+	if !ok {
+		t.Fatalf("missing report for %q in %s", agentID, raw)
+	}
+	return report
+}
+
+func mustDecodeEmbeddedSyncRequest(t *testing.T, raw string) goagentembedded.SyncRequest {
+	t.Helper()
+
+	var request goagentembedded.SyncRequest
+	if err := json.Unmarshal([]byte(raw), &request); err != nil {
+		t.Fatalf("json.Unmarshal(sync request) error = %v", err)
+	}
+	return request
 }

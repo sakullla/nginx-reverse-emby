@@ -28,8 +28,9 @@ type Runtime struct {
 }
 
 func NewRuntime(cfg config.Config, store Store) (*Runtime, error) {
-	source := NewSyncSource(store, cfg.LocalAgentID)
-	sink := NewStateSink(store, cfg.LocalAgentID)
+	bridge := newSyncRequestBridge()
+	source := newSyncSourceWithBridge(store, cfg.LocalAgentID, bridge)
+	sink := newStateSinkWithBridge(store, cfg.LocalAgentID, bridge)
 
 	runtime, err := newEmbeddedRuntime(
 		goagentembedded.Config{
@@ -69,7 +70,7 @@ type syncSourceAdapter struct {
 }
 
 func (a syncSourceAdapter) Sync(ctx context.Context, request goagentembedded.SyncRequest) (goagentembedded.Snapshot, error) {
-	snapshot, err := a.source.Sync(ctx, SyncRequest{CurrentRevision: request.CurrentRevision})
+	snapshot, err := a.source.Sync(ctx, fromEmbeddedSyncRequest(request))
 	if err != nil {
 		return goagentembedded.Snapshot{}, err
 	}
@@ -217,6 +218,41 @@ func fromEmbeddedRuntimeState(state goagentembedded.RuntimeState) RuntimeState {
 	copyValue.Metadata = make(map[string]string, len(state.Metadata))
 	for key, value := range state.Metadata {
 		copyValue.Metadata[key] = value
+	}
+	return copyValue
+}
+
+func fromEmbeddedSyncRequest(request goagentembedded.SyncRequest) SyncRequest {
+	copyValue := SyncRequest{
+		CurrentRevision:   request.CurrentRevision,
+		LastApplyRevision: request.LastApplyRevision,
+		LastApplyStatus:   request.LastApplyStatus,
+		LastApplyMessage:  request.LastApplyMessage,
+	}
+	if len(request.ManagedCertificateReports) == 0 {
+		return copyValue
+	}
+
+	copyValue.ManagedCertificateReports = make([]storage.ManagedCertificateReport, 0, len(request.ManagedCertificateReports))
+	for _, report := range request.ManagedCertificateReports {
+		copyValue.ManagedCertificateReports = append(copyValue.ManagedCertificateReports, storage.ManagedCertificateReport{
+			ID:           report.ID,
+			Domain:       report.Domain,
+			Status:       report.Status,
+			LastIssueAt:  report.LastIssueAt,
+			LastError:    report.LastError,
+			MaterialHash: report.MaterialHash,
+			ACMEInfo: storage.ManagedCertificateACMEInfo{
+				MainDomain: report.ACMEInfo.MainDomain,
+				KeyLength:  report.ACMEInfo.KeyLength,
+				SANDomains: report.ACMEInfo.SANDomains,
+				Profile:    report.ACMEInfo.Profile,
+				CA:         report.ACMEInfo.CA,
+				Created:    report.ACMEInfo.Created,
+				Renew:      report.ACMEInfo.Renew,
+			},
+			UpdatedAt: report.UpdatedAt,
+		})
 	}
 	return copyValue
 }

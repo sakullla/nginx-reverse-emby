@@ -19,10 +19,14 @@ type AgentSnapshotInput struct {
 }
 
 type RuntimeState struct {
-	NodeID          string            `json:"node_id,omitempty"`
-	CurrentRevision int64             `json:"current_revision,omitempty"`
-	Status          string            `json:"status,omitempty"`
-	Metadata        map[string]string `json:"metadata,omitempty"`
+	NodeID                    string                     `json:"node_id,omitempty"`
+	CurrentRevision           int64                      `json:"current_revision,omitempty"`
+	Status                    string                     `json:"status,omitempty"`
+	LastApplyRevision         int64                      `json:"last_apply_revision,omitempty"`
+	LastApplyStatus           string                     `json:"last_apply_status,omitempty"`
+	LastApplyMessage          string                     `json:"last_apply_message,omitempty"`
+	ManagedCertificateReports []ManagedCertificateReport `json:"managed_certificate_reports,omitempty"`
+	Metadata                  map[string]string          `json:"metadata,omitempty"`
 }
 
 type VersionPackage struct {
@@ -121,6 +125,17 @@ type ManagedCertificateBundle struct {
 	Revision int64  `json:"revision"`
 	CertPEM  string `json:"cert_pem"`
 	KeyPEM   string `json:"key_pem"`
+}
+
+type ManagedCertificateReport struct {
+	ID           int                        `json:"id,omitempty"`
+	Domain       string                     `json:"domain,omitempty"`
+	Status       string                     `json:"status,omitempty"`
+	LastIssueAt  string                     `json:"last_issue_at,omitempty"`
+	LastError    string                     `json:"last_error,omitempty"`
+	MaterialHash string                     `json:"material_hash,omitempty"`
+	ACMEInfo     ManagedCertificateACMEInfo `json:"acme_info,omitempty"`
+	UpdatedAt    string                     `json:"updated_at,omitempty"`
 }
 
 type ManagedCertificateACMEInfo struct {

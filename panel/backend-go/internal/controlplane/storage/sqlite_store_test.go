@@ -947,6 +947,52 @@ func TestStoreSavesSuccessfulLocalRuntimeStateIntoLocalAgentState(t *testing.T) 
 	}
 }
 
+func TestStoreSaveLocalRuntimeStateUsesExplicitApplyMetadata(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromCanonicalSchema(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	err = store.SaveLocalRuntimeState(t.Context(), "local", RuntimeState{
+		CurrentRevision:   9,
+		LastApplyRevision: 11,
+		LastApplyStatus:   "error",
+		LastApplyMessage:  "apply failed",
+		Status:            "active",
+	})
+	if err != nil {
+		t.Fatalf("SaveLocalRuntimeState() error = %v", err)
+	}
+
+	state, err := store.LoadLocalAgentState(t.Context())
+	if err != nil {
+		t.Fatalf("LoadLocalAgentState() error = %v", err)
+	}
+	if state.CurrentRevision != 9 {
+		t.Fatalf("CurrentRevision = %d", state.CurrentRevision)
+	}
+	if state.LastApplyRevision != 11 {
+		t.Fatalf("LastApplyRevision = %d", state.LastApplyRevision)
+	}
+	if state.LastApplyStatus != "error" {
+		t.Fatalf("LastApplyStatus = %q", state.LastApplyStatus)
+	}
+	if state.LastApplyMessage != "apply failed" {
+		t.Fatalf("LastApplyMessage = %q", state.LastApplyMessage)
+	}
+	if state.DesiredRevision != 3 {
+		t.Fatalf("DesiredRevision = %d", state.DesiredRevision)
+	}
+}
+
 func seedSQLiteFixtureFromCanonicalSchema(t *testing.T) string {
 	t.Helper()
 
