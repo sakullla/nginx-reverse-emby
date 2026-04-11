@@ -315,6 +315,163 @@ func TestCertificateServiceUpdateUploadedPreservesMaterialWhenPEMFieldsOmitted(t
 	}
 }
 
+func TestCertificateServiceUpdateUploadedMergesOmittedPEMFieldsFromPreviousMaterial(t *testing.T) {
+	caA := mustCreateSelfSignedCA(t, "Upload Merge CA A")
+	caB := mustCreateSelfSignedCA(t, "Upload Merge CA B")
+	leaf := mustCreateLeafSignedByCA(t, "merge.example.com", caA)
+	previousCert := strings.TrimSpace(leaf.CertPEM) + "\n" + strings.TrimSpace(caA.CertPEM)
+	previousKey := strings.TrimSpace(leaf.KeyPEM)
+
+	store := &relayCertStore{
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              32,
+			Domain:          "merge.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  `["local"]`,
+			Status:          "pending",
+			CertificateType: "uploaded",
+			Usage:           "https",
+			Revision:        5,
+		}},
+		materialsByHost: map[string]relayMaterial{
+			"merge.example.com": {CertPEM: previousCert, KeyPEM: previousKey},
+		},
+	}
+	svc := NewCertificateService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	updated, err := svc.Update(context.Background(), "local", 32, ManagedCertificateInput{
+		CAPEM: stringPtr(strings.TrimSpace(caB.CertPEM)),
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	material := store.materialsByHost["merge.example.com"]
+	expectedCert := strings.TrimSpace(leaf.CertPEM) + "\n" + strings.TrimSpace(caB.CertPEM)
+	if strings.TrimSpace(material.CertPEM) != expectedCert {
+		t.Fatalf("material.CertPEM mismatch after CA-only merge")
+	}
+	if strings.TrimSpace(material.KeyPEM) != previousKey {
+		t.Fatalf("material.KeyPEM mismatch after CA-only merge")
+	}
+	if updated.MaterialHash != hashManagedCertificateMaterial(expectedCert, previousKey) {
+		t.Fatalf("updated.MaterialHash = %q", updated.MaterialHash)
+	}
+}
+
+func TestCertificateServiceUpdateUploadedSameDomainRestoreMaterialOnPersistenceFailure(t *testing.T) {
+	oldCA := mustCreateSelfSignedCA(t, "Upload Rollback CA old")
+	oldLeaf := mustCreateLeafSignedByCA(t, "rollback.example.com", oldCA)
+	oldCert := strings.TrimSpace(oldLeaf.CertPEM) + "\n" + strings.TrimSpace(oldCA.CertPEM)
+	oldKey := strings.TrimSpace(oldLeaf.KeyPEM)
+	oldHash := hashManagedCertificateMaterial(oldCert, oldKey)
+
+	newCA := mustCreateSelfSignedCA(t, "Upload Rollback CA new")
+	newLeaf := mustCreateLeafSignedByCA(t, "rollback.example.com", newCA)
+	newCert := strings.TrimSpace(newLeaf.CertPEM) + "\n" + strings.TrimSpace(newCA.CertPEM)
+	newKey := strings.TrimSpace(newLeaf.KeyPEM)
+
+	store := &relayCertStore{
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              34,
+			Domain:          "rollback.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  `["local"]`,
+			Status:          "pending",
+			MaterialHash:    oldHash,
+			CertificateType: "uploaded",
+			Usage:           "https",
+			Revision:        4,
+		}},
+		materialsByHost: map[string]relayMaterial{
+			"rollback.example.com": {CertPEM: oldCert, KeyPEM: oldKey},
+		},
+		saveMaterialErrs: []error{
+			errors.New("disk write failed"),
+			nil,
+		},
+		saveMaterialPartialWriteOnError: true,
+	}
+	svc := NewCertificateService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	_, err := svc.Update(context.Background(), "local", 34, ManagedCertificateInput{
+		CertificatePEM: stringPtr(strings.TrimSpace(newLeaf.CertPEM)),
+		PrivateKeyPEM:  stringPtr(newKey),
+		CAPEM:          stringPtr(strings.TrimSpace(newCA.CertPEM)),
+	})
+	if err == nil {
+		t.Fatal("expected Update() error")
+	}
+
+	row := managedCertificateFromRow(store.managedCerts[0])
+	if row.MaterialHash != oldHash || row.Revision != 4 {
+		t.Fatalf("row not rolled back: %+v", row)
+	}
+	material := store.materialsByHost["rollback.example.com"]
+	if strings.TrimSpace(material.CertPEM) != oldCert || strings.TrimSpace(material.KeyPEM) != oldKey {
+		t.Fatalf("material not restored: %+v", material)
+	}
+	if strings.TrimSpace(material.CertPEM) == newCert {
+		t.Fatalf("material incorrectly kept failed write payload")
+	}
+}
+
+func TestCertificateServiceUpdateRejectsUploadedToNonUploadedTransition(t *testing.T) {
+	ca := mustCreateSelfSignedCA(t, "Upload Transition CA")
+	leaf := mustCreateLeafSignedByCA(t, "transition.example.com", ca)
+	cert := strings.TrimSpace(leaf.CertPEM) + "\n" + strings.TrimSpace(ca.CertPEM)
+	key := strings.TrimSpace(leaf.KeyPEM)
+	hash := hashManagedCertificateMaterial(cert, key)
+
+	store := &relayCertStore{
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              35,
+			Domain:          "transition.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  `["local"]`,
+			Status:          "pending",
+			MaterialHash:    hash,
+			CertificateType: "uploaded",
+			Usage:           "https",
+			Revision:        8,
+		}},
+		materialsByHost: map[string]relayMaterial{
+			"transition.example.com": {CertPEM: cert, KeyPEM: key},
+		},
+	}
+	svc := NewCertificateService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	_, err := svc.Update(context.Background(), "local", 35, ManagedCertificateInput{
+		CertificateType: stringPtr("acme"),
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Update() error = %v", err)
+	}
+	row := managedCertificateFromRow(store.managedCerts[0])
+	if row.CertificateType != "uploaded" || row.MaterialHash != hash {
+		t.Fatalf("row changed unexpectedly: %+v", row)
+	}
+	material := store.materialsByHost["transition.example.com"]
+	if strings.TrimSpace(material.CertPEM) != cert || strings.TrimSpace(material.KeyPEM) != key {
+		t.Fatalf("material changed unexpectedly: %+v", material)
+	}
+}
+
 func TestCertificateServiceUploadedCreateRejectsMissingOrInvalidMaterial(t *testing.T) {
 	store := &relayCertStore{}
 	svc := NewCertificateService(config.Config{

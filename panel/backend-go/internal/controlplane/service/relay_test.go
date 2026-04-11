@@ -27,19 +27,22 @@ type relayMaterial struct {
 }
 
 type relayCertStore struct {
-	agents          []storage.AgentRow
-	httpRulesByID   map[string][]storage.HTTPRuleRow
-	l4RulesByID     map[string][]storage.L4RuleRow
-	relayByAgentID  map[string][]storage.RelayListenerRow
-	managedCerts    []storage.ManagedCertificateRow
-	materialsByHost map[string]relayMaterial
-	localState      storage.LocalAgentStateRow
-	saveRelayErr    error
-	saveManagedErr  error
-	saveManagedErrs []error
-	saveManagedCall int
-	cleanupCall     int
-	cleanupErrs     []error
+	agents                          []storage.AgentRow
+	httpRulesByID                   map[string][]storage.HTTPRuleRow
+	l4RulesByID                     map[string][]storage.L4RuleRow
+	relayByAgentID                  map[string][]storage.RelayListenerRow
+	managedCerts                    []storage.ManagedCertificateRow
+	materialsByHost                 map[string]relayMaterial
+	localState                      storage.LocalAgentStateRow
+	saveRelayErr                    error
+	saveManagedErr                  error
+	saveManagedErrs                 []error
+	saveManagedCall                 int
+	saveMaterialErrs                []error
+	saveMaterialCall                int
+	saveMaterialPartialWriteOnError bool
+	cleanupCall                     int
+	cleanupErrs                     []error
 }
 
 func (s *relayCertStore) ListAgents(context.Context) ([]storage.AgentRow, error) {
@@ -142,6 +145,24 @@ func (s *relayCertStore) LoadManagedCertificateMaterial(_ context.Context, domai
 }
 
 func (s *relayCertStore) SaveManagedCertificateMaterial(_ context.Context, domain string, bundle storage.ManagedCertificateBundle) error {
+	if s.saveMaterialCall < len(s.saveMaterialErrs) {
+		err := s.saveMaterialErrs[s.saveMaterialCall]
+		s.saveMaterialCall++
+		if err != nil {
+			if s.saveMaterialPartialWriteOnError {
+				if s.materialsByHost == nil {
+					s.materialsByHost = map[string]relayMaterial{}
+				}
+				s.materialsByHost[domain] = relayMaterial{
+					CertPEM: bundle.CertPEM,
+					KeyPEM:  bundle.KeyPEM,
+				}
+			}
+			return err
+		}
+	} else {
+		s.saveMaterialCall++
+	}
 	if s.materialsByHost == nil {
 		s.materialsByHost = map[string]relayMaterial{}
 	}

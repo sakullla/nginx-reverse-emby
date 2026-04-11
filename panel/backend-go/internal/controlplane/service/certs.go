@@ -242,6 +242,9 @@ func (s *certificateService) Update(ctx context.Context, agentID string, id int,
 	if err := assertManagedCertificateMutationAllowed(&current, next); err != nil {
 		return ManagedCertificate{}, err
 	}
+	if current.CertificateType == "uploaded" && next.CertificateType != "uploaded" {
+		return ManagedCertificate{}, fmt.Errorf("%w: cannot change certificate_type from uploaded to %s", ErrInvalidArgument, next.CertificateType)
+	}
 	if err := assertManagedCertificateTargetingAllowed(s.cfg, next); err != nil {
 		return ManagedCertificate{}, err
 	}
@@ -267,9 +270,26 @@ func (s *certificateService) Update(ctx context.Context, agentID string, id int,
 		return ManagedCertificate{}, err
 	}
 	if hasUploadMaterial {
+		previousMaterial := storage.ManagedCertificateBundle{}
+		previousMaterialFound := false
+		if strings.EqualFold(strings.TrimSpace(current.Domain), strings.TrimSpace(next.Domain)) {
+			loaded, ok, loadErr := s.store.LoadManagedCertificateMaterial(ctx, current.Domain)
+			if loadErr != nil {
+				return ManagedCertificate{}, loadErr
+			}
+			if ok {
+				previousMaterial = loaded
+				previousMaterialFound = true
+			}
+		}
 		if err := s.store.SaveManagedCertificateMaterial(ctx, next.Domain, uploadMaterial); err != nil {
 			if rollbackErr := s.store.SaveManagedCertificates(ctx, originalRows); rollbackErr != nil {
 				return ManagedCertificate{}, rollbackErr
+			}
+			if previousMaterialFound {
+				if restoreErr := s.store.SaveManagedCertificateMaterial(ctx, current.Domain, previousMaterial); restoreErr != nil {
+					return ManagedCertificate{}, fmt.Errorf("persist uploaded certificate material: %w (restore failed: %v)", err, restoreErr)
+				}
 			}
 			cleanupManagedCertificateMaterialBestEffort(ctx, s.store, rows, originalRows)
 			return ManagedCertificate{}, err
@@ -465,27 +485,48 @@ func (s *certificateService) resolveUploadedMaterialForMutation(ctx context.Cont
 	hasCertificate := input.CertificatePEM != nil
 	hasKey := input.PrivateKeyPEM != nil
 	hasCA := input.CAPEM != nil
-	if !hasCertificate && !hasKey && !hasCA {
-		if previous == nil {
-			return storage.ManagedCertificateBundle{}, false, fmt.Errorf("%w: certificate_pem is required for uploaded certificates", ErrInvalidArgument)
+	certificatePEM := normalizeUploadedPEMField(input.CertificatePEM)
+	privateKeyPEM := normalizeUploadedPEMField(input.PrivateKeyPEM)
+	caPEM := normalizeUploadedPEMField(input.CAPEM)
+
+	if previous == nil {
+		joinedCertificatePEM := joinUploadedCertificatePEM(certificatePEM, caPEM)
+		bundle := storage.ManagedCertificateBundle{
+			Domain:  next.Domain,
+			CertPEM: joinedCertificatePEM,
+			KeyPEM:  privateKeyPEM,
 		}
-		material, ok, err := s.store.LoadManagedCertificateMaterial(ctx, previous.Domain)
+		if err := validateUploadedManagedCertificateBundle(bundle); err != nil {
+			return storage.ManagedCertificateBundle{}, false, err
+		}
+		bundle.CertPEM = strings.TrimSpace(bundle.CertPEM)
+		bundle.KeyPEM = strings.TrimSpace(bundle.KeyPEM)
+		return bundle, true, nil
+	}
+
+	if !hasCertificate || !hasKey || !hasCA {
+		previousMaterial, ok, err := s.store.LoadManagedCertificateMaterial(ctx, previous.Domain)
 		if err != nil {
 			return storage.ManagedCertificateBundle{}, false, err
 		}
 		if !ok {
 			return storage.ManagedCertificateBundle{}, false, fmt.Errorf("%w: certificate_pem is required for uploaded certificates", ErrInvalidArgument)
 		}
-		material.Domain = next.Domain
-		if err := validateUploadedManagedCertificateBundle(material); err != nil {
-			return storage.ManagedCertificateBundle{}, false, err
+		previousLeafPEM, previousCAPEM, splitErr := splitUploadedCertificatePEM(previousMaterial.CertPEM)
+		if splitErr != nil {
+			return storage.ManagedCertificateBundle{}, false, splitErr
 		}
-		return material, true, nil
+		if !hasCertificate {
+			certificatePEM = previousLeafPEM
+		}
+		if !hasKey {
+			privateKeyPEM = strings.TrimSpace(previousMaterial.KeyPEM)
+		}
+		if !hasCA {
+			caPEM = previousCAPEM
+		}
 	}
 
-	certificatePEM := normalizeUploadedPEMField(input.CertificatePEM)
-	privateKeyPEM := normalizeUploadedPEMField(input.PrivateKeyPEM)
-	caPEM := normalizeUploadedPEMField(input.CAPEM)
 	joinedCertificatePEM := joinUploadedCertificatePEM(certificatePEM, caPEM)
 	bundle := storage.ManagedCertificateBundle{
 		Domain:  next.Domain,
