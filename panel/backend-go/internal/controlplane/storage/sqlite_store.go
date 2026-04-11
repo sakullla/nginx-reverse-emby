@@ -27,6 +27,8 @@ type Store interface {
 	SaveRelayListeners(context.Context, string, []RelayListenerRow) error
 	SaveVersionPolicies(context.Context, []VersionPolicyRow) error
 	SaveManagedCertificates(context.Context, []ManagedCertificateRow) error
+	LoadManagedCertificateMaterial(context.Context, string) (ManagedCertificateBundle, bool, error)
+	SaveManagedCertificateMaterial(context.Context, string, ManagedCertificateBundle) error
 	CleanupManagedCertificateMaterial(context.Context, []ManagedCertificateRow, []ManagedCertificateRow) error
 }
 
@@ -399,6 +401,32 @@ func (s *SQLiteStore) CleanupManagedCertificateMaterial(_ context.Context, previ
 		if err := os.RemoveAll(filepath.Join(baseDir, domain)); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func (s *SQLiteStore) LoadManagedCertificateMaterial(_ context.Context, domain string) (ManagedCertificateBundle, bool, error) {
+	material, ok := s.readManagedCertificateMaterial(domain)
+	if !ok {
+		return ManagedCertificateBundle{}, false, nil
+	}
+	return ManagedCertificateBundle{
+		Domain:  strings.TrimSpace(domain),
+		CertPEM: material.CertPEM,
+		KeyPEM:  material.KeyPEM,
+	}, true, nil
+}
+
+func (s *SQLiteStore) SaveManagedCertificateMaterial(_ context.Context, domain string, bundle ManagedCertificateBundle) error {
+	certDir := s.managedCertificateDirectory(domain)
+	if err := os.MkdirAll(certDir, 0o755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(certDir, "cert"), []byte(bundle.CertPEM), 0o600); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(certDir, "key"), []byte(bundle.KeyPEM), 0o600); err != nil {
+		return err
 	}
 	return nil
 }

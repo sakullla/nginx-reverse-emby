@@ -48,10 +48,10 @@ func (c *Client) Sync(ctx context.Context, request SyncRequest) (Snapshot, error
 		Name                      string                           `json:"name"`
 		AgentID                   string                           `json:"agent_id"`
 		CurrentRevision           int                              `json:"current_revision"`
-		LastApplyRevision         int                              `json:"last_apply_revision,omitempty"`
-		LastApplyStatus           string                           `json:"last_apply_status,omitempty"`
-		LastApplyMessage          string                           `json:"last_apply_message,omitempty"`
-		ManagedCertificateReports []model.ManagedCertificateReport `json:"managed_certificate_reports,omitempty"`
+		LastApplyRevision         int                              `json:"last_apply_revision"`
+		LastApplyStatus           string                           `json:"last_apply_status"`
+		LastApplyMessage          string                           `json:"last_apply_message"`
+		ManagedCertificateReports []model.ManagedCertificateReport `json:"managed_certificate_reports"`
 		Version                   string                           `json:"version"`
 		Platform                  string                           `json:"platform"`
 	}{

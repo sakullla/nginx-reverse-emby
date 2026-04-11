@@ -65,6 +65,7 @@ type relayPreparation struct {
 	Listener            RelayListener
 	OriginalCertRows    []storage.ManagedCertificateRow
 	NextCertRows        []storage.ManagedCertificateRow
+	MaterialBundles     []storage.ManagedCertificateBundle
 	PersistCertificates bool
 }
 
@@ -133,6 +134,12 @@ func (s *relayService) Create(ctx context.Context, agentID string, input RelayLi
 		if err := s.store.SaveManagedCertificates(ctx, prepared.NextCertRows); err != nil {
 			return RelayListener{}, err
 		}
+		if err := s.persistManagedCertificateMaterialBundles(ctx, prepared.MaterialBundles, prepared.OriginalCertRows, prepared.NextCertRows); err != nil {
+			if rollbackErr := s.store.SaveManagedCertificates(ctx, prepared.OriginalCertRows); rollbackErr != nil {
+				return RelayListener{}, fmt.Errorf("%v (rollback failed: %v)", err, rollbackErr)
+			}
+			return RelayListener{}, err
+		}
 	}
 	rows = append(rows, relayListenerToRow(listener))
 	if err := s.store.SaveRelayListeners(ctx, resolvedID, rows); err != nil {
@@ -140,6 +147,7 @@ func (s *relayService) Create(ctx context.Context, agentID string, input RelayLi
 			if rollbackErr := s.store.SaveManagedCertificates(ctx, prepared.OriginalCertRows); rollbackErr != nil {
 				return RelayListener{}, fmt.Errorf("%v (rollback failed: %v)", err, rollbackErr)
 			}
+			cleanupManagedCertificateMaterialBestEffort(ctx, s.store, prepared.NextCertRows, prepared.OriginalCertRows)
 		}
 		return RelayListener{}, err
 	}
@@ -204,6 +212,12 @@ func (s *relayService) Update(ctx context.Context, agentID string, id int, input
 		if err := s.store.SaveManagedCertificates(ctx, prepared.NextCertRows); err != nil {
 			return RelayListener{}, err
 		}
+		if err := s.persistManagedCertificateMaterialBundles(ctx, prepared.MaterialBundles, prepared.OriginalCertRows, prepared.NextCertRows); err != nil {
+			if rollbackErr := s.store.SaveManagedCertificates(ctx, prepared.OriginalCertRows); rollbackErr != nil {
+				return RelayListener{}, fmt.Errorf("%v (rollback failed: %v)", err, rollbackErr)
+			}
+			return RelayListener{}, err
+		}
 	}
 	rows[targetIndex] = relayListenerToRow(listener)
 	if err := s.store.SaveRelayListeners(ctx, resolvedID, rows); err != nil {
@@ -211,6 +225,7 @@ func (s *relayService) Update(ctx context.Context, agentID string, id int, input
 			if rollbackErr := s.store.SaveManagedCertificates(ctx, prepared.OriginalCertRows); rollbackErr != nil {
 				return RelayListener{}, fmt.Errorf("%v (rollback failed: %v)", err, rollbackErr)
 			}
+			cleanupManagedCertificateMaterialBestEffort(ctx, s.store, prepared.NextCertRows, prepared.OriginalCertRows)
 		}
 		return RelayListener{}, err
 	}
@@ -327,6 +342,7 @@ func (s *relayService) prepareRelayListener(ctx context.Context, agentID string,
 	}
 	originalCertRows := append([]storage.ManagedCertificateRow(nil), certRows...)
 	persistCertificates := false
+	materialBundles := make([]storage.ManagedCertificateBundle, 0)
 	if draft.Enabled && certificateSource == "auto_relay_ca" && draft.CertificateID == nil {
 		if fallback.CertificateID != nil {
 			if existingAutoCert, _, ok := findManagedCertificateByID(certRows, *fallback.CertificateID); ok && isAutoRelayListenerCertificate(existingAutoCert, fallback.ID) {
@@ -334,10 +350,14 @@ func (s *relayService) prepareRelayListener(ctx context.Context, agentID string,
 			}
 		}
 		if workingInput.CertificateID == nil || *workingInput.CertificateID <= 0 {
-			certID, nextRows := ensureAutoRelayListenerCertificate(certRows, agentID, draft)
+			certID, nextRows, materialBundle, err := s.ensureAutoRelayListenerCertificate(ctx, certRows, agentID, draft)
+			if err != nil {
+				return relayPreparation{}, err
+			}
 			certRows = nextRows
 			persistCertificates = true
 			workingInput.CertificateID = &certID
+			materialBundles = append(materialBundles, materialBundle)
 		}
 	}
 	if draft.Enabled && trustModeSource == "auto" {
@@ -358,7 +378,7 @@ func (s *relayService) prepareRelayListener(ctx context.Context, agentID string,
 		if !containsString(selectedCert.TargetAgentIDs, agentID) {
 			return relayPreparation{}, fmt.Errorf("%w: certificate %d is not assigned to agent %s", ErrInvalidArgument, selectedCertID, agentID)
 		}
-		tlsMode, pinSet, trustedCAIDs, allowSelfSigned, err := deriveRelayTrustMaterial(selectedCert, certRows)
+		tlsMode, pinSet, trustedCAIDs, allowSelfSigned, err := deriveRelayTrustMaterial(ctx, s.store, selectedCert, certRows, materialBundles)
 		if err != nil {
 			return relayPreparation{}, err
 		}
@@ -376,6 +396,7 @@ func (s *relayService) prepareRelayListener(ctx context.Context, agentID string,
 		Listener:            listener,
 		OriginalCertRows:    originalCertRows,
 		NextCertRows:        certRows,
+		MaterialBundles:     materialBundles,
 		PersistCertificates: persistCertificates,
 	}, nil
 }
@@ -561,7 +582,20 @@ func normalizeRelayTrustModeSource(value *string) (string, error) {
 	}
 }
 
-func ensureAutoRelayListenerCertificate(rows []storage.ManagedCertificateRow, agentID string, listener RelayListener) (int, []storage.ManagedCertificateRow) {
+func (s *relayService) persistManagedCertificateMaterialBundles(ctx context.Context, bundles []storage.ManagedCertificateBundle, originalRows []storage.ManagedCertificateRow, nextRows []storage.ManagedCertificateRow) error {
+	for _, bundle := range bundles {
+		if strings.TrimSpace(bundle.Domain) == "" {
+			continue
+		}
+		if err := s.store.SaveManagedCertificateMaterial(ctx, bundle.Domain, bundle); err != nil {
+			cleanupManagedCertificateMaterialBestEffort(ctx, s.store, nextRows, originalRows)
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *relayService) ensureAutoRelayListenerCertificate(ctx context.Context, rows []storage.ManagedCertificateRow, agentID string, listener RelayListener) (int, []storage.ManagedCertificateRow, storage.ManagedCertificateBundle, error) {
 	maxID := 0
 	maxRevision := 0
 	for _, row := range rows {
@@ -574,6 +608,17 @@ func ensureAutoRelayListenerCertificate(rows []storage.ManagedCertificateRow, ag
 	}
 
 	nextID := maxID + 1
+	relayCA, ok := findRelayCACertificate(rows)
+	if !ok {
+		return 0, nil, storage.ManagedCertificateBundle{}, fmt.Errorf("%w: global relay ca not found", ErrInvalidArgument)
+	}
+	relayCABundle, ok, err := s.store.LoadManagedCertificateMaterial(ctx, relayCA.Domain)
+	if err != nil {
+		return 0, nil, storage.ManagedCertificateBundle{}, err
+	}
+	if !ok || strings.TrimSpace(relayCABundle.CertPEM) == "" || strings.TrimSpace(relayCABundle.KeyPEM) == "" {
+		return 0, nil, storage.ManagedCertificateBundle{}, fmt.Errorf("%w: global relay ca material not found", ErrInvalidArgument)
+	}
 	autoCert := ManagedCertificate{
 		ID:              nextID,
 		Domain:          relayListenerAutoCertificateDomain(listener, agentID),
@@ -584,15 +629,21 @@ func ensureAutoRelayListenerCertificate(rows []storage.ManagedCertificateRow, ag
 		Status:          "active",
 		Usage:           "relay_tunnel",
 		CertificateType: "internal_ca",
-		SelfSigned:      true,
+		SelfSigned:      false,
 		Tags:            autoRelayListenerCertificateTags(listener.ID, agentID),
 		Revision:        maxRevision + 1,
 	}
-	autoCert.MaterialHash = stableManagedCertificateMaterialHash(autoCert)
+	materialBundle, err := generateRelayLeafMaterial(autoCert.Domain, relayCABundle)
+	if err != nil {
+		return 0, nil, storage.ManagedCertificateBundle{}, err
+	}
+	materialBundle.ID = autoCert.ID
+	materialBundle.Revision = int64(autoCert.Revision)
+	autoCert.MaterialHash = hashManagedCertificateMaterial(materialBundle.CertPEM, materialBundle.KeyPEM)
 
 	nextRows := append([]storage.ManagedCertificateRow(nil), rows...)
 	nextRows = append(nextRows, managedCertificateToRow(autoCert))
-	return nextID, nextRows
+	return nextID, nextRows, materialBundle, nil
 }
 
 func relayListenerAutoCertificateDomain(listener RelayListener, agentID string) string {

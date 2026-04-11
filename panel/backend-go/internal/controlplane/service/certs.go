@@ -2,8 +2,6 @@ package service
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -881,11 +879,28 @@ func findRelayCACertificate(rows []storage.ManagedCertificateRow) (ManagedCertif
 	return ManagedCertificate{}, false
 }
 
-func deriveRelayTrustMaterial(cert ManagedCertificate, rows []storage.ManagedCertificateRow) (string, []RelayPin, []int, bool, error) {
-	pins := []RelayPin{syntheticRelayPin(cert)}
+func deriveRelayTrustMaterial(ctx context.Context, store storage.Store, cert ManagedCertificate, rows []storage.ManagedCertificateRow, pending []storage.ManagedCertificateBundle) (string, []RelayPin, []int, bool, error) {
+	material, ok, err := loadManagedCertificateMaterial(ctx, store, cert.Domain, pending)
+	if err != nil {
+		return "", nil, nil, false, err
+	}
+	if !ok || strings.TrimSpace(material.CertPEM) == "" {
+		return "", nil, nil, false, fmt.Errorf("%w: unable to derive relay listener trust material for certificate %d", ErrInvalidArgument, cert.ID)
+	}
+	pins, err := deriveRelayPinSetFromCertificate(material.CertPEM)
+	if err != nil {
+		return "", nil, nil, false, err
+	}
+
 	trustedCAIDs := []int{}
-	if relayCA, ok := findRelayCACertificate(rows); ok && cert.CertificateType == "internal_ca" {
-		trustedCAIDs = []int{relayCA.ID}
+	if relayCA, ok := findRelayCACertificate(rows); ok {
+		relayCABundle, relayCAOk, err := loadManagedCertificateMaterial(ctx, store, relayCA.Domain, pending)
+		if err != nil {
+			return "", nil, nil, false, err
+		}
+		if relayCAOk && certificateChainUsesRelayCA(material, relayCABundle) {
+			trustedCAIDs = []int{relayCA.ID}
+		}
 	}
 	allowSelfSigned := cert.SelfSigned || len(trustedCAIDs) > 0
 	if len(pins) > 0 && len(trustedCAIDs) > 0 {
@@ -900,21 +915,11 @@ func deriveRelayTrustMaterial(cert ManagedCertificate, rows []storage.ManagedCer
 	return "", nil, nil, false, fmt.Errorf("%w: unable to derive relay listener trust material for certificate %d", ErrInvalidArgument, cert.ID)
 }
 
-func syntheticRelayPin(cert ManagedCertificate) RelayPin {
-	material := strings.TrimSpace(cert.MaterialHash)
-	if material == "" {
-		material = stableManagedCertificateMaterialHash(cert)
-	}
-	sum := sha256.Sum256([]byte(fmt.Sprintf("%d|%s|%s|%s", cert.ID, cert.Domain, material, cert.CertificateType)))
-	return RelayPin{
-		Type:  "spki_sha256",
-		Value: base64.StdEncoding.EncodeToString(sum[:]),
-	}
-}
-
 func stableManagedCertificateMaterialHash(cert ManagedCertificate) string {
-	sum := sha256.Sum256([]byte(fmt.Sprintf("%d|%s|%s|%v|%s", cert.ID, cert.Domain, cert.Usage, cert.SelfSigned, strings.Join(cert.Tags, ","))))
-	return base64.StdEncoding.EncodeToString(sum[:])
+	return hashManagedCertificateMaterial(
+		fmt.Sprintf("%d|%s|%s|%v|%s", cert.ID, cert.Domain, cert.Usage, cert.SelfSigned, strings.Join(cert.Tags, ",")),
+		cert.CertificateType,
+	)
 }
 
 func containsString(values []string, expected string) bool {

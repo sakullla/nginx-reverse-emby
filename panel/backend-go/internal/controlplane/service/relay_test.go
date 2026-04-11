@@ -2,13 +2,29 @@ package service
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"crypto/sha256"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/base64"
+	"encoding/pem"
 	"errors"
+	"fmt"
+	"math/big"
+	"net"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
+
+type relayMaterial struct {
+	CertPEM string
+	KeyPEM  string
+}
 
 type relayCertStore struct {
 	agents          []storage.AgentRow
@@ -16,6 +32,7 @@ type relayCertStore struct {
 	l4RulesByID     map[string][]storage.L4RuleRow
 	relayByAgentID  map[string][]storage.RelayListenerRow
 	managedCerts    []storage.ManagedCertificateRow
+	materialsByHost map[string]relayMaterial
 	localState      storage.LocalAgentStateRow
 	saveRelayErr    error
 	saveManagedErr  error
@@ -112,11 +129,38 @@ func (s *relayCertStore) CleanupManagedCertificateMaterial(_ context.Context, _ 
 	return nil
 }
 
+func (s *relayCertStore) LoadManagedCertificateMaterial(_ context.Context, domain string) (storage.ManagedCertificateBundle, bool, error) {
+	material, ok := s.materialsByHost[domain]
+	if !ok {
+		return storage.ManagedCertificateBundle{}, false, nil
+	}
+	return storage.ManagedCertificateBundle{
+		Domain:  domain,
+		CertPEM: material.CertPEM,
+		KeyPEM:  material.KeyPEM,
+	}, true, nil
+}
+
+func (s *relayCertStore) SaveManagedCertificateMaterial(_ context.Context, domain string, bundle storage.ManagedCertificateBundle) error {
+	if s.materialsByHost == nil {
+		s.materialsByHost = map[string]relayMaterial{}
+	}
+	s.materialsByHost[domain] = relayMaterial{
+		CertPEM: bundle.CertPEM,
+		KeyPEM:  bundle.KeyPEM,
+	}
+	return nil
+}
+
 func TestRelayServiceCreateAutoIssuesCertificateAndDerivesTrust(t *testing.T) {
+	relayCA := mustCreateSelfSignedCA(t, "__relay-ca.internal")
 	store := &relayCertStore{
 		relayByAgentID: map[string][]storage.RelayListenerRow{},
 		httpRulesByID:  map[string][]storage.HTTPRuleRow{},
 		l4RulesByID:    map[string][]storage.L4RuleRow{},
+		materialsByHost: map[string]relayMaterial{
+			"__relay-ca.internal": relayCA,
+		},
 		managedCerts: []storage.ManagedCertificateRow{{
 			ID:              10,
 			Domain:          "__relay-ca.internal",
@@ -179,7 +223,7 @@ func TestRelayServiceCreateAutoIssuesCertificateAndDerivesTrust(t *testing.T) {
 	if autoCert.Usage != "relay_tunnel" || autoCert.IssuerMode != "local_http01" {
 		t.Fatalf("auto cert usage/issuer = %+v", autoCert)
 	}
-	if autoCert.CertificateType != "internal_ca" || !autoCert.SelfSigned {
+	if autoCert.CertificateType != "internal_ca" || autoCert.SelfSigned {
 		t.Fatalf("auto cert type/self_signed = %+v", autoCert)
 	}
 	if autoCert.Status != "active" || !autoCert.Enabled {
@@ -192,6 +236,17 @@ func TestRelayServiceCreateAutoIssuesCertificateAndDerivesTrust(t *testing.T) {
 		if !containsString(autoCert.Tags, expectedTag) {
 			t.Fatalf("auto cert tags = %+v", autoCert.Tags)
 		}
+	}
+	material, ok := store.materialsByHost[autoCert.Domain]
+	if !ok || strings.TrimSpace(material.CertPEM) == "" || strings.TrimSpace(material.KeyPEM) == "" {
+		t.Fatalf("auto cert material missing: %+v", store.materialsByHost)
+	}
+	expectedPin := mustSPKIPinFromPEM(t, material.CertPEM)
+	if len(listener.PinSet) != 1 || listener.PinSet[0].Value != expectedPin {
+		t.Fatalf("listener.PinSet = %+v, want spki pin %q", listener.PinSet, expectedPin)
+	}
+	if autoCert.MaterialHash != hashRelayMaterial(material.CertPEM, material.KeyPEM) {
+		t.Fatalf("auto cert material hash = %q", autoCert.MaterialHash)
 	}
 }
 
@@ -330,6 +385,8 @@ func TestRelayServiceDeleteRejectsReferencedListener(t *testing.T) {
 }
 
 func TestRelayServiceUpdateSwitchingAwayFromAutoCertificateCleansUpOldCert(t *testing.T) {
+	relayCA := mustCreateSelfSignedCA(t, "__relay-ca.internal")
+	manualMaterial := mustCreateSelfSignedCA(t, "manual.example.com")
 	store := &relayCertStore{
 		relayByAgentID: map[string][]storage.RelayListenerRow{
 			"local": {{
@@ -352,6 +409,10 @@ func TestRelayServiceUpdateSwitchingAwayFromAutoCertificateCleansUpOldCert(t *te
 		},
 		httpRulesByID: map[string][]storage.HTTPRuleRow{},
 		l4RulesByID:   map[string][]storage.L4RuleRow{},
+		materialsByHost: map[string]relayMaterial{
+			"__relay-ca.internal": relayCA,
+			"manual.example.com":  manualMaterial,
+		},
 		managedCerts: []storage.ManagedCertificateRow{
 			{
 				ID:              10,
@@ -433,6 +494,7 @@ func TestRelayServiceUpdateSwitchingAwayFromAutoCertificateCleansUpOldCert(t *te
 }
 
 func TestRelayServiceUpdateAutoRelayCAReplacesExistingManualCertificate(t *testing.T) {
+	relayCA := mustCreateSelfSignedCA(t, "__relay-ca.internal")
 	store := &relayCertStore{
 		relayByAgentID: map[string][]storage.RelayListenerRow{
 			"local": {{
@@ -455,6 +517,9 @@ func TestRelayServiceUpdateAutoRelayCAReplacesExistingManualCertificate(t *testi
 		},
 		httpRulesByID: map[string][]storage.HTTPRuleRow{},
 		l4RulesByID:   map[string][]storage.L4RuleRow{},
+		materialsByHost: map[string]relayMaterial{
+			"__relay-ca.internal": relayCA,
+		},
 		managedCerts: []storage.ManagedCertificateRow{
 			{
 				ID:              10,
@@ -526,10 +591,14 @@ func TestRelayServiceUpdateAutoRelayCAReplacesExistingManualCertificate(t *testi
 }
 
 func TestRelayServiceCreateRollsBackAutoCertificateWhenListenerSaveFails(t *testing.T) {
+	relayCA := mustCreateSelfSignedCA(t, "__relay-ca.internal")
 	store := &relayCertStore{
 		relayByAgentID: map[string][]storage.RelayListenerRow{},
 		httpRulesByID:  map[string][]storage.HTTPRuleRow{},
 		l4RulesByID:    map[string][]storage.L4RuleRow{},
+		materialsByHost: map[string]relayMaterial{
+			"__relay-ca.internal": relayCA,
+		},
 		managedCerts: []storage.ManagedCertificateRow{{
 			ID:              10,
 			Domain:          "__relay-ca.internal",
@@ -572,10 +641,14 @@ func TestRelayServiceCreateRollsBackAutoCertificateWhenListenerSaveFails(t *test
 }
 
 func TestRelayServiceCreateRollbackFailureRemainsServerError(t *testing.T) {
+	relayCA := mustCreateSelfSignedCA(t, "__relay-ca.internal")
 	store := &relayCertStore{
 		relayByAgentID: map[string][]storage.RelayListenerRow{},
 		httpRulesByID:  map[string][]storage.HTTPRuleRow{},
 		l4RulesByID:    map[string][]storage.L4RuleRow{},
+		materialsByHost: map[string]relayMaterial{
+			"__relay-ca.internal": relayCA,
+		},
 		managedCerts: []storage.ManagedCertificateRow{{
 			ID:              10,
 			Domain:          "__relay-ca.internal",
@@ -695,10 +768,14 @@ func TestRelayServiceDeleteCleansUpUnusedAutoCertificate(t *testing.T) {
 }
 
 func TestRelayServiceCreateSucceedsWhenCleanupFailsPostCommit(t *testing.T) {
+	relayCA := mustCreateSelfSignedCA(t, "__relay-ca.internal")
 	store := &relayCertStore{
 		relayByAgentID: map[string][]storage.RelayListenerRow{},
 		httpRulesByID:  map[string][]storage.HTTPRuleRow{},
 		l4RulesByID:    map[string][]storage.L4RuleRow{},
+		materialsByHost: map[string]relayMaterial{
+			"__relay-ca.internal": relayCA,
+		},
 		managedCerts: []storage.ManagedCertificateRow{{
 			ID:              10,
 			Domain:          "__relay-ca.internal",
@@ -743,6 +820,80 @@ func TestRelayServiceCreateSucceedsWhenCleanupFailsPostCommit(t *testing.T) {
 	}
 }
 
+func TestRelayServiceCreateWithUploadedCertificateSignedByRelayCAAutoDerivesCATrust(t *testing.T) {
+	relayCA := mustCreateSelfSignedCA(t, "__relay-ca.internal")
+	manualLeaf := mustCreateLeafSignedByCA(t, "manual.example.com", relayCA)
+	store := &relayCertStore{
+		relayByAgentID: map[string][]storage.RelayListenerRow{},
+		httpRulesByID:  map[string][]storage.HTTPRuleRow{},
+		l4RulesByID:    map[string][]storage.L4RuleRow{},
+		materialsByHost: map[string]relayMaterial{
+			"__relay-ca.internal": relayCA,
+			"manual.example.com":  manualLeaf,
+		},
+		managedCerts: []storage.ManagedCertificateRow{
+			{
+				ID:              10,
+				Domain:          "__relay-ca.internal",
+				Enabled:         true,
+				Scope:           "domain",
+				IssuerMode:      "local_http01",
+				TargetAgentIDs:  `["local"]`,
+				Status:          "active",
+				MaterialHash:    hashRelayMaterial(relayCA.CertPEM, relayCA.KeyPEM),
+				Usage:           "relay_ca",
+				CertificateType: "internal_ca",
+				SelfSigned:      true,
+				TagsJSON:        `["system:relay-ca","system"]`,
+				Revision:        1,
+			},
+			{
+				ID:              20,
+				Domain:          "manual.example.com",
+				Enabled:         true,
+				Scope:           "domain",
+				IssuerMode:      "local_http01",
+				TargetAgentIDs:  `["local"]`,
+				Status:          "active",
+				MaterialHash:    hashRelayMaterial(manualLeaf.CertPEM, manualLeaf.KeyPEM),
+				Usage:           "relay_tunnel",
+				CertificateType: "uploaded",
+				SelfSigned:      false,
+				Revision:        2,
+			},
+		},
+	}
+	svc := NewRelayListenerService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	listener, err := svc.Create(context.Background(), "local", RelayListenerInput{
+		Name:              stringPtr("relay-uploaded"),
+		ListenPort:        intPtrService(8443),
+		CertificateSource: stringPtr("existing_certificate"),
+		CertificateID:     intPtrService(20),
+		TrustModeSource:   stringPtr("auto"),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	if listener.TLSMode != "pin_and_ca" {
+		t.Fatalf("listener.TLSMode = %q", listener.TLSMode)
+	}
+	if len(listener.TrustedCACertificateIDs) != 1 || listener.TrustedCACertificateIDs[0] != 10 {
+		t.Fatalf("listener.TrustedCACertificateIDs = %+v", listener.TrustedCACertificateIDs)
+	}
+	expectedPin := mustSPKIPinFromPEM(t, manualLeaf.CertPEM)
+	if len(listener.PinSet) != 1 || listener.PinSet[0].Value != expectedPin {
+		t.Fatalf("listener.PinSet = %+v, want %q", listener.PinSet, expectedPin)
+	}
+	if !listener.AllowSelfSigned {
+		t.Fatalf("listener.AllowSelfSigned = false")
+	}
+}
+
 func intPtrService(value int) *int {
 	return &value
 }
@@ -757,4 +908,116 @@ func stringPtr(value string) *string {
 
 func boolPtr(value bool) *bool {
 	return &value
+}
+
+func mustCreateSelfSignedCA(t *testing.T, commonName string) relayMaterial {
+	t.Helper()
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	now := time.Now().UTC()
+	template := &x509.Certificate{
+		SerialNumber:          mustSerialNumber(t),
+		Subject:               pkix.Name{CommonName: commonName},
+		NotBefore:             now.Add(-time.Hour),
+		NotAfter:              now.Add(10 * 365 * 24 * time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign | x509.KeyUsageDigitalSignature,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+		MaxPathLenZero:        true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &privateKey.PublicKey, privateKey)
+	if err != nil {
+		t.Fatalf("CreateCertificate() error = %v", err)
+	}
+	return relayMaterial{
+		CertPEM: string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})),
+		KeyPEM:  string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(privateKey)})),
+	}
+}
+
+func mustCreateLeafSignedByCA(t *testing.T, host string, ca relayMaterial) relayMaterial {
+	t.Helper()
+	caCert, caKey := mustParseCertificatePair(t, ca)
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	now := time.Now().UTC()
+	template := &x509.Certificate{
+		SerialNumber: mustSerialNumber(t),
+		Subject:      pkix.Name{CommonName: host},
+		NotBefore:    now.Add(-time.Hour),
+		NotAfter:     now.Add(825 * 24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		DNSNames:     []string{host},
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		template.DNSNames = nil
+		template.IPAddresses = []net.IP{ip}
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, caCert, &privateKey.PublicKey, caKey)
+	if err != nil {
+		t.Fatalf("CreateCertificate() error = %v", err)
+	}
+	return relayMaterial{
+		CertPEM: string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})),
+		KeyPEM:  string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(privateKey)})),
+	}
+}
+
+func mustParseCertificatePair(t *testing.T, material relayMaterial) (*x509.Certificate, *rsa.PrivateKey) {
+	t.Helper()
+	certBlock, _ := pem.Decode([]byte(material.CertPEM))
+	if certBlock == nil {
+		t.Fatal("failed to decode certificate PEM")
+	}
+	cert, err := x509.ParseCertificate(certBlock.Bytes)
+	if err != nil {
+		t.Fatalf("ParseCertificate() error = %v", err)
+	}
+	keyBlock, _ := pem.Decode([]byte(material.KeyPEM))
+	if keyBlock == nil {
+		t.Fatal("failed to decode key PEM")
+	}
+	key, err := x509.ParsePKCS1PrivateKey(keyBlock.Bytes)
+	if err != nil {
+		t.Fatalf("ParsePKCS1PrivateKey() error = %v", err)
+	}
+	return cert, key
+}
+
+func mustSPKIPinFromPEM(t *testing.T, certPEM string) string {
+	t.Helper()
+	block, _ := pem.Decode([]byte(certPEM))
+	if block == nil {
+		t.Fatal("failed to decode certificate PEM")
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatalf("ParseCertificate() error = %v", err)
+	}
+	spki, err := x509.MarshalPKIXPublicKey(cert.PublicKey)
+	if err != nil {
+		t.Fatalf("MarshalPKIXPublicKey() error = %v", err)
+	}
+	sum := sha256.Sum256(spki)
+	return base64.StdEncoding.EncodeToString(sum[:])
+}
+
+func hashRelayMaterial(certPEM string, keyPEM string) string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf("%s\n---\n%s", certPEM, keyPEM)))
+	return fmt.Sprintf("%x", sum[:])
+}
+
+func mustSerialNumber(t *testing.T) *big.Int {
+	t.Helper()
+	limit := new(big.Int).Lsh(big.NewInt(1), 128)
+	serial, err := rand.Int(rand.Reader, limit)
+	if err != nil {
+		t.Fatalf("rand.Int() error = %v", err)
+	}
+	return serial
 }

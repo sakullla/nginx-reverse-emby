@@ -80,6 +80,14 @@ func (f *fakeStore) SaveManagedCertificates(_ context.Context, rows []storage.Ma
 	return nil
 }
 
+func (f *fakeStore) LoadManagedCertificateMaterial(context.Context, string) (storage.ManagedCertificateBundle, bool, error) {
+	return storage.ManagedCertificateBundle{}, false, nil
+}
+
+func (f *fakeStore) SaveManagedCertificateMaterial(context.Context, string, storage.ManagedCertificateBundle) error {
+	return nil
+}
+
 func (f *fakeStore) CleanupManagedCertificateMaterial(context.Context, []storage.ManagedCertificateRow, []storage.ManagedCertificateRow) error {
 	return nil
 }

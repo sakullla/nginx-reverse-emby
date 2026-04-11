@@ -253,28 +253,32 @@ func (a *App) syncOnce(ctx context.Context, req SyncRequest) error {
 	candidateApplied := mergeSnapshotPayload(snapshot, previousApplied)
 	if err := a.runtime.Apply(ctx, previousApplied, candidateApplied); err != nil {
 		a.rollbackRuntime(ctx, candidateApplied, previousApplied)
-		return a.recordRuntimeError(err)
+		return a.recordRuntimeErrorWithRevision(err, candidateApplied.Revision)
 	}
 	if err := a.store.SaveAppliedSnapshot(candidateApplied); err != nil {
 		a.rollbackRuntime(ctx, candidateApplied, previousApplied)
-		return a.recordPersistedRuntimeError(err)
+		return a.recordPersistedRuntimeErrorWithRevision(err, candidateApplied.Revision)
 	}
 	if err := a.persistRuntimeState(true); err != nil {
 		a.rollbackRuntime(ctx, candidateApplied, previousApplied)
 		_ = a.store.SaveAppliedSnapshot(previousApplied)
-		return a.recordPersistedRuntimeError(err)
+		return a.recordPersistedRuntimeErrorWithRevision(err, candidateApplied.Revision)
 	}
 	return nil
 }
 
 func (a *App) recordRuntimeError(syncErr error) error {
+	return a.recordRuntimeErrorWithRevision(syncErr, a.runtime.ActiveSnapshot().Revision)
+}
+
+func (a *App) recordRuntimeErrorWithRevision(syncErr error, revision int64) error {
 	state, err := a.runtimeStateForPersistence()
 	if err != nil {
 		return syncErr
 	}
 	state.Metadata = ensureMetadata(state.Metadata)
 	state.Metadata["last_sync_error"] = syncErr.Error()
-	setApplyMetadata(state.Metadata, a.runtime.ActiveSnapshot().Revision, "error", syncErr.Error())
+	setApplyMetadata(state.Metadata, revision, "error", syncErr.Error())
 	if err := a.store.SaveRuntimeState(state); err != nil {
 		return syncErr
 	}
@@ -302,10 +306,18 @@ func (a *App) recordPersistedRuntimeError(syncErr error) error {
 	if err != nil {
 		return syncErr
 	}
+	currentRevision := parseInt64(state.Metadata["current_revision"], state.CurrentRevision)
+	return a.recordPersistedRuntimeErrorWithRevision(syncErr, currentRevision)
+}
+
+func (a *App) recordPersistedRuntimeErrorWithRevision(syncErr error, revision int64) error {
+	state, err := a.store.LoadRuntimeState()
+	if err != nil {
+		return syncErr
+	}
 	state.Metadata = ensureMetadata(state.Metadata)
 	state.Metadata["last_sync_error"] = syncErr.Error()
-	currentRevision := parseInt64(state.Metadata["current_revision"], state.CurrentRevision)
-	setApplyMetadata(state.Metadata, currentRevision, "error", syncErr.Error())
+	setApplyMetadata(state.Metadata, revision, "error", syncErr.Error())
 	if err := a.store.SaveRuntimeState(state); err != nil {
 		return syncErr
 	}

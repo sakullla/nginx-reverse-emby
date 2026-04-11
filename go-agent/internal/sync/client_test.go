@@ -314,6 +314,61 @@ func TestHeartbeatSyncPreservesOmittedCertificatePayloadAsNil(t *testing.T) {
 	}
 }
 
+func TestHeartbeatSyncSendsExplicitEmptyApplyFieldsAndCertificateReports(t *testing.T) {
+	type captured struct {
+		Method string
+		Path   string
+		Header http.Header
+		Body   []byte
+	}
+	reqs := make(chan captured, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		reqs <- captured{Method: r.Method, Path: r.URL.Path, Header: r.Header.Clone(), Body: body}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"sync":{"desired_version":"1.2.3","desired_revision":7}}`)
+	}))
+	defer server.Close()
+
+	client := NewClient(ClientConfig{
+		MasterURL:      server.URL,
+		AgentToken:     "token",
+		AgentID:        "node",
+		AgentName:      "local",
+		CurrentVersion: "0.1.0",
+		Platform:       "linux-amd64",
+	}, server.Client())
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	if _, err := client.Sync(ctx, SyncRequest{
+		CurrentRevision:           42,
+		LastApplyRevision:         0,
+		LastApplyStatus:           "",
+		LastApplyMessage:          "",
+		ManagedCertificateReports: []model.ManagedCertificateReport{},
+	}); err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+
+	select {
+	case req := <-reqs:
+		for _, key := range []string{
+			`"last_apply_revision":0`,
+			`"last_apply_status":""`,
+			`"last_apply_message":""`,
+			`"managed_certificate_reports":[]`,
+		} {
+			if !bytes.Contains(req.Body, []byte(key)) {
+				t.Fatalf("expected heartbeat payload to contain %s, got %s", key, string(req.Body))
+			}
+		}
+	case <-ctx.Done():
+		t.Fatal("heartbeat not sent")
+	}
+}
+
 func TestHeartbeatSyncPreservesExplicitEmptyCertificatePayloads(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

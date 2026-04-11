@@ -135,7 +135,7 @@ func TestRuleServiceCreateNormalizesAndPersists(t *testing.T) {
 		},
 		LoadBalancing:    &HTTPLoadBalancing{Strategy: "RANDOM"},
 		Tags:             &[]string{" edge ", ""},
-		RelayChain:       &[]int{-1, 0, 7},
+		RelayChain:       &[]int{7},
 		CustomHeaders:    &[]HTTPCustomHeader{{Name: "", Value: "drop"}, {Name: " X-Test ", Value: "1"}},
 		PassProxyHeaders: boolPtrRule(false),
 	})
@@ -223,7 +223,7 @@ func TestRuleServiceUpdateNormalizesAndPersists(t *testing.T) {
 		UserAgent:     stringPtrRule(" MyAgent "),
 		CustomHeaders: &[]HTTPCustomHeader{{Name: "  ", Value: "drop"}, {Name: "X-New", Value: "2"}},
 		Tags:          &[]string{"", "  media"},
-		RelayChain:    &[]int{5, -10, 6},
+		RelayChain:    &[]int{5, 6},
 	})
 	if err != nil {
 		t.Fatalf("Update() error = %v", err)
@@ -322,6 +322,60 @@ func TestRuleServiceCreateRejectsUnknownRelayChainListener(t *testing.T) {
 		t.Fatalf("Create() error = nil")
 	}
 	if err.Error() != "invalid argument: relay listener not found: 999" {
+		t.Fatalf("Create() error = %v", err)
+	}
+}
+
+func TestRuleServiceCreateRejectsInvalidRelayChainEntry(t *testing.T) {
+	store := &fakeRuleStore{
+		listeners: []storage.RelayListenerRow{{
+			ID:      7,
+			AgentID: "local",
+			Enabled: true,
+		}},
+		rulesByAgent: map[string][]storage.HTTPRuleRow{},
+	}
+	svc := NewRuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	_, err := svc.Create(context.Background(), "local", HTTPRuleInput{
+		FrontendURL: stringPtrRule("https://invalid.example.com"),
+		BackendURL:  stringPtrRule("http://upstream:8096"),
+		RelayChain:  &[]int{7, 0},
+	})
+	if err == nil {
+		t.Fatal("Create() error = nil")
+	}
+	if err.Error() != "invalid argument: relay_chain entries must be positive integer listener IDs" {
+		t.Fatalf("Create() error = %v", err)
+	}
+}
+
+func TestRuleServiceCreateRejectsDuplicateRelayChainEntries(t *testing.T) {
+	store := &fakeRuleStore{
+		listeners: []storage.RelayListenerRow{{
+			ID:      7,
+			AgentID: "local",
+			Enabled: true,
+		}},
+		rulesByAgent: map[string][]storage.HTTPRuleRow{},
+	}
+	svc := NewRuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	_, err := svc.Create(context.Background(), "local", HTTPRuleInput{
+		FrontendURL: stringPtrRule("https://duplicate.example.com"),
+		BackendURL:  stringPtrRule("http://upstream:8096"),
+		RelayChain:  &[]int{7, 7},
+	})
+	if err == nil {
+		t.Fatal("Create() error = nil")
+	}
+	if err.Error() != "invalid argument: relay_chain entries must not contain duplicates" {
 		t.Fatalf("Create() error = %v", err)
 	}
 }

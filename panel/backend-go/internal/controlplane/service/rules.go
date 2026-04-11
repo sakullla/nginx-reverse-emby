@@ -799,7 +799,10 @@ func (s *ruleService) normalizeHTTPRuleInput(ctx context.Context, input HTTPRule
 
 	relayChain := append([]int(nil), fallback.RelayChain...)
 	if input.RelayChain != nil {
-		relayChain = normalizeRelayChain(*input.RelayChain)
+		relayChain, err = normalizeRelayChainInput(*input.RelayChain, "tcp")
+		if err != nil {
+			return HTTPRule{}, err
+		}
 	}
 	if err := s.validateRelayChain(ctx, relayChain); err != nil {
 		return HTTPRule{}, err
@@ -842,43 +845,11 @@ func (s *ruleService) normalizeHTTPRuleInput(ctx context.Context, input HTTPRule
 }
 
 func (s *ruleService) validateRelayChain(ctx context.Context, relayChain []int) error {
-	if len(relayChain) == 0 {
-		return nil
-	}
-
-	listeners, err := s.store.ListRelayListeners(ctx, "")
-	if err != nil {
-		return err
-	}
-
-	listenersByID := make(map[int]storage.RelayListenerRow, len(listeners))
-	for _, listener := range listeners {
-		listenersByID[listener.ID] = listener
-	}
-
 	knownAgentIDs, err := s.allKnownAgentIDs(ctx)
 	if err != nil {
 		return err
 	}
-	knownAgents := make(map[string]struct{}, len(knownAgentIDs))
-	for _, agentID := range knownAgentIDs {
-		knownAgents[agentID] = struct{}{}
-	}
-
-	for _, listenerID := range relayChain {
-		listener, ok := listenersByID[listenerID]
-		if !ok {
-			return fmt.Errorf("%w: relay listener not found: %d", ErrInvalidArgument, listenerID)
-		}
-		if !listener.Enabled {
-			return fmt.Errorf("%w: relay listener is disabled: %d", ErrInvalidArgument, listenerID)
-		}
-		if _, ok := knownAgents[strings.TrimSpace(listener.AgentID)]; !ok {
-			return fmt.Errorf("%w: relay listener belongs to unknown agent: %d", ErrInvalidArgument, listenerID)
-		}
-	}
-
-	return nil
+	return validateRelayChainReferences(ctx, s.store, knownAgentIDs, relayChain)
 }
 
 func normalizeHTTPBackendsInput(input HTTPRuleInput, fallback HTTPRule) ([]HTTPRuleBackend, error) {

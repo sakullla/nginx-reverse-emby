@@ -125,6 +125,9 @@ func (s *l4Service) Create(ctx context.Context, agentID string, input L4RuleInpu
 	}
 	rule.AgentID = resolvedID
 	rule.Revision = maxRevision + 1
+	if err := s.validateRelayChain(ctx, rule.RelayChain); err != nil {
+		return L4Rule{}, err
+	}
 
 	if err := ensureUniqueL4Listen(existing, rule, 0); err != nil {
 		return L4Rule{}, err
@@ -173,6 +176,9 @@ func (s *l4Service) Update(ctx context.Context, agentID string, id int, input L4
 	}
 	rule.AgentID = resolvedID
 	rule.Revision = maxRevision + 1
+	if err := s.validateRelayChain(ctx, rule.RelayChain); err != nil {
+		return L4Rule{}, err
+	}
 
 	if err := ensureUniqueL4Listen(existing, rule, id); err != nil {
 		return L4Rule{}, err
@@ -286,7 +292,10 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 
 	relayChain := append([]int(nil), fallback.RelayChain...)
 	if input.RelayChain != nil {
-		relayChain = normalizeRelayChain(*input.RelayChain)
+		relayChain, err = normalizeRelayChainInput(*input.RelayChain, protocol)
+		if err != nil {
+			return L4Rule{}, err
+		}
 	}
 
 	tags := append([]string(nil), fallback.Tags...)
@@ -327,6 +336,38 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 		Tags:          tags,
 		Revision:      fallback.Revision,
 	}, nil
+}
+
+func (s *l4Service) validateRelayChain(ctx context.Context, relayChain []int) error {
+	knownAgentIDs, err := s.allKnownAgentIDs(ctx)
+	if err != nil {
+		return err
+	}
+	return validateRelayChainReferences(ctx, s.store, knownAgentIDs, relayChain)
+}
+
+func (s *l4Service) allKnownAgentIDs(ctx context.Context) ([]string, error) {
+	seen := map[string]struct{}{}
+	agentIDs := make([]string, 0)
+	if s.cfg.EnableLocalAgent && strings.TrimSpace(s.cfg.LocalAgentID) != "" {
+		seen[s.cfg.LocalAgentID] = struct{}{}
+		agentIDs = append(agentIDs, s.cfg.LocalAgentID)
+	}
+	rows, err := s.store.ListAgents(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		if strings.TrimSpace(row.ID) == "" {
+			continue
+		}
+		if _, ok := seen[row.ID]; ok {
+			continue
+		}
+		seen[row.ID] = struct{}{}
+		agentIDs = append(agentIDs, row.ID)
+	}
+	return agentIDs, nil
 }
 
 func normalizeL4BackendsInput(input L4RuleInput, fallback L4Rule) ([]L4Backend, string, int, error) {
@@ -392,16 +433,6 @@ func normalizeL4TuningInput(protocol string, input *L4Tuning, fallback L4Tuning)
 		tuning.ProxyProtocol = L4ProxyProtocolTuning{}
 	}
 	return tuning
-}
-
-func normalizeRelayChain(values []int) []int {
-	normalized := make([]int, 0, len(values))
-	for _, value := range values {
-		if value > 0 {
-			normalized = append(normalized, value)
-		}
-	}
-	return normalized
 }
 
 func normalizeTags(values []string) []string {

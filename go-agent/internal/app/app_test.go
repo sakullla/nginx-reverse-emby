@@ -442,6 +442,9 @@ func TestRunDoesNotAdvanceAppliedSnapshotOrCurrentRevisionOnApplyFailure(t *test
 	if state.Metadata["last_sync_error"] != "http apply failed" {
 		t.Fatalf("expected last_sync_error metadata, got %v", state.Metadata)
 	}
+	if state.Metadata["last_apply_revision"] != "9" || state.Metadata["last_apply_status"] != "error" {
+		t.Fatalf("expected attempted apply revision/status recorded, got %v", state.Metadata)
+	}
 	if state.Metadata["foo"] != "bar" {
 		t.Fatalf("expected unrelated metadata preserved, got %v", state.Metadata)
 	}
@@ -764,6 +767,9 @@ func TestRunDoesNotAdvancePersistedRuntimeStateWhenSaveAppliedSnapshotFails(t *t
 	}
 	if state.Metadata["last_sync_error"] != "applied persistence fail" {
 		t.Fatalf("expected applied persistence error metadata, got %v", state.Metadata)
+	}
+	if state.Metadata["last_apply_revision"] != "9" || state.Metadata["last_apply_status"] != "error" {
+		t.Fatalf("expected attempted apply revision/status recorded, got %v", state.Metadata)
 	}
 	if state.Metadata["foo"] != "bar" {
 		t.Fatalf("expected unrelated metadata preserved, got %v", state.Metadata)
