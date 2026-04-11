@@ -80,16 +80,22 @@ type ManagedCertificateInput struct {
 }
 
 type certificateService struct {
-	cfg   config.Config
-	store storage.Store
-	now   func() time.Time
+	cfg           config.Config
+	store         storage.Store
+	now           func() time.Time
+	renewalIssuer managedCertificateRenewalIssuer
 }
 
 func NewCertificateService(cfg config.Config, store storage.Store) *certificateService {
+	return newCertificateServiceWithRenewal(cfg, store, nil)
+}
+
+func newCertificateServiceWithRenewal(cfg config.Config, store storage.Store, issuer managedCertificateRenewalIssuer) *certificateService {
 	return &certificateService{
-		cfg:   cfg,
-		store: store,
-		now:   time.Now,
+		cfg:           cfg,
+		store:         store,
+		now:           time.Now,
+		renewalIssuer: issuer,
 	}
 }
 

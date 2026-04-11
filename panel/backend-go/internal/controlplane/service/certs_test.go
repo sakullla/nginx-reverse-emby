@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
@@ -163,4 +164,273 @@ func TestCertificateServiceDeleteDetachesSingleAgentFromSharedCertificate(t *tes
 	if len(remaining.TargetAgentIDs) != 1 || remaining.TargetAgentIDs[0] != "edge-1" {
 		t.Fatalf("remaining.TargetAgentIDs = %+v", remaining.TargetAgentIDs)
 	}
+}
+
+func TestCertificateServiceRunRenewalPassRenewsEligibleCloudflareCertificate(t *testing.T) {
+	now := time.Date(2026, 4, 11, 1, 2, 3, 0, time.UTC)
+	store := &relayCertStore{
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              40,
+			Domain:          "media.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "master_cf_dns",
+			TargetAgentIDs:  `["local"]`,
+			Status:          "pending",
+			LastError:       "previous failure",
+			MaterialHash:    "old-hash",
+			ACMEInfo:        `{"Main_Domain":"media.example.com","Renew":"2026-04-10T00:00:00Z"}`,
+			CertificateType: "acme",
+			Usage:           "https",
+			Revision:        3,
+		}},
+	}
+	issuer := &fakeManagedCertificateRenewalIssuer{
+		results: map[int]managedCertificateRenewalResult{
+			40: {
+				Changed:      true,
+				LastIssueAt:  "2026-04-11T01:02:03Z",
+				MaterialHash: "new-hash",
+				ACMEInfo: ManagedCertificateACMEInfo{
+					MainDomain: "media.example.com",
+					CA:         "LetsEncrypt",
+					Renew:      "2026-07-10T00:00:00Z",
+				},
+			},
+		},
+	}
+	svc := newCertificateServiceWithRenewal(config.Config{LocalAgentID: "local"}, store, issuer)
+	svc.now = func() time.Time { return now }
+
+	if err := svc.RunRenewalPass(context.Background()); err != nil {
+		t.Fatalf("RunRenewalPass() error = %v", err)
+	}
+	if len(issuer.calls) != 1 || issuer.calls[0] != 40 {
+		t.Fatalf("issuer calls = %+v", issuer.calls)
+	}
+
+	renewed := managedCertificateFromRow(store.managedCerts[0])
+	if renewed.Status != "active" {
+		t.Fatalf("renewed.Status = %q", renewed.Status)
+	}
+	if renewed.LastError != "" {
+		t.Fatalf("renewed.LastError = %q", renewed.LastError)
+	}
+	if renewed.LastIssueAt != "2026-04-11T01:02:03Z" {
+		t.Fatalf("renewed.LastIssueAt = %q", renewed.LastIssueAt)
+	}
+	if renewed.MaterialHash != "new-hash" {
+		t.Fatalf("renewed.MaterialHash = %q", renewed.MaterialHash)
+	}
+	if renewed.ACMEInfo.CA != "LetsEncrypt" || renewed.ACMEInfo.Renew != "2026-07-10T00:00:00Z" {
+		t.Fatalf("renewed.ACMEInfo = %+v", renewed.ACMEInfo)
+	}
+	if renewed.Revision != 4 {
+		t.Fatalf("renewed.Revision = %d", renewed.Revision)
+	}
+}
+
+func TestCertificateServiceRunRenewalPassSkipsIneligibleCertificates(t *testing.T) {
+	store := &relayCertStore{
+		managedCerts: []storage.ManagedCertificateRow{
+			{
+				ID:              41,
+				Domain:          "disabled.example.com",
+				Enabled:         false,
+				Scope:           "domain",
+				IssuerMode:      "master_cf_dns",
+				TargetAgentIDs:  `["local"]`,
+				Status:          "pending",
+				ACMEInfo:        `{"Renew":"2026-04-10T00:00:00Z"}`,
+				CertificateType: "acme",
+				Usage:           "https",
+				Revision:        2,
+			},
+			{
+				ID:              42,
+				Domain:          "local-http.example.com",
+				Enabled:         true,
+				Scope:           "domain",
+				IssuerMode:      "local_http01",
+				TargetAgentIDs:  `["local"]`,
+				Status:          "pending",
+				ACMEInfo:        `{"Renew":"2026-04-10T00:00:00Z"}`,
+				CertificateType: "acme",
+				Usage:           "https",
+				Revision:        3,
+			},
+			{
+				ID:              43,
+				Domain:          "future.example.com",
+				Enabled:         true,
+				Scope:           "domain",
+				IssuerMode:      "master_cf_dns",
+				TargetAgentIDs:  `["local"]`,
+				Status:          "active",
+				ACMEInfo:        `{"Renew":"2026-05-10T00:00:00Z"}`,
+				CertificateType: "acme",
+				Usage:           "https",
+				Revision:        4,
+			},
+		},
+	}
+	issuer := &fakeManagedCertificateRenewalIssuer{
+		results: map[int]managedCertificateRenewalResult{},
+	}
+	svc := newCertificateServiceWithRenewal(config.Config{LocalAgentID: "local"}, store, issuer)
+	svc.now = func() time.Time { return time.Date(2026, 4, 11, 0, 0, 0, 0, time.UTC) }
+
+	if err := svc.RunRenewalPass(context.Background()); err != nil {
+		t.Fatalf("RunRenewalPass() error = %v", err)
+	}
+	if len(issuer.calls) != 0 {
+		t.Fatalf("issuer calls = %+v", issuer.calls)
+	}
+	if store.saveManagedCall != 0 {
+		t.Fatalf("expected no persistence for skipped certificates, saveManagedCall = %d", store.saveManagedCall)
+	}
+}
+
+func TestCertificateServiceRunRenewalPassRecordsIssuerFailure(t *testing.T) {
+	store := &relayCertStore{
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              44,
+			Domain:          "broken.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "master_cf_dns",
+			TargetAgentIDs:  `["local"]`,
+			Status:          "pending",
+			ACMEInfo:        `{"Renew":"2026-04-10T00:00:00Z"}`,
+			CertificateType: "acme",
+			Usage:           "https",
+			Revision:        7,
+		}},
+	}
+	issuer := &fakeManagedCertificateRenewalIssuer{
+		errs: map[int]error{
+			44: errors.New("cloudflare renewal failed"),
+		},
+	}
+	svc := newCertificateServiceWithRenewal(config.Config{LocalAgentID: "local"}, store, issuer)
+	svc.now = func() time.Time { return time.Date(2026, 4, 11, 0, 0, 0, 0, time.UTC) }
+
+	err := svc.RunRenewalPass(context.Background())
+	if err == nil {
+		t.Fatal("expected RunRenewalPass() to return error")
+	}
+
+	failed := managedCertificateFromRow(store.managedCerts[0])
+	if failed.Status != "error" {
+		t.Fatalf("failed.Status = %q", failed.Status)
+	}
+	if failed.LastError != "cloudflare renewal failed" {
+		t.Fatalf("failed.LastError = %q", failed.LastError)
+	}
+	if failed.Revision != 7 {
+		t.Fatalf("failed.Revision = %d", failed.Revision)
+	}
+}
+
+func TestCertificateServiceRunRenewalPassContinuesAfterIssuerFailure(t *testing.T) {
+	now := time.Date(2026, 4, 11, 0, 0, 0, 0, time.UTC)
+	store := &relayCertStore{
+		managedCerts: []storage.ManagedCertificateRow{
+			{
+				ID:              45,
+				Domain:          "first.example.com",
+				Enabled:         true,
+				Scope:           "domain",
+				IssuerMode:      "master_cf_dns",
+				TargetAgentIDs:  `["local"]`,
+				Status:          "pending",
+				ACMEInfo:        `{"Renew":"2026-04-10T00:00:00Z"}`,
+				CertificateType: "acme",
+				Usage:           "https",
+				Revision:        8,
+			},
+			{
+				ID:              46,
+				Domain:          "second.example.com",
+				Enabled:         true,
+				Scope:           "domain",
+				IssuerMode:      "master_cf_dns",
+				TargetAgentIDs:  `["local"]`,
+				Status:          "pending",
+				MaterialHash:    "before",
+				ACMEInfo:        `{"Renew":"2026-04-10T00:00:00Z"}`,
+				CertificateType: "acme",
+				Usage:           "https",
+				Revision:        9,
+			},
+			{
+				ID:              47,
+				Domain:          "skip.example.com",
+				Enabled:         true,
+				Scope:           "domain",
+				IssuerMode:      "master_cf_dns",
+				TargetAgentIDs:  `["remote"]`,
+				Status:          "pending",
+				ACMEInfo:        `{"Renew":"2026-04-10T00:00:00Z"}`,
+				CertificateType: "acme",
+				Usage:           "https",
+				Revision:        10,
+			},
+		},
+	}
+	issuer := &fakeManagedCertificateRenewalIssuer{
+		errs: map[int]error{
+			45: errors.New("first renew failed"),
+		},
+		results: map[int]managedCertificateRenewalResult{
+			46: {
+				Changed:      true,
+				LastIssueAt:  "2026-04-11T00:00:00Z",
+				MaterialHash: "after",
+				ACMEInfo: ManagedCertificateACMEInfo{
+					MainDomain: "second.example.com",
+					Renew:      "2026-07-10T00:00:00Z",
+				},
+			},
+		},
+	}
+	svc := newCertificateServiceWithRenewal(config.Config{LocalAgentID: "local"}, store, issuer)
+	svc.now = func() time.Time { return now }
+
+	err := svc.RunRenewalPass(context.Background())
+	if err == nil {
+		t.Fatal("expected RunRenewalPass() to return first renewal error")
+	}
+	if len(issuer.calls) != 2 || issuer.calls[0] != 45 || issuer.calls[1] != 46 {
+		t.Fatalf("issuer calls = %+v", issuer.calls)
+	}
+
+	first := managedCertificateFromRow(store.managedCerts[0])
+	if first.Status != "error" || first.LastError != "first renew failed" {
+		t.Fatalf("first = %+v", first)
+	}
+
+	second := managedCertificateFromRow(store.managedCerts[1])
+	if second.Status != "active" || second.MaterialHash != "after" || second.Revision != 11 {
+		t.Fatalf("second = %+v", second)
+	}
+
+	skipped := managedCertificateFromRow(store.managedCerts[2])
+	if skipped.Status != "pending" || skipped.Revision != 10 {
+		t.Fatalf("skipped = %+v", skipped)
+	}
+}
+
+type fakeManagedCertificateRenewalIssuer struct {
+	calls   []int
+	results map[int]managedCertificateRenewalResult
+	errs    map[int]error
+}
+
+func (f *fakeManagedCertificateRenewalIssuer) Renew(_ context.Context, cert ManagedCertificate) (managedCertificateRenewalResult, error) {
+	f.calls = append(f.calls, cert.ID)
+	if err := f.errs[cert.ID]; err != nil {
+		return managedCertificateRenewalResult{}, err
+	}
+	return f.results[cert.ID], nil
 }
