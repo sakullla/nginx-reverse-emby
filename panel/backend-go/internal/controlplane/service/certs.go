@@ -1264,7 +1264,7 @@ func isAutoRelayListenerCertificate(cert ManagedCertificate, listenerID int) boo
 	if cert.Usage != "relay_tunnel" || cert.CertificateType != "internal_ca" {
 		return false
 	}
-	if !containsString(cert.Tags, "auto") || !containsString(cert.Tags, autoRelayListenerTag) {
+	if !containsString(cert.Tags, "auto") {
 		return false
 	}
 	if listenerID <= 0 {

@@ -1381,7 +1381,7 @@ func TestCertificateServiceDeleteRejectsReferencedAutoRelayListenerCertificate(t
 			Status:          "active",
 			Usage:           "relay_tunnel",
 			CertificateType: "internal_ca",
-			TagsJSON:        `["auto","auto:relay-listener","listener:4","agent:local"]`,
+			TagsJSON:        `["relay","auto","listener:4"]`,
 			Revision:        5,
 		}},
 	}
