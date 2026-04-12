@@ -37,95 +37,133 @@ func (s *certificateService) RunRenewalPass(ctx context.Context) error {
 		return err
 	}
 
-	now := s.now().UTC()
 	maxRevision := highestManagedCertificateRevisionForService(rows)
 	for index, row := range rows {
 		cert := managedCertificateFromRow(row)
-		if !s.isManagedCertificateRenewalCandidate(cert, now) {
+		if !s.isManagedCertificateRenewalCandidate(cert, s.now().UTC()) {
 			continue
 		}
 
-		result, err := issuer.Renew(ctx, cert)
+		changed, err := s.renewSingleCertificate(ctx, issuer, cert, rows, index, &maxRevision)
+		if err != nil {
+			return err
+		}
+		if changed {
+			// Reload rows to reflect the saved state for subsequent iterations.
+			rows, err = s.store.ListManagedCertificates(ctx)
+			if err != nil {
+				return err
+			}
+			maxRevision = highestManagedCertificateRevisionForService(rows)
+		}
+	}
+	return nil
+}
+
+func (s *certificateService) renewSingleCertificate(
+	ctx context.Context,
+	issuer managedCertificateRenewalIssuer,
+	cert ManagedCertificate,
+	rows []storage.ManagedCertificateRow,
+	index int,
+	maxRevision *int,
+) (bool, error) {
+	unlock := issuanceLock(cert.ID)
+	defer unlock()
+
+	// Re-read candidate state from storage after acquiring the
+	// per-certificate lock; another goroutine (e.g. manual Issue
+	// API or another renewal pass) may have already renewed it.
+	freshRows, refreshErr := s.store.ListManagedCertificates(ctx)
+	if refreshErr != nil {
+		return false, refreshErr
+	}
+	freshCert, _, freshFound := findManagedCertificateByID(freshRows, cert.ID)
+	if freshFound && !s.isManagedCertificateRenewalCandidate(freshCert, s.now().UTC()) {
+		return false, nil
+	}
+
+	result, err := issuer.Renew(ctx, cert)
+	if err != nil {
+		next := cert
+		next.Status = "error"
+		next.LastError = err.Error()
+		rows[index] = managedCertificateToRow(next)
+		if saveErr := s.store.SaveManagedCertificates(ctx, rows); saveErr != nil {
+			return false, saveErr
+		}
+		return false, fmt.Errorf("renew certificate %d: %w", cert.ID, err)
+	}
+
+	var issuedMaterial storage.ManagedCertificateBundle
+	var previousMaterial storage.ManagedCertificateBundle
+	previousMaterialFound := false
+	if result.Changed {
+		issuedMaterial, err = resolveManagedCertificateIssueMaterial(cert, result)
 		if err != nil {
 			next := cert
 			next.Status = "error"
 			next.LastError = err.Error()
 			rows[index] = managedCertificateToRow(next)
 			if saveErr := s.store.SaveManagedCertificates(ctx, rows); saveErr != nil {
-				return saveErr
+				return false, saveErr
 			}
-			return fmt.Errorf("renew certificate %d: %w", cert.ID, err)
+			return false, fmt.Errorf("renew certificate %d: %w", cert.ID, err)
 		}
 
-		var issuedMaterial storage.ManagedCertificateBundle
-		var previousMaterial storage.ManagedCertificateBundle
-		previousMaterialFound := false
-		if result.Changed {
-			issuedMaterial, err = resolveManagedCertificateIssueMaterial(cert, result)
-			if err != nil {
-				next := cert
-				next.Status = "error"
-				next.LastError = err.Error()
-				rows[index] = managedCertificateToRow(next)
-				if saveErr := s.store.SaveManagedCertificates(ctx, rows); saveErr != nil {
-					return saveErr
-				}
-				return fmt.Errorf("renew certificate %d: %w", cert.ID, err)
+		previousMaterial, previousMaterialFound, err = s.store.LoadManagedCertificateMaterial(ctx, cert.Domain)
+		if err != nil {
+			return false, err
+		}
+		if err := s.store.SaveManagedCertificateMaterial(ctx, cert.Domain, issuedMaterial); err != nil {
+			if restoreErr := s.restoreManagedCertificateMaterialAfterIssueFailure(ctx, cert, previousMaterial, previousMaterialFound); restoreErr != nil {
+				return false, fmt.Errorf("persist renewed certificate material for %s: %w (restore failed: %v)", cert.Domain, err, restoreErr)
 			}
-
-			previousMaterial, previousMaterialFound, err = s.store.LoadManagedCertificateMaterial(ctx, cert.Domain)
-			if err != nil {
-				return err
-			}
-			if err := s.store.SaveManagedCertificateMaterial(ctx, cert.Domain, issuedMaterial); err != nil {
-				if restoreErr := s.restoreManagedCertificateMaterialAfterIssueFailure(ctx, cert, previousMaterial, previousMaterialFound); restoreErr != nil {
-					return fmt.Errorf("persist renewed certificate material for %s: %w (restore failed: %v)", cert.Domain, err, restoreErr)
-				}
-				return fmt.Errorf("persist renewed certificate material for %s: %w", cert.Domain, err)
-			}
-		}
-
-		next := cert
-		next.Status = "active"
-		next.LastError = ""
-		if result.Changed {
-			if result.LastIssueAt != "" {
-				next.LastIssueAt = result.LastIssueAt
-			} else {
-				next.LastIssueAt = now.Format(time.RFC3339)
-			}
-		}
-		if result.MaterialHash != "" {
-			next.MaterialHash = result.MaterialHash
-		} else if result.Changed {
-			next.MaterialHash = hashManagedCertificateMaterial(issuedMaterial.CertPEM, issuedMaterial.KeyPEM)
-		}
-		if !isZeroManagedCertificateACMEInfo(result.ACMEInfo) {
-			next.ACMEInfo = result.ACMEInfo
-		}
-		if result.Changed {
-			maxRevision++
-			next.Revision = maxRevision
-		}
-		if managedCertificateEqual(cert, next) {
-			continue
-		}
-		rows[index] = managedCertificateToRow(next)
-		if err := s.store.SaveManagedCertificates(ctx, rows); err != nil {
-			if result.Changed {
-				if restoreErr := s.restoreManagedCertificateMaterialAfterIssueFailure(ctx, cert, previousMaterial, previousMaterialFound); restoreErr != nil {
-					return fmt.Errorf("save renewed certificate metadata for %s: %w (restore failed: %v)", cert.Domain, err, restoreErr)
-				}
-			}
-			return err
-		}
-		if result.Changed {
-			if err := s.syncManagedCertificateAgentIDs(ctx, next.TargetAgentIDs, next.Revision); err != nil {
-				return err
-			}
+			return false, fmt.Errorf("persist renewed certificate material for %s: %w", cert.Domain, err)
 		}
 	}
-	return nil
+
+	now := s.now().UTC()
+	next := cert
+	next.Status = "active"
+	next.LastError = ""
+	if result.Changed {
+		if result.LastIssueAt != "" {
+			next.LastIssueAt = result.LastIssueAt
+		} else {
+			next.LastIssueAt = now.Format(time.RFC3339)
+		}
+	}
+	if result.MaterialHash != "" {
+		next.MaterialHash = result.MaterialHash
+	} else if result.Changed {
+		next.MaterialHash = hashManagedCertificateMaterial(issuedMaterial.CertPEM, issuedMaterial.KeyPEM)
+	}
+	if !isZeroManagedCertificateACMEInfo(result.ACMEInfo) {
+		next.ACMEInfo = result.ACMEInfo
+	}
+	if result.Changed {
+		*maxRevision++
+		next.Revision = *maxRevision
+	}
+	if managedCertificateEqual(cert, next) {
+		return false, nil
+	}
+	rows[index] = managedCertificateToRow(next)
+	if err := s.store.SaveManagedCertificates(ctx, rows); err != nil {
+		if result.Changed {
+			if restoreErr := s.restoreManagedCertificateMaterialAfterIssueFailure(ctx, cert, previousMaterial, previousMaterialFound); restoreErr != nil {
+				return false, fmt.Errorf("save renewed certificate metadata for %s: %w (restore failed: %v)", cert.Domain, err, restoreErr)
+			}
+		}
+		return false, err
+	}
+	if result.Changed {
+		if err := s.syncManagedCertificateAgentIDs(ctx, next.TargetAgentIDs, next.Revision); err != nil {
+			return false, err
+		}
+	}
+	return result.Changed, nil
 }
 
 func (s *certificateService) isManagedCertificateRenewalCandidate(cert ManagedCertificate, now time.Time) bool {
