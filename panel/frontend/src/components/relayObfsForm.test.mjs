@@ -27,3 +27,17 @@ test('API normalization keeps relay_obfs default false', () => {
   const source = fs.readFileSync(path.resolve(__dirname, '../api/index.js'), 'utf8')
   assert.match(source, /relay_obfs:\s*payload\.relay_obfs === true/)
 })
+
+test('L4 update normalization preserves omitted relay fields', () => {
+  const source = fs.readFileSync(path.resolve(__dirname, '../api/index.js'), 'utf8')
+  assert.match(source, /function normalizeL4RulePayload\(payload = \{\}, options = \{\}\)/)
+  assert.match(source, /const includeRelayDefaults = options\.includeRelayDefaults === true/)
+  assert.match(source, /createL4Rule\(agentId, payload\)[\s\S]*normalizeL4RulePayload\(payload, \{ includeRelayDefaults: true \}\)/)
+  assert.match(source, /updateL4Rule\(agentId, id, payload\)[\s\S]*normalizeL4RulePayload\(payload\)/)
+})
+
+test('HTTP legacy positional overload accepts relay_obfs argument', () => {
+  const source = fs.readFileSync(path.resolve(__dirname, '../api/index.js'), 'utf8')
+  assert.match(source, /function normalizeHttpRulePayload\([^)]*relay_chain,\s*relay_obfs\)/)
+  assert.match(source, /relay_chain,\s*relay_obfs\s*\}\)/)
+})

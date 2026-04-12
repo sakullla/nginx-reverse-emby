@@ -282,7 +282,7 @@ function normalizeL4Rule(rule = {}) {
   }
 }
 
-function normalizeHttpRulePayload(payloadOrFrontend, backend_url, tags, enabled, proxy_redirect, pass_proxy_headers, user_agent, custom_headers, relay_chain) {
+function normalizeHttpRulePayload(payloadOrFrontend, backend_url, tags, enabled, proxy_redirect, pass_proxy_headers, user_agent, custom_headers, relay_chain, relay_obfs) {
   if (payloadOrFrontend && typeof payloadOrFrontend === 'object' && !Array.isArray(payloadOrFrontend)) {
     const payload = { ...payloadOrFrontend }
     const backends = normalizeHttpBackends(payload)
@@ -314,15 +314,28 @@ function normalizeHttpRulePayload(payloadOrFrontend, backend_url, tags, enabled,
     pass_proxy_headers,
     user_agent,
     custom_headers,
-    relay_chain
+    relay_chain,
+    relay_obfs
   })
 }
 
-function normalizeL4RulePayload(payload = {}) {
+function normalizeL4RulePayload(payload = {}, options = {}) {
+  const includeRelayDefaults = options.includeRelayDefaults === true
+  const normalizedPayload = {
+    ...payload
+  }
+  if (Array.isArray(payload.relay_chain)) {
+    normalizedPayload.relay_chain = payload.relay_chain
+  } else if (includeRelayDefaults) {
+    normalizedPayload.relay_chain = []
+  }
+  if (payload.relay_obfs != null) {
+    normalizedPayload.relay_obfs = payload.relay_obfs === true
+  } else if (includeRelayDefaults) {
+    normalizedPayload.relay_obfs = false
+  }
   return {
-    ...payload,
-    relay_chain: Array.isArray(payload.relay_chain) ? payload.relay_chain : [],
-    relay_obfs: payload.relay_obfs === true
+    ...normalizedPayload
   }
 }
 
@@ -603,7 +616,7 @@ export async function fetchL4Rules(agentId) {
 }
 
 export async function createL4Rule(agentId, payload) {
-  const normalizedPayload = normalizeL4RulePayload(payload)
+  const normalizedPayload = normalizeL4RulePayload(payload, { includeRelayDefaults: true })
   if (isDev) {
     await sleep()
     const item = normalizeL4Rule({ ...normalizedPayload, id: ++mockL4IdCounter })
