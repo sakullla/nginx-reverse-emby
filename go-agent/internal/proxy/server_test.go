@@ -846,6 +846,75 @@ func TestStartServesHTTPRulesThroughRelayChain(t *testing.T) {
 	}
 }
 
+func TestStartServesHTTPRulesThroughRelayChainWithObfsMode(t *testing.T) {
+	frontendPort := pickFreePort(t)
+	backendPort := pickFreePort(t)
+	backendAddress := fmt.Sprintf("127.0.0.1:%d", backendPort)
+
+	relayCert := mustIssueProxyTLSCertificate(t, "relay.internal.test")
+	relayPublicPort := pickFreePort(t)
+	relayAccepted := make(chan relayTestRequest, 1)
+	relayStop := startTestRelayServer(t, fmt.Sprintf("127.0.0.1:%d", relayPublicPort), relayCert, relayAccepted)
+	defer relayStop()
+	relayListenPort := pickFreePort(t)
+
+	runtime, err := Start(
+		context.Background(),
+		[]model.HTTPRule{{
+			FrontendURL: fmt.Sprintf("http://edge.example.test:%d", frontendPort),
+			BackendURL:  "http://" + backendAddress,
+			RelayChain:  []int{41},
+			RelayObfs:   true,
+		}},
+		[]model.RelayListener{{
+			ID:         41,
+			AgentID:    "remote-relay-agent",
+			Name:       "relay-hop",
+			ListenHost: "127.0.0.2",
+			BindHosts:  []string{"127.0.0.2"},
+			ListenPort: relayListenPort,
+			PublicHost: "127.0.0.1",
+			PublicPort: relayPublicPort,
+			Enabled:    true,
+			TLSMode:    "pin_only",
+			PinSet: []model.RelayPin{{
+				Type:  "sha256",
+				Value: mustSPKIPin(t, relayCert),
+			}},
+		}},
+		Providers{Relay: &testRuntimeMaterialProvider{}},
+	)
+	if err != nil {
+		t.Fatalf("failed to start relay-backed runtime: %v", err)
+	}
+	defer runtime.Close()
+
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/relay-check", frontendPort), nil)
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+	req.Host = fmt.Sprintf("edge.example.test:%d", frontendPort)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("relay-backed request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", resp.StatusCode)
+	}
+
+	select {
+	case relayReq := <-relayAccepted:
+		if relayReq.Transport.Mode != "first_segment_v1" {
+			t.Fatalf("unexpected relay transport mode %q", relayReq.Transport.Mode)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected request to traverse relay listener")
+	}
+}
+
 func TestResolveRelayHopsUsesPublicEndpointAndFallbacks(t *testing.T) {
 	rule := model.HTTPRule{
 		FrontendURL: "http://edge.example.test",
@@ -980,9 +1049,12 @@ func (p *testRuntimeMaterialProvider) TrustedCAPool(_ context.Context, _ []int) 
 }
 
 type relayTestRequest struct {
-	Network string      `json:"network"`
-	Target  string      `json:"target"`
-	Chain   []relay.Hop `json:"chain,omitempty"`
+	Network   string      `json:"network"`
+	Target    string      `json:"target"`
+	Chain     []relay.Hop `json:"chain,omitempty"`
+	Transport struct {
+		Mode string `json:"mode,omitempty"`
+	} `json:"transport,omitempty"`
 }
 
 func startTestRelayServer(
@@ -1020,13 +1092,18 @@ func startTestRelayServer(
 			return
 		}
 
-		httpReq, err := http.ReadRequest(bufio.NewReader(conn))
+		dataConn := net.Conn(conn)
+		if relayReq.Transport.Mode == relay.TransportModeFirstSegmentV1 {
+			dataConn = relay.WrapConnWithFirstSegmentObfs(conn)
+		}
+
+		httpReq, err := http.ReadRequest(bufio.NewReader(dataConn))
 		if err != nil {
 			return
 		}
 		_ = httpReq.Body.Close()
 
-		_, _ = conn.Write([]byte("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n"))
+		_, _ = dataConn.Write([]byte("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n"))
 	}()
 
 	return func() {

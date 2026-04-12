@@ -15,6 +15,7 @@ import (
 	"io"
 	"math/big"
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -275,6 +276,27 @@ func TestDialRejectsUDP(t *testing.T) {
 	}
 }
 
+func TestDialFailsClosedWhenHopRejectsTransportMode(t *testing.T) {
+	backendAddr, stopBackend := startTCPEchoServer(t)
+	defer stopBackend()
+
+	provider := newFakeTLSMaterialProvider()
+	listener, hop := newRelayEndpoint(t, provider, 1, "relay-unsupported-mode", "pin_only", true, false)
+
+	server, err := Start(context.Background(), []Listener{listener}, provider)
+	if err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+	defer server.Close()
+
+	_, err = Dial(context.Background(), "tcp", backendAddr, []Hop{hop}, provider, DialOptions{
+		TransportMode: "future_mode",
+	})
+	if err == nil || !strings.Contains(err.Error(), "future_mode") {
+		t.Fatalf("Dial() error = %v", err)
+	}
+}
+
 func TestOneHopRelayDataFlow(t *testing.T) {
 	backendAddr, stopBackend := startTCPEchoServer(t)
 	defer stopBackend()
@@ -295,6 +317,30 @@ func TestOneHopRelayDataFlow(t *testing.T) {
 	defer conn.Close()
 
 	assertRoundTrip(t, conn, []byte("one-hop"))
+}
+
+func TestOneHopRelayDataFlowWithFirstSegmentObfs(t *testing.T) {
+	backendAddr, stopBackend := startTCPEchoServer(t)
+	defer stopBackend()
+
+	provider := newFakeTLSMaterialProvider()
+	listener, hop := newRelayEndpoint(t, provider, 1, "relay-one-obfs", "pin_only", true, false)
+
+	server, err := Start(context.Background(), []Listener{listener}, provider)
+	if err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+	defer server.Close()
+
+	conn, err := Dial(context.Background(), "tcp", backendAddr, []Hop{hop}, provider, DialOptions{
+		TransportMode: TransportModeFirstSegmentV1,
+	})
+	if err != nil {
+		t.Fatalf("Dial returned error: %v", err)
+	}
+	defer conn.Close()
+
+	assertRoundTrip(t, conn, bytes.Repeat([]byte{0x16, 0x03, 0x01, 0x20}, 256))
 }
 
 func TestMultiHopRelayDataFlow(t *testing.T) {
@@ -324,6 +370,37 @@ func TestMultiHopRelayDataFlow(t *testing.T) {
 	defer conn.Close()
 
 	assertRoundTrip(t, conn, []byte("multi-hop"))
+}
+
+func TestMultiHopRelayDataFlowWithFirstSegmentObfs(t *testing.T) {
+	backendAddr, stopBackend := startTCPEchoServer(t)
+	defer stopBackend()
+
+	provider := newFakeTLSMaterialProvider()
+	listenerA, hopA := newRelayEndpoint(t, provider, 1, "relay-a-obfs", "pin_only", true, false)
+	listenerB, hopB := newRelayEndpoint(t, provider, 2, "relay-b-obfs", "pin_only", true, false)
+
+	serverA, err := Start(context.Background(), []Listener{listenerA}, provider)
+	if err != nil {
+		t.Fatalf("failed to start first relay: %v", err)
+	}
+	defer serverA.Close()
+
+	serverB, err := Start(context.Background(), []Listener{listenerB}, provider)
+	if err != nil {
+		t.Fatalf("failed to start second relay: %v", err)
+	}
+	defer serverB.Close()
+
+	conn, err := Dial(context.Background(), "tcp", backendAddr, []Hop{hopA, hopB}, provider, DialOptions{
+		TransportMode: TransportModeFirstSegmentV1,
+	})
+	if err != nil {
+		t.Fatalf("Dial returned error: %v", err)
+	}
+	defer conn.Close()
+
+	assertRoundTrip(t, conn, bytes.Repeat([]byte{0x16, 0x03, 0x01, 0x20}, 512))
 }
 
 func TestDialSurfacesFinalTargetFailure(t *testing.T) {

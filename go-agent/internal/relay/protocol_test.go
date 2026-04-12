@@ -27,6 +27,29 @@ func TestWriteRelayRequestHandlesShortWrites(t *testing.T) {
 	}
 }
 
+func TestRelayRequestRoundTripsTransportMode(t *testing.T) {
+	request := relayRequest{
+		Network: "tcp",
+		Target:  "127.0.0.1:443",
+		Transport: relayTransport{
+			Mode: relayTransportModeFirstSegmentV1,
+		},
+	}
+
+	var sink bytes.Buffer
+	if err := writeRelayRequest(&sink, request); err != nil {
+		t.Fatalf("writeRelayRequest() error = %v", err)
+	}
+
+	got, err := readRelayRequest(bytes.NewReader(sink.Bytes()))
+	if err != nil {
+		t.Fatalf("readRelayRequest() error = %v", err)
+	}
+	if got.Transport.Mode != relayTransportModeFirstSegmentV1 {
+		t.Fatalf("transport mode = %q", got.Transport.Mode)
+	}
+}
+
 type shortWriter struct {
 	target io.Writer
 	limit  int

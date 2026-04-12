@@ -51,6 +51,8 @@ func BootstrapSQLiteSchema(ctx context.Context, db *gorm.DB) error {
 		`UPDATE rules SET user_agent = '' WHERE user_agent IS NULL`,
 		`UPDATE rules SET custom_headers = '[]' WHERE custom_headers IS NULL OR trim(custom_headers) = ''`,
 		`UPDATE rules SET relay_chain = '[]' WHERE relay_chain IS NULL OR trim(relay_chain) = ''`,
+		`UPDATE rules SET relay_obfs = 0 WHERE relay_obfs IS NULL`,
+		`UPDATE l4_rules SET relay_obfs = 0 WHERE relay_obfs IS NULL`,
 		`UPDATE agents SET desired_version = '' WHERE desired_version IS NULL`,
 		`UPDATE agents SET platform = '' WHERE platform IS NULL`,
 		`UPDATE local_agent_state SET desired_version = '' WHERE desired_version IS NULL`,

@@ -329,9 +329,7 @@ func (m *Manager) loadOrIssueInternalCA(policy model.ManagedCertificatePolicy) (
 }
 
 func (m *Manager) loadOrIssueACME(ctx context.Context, policy model.ManagedCertificatePolicy) ([]byte, []byte, error) {
-	lock := m.issuanceLock(policy.ID)
-	lock.Lock()
-	defer lock.Unlock()
+	defer m.issuanceLock(policy.ID)()
 	return m.loadOrIssueACMEUnlocked(ctx, policy)
 }
 
@@ -383,16 +381,17 @@ func (m *Manager) loadOrIssueACMEUnlocked(ctx context.Context, policy model.Mana
 	return result.CertPEM, result.KeyPEM, nil
 }
 
-func (m *Manager) issuanceLock(certificateID int) *sync.Mutex {
+func (m *Manager) issuanceLock(certificateID int) func() {
 	m.issuanceMu.Lock()
-	defer m.issuanceMu.Unlock()
-
-	if lock, ok := m.issuanceByID[certificateID]; ok {
-		return lock
+	mu, ok := m.issuanceByID[certificateID]
+	if !ok {
+		mu = &sync.Mutex{}
+		m.issuanceByID[certificateID] = mu
 	}
-	lock := &sync.Mutex{}
-	m.issuanceByID[certificateID] = lock
-	return lock
+	m.issuanceMu.Unlock()
+
+	mu.Lock()
+	return func() { mu.Unlock() }
 }
 
 func (m *Manager) newACMEIssueRequest(policy model.ManagedCertificatePolicy, persisted persistedACMEMaterial) (acmeIssueRequest, error) {

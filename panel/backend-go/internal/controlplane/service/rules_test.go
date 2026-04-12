@@ -136,6 +136,7 @@ func TestRuleServiceCreateNormalizesAndPersists(t *testing.T) {
 		LoadBalancing:    &HTTPLoadBalancing{Strategy: "RANDOM"},
 		Tags:             &[]string{" edge ", ""},
 		RelayChain:       &[]int{7},
+		RelayObfs:        boolPtrRule(true),
 		CustomHeaders:    &[]HTTPCustomHeader{{Name: "", Value: "drop"}, {Name: " X-Test ", Value: "1"}},
 		PassProxyHeaders: boolPtrRule(false),
 	})
@@ -160,6 +161,9 @@ func TestRuleServiceCreateNormalizesAndPersists(t *testing.T) {
 	}
 	if len(rule.RelayChain) != 1 || rule.RelayChain[0] != 7 {
 		t.Fatalf("Create() relay_chain = %+v", rule.RelayChain)
+	}
+	if !rule.RelayObfs {
+		t.Fatalf("Create() relay_obfs = false")
 	}
 	if rule.PassProxyHeaders {
 		t.Fatalf("Create() pass_proxy_headers = true")
@@ -224,6 +228,7 @@ func TestRuleServiceUpdateNormalizesAndPersists(t *testing.T) {
 		CustomHeaders: &[]HTTPCustomHeader{{Name: "  ", Value: "drop"}, {Name: "X-New", Value: "2"}},
 		Tags:          &[]string{"", "  media"},
 		RelayChain:    &[]int{5, 6},
+		RelayObfs:     boolPtrRule(true),
 	})
 	if err != nil {
 		t.Fatalf("Update() error = %v", err)
@@ -249,6 +254,9 @@ func TestRuleServiceUpdateNormalizesAndPersists(t *testing.T) {
 	}
 	if len(rule.RelayChain) != 2 || rule.RelayChain[0] != 5 || rule.RelayChain[1] != 6 {
 		t.Fatalf("Update() relay_chain = %+v", rule.RelayChain)
+	}
+	if !rule.RelayObfs {
+		t.Fatalf("Update() relay_obfs = false")
 	}
 	if !rule.Enabled {
 		t.Fatalf("Update() enabled fallback = false")
@@ -323,6 +331,55 @@ func TestRuleServiceCreateRejectsUnknownRelayChainListener(t *testing.T) {
 	}
 	if err.Error() != "invalid argument: relay listener not found: 999" {
 		t.Fatalf("Create() error = %v", err)
+	}
+}
+
+func TestRuleServiceCreateClearsRelayObfsWithoutRelayChain(t *testing.T) {
+	store := &fakeRuleStore{rulesByAgent: map[string][]storage.HTTPRuleRow{}}
+	svc := NewRuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	rule, err := svc.Create(context.Background(), "local", HTTPRuleInput{
+		FrontendURL: stringPtrRule("https://relay.example.com"),
+		BackendURL:  stringPtrRule("http://127.0.0.1:8096"),
+		RelayObfs:   boolPtrRule(true),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if rule.RelayObfs {
+		t.Fatalf("expected relay_obfs to be cleared when relay_chain is empty")
+	}
+}
+
+func TestRuleServiceUpdateClearsRelayObfsWhenRelayChainRemoved(t *testing.T) {
+	store := &fakeRuleStore{
+		rulesByAgent: map[string][]storage.HTTPRuleRow{
+			"local": {{
+				ID:             1,
+				AgentID:        "local",
+				FrontendURL:    "https://relay.example.com",
+				BackendURL:     "http://127.0.0.1:8096",
+				BackendsJSON:   `[{"url":"http://127.0.0.1:8096"}]`,
+				RelayChainJSON: `[7]`,
+				RelayObfs:      true,
+				Enabled:        true,
+				Revision:       2,
+			}},
+		},
+	}
+	svc := NewRuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	rule, err := svc.Update(context.Background(), "local", 1, HTTPRuleInput{
+		RelayChain: &[]int{},
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if len(rule.RelayChain) != 0 {
+		t.Fatalf("expected relay_chain to be cleared, got %+v", rule.RelayChain)
+	}
+	if rule.RelayObfs {
+		t.Fatalf("expected relay_obfs to be cleared when relay_chain is removed")
 	}
 }
 

@@ -752,6 +752,7 @@ func snapshotHTTPRules(rows []HTTPRuleRow) []HTTPRule {
 			UserAgent:        row.UserAgent,
 			CustomHeaders:    parseHTTPHeaders(row.CustomHeadersJSON),
 			RelayChain:       parseIntSlice(row.RelayChainJSON),
+			RelayObfs:        row.RelayObfs,
 			Revision:         int64(row.Revision),
 		})
 	}
@@ -787,6 +788,7 @@ func snapshotL4Rules(rows []L4RuleRow) []L4Rule {
 			LoadBalancing: parseLoadBalancingStrategy(row.LoadBalancingJSON),
 			Tuning:        parseL4Tuning(row.TuningJSON),
 			RelayChain:    parseIntSlice(row.RelayChainJSON),
+			RelayObfs:     row.RelayObfs,
 			Revision:      int64(row.Revision),
 		})
 	}

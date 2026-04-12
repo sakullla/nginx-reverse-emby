@@ -116,8 +116,12 @@ func TestBootstrapSQLiteSchemaUpgradesLegacySQLiteAndNormalizesBackfills(t *test
 		`INSERT INTO agents (id, name, desired_version, platform) VALUES ('legacy-agent', 'legacy-agent', '', NULL)`,
 		`INSERT INTO rules (
 			id, agent_id, frontend_url, backend_url, backends, load_balancing, enabled, tags, proxy_redirect,
-			pass_proxy_headers, user_agent, custom_headers, relay_chain, revision
-		) VALUES (7, 'legacy-agent', 'https://legacy.example.com', 'http://127.0.0.1:8096', NULL, NULL, 1, NULL, 1, NULL, NULL, NULL, '', 0)`,
+			pass_proxy_headers, user_agent, custom_headers, relay_chain, relay_obfs, revision
+		) VALUES (7, 'legacy-agent', 'https://legacy.example.com', 'http://127.0.0.1:8096', NULL, NULL, 1, NULL, 1, NULL, NULL, NULL, '', NULL, 0)`,
+		`INSERT INTO l4_rules (
+			id, agent_id, name, protocol, listen_host, listen_port, upstream_host, upstream_port, backends,
+			load_balancing, tuning, relay_chain, relay_obfs, enabled, tags, revision
+		) VALUES (8, 'legacy-agent', 'legacy-l4', 'tcp', '0.0.0.0', 25565, '127.0.0.1', 25566, NULL, NULL, NULL, '', NULL, 1, NULL, 0)`,
 		`UPDATE local_agent_state SET desired_version = NULL, last_apply_status = NULL, last_apply_message = NULL WHERE id = 1`,
 		`INSERT INTO managed_certificates (
 			id, domain, enabled, scope, issuer_mode, target_agent_ids, status, usage, certificate_type, self_signed, tags, acme_info, agent_reports
@@ -159,6 +163,17 @@ func TestBootstrapSQLiteSchemaUpgradesLegacySQLiteAndNormalizesBackfills(t *test
 	}
 	if !rules[0].PassProxyHeaders || rules[0].UserAgent != "" || rules[0].CustomHeadersJSON != "[]" || rules[0].RelayChainJSON != "[]" {
 		t.Fatalf("unexpected rule defaults after legacy bootstrap: %+v", rules[0])
+	}
+	if rules[0].RelayObfs {
+		t.Fatalf("expected relay_obfs legacy backfill to default false: %+v", rules[0])
+	}
+
+	l4Rules, err := store.ListL4Rules(t.Context(), "legacy-agent")
+	if err != nil {
+		t.Fatalf("ListL4Rules() error = %v", err)
+	}
+	if len(l4Rules) != 1 || l4Rules[0].RelayObfs {
+		t.Fatalf("expected l4 relay_obfs legacy backfill to default false: %+v", l4Rules)
 	}
 
 	certs, err := store.ListManagedCertificates(t.Context())
@@ -1051,6 +1066,71 @@ func TestStoreLoadAgentSnapshotSkipsMalformedL4Rows(t *testing.T) {
 	}
 	if snapshot.L4Rules[0].ID != 41 {
 		t.Fatalf("L4Rules[0] = %+v", snapshot.L4Rules[0])
+	}
+}
+
+func TestStoreLoadAgentSnapshotIncludesRelayObfsFlags(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromGORM(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	if err := store.SaveHTTPRules(t.Context(), "relay-obfs-agent", []HTTPRuleRow{{
+		ID:                51,
+		AgentID:           "relay-obfs-agent",
+		FrontendURL:       "https://relay-obfs-http.example.com",
+		BackendURL:        "http://127.0.0.1:8096",
+		BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+		LoadBalancingJSON: `{"strategy":"round_robin"}`,
+		Enabled:           true,
+		RelayChainJSON:    `[77]`,
+		RelayObfs:         true,
+		PassProxyHeaders:  true,
+		Revision:          31,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules() error = %v", err)
+	}
+
+	if err := store.SaveL4Rules(t.Context(), "relay-obfs-agent", []L4RuleRow{{
+		ID:                52,
+		AgentID:           "relay-obfs-agent",
+		Name:              "relay-obfs-l4",
+		Protocol:          "tcp",
+		ListenHost:        "0.0.0.0",
+		ListenPort:        19000,
+		UpstreamHost:      "127.0.0.1",
+		UpstreamPort:      19001,
+		BackendsJSON:      `[{"host":"127.0.0.1","port":19001}]`,
+		LoadBalancingJSON: `{"strategy":"round_robin"}`,
+		TuningJSON:        `{}`,
+		RelayChainJSON:    `[77]`,
+		RelayObfs:         true,
+		Enabled:           true,
+		Revision:          32,
+	}}); err != nil {
+		t.Fatalf("SaveL4Rules() error = %v", err)
+	}
+
+	snapshot, err := store.LoadAgentSnapshot(t.Context(), "relay-obfs-agent", AgentSnapshotInput{
+		DesiredRevision: 0,
+		CurrentRevision: 0,
+	})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot() error = %v", err)
+	}
+	if len(snapshot.Rules) != 1 || !snapshot.Rules[0].RelayObfs {
+		t.Fatalf("expected snapshot HTTP relay_obfs=true: %+v", snapshot.Rules)
+	}
+	if len(snapshot.L4Rules) != 1 || !snapshot.L4Rules[0].RelayObfs {
+		t.Fatalf("expected snapshot L4 relay_obfs=true: %+v", snapshot.L4Rules)
 	}
 }
 
