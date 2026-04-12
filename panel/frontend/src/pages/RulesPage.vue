@@ -123,6 +123,7 @@
       :model-value="showAddForm || !!editingRule"
       :title="editingRule ? '编辑规则' : '添加规则'"
       size="lg"
+      :close-on-click-modal="false"
       @update:model-value="closeForm"
     >
       <RuleForm :initial-data="editingRule" :agent-id="agentId" @success="closeForm" />
@@ -133,6 +134,7 @@
       :model-value="showCopyModal"
       title="复制规则"
       size="lg"
+      :close-on-click-modal="false"
       @update:model-value="closeForm"
     >
       <RuleForm v-if="copyingRule" :initial-data="copyingRule" :agent-id="agentId" @success="closeForm" />

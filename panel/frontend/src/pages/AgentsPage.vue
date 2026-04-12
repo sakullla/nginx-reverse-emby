@@ -82,7 +82,7 @@
     </Teleport>
 
     <Teleport to="body">
-      <div v-if="renamingAgent" class="modal-overlay" @click.self="renamingAgent = null">
+      <div v-if="renamingAgent" class="modal-overlay">
         <div class="modal">
           <div class="modal__header">重命名节点</div>
           <div class="modal__body">

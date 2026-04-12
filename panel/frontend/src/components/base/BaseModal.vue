@@ -1,7 +1,7 @@
 <template>
   <Teleport to="body">
     <Transition name="modal">
-      <div v-if="modelValue" class="modal-backdrop" @click.self="close">
+      <div v-if="modelValue" class="modal-backdrop" @click.self="handleBackdropClick">
         <div
           class="modal"
           :class="modalSizeClass"
@@ -49,7 +49,8 @@ const props = defineProps({
     validator: (v) => ['md', 'lg', 'xl'].includes(v)
   },
   large: { type: Boolean, default: false },
-  showFooter: { type: Boolean, default: false }
+  showFooter: { type: Boolean, default: false },
+  closeOnClickModal: { type: Boolean, default: true }
 })
 
 const emit = defineEmits(['update:modelValue', 'confirm'])
@@ -62,6 +63,12 @@ const modalSizeClass = computed(() => {
 
 const close = () => {
   emit('update:modelValue', false)
+}
+
+const handleBackdropClick = () => {
+  if (props.closeOnClickModal) {
+    close()
+  }
 }
 
 const confirm = () => {

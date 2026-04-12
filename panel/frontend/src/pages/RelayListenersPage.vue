@@ -91,6 +91,7 @@
       :model-value="showAddForm || !!editingListener"
       :title="editingListener ? '编辑 Relay 监听器' : '新建 Relay 监听器'"
       size="xl"
+      :close-on-click-modal="false"
       @update:model-value="closeForm"
     >
       <RelayListenerForm :initial-data="editingListener" :agent-id="agentId" @success="closeForm" />

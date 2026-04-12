@@ -69,6 +69,7 @@
       :model-value="showAddForm || !!editingRule"
       :title="editingRule ? '编辑 L4 规则' : '添加 L4 规则'"
       size="lg"
+      :close-on-click-modal="false"
       @update:model-value="closeForm"
     >
       <L4RuleForm :initial-data="editingRule" :agent-id="agentId" @success="closeForm" />
@@ -79,6 +80,7 @@
       :model-value="showCopyModal"
       title="复制 L4 规则"
       size="lg"
+      :close-on-click-modal="false"
       @update:model-value="closeCopy"
     >
       <L4RuleForm v-if="copyingRule" :initial-data="copyingRule" :agent-id="agentId" @success="closeCopy" />

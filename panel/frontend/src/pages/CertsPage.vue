@@ -136,6 +136,7 @@
       :model-value="showAddForm || !!editingCert"
       :title="editingCert ? '编辑证书' : '新建证书'"
       size="xl"
+      :close-on-click-modal="false"
       @update:model-value="closeForm"
     >
       <CertificateForm :initial-data="editingCert" :agent-id="agentId" @success="closeForm" />
