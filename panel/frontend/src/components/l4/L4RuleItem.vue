@@ -124,8 +124,7 @@ const tuningTags = computed(() => {
 .l4-card__status--active { background: var(--color-success-50); color: var(--color-success); }
 .l4-card__status--disabled { background: var(--color-bg-subtle); color: var(--color-text-muted); }
 .l4-card__status--failed { background: var(--color-danger-50); color: var(--color-danger); }
-.l4-card__actions { display: flex; gap: 0.25rem; opacity: 0; transition: opacity 0.15s; }
-.l4-card:hover .l4-card__actions { opacity: 1; }
+.l4-card__actions { display: flex; gap: 0.25rem; }
 .l4-card__action { display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: var(--radius-md); border: none; background: transparent; color: var(--color-text-tertiary); cursor: pointer; transition: all 0.15s; }
 .l4-card__action:hover { background: var(--color-bg-hover); color: var(--color-text-primary); }
 .l4-card__action--delete:hover { background: var(--color-danger-50); color: var(--color-danger); }

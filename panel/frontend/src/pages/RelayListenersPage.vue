@@ -357,12 +357,6 @@ function confirmDelete() {
 .relay-card__actions {
   display: flex;
   gap: 0.25rem;
-  opacity: 0;
-  transition: opacity 0.15s;
-}
-
-.relay-card:hover .relay-card__actions {
-  opacity: 1;
 }
 
 .relay-card__action {

@@ -400,9 +400,8 @@ async function confirmDelete() {
 .rule-card__status--disabled { background: var(--color-bg-subtle); color: var(--color-text-muted); }
 .rule-card__status--failed { background: var(--color-danger-50); color: var(--color-danger); }
 
-/* Actions — hidden until hover */
-.rule-card__actions { display: flex; gap: 0.25rem; opacity: 0; transition: opacity 0.15s; }
-.rule-card:hover .rule-card__actions { opacity: 1; }
+/* Actions */
+.rule-card__actions { display: flex; gap: 0.25rem; }
 .rule-card__action { display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: var(--radius-md); border: none; background: transparent; color: var(--color-text-tertiary); cursor: pointer; transition: all 0.15s; }
 .rule-card__action:hover { background: var(--color-bg-hover); color: var(--color-text-primary); }
 .rule-card__action--delete:hover { background: var(--color-danger-50); color: var(--color-danger); }

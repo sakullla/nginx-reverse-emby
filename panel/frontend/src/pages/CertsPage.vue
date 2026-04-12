@@ -49,13 +49,14 @@
     </div>
 
     <div v-else-if='certificates.length && filteredCerts.length' class='cert-grid'>
-      <div v-for='cert in filteredCerts' :key='cert.id' class='cert-card'>
+      <div v-for='cert in filteredCerts' :key='cert.id' class='cert-card' :class="{ 'cert-card--disabled': !cert.enabled }">
         <div class='cert-card__header'>
-          <div class='cert-card__header-left'>
+          <div class='cert-card__badges'>
             <span class='cert-card__id'>#{{ cert.id }}</span>
-            <div class='cert-card__status' :class='`cert-card__status--${cert.status || "inactive"}`'>
+            <span class='cert-card__scope'>{{ cert.scope === 'ip' ? 'IP' : '域名' }}</span>
+            <span class='cert-card__status' :class='`cert-card__status--${cert.status || "inactive"}`'>
               {{ getStatusLabel(cert) }}
-            </div>
+            </span>
           </div>
           <div class='cert-card__actions'>
             <button
@@ -88,14 +89,24 @@
           </div>
         </div>
 
-        <div class='cert-card__domain'>{{ cert.domain }}</div>
+        <div class='cert-card__domain'>
+          <span class='cert-card__url-icon'>
+            <svg width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'>
+              <path d='M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71'/>
+              <path d='M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71'/>
+            </svg>
+          </span>
+          <code class='cert-card__addr'>{{ cert.domain }}</code>
+        </div>
+
         <div class='cert-card__meta'>
-          <span class='cert-card__scope'>{{ getCertificateUsageLabel(cert.usage) }}</span>
-          <span class='cert-card__issuer'>{{ getCertificateIssuerLabel(cert) }}</span>
-          <span class='cert-card__issuer'>{{ cert.scope === 'ip' ? 'IP 证书' : '域名证书' }}</span>
+          <span class='cert-card__meta-tag'>{{ getCertificateUsageLabel(cert.usage) }}</span>
+          <span class='cert-card__meta-tag'>{{ getCertificateIssuerLabel(cert) }}</span>
           <span v-if='cert.last_issue_at' class='cert-card__date'>{{ formatDate(cert.last_issue_at) }}</span>
         </div>
+
         <p v-if='cert.last_error' class='cert-card__error'>{{ cert.last_error }}</p>
+
         <div class='cert-card__tags'>
           <span v-if='isSystemRelayCA(cert)' class='tag tag--info'>系统 Relay CA</span>
           <span v-if='cert.self_signed' class='tag tag--warn'>自签</span>
@@ -278,7 +289,7 @@ function confirmDelete() {
 .certs-page__title { font-size: 1.5rem; font-weight: 700; margin: 0 0 0.25rem; color: var(--color-text-primary); }
 .certs-page__subtitle { font-size: 0.875rem; color: var(--color-text-tertiary); margin: 0; }
 .certs-page__loading, .certs-page__empty, .certs-page__prompt { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.75rem; padding: 4rem 2rem; color: var(--color-text-muted); text-align: center; }
-.cert-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1rem; }
+.cert-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1rem; }
 .search-wrapper { position: relative; display: flex; align-items: center; }
 .search-icon-btn { display: none; }
 .search-input { flex: 1; min-width: 0; padding: 0.625rem 2rem 0.625rem 0.875rem; border-radius: var(--radius-lg); border: 1.5px solid var(--color-border-default); background: var(--color-bg-subtle); font-size: 0.875rem; color: var(--color-text-primary); outline: none; font-family: inherit; transition: border-color 0.15s, width 0.2s; box-sizing: border-box; }
@@ -341,15 +352,20 @@ function confirmDelete() {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
+  transition: opacity 0.15s;
 }
+.cert-card--disabled { opacity: 0.6; }
 .cert-card__header { display: flex; align-items: center; justify-content: space-between; }
-.cert-card__header-left { display: flex; align-items: center; gap: 0.5rem; }
+.cert-card__badges { display: flex; align-items: center; gap: 0.5rem; }
 .cert-card__id { font-size: 0.75rem; font-family: var(--font-mono); color: var(--color-text-tertiary); }
-.cert-card__domain { font-size: 1rem; font-weight: 600; color: var(--color-text-primary); font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cert-card__meta { display: flex; gap: 0.5rem; font-size: 0.75rem; color: var(--color-text-tertiary); flex-wrap: wrap; }
-.cert-card__scope, .cert-card__issuer { background: var(--color-bg-subtle); padding: 1px 6px; border-radius: var(--radius-sm); }
+.cert-card__scope { display: inline-block; font-size: 0.7rem; font-weight: 700; padding: 2px 6px; border-radius: var(--radius-sm); font-family: var(--font-mono); background: var(--color-bg-subtle); color: var(--color-text-secondary); }
+.cert-card__domain { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
+.cert-card__url-icon { display: flex; align-items: center; justify-content: center; color: var(--color-text-tertiary); flex-shrink: 0; }
+.cert-card__addr { font-family: var(--font-mono); font-size: 0.875rem; font-weight: 500; color: var(--color-text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cert-card__meta { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.cert-card__meta-tag { font-size: 0.7rem; padding: 1px 6px; background: var(--color-bg-subtle); border: 1px solid var(--color-border-subtle); border-radius: var(--radius-sm); color: var(--color-text-secondary); font-family: var(--font-mono); }
+.cert-card__date { font-size: 0.75rem; color: var(--color-text-muted); margin-left: auto; }
 .cert-card__error { font-size: 0.75rem; color: var(--color-danger); background: var(--color-danger-50); padding: 0.25rem 0.5rem; border-radius: var(--radius-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cert-card__date { font-size: 0.75rem; color: var(--color-text-tertiary); }
 .cert-card__tags { display: flex; gap: 0.25rem; flex-wrap: wrap; }
 .tag { font-size: 0.75rem; padding: 2px 8px; background: var(--color-primary-subtle); color: var(--color-primary); border-radius: var(--radius-full); font-weight: 500; }
 .tag--info { background: var(--color-primary-subtle); color: var(--color-primary); }
@@ -361,8 +377,7 @@ function confirmDelete() {
 .cert-card__status--error { background: var(--color-danger-50); color: var(--color-danger); }
 .cert-card__status--inactive { background: var(--color-bg-subtle); color: var(--color-text-muted); }
 
-.cert-card__actions { display: flex; align-items: center; gap: 0.375rem; opacity: 0; transition: opacity 0.15s; }
-.cert-card:hover .cert-card__actions { opacity: 1; }
+.cert-card__actions { display: flex; gap: 0.25rem; }
 .cert-card__action { display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: var(--radius-md); border: none; background: transparent; color: var(--color-text-tertiary); cursor: pointer; transition: all 0.15s; }
 .cert-card__action:hover { background: var(--color-bg-hover); color: var(--color-text-primary); }
 .cert-card__action--delete:hover { background: var(--color-danger-50); color: var(--color-danger); }
