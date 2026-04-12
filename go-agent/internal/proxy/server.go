@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -118,7 +119,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	host := normalizeHost(req.Host)
 	if entry, ok := s.routes[host]; ok {
 		if err := entry.serveHTTP(w, req); err != nil {
-			http.Error(w, "bad gateway", http.StatusBadGateway)
+			log.Printf("[proxy] bad gateway for %s %s (host=%s frontend=%s): %v", req.Method, req.URL.Path, host, entry.rule.FrontendURL, err)
+			http.Error(w, fmt.Sprintf("bad gateway: %v", err), http.StatusBadGateway)
 		}
 		return
 	}
@@ -210,6 +212,7 @@ func StartWithResources(
 
 		go func(srv *http.Server, ln net.Listener) {
 			if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Printf("[proxy] server serve error on %s: %v", spec.bindingKey, err)
 				return
 			}
 		}(server, listener)
@@ -221,19 +224,23 @@ func StartWithResources(
 func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 	bodyBytes, err := readReusableBody(req)
 	if err != nil {
+		log.Printf("[proxy] read body error for %s: %v", e.rule.FrontendURL, err)
 		return err
 	}
 	candidates, err := e.candidates(req.Context())
 	if err != nil {
+		log.Printf("[proxy] candidates error for %s: %v", e.rule.FrontendURL, err)
 		return err
 	}
 	for _, candidate := range candidates {
 		attemptReq, err := cloneProxyRequest(req, bodyBytes, candidate, e.rule)
 		if err != nil {
+			log.Printf("[proxy] clone request error for %s -> %s: %v", e.rule.FrontendURL, candidate.target, err)
 			return err
 		}
 		resp, err := e.transport.RoundTrip(attemptReq)
 		if err != nil {
+			log.Printf("[proxy] roundtrip error for %s -> %s: %v", e.rule.FrontendURL, candidate.target, err)
 			if !isBackendRetryable(attemptReq, err) {
 				return backendRetryError(attemptReq, err)
 			}
@@ -245,6 +252,7 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 		if e.modifyResp != nil {
 			modify := makeModifyResponse(FrontendOriginFromRule(e.rule), e.rule.ProxyRedirect, candidate.backendHost)
 			if err := modify(resp); err != nil {
+				log.Printf("[proxy] modify response error for %s: %v", e.rule.FrontendURL, err)
 				return err
 			}
 		}
