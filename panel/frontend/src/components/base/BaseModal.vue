@@ -152,20 +152,20 @@ onUnmounted(() => {
 /* 2K / 1440p */
 @media (min-width: 2560px) {
   .modal--lg {
-    max-width: min(1400px, 70vw);
+    max-width: min(720px, 80vw);
   }
   .modal--xl {
-    max-width: min(2000px, 75vw);
+    max-width: min(960px, 80vw);
   }
 }
 
 /* 4K */
 @media (min-width: 3840px) {
   .modal--lg {
-    max-width: min(2000px, 60vw);
+    max-width: min(800px, 70vw);
   }
   .modal--xl {
-    max-width: min(2800px, 65vw);
+    max-width: min(1200px, 70vw);
   }
 }
 
