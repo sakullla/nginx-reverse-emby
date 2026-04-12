@@ -74,3 +74,9 @@ test('L4 RuleForm clears relay obfs when relay chain becomes empty', () => {
   assert.match(source, /watch\(\(\) => form\.value\.relay_chain,\s*\(relayChain\) => \{/)
   assert.match(source, /if \(!Array\.isArray\(relayChain\) \|\| relayChain\.length === 0\) \{\s*form\.value\.relay_obfs = false/)
 })
+
+test('L4 RuleForm rehydrates local form state when initialData changes', () => {
+  const source = read('L4RuleForm.vue')
+  assert.match(source, /watch\(\(\) => props\.initialData,\s*\(value\) => \{/)
+  assert.match(source, /form\.value = createFormState\(value\)/)
+})

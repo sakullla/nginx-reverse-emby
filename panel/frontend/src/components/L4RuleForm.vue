@@ -329,31 +329,38 @@ function normalizeL4Strategy(value) {
   return SUPPORTED_L4_STRATEGIES.has(strategy) ? strategy : 'round_robin'
 }
 
-const initialProtocol = props.initialData?.protocol || 'tcp'
+function normalizeInitialBackends(initialData) {
+  if (initialData?.backends?.length > 0) {
+    return initialData.backends.map(b => createBackend(b))
+  }
+  if (initialData?.upstream_host) {
+    return [createBackend({
+      address: `${initialData.upstream_host}:${initialData.upstream_port || ''}`,
+      resolve: false,
+    })]
+  }
+  return [createBackend()]
+}
 
-const initialBackends = props.initialData?.backends?.length > 0
-  ? props.initialData.backends.map(b => createBackend(b))
-  : (props.initialData?.upstream_host
-    ? [createBackend({
-        address: `${props.initialData.upstream_host}:${props.initialData.upstream_port || ''}`,
-        resolve: false,
-      })]
-    : [createBackend()])
+function createFormState(initialData) {
+  const protocol = initialData?.protocol || 'tcp'
+  return {
+    protocol,
+    listen_host: initialData?.listen_host || '0.0.0.0',
+    listen_port: initialData?.listen_port || 0,
+    backends: normalizeInitialBackends(initialData),
+    load_balancing: {
+      strategy: normalizeL4Strategy(initialData?.load_balancing?.strategy),
+    },
+    tuning: mergeTuning(initialData?.tuning, protocol),
+    enabled: initialData?.enabled !== false,
+    tags: Array.isArray(initialData?.tags) ? [...initialData.tags] : [],
+    relay_chain: Array.isArray(initialData?.relay_chain) ? [...initialData.relay_chain] : [],
+    relay_obfs: initialData?.relay_obfs === true,
+  }
+}
 
-const form = ref({
-  protocol: initialProtocol,
-  listen_host: props.initialData?.listen_host || '0.0.0.0',
-  listen_port: props.initialData?.listen_port || 0,
-  backends: initialBackends,
-  load_balancing: {
-    strategy: normalizeL4Strategy(props.initialData?.load_balancing?.strategy),
-  },
-  tuning: mergeTuning(props.initialData?.tuning, initialProtocol),
-  enabled: props.initialData?.enabled !== false,
-  tags: Array.isArray(props.initialData?.tags) ? [...props.initialData.tags] : [],
-  relay_chain: Array.isArray(props.initialData?.relay_chain) ? [...props.initialData.relay_chain] : [],
-  relay_obfs: props.initialData?.relay_obfs === true,
-})
+const form = ref(createFormState(props.initialData))
 
 const tagInput = ref('')
 const draggingIndex = ref(-1)
@@ -405,6 +412,14 @@ const hasRelayConfig = computed(() => {
   return Array.isArray(form.value.relay_chain) && form.value.relay_chain.length > 0
 })
 const relayObfsDisabled = computed(() => !Array.isArray(form.value.relay_chain) || form.value.relay_chain.length === 0)
+
+watch(() => props.initialData, (value) => {
+  form.value = createFormState(value)
+  tagInput.value = ''
+  draggingIndex.value = -1
+  error.value = ''
+  activeTab.value = 'basic'
+}, { immediate: true })
 
 watch(() => form.value.protocol, (newProto) => {
   form.value.tuning = resetTuningForProtocol(form.value.tuning, newProto)
