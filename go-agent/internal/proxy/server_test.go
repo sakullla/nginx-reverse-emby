@@ -205,6 +205,92 @@ func TestPassProxyHeadersUsesIncomingScheme(t *testing.T) {
 	}
 }
 
+func TestServerUsesBackendAuthorityForHTTPSUpstreamsResolvedToIP(t *testing.T) {
+	backendHost := "backend.example.test"
+	backendCert := mustIssueProxyTLSCertificate(t, backendHost)
+	rootCAs := x509.NewCertPool()
+	rootCAs.AddCert(mustParseCertificate(t, backendCert))
+
+	var receivedHost string
+	backendListener, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{
+		MinVersion:   tls.VersionTLS12,
+		Certificates: []tls.Certificate{backendCert},
+	})
+	if err != nil {
+		t.Fatalf("failed to start backend listener: %v", err)
+	}
+	defer backendListener.Close()
+
+	backendDone := make(chan struct{})
+	backendServer := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			receivedHost = r.Host
+			w.WriteHeader(http.StatusNoContent)
+		}),
+	}
+	go func() {
+		defer close(backendDone)
+		_ = backendServer.Serve(backendListener)
+	}()
+	defer func() {
+		_ = backendServer.Close()
+		<-backendDone
+	}()
+
+	backendPort := backendListener.Addr().(*net.TCPAddr).Port
+	cache := backends.NewCache(backends.Config{
+		Resolver: resolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
+			if host != backendHost {
+				t.Fatalf("unexpected resolver host %q", host)
+			}
+			return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, nil
+		}),
+	})
+	transport := NewSharedTransport()
+	transport.TLSClientConfig = &tls.Config{
+		RootCAs: rootCAs,
+	}
+
+	server, err := newServer(
+		model.HTTPListener{
+			Rules: []model.HTTPRule{{
+				FrontendURL: "https://route.example",
+				BackendURL:  fmt.Sprintf("https://%s:%d", backendHost, backendPort),
+			}},
+		},
+		nil,
+		Providers{},
+		cache,
+		transport,
+	)
+	if err != nil {
+		t.Fatalf("failed to build proxy server: %v", err)
+	}
+
+	proxy := httptest.NewServer(server)
+	defer proxy.Close()
+
+	req, err := http.NewRequest(http.MethodGet, proxy.URL+"/status", nil)
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+	req.Host = "route.example"
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("proxy request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", resp.StatusCode)
+	}
+	wantHost := fmt.Sprintf("%s:%d", backendHost, backendPort)
+	if receivedHost != wantHost {
+		t.Fatalf("expected backend host header %q, got %q", wantHost, receivedHost)
+	}
+}
+
 func TestStartRetriesHTTPRequestsAcrossBackends(t *testing.T) {
 	failures := 0
 	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1032,6 +1118,16 @@ func mustIssueProxyTLSCertificate(t *testing.T, host string) tls.Certificate {
 		PrivateKey:  privateKey,
 		Leaf:        template,
 	}
+}
+
+func mustParseCertificate(t *testing.T, cert tls.Certificate) *x509.Certificate {
+	t.Helper()
+
+	parsed, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		t.Fatalf("failed to parse certificate: %v", err)
+	}
+	return parsed
 }
 
 type testRuntimeMaterialProvider struct{}

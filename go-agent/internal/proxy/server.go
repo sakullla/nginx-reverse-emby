@@ -244,10 +244,10 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 			if !isBackendRetryable(attemptReq, err) {
 				return backendRetryError(attemptReq, err)
 			}
-			e.backendCache.MarkFailure(candidate.target.Host)
+			e.backendCache.MarkFailure(candidate.dialAddress)
 			continue
 		}
-		e.backendCache.MarkSuccess(candidate.target.Host)
+		e.backendCache.MarkSuccess(candidate.dialAddress)
 		defer resp.Body.Close()
 		if e.modifyResp != nil {
 			modify := makeModifyResponse(FrontendOriginFromRule(e.rule), e.rule.ProxyRedirect, candidate.backendHost)
@@ -267,6 +267,7 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 
 type httpCandidate struct {
 	target      *url.URL
+	dialAddress string
 	backendHost string
 }
 
@@ -305,10 +306,9 @@ func (e *routeEntry) candidates(ctx context.Context) ([]httpCandidate, error) {
 			if e.backendCache.IsInBackoff(candidate.Address) {
 				continue
 			}
-			target := cloneURL(backend.target)
-			target.Host = candidate.Address
 			out = append(out, httpCandidate{
-				target:      target,
+				target:      cloneURL(backend.target),
+				dialAddress: candidate.Address,
 				backendHost: backend.backendHost,
 			})
 		}
@@ -503,7 +503,7 @@ func newRelayTransport(
 	}
 	transport := cloneTransport(base)
 	transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-		return relay.Dial(ctx, network, strings.TrimSpace(addr), hops, provider, relay.DialOptions{
+		return relay.Dial(ctx, network, dialAddressFromContext(ctx, addr), hops, provider, relay.DialOptions{
 			TransportMode: relayTransportModeForHTTPRule(rule),
 		})
 	}
@@ -587,6 +587,13 @@ func NewSharedTransport() *http.Transport {
 	transport.IdleConnTimeout = 90 * time.Second
 	transport.ResponseHeaderTimeout = 30 * time.Second
 	transport.ForceAttemptHTTP2 = true
+	dialer := &net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}
+	transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return dialer.DialContext(ctx, network, dialAddressFromContext(ctx, addr))
+	}
 	return transport
 }
 
@@ -632,7 +639,8 @@ func cloneProxyRequest(req *http.Request, body []byte, candidate httpCandidate, 
 	out.URL.Fragment = req.URL.Fragment
 	out.URL.ForceQuery = req.URL.ForceQuery
 	out.RequestURI = ""
-	out.Host = req.Host
+	out.Host = candidate.target.Host
+	out = out.WithContext(withDialAddress(out.Context(), candidate.dialAddress))
 	if body != nil {
 		out.Body = io.NopCloser(bytes.NewReader(body))
 		out.ContentLength = int64(len(body))
@@ -788,6 +796,25 @@ func cloneURL(src *url.URL) *url.URL {
 	}
 	copyValue := *src
 	return &copyValue
+}
+
+type dialAddressContextKey struct{}
+
+func withDialAddress(ctx context.Context, address string) context.Context {
+	address = strings.TrimSpace(address)
+	if ctx == nil || address == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, dialAddressContextKey{}, address)
+}
+
+func dialAddressFromContext(ctx context.Context, fallback string) string {
+	if ctx != nil {
+		if address, ok := ctx.Value(dialAddressContextKey{}).(string); ok && strings.TrimSpace(address) != "" {
+			return strings.TrimSpace(address)
+		}
+	}
+	return strings.TrimSpace(fallback)
 }
 
 func upgradeType(h http.Header) string {
