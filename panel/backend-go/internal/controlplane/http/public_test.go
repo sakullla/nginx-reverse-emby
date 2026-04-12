@@ -85,6 +85,12 @@ func TestRouterServesJoinScriptAndHeartbeat(t *testing.T) {
 	if !strings.Contains(script, `ASSET_NAME="nre-agent-$PLATFORM-$ARCH"`) {
 		t.Fatalf("join-agent.sh missing asset name: %s", script)
 	}
+	if !strings.Contains(script, "extract_registered_agent_id()") {
+		t.Fatalf("join-agent.sh missing registered agent id extraction helper: %s", script)
+	}
+	if !strings.Contains(script, "NRE_AGENT_ID=") {
+		t.Fatalf("join-agent.sh missing persisted NRE_AGENT_ID env entry: %s", script)
+	}
 	if strings.Contains(script, "light-agent.js") {
 		t.Fatalf("join-agent.sh unexpectedly references light-agent.js")
 	}

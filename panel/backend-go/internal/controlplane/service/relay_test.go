@@ -300,6 +300,13 @@ func TestRelayServiceCreateAutoIssuesCertificateAndDerivesTrust(t *testing.T) {
 	if !ok || strings.TrimSpace(material.CertPEM) == "" || strings.TrimSpace(material.KeyPEM) == "" {
 		t.Fatalf("auto cert material missing: %+v", store.materialsByHost)
 	}
+	leaf := mustParseCertificate(t, material.CertPEM)
+	if !containsString(leaf.DNSNames, autoCert.Domain) {
+		t.Fatalf("auto cert dns names = %+v, want internal domain %q", leaf.DNSNames, autoCert.Domain)
+	}
+	if !containsString(leaf.DNSNames, "relay-auto.example.com") {
+		t.Fatalf("auto cert dns names = %+v, want public host relay-auto.example.com", leaf.DNSNames)
+	}
 	expectedPin := mustSPKIPinFromPEM(t, material.CertPEM)
 	if len(listener.PinSet) != 1 || listener.PinSet[0].Value != expectedPin {
 		t.Fatalf("listener.PinSet = %+v, want spki pin %q", listener.PinSet, expectedPin)
@@ -1779,6 +1786,19 @@ func mustParseCertificatePair(t *testing.T, material relayMaterial) (*x509.Certi
 		t.Fatalf("ParsePKCS1PrivateKey() error = %v", err)
 	}
 	return cert, key
+}
+
+func mustParseCertificate(t *testing.T, certPEM string) *x509.Certificate {
+	t.Helper()
+	block, _ := pem.Decode([]byte(certPEM))
+	if block == nil {
+		t.Fatal("failed to decode certificate PEM")
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatalf("ParseCertificate() error = %v", err)
+	}
+	return cert
 }
 
 func mustSPKIPinFromPEM(t *testing.T, certPEM string) string {

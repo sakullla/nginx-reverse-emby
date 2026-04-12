@@ -19,7 +19,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
-func generateRelayLeafMaterial(domain string, caBundle storage.ManagedCertificateBundle) (storage.ManagedCertificateBundle, error) {
+func generateRelayLeafMaterial(domain string, caBundle storage.ManagedCertificateBundle, aliases ...string) (storage.ManagedCertificateBundle, error) {
 	caCert, caKey, err := parseCertificateSigner(caBundle.CertPEM, caBundle.KeyPEM)
 	if err != nil {
 		return storage.ManagedCertificateBundle{}, err
@@ -30,6 +30,7 @@ func generateRelayLeafMaterial(domain string, caBundle storage.ManagedCertificat
 		return storage.ManagedCertificateBundle{}, err
 	}
 	now := time.Now().UTC()
+	dnsNames, ipAddresses := relayLeafSANs(domain, aliases...)
 	template := &x509.Certificate{
 		SerialNumber: randomCertificateSerial(),
 		Subject:      pkix.Name{CommonName: relayLeafCommonName(domain)},
@@ -37,11 +38,8 @@ func generateRelayLeafMaterial(domain string, caBundle storage.ManagedCertificat
 		NotAfter:     now.Add(825 * 24 * time.Hour),
 		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-		DNSNames:     []string{strings.TrimSpace(domain)},
-	}
-	if ip := net.ParseIP(strings.TrimSpace(domain)); ip != nil {
-		template.DNSNames = nil
-		template.IPAddresses = []net.IP{ip}
+		DNSNames:     dnsNames,
+		IPAddresses:  ipAddresses,
 	}
 
 	der, err := x509.CreateCertificate(rand.Reader, template, caCert, &privateKey.PublicKey, caKey)
@@ -53,6 +51,41 @@ func generateRelayLeafMaterial(domain string, caBundle storage.ManagedCertificat
 		CertPEM: string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})),
 		KeyPEM:  string(pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(privateKey)})),
 	}, nil
+}
+
+func relayLeafSANs(domain string, aliases ...string) ([]string, []net.IP) {
+	dnsNames := make([]string, 0, 1+len(aliases))
+	ipAddresses := make([]net.IP, 0, 1+len(aliases))
+	seenDNS := make(map[string]struct{}, 1+len(aliases))
+	seenIPs := make(map[string]struct{}, 1+len(aliases))
+
+	addHost := func(raw string) {
+		host := strings.TrimSpace(raw)
+		if host == "" {
+			return
+		}
+		if ip := net.ParseIP(host); ip != nil {
+			key := ip.String()
+			if _, ok := seenIPs[key]; ok {
+				return
+			}
+			seenIPs[key] = struct{}{}
+			ipAddresses = append(ipAddresses, ip)
+			return
+		}
+		key := strings.ToLower(host)
+		if _, ok := seenDNS[key]; ok {
+			return
+		}
+		seenDNS[key] = struct{}{}
+		dnsNames = append(dnsNames, host)
+	}
+
+	addHost(domain)
+	for _, alias := range aliases {
+		addHost(alias)
+	}
+	return dnsNames, ipAddresses
 }
 
 func generateInternalCAMaterial(domain string) (storage.ManagedCertificateBundle, error) {

@@ -63,6 +63,10 @@ json_string() {
     printf '"%s"' "$escaped"
 }
 
+extract_registered_agent_id() {
+    printf '%s' "$1" | tr -d '\r\n' | sed -n 's/.*"agent"[[:space:]]*:[[:space:]]*{[^}]*"id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p'
+}
+
 generate_token() {
     if command -v openssl >/dev/null 2>&1; then
         openssl rand -hex 24
@@ -314,6 +318,12 @@ REGISTER_RESPONSE=$(curl -fsS \
   -H "X-Agent-Token: $AGENT_TOKEN" \
   -d "$PAYLOAD" \
   "$MASTER_URL/panel-api/agents/register")
+REGISTERED_AGENT_ID="$(extract_registered_agent_id "$REGISTER_RESPONSE")"
+[ -n "$REGISTERED_AGENT_ID" ] || {
+    echo "Registered agent id missing from register response" >&2
+    exit 1
+}
+printf 'NRE_AGENT_ID=%s\n' "$(shell_quote "$REGISTERED_AGENT_ID")" >> "$ENV_FILE"
 
 echo "[JOIN] Registered successfully: $REGISTER_RESPONSE"
 echo "[JOIN] Agent binary: $BIN_PATH"

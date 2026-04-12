@@ -251,7 +251,7 @@ func TestManagerApplyRejectsUploadedCertificateWithoutBundlePEM(t *testing.T) {
 	}
 }
 
-func TestManagerApplyUsesInternalCAPathEvenWhenBundlePEMExists(t *testing.T) {
+func TestManagerApplyUsesBundledInternalCAMaterialWhenBundlePEMExists(t *testing.T) {
 	t.Parallel()
 
 	bundle := mustCreateTLSMaterial(t, certificateSpec{commonName: "bundle.example.com"})
@@ -284,8 +284,8 @@ func TestManagerApplyUsesInternalCAPathEvenWhenBundlePEMExists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("certificate info failed: %v", err)
 	}
-	if info.Fingerprint == bundle.Fingerprint {
-		t.Fatal("expected internal_ca issuance path instead of bundle pem")
+	if info.Fingerprint != bundle.Fingerprint {
+		t.Fatal("expected bundled internal_ca material to be preserved")
 	}
 }
 

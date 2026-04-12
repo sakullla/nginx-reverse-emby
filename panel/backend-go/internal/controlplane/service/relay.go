@@ -762,7 +762,7 @@ func (s *relayService) ensureAutoRelayListenerCertificate(ctx context.Context, r
 		Tags:            autoRelayListenerCertificateTags(listener.ID, agentID),
 		Revision:        maxRevision + 1,
 	}
-	materialBundle, err := generateRelayLeafMaterial(autoCert.Domain, relayCABundle)
+	materialBundle, err := generateRelayLeafMaterial(autoCert.Domain, relayCABundle, listener.PublicHost)
 	if err != nil {
 		return 0, nil, nil, err
 	}

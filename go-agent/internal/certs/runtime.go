@@ -285,6 +285,9 @@ func (m *Manager) resolveMaterial(ctx context.Context, policy model.ManagedCerti
 		}
 		return []byte(bundle.CertPEM), []byte(bundle.KeyPEM), nil
 	case "internal_ca":
+		if strings.TrimSpace(bundle.CertPEM) != "" && strings.TrimSpace(bundle.KeyPEM) != "" {
+			return []byte(bundle.CertPEM), []byte(bundle.KeyPEM), nil
+		}
 		return m.loadOrIssueInternalCA(policy)
 	case "acme":
 		return m.loadOrIssueACME(ctx, policy)
