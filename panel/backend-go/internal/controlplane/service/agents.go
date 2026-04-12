@@ -89,6 +89,7 @@ type HTTPRule struct {
 	Tags             []string           `json:"tags"`
 	ProxyRedirect    bool               `json:"proxy_redirect"`
 	RelayChain       []int              `json:"relay_chain"`
+	RelayObfs        bool               `json:"relay_obfs"`
 	PassProxyHeaders bool               `json:"pass_proxy_headers"`
 	UserAgent        string             `json:"user_agent"`
 	CustomHeaders    []HTTPCustomHeader `json:"custom_headers"`
@@ -319,6 +320,7 @@ func (s *agentService) ListHTTPRules(ctx context.Context, agentID string) ([]HTT
 			Tags:             parseStringArray(row.TagsJSON),
 			ProxyRedirect:    row.ProxyRedirect,
 			RelayChain:       parseIntArray(row.RelayChainJSON),
+			RelayObfs:        false,
 			PassProxyHeaders: row.PassProxyHeaders,
 			UserAgent:        row.UserAgent,
 			CustomHeaders:    parseCustomHeaders(row.CustomHeadersJSON),
