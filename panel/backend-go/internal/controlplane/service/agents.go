@@ -260,7 +260,8 @@ func (s *agentService) Register(ctx context.Context, request RegisterRequest, he
 	for _, existing := range rows {
 		existingAgentURL := trimTrailingSlash(existing.AgentURL)
 		if existing.AgentToken == agentToken ||
-			(existingAgentURL != "" && existingAgentURL == agentURL) {
+			(existingAgentURL != "" && existingAgentURL == agentURL) ||
+			(existingAgentURL == "" && existing.Name == name) {
 			row = existing
 			break
 		}

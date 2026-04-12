@@ -259,6 +259,62 @@ func TestAgentServiceRegisterNormalizesURLAndDeduplicatesByURL(t *testing.T) {
 	}
 }
 
+func TestAgentServiceRegisterReusesPullAgentByNameWhenURLIsEmpty(t *testing.T) {
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID:         "pull-existing",
+			Name:       "Pull Node",
+			AgentURL:   "",
+			AgentToken: "token-old",
+		}},
+	}
+	svc := NewAgentService(config.Config{}, store)
+
+	agent, err := svc.Register(context.Background(), RegisterRequest{
+		Name:       "Pull Node",
+		AgentURL:   "",
+		AgentToken: "token-new",
+	}, "")
+	if err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	if agent.ID != "pull-existing" {
+		t.Fatalf("Register() did not reuse pull agent by name: got %+v", agent)
+	}
+	if store.savedAgent.AgentToken != "token-new" {
+		t.Fatalf("expected token updated to token-new, got %q", store.savedAgent.AgentToken)
+	}
+}
+
+func TestAgentServiceRegisterDoesNotReusePushAgentByNameAlone(t *testing.T) {
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID:         "push-existing",
+			Name:       "Push Node",
+			AgentURL:   "https://push.example.com",
+			AgentToken: "token-old",
+		}},
+	}
+	svc := NewAgentService(config.Config{}, store)
+
+	agent, err := svc.Register(context.Background(), RegisterRequest{
+		Name:       "Push Node",
+		AgentURL:   "https://push-new.example.com",
+		AgentToken: "token-new",
+	}, "")
+	if err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	if agent.ID == "push-existing" {
+		t.Fatalf("Register() reused push agent by name alone: got %+v", agent)
+	}
+	if len(store.agents) != 2 {
+		t.Fatalf("expected 2 agents, got %d", len(store.agents))
+	}
+}
+
 func TestAgentServiceRegisterRejectsInvalidURL(t *testing.T) {
 	svc := NewAgentService(config.Config{}, &fakeStore{})
 	for _, invalidURL := range []string{
