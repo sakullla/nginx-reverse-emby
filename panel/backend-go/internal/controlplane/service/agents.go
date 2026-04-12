@@ -320,7 +320,7 @@ func (s *agentService) ListHTTPRules(ctx context.Context, agentID string) ([]HTT
 			Tags:             parseStringArray(row.TagsJSON),
 			ProxyRedirect:    row.ProxyRedirect,
 			RelayChain:       parseIntArray(row.RelayChainJSON),
-			RelayObfs:        false,
+			RelayObfs:        row.RelayObfs,
 			PassProxyHeaders: row.PassProxyHeaders,
 			UserAgent:        row.UserAgent,
 			CustomHeaders:    parseCustomHeaders(row.CustomHeadersJSON),
