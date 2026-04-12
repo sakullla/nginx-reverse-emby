@@ -583,6 +583,12 @@ watch(
   { immediate: true }
 )
 
+watch(() => form.value.relay_chain, (relayChain) => {
+  if (!Array.isArray(relayChain) || relayChain.length === 0) {
+    form.value.relay_obfs = false
+  }
+})
+
 function createDefaultForm() {
   return {
     frontend_url: '',

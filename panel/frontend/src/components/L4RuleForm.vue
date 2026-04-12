@@ -414,6 +414,12 @@ watch(() => form.value.protocol, (newProto) => {
   }
 })
 
+watch(() => form.value.relay_chain, (relayChain) => {
+  if (!Array.isArray(relayChain) || relayChain.length === 0) {
+    form.value.relay_obfs = false
+  }
+})
+
 const LB_TAG_MAP = { round_robin: 'RR', random: 'RND' }
 const LB_TAG_SET = new Set(Object.values(LB_TAG_MAP))
 

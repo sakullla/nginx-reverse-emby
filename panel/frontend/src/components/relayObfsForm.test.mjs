@@ -48,5 +48,17 @@ test('HTTP update normalization preserves omitted relay fields for object payloa
   assert.match(source, /function normalizeHttpRulePayloadObject\(payload = \{\}, options = \{\}\)/)
   assert.match(source, /const includeRelayDefaults = options\.includeRelayDefaults === true/)
   assert.match(source, /createRule\(agentId, payloadOrFrontend, \.\.\.legacyArgs\)[\s\S]*normalizeHttpRulePayloadObject\(payloadOrFrontend, \{ includeRelayDefaults: true \}\)/)
-  assert.match(source, /updateRule\(agentId, id, payloadOrFrontend, \.\.\.legacyArgs\)[\s\S]*normalizeHttpRulePayloadObject\(payloadOrFrontend\)/)
+  assert.match(source, /updateRule\(agentId, id, payloadOrFrontend, \.\.\.legacyArgs\)[\s\S]*normalizeHttpRulePayloadObject\(payloadOrFrontend, \{ includeRelayDefaults: false \}\)/)
+})
+
+test('HTTP RuleForm clears relay obfs when relay chain becomes empty', () => {
+  const source = read('RuleForm.vue')
+  assert.match(source, /watch\(\(\) => form\.value\.relay_chain,\s*\(relayChain\) => \{/)
+  assert.match(source, /if \(!Array\.isArray\(relayChain\) \|\| relayChain\.length === 0\) \{\s*form\.value\.relay_obfs = false/)
+})
+
+test('L4 RuleForm clears relay obfs when relay chain becomes empty', () => {
+  const source = read('L4RuleForm.vue')
+  assert.match(source, /watch\(\(\) => form\.value\.relay_chain,\s*\(relayChain\) => \{/)
+  assert.match(source, /if \(!Array\.isArray\(relayChain\) \|\| relayChain\.length === 0\) \{\s*form\.value\.relay_obfs = false/)
 })

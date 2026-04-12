@@ -458,7 +458,7 @@ export async function createRule(agentId, payloadOrFrontend, ...legacyArgs) {
 
 export async function updateRule(agentId, id, payloadOrFrontend, ...legacyArgs) {
   const payload = payloadOrFrontend && typeof payloadOrFrontend === 'object' && !Array.isArray(payloadOrFrontend)
-    ? normalizeHttpRulePayloadObject(payloadOrFrontend)
+    ? normalizeHttpRulePayloadObject(payloadOrFrontend, { includeRelayDefaults: false })
     : normalizeHttpRulePayload(payloadOrFrontend, ...legacyArgs)
   if (isDev) {
     await sleep()
