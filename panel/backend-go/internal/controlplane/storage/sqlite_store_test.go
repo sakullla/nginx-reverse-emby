@@ -1069,6 +1069,71 @@ func TestStoreLoadAgentSnapshotSkipsMalformedL4Rows(t *testing.T) {
 	}
 }
 
+func TestStoreLoadAgentSnapshotIncludesRelayObfsFlags(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromGORM(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	if err := store.SaveHTTPRules(t.Context(), "relay-obfs-agent", []HTTPRuleRow{{
+		ID:                51,
+		AgentID:           "relay-obfs-agent",
+		FrontendURL:       "https://relay-obfs-http.example.com",
+		BackendURL:        "http://127.0.0.1:8096",
+		BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+		LoadBalancingJSON: `{"strategy":"round_robin"}`,
+		Enabled:           true,
+		RelayChainJSON:    `[77]`,
+		RelayObfs:         true,
+		PassProxyHeaders:  true,
+		Revision:          31,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules() error = %v", err)
+	}
+
+	if err := store.SaveL4Rules(t.Context(), "relay-obfs-agent", []L4RuleRow{{
+		ID:                52,
+		AgentID:           "relay-obfs-agent",
+		Name:              "relay-obfs-l4",
+		Protocol:          "tcp",
+		ListenHost:        "0.0.0.0",
+		ListenPort:        19000,
+		UpstreamHost:      "127.0.0.1",
+		UpstreamPort:      19001,
+		BackendsJSON:      `[{"host":"127.0.0.1","port":19001}]`,
+		LoadBalancingJSON: `{"strategy":"round_robin"}`,
+		TuningJSON:        `{}`,
+		RelayChainJSON:    `[77]`,
+		RelayObfs:         true,
+		Enabled:           true,
+		Revision:          32,
+	}}); err != nil {
+		t.Fatalf("SaveL4Rules() error = %v", err)
+	}
+
+	snapshot, err := store.LoadAgentSnapshot(t.Context(), "relay-obfs-agent", AgentSnapshotInput{
+		DesiredRevision: 0,
+		CurrentRevision: 0,
+	})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot() error = %v", err)
+	}
+	if len(snapshot.Rules) != 1 || !snapshot.Rules[0].RelayObfs {
+		t.Fatalf("expected snapshot HTTP relay_obfs=true: %+v", snapshot.Rules)
+	}
+	if len(snapshot.L4Rules) != 1 || !snapshot.L4Rules[0].RelayObfs {
+		t.Fatalf("expected snapshot L4 relay_obfs=true: %+v", snapshot.L4Rules)
+	}
+}
+
 func TestStoreLoadAgentSnapshotKeepsEffectiveRevisionWhenCurrentMatches(t *testing.T) {
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
