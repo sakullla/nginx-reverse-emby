@@ -101,10 +101,10 @@ func LoadFromEnv() (Config, error) {
 		}
 		cfg.EnableLocalAgent = enabled
 	}
-	if val := strings.TrimSpace(os.Getenv("NRE_LOCAL_AGENT_ID")); val != "" {
+	if val := strings.TrimSpace(firstEnv("NRE_LOCAL_AGENT_ID", "MASTER_LOCAL_AGENT_ID")); val != "" {
 		cfg.LocalAgentID = val
 	}
-	if val := strings.TrimSpace(os.Getenv("NRE_LOCAL_AGENT_NAME")); val != "" {
+	if val := strings.TrimSpace(firstEnv("NRE_LOCAL_AGENT_NAME", "MASTER_LOCAL_AGENT_NAME")); val != "" {
 		cfg.LocalAgentName = val
 	}
 	if val := strings.TrimSpace(os.Getenv("NRE_HEARTBEAT_INTERVAL")); val != "" {

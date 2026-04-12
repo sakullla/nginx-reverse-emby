@@ -49,7 +49,9 @@ func TestLoadFromEnvSupportsLegacyPanelEnvironmentVariables(t *testing.T) {
 	t.Setenv("MASTER_REGISTER_TOKEN", "register-secret")
 	t.Setenv("PANEL_FRONTEND_DIST_DIR", "/tmp/legacy-dist")
 	t.Setenv("PANEL_PUBLIC_AGENT_ASSETS_DIR", "/tmp/legacy-assets")
-	t.Setenv("MASTER_LOCAL_AGENT_ENABLED", "0")
+	t.Setenv("MASTER_LOCAL_AGENT_ENABLED", "1")
+	t.Setenv("MASTER_LOCAL_AGENT_ID", "legacy-local-id")
+	t.Setenv("MASTER_LOCAL_AGENT_NAME", "Legacy Local")
 
 	cfg, err := LoadFromEnv()
 	if err != nil {
@@ -64,8 +66,14 @@ func TestLoadFromEnvSupportsLegacyPanelEnvironmentVariables(t *testing.T) {
 	if cfg.FrontendDistDir != "/tmp/legacy-dist" || cfg.PublicAgentAssetsDir != "/tmp/legacy-assets" {
 		t.Fatalf("unexpected asset dirs: %+v", cfg)
 	}
-	if cfg.EnableLocalAgent {
-		t.Fatalf("EnableLocalAgent = true, want false")
+	if !cfg.EnableLocalAgent {
+		t.Fatalf("EnableLocalAgent = false, want true")
+	}
+	if cfg.LocalAgentID != "legacy-local-id" {
+		t.Fatalf("LocalAgentID = %q, want legacy-local-id", cfg.LocalAgentID)
+	}
+	if cfg.LocalAgentName != "Legacy Local" {
+		t.Fatalf("LocalAgentName = %q, want Legacy Local", cfg.LocalAgentName)
 	}
 }
 
