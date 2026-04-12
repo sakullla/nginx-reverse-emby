@@ -182,13 +182,15 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 
 	done := make(chan struct{}, 2)
 	go func() {
-		io.Copy(upstream, downstreamSource)
-		upstream.Close()
+		_, _ = io.Copy(upstream, downstreamSource)
+		closeTCPWrite(upstream)
+		closeTCPRead(client)
 		done <- struct{}{}
 	}()
 	go func() {
-		io.Copy(client, upstream)
-		client.Close()
+		_, _ = io.Copy(client, upstream)
+		closeTCPWrite(client)
+		closeTCPRead(upstream)
 		done <- struct{}{}
 	}()
 	<-done
@@ -274,7 +276,9 @@ func (s *Server) dialTCPUpstream(rule model.L4Rule) (net.Conn, error) {
 			if hopErr != nil {
 				return nil, hopErr
 			}
-			upstream, err = relay.Dial(s.ctx, "tcp", target, hops, s.relayProvider)
+			upstream, err = relay.Dial(s.ctx, "tcp", target, hops, s.relayProvider, relay.DialOptions{
+				TransportMode: relayTransportModeForL4Rule(rule),
+			})
 		}
 		if err != nil {
 			s.cache.MarkFailure(target)
@@ -288,6 +292,33 @@ func (s *Server) dialTCPUpstream(rule model.L4Rule) (net.Conn, error) {
 		return nil, lastErr
 	}
 	return nil, fmt.Errorf("all backends failed for %s:%d", rule.ListenHost, rule.ListenPort)
+}
+
+func relayTransportModeForL4Rule(rule model.L4Rule) string {
+	if rule.RelayObfs {
+		return relay.TransportModeFirstSegmentV1
+	}
+	return relay.TransportModeOff
+}
+
+func closeTCPWrite(conn net.Conn) {
+	if conn == nil {
+		return
+	}
+	if closer, ok := conn.(interface{ CloseWrite() error }); ok {
+		_ = closer.CloseWrite()
+		return
+	}
+	_ = conn.Close()
+}
+
+func closeTCPRead(conn net.Conn) {
+	if conn == nil {
+		return
+	}
+	if closer, ok := conn.(interface{ CloseRead() error }); ok {
+		_ = closer.CloseRead()
+	}
 }
 
 func (s *Server) startUDPListener(rule model.L4Rule) error {

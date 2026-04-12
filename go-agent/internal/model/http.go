@@ -23,6 +23,7 @@ type HTTPRule struct {
 	UserAgent        string        `json:"user_agent,omitempty"`
 	CustomHeaders    []HTTPHeader  `json:"custom_headers,omitempty"`
 	RelayChain       []int         `json:"relay_chain,omitempty"`
+	RelayObfs        bool          `json:"relay_obfs,omitempty"`
 	Revision         int64         `json:"revision,omitempty"`
 }
 

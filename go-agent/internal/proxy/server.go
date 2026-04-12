@@ -495,9 +495,18 @@ func newRelayTransport(
 	}
 	transport := cloneTransport(base)
 	transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-		return relay.Dial(ctx, network, strings.TrimSpace(addr), hops, provider)
+		return relay.Dial(ctx, network, strings.TrimSpace(addr), hops, provider, relay.DialOptions{
+			TransportMode: relayTransportModeForHTTPRule(rule),
+		})
 	}
 	return transport, nil
+}
+
+func relayTransportModeForHTTPRule(rule model.HTTPRule) string {
+	if rule.RelayObfs {
+		return relay.TransportModeFirstSegmentV1
+	}
+	return relay.TransportModeOff
 }
 
 func resolveRelayHops(rule model.HTTPRule, relayListeners []model.RelayListener) ([]relay.Hop, error) {
