@@ -2954,6 +2954,68 @@ func TestCertificateServiceRunRenewalPassRestoresPreviousMaterialWhenMetadataSav
 	}
 }
 
+func TestCertificateServiceRenewSingleCertificateSkipsDeletedCertificateAfterWaitingOnLock(t *testing.T) {
+	const certID = 51
+	now := time.Date(2026, 4, 11, 6, 7, 8, 0, time.UTC)
+	store := &relayCertStore{
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              certID,
+			Domain:          "renew-deleted.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "master_cf_dns",
+			TargetAgentIDs:  `["local"]`,
+			Status:          "pending",
+			ACMEInfo:        `{"Renew":"2026-04-10T00:00:00Z"}`,
+			CertificateType: "acme",
+			Usage:           "https",
+			Revision:        6,
+		}},
+	}
+	issuer := &fakeManagedCertificateRenewalIssuer{
+		results: map[int]managedCertificateRenewalResult{
+			certID: {},
+		},
+	}
+	svc := newCertificateServiceWithRenewal(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store, issuer)
+	svc.now = func() time.Time { return now }
+
+	rows, err := store.ListManagedCertificates(context.Background())
+	if err != nil {
+		t.Fatalf("ListManagedCertificates() error = %v", err)
+	}
+	cert := managedCertificateFromRow(rows[0])
+	maxRevision := highestManagedCertificateRevisionForService(rows)
+
+	release := issuanceLock(certID)
+	done := make(chan struct{})
+	var changed bool
+	go func() {
+		defer close(done)
+		changed, err = svc.renewSingleCertificate(context.Background(), issuer, cert, rows, 0, &maxRevision)
+	}()
+
+	store.managedCerts = nil
+	release()
+	<-done
+
+	if err != nil {
+		t.Fatalf("renewSingleCertificate() error = %v", err)
+	}
+	if changed {
+		t.Fatalf("renewSingleCertificate() changed = true")
+	}
+	if len(issuer.calls) != 0 {
+		t.Fatalf("issuer calls = %+v", issuer.calls)
+	}
+	if len(store.managedCerts) != 0 {
+		t.Fatalf("deleted certificate was restored: %+v", store.managedCerts)
+	}
+}
+
 type fakeManagedCertificateRenewalIssuer struct {
 	calls   []int
 	results map[int]managedCertificateRenewalResult

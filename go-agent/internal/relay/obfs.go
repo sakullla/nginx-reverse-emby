@@ -61,16 +61,20 @@ type obfsFirstSegmentWriter struct {
 	writer io.Writer
 	cfg    obfsConfig
 	random *rand.Rand
-	framed bool
 	closed bool
+
+	firstSegmentClosed bool
+	firstSegmentBytes  int
+	padFramesLeft      int
 }
 
 func newObfsFirstSegmentWriter(w io.Writer, cfg obfsConfig) *obfsFirstSegmentWriter {
 	cfg = normalizeObfsConfig(cfg)
 	return &obfsFirstSegmentWriter{
-		writer: w,
-		cfg:    cfg,
-		random: rand.New(rand.NewSource(cfg.Seed)),
+		writer:        w,
+		cfg:           cfg,
+		random:        rand.New(rand.NewSource(cfg.Seed)),
+		padFramesLeft: cfg.MaxPadFrames,
 	}
 }
 
@@ -85,21 +89,36 @@ func (w *obfsFirstSegmentWriter) Write(p []byte) (int, error) {
 	if w.closed {
 		return 0, io.ErrClosedPipe
 	}
-	if w.framed {
+	if w.firstSegmentClosed {
 		if err := writeAll(w.writer, p); err != nil {
 			return 0, err
 		}
 		return len(p), nil
 	}
 
-	segmentBytes := len(p)
-	if segmentBytes > w.cfg.MaxDataBytes {
-		segmentBytes = w.cfg.MaxDataBytes
+	framedBudget := w.cfg.MaxDataBytes - w.firstSegmentBytes
+	if framedBudget <= 0 {
+		if err := w.closeFirstSegment(); err != nil {
+			return 0, err
+		}
+		if err := writeAll(w.writer, p); err != nil {
+			return 0, err
+		}
+		return len(p), nil
 	}
-	if err := w.writeFramedSegment(p[:segmentBytes]); err != nil {
+	segmentBytes := len(p)
+	if segmentBytes > framedBudget {
+		segmentBytes = framedBudget
+	}
+	if err := w.writeFramedSegmentChunk(p[:segmentBytes]); err != nil {
 		return 0, err
 	}
-	w.framed = true
+	w.firstSegmentBytes += segmentBytes
+	if w.firstSegmentBytes >= w.cfg.MaxDataBytes {
+		if err := w.closeFirstSegment(); err != nil {
+			return 0, err
+		}
+	}
 
 	if segmentBytes < len(p) {
 		if err := writeAll(w.writer, p[segmentBytes:]); err != nil {
@@ -112,13 +131,17 @@ func (w *obfsFirstSegmentWriter) Write(p []byte) (int, error) {
 func (w *obfsFirstSegmentWriter) Close() error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if !w.firstSegmentClosed && w.firstSegmentBytes > 0 {
+		if err := w.closeFirstSegment(); err != nil {
+			return err
+		}
+	}
 	w.closed = true
 	return nil
 }
 
-func (w *obfsFirstSegmentWriter) writeFramedSegment(payload []byte) error {
+func (w *obfsFirstSegmentWriter) writeFramedSegmentChunk(payload []byte) error {
 	remaining := payload
-	padBudget := w.cfg.MaxPadFrames
 
 	for len(remaining) > 0 {
 		chunkSize := len(remaining)
@@ -134,8 +157,8 @@ func (w *obfsFirstSegmentWriter) writeFramedSegment(payload []byte) error {
 		}
 		remaining = remaining[chunkSize:]
 
-		if padBudget > 0 && (len(remaining) > 0 || w.random.Intn(2) == 0) {
-			padBudget--
+		if w.padFramesLeft > 0 && (len(remaining) > 0 || w.random.Intn(2) == 0) {
+			w.padFramesLeft--
 			padLen := 1 + w.random.Intn(maxObfsPadFrameBytes)
 			pad := make([]byte, padLen)
 			if _, err := w.random.Read(pad); err != nil {
@@ -146,7 +169,14 @@ func (w *obfsFirstSegmentWriter) writeFramedSegment(payload []byte) error {
 			}
 		}
 	}
+	return nil
+}
 
+func (w *obfsFirstSegmentWriter) closeFirstSegment() error {
+	if w.firstSegmentClosed {
+		return nil
+	}
+	w.firstSegmentClosed = true
 	return writeObfsFrame(w.writer, obfsFrameEnd, nil)
 }
 

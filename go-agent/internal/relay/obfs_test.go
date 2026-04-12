@@ -49,3 +49,34 @@ func TestObfsReaderRejectsFrameAfterEnd(t *testing.T) {
 		t.Fatal("expected invalid relay obfs frame error")
 	}
 }
+
+func TestObfsWriterKeepsFirstSegmentOpenAcrossMultipleWrites(t *testing.T) {
+	part1 := bytes.Repeat([]byte{0x16, 0x03}, 128)
+	part2 := bytes.Repeat([]byte{0x01, 0x20}, 128)
+	var framed bytes.Buffer
+
+	writer := newObfsFirstSegmentWriter(&framed, obfsConfig{
+		MaxDataBytes: 4096,
+		MaxPadFrames: 4,
+		Seed:         1,
+	})
+	if _, err := writer.Write(part1); err != nil {
+		t.Fatalf("Write(part1) error = %v", err)
+	}
+	if _, err := writer.Write(part2); err != nil {
+		t.Fatalf("Write(part2) error = %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	reader := newObfsFirstSegmentReader(bytes.NewReader(framed.Bytes()), obfsConfig{MaxDataBytes: 4096})
+	got, err := io.ReadAll(reader)
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	want := append(append([]byte(nil), part1...), part2...)
+	if !bytes.Equal(got, want) {
+		t.Fatalf("payload mismatch")
+	}
+}

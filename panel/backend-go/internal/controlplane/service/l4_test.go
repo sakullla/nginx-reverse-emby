@@ -155,6 +155,79 @@ func TestL4RuleServiceCreateClearsRelayObfsForUDP(t *testing.T) {
 	}
 }
 
+func TestL4RuleServiceUpdateClearsRelayObfsWhenRelayChainRemoved(t *testing.T) {
+	store := &fakeL4Store{
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"local": {{
+				ID:             1,
+				AgentID:        "local",
+				Name:           "relay rule",
+				Protocol:       "tcp",
+				ListenHost:     "0.0.0.0",
+				ListenPort:     9000,
+				UpstreamHost:   "upstream",
+				UpstreamPort:   9001,
+				RelayChainJSON: `[7]`,
+				RelayObfs:      true,
+				Enabled:        true,
+				Revision:       3,
+			}},
+		},
+	}
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	rule, err := svc.Update(context.Background(), "local", 1, L4RuleInput{
+		RelayChain: &[]int{},
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if len(rule.RelayChain) != 0 {
+		t.Fatalf("expected relay_chain to be cleared, got %+v", rule.RelayChain)
+	}
+	if rule.RelayObfs {
+		t.Fatalf("expected relay_obfs to be cleared when relay_chain is removed")
+	}
+}
+
+func TestL4RuleServiceUpdateClearsRelayObfsWhenSwitchingToUDP(t *testing.T) {
+	store := &fakeL4Store{
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"local": {{
+				ID:             1,
+				AgentID:        "local",
+				Name:           "relay rule",
+				Protocol:       "tcp",
+				ListenHost:     "0.0.0.0",
+				ListenPort:     9000,
+				UpstreamHost:   "upstream",
+				UpstreamPort:   9001,
+				RelayChainJSON: `[7]`,
+				RelayObfs:      true,
+				Enabled:        true,
+				Revision:       3,
+			}},
+		},
+	}
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	rule, err := svc.Update(context.Background(), "local", 1, L4RuleInput{
+		Protocol: stringPtrL4("udp"),
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if rule.Protocol != "udp" {
+		t.Fatalf("expected protocol udp, got %q", rule.Protocol)
+	}
+	if len(rule.RelayChain) != 0 {
+		t.Fatalf("expected relay_chain to be cleared for udp, got %+v", rule.RelayChain)
+	}
+	if rule.RelayObfs {
+		t.Fatalf("expected relay_obfs to be cleared for udp protocol")
+	}
+}
+
 func TestL4RuleServiceCreateRejectsDuplicateRelayChainEntries(t *testing.T) {
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{},

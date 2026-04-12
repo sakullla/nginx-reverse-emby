@@ -351,6 +351,38 @@ func TestRuleServiceCreateClearsRelayObfsWithoutRelayChain(t *testing.T) {
 	}
 }
 
+func TestRuleServiceUpdateClearsRelayObfsWhenRelayChainRemoved(t *testing.T) {
+	store := &fakeRuleStore{
+		rulesByAgent: map[string][]storage.HTTPRuleRow{
+			"local": {{
+				ID:             1,
+				AgentID:        "local",
+				FrontendURL:    "https://relay.example.com",
+				BackendURL:     "http://127.0.0.1:8096",
+				BackendsJSON:   `[{"url":"http://127.0.0.1:8096"}]`,
+				RelayChainJSON: `[7]`,
+				RelayObfs:      true,
+				Enabled:        true,
+				Revision:       2,
+			}},
+		},
+	}
+	svc := NewRuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	rule, err := svc.Update(context.Background(), "local", 1, HTTPRuleInput{
+		RelayChain: &[]int{},
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if len(rule.RelayChain) != 0 {
+		t.Fatalf("expected relay_chain to be cleared, got %+v", rule.RelayChain)
+	}
+	if rule.RelayObfs {
+		t.Fatalf("expected relay_obfs to be cleared when relay_chain is removed")
+	}
+}
+
 func TestRuleServiceCreateRejectsInvalidRelayChainEntry(t *testing.T) {
 	store := &fakeRuleStore{
 		listeners: []storage.RelayListenerRow{{

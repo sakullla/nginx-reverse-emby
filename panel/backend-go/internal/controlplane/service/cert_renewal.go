@@ -80,9 +80,18 @@ func (s *certificateService) renewSingleCertificate(
 	if refreshErr != nil {
 		return false, refreshErr
 	}
-	freshCert, _, freshFound := findManagedCertificateByID(freshRows, cert.ID)
-	if freshFound && !s.isManagedCertificateRenewalCandidate(freshCert, s.now().UTC()) {
+	freshCert, freshIndex, freshFound := findManagedCertificateByID(freshRows, cert.ID)
+	if !freshFound {
 		return false, nil
+	}
+	if !s.isManagedCertificateRenewalCandidate(freshCert, s.now().UTC()) {
+		return false, nil
+	}
+	rows = freshRows
+	cert = freshCert
+	index = freshIndex
+	if currentMax := highestManagedCertificateRevisionForService(rows); currentMax > *maxRevision {
+		*maxRevision = currentMax
 	}
 
 	result, err := issuer.Renew(ctx, cert)
