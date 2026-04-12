@@ -117,6 +117,20 @@ func TestLoadFromEnvManagedDNSCertificatesEnabled(t *testing.T) {
 				t.Setenv("CF_TOKEN", "token")
 			},
 		},
+		{
+			name: "CLOUDFLARE_DNS_API_TOKEN",
+			setEnv: func(t *testing.T) {
+				t.Setenv("ACME_DNS_PROVIDER", "cf")
+				t.Setenv("CLOUDFLARE_DNS_API_TOKEN", "token")
+			},
+		},
+		{
+			name: "CF_DNS_API_TOKEN",
+			setEnv: func(t *testing.T) {
+				t.Setenv("ACME_DNS_PROVIDER", "cf")
+				t.Setenv("CF_DNS_API_TOKEN", "token")
+			},
+		},
 	}
 
 	for _, tc := range testCases {

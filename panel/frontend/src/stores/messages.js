@@ -4,6 +4,7 @@ import { reactive, readonly } from 'vue'
  * 全局消息状态管理 - SaaS 标准消息提醒方案
  * 支持 success、error、info、warning 四种消息类型
  * 消息自动消失，error 类型显示 8 秒，其他类型显示 5 秒
+ * 支持 hover 暂停计时
  */
 
 let idCounter = 0
@@ -11,6 +12,18 @@ let idCounter = 0
 const state = reactive({
   messages: []
 })
+
+function startTimer(id) {
+  const message = state.messages.find((m) => m.id === id)
+  if (!message) return
+  if (message.timerId) {
+    clearTimeout(message.timerId)
+  }
+  message.endTime = Date.now() + message.remaining
+  message.timerId = setTimeout(() => {
+    removeMessage(id)
+  }, message.remaining)
+}
 
 /**
  * 添加消息
@@ -27,17 +40,35 @@ function addMessage({ type = 'info', title = '', text = '', duration } = {}) {
     type,
     title: title || getDefaultTitle(type),
     text,
-    duration: duration || (type === 'error' ? 8000 : 5000)
+    duration: duration || (type === 'error' ? 8000 : 5000),
+    timerId: null,
+    endTime: 0,
+    remaining: 0
   }
-
+  message.remaining = message.duration
   state.messages.push(message)
-
-  // 自动移除
-  setTimeout(() => {
-    removeMessage(id)
-  }, message.duration)
-
+  startTimer(id)
   return id
+}
+
+/**
+ * 暂停指定消息的自动移除计时
+ */
+function pauseTimer(id) {
+  const message = state.messages.find((m) => m.id === id)
+  if (!message || !message.timerId) return
+  clearTimeout(message.timerId)
+  message.timerId = null
+  message.remaining = Math.max(0, message.endTime - Date.now())
+}
+
+/**
+ * 恢复指定消息的自动移除计时
+ */
+function resumeTimer(id) {
+  const message = state.messages.find((m) => m.id === id)
+  if (!message || message.timerId || message.remaining <= 0) return
+  startTimer(id)
 }
 
 /**
@@ -59,6 +90,10 @@ function getDefaultTitle(type) {
 function removeMessage(id) {
   const index = state.messages.findIndex((m) => m.id === id)
   if (index > -1) {
+    const message = state.messages[index]
+    if (message.timerId) {
+      clearTimeout(message.timerId)
+    }
     state.messages.splice(index, 1)
   }
 }
@@ -120,6 +155,11 @@ function showWarning(text, title = '') {
  * 清空所有消息
  */
 function clearAll() {
+  state.messages.forEach((m) => {
+    if (m.timerId) {
+      clearTimeout(m.timerId)
+    }
+  })
   state.messages.splice(0, state.messages.length)
 }
 
@@ -127,6 +167,8 @@ export const messageStore = {
   state: readonly(state),
   add: addMessage,
   remove: removeMessage,
+  pauseTimer,
+  resumeTimer,
   success: showSuccess,
   error: showError,
   info: showInfo,

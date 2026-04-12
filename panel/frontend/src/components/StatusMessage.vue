@@ -10,8 +10,9 @@
         :key="msg.id"
         class="status-message"
         :class="`status-message--${msg.type}`"
-        @mouseenter="pauseTimer(msg.id)"
-        @mouseleave="resumeTimer(msg.id)"
+        :data-id="msg.id"
+        @mouseenter="(e) => pauseTimer(msg.id, e)"
+        @mouseleave="(e) => resumeTimer(msg.id, e)"
       >
         <!-- 图标容器 -->
         <div class="status-message__icon-wrapper">
@@ -69,18 +70,20 @@ const remove = (id) => {
   messageStore.remove(id)
 }
 
-const pauseTimer = (id) => {
-  const el = document.querySelector(`[data-id="${id}"] .status-message__progress`)
+const pauseTimer = (id, event) => {
+  const el = event.currentTarget.querySelector('.status-message__progress')
   if (el) {
     el.style.animationPlayState = 'paused'
   }
+  messageStore.pauseTimer(id)
 }
 
-const resumeTimer = (id) => {
-  const el = document.querySelector(`[data-id="${id}"] .status-message__progress`)
+const resumeTimer = (id, event) => {
+  const el = event.currentTarget.querySelector('.status-message__progress')
   if (el) {
     el.style.animationPlayState = 'running'
   }
+  messageStore.resumeTimer(id)
 }
 </script>
 

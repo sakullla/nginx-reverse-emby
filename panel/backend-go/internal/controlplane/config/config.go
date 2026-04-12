@@ -138,7 +138,7 @@ func LoadFromEnv() (Config, error) {
 	}
 
 	acmeDNSProvider := strings.TrimSpace(firstEnv("ACME_DNS_PROVIDER"))
-	cfToken := strings.TrimSpace(firstEnv("CF_Token", "CF_TOKEN"))
+	cfToken := strings.TrimSpace(firstEnv("CLOUDFLARE_DNS_API_TOKEN", "CF_DNS_API_TOKEN", "CF_TOKEN", "CF_Token"))
 	cfg.ManagedDNSCertificatesEnabled = strings.EqualFold(acmeDNSProvider, "cf") && cfToken != ""
 
 	return cfg, nil
