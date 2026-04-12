@@ -3,7 +3,10 @@ services:
     image: ghcr.io/sakullla/nginx-reverse-emby:latest
     container_name: nginx-reverse-emby
     restart: unless-stopped
-    network_mode: host
+    ports:
+      - "8080:8080"
+      - "80:80"
+      - "443:443"
 
     environment:
       PANEL_ROLE: master
