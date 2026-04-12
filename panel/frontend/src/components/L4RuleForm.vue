@@ -232,6 +232,29 @@
           />
         </div>
 
+        <div class="settings-card">
+          <div class="section-header">
+            <div>
+              <h3 class="section-title">隐私增强</h3>
+              <p class="section-description">开启后会为 Relay 中转链路附加隐私增强处理</p>
+            </div>
+          </div>
+          <label class="toggle toggle--card" :class="{ 'toggle--active': form.relay_obfs, 'toggle--disabled': relayObfsDisabled }">
+            <input
+              v-model="form.relay_obfs"
+              type="checkbox"
+              class="toggle__input"
+              :disabled="relayObfsDisabled"
+            >
+            <span class="toggle__slider"></span>
+            <span class="toggle__content">
+              <span class="toggle__label">启用 Relay 隐私增强</span>
+              <span class="toggle__desc">仅对 TCP Relay 链路中的中转流量生效</span>
+            </span>
+          </label>
+          <p v-if="relayObfsDisabled" class="form-help">当前为直连模式，此选项不会生效</p>
+        </div>
+
         <!-- 使用说明 -->
         <div class="relay-help">
           <div class="relay-help__title">
@@ -306,30 +329,38 @@ function normalizeL4Strategy(value) {
   return SUPPORTED_L4_STRATEGIES.has(strategy) ? strategy : 'round_robin'
 }
 
-const initialProtocol = props.initialData?.protocol || 'tcp'
+function normalizeInitialBackends(initialData) {
+  if (initialData?.backends?.length > 0) {
+    return initialData.backends.map(b => createBackend(b))
+  }
+  if (initialData?.upstream_host) {
+    return [createBackend({
+      address: `${initialData.upstream_host}:${initialData.upstream_port || ''}`,
+      resolve: false,
+    })]
+  }
+  return [createBackend()]
+}
 
-const initialBackends = props.initialData?.backends?.length > 0
-  ? props.initialData.backends.map(b => createBackend(b))
-  : (props.initialData?.upstream_host
-    ? [createBackend({
-        address: `${props.initialData.upstream_host}:${props.initialData.upstream_port || ''}`,
-        resolve: false,
-      })]
-    : [createBackend()])
+function createFormState(initialData) {
+  const protocol = initialData?.protocol || 'tcp'
+  return {
+    protocol,
+    listen_host: initialData?.listen_host || '0.0.0.0',
+    listen_port: initialData?.listen_port || 0,
+    backends: normalizeInitialBackends(initialData),
+    load_balancing: {
+      strategy: normalizeL4Strategy(initialData?.load_balancing?.strategy),
+    },
+    tuning: mergeTuning(initialData?.tuning, protocol),
+    enabled: initialData?.enabled !== false,
+    tags: Array.isArray(initialData?.tags) ? [...initialData.tags] : [],
+    relay_chain: Array.isArray(initialData?.relay_chain) ? [...initialData.relay_chain] : [],
+    relay_obfs: initialData?.relay_obfs === true,
+  }
+}
 
-const form = ref({
-  protocol: initialProtocol,
-  listen_host: props.initialData?.listen_host || '0.0.0.0',
-  listen_port: props.initialData?.listen_port || 0,
-  backends: initialBackends,
-  load_balancing: {
-    strategy: normalizeL4Strategy(props.initialData?.load_balancing?.strategy),
-  },
-  tuning: mergeTuning(props.initialData?.tuning, initialProtocol),
-  enabled: props.initialData?.enabled !== false,
-  tags: Array.isArray(props.initialData?.tags) ? [...props.initialData.tags] : [],
-  relay_chain: Array.isArray(props.initialData?.relay_chain) ? [...props.initialData.relay_chain] : [],
-})
+const form = ref(createFormState(props.initialData))
 
 const tagInput = ref('')
 const draggingIndex = ref(-1)
@@ -380,11 +411,27 @@ const hasProtocolTuning = computed(() => {
 const hasRelayConfig = computed(() => {
   return Array.isArray(form.value.relay_chain) && form.value.relay_chain.length > 0
 })
+const relayObfsDisabled = computed(() => !Array.isArray(form.value.relay_chain) || form.value.relay_chain.length === 0)
+
+watch(() => props.initialData, (value) => {
+  form.value = createFormState(value)
+  tagInput.value = ''
+  draggingIndex.value = -1
+  error.value = ''
+  activeTab.value = 'basic'
+}, { immediate: true })
 
 watch(() => form.value.protocol, (newProto) => {
   form.value.tuning = resetTuningForProtocol(form.value.tuning, newProto)
   if (newProto === 'udp') {
     form.value.relay_chain = []
+    form.value.relay_obfs = false
+  }
+})
+
+watch(() => form.value.relay_chain, (relayChain) => {
+  if (!Array.isArray(relayChain) || relayChain.length === 0) {
+    form.value.relay_obfs = false
   }
 })
 
@@ -500,6 +547,10 @@ function buildPayload() {
     enabled: form.value.enabled,
     tags: [...sysTags, ...userTags],
     relay_chain: form.value.protocol === 'tcp' ? [...form.value.relay_chain] : [],
+    relay_obfs: form.value.protocol === 'tcp'
+      && Array.isArray(form.value.relay_chain)
+      && form.value.relay_chain.length > 0
+      && form.value.relay_obfs === true,
   }
 
   // Only send tuning if advanced panel has non-default values or editing existing rule with tuning

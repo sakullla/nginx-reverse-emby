@@ -79,9 +79,7 @@ func (m *Manager) renewalCandidates() []renewalCandidate {
 }
 
 func (m *Manager) renewCertificate(ctx context.Context, candidate renewalCandidate) error {
-	lock := m.issuanceLock(candidate.id)
-	lock.Lock()
-	defer lock.Unlock()
+	defer m.issuanceLock(candidate.id)()
 
 	policy := model.ManagedCertificatePolicy{
 		ID:              candidate.id,
@@ -130,9 +128,7 @@ func (m *Manager) renewCertificate(ctx context.Context, candidate renewalCandida
 }
 
 func (m *Manager) recordRenewalFailure(certificateID int, renewalErr error) {
-	lock := m.issuanceLock(certificateID)
-	lock.Lock()
-	defer lock.Unlock()
+	defer m.issuanceLock(certificateID)()
 	m.recordRenewalFailureLocked(certificateID, renewalErr)
 }
 

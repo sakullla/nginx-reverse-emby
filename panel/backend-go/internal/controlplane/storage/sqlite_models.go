@@ -33,6 +33,7 @@ type HTTPRuleRow struct {
 	TagsJSON          string `gorm:"column:tags"`
 	ProxyRedirect     bool   `gorm:"column:proxy_redirect"`
 	RelayChainJSON    string `gorm:"column:relay_chain"`
+	RelayObfs         bool   `gorm:"column:relay_obfs"`
 	PassProxyHeaders  bool   `gorm:"column:pass_proxy_headers"`
 	UserAgent         string `gorm:"column:user_agent"`
 	CustomHeadersJSON string `gorm:"column:custom_headers"`
@@ -62,6 +63,7 @@ type L4RuleRow struct {
 	LoadBalancingJSON string `gorm:"column:load_balancing"`
 	TuningJSON        string `gorm:"column:tuning"`
 	RelayChainJSON    string `gorm:"column:relay_chain"`
+	RelayObfs         bool   `gorm:"column:relay_obfs"`
 	Enabled           bool   `gorm:"column:enabled"`
 	TagsJSON          string `gorm:"column:tags"`
 	Revision          int    `gorm:"column:revision"`
