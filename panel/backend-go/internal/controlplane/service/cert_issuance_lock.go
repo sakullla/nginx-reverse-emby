@@ -9,13 +9,10 @@ var issuanceMu sync.Mutex
 // ACME issue/renew operations for the same certificate are serialized.
 // Package-level because the auto-renewal loop and HTTP handlers use
 // separate certificateService instances.
-// Entries are cleaned up when no goroutine holds the lock.
 var issuanceByID = make(map[int]*sync.Mutex)
 
-// issuanceLock returns a lock and unlock function for the given certificate ID.
+// issuanceLock returns an unlock function for the given certificate ID.
 // The caller must invoke the returned unlock function when the issuance is done.
-// The unlock function releases the per-certificate lock and, if no other
-// goroutine is waiting, removes the entry from the map to prevent unbounded growth.
 func issuanceLock(id int) func() {
 	issuanceMu.Lock()
 	mu, ok := issuanceByID[id]
@@ -26,13 +23,5 @@ func issuanceLock(id int) func() {
 	issuanceMu.Unlock()
 
 	mu.Lock()
-	return func() {
-		mu.Unlock()
-		issuanceMu.Lock()
-		defer issuanceMu.Unlock()
-		if mu.TryLock() {
-			mu.Unlock()
-			delete(issuanceByID, id)
-		}
-	}
+	return func() { mu.Unlock() }
 }

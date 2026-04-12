@@ -391,15 +391,7 @@ func (m *Manager) issuanceLock(certificateID int) func() {
 	m.issuanceMu.Unlock()
 
 	mu.Lock()
-	return func() {
-		mu.Unlock()
-		m.issuanceMu.Lock()
-		defer m.issuanceMu.Unlock()
-		if mu.TryLock() {
-			mu.Unlock()
-			delete(m.issuanceByID, certificateID)
-		}
-	}
+	return func() { mu.Unlock() }
 }
 
 func (m *Manager) newACMEIssueRequest(policy model.ManagedCertificatePolicy, persisted persistedACMEMaterial) (acmeIssueRequest, error) {

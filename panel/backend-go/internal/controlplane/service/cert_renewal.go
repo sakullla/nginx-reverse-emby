@@ -44,18 +44,20 @@ func (s *certificateService) RunRenewalPass(ctx context.Context) error {
 			continue
 		}
 
-		changed, err := s.renewSingleCertificate(ctx, issuer, cert, rows, index, &maxRevision)
+		_, err := s.renewSingleCertificate(ctx, issuer, cert, rows, index, &maxRevision)
 		if err != nil {
 			return err
 		}
-		if changed {
-			// Reload rows to reflect the saved state for subsequent iterations.
-			rows, err = s.store.ListManagedCertificates(ctx)
-			if err != nil {
-				return err
-			}
-			maxRevision = highestManagedCertificateRevisionForService(rows)
+
+		// Always reload rows after each renewal attempt, even when this
+		// goroutine skipped (changed=false). Another goroutine may have
+		// renewed a different certificate and saved its rows snapshot;
+		// continuing with our stale snapshot would overwrite those changes.
+		rows, err = s.store.ListManagedCertificates(ctx)
+		if err != nil {
+			return err
 		}
+		maxRevision = highestManagedCertificateRevisionForService(rows)
 	}
 	return nil
 }
