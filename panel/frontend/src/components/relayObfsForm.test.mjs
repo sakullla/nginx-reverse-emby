@@ -39,8 +39,8 @@ test('L4 update normalization preserves omitted relay fields', () => {
 
 test('HTTP legacy positional overload accepts relay_obfs argument', () => {
   const source = fs.readFileSync(path.resolve(__dirname, '../api/index.js'), 'utf8')
-  assert.match(source, /function normalizeHttpRulePayload\([^)]*relay_chain,\s*relay_obfs,\s*options = \{\}\)/)
-  assert.match(source, /relay_chain,\s*relay_obfs\s*\},\s*\{\s*includeRelayDefaults\s*\}\)/)
+  assert.match(source, /function normalizeLegacyHttpRulePayload\(payloadOrFrontend, legacyArgs = \[\], options = \{\}\)/)
+  assert.match(source, /const \[\s*backend_url,\s*tags,\s*enabled,\s*proxy_redirect,\s*pass_proxy_headers,\s*user_agent,\s*custom_headers,\s*relay_chain,\s*relay_obfs\s*\] = legacyArgs/)
 })
 
 test('HTTP update normalization preserves omitted relay fields for object payloads', () => {
@@ -53,9 +53,14 @@ test('HTTP update normalization preserves omitted relay fields for object payloa
 
 test('HTTP update normalization preserves omitted relay fields for legacy positional calls', () => {
   const source = fs.readFileSync(path.resolve(__dirname, '../api/index.js'), 'utf8')
-  assert.match(source, /function normalizeHttpRulePayload\([^)]*options = \{\}\)/)
-  assert.match(source, /return normalizeHttpRulePayload\(\{\s*frontend_url: payloadOrFrontend,[\s\S]*relay_obfs\s*\},\s*\{ includeRelayDefaults \}\)/)
-  assert.match(source, /updateRule\(agentId, id, payloadOrFrontend, \.\.\.legacyArgs\)[\s\S]*normalizeHttpRulePayload\(payloadOrFrontend, \.\.\.legacyArgs, \{ includeRelayDefaults: false \}\)/)
+  assert.match(source, /return normalizeHttpRulePayloadObject\(\{\s*frontend_url: payloadOrFrontend,[\s\S]*relay_obfs\s*\},\s*options\)/)
+  assert.match(source, /updateRule\(agentId, id, payloadOrFrontend, \.\.\.legacyArgs\)[\s\S]*normalizeLegacyHttpRulePayload\(payloadOrFrontend, legacyArgs, \{ includeRelayDefaults: false \}\)/)
+})
+
+test('HTTP legacy positional path passes options out of band', () => {
+  const source = fs.readFileSync(path.resolve(__dirname, '../api/index.js'), 'utf8')
+  assert.match(source, /createRule\(agentId, payloadOrFrontend, \.\.\.legacyArgs\)[\s\S]*normalizeLegacyHttpRulePayload\(payloadOrFrontend, legacyArgs, \{ includeRelayDefaults: true \}\)/)
+  assert.doesNotMatch(source, /normalizeHttpRulePayload\(payloadOrFrontend, \.\.\.legacyArgs, \{ includeRelayDefaults: (true|false) \}\)/)
 })
 
 test('HTTP RuleForm clears relay obfs when relay chain becomes empty', () => {
