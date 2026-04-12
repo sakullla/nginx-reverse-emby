@@ -2,13 +2,18 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
@@ -180,13 +185,22 @@ type agentService struct {
 	store             agentStore
 	now               func() time.Time
 	localApplyTrigger func(context.Context) error
+	bundledCacheMu    sync.Mutex
+	bundledCache      map[string]bundledPackageCacheEntry
+}
+
+type bundledPackageCacheEntry struct {
+	modTimeUnixNano int64
+	size            int64
+	pkg             storage.VersionPackage
 }
 
 func NewAgentService(cfg config.Config, store agentStore) *agentService {
 	return &agentService{
-		cfg:   cfg,
-		store: store,
-		now:   time.Now,
+		cfg:          cfg,
+		store:        store,
+		now:          time.Now,
+		bundledCache: make(map[string]bundledPackageCacheEntry),
 	}
 }
 
@@ -683,12 +697,17 @@ func (s *agentService) reconcileManagedCertificatesFromHeartbeat(ctx context.Con
 }
 
 func (s *agentService) loadHeartbeatSnapshot(ctx context.Context, row storage.AgentRow) (storage.Snapshot, error) {
-	return s.store.LoadAgentSnapshot(ctx, row.ID, storage.AgentSnapshotInput{
+	snapshot, err := s.store.LoadAgentSnapshot(ctx, row.ID, storage.AgentSnapshotInput{
 		DesiredVersion:  row.DesiredVersion,
 		DesiredRevision: row.DesiredRevision,
 		CurrentRevision: row.CurrentRevision,
 		Platform:        row.Platform,
 	})
+	if err != nil {
+		return storage.Snapshot{}, err
+	}
+	snapshot.VersionPackage = s.resolveDesiredPackage(snapshot.VersionPackage, row.Platform)
+	return snapshot, nil
 }
 
 func (s *agentService) ensureAgentExists(ctx context.Context, agentID string) error {
@@ -783,6 +802,7 @@ func (s *agentService) summaryForRow(ctx context.Context, row storage.AgentRow) 
 	if err != nil {
 		return AgentSummary{}, err
 	}
+	snapshot.VersionPackage = s.resolveDesiredPackage(snapshot.VersionPackage, row.Platform)
 	desiredPackageSHA256 := ""
 	packageSyncStatus := ""
 	if snapshot.VersionPackage != nil {
@@ -829,6 +849,80 @@ func derivePackageSyncStatus(row storage.AgentRow, pkg *storage.VersionPackage) 
 		return "aligned"
 	}
 	return "pending"
+}
+
+func (s *agentService) resolveDesiredPackage(pkg *storage.VersionPackage, platform string) *storage.VersionPackage {
+	if pkg != nil && strings.TrimSpace(pkg.SHA256) != "" {
+		copyValue := *pkg
+		return &copyValue
+	}
+	return s.bundledAgentPackageInfo(platform)
+}
+
+var fileSHA256Func = fileSHA256
+
+func (s *agentService) bundledAgentPackageInfo(platform string) *storage.VersionPackage {
+	return bundledAgentPackageInfoCached(s.cfg.PublicAgentAssetsDir, platform, &s.bundledCacheMu, s.bundledCache)
+}
+
+func bundledAgentPackageInfoCached(assetRoot string, platform string, mu *sync.Mutex, cache map[string]bundledPackageCacheEntry) *storage.VersionPackage {
+	normalizedPlatform := strings.TrimSpace(platform)
+	normalizedRoot := strings.TrimSpace(assetRoot)
+	if normalizedPlatform == "" || normalizedRoot == "" {
+		return nil
+	}
+	filename := "nre-agent-" + normalizedPlatform
+	assetPath := filepath.Join(normalizedRoot, filename)
+	info, err := os.Stat(assetPath)
+	if err != nil || info.IsDir() {
+		return nil
+	}
+	cacheKey := filepath.Clean(assetPath)
+	if mu != nil && cache != nil {
+		mu.Lock()
+		if entry, ok := cache[cacheKey]; ok && entry.size == info.Size() && entry.modTimeUnixNano == info.ModTime().UnixNano() {
+			copyValue := entry.pkg
+			mu.Unlock()
+			return &copyValue
+		}
+		mu.Unlock()
+	}
+
+	shaValue, err := fileSHA256Func(assetPath)
+	if err != nil || shaValue == "" {
+		return nil
+	}
+	pkg := storage.VersionPackage{
+		Platform: normalizedPlatform,
+		URL:      "/panel-api/public/agent-assets/" + filename,
+		SHA256:   shaValue,
+		Filename: filename,
+		Size:     info.Size(),
+	}
+	if mu != nil && cache != nil {
+		mu.Lock()
+		cache[cacheKey] = bundledPackageCacheEntry{
+			modTimeUnixNano: info.ModTime().UnixNano(),
+			size:            info.Size(),
+			pkg:             pkg,
+		}
+		mu.Unlock()
+	}
+	return &pkg
+}
+
+func fileSHA256(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
 }
 
 type agentRelayRuleReference struct {

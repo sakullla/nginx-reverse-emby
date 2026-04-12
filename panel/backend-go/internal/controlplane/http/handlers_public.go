@@ -36,7 +36,7 @@ func (d Dependencies) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":   true,
-		"sync": heartbeatSyncPayload(reply),
+		"sync": heartbeatSyncPayload(reply, requestBaseURL(r)),
 	})
 }
 
@@ -56,7 +56,7 @@ func remoteIPFromRequest(r *http.Request) string {
 	return remoteAddr
 }
 
-func heartbeatSyncPayload(reply service.HeartbeatReply) map[string]any {
+func heartbeatSyncPayload(reply service.HeartbeatReply, baseURL string) map[string]any {
 	payload := map[string]any{
 		"has_update":       reply.HasUpdate,
 		"desired_version":  reply.DesiredVersion,
@@ -65,10 +65,12 @@ func heartbeatSyncPayload(reply service.HeartbeatReply) map[string]any {
 		"relay_listeners":  reply.RelayListeners,
 	}
 	if reply.VersionPackage != "" {
-		payload["version_package"] = reply.VersionPackage
+		payload["version_package"] = absolutePublicURL(baseURL, reply.VersionPackage)
 	}
 	if reply.VersionPackageMeta != nil {
-		payload["version_package_meta"] = reply.VersionPackageMeta
+		meta := *reply.VersionPackageMeta
+		meta.URL = absolutePublicURL(baseURL, meta.URL)
+		payload["version_package_meta"] = meta
 	}
 	if reply.VersionSHA256 != "" {
 		payload["version_sha256"] = reply.VersionSHA256
@@ -83,6 +85,20 @@ func heartbeatSyncPayload(reply service.HeartbeatReply) map[string]any {
 		payload["certificate_policies"] = reply.CertificatePolicies
 	}
 	return payload
+}
+
+func absolutePublicURL(baseURL string, raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return ""
+	}
+	if strings.HasPrefix(trimmed, "http://") || strings.HasPrefix(trimmed, "https://") {
+		return trimmed
+	}
+	if strings.HasPrefix(trimmed, "/") {
+		return strings.TrimRight(baseURL, "/") + trimmed
+	}
+	return trimmed
 }
 
 func (d Dependencies) handleJoinAgentScript(w http.ResponseWriter, r *http.Request) {

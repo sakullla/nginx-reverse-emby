@@ -313,6 +313,69 @@ func TestHeartbeatResponseIncludesEmptyArraysWhenUpdateClearsState(t *testing.T)
 	}
 }
 
+func TestHeartbeatResponseIncludesVersionPackageMetadataWithoutDesiredVersion(t *testing.T) {
+	router, err := NewRouter(Dependencies{
+		Config:        config.Config{PanelToken: "secret"},
+		SystemService: fakeSystemService{},
+		AgentService: fakeAgentService{heartbeatReply: service.HeartbeatReply{
+			HasUpdate:       false,
+			DesiredVersion:  "",
+			DesiredRevision: 9,
+			VersionPackageMeta: &storage.VersionPackage{
+				Platform: "linux-amd64",
+				URL:      "/panel-api/public/agent-assets/nre-agent-linux-amd64",
+				SHA256:   "desired-sha",
+				Filename: "nre-agent-linux-amd64",
+			},
+			VersionSHA256: "desired-sha",
+		}},
+		RuleService:          fakeRuleService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/panel-api/agents/heartbeat", bytes.NewBufferString(`{"current_revision":9}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Agent-Token", "agent-token")
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Header.Set("X-Forwarded-Host", "panel.example.com")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("POST heartbeat = %d", resp.Code)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	syncPayload, ok := payload["sync"].(map[string]any)
+	if !ok {
+		t.Fatalf("sync payload = %#v", payload["sync"])
+	}
+	if syncPayload["desired_version"] != "" {
+		t.Fatalf("desired_version = %#v", syncPayload["desired_version"])
+	}
+	if syncPayload["version_sha256"] != "desired-sha" {
+		t.Fatalf("version_sha256 = %#v", syncPayload["version_sha256"])
+	}
+	meta, ok := syncPayload["version_package_meta"].(map[string]any)
+	if !ok {
+		t.Fatalf("version_package_meta = %#v", syncPayload["version_package_meta"])
+	}
+	if meta["sha256"] != "desired-sha" {
+		t.Fatalf("version_package_meta.sha256 = %#v", meta["sha256"])
+	}
+	if meta["url"] != "https://panel.example.com/panel-api/public/agent-assets/nre-agent-linux-amd64" {
+		t.Fatalf("version_package_meta.url = %#v", meta["url"])
+	}
+}
+
 func TestHeartbeatUsesRemoteAddrHostWhenForwardedMissing(t *testing.T) {
 	state := &fakeAgentServiceState{}
 	router, err := NewRouter(Dependencies{

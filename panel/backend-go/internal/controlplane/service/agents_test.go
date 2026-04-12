@@ -2,6 +2,9 @@ package service
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -938,6 +941,175 @@ func TestAgentServiceHeartbeatPersistsRuntimePackageMetadata(t *testing.T) {
 	}
 	if reply.VersionPackageMeta == nil || reply.VersionPackageMeta.SHA256 != "desired-sha" {
 		t.Fatalf("reply VersionPackageMeta = %+v", reply.VersionPackageMeta)
+	}
+}
+
+func TestAgentServiceGetUsesSnapshotPackageSHAWhenDesiredVersionEmpty(t *testing.T) {
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID:                   "edge-1",
+			Name:                 "edge-1",
+			AgentToken:           "agent-token",
+			Platform:             "linux-amd64",
+			DesiredVersion:       "",
+			RuntimePackageSHA256: "runtime-sha",
+			LastApplyStatus:      "success",
+		}},
+		snapshot: storage.Snapshot{
+			DesiredVersion: "",
+			VersionPackage: &storage.VersionPackage{
+				Platform: "linux-amd64",
+				URL:      "/panel-api/public/agent-assets/nre-agent-linux-amd64",
+				SHA256:   "desired-sha",
+				Filename: "nre-agent-linux-amd64",
+			},
+		},
+	}
+	svc := NewAgentService(config.Config{}, store)
+
+	summary, err := svc.Get(context.Background(), "edge-1")
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if summary.DesiredVersion != "" {
+		t.Fatalf("summary desired version = %q", summary.DesiredVersion)
+	}
+	if summary.DesiredPackageSHA256 != "desired-sha" {
+		t.Fatalf("summary desired sha = %q", summary.DesiredPackageSHA256)
+	}
+	if summary.PackageSyncStatus != "pending" {
+		t.Fatalf("summary package status = %q", summary.PackageSyncStatus)
+	}
+}
+
+func TestAgentServiceGetUsesBundledAssetSHAWhenDesiredVersionEmpty(t *testing.T) {
+	assetDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(assetDir, "nre-agent-linux-amd64"), []byte("bundled-agent"), 0o755); err != nil {
+		t.Fatalf("WriteFile(agent asset) error = %v", err)
+	}
+
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID:                   "edge-1",
+			Name:                 "edge-1",
+			AgentToken:           "agent-token",
+			Platform:             "linux-amd64",
+			DesiredVersion:       "",
+			RuntimePackageSHA256: "runtime-sha",
+			LastApplyStatus:      "success",
+		}},
+		snapshot: storage.Snapshot{
+			DesiredVersion: "",
+		},
+	}
+	svc := NewAgentService(config.Config{
+		PublicAgentAssetsDir: assetDir,
+	}, store)
+
+	summary, err := svc.Get(context.Background(), "edge-1")
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if summary.DesiredPackageSHA256 == "" {
+		t.Fatalf("summary desired sha is empty")
+	}
+	if summary.PackageSyncStatus != "pending" {
+		t.Fatalf("summary package status = %q", summary.PackageSyncStatus)
+	}
+}
+
+func TestAgentServiceHeartbeatUsesBundledAssetPackageWhenDesiredVersionEmpty(t *testing.T) {
+	assetDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(assetDir, "nre-agent-linux-amd64"), []byte("bundled-agent"), 0o755); err != nil {
+		t.Fatalf("WriteFile(agent asset) error = %v", err)
+	}
+
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID:              "edge-1",
+			Name:            "edge-1",
+			AgentToken:      "agent-token",
+			Platform:        "linux-amd64",
+			DesiredVersion:  "",
+			DesiredRevision: 2,
+			CurrentRevision: 1,
+			LastApplyStatus: "success",
+		}},
+		snapshot: storage.Snapshot{
+			DesiredVersion: "",
+			Revision:       2,
+		},
+	}
+	svc := NewAgentService(config.Config{
+		PublicAgentAssetsDir: assetDir,
+	}, store)
+
+	reply, err := svc.Heartbeat(context.Background(), HeartbeatRequest{
+		CurrentRevision: 1,
+		Platform:        "linux-amd64",
+		RuntimePackage: RuntimePackageInfo{
+			SHA256: "runtime-sha",
+		},
+	}, "agent-token")
+	if err != nil {
+		t.Fatalf("Heartbeat() error = %v", err)
+	}
+	if reply.VersionPackageMeta == nil {
+		t.Fatalf("reply VersionPackageMeta = nil")
+	}
+	if reply.VersionPackageMeta.SHA256 == "" {
+		t.Fatalf("reply VersionPackageMeta.SHA256 is empty")
+	}
+	if reply.VersionPackageMeta.Filename != "nre-agent-linux-amd64" {
+		t.Fatalf("reply VersionPackageMeta.Filename = %q", reply.VersionPackageMeta.Filename)
+	}
+}
+
+func TestBundledAgentPackageInfoCachesSHAUntilFileChanges(t *testing.T) {
+	assetDir := t.TempDir()
+	assetPath := filepath.Join(assetDir, "nre-agent-linux-amd64")
+	if err := os.WriteFile(assetPath, []byte("bundled-agent-v1"), 0o755); err != nil {
+		t.Fatalf("WriteFile(agent asset) error = %v", err)
+	}
+
+	originalHasher := fileSHA256Func
+	t.Cleanup(func() {
+		fileSHA256Func = originalHasher
+	})
+
+	callCount := 0
+	fileSHA256Func = func(path string) (string, error) {
+		callCount++
+		return originalHasher(path)
+	}
+
+	var mu sync.Mutex
+	cache := make(map[string]bundledPackageCacheEntry)
+	first := bundledAgentPackageInfoCached(assetDir, "linux-amd64", &mu, cache)
+	second := bundledAgentPackageInfoCached(assetDir, "linux-amd64", &mu, cache)
+	if first == nil || second == nil {
+		t.Fatalf("expected bundled package metadata")
+	}
+	if callCount != 1 {
+		t.Fatalf("expected single sha call before file change, got %d", callCount)
+	}
+	if first.SHA256 != second.SHA256 {
+		t.Fatalf("expected cached sha to match, got %q vs %q", first.SHA256, second.SHA256)
+	}
+
+	time.Sleep(2 * time.Millisecond)
+	if err := os.WriteFile(assetPath, []byte("bundled-agent-v2"), 0o755); err != nil {
+		t.Fatalf("WriteFile(agent asset v2) error = %v", err)
+	}
+	third := bundledAgentPackageInfoCached(assetDir, "linux-amd64", &mu, cache)
+	if third == nil {
+		t.Fatalf("expected bundled package metadata after change")
+	}
+	if callCount != 2 {
+		t.Fatalf("expected sha to be recomputed after file change, got %d", callCount)
+	}
+	if third.SHA256 == first.SHA256 {
+		t.Fatalf("expected sha to change after file update, got %q", third.SHA256)
 	}
 }
 
