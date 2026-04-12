@@ -132,24 +132,14 @@
       <button class='btn btn-primary' @click='showAddForm = true'>从模板创建第一个证书</button>
     </div>
 
-    <Teleport to='body'>
-      <div v-if='showAddForm || editingCert' class='modal-overlay'>
-        <div class='modal modal--large'>
-          <div class='modal__header'>
-            <span>{{ editingCert ? '编辑证书' : '新建证书' }}</span>
-            <button class='modal__close' @click='closeForm'>
-              <svg width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'>
-                <line x1='18' y1='6' x2='6' y2='18' />
-                <line x1='6' y1='6' x2='18' y2='18' />
-              </svg>
-            </button>
-          </div>
-          <div class='modal__body'>
-            <CertificateForm :initial-data='editingCert' :agent-id='agentId' @success='closeForm' />
-          </div>
-        </div>
-      </div>
-    </Teleport>
+    <BaseModal
+      :model-value="showAddForm || !!editingCert"
+      :title="editingCert ? '编辑证书' : '新建证书'"
+      size="xl"
+      @update:model-value="closeForm"
+    >
+      <CertificateForm :initial-data="editingCert" :agent-id="agentId" @success="closeForm" />
+    </BaseModal>
 
     <DeleteConfirmDialog
       :show='!!deletingCert'
@@ -171,6 +161,7 @@ import { useAgent } from '../context/AgentContext'
 import { useCertificates, useDeleteCertificate, useIssueCertificate } from '../hooks/useCertificates'
 import CertificateForm from '../components/CertificateForm.vue'
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
+import BaseModal from '../components/base/BaseModal.vue'
 import {
   getCertificateSourceLabel,
   getCertificateUsageLabel,
@@ -383,14 +374,6 @@ function confirmDelete() {
 .cert-card__action--delete:hover { background: var(--color-danger-50); color: var(--color-danger); }
 .cert-card__action--issue:hover { background: var(--color-success-50); color: var(--color-success); }
 
-.modal-overlay { position: fixed; inset: 0; background: rgba(37,23,54,0.4); backdrop-filter: blur(8px); z-index: var(--z-modal); display: flex; align-items: center; justify-content: center; padding: var(--space-4); }
-.modal { background: var(--color-bg-surface); border: 1.5px solid var(--color-border-default); border-radius: var(--radius-3xl); box-shadow: var(--shadow-2xl); width: min(480px, 90vw); max-height: calc(100vh - var(--space-8)); display: flex; flex-direction: column; overflow: hidden; }
-.modal--large { width: min(760px, 94vw); }
-.modal__header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); padding: var(--space-5) var(--space-6); border-bottom: 1px solid var(--color-border-subtle); flex-shrink: 0; background: var(--gradient-soft); font-weight: 600; font-size: var(--text-lg); color: var(--color-text-primary); }
-.modal__body { padding: var(--space-6); overflow-x: hidden; overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: var(--space-5); }
-.modal__footer { padding: var(--space-4) var(--space-6); display: flex; justify-content: flex-end; gap: var(--space-3); border-top: 1px solid var(--color-border-subtle); flex-shrink: 0; }
-.modal__close { display: flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: var(--radius-full); color: var(--color-text-tertiary); transition: all var(--duration-normal) var(--ease-bounce); flex-shrink: 0; border: none; background: transparent; cursor: pointer; }
-.modal__close:hover { background: var(--color-danger-50); color: var(--color-danger); transform: rotate(90deg); }
 .btn { padding: 0.5rem 1rem; border-radius: var(--radius-lg); font-size: 0.875rem; font-weight: 500; cursor: pointer; transition: all 0.15s; border: none; font-family: inherit; display: inline-flex; align-items: center; gap: 0.375rem; }
 .btn-primary { background: var(--gradient-primary); color: white; }
 .btn-secondary { background: var(--color-bg-subtle); color: var(--color-text-primary); border: 1px solid var(--color-border-default); }

@@ -119,44 +119,24 @@
     </div>
 
     <!-- Add/Edit Form Modal -->
-    <Teleport to="body">
-      <div v-if="showAddForm || editingRule" class="modal-overlay">
-        <div class="modal modal--large">
-          <div class="modal__header">
-            <span>{{ editingRule ? '编辑规则' : '添加规则' }}</span>
-            <button class="modal__close" @click="closeForm">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <line x1="18" y1="6" x2="6" y2="18"/>
-                <line x1="6" y1="6" x2="18" y2="18"/>
-              </svg>
-            </button>
-          </div>
-          <div class="modal__body">
-            <RuleForm :initial-data="editingRule" :agent-id="agentId" @success="closeForm" />
-          </div>
-        </div>
-      </div>
-    </Teleport>
+    <BaseModal
+      :model-value="showAddForm || !!editingRule"
+      :title="editingRule ? '编辑规则' : '添加规则'"
+      size="lg"
+      @update:model-value="closeForm"
+    >
+      <RuleForm :initial-data="editingRule" :agent-id="agentId" @success="closeForm" />
+    </BaseModal>
 
     <!-- Copy Modal -->
-    <Teleport to="body">
-      <div v-if="showCopyModal" class="modal-overlay">
-        <div class="modal modal--large">
-          <div class="modal__header">
-            <span>复制规则</span>
-            <button class="modal__close" @click="closeForm">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <line x1="18" y1="6" x2="6" y2="18"/>
-                <line x1="6" y1="6" x2="18" y2="18"/>
-              </svg>
-            </button>
-          </div>
-          <div class="modal__body">
-            <RuleForm v-if="copyingRule" :initial-data="copyingRule" :agent-id="agentId" @success="closeForm" />
-          </div>
-        </div>
-      </div>
-    </Teleport>
+    <BaseModal
+      :model-value="showCopyModal"
+      title="复制规则"
+      size="lg"
+      @update:model-value="closeForm"
+    >
+      <RuleForm v-if="copyingRule" :initial-data="copyingRule" :agent-id="agentId" @success="closeForm" />
+    </BaseModal>
 
     <!-- Delete Modal -->
     <DeleteConfirmDialog
@@ -181,6 +161,7 @@ import { useAgents } from '../hooks/useAgents'
 import { getRuleEffectiveStatus } from '../utils/syncStatus'
 import RuleForm from '../components/RuleForm.vue'
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
+import BaseModal from '../components/base/BaseModal.vue'
 
 const route = useRoute()
 const { selectedAgentId } = useAgent()
@@ -425,66 +406,6 @@ async function confirmDelete() {
 .proto-badge--https { background: var(--color-success-50); color: var(--color-success); }
 .tag { font-size: 0.75rem; padding: 2px 8px; background: var(--color-primary-subtle); color: var(--color-primary); border-radius: var(--radius-full); font-weight: 500; }
 
-/* Modals — same as L4 style */
-.modal-overlay { position: fixed; inset: 0; background: rgba(37,23,54,0.4); backdrop-filter: blur(8px); z-index: var(--z-modal); display: flex; align-items: center; justify-content: center; padding: var(--space-4); }
-.modal { background: var(--color-bg-surface); border: 1.5px solid var(--color-border-default); border-radius: var(--radius-3xl); box-shadow: var(--shadow-2xl); width: min(480px, 90vw); max-height: calc(100vh - var(--space-8)); display: flex; flex-direction: column; overflow: hidden; }
-.modal--large { width: min(560px, 92vw); max-height: min(860px, calc(100vh - 40px)); }
-.modal__header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); padding: var(--space-4) var(--space-5); border-bottom: 1px solid var(--color-border-subtle); flex-shrink: 0; background: var(--gradient-soft); font-weight: 600; font-size: var(--text-base); color: var(--color-text-primary); }
-.modal__body { padding: var(--space-4) var(--space-5); overflow-x: hidden; overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: var(--space-4); }
-.modal__footer { padding: var(--space-4) var(--space-5); display: flex; justify-content: flex-end; gap: var(--space-3); border-top: 1px solid var(--color-border-subtle); flex-shrink: 0; }
-.modal__close { display: flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: var(--radius-full); color: var(--color-text-tertiary); transition: all var(--duration-normal) var(--ease-bounce); flex-shrink: 0; border: none; background: transparent; cursor: pointer; }
-.modal__close:hover { background: var(--color-danger-50); color: var(--color-danger); transform: rotate(90deg); }
-
-/* 1080p 屏幕优化 - 避免滚动条 */
-@media (min-height: 900px) and (min-width: 1200px) {
-  .modal--large {
-    width: 560px;
-    max-height: 820px;
-  }
-  .modal--large .modal__body {
-    overflow-y: visible;
-  }
-}
-
-/* iPhone 适配 */
-@media (max-width: 414px) {
-  .modal-overlay {
-    padding: var(--space-2);
-    align-items: flex-end;
-  }
-  .modal--large {
-    width: 100%;
-    max-height: calc(100vh - var(--space-4));
-    border-radius: var(--radius-2xl) var(--radius-2xl) 0 0;
-  }
-  .modal__header {
-    padding: var(--space-3) var(--space-4);
-    font-size: var(--text-sm);
-  }
-  .modal__body {
-    padding: var(--space-3) var(--space-4);
-    gap: var(--space-3);
-  }
-}
-
-/* iPhone SE 等小屏幕 */
-@media (max-width: 375px) and (max-height: 812px) {
-  .modal-overlay {
-    padding: 0;
-  }
-  .modal--large {
-    width: 100%;
-    height: 100%;
-    max-height: 100vh;
-    border-radius: 0;
-  }
-  .modal__header {
-    padding: var(--space-3) var(--space-4);
-  }
-  .modal__body {
-    padding: var(--space-3);
-  }
-}
 .btn { padding: 0.5rem 1rem; border-radius: var(--radius-lg); font-size: 0.875rem; font-weight: 500; cursor: pointer; transition: all 0.15s; border: none; font-family: inherit; display: inline-flex; align-items: center; gap: 0.375rem; }
 .btn-primary { background: var(--gradient-primary); color: white; }
 .btn-secondary { background: var(--color-bg-subtle); color: var(--color-text-primary); border: 1px solid var(--color-border-default); }
