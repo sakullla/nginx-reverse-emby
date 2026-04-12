@@ -24,7 +24,7 @@ type AgentRow struct {
 
 type HTTPRuleRow struct {
 	ID                int    `gorm:"column:id;primaryKey"`
-	AgentID           string `gorm:"column:agent_id;primaryKey"`
+	AgentID           string `gorm:"column:agent_id;primaryKey;index:idx_rules_agent"`
 	FrontendURL       string `gorm:"column:frontend_url"`
 	BackendURL        string `gorm:"column:backend_url"`
 	BackendsJSON      string `gorm:"column:backends"`
@@ -40,7 +40,7 @@ type HTTPRuleRow struct {
 }
 
 type LocalAgentStateRow struct {
-	ID                int    `gorm:"column:id;primaryKey"`
+	ID                int    `gorm:"column:id;primaryKey;check:id = 1"`
 	DesiredRevision   int    `gorm:"column:desired_revision"`
 	CurrentRevision   int    `gorm:"column:current_revision"`
 	LastApplyRevision int    `gorm:"column:last_apply_revision"`
@@ -51,7 +51,7 @@ type LocalAgentStateRow struct {
 
 type L4RuleRow struct {
 	ID                int    `gorm:"column:id;primaryKey"`
-	AgentID           string `gorm:"column:agent_id;primaryKey"`
+	AgentID           string `gorm:"column:agent_id;primaryKey;index:idx_l4_rules_agent"`
 	Name              string `gorm:"column:name"`
 	Protocol          string `gorm:"column:protocol"`
 	ListenHost        string `gorm:"column:listen_host"`
@@ -77,7 +77,7 @@ type VersionPolicyRow struct {
 
 type RelayListenerRow struct {
 	ID                      int    `gorm:"column:id;primaryKey"`
-	AgentID                 string `gorm:"column:agent_id"`
+	AgentID                 string `gorm:"column:agent_id;index:idx_relay_listeners_agent"`
 	Name                    string `gorm:"column:name"`
 	BindHostsJSON           string `gorm:"column:bind_hosts"`
 	ListenHost              string `gorm:"column:listen_host"`
@@ -114,6 +114,11 @@ type ManagedCertificateRow struct {
 	Revision        int    `gorm:"column:revision"`
 }
 
+type MetaRow struct {
+	Key   string `gorm:"column:key;primaryKey"`
+	Value string `gorm:"column:value"`
+}
+
 func (AgentRow) TableName() string {
 	return "agents"
 }
@@ -140,4 +145,8 @@ func (RelayListenerRow) TableName() string {
 
 func (ManagedCertificateRow) TableName() string {
 	return "managed_certificates"
+}
+
+func (MetaRow) TableName() string {
+	return "meta"
 }

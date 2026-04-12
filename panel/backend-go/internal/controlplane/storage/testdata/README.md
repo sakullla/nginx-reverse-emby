@@ -1,14 +1,11 @@
-This directory contains Go-owned storage compatibility fixtures.
+This directory is reserved for optional local, non-secret storage verification assets.
 
-Canonical compatibility baseline after cutover:
-- `schema_base.sql`
-- `schema_migrations.sql`
+Canonical schema/bootstrap behavior for fresh control-plane SQLite databases lives in Go code:
+- `internal/controlplane/storage/schema.go` (`BootstrapSQLiteSchema`)
+- `internal/controlplane/storage/sqlite_models.go` (GORM model schema)
 
-These two files are derived from the last Node-compatible SQLite schema and ordered SQL migrations. They are intentionally checked in so Go storage tests do not depend on `panel/backend` sources.
+`BootstrapSQLiteSchema` also performs upgrade-path normalization for a focused set of legacy SQLite fields covered by storage tests.
 
-Maintenance contract:
-- Treat `schema_base.sql` and `schema_migrations.sql` as canonical fixtures for compatibility tests in this package.
-- Update them intentionally whenever storage schema compatibility behavior changes.
-- Keep fixture updates in the same change as the related schema/storage change so drift is explicit in review.
+Storage tests in this package seed databases through GORM/bootstrap helpers and inline legacy setups, and do not depend on checked-in SQL schema fixtures.
 
-Optional local-only fixture data for manual cutover verification may also live here (for example copied `panel.db` or `managed_certificates/` data), but do not commit secrets, tokens, private keys, or live production data.
+Do not commit secrets, tokens, private keys, or live production data.

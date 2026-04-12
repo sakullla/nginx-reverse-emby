@@ -4,7 +4,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/glebarez/sqlite"
@@ -12,8 +11,8 @@ import (
 	"gorm.io/gorm/logger"
 )
 
-func TestStoreLoadsAgentsAndRulesFromExistingSQLite(t *testing.T) {
-	dataRoot := seedSQLiteFixtureFromCanonicalSchema(t)
+func TestStoreLoadsAgentsAndRulesFromGORMSeededSQLite(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromGORM(t)
 
 	store, err := NewSQLiteStore(dataRoot, "local")
 	if err != nil {
@@ -45,8 +44,206 @@ func TestStoreLoadsAgentsAndRulesFromExistingSQLite(t *testing.T) {
 	}
 }
 
+func TestBootstrapSQLiteSchemaCreatesFreshPanelDatabaseWithoutSQLFixtures(t *testing.T) {
+	dataRoot := t.TempDir()
+
+	db, err := openSQLiteForTest(filepath.Join(dataRoot, "panel.db"))
+	if err != nil {
+		t.Fatalf("openSQLiteForTest() error = %v", err)
+	}
+	defer closeSQLiteForTest(t, db)
+
+	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
+		t.Fatalf("BootstrapSQLiteSchema() error = %v", err)
+	}
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+
+	state, err := store.LoadLocalAgentState(t.Context())
+	if err != nil {
+		t.Fatalf("LoadLocalAgentState() error = %v", err)
+	}
+	if state.ID != 1 || state.LastApplyStatus != "success" {
+		t.Fatalf("unexpected local state: %+v", state)
+	}
+
+	var localStateRows int64
+	if err := store.db.WithContext(t.Context()).Model(&LocalAgentStateRow{}).Count(&localStateRows).Error; err != nil {
+		t.Fatalf("count local_agent_state rows error = %v", err)
+	}
+	if localStateRows != 1 {
+		t.Fatalf("expected exactly one local_agent_state row, got %d", localStateRows)
+	}
+}
+
+func TestBootstrapSQLiteSchemaUpgradesLegacySQLiteAndNormalizesBackfills(t *testing.T) {
+	dataRoot := t.TempDir()
+	dbPath := filepath.Join(dataRoot, "panel.db")
+
+	db, err := openSQLiteForTest(dbPath)
+	if err != nil {
+		t.Fatalf("openSQLiteForTest() error = %v", err)
+	}
+	defer closeSQLiteForTest(t, db)
+
+	legacyLocalStateStatements := []string{
+		`CREATE TABLE local_agent_state (
+			id INTEGER PRIMARY KEY,
+			desired_revision INTEGER DEFAULT 0,
+			current_revision INTEGER DEFAULT 0,
+			last_apply_revision INTEGER DEFAULT 0,
+			last_apply_status TEXT,
+			last_apply_message TEXT,
+			desired_version TEXT
+		)`,
+		`INSERT INTO local_agent_state (id, desired_revision, current_revision, last_apply_revision, last_apply_status, last_apply_message, desired_version) VALUES (2, 1, 1, 1, NULL, NULL, NULL)`,
+	}
+	for _, stmt := range legacyLocalStateStatements {
+		if err := db.WithContext(t.Context()).Exec(stmt).Error; err != nil {
+			t.Fatalf("seed legacy local_agent_state failed: %q, err=%v", stmt, err)
+		}
+	}
+
+	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
+		t.Fatalf("initial BootstrapSQLiteSchema() error = %v", err)
+	}
+
+	legacyDataStatements := []string{
+		`INSERT INTO agents (id, name, desired_version, platform) VALUES ('legacy-agent', 'legacy-agent', '', NULL)`,
+		`INSERT INTO rules (
+			id, agent_id, frontend_url, backend_url, backends, load_balancing, enabled, tags, proxy_redirect,
+			pass_proxy_headers, user_agent, custom_headers, relay_chain, revision
+		) VALUES (7, 'legacy-agent', 'https://legacy.example.com', 'http://127.0.0.1:8096', NULL, NULL, 1, NULL, 1, NULL, NULL, NULL, '', 0)`,
+		`UPDATE local_agent_state SET desired_version = NULL, last_apply_status = NULL, last_apply_message = NULL WHERE id = 1`,
+		`INSERT INTO managed_certificates (
+			id, domain, enabled, scope, issuer_mode, target_agent_ids, status, usage, certificate_type, self_signed, tags, acme_info, agent_reports
+		) VALUES (5, 'legacy.example.com', 1, 'domain', 'master_cf_dns', NULL, NULL, '', NULL, NULL, NULL, NULL, NULL)`,
+		`INSERT INTO relay_listeners (
+			id, agent_id, name, listen_host, listen_port, public_host, public_port, enabled, tls_mode, bind_hosts, pin_set, trusted_ca_certificate_ids, tags
+		) VALUES (9, 'legacy-agent', 'legacy-relay', '0.0.0.0', 7443, '', NULL, 1, NULL, '', NULL, NULL, NULL)`,
+	}
+	for _, stmt := range legacyDataStatements {
+		if err := db.WithContext(t.Context()).Exec(stmt).Error; err != nil {
+			t.Fatalf("seed legacy data failed: %q, err=%v", stmt, err)
+		}
+	}
+
+	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
+		t.Fatalf("BootstrapSQLiteSchema() error = %v", err)
+	}
+
+	store, err := NewSQLiteStore(dataRoot, "legacy-agent")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+
+	agents, err := store.ListAgents(t.Context())
+	if err != nil {
+		t.Fatalf("ListAgents() error = %v", err)
+	}
+	if len(agents) != 1 || agents[0].DesiredVersion != "" || agents[0].Platform != "" {
+		t.Fatalf("unexpected agents after legacy bootstrap: %+v", agents)
+	}
+
+	rules, err := store.ListHTTPRules(t.Context(), "legacy-agent")
+	if err != nil {
+		t.Fatalf("ListHTTPRules() error = %v", err)
+	}
+	if len(rules) != 1 {
+		t.Fatalf("expected 1 rule, got %+v", rules)
+	}
+	if !rules[0].PassProxyHeaders || rules[0].UserAgent != "" || rules[0].CustomHeadersJSON != "[]" || rules[0].RelayChainJSON != "[]" {
+		t.Fatalf("unexpected rule defaults after legacy bootstrap: %+v", rules[0])
+	}
+
+	certs, err := store.ListManagedCertificates(t.Context())
+	if err != nil {
+		t.Fatalf("ListManagedCertificates() error = %v", err)
+	}
+	if len(certs) != 1 {
+		t.Fatalf("expected 1 certificate, got %+v", certs)
+	}
+	if certs[0].Usage != "https" || certs[0].CertificateType != "acme" || certs[0].SelfSigned {
+		t.Fatalf("unexpected cert defaults after legacy bootstrap: %+v", certs[0])
+	}
+
+	listeners, err := store.ListRelayListeners(t.Context(), "legacy-agent")
+	if err != nil {
+		t.Fatalf("ListRelayListeners() error = %v", err)
+	}
+	if len(listeners) != 1 {
+		t.Fatalf("expected 1 relay listener, got %+v", listeners)
+	}
+	if listeners[0].BindHostsJSON != `["0.0.0.0"]` || listeners[0].PublicHost != "0.0.0.0" || listeners[0].PublicPort != 7443 {
+		t.Fatalf("unexpected relay defaults after legacy bootstrap: %+v", listeners[0])
+	}
+
+	localState, err := store.LoadLocalAgentState(t.Context())
+	if err != nil {
+		t.Fatalf("LoadLocalAgentState() error = %v", err)
+	}
+	if localState.ID != 1 || localState.DesiredVersion != "" || localState.LastApplyStatus != "success" {
+		t.Fatalf("unexpected local agent state after legacy bootstrap: %+v", localState)
+	}
+
+	var localStateRows int64
+	if err := store.db.WithContext(t.Context()).Model(&LocalAgentStateRow{}).Count(&localStateRows).Error; err != nil {
+		t.Fatalf("count local_agent_state rows error = %v", err)
+	}
+	if localStateRows != 1 {
+		t.Fatalf("expected singleton local_agent_state after legacy bootstrap, got %d rows", localStateRows)
+	}
+}
+
+func TestBootstrapSQLiteSchemaHandlesMalformedRelayBindHostsJSON(t *testing.T) {
+	dataRoot := t.TempDir()
+	dbPath := filepath.Join(dataRoot, "panel.db")
+
+	db, err := openSQLiteForTest(dbPath)
+	if err != nil {
+		t.Fatalf("openSQLiteForTest() error = %v", err)
+	}
+	defer closeSQLiteForTest(t, db)
+
+	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
+		t.Fatalf("initial BootstrapSQLiteSchema() error = %v", err)
+	}
+
+	if err := db.WithContext(t.Context()).Exec(`INSERT INTO relay_listeners (
+		id, agent_id, name, listen_host, listen_port, public_host, public_port, enabled, bind_hosts, tls_mode, pin_set, trusted_ca_certificate_ids, allow_self_signed, tags, revision
+	) VALUES (21, 'legacy-agent', 'bad-json', '10.10.0.5', 7443, '', NULL, 1, 'not-json', 'pin_or_ca', '[]', '[]', 0, '[]', 1)`).Error; err != nil {
+		t.Fatalf("seed malformed relay listener error = %v", err)
+	}
+
+	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
+		t.Fatalf("BootstrapSQLiteSchema() with malformed bind_hosts error = %v", err)
+	}
+
+	store, err := NewSQLiteStore(dataRoot, "legacy-agent")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+
+	listeners, err := store.ListRelayListeners(t.Context(), "legacy-agent")
+	if err != nil {
+		t.Fatalf("ListRelayListeners() error = %v", err)
+	}
+	if len(listeners) != 1 {
+		t.Fatalf("expected 1 listener, got %+v", listeners)
+	}
+	if listeners[0].BindHostsJSON != `["10.10.0.5"]` || listeners[0].PublicHost != "10.10.0.5" || listeners[0].PublicPort != 7443 {
+		t.Fatalf("unexpected listener fallback values: %+v", listeners[0])
+	}
+}
+
 func TestStorePersistsL4RulesAndVersionPolicies(t *testing.T) {
-	dataRoot := seedSQLiteFixtureFromCanonicalSchema(t)
+	dataRoot := seedSQLiteFixtureFromGORM(t)
 
 	store, err := NewSQLiteStore(dataRoot, "local")
 	if err != nil {
@@ -109,7 +306,7 @@ func TestStorePersistsL4RulesAndVersionPolicies(t *testing.T) {
 }
 
 func TestStorePersistsHTTPRules(t *testing.T) {
-	dataRoot := seedSQLiteFixtureFromCanonicalSchema(t)
+	dataRoot := seedSQLiteFixtureFromGORM(t)
 
 	store, err := NewSQLiteStore(dataRoot, "local")
 	if err != nil {
@@ -152,7 +349,7 @@ func TestStorePersistsHTTPRules(t *testing.T) {
 }
 
 func TestStorePersistsRelayListenersAndManagedCertificates(t *testing.T) {
-	dataRoot := seedSQLiteFixtureFromCanonicalSchema(t)
+	dataRoot := seedSQLiteFixtureFromGORM(t)
 
 	store, err := NewSQLiteStore(dataRoot, "local")
 	if err != nil {
@@ -229,7 +426,7 @@ func TestStorePersistsRelayListenersAndManagedCertificates(t *testing.T) {
 }
 
 func TestStoreSaveManagedCertificatesRemovesMaterialForDeletedDomains(t *testing.T) {
-	dataRoot := seedSQLiteFixtureFromCanonicalSchema(t)
+	dataRoot := seedSQLiteFixtureFromGORM(t)
 
 	store, err := NewSQLiteStore(dataRoot, "local")
 	if err != nil {
@@ -308,7 +505,7 @@ func TestStoreSaveManagedCertificatesRemovesMaterialForDeletedDomains(t *testing
 }
 
 func TestStoreLoadsLocalSnapshotWithHighestRelevantRevision(t *testing.T) {
-	dataRoot := seedSQLiteFixtureFromCanonicalSchema(t)
+	dataRoot := seedSQLiteFixtureFromGORM(t)
 
 	store, err := NewSQLiteStore(dataRoot, "local")
 	if err != nil {
@@ -434,7 +631,7 @@ func TestStoreLoadsLocalSnapshotWithHighestRelevantRevision(t *testing.T) {
 }
 
 func TestStoreLoadsAgentSnapshotWithReferencedRelayListenersAndTrustCABundleOnly(t *testing.T) {
-	dataRoot := seedSQLiteFixtureFromCanonicalSchema(t)
+	dataRoot := seedSQLiteFixtureFromGORM(t)
 
 	store, err := NewSQLiteStore(dataRoot, "local")
 	if err != nil {
@@ -639,7 +836,7 @@ func TestStoreLoadsAgentSnapshotWithReferencedRelayListenersAndTrustCABundleOnly
 }
 
 func TestStoreLoadAgentSnapshotIgnoresDisabledRelayDependencies(t *testing.T) {
-	dataRoot := seedSQLiteFixtureFromCanonicalSchema(t)
+	dataRoot := seedSQLiteFixtureFromGORM(t)
 
 	store, err := NewSQLiteStore(dataRoot, "local")
 	if err != nil {
@@ -784,7 +981,7 @@ func TestStoreLoadAgentSnapshotIgnoresDisabledRelayDependencies(t *testing.T) {
 }
 
 func TestStoreLoadAgentSnapshotSkipsMalformedL4Rows(t *testing.T) {
-	dataRoot := seedSQLiteFixtureFromCanonicalSchema(t)
+	dataRoot := seedSQLiteFixtureFromGORM(t)
 
 	store, err := NewSQLiteStore(dataRoot, "local")
 	if err != nil {
@@ -858,7 +1055,7 @@ func TestStoreLoadAgentSnapshotSkipsMalformedL4Rows(t *testing.T) {
 }
 
 func TestStoreLoadAgentSnapshotKeepsEffectiveRevisionWhenCurrentMatches(t *testing.T) {
-	dataRoot := seedSQLiteFixtureFromCanonicalSchema(t)
+	dataRoot := seedSQLiteFixtureFromGORM(t)
 
 	store, err := NewSQLiteStore(dataRoot, "local")
 	if err != nil {
@@ -910,7 +1107,7 @@ func TestStoreLoadAgentSnapshotKeepsEffectiveRevisionWhenCurrentMatches(t *testi
 }
 
 func TestStoreSavesSuccessfulLocalRuntimeStateIntoLocalAgentState(t *testing.T) {
-	dataRoot := seedSQLiteFixtureFromCanonicalSchema(t)
+	dataRoot := seedSQLiteFixtureFromGORM(t)
 
 	store, err := NewSQLiteStore(dataRoot, "local")
 	if err != nil {
@@ -947,7 +1144,7 @@ func TestStoreSavesSuccessfulLocalRuntimeStateIntoLocalAgentState(t *testing.T) 
 }
 
 func TestStoreSaveLocalRuntimeStateUsesExplicitApplyMetadata(t *testing.T) {
-	dataRoot := seedSQLiteFixtureFromCanonicalSchema(t)
+	dataRoot := seedSQLiteFixtureFromGORM(t)
 
 	store, err := NewSQLiteStore(dataRoot, "local")
 	if err != nil {
@@ -993,7 +1190,7 @@ func TestStoreSaveLocalRuntimeStateUsesExplicitApplyMetadata(t *testing.T) {
 }
 
 func TestStoreSaveLocalRuntimeStatePrefersMetadataOverStaleExplicitApplyMetadata(t *testing.T) {
-	dataRoot := seedSQLiteFixtureFromCanonicalSchema(t)
+	dataRoot := seedSQLiteFixtureFromGORM(t)
 
 	store, err := NewSQLiteStore(dataRoot, "local")
 	if err != nil {
@@ -1044,48 +1241,99 @@ func TestStoreSaveLocalRuntimeStatePrefersMetadataOverStaleExplicitApplyMetadata
 	}
 }
 
-func seedSQLiteFixtureFromCanonicalSchema(t *testing.T) string {
+func seedSQLiteFixtureFromGORM(t *testing.T) string {
 	t.Helper()
 
 	dataRoot := t.TempDir()
 	dbPath := filepath.Join(dataRoot, "panel.db")
-	db, err := gorm.Open(sqlite.Open(dbPath), &gorm.Config{
-		Logger: logger.Default.LogMode(logger.Silent),
-	})
+	db, err := openSQLiteForTest(dbPath)
 	if err != nil {
-		t.Fatalf("gorm.Open() error = %v", err)
+		t.Fatalf("openSQLiteForTest() error = %v", err)
 	}
 	t.Cleanup(func() {
-		sqlDB, dbErr := db.DB()
-		if dbErr == nil {
-			_ = sqlDB.Close()
-		}
+		closeSQLiteForTest(t, db)
 	})
 
-	// Canonical Go-owned compatibility baseline lives in storage/testdata.
-	for _, stmt := range loadFixtureSQLStatements(t, filepath.Join("testdata", "schema_base.sql")) {
-		execSQLiteStatement(t, db, stmt, false)
-	}
-	for _, stmt := range loadFixtureSQLStatements(t, filepath.Join("testdata", "schema_migrations.sql")) {
-		execSQLiteStatement(t, db, stmt, true)
+	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
+		t.Fatalf("BootstrapSQLiteSchema() error = %v", err)
 	}
 
-	statements := []string{
-		`INSERT INTO agents (
-			id, name, desired_revision, current_revision, last_apply_revision, last_apply_status, last_apply_message, is_local, mode, desired_version, platform, tags, capabilities
-		) VALUES ('local', 'Local Agent', 3, 2, 2, 'success', '', 1, 'pull', 'v1.2.3', 'linux-amd64', '[]', '[]')`,
-		`INSERT INTO rules (
-			id, agent_id, frontend_url, backend_url, backends, load_balancing, enabled, tags, proxy_redirect, relay_chain, pass_proxy_headers, user_agent, custom_headers, revision
-		) VALUES (1, 'local', 'https://emby.example.com', 'http://emby:8096', '[{"url":"http://emby:8096"}]', '{"strategy":"round_robin"}', 1, '[]', 1, '[]', 1, '', '[]', 3)`,
-		`INSERT INTO local_agent_state (
-			id, desired_revision, current_revision, last_apply_revision, last_apply_status, last_apply_message, desired_version
-		) VALUES (1, 3, 2, 2, 'success', '', 'v1.2.3')`,
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
 	}
-	for _, stmt := range statements {
-		execSQLiteStatement(t, db, stmt, false)
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	if err := store.SaveAgent(t.Context(), AgentRow{
+		ID:               "local",
+		Name:             "Local Agent",
+		DesiredVersion:   "v1.2.3",
+		DesiredRevision:  3,
+		CurrentRevision:  2,
+		LastApplyStatus:  "success",
+		LastApplyMessage: "",
+		IsLocal:          true,
+		Mode:             "pull",
+		Platform:         "linux-amd64",
+		TagsJSON:         "[]",
+		CapabilitiesJSON: "[]",
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+
+	if err := store.SaveHTTPRules(t.Context(), "local", []HTTPRuleRow{{
+		ID:                1001,
+		AgentID:           "local",
+		FrontendURL:       "https://emby.example.com",
+		BackendURL:        "http://emby:8096",
+		BackendsJSON:      `[{"url":"http://emby:8096"}]`,
+		LoadBalancingJSON: `{"strategy":"round_robin"}`,
+		Enabled:           true,
+		TagsJSON:          `[]`,
+		ProxyRedirect:     true,
+		RelayChainJSON:    `[]`,
+		PassProxyHeaders:  true,
+		UserAgent:         "",
+		CustomHeadersJSON: `[]`,
+		Revision:          3,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules() error = %v", err)
+	}
+
+	if err := store.db.WithContext(t.Context()).
+		Model(&LocalAgentStateRow{}).
+		Where("id = ?", 1).
+		Updates(map[string]any{
+			"desired_revision":    3,
+			"current_revision":    2,
+			"last_apply_revision": 2,
+			"last_apply_status":   "success",
+			"last_apply_message":  "",
+			"desired_version":     "v1.2.3",
+		}).Error; err != nil {
+		t.Fatalf("seed local_agent_state error = %v", err)
 	}
 
 	return dataRoot
+}
+
+func openSQLiteForTest(dbPath string) (*gorm.DB, error) {
+	return gorm.Open(sqlite.Open(dbPath), &gorm.Config{
+		Logger: logger.Default.LogMode(logger.Silent),
+	})
+}
+
+func closeSQLiteForTest(t *testing.T, db *gorm.DB) {
+	t.Helper()
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatalf("db.DB() error = %v", err)
+	}
+	if err := sqlDB.Close(); err != nil {
+		t.Fatalf("sqlDB.Close() error = %v", err)
+	}
 }
 
 func writeManagedCertificateMaterial(t *testing.T, dataRoot string, domain string, certPEM string, keyPEM string) {
@@ -1123,47 +1371,4 @@ func containsPolicyID(values []ManagedCertificatePolicy, expected int) bool {
 		}
 	}
 	return false
-}
-
-func loadFixtureSQLStatements(t *testing.T, fixturePath string) []string {
-	t.Helper()
-
-	sqlBytes, err := os.ReadFile(fixturePath)
-	if err != nil {
-		t.Fatalf("os.ReadFile(%q) error = %v", fixturePath, err)
-	}
-
-	statements := splitSQLStatements(string(sqlBytes))
-	if len(statements) == 0 {
-		t.Fatalf("no SQL statements found in %s", fixturePath)
-	}
-	return statements
-}
-
-func splitSQLStatements(sqlText string) []string {
-	rawStatements := strings.Split(sqlText, ";")
-	statements := make([]string, 0, len(rawStatements))
-	for _, raw := range rawStatements {
-		trimmed := strings.TrimSpace(raw)
-		if trimmed != "" {
-			statements = append(statements, trimmed)
-		}
-	}
-	return statements
-}
-
-func execSQLiteStatement(t *testing.T, db *gorm.DB, stmt string, allowDuplicate bool) {
-	t.Helper()
-
-	if err := db.Exec(stmt).Error; err != nil {
-		if allowDuplicate && isIgnorableMigrationError(err) {
-			return
-		}
-		t.Fatalf("db.Exec(%q) error = %v", stmt, err)
-	}
-}
-
-func isIgnorableMigrationError(err error) bool {
-	message := err.Error()
-	return strings.Contains(message, "duplicate column name") || strings.Contains(message, "already exists")
 }
