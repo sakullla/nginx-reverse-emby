@@ -1110,3 +1110,74 @@ func TestAgentServiceApplyLocalUsesTriggerForSynchronousEmbeddedApply(t *testing
 		t.Fatalf("Apply(local) should rely on runtime callback, saveRuntimeCalls = %d", store.saveRuntimeCalls)
 	}
 }
+
+func TestAgentServiceRegisterDoesNotReuseByNameAlone(t *testing.T) {
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID:         "edge-existing",
+			Name:       "Edge Node",
+			AgentURL:   "https://edge1.example.com",
+			AgentToken: "token-old",
+		}},
+	}
+	svc := NewAgentService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	agent, err := svc.Register(context.Background(), RegisterRequest{
+		Name:       "Edge Node",
+		AgentURL:   "https://edge2.example.com",
+		AgentToken: "token-new",
+	}, "")
+	if err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	if agent.ID == "edge-existing" {
+		t.Fatalf("Register() reused existing agent by name: %+v", agent)
+	}
+	if len(store.agents) != 2 {
+		t.Fatalf("expected 2 agents, got %d", len(store.agents))
+	}
+}
+
+func TestAgentServiceDeleteCleansUpManagedCertificates(t *testing.T) {
+	cfg := config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}
+	store := &fakeStore{
+		agents: []storage.AgentRow{
+			{ID: "edge-a", Name: "edge-a", AgentToken: "token-a"},
+			{ID: "edge-b", Name: "edge-b", AgentToken: "token-b"},
+		},
+		managedCerts: []storage.ManagedCertificateRow{
+			{ID: 1, Domain: "shared.example.com", TargetAgentIDs: `["edge-a","edge-b"]`},
+			{ID: 2, Domain: "orphan.example.com", TargetAgentIDs: `["edge-a"]`},
+		},
+	}
+	svc := NewAgentService(cfg, store)
+
+	deleted, err := svc.Delete(context.Background(), "edge-a")
+	if err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if deleted.ID != "edge-a" {
+		t.Fatalf("deleted agent = %+v", deleted)
+	}
+	if store.deletedAgentID != "edge-a" {
+		t.Fatalf("DeleteAgent() called with %q", store.deletedAgentID)
+	}
+
+	if len(store.managedCerts) != 1 {
+		t.Fatalf("expected 1 remaining cert, got %d", len(store.managedCerts))
+	}
+	remaining := store.managedCerts[0]
+	if remaining.ID != 1 {
+		t.Fatalf("expected remaining cert ID 1, got %d", remaining.ID)
+	}
+	if remaining.TargetAgentIDs != `["edge-b"]` {
+		t.Fatalf("expected shared cert to drop edge-a, got %q", remaining.TargetAgentIDs)
+	}
+}

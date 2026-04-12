@@ -417,6 +417,35 @@ func (s *agentService) Delete(ctx context.Context, agentID string) (AgentSummary
 	if err := s.store.SaveRelayListeners(ctx, agentID, nil); err != nil {
 		return AgentSummary{}, err
 	}
+
+	certRows, err := s.store.ListManagedCertificates(ctx)
+	if err != nil {
+		return AgentSummary{}, err
+	}
+	originalCertRows := append([]storage.ManagedCertificateRow(nil), certRows...)
+	nextCertRows := make([]storage.ManagedCertificateRow, 0, len(certRows))
+	certsChanged := false
+	for _, row := range certRows {
+		cert := managedCertificateFromRow(row)
+		if !containsString(cert.TargetAgentIDs, agentID) {
+			nextCertRows = append(nextCertRows, row)
+			continue
+		}
+		certsChanged = true
+		cert.TargetAgentIDs = removeString(cert.TargetAgentIDs, agentID)
+		delete(cert.AgentReports, agentID)
+		if len(cert.TargetAgentIDs) == 0 {
+			continue
+		}
+		nextCertRows = append(nextCertRows, managedCertificateToRow(cert))
+	}
+	if certsChanged {
+		if err := s.store.SaveManagedCertificates(ctx, nextCertRows); err != nil {
+			return AgentSummary{}, err
+		}
+		cleanupManagedCertificateMaterialBestEffort(ctx, s.store, originalCertRows, nextCertRows)
+	}
+
 	if err := s.store.DeleteAgent(ctx, agentID); err != nil {
 		return AgentSummary{}, err
 	}
