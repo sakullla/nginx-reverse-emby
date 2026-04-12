@@ -105,28 +105,16 @@
     </Teleport>
 
     <!-- Delete Modal -->
-    <Teleport to="body">
-      <div v-if="deletingRule" class="modal-overlay" @click.self="deletingRule = null">
-        <div class="modal">
-          <div class="modal__header">
-            <span>确认删除</span>
-            <button class="modal__close" @click="deletingRule = null">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <line x1="18" y1="6" x2="6" y2="18"/>
-                <line x1="6" y1="6" x2="18" y2="18"/>
-              </svg>
-            </button>
-          </div>
-          <div class="modal__body">
-            <p>确定删除规则 <strong>{{ deletingRule.listen_host }}:{{ deletingRule.listen_port }}</strong>？</p>
-          </div>
-          <div class="modal__footer">
-            <button class="btn btn-secondary" @click="deletingRule = null">取消</button>
-            <button class="btn btn-danger" @click="confirmDelete">删除</button>
-          </div>
-        </div>
-      </div>
-    </Teleport>
+    <DeleteConfirmDialog
+      :show="!!deletingRule"
+      title="确认删除规则"
+      message="删除后该规则将立即失效，相关配置将无法恢复。"
+      :name="deletingRule?.listen_host + ':' + deletingRule?.listen_port"
+      confirm-text="确认删除"
+      :loading="deleteL4Rule.isPending?.value"
+      @confirm="confirmDelete"
+      @cancel="deletingRule = null"
+    />
   </div>
 </template>
 
@@ -138,6 +126,7 @@ import { useL4Rules, useCreateL4Rule, useUpdateL4Rule, useDeleteL4Rule } from '.
 import { useAgents } from '../hooks/useAgents'
 import L4RuleForm from '../components/L4RuleForm.vue'
 import L4RuleItem from '../components/l4/L4RuleItem.vue'
+import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
 
 const route = useRoute()
 const { selectedAgentId } = useAgent()

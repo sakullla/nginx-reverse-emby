@@ -92,20 +92,16 @@
       </div>
     </Teleport>
 
-    <Teleport to='body'>
-      <div v-if='deletingPolicy' class='modal-overlay' @click.self='deletingPolicy = null'>
-        <div class='modal'>
-          <div class='modal__header'>确认删除</div>
-          <div class='modal__body'>
-            <p>确定删除策略 <strong>{{ deletingPolicy.channel }}</strong> 吗？</p>
-          </div>
-          <div class='modal__footer'>
-            <button class='btn btn-secondary' @click='deletingPolicy = null'>取消</button>
-            <button class='btn btn-danger' @click='confirmDelete'>删除</button>
-          </div>
-        </div>
-      </div>
-    </Teleport>
+    <DeleteConfirmDialog
+      :show='!!deletingPolicy'
+      title='确认删除策略'
+      message='删除后该策略将立即失效，相关配置将无法恢复。'
+      :name='deletingPolicy?.channel'
+      confirm-text='确认删除'
+      :loading='deletePolicy.isPending?.value'
+      @confirm='confirmDelete'
+      @cancel='deletingPolicy = null'
+    />
   </div>
 </template>
 
@@ -117,6 +113,7 @@ import {
   useUpdateVersionPolicy,
   useDeleteVersionPolicy
 } from '../hooks/useVersionPolicies'
+import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
 
 const { data: policiesData, isLoading } = useVersionPolicies()
 const createPolicy = useCreateVersionPolicy()

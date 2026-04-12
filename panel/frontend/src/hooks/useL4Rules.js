@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/vue-query'
 import { unref } from 'vue'
 import * as api from '../api'
+import { messageStore } from '../stores/messages'
 
 export function useL4Rules(agentId) {
   return useQuery({
@@ -20,6 +21,10 @@ export function useCreateL4Rule(agentId) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['l4Rules', agentId] })
       qc.invalidateQueries({ queryKey: ['agents'] })
+      messageStore.success('L4 规则创建成功')
+    },
+    onError: (error) => {
+      messageStore.error(error, '创建 L4 规则失败')
     }
   })
 }
@@ -31,6 +36,10 @@ export function useUpdateL4Rule(agentId) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['l4Rules', agentId] })
       qc.invalidateQueries({ queryKey: ['agents'] })
+      messageStore.success('L4 规则更新成功')
+    },
+    onError: (error) => {
+      messageStore.error(error, '更新 L4 规则失败')
     }
   })
 }
@@ -42,6 +51,10 @@ export function useDeleteL4Rule(agentId) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['l4Rules', agentId] })
       qc.invalidateQueries({ queryKey: ['agents'] })
+      messageStore.success('L4 规则已删除')
+    },
+    onError: (error) => {
+      messageStore.error(error, '删除 L4 规则失败')
     }
   })
 }

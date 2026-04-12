@@ -105,29 +105,16 @@
       </div>
     </Teleport>
 
-    <Teleport to='body'>
-      <div v-if='deletingListener' class='modal-overlay' @click.self="deletingListener = null">
-        <div class='modal'>
-          <div class='modal__header'>
-            <span>确认删除</span>
-            <button class='modal__close' @click="deletingListener = null">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-              </svg>
-            </button>
-          </div>
-          <div class='modal__body'>
-            <p>确定删除监听器 <strong>{{ deletingListener.name }}</strong> 吗？</p>
-            <p v-if="deleteError" class='relay-page__error'>{{ deleteError }}</p>
-            <p class='relay-page__warning'>若该监听器已被规则引用，删除会被阻止。</p>
-          </div>
-          <div class='modal__footer'>
-            <button class='btn btn-secondary' @click="deletingListener = null">取消</button>
-            <button class='btn btn-danger' @click='confirmDelete'>删除</button>
-          </div>
-        </div>
-      </div>
-    </Teleport>
+    <DeleteConfirmDialog
+      :show="!!deletingListener"
+      title="确认删除监听器"
+      message="若该监听器已被规则引用，删除会被阻止。删除后相关配置将无法恢复。"
+      :name="deletingListener?.name"
+      confirm-text="确认删除"
+      :loading="deleteRelayListener.isPending?.value"
+      @confirm="confirmDelete"
+      @cancel="deletingListener = null"
+    />
   </div>
 </template>
 
@@ -138,6 +125,7 @@ import { useAgent } from '../context/AgentContext'
 import { useAgents } from '../hooks/useAgents'
 import { useRelayListeners, useDeleteRelayListener, useUpdateRelayListener } from '../hooks/useRelayListeners'
 import RelayListenerForm from '../components/RelayListenerForm.vue'
+import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
 
 const route = useRoute()
 const { selectedAgentId } = useAgent()

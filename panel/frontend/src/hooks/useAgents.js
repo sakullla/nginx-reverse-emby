@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/vue-query'
 import * as api from '../api'
 import { useAuthState } from '../context/useAuthState'
+import { messageStore } from '../stores/messages'
 
 export function useAgents() {
   const { hasToken } = useAuthState()
@@ -16,7 +17,13 @@ export function useDeleteAgent() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (agentId) => api.deleteAgent(agentId),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['agents'] })
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['agents'] })
+      messageStore.success('节点已删除')
+    },
+    onError: (error) => {
+      messageStore.error(error, '删除节点失败')
+    }
   })
 }
 
@@ -24,6 +31,12 @@ export function useRenameAgent() {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: ({ agentId, name }) => api.renameAgent(agentId, name),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['agents'] })
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['agents'] })
+      messageStore.success('节点名称已更新')
+    },
+    onError: (error) => {
+      messageStore.error(error, '重命名节点失败')
+    }
   })
 }

@@ -140,28 +140,16 @@
       </div>
     </Teleport>
 
-    <Teleport to='body'>
-      <div v-if='deletingCert' class='modal-overlay' @click.self='deletingCert = null'>
-        <div class='modal'>
-          <div class='modal__header'>
-            <span>确认删除</span>
-            <button class='modal__close' @click='deletingCert = null'>
-              <svg width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'>
-                <line x1='18' y1='6' x2='6' y2='18' />
-                <line x1='6' y1='6' x2='18' y2='18' />
-              </svg>
-            </button>
-          </div>
-          <div class='modal__body'>
-            <p>确定删除证书 <strong>{{ deletingCert.domain }}</strong>？</p>
-          </div>
-          <div class='modal__footer'>
-            <button class='btn btn-secondary' @click='deletingCert = null'>取消</button>
-            <button class='btn btn-danger' @click='confirmDelete'>删除</button>
-          </div>
-        </div>
-      </div>
-    </Teleport>
+    <DeleteConfirmDialog
+      :show='!!deletingCert'
+      title='确认删除证书'
+      message='删除后该证书将立即失效，相关配置将无法恢复。'
+      :name='deletingCert?.domain'
+      confirm-text='确认删除'
+      :loading='deleteCertificate.isPending?.value'
+      @confirm='confirmDelete'
+      @cancel='deletingCert = null'
+    />
   </div>
 </template>
 
@@ -171,6 +159,7 @@ import { useRoute } from 'vue-router'
 import { useAgent } from '../context/AgentContext'
 import { useCertificates, useDeleteCertificate, useIssueCertificate } from '../hooks/useCertificates'
 import CertificateForm from '../components/CertificateForm.vue'
+import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
 import {
   getCertificateSourceLabel,
   getCertificateUsageLabel,

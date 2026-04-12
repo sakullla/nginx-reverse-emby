@@ -159,20 +159,16 @@
     </Teleport>
 
     <!-- Delete Modal -->
-    <Teleport to="body">
-      <div v-if="deletingRule" class="modal-overlay" @click.self="deletingRule = null">
-        <div class="modal">
-          <div class="modal__header">确认删除</div>
-          <div class="modal__body">
-            <p>确定删除规则 <strong>{{ deletingRule.frontend_url }}</strong>？</p>
-          </div>
-          <div class="modal__footer">
-            <button class="btn btn-secondary" @click="deletingRule = null">取消</button>
-            <button class="btn btn-danger" @click="confirmDelete">删除</button>
-          </div>
-        </div>
-      </div>
-    </Teleport>
+    <DeleteConfirmDialog
+      :show="!!deletingRule"
+      title="确认删除规则"
+      message="删除后该规则将立即失效，相关配置将无法恢复。"
+      :name="deletingRule?.frontend_url"
+      confirm-text="确认删除"
+      :loading="deleteRule.isPending?.value"
+      @confirm="confirmDelete"
+      @cancel="deletingRule = null"
+    />
   </div>
 </template>
 
@@ -184,6 +180,7 @@ import { useRules, useCreateRule, useUpdateRule, useDeleteRule } from '../hooks/
 import { useAgents } from '../hooks/useAgents'
 import { getRuleEffectiveStatus } from '../utils/syncStatus'
 import RuleForm from '../components/RuleForm.vue'
+import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
 
 const route = useRoute()
 const { selectedAgentId } = useAgent()
@@ -305,11 +302,11 @@ function closeForm() {
   copyingRule.value = null
 }
 
-function confirmDelete() {
+async function confirmDelete() {
   if (deletingRule.value) {
-    deleteRule.mutate(deletingRule.value.id)
+    await deleteRule.mutateAsync(deletingRule.value.id)
+    deletingRule.value = null
   }
-  deletingRule.value = null
 }
 
 </script>
