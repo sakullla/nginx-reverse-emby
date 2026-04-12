@@ -112,7 +112,11 @@ func (m *Manager) Activate(stagedPath string, desiredVersion string) error {
 	if err := promoteStagedBinary(stagedPath, m.executablePath); err != nil {
 		return err
 	}
-	return m.execFn(m.executablePath, m.resolveArgv(), withEnv(m.env, "NRE_AGENT_VERSION", desiredVersion))
+	env := append([]string(nil), m.env...)
+	if strings.TrimSpace(desiredVersion) != "" {
+		env = withEnv(env, "NRE_AGENT_VERSION", desiredVersion)
+	}
+	return m.execFn(m.executablePath, m.resolveArgv(), env)
 }
 
 func (m *Manager) resolveArgv() []string {

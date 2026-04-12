@@ -124,6 +124,45 @@ func TestActivatePromotesAndExecsReplacement(t *testing.T) {
 	}
 }
 
+func TestActivatePreservesExistingVersionWhenDesiredVersionEmpty(t *testing.T) {
+	dir := t.TempDir()
+	targetPath := filepath.Join(dir, "nre-agent")
+	if err := os.WriteFile(targetPath, []byte("old"), 0o755); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+	stagedPath := filepath.Join(dir, "updates", "nre-agent")
+	if err := os.MkdirAll(filepath.Dir(stagedPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll returned error: %v", err)
+	}
+	if err := os.WriteFile(stagedPath, []byte("new"), 0o755); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	var gotEnv []string
+	mgr := NewManager(
+		dir,
+		targetPath,
+		[]string{"old-binary"},
+		[]string{"PATH=/bin", "NRE_AGENT_VERSION=1.0.0"},
+		func(_ string, _ []string, env []string) error {
+			gotEnv = append([]string(nil), env...)
+			return ErrRestartRequested
+		},
+		nil,
+	)
+
+	err := mgr.Activate(stagedPath, "")
+	if !errors.Is(err, ErrRestartRequested) {
+		t.Fatalf("expected ErrRestartRequested, got %v", err)
+	}
+	if !containsEnv(gotEnv, "NRE_AGENT_VERSION=1.0.0") {
+		t.Fatalf("expected preserved version env, got %+v", gotEnv)
+	}
+	if containsEnv(gotEnv, "NRE_AGENT_VERSION=") {
+		t.Fatalf("expected empty version env to be absent, got %+v", gotEnv)
+	}
+}
+
 func sumSHA256(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
