@@ -513,15 +513,12 @@ func (a *App) handlePendingUpdate(ctx context.Context, snapshot Snapshot) error 
 	if !agentupdate.HasValidPackage(snapshot.VersionPackage) {
 		return nil
 	}
-	shouldUpdate := false
-	if strings.TrimSpace(snapshot.DesiredVersion) != "" {
-		shouldUpdate = agentupdate.NeedsUpdate(a.cfg.CurrentVersion, snapshot.DesiredVersion)
-	} else {
-		desiredSHA := strings.TrimSpace(snapshot.VersionPackage.SHA256)
-		currentSHA := strings.TrimSpace(a.cfg.RuntimePackageSHA256)
-		shouldUpdate = desiredSHA != "" && !strings.EqualFold(currentSHA, desiredSHA)
+	desiredSHA := strings.TrimSpace(snapshot.VersionPackage.SHA256)
+	if desiredSHA == "" {
+		return nil
 	}
-	if !shouldUpdate {
+	currentSHA := strings.TrimSpace(a.cfg.RuntimePackageSHA256)
+	if currentSHA != "" && strings.EqualFold(currentSHA, desiredSHA) {
 		return nil
 	}
 	if a.updater == nil {

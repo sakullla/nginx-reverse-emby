@@ -1,6 +1,10 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -55,4 +59,42 @@ func TestLoadFromEnvRejectsNonPositiveHeartbeat(t *testing.T) {
 	if _, err := LoadFromEnv(); err == nil {
 		t.Fatal("expected error for zero heartbeat interval")
 	}
+}
+
+func TestLoadFromEnvComputesRuntimePackageSHA256FromExecutable(t *testing.T) {
+	execPath := filepath.Join(t.TempDir(), "nre-agent")
+	payload := []byte("agent-binary")
+	if err := os.WriteFile(execPath, payload, 0o755); err != nil {
+		t.Fatalf("WriteFile returned error: %v", err)
+	}
+
+	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
+	t.Setenv("NRE_AGENT_TOKEN", "secret")
+	t.Setenv("NRE_AGENT_VERSION", "1.2.3")
+
+	cfg, err := loadFromEnvForExecutable(execPath)
+	if err != nil {
+		t.Fatalf("loadFromEnvForExecutable returned error: %v", err)
+	}
+	if cfg.RuntimePackageSHA256 != sumSHA256Hex(payload) {
+		t.Fatalf("expected runtime package sha %q, got %q", sumSHA256Hex(payload), cfg.RuntimePackageSHA256)
+	}
+}
+
+func TestLoadFromEnvLeavesRuntimePackageSHA256EmptyWhenExecutableMissing(t *testing.T) {
+	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
+	t.Setenv("NRE_AGENT_TOKEN", "secret")
+
+	cfg, err := loadFromEnvForExecutable(filepath.Join(t.TempDir(), "missing-agent"))
+	if err != nil {
+		t.Fatalf("loadFromEnvForExecutable returned error: %v", err)
+	}
+	if cfg.RuntimePackageSHA256 != "" {
+		t.Fatalf("expected empty runtime package sha, got %q", cfg.RuntimePackageSHA256)
+	}
+}
+
+func sumSHA256Hex(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }

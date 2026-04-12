@@ -1,9 +1,13 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -38,6 +42,10 @@ func Default() Config {
 }
 
 func LoadFromEnv() (Config, error) {
+	return loadFromEnvForExecutable("")
+}
+
+func loadFromEnvForExecutable(executablePath string) (Config, error) {
 	cfg := Default()
 
 	if val := strings.TrimSpace(os.Getenv("NRE_AGENT_ID")); val != "" {
@@ -80,5 +88,42 @@ func LoadFromEnv() (Config, error) {
 		cfg.HeartbeatInterval = dur
 	}
 
+	cfg.RuntimePackageSHA256 = executableSHA256(executablePath)
+
 	return cfg, nil
+}
+
+func executableSHA256(executablePath string) string {
+	resolvedPath := strings.TrimSpace(executablePath)
+	if resolvedPath == "" {
+		path, err := os.Executable()
+		if err != nil {
+			return ""
+		}
+		resolvedPath = path
+	}
+	resolvedPath, err := filepath.EvalSymlinks(resolvedPath)
+	if err != nil {
+		resolvedPath = strings.TrimSpace(executablePath)
+		if resolvedPath == "" {
+			if fallback, fallbackErr := os.Executable(); fallbackErr == nil {
+				resolvedPath = fallback
+			}
+		}
+	}
+	if strings.TrimSpace(resolvedPath) == "" {
+		return ""
+	}
+
+	file, err := os.Open(resolvedPath)
+	if err != nil {
+		return ""
+	}
+	defer file.Close()
+
+	hash := sha256.New()
+	if _, err := io.Copy(hash, file); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(hash.Sum(nil))
 }
