@@ -1,13 +1,9 @@
 services:
   nginx-reverse-emby:
-    build:
-      context: .
-      target: control-plane-runtime
-    image: nginx-reverse-emby:local
+    image: ghcr.io/sakullla/nginx-reverse-emby:latest
     container_name: nginx-reverse-emby
     restart: unless-stopped
-    ports:
-      - "8080:8080"
+    network_mode: host
 
     environment:
       PANEL_ROLE: master
