@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"log"
 	"os"
 	"reflect"
 	stdruntime "runtime"
@@ -84,6 +85,12 @@ func New(cfg Config) (*App, error) {
 		AgentName:      cfg.AgentName,
 		CurrentVersion: cfg.CurrentVersion,
 		Platform:       stdruntime.GOOS + "-" + stdruntime.GOARCH,
+		RuntimePackage: model.RuntimePackage{
+			Version:  cfg.CurrentVersion,
+			Platform: stdruntime.GOOS,
+			Arch:     stdruntime.GOARCH,
+			SHA256:   cfg.RuntimePackageSHA256,
+		},
 	}, nil)
 	certManager, err := certs.NewManager(cfg.DataDir)
 	if err != nil {
@@ -245,6 +252,7 @@ func (a *App) syncRequest(ctx context.Context, applied Snapshot) (SyncRequest, e
 func (a *App) syncOnce(ctx context.Context, req SyncRequest) error {
 	snapshot, err := a.syncClient.Sync(ctx, req)
 	if err != nil {
+		log.Printf("[agent] sync error: %v", err)
 		return a.recordRuntimeError(err)
 	}
 	existingDesired, err := a.store.LoadDesiredSnapshot()
@@ -261,10 +269,12 @@ func (a *App) syncOnce(ctx context.Context, req SyncRequest) error {
 	previousApplied := a.runtime.ActiveSnapshot()
 	candidateApplied := mergeSnapshotPayload(snapshot, previousApplied)
 	if err := a.runtime.Apply(ctx, previousApplied, candidateApplied); err != nil {
+		log.Printf("[agent] runtime apply error at revision %d: %v", candidateApplied.Revision, err)
 		a.rollbackRuntime(ctx, candidateApplied, previousApplied)
 		return a.recordRuntimeErrorWithRevision(err, candidateApplied.Revision)
 	}
 	if err := a.store.SaveAppliedSnapshot(candidateApplied); err != nil {
+		log.Printf("[agent] save applied snapshot error at revision %d: %v", candidateApplied.Revision, err)
 		a.rollbackRuntime(ctx, candidateApplied, previousApplied)
 		return a.recordPersistedRuntimeErrorWithRevision(err, candidateApplied.Revision)
 	}
@@ -500,10 +510,18 @@ func (a *App) closeLocalRuntimes() {
 }
 
 func (a *App) handlePendingUpdate(ctx context.Context, snapshot Snapshot) error {
-	if !agentupdate.NeedsUpdate(a.cfg.CurrentVersion, snapshot.DesiredVersion) {
+	if !agentupdate.HasValidPackage(snapshot.VersionPackage) {
 		return nil
 	}
-	if !agentupdate.HasValidPackage(snapshot.VersionPackage) {
+	shouldUpdate := false
+	if strings.TrimSpace(snapshot.DesiredVersion) != "" {
+		shouldUpdate = agentupdate.NeedsUpdate(a.cfg.CurrentVersion, snapshot.DesiredVersion)
+	} else {
+		desiredSHA := strings.TrimSpace(snapshot.VersionPackage.SHA256)
+		currentSHA := strings.TrimSpace(a.cfg.RuntimePackageSHA256)
+		shouldUpdate = desiredSHA != "" && !strings.EqualFold(currentSHA, desiredSHA)
+	}
+	if !shouldUpdate {
 		return nil
 	}
 	if a.updater == nil {

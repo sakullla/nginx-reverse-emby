@@ -956,6 +956,56 @@ func TestPerformSyncTriggersUpdaterWhenDesiredVersionPackageIsPresent(t *testing
 	}
 }
 
+func TestHandlePendingUpdateUsesSHAFallbackWhenDesiredVersionEmpty(t *testing.T) {
+	cfg := Config{
+		CurrentVersion:       "",
+		RuntimePackageSHA256: "old-sha",
+	}
+	mem := store.NewInMemory()
+	app := newAppWithDeps(cfg, mem, newTestSyncClient(nil, syncResponse{}), nil, nil, nil)
+	updater := &testUpdater{}
+	app.updater = updater
+
+	err := app.handlePendingUpdate(context.Background(), Snapshot{
+		DesiredVersion: "",
+		VersionPackage: &model.VersionPackage{
+			URL:    "https://example.com/nre-agent",
+			SHA256: "new-sha",
+		},
+	})
+	if !errors.Is(err, agentupdate.ErrRestartRequested) {
+		t.Fatalf("expected restart request, got %v", err)
+	}
+	if len(updater.calls) != 1 {
+		t.Fatalf("expected one updater call, got %d", len(updater.calls))
+	}
+}
+
+func TestHandlePendingUpdateSkipsSHAFallbackWhenSHAAlreadyMatches(t *testing.T) {
+	cfg := Config{
+		CurrentVersion:       "",
+		RuntimePackageSHA256: "same-sha",
+	}
+	mem := store.NewInMemory()
+	app := newAppWithDeps(cfg, mem, newTestSyncClient(nil, syncResponse{}), nil, nil, nil)
+	updater := &testUpdater{}
+	app.updater = updater
+
+	err := app.handlePendingUpdate(context.Background(), Snapshot{
+		DesiredVersion: "",
+		VersionPackage: &model.VersionPackage{
+			URL:    "https://example.com/nre-agent",
+			SHA256: "same-sha",
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if len(updater.calls) != 0 {
+		t.Fatalf("expected no updater call, got %d", len(updater.calls))
+	}
+}
+
 func TestPerformSyncUpdaterStageFailureRecordsErrorWithoutFalseStateAdvance(t *testing.T) {
 	cfg := Config{CurrentVersion: "1.0.0"}
 	mem := store.NewInMemory()

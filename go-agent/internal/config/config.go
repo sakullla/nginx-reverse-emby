@@ -24,6 +24,7 @@ type Config struct {
 	DataDir          string
 	HeartbeatInterval time.Duration
 	CurrentVersion   string
+	RuntimePackageSHA256 string
 }
 
 func Default() Config {

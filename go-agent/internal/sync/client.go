@@ -20,6 +20,7 @@ type ClientConfig struct {
 	AgentName      string
 	CurrentVersion string
 	Platform       string
+	RuntimePackage model.RuntimePackage
 }
 
 type Client struct {
@@ -54,11 +55,13 @@ func (c *Client) Sync(ctx context.Context, request SyncRequest) (Snapshot, error
 		ManagedCertificateReports []model.ManagedCertificateReport `json:"managed_certificate_reports"`
 		Version                   string                           `json:"version"`
 		Platform                  string                           `json:"platform"`
+		RuntimePackage            model.RuntimePackage             `json:"runtime_package"`
 	}{
-		Name:     c.cfg.AgentName,
-		AgentID:  c.cfg.AgentID,
-		Version:  c.cfg.CurrentVersion,
-		Platform: c.cfg.Platform,
+		Name:           c.cfg.AgentName,
+		AgentID:        c.cfg.AgentID,
+		Version:        c.cfg.CurrentVersion,
+		Platform:       c.cfg.Platform,
+		RuntimePackage: c.cfg.RuntimePackage,
 	}
 	payload.CurrentRevision = request.CurrentRevision
 	payload.LastApplyRevision = request.LastApplyRevision
