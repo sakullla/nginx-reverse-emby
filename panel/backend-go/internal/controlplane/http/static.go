@@ -1,10 +1,12 @@
 package http
 
 import (
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 )
 
@@ -190,7 +192,14 @@ func isWithinRoot(root string, candidate string) bool {
 }
 
 func serveFile(w http.ResponseWriter, r *http.Request, filePath string, contentType string, headers map[string]string) {
-	content, err := os.ReadFile(filePath)
+	f, err := os.Open(filePath)
+	if err != nil {
+		http.NotFound(w, r)
+		return
+	}
+	defer f.Close()
+
+	stat, err := f.Stat()
 	if err != nil {
 		http.NotFound(w, r)
 		return
@@ -199,7 +208,13 @@ func serveFile(w http.ResponseWriter, r *http.Request, filePath string, contentT
 	for key, value := range headers {
 		w.Header().Set(key, value)
 	}
-	writeBody(w, r, http.StatusOK, content, contentType)
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Length", strconv.FormatInt(stat.Size(), 10))
+	w.WriteHeader(http.StatusOK)
+	if r != nil && r.Method == http.MethodHead {
+		return
+	}
+	_, _ = io.Copy(w, f)
 }
 
 func writeText(w http.ResponseWriter, status int, body string, contentType string) {
