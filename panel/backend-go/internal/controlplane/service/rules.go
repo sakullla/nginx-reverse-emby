@@ -839,7 +839,7 @@ func (s *ruleService) normalizeHTTPRuleInput(ctx context.Context, input HTTPRule
 		relayObfs = *input.RelayObfs
 	}
 	if relayObfs && len(relayChain) == 0 {
-		return HTTPRule{}, fmt.Errorf("%w: relay_obfs requires non-empty relay_chain", ErrInvalidArgument)
+		relayObfs = false
 	}
 
 	passProxyHeaders := defaultPassProxyHeaders()

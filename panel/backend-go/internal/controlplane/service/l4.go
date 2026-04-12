@@ -329,10 +329,10 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 		relayObfs = *input.RelayObfs
 	}
 	if relayObfs && protocol != "tcp" {
-		return L4Rule{}, fmt.Errorf("%w: relay_obfs is only supported for tcp protocol", ErrInvalidArgument)
+		relayObfs = false
 	}
 	if relayObfs && len(relayChain) == 0 {
-		return L4Rule{}, fmt.Errorf("%w: relay_obfs requires non-empty relay_chain", ErrInvalidArgument)
+		relayObfs = false
 	}
 
 	tags := append([]string(nil), fallback.Tags...)

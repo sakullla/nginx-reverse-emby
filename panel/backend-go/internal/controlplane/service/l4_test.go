@@ -117,35 +117,41 @@ func TestL4RuleServiceCreateRejectsRelayChainForUDP(t *testing.T) {
 	}
 }
 
-func TestL4RuleServiceCreateRejectsRelayObfsWithoutRelayChain(t *testing.T) {
+func TestL4RuleServiceCreateClearsRelayObfsWithoutRelayChain(t *testing.T) {
 	store := &fakeL4Store{l4RulesByID: map[string][]storage.L4RuleRow{}}
 	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
 
-	_, err := svc.Create(context.Background(), "local", L4RuleInput{
+	rule, err := svc.Create(context.Background(), "local", L4RuleInput{
 		Protocol:     stringPtrL4("tcp"),
 		ListenPort:   intPtrL4(9000),
 		UpstreamHost: stringPtrL4("upstream"),
 		UpstreamPort: intPtrL4(9001),
 		RelayObfs:    boolPtrL4(true),
 	})
-	if err == nil || err.Error() != "invalid argument: relay_obfs requires non-empty relay_chain" {
+	if err != nil {
 		t.Fatalf("Create() error = %v", err)
+	}
+	if rule.RelayObfs {
+		t.Fatalf("expected relay_obfs to be cleared when relay_chain is empty")
 	}
 }
 
-func TestL4RuleServiceCreateRejectsRelayObfsForUDP(t *testing.T) {
+func TestL4RuleServiceCreateClearsRelayObfsForUDP(t *testing.T) {
 	store := &fakeL4Store{l4RulesByID: map[string][]storage.L4RuleRow{}}
 	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
 
-	_, err := svc.Create(context.Background(), "local", L4RuleInput{
+	rule, err := svc.Create(context.Background(), "local", L4RuleInput{
 		Protocol:     stringPtrL4("udp"),
 		ListenPort:   intPtrL4(9000),
 		UpstreamHost: stringPtrL4("upstream"),
 		UpstreamPort: intPtrL4(9001),
 		RelayObfs:    boolPtrL4(true),
 	})
-	if err == nil || err.Error() != "invalid argument: relay_obfs is only supported for tcp protocol" {
+	if err != nil {
 		t.Fatalf("Create() error = %v", err)
+	}
+	if rule.RelayObfs {
+		t.Fatalf("expected relay_obfs to be cleared for udp protocol")
 	}
 }
 

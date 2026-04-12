@@ -334,17 +334,20 @@ func TestRuleServiceCreateRejectsUnknownRelayChainListener(t *testing.T) {
 	}
 }
 
-func TestRuleServiceCreateRejectsRelayObfsWithoutRelayChain(t *testing.T) {
+func TestRuleServiceCreateClearsRelayObfsWithoutRelayChain(t *testing.T) {
 	store := &fakeRuleStore{rulesByAgent: map[string][]storage.HTTPRuleRow{}}
 	svc := NewRuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
 
-	_, err := svc.Create(context.Background(), "local", HTTPRuleInput{
+	rule, err := svc.Create(context.Background(), "local", HTTPRuleInput{
 		FrontendURL: stringPtrRule("https://relay.example.com"),
 		BackendURL:  stringPtrRule("http://127.0.0.1:8096"),
 		RelayObfs:   boolPtrRule(true),
 	})
-	if err == nil || err.Error() != "invalid argument: relay_obfs requires non-empty relay_chain" {
+	if err != nil {
 		t.Fatalf("Create() error = %v", err)
+	}
+	if rule.RelayObfs {
+		t.Fatalf("expected relay_obfs to be cleared when relay_chain is empty")
 	}
 }
 
