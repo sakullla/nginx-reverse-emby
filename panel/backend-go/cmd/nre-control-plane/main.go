@@ -2,9 +2,13 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"os/signal"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -57,7 +61,44 @@ var newLocalAgentRuntime = func(cfg config.Config, store localagent.Store) (loca
 	return localagent.NewRuntime(cfg, store)
 }
 
+func guardLegacyNonSQLiteState(dataDir string) error {
+	dbPath := filepath.Join(dataDir, "panel.db")
+	if _, err := os.Stat(dbPath); err == nil {
+		return nil
+	}
+
+	if v := strings.TrimSpace(os.Getenv("PANEL_STORAGE_BACKEND")); v != "" && !strings.EqualFold(v, "sqlite") {
+		return fmt.Errorf("detected legacy storage backend %q in PANEL_STORAGE_BACKEND; migrate data to SQLite before starting the pure-Go control plane", v)
+	}
+
+	legacyMarkers := []string{
+		filepath.Join(dataDir, "state.json"),
+		filepath.Join(dataDir, "agents.json"),
+		filepath.Join(dataDir, "prisma", "schema.prisma"),
+	}
+	for _, p := range legacyMarkers {
+		if _, err := os.Stat(p); err == nil {
+			return fmt.Errorf("detected legacy state file %q; migrate data to panel.db before starting the pure-Go control plane", p)
+		}
+	}
+
+	entries, err := os.ReadDir(dataDir)
+	if err == nil {
+		for _, entry := range entries {
+			name := entry.Name()
+			if strings.HasSuffix(name, ".db") && !strings.EqualFold(name, "panel.db") {
+				return fmt.Errorf("detected legacy database file %q; migrate data to panel.db before starting the pure-Go control plane", name)
+			}
+		}
+	}
+
+	return nil
+}
+
 var initializeControlPlane = func(ctx context.Context, cfg config.Config) error {
+	if err := guardLegacyNonSQLiteState(cfg.DataDir); err != nil {
+		return err
+	}
 	store, err := storage.NewSQLiteStore(cfg.DataDir, cfg.LocalAgentID)
 	if err != nil {
 		return err
