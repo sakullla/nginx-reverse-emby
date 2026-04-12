@@ -466,6 +466,9 @@ func (s *certificateService) Issue(ctx context.Context, agentID string, id int) 
 			return ManagedCertificate{}, fmt.Errorf("%w: managed certificates require ACME_DNS_PROVIDER=cf and CF_Token", ErrInvalidArgument)
 		}
 
+		unlock := issuanceLock(id)
+		defer unlock()
+
 		issueResult, err := issuer.Issue(ctx, current)
 		if err != nil {
 			return s.failManagedCertificateIssue(ctx, rows, targetIndex, current, maxRevision, err, true)
@@ -740,7 +743,10 @@ func (s *certificateService) issueManagedCertificateWithoutRevisionBump(ctx cont
 		return ManagedCertificate{}, fmt.Errorf("%w: managed certificates require ACME_DNS_PROVIDER=cf and CF_Token", ErrInvalidArgument)
 	}
 
-	issueResult, err := issuer.Issue(ctx, current)
+		unlock := issuanceLock(current.ID)
+		defer unlock()
+
+		issueResult, err := issuer.Issue(ctx, current)
 	if err != nil {
 		return s.failManagedCertificateIssue(ctx, rows, targetIndex, current, maxRevision, err, false)
 	}
