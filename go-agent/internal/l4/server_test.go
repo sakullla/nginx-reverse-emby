@@ -472,6 +472,147 @@ func TestTCPRelayProxy(t *testing.T) {
 	}
 }
 
+func TestTCPRelayProxyPassesObfsTransportMode(t *testing.T) {
+	relayCert := mustIssueL4RelayCertificate(t, "relay.internal.test")
+	relayPublicPort := pickFreeTCPPort(t)
+	relayRequests := make(chan l4RelayTestRequest, 1)
+	stopRelay := startL4RelayServer(t, fmt.Sprintf("127.0.0.1:%d", relayPublicPort), relayCert, relayRequests)
+	defer stopRelay()
+	relayListenPort := pickFreeTCPPort(t)
+
+	listenPort := pickFreeTCPPort(t)
+	rule := model.L4Rule{
+		Protocol:     "tcp",
+		ListenHost:   "127.0.0.1",
+		ListenPort:   listenPort,
+		UpstreamHost: "127.0.0.1",
+		UpstreamPort: pickFreeTCPPort(t),
+		RelayChain:   []int{51},
+		RelayObfs:    true,
+	}
+
+	srv, err := NewServer(context.Background(), []model.L4Rule{rule}, []model.RelayListener{{
+		ID:         51,
+		AgentID:    "remote-relay-agent",
+		Name:       "relay-hop",
+		ListenHost: "127.0.0.2",
+		BindHosts:  []string{"127.0.0.2"},
+		ListenPort: relayListenPort,
+		PublicHost: "127.0.0.1",
+		PublicPort: relayPublicPort,
+		Enabled:    true,
+		TLSMode:    "pin_only",
+		PinSet: []model.RelayPin{{
+			Type:  "sha256",
+			Value: mustL4RelaySPKIPin(t, relayCert),
+		}},
+	}}, &testL4RelayProvider{})
+	if err != nil {
+		t.Fatalf("failed to start relay-backed l4 server: %v", err)
+	}
+	defer srv.Close()
+
+	client, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", listenPort))
+	if err != nil {
+		t.Fatalf("failed to dial relay-backed listener: %v", err)
+	}
+	defer client.Close()
+
+	select {
+	case relayReq := <-relayRequests:
+		if relayReq.Transport.Mode != "first_segment_v1" {
+			t.Fatalf("unexpected relay transport mode %q", relayReq.Transport.Mode)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected l4 tcp proxy to traverse relay listener")
+	}
+}
+
+func TestTCPRelayProxyWithRelayObfsRoundTripsPayload(t *testing.T) {
+	upstream := newTCPEchoListener(t)
+	defer upstream.Close()
+
+	relayCert := mustIssueL4RelayCertificate(t, "relay.internal.test")
+	provider := &runtimeL4RelayProvider{
+		serverCertificates: map[int]tls.Certificate{
+			510: relayCert,
+		},
+	}
+
+	certificateID := 510
+	relayListener := relay.Listener{
+		ID:            51,
+		AgentID:       "relay-agent",
+		Name:          "relay-hop",
+		ListenHost:    "127.0.0.1",
+		BindHosts:     []string{"127.0.0.1"},
+		ListenPort:    pickFreeTCPPort(t),
+		PublicHost:    "127.0.0.1",
+		PublicPort:    0,
+		Enabled:       true,
+		CertificateID: &certificateID,
+		TLSMode:       "pin_only",
+		PinSet: []model.RelayPin{{
+			Type:  "sha256",
+			Value: mustL4RelaySPKIPin(t, relayCert),
+		}},
+	}
+	relayServer, err := relay.Start(context.Background(), []relay.Listener{relayListener}, provider)
+	if err != nil {
+		t.Fatalf("failed to start relay runtime: %v", err)
+	}
+	defer relayServer.Close()
+
+	listenPort := pickFreeTCPPort(t)
+	rule := model.L4Rule{
+		Protocol:     "tcp",
+		ListenHost:   "127.0.0.1",
+		ListenPort:   listenPort,
+		UpstreamHost: "127.0.0.1",
+		UpstreamPort: upstream.Port(),
+		RelayChain:   []int{51},
+		RelayObfs:    true,
+	}
+
+	srv, err := NewServer(context.Background(), []model.L4Rule{rule}, []model.RelayListener{{
+		ID:            relayListener.ID,
+		AgentID:       relayListener.AgentID,
+		Name:          relayListener.Name,
+		ListenHost:    relayListener.ListenHost,
+		BindHosts:     relayListener.BindHosts,
+		ListenPort:    relayListener.ListenPort,
+		PublicHost:    relayListener.PublicHost,
+		PublicPort:    relayListener.PublicPort,
+		Enabled:       relayListener.Enabled,
+		CertificateID: relayListener.CertificateID,
+		TLSMode:       relayListener.TLSMode,
+		PinSet:        relayListener.PinSet,
+	}}, provider)
+	if err != nil {
+		t.Fatalf("failed to start relay-backed l4 server: %v", err)
+	}
+	defer srv.Close()
+
+	client, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", listenPort))
+	if err != nil {
+		t.Fatalf("failed to dial relay-backed listener: %v", err)
+	}
+	defer client.Close()
+
+	payload := bytes.Repeat([]byte{0x16, 0x03, 0x01, 0x20}, 256)
+	if _, err := client.Write(payload); err != nil {
+		t.Fatalf("write to relay-backed proxy: %v", err)
+	}
+
+	reply := make([]byte, len(payload))
+	if _, err := io.ReadFull(client, reply); err != nil {
+		t.Fatalf("read from relay-backed proxy: %v", err)
+	}
+	if !bytes.Equal(payload, reply) {
+		t.Fatalf("relay-backed tcp payload mismatch; got %q", reply)
+	}
+}
+
 func TestResolveRelayHopsUsesPublicEndpointAndFallbacks(t *testing.T) {
 	rule := model.L4Rule{
 		Protocol:   "tcp",
@@ -1052,10 +1193,30 @@ func (p *testL4RelayProvider) TrustedCAPool(_ context.Context, _ []int) (*x509.C
 	return x509.NewCertPool(), nil
 }
 
+type runtimeL4RelayProvider struct {
+	serverCertificates map[int]tls.Certificate
+}
+
+func (p *runtimeL4RelayProvider) ServerCertificate(_ context.Context, certificateID int) (*tls.Certificate, error) {
+	cert, ok := p.serverCertificates[certificateID]
+	if !ok {
+		return nil, fmt.Errorf("server certificate %d not available in l4 relay runtime provider", certificateID)
+	}
+	copyCert := cert
+	return &copyCert, nil
+}
+
+func (p *runtimeL4RelayProvider) TrustedCAPool(_ context.Context, _ []int) (*x509.CertPool, error) {
+	return x509.NewCertPool(), nil
+}
+
 type l4RelayTestRequest struct {
-	Network string      `json:"network"`
-	Target  string      `json:"target"`
-	Chain   []relay.Hop `json:"chain,omitempty"`
+	Network   string      `json:"network"`
+	Target    string      `json:"target"`
+	Chain     []relay.Hop `json:"chain,omitempty"`
+	Transport struct {
+		Mode string `json:"mode,omitempty"`
+	} `json:"transport,omitempty"`
 }
 
 func startL4RelayServer(
@@ -1092,12 +1253,17 @@ func startL4RelayServer(
 			return
 		}
 
+		dataConn := net.Conn(conn)
+		if request.Transport.Mode == relay.TransportModeFirstSegmentV1 {
+			dataConn = relay.WrapConnWithFirstSegmentObfs(conn)
+		}
+
 		buf := make([]byte, 1024)
-		n, err := conn.Read(buf)
+		n, err := dataConn.Read(buf)
 		if err != nil {
 			return
 		}
-		_, _ = conn.Write(buf[:n])
+		_, _ = dataConn.Write(buf[:n])
 	}()
 
 	return func() {

@@ -12,6 +12,10 @@ import (
 	"sync"
 )
 
+type DialOptions struct {
+	TransportMode string
+}
+
 type Server struct {
 	ctx      context.Context
 	cancel   context.CancelFunc
@@ -129,6 +133,17 @@ func (s *Server) handleConn(rawConn net.Conn, listener Listener) {
 		})
 		return
 	}
+	switch request.Transport.Mode {
+	case relayTransportModeOff, relayTransportModeFirstSegmentV1:
+	default:
+		_ = withFrameDeadline(clientConn, func() error {
+			return writeRelayResponse(clientConn, relayResponse{
+				OK:    false,
+				Error: fmt.Sprintf("relay transport mode %s is not supported", request.Transport.Mode),
+			})
+		})
+		return
+	}
 
 	upstream, err := s.openUpstream(request)
 	if err != nil {
@@ -147,12 +162,19 @@ func (s *Server) handleConn(rawConn net.Conn, listener Listener) {
 		return
 	}
 
-	pipeBothWays(wrapIdleConn(clientConn), wrapIdleConn(upstream))
+	relayClientConn := net.Conn(clientConn)
+	if request.Transport.Mode == relayTransportModeFirstSegmentV1 {
+		relayClientConn = wrapConnWithFirstSegmentObfs(clientConn, defaultObfsConfig())
+	}
+
+	pipeBothWays(wrapIdleConn(relayClientConn), wrapIdleConn(upstream))
 }
 
 func (s *Server) openUpstream(request relayRequest) (net.Conn, error) {
 	if len(request.Chain) > 0 {
-		return Dial(s.ctx, request.Network, request.Target, request.Chain, s.provider)
+		return Dial(s.ctx, request.Network, request.Target, request.Chain, s.provider, DialOptions{
+			TransportMode: string(request.Transport.Mode),
+		})
 	}
 
 	if !strings.EqualFold(request.Network, "tcp") {
@@ -165,7 +187,7 @@ func (s *Server) openUpstream(request relayRequest) (net.Conn, error) {
 	return dialTCP(s.ctx, request.Target)
 }
 
-func Dial(ctx context.Context, network, target string, chain []Hop, provider TLSMaterialProvider) (net.Conn, error) {
+func Dial(ctx context.Context, network, target string, chain []Hop, provider TLSMaterialProvider, opts ...DialOptions) (net.Conn, error) {
 	if provider == nil {
 		return nil, fmt.Errorf("tls material provider is required")
 	}
@@ -177,6 +199,10 @@ func Dial(ctx context.Context, network, target string, chain []Hop, provider TLS
 	}
 	if _, _, err := net.SplitHostPort(target); err != nil {
 		return nil, fmt.Errorf("invalid relay target %q: %w", target, err)
+	}
+	var options DialOptions
+	if len(opts) > 0 {
+		options = opts[0]
 	}
 
 	firstHop := chain[0]
@@ -207,6 +233,9 @@ func Dial(ctx context.Context, network, target string, chain []Hop, provider TLS
 		Network: "tcp",
 		Target:  target,
 		Chain:   append([]Hop(nil), chain[1:]...),
+		Transport: relayTransport{
+			Mode: relayTransportMode(options.TransportMode),
+		},
 	}
 	if err := withFrameDeadline(relayConn, func() error {
 		return writeRelayRequest(relayConn, request)
@@ -231,6 +260,10 @@ func Dial(ctx context.Context, network, target string, chain []Hop, provider TLS
 			return nil, fmt.Errorf("relay connection failed")
 		}
 		return nil, fmt.Errorf("relay connection failed: %s", response.Error)
+	}
+
+	if request.Transport.Mode == relayTransportModeFirstSegmentV1 {
+		return wrapConnWithFirstSegmentObfs(relayConn, defaultObfsConfig()), nil
 	}
 
 	return relayConn, nil

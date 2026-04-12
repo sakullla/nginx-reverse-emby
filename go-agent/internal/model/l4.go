@@ -24,5 +24,6 @@ type L4Rule struct {
 	LoadBalancing LoadBalancing `json:"load_balancing,omitempty"`
 	Tuning        L4Tuning      `json:"tuning,omitempty"`
 	RelayChain    []int         `json:"relay_chain,omitempty"`
+	RelayObfs     bool          `json:"relay_obfs,omitempty"`
 	Revision      int64         `json:"revision,omitempty"`
 }

@@ -46,6 +46,7 @@ type L4Rule struct {
 	LoadBalancing L4LoadBalancing `json:"load_balancing"`
 	Tuning        L4Tuning        `json:"tuning"`
 	RelayChain    []int           `json:"relay_chain"`
+	RelayObfs     bool            `json:"relay_obfs"`
 	Enabled       bool            `json:"enabled"`
 	Tags          []string        `json:"tags"`
 	Revision      int             `json:"revision"`
@@ -63,6 +64,7 @@ type L4RuleInput struct {
 	LoadBalancing *L4LoadBalancing `json:"load_balancing,omitempty"`
 	Tuning        *L4Tuning        `json:"tuning,omitempty"`
 	RelayChain    *[]int           `json:"relay_chain,omitempty"`
+	RelayObfs     *bool            `json:"relay_obfs,omitempty"`
 	Enabled       *bool            `json:"enabled,omitempty"`
 	Tags          *[]string        `json:"tags,omitempty"`
 }
@@ -319,6 +321,20 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 		}
 	}
 
+	relayObfs := false
+	if fallback.ID > 0 {
+		relayObfs = fallback.RelayObfs
+	}
+	if input.RelayObfs != nil {
+		relayObfs = *input.RelayObfs
+	}
+	if relayObfs && protocol != "tcp" {
+		return L4Rule{}, fmt.Errorf("%w: relay_obfs is only supported for tcp protocol", ErrInvalidArgument)
+	}
+	if relayObfs && len(relayChain) == 0 {
+		return L4Rule{}, fmt.Errorf("%w: relay_obfs requires non-empty relay_chain", ErrInvalidArgument)
+	}
+
 	tags := append([]string(nil), fallback.Tags...)
 	if input.Tags != nil {
 		tags = normalizeTags(*input.Tags)
@@ -353,6 +369,7 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 		LoadBalancing: loadBalancing,
 		Tuning:        tuning,
 		RelayChain:    relayChain,
+		RelayObfs:     relayObfs,
 		Enabled:       enabled,
 		Tags:          tags,
 		Revision:      fallback.Revision,
@@ -499,6 +516,7 @@ func l4RuleFromRow(row storage.L4RuleRow) L4Rule {
 		LoadBalancing: L4LoadBalancing{Strategy: "round_robin"},
 		Tuning:        L4Tuning{ProxyProtocol: L4ProxyProtocolTuning{}},
 		RelayChain:    []int{},
+		RelayObfs:     row.RelayObfs,
 		Enabled:       row.Enabled,
 		Tags:          parseStringArray(row.TagsJSON),
 		Revision:      row.Revision,
@@ -536,6 +554,7 @@ func l4RuleToRow(rule L4Rule) storage.L4RuleRow {
 		LoadBalancingJSON: marshalJSON(rule.LoadBalancing, `{"strategy":"round_robin"}`),
 		TuningJSON:        marshalJSON(rule.Tuning, `{"proxy_protocol":{"decode":false,"send":false}}`),
 		RelayChainJSON:    marshalJSON(rule.RelayChain, "[]"),
+		RelayObfs:         rule.RelayObfs,
 		Enabled:           rule.Enabled,
 		TagsJSON:          marshalJSON(rule.Tags, "[]"),
 		Revision:          rule.Revision,

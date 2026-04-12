@@ -9,10 +9,27 @@ import (
 
 const maxRequestSize = 1 << 20
 
+const (
+	TransportModeOff            = ""
+	TransportModeFirstSegmentV1 = "first_segment_v1"
+)
+
+type relayTransportMode string
+
+const (
+	relayTransportModeOff            relayTransportMode = TransportModeOff
+	relayTransportModeFirstSegmentV1 relayTransportMode = TransportModeFirstSegmentV1
+)
+
+type relayTransport struct {
+	Mode relayTransportMode `json:"mode,omitempty"`
+}
+
 type relayRequest struct {
-	Network string `json:"network"`
-	Target  string `json:"target"`
-	Chain   []Hop  `json:"chain,omitempty"`
+	Network   string         `json:"network"`
+	Target    string         `json:"target"`
+	Chain     []Hop          `json:"chain,omitempty"`
+	Transport relayTransport `json:"transport,omitempty"`
 }
 
 type relayResponse struct {

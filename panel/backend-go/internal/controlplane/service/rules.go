@@ -22,6 +22,7 @@ type HTTPRuleInput struct {
 	Tags             *[]string           `json:"tags,omitempty"`
 	ProxyRedirect    *bool               `json:"proxy_redirect,omitempty"`
 	RelayChain       *[]int              `json:"relay_chain,omitempty"`
+	RelayObfs        *bool               `json:"relay_obfs,omitempty"`
 	PassProxyHeaders *bool               `json:"pass_proxy_headers,omitempty"`
 	UserAgent        *string             `json:"user_agent,omitempty"`
 	CustomHeaders    *[]HTTPCustomHeader `json:"custom_headers,omitempty"`
@@ -830,6 +831,17 @@ func (s *ruleService) normalizeHTTPRuleInput(ctx context.Context, input HTTPRule
 		return HTTPRule{}, err
 	}
 
+	relayObfs := false
+	if fallback.ID > 0 {
+		relayObfs = fallback.RelayObfs
+	}
+	if input.RelayObfs != nil {
+		relayObfs = *input.RelayObfs
+	}
+	if relayObfs && len(relayChain) == 0 {
+		return HTTPRule{}, fmt.Errorf("%w: relay_obfs requires non-empty relay_chain", ErrInvalidArgument)
+	}
+
 	passProxyHeaders := defaultPassProxyHeaders()
 	if fallback.ID > 0 {
 		passProxyHeaders = fallback.PassProxyHeaders
@@ -859,6 +871,7 @@ func (s *ruleService) normalizeHTTPRuleInput(ctx context.Context, input HTTPRule
 		Tags:             tags,
 		ProxyRedirect:    proxyRedirect,
 		RelayChain:       relayChain,
+		RelayObfs:        relayObfs,
 		PassProxyHeaders: passProxyHeaders,
 		UserAgent:        userAgent,
 		CustomHeaders:    customHeaders,
@@ -996,6 +1009,7 @@ func httpRuleFromRow(row storage.HTTPRuleRow) HTTPRule {
 		Tags:             parseStringArray(row.TagsJSON),
 		ProxyRedirect:    row.ProxyRedirect,
 		RelayChain:       parseIntArray(row.RelayChainJSON),
+		RelayObfs:        row.RelayObfs,
 		PassProxyHeaders: row.PassProxyHeaders,
 		UserAgent:        row.UserAgent,
 		CustomHeaders:    parseCustomHeaders(row.CustomHeadersJSON),
@@ -1015,6 +1029,7 @@ func httpRuleToRow(rule HTTPRule) storage.HTTPRuleRow {
 		TagsJSON:          marshalJSON(rule.Tags, "[]"),
 		ProxyRedirect:     rule.ProxyRedirect,
 		RelayChainJSON:    marshalJSON(rule.RelayChain, "[]"),
+		RelayObfs:         rule.RelayObfs,
 		PassProxyHeaders:  rule.PassProxyHeaders,
 		UserAgent:         rule.UserAgent,
 		CustomHeadersJSON: marshalJSON(rule.CustomHeaders, "[]"),
