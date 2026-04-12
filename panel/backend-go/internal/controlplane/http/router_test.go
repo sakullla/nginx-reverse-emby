@@ -513,12 +513,15 @@ func TestRouterServesAgentControlEndpoints(t *testing.T) {
 		AgentService: fakeAgentService{
 			agentsByID: map[string]service.AgentSummary{
 				"edge-1": {
-					ID:       "edge-1",
-					Name:     "Edge 1",
-					Mode:     "pull",
-					Status:   "online",
-					IsLocal:  false,
-					AgentURL: "",
+					ID:                   "edge-1",
+					Name:                 "Edge 1",
+					Mode:                 "pull",
+					Status:               "online",
+					IsLocal:              false,
+					AgentURL:             "",
+					RuntimePackageSHA256: "runtime-sha",
+					DesiredPackageSHA256: "desired-sha",
+					PackageSyncStatus:    "pending",
 				},
 			},
 			updateAgent: service.AgentSummary{
@@ -562,6 +565,23 @@ func TestRouterServesAgentControlEndpoints(t *testing.T) {
 	router.ServeHTTP(getResp, getReq)
 	if getResp.Code != http.StatusOK {
 		t.Fatalf("GET /panel-api/agents/edge-1 = %d", getResp.Code)
+	}
+	var getPayload map[string]any
+	if err := json.Unmarshal(getResp.Body.Bytes(), &getPayload); err != nil {
+		t.Fatalf("json.Unmarshal(get agent) error = %v", err)
+	}
+	agentPayload, ok := getPayload["agent"].(map[string]any)
+	if !ok {
+		t.Fatalf("agent payload = %#v", getPayload["agent"])
+	}
+	if agentPayload["runtime_package_sha256"] != "runtime-sha" {
+		t.Fatalf("runtime_package_sha256 = %v", agentPayload["runtime_package_sha256"])
+	}
+	if agentPayload["desired_package_sha256"] != "desired-sha" {
+		t.Fatalf("desired_package_sha256 = %v", agentPayload["desired_package_sha256"])
+	}
+	if agentPayload["package_sync_status"] != "pending" {
+		t.Fatalf("package_sync_status = %v", agentPayload["package_sync_status"])
 	}
 
 	patchReq := httptest.NewRequest(http.MethodPatch, "/panel-api/agents/edge-1", bytes.NewBufferString(`{"name":"Edge Renamed"}`))

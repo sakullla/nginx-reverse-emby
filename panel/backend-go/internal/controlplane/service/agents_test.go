@@ -825,6 +825,68 @@ func TestAgentServiceHeartbeatPersistsReportedStats(t *testing.T) {
 	}
 }
 
+func TestAgentServiceHeartbeatPersistsRuntimePackageMetadata(t *testing.T) {
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID:              "edge-1",
+			Name:            "edge-1",
+			AgentToken:      "agent-token",
+			Platform:        "linux-amd64",
+			DesiredVersion:  "",
+			DesiredRevision: 2,
+			CurrentRevision: 1,
+			LastApplyStatus: "success",
+		}},
+		snapshot: storage.Snapshot{
+			DesiredVersion: "",
+			Revision:       2,
+			VersionPackage: &storage.VersionPackage{
+				Platform: "linux-amd64",
+				URL:      "https://example.com/nre-agent",
+				SHA256:   "desired-sha",
+			},
+		},
+	}
+	svc := NewAgentService(config.Config{}, store)
+
+	reply, err := svc.Heartbeat(context.Background(), HeartbeatRequest{
+		CurrentRevision: 1,
+		Version:         "1.2.3",
+		Platform:        "linux-amd64",
+		RuntimePackage: RuntimePackageInfo{
+			Version:  "1.2.3",
+			Platform: "linux",
+			Arch:     "amd64",
+			SHA256:   "runtime-sha",
+		},
+	}, "agent-token")
+	if err != nil {
+		t.Fatalf("Heartbeat() error = %v", err)
+	}
+	if store.savedAgent.RuntimePackageSHA256 != "runtime-sha" {
+		t.Fatalf("saved runtime sha = %q", store.savedAgent.RuntimePackageSHA256)
+	}
+	if store.savedAgent.RuntimePackageArch != "amd64" {
+		t.Fatalf("saved runtime arch = %q", store.savedAgent.RuntimePackageArch)
+	}
+	summary, err := svc.Get(context.Background(), "edge-1")
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if summary.RuntimePackageSHA256 != "runtime-sha" {
+		t.Fatalf("summary runtime sha = %q", summary.RuntimePackageSHA256)
+	}
+	if summary.DesiredPackageSHA256 != "desired-sha" {
+		t.Fatalf("summary desired sha = %q", summary.DesiredPackageSHA256)
+	}
+	if summary.PackageSyncStatus != "pending" {
+		t.Fatalf("summary package status = %q", summary.PackageSyncStatus)
+	}
+	if reply.VersionPackageMeta == nil || reply.VersionPackageMeta.SHA256 != "desired-sha" {
+		t.Fatalf("reply VersionPackageMeta = %+v", reply.VersionPackageMeta)
+	}
+}
+
 func TestAgentServiceHeartbeatNormalizesURLAndIP(t *testing.T) {
 	store := &fakeStore{
 		agents: []storage.AgentRow{{

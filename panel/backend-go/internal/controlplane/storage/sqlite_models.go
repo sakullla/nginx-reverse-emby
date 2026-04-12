@@ -7,6 +7,10 @@ type AgentRow struct {
 	AgentToken            string `gorm:"column:agent_token"`
 	Version               string `gorm:"column:version"`
 	Platform              string `gorm:"column:platform"`
+	RuntimePackageVersion string `gorm:"column:runtime_package_version"`
+	RuntimePackagePlatform string `gorm:"column:runtime_package_platform"`
+	RuntimePackageArch    string `gorm:"column:runtime_package_arch"`
+	RuntimePackageSHA256  string `gorm:"column:runtime_package_sha256"`
 	DesiredVersion        string `gorm:"column:desired_version"`
 	TagsJSON              string `gorm:"column:tags"`
 	CapabilitiesJSON      string `gorm:"column:capabilities"`

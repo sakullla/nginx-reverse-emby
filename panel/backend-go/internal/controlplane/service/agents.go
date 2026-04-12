@@ -47,6 +47,12 @@ type AgentSummary struct {
 	AgentURL          string   `json:"agent_url"`
 	Version           string   `json:"version"`
 	Platform          string   `json:"platform"`
+	RuntimePackageVersion string `json:"runtime_package_version"`
+	RuntimePackagePlatform string `json:"runtime_package_platform"`
+	RuntimePackageArch string `json:"runtime_package_arch"`
+	RuntimePackageSHA256 string `json:"runtime_package_sha256"`
+	DesiredPackageSHA256 string `json:"desired_package_sha256"`
+	PackageSyncStatus string `json:"package_sync_status"`
 	DesiredVersion    string   `json:"desired_version"`
 	Tags              []string `json:"tags"`
 	Mode              string   `json:"mode"`
@@ -103,6 +109,7 @@ type HeartbeatRequest struct {
 	LastApplyRevision         int64                               `json:"last_apply_revision"`
 	Version                   string                              `json:"version"`
 	Platform                  string                              `json:"platform"`
+	RuntimePackage            RuntimePackageInfo                  `json:"runtime_package"`
 	AgentURL                  string                              `json:"agent_url"`
 	Tags                      []string                            `json:"tags"`
 	Capabilities              []string                            `json:"capabilities"`
@@ -129,6 +136,13 @@ type HeartbeatReply struct {
 	RelayListeners      []storage.RelayListener            `json:"relay_listeners"`
 	Certificates        []storage.ManagedCertificateBundle `json:"certificates"`
 	CertificatePolicies []storage.ManagedCertificatePolicy `json:"certificate_policies"`
+}
+
+type RuntimePackageInfo struct {
+	Version  string `json:"version"`
+	Platform string `json:"platform"`
+	Arch     string `json:"arch"`
+	SHA256   string `json:"sha256"`
 }
 
 type RegisterRequest struct {
@@ -555,6 +569,10 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 
 	row.Version = defaultString(request.Version, row.Version)
 	row.Platform = defaultString(request.Platform, row.Platform)
+	row.RuntimePackageVersion = defaultString(request.RuntimePackage.Version, row.RuntimePackageVersion)
+	row.RuntimePackagePlatform = defaultString(request.RuntimePackage.Platform, row.RuntimePackagePlatform)
+	row.RuntimePackageArch = defaultString(request.RuntimePackage.Arch, row.RuntimePackageArch)
+	row.RuntimePackageSHA256 = defaultString(request.RuntimePackage.SHA256, row.RuntimePackageSHA256)
 	hasAgentURL := request.HasAgentURL || strings.TrimSpace(request.AgentURL) != ""
 	if hasAgentURL {
 		agentURL := trimTrailingSlash(request.AgentURL)
@@ -737,30 +755,61 @@ func (s *agentService) summaryForRow(ctx context.Context, row storage.AgentRow) 
 	if err != nil {
 		return AgentSummary{}, err
 	}
+	snapshot, err := s.store.LoadAgentSnapshot(ctx, row.ID, storage.AgentSnapshotInput{
+		DesiredVersion:  row.DesiredVersion,
+		DesiredRevision: row.DesiredRevision,
+		CurrentRevision: row.CurrentRevision,
+		Platform:        row.Platform,
+	})
+	if err != nil {
+		return AgentSummary{}, err
+	}
+	desiredPackageSHA256 := ""
+	packageSyncStatus := ""
+	if snapshot.VersionPackage != nil {
+		desiredPackageSHA256 = strings.TrimSpace(snapshot.VersionPackage.SHA256)
+		packageSyncStatus = derivePackageSyncStatus(row, snapshot.VersionPackage)
+	}
 
 	return AgentSummary{
-		ID:                row.ID,
-		Name:              row.Name,
-		AgentURL:          row.AgentURL,
-		Version:           row.Version,
-		Platform:          row.Platform,
-		DesiredVersion:    row.DesiredVersion,
-		Tags:              parseStringArray(row.TagsJSON),
-		Mode:              defaultString(row.Mode, "pull"),
-		DesiredRevision:   row.DesiredRevision,
-		CurrentRevision:   row.CurrentRevision,
-		LastApplyRevision: row.LastApplyRevision,
-		LastApplyStatus:   row.LastApplyStatus,
-		LastApplyMessage:  row.LastApplyMessage,
-		LastSeenAt:        row.LastSeenAt,
-		Status:            s.agentStatus(row),
-		Error:             "",
-		IsLocal:           false,
-		LastSeenIP:        row.LastSeenIP,
-		Capabilities:      parseStringArray(row.CapabilitiesJSON),
-		HTTPRulesCount:    len(rules),
-		L4RulesCount:      len(l4Rules),
+		ID:                     row.ID,
+		Name:                   row.Name,
+		AgentURL:               row.AgentURL,
+		Version:                row.Version,
+		Platform:               row.Platform,
+		RuntimePackageVersion:  row.RuntimePackageVersion,
+		RuntimePackagePlatform: row.RuntimePackagePlatform,
+		RuntimePackageArch:     row.RuntimePackageArch,
+		RuntimePackageSHA256:   row.RuntimePackageSHA256,
+		DesiredPackageSHA256:   desiredPackageSHA256,
+		PackageSyncStatus:      packageSyncStatus,
+		DesiredVersion:         row.DesiredVersion,
+		Tags:                   parseStringArray(row.TagsJSON),
+		Mode:                   defaultString(row.Mode, "pull"),
+		DesiredRevision:        row.DesiredRevision,
+		CurrentRevision:        row.CurrentRevision,
+		LastApplyRevision:      row.LastApplyRevision,
+		LastApplyStatus:        row.LastApplyStatus,
+		LastApplyMessage:       row.LastApplyMessage,
+		LastSeenAt:             row.LastSeenAt,
+		Status:                 s.agentStatus(row),
+		Error:                  "",
+		IsLocal:                false,
+		LastSeenIP:             row.LastSeenIP,
+		Capabilities:           parseStringArray(row.CapabilitiesJSON),
+		HTTPRulesCount:         len(rules),
+		L4RulesCount:           len(l4Rules),
 	}, nil
+}
+
+func derivePackageSyncStatus(row storage.AgentRow, pkg *storage.VersionPackage) string {
+	if pkg == nil || strings.TrimSpace(pkg.SHA256) == "" {
+		return ""
+	}
+	if strings.EqualFold(strings.TrimSpace(row.RuntimePackageSHA256), strings.TrimSpace(pkg.SHA256)) {
+		return "aligned"
+	}
+	return "pending"
 }
 
 type agentRelayRuleReference struct {
