@@ -142,30 +142,30 @@ onUnmounted(() => {
 }
 
 .modal--lg {
-  max-width: min(600px, 90vw);
+  max-width: min(640px, 90vw);
 }
 
 .modal--xl {
-  max-width: min(760px, 92vw);
+  max-width: min(800px, 92vw);
 }
 
-/* 2K 屏放宽 */
-@media (min-width: 1920px) {
-  .modal--lg {
-    max-width: min(1000px, 70vw);
-  }
-  .modal--xl {
-    max-width: min(1400px, 75vw);
-  }
-}
-
-/* 4K 屏进一步放宽 */
+/* 2K / 1440p */
 @media (min-width: 2560px) {
   .modal--lg {
-    max-width: min(1400px, 60vw);
+    max-width: min(1400px, 70vw);
   }
   .modal--xl {
-    max-width: min(1800px, 65vw);
+    max-width: min(2000px, 75vw);
+  }
+}
+
+/* 4K */
+@media (min-width: 3840px) {
+  .modal--lg {
+    max-width: min(2000px, 60vw);
+  }
+  .modal--xl {
+    max-width: min(2800px, 65vw);
   }
 }
 
