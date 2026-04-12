@@ -88,6 +88,9 @@ func TestRouterServesJoinScriptAndHeartbeat(t *testing.T) {
 	if !strings.Contains(script, "BIN_TMP_PATH=\"$BIN_PATH.tmp.$$\"") {
 		t.Fatalf("join-agent.sh missing staged binary temp path: %s", script)
 	}
+	if !strings.Contains(script, "run_root_cmd systemctl daemon-reload\n    SERVICE_EXISTS=\"0\"") {
+		t.Fatalf("join-agent.sh should reload systemd before checking service state: %s", script)
+	}
 	if !strings.Contains(script, "systemctl stop nginx-reverse-emby-agent.service") {
 		t.Fatalf("join-agent.sh missing systemd stop before replace: %s", script)
 	}

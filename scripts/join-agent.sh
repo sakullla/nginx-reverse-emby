@@ -359,11 +359,12 @@ EnvironmentFile=$ENV_FILE
 WorkingDirectory=$DATA_DIR
 ExecStart=$BIN_PATH
 Restart=always
-RestartSec=5
+    RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 EOF
+    run_root_cmd systemctl daemon-reload
     SERVICE_EXISTS="0"
     SERVICE_WAS_ACTIVE="0"
     if service_exists; then
@@ -376,7 +377,6 @@ EOF
         run_root_cmd systemctl stop nginx-reverse-emby-agent.service
     fi
     run_root_cmd mv "$BIN_TMP_PATH" "$BIN_PATH"
-    run_root_cmd systemctl daemon-reload
     if [ "$SERVICE_EXISTS" = "1" ]; then
         run_root_cmd systemctl enable nginx-reverse-emby-agent.service
         run_root_cmd systemctl start nginx-reverse-emby-agent.service
