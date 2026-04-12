@@ -685,6 +685,73 @@ func TestRuleServiceCreateHTTPRuleDoesNotCleanupStaleAutoManagedCertificate(t *t
 	}
 }
 
+func TestRuleServiceUpdateDoesNotCleanupAutoRelayListenerCertificate(t *testing.T) {
+	store := &fakeRuleStore{
+		rulesByAgent: map[string][]storage.HTTPRuleRow{
+			"local": {{
+				ID:                1,
+				AgentID:           "local",
+				FrontendURL:       "https://relay.example.com",
+				BackendURL:        "https://origin.example.com",
+				BackendsJSON:      `[{"url":"https://origin.example.com"}]`,
+				LoadBalancingJSON: `{"strategy":"round_robin"}`,
+				Enabled:           true,
+				ProxyRedirect:     true,
+				PassProxyHeaders:  false,
+				Revision:          7,
+			}},
+		},
+		managedCerts: []storage.ManagedCertificateRow{
+			{
+				ID:              5,
+				Domain:          "relay.example.com",
+				Enabled:         true,
+				Scope:           "domain",
+				IssuerMode:      "local_http01",
+				TargetAgentIDs:  `["local"]`,
+				TagsJSON:        `["manual"]`,
+				Usage:           "https",
+				CertificateType: "acme",
+				Status:          "active",
+				Revision:        10,
+			},
+			{
+				ID:              6,
+				Domain:          "relay-auto.example.com",
+				Enabled:         true,
+				Scope:           "domain",
+				IssuerMode:      "local_http01",
+				TargetAgentIDs:  `["local"]`,
+				TagsJSON:        `["relay","auto","auto:relay-listener","listener:1","agent:local"]`,
+				Usage:           "relay_tunnel",
+				CertificateType: "internal_ca",
+				Status:          "active",
+				Revision:        11,
+			},
+		},
+	}
+	before := append([]storage.ManagedCertificateRow(nil), store.managedCerts...)
+	svc := NewRuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	if _, err := svc.Update(context.Background(), "local", 1, HTTPRuleInput{
+		UserAgent: stringPtrRule("relay-check"),
+	}); err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	if len(store.managedCerts) != len(before) {
+		t.Fatalf("managed cert count = %d", len(store.managedCerts))
+	}
+	for i := range before {
+		if store.managedCerts[i] != before[i] {
+			t.Fatalf("managed cert[%d] changed unexpectedly: before=%+v after=%+v", i, before[i], store.managedCerts[i])
+		}
+	}
+}
+
 func TestRuleServiceCreateHTTPSReusesMatchingCertificateAndAddsAutoTarget(t *testing.T) {
 	store := &fakeRuleStore{
 		agents: []storage.AgentRow{{

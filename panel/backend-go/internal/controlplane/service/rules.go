@@ -482,7 +482,7 @@ func (s *ruleService) cleanupUnusedManagedCertificatesForAgent(
 ) error {
 	for index := 0; index < len(*rows); {
 		cert := managedCertificateFromRow((*rows)[index])
-		if !containsString(cert.TargetAgentIDs, agentID) || isSystemRelayCACertificate(cert) {
+		if !containsString(cert.TargetAgentIDs, agentID) || isSystemRelayCACertificate(cert) || isAutoRelayListenerCertificate(cert, 0) {
 			index++
 			continue
 		}
