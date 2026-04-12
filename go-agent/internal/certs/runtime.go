@@ -290,6 +290,9 @@ func (m *Manager) resolveMaterial(ctx context.Context, policy model.ManagedCerti
 		}
 		return m.loadOrIssueInternalCA(policy)
 	case "acme":
+		if policy.IssuerMode == "master_cf_dns" && strings.TrimSpace(bundle.CertPEM) != "" && strings.TrimSpace(bundle.KeyPEM) != "" {
+			return []byte(bundle.CertPEM), []byte(bundle.KeyPEM), nil
+		}
 		return m.loadOrIssueACME(ctx, policy)
 	default:
 		return nil, nil, fmt.Errorf("unsupported certificate type %q", policy.CertificateType)
