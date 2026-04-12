@@ -282,27 +282,40 @@ function normalizeL4Rule(rule = {}) {
   }
 }
 
+function normalizeHttpRulePayloadObject(payload = {}, options = {}) {
+  const includeRelayDefaults = options.includeRelayDefaults === true
+  const backends = normalizeHttpBackends(payload)
+  const normalizedPayload = {
+    ...payload,
+    frontend_url: String(payload.frontend_url || '').trim(),
+    backend_url: backends[0]?.url || '',
+    backends,
+    load_balancing: {
+      strategy: payload.load_balancing?.strategy === 'random' ? 'random' : 'round_robin'
+    },
+    tags: Array.isArray(payload.tags) ? payload.tags : [],
+    enabled: payload.enabled !== false,
+    proxy_redirect: payload.proxy_redirect !== false,
+    pass_proxy_headers: payload.pass_proxy_headers === true,
+    user_agent: String(payload.user_agent || ''),
+    custom_headers: Array.isArray(payload.custom_headers) ? payload.custom_headers : []
+  }
+  if (Array.isArray(payload.relay_chain)) {
+    normalizedPayload.relay_chain = payload.relay_chain
+  } else if (includeRelayDefaults) {
+    normalizedPayload.relay_chain = []
+  }
+  if (payload.relay_obfs != null) {
+    normalizedPayload.relay_obfs = payload.relay_obfs === true
+  } else if (includeRelayDefaults) {
+    normalizedPayload.relay_obfs = false
+  }
+  return normalizedPayload
+}
+
 function normalizeHttpRulePayload(payloadOrFrontend, backend_url, tags, enabled, proxy_redirect, pass_proxy_headers, user_agent, custom_headers, relay_chain, relay_obfs) {
   if (payloadOrFrontend && typeof payloadOrFrontend === 'object' && !Array.isArray(payloadOrFrontend)) {
-    const payload = { ...payloadOrFrontend }
-    const backends = normalizeHttpBackends(payload)
-    return {
-      ...payload,
-      frontend_url: String(payload.frontend_url || '').trim(),
-      backend_url: backends[0]?.url || '',
-      backends,
-      load_balancing: {
-        strategy: payload.load_balancing?.strategy === 'random' ? 'random' : 'round_robin'
-      },
-      tags: Array.isArray(payload.tags) ? payload.tags : [],
-      enabled: payload.enabled !== false,
-      proxy_redirect: payload.proxy_redirect !== false,
-      pass_proxy_headers: payload.pass_proxy_headers === true,
-      user_agent: String(payload.user_agent || ''),
-      custom_headers: Array.isArray(payload.custom_headers) ? payload.custom_headers : [],
-      relay_chain: Array.isArray(payload.relay_chain) ? payload.relay_chain : [],
-      relay_obfs: payload.relay_obfs === true
-    }
+    return normalizeHttpRulePayloadObject(payloadOrFrontend, { includeRelayDefaults: true })
   }
 
   return normalizeHttpRulePayload({
@@ -422,7 +435,9 @@ export async function fetchRules(agentId) {
 }
 
 export async function createRule(agentId, payloadOrFrontend, ...legacyArgs) {
-  const payload = normalizeHttpRulePayload(payloadOrFrontend, ...legacyArgs)
+  const payload = payloadOrFrontend && typeof payloadOrFrontend === 'object' && !Array.isArray(payloadOrFrontend)
+    ? normalizeHttpRulePayloadObject(payloadOrFrontend, { includeRelayDefaults: true })
+    : normalizeHttpRulePayload(payloadOrFrontend, ...legacyArgs)
   if (isDev) {
     await sleep()
     const nextRule = normalizeHttpRule({
@@ -442,7 +457,9 @@ export async function createRule(agentId, payloadOrFrontend, ...legacyArgs) {
 }
 
 export async function updateRule(agentId, id, payloadOrFrontend, ...legacyArgs) {
-  const payload = normalizeHttpRulePayload(payloadOrFrontend, ...legacyArgs)
+  const payload = payloadOrFrontend && typeof payloadOrFrontend === 'object' && !Array.isArray(payloadOrFrontend)
+    ? normalizeHttpRulePayloadObject(payloadOrFrontend)
+    : normalizeHttpRulePayload(payloadOrFrontend, ...legacyArgs)
   if (isDev) {
     await sleep()
     const list = mockRulesByAgent[agentId] || []
