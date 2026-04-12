@@ -68,12 +68,24 @@ type L4RuleInput struct {
 }
 
 type l4Service struct {
-	cfg   config.Config
-	store storage.Store
+	cfg               config.Config
+	store             storage.Store
+	localApplyTrigger func(context.Context) error
 }
 
 func NewL4RuleService(cfg config.Config, store storage.Store) *l4Service {
 	return &l4Service{cfg: cfg, store: store}
+}
+
+func (s *l4Service) SetLocalApplyTrigger(trigger func(context.Context) error) {
+	s.localApplyTrigger = trigger
+}
+
+func (s *l4Service) triggerLocalApply(ctx context.Context, agentID string) error {
+	if !s.cfg.EnableLocalAgent || agentID != s.cfg.LocalAgentID || s.localApplyTrigger == nil {
+		return nil
+	}
+	return s.localApplyTrigger(ctx)
 }
 
 func (s *l4Service) List(ctx context.Context, agentID string) ([]L4Rule, error) {
@@ -137,6 +149,9 @@ func (s *l4Service) Create(ctx context.Context, agentID string, input L4RuleInpu
 	if err := s.store.SaveL4Rules(ctx, resolvedID, rows); err != nil {
 		return L4Rule{}, err
 	}
+	if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
+		return L4Rule{}, err
+	}
 	return rule, nil
 }
 
@@ -188,6 +203,9 @@ func (s *l4Service) Update(ctx context.Context, agentID string, id int, input L4
 	if err := s.store.SaveL4Rules(ctx, resolvedID, rows); err != nil {
 		return L4Rule{}, err
 	}
+	if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
+		return L4Rule{}, err
+	}
 	return rule, nil
 }
 
@@ -219,6 +237,9 @@ func (s *l4Service) Delete(ctx context.Context, agentID string, id int) (L4Rule,
 	nextRows := append([]storage.L4RuleRow(nil), rows[:targetIndex]...)
 	nextRows = append(nextRows, rows[targetIndex+1:]...)
 	if err := s.store.SaveL4Rules(ctx, resolvedID, nextRows); err != nil {
+		return L4Rule{}, err
+	}
+	if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
 		return L4Rule{}, err
 	}
 	return deleted, nil

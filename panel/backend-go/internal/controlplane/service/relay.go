@@ -86,12 +86,24 @@ type relayPreparation struct {
 }
 
 type relayService struct {
-	cfg   config.Config
-	store storage.Store
+	cfg               config.Config
+	store             storage.Store
+	localApplyTrigger func(context.Context) error
 }
 
 func NewRelayListenerService(cfg config.Config, store storage.Store) *relayService {
 	return &relayService{cfg: cfg, store: store}
+}
+
+func (s *relayService) SetLocalApplyTrigger(trigger func(context.Context) error) {
+	s.localApplyTrigger = trigger
+}
+
+func (s *relayService) triggerLocalApply(ctx context.Context, agentID string) error {
+	if !s.cfg.EnableLocalAgent || agentID != s.cfg.LocalAgentID || s.localApplyTrigger == nil {
+		return nil
+	}
+	return s.localApplyTrigger(ctx)
 }
 
 func (s *relayService) Bootstrap(ctx context.Context) error {
@@ -203,6 +215,9 @@ func (s *relayService) Create(ctx context.Context, agentID string, input RelayLi
 	if prepared.PersistCertificates {
 		cleanupManagedCertificateMaterialBestEffort(ctx, s.store, prepared.OriginalCertRows, prepared.NextCertRows)
 	}
+	if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
+		return RelayListener{}, err
+	}
 	return listener, nil
 }
 
@@ -286,6 +301,9 @@ func (s *relayService) Update(ctx context.Context, agentID string, id int, input
 			return RelayListener{}, err
 		}
 	}
+	if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
+		return RelayListener{}, err
+	}
 	return listener, nil
 }
 
@@ -336,6 +354,9 @@ func (s *relayService) Delete(ctx context.Context, agentID string, id int) (Rela
 		if err := s.cleanupUnusedAutoRelayListenerCertificate(ctx, *deleted.CertificateID); err != nil {
 			return RelayListener{}, err
 		}
+	}
+	if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
+		return RelayListener{}, err
 	}
 	return deleted, nil
 }

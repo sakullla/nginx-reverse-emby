@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"os"
 	"strings"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
@@ -38,12 +39,24 @@ type ruleStore interface {
 }
 
 type ruleService struct {
-	cfg   config.Config
-	store ruleStore
+	cfg               config.Config
+	store             ruleStore
+	localApplyTrigger func(context.Context) error
 }
 
 func NewRuleService(cfg config.Config, store ruleStore) *ruleService {
 	return &ruleService{cfg: cfg, store: store}
+}
+
+func (s *ruleService) SetLocalApplyTrigger(trigger func(context.Context) error) {
+	s.localApplyTrigger = trigger
+}
+
+func (s *ruleService) triggerLocalApply(ctx context.Context, agentID string) error {
+	if !s.cfg.EnableLocalAgent || agentID != s.cfg.LocalAgentID || s.localApplyTrigger == nil {
+		return nil
+	}
+	return s.localApplyTrigger(ctx)
 }
 
 func (s *ruleService) List(ctx context.Context, agentID string) ([]HTTPRule, error) {
@@ -134,6 +147,9 @@ func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRule
 	if certRowsChanged {
 		cleanupManagedCertificateMaterialBestEffort(ctx, s.store, originalCertRows, nextCertRows)
 	}
+	if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
+		return HTTPRule{}, err
+	}
 	return rule, nil
 }
 
@@ -212,6 +228,9 @@ func (s *ruleService) Update(ctx context.Context, agentID string, id int, input 
 	if certRowsChanged {
 		cleanupManagedCertificateMaterialBestEffort(ctx, s.store, originalCertRows, nextCertRows)
 	}
+	if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
+		return HTTPRule{}, err
+	}
 	return rule, nil
 }
 
@@ -270,6 +289,9 @@ func (s *ruleService) Delete(ctx context.Context, agentID string, id int) (HTTPR
 	}
 	if certRowsChanged {
 		cleanupManagedCertificateMaterialBestEffort(ctx, s.store, originalCertRows, nextCertRows)
+	}
+	if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
+		return HTTPRule{}, err
 	}
 	return deleted, nil
 }
@@ -808,7 +830,7 @@ func (s *ruleService) normalizeHTTPRuleInput(ctx context.Context, input HTTPRule
 		return HTTPRule{}, err
 	}
 
-	passProxyHeaders := true
+	passProxyHeaders := defaultPassProxyHeaders()
 	if fallback.ID > 0 {
 		passProxyHeaders = fallback.PassProxyHeaders
 	}
@@ -922,6 +944,19 @@ func normalizeHTTPLoadBalancing(value HTTPLoadBalancing) HTTPLoadBalancing {
 		return HTTPLoadBalancing{Strategy: "random"}
 	}
 	return HTTPLoadBalancing{Strategy: "round_robin"}
+}
+
+func defaultPassProxyHeaders() bool {
+	v := strings.TrimSpace(os.Getenv("PROXY_PASS_PROXY_HEADERS"))
+	if v == "" {
+		return true
+	}
+	switch strings.ToLower(v) {
+	case "0", "false", "no", "off":
+		return false
+	default:
+		return true
+	}
 }
 
 func isValidHTTPURL(raw string) bool {
