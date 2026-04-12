@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -27,7 +28,7 @@ func TestMasterEmbeddedCutoverAppliesHTTPRuleAndServesTraffic(t *testing.T) {
 	}
 }
 
-func TestCutoverAssertionHelpersRoundTripTCPOverL4(t *testing.T) {
+func TestMasterEmbeddedCutoverAppliesL4RuleAndForwardsTCP(t *testing.T) {
 	harness := newCutoverHarness(t)
 	defer harness.Close()
 
@@ -36,9 +37,47 @@ func TestCutoverAssertionHelpersRoundTripTCPOverL4(t *testing.T) {
 	if reply != payload {
 		t.Fatalf("RoundTripTCPOverL4() = %q, want %q", reply, payload)
 	}
+
+	stable := harness.WaitForStableApplyMetadata(harness.fixture.expectedRevision)
+	if stable.DesiredRevision < harness.fixture.expectedRevision {
+		t.Fatalf("DesiredRevision = %d, want >= %d", stable.DesiredRevision, harness.fixture.expectedRevision)
+	}
+	if stable.CurrentRevision != stable.DesiredRevision {
+		t.Fatalf("CurrentRevision = %d, want DesiredRevision %d", stable.CurrentRevision, stable.DesiredRevision)
+	}
+	if stable.LastApplyRevision != stable.DesiredRevision {
+		t.Fatalf("LastApplyRevision = %d, want DesiredRevision %d", stable.LastApplyRevision, stable.DesiredRevision)
+	}
+	if stable.LastApplyStatus != "success" {
+		t.Fatalf("LastApplyStatus = %q, want success", stable.LastApplyStatus)
+	}
+	if stable.LastApplyMessage != "" {
+		t.Fatalf("LastApplyMessage = %q, want empty", stable.LastApplyMessage)
+	}
+	if stable.LastSyncError != "" {
+		t.Fatalf("LastSyncError = %q, want empty", stable.LastSyncError)
+	}
+	if stable.PersistedDesiredRevision != stable.DesiredRevision {
+		t.Fatalf("PersistedDesiredRevision = %d, want DesiredRevision %d", stable.PersistedDesiredRevision, stable.DesiredRevision)
+	}
+	if stable.PersistedCurrentRevision != stable.CurrentRevision {
+		t.Fatalf("PersistedCurrentRevision = %d, want CurrentRevision %d", stable.PersistedCurrentRevision, stable.CurrentRevision)
+	}
+	if stable.PersistedCurrentRevisionRaw != strconv.Itoa(stable.CurrentRevision) {
+		t.Fatalf("PersistedCurrentRevisionRaw = %q, want %d", stable.PersistedCurrentRevisionRaw, stable.CurrentRevision)
+	}
+	if stable.PersistedLastApplyRevision != stable.LastApplyRevision {
+		t.Fatalf("PersistedLastApplyRevision = %d, want LastApplyRevision %d", stable.PersistedLastApplyRevision, stable.LastApplyRevision)
+	}
+	if stable.PersistedLastApplyStatus != stable.LastApplyStatus {
+		t.Fatalf("PersistedLastApplyStatus = %q, want %q", stable.PersistedLastApplyStatus, stable.LastApplyStatus)
+	}
+	if stable.PersistedLastApplyMessage != stable.LastApplyMessage {
+		t.Fatalf("PersistedLastApplyMessage = %q, want %q", stable.PersistedLastApplyMessage, stable.LastApplyMessage)
+	}
 }
 
-func TestCutoverAssertionHelpersRoundTripRelayDialPath(t *testing.T) {
+func TestMasterEmbeddedCutoverAppliesRelayListenerAndTrustChain(t *testing.T) {
 	harness := newCutoverHarnessWithOptions(t, cutoverHarnessOptions{
 		enableRelayPath: true,
 		disableL4Path:   true,
@@ -46,9 +85,89 @@ func TestCutoverAssertionHelpersRoundTripRelayDialPath(t *testing.T) {
 	defer harness.Close()
 
 	const payload = "fixture:relay-round-trip"
-	reply := harness.RoundTripRelayDial(payload)
-	if reply != payload {
-		t.Fatalf("RoundTripRelayDial() = %q, want %q", reply, payload)
+	result := harness.RoundTripRelayDialWithTrust(payload)
+	if result.Payload != payload {
+		t.Fatalf("RoundTripRelayDialWithTrust().Payload = %q, want %q", result.Payload, payload)
+	}
+	if result.PeerSPKIPin != harness.fixture.relayPinSPKISHA256 {
+		t.Fatalf("RoundTripRelayDialWithTrust().PeerSPKIPin = %q, want %q", result.PeerSPKIPin, harness.fixture.relayPinSPKISHA256)
+	}
+	if len(result.TrustedCAIDs) != 1 || result.TrustedCAIDs[0] != harness.fixture.relayInternalCAID {
+		t.Fatalf("RoundTripRelayDialWithTrust().TrustedCAIDs = %+v, want [%d]", result.TrustedCAIDs, harness.fixture.relayInternalCAID)
+	}
+	if !harness.IsRelayListenerReachable() {
+		t.Fatalf("relay listener is not reachable on port %d", harness.fixture.relayListenerPort)
+	}
+}
+
+func TestMasterEmbeddedCutoverExposesManagedCertificateStateAndStableApplyMetadata(t *testing.T) {
+	harness := newCutoverHarnessWithOptions(t, cutoverHarnessOptions{
+		enableRelayPath: true,
+	})
+	defer harness.Close()
+
+	certs := harness.ListGlobalManagedCertificates()
+	if len(certs) < 3 {
+		t.Fatalf("ListGlobalManagedCertificates() length = %d, want >= 3", len(certs))
+	}
+
+	uploaded := findManagedCertificateByID(t, certs, harness.fixture.relayCertificateID)
+	if uploaded.CertificateType != "uploaded" || uploaded.IssuerMode != "local_http01" || uploaded.Usage != "relay_tunnel" || uploaded.Status != "active" {
+		t.Fatalf("uploaded certificate semantics mismatch: %+v", uploaded)
+	}
+
+	internalCA := findManagedCertificateByID(t, certs, harness.fixture.relayInternalCAID)
+	if internalCA.CertificateType != "internal_ca" || internalCA.Usage != "relay_ca" || internalCA.Status != "active" {
+		t.Fatalf("internal CA certificate semantics mismatch: %+v", internalCA)
+	}
+
+	managedPolicy := findManagedCertificateByID(t, certs, harness.fixture.managedPolicyCertificateID)
+	if managedPolicy.CertificateType != "acme" || managedPolicy.IssuerMode != "master_cf_dns" || managedPolicy.Status != "pending" {
+		t.Fatalf("managed policy semantics mismatch: %+v", managedPolicy)
+	}
+	if strings.TrimSpace(managedPolicy.ACMEInfo.MainDomain) != harness.fixture.managedPolicyDomain {
+		t.Fatalf("managed policy acme_info.main_domain = %q, want %q", managedPolicy.ACMEInfo.MainDomain, harness.fixture.managedPolicyDomain)
+	}
+	if strings.TrimSpace(managedPolicy.ACMEInfo.CA) == "" {
+		t.Fatalf("managed policy acme_info.ca must be non-empty: %+v", managedPolicy.ACMEInfo)
+	}
+
+	stable := harness.WaitForStableApplyMetadata(harness.fixture.expectedRevision)
+	if stable.DesiredRevision < harness.fixture.expectedRevision {
+		t.Fatalf("DesiredRevision = %d, want >= %d", stable.DesiredRevision, harness.fixture.expectedRevision)
+	}
+	if stable.CurrentRevision != stable.DesiredRevision {
+		t.Fatalf("CurrentRevision = %d, want DesiredRevision %d", stable.CurrentRevision, stable.DesiredRevision)
+	}
+	if stable.LastApplyRevision != stable.DesiredRevision {
+		t.Fatalf("LastApplyRevision = %d, want DesiredRevision %d", stable.LastApplyRevision, stable.DesiredRevision)
+	}
+	if stable.LastApplyStatus != "success" {
+		t.Fatalf("LastApplyStatus = %q, want success", stable.LastApplyStatus)
+	}
+	if stable.LastApplyMessage != "" {
+		t.Fatalf("LastApplyMessage = %q, want empty", stable.LastApplyMessage)
+	}
+	if stable.LastSyncError != "" {
+		t.Fatalf("LastSyncError = %q, want empty", stable.LastSyncError)
+	}
+	if stable.PersistedDesiredRevision != stable.DesiredRevision {
+		t.Fatalf("PersistedDesiredRevision = %d, want DesiredRevision %d", stable.PersistedDesiredRevision, stable.DesiredRevision)
+	}
+	if stable.PersistedCurrentRevision != stable.CurrentRevision {
+		t.Fatalf("PersistedCurrentRevision = %d, want CurrentRevision %d", stable.PersistedCurrentRevision, stable.CurrentRevision)
+	}
+	if stable.PersistedCurrentRevisionRaw != strconv.Itoa(stable.CurrentRevision) {
+		t.Fatalf("PersistedCurrentRevisionRaw = %q, want %d", stable.PersistedCurrentRevisionRaw, stable.CurrentRevision)
+	}
+	if stable.PersistedLastApplyRevision != stable.LastApplyRevision {
+		t.Fatalf("PersistedLastApplyRevision = %d, want LastApplyRevision %d", stable.PersistedLastApplyRevision, stable.LastApplyRevision)
+	}
+	if stable.PersistedLastApplyStatus != stable.LastApplyStatus {
+		t.Fatalf("PersistedLastApplyStatus = %q, want %q", stable.PersistedLastApplyStatus, stable.LastApplyStatus)
+	}
+	if stable.PersistedLastApplyMessage != stable.LastApplyMessage {
+		t.Fatalf("PersistedLastApplyMessage = %q, want %q", stable.PersistedLastApplyMessage, stable.LastApplyMessage)
 	}
 }
 
@@ -158,4 +277,15 @@ func TestCutoverHarnessRetriesWhenPreferredPortsAreOccupied(t *testing.T) {
 	if !strings.Contains(body, "backend:http") {
 		t.Fatalf("unexpected frontend body %q", body)
 	}
+}
+
+func findManagedCertificateByID(t *testing.T, certs []managedCertificateView, certificateID int) managedCertificateView {
+	t.Helper()
+	for _, cert := range certs {
+		if cert.ID == certificateID {
+			return cert
+		}
+	}
+	t.Fatalf("certificate %d not found in %+v", certificateID, certs)
+	return managedCertificateView{}
 }

@@ -46,11 +46,17 @@ type cutoverFixture struct {
 	relayListenerPort          int
 	managedCertDomain          string
 	managedCertMaterialDir     string
+	relayInternalCADomain      string
+	relayInternalCAMaterialDir string
+	relayInternalCAPEM         string
+	managedPolicyDomain        string
 	expectedRevision           int
 	l4UsesRelay                bool
 	tcpBackendAddr             string
 	relayListenerID            int
 	relayCertificateID         int
+	relayInternalCAID          int
+	managedPolicyCertificateID int
 	relayPinSPKISHA256         string
 	seededLocalCurrentRevision int
 	seededLocalApplyStatus     string
@@ -71,11 +77,15 @@ func buildCutoverFixture(t *testing.T, input cutoverFixtureInput) cutoverFixture
 		l4FrontendPort:             resolveFixturePort(t, input.l4FrontendPort),
 		relayListenerPort:          resolveFixturePort(t, input.relayListenerPort),
 		managedCertDomain:          "fixture-cert.example.test",
+		relayInternalCADomain:      "fixture-relay-ca.internal",
+		managedPolicyDomain:        "fixture-managed-policy.example.test",
 		expectedRevision:           7,
 		l4UsesRelay:                input.enableRelayPath,
 		tcpBackendAddr:             input.tcpBackendAddr,
 		relayListenerID:            301,
 		relayCertificateID:         401,
+		relayInternalCAID:          402,
+		managedPolicyCertificateID: 403,
 		seededLocalCurrentRevision: 2,
 		seededLocalApplyStatus:     "error",
 		seededLocalApplyMessage:    "fixture-seeded-initial-state",
@@ -158,23 +168,37 @@ func seedCutoverFixture(ctx context.Context, store *storage.SQLiteStore, fixture
 		return err
 	}
 
-	certPEM, keyPEM, relayPin, err := issueSelfSignedPEM(fixture.managedCertDomain)
+	relayCertPEM, relayKeyPEM, relayCAPEM, relayCAKeyPEM, relayPin, err := issueRelayLeafSignedByCA(fixture.managedCertDomain)
 	if err != nil {
 		return err
 	}
 	if err := store.SaveManagedCertificateMaterial(ctx, fixture.managedCertDomain, storage.ManagedCertificateBundle{
 		Domain:  fixture.managedCertDomain,
-		CertPEM: certPEM,
-		KeyPEM:  keyPEM,
+		CertPEM: relayCertPEM,
+		KeyPEM:  relayKeyPEM,
 	}); err != nil {
 		return err
 	}
 	expectedMaterialDir := filepath.Join(fixture.dataDir, "managed_certificates", normalizeManagedCertificateHostForFixture(fixture.managedCertDomain))
-	if err := verifyPersistedManagedCertificateMaterial(expectedMaterialDir, certPEM, keyPEM); err != nil {
+	if err := verifyPersistedManagedCertificateMaterial(expectedMaterialDir, relayCertPEM, relayKeyPEM); err != nil {
 		return err
 	}
 	fixture.managedCertMaterialDir = expectedMaterialDir
 	fixture.relayPinSPKISHA256 = relayPin
+
+	if err := store.SaveManagedCertificateMaterial(ctx, fixture.relayInternalCADomain, storage.ManagedCertificateBundle{
+		Domain:  fixture.relayInternalCADomain,
+		CertPEM: relayCAPEM,
+		KeyPEM:  relayCAKeyPEM,
+	}); err != nil {
+		return err
+	}
+	internalCADir := filepath.Join(fixture.dataDir, "managed_certificates", normalizeManagedCertificateHostForFixture(fixture.relayInternalCADomain))
+	if err := verifyPersistedManagedCertificateMaterial(internalCADir, relayCAPEM, relayCAKeyPEM); err != nil {
+		return err
+	}
+	fixture.relayInternalCAMaterialDir = internalCADir
+	fixture.relayInternalCAPEM = relayCAPEM
 
 	relayChainJSON := `[]`
 	if fixture.l4UsesRelay {
@@ -210,13 +234,16 @@ func seedCutoverFixture(ctx context.Context, store *storage.SQLiteStore, fixture
 	listenerEnabled := false
 	listenerTLSMode := "pin_or_ca"
 	pinSetJSON := `[]`
+	trustedCAIDsJSON := `[]`
+	allowSelfSigned := false
 	if fixture.l4UsesRelay {
 		listenerEnabled = true
-		listenerTLSMode = "pin_only"
+		listenerTLSMode = "pin_and_ca"
 		pinSetJSON = mustMarshalJSON([]storage.RelayPin{{
 			Type:  "spki_sha256",
 			Value: relayPin,
 		}})
+		trustedCAIDsJSON = mustMarshalJSON([]int{fixture.relayInternalCAID})
 		certificateID = intPtr(fixture.relayCertificateID)
 	}
 
@@ -233,33 +260,73 @@ func seedCutoverFixture(ctx context.Context, store *storage.SQLiteStore, fixture
 		CertificateID:           certificateID,
 		TLSMode:                 listenerTLSMode,
 		PinSetJSON:              pinSetJSON,
-		TrustedCACertificateIDs: `[]`,
-		AllowSelfSigned:         false,
+		TrustedCACertificateIDs: trustedCAIDsJSON,
+		AllowSelfSigned:         allowSelfSigned,
 		TagsJSON:                `[]`,
 		Revision:                fixture.expectedRevision,
 	}}); err != nil {
 		return err
 	}
 
-	if err := store.SaveManagedCertificates(ctx, []storage.ManagedCertificateRow{{
-		ID:              fixture.relayCertificateID,
-		Domain:          fixture.managedCertDomain,
-		Enabled:         true,
-		Scope:           "domain",
-		IssuerMode:      "local_http01",
-		TargetAgentIDs:  mustMarshalJSON([]string{fixture.localAgentID}),
-		Status:          "active",
-		LastIssueAt:     "",
-		LastError:       "",
-		MaterialHash:    "",
-		AgentReports:    `{}`,
-		ACMEInfo:        `{}`,
-		Usage:           "https",
-		CertificateType: "uploaded",
-		SelfSigned:      true,
-		TagsJSON:        `[]`,
-		Revision:        fixture.expectedRevision,
-	}}); err != nil {
+	if err := store.SaveManagedCertificates(ctx, []storage.ManagedCertificateRow{
+		{
+			ID:              fixture.relayCertificateID,
+			Domain:          fixture.managedCertDomain,
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  mustMarshalJSON([]string{fixture.localAgentID}),
+			Status:          "active",
+			LastIssueAt:     "",
+			LastError:       "",
+			MaterialHash:    "",
+			AgentReports:    `{}`,
+			ACMEInfo:        `{"Main_Domain":"fixture-cert.example.test"}`,
+			Usage:           "relay_tunnel",
+			CertificateType: "uploaded",
+			SelfSigned:      false,
+			TagsJSON:        `[]`,
+			Revision:        fixture.expectedRevision,
+		},
+		{
+			ID:              fixture.relayInternalCAID,
+			Domain:          fixture.relayInternalCADomain,
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  mustMarshalJSON([]string{fixture.localAgentID}),
+			Status:          "active",
+			LastIssueAt:     "",
+			LastError:       "",
+			MaterialHash:    "",
+			AgentReports:    `{}`,
+			ACMEInfo:        fmt.Sprintf(`{"Main_Domain":"%s","CA":"fixture-internal-ca"}`, fixture.relayInternalCADomain),
+			Usage:           "relay_ca",
+			CertificateType: "internal_ca",
+			SelfSigned:      true,
+			TagsJSON:        `[]`,
+			Revision:        fixture.expectedRevision,
+		},
+		{
+			ID:              fixture.managedPolicyCertificateID,
+			Domain:          fixture.managedPolicyDomain,
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "master_cf_dns",
+			TargetAgentIDs:  mustMarshalJSON([]string{"edge-managed"}),
+			Status:          "pending",
+			LastIssueAt:     "",
+			LastError:       "",
+			MaterialHash:    "",
+			AgentReports:    `{}`,
+			ACMEInfo:        fmt.Sprintf(`{"Main_Domain":"%s","Profile":"dns","CA":"LetsEncrypt","Renew":"2026-05-01T00:00:00Z"}`, fixture.managedPolicyDomain),
+			Usage:           "https",
+			CertificateType: "acme",
+			SelfSigned:      false,
+			TagsJSON:        `[]`,
+			Revision:        fixture.expectedRevision,
+		},
+	}); err != nil {
 		return err
 	}
 
@@ -295,39 +362,64 @@ func mustMarshalJSON(value any) string {
 	return string(data)
 }
 
-func issueSelfSignedPEM(domain string) (string, string, string, error) {
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+func issueRelayLeafSignedByCA(domain string) (string, string, string, string, string, error) {
+	caKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
-		return "", "", "", err
+		return "", "", "", "", "", err
+	}
+	caTemplate := &x509.Certificate{
+		SerialNumber: big.NewInt(time.Now().UnixNano()),
+		Subject: pkix.Name{
+			CommonName: "fixture-relay-root-ca",
+		},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(48 * time.Hour),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageCRLSign | x509.KeyUsageDigitalSignature,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	caDER, err := x509.CreateCertificate(rand.Reader, caTemplate, caTemplate, &caKey.PublicKey, caKey)
+	if err != nil {
+		return "", "", "", "", "", err
+	}
+	caCert, err := x509.ParseCertificate(caDER)
+	if err != nil {
+		return "", "", "", "", "", err
 	}
 
-	template := &x509.Certificate{
-		SerialNumber: big.NewInt(time.Now().UnixNano()),
+	leafKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		return "", "", "", "", "", err
+	}
+	leafTemplate := &x509.Certificate{
+		SerialNumber: big.NewInt(time.Now().UnixNano() + 1),
 		Subject: pkix.Name{
 			CommonName: domain,
 		},
 		DNSNames:              []string{domain},
+		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1")},
 		NotBefore:             time.Now().Add(-time.Hour),
 		NotAfter:              time.Now().Add(24 * time.Hour),
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
 	}
-
-	der, err := x509.CreateCertificate(rand.Reader, template, template, &privateKey.PublicKey, privateKey)
+	leafDER, err := x509.CreateCertificate(rand.Reader, leafTemplate, caCert, &leafKey.PublicKey, caKey)
 	if err != nil {
-		return "", "", "", err
+		return "", "", "", "", "", err
 	}
-	parsed, err := x509.ParseCertificate(der)
+	leafCert, err := x509.ParseCertificate(leafDER)
 	if err != nil {
-		return "", "", "", err
+		return "", "", "", "", "", err
 	}
-	pinSum := sha256.Sum256(parsed.RawSubjectPublicKeyInfo)
+	pinSum := sha256.Sum256(leafCert.RawSubjectPublicKeyInfo)
 	pin := base64.StdEncoding.EncodeToString(pinSum[:])
 
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(privateKey)})
-	return string(certPEM), string(keyPEM), pin, nil
+	leafCertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: leafDER})
+	caCertPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: caDER})
+	leafKeyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(leafKey)})
+	caKeyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(caKey)})
+	return string(append(append([]byte(nil), leafCertPEM...), caCertPEM...)), string(leafKeyPEM), string(caCertPEM), string(caKeyPEM), pin, nil
 }
 
 func pickFreeTCPPort(t *testing.T) int {
