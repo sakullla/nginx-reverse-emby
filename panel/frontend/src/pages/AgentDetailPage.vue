@@ -29,6 +29,20 @@
       </div>
     </div>
 
+    <div v-if="agent.last_apply_status === 'failed' && agent.last_apply_message" class="agent-detail__error">
+      <div class="error-block">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="10"/>
+          <line x1="12" y1="8" x2="12" y2="12"/>
+          <line x1="12" y1="16" x2="12.01" y2="16"/>
+        </svg>
+        <div class="error-block__content">
+          <div class="error-block__title">同步失败</div>
+          <div class="error-block__text">{{ agent.last_apply_message }}</div>
+        </div>
+      </div>
+    </div>
+
     <div class="agent-detail__tabs">
       <button v-for="tab in tabs" :key="tab.id" class="tab-btn" :class="{ active: activeTab === tab.id }" @click="activeTab = tab.id">{{ tab.label }}</button>
     </div>
@@ -67,6 +81,7 @@
           <div class="info-row"><span>IP</span><span>{{ agent.last_seen_ip || '—' }}</span></div>
           <div class="info-row"><span>最后活跃</span><span>{{ agent.last_seen_at ? new Date(agent.last_seen_at).toLocaleString() : '—' }}</span></div>
           <div class="info-row"><span>同步状态</span><span>{{ agent.last_apply_status || '—' }}</span></div>
+          <div v-if="agent.last_apply_message" class="info-row"><span>同步消息</span><span>{{ agent.last_apply_message }}</span></div>
         </div>
       </div>
     </div>
@@ -204,6 +219,11 @@ function timeAgo(date) {
 .info-row { display: flex; justify-content: space-between; padding: 0.75rem 1rem; background: var(--color-bg-surface); border-radius: var(--radius-lg); font-size: 0.875rem; }
 .info-row span:first-child { color: var(--color-text-secondary); }
 .info-row span:last-child { color: var(--color-text-primary); font-weight: 500; }
+.agent-detail__error { margin-bottom: 1.5rem; }
+.error-block { display: flex; align-items: flex-start; gap: 0.75rem; padding: 1rem; background: var(--color-danger-50); border: 1px solid var(--color-danger-100); border-radius: var(--radius-lg); color: var(--color-danger); }
+.error-block svg { flex-shrink: 0; margin-top: 1px; }
+.error-block__title { font-weight: 600; font-size: 0.875rem; margin-bottom: 0.25rem; }
+.error-block__text { font-size: 0.8125rem; line-height: 1.5; color: var(--color-danger); opacity: 0.95; word-break: break-word; }
 .agent-detail__loading { display: flex; justify-content: center; padding: 3rem; }
 .agent-detail__not-found { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1rem; padding: 4rem 2rem; color: var(--color-text-muted); text-align: center; }
 .agent-detail__not-found p { margin: 0; font-size: 1rem; }
