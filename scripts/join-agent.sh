@@ -138,6 +138,14 @@ run_root_cmd() {
     fi
 }
 
+service_exists() {
+    systemctl status nginx-reverse-emby-agent.service >/dev/null 2>&1
+}
+
+service_is_active() {
+    systemctl is-active --quiet nginx-reverse-emby-agent.service
+}
+
 resolve_script_dir() {
     script_path=${0:-}
     [ -n "$script_path" ] || return 1
@@ -294,11 +302,13 @@ DATA_DIR="$(absolute_path "$DATA_DIR")"
 BIN_DIR="$DATA_DIR/bin"
 ENV_FILE="$DATA_DIR/agent.env"
 BIN_PATH="$BIN_DIR/nre-agent"
+BIN_TMP_PATH="$BIN_PATH.tmp.$$"
 ASSET_NAME="nre-agent-$PLATFORM-$ARCH"
 
 mkdir -p "$BIN_DIR"
 echo "[JOIN] Installing nre-agent to: $BIN_PATH"
-copy_or_download_binary "$ASSET_NAME" "$BIN_PATH"
+rm -f "$BIN_TMP_PATH"
+copy_or_download_binary "$ASSET_NAME" "$BIN_TMP_PATH"
 
 cat > "$ENV_FILE" <<EOF
 NRE_MASTER_URL=$(shell_quote "$MASTER_URL")
@@ -354,8 +364,25 @@ RestartSec=5
 [Install]
 WantedBy=multi-user.target
 EOF
+    SERVICE_EXISTS="0"
+    SERVICE_WAS_ACTIVE="0"
+    if service_exists; then
+        SERVICE_EXISTS="1"
+        if service_is_active; then
+            SERVICE_WAS_ACTIVE="1"
+        fi
+    fi
+    if [ "$SERVICE_WAS_ACTIVE" = "1" ]; then
+        run_root_cmd systemctl stop nginx-reverse-emby-agent.service
+    fi
+    run_root_cmd mv "$BIN_TMP_PATH" "$BIN_PATH"
     run_root_cmd systemctl daemon-reload
-    run_root_cmd systemctl enable --now nginx-reverse-emby-agent.service
+    if [ "$SERVICE_EXISTS" = "1" ]; then
+        run_root_cmd systemctl enable nginx-reverse-emby-agent.service
+        run_root_cmd systemctl start nginx-reverse-emby-agent.service
+    else
+        run_root_cmd systemctl enable --now nginx-reverse-emby-agent.service
+    fi
     echo "[JOIN] Installed and started systemd service: nginx-reverse-emby-agent.service"
 elif [ "$INSTALL_LAUNCHD" = "1" ]; then
     [ "$PLATFORM" = "darwin" ] || { echo "--install-launchd is only supported on macOS" >&2; exit 1; }
@@ -364,6 +391,7 @@ elif [ "$INSTALL_LAUNCHD" = "1" ]; then
     SERVICE_LABEL="com.nginx-reverse-emby.agent"
     SERVICE_FILE="$LAUNCHD_DIR/$SERVICE_LABEL.plist"
     START_COMMAND="set -a && . $(shell_quote "$ENV_FILE") && set +a && exec $(shell_quote "$BIN_PATH")"
+    mv "$BIN_TMP_PATH" "$BIN_PATH"
     mkdir -p "$LAUNCHD_DIR"
     cat > "$SERVICE_FILE" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
@@ -395,6 +423,7 @@ EOF
     launchctl load -w "$SERVICE_FILE"
     echo "[JOIN] Installed and loaded launchd agent: $SERVICE_LABEL"
 else
+    mv "$BIN_TMP_PATH" "$BIN_PATH"
     echo "[JOIN] Start command:"
     echo "  set -a && . $ENV_FILE && set +a && $BIN_PATH"
 fi

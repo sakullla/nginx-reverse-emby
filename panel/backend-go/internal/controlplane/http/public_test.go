@@ -85,6 +85,18 @@ func TestRouterServesJoinScriptAndHeartbeat(t *testing.T) {
 	if !strings.Contains(script, `ASSET_NAME="nre-agent-$PLATFORM-$ARCH"`) {
 		t.Fatalf("join-agent.sh missing asset name: %s", script)
 	}
+	if !strings.Contains(script, "BIN_TMP_PATH=\"$BIN_PATH.tmp.$$\"") {
+		t.Fatalf("join-agent.sh missing staged binary temp path: %s", script)
+	}
+	if !strings.Contains(script, "systemctl stop nginx-reverse-emby-agent.service") {
+		t.Fatalf("join-agent.sh missing systemd stop before replace: %s", script)
+	}
+	if !strings.Contains(script, "mv \"$BIN_TMP_PATH\" \"$BIN_PATH\"") {
+		t.Fatalf("join-agent.sh missing atomic staged binary move: %s", script)
+	}
+	if !strings.Contains(script, "systemctl start nginx-reverse-emby-agent.service") {
+		t.Fatalf("join-agent.sh missing explicit systemd start after replace: %s", script)
+	}
 	if !strings.Contains(script, "extract_registered_agent_id()") {
 		t.Fatalf("join-agent.sh missing registered agent id extraction helper: %s", script)
 	}
