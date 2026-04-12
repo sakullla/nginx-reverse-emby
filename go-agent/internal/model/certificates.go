@@ -1,11 +1,24 @@
 package model
 
+import "encoding/json"
+
 type ManagedCertificateBundle struct {
 	ID       int    `json:"id"`
 	Domain   string `json:"domain"`
 	Revision int64  `json:"revision"`
 	CertPEM  string `json:"cert_pem"`
 	KeyPEM   string `json:"key_pem"`
+}
+
+type ManagedCertificateReport struct {
+	ID           int                        `json:"id,omitempty"`
+	Domain       string                     `json:"domain,omitempty"`
+	Status       string                     `json:"status,omitempty"`
+	LastIssueAt  string                     `json:"last_issue_at,omitempty"`
+	LastError    string                     `json:"last_error,omitempty"`
+	MaterialHash string                     `json:"material_hash,omitempty"`
+	ACMEInfo     ManagedCertificateACMEInfo `json:"acme_info,omitempty"`
+	UpdatedAt    string                     `json:"updated_at,omitempty"`
 }
 
 type ManagedCertificateACMEInfo struct {
@@ -33,4 +46,24 @@ type ManagedCertificatePolicy struct {
 	Usage           string                     `json:"usage"`
 	CertificateType string                     `json:"certificate_type"`
 	SelfSigned      bool                       `json:"self_signed"`
+}
+
+type ManagedCertificateACMEAccountState struct {
+	KeyPEM       []byte          `json:"key_pem,omitempty"`
+	Registration json.RawMessage `json:"registration,omitempty"`
+}
+
+type ManagedCertificateACMERenewalState struct {
+	NotAfterUnix        int64  `json:"not_after_unix,omitempty"`
+	RenewAtUnix         int64  `json:"renew_at_unix,omitempty"`
+	LastRenewedAtUnix   int64  `json:"last_renewed_at_unix,omitempty"`
+	LastAttemptAtUnix   int64  `json:"last_attempt_at_unix,omitempty"`
+	LastAttemptError    string `json:"last_attempt_error,omitempty"`
+	LastAttemptStatus   string `json:"last_attempt_status,omitempty"`
+	LastAttemptNotAfter int64  `json:"last_attempt_not_after,omitempty"`
+}
+
+type ManagedCertificateACMEState struct {
+	Account ManagedCertificateACMEAccountState `json:"account,omitempty"`
+	Renewal ManagedCertificateACMERenewalState `json:"renewal,omitempty"`
 }

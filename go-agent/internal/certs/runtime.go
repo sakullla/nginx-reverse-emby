@@ -36,14 +36,21 @@ type CertificateInfo struct {
 	IssuerMode      string
 	Status          string
 	Fingerprint     string
+	ACMEInfo        model.ManagedCertificateACMEInfo
 }
 
 type Manager struct {
 	dataDir string
 	cfg     managerConfig
 
-	mu     sync.RWMutex
-	active *activeState
+	mu                 sync.RWMutex
+	active             *activeState
+	renewalLoopStarted sync.Once
+	renewalCancel      context.CancelFunc
+	renewalWG          sync.WaitGroup
+	closeOnce          sync.Once
+	issuanceMu         sync.Mutex
+	issuanceByID       map[int]*sync.Mutex
 }
 
 type activeState struct {
@@ -51,9 +58,10 @@ type activeState struct {
 }
 
 type managedCertificate struct {
-	info        CertificateInfo
-	certificate tls.Certificate
-	parsedChain []*x509.Certificate
+	info         CertificateInfo
+	certificate  tls.Certificate
+	parsedChain  []*x509.Certificate
+	materialHash string
 }
 
 type persistedACMEMaterial struct {
@@ -98,11 +106,26 @@ func NewManager(dataDir string, opts ...Option) (*Manager, error) {
 		cfg.issuerFactory = defaultACMEIssuerFactory
 	}
 
-	return &Manager{
-		dataDir: dataDir,
-		cfg:     cfg,
-		active:  &activeState{byID: map[int]*managedCertificate{}},
-	}, nil
+	renewalCtx, renewalCancel := context.WithCancel(context.Background())
+	manager := &Manager{
+		dataDir:       dataDir,
+		cfg:           cfg,
+		active:        &activeState{byID: map[int]*managedCertificate{}},
+		renewalCancel: renewalCancel,
+		issuanceByID:  map[int]*sync.Mutex{},
+	}
+	manager.startRenewalLoop(renewalCtx)
+	return manager, nil
+}
+
+func (m *Manager) Close() error {
+	m.closeOnce.Do(func() {
+		if m.renewalCancel != nil {
+			m.renewalCancel()
+		}
+		m.renewalWG.Wait()
+	})
+	return nil
 }
 
 func (m *Manager) Apply(ctx context.Context, bundles []model.ManagedCertificateBundle, policies []model.ManagedCertificatePolicy) error {
@@ -246,9 +269,11 @@ func (m *Manager) buildManagedCertificate(ctx context.Context, policy model.Mana
 			IssuerMode:      policy.IssuerMode,
 			Status:          policy.Status,
 			Fingerprint:     fingerprint,
+			ACMEInfo:        policy.ACMEInfo,
 		},
-		certificate: tlsCert,
-		parsedChain: parsedChain,
+		certificate:  tlsCert,
+		parsedChain:  parsedChain,
+		materialHash: hashManagedCertificateMaterial(certPEM, keyPEM),
 	}, nil
 }
 
@@ -260,6 +285,9 @@ func (m *Manager) resolveMaterial(ctx context.Context, policy model.ManagedCerti
 		}
 		return []byte(bundle.CertPEM), []byte(bundle.KeyPEM), nil
 	case "internal_ca":
+		if strings.TrimSpace(bundle.CertPEM) != "" && strings.TrimSpace(bundle.KeyPEM) != "" {
+			return []byte(bundle.CertPEM), []byte(bundle.KeyPEM), nil
+		}
 		return m.loadOrIssueInternalCA(policy)
 	case "acme":
 		return m.loadOrIssueACME(ctx, policy)
@@ -301,6 +329,13 @@ func (m *Manager) loadOrIssueInternalCA(policy model.ManagedCertificatePolicy) (
 }
 
 func (m *Manager) loadOrIssueACME(ctx context.Context, policy model.ManagedCertificatePolicy) ([]byte, []byte, error) {
+	lock := m.issuanceLock(policy.ID)
+	lock.Lock()
+	defer lock.Unlock()
+	return m.loadOrIssueACMEUnlocked(ctx, policy)
+}
+
+func (m *Manager) loadOrIssueACMEUnlocked(ctx context.Context, policy model.ManagedCertificatePolicy) ([]byte, []byte, error) {
 	persisted, err := m.loadPersistedACMEMaterial(policy.ID)
 	if err != nil {
 		return nil, nil, err
@@ -346,6 +381,18 @@ func (m *Manager) loadOrIssueACME(ctx context.Context, policy model.ManagedCerti
 		return nil, nil, err
 	}
 	return result.CertPEM, result.KeyPEM, nil
+}
+
+func (m *Manager) issuanceLock(certificateID int) *sync.Mutex {
+	m.issuanceMu.Lock()
+	defer m.issuanceMu.Unlock()
+
+	if lock, ok := m.issuanceByID[certificateID]; ok {
+		return lock
+	}
+	lock := &sync.Mutex{}
+	m.issuanceByID[certificateID] = lock
+	return lock
 }
 
 func (m *Manager) newACMEIssueRequest(policy model.ManagedCertificatePolicy, persisted persistedACMEMaterial) (acmeIssueRequest, error) {
@@ -407,29 +454,54 @@ func (m *Manager) loadPersistedACMEMaterial(certificateID int) (persistedACMEMat
 		return persistedACMEMaterial{}, err
 	}
 
-	accountKeyPEM, err := os.ReadFile(filepath.Join(m.materialDir(certificateID), "acme_account_key.pem"))
-	if err == nil {
-		result.accountKeyPEM = accountKeyPEM
-	} else if !os.IsNotExist(err) {
-		return persistedACMEMaterial{}, err
-	}
-
-	registrationPayload, err := os.ReadFile(filepath.Join(m.materialDir(certificateID), "acme_registration.json"))
-	if err == nil {
-		var registrationResource registration.Resource
-		if err := json.Unmarshal(registrationPayload, &registrationResource); err == nil {
-			result.registration = &registrationResource
-		}
-	} else if !os.IsNotExist(err) {
-		return persistedACMEMaterial{}, err
-	}
-
-	metadata, metadataUsable, err := m.loadLocalMaterialMetadataIfUsable(certificateID)
+	state, stateUsable, err := m.loadManagedCertificateState(certificateID)
 	if err != nil {
 		return persistedACMEMaterial{}, err
 	}
-	if metadataUsable {
-		result.metadata = metadata
+	if stateUsable {
+		if state.ACME != nil {
+			result.accountKeyPEM = append([]byte(nil), state.ACME.Account.KeyPEM...)
+			if len(state.ACME.Account.Registration) > 0 {
+				var registrationResource registration.Resource
+				if err := json.Unmarshal(state.ACME.Account.Registration, &registrationResource); err == nil {
+					result.registration = &registrationResource
+				}
+			}
+		}
+		if isUsableLocalMaterialMetadata(state.LocalMetadata) {
+			result.metadata = state.LocalMetadata
+		}
+	}
+
+	if len(result.accountKeyPEM) == 0 {
+		accountKeyPEM, err := os.ReadFile(filepath.Join(m.materialDir(certificateID), "acme_account_key.pem"))
+		if err == nil {
+			result.accountKeyPEM = accountKeyPEM
+		} else if !os.IsNotExist(err) {
+			return persistedACMEMaterial{}, err
+		}
+	}
+
+	if result.registration == nil {
+		registrationPayload, err := os.ReadFile(filepath.Join(m.materialDir(certificateID), "acme_registration.json"))
+		if err == nil {
+			var registrationResource registration.Resource
+			if err := json.Unmarshal(registrationPayload, &registrationResource); err == nil {
+				result.registration = &registrationResource
+			}
+		} else if !os.IsNotExist(err) {
+			return persistedACMEMaterial{}, err
+		}
+	}
+
+	if !isUsableLocalMaterialMetadata(result.metadata) {
+		metadata, metadataUsable, err := m.loadLocalMaterialMetadataIfUsable(certificateID)
+		if err != nil {
+			return persistedACMEMaterial{}, err
+		}
+		if metadataUsable {
+			result.metadata = metadata
+		}
 	}
 
 	return result, nil
@@ -460,6 +532,36 @@ func (m *Manager) savePersistedACMEMaterial(certificateID int, result acmeIssueR
 			return err
 		}
 	}
+
+	state, _, err := m.loadManagedCertificateState(certificateID)
+	if err != nil {
+		return err
+	}
+	if state.ACME == nil {
+		state.ACME = &model.ManagedCertificateACMEState{}
+	}
+	state.ACME.Account.KeyPEM = append([]byte(nil), result.AccountKeyPEM...)
+	state.ACME.Account.Registration = nil
+	if result.Registration != nil {
+		payload, err := json.Marshal(result.Registration)
+		if err != nil {
+			return err
+		}
+		state.ACME.Account.Registration = payload
+	}
+	if tlsCert, _, _, err := parseTLSMaterial(result.CertPEM, result.KeyPEM); err == nil && tlsCert.Leaf != nil {
+		state.ACME.Renewal.NotAfterUnix = tlsCert.Leaf.NotAfter.Unix()
+		state.ACME.Renewal.RenewAtUnix = tlsCert.Leaf.NotAfter.Add(-m.cfg.acme.renewBefore).Unix()
+		nowUnix := m.cfg.now().Unix()
+		state.ACME.Renewal.LastRenewedAtUnix = nowUnix
+		state.ACME.Renewal.LastAttemptAtUnix = nowUnix
+		state.ACME.Renewal.LastAttemptError = ""
+		state.ACME.Renewal.LastAttemptStatus = "success"
+		state.ACME.Renewal.LastAttemptNotAfter = tlsCert.Leaf.NotAfter.Unix()
+	}
+	if err := m.saveManagedCertificateState(certificateID, state); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -480,7 +582,15 @@ func (m *Manager) saveLocalMaterialMetadata(certificateID int, metadata localMat
 	if err != nil {
 		return err
 	}
-	return writeFileAtomically(filepath.Join(m.materialDir(certificateID), "local_metadata.json"), payload, 0600)
+	if err := writeFileAtomically(filepath.Join(m.materialDir(certificateID), "local_metadata.json"), payload, 0600); err != nil {
+		return err
+	}
+	state, _, err := m.loadManagedCertificateState(certificateID)
+	if err != nil {
+		return err
+	}
+	state.LocalMetadata = metadata
+	return m.saveManagedCertificateState(certificateID, state)
 }
 
 func (m *Manager) materialDir(certificateID int) string {
@@ -566,6 +676,77 @@ func parseCertificateChain(certPEM []byte) ([]*x509.Certificate, error) {
 func fingerprintFromCertificate(cert *x509.Certificate) string {
 	sum := sha256Sum(cert.Raw)
 	return fmt.Sprintf("%x", sum)
+}
+
+func hashManagedCertificateMaterial(certPEM, keyPEM []byte) string {
+	if len(bytes.TrimSpace(certPEM)) == 0 || len(bytes.TrimSpace(keyPEM)) == 0 {
+		return ""
+	}
+	hash := sha256.New()
+	_, _ = hash.Write(certPEM)
+	_, _ = hash.Write([]byte("\n---\n"))
+	_, _ = hash.Write(keyPEM)
+	return fmt.Sprintf("%x", hash.Sum(nil))
+}
+
+func (m *Manager) ManagedCertificateReports(context.Context) ([]model.ManagedCertificateReport, error) {
+	m.mu.RLock()
+	entries := make([]*managedCertificate, 0, len(m.active.byID))
+	for _, entry := range m.active.byID {
+		if entry == nil || entry.info.IssuerMode != "local_http01" {
+			continue
+		}
+		entries = append(entries, entry)
+	}
+	m.mu.RUnlock()
+
+	reports := make([]model.ManagedCertificateReport, 0, len(entries))
+	for _, entry := range entries {
+		report := model.ManagedCertificateReport{
+			ID:           entry.info.ID,
+			Domain:       entry.info.Domain,
+			Status:       managedCertificateReportStatus(entry),
+			MaterialHash: entry.materialHash,
+			ACMEInfo:     entry.info.ACMEInfo,
+		}
+		state, ok, err := m.loadManagedCertificateState(entry.info.ID)
+		if err != nil {
+			return nil, err
+		}
+		if ok && state.ACME != nil {
+			if renewedAt := state.ACME.Renewal.LastRenewedAtUnix; renewedAt > 0 {
+				report.LastIssueAt = time.Unix(renewedAt, 0).UTC().Format(time.RFC3339)
+			}
+			if lastAttempt := state.ACME.Renewal.LastAttemptAtUnix; lastAttempt > 0 {
+				report.UpdatedAt = time.Unix(lastAttempt, 0).UTC().Format(time.RFC3339)
+			}
+			report.LastError = state.ACME.Renewal.LastAttemptError
+			if normalizeManagedCertificateReportStatus(state.ACME.Renewal.LastAttemptStatus) != "" {
+				report.Status = normalizeManagedCertificateReportStatus(state.ACME.Renewal.LastAttemptStatus)
+			}
+		}
+		reports = append(reports, report)
+	}
+	return reports, nil
+}
+
+func managedCertificateReportStatus(entry *managedCertificate) string {
+	if entry == nil {
+		return ""
+	}
+	if entry.materialHash != "" {
+		return "active"
+	}
+	return normalizeManagedCertificateReportStatus(entry.info.Status)
+}
+
+func normalizeManagedCertificateReportStatus(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "pending", "active", "error":
+		return strings.ToLower(strings.TrimSpace(value))
+	default:
+		return ""
+	}
 }
 
 func sha256Sum(raw []byte) [32]byte {
@@ -668,6 +849,14 @@ func normalizeCertificateHost(value string) string {
 }
 
 func (m *Manager) loadLocalMaterialMetadataIfUsable(certificateID int) (localMaterialMetadata, bool, error) {
+	state, stateUsable, err := m.loadManagedCertificateState(certificateID)
+	if err != nil {
+		return localMaterialMetadata{}, false, err
+	}
+	if stateUsable && isUsableLocalMaterialMetadata(state.LocalMetadata) {
+		return state.LocalMetadata, true, nil
+	}
+
 	payload, err := os.ReadFile(filepath.Join(m.materialDir(certificateID), "local_metadata.json"))
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -681,6 +870,13 @@ func (m *Manager) loadLocalMaterialMetadataIfUsable(certificateID int) (localMat
 		return localMaterialMetadata{}, false, nil
 	}
 	return metadata, true, nil
+}
+
+func isUsableLocalMaterialMetadata(metadata localMaterialMetadata) bool {
+	return strings.TrimSpace(metadata.Domain) != "" &&
+		strings.TrimSpace(metadata.Scope) != "" &&
+		strings.TrimSpace(metadata.IssuerMode) != "" &&
+		strings.TrimSpace(metadata.CertificateType) != ""
 }
 
 func (m *Manager) writeLocalMaterialFiles(certificateID int, certPEM, keyPEM []byte, metadata localMaterialMetadata) error {

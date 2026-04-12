@@ -9,29 +9,6 @@ body {
   -webkit-font-smoothing: antialiased;
 }
 
-/* ============================================
-   Global Modal Responsive
-   ============================================ */
-
-/* Mobile: tighter modal padding and sizing */
-@media (max-width: 640px) {
-  .modal-overlay { padding: var(--space-2) !important; }
-  .modal,
-  .modal--large { width: min(94vw, 100%) !important; max-height: calc(100vh - var(--space-4)); }
-  .modal__header { padding: var(--space-4) var(--space-5); font-size: var(--text-base); }
-  .modal__body { padding: var(--space-4); }
-  .modal__footer { padding: var(--space-3) var(--space-5); }
-}
-
-/* 4K: larger modal text and spacing */
-@media (min-width: 2560px) {
-  .modal { width: min(520px, 85vw) !important; }
-  .modal--large { width: min(680px, 88vw) !important; }
-  .modal__header { padding: var(--space-6) var(--space-7); font-size: var(--text-xl); }
-  .modal__body { padding: var(--space-7); gap: var(--space-6); }
-  .modal__footer { padding: var(--space-5) var(--space-7); }
-}
-
 /* Card grid 4K: larger cards */
 @media (min-width: 2560px) {
   .rule-grid { grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 1.25rem; }

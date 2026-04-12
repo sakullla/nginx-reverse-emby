@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -333,4 +334,8 @@ func closeRead(conn net.Conn) {
 	if closer, ok := conn.(interface{ CloseRead() error }); ok {
 		_ = closer.CloseRead()
 	}
+}
+
+func ListenersChanged(previous, next []Listener) bool {
+	return !reflect.DeepEqual(previous, next)
 }

@@ -18,7 +18,7 @@
             <circle cx='11' cy='11' r='8' />
             <line x1='21' y1='21' x2='16.65' y2='16.65' />
           </svg>
-          <input ref='searchInputRef' v-model='searchQuery' class='search-input' placeholder='搜索域名 / 标签 / #id=...'>
+          <input ref='searchInputRef' v-model='searchQuery' name='certificate-search' class='search-input' placeholder='搜索域名 / 标签 / #id=...'>
           <button v-if='searchQuery' class='clear-btn' @click.stop='searchQuery = ""'>
             <svg width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2.5'>
               <line x1='18' y1='6' x2='6' y2='18' />
@@ -49,13 +49,14 @@
     </div>
 
     <div v-else-if='certificates.length && filteredCerts.length' class='cert-grid'>
-      <div v-for='cert in filteredCerts' :key='cert.id' class='cert-card'>
+      <div v-for='cert in filteredCerts' :key='cert.id' class='cert-card' :class="{ 'cert-card--disabled': !cert.enabled }">
         <div class='cert-card__header'>
-          <div class='cert-card__header-left'>
+          <div class='cert-card__badges'>
             <span class='cert-card__id'>#{{ cert.id }}</span>
-            <div class='cert-card__status' :class='`cert-card__status--${cert.status || "inactive"}`'>
+            <span class='cert-card__scope'>{{ cert.scope === 'ip' ? 'IP' : '域名' }}</span>
+            <span class='cert-card__status' :class='`cert-card__status--${cert.status || "inactive"}`'>
               {{ getStatusLabel(cert) }}
-            </div>
+            </span>
           </div>
           <div class='cert-card__actions'>
             <button
@@ -88,14 +89,24 @@
           </div>
         </div>
 
-        <div class='cert-card__domain'>{{ cert.domain }}</div>
+        <div class='cert-card__domain'>
+          <span class='cert-card__url-icon'>
+            <svg width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'>
+              <path d='M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71'/>
+              <path d='M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71'/>
+            </svg>
+          </span>
+          <code class='cert-card__addr'>{{ cert.domain }}</code>
+        </div>
+
         <div class='cert-card__meta'>
-          <span class='cert-card__scope'>{{ getCertificateUsageLabel(cert.usage) }}</span>
-          <span class='cert-card__issuer'>{{ getCertificateIssuerLabel(cert) }}</span>
-          <span class='cert-card__issuer'>{{ cert.scope === 'ip' ? 'IP 证书' : '域名证书' }}</span>
+          <span class='cert-card__meta-tag'>{{ getCertificateUsageLabel(cert.usage) }}</span>
+          <span class='cert-card__meta-tag'>{{ getCertificateIssuerLabel(cert) }}</span>
           <span v-if='cert.last_issue_at' class='cert-card__date'>{{ formatDate(cert.last_issue_at) }}</span>
         </div>
+
         <p v-if='cert.last_error' class='cert-card__error'>{{ cert.last_error }}</p>
+
         <div class='cert-card__tags'>
           <span v-if='isSystemRelayCA(cert)' class='tag tag--info'>系统 Relay CA</span>
           <span v-if='cert.self_signed' class='tag tag--warn'>自签</span>
@@ -121,47 +132,25 @@
       <button class='btn btn-primary' @click='showAddForm = true'>从模板创建第一个证书</button>
     </div>
 
-    <Teleport to='body'>
-      <div v-if='showAddForm || editingCert' class='modal-overlay'>
-        <div class='modal modal--large'>
-          <div class='modal__header'>
-            <span>{{ editingCert ? '编辑证书' : '新建证书' }}</span>
-            <button class='modal__close' @click='closeForm'>
-              <svg width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'>
-                <line x1='18' y1='6' x2='6' y2='18' />
-                <line x1='6' y1='6' x2='18' y2='18' />
-              </svg>
-            </button>
-          </div>
-          <div class='modal__body'>
-            <CertificateForm :initial-data='editingCert' :agent-id='agentId' @success='closeForm' />
-          </div>
-        </div>
-      </div>
-    </Teleport>
+    <BaseModal
+      :model-value="showAddForm || !!editingCert"
+      :title="editingCert ? '编辑证书' : '新建证书'"
+      size="xl"
+      @update:model-value="closeForm"
+    >
+      <CertificateForm :initial-data="editingCert" :agent-id="agentId" @success="closeForm" />
+    </BaseModal>
 
-    <Teleport to='body'>
-      <div v-if='deletingCert' class='modal-overlay' @click.self='deletingCert = null'>
-        <div class='modal'>
-          <div class='modal__header'>
-            <span>确认删除</span>
-            <button class='modal__close' @click='deletingCert = null'>
-              <svg width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2'>
-                <line x1='18' y1='6' x2='6' y2='18' />
-                <line x1='6' y1='6' x2='18' y2='18' />
-              </svg>
-            </button>
-          </div>
-          <div class='modal__body'>
-            <p>确定删除证书 <strong>{{ deletingCert.domain }}</strong>？</p>
-          </div>
-          <div class='modal__footer'>
-            <button class='btn btn-secondary' @click='deletingCert = null'>取消</button>
-            <button class='btn btn-danger' @click='confirmDelete'>删除</button>
-          </div>
-        </div>
-      </div>
-    </Teleport>
+    <DeleteConfirmDialog
+      :show='!!deletingCert'
+      title='确认删除证书'
+      message='删除后该证书将立即失效，相关配置将无法恢复。'
+      :name='deletingCert?.domain'
+      confirm-text='确认删除'
+      :loading='deleteCertificate.isPending?.value'
+      @confirm='confirmDelete'
+      @cancel='deletingCert = null'
+    />
   </div>
 </template>
 
@@ -171,6 +160,8 @@ import { useRoute } from 'vue-router'
 import { useAgent } from '../context/AgentContext'
 import { useCertificates, useDeleteCertificate, useIssueCertificate } from '../hooks/useCertificates'
 import CertificateForm from '../components/CertificateForm.vue'
+import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
+import BaseModal from '../components/base/BaseModal.vue'
 import {
   getCertificateSourceLabel,
   getCertificateUsageLabel,
@@ -289,7 +280,7 @@ function confirmDelete() {
 .certs-page__title { font-size: 1.5rem; font-weight: 700; margin: 0 0 0.25rem; color: var(--color-text-primary); }
 .certs-page__subtitle { font-size: 0.875rem; color: var(--color-text-tertiary); margin: 0; }
 .certs-page__loading, .certs-page__empty, .certs-page__prompt { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.75rem; padding: 4rem 2rem; color: var(--color-text-muted); text-align: center; }
-.cert-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1rem; }
+.cert-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1rem; }
 .search-wrapper { position: relative; display: flex; align-items: center; }
 .search-icon-btn { display: none; }
 .search-input { flex: 1; min-width: 0; padding: 0.625rem 2rem 0.625rem 0.875rem; border-radius: var(--radius-lg); border: 1.5px solid var(--color-border-default); background: var(--color-bg-subtle); font-size: 0.875rem; color: var(--color-text-primary); outline: none; font-family: inherit; transition: border-color 0.15s, width 0.2s; box-sizing: border-box; }
@@ -352,15 +343,20 @@ function confirmDelete() {
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
+  transition: opacity 0.15s;
 }
+.cert-card--disabled { opacity: 0.6; }
 .cert-card__header { display: flex; align-items: center; justify-content: space-between; }
-.cert-card__header-left { display: flex; align-items: center; gap: 0.5rem; }
+.cert-card__badges { display: flex; align-items: center; gap: 0.5rem; }
 .cert-card__id { font-size: 0.75rem; font-family: var(--font-mono); color: var(--color-text-tertiary); }
-.cert-card__domain { font-size: 1rem; font-weight: 600; color: var(--color-text-primary); font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cert-card__meta { display: flex; gap: 0.5rem; font-size: 0.75rem; color: var(--color-text-tertiary); flex-wrap: wrap; }
-.cert-card__scope, .cert-card__issuer { background: var(--color-bg-subtle); padding: 1px 6px; border-radius: var(--radius-sm); }
+.cert-card__scope { display: inline-block; font-size: 0.7rem; font-weight: 700; padding: 2px 6px; border-radius: var(--radius-sm); font-family: var(--font-mono); background: var(--color-bg-subtle); color: var(--color-text-secondary); }
+.cert-card__domain { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
+.cert-card__url-icon { display: flex; align-items: center; justify-content: center; color: var(--color-text-tertiary); flex-shrink: 0; }
+.cert-card__addr { font-family: var(--font-mono); font-size: 0.875rem; font-weight: 500; color: var(--color-text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cert-card__meta { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.cert-card__meta-tag { font-size: 0.7rem; padding: 1px 6px; background: var(--color-bg-subtle); border: 1px solid var(--color-border-subtle); border-radius: var(--radius-sm); color: var(--color-text-secondary); font-family: var(--font-mono); }
+.cert-card__date { font-size: 0.75rem; color: var(--color-text-muted); margin-left: auto; }
 .cert-card__error { font-size: 0.75rem; color: var(--color-danger); background: var(--color-danger-50); padding: 0.25rem 0.5rem; border-radius: var(--radius-sm); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cert-card__date { font-size: 0.75rem; color: var(--color-text-tertiary); }
 .cert-card__tags { display: flex; gap: 0.25rem; flex-wrap: wrap; }
 .tag { font-size: 0.75rem; padding: 2px 8px; background: var(--color-primary-subtle); color: var(--color-primary); border-radius: var(--radius-full); font-weight: 500; }
 .tag--info { background: var(--color-primary-subtle); color: var(--color-primary); }
@@ -372,21 +368,12 @@ function confirmDelete() {
 .cert-card__status--error { background: var(--color-danger-50); color: var(--color-danger); }
 .cert-card__status--inactive { background: var(--color-bg-subtle); color: var(--color-text-muted); }
 
-.cert-card__actions { display: flex; align-items: center; gap: 0.375rem; opacity: 0; transition: opacity 0.15s; }
-.cert-card:hover .cert-card__actions { opacity: 1; }
+.cert-card__actions { display: flex; gap: 0.25rem; }
 .cert-card__action { display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: var(--radius-md); border: none; background: transparent; color: var(--color-text-tertiary); cursor: pointer; transition: all 0.15s; }
 .cert-card__action:hover { background: var(--color-bg-hover); color: var(--color-text-primary); }
 .cert-card__action--delete:hover { background: var(--color-danger-50); color: var(--color-danger); }
 .cert-card__action--issue:hover { background: var(--color-success-50); color: var(--color-success); }
 
-.modal-overlay { position: fixed; inset: 0; background: rgba(37,23,54,0.4); backdrop-filter: blur(8px); z-index: var(--z-modal); display: flex; align-items: center; justify-content: center; padding: var(--space-4); }
-.modal { background: var(--color-bg-surface); border: 1.5px solid var(--color-border-default); border-radius: var(--radius-3xl); box-shadow: var(--shadow-2xl); width: min(480px, 90vw); max-height: calc(100vh - var(--space-8)); display: flex; flex-direction: column; overflow: hidden; }
-.modal--large { width: min(760px, 94vw); }
-.modal__header { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); padding: var(--space-5) var(--space-6); border-bottom: 1px solid var(--color-border-subtle); flex-shrink: 0; background: var(--gradient-soft); font-weight: 600; font-size: var(--text-lg); color: var(--color-text-primary); }
-.modal__body { padding: var(--space-6); overflow-x: hidden; overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: var(--space-5); }
-.modal__footer { padding: var(--space-4) var(--space-6); display: flex; justify-content: flex-end; gap: var(--space-3); border-top: 1px solid var(--color-border-subtle); flex-shrink: 0; }
-.modal__close { display: flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: var(--radius-full); color: var(--color-text-tertiary); transition: all var(--duration-normal) var(--ease-bounce); flex-shrink: 0; border: none; background: transparent; cursor: pointer; }
-.modal__close:hover { background: var(--color-danger-50); color: var(--color-danger); transform: rotate(90deg); }
 .btn { padding: 0.5rem 1rem; border-radius: var(--radius-lg); font-size: 0.875rem; font-weight: 500; cursor: pointer; transition: all 0.15s; border: none; font-family: inherit; display: inline-flex; align-items: center; gap: 0.375rem; }
 .btn-primary { background: var(--gradient-primary); color: white; }
 .btn-secondary { background: var(--color-bg-subtle); color: var(--color-text-primary); border: 1px solid var(--color-border-default); }

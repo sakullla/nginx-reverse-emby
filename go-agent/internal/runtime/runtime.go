@@ -7,10 +7,50 @@ import (
 	"strconv"
 	"sync"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/l4"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 )
 
 type Activator func(ctx context.Context, previous, next model.Snapshot) error
+
+type SnapshotActivationHandlers struct {
+	ActivateManagedCertificates func(context.Context, []model.ManagedCertificateBundle, []model.ManagedCertificatePolicy) error
+	ActivateHTTPRules           func(context.Context, []model.HTTPRule, []model.RelayListener) error
+	ActivateRelayListeners      func(context.Context, []model.RelayListener) error
+	ActivateL4Rules             func(context.Context, []model.L4Rule, []model.RelayListener) error
+}
+
+func NewSnapshotActivator(handlers SnapshotActivationHandlers) Activator {
+	return func(ctx context.Context, previous, next model.Snapshot) error {
+		if certificatesChanged(previous, next) && handlers.ActivateManagedCertificates != nil {
+			if err := handlers.ActivateManagedCertificates(ctx, next.Certificates, next.CertificatePolicies); err != nil {
+				return err
+			}
+		}
+
+		if (httpRulesChanged(previous, next) || httpRelayInputsChanged(previous, next)) && handlers.ActivateHTTPRules != nil {
+			if err := handlers.ActivateHTTPRules(ctx, next.Rules, next.RelayListeners); err != nil {
+				return err
+			}
+		}
+
+		if relay.ListenersChanged(previous.RelayListeners, next.RelayListeners) && handlers.ActivateRelayListeners != nil {
+			if err := handlers.ActivateRelayListeners(ctx, next.RelayListeners); err != nil {
+				return err
+			}
+		}
+
+		if (l4RulesChanged(previous, next) || l4.RelayInputsChanged(next.L4Rules, previous.RelayListeners, next.RelayListeners)) &&
+			handlers.ActivateL4Rules != nil {
+			if err := handlers.ActivateL4Rules(ctx, next.L4Rules, next.RelayListeners); err != nil {
+				return err
+			}
+		}
+
+		return nil
+	}
+}
 
 type Runtime struct {
 	mu             sync.RWMutex
@@ -89,6 +129,25 @@ func (r *Runtime) Apply(ctx context.Context, previous, next model.Snapshot) erro
 		return err
 	}
 
+	r.setActiveSnapshotLocked(next)
+
+	return nil
+}
+
+func (r *Runtime) Rollback(ctx context.Context, previous, next model.Snapshot) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if err := r.activator(ctx, previous, next); err != nil {
+		r.state.Status = "error"
+		return err
+	}
+
+	r.setActiveSnapshotLocked(next)
+	return nil
+}
+
+func (r *Runtime) setActiveSnapshotLocked(next model.Snapshot) {
 	r.activeSnapshot = cloneSnapshot(next)
 	r.state.Status = "active"
 	r.state.CurrentRevision = next.Revision
@@ -97,8 +156,6 @@ func (r *Runtime) Apply(ctx context.Context, previous, next model.Snapshot) erro
 		r.state.Metadata = make(map[string]string)
 	}
 	r.state.Metadata["current_revision"] = strconv.FormatInt(next.Revision, 10)
-
-	return nil
 }
 
 func isZeroSnapshot(s model.Snapshot) bool {
@@ -203,4 +260,49 @@ func describeSnapshot(snapshot model.Snapshot) string {
 		len(snapshot.Certificates),
 		len(snapshot.CertificatePolicies),
 	)
+}
+
+func certificatesChanged(previous, next model.Snapshot) bool {
+	return !reflect.DeepEqual(previous.Certificates, next.Certificates) ||
+		!reflect.DeepEqual(previous.CertificatePolicies, next.CertificatePolicies)
+}
+
+func httpRulesChanged(previous, next model.Snapshot) bool {
+	return !reflect.DeepEqual(previous.Rules, next.Rules)
+}
+
+func l4RulesChanged(previous, next model.Snapshot) bool {
+	return !reflect.DeepEqual(previous.L4Rules, next.L4Rules)
+}
+
+func httpRelayInputsChanged(previous, next model.Snapshot) bool {
+	for _, rule := range next.Rules {
+		for _, listenerID := range rule.RelayChain {
+			if relayListenerChangedByID(listenerID, previous.RelayListeners, next.RelayListeners) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func relayListenerChangedByID(listenerID int, previous, next []model.RelayListener) bool {
+	previousListener, previousOK := relayListenerByID(listenerID, previous)
+	nextListener, nextOK := relayListenerByID(listenerID, next)
+	if previousOK != nextOK {
+		return true
+	}
+	if !previousOK {
+		return false
+	}
+	return !reflect.DeepEqual(previousListener, nextListener)
+}
+
+func relayListenerByID(listenerID int, listeners []model.RelayListener) (model.RelayListener, bool) {
+	for _, listener := range listeners {
+		if listener.ID == listenerID {
+			return listener, true
+		}
+	}
+	return model.RelayListener{}, false
 }

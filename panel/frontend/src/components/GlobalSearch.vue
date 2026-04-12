@@ -10,6 +10,7 @@
           <input
             ref="inputRef"
             v-model="query"
+            name="global-search"
             type="text"
             class="global-search-input"
             placeholder="跨节点搜索规则..."

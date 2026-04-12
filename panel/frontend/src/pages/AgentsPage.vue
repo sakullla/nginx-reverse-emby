@@ -99,20 +99,16 @@
       </div>
     </Teleport>
 
-    <Teleport to="body">
-      <div v-if="deletingAgent" class="modal-overlay" @click.self="deletingAgent = null">
-        <div class="modal">
-          <div class="modal__header">确认删除</div>
-          <div class="modal__body">
-            <p>确定删除节点 <strong>{{ deletingAgent.name }}</strong> 吗？此操作无法撤销。</p>
-          </div>
-          <div class="modal__footer">
-            <button class="btn btn-secondary" @click="deletingAgent = null">取消</button>
-            <button class="btn btn-danger" @click="confirmDelete">删除</button>
-          </div>
-        </div>
-      </div>
-    </Teleport>
+    <DeleteConfirmDialog
+      :show="!!deletingAgent"
+      title="确认删除节点"
+      message="删除后该节点将立即下线，相关的规则和配置将无法恢复。"
+      :name="deletingAgent?.name"
+      confirm-text="确认删除"
+      :loading="deleteAgent.isPending?.value"
+      @confirm="confirmDelete"
+      @cancel="deletingAgent = null"
+    />
   </div>
 </template>
 
@@ -120,6 +116,7 @@
 import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAgents, useRenameAgent, useDeleteAgent } from '../hooks/useAgents'
+import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
 import { fetchSystemInfo, applyConfig } from '../api'
 import { useAgent } from '../context/AgentContext'
 

@@ -1,6 +1,7 @@
-﻿import { useQuery, useMutation, useQueryClient } from '@tanstack/vue-query'
+import { useQuery, useMutation, useQueryClient } from '@tanstack/vue-query'
 import { unref } from 'vue'
 import * as api from '../api'
+import { messageStore } from '../stores/messages'
 
 export function useRelayListeners(agentId) {
   return useQuery({
@@ -28,6 +29,10 @@ export function useCreateRelayListener(agentId) {
       qc.invalidateQueries({ queryKey: ['relayListeners', agentId] })
       qc.invalidateQueries({ queryKey: ['relayListeners', 'all'] })
       qc.invalidateQueries({ queryKey: ['agents'] })
+      messageStore.success('Relay 监听器创建成功')
+    },
+    onError: (error) => {
+      messageStore.error(error, '创建 Relay 监听器失败')
     }
   })
 }
@@ -40,6 +45,10 @@ export function useUpdateRelayListener(agentId) {
       qc.invalidateQueries({ queryKey: ['relayListeners', agentId] })
       qc.invalidateQueries({ queryKey: ['relayListeners', 'all'] })
       qc.invalidateQueries({ queryKey: ['agents'] })
+      messageStore.success('Relay 监听器更新成功')
+    },
+    onError: (error) => {
+      messageStore.error(error, '更新 Relay 监听器失败')
     }
   })
 }
@@ -52,6 +61,10 @@ export function useDeleteRelayListener(agentId) {
       qc.invalidateQueries({ queryKey: ['relayListeners', agentId] })
       qc.invalidateQueries({ queryKey: ['relayListeners', 'all'] })
       qc.invalidateQueries({ queryKey: ['agents'] })
+      messageStore.success('Relay 监听器已删除')
+    },
+    onError: (error) => {
+      messageStore.error(error, '删除 Relay 监听器失败')
     }
   })
 }

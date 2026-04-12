@@ -442,6 +442,9 @@ func TestRunDoesNotAdvanceAppliedSnapshotOrCurrentRevisionOnApplyFailure(t *test
 	if state.Metadata["last_sync_error"] != "http apply failed" {
 		t.Fatalf("expected last_sync_error metadata, got %v", state.Metadata)
 	}
+	if state.Metadata["last_apply_revision"] != "9" || state.Metadata["last_apply_status"] != "error" {
+		t.Fatalf("expected attempted apply revision/status recorded, got %v", state.Metadata)
+	}
 	if state.Metadata["foo"] != "bar" {
 		t.Fatalf("expected unrelated metadata preserved, got %v", state.Metadata)
 	}
@@ -449,6 +452,116 @@ func TestRunDoesNotAdvanceAppliedSnapshotOrCurrentRevisionOnApplyFailure(t *test
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatalf("Run returned error: %v", err)
+	}
+}
+
+func TestRunClosesCertificateApplierOnShutdown(t *testing.T) {
+	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
+	mem := store.NewInMemory()
+	if err := mem.SaveAppliedSnapshot(Snapshot{DesiredVersion: "baseline"}); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{DesiredVersion: "next", Revision: 2}})
+	certApplier := &testCertificateApplier{}
+	app := newAppWithDeps(cfg, mem, client, certApplier, nil, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- app.Run(ctx)
+	}()
+
+	waitForCalls(t, client, 1, time.Second)
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("run returned error: %v", err)
+	}
+	if got := certApplier.closeCount(); got != 1 {
+		t.Fatalf("expected certificate applier close to be called once, got %d", got)
+	}
+}
+
+func TestAppRollsBackRuntimeAndPersistsLastSyncError(t *testing.T) {
+	cfg := Config{HeartbeatInterval: time.Hour}
+	mem := store.NewInMemory()
+	previousApplied := Snapshot{
+		DesiredVersion: "stable",
+		Revision:       7,
+		Rules: []model.HTTPRule{{
+			FrontendURL: "http://stable.example.test:18080",
+			BackendURL:  "http://127.0.0.1:8096",
+			Revision:    1,
+		}},
+	}
+	if err := mem.SaveAppliedSnapshot(previousApplied); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+	if err := mem.SaveRuntimeState(store.RuntimeState{
+		CurrentRevision: previousApplied.Revision,
+		Metadata: map[string]string{
+			"current_revision": "7",
+			"foo":              "bar",
+		},
+	}); err != nil {
+		t.Fatalf("failed to seed runtime state: %v", err)
+	}
+
+	nextSnapshot := Snapshot{
+		DesiredVersion: "next",
+		Revision:       9,
+		Rules: []model.HTTPRule{{
+			FrontendURL: "http://next.example.test:18080",
+			BackendURL:  "http://127.0.0.1:8096",
+			Revision:    2,
+		}},
+	}
+	client := newTestSyncClient(nil, syncResponse{snapshot: nextSnapshot})
+	httpApplier := &testHTTPApplier{
+		applyErr:   errors.New("activation failed"),
+		failOnCall: 2,
+	}
+	app := newAppWithHTTPDeps(cfg, mem, client, httpApplier, nil, nil, nil)
+
+	ctx := context.Background()
+	if err := app.runtime.Apply(ctx, Snapshot{}, previousApplied); err != nil {
+		t.Fatalf("failed to seed runtime: %v", err)
+	}
+
+	if err := app.performSync(ctx); err == nil || err.Error() != "activation failed" {
+		t.Fatalf("expected activation failure, got %v", err)
+	}
+
+	calls := httpApplier.snapshotCalls()
+	if len(calls) != 3 {
+		t.Fatalf("expected startup, failed apply, and rollback apply calls, got %d", len(calls))
+	}
+	if !reflect.DeepEqual(calls[2].rules, previousApplied.Rules) {
+		t.Fatalf("expected rollback call to restore previous rules, got %+v", calls[2].rules)
+	}
+
+	applied, err := mem.LoadAppliedSnapshot()
+	if err != nil {
+		t.Fatalf("failed to load applied snapshot: %v", err)
+	}
+	if !reflect.DeepEqual(applied, previousApplied) {
+		t.Fatalf("expected applied snapshot unchanged after failed activation, got %+v", applied)
+	}
+
+	state, err := mem.LoadRuntimeState()
+	if err != nil {
+		t.Fatalf("failed to load runtime state: %v", err)
+	}
+	if state.CurrentRevision != previousApplied.Revision {
+		t.Fatalf("expected persisted current revision %d, got %d", previousApplied.Revision, state.CurrentRevision)
+	}
+	if state.Metadata["current_revision"] != "7" {
+		t.Fatalf("expected persisted metadata current_revision 7, got %q", state.Metadata["current_revision"])
+	}
+	if state.Metadata["last_sync_error"] != "activation failed" {
+		t.Fatalf("expected activation failure metadata, got %v", state.Metadata)
+	}
+	if state.Metadata["foo"] != "bar" {
+		t.Fatalf("expected unrelated metadata preserved, got %v", state.Metadata)
 	}
 }
 
@@ -518,10 +631,7 @@ func TestRunRecordsSyncErrorsInRuntimeState(t *testing.T) {
 	}()
 
 	waitForCalls(t, client, 1, time.Second)
-	current, err := mem.LoadRuntimeState()
-	if err != nil {
-		t.Fatalf("failed to load runtime state: %v", err)
-	}
+	current := waitForLastSyncError(t, time.Second, mem.LoadRuntimeState, "boom")
 	if current.Metadata["last_sync_error"] != "boom" {
 		t.Fatalf("expected failure metadata, got %v", current.Metadata)
 	}
@@ -531,10 +641,11 @@ func TestRunRecordsSyncErrorsInRuntimeState(t *testing.T) {
 
 	waitForCalls(t, client, 2, time.Second)
 	waitForRuntimeState(t, time.Second, func() bool {
-		current, err = mem.LoadRuntimeState()
+		updated, err := mem.LoadRuntimeState()
 		if err != nil {
 			t.Fatalf("failed to load runtime state: %v", err)
 		}
+		current = updated
 		_, ok := current.Metadata["last_sync_error"]
 		return !ok
 	}, func() string {
@@ -573,10 +684,7 @@ func TestRunRecordsSaveDesiredSnapshotFailures(t *testing.T) {
 	waitForRequest(t, client, time.Second)  // initial request
 	waitForCalls(t, client, 2, time.Second) // second request triggers failure
 
-	state, err := fs.LoadRuntimeState()
-	if err != nil {
-		t.Fatalf("failed to load runtime state: %v", err)
-	}
+	state := waitForLastSyncError(t, time.Second, fs.LoadRuntimeState, "persistence fail")
 	if state.Metadata["last_sync_error"] != "persistence fail" {
 		t.Fatalf("expected persistence failure metadata, got %v", state.Metadata)
 	}
@@ -654,6 +762,9 @@ func TestRunDoesNotAdvancePersistedRuntimeStateWhenSaveAppliedSnapshotFails(t *t
 	}
 	if state.Metadata["last_sync_error"] != "applied persistence fail" {
 		t.Fatalf("expected applied persistence error metadata, got %v", state.Metadata)
+	}
+	if state.Metadata["last_apply_revision"] != "9" || state.Metadata["last_apply_status"] != "error" {
+		t.Fatalf("expected attempted apply revision/status recorded, got %v", state.Metadata)
 	}
 	if state.Metadata["foo"] != "bar" {
 		t.Fatalf("expected unrelated metadata preserved, got %v", state.Metadata)
@@ -945,6 +1056,101 @@ func TestPerformSyncUpdaterStageFailureRecordsErrorWithoutFalseStateAdvance(t *t
 	}
 }
 
+func TestPerformSyncRelayListenerChangeReappliesHTTPRelayAndL4FromUnifiedSnapshotActivation(t *testing.T) {
+	cfg := Config{HeartbeatInterval: time.Hour}
+	mem := store.NewInMemory()
+
+	previousApplied := Snapshot{
+		DesiredVersion: "stable",
+		Revision:       7,
+		Rules: []model.HTTPRule{{
+			FrontendURL: "https://relay-http.example.com",
+			Backends: []model.HTTPBackend{
+				{URL: "http://10.0.0.10:8096"},
+			},
+			RelayChain: []int{51},
+		}},
+		L4Rules: []model.L4Rule{{
+			Protocol:   "tcp",
+			ListenHost: "127.0.0.1",
+			ListenPort: 19000,
+			Backends: []model.L4Backend{
+				{Host: "10.0.0.20", Port: 9000},
+			},
+			RelayChain: []int{51},
+		}},
+		RelayListeners: []model.RelayListener{{
+			ID:         51,
+			AgentID:    "agent-a",
+			Name:       "relay-a",
+			ListenHost: "127.0.0.1",
+			BindHosts:  []string{"127.0.0.1"},
+			ListenPort: 9443,
+			PublicHost: "relay-a.example.com",
+			PublicPort: 29443,
+			Enabled:    true,
+			TLSMode:    "pin_only",
+			PinSet: []model.RelayPin{{
+				Type:  "sha256",
+				Value: "pin-value",
+			}},
+		}},
+	}
+	if err := mem.SaveAppliedSnapshot(previousApplied); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+
+	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{
+		DesiredVersion: "stable",
+		Revision:       8,
+		RelayListeners: []model.RelayListener{{
+			ID:         51,
+			AgentID:    "agent-a",
+			Name:       "relay-a",
+			ListenHost: "127.0.0.1",
+			BindHosts:  []string{"127.0.0.1"},
+			ListenPort: 9443,
+			PublicHost: "relay-a.example.com",
+			PublicPort: 39443,
+			Enabled:    true,
+			TLSMode:    "pin_only",
+			PinSet: []model.RelayPin{{
+				Type:  "sha256",
+				Value: "pin-value",
+			}},
+		}},
+	}})
+	httpApplier := &testHTTPApplier{}
+	l4Applier := &testL4Applier{}
+	relayApplier := &testRelayApplier{}
+	app := newAppWithHTTPDeps(cfg, mem, client, httpApplier, nil, l4Applier, relayApplier)
+
+	ctx := context.Background()
+	if err := app.runtime.Apply(ctx, Snapshot{}, previousApplied); err != nil {
+		t.Fatalf("failed to seed runtime: %v", err)
+	}
+
+	if err := app.performSync(ctx); err != nil {
+		t.Fatalf("performSync returned error: %v", err)
+	}
+
+	httpCalls := httpApplier.snapshotCalls()
+	if len(httpCalls) != 2 {
+		t.Fatalf("expected startup and relay-change http apply calls, got %d", len(httpCalls))
+	}
+	l4Calls := l4Applier.snapshotCalls()
+	if len(l4Calls) != 2 {
+		t.Fatalf("expected startup and relay-change l4 apply calls, got %d", len(l4Calls))
+	}
+	relayCalls := relayApplier.snapshotCalls()
+	if len(relayCalls) != 2 {
+		t.Fatalf("expected startup and relay-change relay apply calls, got %d", len(relayCalls))
+	}
+	if got := relayCalls[1].listeners[0].PublicPort; got != 39443 {
+		t.Fatalf("expected updated relay listener to be applied, got public_port=%d", got)
+	}
+}
+
 type syncResponse struct {
 	snapshot Snapshot
 	err      error
@@ -973,9 +1179,12 @@ type httpApplyCall struct {
 }
 
 type testCertificateApplier struct {
-	mu       sync.Mutex
-	calls    []applyCall
-	applyErr error
+	mu        sync.Mutex
+	calls     []applyCall
+	applyErr  error
+	reports   []model.ManagedCertificateReport
+	reportErr error
+	closed    int
 }
 
 func (a *testCertificateApplier) Apply(_ context.Context, bundles []model.ManagedCertificateBundle, policies []model.ManagedCertificatePolicy) error {
@@ -996,8 +1205,28 @@ func (a *testCertificateApplier) snapshotCalls() []applyCall {
 	return out
 }
 
+func (a *testCertificateApplier) ManagedCertificateReports(context.Context) ([]model.ManagedCertificateReport, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.reportErr != nil {
+		return nil, a.reportErr
+	}
+	out := make([]model.ManagedCertificateReport, len(a.reports))
+	copy(out, a.reports)
+	return out, nil
+}
+
 func (a *testCertificateApplier) Close() error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.closed++
 	return nil
+}
+
+func (a *testCertificateApplier) closeCount() int {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.closed
 }
 
 type testL4Applier struct {
@@ -1196,6 +1425,73 @@ func waitForRuntimeState(t *testing.T, timeout time.Duration, predicate func() b
 		time.Sleep(1 * time.Millisecond)
 	}
 	t.Fatal(failureMessage())
+}
+
+func waitForLastSyncError(t *testing.T, timeout time.Duration, load func() (store.RuntimeState, error), expected string) store.RuntimeState {
+	t.Helper()
+
+	var state store.RuntimeState
+	waitForRuntimeState(t, timeout, func() bool {
+		current, err := load()
+		if err != nil {
+			t.Fatalf("failed to load runtime state: %v", err)
+		}
+		state = current
+		return current.Metadata["last_sync_error"] == expected
+	}, func() string {
+		return "expected last_sync_error metadata to be persisted"
+	})
+
+	return state
+}
+
+func TestPerformSyncIncludesApplyStatusAndManagedCertificateReports(t *testing.T) {
+	cfg := Config{CurrentVersion: "1.0.0"}
+	mem := store.NewInMemory()
+	applied := Snapshot{
+		DesiredVersion: "1.0.0",
+		Revision:       7,
+	}
+	if err := mem.SaveAppliedSnapshot(applied); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+	if err := mem.SaveRuntimeState(store.RuntimeState{
+		CurrentRevision: applied.Revision,
+		Metadata: map[string]string{
+			"current_revision":    "7",
+			"last_apply_revision": "6",
+			"last_apply_status":   "error",
+			"last_apply_message":  "previous apply failed",
+		},
+	}); err != nil {
+		t.Fatalf("failed to seed runtime state: %v", err)
+	}
+
+	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{DesiredVersion: "ok", Revision: 7}})
+	applier := &testCertificateApplier{
+		reports: []model.ManagedCertificateReport{{
+			ID:           21,
+			Domain:       "sync.example.com",
+			Status:       "active",
+			MaterialHash: "hash-21",
+		}},
+	}
+	app := newAppWithDeps(cfg, mem, client, applier, nil, nil)
+
+	if err := app.performSync(context.Background()); err != nil {
+		t.Fatalf("performSync() error = %v", err)
+	}
+
+	req := waitForRequest(t, client, time.Second)
+	if req.CurrentRevision != 7 {
+		t.Fatalf("CurrentRevision = %d", req.CurrentRevision)
+	}
+	if req.LastApplyRevision != 6 || req.LastApplyStatus != "error" || req.LastApplyMessage != "previous apply failed" {
+		t.Fatalf("unexpected apply metadata in sync request: %+v", req)
+	}
+	if len(req.ManagedCertificateReports) != 1 || req.ManagedCertificateReports[0].ID != 21 {
+		t.Fatalf("unexpected managed certificate reports in sync request: %+v", req.ManagedCertificateReports)
+	}
 }
 
 func TestRunAppliesManagedCertificatesFromSyncedSnapshot(t *testing.T) {
@@ -1500,10 +1796,7 @@ func TestRunRecordsCertificateApplyFailuresInRuntimeState(t *testing.T) {
 
 	waitForCalls(t, client, 1, time.Second)
 
-	state, err := mem.LoadRuntimeState()
-	if err != nil {
-		t.Fatalf("failed to load runtime state: %v", err)
-	}
+	state := waitForLastSyncError(t, time.Second, mem.LoadRuntimeState, "cert apply failed")
 	if state.Metadata["last_sync_error"] != "cert apply failed" {
 		t.Fatalf("expected certificate apply failure metadata, got %v", state.Metadata)
 	}
@@ -1759,10 +2052,7 @@ func TestRunRecordsHTTPApplyFailuresInRuntimeState(t *testing.T) {
 
 	waitForCalls(t, client, 1, time.Second)
 
-	state, err := mem.LoadRuntimeState()
-	if err != nil {
-		t.Fatalf("failed to load runtime state: %v", err)
-	}
+	state := waitForLastSyncError(t, time.Second, mem.LoadRuntimeState, "http apply failed")
 	if state.Metadata["last_sync_error"] != "http apply failed" {
 		t.Fatalf("expected http apply failure metadata, got %v", state.Metadata)
 	}
@@ -2209,10 +2499,7 @@ func TestRunRecordsL4ApplyFailuresInRuntimeState(t *testing.T) {
 
 	waitForCalls(t, client, 1, time.Second)
 
-	state, err := mem.LoadRuntimeState()
-	if err != nil {
-		t.Fatalf("failed to load runtime state: %v", err)
-	}
+	state := waitForLastSyncError(t, time.Second, mem.LoadRuntimeState, "l4 apply failed")
 	if state.Metadata["last_sync_error"] != "l4 apply failed" {
 		t.Fatalf("expected l4 apply failure metadata, got %v", state.Metadata)
 	}
@@ -2246,10 +2533,7 @@ func TestRunRecordsRelayApplyFailuresInRuntimeState(t *testing.T) {
 
 	waitForCalls(t, client, 1, time.Second)
 
-	state, err := mem.LoadRuntimeState()
-	if err != nil {
-		t.Fatalf("failed to load runtime state: %v", err)
-	}
+	state := waitForLastSyncError(t, time.Second, mem.LoadRuntimeState, "relay apply failed")
 	if state.Metadata["last_sync_error"] != "relay apply failed" {
 		t.Fatalf("expected relay apply failure metadata, got %v", state.Metadata)
 	}

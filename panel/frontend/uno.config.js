@@ -16,7 +16,10 @@ export default defineConfig({
     colors: {
       primary: 'var(--color-primary)',
       surface: 'var(--color-bg-surface)',
-      canvas: 'var(--color-bg-canvas)'
+      canvas: 'var(--color-bg-canvas)',
+      subtle: 'var(--color-bg-subtle)',
+      hover: 'var(--color-bg-hover)',
+      default: 'var(--color-border-default)'
     }
   },
   shortcuts: {

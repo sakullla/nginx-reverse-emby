@@ -87,47 +87,25 @@
       <div class="spinner"></div>
     </div>
 
-    <Teleport to='body'>
-      <div v-if='showAddForm || editingListener' class='modal-overlay'>
-        <div class='modal modal--large'>
-          <div class='modal__header'>
-            <span>{{ editingListener ? '编辑 Relay 监听器' : '新建 Relay 监听器' }}</span>
-            <button class='modal__close' @click='closeForm'>
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-              </svg>
-            </button>
-          </div>
-          <div class='modal__body'>
-            <RelayListenerForm :initial-data='editingListener' :agent-id='agentId' @success='closeForm' />
-          </div>
-        </div>
-      </div>
-    </Teleport>
+    <BaseModal
+      :model-value="showAddForm || !!editingListener"
+      :title="editingListener ? '编辑 Relay 监听器' : '新建 Relay 监听器'"
+      size="xl"
+      @update:model-value="closeForm"
+    >
+      <RelayListenerForm :initial-data="editingListener" :agent-id="agentId" @success="closeForm" />
+    </BaseModal>
 
-    <Teleport to='body'>
-      <div v-if='deletingListener' class='modal-overlay' @click.self="deletingListener = null">
-        <div class='modal'>
-          <div class='modal__header'>
-            <span>确认删除</span>
-            <button class='modal__close' @click="deletingListener = null">
-              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
-              </svg>
-            </button>
-          </div>
-          <div class='modal__body'>
-            <p>确定删除监听器 <strong>{{ deletingListener.name }}</strong> 吗？</p>
-            <p v-if="deleteError" class='relay-page__error'>{{ deleteError }}</p>
-            <p class='relay-page__warning'>若该监听器已被规则引用，删除会被阻止。</p>
-          </div>
-          <div class='modal__footer'>
-            <button class='btn btn-secondary' @click="deletingListener = null">取消</button>
-            <button class='btn btn-danger' @click='confirmDelete'>删除</button>
-          </div>
-        </div>
-      </div>
-    </Teleport>
+    <DeleteConfirmDialog
+      :show="!!deletingListener"
+      title="确认删除监听器"
+      message="若该监听器已被规则引用，删除会被阻止。删除后相关配置将无法恢复。"
+      :name="deletingListener?.name"
+      confirm-text="确认删除"
+      :loading="deleteRelayListener.isPending?.value"
+      @confirm="confirmDelete"
+      @cancel="deletingListener = null"
+    />
   </div>
 </template>
 
@@ -138,6 +116,8 @@ import { useAgent } from '../context/AgentContext'
 import { useAgents } from '../hooks/useAgents'
 import { useRelayListeners, useDeleteRelayListener, useUpdateRelayListener } from '../hooks/useRelayListeners'
 import RelayListenerForm from '../components/RelayListenerForm.vue'
+import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
+import BaseModal from '../components/base/BaseModal.vue'
 
 const route = useRoute()
 const { selectedAgentId } = useAgent()
@@ -369,12 +349,6 @@ function confirmDelete() {
 .relay-card__actions {
   display: flex;
   gap: 0.25rem;
-  opacity: 0;
-  transition: opacity 0.15s;
-}
-
-.relay-card:hover .relay-card__actions {
-  opacity: 1;
 }
 
 .relay-card__action {
@@ -518,89 +492,6 @@ function confirmDelete() {
   to {
     transform: rotate(360deg);
   }
-}
-
-/* Modals */
-.modal-overlay {
-  position: fixed;
-  inset: 0;
-  background: rgba(37, 23, 54, 0.4);
-  backdrop-filter: blur(8px);
-  z-index: var(--z-modal);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: var(--space-4);
-}
-
-.modal {
-  background: var(--color-bg-surface);
-  border: 1.5px solid var(--color-border-default);
-  border-radius: var(--radius-3xl);
-  box-shadow: var(--shadow-2xl);
-  width: min(480px, 90vw);
-  max-height: calc(100vh - var(--space-8));
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-
-.modal--large {
-  width: min(760px, 94vw);
-}
-
-.modal__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-4);
-  padding: var(--space-5) var(--space-6);
-  border-bottom: 1px solid var(--color-border-subtle);
-  flex-shrink: 0;
-  background: var(--gradient-soft);
-  font-weight: 600;
-  font-size: var(--text-lg);
-  color: var(--color-text-primary);
-}
-
-.modal__body {
-  padding: var(--space-6);
-  overflow-x: hidden;
-  overflow-y: auto;
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-5);
-}
-
-.modal__footer {
-  padding: var(--space-4) var(--space-6);
-  display: flex;
-  justify-content: flex-end;
-  gap: var(--space-3);
-  border-top: 1px solid var(--color-border-subtle);
-  flex-shrink: 0;
-}
-
-.modal__close {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 36px;
-  height: 36px;
-  border-radius: var(--radius-full);
-  color: var(--color-text-tertiary);
-  transition: all var(--duration-normal) var(--ease-bounce);
-  flex-shrink: 0;
-  border: none;
-  background: transparent;
-  cursor: pointer;
-}
-
-.modal__close:hover {
-  background: var(--color-danger-50);
-  color: var(--color-danger);
-  transform: rotate(90deg);
 }
 
 @media (max-width: 640px) {

@@ -6,27 +6,27 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `nginx-reverse-emby` now uses a split architecture:
 
-- **Control plane:** Node.js backend + Vue frontend
-- **Execution plane:** Go `nre-agent`
+- **Control plane runtime:** Go service in `panel/backend-go` + Vue frontend in `panel/frontend`
+- **Execution plane:** Go `go-agent`
 
 The control plane stores rules, certificates, agents, relay listeners, and version policy. Agents keep using the **heartbeat pull** model: registered agents poll the master, fetch desired state, and apply it locally.
 
-The repository is no longer centered around a bundled Nginx runtime for the control plane. The panel backend now serves:
+The repository is no longer centered around a bundled Nginx runtime for the control plane. The Go control plane serves:
 
 - the JSON API,
 - `/panel-api/*` aliases,
 - the built frontend bundle,
 - public agent assets such as `join-agent.sh` and Go binaries.
 
+Docker/Compose defaults to the pure-Go control-plane container, with embedded local-agent capability enabled by default for the master node.
+
 ## Commands
 
-### Backend (Node.js API)
+### Control Plane (Go)
 ```bash
-cd panel/backend
-node server.js
-node --check server.js
-npm test
-npm run prisma:generate
+cd panel/backend-go
+go run ./cmd/nre-control-plane
+go test ./...
 ```
 
 ### Frontend (Vue 3 / Vite)
@@ -38,7 +38,7 @@ npm run build
 npm run preview
 ```
 
-The Vite dev server proxies `/panel-api` requests to the backend. For local UI development, run the backend alongside the frontend dev server.
+The Vite dev server proxies `/panel-api` requests to the control plane. For local UI development, run the Go control plane alongside the frontend dev server.
 
 ### Go Agent
 ```bash
@@ -53,14 +53,14 @@ docker build -t nginx-reverse-emby .
 docker compose up -d
 ```
 
-The default image/runtime produced by this repository is the **control-plane container**. The Go agent is packaged as a separate execution-plane binary and exposed for download by remote or local agents.
+The default image/runtime produced by this repository is the **pure-Go control-plane container**. The Go agent is packaged as a separate execution-plane binary and exposed for download by remote nodes, while the master also runs with local-agent capability by default.
 
 ## Architecture
 
 ### Control-Plane Request Flow
 ```text
 Browser
-  -> Node backend (server.js)
+  -> Go control plane (panel/backend-go)
     -> authenticated /api/* routes
     -> /panel-api/* compatibility aliases
     -> public agent asset routes
@@ -75,10 +75,11 @@ Browser
 
 ### Runtime Responsibilities
 
-**Node/Vue control plane**
+**Go/Vue control plane**
 - API, auth, storage, revisioning, agent registry
 - relay listener and version policy management
 - agent asset publishing and join/bootstrap flow
+- serving the built SPA and compatibility aliases
 
 **Go execution plane**
 - heartbeat sync client
@@ -88,18 +89,15 @@ Browser
 - certificate/runtime primitives
 - local-agent mode and update plumbing
 
-If you explicitly enable legacy local apply / Node-side execution paths, you must provide `PANEL_GENERATOR_SCRIPT` or `PANEL_APPLY_COMMAND`; the default control-plane image no longer bundles the old generator script.
+`deploy.sh`, `conf.d/`, and repo-root `nginx.conf` remain only for legacy standalone Nginx workflows and are not part of the default runtime path.
 
 ### Storage Layer
-- **SQLite (default):** Prisma-backed storage with worker-thread helpers
-- **JSON fallback:** flat files in `panel/data/`
+- **SQLite (default):** Go control-plane storage/runtime metadata
+- **Local state:** data under `panel/data/` as mounted runtime state
 
-Relevant backend files:
-- `panel/backend/server.js`
-- `panel/backend/storage.js`
-- `panel/backend/storage-json.js`
-- `panel/backend/storage-sqlite.js`
-- `panel/backend/storage-prisma-*.js`
+Relevant control-plane files:
+- `panel/backend-go/cmd/nre-control-plane/main.go`
+- `panel/backend-go/internal/...`
 
 ### Frontend State
 The Vue SPA under `panel/frontend/src/` manages rules, agents, certificates, relay listeners, and version/update UI.
@@ -117,18 +115,18 @@ The Vue SPA under `panel/frontend/src/` manages rules, agents, certificates, rel
 
 - Authenticated API routes live under `/api/*`
 - Public bootstrap / asset routes live under `/api/public/*`
-- `/panel-api/*` aliases are also served directly by the Node backend for compatibility
+- `/panel-api/*` aliases are also served directly by the Go control plane for compatibility
 - Public health endpoint: `/panel-api/health`
 
 ## Testing
 
-Backend tests live in `panel/backend/tests/` and are primarily property/invariant based.
+Control-plane tests live under `panel/backend-go` and should remain package-focused with strong invariant coverage for storage and revision behavior.
 
 Common verification commands:
 
 ```bash
-cd panel/backend && npm test
-cd panel/backend && node --check server.js
+cd panel/backend-go && go test ./...
+cd panel/backend-go && go run ./cmd/nre-control-plane
 cd panel/frontend && npm run build
 cd go-agent && go test ./...
 docker build -t nginx-reverse-emby .

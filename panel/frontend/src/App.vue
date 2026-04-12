@@ -4,6 +4,8 @@
       <RouterView />
     </ThemeProvider>
   </AgentProvider>
+  <!-- 全局消息提醒组件 -->
+  <StatusMessage />
 </template>
 
 <script setup>
@@ -12,6 +14,7 @@ import { useRouter, useRoute } from 'vue-router'
 import { AgentProvider } from './context/AgentContext.js'
 import { ThemeProvider } from './context/ThemeContext.js'
 import { useAuthState } from './context/useAuthState.js'
+import StatusMessage from './components/StatusMessage.vue'
 
 const router = useRouter()
 const route = useRoute()

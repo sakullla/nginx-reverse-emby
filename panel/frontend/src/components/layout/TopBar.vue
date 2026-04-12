@@ -35,7 +35,7 @@
         </button>
         <div v-if="agentDropdownOpen" class="agent-switcher__dropdown">
           <div class="agent-switcher__search">
-            <input v-model="agentSearchQuery" class="agent-switcher__search-input" placeholder="搜索节点..." />
+            <input v-model="agentSearchQuery" name="agent-switcher-search" class="agent-switcher__search-input" placeholder="搜索节点..." />
           </div>
           <div class="agent-switcher__list">
             <button

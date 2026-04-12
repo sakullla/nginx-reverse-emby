@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/vue-query'
 import { unref } from 'vue'
 import * as api from '../api'
+import { messageStore } from '../stores/messages'
 
 export function useRules(agentId) {
   return useQuery({
@@ -20,6 +21,10 @@ export function useCreateRule(agentId) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['rules', agentId] })
       qc.invalidateQueries({ queryKey: ['agents'] })
+      messageStore.success('HTTP 规则创建成功')
+    },
+    onError: (error) => {
+      messageStore.error(error, '创建规则失败')
     }
   })
 }
@@ -31,6 +36,10 @@ export function useUpdateRule(agentId) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['rules', agentId] })
       qc.invalidateQueries({ queryKey: ['agents'] })
+      messageStore.success('HTTP 规则更新成功')
+    },
+    onError: (error) => {
+      messageStore.error(error, '更新规则失败')
     }
   })
 }
@@ -42,6 +51,10 @@ export function useDeleteRule(agentId) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['rules', agentId] })
       qc.invalidateQueries({ queryKey: ['agents'] })
+      messageStore.success('HTTP 规则已删除')
+    },
+    onError: (error) => {
+      messageStore.error(error, '删除规则失败')
     }
   })
 }

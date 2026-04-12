@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/vue-query'
 import { unref } from 'vue'
 import * as api from '../api'
+import { messageStore } from '../stores/messages'
 
 export function useCertificates(agentId) {
   return useQuery({
@@ -17,7 +18,13 @@ export function useCreateCertificate(agentId) {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (payload) => api.createCertificate(unref(agentId), payload),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['certificates', agentId] })
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['certificates', agentId] })
+      messageStore.success('证书创建成功')
+    },
+    onError: (error) => {
+      messageStore.error(error, '创建证书失败')
+    }
   })
 }
 
@@ -25,7 +32,13 @@ export function useUpdateCertificate(agentId) {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: ({ id, ...payload }) => api.updateCertificate(unref(agentId), id, payload),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['certificates', agentId] })
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['certificates', agentId] })
+      messageStore.success('证书更新成功')
+    },
+    onError: (error) => {
+      messageStore.error(error, '更新证书失败')
+    }
   })
 }
 
@@ -33,7 +46,13 @@ export function useDeleteCertificate(agentId) {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (id) => api.deleteCertificate(unref(agentId), id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['certificates', agentId] })
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['certificates', agentId] })
+      messageStore.success('证书已删除')
+    },
+    onError: (error) => {
+      messageStore.error(error, '删除证书失败')
+    }
   })
 }
 
@@ -41,6 +60,12 @@ export function useIssueCertificate(agentId) {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (id) => api.issueCertificate(unref(agentId), id),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['certificates', agentId] })
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['certificates', agentId] })
+      messageStore.success('证书签发申请已提交')
+    },
+    onError: (error) => {
+      messageStore.error(error, '证书签发失败')
+    }
   })
 }

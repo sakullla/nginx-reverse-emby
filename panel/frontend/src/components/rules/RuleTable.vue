@@ -81,8 +81,7 @@ defineEmits(['toggle', 'edit', 'delete'])
 .rules-table__url { font-family: var(--font-mono); font-size: 0.8125rem; color: var(--color-text-primary); }
 .rules-table__url--backend { color: var(--color-text-secondary); }
 .rules-table__tags { display: flex; gap: 0.25rem; flex-wrap: wrap; }
-.rules-table__actions { display: flex; gap: 0.25rem; opacity: 0; transition: opacity 0.15s; }
-.rules-table__row:hover .rules-table__actions { opacity: 1; }
+.rules-table__actions { display: flex; gap: 0.25rem; }
 .rules-table__actions .btn-icon { display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: var(--radius-md); border: none; background: transparent; color: var(--color-text-tertiary); cursor: pointer; transition: all 0.15s; }
 .rules-table__actions .btn-icon:hover { background: var(--color-bg-hover); color: var(--color-primary); }
 .rules-table__actions .btn-icon--danger:hover { background: var(--color-danger-50); color: var(--color-danger); }

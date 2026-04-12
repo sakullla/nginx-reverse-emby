@@ -7,13 +7,13 @@
 
 ## Runtime Architecture
 
-- 控制面：Node.js backend + Vue frontend
-- 执行面：Go `nre-agent`
-- 本地节点：Master 主机上可额外运行 Go local agent
+- 控制面：Go control-plane + Vue frontend
+- 执行面：Go `go-agent`
+- 本地节点：Master 容器默认内嵌 local agent 能力
 - 同步模型：heartbeat pull
 - 版本更新：Master 下发 `desired_version`
 
-当前仓库的 Docker / Compose 默认启动的是**控制面**；Go agent 作为独立执行面单独安装或单独运行。
+当前仓库的 Docker / Compose 默认启动的是**纯 Go 控制面**；Master 容器内默认启用本地 agent 能力，远端节点仍通过公开的 agent 资产单独安装或升级。
 
 ## Quick Start
 
@@ -95,19 +95,42 @@ Windows 执行面同样使用 Go agent，但当前控制面镜像默认只公开
 ## Notes
 
 - 控制面容器默认监听 `8080`。
-- `/panel-api/*` 由 Node backend 直接提供，不再依赖 Nginx 做控制面反代。
+- `/panel-api/*` 由 Go control-plane 直接提供，不再依赖 Nginx 做控制面反代。
 - Go agent 二进制会作为公开资产暴露在 `/panel-api/public/agent-assets/` 下，供 `join-agent.sh` 下载当前已打包的平台版本。
 - `deploy.sh` 仍保留为历史兼容的独立 Nginx 节点脚本，不是默认运行时路径。
-- 如果你显式启用了 legacy local apply / 本地 Node 执行路径，需要额外设置 `PANEL_GENERATOR_SCRIPT` 或 `PANEL_APPLY_COMMAND`；默认控制面镜像不再内置旧的本地生成器。
 
 ## Verification
 
 常用验证命令：
 
 ```bash
-cd panel/backend && npm test
-cd panel/backend && node --check server.js
+cd panel/backend-go && go test ./...
+cd panel/backend-go && go run ./cmd/nre-control-plane
 cd panel/frontend && npm run build
 cd go-agent && go test ./...
 docker build -t nginx-reverse-emby .
 ```
+
+## Pure Go Cutover Verification
+
+在替换生产 master 镜像前，先使用复制出来的 `panel/data` 做一次影子验证：
+
+```bash
+cd panel/backend-go && go test ./...
+cd ../../go-agent && go test ./...
+docker build -t nginx-reverse-emby:pure-go --target control-plane-runtime .
+sh scripts/verify-pure-go-master.sh /path/to/copied-panel-data
+```
+
+建议额外执行：
+
+```bash
+docker compose config
+```
+
+要求：
+
+- `/panel-api/health`、`/panel-api/info`、`/panel-api/agents`、`/panel-api/agents/local/rules`、`/panel-api/certificates`、`/panel-api/version-policies`、`/panel-api/public/join-agent.sh` 全部返回 2xx
+- `/panel-api/agents` 中必须能看到 `id=local` 且 `is_local=true`
+- `join-agent.sh` 必须继续指向 `/panel-api/public/agent-assets/`
+- 复制数据中的 `panel.db`、managed certificate material 与本地状态都能被纯 Go 控制面直接读取
