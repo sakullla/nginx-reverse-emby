@@ -76,7 +76,12 @@
 
       <div v-if="activeTab === 'info'" class="tab-panel">
         <div class="info-grid">
-          <div class="info-row"><span>版本</span><span>{{ agent.version || '—' }}</span></div>
+          <div class="info-row"><span>版本</span><span>{{ agent.version || agent.runtime_package_version || '—' }}</span></div>
+          <div class="info-row"><span>平台</span><span>{{ agent.runtime_package_platform || agent.platform || '—' }}</span></div>
+          <div class="info-row"><span>架构</span><span>{{ agent.runtime_package_arch || '—' }}</span></div>
+          <div class="info-row"><span>运行包 SHA</span><span :title="agent.runtime_package_sha256 || ''">{{ shortSha(agent.runtime_package_sha256) }}</span></div>
+          <div class="info-row"><span>目标包 SHA</span><span :title="agent.desired_package_sha256 || ''">{{ shortSha(agent.desired_package_sha256) }}</span></div>
+          <div class="info-row"><span>包状态</span><span>{{ packageStatusLabel(agent.package_sync_status) }}</span></div>
           <div class="info-row"><span>角色</span><span>{{ getModeLabel(agent.mode) }}</span></div>
           <div class="info-row"><span>IP</span><span>{{ agent.last_seen_ip || '—' }}</span></div>
           <div class="info-row"><span>最后活跃</span><span>{{ agent.last_seen_at ? new Date(agent.last_seen_at).toLocaleString() : '—' }}</span></div>
@@ -176,6 +181,18 @@ function getStatusLabel(agent) {
 
 function getModeLabel(mode) {
   return { local: '本机', master: '主控' }[mode] || '拉取'
+}
+
+function shortSha(value) {
+  const sha = String(value || '').trim()
+  if (!sha) return '—'
+  return sha.length > 12 ? `${sha.slice(0, 12)}...` : sha
+}
+
+function packageStatusLabel(status) {
+  if (status === 'aligned') return '已同步'
+  if (status === 'pending') return '待更新'
+  return '—'
 }
 
 function timeAgo(date) {
