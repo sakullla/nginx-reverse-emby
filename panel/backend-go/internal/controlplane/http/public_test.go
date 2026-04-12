@@ -192,7 +192,7 @@ func TestPublicAgentAssetRejectsPathTraversal(t *testing.T) {
 	}
 }
 
-func TestHeartbeatResponseOmitsNoUpdateFieldsButKeepsRelayListeners(t *testing.T) {
+func TestHeartbeatResponseKeepsRelayCertificatesWhenRelayListenersPresentWithoutUpdate(t *testing.T) {
 	router, err := NewRouter(Dependencies{
 		Config:        config.Config{PanelToken: "secret"},
 		SystemService: fakeSystemService{},
@@ -200,6 +200,19 @@ func TestHeartbeatResponseOmitsNoUpdateFieldsButKeepsRelayListeners(t *testing.T
 			HasUpdate:       false,
 			DesiredRevision: 7,
 			RelayListeners:  []storage.RelayListener{{ID: 11, AgentID: "edge", Name: "relay-a"}},
+			Certificates: []storage.ManagedCertificateBundle{{
+				ID:      31,
+				Domain:  "relay-a.example.com",
+				CertPEM: "cert",
+				KeyPEM:  "key",
+			}},
+			CertificatePolicies: []storage.ManagedCertificatePolicy{{
+				ID:              31,
+				Domain:          "relay-a.example.com",
+				Enabled:         true,
+				Usage:           "relay_tunnel",
+				CertificateType: "uploaded",
+			}},
 		}},
 		RuleService:          fakeRuleService{},
 		L4RuleService:        fakeL4RuleService{},
@@ -229,19 +242,19 @@ func TestHeartbeatResponseOmitsNoUpdateFieldsButKeepsRelayListeners(t *testing.T
 		t.Fatalf("sync payload = %#v", payload["sync"])
 	}
 	if _, found := syncPayload["rules"]; found {
-		t.Fatalf("unexpected rules key in no-update payload: %+v", syncPayload)
+		t.Fatalf("unexpected rules key in no-update relay payload: %+v", syncPayload)
 	}
 	if _, found := syncPayload["l4_rules"]; found {
-		t.Fatalf("unexpected l4_rules key in no-update payload: %+v", syncPayload)
-	}
-	if _, found := syncPayload["certificates"]; found {
-		t.Fatalf("unexpected certificates key in no-update payload: %+v", syncPayload)
-	}
-	if _, found := syncPayload["certificate_policies"]; found {
-		t.Fatalf("unexpected certificate_policies key in no-update payload: %+v", syncPayload)
+		t.Fatalf("unexpected l4_rules key in no-update relay payload: %+v", syncPayload)
 	}
 	if _, found := syncPayload["relay_listeners"]; !found {
-		t.Fatalf("expected relay_listeners key in no-update payload: %+v", syncPayload)
+		t.Fatalf("expected relay_listeners key in no-update relay payload: %+v", syncPayload)
+	}
+	if _, found := syncPayload["certificates"]; !found {
+		t.Fatalf("expected certificates key in no-update relay payload: %+v", syncPayload)
+	}
+	if _, found := syncPayload["certificate_policies"]; !found {
+		t.Fatalf("expected certificate_policies key in no-update relay payload: %+v", syncPayload)
 	}
 }
 

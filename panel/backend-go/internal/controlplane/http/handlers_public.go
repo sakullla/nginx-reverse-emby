@@ -78,6 +78,9 @@ func heartbeatSyncPayload(reply service.HeartbeatReply) map[string]any {
 		payload["l4_rules"] = reply.L4Rules
 		payload["certificates"] = reply.Certificates
 		payload["certificate_policies"] = reply.CertificatePolicies
+	} else if len(reply.RelayListeners) > 0 {
+		payload["certificates"] = reply.Certificates
+		payload["certificate_policies"] = reply.CertificatePolicies
 	}
 	return payload
 }
