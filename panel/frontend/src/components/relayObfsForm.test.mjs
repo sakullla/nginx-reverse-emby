@@ -39,8 +39,8 @@ test('L4 update normalization preserves omitted relay fields', () => {
 
 test('HTTP legacy positional overload accepts relay_obfs argument', () => {
   const source = fs.readFileSync(path.resolve(__dirname, '../api/index.js'), 'utf8')
-  assert.match(source, /function normalizeHttpRulePayload\([^)]*relay_chain,\s*relay_obfs\)/)
-  assert.match(source, /relay_chain,\s*relay_obfs\s*\}\)/)
+  assert.match(source, /function normalizeHttpRulePayload\([^)]*relay_chain,\s*relay_obfs,\s*options = \{\}\)/)
+  assert.match(source, /relay_chain,\s*relay_obfs\s*\},\s*\{\s*includeRelayDefaults\s*\}\)/)
 })
 
 test('HTTP update normalization preserves omitted relay fields for object payloads', () => {
@@ -49,6 +49,13 @@ test('HTTP update normalization preserves omitted relay fields for object payloa
   assert.match(source, /const includeRelayDefaults = options\.includeRelayDefaults === true/)
   assert.match(source, /createRule\(agentId, payloadOrFrontend, \.\.\.legacyArgs\)[\s\S]*normalizeHttpRulePayloadObject\(payloadOrFrontend, \{ includeRelayDefaults: true \}\)/)
   assert.match(source, /updateRule\(agentId, id, payloadOrFrontend, \.\.\.legacyArgs\)[\s\S]*normalizeHttpRulePayloadObject\(payloadOrFrontend, \{ includeRelayDefaults: false \}\)/)
+})
+
+test('HTTP update normalization preserves omitted relay fields for legacy positional calls', () => {
+  const source = fs.readFileSync(path.resolve(__dirname, '../api/index.js'), 'utf8')
+  assert.match(source, /function normalizeHttpRulePayload\([^)]*options = \{\}\)/)
+  assert.match(source, /return normalizeHttpRulePayload\(\{\s*frontend_url: payloadOrFrontend,[\s\S]*relay_obfs\s*\},\s*\{ includeRelayDefaults \}\)/)
+  assert.match(source, /updateRule\(agentId, id, payloadOrFrontend, \.\.\.legacyArgs\)[\s\S]*normalizeHttpRulePayload\(payloadOrFrontend, \.\.\.legacyArgs, \{ includeRelayDefaults: false \}\)/)
 })
 
 test('HTTP RuleForm clears relay obfs when relay chain becomes empty', () => {

@@ -313,9 +313,10 @@ function normalizeHttpRulePayloadObject(payload = {}, options = {}) {
   return normalizedPayload
 }
 
-function normalizeHttpRulePayload(payloadOrFrontend, backend_url, tags, enabled, proxy_redirect, pass_proxy_headers, user_agent, custom_headers, relay_chain, relay_obfs) {
+function normalizeHttpRulePayload(payloadOrFrontend, backend_url, tags, enabled, proxy_redirect, pass_proxy_headers, user_agent, custom_headers, relay_chain, relay_obfs, options = {}) {
+  const includeRelayDefaults = options.includeRelayDefaults === true
   if (payloadOrFrontend && typeof payloadOrFrontend === 'object' && !Array.isArray(payloadOrFrontend)) {
-    return normalizeHttpRulePayloadObject(payloadOrFrontend, { includeRelayDefaults: true })
+    return normalizeHttpRulePayloadObject(payloadOrFrontend, { includeRelayDefaults })
   }
 
   return normalizeHttpRulePayload({
@@ -329,7 +330,7 @@ function normalizeHttpRulePayload(payloadOrFrontend, backend_url, tags, enabled,
     custom_headers,
     relay_chain,
     relay_obfs
-  })
+  }, { includeRelayDefaults })
 }
 
 function normalizeL4RulePayload(payload = {}, options = {}) {
@@ -437,7 +438,7 @@ export async function fetchRules(agentId) {
 export async function createRule(agentId, payloadOrFrontend, ...legacyArgs) {
   const payload = payloadOrFrontend && typeof payloadOrFrontend === 'object' && !Array.isArray(payloadOrFrontend)
     ? normalizeHttpRulePayloadObject(payloadOrFrontend, { includeRelayDefaults: true })
-    : normalizeHttpRulePayload(payloadOrFrontend, ...legacyArgs)
+    : normalizeHttpRulePayload(payloadOrFrontend, ...legacyArgs, { includeRelayDefaults: true })
   if (isDev) {
     await sleep()
     const nextRule = normalizeHttpRule({
@@ -459,7 +460,7 @@ export async function createRule(agentId, payloadOrFrontend, ...legacyArgs) {
 export async function updateRule(agentId, id, payloadOrFrontend, ...legacyArgs) {
   const payload = payloadOrFrontend && typeof payloadOrFrontend === 'object' && !Array.isArray(payloadOrFrontend)
     ? normalizeHttpRulePayloadObject(payloadOrFrontend, { includeRelayDefaults: false })
-    : normalizeHttpRulePayload(payloadOrFrontend, ...legacyArgs)
+    : normalizeHttpRulePayload(payloadOrFrontend, ...legacyArgs, { includeRelayDefaults: false })
   if (isDev) {
     await sleep()
     const list = mockRulesByAgent[agentId] || []
