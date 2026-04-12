@@ -849,6 +849,59 @@ func TestRuleServiceCreateHTTPSRemoteDomainRejectsMasterCFDNSForNonLocalTarget(t
 	}
 }
 
+func TestRuleServiceCreateHTTPSRemoteDomainReusesExistingMasterCFDNSWildcardWithoutRetargeting(t *testing.T) {
+	store := &fakeRuleStore{
+		agents: []storage.AgentRow{{
+			ID:               "edge-1",
+			Name:             "Edge 1",
+			CapabilitiesJSON: `["http_rules","cert_install","local_acme"]`,
+		}},
+		rulesByAgent: map[string][]storage.HTTPRuleRow{},
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              15,
+			Domain:          "*.managed.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "master_cf_dns",
+			TargetAgentIDs:  `["local"]`,
+			TagsJSON:        `["wildcard"]`,
+			Usage:           "https",
+			CertificateType: "acme",
+			Revision:        6,
+		}},
+	}
+	svc := NewRuleService(config.Config{
+		EnableLocalAgent:              true,
+		LocalAgentID:                  "local",
+		ManagedDNSCertificatesEnabled: true,
+	}, store)
+
+	if _, err := svc.Create(context.Background(), "edge-1", HTTPRuleInput{
+		FrontendURL: stringPtrRule("https://edge.managed.example.com"),
+		BackendURL:  stringPtrRule("https://origin.example.net"),
+		Backends:    &[]HTTPRuleBackend{{URL: "https://origin.example.net"}},
+	}); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	if len(store.managedCerts) != 1 {
+		t.Fatalf("managed cert count = %d", len(store.managedCerts))
+	}
+	cert := managedCertificateFromRow(store.managedCerts[0])
+	if cert.Domain != "*.managed.example.com" {
+		t.Fatalf("cert domain = %q", cert.Domain)
+	}
+	if len(cert.TargetAgentIDs) != 1 || cert.TargetAgentIDs[0] != "local" {
+		t.Fatalf("target_agent_ids = %+v", cert.TargetAgentIDs)
+	}
+	if cert.Revision != 6 {
+		t.Fatalf("cert revision = %d", cert.Revision)
+	}
+	if containsString(cert.Tags, managedCertificateAutoTargetTag("edge-1")) {
+		t.Fatalf("tags unexpectedly include remote auto target: %+v", cert.Tags)
+	}
+}
+
 func TestRuleServiceCreateHTTPSDomainFallsBackToLocalHTTP01WhenManagedDNSDisabled(t *testing.T) {
 	store := &fakeRuleStore{
 		agents: []storage.AgentRow{{

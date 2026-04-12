@@ -429,6 +429,9 @@ func (s *ruleService) ensureManagedCertificateForRule(
 		if containsString(cert.TargetAgentIDs, agentID) {
 			return nil
 		}
+		if cert.IssuerMode == "master_cf_dns" {
+			return nil
+		}
 		next := cert
 		next.Enabled = true
 		next.TargetAgentIDs = appendUniqueNormalized(next.TargetAgentIDs, agentID)

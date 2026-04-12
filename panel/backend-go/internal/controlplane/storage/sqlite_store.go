@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -159,7 +160,7 @@ func (s *SQLiteStore) LoadAgentSnapshot(ctx context.Context, agentID string, inp
 		return Snapshot{}, err
 	}
 
-	relevantCertRows := filterManagedCertificatesForAgent(certRows, resolvedAgentID, relayRows)
+	relevantCertRows := filterManagedCertificatesForAgent(certRows, resolvedAgentID, httpRows, relayRows)
 	revisionState := LocalAgentStateRow{
 		DesiredRevision: input.DesiredRevision,
 		CurrentRevision: input.CurrentRevision,
@@ -865,15 +866,89 @@ func snapshotCertificatePolicies(rows []ManagedCertificateRow, agentID string) [
 	return policies
 }
 
-func filterManagedCertificatesForAgent(rows []ManagedCertificateRow, agentID string, relayRows []RelayListenerRow) []ManagedCertificateRow {
+func filterManagedCertificatesForAgent(rows []ManagedCertificateRow, agentID string, httpRows []HTTPRuleRow, relayRows []RelayListenerRow) []ManagedCertificateRow {
 	filtered := make([]ManagedCertificateRow, 0, len(rows))
 	referencedCertificateIDs := relayTrustedCACertificateIDs(relayRows)
 	for _, row := range rows {
-		if referencedCertificateIDs[row.ID] || containsString(parseStringSlice(row.TargetAgentIDs), agentID) {
+		if referencedCertificateIDs[row.ID] || containsString(parseStringSlice(row.TargetAgentIDs), agentID) || doesManagedCertificateMatchAnyHTTPRule(row, httpRows) {
 			filtered = append(filtered, row)
 		}
 	}
 	return filtered
+}
+
+func doesManagedCertificateMatchAnyHTTPRule(row ManagedCertificateRow, httpRows []HTTPRuleRow) bool {
+	if !row.Enabled || !strings.EqualFold(defaultString(row.Usage, "https"), "https") {
+		return false
+	}
+	if defaultString(row.Scope, "domain") == "ip" {
+		return false
+	}
+	for _, httpRow := range httpRows {
+		if !httpRow.Enabled {
+			continue
+		}
+		scheme, host, ok := parseSnapshotHTTPRuleFrontendTarget(httpRow.FrontendURL)
+		if !ok || scheme != "https" {
+			continue
+		}
+		if doesManagedCertificateRowMatchHost(row, host) {
+			return true
+		}
+	}
+	return false
+}
+
+func parseSnapshotHTTPRuleFrontendTarget(frontendURL string) (string, string, bool) {
+	parsed, err := url.Parse(strings.TrimSpace(frontendURL))
+	if err != nil || parsed == nil {
+		return "", "", false
+	}
+	host := strings.ToLower(normalizeSnapshotCertificateHost(parsed.Hostname()))
+	scheme := strings.ToLower(strings.TrimSpace(parsed.Scheme))
+	if host == "" || scheme == "" {
+		return "", "", false
+	}
+	return scheme, host, true
+}
+
+func doesManagedCertificateRowMatchHost(row ManagedCertificateRow, host string) bool {
+	if defaultString(row.Scope, "domain") == "ip" {
+		return isExactSnapshotManagedCertificateMatch(row.Domain, host)
+	}
+	return isExactSnapshotManagedCertificateMatch(row.Domain, host) || isWildcardSnapshotManagedCertificateMatch(row.Domain, host)
+}
+
+func isExactSnapshotManagedCertificateMatch(certDomain string, host string) bool {
+	return strings.EqualFold(normalizeSnapshotCertificateHost(certDomain), normalizeSnapshotCertificateHost(host))
+}
+
+func isWildcardSnapshotManagedCertificateMatch(certDomain string, host string) bool {
+	pattern := strings.ToLower(normalizeSnapshotCertificateHost(certDomain))
+	target := strings.ToLower(normalizeSnapshotCertificateHost(host))
+	if !isWildcardSnapshotCertificateDomain(pattern) {
+		return false
+	}
+	suffix := strings.TrimPrefix(pattern, "*.")
+	if !strings.HasSuffix(target, "."+suffix) {
+		return false
+	}
+	targetParts := strings.Split(target, ".")
+	suffixParts := strings.Split(suffix, ".")
+	return len(targetParts) == len(suffixParts)+1
+}
+
+func isWildcardSnapshotCertificateDomain(value string) bool {
+	normalized := normalizeSnapshotCertificateHost(value)
+	return strings.HasPrefix(normalized, "*.") && len(normalized) > 2
+}
+
+func normalizeSnapshotCertificateHost(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if len(trimmed) >= 2 && strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") {
+		return trimmed[1 : len(trimmed)-1]
+	}
+	return trimmed
 }
 
 func buildManagedCertificateViewForAgent(row ManagedCertificateRow, agentID string) ManagedCertificateRow {

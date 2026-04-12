@@ -850,6 +850,83 @@ func TestStoreLoadsAgentSnapshotWithReferencedRelayListenersAndTrustCABundleOnly
 	}
 }
 
+func TestStoreLoadAgentSnapshotIncludesHTTPSCertificateReferencedByRemoteRuleWithoutTargetAssignment(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromGORM(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	if err := store.SaveAgent(t.Context(), AgentRow{
+		ID:              "edge-cert-ref",
+		Name:            "edge-cert-ref",
+		AgentToken:      "token-edge-cert-ref",
+		DesiredVersion:  "1.2.3",
+		DesiredRevision: 2,
+		CurrentRevision: 1,
+		LastApplyStatus: "success",
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+
+	if err := store.SaveHTTPRules(t.Context(), "edge-cert-ref", []HTTPRuleRow{{
+		ID:                21,
+		AgentID:           "edge-cert-ref",
+		FrontendURL:       "https://edge.managed.example.com",
+		BackendURL:        "https://origin.example.net",
+		BackendsJSON:      `[{"url":"https://origin.example.net"}]`,
+		LoadBalancingJSON: `{"strategy":"round_robin"}`,
+		Enabled:           true,
+		PassProxyHeaders:  true,
+		Revision:          7,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules() error = %v", err)
+	}
+
+	if err := store.SaveManagedCertificates(t.Context(), []ManagedCertificateRow{{
+		ID:              30,
+		Domain:          "*.managed.example.com",
+		Enabled:         true,
+		Scope:           "domain",
+		IssuerMode:      "master_cf_dns",
+		TargetAgentIDs:  `["local"]`,
+		Status:          "active",
+		AgentReports:    `{}`,
+		ACMEInfo:        `{"Main_Domain":"managed.example.com"}`,
+		Usage:           "https",
+		CertificateType: "acme",
+		TagsJSON:        `["wildcard"]`,
+		Revision:        9,
+	}}); err != nil {
+		t.Fatalf("SaveManagedCertificates() error = %v", err)
+	}
+	writeManagedCertificateMaterial(t, dataRoot, "*.managed.example.com", "wildcard-cert", "wildcard-key")
+
+	snapshot, err := store.LoadAgentSnapshot(t.Context(), "edge-cert-ref", AgentSnapshotInput{
+		DesiredVersion:  "1.2.3",
+		DesiredRevision: 7,
+		CurrentRevision: 1,
+		Platform:        "linux-amd64",
+	})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot() error = %v", err)
+	}
+
+	if !containsCertificateID(snapshot.Certificates, 30) {
+		t.Fatalf("Certificates missing referenced HTTPS cert id 30: %+v", snapshot.Certificates)
+	}
+	if !containsPolicyID(snapshot.CertificatePolicies, 30) {
+		t.Fatalf("CertificatePolicies missing referenced HTTPS cert id 30: %+v", snapshot.CertificatePolicies)
+	}
+}
+
 func TestStoreLoadAgentSnapshotIgnoresDisabledRelayDependencies(t *testing.T) {
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
