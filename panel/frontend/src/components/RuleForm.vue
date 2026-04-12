@@ -423,6 +423,29 @@
         />
       </div>
 
+      <div class="settings-card">
+        <div class="section-header">
+          <div>
+            <h3 class="section-title">隐私增强</h3>
+            <p class="section-description">开启后会为 Relay 中转链路附加隐私增强处理</p>
+          </div>
+        </div>
+        <label class="toggle toggle--card" :class="{ 'toggle--active': form.relay_obfs, 'toggle--disabled': relayObfsDisabled }">
+          <input
+            v-model="form.relay_obfs"
+            type="checkbox"
+            class="toggle__input"
+            :disabled="relayObfsDisabled"
+          >
+          <span class="toggle__slider"></span>
+          <span class="toggle__content">
+            <span class="toggle__label">启用 Relay 隐私增强</span>
+            <span class="toggle__desc">适用于已配置 Relay 链路的流量中转场景</span>
+          </span>
+        </label>
+        <p v-if="relayObfsDisabled" class="form-help-text">当前为直连模式，此选项不会生效</p>
+      </div>
+
       <!-- 使用说明 -->
       <div class="relay-help">
         <div class="relay-help__title">
@@ -527,6 +550,7 @@ const hasRequestHeaderConfig = computed(() => {
 const hasRelayConfig = computed(() => {
   return Array.isArray(form.value.relay_chain) && form.value.relay_chain.length > 0
 })
+const relayObfsDisabled = computed(() => !Array.isArray(form.value.relay_chain) || form.value.relay_chain.length === 0)
 
 const selectedUserAgentPreset = computed({
   get() {
@@ -570,7 +594,8 @@ function createDefaultForm() {
     pass_proxy_headers: false,
     user_agent: '',
     custom_headers: [],
-    relay_chain: []
+    relay_chain: [],
+    relay_obfs: false
   }
 }
 
@@ -618,7 +643,8 @@ function createFormState(initialData) {
     pass_proxy_headers: initialData.pass_proxy_headers !== false,
     user_agent: String(initialData.user_agent || ''),
     custom_headers: normalizeCustomHeaders(initialData.custom_headers),
-    relay_chain: Array.isArray(initialData.relay_chain) ? [...initialData.relay_chain] : []
+    relay_chain: Array.isArray(initialData.relay_chain) ? [...initialData.relay_chain] : [],
+    relay_obfs: initialData.relay_obfs === true
   }
 }
 
@@ -820,7 +846,8 @@ async function handleSubmit() {
         name: String(item.name || '').trim(),
         value: item.value ?? ''
       })),
-      relay_chain: Array.isArray(form.value.relay_chain) ? [...form.value.relay_chain] : []
+      relay_chain: Array.isArray(form.value.relay_chain) ? [...form.value.relay_chain] : [],
+      relay_obfs: Array.isArray(form.value.relay_chain) && form.value.relay_chain.length > 0 && form.value.relay_obfs === true
     }
 
     if (isEdit.value) {

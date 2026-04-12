@@ -232,6 +232,29 @@
           />
         </div>
 
+        <div class="settings-card">
+          <div class="section-header">
+            <div>
+              <h3 class="section-title">隐私增强</h3>
+              <p class="section-description">开启后会为 Relay 中转链路附加隐私增强处理</p>
+            </div>
+          </div>
+          <label class="toggle toggle--card" :class="{ 'toggle--active': form.relay_obfs, 'toggle--disabled': relayObfsDisabled }">
+            <input
+              v-model="form.relay_obfs"
+              type="checkbox"
+              class="toggle__input"
+              :disabled="relayObfsDisabled"
+            >
+            <span class="toggle__slider"></span>
+            <span class="toggle__content">
+              <span class="toggle__label">启用 Relay 隐私增强</span>
+              <span class="toggle__desc">仅对 TCP Relay 链路中的中转流量生效</span>
+            </span>
+          </label>
+          <p v-if="relayObfsDisabled" class="form-help">当前为直连模式，此选项不会生效</p>
+        </div>
+
         <!-- 使用说明 -->
         <div class="relay-help">
           <div class="relay-help__title">
@@ -329,6 +352,7 @@ const form = ref({
   enabled: props.initialData?.enabled !== false,
   tags: Array.isArray(props.initialData?.tags) ? [...props.initialData.tags] : [],
   relay_chain: Array.isArray(props.initialData?.relay_chain) ? [...props.initialData.relay_chain] : [],
+  relay_obfs: props.initialData?.relay_obfs === true,
 })
 
 const tagInput = ref('')
@@ -380,11 +404,13 @@ const hasProtocolTuning = computed(() => {
 const hasRelayConfig = computed(() => {
   return Array.isArray(form.value.relay_chain) && form.value.relay_chain.length > 0
 })
+const relayObfsDisabled = computed(() => !Array.isArray(form.value.relay_chain) || form.value.relay_chain.length === 0)
 
 watch(() => form.value.protocol, (newProto) => {
   form.value.tuning = resetTuningForProtocol(form.value.tuning, newProto)
   if (newProto === 'udp') {
     form.value.relay_chain = []
+    form.value.relay_obfs = false
   }
 })
 
@@ -500,6 +526,10 @@ function buildPayload() {
     enabled: form.value.enabled,
     tags: [...sysTags, ...userTags],
     relay_chain: form.value.protocol === 'tcp' ? [...form.value.relay_chain] : [],
+    relay_obfs: form.value.protocol === 'tcp'
+      && Array.isArray(form.value.relay_chain)
+      && form.value.relay_chain.length > 0
+      && form.value.relay_obfs === true,
   }
 
   // Only send tuning if advanced panel has non-default values or editing existing rule with tuning

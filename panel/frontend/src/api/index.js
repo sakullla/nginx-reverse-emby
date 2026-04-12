@@ -222,7 +222,8 @@ function generateMockRules(count) {
       pass_proxy_headers: true,
       user_agent: '',
       custom_headers: [],
-      relay_chain: []
+      relay_chain: [],
+      relay_obfs: false
     })
   }
   return rules
@@ -247,7 +248,8 @@ function normalizeHttpRule(rule = {}) {
     backends,
     load_balancing: {
       strategy: rule.load_balancing?.strategy === 'random' ? 'random' : 'round_robin'
-    }
+    },
+    relay_obfs: rule.relay_obfs === true
   }
 }
 
@@ -275,7 +277,8 @@ function normalizeL4Rule(rule = {}) {
     backends,
     load_balancing: {
       strategy: rule.load_balancing?.strategy === 'random' ? 'random' : 'round_robin'
-    }
+    },
+    relay_obfs: rule.relay_obfs === true
   }
 }
 
@@ -297,7 +300,8 @@ function normalizeHttpRulePayload(payloadOrFrontend, backend_url, tags, enabled,
       pass_proxy_headers: payload.pass_proxy_headers === true,
       user_agent: String(payload.user_agent || ''),
       custom_headers: Array.isArray(payload.custom_headers) ? payload.custom_headers : [],
-      relay_chain: Array.isArray(payload.relay_chain) ? payload.relay_chain : []
+      relay_chain: Array.isArray(payload.relay_chain) ? payload.relay_chain : [],
+      relay_obfs: payload.relay_obfs === true
     }
   }
 
@@ -312,6 +316,14 @@ function normalizeHttpRulePayload(payloadOrFrontend, backend_url, tags, enabled,
     custom_headers,
     relay_chain
   })
+}
+
+function normalizeL4RulePayload(payload = {}) {
+  return {
+    ...payload,
+    relay_chain: Array.isArray(payload.relay_chain) ? payload.relay_chain : [],
+    relay_obfs: payload.relay_obfs === true
+  }
 }
 
 const mockRulesByAgent = {
@@ -530,6 +542,7 @@ const mockL4RulesByAgent = {
       ],
       load_balancing: { strategy: 'round_robin' },
       relay_chain: [],
+      relay_obfs: false,
       enabled: true,
       tags: ['TCP', ':25565', 'game']
     }
@@ -548,6 +561,7 @@ const mockL4RulesByAgent = {
       ],
       load_balancing: { strategy: 'random' },
       relay_chain: [],
+      relay_obfs: false,
       enabled: true,
       tags: ['UDP', ':51820', 'vpn']
     }
@@ -589,29 +603,31 @@ export async function fetchL4Rules(agentId) {
 }
 
 export async function createL4Rule(agentId, payload) {
+  const normalizedPayload = normalizeL4RulePayload(payload)
   if (isDev) {
     await sleep()
-    const item = normalizeL4Rule({ ...payload, id: ++mockL4IdCounter })
+    const item = normalizeL4Rule({ ...normalizedPayload, id: ++mockL4IdCounter })
     mockL4RulesByAgent[agentId] = mockL4RulesByAgent[agentId] || []
     mockL4RulesByAgent[agentId].push(item)
     return item
   }
-  const { data } = await api.post(`/agents/${encodeURIComponent(agentId)}/l4-rules`, payload, longRunningRequest)
+  const { data } = await api.post(`/agents/${encodeURIComponent(agentId)}/l4-rules`, normalizedPayload, longRunningRequest)
   return normalizeL4Rule(data.rule)
 }
 
 export async function updateL4Rule(agentId, id, payload) {
+  const normalizedPayload = normalizeL4RulePayload(payload)
   if (isDev) {
     await sleep()
     const list = mockL4RulesByAgent[agentId] || []
     const idx = list.findIndex((r) => r.id === id)
     if (idx !== -1) {
-      list[idx] = normalizeL4Rule({ ...list[idx], ...payload })
+      list[idx] = normalizeL4Rule({ ...list[idx], ...normalizedPayload })
       return list[idx]
     }
     return null
   }
-  const { data } = await api.put(`/agents/${encodeURIComponent(agentId)}/l4-rules/${id}`, payload, longRunningRequest)
+  const { data } = await api.put(`/agents/${encodeURIComponent(agentId)}/l4-rules/${id}`, normalizedPayload, longRunningRequest)
   return normalizeL4Rule(data.rule)
 }
 
