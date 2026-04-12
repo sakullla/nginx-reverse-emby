@@ -1059,7 +1059,54 @@ func TestAgentServiceStatsFallbackAndApplyBehavior(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Apply(local) error = %v", err)
 	}
-	if localApply.Message != "applied" || store.savedRuntimeAgentID != "local" || store.savedRuntimeState.LastApplyRevision != 4 {
-		t.Fatalf("Apply(local) = %+v, runtime = %+v", localApply, store.savedRuntimeState)
+	if localApply.Message != "waiting for embedded local agent to apply" || !localApply.Pending {
+		t.Fatalf("Apply(local) = %+v", localApply)
+	}
+	if store.saveRuntimeCalls != 0 {
+		t.Fatalf("Apply(local) should not persist fake runtime state, saveRuntimeCalls = %d", store.saveRuntimeCalls)
+	}
+}
+
+func TestAgentServiceApplyLocalUsesTriggerForSynchronousEmbeddedApply(t *testing.T) {
+	cfg := config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+		LocalAgentName:   "Local",
+	}
+	store := &fakeStore{
+		localState: storage.LocalAgentStateRow{
+			DesiredRevision:   1,
+			CurrentRevision:   1,
+			LastApplyRevision: 1,
+			LastApplyStatus:   "success",
+		},
+		localSnapshot: storage.Snapshot{DesiredVersion: "1.2.3", Revision: 4},
+	}
+	svc := NewAgentService(cfg, store)
+
+	triggerCalls := 0
+	svc.SetLocalApplyTrigger(func(context.Context) error {
+		triggerCalls++
+		store.localState = storage.LocalAgentStateRow{
+			DesiredRevision:   4,
+			CurrentRevision:   4,
+			LastApplyRevision: 4,
+			LastApplyStatus:   "success",
+		}
+		return nil
+	})
+
+	localApply, err := svc.Apply(context.Background(), "local")
+	if err != nil {
+		t.Fatalf("Apply(local) error = %v", err)
+	}
+	if localApply.Message != "applied" || localApply.Pending || localApply.DesiredRevision != 4 {
+		t.Fatalf("Apply(local) = %+v", localApply)
+	}
+	if triggerCalls != 1 {
+		t.Fatalf("triggerCalls = %d", triggerCalls)
+	}
+	if store.saveRuntimeCalls != 0 {
+		t.Fatalf("Apply(local) should rely on runtime callback, saveRuntimeCalls = %d", store.saveRuntimeCalls)
 	}
 }

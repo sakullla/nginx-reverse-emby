@@ -18,6 +18,7 @@ type App struct {
 	server           *http.Server
 	enableLocalAgent bool
 	startLocalAgent  LocalAgentStarter
+	cleanup          func() error
 }
 
 func New(cfg config.Config, handler http.Handler, logger *log.Logger, startLocalAgent LocalAgentStarter) *App {
@@ -36,6 +37,12 @@ func New(cfg config.Config, handler http.Handler, logger *log.Logger, startLocal
 }
 
 func (a *App) Run(ctx context.Context) error {
+	defer func() {
+		if a.cleanup != nil {
+			_ = a.cleanup()
+		}
+	}()
+
 	if ctx.Err() != nil {
 		if a.enableLocalAgent && a.startLocalAgent != nil {
 			err := a.startLocalAgent(ctx)
@@ -110,6 +117,10 @@ func (a *App) Run(ctx context.Context) error {
 		}
 		return err
 	}
+}
+
+func (a *App) SetCleanup(cleanup func() error) {
+	a.cleanup = cleanup
 }
 
 func waitLocalAgent(localAgentErrCh <-chan error, enabled bool) error {

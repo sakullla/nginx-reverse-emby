@@ -8,6 +8,7 @@ import (
 	stdruntime "runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/certs"
@@ -68,6 +69,7 @@ type App struct {
 	relayApplier RelayApplier
 	updater      Updater
 	runtime      *agentruntime.Runtime
+	syncMu       sync.Mutex
 }
 
 func New(cfg Config) (*App, error) {
@@ -196,6 +198,9 @@ func (a *App) Run(ctx context.Context) error {
 }
 
 func (a *App) performSync(ctx context.Context) error {
+	a.syncMu.Lock()
+	defer a.syncMu.Unlock()
+
 	applied, err := a.store.LoadAppliedSnapshot()
 	if err != nil {
 		return err
@@ -205,6 +210,10 @@ func (a *App) performSync(ctx context.Context) error {
 		return err
 	}
 	return a.syncOnce(ctx, req)
+}
+
+func (a *App) SyncNow(ctx context.Context) error {
+	return a.performSync(ctx)
 }
 
 func (a *App) syncRequest(ctx context.Context, applied Snapshot) (SyncRequest, error) {

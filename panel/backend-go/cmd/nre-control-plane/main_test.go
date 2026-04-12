@@ -7,17 +7,26 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
+	httpapi "github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/http"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/localagent"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
 type localAgentRuntimeStub struct {
-	start func(context.Context) error
+	start   func(context.Context) error
+	syncNow func(context.Context) error
 }
 
 func (s localAgentRuntimeStub) Start(ctx context.Context) error {
 	if s.start != nil {
 		return s.start(ctx)
+	}
+	return nil
+}
+
+func (s localAgentRuntimeStub) SyncNow(ctx context.Context) error {
+	if s.syncNow != nil {
+		return s.syncNow(ctx)
 	}
 	return nil
 }
@@ -81,13 +90,18 @@ func TestNewControlPlaneAppStartsEmbeddedLocalAgentWhenEnabled(t *testing.T) {
 	started := make(chan struct{}, 1)
 
 	previousNewHandler := newHandler
+	previousNewHandlerWithDependencies := newHandlerWithDependencies
 	previousNewLocalAgentRuntime := newLocalAgentRuntime
 	t.Cleanup(func() {
 		newHandler = previousNewHandler
+		newHandlerWithDependencies = previousNewHandlerWithDependencies
 		newLocalAgentRuntime = previousNewLocalAgentRuntime
 	})
 
 	newHandler = func(config.Config) (http.Handler, error) {
+		return http.NewServeMux(), nil
+	}
+	newHandlerWithDependencies = func(_ config.Config, _ httpapi.Dependencies) (http.Handler, error) {
 		return http.NewServeMux(), nil
 	}
 	newLocalAgentRuntime = func(_ config.Config, store localagent.Store) (localAgentRuntime, error) {

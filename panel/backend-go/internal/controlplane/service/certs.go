@@ -95,10 +95,11 @@ type ManagedCertificateInput struct {
 }
 
 type certificateService struct {
-	cfg           config.Config
-	store         storage.Store
-	now           func() time.Time
-	renewalIssuer managedCertificateRenewalIssuer
+	cfg               config.Config
+	store             storage.Store
+	now               func() time.Time
+	renewalIssuer     managedCertificateRenewalIssuer
+	localApplyTrigger func(context.Context) error
 }
 
 type localManagedCertificateSyncStore interface {
@@ -117,6 +118,10 @@ func newCertificateServiceWithRenewal(cfg config.Config, store storage.Store, is
 		now:           time.Now,
 		renewalIssuer: issuer,
 	}
+}
+
+func (s *certificateService) SetLocalApplyTrigger(trigger func(context.Context) error) {
+	s.localApplyTrigger = trigger
 }
 
 func (s *certificateService) List(ctx context.Context, agentID string) ([]ManagedCertificate, error) {
@@ -601,6 +606,9 @@ func (s *certificateService) issueLocalHTTP01InternalCA(ctx context.Context, row
 		return ManagedCertificate{}, err
 	}
 	cleanupManagedCertificateMaterialBestEffort(ctx, s.store, originalRows, rows)
+	if err := s.syncManagedCertificateAgentIDs(ctx, requestedTargetIDs, next.Revision); err != nil {
+		return ManagedCertificate{}, err
+	}
 	return next, nil
 }
 
@@ -676,6 +684,9 @@ func (s *certificateService) issueLocalHTTP01ACME(ctx context.Context, rows []st
 		return ManagedCertificate{}, err
 	}
 	cleanupManagedCertificateMaterialBestEffort(ctx, s.store, originalRows, rows)
+	if err := s.syncManagedCertificateAgentIDs(ctx, requestedTargetIDs, next.Revision); err != nil {
+		return ManagedCertificate{}, err
+	}
 	return next, nil
 }
 
@@ -880,6 +891,12 @@ func (s *certificateService) syncManagedCertificateAgentIDs(ctx context.Context,
 			continue
 		}
 		if s.cfg.EnableLocalAgent && resolvedID == s.cfg.LocalAgentID {
+			if s.localApplyTrigger != nil {
+				if err := s.localApplyTrigger(ctx); err != nil {
+					return err
+				}
+				continue
+			}
 			if err := s.applyLocalManagedCertificateSync(ctx); err != nil {
 				return err
 			}

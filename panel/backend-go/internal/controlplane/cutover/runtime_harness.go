@@ -135,22 +135,6 @@ func tryStartCutoverHarness(t *testing.T, options cutoverHarnessOptions) (*cutov
 		return nil, fmt.Errorf("RelayListenerService.Bootstrap(): %w", err)
 	}
 
-	router, err := controlplanehttp.NewRouter(controlplanehttp.Dependencies{
-		Config:               cfg,
-		SystemService:        service.NewSystemService(cfg),
-		AgentService:         service.NewAgentService(cfg, apiStore),
-		RuleService:          service.NewRuleService(cfg, apiStore),
-		L4RuleService:        service.NewL4RuleService(cfg, apiStore),
-		VersionPolicyService: service.NewVersionPolicyService(apiStore),
-		RelayListenerService: relayService,
-		CertificateService:   service.NewCertificateService(cfg, apiStore),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("http.NewRouter(): %w", err)
-	}
-	panelServer := httptest.NewServer(router)
-	harness.panelServer = panelServer
-
 	runtimeStore, err := storage.NewSQLiteStore(cfg.DataDir, cfg.LocalAgentID)
 	if err != nil {
 		return nil, fmt.Errorf("NewSQLiteStore(runtime): %w", err)
@@ -161,6 +145,27 @@ func tryStartCutoverHarness(t *testing.T, options cutoverHarnessOptions) (*cutov
 	if err != nil {
 		return nil, fmt.Errorf("localagent.NewRuntime(): %w", err)
 	}
+
+	agentService := service.NewAgentService(cfg, apiStore)
+	certificateService := service.NewCertificateService(cfg, apiStore)
+	agentService.SetLocalApplyTrigger(runtime.SyncNow)
+	certificateService.SetLocalApplyTrigger(runtime.SyncNow)
+
+	router, err := controlplanehttp.NewRouter(controlplanehttp.Dependencies{
+		Config:               cfg,
+		SystemService:        service.NewSystemService(cfg),
+		AgentService:         agentService,
+		RuleService:          service.NewRuleService(cfg, apiStore),
+		L4RuleService:        service.NewL4RuleService(cfg, apiStore),
+		VersionPolicyService: service.NewVersionPolicyService(apiStore),
+		RelayListenerService: relayService,
+		CertificateService:   certificateService,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("http.NewRouter(): %w", err)
+	}
+	panelServer := httptest.NewServer(router)
+	harness.panelServer = panelServer
 
 	// Release reservation listeners right before the runtime takes ownership of the ports.
 	reservations.release()

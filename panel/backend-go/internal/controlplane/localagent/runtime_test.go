@@ -35,6 +35,10 @@ func (s embeddedRuntimeStub) Run(ctx context.Context) error {
 	return nil
 }
 
+func (s embeddedRuntimeStub) SyncNow(context.Context) error {
+	return nil
+}
+
 func (s *bridgeStoreStub) LoadLocalSnapshot(_ context.Context, agentID string) (Snapshot, error) {
 	s.loadAgentID = agentID
 	return s.snapshot, nil

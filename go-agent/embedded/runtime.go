@@ -90,6 +90,10 @@ func (r *Runtime) Run(ctx context.Context) error {
 	return r.app.Run(ctx)
 }
 
+func (r *Runtime) SyncNow(ctx context.Context) error {
+	return r.app.SyncNow(ctx)
+}
+
 type syncClientAdapter struct {
 	source SyncSource
 }

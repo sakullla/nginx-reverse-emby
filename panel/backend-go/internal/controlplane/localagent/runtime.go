@@ -15,6 +15,7 @@ type Store interface {
 
 type embeddedRuntimeRunner interface {
 	Run(context.Context) error
+	SyncNow(context.Context) error
 }
 
 var newEmbeddedRuntime = func(cfg goagentembedded.Config, source goagentembedded.SyncSource, sink goagentembedded.StateSink) (embeddedRuntimeRunner, error) {
@@ -55,6 +56,10 @@ func NewRuntime(cfg config.Config, store Store) (*Runtime, error) {
 
 func (r *Runtime) Start(ctx context.Context) error {
 	return r.runtime.Run(ctx)
+}
+
+func (r *Runtime) SyncNow(ctx context.Context) error {
+	return r.runtime.SyncNow(ctx)
 }
 
 func (r *Runtime) SyncSource() *SyncSource {

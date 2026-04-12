@@ -99,7 +99,11 @@ func (d Dependencies) handlePublicAgentAsset(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	assetPath := filepath.Join(d.Config.PublicAgentAssetsDir, filepath.FromSlash(assetName))
+	assetPath, ok := resolvePublicAgentAssetPath(d.Config.PublicAgentAssetsDir, assetName)
+	if !ok {
+		writeJSON(w, http.StatusNotFound, errorPayload("asset not found"))
+		return
+	}
 	info, err := os.Stat(assetPath)
 	if err != nil || info.IsDir() {
 		writeJSON(w, http.StatusNotFound, errorPayload("asset not found"))
@@ -120,4 +124,18 @@ func publicAssetName(requestPath string) string {
 	default:
 		return ""
 	}
+}
+
+func resolvePublicAgentAssetPath(root string, assetName string) (string, bool) {
+	trimmed := strings.TrimSpace(assetName)
+	if trimmed == "" {
+		return "", false
+	}
+	if trimmed != filepath.Base(trimmed) {
+		return "", false
+	}
+	if strings.ContainsAny(trimmed, `/\`) || trimmed == "." || trimmed == ".." {
+		return "", false
+	}
+	return filepath.Join(filepath.Clean(root), trimmed), true
 }

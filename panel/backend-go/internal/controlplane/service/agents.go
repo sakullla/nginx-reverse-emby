@@ -161,9 +161,10 @@ type ApplyAgentResult struct {
 }
 
 type agentService struct {
-	cfg   config.Config
-	store agentStore
-	now   func() time.Time
+	cfg               config.Config
+	store             agentStore
+	now               func() time.Time
+	localApplyTrigger func(context.Context) error
 }
 
 func NewAgentService(cfg config.Config, store agentStore) *agentService {
@@ -172,6 +173,10 @@ func NewAgentService(cfg config.Config, store agentStore) *agentService {
 		store: store,
 		now:   time.Now,
 	}
+}
+
+func (s *agentService) SetLocalApplyTrigger(trigger func(context.Context) error) {
+	s.localApplyTrigger = trigger
 }
 
 func (s *agentService) List(ctx context.Context) ([]AgentSummary, error) {
@@ -450,13 +455,30 @@ func (s *agentService) Apply(ctx context.Context, agentID string) (ApplyAgentRes
 		if err != nil {
 			return ApplyAgentResult{}, err
 		}
-		if err := s.store.SaveLocalRuntimeState(ctx, s.cfg.LocalAgentID, storage.RuntimeState{
-			CurrentRevision:   snapshot.Revision,
-			Status:            "success",
-			LastApplyRevision: snapshot.Revision,
-			LastApplyStatus:   "success",
-		}); err != nil {
+
+		if s.localApplyTrigger == nil {
+			return ApplyAgentResult{
+				Message:         "waiting for embedded local agent to apply",
+				DesiredRevision: snapshot.Revision,
+				Pending:         true,
+			}, nil
+		}
+		if err := s.localApplyTrigger(ctx); err != nil {
 			return ApplyAgentResult{}, err
+		}
+
+		state, err := s.store.LoadLocalAgentState(ctx)
+		if err != nil {
+			return ApplyAgentResult{}, err
+		}
+		if state.CurrentRevision < int(snapshot.Revision) ||
+			state.LastApplyRevision < int(snapshot.Revision) ||
+			!strings.EqualFold(strings.TrimSpace(state.LastApplyStatus), "success") {
+			return ApplyAgentResult{
+				Message:         "waiting for embedded local agent to apply",
+				DesiredRevision: snapshot.Revision,
+				Pending:         true,
+			}, nil
 		}
 		return ApplyAgentResult{
 			Message:         "applied",

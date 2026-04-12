@@ -1488,6 +1488,66 @@ func TestCertificateServiceIssueLocalHTTP01ACMEPerAgentMarksOnlyRequestedAgentPe
 	}
 }
 
+func TestCertificateServiceIssueLocalHTTP01ACMETriggersAssignedTargetsImmediately(t *testing.T) {
+	now := time.Date(2026, 4, 11, 12, 13, 14, 0, time.UTC)
+	store := &relayCertStore{
+		agents: []storage.AgentRow{{
+			ID:               "local",
+			Name:             "Local Agent",
+			CapabilitiesJSON: `["http_rules","cert_install","local_acme"]`,
+		}},
+		httpRulesByID: map[string][]storage.HTTPRuleRow{
+			"local": {{
+				ID:          1,
+				AgentID:     "local",
+				FrontendURL: "https://media.example.com",
+				Enabled:     true,
+			}},
+		},
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              170,
+			Domain:          "media.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  `["local"]`,
+			Status:          "active",
+			LastIssueAt:     "2026-04-01T00:00:00Z",
+			LastError:       "stale error",
+			MaterialHash:    "global-hash",
+			AgentReports:    `{"local":{"status":"active","last_issue_at":"2026-04-10T10:11:12Z","updated_at":"2026-04-10T10:11:12Z"}}`,
+			CertificateType: "acme",
+			Usage:           "https",
+			Revision:        8,
+		}},
+	}
+	svc := newCertificateServiceWithRenewal(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store, &fakeManagedCertificateRenewalIssuer{})
+	svc.now = func() time.Time { return now }
+
+	triggerCalls := 0
+	svc.SetLocalApplyTrigger(func(context.Context) error {
+		triggerCalls++
+		return nil
+	})
+
+	issued, err := svc.Issue(context.Background(), "local", 170)
+	if err != nil {
+		t.Fatalf("Issue() error = %v", err)
+	}
+	if issued.Status != "pending" || issued.Revision != 9 {
+		t.Fatalf("issued = %+v", issued)
+	}
+	if triggerCalls != 1 {
+		t.Fatalf("triggerCalls = %d", triggerCalls)
+	}
+	if store.saveRuntimeCalls != 0 {
+		t.Fatalf("Issue() should trigger embedded runtime directly, saveRuntimeCalls = %d", store.saveRuntimeCalls)
+	}
+}
+
 func TestCertificateServiceIssueLocalHTTP01ACMERejectsTargetWithoutLocalACME(t *testing.T) {
 	store := &relayCertStore{
 		agents: []storage.AgentRow{{

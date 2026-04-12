@@ -155,6 +155,31 @@ func TestRouterServesJoinScriptAndHeartbeat(t *testing.T) {
 	}
 }
 
+func TestPublicAgentAssetRejectsPathTraversal(t *testing.T) {
+	assetDir := filepath.Join(t.TempDir(), "assets")
+	if err := os.MkdirAll(assetDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(assetDir) error = %v", err)
+	}
+	secretPath := filepath.Join(filepath.Dir(assetDir), "secret.txt")
+	if err := os.WriteFile(secretPath, []byte("secret"), 0o644); err != nil {
+		t.Fatalf("WriteFile(secret) error = %v", err)
+	}
+
+	deps := Dependencies{
+		Config: config.Config{
+			PublicAgentAssetsDir: assetDir,
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/panel-api/public/agent-assets/../secret.txt", nil)
+	resp := httptest.NewRecorder()
+	deps.handlePublicAgentAsset(resp, req)
+
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("GET traversal asset = %d, body = %s", resp.Code, resp.Body.String())
+	}
+}
+
 func TestHeartbeatResponseOmitsNoUpdateFieldsButKeepsRelayListeners(t *testing.T) {
 	router, err := NewRouter(Dependencies{
 		Config:        config.Config{PanelToken: "secret"},

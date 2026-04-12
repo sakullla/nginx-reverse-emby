@@ -18,6 +18,7 @@ import (
 
 type localAgentRuntime interface {
 	Start(context.Context) error
+	SyncNow(context.Context) error
 }
 
 func main() {
@@ -45,6 +46,11 @@ func main() {
 
 var newHandler = func(cfg config.Config) (http.Handler, error) {
 	return httpapi.NewRouter(httpapi.Dependencies{Config: cfg})
+}
+
+var newHandlerWithDependencies = func(cfg config.Config, deps httpapi.Dependencies) (http.Handler, error) {
+	deps.Config = cfg
+	return httpapi.NewRouter(deps)
 }
 
 var newLocalAgentRuntime = func(cfg config.Config, store localagent.Store) (localAgentRuntime, error) {
@@ -131,15 +137,60 @@ var newLocalAgentStarter = func(cfg config.Config) (app.LocalAgentStarter, error
 }
 
 func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error) {
-	handler, err := newHandler(cfg)
+	if !cfg.EnableLocalAgent {
+		handler, err := newHandler(cfg)
+		if err != nil {
+			return nil, err
+		}
+		return app.New(cfg, handler, logger, nil), nil
+	}
+
+	serviceStore, err := storage.NewSQLiteStore(cfg.DataDir, cfg.LocalAgentID)
 	if err != nil {
 		return nil, err
 	}
 
-	startLocalAgent, err := newLocalAgentStarter(cfg)
+	systemSvc := service.NewSystemService(cfg)
+	agentSvc := service.NewAgentService(cfg, serviceStore)
+	ruleSvc := service.NewRuleService(cfg, serviceStore)
+	l4Svc := service.NewL4RuleService(cfg, serviceStore)
+	versionSvc := service.NewVersionPolicyService(serviceStore)
+	relaySvc := service.NewRelayListenerService(cfg, serviceStore)
+	certSvc := service.NewCertificateService(cfg, serviceStore)
+
+	runtimeStore, err := storage.NewSQLiteStore(cfg.DataDir, cfg.LocalAgentID)
+	if err != nil {
+		return nil, err
+	}
+	runtime, err := newLocalAgentRuntime(cfg, runtimeStore)
 	if err != nil {
 		return nil, err
 	}
 
-	return app.New(cfg, handler, logger, startLocalAgent), nil
+	agentSvc.SetLocalApplyTrigger(runtime.SyncNow)
+	certSvc.SetLocalApplyTrigger(runtime.SyncNow)
+
+	handler, err := newHandlerWithDependencies(cfg, httpapi.Dependencies{
+		SystemService:        systemSvc,
+		AgentService:         agentSvc,
+		RuleService:          ruleSvc,
+		L4RuleService:        l4Svc,
+		VersionPolicyService: versionSvc,
+		RelayListenerService: relaySvc,
+		CertificateService:   certSvc,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	controlPlaneApp := app.New(cfg, handler, logger, runtime.Start)
+	controlPlaneApp.SetCleanup(func() error {
+		runtimeErr := runtimeStore.Close()
+		serviceErr := serviceStore.Close()
+		if runtimeErr != nil {
+			return runtimeErr
+		}
+		return serviceErr
+	})
+	return controlPlaneApp, nil
 }
