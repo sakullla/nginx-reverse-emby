@@ -7,8 +7,10 @@ RUN --mount=type=cache,target=/root/.npm npm ci
 COPY panel/frontend/ ./
 RUN npm run build
 
-FROM golang:1.26.2-bookworm AS go-builder
+FROM golang:1.26.2-trixie AS go-builder
 WORKDIR /src/go-agent
+COPY go-agent/go.mod go-agent/go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
 COPY go-agent/ ./
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
@@ -22,18 +24,21 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o /out/nre-agent ./cmd/nre-agent
 
-FROM golang:1.26.2-bookworm AS backend-go-builder
+FROM golang:1.26.2-trixie AS backend-go-builder
+WORKDIR /src
+COPY go-agent/go.mod go-agent/go.sum ./go-agent/
+COPY panel/backend-go/go.mod panel/backend-go/go.sum ./panel/backend-go/
+WORKDIR /src/panel/backend-go
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
 WORKDIR /src
 COPY go-agent/ ./go-agent/
+COPY panel/backend-go/ ./panel/backend-go/
 WORKDIR /src/panel/backend-go
-COPY panel/backend-go/go.mod panel/backend-go/go.sum ./
-RUN --mount=type=cache,target=/go/pkg/mod go mod download
-COPY panel/backend-go/ ./
 RUN --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/go/pkg/mod \
     CGO_ENABLED=0 go build -o /out/nre-control-plane ./cmd/nre-control-plane
 
-FROM debian:bookworm-slim AS go-agent-runtime
+FROM debian:trixie-slim AS go-agent-runtime
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends ca-certificates; \
@@ -41,7 +46,7 @@ RUN set -eux; \
 COPY --from=go-builder /out/nre-agent /usr/local/bin/nre-agent
 ENTRYPOINT ["/usr/local/bin/nre-agent"]
 
-FROM debian:bookworm-slim AS control-plane-runtime
+FROM debian:trixie-slim AS control-plane-runtime
 ENV PANEL_BACKEND_HOST=0.0.0.0 \
     PANEL_BACKEND_PORT=8080
 WORKDIR /opt/nginx-reverse-emby
