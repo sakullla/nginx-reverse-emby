@@ -4,7 +4,7 @@
 
 **Goal:** Ship a pure-Go master image, keep remote agent assets published, and prove the cutover against copied production-like data before release.
 
-**Architecture:** Replace the Node runtime image with the Go control-plane binary while keeping the frontend build stage and published agent binaries. Add repeatable verification scripts that load copied panel data into the new control-plane image, exercise API compatibility, confirm embedded local-agent startup, and run the existing Go test suite plus image build checks.
+**Architecture:** Replace the Node runtime image with the `panel/backend-go` control-plane binary while keeping the frontend build stage and published agent binaries. Add repeatable verification scripts that load copied panel data into the new control-plane image, exercise API compatibility, confirm embedded local-agent startup, and run the existing Go test suite plus image build checks.
 
 **Tech Stack:** Docker multi-stage builds, docker compose, Go tests, copied SQLite data fixtures, shell verification scripts.
 
@@ -14,8 +14,8 @@
 
 **Create**
 - `scripts/verify-pure-go-master.sh`
-- `go-agent/internal/controlplane/http/compat_fixture_test.go`
-- `go-agent/internal/controlplane/storage/testdata/README.md`
+- `panel/backend-go/internal/controlplane/http/compat_fixture_test.go`
+- `panel/backend-go/internal/controlplane/storage/testdata/README.md`
 
 **Modify**
 - `Dockerfile`
@@ -48,12 +48,13 @@ Expected: FAIL because the runtime stage still depends on `node` and `server.js`
 - [ ] **Step 3: Update the control-plane runtime stage**
 
 ```dockerfile
+FROM golang:1.24-bookworm AS backend-go-builder
+WORKDIR /src/panel/backend-go
+COPY panel/backend-go/ ./
+RUN --mount=type=cache,target=/root/.cache/go-build --mount=type=cache,target=/go/pkg/mod CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o /out/nre-control-plane ./cmd/nre-control-plane
+
 FROM debian:bookworm-slim AS control-plane-runtime
-RUN set -eux; apt-get update; apt-get install -y --no-install-recommends ca-certificates; rm -rf /var/lib/apt/lists/*
-WORKDIR /opt/nginx-reverse-emby
-COPY --from=frontend-builder /build/dist ./panel/frontend/dist/
-COPY --from=go-builder /out/nre-control-plane /usr/local/bin/nre-control-plane
-COPY --from=go-builder /out/nre-agent-linux-amd64 ./panel/public/agent-assets/nre-agent-linux-amd64
+COPY --from=backend-go-builder /out/nre-control-plane /usr/local/bin/nre-control-plane
 CMD ["/usr/local/bin/nre-control-plane"]
 ```
 
@@ -76,7 +77,7 @@ git commit -m "build(docker): switch master image to go control-plane"
 
 **Files:**
 - Create: `scripts/verify-pure-go-master.sh`
-- Create: `go-agent/internal/controlplane/storage/testdata/README.md`
+- Create: `panel/backend-go/internal/controlplane/storage/testdata/README.md`
 
 - [ ] **Step 1: Write the failing verification script skeleton**
 
@@ -118,7 +119,7 @@ Expected: PASS with zero non-2xx API responses
 - [ ] **Step 5: Commit**
 
 ```bash
-git add scripts/verify-pure-go-master.sh go-agent/internal/controlplane/storage/testdata/README.md
+git add scripts/verify-pure-go-master.sh panel/backend-go/internal/controlplane/storage/testdata/README.md
 git commit -m "test(cutover): add pure-go master shadow-data verification"
 ```
 
@@ -146,7 +147,8 @@ Expected: no matches
 Before replacing the production master image, run:
 
 ```bash
-cd go-agent && go test ./...
+cd panel/backend-go && go test ./...
+cd ../../go-agent && go test ./...
 docker build -t nginx-reverse-emby:pure-go --target control-plane-runtime .
 sh scripts/verify-pure-go-master.sh /path/to/copied-panel-data
 ```

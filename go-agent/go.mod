@@ -1,6 +1,8 @@
 module github.com/sakullla/nginx-reverse-emby/go-agent
 
-go 1.24.0
+go 1.26.0
+
+toolchain go1.26.2
 
 require github.com/go-acme/lego/v4 v4.31.0
 

@@ -6,6 +6,7 @@ import (
 	"os"
 	"reflect"
 	stdruntime "runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -31,8 +32,16 @@ type CertificateApplier interface {
 	Apply(context.Context, []model.ManagedCertificateBundle, []model.ManagedCertificatePolicy) error
 }
 
+type ManagedCertificateReporter interface {
+	ManagedCertificateReports(context.Context) ([]model.ManagedCertificateReport, error)
+}
+
 type HTTPApplier interface {
 	Apply(context.Context, []model.HTTPRule) error
+	Close() error
+}
+
+type certCloser interface {
 	Close() error
 }
 
@@ -147,7 +156,7 @@ func newAppWithAllDeps(
 		relayApplier: relayApplier,
 		updater:      updater,
 	}
-	app.runtime = agentruntime.NewWithActivator(app.activateSnapshot)
+	app.runtime = agentruntime.NewWithActivator(agentruntime.NewSnapshotActivator(app.snapshotActivationHandlers()))
 	return app
 }
 
@@ -191,8 +200,37 @@ func (a *App) performSync(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	req := SyncRequest{CurrentRevision: int(applied.Revision)}
+	req, err := a.syncRequest(ctx, applied)
+	if err != nil {
+		return err
+	}
 	return a.syncOnce(ctx, req)
+}
+
+func (a *App) syncRequest(ctx context.Context, applied Snapshot) (SyncRequest, error) {
+	req := SyncRequest{CurrentRevision: int(applied.Revision)}
+
+	state, err := a.store.LoadRuntimeState()
+	if err != nil {
+		return SyncRequest{}, err
+	}
+	meta := ensureMetadata(state.Metadata)
+	req.LastApplyRevision = int(parseInt64(meta["last_apply_revision"], applied.Revision))
+	req.LastApplyStatus = strings.TrimSpace(meta["last_apply_status"])
+	req.LastApplyMessage = meta["last_apply_message"]
+	if req.LastApplyStatus == "" {
+		req.LastApplyStatus = "success"
+	}
+
+	if reporter, ok := a.certApplier.(ManagedCertificateReporter); ok {
+		reports, err := reporter.ManagedCertificateReports(ctx)
+		if err != nil {
+			return SyncRequest{}, err
+		}
+		req.ManagedCertificateReports = reports
+	}
+
+	return req, nil
 }
 
 func (a *App) syncOnce(ctx context.Context, req SyncRequest) error {
@@ -214,27 +252,33 @@ func (a *App) syncOnce(ctx context.Context, req SyncRequest) error {
 	previousApplied := a.runtime.ActiveSnapshot()
 	candidateApplied := mergeSnapshotPayload(snapshot, previousApplied)
 	if err := a.runtime.Apply(ctx, previousApplied, candidateApplied); err != nil {
-		return a.recordRuntimeError(err)
+		a.rollbackRuntime(ctx, candidateApplied, previousApplied)
+		return a.recordRuntimeErrorWithRevision(err, candidateApplied.Revision)
 	}
 	if err := a.store.SaveAppliedSnapshot(candidateApplied); err != nil {
-		a.rollbackRuntime(ctx, previousApplied)
-		return a.recordPersistedRuntimeError(err)
+		a.rollbackRuntime(ctx, candidateApplied, previousApplied)
+		return a.recordPersistedRuntimeErrorWithRevision(err, candidateApplied.Revision)
 	}
 	if err := a.persistRuntimeState(true); err != nil {
-		a.rollbackRuntime(ctx, previousApplied)
+		a.rollbackRuntime(ctx, candidateApplied, previousApplied)
 		_ = a.store.SaveAppliedSnapshot(previousApplied)
-		return a.recordPersistedRuntimeError(err)
+		return a.recordPersistedRuntimeErrorWithRevision(err, candidateApplied.Revision)
 	}
 	return nil
 }
 
 func (a *App) recordRuntimeError(syncErr error) error {
+	return a.recordRuntimeErrorWithRevision(syncErr, a.runtime.ActiveSnapshot().Revision)
+}
+
+func (a *App) recordRuntimeErrorWithRevision(syncErr error, revision int64) error {
 	state, err := a.runtimeStateForPersistence()
 	if err != nil {
 		return syncErr
 	}
 	state.Metadata = ensureMetadata(state.Metadata)
 	state.Metadata["last_sync_error"] = syncErr.Error()
+	setApplyMetadata(state.Metadata, revision, "error", syncErr.Error())
 	if err := a.store.SaveRuntimeState(state); err != nil {
 		return syncErr
 	}
@@ -247,6 +291,7 @@ func (a *App) persistRuntimeState(clearLastSyncError bool) error {
 		return err
 	}
 	state.Metadata = ensureMetadata(state.Metadata)
+	setApplyMetadata(state.Metadata, a.runtime.ActiveSnapshot().Revision, "success", "")
 	if clearLastSyncError {
 		delete(state.Metadata, "last_sync_error")
 	}
@@ -261,8 +306,18 @@ func (a *App) recordPersistedRuntimeError(syncErr error) error {
 	if err != nil {
 		return syncErr
 	}
+	currentRevision := parseInt64(state.Metadata["current_revision"], state.CurrentRevision)
+	return a.recordPersistedRuntimeErrorWithRevision(syncErr, currentRevision)
+}
+
+func (a *App) recordPersistedRuntimeErrorWithRevision(syncErr error, revision int64) error {
+	state, err := a.store.LoadRuntimeState()
+	if err != nil {
+		return syncErr
+	}
 	state.Metadata = ensureMetadata(state.Metadata)
 	state.Metadata["last_sync_error"] = syncErr.Error()
+	setApplyMetadata(state.Metadata, revision, "error", syncErr.Error())
 	if err := a.store.SaveRuntimeState(state); err != nil {
 		return syncErr
 	}
@@ -274,6 +329,20 @@ func ensureMetadata(meta map[string]string) map[string]string {
 		return make(map[string]string)
 	}
 	return meta
+}
+
+func setApplyMetadata(meta map[string]string, revision int64, status string, message string) {
+	meta["last_apply_revision"] = strconv.FormatInt(revision, 10)
+	meta["last_apply_status"] = status
+	meta["last_apply_message"] = message
+}
+
+func parseInt64(raw string, fallback int64) int64 {
+	value, err := strconv.ParseInt(strings.TrimSpace(raw), 10, 64)
+	if err != nil {
+		return fallback
+	}
+	return value
 }
 
 func (a *App) runtimeStateForPersistence() (store.RuntimeState, error) {
@@ -336,41 +405,11 @@ func mergeSnapshotPayload(next, previous Snapshot) Snapshot {
 	return merged
 }
 
-func (a *App) activateSnapshot(ctx context.Context, previous, next Snapshot) error {
-	if certificatesChanged(previous, next) {
-		if err := a.applyManagedCertificates(ctx, next); err != nil {
-			return err
-		}
-	}
-	if !reflect.DeepEqual(previous.Rules, next.Rules) || httpRelayInputsChanged(previous, next) {
-		if err := a.applyHTTPRules(ctx, next); err != nil {
-			return err
-		}
-	}
-	if !reflect.DeepEqual(previous.RelayListeners, next.RelayListeners) {
-		if err := a.applyRelayListeners(ctx, next); err != nil {
-			return err
-		}
-	}
-	if !reflect.DeepEqual(previous.L4Rules, next.L4Rules) || l4RelayInputsChanged(previous, next) {
-		if err := a.applyL4Rules(ctx, next); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func certificatesChanged(previous, next Snapshot) bool {
-	return !reflect.DeepEqual(previous.Certificates, next.Certificates) ||
-		!reflect.DeepEqual(previous.CertificatePolicies, next.CertificatePolicies)
-}
-
-func (a *App) rollbackRuntime(ctx context.Context, previousApplied Snapshot) {
-	currentApplied := a.runtime.ActiveSnapshot()
-	if reflect.DeepEqual(currentApplied, previousApplied) {
+func (a *App) rollbackRuntime(ctx context.Context, previousApplied, targetApplied Snapshot) {
+	if reflect.DeepEqual(previousApplied, targetApplied) {
 		return
 	}
-	_ = a.runtime.Apply(ctx, currentApplied, previousApplied)
+	_ = a.runtime.Rollback(ctx, previousApplied, targetApplied)
 }
 
 func (a *App) applyL4Rules(ctx context.Context, snapshot Snapshot) error {
@@ -390,28 +429,32 @@ func (a *App) applyRelayListeners(ctx context.Context, snapshot Snapshot) error 
 	return a.relayApplier.Apply(ctx, localRelayListeners(snapshot.RelayListeners, a.cfg.AgentID, a.cfg.AgentName))
 }
 
-func httpRelayInputsChanged(previous, next Snapshot) bool {
-	if reflect.DeepEqual(previous.RelayListeners, next.RelayListeners) {
-		return false
+func (a *App) snapshotActivationHandlers() agentruntime.SnapshotActivationHandlers {
+	return agentruntime.SnapshotActivationHandlers{
+		ActivateManagedCertificates: func(ctx context.Context, bundles []model.ManagedCertificateBundle, policies []model.ManagedCertificatePolicy) error {
+			return a.applyManagedCertificates(ctx, Snapshot{
+				Certificates:        bundles,
+				CertificatePolicies: policies,
+			})
+		},
+		ActivateHTTPRules: func(ctx context.Context, rules []model.HTTPRule, relayListeners []model.RelayListener) error {
+			return a.applyHTTPRules(ctx, Snapshot{
+				Rules:          rules,
+				RelayListeners: relayListeners,
+			})
+		},
+		ActivateRelayListeners: func(ctx context.Context, relayListeners []model.RelayListener) error {
+			return a.applyRelayListeners(ctx, Snapshot{
+				RelayListeners: relayListeners,
+			})
+		},
+		ActivateL4Rules: func(ctx context.Context, rules []model.L4Rule, relayListeners []model.RelayListener) error {
+			return a.applyL4Rules(ctx, Snapshot{
+				L4Rules:        rules,
+				RelayListeners: relayListeners,
+			})
+		},
 	}
-	for _, rule := range next.Rules {
-		if len(rule.RelayChain) > 0 {
-			return true
-		}
-	}
-	return false
-}
-
-func l4RelayInputsChanged(previous, next Snapshot) bool {
-	if reflect.DeepEqual(previous.RelayListeners, next.RelayListeners) {
-		return false
-	}
-	for _, rule := range next.L4Rules {
-		if len(rule.RelayChain) > 0 {
-			return true
-		}
-	}
-	return false
 }
 
 func localRelayListeners(listeners []model.RelayListener, agentID, agentName string) []model.RelayListener {
@@ -433,6 +476,9 @@ func localRelayListeners(listeners []model.RelayListener, agentID, agentName str
 }
 
 func (a *App) closeLocalRuntimes() {
+	if closer, ok := a.certApplier.(certCloser); ok {
+		_ = closer.Close()
+	}
 	if a.httpApplier != nil {
 		_ = a.httpApplier.Close()
 	}

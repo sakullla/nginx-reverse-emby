@@ -28,7 +28,11 @@ type Client struct {
 }
 
 type SyncRequest struct {
-	CurrentRevision int
+	CurrentRevision           int
+	LastApplyRevision         int
+	LastApplyStatus           string
+	LastApplyMessage          string
+	ManagedCertificateReports []model.ManagedCertificateReport
 }
 
 func NewClient(cfg ClientConfig, httpClient *http.Client) *Client {
@@ -41,11 +45,15 @@ func NewClient(cfg ClientConfig, httpClient *http.Client) *Client {
 
 func (c *Client) Sync(ctx context.Context, request SyncRequest) (Snapshot, error) {
 	payload := struct {
-		Name            string `json:"name"`
-		AgentID         string `json:"agent_id"`
-		CurrentRevision int    `json:"current_revision"`
-		Version         string `json:"version"`
-		Platform        string `json:"platform"`
+		Name                      string                           `json:"name"`
+		AgentID                   string                           `json:"agent_id"`
+		CurrentRevision           int                              `json:"current_revision"`
+		LastApplyRevision         int                              `json:"last_apply_revision"`
+		LastApplyStatus           string                           `json:"last_apply_status"`
+		LastApplyMessage          string                           `json:"last_apply_message"`
+		ManagedCertificateReports []model.ManagedCertificateReport `json:"managed_certificate_reports"`
+		Version                   string                           `json:"version"`
+		Platform                  string                           `json:"platform"`
 	}{
 		Name:     c.cfg.AgentName,
 		AgentID:  c.cfg.AgentID,
@@ -53,6 +61,10 @@ func (c *Client) Sync(ctx context.Context, request SyncRequest) (Snapshot, error
 		Platform: c.cfg.Platform,
 	}
 	payload.CurrentRevision = request.CurrentRevision
+	payload.LastApplyRevision = request.LastApplyRevision
+	payload.LastApplyStatus = request.LastApplyStatus
+	payload.LastApplyMessage = request.LastApplyMessage
+	payload.ManagedCertificateReports = request.ManagedCertificateReports
 
 	data, err := json.Marshal(payload)
 	if err != nil {

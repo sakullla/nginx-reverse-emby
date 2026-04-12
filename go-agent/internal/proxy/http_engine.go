@@ -115,9 +115,9 @@ func passProxyHeaders(req *http.Request, incomingHost, incomingScheme string) ma
 	}
 	if host != "" {
 		values["X-Forwarded-Host"] = host
-		if _, port, err := net.SplitHostPort(host); err == nil {
-			values["X-Forwarded-Port"] = port
-		}
+	}
+	if port := forwardedPort(host, req, incomingScheme); port != "" {
+		values["X-Forwarded-Port"] = port
 	}
 	ip := clientIP(req.RemoteAddr)
 	if ip != "" {
@@ -130,6 +130,30 @@ func passProxyHeaders(req *http.Request, incomingHost, incomingScheme string) ma
 	}
 	values["X-Forwarded-Proto"] = scheme
 	return values
+}
+
+func forwardedPort(host string, req *http.Request, incomingScheme string) string {
+	if _, port, err := net.SplitHostPort(strings.TrimSpace(host)); err == nil && port != "" {
+		return port
+	}
+	if req != nil {
+		if localAddr, ok := req.Context().Value(http.LocalAddrContextKey).(net.Addr); ok {
+			if _, port, err := net.SplitHostPort(localAddr.String()); err == nil && port != "" {
+				return port
+			}
+		}
+		if req.URL != nil && req.URL.Port() != "" {
+			return req.URL.Port()
+		}
+	}
+	scheme := strings.ToLower(strings.TrimSpace(incomingScheme))
+	if scheme == "" {
+		scheme = requestScheme(req)
+	}
+	if scheme == "https" {
+		return "443"
+	}
+	return "80"
 }
 
 func clientIP(remoteAddr string) string {

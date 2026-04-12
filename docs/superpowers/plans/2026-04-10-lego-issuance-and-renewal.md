@@ -4,9 +4,9 @@
 
 **Goal:** Replace `acme.sh` with Go-native lego issuance and automatic renewal for the current HTTP-01 and Cloudflare DNS-01 certificate paths.
 
-**Architecture:** Keep certificate material handling in `go-agent/internal/certs` and add explicit issuance state + renewal scheduling instead of shelling out. Local HTTP-01 renewal runs inside the runtime process; centralized Cloudflare DNS-01 issuance and renewal runs inside the control-plane service and writes the same managed-certificate state back into the shared store.
+**Architecture:** Keep certificate material handling in `go-agent/internal/certs` and add explicit issuance state + renewal scheduling instead of shelling out. Local HTTP-01 renewal runs inside the runtime process; centralized Cloudflare DNS-01 issuance and renewal runs inside `panel/backend-go` and writes the same managed-certificate state back into the shared store.
 
-**Tech Stack:** Go 1.24, lego v4, existing `internal/certs`, shared control-plane store, cert material provider.
+**Tech Stack:** Go 1.24, lego v4, existing `go-agent/internal/certs`, `panel/backend-go`, cert material provider.
 
 ---
 
@@ -16,13 +16,13 @@
 - `go-agent/internal/certs/renewal.go`
 - `go-agent/internal/certs/renewal_test.go`
 - `go-agent/internal/certs/acme_state.go`
-- `go-agent/internal/controlplane/service/cert_renewal.go`
-- `go-agent/internal/controlplane/service/certs_test.go`
+- `panel/backend-go/internal/controlplane/service/cert_renewal.go`
+- `panel/backend-go/internal/controlplane/service/certs_test.go`
 
 **Modify**
 - `go-agent/internal/certs/manager.go`
 - `go-agent/internal/certs/acme_lego.go`
-- `go-agent/internal/controlplane/service/certs.go`
+- `panel/backend-go/internal/controlplane/service/certs.go`
 - `go-agent/internal/model/certificates.go`
 
 ### Task 1: Persist ACME account and renewal metadata in Go-managed state
@@ -155,9 +155,9 @@ git commit -m "feat(certs): add automatic local http-01 renewal"
 ### Task 3: Add centralized Cloudflare DNS-01 issuance and renewal in the control-plane
 
 **Files:**
-- Create: `go-agent/internal/controlplane/service/cert_renewal.go`
-- Modify: `go-agent/internal/controlplane/service/certs.go`
-- Test: `go-agent/internal/controlplane/service/certs_test.go`
+- Create: `panel/backend-go/internal/controlplane/service/cert_renewal.go`
+- Modify: `panel/backend-go/internal/controlplane/service/certs.go`
+- Test: `panel/backend-go/internal/controlplane/service/certs_test.go`
 
 - [ ] **Step 1: Write the failing control-plane renewal test**
 
@@ -185,7 +185,7 @@ func TestCertificateServiceRenewsCloudflareManagedCert(t *testing.T) {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `cd go-agent && go test ./internal/controlplane/service -run TestCertificateServiceRenewsCloudflareManagedCert -v`
+Run: `cd panel/backend-go && go test ./internal/controlplane/service -run TestCertificateServiceRenewsCloudflareManagedCert -v`
 Expected: FAIL with `RunRenewalPass undefined`
 
 - [ ] **Step 3: Implement renewal pass and state write-back**
@@ -215,12 +215,15 @@ func (s *CertificateService) RunRenewalPass(ctx context.Context) error {
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `cd go-agent && go test ./internal/controlplane/service ./internal/certs -v`
+Run: `cd panel/backend-go && go test ./internal/controlplane/service -v`
+Expected: PASS
+
+Run: `cd ..\\..\\go-agent && go test ./internal/certs -v`
 Expected: PASS
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add go-agent/internal/controlplane/service/cert_renewal.go go-agent/internal/controlplane/service/certs.go go-agent/internal/controlplane/service/certs_test.go
+git add panel/backend-go/internal/controlplane/service/cert_renewal.go panel/backend-go/internal/controlplane/service/certs.go panel/backend-go/internal/controlplane/service/certs_test.go
 git commit -m "feat(control-plane): add centralized dns-01 issuance and renewal"
 ```

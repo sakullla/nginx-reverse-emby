@@ -52,14 +52,14 @@
 
 纯 Go 主路径由三块组成：
 
-1. Go control-plane server
+1. `panel/backend-go` Go control-plane server
 2. master 内置 local agent runtime
 3. remote `nre-agent`
 
 对外形态如下：
 
 - Vue SPA 继续作为唯一管理 UI。
-- Go control-plane server 提供前端静态文件、管理 API、agent API、资产发布与状态编排。
+- `panel/backend-go` 提供前端静态文件、管理 API、agent API、资产发布与状态编排。
 - master 容器内部默认带本地 agent 能力，可直接承载本机 HTTP/L4/TLS/relay 运行时。
 - 远端机器继续通过独立 Go agent 接受快照、执行运行时变更、完成版本更新。
 
@@ -71,7 +71,7 @@
 
 ## 4. Go 控制面设计
 
-Go 控制面是单一服务，但内部拆为五层。
+Go 控制面位于 `panel/backend-go/`，作为独立于 `go-agent/` 的控制面实现存在。`go-agent/` 继续只承担执行面职责。控制面内部拆为五层。
 
 ### 4.1 HTTP 层
 
@@ -104,7 +104,7 @@ Go 控制面是单一服务，但内部拆为五层。
 
 职责：
 
-- 以 Go repository 方式替代 Node `storage.js` / `storage-sqlite.js`
+- 以 `panel/backend-go` 内的 Go repository 方式替代 Node `storage.js` / `storage-sqlite.js`
 - 直接读写现有主路径持久化结构
 - 维护现有 revision 语义和对象边界
 
@@ -199,7 +199,7 @@ JSON backend 不作为纯 Go 版本主路径目标。即使保留测试或降级
 
 ## 6. 执行面设计
 
-Go agent 升级为唯一数据面 runtime。Nginx 不再参与主路径 HTTP/L4/TLS/relay 转发。
+`go-agent/` 升级为唯一数据面 runtime。Nginx 不再参与主路径 HTTP/L4/TLS/relay 转发。
 
 ### 6.1 HTTP Runtime
 
@@ -412,7 +412,7 @@ Go agent 升级为唯一数据面 runtime。Nginx 不再参与主路径 HTTP/L4/
 
 后续 implementation plan 需要按下列子系统拆分：
 
-1. Go control-plane HTTP/API compatibility
+1. `panel/backend-go` HTTP/API compatibility
 2. Go storage facade 与现有 SQLite schema 兼容
 3. master 内置 local agent runtime
 4. remote agent runtime 完整替换 Nginx 数据面

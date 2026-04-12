@@ -13,7 +13,9 @@ services:
       PANEL_ROLE: master
       PANEL_BACKEND_HOST: 0.0.0.0
       PANEL_BACKEND_PORT: "8080"
-      MASTER_LOCAL_AGENT_ENABLED: "0"
+      NRE_ENABLE_LOCAL_AGENT: "1"
+      NRE_LOCAL_AGENT_ID: local
+      NRE_LOCAL_AGENT_NAME: local
 
       API_TOKEN: change-this-token
       MASTER_REGISTER_TOKEN: change-this-register-token

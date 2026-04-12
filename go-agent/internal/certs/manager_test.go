@@ -9,13 +9,17 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/hex"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"math/big"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
+
+	"github.com/go-acme/lego/v4/registration"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
@@ -53,6 +57,52 @@ func TestFingerprintFromPEMRejectsExtraDataAfterCertificate(t *testing.T) {
 
 	if _, err := FingerprintFromPEM(withExtra); err == nil {
 		t.Fatal("expected extra data after certificate pem to fail")
+	}
+}
+
+func TestManagedCertificateReportsExposeLocalHTTP01MaterialState(t *testing.T) {
+	material := mustCreateTLSMaterial(t, certificateSpec{commonName: "sync.example.com"})
+	manager := mustNewManager(t, t.TempDir())
+
+	err := manager.Apply(context.Background(), []model.ManagedCertificateBundle{{
+		ID:       21,
+		Domain:   "sync.example.com",
+		Revision: 3,
+		CertPEM:  string(material.CertPEM),
+		KeyPEM:   string(material.KeyPEM),
+	}}, []model.ManagedCertificatePolicy{{
+		ID:              21,
+		Domain:          "sync.example.com",
+		Enabled:         true,
+		Scope:           "domain",
+		IssuerMode:      "local_http01",
+		Status:          "pending",
+		Revision:        3,
+		Usage:           "https",
+		CertificateType: "uploaded",
+		ACMEInfo: model.ManagedCertificateACMEInfo{
+			MainDomain: "sync.example.com",
+		},
+	}})
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+
+	reports, err := manager.ManagedCertificateReports(context.Background())
+	if err != nil {
+		t.Fatalf("ManagedCertificateReports() error = %v", err)
+	}
+	if len(reports) != 1 {
+		t.Fatalf("len(reports) = %d", len(reports))
+	}
+	if reports[0].ID != 21 || reports[0].Status != "active" {
+		t.Fatalf("unexpected report metadata: %+v", reports[0])
+	}
+	if reports[0].MaterialHash != hashManagedCertificateMaterial(material.CertPEM, material.KeyPEM) {
+		t.Fatalf("unexpected material hash: %+v", reports[0])
+	}
+	if reports[0].ACMEInfo.MainDomain != "sync.example.com" {
+		t.Fatalf("unexpected ACME info: %+v", reports[0].ACMEInfo)
 	}
 }
 
@@ -720,6 +770,224 @@ func TestManagerApplyPersistsLocallyIssuedACMEMaterialAcrossRecreation(t *testin
 	}
 }
 
+func TestManagedCertificateStateRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	manager := mustNewManager(t, t.TempDir())
+	certificateID := 9051
+	expected := managedCertificateState{
+		LocalMetadata: localMaterialMetadata{
+			Domain:          "state-roundtrip.example.com",
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			CertificateType: "acme",
+		},
+		ACME: &model.ManagedCertificateACMEState{
+			Account: model.ManagedCertificateACMEAccountState{
+				KeyPEM:       []byte("account-key"),
+				Registration: json.RawMessage(`{"uri":"https://acme-v02.api.letsencrypt.org/acme/acct/12345"}`),
+			},
+			Renewal: model.ManagedCertificateACMERenewalState{
+				NotAfterUnix:        1924905600,
+				RenewAtUnix:         1924041600,
+				LastRenewedAtUnix:   1921453200,
+				LastAttemptAtUnix:   1921453500,
+				LastAttemptError:    "rate-limited",
+				LastAttemptStatus:   "failed",
+				LastAttemptNotAfter: 1924905600,
+			},
+		},
+	}
+
+	if err := manager.saveManagedCertificateState(certificateID, expected); err != nil {
+		t.Fatalf("save managed certificate state failed: %v", err)
+	}
+
+	actual, ok, err := manager.loadManagedCertificateState(certificateID)
+	if err != nil {
+		t.Fatalf("load managed certificate state failed: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected managed certificate state to exist")
+	}
+	if !reflect.DeepEqual(actual, expected) {
+		t.Fatalf("managed certificate state mismatch: got %#v want %#v", actual, expected)
+	}
+}
+
+func TestManagerApplyReusesManagedACMEStateOnRecreation(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC)
+	first := mustCreateTLSMaterial(t, certificateSpec{
+		commonName: "managed-state.example.com",
+		notBefore:  now.Add(-24 * time.Hour),
+		notAfter:   now.Add(2 * time.Hour),
+	})
+	second := mustCreateTLSMaterial(t, certificateSpec{
+		commonName: "managed-state.example.com",
+		notBefore:  now.Add(-time.Hour),
+		notAfter:   now.Add(90 * 24 * time.Hour),
+	})
+	initialAccountKey := []byte("acme-account-key")
+	initialRegistration := &registration.Resource{
+		URI: "https://acme-v02.api.letsencrypt.org/acme/acct/4242",
+	}
+	dataDir := t.TempDir()
+	policy := model.ManagedCertificatePolicy{
+		ID:              9052,
+		Domain:          "managed-state.example.com",
+		Enabled:         true,
+		Scope:           "domain",
+		IssuerMode:      "local_http01",
+		CertificateType: "acme",
+		Usage:           "https",
+	}
+
+	initialManager := mustNewManager(
+		t,
+		dataDir,
+		withNow(func() time.Time { return now }),
+		withRenewBefore(24*time.Hour),
+		withACMEIssuerFactory(func(request acmeIssueRequest) (acmeIssuer, error) {
+			return &fakeACMEIssuer{
+				results: []acmeIssueResult{
+					{
+						CertPEM:       first.CertPEM,
+						KeyPEM:        first.KeyPEM,
+						AccountKeyPEM: initialAccountKey,
+						Registration:  initialRegistration,
+					},
+				},
+			}, nil
+		}),
+	)
+	if err := initialManager.Apply(context.Background(), nil, []model.ManagedCertificatePolicy{policy}); err != nil {
+		t.Fatalf("initial apply failed: %v", err)
+	}
+
+	materialDir := filepath.Join(dataDir, "certs", "managed", "9052")
+	if _, err := os.Stat(filepath.Join(materialDir, managedCertificateStateFileName)); err != nil {
+		t.Fatalf("expected managed state file to exist: %v", err)
+	}
+	managedState, ok, err := initialManager.loadManagedCertificateState(9052)
+	if err != nil {
+		t.Fatalf("load managed state failed: %v", err)
+	}
+	if !ok || managedState.ACME == nil {
+		t.Fatal("expected managed acme state to exist")
+	}
+	if got := string(managedState.ACME.Account.KeyPEM); got != string(initialAccountKey) {
+		t.Fatalf("expected managed state account key, got %q", got)
+	}
+	if managedState.ACME.Renewal.NotAfterUnix == 0 || managedState.ACME.Renewal.RenewAtUnix == 0 {
+		t.Fatalf("expected renewal metadata to be persisted, got %+v", managedState.ACME.Renewal)
+	}
+
+	for _, name := range []string{"acme_account_key.pem", "acme_registration.json", "local_metadata.json"} {
+		if err := os.Remove(filepath.Join(materialDir, name)); err != nil && !os.IsNotExist(err) {
+			t.Fatalf("remove legacy acme state file %s failed: %v", name, err)
+		}
+	}
+
+	recreatedFake := &fakeACMEIssuer{
+		results: []acmeIssueResult{
+			{
+				CertPEM: second.CertPEM,
+				KeyPEM:  second.KeyPEM,
+			},
+		},
+	}
+	recreated := mustNewManager(
+		t,
+		dataDir,
+		withNow(func() time.Time { return now }),
+		withRenewBefore(24*time.Hour),
+		withACMEIssuerFactory(func(request acmeIssueRequest) (acmeIssuer, error) {
+			return recreatedFake, nil
+		}),
+	)
+	if err := recreated.Apply(context.Background(), nil, []model.ManagedCertificatePolicy{policy}); err != nil {
+		t.Fatalf("recreated apply failed: %v", err)
+	}
+
+	if len(recreatedFake.requests) != 1 {
+		t.Fatalf("expected one issuance call after recreation, got %d", len(recreatedFake.requests))
+	}
+	if got := string(recreatedFake.requests[0].AccountKeyPEM); got != string(initialAccountKey) {
+		t.Fatalf("expected account key from managed state, got %q", got)
+	}
+	if recreatedFake.requests[0].Registration == nil || recreatedFake.requests[0].Registration.URI != initialRegistration.URI {
+		t.Fatalf("expected registration from managed state, got %+v", recreatedFake.requests[0].Registration)
+	}
+}
+
+func TestManagerApplyFallsBackToLegacyMetadataWhenManagedMetadataIsPartial(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 4, 10, 12, 0, 0, 0, time.UTC)
+	issued := mustCreateTLSMaterial(t, certificateSpec{
+		commonName: "partial-managed-metadata.example.com",
+		notBefore:  now.Add(-time.Hour),
+		notAfter:   now.Add(90 * 24 * time.Hour),
+	})
+	dataDir := t.TempDir()
+	policy := model.ManagedCertificatePolicy{
+		ID:              9053,
+		Domain:          "partial-managed-metadata.example.com",
+		Enabled:         true,
+		Scope:           "domain",
+		IssuerMode:      "local_http01",
+		CertificateType: "acme",
+		Usage:           "https",
+	}
+
+	initial := mustNewManager(
+		t,
+		dataDir,
+		withNow(func() time.Time { return now }),
+		withACMEIssuerFactory(func(request acmeIssueRequest) (acmeIssuer, error) {
+			return &fakeACMEIssuer{
+				results: []acmeIssueResult{
+					{CertPEM: issued.CertPEM, KeyPEM: issued.KeyPEM},
+				},
+			}, nil
+		}),
+	)
+	if err := initial.Apply(context.Background(), nil, []model.ManagedCertificatePolicy{policy}); err != nil {
+		t.Fatalf("initial apply failed: %v", err)
+	}
+
+	if err := initial.saveManagedCertificateState(policy.ID, managedCertificateState{
+		LocalMetadata: localMaterialMetadata{
+			Domain: policy.Domain,
+		},
+	}); err != nil {
+		t.Fatalf("write partial managed metadata failed: %v", err)
+	}
+
+	recreatedIssuerCalls := 0
+	recreated := mustNewManager(
+		t,
+		dataDir,
+		withNow(func() time.Time { return now }),
+		withACMEIssuerFactory(func(request acmeIssueRequest) (acmeIssuer, error) {
+			recreatedIssuerCalls++
+			return &fakeACMEIssuer{
+				results: []acmeIssueResult{
+					{Err: assertUnreachableError{message: "issuer should not be called when legacy metadata is complete"}},
+				},
+			}, nil
+		}),
+	)
+	if err := recreated.Apply(context.Background(), nil, []model.ManagedCertificatePolicy{policy}); err != nil {
+		t.Fatalf("recreated apply failed: %v", err)
+	}
+	if recreatedIssuerCalls != 0 {
+		t.Fatalf("expected zero issuer calls, got %d", recreatedIssuerCalls)
+	}
+}
+
 func TestManagerApplyRegeneratesInternalCAWhenPolicyDomainChanges(t *testing.T) {
 	t.Parallel()
 
@@ -898,15 +1166,18 @@ func TestManagerApplyRecoversFromCorruptPersistedACMEMetadata(t *testing.T) {
 	if err := manager.Apply(context.Background(), nil, []model.ManagedCertificatePolicy{policy}); err != nil {
 		t.Fatalf("initial apply failed: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(dataDir, "certs", "managed", "554", managedCertificateStateFileName), []byte("{not-json"), 0600); err != nil {
+		t.Fatalf("corrupt managed state write failed: %v", err)
+	}
 	if err := os.WriteFile(filepath.Join(dataDir, "certs", "managed", "554", "local_metadata.json"), []byte("{not-json"), 0600); err != nil {
-		t.Fatalf("corrupt metadata write failed: %v", err)
+		t.Fatalf("corrupt legacy metadata write failed: %v", err)
 	}
 
 	if err := manager.Apply(context.Background(), nil, []model.ManagedCertificatePolicy{policy}); err != nil {
 		t.Fatalf("recovery apply failed: %v", err)
 	}
 	if len(fake.requests) != 2 {
-		t.Fatalf("expected corrupt persisted metadata to trigger reissuance, got %d calls", len(fake.requests))
+		t.Fatalf("expected corrupt managed state to trigger reissuance, got %d calls", len(fake.requests))
 	}
 	info, err := manager.CertificateInfo(554)
 	if err != nil {
