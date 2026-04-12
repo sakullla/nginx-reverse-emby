@@ -71,7 +71,7 @@
             </div>
             <div class="join-command">
               <code>{{ getCurrentCommand() }}</code>
-              <button class="btn btn-primary btn-sm" @click="copyCommand">复制</button>
+              <button class="btn btn-primary btn-sm" :class="{ 'btn--copied': copied }" @click="copyCommand">{{ copied ? '已复制' : '复制' }}</button>
             </div>
             <ol class="join-steps">
               <li v-for="step in getCurrentSteps()" :key="step">{{ step }}</li>
@@ -119,6 +119,7 @@ import { useAgents, useRenameAgent, useDeleteAgent } from '../hooks/useAgents'
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
 import { fetchSystemInfo, applyConfig } from '../api'
 import { useAgent } from '../context/AgentContext'
+import { messageStore } from '../stores/messages'
 
 const router = useRouter()
 const { selectedAgentId } = useAgent()
@@ -130,6 +131,7 @@ const agents = computed(() => data.value ?? [])
 
 const showJoinModal = ref(false)
 const selectedPlatform = ref('linux')
+const copied = ref(false)
 const renamingAgent = ref(null)
 const newAgentName = ref('')
 const deletingAgent = ref(null)
@@ -227,10 +229,12 @@ async function copyCommand() {
       document.body.removeChild(textarea)
       if (!success) throw new Error('execCommand failed')
     }
-    alert('已复制到剪贴板')
+    messageStore.success('已复制到剪贴板')
+    copied.value = true
+    setTimeout(() => { copied.value = false }, 1500)
   } catch (err) {
     console.error('Copy failed:', err)
-    alert('复制失败，请手动选择复制')
+    messageStore.error('复制失败，请手动选择复制')
   }
 }
 
