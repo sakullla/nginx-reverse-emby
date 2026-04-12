@@ -125,8 +125,11 @@ func TestHTTPRuntimeAppliesHostHeadersProxyRedirectAndRoundRobin(t *testing.T) {
 	if headers.ForwardedProto != "http" {
 		t.Fatalf("expected X-Forwarded-Proto=http, got %q", headers.ForwardedProto)
 	}
-	if headers.ForwardedPort != strconv.Itoa(frontendPort) {
-		t.Fatalf("expected X-Forwarded-Port=%d, got %q", frontendPort, headers.ForwardedPort)
+	// When the incoming Host header does not contain a port, X-Forwarded-Port
+	// should default to the scheme default (80 for HTTP) rather than the
+	// internal listener port.
+	if headers.ForwardedPort != "80" {
+		t.Fatalf("expected X-Forwarded-Port=80, got %q", headers.ForwardedPort)
 	}
 }
 

@@ -136,15 +136,8 @@ func forwardedPort(host string, req *http.Request, incomingScheme string) string
 	if _, port, err := net.SplitHostPort(strings.TrimSpace(host)); err == nil && port != "" {
 		return port
 	}
-	if req != nil {
-		if localAddr, ok := req.Context().Value(http.LocalAddrContextKey).(net.Addr); ok {
-			if _, port, err := net.SplitHostPort(localAddr.String()); err == nil && port != "" {
-				return port
-			}
-		}
-		if req.URL != nil && req.URL.Port() != "" {
-			return req.URL.Port()
-		}
+	if req != nil && req.URL != nil && req.URL.Port() != "" {
+		return req.URL.Port()
 	}
 	scheme := strings.ToLower(strings.TrimSpace(incomingScheme))
 	if scheme == "" {
