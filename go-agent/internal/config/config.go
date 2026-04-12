@@ -9,21 +9,21 @@ import (
 )
 
 const (
-	defaultAgentID        = "linux-agent"
-	defaultAgentName      = "linux-agent"
-	defaultDataDir        = "/var/lib/nre-agent"
-	defaultHeartbeat      = 30 * time.Second
-	defaultAgentVersion   = "0.0.0"
+	defaultAgentID      = "linux-agent"
+	defaultAgentName    = "linux-agent"
+	defaultDataDir      = "/var/lib/nre-agent"
+	defaultHeartbeat    = 10 * time.Second
+	defaultAgentVersion = "0.0.0"
 )
 
 type Config struct {
-	AgentID          string
-	AgentName        string
-	AgentToken       string
-	MasterURL        string
-	DataDir          string
-	HeartbeatInterval time.Duration
-	CurrentVersion   string
+	AgentID              string
+	AgentName            string
+	AgentToken           string
+	MasterURL            string
+	DataDir              string
+	HeartbeatInterval    time.Duration
+	CurrentVersion       string
 	RuntimePackageSHA256 string
 }
 

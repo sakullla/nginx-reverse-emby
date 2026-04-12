@@ -27,7 +27,7 @@ func TestLoadFromEnv(t *testing.T) {
 	if cfg.DataDir != "/tmp/nre-data" {
 		t.Fatalf("expected data directory from env, got %q", cfg.DataDir)
 	}
-	if cfg.HeartbeatInterval != 30*time.Second {
+	if cfg.HeartbeatInterval != 10*time.Second {
 		t.Fatalf("expected default heartbeat, got %v", cfg.HeartbeatInterval)
 	}
 }
