@@ -37,7 +37,7 @@ This is preferred over extending existing `go-agent/internal/app/local_runtime_t
 The test harness will assemble these components inside a single test process:
 
 1. A synthetic `dataDir` containing:
-   - SQLite `panel.db`
+   - SQLite `panel.db` created through the Go control-plane GORM schema path
    - managed certificate material directories
    - initial local runtime state
 2. The Go control plane using `panel/backend-go`
@@ -52,7 +52,13 @@ The tests will not mock traffic. They will exercise real listeners opened by the
 
 The synthetic fixture is built explicitly during each test run rather than copied from any external snapshot. Each test gets an isolated temporary `dataDir`.
 
-The fixture must populate at least these persisted entities:
+Schema ownership for the fixture is Go-only:
+
+- the fixture builder must initialize `panel.db` through a shared GORM-owned schema/bootstrap helper from `panel/backend-go/internal/controlplane/storage`
+- the Go/GORM model layer is the single schema source of truth for fresh test databases
+- hand-written SQL baselines under `panel/backend-go/internal/controlplane/storage/testdata/` are transitional only and should be removed as part of this work
+
+The fixture must populate at least these persisted entities after the GORM schema/bootstrap step:
 
 - `agents`
   - one local agent row for `local`
@@ -160,7 +166,8 @@ The implementation should live in a focused test-only package tree:
 
 - `panel/backend-go/internal/controlplane/cutover/fixture_builder.go`
   - builds the synthetic `dataDir`
-  - writes SQLite rows and certificate materials
+  - initializes `panel.db` through the shared GORM schema/bootstrap helper
+  - writes fixture rows through GORM-backed storage helpers plus certificate materials
   - returns useful IDs, ports, and expected revisions
 - `panel/backend-go/internal/controlplane/cutover/runtime_harness.go`
   - starts control-plane dependencies and embedded local agent in-process
@@ -178,12 +185,25 @@ This layout keeps fixture generation, harness lifecycle, and test assertions sep
 The tests should reuse existing production code rather than reimplementing behavior:
 
 - `storage.NewSQLiteStore`
+- the shared GORM schema/bootstrap helper used by `storage.NewSQLiteStore`
 - control-plane app/router wiring
 - embedded local-agent startup path
 - `relay.Dial`
 - existing Go runtime behavior for HTTP/L4/relay listeners
 
 The tests must not introduce a second implementation path just for verification.
+
+## Storage Fixture Migration Requirement
+
+As part of this phase, the storage compatibility fixture path must stop depending on hand-written SQL files as the long-term baseline.
+
+Required outcome:
+
+- `panel/backend-go/internal/controlplane/storage/sqlite_store_test.go` seeds fixture databases through the same shared GORM schema/bootstrap helper used by production
+- `panel/backend-go/internal/controlplane/storage/testdata/schema_base.sql`
+- `panel/backend-go/internal/controlplane/storage/testdata/schema_migrations.sql`
+
+These SQL files may remain only transiently while the migration is in flight. The end state for this phase is Go/GORM-owned schema creation for storage tests and cutover tests alike.
 
 ## Port And Lifecycle Rules
 
