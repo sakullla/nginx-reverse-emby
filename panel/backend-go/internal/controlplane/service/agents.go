@@ -42,33 +42,33 @@ type agentStore interface {
 }
 
 type AgentSummary struct {
-	ID                string   `json:"id"`
-	Name              string   `json:"name"`
-	AgentURL          string   `json:"agent_url"`
-	Version           string   `json:"version"`
-	Platform          string   `json:"platform"`
-	RuntimePackageVersion string `json:"runtime_package_version"`
-	RuntimePackagePlatform string `json:"runtime_package_platform"`
-	RuntimePackageArch string `json:"runtime_package_arch"`
-	RuntimePackageSHA256 string `json:"runtime_package_sha256"`
-	DesiredPackageSHA256 string `json:"desired_package_sha256"`
-	PackageSyncStatus string `json:"package_sync_status"`
-	DesiredVersion    string   `json:"desired_version"`
-	Tags              []string `json:"tags"`
-	Mode              string   `json:"mode"`
-	DesiredRevision   int      `json:"desired_revision"`
-	CurrentRevision   int      `json:"current_revision"`
-	LastApplyRevision int      `json:"last_apply_revision"`
-	LastApplyStatus   string   `json:"last_apply_status"`
-	LastApplyMessage  string   `json:"last_apply_message"`
-	LastSeenAt        string   `json:"last_seen_at"`
-	Status            string   `json:"status"`
-	Error             string   `json:"error"`
-	IsLocal           bool     `json:"is_local"`
-	LastSeenIP        string   `json:"last_seen_ip"`
-	Capabilities      []string `json:"capabilities"`
-	HTTPRulesCount    int      `json:"http_rules_count"`
-	L4RulesCount      int      `json:"l4_rules_count"`
+	ID                     string   `json:"id"`
+	Name                   string   `json:"name"`
+	AgentURL               string   `json:"agent_url"`
+	Version                string   `json:"version"`
+	Platform               string   `json:"platform"`
+	RuntimePackageVersion  string   `json:"runtime_package_version"`
+	RuntimePackagePlatform string   `json:"runtime_package_platform"`
+	RuntimePackageArch     string   `json:"runtime_package_arch"`
+	RuntimePackageSHA256   string   `json:"runtime_package_sha256"`
+	DesiredPackageSHA256   string   `json:"desired_package_sha256"`
+	PackageSyncStatus      string   `json:"package_sync_status"`
+	DesiredVersion         string   `json:"desired_version"`
+	Tags                   []string `json:"tags"`
+	Mode                   string   `json:"mode"`
+	DesiredRevision        int      `json:"desired_revision"`
+	CurrentRevision        int      `json:"current_revision"`
+	LastApplyRevision      int      `json:"last_apply_revision"`
+	LastApplyStatus        string   `json:"last_apply_status"`
+	LastApplyMessage       string   `json:"last_apply_message"`
+	LastSeenAt             string   `json:"last_seen_at"`
+	Status                 string   `json:"status"`
+	Error                  string   `json:"error"`
+	IsLocal                bool     `json:"is_local"`
+	LastSeenIP             string   `json:"last_seen_ip"`
+	Capabilities           []string `json:"capabilities"`
+	HTTPRulesCount         int      `json:"http_rules_count"`
+	L4RulesCount           int      `json:"l4_rules_count"`
 }
 
 type HTTPRuleBackend struct {
@@ -272,12 +272,17 @@ func (s *agentService) Register(ctx context.Context, request RegisterRequest, he
 		Mode:             resolveRemoteAgentMode(agentURL),
 		LastApplyStatus:  "success",
 	}
+	reusedPullByName := false
 	for _, existing := range rows {
 		existingAgentURL := trimTrailingSlash(existing.AgentURL)
 		if existing.AgentToken == agentToken ||
-			(existingAgentURL != "" && existingAgentURL == agentURL) ||
-			(existingAgentURL == "" && existing.Name == name) {
+			(existingAgentURL != "" && existingAgentURL == agentURL) {
 			row = existing
+			break
+		}
+		if existingAgentURL == "" && existing.Name == name {
+			row = existing
+			reusedPullByName = true
 			break
 		}
 	}
@@ -291,6 +296,20 @@ func (s *agentService) Register(ctx context.Context, request RegisterRequest, he
 	row.CapabilitiesJSON = marshalStringArray(normalizeCapabilities(capabilities))
 	row.Mode = resolveRemoteAgentMode(agentURL)
 	row.IsLocal = false
+	if reusedPullByName {
+		row.DesiredRevision = 0
+		row.CurrentRevision = 0
+		row.LastApplyRevision = 0
+		row.LastApplyStatus = "success"
+		row.LastApplyMessage = ""
+		row.RuntimePackageVersion = ""
+		row.RuntimePackagePlatform = ""
+		row.RuntimePackageArch = ""
+		row.RuntimePackageSHA256 = ""
+		row.LastReportedStatsJSON = ""
+		row.LastSeenAt = ""
+		row.LastSeenIP = ""
+	}
 
 	if err := s.store.SaveAgent(ctx, row); err != nil {
 		return AgentSummary{}, err

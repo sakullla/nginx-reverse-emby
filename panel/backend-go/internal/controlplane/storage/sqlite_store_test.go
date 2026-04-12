@@ -645,7 +645,7 @@ func TestStoreLoadsLocalSnapshotWithHighestRelevantRevision(t *testing.T) {
 	}
 }
 
-func TestStoreLoadsAgentSnapshotWithReferencedRelayListenersAndTrustCABundleOnly(t *testing.T) {
+func TestStoreLoadsAgentSnapshotWithReferencedRelayListenersAndCertificates(t *testing.T) {
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
 	store, err := NewSQLiteStore(dataRoot, "local")
@@ -830,23 +830,17 @@ func TestStoreLoadsAgentSnapshotWithReferencedRelayListenersAndTrustCABundleOnly
 	if snapshot.RelayListeners[1].AgentID != "remote-agent-b" {
 		t.Fatalf("RelayListeners[1].AgentID = %q", snapshot.RelayListeners[1].AgentID)
 	}
-	if len(snapshot.Certificates) != 2 {
+	if len(snapshot.Certificates) != 3 {
 		t.Fatalf("Certificates = %+v", snapshot.Certificates)
 	}
-	if len(snapshot.CertificatePolicies) != 2 {
+	if len(snapshot.CertificatePolicies) != 3 {
 		t.Fatalf("CertificatePolicies = %+v", snapshot.CertificatePolicies)
 	}
-	if !containsCertificateID(snapshot.Certificates, 10) || !containsCertificateID(snapshot.Certificates, 11) {
-		t.Fatalf("Certificates missing expected trust/target ids 10/11: %+v", snapshot.Certificates)
+	if !containsCertificateID(snapshot.Certificates, 10) || !containsCertificateID(snapshot.Certificates, 11) || !containsCertificateID(snapshot.Certificates, 12) {
+		t.Fatalf("Certificates missing expected relay dependency ids 10/11/12: %+v", snapshot.Certificates)
 	}
-	if containsCertificateID(snapshot.Certificates, 12) {
-		t.Fatalf("Certificates unexpectedly include cross-agent relay server cert id 12: %+v", snapshot.Certificates)
-	}
-	if !containsPolicyID(snapshot.CertificatePolicies, 10) || !containsPolicyID(snapshot.CertificatePolicies, 11) {
-		t.Fatalf("CertificatePolicies missing expected trust/target ids 10/11: %+v", snapshot.CertificatePolicies)
-	}
-	if containsPolicyID(snapshot.CertificatePolicies, 12) {
-		t.Fatalf("CertificatePolicies unexpectedly include cross-agent relay server cert id 12: %+v", snapshot.CertificatePolicies)
+	if !containsPolicyID(snapshot.CertificatePolicies, 10) || !containsPolicyID(snapshot.CertificatePolicies, 11) || !containsPolicyID(snapshot.CertificatePolicies, 12) {
+		t.Fatalf("CertificatePolicies missing expected relay dependency ids 10/11/12: %+v", snapshot.CertificatePolicies)
 	}
 }
 
@@ -924,6 +918,132 @@ func TestStoreLoadAgentSnapshotIncludesHTTPSCertificateReferencedByRemoteRuleWit
 	}
 	if !containsPolicyID(snapshot.CertificatePolicies, 30) {
 		t.Fatalf("CertificatePolicies missing referenced HTTPS cert id 30: %+v", snapshot.CertificatePolicies)
+	}
+}
+
+func TestStoreLoadAgentSnapshotIncludesRelayListenerServerCertificate(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromGORM(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	if err := store.SaveAgent(t.Context(), AgentRow{
+		ID:              "edge-relay",
+		Name:            "edge-relay",
+		AgentToken:      "token-edge-relay",
+		DesiredVersion:  "1.2.3",
+		DesiredRevision: 2,
+		CurrentRevision: 1,
+		LastApplyStatus: "success",
+	}); err != nil {
+		t.Fatalf("SaveAgent(edge-relay) error = %v", err)
+	}
+	if err := store.SaveAgent(t.Context(), AgentRow{
+		ID:              "relay-host",
+		Name:            "relay-host",
+		AgentToken:      "token-relay-host",
+		DesiredVersion:  "1.2.3",
+		DesiredRevision: 2,
+		CurrentRevision: 1,
+		LastApplyStatus: "success",
+	}); err != nil {
+		t.Fatalf("SaveAgent(relay-host) error = %v", err)
+	}
+
+	if err := store.SaveHTTPRules(t.Context(), "edge-relay", []HTTPRuleRow{{
+		ID:                1,
+		AgentID:           "edge-relay",
+		FrontendURL:       "https://relay-chain.example.com",
+		BackendURL:        "http://127.0.0.1:8096",
+		BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+		LoadBalancingJSON: `{"strategy":"round_robin"}`,
+		Enabled:           true,
+		RelayChainJSON:    `[77]`,
+		PassProxyHeaders:  true,
+		Revision:          9,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules(edge-relay) error = %v", err)
+	}
+
+	if err := store.SaveRelayListeners(t.Context(), "relay-host", []RelayListenerRow{{
+		ID:                      77,
+		AgentID:                 "relay-host",
+		Name:                    "relay-dependency",
+		ListenHost:              "relay-dependency.example.com",
+		ListenPort:              7443,
+		PublicHost:              "relay-dependency.example.com",
+		PublicPort:              7443,
+		Enabled:                 true,
+		CertificateID:           intPointer(31),
+		TLSMode:                 "pin_or_ca",
+		PinSetJSON:              `[]`,
+		TrustedCACertificateIDs: `[30]`,
+		AllowSelfSigned:         false,
+		BindHostsJSON:           `[]`,
+		Revision:                11,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(relay-host) error = %v", err)
+	}
+
+	if err := store.SaveManagedCertificates(t.Context(), []ManagedCertificateRow{{
+		ID:              30,
+		Domain:          "__relay-ca.internal",
+		Enabled:         true,
+		Scope:           "domain",
+		IssuerMode:      "local_http01",
+		TargetAgentIDs:  `[]`,
+		Status:          "active",
+		AgentReports:    `{}`,
+		ACMEInfo:        `{"Main_Domain":"__relay-ca.internal"}`,
+		Usage:           "relay_ca",
+		CertificateType: "internal_ca",
+		SelfSigned:      true,
+		TagsJSON:        `["system:relay-ca"]`,
+		Revision:        12,
+	}, {
+		ID:              31,
+		Domain:          "relay-dependency.example.com",
+		Enabled:         true,
+		Scope:           "domain",
+		IssuerMode:      "local_http01",
+		TargetAgentIDs:  `["relay-host"]`,
+		Status:          "active",
+		AgentReports:    `{}`,
+		ACMEInfo:        `{"Main_Domain":"relay-dependency.example.com"}`,
+		Usage:           "relay_tunnel",
+		CertificateType: "uploaded",
+		SelfSigned:      false,
+		TagsJSON:        `["relay"]`,
+		Revision:        12,
+	}}); err != nil {
+		t.Fatalf("SaveManagedCertificates() error = %v", err)
+	}
+	writeManagedCertificateMaterial(t, dataRoot, "__relay-ca.internal", "relay-ca-cert", "relay-ca-key")
+	writeManagedCertificateMaterial(t, dataRoot, "relay-dependency.example.com", "relay-dependency-cert", "relay-dependency-key")
+
+	snapshot, err := store.LoadAgentSnapshot(t.Context(), "edge-relay", AgentSnapshotInput{
+		DesiredVersion:  "1.2.3",
+		DesiredRevision: 2,
+		CurrentRevision: 1,
+		Platform:        "linux-amd64",
+	})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot() error = %v", err)
+	}
+
+	if !containsCertificateID(snapshot.Certificates, 30) || !containsCertificateID(snapshot.Certificates, 31) {
+		t.Fatalf("Certificates missing relay dependency material: %+v", snapshot.Certificates)
+	}
+	if !containsPolicyID(snapshot.CertificatePolicies, 30) || !containsPolicyID(snapshot.CertificatePolicies, 31) {
+		t.Fatalf("CertificatePolicies missing relay dependency policies: %+v", snapshot.CertificatePolicies)
 	}
 }
 

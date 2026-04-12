@@ -868,7 +868,7 @@ func snapshotCertificatePolicies(rows []ManagedCertificateRow, agentID string) [
 
 func filterManagedCertificatesForAgent(rows []ManagedCertificateRow, agentID string, httpRows []HTTPRuleRow, relayRows []RelayListenerRow) []ManagedCertificateRow {
 	filtered := make([]ManagedCertificateRow, 0, len(rows))
-	referencedCertificateIDs := relayTrustedCACertificateIDs(relayRows)
+	referencedCertificateIDs := relayReferencedCertificateIDs(relayRows)
 	for _, row := range rows {
 		if referencedCertificateIDs[row.ID] || containsString(parseStringSlice(row.TargetAgentIDs), agentID) || doesManagedCertificateMatchAnyHTTPRule(row, httpRows) {
 			filtered = append(filtered, row)
@@ -1177,9 +1177,12 @@ func parseIntSlice(raw string) []int {
 	return normalized
 }
 
-func relayTrustedCACertificateIDs(rows []RelayListenerRow) map[int]bool {
+func relayReferencedCertificateIDs(rows []RelayListenerRow) map[int]bool {
 	ids := make(map[int]bool)
 	for _, row := range rows {
+		if row.CertificateID != nil && *row.CertificateID > 0 {
+			ids[*row.CertificateID] = true
+		}
 		for _, certID := range parseIntSlice(row.TrustedCACertificateIDs) {
 			if certID > 0 {
 				ids[certID] = true

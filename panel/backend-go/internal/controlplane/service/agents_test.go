@@ -287,6 +287,60 @@ func TestAgentServiceRegisterReusesPullAgentByNameWhenURLIsEmpty(t *testing.T) {
 	}
 }
 
+func TestAgentServiceRegisterReusesPullAgentByNameAndResetsRuntimeState(t *testing.T) {
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID:                     "pull-existing",
+			Name:                   "Pull Node",
+			AgentURL:               "",
+			AgentToken:             "token-old",
+			Version:                "old-version",
+			Platform:               "linux-amd64",
+			RuntimePackageVersion:  "old-runtime",
+			RuntimePackagePlatform: "linux",
+			RuntimePackageArch:     "amd64",
+			RuntimePackageSHA256:   "old-sha",
+			DesiredVersion:         "2.0.0",
+			DesiredRevision:        3,
+			CurrentRevision:        7,
+			LastApplyRevision:      7,
+			LastApplyStatus:        "error",
+			LastApplyMessage:       "heartbeat failed: 503 Service Unavailable",
+			LastReportedStatsJSON:  `{"status":"old"}`,
+			LastSeenAt:             "2026-04-12T16:05:46Z",
+			LastSeenIP:             "142.248.151.126",
+		}},
+	}
+	svc := NewAgentService(config.Config{}, store)
+
+	agent, err := svc.Register(context.Background(), RegisterRequest{
+		Name:       "Pull Node",
+		AgentURL:   "",
+		AgentToken: "token-new",
+		Version:    "1",
+		Platform:   "linux-amd64",
+	}, "")
+	if err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	if agent.ID != "pull-existing" {
+		t.Fatalf("Register() did not reuse pull agent by name: got %+v", agent)
+	}
+	if store.savedAgent.DesiredRevision != 0 || store.savedAgent.CurrentRevision != 0 || store.savedAgent.LastApplyRevision != 0 {
+		t.Fatalf("expected revision state reset, got desired=%d current=%d last_apply=%d", store.savedAgent.DesiredRevision, store.savedAgent.CurrentRevision, store.savedAgent.LastApplyRevision)
+	}
+	if store.savedAgent.LastApplyStatus != "success" || store.savedAgent.LastApplyMessage != "" {
+		t.Fatalf("expected apply state reset, got status=%q message=%q", store.savedAgent.LastApplyStatus, store.savedAgent.LastApplyMessage)
+	}
+	if store.savedAgent.RuntimePackageVersion != "" || store.savedAgent.RuntimePackagePlatform != "" || store.savedAgent.RuntimePackageArch != "" || store.savedAgent.RuntimePackageSHA256 != "" {
+		t.Fatalf("expected runtime package state reset, got %+v", store.savedAgent)
+	}
+	if store.savedAgent.LastReportedStatsJSON != "" || store.savedAgent.LastSeenAt != "" || store.savedAgent.LastSeenIP != "" {
+		t.Fatalf("expected liveness state reset, got stats=%q last_seen_at=%q last_seen_ip=%q", store.savedAgent.LastReportedStatsJSON, store.savedAgent.LastSeenAt, store.savedAgent.LastSeenIP)
+	}
+}
+
 func TestAgentServiceRegisterDoesNotReusePushAgentByNameAlone(t *testing.T) {
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
@@ -603,14 +657,14 @@ func TestAgentServiceHeartbeatOmitsSyncPayloadWhenUpToDateButKeepsRelayListeners
 func TestAgentServiceHeartbeatAppliesManagedCertificateReports(t *testing.T) {
 	store := &fakeStore{
 		agents: []storage.AgentRow{{
-			ID:              "remote-cert",
-			Name:            "remote-cert",
-			AgentToken:      "token-remote-cert",
+			ID:               "remote-cert",
+			Name:             "remote-cert",
+			AgentToken:       "token-remote-cert",
 			CapabilitiesJSON: `["cert_install","local_acme"]`,
-			DesiredVersion:  "3.0.0",
-			DesiredRevision: 4,
-			CurrentRevision: 3,
-			LastApplyStatus: "success",
+			DesiredVersion:   "3.0.0",
+			DesiredRevision:  4,
+			CurrentRevision:  3,
+			LastApplyStatus:  "success",
 		}},
 		managedCerts: []storage.ManagedCertificateRow{{
 			ID:              21,
