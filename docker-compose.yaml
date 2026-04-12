@@ -3,21 +3,38 @@ services:
     image: ghcr.io/sakullla/nginx-reverse-emby:latest
     container_name: nginx-reverse-emby
     restart: unless-stopped
-    ports:
-      - "8080:8080"
-      - "80:80"
-      - "443:443"
+    network_mode: host
 
     environment:
-      PANEL_ROLE: master
-      PANEL_BACKEND_HOST: 0.0.0.0
-      PANEL_BACKEND_PORT: "8080"
-      NRE_ENABLE_LOCAL_AGENT: "1"
-      NRE_LOCAL_AGENT_ID: local
-      NRE_LOCAL_AGENT_NAME: local
+      # 部署模式：direct / front_proxy
+      PROXY_DEPLOY_MODE: direct
 
+      # 面板 / Master 角色
+      PANEL_ROLE: master
+      PANEL_PORT: "8080"
+
+      # 面板登录 token
       API_TOKEN: change-this-token
+
+      # 轻量 Agent 注册 token（NAT Agent 使用）
       MASTER_REGISTER_TOKEN: change-this-register-token
+
+      # 可选：预置一条本机规则
+      # PROXY_RULE_1: https://emby.example.com,http://192.168.1.10:8096
+
+      # 可选：Master 本机节点展示信息
+      # MASTER_LOCAL_AGENT_NAME: master-local
+      # MASTER_LOCAL_AGENT_TAGS: local,master
+
+      # direct + acme 常用参数
+      # ACME_EMAIL: admin@example.com
+      # ACME_CA: letsencrypt
+      # PANEL_AUTO_APPLY: "1"
+
+      # DNS 验证示例（按需启用）
+      # ACME_DNS_PROVIDER: cf
+      # CF_Token: xxxxxxxx
+      # CF_Account_ID: xxxxxxxx
 
     volumes:
       - ./data:/opt/nginx-reverse-emby/panel/data
