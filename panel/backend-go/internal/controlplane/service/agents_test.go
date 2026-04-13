@@ -683,6 +683,64 @@ func TestAgentServiceHeartbeatOmitsSyncPayloadWhenUpToDateButKeepsRelayListeners
 	}
 }
 
+func TestAgentServiceHeartbeatForcesFullSyncWhenLastApplyFailedAtCurrentRevision(t *testing.T) {
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID:               "remote-c",
+			Name:             "remote-c",
+			AgentToken:       "token-remote-c",
+			DesiredVersion:   "3.1.0",
+			DesiredRevision:  7,
+			CurrentRevision:  7,
+			LastApplyStatus:  "success",
+			LastApplyMessage: "",
+		}},
+		snapshot: storage.Snapshot{
+			DesiredVersion: "3.1.0",
+			Revision:       7,
+			Rules:          []storage.HTTPRule{{ID: 1, FrontendURL: "https://edge.example.com", BackendURL: "http://127.0.0.1:8096"}},
+			L4Rules:        []storage.L4Rule{{ID: 2, Protocol: "tcp", ListenHost: "0.0.0.0", ListenPort: 50381, UpstreamHost: "127.0.0.1", UpstreamPort: 9001}},
+			RelayListeners: []storage.RelayListener{{ID: 4, AgentID: "remote-c", Name: "relay-local", ListenHost: "0.0.0.0", ListenPort: 443}},
+			Certificates:   []storage.ManagedCertificateBundle{{ID: 8, Domain: "relay.example.com", CertPEM: "CERT", KeyPEM: "KEY"}},
+			CertificatePolicies: []storage.ManagedCertificatePolicy{{
+				ID:              8,
+				Domain:          "relay.example.com",
+				Enabled:         true,
+				Scope:           "domain",
+				IssuerMode:      "local_http01",
+				Status:          "active",
+				Usage:           "relay_tunnel",
+				CertificateType: "uploaded",
+			}},
+		},
+	}
+	svc := NewAgentService(config.Config{}, store)
+
+	reply, err := svc.Heartbeat(context.Background(), HeartbeatRequest{
+		CurrentRevision:   7,
+		LastApplyRevision: 7,
+		LastApplyStatus:   "error",
+		LastApplyMessage:  "relay listener 4: certificate 8 not found",
+		Platform:          "linux-amd64",
+	}, "token-remote-c")
+	if err != nil {
+		t.Fatalf("Heartbeat() error = %v", err)
+	}
+
+	if !reply.HasUpdate {
+		t.Fatalf("HasUpdate = false, want true")
+	}
+	if len(reply.Rules) != 1 || len(reply.L4Rules) != 1 || len(reply.RelayListeners) != 1 {
+		t.Fatalf("expected full rule payload on failed apply retry: %+v", reply)
+	}
+	if len(reply.Certificates) != 1 || len(reply.CertificatePolicies) != 1 {
+		t.Fatalf("expected full certificate payload on failed apply retry: %+v", reply)
+	}
+	if store.savedAgent.LastApplyStatus != "error" || store.savedAgent.LastApplyMessage == "" {
+		t.Fatalf("expected failed apply state to persist, got %+v", store.savedAgent)
+	}
+}
+
 func TestAgentServiceHeartbeatAppliesManagedCertificateReports(t *testing.T) {
 	store := &fakeStore{
 		agents: []storage.AgentRow{{

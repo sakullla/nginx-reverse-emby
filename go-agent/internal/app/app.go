@@ -174,7 +174,7 @@ func newAppWithAllDeps(
 		relayApplier: relayApplier,
 		updater:      updater,
 	}
-	app.runtime = agentruntime.NewWithActivator(agentruntime.NewSnapshotActivator(app.snapshotActivationHandlers()))
+	app.runtime = agentruntime.NewWithActivator(app.snapshotActivator())
 	return app
 }
 
@@ -186,14 +186,15 @@ func (a *App) Run(ctx context.Context) error {
 		return err
 	}
 	if err := a.runtime.Apply(ctx, Snapshot{}, applied); err != nil {
-		return a.recordRuntimeError(err)
+		log.Printf("[agent] startup runtime hydration error at revision %d: %v", applied.Revision, err)
+		_ = a.recordRuntimeErrorWithRevision(err, applied.Revision)
 	}
 
 	if err := a.performSync(ctx); err != nil {
 		if errors.Is(err, agentupdate.ErrRestartRequested) {
 			return nil
 		}
-		if applied.DesiredVersion == "" {
+		if applied.DesiredVersion == "" && applied.Revision == 0 {
 			return err
 		}
 	}
@@ -455,6 +456,31 @@ func (a *App) applyRelayListeners(ctx context.Context, snapshot Snapshot) error 
 		return nil
 	}
 	return a.relayApplier.Apply(ctx, localRelayListeners(snapshot.RelayListeners, a.cfg.AgentID, a.cfg.AgentName))
+}
+
+func (a *App) snapshotActivator() agentruntime.Activator {
+	handlers := a.snapshotActivationHandlers()
+	coreActivator := agentruntime.NewSnapshotActivator(agentruntime.SnapshotActivationHandlers{
+		ActivateManagedCertificates: handlers.ActivateManagedCertificates,
+		ActivateHTTPRules:           handlers.ActivateHTTPRules,
+		ActivateL4Rules:             handlers.ActivateL4Rules,
+	})
+	relayActivator := agentruntime.NewSnapshotActivator(agentruntime.SnapshotActivationHandlers{
+		ActivateRelayListeners: handlers.ActivateRelayListeners,
+	})
+
+	return func(ctx context.Context, previous, next model.Snapshot) error {
+		if err := coreActivator(ctx, previous, next); err != nil {
+			return err
+		}
+
+		localPrevious := previous
+		localPrevious.RelayListeners = localRelayListeners(previous.RelayListeners, a.cfg.AgentID, a.cfg.AgentName)
+		localNext := next
+		localNext.RelayListeners = localRelayListeners(next.RelayListeners, a.cfg.AgentID, a.cfg.AgentName)
+
+		return relayActivator(ctx, localPrevious, localNext)
+	}
 }
 
 func (a *App) snapshotActivationHandlers() agentruntime.SnapshotActivationHandlers {

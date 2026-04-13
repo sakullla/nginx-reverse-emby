@@ -652,7 +652,7 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 	}
 
 	reply := HeartbeatReply{
-		HasUpdate:           request.CurrentRevision < snapshot.Revision,
+		HasUpdate:           request.CurrentRevision < snapshot.Revision || !strings.EqualFold(strings.TrimSpace(row.LastApplyStatus), "success"),
 		DesiredVersion:      snapshot.DesiredVersion,
 		DesiredRevision:     snapshot.Revision,
 		CurrentRevision:     int64(row.CurrentRevision),

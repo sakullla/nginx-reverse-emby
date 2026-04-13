@@ -1141,4 +1141,108 @@ async function handleSubmit() {
 .relay-help__list li {
   margin-bottom: var(--space-1);
 }
+
+/* Settings card (Relay tab) */
+.settings-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--color-bg-subtle);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-lg);
+}
+
+.form-tab-panel > .settings-card {
+  gap: var(--space-2);
+  padding: var(--space-3);
+}
+
+.form-tab-panel > .settings-card .section-header {
+  margin-bottom: 0;
+}
+
+.form-tab-panel > .settings-card .section-title {
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+}
+
+.form-tab-panel > .settings-card .section-description {
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+
+/* Section header (Relay tab) */
+.section-header {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.section-header--split {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.section-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: var(--font-semibold);
+  color: var(--color-text-primary);
+  line-height: 1.4;
+}
+
+.section-description {
+  margin: 0;
+  font-size: 13px;
+  color: var(--color-text-muted);
+  line-height: 1.4;
+}
+
+/* Toggle card variant (Relay tab) */
+.toggle {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-3);
+  cursor: pointer;
+}
+
+.toggle--disabled {
+  cursor: not-allowed;
+}
+
+.toggle__content {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+
+.form-tab-panel .toggle--card {
+  padding: 10px var(--space-3);
+  background: var(--color-bg-surface);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border-subtle);
+}
+
+.form-tab-panel .toggle--card .toggle__label {
+  font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  color: var(--color-text-primary);
+}
+
+.form-tab-panel .toggle--card .toggle__desc {
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+  margin-top: var(--space-1);
+}
+
+.form-help-text {
+  margin: var(--space-2) 0 0 0;
+  font-size: var(--text-sm);
+  color: var(--color-text-secondary);
+  line-height: 1.5;
+}
 </style>

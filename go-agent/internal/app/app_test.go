@@ -1992,8 +1992,8 @@ func TestRunRecordsCertificateApplyFailuresInRuntimeState(t *testing.T) {
 	}
 }
 
-func TestRunRecordsStartupCertificateHydrationFailuresInRuntimeState(t *testing.T) {
-	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
+func TestRunKeepsRunningAfterStartupCertificateHydrationFailure(t *testing.T) {
+	cfg := Config{HeartbeatInterval: time.Hour}
 	mem := store.NewInMemory()
 	stored := Snapshot{
 		DesiredVersion: "stored",
@@ -2004,24 +2004,24 @@ func TestRunRecordsStartupCertificateHydrationFailuresInRuntimeState(t *testing.
 		t.Fatalf("failed to seed applied snapshot: %v", err)
 	}
 
-	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{DesiredVersion: "ok"}})
+	client := newTestSyncClient(nil, syncResponse{err: errors.New("heartbeat failed")})
 	applier := &testCertificateApplier{applyErr: errors.New("startup cert apply failed")}
 	app := newAppWithDeps(cfg, mem, client, applier, nil, nil)
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- app.Run(ctx)
+	}()
 
-	err := app.Run(ctx)
-	if err == nil || err.Error() != "startup cert apply failed" {
-		t.Fatalf("expected startup certificate apply error, got %v", err)
+	req := waitForRequest(t, client, time.Second)
+	if req.LastApplyStatus != "error" || req.LastApplyMessage != "startup cert apply failed" {
+		t.Fatalf("expected startup cert failure to be reported on next heartbeat, got %+v", req)
 	}
 
-	state, loadErr := mem.LoadRuntimeState()
-	if loadErr != nil {
-		t.Fatalf("failed to load runtime state: %v", loadErr)
-	}
-	if state.Metadata["last_sync_error"] != "startup cert apply failed" {
-		t.Fatalf("expected startup certificate apply failure metadata, got %v", state.Metadata)
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run returned error: %v", err)
 	}
 }
 
@@ -2248,8 +2248,8 @@ func TestRunRecordsHTTPApplyFailuresInRuntimeState(t *testing.T) {
 	}
 }
 
-func TestRunRecordsStartupHTTPHydrationFailuresInRuntimeState(t *testing.T) {
-	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
+func TestRunKeepsRunningAfterStartupHTTPHydrationFailure(t *testing.T) {
+	cfg := Config{HeartbeatInterval: time.Hour}
 	mem := store.NewInMemory()
 	stored := Snapshot{
 		DesiredVersion: "stored",
@@ -2260,24 +2260,24 @@ func TestRunRecordsStartupHTTPHydrationFailuresInRuntimeState(t *testing.T) {
 		t.Fatalf("failed to seed applied snapshot: %v", err)
 	}
 
-	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{DesiredVersion: "ok"}})
+	client := newTestSyncClient(nil, syncResponse{err: errors.New("heartbeat failed")})
 	httpApplier := &testHTTPApplier{applyErr: errors.New("startup http apply failed")}
 	app := newAppWithHTTPDeps(cfg, mem, client, httpApplier, nil, nil, nil)
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- app.Run(ctx)
+	}()
 
-	err := app.Run(ctx)
-	if err == nil || err.Error() != "startup http apply failed" {
-		t.Fatalf("expected startup http apply error, got %v", err)
+	req := waitForRequest(t, client, time.Second)
+	if req.LastApplyStatus != "error" || req.LastApplyMessage != "startup http apply failed" {
+		t.Fatalf("expected startup http failure to be reported on next heartbeat, got %+v", req)
 	}
 
-	state, loadErr := mem.LoadRuntimeState()
-	if loadErr != nil {
-		t.Fatalf("failed to load runtime state: %v", loadErr)
-	}
-	if state.Metadata["last_sync_error"] != "startup http apply failed" {
-		t.Fatalf("expected startup http apply failure metadata, got %v", state.Metadata)
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run returned error: %v", err)
 	}
 }
 
@@ -2496,6 +2496,100 @@ func TestRunHydratesRelayListenersFromStoredAppliedSnapshot(t *testing.T) {
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatalf("Run returned error: %v", err)
+	}
+}
+
+func TestRunDoesNotReapplyLocalRelayListenersWhenOnlyRemoteRelayDependencyChanges(t *testing.T) {
+	cfg := Config{
+		AgentID:           "local-agent",
+		HeartbeatInterval: time.Hour,
+	}
+	mem := store.NewInMemory()
+	stored := Snapshot{
+		DesiredVersion: "stored",
+		Revision:       5,
+		L4Rules: []model.L4Rule{{
+			Protocol:   "tcp",
+			ListenHost: "127.0.0.1",
+			ListenPort: 50381,
+			Backends: []model.L4Backend{{
+				Host: "103.100.176.124",
+				Port: 26966,
+			}},
+			RelayChain: []int{5},
+			Revision:   5,
+		}},
+		RelayListeners: []model.RelayListener{
+			{
+				ID:         4,
+				AgentID:    "local-agent",
+				Name:       "local-relay",
+				ListenHost: "0.0.0.0",
+				ListenPort: 443,
+				Enabled:    true,
+				TLSMode:    "pin_only",
+				PinSet: []model.RelayPin{{
+					Type:  "sha256",
+					Value: "local-pin",
+				}},
+				Revision: 5,
+			},
+			{
+				ID:         5,
+				AgentID:    "remote-agent",
+				Name:       "remote-hop",
+				ListenHost: "relay.remote.example",
+				ListenPort: 2443,
+				PublicHost: "relay.remote.example",
+				PublicPort: 2443,
+				Enabled:    true,
+				TLSMode:    "pin_only",
+				PinSet: []model.RelayPin{{
+					Type:  "sha256",
+					Value: "remote-pin",
+				}},
+				Revision: 5,
+			},
+		},
+	}
+	if err := mem.SaveAppliedSnapshot(stored); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+
+	next := stored
+	next.DesiredVersion = "2.0"
+	next.Revision = 6
+	next.RelayListeners = append([]model.RelayListener(nil), stored.RelayListeners...)
+	next.RelayListeners[1].PublicPort = 3443
+	client := newTestSyncClient(nil, syncResponse{snapshot: next})
+	l4Applier := &testL4Applier{}
+	relayApplier := &testRelayApplier{}
+	app := newAppWithDeps(cfg, mem, client, nil, l4Applier, relayApplier)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- app.Run(ctx)
+	}()
+
+	waitForCalls(t, client, 1, time.Second)
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	relayCalls := relayApplier.snapshotCalls()
+	if len(relayCalls) != 1 {
+		t.Fatalf("expected only startup local relay hydration, got %d calls: %+v", len(relayCalls), relayCalls)
+	}
+	if len(relayCalls[0].listeners) != 1 || relayCalls[0].listeners[0].ID != 4 {
+		t.Fatalf("expected only local relay listener to be applied, got %+v", relayCalls[0].listeners)
+	}
+
+	l4Calls := l4Applier.snapshotCalls()
+	if len(l4Calls) != 2 {
+		t.Fatalf("expected startup hydration and remote relay-triggered l4 refresh, got %d calls", len(l4Calls))
 	}
 }
 
@@ -2729,8 +2823,8 @@ func TestRunRecordsRelayApplyFailuresInRuntimeState(t *testing.T) {
 	}
 }
 
-func TestRunRecordsStartupL4HydrationFailuresInRuntimeState(t *testing.T) {
-	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
+func TestRunKeepsRunningAfterStartupL4HydrationFailure(t *testing.T) {
+	cfg := Config{HeartbeatInterval: time.Hour}
 	mem := store.NewInMemory()
 	stored := Snapshot{
 		DesiredVersion: "stored",
@@ -2741,29 +2835,29 @@ func TestRunRecordsStartupL4HydrationFailuresInRuntimeState(t *testing.T) {
 		t.Fatalf("failed to seed applied snapshot: %v", err)
 	}
 
-	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{DesiredVersion: "ok"}})
+	client := newTestSyncClient(nil, syncResponse{err: errors.New("heartbeat failed")})
 	l4Applier := &testL4Applier{applyErr: errors.New("startup l4 apply failed")}
 	app := newAppWithDeps(cfg, mem, client, nil, l4Applier, nil)
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- app.Run(ctx)
+	}()
 
-	err := app.Run(ctx)
-	if err == nil || err.Error() != "startup l4 apply failed" {
-		t.Fatalf("expected startup l4 apply error, got %v", err)
+	req := waitForRequest(t, client, time.Second)
+	if req.LastApplyStatus != "error" || req.LastApplyMessage != "startup l4 apply failed" {
+		t.Fatalf("expected startup l4 failure to be reported on next heartbeat, got %+v", req)
 	}
 
-	state, loadErr := mem.LoadRuntimeState()
-	if loadErr != nil {
-		t.Fatalf("failed to load runtime state: %v", loadErr)
-	}
-	if state.Metadata["last_sync_error"] != "startup l4 apply failed" {
-		t.Fatalf("expected startup l4 apply failure metadata, got %v", state.Metadata)
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run returned error: %v", err)
 	}
 }
 
-func TestRunRecordsStartupRelayHydrationFailuresInRuntimeState(t *testing.T) {
-	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
+func TestRunKeepsRunningAfterStartupRelayHydrationFailure(t *testing.T) {
+	cfg := Config{HeartbeatInterval: time.Hour}
 	mem := store.NewInMemory()
 	stored := Snapshot{
 		DesiredVersion: "stored",
@@ -2774,24 +2868,24 @@ func TestRunRecordsStartupRelayHydrationFailuresInRuntimeState(t *testing.T) {
 		t.Fatalf("failed to seed applied snapshot: %v", err)
 	}
 
-	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{DesiredVersion: "ok"}})
+	client := newTestSyncClient(nil, syncResponse{err: errors.New("heartbeat failed")})
 	relayApplier := &testRelayApplier{applyErr: errors.New("startup relay apply failed")}
 	app := newAppWithDeps(cfg, mem, client, nil, nil, relayApplier)
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- app.Run(ctx)
+	}()
 
-	err := app.Run(ctx)
-	if err == nil || err.Error() != "startup relay apply failed" {
-		t.Fatalf("expected startup relay apply error, got %v", err)
+	req := waitForRequest(t, client, time.Second)
+	if req.LastApplyStatus != "error" || req.LastApplyMessage != "startup relay apply failed" {
+		t.Fatalf("expected startup relay failure to be reported on next heartbeat, got %+v", req)
 	}
 
-	state, loadErr := mem.LoadRuntimeState()
-	if loadErr != nil {
-		t.Fatalf("failed to load runtime state: %v", loadErr)
-	}
-	if state.Metadata["last_sync_error"] != "startup relay apply failed" {
-		t.Fatalf("expected startup relay apply failure metadata, got %v", state.Metadata)
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run returned error: %v", err)
 	}
 }
 
