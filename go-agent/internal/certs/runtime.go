@@ -344,7 +344,7 @@ func (m *Manager) loadOrIssueACMEUnlocked(ctx context.Context, policy model.Mana
 
 	if len(persisted.certPEM) > 0 && len(persisted.keyPEM) > 0 {
 		tlsCert, _, _, err := parseTLSMaterial(persisted.certPEM, persisted.keyPEM)
-		if err == nil && tlsCert.Leaf != nil && persisted.metadata.matchesPolicy(policy) && !m.needsRenewal(tlsCert.Leaf) {
+		if err == nil && tlsCert.Leaf != nil && persisted.metadata.matchesPolicy(policy) && !m.needsRenewalForScope(tlsCert.Leaf, policy.Scope) {
 			return persisted.certPEM, persisted.keyPEM, nil
 		}
 	}
@@ -361,10 +361,9 @@ func (m *Manager) loadOrIssueACMEUnlocked(ctx context.Context, policy model.Mana
 
 	result, err := issuer.Issue(ctx, request)
 	if err != nil {
-		return nil, nil, err
-	}
-
-	if _, _, _, err := parseTLSMaterial(result.CertPEM, result.KeyPEM); err != nil {
+		if saveErr := m.savePersistedACMEAccountState(policy.ID, result); saveErr != nil {
+			return nil, nil, fmt.Errorf("%w (persist acme account state: %v)", err, saveErr)
+		}
 		return nil, nil, err
 	}
 
@@ -375,7 +374,13 @@ func (m *Manager) loadOrIssueACMEUnlocked(ctx context.Context, policy model.Mana
 		result.Registration = persisted.registration
 	}
 
-	if err := m.savePersistedACMEMaterial(policy.ID, result); err != nil {
+	if err := m.savePersistedACMEAccountState(policy.ID, result); err != nil {
+		return nil, nil, err
+	}
+	if _, _, _, err := parseTLSMaterial(result.CertPEM, result.KeyPEM); err != nil {
+		return nil, nil, err
+	}
+	if err := m.savePersistedACMEMaterial(policy.ID, policy.Scope, result); err != nil {
 		return nil, nil, err
 	}
 	if err := m.saveLocalMaterialMetadata(policy.ID, policyMetadata(policy)); err != nil {
@@ -436,10 +441,31 @@ func (m *Manager) newACMEIssueRequest(policy model.ManagedCertificatePolicy, per
 }
 
 func (m *Manager) needsRenewal(leaf *x509.Certificate) bool {
+	return m.needsRenewalForScope(leaf, "")
+}
+
+func (m *Manager) needsRenewalForScope(leaf *x509.Certificate, scope string) bool {
 	if leaf == nil {
 		return true
 	}
-	return !leaf.NotAfter.After(m.cfg.now().Add(m.cfg.acme.renewBefore))
+	return !leaf.NotAfter.After(m.cfg.now().Add(m.renewBeforeForScope(leaf, scope)))
+}
+
+func (m *Manager) renewBeforeForScope(leaf *x509.Certificate, scope string) time.Duration {
+	renewBefore := m.cfg.acme.renewBefore
+	if leaf == nil {
+		return renewBefore
+	}
+	if strings.EqualFold(strings.TrimSpace(scope), "ip") {
+		lifetime := leaf.NotAfter.Sub(leaf.NotBefore)
+		if lifetime > 0 && lifetime < renewBefore {
+			scaled := lifetime / 3
+			if scaled > 0 {
+				return scaled
+			}
+		}
+	}
+	return renewBefore
 }
 
 func (m *Manager) loadPersistedACMEMaterial(certificateID int) (persistedACMEMaterial, error) {
@@ -512,15 +538,13 @@ func (m *Manager) loadPersistedACMEMaterial(certificateID int) (persistedACMEMat
 	return result, nil
 }
 
-func (m *Manager) savePersistedACMEMaterial(certificateID int, result acmeIssueResult) error {
+func (m *Manager) savePersistedACMEAccountState(certificateID int, result acmeIssueResult) error {
+	if len(result.AccountKeyPEM) == 0 && result.Registration == nil {
+		return nil
+	}
+
 	materialDir := m.materialDir(certificateID)
 	if err := os.MkdirAll(materialDir, 0755); err != nil {
-		return err
-	}
-	if err := writeFileAtomically(filepath.Join(materialDir, "cert.pem"), result.CertPEM, 0600); err != nil {
-		return err
-	}
-	if err := writeFileAtomically(filepath.Join(materialDir, "key.pem"), result.KeyPEM, 0600); err != nil {
 		return err
 	}
 	if len(result.AccountKeyPEM) > 0 {
@@ -545,8 +569,9 @@ func (m *Manager) savePersistedACMEMaterial(certificateID int, result acmeIssueR
 	if state.ACME == nil {
 		state.ACME = &model.ManagedCertificateACMEState{}
 	}
-	state.ACME.Account.KeyPEM = append([]byte(nil), result.AccountKeyPEM...)
-	state.ACME.Account.Registration = nil
+	if len(result.AccountKeyPEM) > 0 {
+		state.ACME.Account.KeyPEM = append([]byte(nil), result.AccountKeyPEM...)
+	}
 	if result.Registration != nil {
 		payload, err := json.Marshal(result.Registration)
 		if err != nil {
@@ -554,9 +579,35 @@ func (m *Manager) savePersistedACMEMaterial(certificateID int, result acmeIssueR
 		}
 		state.ACME.Account.Registration = payload
 	}
+	return m.saveManagedCertificateState(certificateID, state)
+}
+
+func (m *Manager) savePersistedACMEMaterial(certificateID int, scope string, result acmeIssueResult) error {
+	materialDir := m.materialDir(certificateID)
+	if err := os.MkdirAll(materialDir, 0755); err != nil {
+		return err
+	}
+	if err := writeFileAtomically(filepath.Join(materialDir, "cert.pem"), result.CertPEM, 0600); err != nil {
+		return err
+	}
+	if err := writeFileAtomically(filepath.Join(materialDir, "key.pem"), result.KeyPEM, 0600); err != nil {
+		return err
+	}
+	if err := m.savePersistedACMEAccountState(certificateID, result); err != nil {
+		return err
+	}
+
+	state, _, err := m.loadManagedCertificateState(certificateID)
+	if err != nil {
+		return err
+	}
+	if state.ACME == nil {
+		state.ACME = &model.ManagedCertificateACMEState{}
+	}
 	if tlsCert, _, _, err := parseTLSMaterial(result.CertPEM, result.KeyPEM); err == nil && tlsCert.Leaf != nil {
+		renewBefore := m.renewBeforeForScope(tlsCert.Leaf, scope)
 		state.ACME.Renewal.NotAfterUnix = tlsCert.Leaf.NotAfter.Unix()
-		state.ACME.Renewal.RenewAtUnix = tlsCert.Leaf.NotAfter.Add(-m.cfg.acme.renewBefore).Unix()
+		state.ACME.Renewal.RenewAtUnix = tlsCert.Leaf.NotAfter.Add(-renewBefore).Unix()
 		nowUnix := m.cfg.now().Unix()
 		state.ACME.Renewal.LastRenewedAtUnix = nowUnix
 		state.ACME.Renewal.LastAttemptAtUnix = nowUnix

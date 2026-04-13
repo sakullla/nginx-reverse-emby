@@ -70,7 +70,7 @@ func (m *Manager) renewalCandidates() []renewalCandidate {
 		if entry.info.IssuerMode != "local_http01" {
 			continue
 		}
-		if !m.needsRenewal(entry.certificate.Leaf) {
+		if !m.needsRenewalForScope(entry.certificate.Leaf, entry.info.Scope) {
 			continue
 		}
 		candidates = append(candidates, renewalCandidate{id: id, info: entry.info})

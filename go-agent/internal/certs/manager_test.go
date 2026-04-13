@@ -649,6 +649,64 @@ func TestManagerApplyIssuesIPACMECertificateUsingShortLivedProfile(t *testing.T)
 	}
 }
 
+func TestManagerApplyReusesFreshShortLivedIPACMECertificate(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 4, 13, 12, 0, 0, 0, time.UTC)
+	first := mustCreateTLSMaterial(t, certificateSpec{
+		commonName: "203.0.113.10",
+		notBefore:  now.Add(-time.Hour),
+		notAfter:   now.Add(6 * 24 * time.Hour),
+	})
+	second := mustCreateTLSMaterial(t, certificateSpec{
+		commonName: "203.0.113.10",
+		notBefore:  now.Add(-time.Hour),
+		notAfter:   now.Add(6 * 24 * time.Hour),
+	})
+	fake := &fakeACMEIssuer{
+		results: []acmeIssueResult{
+			{CertPEM: first.CertPEM, KeyPEM: first.KeyPEM},
+			{CertPEM: second.CertPEM, KeyPEM: second.KeyPEM},
+		},
+	}
+	manager := mustNewManager(
+		t,
+		t.TempDir(),
+		withNow(func() time.Time { return now }),
+		withACMEIssuerFactory(func(request acmeIssueRequest) (acmeIssuer, error) {
+			return fake, nil
+		}),
+	)
+
+	policy := model.ManagedCertificatePolicy{
+		ID:              5102,
+		Domain:          "203.0.113.10",
+		Enabled:         true,
+		Scope:           "ip",
+		IssuerMode:      "local_http01",
+		CertificateType: "acme",
+		Usage:           "https",
+	}
+
+	if err := manager.Apply(context.Background(), nil, []model.ManagedCertificatePolicy{policy}); err != nil {
+		t.Fatalf("initial apply failed: %v", err)
+	}
+	if err := manager.Apply(context.Background(), nil, []model.ManagedCertificatePolicy{policy}); err != nil {
+		t.Fatalf("second apply failed: %v", err)
+	}
+
+	if len(fake.requests) != 1 {
+		t.Fatalf("expected fresh short-lived ip cert to be reused, got %d issuance calls", len(fake.requests))
+	}
+	info, err := manager.CertificateInfo(policy.ID)
+	if err != nil {
+		t.Fatalf("certificate info failed: %v", err)
+	}
+	if info.Fingerprint != first.Fingerprint {
+		t.Fatalf("expected first fingerprint to remain active, got %q want %q", info.Fingerprint, first.Fingerprint)
+	}
+}
+
 func TestManagerApplyUsesDNSChallengeForMasterCFDNSOnLocalMaster(t *testing.T) {
 	t.Parallel()
 
@@ -1362,6 +1420,70 @@ func TestManagerApplyPreservesPreviousStateOnACMEFailure(t *testing.T) {
 	}
 }
 
+func TestManagerApplyPersistsACMEAccountStateAfterIssuanceFailure(t *testing.T) {
+	t.Parallel()
+
+	dataDir := t.TempDir()
+	accountKey := []byte("persisted-account-key")
+	registrationResource := &registration.Resource{
+		URI: "https://acme-v02.api.letsencrypt.org/acme/acct/9999",
+	}
+	policy := model.ManagedCertificatePolicy{
+		ID:              5701,
+		Domain:          "persist-failure.example.com",
+		Enabled:         true,
+		Scope:           "domain",
+		IssuerMode:      "local_http01",
+		CertificateType: "acme",
+		Usage:           "https",
+	}
+
+	initial := mustNewManager(
+		t,
+		dataDir,
+		withACMEIssuerFactory(func(request acmeIssueRequest) (acmeIssuer, error) {
+			return partialStateACMEIssuer{
+				result: acmeIssueResult{
+					AccountKeyPEM: accountKey,
+					Registration:  registrationResource,
+				},
+				err: errSyntheticACMEFailure,
+			}, nil
+		}),
+	)
+	err := initial.Apply(context.Background(), nil, []model.ManagedCertificatePolicy{policy})
+	if !errors.Is(err, errSyntheticACMEFailure) {
+		t.Fatalf("expected synthetic acme failure, got %v", err)
+	}
+
+	reissued := mustCreateTLSMaterial(t, certificateSpec{commonName: "persist-failure.example.com"})
+	recreatedFake := &fakeACMEIssuer{
+		results: []acmeIssueResult{
+			{CertPEM: reissued.CertPEM, KeyPEM: reissued.KeyPEM},
+		},
+	}
+	recreated := mustNewManager(
+		t,
+		dataDir,
+		withACMEIssuerFactory(func(request acmeIssueRequest) (acmeIssuer, error) {
+			return recreatedFake, nil
+		}),
+	)
+	if err := recreated.Apply(context.Background(), nil, []model.ManagedCertificatePolicy{policy}); err != nil {
+		t.Fatalf("recreated apply failed: %v", err)
+	}
+
+	if len(recreatedFake.requests) != 1 {
+		t.Fatalf("expected one issuance call after persisted failure state, got %d", len(recreatedFake.requests))
+	}
+	if got := string(recreatedFake.requests[0].AccountKeyPEM); got != string(accountKey) {
+		t.Fatalf("expected persisted account key, got %q", got)
+	}
+	if recreatedFake.requests[0].Registration == nil || recreatedFake.requests[0].Registration.URI != registrationResource.URI {
+		t.Fatalf("expected persisted registration, got %+v", recreatedFake.requests[0].Registration)
+	}
+}
+
 type certificateSpec struct {
 	commonName string
 	isCA       bool
@@ -1490,3 +1612,12 @@ func (e assertUnreachableError) Error() string {
 }
 
 var errSyntheticACMEFailure = assertUnreachableError{message: "synthetic acme failure"}
+
+type partialStateACMEIssuer struct {
+	result acmeIssueResult
+	err    error
+}
+
+func (i partialStateACMEIssuer) Issue(_ context.Context, _ acmeIssueRequest) (acmeIssueResult, error) {
+	return i.result, i.err
+}

@@ -22,16 +22,18 @@ func defaultACMEIssuerFactory(request acmeIssueRequest) (acmeIssuer, error) {
 type legoACMEIssuer struct{}
 
 func (legoACMEIssuer) Issue(ctx context.Context, request acmeIssueRequest) (acmeIssueResult, error) {
+	result := acmeIssueResult{}
 	if err := ctx.Err(); err != nil {
-		return acmeIssueResult{}, err
+		return result, err
 	}
 
 	accountKey, accountKeyPEM, err := loadOrCreateACMEAccountKey(request.AccountKeyPEM)
 	if err != nil {
-		return acmeIssueResult{}, err
+		return result, err
 	}
+	result.AccountKeyPEM = accountKeyPEM
 	if err := ctx.Err(); err != nil {
-		return acmeIssueResult{}, err
+		return result, err
 	}
 
 	user := &legoUser{
@@ -47,16 +49,16 @@ func (legoACMEIssuer) Issue(ctx context.Context, request acmeIssueRequest) (acme
 
 	client, err := lego.NewClient(config)
 	if err != nil {
-		return acmeIssueResult{}, err
+		return result, err
 	}
 	if err := ctx.Err(); err != nil {
-		return acmeIssueResult{}, err
+		return result, err
 	}
 
 	switch request.ChallengeType {
 	case challengeTypeHTTP01:
 		if err := client.Challenge.SetHTTP01Provider(http01.NewProviderServer(request.HTTP01Interface, request.HTTP01Port)); err != nil {
-			return acmeIssueResult{}, err
+			return result, err
 		}
 	case challengeTypeDNS01Cloudflare:
 		dnsConfig := cloudflare.NewDefaultConfig()
@@ -64,33 +66,36 @@ func (legoACMEIssuer) Issue(ctx context.Context, request acmeIssueRequest) (acme
 		dnsConfig.ZoneToken = firstNonEmpty(request.CloudflareZoneAPIToken, request.CloudflareDNSAPIToken)
 		provider, err := cloudflare.NewDNSProviderConfig(dnsConfig)
 		if err != nil {
-			return acmeIssueResult{}, err
+			return result, err
 		}
 		if err := client.Challenge.SetDNS01Provider(provider); err != nil {
-			return acmeIssueResult{}, err
+			return result, err
 		}
 	default:
-		return acmeIssueResult{}, fmt.Errorf("unsupported acme challenge type %q", request.ChallengeType)
+		return result, fmt.Errorf("unsupported acme challenge type %q", request.ChallengeType)
 	}
 
 	if user.registration == nil || user.registration.URI == "" {
 		if err := ctx.Err(); err != nil {
-			return acmeIssueResult{}, err
+			return result, err
 		}
 		registrationResource, err := client.Registration.Register(registration.RegisterOptions{TermsOfServiceAgreed: true})
 		if err != nil {
-			return acmeIssueResult{}, err
+			return result, err
 		}
 		user.registration = registrationResource
+		result.Registration = registrationResource
+	} else {
+		result.Registration = user.registration
 	}
 
 	existingKey, err := parseOptionalPrivateKey(request.ExistingKeyPEM)
 	if err != nil {
-		return acmeIssueResult{}, err
+		return result, err
 	}
 
 	if err := ctx.Err(); err != nil {
-		return acmeIssueResult{}, err
+		return result, err
 	}
 	resource, err := client.Certificate.Obtain(certificate.ObtainRequest{
 		Domains:    []string{request.Domain},
@@ -99,15 +104,12 @@ func (legoACMEIssuer) Issue(ctx context.Context, request acmeIssueRequest) (acme
 		Profile:    request.Profile,
 	})
 	if err != nil {
-		return acmeIssueResult{}, err
+		return result, err
 	}
 
-	return acmeIssueResult{
-		CertPEM:       resource.Certificate,
-		KeyPEM:        resource.PrivateKey,
-		AccountKeyPEM: accountKeyPEM,
-		Registration:  user.registration,
-	}, nil
+	result.CertPEM = resource.Certificate
+	result.KeyPEM = resource.PrivateKey
+	return result, nil
 }
 
 type legoUser struct {
