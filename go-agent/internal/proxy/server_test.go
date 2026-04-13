@@ -356,7 +356,7 @@ func TestCloneProxyRequestPreservesIncomingPathQueryAndFragment(t *testing.T) {
 		target: mustParseBackendURL(t, "https://backend.example/backend/path?backend=1#backend-fragment"),
 	}
 
-	out, err := cloneProxyRequest(req, nil, candidate, model.HTTPRule{})
+	out, err := cloneProxyRequest(req, nil, candidate, model.HTTPRule{}, "/")
 	if err != nil {
 		t.Fatalf("cloneProxyRequest failed: %v", err)
 	}
@@ -367,14 +367,34 @@ func TestCloneProxyRequestPreservesIncomingPathQueryAndFragment(t *testing.T) {
 	if out.URL.Host != "backend.example" {
 		t.Fatalf("expected backend host to be applied, got %q", out.URL.Host)
 	}
-	if out.URL.Path != req.URL.Path {
-		t.Fatalf("expected incoming path %q to be preserved, got %q", req.URL.Path, out.URL.Path)
+	if out.URL.Path != "/backend/path/incoming/path" {
+		t.Fatalf("expected backend base path to be preserved, got %q", out.URL.Path)
 	}
 	if out.URL.RawQuery != req.URL.RawQuery {
 		t.Fatalf("expected incoming query %q to be preserved, got %q", req.URL.RawQuery, out.URL.RawQuery)
 	}
 	if out.URL.Fragment != req.URL.Fragment {
 		t.Fatalf("expected incoming fragment %q to be preserved, got %q", req.URL.Fragment, out.URL.Fragment)
+	}
+}
+
+func TestCloneProxyRequestRewritesFrontendPrefixToBackendPath(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "https://frontend.example/emby/videos/1/original.mp4?client=1", nil)
+	req.Host = "frontend.example"
+	candidate := httpCandidate{
+		target: mustParseBackendURL(t, "https://backend.example/library"),
+	}
+
+	out, err := cloneProxyRequest(req, nil, candidate, model.HTTPRule{}, "/emby")
+	if err != nil {
+		t.Fatalf("cloneProxyRequest failed: %v", err)
+	}
+
+	if out.URL.Path != "/library/videos/1/original.mp4" {
+		t.Fatalf("expected rewritten backend path, got %q", out.URL.Path)
+	}
+	if out.URL.RawQuery != "client=1" {
+		t.Fatalf("expected query to be preserved, got %q", out.URL.RawQuery)
 	}
 }
 
@@ -682,7 +702,7 @@ func TestPassProxyHeadersDropsSpoofedForwardedFor(t *testing.T) {
 	}
 }
 
-func TestServerDoesNotRewriteExternalLocation(t *testing.T) {
+func TestServerRewritesExternalLocationToInternalProxyPath(t *testing.T) {
 	var backend *httptest.Server
 	backend = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Location", "https://other.example/redirected")
@@ -722,8 +742,121 @@ func TestServerDoesNotRewriteExternalLocation(t *testing.T) {
 	}
 	defer resp.Body.Close()
 
-	if got := resp.Header.Get("Location"); got != "https://other.example/redirected" {
-		t.Fatalf("expected external location untouched, got %q", got)
+	if got := resp.Header.Get("Location"); got != "https://route.example/__nre_redirect/https/other.example/redirected" {
+		t.Fatalf("expected external location rewritten to internal proxy path, got %q", got)
+	}
+}
+
+func TestServerRewritesExternalLocationToInternalRedirectPath(t *testing.T) {
+	var observedPath string
+	var backend *httptest.Server
+	backend = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		observedPath = r.URL.Path
+		w.Header().Set("Location", "https://streamer.example/stream?sign=abc")
+		w.WriteHeader(http.StatusMovedPermanently)
+	}))
+	defer backend.Close()
+
+	listener := model.HTTPListener{
+		Rules: []model.HTTPRule{
+			{
+				FrontendURL:   "https://route.example/emby",
+				BackendURL:    backend.URL,
+				ProxyRedirect: true,
+			},
+		},
+	}
+
+	server := NewServer(listener)
+	proxy := httptest.NewServer(server)
+	defer proxy.Close()
+
+	req, err := http.NewRequest("GET", proxy.URL+"/emby/videos/243668/original.mp4?api_key=test", nil)
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+	req.Host = "route.example"
+
+	client := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("proxy request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusMovedPermanently {
+		t.Fatalf("expected 301, got %d", resp.StatusCode)
+	}
+	if observedPath != "/videos/243668/original.mp4" {
+		t.Fatalf("expected frontend prefix stripped before proxying, got %q", observedPath)
+	}
+	if got := resp.Header.Get("Location"); got != "https://route.example/emby/__nre_redirect/https/streamer.example/stream?sign=abc" {
+		t.Fatalf("unexpected rewritten external location: %q", got)
+	}
+}
+
+func TestServerProxiesFollowUpRequestForInternalRedirectPath(t *testing.T) {
+	var streamer *httptest.Server
+	streamer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/stream" {
+			t.Fatalf("expected streamer path /stream, got %q", r.URL.Path)
+		}
+		if r.URL.RawQuery != "sign=abc" {
+			t.Fatalf("expected streamer query sign=abc, got %q", r.URL.RawQuery)
+		}
+		_, _ = w.Write([]byte("proxied-stream"))
+	}))
+	defer streamer.Close()
+
+	var backend *httptest.Server
+	backend = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", streamer.URL+"/stream?sign=abc")
+		w.WriteHeader(http.StatusMovedPermanently)
+	}))
+	defer backend.Close()
+
+	listener := model.HTTPListener{
+		Rules: []model.HTTPRule{
+			{
+				FrontendURL:   "https://route.example/emby",
+				BackendURL:    backend.URL,
+				ProxyRedirect: true,
+			},
+		},
+	}
+
+	server := NewServer(listener)
+	proxy := httptest.NewServer(server)
+	defer proxy.Close()
+
+	client := &http.Client{
+		Transport: &rewriteHostTransport{
+			base:       http.DefaultTransport,
+			targetHost: "route.example",
+			actualURL:  proxy.URL,
+		},
+	}
+
+	resp, err := client.Get("https://route.example/emby/videos/1/original.mp4")
+	if err != nil {
+		t.Fatalf("proxy request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 after internal redirect proxying, got %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read response body: %v", err)
+	}
+	if string(body) != "proxied-stream" {
+		t.Fatalf("unexpected proxied response body %q", string(body))
 	}
 }
 
@@ -1276,4 +1409,27 @@ type resolverFunc func(context.Context, string) ([]net.IPAddr, error)
 
 func (f resolverFunc) LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error) {
 	return f(ctx, host)
+}
+
+type rewriteHostTransport struct {
+	base       http.RoundTripper
+	targetHost string
+	actualURL  string
+}
+
+func (t *rewriteHostTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.URL.Host != t.targetHost {
+		return t.base.RoundTrip(req)
+	}
+	actual, err := url.Parse(t.actualURL)
+	if err != nil {
+		return nil, err
+	}
+	clone := req.Clone(req.Context())
+	clone.URL.Scheme = actual.Scheme
+	clone.URL.Host = actual.Host
+	if clone.Host == "" {
+		clone.Host = t.targetHost
+	}
+	return t.base.RoundTrip(clone)
 }
