@@ -851,6 +851,9 @@ const mockRelayListenersByAgent = {
       certificate_source: 'auto_relay_ca',
       trust_mode_source: 'auto',
       tls_mode: 'pin_and_ca',
+      transport_mode: 'tls_tcp',
+      allow_transport_fallback: true,
+      obfs_mode: 'early_window_v2',
       pin_set: [{ type: 'spki_sha256', value: 'derived-pin-a' }],
       trusted_ca_certificate_ids: [2],
       allow_self_signed: true,
@@ -871,6 +874,9 @@ const mockRelayListenersByAgent = {
       certificate_source: 'auto_relay_ca',
       trust_mode_source: 'auto',
       tls_mode: 'pin_and_ca',
+      transport_mode: 'quic',
+      allow_transport_fallback: true,
+      obfs_mode: 'off',
       pin_set: [{ type: 'spki_sha256', value: 'derived-pin-b' }],
       trusted_ca_certificate_ids: [4],
       allow_self_signed: true,
@@ -938,6 +944,15 @@ function normalizeRelayBindHosts(rawBindHosts, legacyListenHost) {
   return deduped.length ? deduped : ['0.0.0.0']
 }
 
+function normalizeRelayTransportMode(value) {
+  return value === 'quic' ? 'quic' : 'tls_tcp'
+}
+
+function normalizeRelayObfsMode(value, transportMode) {
+  if (transportMode !== 'tls_tcp') return 'off'
+  return value === 'early_window_v2' ? 'early_window_v2' : 'off'
+}
+
 function normalizeMockRelayListenerRecord(record = {}) {
   const {
     bind_hosts: rawBindHosts,
@@ -946,9 +961,13 @@ function normalizeMockRelayListenerRecord(record = {}) {
     public_port: rawPublicPort,
     ...rest
   } = record
+  const transportMode = normalizeRelayTransportMode(record.transport_mode)
   const normalized = {
     ...rest,
-    bind_hosts: normalizeRelayBindHosts(rawBindHosts, legacyListenHost)
+    bind_hosts: normalizeRelayBindHosts(rawBindHosts, legacyListenHost),
+    transport_mode: transportMode,
+    allow_transport_fallback: record.allow_transport_fallback !== false,
+    obfs_mode: normalizeRelayObfsMode(record.obfs_mode, transportMode)
   }
   const publicHost = String(rawPublicHost || '').trim()
   const publicPort = normalizeRelayPort(rawPublicPort)
@@ -961,6 +980,7 @@ function normalizeMockRelayListenerPayload(agentId, payload = {}) {
   const normalizedRecord = normalizeMockRelayListenerRecord(payload)
   const certificateSource = payload.certificate_source === 'existing_certificate' ? 'existing_certificate' : 'auto_relay_ca'
   const trustModeSource = payload.trust_mode_source === 'custom' ? 'custom' : 'auto'
+  const transportMode = payload.transport_mode === 'quic' ? 'quic' : 'tls_tcp'
   const hasPublicPortInput = payload.public_port != null && String(payload.public_port).trim() !== ''
   if (hasPublicPortInput && normalizeRelayPort(payload.public_port) == null) {
     throw new Error('public_port must be an integer between 1 and 65535')
@@ -1017,6 +1037,11 @@ function normalizeMockRelayListenerPayload(agentId, payload = {}) {
     certificate_id: certificateId,
     certificate_source: certificateSource,
     trust_mode_source: trustModeSource,
+    transport_mode: transportMode,
+    allow_transport_fallback: payload.allow_transport_fallback !== false,
+    obfs_mode: transportMode === 'tls_tcp'
+      ? normalizeRelayObfsMode(payload.obfs_mode, transportMode)
+      : 'off',
     pin_set: derivedPinSet,
     trusted_ca_certificate_ids: derivedTrustedCa,
     tls_mode: trustModeSource === 'auto' ? 'pin_and_ca' : tlsMode,

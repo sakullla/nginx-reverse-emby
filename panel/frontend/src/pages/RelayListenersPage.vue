@@ -72,7 +72,10 @@
 
         <div class='relay-card__meta'>
           <span class='relay-card__badge'>{{ listener.certificate_id ? `证书 #${listener.certificate_id}` : '未绑定证书' }}</span>
+          <span class='relay-card__badge'>{{ transportSummary(listener) }}</span>
+          <span class='relay-card__badge'>{{ obfsSummary(listener) }}</span>
           <span class='relay-card__badge'>{{ trustSummary(listener) }}</span>
+          <span v-if="listener.transport_mode === 'quic'" class='relay-card__badge'>{{ fallbackSummary(listener) }}</span>
           <span v-if="listener.allow_self_signed" class='relay-card__badge relay-card__badge--warn'>允许自签</span>
         </div>
 
@@ -158,6 +161,30 @@ function trustSummary(listener) {
   if (listener.tls_mode === 'pin_only') return '仅 Pin'
   if (listener.tls_mode === 'ca_only') return '仅 CA'
   return '兼容模式'
+}
+
+function normalizeTransportMode(listener) {
+  return listener?.transport_mode === 'quic' ? 'quic' : 'tls_tcp'
+}
+
+function normalizeObfsMode(listener) {
+  return normalizeTransportMode(listener) === 'tls_tcp' && listener?.obfs_mode === 'early_window_v2'
+    ? 'early_window_v2'
+    : 'off'
+}
+
+function transportSummary(listener) {
+  return normalizeTransportMode(listener) === 'quic' ? 'QUIC' : 'TLS/TCP'
+}
+
+function obfsSummary(listener) {
+  return normalizeObfsMode(listener) === 'early_window_v2'
+    ? '隐匿 early_window_v2'
+    : '隐匿关闭'
+}
+
+function fallbackSummary(listener) {
+  return listener?.allow_transport_fallback === false ? '禁止回退' : '允许回退 TLS/TCP'
 }
 
 function normalizePort(port) {

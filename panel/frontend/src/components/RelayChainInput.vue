@@ -221,7 +221,7 @@ function formatListener(listener) {
   const name = listener?.name || `监听器 ${listener?.id}`
   const endpoint = formatPublicEndpoint(listener)
   const agentLabel = String(listener?.agent_name || listener?.agent_id || '').trim()
-  return `${agentLabel ? `[${agentLabel}] ` : ''}${name} (${endpoint})`
+  return `${agentLabel ? `[${agentLabel}] ` : ''}${name} (${endpoint} · ${formatTransportLabel(listener)})`
 }
 
 function normalizePort(raw) {
@@ -252,7 +252,32 @@ function formatListenerSecondary(listener) {
   const bindHosts = resolveBindHosts(listener)
   const bindLabel = bindHosts.length ? bindHosts.join(', ') : '-'
   const listenPort = normalizePort(listener?.listen_port)
-  return `${name} · bind ${listenPort ? `${bindLabel}:${listenPort}` : bindLabel}`
+  return `${name} · ${formatTransportHint(listener)} · bind ${listenPort ? `${bindLabel}:${listenPort}` : bindLabel}`
+}
+
+function normalizeTransportMode(listener) {
+  return listener?.transport_mode === 'quic' ? 'quic' : 'tls_tcp'
+}
+
+function normalizeObfsMode(listener) {
+  return normalizeTransportMode(listener) === 'tls_tcp' && listener?.obfs_mode === 'early_window_v2'
+    ? 'early_window_v2'
+    : 'off'
+}
+
+function formatTransportLabel(listener) {
+  return normalizeTransportMode(listener) === 'quic' ? 'QUIC' : 'TLS/TCP'
+}
+
+function formatTransportHint(listener) {
+  if (normalizeTransportMode(listener) === 'quic') {
+    return listener?.allow_transport_fallback === false
+      ? 'QUIC · 禁止回退'
+      : 'QUIC · 允许回退 TLS/TCP'
+  }
+  return normalizeObfsMode(listener) === 'early_window_v2'
+    ? 'TLS/TCP · early_window_v2'
+    : 'TLS/TCP · 隐匿关闭'
 }
 
 function updateChain(next) {

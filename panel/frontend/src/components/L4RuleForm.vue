@@ -236,7 +236,7 @@
           <div class="section-header">
             <div>
               <h3 class="section-title">隐私增强</h3>
-              <p class="section-description">开启后会为 Relay 中转链路附加隐私增强处理</p>
+              <p class="section-description">仅当首跳 Relay 使用 TLS/TCP 时可启用，用于隐藏内层 ss/TLS 握手特征</p>
             </div>
           </div>
           <label class="toggle toggle--card" :class="{ 'toggle--active': form.relay_obfs, 'toggle--disabled': relayObfsDisabled }">
@@ -249,10 +249,10 @@
             <span class="toggle__slider"></span>
             <span class="toggle__content">
               <span class="toggle__label">启用 Relay 隐私增强</span>
-              <span class="toggle__desc">仅对 TCP Relay 链路中的中转流量生效</span>
+              <span class="toggle__desc">仅对首跳为 TLS/TCP 的 TCP Relay 链路生效</span>
             </span>
           </label>
-          <p v-if="relayObfsDisabled" class="form-help">当前为直连模式，此选项不会生效</p>
+          <p v-if="relayObfsDisabled" class="form-help">{{ relayObfsUnsupportedReason }}</p>
         </div>
 
         <!-- 使用说明 -->
@@ -411,7 +411,25 @@ const hasProtocolTuning = computed(() => {
 const hasRelayConfig = computed(() => {
   return Array.isArray(form.value.relay_chain) && form.value.relay_chain.length > 0
 })
-const relayObfsDisabled = computed(() => !Array.isArray(form.value.relay_chain) || form.value.relay_chain.length === 0)
+const selectedRelayListeners = computed(() => {
+  const listenerMap = new Map(relayListeners.value.map((listener) => [Number(listener.id), listener]))
+  return (Array.isArray(form.value.relay_chain) ? form.value.relay_chain : [])
+    .map((id) => listenerMap.get(Number(id)) || null)
+})
+const firstRelayListener = computed(() => selectedRelayListeners.value[0] ?? null)
+const relayObfsUnsupportedReason = computed(() => {
+  if (!Array.isArray(form.value.relay_chain) || form.value.relay_chain.length === 0) {
+    return '当前为直连模式，此选项不会生效'
+  }
+  if (!firstRelayListener.value) {
+    return '首跳 Relay 监听器不存在，无法启用隐私增强'
+  }
+  if (firstRelayListener.value.transport_mode !== 'tls_tcp') {
+    return '首跳 Relay 使用 QUIC 传输，隐私增强仅适用于 TLS/TCP'
+  }
+  return ''
+})
+const relayObfsDisabled = computed(() => Boolean(relayObfsUnsupportedReason.value))
 
 watch(() => props.initialData, (value) => {
   form.value = createFormState(value)
@@ -429,8 +447,12 @@ watch(() => form.value.protocol, (newProto) => {
   }
 })
 
-watch(() => form.value.relay_chain, (relayChain) => {
-  if (!Array.isArray(relayChain) || relayChain.length === 0) {
+watch([() => form.value.relay_chain, firstRelayListener], ([relayChain]) => {
+  if (
+    !Array.isArray(relayChain)
+    || relayChain.length === 0
+    || firstRelayListener.value?.transport_mode !== 'tls_tcp'
+  ) {
     form.value.relay_obfs = false
   }
 })
@@ -548,6 +570,7 @@ function buildPayload() {
     tags: [...sysTags, ...userTags],
     relay_chain: form.value.protocol === 'tcp' ? [...form.value.relay_chain] : [],
     relay_obfs: form.value.protocol === 'tcp'
+      && firstRelayListener.value?.transport_mode === 'tls_tcp'
       && Array.isArray(form.value.relay_chain)
       && form.value.relay_chain.length > 0
       && form.value.relay_obfs === true,

@@ -65,18 +65,65 @@ test('HTTP legacy positional path passes options out of band', () => {
 
 test('HTTP RuleForm clears relay obfs when relay chain becomes empty', () => {
   const source = read('RuleForm.vue')
-  assert.match(source, /watch\(\(\) => form\.value\.relay_chain,\s*\(relayChain\) => \{/)
-  assert.match(source, /if \(!Array\.isArray\(relayChain\) \|\| relayChain\.length === 0\) \{\s*form\.value\.relay_obfs = false/)
+  assert.match(source, /watch\(\s*\[\(\) => form\.value\.relay_chain,\s*firstRelayListener\],\s*\(\[relayChain\]\) => \{/)
+  assert.match(source, /if \(\s*!Array\.isArray\(relayChain\)\s*\|\|\s*relayChain\.length === 0\s*\|\|\s*firstRelayListener\.value\?\.transport_mode !== 'tls_tcp'/)
 })
 
 test('L4 RuleForm clears relay obfs when relay chain becomes empty', () => {
   const source = read('L4RuleForm.vue')
-  assert.match(source, /watch\(\(\) => form\.value\.relay_chain,\s*\(relayChain\) => \{/)
-  assert.match(source, /if \(!Array\.isArray\(relayChain\) \|\| relayChain\.length === 0\) \{\s*form\.value\.relay_obfs = false/)
+  assert.match(source, /watch\(\s*\[\(\) => form\.value\.relay_chain,\s*firstRelayListener\],\s*\(\[relayChain\]\) => \{/)
+  assert.match(source, /if \(\s*!Array\.isArray\(relayChain\)\s*\|\|\s*relayChain\.length === 0\s*\|\|\s*firstRelayListener\.value\?\.transport_mode !== 'tls_tcp'/)
 })
 
 test('L4 RuleForm rehydrates local form state when initialData changes', () => {
   const source = read('L4RuleForm.vue')
   assert.match(source, /watch\(\(\) => props\.initialData,\s*\(value\) => \{/)
   assert.match(source, /form\.value = createFormState\(value\)/)
+})
+
+test('RelayListenerForm exposes relay transport fields and submit payload', () => {
+  const source = read('RelayListenerForm.vue')
+  assert.match(source, /v-model='form\.transport_mode'/)
+  assert.match(source, /v-model='form\.allow_transport_fallback'/)
+  assert.match(source, /v-model='form\.obfs_mode'/)
+  assert.match(source, /transport_mode:\s*form\.value\.transport_mode/)
+  assert.match(source, /allow_transport_fallback:\s*form\.value\.transport_mode === 'quic'[\s\S]*form\.value\.allow_transport_fallback === true/)
+  assert.match(source, /obfs_mode:\s*form\.value\.transport_mode === 'tls_tcp'[\s\S]*form\.value\.obfs_mode[\s\S]*:\s*'off'/)
+})
+
+test('Relay list and selector surface transport mode to users', () => {
+  const listenersPage = read('../pages/RelayListenersPage.vue')
+  const relayChainInput = read('RelayChainInput.vue')
+  assert.match(listenersPage, /transportSummary\(listener\)/)
+  assert.match(listenersPage, /obfsSummary\(listener\)/)
+  assert.match(relayChainInput, /formatTransportLabel\(listener\)/)
+  assert.match(relayChainInput, /formatTransportHint\(listener\)/)
+})
+
+test('HTTP RuleForm ties relay obfs to first relay listener transport', () => {
+  const source = read('RuleForm.vue')
+  assert.match(source, /const selectedRelayListeners = computed\(\(\) => \{/)
+  assert.match(source, /const firstRelayListener = computed\(\(\) => selectedRelayListeners\.value\[0\] \?\? null\)/)
+  assert.match(source, /const relayObfsUnsupportedReason = computed\(\(\) => \{/)
+  assert.match(source, /firstRelayListener\.value\.transport_mode !== 'tls_tcp'/)
+  assert.match(source, /watch\(\s*\[\(\) => form\.value\.relay_chain,\s*firstRelayListener\]/)
+  assert.match(source, /relay_obfs:\s*firstRelayListener\.value\?\.transport_mode === 'tls_tcp'[\s\S]*form\.value\.relay_obfs === true/)
+})
+
+test('L4 RuleForm ties relay obfs to first relay listener transport', () => {
+  const source = read('L4RuleForm.vue')
+  assert.match(source, /const selectedRelayListeners = computed\(\(\) => \{/)
+  assert.match(source, /const firstRelayListener = computed\(\(\) => selectedRelayListeners\.value\[0\] \?\? null\)/)
+  assert.match(source, /const relayObfsUnsupportedReason = computed\(\(\) => \{/)
+  assert.match(source, /firstRelayListener\.value\.transport_mode !== 'tls_tcp'/)
+  assert.match(source, /watch\(\s*\[\(\) => form\.value\.relay_chain,\s*firstRelayListener\]/)
+  assert.match(source, /relay_obfs:\s*form\.value\.protocol === 'tcp'[\s\S]*firstRelayListener\.value\?\.transport_mode === 'tls_tcp'[\s\S]*form\.value\.relay_obfs === true/)
+})
+
+test('Mock relay listener normalization keeps transport defaults and quic obfs off', () => {
+  const source = fs.readFileSync(path.resolve(__dirname, '../api/index.js'), 'utf8')
+  assert.match(source, /function normalizeRelayTransportMode\(value\)/)
+  assert.match(source, /transport_mode:\s*transportMode/)
+  assert.match(source, /allow_transport_fallback:\s*payload\.allow_transport_fallback !== false/)
+  assert.match(source, /obfs_mode:\s*transportMode === 'tls_tcp'[\s\S]*normalizeRelayObfsMode\(payload\.obfs_mode, transportMode\)[\s\S]*:\s*'off'/)
 })

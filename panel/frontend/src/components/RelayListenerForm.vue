@@ -70,6 +70,40 @@
       <p v-if='errors.public_endpoint' class='form-error'>{{ errors.public_endpoint }}</p>
     </div>
 
+    <div class='form-row'>
+      <div class='form-group'>
+        <label class='form-label'>Relay Transport</label>
+        <select v-model='form.transport_mode' class='input'>
+          <option value='tls_tcp'>TLS/TCP</option>
+          <option value='quic'>QUIC</option>
+        </select>
+        <p class='form-hint'>默认使用 TLS/TCP；如需更低握手耗时和更好的中继传输表现，可改为 QUIC。</p>
+      </div>
+
+      <div v-if='form.transport_mode === "tls_tcp"' class='form-group'>
+        <label class='form-label'>TLS 隐匿策略</label>
+        <select v-model='form.obfs_mode' class='input'>
+          <option value='off'>关闭</option>
+          <option value='early_window_v2'>early_window_v2</option>
+        </select>
+        <p class='form-hint'>仅对 TLS/TCP 生效，用于压低内层 ss/TLS 握手特征。</p>
+      </div>
+
+      <div v-else class='form-group'>
+        <label class='form-label'>QUIC 回退</label>
+        <label class='toggle-row toggle-row--panel'>
+          <input
+            v-model='form.allow_transport_fallback'
+            type='checkbox'
+            class='toggle__input'
+          >
+          <span class='toggle__slider'></span>
+          <span class='toggle__label'>QUIC 不可用时允许回退到 TLS/TCP</span>
+        </label>
+        <p class='form-hint'>开启后会优先尝试 QUIC，失败时自动回退到 TLS/TCP。</p>
+      </div>
+    </div>
+
     <div class='form-group'>
       <label class='form-label'>信任策略</label>
       <select v-model='form.trust_mode_source' class='input'>
@@ -290,12 +324,26 @@ watch(
   }
 )
 
+watch(
+  () => form.value.transport_mode,
+  (value) => {
+    if (value === 'quic') {
+      form.value.obfs_mode = 'off'
+    } else {
+      form.value.obfs_mode = normalizeObfsMode(form.value.obfs_mode, value)
+    }
+  }
+)
+
 function createDefaultForm() {
   return {
     name: '',
     bind_hosts_text: '0.0.0.0',
     public_endpoint: '',
     listen_port: 0,
+    transport_mode: 'tls_tcp',
+    allow_transport_fallback: true,
+    obfs_mode: 'off',
     enabled: true,
     certificate_id: null,
     certificate_source: 'auto_relay_ca',
@@ -323,8 +371,18 @@ function inferTrustModeSource(initialData) {
   return 'custom'
 }
 
+function normalizeTransportMode(value) {
+  return value === 'quic' ? 'quic' : 'tls_tcp'
+}
+
+function normalizeObfsMode(value, transportMode) {
+  if (transportMode !== 'tls_tcp') return 'off'
+  return value === 'early_window_v2' ? 'early_window_v2' : 'off'
+}
+
 function createFormState(initialData) {
   if (!initialData) return createDefaultForm()
+  const transportMode = normalizeTransportMode(initialData.transport_mode)
   return {
     name: initialData.name || '',
     bind_hosts_text: buildBindHostsText(
@@ -334,6 +392,9 @@ function createFormState(initialData) {
     ),
     public_endpoint: buildPublicEndpoint(initialData),
     listen_port: initialData.listen_port || 0,
+    transport_mode: transportMode,
+    allow_transport_fallback: initialData.allow_transport_fallback !== false,
+    obfs_mode: normalizeObfsMode(initialData.obfs_mode, transportMode),
     enabled: initialData.enabled !== false,
     certificate_id: initialData.certificate_id == null ? null : Number(initialData.certificate_id),
     certificate_source: inferCertificateSource(initialData),
@@ -464,6 +525,13 @@ async function handleSubmit() {
     name: form.value.name.trim(),
     bind_hosts: bindHosts,
     listen_port: form.value.listen_port,
+    transport_mode: form.value.transport_mode,
+    allow_transport_fallback: form.value.transport_mode === 'quic'
+      ? form.value.allow_transport_fallback === true
+      : true,
+    obfs_mode: form.value.transport_mode === 'tls_tcp'
+      ? form.value.obfs_mode
+      : 'off',
     enabled: form.value.enabled,
     certificate_id: form.value.certificate_source === 'existing_certificate'
       ? (form.value.certificate_id == null ? null : Number(form.value.certificate_id))
@@ -596,6 +664,13 @@ async function handleSubmit() {
   display: flex;
   align-items: center;
   gap: var(--space-3);
+}
+
+.toggle-row--panel {
+  padding: var(--space-3);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-surface);
 }
 
 .toggle__input {
