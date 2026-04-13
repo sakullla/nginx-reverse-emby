@@ -52,6 +52,7 @@ type routeEntry struct {
 	transport      *http.Transport
 	modifyResp     func(*http.Response) error
 	selectionScope string
+	frontendPath   string
 }
 
 type httpBackend struct {
@@ -101,14 +102,15 @@ func newServer(
 			}
 		}
 
-		frontendOrigin := FrontendOriginFromRule(rule)
+		frontendBaseURL := FrontendOriginFromRule(rule)
 		s.routes[hostKey] = &routeEntry{
 			rule:           rule,
 			backends:       targets,
 			backendCache:   backendCache,
 			transport:      transport,
-			modifyResp:     makeModifyResponse(frontendOrigin, rule.ProxyRedirect, targets[0].backendHost),
+			modifyResp:     makeModifyResponse(frontendBaseURL, rule.ProxyRedirect, targets[0].backendHost, normalizeURLPath(targets[0].target.Path)),
 			selectionScope: hostKey,
+			frontendPath:   FrontendPathFromRule(rule),
 		}
 	}
 
@@ -233,7 +235,7 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 		return err
 	}
 	for _, candidate := range candidates {
-		attemptReq, err := cloneProxyRequest(req, bodyBytes, candidate, e.rule)
+		attemptReq, err := cloneProxyRequest(req, bodyBytes, candidate, e.rule, e.frontendPath)
 		if err != nil {
 			log.Printf("[proxy] clone request error for %s -> %s: %v", e.rule.FrontendURL, candidate.target, err)
 			return err
@@ -250,7 +252,7 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 		e.backendCache.MarkSuccess(candidate.dialAddress)
 		defer resp.Body.Close()
 		if e.modifyResp != nil {
-			modify := makeModifyResponse(FrontendOriginFromRule(e.rule), e.rule.ProxyRedirect, candidate.backendHost)
+			modify := makeModifyResponse(FrontendOriginFromRule(e.rule), e.rule.ProxyRedirect, candidate.backendHost, normalizeURLPath(candidate.target.Path))
 			if err := modify(resp); err != nil {
 				log.Printf("[proxy] modify response error for %s: %v", e.rule.FrontendURL, err)
 				return err
@@ -614,7 +616,7 @@ func parseHTTPBackends(rule model.HTTPRule) ([]httpBackend, error) {
 		}
 		backendsOut = append(backendsOut, httpBackend{
 			target:      target,
-			backendHost: normalizeHost(target.Host),
+			backendHost: normalizeURLAuthority(target),
 		})
 	}
 	return backendsOut, nil
@@ -628,19 +630,28 @@ func readReusableBody(req *http.Request) ([]byte, error) {
 	return io.ReadAll(req.Body)
 }
 
-func cloneProxyRequest(req *http.Request, body []byte, candidate httpCandidate, rule model.HTTPRule) (*http.Request, error) {
+func cloneProxyRequest(req *http.Request, body []byte, candidate httpCandidate, rule model.HTTPRule, frontendPath string) (*http.Request, error) {
 	incomingHost := req.Host
 	incomingScheme := requestScheme(req)
 	out := req.Clone(req.Context())
-	out.URL = cloneURL(candidate.target)
-	out.URL.Path = req.URL.Path
-	out.URL.RawPath = req.URL.RawPath
+	targetURL := cloneURL(candidate.target)
+	dialAddress := candidate.dialAddress
+	if redirectTarget, ok := parseInternalRedirectTarget(req.URL.Path, frontendPath); ok {
+		targetURL = redirectTarget
+		targetURL.RawQuery = req.URL.RawQuery
+		dialAddress = addressWithDefaultPort(targetURL)
+	} else {
+		targetURL.Path = rewriteRequestPath(req.URL.Path, frontendPath, normalizeURLPath(candidate.target.Path))
+		targetURL.RawPath = ""
+		targetURL.RawQuery = req.URL.RawQuery
+	}
+	out.URL = targetURL
 	out.URL.RawQuery = req.URL.RawQuery
 	out.URL.Fragment = req.URL.Fragment
 	out.URL.ForceQuery = req.URL.ForceQuery
 	out.RequestURI = ""
-	out.Host = candidate.target.Host
-	out = out.WithContext(withDialAddress(out.Context(), candidate.dialAddress))
+	out.Host = targetURL.Host
+	out = out.WithContext(withDialAddress(out.Context(), dialAddress))
 	if body != nil {
 		out.Body = io.NopCloser(bytes.NewReader(body))
 		out.ContentLength = int64(len(body))
@@ -864,4 +875,12 @@ func defaultPort(scheme string) int {
 	default:
 		return 80
 	}
+}
+
+func defaultPortString(scheme string) string {
+	port := defaultPort(scheme)
+	if port <= 0 {
+		return ""
+	}
+	return strconv.Itoa(port)
 }

@@ -6,15 +6,22 @@ import (
 )
 
 func TestRewriteLocationUsesFrontendOrigin(t *testing.T) {
-	got := rewriteLocation("https://backend.example/internal", "https://frontend.example")
+	got := rewriteLocation("https://backend.example/internal", "https://frontend.example", "/")
 	if got != "https://frontend.example/internal" {
 		t.Fatalf("unexpected location rewrite: %q", got)
 	}
 }
 
+func TestRewriteLocationPreservesFrontendPathPrefix(t *testing.T) {
+	got := rewriteLocation("https://backend.example/videos/1/original.mp4", "https://frontend.example/emby", "/")
+	if got != "https://frontend.example/emby/videos/1/original.mp4" {
+		t.Fatalf("unexpected location rewrite with prefix: %q", got)
+	}
+}
+
 func TestRewriteLocationEmptyFrontendOriginReturnsOriginal(t *testing.T) {
 	original := "https://backend.example/internal"
-	got := rewriteLocation(original, "")
+	got := rewriteLocation(original, "", "/")
 	if got != original {
 		t.Fatalf("expected original location, got %q", got)
 	}
@@ -34,5 +41,15 @@ func TestApplyHeaderOverridesHostUpdatesRequestHost(t *testing.T) {
 	}
 	if req.Header.Get("X-Test-Header") != "abc" {
 		t.Fatalf("expected header override, got %q", req.Header.Get("X-Test-Header"))
+	}
+}
+
+func TestRewriteExternalLocationToProxyPath(t *testing.T) {
+	got := rewriteExternalLocationToProxyPath(
+		"https://streamer.example/stream?sign=abc",
+		"https://frontend.example/emby",
+	)
+	if got != "https://frontend.example/emby/__nre_redirect/https/streamer.example/stream?sign=abc" {
+		t.Fatalf("unexpected external redirect rewrite: %q", got)
 	}
 }
