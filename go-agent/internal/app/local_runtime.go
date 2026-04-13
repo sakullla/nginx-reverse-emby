@@ -25,11 +25,12 @@ type RelayApplier interface {
 }
 
 type httpRuntimeManager struct {
-	mu        sync.Mutex
-	runtime   *proxy.Runtime
-	provider  proxy.TLSMaterialProvider
-	cache     *backends.Cache
-	transport *http.Transport
+	mu           sync.Mutex
+	runtime      *proxy.Runtime
+	provider     proxy.TLSMaterialProvider
+	cache        *backends.Cache
+	transport    *http.Transport
+	http3Enabled bool
 }
 
 func newHTTPRuntimeManager() *httpRuntimeManager {
@@ -40,10 +41,15 @@ func newHTTPRuntimeManager() *httpRuntimeManager {
 }
 
 func newHTTPRuntimeManagerWithTLS(provider proxy.TLSMaterialProvider) *httpRuntimeManager {
+	return newHTTPRuntimeManagerWithTLSAndHTTP3(provider, false)
+}
+
+func newHTTPRuntimeManagerWithTLSAndHTTP3(provider proxy.TLSMaterialProvider, http3Enabled bool) *httpRuntimeManager {
 	return &httpRuntimeManager{
-		provider:  provider,
-		cache:     backends.NewCache(backends.Config{}),
-		transport: proxy.NewSharedTransport(),
+		provider:     provider,
+		cache:        backends.NewCache(backends.Config{}),
+		transport:    proxy.NewSharedTransport(),
+		http3Enabled: http3Enabled,
 	}
 }
 
@@ -74,7 +80,7 @@ func (m *httpRuntimeManager) ApplyWithRelay(ctx context.Context, rules []model.H
 
 	previous := m.runtime
 	if previous != nil && !httpBindingsOverlap(previous.BindingKeys(), bindings) {
-		runtime, err := proxy.StartWithResources(ctx, rules, relayListeners, providers, m.cache, m.transport)
+		runtime, err := proxy.StartWithResources(ctx, rules, relayListeners, providers, m.cache, m.transport, m.http3Enabled)
 		if err != nil {
 			return err
 		}
@@ -87,7 +93,7 @@ func (m *httpRuntimeManager) ApplyWithRelay(ctx context.Context, rules []model.H
 		m.runtime = nil
 	}
 
-	runtime, err := proxy.StartWithResources(ctx, rules, relayListeners, providers, m.cache, m.transport)
+	runtime, err := proxy.StartWithResources(ctx, rules, relayListeners, providers, m.cache, m.transport, m.http3Enabled)
 	if err != nil {
 		return err
 	}

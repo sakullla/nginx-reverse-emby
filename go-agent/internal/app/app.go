@@ -113,7 +113,7 @@ func New(cfg Config) (*App, error) {
 		cfg,
 		st,
 		client,
-		newHTTPRuntimeManagerWithTLS(certManager),
+		newHTTPRuntimeManagerWithTLSAndHTTP3(certManager, cfg.HTTP3Enabled),
 		certManager,
 		newL4RuntimeManagerWithRelay(certManager),
 		newRelayRuntimeManager(certManager),

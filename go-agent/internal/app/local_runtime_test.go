@@ -19,8 +19,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/quic-go/quic-go/http3"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
 )
 
 func TestL4RuntimeManagerPreservesRunningServerOnInvalidReconfigure(t *testing.T) {
@@ -187,6 +189,104 @@ func TestHTTPRuntimeManagerServesHTTPSRulesWithTLSProvider(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for https runtime on port %d", listenPort)
+}
+
+func TestHTTPRuntimeManagerServesHTTP3WhenEnabled(t *testing.T) {
+	provider := &testHTTPRuntimeTLSProvider{
+		certificates: map[string]tls.Certificate{
+			"edge.example.test": mustIssueTestTLSCertificate(t),
+		},
+	}
+	manager := newHTTPRuntimeManagerWithTLSAndHTTP3(provider, true)
+	ctx := context.Background()
+	listenPort := pickFreeTCPPort(t)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer backend.Close()
+
+	rule := model.HTTPRule{
+		FrontendURL: fmt.Sprintf("https://edge.example.test:%d", listenPort),
+		BackendURL:  backend.URL,
+		Revision:    1,
+	}
+	if err := manager.Apply(ctx, []model.HTTPRule{rule}); err != nil {
+		t.Fatalf("failed to apply https runtime: %v", err)
+	}
+	defer manager.Close()
+
+	transport := &http3.Transport{
+		TLSClientConfig: &tls.Config{
+			ServerName:         "edge.example.test",
+			InsecureSkipVerify: true,
+		},
+	}
+	defer transport.Close()
+
+	client := &http.Client{Transport: transport}
+	deadline := time.Now().Add(2 * time.Second)
+	address := fmt.Sprintf("https://127.0.0.1:%d/", listenPort)
+	for time.Now().Before(deadline) {
+		req, err := http.NewRequest(http.MethodGet, address, nil)
+		if err != nil {
+			t.Fatalf("failed to create request: %v", err)
+		}
+		req.Host = fmt.Sprintf("edge.example.test:%d", listenPort)
+
+		resp, err := client.Do(req)
+		if err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == http.StatusNoContent {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for http3 runtime on port %d", listenPort)
+}
+
+func TestNewPropagatesHTTP3EnabledToHTTPRuntimeManager(t *testing.T) {
+	app, err := New(Config{
+		AgentID:        "agent",
+		AgentName:      "agent",
+		MasterURL:      "https://master.example.com",
+		AgentToken:     "token",
+		CurrentVersion: "0.1.0",
+		DataDir:        t.TempDir(),
+		HTTP3Enabled:   true,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	manager, ok := app.httpApplier.(*httpRuntimeManager)
+	if !ok {
+		t.Fatalf("http applier type = %T", app.httpApplier)
+	}
+	if !manager.http3Enabled {
+		t.Fatal("expected http3 to be enabled on runtime manager")
+	}
+}
+
+func TestNewEmbeddedPropagatesHTTP3EnabledToHTTPRuntimeManager(t *testing.T) {
+	app, err := NewEmbedded(Config{
+		AgentID:        "agent",
+		AgentName:      "agent",
+		CurrentVersion: "0.1.0",
+		DataDir:        t.TempDir(),
+		HTTP3Enabled:   true,
+	}, store.NewInMemory(), staticSyncClient{})
+	if err != nil {
+		t.Fatalf("NewEmbedded() error = %v", err)
+	}
+
+	manager, ok := app.httpApplier.(*httpRuntimeManager)
+	if !ok {
+		t.Fatalf("http applier type = %T", app.httpApplier)
+	}
+	if !manager.http3Enabled {
+		t.Fatal("expected http3 to be enabled on embedded runtime manager")
+	}
 }
 
 func TestHTTPRuntimeManagerPreservesRunningServerWhenNewPortIsOccupied(t *testing.T) {
@@ -404,6 +504,12 @@ func runtimeTestHTTPRule(port int, backendURL string) model.HTTPRule {
 		BackendURL:  backendURL,
 		Revision:    1,
 	}
+}
+
+type staticSyncClient struct{}
+
+func (staticSyncClient) Sync(context.Context, SyncRequest) (Snapshot, error) {
+	return Snapshot{}, nil
 }
 
 func runtimeTestRelayListener(port int, certificateID int) model.RelayListener {
