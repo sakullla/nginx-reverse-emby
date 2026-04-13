@@ -176,6 +176,56 @@ func TestL4RuleServiceCreateAllocatesGlobalIDsAcrossAgentsInSQLiteStore(t *testi
 	}
 }
 
+func TestL4RuleServiceCreateAllocatesIDsAfterExistingHTTPRulesInSQLiteStore(t *testing.T) {
+	dataRoot := t.TempDir()
+	store, err := storage.NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	for _, agentID := range []string{"agent-a", "agent-b"} {
+		if err := store.SaveAgent(context.Background(), storage.AgentRow{
+			ID:               agentID,
+			Name:             agentID,
+			AgentToken:       agentID + "-token",
+			CapabilitiesJSON: marshalStringArray([]string{"http_rules", "l4"}),
+		}); err != nil {
+			t.Fatalf("SaveAgent(%q) error = %v", agentID, err)
+		}
+	}
+
+	httpSvc := NewRuleService(config.Config{}, store)
+	l4Svc := NewL4RuleService(config.Config{}, store)
+
+	httpRule, err := httpSvc.Create(context.Background(), "agent-a", HTTPRuleInput{
+		FrontendURL: stringPtrRule("http://agent-a.example.com"),
+		BackendURL:  stringPtrRule("http://backend-a.example.internal:8096"),
+	})
+	if err != nil {
+		t.Fatalf("Create HTTP rule error = %v", err)
+	}
+
+	l4Rule, err := l4Svc.Create(context.Background(), "agent-b", L4RuleInput{
+		Protocol:     stringPtrL4("tcp"),
+		ListenPort:   intPtrL4(9100),
+		UpstreamHost: stringPtrL4("backend-b.example.internal"),
+		UpstreamPort: intPtrL4(9101),
+	})
+	if err != nil {
+		t.Fatalf("Create L4 rule error = %v", err)
+	}
+
+	if httpRule.ID != 1 {
+		t.Fatalf("httpRule.ID = %d", httpRule.ID)
+	}
+	if l4Rule.ID != 2 {
+		t.Fatalf("l4Rule.ID = %d", l4Rule.ID)
+	}
+}
+
 func TestL4RuleServiceCreateClearsRelayObfsWithoutRelayChain(t *testing.T) {
 	store := &fakeL4Store{l4RulesByID: map[string][]storage.L4RuleRow{}}
 	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)

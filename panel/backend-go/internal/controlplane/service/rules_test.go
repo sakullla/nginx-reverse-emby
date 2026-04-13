@@ -31,6 +31,10 @@ func (f *fakeRuleStore) ListHTTPRules(_ context.Context, agentID string) ([]stor
 	return append([]storage.HTTPRuleRow(nil), f.rulesByAgent[agentID]...), nil
 }
 
+func (f *fakeRuleStore) ListL4Rules(context.Context, string) ([]storage.L4RuleRow, error) {
+	return nil, nil
+}
+
 func (f *fakeRuleStore) SaveHTTPRules(_ context.Context, agentID string, rows []storage.HTTPRuleRow) error {
 	if err := popRuleStoreError(&f.saveHTTPRulesErrs); err != nil {
 		return err
@@ -638,6 +642,56 @@ func TestRuleServiceCreateAllocatesGlobalIDsAcrossAgentsInSQLiteStore(t *testing
 	}
 	if second.ID != 2 {
 		t.Fatalf("second rule id = %d", second.ID)
+	}
+}
+
+func TestRuleServiceCreateAllocatesIDsAfterExistingL4RulesInSQLiteStore(t *testing.T) {
+	dataRoot := t.TempDir()
+	store, err := storage.NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	for _, agentID := range []string{"agent-a", "agent-b"} {
+		if err := store.SaveAgent(context.Background(), storage.AgentRow{
+			ID:               agentID,
+			Name:             agentID,
+			AgentToken:       agentID + "-token",
+			CapabilitiesJSON: marshalStringArray([]string{"http_rules", "l4"}),
+		}); err != nil {
+			t.Fatalf("SaveAgent(%q) error = %v", agentID, err)
+		}
+	}
+
+	l4Svc := NewL4RuleService(config.Config{}, store)
+	httpSvc := NewRuleService(config.Config{}, store)
+
+	l4Rule, err := l4Svc.Create(context.Background(), "agent-a", L4RuleInput{
+		Protocol:     stringPtrL4("tcp"),
+		ListenPort:   intPtrL4(9000),
+		UpstreamHost: stringPtrL4("backend-a.example.internal"),
+		UpstreamPort: intPtrL4(9001),
+	})
+	if err != nil {
+		t.Fatalf("Create L4 rule error = %v", err)
+	}
+
+	httpRule, err := httpSvc.Create(context.Background(), "agent-b", HTTPRuleInput{
+		FrontendURL: stringPtrRule("http://agent-b.example.com"),
+		BackendURL:  stringPtrRule("http://backend-b.example.internal:8096"),
+	})
+	if err != nil {
+		t.Fatalf("Create HTTP rule error = %v", err)
+	}
+
+	if l4Rule.ID != 1 {
+		t.Fatalf("l4Rule.ID = %d", l4Rule.ID)
+	}
+	if httpRule.ID != 2 {
+		t.Fatalf("httpRule.ID = %d", httpRule.ID)
 	}
 }
 

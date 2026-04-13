@@ -118,6 +118,10 @@ func (s *l4Service) Create(ctx context.Context, agentID string, input L4RuleInpu
 	if err != nil {
 		return L4Rule{}, err
 	}
+	allHTTPRows, err := s.listHTTPRulesAcrossAllAgents(ctx)
+	if err != nil {
+		return L4Rule{}, err
+	}
 	rows, err := s.store.ListL4Rules(ctx, resolvedID)
 	if err != nil {
 		return L4Rule{}, err
@@ -127,6 +131,11 @@ func (s *l4Service) Create(ctx context.Context, agentID string, input L4RuleInpu
 	maxID := 0
 	maxRevision := 0
 	for _, row := range allRows {
+		if row.ID > maxID {
+			maxID = row.ID
+		}
+	}
+	for _, row := range allHTTPRows {
 		if row.ID > maxID {
 			maxID = row.ID
 		}
@@ -442,6 +451,23 @@ func (s *l4Service) listL4RulesAcrossAllAgents(ctx context.Context) ([]storage.L
 	rows := make([]storage.L4RuleRow, 0)
 	for _, agentID := range agentIDs {
 		agentRows, err := s.store.ListL4Rules(ctx, agentID)
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, agentRows...)
+	}
+	return rows, nil
+}
+
+func (s *l4Service) listHTTPRulesAcrossAllAgents(ctx context.Context) ([]storage.HTTPRuleRow, error) {
+	agentIDs, err := s.allKnownAgentIDs(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	rows := make([]storage.HTTPRuleRow, 0)
+	for _, agentID := range agentIDs {
+		agentRows, err := s.store.ListHTTPRules(ctx, agentID)
 		if err != nil {
 			return nil, err
 		}

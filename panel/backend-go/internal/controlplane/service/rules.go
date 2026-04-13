@@ -31,6 +31,7 @@ type HTTPRuleInput struct {
 type ruleStore interface {
 	ListAgents(context.Context) ([]storage.AgentRow, error)
 	ListHTTPRules(context.Context, string) ([]storage.HTTPRuleRow, error)
+	ListL4Rules(context.Context, string) ([]storage.L4RuleRow, error)
 	ListManagedCertificates(context.Context) ([]storage.ManagedCertificateRow, error)
 	ListRelayListeners(context.Context, string) ([]storage.RelayListenerRow, error)
 	SaveAgent(context.Context, storage.AgentRow) error
@@ -92,9 +93,18 @@ func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRule
 	if err != nil {
 		return HTTPRule{}, err
 	}
+	allL4Rows, err := s.listL4RulesAcrossAllAgents(ctx)
+	if err != nil {
+		return HTTPRule{}, err
+	}
 
 	maxID := 0
 	for _, row := range allRows {
+		if row.ID > maxID {
+			maxID = row.ID
+		}
+	}
+	for _, row := range allL4Rows {
 		if row.ID > maxID {
 			maxID = row.ID
 		}
@@ -348,6 +358,23 @@ func (s *ruleService) listRulesAcrossAllAgents(ctx context.Context) ([]storage.H
 	rows := make([]storage.HTTPRuleRow, 0)
 	for _, agentID := range agentIDs {
 		agentRows, err := s.store.ListHTTPRules(ctx, agentID)
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, agentRows...)
+	}
+	return rows, nil
+}
+
+func (s *ruleService) listL4RulesAcrossAllAgents(ctx context.Context) ([]storage.L4RuleRow, error) {
+	agentIDs, err := s.allKnownAgentIDs(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	rows := make([]storage.L4RuleRow, 0)
+	for _, agentID := range agentIDs {
+		agentRows, err := s.store.ListL4Rules(ctx, agentID)
 		if err != nil {
 			return nil, err
 		}
