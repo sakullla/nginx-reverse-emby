@@ -2513,7 +2513,7 @@ func TestRunDoesNotReapplyLocalRelayListenersWhenOnlyRemoteRelayDependencyChange
 			ListenHost: "127.0.0.1",
 			ListenPort: 50381,
 			Backends: []model.L4Backend{{
-				Host: "103.100.176.124",
+				Host: "remote-backend.example.test",
 				Port: 26966,
 			}},
 			RelayChain: []int{5},
@@ -2770,7 +2770,7 @@ func TestRunClearsStoredL4RulesWhenRelayListenersAreExplicitlyCleared(t *testing
 			ListenHost: "127.0.0.1",
 			ListenPort: listenPort,
 			Backends: []model.L4Backend{{
-				Host: "103.100.176.124",
+				Host: "remote-backend.example.test",
 				Port: 26966,
 			}},
 			RelayChain: []int{5},
