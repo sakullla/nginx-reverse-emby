@@ -2670,6 +2670,89 @@ func TestRunAppliesExplicitEmptyRelayListeners(t *testing.T) {
 	}
 }
 
+func TestRunClearsStoredL4RulesWhenRelayListenersAreExplicitlyCleared(t *testing.T) {
+	cfg := Config{
+		AgentID:           "local-agent",
+		HeartbeatInterval: 5 * time.Millisecond,
+	}
+	mem := store.NewInMemory()
+	listenPort := pickFreeTCPPort(t)
+	stored := Snapshot{
+		DesiredVersion: "stored",
+		Revision:       5,
+		L4Rules: []model.L4Rule{{
+			Protocol:   "tcp",
+			ListenHost: "127.0.0.1",
+			ListenPort: listenPort,
+			Backends: []model.L4Backend{{
+				Host: "103.100.176.124",
+				Port: 26966,
+			}},
+			RelayChain: []int{5},
+			Revision:   5,
+		}},
+		RelayListeners: []model.RelayListener{{
+			ID:         5,
+			AgentID:    "remote-agent",
+			Name:       "remote-hop",
+			ListenHost: "relay.remote.example",
+			ListenPort: 2443,
+			Enabled:    true,
+			TLSMode:    "pin_only",
+			PinSet: []model.RelayPin{{
+				Type:  "sha256",
+				Value: "pin-value",
+			}},
+			Revision: 5,
+		}},
+	}
+	if err := mem.SaveAppliedSnapshot(stored); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+
+	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{
+		DesiredVersion: "ok",
+		Revision:       6,
+		L4Rules:        []model.L4Rule{},
+		RelayListeners: []model.RelayListener{},
+	}})
+	l4Applier := newL4RuntimeManagerWithRelay(&testRelayTLSProvider{})
+	app := newAppWithDeps(cfg, mem, client, nil, l4Applier, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- app.Run(ctx)
+	}()
+
+	waitForCalls(t, client, 1, time.Second)
+	waitForCalls(t, client, 2, time.Second)
+
+	applied, err := mem.LoadAppliedSnapshot()
+	if err != nil {
+		t.Fatalf("failed to load applied snapshot: %v", err)
+	}
+	if applied.L4Rules == nil || len(applied.L4Rules) != 0 {
+		t.Fatalf("expected applied l4 rules cleared, got %+v", applied.L4Rules)
+	}
+	if applied.RelayListeners == nil || len(applied.RelayListeners) != 0 {
+		t.Fatalf("expected applied relay listeners cleared, got %+v", applied.RelayListeners)
+	}
+
+	state, err := mem.LoadRuntimeState()
+	if err != nil {
+		t.Fatalf("failed to load runtime state: %v", err)
+	}
+	if state.Metadata["last_sync_error"] != "" {
+		t.Fatalf("expected no sync error after relay clear, got %v", state.Metadata)
+	}
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+}
+
 func TestRunRecordsL4ApplyFailuresInRuntimeState(t *testing.T) {
 	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
 	mem := store.NewInMemory()

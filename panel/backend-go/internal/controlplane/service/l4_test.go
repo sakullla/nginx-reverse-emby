@@ -12,6 +12,7 @@ type fakeL4Store struct {
 	agents       []storage.AgentRow
 	l4RulesByID  map[string][]storage.L4RuleRow
 	relayByAgent map[string][]storage.RelayListenerRow
+	savedAgent   storage.AgentRow
 }
 
 func (f *fakeL4Store) ListAgents(context.Context) ([]storage.AgentRow, error) {
@@ -53,7 +54,15 @@ func (f *fakeL4Store) ListManagedCertificates(context.Context) ([]storage.Manage
 	return nil, nil
 }
 
-func (f *fakeL4Store) SaveAgent(context.Context, storage.AgentRow) error {
+func (f *fakeL4Store) SaveAgent(_ context.Context, row storage.AgentRow) error {
+	f.savedAgent = row
+	for i := range f.agents {
+		if f.agents[i].ID == row.ID {
+			f.agents[i] = row
+			return nil
+		}
+	}
+	f.agents = append(f.agents, row)
 	return nil
 }
 
@@ -255,6 +264,50 @@ func TestL4RuleServiceCreateRejectsDuplicateRelayChainEntries(t *testing.T) {
 	}
 	if err.Error() != "invalid argument: relay_chain entries must not contain duplicates" {
 		t.Fatalf("Create() error = %v", err)
+	}
+}
+
+func TestL4RuleServiceDeleteUpdatesRemoteAgentDesiredRevision(t *testing.T) {
+	store := &fakeL4Store{
+		agents: []storage.AgentRow{{
+			ID:               "edge-1",
+			Name:             "Edge 1",
+			CapabilitiesJSON: `["l4"]`,
+			DesiredRevision:  4,
+			CurrentRevision:  4,
+		}},
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"edge-1": {{
+				ID:           1,
+				AgentID:      "edge-1",
+				Protocol:     "tcp",
+				ListenHost:   "0.0.0.0",
+				ListenPort:   50381,
+				UpstreamHost: "127.0.0.1",
+				UpstreamPort: 26966,
+				Enabled:      true,
+				Revision:     4,
+			}},
+		},
+		relayByAgent: map[string][]storage.RelayListenerRow{},
+	}
+	svc := NewL4RuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	deleted, err := svc.Delete(context.Background(), "edge-1", 1)
+	if err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if deleted.ID != 1 {
+		t.Fatalf("deleted.ID = %d", deleted.ID)
+	}
+	if len(store.l4RulesByID["edge-1"]) != 0 {
+		t.Fatalf("l4 rules still stored: %+v", store.l4RulesByID["edge-1"])
+	}
+	if store.agents[0].DesiredRevision != 5 {
+		t.Fatalf("remote desired_revision = %d", store.agents[0].DesiredRevision)
 	}
 }
 

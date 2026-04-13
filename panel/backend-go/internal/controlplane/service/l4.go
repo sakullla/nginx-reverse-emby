@@ -151,6 +151,9 @@ func (s *l4Service) Create(ctx context.Context, agentID string, input L4RuleInpu
 	if err := s.store.SaveL4Rules(ctx, resolvedID, rows); err != nil {
 		return L4Rule{}, err
 	}
+	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, rule.Revision); err != nil {
+		return L4Rule{}, err
+	}
 	if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
 		return L4Rule{}, err
 	}
@@ -205,6 +208,9 @@ func (s *l4Service) Update(ctx context.Context, agentID string, id int, input L4
 	if err := s.store.SaveL4Rules(ctx, resolvedID, rows); err != nil {
 		return L4Rule{}, err
 	}
+	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, rule.Revision); err != nil {
+		return L4Rule{}, err
+	}
 	if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
 		return L4Rule{}, err
 	}
@@ -241,10 +247,47 @@ func (s *l4Service) Delete(ctx context.Context, agentID string, id int) (L4Rule,
 	if err := s.store.SaveL4Rules(ctx, resolvedID, nextRows); err != nil {
 		return L4Rule{}, err
 	}
+	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, deleted.Revision+1); err != nil {
+		return L4Rule{}, err
+	}
 	if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
 		return L4Rule{}, err
 	}
 	return deleted, nil
+}
+
+func (s *l4Service) bumpRemoteDesiredRevision(ctx context.Context, agentID string, revision int) error {
+	if s.cfg.EnableLocalAgent && agentID == s.cfg.LocalAgentID {
+		return nil
+	}
+
+	rows, err := s.store.ListAgents(ctx)
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		if row.ID != agentID {
+			continue
+		}
+		snapshot, err := s.store.LoadAgentSnapshot(ctx, row.ID, storage.AgentSnapshotInput{
+			DesiredVersion:  row.DesiredVersion,
+			DesiredRevision: row.DesiredRevision,
+			CurrentRevision: row.CurrentRevision,
+			Platform:        row.Platform,
+		})
+		if err != nil {
+			return err
+		}
+		nextRevision := revision
+		if int(snapshot.Revision) > nextRevision {
+			nextRevision = int(snapshot.Revision)
+		}
+		if row.DesiredRevision < nextRevision {
+			row.DesiredRevision = nextRevision
+		}
+		return s.store.SaveAgent(ctx, row)
+	}
+	return ErrAgentNotFound
 }
 
 func (s *l4Service) ensureAgentSupportsL4(ctx context.Context, agentID string) (string, error) {

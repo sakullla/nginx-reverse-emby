@@ -1566,6 +1566,52 @@ func TestRelayServiceDeleteThenRecreateAutoCertificateUsesFreshIdentityDomain(t 
 	}
 }
 
+func TestRelayServiceDeleteUpdatesRemoteAgentDesiredRevision(t *testing.T) {
+	store := &relayCertStore{
+		agents: []storage.AgentRow{{
+			ID:              "edge-1",
+			Name:            "Edge 1",
+			DesiredRevision: 4,
+			CurrentRevision: 4,
+		}},
+		relayByAgentID: map[string][]storage.RelayListenerRow{
+			"edge-1": {{
+				ID:         5,
+				AgentID:    "edge-1",
+				Name:       "remote-hop",
+				ListenHost: "0.0.0.0",
+				ListenPort: 2443,
+				PublicHost: "relay.example.com",
+				PublicPort: 2443,
+				Enabled:    true,
+				TLSMode:    "pin_only",
+				Revision:   4,
+			}},
+		},
+		httpRulesByID: map[string][]storage.HTTPRuleRow{},
+		l4RulesByID:   map[string][]storage.L4RuleRow{},
+		managedCerts:  []storage.ManagedCertificateRow{},
+	}
+	svc := NewRelayListenerService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	deleted, err := svc.Delete(context.Background(), "edge-1", 5)
+	if err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if deleted.ID != 5 {
+		t.Fatalf("deleted.ID = %d", deleted.ID)
+	}
+	if len(store.relayByAgentID["edge-1"]) != 0 {
+		t.Fatalf("relay listeners still stored: %+v", store.relayByAgentID["edge-1"])
+	}
+	if store.agents[0].DesiredRevision != 5 {
+		t.Fatalf("remote desired_revision = %d", store.agents[0].DesiredRevision)
+	}
+}
+
 func TestRelayServiceCreateSucceedsWhenCleanupFailsPostCommit(t *testing.T) {
 	relayCA := mustCreateSelfSignedCA(t, "__relay-ca.internal")
 	store := &relayCertStore{

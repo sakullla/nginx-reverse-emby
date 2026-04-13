@@ -212,6 +212,9 @@ func (s *relayService) Create(ctx context.Context, agentID string, input RelayLi
 		}
 		return RelayListener{}, err
 	}
+	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, listener.Revision); err != nil {
+		return RelayListener{}, err
+	}
 	if prepared.PersistCertificates {
 		cleanupManagedCertificateMaterialBestEffort(ctx, s.store, prepared.OriginalCertRows, prepared.NextCertRows)
 	}
@@ -293,6 +296,9 @@ func (s *relayService) Update(ctx context.Context, agentID string, id int, input
 		}
 		return RelayListener{}, err
 	}
+	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, listener.Revision); err != nil {
+		return RelayListener{}, err
+	}
 	if prepared.PersistCertificates {
 		cleanupManagedCertificateMaterialBestEffort(ctx, s.store, prepared.OriginalCertRows, prepared.NextCertRows)
 	}
@@ -350,6 +356,9 @@ func (s *relayService) Delete(ctx context.Context, agentID string, id int) (Rela
 	if err := s.store.SaveRelayListeners(ctx, resolvedID, next); err != nil {
 		return RelayListener{}, err
 	}
+	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, deleted.Revision+1); err != nil {
+		return RelayListener{}, err
+	}
 	if deleted.CertificateID != nil {
 		if err := s.cleanupUnusedAutoRelayListenerCertificate(ctx, *deleted.CertificateID); err != nil {
 			return RelayListener{}, err
@@ -380,6 +389,40 @@ func (s *relayService) ensureAgentExists(ctx context.Context, agentID string) (s
 		}
 	}
 	return "", ErrAgentNotFound
+}
+
+func (s *relayService) bumpRemoteDesiredRevision(ctx context.Context, agentID string, revision int) error {
+	if s.cfg.EnableLocalAgent && agentID == s.cfg.LocalAgentID {
+		return nil
+	}
+
+	rows, err := s.store.ListAgents(ctx)
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		if row.ID != agentID {
+			continue
+		}
+		snapshot, err := s.store.LoadAgentSnapshot(ctx, row.ID, storage.AgentSnapshotInput{
+			DesiredVersion:  row.DesiredVersion,
+			DesiredRevision: row.DesiredRevision,
+			CurrentRevision: row.CurrentRevision,
+			Platform:        row.Platform,
+		})
+		if err != nil {
+			return err
+		}
+		nextRevision := revision
+		if int(snapshot.Revision) > nextRevision {
+			nextRevision = int(snapshot.Revision)
+		}
+		if row.DesiredRevision < nextRevision {
+			row.DesiredRevision = nextRevision
+		}
+		return s.store.SaveAgent(ctx, row)
+	}
+	return ErrAgentNotFound
 }
 
 func (s *relayService) prepareRelayListener(ctx context.Context, agentID string, input RelayListenerInput, fallback RelayListener, suggestedID int) (relayPreparation, error) {
