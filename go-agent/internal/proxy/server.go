@@ -473,6 +473,7 @@ func newTLSListener(ctx context.Context, listener net.Listener, spec runtimeList
 	}
 	config := &tls.Config{
 		MinVersion: tls.VersionTLS12,
+		NextProtos: []string{"h2", "http/1.1"},
 		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 			host := normalizeHost(hello.ServerName)
 			if host == "" && len(spec.hostnames) == 1 {

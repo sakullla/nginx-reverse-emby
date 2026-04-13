@@ -1199,6 +1199,63 @@ func TestResolveRelayHopsUsesPublicEndpointAndFallbacks(t *testing.T) {
 	}
 }
 
+func TestNewTLSListenerAdvertisesHTTP2AndHTTP11Only(t *testing.T) {
+	provider := &testTLSProvider{
+		certificates: map[string]tls.Certificate{
+			"frontend.example.com": mustIssueProxyTLSCertificate(t, "frontend.example.com"),
+		},
+	}
+
+	baseListener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	defer baseListener.Close()
+
+	tlsListener, err := newTLSListener(context.Background(), baseListener, runtimeListenerSpec{
+		bindingKey: "https:443",
+		hostnames:  []string{"frontend.example.com"},
+	}, provider)
+	if err != nil {
+		t.Fatalf("newTLSListener() error = %v", err)
+	}
+	defer tlsListener.Close()
+
+	errCh := make(chan error, 1)
+	go func() {
+		conn, err := tlsListener.Accept()
+		if err != nil {
+			errCh <- err
+			return
+		}
+		defer conn.Close()
+		tlsConn, ok := conn.(*tls.Conn)
+		if !ok {
+			errCh <- fmt.Errorf("accepted connection is %T", conn)
+			return
+		}
+		errCh <- tlsConn.Handshake()
+	}()
+
+	clientConn, err := tls.Dial("tcp", baseListener.Addr().String(), &tls.Config{
+		ServerName:         "frontend.example.com",
+		InsecureSkipVerify: true,
+		NextProtos:         []string{"h2", "http/1.1", "h3"},
+	})
+	if err != nil {
+		t.Fatalf("tls.Dial() error = %v", err)
+	}
+	defer clientConn.Close()
+
+	if err := <-errCh; err != nil {
+		t.Fatalf("server handshake error = %v", err)
+	}
+
+	if got := clientConn.ConnectionState().NegotiatedProtocol; got != "h2" {
+		t.Fatalf("negotiated protocol = %q", got)
+	}
+}
+
 func pickFreePort(t *testing.T) int {
 	t.Helper()
 

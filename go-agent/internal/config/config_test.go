@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -58,6 +59,47 @@ func TestLoadFromEnvRejectsNonPositiveHeartbeat(t *testing.T) {
 	t.Setenv("NRE_HEARTBEAT_INTERVAL", "0s")
 	if _, err := LoadFromEnv(); err == nil {
 		t.Fatal("expected error for zero heartbeat interval")
+	}
+}
+
+func TestLoadFromEnvHTTP3EnabledDefaultsFalse(t *testing.T) {
+	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
+	t.Setenv("NRE_AGENT_TOKEN", "secret")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if cfg.HTTP3Enabled {
+		t.Fatal("expected HTTP3Enabled to default to false")
+	}
+}
+
+func TestLoadFromEnvHTTP3EnabledParsesTrue(t *testing.T) {
+	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
+	t.Setenv("NRE_AGENT_TOKEN", "secret")
+	t.Setenv("NRE_HTTP3_ENABLED", "true")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if !cfg.HTTP3Enabled {
+		t.Fatal("expected HTTP3Enabled to be true")
+	}
+}
+
+func TestLoadFromEnvRejectsInvalidHTTP3Enabled(t *testing.T) {
+	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
+	t.Setenv("NRE_AGENT_TOKEN", "secret")
+	t.Setenv("NRE_HTTP3_ENABLED", "maybe")
+
+	_, err := LoadFromEnv()
+	if err == nil {
+		t.Fatal("expected invalid NRE_HTTP3_ENABLED error")
+	}
+	if !strings.Contains(err.Error(), "NRE_HTTP3_ENABLED") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 

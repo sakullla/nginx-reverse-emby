@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -27,6 +28,7 @@ type Config struct {
 	MasterURL            string
 	DataDir              string
 	HeartbeatInterval    time.Duration
+	HTTP3Enabled         bool
 	CurrentVersion       string
 	RuntimePackageSHA256 string
 }
@@ -86,6 +88,13 @@ func loadFromEnvForExecutable(executablePath string) (Config, error) {
 			return Config{}, errors.New("NRE_HEARTBEAT_INTERVAL must be positive")
 		}
 		cfg.HeartbeatInterval = dur
+	}
+	if val := strings.TrimSpace(os.Getenv("NRE_HTTP3_ENABLED")); val != "" {
+		enabled, err := strconv.ParseBool(val)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid NRE_HTTP3_ENABLED: %w", err)
+		}
+		cfg.HTTP3Enabled = enabled
 	}
 
 	cfg.RuntimePackageSHA256 = executableSHA256(executablePath)
