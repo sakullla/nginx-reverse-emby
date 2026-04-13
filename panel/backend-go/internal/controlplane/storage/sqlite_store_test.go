@@ -1315,6 +1315,27 @@ func TestStoreLoadAgentSnapshotIncludesRelayObfsFlags(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("SaveL4Rules() error = %v", err)
 	}
+	if err := store.SaveRelayListeners(t.Context(), "relay-obfs-agent", []RelayListenerRow{{
+		ID:                      77,
+		AgentID:                 "relay-obfs-agent",
+		Name:                    "relay-obfs-listener",
+		BindHostsJSON:           `["0.0.0.0"]`,
+		ListenHost:              "0.0.0.0",
+		ListenPort:              17443,
+		PublicHost:              "relay-obfs-listener.example.com",
+		PublicPort:              17443,
+		Enabled:                 true,
+		TLSMode:                 "pin_or_ca",
+		TransportMode:           "quic",
+		AllowTransportFallback:  true,
+		ObfsMode:                "off",
+		PinSetJSON:              `[]`,
+		TrustedCACertificateIDs: `[]`,
+		AllowSelfSigned:         true,
+		Revision:                33,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners() error = %v", err)
+	}
 
 	snapshot, err := store.LoadAgentSnapshot(t.Context(), "relay-obfs-agent", AgentSnapshotInput{
 		DesiredRevision: 0,
@@ -1328,6 +1349,18 @@ func TestStoreLoadAgentSnapshotIncludesRelayObfsFlags(t *testing.T) {
 	}
 	if len(snapshot.L4Rules) != 1 || !snapshot.L4Rules[0].RelayObfs {
 		t.Fatalf("expected snapshot L4 relay_obfs=true: %+v", snapshot.L4Rules)
+	}
+	if len(snapshot.RelayListeners) != 1 {
+		t.Fatalf("expected one snapshot relay listener: %+v", snapshot.RelayListeners)
+	}
+	if snapshot.RelayListeners[0].TransportMode != "quic" {
+		t.Fatalf("snapshot relay listener transport_mode = %q", snapshot.RelayListeners[0].TransportMode)
+	}
+	if !snapshot.RelayListeners[0].AllowTransportFallback {
+		t.Fatalf("snapshot relay listener allow_transport_fallback = %v", snapshot.RelayListeners[0].AllowTransportFallback)
+	}
+	if snapshot.RelayListeners[0].ObfsMode != "off" {
+		t.Fatalf("snapshot relay listener obfs_mode = %q", snapshot.RelayListeners[0].ObfsMode)
 	}
 }
 

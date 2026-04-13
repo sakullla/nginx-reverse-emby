@@ -811,12 +811,18 @@ func snapshotRelayListeners(rows []RelayListenerRow) []RelayListener {
 			Enabled:                 row.Enabled,
 			CertificateID:           copyOptionalInt(row.CertificateID),
 			TLSMode:                 defaultString(row.TLSMode, "pin_or_ca"),
+			TransportMode:           defaultString(row.TransportMode, "tls_tcp"),
+			AllowTransportFallback:  row.AllowTransportFallback,
+			ObfsMode:                defaultString(row.ObfsMode, "off"),
 			PinSet:                  parseRelayPins(row.PinSetJSON),
 			TrustedCACertificateIDs: parseIntSlice(row.TrustedCACertificateIDs),
 			AllowSelfSigned:         row.AllowSelfSigned,
 			Tags:                    parseStringSlice(row.TagsJSON),
 			Revision:                int64(row.Revision),
 		})
+		if strings.TrimSpace(row.TransportMode) == "" {
+			listeners[len(listeners)-1].AllowTransportFallback = true
+		}
 	}
 	return listeners
 }
