@@ -15,7 +15,7 @@ The design keeps relay responsibilities separated:
 - Add relay listener transport selection with `tls_tcp` and `quic`.
 - Keep `tls_tcp` as the default relay transport.
 - Support HTTP-over-relay, L4 TCP-over-relay, and L4 UDP-over-relay through the same relay subsystem.
-- Support UDP relay only on QUIC transport, using QUIC streams with framed payloads.
+- Support UDP relay on both QUIC and `tls_tcp`, using QUIC streams for the preferred path and UoT framing for the TCP fallback path.
 - Replace the current relay obfuscation implementation with a new early-window masking method.
 - Allow transport fallback when configured.
 
@@ -126,19 +126,25 @@ Each TCP connection maps to one relay session.
 
 #### UDP
 
-UDP relay is supported only when every hop in `relay_chain` uses `quic`.
+UDP relay supports both relay transports.
 
 Implementation:
 
-- One UDP session maps to one QUIC stream.
-- Each UDP packet is encoded as one length-prefixed frame on that stream.
+- QUIC path:
+  - One UDP session maps to one QUIC stream.
+  - Each UDP packet is encoded as one length-prefixed frame on that stream.
+- `tls_tcp` path:
+  - One UDP session maps to one relay TCP session.
+  - UDP packets are carried through a UoT framing layer inside the TLS relay session.
 - Session lifetime follows the existing UDP session management model: idle timeout, reply timeout, and backend health integration.
 
 Control-plane validation changes:
 
 - UDP rules may keep `relay_chain`.
-- A UDP rule with relay hops is valid only if all referenced relay listeners are `quic`.
-- `relay_obfs` no longer applies to UDP transport semantics.
+- UDP rules are valid on both relay transports.
+- `quic` remains the preferred path for lower latency and reduced head-of-line blocking.
+- `tls_tcp` uses UoT as the compatibility path and does not promise the same latency characteristics as QUIC.
+- `relay_obfs` only affects the `tls_tcp` transport and therefore may still apply to UDP relay sessions when they are carried through UoT.
 
 ### 7. Obfuscation
 
@@ -159,7 +165,18 @@ The old `first_segment_v1` implementation is removed and replaced by `early_wind
 
 This keeps the masking focused on hiding early inner-protocol structure without imposing long-lived throughput penalties.
 
-### 8. Capability Model
+### 8. UDP Over TCP Framing
+
+When UDP is carried over `tls_tcp`, the relay transport uses UoT framing.
+
+Properties:
+
+- Each relay UDP session is isolated from other sessions.
+- Each UDP packet is framed with an explicit length prefix.
+- The framing layer is transport-only and does not change upstream UDP semantics beyond TCP-induced ordering and retransmission behavior.
+- This path exists for compatibility and completeness, not as the preferred low-latency transport.
+
+### 9. Capability Model
 
 Agents advertise additional capabilities:
 
@@ -172,7 +189,7 @@ The control plane uses these capabilities to validate whether an agent may recei
 - QUIC relay listeners
 - UDP relay chains
 
-### 9. Data and Migration
+### 10. Data and Migration
 
 Existing persisted `relay_obfs` boolean is migrated into listener obfuscation semantics:
 
@@ -206,16 +223,17 @@ The control plane keeps compatibility reads long enough to migrate persisted sta
 ### L4 UDP Over Relay
 
 1. Incoming UDP packet is assigned to a UDP session key.
-2. If no active relay session exists, the runtime opens one QUIC relay stream.
-3. UDP packets are length-framed on the QUIC stream.
-4. Reverse traffic is decoded and written back to the local UDP socket.
+2. If no active relay session exists, the runtime opens one relay session using the configured hop transport.
+3. On QUIC, UDP packets are length-framed on the QUIC stream.
+4. On `tls_tcp`, UDP packets are length-framed through the UoT session.
+5. Reverse traffic is decoded and written back to the local UDP socket.
 
 ## Error Handling
 
 - HTTP/3 listener startup failure does not tear down TCP HTTPS listeners.
 - QUIC relay dial failures are surfaced clearly and may trigger transport fallback when allowed.
-- UDP relay on non-QUIC relay listeners is rejected by validation before runtime apply.
 - Listener obfuscation settings on `quic` transport are ignored rather than treated as fatal misconfiguration.
+- UDP relay over `tls_tcp` may exhibit higher latency or stronger head-of-line blocking than QUIC, but remains valid.
 
 ## Testing Strategy
 
@@ -233,7 +251,7 @@ The control plane keeps compatibility reads long enough to migrate persisted sta
 - L4 runtime tests proving:
   - TCP over QUIC relay
   - UDP over QUIC relay
-  - rejection of UDP over `tls_tcp` relay
+  - UDP over `tls_tcp` relay through UoT
 - Obfuscation tests proving:
   - early-window masking preserves byte stream fidelity
   - the early write window is masked and later traffic is pass-through
@@ -242,13 +260,14 @@ The control plane keeps compatibility reads long enough to migrate persisted sta
 
 - Validation tests for new relay listener fields.
 - Capability-gated rule creation tests.
-- L4 validation tests for UDP relay chain constraints.
+- L4 validation tests for UDP relay behavior on both relay transports.
 - Migration tests for legacy `relay_obfs` data.
 
 ## Risks
 
 - QUIC listener and relay lifecycle management is more complex than the current TCP-only model.
 - UDP-over-stream framing is simpler than QUIC datagrams but introduces ordered delivery within a session.
+- UDP over `tls_tcp` inherits TCP head-of-line blocking and retransmission costs.
 - Listener-scoped transport fallback must not create ambiguous operational behavior.
 
 ## Recommendation
@@ -258,6 +277,7 @@ Implement this as one coordinated transport upgrade:
 - make HTTP/3 ingress real
 - add listener-scoped QUIC relay transport
 - route TCP and UDP relay through the same relay subsystem
+- support UDP fallback over `tls_tcp` through UoT
 - replace the old obfuscation implementation with `early_window_v2`
 
 This keeps transport concerns centralized while avoiding long-term split logic between HTTP, relay, and L4 execution paths.
