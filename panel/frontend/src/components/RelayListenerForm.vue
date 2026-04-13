@@ -132,10 +132,13 @@
     </label>
 
     <button type='button' class='advanced-toggle' @click='showAdvanced = !showAdvanced'>
-      {{ showAdvanced ? '收起高级设置' : '显示高级设置' }}
+      <svg class='advanced-toggle__arrow' :class="{ 'advanced-toggle__arrow--open': showAdvanced }" width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'>
+        <polyline points='6 9 12 15 18 9'/>
+      </svg>
+      高级设置
     </button>
 
-    <section v-if='form.trust_mode_source === "custom" || showAdvanced' class='advanced-panel'>
+    <section v-if='showAdvanced' class='advanced-panel'>
       <p class='form-hint'>
         {{ form.trust_mode_source === 'auto'
           ? '自动模式下会由系统派生 Relay CA + Pin；切回高级自定义后，下面这些字段才会参与编辑和提交。'
@@ -233,7 +236,7 @@ watch(
   () => props.initialData,
   (value) => {
     form.value = createFormState(value)
-    showAdvanced.value = false
+    showAdvanced.value = form.value.trust_mode_source === 'custom'
     tagInput.value = ''
     pinSetText.value = (form.value.pin_set || [])
       .map((item) => `${item.type}:${item.value}`)
@@ -637,13 +640,31 @@ async function handleSubmit() {
 }
 
 .advanced-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
   align-self: flex-start;
-  border: 1px solid var(--color-border-default);
-  background: var(--color-bg-surface);
-  border-radius: var(--radius-md);
-  padding: var(--space-2) var(--space-3);
+  border: none;
+  background: none;
+  padding: var(--space-2) 0;
   font-size: var(--text-sm);
+  font-weight: var(--font-medium);
+  color: var(--color-text-secondary);
   cursor: pointer;
+  transition: color var(--duration-fast) var(--ease-default);
+}
+
+.advanced-toggle:hover {
+  color: var(--color-text-primary);
+}
+
+.advanced-toggle__arrow {
+  transition: transform var(--duration-fast) var(--ease-default);
+  flex-shrink: 0;
+}
+
+.advanced-toggle__arrow--open {
+  transform: rotate(180deg);
 }
 
 .advanced-panel {
