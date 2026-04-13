@@ -630,15 +630,17 @@ func TestResolveRelayHopsUsesPublicEndpointAndFallbacks(t *testing.T) {
 	srv := &Server{
 		relayListenersByID: map[int]model.RelayListener{
 			1: {
-				ID:         1,
-				ListenHost: "10.0.0.10",
-				BindHosts:  []string{"10.0.0.20"},
-				ListenPort: 18443,
-				PublicHost: "relay-public.example.test",
-				PublicPort: 28443,
-				Enabled:    true,
-				TLSMode:    "pin_only",
-				PinSet:     []model.RelayPin{{Type: "sha256", Value: "pin-1"}},
+				ID:            1,
+				ListenHost:    "10.0.0.10",
+				BindHosts:     []string{"10.0.0.20"},
+				ListenPort:    18443,
+				PublicHost:    "relay-public.example.test",
+				PublicPort:    28443,
+				TransportMode: relay.ListenerTransportModeQUIC,
+				ObfsMode:      relay.RelayObfsModeOff,
+				Enabled:       true,
+				TLSMode:       "pin_only",
+				PinSet:        []model.RelayPin{{Type: "sha256", Value: "pin-1"}},
 			},
 			2: {
 				ID:         2,
@@ -673,6 +675,9 @@ func TestResolveRelayHopsUsesPublicEndpointAndFallbacks(t *testing.T) {
 	}
 	if got := hops[0].ServerName; got != "relay-public.example.test" {
 		t.Fatalf("expected public host server_name for hop 1, got %q", got)
+	}
+	if got := hops[0].Listener.TransportMode; got != relay.ListenerTransportModeQUIC {
+		t.Fatalf("expected hop 1 transport mode quic, got %q", got)
 	}
 	if got := hops[1].Address; got != "bind-fallback.example.test:19443" {
 		t.Fatalf("expected bind host fallback for hop 2, got %q", got)
