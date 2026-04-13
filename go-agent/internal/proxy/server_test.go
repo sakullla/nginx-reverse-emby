@@ -961,6 +961,66 @@ func TestStartServesHTTPSRulesWithHostMatchedCertificate(t *testing.T) {
 	}
 }
 
+func TestStartWithResourcesGracefullyDegradesWhenHTTP3StartupFails(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer backend.Close()
+
+	port := pickFreePort(t)
+	provider := &testTLSProvider{
+		certificates: map[string]tls.Certificate{
+			"edge.example.test": mustIssueProxyTLSCertificate(t, "edge.example.test"),
+		},
+	}
+
+	sentinel := errors.New("udp unavailable")
+	originalListenPacket := http3ListenPacket
+	http3ListenPacket = func(network, address string) (net.PacketConn, error) {
+		return nil, sentinel
+	}
+	defer func() {
+		http3ListenPacket = originalListenPacket
+	}()
+
+	runtime, err := StartWithResources(context.Background(), []model.HTTPRule{{
+		FrontendURL: fmt.Sprintf("https://edge.example.test:%d", port),
+		BackendURL:  backend.URL,
+	}}, nil, Providers{TLS: provider}, nil, nil, true)
+	if err != nil {
+		t.Fatalf("failed to start https runtime with http3 enabled: %v", err)
+	}
+	defer runtime.Close()
+
+	if len(runtime.http3Servers) != 0 {
+		t.Fatalf("expected http3 startup failure to skip udp runtime, got %d servers", len(runtime.http3Servers))
+	}
+
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("https://127.0.0.1:%d/", port), nil)
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+	req.Host = fmt.Sprintf("edge.example.test:%d", port)
+
+	client := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				ServerName:         "edge.example.test",
+				InsecureSkipVerify: true,
+			},
+		},
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("https runtime request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", resp.StatusCode)
+	}
+}
+
 func TestStartRejectsHTTPSFrontendWithoutMatchingCertificate(t *testing.T) {
 	provider := &testTLSProvider{
 		certificates: map[string]tls.Certificate{
@@ -1005,7 +1065,7 @@ func TestStartServesHTTPRulesThroughRelayChain(t *testing.T) {
 	relayCert := mustIssueProxyTLSCertificate(t, "relay.internal.test")
 	relayPublicPort := pickFreePort(t)
 	relayAccepted := make(chan relayTestRequest, 1)
-	relayStop := startTestRelayServer(t, fmt.Sprintf("127.0.0.1:%d", relayPublicPort), relayCert, relayAccepted)
+	relayStop := startTestRelayServer(t, fmt.Sprintf("127.0.0.1:%d", relayPublicPort), relayCert, relayAccepted, relay.RelayObfsModeOff)
 	defer relayStop()
 	relayListenPort := pickFreePort(t)
 
@@ -1073,7 +1133,7 @@ func TestStartServesHTTPRulesThroughRelayChainWithObfsMode(t *testing.T) {
 	relayCert := mustIssueProxyTLSCertificate(t, "relay.internal.test")
 	relayPublicPort := pickFreePort(t)
 	relayAccepted := make(chan relayTestRequest, 1)
-	relayStop := startTestRelayServer(t, fmt.Sprintf("127.0.0.1:%d", relayPublicPort), relayCert, relayAccepted)
+	relayStop := startTestRelayServer(t, fmt.Sprintf("127.0.0.1:%d", relayPublicPort), relayCert, relayAccepted, relay.RelayObfsModeEarlyWindowV2)
 	defer relayStop()
 	relayListenPort := pickFreePort(t)
 
@@ -1094,6 +1154,7 @@ func TestStartServesHTTPRulesThroughRelayChainWithObfsMode(t *testing.T) {
 			ListenPort: relayListenPort,
 			PublicHost: "127.0.0.1",
 			PublicPort: relayPublicPort,
+			ObfsMode:   relay.RelayObfsModeEarlyWindowV2,
 			Enabled:    true,
 			TLSMode:    "pin_only",
 			PinSet: []model.RelayPin{{
@@ -1126,8 +1187,8 @@ func TestStartServesHTTPRulesThroughRelayChainWithObfsMode(t *testing.T) {
 
 	select {
 	case relayReq := <-relayAccepted:
-		if relayReq.Transport.Mode != "first_segment_v1" {
-			t.Fatalf("unexpected relay transport mode %q", relayReq.Transport.Mode)
+		if relayReq.Target != backendAddress {
+			t.Fatalf("unexpected relay target %q", relayReq.Target)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected request to traverse relay listener")
@@ -1142,15 +1203,17 @@ func TestResolveRelayHopsUsesPublicEndpointAndFallbacks(t *testing.T) {
 	}
 	listeners := []model.RelayListener{
 		{
-			ID:         1,
-			ListenHost: "10.0.0.10",
-			BindHosts:  []string{"10.0.0.20"},
-			ListenPort: 18443,
-			PublicHost: "relay-public.example.test",
-			PublicPort: 28443,
-			Enabled:    true,
-			TLSMode:    "pin_only",
-			PinSet:     []model.RelayPin{{Type: "sha256", Value: "pin-1"}},
+			ID:            1,
+			ListenHost:    "10.0.0.10",
+			BindHosts:     []string{"10.0.0.20"},
+			ListenPort:    18443,
+			PublicHost:    "relay-public.example.test",
+			PublicPort:    28443,
+			TransportMode: relay.ListenerTransportModeQUIC,
+			ObfsMode:      relay.RelayObfsModeOff,
+			Enabled:       true,
+			TLSMode:       "pin_only",
+			PinSet:        []model.RelayPin{{Type: "sha256", Value: "pin-1"}},
 		},
 		{
 			ID:         2,
@@ -1184,6 +1247,9 @@ func TestResolveRelayHopsUsesPublicEndpointAndFallbacks(t *testing.T) {
 	}
 	if got := hops[0].ServerName; got != "relay-public.example.test" {
 		t.Fatalf("expected public host server_name for hop 1, got %q", got)
+	}
+	if got := hops[0].Listener.TransportMode; got != relay.ListenerTransportModeQUIC {
+		t.Fatalf("expected hop 1 transport mode quic, got %q", got)
 	}
 	if got := hops[1].Address; got != "bind-fallback.example.test:19443" {
 		t.Fatalf("expected bind host fallback for hop 2, got %q", got)
@@ -1335,12 +1401,9 @@ func (p *testRuntimeMaterialProvider) TrustedCAPool(_ context.Context, _ []int) 
 }
 
 type relayTestRequest struct {
-	Network   string      `json:"network"`
-	Target    string      `json:"target"`
-	Chain     []relay.Hop `json:"chain,omitempty"`
-	Transport struct {
-		Mode string `json:"mode,omitempty"`
-	} `json:"transport,omitempty"`
+	Network string      `json:"network"`
+	Target  string      `json:"target"`
+	Chain   []relay.Hop `json:"chain,omitempty"`
 }
 
 func startTestRelayServer(
@@ -1348,6 +1411,7 @@ func startTestRelayServer(
 	address string,
 	cert tls.Certificate,
 	requests chan<- relayTestRequest,
+	obfsMode string,
 ) func() {
 	t.Helper()
 
@@ -1366,22 +1430,24 @@ func startTestRelayServer(
 		if err != nil {
 			return
 		}
-		defer conn.Close()
 
 		relayReq, err := readRelayTestRequest(conn)
 		if err != nil {
+			_ = conn.Close()
 			return
 		}
 		requests <- relayReq
 
 		if err := writeRelayTestResponse(conn, map[string]any{"ok": true}); err != nil {
+			_ = conn.Close()
 			return
 		}
 
 		dataConn := net.Conn(conn)
-		if relayReq.Transport.Mode == relay.TransportModeFirstSegmentV1 {
-			dataConn = relay.WrapConnWithFirstSegmentObfs(conn)
+		if obfsMode == relay.RelayObfsModeEarlyWindowV2 {
+			dataConn = relay.WrapConnWithEarlyWindowMask(conn)
 		}
+		defer dataConn.Close()
 
 		httpReq, err := http.ReadRequest(bufio.NewReader(dataConn))
 		if err != nil {

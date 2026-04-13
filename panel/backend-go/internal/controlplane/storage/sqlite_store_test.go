@@ -197,6 +197,15 @@ func TestBootstrapSQLiteSchemaUpgradesLegacySQLiteAndNormalizesBackfills(t *test
 	if listeners[0].BindHostsJSON != `["0.0.0.0"]` || listeners[0].PublicHost != "0.0.0.0" || listeners[0].PublicPort != 7443 {
 		t.Fatalf("unexpected relay defaults after legacy bootstrap: %+v", listeners[0])
 	}
+	if listeners[0].TransportMode != "tls_tcp" {
+		t.Fatalf("expected legacy transport_mode default tls_tcp, got %+v", listeners[0])
+	}
+	if !listeners[0].AllowTransportFallback {
+		t.Fatalf("expected legacy allow_transport_fallback default true, got %+v", listeners[0])
+	}
+	if listeners[0].ObfsMode != "off" {
+		t.Fatalf("expected legacy obfs_mode default off, got %+v", listeners[0])
+	}
 
 	localState, err := store.LoadLocalAgentState(t.Context())
 	if err != nil {
@@ -254,6 +263,44 @@ func TestBootstrapSQLiteSchemaHandlesMalformedRelayBindHostsJSON(t *testing.T) {
 	}
 	if listeners[0].BindHostsJSON != `["10.10.0.5"]` || listeners[0].PublicHost != "10.10.0.5" || listeners[0].PublicPort != 7443 {
 		t.Fatalf("unexpected listener fallback values: %+v", listeners[0])
+	}
+}
+
+func TestNormalizeRelayListenerRowAppliesLegacyTransportDefaultsWithoutClobberingExplicitFalse(t *testing.T) {
+	legacy := RelayListenerRow{
+		ListenHost:             "0.0.0.0",
+		PublicHost:             "",
+		TransportMode:          "",
+		AllowTransportFallback: false,
+		ObfsMode:               "",
+	}
+	normalizeRelayListenerRow(&legacy)
+	if legacy.TransportMode != "tls_tcp" {
+		t.Fatalf("legacy TransportMode = %q", legacy.TransportMode)
+	}
+	if !legacy.AllowTransportFallback {
+		t.Fatalf("legacy AllowTransportFallback = %v", legacy.AllowTransportFallback)
+	}
+	if legacy.ObfsMode != "off" {
+		t.Fatalf("legacy ObfsMode = %q", legacy.ObfsMode)
+	}
+
+	explicit := RelayListenerRow{
+		ListenHost:             "0.0.0.0",
+		PublicHost:             "",
+		TransportMode:          "quic",
+		AllowTransportFallback: false,
+		ObfsMode:               "off",
+	}
+	normalizeRelayListenerRow(&explicit)
+	if explicit.TransportMode != "quic" {
+		t.Fatalf("explicit TransportMode = %q", explicit.TransportMode)
+	}
+	if explicit.AllowTransportFallback {
+		t.Fatalf("explicit AllowTransportFallback = %v", explicit.AllowTransportFallback)
+	}
+	if explicit.ObfsMode != "off" {
+		t.Fatalf("explicit ObfsMode = %q", explicit.ObfsMode)
 	}
 }
 
@@ -1315,6 +1362,27 @@ func TestStoreLoadAgentSnapshotIncludesRelayObfsFlags(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("SaveL4Rules() error = %v", err)
 	}
+	if err := store.SaveRelayListeners(t.Context(), "relay-obfs-agent", []RelayListenerRow{{
+		ID:                      77,
+		AgentID:                 "relay-obfs-agent",
+		Name:                    "relay-obfs-listener",
+		BindHostsJSON:           `["0.0.0.0"]`,
+		ListenHost:              "0.0.0.0",
+		ListenPort:              17443,
+		PublicHost:              "relay-obfs-listener.example.com",
+		PublicPort:              17443,
+		Enabled:                 true,
+		TLSMode:                 "pin_or_ca",
+		TransportMode:           "quic",
+		AllowTransportFallback:  true,
+		ObfsMode:                "off",
+		PinSetJSON:              `[]`,
+		TrustedCACertificateIDs: `[]`,
+		AllowSelfSigned:         true,
+		Revision:                33,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners() error = %v", err)
+	}
 
 	snapshot, err := store.LoadAgentSnapshot(t.Context(), "relay-obfs-agent", AgentSnapshotInput{
 		DesiredRevision: 0,
@@ -1328,6 +1396,18 @@ func TestStoreLoadAgentSnapshotIncludesRelayObfsFlags(t *testing.T) {
 	}
 	if len(snapshot.L4Rules) != 1 || !snapshot.L4Rules[0].RelayObfs {
 		t.Fatalf("expected snapshot L4 relay_obfs=true: %+v", snapshot.L4Rules)
+	}
+	if len(snapshot.RelayListeners) != 1 {
+		t.Fatalf("expected one snapshot relay listener: %+v", snapshot.RelayListeners)
+	}
+	if snapshot.RelayListeners[0].TransportMode != "quic" {
+		t.Fatalf("snapshot relay listener transport_mode = %q", snapshot.RelayListeners[0].TransportMode)
+	}
+	if !snapshot.RelayListeners[0].AllowTransportFallback {
+		t.Fatalf("snapshot relay listener allow_transport_fallback = %v", snapshot.RelayListeners[0].AllowTransportFallback)
+	}
+	if snapshot.RelayListeners[0].ObfsMode != "off" {
+		t.Fatalf("snapshot relay listener obfs_mode = %q", snapshot.RelayListeners[0].ObfsMode)
 	}
 }
 

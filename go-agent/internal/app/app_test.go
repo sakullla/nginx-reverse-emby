@@ -1,8 +1,13 @@
 package app
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"sync"
 	"sync/atomic"
@@ -44,6 +49,86 @@ func TestNewBuildsRealWiring(t *testing.T) {
 	}
 	if app.relayApplier == nil {
 		t.Fatal("expected relay applier to be initialized")
+	}
+}
+
+func TestNewAdvertisesRelayQUICAndConditionalHTTP3IngressCapabilities(t *testing.T) {
+	tests := []struct {
+		name         string
+		http3Enabled bool
+		expectedCaps []string
+	}{
+		{
+			name:         "http3 disabled",
+			http3Enabled: false,
+			expectedCaps: []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic"},
+		},
+		{
+			name:         "http3 enabled",
+			http3Enabled: true,
+			expectedCaps: []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic", "http3_ingress"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			requests := make(chan []byte, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Fatalf("ReadAll() error = %v", err)
+				}
+				select {
+				case requests <- body:
+				default:
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = io.WriteString(w, `{"sync":{"desired_version":"0.1.0","desired_revision":1}}`)
+			}))
+			defer server.Close()
+
+			cfg := Config{
+				AgentID:           "agent",
+				AgentName:         "agent",
+				MasterURL:         server.URL,
+				AgentToken:        "token",
+				CurrentVersion:    "0.1.0",
+				DataDir:           t.TempDir(),
+				HeartbeatInterval: 100 * time.Millisecond,
+				HTTP3Enabled:      tc.http3Enabled,
+			}
+			app, err := New(cfg)
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+
+			var body []byte
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			done := make(chan error, 1)
+			go func() {
+				_, err := app.syncClient.Sync(ctx, SyncRequest{})
+				done <- err
+			}()
+			select {
+			case body = <-requests:
+			case <-ctx.Done():
+				t.Fatal("timed out waiting for heartbeat request")
+			}
+			if err := <-done; err != nil {
+				t.Fatalf("Sync() error = %v", err)
+			}
+
+			var payload struct {
+				Capabilities []string `json:"capabilities"`
+			}
+			if err := json.NewDecoder(bytes.NewReader(body)).Decode(&payload); err != nil {
+				t.Fatalf("Decode() error = %v", err)
+			}
+			if !reflect.DeepEqual(payload.Capabilities, tc.expectedCaps) {
+				t.Fatalf("Capabilities = %+v, want %+v", payload.Capabilities, tc.expectedCaps)
+			}
+		})
 	}
 }
 

@@ -492,11 +492,17 @@ func normalizeVersionPolicyRow(row *VersionPolicyRow) {
 }
 
 func normalizeRelayListenerRow(row *RelayListenerRow) {
+	legacyTransportUnset := strings.TrimSpace(row.TransportMode) == ""
 	row.Name = defaultString(row.Name, "")
 	row.BindHostsJSON = defaultJSON(row.BindHostsJSON, "[]")
 	row.ListenHost = defaultString(row.ListenHost, "0.0.0.0")
 	row.PublicHost = defaultString(row.PublicHost, row.ListenHost)
 	row.TLSMode = defaultString(row.TLSMode, "pin_or_ca")
+	row.TransportMode = defaultString(row.TransportMode, "tls_tcp")
+	if legacyTransportUnset {
+		row.AllowTransportFallback = true
+	}
+	row.ObfsMode = defaultString(row.ObfsMode, "off")
 	row.PinSetJSON = defaultJSON(row.PinSetJSON, "[]")
 	row.TrustedCACertificateIDs = defaultJSON(row.TrustedCACertificateIDs, "[]")
 	row.TagsJSON = defaultJSON(row.TagsJSON, "[]")
@@ -811,12 +817,18 @@ func snapshotRelayListeners(rows []RelayListenerRow) []RelayListener {
 			Enabled:                 row.Enabled,
 			CertificateID:           copyOptionalInt(row.CertificateID),
 			TLSMode:                 defaultString(row.TLSMode, "pin_or_ca"),
+			TransportMode:           defaultString(row.TransportMode, "tls_tcp"),
+			AllowTransportFallback:  row.AllowTransportFallback,
+			ObfsMode:                defaultString(row.ObfsMode, "off"),
 			PinSet:                  parseRelayPins(row.PinSetJSON),
 			TrustedCACertificateIDs: parseIntSlice(row.TrustedCACertificateIDs),
 			AllowSelfSigned:         row.AllowSelfSigned,
 			Tags:                    parseStringSlice(row.TagsJSON),
 			Revision:                int64(row.Revision),
 		})
+		if strings.TrimSpace(row.TransportMode) == "" {
+			listeners[len(listeners)-1].AllowTransportFallback = true
+		}
 	}
 	return listeners
 }

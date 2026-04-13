@@ -6,14 +6,14 @@ import (
 	"testing"
 )
 
-func TestObfsFramesRoundTripOriginalBytes(t *testing.T) {
-	payload := bytes.Repeat([]byte{0x16, 0x03, 0x01, 0x20}, 256)
-	var framed bytes.Buffer
+func TestEarlyWindowMaskerRoundTrip(t *testing.T) {
+	payload := bytes.Repeat([]byte{0x17, 0x03, 0x03, 0x00, 0x20}, 256)
+	var masked bytes.Buffer
 
-	writer := newObfsFirstSegmentWriter(&framed, obfsConfig{
-		MaxDataBytes: 4096,
-		MaxPadFrames: 4,
-		Seed:         1,
+	writer := newEarlyWindowMaskWriter(&masked, earlyWindowMaskConfig{
+		MaxBytes:  32 * 1024,
+		MaxWrites: 8,
+		Seed:      1,
 	})
 	if _, err := writer.Write(payload); err != nil {
 		t.Fatalf("Write() error = %v", err)
@@ -22,17 +22,19 @@ func TestObfsFramesRoundTripOriginalBytes(t *testing.T) {
 		t.Fatalf("Close() error = %v", err)
 	}
 
-	reader := newObfsFirstSegmentReader(bytes.NewReader(framed.Bytes()), obfsConfig{MaxDataBytes: 4096})
+	reader := newEarlyWindowMaskReader(bytes.NewReader(masked.Bytes()), earlyWindowMaskConfig{
+		MaxBytes: 32 * 1024,
+	})
 	got, err := io.ReadAll(reader)
 	if err != nil {
 		t.Fatalf("ReadAll() error = %v", err)
 	}
 	if !bytes.Equal(got, payload) {
-		t.Fatalf("payload mismatch")
+		t.Fatal("payload mismatch")
 	}
 }
 
-func TestObfsReaderRejectsFrameAfterEnd(t *testing.T) {
+func TestEarlyWindowMaskReaderRejectsFrameAfterWindowEnd(t *testing.T) {
 	var stream bytes.Buffer
 	if err := writeObfsFrame(&stream, obfsFrameData, []byte("hello")); err != nil {
 		t.Fatalf("writeObfsFrame(data) error = %v", err)
@@ -44,21 +46,23 @@ func TestObfsReaderRejectsFrameAfterEnd(t *testing.T) {
 		t.Fatalf("writeObfsFrame(data-again) error = %v", err)
 	}
 
-	reader := newObfsFirstSegmentReader(bytes.NewReader(stream.Bytes()), obfsConfig{MaxDataBytes: 4096})
+	reader := newEarlyWindowMaskReader(bytes.NewReader(stream.Bytes()), earlyWindowMaskConfig{
+		MaxBytes: 32 * 1024,
+	})
 	if _, err := io.ReadAll(reader); err == nil {
 		t.Fatal("expected invalid relay obfs frame error")
 	}
 }
 
-func TestObfsWriterKeepsFirstSegmentOpenAcrossMultipleWrites(t *testing.T) {
+func TestEarlyWindowMaskerKeepsWindowOpenAcrossMultipleWrites(t *testing.T) {
 	part1 := bytes.Repeat([]byte{0x16, 0x03}, 128)
 	part2 := bytes.Repeat([]byte{0x01, 0x20}, 128)
-	var framed bytes.Buffer
+	var masked bytes.Buffer
 
-	writer := newObfsFirstSegmentWriter(&framed, obfsConfig{
-		MaxDataBytes: 4096,
-		MaxPadFrames: 4,
-		Seed:         1,
+	writer := newEarlyWindowMaskWriter(&masked, earlyWindowMaskConfig{
+		MaxBytes:  32 * 1024,
+		MaxWrites: 8,
+		Seed:      1,
 	})
 	if _, err := writer.Write(part1); err != nil {
 		t.Fatalf("Write(part1) error = %v", err)
@@ -70,13 +74,15 @@ func TestObfsWriterKeepsFirstSegmentOpenAcrossMultipleWrites(t *testing.T) {
 		t.Fatalf("Close() error = %v", err)
 	}
 
-	reader := newObfsFirstSegmentReader(bytes.NewReader(framed.Bytes()), obfsConfig{MaxDataBytes: 4096})
+	reader := newEarlyWindowMaskReader(bytes.NewReader(masked.Bytes()), earlyWindowMaskConfig{
+		MaxBytes: 32 * 1024,
+	})
 	got, err := io.ReadAll(reader)
 	if err != nil {
 		t.Fatalf("ReadAll() error = %v", err)
 	}
 	want := append(append([]byte(nil), part1...), part2...)
 	if !bytes.Equal(got, want) {
-		t.Fatalf("payload mismatch")
+		t.Fatal("payload mismatch")
 	}
 }

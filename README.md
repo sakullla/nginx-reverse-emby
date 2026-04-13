@@ -98,6 +98,10 @@ Windows 执行面同样使用 Go agent，但当前控制面镜像默认只公开
 - `/panel-api/*` 由 Go control-plane 直接提供，不再依赖 Nginx 做控制面反代。
 - Go agent 二进制会作为公开资产暴露在 `/panel-api/public/agent-assets/` 下，供 `join-agent.sh` 下载当前已打包的平台版本。
 - `deploy.sh` 仍保留为历史兼容的独立 Nginx 节点脚本，不是默认运行时路径。
+- `NRE_HTTP3_ENABLED=true` 会让 HTTPS 入口同时启用 HTTP/3。
+- Relay listener 支持 `transport_mode=tls_tcp|quic`，默认 `tls_tcp`。
+- Relay listener 支持 `obfs_mode=off|early_window_v2`，且仅对 `tls_tcp` 生效。
+- UDP relay 支持通过 Relay 中继，`quic` 走流内包帧，`tls_tcp` 走 UoT。
 
 ## Verification
 

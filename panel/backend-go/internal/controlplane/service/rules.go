@@ -94,7 +94,7 @@ func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRule
 	}
 
 	maxID := 0
-	for _, row := range rows {
+	for _, row := range allRows {
 		if row.ID > maxID {
 			maxID = row.ID
 		}

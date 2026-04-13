@@ -25,9 +25,6 @@ func normalizeRelayChainInput(values []int, protocol string) ([]int, error) {
 		seen[value] = struct{}{}
 		normalized = append(normalized, value)
 	}
-	if strings.ToLower(strings.TrimSpace(protocol)) != "tcp" && len(normalized) > 0 {
-		return nil, fmt.Errorf("%w: relay_chain is only supported for tcp protocol", ErrInvalidArgument)
-	}
 	return normalized, nil
 }
 

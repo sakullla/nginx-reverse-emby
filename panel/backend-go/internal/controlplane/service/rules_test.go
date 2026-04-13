@@ -596,6 +596,51 @@ func TestRuleServiceCreateHTTPSPersistsManagedCertificateInSQLiteStore(t *testin
 	}
 }
 
+func TestRuleServiceCreateAllocatesGlobalIDsAcrossAgentsInSQLiteStore(t *testing.T) {
+	dataRoot := t.TempDir()
+	store, err := storage.NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	for _, agentID := range []string{"agent-a", "agent-b"} {
+		if err := store.SaveAgent(context.Background(), storage.AgentRow{
+			ID:         agentID,
+			Name:       agentID,
+			AgentToken: agentID + "-token",
+		}); err != nil {
+			t.Fatalf("SaveAgent(%q) error = %v", agentID, err)
+		}
+	}
+
+	svc := NewRuleService(config.Config{}, store)
+
+	first, err := svc.Create(context.Background(), "agent-a", HTTPRuleInput{
+		FrontendURL: stringPtrRule("http://agent-a.example.com"),
+		BackendURL:  stringPtrRule("http://127.0.0.1:8096"),
+	})
+	if err != nil {
+		t.Fatalf("Create(agent-a) error = %v", err)
+	}
+	second, err := svc.Create(context.Background(), "agent-b", HTTPRuleInput{
+		FrontendURL: stringPtrRule("http://agent-b.example.com"),
+		BackendURL:  stringPtrRule("http://127.0.0.1:8096"),
+	})
+	if err != nil {
+		t.Fatalf("Create(agent-b) error = %v", err)
+	}
+
+	if first.ID != 1 {
+		t.Fatalf("first rule id = %d", first.ID)
+	}
+	if second.ID != 2 {
+		t.Fatalf("second rule id = %d", second.ID)
+	}
+}
+
 func TestRuleServiceCreateHTTPRuleDoesNotProvisionManagedCertificate(t *testing.T) {
 	store := &fakeRuleStore{
 		rulesByAgent: map[string][]storage.HTTPRuleRow{},

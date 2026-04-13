@@ -14,14 +14,14 @@ func TestAllowsUDPDirectWithEmptyRelayChain(t *testing.T) {
 	}
 }
 
-func TestRejectsUDPRelay(t *testing.T) {
-	if err := ValidateRule(Rule{Protocol: "udp", RelayChain: []int{1}}); err == nil {
-		t.Fatal("expected udp relay to be rejected")
+func TestAllowsUDPRelay(t *testing.T) {
+	if err := ValidateRule(Rule{Protocol: "udp", RelayChain: []int{1}}); err != nil {
+		t.Fatalf("expected udp relay to be allowed: %v", err)
 	}
 }
 
-func TestRejectsUDPRelayCaseInsensitive(t *testing.T) {
-	if err := ValidateRule(Rule{Protocol: "UDP", RelayChain: []int{1}}); err == nil {
-		t.Fatal("expected udp relay to be rejected regardless of protocol case")
+func TestAllowsUDPRelayCaseInsensitive(t *testing.T) {
+	if err := ValidateRule(Rule{Protocol: "UDP", RelayChain: []int{1}}); err != nil {
+		t.Fatalf("expected udp relay to be allowed regardless of protocol case: %v", err)
 	}
 }

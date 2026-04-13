@@ -410,6 +410,28 @@ func TestNormalizeRelayListenerInputDeduplicatesBindHosts(t *testing.T) {
 	}
 }
 
+func TestRelayListenerDefaultsTransportAndObfs(t *testing.T) {
+	listener, err := normalizeRelayListenerInput(RelayListenerInput{
+		Name:       stringPtr("relay-a"),
+		ListenPort: intPtrService(9443),
+	}, RelayListener{}, 1, relayNormalizeOptions{
+		AllowMissingCertificate: true,
+		SkipTrustValidation:     true,
+	})
+	if err != nil {
+		t.Fatalf("normalizeRelayListenerInput() error = %v", err)
+	}
+	if listener.TransportMode != "tls_tcp" {
+		t.Fatalf("TransportMode = %q", listener.TransportMode)
+	}
+	if !listener.AllowTransportFallback {
+		t.Fatal("AllowTransportFallback = false")
+	}
+	if listener.ObfsMode != "off" {
+		t.Fatalf("ObfsMode = %q", listener.ObfsMode)
+	}
+}
+
 func TestRelayServiceBootstrapPersistsCanonicalRelayCAWhenMissing(t *testing.T) {
 	store := &relayCertStore{
 		relayByAgentID: map[string][]storage.RelayListenerRow{},

@@ -10,26 +10,23 @@ import (
 const maxRequestSize = 1 << 20
 
 const (
-	TransportModeOff            = ""
-	TransportModeFirstSegmentV1 = "first_segment_v1"
+	ListenerTransportModeTLSTCP = "tls_tcp"
+	ListenerTransportModeQUIC   = "quic"
+	RelayObfsModeOff            = "off"
+	RelayObfsModeEarlyWindowV2  = "early_window_v2"
 )
-
-type relayTransportMode string
-
-const (
-	relayTransportModeOff            relayTransportMode = TransportModeOff
-	relayTransportModeFirstSegmentV1 relayTransportMode = TransportModeFirstSegmentV1
-)
-
-type relayTransport struct {
-	Mode relayTransportMode `json:"mode,omitempty"`
-}
 
 type relayRequest struct {
-	Network   string         `json:"network"`
-	Target    string         `json:"target"`
-	Chain     []Hop          `json:"chain,omitempty"`
-	Transport relayTransport `json:"transport,omitempty"`
+	Network string `json:"network"`
+	Target  string `json:"target"`
+	Chain   []Hop  `json:"chain,omitempty"`
+}
+
+type relayOpenFrame struct {
+	Kind     string         `json:"kind"`
+	Target   string         `json:"target"`
+	Chain    []Hop          `json:"chain,omitempty"`
+	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
 type relayResponse struct {
@@ -43,6 +40,10 @@ func writeRelayRequest(w io.Writer, request relayRequest) error {
 
 func writeRelayResponse(w io.Writer, response relayResponse) error {
 	return writeFrame(w, response)
+}
+
+func writeRelayOpenFrame(w io.Writer, frame relayOpenFrame) error {
+	return writeFrame(w, frame)
 }
 
 func writeFrame(w io.Writer, payloadValue any) error {
@@ -86,6 +87,19 @@ func readRelayResponse(r io.Reader) (relayResponse, error) {
 		return relayResponse{}, err
 	}
 	return response, nil
+}
+
+func readRelayOpenFrame(r io.Reader) (relayOpenFrame, error) {
+	payload, err := readFrame(r)
+	if err != nil {
+		return relayOpenFrame{}, err
+	}
+
+	var frame relayOpenFrame
+	if err := json.Unmarshal(payload, &frame); err != nil {
+		return relayOpenFrame{}, err
+	}
+	return frame, nil
 }
 
 func readFrame(r io.Reader) ([]byte, error) {

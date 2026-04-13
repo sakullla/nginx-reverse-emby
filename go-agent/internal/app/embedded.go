@@ -43,7 +43,7 @@ func NewEmbedded(cfg Config, st store.Store, client SyncClient) (*App, error) {
 		cfg,
 		st,
 		client,
-		newHTTPRuntimeManagerWithTLS(certManager),
+		newHTTPRuntimeManagerWithTLSAndHTTP3(certManager, cfg.HTTP3Enabled),
 		certManager,
 		newL4RuntimeManagerWithRelay(certManager),
 		newRelayRuntimeManager(certManager),

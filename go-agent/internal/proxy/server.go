@@ -39,10 +39,11 @@ type Providers struct {
 }
 
 type Runtime struct {
-	mu        sync.Mutex
-	bindings  []string
-	servers   []*http.Server
-	listeners []net.Listener
+	mu           sync.Mutex
+	bindings     []string
+	servers      []*http.Server
+	http3Servers []*http3ServerHandle
+	listeners    []net.Listener
 }
 
 type routeEntry struct {
@@ -148,7 +149,7 @@ func BindingKeys(ctx context.Context, rules []model.HTTPRule, relayListeners []m
 }
 
 func Start(ctx context.Context, rules []model.HTTPRule, relayListeners []model.RelayListener, providers Providers) (*Runtime, error) {
-	return StartWithResources(ctx, rules, relayListeners, providers, nil, nil)
+	return StartWithResources(ctx, rules, relayListeners, providers, nil, nil, false)
 }
 
 func StartWithResources(
@@ -158,6 +159,7 @@ func StartWithResources(
 	providers Providers,
 	backendCache *backends.Cache,
 	sharedTransport *http.Transport,
+	http3Enabled bool,
 ) (*Runtime, error) {
 	specs, err := buildRuntimeListenerSpecs(ctx, rules, relayListeners, providers)
 	if err != nil {
@@ -218,6 +220,15 @@ func StartWithResources(
 				return
 			}
 		}(server, listener)
+
+		if http3Enabled && spec.scheme == "https" {
+			handle, err := startHTTP3Server(ctx, servers[idx], spec, providers.TLS)
+			if err != nil {
+				log.Printf("[proxy] http3 startup failed on %s: %v", spec.bindingKey, err)
+				continue
+			}
+			runtime.http3Servers = append(runtime.http3Servers, handle)
+		}
 	}
 
 	return runtime, nil
@@ -326,6 +337,11 @@ func (r *Runtime) Close() error {
 	defer r.mu.Unlock()
 
 	var closeErr error
+	for _, server := range r.http3Servers {
+		if err := server.Close(); err != nil && !errors.Is(err, net.ErrClosed) && closeErr == nil {
+			closeErr = err
+		}
+	}
 	for _, server := range r.servers {
 		if err := server.Close(); err != nil && !errors.Is(err, http.ErrServerClosed) && closeErr == nil {
 			closeErr = err
@@ -337,6 +353,7 @@ func (r *Runtime) Close() error {
 		}
 	}
 	r.servers = nil
+	r.http3Servers = nil
 	r.listeners = nil
 	return closeErr
 }
@@ -463,7 +480,7 @@ func runtimeRuleSpec(rule model.HTTPRule) (runtimeRuleBinding, error) {
 	}, nil
 }
 
-func newTLSListener(ctx context.Context, listener net.Listener, spec runtimeListenerSpec, provider TLSMaterialProvider) (net.Listener, error) {
+func newInboundTLSConfig(ctx context.Context, spec runtimeListenerSpec, provider TLSMaterialProvider) (*tls.Config, error) {
 	if provider == nil {
 		return nil, fmt.Errorf("tls material provider is required")
 	}
@@ -473,7 +490,6 @@ func newTLSListener(ctx context.Context, listener net.Listener, spec runtimeList
 	}
 	config := &tls.Config{
 		MinVersion: tls.VersionTLS12,
-		NextProtos: []string{"h2", "http/1.1"},
 		GetCertificate: func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 			host := normalizeHost(hello.ServerName)
 			if host == "" && len(spec.hostnames) == 1 {
@@ -488,6 +504,15 @@ func newTLSListener(ctx context.Context, listener net.Listener, spec runtimeList
 			return provider.ServerCertificateForHost(ctx, host)
 		},
 	}
+	return config, nil
+}
+
+func newTLSListener(ctx context.Context, listener net.Listener, spec runtimeListenerSpec, provider TLSMaterialProvider) (net.Listener, error) {
+	config, err := newInboundTLSConfig(ctx, spec, provider)
+	if err != nil {
+		return nil, err
+	}
+	config.NextProtos = []string{"h2", "http/1.1"}
 	return tls.NewListener(listener, config), nil
 }
 
@@ -506,18 +531,9 @@ func newRelayTransport(
 	}
 	transport := cloneTransport(base)
 	transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-		return relay.Dial(ctx, network, dialAddressFromContext(ctx, addr), hops, provider, relay.DialOptions{
-			TransportMode: relayTransportModeForHTTPRule(rule),
-		})
+		return relay.Dial(ctx, network, dialAddressFromContext(ctx, addr), hops, provider)
 	}
 	return transport, nil
-}
-
-func relayTransportModeForHTTPRule(rule model.HTTPRule) string {
-	if rule.RelayObfs {
-		return relay.TransportModeFirstSegmentV1
-	}
-	return relay.TransportModeOff
 }
 
 func resolveRelayHops(rule model.HTTPRule, relayListeners []model.RelayListener) ([]relay.Hop, error) {

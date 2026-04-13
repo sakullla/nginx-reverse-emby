@@ -41,6 +41,9 @@ type RelayListener struct {
 	Enabled                 bool       `json:"enabled"`
 	CertificateID           *int       `json:"certificate_id"`
 	TLSMode                 string     `json:"tls_mode"`
+	TransportMode           string     `json:"transport_mode"`
+	AllowTransportFallback  bool       `json:"allow_transport_fallback"`
+	ObfsMode                string     `json:"obfs_mode"`
 	PinSet                  []RelayPin `json:"pin_set"`
 	TrustedCACertificateIDs []int      `json:"trusted_ca_certificate_ids"`
 	AllowSelfSigned         bool       `json:"allow_self_signed"`
@@ -59,6 +62,9 @@ type RelayListenerInput struct {
 	Enabled                    *bool       `json:"enabled,omitempty"`
 	CertificateID              *int        `json:"certificate_id,omitempty"`
 	TLSMode                    *string     `json:"tls_mode,omitempty"`
+	TransportMode              *string     `json:"transport_mode,omitempty"`
+	AllowTransportFallback     *bool       `json:"allow_transport_fallback,omitempty"`
+	ObfsMode                   *string     `json:"obfs_mode,omitempty"`
 	PinSet                     *[]RelayPin `json:"pin_set,omitempty"`
 	TrustedCACertificateIDs    *[]int      `json:"trusted_ca_certificate_ids,omitempty"`
 	AllowSelfSigned            *bool       `json:"allow_self_signed,omitempty"`
@@ -656,6 +662,41 @@ func normalizeRelayListenerInput(input RelayListenerInput, fallback RelayListene
 		return RelayListener{}, fmt.Errorf("%w: tls_mode must be pin_only, ca_only, pin_or_ca, or pin_and_ca", ErrInvalidArgument)
 	}
 
+	transportMode := strings.TrimSpace(pointerString(input.TransportMode))
+	if transportMode == "" {
+		transportMode = fallback.TransportMode
+	}
+	switch transportMode {
+	case "", "tls_tcp":
+		transportMode = "tls_tcp"
+	case "quic":
+	default:
+		return RelayListener{}, fmt.Errorf("%w: transport_mode must be tls_tcp or quic", ErrInvalidArgument)
+	}
+
+	allowTransportFallback := fallback.AllowTransportFallback
+	if fallback.ID <= 0 {
+		allowTransportFallback = true
+	}
+	if input.AllowTransportFallback != nil {
+		allowTransportFallback = *input.AllowTransportFallback
+	}
+
+	obfsMode := strings.TrimSpace(pointerString(input.ObfsMode))
+	if obfsMode == "" {
+		obfsMode = fallback.ObfsMode
+	}
+	switch obfsMode {
+	case "":
+		obfsMode = "off"
+	case "off", "early_window_v2":
+	default:
+		return RelayListener{}, fmt.Errorf("%w: obfs_mode must be off or early_window_v2", ErrInvalidArgument)
+	}
+	if transportMode == "quic" {
+		obfsMode = "off"
+	}
+
 	pinSet := append([]RelayPin(nil), fallback.PinSet...)
 	if input.PinSet != nil {
 		pinSet = normalizeRelayPins(*input.PinSet)
@@ -714,6 +755,9 @@ func normalizeRelayListenerInput(input RelayListenerInput, fallback RelayListene
 		Enabled:                 enabled,
 		CertificateID:           certID,
 		TLSMode:                 tlsMode,
+		TransportMode:           transportMode,
+		AllowTransportFallback:  allowTransportFallback,
+		ObfsMode:                obfsMode,
 		PinSet:                  pinSet,
 		TrustedCACertificateIDs: trustedCAIDs,
 		AllowSelfSigned:         allowSelfSigned,
@@ -1171,19 +1215,25 @@ func normalizeRelayCAIDs(values []int) []int {
 
 func relayListenerFromRow(row storage.RelayListenerRow) RelayListener {
 	listener := RelayListener{
-		ID:              row.ID,
-		AgentID:         row.AgentID,
-		Name:            row.Name,
-		ListenHost:      defaultString(row.ListenHost, "0.0.0.0"),
-		ListenPort:      row.ListenPort,
-		PublicHost:      defaultString(row.PublicHost, row.ListenHost),
-		PublicPort:      row.PublicPort,
-		Enabled:         row.Enabled,
-		CertificateID:   row.CertificateID,
-		TLSMode:         defaultString(row.TLSMode, "pin_or_ca"),
-		AllowSelfSigned: row.AllowSelfSigned,
-		Tags:            parseStringArray(row.TagsJSON),
-		Revision:        row.Revision,
+		ID:                     row.ID,
+		AgentID:                row.AgentID,
+		Name:                   row.Name,
+		ListenHost:             defaultString(row.ListenHost, "0.0.0.0"),
+		ListenPort:             row.ListenPort,
+		PublicHost:             defaultString(row.PublicHost, row.ListenHost),
+		PublicPort:             row.PublicPort,
+		Enabled:                row.Enabled,
+		CertificateID:          row.CertificateID,
+		TLSMode:                defaultString(row.TLSMode, "pin_or_ca"),
+		TransportMode:          defaultString(row.TransportMode, "tls_tcp"),
+		ObfsMode:               defaultString(row.ObfsMode, "off"),
+		AllowTransportFallback: row.AllowTransportFallback,
+		AllowSelfSigned:        row.AllowSelfSigned,
+		Tags:                   parseStringArray(row.TagsJSON),
+		Revision:               row.Revision,
+	}
+	if strings.TrimSpace(row.TransportMode) == "" {
+		listener.AllowTransportFallback = true
 	}
 	if err := json.Unmarshal([]byte(defaultString(row.BindHostsJSON, "[]")), &listener.BindHosts); err != nil {
 		listener.BindHosts = []string{listener.ListenHost}
@@ -1215,6 +1265,9 @@ func relayListenerToRow(listener RelayListener) storage.RelayListenerRow {
 		Enabled:                 listener.Enabled,
 		CertificateID:           listener.CertificateID,
 		TLSMode:                 listener.TLSMode,
+		TransportMode:           listener.TransportMode,
+		AllowTransportFallback:  listener.AllowTransportFallback,
+		ObfsMode:                listener.ObfsMode,
 		PinSetJSON:              marshalJSON(listener.PinSet, "[]"),
 		TrustedCACertificateIDs: marshalJSON(listener.TrustedCACertificateIDs, "[]"),
 		AllowSelfSigned:         listener.AllowSelfSigned,
