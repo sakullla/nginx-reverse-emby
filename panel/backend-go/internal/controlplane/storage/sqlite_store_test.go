@@ -197,6 +197,15 @@ func TestBootstrapSQLiteSchemaUpgradesLegacySQLiteAndNormalizesBackfills(t *test
 	if listeners[0].BindHostsJSON != `["0.0.0.0"]` || listeners[0].PublicHost != "0.0.0.0" || listeners[0].PublicPort != 7443 {
 		t.Fatalf("unexpected relay defaults after legacy bootstrap: %+v", listeners[0])
 	}
+	if listeners[0].TransportMode != "tls_tcp" {
+		t.Fatalf("expected legacy transport_mode default tls_tcp, got %+v", listeners[0])
+	}
+	if !listeners[0].AllowTransportFallback {
+		t.Fatalf("expected legacy allow_transport_fallback default true, got %+v", listeners[0])
+	}
+	if listeners[0].ObfsMode != "off" {
+		t.Fatalf("expected legacy obfs_mode default off, got %+v", listeners[0])
+	}
 
 	localState, err := store.LoadLocalAgentState(t.Context())
 	if err != nil {
@@ -254,6 +263,44 @@ func TestBootstrapSQLiteSchemaHandlesMalformedRelayBindHostsJSON(t *testing.T) {
 	}
 	if listeners[0].BindHostsJSON != `["10.10.0.5"]` || listeners[0].PublicHost != "10.10.0.5" || listeners[0].PublicPort != 7443 {
 		t.Fatalf("unexpected listener fallback values: %+v", listeners[0])
+	}
+}
+
+func TestNormalizeRelayListenerRowAppliesLegacyTransportDefaultsWithoutClobberingExplicitFalse(t *testing.T) {
+	legacy := RelayListenerRow{
+		ListenHost:             "0.0.0.0",
+		PublicHost:             "",
+		TransportMode:          "",
+		AllowTransportFallback: false,
+		ObfsMode:               "",
+	}
+	normalizeRelayListenerRow(&legacy)
+	if legacy.TransportMode != "tls_tcp" {
+		t.Fatalf("legacy TransportMode = %q", legacy.TransportMode)
+	}
+	if !legacy.AllowTransportFallback {
+		t.Fatalf("legacy AllowTransportFallback = %v", legacy.AllowTransportFallback)
+	}
+	if legacy.ObfsMode != "off" {
+		t.Fatalf("legacy ObfsMode = %q", legacy.ObfsMode)
+	}
+
+	explicit := RelayListenerRow{
+		ListenHost:             "0.0.0.0",
+		PublicHost:             "",
+		TransportMode:          "quic",
+		AllowTransportFallback: false,
+		ObfsMode:               "off",
+	}
+	normalizeRelayListenerRow(&explicit)
+	if explicit.TransportMode != "quic" {
+		t.Fatalf("explicit TransportMode = %q", explicit.TransportMode)
+	}
+	if explicit.AllowTransportFallback {
+		t.Fatalf("explicit AllowTransportFallback = %v", explicit.AllowTransportFallback)
+	}
+	if explicit.ObfsMode != "off" {
+		t.Fatalf("explicit ObfsMode = %q", explicit.ObfsMode)
 	}
 }
 

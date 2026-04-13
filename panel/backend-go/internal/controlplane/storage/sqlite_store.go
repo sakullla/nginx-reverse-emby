@@ -492,11 +492,17 @@ func normalizeVersionPolicyRow(row *VersionPolicyRow) {
 }
 
 func normalizeRelayListenerRow(row *RelayListenerRow) {
+	legacyTransportUnset := strings.TrimSpace(row.TransportMode) == ""
 	row.Name = defaultString(row.Name, "")
 	row.BindHostsJSON = defaultJSON(row.BindHostsJSON, "[]")
 	row.ListenHost = defaultString(row.ListenHost, "0.0.0.0")
 	row.PublicHost = defaultString(row.PublicHost, row.ListenHost)
 	row.TLSMode = defaultString(row.TLSMode, "pin_or_ca")
+	row.TransportMode = defaultString(row.TransportMode, "tls_tcp")
+	if legacyTransportUnset {
+		row.AllowTransportFallback = true
+	}
+	row.ObfsMode = defaultString(row.ObfsMode, "off")
 	row.PinSetJSON = defaultJSON(row.PinSetJSON, "[]")
 	row.TrustedCACertificateIDs = defaultJSON(row.TrustedCACertificateIDs, "[]")
 	row.TagsJSON = defaultJSON(row.TagsJSON, "[]")
