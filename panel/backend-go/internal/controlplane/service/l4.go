@@ -114,6 +114,10 @@ func (s *l4Service) Create(ctx context.Context, agentID string, input L4RuleInpu
 		return L4Rule{}, err
 	}
 
+	allRows, err := s.listL4RulesAcrossAllAgents(ctx)
+	if err != nil {
+		return L4Rule{}, err
+	}
 	rows, err := s.store.ListL4Rules(ctx, resolvedID)
 	if err != nil {
 		return L4Rule{}, err
@@ -122,12 +126,14 @@ func (s *l4Service) Create(ctx context.Context, agentID string, input L4RuleInpu
 	existing := make([]L4Rule, 0, len(rows))
 	maxID := 0
 	maxRevision := 0
+	for _, row := range allRows {
+		if row.ID > maxID {
+			maxID = row.ID
+		}
+	}
 	for _, row := range rows {
 		rule := l4RuleFromRow(row)
 		existing = append(existing, rule)
-		if rule.ID > maxID {
-			maxID = rule.ID
-		}
 		if rule.Revision > maxRevision {
 			maxRevision = rule.Revision
 		}
@@ -382,6 +388,23 @@ func (s *l4Service) validateRelayChain(ctx context.Context, relayChain []int) er
 		return err
 	}
 	return validateRelayChainReferences(ctx, s.store, knownAgentIDs, relayChain)
+}
+
+func (s *l4Service) listL4RulesAcrossAllAgents(ctx context.Context) ([]storage.L4RuleRow, error) {
+	agentIDs, err := s.allKnownAgentIDs(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	rows := make([]storage.L4RuleRow, 0)
+	for _, agentID := range agentIDs {
+		agentRows, err := s.store.ListL4Rules(ctx, agentID)
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, agentRows...)
+	}
+	return rows, nil
 }
 
 func (s *l4Service) allKnownAgentIDs(ctx context.Context) ([]string, error) {

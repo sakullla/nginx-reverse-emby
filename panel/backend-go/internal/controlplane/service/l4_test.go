@@ -117,6 +117,56 @@ func TestL4RuleServiceCreateAllowsRelayChainForUDP(t *testing.T) {
 	}
 }
 
+func TestL4RuleServiceCreateAllocatesGlobalIDsAcrossAgentsInSQLiteStore(t *testing.T) {
+	dataRoot := t.TempDir()
+	store, err := storage.NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	for _, agentID := range []string{"agent-a", "agent-b"} {
+		if err := store.SaveAgent(context.Background(), storage.AgentRow{
+			ID:               agentID,
+			Name:             agentID,
+			AgentToken:       agentID + "-token",
+			CapabilitiesJSON: marshalStringArray([]string{"http_rules", "l4"}),
+		}); err != nil {
+			t.Fatalf("SaveAgent(%q) error = %v", agentID, err)
+		}
+	}
+
+	svc := NewL4RuleService(config.Config{}, store)
+
+	first, err := svc.Create(context.Background(), "agent-a", L4RuleInput{
+		Protocol:     stringPtrL4("tcp"),
+		ListenPort:   intPtrL4(9000),
+		UpstreamHost: stringPtrL4("upstream-a"),
+		UpstreamPort: intPtrL4(9001),
+	})
+	if err != nil {
+		t.Fatalf("Create(agent-a) error = %v", err)
+	}
+	second, err := svc.Create(context.Background(), "agent-b", L4RuleInput{
+		Protocol:     stringPtrL4("tcp"),
+		ListenPort:   intPtrL4(9100),
+		UpstreamHost: stringPtrL4("upstream-b"),
+		UpstreamPort: intPtrL4(9101),
+	})
+	if err != nil {
+		t.Fatalf("Create(agent-b) error = %v", err)
+	}
+
+	if first.ID != 1 {
+		t.Fatalf("first rule id = %d", first.ID)
+	}
+	if second.ID != 2 {
+		t.Fatalf("second rule id = %d", second.ID)
+	}
+}
+
 func TestL4RuleServiceCreateClearsRelayObfsWithoutRelayChain(t *testing.T) {
 	store := &fakeL4Store{l4RulesByID: map[string][]storage.L4RuleRow{}}
 	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
