@@ -2414,6 +2414,100 @@ func TestRunHydratesRelayListenersFromStoredAppliedSnapshot(t *testing.T) {
 	}
 }
 
+func TestRunDoesNotReapplyLocalRelayListenersWhenOnlyRemoteRelayDependencyChanges(t *testing.T) {
+	cfg := Config{
+		AgentID:           "local-agent",
+		HeartbeatInterval: time.Hour,
+	}
+	mem := store.NewInMemory()
+	stored := Snapshot{
+		DesiredVersion: "stored",
+		Revision:       5,
+		L4Rules: []model.L4Rule{{
+			Protocol:   "tcp",
+			ListenHost: "127.0.0.1",
+			ListenPort: 50381,
+			Backends: []model.L4Backend{{
+				Host: "103.100.176.124",
+				Port: 26966,
+			}},
+			RelayChain: []int{5},
+			Revision:   5,
+		}},
+		RelayListeners: []model.RelayListener{
+			{
+				ID:         4,
+				AgentID:    "local-agent",
+				Name:       "local-relay",
+				ListenHost: "0.0.0.0",
+				ListenPort: 443,
+				Enabled:    true,
+				TLSMode:    "pin_only",
+				PinSet: []model.RelayPin{{
+					Type:  "sha256",
+					Value: "local-pin",
+				}},
+				Revision: 5,
+			},
+			{
+				ID:         5,
+				AgentID:    "remote-agent",
+				Name:       "remote-hop",
+				ListenHost: "relay.remote.example",
+				ListenPort: 2443,
+				PublicHost: "relay.remote.example",
+				PublicPort: 2443,
+				Enabled:    true,
+				TLSMode:    "pin_only",
+				PinSet: []model.RelayPin{{
+					Type:  "sha256",
+					Value: "remote-pin",
+				}},
+				Revision: 5,
+			},
+		},
+	}
+	if err := mem.SaveAppliedSnapshot(stored); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+
+	next := stored
+	next.DesiredVersion = "2.0"
+	next.Revision = 6
+	next.RelayListeners = append([]model.RelayListener(nil), stored.RelayListeners...)
+	next.RelayListeners[1].PublicPort = 3443
+	client := newTestSyncClient(nil, syncResponse{snapshot: next})
+	l4Applier := &testL4Applier{}
+	relayApplier := &testRelayApplier{}
+	app := newAppWithDeps(cfg, mem, client, nil, l4Applier, relayApplier)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- app.Run(ctx)
+	}()
+
+	waitForCalls(t, client, 1, time.Second)
+
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("Run returned error: %v", err)
+	}
+
+	relayCalls := relayApplier.snapshotCalls()
+	if len(relayCalls) != 1 {
+		t.Fatalf("expected only startup local relay hydration, got %d calls: %+v", len(relayCalls), relayCalls)
+	}
+	if len(relayCalls[0].listeners) != 1 || relayCalls[0].listeners[0].ID != 4 {
+		t.Fatalf("expected only local relay listener to be applied, got %+v", relayCalls[0].listeners)
+	}
+
+	l4Calls := l4Applier.snapshotCalls()
+	if len(l4Calls) != 2 {
+		t.Fatalf("expected startup hydration and remote relay-triggered l4 refresh, got %d calls", len(l4Calls))
+	}
+}
+
 func TestRunDoesNotApplyL4WhenHeartbeatOmitsPayload(t *testing.T) {
 	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
 	mem := store.NewInMemory()

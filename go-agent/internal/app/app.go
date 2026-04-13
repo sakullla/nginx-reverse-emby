@@ -166,7 +166,7 @@ func newAppWithAllDeps(
 		relayApplier: relayApplier,
 		updater:      updater,
 	}
-	app.runtime = agentruntime.NewWithActivator(agentruntime.NewSnapshotActivator(app.snapshotActivationHandlers()))
+	app.runtime = agentruntime.NewWithActivator(app.snapshotActivator())
 	return app
 }
 
@@ -447,6 +447,31 @@ func (a *App) applyRelayListeners(ctx context.Context, snapshot Snapshot) error 
 		return nil
 	}
 	return a.relayApplier.Apply(ctx, localRelayListeners(snapshot.RelayListeners, a.cfg.AgentID, a.cfg.AgentName))
+}
+
+func (a *App) snapshotActivator() agentruntime.Activator {
+	handlers := a.snapshotActivationHandlers()
+	coreActivator := agentruntime.NewSnapshotActivator(agentruntime.SnapshotActivationHandlers{
+		ActivateManagedCertificates: handlers.ActivateManagedCertificates,
+		ActivateHTTPRules:           handlers.ActivateHTTPRules,
+		ActivateL4Rules:             handlers.ActivateL4Rules,
+	})
+	relayActivator := agentruntime.NewSnapshotActivator(agentruntime.SnapshotActivationHandlers{
+		ActivateRelayListeners: handlers.ActivateRelayListeners,
+	})
+
+	return func(ctx context.Context, previous, next model.Snapshot) error {
+		if err := coreActivator(ctx, previous, next); err != nil {
+			return err
+		}
+
+		localPrevious := previous
+		localPrevious.RelayListeners = localRelayListeners(previous.RelayListeners, a.cfg.AgentID, a.cfg.AgentName)
+		localNext := next
+		localNext.RelayListeners = localRelayListeners(next.RelayListeners, a.cfg.AgentID, a.cfg.AgentName)
+
+		return relayActivator(ctx, localPrevious, localNext)
+	}
 }
 
 func (a *App) snapshotActivationHandlers() agentruntime.SnapshotActivationHandlers {
