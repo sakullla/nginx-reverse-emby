@@ -178,14 +178,15 @@ func (a *App) Run(ctx context.Context) error {
 		return err
 	}
 	if err := a.runtime.Apply(ctx, Snapshot{}, applied); err != nil {
-		return a.recordRuntimeError(err)
+		log.Printf("[agent] startup runtime hydration error at revision %d: %v", applied.Revision, err)
+		_ = a.recordRuntimeErrorWithRevision(err, applied.Revision)
 	}
 
 	if err := a.performSync(ctx); err != nil {
 		if errors.Is(err, agentupdate.ErrRestartRequested) {
 			return nil
 		}
-		if applied.DesiredVersion == "" {
+		if applied.DesiredVersion == "" && applied.Revision == 0 {
 			return err
 		}
 	}
