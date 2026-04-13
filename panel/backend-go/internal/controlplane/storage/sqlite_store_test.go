@@ -1,10 +1,13 @@
 package storage
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
@@ -263,6 +266,33 @@ func TestBootstrapSQLiteSchemaHandlesMalformedRelayBindHostsJSON(t *testing.T) {
 	}
 	if listeners[0].BindHostsJSON != `["10.10.0.5"]` || listeners[0].PublicHost != "10.10.0.5" || listeners[0].PublicPort != 7443 {
 		t.Fatalf("unexpected listener fallback values: %+v", listeners[0])
+	}
+}
+
+func TestBootstrapSQLiteSchemaDoesNotRetryExistingRelayTransportColumns(t *testing.T) {
+	dataRoot := t.TempDir()
+	dbPath := filepath.Join(dataRoot, "panel.db")
+	traceLogger := &schemaTraceLogger{}
+
+	db, err := gorm.Open(sqlite.Open(dbPath), &gorm.Config{
+		Logger: traceLogger,
+	})
+	if err != nil {
+		t.Fatalf("gorm.Open() error = %v", err)
+	}
+	defer closeSQLiteForTest(t, db)
+
+	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
+		t.Fatalf("initial BootstrapSQLiteSchema() error = %v", err)
+	}
+
+	traceLogger.Reset()
+	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
+		t.Fatalf("second BootstrapSQLiteSchema() error = %v", err)
+	}
+
+	if traceLogger.duplicateRelayColumnStatements != 0 {
+		t.Fatalf("expected no duplicate relay column ALTER statements, got %d", traceLogger.duplicateRelayColumnStatements)
 	}
 }
 
@@ -1691,6 +1721,33 @@ func closeSQLiteForTest(t *testing.T, db *gorm.DB) {
 	if err := sqlDB.Close(); err != nil {
 		t.Fatalf("sqlDB.Close() error = %v", err)
 	}
+}
+
+type schemaTraceLogger struct {
+	duplicateRelayColumnStatements int
+}
+
+func (l *schemaTraceLogger) LogMode(level logger.LogLevel) logger.Interface {
+	return l
+}
+
+func (l *schemaTraceLogger) Info(context.Context, string, ...interface{})  {}
+func (l *schemaTraceLogger) Warn(context.Context, string, ...interface{})  {}
+func (l *schemaTraceLogger) Error(context.Context, string, ...interface{}) {}
+
+func (l *schemaTraceLogger) Trace(_ context.Context, _ time.Time, fc func() (string, int64), err error) {
+	if err == nil {
+		return
+	}
+	sql, _ := fc()
+	if strings.Contains(strings.ToLower(err.Error()), "duplicate column name") &&
+		strings.Contains(strings.ToLower(sql), "alter table relay_listeners add column") {
+		l.duplicateRelayColumnStatements++
+	}
+}
+
+func (l *schemaTraceLogger) Reset() {
+	l.duplicateRelayColumnStatements = 0
 }
 
 func writeManagedCertificateMaterial(t *testing.T, dataRoot string, domain string, certPEM string, keyPEM string) {

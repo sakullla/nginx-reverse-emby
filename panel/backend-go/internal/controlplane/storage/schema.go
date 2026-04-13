@@ -2,7 +2,6 @@ package storage
 
 import (
 	"context"
-	"strings"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
@@ -47,10 +46,24 @@ func BootstrapSQLiteSchema(ctx context.Context, db *gorm.DB) error {
 		}
 	}
 
+	relayListenerColumnMigrations := []struct {
+		column string
+		sql    string
+	}{
+		{column: "transport_mode", sql: `ALTER TABLE relay_listeners ADD COLUMN transport_mode TEXT NOT NULL DEFAULT 'tls_tcp'`},
+		{column: "allow_transport_fallback", sql: `ALTER TABLE relay_listeners ADD COLUMN allow_transport_fallback INTEGER NOT NULL DEFAULT 1`},
+		{column: "obfs_mode", sql: `ALTER TABLE relay_listeners ADD COLUMN obfs_mode TEXT NOT NULL DEFAULT 'off'`},
+	}
+	for _, migration := range relayListenerColumnMigrations {
+		if tx.Migrator().HasColumn(&RelayListenerRow{}, migration.column) {
+			continue
+		}
+		if err := tx.Exec(migration.sql).Error; err != nil {
+			return err
+		}
+	}
+
 	normalizationStatements := []string{
-		`ALTER TABLE relay_listeners ADD COLUMN transport_mode TEXT NOT NULL DEFAULT 'tls_tcp'`,
-		`ALTER TABLE relay_listeners ADD COLUMN allow_transport_fallback INTEGER NOT NULL DEFAULT 1`,
-		`ALTER TABLE relay_listeners ADD COLUMN obfs_mode TEXT NOT NULL DEFAULT 'off'`,
 		`UPDATE rules SET pass_proxy_headers = 1 WHERE pass_proxy_headers IS NULL`,
 		`UPDATE rules SET user_agent = '' WHERE user_agent IS NULL`,
 		`UPDATE rules SET custom_headers = '[]' WHERE custom_headers IS NULL OR trim(custom_headers) = ''`,
@@ -94,10 +107,6 @@ func BootstrapSQLiteSchema(ctx context.Context, db *gorm.DB) error {
 	}
 	for _, stmt := range normalizationStatements {
 		if err := tx.Exec(stmt).Error; err != nil {
-			// SQLite has no IF NOT EXISTS for ADD COLUMN; ignore duplicate-column on re-bootstrap.
-			if strings.Contains(strings.ToLower(err.Error()), "duplicate column name") {
-				continue
-			}
 			return err
 		}
 	}
