@@ -4,7 +4,7 @@
     <div class="form-tabs">
       <button type="button" class="form-tabs__btn" :class="{ 'form-tabs__btn--active': activeTab === 'basic' }" @click="activeTab = 'basic'">基础配置</button>
       <button type="button" class="form-tabs__btn" :class="{ 'form-tabs__btn--active': activeTab === 'protocol' }" @click="activeTab = 'protocol'">协议与监听 <span v-if="hasProtocolTuning" class="form-tabs__badge">已配置</span></button>
-      <button type="button" class="form-tabs__btn" :class="{ 'form-tabs__btn--active': activeTab === 'relay' }" @click="activeTab = 'relay'" :disabled="form.protocol === 'udp'">Relay 配置 <span v-if="hasRelayConfig" class="form-tabs__badge">已配置</span></button>
+      <button type="button" class="form-tabs__btn" :class="{ 'form-tabs__btn--active': activeTab === 'relay' }" @click="activeTab = 'relay'">Relay 配置 <span v-if="hasRelayConfig" class="form-tabs__badge">已配置</span></button>
     </div>
 
     <!-- Tab 1: Basic -->
@@ -173,107 +173,93 @@
 
     <!-- Tab: Relay -->
     <div v-else-if="activeTab === 'relay'" class="form-tab-panel">
-      <!-- UDP 不支持提示 -->
-      <div v-if="form.protocol === 'udp'" class="relay-disabled-notice">
-        <div class="relay-disabled-notice__icon">
-          <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-            <circle cx="12" cy="12" r="10"/>
-            <line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
-          </svg>
-        </div>
-        <h3 class="relay-disabled-notice__title">UDP 协议不支持 Relay 链路</h3>
-        <p class="relay-disabled-notice__desc">当前 L4 规则使用 UDP 协议，流量将直接转发到后端服务，不经过 Relay 中转</p>
+      <!-- 提示信息 -->
+      <div v-if="!relayListeners.length" class="relay-alert relay-alert--warning">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+          <line x1="12" y1="9" x2="12" y2="13"/>
+          <line x1="12" y1="17" x2="12.01" y2="17"/>
+        </svg>
+        <span>当前没有可用的 Relay 监听器，请先创建监听器后再配置链路</span>
       </div>
 
-      <template v-else>
-        <!-- 提示信息 -->
-        <div v-if="!relayListeners.length" class="relay-alert relay-alert--warning">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
-            <line x1="12" y1="9" x2="12" y2="13"/>
-            <line x1="12" y1="17" x2="12.01" y2="17"/>
-          </svg>
-          <span>当前没有可用的 Relay 监听器，请先创建监听器后再配置链路</span>
+      <div v-else-if="!form.relay_chain.length" class="relay-alert relay-alert--info">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="10"/>
+          <line x1="12" y1="16" x2="12" y2="12"/>
+          <line x1="12" y1="8" x2="12.01" y2="8"/>
+        </svg>
+        <span>当前为直连模式，{{ form.protocol === 'udp' ? 'UDP' : 'TCP' }} 流量将直接转发到后端服务，不经过 Relay 中转</span>
+      </div>
+
+      <!-- Relay 链路配置 -->
+      <div class="settings-card">
+        <div class="section-header section-header--split">
+          <div>
+            <h3 class="section-title">链路配置</h3>
+            <p class="section-description">按顺序添加 Relay 监听器，构建转发路径</p>
+          </div>
+          <router-link
+            v-if="relayListeners.length"
+            to="/relay-listeners"
+            class="relay-link"
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
+              <polyline points="15 3 21 3 21 9"/>
+              <line x1="10" y1="14" x2="21" y2="3"/>
+            </svg>
+            管理监听器
+          </router-link>
         </div>
 
-        <div v-else-if="!form.relay_chain.length" class="relay-alert relay-alert--info">
-          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <RelayChainInput
+          v-model="form.relay_chain"
+          :listeners="relayListeners"
+        />
+      </div>
+
+      <div class="settings-card">
+        <div class="section-header">
+          <div>
+            <h3 class="section-title">隐私增强</h3>
+            <p class="section-description">仅当首跳 Relay 使用 TLS/TCP 时可启用，用于隐藏内层 ss/TLS 握手特征</p>
+          </div>
+        </div>
+        <label class="toggle toggle--card" :class="{ 'toggle--active': form.relay_obfs, 'toggle--disabled': relayObfsDisabled }">
+          <input
+            v-model="form.relay_obfs"
+            type="checkbox"
+            class="toggle__input"
+            :disabled="relayObfsDisabled"
+          >
+          <span class="toggle__slider"></span>
+          <span class="toggle__content">
+            <span class="toggle__label">启用 Relay 隐私增强</span>
+            <span class="toggle__desc">仅对首跳为 TLS/TCP 的 TCP Relay 链路生效</span>
+          </span>
+        </label>
+        <p v-if="relayObfsDisabled" class="form-help">{{ relayObfsUnsupportedReason }}</p>
+      </div>
+
+      <!-- 使用说明 -->
+      <div class="relay-help">
+        <div class="relay-help__title">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <circle cx="12" cy="12" r="10"/>
             <line x1="12" y1="16" x2="12" y2="12"/>
             <line x1="12" y1="8" x2="12.01" y2="8"/>
           </svg>
-          <span>当前为直连模式，TCP 流量将直接转发到后端服务，不经过 Relay 中转</span>
+          使用说明
         </div>
-
-        <!-- Relay 链路配置 -->
-        <div class="settings-card">
-          <div class="section-header section-header--split">
-            <div>
-              <h3 class="section-title">链路配置</h3>
-              <p class="section-description">按顺序添加 Relay 监听器，构建转发路径</p>
-            </div>
-            <router-link
-              v-if="relayListeners.length"
-              to="/relay-listeners"
-              class="relay-link"
-            >
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>
-                <polyline points="15 3 21 3 21 9"/>
-                <line x1="10" y1="14" x2="21" y2="3"/>
-              </svg>
-              管理监听器
-            </router-link>
-          </div>
-
-          <RelayChainInput
-            v-model="form.relay_chain"
-            :listeners="relayListeners"
-          />
-        </div>
-
-        <div class="settings-card">
-          <div class="section-header">
-            <div>
-              <h3 class="section-title">隐私增强</h3>
-              <p class="section-description">仅当首跳 Relay 使用 TLS/TCP 时可启用，用于隐藏内层 ss/TLS 握手特征</p>
-            </div>
-          </div>
-          <label class="toggle toggle--card" :class="{ 'toggle--active': form.relay_obfs, 'toggle--disabled': relayObfsDisabled }">
-            <input
-              v-model="form.relay_obfs"
-              type="checkbox"
-              class="toggle__input"
-              :disabled="relayObfsDisabled"
-            >
-            <span class="toggle__slider"></span>
-            <span class="toggle__content">
-              <span class="toggle__label">启用 Relay 隐私增强</span>
-              <span class="toggle__desc">仅对首跳为 TLS/TCP 的 TCP Relay 链路生效</span>
-            </span>
-          </label>
-          <p v-if="relayObfsDisabled" class="form-help">{{ relayObfsUnsupportedReason }}</p>
-        </div>
-
-        <!-- 使用说明 -->
-        <div class="relay-help">
-          <div class="relay-help__title">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="12" cy="12" r="10"/>
-              <line x1="12" y1="16" x2="12" y2="12"/>
-              <line x1="12" y1="8" x2="12.01" y2="8"/>
-            </svg>
-            使用说明
-          </div>
-          <ul class="relay-help__list">
-            <li>Relay 链路仅支持 TCP 协议，UDP 流量无法使用中继</li>
-            <li>链路按顺序转发：客户端 → 中继节点 1 → 中继节点 2 → ... → 后端服务</li>
-            <li>每个中继节点需要配置对应的 Relay 监听器</li>
-            <li>可通过上下按钮调整链路顺序</li>
-            <li>链路越长延迟越高，建议根据网络拓扑合理规划</li>
-          </ul>
-        </div>
-      </template>
+        <ul class="relay-help__list">
+          <li>Relay 链路支持 TCP 和 UDP；UDP 会通过 UOT 或 QUIC Relay 进行中继</li>
+          <li>链路按顺序转发：客户端 → 中继节点 1 → 中继节点 2 → ... → 后端服务</li>
+          <li>每个中继节点需要配置对应的 Relay 监听器</li>
+          <li>可通过上下按钮调整链路顺序</li>
+          <li>隐私增强仅对首跳为 TLS/TCP 的 TCP 中继生效，UDP 会自动关闭</li>
+        </ul>
+      </div>
     </div>
   </form>
 </template>
@@ -421,6 +407,9 @@ const relayObfsUnsupportedReason = computed(() => {
   if (!Array.isArray(form.value.relay_chain) || form.value.relay_chain.length === 0) {
     return '当前为直连模式，此选项不会生效'
   }
+  if (form.value.protocol !== 'tcp') {
+    return 'UDP Relay 不支持隐私增强'
+  }
   if (!firstRelayListener.value) {
     return '首跳 Relay 监听器不存在，无法启用隐私增强'
   }
@@ -442,7 +431,6 @@ watch(() => props.initialData, (value) => {
 watch(() => form.value.protocol, (newProto) => {
   form.value.tuning = resetTuningForProtocol(form.value.tuning, newProto)
   if (newProto === 'udp') {
-    form.value.relay_chain = []
     form.value.relay_obfs = false
   }
 })
@@ -568,7 +556,7 @@ function buildPayload() {
     },
     enabled: form.value.enabled,
     tags: [...sysTags, ...userTags],
-    relay_chain: form.value.protocol === 'tcp' ? [...form.value.relay_chain] : [],
+    relay_chain: [...form.value.relay_chain],
     relay_obfs: form.value.protocol === 'tcp'
       && firstRelayListener.value?.transport_mode === 'tls_tcp'
       && Array.isArray(form.value.relay_chain)
@@ -1056,39 +1044,6 @@ async function handleSubmit() {
 .toggle__label {
   font-size: var(--text-sm);
   color: var(--color-text-secondary);
-}
-
-/* Relay 配置样式 */
-.relay-disabled-notice {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-4);
-  padding: var(--space-10) var(--space-6);
-  background: var(--color-bg-subtle);
-  border: 2px dashed var(--color-border-default);
-  border-radius: var(--radius-xl);
-  text-align: center;
-}
-
-.relay-disabled-notice__icon {
-  color: var(--color-text-muted);
-  opacity: 0.5;
-}
-
-.relay-disabled-notice__title {
-  margin: 0;
-  font-size: var(--text-lg);
-  font-weight: var(--font-semibold);
-  color: var(--color-text-secondary);
-}
-
-.relay-disabled-notice__desc {
-  margin: 0;
-  font-size: var(--text-sm);
-  color: var(--color-text-muted);
-  max-width: 400px;
 }
 
 .relay-alert {

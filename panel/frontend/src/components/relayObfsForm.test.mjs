@@ -120,6 +120,15 @@ test('L4 RuleForm ties relay obfs to first relay listener transport', () => {
   assert.match(source, /relay_obfs:\s*form\.value\.protocol === 'tcp'[\s\S]*firstRelayListener\.value\?\.transport_mode === 'tls_tcp'[\s\S]*form\.value\.relay_obfs === true/)
 })
 
+test('L4 RuleForm keeps relay chain available for UDP rules', () => {
+  const source = read('L4RuleForm.vue')
+  assert.doesNotMatch(source, /:disabled="form\.protocol === 'udp'"/)
+  assert.doesNotMatch(source, /UDP 协议不支持 Relay 链路/)
+  assert.doesNotMatch(source, /form\.value\.relay_chain = \[\]\s*[\r\n]+\s*form\.value\.relay_obfs = false/)
+  assert.match(source, /relay_chain:\s*\[\.\.\.form\.value\.relay_chain\]/)
+  assert.match(source, /relay_obfs:\s*form\.value\.protocol === 'tcp'/)
+})
+
 test('Mock relay listener normalization keeps transport defaults and quic obfs off', () => {
   const source = fs.readFileSync(path.resolve(__dirname, '../api/index.js'), 'utf8')
   assert.match(source, /function normalizeRelayTransportMode\(value\)/)
