@@ -320,9 +320,6 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 			return L4Rule{}, err
 		}
 	}
-	if protocol != "tcp" {
-		relayChain = []int{}
-	}
 
 	relayObfs := false
 	if fallback.ID > 0 {

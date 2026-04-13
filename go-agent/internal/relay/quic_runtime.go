@@ -34,8 +34,8 @@ func startQUICListener(ctx context.Context, provider TLSMaterialProvider, listen
 }
 
 func dialQUIC(ctx context.Context, network, target string, chain []Hop, provider TLSMaterialProvider) (net.Conn, error) {
-	if !strings.EqualFold(network, "tcp") {
-		return nil, fmt.Errorf("udp relay is not supported")
+	if !strings.EqualFold(network, "tcp") && !strings.EqualFold(network, "udp") {
+		return nil, fmt.Errorf("unsupported network %q", network)
 	}
 	if len(chain) == 0 {
 		return nil, fmt.Errorf("relay chain is required")
@@ -63,7 +63,7 @@ func dialQUIC(ctx context.Context, network, target string, chain []Hop, provider
 
 	conn := &quicStreamConn{conn: session, stream: stream}
 	request := relayOpenFrame{
-		Kind:   "tcp",
+		Kind:   network,
 		Target: target,
 		Chain:  append([]Hop(nil), chain[1:]...),
 	}

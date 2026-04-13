@@ -86,7 +86,7 @@ func (f *fakeL4Store) CleanupManagedCertificateMaterial(context.Context, []stora
 	return nil
 }
 
-func TestL4RuleServiceCreateRejectsRelayChainForUDP(t *testing.T) {
+func TestL4RuleServiceCreateAllowsRelayChainForUDP(t *testing.T) {
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{},
 		relayByAgent: map[string][]storage.RelayListenerRow{
@@ -102,18 +102,18 @@ func TestL4RuleServiceCreateRejectsRelayChainForUDP(t *testing.T) {
 		LocalAgentID:     "local",
 	}, store)
 
-	_, err := svc.Create(context.Background(), "local", L4RuleInput{
+	rule, err := svc.Create(context.Background(), "local", L4RuleInput{
 		Protocol:     stringPtrL4("udp"),
 		ListenPort:   intPtrL4(9000),
 		UpstreamHost: stringPtrL4("upstream"),
 		UpstreamPort: intPtrL4(9001),
 		RelayChain:   &[]int{7},
 	})
-	if err == nil {
-		t.Fatal("Create() error = nil")
-	}
-	if err.Error() != "invalid argument: relay_chain is only supported for tcp protocol" {
+	if err != nil {
 		t.Fatalf("Create() error = %v", err)
+	}
+	if len(rule.RelayChain) != 1 || rule.RelayChain[0] != 7 {
+		t.Fatalf("RelayChain = %+v", rule.RelayChain)
 	}
 }
 
@@ -173,6 +173,13 @@ func TestL4RuleServiceUpdateClearsRelayObfsWhenRelayChainRemoved(t *testing.T) {
 				Revision:       3,
 			}},
 		},
+		relayByAgent: map[string][]storage.RelayListenerRow{
+			"local": {{
+				ID:      7,
+				AgentID: "local",
+				Enabled: true,
+			}},
+		},
 	}
 	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
 
@@ -190,7 +197,7 @@ func TestL4RuleServiceUpdateClearsRelayObfsWhenRelayChainRemoved(t *testing.T) {
 	}
 }
 
-func TestL4RuleServiceUpdateClearsRelayObfsWhenSwitchingToUDP(t *testing.T) {
+func TestL4RuleServiceUpdatePreservesRelayChainWhenSwitchingToUDP(t *testing.T) {
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{
 			"local": {{
@@ -208,6 +215,13 @@ func TestL4RuleServiceUpdateClearsRelayObfsWhenSwitchingToUDP(t *testing.T) {
 				Revision:       3,
 			}},
 		},
+		relayByAgent: map[string][]storage.RelayListenerRow{
+			"local": {{
+				ID:      7,
+				AgentID: "local",
+				Enabled: true,
+			}},
+		},
 	}
 	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
 
@@ -220,8 +234,8 @@ func TestL4RuleServiceUpdateClearsRelayObfsWhenSwitchingToUDP(t *testing.T) {
 	if rule.Protocol != "udp" {
 		t.Fatalf("expected protocol udp, got %q", rule.Protocol)
 	}
-	if len(rule.RelayChain) != 0 {
-		t.Fatalf("expected relay_chain to be cleared for udp, got %+v", rule.RelayChain)
+	if len(rule.RelayChain) != 1 || rule.RelayChain[0] != 7 {
+		t.Fatalf("expected relay_chain to be preserved for udp, got %+v", rule.RelayChain)
 	}
 	if rule.RelayObfs {
 		t.Fatalf("expected relay_obfs to be cleared for udp protocol")

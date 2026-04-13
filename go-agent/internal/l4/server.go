@@ -50,13 +50,53 @@ type udpSession struct {
 	key            string
 	peer           *net.UDPAddr
 	listener       *net.UDPConn
-	upstream       *net.UDPConn
+	upstream       udpUpstream
 	lastActive     time.Time
 	targetAddr     string
 	pendingReplies int
 	awaitingSince  time.Time
 	ready          chan struct{}
 	initErr        error
+}
+
+type udpUpstream interface {
+	Close() error
+	SetReadDeadline(time.Time) error
+	SetWriteDeadline(time.Time) error
+	ReadPacket() ([]byte, error)
+	WritePacket([]byte) error
+}
+
+type directUDPUpstream struct {
+	conn *net.UDPConn
+}
+
+func (u *directUDPUpstream) Close() error                       { return u.conn.Close() }
+func (u *directUDPUpstream) SetReadDeadline(t time.Time) error  { return u.conn.SetReadDeadline(t) }
+func (u *directUDPUpstream) SetWriteDeadline(t time.Time) error { return u.conn.SetWriteDeadline(t) }
+func (u *directUDPUpstream) ReadPacket() ([]byte, error) {
+	buf := make([]byte, 64*1024)
+	n, err := u.conn.Read(buf)
+	if err != nil {
+		return nil, err
+	}
+	return append([]byte(nil), buf[:n]...), nil
+}
+func (u *directUDPUpstream) WritePacket(payload []byte) error {
+	_, err := u.conn.Write(payload)
+	return err
+}
+
+type relayUDPUpstream struct {
+	conn net.Conn
+}
+
+func (u *relayUDPUpstream) Close() error                       { return u.conn.Close() }
+func (u *relayUDPUpstream) SetReadDeadline(t time.Time) error  { return u.conn.SetReadDeadline(t) }
+func (u *relayUDPUpstream) SetWriteDeadline(t time.Time) error { return u.conn.SetWriteDeadline(t) }
+func (u *relayUDPUpstream) ReadPacket() ([]byte, error)        { return relay.ReadUOTPacket(u.conn) }
+func (u *relayUDPUpstream) WritePacket(payload []byte) error {
+	return relay.WriteUOTPacket(u.conn, payload)
 }
 
 func NewServer(
@@ -364,7 +404,7 @@ func (s *Server) proxyUDPPacket(listener *net.UDPConn, rule model.L4Rule, payloa
 		return
 	}
 	_ = session.upstream.SetWriteDeadline(s.now().Add(s.udpReplyTimeout))
-	if _, err := session.upstream.Write(payload); err != nil {
+	if err := session.upstream.WritePacket(payload); err != nil {
 		s.cache.MarkFailure(session.targetAddr)
 		s.closeUDPSession(session.key)
 		return
@@ -483,7 +523,7 @@ func (s *Server) sessionForPeer(rule model.L4Rule, listener *net.UDPConn, peer *
 	return session, nil
 }
 
-func (s *Server) dialUDPUpstream(rule model.L4Rule) (*net.UDPConn, string, error) {
+func (s *Server) dialUDPUpstream(rule model.L4Rule) (udpUpstream, string, error) {
 	candidates, err := l4Candidates(s.ctx, s.cache, rule)
 	if err != nil {
 		return nil, "", err
@@ -491,18 +531,32 @@ func (s *Server) dialUDPUpstream(rule model.L4Rule) (*net.UDPConn, string, error
 
 	var lastErr error
 	for _, candidate := range candidates {
-		addr, err := net.ResolveUDPAddr("udp", candidate.Address)
-		if err != nil {
-			lastErr = err
-			continue
+		if len(rule.RelayChain) == 0 {
+			addr, err := net.ResolveUDPAddr("udp", candidate.Address)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			upstream, err := net.DialUDP("udp", nil, addr)
+			if err != nil {
+				s.cache.MarkFailure(candidate.Address)
+				lastErr = err
+				continue
+			}
+			return &directUDPUpstream{conn: upstream}, candidate.Address, nil
 		}
-		upstream, err := net.DialUDP("udp", nil, addr)
+
+		hops, hopErr := s.resolveRelayHops(rule)
+		if hopErr != nil {
+			return nil, "", hopErr
+		}
+		upstream, err := relay.Dial(s.ctx, "udp", candidate.Address, hops, s.relayProvider)
 		if err != nil {
 			s.cache.MarkFailure(candidate.Address)
 			lastErr = err
 			continue
 		}
-		return upstream, candidate.Address, nil
+		return &relayUDPUpstream{conn: upstream}, candidate.Address, nil
 	}
 	if lastErr != nil {
 		return nil, "", lastErr
@@ -514,12 +568,11 @@ func (s *Server) pipeUDPReplies(session *udpSession) {
 	defer s.wg.Done()
 	defer s.closeUDPSession(session.key)
 
-	buf := make([]byte, 64*1024)
 	for {
 		if err := session.upstream.SetReadDeadline(s.now().Add(250 * time.Millisecond)); err != nil {
 			return
 		}
-		n, err := session.upstream.Read(buf)
+		payload, err := session.upstream.ReadPacket()
 		if err != nil {
 			if ne, ok := err.(net.Error); ok && ne.Timeout() {
 				if s.shouldFailUDPSession(session.key) {
@@ -538,7 +591,7 @@ func (s *Server) pipeUDPReplies(session *udpSession) {
 		}
 		s.markUDPSessionReply(session.key)
 		s.cache.MarkSuccess(session.targetAddr)
-		if _, err := session.listener.WriteToUDP(buf[:n], session.peer); err != nil {
+		if _, err := session.listener.WriteToUDP(payload, session.peer); err != nil {
 			return
 		}
 	}

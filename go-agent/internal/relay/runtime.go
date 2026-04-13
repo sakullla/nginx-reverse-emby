@@ -146,10 +146,14 @@ func (s *Server) handleConn(rawConn net.Conn, listener Listener) {
 	if err != nil {
 		return
 	}
-	if !strings.EqualFold(request.Network, "tcp") {
+	if !strings.EqualFold(request.Network, "tcp") && !strings.EqualFold(request.Network, "udp") {
 		_ = withFrameDeadline(clientConn, func() error {
 			return writeRelayResponse(clientConn, relayResponse{OK: false, Error: fmt.Sprintf("unsupported network %q", request.Network)})
 		})
+		return
+	}
+	if strings.EqualFold(request.Network, "udp") {
+		s.handleUDPRelayStream(clientConn, listener, request.Target, request.Chain)
 		return
 	}
 
@@ -193,12 +197,32 @@ func (s *Server) openUpstream(network, target string, chain []Hop, options DialO
 	return dialTCP(s.ctx, target)
 }
 
+func (s *Server) openUDPPeer(target string, chain []Hop) (udpPacketPeer, error) {
+	if len(chain) > 0 {
+		conn, err := Dial(s.ctx, "udp", target, chain, s.provider)
+		if err != nil {
+			return nil, err
+		}
+		return newUDPStreamPeer(conn), nil
+	}
+
+	addr, err := net.ResolveUDPAddr("udp", target)
+	if err != nil {
+		return nil, fmt.Errorf("invalid relay target %q: %w", target, err)
+	}
+	conn, err := net.DialUDP("udp", nil, addr)
+	if err != nil {
+		return nil, err
+	}
+	return newUDPSocketPeer(conn), nil
+}
+
 func Dial(ctx context.Context, network, target string, chain []Hop, provider TLSMaterialProvider, opts ...DialOptions) (net.Conn, error) {
 	if provider == nil {
 		return nil, fmt.Errorf("tls material provider is required")
 	}
-	if !strings.EqualFold(network, "tcp") {
-		return nil, fmt.Errorf("udp relay is not supported")
+	if !strings.EqualFold(network, "tcp") && !strings.EqualFold(network, "udp") {
+		return nil, fmt.Errorf("unsupported network %q", network)
 	}
 	if len(chain) == 0 {
 		return nil, fmt.Errorf("relay chain is required")
@@ -258,7 +282,7 @@ func dialTLSTCP(ctx context.Context, network, target string, chain []Hop, provid
 	}
 
 	request := relayRequest{
-		Network: "tcp",
+		Network: network,
 		Target:  target,
 		Chain:   append([]Hop(nil), chain[1:]...),
 	}
@@ -409,10 +433,14 @@ func (s *Server) handleQUICStream(conn *quic.Conn, stream *quic.Stream, listener
 	if err != nil {
 		return
 	}
-	if !strings.EqualFold(request.Kind, "tcp") {
+	if !strings.EqualFold(request.Kind, "tcp") && !strings.EqualFold(request.Kind, "udp") {
 		_ = withFrameDeadline(clientConn, func() error {
 			return writeRelayResponse(clientConn, relayResponse{OK: false, Error: fmt.Sprintf("unsupported network %q", request.Kind)})
 		})
+		return
+	}
+	if strings.EqualFold(request.Kind, "udp") {
+		s.handleUDPRelayStream(clientConn, listener, request.Target, request.Chain)
 		return
 	}
 	upstream, err := s.openUpstream(request.Kind, request.Target, request.Chain, DialOptions{})
@@ -438,6 +466,67 @@ func (s *Server) handleQUICStream(conn *quic.Conn, stream *quic.Stream, listener
 func listenerUsesEarlyWindowMask(listener Listener) bool {
 	return normalizeListenerTransportModeValue(listener.TransportMode) == ListenerTransportModeTLSTCP &&
 		strings.EqualFold(strings.TrimSpace(listener.ObfsMode), RelayObfsModeEarlyWindowV2)
+}
+
+func (s *Server) handleUDPRelayStream(clientConn net.Conn, listener Listener, target string, chain []Hop) {
+	upstream, err := s.openUDPPeer(target, chain)
+	if err != nil {
+		_ = withFrameDeadline(clientConn, func() error {
+			return writeRelayResponse(clientConn, relayResponse{OK: false, Error: err.Error()})
+		})
+		return
+	}
+	defer upstream.Close()
+
+	if err := withFrameDeadline(clientConn, func() error {
+		return writeRelayResponse(clientConn, relayResponse{OK: true})
+	}); err != nil {
+		return
+	}
+
+	relayClientConn := clientConn
+	if listenerUsesEarlyWindowMask(listener) {
+		relayClientConn = wrapConnWithEarlyWindowMask(clientConn, defaultEarlyWindowMaskConfig())
+	}
+
+	pipeUDPPackets(relayClientConn, upstream)
+}
+
+func pipeUDPPackets(clientConn net.Conn, upstream udpPacketPeer) {
+	done := make(chan struct{}, 2)
+
+	go func() {
+		defer upstream.Close()
+		for {
+			payload, err := readUOTPacket(clientConn)
+			if err != nil {
+				done <- struct{}{}
+				return
+			}
+			if err := upstream.WritePacket(payload); err != nil {
+				done <- struct{}{}
+				return
+			}
+		}
+	}()
+
+	go func() {
+		defer clientConn.Close()
+		for {
+			payload, err := upstream.ReadPacket()
+			if err != nil {
+				done <- struct{}{}
+				return
+			}
+			if err := writeUOTPacket(clientConn, payload); err != nil {
+				done <- struct{}{}
+				return
+			}
+		}
+	}()
+
+	<-done
+	<-done
 }
 
 func (s *Server) trackQUICConn(conn *quic.Conn) {
