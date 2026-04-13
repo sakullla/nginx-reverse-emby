@@ -12,34 +12,21 @@ const maxRequestSize = 1 << 20
 const (
 	ListenerTransportModeTLSTCP = "tls_tcp"
 	ListenerTransportModeQUIC   = "quic"
-	TransportModeOff            = ""
-	TransportModeFirstSegmentV1 = "first_segment_v1"
+	RelayObfsModeOff            = "off"
+	RelayObfsModeEarlyWindowV2  = "early_window_v2"
 )
-
-type relayTransportMode string
-
-const (
-	relayTransportModeOff            relayTransportMode = TransportModeOff
-	relayTransportModeFirstSegmentV1 relayTransportMode = TransportModeFirstSegmentV1
-)
-
-type relayTransport struct {
-	Mode relayTransportMode `json:"mode,omitempty"`
-}
 
 type relayRequest struct {
-	Network   string         `json:"network"`
-	Target    string         `json:"target"`
-	Chain     []Hop          `json:"chain,omitempty"`
-	Transport relayTransport `json:"transport,omitempty"`
+	Network string `json:"network"`
+	Target  string `json:"target"`
+	Chain   []Hop  `json:"chain,omitempty"`
 }
 
 type relayOpenFrame struct {
-	Kind      string         `json:"kind"`
-	Target    string         `json:"target"`
-	Chain     []Hop          `json:"chain,omitempty"`
-	Transport relayTransport `json:"transport,omitempty"`
-	Metadata  map[string]any `json:"metadata,omitempty"`
+	Kind     string         `json:"kind"`
+	Target   string         `json:"target"`
+	Chain    []Hop          `json:"chain,omitempty"`
+	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
 type relayResponse struct {

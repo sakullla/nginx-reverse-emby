@@ -408,7 +408,7 @@ func TestTCPRelayProxy(t *testing.T) {
 	relayCert := mustIssueL4RelayCertificate(t, "relay.internal.test")
 	relayPublicPort := pickFreeTCPPort(t)
 	relayRequests := make(chan l4RelayTestRequest, 1)
-	stopRelay := startL4RelayServer(t, fmt.Sprintf("127.0.0.1:%d", relayPublicPort), relayCert, relayRequests)
+	stopRelay := startL4RelayServer(t, fmt.Sprintf("127.0.0.1:%d", relayPublicPort), relayCert, relayRequests, relay.RelayObfsModeOff)
 	defer stopRelay()
 	relayListenPort := pickFreeTCPPort(t)
 
@@ -431,6 +431,7 @@ func TestTCPRelayProxy(t *testing.T) {
 		ListenPort: relayListenPort,
 		PublicHost: "127.0.0.1",
 		PublicPort: relayPublicPort,
+		ObfsMode:   relay.RelayObfsModeOff,
 		Enabled:    true,
 		TLSMode:    "pin_only",
 		PinSet: []model.RelayPin{{
@@ -476,7 +477,7 @@ func TestTCPRelayProxyPassesObfsTransportMode(t *testing.T) {
 	relayCert := mustIssueL4RelayCertificate(t, "relay.internal.test")
 	relayPublicPort := pickFreeTCPPort(t)
 	relayRequests := make(chan l4RelayTestRequest, 1)
-	stopRelay := startL4RelayServer(t, fmt.Sprintf("127.0.0.1:%d", relayPublicPort), relayCert, relayRequests)
+	stopRelay := startL4RelayServer(t, fmt.Sprintf("127.0.0.1:%d", relayPublicPort), relayCert, relayRequests, relay.RelayObfsModeEarlyWindowV2)
 	defer stopRelay()
 	relayListenPort := pickFreeTCPPort(t)
 
@@ -520,8 +521,8 @@ func TestTCPRelayProxyPassesObfsTransportMode(t *testing.T) {
 
 	select {
 	case relayReq := <-relayRequests:
-		if relayReq.Transport.Mode != "first_segment_v1" {
-			t.Fatalf("unexpected relay transport mode %q", relayReq.Transport.Mode)
+		if relayReq.Target != fmt.Sprintf("%s:%d", rule.UpstreamHost, rule.UpstreamPort) {
+			t.Fatalf("unexpected relay target %q", relayReq.Target)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected l4 tcp proxy to traverse relay listener")
@@ -549,6 +550,7 @@ func TestTCPRelayProxyWithRelayObfsRoundTripsPayload(t *testing.T) {
 		ListenPort:    pickFreeTCPPort(t),
 		PublicHost:    "127.0.0.1",
 		PublicPort:    0,
+		ObfsMode:      relay.RelayObfsModeEarlyWindowV2,
 		Enabled:       true,
 		CertificateID: &certificateID,
 		TLSMode:       "pin_only",
@@ -583,6 +585,7 @@ func TestTCPRelayProxyWithRelayObfsRoundTripsPayload(t *testing.T) {
 		ListenPort:    relayListener.ListenPort,
 		PublicHost:    relayListener.PublicHost,
 		PublicPort:    relayListener.PublicPort,
+		ObfsMode:      relayListener.ObfsMode,
 		Enabled:       relayListener.Enabled,
 		CertificateID: relayListener.CertificateID,
 		TLSMode:       relayListener.TLSMode,
@@ -1211,12 +1214,9 @@ func (p *runtimeL4RelayProvider) TrustedCAPool(_ context.Context, _ []int) (*x50
 }
 
 type l4RelayTestRequest struct {
-	Network   string      `json:"network"`
-	Target    string      `json:"target"`
-	Chain     []relay.Hop `json:"chain,omitempty"`
-	Transport struct {
-		Mode string `json:"mode,omitempty"`
-	} `json:"transport,omitempty"`
+	Network string      `json:"network"`
+	Target  string      `json:"target"`
+	Chain   []relay.Hop `json:"chain,omitempty"`
 }
 
 func startL4RelayServer(
@@ -1224,6 +1224,7 @@ func startL4RelayServer(
 	address string,
 	cert tls.Certificate,
 	requests chan<- l4RelayTestRequest,
+	obfsMode string,
 ) func() {
 	t.Helper()
 
@@ -1242,21 +1243,23 @@ func startL4RelayServer(
 		if err != nil {
 			return
 		}
-		defer conn.Close()
 
 		request, err := readL4RelayTestRequest(conn)
 		if err != nil {
+			_ = conn.Close()
 			return
 		}
 		requests <- request
 		if err := writeL4RelayTestResponse(conn, map[string]any{"ok": true}); err != nil {
+			_ = conn.Close()
 			return
 		}
 
 		dataConn := net.Conn(conn)
-		if request.Transport.Mode == relay.TransportModeFirstSegmentV1 {
-			dataConn = relay.WrapConnWithFirstSegmentObfs(conn)
+		if obfsMode == relay.RelayObfsModeEarlyWindowV2 {
+			dataConn = relay.WrapConnWithEarlyWindowMask(conn)
 		}
+		defer dataConn.Close()
 
 		buf := make([]byte, 1024)
 		n, err := dataConn.Read(buf)

@@ -14,9 +14,7 @@ import (
 	"github.com/quic-go/quic-go"
 )
 
-type DialOptions struct {
-	TransportMode string
-}
+type DialOptions struct{}
 
 type Server struct {
 	ctx      context.Context
@@ -154,21 +152,8 @@ func (s *Server) handleConn(rawConn net.Conn, listener Listener) {
 		})
 		return
 	}
-	switch request.Transport.Mode {
-	case relayTransportModeOff, relayTransportModeFirstSegmentV1:
-	default:
-		_ = withFrameDeadline(clientConn, func() error {
-			return writeRelayResponse(clientConn, relayResponse{
-				OK:    false,
-				Error: fmt.Sprintf("relay transport mode %s is not supported", request.Transport.Mode),
-			})
-		})
-		return
-	}
 
-	upstream, err := s.openUpstream(request.Network, request.Target, request.Chain, DialOptions{
-		TransportMode: string(request.Transport.Mode),
-	})
+	upstream, err := s.openUpstream(request.Network, request.Target, request.Chain, DialOptions{})
 	if err != nil {
 		_ = withFrameDeadline(clientConn, func() error {
 			return writeRelayResponse(clientConn, relayResponse{OK: false, Error: err.Error()})
@@ -186,8 +171,8 @@ func (s *Server) handleConn(rawConn net.Conn, listener Listener) {
 	}
 
 	relayClientConn := net.Conn(clientConn)
-	if request.Transport.Mode == relayTransportModeFirstSegmentV1 {
-		relayClientConn = wrapConnWithFirstSegmentObfs(clientConn, defaultObfsConfig())
+	if listenerUsesEarlyWindowMask(listener) {
+		relayClientConn = wrapConnWithEarlyWindowMask(clientConn, defaultEarlyWindowMaskConfig())
 	}
 
 	pipeBothWays(wrapIdleConn(relayClientConn), wrapIdleConn(upstream))
@@ -221,11 +206,6 @@ func Dial(ctx context.Context, network, target string, chain []Hop, provider TLS
 	if _, _, err := net.SplitHostPort(target); err != nil {
 		return nil, fmt.Errorf("invalid relay target %q: %w", target, err)
 	}
-	var options DialOptions
-	if len(opts) > 0 {
-		options = opts[0]
-	}
-
 	firstHop := chain[0]
 	if err := ValidateListener(firstHop.Listener); err != nil {
 		return nil, fmt.Errorf("relay hop listener %d: %w", firstHop.Listener.ID, err)
@@ -240,7 +220,7 @@ func Dial(ctx context.Context, network, target string, chain []Hop, provider TLS
 	}
 
 	if transportMode == ListenerTransportModeQUIC {
-		conn, err := dialQUIC(ctx, network, target, chain, provider, options)
+		conn, err := dialQUIC(ctx, network, target, chain, provider)
 		if err == nil {
 			return conn, nil
 		}
@@ -248,17 +228,17 @@ func Dial(ctx context.Context, network, target string, chain []Hop, provider TLS
 			return nil, err
 		}
 
-		fallbackConn, fallbackErr := dialTLSTCP(ctx, network, target, chain, provider, options)
+		fallbackConn, fallbackErr := dialTLSTCP(ctx, network, target, chain, provider)
 		if fallbackErr != nil {
 			return nil, fmt.Errorf("quic relay failed: %v; tls_tcp fallback failed: %w", err, fallbackErr)
 		}
 		return fallbackConn, nil
 	}
 
-	return dialTLSTCP(ctx, network, target, chain, provider, options)
+	return dialTLSTCP(ctx, network, target, chain, provider)
 }
 
-func dialTLSTCP(ctx context.Context, network, target string, chain []Hop, provider TLSMaterialProvider, options DialOptions) (net.Conn, error) {
+func dialTLSTCP(ctx context.Context, network, target string, chain []Hop, provider TLSMaterialProvider) (net.Conn, error) {
 	firstHop := chain[0]
 
 	tlsConfig, err := clientTLSConfig(ctx, provider, firstHop.Listener, firstHop.Address, firstHop.ServerName)
@@ -281,9 +261,6 @@ func dialTLSTCP(ctx context.Context, network, target string, chain []Hop, provid
 		Network: "tcp",
 		Target:  target,
 		Chain:   append([]Hop(nil), chain[1:]...),
-		Transport: relayTransport{
-			Mode: relayTransportMode(options.TransportMode),
-		},
 	}
 	if err := withFrameDeadline(relayConn, func() error {
 		return writeRelayRequest(relayConn, request)
@@ -310,8 +287,8 @@ func dialTLSTCP(ctx context.Context, network, target string, chain []Hop, provid
 		return nil, fmt.Errorf("relay connection failed: %s", response.Error)
 	}
 
-	if request.Transport.Mode == relayTransportModeFirstSegmentV1 {
-		return wrapConnWithFirstSegmentObfs(relayConn, defaultObfsConfig()), nil
+	if listenerUsesEarlyWindowMask(firstHop.Listener) {
+		return wrapConnWithEarlyWindowMask(relayConn, defaultEarlyWindowMaskConfig()), nil
 	}
 
 	return relayConn, nil
@@ -438,21 +415,7 @@ func (s *Server) handleQUICStream(conn *quic.Conn, stream *quic.Stream, listener
 		})
 		return
 	}
-	switch request.Transport.Mode {
-	case relayTransportModeOff, relayTransportModeFirstSegmentV1:
-	default:
-		_ = withFrameDeadline(clientConn, func() error {
-			return writeRelayResponse(clientConn, relayResponse{
-				OK:    false,
-				Error: fmt.Sprintf("relay transport mode %s is not supported", request.Transport.Mode),
-			})
-		})
-		return
-	}
-
-	upstream, err := s.openUpstream(request.Kind, request.Target, request.Chain, DialOptions{
-		TransportMode: string(request.Transport.Mode),
-	})
+	upstream, err := s.openUpstream(request.Kind, request.Target, request.Chain, DialOptions{})
 	if err != nil {
 		_ = withFrameDeadline(clientConn, func() error {
 			return writeRelayResponse(clientConn, relayResponse{OK: false, Error: err.Error()})
@@ -470,6 +433,11 @@ func (s *Server) handleQUICStream(conn *quic.Conn, stream *quic.Stream, listener
 	}
 
 	pipeBothWays(wrapIdleConn(clientConn), wrapIdleConn(upstream))
+}
+
+func listenerUsesEarlyWindowMask(listener Listener) bool {
+	return normalizeListenerTransportModeValue(listener.TransportMode) == ListenerTransportModeTLSTCP &&
+		strings.EqualFold(strings.TrimSpace(listener.ObfsMode), RelayObfsModeEarlyWindowV2)
 }
 
 func (s *Server) trackQUICConn(conn *quic.Conn) {

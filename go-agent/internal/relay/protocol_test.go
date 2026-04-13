@@ -31,9 +31,13 @@ func TestRelayRequestRoundTripsTransportMode(t *testing.T) {
 	request := relayRequest{
 		Network: "tcp",
 		Target:  "127.0.0.1:443",
-		Transport: relayTransport{
-			Mode: relayTransportModeFirstSegmentV1,
-		},
+		Chain: []Hop{{
+			Address: "relay.example.test:9443",
+			Listener: Listener{
+				ID:            7,
+				TransportMode: ListenerTransportModeQUIC,
+			},
+		}},
 	}
 
 	var sink bytes.Buffer
@@ -45,8 +49,8 @@ func TestRelayRequestRoundTripsTransportMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("readRelayRequest() error = %v", err)
 	}
-	if got.Transport.Mode != relayTransportModeFirstSegmentV1 {
-		t.Fatalf("transport mode = %q", got.Transport.Mode)
+	if len(got.Chain) != 1 || got.Chain[0].Listener.TransportMode != ListenerTransportModeQUIC {
+		t.Fatalf("request chain = %+v", got.Chain)
 	}
 }
 

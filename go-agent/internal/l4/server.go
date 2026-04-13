@@ -276,9 +276,7 @@ func (s *Server) dialTCPUpstream(rule model.L4Rule) (net.Conn, error) {
 			if hopErr != nil {
 				return nil, hopErr
 			}
-			upstream, err = relay.Dial(s.ctx, "tcp", target, hops, s.relayProvider, relay.DialOptions{
-				TransportMode: relayTransportModeForL4Rule(rule),
-			})
+			upstream, err = relay.Dial(s.ctx, "tcp", target, hops, s.relayProvider)
 		}
 		if err != nil {
 			s.cache.MarkFailure(target)
@@ -292,13 +290,6 @@ func (s *Server) dialTCPUpstream(rule model.L4Rule) (net.Conn, error) {
 		return nil, lastErr
 	}
 	return nil, fmt.Errorf("all backends failed for %s:%d", rule.ListenHost, rule.ListenPort)
-}
-
-func relayTransportModeForL4Rule(rule model.L4Rule) string {
-	if rule.RelayObfs {
-		return relay.TransportModeFirstSegmentV1
-	}
-	return relay.TransportModeOff
 }
 
 func closeTCPWrite(conn net.Conn) {

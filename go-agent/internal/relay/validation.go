@@ -113,6 +113,12 @@ func normalizeListener(listener Listener) (Listener, error) {
 	}
 	normalized.TransportMode = transportMode
 
+	obfsMode, err := normalizeListenerObfsMode(listener.ObfsMode)
+	if err != nil {
+		return Listener{}, err
+	}
+	normalized.ObfsMode = obfsMode
+
 	return normalized, nil
 }
 
@@ -122,7 +128,7 @@ func normalizeListenerTransportMode(mode string) (string, error) {
 	case ListenerTransportModeTLSTCP, ListenerTransportModeQUIC:
 		return normalized, nil
 	default:
-		return "", fmt.Errorf("unsupported transport_mode")
+		return "", fmt.Errorf("unsupported transport_mode %q", strings.TrimSpace(mode))
 	}
 }
 
@@ -132,6 +138,19 @@ func normalizeListenerTransportModeValue(mode string) string {
 		return ListenerTransportModeTLSTCP
 	}
 	return normalized
+}
+
+func normalizeListenerObfsMode(mode string) (string, error) {
+	normalized := strings.ToLower(strings.TrimSpace(mode))
+	if normalized == "" {
+		return RelayObfsModeOff, nil
+	}
+	switch normalized {
+	case RelayObfsModeOff, RelayObfsModeEarlyWindowV2:
+		return normalized, nil
+	default:
+		return "", fmt.Errorf("unsupported obfs_mode %q", strings.TrimSpace(mode))
+	}
 }
 
 func normalizeTLSMode(mode string) (string, error) {

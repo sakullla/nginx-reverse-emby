@@ -33,7 +33,7 @@ func startQUICListener(ctx context.Context, provider TLSMaterialProvider, listen
 	return quicListenAddr(address, tlsConfig, newRelayQUICConfig())
 }
 
-func dialQUIC(ctx context.Context, network, target string, chain []Hop, provider TLSMaterialProvider, options DialOptions) (net.Conn, error) {
+func dialQUIC(ctx context.Context, network, target string, chain []Hop, provider TLSMaterialProvider) (net.Conn, error) {
 	if !strings.EqualFold(network, "tcp") {
 		return nil, fmt.Errorf("udp relay is not supported")
 	}
@@ -66,9 +66,6 @@ func dialQUIC(ctx context.Context, network, target string, chain []Hop, provider
 		Kind:   "tcp",
 		Target: target,
 		Chain:  append([]Hop(nil), chain[1:]...),
-		Transport: relayTransport{
-			Mode: relayTransportMode(options.TransportMode),
-		},
 	}
 	if err := withFrameDeadline(conn, func() error {
 		return writeRelayOpenFrame(conn, request)

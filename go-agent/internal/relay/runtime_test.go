@@ -276,7 +276,7 @@ func TestDialRejectsUDP(t *testing.T) {
 	}
 }
 
-func TestDialFailsClosedWhenHopRejectsTransportMode(t *testing.T) {
+func TestDialFailsClosedWhenHopRejectsObfsMode(t *testing.T) {
 	backendAddr, stopBackend := startTCPEchoServer(t)
 	defer stopBackend()
 
@@ -289,9 +289,8 @@ func TestDialFailsClosedWhenHopRejectsTransportMode(t *testing.T) {
 	}
 	defer server.Close()
 
-	_, err = Dial(context.Background(), "tcp", backendAddr, []Hop{hop}, provider, DialOptions{
-		TransportMode: "future_mode",
-	})
+	hop.Listener.ObfsMode = "future_mode"
+	_, err = Dial(context.Background(), "tcp", backendAddr, []Hop{hop}, provider)
 	if err == nil || !strings.Contains(err.Error(), "future_mode") {
 		t.Fatalf("Dial() error = %v", err)
 	}
@@ -319,12 +318,14 @@ func TestOneHopRelayDataFlow(t *testing.T) {
 	assertRoundTrip(t, conn, []byte("one-hop"))
 }
 
-func TestOneHopRelayDataFlowWithFirstSegmentObfs(t *testing.T) {
+func TestOneHopRelayDataFlowWithEarlyWindowMask(t *testing.T) {
 	backendAddr, stopBackend := startTCPEchoServer(t)
 	defer stopBackend()
 
 	provider := newFakeTLSMaterialProvider()
 	listener, hop := newRelayEndpoint(t, provider, 1, "relay-one-obfs", "pin_only", true, false)
+	listener.ObfsMode = RelayObfsModeEarlyWindowV2
+	hop.Listener = listener
 
 	server, err := Start(context.Background(), []Listener{listener}, provider)
 	if err != nil {
@@ -332,13 +333,14 @@ func TestOneHopRelayDataFlowWithFirstSegmentObfs(t *testing.T) {
 	}
 	defer server.Close()
 
-	conn, err := Dial(context.Background(), "tcp", backendAddr, []Hop{hop}, provider, DialOptions{
-		TransportMode: TransportModeFirstSegmentV1,
-	})
+	conn, err := Dial(context.Background(), "tcp", backendAddr, []Hop{hop}, provider)
 	if err != nil {
 		t.Fatalf("Dial returned error: %v", err)
 	}
 	defer conn.Close()
+	if _, ok := conn.(*earlyWindowMaskConn); !ok {
+		t.Fatalf("Dial() returned %T", conn)
+	}
 
 	assertRoundTrip(t, conn, bytes.Repeat([]byte{0x16, 0x03, 0x01, 0x20}, 256))
 }
@@ -372,13 +374,17 @@ func TestMultiHopRelayDataFlow(t *testing.T) {
 	assertRoundTrip(t, conn, []byte("multi-hop"))
 }
 
-func TestMultiHopRelayDataFlowWithFirstSegmentObfs(t *testing.T) {
+func TestMultiHopRelayDataFlowWithEarlyWindowMask(t *testing.T) {
 	backendAddr, stopBackend := startTCPEchoServer(t)
 	defer stopBackend()
 
 	provider := newFakeTLSMaterialProvider()
 	listenerA, hopA := newRelayEndpoint(t, provider, 1, "relay-a-obfs", "pin_only", true, false)
 	listenerB, hopB := newRelayEndpoint(t, provider, 2, "relay-b-obfs", "pin_only", true, false)
+	listenerA.ObfsMode = RelayObfsModeEarlyWindowV2
+	listenerB.ObfsMode = RelayObfsModeEarlyWindowV2
+	hopA.Listener = listenerA
+	hopB.Listener = listenerB
 
 	serverA, err := Start(context.Background(), []Listener{listenerA}, provider)
 	if err != nil {
@@ -392,9 +398,7 @@ func TestMultiHopRelayDataFlowWithFirstSegmentObfs(t *testing.T) {
 	}
 	defer serverB.Close()
 
-	conn, err := Dial(context.Background(), "tcp", backendAddr, []Hop{hopA, hopB}, provider, DialOptions{
-		TransportMode: TransportModeFirstSegmentV1,
-	})
+	conn, err := Dial(context.Background(), "tcp", backendAddr, []Hop{hopA, hopB}, provider)
 	if err != nil {
 		t.Fatalf("Dial returned error: %v", err)
 	}
