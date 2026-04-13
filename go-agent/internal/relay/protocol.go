@@ -10,6 +10,8 @@ import (
 const maxRequestSize = 1 << 20
 
 const (
+	ListenerTransportModeTLSTCP = "tls_tcp"
+	ListenerTransportModeQUIC   = "quic"
 	TransportModeOff            = ""
 	TransportModeFirstSegmentV1 = "first_segment_v1"
 )
@@ -32,6 +34,14 @@ type relayRequest struct {
 	Transport relayTransport `json:"transport,omitempty"`
 }
 
+type relayOpenFrame struct {
+	Kind      string         `json:"kind"`
+	Target    string         `json:"target"`
+	Chain     []Hop          `json:"chain,omitempty"`
+	Transport relayTransport `json:"transport,omitempty"`
+	Metadata  map[string]any `json:"metadata,omitempty"`
+}
+
 type relayResponse struct {
 	OK    bool   `json:"ok"`
 	Error string `json:"error,omitempty"`
@@ -43,6 +53,10 @@ func writeRelayRequest(w io.Writer, request relayRequest) error {
 
 func writeRelayResponse(w io.Writer, response relayResponse) error {
 	return writeFrame(w, response)
+}
+
+func writeRelayOpenFrame(w io.Writer, frame relayOpenFrame) error {
+	return writeFrame(w, frame)
 }
 
 func writeFrame(w io.Writer, payloadValue any) error {
@@ -86,6 +100,19 @@ func readRelayResponse(r io.Reader) (relayResponse, error) {
 		return relayResponse{}, err
 	}
 	return response, nil
+}
+
+func readRelayOpenFrame(r io.Reader) (relayOpenFrame, error) {
+	payload, err := readFrame(r)
+	if err != nil {
+		return relayOpenFrame{}, err
+	}
+
+	var frame relayOpenFrame
+	if err := json.Unmarshal(payload, &frame); err != nil {
+		return relayOpenFrame{}, err
+	}
+	return frame, nil
 }
 
 func readFrame(r io.Reader) ([]byte, error) {

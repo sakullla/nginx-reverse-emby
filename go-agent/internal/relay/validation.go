@@ -107,7 +107,31 @@ func normalizeListener(listener Listener) (Listener, error) {
 		normalized.PublicPort = normalized.ListenPort
 	}
 
+	transportMode, err := normalizeListenerTransportMode(listener.TransportMode)
+	if err != nil {
+		return Listener{}, err
+	}
+	normalized.TransportMode = transportMode
+
 	return normalized, nil
+}
+
+func normalizeListenerTransportMode(mode string) (string, error) {
+	normalized := normalizeListenerTransportModeValue(mode)
+	switch normalized {
+	case ListenerTransportModeTLSTCP, ListenerTransportModeQUIC:
+		return normalized, nil
+	default:
+		return "", fmt.Errorf("unsupported transport_mode")
+	}
+}
+
+func normalizeListenerTransportModeValue(mode string) string {
+	normalized := strings.ToLower(strings.TrimSpace(mode))
+	if normalized == "" {
+		return ListenerTransportModeTLSTCP
+	}
+	return normalized
 }
 
 func normalizeTLSMode(mode string) (string, error) {
