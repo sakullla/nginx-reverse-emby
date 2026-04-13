@@ -46,6 +46,7 @@ type acmeIssueRequest struct {
 	Domain        string
 	Scope         string
 	IssuerMode    string
+	Profile       string
 	ChallengeType acmeChallengeType
 
 	DirectoryURL string

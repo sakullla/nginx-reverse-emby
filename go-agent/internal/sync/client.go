@@ -18,6 +18,7 @@ type ClientConfig struct {
 	AgentToken     string
 	AgentID        string
 	AgentName      string
+	Capabilities   []string
 	CurrentVersion string
 	Platform       string
 	RuntimePackage model.RuntimePackage
@@ -48,6 +49,7 @@ func (c *Client) Sync(ctx context.Context, request SyncRequest) (Snapshot, error
 	payload := struct {
 		Name                      string                           `json:"name"`
 		AgentID                   string                           `json:"agent_id"`
+		Capabilities              []string                         `json:"capabilities"`
 		CurrentRevision           int                              `json:"current_revision"`
 		LastApplyRevision         int                              `json:"last_apply_revision"`
 		LastApplyStatus           string                           `json:"last_apply_status"`
@@ -59,6 +61,7 @@ func (c *Client) Sync(ctx context.Context, request SyncRequest) (Snapshot, error
 	}{
 		Name:           c.cfg.AgentName,
 		AgentID:        c.cfg.AgentID,
+		Capabilities:   append([]string(nil), c.cfg.Capabilities...),
 		Version:        c.cfg.CurrentVersion,
 		Platform:       c.cfg.Platform,
 		RuntimePackage: c.cfg.RuntimePackage,

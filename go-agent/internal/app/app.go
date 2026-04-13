@@ -83,6 +83,7 @@ func New(cfg Config) (*App, error) {
 		AgentToken:     cfg.AgentToken,
 		AgentID:        cfg.AgentID,
 		AgentName:      cfg.AgentName,
+		Capabilities:   []string{"http_rules", "cert_install", "local_acme", "l4"},
 		CurrentVersion: cfg.CurrentVersion,
 		Platform:       stdruntime.GOOS + "-" + stdruntime.GOARCH,
 		RuntimePackage: model.RuntimePackage{

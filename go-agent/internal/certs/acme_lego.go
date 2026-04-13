@@ -96,6 +96,7 @@ func (legoACMEIssuer) Issue(ctx context.Context, request acmeIssueRequest) (acme
 		Domains:    []string{request.Domain},
 		PrivateKey: existingKey,
 		Bundle:     true,
+		Profile:    request.Profile,
 	})
 	if err != nil {
 		return acmeIssueResult{}, err

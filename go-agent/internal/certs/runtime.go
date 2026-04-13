@@ -415,6 +415,9 @@ func (m *Manager) newACMEIssueRequest(policy model.ManagedCertificatePolicy, per
 	switch policy.IssuerMode {
 	case "local_http01":
 		request.ChallengeType = challengeTypeHTTP01
+		if policy.Scope == "ip" {
+			request.Profile = "shortlived"
+		}
 	case "master_cf_dns":
 		if !m.cfg.localAgent || m.cfg.nodeRole != "master" {
 			return acmeIssueRequest{}, fmt.Errorf("master_cf_dns issuance is only allowed on the local master agent")

@@ -597,6 +597,9 @@ func TestManagerApplyIssuesACMECertificateUsingLocalHTTP01(t *testing.T) {
 	if fake.requests[0].IssuerMode != "local_http01" {
 		t.Fatalf("unexpected issuer mode: %q", fake.requests[0].IssuerMode)
 	}
+	if fake.requests[0].Profile != "" {
+		t.Fatalf("unexpected profile for domain certificate: %q", fake.requests[0].Profile)
+	}
 
 	info, err := manager.CertificateInfo(51)
 	if err != nil {
@@ -604,6 +607,45 @@ func TestManagerApplyIssuesACMECertificateUsingLocalHTTP01(t *testing.T) {
 	}
 	if info.Fingerprint != issued.Fingerprint {
 		t.Fatalf("unexpected fingerprint: got %q want %q", info.Fingerprint, issued.Fingerprint)
+	}
+}
+
+func TestManagerApplyIssuesIPACMECertificateUsingShortLivedProfile(t *testing.T) {
+	t.Parallel()
+
+	issued := mustCreateTLSMaterial(t, certificateSpec{commonName: "203.0.113.9"})
+	fake := &fakeACMEIssuer{results: []acmeIssueResult{{CertPEM: issued.CertPEM, KeyPEM: issued.KeyPEM}}}
+	manager := mustNewManager(
+		t,
+		t.TempDir(),
+		withACMEIssuerFactory(func(request acmeIssueRequest) (acmeIssuer, error) {
+			return fake, nil
+		}),
+	)
+
+	err := manager.Apply(context.Background(), nil, []model.ManagedCertificatePolicy{
+		{
+			ID:              5101,
+			Domain:          "203.0.113.9",
+			Enabled:         true,
+			Scope:           "ip",
+			IssuerMode:      "local_http01",
+			CertificateType: "acme",
+			Usage:           "https",
+		},
+	})
+	if err != nil {
+		t.Fatalf("apply failed: %v", err)
+	}
+
+	if len(fake.requests) != 1 {
+		t.Fatalf("expected one acme issuance request, got %d", len(fake.requests))
+	}
+	if fake.requests[0].ChallengeType != challengeTypeHTTP01 {
+		t.Fatalf("unexpected challenge type: %q", fake.requests[0].ChallengeType)
+	}
+	if fake.requests[0].Profile != "shortlived" {
+		t.Fatalf("unexpected profile for ip certificate: %q", fake.requests[0].Profile)
 	}
 }
 

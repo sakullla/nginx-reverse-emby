@@ -1025,6 +1025,42 @@ func TestRuleServiceCreateHTTPSIPRequiresLocalACME(t *testing.T) {
 	}
 }
 
+func TestRuleServiceCreateHTTPSIPUsesLocalHTTP01WhenAgentSupportsLocalACME(t *testing.T) {
+	store := &fakeRuleStore{
+		agents: []storage.AgentRow{{
+			ID:               "edge-1",
+			Name:             "Edge 1",
+			CapabilitiesJSON: `["http_rules","cert_install","local_acme"]`,
+		}},
+		rulesByAgent: map[string][]storage.HTTPRuleRow{},
+	}
+	svc := NewRuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	if _, err := svc.Create(context.Background(), "edge-1", HTTPRuleInput{
+		FrontendURL: stringPtrRule("https://192.168.1.10"),
+		BackendURL:  stringPtrRule("http://127.0.0.1:8096"),
+	}); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	if len(store.managedCerts) != 1 {
+		t.Fatalf("managed cert count = %d", len(store.managedCerts))
+	}
+	cert := managedCertificateFromRow(store.managedCerts[0])
+	if cert.Scope != "ip" {
+		t.Fatalf("scope = %q", cert.Scope)
+	}
+	if cert.IssuerMode != "local_http01" {
+		t.Fatalf("issuer_mode = %q", cert.IssuerMode)
+	}
+	if cert.Domain != "192.168.1.10" {
+		t.Fatalf("domain = %q", cert.Domain)
+	}
+}
+
 func TestRuleServiceCreateHTTPSDomainFailsWhenNoIssuerAvailable(t *testing.T) {
 	store := &fakeRuleStore{
 		agents: []storage.AgentRow{{

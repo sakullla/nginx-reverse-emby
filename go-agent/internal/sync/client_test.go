@@ -120,6 +120,7 @@ func TestHeartbeatSync(t *testing.T) {
 		AgentToken:     "token",
 		AgentID:        "node",
 		AgentName:      "local",
+		Capabilities:   []string{"http_rules", "cert_install", "local_acme", "l4"},
 		CurrentVersion: "0.1.0",
 		Platform:       "linux-amd64",
 	}, server.Client())
@@ -243,6 +244,7 @@ func TestHeartbeatSync(t *testing.T) {
 		}
 		var payload struct {
 			Name                      string                           `json:"name"`
+			Capabilities              []string                         `json:"capabilities"`
 			CurrentRevision           int                              `json:"current_revision"`
 			LastApplyRevision         int                              `json:"last_apply_revision"`
 			LastApplyStatus           string                           `json:"last_apply_status"`
@@ -256,6 +258,9 @@ func TestHeartbeatSync(t *testing.T) {
 		}
 		if payload.Name != "local" || payload.Version != "0.1.0" || payload.Platform != "linux-amd64" {
 			t.Fatalf("unexpected payload %+v", payload)
+		}
+		if !reflect.DeepEqual(payload.Capabilities, []string{"http_rules", "cert_install", "local_acme", "l4"}) {
+			t.Fatalf("unexpected capabilities payload %+v", payload.Capabilities)
 		}
 		if payload.CurrentRevision != 42 {
 			t.Fatalf("expected current_revision=42, got %d", payload.CurrentRevision)
@@ -283,6 +288,7 @@ func TestHeartbeatSyncPreservesOmittedCertificatePayloadAsNil(t *testing.T) {
 		AgentToken:     "token",
 		AgentID:        "node",
 		AgentName:      "local",
+		Capabilities:   []string{"http_rules", "cert_install", "local_acme", "l4"},
 		CurrentVersion: "0.1.0",
 		Platform:       "linux-amd64",
 	}, server.Client())
