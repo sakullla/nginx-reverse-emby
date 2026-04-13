@@ -6,6 +6,8 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"fmt"
+	"net"
+	"strings"
 
 	"github.com/go-acme/lego/v4/certcrypto"
 	"github.com/go-acme/lego/v4/certificate"
@@ -43,9 +45,7 @@ func (legoACMEIssuer) Issue(ctx context.Context, request acmeIssueRequest) (acme
 	}
 
 	config := lego.NewConfig(user)
-	if request.DirectoryURL != "" {
-		config.CADirURL = request.DirectoryURL
-	}
+	configureLegoClientConfig(config, request)
 
 	client, err := lego.NewClient(config)
 	if err != nil {
@@ -151,4 +151,16 @@ func parseOptionalPrivateKey(keyPEM []byte) (crypto.PrivateKey, error) {
 		return nil, nil
 	}
 	return certcrypto.ParsePEMPrivateKey(keyPEM)
+}
+
+func configureLegoClientConfig(config *lego.Config, request acmeIssueRequest) {
+	if config == nil {
+		return
+	}
+	if request.DirectoryURL != "" {
+		config.CADirURL = request.DirectoryURL
+	}
+	if strings.EqualFold(strings.TrimSpace(request.Scope), "ip") || net.ParseIP(strings.TrimSpace(request.Domain)) != nil {
+		config.Certificate.DisableCommonName = true
+	}
 }
