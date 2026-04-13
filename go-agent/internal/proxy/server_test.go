@@ -961,6 +961,66 @@ func TestStartServesHTTPSRulesWithHostMatchedCertificate(t *testing.T) {
 	}
 }
 
+func TestStartWithResourcesGracefullyDegradesWhenHTTP3StartupFails(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer backend.Close()
+
+	port := pickFreePort(t)
+	provider := &testTLSProvider{
+		certificates: map[string]tls.Certificate{
+			"edge.example.test": mustIssueProxyTLSCertificate(t, "edge.example.test"),
+		},
+	}
+
+	sentinel := errors.New("udp unavailable")
+	originalListenPacket := http3ListenPacket
+	http3ListenPacket = func(network, address string) (net.PacketConn, error) {
+		return nil, sentinel
+	}
+	defer func() {
+		http3ListenPacket = originalListenPacket
+	}()
+
+	runtime, err := StartWithResources(context.Background(), []model.HTTPRule{{
+		FrontendURL: fmt.Sprintf("https://edge.example.test:%d", port),
+		BackendURL:  backend.URL,
+	}}, nil, Providers{TLS: provider}, nil, nil, true)
+	if err != nil {
+		t.Fatalf("failed to start https runtime with http3 enabled: %v", err)
+	}
+	defer runtime.Close()
+
+	if len(runtime.http3Servers) != 0 {
+		t.Fatalf("expected http3 startup failure to skip udp runtime, got %d servers", len(runtime.http3Servers))
+	}
+
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("https://127.0.0.1:%d/", port), nil)
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+	req.Host = fmt.Sprintf("edge.example.test:%d", port)
+
+	client := &http.Client{
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{
+				ServerName:         "edge.example.test",
+				InsecureSkipVerify: true,
+			},
+		},
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("https runtime request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", resp.StatusCode)
+	}
+}
+
 func TestStartRejectsHTTPSFrontendWithoutMatchingCertificate(t *testing.T) {
 	provider := &testTLSProvider{
 		certificates: map[string]tls.Certificate{
