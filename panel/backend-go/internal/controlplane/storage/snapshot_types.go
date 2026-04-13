@@ -114,6 +114,9 @@ type RelayListener struct {
 	Enabled                 bool       `json:"enabled"`
 	CertificateID           *int       `json:"certificate_id"`
 	TLSMode                 string     `json:"tls_mode"`
+	TransportMode           string     `json:"transport_mode"`
+	AllowTransportFallback  bool       `json:"allow_transport_fallback"`
+	ObfsMode                string     `json:"obfs_mode"`
 	PinSet                  []RelayPin `json:"pin_set"`
 	TrustedCACertificateIDs []int      `json:"trusted_ca_certificate_ids"`
 	AllowSelfSigned         bool       `json:"allow_self_signed"`

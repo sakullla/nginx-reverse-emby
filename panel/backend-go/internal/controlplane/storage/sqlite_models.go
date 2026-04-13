@@ -1,29 +1,29 @@
 package storage
 
 type AgentRow struct {
-	ID                    string `gorm:"column:id;primaryKey"`
-	Name                  string `gorm:"column:name"`
-	AgentURL              string `gorm:"column:agent_url"`
-	AgentToken            string `gorm:"column:agent_token"`
-	Version               string `gorm:"column:version"`
-	Platform              string `gorm:"column:platform"`
-	RuntimePackageVersion string `gorm:"column:runtime_package_version"`
+	ID                     string `gorm:"column:id;primaryKey"`
+	Name                   string `gorm:"column:name"`
+	AgentURL               string `gorm:"column:agent_url"`
+	AgentToken             string `gorm:"column:agent_token"`
+	Version                string `gorm:"column:version"`
+	Platform               string `gorm:"column:platform"`
+	RuntimePackageVersion  string `gorm:"column:runtime_package_version"`
 	RuntimePackagePlatform string `gorm:"column:runtime_package_platform"`
-	RuntimePackageArch    string `gorm:"column:runtime_package_arch"`
-	RuntimePackageSHA256  string `gorm:"column:runtime_package_sha256"`
-	DesiredVersion        string `gorm:"column:desired_version"`
-	TagsJSON              string `gorm:"column:tags"`
-	CapabilitiesJSON      string `gorm:"column:capabilities"`
-	Mode                  string `gorm:"column:mode"`
-	DesiredRevision       int    `gorm:"column:desired_revision"`
-	CurrentRevision       int    `gorm:"column:current_revision"`
-	LastApplyRevision     int    `gorm:"column:last_apply_revision"`
-	LastApplyStatus       string `gorm:"column:last_apply_status"`
-	LastApplyMessage      string `gorm:"column:last_apply_message"`
-	LastReportedStatsJSON string `gorm:"column:last_reported_stats"`
-	LastSeenAt            string `gorm:"column:last_seen_at"`
-	LastSeenIP            string `gorm:"column:last_seen_ip"`
-	IsLocal               bool   `gorm:"column:is_local"`
+	RuntimePackageArch     string `gorm:"column:runtime_package_arch"`
+	RuntimePackageSHA256   string `gorm:"column:runtime_package_sha256"`
+	DesiredVersion         string `gorm:"column:desired_version"`
+	TagsJSON               string `gorm:"column:tags"`
+	CapabilitiesJSON       string `gorm:"column:capabilities"`
+	Mode                   string `gorm:"column:mode"`
+	DesiredRevision        int    `gorm:"column:desired_revision"`
+	CurrentRevision        int    `gorm:"column:current_revision"`
+	LastApplyRevision      int    `gorm:"column:last_apply_revision"`
+	LastApplyStatus        string `gorm:"column:last_apply_status"`
+	LastApplyMessage       string `gorm:"column:last_apply_message"`
+	LastReportedStatsJSON  string `gorm:"column:last_reported_stats"`
+	LastSeenAt             string `gorm:"column:last_seen_at"`
+	LastSeenIP             string `gorm:"column:last_seen_ip"`
+	IsLocal                bool   `gorm:"column:is_local"`
 }
 
 type HTTPRuleRow struct {
@@ -93,6 +93,9 @@ type RelayListenerRow struct {
 	Enabled                 bool   `gorm:"column:enabled"`
 	CertificateID           *int   `gorm:"column:certificate_id"`
 	TLSMode                 string `gorm:"column:tls_mode"`
+	TransportMode           string `gorm:"column:transport_mode"`
+	AllowTransportFallback  bool   `gorm:"column:allow_transport_fallback"`
+	ObfsMode                string `gorm:"column:obfs_mode"`
 	PinSetJSON              string `gorm:"column:pin_set"`
 	TrustedCACertificateIDs string `gorm:"column:trusted_ca_certificate_ids"`
 	AllowSelfSigned         bool   `gorm:"column:allow_self_signed"`
