@@ -73,6 +73,14 @@ type App struct {
 	syncMu       sync.Mutex
 }
 
+func advertisedCapabilities(cfg Config) []string {
+	capabilities := []string{"http_rules", "cert_install", "local_acme", "l4", "relay_quic"}
+	if cfg.HTTP3Enabled {
+		capabilities = append(capabilities, "http3_ingress")
+	}
+	return capabilities
+}
+
 func New(cfg Config) (*App, error) {
 	st, err := store.NewFilesystem(cfg.DataDir)
 	if err != nil {
@@ -83,7 +91,7 @@ func New(cfg Config) (*App, error) {
 		AgentToken:     cfg.AgentToken,
 		AgentID:        cfg.AgentID,
 		AgentName:      cfg.AgentName,
-		Capabilities:   []string{"http_rules", "cert_install", "local_acme", "l4"},
+		Capabilities:   advertisedCapabilities(cfg),
 		CurrentVersion: cfg.CurrentVersion,
 		Platform:       stdruntime.GOOS + "-" + stdruntime.GOARCH,
 		RuntimePackage: model.RuntimePackage{

@@ -6,6 +6,7 @@ toolchain go1.26.2
 
 require (
 	github.com/go-acme/lego/v4 v4.33.0
+	github.com/quic-go/quic-go v0.54.0
 	golang.org/x/sys v0.43.0
 )
 

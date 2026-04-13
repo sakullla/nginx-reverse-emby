@@ -208,6 +208,12 @@ func TestAgentServiceListSynthesizesLocalAgentAndRemoteStatus(t *testing.T) {
 	if agents[0].HTTPRulesCount != 1 {
 		t.Fatalf("local HTTPRulesCount = %d", agents[0].HTTPRulesCount)
 	}
+	if len(agents[0].Capabilities) != 5 {
+		t.Fatalf("local Capabilities = %+v", agents[0].Capabilities)
+	}
+	if agents[0].Capabilities[4] != "relay_quic" {
+		t.Fatalf("local Capabilities = %+v", agents[0].Capabilities)
+	}
 
 	if agents[1].ID != "edge-1" || agents[1].Status != "online" {
 		t.Fatalf("remote agent = %+v", agents[1])
@@ -419,6 +425,26 @@ func TestAgentServiceRegisterCapabilitiesDefaultingByPresence(t *testing.T) {
 	}
 	if storeExplicitEmpty.savedAgent.CapabilitiesJSON != `[]` {
 		t.Fatalf("empty capabilities saved as %q", storeExplicitEmpty.savedAgent.CapabilitiesJSON)
+	}
+}
+
+func TestNormalizeCapabilitiesPreservesRelayQUICAndHTTP3Ingress(t *testing.T) {
+	got := normalizeCapabilities([]string{
+		"http_rules",
+		"relay_quic",
+		"http3_ingress",
+		"bad",
+		"relay_quic",
+	})
+
+	want := []string{"http_rules", "relay_quic", "http3_ingress"}
+	if len(got) != len(want) {
+		t.Fatalf("normalizeCapabilities() len = %d, want %d (%+v)", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("normalizeCapabilities()[%d] = %q, want %q (full=%+v)", i, got[i], want[i], got)
+		}
 	}
 }
 
