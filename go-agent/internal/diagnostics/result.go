@@ -122,11 +122,11 @@ func classifyQuality(kind string, summary Summary) string {
 		}
 	}
 	switch {
-	case summary.LossRate <= 0.05 && summary.AvgLatencyMS <= 80:
+	case summary.LossRate <= 0.05 && summary.AvgLatencyMS <= 50:
 		return "极佳"
-	case summary.LossRate <= 0.10 && summary.AvgLatencyMS <= 200:
+	case summary.LossRate <= 0.10 && summary.AvgLatencyMS <= 120:
 		return "良好"
-	case summary.LossRate <= 0.20 && summary.AvgLatencyMS <= 400:
+	case summary.LossRate <= 0.20 && summary.AvgLatencyMS <= 250:
 		return "一般"
 	default:
 		return "较差"
