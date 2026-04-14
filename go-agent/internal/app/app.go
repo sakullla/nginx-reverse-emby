@@ -19,6 +19,7 @@ import (
 	agentruntime "github.com/sakullla/nginx-reverse-emby/go-agent/internal/runtime"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
 	agentsync "github.com/sakullla/nginx-reverse-emby/go-agent/internal/sync"
+	agenttask "github.com/sakullla/nginx-reverse-emby/go-agent/internal/task"
 	agentupdate "github.com/sakullla/nginx-reverse-emby/go-agent/internal/update"
 )
 
@@ -70,6 +71,7 @@ type App struct {
 	relayApplier RelayApplier
 	updater      Updater
 	runtime      *agentruntime.Runtime
+	taskClient   *agenttask.Client
 	syncMu       sync.Mutex
 }
 
@@ -125,6 +127,15 @@ func New(cfg Config) (*App, error) {
 			platformlinux.ExecReplacement,
 			nil,
 		),
+		agenttask.NewClient(agenttask.ClientConfig{
+			MasterURL:     cfg.MasterURL,
+			AgentToken:    cfg.AgentToken,
+			AgentID:       cfg.AgentID,
+			AgentName:     cfg.AgentName,
+			Version:       cfg.CurrentVersion,
+			Capabilities:  advertisedCapabilities(cfg),
+			ReconnectWait: time.Second,
+		}),
 	), nil
 }
 
@@ -136,7 +147,7 @@ func newAppWithDeps(
 	l4Applier L4Applier,
 	relayApplier RelayApplier,
 ) *App {
-	return newAppWithAllDeps(cfg, st, client, nil, certApplier, l4Applier, relayApplier, nil)
+	return newAppWithAllDeps(cfg, st, client, nil, certApplier, l4Applier, relayApplier, nil, nil)
 }
 
 func newAppWithHTTPDeps(
@@ -148,7 +159,7 @@ func newAppWithHTTPDeps(
 	l4Applier L4Applier,
 	relayApplier RelayApplier,
 ) *App {
-	return newAppWithAllDeps(cfg, st, client, httpApplier, certApplier, l4Applier, relayApplier, nil)
+	return newAppWithAllDeps(cfg, st, client, httpApplier, certApplier, l4Applier, relayApplier, nil, nil)
 }
 
 func newAppWithAllDeps(
@@ -160,6 +171,7 @@ func newAppWithAllDeps(
 	l4Applier L4Applier,
 	relayApplier RelayApplier,
 	updater Updater,
+	taskClient *agenttask.Client,
 ) *App {
 	if cfg.HeartbeatInterval <= 0 {
 		cfg.HeartbeatInterval = config.Default().HeartbeatInterval
@@ -173,6 +185,7 @@ func newAppWithAllDeps(
 		l4Applier:    l4Applier,
 		relayApplier: relayApplier,
 		updater:      updater,
+		taskClient:   taskClient,
 	}
 	app.runtime = agentruntime.NewWithActivator(app.snapshotActivator())
 	return app
@@ -197,6 +210,14 @@ func (a *App) Run(ctx context.Context) error {
 		if applied.DesiredVersion == "" && applied.Revision == 0 {
 			return err
 		}
+	}
+
+	if a.taskClient != nil {
+		go func() {
+			if err := a.taskClient.Run(ctx); err != nil && ctx.Err() == nil {
+				log.Printf("[agent] task client error: %v", err)
+			}
+		}()
 	}
 
 	ticker := time.NewTicker(a.cfg.HeartbeatInterval)

@@ -48,5 +48,6 @@ func NewEmbedded(cfg Config, st store.Store, client SyncClient) (*App, error) {
 		newL4RuntimeManagerWithRelay(certManager),
 		newRelayRuntimeManager(certManager),
 		nil,
+		nil,
 	), nil
 }
