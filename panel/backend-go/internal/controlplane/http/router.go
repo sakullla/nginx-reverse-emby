@@ -173,6 +173,17 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 		}
 	}
 
+	if d.TaskService == nil &&
+		d.SystemService != nil &&
+		d.AgentService != nil &&
+		d.RuleService != nil &&
+		d.L4RuleService != nil &&
+		d.VersionPolicyService != nil &&
+		d.RelayListenerService != nil &&
+		d.CertificateService != nil {
+		d.TaskService = service.NewTaskService(service.TaskServiceConfig{})
+	}
+
 	if d.SystemService != nil && d.AgentService != nil && d.RuleService != nil && d.L4RuleService != nil && d.VersionPolicyService != nil && d.RelayListenerService != nil && d.CertificateService != nil && d.TaskService != nil {
 		return d, nil
 	}
