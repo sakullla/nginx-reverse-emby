@@ -526,6 +526,96 @@ export async function deleteRule(agentId, id) {
   return data.rule
 }
 
+const mockTasksByAgent = {}
+
+function ensureMockTaskMap(agentId) {
+  const key = String(agentId)
+  if (!mockTasksByAgent[key]) mockTasksByAgent[key] = {}
+  return mockTasksByAgent[key]
+}
+
+function buildMockDiagnosticResult(kind, ruleId) {
+  const sent = 3
+  const failed = ruleId % 3 === 0 ? 1 : 0
+  const succeeded = sent - failed
+  const avg = 18 + (ruleId % 7) * 9
+  return {
+    id: `task-${Date.now()}`,
+    agent_id: '',
+    state: 'completed',
+    type: kind === 'http' ? 'diagnose_http_rule' : 'diagnose_l4_tcp_rule',
+    payload: {
+      rule_id: ruleId,
+      rule_kind: kind
+    },
+    result: {
+      kind,
+      rule_id: ruleId,
+      summary: {
+        sent,
+        succeeded,
+        failed,
+        loss_rate: Number((failed / sent).toFixed(1)),
+        avg_latency_ms: avg,
+        min_latency_ms: Math.max(5, avg - 8),
+        max_latency_ms: avg + 17,
+        quality: failed === 0 && avg < 60 ? 'excellent' : failed === 0 ? 'good' : 'fair'
+      },
+      samples: Array.from({ length: sent }, (_, index) => ({
+        attempt: index + 1,
+        backend: kind === 'http' ? `127.0.0.1:${8096 + index}` : `127.0.0.1:${9000 + index}`,
+        success: index >= failed,
+        latency_ms: index >= failed ? avg + index * 2 : 0,
+        status_code: kind === 'http' && index >= failed ? 200 : 0,
+        error: index < failed ? 'dial timeout' : ''
+      }))
+    }
+  }
+}
+
+function queueMockDiagnosticCompletion(agentId, taskRecord) {
+  const tasks = ensureMockTaskMap(agentId)
+  tasks[taskRecord.id] = {
+    ...taskRecord,
+    updated_at: new Date().toISOString()
+  }
+  window.setTimeout(() => {
+    const current = tasks[taskRecord.id]
+    if (!current) return
+    tasks[taskRecord.id] = {
+      ...current,
+      state: 'completed',
+      updated_at: new Date().toISOString(),
+      result: taskRecord.result
+    }
+  }, 900)
+}
+
+export async function diagnoseRule(agentId, ruleId) {
+  if (isDev) {
+    await sleep(250)
+    const task = buildMockDiagnosticResult('http', Number(ruleId))
+    task.agent_id = String(agentId)
+    task.state = 'running'
+    queueMockDiagnosticCompletion(agentId, task)
+    return { ok: true, task_id: task.id, task }
+  }
+  const { data } = await api.post(`/agents/${encodeURIComponent(agentId)}/rules/${encodeURIComponent(ruleId)}/diagnose`, {}, longRunningRequest)
+  return data
+}
+
+export async function fetchAgentTask(agentId, taskId) {
+  if (isDev) {
+    await sleep(250)
+    const tasks = ensureMockTaskMap(agentId)
+    const task = tasks[String(taskId)]
+    if (!task) throw new Error('task not found')
+    return { ok: true, task }
+  }
+  const { data } = await api.get(`/agents/${encodeURIComponent(agentId)}/tasks/${encodeURIComponent(taskId)}`)
+  return data
+}
+
 export async function applyConfig(agentId) {
   if (isDev) {
     await sleep(1200)
@@ -703,6 +793,19 @@ export async function deleteL4Rule(agentId, id) {
   }
   const { data } = await api.delete(`/agents/${encodeURIComponent(agentId)}/l4-rules/${id}`, longRunningRequest)
   return data.rule
+}
+
+export async function diagnoseL4Rule(agentId, ruleId) {
+  if (isDev) {
+    await sleep(250)
+    const task = buildMockDiagnosticResult('l4_tcp', Number(ruleId))
+    task.agent_id = String(agentId)
+    task.state = 'running'
+    queueMockDiagnosticCompletion(agentId, task)
+    return { ok: true, task_id: task.id, task }
+  }
+  const { data } = await api.post(`/agents/${encodeURIComponent(agentId)}/l4-rules/${encodeURIComponent(ruleId)}/diagnose`, {}, longRunningRequest)
+  return data
 }
 
 // Certificates (per-agent, like HTTP/L4)

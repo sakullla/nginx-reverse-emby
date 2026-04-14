@@ -2,6 +2,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/vue-query'
 import { unref } from 'vue'
 import * as api from '../api'
 import { messageStore } from '../stores/messages'
+export { useDiagnoseRule } from './useDiagnostics'
 
 export function useRules(agentId) {
   return useQuery({

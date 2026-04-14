@@ -56,7 +56,7 @@
 
     <!-- Rule card grid -->
     <div v-if="agentId && filteredRules.length" class="rule-grid">
-      <L4RuleItem v-for="rule in filteredRules" :key="rule.id" :rule="rule" :agent="selectedAgent" @edit="startEdit" @delete="startDelete" @copy="handleCopy" @toggle="toggleRule" />
+      <L4RuleItem v-for="rule in filteredRules" :key="rule.id" :rule="rule" :agent="selectedAgent" @edit="startEdit" @delete="startDelete" @copy="handleCopy" @toggle="toggleRule" @diagnose="openDiagnostic" />
     </div>
 
     <!-- Loading -->
@@ -97,6 +97,15 @@
       @confirm="confirmDelete"
       @cancel="deletingRule = null"
     />
+
+    <RuleDiagnosticModal
+      :model-value="showDiagnostic"
+      :task="diagnosticTask"
+      kind="l4_tcp"
+      :rule-label="diagnosticRule?.name || `${diagnosticRule?.listen_host || ''}:${diagnosticRule?.listen_port || ''}`"
+      :endpoint-label="diagnosticRule ? l4BackendAddresses(diagnosticRule).join(', ') : ''"
+      @update:model-value="closeDiagnostic"
+    />
   </div>
 </template>
 
@@ -105,11 +114,14 @@ import { ref, computed, watchEffect } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAgent } from '../context/AgentContext'
 import { useL4Rules, useCreateL4Rule, useUpdateL4Rule, useDeleteL4Rule } from '../hooks/useL4Rules'
+import { useDiagnoseL4Rule, useDiagnosticTask } from '../hooks/useDiagnostics'
 import { useAgents } from '../hooks/useAgents'
 import L4RuleForm from '../components/L4RuleForm.vue'
 import L4RuleItem from '../components/l4/L4RuleItem.vue'
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
 import BaseModal from '../components/base/BaseModal.vue'
+import RuleDiagnosticModal from '../components/RuleDiagnosticModal.vue'
+import { messageStore } from '../stores/messages'
 
 const route = useRoute()
 const { selectedAgentId } = useAgent()
@@ -123,6 +135,7 @@ const selectedAgent = computed(() => agentsData.value?.find(a => a.id === agentI
 const createL4Rule = useCreateL4Rule(agentId)
 const updateL4Rule = useUpdateL4Rule(agentId)
 const deleteL4Rule = useDeleteL4Rule(agentId)
+const diagnoseL4Rule = useDiagnoseL4Rule(agentId)
 const rules = computed(() => _rulesData.value ?? [])
 
 // Search
@@ -177,6 +190,11 @@ const editingRule = ref(null)
 const copyingRule = ref(null)
 const showCopyModal = ref(false)
 const deletingRule = ref(null)
+const showDiagnostic = ref(false)
+const diagnosticRule = ref(null)
+const diagnosticTaskId = ref('')
+const { data: diagnosticTaskData } = useDiagnosticTask(agentId, diagnosticTaskId)
+const diagnosticTask = computed(() => diagnosticTaskData.value?.task || null)
 
 function startEdit(rule) { editingRule.value = rule }
 function handleCopy(rule) { const { id, ...rest } = rule; copyingRule.value = rest; showCopyModal.value = true }
@@ -185,6 +203,18 @@ function closeForm() { showAddForm.value = false; editingRule.value = null }
 function closeCopy() { showCopyModal.value = false; copyingRule.value = null }
 function toggleRule(rule) { updateL4Rule.mutate({ id: rule.id, enabled: !rule.enabled }) }
 function confirmDelete() { if (deletingRule.value) deleteL4Rule.mutate(deletingRule.value.id); deletingRule.value = null }
+async function openDiagnostic(rule) {
+  diagnosticRule.value = rule
+  showDiagnostic.value = true
+  try {
+    const response = await diagnoseL4Rule.mutateAsync(rule.id)
+    diagnosticTaskId.value = response.task_id
+  } catch (error) {
+    closeDiagnostic()
+    messageStore.error(error, '启动 L4 规则诊断失败')
+  }
+}
+function closeDiagnostic() { showDiagnostic.value = false; diagnosticRule.value = null; diagnosticTaskId.value = '' }
 </script>
 
 <style scoped>
