@@ -318,6 +318,42 @@ func TestOneHopRelayDataFlow(t *testing.T) {
 	assertRoundTrip(t, conn, []byte("one-hop"))
 }
 
+func TestTLSTCPSessionPoolReusesOuterConnection(t *testing.T) {
+	backendAddr, stopBackend := startTCPEchoServer(t)
+	defer stopBackend()
+
+	provider := newFakeTLSMaterialProvider()
+	listener, hop := newRelayEndpoint(t, provider, 1, "relay-mux", "pin_only", true, false)
+
+	server, err := Start(context.Background(), []Listener{listener}, provider)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer server.Close()
+
+	resetTLSTCPSessionPoolForTest()
+
+	connA, err := Dial(context.Background(), "tcp", backendAddr, []Hop{hop}, provider)
+	if err != nil {
+		t.Fatalf("Dial(A) error = %v", err)
+	}
+	defer connA.Close()
+
+	connB, err := Dial(context.Background(), "tcp", backendAddr, []Hop{hop}, provider)
+	if err != nil {
+		t.Fatalf("Dial(B) error = %v", err)
+	}
+	defer connB.Close()
+
+	stats := currentTLSTCPSessionPoolStats()
+	if stats.ActiveSessions != 1 {
+		t.Fatalf("ActiveSessions = %d, want 1", stats.ActiveSessions)
+	}
+	if stats.LogicalStreams < 2 {
+		t.Fatalf("LogicalStreams = %d, want at least 2", stats.LogicalStreams)
+	}
+}
+
 func TestOneHopRelayDataFlowWithEarlyWindowMask(t *testing.T) {
 	backendAddr, stopBackend := startTCPEchoServer(t)
 	defer stopBackend()
@@ -338,8 +374,8 @@ func TestOneHopRelayDataFlowWithEarlyWindowMask(t *testing.T) {
 		t.Fatalf("Dial returned error: %v", err)
 	}
 	defer conn.Close()
-	if _, ok := conn.(*earlyWindowMaskConn); !ok {
-		t.Fatalf("Dial() returned %T", conn)
+	if !listenerUsesEarlyWindowMask(hop.Listener) {
+		t.Fatal("expected listener to use early window masking")
 	}
 
 	assertRoundTrip(t, conn, bytes.Repeat([]byte{0x16, 0x03, 0x01, 0x20}, 256))
@@ -470,6 +506,7 @@ func TestPinVerificationBehavior(t *testing.T) {
 func TestCAVerificationBehavior(t *testing.T) {
 	backendAddr, stopBackend := startTCPEchoServer(t)
 	defer stopBackend()
+	resetTLSTCPSessionPoolForTest()
 
 	provider := newFakeTLSMaterialProvider()
 	listener, hop := newRelayEndpoint(t, provider, 1, "relay-ca", "ca_only", false, true)
@@ -496,6 +533,7 @@ func TestCAVerificationBehavior(t *testing.T) {
 func TestPinAndCAVerificationRequiresBoth(t *testing.T) {
 	backendAddr, stopBackend := startTCPEchoServer(t)
 	defer stopBackend()
+	resetTLSTCPSessionPoolForTest()
 
 	provider := newFakeTLSMaterialProvider()
 	listener, hop := newRelayEndpoint(t, provider, 1, "relay-both", "pin_and_ca", true, true)
@@ -583,6 +621,7 @@ func TestPinAndCAVerificationWorksWithDerivedRelayMaterial(t *testing.T) {
 func TestPinOrCAVerificationAcceptsEither(t *testing.T) {
 	backendAddr, stopBackend := startTCPEchoServer(t)
 	defer stopBackend()
+	resetTLSTCPSessionPoolForTest()
 
 	provider := newFakeTLSMaterialProvider()
 	listener, hop := newRelayEndpoint(t, provider, 1, "relay-either", "pin_or_ca", true, true)

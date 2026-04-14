@@ -41,6 +41,7 @@ func TestDialQUICRoundTripTCP(t *testing.T) {
 func TestDialFallsBackToTLSTCP(t *testing.T) {
 	backendAddr, stopBackend := startTCPEchoServer(t)
 	defer stopBackend()
+	resetTLSTCPSessionPoolForTest()
 
 	provider := newFakeTLSMaterialProvider()
 	listener, hop := newRelayEndpoint(t, provider, 1, "relay-quic-fallback", "pin_only", true, false)

@@ -11,7 +11,6 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -501,6 +500,7 @@ func TestTCPRelayProxyPassesObfsTransportMode(t *testing.T) {
 		ListenPort: relayListenPort,
 		PublicHost: "127.0.0.1",
 		PublicPort: relayPublicPort,
+		ObfsMode:   relay.RelayObfsModeEarlyWindowV2,
 		Enabled:    true,
 		TLSMode:    "pin_only",
 		PinSet: []model.RelayPin{{
@@ -1397,6 +1397,27 @@ type l4RelayTestRequest struct {
 	Chain   []relay.Hop `json:"chain,omitempty"`
 }
 
+type l4RelayTestOpenFrame struct {
+	Kind   string      `json:"kind"`
+	Target string      `json:"target"`
+	Chain  []relay.Hop `json:"chain,omitempty"`
+}
+
+type l4RelayTestMuxFrame struct {
+	Version  byte
+	Type     byte
+	Flags    byte
+	StreamID uint32
+	Payload  []byte
+}
+
+type l4RelayTestMuxConn struct {
+	conn     net.Conn
+	streamID uint32
+	readBuf  []byte
+	readEOF  bool
+}
+
 func startL4RelayServer(
 	t *testing.T,
 	address string,
@@ -1421,29 +1442,29 @@ func startL4RelayServer(
 		if err != nil {
 			return
 		}
+		defer conn.Close()
 
-		request, err := readL4RelayTestRequest(conn)
+		relayConn, request, err := acceptL4RelayTestConn(conn, obfsMode)
 		if err != nil {
-			_ = conn.Close()
 			return
 		}
 		requests <- request
-		if err := writeL4RelayTestResponse(conn, map[string]any{"ok": true}); err != nil {
-			_ = conn.Close()
+		if err := writeL4RelayTestResponse(relayConn, map[string]any{"ok": true}); err != nil {
 			return
 		}
 
-		dataConn := net.Conn(conn)
-		if obfsMode == relay.RelayObfsModeEarlyWindowV2 {
-			dataConn = relay.WrapConnWithEarlyWindowMask(conn)
-		}
-		defer dataConn.Close()
+		dataConn := net.Conn(relayConn)
+		_ = dataConn.SetReadDeadline(time.Now().Add(2 * time.Second))
 
 		buf := make([]byte, 1024)
 		n, err := dataConn.Read(buf)
 		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				return
+			}
 			return
 		}
+		_ = dataConn.SetReadDeadline(time.Time{})
 		_, _ = dataConn.Write(buf[:n])
 	}()
 
@@ -1473,23 +1494,23 @@ func startL4UDPRelayServer(t *testing.T, address string, cert tls.Certificate) f
 		}
 		defer conn.Close()
 
-		request, err := readL4RelayTestRequest(conn)
+		relayConn, request, err := acceptL4RelayTestConn(conn, relay.RelayObfsModeOff)
 		if err != nil {
 			return
 		}
 		if request.Network != "udp" {
 			return
 		}
-		if err := writeL4RelayTestResponse(conn, map[string]any{"ok": true}); err != nil {
+		if err := writeL4RelayTestResponse(relayConn, map[string]any{"ok": true}); err != nil {
 			return
 		}
 
 		for {
-			payload, err := relay.ReadUOTPacket(conn)
+			payload, err := relay.ReadUOTPacket(relayConn)
 			if err != nil {
 				return
 			}
-			if err := relay.WriteUOTPacket(conn, payload); err != nil {
+			if err := relay.WriteUOTPacket(relayConn, payload); err != nil {
 				return
 			}
 		}
@@ -1501,16 +1522,37 @@ func startL4UDPRelayServer(t *testing.T, address string, cert tls.Certificate) f
 	}
 }
 
-func readL4RelayTestRequest(conn net.Conn) (l4RelayTestRequest, error) {
-	payload, err := readL4RelayTestFrame(conn)
+func acceptL4RelayTestConn(conn net.Conn, obfsMode string) (net.Conn, l4RelayTestRequest, error) {
+	framedConn := net.Conn(conn)
+	if obfsMode == relay.RelayObfsModeEarlyWindowV2 {
+		framedConn = relay.WrapConnWithEarlyWindowMask(framedConn)
+	}
+
+	request, streamID, err := readL4RelayTestRequest(framedConn)
 	if err != nil {
-		return l4RelayTestRequest{}, err
+		return nil, l4RelayTestRequest{}, err
 	}
-	var request l4RelayTestRequest
-	if err := json.Unmarshal(payload, &request); err != nil {
-		return l4RelayTestRequest{}, err
+	return &l4RelayTestMuxConn{conn: framedConn, streamID: streamID}, request, nil
+}
+
+func readL4RelayTestRequest(conn net.Conn) (l4RelayTestRequest, uint32, error) {
+	frame, err := readL4RelayTestFrame(conn)
+	if err != nil {
+		return l4RelayTestRequest{}, 0, err
 	}
-	return request, nil
+	if frame.Type != 1 {
+		return l4RelayTestRequest{}, 0, fmt.Errorf("unexpected relay mux frame type %d", frame.Type)
+	}
+
+	var request l4RelayTestOpenFrame
+	if err := json.Unmarshal(frame.Payload, &request); err != nil {
+		return l4RelayTestRequest{}, 0, err
+	}
+	return l4RelayTestRequest{
+		Network: request.Kind,
+		Target:  request.Target,
+		Chain:   request.Chain,
+	}, frame.StreamID, nil
 }
 
 func writeL4RelayTestResponse(conn net.Conn, payload any) error {
@@ -1518,30 +1560,142 @@ func writeL4RelayTestResponse(conn net.Conn, payload any) error {
 	if err != nil {
 		return err
 	}
-	return writeL4RelayTestFrame(conn, data)
+	return writeL4RelayTestFrame(conn, l4RelayTestMuxFrame{
+		Version:  1,
+		Type:     2,
+		StreamID: l4RelayTestConnStreamID(conn),
+		Payload:  data,
+	})
 }
 
-func readL4RelayTestFrame(conn net.Conn) ([]byte, error) {
-	var header [4]byte
+func readL4RelayTestFrame(conn net.Conn) (l4RelayTestMuxFrame, error) {
+	var header [11]byte
 	if _, err := io.ReadFull(conn, header[:]); err != nil {
-		return nil, err
+		return l4RelayTestMuxFrame{}, err
 	}
-	size := binary.BigEndian.Uint32(header[:])
+
+	size := uint32(header[7])<<24 | uint32(header[8])<<16 | uint32(header[9])<<8 | uint32(header[10])
 	data := make([]byte, size)
 	if _, err := io.ReadFull(conn, data); err != nil {
-		return nil, err
+		return l4RelayTestMuxFrame{}, err
 	}
-	return data, nil
+	return l4RelayTestMuxFrame{
+		Version:  header[0],
+		Type:     header[1],
+		Flags:    header[2],
+		StreamID: uint32(header[3])<<24 | uint32(header[4])<<16 | uint32(header[5])<<8 | uint32(header[6]),
+		Payload:  data,
+	}, nil
 }
 
-func writeL4RelayTestFrame(conn net.Conn, payload []byte) error {
-	var header [4]byte
-	binary.BigEndian.PutUint32(header[:], uint32(len(payload)))
-	if _, err := conn.Write(header[:]); err != nil {
+func writeL4RelayTestFrame(conn net.Conn, frame l4RelayTestMuxFrame) error {
+	wireConn := l4RelayTestWireConn(conn)
+	var header [11]byte
+	header[0] = frame.Version
+	header[1] = frame.Type
+	header[2] = frame.Flags
+	header[3] = byte(frame.StreamID >> 24)
+	header[4] = byte(frame.StreamID >> 16)
+	header[5] = byte(frame.StreamID >> 8)
+	header[6] = byte(frame.StreamID)
+	size := uint32(len(frame.Payload))
+	header[7] = byte(size >> 24)
+	header[8] = byte(size >> 16)
+	header[9] = byte(size >> 8)
+	header[10] = byte(size)
+	if _, err := wireConn.Write(header[:]); err != nil {
 		return err
 	}
-	_, err := conn.Write(payload)
+	_, err := wireConn.Write(frame.Payload)
 	return err
+}
+
+func l4RelayTestConnStreamID(conn net.Conn) uint32 {
+	if muxConn, ok := conn.(*l4RelayTestMuxConn); ok {
+		return muxConn.streamID
+	}
+	return 0
+}
+
+func l4RelayTestWireConn(conn net.Conn) net.Conn {
+	if muxConn, ok := conn.(*l4RelayTestMuxConn); ok {
+		return muxConn.conn
+	}
+	return conn
+}
+
+func (c *l4RelayTestMuxConn) Read(p []byte) (int, error) {
+	for {
+		if len(c.readBuf) > 0 {
+			n := copy(p, c.readBuf)
+			c.readBuf = c.readBuf[n:]
+			return n, nil
+		}
+		if c.readEOF {
+			return 0, io.EOF
+		}
+
+		frame, err := readL4RelayTestFrame(c.conn)
+		if err != nil {
+			return 0, err
+		}
+		if frame.StreamID != c.streamID {
+			continue
+		}
+
+		switch frame.Type {
+		case 3:
+			c.readBuf = append(c.readBuf, frame.Payload...)
+		case 4:
+			c.readEOF = true
+		case 5:
+			return 0, io.ErrClosedPipe
+		}
+	}
+}
+
+func (c *l4RelayTestMuxConn) Write(p []byte) (int, error) {
+	if err := writeL4RelayTestFrame(c.conn, l4RelayTestMuxFrame{
+		Version:  1,
+		Type:     3,
+		StreamID: c.streamID,
+		Payload:  append([]byte(nil), p...),
+	}); err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+
+func (c *l4RelayTestMuxConn) Close() error {
+	return c.CloseWrite()
+}
+
+func (c *l4RelayTestMuxConn) LocalAddr() net.Addr {
+	return c.conn.LocalAddr()
+}
+
+func (c *l4RelayTestMuxConn) RemoteAddr() net.Addr {
+	return c.conn.RemoteAddr()
+}
+
+func (c *l4RelayTestMuxConn) SetDeadline(t time.Time) error {
+	return c.conn.SetDeadline(t)
+}
+
+func (c *l4RelayTestMuxConn) SetReadDeadline(t time.Time) error {
+	return c.conn.SetReadDeadline(t)
+}
+
+func (c *l4RelayTestMuxConn) SetWriteDeadline(t time.Time) error {
+	return c.conn.SetWriteDeadline(t)
+}
+
+func (c *l4RelayTestMuxConn) CloseWrite() error {
+	return writeL4RelayTestFrame(c.conn, l4RelayTestMuxFrame{
+		Version:  1,
+		Type:     4,
+		StreamID: c.streamID,
+	})
 }
 
 func mustIssueL4RelayCertificate(t *testing.T, host string) tls.Certificate {

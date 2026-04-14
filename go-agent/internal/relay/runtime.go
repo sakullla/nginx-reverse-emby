@@ -137,49 +137,11 @@ func (s *Server) handleConn(rawConn net.Conn, listener Listener) {
 		return
 	}
 
-	var request relayRequest
-	err = withFrameDeadline(clientConn, func() error {
-		var readErr error
-		request, readErr = readRelayRequest(clientConn)
-		return readErr
-	})
-	if err != nil {
-		return
-	}
-	if !strings.EqualFold(request.Network, "tcp") && !strings.EqualFold(request.Network, "udp") {
-		_ = withFrameDeadline(clientConn, func() error {
-			return writeRelayResponse(clientConn, relayResponse{OK: false, Error: fmt.Sprintf("unsupported network %q", request.Network)})
-		})
-		return
-	}
-	if strings.EqualFold(request.Network, "udp") {
-		s.handleUDPRelayStream(clientConn, listener, request.Target, request.Chain)
-		return
-	}
-
-	upstream, err := s.openUpstream(request.Network, request.Target, request.Chain, DialOptions{})
-	if err != nil {
-		_ = withFrameDeadline(clientConn, func() error {
-			return writeRelayResponse(clientConn, relayResponse{OK: false, Error: err.Error()})
-		})
-		return
-	}
-	s.trackConn(upstream)
-	defer s.untrackConn(upstream)
-	defer upstream.Close()
-
-	if err := withFrameDeadline(clientConn, func() error {
-		return writeRelayResponse(clientConn, relayResponse{OK: true})
-	}); err != nil {
-		return
-	}
-
 	relayClientConn := net.Conn(clientConn)
 	if listenerUsesEarlyWindowMask(listener) {
 		relayClientConn = wrapConnWithEarlyWindowMask(clientConn, defaultEarlyWindowMaskConfig())
 	}
-
-	pipeBothWays(wrapIdleConn(relayClientConn), wrapIdleConn(upstream))
+	s.handleMuxTLSTCPConn(relayClientConn, listener)
 }
 
 func (s *Server) openUpstream(network, target string, chain []Hop, options DialOptions) (net.Conn, error) {
@@ -252,14 +214,14 @@ func Dial(ctx context.Context, network, target string, chain []Hop, provider TLS
 			return nil, err
 		}
 
-		fallbackConn, fallbackErr := dialTLSTCP(ctx, network, target, chain, provider)
+		fallbackConn, fallbackErr := dialTLSTCPMux(ctx, network, target, chain, provider)
 		if fallbackErr != nil {
 			return nil, fmt.Errorf("quic relay failed: %v; tls_tcp fallback failed: %w", err, fallbackErr)
 		}
 		return fallbackConn, nil
 	}
 
-	return dialTLSTCP(ctx, network, target, chain, provider)
+	return dialTLSTCPMux(ctx, network, target, chain, provider)
 }
 
 func dialTLSTCP(ctx context.Context, network, target string, chain []Hop, provider TLSMaterialProvider) (net.Conn, error) {

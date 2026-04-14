@@ -34,6 +34,11 @@ type relayResponse struct {
 	Error string `json:"error,omitempty"`
 }
 
+type muxOpenResult struct {
+	OK    bool   `json:"ok"`
+	Error string `json:"error,omitempty"`
+}
+
 func writeRelayRequest(w io.Writer, request relayRequest) error {
 	return writeFrame(w, request)
 }
@@ -44,6 +49,35 @@ func writeRelayResponse(w io.Writer, response relayResponse) error {
 
 func writeRelayOpenFrame(w io.Writer, frame relayOpenFrame) error {
 	return writeFrame(w, frame)
+}
+
+func marshalMuxOpenPayload(frame relayOpenFrame) ([]byte, error) {
+	return json.Marshal(frame)
+}
+
+func readMuxOpenPayload(payload []byte) (relayOpenFrame, error) {
+	var frame relayOpenFrame
+	if err := json.Unmarshal(payload, &frame); err != nil {
+		return relayOpenFrame{}, err
+	}
+	return frame, nil
+}
+
+func marshalMuxOpenResultPayload(result muxOpenResult) ([]byte, error) {
+	return json.Marshal(result)
+}
+
+func readMuxOpenResultPayload(payload []byte) (muxOpenResult, error) {
+	var result muxOpenResult
+	if err := json.Unmarshal(payload, &result); err != nil {
+		return muxOpenResult{}, err
+	}
+	return result, nil
+}
+
+func unmarshalMuxOpenResult(payload []byte) error {
+	_, err := readMuxOpenResultPayload(payload)
+	return err
 }
 
 func writeFrame(w io.Writer, payloadValue any) error {
