@@ -30,7 +30,7 @@ type TCPProber struct {
 
 func NewTCPProber(cfg TCPProberConfig) *TCPProber {
 	if cfg.Attempts <= 0 {
-		cfg.Attempts = 20
+		cfg.Attempts = 5
 	}
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 3 * time.Second

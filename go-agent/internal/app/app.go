@@ -138,8 +138,8 @@ func New(cfg Config) (*App, error) {
 			ReconnectWait: time.Second,
 			Handler: agenttask.NewDiagnosticHandler(
 				st,
-				diagnostics.NewHTTPProber(diagnostics.HTTPProberConfig{Attempts: 20, RelayProvider: certManager}),
-				diagnostics.NewTCPProber(diagnostics.TCPProberConfig{Attempts: 20, RelayProvider: certManager}),
+				diagnostics.NewHTTPProber(diagnostics.HTTPProberConfig{Attempts: 5, RelayProvider: certManager}),
+				diagnostics.NewTCPProber(diagnostics.TCPProberConfig{Attempts: 5, RelayProvider: certManager}),
 			),
 		}),
 	), nil

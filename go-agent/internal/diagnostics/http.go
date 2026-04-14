@@ -34,7 +34,7 @@ type HTTPProber struct {
 
 func NewHTTPProber(cfg HTTPProberConfig) *HTTPProber {
 	if cfg.Attempts <= 0 {
-		cfg.Attempts = 20
+		cfg.Attempts = 5
 	}
 	if cfg.Timeout <= 0 {
 		cfg.Timeout = 5 * time.Second

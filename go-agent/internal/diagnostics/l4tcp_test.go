@@ -67,7 +67,7 @@ func TestTCPProberDiagnoseReportsFailedConnects(t *testing.T) {
 	if report.Summary.Succeeded != 0 || report.Summary.Failed != 2 {
 		t.Fatalf("Summary = %+v", report.Summary)
 	}
-	if report.Summary.Quality != "down" {
+	if report.Summary.Quality != "不可用" {
 		t.Fatalf("Quality = %q", report.Summary.Quality)
 	}
 }

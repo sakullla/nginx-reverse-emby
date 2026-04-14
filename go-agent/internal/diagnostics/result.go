@@ -36,13 +36,13 @@ func BuildReport(kind string, ruleID int, samples []Sample) Report {
 	report := Report{
 		Kind:    kind,
 		RuleID:  ruleID,
-		Summary: buildSummary(samples),
+		Summary: buildSummary(kind, samples),
 		Samples: append([]Sample(nil), samples...),
 	}
 	return report
 }
 
-func buildSummary(samples []Sample) Summary {
+func buildSummary(kind string, samples []Sample) Summary {
 	summary := Summary{
 		Sent: len(samples),
 	}
@@ -79,7 +79,7 @@ func buildSummary(samples []Sample) Summary {
 		summary.MinLatencyMS = roundMetric(minLatency)
 		summary.MaxLatencyMS = roundMetric(maxLatency)
 	}
-	summary.Quality = classifyQuality(summary)
+	summary.Quality = classifyQuality(kind, summary)
 	return summary
 }
 
@@ -105,9 +105,21 @@ func FailureSample(attempt int, backend string, err error) Sample {
 	return sample
 }
 
-func classifyQuality(summary Summary) string {
+func classifyQuality(kind string, summary Summary) string {
 	if summary.Succeeded == 0 {
 		return "不可用"
+	}
+	if kind == "http" {
+		switch {
+		case summary.LossRate <= 0.05 && summary.AvgLatencyMS <= 150:
+			return "极佳"
+		case summary.LossRate <= 0.10 && summary.AvgLatencyMS <= 400:
+			return "良好"
+		case summary.LossRate <= 0.20 && summary.AvgLatencyMS <= 800:
+			return "一般"
+		default:
+			return "较差"
+		}
 	}
 	switch {
 	case summary.LossRate <= 0.05 && summary.AvgLatencyMS <= 80:
