@@ -1514,6 +1514,64 @@ func (a *testHTTPApplier) Close() error {
 	return nil
 }
 
+type orderedApplyRecorder struct {
+	mu    sync.Mutex
+	calls []string
+}
+
+func (r *orderedApplyRecorder) add(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls = append(r.calls, name)
+}
+
+func (r *orderedApplyRecorder) snapshot() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]string, len(r.calls))
+	copy(out, r.calls)
+	return out
+}
+
+type orderedCertificateApplier struct {
+	recorder *orderedApplyRecorder
+}
+
+func (a *orderedCertificateApplier) Apply(_ context.Context, _ []model.ManagedCertificateBundle, _ []model.ManagedCertificatePolicy) error {
+	a.recorder.add("cert")
+	return nil
+}
+
+func (a *orderedCertificateApplier) Close() error {
+	return nil
+}
+
+type orderedL4Applier struct {
+	recorder *orderedApplyRecorder
+}
+
+func (a *orderedL4Applier) Apply(_ context.Context, _ []model.L4Rule) error {
+	a.recorder.add("l4")
+	return nil
+}
+
+func (a *orderedL4Applier) Close() error {
+	return nil
+}
+
+type orderedRelayApplier struct {
+	recorder *orderedApplyRecorder
+}
+
+func (a *orderedRelayApplier) Apply(_ context.Context, _ []model.RelayListener) error {
+	a.recorder.add("relay")
+	return nil
+}
+
+func (a *orderedRelayApplier) Close() error {
+	return nil
+}
+
 type testUpdater struct {
 	calls       []updateCall
 	stagedPath  string
@@ -2584,6 +2642,59 @@ func TestRunDoesNotReapplyLocalRelayListenersWhenOnlyRemoteRelayDependencyChange
 	l4Calls := l4Applier.snapshotCalls()
 	if len(l4Calls) != 2 {
 		t.Fatalf("expected startup hydration and remote relay-triggered l4 refresh, got %d calls", len(l4Calls))
+	}
+}
+
+func TestSnapshotActivatorAppliesRelayBeforeL4Rules(t *testing.T) {
+	recorder := &orderedApplyRecorder{}
+	app := newAppWithDeps(
+		Config{AgentID: "local-agent"},
+		store.NewInMemory(),
+		newTestSyncClient(nil, syncResponse{}),
+		&orderedCertificateApplier{recorder: recorder},
+		&orderedL4Applier{recorder: recorder},
+		&orderedRelayApplier{recorder: recorder},
+	)
+
+	next := Snapshot{
+		Certificates: []model.ManagedCertificateBundle{{
+			ID:       10,
+			Domain:   "relay.internal.test",
+			CertPEM:  "cert",
+			KeyPEM:   "key",
+			Revision: 1,
+		}},
+		RelayListeners: []model.RelayListener{{
+			ID:         51,
+			AgentID:    "local-agent",
+			Name:       "relay-hop",
+			ListenHost: "127.0.0.1",
+			ListenPort: 9443,
+			Enabled:    true,
+			TLSMode:    "pin_only",
+			PinSet: []model.RelayPin{{
+				Type:  "sha256",
+				Value: "pin",
+			}},
+			Revision: 1,
+		}},
+		L4Rules: []model.L4Rule{{
+			Protocol:     "udp",
+			ListenHost:   "127.0.0.1",
+			ListenPort:   5300,
+			UpstreamHost: "127.0.0.1",
+			UpstreamPort: 5301,
+			RelayChain:   []int{51},
+			Revision:     1,
+		}},
+	}
+
+	if err := app.snapshotActivator()(context.Background(), Snapshot{}, next); err != nil {
+		t.Fatalf("snapshotActivator returned error: %v", err)
+	}
+
+	if got := recorder.snapshot(); !reflect.DeepEqual(got, []string{"cert", "relay", "l4"}) {
+		t.Fatalf("apply order = %v, want [cert relay l4]", got)
 	}
 }
 
