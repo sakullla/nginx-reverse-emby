@@ -18,6 +18,7 @@ type SystemService interface {
 type AgentService interface {
 	List(context.Context) ([]service.AgentSummary, error)
 	Get(context.Context, string) (service.AgentSummary, error)
+	GetByToken(context.Context, string) (service.AgentSummary, error)
 	Register(context.Context, service.RegisterRequest, string) (service.AgentSummary, error)
 	Update(context.Context, string, service.UpdateAgentRequest) (service.AgentSummary, error)
 	Delete(context.Context, string) (service.AgentSummary, error)
@@ -28,6 +29,7 @@ type AgentService interface {
 
 type RuleService interface {
 	List(context.Context, string) ([]service.HTTPRule, error)
+	Get(context.Context, string, int) (service.HTTPRule, error)
 	Create(context.Context, string, service.HTTPRuleInput) (service.HTTPRule, error)
 	Update(context.Context, string, int, service.HTTPRuleInput) (service.HTTPRule, error)
 	Delete(context.Context, string, int) (service.HTTPRule, error)
@@ -35,9 +37,17 @@ type RuleService interface {
 
 type L4RuleService interface {
 	List(context.Context, string) ([]service.L4Rule, error)
+	Get(context.Context, string, int) (service.L4Rule, error)
 	Create(context.Context, string, service.L4RuleInput) (service.L4Rule, error)
 	Update(context.Context, string, int, service.L4RuleInput) (service.L4Rule, error)
 	Delete(context.Context, string, int) (service.L4Rule, error)
+}
+
+type TaskService interface {
+	CreateAndDispatch(service.TaskCreateRequest) (service.TaskRecord, error)
+	Get(context.Context, string, string) (service.TaskRecord, error)
+	RegisterSession(service.TaskSessionRegistration) error
+	ApplyUpdate(context.Context, service.TaskUpdateInput) error
 }
 
 type VersionPolicyService interface {
@@ -71,6 +81,7 @@ type Dependencies struct {
 	VersionPolicyService VersionPolicyService
 	RelayListenerService RelayListenerService
 	CertificateService   CertificateService
+	TaskService          TaskService
 }
 
 type legacyRuleListService interface {
@@ -83,6 +94,19 @@ type agentRuleServiceAdapter struct {
 
 func (a agentRuleServiceAdapter) List(ctx context.Context, agentID string) ([]service.HTTPRule, error) {
 	return a.agent.ListHTTPRules(ctx, agentID)
+}
+
+func (a agentRuleServiceAdapter) Get(ctx context.Context, agentID string, id int) (service.HTTPRule, error) {
+	rules, err := a.agent.ListHTTPRules(ctx, agentID)
+	if err != nil {
+		return service.HTTPRule{}, err
+	}
+	for _, rule := range rules {
+		if rule.ID == id {
+			return rule, nil
+		}
+	}
+	return service.HTTPRule{}, service.ErrRuleNotFound
 }
 
 func (a agentRuleServiceAdapter) Create(context.Context, string, service.HTTPRuleInput) (service.HTTPRule, error) {
@@ -112,14 +136,19 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 		mux.Handle(prefix+"/public/agent-assets/", http.HandlerFunc(resolved.handlePublicAgentAsset))
 		mux.Handle(prefix+"/agents/register", http.HandlerFunc(resolved.handleRegisterAgent))
 		mux.Handle(prefix+"/agents/heartbeat", http.HandlerFunc(resolved.handleHeartbeat))
+		mux.Handle(prefix+"/agents/task-session", http.HandlerFunc(resolved.handleAgentTaskSession))
+		mux.Handle(prefix+"/agent-tasks/{taskID}/updates", http.HandlerFunc(resolved.handleAgentTaskUpdate))
 		mux.Handle(prefix+"/agents", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgents)))
 		mux.Handle(prefix+"/agents/{agentID}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgent)))
 		mux.Handle(prefix+"/agents/{agentID}/stats", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentStats)))
 		mux.Handle(prefix+"/agents/{agentID}/apply", resolved.requirePanelToken(http.HandlerFunc(resolved.handleApplyAgent)))
 		mux.Handle(prefix+"/agents/{agentID}/rules", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentRules)))
 		mux.Handle(prefix+"/agents/{agentID}/rules/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentRule)))
+		mux.Handle(prefix+"/agents/{agentID}/rules/{id}/diagnose", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentRuleDiagnose)))
 		mux.Handle(prefix+"/agents/{agentID}/l4-rules", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentL4Rules)))
 		mux.Handle(prefix+"/agents/{agentID}/l4-rules/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentL4Rule)))
+		mux.Handle(prefix+"/agents/{agentID}/l4-rules/{id}/diagnose", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentL4RuleDiagnose)))
+		mux.Handle(prefix+"/agents/{agentID}/tasks/{taskID}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentTask)))
 		mux.Handle(prefix+"/agents/{agentID}/relay-listeners", resolved.requirePanelToken(http.HandlerFunc(resolved.handleRelayListeners)))
 		mux.Handle(prefix+"/agents/{agentID}/relay-listeners/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleRelayListener)))
 		mux.Handle(prefix+"/agents/{agentID}/certificates", resolved.requirePanelToken(http.HandlerFunc(resolved.handleCertificates)))
@@ -147,7 +176,18 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 		}
 	}
 
-	if d.SystemService != nil && d.AgentService != nil && d.RuleService != nil && d.L4RuleService != nil && d.VersionPolicyService != nil && d.RelayListenerService != nil && d.CertificateService != nil {
+	if d.TaskService == nil &&
+		d.SystemService != nil &&
+		d.AgentService != nil &&
+		d.RuleService != nil &&
+		d.L4RuleService != nil &&
+		d.VersionPolicyService != nil &&
+		d.RelayListenerService != nil &&
+		d.CertificateService != nil {
+		d.TaskService = service.NewTaskService(service.TaskServiceConfig{})
+	}
+
+	if d.SystemService != nil && d.AgentService != nil && d.RuleService != nil && d.L4RuleService != nil && d.VersionPolicyService != nil && d.RelayListenerService != nil && d.CertificateService != nil && d.TaskService != nil {
 		return d, nil
 	}
 
@@ -177,6 +217,9 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 	if d.CertificateService == nil {
 		d.CertificateService = service.NewCertificateService(d.Config, store)
 	}
+	if d.TaskService == nil {
+		d.TaskService = service.NewTaskService(service.TaskServiceConfig{})
+	}
 
 	return d, nil
 }
@@ -195,6 +238,8 @@ func mapServiceError(err error) (int, map[string]any) {
 		return http.StatusNotFound, errorPayload("relay listener not found")
 	case errors.Is(err, service.ErrCertificateNotFound):
 		return http.StatusNotFound, errorPayload("certificate not found")
+	case errors.Is(err, service.ErrTaskNotFound):
+		return http.StatusNotFound, errorPayload("task not found")
 	case errors.Is(err, service.ErrL4Unsupported):
 		return http.StatusBadRequest, errorPayload("agent does not support L4 rules")
 	case errors.Is(err, service.ErrInvalidArgument):

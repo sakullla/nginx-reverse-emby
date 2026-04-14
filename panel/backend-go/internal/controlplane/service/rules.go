@@ -79,6 +79,25 @@ func (s *ruleService) List(ctx context.Context, agentID string) ([]HTTPRule, err
 	return rules, nil
 }
 
+func (s *ruleService) Get(ctx context.Context, agentID string, id int) (HTTPRule, error) {
+	resolvedID, err := s.ensureAgentExists(ctx, agentID)
+	if err != nil {
+		return HTTPRule{}, err
+	}
+
+	rows, err := s.store.ListHTTPRules(ctx, resolvedID)
+	if err != nil {
+		return HTTPRule{}, err
+	}
+	for _, row := range rows {
+		rule := httpRuleFromRow(row)
+		if rule.ID == id {
+			return rule, nil
+		}
+	}
+	return HTTPRule{}, ErrRuleNotFound
+}
+
 func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRuleInput) (HTTPRule, error) {
 	resolvedID, err := s.ensureAgentExists(ctx, agentID)
 	if err != nil {

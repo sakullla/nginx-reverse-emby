@@ -81,6 +81,9 @@
             <button class="rule-card__action" title="编辑" @click="startEdit(rule)">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
             </button>
+            <button class="rule-card__action" title="诊断" @click="openDiagnostic(rule)">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h4l2-6 4 12 2-6h6"/></svg>
+            </button>
             <button class="rule-card__action rule-card__action--delete" title="删除" @click="startDelete(rule)">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
             </button>
@@ -151,6 +154,15 @@
       @confirm="confirmDelete"
       @cancel="deletingRule = null"
     />
+
+    <RuleDiagnosticModal
+      :model-value="showDiagnostic"
+      :task="diagnosticTask"
+      kind="http"
+      :rule-label="diagnosticRule?.frontend_url || ''"
+      :endpoint-label="formatHttpBackend(diagnosticRule || {})"
+      @update:model-value="closeDiagnostic"
+    />
   </div>
 </template>
 
@@ -159,11 +171,14 @@ import { ref, computed, watchEffect } from 'vue'
 import { useRoute } from 'vue-router'
 import { useAgent } from '../context/AgentContext'
 import { useRules, useCreateRule, useUpdateRule, useDeleteRule } from '../hooks/useRules'
+import { useDiagnoseRule, useDiagnosticTask } from '../hooks/useDiagnostics'
 import { useAgents } from '../hooks/useAgents'
 import { getRuleEffectiveStatus } from '../utils/syncStatus'
 import RuleForm from '../components/RuleForm.vue'
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
 import BaseModal from '../components/base/BaseModal.vue'
+import RuleDiagnosticModal from '../components/RuleDiagnosticModal.vue'
+import { messageStore } from '../stores/messages'
 
 const route = useRoute()
 const { selectedAgentId } = useAgent()
@@ -175,6 +190,7 @@ const { data: _rulesData, isLoading } = useRules(agentId)
 const createRule = useCreateRule(agentId)
 const updateRule = useUpdateRule(agentId)
 const deleteRule = useDeleteRule(agentId)
+const diagnoseRule = useDiagnoseRule(agentId)
 const rules = computed(() => _rulesData.value ?? [])
 
 // Agents list for sync status derivation
@@ -234,6 +250,11 @@ const editingRule = ref(null)
 const copyingRule = ref(null)
 const showCopyModal = ref(false)
 const deletingRule = ref(null)
+const showDiagnostic = ref(false)
+const diagnosticRule = ref(null)
+const diagnosticTaskId = ref('')
+const { data: diagnosticTaskData } = useDiagnosticTask(agentId, diagnosticTaskId)
+const diagnosticTask = computed(() => diagnosticTaskData.value?.task || null)
 
 function getStatus(rule) {
   return getRuleEffectiveStatus(rule, selectedAgent.value)
@@ -278,11 +299,29 @@ function startDelete(rule) {
   deletingRule.value = rule
 }
 
+async function openDiagnostic(rule) {
+  diagnosticRule.value = rule
+  showDiagnostic.value = true
+  try {
+    const response = await diagnoseRule.mutateAsync(rule.id)
+    diagnosticTaskId.value = response.task_id
+  } catch (error) {
+    closeDiagnostic()
+    messageStore.error(error, '启动 HTTP 规则诊断失败')
+  }
+}
+
 function closeForm() {
   showAddForm.value = false
   editingRule.value = null
   showCopyModal.value = false
   copyingRule.value = null
+}
+
+function closeDiagnostic() {
+  showDiagnostic.value = false
+  diagnosticRule.value = null
+  diagnosticTaskId.value = ''
 }
 
 async function confirmDelete() {

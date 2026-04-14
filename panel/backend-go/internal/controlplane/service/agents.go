@@ -249,6 +249,21 @@ func (s *agentService) Get(ctx context.Context, agentID string) (AgentSummary, e
 	return s.summaryForRow(ctx, row)
 }
 
+func (s *agentService) GetByToken(ctx context.Context, agentToken string) (AgentSummary, error) {
+	token := strings.TrimSpace(agentToken)
+	if token == "" {
+		return AgentSummary{}, ErrAgentUnauthorized
+	}
+	row, err := s.findAgentByToken(ctx, token)
+	if err != nil {
+		if errors.Is(err, ErrAgentNotFound) {
+			return AgentSummary{}, ErrAgentUnauthorized
+		}
+		return AgentSummary{}, err
+	}
+	return s.summaryForRow(ctx, row)
+}
+
 func (s *agentService) Register(ctx context.Context, request RegisterRequest, headerAgentToken string) (AgentSummary, error) {
 	name := strings.TrimSpace(request.Name)
 	if name == "" {

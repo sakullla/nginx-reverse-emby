@@ -21,6 +21,9 @@
         <button class="l4-card__action" title="编辑" @click="$emit('edit', rule)">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
         </button>
+        <button v-if="canDiagnose" class="l4-card__action" title="诊断" @click="$emit('diagnose', rule)">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h4l2-6 4 12 2-6h6"/></svg>
+        </button>
         <button class="l4-card__action l4-card__action--delete" title="删除" @click="$emit('delete', rule)">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
         </button>
@@ -56,10 +59,11 @@ import { computed } from 'vue'
 import { getRuleEffectiveStatus } from '../../utils/syncStatus'
 
 const props = defineProps({ rule: { type: Object, required: true }, agent: { type: Object, default: null } })
-defineEmits(['edit', 'delete', 'copy', 'toggle'])
+defineEmits(['edit', 'delete', 'copy', 'toggle', 'diagnose'])
 
 const status = computed(() => getRuleEffectiveStatus(props.rule, props.agent))
 const statusLabel = computed(() => ({ active: '启用', pending: '待同步', failed: '同步失败', disabled: '已禁用' }[status.value] || '未知'))
+const canDiagnose = computed(() => String(props.rule?.protocol || '').toLowerCase() === 'tcp')
 
 const backends = computed(() => {
   if (Array.isArray(props.rule.backends) && props.rule.backends.length > 0) return props.rule.backends
