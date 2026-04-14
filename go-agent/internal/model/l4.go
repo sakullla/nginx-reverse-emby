@@ -15,6 +15,8 @@ type L4Tuning struct {
 }
 
 type L4Rule struct {
+	ID            int           `json:"id,omitempty"`
+	Name          string        `json:"name,omitempty"`
 	Protocol      string        `json:"protocol"`
 	ListenHost    string        `json:"listen_host"`
 	ListenPort    int           `json:"listen_port"`
@@ -25,5 +27,7 @@ type L4Rule struct {
 	Tuning        L4Tuning      `json:"tuning,omitempty"`
 	RelayChain    []int         `json:"relay_chain,omitempty"`
 	RelayObfs     bool          `json:"relay_obfs,omitempty"`
+	Enabled       bool          `json:"enabled,omitempty"`
+	Tags          []string      `json:"tags,omitempty"`
 	Revision      int64         `json:"revision,omitempty"`
 }

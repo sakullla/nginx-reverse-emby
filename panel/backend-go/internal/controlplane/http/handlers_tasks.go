@@ -1,6 +1,7 @@
 package http
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -114,20 +115,50 @@ func (d Dependencies) handleAgentTask(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (d Dependencies) handleAgentTaskUpdate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.NotFound(w, r)
+		return
+	}
+
+	agent, ok := d.authenticateAgentRequest(w, r)
+	if !ok {
+		return
+	}
+
+	var payload struct {
+		State  string         `json:"state"`
+		Result map[string]any `json:"result"`
+		Error  string         `json:"error"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		writeJSON(w, http.StatusBadRequest, errorPayload("invalid JSON body"))
+		return
+	}
+
+	err := d.TaskService.ApplyUpdate(r.Context(), service.TaskUpdateInput{
+		AgentID: agent.ID,
+		TaskID:  r.PathValue("taskID"),
+		State:   strings.TrimSpace(payload.State),
+		Result:  payload.Result,
+		Error:   strings.TrimSpace(payload.Error),
+	})
+	if err != nil {
+		status, body := mapServiceError(err)
+		writeJSON(w, status, body)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
 func (d Dependencies) handleAgentTaskSession(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.NotFound(w, r)
 		return
 	}
-	agentToken := strings.TrimSpace(r.Header.Get("X-Agent-Token"))
-	if agentToken == "" {
-		writeJSON(w, http.StatusUnauthorized, errorPayload("Unauthorized: missing agent token"))
-		return
-	}
-
-	helloAgentID := strings.TrimSpace(r.URL.Query().Get("agent_id"))
-	if helloAgentID == "" {
-		writeJSON(w, http.StatusBadRequest, errorPayload("agent_id is required"))
+	agent, ok := d.authenticateAgentRequest(w, r)
+	if !ok {
 		return
 	}
 
@@ -138,8 +169,11 @@ func (d Dependencies) handleAgentTaskSession(w http.ResponseWriter, r *http.Requ
 	}
 
 	session := newSSETaskSession(w, flusher)
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
 	if err := d.TaskService.RegisterSession(service.TaskSessionRegistration{
-		AgentID:    helloAgentID,
+		AgentID:    agent.ID,
 		SessionID:  strings.TrimSpace(r.URL.Query().Get("session_id")),
 		Session:    session,
 		RemoteAddr: remoteIPFromRequest(r),
@@ -150,13 +184,26 @@ func (d Dependencies) handleAgentTaskSession(w http.ResponseWriter, r *http.Requ
 	}
 	defer session.Close()
 
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
 	fmt.Fprintf(w, ": task-session-open %s\n\n", time.Now().UTC().Format(time.RFC3339))
 	flusher.Flush()
 
 	<-r.Context().Done()
+}
+
+func (d Dependencies) authenticateAgentRequest(w http.ResponseWriter, r *http.Request) (service.AgentSummary, bool) {
+	agentToken := strings.TrimSpace(r.Header.Get("X-Agent-Token"))
+	if agentToken == "" {
+		writeJSON(w, http.StatusUnauthorized, errorPayload("Unauthorized: missing agent token"))
+		return service.AgentSummary{}, false
+	}
+
+	agent, err := d.AgentService.GetByToken(r.Context(), agentToken)
+	if err != nil {
+		status, body := mapServiceError(err)
+		writeJSON(w, status, body)
+		return service.AgentSummary{}, false
+	}
+	return agent, true
 }
 
 type sseTaskSession struct {
@@ -176,7 +223,17 @@ func (s *sseTaskSession) SendTask(task service.TaskEnvelope) error {
 	if s.closed {
 		return fmt.Errorf("%w: session closed", service.ErrInvalidArgument)
 	}
-	_, err := fmt.Fprintf(s.writer, "event: task\ndata: {\"id\":\"%s\",\"type\":\"%s\"}\n\n", task.ID, task.Type)
+	payload, err := json.Marshal(map[string]any{
+		"task_id":    task.ID,
+		"task_type":  task.Type,
+		"payload":    task.Payload,
+		"deadline":   task.Deadline.UTC().Format(time.RFC3339),
+		"created_at": task.CreatedAt.UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		return err
+	}
+	_, err = fmt.Fprintf(s.writer, "event: task\ndata: %s\n\n", payload)
 	if err != nil {
 		return err
 	}

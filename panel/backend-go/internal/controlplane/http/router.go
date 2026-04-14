@@ -18,6 +18,7 @@ type SystemService interface {
 type AgentService interface {
 	List(context.Context) ([]service.AgentSummary, error)
 	Get(context.Context, string) (service.AgentSummary, error)
+	GetByToken(context.Context, string) (service.AgentSummary, error)
 	Register(context.Context, service.RegisterRequest, string) (service.AgentSummary, error)
 	Update(context.Context, string, service.UpdateAgentRequest) (service.AgentSummary, error)
 	Delete(context.Context, string) (service.AgentSummary, error)
@@ -46,6 +47,7 @@ type TaskService interface {
 	CreateAndDispatch(service.TaskCreateRequest) (service.TaskRecord, error)
 	Get(context.Context, string, string) (service.TaskRecord, error)
 	RegisterSession(service.TaskSessionRegistration) error
+	ApplyUpdate(context.Context, service.TaskUpdateInput) error
 }
 
 type VersionPolicyService interface {
@@ -135,6 +137,7 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 		mux.Handle(prefix+"/agents/register", http.HandlerFunc(resolved.handleRegisterAgent))
 		mux.Handle(prefix+"/agents/heartbeat", http.HandlerFunc(resolved.handleHeartbeat))
 		mux.Handle(prefix+"/agents/task-session", http.HandlerFunc(resolved.handleAgentTaskSession))
+		mux.Handle(prefix+"/agent-tasks/{taskID}/updates", http.HandlerFunc(resolved.handleAgentTaskUpdate))
 		mux.Handle(prefix+"/agents", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgents)))
 		mux.Handle(prefix+"/agents/{agentID}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgent)))
 		mux.Handle(prefix+"/agents/{agentID}/stats", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentStats)))

@@ -14,6 +14,7 @@ type LoadBalancing struct {
 }
 
 type HTTPRule struct {
+	ID               int           `json:"id,omitempty"`
 	FrontendURL      string        `json:"frontend_url"`
 	BackendURL       string        `json:"backend_url"`
 	Backends         []HTTPBackend `json:"backends,omitempty"`
@@ -24,6 +25,8 @@ type HTTPRule struct {
 	CustomHeaders    []HTTPHeader  `json:"custom_headers,omitempty"`
 	RelayChain       []int         `json:"relay_chain,omitempty"`
 	RelayObfs        bool          `json:"relay_obfs,omitempty"`
+	Enabled          bool          `json:"enabled,omitempty"`
+	Tags             []string      `json:"tags,omitempty"`
 	Revision         int64         `json:"revision,omitempty"`
 }
 

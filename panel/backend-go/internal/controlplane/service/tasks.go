@@ -62,6 +62,14 @@ type TaskRecord struct {
 	Deadline  time.Time      `json:"deadline,omitempty"`
 }
 
+type TaskUpdateInput struct {
+	AgentID string
+	TaskID  string
+	State   string
+	Result  map[string]any
+	Error   string
+}
+
 type taskSessionState struct {
 	id         string
 	remoteAddr string
@@ -178,6 +186,31 @@ func (s *TaskService) Get(_ context.Context, agentID string, taskID string) (Tas
 		return TaskRecord{}, ErrTaskNotFound
 	}
 	return record, nil
+}
+
+func (s *TaskService) ApplyUpdate(_ context.Context, input TaskUpdateInput) error {
+	agentID := strings.TrimSpace(input.AgentID)
+	taskID := strings.TrimSpace(input.TaskID)
+	if agentID == "" || taskID == "" {
+		return fmt.Errorf("%w: agent_id and task_id are required", ErrInvalidArgument)
+	}
+	if strings.TrimSpace(input.State) == "" {
+		return fmt.Errorf("%w: state is required", ErrInvalidArgument)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	record, ok := s.tasks[taskID]
+	if !ok || record.AgentID != agentID {
+		return ErrTaskNotFound
+	}
+	record.State = strings.TrimSpace(input.State)
+	record.Result = cloneTaskPayload(input.Result)
+	record.Error = strings.TrimSpace(input.Error)
+	record.UpdatedAt = s.now().UTC()
+	s.tasks[taskID] = record
+	return nil
 }
 
 func (s *TaskService) nextTaskID() string {
