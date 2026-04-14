@@ -129,6 +129,12 @@ type fakeL4RuleService struct {
 	createdRule service.L4Rule
 	updatedRule service.L4Rule
 	deletedRule service.L4Rule
+	state       *fakeL4RuleServiceState
+}
+
+type fakeL4RuleServiceState struct {
+	getAgentIDs []string
+	getIDs      []int
 }
 
 func (f fakeL4RuleService) List(_ context.Context, agentID string) ([]service.L4Rule, error) {
@@ -137,6 +143,23 @@ func (f fakeL4RuleService) List(_ context.Context, agentID string) ([]service.L4
 		return nil, service.ErrAgentNotFound
 	}
 	return rules, nil
+}
+
+func (f fakeL4RuleService) Get(_ context.Context, agentID string, id int) (service.L4Rule, error) {
+	if f.state != nil {
+		f.state.getAgentIDs = append(f.state.getAgentIDs, agentID)
+		f.state.getIDs = append(f.state.getIDs, id)
+	}
+	rules, ok := f.rules[agentID]
+	if !ok {
+		return service.L4Rule{}, service.ErrAgentNotFound
+	}
+	for _, rule := range rules {
+		if rule.ID == id {
+			return rule, nil
+		}
+	}
+	return service.L4Rule{}, service.ErrRuleNotFound
 }
 
 func (f fakeL4RuleService) Create(context.Context, string, service.L4RuleInput) (service.L4Rule, error) {
@@ -179,6 +202,22 @@ func (f fakeRuleService) List(_ context.Context, agentID string) ([]service.HTTP
 	return rules, nil
 }
 
+func (f fakeRuleService) Get(_ context.Context, agentID string, id int) (service.HTTPRule, error) {
+	if f.state != nil {
+		f.state.listAgentIDs = append(f.state.listAgentIDs, agentID)
+	}
+	rules, ok := f.rules[agentID]
+	if !ok {
+		return service.HTTPRule{}, service.ErrAgentNotFound
+	}
+	for _, rule := range rules {
+		if rule.ID == id {
+			return rule, nil
+		}
+	}
+	return service.HTTPRule{}, service.ErrRuleNotFound
+}
+
 func (f fakeRuleService) Create(_ context.Context, agentID string, _ service.HTTPRuleInput) (service.HTTPRule, error) {
 	if f.state != nil {
 		f.state.createAgentIDs = append(f.state.createAgentIDs, agentID)
@@ -200,6 +239,53 @@ func (f fakeRuleService) Delete(_ context.Context, agentID string, id int) (serv
 		f.state.deleteIDs = append(f.state.deleteIDs, id)
 	}
 	return f.deletedRule, nil
+}
+
+type fakeTaskService struct {
+	taskByID           map[string]service.TaskRecord
+	createResult       service.TaskRecord
+	createErr          error
+	getErr             error
+	registerSessionErr error
+	state              *fakeTaskServiceState
+}
+
+type fakeTaskServiceState struct {
+	createRequests []service.TaskCreateRequest
+	getAgentIDs    []string
+	getTaskIDs     []string
+}
+
+func (f fakeTaskService) CreateAndDispatch(req service.TaskCreateRequest) (service.TaskRecord, error) {
+	if f.state != nil {
+		f.state.createRequests = append(f.state.createRequests, req)
+	}
+	if f.createErr != nil {
+		return service.TaskRecord{}, f.createErr
+	}
+	if f.createResult.ID != "" {
+		return f.createResult, nil
+	}
+	return service.TaskRecord{ID: "task-1", AgentID: req.AgentID, Type: req.Type, State: "dispatched"}, nil
+}
+
+func (f fakeTaskService) Get(_ context.Context, agentID string, taskID string) (service.TaskRecord, error) {
+	if f.state != nil {
+		f.state.getAgentIDs = append(f.state.getAgentIDs, agentID)
+		f.state.getTaskIDs = append(f.state.getTaskIDs, taskID)
+	}
+	if f.getErr != nil {
+		return service.TaskRecord{}, f.getErr
+	}
+	record, ok := f.taskByID[taskID]
+	if !ok {
+		return service.TaskRecord{}, service.ErrTaskNotFound
+	}
+	return record, nil
+}
+
+func (f fakeTaskService) RegisterSession(service.TaskSessionRegistration) error {
+	return f.registerSessionErr
 }
 
 type fakeVersionPolicyService struct {
@@ -495,6 +581,159 @@ func TestRouterServesAgentsAndRulesEndpoints(t *testing.T) {
 	router.ServeHTTP(missingResp, missingReq)
 	if missingResp.Code != http.StatusNotFound {
 		t.Fatalf("GET /panel-api/agents/missing/rules = %d", missingResp.Code)
+	}
+}
+
+func TestHandleAgentRuleDiagnoseDispatchesTask(t *testing.T) {
+	taskState := &fakeTaskServiceState{}
+	router, err := NewRouter(Dependencies{
+		Config: config.Config{PanelToken: "secret"},
+		SystemService: fakeSystemService{
+			info: service.SystemInfo{
+				Role:              "master",
+				LocalApplyRuntime: "go-agent",
+				DefaultAgentID:    "local",
+				LocalAgentEnabled: true,
+			},
+		},
+		AgentService: fakeAgentService{},
+		RuleService: fakeRuleService{
+			rules: map[string][]service.HTTPRule{
+				"edge-a": {{
+					ID:          7,
+					AgentID:     "edge-a",
+					FrontendURL: "https://edge.example.test",
+					BackendURL:  "http://127.0.0.1:8080",
+				}},
+			},
+		},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+		TaskService: fakeTaskService{
+			createResult: service.TaskRecord{ID: "task-1", AgentID: "edge-a", Type: service.TaskTypeDiagnoseHTTPRule, State: "dispatched"},
+			state:        taskState,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/panel-api/agents/edge-a/rules/7/diagnose", nil)
+	req.Header.Set("X-Panel-Token", "secret")
+	resp := httptest.NewRecorder()
+
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", resp.Code, http.StatusAccepted)
+	}
+	if len(taskState.createRequests) != 1 {
+		t.Fatalf("createRequests = %+v", taskState.createRequests)
+	}
+	if taskState.createRequests[0].Type != service.TaskTypeDiagnoseHTTPRule {
+		t.Fatalf("task type = %q", taskState.createRequests[0].Type)
+	}
+}
+
+func TestHandleAgentL4RuleDiagnoseDispatchesTask(t *testing.T) {
+	taskState := &fakeTaskServiceState{}
+	router, err := NewRouter(Dependencies{
+		Config: config.Config{PanelToken: "secret"},
+		SystemService: fakeSystemService{
+			info: service.SystemInfo{
+				Role:              "master",
+				LocalApplyRuntime: "go-agent",
+				DefaultAgentID:    "local",
+				LocalAgentEnabled: true,
+			},
+		},
+		AgentService: fakeAgentService{},
+		RuleService:  fakeRuleService{},
+		L4RuleService: fakeL4RuleService{
+			rules: map[string][]service.L4Rule{
+				"edge-a": {{
+					ID:           9,
+					AgentID:      "edge-a",
+					Name:         "tcp-9000",
+					Protocol:     "tcp",
+					ListenHost:   "0.0.0.0",
+					ListenPort:   9000,
+					UpstreamHost: "127.0.0.1",
+					UpstreamPort: 9001,
+				}},
+			},
+		},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+		TaskService: fakeTaskService{
+			createResult: service.TaskRecord{ID: "task-2", AgentID: "edge-a", Type: service.TaskTypeDiagnoseL4TCPRule, State: "dispatched"},
+			state:        taskState,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/panel-api/agents/edge-a/l4-rules/9/diagnose", nil)
+	req.Header.Set("X-Panel-Token", "secret")
+	resp := httptest.NewRecorder()
+
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", resp.Code, http.StatusAccepted)
+	}
+	if len(taskState.createRequests) != 1 {
+		t.Fatalf("createRequests = %+v", taskState.createRequests)
+	}
+	if taskState.createRequests[0].Type != service.TaskTypeDiagnoseL4TCPRule {
+		t.Fatalf("task type = %q", taskState.createRequests[0].Type)
+	}
+}
+
+func TestHandleAgentTaskReturnsTaskRecord(t *testing.T) {
+	taskState := &fakeTaskServiceState{}
+	router, err := NewRouter(Dependencies{
+		Config: config.Config{PanelToken: "secret"},
+		SystemService: fakeSystemService{
+			info: service.SystemInfo{
+				Role:              "master",
+				LocalApplyRuntime: "go-agent",
+				DefaultAgentID:    "local",
+				LocalAgentEnabled: true,
+			},
+		},
+		AgentService:         fakeAgentService{},
+		RuleService:          fakeRuleService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+		TaskService: fakeTaskService{
+			taskByID: map[string]service.TaskRecord{
+				"task-1": {ID: "task-1", AgentID: "edge-a", Type: service.TaskTypeDiagnoseHTTPRule, State: "completed"},
+			},
+			state: taskState,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/panel-api/agents/edge-a/tasks/task-1", nil)
+	req.Header.Set("X-Panel-Token", "secret")
+	resp := httptest.NewRecorder()
+
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.Code, http.StatusOK)
+	}
+	if len(taskState.getTaskIDs) != 1 || taskState.getTaskIDs[0] != "task-1" {
+		t.Fatalf("getTaskIDs = %+v", taskState.getTaskIDs)
 	}
 }
 

@@ -14,6 +14,8 @@ const (
 	TaskTypeDiagnoseL4TCPRule = "diagnose_l4_tcp_rule"
 )
 
+var ErrTaskNotFound = fmt.Errorf("%w: task not found", ErrRuleNotFound)
+
 var errTaskSessionUnavailable = fmt.Errorf("%w: task session unavailable", ErrAgentNotFound)
 
 type TaskServiceConfig struct {
@@ -170,10 +172,10 @@ func (s *TaskService) Get(_ context.Context, agentID string, taskID string) (Tas
 
 	record, ok := s.tasks[strings.TrimSpace(taskID)]
 	if !ok {
-		return TaskRecord{}, ErrRuleNotFound
+		return TaskRecord{}, ErrTaskNotFound
 	}
 	if strings.TrimSpace(agentID) != "" && record.AgentID != strings.TrimSpace(agentID) {
-		return TaskRecord{}, ErrRuleNotFound
+		return TaskRecord{}, ErrTaskNotFound
 	}
 	return record, nil
 }
