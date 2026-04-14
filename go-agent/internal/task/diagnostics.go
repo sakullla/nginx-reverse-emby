@@ -47,7 +47,7 @@ func (h *DiagnosticHandler) HandleTask(ctx context.Context, task TaskMessage) (m
 		if err != nil {
 			return nil, err
 		}
-		report, err := h.httpProber.Diagnose(ctx, rule)
+		report, err := h.httpProber.Diagnose(ctx, rule, snapshot.RelayListeners)
 		if err != nil {
 			return nil, err
 		}
@@ -60,7 +60,7 @@ func (h *DiagnosticHandler) HandleTask(ctx context.Context, task TaskMessage) (m
 		if err != nil {
 			return nil, err
 		}
-		report, err := h.tcpProber.Diagnose(ctx, rule)
+		report, err := h.tcpProber.Diagnose(ctx, rule, snapshot.RelayListeners)
 		if err != nil {
 			return nil, err
 		}

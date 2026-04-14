@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -12,20 +13,23 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 )
 
 type HTTPProberConfig struct {
-	Attempts   int
-	Timeout    time.Duration
-	HTTPClient *http.Client
-	Cache      *backends.Cache
+	Attempts      int
+	Timeout       time.Duration
+	HTTPClient    *http.Client
+	Cache         *backends.Cache
+	RelayProvider relay.TLSMaterialProvider
 }
 
 type HTTPProber struct {
-	attempts   int
-	timeout    time.Duration
-	httpClient *http.Client
-	cache      *backends.Cache
+	attempts      int
+	timeout       time.Duration
+	httpClient    *http.Client
+	cache         *backends.Cache
+	relayProvider relay.TLSMaterialProvider
 }
 
 func NewHTTPProber(cfg HTTPProberConfig) *HTTPProber {
@@ -42,14 +46,15 @@ func NewHTTPProber(cfg HTTPProberConfig) *HTTPProber {
 		cfg.Cache = backends.NewCache(backends.Config{})
 	}
 	return &HTTPProber{
-		attempts:   cfg.Attempts,
-		timeout:    cfg.Timeout,
-		httpClient: cfg.HTTPClient,
-		cache:      cfg.Cache,
+		attempts:      cfg.Attempts,
+		timeout:       cfg.Timeout,
+		httpClient:    cfg.HTTPClient,
+		cache:         cfg.Cache,
+		relayProvider: cfg.RelayProvider,
 	}
 }
 
-func (p *HTTPProber) Diagnose(ctx context.Context, rule model.HTTPRule) (Report, error) {
+func (p *HTTPProber) Diagnose(ctx context.Context, rule model.HTTPRule, relayListeners []model.RelayListener) (Report, error) {
 	candidates, err := httpCandidates(ctx, p.cache, rule)
 	if err != nil {
 		return Report{}, err
@@ -61,25 +66,25 @@ func (p *HTTPProber) Diagnose(ctx context.Context, rule model.HTTPRule) (Report,
 	samples := make([]Sample, 0, p.attempts)
 	for i := 0; i < p.attempts; i++ {
 		candidate := candidates[i%len(candidates)]
-		sample := p.probeCandidate(ctx, i+1, rule, candidate)
+		sample := p.probeCandidate(ctx, i+1, rule, relayListeners, candidate)
 		samples = append(samples, sample)
 	}
 	return BuildReport("http", rule.ID, samples), nil
 }
 
 type httpProbeCandidate struct {
-	backendURL *url.URL
-	address    string
+	targetURL   *url.URL
+	dialAddress string
 }
 
-func (p *HTTPProber) probeCandidate(ctx context.Context, attempt int, rule model.HTTPRule, candidate httpProbeCandidate) Sample {
+func (p *HTTPProber) probeCandidate(ctx context.Context, attempt int, rule model.HTTPRule, relayListeners []model.RelayListener, candidate httpProbeCandidate) Sample {
 	reqCtx, cancel := context.WithTimeout(ctx, p.timeout)
 	defer cancel()
 
 	start := time.Now()
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, candidate.backendURL.String(), nil)
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, candidate.targetURL.String(), nil)
 	if err != nil {
-		return FailureSample(attempt, candidate.address, err)
+		return FailureSample(attempt, candidate.dialAddress, err)
 	}
 	if rule.UserAgent != "" {
 		req.Header.Set("User-Agent", rule.UserAgent)
@@ -88,16 +93,20 @@ func (p *HTTPProber) probeCandidate(ctx context.Context, attempt int, rule model
 		req.Header.Set(header.Name, header.Value)
 	}
 
-	resp, err := p.httpClient.Do(req)
+	client, err := p.clientForCandidate(rule, relayListeners, candidate)
 	if err != nil {
-		p.cache.MarkFailure(candidate.address)
-		return FailureSample(attempt, candidate.address, err)
+		return FailureSample(attempt, candidate.dialAddress, err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		p.cache.MarkFailure(candidate.dialAddress)
+		return FailureSample(attempt, candidate.dialAddress, err)
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, resp.Body)
-	p.cache.MarkSuccess(candidate.address)
+	p.cache.MarkSuccess(candidate.dialAddress)
 
-	return LatencySample(attempt, candidate.address, time.Since(start), resp.StatusCode)
+	return LatencySample(attempt, candidate.dialAddress, time.Since(start), resp.StatusCode)
 }
 
 func httpCandidates(ctx context.Context, cache *backends.Cache, rule model.HTTPRule) ([]httpProbeCandidate, error) {
@@ -141,14 +150,45 @@ func httpCandidates(ctx context.Context, cache *backends.Cache, rule model.HTTPR
 				continue
 			}
 			clone := *target
-			clone.Host = candidate.Address
 			out = append(out, httpProbeCandidate{
-				backendURL: &clone,
-				address:    candidate.Address,
+				targetURL:   &clone,
+				dialAddress: candidate.Address,
 			})
 		}
 	}
 	return out, nil
+}
+
+func (p *HTTPProber) clientForCandidate(rule model.HTTPRule, relayListeners []model.RelayListener, candidate httpProbeCandidate) (*http.Client, error) {
+	baseTransport, ok := p.httpClient.Transport.(*http.Transport)
+	if !ok || baseTransport == nil {
+		baseTransport = http.DefaultTransport.(*http.Transport).Clone()
+	} else {
+		baseTransport = baseTransport.Clone()
+	}
+
+	if len(rule.RelayChain) > 0 {
+		if p.relayProvider == nil {
+			return nil, fmt.Errorf("relay provider is required")
+		}
+		hops, err := resolveHTTPRelayHops(rule, relayListeners)
+		if err != nil {
+			return nil, err
+		}
+		baseTransport.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return relay.Dial(ctx, network, candidate.dialAddress, hops, p.relayProvider)
+		}
+	} else {
+		dialer := &net.Dialer{Timeout: p.timeout}
+		baseTransport.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return dialer.DialContext(ctx, network, candidate.dialAddress)
+		}
+	}
+
+	return &http.Client{
+		Timeout:   p.timeout,
+		Transport: baseTransport,
+	}, nil
 }
 
 func httpPortWithDefault(target *url.URL) int {
@@ -163,4 +203,52 @@ func httpPortWithDefault(target *url.URL) int {
 		return 443
 	}
 	return 80
+}
+
+func resolveHTTPRelayHops(rule model.HTTPRule, relayListeners []model.RelayListener) ([]relay.Hop, error) {
+	relayListenersByID := make(map[int]model.RelayListener, len(relayListeners))
+	for _, listener := range relayListeners {
+		relayListenersByID[listener.ID] = listener
+	}
+
+	hops := make([]relay.Hop, 0, len(rule.RelayChain))
+	for _, listenerID := range rule.RelayChain {
+		listener, ok := relayListenersByID[listenerID]
+		if !ok {
+			return nil, fmt.Errorf("http rule %q: relay listener %d not found", rule.FrontendURL, listenerID)
+		}
+		if !listener.Enabled {
+			return nil, fmt.Errorf("http rule %q: relay listener %d is disabled", rule.FrontendURL, listenerID)
+		}
+		if err := relay.ValidateListener(listener); err != nil {
+			return nil, fmt.Errorf("http rule %q: relay listener %d: %w", rule.FrontendURL, listenerID, err)
+		}
+		host, port := relayHopDialEndpoint(listener)
+		hops = append(hops, relay.Hop{
+			Address:    net.JoinHostPort(host, strconv.Itoa(port)),
+			ServerName: host,
+			Listener:   listener,
+		})
+	}
+	return hops, nil
+}
+
+func relayHopDialEndpoint(listener model.RelayListener) (string, int) {
+	host := strings.TrimSpace(listener.PublicHost)
+	if host == "" {
+		for _, bindHost := range listener.BindHosts {
+			if trimmed := strings.TrimSpace(bindHost); trimmed != "" {
+				host = trimmed
+				break
+			}
+		}
+	}
+	if host == "" {
+		host = strings.TrimSpace(listener.ListenHost)
+	}
+	port := listener.PublicPort
+	if port <= 0 {
+		port = listener.ListenPort
+	}
+	return host, port
 }

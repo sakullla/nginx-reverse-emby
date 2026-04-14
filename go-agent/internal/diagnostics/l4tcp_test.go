@@ -3,6 +3,7 @@ package diagnostics
 import (
 	"context"
 	"net"
+	"strconv"
 	"testing"
 	"time"
 
@@ -10,25 +11,18 @@ import (
 )
 
 func TestTCPProberDiagnoseSummarizesSuccessfulConnects(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	addr, _, stopTarget := startDiagnosticTCPTarget(t)
+	defer stopTarget()
+
+	host, portString, err := net.SplitHostPort(addr)
 	if err != nil {
-		t.Fatalf("Listen() error = %v", err)
+		t.Fatalf("SplitHostPort() error = %v", err)
 	}
-	defer ln.Close()
+	port, err := strconv.Atoi(portString)
+	if err != nil {
+		t.Fatalf("Atoi() error = %v", err)
+	}
 
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		for i := 0; i < 3; i++ {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			_ = conn.Close()
-		}
-	}()
-
-	addr := ln.Addr().(*net.TCPAddr)
 	prober := NewTCPProber(TCPProberConfig{
 		Attempts: 3,
 		Timeout:  time.Second,
@@ -38,9 +32,9 @@ func TestTCPProberDiagnoseSummarizesSuccessfulConnects(t *testing.T) {
 		Protocol:     "tcp",
 		ListenHost:   "0.0.0.0",
 		ListenPort:   9000,
-		UpstreamHost: "127.0.0.1",
-		UpstreamPort: addr.Port,
-	})
+		UpstreamHost: host,
+		UpstreamPort: port,
+	}, nil)
 	if err != nil {
 		t.Fatalf("Diagnose() error = %v", err)
 	}
@@ -51,7 +45,6 @@ func TestTCPProberDiagnoseSummarizesSuccessfulConnects(t *testing.T) {
 	if report.Summary.Sent != 3 || report.Summary.Succeeded != 3 || report.Summary.Failed != 0 {
 		t.Fatalf("Summary = %+v", report.Summary)
 	}
-	<-done
 }
 
 func TestTCPProberDiagnoseReportsFailedConnects(t *testing.T) {
@@ -66,7 +59,7 @@ func TestTCPProberDiagnoseReportsFailedConnects(t *testing.T) {
 		ListenPort:   9100,
 		UpstreamHost: "127.0.0.1",
 		UpstreamPort: 1,
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("Diagnose() error = %v", err)
 	}
@@ -76,5 +69,52 @@ func TestTCPProberDiagnoseReportsFailedConnects(t *testing.T) {
 	}
 	if report.Summary.Quality != "down" {
 		t.Fatalf("Quality = %q", report.Summary.Quality)
+	}
+}
+
+func TestTCPProberDiagnoseUsesRelayChainWhenConfigured(t *testing.T) {
+	addr, targets, stopTarget := startDiagnosticTCPTarget(t)
+	defer stopTarget()
+
+	host, portString, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("SplitHostPort() error = %v", err)
+	}
+	port, err := strconv.Atoi(portString)
+	if err != nil {
+		t.Fatalf("Atoi() error = %v", err)
+	}
+
+	provider := newDiagnosticTLSMaterialProvider()
+	relayListener := newDiagnosticRelayListener(t, provider, 51, "relay.internal.test")
+	stopRelay := startDiagnosticRelayRuntime(t, relayListener, provider)
+	defer stopRelay()
+
+	prober := NewTCPProber(TCPProberConfig{
+		Attempts:      1,
+		Timeout:       time.Second,
+		RelayProvider: provider,
+	})
+	report, err := prober.Diagnose(context.Background(), model.L4Rule{
+		ID:           12,
+		Protocol:     "tcp",
+		ListenHost:   "0.0.0.0",
+		ListenPort:   9000,
+		UpstreamHost: host,
+		UpstreamPort: port,
+		RelayChain:   []int{51},
+	}, []model.RelayListener{relayListener})
+	if err != nil {
+		t.Fatalf("Diagnose() error = %v", err)
+	}
+	if report.Summary.Succeeded != 1 {
+		t.Fatalf("Summary = %+v", report.Summary)
+	}
+
+	if got := waitForDiagnosticTarget(t, targets); got == "" {
+		t.Fatal("expected tcp prober to reach upstream through relay")
+	}
+	if provider.TrustedCAPoolCalls() == 0 {
+		t.Fatal("expected relay TLS material provider to be used")
 	}
 }

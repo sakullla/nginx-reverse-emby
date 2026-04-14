@@ -25,7 +25,7 @@ func TestHTTPProberDiagnoseSummarizesSuccessfulBackendRequests(t *testing.T) {
 		ID:          7,
 		FrontendURL: "https://edge.example.test/emby",
 		BackendURL:  server.URL + "/healthz",
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("Diagnose() error = %v", err)
 	}
@@ -60,7 +60,7 @@ func TestHTTPProberDiagnoseReportsLossAcrossMixedBackends(t *testing.T) {
 			{URL: good.URL},
 		},
 		LoadBalancing: model.LoadBalancing{Strategy: "round_robin"},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("Diagnose() error = %v", err)
 	}
@@ -70,5 +70,38 @@ func TestHTTPProberDiagnoseReportsLossAcrossMixedBackends(t *testing.T) {
 	}
 	if report.Summary.LossRate != 0.5 {
 		t.Fatalf("LossRate = %v", report.Summary.LossRate)
+	}
+}
+
+func TestHTTPProberDiagnoseUsesRelayChainWhenConfigured(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer backend.Close()
+
+	provider := newDiagnosticTLSMaterialProvider()
+	relayListener := newDiagnosticRelayListener(t, provider, 41, "relay.internal.test")
+	stopRelay := startDiagnosticRelayRuntime(t, relayListener, provider)
+	defer stopRelay()
+
+	prober := NewHTTPProber(HTTPProberConfig{
+		Attempts:      1,
+		Timeout:       time.Second,
+		RelayProvider: provider,
+	})
+	report, err := prober.Diagnose(context.Background(), model.HTTPRule{
+		ID:          11,
+		FrontendURL: "https://edge.example.test",
+		BackendURL:  backend.URL + "/healthz",
+		RelayChain:  []int{41},
+	}, []model.RelayListener{relayListener})
+	if err != nil {
+		t.Fatalf("Diagnose() error = %v", err)
+	}
+	if report.Summary.Succeeded != 1 {
+		t.Fatalf("Summary = %+v", report.Summary)
+	}
+	if provider.TrustedCAPoolCalls() == 0 {
+		t.Fatal("expected relay TLS material provider to be used")
 	}
 }
