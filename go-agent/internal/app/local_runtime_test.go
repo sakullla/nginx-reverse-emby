@@ -446,6 +446,35 @@ func TestRelayRuntimeManagerPreservesRunningServerOnMissingCertificateReconfigur
 	waitForPortState(t, listenPort, false)
 }
 
+func TestRelayRuntimeManagerReappliesQUICListenerOnSameUDPPort(t *testing.T) {
+	provider := &testRelayTLSProvider{
+		certificates: map[int]tls.Certificate{
+			1: mustIssueTestTLSCertificate(t),
+		},
+	}
+	manager := newRelayRuntimeManager(provider)
+	ctx := context.Background()
+	listenPort := pickFreeUDPPort(t)
+
+	initial := runtimeTestRelayListener(listenPort, 1)
+	initial.TransportMode = relay.ListenerTransportModeQUIC
+	initial.ObfsMode = relay.RelayObfsModeOff
+	if err := manager.Apply(ctx, []model.RelayListener{initial}); err != nil {
+		t.Fatalf("failed to apply initial quic relay runtime: %v", err)
+	}
+
+	reconfigured := initial
+	reconfigured.AllowTransportFallback = true
+	reconfigured.Revision++
+	if err := manager.Apply(ctx, []model.RelayListener{reconfigured}); err != nil {
+		t.Fatalf("failed to reapply quic relay runtime on same port: %v", err)
+	}
+
+	if err := manager.Close(); err != nil {
+		t.Fatalf("failed to close relay manager: %v", err)
+	}
+}
+
 func TestApplyRelayListenersAcceptsAutoDerivedPinAndCA(t *testing.T) {
 	backendAddr, stopBackend := startRuntimeTestTCPEchoServer(t)
 	defer stopBackend()
@@ -623,6 +652,16 @@ func pickFreeTCPPort(t *testing.T) int {
 	}
 	defer ln.Close()
 	return ln.Addr().(*net.TCPAddr).Port
+}
+
+func pickFreeUDPPort(t *testing.T) int {
+	t.Helper()
+	ln, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("failed to pick udp port: %v", err)
+	}
+	defer ln.Close()
+	return ln.LocalAddr().(*net.UDPAddr).Port
 }
 
 func waitForPortState(t *testing.T, port int, wantBusy bool) {

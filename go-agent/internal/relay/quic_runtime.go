@@ -25,12 +25,36 @@ type quicStreamConn struct {
 	stream *quic.Stream
 }
 
-func startQUICListener(ctx context.Context, provider TLSMaterialProvider, listener Listener, address string) (*quic.Listener, error) {
+type quicListenerHandle struct {
+	listener  *quic.Listener
+	transport *quic.Transport
+	packet    net.PacketConn
+}
+
+func startQUICListener(ctx context.Context, provider TLSMaterialProvider, listener Listener, address string) (*quicListenerHandle, error) {
 	tlsConfig, err := serverQUICTLSConfig(ctx, provider, listener)
 	if err != nil {
 		return nil, err
 	}
-	return quicListenAddr(address, tlsConfig, newRelayQUICConfig())
+	udpAddr, err := net.ResolveUDPAddr("udp", address)
+	if err != nil {
+		return nil, err
+	}
+	packetConn, err := net.ListenUDP("udp", udpAddr)
+	if err != nil {
+		return nil, err
+	}
+	transport := &quic.Transport{Conn: packetConn}
+	ln, err := transport.Listen(tlsConfig, newRelayQUICConfig())
+	if err != nil {
+		_ = packetConn.Close()
+		return nil, err
+	}
+	return &quicListenerHandle{
+		listener:  ln,
+		transport: transport,
+		packet:    packetConn,
+	}, nil
 }
 
 func dialQUIC(ctx context.Context, network, target string, chain []Hop, provider TLSMaterialProvider) (net.Conn, error) {
@@ -202,4 +226,23 @@ func (c *quicStreamConn) CloseWrite() error {
 func (c *quicStreamConn) CloseRead() error {
 	c.stream.CancelRead(0)
 	return nil
+}
+
+func (h *quicListenerHandle) Close() error {
+	if h == nil {
+		return nil
+	}
+
+	var closeErr error
+	if h.transport != nil {
+		if err := h.transport.Close(); err != nil && !errors.Is(err, net.ErrClosed) && closeErr == nil {
+			closeErr = err
+		}
+	}
+	if h.packet != nil {
+		if err := h.packet.Close(); err != nil && !errors.Is(err, net.ErrClosed) && closeErr == nil {
+			closeErr = err
+		}
+	}
+	return closeErr
 }

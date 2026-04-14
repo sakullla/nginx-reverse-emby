@@ -25,7 +25,7 @@ type Server struct {
 
 	mu            sync.Mutex
 	listeners     []net.Listener
-	quicListeners []*quic.Listener
+	quicListeners []*quicListenerHandle
 	conns         map[net.Conn]struct{}
 	quicConns     map[*quic.Conn]struct{}
 	closing       bool
@@ -87,7 +87,7 @@ func (s *Server) startListener(listener Listener) error {
 			}
 			s.quicListeners = append(s.quicListeners, ln)
 			s.wg.Add(1)
-			go s.acceptQUICLoop(ln, listener)
+			go s.acceptQUICLoop(ln.listener, listener)
 		default:
 			ln, err := net.Listen("tcp", addr)
 			if err != nil {
@@ -288,7 +288,7 @@ func (s *Server) Close() error {
 	s.mu.Lock()
 	s.closing = true
 	listeners := append([]net.Listener(nil), s.listeners...)
-	quicListeners := append([]*quic.Listener(nil), s.quicListeners...)
+	quicListeners := append([]*quicListenerHandle(nil), s.quicListeners...)
 	s.mu.Unlock()
 
 	for _, ln := range listeners {
