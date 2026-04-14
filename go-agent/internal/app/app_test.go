@@ -514,18 +514,12 @@ func TestRunDoesNotAdvanceAppliedSnapshotOrCurrentRevisionOnApplyFailure(t *test
 		t.Fatalf("expected applied snapshot to stay unchanged on failure, got %+v", applied)
 	}
 
-	state, err := mem.LoadRuntimeState()
-	if err != nil {
-		t.Fatalf("failed to load runtime state: %v", err)
-	}
+	state := waitForLastSyncError(t, time.Second, mem.LoadRuntimeState, "http apply failed")
 	if state.CurrentRevision != previousApplied.Revision {
 		t.Fatalf("expected current revision %d after failed apply, got %d", previousApplied.Revision, state.CurrentRevision)
 	}
 	if state.Metadata["current_revision"] != "7" {
 		t.Fatalf("expected metadata current_revision 7 after failed apply, got %q", state.Metadata["current_revision"])
-	}
-	if state.Metadata["last_sync_error"] != "http apply failed" {
-		t.Fatalf("expected last_sync_error metadata, got %v", state.Metadata)
 	}
 	if state.Metadata["last_apply_revision"] != "9" || state.Metadata["last_apply_status"] != "error" {
 		t.Fatalf("expected attempted apply revision/status recorded, got %v", state.Metadata)
