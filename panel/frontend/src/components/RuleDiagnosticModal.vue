@@ -8,10 +8,11 @@
   >
     <div class="diagnostic-modal">
       <div class="diagnostic-modal__hero">
-        <div>
+        <div class="diagnostic-modal__hero-text">
           <div class="diagnostic-modal__eyebrow">{{ kindLabel }}</div>
           <h3 class="diagnostic-modal__headline">{{ ruleLabel }}</h3>
           <p class="diagnostic-modal__subtitle">{{ endpointLabel }}</p>
+          <p v-if="agentLabel" class="diagnostic-modal__meta">节点: {{ agentLabel }}</p>
         </div>
         <span class="diagnostic-modal__state" :class="`diagnostic-modal__state--${tone}`">
           {{ stateLabel }}
@@ -46,25 +47,42 @@
           </div>
           <div class="diagnostic-stat">
             <span class="diagnostic-stat__label">链路质量</span>
-            <strong class="diagnostic-stat__value diagnostic-stat__value--caps">{{ summary.quality || '-' }}</strong>
+            <strong class="diagnostic-stat__value diagnostic-stat__value--caps" :class="`diagnostic-stat__value--${qualityTone}`">{{ qualityLabel }}</strong>
           </div>
         </div>
 
         <div class="diagnostic-modal__range">
-          <span>最小 {{ summary.min_latency_ms ?? 0 }} ms</span>
-          <span>最大 {{ summary.max_latency_ms ?? 0 }} ms</span>
+          <div class="latency-bar">
+            <div class="latency-bar__track">
+              <div
+                class="latency-bar__fill"
+                :style="{ width: latencyBarPct + '%' }"
+              ></div>
+            </div>
+            <div class="latency-bar__labels">
+              <span>最小 {{ summary.min_latency_ms ?? 0 }} ms</span>
+              <span>最大 {{ summary.max_latency_ms ?? 0 }} ms</span>
+            </div>
+          </div>
         </div>
 
         <div class="diagnostic-modal__samples">
-          <div class="diagnostic-modal__section-title">探测样本</div>
-          <div class="diagnostic-sample" v-for="sample in samples" :key="`${sample.attempt}-${sample.backend}`" :class="{ 'diagnostic-sample--failed': !sample.success }">
-            <div class="diagnostic-sample__left">
-              <span class="diagnostic-sample__attempt">#{{ sample.attempt }}</span>
-              <code class="diagnostic-sample__backend">{{ sample.backend || '-' }}</code>
-            </div>
-            <div class="diagnostic-sample__right">
-              <span v-if="sample.success">{{ sample.latency_ms }} ms</span>
-              <span v-else>{{ sample.error || 'failed' }}</span>
+          <button type="button" class="diagnostic-modal__section-title diagnostic-modal__section-title--toggle" @click="showSamples = !showSamples">
+            <span>探测样本</span>
+            <span v-if="samples.length" class="diagnostic-modal__sample-count">{{ samples.length }} 次</span>
+            <span class="diagnostic-modal__toggle" :class="{ 'diagnostic-modal__toggle--open': showSamples }">▸</span>
+          </button>
+          <div v-if="showSamples" class="diagnostic-sample-list">
+            <div class="diagnostic-sample" v-for="sample in samples" :key="`${sample.attempt}-${sample.backend}`" :class="{ 'diagnostic-sample--failed': !sample.success }">
+              <div class="diagnostic-sample__left">
+                <span class="diagnostic-sample__attempt">#{{ sample.attempt }}</span>
+                <span v-if="isHTTP && sample.status_code" class="diagnostic-sample__status" :class="`diagnostic-sample__status--${httpStatusTone(sample.status_code)}`">{{ sample.status_code }}</span>
+                <code class="diagnostic-sample__backend">{{ sample.backend || '-' }}</code>
+              </div>
+              <div class="diagnostic-sample__right">
+                <span v-if="sample.success">{{ sample.latency_ms }} ms</span>
+                <span v-else>{{ sample.error || '失败' }}</span>
+              </div>
             </div>
           </div>
         </div>
@@ -74,7 +92,7 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import BaseModal from './base/BaseModal.vue'
 import { diagnosticStateLabel, diagnosticStateTone } from '../hooks/useDiagnostics'
 
@@ -96,101 +114,238 @@ const title = computed(() => props.kind === 'l4_tcp' ? 'L4 规则诊断' : 'HTTP
 const kindLabel = computed(() => props.kind === 'l4_tcp' ? 'TCP PATH DIAGNOSIS' : 'HTTP PATH DIAGNOSIS')
 const stateLabel = computed(() => diagnosticStateLabel(state.value))
 const tone = computed(() => diagnosticStateTone(state.value))
+const agentLabel = computed(() => props.task?.agent_id || '')
+const isHTTP = computed(() => props.kind === 'http')
+const showSamples = ref(false)
+
+const QUALITY_MAP = {
+  '极佳': 'success',
+  '良好': 'info',
+  '一般': 'warning',
+  '较差': 'danger',
+  '不可用': 'danger'
+}
+
+const qualityLabel = computed(() => {
+  const q = summary.value?.quality
+  if (!q) return '-'
+  // Support both Chinese (new) and English (legacy data) from backend
+  const cn = {
+    excellent: '极佳',
+    good: '良好',
+    fair: '一般',
+    poor: '较差',
+    down: '不可用'
+  }[q]
+  return cn || q || '-'
+})
+
+const qualityTone = computed(() => {
+  return QUALITY_MAP[qualityLabel.value] || 'muted'
+})
+
+const latencyBarPct = computed(() => {
+  if (!summary.value) return 0
+  const min = summary.value.min_latency_ms ?? 0
+  const max = summary.value.max_latency_ms ?? 0
+  const avg = summary.value.avg_latency_ms ?? 0
+  if (max <= min) return 50
+  const pct = ((avg - min) / (max - min)) * 100
+  return Math.max(8, Math.min(92, pct))
+})
 
 function formatPercent(value) {
   if (value == null) return '-'
   return `${Math.round(Number(value) * 100)}%`
 }
+
+function httpStatusTone(code) {
+  if (!code) return 'muted'
+  if (code >= 200 && code < 300) return 'success'
+  if (code >= 300 && code < 400) return 'info'
+  if (code >= 400 && code < 500) return 'warning'
+  if (code >= 500) return 'danger'
+  return 'muted'
+}
 </script>
 
 <style scoped>
-.diagnostic-modal { display: flex; flex-direction: column; gap: 1rem; }
+.diagnostic-modal { display: flex; flex-direction: column; gap: 1.1rem; }
 .diagnostic-modal__hero {
   display: flex;
   justify-content: space-between;
   gap: 1rem;
-  padding: 1rem 1.125rem;
-  border-radius: 20px;
-  background:
-    radial-gradient(circle at top left, rgba(13, 148, 136, 0.12), transparent 55%),
-    linear-gradient(135deg, rgba(15, 23, 42, 0.98), rgba(30, 41, 59, 0.92));
-  color: #f8fafc;
+  padding: 1.1rem 1.25rem;
+  border-radius: 16px;
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-default);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
+  position: relative;
+  overflow: hidden;
 }
-.diagnostic-modal__eyebrow { font-size: 0.72rem; letter-spacing: 0.12em; color: rgba(226, 232, 240, 0.68); }
-.diagnostic-modal__headline { margin: 0.2rem 0 0.35rem; font-size: 1.15rem; }
-.diagnostic-modal__subtitle { margin: 0; font-family: var(--font-mono); font-size: 0.82rem; color: rgba(226, 232, 240, 0.8); word-break: break-all; }
-.diagnostic-modal__state { align-self: flex-start; padding: 0.35rem 0.8rem; border-radius: 999px; font-size: 0.82rem; font-weight: 700; }
-.diagnostic-modal__state--success { background: rgba(16, 185, 129, 0.2); color: #6ee7b7; }
-.diagnostic-modal__state--danger { background: rgba(239, 68, 68, 0.18); color: #fca5a5; }
-.diagnostic-modal__state--info { background: rgba(56, 189, 248, 0.16); color: #7dd3fc; }
-.diagnostic-modal__state--muted { background: rgba(148, 163, 184, 0.16); color: #cbd5e1; }
+.diagnostic-modal__hero::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  background: var(--color-primary);
+  opacity: 0.6;
+}
+.diagnostic-modal__hero-text { min-width: 0; }
+.diagnostic-modal__eyebrow { font-size: 0.7rem; letter-spacing: 0.08em; color: var(--color-text-tertiary); font-weight: 600; }
+.diagnostic-modal__headline { margin: 0.25rem 0 0.3rem; font-size: 1.05rem; font-weight: 700; color: var(--color-text-primary); line-height: 1.35; }
+.diagnostic-modal__subtitle { margin: 0; font-family: var(--font-mono); font-size: 0.8rem; color: var(--color-text-secondary); word-break: break-all; line-height: 1.4; }
+.diagnostic-modal__meta { margin: 0.4rem 0 0; font-size: 0.75rem; color: var(--color-text-tertiary); }
+.diagnostic-modal__state { align-self: flex-start; padding: 0.3rem 0.75rem; border-radius: 999px; font-size: 0.78rem; font-weight: 700; border: 1px solid transparent; }
+.diagnostic-modal__state--success { background: rgba(16, 185, 129, 0.12); color: var(--color-success); border-color: rgba(16, 185, 129, 0.25); }
+.diagnostic-modal__state--danger { background: rgba(239, 68, 68, 0.12); color: var(--color-danger); border-color: rgba(239, 68, 68, 0.25); }
+.diagnostic-modal__state--info { background: rgba(56, 189, 248, 0.12); color: var(--color-primary); border-color: rgba(56, 189, 248, 0.25); }
+.diagnostic-modal__state--muted { background: var(--color-bg-hover); color: var(--color-text-muted); border-color: var(--color-border-subtle); }
 .diagnostic-modal__loading, .diagnostic-modal__error {
   display: flex;
   align-items: center;
   gap: 0.875rem;
   padding: 1rem 1.125rem;
-  border-radius: 18px;
+  border-radius: 14px;
   background: var(--color-bg-subtle);
+  border: 1px solid var(--color-border-subtle);
 }
-.diagnostic-modal__error { color: var(--color-danger); border: 1px solid rgba(239, 68, 68, 0.2); }
+.diagnostic-modal__error { color: var(--color-danger); border-color: rgba(239, 68, 68, 0.25); }
 .diagnostic-modal__pulse {
   width: 14px;
   height: 14px;
   border-radius: 50%;
-  background: #0f766e;
-  box-shadow: 0 0 0 rgba(15, 118, 110, 0.4);
+  background: var(--color-primary);
+  box-shadow: 0 0 0 rgba(13, 148, 136, 0.35);
   animation: diag-pulse 1.5s infinite;
 }
 .diagnostic-modal__loading-title { font-weight: 700; color: var(--color-text-primary); }
 .diagnostic-modal__loading-text { font-size: 0.88rem; color: var(--color-text-secondary); }
 .diagnostic-modal__stats {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-  gap: 0.75rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.7rem;
+}
+@media (min-width: 520px) {
+  .diagnostic-modal__stats {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
 }
 .diagnostic-stat {
-  padding: 0.9rem 1rem;
-  border-radius: 18px;
-  background: linear-gradient(180deg, rgba(248, 250, 252, 0.94), rgba(241, 245, 249, 0.9));
-  border: 1px solid var(--color-border-default);
+  padding: 0.75rem 0.9rem;
+  border-radius: 12px;
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
 }
-.diagnostic-stat__label { display: block; font-size: 0.76rem; color: var(--color-text-tertiary); margin-bottom: 0.35rem; }
-.diagnostic-stat__value { font-size: 1.05rem; color: var(--color-text-primary); }
-.diagnostic-stat__value--caps { text-transform: uppercase; letter-spacing: 0.08em; }
+.diagnostic-stat__label { font-size: 0.72rem; color: var(--color-text-tertiary); font-weight: 500; }
+.diagnostic-stat__value { font-size: 1rem; color: var(--color-text-primary); font-weight: 700; }
+.diagnostic-stat__value--caps { text-transform: uppercase; letter-spacing: 0.06em; font-size: 0.92rem; }
+.diagnostic-stat__value--success { color: var(--color-success); }
+.diagnostic-stat__value--info { color: var(--color-primary); }
+.diagnostic-stat__value--warning { color: var(--color-warning); }
+.diagnostic-stat__value--danger { color: var(--color-danger); }
+.diagnostic-stat__value--muted { color: var(--color-text-muted); }
 .diagnostic-modal__range {
+  padding: 0 0.1rem;
+}
+.latency-bar { display: flex; flex-direction: column; gap: 0.35rem; }
+.latency-bar__track {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--color-bg-hover);
+  overflow: hidden;
+}
+.latency-bar__fill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--color-success), var(--color-primary));
+  transition: width 0.4s ease;
+}
+.latency-bar__labels {
   display: flex;
   justify-content: space-between;
-  gap: 1rem;
-  font-size: 0.82rem;
-  color: var(--color-text-secondary);
+  font-size: 0.78rem;
+  color: var(--color-text-tertiary);
 }
-.diagnostic-modal__section-title { font-weight: 700; color: var(--color-text-primary); margin-bottom: 0.5rem; }
+.diagnostic-modal__section-title { font-weight: 700; color: var(--color-text-primary); margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; }
+.diagnostic-modal__section-title--toggle {
+  width: 100%;
+  background: transparent;
+  border: none;
+  padding: 0.35rem 0;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  border-radius: 8px;
+  transition: background 0.15s ease;
+}
+.diagnostic-modal__section-title--toggle:hover {
+  background: var(--color-bg-hover);
+}
+.diagnostic-modal__toggle { font-size: 0.85rem; color: var(--color-text-tertiary); transition: transform 0.2s ease; margin-left: auto; }
+.diagnostic-modal__toggle--open { transform: rotate(90deg); }
+.diagnostic-modal__sample-count { font-size: 0.72rem; font-weight: 600; color: var(--color-text-tertiary); background: var(--color-bg-hover); padding: 2px 8px; border-radius: 999px; }
 .diagnostic-modal__samples { display: flex; flex-direction: column; }
+.diagnostic-sample-list {
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 12px;
+  padding: 0.4rem 0.5rem;
+  background: var(--color-bg-surface);
+}
+.diagnostic-sample-list::-webkit-scrollbar { width: 6px; }
+.diagnostic-sample-list::-webkit-scrollbar-thumb { background: var(--color-border-default); border-radius: 3px; }
 .diagnostic-sample {
   display: flex;
   justify-content: space-between;
   gap: 1rem;
-  padding: 0.7rem 0.85rem;
-  border-top: 1px solid var(--color-border-subtle);
+  padding: 0.55rem 0.65rem;
+  border-radius: 8px;
+  transition: background 0.12s ease;
 }
-.diagnostic-sample:first-of-type { border-top: none; }
-.diagnostic-sample--failed { color: var(--color-danger); }
+.diagnostic-sample + .diagnostic-sample {
+  margin-top: 1px;
+}
+.diagnostic-sample:hover { background: var(--color-bg-hover); }
+.diagnostic-sample--failed { color: var(--color-danger); background: rgba(239, 68, 68, 0.04); }
+.diagnostic-sample--failed:hover { background: rgba(239, 68, 68, 0.08); }
 .diagnostic-sample__left {
   display: flex;
-  gap: 0.75rem;
+  gap: 0.55rem;
   min-width: 0;
   align-items: center;
 }
-.diagnostic-sample__attempt { font-size: 0.78rem; color: var(--color-text-tertiary); }
+.diagnostic-sample__attempt { font-size: 0.75rem; color: var(--color-text-tertiary); font-family: var(--font-mono); min-width: 2.2ch; text-align: right; }
+.diagnostic-sample__status { font-size: 0.68rem; font-weight: 700; padding: 1px 5px; border-radius: var(--radius-sm); font-family: var(--font-mono); }
+.diagnostic-sample__status--success { background: var(--color-success-50); color: var(--color-success); }
+.diagnostic-sample__status--info { background: rgba(56, 189, 248, 0.12); color: #0ea5e9; }
+.diagnostic-sample__status--warning { background: var(--color-warning-50); color: var(--color-warning); }
+.diagnostic-sample__status--danger { background: var(--color-danger-50); color: var(--color-danger); }
+.diagnostic-sample__status--muted { background: var(--color-bg-hover); color: var(--color-text-muted); }
 .diagnostic-sample__backend {
   font-family: var(--font-mono);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  font-size: 0.8rem;
+  color: var(--color-text-secondary);
 }
+.diagnostic-sample__right {
+  font-size: 0.8rem;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+  font-family: var(--font-mono);
+}
+.diagnostic-sample--failed .diagnostic-sample__right { font-weight: 500; }
 @keyframes diag-pulse {
-  0% { box-shadow: 0 0 0 0 rgba(15, 118, 110, 0.45); }
-  70% { box-shadow: 0 0 0 14px rgba(15, 118, 110, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(15, 118, 110, 0); }
+  0% { box-shadow: 0 0 0 0 rgba(13, 148, 136, 0.35); }
+  70% { box-shadow: 0 0 0 14px rgba(13, 148, 136, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(13, 148, 256, 0); }
 }
 </style>

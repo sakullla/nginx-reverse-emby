@@ -535,7 +535,7 @@ function ensureMockTaskMap(agentId) {
 }
 
 function buildMockDiagnosticResult(kind, ruleId) {
-  const sent = 3
+  const sent = 20
   const failed = ruleId % 3 === 0 ? 1 : 0
   const succeeded = sent - failed
   const avg = 18 + (ruleId % 7) * 9
