@@ -161,6 +161,77 @@ func TestTCPDirectProxy(t *testing.T) {
 	}
 }
 
+func TestTCPProxySupportsIPv6ListenerToIPv4Backend(t *testing.T) {
+	requireIPv6LoopbackL4(t)
+
+	upstreamLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen upstream: %v", err)
+	}
+	defer upstreamLn.Close()
+
+	upstreamPort := upstreamLn.Addr().(*net.TCPAddr).Port
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn, err := upstreamLn.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		buf := make([]byte, 64)
+		for {
+			n, err := conn.Read(buf)
+			if err != nil {
+				return
+			}
+			if _, err := conn.Write(buf[:n]); err != nil {
+				return
+			}
+		}
+	}()
+
+	listenPort := pickFreeTCPPortIPv6(t)
+	rule := model.L4Rule{
+		Protocol:     "tcp",
+		ListenHost:   "::1",
+		ListenPort:   listenPort,
+		UpstreamHost: "127.0.0.1",
+		UpstreamPort: upstreamPort,
+	}
+
+	srv, err := NewServer(context.Background(), []model.L4Rule{rule}, nil, nil)
+	if err != nil {
+		t.Fatalf("failed to start server: %v", err)
+	}
+	defer srv.Close()
+
+	client, err := net.Dial("tcp6", fmt.Sprintf("[::1]:%d", listenPort))
+	if err != nil {
+		t.Fatalf("failed to dial ipv6 proxy listener: %v", err)
+	}
+	defer client.Close()
+
+	payload := []byte("hello ipv6")
+	if _, err := client.Write(payload); err != nil {
+		t.Fatalf("write to proxy: %v", err)
+	}
+
+	reply := make([]byte, len(payload))
+	if _, err := io.ReadFull(client, reply); err != nil {
+		t.Fatalf("read from proxy: %v", err)
+	}
+	if !bytes.Equal(payload, reply) {
+		t.Fatalf("tcp payload mismatch; got %q", reply)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		// allow upstream goroutine to exit naturally
+	}
+}
+
 func TestTCPProxyProtocolSendOnly(t *testing.T) {
 	upstreamLn, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -690,6 +761,48 @@ func TestResolveRelayHopsUsesPublicEndpointAndFallbacks(t *testing.T) {
 	}
 	if got := hops[2].ServerName; got != "listen-fallback.example.test" {
 		t.Fatalf("expected listen host server_name for hop 3, got %q", got)
+	}
+}
+
+func TestResolveRelayHopsFormatsIPv6PublicEndpoint(t *testing.T) {
+	rule := model.L4Rule{
+		Protocol:   "tcp",
+		ListenHost: "127.0.0.1",
+		ListenPort: pickFreeTCPPort(t),
+		Backends: []model.L4Backend{
+			{Host: "127.0.0.1", Port: pickFreeTCPPort(t)},
+		},
+		RelayChain: []int{1},
+	}
+
+	srv := &Server{
+		relayListenersByID: map[int]model.RelayListener{
+			1: {
+				ID:         1,
+				ListenHost: "::",
+				BindHosts:  []string{"::"},
+				ListenPort: 18443,
+				PublicHost: "2001:db8::1",
+				PublicPort: 28443,
+				Enabled:    true,
+				TLSMode:    "pin_only",
+				PinSet:     []model.RelayPin{{Type: "sha256", Value: "pin-1"}},
+			},
+		},
+	}
+
+	hops, err := srv.resolveRelayHops(rule)
+	if err != nil {
+		t.Fatalf("resolveRelayHops returned error: %v", err)
+	}
+	if len(hops) != 1 {
+		t.Fatalf("expected 1 relay hop, got %d", len(hops))
+	}
+	if got := hops[0].Address; got != "[2001:db8::1]:28443" {
+		t.Fatalf("expected bracketed ipv6 relay address, got %q", got)
+	}
+	if got := hops[0].ServerName; got != "2001:db8::1" {
+		t.Fatalf("expected ipv6 server_name without brackets, got %q", got)
 	}
 }
 
@@ -1352,6 +1465,25 @@ func pickFreeTCPPort(t *testing.T) int {
 	}
 	defer ln.Close()
 	return ln.Addr().(*net.TCPAddr).Port
+}
+
+func pickFreeTCPPortIPv6(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		t.Fatalf("failed to reserve ipv6 tcp port: %v", err)
+	}
+	defer ln.Close()
+	return ln.Addr().(*net.TCPAddr).Port
+}
+
+func requireIPv6LoopbackL4(t *testing.T) {
+	t.Helper()
+	ln, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		t.Skipf("ipv6 loopback is unavailable: %v", err)
+	}
+	_ = ln.Close()
 }
 
 func pickFreeUDPPort(t *testing.T) int {

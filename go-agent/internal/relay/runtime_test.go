@@ -233,6 +233,55 @@ func TestNormalizeListenerFallsBackBindHostsFromListenHost(t *testing.T) {
 	}
 }
 
+func TestValidateListenerAcceptsIPv6PublicHost(t *testing.T) {
+	t.Parallel()
+
+	err := ValidateListener(Listener{
+		ID:         1,
+		AgentID:    "agent-a",
+		Name:       "relay-v6",
+		ListenHost: "127.0.0.1",
+		ListenPort: 18443,
+		PublicHost: "2001:db8::1",
+		PublicPort: 28443,
+		Enabled:    true,
+		TLSMode:    "pin_only",
+		PinSet: []model.RelayPin{{
+			Type:  "spki_sha256",
+			Value: "cGlubmVk",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("ValidateListener returned error: %v", err)
+	}
+}
+
+func TestValidateListenerRejectsBracketedIPv6PublicHost(t *testing.T) {
+	t.Parallel()
+
+	err := ValidateListener(Listener{
+		ID:         1,
+		AgentID:    "agent-a",
+		Name:       "relay-v6",
+		ListenHost: "127.0.0.1",
+		ListenPort: 18443,
+		PublicHost: "[2001:db8::1]",
+		PublicPort: 28443,
+		Enabled:    true,
+		TLSMode:    "pin_only",
+		PinSet: []model.RelayPin{{
+			Type:  "spki_sha256",
+			Value: "cGlubmVk",
+		}},
+	})
+	if err == nil {
+		t.Fatal("expected bracketed public_host to be rejected")
+	}
+	if got := err.Error(); got != "public_host must be a valid IP address or hostname" {
+		t.Fatalf("unexpected error: %q", got)
+	}
+}
+
 func TestStartBindsAllConfiguredHosts(t *testing.T) {
 	backendAddr, stopBackend := startTCPEchoServer(t)
 	defer stopBackend()

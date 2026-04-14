@@ -903,6 +903,67 @@ func TestStartServesHTTPRulesOnLocalListener(t *testing.T) {
 	}
 }
 
+func TestStartServesIPv4FrontendToIPv6Backend(t *testing.T) {
+	requireIPv6LoopbackProxy(t)
+
+	backendLn, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		t.Fatalf("failed to listen on ipv6 loopback: %v", err)
+	}
+	defer backendLn.Close()
+
+	backendDone := make(chan struct{})
+	go func() {
+		defer close(backendDone)
+		_ = http.Serve(backendLn, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		}))
+	}()
+
+	backendPort := backendLn.Addr().(*net.TCPAddr).Port
+	port := pickFreePort(t)
+	runtime, err := Start(context.Background(), []model.HTTPRule{{
+		FrontendURL: fmt.Sprintf("http://edge.example.test:%d", port),
+		BackendURL:  fmt.Sprintf("http://[::1]:%d", backendPort),
+	}}, nil, Providers{})
+	if err != nil {
+		t.Fatalf("failed to start runtime: %v", err)
+	}
+	defer runtime.Close()
+
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/healthz", port), nil)
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+	req.Host = fmt.Sprintf("edge.example.test:%d", port)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("runtime request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", resp.StatusCode)
+	}
+}
+
+func TestRuntimeRuleSpecKeepsIPv4WildcardBindingForIPv6FrontendHost(t *testing.T) {
+	spec, err := runtimeRuleSpec(model.HTTPRule{
+		FrontendURL: "http://[::1]:18080",
+		BackendURL:  "http://127.0.0.1:8096",
+	})
+	if err != nil {
+		t.Fatalf("runtimeRuleSpec() error = %v", err)
+	}
+	if spec.address != "0.0.0.0:18080" {
+		t.Fatalf("address = %q", spec.address)
+	}
+	if spec.key != "http:18080" {
+		t.Fatalf("key = %q", spec.key)
+	}
+}
+
 func TestStartRejectsHTTPSFrontendWithoutCertificateBinding(t *testing.T) {
 	_, err := Start(context.Background(), []model.HTTPRule{{
 		FrontendURL: "https://edge.example.test:9443",
@@ -1264,6 +1325,41 @@ func TestResolveRelayHopsUsesPublicEndpointAndFallbacks(t *testing.T) {
 	}
 }
 
+func TestResolveRelayHopsFormatsIPv6PublicEndpoint(t *testing.T) {
+	rule := model.HTTPRule{
+		FrontendURL: "http://edge.example.test",
+		BackendURL:  "http://127.0.0.1:8096",
+		RelayChain:  []int{1},
+	}
+	listeners := []model.RelayListener{
+		{
+			ID:         1,
+			ListenHost: "::",
+			BindHosts:  []string{"::"},
+			ListenPort: 18443,
+			PublicHost: "2001:db8::1",
+			PublicPort: 28443,
+			Enabled:    true,
+			TLSMode:    "pin_only",
+			PinSet:     []model.RelayPin{{Type: "sha256", Value: "pin-1"}},
+		},
+	}
+
+	hops, err := resolveRelayHops(rule, listeners)
+	if err != nil {
+		t.Fatalf("resolveRelayHops returned error: %v", err)
+	}
+	if len(hops) != 1 {
+		t.Fatalf("expected 1 relay hop, got %d", len(hops))
+	}
+	if got := hops[0].Address; got != "[2001:db8::1]:28443" {
+		t.Fatalf("expected bracketed ipv6 relay address, got %q", got)
+	}
+	if got := hops[0].ServerName; got != "2001:db8::1" {
+		t.Fatalf("expected ipv6 server_name without brackets, got %q", got)
+	}
+}
+
 func TestNewTLSListenerAdvertisesHTTP2AndHTTP11Only(t *testing.T) {
 	provider := &testTLSProvider{
 		certificates: map[string]tls.Certificate{
@@ -1331,6 +1427,16 @@ func pickFreePort(t *testing.T) int {
 	defer ln.Close()
 
 	return ln.Addr().(*net.TCPAddr).Port
+}
+
+func requireIPv6LoopbackProxy(t *testing.T) {
+	t.Helper()
+
+	ln, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		t.Skipf("ipv6 loopback is unavailable: %v", err)
+	}
+	_ = ln.Close()
 }
 
 type testTLSProvider struct {

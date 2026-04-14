@@ -610,6 +610,55 @@ func TestManagerApplyIssuesACMECertificateUsingLocalHTTP01(t *testing.T) {
 	}
 }
 
+func TestManagerApplyIssuesDomainACMECertificateUsingIPv6HTTP01Binding(t *testing.T) {
+	t.Parallel()
+
+	issued := mustCreateTLSMaterial(t, certificateSpec{commonName: "acme-v6.example.com"})
+	fake := &fakeACMEIssuer{results: []acmeIssueResult{{CertPEM: issued.CertPEM, KeyPEM: issued.KeyPEM}}}
+	manager := mustNewManager(
+		t,
+		t.TempDir(),
+		WithACMEHTTP01Address("::1", "8080"),
+		withACMEIssuerFactory(func(request acmeIssueRequest) (acmeIssuer, error) {
+			return fake, nil
+		}),
+	)
+
+	err := manager.Apply(context.Background(), nil, []model.ManagedCertificatePolicy{
+		{
+			ID:              52,
+			Domain:          "acme-v6.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			CertificateType: "acme",
+			Usage:           "https",
+		},
+	})
+	if err != nil {
+		t.Fatalf("apply failed: %v", err)
+	}
+
+	if len(fake.requests) != 1 {
+		t.Fatalf("expected one acme issuance request, got %d", len(fake.requests))
+	}
+	if fake.requests[0].ChallengeType != challengeTypeHTTP01 {
+		t.Fatalf("unexpected challenge type: %q", fake.requests[0].ChallengeType)
+	}
+	if fake.requests[0].HTTP01Interface != "::1" {
+		t.Fatalf("unexpected http-01 interface: %q", fake.requests[0].HTTP01Interface)
+	}
+	if fake.requests[0].HTTP01Port != "8080" {
+		t.Fatalf("unexpected http-01 port: %q", fake.requests[0].HTTP01Port)
+	}
+	if fake.requests[0].Scope != "domain" {
+		t.Fatalf("unexpected scope: %q", fake.requests[0].Scope)
+	}
+	if fake.requests[0].Profile != "" {
+		t.Fatalf("unexpected profile for domain certificate: %q", fake.requests[0].Profile)
+	}
+}
+
 func TestManagerApplyIssuesIPACMECertificateUsingShortLivedProfile(t *testing.T) {
 	t.Parallel()
 
