@@ -687,6 +687,157 @@ func TestTCPRelayProxyWithRelayObfsRoundTripsPayload(t *testing.T) {
 	}
 }
 
+func TestTCPRelayProxySupportsIPv6EntryThroughIPv4AndIPv6RelayChainToIPv6Backend(t *testing.T) {
+	requireIPv6LoopbackL4(t)
+
+	backendLn, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		t.Fatalf("failed to listen on ipv6 backend: %v", err)
+	}
+	defer backendLn.Close()
+
+	go func() {
+		for {
+			conn, err := backendLn.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				_, _ = io.Copy(c, c)
+			}(conn)
+		}
+	}()
+
+	relayACert := mustIssueL4RelayCertificate(t, "relay-a.internal.test")
+	relayBCert := mustIssueL4RelayCertificate(t, "relay-b.internal.test")
+	provider := &runtimeL4RelayProvider{
+		serverCertificates: map[int]tls.Certificate{
+			610: relayACert,
+			620: relayBCert,
+		},
+	}
+
+	relayAID := 61
+	relayBID := 62
+	relayACertID := 610
+	relayBCertID := 620
+
+	relayAListener := relay.Listener{
+		ID:            relayAID,
+		AgentID:       "relay-a",
+		Name:          "relay-a-v4",
+		ListenHost:    "127.0.0.1",
+		BindHosts:     []string{"127.0.0.1"},
+		ListenPort:    pickFreeTCPPort(t),
+		PublicHost:    "127.0.0.1",
+		PublicPort:    0,
+		Enabled:       true,
+		CertificateID: &relayACertID,
+		TLSMode:       "pin_only",
+		PinSet: []model.RelayPin{{
+			Type:  "sha256",
+			Value: mustL4RelaySPKIPin(t, relayACert),
+		}},
+	}
+	relayAListener.PublicPort = relayAListener.ListenPort
+
+	relayBListener := relay.Listener{
+		ID:            relayBID,
+		AgentID:       "relay-b",
+		Name:          "relay-b-v6",
+		ListenHost:    "::1",
+		BindHosts:     []string{"::1"},
+		ListenPort:    pickFreeTCPPortIPv6(t),
+		PublicHost:    "::1",
+		PublicPort:    0,
+		Enabled:       true,
+		CertificateID: &relayBCertID,
+		TLSMode:       "pin_only",
+		PinSet: []model.RelayPin{{
+			Type:  "sha256",
+			Value: mustL4RelaySPKIPin(t, relayBCert),
+		}},
+	}
+	relayBListener.PublicPort = relayBListener.ListenPort
+
+	relayServerA, err := relay.Start(context.Background(), []relay.Listener{relayAListener}, provider)
+	if err != nil {
+		t.Fatalf("failed to start ipv4 relay A: %v", err)
+	}
+	defer relayServerA.Close()
+
+	relayServerB, err := relay.Start(context.Background(), []relay.Listener{relayBListener}, provider)
+	if err != nil {
+		t.Fatalf("failed to start ipv6 relay B: %v", err)
+	}
+	defer relayServerB.Close()
+
+	listenPort := pickFreeTCPPortIPv6(t)
+	rule := model.L4Rule{
+		Protocol:     "tcp",
+		ListenHost:   "::1",
+		ListenPort:   listenPort,
+		UpstreamHost: "::1",
+		UpstreamPort: backendLn.Addr().(*net.TCPAddr).Port,
+		RelayChain:   []int{relayAID, relayBID},
+	}
+
+	srv, err := NewServer(context.Background(), []model.L4Rule{rule}, []model.RelayListener{
+		{
+			ID:            relayAListener.ID,
+			AgentID:       relayAListener.AgentID,
+			Name:          relayAListener.Name,
+			ListenHost:    relayAListener.ListenHost,
+			BindHosts:     relayAListener.BindHosts,
+			ListenPort:    relayAListener.ListenPort,
+			PublicHost:    relayAListener.PublicHost,
+			PublicPort:    relayAListener.PublicPort,
+			Enabled:       relayAListener.Enabled,
+			CertificateID: relayAListener.CertificateID,
+			TLSMode:       relayAListener.TLSMode,
+			PinSet:        relayAListener.PinSet,
+		},
+		{
+			ID:            relayBListener.ID,
+			AgentID:       relayBListener.AgentID,
+			Name:          relayBListener.Name,
+			ListenHost:    relayBListener.ListenHost,
+			BindHosts:     relayBListener.BindHosts,
+			ListenPort:    relayBListener.ListenPort,
+			PublicHost:    relayBListener.PublicHost,
+			PublicPort:    relayBListener.PublicPort,
+			Enabled:       relayBListener.Enabled,
+			CertificateID: relayBListener.CertificateID,
+			TLSMode:       relayBListener.TLSMode,
+			PinSet:        relayBListener.PinSet,
+		},
+	}, provider)
+	if err != nil {
+		t.Fatalf("failed to start ipv6 entry relay-backed l4 server: %v", err)
+	}
+	defer srv.Close()
+
+	client, err := net.Dial("tcp6", fmt.Sprintf("[::1]:%d", listenPort))
+	if err != nil {
+		t.Fatalf("failed to dial ipv6 entry listener: %v", err)
+	}
+	defer client.Close()
+
+	payload := []byte("v6-entry-v4-relay-v6-relay-v6-backend")
+	if _, err := client.Write(payload); err != nil {
+		t.Fatalf("write to mixed-family relay chain: %v", err)
+	}
+
+	reply := make([]byte, len(payload))
+	if _, err := io.ReadFull(client, reply); err != nil {
+		t.Fatalf("read from mixed-family relay chain: %v", err)
+	}
+	if !bytes.Equal(payload, reply) {
+		t.Fatalf("mixed-family relay chain payload mismatch; got %q", reply)
+	}
+}
+
 func TestResolveRelayHopsUsesPublicEndpointAndFallbacks(t *testing.T) {
 	rule := model.L4Rule{
 		Protocol:   "tcp",
