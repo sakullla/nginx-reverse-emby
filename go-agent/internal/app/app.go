@@ -14,6 +14,7 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/certs"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/diagnostics"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	platformlinux "github.com/sakullla/nginx-reverse-emby/go-agent/internal/platform/linux"
 	agentruntime "github.com/sakullla/nginx-reverse-emby/go-agent/internal/runtime"
@@ -135,6 +136,11 @@ func New(cfg Config) (*App, error) {
 			Version:       cfg.CurrentVersion,
 			Capabilities:  advertisedCapabilities(cfg),
 			ReconnectWait: time.Second,
+			Handler: agenttask.NewDiagnosticHandler(
+				st,
+				diagnostics.NewHTTPProber(diagnostics.HTTPProberConfig{}),
+				diagnostics.NewTCPProber(diagnostics.TCPProberConfig{}),
+			),
 		}),
 	), nil
 }
