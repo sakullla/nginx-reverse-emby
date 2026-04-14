@@ -1158,6 +1158,113 @@ func TestUDPRelayOverTLSTCPUOT(t *testing.T) {
 	}
 }
 
+func TestUDPRelayOverTLSTCPWithRelayRuntime(t *testing.T) {
+	upstreamAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("resolve upstream addr: %v", err)
+	}
+	upstreamConn, err := net.ListenUDP("udp", upstreamAddr)
+	if err != nil {
+		t.Fatalf("listen udp upstream: %v", err)
+	}
+	defer upstreamConn.Close()
+
+	go func() {
+		buf := make([]byte, 64)
+		for {
+			n, addr, err := upstreamConn.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			if _, err := upstreamConn.WriteToUDP(buf[:n], addr); err != nil {
+				return
+			}
+		}
+	}()
+
+	relayCert := mustIssueL4RelayCertificate(t, "relay.internal.test")
+	provider := &runtimeL4RelayProvider{
+		serverCertificates: map[int]tls.Certificate{
+			510: relayCert,
+		},
+	}
+	certificateID := 510
+	relayListener := relay.Listener{
+		ID:            51,
+		AgentID:       "relay-agent",
+		Name:          "relay-tls-hop",
+		ListenHost:    "127.0.0.1",
+		BindHosts:     []string{"127.0.0.1"},
+		ListenPort:    pickFreeTCPPort(t),
+		PublicHost:    "127.0.0.1",
+		PublicPort:    0,
+		Enabled:       true,
+		CertificateID: &certificateID,
+		TLSMode:       "pin_only",
+		PinSet: []model.RelayPin{{
+			Type:  "sha256",
+			Value: mustL4RelaySPKIPin(t, relayCert),
+		}},
+	}
+	relayServer, err := relay.Start(context.Background(), []relay.Listener{relayListener}, provider)
+	if err != nil {
+		t.Fatalf("failed to start tls relay runtime: %v", err)
+	}
+	defer relayServer.Close()
+
+	listenPort := pickFreeUDPPort(t)
+	rule := model.L4Rule{
+		Protocol:     "udp",
+		ListenHost:   "127.0.0.1",
+		ListenPort:   listenPort,
+		UpstreamHost: "127.0.0.1",
+		UpstreamPort: upstreamConn.LocalAddr().(*net.UDPAddr).Port,
+		RelayChain:   []int{relayListener.ID},
+	}
+
+	srv, err := NewServer(context.Background(), []model.L4Rule{rule}, []model.RelayListener{{
+		ID:            relayListener.ID,
+		AgentID:       relayListener.AgentID,
+		Name:          relayListener.Name,
+		ListenHost:    relayListener.ListenHost,
+		BindHosts:     relayListener.BindHosts,
+		ListenPort:    relayListener.ListenPort,
+		PublicHost:    relayListener.PublicHost,
+		PublicPort:    relayListener.PublicPort,
+		Enabled:       relayListener.Enabled,
+		CertificateID: relayListener.CertificateID,
+		TLSMode:       relayListener.TLSMode,
+		PinSet:        relayListener.PinSet,
+	}}, provider)
+	if err != nil {
+		t.Fatalf("failed to start tls relay-backed udp server: %v", err)
+	}
+	defer srv.Close()
+
+	client, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: listenPort})
+	if err != nil {
+		t.Fatalf("dial udp proxy: %v", err)
+	}
+	defer client.Close()
+
+	payload := []byte("udp-over-tls-runtime")
+	if _, err := client.Write(payload); err != nil {
+		t.Fatalf("write udp payload: %v", err)
+	}
+
+	reply := make([]byte, len(payload))
+	if err := client.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set udp read deadline: %v", err)
+	}
+	n, err := client.Read(reply)
+	if err != nil {
+		t.Fatalf("read udp reply: %v", err)
+	}
+	if !bytes.Equal(payload, reply[:n]) {
+		t.Fatalf("udp payload mismatch; got %q", reply[:n])
+	}
+}
+
 func TestUDPRelayOverQUIC(t *testing.T) {
 	upstreamAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
 	if err != nil {

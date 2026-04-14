@@ -367,6 +367,28 @@ func TestOneHopRelayDataFlow(t *testing.T) {
 	assertRoundTrip(t, conn, []byte("one-hop"))
 }
 
+func TestOneHopRelayUDPDataFlow(t *testing.T) {
+	backendAddr, stopBackend := startUDPEchoServer(t)
+	defer stopBackend()
+
+	provider := newFakeTLSMaterialProvider()
+	listener, hop := newRelayEndpoint(t, provider, 1, "relay-one-udp", "pin_only", true, false)
+
+	server, err := Start(context.Background(), []Listener{listener}, provider)
+	if err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+	defer server.Close()
+
+	conn, err := Dial(context.Background(), "udp", backendAddr, []Hop{hop}, provider)
+	if err != nil {
+		t.Fatalf("Dial returned error: %v", err)
+	}
+	defer conn.Close()
+
+	assertUDPRelayRoundTrip(t, conn, []byte("one-hop-udp"))
+}
+
 func TestTLSTCPSessionPoolReusesOuterConnection(t *testing.T) {
 	backendAddr, stopBackend := startTCPEchoServer(t)
 	defer stopBackend()
@@ -393,6 +415,45 @@ func TestTLSTCPSessionPoolReusesOuterConnection(t *testing.T) {
 		t.Fatalf("Dial(B) error = %v", err)
 	}
 	defer connB.Close()
+
+	stats := currentTLSTCPSessionPoolStats()
+	if stats.ActiveSessions != 1 {
+		t.Fatalf("ActiveSessions = %d, want 1", stats.ActiveSessions)
+	}
+	if stats.LogicalStreams < 2 {
+		t.Fatalf("LogicalStreams = %d, want at least 2", stats.LogicalStreams)
+	}
+}
+
+func TestTLSTCPSessionPoolReusesOuterConnectionForUDPStreams(t *testing.T) {
+	backendAddr, stopBackend := startUDPEchoServer(t)
+	defer stopBackend()
+
+	provider := newFakeTLSMaterialProvider()
+	listener, hop := newRelayEndpoint(t, provider, 1, "relay-mux-udp", "pin_only", true, false)
+
+	server, err := Start(context.Background(), []Listener{listener}, provider)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer server.Close()
+
+	resetTLSTCPSessionPoolForTest()
+
+	connA, err := Dial(context.Background(), "udp", backendAddr, []Hop{hop}, provider)
+	if err != nil {
+		t.Fatalf("Dial(A) error = %v", err)
+	}
+	defer connA.Close()
+
+	connB, err := Dial(context.Background(), "udp", backendAddr, []Hop{hop}, provider)
+	if err != nil {
+		t.Fatalf("Dial(B) error = %v", err)
+	}
+	defer connB.Close()
+
+	assertUDPRelayRoundTrip(t, connA, []byte("udp-mux-a"))
+	assertUDPRelayRoundTrip(t, connB, []byte("udp-mux-b"))
 
 	stats := currentTLSTCPSessionPoolStats()
 	if stats.ActiveSessions != 1 {
@@ -457,6 +518,35 @@ func TestMultiHopRelayDataFlow(t *testing.T) {
 	defer conn.Close()
 
 	assertRoundTrip(t, conn, []byte("multi-hop"))
+}
+
+func TestMultiHopRelayUDPDataFlow(t *testing.T) {
+	backendAddr, stopBackend := startUDPEchoServer(t)
+	defer stopBackend()
+
+	provider := newFakeTLSMaterialProvider()
+	listenerA, hopA := newRelayEndpoint(t, provider, 1, "relay-a-udp", "pin_only", true, false)
+	listenerB, hopB := newRelayEndpoint(t, provider, 2, "relay-b-udp", "pin_only", true, false)
+
+	serverA, err := Start(context.Background(), []Listener{listenerA}, provider)
+	if err != nil {
+		t.Fatalf("failed to start first relay: %v", err)
+	}
+	defer serverA.Close()
+
+	serverB, err := Start(context.Background(), []Listener{listenerB}, provider)
+	if err != nil {
+		t.Fatalf("failed to start second relay: %v", err)
+	}
+	defer serverB.Close()
+
+	conn, err := Dial(context.Background(), "udp", backendAddr, []Hop{hopA, hopB}, provider)
+	if err != nil {
+		t.Fatalf("Dial returned error: %v", err)
+	}
+	defer conn.Close()
+
+	assertUDPRelayRoundTrip(t, conn, []byte("multi-hop-udp"))
 }
 
 func TestMultiHopRelayDataFlowWithEarlyWindowMask(t *testing.T) {
@@ -1163,6 +1253,39 @@ func startTCPEchoServer(t *testing.T) (string, func()) {
 	}
 }
 
+func startUDPEchoServer(t *testing.T) (string, func()) {
+	t.Helper()
+
+	addr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to resolve udp addr: %v", err)
+	}
+	conn, err := net.ListenUDP("udp", addr)
+	if err != nil {
+		t.Fatalf("failed to listen udp echo server: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		buf := make([]byte, 64*1024)
+		for {
+			n, peer, err := conn.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			if _, err := conn.WriteToUDP(buf[:n], peer); err != nil {
+				return
+			}
+		}
+	}()
+
+	return conn.LocalAddr().String(), func() {
+		_ = conn.Close()
+		<-done
+	}
+}
+
 func assertRoundTrip(t *testing.T, conn net.Conn, payload []byte) {
 	t.Helper()
 
@@ -1177,6 +1300,22 @@ func assertRoundTrip(t *testing.T, conn net.Conn, payload []byte) {
 
 	if !bytes.Equal(reply, payload) {
 		t.Fatalf("payload mismatch: got %q want %q", reply, payload)
+	}
+}
+
+func assertUDPRelayRoundTrip(t *testing.T, conn net.Conn, payload []byte) {
+	t.Helper()
+
+	if err := WriteUOTPacket(conn, payload); err != nil {
+		t.Fatalf("failed to write udp payload: %v", err)
+	}
+
+	reply, err := ReadUOTPacket(conn)
+	if err != nil {
+		t.Fatalf("failed to read udp payload: %v", err)
+	}
+	if !bytes.Equal(reply, payload) {
+		t.Fatalf("udp payload mismatch: got %q want %q", reply, payload)
 	}
 }
 

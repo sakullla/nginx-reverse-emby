@@ -487,17 +487,19 @@ func (a *App) applyRelayListeners(ctx context.Context, snapshot Snapshot) error 
 
 func (a *App) snapshotActivator() agentruntime.Activator {
 	handlers := a.snapshotActivationHandlers()
-	coreActivator := agentruntime.NewSnapshotActivator(agentruntime.SnapshotActivationHandlers{
+	certActivator := agentruntime.NewSnapshotActivator(agentruntime.SnapshotActivationHandlers{
 		ActivateManagedCertificates: handlers.ActivateManagedCertificates,
-		ActivateHTTPRules:           handlers.ActivateHTTPRules,
-		ActivateL4Rules:             handlers.ActivateL4Rules,
+	})
+	rulesActivator := agentruntime.NewSnapshotActivator(agentruntime.SnapshotActivationHandlers{
+		ActivateHTTPRules: handlers.ActivateHTTPRules,
+		ActivateL4Rules:   handlers.ActivateL4Rules,
 	})
 	relayActivator := agentruntime.NewSnapshotActivator(agentruntime.SnapshotActivationHandlers{
 		ActivateRelayListeners: handlers.ActivateRelayListeners,
 	})
 
 	return func(ctx context.Context, previous, next model.Snapshot) error {
-		if err := coreActivator(ctx, previous, next); err != nil {
+		if err := certActivator(ctx, previous, next); err != nil {
 			return err
 		}
 
@@ -506,7 +508,11 @@ func (a *App) snapshotActivator() agentruntime.Activator {
 		localNext := next
 		localNext.RelayListeners = localRelayListeners(next.RelayListeners, a.cfg.AgentID, a.cfg.AgentName)
 
-		return relayActivator(ctx, localPrevious, localNext)
+		if err := relayActivator(ctx, localPrevious, localNext); err != nil {
+			return err
+		}
+
+		return rulesActivator(ctx, previous, next)
 	}
 }
 
