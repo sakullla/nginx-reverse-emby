@@ -35,6 +35,17 @@ func withFrameDeadline(conn net.Conn, fn func() error) error {
 	return withConnDeadline(conn, relayFrameTimeout, fn)
 }
 
+func withWriteDeadline(conn net.Conn, timeout time.Duration, fn func() error) error {
+	if timeout <= 0 {
+		return fn()
+	}
+	if conn != nil {
+		_ = conn.SetWriteDeadline(time.Now().Add(timeout))
+		defer conn.SetWriteDeadline(time.Time{})
+	}
+	return fn()
+}
+
 func withConnDeadline(conn net.Conn, timeout time.Duration, fn func() error) error {
 	if timeout <= 0 {
 		return fn()

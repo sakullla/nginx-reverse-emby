@@ -17,12 +17,55 @@ export function parsePublicEndpoint(value) {
     }
   }
 
+  if (input.startsWith('[')) {
+    const closing = input.indexOf(']')
+    if (closing <= 1) {
+      return {
+        publicHost: '',
+        publicPort: null,
+        isValid: false
+      }
+    }
+
+    const host = input.slice(1, closing).trim()
+    const rest = input.slice(closing + 1).trim()
+    if (!rest) {
+      return {
+        publicHost: host,
+        publicPort: null,
+        isValid: Boolean(host)
+      }
+    }
+    if (!rest.startsWith(':')) {
+      return {
+        publicHost: '',
+        publicPort: null,
+        isValid: false
+      }
+    }
+
+    const port = normalizePort(rest.slice(1))
+    return {
+      publicHost: host,
+      publicPort: port,
+      isValid: Boolean(host) && port != null
+    }
+  }
+
   const parts = input.split(':')
   if (parts.length === 1) {
     return {
       publicHost: parts[0].trim(),
       publicPort: null,
       isValid: Boolean(parts[0].trim())
+    }
+  }
+
+  if (parts.length > 2) {
+    return {
+      publicHost: input,
+      publicPort: null,
+      isValid: true
     }
   }
 
@@ -48,6 +91,7 @@ export function buildPublicEndpoint(state = {}) {
   const port = normalizePort(state?.public_port)
   if (!host) return ''
   if (port == null) return host
+  if (host.includes(':')) return `[${host}]:${port}`
   return `${host}:${port}`
 }
 

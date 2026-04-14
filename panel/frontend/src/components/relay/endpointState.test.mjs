@@ -31,10 +31,35 @@ test('parsePublicEndpoint supports host:port', () => {
   })
 })
 
+test('parsePublicEndpoint supports bracketed ipv6:port', () => {
+  assert.deepEqual(parsePublicEndpoint(' [2001:db8::1]:7443 '), {
+    publicHost: '2001:db8::1',
+    publicPort: 7443,
+    isValid: true
+  })
+})
+
+test('parsePublicEndpoint supports ipv6 host without port', () => {
+  assert.deepEqual(parsePublicEndpoint('2001:db8::1'), {
+    publicHost: '2001:db8::1',
+    publicPort: null,
+    isValid: true
+  })
+})
+
+test('parsePublicEndpoint rejects malformed bracketed ipv6 endpoint', () => {
+  assert.deepEqual(parsePublicEndpoint('[2001:db8::1]7443'), {
+    publicHost: '',
+    publicPort: null,
+    isValid: false
+  })
+})
+
 test('buildPublicEndpoint builds empty / host / host:port', () => {
   assert.equal(buildPublicEndpoint({ public_host: '', public_port: null }), '')
   assert.equal(buildPublicEndpoint({ public_host: 'relay.example.com', public_port: null }), 'relay.example.com')
   assert.equal(buildPublicEndpoint({ public_host: 'relay.example.com', public_port: 7443 }), 'relay.example.com:7443')
+  assert.equal(buildPublicEndpoint({ public_host: '2001:db8::1', public_port: 7443 }), '[2001:db8::1]:7443')
 })
 
 test('normalizeBindHosts trims, removes empty rows, and deduplicates', () => {

@@ -11,7 +11,6 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -143,6 +142,77 @@ func TestTCPDirectProxy(t *testing.T) {
 	defer client.Close()
 
 	payload := []byte("hello world")
+	if _, err := client.Write(payload); err != nil {
+		t.Fatalf("write to proxy: %v", err)
+	}
+
+	reply := make([]byte, len(payload))
+	if _, err := io.ReadFull(client, reply); err != nil {
+		t.Fatalf("read from proxy: %v", err)
+	}
+	if !bytes.Equal(payload, reply) {
+		t.Fatalf("tcp payload mismatch; got %q", reply)
+	}
+
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		// allow upstream goroutine to exit naturally
+	}
+}
+
+func TestTCPProxySupportsIPv6ListenerToIPv4Backend(t *testing.T) {
+	requireIPv6LoopbackL4(t)
+
+	upstreamLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen upstream: %v", err)
+	}
+	defer upstreamLn.Close()
+
+	upstreamPort := upstreamLn.Addr().(*net.TCPAddr).Port
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn, err := upstreamLn.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		buf := make([]byte, 64)
+		for {
+			n, err := conn.Read(buf)
+			if err != nil {
+				return
+			}
+			if _, err := conn.Write(buf[:n]); err != nil {
+				return
+			}
+		}
+	}()
+
+	listenPort := pickFreeTCPPortIPv6(t)
+	rule := model.L4Rule{
+		Protocol:     "tcp",
+		ListenHost:   "::1",
+		ListenPort:   listenPort,
+		UpstreamHost: "127.0.0.1",
+		UpstreamPort: upstreamPort,
+	}
+
+	srv, err := NewServer(context.Background(), []model.L4Rule{rule}, nil, nil)
+	if err != nil {
+		t.Fatalf("failed to start server: %v", err)
+	}
+	defer srv.Close()
+
+	client, err := net.Dial("tcp6", fmt.Sprintf("[::1]:%d", listenPort))
+	if err != nil {
+		t.Fatalf("failed to dial ipv6 proxy listener: %v", err)
+	}
+	defer client.Close()
+
+	payload := []byte("hello ipv6")
 	if _, err := client.Write(payload); err != nil {
 		t.Fatalf("write to proxy: %v", err)
 	}
@@ -501,6 +571,7 @@ func TestTCPRelayProxyPassesObfsTransportMode(t *testing.T) {
 		ListenPort: relayListenPort,
 		PublicHost: "127.0.0.1",
 		PublicPort: relayPublicPort,
+		ObfsMode:   relay.RelayObfsModeEarlyWindowV2,
 		Enabled:    true,
 		TLSMode:    "pin_only",
 		PinSet: []model.RelayPin{{
@@ -616,6 +687,157 @@ func TestTCPRelayProxyWithRelayObfsRoundTripsPayload(t *testing.T) {
 	}
 }
 
+func TestTCPRelayProxySupportsIPv6EntryThroughIPv4AndIPv6RelayChainToIPv6Backend(t *testing.T) {
+	requireIPv6LoopbackL4(t)
+
+	backendLn, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		t.Fatalf("failed to listen on ipv6 backend: %v", err)
+	}
+	defer backendLn.Close()
+
+	go func() {
+		for {
+			conn, err := backendLn.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				_, _ = io.Copy(c, c)
+			}(conn)
+		}
+	}()
+
+	relayACert := mustIssueL4RelayCertificate(t, "relay-a.internal.test")
+	relayBCert := mustIssueL4RelayCertificate(t, "relay-b.internal.test")
+	provider := &runtimeL4RelayProvider{
+		serverCertificates: map[int]tls.Certificate{
+			610: relayACert,
+			620: relayBCert,
+		},
+	}
+
+	relayAID := 61
+	relayBID := 62
+	relayACertID := 610
+	relayBCertID := 620
+
+	relayAListener := relay.Listener{
+		ID:            relayAID,
+		AgentID:       "relay-a",
+		Name:          "relay-a-v4",
+		ListenHost:    "127.0.0.1",
+		BindHosts:     []string{"127.0.0.1"},
+		ListenPort:    pickFreeTCPPort(t),
+		PublicHost:    "127.0.0.1",
+		PublicPort:    0,
+		Enabled:       true,
+		CertificateID: &relayACertID,
+		TLSMode:       "pin_only",
+		PinSet: []model.RelayPin{{
+			Type:  "sha256",
+			Value: mustL4RelaySPKIPin(t, relayACert),
+		}},
+	}
+	relayAListener.PublicPort = relayAListener.ListenPort
+
+	relayBListener := relay.Listener{
+		ID:            relayBID,
+		AgentID:       "relay-b",
+		Name:          "relay-b-v6",
+		ListenHost:    "::1",
+		BindHosts:     []string{"::1"},
+		ListenPort:    pickFreeTCPPortIPv6(t),
+		PublicHost:    "::1",
+		PublicPort:    0,
+		Enabled:       true,
+		CertificateID: &relayBCertID,
+		TLSMode:       "pin_only",
+		PinSet: []model.RelayPin{{
+			Type:  "sha256",
+			Value: mustL4RelaySPKIPin(t, relayBCert),
+		}},
+	}
+	relayBListener.PublicPort = relayBListener.ListenPort
+
+	relayServerA, err := relay.Start(context.Background(), []relay.Listener{relayAListener}, provider)
+	if err != nil {
+		t.Fatalf("failed to start ipv4 relay A: %v", err)
+	}
+	defer relayServerA.Close()
+
+	relayServerB, err := relay.Start(context.Background(), []relay.Listener{relayBListener}, provider)
+	if err != nil {
+		t.Fatalf("failed to start ipv6 relay B: %v", err)
+	}
+	defer relayServerB.Close()
+
+	listenPort := pickFreeTCPPortIPv6(t)
+	rule := model.L4Rule{
+		Protocol:     "tcp",
+		ListenHost:   "::1",
+		ListenPort:   listenPort,
+		UpstreamHost: "::1",
+		UpstreamPort: backendLn.Addr().(*net.TCPAddr).Port,
+		RelayChain:   []int{relayAID, relayBID},
+	}
+
+	srv, err := NewServer(context.Background(), []model.L4Rule{rule}, []model.RelayListener{
+		{
+			ID:            relayAListener.ID,
+			AgentID:       relayAListener.AgentID,
+			Name:          relayAListener.Name,
+			ListenHost:    relayAListener.ListenHost,
+			BindHosts:     relayAListener.BindHosts,
+			ListenPort:    relayAListener.ListenPort,
+			PublicHost:    relayAListener.PublicHost,
+			PublicPort:    relayAListener.PublicPort,
+			Enabled:       relayAListener.Enabled,
+			CertificateID: relayAListener.CertificateID,
+			TLSMode:       relayAListener.TLSMode,
+			PinSet:        relayAListener.PinSet,
+		},
+		{
+			ID:            relayBListener.ID,
+			AgentID:       relayBListener.AgentID,
+			Name:          relayBListener.Name,
+			ListenHost:    relayBListener.ListenHost,
+			BindHosts:     relayBListener.BindHosts,
+			ListenPort:    relayBListener.ListenPort,
+			PublicHost:    relayBListener.PublicHost,
+			PublicPort:    relayBListener.PublicPort,
+			Enabled:       relayBListener.Enabled,
+			CertificateID: relayBListener.CertificateID,
+			TLSMode:       relayBListener.TLSMode,
+			PinSet:        relayBListener.PinSet,
+		},
+	}, provider)
+	if err != nil {
+		t.Fatalf("failed to start ipv6 entry relay-backed l4 server: %v", err)
+	}
+	defer srv.Close()
+
+	client, err := net.Dial("tcp6", fmt.Sprintf("[::1]:%d", listenPort))
+	if err != nil {
+		t.Fatalf("failed to dial ipv6 entry listener: %v", err)
+	}
+	defer client.Close()
+
+	payload := []byte("v6-entry-v4-relay-v6-relay-v6-backend")
+	if _, err := client.Write(payload); err != nil {
+		t.Fatalf("write to mixed-family relay chain: %v", err)
+	}
+
+	reply := make([]byte, len(payload))
+	if _, err := io.ReadFull(client, reply); err != nil {
+		t.Fatalf("read from mixed-family relay chain: %v", err)
+	}
+	if !bytes.Equal(payload, reply) {
+		t.Fatalf("mixed-family relay chain payload mismatch; got %q", reply)
+	}
+}
+
 func TestResolveRelayHopsUsesPublicEndpointAndFallbacks(t *testing.T) {
 	rule := model.L4Rule{
 		Protocol:   "tcp",
@@ -690,6 +912,48 @@ func TestResolveRelayHopsUsesPublicEndpointAndFallbacks(t *testing.T) {
 	}
 	if got := hops[2].ServerName; got != "listen-fallback.example.test" {
 		t.Fatalf("expected listen host server_name for hop 3, got %q", got)
+	}
+}
+
+func TestResolveRelayHopsFormatsIPv6PublicEndpoint(t *testing.T) {
+	rule := model.L4Rule{
+		Protocol:   "tcp",
+		ListenHost: "127.0.0.1",
+		ListenPort: pickFreeTCPPort(t),
+		Backends: []model.L4Backend{
+			{Host: "127.0.0.1", Port: pickFreeTCPPort(t)},
+		},
+		RelayChain: []int{1},
+	}
+
+	srv := &Server{
+		relayListenersByID: map[int]model.RelayListener{
+			1: {
+				ID:         1,
+				ListenHost: "::",
+				BindHosts:  []string{"::"},
+				ListenPort: 18443,
+				PublicHost: "2001:db8::1",
+				PublicPort: 28443,
+				Enabled:    true,
+				TLSMode:    "pin_only",
+				PinSet:     []model.RelayPin{{Type: "sha256", Value: "pin-1"}},
+			},
+		},
+	}
+
+	hops, err := srv.resolveRelayHops(rule)
+	if err != nil {
+		t.Fatalf("resolveRelayHops returned error: %v", err)
+	}
+	if len(hops) != 1 {
+		t.Fatalf("expected 1 relay hop, got %d", len(hops))
+	}
+	if got := hops[0].Address; got != "[2001:db8::1]:28443" {
+		t.Fatalf("expected bracketed ipv6 relay address, got %q", got)
+	}
+	if got := hops[0].ServerName; got != "2001:db8::1" {
+		t.Fatalf("expected ipv6 server_name without brackets, got %q", got)
 	}
 }
 
@@ -1354,6 +1618,25 @@ func pickFreeTCPPort(t *testing.T) int {
 	return ln.Addr().(*net.TCPAddr).Port
 }
 
+func pickFreeTCPPortIPv6(t *testing.T) int {
+	t.Helper()
+	ln, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		t.Fatalf("failed to reserve ipv6 tcp port: %v", err)
+	}
+	defer ln.Close()
+	return ln.Addr().(*net.TCPAddr).Port
+}
+
+func requireIPv6LoopbackL4(t *testing.T) {
+	t.Helper()
+	ln, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		t.Skipf("ipv6 loopback is unavailable: %v", err)
+	}
+	_ = ln.Close()
+}
+
 func pickFreeUDPPort(t *testing.T) int {
 	t.Helper()
 	ln, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
@@ -1397,6 +1680,27 @@ type l4RelayTestRequest struct {
 	Chain   []relay.Hop `json:"chain,omitempty"`
 }
 
+type l4RelayTestOpenFrame struct {
+	Kind   string      `json:"kind"`
+	Target string      `json:"target"`
+	Chain  []relay.Hop `json:"chain,omitempty"`
+}
+
+type l4RelayTestMuxFrame struct {
+	Version  byte
+	Type     byte
+	Flags    byte
+	StreamID uint32
+	Payload  []byte
+}
+
+type l4RelayTestMuxConn struct {
+	conn     net.Conn
+	streamID uint32
+	readBuf  []byte
+	readEOF  bool
+}
+
 func startL4RelayServer(
 	t *testing.T,
 	address string,
@@ -1421,29 +1725,29 @@ func startL4RelayServer(
 		if err != nil {
 			return
 		}
+		defer conn.Close()
 
-		request, err := readL4RelayTestRequest(conn)
+		relayConn, request, err := acceptL4RelayTestConn(conn, obfsMode)
 		if err != nil {
-			_ = conn.Close()
 			return
 		}
 		requests <- request
-		if err := writeL4RelayTestResponse(conn, map[string]any{"ok": true}); err != nil {
-			_ = conn.Close()
+		if err := writeL4RelayTestResponse(relayConn, map[string]any{"ok": true}); err != nil {
 			return
 		}
 
-		dataConn := net.Conn(conn)
-		if obfsMode == relay.RelayObfsModeEarlyWindowV2 {
-			dataConn = relay.WrapConnWithEarlyWindowMask(conn)
-		}
-		defer dataConn.Close()
+		dataConn := net.Conn(relayConn)
+		_ = dataConn.SetReadDeadline(time.Now().Add(2 * time.Second))
 
 		buf := make([]byte, 1024)
 		n, err := dataConn.Read(buf)
 		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				return
+			}
 			return
 		}
+		_ = dataConn.SetReadDeadline(time.Time{})
 		_, _ = dataConn.Write(buf[:n])
 	}()
 
@@ -1473,23 +1777,23 @@ func startL4UDPRelayServer(t *testing.T, address string, cert tls.Certificate) f
 		}
 		defer conn.Close()
 
-		request, err := readL4RelayTestRequest(conn)
+		relayConn, request, err := acceptL4RelayTestConn(conn, relay.RelayObfsModeOff)
 		if err != nil {
 			return
 		}
 		if request.Network != "udp" {
 			return
 		}
-		if err := writeL4RelayTestResponse(conn, map[string]any{"ok": true}); err != nil {
+		if err := writeL4RelayTestResponse(relayConn, map[string]any{"ok": true}); err != nil {
 			return
 		}
 
 		for {
-			payload, err := relay.ReadUOTPacket(conn)
+			payload, err := relay.ReadUOTPacket(relayConn)
 			if err != nil {
 				return
 			}
-			if err := relay.WriteUOTPacket(conn, payload); err != nil {
+			if err := relay.WriteUOTPacket(relayConn, payload); err != nil {
 				return
 			}
 		}
@@ -1501,16 +1805,37 @@ func startL4UDPRelayServer(t *testing.T, address string, cert tls.Certificate) f
 	}
 }
 
-func readL4RelayTestRequest(conn net.Conn) (l4RelayTestRequest, error) {
-	payload, err := readL4RelayTestFrame(conn)
+func acceptL4RelayTestConn(conn net.Conn, obfsMode string) (net.Conn, l4RelayTestRequest, error) {
+	framedConn := net.Conn(conn)
+	if obfsMode == relay.RelayObfsModeEarlyWindowV2 {
+		framedConn = relay.WrapConnWithEarlyWindowMask(framedConn)
+	}
+
+	request, streamID, err := readL4RelayTestRequest(framedConn)
 	if err != nil {
-		return l4RelayTestRequest{}, err
+		return nil, l4RelayTestRequest{}, err
 	}
-	var request l4RelayTestRequest
-	if err := json.Unmarshal(payload, &request); err != nil {
-		return l4RelayTestRequest{}, err
+	return &l4RelayTestMuxConn{conn: framedConn, streamID: streamID}, request, nil
+}
+
+func readL4RelayTestRequest(conn net.Conn) (l4RelayTestRequest, uint32, error) {
+	frame, err := readL4RelayTestFrame(conn)
+	if err != nil {
+		return l4RelayTestRequest{}, 0, err
 	}
-	return request, nil
+	if frame.Type != 1 {
+		return l4RelayTestRequest{}, 0, fmt.Errorf("unexpected relay mux frame type %d", frame.Type)
+	}
+
+	var request l4RelayTestOpenFrame
+	if err := json.Unmarshal(frame.Payload, &request); err != nil {
+		return l4RelayTestRequest{}, 0, err
+	}
+	return l4RelayTestRequest{
+		Network: request.Kind,
+		Target:  request.Target,
+		Chain:   request.Chain,
+	}, frame.StreamID, nil
 }
 
 func writeL4RelayTestResponse(conn net.Conn, payload any) error {
@@ -1518,30 +1843,142 @@ func writeL4RelayTestResponse(conn net.Conn, payload any) error {
 	if err != nil {
 		return err
 	}
-	return writeL4RelayTestFrame(conn, data)
+	return writeL4RelayTestFrame(conn, l4RelayTestMuxFrame{
+		Version:  1,
+		Type:     2,
+		StreamID: l4RelayTestConnStreamID(conn),
+		Payload:  data,
+	})
 }
 
-func readL4RelayTestFrame(conn net.Conn) ([]byte, error) {
-	var header [4]byte
+func readL4RelayTestFrame(conn net.Conn) (l4RelayTestMuxFrame, error) {
+	var header [11]byte
 	if _, err := io.ReadFull(conn, header[:]); err != nil {
-		return nil, err
+		return l4RelayTestMuxFrame{}, err
 	}
-	size := binary.BigEndian.Uint32(header[:])
+
+	size := uint32(header[7])<<24 | uint32(header[8])<<16 | uint32(header[9])<<8 | uint32(header[10])
 	data := make([]byte, size)
 	if _, err := io.ReadFull(conn, data); err != nil {
-		return nil, err
+		return l4RelayTestMuxFrame{}, err
 	}
-	return data, nil
+	return l4RelayTestMuxFrame{
+		Version:  header[0],
+		Type:     header[1],
+		Flags:    header[2],
+		StreamID: uint32(header[3])<<24 | uint32(header[4])<<16 | uint32(header[5])<<8 | uint32(header[6]),
+		Payload:  data,
+	}, nil
 }
 
-func writeL4RelayTestFrame(conn net.Conn, payload []byte) error {
-	var header [4]byte
-	binary.BigEndian.PutUint32(header[:], uint32(len(payload)))
-	if _, err := conn.Write(header[:]); err != nil {
+func writeL4RelayTestFrame(conn net.Conn, frame l4RelayTestMuxFrame) error {
+	wireConn := l4RelayTestWireConn(conn)
+	var header [11]byte
+	header[0] = frame.Version
+	header[1] = frame.Type
+	header[2] = frame.Flags
+	header[3] = byte(frame.StreamID >> 24)
+	header[4] = byte(frame.StreamID >> 16)
+	header[5] = byte(frame.StreamID >> 8)
+	header[6] = byte(frame.StreamID)
+	size := uint32(len(frame.Payload))
+	header[7] = byte(size >> 24)
+	header[8] = byte(size >> 16)
+	header[9] = byte(size >> 8)
+	header[10] = byte(size)
+	if _, err := wireConn.Write(header[:]); err != nil {
 		return err
 	}
-	_, err := conn.Write(payload)
+	_, err := wireConn.Write(frame.Payload)
 	return err
+}
+
+func l4RelayTestConnStreamID(conn net.Conn) uint32 {
+	if muxConn, ok := conn.(*l4RelayTestMuxConn); ok {
+		return muxConn.streamID
+	}
+	return 0
+}
+
+func l4RelayTestWireConn(conn net.Conn) net.Conn {
+	if muxConn, ok := conn.(*l4RelayTestMuxConn); ok {
+		return muxConn.conn
+	}
+	return conn
+}
+
+func (c *l4RelayTestMuxConn) Read(p []byte) (int, error) {
+	for {
+		if len(c.readBuf) > 0 {
+			n := copy(p, c.readBuf)
+			c.readBuf = c.readBuf[n:]
+			return n, nil
+		}
+		if c.readEOF {
+			return 0, io.EOF
+		}
+
+		frame, err := readL4RelayTestFrame(c.conn)
+		if err != nil {
+			return 0, err
+		}
+		if frame.StreamID != c.streamID {
+			continue
+		}
+
+		switch frame.Type {
+		case 3:
+			c.readBuf = append(c.readBuf, frame.Payload...)
+		case 4:
+			c.readEOF = true
+		case 5:
+			return 0, io.ErrClosedPipe
+		}
+	}
+}
+
+func (c *l4RelayTestMuxConn) Write(p []byte) (int, error) {
+	if err := writeL4RelayTestFrame(c.conn, l4RelayTestMuxFrame{
+		Version:  1,
+		Type:     3,
+		StreamID: c.streamID,
+		Payload:  append([]byte(nil), p...),
+	}); err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+
+func (c *l4RelayTestMuxConn) Close() error {
+	return c.CloseWrite()
+}
+
+func (c *l4RelayTestMuxConn) LocalAddr() net.Addr {
+	return c.conn.LocalAddr()
+}
+
+func (c *l4RelayTestMuxConn) RemoteAddr() net.Addr {
+	return c.conn.RemoteAddr()
+}
+
+func (c *l4RelayTestMuxConn) SetDeadline(t time.Time) error {
+	return c.conn.SetDeadline(t)
+}
+
+func (c *l4RelayTestMuxConn) SetReadDeadline(t time.Time) error {
+	return c.conn.SetReadDeadline(t)
+}
+
+func (c *l4RelayTestMuxConn) SetWriteDeadline(t time.Time) error {
+	return c.conn.SetWriteDeadline(t)
+}
+
+func (c *l4RelayTestMuxConn) CloseWrite() error {
+	return writeL4RelayTestFrame(c.conn, l4RelayTestMuxFrame{
+		Version:  1,
+		Type:     4,
+		StreamID: c.streamID,
+	})
 }
 
 func mustIssueL4RelayCertificate(t *testing.T, host string) tls.Certificate {

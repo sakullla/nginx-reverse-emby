@@ -10,7 +10,6 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -904,6 +903,67 @@ func TestStartServesHTTPRulesOnLocalListener(t *testing.T) {
 	}
 }
 
+func TestStartServesIPv4FrontendToIPv6Backend(t *testing.T) {
+	requireIPv6LoopbackProxy(t)
+
+	backendLn, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		t.Fatalf("failed to listen on ipv6 loopback: %v", err)
+	}
+	defer backendLn.Close()
+
+	backendDone := make(chan struct{})
+	go func() {
+		defer close(backendDone)
+		_ = http.Serve(backendLn, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		}))
+	}()
+
+	backendPort := backendLn.Addr().(*net.TCPAddr).Port
+	port := pickFreePort(t)
+	runtime, err := Start(context.Background(), []model.HTTPRule{{
+		FrontendURL: fmt.Sprintf("http://edge.example.test:%d", port),
+		BackendURL:  fmt.Sprintf("http://[::1]:%d", backendPort),
+	}}, nil, Providers{})
+	if err != nil {
+		t.Fatalf("failed to start runtime: %v", err)
+	}
+	defer runtime.Close()
+
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/healthz", port), nil)
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+	req.Host = fmt.Sprintf("edge.example.test:%d", port)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("runtime request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d", resp.StatusCode)
+	}
+}
+
+func TestRuntimeRuleSpecKeepsIPv4WildcardBindingForIPv6FrontendHost(t *testing.T) {
+	spec, err := runtimeRuleSpec(model.HTTPRule{
+		FrontendURL: "http://[::1]:18080",
+		BackendURL:  "http://127.0.0.1:8096",
+	})
+	if err != nil {
+		t.Fatalf("runtimeRuleSpec() error = %v", err)
+	}
+	if spec.address != "0.0.0.0:18080" {
+		t.Fatalf("address = %q", spec.address)
+	}
+	if spec.key != "http:18080" {
+		t.Fatalf("key = %q", spec.key)
+	}
+}
+
 func TestStartRejectsHTTPSFrontendWithoutCertificateBinding(t *testing.T) {
 	_, err := Start(context.Background(), []model.HTTPRule{{
 		FrontendURL: "https://edge.example.test:9443",
@@ -1265,6 +1325,41 @@ func TestResolveRelayHopsUsesPublicEndpointAndFallbacks(t *testing.T) {
 	}
 }
 
+func TestResolveRelayHopsFormatsIPv6PublicEndpoint(t *testing.T) {
+	rule := model.HTTPRule{
+		FrontendURL: "http://edge.example.test",
+		BackendURL:  "http://127.0.0.1:8096",
+		RelayChain:  []int{1},
+	}
+	listeners := []model.RelayListener{
+		{
+			ID:         1,
+			ListenHost: "::",
+			BindHosts:  []string{"::"},
+			ListenPort: 18443,
+			PublicHost: "2001:db8::1",
+			PublicPort: 28443,
+			Enabled:    true,
+			TLSMode:    "pin_only",
+			PinSet:     []model.RelayPin{{Type: "sha256", Value: "pin-1"}},
+		},
+	}
+
+	hops, err := resolveRelayHops(rule, listeners)
+	if err != nil {
+		t.Fatalf("resolveRelayHops returned error: %v", err)
+	}
+	if len(hops) != 1 {
+		t.Fatalf("expected 1 relay hop, got %d", len(hops))
+	}
+	if got := hops[0].Address; got != "[2001:db8::1]:28443" {
+		t.Fatalf("expected bracketed ipv6 relay address, got %q", got)
+	}
+	if got := hops[0].ServerName; got != "2001:db8::1" {
+		t.Fatalf("expected ipv6 server_name without brackets, got %q", got)
+	}
+}
+
 func TestNewTLSListenerAdvertisesHTTP2AndHTTP11Only(t *testing.T) {
 	provider := &testTLSProvider{
 		certificates: map[string]tls.Certificate{
@@ -1332,6 +1427,16 @@ func pickFreePort(t *testing.T) int {
 	defer ln.Close()
 
 	return ln.Addr().(*net.TCPAddr).Port
+}
+
+func requireIPv6LoopbackProxy(t *testing.T) {
+	t.Helper()
+
+	ln, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		t.Skipf("ipv6 loopback is unavailable: %v", err)
+	}
+	_ = ln.Close()
 }
 
 type testTLSProvider struct {
@@ -1406,6 +1511,27 @@ type relayTestRequest struct {
 	Chain   []relay.Hop `json:"chain,omitempty"`
 }
 
+type relayTestOpenFrame struct {
+	Kind   string      `json:"kind"`
+	Target string      `json:"target"`
+	Chain  []relay.Hop `json:"chain,omitempty"`
+}
+
+type relayTestMuxFrame struct {
+	Version  byte
+	Type     byte
+	Flags    byte
+	StreamID uint32
+	Payload  []byte
+}
+
+type relayTestMuxConn struct {
+	conn     net.Conn
+	streamID uint32
+	readBuf  []byte
+	readEOF  bool
+}
+
 func startTestRelayServer(
 	t *testing.T,
 	address string,
@@ -1430,24 +1556,19 @@ func startTestRelayServer(
 		if err != nil {
 			return
 		}
+		defer conn.Close()
 
-		relayReq, err := readRelayTestRequest(conn)
+		relayConn, relayReq, err := acceptRelayTestConn(conn, obfsMode)
 		if err != nil {
-			_ = conn.Close()
 			return
 		}
 		requests <- relayReq
 
-		if err := writeRelayTestResponse(conn, map[string]any{"ok": true}); err != nil {
-			_ = conn.Close()
+		if err := writeRelayTestResponse(relayConn, map[string]any{"ok": true}); err != nil {
 			return
 		}
 
-		dataConn := net.Conn(conn)
-		if obfsMode == relay.RelayObfsModeEarlyWindowV2 {
-			dataConn = relay.WrapConnWithEarlyWindowMask(conn)
-		}
-		defer dataConn.Close()
+		dataConn := net.Conn(relayConn)
 
 		httpReq, err := http.ReadRequest(bufio.NewReader(dataConn))
 		if err != nil {
@@ -1464,16 +1585,37 @@ func startTestRelayServer(
 	}
 }
 
-func readRelayTestRequest(conn net.Conn) (relayTestRequest, error) {
-	payload, err := readRelayTestFrame(conn)
+func acceptRelayTestConn(conn net.Conn, obfsMode string) (net.Conn, relayTestRequest, error) {
+	framedConn := net.Conn(conn)
+	if obfsMode == relay.RelayObfsModeEarlyWindowV2 {
+		framedConn = relay.WrapConnWithEarlyWindowMask(framedConn)
+	}
+
+	request, streamID, err := readRelayTestRequest(framedConn)
 	if err != nil {
-		return relayTestRequest{}, err
+		return nil, relayTestRequest{}, err
 	}
-	var request relayTestRequest
-	if err := json.Unmarshal(payload, &request); err != nil {
-		return relayTestRequest{}, err
+	return &relayTestMuxConn{conn: framedConn, streamID: streamID}, request, nil
+}
+
+func readRelayTestRequest(conn net.Conn) (relayTestRequest, uint32, error) {
+	frame, err := readRelayTestFrame(conn)
+	if err != nil {
+		return relayTestRequest{}, 0, err
 	}
-	return request, nil
+	if frame.Type != 1 {
+		return relayTestRequest{}, 0, fmt.Errorf("unexpected relay mux frame type %d", frame.Type)
+	}
+
+	var request relayTestOpenFrame
+	if err := json.Unmarshal(frame.Payload, &request); err != nil {
+		return relayTestRequest{}, 0, err
+	}
+	return relayTestRequest{
+		Network: request.Kind,
+		Target:  request.Target,
+		Chain:   request.Chain,
+	}, frame.StreamID, nil
 }
 
 func writeRelayTestResponse(conn net.Conn, payload any) error {
@@ -1481,30 +1623,142 @@ func writeRelayTestResponse(conn net.Conn, payload any) error {
 	if err != nil {
 		return err
 	}
-	return writeRelayTestFrame(conn, data)
+	return writeRelayTestFrame(conn, relayTestMuxFrame{
+		Version:  1,
+		Type:     2,
+		StreamID: relayTestConnStreamID(conn),
+		Payload:  data,
+	})
 }
 
-func readRelayTestFrame(conn net.Conn) ([]byte, error) {
-	var header [4]byte
+func readRelayTestFrame(conn net.Conn) (relayTestMuxFrame, error) {
+	var header [11]byte
 	if _, err := io.ReadFull(conn, header[:]); err != nil {
-		return nil, err
+		return relayTestMuxFrame{}, err
 	}
-	size := binary.BigEndian.Uint32(header[:])
+
+	size := uint32(header[7])<<24 | uint32(header[8])<<16 | uint32(header[9])<<8 | uint32(header[10])
 	data := make([]byte, size)
 	if _, err := io.ReadFull(conn, data); err != nil {
-		return nil, err
+		return relayTestMuxFrame{}, err
 	}
-	return data, nil
+	return relayTestMuxFrame{
+		Version:  header[0],
+		Type:     header[1],
+		Flags:    header[2],
+		StreamID: uint32(header[3])<<24 | uint32(header[4])<<16 | uint32(header[5])<<8 | uint32(header[6]),
+		Payload:  data,
+	}, nil
 }
 
-func writeRelayTestFrame(conn net.Conn, payload []byte) error {
-	var header [4]byte
-	binary.BigEndian.PutUint32(header[:], uint32(len(payload)))
-	if _, err := conn.Write(header[:]); err != nil {
+func writeRelayTestFrame(conn net.Conn, frame relayTestMuxFrame) error {
+	wireConn := relayTestWireConn(conn)
+	var header [11]byte
+	header[0] = frame.Version
+	header[1] = frame.Type
+	header[2] = frame.Flags
+	header[3] = byte(frame.StreamID >> 24)
+	header[4] = byte(frame.StreamID >> 16)
+	header[5] = byte(frame.StreamID >> 8)
+	header[6] = byte(frame.StreamID)
+	size := uint32(len(frame.Payload))
+	header[7] = byte(size >> 24)
+	header[8] = byte(size >> 16)
+	header[9] = byte(size >> 8)
+	header[10] = byte(size)
+	if _, err := wireConn.Write(header[:]); err != nil {
 		return err
 	}
-	_, err := conn.Write(payload)
+	_, err := wireConn.Write(frame.Payload)
 	return err
+}
+
+func relayTestConnStreamID(conn net.Conn) uint32 {
+	if muxConn, ok := conn.(*relayTestMuxConn); ok {
+		return muxConn.streamID
+	}
+	return 0
+}
+
+func relayTestWireConn(conn net.Conn) net.Conn {
+	if muxConn, ok := conn.(*relayTestMuxConn); ok {
+		return muxConn.conn
+	}
+	return conn
+}
+
+func (c *relayTestMuxConn) Read(p []byte) (int, error) {
+	for {
+		if len(c.readBuf) > 0 {
+			n := copy(p, c.readBuf)
+			c.readBuf = c.readBuf[n:]
+			return n, nil
+		}
+		if c.readEOF {
+			return 0, io.EOF
+		}
+
+		frame, err := readRelayTestFrame(c.conn)
+		if err != nil {
+			return 0, err
+		}
+		if frame.StreamID != c.streamID {
+			continue
+		}
+
+		switch frame.Type {
+		case 3:
+			c.readBuf = append(c.readBuf, frame.Payload...)
+		case 4:
+			c.readEOF = true
+		case 5:
+			return 0, io.ErrClosedPipe
+		}
+	}
+}
+
+func (c *relayTestMuxConn) Write(p []byte) (int, error) {
+	if err := writeRelayTestFrame(c.conn, relayTestMuxFrame{
+		Version:  1,
+		Type:     3,
+		StreamID: c.streamID,
+		Payload:  append([]byte(nil), p...),
+	}); err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+
+func (c *relayTestMuxConn) Close() error {
+	return c.CloseWrite()
+}
+
+func (c *relayTestMuxConn) LocalAddr() net.Addr {
+	return c.conn.LocalAddr()
+}
+
+func (c *relayTestMuxConn) RemoteAddr() net.Addr {
+	return c.conn.RemoteAddr()
+}
+
+func (c *relayTestMuxConn) SetDeadline(t time.Time) error {
+	return c.conn.SetDeadline(t)
+}
+
+func (c *relayTestMuxConn) SetReadDeadline(t time.Time) error {
+	return c.conn.SetReadDeadline(t)
+}
+
+func (c *relayTestMuxConn) SetWriteDeadline(t time.Time) error {
+	return c.conn.SetWriteDeadline(t)
+}
+
+func (c *relayTestMuxConn) CloseWrite() error {
+	return writeRelayTestFrame(c.conn, relayTestMuxFrame{
+		Version:  1,
+		Type:     4,
+		StreamID: c.streamID,
+	})
 }
 
 func mustSPKIPin(t *testing.T, cert tls.Certificate) string {
