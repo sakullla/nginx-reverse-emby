@@ -30,7 +30,7 @@ func TestBuildReportSummarizesLatencyAndLoss(t *testing.T) {
 	if report.Summary.MaxLatencyMS != 30 {
 		t.Fatalf("MaxLatencyMS = %v", report.Summary.MaxLatencyMS)
 	}
-	if report.Summary.Quality != "poor" {
+	if report.Summary.Quality != "较差" {
 		t.Fatalf("Quality = %q", report.Summary.Quality)
 	}
 }
@@ -44,7 +44,7 @@ func TestBuildReportMarksDownWhenAllProbesFail(t *testing.T) {
 	if report.Summary.LossRate != 1 {
 		t.Fatalf("LossRate = %v", report.Summary.LossRate)
 	}
-	if report.Summary.Quality != "down" {
+	if report.Summary.Quality != "不可用" {
 		t.Fatalf("Quality = %q", report.Summary.Quality)
 	}
 	if report.Summary.AvgLatencyMS != 0 {

@@ -47,7 +47,7 @@ func buildSummary(samples []Sample) Summary {
 		Sent: len(samples),
 	}
 	if len(samples) == 0 {
-		summary.Quality = "down"
+		summary.Quality = "不可用"
 		return summary
 	}
 
@@ -107,17 +107,17 @@ func FailureSample(attempt int, backend string, err error) Sample {
 
 func classifyQuality(summary Summary) string {
 	if summary.Succeeded == 0 {
-		return "down"
+		return "不可用"
 	}
 	switch {
 	case summary.LossRate <= 0.05 && summary.AvgLatencyMS <= 80:
-		return "excellent"
+		return "极佳"
 	case summary.LossRate <= 0.10 && summary.AvgLatencyMS <= 200:
-		return "good"
+		return "良好"
 	case summary.LossRate <= 0.20 && summary.AvgLatencyMS <= 400:
-		return "fair"
+		return "一般"
 	default:
-		return "poor"
+		return "较差"
 	}
 }
 
