@@ -42,7 +42,7 @@
           </div>
           <div v-else class="global-search-results">
             <div v-for="group in results" :key="group.agentId" class="result-group">
-              <div class="result-group__header" @click="navigateToResult(group.agentId)">
+              <div class="result-group__header" @click="group.agentId ? navigateToResult(group.agentId) : null">
                 <div class="result-group__dot" :class="group.online ? 'result-group__dot--online' : 'result-group__dot--offline'"></div>
                 <span class="result-group__name">{{ group.agentName }}</span>
                 <span class="result-group__count">{{ group.items.length }} 条</span>
@@ -57,8 +57,13 @@
                   {{ typeLabel(item._type) }}
                 </div>
                 <div class="result-item__info">
-                  <div class="result-item__url">{{ item.frontend_url || item.domain || `${item.listen_host || ''}:${item.listen_port}` || `#${item.id}` }}</div>
-                  <div v-if="item._type === 'rule'" class="result-item__backend">→ {{ formatHttpBackend(item) }}</div>
+                  <div class="result-item__url">
+                    {{ item._type === 'agent'
+                      ? item.name
+                      : item.frontend_url || item.domain || `${item.listen_host || ''}:${item.listen_port}` || `#${item.id}` }}
+                  </div>
+                  <div v-if="item._type === 'agent'" class="result-item__backend">{{ item.agent_url || item.last_seen_ip || '—' }}</div>
+                  <div v-else-if="item._type === 'rule'" class="result-item__backend">→ {{ formatHttpBackend(item) }}</div>
                   <div v-else-if="item._type === 'l4'" class="result-item__backend">{{ item.protocol?.toUpperCase() }} {{ item.listen_host || '*' }}:{{ item.listen_port }} → {{ formatL4Backend(item) }}</div>
                   <div v-else-if="item._type === 'cert'" class="result-item__backend">{{ getCertStatus(item) }}</div>
                 </div>
@@ -178,6 +183,18 @@ async function doSearch(val) {
 
     const q = val.toLowerCase()
     const groupResults = []
+
+    // Agent results
+    const matchedAgents = agents.filter(a =>
+      String(a.name || '').toLowerCase().includes(q) ||
+      String(a.agent_url || '').toLowerCase().includes(q) ||
+      String(a.last_seen_ip || '').toLowerCase().includes(q) ||
+      (a.tags || []).some(tag => String(tag).toLowerCase().includes(q))
+    )
+    if (matchedAgents.length) {
+      groupResults.push(makeResult('agent', null, '节点', null, matchedAgents.map(a => ({ ...a, _type: 'agent' }))))
+    }
+
     for (const agent of agents) {
       const rules = rulesByAgent[agent.id] || []
       const l4Rules = l4ByAgent[agent.id] || []
@@ -229,7 +246,9 @@ function navigateToResult(agentId) {
 
 function navigateToItem(agentId, item) {
   close()
-  if (item._type === 'rule') {
+  if (item._type === 'agent') {
+    router.push(`/agents/${item.id}`)
+  } else if (item._type === 'rule') {
     router.push({ path: '/rules', query: { agentId, search: `#id=${item.id}` } })
   } else if (item._type === 'l4') {
     router.push({ path: '/l4', query: { agentId, search: `#id=${item.id}` } })
@@ -239,7 +258,7 @@ function navigateToItem(agentId, item) {
 }
 
 function typeLabel(type) {
-  return type === 'rule' ? 'HTTP' : type === 'l4' ? 'L4' : '证书'
+  return type === 'rule' ? 'HTTP' : type === 'l4' ? 'L4' : type === 'cert' ? '证书' : '节点'
 }
 
 function getCertStatus(cert) {
@@ -283,6 +302,7 @@ onUnmounted(() => document.removeEventListener('keydown', handleKeydown))
 .result-item__type-badge--rule { background: #dbeafe; color: #1d4ed8; }
 .result-item__type-badge--l4 { background: #fce7f3; color: #9d174d; }
 .result-item__type-badge--cert { background: #d1fae5; color: #065f46; }
+.result-item__type-badge--agent { background: #f3e8ff; color: #7e22ce; }
 .result-item__info { flex: 1; min-width: 0; }
 .result-item__url { font-size: 0.875rem; font-weight: 500; color: var(--color-text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .result-item__backend { font-size: 0.75rem; color: var(--color-text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
