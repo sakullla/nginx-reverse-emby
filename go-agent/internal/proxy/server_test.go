@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -429,6 +430,116 @@ func TestRouteEntryDoesNotRetryNonUpstreamUnavailableErrors(t *testing.T) {
 	}
 	if cache.IsInBackoff("127.0.0.1:18091") || cache.IsInBackoff("127.0.0.1:18092") {
 		t.Fatalf("expected non-upstream request errors to skip failure backoff marking")
+	}
+}
+
+func TestRouteEntryCandidatesPreferResolvedAddressWithLowerObservedLatency(t *testing.T) {
+	cache := backends.NewCache(backends.Config{
+		Resolver: resolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
+			return []net.IPAddr{
+				{IP: net.ParseIP("127.0.0.10")},
+				{IP: net.ParseIP("127.0.0.11")},
+			}, nil
+		}),
+		Now: func() time.Time {
+			return time.Date(2026, 4, 16, 12, 0, 0, 0, time.UTC)
+		},
+	})
+	cache.ObserveSuccess("127.0.0.10:8096", 220*time.Millisecond)
+	cache.ObserveSuccess("127.0.0.11:8096", 35*time.Millisecond)
+
+	entry := &routeEntry{
+		rule: model.HTTPRule{
+			FrontendURL: "http://edge.example.test",
+			LoadBalancing: model.LoadBalancing{
+				Strategy: "round_robin",
+			},
+		},
+		backends: []httpBackend{
+			{target: mustParseBackendURL(t, "http://backend.example:8096"), backendHost: "backend.example:8096"},
+		},
+		backendCache:   cache,
+		selectionScope: "edge.example.test",
+	}
+
+	candidates, err := entry.candidates(context.Background())
+	if err != nil {
+		t.Fatalf("candidates() error = %v", err)
+	}
+	if candidates[0].dialAddress != "127.0.0.11:8096" {
+		t.Fatalf("unexpected first candidate: %+v", candidates)
+	}
+}
+
+func TestRouteEntryCandidatesPreserveResolvedOrderWithoutObservations(t *testing.T) {
+	cache := backends.NewCache(backends.Config{
+		Resolver: resolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
+			return []net.IPAddr{
+				{IP: net.ParseIP("127.0.0.12")},
+				{IP: net.ParseIP("127.0.0.13")},
+			}, nil
+		}),
+	})
+
+	entry := &routeEntry{
+		rule: model.HTTPRule{
+			FrontendURL: "http://edge.example.test",
+			LoadBalancing: model.LoadBalancing{
+				Strategy: "round_robin",
+			},
+		},
+		backends: []httpBackend{
+			{target: mustParseBackendURL(t, "http://backend.example:8096"), backendHost: "backend.example:8096"},
+		},
+		backendCache:   cache,
+		selectionScope: "edge.example.test",
+	}
+
+	candidates, err := entry.candidates(context.Background())
+	if err != nil {
+		t.Fatalf("candidates() error = %v", err)
+	}
+	if got := []string{candidates[0].dialAddress, candidates[1].dialAddress}; !reflect.DeepEqual(got, []string{"127.0.0.12:8096", "127.0.0.13:8096"}) {
+		t.Fatalf("unexpected resolved order: %v", got)
+	}
+}
+
+func TestRouteEntryCandidatesKeepBackoffBeforeLatencyPreference(t *testing.T) {
+	cache := backends.NewCache(backends.Config{
+		Resolver: resolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
+			return []net.IPAddr{
+				{IP: net.ParseIP("127.0.0.14")},
+				{IP: net.ParseIP("127.0.0.15")},
+			}, nil
+		}),
+		Now: func() time.Time {
+			return time.Date(2026, 4, 16, 12, 0, 0, 0, time.UTC)
+		},
+	})
+	cache.ObserveSuccess("127.0.0.14:8096", 20*time.Millisecond)
+	cache.ObserveSuccess("127.0.0.15:8096", 80*time.Millisecond)
+	cache.MarkFailure("127.0.0.14:8096")
+
+	entry := &routeEntry{
+		rule: model.HTTPRule{
+			FrontendURL: "http://edge.example.test",
+			LoadBalancing: model.LoadBalancing{
+				Strategy: "round_robin",
+			},
+		},
+		backends: []httpBackend{
+			{target: mustParseBackendURL(t, "http://backend.example:8096"), backendHost: "backend.example:8096"},
+		},
+		backendCache:   cache,
+		selectionScope: "edge.example.test",
+	}
+
+	candidates, err := entry.candidates(context.Background())
+	if err != nil {
+		t.Fatalf("candidates() error = %v", err)
+	}
+	if candidates[0].dialAddress != "127.0.0.15:8096" {
+		t.Fatalf("unexpected first candidate after backoff: %+v", candidates)
 	}
 }
 

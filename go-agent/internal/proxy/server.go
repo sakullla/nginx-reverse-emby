@@ -378,6 +378,7 @@ func (e *routeEntry) candidates(ctx context.Context) ([]httpCandidate, error) {
 			}
 			continue
 		}
+		resolved = e.backendCache.PreferResolvedCandidates(resolved)
 		for _, candidate := range resolved {
 			if e.backendCache.IsInBackoff(candidate.Address) {
 				continue
