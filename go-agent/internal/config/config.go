@@ -246,6 +246,9 @@ func loadFromEnvForExecutable(executablePath string) (Config, error) {
 		}
 		cfg.RelayTimeouts.IdleTimeout = dur
 	}
+	if cfg.BackendFailures.BackoffBase > cfg.BackendFailures.BackoffLimit {
+		return Config{}, errors.New("NRE_BACKEND_FAILURE_BACKOFF_BASE must be less than or equal to NRE_BACKEND_FAILURE_BACKOFF_LIMIT")
+	}
 
 	cfg.RuntimePackageSHA256 = executableSHA256(executablePath)
 

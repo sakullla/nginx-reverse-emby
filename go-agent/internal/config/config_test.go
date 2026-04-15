@@ -185,6 +185,17 @@ func TestLoadFromEnvRejectsInvalidHTTPResilienceSettings(t *testing.T) {
 	}
 }
 
+func TestLoadFromEnvRejectsBackendFailureBackoffBaseGreaterThanLimit(t *testing.T) {
+	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
+	t.Setenv("NRE_AGENT_TOKEN", "secret")
+	t.Setenv("NRE_BACKEND_FAILURE_BACKOFF_BASE", "16s")
+	t.Setenv("NRE_BACKEND_FAILURE_BACKOFF_LIMIT", "15s")
+
+	if _, err := LoadFromEnv(); err == nil {
+		t.Fatal("expected error when backoff base is greater than limit")
+	}
+}
+
 func sumSHA256Hex(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
