@@ -4,10 +4,12 @@ import (
 	"context"
 	"crypto/tls"
 	"net"
+	"sync"
 	"time"
 )
 
 var (
+	relayTimeoutMu        sync.RWMutex
 	relayDialTimeout      = 5 * time.Second
 	relayHandshakeTimeout = 5 * time.Second
 	relayFrameTimeout     = 5 * time.Second
@@ -22,6 +24,7 @@ type TimeoutConfig struct {
 }
 
 func ConfigureTimeouts(cfg TimeoutConfig) func() {
+	relayTimeoutMu.Lock()
 	prevDial := relayDialTimeout
 	prevHandshake := relayHandshakeTimeout
 	prevFrame := relayFrameTimeout
@@ -39,17 +42,21 @@ func ConfigureTimeouts(cfg TimeoutConfig) func() {
 	if cfg.IdleTimeout > 0 {
 		relayIdleTimeout = cfg.IdleTimeout
 	}
+	relayTimeoutMu.Unlock()
 
 	return func() {
+		relayTimeoutMu.Lock()
 		relayDialTimeout = prevDial
 		relayHandshakeTimeout = prevHandshake
 		relayFrameTimeout = prevFrame
 		relayIdleTimeout = prevIdle
+		relayTimeoutMu.Unlock()
 	}
 }
 
 func dialTCP(ctx context.Context, address string) (net.Conn, error) {
-	dialCtx, cancel := context.WithTimeout(ctx, relayDialTimeout)
+	dialTimeout := getRelayDialTimeout()
+	dialCtx, cancel := context.WithTimeout(ctx, dialTimeout)
 	defer cancel()
 
 	var dialer net.Dialer
@@ -57,16 +64,17 @@ func dialTCP(ctx context.Context, address string) (net.Conn, error) {
 }
 
 func handshakeTLS(ctx context.Context, conn *tls.Conn) error {
-	handshakeCtx, cancel := context.WithTimeout(ctx, relayHandshakeTimeout)
+	handshakeTimeout := getRelayHandshakeTimeout()
+	handshakeCtx, cancel := context.WithTimeout(ctx, handshakeTimeout)
 	defer cancel()
 
-	return withConnDeadline(conn, relayHandshakeTimeout, func() error {
+	return withConnDeadline(conn, handshakeTimeout, func() error {
 		return conn.HandshakeContext(handshakeCtx)
 	})
 }
 
 func withFrameDeadline(conn net.Conn, fn func() error) error {
-	return withConnDeadline(conn, relayFrameTimeout, fn)
+	return withConnDeadline(conn, getRelayFrameTimeout(), fn)
 }
 
 func withWriteDeadline(conn net.Conn, timeout time.Duration, fn func() error) error {
@@ -92,10 +100,11 @@ func withConnDeadline(conn net.Conn, timeout time.Duration, fn func() error) err
 }
 
 func wrapIdleConn(conn net.Conn) net.Conn {
-	if relayIdleTimeout <= 0 || conn == nil {
+	idleTimeout := getRelayIdleTimeout()
+	if idleTimeout <= 0 || conn == nil {
 		return conn
 	}
-	return &idleDeadlineConn{Conn: conn, timeout: relayIdleTimeout}
+	return &idleDeadlineConn{Conn: conn, timeout: idleTimeout}
 }
 
 type idleDeadlineConn struct {
@@ -125,4 +134,28 @@ func (c *idleDeadlineConn) CloseRead() error {
 		return closer.CloseRead()
 	}
 	return nil
+}
+
+func getRelayDialTimeout() time.Duration {
+	relayTimeoutMu.RLock()
+	defer relayTimeoutMu.RUnlock()
+	return relayDialTimeout
+}
+
+func getRelayHandshakeTimeout() time.Duration {
+	relayTimeoutMu.RLock()
+	defer relayTimeoutMu.RUnlock()
+	return relayHandshakeTimeout
+}
+
+func getRelayFrameTimeout() time.Duration {
+	relayTimeoutMu.RLock()
+	defer relayTimeoutMu.RUnlock()
+	return relayFrameTimeout
+}
+
+func getRelayIdleTimeout() time.Duration {
+	relayTimeoutMu.RLock()
+	defer relayTimeoutMu.RUnlock()
+	return relayIdleTimeout
 }

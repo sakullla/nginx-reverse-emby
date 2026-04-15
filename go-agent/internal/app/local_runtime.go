@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/l4"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxy"
@@ -328,6 +329,9 @@ func httpBindingsOverlap(left, right []string) bool {
 }
 
 func backendCacheConfigFromAppConfig(cfg Config) backends.Config {
+	if cfg.BackendFailures == config.Default().BackendFailures {
+		return backends.Config{}
+	}
 	return backends.Config{
 		FailureBackoffBase:  cfg.BackendFailures.BackoffBase,
 		FailureBackoffLimit: cfg.BackendFailures.BackoffLimit,

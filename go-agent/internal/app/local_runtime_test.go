@@ -58,6 +58,41 @@ func TestHTTPRuntimeManagerUsesConfiguredTransportAndBackoff(t *testing.T) {
 	}
 }
 
+func TestHTTPRuntimeManagerTask1DefaultsPreserveLegacyBackoffCap(t *testing.T) {
+	manager := newHTTPRuntimeManagerWithConfig(config.Default())
+
+	addr := "127.0.0.1:8096"
+	var backoff time.Duration
+	for i := 0; i < 12; i++ {
+		backoff = manager.cache.MarkFailure(addr)
+	}
+	if backoff != 60*time.Second {
+		t.Fatalf("MarkFailure() cap = %v", backoff)
+	}
+}
+
+func TestAppCloseLocalRuntimesInvokesRelayTimeoutResetOnce(t *testing.T) {
+	calls := 0
+	app := &App{
+		relayTimeoutReset: func() {
+			calls++
+		},
+	}
+
+	app.closeLocalRuntimes()
+	if calls != 1 {
+		t.Fatalf("relayTimeoutReset calls = %d", calls)
+	}
+	if app.relayTimeoutReset != nil {
+		t.Fatal("expected relayTimeoutReset to be cleared after close")
+	}
+
+	app.closeLocalRuntimes()
+	if calls != 1 {
+		t.Fatalf("relayTimeoutReset calls after second close = %d", calls)
+	}
+}
+
 func TestL4RuntimeManagerPreservesRunningServerOnInvalidReconfigure(t *testing.T) {
 	manager := newL4RuntimeManager()
 	ctx := context.Background()

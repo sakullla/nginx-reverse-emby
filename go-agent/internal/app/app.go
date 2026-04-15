@@ -64,17 +64,18 @@ type Updater interface {
 }
 
 type App struct {
-	cfg          Config
-	syncClient   SyncClient
-	store        store.Store
-	httpApplier  HTTPApplier
-	certApplier  CertificateApplier
-	l4Applier    L4Applier
-	relayApplier RelayApplier
-	updater      Updater
-	runtime      *agentruntime.Runtime
-	taskClient   *agenttask.Client
-	syncMu       sync.Mutex
+	cfg               Config
+	syncClient        SyncClient
+	store             store.Store
+	httpApplier       HTTPApplier
+	certApplier       CertificateApplier
+	l4Applier         L4Applier
+	relayApplier      RelayApplier
+	updater           Updater
+	runtime           *agentruntime.Runtime
+	taskClient        *agenttask.Client
+	relayTimeoutReset func()
+	syncMu            sync.Mutex
 }
 
 func advertisedCapabilities(cfg Config) []string {
@@ -86,12 +87,18 @@ func advertisedCapabilities(cfg Config) []string {
 }
 
 func New(cfg Config) (*App, error) {
-	relay.ConfigureTimeouts(relay.TimeoutConfig{
+	resetRelayTimeouts := relay.ConfigureTimeouts(relay.TimeoutConfig{
 		DialTimeout:      cfg.RelayTimeouts.DialTimeout,
 		HandshakeTimeout: cfg.RelayTimeouts.HandshakeTimeout,
 		FrameTimeout:     cfg.RelayTimeouts.FrameTimeout,
 		IdleTimeout:      cfg.RelayTimeouts.IdleTimeout,
 	})
+	restoreRelayTimeouts := true
+	defer func() {
+		if restoreRelayTimeouts {
+			resetRelayTimeouts()
+		}
+	}()
 
 	st, err := store.NewFilesystem(cfg.DataDir)
 	if err != nil {
@@ -120,7 +127,7 @@ func New(cfg Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newAppWithAllDeps(
+	app := newAppWithAllDeps(
 		cfg,
 		st,
 		client,
@@ -150,7 +157,10 @@ func New(cfg Config) (*App, error) {
 				diagnostics.NewTCPProber(diagnostics.TCPProberConfig{Attempts: 5, RelayProvider: certManager}),
 			),
 		}),
-	), nil
+	)
+	app.relayTimeoutReset = resetRelayTimeouts
+	restoreRelayTimeouts = false
+	return app, nil
 }
 
 func newAppWithDeps(
@@ -582,6 +592,10 @@ func (a *App) closeLocalRuntimes() {
 	}
 	if a.l4Applier != nil {
 		_ = a.l4Applier.Close()
+	}
+	if a.relayTimeoutReset != nil {
+		a.relayTimeoutReset()
+		a.relayTimeoutReset = nil
 	}
 }
 
