@@ -161,14 +161,41 @@ func TestLoadFromEnvParsesHTTPResilienceSettings(t *testing.T) {
 	if cfg.HTTPTransport.DialTimeout != 7*time.Second {
 		t.Fatalf("DialTimeout = %v", cfg.HTTPTransport.DialTimeout)
 	}
+	if cfg.HTTPTransport.TLSHandshakeTimeout != 9*time.Second {
+		t.Fatalf("TLSHandshakeTimeout = %v", cfg.HTTPTransport.TLSHandshakeTimeout)
+	}
+	if cfg.HTTPTransport.ResponseHeaderTimeout != 45*time.Second {
+		t.Fatalf("ResponseHeaderTimeout = %v", cfg.HTTPTransport.ResponseHeaderTimeout)
+	}
+	if cfg.HTTPTransport.IdleConnTimeout != 3*time.Minute {
+		t.Fatalf("IdleConnTimeout = %v", cfg.HTTPTransport.IdleConnTimeout)
+	}
+	if cfg.HTTPTransport.KeepAlive != 25*time.Second {
+		t.Fatalf("KeepAlive = %v", cfg.HTTPTransport.KeepAlive)
+	}
 	if !cfg.HTTPResilience.ResumeEnabled {
 		t.Fatal("expected ResumeEnabled")
 	}
 	if cfg.HTTPResilience.ResumeMaxAttempts != 2 {
 		t.Fatalf("ResumeMaxAttempts = %d", cfg.HTTPResilience.ResumeMaxAttempts)
 	}
+	if cfg.HTTPResilience.SameBackendRetryAttempts != 1 {
+		t.Fatalf("SameBackendRetryAttempts = %d", cfg.HTTPResilience.SameBackendRetryAttempts)
+	}
 	if cfg.BackendFailures.BackoffBase != 250*time.Millisecond {
 		t.Fatalf("BackoffBase = %v", cfg.BackendFailures.BackoffBase)
+	}
+	if cfg.BackendFailures.BackoffLimit != 10*time.Second {
+		t.Fatalf("BackoffLimit = %v", cfg.BackendFailures.BackoffLimit)
+	}
+	if cfg.RelayTimeouts.DialTimeout != 6*time.Second {
+		t.Fatalf("DialTimeout = %v", cfg.RelayTimeouts.DialTimeout)
+	}
+	if cfg.RelayTimeouts.HandshakeTimeout != 8*time.Second {
+		t.Fatalf("HandshakeTimeout = %v", cfg.RelayTimeouts.HandshakeTimeout)
+	}
+	if cfg.RelayTimeouts.FrameTimeout != 4*time.Second {
+		t.Fatalf("FrameTimeout = %v", cfg.RelayTimeouts.FrameTimeout)
 	}
 	if cfg.RelayTimeouts.IdleTimeout != 75*time.Second {
 		t.Fatalf("IdleTimeout = %v", cfg.RelayTimeouts.IdleTimeout)
@@ -182,6 +209,100 @@ func TestLoadFromEnvRejectsInvalidHTTPResilienceSettings(t *testing.T) {
 
 	if _, err := LoadFromEnv(); err == nil {
 		t.Fatal("expected error for zero resume attempts")
+	}
+}
+
+func TestLoadFromEnvUsesDefaultNetworkResilienceConfigWhenUnset(t *testing.T) {
+	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
+	t.Setenv("NRE_AGENT_TOKEN", "secret")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if cfg.HTTPTransport.DialTimeout != 30*time.Second {
+		t.Fatalf("DialTimeout = %v", cfg.HTTPTransport.DialTimeout)
+	}
+	if cfg.HTTPTransport.TLSHandshakeTimeout != 10*time.Second {
+		t.Fatalf("TLSHandshakeTimeout = %v", cfg.HTTPTransport.TLSHandshakeTimeout)
+	}
+	if cfg.HTTPTransport.ResponseHeaderTimeout != 30*time.Second {
+		t.Fatalf("ResponseHeaderTimeout = %v", cfg.HTTPTransport.ResponseHeaderTimeout)
+	}
+	if cfg.HTTPTransport.IdleConnTimeout != 90*time.Second {
+		t.Fatalf("IdleConnTimeout = %v", cfg.HTTPTransport.IdleConnTimeout)
+	}
+	if cfg.HTTPTransport.KeepAlive != 30*time.Second {
+		t.Fatalf("KeepAlive = %v", cfg.HTTPTransport.KeepAlive)
+	}
+	if !cfg.HTTPResilience.ResumeEnabled {
+		t.Fatal("expected ResumeEnabled to default true")
+	}
+	if cfg.HTTPResilience.ResumeMaxAttempts != 2 {
+		t.Fatalf("ResumeMaxAttempts = %d", cfg.HTTPResilience.ResumeMaxAttempts)
+	}
+	if cfg.HTTPResilience.SameBackendRetryAttempts != 1 {
+		t.Fatalf("SameBackendRetryAttempts = %d", cfg.HTTPResilience.SameBackendRetryAttempts)
+	}
+	if cfg.BackendFailures.BackoffBase != 1*time.Second {
+		t.Fatalf("BackoffBase = %v", cfg.BackendFailures.BackoffBase)
+	}
+	if cfg.BackendFailures.BackoffLimit != 15*time.Second {
+		t.Fatalf("BackoffLimit = %v", cfg.BackendFailures.BackoffLimit)
+	}
+	if cfg.RelayTimeouts.DialTimeout != 5*time.Second {
+		t.Fatalf("DialTimeout = %v", cfg.RelayTimeouts.DialTimeout)
+	}
+	if cfg.RelayTimeouts.HandshakeTimeout != 5*time.Second {
+		t.Fatalf("HandshakeTimeout = %v", cfg.RelayTimeouts.HandshakeTimeout)
+	}
+	if cfg.RelayTimeouts.FrameTimeout != 5*time.Second {
+		t.Fatalf("FrameTimeout = %v", cfg.RelayTimeouts.FrameTimeout)
+	}
+	if cfg.RelayTimeouts.IdleTimeout != 2*time.Minute {
+		t.Fatalf("IdleTimeout = %v", cfg.RelayTimeouts.IdleTimeout)
+	}
+}
+
+func TestLoadFromEnvRejectsInvalidHTTPStreamResumeEnabled(t *testing.T) {
+	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
+	t.Setenv("NRE_AGENT_TOKEN", "secret")
+	t.Setenv("NRE_HTTP_STREAM_RESUME_ENABLED", "maybe")
+
+	_, err := LoadFromEnv()
+	if err == nil {
+		t.Fatal("expected invalid NRE_HTTP_STREAM_RESUME_ENABLED error")
+	}
+	if !strings.Contains(err.Error(), "NRE_HTTP_STREAM_RESUME_ENABLED") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLoadFromEnvRejectsInvalidHTTPDialTimeout(t *testing.T) {
+	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
+	t.Setenv("NRE_AGENT_TOKEN", "secret")
+	t.Setenv("NRE_HTTP_DIAL_TIMEOUT", "bogus")
+
+	_, err := LoadFromEnv()
+	if err == nil {
+		t.Fatal("expected invalid NRE_HTTP_DIAL_TIMEOUT error")
+	}
+	if !strings.Contains(err.Error(), "NRE_HTTP_DIAL_TIMEOUT") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLoadFromEnvRejectsInvalidSameBackendRetryAttempts(t *testing.T) {
+	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
+	t.Setenv("NRE_AGENT_TOKEN", "secret")
+	t.Setenv("NRE_HTTP_SAME_BACKEND_RETRY_ATTEMPTS", "0")
+
+	_, err := LoadFromEnv()
+	if err == nil {
+		t.Fatal("expected error for non-positive same backend retry attempts")
+	}
+	if !strings.Contains(err.Error(), "NRE_HTTP_SAME_BACKEND_RETRY_ATTEMPTS") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
