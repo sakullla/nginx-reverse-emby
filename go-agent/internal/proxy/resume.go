@@ -32,6 +32,9 @@ func (e *routeEntry) shouldResumeResponse(req *http.Request, resp *http.Response
 func (e *routeEntry) copyResumableResponse(w http.ResponseWriter, req *http.Request, resp *http.Response, state resumableResponse) error {
 	copyHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
+	fail := func(err error) error {
+		return newStartedResponseError(err)
+	}
 
 	var (
 		expectedBytes = state.responseLength()
@@ -44,7 +47,7 @@ func (e *routeEntry) copyResumableResponse(w http.ResponseWriter, req *http.Requ
 		_ = current.Body.Close()
 		sentBytes += n
 		if writeErr != nil {
-			return writeErr
+			return fail(writeErr)
 		}
 		if sentBytes >= expectedBytes {
 			return nil
@@ -53,24 +56,24 @@ func (e *routeEntry) copyResumableResponse(w http.ResponseWriter, req *http.Requ
 			readErr = io.ErrUnexpectedEOF
 		}
 		if !isResumableReadError(readErr) {
-			return readErr
+			return fail(readErr)
 		}
 		if attempts >= e.resilience.ResumeMaxAttempts {
-			return readErr
+			return fail(readErr)
 		}
 
 		nextStart := state.rangeStart + sentBytes
 		nextReq, err := newResumeRequest(req, state, nextStart)
 		if err != nil {
-			return err
+			return fail(err)
 		}
 		nextResp, err := e.transport.RoundTrip(nextReq)
 		if err != nil {
-			return err
+			return fail(err)
 		}
 		if err := validateResumeResponse(nextResp, state, nextStart); err != nil {
 			_ = nextResp.Body.Close()
-			return err
+			return fail(err)
 		}
 
 		current = nextResp

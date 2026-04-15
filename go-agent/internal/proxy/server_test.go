@@ -20,6 +20,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -603,6 +604,58 @@ func TestRouteEntryRetriesSameBackendOnceBeforeFailingRequest(t *testing.T) {
 	}
 }
 
+func TestRouteEntryMarksRedirectDialAddressInBackoffOnFailure(t *testing.T) {
+	redirectTarget := mustParseBackendURL(t, "http://127.0.0.1:18093")
+	cache := backends.NewCache(backends.Config{
+		Resolver: resolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
+			if host != "backend.example" {
+				t.Fatalf("unexpected resolver host %q", host)
+			}
+			return []net.IPAddr{{IP: net.ParseIP("127.0.0.10")}}, nil
+		}),
+	})
+	transport := NewSharedTransport()
+	sentinel := &net.OpError{Op: "dial", Net: "tcp", Err: io.ErrUnexpectedEOF}
+	var dialed string
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		dialed = dialAddressFromContext(ctx, address)
+		return nil, sentinel
+	}
+	entry := &routeEntry{
+		rule: model.HTTPRule{
+			FrontendURL: "http://edge.example.test/emby",
+			LoadBalancing: model.LoadBalancing{
+				Strategy: "round_robin",
+			},
+		},
+		backends: []httpBackend{
+			{target: mustParseBackendURL(t, "http://backend.example:8096"), backendHost: "backend.example:8096"},
+		},
+		backendCache:   cache,
+		transport:      transport,
+		selectionScope: "edge.example.test",
+		frontendPath:   "/emby",
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "http://edge.example.test/emby/__nre_redirect/http/127.0.0.1:18093/stream", nil)
+	req.Host = "edge.example.test"
+	recorder := httptest.NewRecorder()
+
+	err := entry.serveHTTP(recorder, req)
+	if err == nil {
+		t.Fatal("expected redirected dial failure")
+	}
+	if dialed != redirectTarget.Host {
+		t.Fatalf("expected dial address %q, got %q", redirectTarget.Host, dialed)
+	}
+	if cache.IsInBackoff("127.0.0.10:8096") {
+		t.Fatal("expected original backend candidate address to remain out of backoff")
+	}
+	if !cache.IsInBackoff(redirectTarget.Host) {
+		t.Fatalf("expected redirected dial address %q to be marked in backoff", redirectTarget.Host)
+	}
+}
+
 func TestRouteEntryDoesNotRetrySameBackendForUnsafeMethod(t *testing.T) {
 	requests := 0
 	flaky := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -648,6 +701,108 @@ func TestRouteEntryDoesNotRetrySameBackendForUnsafeMethod(t *testing.T) {
 	}
 	if requests != 1 {
 		t.Fatalf("expected exactly one backend attempt for unsafe method, got %d", requests)
+	}
+}
+
+func TestServerDoesNotAppendBadGatewayAfterResumableResponseStarts(t *testing.T) {
+	payload := []byte("0123456789abcdefghijklmnopqrstuvwxyz")
+	rangeStart := 5
+	rangeEnd := 20
+	expected := payload[rangeStart : rangeEnd+1]
+	split := len(expected) / 2
+
+	var mu sync.Mutex
+	requests := make([]string, 0, 2)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requests = append(requests, r.Header.Get("Range"))
+		attempt := len(requests)
+		mu.Unlock()
+
+		switch attempt {
+		case 1:
+			hijacker, ok := w.(http.Hijacker)
+			if !ok {
+				t.Fatal("backend response writer does not support hijack")
+			}
+			conn, rw, err := hijacker.Hijack()
+			if err != nil {
+				t.Fatalf("backend hijack failed: %v", err)
+			}
+			defer conn.Close()
+
+			_, _ = rw.WriteString(fmt.Sprintf("HTTP/1.1 206 Partial Content\r\nAccept-Ranges: bytes\r\nETag: \"stable\"\r\nContent-Range: bytes %d-%d/%d\r\n\r\n", rangeStart, rangeEnd, len(payload)))
+			_, _ = rw.Write(expected[:split])
+			_ = rw.Flush()
+		case 2:
+			if got := r.Header.Get("Range"); got != fmt.Sprintf("bytes=%d-%d", rangeStart+split, rangeEnd) {
+				t.Fatalf("expected resumed request for remaining bytes, got %q", got)
+			}
+			w.Header().Set("Accept-Ranges", "bytes")
+			w.Header().Set("ETag", `"changed"`)
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", rangeStart+split, rangeEnd, len(payload)))
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write(expected[split:])
+		default:
+			t.Fatalf("unexpected backend request #%d", attempt)
+		}
+	}))
+	defer backend.Close()
+
+	server, err := newServerWithResilience(
+		model.HTTPListener{
+			Rules: []model.HTTPRule{{
+				FrontendURL: "http://route.example/emby",
+				BackendURL:  backend.URL,
+			}},
+		},
+		nil,
+		Providers{},
+		backends.NewCache(backends.Config{}),
+		NewSharedTransport(),
+		StreamResilienceOptions{
+			ResumeEnabled:     true,
+			ResumeMaxAttempts: 1,
+		},
+	)
+	if err != nil {
+		t.Fatalf("failed to build resumable proxy server: %v", err)
+	}
+
+	proxy := httptest.NewServer(server)
+	defer proxy.Close()
+
+	req, err := http.NewRequest(http.MethodGet, proxy.URL+"/emby/video", nil)
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+	req.Host = "route.example"
+	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", rangeStart, rangeEnd))
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("proxy request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read proxy body: %v", err)
+	}
+	if resp.StatusCode != http.StatusPartialContent {
+		t.Fatalf("expected 206 response, got %d", resp.StatusCode)
+	}
+	if strings.Contains(string(body), "bad gateway") {
+		t.Fatalf("expected started response to end without appended 502 body, got %q", string(body))
+	}
+	if string(body) != string(expected[:split]) {
+		t.Fatalf("expected only already-streamed bytes after resume failure, got %q", string(body))
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(requests) != 2 {
+		t.Fatalf("expected exactly two upstream requests, got %d", len(requests))
 	}
 }
 

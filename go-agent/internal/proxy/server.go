@@ -136,6 +136,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if entry, ok := s.routes[host]; ok {
 		if err := entry.serveHTTP(w, req); err != nil {
 			log.Printf("[proxy] bad gateway for %s %s (host=%s frontend=%s): %v", req.Method, req.URL.Path, host, entry.rule.FrontendURL, err)
+			var startedErr *startedResponseError
+			if errors.As(err, &startedErr) {
+				return
+			}
 			http.Error(w, fmt.Sprintf("bad gateway: %v", err), http.StatusBadGateway)
 		}
 		return
@@ -279,6 +283,7 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 				log.Printf("[proxy] clone request error for %s -> %s: %v", e.rule.FrontendURL, candidate.target, err)
 				return err
 			}
+			actualDialAddress := dialAddressFromContext(attemptReq.Context(), candidate.dialAddress)
 			resp, err := e.transport.RoundTrip(attemptReq)
 			if err != nil {
 				log.Printf("[proxy] roundtrip error for %s -> %s: %v", e.rule.FrontendURL, candidate.target, err)
@@ -288,10 +293,10 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 				if attempt+1 < maxSameBackendAttempts {
 					continue
 				}
-				e.backendCache.MarkFailure(candidate.dialAddress)
+				e.backendCache.MarkFailure(actualDialAddress)
 				break
 			}
-			e.backendCache.MarkSuccess(candidate.dialAddress)
+			e.backendCache.MarkSuccess(actualDialAddress)
 			if e.modifyResp != nil {
 				modify := makeModifyResponse(FrontendOriginFromRule(e.rule), e.rule.ProxyRedirect, candidate.backendHost, normalizeURLPath(candidate.target.Path))
 				if err := modify(resp); err != nil {
@@ -768,6 +773,35 @@ func backendRetryError(req *http.Request, err error) error {
 		}
 	}
 	return err
+}
+
+type startedResponseError struct {
+	err error
+}
+
+func (e *startedResponseError) Error() string {
+	if e == nil || e.err == nil {
+		return ""
+	}
+	return e.err.Error()
+}
+
+func (e *startedResponseError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
+}
+
+func newStartedResponseError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var startedErr *startedResponseError
+	if errors.As(err, &startedErr) {
+		return err
+	}
+	return &startedResponseError{err: err}
 }
 
 func copyResponse(w http.ResponseWriter, resp *http.Response) {
