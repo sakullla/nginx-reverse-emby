@@ -59,21 +59,24 @@ func (p *TCPProber) Diagnose(ctx context.Context, rule model.L4Rule, relayListen
 		return Report{}, fmt.Errorf("no healthy backend candidates for %s:%d", rule.ListenHost, rule.ListenPort)
 	}
 
-	samples := make([]Sample, 0, p.attempts)
-	for i := 0; i < p.attempts; i++ {
-		candidate := candidates[i%len(candidates)]
-		reqCtx, cancel := context.WithTimeout(ctx, p.timeout)
-		start := time.Now()
-		conn, err := p.dialCandidate(reqCtx, rule, relayListeners, candidate.Address)
-		cancel()
-		if err != nil {
-			p.cache.MarkFailure(candidate.Address)
-			samples = append(samples, FailureSample(i+1, candidate.Address, err))
-			continue
+	samples := make([]Sample, 0, p.attempts*len(candidates))
+	attempt := 0
+	for _, candidate := range candidates {
+		for i := 0; i < p.attempts; i++ {
+			attempt++
+			reqCtx, cancel := context.WithTimeout(ctx, p.timeout)
+			start := time.Now()
+			conn, err := p.dialCandidate(reqCtx, rule, relayListeners, candidate.Address)
+			cancel()
+			if err != nil {
+				p.cache.MarkFailure(candidate.Address)
+				samples = append(samples, FailureSample(attempt, candidate.Address, err))
+				continue
+			}
+			_ = conn.Close()
+			p.cache.MarkSuccess(candidate.Address)
+			samples = append(samples, LatencySample(attempt, candidate.Address, time.Since(start), 0))
 		}
-		_ = conn.Close()
-		p.cache.MarkSuccess(candidate.Address)
-		samples = append(samples, LatencySample(i+1, candidate.Address, time.Since(start), 0))
 	}
 
 	return BuildReport("l4_tcp", rule.ID, samples), nil
