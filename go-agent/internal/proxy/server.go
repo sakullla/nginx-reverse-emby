@@ -284,6 +284,9 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 				return err
 			}
 			actualDialAddress := dialAddressFromContext(attemptReq.Context(), candidate.dialAddress)
+			if e.backendCache.IsInBackoff(actualDialAddress) {
+				break
+			}
 			resp, err := e.transport.RoundTrip(attemptReq)
 			if err != nil {
 				log.Printf("[proxy] roundtrip error for %s -> %s: %v", e.rule.FrontendURL, candidate.target, err)

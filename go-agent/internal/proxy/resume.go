@@ -31,6 +31,8 @@ func (e *routeEntry) shouldResumeResponse(req *http.Request, resp *http.Response
 
 func (e *routeEntry) copyResumableResponse(w http.ResponseWriter, req *http.Request, resp *http.Response, state resumableResponse) error {
 	copyHeaders(w.Header(), resp.Header)
+	w.Header().Del("Transfer-Encoding")
+	w.Header().Set("Content-Length", strconv.FormatInt(state.responseLength(), 10))
 	w.WriteHeader(resp.StatusCode)
 	fail := func(err error) error {
 		return newStartedResponseError(err)

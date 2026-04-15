@@ -656,6 +656,53 @@ func TestRouteEntryMarksRedirectDialAddressInBackoffOnFailure(t *testing.T) {
 	}
 }
 
+func TestRouteEntrySkipsRedirectDialAddressAlreadyInBackoff(t *testing.T) {
+	redirectTarget := mustParseBackendURL(t, "http://127.0.0.1:18094")
+	cache := backends.NewCache(backends.Config{
+		Resolver: resolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
+			if host != "backend.example" {
+				t.Fatalf("unexpected resolver host %q", host)
+			}
+			return []net.IPAddr{{IP: net.ParseIP("127.0.0.11")}}, nil
+		}),
+	})
+	cache.MarkFailure(redirectTarget.Host)
+
+	transport := NewSharedTransport()
+	dials := 0
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		dials++
+		return nil, &net.OpError{Op: "dial", Net: "tcp", Err: io.ErrUnexpectedEOF}
+	}
+	entry := &routeEntry{
+		rule: model.HTTPRule{
+			FrontendURL: "http://edge.example.test/emby",
+			LoadBalancing: model.LoadBalancing{
+				Strategy: "round_robin",
+			},
+		},
+		backends: []httpBackend{
+			{target: mustParseBackendURL(t, "http://backend.example:8096"), backendHost: "backend.example:8096"},
+		},
+		backendCache:   cache,
+		transport:      transport,
+		selectionScope: "edge.example.test",
+		frontendPath:   "/emby",
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "http://edge.example.test/emby/__nre_redirect/http/127.0.0.1:18094/stream", nil)
+	req.Host = "edge.example.test"
+	recorder := httptest.NewRecorder()
+
+	err := entry.serveHTTP(recorder, req)
+	if err == nil {
+		t.Fatal("expected redirected request to fail when target is already in backoff")
+	}
+	if dials != 0 {
+		t.Fatalf("expected redirect target already in backoff to skip dialing, got %d dials", dials)
+	}
+}
+
 func TestRouteEntryDoesNotRetrySameBackendForUnsafeMethod(t *testing.T) {
 	requests := 0
 	flaky := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -786,11 +833,14 @@ func TestServerDoesNotAppendBadGatewayAfterResumableResponseStarts(t *testing.T)
 	defer resp.Body.Close()
 
 	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatalf("failed to read proxy body: %v", err)
+	if !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("expected incomplete body read error, got %v", err)
 	}
 	if resp.StatusCode != http.StatusPartialContent {
 		t.Fatalf("expected 206 response, got %d", resp.StatusCode)
+	}
+	if resp.ContentLength != int64(len(expected)) {
+		t.Fatalf("expected deterministic content-length %d, got %d", len(expected), resp.ContentLength)
 	}
 	if strings.Contains(string(body), "bad gateway") {
 		t.Fatalf("expected started response to end without appended 502 body, got %q", string(body))
