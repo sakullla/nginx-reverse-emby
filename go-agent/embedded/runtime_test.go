@@ -2,6 +2,7 @@ package embedded
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -224,6 +225,66 @@ func TestRuntimeCloseDelegatesToEmbeddedAppCleanup(t *testing.T) {
 	}
 	if resetCalls != 1 {
 		t.Fatalf("relay timeout reset calls after second Close() = %d", resetCalls)
+	}
+}
+
+func TestRuntimeCloseReturnsStableErrorUnderConcurrentCalls(t *testing.T) {
+	previousNewEmbeddedApp := newEmbeddedApp
+	t.Cleanup(func() {
+		newEmbeddedApp = previousNewEmbeddedApp
+	})
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	wantErr := errors.New("close failed")
+
+	newEmbeddedApp = func(cfg agentapp.Config, st agentstore.Store, client agentapp.SyncClient) (embeddedAppRunner, error) {
+		return runtimeTestEmbeddedApp{
+			closeFn: func() error {
+				close(started)
+				<-release
+				return wantErr
+			},
+		}, nil
+	}
+
+	runtime, err := New(Config{
+		AgentID:   "local",
+		AgentName: "local",
+		DataDir:   t.TempDir(),
+	}, newRuntimeTestSource(Snapshot{}), newRuntimeTestSink())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	firstErr := make(chan error, 1)
+	go func() {
+		firstErr <- runtime.Close()
+	}()
+
+	<-started
+
+	secondErr := make(chan error, 1)
+	go func() {
+		secondErr <- runtime.Close()
+	}()
+
+	select {
+	case err := <-secondErr:
+		t.Fatalf("second Close() returned before first completed: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	close(release)
+
+	if err := <-firstErr; !errors.Is(err, wantErr) {
+		t.Fatalf("first Close() error = %v", err)
+	}
+	if err := <-secondErr; !errors.Is(err, wantErr) {
+		t.Fatalf("second Close() error = %v", err)
+	}
+	if err := runtime.Close(); !errors.Is(err, wantErr) {
+		t.Fatalf("third Close() error = %v", err)
 	}
 }
 

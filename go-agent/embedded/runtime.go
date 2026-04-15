@@ -170,20 +170,14 @@ func (r *Runtime) Close() error {
 		return nil
 	}
 	r.closeMu.Lock()
+	defer r.closeMu.Unlock()
 	if r.closed {
-		err := r.closeErr
-		r.closeMu.Unlock()
-		return err
+		return r.closeErr
 	}
+
+	r.closeErr = r.app.Close()
 	r.closed = true
-	r.closeMu.Unlock()
-
-	err := r.app.Close()
-
-	r.closeMu.Lock()
-	r.closeErr = err
-	r.closeMu.Unlock()
-	return err
+	return r.closeErr
 }
 
 type syncClientAdapter struct {
