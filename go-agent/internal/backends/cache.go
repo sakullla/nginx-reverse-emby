@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	"net"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,6 +29,7 @@ type Cache struct {
 	dnsCache   map[string]dnsCacheEntry
 	failures   map[string]failureEntry
 	roundRobin map[string]int
+	observed   map[string]candidateObservation
 }
 
 type dnsCacheEntry struct {
@@ -38,6 +40,13 @@ type dnsCacheEntry struct {
 type failureEntry struct {
 	consecutive int
 	retryAfter  time.Time
+}
+
+type candidateObservation struct {
+	successes   int
+	failures    int
+	lastLatency time.Duration
+	lastUpdated time.Time
 }
 
 func NewCache(cfg Config) *Cache {
@@ -77,6 +86,7 @@ func NewCache(cfg Config) *Cache {
 		dnsCache:     make(map[string]dnsCacheEntry),
 		failures:     make(map[string]failureEntry),
 		roundRobin:   make(map[string]int),
+		observed:     make(map[string]candidateObservation),
 	}
 }
 
@@ -143,6 +153,45 @@ func (c *Cache) Order(scope, strategy string, candidates []Candidate) []Candidat
 	}
 }
 
+func (c *Cache) ObserveSuccess(address string, latency time.Duration) {
+	key := strings.TrimSpace(address)
+	if key == "" {
+		return
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	entry := c.observed[key]
+	entry.successes++
+	entry.lastLatency = latency
+	entry.lastUpdated = c.now()
+	c.observed[key] = entry
+	delete(c.failures, key)
+}
+
+func (c *Cache) PreferResolvedCandidates(candidates []Candidate) []Candidate {
+	ordered := make([]Candidate, len(candidates))
+	copy(ordered, candidates)
+
+	sort.SliceStable(ordered, func(i, j int) bool {
+		left := c.observationFor(ordered[i].Address)
+		right := c.observationFor(ordered[j].Address)
+		if left.successes != right.successes {
+			return left.successes > right.successes
+		}
+		if left.failures != right.failures {
+			return left.failures < right.failures
+		}
+		if left.successes > 0 && right.successes > 0 && left.lastLatency != right.lastLatency {
+			return left.lastLatency < right.lastLatency
+		}
+		return false
+	})
+
+	return ordered
+}
+
 func (c *Cache) MarkFailure(address string) time.Duration {
 	key := strings.TrimSpace(address)
 	if key == "" {
@@ -156,6 +205,11 @@ func (c *Cache) MarkFailure(address string) time.Duration {
 
 	entry := c.failures[key]
 	entry.consecutive++
+
+	observed := c.observed[key]
+	observed.failures++
+	observed.lastUpdated = now
+	c.observed[key] = observed
 
 	backoff := c.backoffBase
 	for i := 1; i < entry.consecutive; i++ {
@@ -270,4 +324,15 @@ func normalizeStrategy(strategy string) string {
 	default:
 		return StrategyRoundRobin
 	}
+}
+
+func (c *Cache) observationFor(address string) candidateObservation {
+	key := strings.TrimSpace(address)
+	if key == "" {
+		return candidateObservation{}
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.observed[key]
 }

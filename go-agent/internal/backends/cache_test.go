@@ -198,6 +198,61 @@ func TestCacheFailureBackoffUsesConfiguredBaseAndLimit(t *testing.T) {
 	}
 }
 
+func TestCacheObserveSuccessStoresLatencyAndRanksCandidates(t *testing.T) {
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return time.Date(2026, 4, 16, 12, 0, 0, 0, time.UTC)
+		},
+	})
+	candidates := []Candidate{
+		{Address: "10.0.0.1:443"},
+		{Address: "10.0.0.2:443"},
+	}
+
+	cache.ObserveSuccess("10.0.0.1:443", 180*time.Millisecond)
+	cache.ObserveSuccess("10.0.0.2:443", 40*time.Millisecond)
+
+	got := cache.PreferResolvedCandidates(candidates)
+	if !reflect.DeepEqual(addresses(got), []string{"10.0.0.2:443", "10.0.0.1:443"}) {
+		t.Fatalf("unexpected preferred order: %v", addresses(got))
+	}
+}
+
+func TestCachePreferResolvedCandidatesPreservesInputOrderWithoutObservations(t *testing.T) {
+	cache := NewCache(Config{})
+	candidates := []Candidate{
+		{Address: "10.0.0.3:443"},
+		{Address: "10.0.0.4:443"},
+		{Address: "10.0.0.5:443"},
+	}
+
+	got := cache.PreferResolvedCandidates(candidates)
+	if !reflect.DeepEqual(addresses(got), []string{"10.0.0.3:443", "10.0.0.4:443", "10.0.0.5:443"}) {
+		t.Fatalf("unexpected preserved order: %v", addresses(got))
+	}
+}
+
+func TestCacheMarkFailureDemotesPreferredCandidate(t *testing.T) {
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return time.Date(2026, 4, 16, 12, 0, 0, 0, time.UTC)
+		},
+	})
+	candidates := []Candidate{
+		{Address: "10.0.0.6:443"},
+		{Address: "10.0.0.7:443"},
+	}
+
+	cache.ObserveSuccess("10.0.0.6:443", 25*time.Millisecond)
+	cache.ObserveSuccess("10.0.0.7:443", 90*time.Millisecond)
+	cache.MarkFailure("10.0.0.6:443")
+
+	got := cache.PreferResolvedCandidates(candidates)
+	if !reflect.DeepEqual(addresses(got), []string{"10.0.0.7:443", "10.0.0.6:443"}) {
+		t.Fatalf("unexpected order after failure: %v", addresses(got))
+	}
+}
+
 func addresses(candidates []Candidate) []string {
 	out := make([]string, len(candidates))
 	for i := range candidates {
