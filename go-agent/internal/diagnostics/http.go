@@ -79,6 +79,7 @@ type httpProbeCandidate struct {
 	targetURL    *url.URL
 	backendLabel string
 	dialAddress  string
+	configuredURL string
 }
 
 func (p *HTTPProber) probeCandidate(ctx context.Context, attempt int, rule model.HTTPRule, relayListeners []model.RelayListener, candidate httpProbeCandidate) Sample {
@@ -95,7 +96,7 @@ func (p *HTTPProber) probeCandidate(ctx context.Context, attempt int, rule model
 	}
 	defer resp.Body.Close()
 	_, _ = io.Copy(io.Discard, resp.Body)
-	p.cache.MarkSuccess(candidate.dialAddress)
+	p.cache.ObserveSuccess(candidate.dialAddress, time.Since(start))
 
 	return LatencySample(attempt, candidate.backendLabel, time.Since(start), resp.StatusCode)
 }
@@ -159,13 +160,35 @@ func httpCandidates(ctx context.Context, cache *backends.Cache, rule model.HTTPR
 			}
 			clone := *target
 			out = append(out, httpProbeCandidate{
-				targetURL:    &clone,
-				backendLabel: clone.String(),
-				dialAddress:  candidate.Address,
+				targetURL:     &clone,
+				backendLabel:  probeBackendLabel(&clone, candidate.Address),
+				dialAddress:   candidate.Address,
+				configuredURL: clone.String(),
 			})
 		}
 	}
 	return out, nil
+}
+
+func probeBackendLabel(target *url.URL, dialAddress string) string {
+	if target == nil {
+		return dialAddress
+	}
+
+	if strings.EqualFold(httpProbeTargetAddress(target), dialAddress) {
+		return target.String()
+	}
+	return fmt.Sprintf("%s [%s]", target.String(), dialAddress)
+}
+
+func httpProbeTargetAddress(target *url.URL) string {
+	if target == nil {
+		return ""
+	}
+	if target.Port() != "" {
+		return target.Host
+	}
+	return net.JoinHostPort(target.Hostname(), strconv.Itoa(httpPortWithDefault(target)))
 }
 
 func (p *HTTPProber) clientForCandidate(rule model.HTTPRule, relayListeners []model.RelayListener, candidate httpProbeCandidate) (*http.Client, error) {

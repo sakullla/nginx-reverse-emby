@@ -2,12 +2,15 @@ package diagnostics
 
 import (
 	"context"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
@@ -224,4 +227,71 @@ func TestHTTPProberDiagnoseCollectsFiveSamplesPerBackend(t *testing.T) {
 	if backendHits["a"] != 5 || backendHits["b"] != 5 {
 		t.Fatalf("backendHits = %+v", backendHits)
 	}
+}
+
+func TestHTTPProberDiagnoseSplitsHostnameBackendsByResolvedAddress(t *testing.T) {
+	listener, err := net.Listen("tcp", "0.0.0.0:0")
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	defer listener.Close()
+
+	server := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		}),
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = server.Serve(listener)
+	}()
+	defer func() {
+		_ = server.Close()
+		<-done
+	}()
+
+	port := listener.Addr().(*net.TCPAddr).Port
+	cache := backends.NewCache(backends.Config{
+		Resolver: diagnosticResolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
+			if host != "echo.example.test" {
+				t.Fatalf("unexpected resolver host %q", host)
+			}
+			return []net.IPAddr{
+				{IP: net.ParseIP("127.0.0.1")},
+				{IP: net.ParseIP("127.0.0.2")},
+			}, nil
+		}),
+	})
+
+	prober := NewHTTPProber(HTTPProberConfig{
+		Attempts: 5,
+		Timeout:  time.Second,
+		Cache:    cache,
+	})
+
+	report, err := prober.Diagnose(context.Background(), model.HTTPRule{
+		ID:          31,
+		FrontendURL: "https://edge.example.test",
+		BackendURL:  fmt.Sprintf("http://echo.example.test:%d/healthz", port),
+	}, nil)
+	if err != nil {
+		t.Fatalf("Diagnose() error = %v", err)
+	}
+
+	if len(report.Backends) != 2 {
+		t.Fatalf("Backends = %+v", report.Backends)
+	}
+	if report.Backends[0].Backend != fmt.Sprintf("http://echo.example.test:%d/healthz [127.0.0.1:%d]", port, port) {
+		t.Fatalf("first backend = %+v", report.Backends[0])
+	}
+	if report.Backends[1].Backend != fmt.Sprintf("http://echo.example.test:%d/healthz [127.0.0.2:%d]", port, port) {
+		t.Fatalf("second backend = %+v", report.Backends[1])
+	}
+}
+
+type diagnosticResolverFunc func(context.Context, string) ([]net.IPAddr, error)
+
+func (f diagnosticResolverFunc) LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error) {
+	return f(ctx, host)
 }
