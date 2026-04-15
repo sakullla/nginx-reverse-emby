@@ -22,30 +22,84 @@ const (
 )
 
 type Config struct {
-	ListenAddr                      string
-	DataDir                         string
-	PanelToken                      string
-	RegisterToken                   string
-	FrontendDistDir                 string
-	PublicAgentAssetsDir            string
-	EnableLocalAgent                bool
-	LocalAgentID                    string
-	LocalAgentName                  string
-	HeartbeatInterval               time.Duration
-	ManagedCertificateRenewInterval time.Duration
-	ManagedDNSCertificatesEnabled   bool
+	ListenAddr                        string
+	DataDir                           string
+	PanelToken                        string
+	RegisterToken                     string
+	FrontendDistDir                   string
+	PublicAgentAssetsDir              string
+	EnableLocalAgent                  bool
+	LocalAgentID                      string
+	LocalAgentName                    string
+	HeartbeatInterval                 time.Duration
+	LocalAgentHTTP3Enabled            bool
+	LocalAgentHTTPTransport           HTTPTransportConfig
+	LocalAgentHTTPResilience          HTTPResilienceConfig
+	LocalAgentBackendFailures         BackendFailureConfig
+	LocalAgentBackendFailuresExplicit bool
+	LocalAgentRelayTimeouts           RelayTimeoutConfig
+	ManagedCertificateRenewInterval   time.Duration
+	ManagedDNSCertificatesEnabled     bool
+}
+
+type HTTPTransportConfig struct {
+	DialTimeout           time.Duration
+	TLSHandshakeTimeout   time.Duration
+	ResponseHeaderTimeout time.Duration
+	IdleConnTimeout       time.Duration
+	KeepAlive             time.Duration
+}
+
+type HTTPResilienceConfig struct {
+	ResumeEnabled            bool
+	ResumeMaxAttempts        int
+	SameBackendRetryAttempts int
+}
+
+type BackendFailureConfig struct {
+	BackoffBase  time.Duration
+	BackoffLimit time.Duration
+}
+
+type RelayTimeoutConfig struct {
+	DialTimeout      time.Duration
+	HandshakeTimeout time.Duration
+	FrameTimeout     time.Duration
+	IdleTimeout      time.Duration
 }
 
 func Default() Config {
 	return Config{
-		ListenAddr:                      defaultListenAddr,
-		DataDir:                         defaultDataDir,
-		FrontendDistDir:                 defaultFrontendDistDir,
-		PublicAgentAssetsDir:            defaultPublicAssetsDir,
-		EnableLocalAgent:                defaultEnableLocalAgent,
-		LocalAgentID:                    defaultLocalAgentID,
-		LocalAgentName:                  defaultLocalAgentName,
-		HeartbeatInterval:               defaultHeartbeatInterval,
+		ListenAddr:           defaultListenAddr,
+		DataDir:              defaultDataDir,
+		FrontendDistDir:      defaultFrontendDistDir,
+		PublicAgentAssetsDir: defaultPublicAssetsDir,
+		EnableLocalAgent:     defaultEnableLocalAgent,
+		LocalAgentID:         defaultLocalAgentID,
+		LocalAgentName:       defaultLocalAgentName,
+		HeartbeatInterval:    defaultHeartbeatInterval,
+		LocalAgentHTTPTransport: HTTPTransportConfig{
+			DialTimeout:           30 * time.Second,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ResponseHeaderTimeout: 30 * time.Second,
+			IdleConnTimeout:       90 * time.Second,
+			KeepAlive:             30 * time.Second,
+		},
+		LocalAgentHTTPResilience: HTTPResilienceConfig{
+			ResumeEnabled:            true,
+			ResumeMaxAttempts:        2,
+			SameBackendRetryAttempts: 1,
+		},
+		LocalAgentBackendFailures: BackendFailureConfig{
+			BackoffBase:  1 * time.Second,
+			BackoffLimit: 15 * time.Second,
+		},
+		LocalAgentRelayTimeouts: RelayTimeoutConfig{
+			DialTimeout:      5 * time.Second,
+			HandshakeTimeout: 5 * time.Second,
+			FrameTimeout:     5 * time.Second,
+			IdleTimeout:      2 * time.Minute,
+		},
 		ManagedCertificateRenewInterval: defaultManagedCertRenew,
 	}
 }
@@ -117,6 +171,116 @@ func LoadFromEnv() (Config, error) {
 		}
 		cfg.HeartbeatInterval = dur
 	}
+	if val := strings.TrimSpace(os.Getenv("NRE_HTTP3_ENABLED")); val != "" {
+		enabled, err := strconv.ParseBool(val)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid NRE_HTTP3_ENABLED: %w", err)
+		}
+		cfg.LocalAgentHTTP3Enabled = enabled
+	}
+	if val := strings.TrimSpace(os.Getenv("NRE_HTTP_DIAL_TIMEOUT")); val != "" {
+		dur, err := parsePositiveDurationEnv("NRE_HTTP_DIAL_TIMEOUT", val)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.LocalAgentHTTPTransport.DialTimeout = dur
+	}
+	if val := strings.TrimSpace(os.Getenv("NRE_HTTP_TLS_HANDSHAKE_TIMEOUT")); val != "" {
+		dur, err := parsePositiveDurationEnv("NRE_HTTP_TLS_HANDSHAKE_TIMEOUT", val)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.LocalAgentHTTPTransport.TLSHandshakeTimeout = dur
+	}
+	if val := strings.TrimSpace(os.Getenv("NRE_HTTP_RESPONSE_HEADER_TIMEOUT")); val != "" {
+		dur, err := parsePositiveDurationEnv("NRE_HTTP_RESPONSE_HEADER_TIMEOUT", val)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.LocalAgentHTTPTransport.ResponseHeaderTimeout = dur
+	}
+	if val := strings.TrimSpace(os.Getenv("NRE_HTTP_IDLE_CONN_TIMEOUT")); val != "" {
+		dur, err := parsePositiveDurationEnv("NRE_HTTP_IDLE_CONN_TIMEOUT", val)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.LocalAgentHTTPTransport.IdleConnTimeout = dur
+	}
+	if val := strings.TrimSpace(os.Getenv("NRE_HTTP_KEEP_ALIVE")); val != "" {
+		dur, err := parsePositiveDurationEnv("NRE_HTTP_KEEP_ALIVE", val)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.LocalAgentHTTPTransport.KeepAlive = dur
+	}
+	if val := strings.TrimSpace(os.Getenv("NRE_HTTP_STREAM_RESUME_ENABLED")); val != "" {
+		enabled, err := strconv.ParseBool(val)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid NRE_HTTP_STREAM_RESUME_ENABLED: %w", err)
+		}
+		cfg.LocalAgentHTTPResilience.ResumeEnabled = enabled
+	}
+	if val := strings.TrimSpace(os.Getenv("NRE_HTTP_STREAM_RESUME_MAX_ATTEMPTS")); val != "" {
+		attempts, err := parsePositiveIntEnv("NRE_HTTP_STREAM_RESUME_MAX_ATTEMPTS", val)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.LocalAgentHTTPResilience.ResumeMaxAttempts = attempts
+	}
+	if val := strings.TrimSpace(os.Getenv("NRE_HTTP_SAME_BACKEND_RETRY_ATTEMPTS")); val != "" {
+		attempts, err := parsePositiveIntEnv("NRE_HTTP_SAME_BACKEND_RETRY_ATTEMPTS", val)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.LocalAgentHTTPResilience.SameBackendRetryAttempts = attempts
+	}
+	if val := strings.TrimSpace(os.Getenv("NRE_BACKEND_FAILURE_BACKOFF_BASE")); val != "" {
+		dur, err := parsePositiveDurationEnv("NRE_BACKEND_FAILURE_BACKOFF_BASE", val)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.LocalAgentBackendFailures.BackoffBase = dur
+		cfg.LocalAgentBackendFailuresExplicit = true
+	}
+	if val := strings.TrimSpace(os.Getenv("NRE_BACKEND_FAILURE_BACKOFF_LIMIT")); val != "" {
+		dur, err := parsePositiveDurationEnv("NRE_BACKEND_FAILURE_BACKOFF_LIMIT", val)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.LocalAgentBackendFailures.BackoffLimit = dur
+		cfg.LocalAgentBackendFailuresExplicit = true
+	}
+	if cfg.LocalAgentBackendFailures.BackoffBase > cfg.LocalAgentBackendFailures.BackoffLimit {
+		return Config{}, errors.New("NRE_BACKEND_FAILURE_BACKOFF_BASE must be less than or equal to NRE_BACKEND_FAILURE_BACKOFF_LIMIT")
+	}
+	if val := strings.TrimSpace(os.Getenv("NRE_RELAY_DIAL_TIMEOUT")); val != "" {
+		dur, err := parsePositiveDurationEnv("NRE_RELAY_DIAL_TIMEOUT", val)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.LocalAgentRelayTimeouts.DialTimeout = dur
+	}
+	if val := strings.TrimSpace(os.Getenv("NRE_RELAY_HANDSHAKE_TIMEOUT")); val != "" {
+		dur, err := parsePositiveDurationEnv("NRE_RELAY_HANDSHAKE_TIMEOUT", val)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.LocalAgentRelayTimeouts.HandshakeTimeout = dur
+	}
+	if val := strings.TrimSpace(os.Getenv("NRE_RELAY_FRAME_TIMEOUT")); val != "" {
+		dur, err := parsePositiveDurationEnv("NRE_RELAY_FRAME_TIMEOUT", val)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.LocalAgentRelayTimeouts.FrameTimeout = dur
+	}
+	if val := strings.TrimSpace(os.Getenv("NRE_RELAY_IDLE_TIMEOUT")); val != "" {
+		dur, err := parsePositiveDurationEnv("NRE_RELAY_IDLE_TIMEOUT", val)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.LocalAgentRelayTimeouts.IdleTimeout = dur
+	}
 	if val := strings.TrimSpace(os.Getenv("NRE_MANAGED_CERT_RENEW_INTERVAL")); val != "" {
 		dur, err := time.ParseDuration(val)
 		if err != nil {
@@ -162,4 +326,26 @@ func parseBool(value string) (bool, error) {
 	default:
 		return false, fmt.Errorf("unsupported boolean value %q", value)
 	}
+}
+
+func parsePositiveDurationEnv(name, value string) (time.Duration, error) {
+	dur, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s: %w", name, err)
+	}
+	if dur <= 0 {
+		return 0, fmt.Errorf("%s must be positive", name)
+	}
+	return dur, nil
+}
+
+func parsePositiveIntEnv(name, value string) (int, error) {
+	num, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s: %w", name, err)
+	}
+	if num <= 0 {
+		return 0, fmt.Errorf("%s must be positive", name)
+	}
+	return num, nil
 }

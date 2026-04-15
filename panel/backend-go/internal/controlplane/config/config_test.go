@@ -227,3 +227,43 @@ func TestLoadFromEnvParsesLegacyManagedCertificateRenewIntervalMillis(t *testing
 		t.Fatalf("ManagedCertificateRenewInterval = %v", cfg.ManagedCertificateRenewInterval)
 	}
 }
+
+func TestLoadFromEnvParsesLocalAgentRuntimeResilienceSettings(t *testing.T) {
+	t.Setenv("NRE_PANEL_TOKEN", "secret")
+	t.Setenv("NRE_REGISTER_TOKEN", "register-secret")
+	t.Setenv("NRE_HTTP3_ENABLED", "true")
+	t.Setenv("NRE_HTTP_DIAL_TIMEOUT", "7s")
+	t.Setenv("NRE_HTTP_TLS_HANDSHAKE_TIMEOUT", "8s")
+	t.Setenv("NRE_HTTP_RESPONSE_HEADER_TIMEOUT", "9s")
+	t.Setenv("NRE_HTTP_IDLE_CONN_TIMEOUT", "10s")
+	t.Setenv("NRE_HTTP_KEEP_ALIVE", "11s")
+	t.Setenv("NRE_HTTP_STREAM_RESUME_ENABLED", "true")
+	t.Setenv("NRE_HTTP_STREAM_RESUME_MAX_ATTEMPTS", "4")
+	t.Setenv("NRE_HTTP_SAME_BACKEND_RETRY_ATTEMPTS", "3")
+	t.Setenv("NRE_BACKEND_FAILURE_BACKOFF_BASE", "1s")
+	t.Setenv("NRE_BACKEND_FAILURE_BACKOFF_LIMIT", "15s")
+	t.Setenv("NRE_RELAY_DIAL_TIMEOUT", "12s")
+	t.Setenv("NRE_RELAY_HANDSHAKE_TIMEOUT", "13s")
+	t.Setenv("NRE_RELAY_FRAME_TIMEOUT", "14s")
+	t.Setenv("NRE_RELAY_IDLE_TIMEOUT", "15s")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if !cfg.LocalAgentHTTP3Enabled {
+		t.Fatal("expected LocalAgentHTTP3Enabled")
+	}
+	if cfg.LocalAgentHTTPTransport.DialTimeout != 7*time.Second {
+		t.Fatalf("DialTimeout = %v", cfg.LocalAgentHTTPTransport.DialTimeout)
+	}
+	if cfg.LocalAgentHTTPResilience.ResumeMaxAttempts != 4 {
+		t.Fatalf("ResumeMaxAttempts = %d", cfg.LocalAgentHTTPResilience.ResumeMaxAttempts)
+	}
+	if !cfg.LocalAgentBackendFailuresExplicit {
+		t.Fatal("expected LocalAgentBackendFailuresExplicit")
+	}
+	if cfg.LocalAgentRelayTimeouts.IdleTimeout != 15*time.Second {
+		t.Fatalf("IdleTimeout = %v", cfg.LocalAgentRelayTimeouts.IdleTimeout)
+	}
+}

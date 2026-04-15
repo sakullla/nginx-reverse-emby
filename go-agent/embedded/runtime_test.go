@@ -4,6 +4,9 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	agentapp "github.com/sakullla/nginx-reverse-emby/go-agent/internal/app"
+	agentstore "github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
 )
 
 type runtimeTestSource struct {
@@ -126,6 +129,61 @@ func TestRunPersistsAppliedRevisionAcrossRuntimeRecreation(t *testing.T) {
 	}
 	if request.CurrentRevision != 7 {
 		t.Fatalf("second sync CurrentRevision = %d, want 7", request.CurrentRevision)
+	}
+}
+
+func TestNewPropagatesResilienceConfigIntoEmbeddedApp(t *testing.T) {
+	previousNewEmbeddedApp := newEmbeddedApp
+	t.Cleanup(func() {
+		newEmbeddedApp = previousNewEmbeddedApp
+	})
+
+	captured := agentapp.Config{}
+	newEmbeddedApp = func(cfg agentapp.Config, st agentstore.Store, client agentapp.SyncClient) (*agentapp.App, error) {
+		captured = cfg
+		return &agentapp.App{}, nil
+	}
+
+	_, err := New(Config{
+		AgentID:           "local",
+		AgentName:         "local",
+		DataDir:           t.TempDir(),
+		CurrentVersion:    "1.0.0",
+		HeartbeatInterval: 5 * time.Millisecond,
+		HTTP3Enabled:      true,
+		HTTPTransport: HTTPTransportConfig{
+			ResponseHeaderTimeout: 9 * time.Second,
+		},
+		HTTPResilience: HTTPResilienceConfig{
+			ResumeMaxAttempts: 4,
+		},
+		BackendFailures: BackendFailureConfig{
+			BackoffBase:  1 * time.Second,
+			BackoffLimit: 15 * time.Second,
+		},
+		BackendFailuresExplicit: true,
+		RelayTimeouts: RelayTimeoutConfig{
+			IdleTimeout: 15 * time.Second,
+		},
+	}, newRuntimeTestSource(Snapshot{}), newRuntimeTestSink())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	if !captured.HTTP3Enabled {
+		t.Fatal("expected HTTP3Enabled propagation")
+	}
+	if captured.HTTPTransport.ResponseHeaderTimeout != 9*time.Second {
+		t.Fatalf("ResponseHeaderTimeout = %v", captured.HTTPTransport.ResponseHeaderTimeout)
+	}
+	if captured.HTTPResilience.ResumeMaxAttempts != 4 {
+		t.Fatalf("ResumeMaxAttempts = %d", captured.HTTPResilience.ResumeMaxAttempts)
+	}
+	if !captured.BackendFailuresExplicit {
+		t.Fatal("expected BackendFailuresExplicit propagation")
+	}
+	if captured.RelayTimeouts.IdleTimeout != 15*time.Second {
+		t.Fatalf("IdleTimeout = %v", captured.RelayTimeouts.IdleTimeout)
 	}
 }
 

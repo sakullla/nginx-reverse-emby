@@ -22,19 +22,20 @@ const (
 )
 
 type Config struct {
-	AgentID              string
-	AgentName            string
-	AgentToken           string
-	MasterURL            string
-	DataDir              string
-	HeartbeatInterval    time.Duration
-	HTTPTransport        HTTPTransportConfig
-	HTTPResilience       HTTPResilienceConfig
-	BackendFailures      BackendFailureConfig
-	RelayTimeouts        RelayTimeoutConfig
-	HTTP3Enabled         bool
-	CurrentVersion       string
-	RuntimePackageSHA256 string
+	AgentID                 string
+	AgentName               string
+	AgentToken              string
+	MasterURL               string
+	DataDir                 string
+	HeartbeatInterval       time.Duration
+	HTTPTransport           HTTPTransportConfig
+	HTTPResilience          HTTPResilienceConfig
+	BackendFailures         BackendFailureConfig
+	BackendFailuresExplicit bool
+	RelayTimeouts           RelayTimeoutConfig
+	HTTP3Enabled            bool
+	CurrentVersion          string
+	RuntimePackageSHA256    string
 }
 
 type HTTPTransportConfig struct {
@@ -97,6 +98,10 @@ func Default() Config {
 
 func LoadFromEnv() (Config, error) {
 	return loadFromEnvForExecutable("")
+}
+
+func (c Config) HasExplicitBackendFailureOverrides() bool {
+	return c.BackendFailuresExplicit
 }
 
 func loadFromEnvForExecutable(executablePath string) (Config, error) {
@@ -210,6 +215,7 @@ func loadFromEnvForExecutable(executablePath string) (Config, error) {
 			return Config{}, err
 		}
 		cfg.BackendFailures.BackoffBase = dur
+		cfg.BackendFailuresExplicit = true
 	}
 	if val := strings.TrimSpace(os.Getenv("NRE_BACKEND_FAILURE_BACKOFF_LIMIT")); val != "" {
 		dur, err := parsePositiveDurationEnv("NRE_BACKEND_FAILURE_BACKOFF_LIMIT", val)
@@ -217,6 +223,7 @@ func loadFromEnvForExecutable(executablePath string) (Config, error) {
 			return Config{}, err
 		}
 		cfg.BackendFailures.BackoffLimit = dur
+		cfg.BackendFailuresExplicit = true
 	}
 	if val := strings.TrimSpace(os.Getenv("NRE_RELAY_DIAL_TIMEOUT")); val != "" {
 		dur, err := parsePositiveDurationEnv("NRE_RELAY_DIAL_TIMEOUT", val)

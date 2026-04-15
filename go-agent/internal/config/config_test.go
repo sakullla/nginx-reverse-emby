@@ -317,6 +317,27 @@ func TestLoadFromEnvRejectsBackendFailureBackoffBaseGreaterThanLimit(t *testing.
 	}
 }
 
+func TestLoadFromEnvBackendFailureOverrideExplicitWhenProvidedAtDefaultValues(t *testing.T) {
+	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
+	t.Setenv("NRE_AGENT_TOKEN", "secret")
+	t.Setenv("NRE_BACKEND_FAILURE_BACKOFF_BASE", "1s")
+	t.Setenv("NRE_BACKEND_FAILURE_BACKOFF_LIMIT", "15s")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if !cfg.HasExplicitBackendFailureOverrides() {
+		t.Fatal("expected backend failure overrides to be explicit")
+	}
+}
+
+func TestDefaultConfigBackendFailureOverrideNotExplicit(t *testing.T) {
+	if Default().HasExplicitBackendFailureOverrides() {
+		t.Fatal("expected default config to have no explicit backend failure overrides")
+	}
+}
+
 func sumSHA256Hex(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])

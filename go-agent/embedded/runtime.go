@@ -7,6 +7,7 @@ import (
 	"time"
 
 	agentapp "github.com/sakullla/nginx-reverse-emby/go-agent/internal/app"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	agentstore "github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
 )
@@ -38,11 +39,43 @@ type StateSink interface {
 }
 
 type Config struct {
-	AgentID           string
-	AgentName         string
-	DataDir           string
-	CurrentVersion    string
-	HeartbeatInterval time.Duration
+	AgentID                 string
+	AgentName               string
+	DataDir                 string
+	CurrentVersion          string
+	HeartbeatInterval       time.Duration
+	HTTP3Enabled            bool
+	HTTPTransport           HTTPTransportConfig
+	HTTPResilience          HTTPResilienceConfig
+	BackendFailures         BackendFailureConfig
+	BackendFailuresExplicit bool
+	RelayTimeouts           RelayTimeoutConfig
+}
+
+type HTTPTransportConfig struct {
+	DialTimeout           time.Duration
+	TLSHandshakeTimeout   time.Duration
+	ResponseHeaderTimeout time.Duration
+	IdleConnTimeout       time.Duration
+	KeepAlive             time.Duration
+}
+
+type HTTPResilienceConfig struct {
+	ResumeEnabled            bool
+	ResumeMaxAttempts        int
+	SameBackendRetryAttempts int
+}
+
+type BackendFailureConfig struct {
+	BackoffBase  time.Duration
+	BackoffLimit time.Duration
+}
+
+type RelayTimeoutConfig struct {
+	DialTimeout      time.Duration
+	HandshakeTimeout time.Duration
+	FrameTimeout     time.Duration
+	IdleTimeout      time.Duration
 }
 
 type Runtime struct {
@@ -59,6 +92,10 @@ var newPersistentStore = func(dataDir string, sink StateSink) (agentstore.Store,
 	return &persistentBridgeStore{delegate: delegate, sink: sink}, nil
 }
 
+var newEmbeddedApp = func(cfg agentapp.Config, st agentstore.Store, client agentapp.SyncClient) (*agentapp.App, error) {
+	return agentapp.NewEmbedded(cfg, st, client)
+}
+
 func New(cfg Config, source SyncSource, sink StateSink) (*Runtime, error) {
 	if source == nil {
 		return nil, errors.New("sync source is required")
@@ -72,12 +109,36 @@ func New(cfg Config, source SyncSource, sink StateSink) (*Runtime, error) {
 		return nil, err
 	}
 
-	runtimeApp, err := agentapp.NewEmbedded(agentapp.Config{
+	runtimeApp, err := newEmbeddedApp(agentapp.Config{
 		AgentID:           cfg.AgentID,
 		AgentName:         cfg.AgentName,
 		DataDir:           cfg.DataDir,
 		HeartbeatInterval: cfg.HeartbeatInterval,
 		CurrentVersion:    cfg.CurrentVersion,
+		HTTP3Enabled:      cfg.HTTP3Enabled,
+		HTTPTransport: config.HTTPTransportConfig{
+			DialTimeout:           cfg.HTTPTransport.DialTimeout,
+			TLSHandshakeTimeout:   cfg.HTTPTransport.TLSHandshakeTimeout,
+			ResponseHeaderTimeout: cfg.HTTPTransport.ResponseHeaderTimeout,
+			IdleConnTimeout:       cfg.HTTPTransport.IdleConnTimeout,
+			KeepAlive:             cfg.HTTPTransport.KeepAlive,
+		},
+		HTTPResilience: config.HTTPResilienceConfig{
+			ResumeEnabled:            cfg.HTTPResilience.ResumeEnabled,
+			ResumeMaxAttempts:        cfg.HTTPResilience.ResumeMaxAttempts,
+			SameBackendRetryAttempts: cfg.HTTPResilience.SameBackendRetryAttempts,
+		},
+		BackendFailures: config.BackendFailureConfig{
+			BackoffBase:  cfg.BackendFailures.BackoffBase,
+			BackoffLimit: cfg.BackendFailures.BackoffLimit,
+		},
+		BackendFailuresExplicit: cfg.BackendFailuresExplicit,
+		RelayTimeouts: config.RelayTimeoutConfig{
+			DialTimeout:      cfg.RelayTimeouts.DialTimeout,
+			HandshakeTimeout: cfg.RelayTimeouts.HandshakeTimeout,
+			FrameTimeout:     cfg.RelayTimeouts.FrameTimeout,
+			IdleTimeout:      cfg.RelayTimeouts.IdleTimeout,
+		},
 	}, persistentStore, syncClientAdapter{source: source})
 	if err != nil {
 		return nil, err

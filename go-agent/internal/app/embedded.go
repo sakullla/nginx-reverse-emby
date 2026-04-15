@@ -5,6 +5,7 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/certs"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
 )
 
@@ -15,6 +16,19 @@ func NewEmbedded(cfg Config, st store.Store, client SyncClient) (*App, error) {
 	if client == nil {
 		return nil, errors.New("sync client is required")
 	}
+
+	resetRelayTimeouts := relay.ConfigureTimeouts(relay.TimeoutConfig{
+		DialTimeout:      cfg.RelayTimeouts.DialTimeout,
+		HandshakeTimeout: cfg.RelayTimeouts.HandshakeTimeout,
+		FrameTimeout:     cfg.RelayTimeouts.FrameTimeout,
+		IdleTimeout:      cfg.RelayTimeouts.IdleTimeout,
+	})
+	restoreRelayTimeouts := true
+	defer func() {
+		if restoreRelayTimeouts {
+			resetRelayTimeouts()
+		}
+	}()
 
 	defaults := config.Default()
 	if cfg.AgentID == "" {
@@ -39,15 +53,18 @@ func NewEmbedded(cfg Config, st store.Store, client SyncClient) (*App, error) {
 		return nil, err
 	}
 
-	return newAppWithAllDeps(
+	app := newAppWithAllDeps(
 		cfg,
 		st,
 		client,
-		newHTTPRuntimeManagerWithTLSAndHTTP3(certManager, cfg.HTTP3Enabled),
+		newHTTPRuntimeManagerWithTLSAndHTTP3AndConfig(certManager, cfg.HTTP3Enabled, cfg),
 		certManager,
-		newL4RuntimeManagerWithRelay(certManager),
+		newL4RuntimeManagerWithRelayAndConfig(certManager, cfg),
 		newRelayRuntimeManager(certManager),
 		nil,
 		nil,
-	), nil
+	)
+	app.relayTimeoutReset = resetRelayTimeouts
+	restoreRelayTimeouts = false
+	return app, nil
 }

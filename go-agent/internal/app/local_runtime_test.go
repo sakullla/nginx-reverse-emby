@@ -44,6 +44,7 @@ func TestHTTPRuntimeManagerUsesConfiguredTransportAndBackoff(t *testing.T) {
 			BackoffBase:  500 * time.Millisecond,
 			BackoffLimit: 9 * time.Second,
 		},
+		BackendFailuresExplicit: true,
 	}
 
 	manager := newHTTPRuntimeManagerWithConfig(cfg)
@@ -67,6 +68,21 @@ func TestHTTPRuntimeManagerTask1DefaultsPreserveLegacyBackoffCap(t *testing.T) {
 		backoff = manager.cache.MarkFailure(addr)
 	}
 	if backoff != 60*time.Second {
+		t.Fatalf("MarkFailure() cap = %v", backoff)
+	}
+}
+
+func TestHTTPRuntimeManagerExplicitTask1DefaultsUseTask1BackoffCap(t *testing.T) {
+	cfg := config.Default()
+	cfg.BackendFailuresExplicit = true
+	manager := newHTTPRuntimeManagerWithConfig(cfg)
+
+	addr := "127.0.0.1:8096"
+	var backoff time.Duration
+	for i := 0; i < 12; i++ {
+		backoff = manager.cache.MarkFailure(addr)
+	}
+	if backoff != 15*time.Second {
 		t.Fatalf("MarkFailure() cap = %v", backoff)
 	}
 }
