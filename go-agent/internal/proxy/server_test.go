@@ -603,6 +603,54 @@ func TestRouteEntryRetriesSameBackendOnceBeforeFailingRequest(t *testing.T) {
 	}
 }
 
+func TestRouteEntryDoesNotRetrySameBackendForUnsafeMethod(t *testing.T) {
+	requests := 0
+	flaky := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Fatalf("response writer does not support hijack")
+		}
+		conn, _, err := hj.Hijack()
+		if err != nil {
+			t.Fatalf("hijack failed: %v", err)
+		}
+		_ = conn.Close()
+	}))
+	defer flaky.Close()
+
+	backendURL := mustParseBackendURL(t, flaky.URL)
+	entry := &routeEntry{
+		rule: model.HTTPRule{
+			FrontendURL: "http://edge.example.test",
+			LoadBalancing: model.LoadBalancing{
+				Strategy: "round_robin",
+			},
+		},
+		backends: []httpBackend{
+			{target: backendURL, backendHost: backendURL.Host},
+		},
+		backendCache:   backends.NewCache(backends.Config{}),
+		transport:      NewSharedTransport(),
+		selectionScope: "edge.example.test",
+		resilience: StreamResilienceOptions{
+			SameBackendRetryAttempts: 2,
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "http://edge.example.test/retry", strings.NewReader("payload"))
+	req.Host = "edge.example.test"
+	recorder := httptest.NewRecorder()
+
+	err := entry.serveHTTP(recorder, req)
+	if err == nil {
+		t.Fatal("expected POST request to fail without same-backend retry")
+	}
+	if requests != 1 {
+		t.Fatalf("expected exactly one backend attempt for unsafe method, got %d", requests)
+	}
+}
+
 func TestServerPreservesSwitchingProtocolsUpgradeTunnel(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.EqualFold(r.Header.Get("Connection"), "Upgrade") {

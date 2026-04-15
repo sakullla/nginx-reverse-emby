@@ -203,7 +203,7 @@ func loadFromEnvForExecutable(executablePath string) (Config, error) {
 		cfg.HTTPResilience.ResumeMaxAttempts = attempts
 	}
 	if val := strings.TrimSpace(os.Getenv("NRE_HTTP_SAME_BACKEND_RETRY_ATTEMPTS")); val != "" {
-		attempts, err := parsePositiveIntEnv("NRE_HTTP_SAME_BACKEND_RETRY_ATTEMPTS", val)
+		attempts, err := parseNonNegativeIntEnv("NRE_HTTP_SAME_BACKEND_RETRY_ATTEMPTS", val)
 		if err != nil {
 			return Config{}, err
 		}
@@ -280,6 +280,17 @@ func parsePositiveIntEnv(name, value string) (int, error) {
 	}
 	if num <= 0 {
 		return 0, fmt.Errorf("%s must be positive", name)
+	}
+	return num, nil
+}
+
+func parseNonNegativeIntEnv(name, value string) (int, error) {
+	num, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s: %w", name, err)
+	}
+	if num < 0 {
+		return 0, fmt.Errorf("%s must be non-negative", name)
 	}
 	return num, nil
 }

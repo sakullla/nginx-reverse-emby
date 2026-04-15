@@ -295,7 +295,7 @@ func TestLoadFromEnvRejectsInvalidHTTPDialTimeout(t *testing.T) {
 func TestLoadFromEnvRejectsInvalidSameBackendRetryAttempts(t *testing.T) {
 	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
 	t.Setenv("NRE_AGENT_TOKEN", "secret")
-	t.Setenv("NRE_HTTP_SAME_BACKEND_RETRY_ATTEMPTS", "0")
+	t.Setenv("NRE_HTTP_SAME_BACKEND_RETRY_ATTEMPTS", "-1")
 
 	_, err := LoadFromEnv()
 	if err == nil {
@@ -303,6 +303,20 @@ func TestLoadFromEnvRejectsInvalidSameBackendRetryAttempts(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "NRE_HTTP_SAME_BACKEND_RETRY_ATTEMPTS") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLoadFromEnvAllowsZeroSameBackendRetryAttempts(t *testing.T) {
+	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
+	t.Setenv("NRE_AGENT_TOKEN", "secret")
+	t.Setenv("NRE_HTTP_SAME_BACKEND_RETRY_ATTEMPTS", "0")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if cfg.HTTPResilience.SameBackendRetryAttempts != 0 {
+		t.Fatalf("SameBackendRetryAttempts = %d", cfg.HTTPResilience.SameBackendRetryAttempts)
 	}
 }
 
