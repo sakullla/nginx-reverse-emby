@@ -967,6 +967,27 @@ export async function fetchAllAgentsCertificates(agentIds) {
   return results.filter((r) => r.status === 'fulfilled').map((r) => r.value)
 }
 
+export async function fetchAllAgentsRelayListeners(agentIds) {
+  if (isDev) {
+    await sleep()
+    return agentIds.map((agentId) => ({
+      agentId,
+      listeners: (mockRelayListenersByAgent[agentId] || []).map((item) => normalizeMockRelayListenerRecord(item))
+    }))
+  }
+  const results = await Promise.allSettled(
+    agentIds.map((agentId) =>
+      api.get(`/agents/${encodeURIComponent(agentId)}/relay-listeners`).then(({ data }) => ({
+        agentId,
+        listeners: data.listeners || []
+      }))
+    )
+  )
+  return results
+    .filter((r) => r.status === 'fulfilled')
+    .map((r) => r.value)
+}
+
 const mockRelayListenersByAgent = {
   local: [
     {

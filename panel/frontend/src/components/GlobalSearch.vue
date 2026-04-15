@@ -13,7 +13,7 @@
             name="global-search"
             type="text"
             class="global-search-input"
-            placeholder="跨节点搜索规则..."
+            placeholder="跨节点搜索规则 / 监听器 / 证书 / 节点..."
             @keydown.escape="close"
           >
           <button v-if="query" class="clear-btn" @click="query = ''">
@@ -32,7 +32,7 @@
             <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
               <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
             </svg>
-            <p>输入关键字搜索所有节点的规则</p>
+            <p>输入关键字搜索所有节点的规则、监听器、证书和节点</p>
           </div>
           <div v-else-if="!results.length" class="global-search-state">
             <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -60,12 +60,13 @@
                   <div class="result-item__url">
                     {{ item._type === 'agent'
                       ? item.name
-                      : item.frontend_url || item.domain || `${item.listen_host || ''}:${item.listen_port}` || `#${item.id}` }}
+                      : item.frontend_url || item.domain || item.name || `${item.listen_host || ''}:${item.listen_port}` || `#${item.id}` }}
                   </div>
                   <div v-if="item._type === 'agent'" class="result-item__backend">{{ item.agent_url || item.last_seen_ip || '—' }}</div>
                   <div v-else-if="item._type === 'rule'" class="result-item__backend">→ {{ formatHttpBackend(item) }}</div>
                   <div v-else-if="item._type === 'l4'" class="result-item__backend">{{ item.protocol?.toUpperCase() }} {{ item.listen_host || '*' }}:{{ item.listen_port }} → {{ formatL4Backend(item) }}</div>
                   <div v-else-if="item._type === 'cert'" class="result-item__backend">{{ getCertStatus(item) }}</div>
+                  <div v-else-if="item._type === 'relay'" class="result-item__backend">{{ item.public_host || item.bind_hosts?.[0] || '' }}:{{ item.public_port || item.listen_port || '' }}</div>
                 </div>
               </div>
             </div>
@@ -170,16 +171,18 @@ async function doSearch(val) {
       return
     }
     const agentIds = agents.map(a => a.id)
-    const [rulesResults, l4Results, certsResults] = await Promise.all([
+    const [rulesResults, l4Results, certsResults, relayResults] = await Promise.all([
       api.fetchAllAgentsRules(agentIds).catch(() => []),
       api.fetchAllAgentsL4Rules(agentIds).catch(() => []),
-      api.fetchAllAgentsCertificates(agentIds).catch(() => [])
+      api.fetchAllAgentsCertificates(agentIds).catch(() => []),
+      api.fetchAllAgentsRelayListeners(agentIds).catch(() => [])
     ])
     if (currentSearchId !== searchId.value) return
 
     const rulesByAgent = Object.fromEntries(rulesResults.map(r => [r.agentId, r.rules || []]))
     const l4ByAgent = Object.fromEntries(l4Results.map(r => [r.agentId, r.l4Rules || []]))
     const certsByAgent = Object.fromEntries(certsResults.map(r => [r.agentId, r.certificates || []]))
+    const relayByAgent = Object.fromEntries(relayResults.map(r => [r.agentId, r.listeners || []]))
 
     const q = val.toLowerCase()
     const groupResults = []
@@ -199,6 +202,7 @@ async function doSearch(val) {
       const rules = rulesByAgent[agent.id] || []
       const l4Rules = l4ByAgent[agent.id] || []
       const certs = certsByAgent[agent.id] || []
+      const relays = relayByAgent[agent.id] || []
 
       const matchedRules = rules.filter(r =>
         r.frontend_url?.toLowerCase().includes(q) ||
@@ -218,10 +222,18 @@ async function doSearch(val) {
         c.domain?.toLowerCase().includes(q) ||
         (c.tags || []).some(tag => tag.toLowerCase().includes(q))
       )
+      const matchedRelays = relays.filter(r =>
+        String(r.name || '').toLowerCase().includes(q) ||
+        String(r.public_host || '').toLowerCase().includes(q) ||
+        (r.bind_hosts || []).some(h => String(h).toLowerCase().includes(q)) ||
+        String(r.listen_port || '').includes(q) ||
+        (r.tags || []).some(tag => tag.toLowerCase().includes(q))
+      )
       const items = [
         ...matchedRules.map(r => ({ ...r, _type: 'rule' })),
         ...matchedL4.map(r => ({ ...r, _type: 'l4' })),
-        ...matchedCerts.map(c => ({ ...c, _type: 'cert' }))
+        ...matchedCerts.map(c => ({ ...c, _type: 'cert' })),
+        ...matchedRelays.map(r => ({ ...r, _type: 'relay' }))
       ]
       if (items.length) {
         groupResults.push(makeResult(null, agent.id, agent.name, agent.status === 'online', items))
@@ -254,11 +266,13 @@ function navigateToItem(agentId, item) {
     router.push({ path: '/l4', query: { agentId, search: `#id=${item.id}` } })
   } else if (item._type === 'cert') {
     router.push({ path: '/certs', query: { agentId, search: `#id=${item.id}` } })
+  } else if (item._type === 'relay') {
+    router.push({ path: '/relay-listeners', query: { agentId } })
   }
 }
 
 function typeLabel(type) {
-  return type === 'rule' ? 'HTTP' : type === 'l4' ? 'L4' : type === 'cert' ? '证书' : '节点'
+  return type === 'rule' ? 'HTTP' : type === 'l4' ? 'L4' : type === 'cert' ? '证书' : type === 'relay' ? 'Relay' : '节点'
 }
 
 function getCertStatus(cert) {
@@ -303,6 +317,7 @@ onUnmounted(() => document.removeEventListener('keydown', handleKeydown))
 .result-item__type-badge--l4 { background: #fce7f3; color: #9d174d; }
 .result-item__type-badge--cert { background: #d1fae5; color: #065f46; }
 .result-item__type-badge--agent { background: #f3e8ff; color: #7e22ce; }
+.result-item__type-badge--relay { background: #fef3c7; color: #b45309; }
 .result-item__info { flex: 1; min-width: 0; }
 .result-item__url { font-size: 0.875rem; font-weight: 500; color: var(--color-text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .result-item__backend { font-size: 0.75rem; color: var(--color-text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

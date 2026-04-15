@@ -44,8 +44,12 @@
             <span class="agent-card__mode-badge">{{ getModeLabel(agent.mode) }}</span>
           </div>
           <div class="agent-card__actions" @click.stop>
-            <button class="btn btn-secondary btn-sm" @click="startRename(agent)">重命名</button>
-            <button v-if="!agent.is_local" class="btn btn-danger btn-sm" @click="startDelete(agent)">删除</button>
+            <button class="agent-card__action" title="重命名" @click="startRename(agent)">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+            </button>
+            <button v-if="!agent.is_local" class="agent-card__action agent-card__action--delete" title="删除" @click="startDelete(agent)">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+            </button>
           </div>
         </div>
         <div class="agent-card__name">{{ agent.name }}</div>
@@ -353,7 +357,10 @@ function confirmDelete() {
 .agent-card__stats { display: flex; align-items: center; gap: 0.75rem; margin-top: 0.25rem; }
 .agent-card__stat { display: flex; align-items: center; gap: 0.25rem; font-size: 0.75rem; color: var(--color-text-tertiary); }
 .agent-card__last-seen { font-size: 0.75rem; color: var(--color-text-muted); margin-left: auto; }
-.agent-card__actions { display: flex; gap: 0.5rem; }
+.agent-card__actions { display: flex; gap: 0.25rem; }
+.agent-card__action { display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: var(--radius-md); border: none; background: transparent; color: var(--color-text-tertiary); cursor: pointer; transition: all 0.15s; }
+.agent-card__action:hover { background: var(--color-bg-hover); color: var(--color-text-primary); }
+.agent-card__action--delete:hover { background: var(--color-danger-50); color: var(--color-danger); }
 
 .agents-page__empty, .agents-page__loading { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.75rem; padding: 4rem 2rem; color: var(--color-text-muted); text-align: center; }
 
