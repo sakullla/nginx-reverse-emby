@@ -238,6 +238,76 @@ func TestServeHTTPResumesInterruptedSingleRangeTransfer(t *testing.T) {
 	}
 }
 
+func TestServeHTTPResumesShortCleanEOFSingleRangeTransfer(t *testing.T) {
+	payload := []byte("0123456789abcdefghijklmnopqrstuvwxyz")
+	rangeStart := 5
+	rangeEnd := 20
+	expected := payload[rangeStart : rangeEnd+1]
+	split := len(expected) / 2
+
+	var mu sync.Mutex
+	requests := make([]string, 0, 2)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requests = append(requests, r.Header.Get("Range"))
+		attempt := len(requests)
+		mu.Unlock()
+
+		switch attempt {
+		case 1:
+			if got := r.Header.Get("Range"); got != fmt.Sprintf("bytes=%d-%d", rangeStart, rangeEnd) {
+				t.Fatalf("expected initial single-range request, got %q", got)
+			}
+			w.Header().Set("Accept-Ranges", "bytes")
+			w.Header().Set("ETag", `"stable"`)
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", rangeStart, rangeEnd, len(payload)))
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write(expected[:split])
+		case 2:
+			want := fmt.Sprintf("bytes=%d-%d", rangeStart+split, rangeEnd)
+			if got := r.Header.Get("Range"); got != want {
+				t.Fatalf("expected resumed single-range request %q, got %q", want, got)
+			}
+			w.Header().Set("Accept-Ranges", "bytes")
+			w.Header().Set("ETag", `"stable"`)
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", rangeStart+split, rangeEnd, len(payload)))
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(expected)-split))
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write(expected[split:])
+		default:
+			t.Fatalf("unexpected backend request #%d", attempt)
+		}
+	}))
+	defer backend.Close()
+
+	entry := resumableTestRouteEntry(t, backend.URL)
+	entry.resilience = StreamResilienceOptions{
+		ResumeEnabled:     true,
+		ResumeMaxAttempts: 1,
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "http://edge.example.test/video", nil)
+	req.Host = "edge.example.test"
+	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", rangeStart, rangeEnd))
+	recorder := httptest.NewRecorder()
+
+	if err := entry.serveHTTP(recorder, req); err != nil {
+		t.Fatalf("expected short clean-EOF single-range transfer to resume, got %v", err)
+	}
+	if got := recorder.Code; got != http.StatusPartialContent {
+		t.Fatalf("expected 206 response, got %d", got)
+	}
+	if got := recorder.Body.Bytes(); string(got) != string(expected) {
+		t.Fatalf("expected full single-range payload after clean-EOF resume, got %q", string(got))
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(requests) != 2 {
+		t.Fatalf("expected exactly two upstream requests, got %d", len(requests))
+	}
+}
+
 func TestServeHTTPDoesNotResumeOnDownstreamWriteFailure(t *testing.T) {
 	payload := []byte("0123456789abcdefghijklmnopqrstuvwxyz")
 

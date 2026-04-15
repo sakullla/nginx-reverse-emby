@@ -34,9 +34,10 @@ func (e *routeEntry) copyResumableResponse(w http.ResponseWriter, req *http.Requ
 	w.WriteHeader(resp.StatusCode)
 
 	var (
-		sentBytes int64
-		attempts  int
-		current   = resp
+		expectedBytes = state.responseLength()
+		sentBytes     int64
+		attempts      int
+		current       = resp
 	)
 	for {
 		n, readErr, writeErr := copyResumableChunk(w, current.Body)
@@ -45,8 +46,11 @@ func (e *routeEntry) copyResumableResponse(w http.ResponseWriter, req *http.Requ
 		if writeErr != nil {
 			return writeErr
 		}
-		if readErr == nil || sentBytes >= state.responseLength() {
+		if sentBytes >= expectedBytes {
 			return nil
+		}
+		if readErr == nil {
+			readErr = io.ErrUnexpectedEOF
 		}
 		if !isResumableReadError(readErr) {
 			return readErr
@@ -127,8 +131,7 @@ func newResumableResponse(req *http.Request, resp *http.Response) (resumableResp
 			validator:     validator,
 		}, true
 	case http.StatusPartialContent:
-		rawRange := strings.TrimSpace(req.Header.Get("Range"))
-		if rawRange == "" || strings.Contains(rawRange, ",") {
+		if !hasSingleByteRangeRequest(req.Header.Get("Range")) {
 			return resumableResponse{}, false
 		}
 		if isMultipartByteranges(resp.Header) {
@@ -250,6 +253,22 @@ func acceptsByteRanges(header http.Header) bool {
 		}
 	}
 	return false
+}
+
+func hasSingleByteRangeRequest(value string) bool {
+	value = strings.TrimSpace(value)
+	parts := strings.SplitN(value, "=", 2)
+	if len(parts) != 2 {
+		return false
+	}
+	if !strings.EqualFold(strings.TrimSpace(parts[0]), "bytes") {
+		return false
+	}
+	spec := strings.TrimSpace(parts[1])
+	if spec == "" || strings.Contains(spec, ",") || !strings.Contains(spec, "-") {
+		return false
+	}
+	return true
 }
 
 func isMultipartByteranges(header http.Header) bool {
