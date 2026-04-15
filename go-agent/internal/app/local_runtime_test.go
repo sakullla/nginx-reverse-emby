@@ -437,6 +437,35 @@ func TestNewPropagatesHTTP3EnabledToHTTPRuntimeManager(t *testing.T) {
 	}
 }
 
+func TestNewAppliesDefaultHTTPResilienceForDirectCallers(t *testing.T) {
+	app, err := New(Config{
+		AgentID:        "agent",
+		AgentName:      "agent",
+		MasterURL:      "https://master.example.com",
+		AgentToken:     "token",
+		CurrentVersion: "0.1.0",
+		DataDir:        t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer app.Close()
+
+	manager, ok := app.httpApplier.(*httpRuntimeManager)
+	if !ok {
+		t.Fatalf("http applier type = %T", app.httpApplier)
+	}
+	if !manager.options.ResumeEnabled {
+		t.Fatal("expected resume to default to enabled")
+	}
+	if manager.options.ResumeMaxAttempts != 2 {
+		t.Fatalf("ResumeMaxAttempts = %d", manager.options.ResumeMaxAttempts)
+	}
+	if manager.options.SameBackendRetryAttempts != 1 {
+		t.Fatalf("SameBackendRetryAttempts = %d", manager.options.SameBackendRetryAttempts)
+	}
+}
+
 func TestNewEmbeddedPropagatesHTTP3EnabledToHTTPRuntimeManager(t *testing.T) {
 	app, err := NewEmbedded(Config{
 		AgentID:        "agent",
@@ -455,6 +484,33 @@ func TestNewEmbeddedPropagatesHTTP3EnabledToHTTPRuntimeManager(t *testing.T) {
 	}
 	if !manager.http3Enabled {
 		t.Fatal("expected http3 to be enabled on embedded runtime manager")
+	}
+}
+
+func TestNewEmbeddedAppliesDefaultHTTPResilienceForDirectCallers(t *testing.T) {
+	app, err := NewEmbedded(Config{
+		AgentID:        "agent",
+		AgentName:      "agent",
+		CurrentVersion: "0.1.0",
+		DataDir:        t.TempDir(),
+	}, store.NewInMemory(), staticSyncClient{})
+	if err != nil {
+		t.Fatalf("NewEmbedded() error = %v", err)
+	}
+	defer app.Close()
+
+	manager, ok := app.httpApplier.(*httpRuntimeManager)
+	if !ok {
+		t.Fatalf("http applier type = %T", app.httpApplier)
+	}
+	if !manager.options.ResumeEnabled {
+		t.Fatal("expected resume to default to enabled")
+	}
+	if manager.options.ResumeMaxAttempts != 2 {
+		t.Fatalf("ResumeMaxAttempts = %d", manager.options.ResumeMaxAttempts)
+	}
+	if manager.options.SameBackendRetryAttempts != 1 {
+		t.Fatalf("SameBackendRetryAttempts = %d", manager.options.SameBackendRetryAttempts)
 	}
 }
 

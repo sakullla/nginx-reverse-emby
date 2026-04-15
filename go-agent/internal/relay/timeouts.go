@@ -9,12 +9,23 @@ import (
 )
 
 var (
-	relayTimeoutMu        sync.RWMutex
-	relayDialTimeout      = 5 * time.Second
-	relayHandshakeTimeout = 5 * time.Second
-	relayFrameTimeout     = 5 * time.Second
-	relayIdleTimeout      = 2 * time.Minute
+	relayTimeoutMu               sync.RWMutex
+	relayTimeoutNextID           uint64
+	relayTimeoutOverrides        []relayTimeoutOverride
+	relayDialTimeout             = 5 * time.Second
+	relayHandshakeTimeout        = 5 * time.Second
+	relayFrameTimeout            = 5 * time.Second
+	relayIdleTimeout             = 2 * time.Minute
+	defaultRelayDialTimeout      = 5 * time.Second
+	defaultRelayHandshakeTimeout = 5 * time.Second
+	defaultRelayFrameTimeout     = 5 * time.Second
+	defaultRelayIdleTimeout      = 2 * time.Minute
 )
+
+type relayTimeoutOverride struct {
+	id  uint64
+	cfg TimeoutConfig
+}
 
 type TimeoutConfig struct {
 	DialTimeout      time.Duration
@@ -25,32 +36,44 @@ type TimeoutConfig struct {
 
 func ConfigureTimeouts(cfg TimeoutConfig) func() {
 	relayTimeoutMu.Lock()
-	prevDial := relayDialTimeout
-	prevHandshake := relayHandshakeTimeout
-	prevFrame := relayFrameTimeout
-	prevIdle := relayIdleTimeout
-
-	if cfg.DialTimeout > 0 {
-		relayDialTimeout = cfg.DialTimeout
-	}
-	if cfg.HandshakeTimeout > 0 {
-		relayHandshakeTimeout = cfg.HandshakeTimeout
-	}
-	if cfg.FrameTimeout > 0 {
-		relayFrameTimeout = cfg.FrameTimeout
-	}
-	if cfg.IdleTimeout > 0 {
-		relayIdleTimeout = cfg.IdleTimeout
-	}
+	relayTimeoutNextID++
+	overrideID := relayTimeoutNextID
+	relayTimeoutOverrides = append(relayTimeoutOverrides, relayTimeoutOverride{id: overrideID, cfg: cfg})
+	applyRelayTimeoutOverridesLocked()
 	relayTimeoutMu.Unlock()
 
 	return func() {
 		relayTimeoutMu.Lock()
-		relayDialTimeout = prevDial
-		relayHandshakeTimeout = prevHandshake
-		relayFrameTimeout = prevFrame
-		relayIdleTimeout = prevIdle
+		for i, override := range relayTimeoutOverrides {
+			if override.id != overrideID {
+				continue
+			}
+			relayTimeoutOverrides = append(relayTimeoutOverrides[:i], relayTimeoutOverrides[i+1:]...)
+			break
+		}
+		applyRelayTimeoutOverridesLocked()
 		relayTimeoutMu.Unlock()
+	}
+}
+
+func applyRelayTimeoutOverridesLocked() {
+	relayDialTimeout = defaultRelayDialTimeout
+	relayHandshakeTimeout = defaultRelayHandshakeTimeout
+	relayFrameTimeout = defaultRelayFrameTimeout
+	relayIdleTimeout = defaultRelayIdleTimeout
+	for _, override := range relayTimeoutOverrides {
+		if override.cfg.DialTimeout > 0 {
+			relayDialTimeout = override.cfg.DialTimeout
+		}
+		if override.cfg.HandshakeTimeout > 0 {
+			relayHandshakeTimeout = override.cfg.HandshakeTimeout
+		}
+		if override.cfg.FrameTimeout > 0 {
+			relayFrameTimeout = override.cfg.FrameTimeout
+		}
+		if override.cfg.IdleTimeout > 0 {
+			relayIdleTimeout = override.cfg.IdleTimeout
+		}
 	}
 }
 

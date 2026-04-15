@@ -4,7 +4,6 @@ import (
 	"errors"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/certs"
-	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
 )
@@ -16,6 +15,8 @@ func NewEmbedded(cfg Config, st store.Store, client SyncClient) (*App, error) {
 	if client == nil {
 		return nil, errors.New("sync client is required")
 	}
+
+	cfg = normalizeConstructorConfig(cfg)
 
 	resetRelayTimeouts := relay.ConfigureTimeouts(relay.TimeoutConfig{
 		DialTimeout:      cfg.RelayTimeouts.DialTimeout,
@@ -29,20 +30,6 @@ func NewEmbedded(cfg Config, st store.Store, client SyncClient) (*App, error) {
 			resetRelayTimeouts()
 		}
 	}()
-
-	defaults := config.Default()
-	if cfg.AgentID == "" {
-		cfg.AgentID = defaults.AgentID
-	}
-	if cfg.AgentName == "" {
-		cfg.AgentName = defaults.AgentName
-	}
-	if cfg.DataDir == "" {
-		cfg.DataDir = defaults.DataDir
-	}
-	if cfg.CurrentVersion == "" {
-		cfg.CurrentVersion = defaults.CurrentVersion
-	}
 
 	certManager, err := certs.NewManager(
 		cfg.DataDir,

@@ -87,7 +87,34 @@ func advertisedCapabilities(cfg Config) []string {
 	return capabilities
 }
 
+func normalizeConstructorConfig(cfg Config) Config {
+	defaults := config.Default()
+
+	if cfg.AgentID == "" {
+		cfg.AgentID = defaults.AgentID
+	}
+	if cfg.AgentName == "" {
+		cfg.AgentName = defaults.AgentName
+	}
+	if cfg.DataDir == "" {
+		cfg.DataDir = defaults.DataDir
+	}
+	if cfg.CurrentVersion == "" {
+		cfg.CurrentVersion = defaults.CurrentVersion
+	}
+	if cfg.HeartbeatInterval <= 0 {
+		cfg.HeartbeatInterval = defaults.HeartbeatInterval
+	}
+	if cfg.HTTPResilience == (config.HTTPResilienceConfig{}) {
+		cfg.HTTPResilience = defaults.HTTPResilience
+	}
+
+	return cfg
+}
+
 func New(cfg Config) (*App, error) {
+	cfg = normalizeConstructorConfig(cfg)
+
 	resetRelayTimeouts := relay.ConfigureTimeouts(relay.TimeoutConfig{
 		DialTimeout:      cfg.RelayTimeouts.DialTimeout,
 		HandshakeTimeout: cfg.RelayTimeouts.HandshakeTimeout,
