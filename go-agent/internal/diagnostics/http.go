@@ -63,28 +63,59 @@ func (p *HTTPProber) Diagnose(ctx context.Context, rule model.HTTPRule, relayLis
 		return Report{}, fmt.Errorf("no healthy backend candidates for %s", rule.FrontendURL)
 	}
 
-	samples := make([]Sample, 0, p.attempts)
-	for i := 0; i < p.attempts; i++ {
-		candidate := candidates[i%len(candidates)]
-		sample := p.probeCandidate(ctx, i+1, rule, relayListeners, candidate)
-		samples = append(samples, sample)
+	samples := make([]Sample, 0, p.attempts*len(candidates))
+	attempt := 0
+	for _, candidate := range candidates {
+		for i := 0; i < p.attempts; i++ {
+			attempt++
+			sample := p.probeCandidate(ctx, attempt, rule, relayListeners, candidate)
+			samples = append(samples, sample)
+		}
 	}
 	return BuildReport("http", rule.ID, samples), nil
 }
 
 type httpProbeCandidate struct {
-	targetURL   *url.URL
-	dialAddress string
+	targetURL    *url.URL
+	backendLabel string
+	dialAddress  string
 }
 
 func (p *HTTPProber) probeCandidate(ctx context.Context, attempt int, rule model.HTTPRule, relayListeners []model.RelayListener, candidate httpProbeCandidate) Sample {
+	start := time.Now()
+	client, err := p.clientForCandidate(rule, relayListeners, candidate)
+	if err != nil {
+		return FailureSample(attempt, candidate.backendLabel, err)
+	}
+
+	resp, err := p.doProbeRequest(ctx, client, rule, candidate, http.MethodHead)
+	if err != nil {
+		p.cache.MarkFailure(candidate.dialAddress)
+		return FailureSample(attempt, candidate.backendLabel, err)
+	}
+	defer resp.Body.Close()
+	if shouldFallbackToGET(resp.StatusCode) {
+		resp.Body.Close()
+		resp, err = p.doProbeRequest(ctx, client, rule, candidate, http.MethodGet)
+		if err != nil {
+			p.cache.MarkFailure(candidate.dialAddress)
+			return FailureSample(attempt, candidate.backendLabel, err)
+		}
+		defer resp.Body.Close()
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	p.cache.MarkSuccess(candidate.dialAddress)
+
+	return LatencySample(attempt, candidate.backendLabel, time.Since(start), resp.StatusCode)
+}
+
+func (p *HTTPProber) doProbeRequest(ctx context.Context, client *http.Client, rule model.HTTPRule, candidate httpProbeCandidate, method string) (*http.Response, error) {
 	reqCtx, cancel := context.WithTimeout(ctx, p.timeout)
 	defer cancel()
 
-	start := time.Now()
-	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, candidate.targetURL.String(), nil)
+	req, err := http.NewRequestWithContext(reqCtx, method, candidate.targetURL.String(), nil)
 	if err != nil {
-		return FailureSample(attempt, candidate.dialAddress, err)
+		return nil, err
 	}
 	if rule.UserAgent != "" {
 		req.Header.Set("User-Agent", rule.UserAgent)
@@ -92,21 +123,11 @@ func (p *HTTPProber) probeCandidate(ctx context.Context, attempt int, rule model
 	for _, header := range rule.CustomHeaders {
 		req.Header.Set(header.Name, header.Value)
 	}
+	return client.Do(req)
+}
 
-	client, err := p.clientForCandidate(rule, relayListeners, candidate)
-	if err != nil {
-		return FailureSample(attempt, candidate.dialAddress, err)
-	}
-	resp, err := client.Do(req)
-	if err != nil {
-		p.cache.MarkFailure(candidate.dialAddress)
-		return FailureSample(attempt, candidate.dialAddress, err)
-	}
-	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, resp.Body)
-	p.cache.MarkSuccess(candidate.dialAddress)
-
-	return LatencySample(attempt, candidate.dialAddress, time.Since(start), resp.StatusCode)
+func shouldFallbackToGET(statusCode int) bool {
+	return statusCode == http.StatusMethodNotAllowed || statusCode == http.StatusNotImplemented
 }
 
 func httpCandidates(ctx context.Context, cache *backends.Cache, rule model.HTTPRule) ([]httpProbeCandidate, error) {
@@ -151,8 +172,9 @@ func httpCandidates(ctx context.Context, cache *backends.Cache, rule model.HTTPR
 			}
 			clone := *target
 			out = append(out, httpProbeCandidate{
-				targetURL:   &clone,
-				dialAddress: candidate.Address,
+				targetURL:    &clone,
+				backendLabel: clone.String(),
+				dialAddress:  candidate.Address,
 			})
 		}
 	}

@@ -118,6 +118,22 @@ func findL4Rule(rules []model.L4Rule, ruleID int) (model.L4Rule, error) {
 }
 
 func reportToMap(report diagnostics.Report) map[string]any {
+	backends := make([]map[string]any, 0, len(report.Backends))
+	for _, backend := range report.Backends {
+		backends = append(backends, map[string]any{
+			"backend": backend.Backend,
+			"summary": map[string]any{
+				"sent":           backend.Summary.Sent,
+				"succeeded":      backend.Summary.Succeeded,
+				"failed":         backend.Summary.Failed,
+				"loss_rate":      backend.Summary.LossRate,
+				"avg_latency_ms": backend.Summary.AvgLatencyMS,
+				"min_latency_ms": backend.Summary.MinLatencyMS,
+				"max_latency_ms": backend.Summary.MaxLatencyMS,
+				"quality":        backend.Summary.Quality,
+			},
+		})
+	}
 	return map[string]any{
 		"kind":    report.Kind,
 		"rule_id": report.RuleID,
@@ -131,6 +147,7 @@ func reportToMap(report diagnostics.Report) map[string]any {
 			"max_latency_ms": report.Summary.MaxLatencyMS,
 			"quality":        report.Summary.Quality,
 		},
-		"samples": report.Samples,
+		"backends": backends,
+		"samples":  report.Samples,
 	}
 }
