@@ -51,6 +51,7 @@ type routeEntry struct {
 	backends       []httpBackend
 	backendCache   *backends.Cache
 	transport      *http.Transport
+	resilience     StreamResilienceOptions
 	modifyResp     func(*http.Response) error
 	selectionScope string
 	frontendPath   string
@@ -109,6 +110,7 @@ func newServer(
 			backends:       targets,
 			backendCache:   backendCache,
 			transport:      transport,
+			resilience:     StreamResilienceOptions{},
 			modifyResp:     makeModifyResponse(frontendBaseURL, rule.ProxyRedirect, targets[0].backendHost, normalizeURLPath(targets[0].target.Path)),
 			selectionScope: hostKey,
 			frontendPath:   FrontendPathFromRule(rule),
@@ -246,36 +248,62 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 		return err
 	}
 	for _, candidate := range candidates {
-		attemptReq, err := cloneProxyRequest(req, bodyBytes, candidate, e.rule, e.frontendPath)
-		if err != nil {
-			log.Printf("[proxy] clone request error for %s -> %s: %v", e.rule.FrontendURL, candidate.target, err)
-			return err
-		}
-		resp, err := e.transport.RoundTrip(attemptReq)
-		if err != nil {
-			log.Printf("[proxy] roundtrip error for %s -> %s: %v", e.rule.FrontendURL, candidate.target, err)
-			if !isBackendRetryable(attemptReq, err) {
-				return backendRetryError(attemptReq, err)
-			}
-			e.backendCache.MarkFailure(candidate.dialAddress)
-			continue
-		}
-		e.backendCache.MarkSuccess(candidate.dialAddress)
-		defer resp.Body.Close()
-		if e.modifyResp != nil {
-			modify := makeModifyResponse(FrontendOriginFromRule(e.rule), e.rule.ProxyRedirect, candidate.backendHost, normalizeURLPath(candidate.target.Path))
-			if err := modify(resp); err != nil {
-				log.Printf("[proxy] modify response error for %s: %v", e.rule.FrontendURL, err)
+		maxSameBackendAttempts := e.sameBackendRetryMaxAttempts(req)
+		for attempt := 0; attempt < maxSameBackendAttempts; attempt++ {
+			attemptReq, err := cloneProxyRequest(req, bodyBytes, candidate, e.rule, e.frontendPath)
+			if err != nil {
+				log.Printf("[proxy] clone request error for %s -> %s: %v", e.rule.FrontendURL, candidate.target, err)
 				return err
 			}
+			resp, err := e.transport.RoundTrip(attemptReq)
+			if err != nil {
+				log.Printf("[proxy] roundtrip error for %s -> %s: %v", e.rule.FrontendURL, candidate.target, err)
+				if !isBackendRetryable(attemptReq, err) {
+					return backendRetryError(attemptReq, err)
+				}
+				if attempt+1 < maxSameBackendAttempts {
+					continue
+				}
+				e.backendCache.MarkFailure(candidate.dialAddress)
+				break
+			}
+			e.backendCache.MarkSuccess(candidate.dialAddress)
+			defer resp.Body.Close()
+			if e.modifyResp != nil {
+				modify := makeModifyResponse(FrontendOriginFromRule(e.rule), e.rule.ProxyRedirect, candidate.backendHost, normalizeURLPath(candidate.target.Path))
+				if err := modify(resp); err != nil {
+					log.Printf("[proxy] modify response error for %s: %v", e.rule.FrontendURL, err)
+					return err
+				}
+			}
+			if resp.StatusCode == http.StatusSwitchingProtocols {
+				return handleUpgradeResponse(w, attemptReq, resp)
+			}
+			copyResponse(w, resp)
+			return nil
 		}
-		if resp.StatusCode == http.StatusSwitchingProtocols {
-			return handleUpgradeResponse(w, attemptReq, resp)
-		}
-		copyResponse(w, resp)
-		return nil
 	}
 	return fmt.Errorf("all backends failed for %s", e.rule.FrontendURL)
+}
+
+func (e *routeEntry) sameBackendRetryMaxAttempts(req *http.Request) int {
+	if req == nil || !isRetrySafeMethod(req.Method) {
+		return 1
+	}
+	attempts := e.resilience.SameBackendRetryAttempts + 1
+	if attempts < 1 {
+		return 1
+	}
+	return attempts
+}
+
+func isRetrySafeMethod(method string) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodTrace:
+		return true
+	default:
+		return false
+	}
 }
 
 type httpCandidate struct {
