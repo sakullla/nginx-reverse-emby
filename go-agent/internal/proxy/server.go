@@ -82,6 +82,17 @@ func newServer(
 	backendCache *backends.Cache,
 	sharedTransport *http.Transport,
 ) (*Server, error) {
+	return newServerWithResilience(listener, relayListeners, providers, backendCache, sharedTransport, StreamResilienceOptions{})
+}
+
+func newServerWithResilience(
+	listener model.HTTPListener,
+	relayListeners []model.RelayListener,
+	providers Providers,
+	backendCache *backends.Cache,
+	sharedTransport *http.Transport,
+	resilience StreamResilienceOptions,
+) (*Server, error) {
 	s := &Server{routes: make(map[string]*routeEntry)}
 	relayListenersByID := make(map[int]model.RelayListener, len(relayListeners))
 	for _, relayListener := range relayListeners {
@@ -110,7 +121,7 @@ func newServer(
 			backends:       targets,
 			backendCache:   backendCache,
 			transport:      transport,
-			resilience:     StreamResilienceOptions{},
+			resilience:     resilience,
 			modifyResp:     makeModifyResponse(frontendBaseURL, rule.ProxyRedirect, targets[0].backendHost, normalizeURLPath(targets[0].target.Path)),
 			selectionScope: hostKey,
 			frontendPath:   FrontendPathFromRule(rule),
@@ -163,6 +174,19 @@ func StartWithResources(
 	sharedTransport *http.Transport,
 	http3Enabled bool,
 ) (*Runtime, error) {
+	return StartWithResourcesAndOptions(ctx, rules, relayListeners, providers, backendCache, sharedTransport, http3Enabled, StreamResilienceOptions{})
+}
+
+func StartWithResourcesAndOptions(
+	ctx context.Context,
+	rules []model.HTTPRule,
+	relayListeners []model.RelayListener,
+	providers Providers,
+	backendCache *backends.Cache,
+	sharedTransport *http.Transport,
+	http3Enabled bool,
+	resilience StreamResilienceOptions,
+) (*Runtime, error) {
 	specs, err := buildRuntimeListenerSpecs(ctx, rules, relayListeners, providers)
 	if err != nil {
 		return nil, err
@@ -175,7 +199,7 @@ func StartWithResources(
 	}
 	servers := make([]*Server, 0, len(specs))
 	for _, spec := range specs {
-		server, err := newServer(spec.listener, relayListeners, providers, backendCache, sharedTransport)
+		server, err := newServerWithResilience(spec.listener, relayListeners, providers, backendCache, sharedTransport, resilience)
 		if err != nil {
 			return nil, err
 		}

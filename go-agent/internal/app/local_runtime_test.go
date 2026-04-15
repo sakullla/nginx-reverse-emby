@@ -87,6 +87,75 @@ func TestHTTPRuntimeManagerExplicitTask1DefaultsUseTask1BackoffCap(t *testing.T)
 	}
 }
 
+func TestHTTPRuntimeManagerRuntimeUsesConfiguredSameBackendRetryAttempts(t *testing.T) {
+	cfg := config.Default()
+	cfg.HTTPResilience.SameBackendRetryAttempts = 1
+	manager := newHTTPRuntimeManagerWithConfig(cfg)
+	ctx := context.Background()
+	listenPort := pickFreeTCPPort(t)
+
+	requests := 0
+	flaky := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if requests == 1 {
+			hj, ok := w.(http.Hijacker)
+			if !ok {
+				t.Fatalf("response writer does not support hijack")
+			}
+			conn, _, err := hj.Hijack()
+			if err != nil {
+				t.Fatalf("hijack failed: %v", err)
+			}
+			_ = conn.Close()
+			return
+		}
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer flaky.Close()
+
+	rule := runtimeTestHTTPRule(listenPort, flaky.URL)
+	if err := manager.Apply(ctx, []model.HTTPRule{rule}); err != nil {
+		t.Fatalf("failed to apply http runtime: %v", err)
+	}
+	defer manager.Close()
+
+	var (
+		resp *http.Response
+		err  error
+	)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		req, reqErr := http.NewRequest(http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/retry", listenPort), nil)
+		if reqErr != nil {
+			t.Fatalf("failed to create runtime request: %v", reqErr)
+		}
+		req.Host = fmt.Sprintf("edge.example.test:%d", listenPort)
+		resp, err = http.DefaultClient.Do(req)
+		if err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("runtime request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read runtime response body: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 response, got %d (%q)", resp.StatusCode, string(body))
+	}
+	if string(body) != "ok" {
+		t.Fatalf("expected runtime response body %q, got %q", "ok", string(body))
+	}
+	if requests != 2 {
+		t.Fatalf("expected same backend retry to make 2 attempts, got %d", requests)
+	}
+}
+
 func TestAppCloseLocalRuntimesInvokesRelayTimeoutResetOnce(t *testing.T) {
 	calls := 0
 	app := &App{

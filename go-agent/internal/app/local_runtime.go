@@ -99,7 +99,7 @@ func (m *httpRuntimeManager) ApplyWithRelay(ctx context.Context, rules []model.H
 
 	previous := m.runtime
 	if previous != nil && !httpBindingsOverlap(previous.BindingKeys(), bindings) {
-		runtime, err := proxy.StartWithResources(ctx, rules, relayListeners, providers, m.cache, m.transport, m.http3Enabled)
+		runtime, err := proxy.StartWithResourcesAndOptions(ctx, rules, relayListeners, providers, m.cache, m.transport, m.http3Enabled, m.options)
 		if err != nil {
 			return err
 		}
@@ -112,7 +112,7 @@ func (m *httpRuntimeManager) ApplyWithRelay(ctx context.Context, rules []model.H
 		m.runtime = nil
 	}
 
-	runtime, err := proxy.StartWithResources(ctx, rules, relayListeners, providers, m.cache, m.transport, m.http3Enabled)
+	runtime, err := proxy.StartWithResourcesAndOptions(ctx, rules, relayListeners, providers, m.cache, m.transport, m.http3Enabled, m.options)
 	if err != nil {
 		return err
 	}
