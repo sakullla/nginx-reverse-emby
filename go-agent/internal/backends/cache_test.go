@@ -253,6 +253,28 @@ func TestCacheMarkFailureDemotesPreferredCandidate(t *testing.T) {
 	}
 }
 
+func TestCachePreferResolvedCandidatesUsesLatencyOverCumulativeSuccesses(t *testing.T) {
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return time.Date(2026, 4, 16, 12, 0, 0, 0, time.UTC)
+		},
+	})
+	candidates := []Candidate{
+		{Address: "10.0.0.8:443"},
+		{Address: "10.0.0.9:443"},
+	}
+
+	cache.ObserveSuccess("10.0.0.8:443", 180*time.Millisecond)
+	cache.ObserveSuccess("10.0.0.8:443", 170*time.Millisecond)
+	cache.ObserveSuccess("10.0.0.8:443", 160*time.Millisecond)
+	cache.ObserveSuccess("10.0.0.9:443", 40*time.Millisecond)
+
+	got := cache.PreferResolvedCandidates(candidates)
+	if !reflect.DeepEqual(addresses(got), []string{"10.0.0.9:443", "10.0.0.8:443"}) {
+		t.Fatalf("unexpected preferred order: %v", addresses(got))
+	}
+}
+
 func addresses(candidates []Candidate) []string {
 	out := make([]string, len(candidates))
 	for i := range candidates {

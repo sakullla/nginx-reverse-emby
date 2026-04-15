@@ -174,16 +174,37 @@ func (c *Cache) PreferResolvedCandidates(candidates []Candidate) []Candidate {
 	ordered := make([]Candidate, len(candidates))
 	copy(ordered, candidates)
 
+	now := c.now()
+	backoffState := make(map[string]bool, len(ordered))
+	observedState := make(map[string]candidateObservation, len(ordered))
+
+	c.mu.Lock()
+	for _, candidate := range ordered {
+		key := strings.TrimSpace(candidate.Address)
+		observedState[key] = c.observed[key]
+		if entry, ok := c.failures[key]; ok {
+			backoffState[key] = now.Before(entry.retryAfter)
+		}
+	}
+	c.mu.Unlock()
+
 	sort.SliceStable(ordered, func(i, j int) bool {
-		left := c.observationFor(ordered[i].Address)
-		right := c.observationFor(ordered[j].Address)
-		if left.successes != right.successes {
-			return left.successes > right.successes
+		leftKey := strings.TrimSpace(ordered[i].Address)
+		rightKey := strings.TrimSpace(ordered[j].Address)
+		leftBackoff := backoffState[leftKey]
+		rightBackoff := backoffState[rightKey]
+		if leftBackoff != rightBackoff {
+			return !leftBackoff
 		}
-		if left.failures != right.failures {
-			return left.failures < right.failures
+
+		left := observedState[leftKey]
+		right := observedState[rightKey]
+		leftHasSuccess := left.successes > 0
+		rightHasSuccess := right.successes > 0
+		if leftHasSuccess != rightHasSuccess {
+			return leftHasSuccess
 		}
-		if left.successes > 0 && right.successes > 0 && left.lastLatency != right.lastLatency {
+		if leftHasSuccess && rightHasSuccess && left.lastLatency != right.lastLatency {
 			return left.lastLatency < right.lastLatency
 		}
 		return false

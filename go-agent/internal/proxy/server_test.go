@@ -582,6 +582,61 @@ func TestRouteEntryServeHTTPRecordsSuccessfulLatencyObservation(t *testing.T) {
 	}
 }
 
+func TestRouteEntryServeHTTPDoesNotRecordSuccessWhenBodyCopyFails(t *testing.T) {
+	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hijacker, ok := w.(http.Hijacker)
+		if !ok {
+			t.Fatal("response writer does not support hijack")
+		}
+		conn, rw, err := hijacker.Hijack()
+		if err != nil {
+			t.Fatalf("hijack failed: %v", err)
+		}
+		defer conn.Close()
+
+		_, _ = rw.WriteString("HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nok")
+		_ = rw.Flush()
+	}))
+	defer broken.Close()
+
+	brokenURL := mustParseBackendURL(t, broken.URL)
+	cache := backends.NewCache(backends.Config{})
+	cache.ObserveSuccess("203.0.113.10:80", 100*time.Millisecond)
+
+	entry := &routeEntry{
+		rule: model.HTTPRule{
+			FrontendURL: "http://edge.example.test",
+		},
+		backends: []httpBackend{
+			{target: brokenURL, backendHost: brokenURL.Host},
+		},
+		backendCache:   cache,
+		transport:      NewSharedTransport(),
+		selectionScope: "edge.example.test",
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "http://edge.example.test/broken", nil)
+	req.Host = "edge.example.test"
+	recorder := httptest.NewRecorder()
+
+	err := entry.serveHTTP(recorder, req)
+	if err == nil {
+		t.Fatal("expected body copy failure")
+	}
+	var startedErr *startedResponseError
+	if !errors.As(err, &startedErr) {
+		t.Fatalf("expected startedResponseError, got %v", err)
+	}
+
+	candidates := cache.PreferResolvedCandidates([]backends.Candidate{
+		{Address: "203.0.113.10:80"},
+		{Address: brokenURL.Host},
+	})
+	if candidates[0].Address != "203.0.113.10:80" {
+		t.Fatalf("unexpected candidate ranking after failed body copy: %+v", candidates)
+	}
+}
+
 func TestRouteEntryDoesNotRetryGenericTransportErrors(t *testing.T) {
 	sentinel := errors.New("synthetic dial error")
 	cache := backends.NewCache(backends.Config{})

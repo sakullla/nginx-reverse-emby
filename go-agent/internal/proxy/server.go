@@ -300,22 +300,36 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 				e.backendCache.MarkFailure(actualDialAddress)
 				break
 			}
-			e.backendCache.ObserveSuccess(actualDialAddress, time.Since(start))
 			if e.modifyResp != nil {
 				modify := makeModifyResponse(FrontendOriginFromRule(e.rule), e.rule.ProxyRedirect, candidate.backendHost, normalizeURLPath(candidate.target.Path))
 				if err := modify(resp); err != nil {
 					_ = resp.Body.Close()
+					e.backendCache.MarkFailure(actualDialAddress)
 					log.Printf("[proxy] modify response error for %s: %v", e.rule.FrontendURL, err)
 					return err
 				}
 			}
 			if resp.StatusCode == http.StatusSwitchingProtocols {
-				return handleUpgradeResponse(w, attemptReq, resp)
+				if err := handleUpgradeResponse(w, attemptReq, resp); err != nil {
+					e.backendCache.MarkFailure(actualDialAddress)
+					return err
+				}
+				e.backendCache.ObserveSuccess(actualDialAddress, time.Since(start))
+				return nil
 			}
 			if state, ok := e.shouldResumeResponse(attemptReq, resp); ok {
-				return e.copyResumableResponse(w, attemptReq, resp, state)
+				if err := e.copyResumableResponse(w, attemptReq, resp, state); err != nil {
+					e.backendCache.MarkFailure(actualDialAddress)
+					return err
+				}
+				e.backendCache.ObserveSuccess(actualDialAddress, time.Since(start))
+				return nil
 			}
-			copyResponse(w, resp)
+			if err := copyResponse(w, resp); err != nil {
+				e.backendCache.MarkFailure(actualDialAddress)
+				return newStartedResponseError(err)
+			}
+			e.backendCache.ObserveSuccess(actualDialAddress, time.Since(start))
 			return nil
 		}
 	}
@@ -809,9 +823,9 @@ func newStartedResponseError(err error) error {
 	return &startedResponseError{err: err}
 }
 
-func copyResponse(w http.ResponseWriter, resp *http.Response) {
+func copyResponse(w http.ResponseWriter, resp *http.Response) error {
 	if resp == nil {
-		return
+		return nil
 	}
 	if resp.Body != nil {
 		defer resp.Body.Close()
@@ -819,8 +833,11 @@ func copyResponse(w http.ResponseWriter, resp *http.Response) {
 	copyHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 	if resp.Body != nil {
-		_, _ = io.Copy(w, resp.Body)
+		if _, err := io.Copy(w, resp.Body); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 func handleUpgradeResponse(w http.ResponseWriter, req *http.Request, resp *http.Response) error {
