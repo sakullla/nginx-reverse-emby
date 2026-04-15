@@ -61,15 +61,15 @@ docker compose up -d
 | `NRE_HTTP_KEEP_ALIVE` | `30s` | upstream TCP keepalive 间隔。 |
 | `NRE_HTTP_STREAM_RESUME_ENABLED` | `true` | 是否启用中断流恢复。 |
 | `NRE_HTTP_STREAM_RESUME_MAX_ATTEMPTS` | `2` | 单次请求最多追加恢复次数（正整数）。 |
-| `NRE_HTTP_SAME_BACKEND_RETRY_ATTEMPTS` | `1` | 同一 backend 的额外重试次数。`1` 代表最多 2 次尝试（初次 + 1 次重试）。 |
+| `NRE_HTTP_SAME_BACKEND_RETRY_ATTEMPTS` | `1` | 同一 backend 的额外重试次数（`1` 代表最多 2 次尝试：初次 + 1 次重试）。仅对 retry-safe 方法生效，且只在上游返回响应前的可重试 transport/read 错误上触发。 |
 | `NRE_BACKEND_FAILURE_BACKOFF_BASE` | `1s` | backend 连续失败退避起始值。 |
-| `NRE_BACKEND_FAILURE_BACKOFF_LIMIT` | `15s` | backend 连续失败退避上限（指数退避封顶）。 |
+| `NRE_BACKEND_FAILURE_BACKOFF_LIMIT` | `60s`（未显式覆盖时） | backend 连续失败退避上限（指数退避封顶）；显式设置时可按需改为 `15s` 或其他值。 |
 | `NRE_RELAY_DIAL_TIMEOUT` | `5s` | relay 上游拨号超时。 |
 | `NRE_RELAY_HANDSHAKE_TIMEOUT` | `5s` | relay 握手超时。 |
 | `NRE_RELAY_FRAME_TIMEOUT` | `5s` | relay 单帧读写超时。 |
 | `NRE_RELAY_IDLE_TIMEOUT` | `2m` | relay 空闲连接超时。 |
 
-`NRE_HTTP_SAME_BACKEND_RETRY_ATTEMPTS` 在 Master 内嵌 local agent 场景要求正整数；独立 `go-agent` 允许设置为 `0`（仅首发，不做同 backend 额外重试）。
+`NRE_HTTP_SAME_BACKEND_RETRY_ATTEMPTS` 不是通用 POST/5xx 重试开关：不会对 POST 生效，也不会在已收到普通 HTTP 5xx 响应后做同 backend 重放。Master 内嵌 local agent 场景要求正整数；独立 `go-agent` 允许设置为 `0`（仅首发，不做同 backend 额外重试）。
 
 ### Resumable Streaming Scope
 
