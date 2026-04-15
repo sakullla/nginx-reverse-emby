@@ -20,10 +20,43 @@ import (
 	"time"
 
 	"github.com/quic-go/quic-go/http3"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
 )
+
+func TestHTTPRuntimeManagerUsesConfiguredTransportAndBackoff(t *testing.T) {
+	cfg := Config{
+		HTTPTransport: config.HTTPTransportConfig{
+			DialTimeout:           11 * time.Second,
+			TLSHandshakeTimeout:   12 * time.Second,
+			ResponseHeaderTimeout: 13 * time.Second,
+			IdleConnTimeout:       14 * time.Second,
+			KeepAlive:             15 * time.Second,
+		},
+		HTTPResilience: config.HTTPResilienceConfig{
+			ResumeEnabled:            true,
+			ResumeMaxAttempts:        2,
+			SameBackendRetryAttempts: 1,
+		},
+		BackendFailures: config.BackendFailureConfig{
+			BackoffBase:  500 * time.Millisecond,
+			BackoffLimit: 9 * time.Second,
+		},
+	}
+
+	manager := newHTTPRuntimeManagerWithConfig(cfg)
+	if manager.transport.ResponseHeaderTimeout != 13*time.Second {
+		t.Fatalf("ResponseHeaderTimeout = %v", manager.transport.ResponseHeaderTimeout)
+	}
+	if got := manager.cache.MarkFailure("127.0.0.1:8096"); got != 500*time.Millisecond {
+		t.Fatalf("MarkFailure() = %v", got)
+	}
+	if !manager.options.ResumeEnabled {
+		t.Fatal("expected resume to be enabled")
+	}
+}
 
 func TestL4RuntimeManagerPreservesRunningServerOnInvalidReconfigure(t *testing.T) {
 	manager := newL4RuntimeManager()

@@ -174,6 +174,30 @@ func TestCacheFailureBackoffCapsAndSuccessResetsState(t *testing.T) {
 	}
 }
 
+func TestCacheFailureBackoffUsesConfiguredBaseAndLimit(t *testing.T) {
+	cache := NewCache(Config{
+		FailureBackoffBase:  500 * time.Millisecond,
+		FailureBackoffLimit: 4 * time.Second,
+	})
+
+	addr := "10.0.0.99:9001"
+	if got := cache.MarkFailure(addr); got != 500*time.Millisecond {
+		t.Fatalf("first MarkFailure() = %v", got)
+	}
+	if got := cache.MarkFailure(addr); got != time.Second {
+		t.Fatalf("second MarkFailure() = %v", got)
+	}
+	if got := cache.MarkFailure(addr); got != 2*time.Second {
+		t.Fatalf("third MarkFailure() = %v", got)
+	}
+	if got := cache.MarkFailure(addr); got != 4*time.Second {
+		t.Fatalf("fourth MarkFailure() = %v", got)
+	}
+	if got := cache.MarkFailure(addr); got != 4*time.Second {
+		t.Fatalf("capped MarkFailure() = %v", got)
+	}
+}
+
 func addresses(candidates []Candidate) []string {
 	out := make([]string, len(candidates))
 	for i := range candidates {

@@ -18,10 +18,12 @@ const (
 )
 
 type Cache struct {
-	mu         sync.Mutex
-	resolver   Resolver
-	now        func() time.Time
-	randomIntn func(n int) int
+	mu           sync.Mutex
+	resolver     Resolver
+	now          func() time.Time
+	randomIntn   func(n int) int
+	backoffBase  time.Duration
+	backoffLimit time.Duration
 
 	dnsCache   map[string]dnsCacheEntry
 	failures   map[string]failureEntry
@@ -54,13 +56,27 @@ func NewCache(cfg Config) *Cache {
 		randomIntn = rand.Intn
 	}
 
+	backoffBase := cfg.FailureBackoffBase
+	if backoffBase <= 0 {
+		backoffBase = failureBackoffBase
+	}
+	backoffLimit := cfg.FailureBackoffLimit
+	if backoffLimit <= 0 {
+		backoffLimit = failureBackoffLimit
+	}
+	if backoffBase > backoffLimit {
+		backoffBase = backoffLimit
+	}
+
 	return &Cache{
-		resolver:   resolver,
-		now:        nowFn,
-		randomIntn: randomIntn,
-		dnsCache:   make(map[string]dnsCacheEntry),
-		failures:   make(map[string]failureEntry),
-		roundRobin: make(map[string]int),
+		resolver:     resolver,
+		now:          nowFn,
+		randomIntn:   randomIntn,
+		backoffBase:  backoffBase,
+		backoffLimit: backoffLimit,
+		dnsCache:     make(map[string]dnsCacheEntry),
+		failures:     make(map[string]failureEntry),
+		roundRobin:   make(map[string]int),
 	}
 }
 
@@ -141,16 +157,16 @@ func (c *Cache) MarkFailure(address string) time.Duration {
 	entry := c.failures[key]
 	entry.consecutive++
 
-	backoff := failureBackoffBase
+	backoff := c.backoffBase
 	for i := 1; i < entry.consecutive; i++ {
-		if backoff >= failureBackoffLimit/2 {
-			backoff = failureBackoffLimit
+		if backoff >= c.backoffLimit/2 {
+			backoff = c.backoffLimit
 			break
 		}
 		backoff *= 2
 	}
-	if backoff > failureBackoffLimit {
-		backoff = failureBackoffLimit
+	if backoff > c.backoffLimit {
+		backoff = c.backoffLimit
 	}
 
 	entry.retryAfter = now.Add(backoff)

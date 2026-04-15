@@ -31,7 +31,9 @@ type SelectionConfig struct {
 }
 
 type Config struct {
-	Resolver   Resolver
-	Now        func() time.Time
-	RandomIntn func(n int) int
+	Resolver            Resolver
+	Now                 func() time.Time
+	RandomIntn          func(n int) int
+	FailureBackoffBase  time.Duration
+	FailureBackoffLimit time.Duration
 }

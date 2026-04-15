@@ -17,6 +17,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/diagnostics"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	platformlinux "github.com/sakullla/nginx-reverse-emby/go-agent/internal/platform/linux"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	agentruntime "github.com/sakullla/nginx-reverse-emby/go-agent/internal/runtime"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
 	agentsync "github.com/sakullla/nginx-reverse-emby/go-agent/internal/sync"
@@ -85,6 +86,13 @@ func advertisedCapabilities(cfg Config) []string {
 }
 
 func New(cfg Config) (*App, error) {
+	relay.ConfigureTimeouts(relay.TimeoutConfig{
+		DialTimeout:      cfg.RelayTimeouts.DialTimeout,
+		HandshakeTimeout: cfg.RelayTimeouts.HandshakeTimeout,
+		FrameTimeout:     cfg.RelayTimeouts.FrameTimeout,
+		IdleTimeout:      cfg.RelayTimeouts.IdleTimeout,
+	})
+
 	st, err := store.NewFilesystem(cfg.DataDir)
 	if err != nil {
 		return nil, err
@@ -116,9 +124,9 @@ func New(cfg Config) (*App, error) {
 		cfg,
 		st,
 		client,
-		newHTTPRuntimeManagerWithTLSAndHTTP3(certManager, cfg.HTTP3Enabled),
+		newHTTPRuntimeManagerWithTLSAndHTTP3AndConfig(certManager, cfg.HTTP3Enabled, cfg),
 		certManager,
-		newL4RuntimeManagerWithRelay(certManager),
+		newL4RuntimeManagerWithRelayAndConfig(certManager, cfg),
 		newRelayRuntimeManager(certManager),
 		agentupdate.NewManager(
 			cfg.DataDir,

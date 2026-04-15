@@ -14,6 +14,40 @@ var (
 	relayIdleTimeout      = 2 * time.Minute
 )
 
+type TimeoutConfig struct {
+	DialTimeout      time.Duration
+	HandshakeTimeout time.Duration
+	FrameTimeout     time.Duration
+	IdleTimeout      time.Duration
+}
+
+func ConfigureTimeouts(cfg TimeoutConfig) func() {
+	prevDial := relayDialTimeout
+	prevHandshake := relayHandshakeTimeout
+	prevFrame := relayFrameTimeout
+	prevIdle := relayIdleTimeout
+
+	if cfg.DialTimeout > 0 {
+		relayDialTimeout = cfg.DialTimeout
+	}
+	if cfg.HandshakeTimeout > 0 {
+		relayHandshakeTimeout = cfg.HandshakeTimeout
+	}
+	if cfg.FrameTimeout > 0 {
+		relayFrameTimeout = cfg.FrameTimeout
+	}
+	if cfg.IdleTimeout > 0 {
+		relayIdleTimeout = cfg.IdleTimeout
+	}
+
+	return func() {
+		relayDialTimeout = prevDial
+		relayHandshakeTimeout = prevHandshake
+		relayFrameTimeout = prevFrame
+		relayIdleTimeout = prevIdle
+	}
+}
+
 func dialTCP(ctx context.Context, address string) (net.Conn, error) {
 	dialCtx, cancel := context.WithTimeout(ctx, relayDialTimeout)
 	defer cancel()
