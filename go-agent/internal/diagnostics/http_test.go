@@ -113,7 +113,7 @@ func TestHTTPProberDiagnoseUsesRelayChainWhenConfigured(t *testing.T) {
 	}
 }
 
-func TestHTTPProberDiagnoseFallsBackToGetWhenHeadIsNotSupported(t *testing.T) {
+func TestHTTPProberDiagnoseUsesGetRequestsByDefault(t *testing.T) {
 	var (
 		mu      sync.Mutex
 		methods []string
@@ -122,15 +122,11 @@ func TestHTTPProberDiagnoseFallsBackToGetWhenHeadIsNotSupported(t *testing.T) {
 		mu.Lock()
 		methods = append(methods, r.Method)
 		mu.Unlock()
-		if r.Method == http.MethodHead {
+		if r.Method != http.MethodGet {
 			w.WriteHeader(http.StatusMethodNotAllowed)
 			return
 		}
-		if r.Method == http.MethodGet {
-			w.WriteHeader(http.StatusNoContent)
-			return
-		}
-		w.WriteHeader(http.StatusBadRequest)
+		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer server.Close()
 
@@ -160,11 +156,18 @@ func TestHTTPProberDiagnoseFallsBackToGetWhenHeadIsNotSupported(t *testing.T) {
 
 	mu.Lock()
 	defer mu.Unlock()
-	if len(methods) != 2 {
+	if len(methods) != 1 {
 		t.Fatalf("methods = %v", methods)
 	}
-	if methods[0] != http.MethodHead || methods[1] != http.MethodGet {
+	if methods[0] != http.MethodGet {
 		t.Fatalf("methods = %v", methods)
+	}
+}
+
+func TestNewHTTPProberDefaultsAttemptsToFive(t *testing.T) {
+	prober := NewHTTPProber(HTTPProberConfig{})
+	if prober.attempts != 5 {
+		t.Fatalf("attempts = %d", prober.attempts)
 	}
 }
 

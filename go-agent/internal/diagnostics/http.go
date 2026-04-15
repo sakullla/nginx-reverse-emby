@@ -88,21 +88,12 @@ func (p *HTTPProber) probeCandidate(ctx context.Context, attempt int, rule model
 		return FailureSample(attempt, candidate.backendLabel, err)
 	}
 
-	resp, err := p.doProbeRequest(ctx, client, rule, candidate, http.MethodHead)
+	resp, err := p.doProbeRequest(ctx, client, rule, candidate, http.MethodGet)
 	if err != nil {
 		p.cache.MarkFailure(candidate.dialAddress)
 		return FailureSample(attempt, candidate.backendLabel, err)
 	}
 	defer resp.Body.Close()
-	if shouldFallbackToGET(resp.StatusCode) {
-		resp.Body.Close()
-		resp, err = p.doProbeRequest(ctx, client, rule, candidate, http.MethodGet)
-		if err != nil {
-			p.cache.MarkFailure(candidate.dialAddress)
-			return FailureSample(attempt, candidate.backendLabel, err)
-		}
-		defer resp.Body.Close()
-	}
 	_, _ = io.Copy(io.Discard, resp.Body)
 	p.cache.MarkSuccess(candidate.dialAddress)
 
@@ -124,10 +115,6 @@ func (p *HTTPProber) doProbeRequest(ctx context.Context, client *http.Client, ru
 		req.Header.Set(header.Name, header.Value)
 	}
 	return client.Do(req)
-}
-
-func shouldFallbackToGET(statusCode int) bool {
-	return statusCode == http.StatusMethodNotAllowed || statusCode == http.StatusNotImplemented
 }
 
 func httpCandidates(ctx context.Context, cache *backends.Cache, rule model.HTTPRule) ([]httpProbeCandidate, error) {
