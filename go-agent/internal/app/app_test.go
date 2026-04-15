@@ -3077,6 +3077,32 @@ func TestRunKeepsRunningAfterStartupRelayHydrationFailure(t *testing.T) {
 	}
 }
 
+func TestAppCloseResetsRelayTimeoutOverridesWithoutRun(t *testing.T) {
+	resetCalls := 0
+	app := &App{
+		relayTimeoutReset: func() {
+			resetCalls++
+		},
+	}
+
+	if err := app.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if resetCalls != 1 {
+		t.Fatalf("relay timeout reset calls = %d", resetCalls)
+	}
+	if app.relayTimeoutReset != nil {
+		t.Fatal("expected relayTimeoutReset to be cleared after Close()")
+	}
+
+	if err := app.Close(); err != nil {
+		t.Fatalf("second Close() error = %v", err)
+	}
+	if resetCalls != 1 {
+		t.Fatalf("relay timeout reset calls after second Close() = %d", resetCalls)
+	}
+}
+
 type failingStore struct {
 	delegate             store.Store
 	failOnNthSave        int

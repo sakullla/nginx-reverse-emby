@@ -75,6 +75,7 @@ type App struct {
 	runtime           *agentruntime.Runtime
 	taskClient        *agenttask.Client
 	relayTimeoutReset func()
+	closeOnce         sync.Once
 	syncMu            sync.Mutex
 }
 
@@ -216,7 +217,9 @@ func newAppWithAllDeps(
 }
 
 func (a *App) Run(ctx context.Context) error {
-	defer a.closeLocalRuntimes()
+	defer func() {
+		_ = a.Close()
+	}()
 
 	applied, err := a.store.LoadAppliedSnapshot()
 	if err != nil {
@@ -257,6 +260,16 @@ func (a *App) Run(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+func (a *App) Close() error {
+	if a == nil {
+		return nil
+	}
+	a.closeOnce.Do(func() {
+		a.closeLocalRuntimes()
+	})
+	return nil
 }
 
 func (a *App) performSync(ctx context.Context) error {

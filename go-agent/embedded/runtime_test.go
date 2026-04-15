@@ -139,7 +139,7 @@ func TestNewPropagatesResilienceConfigIntoEmbeddedApp(t *testing.T) {
 	})
 
 	captured := agentapp.Config{}
-	newEmbeddedApp = func(cfg agentapp.Config, st agentstore.Store, client agentapp.SyncClient) (*agentapp.App, error) {
+	newEmbeddedApp = func(cfg agentapp.Config, st agentstore.Store, client agentapp.SyncClient) (embeddedAppRunner, error) {
 		captured = cfg
 		return &agentapp.App{}, nil
 	}
@@ -185,6 +185,65 @@ func TestNewPropagatesResilienceConfigIntoEmbeddedApp(t *testing.T) {
 	if captured.RelayTimeouts.IdleTimeout != 15*time.Second {
 		t.Fatalf("IdleTimeout = %v", captured.RelayTimeouts.IdleTimeout)
 	}
+}
+
+func TestRuntimeCloseDelegatesToEmbeddedAppCleanup(t *testing.T) {
+	previousNewEmbeddedApp := newEmbeddedApp
+	t.Cleanup(func() {
+		newEmbeddedApp = previousNewEmbeddedApp
+	})
+
+	resetCalls := 0
+	newEmbeddedApp = func(cfg agentapp.Config, st agentstore.Store, client agentapp.SyncClient) (embeddedAppRunner, error) {
+		return runtimeTestEmbeddedApp{
+			closeFn: func() error {
+				resetCalls++
+				return nil
+			},
+		}, nil
+	}
+
+	runtime, err := New(Config{
+		AgentID:   "local",
+		AgentName: "local",
+		DataDir:   t.TempDir(),
+	}, newRuntimeTestSource(Snapshot{}), newRuntimeTestSink())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	if err := runtime.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if resetCalls != 1 {
+		t.Fatalf("relay timeout reset calls = %d", resetCalls)
+	}
+
+	if err := runtime.Close(); err != nil {
+		t.Fatalf("second Close() error = %v", err)
+	}
+	if resetCalls != 1 {
+		t.Fatalf("relay timeout reset calls after second Close() = %d", resetCalls)
+	}
+}
+
+type runtimeTestEmbeddedApp struct {
+	closeFn func() error
+}
+
+func (a runtimeTestEmbeddedApp) Run(context.Context) error {
+	return nil
+}
+
+func (a runtimeTestEmbeddedApp) SyncNow(context.Context) error {
+	return nil
+}
+
+func (a runtimeTestEmbeddedApp) Close() error {
+	if a.closeFn != nil {
+		return a.closeFn()
+	}
+	return nil
 }
 
 func waitForSyncRequest(t *testing.T, source *runtimeTestSource, timeout time.Duration) SyncRequest {

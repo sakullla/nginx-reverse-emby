@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"sync"
 	"time"
 
 	agentapp "github.com/sakullla/nginx-reverse-emby/go-agent/internal/app"
@@ -79,7 +80,10 @@ type RelayTimeoutConfig struct {
 }
 
 type Runtime struct {
-	app *agentapp.App
+	app      embeddedAppRunner
+	closeMu  sync.Mutex
+	closed   bool
+	closeErr error
 }
 
 const stateRootDir = "embedded-agent-state"
@@ -92,8 +96,14 @@ var newPersistentStore = func(dataDir string, sink StateSink) (agentstore.Store,
 	return &persistentBridgeStore{delegate: delegate, sink: sink}, nil
 }
 
-var newEmbeddedApp = func(cfg agentapp.Config, st agentstore.Store, client agentapp.SyncClient) (*agentapp.App, error) {
+var newEmbeddedApp = func(cfg agentapp.Config, st agentstore.Store, client agentapp.SyncClient) (embeddedAppRunner, error) {
 	return agentapp.NewEmbedded(cfg, st, client)
+}
+
+type embeddedAppRunner interface {
+	Run(context.Context) error
+	SyncNow(context.Context) error
+	Close() error
 }
 
 func New(cfg Config, source SyncSource, sink StateSink) (*Runtime, error) {
@@ -153,6 +163,27 @@ func (r *Runtime) Run(ctx context.Context) error {
 
 func (r *Runtime) SyncNow(ctx context.Context) error {
 	return r.app.SyncNow(ctx)
+}
+
+func (r *Runtime) Close() error {
+	if r == nil || r.app == nil {
+		return nil
+	}
+	r.closeMu.Lock()
+	if r.closed {
+		err := r.closeErr
+		r.closeMu.Unlock()
+		return err
+	}
+	r.closed = true
+	r.closeMu.Unlock()
+
+	err := r.app.Close()
+
+	r.closeMu.Lock()
+	r.closeErr = err
+	r.closeMu.Unlock()
+	return err
 }
 
 type syncClientAdapter struct {
