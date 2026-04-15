@@ -292,16 +292,19 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 				break
 			}
 			e.backendCache.MarkSuccess(candidate.dialAddress)
-			defer resp.Body.Close()
 			if e.modifyResp != nil {
 				modify := makeModifyResponse(FrontendOriginFromRule(e.rule), e.rule.ProxyRedirect, candidate.backendHost, normalizeURLPath(candidate.target.Path))
 				if err := modify(resp); err != nil {
+					_ = resp.Body.Close()
 					log.Printf("[proxy] modify response error for %s: %v", e.rule.FrontendURL, err)
 					return err
 				}
 			}
 			if resp.StatusCode == http.StatusSwitchingProtocols {
 				return handleUpgradeResponse(w, attemptReq, resp)
+			}
+			if state, ok := e.shouldResumeResponse(attemptReq, resp); ok {
+				return e.copyResumableResponse(w, attemptReq, resp, state)
 			}
 			copyResponse(w, resp)
 			return nil
@@ -768,9 +771,17 @@ func backendRetryError(req *http.Request, err error) error {
 }
 
 func copyResponse(w http.ResponseWriter, resp *http.Response) {
+	if resp == nil {
+		return
+	}
+	if resp.Body != nil {
+		defer resp.Body.Close()
+	}
 	copyHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
+	if resp.Body != nil {
+		_, _ = io.Copy(w, resp.Body)
+	}
 }
 
 func handleUpgradeResponse(w http.ResponseWriter, req *http.Request, resp *http.Response) error {
