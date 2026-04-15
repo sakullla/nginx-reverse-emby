@@ -103,6 +103,50 @@ func TestDiagnosticHandlerReturnsPerBackendResults(t *testing.T) {
 	}
 }
 
+func TestDiagnosticHandlerUsesFiveHTTPSamplesByDefault(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	mem := store.NewInMemory()
+	if err := mem.SaveAppliedSnapshot(model.Snapshot{
+		Rules: []model.HTTPRule{{
+			ID:          27,
+			FrontendURL: "https://edge.example.test/emby",
+			BackendURL:  server.URL + "/healthz",
+		}},
+	}); err != nil {
+		t.Fatalf("SaveAppliedSnapshot() error = %v", err)
+	}
+
+	handler := NewDiagnosticHandler(
+		mem,
+		diagnostics.NewHTTPProber(diagnostics.HTTPProberConfig{
+			Timeout:    time.Second,
+			HTTPClient: server.Client(),
+		}),
+		diagnostics.NewTCPProber(diagnostics.TCPProberConfig{}),
+	)
+
+	result, err := handler.HandleTask(context.Background(), TaskMessage{
+		TaskID:     "task-27",
+		TaskType:   TaskTypeDiagnoseHTTPRule,
+		RawPayload: map[string]any{"rule_id": 27},
+	})
+	if err != nil {
+		t.Fatalf("HandleTask() error = %v", err)
+	}
+
+	summary, ok := result["summary"].(map[string]any)
+	if !ok {
+		t.Fatalf("summary = %#v", result["summary"])
+	}
+	if summary["sent"] != 5 {
+		t.Fatalf("summary = %+v", summary)
+	}
+}
+
 func TestDiagnosticHandlerExecutesTCPL4ProbeFromDesiredSnapshot(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

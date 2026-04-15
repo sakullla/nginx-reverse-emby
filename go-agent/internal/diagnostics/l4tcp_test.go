@@ -203,6 +203,13 @@ func TestTCPProberDiagnoseRecordsPerBackendFailuresSeparately(t *testing.T) {
 	}
 }
 
+func TestNewTCPProberDefaultsAttemptsToFive(t *testing.T) {
+	prober := NewTCPProber(TCPProberConfig{})
+	if prober.attempts != 5 {
+		t.Fatalf("attempts = %d", prober.attempts)
+	}
+}
+
 func splitDiagnosticTCPAddr(t *testing.T, addr string) (string, int) {
 	t.Helper()
 	host, portString, err := net.SplitHostPort(addr)

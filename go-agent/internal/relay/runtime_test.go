@@ -1331,6 +1331,18 @@ func pickFreeTCPPort(t *testing.T) int {
 	return ln.Addr().(*net.TCPAddr).Port
 }
 
+func pickFreeUDPPort(t *testing.T) int {
+	t.Helper()
+
+	ln, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("failed to reserve udp port: %v", err)
+	}
+	defer ln.Close()
+
+	return ln.LocalAddr().(*net.UDPAddr).Port
+}
+
 func withRelayTimeouts(dial, handshake, frame, idle time.Duration, fn func()) {
 	prevDial := relayDialTimeout
 	prevHandshake := relayHandshakeTimeout
