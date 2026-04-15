@@ -118,3 +118,100 @@ func TestTCPProberDiagnoseUsesRelayChainWhenConfigured(t *testing.T) {
 		t.Fatal("expected relay TLS material provider to be used")
 	}
 }
+
+func TestTCPProberDiagnoseCollectsFiveSamplesPerBackend(t *testing.T) {
+	addrA, _, stopA := startDiagnosticTCPTarget(t)
+	defer stopA()
+	addrB, _, stopB := startDiagnosticTCPTarget(t)
+	defer stopB()
+
+	hostA, portA := splitDiagnosticTCPAddr(t, addrA)
+	hostB, portB := splitDiagnosticTCPAddr(t, addrB)
+
+	prober := NewTCPProber(TCPProberConfig{
+		Attempts: 5,
+		Timeout:  time.Second,
+	})
+	report, err := prober.Diagnose(context.Background(), model.L4Rule{
+		ID:         21,
+		Protocol:   "tcp",
+		ListenHost: "0.0.0.0",
+		ListenPort: 9200,
+		Backends: []model.L4Backend{
+			{Host: hostA, Port: portA},
+			{Host: hostB, Port: portB},
+		},
+		LoadBalancing: model.LoadBalancing{Strategy: "round_robin"},
+	}, nil)
+	if err != nil {
+		t.Fatalf("Diagnose() error = %v", err)
+	}
+
+	if report.Summary.Sent != 10 {
+		t.Fatalf("Summary = %+v", report.Summary)
+	}
+	if len(report.Backends) != 2 {
+		t.Fatalf("Backends = %+v", report.Backends)
+	}
+	for _, backend := range report.Backends {
+		if backend.Summary.Sent != 5 {
+			t.Fatalf("backend summary = %+v", backend)
+		}
+	}
+}
+
+func TestTCPProberDiagnoseRecordsPerBackendFailuresSeparately(t *testing.T) {
+	addr, _, stopTarget := startDiagnosticTCPTarget(t)
+	defer stopTarget()
+
+	host, port := splitDiagnosticTCPAddr(t, addr)
+
+	prober := NewTCPProber(TCPProberConfig{
+		Attempts: 5,
+		Timeout:  100 * time.Millisecond,
+	})
+	report, err := prober.Diagnose(context.Background(), model.L4Rule{
+		ID:         22,
+		Protocol:   "tcp",
+		ListenHost: "0.0.0.0",
+		ListenPort: 9300,
+		Backends: []model.L4Backend{
+			{Host: "127.0.0.1", Port: 1},
+			{Host: host, Port: port},
+		},
+		LoadBalancing: model.LoadBalancing{Strategy: "round_robin"},
+	}, nil)
+	if err != nil {
+		t.Fatalf("Diagnose() error = %v", err)
+	}
+
+	if len(report.Backends) != 2 {
+		t.Fatalf("Backends = %+v", report.Backends)
+	}
+	var failedBackend *BackendReport
+	for i := range report.Backends {
+		if report.Backends[i].Summary.Succeeded == 0 {
+			failedBackend = &report.Backends[i]
+			break
+		}
+	}
+	if failedBackend == nil {
+		t.Fatalf("Backends = %+v", report.Backends)
+	}
+	if failedBackend.Summary.Sent != 5 || failedBackend.Summary.Quality != "不可用" {
+		t.Fatalf("failed backend = %+v", *failedBackend)
+	}
+}
+
+func splitDiagnosticTCPAddr(t *testing.T, addr string) (string, int) {
+	t.Helper()
+	host, portString, err := net.SplitHostPort(addr)
+	if err != nil {
+		t.Fatalf("SplitHostPort() error = %v", err)
+	}
+	port, err := strconv.Atoi(portString)
+	if err != nil {
+		t.Fatalf("Atoi() error = %v", err)
+	}
+	return host, port
+}

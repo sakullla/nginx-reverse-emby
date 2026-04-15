@@ -157,3 +157,84 @@ func TestDiagnosticHandlerExecutesTCPL4ProbeFromDesiredSnapshot(t *testing.T) {
 	}
 	<-done
 }
+
+func TestDiagnosticHandlerReturnsPerBackendResultsForL4Rules(t *testing.T) {
+	lnA, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	defer lnA.Close()
+	lnB, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	defer lnB.Close()
+
+	doneA := make(chan struct{})
+	go func() {
+		defer close(doneA)
+		for i := 0; i < 5; i++ {
+			conn, err := lnA.Accept()
+			if err != nil {
+				return
+			}
+			_ = conn.Close()
+		}
+	}()
+	doneB := make(chan struct{})
+	go func() {
+		defer close(doneB)
+		for i := 0; i < 5; i++ {
+			conn, err := lnB.Accept()
+			if err != nil {
+				return
+			}
+			_ = conn.Close()
+		}
+	}()
+
+	addrA := lnA.Addr().(*net.TCPAddr)
+	addrB := lnB.Addr().(*net.TCPAddr)
+
+	mem := store.NewInMemory()
+	if err := mem.SaveDesiredSnapshot(model.Snapshot{
+		L4Rules: []model.L4Rule{{
+			ID:         19,
+			Protocol:   "tcp",
+			ListenHost: "0.0.0.0",
+			ListenPort: 9400,
+			Backends: []model.L4Backend{
+				{Host: "127.0.0.1", Port: addrA.Port},
+				{Host: "127.0.0.1", Port: addrB.Port},
+			},
+			LoadBalancing: model.LoadBalancing{Strategy: "round_robin"},
+		}},
+	}); err != nil {
+		t.Fatalf("SaveDesiredSnapshot() error = %v", err)
+	}
+
+	handler := NewDiagnosticHandler(mem, diagnostics.NewHTTPProber(diagnostics.HTTPProberConfig{}), diagnostics.NewTCPProber(diagnostics.TCPProberConfig{
+		Attempts: 5,
+		Timeout:  time.Second,
+	}))
+
+	result, err := handler.HandleTask(context.Background(), TaskMessage{
+		TaskID:     "task-19",
+		TaskType:   TaskTypeDiagnoseL4TCPRule,
+		RawPayload: map[string]any{"rule_id": 19},
+	})
+	if err != nil {
+		t.Fatalf("HandleTask() error = %v", err)
+	}
+
+	backends, ok := result["backends"].([]map[string]any)
+	if !ok {
+		t.Fatalf("backends = %#v", result["backends"])
+	}
+	if len(backends) != 2 {
+		t.Fatalf("backends = %#v", backends)
+	}
+
+	<-doneA
+	<-doneB
+}
