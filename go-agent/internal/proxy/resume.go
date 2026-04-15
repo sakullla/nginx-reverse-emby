@@ -39,17 +39,20 @@ func (e *routeEntry) copyResumableResponse(w http.ResponseWriter, req *http.Requ
 		current   = resp
 	)
 	for {
-		n, err := io.Copy(w, current.Body)
+		n, readErr, writeErr := copyResumableChunk(w, current.Body)
 		_ = current.Body.Close()
 		sentBytes += n
-		if err == nil || sentBytes >= state.responseLength() {
+		if writeErr != nil {
+			return writeErr
+		}
+		if readErr == nil || sentBytes >= state.responseLength() {
 			return nil
 		}
-		if !isResumableBodyError(err) {
-			return err
+		if !isResumableReadError(readErr) {
+			return readErr
 		}
 		if attempts >= e.resilience.ResumeMaxAttempts {
-			return err
+			return readErr
 		}
 
 		nextStart := state.rangeStart + sentBytes
@@ -68,6 +71,30 @@ func (e *routeEntry) copyResumableResponse(w http.ResponseWriter, req *http.Requ
 
 		current = nextResp
 		attempts++
+	}
+}
+
+func copyResumableChunk(dst io.Writer, src io.Reader) (int64, error, error) {
+	buf := make([]byte, 32*1024)
+	var written int64
+	for {
+		n, readErr := src.Read(buf)
+		if n > 0 {
+			writeN, writeErr := dst.Write(buf[:n])
+			written += int64(writeN)
+			if writeErr != nil {
+				return written, nil, writeErr
+			}
+			if writeN != n {
+				return written, nil, io.ErrShortWrite
+			}
+		}
+		if readErr != nil {
+			if readErr == io.EOF {
+				return written, nil, nil
+			}
+			return written, readErr, nil
+		}
 	}
 }
 
@@ -260,7 +287,7 @@ func parseContentRange(value string) (int64, int64, int64, bool) {
 	return start, end, total, true
 }
 
-func isResumableBodyError(err error) bool {
+func isResumableReadError(err error) bool {
 	if err == nil || err == io.EOF {
 		return false
 	}

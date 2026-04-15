@@ -1,7 +1,11 @@
 package proxy
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -234,6 +238,65 @@ func TestServeHTTPResumesInterruptedSingleRangeTransfer(t *testing.T) {
 	}
 }
 
+func TestServeHTTPDoesNotResumeOnDownstreamWriteFailure(t *testing.T) {
+	payload := []byte("0123456789abcdefghijklmnopqrstuvwxyz")
+
+	var mu sync.Mutex
+	requests := make([]string, 0, 2)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requests = append(requests, r.Header.Get("Range"))
+		attempt := len(requests)
+		mu.Unlock()
+
+		switch attempt {
+		case 1:
+			w.Header().Set("Accept-Ranges", "bytes")
+			w.Header().Set("ETag", `"stable"`)
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(payload)))
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(payload)
+		case 2:
+			t.Fatal("unexpected resume request after downstream write failure")
+		default:
+			t.Fatalf("unexpected backend request #%d", attempt)
+		}
+	}))
+	defer backend.Close()
+
+	entry := resumableTestRouteEntry(t, backend.URL)
+	entry.resilience = StreamResilienceOptions{
+		ResumeEnabled:     true,
+		ResumeMaxAttempts: 1,
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "http://edge.example.test/video", nil)
+	req.Host = "edge.example.test"
+	writer := &failingResumeResponseWriter{
+		header:    make(http.Header),
+		failAfter: len(payload) / 2,
+		err: &net.OpError{
+			Op:  "write",
+			Net: "tcp",
+			Err: io.ErrClosedPipe,
+		},
+	}
+
+	err := entry.serveHTTP(writer, req)
+	if err == nil {
+		t.Fatal("expected downstream write failure to be returned")
+	}
+	if !errors.Is(err, writer.err) {
+		t.Fatalf("expected downstream write error, got %v", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(requests) != 1 {
+		t.Fatalf("expected exactly one upstream request, got %d", len(requests))
+	}
+}
+
 func resumableTestRouteEntry(t *testing.T, backendRawURL string) *routeEntry {
 	t.Helper()
 
@@ -252,4 +315,44 @@ func resumableTestRouteEntry(t *testing.T, backendRawURL string) *routeEntry {
 		transport:      NewSharedTransport(),
 		selectionScope: "edge.example.test",
 	}
+}
+
+type failingResumeResponseWriter struct {
+	header      http.Header
+	statusCode  int
+	buf         bytes.Buffer
+	failAfter   int
+	err         error
+	written     int
+	wroteHeader bool
+}
+
+func (w *failingResumeResponseWriter) Header() http.Header {
+	return w.header
+}
+
+func (w *failingResumeResponseWriter) WriteHeader(statusCode int) {
+	if w.wroteHeader {
+		return
+	}
+	w.statusCode = statusCode
+	w.wroteHeader = true
+}
+
+func (w *failingResumeResponseWriter) Write(p []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	if w.failAfter <= w.written {
+		return 0, w.err
+	}
+	remaining := w.failAfter - w.written
+	if remaining >= len(p) {
+		n, _ := w.buf.Write(p)
+		w.written += n
+		return n, nil
+	}
+	n, _ := w.buf.Write(p[:remaining])
+	w.written += n
+	return n, w.err
 }
