@@ -199,7 +199,7 @@ func TestHTTPRuntimeManagerServesHTTP3WhenEnabled(t *testing.T) {
 	}
 	manager := newHTTPRuntimeManagerWithTLSAndHTTP3(provider, true)
 	ctx := context.Background()
-	listenPort := pickFreeTCPPort(t)
+	listenPort := pickFreeTCPAndUDPPort(t)
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -243,6 +243,22 @@ func TestHTTPRuntimeManagerServesHTTP3WhenEnabled(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for http3 runtime on port %d", listenPort)
+}
+
+func TestPickFreeTCPAndUDPPortReturnsBindablePort(t *testing.T) {
+	port := pickFreeTCPAndUDPPort(t)
+
+	tcpListener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		t.Fatalf("failed to listen on tcp port %d: %v", port, err)
+	}
+	defer tcpListener.Close()
+
+	udpListener, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: port})
+	if err != nil {
+		t.Fatalf("failed to listen on udp port %d: %v", port, err)
+	}
+	defer udpListener.Close()
 }
 
 func TestNewPropagatesHTTP3EnabledToHTTPRuntimeManager(t *testing.T) {
@@ -662,6 +678,24 @@ func pickFreeUDPPort(t *testing.T) int {
 	}
 	defer ln.Close()
 	return ln.LocalAddr().(*net.UDPAddr).Port
+}
+
+func pickFreeTCPAndUDPPort(t *testing.T) int {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		port := pickFreeUDPPort(t)
+		tcpListener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+		if err != nil {
+			continue
+		}
+		_ = tcpListener.Close()
+		return port
+	}
+
+	t.Fatal("failed to pick a port available for both tcp and udp")
+	return 0
 }
 
 func waitForPortState(t *testing.T, port int, wantBusy bool) {
