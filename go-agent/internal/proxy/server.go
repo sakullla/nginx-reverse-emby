@@ -287,6 +287,7 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 			if e.backendCache.IsInBackoff(actualDialAddress) {
 				break
 			}
+			start := time.Now()
 			resp, err := e.transport.RoundTrip(attemptReq)
 			if err != nil {
 				log.Printf("[proxy] roundtrip error for %s -> %s: %v", e.rule.FrontendURL, candidate.target, err)
@@ -299,7 +300,7 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 				e.backendCache.MarkFailure(actualDialAddress)
 				break
 			}
-			e.backendCache.MarkSuccess(actualDialAddress)
+			e.backendCache.ObserveSuccess(actualDialAddress, time.Since(start))
 			if e.modifyResp != nil {
 				modify := makeModifyResponse(FrontendOriginFromRule(e.rule), e.rule.ProxyRedirect, candidate.backendHost, normalizeURLPath(candidate.target.Path))
 				if err := modify(resp); err != nil {

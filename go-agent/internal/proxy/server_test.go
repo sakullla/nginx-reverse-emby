@@ -543,6 +543,45 @@ func TestRouteEntryCandidatesKeepBackoffBeforeLatencyPreference(t *testing.T) {
 	}
 }
 
+func TestRouteEntryServeHTTPRecordsSuccessfulLatencyObservation(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(20 * time.Millisecond)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer backend.Close()
+
+	backendURL := mustParseBackendURL(t, backend.URL)
+	cache := backends.NewCache(backends.Config{})
+
+	entry := &routeEntry{
+		rule: model.HTTPRule{
+			FrontendURL: "http://edge.example.test",
+		},
+		backends: []httpBackend{
+			{target: backendURL, backendHost: backendURL.Host},
+		},
+		backendCache:   cache,
+		transport:      NewSharedTransport(),
+		selectionScope: "edge.example.test",
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "http://edge.example.test/observe", nil)
+	req.Host = "edge.example.test"
+	recorder := httptest.NewRecorder()
+
+	if err := entry.serveHTTP(recorder, req); err != nil {
+		t.Fatalf("serveHTTP() error = %v", err)
+	}
+
+	candidates := cache.PreferResolvedCandidates([]backends.Candidate{
+		{Address: "203.0.113.10:80"},
+		{Address: backendURL.Host},
+	})
+	if candidates[0].Address != backendURL.Host {
+		t.Fatalf("unexpected candidate ranking after success: %+v", candidates)
+	}
+}
+
 func TestRouteEntryDoesNotRetryGenericTransportErrors(t *testing.T) {
 	sentinel := errors.New("synthetic dial error")
 	cache := backends.NewCache(backends.Config{})
