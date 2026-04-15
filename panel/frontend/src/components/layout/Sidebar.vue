@@ -47,14 +47,6 @@
         </svg>
         <span>Relay 监听器</span>
       </RouterLink>
-      <RouterLink to="/versions" class="sidebar__nav-item" active-class="sidebar__nav-item--active">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M3 5h18"/>
-          <path d="M3 12h10"/>
-          <path d="M3 19h6"/>
-        </svg>
-        <span>版本策略</span>
-      </RouterLink>
       <RouterLink to="/agents" class="sidebar__nav-item" :class="{ active: route.name === 'agents' || route.name === 'agent-detail' }">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
@@ -100,13 +92,6 @@
           <path d="M10 16h4"/>
           <circle cx="4" cy="12" r="2"/>
           <circle cx="20" cy="12" r="2"/>
-        </svg>
-      </RouterLink>
-      <RouterLink to="/versions" class="sidebar__nav-icon" title="版本策略" active-class="sidebar__nav-icon--active">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-          <path d="M3 5h18"/>
-          <path d="M3 12h10"/>
-          <path d="M3 19h6"/>
         </svg>
       </RouterLink>
       <RouterLink to="/agents" class="sidebar__nav-icon" title="节点管理" :class="{ 'sidebar__nav-icon--active': route.name === 'agents' || route.name === 'agent-detail' }">
