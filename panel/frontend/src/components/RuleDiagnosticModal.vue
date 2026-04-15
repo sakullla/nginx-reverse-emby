@@ -66,6 +66,34 @@
           </div>
         </div>
 
+        <div v-if="backendSummaries.length" class="diagnostic-modal__backends">
+          <div class="diagnostic-modal__section-title">后端延迟</div>
+          <div class="diagnostic-backend-grid">
+            <article v-for="backend in backendSummaries" :key="backend.backend" class="diagnostic-backend-card">
+              <div class="diagnostic-backend-card__header">
+                <code class="diagnostic-backend-card__name">{{ backend.backend }}</code>
+                <span class="diagnostic-backend-card__quality" :class="`diagnostic-backend-card__quality--${qualityToneFor(backend.summary?.quality)}`">
+                  {{ qualityLabelFor(backend.summary?.quality) }}
+                </span>
+              </div>
+              <div class="diagnostic-backend-card__stats">
+                <div>
+                  <span class="diagnostic-backend-card__label">平均</span>
+                  <strong class="diagnostic-backend-card__value">{{ backend.summary?.avg_latency_ms ?? 0 }} ms</strong>
+                </div>
+                <div>
+                  <span class="diagnostic-backend-card__label">成功</span>
+                  <strong class="diagnostic-backend-card__value">{{ backend.summary?.succeeded ?? 0 }} / {{ backend.summary?.sent ?? 0 }}</strong>
+                </div>
+              </div>
+              <div class="diagnostic-backend-card__range">
+                <span>最小 {{ backend.summary?.min_latency_ms ?? 0 }} ms</span>
+                <span>最大 {{ backend.summary?.max_latency_ms ?? 0 }} ms</span>
+              </div>
+            </article>
+          </div>
+        </div>
+
         <div class="diagnostic-modal__samples">
           <button type="button" class="diagnostic-modal__section-title diagnostic-modal__section-title--toggle" @click="showSamples = !showSamples">
             <span>探测样本</span>
@@ -109,6 +137,7 @@ defineEmits(['update:modelValue'])
 const state = computed(() => props.task?.state || 'pending')
 const busy = computed(() => !['completed', 'failed'].includes(state.value))
 const summary = computed(() => props.task?.result?.summary || null)
+const backendSummaries = computed(() => props.task?.result?.backends || [])
 const samples = computed(() => props.task?.result?.samples || [])
 const title = computed(() => props.kind === 'l4_tcp' ? 'L4 规则诊断' : 'HTTP 规则诊断')
 const kindLabel = computed(() => props.kind === 'l4_tcp' ? 'TCP PATH DIAGNOSIS' : 'HTTP PATH DIAGNOSIS')
@@ -166,6 +195,21 @@ function httpStatusTone(code) {
   if (code >= 400 && code < 500) return 'warning'
   if (code >= 500) return 'danger'
   return 'muted'
+}
+
+function qualityLabelFor(value) {
+  if (!value) return '-'
+  return {
+    excellent: '极佳',
+    good: '良好',
+    fair: '一般',
+    poor: '较差',
+    down: '不可用'
+  }[value] || value
+}
+
+function qualityToneFor(value) {
+  return QUALITY_MAP[qualityLabelFor(value)] || 'muted'
 }
 </script>
 
@@ -270,6 +314,72 @@ function httpStatusTone(code) {
   display: flex;
   justify-content: space-between;
   font-size: 0.78rem;
+  color: var(--color-text-tertiary);
+}
+.diagnostic-modal__backends {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.diagnostic-backend-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.75rem;
+}
+.diagnostic-backend-card {
+  padding: 0.85rem 0.95rem;
+  border-radius: 12px;
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+.diagnostic-backend-card__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+.diagnostic-backend-card__name {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  color: var(--color-text-primary);
+  word-break: break-all;
+}
+.diagnostic-backend-card__quality {
+  flex-shrink: 0;
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--color-bg-hover);
+  color: var(--color-text-muted);
+}
+.diagnostic-backend-card__quality--success { background: var(--color-success-50); color: var(--color-success); }
+.diagnostic-backend-card__quality--info { background: rgba(56, 189, 248, 0.12); color: var(--color-primary); }
+.diagnostic-backend-card__quality--warning { background: var(--color-warning-50); color: var(--color-warning); }
+.diagnostic-backend-card__quality--danger { background: var(--color-danger-50); color: var(--color-danger); }
+.diagnostic-backend-card__stats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.6rem;
+}
+.diagnostic-backend-card__label {
+  display: block;
+  font-size: 0.72rem;
+  color: var(--color-text-tertiary);
+  margin-bottom: 0.15rem;
+}
+.diagnostic-backend-card__value {
+  font-size: 0.95rem;
+  color: var(--color-text-primary);
+}
+.diagnostic-backend-card__range {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.75rem;
+  font-size: 0.75rem;
   color: var(--color-text-tertiary);
 }
 .diagnostic-modal__section-title { font-weight: 700; color: var(--color-text-primary); margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; }

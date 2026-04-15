@@ -54,6 +54,55 @@ func TestDiagnosticHandlerExecutesHTTPRuleProbeFromAppliedSnapshot(t *testing.T)
 	}
 }
 
+func TestDiagnosticHandlerReturnsPerBackendResults(t *testing.T) {
+	backendA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer backendA.Close()
+	backendB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer backendB.Close()
+
+	mem := store.NewInMemory()
+	if err := mem.SaveAppliedSnapshot(model.Snapshot{
+		Rules: []model.HTTPRule{{
+			ID:          17,
+			FrontendURL: "https://edge.example.test/emby",
+			Backends: []model.HTTPBackend{
+				{URL: backendA.URL + "/healthz"},
+				{URL: backendB.URL + "/healthz"},
+			},
+			LoadBalancing: model.LoadBalancing{Strategy: "round_robin"},
+		}},
+	}); err != nil {
+		t.Fatalf("SaveAppliedSnapshot() error = %v", err)
+	}
+
+	handler := NewDiagnosticHandler(mem, diagnostics.NewHTTPProber(diagnostics.HTTPProberConfig{
+		Attempts:   5,
+		Timeout:    time.Second,
+		HTTPClient: backendA.Client(),
+	}), diagnostics.NewTCPProber(diagnostics.TCPProberConfig{}))
+
+	result, err := handler.HandleTask(context.Background(), TaskMessage{
+		TaskID:     "task-17",
+		TaskType:   TaskTypeDiagnoseHTTPRule,
+		RawPayload: map[string]any{"rule_id": 17},
+	})
+	if err != nil {
+		t.Fatalf("HandleTask() error = %v", err)
+	}
+
+	backends, ok := result["backends"].([]map[string]any)
+	if !ok {
+		t.Fatalf("backends = %#v", result["backends"])
+	}
+	if len(backends) != 2 {
+		t.Fatalf("backends = %#v", backends)
+	}
+}
+
 func TestDiagnosticHandlerExecutesTCPL4ProbeFromDesiredSnapshot(t *testing.T) {
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {

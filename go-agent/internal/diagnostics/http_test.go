@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
@@ -65,11 +66,17 @@ func TestHTTPProberDiagnoseReportsLossAcrossMixedBackends(t *testing.T) {
 		t.Fatalf("Diagnose() error = %v", err)
 	}
 
-	if report.Summary.Sent != 2 || report.Summary.Succeeded != 1 || report.Summary.Failed != 1 {
+	if report.Summary.Sent != 4 || report.Summary.Succeeded != 2 || report.Summary.Failed != 2 {
 		t.Fatalf("Summary = %+v", report.Summary)
 	}
 	if report.Summary.LossRate != 0.5 {
 		t.Fatalf("LossRate = %v", report.Summary.LossRate)
+	}
+	if len(report.Backends) != 2 {
+		t.Fatalf("Backends = %+v", report.Backends)
+	}
+	if report.Backends[0].Summary.Sent != 2 || report.Backends[1].Summary.Sent != 2 {
+		t.Fatalf("Backends = %+v", report.Backends)
 	}
 }
 
@@ -103,5 +110,115 @@ func TestHTTPProberDiagnoseUsesRelayChainWhenConfigured(t *testing.T) {
 	}
 	if provider.TrustedCAPoolCalls() == 0 {
 		t.Fatal("expected relay TLS material provider to be used")
+	}
+}
+
+func TestHTTPProberDiagnoseFallsBackToGetWhenHeadIsNotSupported(t *testing.T) {
+	var (
+		mu      sync.Mutex
+		methods []string
+	)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		methods = append(methods, r.Method)
+		mu.Unlock()
+		if r.Method == http.MethodHead {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		if r.Method == http.MethodGet {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer server.Close()
+
+	prober := NewHTTPProber(HTTPProberConfig{
+		Attempts:   1,
+		Timeout:    time.Second,
+		HTTPClient: server.Client(),
+	})
+	report, err := prober.Diagnose(context.Background(), model.HTTPRule{
+		ID:          12,
+		FrontendURL: "https://edge.example.test/emby",
+		BackendURL:  server.URL + "/healthz",
+	}, nil)
+	if err != nil {
+		t.Fatalf("Diagnose() error = %v", err)
+	}
+
+	if report.Summary.Succeeded != 1 {
+		t.Fatalf("Summary = %+v", report.Summary)
+	}
+	if len(report.Samples) != 1 {
+		t.Fatalf("Samples = %+v", report.Samples)
+	}
+	if got := report.Samples[0].StatusCode; got != http.StatusNoContent {
+		t.Fatalf("StatusCode = %d", got)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(methods) != 2 {
+		t.Fatalf("methods = %v", methods)
+	}
+	if methods[0] != http.MethodHead || methods[1] != http.MethodGet {
+		t.Fatalf("methods = %v", methods)
+	}
+}
+
+func TestHTTPProberDiagnoseCollectsFiveSamplesPerBackend(t *testing.T) {
+	var (
+		mu          sync.Mutex
+		backendHits = map[string]int{}
+	)
+	newBackend := func(name string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			backendHits[name]++
+			mu.Unlock()
+			w.WriteHeader(http.StatusNoContent)
+		}))
+	}
+	backendA := newBackend("a")
+	defer backendA.Close()
+	backendB := newBackend("b")
+	defer backendB.Close()
+
+	prober := NewHTTPProber(HTTPProberConfig{
+		Attempts:   5,
+		Timeout:    time.Second,
+		HTTPClient: backendA.Client(),
+	})
+	report, err := prober.Diagnose(context.Background(), model.HTTPRule{
+		ID:          13,
+		FrontendURL: "https://edge.example.test/multi",
+		Backends: []model.HTTPBackend{
+			{URL: backendA.URL + "/healthz"},
+			{URL: backendB.URL + "/healthz"},
+		},
+		LoadBalancing: model.LoadBalancing{Strategy: "round_robin"},
+	}, nil)
+	if err != nil {
+		t.Fatalf("Diagnose() error = %v", err)
+	}
+
+	if report.Summary.Sent != 10 {
+		t.Fatalf("Summary = %+v", report.Summary)
+	}
+	if len(report.Backends) != 2 {
+		t.Fatalf("Backends = %+v", report.Backends)
+	}
+	for _, backend := range report.Backends {
+		if backend.Summary.Sent != 5 {
+			t.Fatalf("backend summary = %+v", backend)
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if backendHits["a"] != 5 || backendHits["b"] != 5 {
+		t.Fatalf("backendHits = %+v", backendHits)
 	}
 }

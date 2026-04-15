@@ -535,10 +535,44 @@ function ensureMockTaskMap(agentId) {
 }
 
 function buildMockDiagnosticResult(kind, ruleId) {
-  const sent = 20
+  const sent = 10
   const failed = ruleId % 3 === 0 ? 1 : 0
   const succeeded = sent - failed
   const avg = 18 + (ruleId % 7) * 9
+  const backendLabels = kind === 'http'
+    ? ['http://10.0.0.11:8096/healthz', 'http://10.0.0.12:8096/healthz']
+    : ['127.0.0.1:9001', '127.0.0.1:9002']
+  const samples = Array.from({ length: sent }, (_, index) => {
+    const backend = backendLabels[index % backendLabels.length]
+    const sampleFailed = index < failed
+    return {
+      attempt: index + 1,
+      backend,
+      success: !sampleFailed,
+      latency_ms: sampleFailed ? 0 : avg + index * 2,
+      status_code: kind === 'http' && !sampleFailed ? 200 : 0,
+      error: sampleFailed ? 'dial timeout' : ''
+    }
+  })
+  const backends = backendLabels.map((backend) => {
+    const backendSamples = samples.filter((sample) => sample.backend === backend)
+    const successful = backendSamples.filter((sample) => sample.success)
+    const latencies = successful.map((sample) => sample.latency_ms)
+    const total = latencies.reduce((sum, value) => sum + value, 0)
+    return {
+      backend,
+      summary: {
+        sent: backendSamples.length,
+        succeeded: successful.length,
+        failed: backendSamples.length - successful.length,
+        loss_rate: Number(((backendSamples.length - successful.length) / backendSamples.length).toFixed(1)),
+        avg_latency_ms: successful.length ? Number((total / successful.length).toFixed(1)) : 0,
+        min_latency_ms: successful.length ? Math.min(...latencies) : 0,
+        max_latency_ms: successful.length ? Math.max(...latencies) : 0,
+        quality: successful.length === backendSamples.length ? 'good' : 'fair'
+      }
+    }
+  })
   return {
     id: `task-${Date.now()}`,
     agent_id: '',
@@ -561,14 +595,8 @@ function buildMockDiagnosticResult(kind, ruleId) {
         max_latency_ms: avg + 17,
         quality: failed === 0 && avg < 60 ? 'excellent' : failed === 0 ? 'good' : 'fair'
       },
-      samples: Array.from({ length: sent }, (_, index) => ({
-        attempt: index + 1,
-        backend: kind === 'http' ? `127.0.0.1:${8096 + index}` : `127.0.0.1:${9000 + index}`,
-        success: index >= failed,
-        latency_ms: index >= failed ? avg + index * 2 : 0,
-        status_code: kind === 'http' && index >= failed ? 200 : 0,
-        error: index < failed ? 'dial timeout' : ''
-      }))
+      backends,
+      samples
     }
   }
 }

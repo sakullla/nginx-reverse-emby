@@ -51,3 +51,28 @@ func TestBuildReportMarksDownWhenAllProbesFail(t *testing.T) {
 		t.Fatalf("AvgLatencyMS = %v", report.Summary.AvgLatencyMS)
 	}
 }
+
+func TestBuildReportIncludesPerBackendSummaries(t *testing.T) {
+	report := BuildReport("http", 7, []Sample{
+		{Attempt: 1, Backend: "http://backend-a/healthz", Success: true, LatencyMS: 10},
+		{Attempt: 2, Backend: "http://backend-a/healthz", Success: false, Error: "timeout"},
+		{Attempt: 3, Backend: "http://backend-b/healthz", Success: true, LatencyMS: 30},
+		{Attempt: 4, Backend: "http://backend-b/healthz", Success: true, LatencyMS: 50},
+	})
+
+	if len(report.Backends) != 2 {
+		t.Fatalf("Backends = %+v", report.Backends)
+	}
+	if report.Backends[0].Backend != "http://backend-a/healthz" {
+		t.Fatalf("first backend = %+v", report.Backends[0])
+	}
+	if report.Backends[0].Summary.Sent != 2 || report.Backends[0].Summary.Succeeded != 1 || report.Backends[0].Summary.Failed != 1 {
+		t.Fatalf("first backend summary = %+v", report.Backends[0].Summary)
+	}
+	if report.Backends[1].Backend != "http://backend-b/healthz" {
+		t.Fatalf("second backend = %+v", report.Backends[1])
+	}
+	if report.Backends[1].Summary.Sent != 2 || report.Backends[1].Summary.Succeeded != 2 || report.Backends[1].Summary.AvgLatencyMS != 40 {
+		t.Fatalf("second backend summary = %+v", report.Backends[1].Summary)
+	}
+}

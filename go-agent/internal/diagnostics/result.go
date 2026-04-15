@@ -25,19 +25,26 @@ type Summary struct {
 	Quality      string  `json:"quality"`
 }
 
+type BackendReport struct {
+	Backend string  `json:"backend"`
+	Summary Summary `json:"summary"`
+}
+
 type Report struct {
-	Kind    string   `json:"kind"`
-	RuleID  int      `json:"rule_id"`
-	Summary Summary  `json:"summary"`
-	Samples []Sample `json:"samples"`
+	Kind     string          `json:"kind"`
+	RuleID   int             `json:"rule_id"`
+	Summary  Summary         `json:"summary"`
+	Backends []BackendReport `json:"backends,omitempty"`
+	Samples  []Sample        `json:"samples"`
 }
 
 func BuildReport(kind string, ruleID int, samples []Sample) Report {
 	report := Report{
-		Kind:    kind,
-		RuleID:  ruleID,
-		Summary: buildSummary(kind, samples),
-		Samples: append([]Sample(nil), samples...),
+		Kind:     kind,
+		RuleID:   ruleID,
+		Summary:  buildSummary(kind, samples),
+		Backends: buildBackendReports(kind, samples),
+		Samples:  append([]Sample(nil), samples...),
 	}
 	return report
 }
@@ -81,6 +88,29 @@ func buildSummary(kind string, samples []Sample) Summary {
 	}
 	summary.Quality = classifyQuality(kind, summary)
 	return summary
+}
+
+func buildBackendReports(kind string, samples []Sample) []BackendReport {
+	grouped := make(map[string][]Sample)
+	order := make([]string, 0)
+	for _, sample := range samples {
+		backend := sample.Backend
+		if backend == "" {
+			continue
+		}
+		if _, ok := grouped[backend]; !ok {
+			order = append(order, backend)
+		}
+		grouped[backend] = append(grouped[backend], sample)
+	}
+	reports := make([]BackendReport, 0, len(order))
+	for _, backend := range order {
+		reports = append(reports, BackendReport{
+			Backend: backend,
+			Summary: buildSummary(kind, grouped[backend]),
+		})
+	}
+	return reports
 }
 
 func LatencySample(attempt int, backend string, latency time.Duration, statusCode int) Sample {
