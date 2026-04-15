@@ -136,6 +136,55 @@ func TestLoadFromEnvLeavesRuntimePackageSHA256EmptyWhenExecutableMissing(t *test
 	}
 }
 
+func TestLoadFromEnvParsesHTTPResilienceSettings(t *testing.T) {
+	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
+	t.Setenv("NRE_AGENT_TOKEN", "secret")
+	t.Setenv("NRE_HTTP_DIAL_TIMEOUT", "7s")
+	t.Setenv("NRE_HTTP_TLS_HANDSHAKE_TIMEOUT", "9s")
+	t.Setenv("NRE_HTTP_RESPONSE_HEADER_TIMEOUT", "45s")
+	t.Setenv("NRE_HTTP_IDLE_CONN_TIMEOUT", "3m")
+	t.Setenv("NRE_HTTP_KEEP_ALIVE", "25s")
+	t.Setenv("NRE_HTTP_STREAM_RESUME_ENABLED", "true")
+	t.Setenv("NRE_HTTP_STREAM_RESUME_MAX_ATTEMPTS", "2")
+	t.Setenv("NRE_HTTP_SAME_BACKEND_RETRY_ATTEMPTS", "1")
+	t.Setenv("NRE_BACKEND_FAILURE_BACKOFF_BASE", "250ms")
+	t.Setenv("NRE_BACKEND_FAILURE_BACKOFF_LIMIT", "10s")
+	t.Setenv("NRE_RELAY_DIAL_TIMEOUT", "6s")
+	t.Setenv("NRE_RELAY_HANDSHAKE_TIMEOUT", "8s")
+	t.Setenv("NRE_RELAY_FRAME_TIMEOUT", "4s")
+	t.Setenv("NRE_RELAY_IDLE_TIMEOUT", "75s")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if cfg.HTTPTransport.DialTimeout != 7*time.Second {
+		t.Fatalf("DialTimeout = %v", cfg.HTTPTransport.DialTimeout)
+	}
+	if !cfg.HTTPResilience.ResumeEnabled {
+		t.Fatal("expected ResumeEnabled")
+	}
+	if cfg.HTTPResilience.ResumeMaxAttempts != 2 {
+		t.Fatalf("ResumeMaxAttempts = %d", cfg.HTTPResilience.ResumeMaxAttempts)
+	}
+	if cfg.BackendFailures.BackoffBase != 250*time.Millisecond {
+		t.Fatalf("BackoffBase = %v", cfg.BackendFailures.BackoffBase)
+	}
+	if cfg.RelayTimeouts.IdleTimeout != 75*time.Second {
+		t.Fatalf("IdleTimeout = %v", cfg.RelayTimeouts.IdleTimeout)
+	}
+}
+
+func TestLoadFromEnvRejectsInvalidHTTPResilienceSettings(t *testing.T) {
+	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
+	t.Setenv("NRE_AGENT_TOKEN", "secret")
+	t.Setenv("NRE_HTTP_STREAM_RESUME_MAX_ATTEMPTS", "0")
+
+	if _, err := LoadFromEnv(); err == nil {
+		t.Fatal("expected error for zero resume attempts")
+	}
+}
+
 func sumSHA256Hex(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
