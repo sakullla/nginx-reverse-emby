@@ -16,6 +16,9 @@ const (
 	dnsCacheTTL         = 30 * time.Second
 	failureBackoffBase  = time.Second
 	failureBackoffLimit = 60 * time.Second
+	observationWindow   = 24 * time.Hour
+	observationBuckets  = 24
+	observationAlpha    = 0.35
 )
 
 type Cache struct {
@@ -43,10 +46,29 @@ type failureEntry struct {
 }
 
 type candidateObservation struct {
-	successes   int
-	failures    int
-	lastLatency time.Duration
-	lastUpdated time.Time
+	counts            [observationBuckets]observationBucket
+	lastLatency       time.Duration
+	latencyEstimate   time.Duration
+	lastSuccessAt     time.Time
+	lastBandwidth     float64
+	bandwidthEstimate float64
+	lastBandwidthAt   time.Time
+	lastUpdated       time.Time
+}
+
+type observationBucket struct {
+	hour      int64
+	successes int
+	failures  int
+}
+
+type candidatePreference struct {
+	inBackoff    bool
+	stability    float64
+	latency      time.Duration
+	hasLatency   bool
+	bandwidth    float64
+	hasBandwidth bool
 }
 
 func NewCache(cfg Config) *Cache {
@@ -154,18 +176,22 @@ func (c *Cache) Order(scope, strategy string, candidates []Candidate) []Candidat
 }
 
 func (c *Cache) ObserveSuccess(address string, latency time.Duration) {
+	c.ObserveTransferSuccess(address, latency, 0, 0)
+}
+
+func (c *Cache) ObserveTransferSuccess(address string, latency time.Duration, totalDuration time.Duration, bytesTransferred int64) {
 	key := strings.TrimSpace(address)
 	if key == "" {
 		return
 	}
 
+	now := c.now()
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	entry := c.observed[key]
-	entry.successes++
-	entry.lastLatency = latency
-	entry.lastUpdated = c.now()
+	entry.recordSuccess(now, latency, totalDuration, bytesTransferred)
 	c.observed[key] = entry
 	delete(c.failures, key)
 }
@@ -176,12 +202,12 @@ func (c *Cache) PreferResolvedCandidates(candidates []Candidate) []Candidate {
 
 	now := c.now()
 	backoffState := make(map[string]bool, len(ordered))
-	observedState := make(map[string]candidateObservation, len(ordered))
+	preferenceState := make(map[string]candidatePreference, len(ordered))
 
 	c.mu.Lock()
 	for _, candidate := range ordered {
 		key := strings.TrimSpace(candidate.Address)
-		observedState[key] = c.observed[key]
+		preferenceState[key] = c.observed[key].preference(now)
 		if entry, ok := c.failures[key]; ok {
 			backoffState[key] = now.Before(entry.retryAfter)
 		}
@@ -197,15 +223,19 @@ func (c *Cache) PreferResolvedCandidates(candidates []Candidate) []Candidate {
 			return !leftBackoff
 		}
 
-		left := observedState[leftKey]
-		right := observedState[rightKey]
-		leftHasSuccess := left.successes > 0
-		rightHasSuccess := right.successes > 0
-		if leftHasSuccess != rightHasSuccess {
-			return leftHasSuccess
+		left := preferenceState[leftKey]
+		right := preferenceState[rightKey]
+		if left.stability != right.stability {
+			return left.stability > right.stability
 		}
-		if leftHasSuccess && rightHasSuccess && left.lastLatency != right.lastLatency {
-			return left.lastLatency < right.lastLatency
+		if left.hasLatency && right.hasLatency && left.latency != right.latency {
+			return left.latency < right.latency
+		}
+		if left.hasBandwidth != right.hasBandwidth {
+			return left.hasBandwidth
+		}
+		if left.hasBandwidth && right.hasBandwidth && left.bandwidth != right.bandwidth {
+			return left.bandwidth > right.bandwidth
 		}
 		return false
 	})
@@ -228,8 +258,7 @@ func (c *Cache) MarkFailure(address string) time.Duration {
 	entry.consecutive++
 
 	observed := c.observed[key]
-	observed.failures++
-	observed.lastUpdated = now
+	observed.recordFailure(now)
 	c.observed[key] = observed
 
 	backoff := c.backoffBase
@@ -356,4 +385,110 @@ func (c *Cache) observationFor(address string) candidateObservation {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.observed[key]
+}
+
+func (o *candidateObservation) recordSuccess(now time.Time, latency time.Duration, totalDuration time.Duration, bytesTransferred int64) {
+	o.recordOutcome(now, true)
+	if latency > 0 {
+		o.lastLatency = latency
+		o.latencyEstimate = blendDuration(o.latencyEstimate, latency)
+		o.lastSuccessAt = now
+	}
+	if totalDuration > 0 && bytesTransferred > 0 {
+		bandwidth := float64(bytesTransferred) / totalDuration.Seconds()
+		if bandwidth > 0 {
+			o.lastBandwidth = bandwidth
+			o.bandwidthEstimate = blendFloat(o.bandwidthEstimate, bandwidth)
+			o.lastBandwidthAt = now
+		}
+	}
+	o.lastUpdated = now
+}
+
+func (o *candidateObservation) recordFailure(now time.Time) {
+	o.recordOutcome(now, false)
+	o.lastUpdated = now
+}
+
+func (o *candidateObservation) recordOutcome(now time.Time, success bool) {
+	hour := now.UTC().Unix() / int64(time.Hour/time.Second)
+	index := int(hour % observationBuckets)
+	if o.counts[index].hour != hour {
+		o.counts[index] = observationBucket{hour: hour}
+	}
+	if success {
+		o.counts[index].successes++
+		return
+	}
+	o.counts[index].failures++
+}
+
+func (o candidateObservation) preference(now time.Time) candidatePreference {
+	successes, failures := o.recentCounts(now)
+	preference := candidatePreference{
+		stability: stabilityScore(successes, failures),
+	}
+	if latency, ok := o.latencyFor(now); ok {
+		preference.latency = latency
+		preference.hasLatency = true
+	}
+	if bandwidth, ok := o.bandwidthFor(now); ok {
+		preference.bandwidth = bandwidth
+		preference.hasBandwidth = true
+	}
+	return preference
+}
+
+func stabilityScore(successes, failures int) float64 {
+	switch {
+	case successes <= 0 && failures <= 0:
+		return 0.5
+	case successes <= 0:
+		return 0
+	default:
+		return 1 / float64(failures+1)
+	}
+}
+
+func (o candidateObservation) recentCounts(now time.Time) (int, int) {
+	currentHour := now.UTC().Unix() / int64(time.Hour/time.Second)
+	var successes int
+	var failures int
+	for _, bucket := range o.counts {
+		age := currentHour - bucket.hour
+		if age < 0 || age >= observationBuckets {
+			continue
+		}
+		successes += bucket.successes
+		failures += bucket.failures
+	}
+	return successes, failures
+}
+
+func (o candidateObservation) latencyFor(now time.Time) (time.Duration, bool) {
+	if o.lastSuccessAt.IsZero() || now.Sub(o.lastSuccessAt) >= observationWindow || o.latencyEstimate <= 0 {
+		return 0, false
+	}
+	return o.latencyEstimate, true
+}
+
+func (o candidateObservation) bandwidthFor(now time.Time) (float64, bool) {
+	if o.lastBandwidthAt.IsZero() || now.Sub(o.lastBandwidthAt) >= observationWindow || o.bandwidthEstimate <= 0 {
+		return 0, false
+	}
+	return o.bandwidthEstimate, true
+}
+
+func blendDuration(current, next time.Duration) time.Duration {
+	if current <= 0 {
+		return next
+	}
+	return time.Duration((1.0-observationAlpha)*float64(current) + observationAlpha*float64(next))
+}
+
+func blendFloat(current, next float64) float64 {
+	if current <= 0 {
+		return next
+	}
+	return (1.0-observationAlpha)*current + observationAlpha*next
 }

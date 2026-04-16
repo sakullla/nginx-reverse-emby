@@ -300,6 +300,7 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 				e.backendCache.MarkFailure(actualDialAddress)
 				break
 			}
+			headerLatency := time.Since(start)
 			if e.modifyResp != nil {
 				modify := makeModifyResponse(FrontendOriginFromRule(e.rule), e.rule.ProxyRedirect, candidate.backendHost, normalizeURLPath(candidate.target.Path))
 				if err := modify(resp); err != nil {
@@ -314,22 +315,24 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 					e.backendCache.MarkFailure(actualDialAddress)
 					return err
 				}
-				e.backendCache.ObserveSuccess(actualDialAddress, time.Since(start))
+				e.observeSuccessfulBackend(actualDialAddress, headerLatency, time.Since(start), 0)
 				return nil
 			}
 			if state, ok := e.shouldResumeResponse(attemptReq, resp); ok {
-				if err := e.copyResumableResponse(w, attemptReq, resp, state); err != nil {
+				written, err := e.copyResumableResponse(w, attemptReq, resp, state)
+				if err != nil {
 					e.backendCache.MarkFailure(actualDialAddress)
 					return err
 				}
-				e.backendCache.ObserveSuccess(actualDialAddress, time.Since(start))
+				e.observeSuccessfulBackend(actualDialAddress, headerLatency, time.Since(start), written)
 				return nil
 			}
-			if err := copyResponse(w, resp); err != nil {
+			written, err := copyResponse(w, resp)
+			if err != nil {
 				e.backendCache.MarkFailure(actualDialAddress)
 				return newStartedResponseError(err)
 			}
-			e.backendCache.ObserveSuccess(actualDialAddress, time.Since(start))
+			e.observeSuccessfulBackend(actualDialAddress, headerLatency, time.Since(start), written)
 			return nil
 		}
 	}
@@ -345,6 +348,20 @@ func (e *routeEntry) sameBackendRetryMaxAttempts(req *http.Request) int {
 		return 1
 	}
 	return attempts
+}
+
+func (e *routeEntry) observeSuccessfulBackend(address string, headerLatency time.Duration, totalDuration time.Duration, bytesTransferred int64) {
+	if e == nil || e.backendCache == nil {
+		return
+	}
+	if totalDuration <= 0 {
+		totalDuration = headerLatency
+	}
+	if bytesTransferred > 0 {
+		e.backendCache.ObserveTransferSuccess(address, headerLatency, totalDuration, bytesTransferred)
+		return
+	}
+	e.backendCache.ObserveSuccess(address, headerLatency)
 }
 
 func isRetrySafeMethod(method string) bool {
@@ -823,21 +840,24 @@ func newStartedResponseError(err error) error {
 	return &startedResponseError{err: err}
 }
 
-func copyResponse(w http.ResponseWriter, resp *http.Response) error {
+func copyResponse(w http.ResponseWriter, resp *http.Response) (int64, error) {
 	if resp == nil {
-		return nil
+		return 0, nil
 	}
 	if resp.Body != nil {
 		defer resp.Body.Close()
 	}
 	copyHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
+	var written int64
 	if resp.Body != nil {
-		if _, err := io.Copy(w, resp.Body); err != nil {
-			return err
+		n, err := io.Copy(w, resp.Body)
+		written = n
+		if err != nil {
+			return written, err
 		}
 	}
-	return nil
+	return written, nil
 }
 
 func handleUpgradeResponse(w http.ResponseWriter, req *http.Request, resp *http.Response) error {

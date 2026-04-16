@@ -275,6 +275,76 @@ func TestCachePreferResolvedCandidatesUsesLatencyOverCumulativeSuccesses(t *test
 	}
 }
 
+func TestCachePreferResolvedCandidatesUsesOnlyRecent24hStability(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	now := base
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return now
+		},
+	})
+	candidates := []Candidate{
+		{Address: "10.0.0.10:443"},
+		{Address: "10.0.0.11:443"},
+	}
+
+	now = base.Add(-25 * time.Hour)
+	cache.MarkFailure("10.0.0.10:443")
+	now = base.Add(-2 * time.Hour)
+	cache.MarkFailure("10.0.0.11:443")
+	cache.ObserveSuccess("10.0.0.11:443", 20*time.Millisecond)
+	now = base
+	cache.ObserveSuccess("10.0.0.10:443", 40*time.Millisecond)
+
+	got := cache.PreferResolvedCandidates(candidates)
+	if !reflect.DeepEqual(addresses(got), []string{"10.0.0.10:443", "10.0.0.11:443"}) {
+		t.Fatalf("unexpected preferred order with 24h stability window: %v", addresses(got))
+	}
+}
+
+func TestCachePreferResolvedCandidatesUsesStabilityBeforeLatency(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return base
+		},
+	})
+	candidates := []Candidate{
+		{Address: "10.0.0.12:443"},
+		{Address: "10.0.0.13:443"},
+	}
+
+	cache.ObserveSuccess("10.0.0.12:443", 60*time.Millisecond)
+	cache.MarkFailure("10.0.0.13:443")
+	cache.ObserveSuccess("10.0.0.13:443", 5*time.Millisecond)
+
+	got := cache.PreferResolvedCandidates(candidates)
+	if !reflect.DeepEqual(addresses(got), []string{"10.0.0.12:443", "10.0.0.13:443"}) {
+		t.Fatalf("unexpected preferred order with stability-first ranking: %v", addresses(got))
+	}
+}
+
+func TestCachePreferResolvedCandidatesUsesBandwidthAfterStabilityAndLatency(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return base
+		},
+	})
+	candidates := []Candidate{
+		{Address: "10.0.0.14:443"},
+		{Address: "10.0.0.15:443"},
+	}
+
+	cache.ObserveTransferSuccess("10.0.0.14:443", 30*time.Millisecond, 100*time.Millisecond, 128*1024)
+	cache.ObserveTransferSuccess("10.0.0.15:443", 30*time.Millisecond, 100*time.Millisecond, 2*1024*1024)
+
+	got := cache.PreferResolvedCandidates(candidates)
+	if !reflect.DeepEqual(addresses(got), []string{"10.0.0.15:443", "10.0.0.14:443"}) {
+		t.Fatalf("unexpected preferred order with bandwidth tiebreak: %v", addresses(got))
+	}
+}
+
 func addresses(candidates []Candidate) []string {
 	out := make([]string, len(candidates))
 	for i := range candidates {

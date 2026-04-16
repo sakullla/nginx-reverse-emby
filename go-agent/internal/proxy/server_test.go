@@ -582,6 +582,29 @@ func TestRouteEntryServeHTTPRecordsSuccessfulLatencyObservation(t *testing.T) {
 	}
 }
 
+func TestRouteEntryObserveSuccessfulBackendUsesBandwidthForFutureRanking(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	cache := backends.NewCache(backends.Config{
+		Now: func() time.Time {
+			return base
+		},
+	})
+	entry := &routeEntry{
+		backendCache: cache,
+	}
+
+	entry.observeSuccessfulBackend("203.0.113.20:80", 30*time.Millisecond, 100*time.Millisecond, 2*1024*1024)
+	cache.ObserveTransferSuccess("203.0.113.21:80", 30*time.Millisecond, 100*time.Millisecond, 128*1024)
+
+	candidates := cache.PreferResolvedCandidates([]backends.Candidate{
+		{Address: "203.0.113.21:80"},
+		{Address: "203.0.113.20:80"},
+	})
+	if candidates[0].Address != "203.0.113.20:80" {
+		t.Fatalf("unexpected candidate ranking after bandwidth observation: %+v", candidates)
+	}
+}
+
 func TestRouteEntryServeHTTPDoesNotRecordSuccessWhenBodyCopyFails(t *testing.T) {
 	broken := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		hijacker, ok := w.(http.Hijacker)
