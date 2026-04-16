@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 )
@@ -468,6 +469,122 @@ func TestTCPDirectProxySupportsHostnameBackend(t *testing.T) {
 	}
 	if string(reply) != "host" {
 		t.Fatalf("expected hostname backend echo, got %q", string(reply))
+	}
+}
+
+func TestL4CandidatesAdaptiveExploresColdBackendWhenBudgetTriggers(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	cache := backends.NewCache(backends.Config{
+		Resolver: resolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
+			switch host {
+			case "warm.example":
+				return []net.IPAddr{{IP: net.ParseIP("127.0.0.51")}}, nil
+			case "cold.example":
+				return []net.IPAddr{{IP: net.ParseIP("127.0.0.52")}}, nil
+			default:
+				return nil, fmt.Errorf("unexpected host %q", host)
+			}
+		}),
+		Now: func() time.Time {
+			return base
+		},
+		RandomIntn: func(n int) int {
+			if n != 100 {
+				t.Fatalf("unexpected exploration budget bound: %d", n)
+			}
+			return 0
+		},
+	})
+
+	scope := "tcp:0.0.0.0:9443"
+	for i := 0; i < 4; i++ {
+		cache.ObserveBackendSuccess(backends.BackendObservationKey(scope, backends.StableBackendID("warm.example:9001")), 20*time.Millisecond, 200*time.Millisecond, 512*1024)
+	}
+
+	candidates, err := l4Candidates(context.Background(), cache, model.L4Rule{
+		Protocol:      "tcp",
+		ListenHost:    "0.0.0.0",
+		ListenPort:    9443,
+		LoadBalancing: model.LoadBalancing{Strategy: "adaptive"},
+		Backends: []model.L4Backend{
+			{Host: "warm.example", Port: 9001},
+			{Host: "cold.example", Port: 9001},
+		},
+	})
+	if err != nil {
+		t.Fatalf("l4Candidates() error = %v", err)
+	}
+	if candidates[0].address != "127.0.0.52:9001" {
+		t.Fatalf("unexpected order: %+v", candidates)
+	}
+}
+
+func TestL4CandidatesAdaptivePromotesRecoveredResolvedCandidateOnlyDuringSlowStart(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	now := base
+	cache := backends.NewCache(backends.Config{
+		Resolver: resolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
+			switch host {
+			case "dual.example":
+				return []net.IPAddr{
+					{IP: net.ParseIP("127.0.0.1")},
+					{IP: net.ParseIP("127.0.0.2")},
+				}, nil
+			default:
+				return nil, fmt.Errorf("unexpected host %q", host)
+			}
+		}),
+		Now: func() time.Time {
+			return now
+		},
+		RandomIntn: func(n int) int {
+			if n != 100 {
+				t.Fatalf("unexpected exploration budget bound: %d", n)
+			}
+			return 0
+		},
+	})
+
+	rule := model.L4Rule{
+		Protocol:      "tcp",
+		ListenHost:    "0.0.0.0",
+		ListenPort:    9444,
+		LoadBalancing: model.LoadBalancing{Strategy: "adaptive"},
+		Backends: []model.L4Backend{
+			{Host: "dual.example", Port: 9001},
+		},
+	}
+
+	warmAddress := "127.0.0.1:9001"
+	recoveredAddress := "127.0.0.2:9001"
+	cache.ObserveTransferSuccess(warmAddress, 15*time.Millisecond, 50*time.Millisecond, 512*1024)
+	cache.ObserveTransferSuccess(warmAddress, 15*time.Millisecond, 50*time.Millisecond, 512*1024)
+	cache.ObserveTransferSuccess(warmAddress, 15*time.Millisecond, 50*time.Millisecond, 512*1024)
+	cache.MarkFailure(recoveredAddress)
+	now = now.Add(1100 * time.Millisecond)
+
+	candidates, err := l4Candidates(context.Background(), cache, rule)
+	if err != nil {
+		t.Fatalf("l4Candidates() error = %v", err)
+	}
+	if candidates[0].address != recoveredAddress {
+		t.Fatalf("expected recovering candidate to be promoted, got %+v", candidates)
+	}
+
+	cache.ObserveTransferSuccess(recoveredAddress, 25*time.Millisecond, 200*time.Millisecond, 128*1024)
+	cache.ObserveTransferSuccess(recoveredAddress, 25*time.Millisecond, 200*time.Millisecond, 128*1024)
+
+	candidates, err = l4Candidates(context.Background(), cache, rule)
+	if err != nil {
+		t.Fatalf("l4Candidates() error after recovery = %v", err)
+	}
+	if candidates[0].address != warmAddress {
+		t.Fatalf("expected warm peer to retake priority after recovery warms, got %+v", candidates)
+	}
+
+	summary := cache.Summary(recoveredAddress)
+	if summary.State != backends.ObservationStateWarm || !summary.SlowStartActive {
+		t.Fatalf("Summary = %+v", summary)
 	}
 }
 
@@ -2207,4 +2324,10 @@ func waitForProxyProtocolObservation(t *testing.T, observed <-chan proxyProtocol
 		t.Fatal("timed out waiting for upstream observation")
 		return proxyProtocolObservation{}
 	}
+}
+
+type resolverFunc func(context.Context, string) ([]net.IPAddr, error)
+
+func (f resolverFunc) LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error) {
+	return f(ctx, host)
 }
