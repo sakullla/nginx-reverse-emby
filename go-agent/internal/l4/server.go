@@ -214,7 +214,6 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 		return
 	}
 
-	sessionStart := s.now()
 	upstream, candidate, connectDuration, err := s.dialTCPUpstream(rule)
 	if err != nil {
 		return
@@ -227,26 +226,23 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 		s.observeCandidateFailure(candidate)
 		return
 	}
+	s.observeCandidateSuccess(candidate, connectDuration, connectDuration, 0)
 
-	type tcpCopyResult struct {
-		n int64
-	}
-	done := make(chan tcpCopyResult, 2)
+	done := make(chan struct{}, 2)
 	go func() {
-		n, _ := io.Copy(upstream, downstreamSource)
+		_, _ = io.Copy(upstream, downstreamSource)
 		closeTCPWrite(upstream)
 		closeTCPRead(client)
-		done <- tcpCopyResult{n: n}
+		done <- struct{}{}
 	}()
 	go func() {
-		n, _ := io.Copy(client, upstream)
+		_, _ = io.Copy(client, upstream)
 		closeTCPWrite(client)
 		closeTCPRead(upstream)
-		done <- tcpCopyResult{n: n}
+		done <- struct{}{}
 	}()
-	first := <-done
-	second := <-done
-	s.observeCandidateSuccess(candidate, connectDuration, s.now().Sub(sessionStart), first.n+second.n)
+	<-done
+	<-done
 }
 
 func (s *Server) prepareTCPDownstream(client net.Conn, rule model.L4Rule) (io.Reader, *proxyInfo, error) {

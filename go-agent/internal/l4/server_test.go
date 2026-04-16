@@ -16,6 +16,7 @@ import (
 	"io"
 	"math/big"
 	"net"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -470,6 +471,92 @@ func TestTCPDirectProxySupportsHostnameBackend(t *testing.T) {
 	if string(reply) != "host" {
 		t.Fatalf("expected hostname backend echo, got %q", string(reply))
 	}
+}
+
+func TestTCPConnectObservesSuccessBeforeSessionTeardown(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	now := base
+	cache := backends.NewCache(backends.Config{
+		Now: func() time.Time {
+			return now
+		},
+	})
+
+	upstreamLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen upstream: %v", err)
+	}
+	defer upstreamLn.Close()
+
+	upstreamAccepted := make(chan net.Conn, 1)
+	upstreamRelease := make(chan struct{})
+	go func() {
+		conn, err := upstreamLn.Accept()
+		if err != nil {
+			return
+		}
+		upstreamAccepted <- conn
+		<-upstreamRelease
+		conn.Close()
+	}()
+
+	listenPort := pickFreeTCPPort(t)
+	scope := "tcp:" + net.JoinHostPort("127.0.0.1", strconv.Itoa(listenPort))
+	targetAddress := upstreamLn.Addr().String()
+	backendKey := backends.BackendObservationKey(scope, backends.StableBackendID(targetAddress))
+
+	cache.MarkFailure(targetAddress)
+	cache.ObserveBackendFailure(backendKey)
+	now = now.Add(1100 * time.Millisecond)
+	cache.ObserveBackendSuccess(backendKey, 20*time.Millisecond, 20*time.Millisecond, 0)
+
+	srv, err := NewServerWithResources(context.Background(), []model.L4Rule{{
+		Protocol:   "tcp",
+		ListenHost: "127.0.0.1",
+		ListenPort: listenPort,
+		Backends: []model.L4Backend{
+			{Host: "127.0.0.1", Port: upstreamLn.Addr().(*net.TCPAddr).Port},
+		},
+		LoadBalancing: model.LoadBalancing{Strategy: "adaptive"},
+	}}, nil, nil, cache)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	srv.now = func() time.Time { return now }
+	defer srv.Close()
+
+	client, err := net.Dial("tcp", srv.tcpListeners[0].Addr().String())
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	defer client.Close()
+
+	var upstreamConn net.Conn
+	select {
+	case upstreamConn = <-upstreamAccepted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for upstream accept")
+	}
+	defer func() {
+		close(upstreamRelease)
+		if upstreamConn != nil {
+			upstreamConn.Close()
+		}
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		resolved := cache.Summary(targetAddress)
+		backend := cache.Summary(backendKey)
+		if resolved.RecentSucceeded > 0 && backend.State == backends.ObservationStateWarm && backend.SlowStartActive {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	resolved := cache.Summary(targetAddress)
+	backend := cache.Summary(backendKey)
+	t.Fatalf("expected prompt tcp success observation while session stayed open; resolved=%+v backend=%+v", resolved, backend)
 }
 
 func TestL4CandidatesAdaptiveExploresColdBackendWhenBudgetTriggers(t *testing.T) {
