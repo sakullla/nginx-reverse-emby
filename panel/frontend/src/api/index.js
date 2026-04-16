@@ -554,7 +554,7 @@ function buildMockDiagnosticResult(kind, ruleId) {
       error: sampleFailed ? 'dial timeout' : ''
     }
   })
-  const backends = backendLabels.map((backend) => {
+  const backends = backendLabels.map((backend, index) => {
     const backendSamples = samples.filter((sample) => sample.backend === backend)
     const successful = backendSamples.filter((sample) => sample.success)
     const latencies = successful.map((sample) => sample.latency_ms)
@@ -579,7 +579,12 @@ function buildMockDiagnosticResult(kind, ruleId) {
         recent_failed: backendSamples.length - successful.length,
         latency_ms: successful.length ? Number((total / successful.length).toFixed(1)) : 0,
         estimated_bandwidth_bps: backend === backendLabels[0] ? 4 * 1024 * 1024 : 768 * 1024,
-        performance_score: backend === backendLabels[0] ? 0.88 : 0.63
+        performance_score: backend === backendLabels[0] ? 0.88 : 0.63,
+        state: index === 0 ? 'warm' : 'recovering',
+        sample_confidence: index === 0 ? 1 : 0.45,
+        slow_start_active: index !== 0,
+        outlier: index !== 0,
+        traffic_share_hint: index === 0 ? 'normal' : 'recovery'
       },
       children: kind === 'http'
         ? [
@@ -603,7 +608,12 @@ function buildMockDiagnosticResult(kind, ruleId) {
                 recent_failed: backendSamples.length - successful.length,
                 latency_ms: successful.length ? Number((total / successful.length).toFixed(1)) : 0,
                 estimated_bandwidth_bps: backend === backendLabels[0] ? 4 * 1024 * 1024 : 768 * 1024,
-                performance_score: backend === backendLabels[0] ? 0.88 : 0.63
+                performance_score: backend === backendLabels[0] ? 0.88 : 0.63,
+                state: index === 0 ? 'warm' : 'recovering',
+                sample_confidence: index === 0 ? 1 : 0.45,
+                slow_start_active: index !== 0,
+                outlier: index !== 0,
+                traffic_share_hint: index === 0 ? 'normal' : 'recovery'
               }
             }
           ]

@@ -95,8 +95,16 @@
               </div>
               <div v-if="backend.adaptive" class="diagnostic-backend-card__adaptive">
                 <div class="diagnostic-factor">
+                  <span class="diagnostic-factor__label">状态</span>
+                  <strong class="diagnostic-factor__value">{{ adaptiveStateLabel(backend.adaptive?.state) }}</strong>
+                </div>
+                <div class="diagnostic-factor">
                   <span class="diagnostic-factor__label">近24h稳定性</span>
                   <strong class="diagnostic-factor__value">{{ formatPercent(backend.adaptive?.stability) }}</strong>
+                </div>
+                <div class="diagnostic-factor">
+                  <span class="diagnostic-factor__label">样本置信度</span>
+                  <strong class="diagnostic-factor__value">{{ formatPercent(backend.adaptive?.sample_confidence) }}</strong>
                 </div>
                 <div class="diagnostic-factor">
                   <span class="diagnostic-factor__label">延迟</span>
@@ -109,6 +117,18 @@
                 <div class="diagnostic-factor">
                   <span class="diagnostic-factor__label">综合性能</span>
                   <strong class="diagnostic-factor__value">{{ formatScore(backend.adaptive?.performance_score) }}</strong>
+                </div>
+                <div class="diagnostic-factor">
+                  <span class="diagnostic-factor__label">慢启动</span>
+                  <strong class="diagnostic-factor__value">{{ backend.adaptive?.slow_start_active ? '进行中' : '无' }}</strong>
+                </div>
+                <div class="diagnostic-factor">
+                  <span class="diagnostic-factor__label">异常检测</span>
+                  <strong class="diagnostic-factor__value">{{ backend.adaptive?.outlier ? '已降权' : '正常' }}</strong>
+                </div>
+                <div class="diagnostic-factor">
+                  <span class="diagnostic-factor__label">流量阶段</span>
+                  <strong class="diagnostic-factor__value">{{ trafficShareLabel(backend.adaptive?.traffic_share_hint) }}</strong>
                 </div>
               </div>
               <div v-if="backend.adaptive?.reason" class="diagnostic-backend-card__reason">
@@ -123,8 +143,16 @@
                   </div>
                   <div class="diagnostic-backend-card__adaptive diagnostic-backend-card__adaptive--child">
                     <div class="diagnostic-factor">
+                      <span class="diagnostic-factor__label">状态</span>
+                      <strong class="diagnostic-factor__value">{{ adaptiveStateLabel(child.adaptive?.state) }}</strong>
+                    </div>
+                    <div class="diagnostic-factor">
                       <span class="diagnostic-factor__label">近24h稳定性</span>
                       <strong class="diagnostic-factor__value">{{ formatPercent(child.adaptive?.stability) }}</strong>
+                    </div>
+                    <div class="diagnostic-factor">
+                      <span class="diagnostic-factor__label">样本置信度</span>
+                      <strong class="diagnostic-factor__value">{{ formatPercent(child.adaptive?.sample_confidence) }}</strong>
                     </div>
                     <div class="diagnostic-factor">
                       <span class="diagnostic-factor__label">延迟</span>
@@ -137,6 +165,18 @@
                     <div class="diagnostic-factor">
                       <span class="diagnostic-factor__label">综合性能</span>
                       <strong class="diagnostic-factor__value">{{ formatScore(child.adaptive?.performance_score) }}</strong>
+                    </div>
+                    <div class="diagnostic-factor">
+                      <span class="diagnostic-factor__label">慢启动</span>
+                      <strong class="diagnostic-factor__value">{{ child.adaptive?.slow_start_active ? '进行中' : '无' }}</strong>
+                    </div>
+                    <div class="diagnostic-factor">
+                      <span class="diagnostic-factor__label">异常检测</span>
+                      <strong class="diagnostic-factor__value">{{ child.adaptive?.outlier ? '已降权' : '正常' }}</strong>
+                    </div>
+                    <div class="diagnostic-factor">
+                      <span class="diagnostic-factor__label">流量阶段</span>
+                      <strong class="diagnostic-factor__value">{{ trafficShareLabel(child.adaptive?.traffic_share_hint) }}</strong>
                     </div>
                   </div>
                 </article>
@@ -257,6 +297,22 @@ function reasonLabel(value) {
     performance_higher: '综合性能更高',
     stability_higher: '近24h稳定性更高'
   }[value] || value || '-'
+}
+
+function adaptiveStateLabel(value) {
+  return {
+    cold: '冷启动',
+    recovering: '恢复中',
+    warm: '稳定'
+  }[value] || '-'
+}
+
+function trafficShareLabel(value) {
+  return {
+    normal: '主流量',
+    cold: '冷启动探索',
+    recovery: '恢复探索'
+  }[value] || '-'
 }
 
 function httpStatusTone(code) {
