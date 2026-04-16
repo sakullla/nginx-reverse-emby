@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
 	"sync/atomic"
@@ -36,6 +37,7 @@ func (f TaskHandlerFunc) HandleTask(ctx context.Context, task TaskMessage) (map[
 
 type Client struct {
 	cfg        ClientConfig
+	transport  *http.Transport
 	sessionSeq uint64
 }
 
@@ -43,11 +45,23 @@ func NewClient(cfg ClientConfig) *Client {
 	if cfg.ReconnectWait <= 0 {
 		cfg.ReconnectWait = time.Second
 	}
-	if cfg.HTTPClient == nil {
-		cfg.HTTPClient = http.DefaultClient
-	}
 	cfg.MasterURL = strings.TrimRight(cfg.MasterURL, "/")
-	return &Client{cfg: cfg}
+	if cfg.HTTPClient != nil {
+		return &Client{cfg: cfg}
+	}
+	transport := &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout:   10 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 30 * time.Second,
+		IdleConnTimeout:       90 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		ForceAttemptHTTP2:     true,
+	}
+	cfg.HTTPClient = &http.Client{Transport: transport}
+	return &Client{cfg: cfg, transport: transport}
 }
 
 func (c *Client) Run(ctx context.Context) error {
@@ -78,11 +92,13 @@ func (c *Client) runSession(ctx context.Context) error {
 
 	resp, err := c.cfg.HTTPClient.Do(req)
 	if err != nil {
+		c.discardConnections()
 		return err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		c.discardConnections()
 		return fmt.Errorf("task session failed: %s", resp.Status)
 	}
 
@@ -200,14 +216,22 @@ func (c *Client) postUpdate(ctx context.Context, taskID string, payload map[stri
 
 	resp, err := c.cfg.HTTPClient.Do(req)
 	if err != nil {
+		c.discardConnections()
 		return err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		c.discardConnections()
 		return fmt.Errorf("task update failed: %s", resp.Status)
 	}
 	return nil
+}
+
+func (c *Client) discardConnections() {
+	if c.transport != nil {
+		c.transport.CloseIdleConnections()
+	}
 }
 
 func (c *Client) updateURL(taskID string) string {

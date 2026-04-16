@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
@@ -25,8 +27,9 @@ type ClientConfig struct {
 }
 
 type Client struct {
-	cfg    ClientConfig
-	client *http.Client
+	cfg       ClientConfig
+	client    *http.Client
+	transport *http.Transport
 }
 
 type SyncRequest struct {
@@ -38,11 +41,26 @@ type SyncRequest struct {
 }
 
 func NewClient(cfg ClientConfig, httpClient *http.Client) *Client {
-	if httpClient == nil {
-		httpClient = http.DefaultClient
-	}
 	cfg.MasterURL = strings.TrimRight(cfg.MasterURL, "/")
-	return &Client{cfg: cfg, client: httpClient}
+	if httpClient != nil {
+		return &Client{cfg: cfg, client: httpClient}
+	}
+	transport := &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout:   10 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 30 * time.Second,
+		IdleConnTimeout:       90 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		ForceAttemptHTTP2:     true,
+	}
+	client := &http.Client{
+		Transport: transport,
+		Timeout:   60 * time.Second,
+	}
+	return &Client{cfg: cfg, client: client, transport: transport}
 }
 
 func (c *Client) Sync(ctx context.Context, request SyncRequest) (Snapshot, error) {
@@ -87,11 +105,13 @@ func (c *Client) Sync(ctx context.Context, request SyncRequest) (Snapshot, error
 
 	resp, err := c.client.Do(httpReq)
 	if err != nil {
+		c.discardConnections()
 		return Snapshot{}, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		c.discardConnections()
 		return Snapshot{}, fmt.Errorf("heartbeat failed: %s", resp.Status)
 	}
 
@@ -115,6 +135,12 @@ func (c *Client) Sync(ctx context.Context, request SyncRequest) (Snapshot, error
 	)
 
 	return snapshot, nil
+}
+
+func (c *Client) discardConnections() {
+	if c.transport != nil {
+		c.transport.CloseIdleConnections()
+	}
 }
 
 func normalizeVersionPackage(pkg *model.VersionPackage, rawURL, rawSHA256 string) *model.VersionPackage {
