@@ -120,11 +120,11 @@
                 </div>
                 <div class="diagnostic-factor">
                   <span class="diagnostic-factor__label">慢启动</span>
-                  <strong class="diagnostic-factor__value">{{ backend.adaptive?.slow_start_active ? '进行中' : '无' }}</strong>
+                  <strong class="diagnostic-factor__value">{{ slowStartLabel(backend.adaptive?.slow_start_active) }}</strong>
                 </div>
                 <div class="diagnostic-factor">
                   <span class="diagnostic-factor__label">异常检测</span>
-                  <strong class="diagnostic-factor__value">{{ backend.adaptive?.outlier ? '已降权' : '正常' }}</strong>
+                  <strong class="diagnostic-factor__value">{{ outlierLabel(backend.adaptive?.outlier) }}</strong>
                 </div>
                 <div class="diagnostic-factor">
                   <span class="diagnostic-factor__label">流量阶段</span>
@@ -141,7 +141,7 @@
                     <code class="diagnostic-backend-child__name">{{ child.backend }}</code>
                     <span v-if="child.adaptive?.preferred" class="diagnostic-backend-card__preferred">当前优选</span>
                   </div>
-                  <div class="diagnostic-backend-card__adaptive diagnostic-backend-card__adaptive--child">
+                  <div v-if="child.adaptive" class="diagnostic-backend-card__adaptive diagnostic-backend-card__adaptive--child">
                     <div class="diagnostic-factor">
                       <span class="diagnostic-factor__label">状态</span>
                       <strong class="diagnostic-factor__value">{{ adaptiveStateLabel(child.adaptive?.state) }}</strong>
@@ -168,11 +168,11 @@
                     </div>
                     <div class="diagnostic-factor">
                       <span class="diagnostic-factor__label">慢启动</span>
-                      <strong class="diagnostic-factor__value">{{ child.adaptive?.slow_start_active ? '进行中' : '无' }}</strong>
+                      <strong class="diagnostic-factor__value">{{ slowStartLabel(child.adaptive?.slow_start_active) }}</strong>
                     </div>
                     <div class="diagnostic-factor">
                       <span class="diagnostic-factor__label">异常检测</span>
-                      <strong class="diagnostic-factor__value">{{ child.adaptive?.outlier ? '已降权' : '正常' }}</strong>
+                      <strong class="diagnostic-factor__value">{{ outlierLabel(child.adaptive?.outlier) }}</strong>
                     </div>
                     <div class="diagnostic-factor">
                       <span class="diagnostic-factor__label">流量阶段</span>
@@ -304,7 +304,7 @@ function adaptiveStateLabel(value) {
     cold: '冷启动',
     recovering: '恢复中',
     warm: '稳定'
-  }[value] || '-'
+  }[value] || value || '-'
 }
 
 function trafficShareLabel(value) {
@@ -312,7 +312,17 @@ function trafficShareLabel(value) {
     normal: '主流量',
     cold: '冷启动探索',
     recovery: '恢复探索'
-  }[value] || '-'
+  }[value] || value || '-'
+}
+
+function slowStartLabel(value) {
+  if (value == null) return '-'
+  return value ? '进行中' : '无'
+}
+
+function outlierLabel(value) {
+  if (value == null) return '-'
+  return value ? '已降权' : '正常'
 }
 
 function httpStatusTone(code) {
