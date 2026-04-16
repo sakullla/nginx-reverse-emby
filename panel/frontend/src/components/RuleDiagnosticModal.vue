@@ -80,27 +80,28 @@
                 </div>
               </div>
 
-              <div class="diagnostic-backend-item__stats">
-                <div>
-                  <span class="diagnostic-backend-item__label">平均</span>
-                  <strong class="diagnostic-backend-item__value">{{ backend.summary?.avg_latency_ms ?? 0 }} ms</strong>
+              <div class="diagnostic-backend-item__metrics">
+                <div class="diagnostic-metric">
+                  <span class="diagnostic-metric__label">延迟</span>
+                  <strong class="diagnostic-metric__value">{{ backend.adaptive?.latency_ms ?? 0 }} ms</strong>
                 </div>
-                <div>
-                  <span class="diagnostic-backend-item__label">成功</span>
-                  <strong class="diagnostic-backend-item__value">{{ backend.summary?.succeeded ?? 0 }} / {{ backend.summary?.sent ?? 0 }}</strong>
+                <div class="diagnostic-metric">
+                  <span class="diagnostic-metric__label">稳定性</span>
+                  <strong class="diagnostic-metric__value">{{ formatPercent(backend.adaptive?.stability) }}</strong>
+                </div>
+                <div class="diagnostic-metric">
+                  <span class="diagnostic-metric__label">综合性能</span>
+                  <strong class="diagnostic-metric__value">{{ formatScore(backend.adaptive?.performance_score) }}</strong>
+                </div>
+                <div class="diagnostic-metric">
+                  <span class="diagnostic-metric__label">评估带宽</span>
+                  <strong class="diagnostic-metric__value">{{ formatBandwidth(backend.adaptive?.estimated_bandwidth_bps) }}</strong>
                 </div>
               </div>
 
-              <div class="diagnostic-backend-item__range">
-                <span>最小 {{ backend.summary?.min_latency_ms ?? 0 }} ms</span>
-                <span>最大 {{ backend.summary?.max_latency_ms ?? 0 }} ms</span>
-              </div>
-
-              <div class="diagnostic-backend-item__adaptive-summary">
-                <span class="diagnostic-badge">状态 {{ adaptiveStateLabel(backend.adaptive?.state) }}</span>
-                <span class="diagnostic-badge">24h稳定性 {{ formatPercent(backend.adaptive?.stability) }}</span>
-                <span class="diagnostic-badge">置信度 {{ formatPercent(backend.adaptive?.sample_confidence) }}</span>
-                <span class="diagnostic-badge">慢启动 {{ slowStartLabel(backend.adaptive?.slow_start_active) }}</span>
+              <div class="diagnostic-backend-item__probe">
+                <span class="diagnostic-backend-item__probe-stat">本次延迟 <strong>{{ backend.summary?.avg_latency_ms ?? 0 }} ms</strong></span>
+                <span class="diagnostic-backend-item__probe-stat">成功 <strong>{{ backend.summary?.succeeded ?? 0 }} / {{ backend.summary?.sent ?? 0 }}</strong></span>
               </div>
 
               <button type="button" class="diagnostic-backend-item__toggle" @click="toggleAdaptive(backend.backend)">
@@ -138,13 +139,14 @@
 
               <div v-if="backend.children?.length" class="diagnostic-backend-item__children">
                 <div class="diagnostic-backend-item__child-title">已解析候选</div>
-                <div class="diagnostic-child-list">
-                  <div v-for="child in backend.children" :key="child.backend" class="diagnostic-child-row">
-                    <code class="diagnostic-child-row__name">{{ child.backend }}</code>
+                <div class="diagnostic-child-row">
+                  <div v-for="(child, idx) in backend.children" :key="child.backend" class="diagnostic-child-item">
+                    <code class="diagnostic-child-item__name">{{ child.backend }}</code>
                     <span v-if="child.adaptive?.preferred" class="diagnostic-backend-item__preferred">当前优选</span>
-                    <span class="diagnostic-badge diagnostic-badge--subtle">状态 {{ adaptiveStateLabel(child.adaptive?.state) }}</span>
-                    <span class="diagnostic-badge diagnostic-badge--subtle">延迟 {{ child.adaptive?.latency_ms ?? 0 }} ms</span>
-                    <span class="diagnostic-badge diagnostic-badge--subtle">置信度 {{ formatPercent(child.adaptive?.sample_confidence) }}</span>
+                    <span class="diagnostic-child-item__metric">延迟 {{ child.adaptive?.latency_ms ?? 0 }} ms</span>
+                    <span class="diagnostic-child-item__metric">稳定性 {{ formatPercent(child.adaptive?.stability) }}</span>
+                    <span class="diagnostic-child-item__metric">综合性能 {{ formatScore(child.adaptive?.performance_score) }}</span>
+                    <span class="diagnostic-child-item__metric">评估带宽 {{ formatBandwidth(child.adaptive?.estimated_bandwidth_bps) }}</span>
                   </div>
                 </div>
               </div>
@@ -493,49 +495,41 @@ function qualityToneFor(value) {
 .diagnostic-backend-item__quality--info { background: rgba(56, 189, 248, 0.12); color: var(--color-primary); }
 .diagnostic-backend-item__quality--warning { background: var(--color-warning-50); color: var(--color-warning); }
 .diagnostic-backend-item__quality--danger { background: var(--color-danger-50); color: var(--color-danger); }
-.diagnostic-backend-item__stats {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.5rem;
-}
-.diagnostic-backend-item__label {
-  display: block;
-  font-size: 0.68rem;
-  color: var(--color-text-tertiary);
-  margin-bottom: 0.1rem;
-}
-.diagnostic-backend-item__value {
-  font-size: 0.9rem;
-  color: var(--color-text-primary);
-}
-.diagnostic-backend-item__range {
+.diagnostic-backend-item__metrics {
   display: flex;
-  justify-content: space-between;
-  gap: 0.75rem;
-  font-size: 0.72rem;
-  color: var(--color-text-tertiary);
+  gap: 0.4rem;
 }
-.diagnostic-backend-item__adaptive-summary {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.35rem;
-  padding: 0.45rem 0.55rem;
+ .diagnostic-metric {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 0.35rem 0.45rem;
   border-radius: 8px;
-  background: var(--color-bg-hover);
-}
-.diagnostic-badge {
-  font-size: 0.65rem;
-  padding: 2px 7px;
-  border-radius: 999px;
-  background: var(--color-bg-surface);
-  color: var(--color-text-secondary);
+  background: rgba(0,0,0,0.02);
   border: 1px solid var(--color-border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 0.05rem;
 }
-.diagnostic-badge--subtle {
-  background: transparent;
-  border-color: transparent;
+.diagnostic-metric__label {
+  font-size: 0.62rem;
   color: var(--color-text-tertiary);
-  padding: 2px 6px;
+  font-weight: 500;
+}
+.diagnostic-metric__value {
+  font-size: 0.82rem;
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+.diagnostic-backend-item__probe {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  font-size: 0.72rem;
+  color: var(--color-text-secondary);
+}
+.diagnostic-backend-item__probe-stat strong {
+  color: var(--color-text-primary);
+  font-weight: 600;
 }
 .diagnostic-backend-item__toggle {
   align-self: flex-start;
@@ -545,14 +539,14 @@ function qualityToneFor(value) {
   padding: 0.25rem 0.55rem;
   border-radius: 8px;
   border: 1px solid var(--color-border-subtle);
-  background: var(--color-bg-hover);
+  background: rgba(0,0,0,0.02);
   color: var(--color-text-secondary);
   font-size: 0.72rem;
   cursor: pointer;
   transition: background 0.15s ease;
 }
 .diagnostic-backend-item__toggle:hover {
-  background: var(--color-bg-subtle);
+  background: rgba(0,0,0,0.05);
 }
 .diagnostic-backend-item__toggle-icon {
   font-size: 0.75rem;
@@ -569,8 +563,13 @@ function qualityToneFor(value) {
 }
 .diagnostic-backend-item__details-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 0.4rem;
+}
+@media (max-width: 520px) {
+  .diagnostic-backend-item__details-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 .diagnostic-backend-item__reason {
   font-size: 0.72rem;
@@ -584,36 +583,45 @@ function qualityToneFor(value) {
   border-top: 1px solid var(--color-border-subtle);
 }
 .diagnostic-backend-item__child-title {
-  font-size: 0.7rem;
+  font-size: 0.68rem;
   font-weight: 600;
   color: var(--color-text-tertiary);
-}
-.diagnostic-child-list {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
+  margin-bottom: 0.15rem;
 }
 .diagnostic-child-row {
   display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 0.35rem;
-  padding: 0.5rem 0.65rem;
-  border-radius: 8px;
-  background: var(--color-bg-subtle);
-  border: 1px solid var(--color-border-subtle);
+  flex-wrap: nowrap;
+  gap: 0.75rem;
+  overflow-x: auto;
+  padding-bottom: 0.15rem;
 }
-.diagnostic-child-row__name {
+.diagnostic-child-item {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.25rem 0.75rem 0.25rem 0;
+  border-right: 1px solid var(--color-border-subtle);
+}
+.diagnostic-child-item:last-child {
+  border-right: none;
+  padding-right: 0;
+}
+.diagnostic-child-item__name {
   font-family: var(--font-mono);
-  font-size: 0.74rem;
+  font-size: 0.72rem;
+  color: var(--color-text-primary);
+  white-space: nowrap;
+}
+.diagnostic-child-item__metric {
+  font-size: 0.68rem;
   color: var(--color-text-secondary);
-  word-break: break-all;
-  margin-right: 0.25rem;
+  white-space: nowrap;
 }
 .diagnostic-factor {
   padding: 0.4rem 0.5rem;
   border-radius: 8px;
-  background: var(--color-bg-hover);
+  background: rgba(0,0,0,0.02);
   border: 1px solid var(--color-border-subtle);
   display: flex;
   flex-direction: column;
@@ -627,7 +635,7 @@ function qualityToneFor(value) {
   font-size: 0.82rem;
   color: var(--color-text-primary);
 }
-.diagnostic-modal__section-title { font-weight: 700; color: var(--color-text-primary); margin-bottom: 0.4rem; display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; }
+.diagnostic-modal__section-title { font-weight: 700; color: var(--color-text-primary); margin-bottom: 0.35rem; display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; }
 .diagnostic-modal__section-title--toggle {
   width: 100%;
   background: transparent;
