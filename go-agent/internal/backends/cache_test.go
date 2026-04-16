@@ -280,6 +280,71 @@ func TestCacheSummaryReportsRecoveringStateAfterBackoffExpires(t *testing.T) {
 	}
 }
 
+func TestCacheObserveBackendFailureUsesScopedRecoveryState(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	now := base
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return now
+		},
+	})
+
+	backendKey := BackendObservationKey("tcp:rule-backend-recovery", StableBackendID("10.0.0.30:443"))
+	cache.ObserveBackendFailure(backendKey)
+
+	blocked := cache.Summary(backendKey)
+	if !blocked.InBackoff {
+		t.Fatalf("expected backend failure to enter backoff: %+v", blocked)
+	}
+	if blocked.State != ObservationStateCold {
+		t.Fatalf("blocked State = %q", blocked.State)
+	}
+	if blocked.TrafficShareHint != "blocked" {
+		t.Fatalf("blocked TrafficShareHint = %q", blocked.TrafficShareHint)
+	}
+
+	now = now.Add(1100 * time.Millisecond)
+
+	recovering := cache.Summary(backendKey)
+	if recovering.State != ObservationStateRecovering {
+		t.Fatalf("recovering State = %q", recovering.State)
+	}
+	if !recovering.SlowStartActive {
+		t.Fatalf("expected recovering backend summary to report slow start: %+v", recovering)
+	}
+	if recovering.TrafficShareHint != "recovery" {
+		t.Fatalf("recovering TrafficShareHint = %q", recovering.TrafficShareHint)
+	}
+}
+
+func TestCacheSummaryUsesScopedBackendStateWithoutResolvedInference(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	now := base
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return now
+		},
+	})
+
+	backendID := StableBackendID("10.0.0.31:443")
+	backendKey := BackendObservationKey("tcp:rule-backend-summary", backendID)
+	for i := 0; i < 3; i++ {
+		cache.ObserveBackendSuccess(backendKey, 20*time.Millisecond, 40*time.Millisecond, 128*1024)
+	}
+	cache.MarkFailure(backendID)
+
+	summary := cache.Summary(backendKey)
+	if summary.InBackoff {
+		t.Fatalf("expected backend summary to ignore resolved backoff state: %+v", summary)
+	}
+	if summary.State != ObservationStateWarm {
+		t.Fatalf("State = %q", summary.State)
+	}
+	if summary.TrafficShareHint != "normal" {
+		t.Fatalf("TrafficShareHint = %q", summary.TrafficShareHint)
+	}
+}
+
 func TestCachePreferResolvedCandidatesDampensSingleBandwidthSpikeWithConfidence(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
 	cache := NewCache(Config{
@@ -341,6 +406,32 @@ func TestCacheOrderAdaptivePreservesInputOrderOnTie(t *testing.T) {
 	got := cache.Order(scope, StrategyAdaptive, candidates)
 	if ordered := addresses(got); !reflect.DeepEqual(ordered, []string{"c", "a", "b"}) {
 		t.Fatalf("unexpected adaptive tie ordering: %v", ordered)
+	}
+}
+
+func TestCacheOrderAdaptiveUsesScopedBackendStateWithoutResolvedOverlay(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	now := base
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return now
+		},
+	})
+	scope := "tcp:rule-backend-order"
+	candidates := []Candidate{
+		{Address: "10.0.0.1:443"},
+		{Address: "10.0.0.2:443"},
+	}
+
+	for i := 0; i < 3; i++ {
+		cache.ObserveBackendSuccess(BackendObservationKey(scope, candidates[0].Address), 15*time.Millisecond, 30*time.Millisecond, 256*1024)
+		cache.ObserveBackendSuccess(BackendObservationKey(scope, candidates[1].Address), 35*time.Millisecond, 70*time.Millisecond, 128*1024)
+	}
+	cache.MarkFailure(candidates[0].Address)
+
+	got := cache.Order(scope, StrategyAdaptive, candidates)
+	if ordered := addresses(got); !reflect.DeepEqual(ordered, []string{"10.0.0.1:443", "10.0.0.2:443"}) {
+		t.Fatalf("unexpected adaptive order when resolved overlay should be ignored: %v", ordered)
 	}
 }
 

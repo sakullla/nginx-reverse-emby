@@ -60,18 +60,18 @@ type Config struct {
 }
 
 type ObservationSummary struct {
-	Stability         float64
-	RecentSucceeded   int
-	RecentFailed      int
-	Latency           time.Duration
-	HasLatency        bool
-	Bandwidth         float64
-	HasBandwidth      bool
-	PerformanceScore  float64
-	InBackoff         bool
-	State             string
-	SampleConfidence  float64
-	SlowStartActive   bool
-	Outlier           bool
-	TrafficShareHint  string
+	Stability        float64
+	RecentSucceeded  int
+	RecentFailed     int
+	Latency          time.Duration
+	HasLatency       bool
+	Bandwidth        float64
+	HasBandwidth     bool
+	PerformanceScore float64
+	InBackoff        bool
+	State            string
+	SampleConfidence float64
+	SlowStartActive  bool
+	Outlier          bool
+	TrafficShareHint string
 }

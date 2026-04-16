@@ -14,22 +14,22 @@ import (
 )
 
 const (
-	dnsCacheTTL         = 30 * time.Second
-	failureBackoffBase  = time.Second
-	failureBackoffLimit = 60 * time.Second
-	observationWindow   = 24 * time.Hour
-	observationBuckets  = 24
-	observationAlpha    = 0.35
-	recoveryWindow      = 2 * time.Minute
-	slowStartDuration   = 60 * time.Second
-	resolvedSlowStart   = 30 * time.Second
-	minRecentSamples    = 3
-	minRecoverSuccesses = 2
-	minConfidence       = 0.25
-	coldExplorationPct  = 10
-	recoveringExplPct   = 15
-	combinedExplPct     = 20
-	slowStartMinFactor  = 0.30
+	dnsCacheTTL          = 30 * time.Second
+	failureBackoffBase   = time.Second
+	failureBackoffLimit  = 60 * time.Second
+	observationWindow    = 24 * time.Hour
+	observationBuckets   = 24
+	observationAlpha     = 0.35
+	recoveryWindow       = 2 * time.Minute
+	slowStartDuration    = 60 * time.Second
+	resolvedSlowStart    = 30 * time.Second
+	minRecentSamples     = 3
+	minRecoverSuccesses  = 2
+	minConfidence        = 0.25
+	coldExplorationPct   = 10
+	recoveringExplPct    = 15
+	combinedExplPct      = 20
+	slowStartMinFactor   = 0.30
 	outlierPenaltyFactor = 0.35
 )
 
@@ -58,21 +58,21 @@ type failureEntry struct {
 }
 
 type candidateObservation struct {
-	counts            [observationBuckets]observationBucket
-	lastLatency       time.Duration
-	latencyEstimate   time.Duration
-	lastSuccessAt     time.Time
-	lastSuccessCount  int
-	hadBackoff        bool
-	recoveryUntil     time.Time
-	recoverySuccesses int
-	slowStartUntil    time.Time
+	counts             [observationBuckets]observationBucket
+	lastLatency        time.Duration
+	latencyEstimate    time.Duration
+	lastSuccessAt      time.Time
+	lastSuccessCount   int
+	hadBackoff         bool
+	recoveryUntil      time.Time
+	recoverySuccesses  int
+	slowStartUntil     time.Time
 	slowStartStartedAt time.Time
-	outlierUntil      time.Time
-	lastBandwidth     float64
-	bandwidthEstimate float64
-	lastBandwidthAt   time.Time
-	lastUpdated       time.Time
+	outlierUntil       time.Time
+	lastBandwidth      float64
+	bandwidthEstimate  float64
+	lastBandwidthAt    time.Time
+	lastUpdated        time.Time
 }
 
 type observationBucket struct {
@@ -82,19 +82,19 @@ type observationBucket struct {
 }
 
 type candidatePreference struct {
-	inBackoff         bool
-	state             string
-	stability         float64
-	latency           time.Duration
-	hasLatency        bool
-	bandwidth         float64
-	hasBandwidth      bool
-	confidence        float64
-	outlier           bool
-	slowStartActive   bool
-	slowStartFactor   float64
-	performance       float64
-	trafficShareHint  string
+	inBackoff        bool
+	state            string
+	stability        float64
+	latency          time.Duration
+	hasLatency       bool
+	bandwidth        float64
+	hasBandwidth     bool
+	confidence       float64
+	outlier          bool
+	slowStartActive  bool
+	slowStartFactor  float64
+	performance      float64
+	trafficShareHint string
 }
 
 func NewCache(cfg Config) *Cache {
@@ -199,7 +199,7 @@ func (c *Cache) Order(scope, strategy string, candidates []Candidate) []Candidat
 		for _, candidate := range ordered {
 			key := strings.TrimSpace(candidate.Address)
 			observationKey := BackendObservationKey(scope, key)
-			observation := c.adaptiveObservation(observationKey, key)
+			observation := c.observed[observationKey]
 			preference := observation.preference(now)
 			preferenceState[key] = preference
 			switch preference.state {
@@ -275,6 +275,11 @@ func (c *Cache) ObserveBackendFailure(scope string) {
 
 	entry := c.observed[key]
 	entry.recordFailure(now)
+	entry.hadBackoff = true
+	entry.recoveryUntil = now.Add(c.backoffDuration(1)).Add(recoveryWindow)
+	entry.recoverySuccesses = 0
+	entry.slowStartStartedAt = entry.recoveryUntil.Add(-recoveryWindow)
+	entry.slowStartUntil = entry.recoveryUntil
 	c.observed[key] = entry
 }
 
@@ -483,9 +488,6 @@ func (c *Cache) Summary(key string) ObservationSummary {
 
 	c.mu.Lock()
 	observation := c.observed[normalized]
-	if address := backendObservationAddress(normalized); address != "" {
-		observation = mergeObservations(observation, c.observed[address])
-	}
 	c.mu.Unlock()
 
 	successes, failures := observation.recentCounts(now)
@@ -503,9 +505,9 @@ func (c *Cache) Summary(key string) ObservationSummary {
 		InBackoff:        preference.inBackoff,
 		State:            preference.state,
 		SampleConfidence: preference.confidence,
-		SlowStartActive:   preference.slowStartActive,
-		Outlier:           preference.outlier,
-		TrafficShareHint:  preference.trafficShareHint,
+		SlowStartActive:  preference.slowStartActive,
+		Outlier:          preference.outlier,
+		TrafficShareHint: preference.trafficShareHint,
 	}
 }
 
@@ -566,65 +568,6 @@ func (o *candidateObservation) recordOutcome(now time.Time, success bool) {
 		return
 	}
 	o.counts[index].failures++
-}
-
-func (c *Cache) adaptiveObservation(scopedKey, address string) candidateObservation {
-	scopedKey = strings.TrimSpace(scopedKey)
-	address = strings.TrimSpace(address)
-	if scopedKey == "" && address == "" {
-		return candidateObservation{}
-	}
-
-	scoped := c.observed[scopedKey]
-	if address == "" || scopedKey == address {
-		return scoped
-	}
-
-	return mergeObservations(scoped, c.observed[address])
-}
-
-func mergeObservations(base candidateObservation, overlay candidateObservation) candidateObservation {
-	if !overlay.hadBackoff && overlay.recoveryUntil.IsZero() && overlay.recoverySuccesses == 0 && overlay.slowStartStartedAt.IsZero() && overlay.slowStartUntil.IsZero() && overlay.outlierUntil.IsZero() {
-		return base
-	}
-
-	merged := base
-	if overlay.hadBackoff || !overlay.recoveryUntil.IsZero() {
-		merged.hadBackoff = true
-	}
-	if merged.recoveryUntil.IsZero() || (!overlay.recoveryUntil.IsZero() && overlay.recoveryUntil.After(merged.recoveryUntil)) {
-		merged.recoveryUntil = overlay.recoveryUntil
-	}
-	if overlay.recoverySuccesses > merged.recoverySuccesses {
-		merged.recoverySuccesses = overlay.recoverySuccesses
-	}
-	if merged.slowStartStartedAt.IsZero() || (!overlay.slowStartStartedAt.IsZero() && overlay.slowStartStartedAt.Before(merged.slowStartStartedAt)) {
-		merged.slowStartStartedAt = overlay.slowStartStartedAt
-	}
-	if merged.slowStartUntil.IsZero() || (!overlay.slowStartUntil.IsZero() && overlay.slowStartUntil.After(merged.slowStartUntil)) {
-		merged.slowStartUntil = overlay.slowStartUntil
-	}
-	if !overlay.outlierUntil.IsZero() && (merged.outlierUntil.IsZero() || overlay.outlierUntil.After(merged.outlierUntil)) {
-		merged.outlierUntil = overlay.outlierUntil
-	}
-	if overlay.lastBandwidthAt.After(merged.lastBandwidthAt) {
-		merged.lastBandwidth = overlay.lastBandwidth
-		merged.bandwidthEstimate = overlay.bandwidthEstimate
-		merged.lastBandwidthAt = overlay.lastBandwidthAt
-	}
-	return merged
-}
-
-func backendObservationAddress(key string) string {
-	normalized := strings.TrimSpace(key)
-	if !strings.HasPrefix(normalized, backendObservationPrefix) {
-		return ""
-	}
-	parts := strings.SplitN(strings.TrimPrefix(normalized, backendObservationPrefix), "|", 2)
-	if len(parts) != 2 {
-		return ""
-	}
-	return strings.TrimSpace(parts[1])
 }
 
 func (o candidateObservation) preference(now time.Time) candidatePreference {
