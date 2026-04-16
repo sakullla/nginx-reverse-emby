@@ -444,6 +444,38 @@ func (c *Cache) observationFor(address string) candidateObservation {
 	return c.observed[key]
 }
 
+func (c *Cache) Summary(key string) ObservationSummary {
+	normalized := strings.TrimSpace(key)
+	if normalized == "" {
+		return ObservationSummary{}
+	}
+
+	now := c.now()
+
+	c.mu.Lock()
+	observation := c.observed[normalized]
+	inBackoff := false
+	if entry, ok := c.failures[normalized]; ok {
+		inBackoff = now.Before(entry.retryAfter)
+	}
+	c.mu.Unlock()
+
+	successes, failures := observation.recentCounts(now)
+	preference := observation.preference(now)
+
+	return ObservationSummary{
+		Stability:        preference.stability,
+		RecentSucceeded:  successes,
+		RecentFailed:     failures,
+		Latency:          preference.latency,
+		HasLatency:       preference.hasLatency,
+		Bandwidth:        preference.bandwidth,
+		HasBandwidth:     preference.hasBandwidth,
+		PerformanceScore: preference.performance,
+		InBackoff:        inBackoff,
+	}
+}
+
 func (o *candidateObservation) recordSuccess(now time.Time, latency time.Duration, totalDuration time.Duration, bytesTransferred int64) {
 	o.recordOutcome(now, true)
 	if latency > 0 {
@@ -542,17 +574,18 @@ func performanceScore(preference candidatePreference) float64 {
 	switch {
 	case preference.hasLatency && preference.latency > 0:
 		latencyMillis := float64(preference.latency) / float64(time.Millisecond)
-		latencyScore = 1 / math.Log1p(latencyMillis)
+		latencyScore = 1 / (1 + latencyMillis/50.0)
 	}
 
 	bandwidthScore := 0.0
 	switch {
 	case preference.hasBandwidth && preference.bandwidth > 0:
-		bandwidthScore = math.Log1p(preference.bandwidth / 1024.0)
+		bandwidthMBps := preference.bandwidth / (1024.0 * 1024.0)
+		bandwidthScore = math.Log1p(bandwidthMBps) / math.Log1p(16)
 	}
 
 	if preference.hasLatency && preference.hasBandwidth {
-		return latencyScore + bandwidthScore
+		return 0.45*latencyScore + 0.55*bandwidthScore
 	}
 	if preference.hasLatency {
 		return latencyScore

@@ -26,8 +26,10 @@ type Summary struct {
 }
 
 type BackendReport struct {
-	Backend string  `json:"backend"`
-	Summary Summary `json:"summary"`
+	Backend  string           `json:"backend"`
+	Summary  Summary          `json:"summary"`
+	Adaptive *AdaptiveSummary `json:"adaptive,omitempty"`
+	Children []BackendReport  `json:"children,omitempty"`
 }
 
 type Report struct {
@@ -36,6 +38,17 @@ type Report struct {
 	Summary  Summary         `json:"summary"`
 	Backends []BackendReport `json:"backends,omitempty"`
 	Samples  []Sample        `json:"samples"`
+}
+
+type AdaptiveSummary struct {
+	Preferred             bool    `json:"preferred,omitempty"`
+	Reason                string  `json:"reason,omitempty"`
+	Stability             float64 `json:"stability,omitempty"`
+	RecentSucceeded       int     `json:"recent_succeeded,omitempty"`
+	RecentFailed          int     `json:"recent_failed,omitempty"`
+	LatencyMS             float64 `json:"latency_ms,omitempty"`
+	EstimatedBandwidthBps float64 `json:"estimated_bandwidth_bps,omitempty"`
+	PerformanceScore      float64 `json:"performance_score,omitempty"`
 }
 
 func BuildReport(kind string, ruleID int, samples []Sample) Report {

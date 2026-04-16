@@ -59,6 +59,11 @@ type udpSession struct {
 	initErr        error
 }
 
+type l4Candidate struct {
+	address               string
+	backendObservationKey string
+}
+
 type udpUpstream interface {
 	Close() error
 	SetReadDeadline(time.Time) error
@@ -307,7 +312,8 @@ func (s *Server) dialTCPUpstream(rule model.L4Rule) (net.Conn, error) {
 
 	var lastErr error
 	for _, candidate := range candidates {
-		target := candidate.Address
+		target := candidate.address
+		start := s.now()
 		var upstream net.Conn
 		if len(rule.RelayChain) == 0 {
 			upstream, err = (&net.Dialer{}).DialContext(s.ctx, "tcp", target)
@@ -319,9 +325,16 @@ func (s *Server) dialTCPUpstream(rule model.L4Rule) (net.Conn, error) {
 			upstream, err = relay.Dial(s.ctx, "tcp", target, hops, s.relayProvider)
 		}
 		if err != nil {
+			if candidate.backendObservationKey != "" {
+				s.cache.ObserveBackendFailure(candidate.backendObservationKey)
+			}
 			s.cache.MarkFailure(target)
 			lastErr = err
 			continue
+		}
+		connectDuration := s.now().Sub(start)
+		if candidate.backendObservationKey != "" {
+			s.cache.ObserveBackendSuccess(candidate.backendObservationKey, connectDuration, connectDuration, 0)
 		}
 		s.cache.MarkSuccess(target)
 		return upstream, nil
@@ -531,32 +544,39 @@ func (s *Server) dialUDPUpstream(rule model.L4Rule) (udpUpstream, string, error)
 
 	var lastErr error
 	for _, candidate := range candidates {
+		targetAddress := candidate.address
 		if len(rule.RelayChain) == 0 {
-			addr, err := net.ResolveUDPAddr("udp", candidate.Address)
+			addr, err := net.ResolveUDPAddr("udp", targetAddress)
 			if err != nil {
 				lastErr = err
 				continue
 			}
 			upstream, err := net.DialUDP("udp", nil, addr)
 			if err != nil {
-				s.cache.MarkFailure(candidate.Address)
+				if candidate.backendObservationKey != "" {
+					s.cache.ObserveBackendFailure(candidate.backendObservationKey)
+				}
+				s.cache.MarkFailure(targetAddress)
 				lastErr = err
 				continue
 			}
-			return &directUDPUpstream{conn: upstream}, candidate.Address, nil
+			return &directUDPUpstream{conn: upstream}, targetAddress, nil
 		}
 
 		hops, hopErr := s.resolveRelayHops(rule)
 		if hopErr != nil {
 			return nil, "", hopErr
 		}
-		upstream, err := relay.Dial(s.ctx, "udp", candidate.Address, hops, s.relayProvider)
+		upstream, err := relay.Dial(s.ctx, "udp", targetAddress, hops, s.relayProvider)
 		if err != nil {
-			s.cache.MarkFailure(candidate.Address)
+			if candidate.backendObservationKey != "" {
+				s.cache.ObserveBackendFailure(candidate.backendObservationKey)
+			}
+			s.cache.MarkFailure(targetAddress)
 			lastErr = err
 			continue
 		}
-		return &relayUDPUpstream{conn: upstream}, candidate.Address, nil
+		return &relayUDPUpstream{conn: upstream}, targetAddress, nil
 	}
 	if lastErr != nil {
 		return nil, "", lastErr
@@ -671,7 +691,7 @@ func (s *Server) closeUDPSessions() {
 	}
 }
 
-func l4Candidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule) ([]backends.Candidate, error) {
+func l4Candidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule) ([]l4Candidate, error) {
 	if cache == nil {
 		return nil, fmt.Errorf("backend cache is required")
 	}
@@ -697,7 +717,7 @@ func l4Candidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule)
 
 	scope := strings.ToLower(rule.Protocol) + ":" + net.JoinHostPort(rule.ListenHost, strconv.Itoa(rule.ListenPort))
 	orderedBackends := cache.Order(scope, rule.LoadBalancing.Strategy, placeholders)
-	out := make([]backends.Candidate, 0, len(rawBackends))
+	out := make([]l4Candidate, 0, len(rawBackends))
 	for _, ordered := range orderedBackends {
 		backend := rawBackends[indexByID[ordered.Address]]
 		endpoint := backends.Endpoint{
@@ -713,11 +733,15 @@ func l4Candidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule)
 			}
 			continue
 		}
+		resolved = cache.PreferResolvedCandidates(resolved)
 		for _, candidate := range resolved {
 			if cache.IsInBackoff(candidate.Address) {
 				continue
 			}
-			out = append(out, candidate)
+			out = append(out, l4Candidate{
+				address:               candidate.Address,
+				backendObservationKey: backends.BackendObservationKey(scope, backends.StableBackendID(net.JoinHostPort(backend.Host, strconv.Itoa(backend.Port)))),
+			})
 		}
 	}
 	if len(out) == 0 {

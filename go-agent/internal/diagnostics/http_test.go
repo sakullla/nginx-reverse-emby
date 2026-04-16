@@ -290,6 +290,53 @@ func TestHTTPProberDiagnoseSplitsHostnameBackendsByResolvedAddress(t *testing.T)
 	}
 }
 
+func TestHTTPProberDiagnoseAdaptivePrefersConfiguredBackendOrder(t *testing.T) {
+	bulk := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer bulk.Close()
+
+	fast := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer fast.Close()
+
+	cache := backends.NewCache(backends.Config{
+		Now: func() time.Time {
+			return time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+		},
+	})
+	scope := "https://edge.example.test"
+	cache.ObserveBackendSuccess(backends.BackendObservationKey(scope, backends.StableBackendID(bulk.URL+"/healthz")), 30*time.Millisecond, 200*time.Millisecond, 4*1024*1024)
+	cache.ObserveBackendSuccess(backends.BackendObservationKey(scope, backends.StableBackendID(fast.URL+"/healthz")), 10*time.Millisecond, 200*time.Millisecond, 64*1024)
+
+	prober := NewHTTPProber(HTTPProberConfig{
+		Attempts:   1,
+		Timeout:    time.Second,
+		HTTPClient: bulk.Client(),
+		Cache:      cache,
+	})
+	report, err := prober.Diagnose(context.Background(), model.HTTPRule{
+		ID:          32,
+		FrontendURL: "https://edge.example.test",
+		Backends: []model.HTTPBackend{
+			{URL: bulk.URL + "/healthz"},
+			{URL: fast.URL + "/healthz"},
+		},
+		LoadBalancing: model.LoadBalancing{Strategy: "adaptive"},
+	}, nil)
+	if err != nil {
+		t.Fatalf("Diagnose() error = %v", err)
+	}
+
+	if len(report.Backends) != 2 {
+		t.Fatalf("Backends = %+v", report.Backends)
+	}
+	if report.Backends[0].Backend != bulk.URL+"/healthz" {
+		t.Fatalf("unexpected first backend report: %+v", report.Backends)
+	}
+}
+
 type diagnosticResolverFunc func(context.Context, string) ([]net.IPAddr, error)
 
 func (f diagnosticResolverFunc) LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error) {

@@ -32,6 +32,11 @@ type HTTPProber struct {
 	relayProvider relay.TLSMaterialProvider
 }
 
+type httpResolvedCandidate struct {
+	label       string
+	dialAddress string
+}
+
 func NewHTTPProber(cfg HTTPProberConfig) *HTTPProber {
 	if cfg.Attempts <= 0 {
 		cfg.Attempts = 5
@@ -72,14 +77,18 @@ func (p *HTTPProber) Diagnose(ctx context.Context, rule model.HTTPRule, relayLis
 			samples = append(samples, sample)
 		}
 	}
-	return BuildReport("http", rule.ID, samples), nil
+	report := BuildReport("http", rule.ID, samples)
+	report.Backends = buildHTTPAdaptiveReports(report.Backends, candidates, p.cache)
+	return report, nil
 }
 
 type httpProbeCandidate struct {
-	targetURL    *url.URL
-	backendLabel string
-	dialAddress  string
-	configuredURL string
+	targetURL             *url.URL
+	backendLabel          string
+	dialAddress           string
+	backendObservationKey string
+	configuredURL         string
+	resolvedCandidates    []httpResolvedCandidate
 }
 
 func (p *HTTPProber) probeCandidate(ctx context.Context, attempt int, rule model.HTTPRule, relayListeners []model.RelayListener, candidate httpProbeCandidate) Sample {
@@ -91,14 +100,21 @@ func (p *HTTPProber) probeCandidate(ctx context.Context, attempt int, rule model
 
 	resp, err := p.doProbeRequest(ctx, client, rule, candidate, http.MethodGet)
 	if err != nil {
+		if candidate.backendObservationKey != "" {
+			p.cache.ObserveBackendFailure(candidate.backendObservationKey)
+		}
 		p.cache.MarkFailure(candidate.dialAddress)
 		return FailureSample(attempt, candidate.backendLabel, err)
 	}
 	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, resp.Body)
-	p.cache.ObserveSuccess(candidate.dialAddress, time.Since(start))
+	written, _ := io.Copy(io.Discard, resp.Body)
+	totalDuration := time.Since(start)
+	if candidate.backendObservationKey != "" {
+		p.cache.ObserveBackendSuccess(candidate.backendObservationKey, totalDuration, totalDuration, written)
+	}
+	p.cache.ObserveTransferSuccess(candidate.dialAddress, totalDuration, totalDuration, written)
 
-	return LatencySample(attempt, candidate.backendLabel, time.Since(start), resp.StatusCode)
+	return LatencySample(attempt, candidate.backendLabel, totalDuration, resp.StatusCode)
 }
 
 func (p *HTTPProber) doProbeRequest(ctx context.Context, client *http.Client, rule model.HTTPRule, candidate httpProbeCandidate, method string) (*http.Response, error) {
@@ -154,20 +170,155 @@ func httpCandidates(ctx context.Context, cache *backends.Cache, rule model.HTTPR
 		if err != nil {
 			continue
 		}
+		resolved = cache.PreferResolvedCandidates(resolved)
+		resolvedChildren := make([]httpResolvedCandidate, 0, len(resolved))
 		for _, candidate := range resolved {
 			if cache.IsInBackoff(candidate.Address) {
 				continue
 			}
 			clone := *target
+			resolvedChildren = append(resolvedChildren, httpResolvedCandidate{
+				label:       probeBackendLabel(&clone, candidate.Address),
+				dialAddress: candidate.Address,
+			})
 			out = append(out, httpProbeCandidate{
-				targetURL:     &clone,
-				backendLabel:  probeBackendLabel(&clone, candidate.Address),
-				dialAddress:   candidate.Address,
-				configuredURL: clone.String(),
+				targetURL:             &clone,
+				backendLabel:          probeBackendLabel(&clone, candidate.Address),
+				dialAddress:           candidate.Address,
+				backendObservationKey: backends.BackendObservationKey(scope, backends.StableBackendID(clone.String())),
+				configuredURL:         clone.String(),
+				resolvedCandidates:    append([]httpResolvedCandidate(nil), resolvedChildren...),
 			})
 		}
 	}
 	return out, nil
+}
+
+func buildHTTPAdaptiveReports(reports []BackendReport, candidates []httpProbeCandidate, cache *backends.Cache) []BackendReport {
+	configuredChildren := make(map[string][]httpResolvedCandidate)
+	configuredSummary := make(map[string]backends.ObservationSummary)
+	for _, candidate := range candidates {
+		if candidate.configuredURL == "" {
+			continue
+		}
+		if _, ok := configuredChildren[candidate.configuredURL]; !ok {
+			configuredChildren[candidate.configuredURL] = append([]httpResolvedCandidate(nil), candidate.resolvedCandidates...)
+		}
+		if _, ok := configuredSummary[candidate.configuredURL]; !ok {
+			configuredSummary[candidate.configuredURL] = cache.Summary(candidate.backendObservationKey)
+		}
+	}
+
+	reportByLabel := make(map[string]BackendReport, len(reports))
+	for _, report := range reports {
+		reportByLabel[report.Backend] = report
+	}
+
+	annotated := make([]BackendReport, 0, len(reports))
+	seenConfigured := make(map[string]struct{}, len(reports))
+	for _, report := range reports {
+		configured := report.Backend
+		if idx := strings.Index(configured, " ["); idx > 0 {
+			configured = configured[:idx]
+		}
+		children := configuredChildren[configured]
+		if len(children) <= 1 {
+			report.Adaptive = adaptiveSummaryFromObservation(cache.Summary(strings.TrimSpace(report.Backend)), false, "")
+			annotated = append(annotated, report)
+			continue
+		}
+		if _, ok := seenConfigured[configured]; ok {
+			continue
+		}
+		seenConfigured[configured] = struct{}{}
+		parent := BackendReport{
+			Backend:  configured,
+			Summary:  mergeChildSummaries(children, reportByLabel),
+			Adaptive: adaptiveSummaryFromObservation(configuredSummary[configured], true, "performance_higher"),
+			Children: make([]BackendReport, 0, len(children)),
+		}
+		for index, child := range children {
+			childReport := reportByLabel[child.label]
+			parent.Children = append(parent.Children, BackendReport{
+				Backend:  child.label,
+				Summary:  childReport.Summary,
+				Adaptive: adaptiveSummaryFromObservation(cache.Summary(child.dialAddress), index == 0, preferredReason(index == 0)),
+			})
+		}
+		annotated = append(annotated, parent)
+	}
+	return annotated
+}
+
+func mergeChildSummaries(children []httpResolvedCandidate, reports map[string]BackendReport) Summary {
+	samples := 0
+	succeeded := 0
+	failed := 0
+	totalLatency := 0.0
+	minLatency := 0.0
+	maxLatency := 0.0
+	successfulChildren := 0
+
+	for _, child := range children {
+		report, ok := reports[child.label]
+		if !ok {
+			continue
+		}
+		samples += report.Summary.Sent
+		succeeded += report.Summary.Succeeded
+		failed += report.Summary.Failed
+		if report.Summary.Succeeded > 0 {
+			successfulChildren++
+			totalLatency += report.Summary.AvgLatencyMS * float64(report.Summary.Succeeded)
+			if successfulChildren == 1 || report.Summary.MinLatencyMS < minLatency {
+				minLatency = report.Summary.MinLatencyMS
+			}
+			if report.Summary.MaxLatencyMS > maxLatency {
+				maxLatency = report.Summary.MaxLatencyMS
+			}
+		}
+	}
+
+	summary := Summary{
+		Sent:      samples,
+		Succeeded: succeeded,
+		Failed:    failed,
+		Quality:   "不可用",
+	}
+	if samples > 0 {
+		summary.LossRate = roundMetric(float64(failed) / float64(samples))
+	}
+	if succeeded > 0 {
+		summary.AvgLatencyMS = roundMetric(totalLatency / float64(succeeded))
+		summary.MinLatencyMS = roundMetric(minLatency)
+		summary.MaxLatencyMS = roundMetric(maxLatency)
+	}
+	summary.Quality = classifyQuality("http", summary)
+	return summary
+}
+
+func adaptiveSummaryFromObservation(summary backends.ObservationSummary, preferred bool, reason string) *AdaptiveSummary {
+	latencyMS := 0.0
+	if summary.HasLatency {
+		latencyMS = roundMetric(float64(summary.Latency) / float64(time.Millisecond))
+	}
+	return &AdaptiveSummary{
+		Preferred:             preferred,
+		Reason:                reason,
+		Stability:             roundMetric(summary.Stability),
+		RecentSucceeded:       summary.RecentSucceeded,
+		RecentFailed:          summary.RecentFailed,
+		LatencyMS:             latencyMS,
+		EstimatedBandwidthBps: roundMetric(summary.Bandwidth),
+		PerformanceScore:      roundMetric(summary.PerformanceScore),
+	}
+}
+
+func preferredReason(preferred bool) string {
+	if !preferred {
+		return ""
+	}
+	return "performance_higher"
 }
 
 func probeBackendLabel(target *url.URL, dialAddress string) string {

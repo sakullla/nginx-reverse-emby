@@ -28,6 +28,12 @@ type TCPProber struct {
 	relayProvider relay.TLSMaterialProvider
 }
 
+type tcpProbeCandidate struct {
+	address               string
+	backendLabel          string
+	backendObservationKey string
+}
+
 func NewTCPProber(cfg TCPProberConfig) *TCPProber {
 	if cfg.Attempts <= 0 {
 		cfg.Attempts = 5
@@ -66,20 +72,29 @@ func (p *TCPProber) Diagnose(ctx context.Context, rule model.L4Rule, relayListen
 			attempt++
 			reqCtx, cancel := context.WithTimeout(ctx, p.timeout)
 			start := time.Now()
-			conn, err := p.dialCandidate(reqCtx, rule, relayListeners, candidate.Address)
+			conn, err := p.dialCandidate(reqCtx, rule, relayListeners, candidate.address)
 			cancel()
 			if err != nil {
-				p.cache.MarkFailure(candidate.Address)
-				samples = append(samples, FailureSample(attempt, candidate.Address, err))
+				if candidate.backendObservationKey != "" {
+					p.cache.ObserveBackendFailure(candidate.backendObservationKey)
+				}
+				p.cache.MarkFailure(candidate.address)
+				samples = append(samples, FailureSample(attempt, candidate.backendLabel, err))
 				continue
 			}
 			_ = conn.Close()
-			p.cache.MarkSuccess(candidate.Address)
-			samples = append(samples, LatencySample(attempt, candidate.Address, time.Since(start), 0))
+			totalDuration := time.Since(start)
+			if candidate.backendObservationKey != "" {
+				p.cache.ObserveBackendSuccess(candidate.backendObservationKey, totalDuration, totalDuration, 0)
+			}
+			p.cache.MarkSuccess(candidate.address)
+			samples = append(samples, LatencySample(attempt, candidate.backendLabel, totalDuration, 0))
 		}
 	}
 
-	return BuildReport("l4_tcp", rule.ID, samples), nil
+	report := BuildReport("l4_tcp", rule.ID, samples)
+	report.Backends = buildTCPAdaptiveReports(report.Backends, candidates, p.cache)
+	return report, nil
 }
 
 func (p *TCPProber) dialCandidate(ctx context.Context, rule model.L4Rule, relayListeners []model.RelayListener, address string) (net.Conn, error) {
@@ -96,7 +111,7 @@ func (p *TCPProber) dialCandidate(ctx context.Context, rule model.L4Rule, relayL
 	return relay.Dial(ctx, "tcp", address, hops, p.relayProvider)
 }
 
-func tcpCandidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule) ([]backends.Candidate, error) {
+func tcpCandidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule) ([]tcpProbeCandidate, error) {
 	rawBackends := rule.Backends
 	if len(rawBackends) == 0 && rule.UpstreamHost != "" && rule.UpstreamPort > 0 {
 		rawBackends = []model.L4Backend{{Host: rule.UpstreamHost, Port: rule.UpstreamPort}}
@@ -115,7 +130,7 @@ func tcpCandidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule
 
 	scope := "tcp:" + net.JoinHostPort(rule.ListenHost, strconv.Itoa(rule.ListenPort))
 	ordered := cache.Order(scope, rule.LoadBalancing.Strategy, placeholders)
-	out := make([]backends.Candidate, 0, len(rawBackends))
+	out := make([]tcpProbeCandidate, 0, len(rawBackends))
 	for _, placeholder := range ordered {
 		backend := rawBackends[indexByID[placeholder.Address]]
 		resolved, err := cache.Resolve(ctx, backends.Endpoint{
@@ -125,14 +140,45 @@ func tcpCandidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule
 		if err != nil {
 			continue
 		}
+		resolved = cache.PreferResolvedCandidates(resolved)
 		for _, candidate := range resolved {
 			if cache.IsInBackoff(candidate.Address) {
 				continue
 			}
-			out = append(out, candidate)
+			out = append(out, tcpProbeCandidate{
+				address:               candidate.Address,
+				backendLabel:          candidate.Address,
+				backendObservationKey: backends.BackendObservationKey(scope, backends.StableBackendID(net.JoinHostPort(backend.Host, strconv.Itoa(backend.Port)))),
+			})
 		}
 	}
 	return out, nil
+}
+
+func buildTCPAdaptiveReports(reports []BackendReport, candidates []tcpProbeCandidate, cache *backends.Cache) []BackendReport {
+	reportByLabel := make(map[string]BackendReport, len(reports))
+	for _, report := range reports {
+		reportByLabel[report.Backend] = report
+	}
+
+	annotated := make([]BackendReport, 0, len(reports))
+	seen := make(map[string]struct{}, len(reports))
+	for _, candidate := range candidates {
+		if _, ok := seen[candidate.backendLabel]; ok {
+			continue
+		}
+		seen[candidate.backendLabel] = struct{}{}
+		report, ok := reportByLabel[candidate.backendLabel]
+		if !ok {
+			continue
+		}
+		report.Adaptive = adaptiveSummaryFromObservation(cache.Summary(candidate.address), false, "")
+		annotated = append(annotated, report)
+	}
+	if len(annotated) > 0 {
+		annotated[0].Adaptive = adaptiveSummaryFromObservation(cache.Summary(candidates[0].address), true, "performance_higher")
+	}
+	return annotated
 }
 
 func resolveL4RelayHops(rule model.L4Rule, relayListeners []model.RelayListener) ([]relay.Hop, error) {

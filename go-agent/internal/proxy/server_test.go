@@ -593,7 +593,7 @@ func TestRouteEntryObserveSuccessfulBackendUsesBandwidthForFutureRanking(t *test
 		backendCache: cache,
 	}
 
-	entry.observeSuccessfulBackend("203.0.113.20:80", 30*time.Millisecond, 100*time.Millisecond, 2*1024*1024)
+	entry.observeSuccessfulBackend("", "203.0.113.20:80", 30*time.Millisecond, 100*time.Millisecond, 2*1024*1024)
 	cache.ObserveTransferSuccess("203.0.113.21:80", 30*time.Millisecond, 100*time.Millisecond, 128*1024)
 
 	candidates := cache.PreferResolvedCandidates([]backends.Candidate{
@@ -602,6 +602,53 @@ func TestRouteEntryObserveSuccessfulBackendUsesBandwidthForFutureRanking(t *test
 	})
 	if candidates[0].Address != "203.0.113.20:80" {
 		t.Fatalf("unexpected candidate ranking after bandwidth observation: %+v", candidates)
+	}
+}
+
+func TestRouteEntryCandidatesAdaptivePrefersBackendBeforeResolvedCandidate(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	cache := backends.NewCache(backends.Config{
+		Resolver: resolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
+			switch host {
+			case "bulk.example":
+				return []net.IPAddr{{IP: net.ParseIP("127.0.0.21")}}, nil
+			case "fast.example":
+				return []net.IPAddr{{IP: net.ParseIP("127.0.0.22")}}, nil
+			default:
+				return nil, fmt.Errorf("unexpected host %q", host)
+			}
+		}),
+		Now: func() time.Time {
+			return base
+		},
+	})
+	cache.ObserveBackendSuccess(backends.BackendObservationKey("edge.example.test", backends.StableBackendID("http://bulk.example:8096")), 30*time.Millisecond, 200*time.Millisecond, 4*1024*1024)
+	cache.ObserveBackendSuccess(backends.BackendObservationKey("edge.example.test", backends.StableBackendID("http://fast.example:8096")), 10*time.Millisecond, 200*time.Millisecond, 64*1024)
+
+	entry := &routeEntry{
+		rule: model.HTTPRule{
+			FrontendURL: "http://edge.example.test",
+			LoadBalancing: model.LoadBalancing{
+				Strategy: "adaptive",
+			},
+		},
+		backends: []httpBackend{
+			{target: mustParseBackendURL(t, "http://bulk.example:8096"), backendHost: "bulk.example:8096"},
+			{target: mustParseBackendURL(t, "http://fast.example:8096"), backendHost: "fast.example:8096"},
+		},
+		backendCache:   cache,
+		selectionScope: "edge.example.test",
+	}
+
+	candidates, err := entry.candidates(context.Background())
+	if err != nil {
+		t.Fatalf("candidates() error = %v", err)
+	}
+	if len(candidates) < 2 {
+		t.Fatalf("expected at least two candidates, got %+v", candidates)
+	}
+	if candidates[0].backendHost != "bulk.example:8096" {
+		t.Fatalf("unexpected first candidate: %+v", candidates)
 	}
 }
 

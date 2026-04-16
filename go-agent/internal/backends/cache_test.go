@@ -129,17 +129,17 @@ func TestCacheOrderAdaptiveUsesBackendStabilityBeforePerformance(t *testing.T) {
 	})
 	scope := "http:rule-adaptive"
 	candidates := []Candidate{
-		{Address: "0"},
-		{Address: "1"},
+		{Address: "backend-a"},
+		{Address: "backend-b"},
 	}
 
-	cache.ObserveBackendSuccess(BackendObservationKey(scope, "0"), 10*time.Millisecond, 20*time.Millisecond, 128*1024)
-	cache.ObserveBackendFailure(BackendObservationKey(scope, "0"))
+	cache.ObserveBackendSuccess(BackendObservationKey(scope, "backend-a"), 10*time.Millisecond, 20*time.Millisecond, 128*1024)
+	cache.ObserveBackendFailure(BackendObservationKey(scope, "backend-a"))
 
-	cache.ObserveBackendSuccess(BackendObservationKey(scope, "1"), 120*time.Millisecond, 150*time.Millisecond, 64*1024)
+	cache.ObserveBackendSuccess(BackendObservationKey(scope, "backend-b"), 120*time.Millisecond, 150*time.Millisecond, 64*1024)
 
 	got := cache.Order(scope, StrategyAdaptive, candidates)
-	if ordered := addresses(got); !reflect.DeepEqual(ordered, []string{"1", "0"}) {
+	if ordered := addresses(got); !reflect.DeepEqual(ordered, []string{"backend-b", "backend-a"}) {
 		t.Fatalf("unexpected adaptive order with stability-first scoring: %v", ordered)
 	}
 }
@@ -153,15 +153,15 @@ func TestCacheOrderAdaptiveUsesCombinedPerformanceNotLatencyOnly(t *testing.T) {
 	})
 	scope := "http:rule-adaptive-performance"
 	candidates := []Candidate{
-		{Address: "0"},
-		{Address: "1"},
+		{Address: "bulk"},
+		{Address: "fast"},
 	}
 
-	cache.ObserveBackendSuccess(BackendObservationKey(scope, "0"), 12*time.Millisecond, 100*time.Millisecond, 64*1024)
-	cache.ObserveBackendSuccess(BackendObservationKey(scope, "1"), 18*time.Millisecond, 100*time.Millisecond, 2*1024*1024)
+	cache.ObserveBackendSuccess(BackendObservationKey(scope, "bulk"), 12*time.Millisecond, 100*time.Millisecond, 64*1024)
+	cache.ObserveBackendSuccess(BackendObservationKey(scope, "fast"), 18*time.Millisecond, 100*time.Millisecond, 2*1024*1024)
 
 	got := cache.Order(scope, StrategyAdaptive, candidates)
-	if ordered := addresses(got); !reflect.DeepEqual(ordered, []string{"1", "0"}) {
+	if ordered := addresses(got); !reflect.DeepEqual(ordered, []string{"fast", "bulk"}) {
 		t.Fatalf("unexpected adaptive order with combined performance scoring: %v", ordered)
 	}
 }
@@ -176,22 +176,22 @@ func TestCacheOrderAdaptiveUsesOnlyRecent24hStability(t *testing.T) {
 	})
 	scope := "http:rule-adaptive-window"
 	candidates := []Candidate{
-		{Address: "0"},
-		{Address: "1"},
+		{Address: "backend-a"},
+		{Address: "backend-b"},
 	}
 
 	now = base.Add(-25 * time.Hour)
-	cache.ObserveBackendFailure(BackendObservationKey(scope, "0"))
+	cache.ObserveBackendFailure(BackendObservationKey(scope, "backend-a"))
 
 	now = base.Add(-2 * time.Hour)
-	cache.ObserveBackendFailure(BackendObservationKey(scope, "1"))
-	cache.ObserveBackendSuccess(BackendObservationKey(scope, "1"), 40*time.Millisecond, 80*time.Millisecond, 128*1024)
+	cache.ObserveBackendFailure(BackendObservationKey(scope, "backend-b"))
+	cache.ObserveBackendSuccess(BackendObservationKey(scope, "backend-b"), 40*time.Millisecond, 80*time.Millisecond, 128*1024)
 
 	now = base
-	cache.ObserveBackendSuccess(BackendObservationKey(scope, "0"), 60*time.Millisecond, 100*time.Millisecond, 128*1024)
+	cache.ObserveBackendSuccess(BackendObservationKey(scope, "backend-a"), 60*time.Millisecond, 100*time.Millisecond, 128*1024)
 
 	got := cache.Order(scope, StrategyAdaptive, candidates)
-	if ordered := addresses(got); !reflect.DeepEqual(ordered, []string{"0", "1"}) {
+	if ordered := addresses(got); !reflect.DeepEqual(ordered, []string{"backend-a", "backend-b"}) {
 		t.Fatalf("unexpected adaptive order with recent stability window: %v", ordered)
 	}
 }
@@ -200,13 +200,13 @@ func TestCacheOrderAdaptivePreservesInputOrderOnTie(t *testing.T) {
 	cache := NewCache(Config{})
 	scope := "http:rule-adaptive-tie"
 	candidates := []Candidate{
-		{Address: "2"},
-		{Address: "0"},
-		{Address: "1"},
+		{Address: "c"},
+		{Address: "a"},
+		{Address: "b"},
 	}
 
 	got := cache.Order(scope, StrategyAdaptive, candidates)
-	if ordered := addresses(got); !reflect.DeepEqual(ordered, []string{"2", "0", "1"}) {
+	if ordered := addresses(got); !reflect.DeepEqual(ordered, []string{"c", "a", "b"}) {
 		t.Fatalf("unexpected adaptive tie ordering: %v", ordered)
 	}
 }
