@@ -459,7 +459,7 @@ func TestRunMergesOmittedSyncFieldsOntoPreviouslyAppliedSnapshot(t *testing.T) {
 }
 
 func TestRunDoesNotAdvanceAppliedSnapshotOrCurrentRevisionOnApplyFailure(t *testing.T) {
-	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
+	cfg := Config{HeartbeatInterval: time.Hour}
 	mem := store.NewInMemory()
 	previousApplied := Snapshot{
 		DesiredVersion: "stable",
@@ -701,6 +701,7 @@ func TestRunRecordsSyncErrorsInRuntimeState(t *testing.T) {
 		{err: errors.New("boom")},
 		{snapshot: Snapshot{DesiredVersion: "new"}},
 	}, syncResponse{})
+	releaseSecondSync := client.blockFromCall(2)
 
 	app := newAppWithDeps(cfg, mem, client, nil, nil, nil)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -718,6 +719,7 @@ func TestRunRecordsSyncErrorsInRuntimeState(t *testing.T) {
 		t.Fatalf("expected other metadata preserved, got %v", current.Metadata)
 	}
 
+	close(releaseSecondSync)
 	waitForCalls(t, client, 2, time.Second)
 	waitForRuntimeState(t, time.Second, func() bool {
 		updated, err := mem.LoadRuntimeState()
@@ -751,6 +753,7 @@ func TestRunRecordsSaveDesiredSnapshotFailures(t *testing.T) {
 	}
 
 	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{DesiredVersion: "ok"}})
+	releaseThirdSync := client.blockFromCall(3)
 	app := newAppWithDeps(cfg, fs, client, nil, nil, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -768,6 +771,7 @@ func TestRunRecordsSaveDesiredSnapshotFailures(t *testing.T) {
 		t.Fatalf("expected persistence failure metadata, got %v", state.Metadata)
 	}
 
+	close(releaseThirdSync)
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatalf("Run returned error: %v", err)
@@ -1605,7 +1609,10 @@ type testSyncClient struct {
 	responses []syncResponse
 	fallback  syncResponse
 	callCount int32
+	doneCount int32
 	reqCh     chan SyncRequest
+	blockCh   chan struct{}
+	blockFrom int32
 }
 
 func newTestSyncClient(responses []syncResponse, fallback syncResponse) *testSyncClient {
@@ -1616,11 +1623,29 @@ func newTestSyncClient(responses []syncResponse, fallback syncResponse) *testSyn
 	}
 }
 
+func (c *testSyncClient) blockFromCall(callNum int32) chan struct{} {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.blockCh == nil {
+		c.blockCh = make(chan struct{})
+	}
+	c.blockFrom = callNum
+	return c.blockCh
+}
+
 func (c *testSyncClient) Sync(_ context.Context, request SyncRequest) (Snapshot, error) {
-	atomic.AddInt32(&c.callCount, 1)
+	callNum := atomic.AddInt32(&c.callCount, 1)
 	select {
 	case c.reqCh <- request:
 	default:
+	}
+	defer atomic.AddInt32(&c.doneCount, 1)
+	c.mu.Lock()
+	blockCh := c.blockCh
+	blockFrom := c.blockFrom
+	c.mu.Unlock()
+	if blockCh != nil && callNum >= blockFrom {
+		<-blockCh
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -1645,7 +1670,7 @@ func waitForRequest(t *testing.T, client *testSyncClient, timeout time.Duration)
 func waitForCalls(t *testing.T, client *testSyncClient, target int, timeout time.Duration) {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		if int(atomic.LoadInt32(&client.callCount)) >= target {
+		if int(atomic.LoadInt32(&client.doneCount)) >= target {
 			return
 		}
 		time.Sleep(1 * time.Millisecond)
@@ -2011,7 +2036,7 @@ func TestRunPreservesStoredManagedCertificatePayloadWhenHeartbeatOmitsFields(t *
 }
 
 func TestRunRecordsCertificateApplyFailuresInRuntimeState(t *testing.T) {
-	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
+	cfg := Config{HeartbeatInterval: time.Hour}
 	mem := store.NewInMemory()
 	if err := mem.SaveAppliedSnapshot(Snapshot{DesiredVersion: "baseline"}); err != nil {
 		t.Fatalf("failed to seed applied snapshot: %v", err)
@@ -2267,7 +2292,7 @@ func TestRunAppliesExplicitEmptyHTTPRules(t *testing.T) {
 }
 
 func TestRunRecordsHTTPApplyFailuresInRuntimeState(t *testing.T) {
-	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
+	cfg := Config{HeartbeatInterval: time.Hour}
 	mem := store.NewInMemory()
 	if err := mem.SaveAppliedSnapshot(Snapshot{DesiredVersion: "baseline"}); err != nil {
 		t.Fatalf("failed to seed applied snapshot: %v", err)
@@ -2944,7 +2969,7 @@ func TestRunClearsStoredL4RulesWhenRelayListenersAreExplicitlyCleared(t *testing
 }
 
 func TestRunRecordsL4ApplyFailuresInRuntimeState(t *testing.T) {
-	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
+	cfg := Config{HeartbeatInterval: time.Hour}
 	mem := store.NewInMemory()
 	if err := mem.SaveAppliedSnapshot(Snapshot{DesiredVersion: "baseline"}); err != nil {
 		t.Fatalf("failed to seed applied snapshot: %v", err)
@@ -2978,7 +3003,7 @@ func TestRunRecordsL4ApplyFailuresInRuntimeState(t *testing.T) {
 }
 
 func TestRunRecordsRelayApplyFailuresInRuntimeState(t *testing.T) {
-	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
+	cfg := Config{HeartbeatInterval: time.Hour}
 	mem := store.NewInMemory()
 	if err := mem.SaveAppliedSnapshot(Snapshot{DesiredVersion: "baseline"}); err != nil {
 		t.Fatalf("failed to seed applied snapshot: %v", err)
