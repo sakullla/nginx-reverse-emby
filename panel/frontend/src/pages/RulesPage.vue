@@ -81,7 +81,7 @@
             <button class="rule-card__action" title="编辑" @click="startEdit(rule)">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
             </button>
-            <button class="rule-card__action" title="诊断" @click="openDiagnostic(rule)">
+            <button class="rule-card__action rule-card__action--diagnose" title="诊断" @click="openDiagnostic(rule)">
               <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h4l2-6 4 12 2-6h6"/></svg>
             </button>
             <button class="rule-card__action rule-card__action--delete" title="删除" @click="startDelete(rule)">
@@ -428,6 +428,7 @@ async function confirmDelete() {
 .rule-card__action:hover { background: var(--color-bg-hover); color: var(--color-text-primary); }
 .rule-card__action--delete:hover { background: var(--color-danger-50); color: var(--color-danger); }
 .rule-card__action--toggle:hover { background: var(--color-warning-50); color: var(--color-warning); }
+.rule-card__action--diagnose:hover { background: rgba(56, 189, 248, 0.12); color: var(--color-primary); }
 
 /* Inline mapping */
 .rule-card__mapping { display: flex; flex-direction: column; gap: 0.375rem; }
