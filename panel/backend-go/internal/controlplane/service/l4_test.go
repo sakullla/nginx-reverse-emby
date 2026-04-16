@@ -126,6 +126,49 @@ func TestL4RuleServiceCreateAllowsRelayChainForUDP(t *testing.T) {
 	}
 }
 
+func TestL4RuleServiceCreateDefaultsLoadBalancingToAdaptivePreservesExplicitStrategies(t *testing.T) {
+	store := &fakeL4Store{l4RulesByID: map[string][]storage.L4RuleRow{}}
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	rule, err := svc.Create(context.Background(), "local", L4RuleInput{
+		Protocol:     stringPtrL4("tcp"),
+		ListenPort:   intPtrL4(9000),
+		UpstreamHost: stringPtrL4("upstream"),
+		UpstreamPort: intPtrL4(9001),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	if rule.LoadBalancing.Strategy != "adaptive" {
+		t.Fatalf("Create() load_balancing = %+v", rule.LoadBalancing)
+	}
+	if got := store.l4RulesByID["local"][0].LoadBalancingJSON; got != `{"strategy":"adaptive"}` {
+		t.Fatalf("persisted load_balancing_json = %q", got)
+	}
+}
+
+func TestL4RuleServiceCreateDefaultsLoadBalancingToAdaptiveWithEmptyInput(t *testing.T) {
+	store := &fakeL4Store{l4RulesByID: map[string][]storage.L4RuleRow{}}
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	rule, err := svc.Create(context.Background(), "local", L4RuleInput{
+		Protocol:     stringPtrL4("tcp"),
+		ListenPort:   intPtrL4(9000),
+		UpstreamHost: stringPtrL4("upstream"),
+		UpstreamPort: intPtrL4(9001),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if rule.LoadBalancing.Strategy != "adaptive" {
+		t.Fatalf("Create() load_balancing = %+v", rule.LoadBalancing)
+	}
+	if got := store.l4RulesByID["local"][0].LoadBalancingJSON; got != `{"strategy":"adaptive"}` {
+		t.Fatalf("persisted load_balancing_json = %q", got)
+	}
+}
+
 func TestL4RuleServiceCreateAllocatesGlobalIDsAcrossAgentsInSQLiteStore(t *testing.T) {
 	dataRoot := t.TempDir()
 	store, err := storage.NewSQLiteStore(dataRoot, "local")
@@ -303,6 +346,81 @@ func TestL4RuleServiceUpdateClearsRelayObfsWhenRelayChainRemoved(t *testing.T) {
 	}
 	if rule.RelayObfs {
 		t.Fatalf("expected relay_obfs to be cleared when relay_chain is removed")
+	}
+}
+
+func TestL4RuleServiceUpdateDefaultsInvalidLoadBalancingToAdaptive(t *testing.T) {
+	store := &fakeL4Store{
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"local": {{
+				ID:                1,
+				AgentID:           "local",
+				Name:              "relay rule",
+				Protocol:          "tcp",
+				ListenHost:        "0.0.0.0",
+				ListenPort:        9000,
+				UpstreamHost:      "upstream",
+				UpstreamPort:      9001,
+				LoadBalancingJSON: `{}`,
+				Enabled:           true,
+				Revision:          3,
+			}},
+		},
+	}
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	rule, err := svc.Update(context.Background(), "local", 1, L4RuleInput{
+		Protocol: stringPtrL4("tcp"),
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	if rule.LoadBalancing.Strategy != "adaptive" {
+		t.Fatalf("Update() load_balancing = %+v", rule.LoadBalancing)
+	}
+	if got := store.l4RulesByID["local"][0].LoadBalancingJSON; got != `{"strategy":"adaptive"}` {
+		t.Fatalf("persisted load_balancing_json = %q", got)
+	}
+}
+
+func TestL4RuleServiceUpdatePreservesExplicitLoadBalancingStrategies(t *testing.T) {
+	for _, strategy := range []string{"round_robin", "random"} {
+		t.Run(strategy, func(t *testing.T) {
+			lbJSON := `{"strategy":"` + strategy + `"}`
+			store := &fakeL4Store{
+				l4RulesByID: map[string][]storage.L4RuleRow{
+					"local": {{
+						ID:                1,
+						AgentID:           "local",
+						Name:              "relay rule",
+						Protocol:          "tcp",
+						ListenHost:        "0.0.0.0",
+						ListenPort:        9000,
+						UpstreamHost:      "upstream",
+						UpstreamPort:      9001,
+						LoadBalancingJSON: lbJSON,
+						Enabled:           true,
+						Revision:          3,
+					}},
+				},
+			}
+			svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+			rule, err := svc.Update(context.Background(), "local", 1, L4RuleInput{
+				Protocol: stringPtrL4("tcp"),
+			})
+			if err != nil {
+				t.Fatalf("Update() error = %v", err)
+			}
+
+			if rule.LoadBalancing.Strategy != strategy {
+				t.Fatalf("Update() load_balancing = %+v", rule.LoadBalancing)
+			}
+			if got := store.l4RulesByID["local"][0].LoadBalancingJSON; got != lbJSON {
+				t.Fatalf("persisted load_balancing_json = %q", got)
+			}
+		})
 	}
 }
 

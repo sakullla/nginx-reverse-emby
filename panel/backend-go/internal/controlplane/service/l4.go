@@ -567,8 +567,11 @@ func normalizeL4LoadBalancingInput(input *L4LoadBalancing, fallback L4LoadBalanc
 		strategy = input.Strategy
 	}
 	strategy = strings.ToLower(strings.TrimSpace(strategy))
-	if strategy != "random" {
-		strategy = "round_robin"
+	switch strategy {
+	case "round_robin", "random", "adaptive":
+		// keep explicit strategies
+	default:
+		strategy = "adaptive"
 	}
 	return L4LoadBalancing{Strategy: strategy}
 }
@@ -662,7 +665,7 @@ func l4RuleToRow(rule L4Rule) storage.L4RuleRow {
 		UpstreamHost:      rule.UpstreamHost,
 		UpstreamPort:      rule.UpstreamPort,
 		BackendsJSON:      marshalJSON(rule.Backends, "[]"),
-		LoadBalancingJSON: marshalJSON(rule.LoadBalancing, `{"strategy":"round_robin"}`),
+		LoadBalancingJSON: marshalJSON(rule.LoadBalancing, `{"strategy":"adaptive"}`),
 		TuningJSON:        marshalJSON(rule.Tuning, `{"proxy_protocol":{"decode":false,"send":false}}`),
 		RelayChainJSON:    marshalJSON(rule.RelayChain, "[]"),
 		RelayObfs:         rule.RelayObfs,
@@ -683,9 +686,9 @@ func parseL4Backends(raw string) []L4Backend {
 func parseL4LoadBalancing(raw string) L4LoadBalancing {
 	var lb L4LoadBalancing
 	if err := json.Unmarshal([]byte(defaultString(raw, "{}")), &lb); err != nil {
-		return L4LoadBalancing{Strategy: "round_robin"}
+		return L4LoadBalancing{Strategy: "adaptive"}
 	}
-	return normalizeL4LoadBalancingInput(&lb, L4LoadBalancing{Strategy: "round_robin"})
+	return normalizeL4LoadBalancingInput(&lb, L4LoadBalancing{Strategy: "adaptive"})
 }
 
 func parseL4Tuning(raw string) L4Tuning {

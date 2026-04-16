@@ -485,7 +485,7 @@ func TestAgentServiceListHTTPRulesNormalizesStoredFields(t *testing.T) {
 	if len(rule.Backends) != 1 || rule.Backends[0].URL != "http://emby:8096" {
 		t.Fatalf("Backends = %+v", rule.Backends)
 	}
-	if rule.LoadBalancing.Strategy != "round_robin" {
+	if rule.LoadBalancing.Strategy != "adaptive" {
 		t.Fatalf("LoadBalancing = %+v", rule.LoadBalancing)
 	}
 	if len(rule.CustomHeaders) != 1 || rule.CustomHeaders[0].Name != "X-Test" {

@@ -1036,10 +1036,13 @@ func parseHTTPHeaders(raw string) []HTTPHeader {
 func parseLoadBalancingStrategy(raw string) LoadBalancing {
 	var value LoadBalancing
 	if err := json.Unmarshal([]byte(defaultString(raw, "{}")), &value); err != nil {
-		return LoadBalancing{Strategy: "round_robin"}
+		return LoadBalancing{Strategy: "adaptive"}
 	}
-	if strings.TrimSpace(value.Strategy) != "random" {
-		value.Strategy = "round_robin"
+	switch strings.ToLower(strings.TrimSpace(value.Strategy)) {
+	case "round_robin", "random", "adaptive":
+		value.Strategy = strings.ToLower(strings.TrimSpace(value.Strategy))
+	default:
+		value.Strategy = "adaptive"
 	}
 	return value
 }

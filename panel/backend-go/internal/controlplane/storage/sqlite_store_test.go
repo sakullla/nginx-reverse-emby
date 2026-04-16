@@ -440,6 +440,83 @@ func TestStorePersistsHTTPRules(t *testing.T) {
 	}
 }
 
+func TestStoreNormalizesAdaptiveLoadBalancingForHTTPAndL4(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromGORM(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	if err := store.SaveHTTPRules(t.Context(), "local", []HTTPRuleRow{{
+		ID:                77,
+		AgentID:           "local",
+		FrontendURL:       "https://adaptive-http.example.com",
+		BackendURL:        "http://emby:8096",
+		BackendsJSON:      `[{"url":"http://emby:8096"}]`,
+		LoadBalancingJSON: `{}`,
+		Enabled:           true,
+		ProxyRedirect:     true,
+		RelayChainJSON:    `[]`,
+		PassProxyHeaders:  true,
+		Revision:          17,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules() error = %v", err)
+	}
+
+	httpRules, err := store.ListHTTPRules(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListHTTPRules() error = %v", err)
+	}
+	if len(httpRules) != 1 {
+		t.Fatalf("ListHTTPRules() = %+v", httpRules)
+	}
+
+	if err := store.SaveL4Rules(t.Context(), "local", []L4RuleRow{{
+		ID:                78,
+		AgentID:           "local",
+		Name:              "adaptive-l4",
+		Protocol:          "tcp",
+		ListenHost:        "0.0.0.0",
+		ListenPort:        9443,
+		UpstreamHost:      "upstream",
+		UpstreamPort:      9444,
+		BackendsJSON:      `[{"host":"upstream","port":9444}]`,
+		LoadBalancingJSON: `{}`,
+		TuningJSON:        `{}`,
+		RelayChainJSON:    `[]`,
+		Enabled:           true,
+		Revision:          18,
+	}}); err != nil {
+		t.Fatalf("SaveL4Rules() error = %v", err)
+	}
+
+	l4Rules, err := store.ListL4Rules(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListL4Rules() error = %v", err)
+	}
+	if len(l4Rules) != 1 {
+		t.Fatalf("ListL4Rules() = %+v", l4Rules)
+	}
+
+	snapshot, err := store.LoadAgentSnapshot(t.Context(), "local", AgentSnapshotInput{})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot() error = %v", err)
+	}
+	if len(snapshot.Rules) != 1 || snapshot.Rules[0].LoadBalancing.Strategy != "adaptive" {
+		t.Fatalf("snapshot HTTP rules = %+v", snapshot.Rules)
+	}
+	if len(snapshot.L4Rules) != 1 || snapshot.L4Rules[0].LoadBalancing.Strategy != "adaptive" {
+		t.Fatalf("snapshot L4 rules = %+v", snapshot.L4Rules)
+	}
+}
+
 func TestStorePersistsRelayListenersAndManagedCertificates(t *testing.T) {
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
