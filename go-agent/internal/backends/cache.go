@@ -20,6 +20,17 @@ const (
 	observationWindow   = 24 * time.Hour
 	observationBuckets  = 24
 	observationAlpha    = 0.35
+	recoveryWindow      = 2 * time.Minute
+	slowStartDuration   = 60 * time.Second
+	resolvedSlowStart   = 30 * time.Second
+	minRecentSamples    = 3
+	minRecoverSuccesses = 2
+	minConfidence       = 0.25
+	coldExplorationPct  = 10
+	recoveringExplPct   = 15
+	combinedExplPct     = 20
+	slowStartMinFactor  = 0.30
+	outlierPenaltyFactor = 0.35
 )
 
 type Cache struct {
@@ -51,6 +62,13 @@ type candidateObservation struct {
 	lastLatency       time.Duration
 	latencyEstimate   time.Duration
 	lastSuccessAt     time.Time
+	lastSuccessCount  int
+	hadBackoff        bool
+	recoveryUntil     time.Time
+	recoverySuccesses int
+	slowStartUntil    time.Time
+	slowStartStartedAt time.Time
+	outlierUntil      time.Time
 	lastBandwidth     float64
 	bandwidthEstimate float64
 	lastBandwidthAt   time.Time
@@ -64,13 +82,19 @@ type observationBucket struct {
 }
 
 type candidatePreference struct {
-	inBackoff    bool
-	stability    float64
-	latency      time.Duration
-	hasLatency   bool
-	bandwidth    float64
-	hasBandwidth bool
-	performance  float64
+	inBackoff         bool
+	state             string
+	stability         float64
+	latency           time.Duration
+	hasLatency        bool
+	bandwidth         float64
+	hasBandwidth      bool
+	confidence        float64
+	outlier           bool
+	slowStartActive   bool
+	slowStartFactor   float64
+	performance       float64
+	trafficShareHint  string
 }
 
 func NewCache(cfg Config) *Cache {
@@ -168,12 +192,27 @@ func (c *Cache) Order(scope, strategy string, candidates []Candidate) []Candidat
 	case StrategyAdaptive:
 		now := c.now()
 		preferenceState := make(map[string]candidatePreference, len(ordered))
+		hasCold := false
+		hasRecovering := false
 
 		c.mu.Lock()
 		for _, candidate := range ordered {
 			key := strings.TrimSpace(candidate.Address)
 			observationKey := BackendObservationKey(scope, key)
-			preferenceState[key] = c.observed[observationKey].preference(now)
+			preference := c.observed[observationKey].preference(now)
+			if entry, ok := c.failures[key]; ok {
+				preference.inBackoff = now.Before(entry.retryAfter)
+			}
+			preferenceState[key] = preference
+			if preference.inBackoff {
+				continue
+			}
+			switch preference.state {
+			case ObservationStateCold:
+				hasCold = true
+			case ObservationStateRecovering:
+				hasRecovering = true
+			}
 		}
 		c.mu.Unlock()
 
@@ -190,6 +229,7 @@ func (c *Cache) Order(scope, strategy string, candidates []Candidate) []Candidat
 			}
 			return false
 		})
+		ordered = c.maybePromoteExplorationCandidate(ordered, preferenceState, hasCold, hasRecovering)
 		return ordered
 	default:
 		offset := c.roundRobinOffset(scope, len(ordered))
@@ -219,7 +259,7 @@ func (c *Cache) ObserveBackendSuccess(scope string, latency time.Duration, total
 	defer c.mu.Unlock()
 
 	entry := c.observed[key]
-	entry.recordSuccess(now, latency, totalDuration, bytesTransferred)
+	entry.recordSuccess(now, latency, totalDuration, bytesTransferred, c.slowStartWindowForKey(key))
 	c.observed[key] = entry
 	delete(c.failures, key)
 }
@@ -252,7 +292,7 @@ func (c *Cache) ObserveTransferSuccess(address string, latency time.Duration, to
 	defer c.mu.Unlock()
 
 	entry := c.observed[key]
-	entry.recordSuccess(now, latency, totalDuration, bytesTransferred)
+	entry.recordSuccess(now, latency, totalDuration, bytesTransferred, c.slowStartWindowForKey(key))
 	c.observed[key] = entry
 	delete(c.failures, key)
 }
@@ -268,10 +308,12 @@ func (c *Cache) PreferResolvedCandidates(candidates []Candidate) []Candidate {
 	c.mu.Lock()
 	for _, candidate := range ordered {
 		key := strings.TrimSpace(candidate.Address)
-		preferenceState[key] = c.observed[key].preference(now)
+		preference := c.observed[key].preference(now)
 		if entry, ok := c.failures[key]; ok {
 			backoffState[key] = now.Before(entry.retryAfter)
+			preference.inBackoff = backoffState[key]
 		}
+		preferenceState[key] = preference
 	}
 	c.mu.Unlock()
 
@@ -294,6 +336,7 @@ func (c *Cache) PreferResolvedCandidates(candidates []Candidate) []Candidate {
 		}
 		return false
 	})
+	ordered = c.maybePromoteExplorationCandidate(ordered, preferenceState, c.hasState(preferenceState, ObservationStateCold), c.hasState(preferenceState, ObservationStateRecovering))
 
 	return ordered
 }
@@ -314,19 +357,14 @@ func (c *Cache) MarkFailure(address string) time.Duration {
 
 	observed := c.observed[key]
 	observed.recordFailure(now)
+	observed.hadBackoff = true
+	observed.recoveryUntil = now.Add(c.backoffDuration(entry.consecutive)).Add(recoveryWindow)
+	observed.recoverySuccesses = 0
+	observed.slowStartStartedAt = observed.recoveryUntil.Add(-recoveryWindow)
+	observed.slowStartUntil = observed.recoveryUntil
 	c.observed[key] = observed
 
-	backoff := c.backoffBase
-	for i := 1; i < entry.consecutive; i++ {
-		if backoff >= c.backoffLimit/2 {
-			backoff = c.backoffLimit
-			break
-		}
-		backoff *= 2
-	}
-	if backoff > c.backoffLimit {
-		backoff = c.backoffLimit
-	}
+	backoff := c.backoffDuration(entry.consecutive)
 
 	entry.retryAfter = now.Add(backoff)
 	c.failures[key] = entry
@@ -473,11 +511,32 @@ func (c *Cache) Summary(key string) ObservationSummary {
 		HasBandwidth:     preference.hasBandwidth,
 		PerformanceScore: preference.performance,
 		InBackoff:        inBackoff,
+		State:            preference.state,
+		SampleConfidence: preference.confidence,
+		SlowStartActive:   preference.slowStartActive,
+		Outlier:           preference.outlier,
+		TrafficShareHint:  preference.trafficShareHint,
 	}
 }
 
-func (o *candidateObservation) recordSuccess(now time.Time, latency time.Duration, totalDuration time.Duration, bytesTransferred int64) {
+func (o *candidateObservation) recordSuccess(now time.Time, latency time.Duration, totalDuration time.Duration, bytesTransferred int64, slowStartWindow time.Duration) {
 	o.recordOutcome(now, true)
+	o.lastSuccessCount++
+	successes, failures := o.recentCounts(now)
+	totalRecent := successes + failures
+	if o.hadBackoff && !o.recoveryUntil.IsZero() && now.After(o.slowStartStartedAt) && now.Before(o.recoveryUntil) {
+		o.recoverySuccesses++
+		if o.recoverySuccesses >= minRecoverSuccesses && totalRecent >= minRecentSamples {
+			o.hadBackoff = false
+			o.recoveryUntil = time.Time{}
+			o.recoverySuccesses = 0
+			o.slowStartStartedAt = now
+			o.slowStartUntil = now.Add(slowStartWindow)
+		}
+	}
+	if !o.outlierUntil.IsZero() && now.After(o.outlierUntil) {
+		o.outlierUntil = time.Time{}
+	}
 	if latency > 0 {
 		o.lastLatency = latency
 		o.latencyEstimate = blendDuration(o.latencyEstimate, latency)
@@ -486,6 +545,9 @@ func (o *candidateObservation) recordSuccess(now time.Time, latency time.Duratio
 	if totalDuration > 0 && bytesTransferred > 0 {
 		bandwidth := float64(bytesTransferred) / totalDuration.Seconds()
 		if bandwidth > 0 {
+			if o.bandwidthEstimate > 0 && bandwidth < 0.5*o.bandwidthEstimate {
+				o.outlierUntil = now.Add(30 * time.Second)
+			}
 			o.lastBandwidth = bandwidth
 			o.bandwidthEstimate = blendFloat(o.bandwidthEstimate, bandwidth)
 			o.lastBandwidthAt = now
@@ -496,6 +558,10 @@ func (o *candidateObservation) recordSuccess(now time.Time, latency time.Duratio
 
 func (o *candidateObservation) recordFailure(now time.Time) {
 	o.recordOutcome(now, false)
+	o.lastSuccessCount = 0
+	if o.hadBackoff && !o.recoveryUntil.IsZero() && now.Before(o.recoveryUntil) {
+		o.recoverySuccesses = 0
+	}
 	o.lastUpdated = now
 }
 
@@ -514,8 +580,19 @@ func (o *candidateObservation) recordOutcome(now time.Time, success bool) {
 
 func (o candidateObservation) preference(now time.Time) candidatePreference {
 	successes, failures := o.recentCounts(now)
+	inBackoff := o.inBackoff(now)
+	state := o.state(now, successes)
+	confidence := sampleConfidence(successes, failures)
+	slowFactor, slowStartActive := slowStartFactor(now, o.slowStartStartedAt, o.slowStartUntil)
+	outlier := o.isOutlier(now, failures)
 	preference := candidatePreference{
-		stability: stabilityScore(successes, failures),
+		inBackoff:       inBackoff,
+		stability:       stabilityScore(successes, failures),
+		state:           state,
+		confidence:      confidence,
+		outlier:         outlier,
+		slowStartActive: slowStartActive,
+		slowStartFactor: slowFactor,
 	}
 	if latency, ok := o.latencyFor(now); ok {
 		preference.latency = latency
@@ -525,7 +602,17 @@ func (o candidateObservation) preference(now time.Time) candidatePreference {
 		preference.bandwidth = bandwidth
 		preference.hasBandwidth = true
 	}
-	preference.performance = performanceScore(preference)
+	preference.performance = effectivePerformance(preference)
+	switch {
+	case preference.inBackoff:
+		preference.trafficShareHint = "blocked"
+	case preference.slowStartActive:
+		preference.trafficShareHint = "recovery"
+	case preference.state == ObservationStateCold:
+		preference.trafficShareHint = "cold"
+	default:
+		preference.trafficShareHint = "normal"
+	}
 	return preference
 }
 
@@ -538,6 +625,84 @@ func stabilityScore(successes, failures int) float64 {
 	default:
 		return float64(successes) / float64(successes+failures)
 	}
+}
+
+func sampleConfidence(successes, failures int) float64 {
+	total := successes + failures
+	switch {
+	case total <= 0:
+		return 0
+	case total == 1:
+		return 0.05
+	case total == 2:
+		return 0.1
+	case total == 3:
+		return 0.55
+	case total == 4:
+		return 0.8
+	default:
+		return 1
+	}
+}
+
+func slowStartFactor(now, startedAt, until time.Time) (float64, bool) {
+	if startedAt.IsZero() || until.IsZero() || now.Before(startedAt) || !now.Before(until) {
+		return 1, false
+	}
+	total := until.Sub(startedAt)
+	if total <= 0 {
+		return 1, false
+	}
+	progress := float64(now.Sub(startedAt)) / float64(total)
+	if progress < 0 {
+		progress = 0
+	}
+	if progress > 1 {
+		progress = 1
+	}
+	return slowStartMinFactor + (1-slowStartMinFactor)*progress, true
+}
+
+func outlierPenalty(outlier bool) float64 {
+	if outlier {
+		return outlierPenaltyFactor
+	}
+	return 1
+}
+
+func (o candidateObservation) state(now time.Time, recentSamples int) string {
+	if o.hadBackoff && !o.recoveryUntil.IsZero() && now.After(o.slowStartStartedAt) && now.Before(o.recoveryUntil) {
+		return ObservationStateRecovering
+	}
+	if recentSamples < minRecentSamples || o.lastSuccessAt.IsZero() {
+		return ObservationStateCold
+	}
+	return ObservationStateWarm
+}
+
+func (o candidateObservation) isOutlier(now time.Time, failures int) bool {
+	if !o.outlierUntil.IsZero() && now.Before(o.outlierUntil) {
+		return true
+	}
+	if o.lastBandwidth > 0 && o.bandwidthEstimate > 0 {
+		return o.lastBandwidth < 0.5*o.bandwidthEstimate || o.lastBandwidth > 2.5*o.bandwidthEstimate
+	}
+	return false
+}
+
+func effectivePerformance(preference candidatePreference) float64 {
+	if !preference.hasLatency && !preference.hasBandwidth {
+		return 0
+	}
+	slowStart := preference.slowStartFactor
+	if slowStart <= 0 {
+		slowStart = 1
+	}
+	performance := performanceScore(preference)
+	if preference.hasBandwidth {
+		performance *= bandwidthConfidenceFactor(preference.confidence)
+	}
+	return performance * slowStart * outlierPenalty(preference.outlier)
 }
 
 func (o candidateObservation) recentCounts(now time.Time) (int, int) {
@@ -594,6 +759,101 @@ func performanceScore(preference candidatePreference) float64 {
 		return bandwidthScore
 	}
 	return 0
+}
+
+func bandwidthPerformanceScore(bandwidth float64) float64 {
+	if bandwidth <= 0 {
+		return 0
+	}
+	bandwidthMBps := bandwidth / (1024.0 * 1024.0)
+	return math.Log1p(bandwidthMBps) / math.Log1p(16)
+}
+
+func bandwidthConfidenceFactor(confidence float64) float64 {
+	if confidence <= 0 {
+		return 0.25
+	}
+	if confidence > 1 {
+		confidence = 1
+	}
+	return 0.25 + 0.75*confidence
+}
+
+func (c *Cache) maybePromoteExplorationCandidate(ordered []Candidate, preferences map[string]candidatePreference, hasCold bool, hasRecovering bool) []Candidate {
+	budget := c.chooseExplorationBudget(hasRecovering, hasCold)
+	if budget == 0 {
+		return ordered
+	}
+	if c.randomIntn(100) >= budget {
+		return ordered
+	}
+
+	target := ObservationStateRecovering
+	if !hasRecovering {
+		target = ObservationStateCold
+	}
+	for i, candidate := range ordered {
+		pref := preferences[strings.TrimSpace(candidate.Address)]
+		if pref.inBackoff || pref.state != target {
+			continue
+		}
+		if i == 0 {
+			return ordered
+		}
+		rotated := make([]Candidate, 0, len(ordered))
+		rotated = append(rotated, ordered[i:]...)
+		rotated = append(rotated, ordered[:i]...)
+		return rotated
+	}
+	return ordered
+}
+
+func (c *Cache) hasState(preferences map[string]candidatePreference, state string) bool {
+	for _, preference := range preferences {
+		if preference.state == state {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Cache) chooseExplorationBudget(hasRecovering bool, hasCold bool) int {
+	switch {
+	case hasRecovering && hasCold:
+		return combinedExplPct
+	case hasRecovering:
+		return recoveringExplPct
+	case hasCold:
+		return coldExplorationPct
+	default:
+		return 0
+	}
+}
+
+func (c *Cache) slowStartWindowForKey(key string) time.Duration {
+	if strings.Contains(key, ":") {
+		return resolvedSlowStart
+	}
+	return slowStartDuration
+}
+
+func (c *Cache) backoffDuration(consecutive int) time.Duration {
+	backoff := c.backoffBase
+	for i := 1; i < consecutive; i++ {
+		if backoff >= c.backoffLimit/2 {
+			backoff = c.backoffLimit
+			break
+		}
+		backoff *= 2
+	}
+	if backoff > c.backoffLimit {
+		backoff = c.backoffLimit
+	}
+	return backoff
+}
+
+func (o candidateObservation) inBackoff(now time.Time) bool {
+	return !o.recoveryUntil.IsZero() && now.Before(o.slowStartStartedAt)
 }
 
 func blendDuration(current, next time.Duration) time.Duration {

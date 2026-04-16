@@ -150,6 +150,9 @@ func TestCacheOrderAdaptiveUsesCombinedPerformanceNotLatencyOnly(t *testing.T) {
 		Now: func() time.Time {
 			return base
 		},
+		RandomIntn: func(n int) int {
+			return n - 1
+		},
 	})
 	scope := "http:rule-adaptive-performance"
 	candidates := []Candidate{
@@ -193,6 +196,136 @@ func TestCacheOrderAdaptiveUsesOnlyRecent24hStability(t *testing.T) {
 	got := cache.Order(scope, StrategyAdaptive, candidates)
 	if ordered := addresses(got); !reflect.DeepEqual(ordered, []string{"backend-a", "backend-b"}) {
 		t.Fatalf("unexpected adaptive order with recent stability window: %v", ordered)
+	}
+}
+
+func TestCacheSummaryReportsColdStateAndLowConfidence(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return base
+		},
+	})
+
+	cache.ObserveSuccess("10.0.0.10:443", 30*time.Millisecond)
+
+	summary := cache.Summary("10.0.0.10:443")
+	if summary.State != ObservationStateCold {
+		t.Fatalf("State = %q", summary.State)
+	}
+	if summary.SampleConfidence <= 0 || summary.SampleConfidence >= 0.5 {
+		t.Fatalf("SampleConfidence = %v", summary.SampleConfidence)
+	}
+	if summary.SlowStartActive {
+		t.Fatalf("expected cold summary to not report slow start: %+v", summary)
+	}
+	if summary.Outlier {
+		t.Fatalf("expected cold summary to not report outlier: %+v", summary)
+	}
+	if summary.TrafficShareHint != "cold" {
+		t.Fatalf("TrafficShareHint = %q", summary.TrafficShareHint)
+	}
+}
+
+func TestCachePreferResolvedCandidatesExploresColdCandidateWhenBudgetTriggers(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return base
+		},
+		RandomIntn: func(n int) int {
+			if n != 100 {
+				t.Fatalf("unexpected exploration budget bound: %d", n)
+			}
+			return 0
+		},
+	})
+	candidates := []Candidate{
+		{Address: "10.0.0.11:443"},
+		{Address: "10.0.0.12:443"},
+	}
+
+	for i := 0; i < 4; i++ {
+		cache.ObserveSuccess("10.0.0.11:443", 20*time.Millisecond)
+	}
+
+	got := cache.PreferResolvedCandidates(candidates)
+	if !reflect.DeepEqual(addresses(got), []string{"10.0.0.12:443", "10.0.0.11:443"}) {
+		t.Fatalf("unexpected preferred order with cold exploration budget: %v", addresses(got))
+	}
+}
+
+func TestCacheSummaryReportsRecoveringStateAfterBackoffExpires(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	now := base
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return now
+		},
+	})
+
+	addr := "10.0.0.20:443"
+	cache.MarkFailure(addr)
+	now = now.Add(1100 * time.Millisecond)
+
+	summary := cache.Summary(addr)
+	if summary.State != ObservationStateRecovering {
+		t.Fatalf("State = %q", summary.State)
+	}
+	if !summary.SlowStartActive {
+		t.Fatalf("expected recovering summary to report slow start: %+v", summary)
+	}
+	if summary.TrafficShareHint != "recovery" {
+		t.Fatalf("TrafficShareHint = %q", summary.TrafficShareHint)
+	}
+}
+
+func TestCachePreferResolvedCandidatesDampensSingleBandwidthSpikeWithConfidence(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return base
+		},
+	})
+	candidates := []Candidate{
+		{Address: "10.0.0.13:443"},
+		{Address: "10.0.0.14:443"},
+	}
+
+	cache.ObserveTransferSuccess("10.0.0.13:443", 30*time.Millisecond, 100*time.Millisecond, 128*1024)
+	cache.ObserveTransferSuccess("10.0.0.13:443", 30*time.Millisecond, 100*time.Millisecond, 128*1024)
+	cache.ObserveTransferSuccess("10.0.0.13:443", 30*time.Millisecond, 100*time.Millisecond, 128*1024)
+
+	cache.ObserveTransferSuccess("10.0.0.14:443", 30*time.Millisecond, 100*time.Millisecond, 64*1024)
+	cache.ObserveTransferSuccess("10.0.0.14:443", 30*time.Millisecond, 100*time.Millisecond, 64*1024*64)
+
+	got := cache.PreferResolvedCandidates(candidates)
+	if !reflect.DeepEqual(addresses(got), []string{"10.0.0.13:443", "10.0.0.14:443"}) {
+		t.Fatalf("unexpected preferred order with damped bandwidth spike: %v", addresses(got))
+	}
+}
+
+func TestCacheSummaryMarksOutlierBeforeHardBackoff(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	now := base
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return now
+		},
+	})
+
+	addr := "10.0.0.23:443"
+	for i := 0; i < 4; i++ {
+		cache.ObserveTransferSuccess(addr, 20*time.Millisecond, 200*time.Millisecond, 512*1024)
+	}
+	cache.ObserveTransferSuccess(addr, 600*time.Millisecond, 2*time.Second, 4*1024)
+
+	summary := cache.Summary(addr)
+	if !summary.Outlier {
+		t.Fatalf("Summary = %+v", summary)
+	}
+	if summary.InBackoff {
+		t.Fatalf("expected outlier demotion before hard backoff: %+v", summary)
 	}
 }
 

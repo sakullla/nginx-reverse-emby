@@ -11,6 +11,10 @@ const (
 	StrategyRoundRobin = "round_robin"
 	StrategyRandom     = "random"
 	StrategyAdaptive   = "adaptive"
+
+	ObservationStateCold       = "cold"
+	ObservationStateRecovering = "recovering"
+	ObservationStateWarm       = "warm"
 )
 
 const backendObservationPrefix = "backend|"
@@ -56,13 +60,18 @@ type Config struct {
 }
 
 type ObservationSummary struct {
-	Stability        float64
-	RecentSucceeded  int
-	RecentFailed     int
-	Latency          time.Duration
-	HasLatency       bool
-	Bandwidth        float64
-	HasBandwidth     bool
-	PerformanceScore float64
-	InBackoff        bool
+	Stability         float64
+	RecentSucceeded   int
+	RecentFailed      int
+	Latency           time.Duration
+	HasLatency        bool
+	Bandwidth         float64
+	HasBandwidth      bool
+	PerformanceScore  float64
+	InBackoff         bool
+	State             string
+	SampleConfidence  float64
+	SlowStartActive   bool
+	Outlier           bool
+	TrafficShareHint  string
 }
