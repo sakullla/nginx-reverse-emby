@@ -68,118 +68,85 @@
 
         <div v-if="backendSummaries.length" class="diagnostic-modal__backends">
           <div class="diagnostic-modal__section-title">后端延迟</div>
-          <div class="diagnostic-backend-grid">
-            <article v-for="backend in backendSummaries" :key="backend.backend" class="diagnostic-backend-card">
-              <div class="diagnostic-backend-card__header">
-                <code class="diagnostic-backend-card__name">{{ backend.backend }}</code>
-                <div class="diagnostic-backend-card__badges">
-                  <span v-if="backend.adaptive?.preferred" class="diagnostic-backend-card__preferred">当前优选</span>
-                  <span class="diagnostic-backend-card__quality" :class="`diagnostic-backend-card__quality--${qualityToneFor(backend.summary?.quality)}`">
+          <div class="diagnostic-backend-list">
+            <article v-for="backend in backendSummaries" :key="backend.backend" class="diagnostic-backend-item">
+              <div class="diagnostic-backend-item__header">
+                <code class="diagnostic-backend-item__name">{{ backend.backend }}</code>
+                <div class="diagnostic-backend-item__badges">
+                  <span v-if="backend.adaptive?.preferred" class="diagnostic-backend-item__preferred">当前优选</span>
+                  <span class="diagnostic-backend-item__quality" :class="`diagnostic-backend-item__quality--${qualityToneFor(backend.summary?.quality)}`">
                     {{ qualityLabelFor(backend.summary?.quality) }}
                   </span>
                 </div>
               </div>
-              <div class="diagnostic-backend-card__stats">
+
+              <div class="diagnostic-backend-item__stats">
                 <div>
-                  <span class="diagnostic-backend-card__label">平均</span>
-                  <strong class="diagnostic-backend-card__value">{{ backend.summary?.avg_latency_ms ?? 0 }} ms</strong>
+                  <span class="diagnostic-backend-item__label">平均</span>
+                  <strong class="diagnostic-backend-item__value">{{ backend.summary?.avg_latency_ms ?? 0 }} ms</strong>
                 </div>
                 <div>
-                  <span class="diagnostic-backend-card__label">成功</span>
-                  <strong class="diagnostic-backend-card__value">{{ backend.summary?.succeeded ?? 0 }} / {{ backend.summary?.sent ?? 0 }}</strong>
+                  <span class="diagnostic-backend-item__label">成功</span>
+                  <strong class="diagnostic-backend-item__value">{{ backend.summary?.succeeded ?? 0 }} / {{ backend.summary?.sent ?? 0 }}</strong>
                 </div>
               </div>
-              <div class="diagnostic-backend-card__range">
+
+              <div class="diagnostic-backend-item__range">
                 <span>最小 {{ backend.summary?.min_latency_ms ?? 0 }} ms</span>
                 <span>最大 {{ backend.summary?.max_latency_ms ?? 0 }} ms</span>
               </div>
-              <div v-if="backend.adaptive" class="diagnostic-backend-card__adaptive">
-                <div class="diagnostic-factor">
-                  <span class="diagnostic-factor__label">状态</span>
-                  <strong class="diagnostic-factor__value">{{ adaptiveStateLabel(backend.adaptive?.state) }}</strong>
+
+              <div class="diagnostic-backend-item__adaptive-summary">
+                <span class="diagnostic-badge">状态 {{ adaptiveStateLabel(backend.adaptive?.state) }}</span>
+                <span class="diagnostic-badge">24h稳定性 {{ formatPercent(backend.adaptive?.stability) }}</span>
+                <span class="diagnostic-badge">置信度 {{ formatPercent(backend.adaptive?.sample_confidence) }}</span>
+                <span class="diagnostic-badge">慢启动 {{ slowStartLabel(backend.adaptive?.slow_start_active) }}</span>
+              </div>
+
+              <button type="button" class="diagnostic-backend-item__toggle" @click="toggleAdaptive(backend.backend)">
+                <span>{{ isAdaptiveExpanded(backend.backend) ? '收起' : '展开更多' }}</span>
+                <span class="diagnostic-backend-item__toggle-icon" :class="{ 'diagnostic-backend-item__toggle-icon--open': isAdaptiveExpanded(backend.backend) }">▸</span>
+              </button>
+
+              <div v-show="isAdaptiveExpanded(backend.backend)" class="diagnostic-backend-item__details">
+                <div class="diagnostic-backend-item__details-grid">
+                  <div class="diagnostic-factor">
+                    <span class="diagnostic-factor__label">延迟</span>
+                    <strong class="diagnostic-factor__value">{{ backend.adaptive?.latency_ms ?? 0 }} ms</strong>
+                  </div>
+                  <div class="diagnostic-factor">
+                    <span class="diagnostic-factor__label">评估带宽</span>
+                    <strong class="diagnostic-factor__value">{{ formatBandwidth(backend.adaptive?.estimated_bandwidth_bps) }}</strong>
+                  </div>
+                  <div class="diagnostic-factor">
+                    <span class="diagnostic-factor__label">综合性能</span>
+                    <strong class="diagnostic-factor__value">{{ formatScore(backend.adaptive?.performance_score) }}</strong>
+                  </div>
+                  <div class="diagnostic-factor">
+                    <span class="diagnostic-factor__label">异常检测</span>
+                    <strong class="diagnostic-factor__value">{{ outlierLabel(backend.adaptive?.outlier) }}</strong>
+                  </div>
+                  <div class="diagnostic-factor">
+                    <span class="diagnostic-factor__label">流量阶段</span>
+                    <strong class="diagnostic-factor__value">{{ trafficShareLabel(backend.adaptive?.traffic_share_hint) }}</strong>
+                  </div>
                 </div>
-                <div class="diagnostic-factor">
-                  <span class="diagnostic-factor__label">近24h稳定性</span>
-                  <strong class="diagnostic-factor__value">{{ formatPercent(backend.adaptive?.stability) }}</strong>
-                </div>
-                <div class="diagnostic-factor">
-                  <span class="diagnostic-factor__label">样本置信度</span>
-                  <strong class="diagnostic-factor__value">{{ formatPercent(backend.adaptive?.sample_confidence) }}</strong>
-                </div>
-                <div class="diagnostic-factor">
-                  <span class="diagnostic-factor__label">延迟</span>
-                  <strong class="diagnostic-factor__value">{{ backend.adaptive?.latency_ms ?? 0 }} ms</strong>
-                </div>
-                <div class="diagnostic-factor">
-                  <span class="diagnostic-factor__label">评估带宽</span>
-                  <strong class="diagnostic-factor__value">{{ formatBandwidth(backend.adaptive?.estimated_bandwidth_bps) }}</strong>
-                </div>
-                <div class="diagnostic-factor">
-                  <span class="diagnostic-factor__label">综合性能</span>
-                  <strong class="diagnostic-factor__value">{{ formatScore(backend.adaptive?.performance_score) }}</strong>
-                </div>
-                <div class="diagnostic-factor">
-                  <span class="diagnostic-factor__label">慢启动</span>
-                  <strong class="diagnostic-factor__value">{{ slowStartLabel(backend.adaptive?.slow_start_active) }}</strong>
-                </div>
-                <div class="diagnostic-factor">
-                  <span class="diagnostic-factor__label">异常检测</span>
-                  <strong class="diagnostic-factor__value">{{ outlierLabel(backend.adaptive?.outlier) }}</strong>
-                </div>
-                <div class="diagnostic-factor">
-                  <span class="diagnostic-factor__label">流量阶段</span>
-                  <strong class="diagnostic-factor__value">{{ trafficShareLabel(backend.adaptive?.traffic_share_hint) }}</strong>
+                <div v-if="backend.adaptive?.reason" class="diagnostic-backend-item__reason">
+                  原因: {{ reasonLabel(backend.adaptive?.reason) }}
                 </div>
               </div>
-              <div v-if="backend.adaptive?.reason" class="diagnostic-backend-card__reason">
-                原因: {{ reasonLabel(backend.adaptive?.reason) }}
-              </div>
-              <div v-if="backend.children?.length" class="diagnostic-backend-card__children">
-                <div class="diagnostic-backend-card__child-title">已解析候选</div>
-                <article v-for="child in backend.children" :key="child.backend" class="diagnostic-backend-child">
-                  <div class="diagnostic-backend-child__header">
-                    <code class="diagnostic-backend-child__name">{{ child.backend }}</code>
-                    <span v-if="child.adaptive?.preferred" class="diagnostic-backend-card__preferred">当前优选</span>
+
+              <div v-if="backend.children?.length" class="diagnostic-backend-item__children">
+                <div class="diagnostic-backend-item__child-title">已解析候选</div>
+                <div class="diagnostic-child-list">
+                  <div v-for="child in backend.children" :key="child.backend" class="diagnostic-child-row">
+                    <code class="diagnostic-child-row__name">{{ child.backend }}</code>
+                    <span v-if="child.adaptive?.preferred" class="diagnostic-backend-item__preferred">当前优选</span>
+                    <span class="diagnostic-badge diagnostic-badge--subtle">状态 {{ adaptiveStateLabel(child.adaptive?.state) }}</span>
+                    <span class="diagnostic-badge diagnostic-badge--subtle">延迟 {{ child.adaptive?.latency_ms ?? 0 }} ms</span>
+                    <span class="diagnostic-badge diagnostic-badge--subtle">置信度 {{ formatPercent(child.adaptive?.sample_confidence) }}</span>
                   </div>
-                  <div v-if="child.adaptive" class="diagnostic-backend-card__adaptive diagnostic-backend-card__adaptive--child">
-                    <div class="diagnostic-factor">
-                      <span class="diagnostic-factor__label">状态</span>
-                      <strong class="diagnostic-factor__value">{{ adaptiveStateLabel(child.adaptive?.state) }}</strong>
-                    </div>
-                    <div class="diagnostic-factor">
-                      <span class="diagnostic-factor__label">近24h稳定性</span>
-                      <strong class="diagnostic-factor__value">{{ formatPercent(child.adaptive?.stability) }}</strong>
-                    </div>
-                    <div class="diagnostic-factor">
-                      <span class="diagnostic-factor__label">样本置信度</span>
-                      <strong class="diagnostic-factor__value">{{ formatPercent(child.adaptive?.sample_confidence) }}</strong>
-                    </div>
-                    <div class="diagnostic-factor">
-                      <span class="diagnostic-factor__label">延迟</span>
-                      <strong class="diagnostic-factor__value">{{ child.adaptive?.latency_ms ?? 0 }} ms</strong>
-                    </div>
-                    <div class="diagnostic-factor">
-                      <span class="diagnostic-factor__label">评估带宽</span>
-                      <strong class="diagnostic-factor__value">{{ formatBandwidth(child.adaptive?.estimated_bandwidth_bps) }}</strong>
-                    </div>
-                    <div class="diagnostic-factor">
-                      <span class="diagnostic-factor__label">综合性能</span>
-                      <strong class="diagnostic-factor__value">{{ formatScore(child.adaptive?.performance_score) }}</strong>
-                    </div>
-                    <div class="diagnostic-factor">
-                      <span class="diagnostic-factor__label">慢启动</span>
-                      <strong class="diagnostic-factor__value">{{ slowStartLabel(child.adaptive?.slow_start_active) }}</strong>
-                    </div>
-                    <div class="diagnostic-factor">
-                      <span class="diagnostic-factor__label">异常检测</span>
-                      <strong class="diagnostic-factor__value">{{ outlierLabel(child.adaptive?.outlier) }}</strong>
-                    </div>
-                    <div class="diagnostic-factor">
-                      <span class="diagnostic-factor__label">流量阶段</span>
-                      <strong class="diagnostic-factor__value">{{ trafficShareLabel(child.adaptive?.traffic_share_hint) }}</strong>
-                    </div>
-                  </div>
-                </article>
+                </div>
               </div>
             </article>
           </div>
@@ -237,6 +204,18 @@ const tone = computed(() => diagnosticStateTone(state.value))
 const agentLabel = computed(() => props.task?.agent_id || '')
 const isHTTP = computed(() => props.kind === 'http')
 const showSamples = ref(false)
+const expandedAdaptive = ref(new Set())
+
+function toggleAdaptive(backendName) {
+  const s = new Set(expandedAdaptive.value)
+  if (s.has(backendName)) s.delete(backendName)
+  else s.add(backendName)
+  expandedAdaptive.value = s
+}
+
+function isAdaptiveExpanded(backendName) {
+  return expandedAdaptive.value.has(backendName)
+}
 
 const QUALITY_MAP = {
   '极佳': 'success',
