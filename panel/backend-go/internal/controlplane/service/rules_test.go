@@ -180,6 +180,49 @@ func TestRuleServiceCreateNormalizesAndPersists(t *testing.T) {
 	}
 }
 
+func TestRuleServiceCreateNormalizesLoadBalancingStrategies(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    *HTTPLoadBalancing
+		expected string
+	}{
+		{name: "defaults empty input to adaptive", input: nil, expected: "adaptive"},
+		{name: "normalizes explicit adaptive", input: &HTTPLoadBalancing{Strategy: "ADAPTIVE"}, expected: "adaptive"},
+		{name: "preserves explicit round robin", input: &HTTPLoadBalancing{Strategy: "round_robin"}, expected: "round_robin"},
+		{name: "preserves explicit random", input: &HTTPLoadBalancing{Strategy: "RANDOM"}, expected: "random"},
+		{name: "normalizes invalid strategy to adaptive", input: &HTTPLoadBalancing{Strategy: "invalid"}, expected: "adaptive"},
+		{name: "normalizes blank strategy to adaptive", input: &HTTPLoadBalancing{Strategy: "   "}, expected: "adaptive"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &fakeRuleStore{
+				rulesByAgent: map[string][]storage.HTTPRuleRow{},
+			}
+			svc := NewRuleService(config.Config{
+				EnableLocalAgent: true,
+				LocalAgentID:     "local",
+			}, store)
+
+			rule, err := svc.Create(context.Background(), "local", HTTPRuleInput{
+				FrontendURL:   stringPtrRule("https://new.example.com"),
+				BackendURL:    stringPtrRule("http://upstream-a:8096"),
+				LoadBalancing: tt.input,
+			})
+			if err != nil {
+				t.Fatalf("Create() error = %v", err)
+			}
+
+			if rule.LoadBalancing.Strategy != tt.expected {
+				t.Fatalf("Create() load_balancing = %+v", rule.LoadBalancing)
+			}
+			if got := store.rulesByAgent["local"][0].LoadBalancingJSON; got != `{"strategy":"`+tt.expected+`"}` {
+				t.Fatalf("persisted load_balancing_json = %q", got)
+			}
+		})
+	}
+}
+
 func TestRuleServiceUpdateNormalizesAndPersists(t *testing.T) {
 	store := &fakeRuleStore{
 		agents: []storage.AgentRow{{
@@ -244,7 +287,7 @@ func TestRuleServiceUpdateNormalizesAndPersists(t *testing.T) {
 	if rule.BackendURL != "http://emby:8096" || len(rule.Backends) != 1 || rule.Backends[0].URL != "http://emby:8096" {
 		t.Fatalf("Update() backends fallback = %+v", rule.Backends)
 	}
-	if rule.LoadBalancing.Strategy != "round_robin" {
+	if rule.LoadBalancing.Strategy != "adaptive" {
 		t.Fatalf("Update() load_balancing = %+v", rule.LoadBalancing)
 	}
 	if rule.UserAgent != "MyAgent" {
@@ -282,6 +325,50 @@ func TestRuleServiceUpdateNormalizesAndPersists(t *testing.T) {
 	}
 }
 
+func TestRuleServiceUpdatePreservesExplicitLoadBalancingStrategies(t *testing.T) {
+	for _, strategy := range []string{"round_robin", "random"} {
+		t.Run(strategy, func(t *testing.T) {
+			lbJSON := `{"strategy":"` + strategy + `"}`
+			store := &fakeRuleStore{
+				rulesByAgent: map[string][]storage.HTTPRuleRow{
+					"local": {{
+						ID:                3,
+						AgentID:           "local",
+						FrontendURL:       "https://before.example.com",
+						BackendURL:        "http://emby:8096",
+						BackendsJSON:      `[{"url":"http://emby:8096"}]`,
+						LoadBalancingJSON: lbJSON,
+						Enabled:           true,
+						TagsJSON:          `["existing"]`,
+						ProxyRedirect:     true,
+						RelayChainJSON:    `[]`,
+						PassProxyHeaders:  true,
+						UserAgent:         "Legacy",
+						CustomHeadersJSON: `[{"name":"X-Legacy","value":"1"}]`,
+						Revision:          10,
+					}},
+				},
+			}
+			svc := NewRuleService(config.Config{
+				EnableLocalAgent: true,
+				LocalAgentID:     "local",
+			}, store)
+
+			rule, err := svc.Update(context.Background(), "local", 3, HTTPRuleInput{
+				FrontendURL: stringPtrRule("https://after.example.com"),
+			})
+			if err != nil {
+				t.Fatalf("Update() error = %v", err)
+			}
+			if rule.LoadBalancing.Strategy != strategy {
+				t.Fatalf("Update() load_balancing = %+v", rule.LoadBalancing)
+			}
+			if got := store.rulesByAgent["local"][0].LoadBalancingJSON; got != lbJSON {
+				t.Fatalf("persisted load_balancing_json = %q", got)
+			}
+		})
+	}
+}
 func TestRuleServiceDeletePersistsRemoval(t *testing.T) {
 	store := &fakeRuleStore{
 		rulesByAgent: map[string][]storage.HTTPRuleRow{

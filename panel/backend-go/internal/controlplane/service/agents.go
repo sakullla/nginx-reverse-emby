@@ -2,8 +2,8 @@ package service
 
 import (
 	"context"
-	"crypto/sha256"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -1075,12 +1075,15 @@ func parseBackends(raw string) []HTTPRuleBackend {
 func parseLoadBalancing(raw string) HTTPLoadBalancing {
 	value := struct {
 		Strategy string `json:"strategy"`
-	}{Strategy: "round_robin"}
+	}{Strategy: "adaptive"}
 	if err := json.Unmarshal([]byte(defaultString(raw, "{}")), &value); err != nil {
-		return HTTPLoadBalancing{Strategy: "round_robin"}
+		return HTTPLoadBalancing{Strategy: "adaptive"}
 	}
-	if value.Strategy != "random" {
-		value.Strategy = "round_robin"
+	switch strings.ToLower(strings.TrimSpace(value.Strategy)) {
+	case "round_robin", "random", "adaptive":
+		value.Strategy = strings.ToLower(strings.TrimSpace(value.Strategy))
+	default:
+		value.Strategy = "adaptive"
 	}
 	return HTTPLoadBalancing{Strategy: value.Strategy}
 }
@@ -1137,11 +1140,11 @@ func normalizeAgentTags(values []string) []string {
 
 func normalizeCapabilities(values []string) []string {
 	allowed := map[string]struct{}{
-		"http_rules":   {},
-		"local_acme":   {},
-		"cert_install": {},
-		"l4":           {},
-		"relay_quic":   {},
+		"http_rules":    {},
+		"local_acme":    {},
+		"cert_install":  {},
+		"l4":            {},
+		"relay_quic":    {},
 		"http3_ingress": {},
 	}
 	seen := map[string]struct{}{}

@@ -840,8 +840,8 @@ func (s *ruleService) normalizeHTTPRuleInput(ctx context.Context, input HTTPRule
 	backendURL := backends[0].URL
 
 	loadBalancing := fallback.LoadBalancing
-	if loadBalancing.Strategy == "" {
-		loadBalancing = HTTPLoadBalancing{Strategy: "round_robin"}
+	if strings.TrimSpace(loadBalancing.Strategy) == "" {
+		loadBalancing = HTTPLoadBalancing{Strategy: "adaptive"}
 	}
 	if input.LoadBalancing != nil {
 		loadBalancing = *input.LoadBalancing
@@ -1002,10 +1002,16 @@ func normalizeHTTPCustomHeaders(values []HTTPCustomHeader) []HTTPCustomHeader {
 }
 
 func normalizeHTTPLoadBalancing(value HTTPLoadBalancing) HTTPLoadBalancing {
-	if strings.EqualFold(strings.TrimSpace(value.Strategy), "random") {
+	switch strings.ToLower(strings.TrimSpace(value.Strategy)) {
+	case "round_robin":
+		return HTTPLoadBalancing{Strategy: "round_robin"}
+	case "random":
 		return HTTPLoadBalancing{Strategy: "random"}
+	case "adaptive":
+		return HTTPLoadBalancing{Strategy: "adaptive"}
+	default:
+		return HTTPLoadBalancing{Strategy: "adaptive"}
 	}
-	return HTTPLoadBalancing{Strategy: "round_robin"}
 }
 
 func defaultPassProxyHeaders() bool {
@@ -1073,7 +1079,7 @@ func httpRuleToRow(rule HTTPRule) storage.HTTPRuleRow {
 		FrontendURL:       rule.FrontendURL,
 		BackendURL:        rule.BackendURL,
 		BackendsJSON:      marshalJSON(rule.Backends, "[]"),
-		LoadBalancingJSON: marshalJSON(rule.LoadBalancing, `{"strategy":"round_robin"}`),
+		LoadBalancingJSON: marshalJSON(rule.LoadBalancing, `{"strategy":"adaptive"}`),
 		Enabled:           rule.Enabled,
 		TagsJSON:          marshalJSON(rule.Tags, "[]"),
 		ProxyRedirect:     rule.ProxyRedirect,
