@@ -221,6 +221,9 @@ func (c *Cache) Order(scope, strategy string, candidates []Candidate) []Candidat
 			rightKey := strings.TrimSpace(ordered[j].Address)
 			left := preferenceState[leftKey]
 			right := preferenceState[rightKey]
+			if left.inBackoff != right.inBackoff {
+				return !left.inBackoff
+			}
 			if left.stability != right.stability {
 				return left.stability > right.stability
 			}
@@ -581,7 +584,7 @@ func (o *candidateObservation) recordOutcome(now time.Time, success bool) {
 func (o candidateObservation) preference(now time.Time) candidatePreference {
 	successes, failures := o.recentCounts(now)
 	inBackoff := o.inBackoff(now)
-	state := o.state(now, successes)
+	state := o.state(now, successes, failures, inBackoff)
 	confidence := sampleConfidence(successes, failures)
 	slowFactor, slowStartActive := slowStartFactor(now, o.slowStartStartedAt, o.slowStartUntil)
 	outlier := o.isOutlier(now, failures)
@@ -670,11 +673,11 @@ func outlierPenalty(outlier bool) float64 {
 	return 1
 }
 
-func (o candidateObservation) state(now time.Time, recentSamples int) string {
+func (o candidateObservation) state(now time.Time, recentSuccesses, recentFailures int, inBackoff bool) string {
 	if o.hadBackoff && !o.recoveryUntil.IsZero() && now.After(o.slowStartStartedAt) && now.Before(o.recoveryUntil) {
 		return ObservationStateRecovering
 	}
-	if recentSamples < minRecentSamples || o.lastSuccessAt.IsZero() {
+	if inBackoff || recentSuccesses <= 0 || recentSuccesses+recentFailures < minRecentSamples || o.lastSuccessAt.IsZero() {
 		return ObservationStateCold
 	}
 	return ObservationStateWarm
