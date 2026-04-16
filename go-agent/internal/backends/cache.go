@@ -199,14 +199,9 @@ func (c *Cache) Order(scope, strategy string, candidates []Candidate) []Candidat
 		for _, candidate := range ordered {
 			key := strings.TrimSpace(candidate.Address)
 			observationKey := BackendObservationKey(scope, key)
-			preference := c.observed[observationKey].preference(now)
-			if entry, ok := c.failures[key]; ok {
-				preference.inBackoff = now.Before(entry.retryAfter)
-			}
+			observation := c.adaptiveObservation(observationKey, key)
+			preference := observation.preference(now)
 			preferenceState[key] = preference
-			if preference.inBackoff {
-				continue
-			}
 			switch preference.state {
 			case ObservationStateCold:
 				hasCold = true
@@ -305,17 +300,13 @@ func (c *Cache) PreferResolvedCandidates(candidates []Candidate) []Candidate {
 	copy(ordered, candidates)
 
 	now := c.now()
-	backoffState := make(map[string]bool, len(ordered))
 	preferenceState := make(map[string]candidatePreference, len(ordered))
 
 	c.mu.Lock()
 	for _, candidate := range ordered {
 		key := strings.TrimSpace(candidate.Address)
-		preference := c.observed[key].preference(now)
-		if entry, ok := c.failures[key]; ok {
-			backoffState[key] = now.Before(entry.retryAfter)
-			preference.inBackoff = backoffState[key]
-		}
+		observation := c.observed[key]
+		preference := observation.preference(now)
 		preferenceState[key] = preference
 	}
 	c.mu.Unlock()
@@ -323,14 +314,11 @@ func (c *Cache) PreferResolvedCandidates(candidates []Candidate) []Candidate {
 	sort.SliceStable(ordered, func(i, j int) bool {
 		leftKey := strings.TrimSpace(ordered[i].Address)
 		rightKey := strings.TrimSpace(ordered[j].Address)
-		leftBackoff := backoffState[leftKey]
-		rightBackoff := backoffState[rightKey]
-		if leftBackoff != rightBackoff {
-			return !leftBackoff
-		}
-
 		left := preferenceState[leftKey]
 		right := preferenceState[rightKey]
+		if left.inBackoff != right.inBackoff {
+			return !left.inBackoff
+		}
 		if left.stability != right.stability {
 			return left.stability > right.stability
 		}
@@ -495,9 +483,8 @@ func (c *Cache) Summary(key string) ObservationSummary {
 
 	c.mu.Lock()
 	observation := c.observed[normalized]
-	inBackoff := false
-	if entry, ok := c.failures[normalized]; ok {
-		inBackoff = now.Before(entry.retryAfter)
+	if address := backendObservationAddress(normalized); address != "" {
+		observation = mergeObservations(observation, c.observed[address])
 	}
 	c.mu.Unlock()
 
@@ -513,7 +500,7 @@ func (c *Cache) Summary(key string) ObservationSummary {
 		Bandwidth:        preference.bandwidth,
 		HasBandwidth:     preference.hasBandwidth,
 		PerformanceScore: preference.performance,
-		InBackoff:        inBackoff,
+		InBackoff:        preference.inBackoff,
 		State:            preference.state,
 		SampleConfidence: preference.confidence,
 		SlowStartActive:   preference.slowStartActive,
@@ -579,6 +566,65 @@ func (o *candidateObservation) recordOutcome(now time.Time, success bool) {
 		return
 	}
 	o.counts[index].failures++
+}
+
+func (c *Cache) adaptiveObservation(scopedKey, address string) candidateObservation {
+	scopedKey = strings.TrimSpace(scopedKey)
+	address = strings.TrimSpace(address)
+	if scopedKey == "" && address == "" {
+		return candidateObservation{}
+	}
+
+	scoped := c.observed[scopedKey]
+	if address == "" || scopedKey == address {
+		return scoped
+	}
+
+	return mergeObservations(scoped, c.observed[address])
+}
+
+func mergeObservations(base candidateObservation, overlay candidateObservation) candidateObservation {
+	if !overlay.hadBackoff && overlay.recoveryUntil.IsZero() && overlay.recoverySuccesses == 0 && overlay.slowStartStartedAt.IsZero() && overlay.slowStartUntil.IsZero() && overlay.outlierUntil.IsZero() {
+		return base
+	}
+
+	merged := base
+	if overlay.hadBackoff || !overlay.recoveryUntil.IsZero() {
+		merged.hadBackoff = true
+	}
+	if merged.recoveryUntil.IsZero() || (!overlay.recoveryUntil.IsZero() && overlay.recoveryUntil.After(merged.recoveryUntil)) {
+		merged.recoveryUntil = overlay.recoveryUntil
+	}
+	if overlay.recoverySuccesses > merged.recoverySuccesses {
+		merged.recoverySuccesses = overlay.recoverySuccesses
+	}
+	if merged.slowStartStartedAt.IsZero() || (!overlay.slowStartStartedAt.IsZero() && overlay.slowStartStartedAt.Before(merged.slowStartStartedAt)) {
+		merged.slowStartStartedAt = overlay.slowStartStartedAt
+	}
+	if merged.slowStartUntil.IsZero() || (!overlay.slowStartUntil.IsZero() && overlay.slowStartUntil.After(merged.slowStartUntil)) {
+		merged.slowStartUntil = overlay.slowStartUntil
+	}
+	if !overlay.outlierUntil.IsZero() && (merged.outlierUntil.IsZero() || overlay.outlierUntil.After(merged.outlierUntil)) {
+		merged.outlierUntil = overlay.outlierUntil
+	}
+	if overlay.lastBandwidthAt.After(merged.lastBandwidthAt) {
+		merged.lastBandwidth = overlay.lastBandwidth
+		merged.bandwidthEstimate = overlay.bandwidthEstimate
+		merged.lastBandwidthAt = overlay.lastBandwidthAt
+	}
+	return merged
+}
+
+func backendObservationAddress(key string) string {
+	normalized := strings.TrimSpace(key)
+	if !strings.HasPrefix(normalized, backendObservationPrefix) {
+		return ""
+	}
+	parts := strings.SplitN(strings.TrimPrefix(normalized, backendObservationPrefix), "|", 2)
+	if len(parts) != 2 {
+		return ""
+	}
+	return strings.TrimSpace(parts[1])
 }
 
 func (o candidateObservation) preference(now time.Time) candidatePreference {
