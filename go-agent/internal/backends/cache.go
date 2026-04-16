@@ -273,14 +273,7 @@ func (c *Cache) ObserveBackendFailure(scope string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	entry := c.observed[key]
-	entry.recordFailure(now)
-	entry.hadBackoff = true
-	entry.recoveryUntil = now.Add(c.backoffDuration(1)).Add(recoveryWindow)
-	entry.recoverySuccesses = 0
-	entry.slowStartStartedAt = entry.recoveryUntil.Add(-recoveryWindow)
-	entry.slowStartUntil = entry.recoveryUntil
-	c.observed[key] = entry
+	c.applyFailureLocked(key, now)
 }
 
 func (c *Cache) ObserveTransferSuccess(address string, latency time.Duration, totalDuration time.Duration, bytesTransferred int64) {
@@ -348,23 +341,7 @@ func (c *Cache) MarkFailure(address string) time.Duration {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	entry := c.failures[key]
-	entry.consecutive++
-
-	observed := c.observed[key]
-	observed.recordFailure(now)
-	observed.hadBackoff = true
-	observed.recoveryUntil = now.Add(c.backoffDuration(entry.consecutive)).Add(recoveryWindow)
-	observed.recoverySuccesses = 0
-	observed.slowStartStartedAt = observed.recoveryUntil.Add(-recoveryWindow)
-	observed.slowStartUntil = observed.recoveryUntil
-	c.observed[key] = observed
-
-	backoff := c.backoffDuration(entry.consecutive)
-
-	entry.retryAfter = now.Add(backoff)
-	c.failures[key] = entry
-	return backoff
+	return c.applyFailureLocked(key, now)
 }
 
 func (c *Cache) MarkSuccess(address string) {
@@ -751,14 +728,6 @@ func performanceScore(preference candidatePreference) float64 {
 	return 0
 }
 
-func bandwidthPerformanceScore(bandwidth float64) float64 {
-	if bandwidth <= 0 {
-		return 0
-	}
-	bandwidthMBps := bandwidth / (1024.0 * 1024.0)
-	return math.Log1p(bandwidthMBps) / math.Log1p(16)
-}
-
 func confidenceFactor(confidence float64) float64 {
 	if confidence <= 0 {
 		return 0.25
@@ -821,10 +790,10 @@ func (c *Cache) chooseExplorationBudget(hasRecovering bool, hasCold bool) int {
 }
 
 func (c *Cache) slowStartWindowForKey(key string) time.Duration {
-	if strings.Contains(key, ":") {
-		return resolvedSlowStart
+	if strings.HasPrefix(strings.TrimSpace(key), backendObservationPrefix) {
+		return slowStartDuration
 	}
-	return slowStartDuration
+	return resolvedSlowStart
 }
 
 func (c *Cache) backoffDuration(consecutive int) time.Duration {
@@ -839,6 +808,26 @@ func (c *Cache) backoffDuration(consecutive int) time.Duration {
 	if backoff > c.backoffLimit {
 		backoff = c.backoffLimit
 	}
+	return backoff
+}
+
+func (c *Cache) applyFailureLocked(key string, now time.Time) time.Duration {
+	entry := c.failures[key]
+	entry.consecutive++
+
+	backoff := c.backoffDuration(entry.consecutive)
+	entry.retryAfter = now.Add(backoff)
+	c.failures[key] = entry
+
+	observed := c.observed[key]
+	observed.recordFailure(now)
+	observed.hadBackoff = true
+	observed.recoveryUntil = entry.retryAfter.Add(recoveryWindow)
+	observed.recoverySuccesses = 0
+	observed.slowStartStartedAt = observed.recoveryUntil.Add(-recoveryWindow)
+	observed.slowStartUntil = observed.recoveryUntil
+	c.observed[key] = observed
+
 	return backoff
 }
 

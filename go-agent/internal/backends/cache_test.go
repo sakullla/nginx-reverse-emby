@@ -317,6 +317,114 @@ func TestCacheObserveBackendFailureUsesScopedRecoveryState(t *testing.T) {
 	}
 }
 
+func TestCacheSlowStartWindowUsesBackendObservationPrefix(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	now := base
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return now
+		},
+	})
+
+	backendKey := BackendObservationKey("http:rule-slow-start", StableBackendID("http://backend.example:8096"))
+	cache.ObserveBackendFailure(backendKey)
+	now = now.Add(1100 * time.Millisecond)
+	cache.ObserveBackendSuccess(backendKey, 20*time.Millisecond, 40*time.Millisecond, 128*1024)
+	cache.ObserveBackendSuccess(backendKey, 20*time.Millisecond, 40*time.Millisecond, 128*1024)
+
+	backendObservation := cache.observationFor(backendKey)
+	if got := backendObservation.slowStartUntil.Sub(backendObservation.slowStartStartedAt); got != slowStartDuration {
+		t.Fatalf("backend slow-start window = %s", got)
+	}
+
+	address := "10.0.0.32:443"
+	cache.MarkFailure(address)
+	now = now.Add(1100 * time.Millisecond)
+	cache.ObserveTransferSuccess(address, 20*time.Millisecond, 40*time.Millisecond, 128*1024)
+	cache.ObserveTransferSuccess(address, 20*time.Millisecond, 40*time.Millisecond, 128*1024)
+
+	resolvedObservation := cache.observationFor(address)
+	if got := resolvedObservation.slowStartUntil.Sub(resolvedObservation.slowStartStartedAt); got != resolvedSlowStart {
+		t.Fatalf("resolved slow-start window = %s", got)
+	}
+}
+
+func TestCacheObserveBackendFailureEscalatesRepeatedBackoff(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	now := base
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return now
+		},
+	})
+
+	backendKey := BackendObservationKey("http:rule-backoff-escalation", StableBackendID("http://backend.example:8096"))
+	cache.ObserveBackendFailure(backendKey)
+
+	first := cache.failures[backendKey]
+	if first.consecutive != 1 {
+		t.Fatalf("first consecutive = %d", first.consecutive)
+	}
+	if got := first.retryAfter.Sub(base); got != time.Second {
+		t.Fatalf("first retryAfter delta = %s", got)
+	}
+
+	now = now.Add(1100 * time.Millisecond)
+	cache.ObserveBackendFailure(backendKey)
+
+	second := cache.failures[backendKey]
+	if second.consecutive != 2 {
+		t.Fatalf("second consecutive = %d", second.consecutive)
+	}
+	if got := second.retryAfter.Sub(now); got != 2*time.Second {
+		t.Fatalf("second retryAfter delta = %s", got)
+	}
+
+	now = now.Add(1500 * time.Millisecond)
+	summary := cache.Summary(backendKey)
+	if !summary.InBackoff {
+		t.Fatalf("expected escalated backend backoff to remain active: %+v", summary)
+	}
+	if summary.TrafficShareHint != "blocked" {
+		t.Fatalf("TrafficShareHint = %q", summary.TrafficShareHint)
+	}
+}
+
+func TestCacheObserveBackendSuccessClearsFailureProgression(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	now := base
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return now
+		},
+	})
+
+	backendKey := BackendObservationKey("http:rule-backoff-reset", StableBackendID("http://backend.example:8096"))
+	cache.ObserveBackendFailure(backendKey)
+	now = now.Add(1100 * time.Millisecond)
+	cache.ObserveBackendFailure(backendKey)
+
+	if got := cache.failures[backendKey].consecutive; got != 2 {
+		t.Fatalf("consecutive before success = %d", got)
+	}
+
+	cache.ObserveBackendSuccess(backendKey, 20*time.Millisecond, 40*time.Millisecond, 128*1024)
+	if _, ok := cache.failures[backendKey]; ok {
+		t.Fatalf("expected backend failure entry to be cleared after success")
+	}
+
+	now = now.Add(10 * time.Millisecond)
+	cache.ObserveBackendFailure(backendKey)
+
+	entry := cache.failures[backendKey]
+	if entry.consecutive != 1 {
+		t.Fatalf("consecutive after reset = %d", entry.consecutive)
+	}
+	if got := entry.retryAfter.Sub(now); got != time.Second {
+		t.Fatalf("retryAfter delta after reset = %s", got)
+	}
+}
+
 func TestCacheSummaryUsesScopedBackendStateWithoutResolvedInference(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
 	now := base
