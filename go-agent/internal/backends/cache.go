@@ -3,6 +3,7 @@ package backends
 import (
 	"context"
 	"fmt"
+	"math"
 	"math/rand"
 	"net"
 	"sort"
@@ -166,18 +167,21 @@ func (c *Cache) Order(scope, strategy string, candidates []Candidate) []Candidat
 		return ordered
 	case StrategyAdaptive:
 		now := c.now()
-		preferences := make([]candidatePreference, len(ordered))
+		preferenceState := make(map[string]candidatePreference, len(ordered))
 
 		c.mu.Lock()
-		for i := range ordered {
-			key := BackendObservationKey(scope, ordered[i].Address)
-			preferences[i] = c.observed[key].preference(now)
+		for _, candidate := range ordered {
+			key := strings.TrimSpace(candidate.Address)
+			observationKey := BackendObservationKey(scope, key)
+			preferenceState[key] = c.observed[observationKey].preference(now)
 		}
 		c.mu.Unlock()
 
 		sort.SliceStable(ordered, func(i, j int) bool {
-			left := preferences[i]
-			right := preferences[j]
+			leftKey := strings.TrimSpace(ordered[i].Address)
+			rightKey := strings.TrimSpace(ordered[j].Address)
+			left := preferenceState[leftKey]
+			right := preferenceState[rightKey]
 			if left.stability != right.stability {
 				return left.stability > right.stability
 			}
@@ -500,7 +504,7 @@ func stabilityScore(successes, failures int) float64 {
 	case successes <= 0:
 		return 0
 	default:
-		return 1 / float64(failures+1)
+		return float64(successes) / float64(successes+failures)
 	}
 }
 
@@ -534,24 +538,21 @@ func (o candidateObservation) bandwidthFor(now time.Time) (float64, bool) {
 }
 
 func performanceScore(preference candidatePreference) float64 {
-	latencyScore := 0.5
+	latencyScore := 0.0
 	switch {
 	case preference.hasLatency && preference.latency > 0:
-		latencyScore = 1 / (1 + preference.latency.Seconds())
-	case preference.hasLatency:
-		latencyScore = 1
+		latencyMillis := float64(preference.latency) / float64(time.Millisecond)
+		latencyScore = 1 / math.Log1p(latencyMillis)
 	}
 
-	bandwidthScore := 0.5
+	bandwidthScore := 0.0
 	switch {
 	case preference.hasBandwidth && preference.bandwidth > 0:
-		bandwidthScore = preference.bandwidth / (preference.bandwidth + 1024*1024)
-	case preference.hasBandwidth:
-		bandwidthScore = 1
+		bandwidthScore = math.Log1p(preference.bandwidth / 1024.0)
 	}
 
 	if preference.hasLatency && preference.hasBandwidth {
-		return 0.5*latencyScore + 0.5*bandwidthScore
+		return latencyScore + bandwidthScore
 	}
 	if preference.hasLatency {
 		return latencyScore
@@ -559,7 +560,7 @@ func performanceScore(preference candidatePreference) float64 {
 	if preference.hasBandwidth {
 		return bandwidthScore
 	}
-	return 0.5
+	return 0
 }
 
 func blendDuration(current, next time.Duration) time.Duration {
