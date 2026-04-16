@@ -570,7 +570,44 @@ function buildMockDiagnosticResult(kind, ruleId) {
         min_latency_ms: successful.length ? Math.min(...latencies) : 0,
         max_latency_ms: successful.length ? Math.max(...latencies) : 0,
         quality: successful.length === backendSamples.length ? 'good' : 'fair'
-      }
+      },
+      adaptive: {
+        preferred: backend === backendLabels[0],
+        reason: backend === backendLabels[0] ? 'performance_higher' : '',
+        stability: backend === backendLabels[0] ? 1 : 0.8,
+        recent_succeeded: successful.length,
+        recent_failed: backendSamples.length - successful.length,
+        latency_ms: successful.length ? Number((total / successful.length).toFixed(1)) : 0,
+        estimated_bandwidth_bps: backend === backendLabels[0] ? 4 * 1024 * 1024 : 768 * 1024,
+        performance_score: backend === backendLabels[0] ? 0.88 : 0.63
+      },
+      children: kind === 'http'
+        ? [
+            {
+              backend: `${backend} [203.0.113.${11 + backendLabels.indexOf(backend)}:8096]`,
+              summary: {
+                sent: Math.max(1, Math.floor(backendSamples.length / 2)),
+                succeeded: Math.max(1, Math.floor(successful.length / 2)),
+                failed: Math.max(0, Math.floor((backendSamples.length - successful.length) / 2)),
+                loss_rate: 0,
+                avg_latency_ms: successful.length ? Number((total / successful.length).toFixed(1)) : 0,
+                min_latency_ms: successful.length ? Math.min(...latencies) : 0,
+                max_latency_ms: successful.length ? Math.max(...latencies) : 0,
+                quality: successful.length === backendSamples.length ? 'good' : 'fair'
+              },
+              adaptive: {
+                preferred: backend === backendLabels[0],
+                reason: backend === backendLabels[0] ? 'performance_higher' : '',
+                stability: backend === backendLabels[0] ? 1 : 0.8,
+                recent_succeeded: successful.length,
+                recent_failed: backendSamples.length - successful.length,
+                latency_ms: successful.length ? Number((total / successful.length).toFixed(1)) : 0,
+                estimated_bandwidth_bps: backend === backendLabels[0] ? 4 * 1024 * 1024 : 768 * 1024,
+                performance_score: backend === backendLabels[0] ? 0.88 : 0.63
+              }
+            }
+          ]
+        : []
     }
   })
   return {
