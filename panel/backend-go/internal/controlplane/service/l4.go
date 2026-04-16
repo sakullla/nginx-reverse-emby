@@ -627,7 +627,7 @@ func l4RuleFromRow(row storage.L4RuleRow) L4Rule {
 		ListenPort:    row.ListenPort,
 		UpstreamHost:  row.UpstreamHost,
 		UpstreamPort:  row.UpstreamPort,
-		LoadBalancing: L4LoadBalancing{Strategy: "round_robin"},
+		LoadBalancing: L4LoadBalancing{Strategy: "adaptive"},
 		Tuning:        L4Tuning{ProxyProtocol: L4ProxyProtocolTuning{}},
 		RelayChain:    []int{},
 		RelayObfs:     row.RelayObfs,

@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -474,7 +475,7 @@ func TestStoreNormalizesAdaptiveLoadBalancingForHTTPAndL4(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListHTTPRules() error = %v", err)
 	}
-	if len(httpRules) != 1 {
+	if len(httpRules) != 1 || parseLoadBalancingStrategy(httpRules[0].LoadBalancingJSON).Strategy != "adaptive" {
 		t.Fatalf("ListHTTPRules() = %+v", httpRules)
 	}
 
@@ -501,7 +502,7 @@ func TestStoreNormalizesAdaptiveLoadBalancingForHTTPAndL4(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListL4Rules() error = %v", err)
 	}
-	if len(l4Rules) != 1 {
+	if len(l4Rules) != 1 || parseL4LoadBalancingStrategy(t, l4Rules[0].LoadBalancingJSON).Strategy != "adaptive" {
 		t.Fatalf("ListL4Rules() = %+v", l4Rules)
 	}
 
@@ -517,6 +518,18 @@ func TestStoreNormalizesAdaptiveLoadBalancingForHTTPAndL4(t *testing.T) {
 	}
 }
 
+func parseL4LoadBalancingStrategy(t *testing.T, raw string) LoadBalancing {
+	t.Helper()
+
+	var lb LoadBalancing
+	if err := json.Unmarshal([]byte(defaultString(raw, "{}")), &lb); err != nil {
+		t.Fatalf("json.Unmarshal(load_balancing) error = %v", err)
+	}
+	if strings.TrimSpace(lb.Strategy) == "" {
+		return LoadBalancing{Strategy: "adaptive"}
+	}
+	return LoadBalancing{Strategy: strings.ToLower(strings.TrimSpace(lb.Strategy))}
+}
 func TestStorePersistsRelayListenersAndManagedCertificates(t *testing.T) {
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 

@@ -119,6 +119,430 @@ func TestCacheOrderRandomUsesHook(t *testing.T) {
 	}
 }
 
+func TestCacheOrderAdaptiveUsesBackendStabilityBeforePerformance(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	now := base
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return now
+		},
+	})
+	scope := "http:rule-adaptive"
+	candidates := []Candidate{
+		{Address: "backend-a"},
+		{Address: "backend-b"},
+	}
+
+	cache.ObserveBackendSuccess(BackendObservationKey(scope, "backend-a"), 10*time.Millisecond, 20*time.Millisecond, 128*1024)
+	cache.ObserveBackendFailure(BackendObservationKey(scope, "backend-a"))
+
+	cache.ObserveBackendSuccess(BackendObservationKey(scope, "backend-b"), 120*time.Millisecond, 150*time.Millisecond, 64*1024)
+
+	got := cache.Order(scope, StrategyAdaptive, candidates)
+	if ordered := addresses(got); !reflect.DeepEqual(ordered, []string{"backend-b", "backend-a"}) {
+		t.Fatalf("unexpected adaptive order with stability-first scoring: %v", ordered)
+	}
+}
+
+func TestCacheOrderAdaptiveUsesCombinedPerformanceNotLatencyOnly(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return base
+		},
+		RandomIntn: func(n int) int {
+			return n - 1
+		},
+	})
+	scope := "http:rule-adaptive-performance"
+	candidates := []Candidate{
+		{Address: "bulk"},
+		{Address: "fast"},
+	}
+
+	cache.ObserveBackendSuccess(BackendObservationKey(scope, "bulk"), 12*time.Millisecond, 100*time.Millisecond, 64*1024)
+	cache.ObserveBackendSuccess(BackendObservationKey(scope, "fast"), 18*time.Millisecond, 100*time.Millisecond, 2*1024*1024)
+
+	got := cache.Order(scope, StrategyAdaptive, candidates)
+	if ordered := addresses(got); !reflect.DeepEqual(ordered, []string{"fast", "bulk"}) {
+		t.Fatalf("unexpected adaptive order with combined performance scoring: %v", ordered)
+	}
+}
+
+func TestCacheOrderAdaptiveUsesOnlyRecent24hStability(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	now := base
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return now
+		},
+	})
+	scope := "http:rule-adaptive-window"
+	candidates := []Candidate{
+		{Address: "backend-a"},
+		{Address: "backend-b"},
+	}
+
+	now = base.Add(-25 * time.Hour)
+	cache.ObserveBackendFailure(BackendObservationKey(scope, "backend-a"))
+
+	now = base.Add(-2 * time.Hour)
+	cache.ObserveBackendFailure(BackendObservationKey(scope, "backend-b"))
+	cache.ObserveBackendSuccess(BackendObservationKey(scope, "backend-b"), 40*time.Millisecond, 80*time.Millisecond, 128*1024)
+
+	now = base
+	cache.ObserveBackendSuccess(BackendObservationKey(scope, "backend-a"), 60*time.Millisecond, 100*time.Millisecond, 128*1024)
+
+	got := cache.Order(scope, StrategyAdaptive, candidates)
+	if ordered := addresses(got); !reflect.DeepEqual(ordered, []string{"backend-a", "backend-b"}) {
+		t.Fatalf("unexpected adaptive order with recent stability window: %v", ordered)
+	}
+}
+
+func TestCacheSummaryReportsColdStateAndLowConfidence(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return base
+		},
+	})
+
+	cache.ObserveSuccess("10.0.0.10:443", 30*time.Millisecond)
+
+	summary := cache.Summary("10.0.0.10:443")
+	if summary.State != ObservationStateCold {
+		t.Fatalf("State = %q", summary.State)
+	}
+	if summary.SampleConfidence <= 0 || summary.SampleConfidence >= 0.5 {
+		t.Fatalf("SampleConfidence = %v", summary.SampleConfidence)
+	}
+	if summary.SlowStartActive {
+		t.Fatalf("expected cold summary to not report slow start: %+v", summary)
+	}
+	if summary.Outlier {
+		t.Fatalf("expected cold summary to not report outlier: %+v", summary)
+	}
+	if summary.TrafficShareHint != "cold" {
+		t.Fatalf("TrafficShareHint = %q", summary.TrafficShareHint)
+	}
+}
+
+func TestCachePreferResolvedCandidatesExploresColdCandidateWhenBudgetTriggers(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return base
+		},
+		RandomIntn: func(n int) int {
+			if n != 100 {
+				t.Fatalf("unexpected exploration budget bound: %d", n)
+			}
+			return 0
+		},
+	})
+	candidates := []Candidate{
+		{Address: "10.0.0.11:443"},
+		{Address: "10.0.0.12:443"},
+	}
+
+	for i := 0; i < 4; i++ {
+		cache.ObserveSuccess("10.0.0.11:443", 20*time.Millisecond)
+	}
+
+	got := cache.PreferResolvedCandidates(candidates)
+	if !reflect.DeepEqual(addresses(got), []string{"10.0.0.12:443", "10.0.0.11:443"}) {
+		t.Fatalf("unexpected preferred order with cold exploration budget: %v", addresses(got))
+	}
+}
+
+func TestCacheSummaryReportsRecoveringStateAfterBackoffExpires(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	now := base
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return now
+		},
+	})
+
+	addr := "10.0.0.20:443"
+	cache.MarkFailure(addr)
+	now = now.Add(1100 * time.Millisecond)
+
+	summary := cache.Summary(addr)
+	if summary.State != ObservationStateRecovering {
+		t.Fatalf("State = %q", summary.State)
+	}
+	if !summary.SlowStartActive {
+		t.Fatalf("expected recovering summary to report slow start: %+v", summary)
+	}
+	if summary.TrafficShareHint != "recovery" {
+		t.Fatalf("TrafficShareHint = %q", summary.TrafficShareHint)
+	}
+}
+
+func TestCacheObserveBackendFailureUsesScopedRecoveryState(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	now := base
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return now
+		},
+	})
+
+	backendKey := BackendObservationKey("tcp:rule-backend-recovery", StableBackendID("10.0.0.30:443"))
+	cache.ObserveBackendFailure(backendKey)
+
+	blocked := cache.Summary(backendKey)
+	if !blocked.InBackoff {
+		t.Fatalf("expected backend failure to enter backoff: %+v", blocked)
+	}
+	if blocked.State != ObservationStateCold {
+		t.Fatalf("blocked State = %q", blocked.State)
+	}
+	if blocked.TrafficShareHint != "blocked" {
+		t.Fatalf("blocked TrafficShareHint = %q", blocked.TrafficShareHint)
+	}
+
+	now = now.Add(1100 * time.Millisecond)
+
+	recovering := cache.Summary(backendKey)
+	if recovering.State != ObservationStateRecovering {
+		t.Fatalf("recovering State = %q", recovering.State)
+	}
+	if !recovering.SlowStartActive {
+		t.Fatalf("expected recovering backend summary to report slow start: %+v", recovering)
+	}
+	if recovering.TrafficShareHint != "recovery" {
+		t.Fatalf("recovering TrafficShareHint = %q", recovering.TrafficShareHint)
+	}
+}
+
+func TestCacheSlowStartWindowUsesBackendObservationPrefix(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	now := base
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return now
+		},
+	})
+
+	backendKey := BackendObservationKey("http:rule-slow-start", StableBackendID("http://backend.example:8096"))
+	cache.ObserveBackendFailure(backendKey)
+	now = now.Add(1100 * time.Millisecond)
+	cache.ObserveBackendSuccess(backendKey, 20*time.Millisecond, 40*time.Millisecond, 128*1024)
+	cache.ObserveBackendSuccess(backendKey, 20*time.Millisecond, 40*time.Millisecond, 128*1024)
+
+	backendObservation := cache.observationFor(backendKey)
+	if got := backendObservation.slowStartUntil.Sub(backendObservation.slowStartStartedAt); got != slowStartDuration {
+		t.Fatalf("backend slow-start window = %s", got)
+	}
+
+	address := "10.0.0.32:443"
+	cache.MarkFailure(address)
+	now = now.Add(1100 * time.Millisecond)
+	cache.ObserveTransferSuccess(address, 20*time.Millisecond, 40*time.Millisecond, 128*1024)
+	cache.ObserveTransferSuccess(address, 20*time.Millisecond, 40*time.Millisecond, 128*1024)
+
+	resolvedObservation := cache.observationFor(address)
+	if got := resolvedObservation.slowStartUntil.Sub(resolvedObservation.slowStartStartedAt); got != resolvedSlowStart {
+		t.Fatalf("resolved slow-start window = %s", got)
+	}
+}
+
+func TestCacheObserveBackendFailureEscalatesRepeatedBackoff(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	now := base
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return now
+		},
+	})
+
+	backendKey := BackendObservationKey("http:rule-backoff-escalation", StableBackendID("http://backend.example:8096"))
+	cache.ObserveBackendFailure(backendKey)
+
+	first := cache.failures[backendKey]
+	if first.consecutive != 1 {
+		t.Fatalf("first consecutive = %d", first.consecutive)
+	}
+	if got := first.retryAfter.Sub(base); got != time.Second {
+		t.Fatalf("first retryAfter delta = %s", got)
+	}
+
+	now = now.Add(1100 * time.Millisecond)
+	cache.ObserveBackendFailure(backendKey)
+
+	second := cache.failures[backendKey]
+	if second.consecutive != 2 {
+		t.Fatalf("second consecutive = %d", second.consecutive)
+	}
+	if got := second.retryAfter.Sub(now); got != 2*time.Second {
+		t.Fatalf("second retryAfter delta = %s", got)
+	}
+
+	now = now.Add(1500 * time.Millisecond)
+	summary := cache.Summary(backendKey)
+	if !summary.InBackoff {
+		t.Fatalf("expected escalated backend backoff to remain active: %+v", summary)
+	}
+	if summary.TrafficShareHint != "blocked" {
+		t.Fatalf("TrafficShareHint = %q", summary.TrafficShareHint)
+	}
+}
+
+func TestCacheObserveBackendSuccessClearsFailureProgression(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	now := base
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return now
+		},
+	})
+
+	backendKey := BackendObservationKey("http:rule-backoff-reset", StableBackendID("http://backend.example:8096"))
+	cache.ObserveBackendFailure(backendKey)
+	now = now.Add(1100 * time.Millisecond)
+	cache.ObserveBackendFailure(backendKey)
+
+	if got := cache.failures[backendKey].consecutive; got != 2 {
+		t.Fatalf("consecutive before success = %d", got)
+	}
+
+	cache.ObserveBackendSuccess(backendKey, 20*time.Millisecond, 40*time.Millisecond, 128*1024)
+	if _, ok := cache.failures[backendKey]; ok {
+		t.Fatalf("expected backend failure entry to be cleared after success")
+	}
+
+	now = now.Add(10 * time.Millisecond)
+	cache.ObserveBackendFailure(backendKey)
+
+	entry := cache.failures[backendKey]
+	if entry.consecutive != 1 {
+		t.Fatalf("consecutive after reset = %d", entry.consecutive)
+	}
+	if got := entry.retryAfter.Sub(now); got != time.Second {
+		t.Fatalf("retryAfter delta after reset = %s", got)
+	}
+}
+
+func TestCacheSummaryUsesScopedBackendStateWithoutResolvedInference(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	now := base
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return now
+		},
+	})
+
+	backendID := StableBackendID("10.0.0.31:443")
+	backendKey := BackendObservationKey("tcp:rule-backend-summary", backendID)
+	for i := 0; i < 3; i++ {
+		cache.ObserveBackendSuccess(backendKey, 20*time.Millisecond, 40*time.Millisecond, 128*1024)
+	}
+	cache.MarkFailure(backendID)
+
+	summary := cache.Summary(backendKey)
+	if summary.InBackoff {
+		t.Fatalf("expected backend summary to ignore resolved backoff state: %+v", summary)
+	}
+	if summary.State != ObservationStateWarm {
+		t.Fatalf("State = %q", summary.State)
+	}
+	if summary.TrafficShareHint != "normal" {
+		t.Fatalf("TrafficShareHint = %q", summary.TrafficShareHint)
+	}
+}
+
+func TestCachePreferResolvedCandidatesDampensSingleBandwidthSpikeWithConfidence(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return base
+		},
+	})
+	candidates := []Candidate{
+		{Address: "10.0.0.13:443"},
+		{Address: "10.0.0.14:443"},
+	}
+
+	cache.ObserveTransferSuccess("10.0.0.13:443", 30*time.Millisecond, 100*time.Millisecond, 128*1024)
+	cache.ObserveTransferSuccess("10.0.0.13:443", 30*time.Millisecond, 100*time.Millisecond, 128*1024)
+	cache.ObserveTransferSuccess("10.0.0.13:443", 30*time.Millisecond, 100*time.Millisecond, 128*1024)
+
+	cache.ObserveTransferSuccess("10.0.0.14:443", 30*time.Millisecond, 100*time.Millisecond, 64*1024)
+	cache.ObserveTransferSuccess("10.0.0.14:443", 30*time.Millisecond, 100*time.Millisecond, 64*1024*64)
+
+	got := cache.PreferResolvedCandidates(candidates)
+	if !reflect.DeepEqual(addresses(got), []string{"10.0.0.13:443", "10.0.0.14:443"}) {
+		t.Fatalf("unexpected preferred order with damped bandwidth spike: %v", addresses(got))
+	}
+}
+
+func TestCacheSummaryMarksOutlierBeforeHardBackoff(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	now := base
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return now
+		},
+	})
+
+	addr := "10.0.0.23:443"
+	for i := 0; i < 4; i++ {
+		cache.ObserveTransferSuccess(addr, 20*time.Millisecond, 200*time.Millisecond, 512*1024)
+	}
+	cache.ObserveTransferSuccess(addr, 600*time.Millisecond, 2*time.Second, 4*1024)
+
+	summary := cache.Summary(addr)
+	if !summary.Outlier {
+		t.Fatalf("Summary = %+v", summary)
+	}
+	if summary.InBackoff {
+		t.Fatalf("expected outlier demotion before hard backoff: %+v", summary)
+	}
+}
+
+func TestCacheOrderAdaptivePreservesInputOrderOnTie(t *testing.T) {
+	cache := NewCache(Config{})
+	scope := "http:rule-adaptive-tie"
+	candidates := []Candidate{
+		{Address: "c"},
+		{Address: "a"},
+		{Address: "b"},
+	}
+
+	got := cache.Order(scope, StrategyAdaptive, candidates)
+	if ordered := addresses(got); !reflect.DeepEqual(ordered, []string{"c", "a", "b"}) {
+		t.Fatalf("unexpected adaptive tie ordering: %v", ordered)
+	}
+}
+
+func TestCacheOrderAdaptiveUsesScopedBackendStateWithoutResolvedOverlay(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	now := base
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return now
+		},
+	})
+	scope := "tcp:rule-backend-order"
+	candidates := []Candidate{
+		{Address: "10.0.0.1:443"},
+		{Address: "10.0.0.2:443"},
+	}
+
+	for i := 0; i < 3; i++ {
+		cache.ObserveBackendSuccess(BackendObservationKey(scope, candidates[0].Address), 15*time.Millisecond, 30*time.Millisecond, 256*1024)
+		cache.ObserveBackendSuccess(BackendObservationKey(scope, candidates[1].Address), 35*time.Millisecond, 70*time.Millisecond, 128*1024)
+	}
+	cache.MarkFailure(candidates[0].Address)
+
+	got := cache.Order(scope, StrategyAdaptive, candidates)
+	if ordered := addresses(got); !reflect.DeepEqual(ordered, []string{"10.0.0.1:443", "10.0.0.2:443"}) {
+		t.Fatalf("unexpected adaptive order when resolved overlay should be ignored: %v", ordered)
+	}
+}
+
 func TestCacheFailureBackoffCapsAndSuccessResetsState(t *testing.T) {
 	base := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
 	now := base
@@ -195,6 +619,174 @@ func TestCacheFailureBackoffUsesConfiguredBaseAndLimit(t *testing.T) {
 	}
 	if got := cache.MarkFailure(addr); got != 4*time.Second {
 		t.Fatalf("capped MarkFailure() = %v", got)
+	}
+}
+
+func TestCacheObserveSuccessStoresLatencyAndRanksCandidates(t *testing.T) {
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return time.Date(2026, 4, 16, 12, 0, 0, 0, time.UTC)
+		},
+	})
+	candidates := []Candidate{
+		{Address: "10.0.0.1:443"},
+		{Address: "10.0.0.2:443"},
+	}
+
+	cache.ObserveSuccess("10.0.0.1:443", 180*time.Millisecond)
+	cache.ObserveSuccess("10.0.0.2:443", 40*time.Millisecond)
+
+	got := cache.PreferResolvedCandidates(candidates)
+	if !reflect.DeepEqual(addresses(got), []string{"10.0.0.2:443", "10.0.0.1:443"}) {
+		t.Fatalf("unexpected preferred order: %v", addresses(got))
+	}
+}
+
+func TestCachePreferResolvedCandidatesPreservesInputOrderWithoutObservations(t *testing.T) {
+	cache := NewCache(Config{})
+	candidates := []Candidate{
+		{Address: "10.0.0.3:443"},
+		{Address: "10.0.0.4:443"},
+		{Address: "10.0.0.5:443"},
+	}
+
+	got := cache.PreferResolvedCandidates(candidates)
+	if !reflect.DeepEqual(addresses(got), []string{"10.0.0.3:443", "10.0.0.4:443", "10.0.0.5:443"}) {
+		t.Fatalf("unexpected preserved order: %v", addresses(got))
+	}
+}
+
+func TestCacheMarkFailureDemotesPreferredCandidate(t *testing.T) {
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return time.Date(2026, 4, 16, 12, 0, 0, 0, time.UTC)
+		},
+	})
+	candidates := []Candidate{
+		{Address: "10.0.0.6:443"},
+		{Address: "10.0.0.7:443"},
+	}
+
+	cache.ObserveSuccess("10.0.0.6:443", 25*time.Millisecond)
+	cache.ObserveSuccess("10.0.0.7:443", 90*time.Millisecond)
+	cache.MarkFailure("10.0.0.6:443")
+
+	got := cache.PreferResolvedCandidates(candidates)
+	if !reflect.DeepEqual(addresses(got), []string{"10.0.0.7:443", "10.0.0.6:443"}) {
+		t.Fatalf("unexpected order after failure: %v", addresses(got))
+	}
+}
+
+func TestCachePreferResolvedCandidatesUsesLatencyOverCumulativeSuccesses(t *testing.T) {
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return time.Date(2026, 4, 16, 12, 0, 0, 0, time.UTC)
+		},
+	})
+	candidates := []Candidate{
+		{Address: "10.0.0.8:443"},
+		{Address: "10.0.0.9:443"},
+	}
+
+	cache.ObserveSuccess("10.0.0.8:443", 180*time.Millisecond)
+	cache.ObserveSuccess("10.0.0.8:443", 170*time.Millisecond)
+	cache.ObserveSuccess("10.0.0.8:443", 160*time.Millisecond)
+	cache.ObserveSuccess("10.0.0.9:443", 40*time.Millisecond)
+
+	got := cache.PreferResolvedCandidates(candidates)
+	if !reflect.DeepEqual(addresses(got), []string{"10.0.0.9:443", "10.0.0.8:443"}) {
+		t.Fatalf("unexpected preferred order: %v", addresses(got))
+	}
+}
+
+func TestCachePreferResolvedCandidatesUsesOnlyRecent24hStability(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	now := base
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return now
+		},
+	})
+	candidates := []Candidate{
+		{Address: "10.0.0.10:443"},
+		{Address: "10.0.0.11:443"},
+	}
+
+	now = base.Add(-25 * time.Hour)
+	cache.MarkFailure("10.0.0.10:443")
+	now = base.Add(-2 * time.Hour)
+	cache.MarkFailure("10.0.0.11:443")
+	cache.ObserveSuccess("10.0.0.11:443", 20*time.Millisecond)
+	now = base
+	cache.ObserveSuccess("10.0.0.10:443", 40*time.Millisecond)
+
+	got := cache.PreferResolvedCandidates(candidates)
+	if !reflect.DeepEqual(addresses(got), []string{"10.0.0.10:443", "10.0.0.11:443"}) {
+		t.Fatalf("unexpected preferred order with 24h stability window: %v", addresses(got))
+	}
+}
+
+func TestCachePreferResolvedCandidatesUsesStabilityBeforeLatency(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return base
+		},
+	})
+	candidates := []Candidate{
+		{Address: "10.0.0.12:443"},
+		{Address: "10.0.0.13:443"},
+	}
+
+	cache.ObserveSuccess("10.0.0.12:443", 60*time.Millisecond)
+	cache.MarkFailure("10.0.0.13:443")
+	cache.ObserveSuccess("10.0.0.13:443", 5*time.Millisecond)
+
+	got := cache.PreferResolvedCandidates(candidates)
+	if !reflect.DeepEqual(addresses(got), []string{"10.0.0.12:443", "10.0.0.13:443"}) {
+		t.Fatalf("unexpected preferred order with stability-first ranking: %v", addresses(got))
+	}
+}
+
+func TestCachePreferResolvedCandidatesUsesBandwidthAfterStabilityAndLatency(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return base
+		},
+	})
+	candidates := []Candidate{
+		{Address: "10.0.0.14:443"},
+		{Address: "10.0.0.15:443"},
+	}
+
+	cache.ObserveTransferSuccess("10.0.0.14:443", 30*time.Millisecond, 100*time.Millisecond, 128*1024)
+	cache.ObserveTransferSuccess("10.0.0.15:443", 30*time.Millisecond, 100*time.Millisecond, 2*1024*1024)
+
+	got := cache.PreferResolvedCandidates(candidates)
+	if !reflect.DeepEqual(addresses(got), []string{"10.0.0.15:443", "10.0.0.14:443"}) {
+		t.Fatalf("unexpected preferred order with bandwidth tiebreak: %v", addresses(got))
+	}
+}
+
+func TestCachePreferResolvedCandidatesUsesCombinedPerformanceNotLatencyOnly(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return base
+		},
+	})
+	candidates := []Candidate{
+		{Address: "10.0.0.16:443"},
+		{Address: "10.0.0.17:443"},
+	}
+
+	cache.ObserveTransferSuccess("10.0.0.16:443", 12*time.Millisecond, 100*time.Millisecond, 64*1024)
+	cache.ObserveTransferSuccess("10.0.0.17:443", 18*time.Millisecond, 100*time.Millisecond, 2*1024*1024)
+
+	got := cache.PreferResolvedCandidates(candidates)
+	if !reflect.DeepEqual(addresses(got), []string{"10.0.0.17:443", "10.0.0.16:443"}) {
+		t.Fatalf("unexpected preferred order with combined performance scoring: %v", addresses(got))
 	}
 }
 

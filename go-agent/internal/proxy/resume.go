@@ -29,13 +29,13 @@ func (e *routeEntry) shouldResumeResponse(req *http.Request, resp *http.Response
 	return newResumableResponse(req, resp)
 }
 
-func (e *routeEntry) copyResumableResponse(w http.ResponseWriter, req *http.Request, resp *http.Response, state resumableResponse) error {
+func (e *routeEntry) copyResumableResponse(w http.ResponseWriter, req *http.Request, resp *http.Response, state resumableResponse) (int64, error) {
 	copyHeaders(w.Header(), resp.Header)
 	w.Header().Del("Transfer-Encoding")
 	w.Header().Set("Content-Length", strconv.FormatInt(state.responseLength(), 10))
 	w.WriteHeader(resp.StatusCode)
-	fail := func(err error) error {
-		return newStartedResponseError(err)
+	fail := func(sentBytes int64, err error) (int64, error) {
+		return sentBytes, newStartedResponseError(err)
 	}
 
 	var (
@@ -49,33 +49,33 @@ func (e *routeEntry) copyResumableResponse(w http.ResponseWriter, req *http.Requ
 		_ = current.Body.Close()
 		sentBytes += n
 		if writeErr != nil {
-			return fail(writeErr)
+			return fail(sentBytes, writeErr)
 		}
 		if sentBytes >= expectedBytes {
-			return nil
+			return sentBytes, nil
 		}
 		if readErr == nil {
 			readErr = io.ErrUnexpectedEOF
 		}
 		if !isResumableReadError(readErr) {
-			return fail(readErr)
+			return fail(sentBytes, readErr)
 		}
 		if attempts >= e.resilience.ResumeMaxAttempts {
-			return fail(readErr)
+			return fail(sentBytes, readErr)
 		}
 
 		nextStart := state.rangeStart + sentBytes
 		nextReq, err := newResumeRequest(req, state, nextStart)
 		if err != nil {
-			return fail(err)
+			return fail(sentBytes, err)
 		}
 		nextResp, err := e.transport.RoundTrip(nextReq)
 		if err != nil {
-			return fail(err)
+			return fail(sentBytes, err)
 		}
 		if err := validateResumeResponse(nextResp, state, nextStart); err != nil {
 			_ = nextResp.Body.Close()
-			return fail(err)
+			return fail(sentBytes, err)
 		}
 
 		current = nextResp

@@ -180,102 +180,46 @@ func TestRuleServiceCreateNormalizesAndPersists(t *testing.T) {
 	}
 }
 
-func TestRuleServiceCreateDefaultsHTTPLoadBalancingToAdaptivePreservesExplicitLoadBalancing(t *testing.T) {
-	store := &fakeRuleStore{
-		rulesByAgent: map[string][]storage.HTTPRuleRow{},
-	}
-	svc := NewRuleService(config.Config{
-		EnableLocalAgent: true,
-		LocalAgentID:     "local",
-	}, store)
-
-	rule, err := svc.Create(context.Background(), "local", HTTPRuleInput{
-		FrontendURL: stringPtrRule("https://adaptive.example.com"),
-		BackendURL:  stringPtrRule("http://127.0.0.1:8096"),
-	})
-	if err != nil {
-		t.Fatalf("Create() error = %v", err)
+func TestRuleServiceCreateNormalizesLoadBalancingStrategies(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    *HTTPLoadBalancing
+		expected string
+	}{
+		{name: "defaults empty input to adaptive", input: nil, expected: "adaptive"},
+		{name: "normalizes explicit adaptive", input: &HTTPLoadBalancing{Strategy: "ADAPTIVE"}, expected: "adaptive"},
+		{name: "preserves explicit round robin", input: &HTTPLoadBalancing{Strategy: "round_robin"}, expected: "round_robin"},
+		{name: "preserves explicit random", input: &HTTPLoadBalancing{Strategy: "RANDOM"}, expected: "random"},
+		{name: "normalizes invalid strategy to adaptive", input: &HTTPLoadBalancing{Strategy: "invalid"}, expected: "adaptive"},
+		{name: "normalizes blank strategy to adaptive", input: &HTTPLoadBalancing{Strategy: "   "}, expected: "adaptive"},
 	}
 
-	if rule.LoadBalancing.Strategy != "adaptive" {
-		t.Fatalf("Create() load_balancing = %+v", rule.LoadBalancing)
-	}
-	if got := store.rulesByAgent["local"][0].LoadBalancingJSON; got != `{"strategy":"adaptive"}` {
-		t.Fatalf("persisted load_balancing_json = %q", got)
-	}
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &fakeRuleStore{
+				rulesByAgent: map[string][]storage.HTTPRuleRow{},
+			}
+			svc := NewRuleService(config.Config{
+				EnableLocalAgent: true,
+				LocalAgentID:     "local",
+			}, store)
 
-func TestRuleServiceCreateDefaultsHTTPLoadBalancingToAdaptiveWithEmptyInput(t *testing.T) {
-	store := &fakeRuleStore{
-		rulesByAgent: map[string][]storage.HTTPRuleRow{},
-	}
-	svc := NewRuleService(config.Config{
-		EnableLocalAgent: true,
-		LocalAgentID:     "local",
-	}, store)
+			rule, err := svc.Create(context.Background(), "local", HTTPRuleInput{
+				FrontendURL:   stringPtrRule("https://new.example.com"),
+				BackendURL:    stringPtrRule("http://upstream-a:8096"),
+				LoadBalancing: tt.input,
+			})
+			if err != nil {
+				t.Fatalf("Create() error = %v", err)
+			}
 
-	rule, err := svc.Create(context.Background(), "local", HTTPRuleInput{
-		FrontendURL: stringPtrRule("https://adaptive.example.com"),
-		BackendURL:  stringPtrRule("http://127.0.0.1:8096"),
-	})
-	if err != nil {
-		t.Fatalf("Create() error = %v", err)
-	}
-
-	if rule.LoadBalancing.Strategy != "adaptive" {
-		t.Fatalf("Create() load_balancing = %+v", rule.LoadBalancing)
-	}
-	if got := store.rulesByAgent["local"][0].LoadBalancingJSON; got != `{"strategy":"adaptive"}` {
-		t.Fatalf("persisted load_balancing_json = %q", got)
-	}
-}
-
-func TestRuleServiceCreateDefaultsHTTPLoadBalancingToAdaptiveWithInvalidInput(t *testing.T) {
-	store := &fakeRuleStore{
-		rulesByAgent: map[string][]storage.HTTPRuleRow{},
-	}
-	svc := NewRuleService(config.Config{
-		EnableLocalAgent: true,
-		LocalAgentID:     "local",
-	}, store)
-
-	rule, err := svc.Create(context.Background(), "local", HTTPRuleInput{
-		FrontendURL: stringPtrRule("https://adaptive.example.com"),
-		BackendURL:  stringPtrRule("http://127.0.0.1:8096"),
-	})
-	if err != nil {
-		t.Fatalf("Create() error = %v", err)
-	}
-
-	if rule.LoadBalancing.Strategy != "adaptive" {
-		t.Fatalf("Create() load_balancing = %+v", rule.LoadBalancing)
-	}
-	if got := store.rulesByAgent["local"][0].LoadBalancingJSON; got != `{"strategy":"adaptive"}` {
-		t.Fatalf("persisted load_balancing_json = %q", got)
-	}
-}
-
-func TestRuleServiceCreateDefaultsHTTPLoadBalancingToAdaptiveWithExplicitInput(t *testing.T) {
-	store := &fakeRuleStore{
-		rulesByAgent: map[string][]storage.HTTPRuleRow{},
-	}
-	svc := NewRuleService(config.Config{
-		EnableLocalAgent: true,
-		LocalAgentID:     "local",
-	}, store)
-
-	rule, err := svc.Create(context.Background(), "local", HTTPRuleInput{
-		FrontendURL: stringPtrRule("https://adaptive.example.com"),
-		BackendURL:  stringPtrRule("http://127.0.0.1:8096"),
-	})
-	if err != nil {
-		t.Fatalf("Create() error = %v", err)
-	}
-	if rule.LoadBalancing.Strategy != "adaptive" {
-		t.Fatalf("Create() load_balancing = %+v", rule.LoadBalancing)
-	}
-	if got := store.rulesByAgent["local"][0].LoadBalancingJSON; got != `{"strategy":"adaptive"}` {
-		t.Fatalf("persisted load_balancing_json = %q", got)
+			if rule.LoadBalancing.Strategy != tt.expected {
+				t.Fatalf("Create() load_balancing = %+v", rule.LoadBalancing)
+			}
+			if got := store.rulesByAgent["local"][0].LoadBalancingJSON; got != `{"strategy":"`+tt.expected+`"}` {
+				t.Fatalf("persisted load_balancing_json = %q", got)
+			}
+		})
 	}
 }
 
@@ -435,7 +379,6 @@ func TestRuleServiceUpdatePreservesExplicitLoadBalancingStrategies(t *testing.T)
 		})
 	}
 }
-
 func TestRuleServiceDeletePersistsRemoval(t *testing.T) {
 	store := &fakeRuleStore{
 		rulesByAgent: map[string][]storage.HTTPRuleRow{

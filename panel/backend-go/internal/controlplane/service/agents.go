@@ -2,8 +2,8 @@ package service
 
 import (
 	"context"
-	"crypto/sha256"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -1140,11 +1140,11 @@ func normalizeAgentTags(values []string) []string {
 
 func normalizeCapabilities(values []string) []string {
 	allowed := map[string]struct{}{
-		"http_rules":   {},
-		"local_acme":   {},
-		"cert_install": {},
-		"l4":           {},
-		"relay_quic":   {},
+		"http_rules":    {},
+		"local_acme":    {},
+		"cert_install":  {},
+		"l4":            {},
+		"relay_quic":    {},
 		"http3_ingress": {},
 	}
 	seen := map[string]struct{}{}

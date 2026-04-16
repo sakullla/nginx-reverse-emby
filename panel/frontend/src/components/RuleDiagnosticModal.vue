@@ -72,9 +72,12 @@
             <article v-for="backend in backendSummaries" :key="backend.backend" class="diagnostic-backend-card">
               <div class="diagnostic-backend-card__header">
                 <code class="diagnostic-backend-card__name">{{ backend.backend }}</code>
-                <span class="diagnostic-backend-card__quality" :class="`diagnostic-backend-card__quality--${qualityToneFor(backend.summary?.quality)}`">
-                  {{ qualityLabelFor(backend.summary?.quality) }}
-                </span>
+                <div class="diagnostic-backend-card__badges">
+                  <span v-if="backend.adaptive?.preferred" class="diagnostic-backend-card__preferred">当前优选</span>
+                  <span class="diagnostic-backend-card__quality" :class="`diagnostic-backend-card__quality--${qualityToneFor(backend.summary?.quality)}`">
+                    {{ qualityLabelFor(backend.summary?.quality) }}
+                  </span>
+                </div>
               </div>
               <div class="diagnostic-backend-card__stats">
                 <div>
@@ -89,6 +92,94 @@
               <div class="diagnostic-backend-card__range">
                 <span>最小 {{ backend.summary?.min_latency_ms ?? 0 }} ms</span>
                 <span>最大 {{ backend.summary?.max_latency_ms ?? 0 }} ms</span>
+              </div>
+              <div v-if="backend.adaptive" class="diagnostic-backend-card__adaptive">
+                <div class="diagnostic-factor">
+                  <span class="diagnostic-factor__label">状态</span>
+                  <strong class="diagnostic-factor__value">{{ adaptiveStateLabel(backend.adaptive?.state) }}</strong>
+                </div>
+                <div class="diagnostic-factor">
+                  <span class="diagnostic-factor__label">近24h稳定性</span>
+                  <strong class="diagnostic-factor__value">{{ formatPercent(backend.adaptive?.stability) }}</strong>
+                </div>
+                <div class="diagnostic-factor">
+                  <span class="diagnostic-factor__label">样本置信度</span>
+                  <strong class="diagnostic-factor__value">{{ formatPercent(backend.adaptive?.sample_confidence) }}</strong>
+                </div>
+                <div class="diagnostic-factor">
+                  <span class="diagnostic-factor__label">延迟</span>
+                  <strong class="diagnostic-factor__value">{{ backend.adaptive?.latency_ms ?? 0 }} ms</strong>
+                </div>
+                <div class="diagnostic-factor">
+                  <span class="diagnostic-factor__label">评估带宽</span>
+                  <strong class="diagnostic-factor__value">{{ formatBandwidth(backend.adaptive?.estimated_bandwidth_bps) }}</strong>
+                </div>
+                <div class="diagnostic-factor">
+                  <span class="diagnostic-factor__label">综合性能</span>
+                  <strong class="diagnostic-factor__value">{{ formatScore(backend.adaptive?.performance_score) }}</strong>
+                </div>
+                <div class="diagnostic-factor">
+                  <span class="diagnostic-factor__label">慢启动</span>
+                  <strong class="diagnostic-factor__value">{{ slowStartLabel(backend.adaptive?.slow_start_active) }}</strong>
+                </div>
+                <div class="diagnostic-factor">
+                  <span class="diagnostic-factor__label">异常检测</span>
+                  <strong class="diagnostic-factor__value">{{ outlierLabel(backend.adaptive?.outlier) }}</strong>
+                </div>
+                <div class="diagnostic-factor">
+                  <span class="diagnostic-factor__label">流量阶段</span>
+                  <strong class="diagnostic-factor__value">{{ trafficShareLabel(backend.adaptive?.traffic_share_hint) }}</strong>
+                </div>
+              </div>
+              <div v-if="backend.adaptive?.reason" class="diagnostic-backend-card__reason">
+                原因: {{ reasonLabel(backend.adaptive?.reason) }}
+              </div>
+              <div v-if="backend.children?.length" class="diagnostic-backend-card__children">
+                <div class="diagnostic-backend-card__child-title">已解析候选</div>
+                <article v-for="child in backend.children" :key="child.backend" class="diagnostic-backend-child">
+                  <div class="diagnostic-backend-child__header">
+                    <code class="diagnostic-backend-child__name">{{ child.backend }}</code>
+                    <span v-if="child.adaptive?.preferred" class="diagnostic-backend-card__preferred">当前优选</span>
+                  </div>
+                  <div v-if="child.adaptive" class="diagnostic-backend-card__adaptive diagnostic-backend-card__adaptive--child">
+                    <div class="diagnostic-factor">
+                      <span class="diagnostic-factor__label">状态</span>
+                      <strong class="diagnostic-factor__value">{{ adaptiveStateLabel(child.adaptive?.state) }}</strong>
+                    </div>
+                    <div class="diagnostic-factor">
+                      <span class="diagnostic-factor__label">近24h稳定性</span>
+                      <strong class="diagnostic-factor__value">{{ formatPercent(child.adaptive?.stability) }}</strong>
+                    </div>
+                    <div class="diagnostic-factor">
+                      <span class="diagnostic-factor__label">样本置信度</span>
+                      <strong class="diagnostic-factor__value">{{ formatPercent(child.adaptive?.sample_confidence) }}</strong>
+                    </div>
+                    <div class="diagnostic-factor">
+                      <span class="diagnostic-factor__label">延迟</span>
+                      <strong class="diagnostic-factor__value">{{ child.adaptive?.latency_ms ?? 0 }} ms</strong>
+                    </div>
+                    <div class="diagnostic-factor">
+                      <span class="diagnostic-factor__label">评估带宽</span>
+                      <strong class="diagnostic-factor__value">{{ formatBandwidth(child.adaptive?.estimated_bandwidth_bps) }}</strong>
+                    </div>
+                    <div class="diagnostic-factor">
+                      <span class="diagnostic-factor__label">综合性能</span>
+                      <strong class="diagnostic-factor__value">{{ formatScore(child.adaptive?.performance_score) }}</strong>
+                    </div>
+                    <div class="diagnostic-factor">
+                      <span class="diagnostic-factor__label">慢启动</span>
+                      <strong class="diagnostic-factor__value">{{ slowStartLabel(child.adaptive?.slow_start_active) }}</strong>
+                    </div>
+                    <div class="diagnostic-factor">
+                      <span class="diagnostic-factor__label">异常检测</span>
+                      <strong class="diagnostic-factor__value">{{ outlierLabel(child.adaptive?.outlier) }}</strong>
+                    </div>
+                    <div class="diagnostic-factor">
+                      <span class="diagnostic-factor__label">流量阶段</span>
+                      <strong class="diagnostic-factor__value">{{ trafficShareLabel(child.adaptive?.traffic_share_hint) }}</strong>
+                    </div>
+                  </div>
+                </article>
               </div>
             </article>
           </div>
@@ -186,6 +277,52 @@ const latencyBarPct = computed(() => {
 function formatPercent(value) {
   if (value == null) return '-'
   return `${Math.round(Number(value) * 100)}%`
+}
+
+function formatBandwidth(value) {
+  const num = Number(value || 0)
+  if (!num) return '-'
+  if (num >= 1024 * 1024) return `${(num / (1024 * 1024)).toFixed(1)} MB/s`
+  if (num >= 1024) return `${(num / 1024).toFixed(1)} KB/s`
+  return `${num.toFixed(0)} B/s`
+}
+
+function formatScore(value) {
+  if (value == null) return '-'
+  return Number(value).toFixed(2)
+}
+
+function reasonLabel(value) {
+  return {
+    performance_higher: '综合性能更高',
+    stability_higher: '近24h稳定性更高'
+  }[value] || value || '-'
+}
+
+function adaptiveStateLabel(value) {
+  return {
+    cold: '冷启动',
+    recovering: '恢复中',
+    warm: '稳定'
+  }[value] || value || '-'
+}
+
+function trafficShareLabel(value) {
+  return {
+    normal: '主流量',
+    cold: '冷启动探索',
+    recovery: '恢复探索'
+  }[value] || value || '-'
+}
+
+function slowStartLabel(value) {
+  if (value == null) return '-'
+  return value ? '进行中' : '无'
+}
+
+function outlierLabel(value) {
+  if (value == null) return '-'
+  return value ? '已降权' : '正常'
 }
 
 function httpStatusTone(code) {
@@ -341,11 +478,28 @@ function qualityToneFor(value) {
   justify-content: space-between;
   gap: 0.75rem;
 }
+.diagnostic-backend-card__badges {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.35rem;
+}
 .diagnostic-backend-card__name {
   font-family: var(--font-mono);
   font-size: 0.78rem;
   color: var(--color-text-primary);
   word-break: break-all;
+}
+.diagnostic-backend-card__preferred {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 0.68rem;
+  font-weight: 700;
+  background: rgba(16, 185, 129, 0.12);
+  color: var(--color-success);
+  border: 1px solid rgba(16, 185, 129, 0.2);
 }
 .diagnostic-backend-card__quality {
   flex-shrink: 0;
@@ -381,6 +535,68 @@ function qualityToneFor(value) {
   gap: 0.75rem;
   font-size: 0.75rem;
   color: var(--color-text-tertiary);
+}
+.diagnostic-backend-card__adaptive {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.45rem;
+}
+.diagnostic-backend-card__adaptive--child {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.diagnostic-factor {
+  padding: 0.45rem 0.55rem;
+  border-radius: 10px;
+  background: var(--color-bg-hover);
+  border: 1px solid var(--color-border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+.diagnostic-factor__label {
+  font-size: 0.68rem;
+  color: var(--color-text-tertiary);
+}
+.diagnostic-factor__value {
+  font-size: 0.86rem;
+  color: var(--color-text-primary);
+}
+.diagnostic-backend-card__reason {
+  font-size: 0.74rem;
+  color: var(--color-text-secondary);
+}
+.diagnostic-backend-card__children {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding-top: 0.2rem;
+  border-top: 1px solid var(--color-border-subtle);
+}
+.diagnostic-backend-card__child-title {
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--color-text-tertiary);
+}
+.diagnostic-backend-child {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  padding: 0.6rem;
+  border-radius: 10px;
+  background: var(--color-bg-subtle);
+  border: 1px solid var(--color-border-subtle);
+}
+.diagnostic-backend-child__header {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  align-items: flex-start;
+}
+.diagnostic-backend-child__name {
+  font-family: var(--font-mono);
+  font-size: 0.74rem;
+  color: var(--color-text-secondary);
+  word-break: break-all;
 }
 .diagnostic-modal__section-title { font-weight: 700; color: var(--color-text-primary); margin-bottom: 0.5rem; display: flex; align-items: center; gap: 0.5rem; }
 .diagnostic-modal__section-title--toggle {

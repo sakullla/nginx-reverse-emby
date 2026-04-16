@@ -287,6 +287,7 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 			if e.backendCache.IsInBackoff(actualDialAddress) {
 				break
 			}
+			start := time.Now()
 			resp, err := e.transport.RoundTrip(attemptReq)
 			if err != nil {
 				log.Printf("[proxy] roundtrip error for %s -> %s: %v", e.rule.FrontendURL, candidate.target, err)
@@ -296,25 +297,57 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 				if attempt+1 < maxSameBackendAttempts {
 					continue
 				}
+				if candidate.backendObservationKey != "" {
+					e.backendCache.ObserveBackendFailure(candidate.backendObservationKey)
+				}
 				e.backendCache.MarkFailure(actualDialAddress)
 				break
 			}
-			e.backendCache.MarkSuccess(actualDialAddress)
+			headerLatency := time.Since(start)
 			if e.modifyResp != nil {
 				modify := makeModifyResponse(FrontendOriginFromRule(e.rule), e.rule.ProxyRedirect, candidate.backendHost, normalizeURLPath(candidate.target.Path))
 				if err := modify(resp); err != nil {
 					_ = resp.Body.Close()
+					if candidate.backendObservationKey != "" {
+						e.backendCache.ObserveBackendFailure(candidate.backendObservationKey)
+					}
+					e.backendCache.MarkFailure(actualDialAddress)
 					log.Printf("[proxy] modify response error for %s: %v", e.rule.FrontendURL, err)
 					return err
 				}
 			}
 			if resp.StatusCode == http.StatusSwitchingProtocols {
-				return handleUpgradeResponse(w, attemptReq, resp)
+				if err := handleUpgradeResponse(w, attemptReq, resp); err != nil {
+					if candidate.backendObservationKey != "" {
+						e.backendCache.ObserveBackendFailure(candidate.backendObservationKey)
+					}
+					e.backendCache.MarkFailure(actualDialAddress)
+					return err
+				}
+				e.observeSuccessfulBackend(candidate.backendObservationKey, actualDialAddress, headerLatency, time.Since(start), 0)
+				return nil
 			}
 			if state, ok := e.shouldResumeResponse(attemptReq, resp); ok {
-				return e.copyResumableResponse(w, attemptReq, resp, state)
+				written, err := e.copyResumableResponse(w, attemptReq, resp, state)
+				if err != nil {
+					if candidate.backendObservationKey != "" {
+						e.backendCache.ObserveBackendFailure(candidate.backendObservationKey)
+					}
+					e.backendCache.MarkFailure(actualDialAddress)
+					return err
+				}
+				e.observeSuccessfulBackend(candidate.backendObservationKey, actualDialAddress, headerLatency, time.Since(start), written)
+				return nil
 			}
-			copyResponse(w, resp)
+			written, err := copyResponse(w, resp)
+			if err != nil {
+				if candidate.backendObservationKey != "" {
+					e.backendCache.ObserveBackendFailure(candidate.backendObservationKey)
+				}
+				e.backendCache.MarkFailure(actualDialAddress)
+				return newStartedResponseError(err)
+			}
+			e.observeSuccessfulBackend(candidate.backendObservationKey, actualDialAddress, headerLatency, time.Since(start), written)
 			return nil
 		}
 	}
@@ -332,6 +365,23 @@ func (e *routeEntry) sameBackendRetryMaxAttempts(req *http.Request) int {
 	return attempts
 }
 
+func (e *routeEntry) observeSuccessfulBackend(backendObservationKey string, address string, headerLatency time.Duration, totalDuration time.Duration, bytesTransferred int64) {
+	if e == nil || e.backendCache == nil {
+		return
+	}
+	if totalDuration <= 0 {
+		totalDuration = headerLatency
+	}
+	if backendObservationKey != "" {
+		e.backendCache.ObserveBackendSuccess(backendObservationKey, headerLatency, totalDuration, bytesTransferred)
+	}
+	if bytesTransferred > 0 {
+		e.backendCache.ObserveTransferSuccess(address, headerLatency, totalDuration, bytesTransferred)
+		return
+	}
+	e.backendCache.ObserveSuccess(address, headerLatency)
+}
+
 func isRetrySafeMethod(method string) bool {
 	switch method {
 	case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodTrace:
@@ -342,9 +392,10 @@ func isRetrySafeMethod(method string) bool {
 }
 
 type httpCandidate struct {
-	target      *url.URL
-	dialAddress string
-	backendHost string
+	target                *url.URL
+	dialAddress           string
+	backendHost           string
+	backendObservationKey string
 }
 
 func (e *routeEntry) candidates(ctx context.Context) ([]httpCandidate, error) {
@@ -353,18 +404,25 @@ func (e *routeEntry) candidates(ctx context.Context) ([]httpCandidate, error) {
 	}
 
 	placeholders := make([]backends.Candidate, 0, len(e.backends))
-	indexByID := make(map[string]int, len(e.backends))
+	indexesByID := make(map[string][]int, len(e.backends))
 	for i := range e.backends {
-		id := strconv.Itoa(i)
-		placeholders = append(placeholders, backends.Candidate{Address: id})
-		indexByID[id] = i
+		backendID := backends.StableBackendID(e.backends[i].target.String())
+		placeholders = append(placeholders, backends.Candidate{Address: backendID})
+		indexesByID[backendID] = append(indexesByID[backendID], i)
 	}
 
 	strategy := e.rule.LoadBalancing.Strategy
 	orderedBackends := e.backendCache.Order(e.selectionScope, strategy, placeholders)
 	out := make([]httpCandidate, 0, len(e.backends))
 	for _, ordered := range orderedBackends {
-		backend := e.backends[indexByID[ordered.Address]]
+		indexes := indexesByID[ordered.Address]
+		if len(indexes) == 0 {
+			continue
+		}
+		backendIndex := indexes[0]
+		indexesByID[ordered.Address] = indexes[1:]
+		backend := e.backends[backendIndex]
+		backendObservationKey := backends.BackendObservationKey(e.selectionScope, backends.StableBackendID(backend.target.String()))
 		endpoint := backends.Endpoint{
 			Host: backend.target.Hostname(),
 			Port: portWithDefault(backend.target),
@@ -378,14 +436,16 @@ func (e *routeEntry) candidates(ctx context.Context) ([]httpCandidate, error) {
 			}
 			continue
 		}
+		resolved = e.backendCache.PreferResolvedCandidates(resolved)
 		for _, candidate := range resolved {
 			if e.backendCache.IsInBackoff(candidate.Address) {
 				continue
 			}
 			out = append(out, httpCandidate{
-				target:      cloneURL(backend.target),
-				dialAddress: candidate.Address,
-				backendHost: backend.backendHost,
+				target:                cloneURL(backend.target),
+				dialAddress:           candidate.Address,
+				backendHost:           backend.backendHost,
+				backendObservationKey: backendObservationKey,
 			})
 		}
 	}
@@ -807,18 +867,24 @@ func newStartedResponseError(err error) error {
 	return &startedResponseError{err: err}
 }
 
-func copyResponse(w http.ResponseWriter, resp *http.Response) {
+func copyResponse(w http.ResponseWriter, resp *http.Response) (int64, error) {
 	if resp == nil {
-		return
+		return 0, nil
 	}
 	if resp.Body != nil {
 		defer resp.Body.Close()
 	}
 	copyHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
+	var written int64
 	if resp.Body != nil {
-		_, _ = io.Copy(w, resp.Body)
+		n, err := io.Copy(w, resp.Body)
+		written = n
+		if err != nil {
+			return written, err
+		}
 	}
+	return written, nil
 }
 
 func handleUpgradeResponse(w http.ResponseWriter, req *http.Request, resp *http.Response) error {

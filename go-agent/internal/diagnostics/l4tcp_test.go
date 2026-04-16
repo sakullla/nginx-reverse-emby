@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
@@ -207,6 +208,65 @@ func TestNewTCPProberDefaultsAttemptsToFive(t *testing.T) {
 	prober := NewTCPProber(TCPProberConfig{})
 	if prober.attempts != 5 {
 		t.Fatalf("attempts = %d", prober.attempts)
+	}
+}
+
+func TestTCPProberDiagnoseUsesSharedAdaptiveRecoverySummary(t *testing.T) {
+	addr, _, stopTarget := startDiagnosticTCPTarget(t)
+	defer stopTarget()
+
+	host, port := splitDiagnosticTCPAddr(t, addr)
+	now := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	cache := backends.NewCache(backends.Config{
+		Now: func() time.Time {
+			return now
+		},
+	})
+
+	scope := "tcp:0.0.0.0:9500"
+	backendKey := backends.BackendObservationKey(scope, backends.StableBackendID(net.JoinHostPort(host, strconv.Itoa(port))))
+	for i := 0; i < 4; i++ {
+		cache.ObserveBackendSuccess(backendKey, 20*time.Millisecond, 200*time.Millisecond, 512*1024)
+	}
+	cache.ObserveBackendSuccess(backendKey, 600*time.Millisecond, 2*time.Second, 4*1024)
+	cache.ObserveBackendFailure(backendKey)
+	now = now.Add(1100 * time.Millisecond)
+
+	prober := NewTCPProber(TCPProberConfig{
+		Attempts: 1,
+		Timeout:  time.Second,
+		Cache:    cache,
+	})
+	report, err := prober.Diagnose(context.Background(), model.L4Rule{
+		ID:           23,
+		Protocol:     "tcp",
+		ListenHost:   "0.0.0.0",
+		ListenPort:   9500,
+		UpstreamHost: host,
+		UpstreamPort: port,
+	}, nil)
+	if err != nil {
+		t.Fatalf("Diagnose() error = %v", err)
+	}
+	if len(report.Backends) != 1 || report.Backends[0].Adaptive == nil {
+		t.Fatalf("Backends = %+v", report.Backends)
+	}
+
+	adaptive := report.Backends[0].Adaptive
+	if adaptive.State != backends.ObservationStateRecovering {
+		t.Fatalf("State = %q", adaptive.State)
+	}
+	if adaptive.SampleConfidence != 1 {
+		t.Fatalf("SampleConfidence = %v", adaptive.SampleConfidence)
+	}
+	if !adaptive.SlowStartActive {
+		t.Fatalf("expected slow-start active summary: %+v", adaptive)
+	}
+	if !adaptive.Outlier {
+		t.Fatalf("expected outlier summary: %+v", adaptive)
+	}
+	if adaptive.TrafficShareHint != "recovery" {
+		t.Fatalf("TrafficShareHint = %q", adaptive.TrafficShareHint)
 	}
 }
 

@@ -126,46 +126,58 @@ func TestL4RuleServiceCreateAllowsRelayChainForUDP(t *testing.T) {
 	}
 }
 
-func TestL4RuleServiceCreateDefaultsLoadBalancingToAdaptivePreservesExplicitStrategies(t *testing.T) {
-	store := &fakeL4Store{l4RulesByID: map[string][]storage.L4RuleRow{}}
-	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
-
-	rule, err := svc.Create(context.Background(), "local", L4RuleInput{
-		Protocol:     stringPtrL4("tcp"),
-		ListenPort:   intPtrL4(9000),
-		UpstreamHost: stringPtrL4("upstream"),
-		UpstreamPort: intPtrL4(9001),
-	})
-	if err != nil {
-		t.Fatalf("Create() error = %v", err)
+func TestL4RuleServiceCreateNormalizesLoadBalancingStrategies(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    *L4LoadBalancing
+		expected string
+	}{
+		{name: "defaults empty input to adaptive", input: nil, expected: "adaptive"},
+		{name: "normalizes explicit adaptive", input: &L4LoadBalancing{Strategy: "ADAPTIVE"}, expected: "adaptive"},
+		{name: "preserves explicit round robin", input: &L4LoadBalancing{Strategy: "round_robin"}, expected: "round_robin"},
+		{name: "preserves explicit random", input: &L4LoadBalancing{Strategy: "RANDOM"}, expected: "random"},
+		{name: "normalizes invalid strategy to adaptive", input: &L4LoadBalancing{Strategy: "invalid"}, expected: "adaptive"},
+		{name: "normalizes blank strategy to adaptive", input: &L4LoadBalancing{Strategy: "   "}, expected: "adaptive"},
 	}
 
-	if rule.LoadBalancing.Strategy != "adaptive" {
-		t.Fatalf("Create() load_balancing = %+v", rule.LoadBalancing)
-	}
-	if got := store.l4RulesByID["local"][0].LoadBalancingJSON; got != `{"strategy":"adaptive"}` {
-		t.Fatalf("persisted load_balancing_json = %q", got)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &fakeL4Store{l4RulesByID: map[string][]storage.L4RuleRow{}}
+			svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+			rule, err := svc.Create(context.Background(), "local", L4RuleInput{
+				Protocol:      stringPtrL4("tcp"),
+				ListenPort:    intPtrL4(9000),
+				UpstreamHost:  stringPtrL4("upstream"),
+				UpstreamPort:  intPtrL4(9001),
+				LoadBalancing: tt.input,
+			})
+			if err != nil {
+				t.Fatalf("Create() error = %v", err)
+			}
+			if rule.LoadBalancing.Strategy != tt.expected {
+				t.Fatalf("Create() load_balancing = %+v", rule.LoadBalancing)
+			}
+			if got := store.l4RulesByID["local"][0].LoadBalancingJSON; got != `{"strategy":"`+tt.expected+`"}` {
+				t.Fatalf("persisted load_balancing_json = %q", got)
+			}
+		})
 	}
 }
 
-func TestL4RuleServiceCreateDefaultsLoadBalancingToAdaptiveWithEmptyInput(t *testing.T) {
-	store := &fakeL4Store{l4RulesByID: map[string][]storage.L4RuleRow{}}
-	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
-
-	rule, err := svc.Create(context.Background(), "local", L4RuleInput{
-		Protocol:     stringPtrL4("tcp"),
-		ListenPort:   intPtrL4(9000),
-		UpstreamHost: stringPtrL4("upstream"),
-		UpstreamPort: intPtrL4(9001),
+func TestL4RuleFromRowDefaultsLoadBalancingToAdaptive(t *testing.T) {
+	rule := l4RuleFromRow(storage.L4RuleRow{
+		ID:           1,
+		AgentID:      "local",
+		Protocol:     "tcp",
+		ListenHost:   "0.0.0.0",
+		ListenPort:   9000,
+		UpstreamHost: "upstream",
+		UpstreamPort: 9001,
 	})
-	if err != nil {
-		t.Fatalf("Create() error = %v", err)
-	}
+
 	if rule.LoadBalancing.Strategy != "adaptive" {
-		t.Fatalf("Create() load_balancing = %+v", rule.LoadBalancing)
-	}
-	if got := store.l4RulesByID["local"][0].LoadBalancingJSON; got != `{"strategy":"adaptive"}` {
-		t.Fatalf("persisted load_balancing_json = %q", got)
+		t.Fatalf("l4RuleFromRow() load_balancing = %+v", rule.LoadBalancing)
 	}
 }
 
