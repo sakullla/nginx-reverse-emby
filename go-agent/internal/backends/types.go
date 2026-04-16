@@ -3,13 +3,26 @@ package backends
 import (
 	"context"
 	"net"
+	"strings"
 	"time"
 )
 
 const (
 	StrategyRoundRobin = "round_robin"
 	StrategyRandom     = "random"
+	StrategyAdaptive   = "adaptive"
 )
+
+const backendObservationPrefix = "backend|"
+
+func BackendObservationKey(scope string, backendID string) string {
+	normalizedScope := strings.TrimSpace(scope)
+	normalizedBackendID := strings.TrimSpace(backendID)
+	if normalizedScope == "" || normalizedBackendID == "" {
+		return ""
+	}
+	return backendObservationPrefix + normalizedScope + "|" + normalizedBackendID
+}
 
 type Resolver interface {
 	LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error)

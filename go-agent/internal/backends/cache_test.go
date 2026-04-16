@@ -119,6 +119,98 @@ func TestCacheOrderRandomUsesHook(t *testing.T) {
 	}
 }
 
+func TestCacheOrderAdaptiveUsesBackendStabilityBeforePerformance(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	now := base
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return now
+		},
+	})
+	scope := "http:rule-adaptive"
+	candidates := []Candidate{
+		{Address: "0"},
+		{Address: "1"},
+	}
+
+	cache.ObserveBackendSuccess(BackendObservationKey(scope, "0"), 10*time.Millisecond, 20*time.Millisecond, 128*1024)
+	cache.ObserveBackendFailure(BackendObservationKey(scope, "0"))
+
+	cache.ObserveBackendSuccess(BackendObservationKey(scope, "1"), 120*time.Millisecond, 150*time.Millisecond, 64*1024)
+
+	got := cache.Order(scope, StrategyAdaptive, candidates)
+	if ordered := addresses(got); !reflect.DeepEqual(ordered, []string{"1", "0"}) {
+		t.Fatalf("unexpected adaptive order with stability-first scoring: %v", ordered)
+	}
+}
+
+func TestCacheOrderAdaptiveUsesCombinedPerformanceNotLatencyOnly(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return base
+		},
+	})
+	scope := "http:rule-adaptive-performance"
+	candidates := []Candidate{
+		{Address: "0"},
+		{Address: "1"},
+	}
+
+	cache.ObserveBackendSuccess(BackendObservationKey(scope, "0"), 12*time.Millisecond, 100*time.Millisecond, 64*1024)
+	cache.ObserveBackendSuccess(BackendObservationKey(scope, "1"), 18*time.Millisecond, 100*time.Millisecond, 2*1024*1024)
+
+	got := cache.Order(scope, StrategyAdaptive, candidates)
+	if ordered := addresses(got); !reflect.DeepEqual(ordered, []string{"1", "0"}) {
+		t.Fatalf("unexpected adaptive order with combined performance scoring: %v", ordered)
+	}
+}
+
+func TestCacheOrderAdaptiveUsesOnlyRecent24hStability(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	now := base
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return now
+		},
+	})
+	scope := "http:rule-adaptive-window"
+	candidates := []Candidate{
+		{Address: "0"},
+		{Address: "1"},
+	}
+
+	now = base.Add(-25 * time.Hour)
+	cache.ObserveBackendFailure(BackendObservationKey(scope, "0"))
+
+	now = base.Add(-2 * time.Hour)
+	cache.ObserveBackendFailure(BackendObservationKey(scope, "1"))
+	cache.ObserveBackendSuccess(BackendObservationKey(scope, "1"), 40*time.Millisecond, 80*time.Millisecond, 128*1024)
+
+	now = base
+	cache.ObserveBackendSuccess(BackendObservationKey(scope, "0"), 60*time.Millisecond, 100*time.Millisecond, 128*1024)
+
+	got := cache.Order(scope, StrategyAdaptive, candidates)
+	if ordered := addresses(got); !reflect.DeepEqual(ordered, []string{"0", "1"}) {
+		t.Fatalf("unexpected adaptive order with recent stability window: %v", ordered)
+	}
+}
+
+func TestCacheOrderAdaptivePreservesInputOrderOnTie(t *testing.T) {
+	cache := NewCache(Config{})
+	scope := "http:rule-adaptive-tie"
+	candidates := []Candidate{
+		{Address: "2"},
+		{Address: "0"},
+		{Address: "1"},
+	}
+
+	got := cache.Order(scope, StrategyAdaptive, candidates)
+	if ordered := addresses(got); !reflect.DeepEqual(ordered, []string{"2", "0", "1"}) {
+		t.Fatalf("unexpected adaptive tie ordering: %v", ordered)
+	}
+}
+
 func TestCacheFailureBackoffCapsAndSuccessResetsState(t *testing.T) {
 	base := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
 	now := base
@@ -342,6 +434,27 @@ func TestCachePreferResolvedCandidatesUsesBandwidthAfterStabilityAndLatency(t *t
 	got := cache.PreferResolvedCandidates(candidates)
 	if !reflect.DeepEqual(addresses(got), []string{"10.0.0.15:443", "10.0.0.14:443"}) {
 		t.Fatalf("unexpected preferred order with bandwidth tiebreak: %v", addresses(got))
+	}
+}
+
+func TestCachePreferResolvedCandidatesUsesCombinedPerformanceNotLatencyOnly(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return base
+		},
+	})
+	candidates := []Candidate{
+		{Address: "10.0.0.16:443"},
+		{Address: "10.0.0.17:443"},
+	}
+
+	cache.ObserveTransferSuccess("10.0.0.16:443", 12*time.Millisecond, 100*time.Millisecond, 64*1024)
+	cache.ObserveTransferSuccess("10.0.0.17:443", 18*time.Millisecond, 100*time.Millisecond, 2*1024*1024)
+
+	got := cache.PreferResolvedCandidates(candidates)
+	if !reflect.DeepEqual(addresses(got), []string{"10.0.0.17:443", "10.0.0.16:443"}) {
+		t.Fatalf("unexpected preferred order with combined performance scoring: %v", addresses(got))
 	}
 }
 

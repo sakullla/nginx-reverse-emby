@@ -69,6 +69,7 @@ type candidatePreference struct {
 	hasLatency   bool
 	bandwidth    float64
 	hasBandwidth bool
+	performance  float64
 }
 
 func NewCache(cfg Config) *Cache {
@@ -163,6 +164,29 @@ func (c *Cache) Order(scope, strategy string, candidates []Candidate) []Candidat
 			ordered[i], ordered[j] = ordered[j], ordered[i]
 		}
 		return ordered
+	case StrategyAdaptive:
+		now := c.now()
+		preferences := make([]candidatePreference, len(ordered))
+
+		c.mu.Lock()
+		for i := range ordered {
+			key := BackendObservationKey(scope, ordered[i].Address)
+			preferences[i] = c.observed[key].preference(now)
+		}
+		c.mu.Unlock()
+
+		sort.SliceStable(ordered, func(i, j int) bool {
+			left := preferences[i]
+			right := preferences[j]
+			if left.stability != right.stability {
+				return left.stability > right.stability
+			}
+			if left.performance != right.performance {
+				return left.performance > right.performance
+			}
+			return false
+		})
+		return ordered
 	default:
 		offset := c.roundRobinOffset(scope, len(ordered))
 		if offset == 0 {
@@ -177,6 +201,39 @@ func (c *Cache) Order(scope, strategy string, candidates []Candidate) []Candidat
 
 func (c *Cache) ObserveSuccess(address string, latency time.Duration) {
 	c.ObserveTransferSuccess(address, latency, 0, 0)
+}
+
+func (c *Cache) ObserveBackendSuccess(scope string, latency time.Duration, totalDuration time.Duration, bytesTransferred int64) {
+	key := strings.TrimSpace(scope)
+	if key == "" {
+		return
+	}
+
+	now := c.now()
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	entry := c.observed[key]
+	entry.recordSuccess(now, latency, totalDuration, bytesTransferred)
+	c.observed[key] = entry
+	delete(c.failures, key)
+}
+
+func (c *Cache) ObserveBackendFailure(scope string) {
+	key := strings.TrimSpace(scope)
+	if key == "" {
+		return
+	}
+
+	now := c.now()
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	entry := c.observed[key]
+	entry.recordFailure(now)
+	c.observed[key] = entry
 }
 
 func (c *Cache) ObserveTransferSuccess(address string, latency time.Duration, totalDuration time.Duration, bytesTransferred int64) {
@@ -228,14 +285,8 @@ func (c *Cache) PreferResolvedCandidates(candidates []Candidate) []Candidate {
 		if left.stability != right.stability {
 			return left.stability > right.stability
 		}
-		if left.hasLatency && right.hasLatency && left.latency != right.latency {
-			return left.latency < right.latency
-		}
-		if left.hasBandwidth != right.hasBandwidth {
-			return left.hasBandwidth
-		}
-		if left.hasBandwidth && right.hasBandwidth && left.bandwidth != right.bandwidth {
-			return left.bandwidth > right.bandwidth
+		if left.performance != right.performance {
+			return left.performance > right.performance
 		}
 		return false
 	})
@@ -371,6 +422,8 @@ func normalizeStrategy(strategy string) string {
 	switch strings.ToLower(strings.TrimSpace(strategy)) {
 	case StrategyRandom:
 		return StrategyRandom
+	case StrategyAdaptive:
+		return StrategyAdaptive
 	default:
 		return StrategyRoundRobin
 	}
@@ -436,6 +489,7 @@ func (o candidateObservation) preference(now time.Time) candidatePreference {
 		preference.bandwidth = bandwidth
 		preference.hasBandwidth = true
 	}
+	preference.performance = performanceScore(preference)
 	return preference
 }
 
@@ -477,6 +531,35 @@ func (o candidateObservation) bandwidthFor(now time.Time) (float64, bool) {
 		return 0, false
 	}
 	return o.bandwidthEstimate, true
+}
+
+func performanceScore(preference candidatePreference) float64 {
+	latencyScore := 0.5
+	switch {
+	case preference.hasLatency && preference.latency > 0:
+		latencyScore = 1 / (1 + preference.latency.Seconds())
+	case preference.hasLatency:
+		latencyScore = 1
+	}
+
+	bandwidthScore := 0.5
+	switch {
+	case preference.hasBandwidth && preference.bandwidth > 0:
+		bandwidthScore = preference.bandwidth / (preference.bandwidth + 1024*1024)
+	case preference.hasBandwidth:
+		bandwidthScore = 1
+	}
+
+	if preference.hasLatency && preference.hasBandwidth {
+		return 0.5*latencyScore + 0.5*bandwidthScore
+	}
+	if preference.hasLatency {
+		return latencyScore
+	}
+	if preference.hasBandwidth {
+		return bandwidthScore
+	}
+	return 0.5
 }
 
 func blendDuration(current, next time.Duration) time.Duration {
