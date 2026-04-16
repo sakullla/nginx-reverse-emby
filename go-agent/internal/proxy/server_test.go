@@ -605,6 +605,38 @@ func TestRouteEntryObserveSuccessfulBackendUsesBandwidthForFutureRanking(t *test
 	}
 }
 
+func TestRouteEntryObserveSuccessfulBackendStartsSlowStartAfterRecovery(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	now := base
+	cache := backends.NewCache(backends.Config{
+		Now: func() time.Time {
+			return now
+		},
+	})
+	entry := &routeEntry{
+		backendCache: cache,
+	}
+
+	backendKey := backends.BackendObservationKey("edge.example.test", backends.StableBackendID("http://backend.example:8096"))
+	address := "203.0.113.30:8096"
+
+	cache.ObserveBackendFailure(backendKey)
+	now = now.Add(1100 * time.Millisecond)
+	entry.observeSuccessfulBackend(backendKey, address, 20*time.Millisecond, 40*time.Millisecond, 128*1024)
+	entry.observeSuccessfulBackend(backendKey, address, 20*time.Millisecond, 40*time.Millisecond, 128*1024)
+
+	summary := cache.Summary(backendKey)
+	if summary.State != backends.ObservationStateWarm {
+		t.Fatalf("expected warmed backend after recovery successes, got %+v", summary)
+	}
+	if !summary.SlowStartActive {
+		t.Fatalf("expected backend slow start to activate after recovery, got %+v", summary)
+	}
+	if summary.TrafficShareHint != "recovery" {
+		t.Fatalf("expected backend traffic share hint to stay in recovery slow start, got %+v", summary)
+	}
+}
+
 func TestRouteEntryCandidatesAdaptivePrefersBackendBeforeResolvedCandidate(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
 	cache := backends.NewCache(backends.Config{
@@ -649,6 +681,64 @@ func TestRouteEntryCandidatesAdaptivePrefersBackendBeforeResolvedCandidate(t *te
 	}
 	if candidates[0].backendHost != "bulk.example:8096" {
 		t.Fatalf("unexpected first candidate: %+v", candidates)
+	}
+}
+
+func TestRouteEntryCandidatesAdaptiveExploresColdBackendWhenBudgetTriggers(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	cache := backends.NewCache(backends.Config{
+		Resolver: resolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
+			switch host {
+			case "warm.example":
+				return []net.IPAddr{{IP: net.ParseIP("127.0.0.31")}}, nil
+			case "cold.example":
+				return []net.IPAddr{{IP: net.ParseIP("127.0.0.32")}}, nil
+			default:
+				return nil, fmt.Errorf("unexpected host %q", host)
+			}
+		}),
+		Now: func() time.Time {
+			return base
+		},
+		RandomIntn: func(n int) int {
+			if n != 100 {
+				t.Fatalf("unexpected exploration budget bound: %d", n)
+			}
+			return 0
+		},
+	})
+
+	warmBackend := mustParseBackendURL(t, "http://warm.example:8096")
+	coldBackend := mustParseBackendURL(t, "http://cold.example:8096")
+	warmKey := backends.BackendObservationKey("edge.example.test", backends.StableBackendID(warmBackend.String()))
+	for i := 0; i < 4; i++ {
+		cache.ObserveBackendSuccess(warmKey, 20*time.Millisecond, 40*time.Millisecond, 128*1024)
+	}
+
+	entry := &routeEntry{
+		rule: model.HTTPRule{
+			FrontendURL: "http://edge.example.test",
+			LoadBalancing: model.LoadBalancing{
+				Strategy: "adaptive",
+			},
+		},
+		backends: []httpBackend{
+			{target: warmBackend, backendHost: warmBackend.Host},
+			{target: coldBackend, backendHost: coldBackend.Host},
+		},
+		backendCache:   cache,
+		selectionScope: "edge.example.test",
+	}
+
+	candidates, err := entry.candidates(context.Background())
+	if err != nil {
+		t.Fatalf("candidates() error = %v", err)
+	}
+	if len(candidates) < 2 {
+		t.Fatalf("expected at least two candidates, got %+v", candidates)
+	}
+	if candidates[0].backendHost != coldBackend.Host {
+		t.Fatalf("expected cold backend to be explored first, got %+v", candidates)
 	}
 }
 

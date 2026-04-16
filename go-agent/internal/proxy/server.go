@@ -404,18 +404,25 @@ func (e *routeEntry) candidates(ctx context.Context) ([]httpCandidate, error) {
 	}
 
 	placeholders := make([]backends.Candidate, 0, len(e.backends))
-	indexByID := make(map[string]int, len(e.backends))
+	indexesByID := make(map[string][]int, len(e.backends))
 	for i := range e.backends {
-		id := strconv.Itoa(i)
-		placeholders = append(placeholders, backends.Candidate{Address: id})
-		indexByID[id] = i
+		backendID := backends.StableBackendID(e.backends[i].target.String())
+		placeholders = append(placeholders, backends.Candidate{Address: backendID})
+		indexesByID[backendID] = append(indexesByID[backendID], i)
 	}
 
 	strategy := e.rule.LoadBalancing.Strategy
 	orderedBackends := e.backendCache.Order(e.selectionScope, strategy, placeholders)
 	out := make([]httpCandidate, 0, len(e.backends))
 	for _, ordered := range orderedBackends {
-		backend := e.backends[indexByID[ordered.Address]]
+		indexes := indexesByID[ordered.Address]
+		if len(indexes) == 0 {
+			continue
+		}
+		backendIndex := indexes[0]
+		indexesByID[ordered.Address] = indexes[1:]
+		backend := e.backends[backendIndex]
+		backendObservationKey := backends.BackendObservationKey(e.selectionScope, backends.StableBackendID(backend.target.String()))
 		endpoint := backends.Endpoint{
 			Host: backend.target.Hostname(),
 			Port: portWithDefault(backend.target),
@@ -438,7 +445,7 @@ func (e *routeEntry) candidates(ctx context.Context) ([]httpCandidate, error) {
 				target:                cloneURL(backend.target),
 				dialAddress:           candidate.Address,
 				backendHost:           backend.backendHost,
-				backendObservationKey: backends.BackendObservationKey(e.selectionScope, backends.StableBackendID(backend.target.String())),
+				backendObservationKey: backendObservationKey,
 			})
 		}
 	}
