@@ -723,7 +723,7 @@ func (o candidateObservation) state(now time.Time, recentSuccesses, recentFailur
 	if o.hadBackoff && !o.recoveryUntil.IsZero() && now.After(o.slowStartStartedAt) && now.Before(o.recoveryUntil) {
 		return ObservationStateRecovering
 	}
-	if inBackoff || recentSuccesses <= 0 || recentSuccesses+recentFailures < minRecentSamples || o.lastSuccessAt.IsZero() {
+	if inBackoff || recentSuccesses <= 0 || recentSuccesses+recentFailures < minRecentSamples {
 		return ObservationStateCold
 	}
 	return ObservationStateWarm
@@ -748,9 +748,7 @@ func effectivePerformance(preference candidatePreference) float64 {
 		slowStart = 1
 	}
 	performance := performanceScore(preference)
-	if preference.hasBandwidth {
-		performance *= bandwidthConfidenceFactor(preference.confidence)
-	}
+	performance *= confidenceFactor(preference.confidence)
 	return performance * slowStart * outlierPenalty(preference.outlier)
 }
 
@@ -818,7 +816,7 @@ func bandwidthPerformanceScore(bandwidth float64) float64 {
 	return math.Log1p(bandwidthMBps) / math.Log1p(16)
 }
 
-func bandwidthConfidenceFactor(confidence float64) float64 {
+func confidenceFactor(confidence float64) float64 {
 	if confidence <= 0 {
 		return 0.25
 	}
