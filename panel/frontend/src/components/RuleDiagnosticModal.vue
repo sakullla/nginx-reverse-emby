@@ -597,11 +597,11 @@ function qualityToneFor(value) {
 .diagnostic-modal__sample-count { font-size: 0.72rem; font-weight: 600; color: var(--color-text-tertiary); background: var(--color-bg-hover); padding: 2px 8px; border-radius: 999px; }
 .diagnostic-modal__samples { display: flex; flex-direction: column; }
 .diagnostic-sample-list {
-  max-height: 260px;
+  max-height: 220px;
   overflow-y: auto;
   border: 1px solid var(--color-border-subtle);
   border-radius: 12px;
-  padding: 0.4rem 0.5rem;
+  padding: 0.3rem 0.4rem;
   background: var(--color-bg-surface);
 }
 .diagnostic-sample-list::-webkit-scrollbar { width: 6px; }
@@ -610,12 +610,15 @@ function qualityToneFor(value) {
   display: flex;
   justify-content: space-between;
   gap: 1rem;
-  padding: 0.55rem 0.65rem;
-  border-radius: 8px;
+  padding: 0.4rem 0.5rem;
+  border-bottom: 1px solid var(--color-border-subtle);
   transition: background 0.12s ease;
 }
+.diagnostic-sample:last-child {
+  border-bottom: none;
+}
 .diagnostic-sample + .diagnostic-sample {
-  margin-top: 1px;
+  margin-top: 0;
 }
 .diagnostic-sample:hover { background: var(--color-bg-hover); }
 .diagnostic-sample--failed { color: var(--color-danger); background: rgba(239, 68, 68, 0.04); }
@@ -626,8 +629,8 @@ function qualityToneFor(value) {
   min-width: 0;
   align-items: center;
 }
-.diagnostic-sample__attempt { font-size: 0.75rem; color: var(--color-text-tertiary); font-family: var(--font-mono); min-width: 2.2ch; text-align: right; }
-.diagnostic-sample__status { font-size: 0.68rem; font-weight: 700; padding: 1px 5px; border-radius: var(--radius-sm); font-family: var(--font-mono); }
+.diagnostic-sample__attempt { font-size: 0.72rem; color: var(--color-text-tertiary); font-family: var(--font-mono); min-width: 2.2ch; text-align: right; }
+.diagnostic-sample__status { font-size: 0.65rem; font-weight: 700; padding: 1px 4px; border-radius: var(--radius-sm); font-family: var(--font-mono); }
 .diagnostic-sample__status--success { background: var(--color-success-50); color: var(--color-success); }
 .diagnostic-sample__status--info { background: rgba(56, 189, 248, 0.12); color: #0ea5e9; }
 .diagnostic-sample__status--warning { background: var(--color-warning-50); color: var(--color-warning); }
@@ -638,11 +641,11 @@ function qualityToneFor(value) {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  font-size: 0.8rem;
+  font-size: 0.78rem;
   color: var(--color-text-secondary);
 }
 .diagnostic-sample__right {
-  font-size: 0.8rem;
+  font-size: 0.78rem;
   color: var(--color-text-secondary);
   white-space: nowrap;
   font-family: var(--font-mono);
