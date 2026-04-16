@@ -164,6 +164,11 @@ func backendReportToMap(backend diagnostics.BackendReport) map[string]any {
 			"latency_ms":              backend.Adaptive.LatencyMS,
 			"estimated_bandwidth_bps": backend.Adaptive.EstimatedBandwidthBps,
 			"performance_score":       backend.Adaptive.PerformanceScore,
+			"state":                   backend.Adaptive.State,
+			"sample_confidence":       backend.Adaptive.SampleConfidence,
+			"slow_start_active":       backend.Adaptive.SlowStartActive,
+			"outlier":                 backend.Adaptive.Outlier,
+			"traffic_share_hint":      backend.Adaptive.TrafficShareHint,
 		}
 	}
 	if len(backend.Children) > 0 {

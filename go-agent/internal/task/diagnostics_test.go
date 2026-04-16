@@ -331,3 +331,97 @@ func TestDiagnosticHandlerReturnsPerBackendResultsForL4Rules(t *testing.T) {
 	<-doneA
 	<-doneB
 }
+
+func TestReportToMapIncludesAdaptiveRecoveryFields(t *testing.T) {
+	report := diagnostics.Report{
+		Kind:   "http",
+		RuleID: 29,
+		Summary: diagnostics.Summary{
+			Sent:      1,
+			Succeeded: 1,
+			Quality:   "极佳",
+		},
+		Backends: []diagnostics.BackendReport{{
+			Backend: "http://backend.example.test/healthz",
+			Summary: diagnostics.Summary{
+				Sent:      1,
+				Succeeded: 1,
+				Quality:   "极佳",
+			},
+			Adaptive: &diagnostics.AdaptiveSummary{
+				Preferred:        true,
+				Reason:           "performance_higher",
+				State:            "recovering",
+				SampleConfidence: 0.55,
+				SlowStartActive:  true,
+				Outlier:          true,
+				TrafficShareHint: "recovery",
+			},
+			Children: []diagnostics.BackendReport{{
+				Backend: "http://backend.example.test/healthz [10.0.0.10:443]",
+				Summary: diagnostics.Summary{
+					Sent:      1,
+					Succeeded: 1,
+					Quality:   "极佳",
+				},
+				Adaptive: &diagnostics.AdaptiveSummary{
+					State:            "warm",
+					SampleConfidence: 1,
+					SlowStartActive:  false,
+					Outlier:          false,
+					TrafficShareHint: "normal",
+				},
+			}},
+		}},
+	}
+
+	payload := reportToMap(report)
+	backends, ok := payload["backends"].([]map[string]any)
+	if !ok || len(backends) != 1 {
+		t.Fatalf("backends = %#v", payload["backends"])
+	}
+
+	adaptive, ok := backends[0]["adaptive"].(map[string]any)
+	if !ok {
+		t.Fatalf("adaptive = %#v", backends[0]["adaptive"])
+	}
+	if adaptive["state"] != "recovering" {
+		t.Fatalf("state = %#v", adaptive["state"])
+	}
+	if adaptive["sample_confidence"] != 0.55 {
+		t.Fatalf("sample_confidence = %#v", adaptive["sample_confidence"])
+	}
+	if adaptive["slow_start_active"] != true {
+		t.Fatalf("slow_start_active = %#v", adaptive["slow_start_active"])
+	}
+	if adaptive["outlier"] != true {
+		t.Fatalf("outlier = %#v", adaptive["outlier"])
+	}
+	if adaptive["traffic_share_hint"] != "recovery" {
+		t.Fatalf("traffic_share_hint = %#v", adaptive["traffic_share_hint"])
+	}
+
+	children, ok := backends[0]["children"].([]map[string]any)
+	if !ok || len(children) != 1 {
+		t.Fatalf("children = %#v", backends[0]["children"])
+	}
+	childAdaptive, ok := children[0]["adaptive"].(map[string]any)
+	if !ok {
+		t.Fatalf("child adaptive = %#v", children[0]["adaptive"])
+	}
+	if childAdaptive["state"] != "warm" {
+		t.Fatalf("child state = %#v", childAdaptive["state"])
+	}
+	if childAdaptive["sample_confidence"] != 1.0 {
+		t.Fatalf("child sample_confidence = %#v", childAdaptive["sample_confidence"])
+	}
+	if childAdaptive["slow_start_active"] != false {
+		t.Fatalf("child slow_start_active = %#v", childAdaptive["slow_start_active"])
+	}
+	if childAdaptive["outlier"] != false {
+		t.Fatalf("child outlier = %#v", childAdaptive["outlier"])
+	}
+	if childAdaptive["traffic_share_hint"] != "normal" {
+		t.Fatalf("child traffic_share_hint = %#v", childAdaptive["traffic_share_hint"])
+	}
+}

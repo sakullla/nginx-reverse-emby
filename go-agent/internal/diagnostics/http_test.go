@@ -2,6 +2,7 @@ package diagnostics
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -279,14 +280,20 @@ func TestHTTPProberDiagnoseSplitsHostnameBackendsByResolvedAddress(t *testing.T)
 		t.Fatalf("Diagnose() error = %v", err)
 	}
 
-	if len(report.Backends) != 2 {
+	if len(report.Backends) != 1 {
 		t.Fatalf("Backends = %+v", report.Backends)
 	}
-	if report.Backends[0].Backend != fmt.Sprintf("http://echo.example.test:%d/healthz [127.0.0.1:%d]", port, port) {
+	if report.Backends[0].Backend != fmt.Sprintf("http://echo.example.test:%d/healthz", port) {
 		t.Fatalf("first backend = %+v", report.Backends[0])
 	}
-	if report.Backends[1].Backend != fmt.Sprintf("http://echo.example.test:%d/healthz [127.0.0.2:%d]", port, port) {
-		t.Fatalf("second backend = %+v", report.Backends[1])
+	if len(report.Backends[0].Children) != 2 {
+		t.Fatalf("children = %+v", report.Backends[0].Children)
+	}
+	if report.Backends[0].Children[0].Backend != fmt.Sprintf("http://echo.example.test:%d/healthz [127.0.0.1:%d]", port, port) {
+		t.Fatalf("first child backend = %+v", report.Backends[0].Children[0])
+	}
+	if report.Backends[0].Children[1].Backend != fmt.Sprintf("http://echo.example.test:%d/healthz [127.0.0.2:%d]", port, port) {
+		t.Fatalf("second child backend = %+v", report.Backends[0].Children[1])
 	}
 }
 
@@ -334,6 +341,111 @@ func TestHTTPProberDiagnoseAdaptivePrefersConfiguredBackendOrder(t *testing.T) {
 	}
 	if report.Backends[0].Backend != bulk.URL+"/healthz" {
 		t.Fatalf("unexpected first backend report: %+v", report.Backends)
+	}
+}
+
+func TestHTTPProberDiagnoseSerializesAdaptiveRecoveryFields(t *testing.T) {
+	listener, err := net.Listen("tcp", "0.0.0.0:0")
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	defer listener.Close()
+
+	server := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		}),
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = server.Serve(listener)
+	}()
+	defer func() {
+		_ = server.Close()
+		<-done
+	}()
+
+	port := listener.Addr().(*net.TCPAddr).Port
+	now := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	cache := backends.NewCache(backends.Config{
+		Now: func() time.Time {
+			return now
+		},
+		Resolver: diagnosticResolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
+			if host != "echo.example.test" {
+				t.Fatalf("unexpected resolver host %q", host)
+			}
+			return []net.IPAddr{
+				{IP: net.ParseIP("127.0.0.1")},
+				{IP: net.ParseIP("127.0.0.2")},
+			}, nil
+		}),
+	})
+
+	frontendURL := "https://edge.example.test"
+	backendURL := fmt.Sprintf("http://echo.example.test:%d/healthz", port)
+	backendKey := backends.BackendObservationKey(frontendURL, backends.StableBackendID(backendURL))
+	for i := 0; i < 4; i++ {
+		cache.ObserveBackendSuccess(backendKey, 20*time.Millisecond, 200*time.Millisecond, 512*1024)
+	}
+	cache.ObserveBackendSuccess(backendKey, 600*time.Millisecond, 2*time.Second, 4*1024)
+	cache.ObserveBackendFailure(backendKey)
+	now = now.Add(1100 * time.Millisecond)
+
+	prober := NewHTTPProber(HTTPProberConfig{
+		Attempts: 1,
+		Timeout:  time.Second,
+		Cache:    cache,
+	})
+	report, err := prober.Diagnose(context.Background(), model.HTTPRule{
+		ID:          33,
+		FrontendURL: frontendURL,
+		BackendURL:  backendURL,
+		LoadBalancing: model.LoadBalancing{
+			Strategy: "adaptive",
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("Diagnose() error = %v", err)
+	}
+
+	payload, err := json.Marshal(report)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+
+	var decoded map[string]any
+	if err := json.Unmarshal(payload, &decoded); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+
+	backendPayloads, ok := decoded["backends"].([]any)
+	if !ok || len(backendPayloads) != 1 {
+		t.Fatalf("backends = %#v", decoded["backends"])
+	}
+	backendPayload, ok := backendPayloads[0].(map[string]any)
+	if !ok {
+		t.Fatalf("backend = %#v", backendPayloads[0])
+	}
+	adaptive, ok := backendPayload["adaptive"].(map[string]any)
+	if !ok {
+		t.Fatalf("adaptive = %#v", backendPayload["adaptive"])
+	}
+	if adaptive["state"] != backends.ObservationStateWarm {
+		t.Fatalf("state = %#v", adaptive["state"])
+	}
+	if adaptive["sample_confidence"] != 1.0 {
+		t.Fatalf("sample_confidence = %#v", adaptive["sample_confidence"])
+	}
+	if adaptive["slow_start_active"] != true {
+		t.Fatalf("slow_start_active = %#v", adaptive["slow_start_active"])
+	}
+	if adaptive["outlier"] != true {
+		t.Fatalf("outlier = %#v", adaptive["outlier"])
+	}
+	if adaptive["traffic_share_hint"] != "recovery" {
+		t.Fatalf("traffic_share_hint = %#v", adaptive["traffic_share_hint"])
 	}
 }
 

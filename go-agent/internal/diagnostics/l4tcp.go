@@ -172,13 +172,20 @@ func buildTCPAdaptiveReports(reports []BackendReport, candidates []tcpProbeCandi
 		if !ok {
 			continue
 		}
-		report.Adaptive = adaptiveSummaryFromObservation(cache.Summary(candidate.address), false, "")
+		report.Adaptive = adaptiveSummaryFromObservation(cache.Summary(tcpAdaptiveSummaryKey(candidate)), false, "")
 		annotated = append(annotated, report)
 	}
 	if len(annotated) > 0 {
-		annotated[0].Adaptive = adaptiveSummaryFromObservation(cache.Summary(candidates[0].address), true, "performance_higher")
+		annotated[0].Adaptive = adaptiveSummaryFromObservation(cache.Summary(tcpAdaptiveSummaryKey(candidates[0])), true, "performance_higher")
 	}
 	return annotated
+}
+
+func tcpAdaptiveSummaryKey(candidate tcpProbeCandidate) string {
+	if candidate.backendObservationKey != "" {
+		return candidate.backendObservationKey
+	}
+	return candidate.address
 }
 
 func resolveL4RelayHops(rule model.L4Rule, relayListeners []model.RelayListener) ([]relay.Hop, error) {

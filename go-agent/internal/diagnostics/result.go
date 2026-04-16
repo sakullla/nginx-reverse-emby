@@ -49,6 +49,11 @@ type AdaptiveSummary struct {
 	LatencyMS             float64 `json:"latency_ms,omitempty"`
 	EstimatedBandwidthBps float64 `json:"estimated_bandwidth_bps,omitempty"`
 	PerformanceScore      float64 `json:"performance_score,omitempty"`
+	State                 string  `json:"state,omitempty"`
+	SampleConfidence      float64 `json:"sample_confidence,omitempty"`
+	SlowStartActive       bool    `json:"slow_start_active,omitempty"`
+	Outlier               bool    `json:"outlier,omitempty"`
+	TrafficShareHint      string  `json:"traffic_share_hint,omitempty"`
 }
 
 func BuildReport(kind string, ruleID int, samples []Sample) Report {

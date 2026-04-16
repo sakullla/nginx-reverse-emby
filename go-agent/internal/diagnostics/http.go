@@ -201,7 +201,7 @@ func buildHTTPAdaptiveReports(reports []BackendReport, candidates []httpProbeCan
 		if candidate.configuredURL == "" {
 			continue
 		}
-		if _, ok := configuredChildren[candidate.configuredURL]; !ok {
+		if existing := configuredChildren[candidate.configuredURL]; len(candidate.resolvedCandidates) > len(existing) {
 			configuredChildren[candidate.configuredURL] = append([]httpResolvedCandidate(nil), candidate.resolvedCandidates...)
 		}
 		if _, ok := configuredSummary[candidate.configuredURL]; !ok {
@@ -223,7 +223,7 @@ func buildHTTPAdaptiveReports(reports []BackendReport, candidates []httpProbeCan
 		}
 		children := configuredChildren[configured]
 		if len(children) <= 1 {
-			report.Adaptive = adaptiveSummaryFromObservation(cache.Summary(strings.TrimSpace(report.Backend)), false, "")
+			report.Adaptive = adaptiveSummaryFromObservation(configuredSummary[configured], false, "")
 			annotated = append(annotated, report)
 			continue
 		}
@@ -311,6 +311,11 @@ func adaptiveSummaryFromObservation(summary backends.ObservationSummary, preferr
 		LatencyMS:             latencyMS,
 		EstimatedBandwidthBps: roundMetric(summary.Bandwidth),
 		PerformanceScore:      roundMetric(summary.PerformanceScore),
+		State:                 summary.State,
+		SampleConfidence:      roundMetric(summary.SampleConfidence),
+		SlowStartActive:       summary.SlowStartActive,
+		Outlier:               summary.Outlier,
+		TrafficShareHint:      summary.TrafficShareHint,
 	}
 }
 
