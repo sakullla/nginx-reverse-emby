@@ -264,6 +264,11 @@ function normalizeHttpBackends(rule = {}) {
   return backendUrl ? [{ url: backendUrl }] : []
 }
 
+function normalizeStrategy(value) {
+  const s = String(value || '').trim().toLowerCase()
+  return s === 'round_robin' || s === 'random' || s === 'adaptive' ? s : 'adaptive'
+}
+
 function normalizeHttpRule(rule = {}) {
   const backends = normalizeHttpBackends(rule)
   return {
@@ -271,7 +276,7 @@ function normalizeHttpRule(rule = {}) {
     backend_url: backends[0]?.url || String(rule.backend_url || '').trim(),
     backends,
     load_balancing: {
-      strategy: rule.load_balancing?.strategy === 'random' ? 'random' : 'round_robin'
+      strategy: normalizeStrategy(rule.load_balancing?.strategy)
     },
     relay_obfs: rule.relay_obfs === true
   }
@@ -300,7 +305,7 @@ function normalizeL4Rule(rule = {}) {
     upstream_port: backends[0]?.port || Number(rule.upstream_port) || 0,
     backends,
     load_balancing: {
-      strategy: rule.load_balancing?.strategy === 'random' ? 'random' : 'round_robin'
+      strategy: normalizeStrategy(rule.load_balancing?.strategy)
     },
     relay_obfs: rule.relay_obfs === true
   }
@@ -315,7 +320,7 @@ function normalizeHttpRulePayloadObject(payload = {}, options = {}) {
     backend_url: backends[0]?.url || '',
     backends,
     load_balancing: {
-      strategy: payload.load_balancing?.strategy === 'random' ? 'random' : 'round_robin'
+      strategy: normalizeStrategy(payload.load_balancing?.strategy)
     },
     tags: Array.isArray(payload.tags) ? payload.tags : [],
     enabled: payload.enabled !== false,
