@@ -386,6 +386,24 @@ func TestCacheSummaryReadinessTransitionDoesNotTriggerOutlier(t *testing.T) {
 	}
 }
 
+func TestCacheUpwardThroughputJumpDoesNotLatchOutlierWindow(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	cache := NewCache(Config{
+		Now: func() time.Time { return base },
+	})
+	addr := "10.0.0.44:443"
+
+	cache.ObserveTransferSuccess(addr, 20*time.Millisecond, 4*time.Second, 2*1024*1024)
+	cache.ObserveTransferSuccess(addr, 20*time.Millisecond, 4*time.Second, 2*1024*1024)
+	cache.ObserveTransferSuccess(addr, 20*time.Millisecond, 4*time.Second, 2*1024*1024)
+	cache.ObserveTransferSuccess(addr, 20*time.Millisecond, 100*time.Millisecond, 2*1024*1024)
+
+	observation := cache.observationFor(addr)
+	if !observation.outlierUntil.IsZero() {
+		t.Fatalf("upward throughput jump must not latch outlierUntil: %+v", observation)
+	}
+}
+
 func TestCacheObserveBackendFailureUsesScopedRecoveryState(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
 	now := base
@@ -957,6 +975,8 @@ func TestCachePreferResolvedCandidatesUsesBandwidthAfterStabilityAndLatency(t *t
 
 	cache.ObserveTransferSuccess("10.0.0.14:443", 30*time.Millisecond, 100*time.Millisecond, 512*1024)
 	cache.ObserveTransferSuccess("10.0.0.14:443", 30*time.Millisecond, 100*time.Millisecond, 512*1024)
+	cache.ObserveTransferSuccess("10.0.0.14:443", 30*time.Millisecond, 100*time.Millisecond, 512*1024)
+	cache.ObserveTransferSuccess("10.0.0.15:443", 30*time.Millisecond, 100*time.Millisecond, 2*1024*1024)
 	cache.ObserveTransferSuccess("10.0.0.15:443", 30*time.Millisecond, 100*time.Millisecond, 2*1024*1024)
 	cache.ObserveTransferSuccess("10.0.0.15:443", 30*time.Millisecond, 100*time.Millisecond, 2*1024*1024)
 
@@ -980,6 +1000,8 @@ func TestCachePreferResolvedCandidatesUsesCombinedPerformanceNotLatencyOnly(t *t
 
 	cache.ObserveTransferSuccess("10.0.0.16:443", 12*time.Millisecond, 100*time.Millisecond, 512*1024)
 	cache.ObserveTransferSuccess("10.0.0.16:443", 12*time.Millisecond, 100*time.Millisecond, 512*1024)
+	cache.ObserveTransferSuccess("10.0.0.16:443", 12*time.Millisecond, 100*time.Millisecond, 512*1024)
+	cache.ObserveTransferSuccess("10.0.0.17:443", 18*time.Millisecond, 100*time.Millisecond, 2*1024*1024)
 	cache.ObserveTransferSuccess("10.0.0.17:443", 18*time.Millisecond, 100*time.Millisecond, 2*1024*1024)
 	cache.ObserveTransferSuccess("10.0.0.17:443", 18*time.Millisecond, 100*time.Millisecond, 2*1024*1024)
 

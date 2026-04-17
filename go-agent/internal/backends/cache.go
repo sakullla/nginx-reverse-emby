@@ -579,7 +579,7 @@ func (o *candidateObservation) recordSuccess(now time.Time, latency time.Duratio
 			o.lastThroughputAt = now
 			o.recordQualifiedThroughput(now, weight)
 			o.outlierThroughput = wasReady && o.qualifiedThroughputReady(now)
-			if o.outlierThroughput && previousEstimate > 0 && (throughput < 0.5*previousEstimate || throughput > 2.5*previousEstimate) {
+			if o.outlierThroughput && previousEstimate > 0 && throughput < 0.5*previousEstimate {
 				o.outlierUntil = now.Add(30 * time.Second)
 			}
 		}
