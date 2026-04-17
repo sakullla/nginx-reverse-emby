@@ -426,6 +426,9 @@ func TestHTTPProberProbeCandidateTreatsTimedOutBodyReadAsFailure(t *testing.T) {
 	if backendSummary.RecentSucceeded != 0 {
 		t.Fatalf("expected backend observation to skip success learning after body-read timeout, got %+v", backendSummary)
 	}
+	if backendSummary.RecentFailed != 1 {
+		t.Fatalf("expected backend observation to record probe failure after body-read timeout, got %+v", backendSummary)
+	}
 }
 
 func TestHTTPCandidatesReturnsResolveErrorWhenEveryBackendFailsDNS(t *testing.T) {
