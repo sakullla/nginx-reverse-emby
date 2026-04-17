@@ -14,23 +14,30 @@ import (
 )
 
 const (
-	dnsCacheTTL          = 30 * time.Second
-	failureBackoffBase   = time.Second
-	failureBackoffLimit  = 60 * time.Second
-	observationWindow    = 24 * time.Hour
-	observationBuckets   = 24
-	observationAlpha     = 0.35
-	recoveryWindow       = 2 * time.Minute
-	slowStartDuration    = 60 * time.Second
-	resolvedSlowStart    = 30 * time.Second
-	minRecentSamples     = 3
-	minRecoverSuccesses  = 2
-	minConfidence        = 0.25
-	coldExplorationPct   = 10
-	recoveringExplPct    = 15
-	combinedExplPct      = 20
-	slowStartMinFactor   = 0.30
-	outlierPenaltyFactor = 0.35
+	dnsCacheTTL                         = 30 * time.Second
+	failureBackoffBase                  = time.Second
+	failureBackoffLimit                 = 60 * time.Second
+	observationWindow                   = 24 * time.Hour
+	observationBuckets                  = 24
+	observationAlpha                    = 0.35
+	recoveryWindow                      = 2 * time.Minute
+	slowStartDuration                   = 60 * time.Second
+	resolvedSlowStart                   = 30 * time.Second
+	minRecentSamples                    = 3
+	minRecoverSuccesses                 = 2
+	minConfidence                       = 0.25
+	coldExplorationPct                  = 10
+	recoveringExplPct                   = 15
+	combinedExplPct                     = 20
+	slowStartMinFactor                  = 0.30
+	outlierPenaltyFactor                = 0.35
+	throughputSmallBytes          int64 = 128 * 1024
+	throughputLargeBytes          int64 = 1024 * 1024
+	throughputMinDuration               = 80 * time.Millisecond
+	mediumThroughputWeight              = 0.5
+	largeThroughputWeight               = 1.0
+	minQualifiedThroughputSamples       = 2
+	minQualifiedThroughputWeight        = 1.5
 )
 
 type Cache struct {
@@ -69,16 +76,21 @@ type candidateObservation struct {
 	slowStartUntil     time.Time
 	slowStartStartedAt time.Time
 	outlierUntil       time.Time
-	lastBandwidth      float64
-	bandwidthEstimate  float64
-	lastBandwidthAt    time.Time
+	lastThroughput     float64
+	throughputEstimate float64
+	lastThroughputAt   time.Time
 	lastUpdated        time.Time
 }
 
 type observationBucket struct {
-	hour      int64
-	successes int
-	failures  int
+	hour                       int64
+	successes                  int
+	failures                   int
+	smallWeight                float64
+	mediumWeight               float64
+	largeWeight                float64
+	qualifiedThroughputSamples int
+	qualifiedThroughputWeight  float64
 }
 
 type candidatePreference struct {
@@ -554,15 +566,18 @@ func (o *candidateObservation) recordSuccess(now time.Time, latency time.Duratio
 		o.latencyEstimate = blendDuration(o.latencyEstimate, latency)
 		o.lastSuccessAt = now
 	}
-	if totalDuration > 0 && bytesTransferred > 0 {
-		bandwidth := float64(bytesTransferred) / totalDuration.Seconds()
-		if bandwidth > 0 {
-			if o.bandwidthEstimate > 0 && bandwidth < 0.5*o.bandwidthEstimate {
+	weight, qualified, bucket := classifyThroughputSample(totalDuration, bytesTransferred)
+	o.recordTrafficMix(now, bucket, weight)
+	if qualified {
+		throughput := float64(bytesTransferred) / totalDuration.Seconds()
+		if throughput > 0 {
+			if o.throughputEstimate > 0 && throughput < 0.5*o.throughputEstimate {
 				o.outlierUntil = now.Add(30 * time.Second)
 			}
-			o.lastBandwidth = bandwidth
-			o.bandwidthEstimate = blendFloat(o.bandwidthEstimate, bandwidth)
-			o.lastBandwidthAt = now
+			o.lastThroughput = throughput
+			o.throughputEstimate = blendFloat(o.throughputEstimate, throughput)
+			o.lastThroughputAt = now
+			o.recordQualifiedThroughput(now, weight)
 		}
 	}
 	o.lastUpdated = now
@@ -588,6 +603,41 @@ func (o *candidateObservation) recordOutcome(now time.Time, success bool) {
 		return
 	}
 	o.counts[index].failures++
+}
+
+func (o *candidateObservation) recordTrafficMix(now time.Time, bucket string, weight float64) {
+	if bucket == "" || weight <= 0 {
+		return
+	}
+
+	entry := o.bucketFor(now)
+	switch bucket {
+	case "small":
+		entry.smallWeight += weight
+	case "medium":
+		entry.mediumWeight += weight
+	case "large":
+		entry.largeWeight += weight
+	}
+}
+
+func (o *candidateObservation) recordQualifiedThroughput(now time.Time, weight float64) {
+	if weight <= 0 {
+		return
+	}
+
+	entry := o.bucketFor(now)
+	entry.qualifiedThroughputSamples++
+	entry.qualifiedThroughputWeight += weight
+}
+
+func (o *candidateObservation) bucketFor(now time.Time) *observationBucket {
+	hour := now.UTC().Unix() / int64(time.Hour/time.Second)
+	index := int(hour % observationBuckets)
+	if o.counts[index].hour != hour {
+		o.counts[index] = observationBucket{hour: hour}
+	}
+	return &o.counts[index]
 }
 
 func (o candidateObservation) preference(now time.Time) candidatePreference {
@@ -696,8 +746,8 @@ func (o candidateObservation) isOutlier(now time.Time, failures int) bool {
 	if !o.outlierUntil.IsZero() && now.Before(o.outlierUntil) {
 		return true
 	}
-	if o.lastBandwidth > 0 && o.bandwidthEstimate > 0 {
-		return o.lastBandwidth < 0.5*o.bandwidthEstimate || o.lastBandwidth > 2.5*o.bandwidthEstimate
+	if o.lastThroughput > 0 && o.throughputEstimate > 0 {
+		return o.lastThroughput < 0.5*o.throughputEstimate || o.lastThroughput > 2.5*o.throughputEstimate
 	}
 	return false
 }
@@ -738,10 +788,42 @@ func (o candidateObservation) latencyFor(now time.Time) (time.Duration, bool) {
 }
 
 func (o candidateObservation) bandwidthFor(now time.Time) (float64, bool) {
-	if o.lastBandwidthAt.IsZero() || now.Sub(o.lastBandwidthAt) >= observationWindow || o.bandwidthEstimate <= 0 {
+	samples, weight := o.recentQualifiedThroughput(now)
+	if samples < minQualifiedThroughputSamples || weight < minQualifiedThroughputWeight {
 		return 0, false
 	}
-	return o.bandwidthEstimate, true
+	if o.lastThroughputAt.IsZero() || now.Sub(o.lastThroughputAt) >= observationWindow || o.throughputEstimate <= 0 {
+		return 0, false
+	}
+	return o.throughputEstimate, true
+}
+
+func (o candidateObservation) recentQualifiedThroughput(now time.Time) (int, float64) {
+	currentHour := now.UTC().Unix() / int64(time.Hour/time.Second)
+	var samples int
+	var weight float64
+	for _, bucket := range o.counts {
+		age := currentHour - bucket.hour
+		if age < 0 || age >= observationBuckets {
+			continue
+		}
+		samples += bucket.qualifiedThroughputSamples
+		weight += bucket.qualifiedThroughputWeight
+	}
+	return samples, weight
+}
+
+func classifyThroughputSample(transferDuration time.Duration, bytesTransferred int64) (float64, bool, string) {
+	if bytesTransferred <= 0 || transferDuration <= 0 {
+		return 0, false, ""
+	}
+	if bytesTransferred < throughputSmallBytes || transferDuration < throughputMinDuration {
+		return 1.0, false, "small"
+	}
+	if bytesTransferred < throughputLargeBytes {
+		return mediumThroughputWeight, true, "medium"
+	}
+	return largeThroughputWeight, true, "large"
 }
 
 func performanceScore(preference candidatePreference) float64 {

@@ -186,8 +186,12 @@ func TestCacheOrderAdaptiveUsesCombinedPerformanceNotLatencyOnly(t *testing.T) {
 		{Address: "fast"},
 	}
 
-	cache.ObserveBackendSuccess(BackendObservationKey(scope, "bulk"), 12*time.Millisecond, 100*time.Millisecond, 64*1024)
-	cache.ObserveBackendSuccess(BackendObservationKey(scope, "fast"), 18*time.Millisecond, 100*time.Millisecond, 2*1024*1024)
+	bulkKey := BackendObservationKey(scope, "bulk")
+	fastKey := BackendObservationKey(scope, "fast")
+	cache.ObserveBackendSuccess(bulkKey, 12*time.Millisecond, 100*time.Millisecond, 512*1024)
+	cache.ObserveBackendSuccess(bulkKey, 12*time.Millisecond, 100*time.Millisecond, 512*1024)
+	cache.ObserveBackendSuccess(fastKey, 18*time.Millisecond, 100*time.Millisecond, 2*1024*1024)
+	cache.ObserveBackendSuccess(fastKey, 18*time.Millisecond, 100*time.Millisecond, 2*1024*1024)
 
 	got := cache.Order(scope, StrategyAdaptive, candidates)
 	if ordered := addresses(got); !reflect.DeepEqual(ordered, []string{"fast", "bulk"}) {
@@ -303,6 +307,44 @@ func TestCacheSummaryReportsRecoveringStateAfterBackoffExpires(t *testing.T) {
 	}
 	if summary.TrafficShareHint != "recovery" {
 		t.Fatalf("TrafficShareHint = %q", summary.TrafficShareHint)
+	}
+}
+
+func TestCacheSummaryRequiresQualifiedThroughputSamples(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	cache := NewCache(Config{
+		Now: func() time.Time { return base },
+	})
+	addr := "10.0.0.40:443"
+
+	cache.ObserveTransferSuccess(addr, 20*time.Millisecond, 120*time.Millisecond, 2*1024*1024)
+
+	first := cache.Summary(addr)
+	if first.HasBandwidth {
+		t.Fatalf("expected throughput to stay hidden after one qualified sample: %+v", first)
+	}
+
+	cache.ObserveTransferSuccess(addr, 20*time.Millisecond, 120*time.Millisecond, 512*1024)
+
+	second := cache.Summary(addr)
+	if !second.HasBandwidth {
+		t.Fatalf("expected throughput after 2 qualified samples with total weight 1.5: %+v", second)
+	}
+}
+
+func TestCacheSummaryDoesNotPromoteSmallResponsesToQualifiedThroughput(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	cache := NewCache(Config{
+		Now: func() time.Time { return base },
+	})
+	addr := "10.0.0.41:443"
+
+	cache.ObserveTransferSuccess(addr, 20*time.Millisecond, 120*time.Millisecond, 2*1024*1024)
+	cache.ObserveTransferSuccess(addr, 20*time.Millisecond, 60*time.Millisecond, 2*1024*1024)
+
+	summary := cache.Summary(addr)
+	if summary.HasBandwidth {
+		t.Fatalf("small responses must not count toward qualified throughput readiness: %+v", summary)
 	}
 }
 
@@ -517,7 +559,7 @@ func TestCacheSummaryMarksOutlierBeforeHardBackoff(t *testing.T) {
 	for i := 0; i < 4; i++ {
 		cache.ObserveTransferSuccess(addr, 20*time.Millisecond, 200*time.Millisecond, 512*1024)
 	}
-	cache.ObserveTransferSuccess(addr, 600*time.Millisecond, 2*time.Second, 4*1024)
+	cache.ObserveTransferSuccess(addr, 600*time.Millisecond, 2*time.Second, 512*1024)
 
 	summary := cache.Summary(addr)
 	if !summary.Outlier {
@@ -786,7 +828,9 @@ func TestCachePreferResolvedCandidatesUsesBandwidthAfterStabilityAndLatency(t *t
 		{Address: "10.0.0.15:443"},
 	}
 
-	cache.ObserveTransferSuccess("10.0.0.14:443", 30*time.Millisecond, 100*time.Millisecond, 128*1024)
+	cache.ObserveTransferSuccess("10.0.0.14:443", 30*time.Millisecond, 100*time.Millisecond, 512*1024)
+	cache.ObserveTransferSuccess("10.0.0.14:443", 30*time.Millisecond, 100*time.Millisecond, 512*1024)
+	cache.ObserveTransferSuccess("10.0.0.15:443", 30*time.Millisecond, 100*time.Millisecond, 2*1024*1024)
 	cache.ObserveTransferSuccess("10.0.0.15:443", 30*time.Millisecond, 100*time.Millisecond, 2*1024*1024)
 
 	got := cache.PreferResolvedCandidates(candidates)
@@ -807,7 +851,9 @@ func TestCachePreferResolvedCandidatesUsesCombinedPerformanceNotLatencyOnly(t *t
 		{Address: "10.0.0.17:443"},
 	}
 
-	cache.ObserveTransferSuccess("10.0.0.16:443", 12*time.Millisecond, 100*time.Millisecond, 64*1024)
+	cache.ObserveTransferSuccess("10.0.0.16:443", 12*time.Millisecond, 100*time.Millisecond, 512*1024)
+	cache.ObserveTransferSuccess("10.0.0.16:443", 12*time.Millisecond, 100*time.Millisecond, 512*1024)
+	cache.ObserveTransferSuccess("10.0.0.17:443", 18*time.Millisecond, 100*time.Millisecond, 2*1024*1024)
 	cache.ObserveTransferSuccess("10.0.0.17:443", 18*time.Millisecond, 100*time.Millisecond, 2*1024*1024)
 
 	got := cache.PreferResolvedCandidates(candidates)
