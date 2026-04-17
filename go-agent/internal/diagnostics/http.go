@@ -152,7 +152,7 @@ func httpCandidates(ctx context.Context, cache *backends.Cache, rule model.HTTPR
 			return nil, err
 		}
 		parsed = append(parsed, target)
-		id := strconv.Itoa(i)
+		id := backends.StableBackendID(strings.TrimSpace(entry.URL))
 		placeholders = append(placeholders, backends.Candidate{Address: id})
 		indexByID[id] = i
 	}

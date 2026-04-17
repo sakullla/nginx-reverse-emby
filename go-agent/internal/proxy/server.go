@@ -330,10 +330,12 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 			if state, ok := e.shouldResumeResponse(attemptReq, resp); ok {
 				written, err := e.copyResumableResponse(w, attemptReq, resp, state)
 				if err != nil {
-					if candidate.backendObservationKey != "" {
-						e.backendCache.ObserveBackendFailure(candidate.backendObservationKey)
+					if attemptReq.Context().Err() == nil {
+						if candidate.backendObservationKey != "" {
+							e.backendCache.ObserveBackendFailure(candidate.backendObservationKey)
+						}
+						e.backendCache.MarkFailure(actualDialAddress)
 					}
-					e.backendCache.MarkFailure(actualDialAddress)
 					return err
 				}
 				e.observeSuccessfulBackend(candidate.backendObservationKey, actualDialAddress, headerLatency, time.Since(start), written)
@@ -341,10 +343,12 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 			}
 			written, err := copyResponse(w, resp)
 			if err != nil {
-				if candidate.backendObservationKey != "" {
-					e.backendCache.ObserveBackendFailure(candidate.backendObservationKey)
+				if attemptReq.Context().Err() == nil {
+					if candidate.backendObservationKey != "" {
+						e.backendCache.ObserveBackendFailure(candidate.backendObservationKey)
+					}
+					e.backendCache.MarkFailure(actualDialAddress)
 				}
-				e.backendCache.MarkFailure(actualDialAddress)
 				return newStartedResponseError(err)
 			}
 			e.observeSuccessfulBackend(candidate.backendObservationKey, actualDialAddress, headerLatency, time.Since(start), written)

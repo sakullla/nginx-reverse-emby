@@ -67,8 +67,13 @@
         </div>
 
         <div v-if="backendSummaries.length" class="diagnostic-modal__backends">
-          <div class="diagnostic-modal__section-title">后端延迟</div>
-          <div class="diagnostic-backend-list">
+          <button type="button" class="diagnostic-modal__section-title diagnostic-modal__section-title--toggle" @click="showBackends = !showBackends">
+            <span>后端延迟</span>
+            <span v-if="backendSummaries.length" class="diagnostic-modal__sample-count">{{ backendSummaries.length }} 个</span>
+            <span class="diagnostic-modal__toggle" :class="{ 'diagnostic-modal__toggle--open': showBackends }">▸</span>
+          </button>
+          <Transition name="slide-expand">
+          <div v-if="showBackends" class="diagnostic-backend-list">
             <article v-for="backend in backendSummaries" :key="backend.backend" class="diagnostic-backend-item">
               <div class="diagnostic-backend-item__header">
                 <code class="diagnostic-backend-item__name">{{ backend.backend }}</code>
@@ -109,33 +114,35 @@
                 <span class="diagnostic-backend-item__toggle-icon" :class="{ 'diagnostic-backend-item__toggle-icon--open': isAdaptiveExpanded(backend.backend) }">▸</span>
               </button>
 
-              <div v-show="isAdaptiveExpanded(backend.backend)" class="diagnostic-backend-item__details">
-                <div class="diagnostic-backend-item__details-grid">
-                  <div class="diagnostic-factor">
-                    <span class="diagnostic-factor__label">延迟</span>
-                    <strong class="diagnostic-factor__value">{{ backend.adaptive?.latency_ms ?? 0 }} ms</strong>
+              <Transition name="slide-expand">
+                <div v-if="isAdaptiveExpanded(backend.backend)" class="diagnostic-backend-item__details">
+                  <div class="diagnostic-backend-item__details-grid">
+                    <div class="diagnostic-factor">
+                      <span class="diagnostic-factor__label">延迟</span>
+                      <strong class="diagnostic-factor__value">{{ backend.adaptive?.latency_ms ?? 0 }} ms</strong>
+                    </div>
+                    <div class="diagnostic-factor">
+                      <span class="diagnostic-factor__label">评估带宽</span>
+                      <strong class="diagnostic-factor__value">{{ formatBandwidth(backend.adaptive?.estimated_bandwidth_bps) }}</strong>
+                    </div>
+                    <div class="diagnostic-factor">
+                      <span class="diagnostic-factor__label">综合性能</span>
+                      <strong class="diagnostic-factor__value">{{ formatScore(backend.adaptive?.performance_score) }}</strong>
+                    </div>
+                    <div class="diagnostic-factor">
+                      <span class="diagnostic-factor__label">异常检测</span>
+                      <strong class="diagnostic-factor__value">{{ outlierLabel(backend.adaptive?.outlier) }}</strong>
+                    </div>
+                    <div class="diagnostic-factor">
+                      <span class="diagnostic-factor__label">流量阶段</span>
+                      <strong class="diagnostic-factor__value">{{ trafficShareLabel(backend.adaptive?.traffic_share_hint) }}</strong>
+                    </div>
                   </div>
-                  <div class="diagnostic-factor">
-                    <span class="diagnostic-factor__label">评估带宽</span>
-                    <strong class="diagnostic-factor__value">{{ formatBandwidth(backend.adaptive?.estimated_bandwidth_bps) }}</strong>
-                  </div>
-                  <div class="diagnostic-factor">
-                    <span class="diagnostic-factor__label">综合性能</span>
-                    <strong class="diagnostic-factor__value">{{ formatScore(backend.adaptive?.performance_score) }}</strong>
-                  </div>
-                  <div class="diagnostic-factor">
-                    <span class="diagnostic-factor__label">异常检测</span>
-                    <strong class="diagnostic-factor__value">{{ outlierLabel(backend.adaptive?.outlier) }}</strong>
-                  </div>
-                  <div class="diagnostic-factor">
-                    <span class="diagnostic-factor__label">流量阶段</span>
-                    <strong class="diagnostic-factor__value">{{ trafficShareLabel(backend.adaptive?.traffic_share_hint) }}</strong>
+                  <div v-if="backend.adaptive?.reason" class="diagnostic-backend-item__reason">
+                    原因: {{ reasonLabel(backend.adaptive?.reason) }}
                   </div>
                 </div>
-                <div v-if="backend.adaptive?.reason" class="diagnostic-backend-item__reason">
-                  原因: {{ reasonLabel(backend.adaptive?.reason) }}
-                </div>
-              </div>
+              </Transition>
 
               <div v-if="backend.children?.length" class="diagnostic-backend-item__children">
                 <div class="diagnostic-backend-item__child-title">已解析候选</div>
@@ -152,6 +159,7 @@
               </div>
             </article>
           </div>
+          </Transition>
         </div>
 
         <div class="diagnostic-modal__samples">
@@ -206,6 +214,7 @@ const tone = computed(() => diagnosticStateTone(state.value))
 const agentLabel = computed(() => props.task?.agent_id || '')
 const isHTTP = computed(() => props.kind === 'http')
 const showSamples = ref(false)
+const showBackends = ref(false)
 const expandedAdaptive = ref(new Set())
 
 function toggleAdaptive(backendName) {
@@ -332,7 +341,10 @@ function qualityToneFor(value) {
 </script>
 
 <style scoped>
+/* ── Layout ── */
 .diagnostic-modal { display: flex; flex-direction: column; gap: 1rem; }
+
+/* ── Hero ── */
 .diagnostic-modal__hero {
   display: flex;
   justify-content: space-between;
@@ -340,31 +352,44 @@ function qualityToneFor(value) {
   padding: 1rem 1.1rem;
   border-radius: 16px;
   background: var(--color-bg-surface);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
   border: 1px solid var(--color-border-default);
   box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
   position: relative;
   overflow: hidden;
 }
-.diagnostic-modal__hero::before {
+.diagnostic-modal__hero::after {
   content: '';
   position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 4px;
-  background: var(--color-primary);
-  opacity: 0.6;
+  top: -24px;
+  right: -24px;
+  width: 100px;
+  height: 100px;
+  background: radial-gradient(circle, var(--color-primary-subtle) 0%, transparent 70%);
+  opacity: 0.7;
+  pointer-events: none;
 }
-.diagnostic-modal__hero-text { min-width: 0; }
+.diagnostic-modal__hero-text { min-width: 0; position: relative; }
 .diagnostic-modal__eyebrow { font-size: 0.7rem; letter-spacing: 0.08em; color: var(--color-text-tertiary); font-weight: 600; }
 .diagnostic-modal__headline { margin: 0.2rem 0 0.25rem; font-size: 1rem; font-weight: 700; color: var(--color-text-primary); line-height: 1.35; }
 .diagnostic-modal__subtitle { margin: 0; font-family: var(--font-mono); font-size: 0.78rem; color: var(--color-text-secondary); word-break: break-all; line-height: 1.4; }
 .diagnostic-modal__meta { margin: 0.3rem 0 0; font-size: 0.72rem; color: var(--color-text-tertiary); }
-.diagnostic-modal__state { align-self: flex-start; padding: 0.25rem 0.65rem; border-radius: 999px; font-size: 0.75rem; font-weight: 700; border: 1px solid transparent; }
-.diagnostic-modal__state--success { background: rgba(16, 185, 129, 0.12); color: var(--color-success); border-color: rgba(16, 185, 129, 0.25); }
-.diagnostic-modal__state--danger { background: rgba(239, 68, 68, 0.12); color: var(--color-danger); border-color: rgba(239, 68, 68, 0.25); }
-.diagnostic-modal__state--info { background: rgba(56, 189, 248, 0.12); color: var(--color-primary); border-color: rgba(56, 189, 248, 0.25); }
+.diagnostic-modal__state {
+  align-self: flex-start;
+  padding: 0.25rem 0.65rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  border: 1px solid transparent;
+  position: relative;
+}
+.diagnostic-modal__state--success { background: rgba(16, 185, 129, 0.12); color: var(--color-success); border-color: rgba(16, 185, 129, 0.25); box-shadow: 0 0 10px rgba(16, 185, 129, 0.12); }
+.diagnostic-modal__state--danger { background: rgba(239, 68, 68, 0.12); color: var(--color-danger); border-color: rgba(239, 68, 68, 0.25); box-shadow: 0 0 10px rgba(239, 68, 68, 0.12); }
+.diagnostic-modal__state--info { background: rgba(56, 189, 248, 0.12); color: var(--color-primary); border-color: rgba(56, 189, 248, 0.25); box-shadow: 0 0 10px rgba(56, 189, 248, 0.12); }
 .diagnostic-modal__state--muted { background: var(--color-bg-hover); color: var(--color-text-muted); border-color: var(--color-border-subtle); }
+
+/* ── Loading / Error ── */
 .diagnostic-modal__loading, .diagnostic-modal__error {
   display: flex;
   align-items: center;
@@ -372,6 +397,8 @@ function qualityToneFor(value) {
   padding: 0.875rem 1rem;
   border-radius: 14px;
   background: var(--color-bg-hover);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
   border: 1px solid var(--color-border-subtle);
 }
 .diagnostic-modal__error { color: var(--color-danger); border-color: rgba(239, 68, 68, 0.25); }
@@ -380,11 +407,13 @@ function qualityToneFor(value) {
   height: 14px;
   border-radius: 50%;
   background: var(--color-primary);
-  box-shadow: 0 0 0 rgba(13, 148, 136, 0.35);
+  box-shadow: 0 0 12px rgba(13, 148, 136, 0.4);
   animation: diag-pulse 1.5s infinite;
 }
 .diagnostic-modal__loading-title { font-weight: 700; color: var(--color-text-primary); }
 .diagnostic-modal__loading-text { font-size: 0.82rem; color: var(--color-text-secondary); }
+
+/* ── Stats Grid ── */
 .diagnostic-modal__stats {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -399,12 +428,15 @@ function qualityToneFor(value) {
   padding: 0.65rem 0.8rem;
   border-radius: 12px;
   background: var(--color-bg-surface);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
   border: 1px solid var(--color-border-subtle);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
   display: flex;
   flex-direction: column;
   gap: 0.15rem;
 }
-.diagnostic-stat__label { font-size: 0.68rem; color: var(--color-text-tertiary); font-weight: 500; }
+.diagnostic-stat__label { font-size: 0.68rem; color: var(--color-primary); font-weight: 500; }
 .diagnostic-stat__value { font-size: 0.95rem; color: var(--color-text-primary); font-weight: 700; }
 .diagnostic-stat__value--caps { text-transform: uppercase; letter-spacing: 0.06em; font-size: 0.88rem; }
 .diagnostic-stat__value--success { color: var(--color-success); }
@@ -412,6 +444,8 @@ function qualityToneFor(value) {
 .diagnostic-stat__value--warning { color: var(--color-warning); }
 .diagnostic-stat__value--danger { color: var(--color-danger); }
 .diagnostic-stat__value--muted { color: var(--color-text-muted); }
+
+/* ── Latency Bar ── */
 .diagnostic-modal__range {
   padding: 0 0.1rem;
 }
@@ -426,6 +460,7 @@ function qualityToneFor(value) {
   height: 100%;
   border-radius: 999px;
   background: linear-gradient(90deg, var(--color-success), var(--color-primary));
+  box-shadow: 0 0 8px var(--color-primary-subtle);
   transition: width 0.4s ease;
 }
 .latency-bar__labels {
@@ -434,6 +469,8 @@ function qualityToneFor(value) {
   font-size: 0.78rem;
   color: var(--color-text-tertiary);
 }
+
+/* ── Backend Cards ── */
 .diagnostic-modal__backends {
   display: flex;
   flex-direction: column;
@@ -445,19 +482,36 @@ function qualityToneFor(value) {
   gap: 0.5rem;
 }
 .diagnostic-backend-item {
-  padding: 0.75rem 0.85rem;
-  border-radius: 12px;
-  background: var(--color-bg-surface);
+  padding: 0.85rem 1rem;
+  border-radius: 16px;
+  background: linear-gradient(135deg, var(--color-primary-subtle) 0%, rgba(0,0,0,0) 100%);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
   border: 1px solid var(--color-border-subtle);
+  box-shadow: 0 2px 16px rgba(0,0,0,0.08), inset 0 1px 0 rgba(255,255,255,0.04);
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
+  position: relative;
+  overflow: hidden;
+}
+.diagnostic-backend-item::after {
+  content: '';
+  position: absolute;
+  top: -20px;
+  right: -20px;
+  width: 80px;
+  height: 80px;
+  background: radial-gradient(circle, var(--color-primary-subtle) 0%, transparent 70%);
+  opacity: 0.6;
+  pointer-events: none;
 }
 .diagnostic-backend-item__header {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 0.75rem;
+  position: relative;
 }
 .diagnostic-backend-item__name {
   font-family: var(--font-mono);
@@ -474,52 +528,58 @@ function qualityToneFor(value) {
 .diagnostic-backend-item__preferred {
   display: inline-flex;
   align-items: center;
-  padding: 2px 8px;
+  padding: 2px 10px;
   border-radius: 999px;
-  font-size: 0.65rem;
+  font-size: 0.62rem;
   font-weight: 700;
-  background: rgba(16, 185, 129, 0.12);
+  background: linear-gradient(135deg, rgba(16, 185, 129, 0.15), rgba(16, 185, 129, 0.08));
   color: var(--color-success);
-  border: 1px solid rgba(16, 185, 129, 0.2);
+  border: 1px solid rgba(16, 185, 129, 0.25);
+  box-shadow: 0 0 8px rgba(16, 185, 129, 0.1);
 }
 .diagnostic-backend-item__quality {
   flex-shrink: 0;
-  font-size: 0.65rem;
+  font-size: 0.62rem;
   font-weight: 700;
-  padding: 2px 8px;
+  padding: 2px 10px;
   border-radius: 999px;
   background: var(--color-bg-hover);
   color: var(--color-text-muted);
 }
-.diagnostic-backend-item__quality--success { background: var(--color-success-50); color: var(--color-success); }
-.diagnostic-backend-item__quality--info { background: rgba(56, 189, 248, 0.12); color: var(--color-primary); }
-.diagnostic-backend-item__quality--warning { background: var(--color-warning-50); color: var(--color-warning); }
-.diagnostic-backend-item__quality--danger { background: var(--color-danger-50); color: var(--color-danger); }
+.diagnostic-backend-item__quality--success { background: linear-gradient(135deg, rgba(16,185,129,0.14), rgba(16,185,129,0.07)); color: var(--color-success); box-shadow: 0 0 8px rgba(16,185,129,0.08); }
+.diagnostic-backend-item__quality--info { background: linear-gradient(135deg, rgba(56,189,248,0.14), rgba(56,189,248,0.07)); color: var(--color-primary); box-shadow: 0 0 8px rgba(56,189,248,0.08); }
+.diagnostic-backend-item__quality--warning { background: linear-gradient(135deg, rgba(217,119,6,0.14), rgba(217,119,6,0.07)); color: var(--color-warning); box-shadow: 0 0 8px rgba(217,119,6,0.08); }
+.diagnostic-backend-item__quality--danger { background: linear-gradient(135deg, rgba(239,68,68,0.14), rgba(239,68,68,0.07)); color: var(--color-danger); box-shadow: 0 0 8px rgba(239,68,68,0.08); }
+
+/* ── Metrics Grid ── */
 .diagnostic-backend-item__metrics {
   display: flex;
   gap: 0.4rem;
 }
- .diagnostic-metric {
+.diagnostic-metric {
   flex: 1 1 0;
   min-width: 0;
-  padding: 0.35rem 0.45rem;
-  border-radius: 8px;
-  background: rgba(0,0,0,0.02);
+  padding: 0.4rem 0.5rem;
+  border-radius: 10px;
+  background: var(--color-primary-subtle);
   border: 1px solid var(--color-border-subtle);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
   display: flex;
   flex-direction: column;
   gap: 0.05rem;
 }
 .diagnostic-metric__label {
-  font-size: 0.62rem;
-  color: var(--color-text-tertiary);
+  font-size: 0.6rem;
+  color: var(--color-primary);
   font-weight: 500;
 }
 .diagnostic-metric__value {
-  font-size: 0.82rem;
+  font-size: 0.84rem;
   color: var(--color-text-primary);
-  font-weight: 600;
+  font-weight: 700;
 }
+
+/* ── Probe Stats ── */
 .diagnostic-backend-item__probe {
   display: flex;
   align-items: center;
@@ -528,34 +588,56 @@ function qualityToneFor(value) {
   color: var(--color-text-secondary);
 }
 .diagnostic-backend-item__probe-stat strong {
-  color: var(--color-text-primary);
+  color: var(--color-primary);
   font-weight: 600;
 }
+
+/* ── Toggle Button ── */
 .diagnostic-backend-item__toggle {
   align-self: flex-start;
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
-  padding: 0.25rem 0.55rem;
+  padding: 0.22rem 0.6rem;
   border-radius: 8px;
   border: 1px solid var(--color-border-subtle);
-  background: rgba(0,0,0,0.02);
-  color: var(--color-text-secondary);
+  background: var(--color-primary-subtle);
+  color: var(--color-primary);
   font-size: 0.72rem;
   cursor: pointer;
-  transition: background 0.15s ease;
+  transition: background 0.15s ease, box-shadow 0.15s ease;
 }
 .diagnostic-backend-item__toggle:hover {
-  background: rgba(0,0,0,0.05);
+  background: var(--color-bg-hover);
+  box-shadow: 0 0 6px var(--color-primary-subtle);
 }
 .diagnostic-backend-item__toggle-icon {
-  font-size: 0.75rem;
-  color: var(--color-text-tertiary);
-  transition: transform 0.2s ease;
+  font-size: 0.7rem;
+  color: var(--color-primary);
+  transition: transform 0.25s ease;
 }
 .diagnostic-backend-item__toggle-icon--open {
   transform: rotate(90deg);
 }
+
+/* ── Expand/Collapse Animation ── */
+.slide-expand-enter-active,
+.slide-expand-leave-active {
+  transition: max-height 0.3s ease, opacity 0.25s ease;
+  overflow: hidden;
+}
+.slide-expand-enter-from,
+.slide-expand-leave-to {
+  max-height: 0;
+  opacity: 0;
+}
+.slide-expand-enter-to,
+.slide-expand-leave-from {
+  max-height: 400px;
+  opacity: 1;
+}
+
+/* ── Details (expanded) ── */
 .diagnostic-backend-item__details {
   display: flex;
   flex-direction: column;
@@ -575,6 +657,8 @@ function qualityToneFor(value) {
   font-size: 0.72rem;
   color: var(--color-text-secondary);
 }
+
+/* ── Children ── */
 .diagnostic-backend-item__children {
   display: flex;
   flex-direction: column;
@@ -618,23 +702,29 @@ function qualityToneFor(value) {
   color: var(--color-text-secondary);
   white-space: nowrap;
 }
+
+/* ── Factor (in expanded details) ── */
 .diagnostic-factor {
   padding: 0.4rem 0.5rem;
-  border-radius: 8px;
-  background: rgba(0,0,0,0.02);
+  border-radius: 10px;
+  background: var(--color-primary-subtle);
   border: 1px solid var(--color-border-subtle);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
   display: flex;
   flex-direction: column;
   gap: 0.1rem;
 }
 .diagnostic-factor__label {
-  font-size: 0.65rem;
-  color: var(--color-text-tertiary);
+  font-size: 0.6rem;
+  color: var(--color-primary);
+  font-weight: 500;
 }
 .diagnostic-factor__value {
   font-size: 0.82rem;
   color: var(--color-text-primary);
 }
+
+/* ── Section Titles ── */
 .diagnostic-modal__section-title { font-weight: 700; color: var(--color-text-primary); margin-bottom: 0.35rem; display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; }
 .diagnostic-modal__section-title--toggle {
   width: 100%;
@@ -653,14 +743,19 @@ function qualityToneFor(value) {
 .diagnostic-modal__toggle { font-size: 0.85rem; color: var(--color-text-tertiary); transition: transform 0.2s ease; margin-left: auto; }
 .diagnostic-modal__toggle--open { transform: rotate(90deg); }
 .diagnostic-modal__sample-count { font-size: 0.68rem; font-weight: 600; color: var(--color-text-tertiary); background: var(--color-bg-hover); padding: 2px 7px; border-radius: 999px; }
+
+/* ── Samples ── */
 .diagnostic-modal__samples { display: flex; flex-direction: column; }
 .diagnostic-sample-list {
   max-height: 220px;
   overflow-y: auto;
   border: 1px solid var(--color-border-subtle);
-  border-radius: 12px;
+  border-radius: 14px;
   padding: 0.3rem 0.4rem;
   background: var(--color-bg-surface);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
 }
 .diagnostic-sample-list::-webkit-scrollbar { width: 6px; }
 .diagnostic-sample-list::-webkit-scrollbar-thumb { background: var(--color-border-default); border-radius: 3px; }
@@ -709,9 +804,11 @@ function qualityToneFor(value) {
   font-family: var(--font-mono);
 }
 .diagnostic-sample--failed .diagnostic-sample__right { font-weight: 500; }
+
+/* ── Pulse Animation ── */
 @keyframes diag-pulse {
-  0% { box-shadow: 0 0 0 0 rgba(13, 148, 136, 0.35); }
-  70% { box-shadow: 0 0 0 14px rgba(13, 148, 136, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(13, 148, 256, 0); }
+  0% { box-shadow: 0 0 0 0 rgba(13, 148, 136, 0.4); }
+  70% { box-shadow: 0 0 14px 8px rgba(13, 148, 136, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(13, 148, 136, 0); }
 }
 </style>

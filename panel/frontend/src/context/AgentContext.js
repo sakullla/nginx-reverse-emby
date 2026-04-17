@@ -21,7 +21,7 @@ export const AgentProvider = defineComponent({
         selectedAgentId.value = id
         localStorage.setItem('selected_agent_id', id)
       }
-    })
+    }, { immediate: true })
 
     // useAgents is owned here so we can validate whenever the agents list updates
     const { data: agentsData } = useAgents()

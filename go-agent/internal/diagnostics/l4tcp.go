@@ -123,7 +123,7 @@ func tcpCandidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule
 	placeholders := make([]backends.Candidate, 0, len(rawBackends))
 	indexByID := make(map[string]int, len(rawBackends))
 	for i := range rawBackends {
-		id := strconv.Itoa(i)
+		id := backends.StableBackendID(net.JoinHostPort(rawBackends[i].Host, strconv.Itoa(rawBackends[i].Port)))
 		placeholders = append(placeholders, backends.Candidate{Address: id})
 		indexByID[id] = i
 	}
