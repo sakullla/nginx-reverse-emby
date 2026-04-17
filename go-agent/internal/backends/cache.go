@@ -571,13 +571,14 @@ func (o *candidateObservation) recordSuccess(now time.Time, latency time.Duratio
 	if qualified {
 		throughput := float64(bytesTransferred) / totalDuration.Seconds()
 		if throughput > 0 {
-			if o.throughputEstimate > 0 && throughput < 0.5*o.throughputEstimate {
-				o.outlierUntil = now.Add(30 * time.Second)
-			}
+			previousEstimate := o.throughputEstimate
 			o.lastThroughput = throughput
 			o.throughputEstimate = blendFloat(o.throughputEstimate, throughput)
 			o.lastThroughputAt = now
 			o.recordQualifiedThroughput(now, weight)
+			if o.qualifiedThroughputReady(now) && previousEstimate > 0 && (throughput < 0.5*previousEstimate || throughput > 2.5*previousEstimate) {
+				o.outlierUntil = now.Add(30 * time.Second)
+			}
 		}
 	}
 	o.lastUpdated = now
@@ -743,6 +744,9 @@ func (o candidateObservation) state(now time.Time, recentSuccesses, recentFailur
 }
 
 func (o candidateObservation) isOutlier(now time.Time, failures int) bool {
+	if !o.qualifiedThroughputReady(now) {
+		return false
+	}
 	if !o.outlierUntil.IsZero() && now.Before(o.outlierUntil) {
 		return true
 	}
@@ -788,14 +792,21 @@ func (o candidateObservation) latencyFor(now time.Time) (time.Duration, bool) {
 }
 
 func (o candidateObservation) bandwidthFor(now time.Time) (float64, bool) {
-	samples, weight := o.recentQualifiedThroughput(now)
-	if samples < minQualifiedThroughputSamples || weight < minQualifiedThroughputWeight {
-		return 0, false
-	}
-	if o.lastThroughputAt.IsZero() || now.Sub(o.lastThroughputAt) >= observationWindow || o.throughputEstimate <= 0 {
+	if !o.qualifiedThroughputReady(now) {
 		return 0, false
 	}
 	return o.throughputEstimate, true
+}
+
+func (o candidateObservation) qualifiedThroughputReady(now time.Time) bool {
+	samples, weight := o.recentQualifiedThroughput(now)
+	if samples < minQualifiedThroughputSamples || weight < minQualifiedThroughputWeight {
+		return false
+	}
+	if o.lastThroughputAt.IsZero() || now.Sub(o.lastThroughputAt) >= observationWindow || o.throughputEstimate <= 0 {
+		return false
+	}
+	return true
 }
 
 func (o candidateObservation) recentQualifiedThroughput(now time.Time) (int, float64) {

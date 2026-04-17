@@ -348,6 +348,25 @@ func TestCacheSummaryDoesNotPromoteSmallResponsesToQualifiedThroughput(t *testin
 	}
 }
 
+func TestCacheSummaryKeepsMediumOnlyThroughputHidden(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	cache := NewCache(Config{
+		Now: func() time.Time { return base },
+	})
+	addr := "10.0.0.42:443"
+
+	cache.ObserveTransferSuccess(addr, 20*time.Millisecond, 100*time.Millisecond, 512*1024)
+	cache.ObserveTransferSuccess(addr, 20*time.Millisecond, 1500*time.Millisecond, 512*1024)
+
+	summary := cache.Summary(addr)
+	if summary.HasBandwidth {
+		t.Fatalf("two medium samples must keep throughput hidden until total qualified weight reaches 1.5: %+v", summary)
+	}
+	if summary.Outlier {
+		t.Fatalf("hidden throughput must not surface as an outlier before readiness: %+v", summary)
+	}
+}
+
 func TestCacheObserveBackendFailureUsesScopedRecoveryState(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
 	now := base
@@ -567,6 +586,88 @@ func TestCacheSummaryMarksOutlierBeforeHardBackoff(t *testing.T) {
 	}
 	if summary.InBackoff {
 		t.Fatalf("expected outlier demotion before hard backoff: %+v", summary)
+	}
+}
+
+func TestCachePreferResolvedCandidatesIgnoresUnqualifiedThroughputOutliers(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return base
+		},
+		RandomIntn: func(n int) int {
+			return n - 1
+		},
+	})
+	candidates := []Candidate{
+		{Address: "10.0.0.24:443"},
+		{Address: "10.0.0.25:443"},
+	}
+
+	cache.ObserveTransferSuccess("10.0.0.24:443", 40*time.Millisecond, 40*time.Millisecond, 64*1024)
+	cache.ObserveTransferSuccess("10.0.0.24:443", 40*time.Millisecond, 40*time.Millisecond, 64*1024)
+	cache.ObserveTransferSuccess("10.0.0.24:443", 40*time.Millisecond, 40*time.Millisecond, 64*1024)
+
+	cache.ObserveTransferSuccess("10.0.0.25:443", 20*time.Millisecond, 40*time.Millisecond, 64*1024)
+	cache.ObserveTransferSuccess("10.0.0.25:443", 20*time.Millisecond, 100*time.Millisecond, 512*1024)
+	cache.ObserveTransferSuccess("10.0.0.25:443", 20*time.Millisecond, 1500*time.Millisecond, 512*1024)
+
+	got := cache.PreferResolvedCandidates(candidates)
+	if !reflect.DeepEqual(addresses(got), []string{"10.0.0.25:443", "10.0.0.24:443"}) {
+		t.Fatalf("unexpected preferred order when throughput is still unqualified: %v", addresses(got))
+	}
+}
+
+func TestClassifyThroughputSampleBoundaries(t *testing.T) {
+	tests := []struct {
+		name       string
+		duration   time.Duration
+		bytes      int64
+		wantWeight float64
+		wantReady  bool
+		wantBucket string
+	}{
+		{
+			name:       "exact small byte and duration threshold becomes medium",
+			duration:   80 * time.Millisecond,
+			bytes:      128 * 1024,
+			wantWeight: mediumThroughputWeight,
+			wantReady:  true,
+			wantBucket: "medium",
+		},
+		{
+			name:       "exact large byte threshold becomes large",
+			duration:   80 * time.Millisecond,
+			bytes:      1024 * 1024,
+			wantWeight: largeThroughputWeight,
+			wantReady:  true,
+			wantBucket: "large",
+		},
+		{
+			name:       "just below byte threshold stays small",
+			duration:   80 * time.Millisecond,
+			bytes:      128*1024 - 1,
+			wantWeight: 1.0,
+			wantReady:  false,
+			wantBucket: "small",
+		},
+		{
+			name:       "just below duration threshold stays small",
+			duration:   80*time.Millisecond - time.Nanosecond,
+			bytes:      128 * 1024,
+			wantWeight: 1.0,
+			wantReady:  false,
+			wantBucket: "small",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotWeight, gotReady, gotBucket := classifyThroughputSample(tt.duration, tt.bytes)
+			if gotWeight != tt.wantWeight || gotReady != tt.wantReady || gotBucket != tt.wantBucket {
+				t.Fatalf("classifyThroughputSample(%s, %d) = (%v, %v, %q), want (%v, %v, %q)", tt.duration, tt.bytes, gotWeight, gotReady, gotBucket, tt.wantWeight, tt.wantReady, tt.wantBucket)
+			}
+		})
 	}
 }
 
