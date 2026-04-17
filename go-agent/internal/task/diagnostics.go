@@ -155,21 +155,24 @@ func backendReportToMap(backend diagnostics.BackendReport) map[string]any {
 		},
 	}
 	if backend.Adaptive != nil {
-		payload["adaptive"] = map[string]any{
-			"preferred":               backend.Adaptive.Preferred,
-			"reason":                  backend.Adaptive.Reason,
-			"stability":               backend.Adaptive.Stability,
-			"recent_succeeded":        backend.Adaptive.RecentSucceeded,
-			"recent_failed":           backend.Adaptive.RecentFailed,
-			"latency_ms":              backend.Adaptive.LatencyMS,
-			"estimated_bandwidth_bps": backend.Adaptive.EstimatedBandwidthBps,
-			"performance_score":       backend.Adaptive.PerformanceScore,
-			"state":                   backend.Adaptive.State,
-			"sample_confidence":       backend.Adaptive.SampleConfidence,
-			"slow_start_active":       backend.Adaptive.SlowStartActive,
-			"outlier":                 backend.Adaptive.Outlier,
-			"traffic_share_hint":      backend.Adaptive.TrafficShareHint,
+		adaptivePayload := map[string]any{
+			"preferred":          backend.Adaptive.Preferred,
+			"reason":             backend.Adaptive.Reason,
+			"stability":          backend.Adaptive.Stability,
+			"recent_succeeded":   backend.Adaptive.RecentSucceeded,
+			"recent_failed":      backend.Adaptive.RecentFailed,
+			"latency_ms":         backend.Adaptive.LatencyMS,
+			"performance_score":  backend.Adaptive.PerformanceScore,
+			"state":              backend.Adaptive.State,
+			"sample_confidence":  backend.Adaptive.SampleConfidence,
+			"slow_start_active":  backend.Adaptive.SlowStartActive,
+			"outlier":            backend.Adaptive.Outlier,
+			"traffic_share_hint": backend.Adaptive.TrafficShareHint,
 		}
+		if backend.Adaptive.EstimatedBandwidthBps > 0 {
+			adaptivePayload["estimated_bandwidth_bps"] = backend.Adaptive.EstimatedBandwidthBps
+		}
+		payload["adaptive"] = adaptivePayload
 	}
 	if len(backend.Children) > 0 {
 		children := make([]map[string]any, 0, len(backend.Children))

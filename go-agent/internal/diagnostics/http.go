@@ -252,7 +252,7 @@ func buildHTTPAdaptiveReports(reports []BackendReport, candidates []httpProbeCan
 		}
 		children := configuredChildren[configured]
 		if len(children) <= 1 {
-			report.Adaptive = adaptiveSummaryFromObservation(configuredSummary[configured], false, "")
+			report.Adaptive = adaptiveSummaryFromObservation(configuredSummary[configured], false, "", true)
 			annotated = append(annotated, report)
 			continue
 		}
@@ -267,7 +267,7 @@ func buildHTTPAdaptiveReports(reports []BackendReport, candidates []httpProbeCan
 		parent := BackendReport{
 			Backend:  configured,
 			Summary:  mergeChildSummaries(children, reportByLabel),
-			Adaptive: adaptiveSummaryFromObservation(configuredSummary[configured], isPreferred, preferredReason(isPreferred)),
+			Adaptive: adaptiveSummaryFromObservation(configuredSummary[configured], isPreferred, preferredReason(isPreferred), true),
 			Children: make([]BackendReport, 0, len(children)),
 		}
 		for index, child := range children {
@@ -275,7 +275,7 @@ func buildHTTPAdaptiveReports(reports []BackendReport, candidates []httpProbeCan
 			parent.Children = append(parent.Children, BackendReport{
 				Backend:  child.label,
 				Summary:  childReport.Summary,
-				Adaptive: adaptiveSummaryFromObservation(cache.Summary(child.dialAddress), index == 0, preferredReason(index == 0)),
+				Adaptive: adaptiveSummaryFromObservation(cache.Summary(child.dialAddress), index == 0, preferredReason(index == 0), true),
 			})
 		}
 		annotated = append(annotated, parent)
@@ -330,26 +330,29 @@ func mergeChildSummaries(children []httpResolvedCandidate, reports map[string]Ba
 	return summary
 }
 
-func adaptiveSummaryFromObservation(summary backends.ObservationSummary, preferred bool, reason string) *AdaptiveSummary {
+func adaptiveSummaryFromObservation(summary backends.ObservationSummary, preferred bool, reason string, includeThroughput bool) *AdaptiveSummary {
 	latencyMS := 0.0
 	if summary.HasLatency {
 		latencyMS = roundMetric(float64(summary.Latency) / float64(time.Millisecond))
 	}
-	return &AdaptiveSummary{
-		Preferred:             preferred,
-		Reason:                reason,
-		Stability:             roundMetric(summary.Stability),
-		RecentSucceeded:       summary.RecentSucceeded,
-		RecentFailed:          summary.RecentFailed,
-		LatencyMS:             latencyMS,
-		EstimatedBandwidthBps: roundMetric(summary.Bandwidth),
-		PerformanceScore:      roundMetric(summary.PerformanceScore),
-		State:                 summary.State,
-		SampleConfidence:      roundMetric(summary.SampleConfidence),
-		SlowStartActive:       summary.SlowStartActive,
-		Outlier:               summary.Outlier,
-		TrafficShareHint:      summary.TrafficShareHint,
+	adaptive := &AdaptiveSummary{
+		Preferred:        preferred,
+		Reason:           reason,
+		Stability:        roundMetric(summary.Stability),
+		RecentSucceeded:  summary.RecentSucceeded,
+		RecentFailed:     summary.RecentFailed,
+		LatencyMS:        latencyMS,
+		PerformanceScore: roundMetric(summary.PerformanceScore),
+		State:            summary.State,
+		SampleConfidence: roundMetric(summary.SampleConfidence),
+		SlowStartActive:  summary.SlowStartActive,
+		Outlier:          summary.Outlier,
+		TrafficShareHint: summary.TrafficShareHint,
 	}
+	if includeThroughput && summary.HasBandwidth {
+		adaptive.EstimatedBandwidthBps = roundMetric(summary.Bandwidth)
+	}
+	return adaptive
 }
 
 func preferredReason(preferred bool) string {

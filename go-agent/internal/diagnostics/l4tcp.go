@@ -195,11 +195,11 @@ func buildTCPAdaptiveReports(reports []BackendReport, candidates []tcpProbeCandi
 		if !ok {
 			continue
 		}
-		report.Adaptive = adaptiveSummaryFromObservation(cache.Summary(tcpAdaptiveSummaryKey(candidate)), false, "")
+		report.Adaptive = adaptiveSummaryFromObservation(cache.Summary(tcpAdaptiveSummaryKey(candidate)), false, "", false)
 		annotated = append(annotated, report)
 	}
 	if len(annotated) > 0 {
-		annotated[0].Adaptive = adaptiveSummaryFromObservation(cache.Summary(tcpAdaptiveSummaryKey(candidates[0])), true, "performance_higher")
+		annotated[0].Adaptive = adaptiveSummaryFromObservation(cache.Summary(tcpAdaptiveSummaryKey(candidates[0])), true, "performance_higher", false)
 	}
 	return annotated
 }

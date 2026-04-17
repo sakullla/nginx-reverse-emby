@@ -303,6 +303,45 @@ func TestTCPProberDiagnoseUsesSharedAdaptiveRecoverySummary(t *testing.T) {
 	}
 }
 
+func TestTCPProberDiagnoseOmitsEstimatedBandwidthFromAdaptiveSummary(t *testing.T) {
+	addr, _, stopTarget := startDiagnosticTCPTarget(t)
+	defer stopTarget()
+
+	host, port := splitDiagnosticTCPAddr(t, addr)
+	cache := backends.NewCache(backends.Config{})
+	scope := "tcp:0.0.0.0:9880"
+	backendKey := backends.BackendObservationKey(scope, backends.StableBackendID(net.JoinHostPort(host, strconv.Itoa(port))))
+	cache.ObserveBackendSuccess(backendKey, 20*time.Millisecond, 100*time.Millisecond, 512*1024)
+	cache.ObserveBackendSuccess(backendKey, 20*time.Millisecond, 100*time.Millisecond, 1024*1024)
+
+	prober := NewTCPProber(TCPProberConfig{
+		Attempts: 1,
+		Timeout:  time.Second,
+		Cache:    cache,
+	})
+
+	report, err := prober.Diagnose(context.Background(), model.L4Rule{
+		ID:           88,
+		Protocol:     "tcp",
+		ListenHost:   "0.0.0.0",
+		ListenPort:   9880,
+		UpstreamHost: host,
+		UpstreamPort: port,
+		LoadBalancing: model.LoadBalancing{
+			Strategy: "adaptive",
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("Diagnose() error = %v", err)
+	}
+	if len(report.Backends) != 1 || report.Backends[0].Adaptive == nil {
+		t.Fatalf("Backends = %+v", report.Backends)
+	}
+	if report.Backends[0].Adaptive.EstimatedBandwidthBps != 0 {
+		t.Fatalf("l4 adaptive summary must not expose throughput: %+v", report.Backends[0].Adaptive)
+	}
+}
+
 func TestTCPCandidatesUseLatencyOnlyResolvedOrdering(t *testing.T) {
 	base := time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC)
 	cache := backends.NewCache(backends.Config{

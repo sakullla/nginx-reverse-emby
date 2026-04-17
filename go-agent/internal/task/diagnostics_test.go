@@ -425,3 +425,29 @@ func TestReportToMapIncludesAdaptiveRecoveryFields(t *testing.T) {
 		t.Fatalf("child traffic_share_hint = %#v", childAdaptive["traffic_share_hint"])
 	}
 }
+
+func TestReportToMapOmitsEstimatedBandwidthWhenAdaptiveSummaryHasNoThroughput(t *testing.T) {
+	report := diagnostics.Report{
+		Kind: "l4_tcp",
+		Backends: []diagnostics.BackendReport{{
+			Backend: "127.0.0.1:9001",
+			Adaptive: &diagnostics.AdaptiveSummary{
+				LatencyMS:        12,
+				PerformanceScore: 0.8,
+			},
+		}},
+	}
+
+	payload := reportToMap(report)
+	backends, ok := payload["backends"].([]map[string]any)
+	if !ok || len(backends) != 1 {
+		t.Fatalf("backends = %#v", payload["backends"])
+	}
+	adaptive, ok := backends[0]["adaptive"].(map[string]any)
+	if !ok {
+		t.Fatalf("adaptive = %#v", backends[0]["adaptive"])
+	}
+	if _, exists := adaptive["estimated_bandwidth_bps"]; exists {
+		t.Fatalf("l4 payload must omit estimated_bandwidth_bps: %#v", adaptive)
+	}
+}
