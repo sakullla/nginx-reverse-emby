@@ -663,13 +663,11 @@ func (o candidateObservation) preference(now time.Time, allowThroughput bool) ca
 	state := o.state(now, successes, failures, inBackoff)
 	confidence := sampleConfidence(successes, failures)
 	slowFactor, slowStartActive := slowStartFactor(now, o.slowStartStartedAt, o.slowStartUntil)
-	outlier := o.isOutlier(now, failures)
 	preference := candidatePreference{
 		inBackoff:       inBackoff,
 		stability:       stabilityScore(successes, failures),
 		state:           state,
 		confidence:      confidence,
-		outlier:         outlier,
 		slowStartActive: slowStartActive,
 		slowStartFactor: slowFactor,
 	}
@@ -677,9 +675,12 @@ func (o candidateObservation) preference(now time.Time, allowThroughput bool) ca
 		preference.latency = latency
 		preference.hasLatency = true
 	}
-	if bandwidth, ok := o.bandwidthFor(now); ok {
-		preference.bandwidth = bandwidth
-		preference.hasBandwidth = true
+	if allowThroughput {
+		preference.outlier = o.isOutlier(now, failures)
+		if bandwidth, ok := o.bandwidthFor(now); ok {
+			preference.bandwidth = bandwidth
+			preference.hasBandwidth = true
+		}
 	}
 	preference.performance = effectivePerformance(preference, allowThroughput, o.recentTrafficMix(now))
 	switch {

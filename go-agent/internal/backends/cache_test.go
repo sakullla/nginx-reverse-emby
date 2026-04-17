@@ -757,6 +757,35 @@ func TestCachePreferResolvedCandidatesLatencyOnlyIgnoresHTTPThroughput(t *testin
 	}
 }
 
+func TestCachePreferResolvedCandidatesLatencyOnlyIgnoresThroughputOutlierPenalty(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	cache := NewCache(Config{
+		Now: func() time.Time { return base },
+	})
+	candidates := []Candidate{
+		{Address: "10.0.0.60:443"},
+		{Address: "10.0.0.61:443"},
+	}
+
+	for i := 0; i < 4; i++ {
+		cache.ObserveTransferSuccess("10.0.0.60:443", 10*time.Millisecond, 200*time.Millisecond, 512*1024)
+	}
+	cache.ObserveTransferSuccess("10.0.0.60:443", 10*time.Millisecond, 2*time.Second, 512*1024)
+
+	for i := 0; i < 5; i++ {
+		cache.ObserveSuccess("10.0.0.61:443", 25*time.Millisecond)
+	}
+
+	if summary := cache.Summary("10.0.0.60:443"); !summary.Outlier {
+		t.Fatalf("expected qualified slow sample to mark throughput outlier before latency-only ranking: %+v", summary)
+	}
+
+	got := cache.PreferResolvedCandidatesLatencyOnly(candidates)
+	if ordered := addresses(got); !reflect.DeepEqual(ordered, []string{"10.0.0.60:443", "10.0.0.61:443"}) {
+		t.Fatalf("latency-only ranking must ignore throughput outlier penalties: %v", ordered)
+	}
+}
+
 func TestClassifyThroughputSampleBoundaries(t *testing.T) {
 	tests := []struct {
 		name       string
