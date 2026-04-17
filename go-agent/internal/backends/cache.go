@@ -257,11 +257,21 @@ func (c *Cache) Order(scope, strategy string, candidates []Candidate) []Candidat
 		hasRecovering := false
 
 		c.mu.Lock()
+		sharedMix := trafficMix{}
+		observations := make(map[string]candidateObservation, len(ordered))
 		for _, candidate := range ordered {
 			key := strings.TrimSpace(candidate.Address)
 			observationKey := BackendObservationKey(scope, key)
 			observation := c.observed[observationKey]
-			preference := observation.preference(now, true)
+			observations[key] = observation
+			mix := observation.recentTrafficMix(now)
+			sharedMix.small += mix.small
+			sharedMix.bulk += mix.bulk
+		}
+		for _, candidate := range ordered {
+			key := strings.TrimSpace(candidate.Address)
+			observation := observations[key]
+			preference := observation.preference(now, true, sharedMix)
 			preferenceState[key] = preference
 			switch preference.state {
 			case ObservationStateCold:
@@ -373,7 +383,7 @@ func (c *Cache) preferResolvedCandidates(candidates []Candidate, allowThroughput
 	for _, candidate := range ordered {
 		key := strings.TrimSpace(candidate.Address)
 		observation := c.observed[key]
-		preference := observation.preference(now, allowThroughput)
+		preference := observation.preference(now, allowThroughput, observation.recentTrafficMix(now))
 		preferenceState[key] = preference
 	}
 	c.mu.Unlock()
@@ -537,7 +547,7 @@ func (c *Cache) Summary(key string) ObservationSummary {
 	c.mu.Unlock()
 
 	successes, failures := observation.recentCounts(now)
-	preference := observation.preference(now, true)
+	preference := observation.preference(now, true, observation.recentTrafficMix(now))
 
 	return ObservationSummary{
 		Stability:        preference.stability,
@@ -657,7 +667,7 @@ func (o *candidateObservation) bucketFor(now time.Time) *observationBucket {
 	return &o.counts[index]
 }
 
-func (o candidateObservation) preference(now time.Time, allowThroughput bool) candidatePreference {
+func (o candidateObservation) preference(now time.Time, allowThroughput bool, mix trafficMix) candidatePreference {
 	successes, failures := o.recentCounts(now)
 	inBackoff := o.inBackoff(now)
 	state := o.state(now, successes, failures, inBackoff)
@@ -682,7 +692,7 @@ func (o candidateObservation) preference(now time.Time, allowThroughput bool) ca
 			preference.hasBandwidth = true
 		}
 	}
-	preference.performance = effectivePerformance(preference, allowThroughput, o.recentTrafficMix(now))
+	preference.performance = effectivePerformance(preference, allowThroughput, mix)
 	switch {
 	case preference.inBackoff:
 		preference.trafficShareHint = "blocked"

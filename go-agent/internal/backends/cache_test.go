@@ -208,14 +208,22 @@ func TestCacheOrderAdaptivePrefersLowerLatencyWhenOnlySmallResponsesExist(t *tes
 	scope := "http:rule-small-only"
 	candidates := []Candidate{{Address: "low-latency"}, {Address: "high-latency"}}
 
-	for i := 0; i < 3; i++ {
-		cache.ObserveBackendSuccess(BackendObservationKey(scope, "low-latency"), 10*time.Millisecond, 60*time.Millisecond, 4*1024*1024)
-		cache.ObserveBackendSuccess(BackendObservationKey(scope, "high-latency"), 25*time.Millisecond, 60*time.Millisecond, 8*1024*1024)
+	lowLatencyKey := BackendObservationKey(scope, "low-latency")
+	highLatencyKey := BackendObservationKey(scope, "high-latency")
+
+	for i := 0; i < 20; i++ {
+		cache.ObserveBackendSuccess(lowLatencyKey, 10*time.Millisecond, 60*time.Millisecond, 4*1024*1024)
+	}
+	cache.ObserveBackendSuccess(lowLatencyKey, 10*time.Millisecond, 200*time.Millisecond, 512*1024)
+	cache.ObserveBackendSuccess(lowLatencyKey, 10*time.Millisecond, 400*time.Millisecond, 1024*1024)
+
+	for i := 0; i < 4; i++ {
+		cache.ObserveBackendSuccess(highLatencyKey, 50*time.Millisecond, 120*time.Millisecond, 3*1024*1024)
 	}
 
 	got := cache.Order(scope, StrategyAdaptive, candidates)
 	if ordered := addresses(got); !reflect.DeepEqual(ordered, []string{"low-latency", "high-latency"}) {
-		t.Fatalf("small-response traffic should stay latency-biased: %v", ordered)
+		t.Fatalf("shared small-heavy traffic should keep adaptive ordering latency-biased: %v", ordered)
 	}
 }
 
@@ -227,14 +235,22 @@ func TestCacheOrderAdaptivePrefersBulkCandidateWhenQualifiedThroughputDominates(
 	scope := "http:rule-bulk"
 	candidates := []Candidate{{Address: "latency-first"}, {Address: "bulk-first"}}
 
-	for i := 0; i < 3; i++ {
-		cache.ObserveBackendSuccess(BackendObservationKey(scope, "latency-first"), 10*time.Millisecond, 200*time.Millisecond, 256*1024)
-		cache.ObserveBackendSuccess(BackendObservationKey(scope, "bulk-first"), 20*time.Millisecond, 120*time.Millisecond, 2*1024*1024)
+	latencyFirstKey := BackendObservationKey(scope, "latency-first")
+	bulkFirstKey := BackendObservationKey(scope, "bulk-first")
+
+	for i := 0; i < 12; i++ {
+		cache.ObserveBackendSuccess(latencyFirstKey, 10*time.Millisecond, 60*time.Millisecond, 4*1024*1024)
+	}
+	cache.ObserveBackendSuccess(latencyFirstKey, 10*time.Millisecond, 200*time.Millisecond, 512*1024)
+	cache.ObserveBackendSuccess(latencyFirstKey, 10*time.Millisecond, 400*time.Millisecond, 1024*1024)
+
+	for i := 0; i < 25; i++ {
+		cache.ObserveBackendSuccess(bulkFirstKey, 75*time.Millisecond, 280*time.Millisecond, 3*1024*1024)
 	}
 
 	got := cache.Order(scope, StrategyAdaptive, candidates)
 	if ordered := addresses(got); !reflect.DeepEqual(ordered, []string{"bulk-first", "latency-first"}) {
-		t.Fatalf("bulk-heavy traffic should allow higher throughput candidate to win: %v", ordered)
+		t.Fatalf("shared bulk-heavy traffic should allow higher throughput candidate to win: %v", ordered)
 	}
 }
 
