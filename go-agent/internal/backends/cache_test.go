@@ -614,25 +614,32 @@ func TestCachePreferResolvedCandidatesIgnoresUnqualifiedThroughputOutliers(t *te
 		Now: func() time.Time {
 			return base
 		},
-		RandomIntn: func(n int) int {
-			return n - 1
-		},
 	})
+	hiddenAddr := "10.0.0.25:443"
+	controlAddr := "10.0.0.24:443"
 	candidates := []Candidate{
-		{Address: "10.0.0.24:443"},
-		{Address: "10.0.0.25:443"},
+		{Address: hiddenAddr},
+		{Address: controlAddr},
 	}
 
-	cache.ObserveTransferSuccess("10.0.0.24:443", 40*time.Millisecond, 40*time.Millisecond, 64*1024)
-	cache.ObserveTransferSuccess("10.0.0.24:443", 40*time.Millisecond, 40*time.Millisecond, 64*1024)
-	cache.ObserveTransferSuccess("10.0.0.24:443", 40*time.Millisecond, 40*time.Millisecond, 64*1024)
+	cache.ObserveTransferSuccess(hiddenAddr, 20*time.Millisecond, 40*time.Millisecond, 64*1024)
+	cache.ObserveTransferSuccess(hiddenAddr, 20*time.Millisecond, 100*time.Millisecond, 512*1024)
+	cache.ObserveTransferSuccess(hiddenAddr, 20*time.Millisecond, 1500*time.Millisecond, 512*1024)
 
-	cache.ObserveTransferSuccess("10.0.0.25:443", 20*time.Millisecond, 40*time.Millisecond, 64*1024)
-	cache.ObserveTransferSuccess("10.0.0.25:443", 20*time.Millisecond, 100*time.Millisecond, 512*1024)
-	cache.ObserveTransferSuccess("10.0.0.25:443", 20*time.Millisecond, 1500*time.Millisecond, 512*1024)
+	cache.ObserveTransferSuccess(controlAddr, 20*time.Millisecond, 40*time.Millisecond, 64*1024)
+	cache.ObserveTransferSuccess(controlAddr, 20*time.Millisecond, 40*time.Millisecond, 64*1024)
+	cache.ObserveTransferSuccess(controlAddr, 20*time.Millisecond, 40*time.Millisecond, 64*1024)
+
+	hiddenSummary := cache.Summary(hiddenAddr)
+	if hiddenSummary.HasBandwidth {
+		t.Fatalf("expected hidden throughput candidate to remain bandwidth-hidden: %+v", hiddenSummary)
+	}
+	if hiddenSummary.Outlier {
+		t.Fatalf("hidden throughput must not participate in ordering via outlier state: %+v", hiddenSummary)
+	}
 
 	got := cache.PreferResolvedCandidates(candidates)
-	if !reflect.DeepEqual(addresses(got), []string{"10.0.0.25:443", "10.0.0.24:443"}) {
+	if !reflect.DeepEqual(addresses(got), []string{hiddenAddr, controlAddr}) {
 		t.Fatalf("unexpected preferred order when throughput is still unqualified: %v", addresses(got))
 	}
 }
