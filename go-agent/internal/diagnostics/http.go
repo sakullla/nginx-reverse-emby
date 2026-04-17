@@ -112,7 +112,14 @@ func (p *HTTPProber) probeCandidate(ctx context.Context, cache *backends.Cache, 
 	}
 	defer resp.Body.Close()
 	headerLatency := time.Since(start)
-	written, _ := io.Copy(io.Discard, resp.Body)
+	written, err := io.Copy(io.Discard, resp.Body)
+	if err != nil {
+		if candidate.backendObservationKey != "" {
+			cache.ObserveBackendFailure(candidate.backendObservationKey)
+		}
+		cache.MarkFailure(candidate.dialAddress)
+		return FailureSample(attempt, candidate.backendLabel, err)
+	}
 	totalDuration := time.Since(start)
 	transferDuration := totalDuration - headerLatency
 	if transferDuration < 0 {

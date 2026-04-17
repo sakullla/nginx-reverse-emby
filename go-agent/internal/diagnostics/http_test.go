@@ -372,6 +372,62 @@ func TestHTTPProberProbeCandidateLearnsQualifiedThroughputFromBodyTransfer(t *te
 	}
 }
 
+func TestHTTPProberProbeCandidateTreatsTimedOutBodyReadAsFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatal("response writer does not support flushing")
+		}
+
+		chunk := bytes.Repeat([]byte("a"), 64*1024)
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(chunk)*2))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(chunk)
+		flusher.Flush()
+		time.Sleep(250 * time.Millisecond)
+	}))
+	defer server.Close()
+
+	cache := backends.NewCache(backends.Config{})
+	prober := NewHTTPProber(HTTPProberConfig{
+		Attempts: 1,
+		Timeout:  100 * time.Millisecond,
+		Cache:    cache,
+	})
+
+	target, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	candidate := httpProbeCandidate{
+		targetURL:             target,
+		backendLabel:          server.URL,
+		dialAddress:           target.Host,
+		backendObservationKey: backends.BackendObservationKey("https://edge.example.test", backends.StableBackendID(server.URL)),
+	}
+
+	sample := prober.probeCandidate(context.Background(), cache, 1, model.HTTPRule{}, nil, candidate)
+	if sample.Success {
+		t.Fatalf("expected probe failure when body read times out, got %+v", sample)
+	}
+	if sample.Error == "" {
+		t.Fatalf("expected probe error when body read times out, got %+v", sample)
+	}
+
+	addressSummary := cache.Summary(target.Host)
+	if addressSummary.RecentSucceeded != 0 || addressSummary.HasBandwidth {
+		t.Fatalf("expected no successful throughput learning after body-read timeout, got %+v", addressSummary)
+	}
+	if addressSummary.RecentFailed != 1 {
+		t.Fatalf("expected timed-out body read to count as failure, got %+v", addressSummary)
+	}
+
+	backendSummary := cache.Summary(candidate.backendObservationKey)
+	if backendSummary.RecentSucceeded != 0 {
+		t.Fatalf("expected backend observation to skip success learning after body-read timeout, got %+v", backendSummary)
+	}
+}
+
 func TestHTTPCandidatesReturnsResolveErrorWhenEveryBackendFailsDNS(t *testing.T) {
 	cache := backends.NewCache(backends.Config{
 		Resolver: diagnosticResolverFunc(func(context.Context, string) ([]net.IPAddr, error) {
