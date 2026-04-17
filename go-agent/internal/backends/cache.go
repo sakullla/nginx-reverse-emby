@@ -546,6 +546,43 @@ func (c *Cache) observationFor(address string) candidateObservation {
 }
 
 func (c *Cache) Summary(key string) ObservationSummary {
+	return c.summaryForKey(key, true, trafficMix{}, false)
+}
+
+func (c *Cache) SummaryLatencyOnly(key string) ObservationSummary {
+	return c.summaryForKey(key, false, trafficMix{}, false)
+}
+
+func (c *Cache) SummariesWithSharedThroughput(keys []string) map[string]ObservationSummary {
+	now := c.now()
+	observations := make(map[string]candidateObservation, len(keys))
+	sharedMix := trafficMix{}
+
+	c.mu.Lock()
+	for _, key := range keys {
+		normalized := strings.TrimSpace(key)
+		if normalized == "" {
+			continue
+		}
+		if _, ok := observations[normalized]; ok {
+			continue
+		}
+		observation := c.observed[normalized]
+		observations[normalized] = observation
+		mix := observation.recentTrafficMix(now)
+		sharedMix.small += mix.small
+		sharedMix.bulk += mix.bulk
+	}
+	c.mu.Unlock()
+
+	summaries := make(map[string]ObservationSummary, len(observations))
+	for key, observation := range observations {
+		summaries[key] = summaryFromObservation(observation, now, true, sharedMix, true)
+	}
+	return summaries
+}
+
+func (c *Cache) summaryForKey(key string, allowThroughput bool, mix trafficMix, useProvidedMix bool) ObservationSummary {
 	normalized := strings.TrimSpace(key)
 	if normalized == "" {
 		return ObservationSummary{}
@@ -556,9 +593,15 @@ func (c *Cache) Summary(key string) ObservationSummary {
 	c.mu.Lock()
 	observation := c.observed[normalized]
 	c.mu.Unlock()
+	return summaryFromObservation(observation, now, allowThroughput, mix, useProvidedMix)
+}
 
+func summaryFromObservation(observation candidateObservation, now time.Time, allowThroughput bool, mix trafficMix, useProvidedMix bool) ObservationSummary {
 	successes, failures := observation.recentCounts(now)
-	preference := observation.preference(now, true, observation.recentTrafficMix(now))
+	if !useProvidedMix {
+		mix = observation.recentTrafficMix(now)
+	}
+	preference := observation.preference(now, allowThroughput, mix)
 
 	return ObservationSummary{
 		Stability:        preference.stability,
@@ -609,7 +652,7 @@ func (o *candidateObservation) recordSuccess(now time.Time, latency time.Duratio
 		if throughput > 0 {
 			previousEstimate := o.throughputEstimate
 			o.lastThroughput = throughput
-			o.throughputEstimate = blendFloat(o.throughputEstimate, throughput)
+			o.throughputEstimate = blendWeightedFloat(o.throughputEstimate, throughput, weight)
 			o.lastThroughputAt = now
 			o.recordQualifiedThroughput(now, weight)
 			o.outlierThroughput = wasReady && o.qualifiedThroughputReady(now)
@@ -1030,9 +1073,16 @@ func blendDuration(current, next time.Duration) time.Duration {
 	return time.Duration((1.0-observationAlpha)*float64(current) + observationAlpha*float64(next))
 }
 
-func blendFloat(current, next float64) float64 {
+func blendWeightedFloat(current, next float64, weight float64) float64 {
 	if current <= 0 {
 		return next
 	}
-	return (1.0-observationAlpha)*current + observationAlpha*next
+	if weight <= 0 {
+		return current
+	}
+	alpha := observationAlpha * weight
+	if alpha > 1 {
+		alpha = 1
+	}
+	return (1.0-alpha)*current + alpha*next
 }

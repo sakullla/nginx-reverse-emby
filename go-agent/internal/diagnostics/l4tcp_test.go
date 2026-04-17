@@ -342,6 +342,62 @@ func TestTCPProberDiagnoseOmitsEstimatedBandwidthFromAdaptiveSummary(t *testing.
 	}
 }
 
+func TestTCPAdaptiveReportsOmitHTTPOnlyAdaptiveSignals(t *testing.T) {
+	base := time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC)
+	cache := backends.NewCache(backends.Config{
+		Now: func() time.Time {
+			return base
+		},
+	})
+
+	scope := "tcp:0.0.0.0:9881"
+	slowBackend := "127.0.0.91:9001"
+	fastBackend := "127.0.0.90:9001"
+	slowKey := backends.BackendObservationKey(scope, backends.StableBackendID(slowBackend))
+	fastKey := backends.BackendObservationKey(scope, backends.StableBackendID(fastBackend))
+	for i := 0; i < 3; i++ {
+		cache.ObserveBackendSuccess(slowKey, 45*time.Millisecond, 120*time.Millisecond, 2*1024*1024)
+		cache.ObserveBackendSuccess(fastKey, 10*time.Millisecond, 350*time.Millisecond, 512*1024)
+	}
+
+	reports := []BackendReport{
+		{Backend: fastBackend, Summary: Summary{}},
+		{Backend: slowBackend, Summary: Summary{}},
+	}
+	annotated := buildTCPAdaptiveReports(reports, []tcpProbeCandidate{
+		{
+			address:               fastBackend,
+			backendLabel:          fastBackend,
+			backendObservationKey: fastKey,
+		},
+		{
+			address:               slowBackend,
+			backendLabel:          slowBackend,
+			backendObservationKey: slowKey,
+		},
+	}, cache)
+	if len(annotated) != 2 {
+		t.Fatalf("annotated = %+v", annotated)
+	}
+
+	adaptiveByBackend := make(map[string]*AdaptiveSummary, len(annotated))
+	for _, report := range annotated {
+		adaptiveByBackend[report.Backend] = report.Adaptive
+	}
+
+	fastAdaptive := adaptiveByBackend[fastBackend]
+	slowAdaptive := adaptiveByBackend[slowBackend]
+	if fastAdaptive == nil || slowAdaptive == nil {
+		t.Fatalf("annotated = %+v", annotated)
+	}
+	if fastAdaptive.PerformanceScore != 0 || slowAdaptive.PerformanceScore != 0 {
+		t.Fatalf("l4 adaptive summaries must omit HTTP-only performance scores: fast=%+v slow=%+v", fastAdaptive, slowAdaptive)
+	}
+	if fastAdaptive.Reason != "" || slowAdaptive.Reason != "" {
+		t.Fatalf("l4 adaptive summaries must omit HTTP-only preferred reasons: fast=%+v slow=%+v", fastAdaptive, slowAdaptive)
+	}
+}
+
 func TestTCPCandidatesUseLatencyOnlyResolvedOrdering(t *testing.T) {
 	base := time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC)
 	cache := backends.NewCache(backends.Config{

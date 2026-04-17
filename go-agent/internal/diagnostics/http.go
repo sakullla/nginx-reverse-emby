@@ -224,7 +224,9 @@ func httpCandidates(ctx context.Context, cache *backends.Cache, rule model.HTTPR
 
 func buildHTTPAdaptiveReports(reports []BackendReport, candidates []httpProbeCandidate, cache *backends.Cache) []BackendReport {
 	configuredChildren := make(map[string][]httpResolvedCandidate)
+	configuredKeys := make(map[string]string)
 	configuredSummary := make(map[string]backends.ObservationSummary)
+	sharedConfiguredKeys := make([]string, 0, len(candidates))
 	for _, candidate := range candidates {
 		if candidate.configuredURL == "" {
 			continue
@@ -232,9 +234,20 @@ func buildHTTPAdaptiveReports(reports []BackendReport, candidates []httpProbeCan
 		if existing := configuredChildren[candidate.configuredURL]; len(candidate.resolvedCandidates) > len(existing) {
 			configuredChildren[candidate.configuredURL] = append([]httpResolvedCandidate(nil), candidate.resolvedCandidates...)
 		}
-		if _, ok := configuredSummary[candidate.configuredURL]; !ok {
-			configuredSummary[candidate.configuredURL] = cache.Summary(candidate.backendObservationKey)
+		if _, ok := configuredKeys[candidate.configuredURL]; !ok {
+			configuredKeys[candidate.configuredURL] = candidate.backendObservationKey
+			if candidate.backendObservationKey != "" {
+				sharedConfiguredKeys = append(sharedConfiguredKeys, candidate.backendObservationKey)
+			}
 		}
+	}
+	sharedConfiguredSummary := cache.SummariesWithSharedThroughput(sharedConfiguredKeys)
+	for configuredURL, key := range configuredKeys {
+		if summary, ok := sharedConfiguredSummary[key]; ok {
+			configuredSummary[configuredURL] = summary
+			continue
+		}
+		configuredSummary[configuredURL] = cache.Summary(key)
 	}
 
 	reportByLabel := make(map[string]BackendReport, len(reports))
@@ -252,7 +265,10 @@ func buildHTTPAdaptiveReports(reports []BackendReport, candidates []httpProbeCan
 		}
 		children := configuredChildren[configured]
 		if len(children) <= 1 {
-			report.Adaptive = adaptiveSummaryFromObservation(configuredSummary[configured], false, "", true)
+			report.Adaptive = adaptiveSummaryFromObservation(configuredSummary[configured], false, "", adaptiveSummaryOptions{
+				includeThroughput:   true,
+				includeHTTPInsights: true,
+			})
 			annotated = append(annotated, report)
 			continue
 		}
@@ -265,17 +281,23 @@ func buildHTTPAdaptiveReports(reports []BackendReport, candidates []httpProbeCan
 			hasPreferred = true
 		}
 		parent := BackendReport{
-			Backend:  configured,
-			Summary:  mergeChildSummaries(children, reportByLabel),
-			Adaptive: adaptiveSummaryFromObservation(configuredSummary[configured], isPreferred, preferredReason(isPreferred), true),
+			Backend: configured,
+			Summary: mergeChildSummaries(children, reportByLabel),
+			Adaptive: adaptiveSummaryFromObservation(configuredSummary[configured], isPreferred, preferredReason(isPreferred), adaptiveSummaryOptions{
+				includeThroughput:   true,
+				includeHTTPInsights: true,
+			}),
 			Children: make([]BackendReport, 0, len(children)),
 		}
 		for index, child := range children {
 			childReport := reportByLabel[child.label]
 			parent.Children = append(parent.Children, BackendReport{
-				Backend:  child.label,
-				Summary:  childReport.Summary,
-				Adaptive: adaptiveSummaryFromObservation(cache.Summary(child.dialAddress), index == 0, preferredReason(index == 0), true),
+				Backend: child.label,
+				Summary: childReport.Summary,
+				Adaptive: adaptiveSummaryFromObservation(cache.Summary(child.dialAddress), index == 0, preferredReason(index == 0), adaptiveSummaryOptions{
+					includeThroughput:   true,
+					includeHTTPInsights: true,
+				}),
 			})
 		}
 		annotated = append(annotated, parent)
@@ -330,26 +352,33 @@ func mergeChildSummaries(children []httpResolvedCandidate, reports map[string]Ba
 	return summary
 }
 
-func adaptiveSummaryFromObservation(summary backends.ObservationSummary, preferred bool, reason string, includeThroughput bool) *AdaptiveSummary {
+type adaptiveSummaryOptions struct {
+	includeThroughput   bool
+	includeHTTPInsights bool
+}
+
+func adaptiveSummaryFromObservation(summary backends.ObservationSummary, preferred bool, reason string, options adaptiveSummaryOptions) *AdaptiveSummary {
 	latencyMS := 0.0
 	if summary.HasLatency {
 		latencyMS = roundMetric(float64(summary.Latency) / float64(time.Millisecond))
 	}
 	adaptive := &AdaptiveSummary{
 		Preferred:        preferred,
-		Reason:           reason,
 		Stability:        roundMetric(summary.Stability),
 		RecentSucceeded:  summary.RecentSucceeded,
 		RecentFailed:     summary.RecentFailed,
 		LatencyMS:        latencyMS,
-		PerformanceScore: roundMetric(summary.PerformanceScore),
 		State:            summary.State,
 		SampleConfidence: roundMetric(summary.SampleConfidence),
 		SlowStartActive:  summary.SlowStartActive,
-		Outlier:          summary.Outlier,
 		TrafficShareHint: summary.TrafficShareHint,
 	}
-	if includeThroughput && summary.HasBandwidth {
+	if options.includeHTTPInsights {
+		adaptive.Reason = reason
+		adaptive.PerformanceScore = roundMetric(summary.PerformanceScore)
+		adaptive.Outlier = summary.Outlier
+	}
+	if options.includeThroughput && summary.HasBandwidth {
 		adaptive.EstimatedBandwidthBps = roundMetric(summary.Bandwidth)
 	}
 	return adaptive

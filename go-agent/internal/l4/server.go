@@ -807,19 +807,12 @@ func (s *Server) observeCandidateFailure(candidate l4Candidate) {
 	}
 }
 
-func (s *Server) observeCandidateSuccess(candidate l4Candidate, headerLatency time.Duration, totalDuration time.Duration, bytesTransferred int64) {
+func (s *Server) observeCandidateSuccess(candidate l4Candidate, headerLatency time.Duration, _ time.Duration, _ int64) {
 	if s == nil || s.cache == nil || candidate.address == "" {
 		return
 	}
-	if totalDuration <= 0 {
-		totalDuration = headerLatency
-	}
 	if candidate.backendObservationKey != "" {
-		s.cache.ObserveBackendSuccess(candidate.backendObservationKey, headerLatency, totalDuration, bytesTransferred)
-	}
-	if bytesTransferred > 0 {
-		s.cache.ObserveTransferSuccess(candidate.address, headerLatency, totalDuration, bytesTransferred)
-		return
+		s.cache.ObserveBackendSuccess(candidate.backendObservationKey, headerLatency, 0, 0)
 	}
 	s.cache.ObserveSuccess(candidate.address, headerLatency)
 }

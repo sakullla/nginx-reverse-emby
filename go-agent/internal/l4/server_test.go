@@ -559,6 +559,41 @@ func TestTCPConnectObservesSuccessBeforeSessionTeardown(t *testing.T) {
 	t.Fatalf("expected prompt tcp success observation while session stayed open; resolved=%+v backend=%+v", resolved, backend)
 }
 
+func TestObserveCandidateSuccessDoesNotLearnThroughput(t *testing.T) {
+	base := time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC)
+	cache := backends.NewCache(backends.Config{
+		Now: func() time.Time {
+			return base
+		},
+	})
+	srv := &Server{cache: cache}
+	scope := "tcp:0.0.0.0:9550"
+	candidate := l4Candidate{
+		address:               "203.0.113.10:9001",
+		backendObservationKey: backends.BackendObservationKey(scope, backends.StableBackendID("203.0.113.10:9001")),
+	}
+
+	for i := 0; i < 3; i++ {
+		srv.observeCandidateSuccess(candidate, 20*time.Millisecond, 250*time.Millisecond, 2*1024*1024)
+	}
+
+	resolved := cache.Summary(candidate.address)
+	if resolved.RecentSucceeded != 3 {
+		t.Fatalf("resolved summary = %+v", resolved)
+	}
+	if resolved.HasBandwidth {
+		t.Fatalf("l4 runtime must not learn throughput for resolved address summaries: %+v", resolved)
+	}
+
+	backend := cache.Summary(candidate.backendObservationKey)
+	if backend.RecentSucceeded != 3 {
+		t.Fatalf("backend summary = %+v", backend)
+	}
+	if backend.HasBandwidth {
+		t.Fatalf("l4 runtime must not learn throughput for backend summaries: %+v", backend)
+	}
+}
+
 func TestL4CandidatesAdaptiveExploresColdBackendWhenBudgetTriggers(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
 	cache := backends.NewCache(backends.Config{

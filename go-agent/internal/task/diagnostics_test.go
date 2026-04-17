@@ -451,3 +451,38 @@ func TestReportToMapOmitsEstimatedBandwidthWhenAdaptiveSummaryHasNoThroughput(t 
 		t.Fatalf("l4 payload must omit estimated_bandwidth_bps: %#v", adaptive)
 	}
 }
+
+func TestReportToMapOmitsHTTPOnlyAdaptiveFieldsForL4(t *testing.T) {
+	report := diagnostics.Report{
+		Kind: "l4_tcp",
+		Backends: []diagnostics.BackendReport{{
+			Backend: "127.0.0.1:9001",
+			Adaptive: &diagnostics.AdaptiveSummary{
+				Reason:           "performance_higher",
+				LatencyMS:        12,
+				PerformanceScore: 0.8,
+				Outlier:          true,
+				TrafficShareHint: "normal",
+			},
+		}},
+	}
+
+	payload := reportToMap(report)
+	backends, ok := payload["backends"].([]map[string]any)
+	if !ok || len(backends) != 1 {
+		t.Fatalf("backends = %#v", payload["backends"])
+	}
+	adaptive, ok := backends[0]["adaptive"].(map[string]any)
+	if !ok {
+		t.Fatalf("adaptive = %#v", backends[0]["adaptive"])
+	}
+	if _, exists := adaptive["reason"]; exists {
+		t.Fatalf("l4 payload must omit HTTP-only adaptive reason: %#v", adaptive)
+	}
+	if _, exists := adaptive["performance_score"]; exists {
+		t.Fatalf("l4 payload must omit HTTP-only adaptive performance_score: %#v", adaptive)
+	}
+	if _, exists := adaptive["outlier"]; exists {
+		t.Fatalf("l4 payload must omit HTTP-only adaptive outlier: %#v", adaptive)
+	}
+}

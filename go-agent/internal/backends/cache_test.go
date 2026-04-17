@@ -499,6 +499,29 @@ func TestCacheSummaryReadinessTransitionDoesNotTriggerOutlier(t *testing.T) {
 	}
 }
 
+func TestCacheSummaryAppliesQualifiedThroughputSampleWeightToEWMA(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	cache := NewCache(Config{
+		Now: func() time.Time { return base },
+	})
+	addr := "10.0.0.46:443"
+
+	cache.ObserveTransferSuccess(addr, 20*time.Millisecond, 100*time.Millisecond, 2*1024*1024)
+	cache.ObserveTransferSuccess(addr, 20*time.Millisecond, time.Second, 512*1024)
+
+	summary := cache.Summary(addr)
+	if !summary.HasBandwidth {
+		t.Fatalf("expected qualified throughput after one large and one medium sample: %+v", summary)
+	}
+
+	firstSample := float64(2*1024*1024) / (100 * time.Millisecond).Seconds()
+	secondSample := float64(512*1024) / time.Second.Seconds()
+	want := (1-observationAlpha*mediumThroughputWeight)*firstSample + observationAlpha*mediumThroughputWeight*secondSample
+	if math.Abs(summary.Bandwidth-want) > 1 {
+		t.Fatalf("weighted throughput EWMA = %v, want %v", summary.Bandwidth, want)
+	}
+}
+
 func TestCacheUpwardThroughputJumpDoesNotLatchOutlierWindow(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
 	cache := NewCache(Config{

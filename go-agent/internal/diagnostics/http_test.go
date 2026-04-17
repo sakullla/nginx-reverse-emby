@@ -565,6 +565,63 @@ func TestHTTPProberDiagnoseAdaptivePrefersConfiguredBackendOrder(t *testing.T) {
 	}
 }
 
+func TestBuildHTTPAdaptiveReportsUsesSharedTrafficMixForConfiguredPerformance(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	cache := backends.NewCache(backends.Config{
+		Now: func() time.Time {
+			return base
+		},
+	})
+	scope := "https://edge.example.test"
+	lowLatencyURL := "http://low.example:8096/healthz"
+	bulkURL := "http://bulk.example:8096/healthz"
+	lowLatencyKey := backends.BackendObservationKey(scope, backends.StableBackendID(lowLatencyURL))
+	bulkKey := backends.BackendObservationKey(scope, backends.StableBackendID(bulkURL))
+
+	for i := 0; i < 20; i++ {
+		cache.ObserveBackendSuccess(lowLatencyKey, 10*time.Millisecond, 60*time.Millisecond, 4*1024*1024)
+	}
+	cache.ObserveBackendSuccess(lowLatencyKey, 10*time.Millisecond, 200*time.Millisecond, 512*1024)
+	cache.ObserveBackendSuccess(lowLatencyKey, 10*time.Millisecond, 400*time.Millisecond, 1024*1024)
+
+	for i := 0; i < 4; i++ {
+		cache.ObserveBackendSuccess(bulkKey, 50*time.Millisecond, 120*time.Millisecond, 3*1024*1024)
+	}
+
+	annotated := buildHTTPAdaptiveReports([]BackendReport{
+		{Backend: lowLatencyURL, Summary: Summary{}},
+		{Backend: bulkURL, Summary: Summary{}},
+	}, []httpProbeCandidate{
+		{
+			backendLabel:          lowLatencyURL,
+			backendObservationKey: lowLatencyKey,
+			configuredURL:         lowLatencyURL,
+		},
+		{
+			backendLabel:          bulkURL,
+			backendObservationKey: bulkKey,
+			configuredURL:         bulkURL,
+		},
+	}, cache)
+	if len(annotated) != 2 {
+		t.Fatalf("annotated = %+v", annotated)
+	}
+
+	adaptiveByBackend := make(map[string]*AdaptiveSummary, len(annotated))
+	for _, report := range annotated {
+		adaptiveByBackend[report.Backend] = report.Adaptive
+	}
+
+	lowLatencyAdaptive := adaptiveByBackend[lowLatencyURL]
+	bulkAdaptive := adaptiveByBackend[bulkURL]
+	if lowLatencyAdaptive == nil || bulkAdaptive == nil {
+		t.Fatalf("annotated = %+v", annotated)
+	}
+	if lowLatencyAdaptive.PerformanceScore <= bulkAdaptive.PerformanceScore {
+		t.Fatalf("configured HTTP summaries must use shared traffic mix so the preferred backend does not show a lower score: low=%+v bulk=%+v", lowLatencyAdaptive, bulkAdaptive)
+	}
+}
+
 func TestHTTPProberDiagnoseSerializesAdaptiveRecoveryFields(t *testing.T) {
 	listener, err := net.Listen("tcp", "0.0.0.0:0")
 	if err != nil {
