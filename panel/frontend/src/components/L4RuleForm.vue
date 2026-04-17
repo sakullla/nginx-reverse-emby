@@ -60,9 +60,17 @@
             v-for="(backend, index) in form.backends"
             :key="backend.id"
             class="backend-item"
-            :class="{ 'backend-item--dragging': draggingIndex === index }"
+            :class="{
+              'backend-item--dragging': dragState.from === index,
+              'backend-item--drag-over': dragState.to === index && dragState.from !== index
+            }"
+            draggable="true"
+            @dragstart="onDragStart(index)"
+            @dragover.prevent="onDragOver(index)"
+            @drop="onDrop(index)"
+            @dragend="onDragEnd"
           >
-            <div class="backend-drag-handle" @mousedown="startDrag(index)" title="拖动排序">
+            <div class="backend-drag-handle" title="拖动排序">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                 <circle cx="9" cy="5" r="1"/>
                 <circle cx="9" cy="12" r="1"/>
@@ -350,8 +358,29 @@ function createFormState(initialData) {
 const form = ref(createFormState(props.initialData))
 
 const tagInput = ref('')
-const draggingIndex = ref(-1)
 const error = ref('')
+const dragState = ref({ from: -1, to: -1 })
+
+function onDragStart(index) {
+  dragState.value = { from: index, to: index }
+}
+
+function onDragOver(index) {
+  if (dragState.value.from === -1) return
+  dragState.value.to = index
+}
+
+function onDrop(index) {
+  const from = dragState.value.from
+  if (from === -1 || from === index) return
+  const item = form.value.backends.splice(from, 1)[0]
+  form.value.backends.splice(index, 0, item)
+  dragState.value = { from: -1, to: -1 }
+}
+
+function onDragEnd() {
+  dragState.value = { from: -1, to: -1 }
+}
 
 // Detect if tuning has non-default values (including backend extensions)
 const hasTuningChanges = computed(() => {
@@ -424,7 +453,7 @@ const relayObfsDisabled = computed(() => Boolean(relayObfsUnsupportedReason.valu
 watch(() => props.initialData, (value) => {
   form.value = createFormState(value)
   tagInput.value = ''
-  draggingIndex.value = -1
+  dragState.value = { from: -1, to: -1 }
   error.value = ''
   activeTab.value = 'basic'
 }, { immediate: true })
@@ -498,17 +527,6 @@ function parseBackendAddress(index) {
   }
   const cleanHost = backend.host?.replace(/^\[|\]$/g, '') || ''
   backend.resolve = !isIpAddress(cleanHost)
-}
-
-function startDrag(index) {
-  draggingIndex.value = index
-  const handleMouseUp = () => {
-    draggingIndex.value = -1
-    document.removeEventListener('mouseup', handleMouseUp)
-    document.removeEventListener('mouseleave', handleMouseUp)
-  }
-  document.addEventListener('mouseup', handleMouseUp)
-  document.addEventListener('mouseleave', handleMouseUp)
 }
 
 function addTag() {
@@ -713,6 +731,12 @@ async function handleSubmit() {
 
 .backend-item--dragging {
   opacity: 0.5;
+  border-color: var(--color-primary);
+  box-shadow: var(--shadow-focus);
+}
+
+.backend-item--drag-over {
+  border-top: 2px solid var(--color-primary);
 }
 
 .backend-drag-handle {

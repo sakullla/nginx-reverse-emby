@@ -93,7 +93,26 @@
               v-for="(backend, index) in form.backends"
               :key="backend.id"
               class="backend-item"
+              :class="{
+                'backend-item--dragging': dragState.from === index,
+                'backend-item--drag-over': dragState.to === index && dragState.from !== index
+              }"
+              draggable="true"
+              @dragstart="onDragStart(index)"
+              @dragover.prevent="onDragOver(index)"
+              @drop="onDrop(index)"
+              @dragend="onDragEnd"
             >
+              <div class="backend-drag-handle" title="拖动排序">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="9" cy="5" r="1"/>
+                  <circle cx="9" cy="12" r="1"/>
+                  <circle cx="9" cy="19" r="1"/>
+                  <circle cx="15" cy="5" r="1"/>
+                  <circle cx="15" cy="12" r="1"/>
+                  <circle cx="15" cy="19" r="1"/>
+                </svg>
+              </div>
               <div class="input-wrapper backend-item__input">
                 <span class="input-wrapper__icon">
                   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -532,6 +551,28 @@ const errors = ref({
   backend_url: '',
   submit: ''
 })
+const dragState = ref({ from: -1, to: -1 })
+
+function onDragStart(index) {
+  dragState.value = { from: index, to: index }
+}
+
+function onDragOver(index) {
+  if (dragState.value.from === -1) return
+  dragState.value.to = index
+}
+
+function onDrop(index) {
+  const from = dragState.value.from
+  if (from === -1 || from === index) return
+  const item = form.value.backends.splice(from, 1)[0]
+  form.value.backends.splice(index, 0, item)
+  dragState.value = { from: -1, to: -1 }
+}
+
+function onDragEnd() {
+  dragState.value = { from: -1, to: -1 }
+}
 
 const hasRequestHeaderConfig = computed(() => {
   const hasCustomHeaderConfig = form.value.custom_headers.some((item) => {
@@ -1242,6 +1283,42 @@ async function handleSubmit() {
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius-md);
+  transition: all var(--duration-fast);
+  cursor: grab;
+}
+
+.backend-item:active {
+  cursor: grabbing;
+}
+
+.backend-item--dragging {
+  opacity: 0.5;
+  border-color: var(--color-primary);
+  box-shadow: var(--shadow-focus);
+}
+
+.backend-item--drag-over {
+  border-top: 2px solid var(--color-primary);
+}
+
+.backend-drag-handle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: var(--space-1);
+  color: var(--color-text-muted);
+  cursor: grab;
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+}
+
+.backend-drag-handle:hover {
+  background: var(--color-bg-hover);
+  color: var(--color-text-secondary);
+}
+
+.backend-drag-handle:active {
+  cursor: grabbing;
 }
 
 .backend-item__input {
