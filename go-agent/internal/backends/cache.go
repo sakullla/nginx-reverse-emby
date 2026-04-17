@@ -79,6 +79,7 @@ type candidateObservation struct {
 	lastThroughput     float64
 	throughputEstimate float64
 	lastThroughputAt   time.Time
+	outlierThroughput  bool
 	lastUpdated        time.Time
 }
 
@@ -569,6 +570,7 @@ func (o *candidateObservation) recordSuccess(now time.Time, latency time.Duratio
 	weight, qualified, bucket := classifyThroughputSample(totalDuration, bytesTransferred)
 	o.recordTrafficMix(now, bucket, weight)
 	if qualified {
+		wasReady := o.qualifiedThroughputReady(now)
 		throughput := float64(bytesTransferred) / totalDuration.Seconds()
 		if throughput > 0 {
 			previousEstimate := o.throughputEstimate
@@ -576,7 +578,8 @@ func (o *candidateObservation) recordSuccess(now time.Time, latency time.Duratio
 			o.throughputEstimate = blendFloat(o.throughputEstimate, throughput)
 			o.lastThroughputAt = now
 			o.recordQualifiedThroughput(now, weight)
-			if o.qualifiedThroughputReady(now) && previousEstimate > 0 && (throughput < 0.5*previousEstimate || throughput > 2.5*previousEstimate) {
+			o.outlierThroughput = wasReady && o.qualifiedThroughputReady(now)
+			if o.outlierThroughput && previousEstimate > 0 && (throughput < 0.5*previousEstimate || throughput > 2.5*previousEstimate) {
 				o.outlierUntil = now.Add(30 * time.Second)
 			}
 		}
@@ -744,7 +747,7 @@ func (o candidateObservation) state(now time.Time, recentSuccesses, recentFailur
 }
 
 func (o candidateObservation) isOutlier(now time.Time, failures int) bool {
-	if !o.qualifiedThroughputReady(now) {
+	if !o.qualifiedThroughputReady(now) || !o.outlierThroughput {
 		return false
 	}
 	if !o.outlierUntil.IsZero() && now.Before(o.outlierUntil) {

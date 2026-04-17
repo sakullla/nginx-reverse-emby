@@ -367,6 +367,25 @@ func TestCacheSummaryKeepsMediumOnlyThroughputHidden(t *testing.T) {
 	}
 }
 
+func TestCacheSummaryReadinessTransitionDoesNotTriggerOutlier(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	cache := NewCache(Config{
+		Now: func() time.Time { return base },
+	})
+	addr := "10.0.0.43:443"
+
+	cache.ObserveTransferSuccess(addr, 20*time.Millisecond, 100*time.Millisecond, 2*1024*1024)
+	cache.ObserveTransferSuccess(addr, 20*time.Millisecond, 1500*time.Millisecond, 512*1024)
+
+	summary := cache.Summary(addr)
+	if !summary.HasBandwidth {
+		t.Fatalf("expected threshold-crossing sample to make throughput visible: %+v", summary)
+	}
+	if summary.Outlier {
+		t.Fatalf("threshold-crossing sample must not inherit outlier state from pre-ready throughput history: %+v", summary)
+	}
+}
+
 func TestCacheObserveBackendFailureUsesScopedRecoveryState(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
 	now := base
