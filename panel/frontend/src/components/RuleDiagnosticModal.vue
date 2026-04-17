@@ -146,7 +146,7 @@
 
               <div v-if="backend.children?.length" class="diagnostic-backend-item__children">
                 <div class="diagnostic-backend-item__child-title">已解析候选</div>
-                <div class="diagnostic-child-row">
+                <div class="diagnostic-child-list">
                   <div v-for="(child, idx) in backend.children" :key="child.backend" class="diagnostic-child-item">
                     <code class="diagnostic-child-item__name">{{ child.backend }}</code>
                     <span v-if="child.adaptive?.preferred" class="diagnostic-backend-item__preferred">当前优选</span>
@@ -682,24 +682,21 @@ function qualityToneFor(value) {
   color: var(--color-text-tertiary);
   margin-bottom: 0.15rem;
 }
-.diagnostic-child-row {
+.diagnostic-child-list {
   display: flex;
-  flex-wrap: nowrap;
-  gap: 0.75rem;
-  overflow-x: auto;
-  padding-bottom: 0.15rem;
+  flex-direction: column;
+  gap: 0.35rem;
 }
 .diagnostic-child-item {
-  flex: 0 0 auto;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 0.4rem;
-  padding: 0.25rem 0.75rem 0.25rem 0;
-  border-right: 1px solid var(--color-border-subtle);
+  padding: 0.25rem 0;
+  border-bottom: 1px solid var(--color-border-subtle);
 }
 .diagnostic-child-item:last-child {
-  border-right: none;
-  padding-right: 0;
+  border-bottom: none;
 }
 .diagnostic-child-item__name {
   font-family: var(--font-mono);
