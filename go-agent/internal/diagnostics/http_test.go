@@ -1,12 +1,14 @@
 package diagnostics
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sync"
 	"testing"
 	"time"
@@ -327,6 +329,49 @@ func TestHTTPProberDiagnoseSplitsHostnameBackendsByResolvedAddress(t *testing.T)
 	}
 }
 
+func TestHTTPProberProbeCandidateLearnsQualifiedThroughputFromBodyTransfer(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(900 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatal("response writer does not support flushing")
+		}
+		chunk := bytes.Repeat([]byte("a"), 256*1024)
+		for i := 0; i < 8; i++ {
+			_, _ = w.Write(chunk)
+			flusher.Flush()
+			time.Sleep(15 * time.Millisecond)
+		}
+	}))
+	defer server.Close()
+
+	cache := backends.NewCache(backends.Config{})
+	prober := NewHTTPProber(HTTPProberConfig{
+		Attempts: 1,
+		Timeout:  3 * time.Second,
+		Cache:    cache,
+	})
+
+	target, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	candidate := httpProbeCandidate{
+		targetURL:    target,
+		backendLabel: server.URL,
+		dialAddress:  target.Host,
+	}
+
+	prober.probeCandidate(context.Background(), cache, 1, model.HTTPRule{}, nil, candidate)
+	prober.probeCandidate(context.Background(), cache, 2, model.HTTPRule{}, nil, candidate)
+
+	summary := cache.Summary(target.Host)
+	if !summary.HasBandwidth || summary.Bandwidth < 10*1024*1024 {
+		t.Fatalf("expected transfer-duration throughput estimate, got %+v", summary)
+	}
+}
+
 func TestHTTPCandidatesReturnsResolveErrorWhenEveryBackendFailsDNS(t *testing.T) {
 	cache := backends.NewCache(backends.Config{
 		Resolver: diagnosticResolverFunc(func(context.Context, string) ([]net.IPAddr, error) {
@@ -427,8 +472,12 @@ func TestHTTPProberDiagnoseAdaptivePrefersConfiguredBackendOrder(t *testing.T) {
 		},
 	})
 	scope := "https://edge.example.test"
-	cache.ObserveBackendSuccess(backends.BackendObservationKey(scope, backends.StableBackendID(bulk.URL+"/healthz")), 30*time.Millisecond, 200*time.Millisecond, 4*1024*1024)
-	cache.ObserveBackendSuccess(backends.BackendObservationKey(scope, backends.StableBackendID(fast.URL+"/healthz")), 10*time.Millisecond, 200*time.Millisecond, 64*1024)
+	bulkKey := backends.BackendObservationKey(scope, backends.StableBackendID(bulk.URL+"/healthz"))
+	fastKey := backends.BackendObservationKey(scope, backends.StableBackendID(fast.URL+"/healthz"))
+	cache.ObserveBackendSuccess(bulkKey, 30*time.Millisecond, 100*time.Millisecond, 4*1024*1024)
+	cache.ObserveBackendSuccess(bulkKey, 30*time.Millisecond, 100*time.Millisecond, 4*1024*1024)
+	cache.ObserveBackendSuccess(fastKey, 10*time.Millisecond, 200*time.Millisecond, 64*1024)
+	cache.ObserveBackendSuccess(fastKey, 10*time.Millisecond, 200*time.Millisecond, 64*1024)
 
 	prober := NewHTTPProber(HTTPProberConfig{
 		Attempts:   1,
@@ -554,7 +603,7 @@ func TestHTTPProberDiagnoseSerializesAdaptiveRecoveryFields(t *testing.T) {
 	if adaptive["slow_start_active"] != true {
 		t.Fatalf("slow_start_active = %#v", adaptive["slow_start_active"])
 	}
-	if adaptive["outlier"] != true {
+	if _, ok := adaptive["outlier"]; ok {
 		t.Fatalf("outlier = %#v", adaptive["outlier"])
 	}
 	if adaptive["traffic_share_hint"] != "recovery" {

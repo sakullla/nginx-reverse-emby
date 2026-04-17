@@ -99,7 +99,10 @@ func (p *HTTPProber) probeCandidate(ctx context.Context, cache *backends.Cache, 
 		return FailureSample(attempt, candidate.backendLabel, err)
 	}
 
-	resp, err := p.doProbeRequest(ctx, client, rule, candidate, http.MethodGet)
+	reqCtx, cancel := context.WithTimeout(ctx, p.timeout)
+	defer cancel()
+
+	resp, err := p.doProbeRequest(reqCtx, client, rule, candidate, http.MethodGet)
 	if err != nil {
 		if candidate.backendObservationKey != "" {
 			cache.ObserveBackendFailure(candidate.backendObservationKey)
@@ -108,21 +111,23 @@ func (p *HTTPProber) probeCandidate(ctx context.Context, cache *backends.Cache, 
 		return FailureSample(attempt, candidate.backendLabel, err)
 	}
 	defer resp.Body.Close()
+	headerLatency := time.Since(start)
 	written, _ := io.Copy(io.Discard, resp.Body)
 	totalDuration := time.Since(start)
-	if candidate.backendObservationKey != "" {
-		cache.ObserveBackendSuccess(candidate.backendObservationKey, totalDuration, totalDuration, written)
+	transferDuration := totalDuration - headerLatency
+	if transferDuration < 0 {
+		transferDuration = 0
 	}
-	cache.ObserveTransferSuccess(candidate.dialAddress, totalDuration, totalDuration, written)
+	if candidate.backendObservationKey != "" {
+		cache.ObserveBackendSuccess(candidate.backendObservationKey, headerLatency, transferDuration, written)
+	}
+	cache.ObserveTransferSuccess(candidate.dialAddress, headerLatency, transferDuration, written)
 
 	return LatencySample(attempt, candidate.backendLabel, totalDuration, resp.StatusCode)
 }
 
 func (p *HTTPProber) doProbeRequest(ctx context.Context, client *http.Client, rule model.HTTPRule, candidate httpProbeCandidate, method string) (*http.Response, error) {
-	reqCtx, cancel := context.WithTimeout(ctx, p.timeout)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(reqCtx, method, candidate.targetURL.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, method, candidate.targetURL.String(), nil)
 	if err != nil {
 		return nil, err
 	}
