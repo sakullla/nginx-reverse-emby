@@ -233,6 +233,14 @@ func (c *Cache) Resolve(ctx context.Context, endpoint Endpoint) ([]Candidate, er
 }
 
 func (c *Cache) Order(scope, strategy string, candidates []Candidate) []Candidate {
+	return c.order(scope, strategy, candidates, true)
+}
+
+func (c *Cache) OrderLatencyOnly(scope, strategy string, candidates []Candidate) []Candidate {
+	return c.order(scope, strategy, candidates, false)
+}
+
+func (c *Cache) order(scope, strategy string, candidates []Candidate, allowThroughput bool) []Candidate {
 	ordered := make([]Candidate, len(candidates))
 	copy(ordered, candidates)
 
@@ -264,6 +272,9 @@ func (c *Cache) Order(scope, strategy string, candidates []Candidate) []Candidat
 			observationKey := BackendObservationKey(scope, key)
 			observation := c.observed[observationKey]
 			observations[key] = observation
+			if !allowThroughput {
+				continue
+			}
 			mix := observation.recentTrafficMix(now)
 			sharedMix.small += mix.small
 			sharedMix.bulk += mix.bulk
@@ -271,7 +282,7 @@ func (c *Cache) Order(scope, strategy string, candidates []Candidate) []Candidat
 		for _, candidate := range ordered {
 			key := strings.TrimSpace(candidate.Address)
 			observation := observations[key]
-			preference := observation.preference(now, true, sharedMix)
+			preference := observation.preference(now, allowThroughput, sharedMix)
 			preferenceState[key] = preference
 			switch preference.state {
 			case ObservationStateCold:

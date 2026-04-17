@@ -736,7 +736,7 @@ func l4Candidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule)
 	}
 
 	scope := strings.ToLower(rule.Protocol) + ":" + net.JoinHostPort(rule.ListenHost, strconv.Itoa(rule.ListenPort))
-	orderedBackends := cache.Order(scope, rule.LoadBalancing.Strategy, placeholders)
+	orderedBackends := cache.OrderLatencyOnly(scope, rule.LoadBalancing.Strategy, placeholders)
 	out := make([]l4Candidate, 0, len(rawBackends))
 	for _, ordered := range orderedBackends {
 		indexes := indexesByID[ordered.Address]

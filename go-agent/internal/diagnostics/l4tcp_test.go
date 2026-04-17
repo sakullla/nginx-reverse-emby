@@ -398,6 +398,58 @@ func TestTCPCandidatesUseLatencyOnlyResolvedOrdering(t *testing.T) {
 	}
 }
 
+func TestTCPCandidatesUseLatencyOnlyPlaceholderOrdering(t *testing.T) {
+	base := time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC)
+	cache := backends.NewCache(backends.Config{
+		Now: func() time.Time {
+			return base
+		},
+	})
+
+	scope := "tcp:0.0.0.0:9504"
+	slowHighThroughput := "127.0.0.91:9001"
+	fastLowerThroughput := "127.0.0.90:9001"
+	slowBackendID := backends.StableBackendID(slowHighThroughput)
+	fastBackendID := backends.StableBackendID(fastLowerThroughput)
+	for i := 0; i < 3; i++ {
+		cache.ObserveBackendSuccess(backends.BackendObservationKey(scope, slowBackendID), 45*time.Millisecond, 120*time.Millisecond, 2*1024*1024)
+		cache.ObserveBackendSuccess(backends.BackendObservationKey(scope, fastBackendID), 10*time.Millisecond, 350*time.Millisecond, 512*1024)
+	}
+
+	placeholders := []backends.Candidate{
+		{Address: slowBackendID},
+		{Address: fastBackendID},
+	}
+	if got := cache.Order(scope, backends.StrategyAdaptive, placeholders); got[0].Address != slowBackendID {
+		t.Fatalf("fixture must diverge under throughput-aware placeholder ordering: %+v", got)
+	}
+
+	candidates, err := tcpCandidates(context.Background(), cache, model.L4Rule{
+		ID:           27,
+		Protocol:     "tcp",
+		ListenHost:   "0.0.0.0",
+		ListenPort:   9504,
+		UpstreamHost: "",
+		UpstreamPort: 0,
+		LoadBalancing: model.LoadBalancing{
+			Strategy: "adaptive",
+		},
+		Backends: []model.L4Backend{
+			{Host: "127.0.0.91", Port: 9001},
+			{Host: "127.0.0.90", Port: 9001},
+		},
+	})
+	if err != nil {
+		t.Fatalf("tcpCandidates() error = %v", err)
+	}
+	if len(candidates) < 2 {
+		t.Fatalf("candidates = %+v", candidates)
+	}
+	if candidates[0].address != fastLowerThroughput {
+		t.Fatalf("tcpCandidates() must keep latency-only placeholder ordering: %+v", candidates)
+	}
+}
+
 func TestTCPCandidatesAssignDistinctObservationKeysToDuplicateBackends(t *testing.T) {
 	cache := backends.NewCache(backends.Config{})
 

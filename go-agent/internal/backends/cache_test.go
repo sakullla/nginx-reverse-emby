@@ -200,6 +200,34 @@ func TestCacheOrderAdaptiveUsesCombinedPerformanceNotLatencyOnly(t *testing.T) {
 	}
 }
 
+func TestCacheOrderLatencyOnlyIgnoresBackendThroughput(t *testing.T) {
+	base := time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC)
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return base
+		},
+	})
+	scope := "tcp:rule-placeholder-latency-only"
+	candidates := []Candidate{
+		{Address: "slow"},
+		{Address: "fast"},
+	}
+
+	for i := 0; i < 3; i++ {
+		cache.ObserveBackendSuccess(BackendObservationKey(scope, "slow"), 45*time.Millisecond, 120*time.Millisecond, 2*1024*1024)
+		cache.ObserveBackendSuccess(BackendObservationKey(scope, "fast"), 10*time.Millisecond, 350*time.Millisecond, 512*1024)
+	}
+
+	if got := cache.Order(scope, StrategyAdaptive, candidates); !reflect.DeepEqual(addresses(got), []string{"slow", "fast"}) {
+		t.Fatalf("fixture must diverge under throughput-aware ordering: %v", addresses(got))
+	}
+
+	got := cache.OrderLatencyOnly(scope, StrategyAdaptive, candidates)
+	if ordered := addresses(got); !reflect.DeepEqual(ordered, []string{"fast", "slow"}) {
+		t.Fatalf("latency-only adaptive ordering must ignore backend throughput history: %v", ordered)
+	}
+}
+
 func TestCacheOrderAdaptivePrefersLowerLatencyWhenOnlySmallResponsesExist(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
 	cache := NewCache(Config{

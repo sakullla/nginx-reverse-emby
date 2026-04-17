@@ -132,7 +132,7 @@ func tcpCandidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule
 	}
 
 	scope := "tcp:" + net.JoinHostPort(rule.ListenHost, strconv.Itoa(rule.ListenPort))
-	ordered := cache.Order(scope, rule.LoadBalancing.Strategy, placeholders)
+	ordered := cache.OrderLatencyOnly(scope, rule.LoadBalancing.Strategy, placeholders)
 	out := make([]tcpProbeCandidate, 0, len(rawBackends))
 	for _, placeholder := range ordered {
 		indexes := indexesByID[placeholder.Address]
