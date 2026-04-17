@@ -98,7 +98,7 @@
                   <span class="diagnostic-metric__label">综合性能</span>
                   <strong class="diagnostic-metric__value">{{ formatScore(backend.adaptive?.performance_score) }}</strong>
                 </div>
-                <div v-if="showThroughputMetrics" class="diagnostic-metric">
+                <div v-if="showThroughputMetrics && hasThroughput(backend.adaptive?.estimated_bandwidth_bps)" class="diagnostic-metric">
                   <span class="diagnostic-metric__label">持续吞吐</span>
                   <strong class="diagnostic-metric__value">{{ formatThroughput(backend.adaptive?.estimated_bandwidth_bps) }}</strong>
                 </div>
@@ -121,7 +121,7 @@
                       <span class="diagnostic-factor__label">延迟</span>
                       <strong class="diagnostic-factor__value">{{ backend.adaptive?.latency_ms ?? backend.summary?.avg_latency_ms ?? 0 }} ms</strong>
                     </div>
-                    <div v-if="showThroughputMetrics" class="diagnostic-factor">
+                    <div v-if="showThroughputMetrics && hasThroughput(backend.adaptive?.estimated_bandwidth_bps)" class="diagnostic-factor">
                       <span class="diagnostic-factor__label">持续吞吐</span>
                       <strong class="diagnostic-factor__value">{{ formatThroughput(backend.adaptive?.estimated_bandwidth_bps) }}</strong>
                     </div>
@@ -153,7 +153,7 @@
                     <span class="diagnostic-child-item__metric">延迟 {{ child.adaptive?.latency_ms ?? child.summary?.avg_latency_ms ?? 0 }} ms</span>
                     <span class="diagnostic-child-item__metric">稳定性 {{ formatPercent(child.adaptive?.stability) }}</span>
                     <span class="diagnostic-child-item__metric">综合性能 {{ formatScore(child.adaptive?.performance_score) }}</span>
-                    <span v-if="showThroughputMetrics" class="diagnostic-child-item__metric">持续吞吐 {{ formatThroughput(child.adaptive?.estimated_bandwidth_bps) }}</span>
+                    <span v-if="showThroughputMetrics && hasThroughput(child.adaptive?.estimated_bandwidth_bps)" class="diagnostic-child-item__metric">持续吞吐 {{ formatThroughput(child.adaptive?.estimated_bandwidth_bps) }}</span>
                   </div>
                 </div>
               </div>
@@ -280,9 +280,14 @@ function formatPercent(value) {
   return `${Math.round(Number(value) * 100)}%`
 }
 
+function hasThroughput(value) {
+  return value != null
+}
+
 function formatThroughput(value) {
-  const num = Number(value || 0)
-  if (!num) return '-'
+  if (value == null) return '-'
+  const num = Number(value)
+  if (!Number.isFinite(num)) return '-'
   if (num >= 1024 * 1024) return `${(num / (1024 * 1024)).toFixed(1)} MB/s`
   if (num >= 1024) return `${(num / 1024).toFixed(1)} KB/s`
   return `${num.toFixed(0)} B/s`
