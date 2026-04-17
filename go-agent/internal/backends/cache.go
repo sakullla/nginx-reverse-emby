@@ -596,17 +596,6 @@ func (o *candidateObservation) recordSuccess(now time.Time, latency time.Duratio
 				o.outlierUntil = now.Add(30 * time.Second)
 			}
 		}
-	} else if totalDuration > 0 && bytesTransferred > 0 && o.qualifiedThroughputReady(now) && o.throughputEstimate > 0 {
-		throughput := float64(bytesTransferred) / totalDuration.Seconds()
-		if throughput > 0 {
-			o.lastThroughput = throughput
-			if throughput < 0.5*o.throughputEstimate || throughput > 2.5*o.throughputEstimate {
-				o.outlierThroughput = true
-				if throughput < 0.5*o.throughputEstimate {
-					o.outlierUntil = now.Add(30 * time.Second)
-				}
-			}
-		}
 	}
 	o.lastUpdated = now
 }
@@ -898,6 +887,9 @@ func performanceScore(preference candidatePreference, allowThroughput bool, mix 
 	}
 	throughputMBps := preference.bandwidth / (1024.0 * 1024.0)
 	throughputScore := math.Log1p(throughputMBps) / math.Log1p(16)
+	if !preference.hasLatency || preference.latency <= 0 {
+		return throughputScore
+	}
 	latencyWeight, throughputWeight := throughputWeights(mix)
 	return latencyWeight*latencyScore + throughputWeight*throughputScore
 }

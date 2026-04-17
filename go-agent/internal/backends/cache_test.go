@@ -2,6 +2,7 @@ package backends
 
 import (
 	"context"
+	"math"
 	"net"
 	"reflect"
 	"sync"
@@ -664,7 +665,7 @@ func TestCacheSummaryMarksOutlierBeforeHardBackoff(t *testing.T) {
 	}
 }
 
-func TestCacheSummaryMarksOutlierFromSlowSmallResponseAfterQualifiedHistory(t *testing.T) {
+func TestCacheSummaryDoesNotMarkOutlierFromSlowSmallResponseAfterQualifiedHistory(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
 	cache := NewCache(Config{
 		Now: func() time.Time { return base },
@@ -677,8 +678,25 @@ func TestCacheSummaryMarksOutlierFromSlowSmallResponseAfterQualifiedHistory(t *t
 	cache.ObserveTransferSuccess(addr, 600*time.Millisecond, 2*time.Second, 4*1024)
 
 	summary := cache.Summary(addr)
-	if !summary.Outlier {
-		t.Fatalf("slow small responses should still mark an established throughput candidate as outlier: %+v", summary)
+	if summary.Outlier {
+		t.Fatalf("slow small responses must not mark throughput outlier when the sample is unqualified: %+v", summary)
+	}
+}
+
+func TestPerformanceScoreUsesFullThroughputScoreWhenLatencyMissing(t *testing.T) {
+	preference := candidatePreference{
+		bandwidth:    8 * 1024 * 1024,
+		hasBandwidth: true,
+	}
+	mix := trafficMix{
+		small: 1,
+		bulk:  1,
+	}
+
+	got := performanceScore(preference, true, mix)
+	want := math.Log1p(8) / math.Log1p(16)
+	if got != want {
+		t.Fatalf("performanceScore() without latency = %v, want %v", got, want)
 	}
 }
 
