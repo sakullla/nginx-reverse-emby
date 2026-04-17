@@ -278,7 +278,6 @@ function normalizeHttpRule(rule = {}) {
     backends,
     load_balancing: {
       strategy: normalizeLoadBalancingStrategy(rule.load_balancing?.strategy)
-      strategy: normalizeStrategy(rule.load_balancing?.strategy)
     },
     relay_obfs: rule.relay_obfs === true
   }
@@ -308,7 +307,6 @@ function normalizeL4Rule(rule = {}) {
     backends,
     load_balancing: {
       strategy: normalizeLoadBalancingStrategy(rule.load_balancing?.strategy)
-      strategy: normalizeStrategy(rule.load_balancing?.strategy)
     },
     relay_obfs: rule.relay_obfs === true
   }
@@ -324,7 +322,6 @@ function normalizeHttpRulePayloadObject(payload = {}, options = {}) {
     backends,
     load_balancing: {
       strategy: normalizeLoadBalancingStrategy(payload.load_balancing?.strategy)
-      strategy: normalizeStrategy(payload.load_balancing?.strategy)
     },
     tags: Array.isArray(payload.tags) ? payload.tags : [],
     enabled: payload.enabled !== false,
