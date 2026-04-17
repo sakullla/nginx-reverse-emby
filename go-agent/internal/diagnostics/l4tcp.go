@@ -149,7 +149,7 @@ func tcpCandidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule
 		if err != nil {
 			continue
 		}
-		resolved = cache.PreferResolvedCandidates(resolved)
+		resolved = cache.PreferResolvedCandidatesLatencyOnly(resolved)
 		for _, candidate := range resolved {
 			if cache.IsInBackoff(candidate.Address) {
 				continue

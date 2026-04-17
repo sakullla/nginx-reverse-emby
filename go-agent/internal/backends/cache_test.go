@@ -199,6 +199,44 @@ func TestCacheOrderAdaptiveUsesCombinedPerformanceNotLatencyOnly(t *testing.T) {
 	}
 }
 
+func TestCacheOrderAdaptivePrefersLowerLatencyWhenOnlySmallResponsesExist(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	cache := NewCache(Config{
+		Now: func() time.Time { return base },
+	})
+	scope := "http:rule-small-only"
+	candidates := []Candidate{{Address: "low-latency"}, {Address: "high-latency"}}
+
+	for i := 0; i < 3; i++ {
+		cache.ObserveBackendSuccess(BackendObservationKey(scope, "low-latency"), 10*time.Millisecond, 60*time.Millisecond, 4*1024*1024)
+		cache.ObserveBackendSuccess(BackendObservationKey(scope, "high-latency"), 25*time.Millisecond, 60*time.Millisecond, 8*1024*1024)
+	}
+
+	got := cache.Order(scope, StrategyAdaptive, candidates)
+	if ordered := addresses(got); !reflect.DeepEqual(ordered, []string{"low-latency", "high-latency"}) {
+		t.Fatalf("small-response traffic should stay latency-biased: %v", ordered)
+	}
+}
+
+func TestCacheOrderAdaptivePrefersBulkCandidateWhenQualifiedThroughputDominates(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	cache := NewCache(Config{
+		Now: func() time.Time { return base },
+	})
+	scope := "http:rule-bulk"
+	candidates := []Candidate{{Address: "latency-first"}, {Address: "bulk-first"}}
+
+	for i := 0; i < 3; i++ {
+		cache.ObserveBackendSuccess(BackendObservationKey(scope, "latency-first"), 10*time.Millisecond, 200*time.Millisecond, 256*1024)
+		cache.ObserveBackendSuccess(BackendObservationKey(scope, "bulk-first"), 20*time.Millisecond, 120*time.Millisecond, 2*1024*1024)
+	}
+
+	got := cache.Order(scope, StrategyAdaptive, candidates)
+	if ordered := addresses(got); !reflect.DeepEqual(ordered, []string{"bulk-first", "latency-first"}) {
+		t.Fatalf("bulk-heavy traffic should allow higher throughput candidate to win: %v", ordered)
+	}
+}
+
 func TestCacheOrderAdaptiveUsesOnlyRecent24hStability(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
 	now := base
@@ -626,6 +664,24 @@ func TestCacheSummaryMarksOutlierBeforeHardBackoff(t *testing.T) {
 	}
 }
 
+func TestCacheSummaryMarksOutlierFromSlowSmallResponseAfterQualifiedHistory(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	cache := NewCache(Config{
+		Now: func() time.Time { return base },
+	})
+	addr := "10.0.0.45:443"
+
+	for i := 0; i < 4; i++ {
+		cache.ObserveTransferSuccess(addr, 20*time.Millisecond, 200*time.Millisecond, 512*1024)
+	}
+	cache.ObserveTransferSuccess(addr, 600*time.Millisecond, 2*time.Second, 4*1024)
+
+	summary := cache.Summary(addr)
+	if !summary.Outlier {
+		t.Fatalf("slow small responses should still mark an established throughput candidate as outlier: %+v", summary)
+	}
+}
+
 func TestCachePreferResolvedCandidatesIgnoresUnqualifiedThroughputOutliers(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
 	cache := NewCache(Config{
@@ -659,6 +715,27 @@ func TestCachePreferResolvedCandidatesIgnoresUnqualifiedThroughputOutliers(t *te
 	got := cache.PreferResolvedCandidates(candidates)
 	if !reflect.DeepEqual(addresses(got), []string{hiddenAddr, controlAddr}) {
 		t.Fatalf("unexpected preferred order when throughput is still unqualified: %v", addresses(got))
+	}
+}
+
+func TestCachePreferResolvedCandidatesLatencyOnlyIgnoresHTTPThroughput(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	cache := NewCache(Config{
+		Now: func() time.Time { return base },
+	})
+	candidates := []Candidate{
+		{Address: "10.0.0.50:443"},
+		{Address: "10.0.0.51:443"},
+	}
+
+	cache.ObserveTransferSuccess("10.0.0.50:443", 20*time.Millisecond, 120*time.Millisecond, 2*1024*1024)
+	cache.ObserveTransferSuccess("10.0.0.50:443", 20*time.Millisecond, 120*time.Millisecond, 512*1024)
+	cache.ObserveTransferSuccess("10.0.0.51:443", 10*time.Millisecond, 120*time.Millisecond, 128*1024)
+	cache.ObserveTransferSuccess("10.0.0.51:443", 10*time.Millisecond, 120*time.Millisecond, 128*1024)
+
+	got := cache.PreferResolvedCandidatesLatencyOnly(candidates)
+	if ordered := addresses(got); !reflect.DeepEqual(ordered, []string{"10.0.0.51:443", "10.0.0.50:443"}) {
+		t.Fatalf("l4 resolved ranking must ignore HTTP throughput signals: %v", ordered)
 	}
 }
 
