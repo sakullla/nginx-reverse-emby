@@ -60,7 +60,8 @@ func NewHTTPProber(cfg HTTPProberConfig) *HTTPProber {
 }
 
 func (p *HTTPProber) Diagnose(ctx context.Context, rule model.HTTPRule, relayListeners []model.RelayListener) (Report, error) {
-	candidates, err := httpCandidates(ctx, p.cache, rule)
+	cache := p.cache.Clone()
+	candidates, err := httpCandidates(ctx, cache, rule)
 	if err != nil {
 		return Report{}, err
 	}
@@ -73,12 +74,12 @@ func (p *HTTPProber) Diagnose(ctx context.Context, rule model.HTTPRule, relayLis
 	for _, candidate := range candidates {
 		for i := 0; i < p.attempts; i++ {
 			attempt++
-			sample := p.probeCandidate(ctx, attempt, rule, relayListeners, candidate)
+			sample := p.probeCandidate(ctx, cache, attempt, rule, relayListeners, candidate)
 			samples = append(samples, sample)
 		}
 	}
 	report := BuildReport("http", rule.ID, samples)
-	report.Backends = buildHTTPAdaptiveReports(report.Backends, candidates, p.cache)
+	report.Backends = buildHTTPAdaptiveReports(report.Backends, candidates, cache)
 	return report, nil
 }
 
@@ -91,7 +92,7 @@ type httpProbeCandidate struct {
 	resolvedCandidates    []httpResolvedCandidate
 }
 
-func (p *HTTPProber) probeCandidate(ctx context.Context, attempt int, rule model.HTTPRule, relayListeners []model.RelayListener, candidate httpProbeCandidate) Sample {
+func (p *HTTPProber) probeCandidate(ctx context.Context, cache *backends.Cache, attempt int, rule model.HTTPRule, relayListeners []model.RelayListener, candidate httpProbeCandidate) Sample {
 	start := time.Now()
 	client, err := p.clientForCandidate(rule, relayListeners, candidate)
 	if err != nil {
@@ -101,18 +102,18 @@ func (p *HTTPProber) probeCandidate(ctx context.Context, attempt int, rule model
 	resp, err := p.doProbeRequest(ctx, client, rule, candidate, http.MethodGet)
 	if err != nil {
 		if candidate.backendObservationKey != "" {
-			p.cache.ObserveBackendFailure(candidate.backendObservationKey)
+			cache.ObserveBackendFailure(candidate.backendObservationKey)
 		}
-		p.cache.MarkFailure(candidate.dialAddress)
+		cache.MarkFailure(candidate.dialAddress)
 		return FailureSample(attempt, candidate.backendLabel, err)
 	}
 	defer resp.Body.Close()
 	written, _ := io.Copy(io.Discard, resp.Body)
 	totalDuration := time.Since(start)
 	if candidate.backendObservationKey != "" {
-		p.cache.ObserveBackendSuccess(candidate.backendObservationKey, totalDuration, totalDuration, written)
+		cache.ObserveBackendSuccess(candidate.backendObservationKey, totalDuration, totalDuration, written)
 	}
-	p.cache.ObserveTransferSuccess(candidate.dialAddress, totalDuration, totalDuration, written)
+	cache.ObserveTransferSuccess(candidate.dialAddress, totalDuration, totalDuration, written)
 
 	return LatencySample(attempt, candidate.backendLabel, totalDuration, resp.StatusCode)
 }
@@ -160,6 +161,7 @@ func httpCandidates(ctx context.Context, cache *backends.Cache, rule model.HTTPR
 	scope := strings.ToLower(strings.TrimSpace(rule.FrontendURL))
 	ordered := cache.Order(scope, rule.LoadBalancing.Strategy, placeholders)
 	out := make([]httpProbeCandidate, 0, len(rawBackends))
+	var lastResolveErr error
 	for _, placeholder := range ordered {
 		target := parsed[indexByID[placeholder.Address]]
 		endpoint := backends.Endpoint{
@@ -168,6 +170,7 @@ func httpCandidates(ctx context.Context, cache *backends.Cache, rule model.HTTPR
 		}
 		resolved, err := cache.Resolve(ctx, endpoint)
 		if err != nil {
+			lastResolveErr = err
 			continue
 		}
 		resolved = cache.PreferResolvedCandidates(resolved)
@@ -181,15 +184,21 @@ func httpCandidates(ctx context.Context, cache *backends.Cache, rule model.HTTPR
 				label:       probeBackendLabel(&clone, candidate.Address),
 				dialAddress: candidate.Address,
 			})
+		}
+		for _, child := range resolvedChildren {
+			clone := *target
 			out = append(out, httpProbeCandidate{
 				targetURL:             &clone,
-				backendLabel:          probeBackendLabel(&clone, candidate.Address),
-				dialAddress:           candidate.Address,
+				backendLabel:          child.label,
+				dialAddress:           child.dialAddress,
 				backendObservationKey: backends.BackendObservationKey(scope, backends.StableBackendID(clone.String())),
 				configuredURL:         clone.String(),
 				resolvedCandidates:    append([]httpResolvedCandidate(nil), resolvedChildren...),
 			})
 		}
+	}
+	if len(out) == 0 && lastResolveErr != nil {
+		return nil, fmt.Errorf("resolve backend candidates: %w", lastResolveErr)
 	}
 	return out, nil
 }

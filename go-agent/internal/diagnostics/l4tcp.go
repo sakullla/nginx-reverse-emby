@@ -57,7 +57,8 @@ func NewTCPProber(cfg TCPProberConfig) *TCPProber {
 }
 
 func (p *TCPProber) Diagnose(ctx context.Context, rule model.L4Rule, relayListeners []model.RelayListener) (Report, error) {
-	candidates, err := tcpCandidates(ctx, p.cache, rule)
+	cache := p.cache.Clone()
+	candidates, err := tcpCandidates(ctx, cache, rule)
 	if err != nil {
 		return Report{}, err
 	}
@@ -76,24 +77,24 @@ func (p *TCPProber) Diagnose(ctx context.Context, rule model.L4Rule, relayListen
 			cancel()
 			if err != nil {
 				if candidate.backendObservationKey != "" {
-					p.cache.ObserveBackendFailure(candidate.backendObservationKey)
+					cache.ObserveBackendFailure(candidate.backendObservationKey)
 				}
-				p.cache.MarkFailure(candidate.address)
+				cache.MarkFailure(candidate.address)
 				samples = append(samples, FailureSample(attempt, candidate.backendLabel, err))
 				continue
 			}
 			_ = conn.Close()
 			totalDuration := time.Since(start)
 			if candidate.backendObservationKey != "" {
-				p.cache.ObserveBackendSuccess(candidate.backendObservationKey, totalDuration, totalDuration, 0)
+				cache.ObserveBackendSuccess(candidate.backendObservationKey, totalDuration, totalDuration, 0)
 			}
-			p.cache.MarkSuccess(candidate.address)
+			cache.MarkSuccess(candidate.address)
 			samples = append(samples, LatencySample(attempt, candidate.backendLabel, totalDuration, 0))
 		}
 	}
 
 	report := BuildReport("l4_tcp", rule.ID, samples)
-	report.Backends = buildTCPAdaptiveReports(report.Backends, candidates, p.cache)
+	report.Backends = buildTCPAdaptiveReports(report.Backends, candidates, cache)
 	return report, nil
 }
 
@@ -121,18 +122,26 @@ func tcpCandidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule
 	}
 
 	placeholders := make([]backends.Candidate, 0, len(rawBackends))
-	indexByID := make(map[string]int, len(rawBackends))
+	indexesByID := make(map[string][]int, len(rawBackends))
+	duplicateCounts := make(map[string]int, len(rawBackends))
 	for i := range rawBackends {
 		id := backends.StableBackendID(net.JoinHostPort(rawBackends[i].Host, strconv.Itoa(rawBackends[i].Port)))
 		placeholders = append(placeholders, backends.Candidate{Address: id})
-		indexByID[id] = i
+		indexesByID[id] = append(indexesByID[id], i)
+		duplicateCounts[id]++
 	}
 
 	scope := "tcp:" + net.JoinHostPort(rule.ListenHost, strconv.Itoa(rule.ListenPort))
 	ordered := cache.Order(scope, rule.LoadBalancing.Strategy, placeholders)
 	out := make([]tcpProbeCandidate, 0, len(rawBackends))
 	for _, placeholder := range ordered {
-		backend := rawBackends[indexByID[placeholder.Address]]
+		indexes := indexesByID[placeholder.Address]
+		if len(indexes) == 0 {
+			continue
+		}
+		backendIndex := indexes[0]
+		indexesByID[placeholder.Address] = indexes[1:]
+		backend := rawBackends[backendIndex]
 		resolved, err := cache.Resolve(ctx, backends.Endpoint{
 			Host: backend.Host,
 			Port: backend.Port,
@@ -147,12 +156,33 @@ func tcpCandidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule
 			}
 			out = append(out, tcpProbeCandidate{
 				address:               candidate.Address,
-				backendLabel:          candidate.Address,
-				backendObservationKey: backends.BackendObservationKey(scope, backends.StableBackendID(net.JoinHostPort(backend.Host, strconv.Itoa(backend.Port)))),
+				backendLabel:          tcpProbeBackendLabel(candidate.Address, placeholder.Address, backendIndex, duplicateCounts[placeholder.Address]),
+				backendObservationKey: tcpProbeObservationKey(scope, placeholder.Address, backendIndex, duplicateCounts[placeholder.Address]),
 			})
 		}
 	}
 	return out, nil
+}
+
+func tcpProbeBackendLabel(address string, backendID string, backendIndex int, duplicateCount int) string {
+	if duplicateCount <= 1 {
+		return address
+	}
+	return fmt.Sprintf("%s [slot %d]", address, backendSlotOrdinal(backendID, backendIndex)+1)
+}
+
+func tcpProbeObservationKey(scope string, backendID string, backendIndex int, duplicateCount int) string {
+	if duplicateCount <= 1 {
+		return backends.BackendObservationKey(scope, backendID)
+	}
+	return backends.BackendObservationKey(scope, fmt.Sprintf("%s#%d", backendID, backendSlotOrdinal(backendID, backendIndex)+1))
+}
+
+func backendSlotOrdinal(backendID string, backendIndex int) int {
+	if backendIndex < 0 {
+		return 0
+	}
+	return backendIndex
 }
 
 func buildTCPAdaptiveReports(reports []BackendReport, candidates []tcpProbeCandidate, cache *backends.Cache) []BackendReport {

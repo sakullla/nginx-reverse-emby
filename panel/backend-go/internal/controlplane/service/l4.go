@@ -303,18 +303,12 @@ func (s *l4Service) bumpRemoteDesiredRevision(ctx context.Context, agentID strin
 		if row.ID != agentID {
 			continue
 		}
-		snapshot, err := s.store.LoadAgentSnapshot(ctx, row.ID, storage.AgentSnapshotInput{
-			DesiredVersion:  row.DesiredVersion,
-			DesiredRevision: row.DesiredRevision,
-			CurrentRevision: row.CurrentRevision,
-			Platform:        row.Platform,
-		})
-		if err != nil {
-			return err
-		}
 		nextRevision := revision
-		if int(snapshot.Revision) > nextRevision {
-			nextRevision = int(snapshot.Revision)
+		if row.DesiredRevision > nextRevision {
+			nextRevision = row.DesiredRevision
+		}
+		if row.CurrentRevision > nextRevision {
+			nextRevision = row.CurrentRevision
 		}
 		if row.DesiredRevision < nextRevision {
 			row.DesiredRevision = nextRevision
@@ -496,27 +490,7 @@ func (s *l4Service) listHTTPRulesAcrossAllAgents(ctx context.Context) ([]storage
 }
 
 func (s *l4Service) allKnownAgentIDs(ctx context.Context) ([]string, error) {
-	seen := map[string]struct{}{}
-	agentIDs := make([]string, 0)
-	if s.cfg.EnableLocalAgent && strings.TrimSpace(s.cfg.LocalAgentID) != "" {
-		seen[s.cfg.LocalAgentID] = struct{}{}
-		agentIDs = append(agentIDs, s.cfg.LocalAgentID)
-	}
-	rows, err := s.store.ListAgents(ctx)
-	if err != nil {
-		return nil, err
-	}
-	for _, row := range rows {
-		if strings.TrimSpace(row.ID) == "" {
-			continue
-		}
-		if _, ok := seen[row.ID]; ok {
-			continue
-		}
-		seen[row.ID] = struct{}{}
-		agentIDs = append(agentIDs, row.ID)
-	}
-	return agentIDs, nil
+	return allKnownAgentIDs(ctx, s.cfg, s.store)
 }
 
 func normalizeL4BackendsInput(input L4RuleInput, fallback L4Rule) ([]L4Backend, string, int, error) {

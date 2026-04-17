@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 )
@@ -117,6 +118,31 @@ func TestCacheOrderRandomUsesHook(t *testing.T) {
 	if ordered := addresses(got); !reflect.DeepEqual(ordered, []string{"10.0.0.3:80", "10.0.0.1:80", "10.0.0.2:80"}) {
 		t.Fatalf("unexpected random order: %v", ordered)
 	}
+}
+
+func TestCacheOrderRandomSupportsConcurrentCalls(t *testing.T) {
+	cache := NewCache(Config{})
+	candidates := []Candidate{
+		{Address: "10.0.0.1:80"},
+		{Address: "10.0.0.2:80"},
+		{Address: "10.0.0.3:80"},
+		{Address: "10.0.0.4:80"},
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			for j := 0; j < 64; j++ {
+				got := cache.Order("http:random-concurrent", StrategyRandom, candidates)
+				if len(got) != len(candidates) {
+					t.Errorf("goroutine %d iteration %d len = %d", idx, j, len(got))
+				}
+			}
+		}(i)
+	}
+	wg.Wait()
 }
 
 func TestCacheOrderAdaptiveUsesBackendStabilityBeforePerformance(t *testing.T) {

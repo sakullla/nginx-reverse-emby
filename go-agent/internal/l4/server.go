@@ -315,6 +315,9 @@ func (s *Server) dialTCPUpstream(rule model.L4Rule) (net.Conn, l4Candidate, time
 
 	var lastErr error
 	for _, candidate := range candidates {
+		if ctxErr := s.ctx.Err(); ctxErr != nil {
+			return nil, l4Candidate{}, 0, ctxErr
+		}
 		target := candidate.address
 		start := s.now()
 		var upstream net.Conn
@@ -328,6 +331,9 @@ func (s *Server) dialTCPUpstream(rule model.L4Rule) (net.Conn, l4Candidate, time
 			upstream, err = relay.Dial(s.ctx, "tcp", target, hops, s.relayProvider)
 		}
 		if err != nil {
+			if ctxErr := s.ctx.Err(); ctxErr != nil {
+				return nil, l4Candidate{}, 0, ctxErr
+			}
 			s.observeCandidateFailure(candidate)
 			lastErr = err
 			continue
@@ -720,10 +726,12 @@ func l4Candidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule)
 
 	placeholders := make([]backends.Candidate, 0, len(rawBackends))
 	indexesByID := make(map[string][]int, len(rawBackends))
+	duplicateCounts := make(map[string]int, len(rawBackends))
 	for i := range rawBackends {
 		id := backends.StableBackendID(net.JoinHostPort(rawBackends[i].Host, strconv.Itoa(rawBackends[i].Port)))
 		placeholders = append(placeholders, backends.Candidate{Address: id})
 		indexesByID[id] = append(indexesByID[id], i)
+		duplicateCounts[id]++
 	}
 
 	scope := strings.ToLower(rule.Protocol) + ":" + net.JoinHostPort(rule.ListenHost, strconv.Itoa(rule.ListenPort))
@@ -758,7 +766,7 @@ func l4Candidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule)
 			}
 			out = append(out, l4Candidate{
 				address:               candidate.Address,
-				backendObservationKey: backends.BackendObservationKey(scope, backendID),
+				backendObservationKey: l4ObservationKey(scope, backendID, backendIndex, duplicateCounts[backendID]),
 			})
 		}
 	}
@@ -766,6 +774,13 @@ func l4Candidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule)
 		return nil, fmt.Errorf("no healthy backend candidates for %s:%d", rule.ListenHost, rule.ListenPort)
 	}
 	return out, nil
+}
+
+func l4ObservationKey(scope string, backendID string, backendIndex int, duplicateCount int) string {
+	if duplicateCount <= 1 {
+		return backends.BackendObservationKey(scope, backendID)
+	}
+	return backends.BackendObservationKey(scope, fmt.Sprintf("%s#%d", backendID, backendIndex+1))
 }
 
 func cloneUDPAddr(addr *net.UDPAddr) *net.UDPAddr {

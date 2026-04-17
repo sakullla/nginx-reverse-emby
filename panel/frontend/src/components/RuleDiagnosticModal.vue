@@ -188,7 +188,7 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import BaseModal from './base/BaseModal.vue'
 import { diagnosticStateLabel, diagnosticStateTone } from '../hooks/useDiagnostics'
 
@@ -216,6 +216,16 @@ const isHTTP = computed(() => props.kind === 'http')
 const showSamples = ref(false)
 const showBackends = ref(false)
 const expandedAdaptive = ref(new Set())
+
+function resetExpandedState() {
+  showSamples.value = false
+  showBackends.value = false
+  expandedAdaptive.value = new Set()
+}
+
+watch(() => props.modelValue, () => {
+  resetExpandedState()
+})
 
 function toggleAdaptive(backendName) {
   const s = new Set(expandedAdaptive.value)

@@ -675,6 +675,61 @@ func TestL4CandidatesAdaptivePromotesRecoveredResolvedCandidateOnlyDuringSlowSta
 	}
 }
 
+func TestL4CandidatesAssignDistinctObservationKeysToDuplicateBackends(t *testing.T) {
+	cache := backends.NewCache(backends.Config{})
+
+	candidates, err := l4Candidates(context.Background(), cache, model.L4Rule{
+		Protocol:   "tcp",
+		ListenHost: "0.0.0.0",
+		ListenPort: 9445,
+		Backends: []model.L4Backend{
+			{Host: "127.0.0.1", Port: 9001},
+			{Host: "127.0.0.1", Port: 9001},
+		},
+	})
+	if err != nil {
+		t.Fatalf("l4Candidates() error = %v", err)
+	}
+	if len(candidates) != 2 {
+		t.Fatalf("candidates = %+v", candidates)
+	}
+	if candidates[0].backendObservationKey == candidates[1].backendObservationKey {
+		t.Fatalf("duplicate backends must not share observation keys: %+v", candidates)
+	}
+}
+
+func TestDialTCPUpstreamStopsWhenServerContextCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	cache := backends.NewCache(backends.Config{})
+	srv := &Server{
+		ctx:   ctx,
+		cache: cache,
+		now:   time.Now,
+	}
+	rule := model.L4Rule{
+		Protocol:   "tcp",
+		ListenHost: "0.0.0.0",
+		ListenPort: 9446,
+		Backends: []model.L4Backend{
+			{Host: "127.0.0.1", Port: 9001},
+			{Host: "127.0.0.1", Port: 9002},
+		},
+	}
+
+	_, _, _, err := srv.dialTCPUpstream(rule)
+	if err == nil {
+		t.Fatal("dialTCPUpstream() error = nil")
+	}
+	if err != context.Canceled {
+		t.Fatalf("dialTCPUpstream() error = %v", err)
+	}
+	if cache.IsInBackoff("127.0.0.1:9001") || cache.IsInBackoff("127.0.0.1:9002") {
+		t.Fatalf("expected cancelled dial to stop before marking candidates failed")
+	}
+}
+
 func TestTCPRelayProxy(t *testing.T) {
 	upstreamPort := pickFreeTCPPort(t)
 	upstreamAddress := fmt.Sprintf("127.0.0.1:%d", upstreamPort)

@@ -367,6 +367,100 @@ func TestServeHTTPDoesNotResumeOnDownstreamWriteFailure(t *testing.T) {
 	}
 }
 
+func TestServeHTTPResumableResponseStripsHopByHopHeaders(t *testing.T) {
+	payload := []byte("hop-by-hop-safe")
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Accept-Ranges", "bytes")
+		w.Header().Set("ETag", `"stable"`)
+		w.Header().Set("Connection", "keep-alive")
+		w.Header().Set("Keep-Alive", "timeout=5")
+		w.Header().Set("Proxy-Connection", "keep-alive")
+		w.Header().Set("Transfer-Encoding", "chunked")
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(payload)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(payload)
+	}))
+	defer backend.Close()
+
+	entry := resumableTestRouteEntry(t, backend.URL)
+	entry.resilience = StreamResilienceOptions{
+		ResumeEnabled:     true,
+		ResumeMaxAttempts: 1,
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "http://edge.example.test/video", nil)
+	req.Host = "edge.example.test"
+	recorder := httptest.NewRecorder()
+
+	if err := entry.serveHTTP(recorder, req); err != nil {
+		t.Fatalf("serveHTTP() error = %v", err)
+	}
+	if got := recorder.Header().Get("Connection"); got != "" {
+		t.Fatalf("Connection header = %q", got)
+	}
+	if got := recorder.Header().Get("Keep-Alive"); got != "" {
+		t.Fatalf("Keep-Alive header = %q", got)
+	}
+	if got := recorder.Header().Get("Proxy-Connection"); got != "" {
+		t.Fatalf("Proxy-Connection header = %q", got)
+	}
+	if got := recorder.Header().Get("Transfer-Encoding"); got != "" {
+		t.Fatalf("Transfer-Encoding header = %q", got)
+	}
+}
+
+func TestCopyHeadersReplacesExistingValues(t *testing.T) {
+	dst := http.Header{}
+	dst.Set("Content-Type", "text/plain")
+	dst.Add("X-Test", "old")
+
+	src := http.Header{}
+	src.Set("Content-Type", "application/json")
+	src.Add("X-Test", "new")
+	src.Add("X-Test", "newer")
+
+	copyHeaders(dst, src)
+
+	if got := dst.Values("Content-Type"); len(got) != 1 || got[0] != "application/json" {
+		t.Fatalf("Content-Type values = %v", got)
+	}
+	if got := dst.Values("X-Test"); len(got) != 2 || got[0] != "new" || got[1] != "newer" {
+		t.Fatalf("X-Test values = %v", got)
+	}
+}
+
+func TestServeHTTPResumableResponseFlushesBodyChunks(t *testing.T) {
+	payload := bytes.Repeat([]byte("abcdefghijklmnopqrstuvwxyz012345"), 4096)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Accept-Ranges", "bytes")
+		w.Header().Set("ETag", `"stable"`)
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(payload)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(payload)
+	}))
+	defer backend.Close()
+
+	entry := resumableTestRouteEntry(t, backend.URL)
+	entry.resilience = StreamResilienceOptions{
+		ResumeEnabled:     true,
+		ResumeMaxAttempts: 1,
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "http://edge.example.test/video", nil)
+	req.Host = "edge.example.test"
+	writer := &flushingResumeResponseWriter{header: make(http.Header)}
+
+	if err := entry.serveHTTP(writer, req); err != nil {
+		t.Fatalf("serveHTTP() error = %v", err)
+	}
+	if writer.flushCount == 0 {
+		t.Fatal("expected resumable copy to flush streamed chunks")
+	}
+	if got := writer.buf.Len(); got != len(payload) {
+		t.Fatalf("written bytes = %d", got)
+	}
+}
+
 func resumableTestRouteEntry(t *testing.T, backendRawURL string) *routeEntry {
 	t.Helper()
 
@@ -394,6 +488,14 @@ type failingResumeResponseWriter struct {
 	failAfter   int
 	err         error
 	written     int
+	wroteHeader bool
+}
+
+type flushingResumeResponseWriter struct {
+	header      http.Header
+	statusCode  int
+	buf         bytes.Buffer
+	flushCount  int
 	wroteHeader bool
 }
 
@@ -425,4 +527,27 @@ func (w *failingResumeResponseWriter) Write(p []byte) (int, error) {
 	n, _ := w.buf.Write(p[:remaining])
 	w.written += n
 	return n, w.err
+}
+
+func (w *flushingResumeResponseWriter) Header() http.Header {
+	return w.header
+}
+
+func (w *flushingResumeResponseWriter) WriteHeader(statusCode int) {
+	if w.wroteHeader {
+		return
+	}
+	w.statusCode = statusCode
+	w.wroteHeader = true
+}
+
+func (w *flushingResumeResponseWriter) Write(p []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.buf.Write(p)
+}
+
+func (w *flushingResumeResponseWriter) Flush() {
+	w.flushCount++
 }

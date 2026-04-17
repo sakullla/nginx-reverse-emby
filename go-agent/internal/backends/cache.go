@@ -110,7 +110,13 @@ func NewCache(cfg Config) *Cache {
 
 	randomIntn := cfg.RandomIntn
 	if randomIntn == nil {
-		randomIntn = rand.Intn
+		source := rand.New(rand.NewSource(time.Now().UnixNano()))
+		var randomMu sync.Mutex
+		randomIntn = func(n int) int {
+			randomMu.Lock()
+			defer randomMu.Unlock()
+			return source.Intn(n)
+		}
 	}
 
 	backoffBase := cfg.FailureBackoffBase
@@ -136,6 +142,43 @@ func NewCache(cfg Config) *Cache {
 		roundRobin:   make(map[string]int),
 		observed:     make(map[string]candidateObservation),
 	}
+}
+
+func (c *Cache) Clone() *Cache {
+	if c == nil {
+		return nil
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	clone := &Cache{
+		resolver:     c.resolver,
+		now:          c.now,
+		randomIntn:   c.randomIntn,
+		backoffBase:  c.backoffBase,
+		backoffLimit: c.backoffLimit,
+		dnsCache:     make(map[string]dnsCacheEntry, len(c.dnsCache)),
+		failures:     make(map[string]failureEntry, len(c.failures)),
+		roundRobin:   make(map[string]int, len(c.roundRobin)),
+		observed:     make(map[string]candidateObservation, len(c.observed)),
+	}
+	for key, entry := range c.dnsCache {
+		clone.dnsCache[key] = dnsCacheEntry{
+			ips:       append([]string(nil), entry.ips...),
+			expiresAt: entry.expiresAt,
+		}
+	}
+	for key, entry := range c.failures {
+		clone.failures[key] = entry
+	}
+	for key, entry := range c.roundRobin {
+		clone.roundRobin[key] = entry
+	}
+	for key, entry := range c.observed {
+		clone.observed[key] = entry
+	}
+	return clone
 }
 
 func (c *Cache) Resolve(ctx context.Context, endpoint Endpoint) ([]Candidate, error) {

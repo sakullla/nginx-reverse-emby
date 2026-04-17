@@ -459,7 +459,7 @@ func normalizeAgentRow(row *AgentRow) {
 
 func normalizeHTTPRuleRow(row *HTTPRuleRow) {
 	row.BackendsJSON = defaultJSON(row.BackendsJSON, "[]")
-	row.LoadBalancingJSON = defaultJSON(row.LoadBalancingJSON, "{}")
+	row.LoadBalancingJSON = normalizeLoadBalancingJSON(row.LoadBalancingJSON)
 	row.TagsJSON = defaultJSON(row.TagsJSON, "[]")
 	row.RelayChainJSON = defaultJSON(row.RelayChainJSON, "[]")
 	row.UserAgent = defaultString(row.UserAgent, "")
@@ -478,7 +478,7 @@ func normalizeL4RuleRow(row *L4RuleRow) {
 	row.ListenHost = defaultString(row.ListenHost, "0.0.0.0")
 	row.UpstreamHost = defaultString(row.UpstreamHost, "")
 	row.BackendsJSON = defaultJSON(row.BackendsJSON, "[]")
-	row.LoadBalancingJSON = defaultJSON(row.LoadBalancingJSON, "{}")
+	row.LoadBalancingJSON = normalizeLoadBalancingJSON(row.LoadBalancingJSON)
 	row.TuningJSON = defaultJSON(row.TuningJSON, "{}")
 	row.RelayChainJSON = defaultJSON(row.RelayChainJSON, "[]")
 	row.TagsJSON = defaultJSON(row.TagsJSON, "[]")
@@ -536,6 +536,14 @@ func defaultString(value string, fallback string) string {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
 		return fallback
+	}
+	return trimmed
+}
+
+func normalizeLoadBalancingJSON(value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" || trimmed == "{}" {
+		return `{"strategy":"adaptive"}`
 	}
 	return trimmed
 }

@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -30,8 +31,7 @@ func (e *routeEntry) shouldResumeResponse(req *http.Request, resp *http.Response
 }
 
 func (e *routeEntry) copyResumableResponse(w http.ResponseWriter, req *http.Request, resp *http.Response, state resumableResponse) (int64, error) {
-	copyHeaders(w.Header(), resp.Header)
-	w.Header().Del("Transfer-Encoding")
+	copyProxyResponseHeaders(w.Header(), resp.Header, resp.StatusCode)
 	w.Header().Set("Content-Length", strconv.FormatInt(state.responseLength(), 10))
 	w.WriteHeader(resp.StatusCode)
 	fail := func(sentBytes int64, err error) (int64, error) {
@@ -57,7 +57,7 @@ func (e *routeEntry) copyResumableResponse(w http.ResponseWriter, req *http.Requ
 		if readErr == nil {
 			readErr = io.ErrUnexpectedEOF
 		}
-		if !isResumableReadError(readErr) {
+		if !isResumableReadError(req, readErr) {
 			return fail(sentBytes, readErr)
 		}
 		if attempts >= e.resilience.ResumeMaxAttempts {
@@ -83,9 +83,10 @@ func (e *routeEntry) copyResumableResponse(w http.ResponseWriter, req *http.Requ
 	}
 }
 
-func copyResumableChunk(dst io.Writer, src io.Reader) (int64, error, error) {
+func copyResumableChunk(dst http.ResponseWriter, src io.Reader) (int64, error, error) {
 	buf := make([]byte, 32*1024)
 	var written int64
+	controller := http.NewResponseController(dst)
 	for {
 		n, readErr := src.Read(buf)
 		if n > 0 {
@@ -96,6 +97,9 @@ func copyResumableChunk(dst io.Writer, src io.Reader) (int64, error, error) {
 			}
 			if writeN != n {
 				return written, nil, io.ErrShortWrite
+			}
+			if flushErr := controller.Flush(); flushErr != nil && !errors.Is(flushErr, http.ErrNotSupported) {
+				return written, nil, flushErr
 			}
 		}
 		if readErr != nil {
@@ -311,9 +315,9 @@ func parseContentRange(value string) (int64, int64, int64, bool) {
 	return start, end, total, true
 }
 
-func isResumableReadError(err error) bool {
+func isResumableReadError(req *http.Request, err error) bool {
 	if err == nil || err == io.EOF {
 		return false
 	}
-	return isBackendRetryable(nil, err)
+	return isBackendRetryable(req, err)
 }

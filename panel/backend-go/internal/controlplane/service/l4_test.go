@@ -9,10 +9,11 @@ import (
 )
 
 type fakeL4Store struct {
-	agents       []storage.AgentRow
-	l4RulesByID  map[string][]storage.L4RuleRow
-	relayByAgent map[string][]storage.RelayListenerRow
-	savedAgent   storage.AgentRow
+	agents            []storage.AgentRow
+	l4RulesByID       map[string][]storage.L4RuleRow
+	relayByAgent      map[string][]storage.RelayListenerRow
+	savedAgent        storage.AgentRow
+	loadSnapshotCalls int
 }
 
 func (f *fakeL4Store) ListAgents(context.Context) ([]storage.AgentRow, error) {
@@ -43,6 +44,7 @@ func (f *fakeL4Store) LoadLocalAgentState(context.Context) (storage.LocalAgentSt
 }
 
 func (f *fakeL4Store) LoadAgentSnapshot(context.Context, string, storage.AgentSnapshotInput) (storage.Snapshot, error) {
+	f.loadSnapshotCalls++
 	return storage.Snapshot{}, nil
 }
 
@@ -552,6 +554,9 @@ func TestL4RuleServiceDeleteUpdatesRemoteAgentDesiredRevision(t *testing.T) {
 	}
 	if store.agents[0].DesiredRevision != 5 {
 		t.Fatalf("remote desired_revision = %d", store.agents[0].DesiredRevision)
+	}
+	if store.loadSnapshotCalls != 0 {
+		t.Fatalf("LoadAgentSnapshot() calls = %d", store.loadSnapshotCalls)
 	}
 }
 

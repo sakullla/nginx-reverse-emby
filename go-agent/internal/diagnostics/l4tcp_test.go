@@ -73,6 +73,39 @@ func TestTCPProberDiagnoseReportsFailedConnects(t *testing.T) {
 	}
 }
 
+func TestTCPProberDiagnoseDoesNotMutateSharedCache(t *testing.T) {
+	cache := backends.NewCache(backends.Config{})
+	prober := NewTCPProber(TCPProberConfig{
+		Attempts: 1,
+		Timeout:  100 * time.Millisecond,
+		Cache:    cache,
+	})
+	rule := model.L4Rule{
+		ID:           24,
+		Protocol:     "tcp",
+		ListenHost:   "0.0.0.0",
+		ListenPort:   9501,
+		UpstreamHost: "127.0.0.1",
+		UpstreamPort: 1,
+	}
+
+	report, err := prober.Diagnose(context.Background(), rule, nil)
+	if err != nil {
+		t.Fatalf("Diagnose() error = %v", err)
+	}
+	if report.Summary.Failed != 1 {
+		t.Fatalf("Summary = %+v", report.Summary)
+	}
+
+	backendKey := backends.BackendObservationKey("tcp:0.0.0.0:9501", backends.StableBackendID("127.0.0.1:1"))
+	if cache.IsInBackoff("127.0.0.1:1") {
+		t.Fatalf("expected diagnostic probes to leave shared backoff state untouched")
+	}
+	if summary := cache.Summary(backendKey); summary.RecentFailed != 0 || summary.InBackoff {
+		t.Fatalf("expected diagnostic probes to leave shared backend observation untouched: %+v", summary)
+	}
+}
+
 func TestTCPProberDiagnoseUsesRelayChainWhenConfigured(t *testing.T) {
 	addr, targets, stopTarget := startDiagnosticTCPTarget(t)
 	defer stopTarget()
@@ -267,6 +300,30 @@ func TestTCPProberDiagnoseUsesSharedAdaptiveRecoverySummary(t *testing.T) {
 	}
 	if adaptive.TrafficShareHint != "recovery" {
 		t.Fatalf("TrafficShareHint = %q", adaptive.TrafficShareHint)
+	}
+}
+
+func TestTCPCandidatesAssignDistinctObservationKeysToDuplicateBackends(t *testing.T) {
+	cache := backends.NewCache(backends.Config{})
+
+	candidates, err := tcpCandidates(context.Background(), cache, model.L4Rule{
+		ID:         25,
+		Protocol:   "tcp",
+		ListenHost: "0.0.0.0",
+		ListenPort: 9502,
+		Backends: []model.L4Backend{
+			{Host: "127.0.0.1", Port: 9001},
+			{Host: "127.0.0.1", Port: 9001},
+		},
+	})
+	if err != nil {
+		t.Fatalf("tcpCandidates() error = %v", err)
+	}
+	if len(candidates) != 2 {
+		t.Fatalf("candidates = %+v", candidates)
+	}
+	if candidates[0].backendObservationKey == candidates[1].backendObservationKey {
+		t.Fatalf("duplicate backends must not share observation keys: %+v", candidates)
 	}
 }
 

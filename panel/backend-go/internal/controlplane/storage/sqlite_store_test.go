@@ -478,6 +478,9 @@ func TestStoreNormalizesAdaptiveLoadBalancingForHTTPAndL4(t *testing.T) {
 	if len(httpRules) != 1 || parseLoadBalancingStrategy(httpRules[0].LoadBalancingJSON).Strategy != "adaptive" {
 		t.Fatalf("ListHTTPRules() = %+v", httpRules)
 	}
+	if httpRules[0].LoadBalancingJSON != `{"strategy":"adaptive"}` {
+		t.Fatalf("http load_balancing_json = %q", httpRules[0].LoadBalancingJSON)
+	}
 
 	if err := store.SaveL4Rules(t.Context(), "local", []L4RuleRow{{
 		ID:                78,
@@ -504,6 +507,9 @@ func TestStoreNormalizesAdaptiveLoadBalancingForHTTPAndL4(t *testing.T) {
 	}
 	if len(l4Rules) != 1 || parseL4LoadBalancingStrategy(t, l4Rules[0].LoadBalancingJSON).Strategy != "adaptive" {
 		t.Fatalf("ListL4Rules() = %+v", l4Rules)
+	}
+	if l4Rules[0].LoadBalancingJSON != `{"strategy":"adaptive"}` {
+		t.Fatalf("l4 load_balancing_json = %q", l4Rules[0].LoadBalancingJSON)
 	}
 
 	snapshot, err := store.LoadAgentSnapshot(t.Context(), "local", AgentSnapshotInput{})

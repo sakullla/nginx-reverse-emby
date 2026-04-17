@@ -41,7 +41,9 @@ export const AgentProvider = defineComponent({
       if (token) {
         try {
           systemInfo.value = await fetchSystemInfo()
-        } catch {}
+        } catch (err) {
+          console.error('[AgentContext] fetchSystemInfo failed', err)
+        }
         systemInfoAttempted.value = true
       }
     }, { immediate: true })

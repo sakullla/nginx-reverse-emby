@@ -878,7 +878,7 @@ func copyResponse(w http.ResponseWriter, resp *http.Response) (int64, error) {
 	if resp.Body != nil {
 		defer resp.Body.Close()
 	}
-	copyHeaders(w.Header(), resp.Header)
+	copyProxyResponseHeaders(w.Header(), resp.Header, resp.StatusCode)
 	w.WriteHeader(resp.StatusCode)
 	var written int64
 	if resp.Body != nil {
@@ -982,10 +982,64 @@ func (c switchProtocolCopier) copyToBackend(errc chan<- error) {
 
 func copyHeaders(dst, src http.Header) {
 	for key, values := range src {
+		dst.Del(key)
 		for _, value := range values {
 			dst.Add(key, value)
 		}
 	}
+}
+
+func copyProxyResponseHeaders(dst, src http.Header, statusCode int) {
+	hopByHop := hopByHopHeaders(src)
+	for key := range src {
+		if shouldStripProxyResponseHeader(key, hopByHop, statusCode) {
+			dst.Del(key)
+		}
+	}
+	for key, values := range src {
+		if shouldStripProxyResponseHeader(key, hopByHop, statusCode) {
+			continue
+		}
+		dst.Del(key)
+		for _, value := range values {
+			dst.Add(key, value)
+		}
+	}
+}
+
+func shouldStripProxyResponseHeader(key string, hopByHop map[string]struct{}, statusCode int) bool {
+	canonical := http.CanonicalHeaderKey(strings.TrimSpace(key))
+	if _, ok := hopByHop[canonical]; ok {
+		return true
+	}
+	if canonical == "Content-Range" && statusCode != http.StatusPartialContent {
+		return true
+	}
+	return false
+}
+
+func hopByHopHeaders(header http.Header) map[string]struct{} {
+	hopByHop := map[string]struct{}{
+		"Connection":          {},
+		"Keep-Alive":          {},
+		"Proxy-Authenticate":  {},
+		"Proxy-Authorization": {},
+		"Proxy-Connection":    {},
+		"Te":                  {},
+		"Trailer":             {},
+		"Transfer-Encoding":   {},
+		"Upgrade":             {},
+	}
+	for _, value := range header.Values("Connection") {
+		for _, token := range strings.Split(value, ",") {
+			trimmed := http.CanonicalHeaderKey(strings.TrimSpace(token))
+			if trimmed == "" {
+				continue
+			}
+			hopByHop[trimmed] = struct{}{}
+		}
+	}
+	return hopByHop
 }
 
 func cloneURL(src *url.URL) *url.URL {

@@ -1110,24 +1110,7 @@ func (s *relayService) findRelayListenerReference(ctx context.Context, listenerI
 }
 
 func (s *relayService) allKnownAgentIDs(ctx context.Context) ([]string, error) {
-	seen := map[string]struct{}{}
-	agentIDs := make([]string, 0)
-	if s.cfg.EnableLocalAgent && strings.TrimSpace(s.cfg.LocalAgentID) != "" {
-		seen[s.cfg.LocalAgentID] = struct{}{}
-		agentIDs = append(agentIDs, s.cfg.LocalAgentID)
-	}
-	rows, err := s.store.ListAgents(ctx)
-	if err != nil {
-		return nil, err
-	}
-	for _, row := range rows {
-		if _, ok := seen[row.ID]; ok || strings.TrimSpace(row.ID) == "" {
-			continue
-		}
-		seen[row.ID] = struct{}{}
-		agentIDs = append(agentIDs, row.ID)
-	}
-	return agentIDs, nil
+	return allKnownAgentIDs(ctx, s.cfg, s.store)
 }
 
 func (s *relayService) cleanupUnusedAutoRelayListenerCertificate(ctx context.Context, certID int) error {

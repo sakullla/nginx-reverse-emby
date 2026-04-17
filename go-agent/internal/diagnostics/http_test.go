@@ -84,6 +84,36 @@ func TestHTTPProberDiagnoseReportsLossAcrossMixedBackends(t *testing.T) {
 	}
 }
 
+func TestHTTPProberDiagnoseDoesNotMutateSharedCache(t *testing.T) {
+	cache := backends.NewCache(backends.Config{})
+	prober := NewHTTPProber(HTTPProberConfig{
+		Attempts: 1,
+		Timeout:  100 * time.Millisecond,
+		Cache:    cache,
+	})
+	rule := model.HTTPRule{
+		ID:          80,
+		FrontendURL: "https://edge.example.test",
+		BackendURL:  "http://127.0.0.1:1",
+	}
+
+	report, err := prober.Diagnose(context.Background(), rule, nil)
+	if err != nil {
+		t.Fatalf("Diagnose() error = %v", err)
+	}
+	if report.Summary.Failed != 1 {
+		t.Fatalf("Summary = %+v", report.Summary)
+	}
+
+	backendKey := backends.BackendObservationKey(rule.FrontendURL, backends.StableBackendID(rule.BackendURL))
+	if cache.IsInBackoff("127.0.0.1:1") {
+		t.Fatalf("expected diagnostic probes to leave shared backoff state untouched")
+	}
+	if summary := cache.Summary(backendKey); summary.RecentFailed != 0 || summary.InBackoff {
+		t.Fatalf("expected diagnostic probes to leave shared backend observation untouched: %+v", summary)
+	}
+}
+
 func TestHTTPProberDiagnoseUsesRelayChainWhenConfigured(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
@@ -294,6 +324,57 @@ func TestHTTPProberDiagnoseSplitsHostnameBackendsByResolvedAddress(t *testing.T)
 	}
 	if report.Backends[0].Children[1].Backend != fmt.Sprintf("http://echo.example.test:%d/healthz [127.0.0.2:%d]", port, port) {
 		t.Fatalf("second child backend = %+v", report.Backends[0].Children[1])
+	}
+}
+
+func TestHTTPCandidatesReturnsResolveErrorWhenEveryBackendFailsDNS(t *testing.T) {
+	cache := backends.NewCache(backends.Config{
+		Resolver: diagnosticResolverFunc(func(context.Context, string) ([]net.IPAddr, error) {
+			return nil, fmt.Errorf("lookup failed")
+		}),
+	})
+
+	_, err := httpCandidates(context.Background(), cache, model.HTTPRule{
+		ID:          34,
+		FrontendURL: "https://edge.example.test",
+		BackendURL:  "http://echo.example.test:8096/healthz",
+	})
+	if err == nil {
+		t.Fatal("httpCandidates() error = nil")
+	}
+	if got := err.Error(); got != "resolve backend candidates: lookup failed" {
+		t.Fatalf("httpCandidates() error = %q", got)
+	}
+}
+
+func TestHTTPCandidatesPreserveAllResolvedChildrenPerCandidate(t *testing.T) {
+	cache := backends.NewCache(backends.Config{
+		Resolver: diagnosticResolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
+			if host != "echo.example.test" {
+				t.Fatalf("unexpected resolver host %q", host)
+			}
+			return []net.IPAddr{
+				{IP: net.ParseIP("127.0.0.1")},
+				{IP: net.ParseIP("127.0.0.2")},
+			}, nil
+		}),
+	})
+
+	candidates, err := httpCandidates(context.Background(), cache, model.HTTPRule{
+		ID:          35,
+		FrontendURL: "https://edge.example.test",
+		BackendURL:  "http://echo.example.test:8096/healthz",
+	})
+	if err != nil {
+		t.Fatalf("httpCandidates() error = %v", err)
+	}
+	if len(candidates) != 2 {
+		t.Fatalf("candidates = %+v", candidates)
+	}
+	for _, candidate := range candidates {
+		if len(candidate.resolvedCandidates) != 2 {
+			t.Fatalf("candidate.resolvedCandidates = %+v", candidate.resolvedCandidates)
+		}
 	}
 }
 
