@@ -4,6 +4,7 @@ const isDev = import.meta.env.DEV
 const sleep = (ms = 500) => new Promise((resolve) => setTimeout(resolve, ms))
 const SYSTEM_RELAY_CA_TAG = 'system:relay-ca'
 const SYSTEM_RELAY_TUNNEL_TAG = 'system:auto-relay-tunnel'
+const SUPPORTED_LOAD_BALANCING_STRATEGIES = new Set(['adaptive', 'round_robin', 'random'])
 
 function readDevMockFlags() {
   if (!isDev || typeof window === 'undefined') return {}
@@ -239,7 +240,7 @@ function generateMockRules(count) {
       frontend_url: `https://${subdomain}.${domain}`,
       backend_url: `http://${ip}:${svc.port}`,
       backends: [{ url: `http://${ip}:${svc.port}` }],
-      load_balancing: { strategy: 'round_robin' },
+      load_balancing: { strategy: 'adaptive' },
       enabled: i % 7 !== 0,
       tags: [...svc.tags, i % 3 === 0 ? 'https' : 'http'],
       proxy_redirect: true,
@@ -264,6 +265,11 @@ function normalizeHttpBackends(rule = {}) {
   return backendUrl ? [{ url: backendUrl }] : []
 }
 
+function normalizeLoadBalancingStrategy(value) {
+  const strategy = String(value || '').trim().toLowerCase()
+  return SUPPORTED_LOAD_BALANCING_STRATEGIES.has(strategy) ? strategy : 'adaptive'
+}
+
 function normalizeHttpRule(rule = {}) {
   const backends = normalizeHttpBackends(rule)
   return {
@@ -271,7 +277,7 @@ function normalizeHttpRule(rule = {}) {
     backend_url: backends[0]?.url || String(rule.backend_url || '').trim(),
     backends,
     load_balancing: {
-      strategy: rule.load_balancing?.strategy === 'random' ? 'random' : 'round_robin'
+      strategy: normalizeLoadBalancingStrategy(rule.load_balancing?.strategy)
     },
     relay_obfs: rule.relay_obfs === true
   }
@@ -300,7 +306,7 @@ function normalizeL4Rule(rule = {}) {
     upstream_port: backends[0]?.port || Number(rule.upstream_port) || 0,
     backends,
     load_balancing: {
-      strategy: rule.load_balancing?.strategy === 'random' ? 'random' : 'round_robin'
+      strategy: normalizeLoadBalancingStrategy(rule.load_balancing?.strategy)
     },
     relay_obfs: rule.relay_obfs === true
   }
@@ -315,7 +321,7 @@ function normalizeHttpRulePayloadObject(payload = {}, options = {}) {
     backend_url: backends[0]?.url || '',
     backends,
     load_balancing: {
-      strategy: payload.load_balancing?.strategy === 'random' ? 'random' : 'round_robin'
+      strategy: normalizeLoadBalancingStrategy(payload.load_balancing?.strategy)
     },
     tags: Array.isArray(payload.tags) ? payload.tags : [],
     enabled: payload.enabled !== false,
@@ -367,7 +373,10 @@ function normalizeLegacyHttpRulePayload(payloadOrFrontend, legacyArgs = [], opti
 function normalizeL4RulePayload(payload = {}, options = {}) {
   const includeRelayDefaults = options.includeRelayDefaults === true
   const normalizedPayload = {
-    ...payload
+    ...payload,
+    load_balancing: {
+      strategy: normalizeLoadBalancingStrategy(payload.load_balancing?.strategy)
+    }
   }
   if (Array.isArray(payload.relay_chain)) {
     normalizedPayload.relay_chain = payload.relay_chain

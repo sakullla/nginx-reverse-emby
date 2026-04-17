@@ -136,3 +136,27 @@ test('Mock relay listener normalization keeps transport defaults and quic obfs o
   assert.match(source, /allow_transport_fallback:\s*payload\.allow_transport_fallback !== false/)
   assert.match(source, /obfs_mode:\s*transportMode === 'tls_tcp'[\s\S]*normalizeRelayObfsMode\(payload\.obfs_mode, transportMode\)[\s\S]*:\s*'off'/)
 })
+
+test('HTTP and L4 API normalization preserve adaptive load balancing strategy', () => {
+  const source = fs.readFileSync(path.resolve(__dirname, '../api/index.js'), 'utf8')
+  assert.match(source, /const SUPPORTED_LOAD_BALANCING_STRATEGIES = new Set\(\['adaptive', 'round_robin', 'random'\]\)/)
+  assert.match(source, /strategy:\s*normalizeLoadBalancingStrategy\(rule\.load_balancing\?\.strategy\)/)
+  assert.match(source, /strategy:\s*normalizeLoadBalancingStrategy\(payload\.load_balancing\?\.strategy\)/)
+})
+
+test('Rule forms and L4 cards expose adaptive load balancing strategy', () => {
+  const httpForm = read('RuleForm.vue')
+  const l4Form = read('L4RuleForm.vue')
+  const l4Item = read('l4/L4RuleItem.vue')
+
+  assert.match(httpForm, /<option value="adaptive">自适应 \(Adaptive\)<\/option>/)
+  assert.match(httpForm, /const SUPPORTED_HTTP_STRATEGIES = new Set\(\['adaptive', 'round_robin', 'random'\]\)/)
+  assert.match(httpForm, /load_balancing:\s*\{\s*strategy: 'adaptive'\s*\}/)
+
+  assert.match(l4Form, /<option value="adaptive">自适应 \(Adaptive\)<\/option>/)
+  assert.match(l4Form, /const SUPPORTED_L4_STRATEGIES = new Set\(\['adaptive', 'round_robin', 'random'\]\)/)
+  assert.match(l4Form, /strategy:\s*normalizeL4Strategy\(initialData\?\.load_balancing\?\.strategy\)/)
+
+  assert.match(l4Item, /const LB_MAP = \{ adaptive: 'ADP', round_robin: 'RR', random: 'RND' \}/)
+  assert.match(l4Item, /const LB_TITLES = \{ adaptive: '自适应 \(Adaptive\)', round_robin: '轮询 \(Round Robin\)', random: '随机 \(Random\)' \}/)
+})

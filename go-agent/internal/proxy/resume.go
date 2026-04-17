@@ -46,23 +46,28 @@ func (e *routeEntry) copyResumableResponse(w http.ResponseWriter, req *http.Requ
 	)
 	for {
 		n, readErr, writeErr := copyResumableChunk(w, current.Body)
-		_ = current.Body.Close()
 		sentBytes += n
 		if writeErr != nil {
+			_ = current.Body.Close()
 			return fail(sentBytes, writeErr)
 		}
 		if sentBytes >= expectedBytes {
+			_ = current.Body.Close()
 			return sentBytes, nil
 		}
 		if readErr == nil {
 			readErr = io.ErrUnexpectedEOF
 		}
 		if !isResumableReadError(req, readErr) {
+			_ = current.Body.Close()
 			return fail(sentBytes, readErr)
 		}
 		if attempts >= e.resilience.ResumeMaxAttempts {
+			_ = current.Body.Close()
 			return fail(sentBytes, readErr)
 		}
+		drainResponseBody(current.Body)
+		_ = current.Body.Close()
 
 		nextStart := state.rangeStart + sentBytes
 		nextReq, err := newResumeRequest(req, state, nextStart)
@@ -126,7 +131,8 @@ func newResumableResponse(req *http.Request, resp *http.Response) (resumableResp
 
 	switch resp.StatusCode {
 	case http.StatusOK:
-		if strings.TrimSpace(req.Header.Get("Range")) != "" {
+		requestRange := strings.TrimSpace(req.Header.Get("Range"))
+		if requestRange != "" && !isInitialFullBodyRangeRequest(requestRange) {
 			return resumableResponse{}, false
 		}
 		if resp.ContentLength <= 0 {
@@ -280,6 +286,15 @@ func hasSingleByteRangeRequest(value string) bool {
 	return true
 }
 
+func isInitialFullBodyRangeRequest(value string) bool {
+	value = strings.TrimSpace(value)
+	parts := strings.SplitN(value, "=", 2)
+	if len(parts) != 2 || !strings.EqualFold(strings.TrimSpace(parts[0]), "bytes") {
+		return false
+	}
+	return strings.TrimSpace(parts[1]) == "0-"
+}
+
 func isMultipartByteranges(header http.Header) bool {
 	contentType := strings.TrimSpace(header.Get("Content-Type"))
 	return strings.HasPrefix(strings.ToLower(contentType), "multipart/byteranges")
@@ -320,4 +335,11 @@ func isResumableReadError(req *http.Request, err error) bool {
 		return false
 	}
 	return isBackendRetryable(req, err)
+}
+
+func drainResponseBody(body io.Reader) {
+	if body == nil {
+		return
+	}
+	_, _ = io.CopyN(io.Discard, body, 512*1024)
 }

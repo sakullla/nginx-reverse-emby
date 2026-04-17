@@ -56,6 +56,7 @@ type udpSession struct {
 	backendObservationKey string
 	pendingReplies        int
 	awaitingSince         time.Time
+	pendingReplyTimes     []time.Time
 	ready                 chan struct{}
 	initErr               error
 }
@@ -630,10 +631,9 @@ func (s *Server) markUDPSessionWrite(key string) {
 	if session := s.udpSessions[key]; session != nil {
 		now := s.now()
 		session.lastActive = now
-		session.pendingReplies++
-		if session.pendingReplies == 1 {
-			session.awaitingSince = now
-		}
+		session.pendingReplyTimes = append(session.pendingReplyTimes, now)
+		session.pendingReplies = len(session.pendingReplyTimes)
+		session.awaitingSince = session.pendingReplyTimes[0]
 	}
 }
 
@@ -643,11 +643,12 @@ func (s *Server) markUDPSessionReply(key string) {
 	if session := s.udpSessions[key]; session != nil {
 		now := s.now()
 		session.lastActive = now
-		if session.pendingReplies > 0 {
-			session.pendingReplies--
+		if len(session.pendingReplyTimes) > 0 {
+			session.pendingReplyTimes = session.pendingReplyTimes[1:]
 		}
+		session.pendingReplies = len(session.pendingReplyTimes)
 		if session.pendingReplies > 0 {
-			session.awaitingSince = now
+			session.awaitingSince = session.pendingReplyTimes[0]
 		} else {
 			session.awaitingSince = time.Time{}
 		}

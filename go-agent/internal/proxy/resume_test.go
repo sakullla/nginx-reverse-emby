@@ -65,8 +65,7 @@ func TestServeHTTPResumesInterruptedFullBodyTransfer(t *testing.T) {
 		ResumeMaxAttempts: 1,
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "http://edge.example.test/video", nil)
-	req.Host = "edge.example.test"
+	req := httptest.NewRequest(http.MethodGet, backend.URL, nil)
 	recorder := httptest.NewRecorder()
 
 	if err := entry.serveHTTP(recorder, req); err != nil {
@@ -138,8 +137,7 @@ func TestServeHTTPDoesNotResumeWhenValidatorChanges(t *testing.T) {
 		ResumeMaxAttempts: 1,
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "http://edge.example.test/video", nil)
-	req.Host = "edge.example.test"
+	req := httptest.NewRequest(http.MethodGet, backend.URL, nil)
 	recorder := httptest.NewRecorder()
 
 	err := entry.serveHTTP(recorder, req)
@@ -235,6 +233,74 @@ func TestServeHTTPResumesInterruptedSingleRangeTransfer(t *testing.T) {
 	defer mu.Unlock()
 	if len(requests) != 2 {
 		t.Fatalf("expected exactly two upstream requests, got %d", len(requests))
+	}
+}
+
+func TestServeHTTPResumesInterruptedRangeProbeWithInitial200Response(t *testing.T) {
+	payload := []byte("0123456789abcdefghijklmnopqrstuvwxyz")
+	split := len(payload) / 2
+
+	var mu sync.Mutex
+	requests := make([]string, 0, 2)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requests = append(requests, r.Header.Get("Range"))
+		attempt := len(requests)
+		mu.Unlock()
+
+		switch attempt {
+		case 1:
+			if got := r.Header.Get("Range"); got != "bytes=0-" {
+				t.Fatalf("expected initial range probe request, got %q", got)
+			}
+			hijacker, ok := w.(http.Hijacker)
+			if !ok {
+				t.Fatal("backend response writer does not support hijack")
+			}
+			conn, rw, err := hijacker.Hijack()
+			if err != nil {
+				t.Fatalf("backend hijack failed: %v", err)
+			}
+			defer conn.Close()
+
+			_, _ = rw.WriteString(fmt.Sprintf("HTTP/1.1 200 OK\r\nAccept-Ranges: bytes\r\nETag: \"stable\"\r\nContent-Length: %d\r\n\r\n", len(payload)))
+			_, _ = rw.Write(payload[:split])
+			_ = rw.Flush()
+		case 2:
+			if got := r.Header.Get("Range"); got != fmt.Sprintf("bytes=%d-", split) {
+				t.Fatalf("expected resumed request for remaining bytes, got %q", got)
+			}
+			w.Header().Set("Accept-Ranges", "bytes")
+			w.Header().Set("ETag", `"stable"`)
+			w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", split, len(payload)-1, len(payload)))
+			w.Header().Set("Content-Length", fmt.Sprintf("%d", len(payload)-split))
+			w.WriteHeader(http.StatusPartialContent)
+			_, _ = w.Write(payload[split:])
+		default:
+			t.Fatalf("unexpected backend request #%d", attempt)
+		}
+	}))
+	defer backend.Close()
+
+	entry := resumableTestRouteEntry(t, backend.URL)
+	entry.resilience = StreamResilienceOptions{
+		ResumeEnabled:     true,
+		ResumeMaxAttempts: 1,
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "http://edge.example.test/video", nil)
+	req.Host = "edge.example.test"
+	req.Header.Set("Range", "bytes=0-")
+	recorder := httptest.NewRecorder()
+
+	if err := entry.serveHTTP(recorder, req); err != nil {
+		t.Fatalf("expected interrupted range probe to resume, got %v", err)
+	}
+	if got := recorder.Code; got != http.StatusOK {
+		t.Fatalf("expected 200 response, got %d", got)
+	}
+	if got := recorder.Body.Bytes(); string(got) != string(payload) {
+		t.Fatalf("expected full payload after resume, got %q", string(got))
 	}
 }
 
@@ -388,8 +454,7 @@ func TestServeHTTPResumableResponseStripsHopByHopHeaders(t *testing.T) {
 		ResumeMaxAttempts: 1,
 	}
 
-	req := httptest.NewRequest(http.MethodGet, "http://edge.example.test/video", nil)
-	req.Host = "edge.example.test"
+	req := httptest.NewRequest(http.MethodGet, backend.URL, nil)
 	recorder := httptest.NewRecorder()
 
 	if err := entry.serveHTTP(recorder, req); err != nil {
@@ -461,6 +526,70 @@ func TestServeHTTPResumableResponseFlushesBodyChunks(t *testing.T) {
 	}
 }
 
+func TestCopyResumableResponseDrainsInterruptedBodyBeforeRetry(t *testing.T) {
+	payload := []byte("0123456789abcdefghijklmnopqrstuvwxyz")
+	split := len(payload) / 2
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Range"); got != fmt.Sprintf("bytes=%d-", split) {
+			t.Fatalf("expected resumed request for remaining bytes, got %q", got)
+		}
+		w.Header().Set("Accept-Ranges", "bytes")
+		w.Header().Set("ETag", `"stable"`)
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", split, len(payload)-1, len(payload)))
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(payload)-split))
+		w.WriteHeader(http.StatusPartialContent)
+		_, _ = w.Write(payload[split:])
+	}))
+	defer backend.Close()
+
+	entry := resumableTestRouteEntry(t, backend.URL)
+	entry.resilience = StreamResilienceOptions{
+		ResumeEnabled:     true,
+		ResumeMaxAttempts: 1,
+	}
+
+	body := &drainTrackingBody{
+		chunks: [][]byte{
+			payload[:split],
+			payload[split:],
+		},
+		failAfterChunk: 0,
+		err:            io.ErrUnexpectedEOF,
+	}
+	resp := &http.Response{
+		StatusCode:    http.StatusOK,
+		Header:        make(http.Header),
+		Body:          body,
+		ContentLength: int64(len(payload)),
+	}
+	resp.Header.Set("Accept-Ranges", "bytes")
+	resp.Header.Set("ETag", `"stable"`)
+
+	req := httptest.NewRequest(http.MethodGet, backend.URL, nil)
+	recorder := httptest.NewRecorder()
+
+	written, err := entry.copyResumableResponse(recorder, req, resp, resumableResponse{
+		initialStatus: http.StatusOK,
+		rangeStart:    0,
+		rangeEnd:      int64(len(payload) - 1),
+		resourceSize:  int64(len(payload)),
+		validator: responseValidator{
+			etag:    `"stable"`,
+			ifRange: `"stable"`,
+		},
+	})
+	if err != nil {
+		t.Fatalf("copyResumableResponse() error = %v", err)
+	}
+	if written != int64(len(payload)) {
+		t.Fatalf("written = %d", written)
+	}
+	if !body.drained {
+		t.Fatal("expected interrupted upstream body to be drained before retry")
+	}
+}
+
 func resumableTestRouteEntry(t *testing.T, backendRawURL string) *routeEntry {
 	t.Helper()
 
@@ -499,8 +628,38 @@ type flushingResumeResponseWriter struct {
 	wroteHeader bool
 }
 
+type drainTrackingBody struct {
+	chunks         [][]byte
+	failAfterChunk int
+	err            error
+	index          int
+	drained        bool
+}
+
 func (w *failingResumeResponseWriter) Header() http.Header {
 	return w.header
+}
+
+func (b *drainTrackingBody) Read(p []byte) (int, error) {
+	if b.index >= len(b.chunks) {
+		b.drained = true
+		return 0, io.EOF
+	}
+	chunk := b.chunks[b.index]
+	b.index++
+	n := copy(p, chunk)
+	if b.index-1 == b.failAfterChunk {
+		return n, b.err
+	}
+	if b.index >= len(b.chunks) {
+		b.drained = true
+		return n, io.EOF
+	}
+	return n, nil
+}
+
+func (b *drainTrackingBody) Close() error {
+	return nil
 }
 
 func (w *failingResumeResponseWriter) WriteHeader(statusCode int) {

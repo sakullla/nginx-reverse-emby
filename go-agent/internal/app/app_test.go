@@ -13,9 +13,12 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unsafe"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
+	agentsync "github.com/sakullla/nginx-reverse-emby/go-agent/internal/sync"
 	agentupdate "github.com/sakullla/nginx-reverse-emby/go-agent/internal/update"
 )
 
@@ -50,6 +53,66 @@ func TestNewBuildsRealWiring(t *testing.T) {
 	if app.relayApplier == nil {
 		t.Fatal("expected relay applier to be initialized")
 	}
+}
+
+func TestNewPropagatesHTTPTransportConfigToSyncAndTaskClients(t *testing.T) {
+	cfg := Config{
+		AgentID:        "agent",
+		AgentName:      "agent",
+		MasterURL:      "https://master.example.com",
+		AgentToken:     "token",
+		CurrentVersion: "0.1.0",
+		DataDir:        t.TempDir(),
+		HTTPTransport: config.HTTPTransportConfig{
+			DialTimeout:           21 * time.Second,
+			TLSHandshakeTimeout:   22 * time.Second,
+			ResponseHeaderTimeout: 23 * time.Second,
+			IdleConnTimeout:       24 * time.Second,
+			KeepAlive:             25 * time.Second,
+		},
+	}
+
+	app, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	syncClient, ok := app.syncClient.(*agentsync.Client)
+	if !ok {
+		t.Fatalf("syncClient type = %T", app.syncClient)
+	}
+	syncClientTransport := extractPrivateTransport(t, syncClient)
+	if syncClientTransport == nil {
+		t.Fatal("expected sync transport to be initialized")
+	}
+	if syncClientTransport.ResponseHeaderTimeout != 23*time.Second {
+		t.Fatalf("sync ResponseHeaderTimeout = %v", syncClientTransport.ResponseHeaderTimeout)
+	}
+
+	if app.taskClient == nil {
+		t.Fatal("expected task client to be initialized")
+	}
+	taskTransport := extractPrivateTransport(t, app.taskClient)
+	if taskTransport.ResponseHeaderTimeout != 23*time.Second {
+		t.Fatalf("task ResponseHeaderTimeout = %v", taskTransport.ResponseHeaderTimeout)
+	}
+	if taskTransport.TLSHandshakeTimeout != 22*time.Second {
+		t.Fatalf("task TLSHandshakeTimeout = %v", taskTransport.TLSHandshakeTimeout)
+	}
+}
+
+func extractPrivateTransport(t *testing.T, client any) *http.Transport {
+	t.Helper()
+
+	value := reflect.ValueOf(client)
+	if value.Kind() != reflect.Pointer || value.IsNil() {
+		t.Fatalf("client = %T", client)
+	}
+	field := value.Elem().FieldByName("transport")
+	if !field.IsValid() || field.IsNil() {
+		return nil
+	}
+	return reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem().Interface().(*http.Transport)
 }
 
 func TestNewAdvertisesRelayQUICAndConditionalHTTP3IngressCapabilities(t *testing.T) {

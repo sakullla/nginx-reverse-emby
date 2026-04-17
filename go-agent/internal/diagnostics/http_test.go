@@ -378,6 +378,38 @@ func TestHTTPCandidatesPreserveAllResolvedChildrenPerCandidate(t *testing.T) {
 	}
 }
 
+func TestHTTPCandidatesPreserveDuplicateConfiguredBackends(t *testing.T) {
+	cache := backends.NewCache(backends.Config{
+		Resolver: diagnosticResolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
+			if host != "echo.example.test" {
+				t.Fatalf("unexpected resolver host %q", host)
+			}
+			return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, nil
+		}),
+	})
+
+	candidates, err := httpCandidates(context.Background(), cache, model.HTTPRule{
+		ID:          36,
+		FrontendURL: "https://edge.example.test",
+		Backends: []model.HTTPBackend{
+			{URL: "http://echo.example.test:8096/healthz"},
+			{URL: "http://echo.example.test:8096/healthz"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("httpCandidates() error = %v", err)
+	}
+	if len(candidates) != 2 {
+		t.Fatalf("candidates = %+v", candidates)
+	}
+	if candidates[0].configuredURL != candidates[1].configuredURL {
+		t.Fatalf("configuredURL mismatch = %+v", candidates)
+	}
+	if candidates[0].backendObservationKey != candidates[1].backendObservationKey {
+		t.Fatalf("backendObservationKey mismatch = %+v", candidates)
+	}
+}
+
 func TestHTTPProberDiagnoseAdaptivePrefersConfiguredBackendOrder(t *testing.T) {
 	bulk := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)

@@ -80,10 +80,10 @@ const backendsTooltip = computed(() => backends.value.map((b, i) => {
   return s
 }).join('\n'))
 
-const LB_MAP = { round_robin: 'RR', random: 'RND' }
-const LB_TITLES = { round_robin: '轮询 (Round Robin)', random: '随机 (Random)' }
-const lbLabel = computed(() => LB_MAP[props.rule.load_balancing?.strategy] || 'RR')
-const lbTitle = computed(() => LB_TITLES[props.rule.load_balancing?.strategy] || '轮询')
+const LB_MAP = { adaptive: 'ADP', round_robin: 'RR', random: 'RND' }
+const LB_TITLES = { adaptive: '自适应 (Adaptive)', round_robin: '轮询 (Round Robin)', random: '随机 (Random)' }
+const lbLabel = computed(() => LB_MAP[props.rule.load_balancing?.strategy] || 'ADP')
+const lbTitle = computed(() => LB_TITLES[props.rule.load_balancing?.strategy] || '自适应 (Adaptive)')
 
 const tuningTags = computed(() => {
   const t = props.rule.tuning

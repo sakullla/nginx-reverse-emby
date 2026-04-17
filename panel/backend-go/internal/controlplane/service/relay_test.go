@@ -59,8 +59,26 @@ func (s *relayCertStore) ListHTTPRules(_ context.Context, agentID string) ([]sto
 	return append([]storage.HTTPRuleRow(nil), s.httpRulesByID[agentID]...), nil
 }
 
+func (s *relayCertStore) GetHTTPRule(_ context.Context, agentID string, id int) (storage.HTTPRuleRow, bool, error) {
+	for _, row := range s.httpRulesByID[agentID] {
+		if row.ID == id {
+			return row, true, nil
+		}
+	}
+	return storage.HTTPRuleRow{}, false, nil
+}
+
 func (s *relayCertStore) ListL4Rules(_ context.Context, agentID string) ([]storage.L4RuleRow, error) {
 	return append([]storage.L4RuleRow(nil), s.l4RulesByID[agentID]...), nil
+}
+
+func (s *relayCertStore) GetL4Rule(_ context.Context, agentID string, id int) (storage.L4RuleRow, bool, error) {
+	for _, row := range s.l4RulesByID[agentID] {
+		if row.ID == id {
+			return row, true, nil
+		}
+	}
+	return storage.L4RuleRow{}, false, nil
 }
 
 func (s *relayCertStore) ListRelayListeners(_ context.Context, agentID string) ([]storage.RelayListenerRow, error) {

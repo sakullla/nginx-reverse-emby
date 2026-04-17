@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
 )
 
 func TestTaskClientReconnectsAndSendsHello(t *testing.T) {
@@ -286,5 +288,32 @@ func TestTaskClientReportsFailedTaskExecution(t *testing.T) {
 	}
 	if got[1]["error"] != "probe failed" {
 		t.Fatalf("error = %#v", got[1]["error"])
+	}
+}
+
+func TestNewClientAppliesConfiguredHTTPTransportTimeouts(t *testing.T) {
+	client := NewClient(ClientConfig{
+		MasterURL:  "https://master.example.com",
+		AgentToken: "token",
+		HTTPTransport: config.HTTPTransportConfig{
+			DialTimeout:           11 * time.Second,
+			TLSHandshakeTimeout:   12 * time.Second,
+			ResponseHeaderTimeout: 13 * time.Second,
+			IdleConnTimeout:       14 * time.Second,
+			KeepAlive:             15 * time.Second,
+		},
+	})
+
+	if client.transport == nil {
+		t.Fatal("expected transport to be initialized")
+	}
+	if client.transport.TLSHandshakeTimeout != 12*time.Second {
+		t.Fatalf("TLSHandshakeTimeout = %v", client.transport.TLSHandshakeTimeout)
+	}
+	if client.transport.ResponseHeaderTimeout != 13*time.Second {
+		t.Fatalf("ResponseHeaderTimeout = %v", client.transport.ResponseHeaderTimeout)
+	}
+	if client.transport.IdleConnTimeout != 14*time.Second {
+		t.Fatalf("IdleConnTimeout = %v", client.transport.IdleConnTimeout)
 	}
 }

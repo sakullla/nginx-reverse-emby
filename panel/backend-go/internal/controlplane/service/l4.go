@@ -114,17 +114,14 @@ func (s *l4Service) Get(ctx context.Context, agentID string, id int) (L4Rule, er
 		return L4Rule{}, err
 	}
 
-	rows, err := s.store.ListL4Rules(ctx, resolvedID)
+	row, ok, err := s.store.GetL4Rule(ctx, resolvedID, id)
 	if err != nil {
 		return L4Rule{}, err
 	}
-	for _, row := range rows {
-		rule := l4RuleFromRow(row)
-		if rule.ID == id {
-			return rule, nil
-		}
+	if !ok {
+		return L4Rule{}, ErrRuleNotFound
 	}
-	return L4Rule{}, ErrRuleNotFound
+	return l4RuleFromRow(row), nil
 }
 
 func (s *l4Service) Create(ctx context.Context, agentID string, input L4RuleInput) (L4Rule, error) {

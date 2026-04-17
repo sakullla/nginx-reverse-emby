@@ -1909,6 +1909,35 @@ func TestUDPProxyFailsOutstandingPacketAfterPartialReplies(t *testing.T) {
 	}
 }
 
+func TestUDPReplyTimeoutTracksOldestOutstandingPacket(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	now := base
+	srv := &Server{
+		now:             func() time.Time { return now },
+		udpReplyTimeout: 100 * time.Millisecond,
+		udpSessions: map[string]*udpSession{
+			"peer": {key: "peer"},
+		},
+	}
+
+	srv.markUDPSessionWrite("peer")
+	now = now.Add(10 * time.Millisecond)
+	srv.markUDPSessionWrite("peer")
+	now = now.Add(90 * time.Millisecond)
+	srv.markUDPSessionReply("peer")
+	if srv.shouldFailUDPSession("peer") {
+		t.Fatal("did not expect timeout before the oldest outstanding packet exceeds the window")
+	}
+	now = now.Add(15 * time.Millisecond)
+
+	if !srv.shouldFailUDPSession("peer") {
+		t.Fatal("expected timeout to remain anchored to the oldest outstanding packet")
+	}
+	if got := srv.udpReplyDuration("peer"); got < 100*time.Millisecond {
+		t.Fatalf("udpReplyDuration() = %v", got)
+	}
+}
+
 func TestUDPProxyExpiresIdleSessions(t *testing.T) {
 	upstreamAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
 	if err != nil {

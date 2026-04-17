@@ -31,6 +31,7 @@ type HTTPRuleInput struct {
 type ruleStore interface {
 	ListAgents(context.Context) ([]storage.AgentRow, error)
 	ListHTTPRules(context.Context, string) ([]storage.HTTPRuleRow, error)
+	GetHTTPRule(context.Context, string, int) (storage.HTTPRuleRow, bool, error)
 	ListL4Rules(context.Context, string) ([]storage.L4RuleRow, error)
 	ListManagedCertificates(context.Context) ([]storage.ManagedCertificateRow, error)
 	ListRelayListeners(context.Context, string) ([]storage.RelayListenerRow, error)
@@ -85,17 +86,14 @@ func (s *ruleService) Get(ctx context.Context, agentID string, id int) (HTTPRule
 		return HTTPRule{}, err
 	}
 
-	rows, err := s.store.ListHTTPRules(ctx, resolvedID)
+	row, ok, err := s.store.GetHTTPRule(ctx, resolvedID, id)
 	if err != nil {
 		return HTTPRule{}, err
 	}
-	for _, row := range rows {
-		rule := httpRuleFromRow(row)
-		if rule.ID == id {
-			return rule, nil
-		}
+	if !ok {
+		return HTTPRule{}, ErrRuleNotFound
 	}
-	return HTTPRule{}, ErrRuleNotFound
+	return httpRuleFromRow(row), nil
 }
 
 func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRuleInput) (HTTPRule, error) {
@@ -360,9 +358,14 @@ func (s *ruleService) bumpRemoteDesiredRevision(ctx context.Context, agentID str
 		if row.ID != agentID {
 			continue
 		}
-		if row.DesiredRevision < revision {
-			row.DesiredRevision = revision
+		nextRevision := revision
+		if row.DesiredRevision > nextRevision {
+			nextRevision = row.DesiredRevision
 		}
+		if row.CurrentRevision > nextRevision {
+			nextRevision = row.CurrentRevision
+		}
+		row.DesiredRevision = nextRevision
 		return s.store.SaveAgent(ctx, row)
 	}
 	return ErrAgentNotFound

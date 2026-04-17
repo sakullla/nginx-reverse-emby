@@ -168,21 +168,14 @@ func tcpProbeBackendLabel(address string, backendID string, backendIndex int, du
 	if duplicateCount <= 1 {
 		return address
 	}
-	return fmt.Sprintf("%s [slot %d]", address, backendSlotOrdinal(backendID, backendIndex)+1)
+	return fmt.Sprintf("%s [slot %d]", address, backendIndex+1)
 }
 
 func tcpProbeObservationKey(scope string, backendID string, backendIndex int, duplicateCount int) string {
 	if duplicateCount <= 1 {
 		return backends.BackendObservationKey(scope, backendID)
 	}
-	return backends.BackendObservationKey(scope, fmt.Sprintf("%s#%d", backendID, backendSlotOrdinal(backendID, backendIndex)+1))
-}
-
-func backendSlotOrdinal(backendID string, backendIndex int) int {
-	if backendIndex < 0 {
-		return 0
-	}
-	return backendIndex
+	return backends.BackendObservationKey(scope, fmt.Sprintf("%s#%d", backendID, backendIndex+1))
 }
 
 func buildTCPAdaptiveReports(reports []BackendReport, candidates []tcpProbeCandidate, cache *backends.Cache) []BackendReport {

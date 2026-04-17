@@ -17,7 +17,9 @@ import (
 type Store interface {
 	ListAgents(context.Context) ([]AgentRow, error)
 	ListHTTPRules(context.Context, string) ([]HTTPRuleRow, error)
+	GetHTTPRule(context.Context, string, int) (HTTPRuleRow, bool, error)
 	ListL4Rules(context.Context, string) ([]L4RuleRow, error)
+	GetL4Rule(context.Context, string, int) (L4RuleRow, bool, error)
 	ListRelayListeners(context.Context, string) ([]RelayListenerRow, error)
 	LoadLocalAgentState(context.Context) (LocalAgentStateRow, error)
 	LoadAgentSnapshot(context.Context, string, AgentSnapshotInput) (Snapshot, error)
@@ -97,6 +99,25 @@ func (s *SQLiteStore) ListHTTPRules(ctx context.Context, agentID string) ([]HTTP
 		normalizeHTTPRuleRow(&rules[i])
 	}
 	return rules, nil
+}
+
+func (s *SQLiteStore) GetHTTPRule(ctx context.Context, agentID string, id int) (HTTPRuleRow, bool, error) {
+	if agentID == "" {
+		agentID = s.localAgentID
+	}
+
+	var rule HTTPRuleRow
+	err := s.db.WithContext(ctx).
+		Where("agent_id = ? AND id = ?", agentID, id).
+		First(&rule).Error
+	if err == nil {
+		normalizeHTTPRuleRow(&rule)
+		return rule, true, nil
+	}
+	if err == gorm.ErrRecordNotFound {
+		return HTTPRuleRow{}, false, nil
+	}
+	return HTTPRuleRow{}, false, err
 }
 
 func (s *SQLiteStore) LoadLocalAgentState(ctx context.Context) (LocalAgentStateRow, error) {
@@ -194,6 +215,25 @@ func (s *SQLiteStore) ListL4Rules(ctx context.Context, agentID string) ([]L4Rule
 		normalizeL4RuleRow(&rules[i])
 	}
 	return rules, nil
+}
+
+func (s *SQLiteStore) GetL4Rule(ctx context.Context, agentID string, id int) (L4RuleRow, bool, error) {
+	if agentID == "" {
+		agentID = s.localAgentID
+	}
+
+	var rule L4RuleRow
+	err := s.db.WithContext(ctx).
+		Where("agent_id = ? AND id = ?", agentID, id).
+		First(&rule).Error
+	if err == nil {
+		normalizeL4RuleRow(&rule)
+		return rule, true, nil
+	}
+	if err == gorm.ErrRecordNotFound {
+		return L4RuleRow{}, false, nil
+	}
+	return L4RuleRow{}, false, err
 }
 
 func (s *SQLiteStore) ListVersionPolicies(ctx context.Context) ([]VersionPolicyRow, error) {

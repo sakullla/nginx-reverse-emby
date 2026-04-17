@@ -146,6 +146,7 @@ func New(cfg Config) (*App, error) {
 			Arch:     stdruntime.GOARCH,
 			SHA256:   cfg.RuntimePackageSHA256,
 		},
+		HTTPTransport: cfg.HTTPTransport,
 	}, nil)
 	certManager, err := certs.NewManager(cfg.DataDir)
 	if err != nil {
@@ -179,6 +180,7 @@ func New(cfg Config) (*App, error) {
 			Version:       cfg.CurrentVersion,
 			Capabilities:  advertisedCapabilities(cfg),
 			ReconnectWait: time.Second,
+			HTTPTransport: cfg.HTTPTransport,
 			Handler: agenttask.NewDiagnosticHandler(
 				st,
 				diagnostics.NewHTTPProber(diagnostics.HTTPProberConfig{Attempts: 5, RelayProvider: certManager}),

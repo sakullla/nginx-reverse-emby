@@ -14,6 +14,8 @@ type fakeL4Store struct {
 	relayByAgent      map[string][]storage.RelayListenerRow
 	savedAgent        storage.AgentRow
 	loadSnapshotCalls int
+	listL4RulesErr    error
+	getL4RuleCalls    int
 }
 
 func (f *fakeL4Store) ListAgents(context.Context) ([]storage.AgentRow, error) {
@@ -24,8 +26,25 @@ func (f *fakeL4Store) ListHTTPRules(context.Context, string) ([]storage.HTTPRule
 	return nil, nil
 }
 
+func (f *fakeL4Store) GetHTTPRule(context.Context, string, int) (storage.HTTPRuleRow, bool, error) {
+	return storage.HTTPRuleRow{}, false, nil
+}
+
 func (f *fakeL4Store) ListL4Rules(_ context.Context, agentID string) ([]storage.L4RuleRow, error) {
+	if f.listL4RulesErr != nil {
+		return nil, f.listL4RulesErr
+	}
 	return append([]storage.L4RuleRow(nil), f.l4RulesByID[agentID]...), nil
+}
+
+func (f *fakeL4Store) GetL4Rule(_ context.Context, agentID string, id int) (storage.L4RuleRow, bool, error) {
+	f.getL4RuleCalls++
+	for _, row := range f.l4RulesByID[agentID] {
+		if row.ID == id {
+			return row, true, nil
+		}
+	}
+	return storage.L4RuleRow{}, false, nil
 }
 
 func (f *fakeL4Store) ListRelayListeners(_ context.Context, agentID string) ([]storage.RelayListenerRow, error) {
@@ -557,6 +576,45 @@ func TestL4RuleServiceDeleteUpdatesRemoteAgentDesiredRevision(t *testing.T) {
 	}
 	if store.loadSnapshotCalls != 0 {
 		t.Fatalf("LoadAgentSnapshot() calls = %d", store.loadSnapshotCalls)
+	}
+}
+
+func TestL4RuleServiceGetUsesDirectStoreLookup(t *testing.T) {
+	store := &fakeL4Store{
+		agents: []storage.AgentRow{{
+			ID:               "edge-1",
+			Name:             "Edge 1",
+			CapabilitiesJSON: `["l4"]`,
+		}},
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"edge-1": {{
+				ID:           9,
+				AgentID:      "edge-1",
+				Protocol:     "tcp",
+				ListenHost:   "0.0.0.0",
+				ListenPort:   9000,
+				UpstreamHost: "127.0.0.1",
+				UpstreamPort: 9001,
+				Revision:     3,
+			}},
+		},
+		relayByAgent:   map[string][]storage.RelayListenerRow{},
+		listL4RulesErr: context.DeadlineExceeded,
+	}
+	svc := NewL4RuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	rule, err := svc.Get(context.Background(), "edge-1", 9)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if rule.ID != 9 {
+		t.Fatalf("Get() rule = %+v", rule)
+	}
+	if store.getL4RuleCalls != 1 {
+		t.Fatalf("GetL4Rule() calls = %d", store.getL4RuleCalls)
 	}
 }
 

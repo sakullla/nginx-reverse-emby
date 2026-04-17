@@ -36,6 +36,7 @@
       <div class="form-group">
         <label class="form-label">负载均衡策略</label>
         <select v-model="form.load_balancing.strategy" class="input" @change="handleStrategyChange">
+          <option value="adaptive">自适应 (Adaptive)</option>
           <option value="round_robin">轮询 (Round Robin)</option>
           <option value="random">随机 (Random)</option>
         </select>
@@ -308,11 +309,11 @@ function createBackend(data = {}) {
   }
 }
 
-const SUPPORTED_L4_STRATEGIES = new Set(['round_robin', 'random'])
+const SUPPORTED_L4_STRATEGIES = new Set(['adaptive', 'round_robin', 'random'])
 
 function normalizeL4Strategy(value) {
   const strategy = String(value || '').trim().toLowerCase()
-  return SUPPORTED_L4_STRATEGIES.has(strategy) ? strategy : 'round_robin'
+  return SUPPORTED_L4_STRATEGIES.has(strategy) ? strategy : 'adaptive'
 }
 
 function normalizeInitialBackends(initialData) {
@@ -445,7 +446,7 @@ watch([() => form.value.relay_chain, firstRelayListener], ([relayChain]) => {
   }
 })
 
-const LB_TAG_MAP = { round_robin: 'RR', random: 'RND' }
+const LB_TAG_MAP = { adaptive: 'ADP', round_robin: 'RR', random: 'RND' }
 const LB_TAG_SET = new Set(Object.values(LB_TAG_MAP))
 
 function isL4AutoTag(t) {

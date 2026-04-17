@@ -11,7 +11,11 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
 )
+
+type HTTPTransportConfig = config.HTTPTransportConfig
 
 type ClientConfig struct {
 	MasterURL     string
@@ -21,6 +25,7 @@ type ClientConfig struct {
 	Version       string
 	Capabilities  []string
 	ReconnectWait time.Duration
+	HTTPTransport HTTPTransportConfig
 	HTTPClient    *http.Client
 	Handler       TaskHandler
 }
@@ -49,14 +54,30 @@ func NewClient(cfg ClientConfig) *Client {
 	if cfg.HTTPClient != nil {
 		return &Client{cfg: cfg}
 	}
+	transportCfg := config.Default().HTTPTransport
+	if cfg.HTTPTransport.DialTimeout > 0 {
+		transportCfg.DialTimeout = cfg.HTTPTransport.DialTimeout
+	}
+	if cfg.HTTPTransport.TLSHandshakeTimeout > 0 {
+		transportCfg.TLSHandshakeTimeout = cfg.HTTPTransport.TLSHandshakeTimeout
+	}
+	if cfg.HTTPTransport.ResponseHeaderTimeout > 0 {
+		transportCfg.ResponseHeaderTimeout = cfg.HTTPTransport.ResponseHeaderTimeout
+	}
+	if cfg.HTTPTransport.IdleConnTimeout > 0 {
+		transportCfg.IdleConnTimeout = cfg.HTTPTransport.IdleConnTimeout
+	}
+	if cfg.HTTPTransport.KeepAlive > 0 {
+		transportCfg.KeepAlive = cfg.HTTPTransport.KeepAlive
+	}
 	transport := &http.Transport{
 		DialContext: (&net.Dialer{
-			Timeout:   10 * time.Second,
-			KeepAlive: 30 * time.Second,
+			Timeout:   transportCfg.DialTimeout,
+			KeepAlive: transportCfg.KeepAlive,
 		}).DialContext,
-		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: 30 * time.Second,
-		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   transportCfg.TLSHandshakeTimeout,
+		ResponseHeaderTimeout: transportCfg.ResponseHeaderTimeout,
+		IdleConnTimeout:       transportCfg.IdleConnTimeout,
 		ExpectContinueTimeout: 1 * time.Second,
 		ForceAttemptHTTP2:     true,
 	}

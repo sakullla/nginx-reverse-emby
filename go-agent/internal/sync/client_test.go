@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
@@ -528,5 +529,32 @@ func TestHeartbeatSyncDecodesTypedHTTPAndL4BackendFields(t *testing.T) {
 	}
 	if snap.L4Rules[0].Tuning.ProxyProtocol.Send {
 		t.Fatalf("expected proxy_protocol.send=false")
+	}
+}
+
+func TestNewClientAppliesConfiguredHTTPTransportTimeouts(t *testing.T) {
+	client := NewClient(ClientConfig{
+		MasterURL:  "https://master.example.com",
+		AgentToken: "token",
+		HTTPTransport: config.HTTPTransportConfig{
+			DialTimeout:           11 * time.Second,
+			TLSHandshakeTimeout:   12 * time.Second,
+			ResponseHeaderTimeout: 13 * time.Second,
+			IdleConnTimeout:       14 * time.Second,
+			KeepAlive:             15 * time.Second,
+		},
+	}, nil)
+
+	if client.transport == nil {
+		t.Fatal("expected transport to be initialized")
+	}
+	if client.transport.TLSHandshakeTimeout != 12*time.Second {
+		t.Fatalf("TLSHandshakeTimeout = %v", client.transport.TLSHandshakeTimeout)
+	}
+	if client.transport.ResponseHeaderTimeout != 13*time.Second {
+		t.Fatalf("ResponseHeaderTimeout = %v", client.transport.ResponseHeaderTimeout)
+	}
+	if client.transport.IdleConnTimeout != 14*time.Second {
+		t.Fatalf("IdleConnTimeout = %v", client.transport.IdleConnTimeout)
 	}
 }
