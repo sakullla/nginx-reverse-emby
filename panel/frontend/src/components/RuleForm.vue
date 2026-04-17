@@ -428,7 +428,7 @@
         <div class="section-header">
           <div>
             <h3 class="section-title">隐私增强</h3>
-            <p class="section-description">仅当首跳 Relay 使用 TLS/TCP 时可启用，用于隐藏内层 ss/TLS 握手特征</p>
+            <p class="section-description">仅当首跳 Relay 使用 TLS/TCP 时可启用，用于隐藏内层 SS/TLS 握手特征</p>
           </div>
         </div>
         <label class="toggle toggle--card" :class="{ 'toggle--active': form.relay_obfs, 'toggle--disabled': relayObfsDisabled }">
