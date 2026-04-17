@@ -221,6 +221,26 @@ func TestCacheOrderAdaptivePrefersLowerLatencyWhenOnlySmallResponsesExist(t *tes
 		cache.ObserveBackendSuccess(highLatencyKey, 50*time.Millisecond, 120*time.Millisecond, 3*1024*1024)
 	}
 
+	lowObservation := cache.observationFor(lowLatencyKey)
+	highObservation := cache.observationFor(highLatencyKey)
+	lowLocalMix := lowObservation.recentTrafficMix(base)
+	highLocalMix := highObservation.recentTrafficMix(base)
+	lowLocalPerformance := lowObservation.preference(base, true, lowLocalMix).performance
+	highLocalPerformance := highObservation.preference(base, true, highLocalMix).performance
+	if lowLocalPerformance >= highLocalPerformance {
+		t.Fatalf("fixture must prefer the higher-throughput candidate under candidate-local weighting: low=%v high=%v", lowLocalPerformance, highLocalPerformance)
+	}
+
+	sharedMix := trafficMix{
+		small: lowLocalMix.small + highLocalMix.small,
+		bulk:  lowLocalMix.bulk + highLocalMix.bulk,
+	}
+	lowSharedPerformance := lowObservation.preference(base, true, sharedMix).performance
+	highSharedPerformance := highObservation.preference(base, true, sharedMix).performance
+	if lowSharedPerformance <= highSharedPerformance {
+		t.Fatalf("fixture must flip once shared small-heavy scope mix is applied: low=%v high=%v mix=%+v", lowSharedPerformance, highSharedPerformance, sharedMix)
+	}
+
 	got := cache.Order(scope, StrategyAdaptive, candidates)
 	if ordered := addresses(got); !reflect.DeepEqual(ordered, []string{"low-latency", "high-latency"}) {
 		t.Fatalf("shared small-heavy traffic should keep adaptive ordering latency-biased: %v", ordered)
@@ -246,6 +266,16 @@ func TestCacheOrderAdaptivePrefersBulkCandidateWhenQualifiedThroughputDominates(
 
 	for i := 0; i < 25; i++ {
 		cache.ObserveBackendSuccess(bulkFirstKey, 75*time.Millisecond, 280*time.Millisecond, 3*1024*1024)
+	}
+
+	latencyFirstObservation := cache.observationFor(latencyFirstKey)
+	bulkFirstObservation := cache.observationFor(bulkFirstKey)
+	latencyFirstLocalMix := latencyFirstObservation.recentTrafficMix(base)
+	bulkFirstLocalMix := bulkFirstObservation.recentTrafficMix(base)
+	latencyFirstLocalPerformance := latencyFirstObservation.preference(base, true, latencyFirstLocalMix).performance
+	bulkFirstLocalPerformance := bulkFirstObservation.preference(base, true, bulkFirstLocalMix).performance
+	if latencyFirstLocalPerformance <= bulkFirstLocalPerformance {
+		t.Fatalf("fixture must prefer the latency-first candidate under candidate-local weighting: latency=%v bulk=%v", latencyFirstLocalPerformance, bulkFirstLocalPerformance)
 	}
 
 	got := cache.Order(scope, StrategyAdaptive, candidates)

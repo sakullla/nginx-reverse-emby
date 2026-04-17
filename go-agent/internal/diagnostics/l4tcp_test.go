@@ -295,11 +295,67 @@ func TestTCPProberDiagnoseUsesSharedAdaptiveRecoverySummary(t *testing.T) {
 	if !adaptive.SlowStartActive {
 		t.Fatalf("expected slow-start active summary: %+v", adaptive)
 	}
-	if !adaptive.Outlier {
-		t.Fatalf("expected outlier summary: %+v", adaptive)
+	if adaptive.Outlier {
+		t.Fatalf("small/unqualified samples must not surface as throughput outliers in shared recovery summary: %+v", adaptive)
 	}
 	if adaptive.TrafficShareHint != "recovery" {
 		t.Fatalf("TrafficShareHint = %q", adaptive.TrafficShareHint)
+	}
+}
+
+func TestTCPCandidatesUseLatencyOnlyResolvedOrdering(t *testing.T) {
+	base := time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC)
+	cache := backends.NewCache(backends.Config{
+		Resolver: diagnosticResolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
+			switch host {
+			case "resolved.example":
+				return []net.IPAddr{
+					{IP: net.ParseIP("127.0.0.81")},
+					{IP: net.ParseIP("127.0.0.80")},
+				}, nil
+			default:
+				return nil, nil
+			}
+		}),
+		Now: func() time.Time {
+			return base
+		},
+	})
+
+	slowHighThroughput := "127.0.0.81:9001"
+	fastLowerThroughput := "127.0.0.80:9001"
+	for i := 0; i < 3; i++ {
+		cache.ObserveTransferSuccess(slowHighThroughput, 45*time.Millisecond, 120*time.Millisecond, 2*1024*1024)
+		cache.ObserveTransferSuccess(fastLowerThroughput, 10*time.Millisecond, 350*time.Millisecond, 512*1024)
+	}
+
+	resolved, err := cache.Resolve(context.Background(), backends.Endpoint{Host: "resolved.example", Port: 9001})
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	if got := cache.PreferResolvedCandidates(resolved); got[0].Address != slowHighThroughput {
+		t.Fatalf("fixture must diverge under throughput-aware resolved ordering: %+v", got)
+	}
+
+	candidates, err := tcpCandidates(context.Background(), cache, model.L4Rule{
+		ID:           26,
+		Protocol:     "tcp",
+		ListenHost:   "0.0.0.0",
+		ListenPort:   9503,
+		UpstreamHost: "resolved.example",
+		UpstreamPort: 9001,
+		LoadBalancing: model.LoadBalancing{
+			Strategy: "adaptive",
+		},
+	})
+	if err != nil {
+		t.Fatalf("tcpCandidates() error = %v", err)
+	}
+	if len(candidates) < 2 {
+		t.Fatalf("candidates = %+v", candidates)
+	}
+	if candidates[0].address != fastLowerThroughput {
+		t.Fatalf("tcpCandidates() must keep latency-only resolved ordering: %+v", candidates)
 	}
 }
 

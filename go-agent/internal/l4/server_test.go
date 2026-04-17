@@ -675,6 +675,60 @@ func TestL4CandidatesAdaptivePromotesRecoveredResolvedCandidateOnlyDuringSlowSta
 	}
 }
 
+func TestL4CandidatesUseLatencyOnlyResolvedOrdering(t *testing.T) {
+	base := time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC)
+	cache := backends.NewCache(backends.Config{
+		Resolver: resolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
+			switch host {
+			case "resolved.example":
+				return []net.IPAddr{
+					{IP: net.ParseIP("127.0.0.71")},
+					{IP: net.ParseIP("127.0.0.70")},
+				}, nil
+			default:
+				return nil, fmt.Errorf("unexpected host %q", host)
+			}
+		}),
+		Now: func() time.Time {
+			return base
+		},
+	})
+
+	slowHighThroughput := "127.0.0.71:9001"
+	fastLowerThroughput := "127.0.0.70:9001"
+	for i := 0; i < 3; i++ {
+		cache.ObserveTransferSuccess(slowHighThroughput, 45*time.Millisecond, 120*time.Millisecond, 2*1024*1024)
+		cache.ObserveTransferSuccess(fastLowerThroughput, 10*time.Millisecond, 350*time.Millisecond, 512*1024)
+	}
+
+	resolved, err := cache.Resolve(context.Background(), backends.Endpoint{Host: "resolved.example", Port: 9001})
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	if got := cache.PreferResolvedCandidates(resolved); got[0].Address != slowHighThroughput {
+		t.Fatalf("fixture must diverge under throughput-aware resolved ordering: %+v", got)
+	}
+
+	candidates, err := l4Candidates(context.Background(), cache, model.L4Rule{
+		Protocol:      "tcp",
+		ListenHost:    "0.0.0.0",
+		ListenPort:    9446,
+		LoadBalancing: model.LoadBalancing{Strategy: "adaptive"},
+		Backends: []model.L4Backend{
+			{Host: "resolved.example", Port: 9001},
+		},
+	})
+	if err != nil {
+		t.Fatalf("l4Candidates() error = %v", err)
+	}
+	if len(candidates) < 2 {
+		t.Fatalf("candidates = %+v", candidates)
+	}
+	if candidates[0].address != fastLowerThroughput {
+		t.Fatalf("l4Candidates() must keep latency-only resolved ordering: %+v", candidates)
+	}
+}
+
 func TestL4CandidatesAssignDistinctObservationKeysToDuplicateBackends(t *testing.T) {
 	cache := backends.NewCache(backends.Config{})
 
