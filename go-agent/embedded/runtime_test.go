@@ -2,8 +2,12 @@ package embedded
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
+
+	agentapp "github.com/sakullla/nginx-reverse-emby/go-agent/internal/app"
+	agentstore "github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
 )
 
 type runtimeTestSource struct {
@@ -127,6 +131,180 @@ func TestRunPersistsAppliedRevisionAcrossRuntimeRecreation(t *testing.T) {
 	if request.CurrentRevision != 7 {
 		t.Fatalf("second sync CurrentRevision = %d, want 7", request.CurrentRevision)
 	}
+}
+
+func TestNewPropagatesResilienceConfigIntoEmbeddedApp(t *testing.T) {
+	previousNewEmbeddedApp := newEmbeddedApp
+	t.Cleanup(func() {
+		newEmbeddedApp = previousNewEmbeddedApp
+	})
+
+	captured := agentapp.Config{}
+	newEmbeddedApp = func(cfg agentapp.Config, st agentstore.Store, client agentapp.SyncClient) (embeddedAppRunner, error) {
+		captured = cfg
+		return &agentapp.App{}, nil
+	}
+
+	_, err := New(Config{
+		AgentID:           "local",
+		AgentName:         "local",
+		DataDir:           t.TempDir(),
+		CurrentVersion:    "1.0.0",
+		HeartbeatInterval: 5 * time.Millisecond,
+		HTTP3Enabled:      true,
+		HTTPTransport: HTTPTransportConfig{
+			ResponseHeaderTimeout: 9 * time.Second,
+		},
+		HTTPResilience: HTTPResilienceConfig{
+			ResumeMaxAttempts: 4,
+		},
+		BackendFailures: BackendFailureConfig{
+			BackoffBase:  1 * time.Second,
+			BackoffLimit: 15 * time.Second,
+		},
+		BackendFailuresExplicit: true,
+		RelayTimeouts: RelayTimeoutConfig{
+			IdleTimeout: 15 * time.Second,
+		},
+	}, newRuntimeTestSource(Snapshot{}), newRuntimeTestSink())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	if !captured.HTTP3Enabled {
+		t.Fatal("expected HTTP3Enabled propagation")
+	}
+	if captured.HTTPTransport.ResponseHeaderTimeout != 9*time.Second {
+		t.Fatalf("ResponseHeaderTimeout = %v", captured.HTTPTransport.ResponseHeaderTimeout)
+	}
+	if captured.HTTPResilience.ResumeMaxAttempts != 4 {
+		t.Fatalf("ResumeMaxAttempts = %d", captured.HTTPResilience.ResumeMaxAttempts)
+	}
+	if !captured.BackendFailuresExplicit {
+		t.Fatal("expected BackendFailuresExplicit propagation")
+	}
+	if captured.RelayTimeouts.IdleTimeout != 15*time.Second {
+		t.Fatalf("IdleTimeout = %v", captured.RelayTimeouts.IdleTimeout)
+	}
+}
+
+func TestRuntimeCloseDelegatesToEmbeddedAppCleanup(t *testing.T) {
+	previousNewEmbeddedApp := newEmbeddedApp
+	t.Cleanup(func() {
+		newEmbeddedApp = previousNewEmbeddedApp
+	})
+
+	resetCalls := 0
+	newEmbeddedApp = func(cfg agentapp.Config, st agentstore.Store, client agentapp.SyncClient) (embeddedAppRunner, error) {
+		return runtimeTestEmbeddedApp{
+			closeFn: func() error {
+				resetCalls++
+				return nil
+			},
+		}, nil
+	}
+
+	runtime, err := New(Config{
+		AgentID:   "local",
+		AgentName: "local",
+		DataDir:   t.TempDir(),
+	}, newRuntimeTestSource(Snapshot{}), newRuntimeTestSink())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	if err := runtime.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if resetCalls != 1 {
+		t.Fatalf("relay timeout reset calls = %d", resetCalls)
+	}
+
+	if err := runtime.Close(); err != nil {
+		t.Fatalf("second Close() error = %v", err)
+	}
+	if resetCalls != 1 {
+		t.Fatalf("relay timeout reset calls after second Close() = %d", resetCalls)
+	}
+}
+
+func TestRuntimeCloseReturnsStableErrorUnderConcurrentCalls(t *testing.T) {
+	previousNewEmbeddedApp := newEmbeddedApp
+	t.Cleanup(func() {
+		newEmbeddedApp = previousNewEmbeddedApp
+	})
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	wantErr := errors.New("close failed")
+
+	newEmbeddedApp = func(cfg agentapp.Config, st agentstore.Store, client agentapp.SyncClient) (embeddedAppRunner, error) {
+		return runtimeTestEmbeddedApp{
+			closeFn: func() error {
+				close(started)
+				<-release
+				return wantErr
+			},
+		}, nil
+	}
+
+	runtime, err := New(Config{
+		AgentID:   "local",
+		AgentName: "local",
+		DataDir:   t.TempDir(),
+	}, newRuntimeTestSource(Snapshot{}), newRuntimeTestSink())
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	firstErr := make(chan error, 1)
+	go func() {
+		firstErr <- runtime.Close()
+	}()
+
+	<-started
+
+	secondErr := make(chan error, 1)
+	go func() {
+		secondErr <- runtime.Close()
+	}()
+
+	select {
+	case err := <-secondErr:
+		t.Fatalf("second Close() returned before first completed: %v", err)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	close(release)
+
+	if err := <-firstErr; !errors.Is(err, wantErr) {
+		t.Fatalf("first Close() error = %v", err)
+	}
+	if err := <-secondErr; !errors.Is(err, wantErr) {
+		t.Fatalf("second Close() error = %v", err)
+	}
+	if err := runtime.Close(); !errors.Is(err, wantErr) {
+		t.Fatalf("third Close() error = %v", err)
+	}
+}
+
+type runtimeTestEmbeddedApp struct {
+	closeFn func() error
+}
+
+func (a runtimeTestEmbeddedApp) Run(context.Context) error {
+	return nil
+}
+
+func (a runtimeTestEmbeddedApp) SyncNow(context.Context) error {
+	return nil
+}
+
+func (a runtimeTestEmbeddedApp) Close() error {
+	if a.closeFn != nil {
+		return a.closeFn()
+	}
+	return nil
 }
 
 func waitForSyncRequest(t *testing.T, source *runtimeTestSource, timeout time.Duration) SyncRequest {

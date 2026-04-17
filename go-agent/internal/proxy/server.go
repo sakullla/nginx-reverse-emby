@@ -51,6 +51,7 @@ type routeEntry struct {
 	backends       []httpBackend
 	backendCache   *backends.Cache
 	transport      *http.Transport
+	resilience     StreamResilienceOptions
 	modifyResp     func(*http.Response) error
 	selectionScope string
 	frontendPath   string
@@ -81,6 +82,17 @@ func newServer(
 	backendCache *backends.Cache,
 	sharedTransport *http.Transport,
 ) (*Server, error) {
+	return newServerWithResilience(listener, relayListeners, providers, backendCache, sharedTransport, StreamResilienceOptions{})
+}
+
+func newServerWithResilience(
+	listener model.HTTPListener,
+	relayListeners []model.RelayListener,
+	providers Providers,
+	backendCache *backends.Cache,
+	sharedTransport *http.Transport,
+	resilience StreamResilienceOptions,
+) (*Server, error) {
 	s := &Server{routes: make(map[string]*routeEntry)}
 	relayListenersByID := make(map[int]model.RelayListener, len(relayListeners))
 	for _, relayListener := range relayListeners {
@@ -109,6 +121,7 @@ func newServer(
 			backends:       targets,
 			backendCache:   backendCache,
 			transport:      transport,
+			resilience:     resilience,
 			modifyResp:     makeModifyResponse(frontendBaseURL, rule.ProxyRedirect, targets[0].backendHost, normalizeURLPath(targets[0].target.Path)),
 			selectionScope: hostKey,
 			frontendPath:   FrontendPathFromRule(rule),
@@ -123,6 +136,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	if entry, ok := s.routes[host]; ok {
 		if err := entry.serveHTTP(w, req); err != nil {
 			log.Printf("[proxy] bad gateway for %s %s (host=%s frontend=%s): %v", req.Method, req.URL.Path, host, entry.rule.FrontendURL, err)
+			var startedErr *startedResponseError
+			if errors.As(err, &startedErr) {
+				return
+			}
 			http.Error(w, fmt.Sprintf("bad gateway: %v", err), http.StatusBadGateway)
 		}
 		return
@@ -161,6 +178,19 @@ func StartWithResources(
 	sharedTransport *http.Transport,
 	http3Enabled bool,
 ) (*Runtime, error) {
+	return StartWithResourcesAndOptions(ctx, rules, relayListeners, providers, backendCache, sharedTransport, http3Enabled, StreamResilienceOptions{})
+}
+
+func StartWithResourcesAndOptions(
+	ctx context.Context,
+	rules []model.HTTPRule,
+	relayListeners []model.RelayListener,
+	providers Providers,
+	backendCache *backends.Cache,
+	sharedTransport *http.Transport,
+	http3Enabled bool,
+	resilience StreamResilienceOptions,
+) (*Runtime, error) {
 	specs, err := buildRuntimeListenerSpecs(ctx, rules, relayListeners, providers)
 	if err != nil {
 		return nil, err
@@ -173,7 +203,7 @@ func StartWithResources(
 	}
 	servers := make([]*Server, 0, len(specs))
 	for _, spec := range specs {
-		server, err := newServer(spec.listener, relayListeners, providers, backendCache, sharedTransport)
+		server, err := newServerWithResilience(spec.listener, relayListeners, providers, backendCache, sharedTransport, resilience)
 		if err != nil {
 			return nil, err
 		}
@@ -246,42 +276,130 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 		return err
 	}
 	for _, candidate := range candidates {
-		attemptReq, err := cloneProxyRequest(req, bodyBytes, candidate, e.rule, e.frontendPath)
-		if err != nil {
-			log.Printf("[proxy] clone request error for %s -> %s: %v", e.rule.FrontendURL, candidate.target, err)
-			return err
-		}
-		resp, err := e.transport.RoundTrip(attemptReq)
-		if err != nil {
-			log.Printf("[proxy] roundtrip error for %s -> %s: %v", e.rule.FrontendURL, candidate.target, err)
-			if !isBackendRetryable(attemptReq, err) {
-				return backendRetryError(attemptReq, err)
-			}
-			e.backendCache.MarkFailure(candidate.dialAddress)
-			continue
-		}
-		e.backendCache.MarkSuccess(candidate.dialAddress)
-		defer resp.Body.Close()
-		if e.modifyResp != nil {
-			modify := makeModifyResponse(FrontendOriginFromRule(e.rule), e.rule.ProxyRedirect, candidate.backendHost, normalizeURLPath(candidate.target.Path))
-			if err := modify(resp); err != nil {
-				log.Printf("[proxy] modify response error for %s: %v", e.rule.FrontendURL, err)
+		maxSameBackendAttempts := e.sameBackendRetryMaxAttempts(req)
+		for attempt := 0; attempt < maxSameBackendAttempts; attempt++ {
+			attemptReq, err := cloneProxyRequest(req, bodyBytes, candidate, e.rule, e.frontendPath)
+			if err != nil {
+				log.Printf("[proxy] clone request error for %s -> %s: %v", e.rule.FrontendURL, candidate.target, err)
 				return err
 			}
+			actualDialAddress := dialAddressFromContext(attemptReq.Context(), candidate.dialAddress)
+			if e.backendCache.IsInBackoff(actualDialAddress) {
+				break
+			}
+			start := time.Now()
+			resp, err := e.transport.RoundTrip(attemptReq)
+			if err != nil {
+				log.Printf("[proxy] roundtrip error for %s -> %s: %v", e.rule.FrontendURL, candidate.target, err)
+				if !isBackendRetryable(attemptReq, err) {
+					return backendRetryError(attemptReq, err)
+				}
+				if attempt+1 < maxSameBackendAttempts {
+					continue
+				}
+				if candidate.backendObservationKey != "" {
+					e.backendCache.ObserveBackendFailure(candidate.backendObservationKey)
+				}
+				e.backendCache.MarkFailure(actualDialAddress)
+				break
+			}
+			headerLatency := time.Since(start)
+			if e.modifyResp != nil {
+				modify := makeModifyResponse(FrontendOriginFromRule(e.rule), e.rule.ProxyRedirect, candidate.backendHost, normalizeURLPath(candidate.target.Path))
+				if err := modify(resp); err != nil {
+					_ = resp.Body.Close()
+					if candidate.backendObservationKey != "" {
+						e.backendCache.ObserveBackendFailure(candidate.backendObservationKey)
+					}
+					e.backendCache.MarkFailure(actualDialAddress)
+					log.Printf("[proxy] modify response error for %s: %v", e.rule.FrontendURL, err)
+					return err
+				}
+			}
+			if resp.StatusCode == http.StatusSwitchingProtocols {
+				if err := handleUpgradeResponse(w, attemptReq, resp); err != nil {
+					if candidate.backendObservationKey != "" {
+						e.backendCache.ObserveBackendFailure(candidate.backendObservationKey)
+					}
+					e.backendCache.MarkFailure(actualDialAddress)
+					return err
+				}
+				e.observeSuccessfulBackend(candidate.backendObservationKey, actualDialAddress, headerLatency, time.Since(start), 0)
+				return nil
+			}
+			if state, ok := e.shouldResumeResponse(attemptReq, resp); ok {
+				written, err := e.copyResumableResponse(w, attemptReq, resp, state)
+				if err != nil {
+					if attemptReq.Context().Err() == nil {
+						if candidate.backendObservationKey != "" {
+							e.backendCache.ObserveBackendFailure(candidate.backendObservationKey)
+						}
+						e.backendCache.MarkFailure(actualDialAddress)
+					}
+					return err
+				}
+				e.observeSuccessfulBackend(candidate.backendObservationKey, actualDialAddress, headerLatency, time.Since(start), written)
+				return nil
+			}
+			written, err := copyResponse(w, resp)
+			if err != nil {
+				if attemptReq.Context().Err() == nil {
+					if candidate.backendObservationKey != "" {
+						e.backendCache.ObserveBackendFailure(candidate.backendObservationKey)
+					}
+					e.backendCache.MarkFailure(actualDialAddress)
+				}
+				return newStartedResponseError(err)
+			}
+			e.observeSuccessfulBackend(candidate.backendObservationKey, actualDialAddress, headerLatency, time.Since(start), written)
+			return nil
 		}
-		if resp.StatusCode == http.StatusSwitchingProtocols {
-			return handleUpgradeResponse(w, attemptReq, resp)
-		}
-		copyResponse(w, resp)
-		return nil
 	}
 	return fmt.Errorf("all backends failed for %s", e.rule.FrontendURL)
 }
 
+func (e *routeEntry) sameBackendRetryMaxAttempts(req *http.Request) int {
+	if req == nil || !isRetrySafeMethod(req.Method) {
+		return 1
+	}
+	attempts := e.resilience.SameBackendRetryAttempts + 1
+	if attempts < 1 {
+		return 1
+	}
+	return attempts
+}
+
+func (e *routeEntry) observeSuccessfulBackend(backendObservationKey string, address string, headerLatency time.Duration, totalDuration time.Duration, bytesTransferred int64) {
+	if e == nil || e.backendCache == nil {
+		return
+	}
+	if totalDuration <= 0 {
+		totalDuration = headerLatency
+	}
+	if backendObservationKey != "" {
+		e.backendCache.ObserveBackendSuccess(backendObservationKey, headerLatency, totalDuration, bytesTransferred)
+	}
+	if bytesTransferred > 0 {
+		e.backendCache.ObserveTransferSuccess(address, headerLatency, totalDuration, bytesTransferred)
+		return
+	}
+	e.backendCache.ObserveSuccess(address, headerLatency)
+}
+
+func isRetrySafeMethod(method string) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodTrace:
+		return true
+	default:
+		return false
+	}
+}
+
 type httpCandidate struct {
-	target      *url.URL
-	dialAddress string
-	backendHost string
+	target                *url.URL
+	dialAddress           string
+	backendHost           string
+	backendObservationKey string
 }
 
 func (e *routeEntry) candidates(ctx context.Context) ([]httpCandidate, error) {
@@ -290,18 +408,25 @@ func (e *routeEntry) candidates(ctx context.Context) ([]httpCandidate, error) {
 	}
 
 	placeholders := make([]backends.Candidate, 0, len(e.backends))
-	indexByID := make(map[string]int, len(e.backends))
+	indexesByID := make(map[string][]int, len(e.backends))
 	for i := range e.backends {
-		id := strconv.Itoa(i)
-		placeholders = append(placeholders, backends.Candidate{Address: id})
-		indexByID[id] = i
+		backendID := backends.StableBackendID(e.backends[i].target.String())
+		placeholders = append(placeholders, backends.Candidate{Address: backendID})
+		indexesByID[backendID] = append(indexesByID[backendID], i)
 	}
 
 	strategy := e.rule.LoadBalancing.Strategy
 	orderedBackends := e.backendCache.Order(e.selectionScope, strategy, placeholders)
 	out := make([]httpCandidate, 0, len(e.backends))
 	for _, ordered := range orderedBackends {
-		backend := e.backends[indexByID[ordered.Address]]
+		indexes := indexesByID[ordered.Address]
+		if len(indexes) == 0 {
+			continue
+		}
+		backendIndex := indexes[0]
+		indexesByID[ordered.Address] = indexes[1:]
+		backend := e.backends[backendIndex]
+		backendObservationKey := backends.BackendObservationKey(e.selectionScope, backends.StableBackendID(backend.target.String()))
 		endpoint := backends.Endpoint{
 			Host: backend.target.Hostname(),
 			Port: portWithDefault(backend.target),
@@ -315,14 +440,16 @@ func (e *routeEntry) candidates(ctx context.Context) ([]httpCandidate, error) {
 			}
 			continue
 		}
+		resolved = e.backendCache.PreferResolvedCandidates(resolved)
 		for _, candidate := range resolved {
 			if e.backendCache.IsInBackoff(candidate.Address) {
 				continue
 			}
 			out = append(out, httpCandidate{
-				target:      cloneURL(backend.target),
-				dialAddress: candidate.Address,
-				backendHost: backend.backendHost,
+				target:                cloneURL(backend.target),
+				dialAddress:           candidate.Address,
+				backendHost:           backend.backendHost,
+				backendObservationKey: backendObservationKey,
 			})
 		}
 	}
@@ -715,10 +842,53 @@ func backendRetryError(req *http.Request, err error) error {
 	return err
 }
 
-func copyResponse(w http.ResponseWriter, resp *http.Response) {
-	copyHeaders(w.Header(), resp.Header)
+type startedResponseError struct {
+	err error
+}
+
+func (e *startedResponseError) Error() string {
+	if e == nil || e.err == nil {
+		return ""
+	}
+	return e.err.Error()
+}
+
+func (e *startedResponseError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
+}
+
+func newStartedResponseError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var startedErr *startedResponseError
+	if errors.As(err, &startedErr) {
+		return err
+	}
+	return &startedResponseError{err: err}
+}
+
+func copyResponse(w http.ResponseWriter, resp *http.Response) (int64, error) {
+	if resp == nil {
+		return 0, nil
+	}
+	if resp.Body != nil {
+		defer resp.Body.Close()
+	}
+	copyProxyResponseHeaders(w.Header(), resp.Header, resp.StatusCode)
 	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
+	var written int64
+	if resp.Body != nil {
+		n, err := io.Copy(w, resp.Body)
+		written = n
+		if err != nil {
+			return written, err
+		}
+	}
+	return written, nil
 }
 
 func handleUpgradeResponse(w http.ResponseWriter, req *http.Request, resp *http.Response) error {
@@ -812,10 +982,64 @@ func (c switchProtocolCopier) copyToBackend(errc chan<- error) {
 
 func copyHeaders(dst, src http.Header) {
 	for key, values := range src {
+		dst.Del(key)
 		for _, value := range values {
 			dst.Add(key, value)
 		}
 	}
+}
+
+func copyProxyResponseHeaders(dst, src http.Header, statusCode int) {
+	hopByHop := hopByHopHeaders(src)
+	for key := range src {
+		if shouldStripProxyResponseHeader(key, hopByHop, statusCode) {
+			dst.Del(key)
+		}
+	}
+	for key, values := range src {
+		if shouldStripProxyResponseHeader(key, hopByHop, statusCode) {
+			continue
+		}
+		dst.Del(key)
+		for _, value := range values {
+			dst.Add(key, value)
+		}
+	}
+}
+
+func shouldStripProxyResponseHeader(key string, hopByHop map[string]struct{}, statusCode int) bool {
+	canonical := http.CanonicalHeaderKey(strings.TrimSpace(key))
+	if _, ok := hopByHop[canonical]; ok {
+		return true
+	}
+	if canonical == "Content-Range" && statusCode != http.StatusPartialContent {
+		return true
+	}
+	return false
+}
+
+func hopByHopHeaders(header http.Header) map[string]struct{} {
+	hopByHop := map[string]struct{}{
+		"Connection":          {},
+		"Keep-Alive":          {},
+		"Proxy-Authenticate":  {},
+		"Proxy-Authorization": {},
+		"Proxy-Connection":    {},
+		"Te":                  {},
+		"Trailer":             {},
+		"Transfer-Encoding":   {},
+		"Upgrade":             {},
+	}
+	for _, value := range header.Values("Connection") {
+		for _, token := range strings.Split(value, ",") {
+			trimmed := http.CanonicalHeaderKey(strings.TrimSpace(token))
+			if trimmed == "" {
+				continue
+			}
+			hopByHop[trimmed] = struct{}{}
+		}
+	}
+	return hopByHop
 }
 
 func cloneURL(src *url.URL) *url.URL {

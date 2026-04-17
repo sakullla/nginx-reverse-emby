@@ -20,10 +20,163 @@ import (
 	"time"
 
 	"github.com/quic-go/quic-go/http3"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
 )
+
+func TestHTTPRuntimeManagerUsesConfiguredTransportAndBackoff(t *testing.T) {
+	cfg := Config{
+		HTTPTransport: config.HTTPTransportConfig{
+			DialTimeout:           11 * time.Second,
+			TLSHandshakeTimeout:   12 * time.Second,
+			ResponseHeaderTimeout: 13 * time.Second,
+			IdleConnTimeout:       14 * time.Second,
+			KeepAlive:             15 * time.Second,
+		},
+		HTTPResilience: config.HTTPResilienceConfig{
+			ResumeEnabled:            true,
+			ResumeMaxAttempts:        2,
+			SameBackendRetryAttempts: 1,
+		},
+		BackendFailures: config.BackendFailureConfig{
+			BackoffBase:  500 * time.Millisecond,
+			BackoffLimit: 9 * time.Second,
+		},
+		BackendFailuresExplicit: true,
+	}
+
+	manager := newHTTPRuntimeManagerWithConfig(cfg)
+	if manager.transport.ResponseHeaderTimeout != 13*time.Second {
+		t.Fatalf("ResponseHeaderTimeout = %v", manager.transport.ResponseHeaderTimeout)
+	}
+	if got := manager.cache.MarkFailure("127.0.0.1:8096"); got != 500*time.Millisecond {
+		t.Fatalf("MarkFailure() = %v", got)
+	}
+	if !manager.options.ResumeEnabled {
+		t.Fatal("expected resume to be enabled")
+	}
+}
+
+func TestHTTPRuntimeManagerTask1DefaultsPreserveLegacyBackoffCap(t *testing.T) {
+	manager := newHTTPRuntimeManagerWithConfig(config.Default())
+
+	addr := "127.0.0.1:8096"
+	var backoff time.Duration
+	for i := 0; i < 12; i++ {
+		backoff = manager.cache.MarkFailure(addr)
+	}
+	if backoff != 60*time.Second {
+		t.Fatalf("MarkFailure() cap = %v", backoff)
+	}
+}
+
+func TestHTTPRuntimeManagerExplicitTask1DefaultsUseTask1BackoffCap(t *testing.T) {
+	cfg := config.Default()
+	cfg.BackendFailuresExplicit = true
+	manager := newHTTPRuntimeManagerWithConfig(cfg)
+
+	addr := "127.0.0.1:8096"
+	var backoff time.Duration
+	for i := 0; i < 12; i++ {
+		backoff = manager.cache.MarkFailure(addr)
+	}
+	if backoff != 15*time.Second {
+		t.Fatalf("MarkFailure() cap = %v", backoff)
+	}
+}
+
+func TestHTTPRuntimeManagerRuntimeUsesConfiguredSameBackendRetryAttempts(t *testing.T) {
+	cfg := config.Default()
+	cfg.HTTPResilience.SameBackendRetryAttempts = 1
+	manager := newHTTPRuntimeManagerWithConfig(cfg)
+	ctx := context.Background()
+	listenPort := pickFreeTCPPort(t)
+
+	requests := 0
+	flaky := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if requests == 1 {
+			hj, ok := w.(http.Hijacker)
+			if !ok {
+				t.Fatalf("response writer does not support hijack")
+			}
+			conn, _, err := hj.Hijack()
+			if err != nil {
+				t.Fatalf("hijack failed: %v", err)
+			}
+			_ = conn.Close()
+			return
+		}
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer flaky.Close()
+
+	rule := runtimeTestHTTPRule(listenPort, flaky.URL)
+	if err := manager.Apply(ctx, []model.HTTPRule{rule}); err != nil {
+		t.Fatalf("failed to apply http runtime: %v", err)
+	}
+	defer manager.Close()
+
+	var (
+		resp *http.Response
+		err  error
+	)
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		req, reqErr := http.NewRequest(http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/retry", listenPort), nil)
+		if reqErr != nil {
+			t.Fatalf("failed to create runtime request: %v", reqErr)
+		}
+		req.Host = fmt.Sprintf("edge.example.test:%d", listenPort)
+		resp, err = http.DefaultClient.Do(req)
+		if err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("runtime request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read runtime response body: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 response, got %d (%q)", resp.StatusCode, string(body))
+	}
+	if string(body) != "ok" {
+		t.Fatalf("expected runtime response body %q, got %q", "ok", string(body))
+	}
+	if requests != 2 {
+		t.Fatalf("expected same backend retry to make 2 attempts, got %d", requests)
+	}
+}
+
+func TestAppCloseLocalRuntimesInvokesRelayTimeoutResetOnce(t *testing.T) {
+	calls := 0
+	app := &App{
+		relayTimeoutReset: func() {
+			calls++
+		},
+	}
+
+	app.closeLocalRuntimes()
+	if calls != 1 {
+		t.Fatalf("relayTimeoutReset calls = %d", calls)
+	}
+	if app.relayTimeoutReset != nil {
+		t.Fatal("expected relayTimeoutReset to be cleared after close")
+	}
+
+	app.closeLocalRuntimes()
+	if calls != 1 {
+		t.Fatalf("relayTimeoutReset calls after second close = %d", calls)
+	}
+}
 
 func TestL4RuntimeManagerPreservesRunningServerOnInvalidReconfigure(t *testing.T) {
 	manager := newL4RuntimeManager()
@@ -284,6 +437,35 @@ func TestNewPropagatesHTTP3EnabledToHTTPRuntimeManager(t *testing.T) {
 	}
 }
 
+func TestNewAppliesDefaultHTTPResilienceForDirectCallers(t *testing.T) {
+	app, err := New(Config{
+		AgentID:        "agent",
+		AgentName:      "agent",
+		MasterURL:      "https://master.example.com",
+		AgentToken:     "token",
+		CurrentVersion: "0.1.0",
+		DataDir:        t.TempDir(),
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer app.Close()
+
+	manager, ok := app.httpApplier.(*httpRuntimeManager)
+	if !ok {
+		t.Fatalf("http applier type = %T", app.httpApplier)
+	}
+	if !manager.options.ResumeEnabled {
+		t.Fatal("expected resume to default to enabled")
+	}
+	if manager.options.ResumeMaxAttempts != 2 {
+		t.Fatalf("ResumeMaxAttempts = %d", manager.options.ResumeMaxAttempts)
+	}
+	if manager.options.SameBackendRetryAttempts != 1 {
+		t.Fatalf("SameBackendRetryAttempts = %d", manager.options.SameBackendRetryAttempts)
+	}
+}
+
 func TestNewEmbeddedPropagatesHTTP3EnabledToHTTPRuntimeManager(t *testing.T) {
 	app, err := NewEmbedded(Config{
 		AgentID:        "agent",
@@ -302,6 +484,33 @@ func TestNewEmbeddedPropagatesHTTP3EnabledToHTTPRuntimeManager(t *testing.T) {
 	}
 	if !manager.http3Enabled {
 		t.Fatal("expected http3 to be enabled on embedded runtime manager")
+	}
+}
+
+func TestNewEmbeddedAppliesDefaultHTTPResilienceForDirectCallers(t *testing.T) {
+	app, err := NewEmbedded(Config{
+		AgentID:        "agent",
+		AgentName:      "agent",
+		CurrentVersion: "0.1.0",
+		DataDir:        t.TempDir(),
+	}, store.NewInMemory(), staticSyncClient{})
+	if err != nil {
+		t.Fatalf("NewEmbedded() error = %v", err)
+	}
+	defer app.Close()
+
+	manager, ok := app.httpApplier.(*httpRuntimeManager)
+	if !ok {
+		t.Fatalf("http applier type = %T", app.httpApplier)
+	}
+	if !manager.options.ResumeEnabled {
+		t.Fatal("expected resume to default to enabled")
+	}
+	if manager.options.ResumeMaxAttempts != 2 {
+		t.Fatalf("ResumeMaxAttempts = %d", manager.options.ResumeMaxAttempts)
+	}
+	if manager.options.SameBackendRetryAttempts != 1 {
+		t.Fatalf("SameBackendRetryAttempts = %d", manager.options.SameBackendRetryAttempts)
 	}
 }
 

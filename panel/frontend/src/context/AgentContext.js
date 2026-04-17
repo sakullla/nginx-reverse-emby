@@ -1,4 +1,5 @@
 import { defineComponent, h, provide, inject, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { useAgents } from '../hooks/useAgents'
 import { fetchSystemInfo } from '../api'
 import { useAuthState } from './useAuthState'
@@ -11,6 +12,16 @@ export const AgentProvider = defineComponent({
   setup(props, { slots }) {
     const savedId = localStorage.getItem('selected_agent_id')
     const selectedAgentId = ref(savedId || null)
+    const route = useRoute()
+
+    // Sync URL query agentId into persistent context so sidebar navigation
+    // (which uses static paths without query params) preserves the selection.
+    watch(() => route.query.agentId, (id) => {
+      if (id && id !== selectedAgentId.value) {
+        selectedAgentId.value = id
+        localStorage.setItem('selected_agent_id', id)
+      }
+    }, { immediate: true })
 
     // useAgents is owned here so we can validate whenever the agents list updates
     const { data: agentsData } = useAgents()
@@ -30,7 +41,9 @@ export const AgentProvider = defineComponent({
       if (token) {
         try {
           systemInfo.value = await fetchSystemInfo()
-        } catch {}
+        } catch (err) {
+          console.error('[AgentContext] fetchSystemInfo failed', err)
+        }
         systemInfoAttempted.value = true
       }
     }, { immediate: true })

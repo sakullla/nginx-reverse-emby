@@ -5,13 +5,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"strings"
+	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
 type Snapshot = model.Snapshot
+type HTTPTransportConfig = config.HTTPTransportConfig
 
 type ClientConfig struct {
 	MasterURL      string
@@ -22,11 +26,13 @@ type ClientConfig struct {
 	CurrentVersion string
 	Platform       string
 	RuntimePackage model.RuntimePackage
+	HTTPTransport  HTTPTransportConfig
 }
 
 type Client struct {
-	cfg    ClientConfig
-	client *http.Client
+	cfg       ClientConfig
+	client    *http.Client
+	transport *http.Transport
 }
 
 type SyncRequest struct {
@@ -38,11 +44,42 @@ type SyncRequest struct {
 }
 
 func NewClient(cfg ClientConfig, httpClient *http.Client) *Client {
-	if httpClient == nil {
-		httpClient = http.DefaultClient
-	}
 	cfg.MasterURL = strings.TrimRight(cfg.MasterURL, "/")
-	return &Client{cfg: cfg, client: httpClient}
+	if httpClient != nil {
+		return &Client{cfg: cfg, client: httpClient}
+	}
+	transportCfg := config.Default().HTTPTransport
+	if cfg.HTTPTransport.DialTimeout > 0 {
+		transportCfg.DialTimeout = cfg.HTTPTransport.DialTimeout
+	}
+	if cfg.HTTPTransport.TLSHandshakeTimeout > 0 {
+		transportCfg.TLSHandshakeTimeout = cfg.HTTPTransport.TLSHandshakeTimeout
+	}
+	if cfg.HTTPTransport.ResponseHeaderTimeout > 0 {
+		transportCfg.ResponseHeaderTimeout = cfg.HTTPTransport.ResponseHeaderTimeout
+	}
+	if cfg.HTTPTransport.IdleConnTimeout > 0 {
+		transportCfg.IdleConnTimeout = cfg.HTTPTransport.IdleConnTimeout
+	}
+	if cfg.HTTPTransport.KeepAlive > 0 {
+		transportCfg.KeepAlive = cfg.HTTPTransport.KeepAlive
+	}
+	transport := &http.Transport{
+		DialContext: (&net.Dialer{
+			Timeout:   transportCfg.DialTimeout,
+			KeepAlive: transportCfg.KeepAlive,
+		}).DialContext,
+		TLSHandshakeTimeout:   transportCfg.TLSHandshakeTimeout,
+		ResponseHeaderTimeout: transportCfg.ResponseHeaderTimeout,
+		IdleConnTimeout:       transportCfg.IdleConnTimeout,
+		ExpectContinueTimeout: 1 * time.Second,
+		ForceAttemptHTTP2:     true,
+	}
+	client := &http.Client{
+		Transport: transport,
+		Timeout:   60 * time.Second,
+	}
+	return &Client{cfg: cfg, client: client, transport: transport}
 }
 
 func (c *Client) Sync(ctx context.Context, request SyncRequest) (Snapshot, error) {
@@ -87,11 +124,13 @@ func (c *Client) Sync(ctx context.Context, request SyncRequest) (Snapshot, error
 
 	resp, err := c.client.Do(httpReq)
 	if err != nil {
+		c.discardConnections()
 		return Snapshot{}, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		c.discardConnections()
 		return Snapshot{}, fmt.Errorf("heartbeat failed: %s", resp.Status)
 	}
 
@@ -115,6 +154,12 @@ func (c *Client) Sync(ctx context.Context, request SyncRequest) (Snapshot, error
 	)
 
 	return snapshot, nil
+}
+
+func (c *Client) discardConnections() {
+	if c.transport != nil {
+		c.transport.CloseIdleConnections()
+	}
 }
 
 func normalizeVersionPackage(pkg *model.VersionPackage, rawURL, rawSHA256 string) *model.VersionPackage {

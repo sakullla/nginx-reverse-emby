@@ -30,14 +30,12 @@ type httpRuntimeManager struct {
 	provider     proxy.TLSMaterialProvider
 	cache        *backends.Cache
 	transport    *http.Transport
+	options      proxy.StreamResilienceOptions
 	http3Enabled bool
 }
 
 func newHTTPRuntimeManager() *httpRuntimeManager {
-	return &httpRuntimeManager{
-		cache:     backends.NewCache(backends.Config{}),
-		transport: proxy.NewSharedTransport(),
-	}
+	return newHTTPRuntimeManagerWithConfig(Config{})
 }
 
 func newHTTPRuntimeManagerWithTLS(provider proxy.TLSMaterialProvider) *httpRuntimeManager {
@@ -45,10 +43,31 @@ func newHTTPRuntimeManagerWithTLS(provider proxy.TLSMaterialProvider) *httpRunti
 }
 
 func newHTTPRuntimeManagerWithTLSAndHTTP3(provider proxy.TLSMaterialProvider, http3Enabled bool) *httpRuntimeManager {
+	return newHTTPRuntimeManagerWithTLSAndHTTP3AndConfig(provider, http3Enabled, Config{})
+}
+
+func newHTTPRuntimeManagerWithConfig(cfg Config) *httpRuntimeManager {
+	return newHTTPRuntimeManagerWithTLSAndHTTP3AndConfig(nil, false, cfg)
+}
+
+func newHTTPRuntimeManagerWithTLSAndHTTP3AndConfig(provider proxy.TLSMaterialProvider, http3Enabled bool, cfg Config) *httpRuntimeManager {
+	transport := proxy.NewSharedTransport()
+	proxy.ApplyTransportOptions(transport, proxy.TransportOptions{
+		DialTimeout:           cfg.HTTPTransport.DialTimeout,
+		TLSHandshakeTimeout:   cfg.HTTPTransport.TLSHandshakeTimeout,
+		ResponseHeaderTimeout: cfg.HTTPTransport.ResponseHeaderTimeout,
+		IdleConnTimeout:       cfg.HTTPTransport.IdleConnTimeout,
+		KeepAlive:             cfg.HTTPTransport.KeepAlive,
+	})
 	return &httpRuntimeManager{
-		provider:     provider,
-		cache:        backends.NewCache(backends.Config{}),
-		transport:    proxy.NewSharedTransport(),
+		provider:  provider,
+		cache:     backends.NewCache(backendCacheConfigFromAppConfig(cfg)),
+		transport: transport,
+		options: proxy.StreamResilienceOptions{
+			ResumeEnabled:            cfg.HTTPResilience.ResumeEnabled,
+			ResumeMaxAttempts:        cfg.HTTPResilience.ResumeMaxAttempts,
+			SameBackendRetryAttempts: cfg.HTTPResilience.SameBackendRetryAttempts,
+		},
 		http3Enabled: http3Enabled,
 	}
 }
@@ -80,7 +99,7 @@ func (m *httpRuntimeManager) ApplyWithRelay(ctx context.Context, rules []model.H
 
 	previous := m.runtime
 	if previous != nil && !httpBindingsOverlap(previous.BindingKeys(), bindings) {
-		runtime, err := proxy.StartWithResources(ctx, rules, relayListeners, providers, m.cache, m.transport, m.http3Enabled)
+		runtime, err := proxy.StartWithResourcesAndOptions(ctx, rules, relayListeners, providers, m.cache, m.transport, m.http3Enabled, m.options)
 		if err != nil {
 			return err
 		}
@@ -93,7 +112,7 @@ func (m *httpRuntimeManager) ApplyWithRelay(ctx context.Context, rules []model.H
 		m.runtime = nil
 	}
 
-	runtime, err := proxy.StartWithResources(ctx, rules, relayListeners, providers, m.cache, m.transport, m.http3Enabled)
+	runtime, err := proxy.StartWithResourcesAndOptions(ctx, rules, relayListeners, providers, m.cache, m.transport, m.http3Enabled, m.options)
 	if err != nil {
 		return err
 	}
@@ -121,14 +140,20 @@ type l4RuntimeManager struct {
 }
 
 func newL4RuntimeManager() *l4RuntimeManager {
-	return &l4RuntimeManager{
-		cache: backends.NewCache(backends.Config{}),
-	}
+	return newL4RuntimeManagerWithConfig(Config{})
 }
 
 func newL4RuntimeManagerWithRelay(provider relay.TLSMaterialProvider) *l4RuntimeManager {
+	return newL4RuntimeManagerWithRelayAndConfig(provider, Config{})
+}
+
+func newL4RuntimeManagerWithConfig(cfg Config) *l4RuntimeManager {
+	return newL4RuntimeManagerWithRelayAndConfig(nil, cfg)
+}
+
+func newL4RuntimeManagerWithRelayAndConfig(provider relay.TLSMaterialProvider, cfg Config) *l4RuntimeManager {
 	return &l4RuntimeManager{
-		cache:    backends.NewCache(backends.Config{}),
+		cache:    backends.NewCache(backendCacheConfigFromAppConfig(cfg)),
 		provider: provider,
 	}
 }
@@ -300,4 +325,14 @@ func httpBindingsOverlap(left, right []string) bool {
 		}
 	}
 	return false
+}
+
+func backendCacheConfigFromAppConfig(cfg Config) backends.Config {
+	if !cfg.HasExplicitBackendFailureOverrides() {
+		return backends.Config{}
+	}
+	return backends.Config{
+		FailureBackoffBase:  cfg.BackendFailures.BackoffBase,
+		FailureBackoffLimit: cfg.BackendFailures.BackoffLimit,
+	}
 }

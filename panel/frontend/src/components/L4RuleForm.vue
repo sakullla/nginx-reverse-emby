@@ -36,6 +36,7 @@
       <div class="form-group">
         <label class="form-label">负载均衡策略</label>
         <select v-model="form.load_balancing.strategy" class="input" @change="handleStrategyChange">
+          <option value="adaptive">自适应 (Adaptive)</option>
           <option value="round_robin">轮询 (Round Robin)</option>
           <option value="random">随机 (Random)</option>
         </select>
@@ -223,7 +224,7 @@
         <div class="section-header">
           <div>
             <h3 class="section-title">隐私增强</h3>
-            <p class="section-description">仅当首跳 Relay 使用 TLS/TCP 时可启用，用于隐藏内层 ss/TLS 握手特征</p>
+            <p class="section-description">仅当首跳 Relay 使用 TLS/TCP 时可启用，用于隐藏内层 SS/TLS 握手特征</p>
           </div>
         </div>
         <label class="toggle toggle--card" :class="{ 'toggle--active': form.relay_obfs, 'toggle--disabled': relayObfsDisabled }">
@@ -308,11 +309,11 @@ function createBackend(data = {}) {
   }
 }
 
-const SUPPORTED_L4_STRATEGIES = new Set(['round_robin', 'random'])
+const SUPPORTED_L4_STRATEGIES = new Set(['adaptive', 'round_robin', 'random'])
 
 function normalizeL4Strategy(value) {
   const strategy = String(value || '').trim().toLowerCase()
-  return SUPPORTED_L4_STRATEGIES.has(strategy) ? strategy : 'round_robin'
+  return SUPPORTED_L4_STRATEGIES.has(strategy) ? strategy : 'adaptive'
 }
 
 function normalizeInitialBackends(initialData) {
@@ -445,7 +446,7 @@ watch([() => form.value.relay_chain, firstRelayListener], ([relayChain]) => {
   }
 })
 
-const LB_TAG_MAP = { round_robin: 'RR', random: 'RND' }
+const LB_TAG_MAP = { adaptive: 'ADP', round_robin: 'RR', random: 'RND' }
 const LB_TAG_SET = new Set(Object.values(LB_TAG_MAP))
 
 function isL4AutoTag(t) {

@@ -4,18 +4,82 @@ import (
 	"context"
 	"crypto/tls"
 	"net"
+	"sync"
 	"time"
 )
 
 var (
-	relayDialTimeout      = 5 * time.Second
-	relayHandshakeTimeout = 5 * time.Second
-	relayFrameTimeout     = 5 * time.Second
-	relayIdleTimeout      = 2 * time.Minute
+	relayTimeoutMu               sync.RWMutex
+	relayTimeoutNextID           uint64
+	relayTimeoutOverrides        []relayTimeoutOverride
+	relayDialTimeout             = 5 * time.Second
+	relayHandshakeTimeout        = 5 * time.Second
+	relayFrameTimeout            = 5 * time.Second
+	relayIdleTimeout             = 2 * time.Minute
+	defaultRelayDialTimeout      = 5 * time.Second
+	defaultRelayHandshakeTimeout = 5 * time.Second
+	defaultRelayFrameTimeout     = 5 * time.Second
+	defaultRelayIdleTimeout      = 2 * time.Minute
 )
 
+type relayTimeoutOverride struct {
+	id  uint64
+	cfg TimeoutConfig
+}
+
+type TimeoutConfig struct {
+	DialTimeout      time.Duration
+	HandshakeTimeout time.Duration
+	FrameTimeout     time.Duration
+	IdleTimeout      time.Duration
+}
+
+func ConfigureTimeouts(cfg TimeoutConfig) func() {
+	relayTimeoutMu.Lock()
+	relayTimeoutNextID++
+	overrideID := relayTimeoutNextID
+	relayTimeoutOverrides = append(relayTimeoutOverrides, relayTimeoutOverride{id: overrideID, cfg: cfg})
+	applyRelayTimeoutOverridesLocked()
+	relayTimeoutMu.Unlock()
+
+	return func() {
+		relayTimeoutMu.Lock()
+		for i, override := range relayTimeoutOverrides {
+			if override.id != overrideID {
+				continue
+			}
+			relayTimeoutOverrides = append(relayTimeoutOverrides[:i], relayTimeoutOverrides[i+1:]...)
+			break
+		}
+		applyRelayTimeoutOverridesLocked()
+		relayTimeoutMu.Unlock()
+	}
+}
+
+func applyRelayTimeoutOverridesLocked() {
+	relayDialTimeout = defaultRelayDialTimeout
+	relayHandshakeTimeout = defaultRelayHandshakeTimeout
+	relayFrameTimeout = defaultRelayFrameTimeout
+	relayIdleTimeout = defaultRelayIdleTimeout
+	for _, override := range relayTimeoutOverrides {
+		if override.cfg.DialTimeout > 0 {
+			relayDialTimeout = override.cfg.DialTimeout
+		}
+		if override.cfg.HandshakeTimeout > 0 {
+			relayHandshakeTimeout = override.cfg.HandshakeTimeout
+		}
+		if override.cfg.FrameTimeout > 0 {
+			relayFrameTimeout = override.cfg.FrameTimeout
+		}
+		if override.cfg.IdleTimeout > 0 {
+			relayIdleTimeout = override.cfg.IdleTimeout
+		}
+	}
+}
+
 func dialTCP(ctx context.Context, address string) (net.Conn, error) {
-	dialCtx, cancel := context.WithTimeout(ctx, relayDialTimeout)
+	dialTimeout := getRelayDialTimeout()
+	dialCtx, cancel := context.WithTimeout(ctx, dialTimeout)
 	defer cancel()
 
 	var dialer net.Dialer
@@ -23,16 +87,17 @@ func dialTCP(ctx context.Context, address string) (net.Conn, error) {
 }
 
 func handshakeTLS(ctx context.Context, conn *tls.Conn) error {
-	handshakeCtx, cancel := context.WithTimeout(ctx, relayHandshakeTimeout)
+	handshakeTimeout := getRelayHandshakeTimeout()
+	handshakeCtx, cancel := context.WithTimeout(ctx, handshakeTimeout)
 	defer cancel()
 
-	return withConnDeadline(conn, relayHandshakeTimeout, func() error {
+	return withConnDeadline(conn, handshakeTimeout, func() error {
 		return conn.HandshakeContext(handshakeCtx)
 	})
 }
 
 func withFrameDeadline(conn net.Conn, fn func() error) error {
-	return withConnDeadline(conn, relayFrameTimeout, fn)
+	return withConnDeadline(conn, getRelayFrameTimeout(), fn)
 }
 
 func withWriteDeadline(conn net.Conn, timeout time.Duration, fn func() error) error {
@@ -58,10 +123,11 @@ func withConnDeadline(conn net.Conn, timeout time.Duration, fn func() error) err
 }
 
 func wrapIdleConn(conn net.Conn) net.Conn {
-	if relayIdleTimeout <= 0 || conn == nil {
+	idleTimeout := getRelayIdleTimeout()
+	if idleTimeout <= 0 || conn == nil {
 		return conn
 	}
-	return &idleDeadlineConn{Conn: conn, timeout: relayIdleTimeout}
+	return &idleDeadlineConn{Conn: conn, timeout: idleTimeout}
 }
 
 type idleDeadlineConn struct {
@@ -91,4 +157,28 @@ func (c *idleDeadlineConn) CloseRead() error {
 		return closer.CloseRead()
 	}
 	return nil
+}
+
+func getRelayDialTimeout() time.Duration {
+	relayTimeoutMu.RLock()
+	defer relayTimeoutMu.RUnlock()
+	return relayDialTimeout
+}
+
+func getRelayHandshakeTimeout() time.Duration {
+	relayTimeoutMu.RLock()
+	defer relayTimeoutMu.RUnlock()
+	return relayHandshakeTimeout
+}
+
+func getRelayFrameTimeout() time.Duration {
+	relayTimeoutMu.RLock()
+	defer relayTimeoutMu.RUnlock()
+	return relayFrameTimeout
+}
+
+func getRelayIdleTimeout() time.Duration {
+	relayTimeoutMu.RLock()
+	defer relayTimeoutMu.RUnlock()
+	return relayIdleTimeout
 }

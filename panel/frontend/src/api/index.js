@@ -4,6 +4,7 @@ const isDev = import.meta.env.DEV
 const sleep = (ms = 500) => new Promise((resolve) => setTimeout(resolve, ms))
 const SYSTEM_RELAY_CA_TAG = 'system:relay-ca'
 const SYSTEM_RELAY_TUNNEL_TAG = 'system:auto-relay-tunnel'
+const SUPPORTED_LOAD_BALANCING_STRATEGIES = new Set(['adaptive', 'round_robin', 'random'])
 
 function readDevMockFlags() {
   if (!isDev || typeof window === 'undefined') return {}
@@ -239,7 +240,7 @@ function generateMockRules(count) {
       frontend_url: `https://${subdomain}.${domain}`,
       backend_url: `http://${ip}:${svc.port}`,
       backends: [{ url: `http://${ip}:${svc.port}` }],
-      load_balancing: { strategy: 'round_robin' },
+      load_balancing: { strategy: 'adaptive' },
       enabled: i % 7 !== 0,
       tags: [...svc.tags, i % 3 === 0 ? 'https' : 'http'],
       proxy_redirect: true,
@@ -264,6 +265,11 @@ function normalizeHttpBackends(rule = {}) {
   return backendUrl ? [{ url: backendUrl }] : []
 }
 
+function normalizeLoadBalancingStrategy(value) {
+  const strategy = String(value || '').trim().toLowerCase()
+  return SUPPORTED_LOAD_BALANCING_STRATEGIES.has(strategy) ? strategy : 'adaptive'
+}
+
 function normalizeHttpRule(rule = {}) {
   const backends = normalizeHttpBackends(rule)
   return {
@@ -271,7 +277,8 @@ function normalizeHttpRule(rule = {}) {
     backend_url: backends[0]?.url || String(rule.backend_url || '').trim(),
     backends,
     load_balancing: {
-      strategy: rule.load_balancing?.strategy === 'random' ? 'random' : 'round_robin'
+      strategy: normalizeLoadBalancingStrategy(rule.load_balancing?.strategy)
+      strategy: normalizeStrategy(rule.load_balancing?.strategy)
     },
     relay_obfs: rule.relay_obfs === true
   }
@@ -300,7 +307,8 @@ function normalizeL4Rule(rule = {}) {
     upstream_port: backends[0]?.port || Number(rule.upstream_port) || 0,
     backends,
     load_balancing: {
-      strategy: rule.load_balancing?.strategy === 'random' ? 'random' : 'round_robin'
+      strategy: normalizeLoadBalancingStrategy(rule.load_balancing?.strategy)
+      strategy: normalizeStrategy(rule.load_balancing?.strategy)
     },
     relay_obfs: rule.relay_obfs === true
   }
@@ -315,7 +323,8 @@ function normalizeHttpRulePayloadObject(payload = {}, options = {}) {
     backend_url: backends[0]?.url || '',
     backends,
     load_balancing: {
-      strategy: payload.load_balancing?.strategy === 'random' ? 'random' : 'round_robin'
+      strategy: normalizeLoadBalancingStrategy(payload.load_balancing?.strategy)
+      strategy: normalizeStrategy(payload.load_balancing?.strategy)
     },
     tags: Array.isArray(payload.tags) ? payload.tags : [],
     enabled: payload.enabled !== false,
@@ -367,7 +376,10 @@ function normalizeLegacyHttpRulePayload(payloadOrFrontend, legacyArgs = [], opti
 function normalizeL4RulePayload(payload = {}, options = {}) {
   const includeRelayDefaults = options.includeRelayDefaults === true
   const normalizedPayload = {
-    ...payload
+    ...payload,
+    load_balancing: {
+      strategy: normalizeLoadBalancingStrategy(payload.load_balancing?.strategy)
+    }
   }
   if (Array.isArray(payload.relay_chain)) {
     normalizedPayload.relay_chain = payload.relay_chain
@@ -554,7 +566,7 @@ function buildMockDiagnosticResult(kind, ruleId) {
       error: sampleFailed ? 'dial timeout' : ''
     }
   })
-  const backends = backendLabels.map((backend) => {
+  const backends = backendLabels.map((backend, index) => {
     const backendSamples = samples.filter((sample) => sample.backend === backend)
     const successful = backendSamples.filter((sample) => sample.success)
     const latencies = successful.map((sample) => sample.latency_ms)
@@ -570,7 +582,54 @@ function buildMockDiagnosticResult(kind, ruleId) {
         min_latency_ms: successful.length ? Math.min(...latencies) : 0,
         max_latency_ms: successful.length ? Math.max(...latencies) : 0,
         quality: successful.length === backendSamples.length ? 'good' : 'fair'
-      }
+      },
+      adaptive: {
+        preferred: backend === backendLabels[0],
+        reason: backend === backendLabels[0] ? 'performance_higher' : '',
+        stability: backend === backendLabels[0] ? 1 : 0.8,
+        recent_succeeded: successful.length,
+        recent_failed: backendSamples.length - successful.length,
+        latency_ms: successful.length ? Number((total / successful.length).toFixed(1)) : 0,
+        estimated_bandwidth_bps: backend === backendLabels[0] ? 4 * 1024 * 1024 : 768 * 1024,
+        performance_score: backend === backendLabels[0] ? 0.88 : 0.63,
+        state: index === 0 ? 'warm' : 'recovering',
+        sample_confidence: index === 0 ? 1 : 0.45,
+        slow_start_active: index !== 0,
+        outlier: index !== 0,
+        traffic_share_hint: index === 0 ? 'normal' : 'recovery'
+      },
+      children: kind === 'http'
+        ? [
+            {
+              backend: `${backend} [203.0.113.${11 + backendLabels.indexOf(backend)}:8096]`,
+              summary: {
+                sent: Math.max(1, Math.floor(backendSamples.length / 2)),
+                succeeded: Math.max(1, Math.floor(successful.length / 2)),
+                failed: Math.max(0, Math.floor((backendSamples.length - successful.length) / 2)),
+                loss_rate: 0,
+                avg_latency_ms: successful.length ? Number((total / successful.length).toFixed(1)) : 0,
+                min_latency_ms: successful.length ? Math.min(...latencies) : 0,
+                max_latency_ms: successful.length ? Math.max(...latencies) : 0,
+                quality: successful.length === backendSamples.length ? 'good' : 'fair'
+              },
+              adaptive: {
+                preferred: backend === backendLabels[0],
+                reason: backend === backendLabels[0] ? 'performance_higher' : '',
+                stability: backend === backendLabels[0] ? 1 : 0.8,
+                recent_succeeded: successful.length,
+                recent_failed: backendSamples.length - successful.length,
+                latency_ms: successful.length ? Number((total / successful.length).toFixed(1)) : 0,
+                estimated_bandwidth_bps: backend === backendLabels[0] ? 4 * 1024 * 1024 : 768 * 1024,
+                performance_score: backend === backendLabels[0] ? 0.88 : 0.63,
+                state: index === 0 ? 'warm' : 'recovering',
+                sample_confidence: index === 0 ? 1 : 0.45,
+                slow_start_active: index !== 0,
+                outlier: index !== 0,
+                traffic_share_hint: index === 0 ? 'normal' : 'recovery'
+              }
+            }
+          ]
+        : []
     }
   })
   return {

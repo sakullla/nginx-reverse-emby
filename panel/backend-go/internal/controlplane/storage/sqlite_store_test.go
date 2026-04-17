@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -440,6 +441,101 @@ func TestStorePersistsHTTPRules(t *testing.T) {
 	}
 }
 
+func TestStoreNormalizesAdaptiveLoadBalancingForHTTPAndL4(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromGORM(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	if err := store.SaveHTTPRules(t.Context(), "local", []HTTPRuleRow{{
+		ID:                77,
+		AgentID:           "local",
+		FrontendURL:       "https://adaptive-http.example.com",
+		BackendURL:        "http://emby:8096",
+		BackendsJSON:      `[{"url":"http://emby:8096"}]`,
+		LoadBalancingJSON: `{}`,
+		Enabled:           true,
+		ProxyRedirect:     true,
+		RelayChainJSON:    `[]`,
+		PassProxyHeaders:  true,
+		Revision:          17,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules() error = %v", err)
+	}
+
+	httpRules, err := store.ListHTTPRules(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListHTTPRules() error = %v", err)
+	}
+	if len(httpRules) != 1 || parseLoadBalancingStrategy(httpRules[0].LoadBalancingJSON).Strategy != "adaptive" {
+		t.Fatalf("ListHTTPRules() = %+v", httpRules)
+	}
+	if httpRules[0].LoadBalancingJSON != `{"strategy":"adaptive"}` {
+		t.Fatalf("http load_balancing_json = %q", httpRules[0].LoadBalancingJSON)
+	}
+
+	if err := store.SaveL4Rules(t.Context(), "local", []L4RuleRow{{
+		ID:                78,
+		AgentID:           "local",
+		Name:              "adaptive-l4",
+		Protocol:          "tcp",
+		ListenHost:        "0.0.0.0",
+		ListenPort:        9443,
+		UpstreamHost:      "upstream",
+		UpstreamPort:      9444,
+		BackendsJSON:      `[{"host":"upstream","port":9444}]`,
+		LoadBalancingJSON: `{}`,
+		TuningJSON:        `{}`,
+		RelayChainJSON:    `[]`,
+		Enabled:           true,
+		Revision:          18,
+	}}); err != nil {
+		t.Fatalf("SaveL4Rules() error = %v", err)
+	}
+
+	l4Rules, err := store.ListL4Rules(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListL4Rules() error = %v", err)
+	}
+	if len(l4Rules) != 1 || parseL4LoadBalancingStrategy(t, l4Rules[0].LoadBalancingJSON).Strategy != "adaptive" {
+		t.Fatalf("ListL4Rules() = %+v", l4Rules)
+	}
+	if l4Rules[0].LoadBalancingJSON != `{"strategy":"adaptive"}` {
+		t.Fatalf("l4 load_balancing_json = %q", l4Rules[0].LoadBalancingJSON)
+	}
+
+	snapshot, err := store.LoadAgentSnapshot(t.Context(), "local", AgentSnapshotInput{})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot() error = %v", err)
+	}
+	if len(snapshot.Rules) != 1 || snapshot.Rules[0].LoadBalancing.Strategy != "adaptive" {
+		t.Fatalf("snapshot HTTP rules = %+v", snapshot.Rules)
+	}
+	if len(snapshot.L4Rules) != 1 || snapshot.L4Rules[0].LoadBalancing.Strategy != "adaptive" {
+		t.Fatalf("snapshot L4 rules = %+v", snapshot.L4Rules)
+	}
+}
+
+func parseL4LoadBalancingStrategy(t *testing.T, raw string) LoadBalancing {
+	t.Helper()
+
+	var lb LoadBalancing
+	if err := json.Unmarshal([]byte(defaultString(raw, "{}")), &lb); err != nil {
+		t.Fatalf("json.Unmarshal(load_balancing) error = %v", err)
+	}
+	if strings.TrimSpace(lb.Strategy) == "" {
+		return LoadBalancing{Strategy: "adaptive"}
+	}
+	return LoadBalancing{Strategy: strings.ToLower(strings.TrimSpace(lb.Strategy))}
+}
 func TestStorePersistsRelayListenersAndManagedCertificates(t *testing.T) {
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 

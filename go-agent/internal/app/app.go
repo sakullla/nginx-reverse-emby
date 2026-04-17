@@ -17,6 +17,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/diagnostics"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	platformlinux "github.com/sakullla/nginx-reverse-emby/go-agent/internal/platform/linux"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	agentruntime "github.com/sakullla/nginx-reverse-emby/go-agent/internal/runtime"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
 	agentsync "github.com/sakullla/nginx-reverse-emby/go-agent/internal/sync"
@@ -63,17 +64,19 @@ type Updater interface {
 }
 
 type App struct {
-	cfg          Config
-	syncClient   SyncClient
-	store        store.Store
-	httpApplier  HTTPApplier
-	certApplier  CertificateApplier
-	l4Applier    L4Applier
-	relayApplier RelayApplier
-	updater      Updater
-	runtime      *agentruntime.Runtime
-	taskClient   *agenttask.Client
-	syncMu       sync.Mutex
+	cfg               Config
+	syncClient        SyncClient
+	store             store.Store
+	httpApplier       HTTPApplier
+	certApplier       CertificateApplier
+	l4Applier         L4Applier
+	relayApplier      RelayApplier
+	updater           Updater
+	runtime           *agentruntime.Runtime
+	taskClient        *agenttask.Client
+	relayTimeoutReset func()
+	closeOnce         sync.Once
+	syncMu            sync.Mutex
 }
 
 func advertisedCapabilities(cfg Config) []string {
@@ -84,7 +87,47 @@ func advertisedCapabilities(cfg Config) []string {
 	return capabilities
 }
 
+func normalizeConstructorConfig(cfg Config) Config {
+	defaults := config.Default()
+
+	if cfg.AgentID == "" {
+		cfg.AgentID = defaults.AgentID
+	}
+	if cfg.AgentName == "" {
+		cfg.AgentName = defaults.AgentName
+	}
+	if cfg.DataDir == "" {
+		cfg.DataDir = defaults.DataDir
+	}
+	if cfg.CurrentVersion == "" {
+		cfg.CurrentVersion = defaults.CurrentVersion
+	}
+	if cfg.HeartbeatInterval <= 0 {
+		cfg.HeartbeatInterval = defaults.HeartbeatInterval
+	}
+	if cfg.HTTPResilience == (config.HTTPResilienceConfig{}) {
+		cfg.HTTPResilience = defaults.HTTPResilience
+	}
+
+	return cfg
+}
+
 func New(cfg Config) (*App, error) {
+	cfg = normalizeConstructorConfig(cfg)
+
+	resetRelayTimeouts := relay.ConfigureTimeouts(relay.TimeoutConfig{
+		DialTimeout:      cfg.RelayTimeouts.DialTimeout,
+		HandshakeTimeout: cfg.RelayTimeouts.HandshakeTimeout,
+		FrameTimeout:     cfg.RelayTimeouts.FrameTimeout,
+		IdleTimeout:      cfg.RelayTimeouts.IdleTimeout,
+	})
+	restoreRelayTimeouts := true
+	defer func() {
+		if restoreRelayTimeouts {
+			resetRelayTimeouts()
+		}
+	}()
+
 	st, err := store.NewFilesystem(cfg.DataDir)
 	if err != nil {
 		return nil, err
@@ -103,6 +146,7 @@ func New(cfg Config) (*App, error) {
 			Arch:     stdruntime.GOARCH,
 			SHA256:   cfg.RuntimePackageSHA256,
 		},
+		HTTPTransport: cfg.HTTPTransport,
 	}, nil)
 	certManager, err := certs.NewManager(cfg.DataDir)
 	if err != nil {
@@ -112,13 +156,13 @@ func New(cfg Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
-	return newAppWithAllDeps(
+	app := newAppWithAllDeps(
 		cfg,
 		st,
 		client,
-		newHTTPRuntimeManagerWithTLSAndHTTP3(certManager, cfg.HTTP3Enabled),
+		newHTTPRuntimeManagerWithTLSAndHTTP3AndConfig(certManager, cfg.HTTP3Enabled, cfg),
 		certManager,
-		newL4RuntimeManagerWithRelay(certManager),
+		newL4RuntimeManagerWithRelayAndConfig(certManager, cfg),
 		newRelayRuntimeManager(certManager),
 		agentupdate.NewManager(
 			cfg.DataDir,
@@ -136,13 +180,17 @@ func New(cfg Config) (*App, error) {
 			Version:       cfg.CurrentVersion,
 			Capabilities:  advertisedCapabilities(cfg),
 			ReconnectWait: time.Second,
+			HTTPTransport: cfg.HTTPTransport,
 			Handler: agenttask.NewDiagnosticHandler(
 				st,
 				diagnostics.NewHTTPProber(diagnostics.HTTPProberConfig{Attempts: 5, RelayProvider: certManager}),
 				diagnostics.NewTCPProber(diagnostics.TCPProberConfig{Attempts: 5, RelayProvider: certManager}),
 			),
 		}),
-	), nil
+	)
+	app.relayTimeoutReset = resetRelayTimeouts
+	restoreRelayTimeouts = false
+	return app, nil
 }
 
 func newAppWithDeps(
@@ -198,7 +246,9 @@ func newAppWithAllDeps(
 }
 
 func (a *App) Run(ctx context.Context) error {
-	defer a.closeLocalRuntimes()
+	defer func() {
+		_ = a.Close()
+	}()
 
 	applied, err := a.store.LoadAppliedSnapshot()
 	if err != nil {
@@ -239,6 +289,16 @@ func (a *App) Run(ctx context.Context) error {
 			}
 		}
 	}
+}
+
+func (a *App) Close() error {
+	if a == nil {
+		return nil
+	}
+	a.closeOnce.Do(func() {
+		a.closeLocalRuntimes()
+	})
+	return nil
 }
 
 func (a *App) performSync(ctx context.Context) error {
@@ -574,6 +634,10 @@ func (a *App) closeLocalRuntimes() {
 	}
 	if a.l4Applier != nil {
 		_ = a.l4Applier.Close()
+	}
+	if a.relayTimeoutReset != nil {
+		a.relayTimeoutReset()
+		a.relayTimeoutReset = nil
 	}
 }
 

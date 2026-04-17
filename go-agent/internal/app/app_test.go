@@ -13,9 +13,12 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unsafe"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
+	agentsync "github.com/sakullla/nginx-reverse-emby/go-agent/internal/sync"
 	agentupdate "github.com/sakullla/nginx-reverse-emby/go-agent/internal/update"
 )
 
@@ -50,6 +53,66 @@ func TestNewBuildsRealWiring(t *testing.T) {
 	if app.relayApplier == nil {
 		t.Fatal("expected relay applier to be initialized")
 	}
+}
+
+func TestNewPropagatesHTTPTransportConfigToSyncAndTaskClients(t *testing.T) {
+	cfg := Config{
+		AgentID:        "agent",
+		AgentName:      "agent",
+		MasterURL:      "https://master.example.com",
+		AgentToken:     "token",
+		CurrentVersion: "0.1.0",
+		DataDir:        t.TempDir(),
+		HTTPTransport: config.HTTPTransportConfig{
+			DialTimeout:           21 * time.Second,
+			TLSHandshakeTimeout:   22 * time.Second,
+			ResponseHeaderTimeout: 23 * time.Second,
+			IdleConnTimeout:       24 * time.Second,
+			KeepAlive:             25 * time.Second,
+		},
+	}
+
+	app, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	syncClient, ok := app.syncClient.(*agentsync.Client)
+	if !ok {
+		t.Fatalf("syncClient type = %T", app.syncClient)
+	}
+	syncClientTransport := extractPrivateTransport(t, syncClient)
+	if syncClientTransport == nil {
+		t.Fatal("expected sync transport to be initialized")
+	}
+	if syncClientTransport.ResponseHeaderTimeout != 23*time.Second {
+		t.Fatalf("sync ResponseHeaderTimeout = %v", syncClientTransport.ResponseHeaderTimeout)
+	}
+
+	if app.taskClient == nil {
+		t.Fatal("expected task client to be initialized")
+	}
+	taskTransport := extractPrivateTransport(t, app.taskClient)
+	if taskTransport.ResponseHeaderTimeout != 23*time.Second {
+		t.Fatalf("task ResponseHeaderTimeout = %v", taskTransport.ResponseHeaderTimeout)
+	}
+	if taskTransport.TLSHandshakeTimeout != 22*time.Second {
+		t.Fatalf("task TLSHandshakeTimeout = %v", taskTransport.TLSHandshakeTimeout)
+	}
+}
+
+func extractPrivateTransport(t *testing.T, client any) *http.Transport {
+	t.Helper()
+
+	value := reflect.ValueOf(client)
+	if value.Kind() != reflect.Pointer || value.IsNil() {
+		t.Fatalf("client = %T", client)
+	}
+	field := value.Elem().FieldByName("transport")
+	if !field.IsValid() || field.IsNil() {
+		return nil
+	}
+	return reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem().Interface().(*http.Transport)
 }
 
 func TestNewAdvertisesRelayQUICAndConditionalHTTP3IngressCapabilities(t *testing.T) {
@@ -459,7 +522,7 @@ func TestRunMergesOmittedSyncFieldsOntoPreviouslyAppliedSnapshot(t *testing.T) {
 }
 
 func TestRunDoesNotAdvanceAppliedSnapshotOrCurrentRevisionOnApplyFailure(t *testing.T) {
-	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
+	cfg := Config{HeartbeatInterval: time.Hour}
 	mem := store.NewInMemory()
 	previousApplied := Snapshot{
 		DesiredVersion: "stable",
@@ -701,6 +764,7 @@ func TestRunRecordsSyncErrorsInRuntimeState(t *testing.T) {
 		{err: errors.New("boom")},
 		{snapshot: Snapshot{DesiredVersion: "new"}},
 	}, syncResponse{})
+	releaseSecondSync := client.blockFromCall(2)
 
 	app := newAppWithDeps(cfg, mem, client, nil, nil, nil)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -718,6 +782,7 @@ func TestRunRecordsSyncErrorsInRuntimeState(t *testing.T) {
 		t.Fatalf("expected other metadata preserved, got %v", current.Metadata)
 	}
 
+	close(releaseSecondSync)
 	waitForCalls(t, client, 2, time.Second)
 	waitForRuntimeState(t, time.Second, func() bool {
 		updated, err := mem.LoadRuntimeState()
@@ -751,6 +816,7 @@ func TestRunRecordsSaveDesiredSnapshotFailures(t *testing.T) {
 	}
 
 	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{DesiredVersion: "ok"}})
+	releaseThirdSync := client.blockFromCall(3)
 	app := newAppWithDeps(cfg, fs, client, nil, nil, nil)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -768,6 +834,7 @@ func TestRunRecordsSaveDesiredSnapshotFailures(t *testing.T) {
 		t.Fatalf("expected persistence failure metadata, got %v", state.Metadata)
 	}
 
+	close(releaseThirdSync)
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatalf("Run returned error: %v", err)
@@ -1605,7 +1672,10 @@ type testSyncClient struct {
 	responses []syncResponse
 	fallback  syncResponse
 	callCount int32
+	doneCount int32
 	reqCh     chan SyncRequest
+	blockCh   chan struct{}
+	blockFrom int32
 }
 
 func newTestSyncClient(responses []syncResponse, fallback syncResponse) *testSyncClient {
@@ -1616,11 +1686,29 @@ func newTestSyncClient(responses []syncResponse, fallback syncResponse) *testSyn
 	}
 }
 
+func (c *testSyncClient) blockFromCall(callNum int32) chan struct{} {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.blockCh == nil {
+		c.blockCh = make(chan struct{})
+	}
+	c.blockFrom = callNum
+	return c.blockCh
+}
+
 func (c *testSyncClient) Sync(_ context.Context, request SyncRequest) (Snapshot, error) {
-	atomic.AddInt32(&c.callCount, 1)
+	callNum := atomic.AddInt32(&c.callCount, 1)
 	select {
 	case c.reqCh <- request:
 	default:
+	}
+	defer atomic.AddInt32(&c.doneCount, 1)
+	c.mu.Lock()
+	blockCh := c.blockCh
+	blockFrom := c.blockFrom
+	c.mu.Unlock()
+	if blockCh != nil && callNum >= blockFrom {
+		<-blockCh
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -1645,7 +1733,7 @@ func waitForRequest(t *testing.T, client *testSyncClient, timeout time.Duration)
 func waitForCalls(t *testing.T, client *testSyncClient, target int, timeout time.Duration) {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		if int(atomic.LoadInt32(&client.callCount)) >= target {
+		if int(atomic.LoadInt32(&client.doneCount)) >= target {
 			return
 		}
 		time.Sleep(1 * time.Millisecond)
@@ -2011,7 +2099,7 @@ func TestRunPreservesStoredManagedCertificatePayloadWhenHeartbeatOmitsFields(t *
 }
 
 func TestRunRecordsCertificateApplyFailuresInRuntimeState(t *testing.T) {
-	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
+	cfg := Config{HeartbeatInterval: time.Hour}
 	mem := store.NewInMemory()
 	if err := mem.SaveAppliedSnapshot(Snapshot{DesiredVersion: "baseline"}); err != nil {
 		t.Fatalf("failed to seed applied snapshot: %v", err)
@@ -2267,7 +2355,7 @@ func TestRunAppliesExplicitEmptyHTTPRules(t *testing.T) {
 }
 
 func TestRunRecordsHTTPApplyFailuresInRuntimeState(t *testing.T) {
-	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
+	cfg := Config{HeartbeatInterval: time.Hour}
 	mem := store.NewInMemory()
 	if err := mem.SaveAppliedSnapshot(Snapshot{DesiredVersion: "baseline"}); err != nil {
 		t.Fatalf("failed to seed applied snapshot: %v", err)
@@ -2944,7 +3032,7 @@ func TestRunClearsStoredL4RulesWhenRelayListenersAreExplicitlyCleared(t *testing
 }
 
 func TestRunRecordsL4ApplyFailuresInRuntimeState(t *testing.T) {
-	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
+	cfg := Config{HeartbeatInterval: time.Hour}
 	mem := store.NewInMemory()
 	if err := mem.SaveAppliedSnapshot(Snapshot{DesiredVersion: "baseline"}); err != nil {
 		t.Fatalf("failed to seed applied snapshot: %v", err)
@@ -2978,7 +3066,7 @@ func TestRunRecordsL4ApplyFailuresInRuntimeState(t *testing.T) {
 }
 
 func TestRunRecordsRelayApplyFailuresInRuntimeState(t *testing.T) {
-	cfg := Config{HeartbeatInterval: 5 * time.Millisecond}
+	cfg := Config{HeartbeatInterval: time.Hour}
 	mem := store.NewInMemory()
 	if err := mem.SaveAppliedSnapshot(Snapshot{DesiredVersion: "baseline"}); err != nil {
 		t.Fatalf("failed to seed applied snapshot: %v", err)
@@ -3074,6 +3162,32 @@ func TestRunKeepsRunningAfterStartupRelayHydrationFailure(t *testing.T) {
 	cancel()
 	if err := <-done; err != nil {
 		t.Fatalf("Run returned error: %v", err)
+	}
+}
+
+func TestAppCloseResetsRelayTimeoutOverridesWithoutRun(t *testing.T) {
+	resetCalls := 0
+	app := &App{
+		relayTimeoutReset: func() {
+			resetCalls++
+		},
+	}
+
+	if err := app.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if resetCalls != 1 {
+		t.Fatalf("relay timeout reset calls = %d", resetCalls)
+	}
+	if app.relayTimeoutReset != nil {
+		t.Fatal("expected relayTimeoutReset to be cleared after Close()")
+	}
+
+	if err := app.Close(); err != nil {
+		t.Fatalf("second Close() error = %v", err)
+	}
+	if resetCalls != 1 {
+		t.Fatalf("relay timeout reset calls after second Close() = %d", resetCalls)
 	}
 }
 

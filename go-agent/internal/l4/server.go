@@ -47,16 +47,23 @@ type Server struct {
 }
 
 type udpSession struct {
-	key            string
-	peer           *net.UDPAddr
-	listener       *net.UDPConn
-	upstream       udpUpstream
-	lastActive     time.Time
-	targetAddr     string
-	pendingReplies int
-	awaitingSince  time.Time
-	ready          chan struct{}
-	initErr        error
+	key                   string
+	peer                  *net.UDPAddr
+	listener              *net.UDPConn
+	upstream              udpUpstream
+	lastActive            time.Time
+	targetAddr            string
+	backendObservationKey string
+	pendingReplies        int
+	awaitingSince         time.Time
+	pendingReplyTimes     []time.Time
+	ready                 chan struct{}
+	initErr               error
+}
+
+type l4Candidate struct {
+	address               string
+	backendObservationKey string
 }
 
 type udpUpstream interface {
@@ -208,7 +215,7 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 		return
 	}
 
-	upstream, err := s.dialTCPUpstream(rule)
+	upstream, candidate, connectDuration, err := s.dialTCPUpstream(rule)
 	if err != nil {
 		return
 	}
@@ -217,8 +224,10 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 	defer upstream.Close()
 
 	if err := s.writeTCPProxyHeader(upstream, client, downstreamProxyInfo, rule); err != nil {
+		s.observeCandidateFailure(candidate)
 		return
 	}
+	s.observeCandidateSuccess(candidate, connectDuration, connectDuration, 0)
 
 	done := make(chan struct{}, 2)
 	go func() {
@@ -299,37 +308,44 @@ func cloneTCPAddr(addr *net.TCPAddr) *net.TCPAddr {
 	return &out
 }
 
-func (s *Server) dialTCPUpstream(rule model.L4Rule) (net.Conn, error) {
+func (s *Server) dialTCPUpstream(rule model.L4Rule) (net.Conn, l4Candidate, time.Duration, error) {
 	candidates, err := l4Candidates(s.ctx, s.cache, rule)
 	if err != nil {
-		return nil, err
+		return nil, l4Candidate{}, 0, err
 	}
 
 	var lastErr error
 	for _, candidate := range candidates {
-		target := candidate.Address
+		if ctxErr := s.ctx.Err(); ctxErr != nil {
+			return nil, l4Candidate{}, 0, ctxErr
+		}
+		target := candidate.address
+		start := s.now()
 		var upstream net.Conn
 		if len(rule.RelayChain) == 0 {
 			upstream, err = (&net.Dialer{}).DialContext(s.ctx, "tcp", target)
 		} else {
 			hops, hopErr := s.resolveRelayHops(rule)
 			if hopErr != nil {
-				return nil, hopErr
+				return nil, l4Candidate{}, 0, hopErr
 			}
 			upstream, err = relay.Dial(s.ctx, "tcp", target, hops, s.relayProvider)
 		}
 		if err != nil {
-			s.cache.MarkFailure(target)
+			if ctxErr := s.ctx.Err(); ctxErr != nil {
+				return nil, l4Candidate{}, 0, ctxErr
+			}
+			s.observeCandidateFailure(candidate)
 			lastErr = err
 			continue
 		}
-		s.cache.MarkSuccess(target)
-		return upstream, nil
+		connectDuration := s.now().Sub(start)
+		return upstream, candidate, connectDuration, nil
 	}
 	if lastErr != nil {
-		return nil, lastErr
+		return nil, l4Candidate{}, 0, lastErr
 	}
-	return nil, fmt.Errorf("all backends failed for %s:%d", rule.ListenHost, rule.ListenPort)
+	return nil, l4Candidate{}, 0, fmt.Errorf("all backends failed for %s:%d", rule.ListenHost, rule.ListenPort)
 }
 
 func closeTCPWrite(conn net.Conn) {
@@ -405,7 +421,10 @@ func (s *Server) proxyUDPPacket(listener *net.UDPConn, rule model.L4Rule, payloa
 	}
 	_ = session.upstream.SetWriteDeadline(s.now().Add(s.udpReplyTimeout))
 	if err := session.upstream.WritePacket(payload); err != nil {
-		s.cache.MarkFailure(session.targetAddr)
+		s.observeCandidateFailure(l4Candidate{
+			address:               session.targetAddr,
+			backendObservationKey: session.backendObservationKey,
+		})
 		s.closeUDPSession(session.key)
 		return
 	}
@@ -501,7 +520,7 @@ func (s *Server) sessionForPeer(rule model.L4Rule, listener *net.UDPConn, peer *
 	s.udpSessions[key] = session
 	s.udpMu.Unlock()
 
-	upstream, target, err := s.dialUDPUpstream(rule)
+	upstream, candidate, err := s.dialUDPUpstream(rule)
 	if err != nil {
 		s.udpMu.Lock()
 		session.initErr = err
@@ -513,7 +532,8 @@ func (s *Server) sessionForPeer(rule model.L4Rule, listener *net.UDPConn, peer *
 
 	s.udpMu.Lock()
 	session.upstream = upstream
-	session.targetAddr = target
+	session.targetAddr = candidate.address
+	session.backendObservationKey = candidate.backendObservationKey
 	close(session.ready)
 	session.ready = nil
 	s.udpMu.Unlock()
@@ -523,45 +543,46 @@ func (s *Server) sessionForPeer(rule model.L4Rule, listener *net.UDPConn, peer *
 	return session, nil
 }
 
-func (s *Server) dialUDPUpstream(rule model.L4Rule) (udpUpstream, string, error) {
+func (s *Server) dialUDPUpstream(rule model.L4Rule) (udpUpstream, l4Candidate, error) {
 	candidates, err := l4Candidates(s.ctx, s.cache, rule)
 	if err != nil {
-		return nil, "", err
+		return nil, l4Candidate{}, err
 	}
 
 	var lastErr error
 	for _, candidate := range candidates {
+		targetAddress := candidate.address
 		if len(rule.RelayChain) == 0 {
-			addr, err := net.ResolveUDPAddr("udp", candidate.Address)
+			addr, err := net.ResolveUDPAddr("udp", targetAddress)
 			if err != nil {
 				lastErr = err
 				continue
 			}
 			upstream, err := net.DialUDP("udp", nil, addr)
 			if err != nil {
-				s.cache.MarkFailure(candidate.Address)
+				s.observeCandidateFailure(candidate)
 				lastErr = err
 				continue
 			}
-			return &directUDPUpstream{conn: upstream}, candidate.Address, nil
+			return &directUDPUpstream{conn: upstream}, candidate, nil
 		}
 
 		hops, hopErr := s.resolveRelayHops(rule)
 		if hopErr != nil {
-			return nil, "", hopErr
+			return nil, l4Candidate{}, hopErr
 		}
-		upstream, err := relay.Dial(s.ctx, "udp", candidate.Address, hops, s.relayProvider)
+		upstream, err := relay.Dial(s.ctx, "udp", targetAddress, hops, s.relayProvider)
 		if err != nil {
-			s.cache.MarkFailure(candidate.Address)
+			s.observeCandidateFailure(candidate)
 			lastErr = err
 			continue
 		}
-		return &relayUDPUpstream{conn: upstream}, candidate.Address, nil
+		return &relayUDPUpstream{conn: upstream}, candidate, nil
 	}
 	if lastErr != nil {
-		return nil, "", lastErr
+		return nil, l4Candidate{}, lastErr
 	}
-	return nil, "", fmt.Errorf("all backends failed for %s:%d", rule.ListenHost, rule.ListenPort)
+	return nil, l4Candidate{}, fmt.Errorf("all backends failed for %s:%d", rule.ListenHost, rule.ListenPort)
 }
 
 func (s *Server) pipeUDPReplies(session *udpSession) {
@@ -576,7 +597,10 @@ func (s *Server) pipeUDPReplies(session *udpSession) {
 		if err != nil {
 			if ne, ok := err.(net.Error); ok && ne.Timeout() {
 				if s.shouldFailUDPSession(session.key) {
-					s.cache.MarkFailure(session.targetAddr)
+					s.observeCandidateFailure(l4Candidate{
+						address:               session.targetAddr,
+						backendObservationKey: session.backendObservationKey,
+					})
 					return
 				}
 				if s.shouldExpireUDPSession(session.key) {
@@ -589,8 +613,12 @@ func (s *Server) pipeUDPReplies(session *udpSession) {
 			}
 			return
 		}
+		replyDuration := s.udpReplyDuration(session.key)
 		s.markUDPSessionReply(session.key)
-		s.cache.MarkSuccess(session.targetAddr)
+		s.observeCandidateSuccess(l4Candidate{
+			address:               session.targetAddr,
+			backendObservationKey: session.backendObservationKey,
+		}, replyDuration, replyDuration, int64(len(payload)))
 		if _, err := session.listener.WriteToUDP(payload, session.peer); err != nil {
 			return
 		}
@@ -603,10 +631,9 @@ func (s *Server) markUDPSessionWrite(key string) {
 	if session := s.udpSessions[key]; session != nil {
 		now := s.now()
 		session.lastActive = now
-		session.pendingReplies++
-		if session.pendingReplies == 1 {
-			session.awaitingSince = now
-		}
+		session.pendingReplyTimes = append(session.pendingReplyTimes, now)
+		session.pendingReplies = len(session.pendingReplyTimes)
+		session.awaitingSince = session.pendingReplyTimes[0]
 	}
 }
 
@@ -616,11 +643,12 @@ func (s *Server) markUDPSessionReply(key string) {
 	if session := s.udpSessions[key]; session != nil {
 		now := s.now()
 		session.lastActive = now
-		if session.pendingReplies > 0 {
-			session.pendingReplies--
+		if len(session.pendingReplyTimes) > 0 {
+			session.pendingReplyTimes = session.pendingReplyTimes[1:]
 		}
+		session.pendingReplies = len(session.pendingReplyTimes)
 		if session.pendingReplies > 0 {
-			session.awaitingSince = now
+			session.awaitingSince = session.pendingReplyTimes[0]
 		} else {
 			session.awaitingSince = time.Time{}
 		}
@@ -635,6 +663,16 @@ func (s *Server) shouldFailUDPSession(key string) bool {
 		return false
 	}
 	return s.now().Sub(session.awaitingSince) >= s.udpReplyTimeout
+}
+
+func (s *Server) udpReplyDuration(key string) time.Duration {
+	s.udpMu.Lock()
+	defer s.udpMu.Unlock()
+	session := s.udpSessions[key]
+	if session == nil || session.awaitingSince.IsZero() {
+		return 0
+	}
+	return s.now().Sub(session.awaitingSince)
 }
 
 func (s *Server) shouldExpireUDPSession(key string) bool {
@@ -671,7 +709,7 @@ func (s *Server) closeUDPSessions() {
 	}
 }
 
-func l4Candidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule) ([]backends.Candidate, error) {
+func l4Candidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule) ([]l4Candidate, error) {
 	if cache == nil {
 		return nil, fmt.Errorf("backend cache is required")
 	}
@@ -688,18 +726,27 @@ func l4Candidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule)
 	}
 
 	placeholders := make([]backends.Candidate, 0, len(rawBackends))
-	indexByID := make(map[string]int, len(rawBackends))
+	indexesByID := make(map[string][]int, len(rawBackends))
+	duplicateCounts := make(map[string]int, len(rawBackends))
 	for i := range rawBackends {
-		id := strconv.Itoa(i)
+		id := backends.StableBackendID(net.JoinHostPort(rawBackends[i].Host, strconv.Itoa(rawBackends[i].Port)))
 		placeholders = append(placeholders, backends.Candidate{Address: id})
-		indexByID[id] = i
+		indexesByID[id] = append(indexesByID[id], i)
+		duplicateCounts[id]++
 	}
 
 	scope := strings.ToLower(rule.Protocol) + ":" + net.JoinHostPort(rule.ListenHost, strconv.Itoa(rule.ListenPort))
 	orderedBackends := cache.Order(scope, rule.LoadBalancing.Strategy, placeholders)
-	out := make([]backends.Candidate, 0, len(rawBackends))
+	out := make([]l4Candidate, 0, len(rawBackends))
 	for _, ordered := range orderedBackends {
-		backend := rawBackends[indexByID[ordered.Address]]
+		indexes := indexesByID[ordered.Address]
+		if len(indexes) == 0 {
+			continue
+		}
+		backendIndex := indexes[0]
+		indexesByID[ordered.Address] = indexes[1:]
+		backend := rawBackends[backendIndex]
+		backendID := backends.StableBackendID(net.JoinHostPort(backend.Host, strconv.Itoa(backend.Port)))
 		endpoint := backends.Endpoint{
 			Host: backend.Host,
 			Port: backend.Port,
@@ -713,17 +760,28 @@ func l4Candidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule)
 			}
 			continue
 		}
+		resolved = cache.PreferResolvedCandidates(resolved)
 		for _, candidate := range resolved {
 			if cache.IsInBackoff(candidate.Address) {
 				continue
 			}
-			out = append(out, candidate)
+			out = append(out, l4Candidate{
+				address:               candidate.Address,
+				backendObservationKey: l4ObservationKey(scope, backendID, backendIndex, duplicateCounts[backendID]),
+			})
 		}
 	}
 	if len(out) == 0 {
 		return nil, fmt.Errorf("no healthy backend candidates for %s:%d", rule.ListenHost, rule.ListenPort)
 	}
 	return out, nil
+}
+
+func l4ObservationKey(scope string, backendID string, backendIndex int, duplicateCount int) string {
+	if duplicateCount <= 1 {
+		return backends.BackendObservationKey(scope, backendID)
+	}
+	return backends.BackendObservationKey(scope, fmt.Sprintf("%s#%d", backendID, backendIndex+1))
 }
 
 func cloneUDPAddr(addr *net.UDPAddr) *net.UDPAddr {
@@ -735,6 +793,35 @@ func cloneUDPAddr(addr *net.UDPAddr) *net.UDPAddr {
 		out.IP = append(net.IP(nil), addr.IP...)
 	}
 	return &out
+}
+
+func (s *Server) observeCandidateFailure(candidate l4Candidate) {
+	if s == nil || s.cache == nil {
+		return
+	}
+	if candidate.backendObservationKey != "" {
+		s.cache.ObserveBackendFailure(candidate.backendObservationKey)
+	}
+	if candidate.address != "" {
+		s.cache.MarkFailure(candidate.address)
+	}
+}
+
+func (s *Server) observeCandidateSuccess(candidate l4Candidate, headerLatency time.Duration, totalDuration time.Duration, bytesTransferred int64) {
+	if s == nil || s.cache == nil || candidate.address == "" {
+		return
+	}
+	if totalDuration <= 0 {
+		totalDuration = headerLatency
+	}
+	if candidate.backendObservationKey != "" {
+		s.cache.ObserveBackendSuccess(candidate.backendObservationKey, headerLatency, totalDuration, bytesTransferred)
+	}
+	if bytesTransferred > 0 {
+		s.cache.ObserveTransferSuccess(candidate.address, headerLatency, totalDuration, bytesTransferred)
+		return
+	}
+	s.cache.ObserveSuccess(candidate.address, headerLatency)
 }
 
 func (s *Server) validateRelayChain(rule model.L4Rule) error {

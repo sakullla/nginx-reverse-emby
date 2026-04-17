@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"reflect"
 	"testing"
+	"time"
 
 	goagentembedded "github.com/sakullla/nginx-reverse-emby/go-agent/embedded"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/app"
@@ -70,6 +71,13 @@ func TestNewRuntimeStartsEmbeddedRuntimeWithBridgeAdapters(t *testing.T) {
 	cfg.EnableLocalAgent = true
 	cfg.LocalAgentID = "local-test"
 	cfg.LocalAgentName = "local-test"
+	cfg.LocalAgentHTTP3Enabled = true
+	cfg.LocalAgentHTTPTransport.DialTimeout = 7 * time.Second
+	cfg.LocalAgentHTTPResilience.ResumeMaxAttempts = 4
+	cfg.LocalAgentBackendFailures.BackoffBase = 1 * time.Second
+	cfg.LocalAgentBackendFailures.BackoffLimit = 15 * time.Second
+	cfg.LocalAgentBackendFailuresExplicit = true
+	cfg.LocalAgentRelayTimeouts.IdleTimeout = 12 * time.Second
 
 	store := &bridgeStoreStub{
 		snapshot: Snapshot{
@@ -87,6 +95,21 @@ func TestNewRuntimeStartsEmbeddedRuntimeWithBridgeAdapters(t *testing.T) {
 	newEmbeddedRuntime = func(cfg goagentembedded.Config, source goagentembedded.SyncSource, sink goagentembedded.StateSink) (embeddedRuntimeRunner, error) {
 		if cfg.AgentID != "local-test" {
 			t.Fatalf("embedded runtime AgentID = %q", cfg.AgentID)
+		}
+		if !cfg.HTTP3Enabled {
+			t.Fatal("expected HTTP3Enabled to propagate")
+		}
+		if cfg.HTTPTransport.DialTimeout != 7*time.Second {
+			t.Fatalf("DialTimeout = %v", cfg.HTTPTransport.DialTimeout)
+		}
+		if cfg.HTTPResilience.ResumeMaxAttempts != 4 {
+			t.Fatalf("ResumeMaxAttempts = %d", cfg.HTTPResilience.ResumeMaxAttempts)
+		}
+		if !cfg.BackendFailuresExplicit {
+			t.Fatal("expected BackendFailuresExplicit to propagate")
+		}
+		if cfg.RelayTimeouts.IdleTimeout != 12*time.Second {
+			t.Fatalf("IdleTimeout = %v", cfg.RelayTimeouts.IdleTimeout)
 		}
 		request := mustDecodeEmbeddedSyncRequest(t, `{
 			"CurrentRevision": 14,

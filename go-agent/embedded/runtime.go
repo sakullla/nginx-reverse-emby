@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"sync"
 	"time"
 
 	agentapp "github.com/sakullla/nginx-reverse-emby/go-agent/internal/app"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	agentstore "github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
 )
@@ -38,15 +40,50 @@ type StateSink interface {
 }
 
 type Config struct {
-	AgentID           string
-	AgentName         string
-	DataDir           string
-	CurrentVersion    string
-	HeartbeatInterval time.Duration
+	AgentID                 string
+	AgentName               string
+	DataDir                 string
+	CurrentVersion          string
+	HeartbeatInterval       time.Duration
+	HTTP3Enabled            bool
+	HTTPTransport           HTTPTransportConfig
+	HTTPResilience          HTTPResilienceConfig
+	BackendFailures         BackendFailureConfig
+	BackendFailuresExplicit bool
+	RelayTimeouts           RelayTimeoutConfig
+}
+
+type HTTPTransportConfig struct {
+	DialTimeout           time.Duration
+	TLSHandshakeTimeout   time.Duration
+	ResponseHeaderTimeout time.Duration
+	IdleConnTimeout       time.Duration
+	KeepAlive             time.Duration
+}
+
+type HTTPResilienceConfig struct {
+	ResumeEnabled            bool
+	ResumeMaxAttempts        int
+	SameBackendRetryAttempts int
+}
+
+type BackendFailureConfig struct {
+	BackoffBase  time.Duration
+	BackoffLimit time.Duration
+}
+
+type RelayTimeoutConfig struct {
+	DialTimeout      time.Duration
+	HandshakeTimeout time.Duration
+	FrameTimeout     time.Duration
+	IdleTimeout      time.Duration
 }
 
 type Runtime struct {
-	app *agentapp.App
+	app      embeddedAppRunner
+	closeMu  sync.Mutex
+	closed   bool
+	closeErr error
 }
 
 const stateRootDir = "embedded-agent-state"
@@ -57,6 +94,16 @@ var newPersistentStore = func(dataDir string, sink StateSink) (agentstore.Store,
 		return nil, err
 	}
 	return &persistentBridgeStore{delegate: delegate, sink: sink}, nil
+}
+
+var newEmbeddedApp = func(cfg agentapp.Config, st agentstore.Store, client agentapp.SyncClient) (embeddedAppRunner, error) {
+	return agentapp.NewEmbedded(cfg, st, client)
+}
+
+type embeddedAppRunner interface {
+	Run(context.Context) error
+	SyncNow(context.Context) error
+	Close() error
 }
 
 func New(cfg Config, source SyncSource, sink StateSink) (*Runtime, error) {
@@ -72,12 +119,36 @@ func New(cfg Config, source SyncSource, sink StateSink) (*Runtime, error) {
 		return nil, err
 	}
 
-	runtimeApp, err := agentapp.NewEmbedded(agentapp.Config{
+	runtimeApp, err := newEmbeddedApp(agentapp.Config{
 		AgentID:           cfg.AgentID,
 		AgentName:         cfg.AgentName,
 		DataDir:           cfg.DataDir,
 		HeartbeatInterval: cfg.HeartbeatInterval,
 		CurrentVersion:    cfg.CurrentVersion,
+		HTTP3Enabled:      cfg.HTTP3Enabled,
+		HTTPTransport: config.HTTPTransportConfig{
+			DialTimeout:           cfg.HTTPTransport.DialTimeout,
+			TLSHandshakeTimeout:   cfg.HTTPTransport.TLSHandshakeTimeout,
+			ResponseHeaderTimeout: cfg.HTTPTransport.ResponseHeaderTimeout,
+			IdleConnTimeout:       cfg.HTTPTransport.IdleConnTimeout,
+			KeepAlive:             cfg.HTTPTransport.KeepAlive,
+		},
+		HTTPResilience: config.HTTPResilienceConfig{
+			ResumeEnabled:            cfg.HTTPResilience.ResumeEnabled,
+			ResumeMaxAttempts:        cfg.HTTPResilience.ResumeMaxAttempts,
+			SameBackendRetryAttempts: cfg.HTTPResilience.SameBackendRetryAttempts,
+		},
+		BackendFailures: config.BackendFailureConfig{
+			BackoffBase:  cfg.BackendFailures.BackoffBase,
+			BackoffLimit: cfg.BackendFailures.BackoffLimit,
+		},
+		BackendFailuresExplicit: cfg.BackendFailuresExplicit,
+		RelayTimeouts: config.RelayTimeoutConfig{
+			DialTimeout:      cfg.RelayTimeouts.DialTimeout,
+			HandshakeTimeout: cfg.RelayTimeouts.HandshakeTimeout,
+			FrameTimeout:     cfg.RelayTimeouts.FrameTimeout,
+			IdleTimeout:      cfg.RelayTimeouts.IdleTimeout,
+		},
 	}, persistentStore, syncClientAdapter{source: source})
 	if err != nil {
 		return nil, err
@@ -92,6 +163,21 @@ func (r *Runtime) Run(ctx context.Context) error {
 
 func (r *Runtime) SyncNow(ctx context.Context) error {
 	return r.app.SyncNow(ctx)
+}
+
+func (r *Runtime) Close() error {
+	if r == nil || r.app == nil {
+		return nil
+	}
+	r.closeMu.Lock()
+	defer r.closeMu.Unlock()
+	if r.closed {
+		return r.closeErr
+	}
+
+	r.closeErr = r.app.Close()
+	r.closed = true
+	return r.closeErr
 }
 
 type syncClientAdapter struct {

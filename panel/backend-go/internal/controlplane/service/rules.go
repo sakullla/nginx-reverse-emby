@@ -31,6 +31,7 @@ type HTTPRuleInput struct {
 type ruleStore interface {
 	ListAgents(context.Context) ([]storage.AgentRow, error)
 	ListHTTPRules(context.Context, string) ([]storage.HTTPRuleRow, error)
+	GetHTTPRule(context.Context, string, int) (storage.HTTPRuleRow, bool, error)
 	ListL4Rules(context.Context, string) ([]storage.L4RuleRow, error)
 	ListManagedCertificates(context.Context) ([]storage.ManagedCertificateRow, error)
 	ListRelayListeners(context.Context, string) ([]storage.RelayListenerRow, error)
@@ -85,17 +86,14 @@ func (s *ruleService) Get(ctx context.Context, agentID string, id int) (HTTPRule
 		return HTTPRule{}, err
 	}
 
-	rows, err := s.store.ListHTTPRules(ctx, resolvedID)
+	row, ok, err := s.store.GetHTTPRule(ctx, resolvedID, id)
 	if err != nil {
 		return HTTPRule{}, err
 	}
-	for _, row := range rows {
-		rule := httpRuleFromRow(row)
-		if rule.ID == id {
-			return rule, nil
-		}
+	if !ok {
+		return HTTPRule{}, ErrRuleNotFound
 	}
-	return HTTPRule{}, ErrRuleNotFound
+	return httpRuleFromRow(row), nil
 }
 
 func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRuleInput) (HTTPRule, error) {
@@ -360,9 +358,14 @@ func (s *ruleService) bumpRemoteDesiredRevision(ctx context.Context, agentID str
 		if row.ID != agentID {
 			continue
 		}
-		if row.DesiredRevision < revision {
-			row.DesiredRevision = revision
+		nextRevision := revision
+		if row.DesiredRevision > nextRevision {
+			nextRevision = row.DesiredRevision
 		}
+		if row.CurrentRevision > nextRevision {
+			nextRevision = row.CurrentRevision
+		}
+		row.DesiredRevision = nextRevision
 		return s.store.SaveAgent(ctx, row)
 	}
 	return ErrAgentNotFound
@@ -403,29 +406,7 @@ func (s *ruleService) listL4RulesAcrossAllAgents(ctx context.Context) ([]storage
 }
 
 func (s *ruleService) allKnownAgentIDs(ctx context.Context) ([]string, error) {
-	seen := map[string]struct{}{}
-	agentIDs := make([]string, 0)
-
-	if s.cfg.EnableLocalAgent && strings.TrimSpace(s.cfg.LocalAgentID) != "" {
-		seen[s.cfg.LocalAgentID] = struct{}{}
-		agentIDs = append(agentIDs, s.cfg.LocalAgentID)
-	}
-
-	rows, err := s.store.ListAgents(ctx)
-	if err != nil {
-		return nil, err
-	}
-	for _, row := range rows {
-		if strings.TrimSpace(row.ID) == "" {
-			continue
-		}
-		if _, ok := seen[row.ID]; ok {
-			continue
-		}
-		seen[row.ID] = struct{}{}
-		agentIDs = append(agentIDs, row.ID)
-	}
-	return agentIDs, nil
+	return allKnownAgentIDs(ctx, s.cfg, s.store)
 }
 
 func (s *ruleService) prepareManagedCertificatesForRuleMutation(
@@ -840,8 +821,8 @@ func (s *ruleService) normalizeHTTPRuleInput(ctx context.Context, input HTTPRule
 	backendURL := backends[0].URL
 
 	loadBalancing := fallback.LoadBalancing
-	if loadBalancing.Strategy == "" {
-		loadBalancing = HTTPLoadBalancing{Strategy: "round_robin"}
+	if strings.TrimSpace(loadBalancing.Strategy) == "" {
+		loadBalancing = HTTPLoadBalancing{Strategy: "adaptive"}
 	}
 	if input.LoadBalancing != nil {
 		loadBalancing = *input.LoadBalancing
@@ -1002,10 +983,16 @@ func normalizeHTTPCustomHeaders(values []HTTPCustomHeader) []HTTPCustomHeader {
 }
 
 func normalizeHTTPLoadBalancing(value HTTPLoadBalancing) HTTPLoadBalancing {
-	if strings.EqualFold(strings.TrimSpace(value.Strategy), "random") {
+	switch strings.ToLower(strings.TrimSpace(value.Strategy)) {
+	case "round_robin":
+		return HTTPLoadBalancing{Strategy: "round_robin"}
+	case "random":
 		return HTTPLoadBalancing{Strategy: "random"}
+	case "adaptive":
+		return HTTPLoadBalancing{Strategy: "adaptive"}
+	default:
+		return HTTPLoadBalancing{Strategy: "adaptive"}
 	}
-	return HTTPLoadBalancing{Strategy: "round_robin"}
 }
 
 func defaultPassProxyHeaders() bool {
@@ -1073,7 +1060,7 @@ func httpRuleToRow(rule HTTPRule) storage.HTTPRuleRow {
 		FrontendURL:       rule.FrontendURL,
 		BackendURL:        rule.BackendURL,
 		BackendsJSON:      marshalJSON(rule.Backends, "[]"),
-		LoadBalancingJSON: marshalJSON(rule.LoadBalancing, `{"strategy":"round_robin"}`),
+		LoadBalancingJSON: marshalJSON(rule.LoadBalancing, `{"strategy":"adaptive"}`),
 		Enabled:           rule.Enabled,
 		TagsJSON:          marshalJSON(rule.Tags, "[]"),
 		ProxyRedirect:     rule.ProxyRedirect,

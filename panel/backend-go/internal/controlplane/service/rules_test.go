@@ -16,11 +16,13 @@ type fakeRuleStore struct {
 	listeners    []storage.RelayListenerRow
 	managedCerts []storage.ManagedCertificateRow
 
+	listHTTPRulesErr  error
 	saveHTTPRulesErrs []error
 	saveManagedErrs   []error
 	cleanupErrs       []error
 	materialByDomain  map[string]bool
 	cleanupCallCount  int
+	getHTTPRuleCalls  int
 }
 
 func (f *fakeRuleStore) ListAgents(context.Context) ([]storage.AgentRow, error) {
@@ -28,7 +30,20 @@ func (f *fakeRuleStore) ListAgents(context.Context) ([]storage.AgentRow, error) 
 }
 
 func (f *fakeRuleStore) ListHTTPRules(_ context.Context, agentID string) ([]storage.HTTPRuleRow, error) {
+	if f.listHTTPRulesErr != nil {
+		return nil, f.listHTTPRulesErr
+	}
 	return append([]storage.HTTPRuleRow(nil), f.rulesByAgent[agentID]...), nil
+}
+
+func (f *fakeRuleStore) GetHTTPRule(_ context.Context, agentID string, id int) (storage.HTTPRuleRow, bool, error) {
+	f.getHTTPRuleCalls++
+	for _, row := range f.rulesByAgent[agentID] {
+		if row.ID == id {
+			return row, true, nil
+		}
+	}
+	return storage.HTTPRuleRow{}, false, nil
 }
 
 func (f *fakeRuleStore) ListL4Rules(context.Context, string) ([]storage.L4RuleRow, error) {
@@ -180,6 +195,49 @@ func TestRuleServiceCreateNormalizesAndPersists(t *testing.T) {
 	}
 }
 
+func TestRuleServiceCreateNormalizesLoadBalancingStrategies(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    *HTTPLoadBalancing
+		expected string
+	}{
+		{name: "defaults empty input to adaptive", input: nil, expected: "adaptive"},
+		{name: "normalizes explicit adaptive", input: &HTTPLoadBalancing{Strategy: "ADAPTIVE"}, expected: "adaptive"},
+		{name: "preserves explicit round robin", input: &HTTPLoadBalancing{Strategy: "round_robin"}, expected: "round_robin"},
+		{name: "preserves explicit random", input: &HTTPLoadBalancing{Strategy: "RANDOM"}, expected: "random"},
+		{name: "normalizes invalid strategy to adaptive", input: &HTTPLoadBalancing{Strategy: "invalid"}, expected: "adaptive"},
+		{name: "normalizes blank strategy to adaptive", input: &HTTPLoadBalancing{Strategy: "   "}, expected: "adaptive"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			store := &fakeRuleStore{
+				rulesByAgent: map[string][]storage.HTTPRuleRow{},
+			}
+			svc := NewRuleService(config.Config{
+				EnableLocalAgent: true,
+				LocalAgentID:     "local",
+			}, store)
+
+			rule, err := svc.Create(context.Background(), "local", HTTPRuleInput{
+				FrontendURL:   stringPtrRule("https://new.example.com"),
+				BackendURL:    stringPtrRule("http://upstream-a:8096"),
+				LoadBalancing: tt.input,
+			})
+			if err != nil {
+				t.Fatalf("Create() error = %v", err)
+			}
+
+			if rule.LoadBalancing.Strategy != tt.expected {
+				t.Fatalf("Create() load_balancing = %+v", rule.LoadBalancing)
+			}
+			if got := store.rulesByAgent["local"][0].LoadBalancingJSON; got != `{"strategy":"`+tt.expected+`"}` {
+				t.Fatalf("persisted load_balancing_json = %q", got)
+			}
+		})
+	}
+}
+
 func TestRuleServiceUpdateNormalizesAndPersists(t *testing.T) {
 	store := &fakeRuleStore{
 		agents: []storage.AgentRow{{
@@ -244,7 +302,7 @@ func TestRuleServiceUpdateNormalizesAndPersists(t *testing.T) {
 	if rule.BackendURL != "http://emby:8096" || len(rule.Backends) != 1 || rule.Backends[0].URL != "http://emby:8096" {
 		t.Fatalf("Update() backends fallback = %+v", rule.Backends)
 	}
-	if rule.LoadBalancing.Strategy != "round_robin" {
+	if rule.LoadBalancing.Strategy != "adaptive" {
 		t.Fatalf("Update() load_balancing = %+v", rule.LoadBalancing)
 	}
 	if rule.UserAgent != "MyAgent" {
@@ -280,8 +338,62 @@ func TestRuleServiceUpdateNormalizesAndPersists(t *testing.T) {
 	if store.rulesByAgent["local"][0].BackendURL != "http://emby:8096" {
 		t.Fatalf("persisted backend fallback = %q", store.rulesByAgent["local"][0].BackendURL)
 	}
+	if store.rulesByAgent["local"][0].LoadBalancingJSON != `{"strategy":"adaptive"}` {
+		t.Fatalf("persisted load_balancing_json = %q", store.rulesByAgent["local"][0].LoadBalancingJSON)
+	}
 }
 
+func TestRuleServiceUpdatePreservesExplicitLoadBalancingStrategies(t *testing.T) {
+	for _, strategy := range []string{"round_robin", "random"} {
+		t.Run(strategy, func(t *testing.T) {
+			lbJSON := `{"strategy":"` + strategy + `"}`
+			store := &fakeRuleStore{
+				listeners: []storage.RelayListenerRow{{
+					ID:       5,
+					AgentID:  "local",
+					Enabled:  true,
+					Revision: 10,
+				}},
+				rulesByAgent: map[string][]storage.HTTPRuleRow{
+					"local": {{
+						ID:                3,
+						AgentID:           "local",
+						FrontendURL:       "https://before.example.com",
+						BackendURL:        "http://emby:8096",
+						BackendsJSON:      `[{"url":"http://emby:8096"}]`,
+						LoadBalancingJSON: lbJSON,
+						Enabled:           true,
+						TagsJSON:          `["existing"]`,
+						ProxyRedirect:     true,
+						RelayChainJSON:    `[5]`,
+						PassProxyHeaders:  true,
+						UserAgent:         "Legacy",
+						CustomHeadersJSON: `[{"name":"X-Legacy","value":"1"}]`,
+						Revision:          10,
+					}},
+				},
+			}
+			svc := NewRuleService(config.Config{
+				EnableLocalAgent: true,
+				LocalAgentID:     "local",
+			}, store)
+
+			rule, err := svc.Update(context.Background(), "local", 3, HTTPRuleInput{
+				FrontendURL: stringPtrRule("https://after.example.com"),
+			})
+			if err != nil {
+				t.Fatalf("Update() error = %v", err)
+			}
+
+			if rule.LoadBalancing.Strategy != strategy {
+				t.Fatalf("Update() load_balancing = %+v", rule.LoadBalancing)
+			}
+			if got := store.rulesByAgent["local"][0].LoadBalancingJSON; got != lbJSON {
+				t.Fatalf("persisted load_balancing_json = %q", got)
+			}
+		})
+	}
+}
 func TestRuleServiceDeletePersistsRemoval(t *testing.T) {
 	store := &fakeRuleStore{
 		rulesByAgent: map[string][]storage.HTTPRuleRow{
@@ -466,7 +578,7 @@ func TestRuleServiceCreateUpdatesRemoteAgentDesiredRevision(t *testing.T) {
 	}, store)
 
 	rule, err := svc.Create(context.Background(), "edge-1", HTTPRuleInput{
-		FrontendURL: stringPtrRule("https://new.example.com"),
+		FrontendURL: stringPtrRule("http://new.example.com"),
 		BackendURL:  stringPtrRule("http://127.0.0.1:8096"),
 	})
 	if err != nil {
@@ -478,6 +590,81 @@ func TestRuleServiceCreateUpdatesRemoteAgentDesiredRevision(t *testing.T) {
 	}
 	if store.agents[0].DesiredRevision != 5 {
 		t.Fatalf("remote desired_revision = %d", store.agents[0].DesiredRevision)
+	}
+}
+
+func TestRuleServiceCreateDoesNotRegressRemoteDesiredRevisionBelowCurrentRevision(t *testing.T) {
+	store := &fakeRuleStore{
+		agents: []storage.AgentRow{{
+			ID:               "edge-1",
+			Name:             "Edge 1",
+			CapabilitiesJSON: `["http_rules"]`,
+			DesiredRevision:  4,
+			CurrentRevision:  9,
+		}},
+		rulesByAgent: map[string][]storage.HTTPRuleRow{
+			"edge-1": {{
+				ID:          1,
+				AgentID:     "edge-1",
+				FrontendURL: "https://existing.example.com",
+				BackendURL:  "http://127.0.0.1:8096",
+				Revision:    4,
+			}},
+		},
+	}
+	svc := NewRuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	rule, err := svc.Create(context.Background(), "edge-1", HTTPRuleInput{
+		FrontendURL: stringPtrRule("http://new.example.com"),
+		BackendURL:  stringPtrRule("http://127.0.0.1:8096"),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	if rule.Revision != 5 {
+		t.Fatalf("Create() revision = %d", rule.Revision)
+	}
+	if store.agents[0].DesiredRevision != 9 {
+		t.Fatalf("remote desired_revision = %d", store.agents[0].DesiredRevision)
+	}
+}
+
+func TestRuleServiceGetUsesDirectStoreLookup(t *testing.T) {
+	store := &fakeRuleStore{
+		agents: []storage.AgentRow{{
+			ID:               "edge-1",
+			Name:             "Edge 1",
+			CapabilitiesJSON: `["http_rules"]`,
+		}},
+		rulesByAgent: map[string][]storage.HTTPRuleRow{
+			"edge-1": {{
+				ID:          7,
+				AgentID:     "edge-1",
+				FrontendURL: "https://lookup.example.com",
+				BackendURL:  "http://127.0.0.1:8096",
+				Revision:    3,
+			}},
+		},
+		listHTTPRulesErr: errors.New("ListHTTPRules should not be used by Get"),
+	}
+	svc := NewRuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	rule, err := svc.Get(context.Background(), "edge-1", 7)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if rule.ID != 7 {
+		t.Fatalf("Get() rule = %+v", rule)
+	}
+	if store.getHTTPRuleCalls != 1 {
+		t.Fatalf("GetHTTPRule() calls = %d", store.getHTTPRuleCalls)
 	}
 }
 

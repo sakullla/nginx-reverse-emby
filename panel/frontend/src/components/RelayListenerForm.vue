@@ -86,7 +86,7 @@
           <option value='off'>关闭</option>
           <option value='early_window_v2'>early_window_v2</option>
         </select>
-        <p class='form-hint'>仅对 TLS/TCP 生效，用于压低内层 ss/TLS 握手特征。</p>
+        <p class='form-hint'>仅对 TLS/TCP 生效，用于压低内层 SS/TLS 握手特征。</p>
       </div>
 
       <div v-else class='form-group'>

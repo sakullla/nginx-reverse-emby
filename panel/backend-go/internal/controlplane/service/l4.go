@@ -114,17 +114,14 @@ func (s *l4Service) Get(ctx context.Context, agentID string, id int) (L4Rule, er
 		return L4Rule{}, err
 	}
 
-	rows, err := s.store.ListL4Rules(ctx, resolvedID)
+	row, ok, err := s.store.GetL4Rule(ctx, resolvedID, id)
 	if err != nil {
 		return L4Rule{}, err
 	}
-	for _, row := range rows {
-		rule := l4RuleFromRow(row)
-		if rule.ID == id {
-			return rule, nil
-		}
+	if !ok {
+		return L4Rule{}, ErrRuleNotFound
 	}
-	return L4Rule{}, ErrRuleNotFound
+	return l4RuleFromRow(row), nil
 }
 
 func (s *l4Service) Create(ctx context.Context, agentID string, input L4RuleInput) (L4Rule, error) {
@@ -303,18 +300,12 @@ func (s *l4Service) bumpRemoteDesiredRevision(ctx context.Context, agentID strin
 		if row.ID != agentID {
 			continue
 		}
-		snapshot, err := s.store.LoadAgentSnapshot(ctx, row.ID, storage.AgentSnapshotInput{
-			DesiredVersion:  row.DesiredVersion,
-			DesiredRevision: row.DesiredRevision,
-			CurrentRevision: row.CurrentRevision,
-			Platform:        row.Platform,
-		})
-		if err != nil {
-			return err
-		}
 		nextRevision := revision
-		if int(snapshot.Revision) > nextRevision {
-			nextRevision = int(snapshot.Revision)
+		if row.DesiredRevision > nextRevision {
+			nextRevision = row.DesiredRevision
+		}
+		if row.CurrentRevision > nextRevision {
+			nextRevision = row.CurrentRevision
 		}
 		if row.DesiredRevision < nextRevision {
 			row.DesiredRevision = nextRevision
@@ -496,27 +487,7 @@ func (s *l4Service) listHTTPRulesAcrossAllAgents(ctx context.Context) ([]storage
 }
 
 func (s *l4Service) allKnownAgentIDs(ctx context.Context) ([]string, error) {
-	seen := map[string]struct{}{}
-	agentIDs := make([]string, 0)
-	if s.cfg.EnableLocalAgent && strings.TrimSpace(s.cfg.LocalAgentID) != "" {
-		seen[s.cfg.LocalAgentID] = struct{}{}
-		agentIDs = append(agentIDs, s.cfg.LocalAgentID)
-	}
-	rows, err := s.store.ListAgents(ctx)
-	if err != nil {
-		return nil, err
-	}
-	for _, row := range rows {
-		if strings.TrimSpace(row.ID) == "" {
-			continue
-		}
-		if _, ok := seen[row.ID]; ok {
-			continue
-		}
-		seen[row.ID] = struct{}{}
-		agentIDs = append(agentIDs, row.ID)
-	}
-	return agentIDs, nil
+	return allKnownAgentIDs(ctx, s.cfg, s.store)
 }
 
 func normalizeL4BackendsInput(input L4RuleInput, fallback L4Rule) ([]L4Backend, string, int, error) {
@@ -567,8 +538,11 @@ func normalizeL4LoadBalancingInput(input *L4LoadBalancing, fallback L4LoadBalanc
 		strategy = input.Strategy
 	}
 	strategy = strings.ToLower(strings.TrimSpace(strategy))
-	if strategy != "random" {
-		strategy = "round_robin"
+	switch strategy {
+	case "round_robin", "random", "adaptive":
+		// keep explicit strategies
+	default:
+		strategy = "adaptive"
 	}
 	return L4LoadBalancing{Strategy: strategy}
 }
@@ -624,7 +598,7 @@ func l4RuleFromRow(row storage.L4RuleRow) L4Rule {
 		ListenPort:    row.ListenPort,
 		UpstreamHost:  row.UpstreamHost,
 		UpstreamPort:  row.UpstreamPort,
-		LoadBalancing: L4LoadBalancing{Strategy: "round_robin"},
+		LoadBalancing: L4LoadBalancing{Strategy: "adaptive"},
 		Tuning:        L4Tuning{ProxyProtocol: L4ProxyProtocolTuning{}},
 		RelayChain:    []int{},
 		RelayObfs:     row.RelayObfs,
@@ -662,7 +636,7 @@ func l4RuleToRow(rule L4Rule) storage.L4RuleRow {
 		UpstreamHost:      rule.UpstreamHost,
 		UpstreamPort:      rule.UpstreamPort,
 		BackendsJSON:      marshalJSON(rule.Backends, "[]"),
-		LoadBalancingJSON: marshalJSON(rule.LoadBalancing, `{"strategy":"round_robin"}`),
+		LoadBalancingJSON: marshalJSON(rule.LoadBalancing, `{"strategy":"adaptive"}`),
 		TuningJSON:        marshalJSON(rule.Tuning, `{"proxy_protocol":{"decode":false,"send":false}}`),
 		RelayChainJSON:    marshalJSON(rule.RelayChain, "[]"),
 		RelayObfs:         rule.RelayObfs,
@@ -683,9 +657,9 @@ func parseL4Backends(raw string) []L4Backend {
 func parseL4LoadBalancing(raw string) L4LoadBalancing {
 	var lb L4LoadBalancing
 	if err := json.Unmarshal([]byte(defaultString(raw, "{}")), &lb); err != nil {
-		return L4LoadBalancing{Strategy: "round_robin"}
+		return L4LoadBalancing{Strategy: "adaptive"}
 	}
-	return normalizeL4LoadBalancingInput(&lb, L4LoadBalancing{Strategy: "round_robin"})
+	return normalizeL4LoadBalancingInput(&lb, L4LoadBalancing{Strategy: "adaptive"})
 }
 
 func parseL4Tuning(raw string) L4Tuning {

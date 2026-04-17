@@ -21,7 +21,7 @@
         <button class="l4-card__action" title="编辑" @click="$emit('edit', rule)">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
         </button>
-        <button v-if="canDiagnose" class="l4-card__action" title="诊断" @click="$emit('diagnose', rule)">
+        <button v-if="canDiagnose" class="l4-card__action l4-card__action--diagnose" title="诊断" @click="$emit('diagnose', rule)">
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 12h4l2-6 4 12 2-6h6"/></svg>
         </button>
         <button class="l4-card__action l4-card__action--delete" title="删除" @click="$emit('delete', rule)">
@@ -80,10 +80,10 @@ const backendsTooltip = computed(() => backends.value.map((b, i) => {
   return s
 }).join('\n'))
 
-const LB_MAP = { round_robin: 'RR', random: 'RND' }
-const LB_TITLES = { round_robin: '轮询 (Round Robin)', random: '随机 (Random)' }
-const lbLabel = computed(() => LB_MAP[props.rule.load_balancing?.strategy] || 'RR')
-const lbTitle = computed(() => LB_TITLES[props.rule.load_balancing?.strategy] || '轮询')
+const LB_MAP = { adaptive: 'ADP', round_robin: 'RR', random: 'RND' }
+const LB_TITLES = { adaptive: '自适应 (Adaptive)', round_robin: '轮询 (Round Robin)', random: '随机 (Random)' }
+const lbLabel = computed(() => LB_MAP[props.rule.load_balancing?.strategy] || 'ADP')
+const lbTitle = computed(() => LB_TITLES[props.rule.load_balancing?.strategy] || '自适应 (Adaptive)')
 
 const tuningTags = computed(() => {
   const t = props.rule.tuning
@@ -133,6 +133,7 @@ const tuningTags = computed(() => {
 .l4-card__action:hover { background: var(--color-bg-hover); color: var(--color-text-primary); }
 .l4-card__action--delete:hover { background: var(--color-danger-50); color: var(--color-danger); }
 .l4-card__action--toggle:hover { background: var(--color-warning-50); color: var(--color-warning); }
+.l4-card__action--diagnose:hover { background: rgba(56, 189, 248, 0.12); color: var(--color-primary); }
 .l4-card__mapping { display: flex; flex-direction: column; gap: 0.375rem; }
 .l4-card__endpoint { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
 .l4-card__addr { font-family: var(--font-mono); font-size: 0.875rem; font-weight: 500; color: var(--color-text-primary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
