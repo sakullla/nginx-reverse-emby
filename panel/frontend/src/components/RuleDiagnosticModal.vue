@@ -88,7 +88,7 @@
               <div class="diagnostic-backend-item__metrics">
                 <div class="diagnostic-metric">
                   <span class="diagnostic-metric__label">延迟</span>
-                  <strong class="diagnostic-metric__value">{{ backend.adaptive?.latency_ms ?? 0 }} ms</strong>
+                  <strong class="diagnostic-metric__value">{{ backend.adaptive?.latency_ms ?? backend.summary?.avg_latency_ms ?? 0 }} ms</strong>
                 </div>
                 <div class="diagnostic-metric">
                   <span class="diagnostic-metric__label">稳定性</span>
@@ -119,7 +119,7 @@
                   <div class="diagnostic-backend-item__details-grid">
                     <div class="diagnostic-factor">
                       <span class="diagnostic-factor__label">延迟</span>
-                      <strong class="diagnostic-factor__value">{{ backend.adaptive?.latency_ms ?? 0 }} ms</strong>
+                      <strong class="diagnostic-factor__value">{{ backend.adaptive?.latency_ms ?? backend.summary?.avg_latency_ms ?? 0 }} ms</strong>
                     </div>
                     <div class="diagnostic-factor">
                       <span class="diagnostic-factor__label">评估带宽</span>
@@ -150,7 +150,7 @@
                   <div v-for="(child, idx) in backend.children" :key="child.backend" class="diagnostic-child-item">
                     <code class="diagnostic-child-item__name">{{ child.backend }}</code>
                     <span v-if="child.adaptive?.preferred" class="diagnostic-backend-item__preferred">当前优选</span>
-                    <span class="diagnostic-child-item__metric">延迟 {{ child.adaptive?.latency_ms ?? 0 }} ms</span>
+                    <span class="diagnostic-child-item__metric">延迟 {{ child.adaptive?.latency_ms ?? child.summary?.avg_latency_ms ?? 0 }} ms</span>
                     <span class="diagnostic-child-item__metric">稳定性 {{ formatPercent(child.adaptive?.stability) }}</span>
                     <span class="diagnostic-child-item__metric">综合性能 {{ formatScore(child.adaptive?.performance_score) }}</span>
                     <span class="diagnostic-child-item__metric">评估带宽 {{ formatBandwidth(child.adaptive?.estimated_bandwidth_bps) }}</span>

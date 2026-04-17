@@ -145,7 +145,7 @@ func httpCandidates(ctx context.Context, cache *backends.Cache, rule model.HTTPR
 	}
 
 	placeholders := make([]backends.Candidate, 0, len(rawBackends))
-	indexByID := make(map[string]int, len(rawBackends))
+	indicesByID := make(map[string][]int, len(rawBackends))
 	parsed := make([]*url.URL, 0, len(rawBackends))
 	for i, entry := range rawBackends {
 		target, err := url.Parse(strings.TrimSpace(entry.URL))
@@ -155,15 +155,22 @@ func httpCandidates(ctx context.Context, cache *backends.Cache, rule model.HTTPR
 		parsed = append(parsed, target)
 		id := backends.StableBackendID(strings.TrimSpace(entry.URL))
 		placeholders = append(placeholders, backends.Candidate{Address: id})
-		indexByID[id] = i
+		indicesByID[id] = append(indicesByID[id], i)
 	}
 
 	scope := strings.ToLower(strings.TrimSpace(rule.FrontendURL))
 	ordered := cache.Order(scope, rule.LoadBalancing.Strategy, placeholders)
 	out := make([]httpProbeCandidate, 0, len(rawBackends))
 	var lastResolveErr error
+	nextIndex := make(map[string]int, len(indicesByID))
 	for _, placeholder := range ordered {
-		target := parsed[indexByID[placeholder.Address]]
+		idx := nextIndex[placeholder.Address]
+		nextIndex[placeholder.Address] = idx + 1
+		indices := indicesByID[placeholder.Address]
+		if idx >= len(indices) {
+			continue
+		}
+		target := parsed[indices[idx]]
 		endpoint := backends.Endpoint{
 			Host: target.Hostname(),
 			Port: httpPortWithDefault(target),
@@ -225,6 +232,7 @@ func buildHTTPAdaptiveReports(reports []BackendReport, candidates []httpProbeCan
 
 	annotated := make([]BackendReport, 0, len(reports))
 	seenConfigured := make(map[string]struct{}, len(reports))
+	hasPreferred := false
 	for _, report := range reports {
 		configured := report.Backend
 		if idx := strings.Index(configured, " ["); idx > 0 {
@@ -240,10 +248,14 @@ func buildHTTPAdaptiveReports(reports []BackendReport, candidates []httpProbeCan
 			continue
 		}
 		seenConfigured[configured] = struct{}{}
+		isPreferred := !hasPreferred
+		if isPreferred {
+			hasPreferred = true
+		}
 		parent := BackendReport{
 			Backend:  configured,
 			Summary:  mergeChildSummaries(children, reportByLabel),
-			Adaptive: adaptiveSummaryFromObservation(configuredSummary[configured], true, "performance_higher"),
+			Adaptive: adaptiveSummaryFromObservation(configuredSummary[configured], isPreferred, preferredReason(isPreferred)),
 			Children: make([]BackendReport, 0, len(children)),
 		}
 		for index, child := range children {
