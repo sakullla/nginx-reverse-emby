@@ -121,18 +121,25 @@ func tcpCandidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule
 	}
 
 	placeholders := make([]backends.Candidate, 0, len(rawBackends))
-	indexByID := make(map[string]int, len(rawBackends))
+	indicesByID := make(map[string][]int, len(rawBackends))
 	for i := range rawBackends {
 		id := backends.StableBackendID(net.JoinHostPort(rawBackends[i].Host, strconv.Itoa(rawBackends[i].Port)))
 		placeholders = append(placeholders, backends.Candidate{Address: id})
-		indexByID[id] = i
+		indicesByID[id] = append(indicesByID[id], i)
 	}
 
 	scope := "tcp:" + net.JoinHostPort(rule.ListenHost, strconv.Itoa(rule.ListenPort))
 	ordered := cache.Order(scope, rule.LoadBalancing.Strategy, placeholders)
 	out := make([]tcpProbeCandidate, 0, len(rawBackends))
+	nextIndex := make(map[string]int, len(indicesByID))
 	for _, placeholder := range ordered {
-		backend := rawBackends[indexByID[placeholder.Address]]
+		idx := nextIndex[placeholder.Address]
+		nextIndex[placeholder.Address] = idx + 1
+		indices := indicesByID[placeholder.Address]
+		if idx >= len(indices) {
+			continue
+		}
+		backend := rawBackends[indices[idx]]
 		resolved, err := cache.Resolve(ctx, backends.Endpoint{
 			Host: backend.Host,
 			Port: backend.Port,
