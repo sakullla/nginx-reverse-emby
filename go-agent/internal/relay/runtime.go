@@ -232,7 +232,7 @@ func dialTLSTCP(ctx context.Context, network, target string, chain []Hop, provid
 		return nil, err
 	}
 
-	rawConn, err := dialTCP(ctx, firstHop.Address)
+	rawConn, err := dialRelayTCP(ctx, firstHop.Address)
 	if err != nil {
 		return nil, err
 	}

@@ -1,6 +1,9 @@
 package relay
 
 import (
+	"context"
+	"io"
+	"net"
 	"testing"
 	"time"
 )
@@ -9,6 +12,15 @@ type fakeRelayTCPBufferConn struct {
 	readBuffer  int
 	writeBuffer int
 }
+
+func (c *fakeRelayTCPBufferConn) Read(_ []byte) (int, error)         { return 0, io.EOF }
+func (c *fakeRelayTCPBufferConn) Write(p []byte) (int, error)        { return len(p), nil }
+func (c *fakeRelayTCPBufferConn) Close() error                       { return nil }
+func (c *fakeRelayTCPBufferConn) LocalAddr() net.Addr                { return nil }
+func (c *fakeRelayTCPBufferConn) RemoteAddr() net.Addr               { return nil }
+func (c *fakeRelayTCPBufferConn) SetDeadline(_ time.Time) error      { return nil }
+func (c *fakeRelayTCPBufferConn) SetReadDeadline(_ time.Time) error  { return nil }
+func (c *fakeRelayTCPBufferConn) SetWriteDeadline(_ time.Time) error { return nil }
 
 func (c *fakeRelayTCPBufferConn) SetReadBuffer(bytes int) error {
 	c.readBuffer = bytes
@@ -132,4 +144,66 @@ func TestTuneBulkRelayConnAppliesReadAndWriteBuffers(t *testing.T) {
 
 func TestTuneBulkRelayConnIgnoresUnsupportedConnections(t *testing.T) {
 	tuneBulkRelayConn(struct{}{})
+}
+
+func TestDialTCPDoesNotTuneSocketBuffersForDirectConnections(t *testing.T) {
+	originalDial := relayDialContext
+	conn := &fakeRelayTCPBufferConn{}
+	relayDialContext = func(_ context.Context, network, address string) (net.Conn, error) {
+		if network != "tcp" {
+			t.Fatalf("network = %q, want tcp", network)
+		}
+		if address != "relay.example:443" {
+			t.Fatalf("address = %q, want relay.example:443", address)
+		}
+		return conn, nil
+	}
+	defer func() {
+		relayDialContext = originalDial
+	}()
+
+	got, err := dialTCP(context.Background(), "relay.example:443")
+	if err != nil {
+		t.Fatalf("dialTCP() error = %v", err)
+	}
+	if got != conn {
+		t.Fatalf("dialTCP() returned unexpected connection")
+	}
+	if conn.readBuffer != 0 {
+		t.Fatalf("readBuffer = %d, want 0", conn.readBuffer)
+	}
+	if conn.writeBuffer != 0 {
+		t.Fatalf("writeBuffer = %d, want 0", conn.writeBuffer)
+	}
+}
+
+func TestDialRelayTCPTunesSocketBuffersForRelayConnections(t *testing.T) {
+	originalDial := relayDialContext
+	conn := &fakeRelayTCPBufferConn{}
+	relayDialContext = func(_ context.Context, network, address string) (net.Conn, error) {
+		if network != "tcp" {
+			t.Fatalf("network = %q, want tcp", network)
+		}
+		if address != "relay.example:443" {
+			t.Fatalf("address = %q, want relay.example:443", address)
+		}
+		return conn, nil
+	}
+	defer func() {
+		relayDialContext = originalDial
+	}()
+
+	got, err := dialRelayTCP(context.Background(), "relay.example:443")
+	if err != nil {
+		t.Fatalf("dialRelayTCP() error = %v", err)
+	}
+	if got != conn {
+		t.Fatalf("dialRelayTCP() returned unexpected connection")
+	}
+	if conn.readBuffer != relayBulkSocketBufferBytes {
+		t.Fatalf("readBuffer = %d, want %d", conn.readBuffer, relayBulkSocketBufferBytes)
+	}
+	if conn.writeBuffer != relayBulkSocketBufferBytes {
+		t.Fatalf("writeBuffer = %d, want %d", conn.writeBuffer, relayBulkSocketBufferBytes)
+	}
 }

@@ -41,6 +41,13 @@ type relayTCPBufferTuner interface {
 	SetWriteBuffer(bytes int) error
 }
 
+type relayDialContextFunc func(ctx context.Context, network, address string) (net.Conn, error)
+
+var relayDialContext relayDialContextFunc = func(ctx context.Context, network, address string) (net.Conn, error) {
+	var dialer net.Dialer
+	return dialer.DialContext(ctx, network, address)
+}
+
 func ConfigureTimeouts(cfg TimeoutConfig) func() {
 	relayTimeoutMu.Lock()
 	relayTimeoutNextID++
@@ -85,16 +92,25 @@ func applyRelayTimeoutOverridesLocked() {
 }
 
 func dialTCP(ctx context.Context, address string) (net.Conn, error) {
+	return dialTCPWithTuning(ctx, address, false)
+}
+
+func dialRelayTCP(ctx context.Context, address string) (net.Conn, error) {
+	return dialTCPWithTuning(ctx, address, true)
+}
+
+func dialTCPWithTuning(ctx context.Context, address string, tuneBuffers bool) (net.Conn, error) {
 	dialTimeout := getRelayDialTimeout()
 	dialCtx, cancel := context.WithTimeout(ctx, dialTimeout)
 	defer cancel()
 
-	var dialer net.Dialer
-	conn, err := dialer.DialContext(dialCtx, "tcp", address)
+	conn, err := relayDialContext(dialCtx, "tcp", address)
 	if err != nil {
 		return nil, err
 	}
-	tuneBulkRelayConn(conn)
+	if tuneBuffers {
+		tuneBulkRelayConn(conn)
+	}
 	return conn, nil
 }
 

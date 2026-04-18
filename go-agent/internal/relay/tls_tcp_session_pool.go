@@ -172,7 +172,7 @@ func dialNewTLSTCPTunnel(ctx context.Context, hop Hop, provider TLSMaterialProvi
 		return nil, err
 	}
 
-	rawConn, err := dialTCP(ctx, hop.Address)
+	rawConn, err := dialRelayTCP(ctx, hop.Address)
 	if err != nil {
 		return nil, err
 	}
@@ -390,6 +390,12 @@ func (s *tlsTCPLogicalStream) Read(p []byte) (int, error) {
 			total := 0
 			for total < len(p) && len(s.readChunks) > 0 {
 				head := s.readChunks[0]
+				if len(head) == 0 {
+					s.readChunks[0] = nil
+					s.readChunks = s.readChunks[1:]
+					s.readOffset = 0
+					continue
+				}
 				n := copy(p[total:], head[s.readOffset:])
 				total += n
 				s.readOffset += n
@@ -492,6 +498,9 @@ func (s *tlsTCPLogicalStream) ConnectionState() tls.ConnectionState {
 }
 
 func (s *tlsTCPLogicalStream) appendData(payload []byte) {
+	if len(payload) == 0 {
+		return
+	}
 	s.readMu.Lock()
 	s.readChunks = append(s.readChunks, payload)
 	s.readMu.Unlock()

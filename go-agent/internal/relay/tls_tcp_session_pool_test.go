@@ -70,3 +70,18 @@ func TestTLSTCPLogicalStreamReadReturnsQueuedDataBeforeEOF(t *testing.T) {
 		t.Fatalf("Read() second n = %d, want 0", n)
 	}
 }
+
+func TestTLSTCPLogicalStreamReadDoesNotReturnZeroNilForEmptyDataFrame(t *testing.T) {
+	stream := &tlsTCPLogicalStream{readCh: make(chan struct{}, 1)}
+	stream.appendData(nil)
+	stream.setReadError(io.EOF)
+
+	buf := make([]byte, 1)
+	n, err := stream.Read(buf)
+	if !errors.Is(err, io.EOF) {
+		t.Fatalf("Read() error = %v, want EOF", err)
+	}
+	if n != 0 {
+		t.Fatalf("Read() n = %d, want 0", n)
+	}
+}
