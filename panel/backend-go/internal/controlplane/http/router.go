@@ -72,6 +72,11 @@ type CertificateService interface {
 	Issue(context.Context, string, int) (service.ManagedCertificate, error)
 }
 
+type BackupService interface {
+	Export(context.Context) ([]byte, string, error)
+	Import(context.Context, []byte) (service.BackupImportResult, error)
+}
+
 type Dependencies struct {
 	Config               config.Config
 	SystemService        SystemService
@@ -82,6 +87,7 @@ type Dependencies struct {
 	RelayListenerService RelayListenerService
 	CertificateService   CertificateService
 	TaskService          TaskService
+	BackupService        BackupService
 }
 
 type legacyRuleListService interface {
@@ -90,6 +96,16 @@ type legacyRuleListService interface {
 
 type agentRuleServiceAdapter struct {
 	agent legacyRuleListService
+}
+
+type unavailableBackupService struct{}
+
+func (unavailableBackupService) Export(context.Context) ([]byte, string, error) {
+	return nil, "", fmt.Errorf("backup service unavailable")
+}
+
+func (unavailableBackupService) Import(context.Context, []byte) (service.BackupImportResult, error) {
+	return service.BackupImportResult{}, fmt.Errorf("backup service unavailable")
 }
 
 func (a agentRuleServiceAdapter) List(ctx context.Context, agentID string) ([]service.HTTPRule, error) {
@@ -138,6 +154,10 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 		mux.Handle(prefix+"/agents/heartbeat", http.HandlerFunc(resolved.handleHeartbeat))
 		mux.Handle(prefix+"/agents/task-session", http.HandlerFunc(resolved.handleAgentTaskSession))
 		mux.Handle(prefix+"/agent-tasks/{taskID}/updates", http.HandlerFunc(resolved.handleAgentTaskUpdate))
+		if resolved.BackupService != nil {
+			mux.Handle(prefix+"/system/backup/export", resolved.requirePanelToken(http.HandlerFunc(resolved.handleBackupExport)))
+			mux.Handle(prefix+"/system/backup/import", resolved.requirePanelToken(http.HandlerFunc(resolved.handleBackupImport)))
+		}
 		mux.Handle(prefix+"/agents", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgents)))
 		mux.Handle(prefix+"/agents/{agentID}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgent)))
 		mux.Handle(prefix+"/agents/{agentID}/stats", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentStats)))
@@ -187,7 +207,19 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 		d.TaskService = service.NewTaskService(service.TaskServiceConfig{})
 	}
 
-	if d.SystemService != nil && d.AgentService != nil && d.RuleService != nil && d.L4RuleService != nil && d.VersionPolicyService != nil && d.RelayListenerService != nil && d.CertificateService != nil && d.TaskService != nil {
+	if d.BackupService == nil &&
+		d.SystemService != nil &&
+		d.AgentService != nil &&
+		d.RuleService != nil &&
+		d.L4RuleService != nil &&
+		d.VersionPolicyService != nil &&
+		d.RelayListenerService != nil &&
+		d.CertificateService != nil &&
+		d.TaskService != nil {
+		d.BackupService = unavailableBackupService{}
+	}
+
+	if d.SystemService != nil && d.AgentService != nil && d.RuleService != nil && d.L4RuleService != nil && d.VersionPolicyService != nil && d.RelayListenerService != nil && d.CertificateService != nil && d.TaskService != nil && d.BackupService != nil {
 		return d, nil
 	}
 
@@ -219,6 +251,9 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 	}
 	if d.TaskService == nil {
 		d.TaskService = service.NewTaskService(service.TaskServiceConfig{})
+	}
+	if d.BackupService == nil {
+		d.BackupService = service.NewBackupService(d.Config, store)
 	}
 
 	return d, nil

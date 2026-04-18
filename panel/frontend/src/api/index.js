@@ -448,6 +448,134 @@ export async function fetchSystemInfo() {
   return data
 }
 
+function parseDownloadFilename(contentDisposition, fallback = 'nre-backup.tar.gz') {
+  const value = String(contentDisposition || '')
+  const encodedMatch = value.match(/filename\*=UTF-8''([^;]+)/i)
+  if (encodedMatch?.[1]) {
+    try {
+      return decodeURIComponent(encodedMatch[1])
+    } catch {
+      return fallback
+    }
+  }
+  const plainMatch = value.match(/filename="?([^";]+)"?/i)
+  return plainMatch?.[1] || fallback
+}
+
+export async function exportBackup() {
+  if (isDev) {
+    await sleep()
+    return {
+      filename: `nre-backup-${new Date().toISOString().replace(/[:.]/g, '-')}.tar.gz`,
+      blob: new Blob(
+        [
+          JSON.stringify({
+            manifest: {
+              package_version: 1,
+              source_architecture: 'pure-go',
+              exported_at: new Date().toISOString(),
+              includes_certificates: true,
+              counts: {
+                agents: 2,
+                http_rules: 4,
+                l4_rules: 1,
+                relay_listeners: 1,
+                certificates: 2,
+                version_policies: 1
+              }
+            }
+          })
+        ],
+        { type: 'application/gzip' }
+      )
+    }
+  }
+  const response = await api.get('/system/backup/export', {
+    responseType: 'blob',
+    timeout: 0
+  })
+  return {
+    blob: response.data,
+    filename: parseDownloadFilename(response.headers['content-disposition'])
+  }
+}
+
+export async function importBackup(file) {
+  if (isDev) {
+    await sleep(900)
+    return {
+      manifest: {
+        package_version: 1,
+        source_architecture: 'main-legacy',
+        exported_at: new Date().toISOString(),
+        includes_certificates: true,
+        counts: {
+          agents: 2,
+          http_rules: 3,
+          l4_rules: 1,
+          relay_listeners: 1,
+          certificates: 2,
+          version_policies: 1
+        }
+      },
+      summary: {
+        imported: {
+          agents: 1,
+          http_rules: 2,
+          l4_rules: 1,
+          relay_listeners: 1,
+          certificates: 1,
+          version_policies: 1
+        },
+        skipped_conflict: {
+          agents: 1,
+          http_rules: 1,
+          l4_rules: 0,
+          relay_listeners: 0,
+          certificates: 0,
+          version_policies: 0
+        },
+        skipped_invalid: {
+          agents: 0,
+          http_rules: 0,
+          l4_rules: 0,
+          relay_listeners: 0,
+          certificates: 0,
+          version_policies: 0
+        },
+        skipped_missing_material: {
+          agents: 0,
+          http_rules: 0,
+          l4_rules: 0,
+          relay_listeners: 0,
+          certificates: 1,
+          version_policies: 0
+        }
+      },
+      report: {
+        imported: [
+          { kind: 'agent', key: 'edge-1' },
+          { kind: 'http_rule', key: 'https://media.example.com' }
+        ],
+        skipped_conflict: [
+          { kind: 'agent', key: 'edge-2', reason: 'agent name already exists' }
+        ],
+        skipped_invalid: [],
+        skipped_missing_material: [
+          { kind: 'certificate', key: 'relay.example.com', reason: 'certificate material missing from backup' }
+        ]
+      },
+      file_name: file?.name || 'mock-backup.tar.gz'
+    }
+  }
+  const formData = new FormData()
+  formData.append('file', file)
+  const { data } = await api.post('/system/backup/import', formData, {
+    timeout: 0
+  })
+  return data
+}
+
 export async function fetchAgents() {
   if (isDev) {
     await sleep()
