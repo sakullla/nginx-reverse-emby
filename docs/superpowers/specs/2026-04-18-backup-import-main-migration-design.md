@@ -4,10 +4,11 @@
 
 Add a complete migration path from the old `main` architecture to the new pure-Go architecture with these boundaries:
 
-- Old `main` control plane exports a backup package.
-- New control plane imports that backup package.
+- Old `main` control plane supports backup export and backup import.
+- New pure-Go control plane supports backup export and backup import.
+- The backup package is portable across old and new control-plane architectures.
 - Old `main` Agent nodes are migrated separately by running `join-agent.sh migrate-from-main`.
-- Daily backup/export/import remains available in the new control plane after migration.
+- Daily backup/export/import remains available in both control-plane architectures.
 
 The design must support a low-friction migration flow, include certificate material, skip conflicting items with a report, and clean up the old Agent-side runtime after a successful migration.
 
@@ -18,6 +19,8 @@ The design must support a low-friction migration flow, include certificate mater
 - System settings UI for backup, export, and import.
 - Control-plane backend APIs and services for backup package export/import.
 - Backup package support for old `main` control-plane data and new control-plane data.
+- Old `main` control-plane implementation of backup import/export.
+- New pure-Go control-plane implementation of backup import/export.
 - Agent-side `join-agent.sh migrate-from-main` flow for old `main` lightweight agents.
 - Agent token reuse during Agent migration.
 - Migration of certificate material required for no-touch cutover.
@@ -42,6 +45,15 @@ The design must support a low-friction migration flow, include certificate mater
 5. User imports the backup package.
 6. System imports non-conflicting data and shows an import report.
 7. User visits each old Agent node and runs the new `join-agent.sh migrate-from-main` command.
+
+### Daily Backup and Restore
+
+Both old and new control planes support the same operational pattern:
+
+1. User opens system settings.
+2. User exports a backup package.
+3. User may import a previously exported backup package into the same architecture or the other architecture.
+4. System skips conflicting items and shows a detailed report.
 
 ### Agent Migration
 
@@ -78,13 +90,14 @@ Both old-control-plane export/import and new-control-plane export/import use a s
 - counts by resource type
 - whether certificate material is included
 
-This keeps import logic centralized and lets the new control plane accept both old and new export packages without maintaining two unrelated import pipelines.
+This keeps import logic centralized and lets both control-plane architectures accept both old and new export packages without maintaining two unrelated import pipelines.
 
 ### Control Plane Layers
 
-- HTTP handlers expose export/import endpoints.
-- A backup service produces and consumes the tarball package.
-- Translators normalize old `main` exported records into the new internal service/storage model.
+- Old `main` HTTP handlers expose export/import endpoints.
+- New pure-Go HTTP handlers expose export/import endpoints.
+- A shared backup service contract produces and consumes the tarball package.
+- Translators normalize old `main` exported records into the new internal service/storage model and normalize new exports into the portable package model.
 - Import execution writes through existing service/storage layers where possible so validation remains consistent.
 
 ### Agent Migration Layers
@@ -98,7 +111,7 @@ This keeps import logic centralized and lets the new control plane accept both o
 
 ### Migrated Control-Plane Data
 
-The control-plane backup/import includes:
+The control-plane backup/import includes, in both old and new architectures:
 
 - Agent inventory records: name, tags, version, mode, display URL where applicable
 - HTTP rules
@@ -151,7 +164,9 @@ For Agent-side migration from old lightweight-Agent nodes:
 
 ## Control Plane API Design
 
-### New Endpoints
+### Endpoints
+
+The backup API surface is added to both the old `main` control plane and the new pure-Go control plane:
 
 - `GET /panel-api/system/backup/export`
 - `POST /panel-api/system/backup/import`
@@ -184,7 +199,7 @@ The system settings page gains a new data-management section:
 
 This section sits alongside existing theme/system information, not as a separate page, because migration and backup are administrative system actions.
 
-The UI behavior:
+The UI behavior is implemented in both old and new control-plane frontends:
 
 - export is a direct download action
 - import accepts a selected tarball
@@ -302,6 +317,10 @@ The cleanup must not delete `.acme.sh` records by blindly removing directories b
 
 ### Control Plane Tests
 
+- old `main` export package generation
+- old `main` import package parsing
+- new pure-Go export package generation
+- new pure-Go import package parsing
 - export package generation for pure-Go data
 - import package parsing for old `main` manifests
 - conflict skip behavior
@@ -321,7 +340,10 @@ The cleanup must not delete `.acme.sh` records by blindly removing directories b
 
 ### End-to-End Verification
 
+- old control plane export -> old control plane import
 - old control plane export -> new control plane import
+- new control plane export -> new control plane import
+- new control plane export -> old control plane import where the old architecture supports the imported resource set
 - old Agent node migration to new `go-agent`
 - certificate still usable after migration
 - no old renew service remains active
@@ -329,6 +351,6 @@ The cleanup must not delete `.acme.sh` records by blindly removing directories b
 
 ## Rollout Notes
 
-- The new import path should land before or with the settings UI changes.
+- Old and new control-plane import/export support should land together with the settings UI changes so users can create portable backups before upgrading.
 - The Agent migration command should ship with updated documentation that explains the full sequence: export old control-plane data, upgrade Master, import backup, migrate Agents.
 - The startup guard that rejects old control-plane storage remains valid; users are expected to import before relying on the new control plane.
