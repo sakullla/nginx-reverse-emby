@@ -30,6 +30,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	logPanelTokenWarning(log.Default(), cfg)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -46,6 +47,16 @@ func main() {
 	if err := application.Run(ctx); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func logPanelTokenWarning(logger *log.Logger, cfg config.Config) {
+	if strings.TrimSpace(cfg.PanelToken) != "" {
+		return
+	}
+	if logger == nil {
+		logger = log.Default()
+	}
+	logger.Println("[security] panel token is empty; panel API authentication is disabled")
 }
 
 var newHandler = func(cfg config.Config) (http.Handler, error) {

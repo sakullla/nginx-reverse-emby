@@ -1,8 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"log"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -211,5 +214,28 @@ func TestStartManagedCertificateAutoRenewLoopRunsInitialPass(t *testing.T) {
 	case <-called:
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for initial managed certificate renewal pass")
+	}
+}
+
+func TestLogPanelTokenWarningWarnsWhenPanelTokenMissing(t *testing.T) {
+	var buffer bytes.Buffer
+	logger := log.New(&buffer, "", 0)
+
+	logPanelTokenWarning(logger, config.Config{})
+
+	output := buffer.String()
+	if !strings.Contains(output, "panel token is empty") {
+		t.Fatalf("warning output = %q", output)
+	}
+}
+
+func TestLogPanelTokenWarningSkipsWhenPanelTokenConfigured(t *testing.T) {
+	var buffer bytes.Buffer
+	logger := log.New(&buffer, "", 0)
+
+	logPanelTokenWarning(logger, config.Config{PanelToken: "secret"})
+
+	if buffer.Len() != 0 {
+		t.Fatalf("expected no warning, got %q", buffer.String())
 	}
 }

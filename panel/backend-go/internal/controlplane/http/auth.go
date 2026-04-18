@@ -1,6 +1,7 @@
 package http
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"net/http"
 )
@@ -9,7 +10,7 @@ func (d Dependencies) isPanelAuthorized(r *http.Request) bool {
 	if d.Config.PanelToken == "" {
 		return true
 	}
-	return r.Header.Get("X-Panel-Token") == d.Config.PanelToken
+	return tokenMatches(d.Config.PanelToken, r.Header.Get("X-Panel-Token"))
 }
 
 func (d Dependencies) requirePanelToken(next http.Handler) http.Handler {
@@ -26,10 +27,20 @@ func (d Dependencies) isRegisterAuthorized(r *http.Request, registerToken string
 	if d.Config.RegisterToken == "" {
 		return true
 	}
-	if r.Header.Get("X-Register-Token") == d.Config.RegisterToken {
+	if tokenMatches(d.Config.RegisterToken, r.Header.Get("X-Register-Token")) {
 		return true
 	}
-	return registerToken == d.Config.RegisterToken
+	return tokenMatches(d.Config.RegisterToken, registerToken)
+}
+
+func tokenMatches(expected string, presented string) bool {
+	if expected == "" || presented == "" {
+		return false
+	}
+	if len(expected) != len(presented) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(expected), []byte(presented)) == 1
 }
 
 func errorPayload(message string) map[string]any {

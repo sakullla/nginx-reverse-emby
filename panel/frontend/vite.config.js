@@ -9,7 +9,11 @@ export default defineConfig({
   ],
   test: {
     environment: 'jsdom',
-    include: ['src/components/**/*.test.js']
+    include: [
+      'src/components/**/*.test.js',
+      'src/api/**/*.test.mjs',
+      'src/context/**/*.test.mjs'
+    ]
   },
   build: {
     outDir: 'dist',

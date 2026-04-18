@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 )
@@ -97,6 +98,74 @@ func TestTaskServiceStoresCompletedDiagnosticResult(t *testing.T) {
 	}
 }
 
+func TestTaskServiceClosedSessionIsNotReusedForDispatch(t *testing.T) {
+	service := NewTaskService(TaskServiceConfig{
+		Now: func() time.Time {
+			return time.Unix(1700000000, 0).UTC()
+		},
+		TaskTTL: 30 * time.Second,
+	})
+	session := newClosableStubTaskSession("agent-a")
+	if err := service.RegisterSession(TaskSessionRegistration{
+		AgentID:   "agent-a",
+		SessionID: "session-1",
+		Session:   session,
+	}); err != nil {
+		t.Fatalf("RegisterSession() error = %v", err)
+	}
+
+	if err := session.Close(); err != nil {
+		t.Fatalf("session.Close() error = %v", err)
+	}
+
+	_, err := service.CreateAndDispatch(TaskCreateRequest{
+		AgentID: "agent-a",
+		Type:    TaskTypeDiagnoseHTTPRule,
+		Payload: map[string]any{"rule_id": 7},
+	})
+	if !errors.Is(err, errTaskSessionUnavailable) {
+		t.Fatalf("CreateAndDispatch() error = %v, want %v", err, errTaskSessionUnavailable)
+	}
+}
+
+func TestTaskServiceDispatchFailureEvictsStaleSession(t *testing.T) {
+	service := NewTaskService(TaskServiceConfig{
+		Now: func() time.Time {
+			return time.Unix(1700000000, 0).UTC()
+		},
+		TaskTTL: 30 * time.Second,
+	})
+	session := newClosableStubTaskSession("agent-a")
+	if err := service.RegisterSession(TaskSessionRegistration{
+		AgentID:   "agent-a",
+		SessionID: "session-1",
+		Session:   session,
+	}); err != nil {
+		t.Fatalf("RegisterSession() error = %v", err)
+	}
+
+	if err := session.Close(); err != nil {
+		t.Fatalf("session.Close() error = %v", err)
+	}
+
+	_, err := service.CreateAndDispatch(TaskCreateRequest{
+		AgentID: "agent-a",
+		Type:    TaskTypeDiagnoseHTTPRule,
+		Payload: map[string]any{"rule_id": 7},
+	})
+	if !errors.Is(err, errTaskSessionUnavailable) {
+		t.Fatalf("CreateAndDispatch() error = %v, want %v", err, errTaskSessionUnavailable)
+	}
+
+	if _, err := service.CreateAndDispatch(TaskCreateRequest{
+		AgentID: "agent-a",
+		Type:    TaskTypeDiagnoseHTTPRule,
+		Payload: map[string]any{"rule_id": 8},
+	}); !errors.Is(err, errTaskSessionUnavailable) {
+		t.Fatalf("second CreateAndDispatch() error = %v, want %v", err, errTaskSessionUnavailable)
+	}
+}
+
 type stubTaskSession struct {
 	agentID string
 	tasks   chan TaskEnvelope
@@ -128,4 +197,27 @@ func (s *stubTaskSession) WaitForTask(t *testing.T) TaskEnvelope {
 		t.Fatal("timed out waiting for task dispatch")
 		return TaskEnvelope{}
 	}
+}
+
+type closableStubTaskSession struct {
+	*stubTaskSession
+	closed bool
+}
+
+func newClosableStubTaskSession(agentID string) *closableStubTaskSession {
+	return &closableStubTaskSession{
+		stubTaskSession: newStubTaskSession(agentID),
+	}
+}
+
+func (s *closableStubTaskSession) SendTask(task TaskEnvelope) error {
+	if s.closed {
+		return errors.New("session closed")
+	}
+	return s.stubTaskSession.SendTask(task)
+}
+
+func (s *closableStubTaskSession) Close() error {
+	s.closed = true
+	return nil
 }

@@ -161,7 +161,14 @@ func (s *TaskService) CreateAndDispatch(req TaskCreateRequest) (TaskRecord, erro
 	}
 
 	if err := sessionState.session.SendTask(envelope); err != nil {
-		return TaskRecord{}, err
+		s.mu.Lock()
+		current, stillPresent := s.sessions[agentID]
+		if stillPresent && current.session == sessionState.session {
+			delete(s.sessions, agentID)
+		}
+		s.mu.Unlock()
+		_ = sessionState.session.Close()
+		return TaskRecord{}, errTaskSessionUnavailable
 	}
 
 	record.State = "dispatched"

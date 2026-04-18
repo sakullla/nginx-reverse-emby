@@ -550,6 +550,21 @@ func TestRouterServesPanelAuthAndInfoEndpoints(t *testing.T) {
 	}
 }
 
+func TestTokenMatchesRequiresExactSecret(t *testing.T) {
+	if !tokenMatches("secret", "secret") {
+		t.Fatal("expected matching tokens to authorize")
+	}
+	if tokenMatches("secret", "Secret") {
+		t.Fatal("expected mismatched tokens to be rejected")
+	}
+	if tokenMatches("secret", "") {
+		t.Fatal("expected empty presented token to be rejected")
+	}
+	if tokenMatches("", "secret") {
+		t.Fatal("expected empty expected token to be rejected")
+	}
+}
+
 func TestRouterServesAgentsAndRulesEndpoints(t *testing.T) {
 	router, err := NewRouter(Dependencies{
 		Config: config.Config{PanelToken: "secret"},

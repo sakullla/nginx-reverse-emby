@@ -1609,3 +1609,33 @@ func TestAgentServiceDeleteCleansUpManagedCertificates(t *testing.T) {
 		t.Fatalf("expected shared cert to drop edge-a, got %q", remaining.TargetAgentIDs)
 	}
 }
+
+func TestAgentServiceUpdateRejectsLocalAgentWithEnglishError(t *testing.T) {
+	svc := NewAgentService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, &fakeStore{})
+
+	_, err := svc.Update(context.Background(), "local", UpdateAgentRequest{})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if err.Error() != "invalid argument: local agent cannot be modified" {
+		t.Fatalf("Update() error = %v", err)
+	}
+}
+
+func TestAgentServiceDeleteRejectsLocalAgentWithEnglishError(t *testing.T) {
+	svc := NewAgentService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, &fakeStore{})
+
+	_, err := svc.Delete(context.Background(), "local")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if err.Error() != "invalid argument: local agent cannot be deleted" {
+		t.Fatalf("Delete() error = %v", err)
+	}
+}

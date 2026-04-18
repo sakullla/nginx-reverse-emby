@@ -395,7 +395,7 @@ func (s *agentService) ListHTTPRules(ctx context.Context, agentID string) ([]HTT
 
 func (s *agentService) Update(ctx context.Context, agentID string, input UpdateAgentRequest) (AgentSummary, error) {
 	if s.cfg.EnableLocalAgent && agentID == s.cfg.LocalAgentID {
-		return AgentSummary{}, fmt.Errorf("%w: 本地 Agent 不允许修改", ErrInvalidArgument)
+		return AgentSummary{}, fmt.Errorf("%w: local agent cannot be modified", ErrInvalidArgument)
 	}
 
 	row, err := s.findAgentByID(ctx, agentID)
@@ -449,7 +449,7 @@ func (s *agentService) Update(ctx context.Context, agentID string, input UpdateA
 
 func (s *agentService) Delete(ctx context.Context, agentID string) (AgentSummary, error) {
 	if s.cfg.EnableLocalAgent && agentID == s.cfg.LocalAgentID {
-		return AgentSummary{}, fmt.Errorf("%w: 本地 Agent 不允许删除", ErrInvalidArgument)
+		return AgentSummary{}, fmt.Errorf("%w: local agent cannot be deleted", ErrInvalidArgument)
 	}
 
 	row, err := s.findAgentByID(ctx, agentID)
