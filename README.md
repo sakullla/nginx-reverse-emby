@@ -137,6 +137,14 @@ curl -fsSL http://master.example.com:8080/panel-api/public/join-agent.sh | sh -s
 如需从 VPS 上完全移除本地 Go agent 运行时，可执行：
 
 ```bash
+/usr/local/bin/nginx-reverse-emby-agent-uninstall.sh
+```
+
+安装脚本在 Linux 和 macOS 上都会安装这个固定卸载入口，便于像 k3s 一样在主机上直接卸载，无需重新下载 join 脚本。
+
+也可继续使用在线卸载方式：
+
+```bash
 curl -fsSL http://master.example.com:8080/panel-api/public/join-agent.sh | sh -s -- uninstall-agent
 ```
 

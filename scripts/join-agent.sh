@@ -150,6 +150,51 @@ run_root_cmd() {
     fi
 }
 
+persist_installed_join_script() {
+    mkdir -p "$BIN_DIR"
+    [ -n "$MASTER_URL" ] || {
+        echo "Missing --master-url; cannot persist installed join-agent.sh" >&2
+        exit 1
+    }
+    curl -fsSL --connect-timeout 15 --max-time 300 "$MASTER_URL/panel-api/public/join-agent.sh" -o "$JOIN_SCRIPT_PATH"
+    chmod 755 "$JOIN_SCRIPT_PATH"
+}
+
+install_uninstall_wrapper() {
+    if [ -z "${SUDO_BIN:-}" ] && [ "$(id -u)" -ne 0 ] && [ ! -w "$(dirname -- "$UNINSTALL_WRAPPER_PATH")" ]; then
+        SUDO_BIN="$(require_root_or_sudo)" || {
+            echo "Installing uninstall wrapper requires root or sudo" >&2
+            exit 1
+        }
+    fi
+
+    uninstall_source_arg=""
+    if [ -n "${WRAPPER_SOURCE_DIR:-}" ]; then
+        uninstall_source_arg=" --source-dir $(shell_quote "$SOURCE_DIR")"
+    fi
+
+    cat <<EOF | run_root_cmd tee "$UNINSTALL_WRAPPER_PATH" >/dev/null
+#!/bin/sh
+set -eu
+exec $(shell_quote "$JOIN_SCRIPT_PATH") uninstall-agent --data-dir $(shell_quote "$DATA_DIR")$uninstall_source_arg
+EOF
+    run_root_cmd chmod 755 "$UNINSTALL_WRAPPER_PATH"
+    echo "[JOIN] Installed uninstall command: $UNINSTALL_WRAPPER_PATH"
+}
+
+remove_uninstall_wrapper() {
+    if [ ! -e "$UNINSTALL_WRAPPER_PATH" ]; then
+        return 0
+    fi
+    if [ -z "${SUDO_BIN:-}" ] && [ "$(id -u)" -ne 0 ] && [ ! -w "$UNINSTALL_WRAPPER_PATH" ] && [ ! -w "$(dirname -- "$UNINSTALL_WRAPPER_PATH")" ]; then
+        SUDO_BIN="$(require_root_or_sudo)" || {
+            echo "Removing uninstall wrapper requires root or sudo" >&2
+            exit 1
+        }
+    fi
+    run_root_cmd rm -f "$UNINSTALL_WRAPPER_PATH"
+}
+
 service_exists() {
     systemctl status nginx-reverse-emby-agent.service >/dev/null 2>&1
 }
@@ -354,6 +399,7 @@ EOF
     else
         run_root_cmd systemctl enable --now nginx-reverse-emby-agent.service
     fi
+    install_uninstall_wrapper
     echo "[JOIN] Installed and started systemd service: nginx-reverse-emby-agent.service"
 }
 
@@ -394,6 +440,7 @@ install_launchd_service() {
 EOF
     launchctl unload "$SERVICE_FILE" >/dev/null 2>&1 || true
     launchctl load -w "$SERVICE_FILE"
+    install_uninstall_wrapper
     echo "[JOIN] Installed and loaded launchd agent: $SERVICE_LABEL"
 }
 
@@ -635,6 +682,7 @@ cleanup_local_agent_runtime() {
         if command -v systemctl >/dev/null 2>&1; then
             run_root_cmd systemctl daemon-reload
         fi
+        run_root_cmd rm -f "$UNINSTALL_WRAPPER_PATH"
         run_root_cmd rm -rf "$DATA_DIR"
         if [ -n "${SOURCE_DIR:-}" ]; then
             SOURCE_DIR="$(absolute_path "$SOURCE_DIR")"
@@ -646,12 +694,14 @@ cleanup_local_agent_runtime() {
             launchctl unload "$SERVICE_FILE" >/dev/null 2>&1 || true
             rm -f "$SERVICE_FILE"
         fi
+        remove_uninstall_wrapper
         rm -rf "$DATA_DIR"
         if [ -n "${SOURCE_DIR:-}" ]; then
             SOURCE_DIR="$(absolute_path "$SOURCE_DIR")"
             rm -rf "$SOURCE_DIR"
         fi
     else
+        remove_uninstall_wrapper
         rm -rf "$DATA_DIR"
         if [ -n "${SOURCE_DIR:-}" ]; then
             SOURCE_DIR="$(absolute_path "$SOURCE_DIR")"
@@ -720,6 +770,8 @@ run_join() {
     ENV_FILE="$DATA_DIR/agent.env"
     BIN_PATH="$BIN_DIR/nre-agent"
     BIN_TMP_PATH="$BIN_PATH.tmp.$$"
+    JOIN_SCRIPT_PATH="$BIN_DIR/join-agent.sh"
+    UNINSTALL_WRAPPER_PATH="/usr/local/bin/nginx-reverse-emby-agent-uninstall.sh"
     ASSET_NAME="nre-agent-$PLATFORM-$ARCH"
 
     load_existing_agent_env_if_present "$ENV_FILE"
@@ -747,6 +799,7 @@ run_join() {
     echo "[JOIN] Installing nre-agent to: $BIN_PATH"
     rm -f "$BIN_TMP_PATH"
     copy_or_download_binary "$ASSET_NAME" "$BIN_TMP_PATH"
+    persist_installed_join_script
     write_agent_env "$ENV_FILE"
     register_agent
 
@@ -806,12 +859,16 @@ run_migrate_from_main() {
     ENV_FILE="$DATA_DIR/agent.env"
     BIN_PATH="$BIN_DIR/nre-agent"
     BIN_TMP_PATH="$BIN_PATH.tmp.$$"
+    JOIN_SCRIPT_PATH="$BIN_DIR/join-agent.sh"
+    UNINSTALL_WRAPPER_PATH="/usr/local/bin/nginx-reverse-emby-agent-uninstall.sh"
+    WRAPPER_SOURCE_DIR="$SOURCE_DIR"
     ASSET_NAME="nre-agent-$PLATFORM-$ARCH"
 
     mkdir -p "$BIN_DIR"
     echo "[MIGRATE] Preparing go-agent install: $BIN_PATH"
     rm -f "$BIN_TMP_PATH"
     copy_or_download_binary "$ASSET_NAME" "$BIN_TMP_PATH"
+    persist_installed_join_script
     write_agent_env "$ENV_FILE"
 
     SUDO_BIN="$(require_root_or_sudo)" || {
@@ -885,6 +942,7 @@ INSTALL_SYSTEMD="0"
 INSTALL_LAUNCHD="0"
 BINARY_URL=""
 SOURCE_DIR="/opt/nginx-reverse-emby-agent"
+WRAPPER_SOURCE_DIR=""
 SCRIPT_DIR="$(resolve_script_dir 2>/dev/null || true)"
 PLATFORM="$(detect_platform)"
 ARCH="$(detect_arch)"
@@ -909,7 +967,7 @@ while [ $# -gt 0 ]; do
         --version) AGENT_VERSION="$2"; shift 2 ;;
         --tags) AGENT_TAGS="$2"; shift 2 ;;
         --binary-url) BINARY_URL="$2"; shift 2 ;;
-        --source-dir) SOURCE_DIR="$2"; shift 2 ;;
+        --source-dir) SOURCE_DIR="$2"; WRAPPER_SOURCE_DIR="$2"; shift 2 ;;
         --install-systemd) INSTALL_SYSTEMD="1"; shift 1 ;;
         --install-launchd) INSTALL_LAUNCHD="1"; shift 1 ;;
         -h|--help) usage; exit 0 ;;

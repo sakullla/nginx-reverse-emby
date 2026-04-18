@@ -282,6 +282,39 @@ func TestJoinScriptIncludesUninstallAndLegacyNginxCleanup(t *testing.T) {
 	}
 }
 
+func TestJoinScriptInstallsStableUninstallWrapper(t *testing.T) {
+	deps := Dependencies{Config: config.Config{}}
+	req := httptest.NewRequest(http.MethodGet, "/panel-api/public/join-agent.sh", nil)
+	script, err := deps.buildJoinAgentScript(req)
+	if err != nil {
+		t.Fatalf("buildJoinAgentScript() error = %v", err)
+	}
+	if !strings.Contains(script, `JOIN_SCRIPT_PATH="$BIN_DIR/join-agent.sh"`) {
+		t.Fatalf("join-agent.sh missing persisted join script path")
+	}
+	if !strings.Contains(script, `UNINSTALL_WRAPPER_PATH="/usr/local/bin/nginx-reverse-emby-agent-uninstall.sh"`) {
+		t.Fatalf("join-agent.sh missing uninstall wrapper path")
+	}
+	if !strings.Contains(script, "persist_installed_join_script()") {
+		t.Fatalf("join-agent.sh missing join script persistence helper")
+	}
+	if !strings.Contains(script, "install_uninstall_wrapper()") {
+		t.Fatalf("join-agent.sh missing uninstall wrapper installer")
+	}
+	if !strings.Contains(script, `curl -fsSL --connect-timeout 15 --max-time 300 "$MASTER_URL/panel-api/public/join-agent.sh" -o "$JOIN_SCRIPT_PATH"`) {
+		t.Fatalf("join-agent.sh missing persisted join script download")
+	}
+	if !strings.Contains(script, `exec $(shell_quote "$JOIN_SCRIPT_PATH") uninstall-agent --data-dir $(shell_quote "$DATA_DIR")`) {
+		t.Fatalf("join-agent.sh missing uninstall wrapper delegation")
+	}
+	if !strings.Contains(script, `--source-dir $(shell_quote "$SOURCE_DIR")`) {
+		t.Fatalf("join-agent.sh missing optional source-dir forwarding in uninstall wrapper")
+	}
+	if !strings.Contains(script, "install_uninstall_wrapper") {
+		t.Fatalf("join-agent.sh missing uninstall wrapper install call")
+	}
+}
+
 func TestDockerComposeMountsControlPlaneDataDir(t *testing.T) {
 	_, currentFile, _, ok := runtime.Caller(0)
 	if !ok {
