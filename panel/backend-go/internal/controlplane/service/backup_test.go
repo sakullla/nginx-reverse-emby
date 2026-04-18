@@ -442,13 +442,13 @@ func TestBackupServiceImportBumpsDesiredRevisionForCertificateOnlyRestore(t *tes
 
 	ctx := t.Context()
 	if err := sourceStore.SaveAgent(ctx, storage.AgentRow{
-		ID:              "edge-a",
-		Name:            "edge-a",
-		AgentToken:      "token-edge-a",
-		Platform:        "linux-amd64",
+		ID:               "edge-a",
+		Name:             "edge-a",
+		AgentToken:       "token-edge-a",
+		Platform:         "linux-amd64",
 		CapabilitiesJSON: `["cert_install"]`,
-		DesiredRevision: 2,
-		CurrentRevision: 2,
+		DesiredRevision:  2,
+		CurrentRevision:  2,
 	}); err != nil {
 		t.Fatalf("SaveAgent(source) error = %v", err)
 	}
@@ -490,13 +490,13 @@ func TestBackupServiceImportBumpsDesiredRevisionForCertificateOnlyRestore(t *tes
 	}
 	defer targetStore.Close()
 	if err := targetStore.SaveAgent(ctx, storage.AgentRow{
-		ID:              "edge-a",
-		Name:            "edge-a",
-		AgentToken:      "token-edge-a",
-		Platform:        "linux-amd64",
+		ID:               "edge-a",
+		Name:             "edge-a",
+		AgentToken:       "token-edge-a",
+		Platform:         "linux-amd64",
 		CapabilitiesJSON: `["cert_install"]`,
-		DesiredRevision: 50,
-		CurrentRevision: 50,
+		DesiredRevision:  50,
+		CurrentRevision:  50,
 	}); err != nil {
 		t.Fatalf("SaveAgent(target) error = %v", err)
 	}
@@ -719,5 +719,210 @@ func TestBackupServiceAllowsSameHTTPFrontendAcrossDifferentAgents(t *testing.T) 
 		if len(rows) != 1 || rows[0].FrontendURL != "https://media.example.com" {
 			t.Fatalf("imported http rules for %s = %+v", agentID, rows)
 		}
+	}
+}
+
+func TestBackupServiceImportReassignsHTTPRuleIDAndRevisionWhenExistingL4RuleUsesThatFloor(t *testing.T) {
+	sourceStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "http-cross-source"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(source) error = %v", err)
+	}
+	defer sourceStore.Close()
+
+	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "http-cross-target"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(target) error = %v", err)
+	}
+	defer targetStore.Close()
+
+	ctx := t.Context()
+	agent := storage.AgentRow{
+		ID:               "edge-a",
+		Name:             "edge-a",
+		AgentToken:       "token-edge-a",
+		CapabilitiesJSON: `["http_rules","l4"]`,
+	}
+	if err := sourceStore.SaveAgent(ctx, agent); err != nil {
+		t.Fatalf("SaveAgent(source) error = %v", err)
+	}
+	if err := targetStore.SaveAgent(ctx, storage.AgentRow{
+		ID:               "edge-a",
+		Name:             "edge-a",
+		AgentToken:       "token-edge-a",
+		CapabilitiesJSON: `["http_rules","l4"]`,
+		DesiredRevision:  0,
+		CurrentRevision:  0,
+	}); err != nil {
+		t.Fatalf("SaveAgent(target) error = %v", err)
+	}
+	if err := sourceStore.SaveHTTPRules(ctx, "edge-a", []storage.HTTPRuleRow{{
+		ID:                9,
+		AgentID:           "edge-a",
+		FrontendURL:       "https://import-http.example.com",
+		BackendURL:        "http://127.0.0.1:8096",
+		BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		Enabled:           true,
+		RelayChainJSON:    `[]`,
+		TagsJSON:          `[]`,
+		CustomHeadersJSON: `[]`,
+		Revision:          4,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules(source) error = %v", err)
+	}
+	if err := targetStore.SaveL4Rules(ctx, "edge-a", []storage.L4RuleRow{{
+		ID:                9,
+		AgentID:           "edge-a",
+		Name:              "existing l4",
+		Protocol:          "tcp",
+		ListenHost:        "0.0.0.0",
+		ListenPort:        25565,
+		UpstreamHost:      "127.0.0.1",
+		UpstreamPort:      25565,
+		BackendsJSON:      `[{"host":"127.0.0.1","port":25565}]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		TuningJSON:        `{"proxy_protocol":{"decode":false,"send":false}}`,
+		RelayChainJSON:    `[]`,
+		Enabled:           true,
+		TagsJSON:          `[]`,
+		Revision:          9,
+	}}); err != nil {
+		t.Fatalf("SaveL4Rules(target) error = %v", err)
+	}
+
+	archive, _, err := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, sourceStore).Export(ctx)
+	if err != nil {
+		t.Fatalf("Export() error = %v", err)
+	}
+
+	result, err := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, targetStore).Import(ctx, archive)
+	if err != nil {
+		t.Fatalf("Import() error = %v", err)
+	}
+	if result.Summary.Imported.HTTPRules != 1 {
+		t.Fatalf("HTTP import summary = %+v", result.Summary)
+	}
+
+	rows, err := targetStore.ListHTTPRules(ctx, "edge-a")
+	if err != nil {
+		t.Fatalf("ListHTTPRules() error = %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("imported http rows = %+v", rows)
+	}
+	if rows[0].ID != 10 {
+		t.Fatalf("imported http id = %d", rows[0].ID)
+	}
+	if rows[0].Revision != 10 {
+		t.Fatalf("imported http revision = %d", rows[0].Revision)
+	}
+	agents, err := targetStore.ListAgents(ctx)
+	if err != nil {
+		t.Fatalf("ListAgents() error = %v", err)
+	}
+	if len(agents) != 1 || agents[0].DesiredRevision != 10 {
+		t.Fatalf("agents after import = %+v", agents)
+	}
+}
+
+func TestBackupServiceImportReassignsL4RuleIDAndRevisionWhenExistingHTTPRuleUsesThatFloor(t *testing.T) {
+	sourceStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "l4-cross-source"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(source) error = %v", err)
+	}
+	defer sourceStore.Close()
+
+	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "l4-cross-target"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(target) error = %v", err)
+	}
+	defer targetStore.Close()
+
+	ctx := t.Context()
+	if err := sourceStore.SaveAgent(ctx, storage.AgentRow{
+		ID:               "edge-a",
+		Name:             "edge-a",
+		AgentToken:       "token-edge-a",
+		CapabilitiesJSON: `["http_rules","l4"]`,
+	}); err != nil {
+		t.Fatalf("SaveAgent(source) error = %v", err)
+	}
+	if err := targetStore.SaveAgent(ctx, storage.AgentRow{
+		ID:               "edge-a",
+		Name:             "edge-a",
+		AgentToken:       "token-edge-a",
+		CapabilitiesJSON: `["http_rules","l4"]`,
+		DesiredRevision:  0,
+		CurrentRevision:  0,
+	}); err != nil {
+		t.Fatalf("SaveAgent(target) error = %v", err)
+	}
+	if err := sourceStore.SaveL4Rules(ctx, "edge-a", []storage.L4RuleRow{{
+		ID:                11,
+		AgentID:           "edge-a",
+		Name:              "import l4",
+		Protocol:          "tcp",
+		ListenHost:        "0.0.0.0",
+		ListenPort:        25566,
+		UpstreamHost:      "127.0.0.1",
+		UpstreamPort:      25566,
+		BackendsJSON:      `[{"host":"127.0.0.1","port":25566}]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		TuningJSON:        `{"proxy_protocol":{"decode":false,"send":false}}`,
+		RelayChainJSON:    `[]`,
+		Enabled:           true,
+		TagsJSON:          `[]`,
+		Revision:          4,
+	}}); err != nil {
+		t.Fatalf("SaveL4Rules(source) error = %v", err)
+	}
+	if err := targetStore.SaveHTTPRules(ctx, "edge-a", []storage.HTTPRuleRow{{
+		ID:                11,
+		AgentID:           "edge-a",
+		FrontendURL:       "https://existing-http.example.com",
+		BackendURL:        "http://127.0.0.1:8096",
+		BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		Enabled:           true,
+		RelayChainJSON:    `[]`,
+		TagsJSON:          `[]`,
+		CustomHeadersJSON: `[]`,
+		Revision:          9,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules(target) error = %v", err)
+	}
+
+	archive, _, err := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, sourceStore).Export(ctx)
+	if err != nil {
+		t.Fatalf("Export() error = %v", err)
+	}
+
+	result, err := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, targetStore).Import(ctx, archive)
+	if err != nil {
+		t.Fatalf("Import() error = %v", err)
+	}
+	if result.Summary.Imported.L4Rules != 1 {
+		t.Fatalf("L4 import summary = %+v", result.Summary)
+	}
+
+	rows, err := targetStore.ListL4Rules(ctx, "edge-a")
+	if err != nil {
+		t.Fatalf("ListL4Rules() error = %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("imported l4 rows = %+v", rows)
+	}
+	if rows[0].ID != 12 {
+		t.Fatalf("imported l4 id = %d", rows[0].ID)
+	}
+	if rows[0].Revision != 10 {
+		t.Fatalf("imported l4 revision = %d", rows[0].Revision)
+	}
+	agents, err := targetStore.ListAgents(ctx)
+	if err != nil {
+		t.Fatalf("ListAgents() error = %v", err)
+	}
+	if len(agents) != 1 || agents[0].DesiredRevision != 10 {
+		t.Fatalf("agents after import = %+v", agents)
 	}
 }

@@ -1652,6 +1652,176 @@ func TestRelayServiceDeleteUpdatesRemoteAgentDesiredRevision(t *testing.T) {
 	}
 }
 
+func TestRelayServiceCreateUsesRevisionAboveRemoteAgentSyncFloor(t *testing.T) {
+	store := &relayCertStore{
+		agents: []storage.AgentRow{{
+			ID:              "edge-1",
+			Name:            "Edge 1",
+			DesiredRevision: 9,
+			CurrentRevision: 9,
+		}},
+		relayByAgentID: map[string][]storage.RelayListenerRow{
+			"edge-1": {{
+				ID:         5,
+				AgentID:    "edge-1",
+				Name:       "existing-hop",
+				ListenHost: "0.0.0.0",
+				ListenPort: 2443,
+				PublicHost: "relay.example.com",
+				PublicPort: 2443,
+				Enabled:    false,
+				Revision:   4,
+			}},
+		},
+		httpRulesByID: map[string][]storage.HTTPRuleRow{},
+		l4RulesByID:   map[string][]storage.L4RuleRow{},
+		managedCerts:  []storage.ManagedCertificateRow{},
+	}
+	svc := NewRelayListenerService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	listener, err := svc.Create(context.Background(), "edge-1", RelayListenerInput{
+		Name:       stringPtr("remote-hop"),
+		ListenPort: intPtrService(3443),
+		Enabled:    boolPtr(false),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if listener.Revision != 10 {
+		t.Fatalf("Create() revision = %d", listener.Revision)
+	}
+	if store.agents[0].DesiredRevision != 10 {
+		t.Fatalf("remote desired_revision = %d", store.agents[0].DesiredRevision)
+	}
+}
+
+func TestRelayServiceCreateReassignsPreferredIDWhenListenerAlreadyUsesIt(t *testing.T) {
+	store := &relayCertStore{
+		relayByAgentID: map[string][]storage.RelayListenerRow{
+			"local": {{
+				ID:         9,
+				AgentID:    "local",
+				Name:       "existing-hop",
+				ListenHost: "0.0.0.0",
+				ListenPort: 2443,
+				PublicHost: "existing.example.com",
+				PublicPort: 2443,
+				Enabled:    false,
+				Revision:   2,
+			}},
+		},
+		httpRulesByID: map[string][]storage.HTTPRuleRow{},
+		l4RulesByID:   map[string][]storage.L4RuleRow{},
+		managedCerts:  []storage.ManagedCertificateRow{},
+	}
+	svc := NewRelayListenerService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	listener, err := svc.Create(context.Background(), "local", RelayListenerInput{
+		ID:         intPtrService(9),
+		Name:       stringPtr("new-hop"),
+		ListenPort: intPtrService(3443),
+		Enabled:    boolPtr(false),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if listener.ID != 10 {
+		t.Fatalf("Create() id = %d, want 10", listener.ID)
+	}
+}
+
+func TestRelayServiceUpdateUsesRevisionAboveRemoteAgentSyncFloor(t *testing.T) {
+	store := &relayCertStore{
+		agents: []storage.AgentRow{{
+			ID:              "edge-1",
+			Name:            "Edge 1",
+			DesiredRevision: 9,
+			CurrentRevision: 9,
+		}},
+		relayByAgentID: map[string][]storage.RelayListenerRow{
+			"edge-1": {{
+				ID:         5,
+				AgentID:    "edge-1",
+				Name:       "remote-hop",
+				ListenHost: "0.0.0.0",
+				ListenPort: 2443,
+				PublicHost: "relay.example.com",
+				PublicPort: 2443,
+				Enabled:    false,
+				Revision:   4,
+			}},
+		},
+		httpRulesByID: map[string][]storage.HTTPRuleRow{},
+		l4RulesByID:   map[string][]storage.L4RuleRow{},
+		managedCerts:  []storage.ManagedCertificateRow{},
+	}
+	svc := NewRelayListenerService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	listener, err := svc.Update(context.Background(), "edge-1", 5, RelayListenerInput{
+		Name: stringPtr("remote-hop-updated"),
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if listener.Revision != 10 {
+		t.Fatalf("Update() revision = %d", listener.Revision)
+	}
+	if store.agents[0].DesiredRevision != 10 {
+		t.Fatalf("remote desired_revision = %d", store.agents[0].DesiredRevision)
+	}
+}
+
+func TestRelayServiceDeleteUsesRevisionAboveRemoteAgentSyncFloor(t *testing.T) {
+	store := &relayCertStore{
+		agents: []storage.AgentRow{{
+			ID:              "edge-1",
+			Name:            "Edge 1",
+			DesiredRevision: 9,
+			CurrentRevision: 9,
+		}},
+		relayByAgentID: map[string][]storage.RelayListenerRow{
+			"edge-1": {{
+				ID:         5,
+				AgentID:    "edge-1",
+				Name:       "remote-hop",
+				ListenHost: "0.0.0.0",
+				ListenPort: 2443,
+				PublicHost: "relay.example.com",
+				PublicPort: 2443,
+				Enabled:    false,
+				Revision:   4,
+			}},
+		},
+		httpRulesByID: map[string][]storage.HTTPRuleRow{},
+		l4RulesByID:   map[string][]storage.L4RuleRow{},
+		managedCerts:  []storage.ManagedCertificateRow{},
+	}
+	svc := NewRelayListenerService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	deleted, err := svc.Delete(context.Background(), "edge-1", 5)
+	if err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if deleted.ID != 5 {
+		t.Fatalf("deleted.ID = %d", deleted.ID)
+	}
+	if store.agents[0].DesiredRevision != 10 {
+		t.Fatalf("remote desired_revision = %d", store.agents[0].DesiredRevision)
+	}
+}
+
 func TestRelayServiceCreateSucceedsWhenCleanupFailsPostCommit(t *testing.T) {
 	relayCA := mustCreateSelfSignedCA(t, "__relay-ca.internal")
 	store := &relayCertStore{

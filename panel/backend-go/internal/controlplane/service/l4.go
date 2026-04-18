@@ -130,32 +130,17 @@ func (s *l4Service) Create(ctx context.Context, agentID string, input L4RuleInpu
 		return L4Rule{}, err
 	}
 
-	allRows, err := s.listL4RulesAcrossAllAgents(ctx)
-	if err != nil {
-		return L4Rule{}, err
-	}
-	allHTTPRows, err := s.listHTTPRulesAcrossAllAgents(ctx)
-	if err != nil {
-		return L4Rule{}, err
-	}
 	rows, err := s.store.ListL4Rules(ctx, resolvedID)
+	if err != nil {
+		return L4Rule{}, err
+	}
+	allocator, err := newConfigIdentityAllocatorFromStore(ctx, s.cfg, s.store)
 	if err != nil {
 		return L4Rule{}, err
 	}
 
 	existing := make([]L4Rule, 0, len(rows))
-	maxID := 0
 	maxRevision := 0
-	for _, row := range allRows {
-		if row.ID > maxID {
-			maxID = row.ID
-		}
-	}
-	for _, row := range allHTTPRows {
-		if row.ID > maxID {
-			maxID = row.ID
-		}
-	}
 	for _, row := range rows {
 		rule := l4RuleFromRow(row)
 		existing = append(existing, rule)
@@ -164,12 +149,15 @@ func (s *l4Service) Create(ctx context.Context, agentID string, input L4RuleInpu
 		}
 	}
 
-	rule, err := normalizeL4RuleInput(input, L4Rule{}, maxID+1)
+	allocatedID := allocator.AllocateRuleID(preferredInt(input.ID))
+	normalizedInput := input
+	normalizedInput.ID = nil
+	rule, err := normalizeL4RuleInput(normalizedInput, L4Rule{}, allocatedID)
 	if err != nil {
 		return L4Rule{}, err
 	}
 	rule.AgentID = resolvedID
-	rule.Revision = maxRevision + 1
+	rule.Revision = allocator.AllocateRevisionForAgent(resolvedID, maxRevision)
 	if err := s.validateRelayChain(ctx, rule.RelayChain); err != nil {
 		return L4Rule{}, err
 	}
@@ -201,6 +189,10 @@ func (s *l4Service) Update(ctx context.Context, agentID string, id int, input L4
 	if err != nil {
 		return L4Rule{}, err
 	}
+	allocator, err := newConfigIdentityAllocatorFromStore(ctx, s.cfg, s.store)
+	if err != nil {
+		return L4Rule{}, err
+	}
 
 	existing := make([]L4Rule, 0, len(rows))
 	maxRevision := 0
@@ -226,7 +218,7 @@ func (s *l4Service) Update(ctx context.Context, agentID string, id int, input L4
 		return L4Rule{}, err
 	}
 	rule.AgentID = resolvedID
-	rule.Revision = maxRevision + 1
+	rule.Revision = allocator.AllocateRevisionForAgent(resolvedID, maxRevision)
 	if err := s.validateRelayChain(ctx, rule.RelayChain); err != nil {
 		return L4Rule{}, err
 	}
@@ -278,7 +270,12 @@ func (s *l4Service) Delete(ctx context.Context, agentID string, id int) (L4Rule,
 	if err := s.store.SaveL4Rules(ctx, resolvedID, nextRows); err != nil {
 		return L4Rule{}, err
 	}
-	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, deleted.Revision+1); err != nil {
+	allocator, err := newConfigIdentityAllocatorFromStore(ctx, s.cfg, s.store)
+	if err != nil {
+		return L4Rule{}, err
+	}
+	nextRevision := allocator.AllocateRevisionForAgent(resolvedID, deleted.Revision)
+	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, nextRevision); err != nil {
 		return L4Rule{}, err
 	}
 	if err := s.triggerLocalApply(ctx, resolvedID); err != nil {
@@ -450,40 +447,6 @@ func (s *l4Service) validateRelayChain(ctx context.Context, relayChain []int) er
 		return err
 	}
 	return validateRelayChainReferences(ctx, s.store, knownAgentIDs, relayChain)
-}
-
-func (s *l4Service) listL4RulesAcrossAllAgents(ctx context.Context) ([]storage.L4RuleRow, error) {
-	agentIDs, err := s.allKnownAgentIDs(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	rows := make([]storage.L4RuleRow, 0)
-	for _, agentID := range agentIDs {
-		agentRows, err := s.store.ListL4Rules(ctx, agentID)
-		if err != nil {
-			return nil, err
-		}
-		rows = append(rows, agentRows...)
-	}
-	return rows, nil
-}
-
-func (s *l4Service) listHTTPRulesAcrossAllAgents(ctx context.Context) ([]storage.HTTPRuleRow, error) {
-	agentIDs, err := s.allKnownAgentIDs(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	rows := make([]storage.HTTPRuleRow, 0)
-	for _, agentID := range agentIDs {
-		agentRows, err := s.store.ListHTTPRules(ctx, agentID)
-		if err != nil {
-			return nil, err
-		}
-		rows = append(rows, agentRows...)
-	}
-	return rows, nil
 }
 
 func (s *l4Service) allKnownAgentIDs(ctx context.Context) ([]string, error) {

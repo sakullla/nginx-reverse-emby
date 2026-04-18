@@ -177,25 +177,28 @@ func (s *relayService) Create(ctx context.Context, agentID string, input RelayLi
 	if err != nil {
 		return RelayListener{}, err
 	}
+	allocator, err := newConfigIdentityAllocatorFromStore(ctx, s.cfg, s.store)
+	if err != nil {
+		return RelayListener{}, err
+	}
 
-	maxID := 0
 	maxRevision := 0
 	for _, row := range allRows {
-		if row.ID > maxID {
-			maxID = row.ID
-		}
 		if row.Revision > maxRevision {
 			maxRevision = row.Revision
 		}
 	}
 
-	prepared, err := s.prepareRelayListener(ctx, resolvedID, input, RelayListener{}, maxID+1)
+	allocatedID := allocator.AllocateListenerID(preferredInt(input.ID))
+	normalizedInput := input
+	normalizedInput.ID = nil
+	prepared, err := s.prepareRelayListener(ctx, resolvedID, normalizedInput, RelayListener{}, allocatedID)
 	if err != nil {
 		return RelayListener{}, err
 	}
 	listener := prepared.Listener
 	listener.AgentID = resolvedID
-	listener.Revision = maxRevision + 1
+	listener.Revision = allocator.AllocateRevisionForAgent(resolvedID, maxRevision)
 
 	if prepared.PersistCertificates {
 		if err := s.store.SaveManagedCertificates(ctx, prepared.NextCertRows); err != nil {
@@ -240,6 +243,10 @@ func (s *relayService) Update(ctx context.Context, agentID string, id int, input
 	if err != nil {
 		return RelayListener{}, err
 	}
+	allocator, err := newConfigIdentityAllocatorFromStore(ctx, s.cfg, s.store)
+	if err != nil {
+		return RelayListener{}, err
+	}
 
 	maxRevision := 0
 	targetIndex := -1
@@ -279,7 +286,7 @@ func (s *relayService) Update(ctx context.Context, agentID string, id int, input
 		}
 	}
 	listener.AgentID = resolvedID
-	listener.Revision = maxRevision + 1
+	listener.Revision = allocator.AllocateRevisionForAgent(resolvedID, maxRevision)
 
 	if prepared.PersistCertificates {
 		if err := s.store.SaveManagedCertificates(ctx, prepared.NextCertRows); err != nil {
@@ -362,7 +369,12 @@ func (s *relayService) Delete(ctx context.Context, agentID string, id int) (Rela
 	if err := s.store.SaveRelayListeners(ctx, resolvedID, next); err != nil {
 		return RelayListener{}, err
 	}
-	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, deleted.Revision+1); err != nil {
+	allocator, err := newConfigIdentityAllocatorFromStore(ctx, s.cfg, s.store)
+	if err != nil {
+		return RelayListener{}, err
+	}
+	nextRevision := allocator.AllocateRevisionForAgent(resolvedID, deleted.Revision)
+	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, nextRevision); err != nil {
 		return RelayListener{}, err
 	}
 	if deleted.CertificateID != nil {

@@ -172,20 +172,23 @@ func (s *certificateService) Create(ctx context.Context, agentID string, input M
 	if err != nil {
 		return ManagedCertificate{}, err
 	}
+	allocator, err := newConfigIdentityAllocatorFromStore(ctx, s.cfg, s.store)
+	if err != nil {
+		return ManagedCertificate{}, err
+	}
 
-	maxID := 0
 	maxRevision := 0
 	for _, row := range current {
-		if row.ID > maxID {
-			maxID = row.ID
-		}
 		if row.Revision > maxRevision {
 			maxRevision = row.Revision
 		}
 	}
 
 	allowEmptyTargets := resolvedID == ""
-	cert, err := normalizeManagedCertificateInput(input, ManagedCertificate{}, maxID+1, resolvedID, allowEmptyTargets)
+	allocatedID := allocator.AllocateCertificateID(preferredInt(input.ID))
+	normalizedInput := input
+	normalizedInput.ID = nil
+	cert, err := normalizeManagedCertificateInput(normalizedInput, ManagedCertificate{}, allocatedID, resolvedID, allowEmptyTargets)
 	if err != nil {
 		return ManagedCertificate{}, err
 	}
@@ -209,7 +212,7 @@ func (s *certificateService) Create(ctx context.Context, agentID string, input M
 			cert.LastError = ""
 		}
 	}
-	cert.Revision = maxRevision + 1
+	cert.Revision = allocator.AllocateRevisionForTargets(cert.TargetAgentIDs, maxRevision)
 
 	originalRows := make([]storage.ManagedCertificateRow, 0, len(current))
 	rows := make([]storage.ManagedCertificateRow, 0, len(current)+1)
@@ -245,6 +248,10 @@ func (s *certificateService) Update(ctx context.Context, agentID string, id int,
 	}
 
 	rows, err := s.store.ListManagedCertificates(ctx)
+	if err != nil {
+		return ManagedCertificate{}, err
+	}
+	allocator, err := newConfigIdentityAllocatorFromStore(ctx, s.cfg, s.store)
 	if err != nil {
 		return ManagedCertificate{}, err
 	}
@@ -298,7 +305,10 @@ func (s *certificateService) Update(ctx context.Context, agentID string, id int,
 			next.LastError = ""
 		}
 	}
-	next.Revision = maxRevision + 1
+	next.Revision = allocator.AllocateRevisionForTargets(
+		unionManagedCertificateAgentIDs(current.TargetAgentIDs, next.TargetAgentIDs),
+		maxRevision,
+	)
 	rows[targetIndex] = managedCertificateToRow(next)
 	originalRows := append([]storage.ManagedCertificateRow(nil), rows...)
 	originalRows[targetIndex] = managedCertificateToRow(current)
@@ -349,6 +359,10 @@ func (s *certificateService) Delete(ctx context.Context, agentID string, id int)
 	if err != nil {
 		return ManagedCertificate{}, err
 	}
+	allocator, err := newConfigIdentityAllocatorFromStore(ctx, s.cfg, s.store)
+	if err != nil {
+		return ManagedCertificate{}, err
+	}
 
 	maxRevision := 0
 	targetIndex := -1
@@ -377,7 +391,7 @@ func (s *certificateService) Delete(ctx context.Context, agentID string, id int)
 		nextTargets := removeString(current.TargetAgentIDs, resolvedID)
 		next := current
 		next.TargetAgentIDs = nextTargets
-		next.Revision = maxRevision + 1
+		next.Revision = allocator.AllocateRevisionForTargets(current.TargetAgentIDs, maxRevision)
 		originalRows := append([]storage.ManagedCertificateRow(nil), rows...)
 		rows[targetIndex] = managedCertificateToRow(next)
 		if err := s.store.SaveManagedCertificates(ctx, rows); err != nil {
@@ -393,7 +407,15 @@ func (s *certificateService) Delete(ctx context.Context, agentID string, id int)
 	if err := s.store.SaveManagedCertificates(ctx, nextRows); err != nil {
 		return ManagedCertificate{}, err
 	}
+	allocator, err = newConfigIdentityAllocatorFromStore(ctx, s.cfg, s.store)
+	if err != nil {
+		return ManagedCertificate{}, err
+	}
+	nextRevision := allocator.AllocateRevisionForTargets(current.TargetAgentIDs, current.Revision)
 	cleanupManagedCertificateMaterialBestEffort(ctx, s.store, rows, nextRows)
+	if err := s.syncManagedCertificateAgentIDs(ctx, current.TargetAgentIDs, nextRevision); err != nil {
+		return ManagedCertificate{}, err
+	}
 	return current, nil
 }
 
@@ -743,10 +765,10 @@ func (s *certificateService) issueManagedCertificateWithoutRevisionBump(ctx cont
 		return ManagedCertificate{}, fmt.Errorf("%w: managed certificates require ACME_DNS_PROVIDER=cf and CF_Token", ErrInvalidArgument)
 	}
 
-		unlock := issuanceLock(current.ID)
-		defer unlock()
+	unlock := issuanceLock(current.ID)
+	defer unlock()
 
-		issueResult, err := issuer.Issue(ctx, current)
+	issueResult, err := issuer.Issue(ctx, current)
 	if err != nil {
 		return s.failManagedCertificateIssue(ctx, rows, targetIndex, current, maxRevision, err, false)
 	}

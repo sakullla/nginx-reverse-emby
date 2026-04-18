@@ -10,6 +10,7 @@ import (
 
 type fakeL4Store struct {
 	agents            []storage.AgentRow
+	httpRulesByID     map[string][]storage.HTTPRuleRow
 	l4RulesByID       map[string][]storage.L4RuleRow
 	relayByAgent      map[string][]storage.RelayListenerRow
 	savedAgent        storage.AgentRow
@@ -22,8 +23,8 @@ func (f *fakeL4Store) ListAgents(context.Context) ([]storage.AgentRow, error) {
 	return append([]storage.AgentRow(nil), f.agents...), nil
 }
 
-func (f *fakeL4Store) ListHTTPRules(context.Context, string) ([]storage.HTTPRuleRow, error) {
-	return nil, nil
+func (f *fakeL4Store) ListHTTPRules(_ context.Context, agentID string) ([]storage.HTTPRuleRow, error) {
+	return append([]storage.HTTPRuleRow(nil), f.httpRulesByID[agentID]...), nil
 }
 
 func (f *fakeL4Store) GetHTTPRule(context.Context, string, int) (storage.HTTPRuleRow, bool, error) {
@@ -576,6 +577,185 @@ func TestL4RuleServiceDeleteUpdatesRemoteAgentDesiredRevision(t *testing.T) {
 	}
 	if store.loadSnapshotCalls != 0 {
 		t.Fatalf("LoadAgentSnapshot() calls = %d", store.loadSnapshotCalls)
+	}
+}
+
+func TestL4RuleServiceCreateUsesRevisionAboveRemoteAgentSyncFloor(t *testing.T) {
+	store := &fakeL4Store{
+		agents: []storage.AgentRow{{
+			ID:               "edge-1",
+			Name:             "Edge 1",
+			CapabilitiesJSON: `["l4"]`,
+			DesiredRevision:  9,
+			CurrentRevision:  9,
+		}},
+		httpRulesByID: map[string][]storage.HTTPRuleRow{},
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"edge-1": {{
+				ID:           1,
+				AgentID:      "edge-1",
+				Protocol:     "tcp",
+				ListenHost:   "0.0.0.0",
+				ListenPort:   50381,
+				UpstreamHost: "127.0.0.1",
+				UpstreamPort: 26966,
+				Enabled:      true,
+				Revision:     4,
+			}},
+		},
+		relayByAgent: map[string][]storage.RelayListenerRow{},
+	}
+	svc := NewL4RuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	rule, err := svc.Create(context.Background(), "edge-1", L4RuleInput{
+		Protocol:     stringPtrL4("tcp"),
+		ListenPort:   intPtrL4(50382),
+		UpstreamHost: stringPtrL4("127.0.0.1"),
+		UpstreamPort: intPtrL4(26967),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if rule.Revision != 10 {
+		t.Fatalf("Create() revision = %d", rule.Revision)
+	}
+	if store.agents[0].DesiredRevision != 10 {
+		t.Fatalf("remote desired_revision = %d", store.agents[0].DesiredRevision)
+	}
+}
+
+func TestL4RuleServiceCreateReassignsPreferredIDWhenHTTPRuleAlreadyUsesIt(t *testing.T) {
+	store := &fakeL4Store{
+		httpRulesByID: map[string][]storage.HTTPRuleRow{
+			"local": {{
+				ID:          9,
+				AgentID:     "local",
+				FrontendURL: "http://existing-http.example.com",
+				BackendURL:  "http://127.0.0.1:8096",
+				Revision:    2,
+			}},
+		},
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"local": {{
+				ID:           7,
+				AgentID:      "local",
+				Protocol:     "tcp",
+				ListenHost:   "0.0.0.0",
+				ListenPort:   50381,
+				UpstreamHost: "127.0.0.1",
+				UpstreamPort: 26966,
+				Enabled:      true,
+				Revision:     3,
+			}},
+		},
+		relayByAgent: map[string][]storage.RelayListenerRow{},
+	}
+	svc := NewL4RuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	rule, err := svc.Create(context.Background(), "local", L4RuleInput{
+		ID:           intPtrL4(9),
+		Protocol:     stringPtrL4("tcp"),
+		ListenPort:   intPtrL4(50382),
+		UpstreamHost: stringPtrL4("127.0.0.1"),
+		UpstreamPort: intPtrL4(26967),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if rule.ID != 10 {
+		t.Fatalf("Create() id = %d, want 10", rule.ID)
+	}
+}
+
+func TestL4RuleServiceUpdateUsesRevisionAboveRemoteAgentSyncFloor(t *testing.T) {
+	store := &fakeL4Store{
+		agents: []storage.AgentRow{{
+			ID:               "edge-1",
+			Name:             "Edge 1",
+			CapabilitiesJSON: `["l4"]`,
+			DesiredRevision:  9,
+			CurrentRevision:  9,
+		}},
+		httpRulesByID: map[string][]storage.HTTPRuleRow{},
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"edge-1": {{
+				ID:           1,
+				AgentID:      "edge-1",
+				Protocol:     "tcp",
+				ListenHost:   "0.0.0.0",
+				ListenPort:   50381,
+				UpstreamHost: "127.0.0.1",
+				UpstreamPort: 26966,
+				Enabled:      true,
+				Revision:     4,
+			}},
+		},
+		relayByAgent: map[string][]storage.RelayListenerRow{},
+	}
+	svc := NewL4RuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	rule, err := svc.Update(context.Background(), "edge-1", 1, L4RuleInput{
+		ListenPort: intPtrL4(50382),
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if rule.Revision != 10 {
+		t.Fatalf("Update() revision = %d", rule.Revision)
+	}
+	if store.agents[0].DesiredRevision != 10 {
+		t.Fatalf("remote desired_revision = %d", store.agents[0].DesiredRevision)
+	}
+}
+
+func TestL4RuleServiceDeleteUsesRevisionAboveRemoteAgentSyncFloor(t *testing.T) {
+	store := &fakeL4Store{
+		agents: []storage.AgentRow{{
+			ID:               "edge-1",
+			Name:             "Edge 1",
+			CapabilitiesJSON: `["l4"]`,
+			DesiredRevision:  9,
+			CurrentRevision:  9,
+		}},
+		httpRulesByID: map[string][]storage.HTTPRuleRow{},
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"edge-1": {{
+				ID:           1,
+				AgentID:      "edge-1",
+				Protocol:     "tcp",
+				ListenHost:   "0.0.0.0",
+				ListenPort:   50381,
+				UpstreamHost: "127.0.0.1",
+				UpstreamPort: 26966,
+				Enabled:      true,
+				Revision:     4,
+			}},
+		},
+		relayByAgent: map[string][]storage.RelayListenerRow{},
+	}
+	svc := NewL4RuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	deleted, err := svc.Delete(context.Background(), "edge-1", 1)
+	if err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if deleted.ID != 1 {
+		t.Fatalf("deleted.ID = %d", deleted.ID)
+	}
+	if store.agents[0].DesiredRevision != 10 {
+		t.Fatalf("remote desired_revision = %d", store.agents[0].DesiredRevision)
 	}
 }
 
