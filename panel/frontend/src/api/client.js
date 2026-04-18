@@ -15,6 +15,14 @@ export const longRunningRequest = {
 
 api.interceptors.request.use((config) => {
   const headers = config.headers || {}
+  if (typeof FormData !== 'undefined' && config.data instanceof FormData) {
+    if (typeof headers.delete === 'function') {
+      headers.delete('Content-Type')
+    } else {
+      delete headers['Content-Type']
+      delete headers['content-type']
+    }
+  }
   if (!headers['X-Panel-Token']) {
     const token = getStoredAuthToken()
     if (token) {
