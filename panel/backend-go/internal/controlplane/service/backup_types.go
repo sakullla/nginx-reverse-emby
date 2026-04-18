@@ -3,9 +3,9 @@ package service
 import "time"
 
 const (
-	BackupPackageVersion          = 1
-	BackupSourceArchitectureGo    = "pure-go"
-	BackupSourceArchitectureMain  = "main-legacy"
+	BackupPackageVersion         = 1
+	BackupSourceArchitectureGo   = "pure-go"
+	BackupSourceArchitectureMain = "main-legacy"
 )
 
 type BackupManifest struct {
@@ -56,6 +56,9 @@ type BackupAgent struct {
 	Mode                   string   `json:"mode,omitempty"`
 }
 
+// Backup payload types intentionally mirror the current service JSON shape so
+// legacy and pure-Go exports stay aligned. Keep compatibility in mind before
+// changing the underlying service structs or their JSON tags.
 type BackupHTTPRule = HTTPRule
 type BackupL4Rule = L4Rule
 type BackupRelayListener = RelayListener

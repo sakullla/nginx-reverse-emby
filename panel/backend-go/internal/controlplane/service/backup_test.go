@@ -100,17 +100,17 @@ func TestBackupServiceExportImportRoundTripAndConflictReport(t *testing.T) {
 
 	ctx := t.Context()
 	if err := sourceStore.SaveAgent(ctx, storage.AgentRow{
-		ID:              "edge-a",
-		Name:            "edge-a",
-		AgentToken:      "token-edge-a",
-		AgentURL:        "http://edge-a:8080",
-		Version:         "1.2.3",
-		Platform:        "linux-amd64",
-		DesiredVersion:  "1.2.3",
-		DesiredRevision: 3,
-		TagsJSON:        `["edge","media"]`,
+		ID:               "edge-a",
+		Name:             "edge-a",
+		AgentToken:       "token-edge-a",
+		AgentURL:         "http://edge-a:8080",
+		Version:          "1.2.3",
+		Platform:         "linux-amd64",
+		DesiredVersion:   "1.2.3",
+		DesiredRevision:  3,
+		TagsJSON:         `["edge","media"]`,
 		CapabilitiesJSON: `["http_rules","l4","cert_install"]`,
-		Mode:            "pull",
+		Mode:             "pull",
 	}); err != nil {
 		t.Fatalf("SaveAgent() error = %v", err)
 	}
@@ -300,6 +300,16 @@ func (s *failingBackupStore) SaveVersionPolicies(ctx context.Context, rows []sto
 	return s.backupStore.SaveVersionPolicies(ctx, rows)
 }
 
+type countingBackupStore struct {
+	backupStore
+	listAgentsCalls int
+}
+
+func (s *countingBackupStore) ListAgents(ctx context.Context) ([]storage.AgentRow, error) {
+	s.listAgentsCalls++
+	return s.backupStore.ListAgents(ctx)
+}
+
 func TestBackupServiceRollbackOnImportFailure(t *testing.T) {
 	sourceStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "rollback-source"), "local")
 	if err != nil {
@@ -338,7 +348,7 @@ func TestBackupServiceRollbackOnImportFailure(t *testing.T) {
 	defer targetStore.Close()
 
 	failingStore := &failingBackupStore{
-		backupStore:                   targetStore,
+		backupStore:                    targetStore,
 		remainingVersionPolicyFailures: 1,
 	}
 	targetSvc := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, failingStore)
@@ -359,6 +369,49 @@ func TestBackupServiceRollbackOnImportFailure(t *testing.T) {
 	}
 	if len(policies) != 0 {
 		t.Fatalf("version policies after rollback = %+v", policies)
+	}
+}
+
+func TestBackupServiceBumpModifiedAgentsListsAgentsOnce(t *testing.T) {
+	store, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "counting-target"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(target) error = %v", err)
+	}
+	defer store.Close()
+
+	ctx := t.Context()
+	for _, row := range []storage.AgentRow{
+		{ID: "edge-a", Name: "edge-a", AgentToken: "token-a", CurrentRevision: 3, DesiredRevision: 3},
+		{ID: "edge-b", Name: "edge-b", AgentToken: "token-b", CurrentRevision: 8, DesiredRevision: 8},
+	} {
+		if err := store.SaveAgent(ctx, row); err != nil {
+			t.Fatalf("SaveAgent(%s) error = %v", row.ID, err)
+		}
+	}
+
+	countingStore := &countingBackupStore{backupStore: store}
+	svc := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, countingStore)
+
+	if err := svc.bumpModifiedAgents(ctx, map[string]bool{"edge-a": true, "edge-b": true}); err != nil {
+		t.Fatalf("bumpModifiedAgents() error = %v", err)
+	}
+	if countingStore.listAgentsCalls != 1 {
+		t.Fatalf("ListAgents() calls = %d, want 1", countingStore.listAgentsCalls)
+	}
+
+	agents, err := store.ListAgents(ctx)
+	if err != nil {
+		t.Fatalf("ListAgents() after bump error = %v", err)
+	}
+	byID := map[string]storage.AgentRow{}
+	for _, row := range agents {
+		byID[row.ID] = row
+	}
+	if byID["edge-a"].DesiredRevision != 4 {
+		t.Fatalf("edge-a DesiredRevision = %d, want 4", byID["edge-a"].DesiredRevision)
+	}
+	if byID["edge-b"].DesiredRevision != 9 {
+		t.Fatalf("edge-b DesiredRevision = %d, want 9", byID["edge-b"].DesiredRevision)
 	}
 }
 

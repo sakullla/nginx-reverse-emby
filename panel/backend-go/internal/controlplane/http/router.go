@@ -196,30 +196,15 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 		}
 	}
 
-	if d.TaskService == nil &&
-		d.SystemService != nil &&
-		d.AgentService != nil &&
-		d.RuleService != nil &&
-		d.L4RuleService != nil &&
-		d.VersionPolicyService != nil &&
-		d.RelayListenerService != nil &&
-		d.CertificateService != nil {
+	if d.TaskService == nil && d.hasCoreServices() {
 		d.TaskService = service.NewTaskService(service.TaskServiceConfig{})
 	}
 
-	if d.BackupService == nil &&
-		d.SystemService != nil &&
-		d.AgentService != nil &&
-		d.RuleService != nil &&
-		d.L4RuleService != nil &&
-		d.VersionPolicyService != nil &&
-		d.RelayListenerService != nil &&
-		d.CertificateService != nil &&
-		d.TaskService != nil {
+	if d.BackupService == nil && d.hasCoreServices() && d.TaskService != nil {
 		d.BackupService = unavailableBackupService{}
 	}
 
-	if d.SystemService != nil && d.AgentService != nil && d.RuleService != nil && d.L4RuleService != nil && d.VersionPolicyService != nil && d.RelayListenerService != nil && d.CertificateService != nil && d.TaskService != nil && d.BackupService != nil {
+	if d.hasCoreServices() && d.TaskService != nil && d.BackupService != nil {
 		return d, nil
 	}
 
@@ -257,6 +242,16 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 	}
 
 	return d, nil
+}
+
+func (d Dependencies) hasCoreServices() bool {
+	return d.SystemService != nil &&
+		d.AgentService != nil &&
+		d.RuleService != nil &&
+		d.L4RuleService != nil &&
+		d.VersionPolicyService != nil &&
+		d.RelayListenerService != nil &&
+		d.CertificateService != nil
 }
 
 func mapServiceError(err error) (int, map[string]any) {

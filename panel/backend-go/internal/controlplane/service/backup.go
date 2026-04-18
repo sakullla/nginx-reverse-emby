@@ -9,8 +9,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"path"
 	"net/url"
+	"path"
 	"runtime/debug"
 	"slices"
 	"strings"
@@ -242,25 +242,28 @@ func (s *backupService) importBundle(ctx context.Context, bundle BackupBundle) (
 }
 
 func (s *backupService) bumpModifiedAgents(ctx context.Context, modifiedAgents map[string]bool) error {
+	rows, err := s.store.ListAgents(ctx)
+	if err != nil {
+		return err
+	}
+	rowsByID := make(map[string]storage.AgentRow, len(rows))
+	for _, row := range rows {
+		rowsByID[row.ID] = row
+	}
+
 	for agentID := range modifiedAgents {
 		if s.cfg.EnableLocalAgent && agentID == s.cfg.LocalAgentID {
 			continue
 		}
-		rows, err := s.store.ListAgents(ctx)
-		if err != nil {
-			return err
+		row, ok := rowsByID[agentID]
+		if !ok {
+			continue
 		}
-		for _, row := range rows {
-			if row.ID != agentID {
-				continue
+		if row.DesiredRevision < row.CurrentRevision+1 {
+			row.DesiredRevision = row.CurrentRevision + 1
+			if err := s.store.SaveAgent(ctx, row); err != nil {
+				return err
 			}
-			if row.DesiredRevision < row.CurrentRevision+1 {
-				row.DesiredRevision = row.CurrentRevision + 1
-				if err := s.store.SaveAgent(ctx, row); err != nil {
-					return err
-				}
-			}
-			break
 		}
 	}
 	return nil
@@ -539,7 +542,7 @@ func (s *backupService) importRelayListeners(ctx context.Context, existing []sto
 		if err := s.store.SaveRelayListeners(ctx, agentID, rows); err != nil {
 			return nil, err
 		}
-					modifiedAgents[agentID] = true
+		modifiedAgents[agentID] = true
 	}
 	return listenerIDMap, nil
 }
@@ -667,7 +670,7 @@ func (s *backupService) importHTTPRules(ctx context.Context, incoming []BackupHT
 		if err := s.store.SaveHTTPRules(ctx, agentID, rows); err != nil {
 			return err
 		}
-			modifiedAgents[agentID] = true
+		modifiedAgents[agentID] = true
 	}
 	return nil
 }
@@ -759,7 +762,7 @@ func (s *backupService) importL4Rules(ctx context.Context, incoming []BackupL4Ru
 		if err := s.store.SaveL4Rules(ctx, agentID, rows); err != nil {
 			return err
 		}
-					modifiedAgents[agentID] = true
+		modifiedAgents[agentID] = true
 	}
 	return nil
 }
@@ -1082,27 +1085,27 @@ func relayListenerInputFromBackup(listener BackupRelayListener, certIDMap map[in
 	}
 	trustedIDs := remapIntSlice(listener.TrustedCACertificateIDs, certIDMap)
 	return RelayListenerInput{
-		Name:                    backupStringPtr(listener.Name),
-		ListenHost:              backupStringPtr(listener.ListenHost),
-		BindHosts:               &listener.BindHosts,
-		ListenPort:              backupIntPtr(listener.ListenPort),
-		PublicHost:              backupStringPtr(listener.PublicHost),
-		PublicPort:              backupIntPtr(listener.PublicPort),
-		Enabled:                 backupBoolPtr(listener.Enabled),
-		CertificateID:           certificateID,
-		TLSMode:                 backupStringPtr(listener.TLSMode),
-		TransportMode:           backupStringPtr(listener.TransportMode),
-		AllowTransportFallback:  backupBoolPtr(listener.AllowTransportFallback),
-		ObfsMode:                backupStringPtr(listener.ObfsMode),
-		PinSet:                  &listener.PinSet,
-		TrustedCACertificateIDs: trustedIDs,
-		AllowSelfSigned:         backupBoolPtr(listener.AllowSelfSigned),
-		Tags:                    &listener.Tags,
-		HasCertificateID:        true,
-		HasTLSMode:              true,
+		Name:                       backupStringPtr(listener.Name),
+		ListenHost:                 backupStringPtr(listener.ListenHost),
+		BindHosts:                  &listener.BindHosts,
+		ListenPort:                 backupIntPtr(listener.ListenPort),
+		PublicHost:                 backupStringPtr(listener.PublicHost),
+		PublicPort:                 backupIntPtr(listener.PublicPort),
+		Enabled:                    backupBoolPtr(listener.Enabled),
+		CertificateID:              certificateID,
+		TLSMode:                    backupStringPtr(listener.TLSMode),
+		TransportMode:              backupStringPtr(listener.TransportMode),
+		AllowTransportFallback:     backupBoolPtr(listener.AllowTransportFallback),
+		ObfsMode:                   backupStringPtr(listener.ObfsMode),
+		PinSet:                     &listener.PinSet,
+		TrustedCACertificateIDs:    trustedIDs,
+		AllowSelfSigned:            backupBoolPtr(listener.AllowSelfSigned),
+		Tags:                       &listener.Tags,
+		HasCertificateID:           true,
+		HasTLSMode:                 true,
 		HasTrustedCACertificateIDs: trustedIDs != nil,
-		HasAllowSelfSigned:      true,
-		HasPinSet:               true,
+		HasAllowSelfSigned:         true,
+		HasPinSet:                  true,
 	}
 }
 
@@ -1129,93 +1132,42 @@ func pointerIntSlice(values *[]int) []int {
 }
 
 func httpRuleRowsEqual(a []storage.HTTPRuleRow, b []storage.HTTPRuleRow) bool {
-	left := append([]storage.HTTPRuleRow(nil), a...)
-	right := append([]storage.HTTPRuleRow(nil), b...)
-	slices.SortFunc(left, func(x storage.HTTPRuleRow, y storage.HTTPRuleRow) int {
-		if x.AgentID != y.AgentID {
-			return strings.Compare(x.AgentID, y.AgentID)
-		}
-		if x.ID < y.ID {
-			return -1
-		}
-		if x.ID > y.ID {
-			return 1
-		}
-		return 0
+	return equalSortedRows(a, b, func(x storage.HTTPRuleRow, y storage.HTTPRuleRow) int {
+		return compareAgentScopedRows(x.AgentID, x.ID, y.AgentID, y.ID)
 	})
-	slices.SortFunc(right, func(x storage.HTTPRuleRow, y storage.HTTPRuleRow) int {
-		if x.AgentID != y.AgentID {
-			return strings.Compare(x.AgentID, y.AgentID)
-		}
-		if x.ID < y.ID {
-			return -1
-		}
-		if x.ID > y.ID {
-			return 1
-		}
-		return 0
-	})
-	return slices.Equal(left, right)
 }
 
 func l4RuleRowsEqual(a []storage.L4RuleRow, b []storage.L4RuleRow) bool {
-	left := append([]storage.L4RuleRow(nil), a...)
-	right := append([]storage.L4RuleRow(nil), b...)
-	slices.SortFunc(left, func(x storage.L4RuleRow, y storage.L4RuleRow) int {
-		if x.AgentID != y.AgentID {
-			return strings.Compare(x.AgentID, y.AgentID)
-		}
-		if x.ID < y.ID {
-			return -1
-		}
-		if x.ID > y.ID {
-			return 1
-		}
-		return 0
+	return equalSortedRows(a, b, func(x storage.L4RuleRow, y storage.L4RuleRow) int {
+		return compareAgentScopedRows(x.AgentID, x.ID, y.AgentID, y.ID)
 	})
-	slices.SortFunc(right, func(x storage.L4RuleRow, y storage.L4RuleRow) int {
-		if x.AgentID != y.AgentID {
-			return strings.Compare(x.AgentID, y.AgentID)
-		}
-		if x.ID < y.ID {
-			return -1
-		}
-		if x.ID > y.ID {
-			return 1
-		}
-		return 0
-	})
-	return slices.Equal(left, right)
 }
 
 func relayListenerRowsEqual(a []storage.RelayListenerRow, b []storage.RelayListenerRow) bool {
-	left := append([]storage.RelayListenerRow(nil), a...)
-	right := append([]storage.RelayListenerRow(nil), b...)
-	slices.SortFunc(left, func(x storage.RelayListenerRow, y storage.RelayListenerRow) int {
-		if x.AgentID != y.AgentID {
-			return strings.Compare(x.AgentID, y.AgentID)
-		}
-		if x.ID < y.ID {
-			return -1
-		}
-		if x.ID > y.ID {
-			return 1
-		}
-		return 0
+	return equalSortedRows(a, b, func(x storage.RelayListenerRow, y storage.RelayListenerRow) int {
+		return compareAgentScopedRows(x.AgentID, x.ID, y.AgentID, y.ID)
 	})
-	slices.SortFunc(right, func(x storage.RelayListenerRow, y storage.RelayListenerRow) int {
-		if x.AgentID != y.AgentID {
-			return strings.Compare(x.AgentID, y.AgentID)
-		}
-		if x.ID < y.ID {
-			return -1
-		}
-		if x.ID > y.ID {
-			return 1
-		}
-		return 0
-	})
+}
+
+func equalSortedRows[T comparable](a []T, b []T, compare func(T, T) int) bool {
+	left := append([]T(nil), a...)
+	right := append([]T(nil), b...)
+	slices.SortFunc(left, compare)
+	slices.SortFunc(right, compare)
 	return slices.Equal(left, right)
+}
+
+func compareAgentScopedRows(agentIDA string, idA int, agentIDB string, idB int) int {
+	if agentIDA != agentIDB {
+		return strings.Compare(agentIDA, agentIDB)
+	}
+	if idA < idB {
+		return -1
+	}
+	if idA > idB {
+		return 1
+	}
+	return 0
 }
 
 func backupAppVersion() string {
