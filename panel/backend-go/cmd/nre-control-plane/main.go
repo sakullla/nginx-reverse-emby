@@ -233,6 +233,7 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 		VersionPolicyService: versionSvc,
 		RelayListenerService: relaySvc,
 		CertificateService:   certSvc,
+		BackupService:        service.NewBackupService(cfg, serviceStore),
 	})
 	if err != nil {
 		return nil, err

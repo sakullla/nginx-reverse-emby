@@ -140,6 +140,50 @@ func TestNewControlPlaneAppStartsEmbeddedLocalAgentWhenEnabled(t *testing.T) {
 	}
 }
 
+func TestNewControlPlaneAppProvidesBackupServiceWhenLocalAgentEnabled(t *testing.T) {
+	cfg := config.Default()
+	cfg.ListenAddr = "127.0.0.1:0"
+	cfg.EnableLocalAgent = true
+	cfg.DataDir = t.TempDir()
+
+	previousNewHandler := newHandler
+	previousNewHandlerWithDependencies := newHandlerWithDependencies
+	previousNewLocalAgentRuntime := newLocalAgentRuntime
+	t.Cleanup(func() {
+		newHandler = previousNewHandler
+		newHandlerWithDependencies = previousNewHandlerWithDependencies
+		newLocalAgentRuntime = previousNewLocalAgentRuntime
+	})
+
+	newHandler = func(config.Config) (http.Handler, error) {
+		return http.NewServeMux(), nil
+	}
+	newHandlerWithDependencies = func(_ config.Config, deps httpapi.Dependencies) (http.Handler, error) {
+		if deps.BackupService == nil {
+			t.Fatal("BackupService = nil, want configured backup service")
+		}
+		return http.NewServeMux(), nil
+	}
+	newLocalAgentRuntime = func(_ config.Config, store localagent.Store) (localAgentRuntime, error) {
+		if sqliteStore, ok := store.(*storage.SQLiteStore); ok {
+			t.Cleanup(func() {
+				_ = sqliteStore.Close()
+			})
+		}
+		return localAgentRuntimeStub{}, nil
+	}
+
+	application, err := newControlPlaneApp(cfg, nil)
+	if err != nil {
+		t.Fatalf("newControlPlaneApp() error = %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := application.Run(ctx); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+}
+
 func TestInitializeControlPlaneBootstrapsGlobalRelayCA(t *testing.T) {
 	cfg := config.Default()
 	cfg.DataDir = t.TempDir()
