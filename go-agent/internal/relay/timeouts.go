@@ -22,6 +22,8 @@ var (
 	defaultRelayIdleTimeout      = 2 * time.Minute
 )
 
+const relayBulkSocketBufferBytes = 1 << 20
+
 type relayTimeoutOverride struct {
 	id  uint64
 	cfg TimeoutConfig
@@ -32,6 +34,11 @@ type TimeoutConfig struct {
 	HandshakeTimeout time.Duration
 	FrameTimeout     time.Duration
 	IdleTimeout      time.Duration
+}
+
+type relayTCPBufferTuner interface {
+	SetReadBuffer(bytes int) error
+	SetWriteBuffer(bytes int) error
 }
 
 func ConfigureTimeouts(cfg TimeoutConfig) func() {
@@ -83,7 +90,12 @@ func dialTCP(ctx context.Context, address string) (net.Conn, error) {
 	defer cancel()
 
 	var dialer net.Dialer
-	return dialer.DialContext(dialCtx, "tcp", address)
+	conn, err := dialer.DialContext(dialCtx, "tcp", address)
+	if err != nil {
+		return nil, err
+	}
+	tuneBulkRelayConn(conn)
+	return conn, nil
 }
 
 func handshakeTLS(ctx context.Context, conn *tls.Conn) error {
@@ -181,4 +193,13 @@ func getRelayIdleTimeout() time.Duration {
 	relayTimeoutMu.RLock()
 	defer relayTimeoutMu.RUnlock()
 	return relayIdleTimeout
+}
+
+func tuneBulkRelayConn(conn any) {
+	tuner, ok := conn.(relayTCPBufferTuner)
+	if !ok {
+		return
+	}
+	_ = tuner.SetReadBuffer(relayBulkSocketBufferBytes)
+	_ = tuner.SetWriteBuffer(relayBulkSocketBufferBytes)
 }

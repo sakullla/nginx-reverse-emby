@@ -5,6 +5,21 @@ import (
 	"time"
 )
 
+type fakeRelayTCPBufferConn struct {
+	readBuffer  int
+	writeBuffer int
+}
+
+func (c *fakeRelayTCPBufferConn) SetReadBuffer(bytes int) error {
+	c.readBuffer = bytes
+	return nil
+}
+
+func (c *fakeRelayTCPBufferConn) SetWriteBuffer(bytes int) error {
+	c.writeBuffer = bytes
+	return nil
+}
+
 func TestConfigureTimeoutsOverridesRelayPackageTimeouts(t *testing.T) {
 	reset := ConfigureTimeouts(TimeoutConfig{
 		DialTimeout:      9 * time.Second,
@@ -100,4 +115,21 @@ func TestConfigureTimeoutsResetDoesNotOverwriteNewerConfiguration(t *testing.T) 
 	if relayIdleTimeout != 2*time.Minute {
 		t.Fatalf("relayIdleTimeout after inner reset = %v", relayIdleTimeout)
 	}
+}
+
+func TestTuneBulkRelayConnAppliesReadAndWriteBuffers(t *testing.T) {
+	conn := &fakeRelayTCPBufferConn{}
+
+	tuneBulkRelayConn(conn)
+
+	if conn.readBuffer != relayBulkSocketBufferBytes {
+		t.Fatalf("readBuffer = %d, want %d", conn.readBuffer, relayBulkSocketBufferBytes)
+	}
+	if conn.writeBuffer != relayBulkSocketBufferBytes {
+		t.Fatalf("writeBuffer = %d, want %d", conn.writeBuffer, relayBulkSocketBufferBytes)
+	}
+}
+
+func TestTuneBulkRelayConnIgnoresUnsupportedConnections(t *testing.T) {
+	tuneBulkRelayConn(struct{}{})
 }
