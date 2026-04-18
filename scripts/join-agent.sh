@@ -553,14 +553,26 @@ normalize_legacy_acme_domain() {
 }
 
 cleanup_legacy_nginx_runtime() {
+    if ! legacy_nginx_runtime_present; then
+        return 0
+    fi
     if command -v systemctl >/dev/null 2>&1; then
-        run_root_cmd systemctl disable --now nginx.service >/dev/null 2>&1 || true
+        disable_systemd_unit_if_present nginx.service >/dev/null 2>&1 || true
     fi
     run_root_cmd rm -f /etc/nginx/conf.d/zz-nginx-reverse-emby-agent.include.conf
     run_root_cmd rm -f /etc/nginx/conf.d/zz-nginx-reverse-emby-agent.globals.conf
     run_root_cmd rm -f /etc/nginx/conf.d/zz-nginx-reverse-emby-agent.status.conf
     run_root_cmd rm -rf /etc/nginx/conf.d/dynamic
     run_root_cmd rm -rf /etc/nginx/stream-conf.d/dynamic
+}
+
+legacy_nginx_runtime_present() {
+    [ -f /etc/nginx/conf.d/zz-nginx-reverse-emby-agent.include.conf ] && return 0
+    [ -f /etc/nginx/conf.d/zz-nginx-reverse-emby-agent.globals.conf ] && return 0
+    [ -f /etc/nginx/conf.d/zz-nginx-reverse-emby-agent.status.conf ] && return 0
+    [ -d /etc/nginx/conf.d/dynamic ] && return 0
+    [ -d /etc/nginx/stream-conf.d/dynamic ] && return 0
+    return 1
 }
 
 cleanup_legacy_runtime() {

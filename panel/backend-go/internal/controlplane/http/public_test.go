@@ -257,8 +257,8 @@ func TestJoinScriptIncludesUninstallAndLegacyNginxCleanup(t *testing.T) {
 	if !strings.Contains(script, "cleanup_legacy_nginx_runtime()") {
 		t.Fatalf("join-agent.sh missing shared legacy nginx cleanup helper")
 	}
-	if !strings.Contains(script, `systemctl disable --now nginx.service`) {
-		t.Fatalf("join-agent.sh missing legacy nginx service shutdown")
+	if !strings.Contains(script, "legacy_nginx_runtime_present()") {
+		t.Fatalf("join-agent.sh missing legacy nginx runtime detection helper")
 	}
 	if !strings.Contains(script, "cleanup_local_agent_runtime()") {
 		t.Fatalf("join-agent.sh missing local uninstall cleanup helper")
@@ -271,8 +271,11 @@ func TestJoinScriptIncludesUninstallAndLegacyNginxCleanup(t *testing.T) {
 	if !strings.Contains(localCleanupBody, "cleanup_legacy_nginx_runtime") {
 		t.Fatalf("join-agent.sh uninstall cleanup should stop host nginx via legacy cleanup helper: %s", localCleanupBody)
 	}
-	if !strings.Contains(localCleanupBody, "nginx.service") && !strings.Contains(script, `systemctl disable --now nginx.service`) {
-		t.Fatalf("join-agent.sh uninstall cleanup should stop host nginx: %s", localCleanupBody)
+	if !strings.Contains(script, "if ! legacy_nginx_runtime_present; then") {
+		t.Fatalf("join-agent.sh cleanup should skip unrelated nginx installs")
+	}
+	if !strings.Contains(script, "disable_systemd_unit_if_present nginx.service") {
+		t.Fatalf("join-agent.sh cleanup should only disable nginx when legacy runtime markers exist")
 	}
 	if strings.Contains(script, "/panel-api/agents/$NRE_AGENT_ID") {
 		t.Fatalf("join-agent.sh unexpectedly attempts control-plane unregister during uninstall")

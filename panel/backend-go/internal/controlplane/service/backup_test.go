@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -647,5 +648,76 @@ func TestBackupServiceAllowsSameL4ListenAcrossDifferentAgents(t *testing.T) {
 	}
 	if result.Summary.Imported.L4Rules != 2 || result.Summary.SkippedConflict.L4Rules != 0 {
 		t.Fatalf("L4 import summary = %+v", result.Summary)
+	}
+}
+
+func TestBackupServiceAllowsSameHTTPFrontendAcrossDifferentAgents(t *testing.T) {
+	sourceStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "http-source"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(source) error = %v", err)
+	}
+	defer sourceStore.Close()
+
+	ctx := t.Context()
+	for _, agent := range []storage.AgentRow{
+		{ID: "edge-a", Name: "edge-a", AgentToken: "token-a"},
+		{ID: "edge-b", Name: "edge-b", AgentToken: "token-b"},
+	} {
+		if err := sourceStore.SaveAgent(ctx, agent); err != nil {
+			t.Fatalf("SaveAgent(%s) error = %v", agent.ID, err)
+		}
+	}
+	for _, item := range []struct {
+		agentID string
+		id      int
+		backend string
+	}{
+		{agentID: "edge-a", id: 1, backend: "http://127.0.0.1:8096"},
+		{agentID: "edge-b", id: 2, backend: "http://127.0.0.1:8097"},
+	} {
+		if err := sourceStore.SaveHTTPRules(ctx, item.agentID, []storage.HTTPRuleRow{{
+			ID:                item.id,
+			AgentID:           item.agentID,
+			FrontendURL:       "https://media.example.com",
+			BackendURL:        item.backend,
+			BackendsJSON:      fmt.Sprintf(`[{"url":"%s"}]`, item.backend),
+			LoadBalancingJSON: `{"strategy":"adaptive"}`,
+			Enabled:           true,
+			TagsJSON:          `[]`,
+			RelayChainJSON:    `[]`,
+			CustomHeadersJSON: `[]`,
+			Revision:          item.id,
+		}}); err != nil {
+			t.Fatalf("SaveHTTPRules(%s) error = %v", item.agentID, err)
+		}
+	}
+
+	archive, _, err := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, sourceStore).Export(ctx)
+	if err != nil {
+		t.Fatalf("Export() error = %v", err)
+	}
+
+	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "http-target"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(target) error = %v", err)
+	}
+	defer targetStore.Close()
+
+	result, err := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, targetStore).Import(ctx, archive)
+	if err != nil {
+		t.Fatalf("Import() error = %v", err)
+	}
+	if result.Summary.Imported.HTTPRules != 2 || result.Summary.SkippedConflict.HTTPRules != 0 {
+		t.Fatalf("HTTP import summary = %+v", result.Summary)
+	}
+
+	for _, agentID := range []string{"edge-a", "edge-b"} {
+		rows, err := targetStore.ListHTTPRules(ctx, agentID)
+		if err != nil {
+			t.Fatalf("ListHTTPRules(%s) error = %v", agentID, err)
+		}
+		if len(rows) != 1 || rows[0].FrontendURL != "https://media.example.com" {
+			t.Fatalf("imported http rules for %s = %+v", agentID, rows)
+		}
 	}
 }

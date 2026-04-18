@@ -642,7 +642,7 @@ func (s *backupService) importHTTPRules(ctx context.Context, incoming []BackupHT
 	usedIDs := map[string]map[int]struct{}{}
 
 	for _, row := range existingRules {
-		key := strings.TrimSpace(row.FrontendURL)
+		key := httpRuleConflictKey(row.AgentID, row.FrontendURL)
 		conflictSet[key] = struct{}{}
 		grouped[row.AgentID] = append(grouped[row.AgentID], row)
 		if row.ID > maxIDs[row.AgentID] {
@@ -664,7 +664,8 @@ func (s *backupService) importHTTPRules(ctx context.Context, incoming []BackupHT
 			result.addSkippedInvalid("http_rule", key, "http rule references unknown agent")
 			continue
 		}
-		if _, exists := conflictSet[key]; exists {
+		conflictKey := httpRuleConflictKey(resolvedAgentID, item.FrontendURL)
+		if _, exists := conflictSet[conflictKey]; exists {
 			result.addSkippedConflict("http_rule", key, "frontend_url already exists")
 			continue
 		}
@@ -701,7 +702,7 @@ func (s *backupService) importHTTPRules(ctx context.Context, incoming []BackupHT
 			maxRevisionByAgent[resolvedAgentID] = normalized.Revision
 		}
 		grouped[resolvedAgentID] = append(grouped[resolvedAgentID], httpRuleToRow(normalized))
-		conflictSet[key] = struct{}{}
+		conflictSet[conflictKey] = struct{}{}
 		recordModifiedAgentRevision(modifiedAgents, resolvedAgentID, normalized.Revision)
 		result.addImported("http_rule", key)
 	}
@@ -1104,6 +1105,10 @@ func pathUnescapeDomain(value string) string {
 
 func relayConflictKey(agentID string, name string) string {
 	return strings.TrimSpace(agentID) + "|" + strings.TrimSpace(name)
+}
+
+func httpRuleConflictKey(agentID string, frontendURL string) string {
+	return strings.TrimSpace(agentID) + "|" + strings.TrimSpace(frontendURL)
 }
 
 func l4ConflictKey(agentID string, protocol string, listenHost string, listenPort int) string {
