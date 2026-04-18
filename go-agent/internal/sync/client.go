@@ -45,6 +45,7 @@ type SyncRequest struct {
 
 func NewClient(cfg ClientConfig, httpClient *http.Client) *Client {
 	cfg.MasterURL = strings.TrimRight(cfg.MasterURL, "/")
+	cfg.MasterURL = normalizeMasterBaseURL(cfg.MasterURL)
 	if httpClient != nil {
 		return &Client{cfg: cfg, client: httpClient}
 	}
@@ -182,5 +183,17 @@ func normalizeVersionPackage(pkg *model.VersionPackage, rawURL, rawSHA256 string
 	return &model.VersionPackage{
 		URL:    rawURL,
 		SHA256: rawSHA256,
+	}
+}
+
+func normalizeMasterBaseURL(raw string) string {
+	trimmed := strings.TrimRight(strings.TrimSpace(raw), "/")
+	switch {
+	case strings.HasSuffix(trimmed, "/panel-api"):
+		return strings.TrimSuffix(trimmed, "/panel-api")
+	case strings.HasSuffix(trimmed, "/api"):
+		return strings.TrimSuffix(trimmed, "/api")
+	default:
+		return trimmed
 	}
 }

@@ -51,6 +51,7 @@ func NewClient(cfg ClientConfig) *Client {
 		cfg.ReconnectWait = time.Second
 	}
 	cfg.MasterURL = strings.TrimRight(cfg.MasterURL, "/")
+	cfg.MasterURL = normalizeMasterBaseURL(cfg.MasterURL)
 	if cfg.HTTPClient != nil {
 		return &Client{cfg: cfg}
 	}
@@ -257,4 +258,16 @@ func (c *Client) discardConnections() {
 
 func (c *Client) updateURL(taskID string) string {
 	return fmt.Sprintf("%s/api/agent-tasks/%s/updates", c.cfg.MasterURL, taskID)
+}
+
+func normalizeMasterBaseURL(raw string) string {
+	trimmed := strings.TrimRight(strings.TrimSpace(raw), "/")
+	switch {
+	case strings.HasSuffix(trimmed, "/panel-api"):
+		return strings.TrimSuffix(trimmed, "/panel-api")
+	case strings.HasSuffix(trimmed, "/api"):
+		return strings.TrimSuffix(trimmed, "/api")
+	default:
+		return trimmed
+	}
 }

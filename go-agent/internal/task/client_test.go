@@ -81,6 +81,56 @@ func TestTaskClientReconnectsAndSendsHello(t *testing.T) {
 	}
 }
 
+func TestTaskClientSupportsMasterURLWithApiPrefix(t *testing.T) {
+	requests := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests <- r.URL.Path
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(": connected\n\n"))
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	client := NewClient(ClientConfig{
+		MasterURL:     server.URL + "/panel-api",
+		AgentToken:    "token",
+		AgentID:       "edge-a",
+		ReconnectWait: 10 * time.Millisecond,
+		HTTPClient:    server.Client(),
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- client.Run(ctx)
+	}()
+
+	select {
+	case path := <-requests:
+		if path != "/api/agents/task-session" {
+			t.Fatalf("path = %q", path)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for task session request")
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for client shutdown")
+	}
+}
+
 func TestClientSendHelloEncodesExpectedMessage(t *testing.T) {
 	client := NewClient(ClientConfig{
 		AgentID:      "edge-a",

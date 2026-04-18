@@ -277,6 +277,44 @@ func TestHeartbeatSync(t *testing.T) {
 	}
 }
 
+func TestHeartbeatSyncSupportsMasterURLWithApiPrefix(t *testing.T) {
+	type captured struct {
+		Path string
+	}
+	reqs := make(chan captured, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		reqs <- captured{Path: r.URL.Path}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"sync":{"desired_version":"1.2.3","desired_revision":7}}`)
+	}))
+	defer server.Close()
+
+	client := NewClient(ClientConfig{
+		MasterURL:      server.URL + "/panel-api",
+		AgentToken:     "token",
+		AgentID:        "node",
+		AgentName:      "local",
+		CurrentVersion: "0.1.0",
+		Platform:       "linux-amd64",
+	}, server.Client())
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	if _, err := client.Sync(ctx, SyncRequest{CurrentRevision: 42}); err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+
+	select {
+	case req := <-reqs:
+		if req.Path != "/api/agents/heartbeat" {
+			t.Fatalf("expected normalized heartbeat path, got %s", req.Path)
+		}
+	case <-ctx.Done():
+		t.Fatal("heartbeat not sent")
+	}
+}
+
 func TestHeartbeatSyncPreservesOmittedCertificatePayloadAsNil(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

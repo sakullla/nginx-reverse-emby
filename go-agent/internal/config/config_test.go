@@ -37,6 +37,19 @@ func TestLoadFromEnv(t *testing.T) {
 	}
 }
 
+func TestLoadFromEnvNormalizesMasterURLWithApiPrefix(t *testing.T) {
+	t.Setenv("NRE_AGENT_TOKEN", "secret")
+	t.Setenv("NRE_MASTER_URL", "https://master.example.com/panel-api/")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("expected success, got %v", err)
+	}
+	if cfg.MasterURL != "https://master.example.com/panel-api" {
+		t.Fatalf("expected env loader to keep explicit prefix, got %q", cfg.MasterURL)
+	}
+}
+
 func TestLoadFromEnvRequiresMasterURLAndToken(t *testing.T) {
 	t.Setenv("NRE_AGENT_TOKEN", "secret")
 	if _, err := LoadFromEnv(); err == nil {
