@@ -18,7 +18,7 @@ func TestParseProxyProtocolV1(t *testing.T) {
 	if info.Destination.String() != "203.0.113.20:443" {
 		t.Fatalf("unexpected destination: %s", info.Destination.String())
 	}
-	if string(payload) != "payload" {
+	if payload != nil {
 		t.Fatalf("unexpected payload: %q", string(payload))
 	}
 }
@@ -46,8 +46,22 @@ func TestParseProxyProtocolV1Unknown(t *testing.T) {
 	if info != nil {
 		t.Fatalf("expected UNKNOWN header to return no proxy tuple, got %#v", info)
 	}
-	if string(payload) != "payload" {
+	if payload != nil {
 		t.Fatalf("unexpected payload: %q", string(payload))
+	}
+}
+
+func TestParseProxyHeaderDoesNotCopyBufferedPayloadWhenHeaderDecoded(t *testing.T) {
+	header := []byte("PROXY TCP4 198.51.100.10 203.0.113.20 12345 443\r\npayload")
+	info, payload, err := parseProxyHeader(bytes.NewReader(header))
+	if err != nil {
+		t.Fatalf("parse v1: %v", err)
+	}
+	if info == nil {
+		t.Fatal("expected parsed proxy info")
+	}
+	if payload != nil {
+		t.Fatalf("expected no copied payload buffer, got %q", string(payload))
 	}
 }
 

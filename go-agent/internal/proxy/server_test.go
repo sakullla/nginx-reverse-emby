@@ -22,6 +22,7 @@ import (
 	"reflect"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -800,6 +801,48 @@ func TestRouteEntryServeHTTPDoesNotRecordSuccessWhenBodyCopyFails(t *testing.T) 
 	})
 	if candidates[0].Address != "203.0.113.10:80" {
 		t.Fatalf("unexpected candidate ranking after failed body copy: %+v", candidates)
+	}
+}
+
+type panicAfterReadCloser struct {
+	readCalled atomic.Bool
+	payload     []byte
+}
+
+func (r *panicAfterReadCloser) Read(p []byte) (int, error) {
+	r.readCalled.Store(true)
+	if len(r.payload) == 0 {
+		return 0, io.EOF
+	}
+	n := copy(p, r.payload)
+	r.payload = r.payload[n:]
+	if len(r.payload) == 0 {
+		return n, io.EOF
+	}
+	return n, nil
+}
+
+func (r *panicAfterReadCloser) Close() error {
+	return nil
+}
+
+func TestPrepareReusableBodyLeavesSingleAttemptRequestsStreaming(t *testing.T) {
+	body := &panicAfterReadCloser{payload: []byte("payload")}
+	req := httptest.NewRequest(http.MethodPost, "http://edge.example.test/stream", nil)
+	req.Body = body
+
+	prepared, err := prepareReusableBody(req, 1)
+	if err != nil {
+		t.Fatalf("prepareReusableBody() error = %v", err)
+	}
+	if body.readCalled.Load() {
+		t.Fatal("expected single-attempt request body to remain unread")
+	}
+	if prepared == nil || prepared.stream == nil {
+		t.Fatalf("expected streaming body, got %+v", prepared)
+	}
+	if err := prepared.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
 	}
 }
 

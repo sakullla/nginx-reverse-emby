@@ -265,11 +265,12 @@ func StartWithResourcesAndOptions(
 }
 
 func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
-	bodyBytes, err := readReusableBody(req)
+	body, err := prepareReusableBody(req, e.sameBackendRetryMaxAttempts(req))
 	if err != nil {
 		log.Printf("[proxy] read body error for %s: %v", e.rule.FrontendURL, err)
 		return err
 	}
+	defer body.Close()
 	candidates, err := e.candidates(req.Context())
 	if err != nil {
 		log.Printf("[proxy] candidates error for %s: %v", e.rule.FrontendURL, err)
@@ -278,7 +279,7 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 	for _, candidate := range candidates {
 		maxSameBackendAttempts := e.sameBackendRetryMaxAttempts(req)
 		for attempt := 0; attempt < maxSameBackendAttempts; attempt++ {
-			attemptReq, err := cloneProxyRequest(req, bodyBytes, candidate, e.rule, e.frontendPath)
+			attemptReq, err := cloneProxyRequest(req, body, candidate, e.rule, e.frontendPath)
 			if err != nil {
 				log.Printf("[proxy] clone request error for %s -> %s: %v", e.rule.FrontendURL, candidate.target, err)
 				return err
@@ -770,15 +771,55 @@ func parseHTTPBackends(rule model.HTTPRule) ([]httpBackend, error) {
 	return backendsOut, nil
 }
 
-func readReusableBody(req *http.Request) ([]byte, error) {
-	if req == nil || req.Body == nil {
-		return nil, nil
-	}
-	defer req.Body.Close()
-	return io.ReadAll(req.Body)
+type reusableRequestBody struct {
+	buffered []byte
+	stream   io.ReadCloser
 }
 
-func cloneProxyRequest(req *http.Request, body []byte, candidate httpCandidate, rule model.HTTPRule, frontendPath string) (*http.Request, error) {
+func prepareReusableBody(req *http.Request, maxAttempts int) (*reusableRequestBody, error) {
+	if req == nil || req.Body == nil {
+		return &reusableRequestBody{}, nil
+	}
+	if maxAttempts <= 1 {
+		return &reusableRequestBody{stream: req.Body}, nil
+	}
+	defer req.Body.Close()
+	body, err := io.ReadAll(req.Body)
+	if err != nil {
+		return nil, err
+	}
+	return &reusableRequestBody{buffered: body}, nil
+}
+
+func (b *reusableRequestBody) Open() (io.ReadCloser, int64, func() (io.ReadCloser, error)) {
+	if b == nil {
+		return nil, 0, nil
+	}
+	if b.buffered != nil {
+		getBody := func() (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(b.buffered)), nil
+		}
+		rc, _ := getBody()
+		return rc, int64(len(b.buffered)), getBody
+	}
+	if b.stream != nil {
+		stream := b.stream
+		b.stream = nil
+		return stream, 0, nil
+	}
+	return nil, 0, nil
+}
+
+func (b *reusableRequestBody) Close() error {
+	if b == nil || b.stream == nil {
+		return nil
+	}
+	err := b.stream.Close()
+	b.stream = nil
+	return err
+}
+
+func cloneProxyRequest(req *http.Request, body *reusableRequestBody, candidate httpCandidate, rule model.HTTPRule, frontendPath string) (*http.Request, error) {
 	incomingHost := req.Host
 	incomingScheme := requestScheme(req)
 	out := req.Clone(req.Context())
@@ -801,11 +842,7 @@ func cloneProxyRequest(req *http.Request, body []byte, candidate httpCandidate, 
 	out.Host = targetURL.Host
 	out = out.WithContext(withDialAddress(out.Context(), dialAddress))
 	if body != nil {
-		out.Body = io.NopCloser(bytes.NewReader(body))
-		out.ContentLength = int64(len(body))
-		out.GetBody = func() (io.ReadCloser, error) {
-			return io.NopCloser(bytes.NewReader(body)), nil
-		}
+		out.Body, out.ContentLength, out.GetBody = body.Open()
 	} else {
 		out.Body = nil
 		out.ContentLength = 0

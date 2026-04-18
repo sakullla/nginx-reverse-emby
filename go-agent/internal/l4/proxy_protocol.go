@@ -32,8 +32,7 @@ func parseProxyHeader(r io.Reader) (*proxyInfo, []byte, error) {
 		return parseProxyProtocolV1(reader)
 	}
 
-	buffered, err := bufferedReaderBytes(reader)
-	return nil, buffered, err
+	return nil, nil, nil
 }
 
 func parseProxyProtocolV1(reader *bufio.Reader) (*proxyInfo, []byte, error) {
@@ -53,8 +52,7 @@ func parseProxyProtocolV1(reader *bufio.Reader) (*proxyInfo, []byte, error) {
 		if len(fields) != 2 {
 			return nil, nil, fmt.Errorf("invalid proxy protocol v1 unknown header")
 		}
-		buffered, err := bufferedReaderBytes(reader)
-		return nil, buffered, err
+		return nil, nil, nil
 	}
 	if len(fields) != 6 {
 		return nil, nil, fmt.Errorf("invalid proxy protocol v1 header")
@@ -64,15 +62,11 @@ func parseProxyProtocolV1(reader *bufio.Reader) (*proxyInfo, []byte, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	buffered, err := bufferedReaderBytes(reader)
-	if err != nil {
-		return nil, nil, err
-	}
 	return &proxyInfo{
 		Source:      source,
 		Destination: destination,
 		Version:     1,
-	}, buffered, nil
+	}, nil, nil
 }
 
 func parseProxyProtocolV2(reader *bufio.Reader) (*proxyInfo, []byte, error) {
@@ -95,8 +89,7 @@ func parseProxyProtocolV2(reader *bufio.Reader) (*proxyInfo, []byte, error) {
 
 	command := header[12] & 0x0f
 	if command == 0x0 {
-		buffered, err := bufferedReaderBytes(reader)
-		return nil, buffered, err
+		return nil, nil, nil
 	}
 	if command != 0x1 {
 		return nil, nil, fmt.Errorf("unsupported proxy protocol v2 command %d", command)
@@ -113,18 +106,13 @@ func parseProxyProtocolV2(reader *bufio.Reader) (*proxyInfo, []byte, error) {
 		return nil, nil, err
 	}
 	if source == nil || destination == nil {
-		buffered, err := bufferedReaderBytes(reader)
-		return nil, buffered, err
-	}
-	buffered, err := bufferedReaderBytes(reader)
-	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil
 	}
 	return &proxyInfo{
 		Source:      source,
 		Destination: destination,
 		Version:     2,
-	}, buffered, nil
+	}, nil, nil
 }
 
 func parseProxyAddresses(network, sourceIP, destinationIP, sourcePort, destinationPort string) (*net.TCPAddr, *net.TCPAddr, error) {
@@ -272,13 +260,3 @@ func proxyAddressFamily(info proxyInfo) (string, net.IP, net.IP, error) {
 	return "", nil, nil, fmt.Errorf("proxy protocol requires matching ip families")
 }
 
-func bufferedReaderBytes(reader *bufio.Reader) ([]byte, error) {
-	if reader.Buffered() == 0 {
-		return nil, nil
-	}
-	buffered, err := reader.Peek(reader.Buffered())
-	if err != nil {
-		return nil, err
-	}
-	return append([]byte(nil), buffered...), nil
-}
