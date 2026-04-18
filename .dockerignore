@@ -5,8 +5,10 @@
 # Node
 panel/frontend/node_modules
 panel/frontend/.vite
+panel/frontend/dist
 
-# IDE
+# Local specs / IDE
+.kiro
 .vscode
 .idea
 *.swp

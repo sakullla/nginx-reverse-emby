@@ -6,3 +6,6 @@ test-results/
 .idea/
 .vscode/
 .ai/
+.superpowers/
+.worktrees/
+.claude/settings.local.json

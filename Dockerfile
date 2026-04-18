@@ -1,52 +1,75 @@
-FROM node:24-bookworm-slim AS node-runtime
+FROM node:24-trixie-slim AS node-base
 
-FROM node:24-alpine AS frontend-builder
-
+FROM node-base AS frontend-builder
 WORKDIR /build
-
 COPY panel/frontend/package*.json ./
-RUN npm ci
-
+RUN --mount=type=cache,target=/root/.npm npm ci
 COPY panel/frontend/ ./
 RUN npm run build
 
-FROM nginx:latest
+FROM golang:1.26.2-trixie AS go-builder
+WORKDIR /src/go-agent
+COPY go-agent/go.mod go-agent/go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
+COPY go-agent/ ./
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg/mod \
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/nre-agent-linux-amd64 ./cmd/nre-agent && \
+    CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o /out/nre-agent-linux-arm64 ./cmd/nre-agent && \
+    CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -o /out/nre-agent-darwin-amd64 ./cmd/nre-agent && \
+    CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o /out/nre-agent-darwin-arm64 ./cmd/nre-agent && \
+    CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o /out/nre-agent-windows-amd64 ./cmd/nre-agent && \
+    CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -o /out/nre-agent-windows-arm64 ./cmd/nre-agent
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg/mod \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -o /out/nre-agent ./cmd/nre-agent
 
-COPY docker/ /tmp/docker/
-COPY panel/backend/ /opt/nginx-reverse-emby/panel/backend/
-COPY scripts/ /opt/nginx-reverse-emby/scripts/
-COPY examples/ /opt/nginx-reverse-emby/examples/
-COPY --from=frontend-builder /build/dist /opt/nginx-reverse-emby/panel/frontend/
-COPY --from=node-runtime /usr/local/bin/node /usr/local/bin/node
+FROM golang:1.26.2-trixie AS backend-go-builder
+WORKDIR /src
+COPY go-agent/go.mod go-agent/go.sum ./go-agent/
+COPY panel/backend-go/go.mod panel/backend-go/go.sum ./panel/backend-go/
+WORKDIR /src/panel/backend-go
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
+WORKDIR /src
+COPY go-agent/ ./go-agent/
+COPY panel/backend-go/ ./panel/backend-go/
+WORKDIR /src/panel/backend-go
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg/mod \
+    CGO_ENABLED=0 go build -o /out/nre-control-plane ./cmd/nre-control-plane
 
+FROM debian:trixie-slim AS go-agent-runtime
 RUN set -eux; \
-    if command -v apk >/dev/null 2>&1; then \
-        apk add --no-cache curl socat openssl ca-certificates cronie; \
-    elif command -v apt-get >/dev/null 2>&1; then \
-        apt-get update; \
-        apt-get install -y --no-install-recommends curl socat openssl ca-certificates cron; \
-        rm -rf /var/lib/apt/lists/*; \
-    else \
-        echo "Unsupported base image package manager" >&2; \
-        exit 1; \
-    fi; \
-    find /tmp/docker /opt/nginx-reverse-emby/scripts -type f -name '*.sh' -exec sed -i 's/\r$//' {} +; \
-    rm -f /etc/nginx/conf.d/default.conf; \
-    mkdir -p /etc/nginx/templates /etc/nginx/conf.d/dynamic /opt/nginx-reverse-emby/panel/data; \
-    mv /tmp/docker/nginx.conf /etc/nginx/nginx.conf; \
-    mv /tmp/docker/default.conf.template /etc/nginx/templates/default.conf; \
-    mv /tmp/docker/default.direct.no_tls.conf.template /etc/nginx/templates/default.direct.no_tls.conf; \
-    mv /tmp/docker/default.direct.tls.conf.template /etc/nginx/templates/default.direct.tls.conf; \
-    mv /tmp/docker/panel.conf.template /opt/nginx-reverse-emby/panel/panel.conf.template; \
-    mv /tmp/docker/15-panel-config.sh /docker-entrypoint.d/15-panel-config.sh; \
-    mv /tmp/docker/20-panel-backend.sh /docker-entrypoint.d/20-panel-backend.sh; \
-    mv /tmp/docker/25-dynamic-reverse-proxy.sh /docker-entrypoint.d/25-dynamic-reverse-proxy.sh; \
-    mv /tmp/docker/30-acme-renew.sh /docker-entrypoint.d/30-acme-renew.sh; \
-    chmod +x /docker-entrypoint.d/15-panel-config.sh /docker-entrypoint.d/20-panel-backend.sh /docker-entrypoint.d/25-dynamic-reverse-proxy.sh /docker-entrypoint.d/30-acme-renew.sh; \
-    chmod +x /opt/nginx-reverse-emby/panel/backend/server.js /opt/nginx-reverse-emby/scripts/*.sh; \
-    rm -rf /tmp/docker
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates; \
+    rm -rf /var/lib/apt/lists/*
+COPY --from=go-builder /out/nre-agent /usr/local/bin/nre-agent
+ENTRYPOINT ["/usr/local/bin/nre-agent"]
 
-# 统一数据持久化卷
+FROM debian:trixie-slim AS control-plane-runtime
+ENV PANEL_BACKEND_HOST=0.0.0.0 \
+    PANEL_BACKEND_PORT=8080
+WORKDIR /opt/nginx-reverse-emby
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates; \
+    rm -rf /var/lib/apt/lists/*
+COPY scripts/ ./scripts/
+COPY --from=frontend-builder /build/dist ./panel/frontend/dist/
+COPY --from=backend-go-builder /out/nre-control-plane /usr/local/bin/nre-control-plane
+COPY --from=go-builder /out/nre-agent-linux-amd64 ./panel/public/agent-assets/nre-agent-linux-amd64
+COPY --from=go-builder /out/nre-agent-linux-arm64 ./panel/public/agent-assets/nre-agent-linux-arm64
+COPY --from=go-builder /out/nre-agent-darwin-amd64 ./panel/public/agent-assets/nre-agent-darwin-amd64
+COPY --from=go-builder /out/nre-agent-darwin-arm64 ./panel/public/agent-assets/nre-agent-darwin-arm64
+COPY --from=go-builder /out/nre-agent-windows-amd64 ./panel/public/agent-assets/nre-agent-windows-amd64
+COPY --from=go-builder /out/nre-agent-windows-arm64 ./panel/public/agent-assets/nre-agent-windows-arm64
+RUN set -eux; \
+    find ./scripts -type f -name '*.sh' -exec sed -i 's/\r$//' {} +; \
+    chmod +x /usr/local/bin/nre-control-plane ./scripts/*.sh ./panel/public/agent-assets/*; \
+    mkdir -p ./panel/data
+
 VOLUME ["/opt/nginx-reverse-emby/panel/data"]
-
-EXPOSE 3000 80 443 8080
+EXPOSE 8080
+CMD ["/usr/local/bin/nre-control-plane"]

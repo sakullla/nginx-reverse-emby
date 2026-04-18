@@ -5,15 +5,28 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "vitest run"
   },
   "dependencies": {
-    "axios": "^1.6.7",
+    "@tanstack/vue-query": "^5.96.2",
+    "@vueuse/core": "^14.2.1",
+    "axios": "^1.15.0",
     "pinia": "^2.1.7",
-    "vue": "^3.4.21"
+    "vue": "^3.4.21",
+    "vue-router": "^4.6.4"
   },
   "devDependencies": {
-    "@vitejs/plugin-vue": "^5.0.4",
-    "vite": "^5.2.0"
+    "@iconify-json/mdi": "^1.2.3",
+    "@iconify-json/ph": "^1.2.2",
+    "@vue/test-utils": "^2.4.6",
+    "@unocss/preset-icons": "^66.6.7",
+    "@unocss/preset-wind": "^66.6.7",
+    "@vitejs/plugin-vue": "^6.0.6",
+    "jsdom": "^26.1.0",
+    "unocss": "^66.6.7",
+    "unplugin-vue-jsx": "^0.8.1",
+    "vite": "^6.4.2",
+    "vitest": "^3.2.4"
   }
 }

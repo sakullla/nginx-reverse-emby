@@ -1,8 +1,14 @@
 <template>
   <Teleport to="body">
     <Transition name="modal">
-      <div v-if="modelValue" class="modal-backdrop">
-        <div class="modal" :class="{ 'modal--lg': large }" tabindex="-1" ref="modalRef">
+      <div v-if="modelValue" class="modal-backdrop" @click.self="handleBackdropClick">
+        <div
+          class="modal"
+          :class="modalSizeClass"
+          tabindex="-1"
+          ref="modalRef"
+          @click.stop
+        >
           <div class="modal__header">
             <div>
               <h3 class="modal__title">{{ title }}</h3>
@@ -31,21 +37,38 @@
 </template>
 
 <script setup>
-import { ref, watch, onUnmounted } from 'vue'
+import { ref, watch, onUnmounted, computed } from 'vue'
 
 const props = defineProps({
   modelValue: { type: Boolean, required: true },
   title: { type: String, required: true },
   subtitle: { type: String, default: '' },
+  size: {
+    type: String,
+    default: 'md',
+    validator: (v) => ['md', 'lg', 'xl'].includes(v)
+  },
   large: { type: Boolean, default: false },
-  showFooter: { type: Boolean, default: false }
+  showFooter: { type: Boolean, default: false },
+  closeOnClickModal: { type: Boolean, default: true }
 })
 
 const emit = defineEmits(['update:modelValue', 'confirm'])
 const modalRef = ref(null)
 
+const modalSizeClass = computed(() => {
+  if (props.large) return 'modal--lg'
+  return `modal--${props.size}`
+})
+
 const close = () => {
   emit('update:modelValue', false)
+}
+
+const handleBackdropClick = () => {
+  if (props.closeOnClickModal) {
+    close()
+  }
 }
 
 const confirm = () => {
@@ -89,7 +112,7 @@ onUnmounted(() => {
 
 .modal-enter-active .modal,
 .modal-leave-active .modal {
-  transition: transform var(--duration-slow) var(--ease-bounce), 
+  transition: transform var(--duration-slow) var(--ease-bounce),
               opacity var(--duration-slow) var(--ease-bounce);
 }
 
@@ -117,7 +140,7 @@ onUnmounted(() => {
   border-radius: var(--radius-3xl);
   box-shadow: var(--shadow-2xl);
   width: 100%;
-  max-width: 480px;
+  max-width: min(520px, 92vw);
   max-height: calc(100vh - var(--space-8));
   display: flex;
   flex-direction: column;
@@ -126,7 +149,31 @@ onUnmounted(() => {
 }
 
 .modal--lg {
-  max-width: 640px;
+  max-width: min(640px, 90vw);
+}
+
+.modal--xl {
+  max-width: min(800px, 92vw);
+}
+
+/* 2K / 1440p */
+@media (min-width: 2560px) {
+  .modal--lg {
+    max-width: min(720px, 80vw);
+  }
+  .modal--xl {
+    max-width: min(960px, 80vw);
+  }
+}
+
+/* 4K */
+@media (min-width: 3840px) {
+  .modal--lg {
+    max-width: min(800px, 70vw);
+  }
+  .modal--xl {
+    max-width: min(1200px, 70vw);
+  }
 }
 
 .modal__header {
@@ -163,6 +210,9 @@ onUnmounted(() => {
   color: var(--color-text-tertiary);
   transition: all var(--duration-normal) var(--ease-bounce);
   flex-shrink: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
 }
 
 .modal__close:hover {
@@ -188,6 +238,31 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 
+.btn {
+  padding: 0.5rem 1rem;
+  border-radius: var(--radius-lg);
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s;
+  border: none;
+  font-family: inherit;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.btn--primary {
+  background: var(--gradient-primary);
+  color: white;
+}
+
+.btn--secondary {
+  background: var(--color-bg-subtle);
+  color: var(--color-text-primary);
+  border: 1px solid var(--color-border-default);
+}
+
 @media (max-width: 640px) {
   .modal-backdrop {
     padding: var(--space-4);
@@ -207,6 +282,21 @@ onUnmounted(() => {
   .modal-enter-from .modal,
   .modal-leave-to .modal {
     transform: translateY(100%);
+  }
+}
+
+/* iPhone SE 等小屏幕全屏 */
+@media (max-width: 375px) and (max-height: 812px) {
+  .modal-backdrop {
+    padding: 0;
+    align-items: flex-end;
+  }
+
+  .modal {
+    width: 100%;
+    height: 100%;
+    max-height: 100vh;
+    border-radius: var(--radius-2xl) var(--radius-2xl) 0 0;
   }
 }
 </style>

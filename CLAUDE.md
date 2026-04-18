@@ -4,239 +4,145 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Nginx-Reverse-Emby is an automated reverse proxy solution designed for Emby, Jellyfin, and various HTTP services. It features a web management panel, automatic SSL certificate renewal with acme.sh, and IPv4/IPv6 dual-stack support.
+`nginx-reverse-emby` now uses a split architecture:
 
-**Tech Stack:**
-- Frontend: Vue 3 + Vite + Pinia + Axios (SPA)
-- Backend: Node.js HTTP server (single file: `panel/backend/server.js`)
-- Infrastructure: Nginx + Shell scripts for automation
-- Deployment: Docker (multi-stage build)
+- **Control plane runtime:** Go service in `panel/backend-go` + Vue frontend in `panel/frontend`
+- **Execution plane:** Go `go-agent`
 
-## Architecture
+The control plane stores rules, certificates, agents, relay listeners, and version policy. Agents keep using the **heartbeat pull** model: registered agents poll the master, fetch desired state, and apply it locally.
 
-### Three-Layer Architecture
+The repository is no longer centered around a bundled Nginx runtime for the control plane. The Go control plane serves:
 
-1. **Frontend Panel** (`panel/frontend/`)
-   - Vue 3 SPA with component-based architecture
-   - Pinia store (`src/stores/rules.js`) manages proxy rules and authentication state
-   - Components in `src/components/`: RuleList, RuleForm, RuleItem, L4RuleList, L4RuleForm, CertificateList, TokenConfig
-   - API client in `src/api/index.js` communicates with backend via REST
+- the JSON API,
+- `/panel-api/*` aliases,
+- the built frontend bundle,
+- public agent assets such as `join-agent.sh` and Go binaries.
 
-2. **Backend Server** (`panel/backend/server.js`)
-   - Simple Node.js HTTP server (no framework dependencies)
-   - Manages proxy rules stored in JSON format (`/opt/nginx-reverse-emby/panel/data/proxy_rules.json`)
-   - Provides REST API: GET/POST/PUT/DELETE for rules, GET for stats
-   - Token-based authentication via `X-Panel-Token` header
-   - Triggers nginx config regeneration and reload after rule changes
+Docker/Compose defaults to the pure-Go control-plane container, with embedded local-agent capability enabled by default for the master node.
 
-3. **Infrastructure Layer** (`docker/` scripts)
-   - `25-dynamic-reverse-proxy.sh`: **Core script** - reads rules and generates nginx configs dynamically
-   - `20-panel-backend.sh`: Starts the Node.js backend server
-   - `15-panel-config.sh`: Initializes panel configuration
-   - `30-acme-renew.sh`: Manages SSL certificate renewal with acme.sh
-   - Nginx config templates: `default.conf.template`, `default.direct.*.conf.template`, `panel.conf.template`
+## Commands
 
-### Data Flow
-
-```
-User → Frontend Panel → Backend API → Rules JSON → 25-dynamic-reverse-proxy.sh → Nginx Config → nginx -t → nginx -s reload
-```
-
-### Deployment Modes
-
-- **`direct` mode** (default): Container directly handles ports 80/443 and SSL termination
-- **`front_proxy` mode**: Container only does internal forwarding; external proxy handles SSL
-
-### Master/Agent Architecture
-
-- **Master**: Runs complete panel and backend, manages rules and config distribution
-- **Agent**: Lightweight node running on target hosts, requires only Node.js 18+ and Nginx
-- **NAT Agent**: Behind NAT/firewall, polls Master via heartbeat to pull configs (no inbound ports needed)
-
-### Key Directories
-
-- `/opt/nginx-reverse-emby/panel/data`: Persistent data (rules, certs, acme.sh state)
-- `/etc/nginx/conf.d/dynamic`: Generated nginx configs for each proxy rule
-- `/etc/nginx/stream-conf.d/dynamic`: Generated nginx configs for L4 rules
-- `/etc/nginx/templates`: Nginx config templates
-
-## Common Development Commands
-
-### Frontend Development
-
+### Control Plane (Go)
 ```bash
-# Install dependencies
-cd panel/frontend && npm ci
+cd panel/backend-go
+go run ./cmd/nre-control-plane
+go test ./...
+```
 
-# Development server (with hot reload)
+### Frontend (Vue 3 / Vite)
+```bash
+cd panel/frontend
+npm ci
 npm run dev
-
-# Production build (outputs to dist/)
 npm run build
-
-# Preview production build
 npm run preview
 ```
 
-### Docker Development
+The Vite dev server proxies `/panel-api` requests to the control plane. For local UI development, run the Go control plane alongside the frontend dev server.
 
+### Go Agent
 ```bash
-# Build Docker image
+cd go-agent
+go test ./...
+go run ./cmd/nre-agent
+```
+
+### Container / Runtime Packaging
+```bash
 docker build -t nginx-reverse-emby .
-
-# Run with docker-compose
 docker compose up -d
-
-# View logs
-docker compose logs -f
-
-# Rebuild and restart
-docker compose up -d --build
-
-# Stop and remove
-docker compose down
 ```
 
-### Nginx Operations
+The default image/runtime produced by this repository is the **pure-Go control-plane container**. The Go agent is packaged as a separate execution-plane binary and exposed for download by remote nodes, while the master also runs with local-agent capability by default.
 
-```bash
-# Test nginx configuration
-nginx -t
+## Architecture
 
-# Reload nginx (graceful)
-nginx -s reload
-
-# View nginx error log
-tail -f /var/log/nginx/error.log
-
-# Check nginx status endpoint
-curl http://127.0.0.1:18080/nginx_status
+### Control-Plane Request Flow
+```text
+Browser
+  -> Go control plane (panel/backend-go)
+    -> authenticated /api/* routes
+    -> /panel-api/* compatibility aliases
+    -> public agent asset routes
+    -> built frontend static files / SPA fallback
 ```
 
-### Backend Development
+### Agent Sync Flow (pull model)
+1. Master stores desired state and desired revisions
+2. A registered Go `nre-agent` sends heartbeat / sync requests to the master
+3. Master returns rules, L4 rules, relay listeners, certificates, and version/update information
+4. Agent applies the config locally and reports current status/revision back on later heartbeats
 
-```bash
-# Run backend server directly (for testing)
-cd panel/backend
-node server.js
+### Runtime Responsibilities
 
-# Environment variables for backend:
-# PANEL_BACKEND_PORT=18081
-# API_TOKEN=your-token
-# PANEL_AUTO_APPLY=1
-```
+**Go/Vue control plane**
+- API, auth, storage, revisioning, agent registry
+- relay listener and version policy management
+- agent asset publishing and join/bootstrap flow
+- serving the built SPA and compatibility aliases
 
-### Testing Dynamic Proxy Generation
+**Go execution plane**
+- heartbeat sync client
+- HTTP proxy engine
+- L4 direct proxying
+- TCP relay validation/runtime
+- certificate/runtime primitives
+- local-agent mode and update plumbing
 
-```bash
-# Manually trigger proxy config generation
-/docker-entrypoint.d/25-dynamic-reverse-proxy.sh
+`deploy.sh`, `conf.d/`, and repo-root `nginx.conf` remain only for legacy standalone Nginx workflows and are not part of the default runtime path.
 
-# Check generated configs
-ls -la /etc/nginx/conf.d/dynamic/
+### Storage Layer
+- **SQLite (default):** Go control-plane storage/runtime metadata
+- **Local state:** data under `panel/data/` as mounted runtime state
 
-# View a specific generated config
-cat /etc/nginx/conf.d/dynamic/rule_1.conf
-```
+Relevant control-plane files:
+- `panel/backend-go/cmd/nre-control-plane/main.go`
+- `panel/backend-go/internal/...`
 
-## Important Implementation Details
-
-### SSL Certificate Management
-
-- Certificates managed by `acme.sh` in `/opt/nginx-reverse-emby/panel/data/.acme.sh`
-- Supports HTTP-01 and DNS-01 validation (via DNS API providers like Cloudflare)
-- Auto-renewal configured via cron in `30-acme-renew.sh`
-- Certificate state tracked in `.state/active_cert_domains`
-- Managed certificates: centralized cert management across agents (requires Cloudflare DNS API)
-
-### Authentication Flow
-
-1. Frontend checks for token in localStorage (`panel_token`)
-2. All API requests include `X-Panel-Token` header
-3. Backend validates token against `API_TOKEN` environment variable
-4. If token missing or invalid, frontend shows TokenConfig component
-
-### Config Generation Process
-
-The `25-dynamic-reverse-proxy.sh` script:
-1. Reads rules from `proxy_rules.csv` or `proxy_rules.json`
-2. Parses each rule's frontend_url (protocol, host, port, path)
-3. For HTTPS rules in `direct` mode: requests/installs SSL certificates
-4. Generates nginx config file per rule in `/etc/nginx/conf.d/dynamic/`
-5. Runs `nginx -t` to validate
-6. Executes `nginx -s reload` if validation passes
-
-### L4 (TCP/UDP) Proxy Rules
-
-- Stored in `l4_rules.json`
-- Generated configs placed in `/etc/nginx/stream-conf.d/dynamic/`
-- Supports TCP and UDP protocols
-- Requires nginx stream module
-
-## Debugging Tips
-
-### Frontend Issues
-
-- Check browser console for API errors
-- Verify token is set: `localStorage.getItem('panel_token')`
-- Check API endpoint: default is `/panel-api` (proxied by nginx to backend)
-
-### Backend Issues
-
-- Check if server is running: `curl http://127.0.0.1:18081/panel-api/rules`
-- Verify token: `curl -H "X-Panel-Token: your-token" http://127.0.0.1:18081/panel-api/rules`
-- Check backend logs in Docker: `docker compose logs nginx-reverse-emby | grep server.js`
-
-### Nginx Issues
-
-- Always run `nginx -t` before reload
-- Check error log: `/var/log/nginx/error.log`
-- Verify generated configs: `ls /etc/nginx/conf.d/dynamic/`
-- Check if ports are listening: `netstat -tlnp | grep nginx`
-
-### SSL Certificate Issues
-
-- Check acme.sh logs: `cat /opt/nginx-reverse-emby/panel/data/.acme.sh/*.log`
-- Verify DNS records for domain validation
-- For DNS API: ensure provider credentials are set (e.g., `CF_Token`, `CF_Account_ID`)
-- Manual cert request: `$ACME_HOME/acme.sh --issue -d example.com --standalone`
-
-### Agent Issues
-
-- Check agent heartbeat: agents must poll Master within `AGENT_HEARTBEAT_TIMEOUT_MS` (default 90s)
-- NAT agents: verify they can reach Master URL
-- Check agent logs: `journalctl -u light-agent -f` (if using systemd)
-- Verify agent registration: check `agents.json` on Master
-
-## Project-Specific Conventions
-
-- All user-facing text in Chinese (frontend, logs, error messages)
-- Backend uses CommonJS (`require`), frontend uses ES modules (`import`)
-- Frontend components use Composition API (`<script setup>`)
-- Shell scripts use POSIX-compliant syntax (no bashisms) except `scripts/join-agent.sh` which is Bash-specific
-- Environment variables prefixed by component: `PANEL_*`, `ACME_*`, `PROXY_*`, `MASTER_*`, `AGENT_*`
-- Data persistence: everything under `/opt/nginx-reverse-emby/panel/data`
-- Frontend: 2-space indentation, single quotes, no semicolons
-- Backend: semicolons, defensive error handling
-- Components: `PascalCase.vue`, JS modules: `camelCase`
-- Commit style: Conventional Commits (e.g., `feat(panel):`, `fix(agent):`, `docs:`)
+### Frontend State
+The Vue SPA under `panel/frontend/src/` manages rules, agents, certificates, relay listeners, and version/update UI.
 
 ## Key Environment Variables
 
-- `API_TOKEN`: Panel authentication token (required in production)
-- `PROXY_DEPLOY_MODE`: `direct` or `front_proxy`
-- `FRONT_PROXY_PORT`: Container listening port in `front_proxy` mode (default: 3000)
-- `PANEL_PORT`: Web panel port (default: 8080)
-- `PANEL_ROLE`: Node role - `master` or `agent`
-- `PANEL_AUTO_APPLY`: Auto-apply config changes (default: 1)
-- `ACME_DNS_PROVIDER`: DNS provider for certificate validation (e.g., `cf`)
-- `ACME_EMAIL`: Email for Let's Encrypt notifications
-- `ACME_CA`: Certificate authority (default: `letsencrypt`)
-- `CF_Token`: Cloudflare API Token (for DNS validation)
-- `CF_Account_ID`: Cloudflare Account ID (for DNS validation)
-- `MASTER_REGISTER_TOKEN`: Agent registration token
-- `MASTER_LOCAL_AGENT_NAME`: Master local node display name
-- `MASTER_LOCAL_AGENT_TAGS`: Master local node tags
-- `AGENT_NAME`: Agent node name
-- `AGENT_TAGS`: Agent node tags (comma-separated)
-- `AGENT_CAPABILITIES`: Agent capabilities (default: `http_rules,local_acme,cert_install,l4`)
+| Prefix | Purpose |
+|--------|---------|
+| `PANEL_*` | Panel host/port, storage backend, runtime behavior |
+| `MASTER_*` | Master register token, local-agent settings, version/update behavior |
+| `AGENT_*` | Go agent identity, polling, and sync settings |
+| `PROXY_*` | Proxy/runtime configuration shared with rules or local runtime behavior |
+
+## API Conventions
+
+- Authenticated API routes live under `/api/*`
+- Public bootstrap / asset routes live under `/api/public/*`
+- `/panel-api/*` aliases are also served directly by the Go control plane for compatibility
+- Public health endpoint: `/panel-api/health`
+
+## Testing
+
+Control-plane tests live under `panel/backend-go` and should remain package-focused with strong invariant coverage for storage and revision behavior.
+
+Common verification commands:
+
+```bash
+cd panel/backend-go && go test ./...
+cd panel/backend-go && go run ./cmd/nre-control-plane
+cd panel/frontend && npm run build
+cd go-agent && go test ./...
+docker build -t nginx-reverse-emby .
+```
+
+## Commit Style
+
+Commits follow Conventional Commits, for example:
+
+- `feat(backend): ...`
+- `feat(go-agent): ...`
+- `fix(panel): ...`
+- `feat(runtime): ...`
+
+## Security Notes
+
+- Never log or commit API tokens, register tokens, certificates, or files under `panel/data/`
+- Treat agent registration/update endpoints as sensitive
+- Keep public asset routes limited to bootstrap scripts and published agent binaries

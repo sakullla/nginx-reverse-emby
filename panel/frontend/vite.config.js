@@ -1,8 +1,20 @@
 import { defineConfig } from 'vite'
 import vue from '@vitejs/plugin-vue'
+import UnoCSS from 'unocss/vite'
 
 export default defineConfig({
-  plugins: [vue()],
+  plugins: [
+    vue(),
+    UnoCSS()
+  ],
+  test: {
+    environment: 'jsdom',
+    include: [
+      'src/components/**/*.test.js',
+      'src/api/**/*.test.mjs',
+      'src/context/**/*.test.mjs'
+    ]
+  },
   build: {
     outDir: 'dist',
     assetsDir: 'assets',

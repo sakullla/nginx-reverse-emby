@@ -1,6 +1,31 @@
-/* Main Styles Entry Point */
-@import './variables.css';
-@import './base.css';
-@import './layout.css';
-@import './components.css';
-@import './status-message.css';
+@import './themes.css';
+
+/* Body base — theme is set via data-theme on <html> */
+body {
+  margin: 0;
+  font-family: var(--font-sans);
+  background: var(--color-bg-canvas);
+  color: var(--color-text-primary);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Card grid 4K: larger cards */
+@media (min-width: 2560px) {
+  .rule-grid { grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 1.25rem; }
+  .rule-card { padding: 1.5rem; }
+  .cert-grid { grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 1.25rem; }
+  .cert-card { padding: 1.5rem; }
+  .l4-card { padding: 1.5rem; }
+}
+
+/* TopBar 4K: larger text and padding */
+@media (min-width: 2560px) {
+  .topbar { height: 72px; padding: 0 2rem; }
+  .topbar__name { font-size: 1.125rem; }
+  .topbar__badge { font-size: 0.875rem; }
+}
+
+/* Tablet: cert grid tighter columns */
+@media (max-width: 1024px) {
+  .cert-grid { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+}
