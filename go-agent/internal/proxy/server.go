@@ -376,11 +376,15 @@ func (e *routeEntry) observeSuccessfulBackend(backendObservationKey string, addr
 	if totalDuration <= 0 {
 		totalDuration = headerLatency
 	}
+	transferDuration := totalDuration - headerLatency
+	if transferDuration < 0 {
+		transferDuration = 0
+	}
 	if backendObservationKey != "" {
-		e.backendCache.ObserveBackendSuccess(backendObservationKey, headerLatency, totalDuration, bytesTransferred)
+		e.backendCache.ObserveBackendSuccess(backendObservationKey, headerLatency, transferDuration, bytesTransferred)
 	}
 	if bytesTransferred > 0 {
-		e.backendCache.ObserveTransferSuccess(address, headerLatency, totalDuration, bytesTransferred)
+		e.backendCache.ObserveTransferSuccess(address, headerLatency, transferDuration, bytesTransferred)
 		return
 	}
 	e.backendCache.ObserveSuccess(address, headerLatency)

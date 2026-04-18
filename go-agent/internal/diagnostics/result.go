@@ -41,19 +41,19 @@ type Report struct {
 }
 
 type AdaptiveSummary struct {
-	Preferred             bool    `json:"preferred,omitempty"`
-	Reason                string  `json:"reason,omitempty"`
-	Stability             float64 `json:"stability,omitempty"`
-	RecentSucceeded       int     `json:"recent_succeeded,omitempty"`
-	RecentFailed          int     `json:"recent_failed,omitempty"`
-	LatencyMS             float64 `json:"latency_ms,omitempty"`
-	EstimatedBandwidthBps float64 `json:"estimated_bandwidth_bps,omitempty"`
-	PerformanceScore      float64 `json:"performance_score,omitempty"`
-	State                 string  `json:"state,omitempty"`
-	SampleConfidence      float64 `json:"sample_confidence,omitempty"`
-	SlowStartActive       bool    `json:"slow_start_active,omitempty"`
-	Outlier               bool    `json:"outlier,omitempty"`
-	TrafficShareHint      string  `json:"traffic_share_hint,omitempty"`
+	Preferred              bool    `json:"preferred,omitempty"`
+	Reason                 string  `json:"reason,omitempty"`
+	Stability              float64 `json:"stability,omitempty"`
+	RecentSucceeded        int     `json:"recent_succeeded,omitempty"`
+	RecentFailed           int     `json:"recent_failed,omitempty"`
+	LatencyMS              float64 `json:"latency_ms,omitempty"`
+	SustainedThroughputBps float64 `json:"sustained_throughput_bps,omitempty"`
+	PerformanceScore       float64 `json:"performance_score,omitempty"`
+	State                  string  `json:"state,omitempty"`
+	SampleConfidence       float64 `json:"sample_confidence,omitempty"`
+	SlowStartActive        bool    `json:"slow_start_active,omitempty"`
+	Outlier                bool    `json:"outlier,omitempty"`
+	TrafficShareHint       string  `json:"traffic_share_hint,omitempty"`
 }
 
 func BuildReport(kind string, ruleID int, samples []Sample) Report {

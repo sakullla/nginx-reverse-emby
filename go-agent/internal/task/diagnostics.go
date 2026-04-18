@@ -120,7 +120,7 @@ func findL4Rule(rules []model.L4Rule, ruleID int) (model.L4Rule, error) {
 func reportToMap(report diagnostics.Report) map[string]any {
 	backends := make([]map[string]any, 0, len(report.Backends))
 	for _, backend := range report.Backends {
-		backends = append(backends, backendReportToMap(backend))
+		backends = append(backends, backendReportToMap(report.Kind, backend))
 	}
 	return map[string]any{
 		"kind":    report.Kind,
@@ -140,7 +140,7 @@ func reportToMap(report diagnostics.Report) map[string]any {
 	}
 }
 
-func backendReportToMap(backend diagnostics.BackendReport) map[string]any {
+func backendReportToMap(kind string, backend diagnostics.BackendReport) map[string]any {
 	payload := map[string]any{
 		"backend": backend.Backend,
 		"summary": map[string]any{
@@ -155,26 +155,31 @@ func backendReportToMap(backend diagnostics.BackendReport) map[string]any {
 		},
 	}
 	if backend.Adaptive != nil {
-		payload["adaptive"] = map[string]any{
-			"preferred":               backend.Adaptive.Preferred,
-			"reason":                  backend.Adaptive.Reason,
-			"stability":               backend.Adaptive.Stability,
-			"recent_succeeded":        backend.Adaptive.RecentSucceeded,
-			"recent_failed":           backend.Adaptive.RecentFailed,
-			"latency_ms":              backend.Adaptive.LatencyMS,
-			"estimated_bandwidth_bps": backend.Adaptive.EstimatedBandwidthBps,
-			"performance_score":       backend.Adaptive.PerformanceScore,
-			"state":                   backend.Adaptive.State,
-			"sample_confidence":       backend.Adaptive.SampleConfidence,
-			"slow_start_active":       backend.Adaptive.SlowStartActive,
-			"outlier":                 backend.Adaptive.Outlier,
-			"traffic_share_hint":      backend.Adaptive.TrafficShareHint,
+		adaptivePayload := map[string]any{
+			"preferred":          backend.Adaptive.Preferred,
+			"stability":          backend.Adaptive.Stability,
+			"recent_succeeded":   backend.Adaptive.RecentSucceeded,
+			"recent_failed":      backend.Adaptive.RecentFailed,
+			"latency_ms":         backend.Adaptive.LatencyMS,
+			"state":              backend.Adaptive.State,
+			"sample_confidence":  backend.Adaptive.SampleConfidence,
+			"slow_start_active":  backend.Adaptive.SlowStartActive,
+			"traffic_share_hint": backend.Adaptive.TrafficShareHint,
 		}
+		if kind == "http" {
+			adaptivePayload["reason"] = backend.Adaptive.Reason
+			adaptivePayload["performance_score"] = backend.Adaptive.PerformanceScore
+			adaptivePayload["outlier"] = backend.Adaptive.Outlier
+		}
+		if kind == "http" && backend.Adaptive.SustainedThroughputBps > 0 {
+			adaptivePayload["sustained_throughput_bps"] = backend.Adaptive.SustainedThroughputBps
+		}
+		payload["adaptive"] = adaptivePayload
 	}
 	if len(backend.Children) > 0 {
 		children := make([]map[string]any, 0, len(backend.Children))
 		for _, child := range backend.Children {
-			children = append(children, backendReportToMap(child))
+			children = append(children, backendReportToMap(kind, child))
 		}
 		payload["children"] = children
 	}

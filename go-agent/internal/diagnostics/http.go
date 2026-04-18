@@ -99,7 +99,10 @@ func (p *HTTPProber) probeCandidate(ctx context.Context, cache *backends.Cache, 
 		return FailureSample(attempt, candidate.backendLabel, err)
 	}
 
-	resp, err := p.doProbeRequest(ctx, client, rule, candidate, http.MethodGet)
+	reqCtx, cancel := context.WithTimeout(ctx, p.timeout)
+	defer cancel()
+
+	resp, err := p.doProbeRequest(reqCtx, client, rule, candidate, http.MethodGet)
 	if err != nil {
 		if candidate.backendObservationKey != "" {
 			cache.ObserveBackendFailure(candidate.backendObservationKey)
@@ -108,21 +111,30 @@ func (p *HTTPProber) probeCandidate(ctx context.Context, cache *backends.Cache, 
 		return FailureSample(attempt, candidate.backendLabel, err)
 	}
 	defer resp.Body.Close()
-	written, _ := io.Copy(io.Discard, resp.Body)
-	totalDuration := time.Since(start)
-	if candidate.backendObservationKey != "" {
-		cache.ObserveBackendSuccess(candidate.backendObservationKey, totalDuration, totalDuration, written)
+	headerLatency := time.Since(start)
+	written, err := io.Copy(io.Discard, resp.Body)
+	if err != nil {
+		if candidate.backendObservationKey != "" {
+			cache.ObserveBackendFailure(candidate.backendObservationKey)
+		}
+		cache.MarkFailure(candidate.dialAddress)
+		return FailureSample(attempt, candidate.backendLabel, err)
 	}
-	cache.ObserveTransferSuccess(candidate.dialAddress, totalDuration, totalDuration, written)
+	totalDuration := time.Since(start)
+	transferDuration := totalDuration - headerLatency
+	if transferDuration < 0 {
+		transferDuration = 0
+	}
+	if candidate.backendObservationKey != "" {
+		cache.ObserveBackendSuccess(candidate.backendObservationKey, headerLatency, transferDuration, written)
+	}
+	cache.ObserveTransferSuccess(candidate.dialAddress, headerLatency, transferDuration, written)
 
 	return LatencySample(attempt, candidate.backendLabel, totalDuration, resp.StatusCode)
 }
 
 func (p *HTTPProber) doProbeRequest(ctx context.Context, client *http.Client, rule model.HTTPRule, candidate httpProbeCandidate, method string) (*http.Response, error) {
-	reqCtx, cancel := context.WithTimeout(ctx, p.timeout)
-	defer cancel()
-
-	req, err := http.NewRequestWithContext(reqCtx, method, candidate.targetURL.String(), nil)
+	req, err := http.NewRequestWithContext(ctx, method, candidate.targetURL.String(), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -212,7 +224,9 @@ func httpCandidates(ctx context.Context, cache *backends.Cache, rule model.HTTPR
 
 func buildHTTPAdaptiveReports(reports []BackendReport, candidates []httpProbeCandidate, cache *backends.Cache) []BackendReport {
 	configuredChildren := make(map[string][]httpResolvedCandidate)
+	configuredKeys := make(map[string]string)
 	configuredSummary := make(map[string]backends.ObservationSummary)
+	sharedConfiguredKeys := make([]string, 0, len(candidates))
 	for _, candidate := range candidates {
 		if candidate.configuredURL == "" {
 			continue
@@ -220,9 +234,20 @@ func buildHTTPAdaptiveReports(reports []BackendReport, candidates []httpProbeCan
 		if existing := configuredChildren[candidate.configuredURL]; len(candidate.resolvedCandidates) > len(existing) {
 			configuredChildren[candidate.configuredURL] = append([]httpResolvedCandidate(nil), candidate.resolvedCandidates...)
 		}
-		if _, ok := configuredSummary[candidate.configuredURL]; !ok {
-			configuredSummary[candidate.configuredURL] = cache.Summary(candidate.backendObservationKey)
+		if _, ok := configuredKeys[candidate.configuredURL]; !ok {
+			configuredKeys[candidate.configuredURL] = candidate.backendObservationKey
+			if candidate.backendObservationKey != "" {
+				sharedConfiguredKeys = append(sharedConfiguredKeys, candidate.backendObservationKey)
+			}
 		}
+	}
+	sharedConfiguredSummary := cache.SummariesWithSharedThroughput(sharedConfiguredKeys)
+	for configuredURL, key := range configuredKeys {
+		if summary, ok := sharedConfiguredSummary[key]; ok {
+			configuredSummary[configuredURL] = summary
+			continue
+		}
+		configuredSummary[configuredURL] = cache.Summary(key)
 	}
 
 	reportByLabel := make(map[string]BackendReport, len(reports))
@@ -240,7 +265,10 @@ func buildHTTPAdaptiveReports(reports []BackendReport, candidates []httpProbeCan
 		}
 		children := configuredChildren[configured]
 		if len(children) <= 1 {
-			report.Adaptive = adaptiveSummaryFromObservation(configuredSummary[configured], false, "")
+			report.Adaptive = adaptiveSummaryFromObservation(configuredSummary[configured], false, "", adaptiveSummaryOptions{
+				includeThroughput:   true,
+				includeHTTPInsights: true,
+			})
 			annotated = append(annotated, report)
 			continue
 		}
@@ -253,17 +281,32 @@ func buildHTTPAdaptiveReports(reports []BackendReport, candidates []httpProbeCan
 			hasPreferred = true
 		}
 		parent := BackendReport{
-			Backend:  configured,
-			Summary:  mergeChildSummaries(children, reportByLabel),
-			Adaptive: adaptiveSummaryFromObservation(configuredSummary[configured], isPreferred, preferredReason(isPreferred)),
+			Backend: configured,
+			Summary: mergeChildSummaries(children, reportByLabel),
+			Adaptive: adaptiveSummaryFromObservation(configuredSummary[configured], isPreferred, preferredReason(isPreferred), adaptiveSummaryOptions{
+				includeThroughput:   true,
+				includeHTTPInsights: true,
+			}),
 			Children: make([]BackendReport, 0, len(children)),
 		}
+		childAddresses := make([]string, 0, len(children))
+		for _, child := range children {
+			childAddresses = append(childAddresses, child.dialAddress)
+		}
+		childSummaries := cache.SummariesWithSharedThroughput(childAddresses)
 		for index, child := range children {
 			childReport := reportByLabel[child.label]
+			childSummary, ok := childSummaries[child.dialAddress]
+			if !ok {
+				childSummary = cache.Summary(child.dialAddress)
+			}
 			parent.Children = append(parent.Children, BackendReport{
-				Backend:  child.label,
-				Summary:  childReport.Summary,
-				Adaptive: adaptiveSummaryFromObservation(cache.Summary(child.dialAddress), index == 0, preferredReason(index == 0)),
+				Backend: child.label,
+				Summary: childReport.Summary,
+				Adaptive: adaptiveSummaryFromObservation(childSummary, index == 0, preferredReason(index == 0), adaptiveSummaryOptions{
+					includeThroughput:   true,
+					includeHTTPInsights: true,
+				}),
 			})
 		}
 		annotated = append(annotated, parent)
@@ -318,26 +361,36 @@ func mergeChildSummaries(children []httpResolvedCandidate, reports map[string]Ba
 	return summary
 }
 
-func adaptiveSummaryFromObservation(summary backends.ObservationSummary, preferred bool, reason string) *AdaptiveSummary {
+type adaptiveSummaryOptions struct {
+	includeThroughput   bool
+	includeHTTPInsights bool
+}
+
+func adaptiveSummaryFromObservation(summary backends.ObservationSummary, preferred bool, reason string, options adaptiveSummaryOptions) *AdaptiveSummary {
 	latencyMS := 0.0
 	if summary.HasLatency {
 		latencyMS = roundMetric(float64(summary.Latency) / float64(time.Millisecond))
 	}
-	return &AdaptiveSummary{
-		Preferred:             preferred,
-		Reason:                reason,
-		Stability:             roundMetric(summary.Stability),
-		RecentSucceeded:       summary.RecentSucceeded,
-		RecentFailed:          summary.RecentFailed,
-		LatencyMS:             latencyMS,
-		EstimatedBandwidthBps: roundMetric(summary.Bandwidth),
-		PerformanceScore:      roundMetric(summary.PerformanceScore),
-		State:                 summary.State,
-		SampleConfidence:      roundMetric(summary.SampleConfidence),
-		SlowStartActive:       summary.SlowStartActive,
-		Outlier:               summary.Outlier,
-		TrafficShareHint:      summary.TrafficShareHint,
+	adaptive := &AdaptiveSummary{
+		Preferred:        preferred,
+		Stability:        roundMetric(summary.Stability),
+		RecentSucceeded:  summary.RecentSucceeded,
+		RecentFailed:     summary.RecentFailed,
+		LatencyMS:        latencyMS,
+		State:            summary.State,
+		SampleConfidence: roundMetric(summary.SampleConfidence),
+		SlowStartActive:  summary.SlowStartActive,
+		TrafficShareHint: summary.TrafficShareHint,
 	}
+	if options.includeHTTPInsights {
+		adaptive.Reason = reason
+		adaptive.PerformanceScore = roundMetric(summary.PerformanceScore)
+		adaptive.Outlier = summary.Outlier
+	}
+	if options.includeThroughput && summary.HasBandwidth {
+		adaptive.SustainedThroughputBps = roundMetric(summary.Bandwidth)
+	}
+	return adaptive
 }
 
 func preferredReason(preferred bool) string {
