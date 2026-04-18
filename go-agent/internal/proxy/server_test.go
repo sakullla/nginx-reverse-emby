@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -806,7 +807,7 @@ func TestRouteEntryServeHTTPDoesNotRecordSuccessWhenBodyCopyFails(t *testing.T) 
 
 type panicAfterReadCloser struct {
 	readCalled atomic.Bool
-	payload     []byte
+	payload    []byte
 }
 
 func (r *panicAfterReadCloser) Read(p []byte) (int, error) {
@@ -1977,6 +1978,90 @@ func TestStartServesHTTPRulesThroughRelayChainWithObfsMode(t *testing.T) {
 	}
 }
 
+func TestStartStreamsLargeHTTPDownloadThroughRelayChainWithObfsMode(t *testing.T) {
+	payload := bytes.Repeat([]byte("abcdefghijklmnopqrstuvwxyz012345"), 4096)
+	frontendPort := pickFreePort(t)
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(payload)))
+		_, _ = w.Write(payload)
+	}))
+	defer backend.Close()
+
+	backendURL, err := url.Parse(backend.URL)
+	if err != nil {
+		t.Fatalf("failed to parse backend URL: %v", err)
+	}
+
+	relayCert := mustIssueProxyTLSCertificate(t, "relay.internal.test")
+	relayPublicPort := pickFreePort(t)
+	relayAccepted := make(chan relayTestRequest, 1)
+	relayStop := startStreamingTestRelayServer(t, fmt.Sprintf("127.0.0.1:%d", relayPublicPort), relayCert, relayAccepted, relay.RelayObfsModeEarlyWindowV2)
+	defer relayStop()
+	relayListenPort := pickFreePort(t)
+
+	runtime, err := Start(
+		context.Background(),
+		[]model.HTTPRule{{
+			FrontendURL: fmt.Sprintf("http://edge.example.test:%d", frontendPort),
+			BackendURL:  backend.URL,
+			RelayChain:  []int{41},
+			RelayObfs:   true,
+		}},
+		[]model.RelayListener{{
+			ID:         41,
+			AgentID:    "remote-relay-agent",
+			Name:       "relay-hop",
+			ListenHost: "127.0.0.2",
+			BindHosts:  []string{"127.0.0.2"},
+			ListenPort: relayListenPort,
+			PublicHost: "127.0.0.1",
+			PublicPort: relayPublicPort,
+			ObfsMode:   relay.RelayObfsModeEarlyWindowV2,
+			Enabled:    true,
+			TLSMode:    "pin_only",
+			PinSet: []model.RelayPin{{
+				Type:  "sha256",
+				Value: mustSPKIPin(t, relayCert),
+			}},
+		}},
+		Providers{Relay: &testRuntimeMaterialProvider{}},
+	)
+	if err != nil {
+		t.Fatalf("failed to start relay-backed runtime: %v", err)
+	}
+	defer runtime.Close()
+
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/download", frontendPort), nil)
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+	req.Host = fmt.Sprintf("edge.example.test:%d", frontendPort)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("relay-backed request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read proxied body: %v", err)
+	}
+	if !bytes.Equal(body, payload) {
+		t.Fatal("proxied download payload mismatch")
+	}
+
+	select {
+	case relayReq := <-relayAccepted:
+		if relayReq.Target != backendURL.Host {
+			t.Fatalf("unexpected relay target %q", relayReq.Target)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected large download to traverse relay listener")
+	}
+}
+
 func TestResolveRelayHopsUsesPublicEndpointAndFallbacks(t *testing.T) {
 	rule := model.HTTPRule{
 		FrontendURL: "http://edge.example.test",
@@ -2307,6 +2392,69 @@ func startTestRelayServer(
 	}
 }
 
+func startStreamingTestRelayServer(
+	t *testing.T,
+	address string,
+	cert tls.Certificate,
+	requests chan<- relayTestRequest,
+	obfsMode string,
+) func() {
+	t.Helper()
+
+	ln, err := tls.Listen("tcp", address, &tls.Config{
+		MinVersion:   tls.VersionTLS12,
+		Certificates: []tls.Certificate{cert},
+	})
+	if err != nil {
+		t.Fatalf("failed to start streaming relay server: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+
+		relayConn, relayReq, err := acceptRelayTestConn(conn, obfsMode)
+		if err != nil {
+			return
+		}
+		requests <- relayReq
+
+		if err := writeRelayTestResponse(relayConn, map[string]any{"ok": true}); err != nil {
+			return
+		}
+
+		upstream, err := net.Dial("tcp", relayReq.Target)
+		if err != nil {
+			return
+		}
+		defer upstream.Close()
+
+		req, err := http.ReadRequest(bufio.NewReader(relayConn))
+		if err != nil {
+			return
+		}
+		if err := req.Write(upstream); err != nil {
+			_ = req.Body.Close()
+			return
+		}
+		_ = req.Body.Close()
+		closeWriteTestConn(upstream)
+
+		_, _ = io.Copy(relayConn, upstream)
+		closeWriteTestConn(relayConn)
+	}()
+
+	return func() {
+		_ = ln.Close()
+		<-done
+	}
+}
+
 func acceptRelayTestConn(conn net.Conn, obfsMode string) (net.Conn, relayTestRequest, error) {
 	framedConn := net.Conn(conn)
 	if obfsMode == relay.RelayObfsModeEarlyWindowV2 {
@@ -2407,6 +2555,15 @@ func relayTestWireConn(conn net.Conn) net.Conn {
 		return muxConn.conn
 	}
 	return conn
+}
+
+func closeWriteTestConn(conn net.Conn) {
+	if conn == nil {
+		return
+	}
+	if closer, ok := conn.(interface{ CloseWrite() error }); ok {
+		_ = closer.CloseWrite()
+	}
 }
 
 func (c *relayTestMuxConn) Read(p []byte) (int, error) {

@@ -46,11 +46,12 @@ type tlsTCPLogicalStream struct {
 	tunnel   *tlsTCPTunnel
 	streamID uint32
 
-	readMu     sync.Mutex
-	readBuf    []byte
-	readCh     chan struct{}
-	readErr    error
-	readErrSet bool
+	readMu      sync.Mutex
+	readChunks  [][]byte
+	readOffset  int
+	readCh      chan struct{}
+	readErr     error
+	readErrSet  bool
 	writeClosed bool
 
 	openResultCh chan error
@@ -385,11 +386,22 @@ func (t *tlsTCPTunnel) failAllStreams(err error) {
 func (s *tlsTCPLogicalStream) Read(p []byte) (int, error) {
 	for {
 		s.readMu.Lock()
-		if len(s.readBuf) > 0 {
-			n := copy(p, s.readBuf)
-			s.readBuf = s.readBuf[n:]
+		if len(s.readChunks) > 0 {
+			total := 0
+			for total < len(p) && len(s.readChunks) > 0 {
+				head := s.readChunks[0]
+				n := copy(p[total:], head[s.readOffset:])
+				total += n
+				s.readOffset += n
+				if s.readOffset < len(head) {
+					break
+				}
+				s.readChunks[0] = nil
+				s.readChunks = s.readChunks[1:]
+				s.readOffset = 0
+			}
 			s.readMu.Unlock()
-			return n, nil
+			return total, nil
 		}
 		if s.readErrSet {
 			err := s.readErr
@@ -481,7 +493,7 @@ func (s *tlsTCPLogicalStream) ConnectionState() tls.ConnectionState {
 
 func (s *tlsTCPLogicalStream) appendData(payload []byte) {
 	s.readMu.Lock()
-	s.readBuf = append(s.readBuf, payload...)
+	s.readChunks = append(s.readChunks, payload)
 	s.readMu.Unlock()
 	s.notifyReadable()
 }
