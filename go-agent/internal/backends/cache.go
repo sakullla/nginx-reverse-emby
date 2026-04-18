@@ -391,10 +391,23 @@ func (c *Cache) preferResolvedCandidates(candidates []Candidate, allowThroughput
 	preferenceState := make(map[string]candidatePreference, len(ordered))
 
 	c.mu.Lock()
+	sharedMix := trafficMix{}
+	observations := make(map[string]candidateObservation, len(ordered))
 	for _, candidate := range ordered {
 		key := strings.TrimSpace(candidate.Address)
 		observation := c.observed[key]
-		preference := observation.preference(now, allowThroughput, observation.recentTrafficMix(now))
+		observations[key] = observation
+		if !allowThroughput {
+			continue
+		}
+		mix := observation.recentTrafficMix(now)
+		sharedMix.small += mix.small
+		sharedMix.bulk += mix.bulk
+	}
+	for _, candidate := range ordered {
+		key := strings.TrimSpace(candidate.Address)
+		observation := observations[key]
+		preference := observation.preference(now, allowThroughput, sharedMix)
 		preferenceState[key] = preference
 	}
 	c.mu.Unlock()
