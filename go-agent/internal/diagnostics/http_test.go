@@ -697,6 +697,123 @@ func TestBuildHTTPAdaptiveReportsUsesSharedTrafficMixForResolvedChildren(t *test
 	}
 }
 
+func TestBuildHTTPAdaptiveReportsMarksPreferredConfiguredBackendByAdaptivePreference(t *testing.T) {
+	base := time.Date(2026, 4, 18, 10, 0, 0, 0, time.UTC)
+	cache := backends.NewCache(backends.Config{
+		Now: func() time.Time {
+			return base
+		},
+	})
+	scope := "https://edge.example.test"
+	coldURL := "http://cold.example:8096/healthz"
+	warmURL := "http://warm.example:8096/healthz"
+	coldKey := backends.BackendObservationKey(scope, backends.StableBackendID(coldURL))
+	warmKey := backends.BackendObservationKey(scope, backends.StableBackendID(warmURL))
+
+	cache.ObserveBackendSuccess(coldKey, 50*time.Millisecond, 120*time.Millisecond, 2*1024*1024)
+	cache.ObserveBackendSuccess(coldKey, 50*time.Millisecond, 120*time.Millisecond, 2*1024*1024)
+
+	for i := 0; i < 4; i++ {
+		cache.ObserveBackendSuccess(warmKey, 10*time.Millisecond, 80*time.Millisecond, 2*1024*1024)
+	}
+
+	annotated := buildHTTPAdaptiveReports([]BackendReport{
+		{Backend: coldURL, Summary: Summary{}},
+		{Backend: warmURL, Summary: Summary{}},
+	}, []httpProbeCandidate{
+		{
+			backendLabel:          coldURL,
+			backendObservationKey: coldKey,
+			configuredURL:         coldURL,
+		},
+		{
+			backendLabel:          warmURL,
+			backendObservationKey: warmKey,
+			configuredURL:         warmURL,
+		},
+	}, cache)
+	if len(annotated) != 2 {
+		t.Fatalf("annotated = %+v", annotated)
+	}
+
+	if annotated[0].Backend != coldURL || annotated[1].Backend != warmURL {
+		t.Fatalf("annotated order = %+v", annotated)
+	}
+	if annotated[0].Adaptive == nil || annotated[1].Adaptive == nil {
+		t.Fatalf("annotated adaptive = %+v", annotated)
+	}
+	if annotated[0].Adaptive.Preferred {
+		t.Fatalf("configured backend with colder/lower-confidence adaptive summary must not be marked preferred: %+v", annotated)
+	}
+	if !annotated[1].Adaptive.Preferred {
+		t.Fatalf("configured backend with stronger adaptive summary must be marked preferred: %+v", annotated)
+	}
+}
+
+func TestBuildHTTPAdaptiveReportsMarksPreferredResolvedChildByAdaptivePreference(t *testing.T) {
+	base := time.Date(2026, 4, 18, 10, 0, 0, 0, time.UTC)
+	cache := backends.NewCache(backends.Config{
+		Now: func() time.Time {
+			return base
+		},
+	})
+
+	configuredURL := "http://origin.example:8096/healthz"
+	coldAddr := "10.0.0.10:8096"
+	warmAddr := "10.0.0.11:8096"
+	coldLabel := configuredURL + " [" + coldAddr + "]"
+	warmLabel := configuredURL + " [" + warmAddr + "]"
+
+	cache.ObserveTransferSuccess(coldAddr, 50*time.Millisecond, 120*time.Millisecond, 2*1024*1024)
+	cache.ObserveTransferSuccess(coldAddr, 50*time.Millisecond, 120*time.Millisecond, 2*1024*1024)
+
+	for i := 0; i < 4; i++ {
+		cache.ObserveTransferSuccess(warmAddr, 10*time.Millisecond, 80*time.Millisecond, 2*1024*1024)
+	}
+
+	annotated := buildHTTPAdaptiveReports([]BackendReport{
+		{Backend: coldLabel, Summary: Summary{}},
+		{Backend: warmLabel, Summary: Summary{}},
+	}, []httpProbeCandidate{
+		{
+			backendLabel:  coldLabel,
+			dialAddress:   coldAddr,
+			configuredURL: configuredURL,
+			resolvedCandidates: []httpResolvedCandidate{
+				{label: coldLabel, dialAddress: coldAddr},
+				{label: warmLabel, dialAddress: warmAddr},
+			},
+		},
+		{
+			backendLabel:  warmLabel,
+			dialAddress:   warmAddr,
+			configuredURL: configuredURL,
+			resolvedCandidates: []httpResolvedCandidate{
+				{label: coldLabel, dialAddress: coldAddr},
+				{label: warmLabel, dialAddress: warmAddr},
+			},
+		},
+	}, cache)
+	if len(annotated) != 1 {
+		t.Fatalf("annotated = %+v", annotated)
+	}
+	if len(annotated[0].Children) != 2 {
+		t.Fatalf("children = %+v", annotated[0].Children)
+	}
+
+	firstChild := annotated[0].Children[0]
+	secondChild := annotated[0].Children[1]
+	if firstChild.Adaptive == nil || secondChild.Adaptive == nil {
+		t.Fatalf("children adaptive = %+v", annotated[0].Children)
+	}
+	if firstChild.Adaptive.Preferred {
+		t.Fatalf("resolved child with colder/lower-confidence adaptive summary must not be marked preferred: %+v", annotated[0].Children)
+	}
+	if !secondChild.Adaptive.Preferred {
+		t.Fatalf("resolved child with stronger adaptive summary must be marked preferred: %+v", annotated[0].Children)
+	}
+}
+
 func TestHTTPProberDiagnoseSerializesAdaptiveRecoveryFields(t *testing.T) {
 	listener, err := net.Listen("tcp", "0.0.0.0:0")
 	if err != nil {

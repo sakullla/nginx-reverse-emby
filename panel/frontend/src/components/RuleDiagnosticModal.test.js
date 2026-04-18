@@ -86,13 +86,14 @@ describe('RuleDiagnosticModal', () => {
     expect(wrapper.text()).toContain('4.0 MB/s')
   })
 
-  it('hides throughput metrics when sustained throughput is absent', async () => {
+  it('keeps throughput metrics visible for HTTP diagnostics even when throughput is unavailable', async () => {
     const wrapper = mountModal({
       task: buildTask('http', { sustained_throughput_bps: null })
     })
     await wrapper.get('.diagnostic-modal__section-title--toggle').trigger('click')
 
-    expect(wrapper.text()).not.toContain('持续吞吐')
+    expect(wrapper.text()).toContain('持续吞吐')
+    expect(wrapper.text()).toContain('-')
   })
 
   it('omits HTTP-only adaptive fields for l4 diagnostics', async () => {

@@ -255,9 +255,10 @@ func buildHTTPAdaptiveReports(reports []BackendReport, candidates []httpProbeCan
 		reportByLabel[report.Backend] = report
 	}
 
+	preferredConfigured := preferredObservationKey(configuredSummary)
+
 	annotated := make([]BackendReport, 0, len(reports))
 	seenConfigured := make(map[string]struct{}, len(reports))
-	hasPreferred := false
 	for _, report := range reports {
 		configured := report.Backend
 		if idx := strings.Index(configured, " ["); idx > 0 {
@@ -265,7 +266,8 @@ func buildHTTPAdaptiveReports(reports []BackendReport, candidates []httpProbeCan
 		}
 		children := configuredChildren[configured]
 		if len(children) <= 1 {
-			report.Adaptive = adaptiveSummaryFromObservation(configuredSummary[configured], false, "", adaptiveSummaryOptions{
+			isPreferred := configured == preferredConfigured
+			report.Adaptive = adaptiveSummaryFromObservation(configuredSummary[configured], isPreferred, preferredReason(isPreferred), adaptiveSummaryOptions{
 				includeThroughput:   true,
 				includeHTTPInsights: true,
 			})
@@ -276,10 +278,7 @@ func buildHTTPAdaptiveReports(reports []BackendReport, candidates []httpProbeCan
 			continue
 		}
 		seenConfigured[configured] = struct{}{}
-		isPreferred := !hasPreferred
-		if isPreferred {
-			hasPreferred = true
-		}
+		isPreferred := configured == preferredConfigured
 		parent := BackendReport{
 			Backend: configured,
 			Summary: mergeChildSummaries(children, reportByLabel),
@@ -294,16 +293,21 @@ func buildHTTPAdaptiveReports(reports []BackendReport, candidates []httpProbeCan
 			childAddresses = append(childAddresses, child.dialAddress)
 		}
 		childSummaries := cache.SummariesWithSharedThroughput(childAddresses)
+		preferredChildKey := preferredObservationKey(childSummaries)
 		for index, child := range children {
 			childReport := reportByLabel[child.label]
 			childSummary, ok := childSummaries[child.dialAddress]
 			if !ok {
 				childSummary = cache.Summary(child.dialAddress)
 			}
+			isPreferredChild := child.dialAddress == preferredChildKey
+			if len(childSummaries) == 0 {
+				isPreferredChild = index == 0
+			}
 			parent.Children = append(parent.Children, BackendReport{
 				Backend: child.label,
 				Summary: childReport.Summary,
-				Adaptive: adaptiveSummaryFromObservation(childSummary, index == 0, preferredReason(index == 0), adaptiveSummaryOptions{
+				Adaptive: adaptiveSummaryFromObservation(childSummary, isPreferredChild, preferredReason(isPreferredChild), adaptiveSummaryOptions{
 					includeThroughput:   true,
 					includeHTTPInsights: true,
 				}),
@@ -312,6 +316,40 @@ func buildHTTPAdaptiveReports(reports []BackendReport, candidates []httpProbeCan
 		annotated = append(annotated, parent)
 	}
 	return annotated
+}
+
+func preferredObservationKey(summaries map[string]backends.ObservationSummary) string {
+	preferred := ""
+	var best backends.ObservationSummary
+	for key, summary := range summaries {
+		if preferred == "" || compareObservationSummary(summary, best) > 0 {
+			preferred = key
+			best = summary
+		}
+	}
+	return preferred
+}
+
+func compareObservationSummary(left, right backends.ObservationSummary) int {
+	if left.InBackoff != right.InBackoff {
+		if !left.InBackoff {
+			return 1
+		}
+		return -1
+	}
+	if left.Stability != right.Stability {
+		if left.Stability > right.Stability {
+			return 1
+		}
+		return -1
+	}
+	if left.PerformanceScore != right.PerformanceScore {
+		if left.PerformanceScore > right.PerformanceScore {
+			return 1
+		}
+		return -1
+	}
+	return 0
 }
 
 func mergeChildSummaries(children []httpResolvedCandidate, reports map[string]BackendReport) Summary {
