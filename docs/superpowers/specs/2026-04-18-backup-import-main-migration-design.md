@@ -4,11 +4,11 @@
 
 Add a complete migration path from the old `main` architecture to the new pure-Go architecture with these boundaries:
 
-- Old `main` control plane supports backup export and backup import.
-- New pure-Go control plane supports backup export and backup import.
+- Old `main` control plane supports `导出备份` and `导入备份`.
+- New pure-Go control plane supports `导出备份` and `导入备份`.
 - The backup package is portable across old and new control-plane architectures.
 - Old `main` Agent nodes are migrated separately by running `join-agent.sh migrate-from-main`.
-- Daily backup/export/import remains available in both control-plane architectures.
+- Daily backup export and backup import remain available in both control-plane architectures.
 
 The design must support a low-friction migration flow, include certificate material, skip conflicting items with a report, and clean up the old Agent-side runtime after a successful migration.
 
@@ -16,11 +16,11 @@ The design must support a low-friction migration flow, include certificate mater
 
 ### In Scope
 
-- System settings UI for backup, export, and import.
-- Control-plane backend APIs and services for backup package export/import.
+- System settings UI for backup export and backup import.
+- Control-plane backend APIs and services for portable backup package export/import.
 - Backup package support for old `main` control-plane data and new control-plane data.
-- Old `main` control-plane implementation of backup import/export.
-- New pure-Go control-plane implementation of backup import/export.
+- Old `main` control-plane implementation of backup export/import.
+- New pure-Go control-plane implementation of backup export/import.
 - Agent-side `join-agent.sh migrate-from-main` flow for old `main` lightweight agents.
 - Agent token reuse during Agent migration.
 - Migration of certificate material required for no-touch cutover.
@@ -39,7 +39,7 @@ The design must support a low-friction migration flow, include certificate mater
 ### Control Plane Migration
 
 1. User opens the old-version system settings page.
-2. User exports a backup package.
+2. User clicks `导出备份` and downloads a backup package.
 3. User upgrades the Master to the new version.
 4. User opens the new-version system settings page.
 5. User imports the backup package.
@@ -51,7 +51,7 @@ The design must support a low-friction migration flow, include certificate mater
 Both old and new control planes support the same operational pattern:
 
 1. User opens system settings.
-2. User exports a backup package.
+2. User clicks `导出备份`.
 3. User may import a previously exported backup package into the same architecture or the other architecture.
 4. System skips conflicting items and shows a detailed report.
 
@@ -199,9 +199,14 @@ The system settings page gains a new data-management section:
 
 This section sits alongside existing theme/system information, not as a separate page, because migration and backup are administrative system actions.
 
+There is no separate `备份` button with a different format or different behavior. The product surface is intentionally reduced to:
+
+- one export action: `导出备份`
+- one import action: `导入备份`
+
 The UI behavior is implemented in both old and new control-plane frontends:
 
-- export is a direct download action
+- `导出备份` is a direct download action
 - import accepts a selected tarball
 - import shows progress state
 - import result renders a concise summary first, then the detailed report
