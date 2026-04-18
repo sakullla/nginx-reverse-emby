@@ -1,8 +1,10 @@
 package service
 
 import (
+	"context"
 	"strings"
 
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
@@ -24,6 +26,15 @@ type configIdentityAllocator struct {
 	nextRevisionByAgent map[string]int
 }
 
+type configIdentityAllocatorStore interface {
+	ListAgents(context.Context) ([]storage.AgentRow, error)
+	ListHTTPRules(context.Context, string) ([]storage.HTTPRuleRow, error)
+	ListL4Rules(context.Context, string) ([]storage.L4RuleRow, error)
+	LoadLocalAgentState(context.Context) (storage.LocalAgentStateRow, error)
+	ListRelayListeners(context.Context, string) ([]storage.RelayListenerRow, error)
+	ListManagedCertificates(context.Context) ([]storage.ManagedCertificateRow, error)
+}
+
 func newConfigIdentityAllocator(state configIdentityAllocatorState) *configIdentityAllocator {
 	allocator := &configIdentityAllocator{
 		localAgentID:        strings.TrimSpace(state.LocalAgentID),
@@ -35,6 +46,47 @@ func newConfigIdentityAllocator(state configIdentityAllocatorState) *configIdent
 	allocator.seedIDs(state)
 	allocator.seedRevisionFloors(state)
 	return allocator
+}
+
+func newConfigIdentityAllocatorFromStore(ctx context.Context, cfg config.Config, store configIdentityAllocatorStore) (*configIdentityAllocator, error) {
+	agentRows, err := store.ListAgents(ctx)
+	if err != nil {
+		return nil, err
+	}
+	localState, err := store.LoadLocalAgentState(ctx)
+	if err != nil {
+		return nil, err
+	}
+	agentIDs, err := allKnownAgentIDs(ctx, cfg, store)
+	if err != nil {
+		return nil, err
+	}
+	httpRows, err := listAllHTTPRuleRows(ctx, store, agentIDs)
+	if err != nil {
+		return nil, err
+	}
+	l4Rows, err := listAllL4RuleRows(ctx, store, agentIDs)
+	if err != nil {
+		return nil, err
+	}
+	relayRows, err := store.ListRelayListeners(ctx, "")
+	if err != nil {
+		return nil, err
+	}
+	certRows, err := store.ListManagedCertificates(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return newConfigIdentityAllocator(configIdentityAllocatorState{
+		LocalAgentID:   cfg.LocalAgentID,
+		Agents:         agentRows,
+		LocalState:     localState,
+		HTTPRules:      httpRows,
+		L4Rules:        l4Rows,
+		RelayListeners: relayRows,
+		Certificates:   certRows,
+	}), nil
 }
 
 func (a *configIdentityAllocator) AllocateRuleID(preferredID int) int {
@@ -149,6 +201,37 @@ func allocatePreferredID(used map[int]struct{}, preferredID int) int {
 	}
 	used[next] = struct{}{}
 	return next
+}
+
+func preferredInt(value *int) int {
+	if value == nil {
+		return 0
+	}
+	return *value
+}
+
+func listAllHTTPRuleRows(ctx context.Context, store configIdentityAllocatorStore, agentIDs []string) ([]storage.HTTPRuleRow, error) {
+	rows := make([]storage.HTTPRuleRow, 0)
+	for _, agentID := range agentIDs {
+		agentRows, err := store.ListHTTPRules(ctx, agentID)
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, agentRows...)
+	}
+	return rows, nil
+}
+
+func listAllL4RuleRows(ctx context.Context, store configIdentityAllocatorStore, agentIDs []string) ([]storage.L4RuleRow, error) {
+	rows := make([]storage.L4RuleRow, 0)
+	for _, agentID := range agentIDs {
+		agentRows, err := store.ListL4Rules(ctx, agentID)
+		if err != nil {
+			return nil, err
+		}
+		rows = append(rows, agentRows...)
+	}
+	return rows, nil
 }
 
 func highestAgentRuleRevision(agentID string, httpRows []storage.HTTPRuleRow, l4Rows []storage.L4RuleRow) int {
