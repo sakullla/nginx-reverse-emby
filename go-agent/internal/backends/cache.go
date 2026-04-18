@@ -84,14 +84,14 @@ type candidateObservation struct {
 }
 
 type observationBucket struct {
+	smallWeight                float32
+	mediumWeight               float32
+	largeWeight                float32
+	qualifiedThroughputWeight  float32
 	hour                       int64
-	successes                  int
-	failures                   int
-	smallWeight                float64
-	mediumWeight               float64
-	largeWeight                float64
-	qualifiedThroughputSamples int
-	qualifiedThroughputWeight  float64
+	successes                  uint16
+	failures                   uint16
+	qualifiedThroughputSamples uint16
 }
 
 type candidatePreference struct {
@@ -113,6 +113,11 @@ type candidatePreference struct {
 type trafficMix struct {
 	small float64
 	bulk  float64
+}
+
+type candidateSnapshot struct {
+	key         string
+	observation candidateObservation
 }
 
 func NewCache(cfg Config) *Cache {
@@ -260,38 +265,8 @@ func (c *Cache) order(scope, strategy string, candidates []Candidate, allowThrou
 		return ordered
 	case StrategyAdaptive:
 		now := c.now()
-		preferenceState := make(map[string]candidatePreference, len(ordered))
-		hasCold := false
-		hasRecovering := false
-
-		c.mu.Lock()
-		sharedMix := trafficMix{}
-		observations := make(map[string]candidateObservation, len(ordered))
-		for _, candidate := range ordered {
-			key := strings.TrimSpace(candidate.Address)
-			observationKey := BackendObservationKey(scope, key)
-			observation := c.observed[observationKey]
-			observations[key] = observation
-			if !allowThroughput {
-				continue
-			}
-			mix := observation.recentTrafficMix(now)
-			sharedMix.small += mix.small
-			sharedMix.bulk += mix.bulk
-		}
-		for _, candidate := range ordered {
-			key := strings.TrimSpace(candidate.Address)
-			observation := observations[key]
-			preference := observation.preference(now, allowThroughput, sharedMix)
-			preferenceState[key] = preference
-			switch preference.state {
-			case ObservationStateCold:
-				hasCold = true
-			case ObservationStateRecovering:
-				hasRecovering = true
-			}
-		}
-		c.mu.Unlock()
+		snapshots, sharedMix := c.backendSnapshots(scope, ordered, now, allowThroughput)
+		preferenceState, hasCold, hasRecovering := preferencesFromSnapshots(snapshots, now, allowThroughput, sharedMix)
 
 		sort.SliceStable(ordered, func(i, j int) bool {
 			leftKey := strings.TrimSpace(ordered[i].Address)
@@ -388,29 +363,8 @@ func (c *Cache) preferResolvedCandidates(candidates []Candidate, allowThroughput
 	copy(ordered, candidates)
 
 	now := c.now()
-	preferenceState := make(map[string]candidatePreference, len(ordered))
-
-	c.mu.Lock()
-	sharedMix := trafficMix{}
-	observations := make(map[string]candidateObservation, len(ordered))
-	for _, candidate := range ordered {
-		key := strings.TrimSpace(candidate.Address)
-		observation := c.observed[key]
-		observations[key] = observation
-		if !allowThroughput {
-			continue
-		}
-		mix := observation.recentTrafficMix(now)
-		sharedMix.small += mix.small
-		sharedMix.bulk += mix.bulk
-	}
-	for _, candidate := range ordered {
-		key := strings.TrimSpace(candidate.Address)
-		observation := observations[key]
-		preference := observation.preference(now, allowThroughput, sharedMix)
-		preferenceState[key] = preference
-	}
-	c.mu.Unlock()
+	snapshots, sharedMix := c.resolvedSnapshots(ordered, now, allowThroughput)
+	preferenceState, _, _ := preferencesFromSnapshots(snapshots, now, allowThroughput, sharedMix)
 
 	sort.SliceStable(ordered, func(i, j int) bool {
 		leftKey := strings.TrimSpace(ordered[i].Address)
@@ -634,6 +588,61 @@ func summaryFromObservation(observation candidateObservation, now time.Time, all
 	}
 }
 
+func (c *Cache) backendSnapshots(scope string, candidates []Candidate, now time.Time, allowThroughput bool) ([]candidateSnapshot, trafficMix) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	snapshots := make([]candidateSnapshot, 0, len(candidates))
+	sharedMix := trafficMix{}
+	for _, candidate := range candidates {
+		key := strings.TrimSpace(candidate.Address)
+		observation := c.observed[BackendObservationKey(scope, key)]
+		snapshots = append(snapshots, candidateSnapshot{key: key, observation: observation})
+		if allowThroughput {
+			mix := observation.recentTrafficMix(now)
+			sharedMix.small += mix.small
+			sharedMix.bulk += mix.bulk
+		}
+	}
+	return snapshots, sharedMix
+}
+
+func (c *Cache) resolvedSnapshots(candidates []Candidate, now time.Time, allowThroughput bool) ([]candidateSnapshot, trafficMix) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	snapshots := make([]candidateSnapshot, 0, len(candidates))
+	sharedMix := trafficMix{}
+	for _, candidate := range candidates {
+		key := strings.TrimSpace(candidate.Address)
+		observation := c.observed[key]
+		snapshots = append(snapshots, candidateSnapshot{key: key, observation: observation})
+		if allowThroughput {
+			mix := observation.recentTrafficMix(now)
+			sharedMix.small += mix.small
+			sharedMix.bulk += mix.bulk
+		}
+	}
+	return snapshots, sharedMix
+}
+
+func preferencesFromSnapshots(snapshots []candidateSnapshot, now time.Time, allowThroughput bool, sharedMix trafficMix) (map[string]candidatePreference, bool, bool) {
+	preferenceState := make(map[string]candidatePreference, len(snapshots))
+	hasCold := false
+	hasRecovering := false
+	for _, snapshot := range snapshots {
+		preference := snapshot.observation.preference(now, allowThroughput, sharedMix)
+		preferenceState[snapshot.key] = preference
+		switch preference.state {
+		case ObservationStateCold:
+			hasCold = true
+		case ObservationStateRecovering:
+			hasRecovering = true
+		}
+	}
+	return preferenceState, hasCold, hasRecovering
+}
+
 func (o *candidateObservation) recordSuccess(now time.Time, latency time.Duration, totalDuration time.Duration, bytesTransferred int64, slowStartWindow time.Duration) {
 	o.recordOutcome(now, true)
 	o.lastSuccessCount++
@@ -668,6 +677,10 @@ func (o *candidateObservation) recordSuccess(now time.Time, latency time.Duratio
 			o.throughputEstimate = blendWeightedFloat(o.throughputEstimate, throughput, weight)
 			o.lastThroughputAt = now
 			o.recordQualifiedThroughput(now, weight)
+			// Only let qualified samples participate in outlier detection after the
+			// observation was already "ready" before this write. A threshold-crossing
+			// sample makes throughput visible, but it must not be treated as an
+			// immediate outlier based on pre-ready history.
 			o.outlierThroughput = wasReady && o.qualifiedThroughputReady(now)
 			if o.outlierThroughput && previousEstimate > 0 && throughput < 0.5*previousEstimate {
 				o.outlierUntil = now.Add(30 * time.Second)
@@ -707,11 +720,11 @@ func (o *candidateObservation) recordTrafficMix(now time.Time, bucket string, we
 	entry := o.bucketFor(now)
 	switch bucket {
 	case "small":
-		entry.smallWeight += weight
+		entry.smallWeight += float32(weight)
 	case "medium":
-		entry.mediumWeight += weight
+		entry.mediumWeight += float32(weight)
 	case "large":
-		entry.largeWeight += weight
+		entry.largeWeight += float32(weight)
 	}
 }
 
@@ -722,7 +735,7 @@ func (o *candidateObservation) recordQualifiedThroughput(now time.Time, weight f
 
 	entry := o.bucketFor(now)
 	entry.qualifiedThroughputSamples++
-	entry.qualifiedThroughputWeight += weight
+	entry.qualifiedThroughputWeight += float32(weight)
 }
 
 func (o *candidateObservation) bucketFor(now time.Time) *observationBucket {
@@ -872,8 +885,8 @@ func (o candidateObservation) recentCounts(now time.Time) (int, int) {
 		if age < 0 || age >= observationBuckets {
 			continue
 		}
-		successes += bucket.successes
-		failures += bucket.failures
+		successes += int(bucket.successes)
+		failures += int(bucket.failures)
 	}
 	return successes, failures
 }
@@ -886,8 +899,8 @@ func (o candidateObservation) recentTrafficMix(now time.Time) trafficMix {
 		if age < 0 || age >= observationBuckets {
 			continue
 		}
-		mix.small += bucket.smallWeight
-		mix.bulk += bucket.mediumWeight + bucket.largeWeight
+		mix.small += float64(bucket.smallWeight)
+		mix.bulk += float64(bucket.mediumWeight) + float64(bucket.largeWeight)
 	}
 	return mix
 }
@@ -926,8 +939,8 @@ func (o candidateObservation) recentQualifiedThroughput(now time.Time) (int, flo
 		if age < 0 || age >= observationBuckets {
 			continue
 		}
-		samples += bucket.qualifiedThroughputSamples
-		weight += bucket.qualifiedThroughputWeight
+		samples += int(bucket.qualifiedThroughputSamples)
+		weight += float64(bucket.qualifiedThroughputWeight)
 	}
 	return samples, weight
 }

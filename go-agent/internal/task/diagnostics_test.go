@@ -426,7 +426,7 @@ func TestReportToMapIncludesAdaptiveRecoveryFields(t *testing.T) {
 	}
 }
 
-func TestReportToMapOmitsEstimatedBandwidthWhenAdaptiveSummaryHasNoThroughput(t *testing.T) {
+func TestReportToMapOmitsSustainedThroughputWhenAdaptiveSummaryHasNoThroughput(t *testing.T) {
 	report := diagnostics.Report{
 		Kind: "l4_tcp",
 		Backends: []diagnostics.BackendReport{{
@@ -447,8 +447,33 @@ func TestReportToMapOmitsEstimatedBandwidthWhenAdaptiveSummaryHasNoThroughput(t 
 	if !ok {
 		t.Fatalf("adaptive = %#v", backends[0]["adaptive"])
 	}
-	if _, exists := adaptive["estimated_bandwidth_bps"]; exists {
-		t.Fatalf("l4 payload must omit estimated_bandwidth_bps: %#v", adaptive)
+	if _, exists := adaptive["sustained_throughput_bps"]; exists {
+		t.Fatalf("l4 payload must omit sustained_throughput_bps: %#v", adaptive)
+	}
+}
+
+func TestReportToMapSerializesSustainedThroughputForHTTP(t *testing.T) {
+	report := diagnostics.Report{
+		Kind: "http",
+		Backends: []diagnostics.BackendReport{{
+			Backend: "http://backend.example.test/healthz",
+			Adaptive: &diagnostics.AdaptiveSummary{
+				SustainedThroughputBps: 4 * 1024 * 1024,
+			},
+		}},
+	}
+
+	payload := reportToMap(report)
+	backends, ok := payload["backends"].([]map[string]any)
+	if !ok || len(backends) != 1 {
+		t.Fatalf("backends = %#v", payload["backends"])
+	}
+	adaptive, ok := backends[0]["adaptive"].(map[string]any)
+	if !ok {
+		t.Fatalf("adaptive = %#v", backends[0]["adaptive"])
+	}
+	if adaptive["sustained_throughput_bps"] != float64(4*1024*1024) {
+		t.Fatalf("sustained_throughput_bps = %#v", adaptive["sustained_throughput_bps"])
 	}
 }
 

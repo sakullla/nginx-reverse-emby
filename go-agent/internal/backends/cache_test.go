@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"unsafe"
 )
 
 func TestCacheResolveUsesFixedDNSCacheTTL(t *testing.T) {
@@ -933,6 +934,12 @@ func TestClassifyThroughputSampleBoundaries(t *testing.T) {
 				t.Fatalf("classifyThroughputSample(%s, %d) = (%v, %v, %q), want (%v, %v, %q)", tt.duration, tt.bytes, gotWeight, gotReady, gotBucket, tt.wantWeight, tt.wantReady, tt.wantBucket)
 			}
 		})
+	}
+}
+
+func TestObservationBucketLayoutStaysCompact(t *testing.T) {
+	if got := unsafe.Sizeof(observationBucket{}); got > 32 {
+		t.Fatalf("observationBucket size = %d, want <= 32 bytes", got)
 	}
 }
 

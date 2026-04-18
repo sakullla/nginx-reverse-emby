@@ -171,8 +171,8 @@ func backendReportToMap(kind string, backend diagnostics.BackendReport) map[stri
 			adaptivePayload["performance_score"] = backend.Adaptive.PerformanceScore
 			adaptivePayload["outlier"] = backend.Adaptive.Outlier
 		}
-		if kind == "http" && backend.Adaptive.EstimatedBandwidthBps > 0 {
-			adaptivePayload["estimated_bandwidth_bps"] = backend.Adaptive.EstimatedBandwidthBps
+		if kind == "http" && backend.Adaptive.SustainedThroughputBps > 0 {
+			adaptivePayload["sustained_throughput_bps"] = backend.Adaptive.SustainedThroughputBps
 		}
 		payload["adaptive"] = adaptivePayload
 	}

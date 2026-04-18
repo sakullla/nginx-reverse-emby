@@ -98,9 +98,9 @@
                   <span class="diagnostic-metric__label">综合性能</span>
                   <strong class="diagnostic-metric__value">{{ formatScore(backend.adaptive?.performance_score) }}</strong>
                 </div>
-                <div v-if="showHTTPAdaptiveMetrics && hasThroughput(backend.adaptive?.estimated_bandwidth_bps)" class="diagnostic-metric">
+                <div v-if="showHTTPAdaptiveMetrics && hasThroughput(backend.adaptive?.sustained_throughput_bps)" class="diagnostic-metric">
                   <span class="diagnostic-metric__label">持续吞吐</span>
-                  <strong class="diagnostic-metric__value">{{ formatThroughput(backend.adaptive?.estimated_bandwidth_bps) }}</strong>
+                  <strong class="diagnostic-metric__value">{{ formatThroughput(backend.adaptive?.sustained_throughput_bps) }}</strong>
                 </div>
               </div>
 
@@ -121,9 +121,9 @@
                       <span class="diagnostic-factor__label">延迟</span>
                       <strong class="diagnostic-factor__value">{{ backend.adaptive?.latency_ms ?? backend.summary?.avg_latency_ms ?? 0 }} ms</strong>
                     </div>
-                    <div v-if="showHTTPAdaptiveMetrics && hasThroughput(backend.adaptive?.estimated_bandwidth_bps)" class="diagnostic-factor">
+                    <div v-if="showHTTPAdaptiveMetrics && hasThroughput(backend.adaptive?.sustained_throughput_bps)" class="diagnostic-factor">
                       <span class="diagnostic-factor__label">持续吞吐</span>
-                      <strong class="diagnostic-factor__value">{{ formatThroughput(backend.adaptive?.estimated_bandwidth_bps) }}</strong>
+                      <strong class="diagnostic-factor__value">{{ formatThroughput(backend.adaptive?.sustained_throughput_bps) }}</strong>
                     </div>
                     <div v-if="showHTTPAdaptiveMetrics" class="diagnostic-factor">
                       <span class="diagnostic-factor__label">综合性能</span>
@@ -153,7 +153,7 @@
                     <span class="diagnostic-child-item__metric">延迟 {{ child.adaptive?.latency_ms ?? child.summary?.avg_latency_ms ?? 0 }} ms</span>
                     <span class="diagnostic-child-item__metric">稳定性 {{ formatPercent(child.adaptive?.stability) }}</span>
                     <span v-if="showHTTPAdaptiveMetrics" class="diagnostic-child-item__metric">综合性能 {{ formatScore(child.adaptive?.performance_score) }}</span>
-                    <span v-if="showHTTPAdaptiveMetrics && hasThroughput(child.adaptive?.estimated_bandwidth_bps)" class="diagnostic-child-item__metric">持续吞吐 {{ formatThroughput(child.adaptive?.estimated_bandwidth_bps) }}</span>
+                    <span v-if="showHTTPAdaptiveMetrics && hasThroughput(child.adaptive?.sustained_throughput_bps)" class="diagnostic-child-item__metric">持续吞吐 {{ formatThroughput(child.adaptive?.sustained_throughput_bps) }}</span>
                   </div>
                 </div>
               </div>

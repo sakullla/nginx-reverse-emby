@@ -303,7 +303,7 @@ func TestTCPProberDiagnoseUsesSharedAdaptiveRecoverySummary(t *testing.T) {
 	}
 }
 
-func TestTCPProberDiagnoseOmitsEstimatedBandwidthFromAdaptiveSummary(t *testing.T) {
+func TestTCPProberDiagnoseOmitsSustainedThroughputFromAdaptiveSummary(t *testing.T) {
 	addr, _, stopTarget := startDiagnosticTCPTarget(t)
 	defer stopTarget()
 
@@ -337,7 +337,7 @@ func TestTCPProberDiagnoseOmitsEstimatedBandwidthFromAdaptiveSummary(t *testing.
 	if len(report.Backends) != 1 || report.Backends[0].Adaptive == nil {
 		t.Fatalf("Backends = %+v", report.Backends)
 	}
-	if report.Backends[0].Adaptive.EstimatedBandwidthBps != 0 {
+	if report.Backends[0].Adaptive.SustainedThroughputBps != 0 {
 		t.Fatalf("l4 adaptive summary must not expose throughput: %+v", report.Backends[0].Adaptive)
 	}
 }

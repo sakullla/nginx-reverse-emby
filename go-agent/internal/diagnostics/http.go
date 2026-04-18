@@ -289,12 +289,21 @@ func buildHTTPAdaptiveReports(reports []BackendReport, candidates []httpProbeCan
 			}),
 			Children: make([]BackendReport, 0, len(children)),
 		}
+		childAddresses := make([]string, 0, len(children))
+		for _, child := range children {
+			childAddresses = append(childAddresses, child.dialAddress)
+		}
+		childSummaries := cache.SummariesWithSharedThroughput(childAddresses)
 		for index, child := range children {
 			childReport := reportByLabel[child.label]
+			childSummary, ok := childSummaries[child.dialAddress]
+			if !ok {
+				childSummary = cache.Summary(child.dialAddress)
+			}
 			parent.Children = append(parent.Children, BackendReport{
 				Backend: child.label,
 				Summary: childReport.Summary,
-				Adaptive: adaptiveSummaryFromObservation(cache.Summary(child.dialAddress), index == 0, preferredReason(index == 0), adaptiveSummaryOptions{
+				Adaptive: adaptiveSummaryFromObservation(childSummary, index == 0, preferredReason(index == 0), adaptiveSummaryOptions{
 					includeThroughput:   true,
 					includeHTTPInsights: true,
 				}),
@@ -379,7 +388,7 @@ func adaptiveSummaryFromObservation(summary backends.ObservationSummary, preferr
 		adaptive.Outlier = summary.Outlier
 	}
 	if options.includeThroughput && summary.HasBandwidth {
-		adaptive.EstimatedBandwidthBps = roundMetric(summary.Bandwidth)
+		adaptive.SustainedThroughputBps = roundMetric(summary.Bandwidth)
 	}
 	return adaptive
 }

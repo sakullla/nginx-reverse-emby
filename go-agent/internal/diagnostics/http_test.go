@@ -622,6 +622,81 @@ func TestBuildHTTPAdaptiveReportsUsesSharedTrafficMixForConfiguredPerformance(t 
 	}
 }
 
+func TestBuildHTTPAdaptiveReportsUsesSharedTrafficMixForResolvedChildren(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	cache := backends.NewCache(backends.Config{
+		Now: func() time.Time {
+			return base
+		},
+	})
+
+	configuredURL := "http://origin.example:8096/healthz"
+	lowLatencyAddr := "10.0.0.10:8096"
+	bulkAddr := "10.0.0.11:8096"
+	lowLatencyLabel := configuredURL + " [" + lowLatencyAddr + "]"
+	bulkLabel := configuredURL + " [" + bulkAddr + "]"
+
+	for i := 0; i < 20; i++ {
+		cache.ObserveTransferSuccess(lowLatencyAddr, 10*time.Millisecond, 60*time.Millisecond, 4*1024*1024)
+	}
+	cache.ObserveTransferSuccess(lowLatencyAddr, 10*time.Millisecond, 200*time.Millisecond, 512*1024)
+	cache.ObserveTransferSuccess(lowLatencyAddr, 10*time.Millisecond, 400*time.Millisecond, 1024*1024)
+
+	for i := 0; i < 4; i++ {
+		cache.ObserveTransferSuccess(bulkAddr, 50*time.Millisecond, 120*time.Millisecond, 3*1024*1024)
+	}
+
+	resolved := cache.PreferResolvedCandidates([]backends.Candidate{
+		{Address: lowLatencyAddr},
+		{Address: bulkAddr},
+	})
+	if len(resolved) != 2 || resolved[0].Address != lowLatencyAddr {
+		t.Fatalf("fixture must prefer the latency-first resolved candidate under shared mix ordering: %+v", resolved)
+	}
+
+	annotated := buildHTTPAdaptiveReports([]BackendReport{
+		{Backend: lowLatencyLabel, Summary: Summary{}},
+		{Backend: bulkLabel, Summary: Summary{}},
+	}, []httpProbeCandidate{
+		{
+			backendLabel:  lowLatencyLabel,
+			dialAddress:   lowLatencyAddr,
+			configuredURL: configuredURL,
+			resolvedCandidates: []httpResolvedCandidate{
+				{label: lowLatencyLabel, dialAddress: lowLatencyAddr},
+				{label: bulkLabel, dialAddress: bulkAddr},
+			},
+		},
+		{
+			backendLabel:  bulkLabel,
+			dialAddress:   bulkAddr,
+			configuredURL: configuredURL,
+			resolvedCandidates: []httpResolvedCandidate{
+				{label: lowLatencyLabel, dialAddress: lowLatencyAddr},
+				{label: bulkLabel, dialAddress: bulkAddr},
+			},
+		},
+	}, cache)
+	if len(annotated) != 1 {
+		t.Fatalf("annotated = %+v", annotated)
+	}
+	if len(annotated[0].Children) != 2 {
+		t.Fatalf("children = %+v", annotated[0].Children)
+	}
+
+	preferredChild := annotated[0].Children[0].Adaptive
+	otherChild := annotated[0].Children[1].Adaptive
+	if preferredChild == nil || otherChild == nil {
+		t.Fatalf("children = %+v", annotated[0].Children)
+	}
+	if !preferredChild.Preferred {
+		t.Fatalf("first resolved child must stay preferred: %+v", annotated[0].Children)
+	}
+	if preferredChild.PerformanceScore <= otherChild.PerformanceScore {
+		t.Fatalf("resolved HTTP summaries must use shared traffic mix so the preferred child does not show a lower score: preferred=%+v other=%+v", preferredChild, otherChild)
+	}
+}
+
 func TestHTTPProberDiagnoseSerializesAdaptiveRecoveryFields(t *testing.T) {
 	listener, err := net.Listen("tcp", "0.0.0.0:0")
 	if err != nil {
