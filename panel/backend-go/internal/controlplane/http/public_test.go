@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -88,8 +89,11 @@ func TestRouterServesJoinScriptAndHeartbeat(t *testing.T) {
 	if !strings.Contains(script, "BIN_TMP_PATH=\"$BIN_PATH.tmp.$$\"") {
 		t.Fatalf("join-agent.sh missing staged binary temp path: %s", script)
 	}
-	if !strings.Contains(script, "run_root_cmd systemctl daemon-reload\n    SERVICE_EXISTS=\"0\"") {
-		t.Fatalf("join-agent.sh should reload systemd before checking service state: %s", script)
+	if !strings.Contains(script, "run_root_cmd systemctl daemon-reload") {
+		t.Fatalf("join-agent.sh missing systemd daemon-reload: %s", script)
+	}
+	if !strings.Contains(script, "SERVICE_EXISTS=\"0\"") {
+		t.Fatalf("join-agent.sh missing service state detection: %s", script)
 	}
 	if !strings.Contains(script, "systemctl stop nginx-reverse-emby-agent.service") {
 		t.Fatalf("join-agent.sh missing systemd stop before replace: %s", script)
@@ -192,6 +196,106 @@ func TestPublicAgentAssetRejectsPathTraversal(t *testing.T) {
 
 	if resp.Code != http.StatusNotFound {
 		t.Fatalf("GET traversal asset = %d, body = %s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestJoinScriptIncludesMigrateFromMainCommand(t *testing.T) {
+	deps := Dependencies{Config: config.Config{}}
+	req := httptest.NewRequest(http.MethodGet, "/panel-api/public/join-agent.sh", nil)
+	script, err := deps.buildJoinAgentScript(req)
+	if err != nil {
+		t.Fatalf("buildJoinAgentScript() error = %v", err)
+	}
+	if !strings.Contains(script, "migrate-from-main") {
+		t.Fatalf("join-agent.sh missing migrate-from-main command")
+	}
+	if !strings.Contains(script, `DATA_DIR="/var/lib/nre-agent"`) {
+		t.Fatalf("join-agent.sh missing normalized agent data dir default")
+	}
+	if !strings.Contains(script, `SOURCE_DIR="/opt/nginx-reverse-emby-agent"`) {
+		t.Fatalf("join-agent.sh missing legacy source dir default")
+	}
+	if !strings.Contains(script, "cleanup_legacy_acme()") {
+		t.Fatalf("join-agent.sh missing legacy acme cleanup helper")
+	}
+	if !strings.Contains(script, "normalize_legacy_acme_domain()") {
+		t.Fatalf("join-agent.sh missing wildcard acme normalization helper")
+	}
+	if !strings.Contains(script, `acme_domain="$(normalize_legacy_acme_domain "$cert_domain")"`) {
+		t.Fatalf("join-agent.sh missing normalized acme domain usage")
+	}
+	if !strings.Contains(script, `--remove -d "$acme_domain" --ecc`) {
+		t.Fatalf("join-agent.sh missing normalized acme remove command")
+	}
+}
+
+func TestJoinScriptPreservesMigratedAgentIdentity(t *testing.T) {
+	deps := Dependencies{Config: config.Config{}}
+	req := httptest.NewRequest(http.MethodGet, "/panel-api/public/join-agent.sh", nil)
+	script, err := deps.buildJoinAgentScript(req)
+	if err != nil {
+		t.Fatalf("buildJoinAgentScript() error = %v", err)
+	}
+	if !strings.Contains(script, `load_existing_agent_env_if_present "$ENV_FILE"`) {
+		t.Fatalf("join-agent.sh missing migrated agent env reload")
+	}
+	if strings.Contains(script, `mv "$OLD_DATA_DIR/." "$DATA_DIR/"`) {
+		t.Fatalf("join-agent.sh still moves the literal dot entry during data migration")
+	}
+}
+
+func TestJoinScriptIncludesUninstallAndLegacyNginxCleanup(t *testing.T) {
+	deps := Dependencies{Config: config.Config{}}
+	req := httptest.NewRequest(http.MethodGet, "/panel-api/public/join-agent.sh", nil)
+	script, err := deps.buildJoinAgentScript(req)
+	if err != nil {
+		t.Fatalf("buildJoinAgentScript() error = %v", err)
+	}
+	if !strings.Contains(script, "uninstall-agent") {
+		t.Fatalf("join-agent.sh missing uninstall-agent command")
+	}
+	if !strings.Contains(script, "cleanup_legacy_nginx_runtime()") {
+		t.Fatalf("join-agent.sh missing shared legacy nginx cleanup helper")
+	}
+	if !strings.Contains(script, "legacy_nginx_runtime_present()") {
+		t.Fatalf("join-agent.sh missing legacy nginx runtime detection helper")
+	}
+	if !strings.Contains(script, "cleanup_local_agent_runtime()") {
+		t.Fatalf("join-agent.sh missing local uninstall cleanup helper")
+	}
+	localCleanupBody, found := strings.CutPrefix(script[strings.Index(script, "cleanup_local_agent_runtime()"):], "cleanup_local_agent_runtime() {\n")
+	if !found {
+		t.Fatalf("join-agent.sh missing cleanup_local_agent_runtime body")
+	}
+	localCleanupBody, _, _ = strings.Cut(localCleanupBody, "\n}\n\nload_legacy_runtime()")
+	if !strings.Contains(localCleanupBody, "cleanup_legacy_nginx_runtime") {
+		t.Fatalf("join-agent.sh uninstall cleanup should stop host nginx via legacy cleanup helper: %s", localCleanupBody)
+	}
+	if !strings.Contains(script, "if ! legacy_nginx_runtime_present; then") {
+		t.Fatalf("join-agent.sh cleanup should skip unrelated nginx installs")
+	}
+	if !strings.Contains(script, "disable_systemd_unit_if_present nginx.service") {
+		t.Fatalf("join-agent.sh cleanup should only disable nginx when legacy runtime markers exist")
+	}
+	if strings.Contains(script, "/panel-api/agents/$NRE_AGENT_ID") {
+		t.Fatalf("join-agent.sh unexpectedly attempts control-plane unregister during uninstall")
+	}
+}
+
+func TestDockerComposeMountsControlPlaneDataDir(t *testing.T) {
+	_, currentFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller() failed")
+	}
+	repoRoot := filepath.Clean(filepath.Join(filepath.Dir(currentFile), "..", "..", "..", "..", ".."))
+	composePath := filepath.Join(repoRoot, "docker-compose.yaml")
+	composeBytes, err := os.ReadFile(composePath)
+	if err != nil {
+		t.Fatalf("ReadFile(docker-compose.yaml) error = %v", err)
+	}
+	compose := string(composeBytes)
+	if !strings.Contains(compose, "./data:/opt/nginx-reverse-emby/panel/data") {
+		t.Fatalf("docker-compose.yaml missing control-plane data dir mount: %s", compose)
 	}
 }
 

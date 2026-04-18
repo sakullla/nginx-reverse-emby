@@ -82,6 +82,8 @@ docker compose up -d
 
 ## Join Agent
 
+独立 Agent 默认数据目录为 `/var/lib/nre-agent`。控制面默认数据目录为 `/opt/nginx-reverse-emby/panel/data`。
+
 ### Linux
 
 ```bash
@@ -115,6 +117,39 @@ Windows 执行面同样使用 Go agent，但当前控制面镜像默认只公开
 - `--tags edge,emby`
 - `--agent-url https://edge-01.example.com`
 - `--binary-url https://example.com/custom/nre-agent`
+- `--data-dir /var/lib/nre-agent`
+
+### Migrate From Legacy `main` Agent
+
+旧 `main` 版本的轻量 Agent 节点迁移到当前 Go agent 时，先在旧控制面执行 `导出备份`，升级控制面并 `导入备份`，然后在每台旧 Agent 机器执行：
+
+```bash
+curl -fsSL http://master.example.com:8080/panel-api/public/join-agent.sh | sh -s -- \
+  migrate-from-main \
+  --register-token your-register-token \
+  --install-systemd
+```
+
+默认会从 `/opt/nginx-reverse-emby-agent` 读取旧 lightweight-Agent 目录，复用原 `agent_token`，切换到新的 `/var/lib/nre-agent`，并在新服务验证通过后清理旧 runtime、旧 nginx 服务与动态配置、以及旧 `.acme.sh` 续期状态。
+
+### Uninstall Agent
+
+如需从 VPS 上完全移除本地 Go agent 运行时，可执行：
+
+```bash
+curl -fsSL http://master.example.com:8080/panel-api/public/join-agent.sh | sh -s -- uninstall-agent
+```
+
+该命令只清理本机 service、数据目录、legacy lightweight-Agent 残留和 legacy nginx runtime 残留；控制面里的 agent 记录仍需手动删除。
+
+## Backup Import / Export
+
+系统设置里统一提供：
+
+- `导出备份`
+- `导入备份`
+
+旧 `main` 控制面和当前纯 Go 控制面都使用同一个可移植备份包格式，支持跨架构导出后再导入。导入时会跳过冲突项并返回详细报告；证书 PEM 和私钥材料也会被一并包含，便于从旧版本无感迁移到新版本。
 
 ## Desired Version Updates
 

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -446,6 +447,33 @@ func (f fakeCertificateService) Issue(_ context.Context, agentID string, id int)
 		f.state.issueIDs = append(f.state.issueIDs, id)
 	}
 	return f.issuedCertificate, nil
+}
+
+type fakeBackupService struct {
+	exportBody     []byte
+	exportFilename string
+	importResult   service.BackupImportResult
+	importErr      error
+	state          *fakeBackupServiceState
+}
+
+type fakeBackupServiceState struct {
+	importBodies [][]byte
+}
+
+func (f fakeBackupService) Export(context.Context) ([]byte, string, error) {
+	return f.exportBody, f.exportFilename, nil
+}
+
+func (f fakeBackupService) Import(_ context.Context, body []byte) (service.BackupImportResult, error) {
+	if f.state != nil {
+		copyBody := append([]byte(nil), body...)
+		f.state.importBodies = append(f.state.importBodies, copyBody)
+	}
+	if f.importErr != nil {
+		return service.BackupImportResult{}, f.importErr
+	}
+	return f.importResult, nil
 }
 
 func TestRouterServesPanelAuthAndInfoEndpoints(t *testing.T) {
@@ -1345,6 +1373,229 @@ func TestRouterServesRelayListenerAndCertificateEndpoints(t *testing.T) {
 	router.ServeHTTP(deleteCertificateResp, deleteCertificateReq)
 	if deleteCertificateResp.Code != http.StatusOK {
 		t.Fatalf("DELETE /panel-api/agents/local/certificates/12 = %d", deleteCertificateResp.Code)
+	}
+}
+
+func TestRouterServesBackupExportAndImport(t *testing.T) {
+	state := &fakeBackupServiceState{}
+	for _, prefix := range []string{"/api", "/panel-api"} {
+		router, err := NewRouter(Dependencies{
+			Config: config.Config{PanelToken: "secret"},
+			SystemService: fakeSystemService{
+				info: service.SystemInfo{
+					Role:              "master",
+					LocalApplyRuntime: "go-agent",
+					DefaultAgentID:    "local",
+					LocalAgentEnabled: true,
+				},
+			},
+			AgentService:         fakeAgentService{},
+			RuleService:          fakeRuleService{},
+			L4RuleService:        fakeL4RuleService{},
+			VersionPolicyService: fakeVersionPolicyService{},
+			RelayListenerService: fakeRelayListenerService{},
+			CertificateService:   fakeCertificateService{},
+			BackupService: fakeBackupService{
+				exportBody:     []byte("backup-archive"),
+				exportFilename: "nre-backup.tar.gz",
+				importResult: service.BackupImportResult{
+					Manifest: service.BackupManifest{
+						PackageVersion:       service.BackupPackageVersion,
+						SourceArchitecture:   service.BackupSourceArchitectureGo,
+						ExportedAt:           time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC),
+						IncludesCertificates: true,
+					},
+					Summary: service.BackupImportSummary{
+						Imported: service.BackupCounts{Agents: 1},
+					},
+					Report: service.BackupImportReport{
+						Imported: []service.BackupImportItem{{Kind: "agent", Key: "edge-a"}},
+					},
+				},
+				state: state,
+			},
+		})
+		if err != nil {
+			t.Fatalf("NewRouter() error = %v", err)
+		}
+
+		exportReq := httptest.NewRequest(http.MethodGet, prefix+"/system/backup/export", nil)
+		exportReq.Header.Set("X-Panel-Token", "secret")
+		exportResp := httptest.NewRecorder()
+		router.ServeHTTP(exportResp, exportReq)
+		if exportResp.Code != http.StatusOK {
+			t.Fatalf("GET %s/system/backup/export = %d", prefix, exportResp.Code)
+		}
+		if got := exportResp.Header().Get("Content-Disposition"); !strings.Contains(got, "nre-backup.tar.gz") {
+			t.Fatalf("GET %s/system/backup/export content-disposition = %q", prefix, got)
+		}
+		if got := exportResp.Body.String(); got != "backup-archive" {
+			t.Fatalf("GET %s/system/backup/export body = %q", prefix, got)
+		}
+
+		var body bytes.Buffer
+		writer := multipart.NewWriter(&body)
+		part, err := writer.CreateFormFile("file", "backup.tar.gz")
+		if err != nil {
+			t.Fatalf("CreateFormFile() error = %v", err)
+		}
+		if _, err := part.Write([]byte("import-body")); err != nil {
+			t.Fatalf("part.Write() error = %v", err)
+		}
+		if err := writer.Close(); err != nil {
+			t.Fatalf("writer.Close() error = %v", err)
+		}
+
+		importReq := httptest.NewRequest(http.MethodPost, prefix+"/system/backup/import", &body)
+		importReq.Header.Set("X-Panel-Token", "secret")
+		importReq.Header.Set("Content-Type", writer.FormDataContentType())
+		importResp := httptest.NewRecorder()
+		router.ServeHTTP(importResp, importReq)
+		if importResp.Code != http.StatusOK {
+			t.Fatalf("POST %s/system/backup/import = %d", prefix, importResp.Code)
+		}
+
+		var payload map[string]any
+		if err := json.Unmarshal(importResp.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("json.Unmarshal(import response) error = %v", err)
+		}
+		if payload["ok"] != true {
+			t.Fatalf("POST %s/system/backup/import payload = %+v", prefix, payload)
+		}
+	}
+
+	if len(state.importBodies) != 2 || string(state.importBodies[0]) != "import-body" || string(state.importBodies[1]) != "import-body" {
+		t.Fatalf("import bodies = %+v", state.importBodies)
+	}
+}
+
+func TestRouterBackupRoutesRemainRegisteredWhenBackupServiceIsNotInjected(t *testing.T) {
+	router, err := NewRouter(Dependencies{
+		Config: config.Config{PanelToken: "secret"},
+		SystemService: fakeSystemService{
+			info: service.SystemInfo{
+				Role:              "master",
+				LocalApplyRuntime: "go-agent",
+				DefaultAgentID:    "local",
+				LocalAgentEnabled: true,
+			},
+		},
+		AgentService:         fakeAgentService{},
+		RuleService:          fakeRuleService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+		TaskService:          fakeTaskService{},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/panel-api/system/backup/export", nil)
+	req.Header.Set("X-Panel-Token", "secret")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+	if resp.Code == http.StatusNotFound {
+		t.Fatalf("GET /panel-api/system/backup/export unexpectedly returned 404")
+	}
+	if resp.Code != http.StatusInternalServerError {
+		t.Fatalf("GET /panel-api/system/backup/export = %d, want %d", resp.Code, http.StatusInternalServerError)
+	}
+}
+
+func TestRouterBackupExportSanitizesContentDispositionFilename(t *testing.T) {
+	router, err := NewRouter(Dependencies{
+		Config: config.Config{PanelToken: "secret"},
+		SystemService: fakeSystemService{
+			info: service.SystemInfo{
+				Role:              "master",
+				LocalApplyRuntime: "go-agent",
+				DefaultAgentID:    "local",
+				LocalAgentEnabled: true,
+			},
+		},
+		AgentService:         fakeAgentService{},
+		RuleService:          fakeRuleService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+		BackupService: fakeBackupService{
+			exportBody:     []byte("backup-archive"),
+			exportFilename: "nre-backup\"\r\nX-Bad: yes.tar.gz",
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/panel-api/system/backup/export", nil)
+	req.Header.Set("X-Panel-Token", "secret")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("GET /panel-api/system/backup/export = %d", resp.Code)
+	}
+	got := resp.Header().Get("Content-Disposition")
+	if strings.ContainsAny(got, "\r\n") {
+		t.Fatalf("Content-Disposition contains raw newline: %q", got)
+	}
+	if strings.Contains(got, "X-Bad: yes") {
+		t.Fatalf("Content-Disposition leaked injected header content: %q", got)
+	}
+}
+
+func TestRouterBackupImportRejectsOversizedUpload(t *testing.T) {
+	state := &fakeBackupServiceState{}
+	router, err := NewRouter(Dependencies{
+		Config: config.Config{PanelToken: "secret"},
+		SystemService: fakeSystemService{
+			info: service.SystemInfo{
+				Role:              "master",
+				LocalApplyRuntime: "go-agent",
+				DefaultAgentID:    "local",
+				LocalAgentEnabled: true,
+			},
+		},
+		AgentService:         fakeAgentService{},
+		RuleService:          fakeRuleService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+		BackupService: fakeBackupService{
+			importResult: service.BackupImportResult{},
+			state:        state,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	part, err := writer.CreateFormFile("file", "backup.tar.gz")
+	if err != nil {
+		t.Fatalf("CreateFormFile() error = %v", err)
+	}
+	if _, err := part.Write(bytes.Repeat([]byte("a"), 33<<20)); err != nil {
+		t.Fatalf("part.Write() error = %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("writer.Close() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/panel-api/system/backup/import", &body)
+	req.Header.Set("X-Panel-Token", "secret")
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("POST /panel-api/system/backup/import = %d, want %d", resp.Code, http.StatusRequestEntityTooLarge)
+	}
+	if len(state.importBodies) != 0 {
+		t.Fatalf("backup import service should not be called on oversized upload: %+v", state.importBodies)
 	}
 }
 

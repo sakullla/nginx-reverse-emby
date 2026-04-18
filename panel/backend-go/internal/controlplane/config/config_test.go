@@ -23,6 +23,13 @@ func TestLoadFromEnvDefaultsMasterRuntime(t *testing.T) {
 	}
 }
 
+func TestDefaultUsesNormalizedControlPlaneDataDir(t *testing.T) {
+	cfg := Default()
+	if cfg.DataDir != "/opt/nginx-reverse-emby/panel/data" {
+		t.Fatalf("DataDir = %q", cfg.DataDir)
+	}
+}
+
 func TestLoadFromEnvInfersRuntimeAssetDefaults(t *testing.T) {
 	t.Setenv("NRE_CONTROL_PLANE_ADDR", "0.0.0.0:8080")
 	t.Setenv("NRE_CONTROL_PLANE_DATA_DIR", "/tmp/nre-data")
