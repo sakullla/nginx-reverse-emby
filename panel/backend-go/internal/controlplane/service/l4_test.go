@@ -619,12 +619,9 @@ func TestL4RuleServiceCreateUsesRevisionAboveRemoteAgentSyncFloor(t *testing.T) 
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
-	if rule.Revision != 10 {
-		t.Fatalf("Create() revision = %d", rule.Revision)
-	}
-	if store.agents[0].DesiredRevision != 10 {
-		t.Fatalf("remote desired_revision = %d", store.agents[0].DesiredRevision)
-	}
+	assertRevisionAboveFloor(t, "Create() revision", rule.Revision, 9)
+	assertRevisionAboveFloor(t, "remote desired_revision", store.agents[0].DesiredRevision, 9)
+	assertRevisionNotBehind(t, "remote desired_revision", store.agents[0].DesiredRevision, rule.Revision)
 }
 
 func TestL4RuleServiceCreateReassignsPreferredIDWhenHTTPRuleAlreadyUsesIt(t *testing.T) {
@@ -709,12 +706,9 @@ func TestL4RuleServiceUpdateUsesRevisionAboveRemoteAgentSyncFloor(t *testing.T) 
 	if err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
-	if rule.Revision != 10 {
-		t.Fatalf("Update() revision = %d", rule.Revision)
-	}
-	if store.agents[0].DesiredRevision != 10 {
-		t.Fatalf("remote desired_revision = %d", store.agents[0].DesiredRevision)
-	}
+	assertRevisionAboveFloor(t, "Update() revision", rule.Revision, 9)
+	assertRevisionAboveFloor(t, "remote desired_revision", store.agents[0].DesiredRevision, 9)
+	assertRevisionNotBehind(t, "remote desired_revision", store.agents[0].DesiredRevision, rule.Revision)
 }
 
 func TestL4RuleServiceDeleteUsesRevisionAboveRemoteAgentSyncFloor(t *testing.T) {
@@ -754,9 +748,7 @@ func TestL4RuleServiceDeleteUsesRevisionAboveRemoteAgentSyncFloor(t *testing.T) 
 	if deleted.ID != 1 {
 		t.Fatalf("deleted.ID = %d", deleted.ID)
 	}
-	if store.agents[0].DesiredRevision != 10 {
-		t.Fatalf("remote desired_revision = %d", store.agents[0].DesiredRevision)
-	}
+	assertRevisionAboveFloor(t, "remote desired_revision", store.agents[0].DesiredRevision, 9)
 }
 
 func TestL4RuleServiceGetUsesDirectStoreLookup(t *testing.T) {

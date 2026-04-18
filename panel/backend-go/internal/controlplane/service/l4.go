@@ -151,6 +151,8 @@ func (s *l4Service) Create(ctx context.Context, agentID string, input L4RuleInpu
 
 	allocatedID := allocator.AllocateRuleID(preferredInt(input.ID))
 	normalizedInput := input
+	// Keep the caller's preferred ID only for allocator conflict resolution.
+	// Normalization should see the assigned ID, not re-read the raw preference.
 	normalizedInput.ID = nil
 	rule, err := normalizeL4RuleInput(normalizedInput, L4Rule{}, allocatedID)
 	if err != nil {

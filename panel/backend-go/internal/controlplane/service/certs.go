@@ -187,6 +187,8 @@ func (s *certificateService) Create(ctx context.Context, agentID string, input M
 	allowEmptyTargets := resolvedID == ""
 	allocatedID := allocator.AllocateCertificateID(preferredInt(input.ID))
 	normalizedInput := input
+	// Keep the caller's preferred ID only for allocator conflict resolution.
+	// Normalization should see the assigned ID, not re-read the raw preference.
 	normalizedInput.ID = nil
 	cert, err := normalizeManagedCertificateInput(normalizedInput, ManagedCertificate{}, allocatedID, resolvedID, allowEmptyTargets)
 	if err != nil {

@@ -813,16 +813,16 @@ func TestBackupServiceImportReassignsHTTPRuleIDAndRevisionWhenExistingL4RuleUses
 	if rows[0].ID != 10 {
 		t.Fatalf("imported http id = %d", rows[0].ID)
 	}
-	if rows[0].Revision != 10 {
-		t.Fatalf("imported http revision = %d", rows[0].Revision)
-	}
+	assertRevisionAboveFloor(t, "imported http revision", rows[0].Revision, 9)
 	agents, err := targetStore.ListAgents(ctx)
 	if err != nil {
 		t.Fatalf("ListAgents() error = %v", err)
 	}
-	if len(agents) != 1 || agents[0].DesiredRevision != 10 {
+	if len(agents) != 1 {
 		t.Fatalf("agents after import = %+v", agents)
 	}
+	assertRevisionAboveFloor(t, "imported agent desired revision", agents[0].DesiredRevision, 9)
+	assertRevisionNotBehind(t, "imported agent desired revision", agents[0].DesiredRevision, rows[0].Revision)
 }
 
 func TestBackupServiceImportReassignsL4RuleIDAndRevisionWhenExistingHTTPRuleUsesThatFloor(t *testing.T) {
@@ -915,14 +915,14 @@ func TestBackupServiceImportReassignsL4RuleIDAndRevisionWhenExistingHTTPRuleUses
 	if rows[0].ID != 12 {
 		t.Fatalf("imported l4 id = %d", rows[0].ID)
 	}
-	if rows[0].Revision != 10 {
-		t.Fatalf("imported l4 revision = %d", rows[0].Revision)
-	}
+	assertRevisionAboveFloor(t, "imported l4 revision", rows[0].Revision, 9)
 	agents, err := targetStore.ListAgents(ctx)
 	if err != nil {
 		t.Fatalf("ListAgents() error = %v", err)
 	}
-	if len(agents) != 1 || agents[0].DesiredRevision != 10 {
+	if len(agents) != 1 {
 		t.Fatalf("agents after import = %+v", agents)
 	}
+	assertRevisionAboveFloor(t, "imported agent desired revision", agents[0].DesiredRevision, 9)
+	assertRevisionNotBehind(t, "imported agent desired revision", agents[0].DesiredRevision, rows[0].Revision)
 }

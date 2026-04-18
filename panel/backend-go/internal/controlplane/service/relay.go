@@ -191,6 +191,8 @@ func (s *relayService) Create(ctx context.Context, agentID string, input RelayLi
 
 	allocatedID := allocator.AllocateListenerID(preferredInt(input.ID))
 	normalizedInput := input
+	// Keep the caller's preferred ID only for allocator conflict resolution.
+	// Normalization should see the assigned ID, not re-read the raw preference.
 	normalizedInput.ID = nil
 	prepared, err := s.prepareRelayListener(ctx, resolvedID, normalizedInput, RelayListener{}, allocatedID)
 	if err != nil {

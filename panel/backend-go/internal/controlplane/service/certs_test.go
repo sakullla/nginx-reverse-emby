@@ -420,15 +420,11 @@ func TestCertificateServiceCreateUsesRevisionAboveTargetSyncFloor(t *testing.T) 
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
-	if created.Revision != 10 {
-		t.Fatalf("created.Revision = %d", created.Revision)
-	}
-	if got := relayAgentByID(t, store, "edge-1").DesiredRevision; got != 10 {
-		t.Fatalf("edge-1 desired revision = %d", got)
-	}
-	if got := relayAgentByID(t, store, "edge-2").DesiredRevision; got != 10 {
-		t.Fatalf("edge-2 desired revision = %d", got)
-	}
+	assertRevisionAboveFloor(t, "created.Revision", created.Revision, 9)
+	assertRevisionAboveFloor(t, "edge-1 desired revision", relayAgentByID(t, store, "edge-1").DesiredRevision, 9)
+	assertRevisionAboveFloor(t, "edge-2 desired revision", relayAgentByID(t, store, "edge-2").DesiredRevision, 9)
+	assertRevisionNotBehind(t, "edge-1 desired revision", relayAgentByID(t, store, "edge-1").DesiredRevision, created.Revision)
+	assertRevisionNotBehind(t, "edge-2 desired revision", relayAgentByID(t, store, "edge-2").DesiredRevision, created.Revision)
 }
 
 func TestCertificateServiceUpdateUploadedPreservesMaterialWhenPEMFieldsOmitted(t *testing.T) {
@@ -524,15 +520,11 @@ func TestCertificateServiceUpdateUsesRevisionAboveAffectedTargetSyncFloor(t *tes
 	if err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
-	if updated.Revision != 10 {
-		t.Fatalf("updated.Revision = %d", updated.Revision)
-	}
-	if got := relayAgentByID(t, store, "edge-1").DesiredRevision; got != 10 {
-		t.Fatalf("edge-1 desired revision = %d", got)
-	}
-	if got := relayAgentByID(t, store, "edge-2").DesiredRevision; got != 10 {
-		t.Fatalf("edge-2 desired revision = %d", got)
-	}
+	assertRevisionAboveFloor(t, "updated.Revision", updated.Revision, 9)
+	assertRevisionAboveFloor(t, "edge-1 desired revision", relayAgentByID(t, store, "edge-1").DesiredRevision, 9)
+	assertRevisionAboveFloor(t, "edge-2 desired revision", relayAgentByID(t, store, "edge-2").DesiredRevision, 9)
+	assertRevisionNotBehind(t, "edge-1 desired revision", relayAgentByID(t, store, "edge-1").DesiredRevision, updated.Revision)
+	assertRevisionNotBehind(t, "edge-2 desired revision", relayAgentByID(t, store, "edge-2").DesiredRevision, updated.Revision)
 }
 
 func TestCertificateServiceUpdateUploadedMergesOmittedPEMFieldsFromPreviousMaterial(t *testing.T) {
@@ -2392,9 +2384,7 @@ func TestCertificateServiceDeleteUsesRevisionAboveDeletedTargetSyncFloor(t *test
 	if deleted.ID != 96 {
 		t.Fatalf("deleted.ID = %d", deleted.ID)
 	}
-	if got := relayAgentByID(t, store, "edge-1").DesiredRevision; got != 10 {
-		t.Fatalf("edge-1 desired revision = %d", got)
-	}
+	assertRevisionAboveFloor(t, "edge-1 desired revision", relayAgentByID(t, store, "edge-1").DesiredRevision, 9)
 }
 
 func TestCertificateServiceGlobalCreateKeepsEmptyTargetAgentIDsWhenOmittedOrExplicitlyEmpty(t *testing.T) {

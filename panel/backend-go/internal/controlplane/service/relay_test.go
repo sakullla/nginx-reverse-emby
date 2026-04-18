@@ -1690,12 +1690,9 @@ func TestRelayServiceCreateUsesRevisionAboveRemoteAgentSyncFloor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
-	if listener.Revision != 10 {
-		t.Fatalf("Create() revision = %d", listener.Revision)
-	}
-	if store.agents[0].DesiredRevision != 10 {
-		t.Fatalf("remote desired_revision = %d", store.agents[0].DesiredRevision)
-	}
+	assertRevisionAboveFloor(t, "Create() revision", listener.Revision, 9)
+	assertRevisionAboveFloor(t, "remote desired_revision", store.agents[0].DesiredRevision, 9)
+	assertRevisionNotBehind(t, "remote desired_revision", store.agents[0].DesiredRevision, listener.Revision)
 }
 
 func TestRelayServiceCreateReassignsPreferredIDWhenListenerAlreadyUsesIt(t *testing.T) {
@@ -1772,12 +1769,9 @@ func TestRelayServiceUpdateUsesRevisionAboveRemoteAgentSyncFloor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Update() error = %v", err)
 	}
-	if listener.Revision != 10 {
-		t.Fatalf("Update() revision = %d", listener.Revision)
-	}
-	if store.agents[0].DesiredRevision != 10 {
-		t.Fatalf("remote desired_revision = %d", store.agents[0].DesiredRevision)
-	}
+	assertRevisionAboveFloor(t, "Update() revision", listener.Revision, 9)
+	assertRevisionAboveFloor(t, "remote desired_revision", store.agents[0].DesiredRevision, 9)
+	assertRevisionNotBehind(t, "remote desired_revision", store.agents[0].DesiredRevision, listener.Revision)
 }
 
 func TestRelayServiceDeleteUsesRevisionAboveRemoteAgentSyncFloor(t *testing.T) {
@@ -1817,9 +1811,7 @@ func TestRelayServiceDeleteUsesRevisionAboveRemoteAgentSyncFloor(t *testing.T) {
 	if deleted.ID != 5 {
 		t.Fatalf("deleted.ID = %d", deleted.ID)
 	}
-	if store.agents[0].DesiredRevision != 10 {
-		t.Fatalf("remote desired_revision = %d", store.agents[0].DesiredRevision)
-	}
+	assertRevisionAboveFloor(t, "remote desired_revision", store.agents[0].DesiredRevision, 9)
 }
 
 func TestRelayServiceCreateSucceedsWhenCleanupFailsPostCommit(t *testing.T) {

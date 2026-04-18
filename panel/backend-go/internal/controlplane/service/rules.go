@@ -125,6 +125,8 @@ func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRule
 
 	allocatedID := allocator.AllocateRuleID(preferredInt(input.ID))
 	normalizedInput := input
+	// Keep the caller's preferred ID only for allocator conflict resolution.
+	// Normalization should see the assigned ID, not re-read the raw preference.
 	normalizedInput.ID = nil
 	rule, err := s.normalizeHTTPRuleInput(ctx, normalizedInput, HTTPRule{}, allocatedID)
 	if err != nil {
