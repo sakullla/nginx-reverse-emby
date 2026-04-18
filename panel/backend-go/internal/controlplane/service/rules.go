@@ -111,22 +111,11 @@ func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRule
 	if err != nil {
 		return HTTPRule{}, err
 	}
-	allL4Rows, err := s.listL4RulesAcrossAllAgents(ctx)
+	allocator, err := newConfigIdentityAllocatorFromStore(ctx, s.cfg, s.store)
 	if err != nil {
 		return HTTPRule{}, err
 	}
 
-	maxID := 0
-	for _, row := range allRows {
-		if row.ID > maxID {
-			maxID = row.ID
-		}
-	}
-	for _, row := range allL4Rows {
-		if row.ID > maxID {
-			maxID = row.ID
-		}
-	}
 	maxRevision := 0
 	for _, row := range allRows {
 		if row.Revision > maxRevision {
@@ -134,15 +123,15 @@ func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRule
 		}
 	}
 
-	rule, err := s.normalizeHTTPRuleInput(ctx, input, HTTPRule{}, maxID+1)
+	allocatedID := allocator.AllocateRuleID(preferredInt(input.ID))
+	normalizedInput := input
+	normalizedInput.ID = nil
+	rule, err := s.normalizeHTTPRuleInput(ctx, normalizedInput, HTTPRule{}, allocatedID)
 	if err != nil {
 		return HTTPRule{}, err
 	}
 	rule.AgentID = resolvedID
-	rule.Revision, err = s.nextRuleRevision(ctx, resolvedID, maxRevision)
-	if err != nil {
-		return HTTPRule{}, err
-	}
+	rule.Revision = allocator.AllocateRevisionForAgent(resolvedID, maxRevision)
 
 	nextRows := append(append([]storage.HTTPRuleRow(nil), rows...), httpRuleToRow(rule))
 	certRowsChanged := false
@@ -199,6 +188,10 @@ func (s *ruleService) Update(ctx context.Context, agentID string, id int, input 
 	if err != nil {
 		return HTTPRule{}, err
 	}
+	allocator, err := newConfigIdentityAllocatorFromStore(ctx, s.cfg, s.store)
+	if err != nil {
+		return HTTPRule{}, err
+	}
 
 	maxRevision := 0
 	targetIndex := -1
@@ -227,10 +220,7 @@ func (s *ruleService) Update(ctx context.Context, agentID string, id int, input 
 		return HTTPRule{}, err
 	}
 	rule.AgentID = resolvedID
-	rule.Revision, err = s.nextRuleRevision(ctx, resolvedID, maxRevision)
-	if err != nil {
-		return HTTPRule{}, err
-	}
+	rule.Revision = allocator.AllocateRevisionForAgent(resolvedID, maxRevision)
 
 	nextRows := append([]storage.HTTPRuleRow(nil), rows...)
 	nextRows[targetIndex] = httpRuleToRow(rule)
@@ -319,10 +309,11 @@ func (s *ruleService) Delete(ctx context.Context, agentID string, id int) (HTTPR
 		}
 		return HTTPRule{}, err
 	}
-	nextRevision, err := s.nextRuleRevision(ctx, resolvedID, deleted.Revision)
+	allocator, err := newConfigIdentityAllocatorFromStore(ctx, s.cfg, s.store)
 	if err != nil {
 		return HTTPRule{}, err
 	}
+	nextRevision := allocator.AllocateRevisionForAgent(resolvedID, deleted.Revision)
 	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, nextRevision); err != nil {
 		return HTTPRule{}, err
 	}
@@ -354,38 +345,6 @@ func (s *ruleService) ensureAgentExists(ctx context.Context, agentID string) (st
 		}
 	}
 	return "", ErrAgentNotFound
-}
-
-func (s *ruleService) nextRuleRevision(ctx context.Context, agentID string, currentMax int) (int, error) {
-	floor, err := s.ruleRevisionFloor(ctx, agentID)
-	if err != nil {
-		return 0, err
-	}
-	if floor > currentMax {
-		currentMax = floor
-	}
-	return currentMax + 1, nil
-}
-
-func (s *ruleService) ruleRevisionFloor(ctx context.Context, agentID string) (int, error) {
-	if s.cfg.EnableLocalAgent && agentID == s.cfg.LocalAgentID {
-		state, err := s.store.LoadLocalAgentState(ctx)
-		if err != nil {
-			return 0, err
-		}
-		return maxInt(state.DesiredRevision, state.CurrentRevision), nil
-	}
-
-	rows, err := s.store.ListAgents(ctx)
-	if err != nil {
-		return 0, err
-	}
-	for _, row := range rows {
-		if row.ID == agentID {
-			return maxInt(row.DesiredRevision, row.CurrentRevision), nil
-		}
-	}
-	return 0, ErrAgentNotFound
 }
 
 func (s *ruleService) bumpRemoteDesiredRevision(ctx context.Context, agentID string, revision int) error {

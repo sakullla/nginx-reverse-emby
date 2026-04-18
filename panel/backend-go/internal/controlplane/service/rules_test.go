@@ -11,10 +11,11 @@ import (
 )
 
 type fakeRuleStore struct {
-	agents       []storage.AgentRow
-	rulesByAgent map[string][]storage.HTTPRuleRow
-	listeners    []storage.RelayListenerRow
-	managedCerts []storage.ManagedCertificateRow
+	agents         []storage.AgentRow
+	rulesByAgent   map[string][]storage.HTTPRuleRow
+	l4RulesByAgent map[string][]storage.L4RuleRow
+	listeners      []storage.RelayListenerRow
+	managedCerts   []storage.ManagedCertificateRow
 
 	listHTTPRulesErr  error
 	saveHTTPRulesErrs []error
@@ -46,8 +47,8 @@ func (f *fakeRuleStore) GetHTTPRule(_ context.Context, agentID string, id int) (
 	return storage.HTTPRuleRow{}, false, nil
 }
 
-func (f *fakeRuleStore) ListL4Rules(context.Context, string) ([]storage.L4RuleRow, error) {
-	return nil, nil
+func (f *fakeRuleStore) ListL4Rules(_ context.Context, agentID string) ([]storage.L4RuleRow, error) {
+	return append([]storage.L4RuleRow(nil), f.l4RulesByAgent[agentID]...), nil
 }
 
 func (f *fakeRuleStore) SaveHTTPRules(_ context.Context, agentID string, rows []storage.HTTPRuleRow) error {
@@ -674,6 +675,45 @@ func TestRuleServiceCreateUsesRevisionAboveRemoteAgentSyncFloor(t *testing.T) {
 	}
 	if store.agents[0].DesiredRevision != 10 {
 		t.Fatalf("remote desired_revision = %d", store.agents[0].DesiredRevision)
+	}
+}
+
+func TestRuleServiceCreateReassignsPreferredIDWhenL4RuleAlreadyUsesIt(t *testing.T) {
+	store := &fakeRuleStore{
+		rulesByAgent: map[string][]storage.HTTPRuleRow{
+			"local": {{
+				ID:          7,
+				AgentID:     "local",
+				FrontendURL: "http://existing-http.example.com",
+				BackendURL:  "http://127.0.0.1:8096",
+				Revision:    2,
+			}},
+		},
+		l4RulesByAgent: map[string][]storage.L4RuleRow{
+			"local": {{
+				ID:         9,
+				AgentID:    "local",
+				ListenHost: "0.0.0.0",
+				ListenPort: 25565,
+				Revision:   3,
+			}},
+		},
+	}
+	svc := NewRuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	rule, err := svc.Create(context.Background(), "local", HTTPRuleInput{
+		ID:          intPtrRule(9),
+		FrontendURL: stringPtrRule("http://new-http.example.com"),
+		BackendURL:  stringPtrRule("http://127.0.0.1:8096"),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if rule.ID != 10 {
+		t.Fatalf("Create() id = %d, want 10", rule.ID)
 	}
 }
 
@@ -1837,6 +1877,10 @@ func TestRuleServiceDeleteSucceedsWhenCleanupFailsPostCommit(t *testing.T) {
 }
 
 func stringPtrRule(value string) *string {
+	return &value
+}
+
+func intPtrRule(value int) *int {
 	return &value
 }
 
