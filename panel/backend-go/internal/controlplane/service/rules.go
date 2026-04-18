@@ -33,6 +33,7 @@ type ruleStore interface {
 	ListHTTPRules(context.Context, string) ([]storage.HTTPRuleRow, error)
 	GetHTTPRule(context.Context, string, int) (storage.HTTPRuleRow, bool, error)
 	ListL4Rules(context.Context, string) ([]storage.L4RuleRow, error)
+	LoadLocalAgentState(context.Context) (storage.LocalAgentStateRow, error)
 	ListManagedCertificates(context.Context) ([]storage.ManagedCertificateRow, error)
 	ListRelayListeners(context.Context, string) ([]storage.RelayListenerRow, error)
 	SaveAgent(context.Context, storage.AgentRow) error
@@ -138,7 +139,10 @@ func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRule
 		return HTTPRule{}, err
 	}
 	rule.AgentID = resolvedID
-	rule.Revision = maxRevision + 1
+	rule.Revision, err = s.nextRuleRevision(ctx, resolvedID, maxRevision)
+	if err != nil {
+		return HTTPRule{}, err
+	}
 
 	nextRows := append(append([]storage.HTTPRuleRow(nil), rows...), httpRuleToRow(rule))
 	certRowsChanged := false
@@ -223,7 +227,10 @@ func (s *ruleService) Update(ctx context.Context, agentID string, id int, input 
 		return HTTPRule{}, err
 	}
 	rule.AgentID = resolvedID
-	rule.Revision = maxRevision + 1
+	rule.Revision, err = s.nextRuleRevision(ctx, resolvedID, maxRevision)
+	if err != nil {
+		return HTTPRule{}, err
+	}
 
 	nextRows := append([]storage.HTTPRuleRow(nil), rows...)
 	nextRows[targetIndex] = httpRuleToRow(rule)
@@ -312,7 +319,11 @@ func (s *ruleService) Delete(ctx context.Context, agentID string, id int) (HTTPR
 		}
 		return HTTPRule{}, err
 	}
-	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, deleted.Revision+1); err != nil {
+	nextRevision, err := s.nextRuleRevision(ctx, resolvedID, deleted.Revision)
+	if err != nil {
+		return HTTPRule{}, err
+	}
+	if err := s.bumpRemoteDesiredRevision(ctx, resolvedID, nextRevision); err != nil {
 		return HTTPRule{}, err
 	}
 	if certRowsChanged {
@@ -345,6 +356,38 @@ func (s *ruleService) ensureAgentExists(ctx context.Context, agentID string) (st
 	return "", ErrAgentNotFound
 }
 
+func (s *ruleService) nextRuleRevision(ctx context.Context, agentID string, currentMax int) (int, error) {
+	floor, err := s.ruleRevisionFloor(ctx, agentID)
+	if err != nil {
+		return 0, err
+	}
+	if floor > currentMax {
+		currentMax = floor
+	}
+	return currentMax + 1, nil
+}
+
+func (s *ruleService) ruleRevisionFloor(ctx context.Context, agentID string) (int, error) {
+	if s.cfg.EnableLocalAgent && agentID == s.cfg.LocalAgentID {
+		state, err := s.store.LoadLocalAgentState(ctx)
+		if err != nil {
+			return 0, err
+		}
+		return maxInt(state.DesiredRevision, state.CurrentRevision), nil
+	}
+
+	rows, err := s.store.ListAgents(ctx)
+	if err != nil {
+		return 0, err
+	}
+	for _, row := range rows {
+		if row.ID == agentID {
+			return maxInt(row.DesiredRevision, row.CurrentRevision), nil
+		}
+	}
+	return 0, ErrAgentNotFound
+}
+
 func (s *ruleService) bumpRemoteDesiredRevision(ctx context.Context, agentID string, revision int) error {
 	if s.cfg.EnableLocalAgent && agentID == s.cfg.LocalAgentID {
 		return nil
@@ -365,7 +408,9 @@ func (s *ruleService) bumpRemoteDesiredRevision(ctx context.Context, agentID str
 		if row.CurrentRevision > nextRevision {
 			nextRevision = row.CurrentRevision
 		}
-		row.DesiredRevision = nextRevision
+		if row.DesiredRevision < nextRevision {
+			row.DesiredRevision = nextRevision
+		}
 		return s.store.SaveAgent(ctx, row)
 	}
 	return ErrAgentNotFound
@@ -1071,4 +1116,14 @@ func httpRuleToRow(rule HTTPRule) storage.HTTPRuleRow {
 		CustomHeadersJSON: marshalJSON(rule.CustomHeaders, "[]"),
 		Revision:          rule.Revision,
 	}
+}
+
+func maxInt(values ...int) int {
+	maxValue := 0
+	for _, value := range values {
+		if value > maxValue {
+			maxValue = value
+		}
+	}
+	return maxValue
 }

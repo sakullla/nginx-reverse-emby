@@ -77,6 +77,10 @@ func (f *fakeRuleStore) ListManagedCertificates(context.Context) ([]storage.Mana
 	return append([]storage.ManagedCertificateRow(nil), f.managedCerts...), nil
 }
 
+func (f *fakeRuleStore) LoadLocalAgentState(context.Context) (storage.LocalAgentStateRow, error) {
+	return storage.LocalAgentStateRow{}, nil
+}
+
 func (f *fakeRuleStore) LoadAgentSnapshot(context.Context, string, storage.AgentSnapshotInput) (storage.Snapshot, error) {
 	return storage.Snapshot{}, nil
 }
@@ -625,10 +629,132 @@ func TestRuleServiceCreateDoesNotRegressRemoteDesiredRevisionBelowCurrentRevisio
 		t.Fatalf("Create() error = %v", err)
 	}
 
-	if rule.Revision != 5 {
+	if rule.Revision != 10 {
 		t.Fatalf("Create() revision = %d", rule.Revision)
 	}
-	if store.agents[0].DesiredRevision != 9 {
+	if store.agents[0].DesiredRevision != 10 {
+		t.Fatalf("remote desired_revision = %d", store.agents[0].DesiredRevision)
+	}
+}
+
+func TestRuleServiceCreateUsesRevisionAboveRemoteAgentSyncFloor(t *testing.T) {
+	store := &fakeRuleStore{
+		agents: []storage.AgentRow{{
+			ID:               "edge-1",
+			Name:             "Edge 1",
+			CapabilitiesJSON: `["http_rules","local_acme","cert_install"]`,
+			DesiredRevision:  9,
+			CurrentRevision:  9,
+		}},
+		rulesByAgent: map[string][]storage.HTTPRuleRow{
+			"edge-1": {{
+				ID:          1,
+				AgentID:     "edge-1",
+				FrontendURL: "http://existing.example.com",
+				BackendURL:  "http://127.0.0.1:8096",
+				Revision:    4,
+			}},
+		},
+	}
+	svc := NewRuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	rule, err := svc.Create(context.Background(), "edge-1", HTTPRuleInput{
+		FrontendURL: stringPtrRule("http://new.example.com"),
+		BackendURL:  stringPtrRule("http://127.0.0.1:8096"),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	if rule.Revision != 10 {
+		t.Fatalf("Create() revision = %d", rule.Revision)
+	}
+	if store.agents[0].DesiredRevision != 10 {
+		t.Fatalf("remote desired_revision = %d", store.agents[0].DesiredRevision)
+	}
+}
+
+func TestRuleServiceUpdateUsesRevisionAboveRemoteAgentSyncFloor(t *testing.T) {
+	store := &fakeRuleStore{
+		agents: []storage.AgentRow{{
+			ID:               "edge-1",
+			Name:             "Edge 1",
+			CapabilitiesJSON: `["http_rules","local_acme","cert_install"]`,
+			DesiredRevision:  9,
+			CurrentRevision:  9,
+		}},
+		rulesByAgent: map[string][]storage.HTTPRuleRow{
+			"edge-1": {{
+				ID:                1,
+				AgentID:           "edge-1",
+				FrontendURL:       "http://existing.example.com",
+				BackendURL:        "http://127.0.0.1:8096",
+				BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+				LoadBalancingJSON: `{"strategy":"adaptive"}`,
+				Enabled:           true,
+				Revision:          4,
+			}},
+		},
+	}
+	svc := NewRuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	rule, err := svc.Update(context.Background(), "edge-1", 1, HTTPRuleInput{
+		FrontendURL: stringPtrRule("http://updated.example.com"),
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	if rule.Revision != 10 {
+		t.Fatalf("Update() revision = %d", rule.Revision)
+	}
+	if store.agents[0].DesiredRevision != 10 {
+		t.Fatalf("remote desired_revision = %d", store.agents[0].DesiredRevision)
+	}
+}
+
+func TestRuleServiceDeleteUsesRevisionAboveRemoteAgentSyncFloor(t *testing.T) {
+	store := &fakeRuleStore{
+		agents: []storage.AgentRow{{
+			ID:               "edge-1",
+			Name:             "Edge 1",
+			CapabilitiesJSON: `["http_rules","local_acme","cert_install"]`,
+			DesiredRevision:  9,
+			CurrentRevision:  9,
+		}},
+		rulesByAgent: map[string][]storage.HTTPRuleRow{
+			"edge-1": {{
+				ID:                1,
+				AgentID:           "edge-1",
+				FrontendURL:       "http://existing.example.com",
+				BackendURL:        "http://127.0.0.1:8096",
+				BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+				LoadBalancingJSON: `{"strategy":"adaptive"}`,
+				Enabled:           true,
+				Revision:          4,
+			}},
+		},
+	}
+	svc := NewRuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	deleted, err := svc.Delete(context.Background(), "edge-1", 1)
+	if err != nil {
+		t.Fatalf("Delete() error = %v", err)
+	}
+
+	if deleted.ID != 1 {
+		t.Fatalf("Delete() id = %d", deleted.ID)
+	}
+	if store.agents[0].DesiredRevision != 10 {
 		t.Fatalf("remote desired_revision = %d", store.agents[0].DesiredRevision)
 	}
 }
