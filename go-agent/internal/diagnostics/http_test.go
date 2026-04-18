@@ -1,12 +1,14 @@
 package diagnostics
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"sync"
 	"testing"
 	"time"
@@ -327,6 +329,108 @@ func TestHTTPProberDiagnoseSplitsHostnameBackendsByResolvedAddress(t *testing.T)
 	}
 }
 
+func TestHTTPProberProbeCandidateLearnsQualifiedThroughputFromBodyTransfer(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(900 * time.Millisecond)
+		w.WriteHeader(http.StatusOK)
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatal("response writer does not support flushing")
+		}
+		chunk := bytes.Repeat([]byte("a"), 256*1024)
+		for i := 0; i < 8; i++ {
+			_, _ = w.Write(chunk)
+			flusher.Flush()
+			time.Sleep(15 * time.Millisecond)
+		}
+	}))
+	defer server.Close()
+
+	cache := backends.NewCache(backends.Config{})
+	prober := NewHTTPProber(HTTPProberConfig{
+		Attempts: 1,
+		Timeout:  3 * time.Second,
+		Cache:    cache,
+	})
+
+	target, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	candidate := httpProbeCandidate{
+		targetURL:    target,
+		backendLabel: server.URL,
+		dialAddress:  target.Host,
+	}
+
+	prober.probeCandidate(context.Background(), cache, 1, model.HTTPRule{}, nil, candidate)
+	prober.probeCandidate(context.Background(), cache, 2, model.HTTPRule{}, nil, candidate)
+
+	summary := cache.Summary(target.Host)
+	if !summary.HasBandwidth || summary.Bandwidth < 10*1024*1024 {
+		t.Fatalf("expected transfer-duration throughput estimate, got %+v", summary)
+	}
+}
+
+func TestHTTPProberProbeCandidateTreatsTimedOutBodyReadAsFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatal("response writer does not support flushing")
+		}
+
+		chunk := bytes.Repeat([]byte("a"), 64*1024)
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(chunk)*2))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(chunk)
+		flusher.Flush()
+		time.Sleep(250 * time.Millisecond)
+	}))
+	defer server.Close()
+
+	cache := backends.NewCache(backends.Config{})
+	prober := NewHTTPProber(HTTPProberConfig{
+		Attempts: 1,
+		Timeout:  100 * time.Millisecond,
+		Cache:    cache,
+	})
+
+	target, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	candidate := httpProbeCandidate{
+		targetURL:             target,
+		backendLabel:          server.URL,
+		dialAddress:           target.Host,
+		backendObservationKey: backends.BackendObservationKey("https://edge.example.test", backends.StableBackendID(server.URL)),
+	}
+
+	sample := prober.probeCandidate(context.Background(), cache, 1, model.HTTPRule{}, nil, candidate)
+	if sample.Success {
+		t.Fatalf("expected probe failure when body read times out, got %+v", sample)
+	}
+	if sample.Error == "" {
+		t.Fatalf("expected probe error when body read times out, got %+v", sample)
+	}
+
+	addressSummary := cache.Summary(target.Host)
+	if addressSummary.RecentSucceeded != 0 || addressSummary.HasBandwidth {
+		t.Fatalf("expected no successful throughput learning after body-read timeout, got %+v", addressSummary)
+	}
+	if addressSummary.RecentFailed != 1 {
+		t.Fatalf("expected timed-out body read to count as failure, got %+v", addressSummary)
+	}
+
+	backendSummary := cache.Summary(candidate.backendObservationKey)
+	if backendSummary.RecentSucceeded != 0 {
+		t.Fatalf("expected backend observation to skip success learning after body-read timeout, got %+v", backendSummary)
+	}
+	if backendSummary.RecentFailed != 1 {
+		t.Fatalf("expected backend observation to record probe failure after body-read timeout, got %+v", backendSummary)
+	}
+}
+
 func TestHTTPCandidatesReturnsResolveErrorWhenEveryBackendFailsDNS(t *testing.T) {
 	cache := backends.NewCache(backends.Config{
 		Resolver: diagnosticResolverFunc(func(context.Context, string) ([]net.IPAddr, error) {
@@ -427,8 +531,12 @@ func TestHTTPProberDiagnoseAdaptivePrefersConfiguredBackendOrder(t *testing.T) {
 		},
 	})
 	scope := "https://edge.example.test"
-	cache.ObserveBackendSuccess(backends.BackendObservationKey(scope, backends.StableBackendID(bulk.URL+"/healthz")), 30*time.Millisecond, 200*time.Millisecond, 4*1024*1024)
-	cache.ObserveBackendSuccess(backends.BackendObservationKey(scope, backends.StableBackendID(fast.URL+"/healthz")), 10*time.Millisecond, 200*time.Millisecond, 64*1024)
+	bulkKey := backends.BackendObservationKey(scope, backends.StableBackendID(bulk.URL+"/healthz"))
+	fastKey := backends.BackendObservationKey(scope, backends.StableBackendID(fast.URL+"/healthz"))
+	cache.ObserveBackendSuccess(bulkKey, 30*time.Millisecond, 100*time.Millisecond, 4*1024*1024)
+	cache.ObserveBackendSuccess(bulkKey, 30*time.Millisecond, 100*time.Millisecond, 4*1024*1024)
+	cache.ObserveBackendSuccess(fastKey, 10*time.Millisecond, 200*time.Millisecond, 64*1024)
+	cache.ObserveBackendSuccess(fastKey, 10*time.Millisecond, 200*time.Millisecond, 64*1024)
 
 	prober := NewHTTPProber(HTTPProberConfig{
 		Attempts:   1,
@@ -454,6 +562,138 @@ func TestHTTPProberDiagnoseAdaptivePrefersConfiguredBackendOrder(t *testing.T) {
 	}
 	if report.Backends[0].Backend != bulk.URL+"/healthz" {
 		t.Fatalf("unexpected first backend report: %+v", report.Backends)
+	}
+}
+
+func TestBuildHTTPAdaptiveReportsUsesSharedTrafficMixForConfiguredPerformance(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	cache := backends.NewCache(backends.Config{
+		Now: func() time.Time {
+			return base
+		},
+	})
+	scope := "https://edge.example.test"
+	lowLatencyURL := "http://low.example:8096/healthz"
+	bulkURL := "http://bulk.example:8096/healthz"
+	lowLatencyKey := backends.BackendObservationKey(scope, backends.StableBackendID(lowLatencyURL))
+	bulkKey := backends.BackendObservationKey(scope, backends.StableBackendID(bulkURL))
+
+	for i := 0; i < 20; i++ {
+		cache.ObserveBackendSuccess(lowLatencyKey, 10*time.Millisecond, 60*time.Millisecond, 4*1024*1024)
+	}
+	cache.ObserveBackendSuccess(lowLatencyKey, 10*time.Millisecond, 200*time.Millisecond, 512*1024)
+	cache.ObserveBackendSuccess(lowLatencyKey, 10*time.Millisecond, 400*time.Millisecond, 1024*1024)
+
+	for i := 0; i < 4; i++ {
+		cache.ObserveBackendSuccess(bulkKey, 50*time.Millisecond, 120*time.Millisecond, 3*1024*1024)
+	}
+
+	annotated := buildHTTPAdaptiveReports([]BackendReport{
+		{Backend: lowLatencyURL, Summary: Summary{}},
+		{Backend: bulkURL, Summary: Summary{}},
+	}, []httpProbeCandidate{
+		{
+			backendLabel:          lowLatencyURL,
+			backendObservationKey: lowLatencyKey,
+			configuredURL:         lowLatencyURL,
+		},
+		{
+			backendLabel:          bulkURL,
+			backendObservationKey: bulkKey,
+			configuredURL:         bulkURL,
+		},
+	}, cache)
+	if len(annotated) != 2 {
+		t.Fatalf("annotated = %+v", annotated)
+	}
+
+	adaptiveByBackend := make(map[string]*AdaptiveSummary, len(annotated))
+	for _, report := range annotated {
+		adaptiveByBackend[report.Backend] = report.Adaptive
+	}
+
+	lowLatencyAdaptive := adaptiveByBackend[lowLatencyURL]
+	bulkAdaptive := adaptiveByBackend[bulkURL]
+	if lowLatencyAdaptive == nil || bulkAdaptive == nil {
+		t.Fatalf("annotated = %+v", annotated)
+	}
+	if lowLatencyAdaptive.PerformanceScore <= bulkAdaptive.PerformanceScore {
+		t.Fatalf("configured HTTP summaries must use shared traffic mix so the preferred backend does not show a lower score: low=%+v bulk=%+v", lowLatencyAdaptive, bulkAdaptive)
+	}
+}
+
+func TestBuildHTTPAdaptiveReportsUsesSharedTrafficMixForResolvedChildren(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	cache := backends.NewCache(backends.Config{
+		Now: func() time.Time {
+			return base
+		},
+	})
+
+	configuredURL := "http://origin.example:8096/healthz"
+	lowLatencyAddr := "10.0.0.10:8096"
+	bulkAddr := "10.0.0.11:8096"
+	lowLatencyLabel := configuredURL + " [" + lowLatencyAddr + "]"
+	bulkLabel := configuredURL + " [" + bulkAddr + "]"
+
+	for i := 0; i < 20; i++ {
+		cache.ObserveTransferSuccess(lowLatencyAddr, 10*time.Millisecond, 60*time.Millisecond, 4*1024*1024)
+	}
+	cache.ObserveTransferSuccess(lowLatencyAddr, 10*time.Millisecond, 200*time.Millisecond, 512*1024)
+	cache.ObserveTransferSuccess(lowLatencyAddr, 10*time.Millisecond, 400*time.Millisecond, 1024*1024)
+
+	for i := 0; i < 4; i++ {
+		cache.ObserveTransferSuccess(bulkAddr, 50*time.Millisecond, 120*time.Millisecond, 3*1024*1024)
+	}
+
+	resolved := cache.PreferResolvedCandidates([]backends.Candidate{
+		{Address: lowLatencyAddr},
+		{Address: bulkAddr},
+	})
+	if len(resolved) != 2 || resolved[0].Address != lowLatencyAddr {
+		t.Fatalf("fixture must prefer the latency-first resolved candidate under shared mix ordering: %+v", resolved)
+	}
+
+	annotated := buildHTTPAdaptiveReports([]BackendReport{
+		{Backend: lowLatencyLabel, Summary: Summary{}},
+		{Backend: bulkLabel, Summary: Summary{}},
+	}, []httpProbeCandidate{
+		{
+			backendLabel:  lowLatencyLabel,
+			dialAddress:   lowLatencyAddr,
+			configuredURL: configuredURL,
+			resolvedCandidates: []httpResolvedCandidate{
+				{label: lowLatencyLabel, dialAddress: lowLatencyAddr},
+				{label: bulkLabel, dialAddress: bulkAddr},
+			},
+		},
+		{
+			backendLabel:  bulkLabel,
+			dialAddress:   bulkAddr,
+			configuredURL: configuredURL,
+			resolvedCandidates: []httpResolvedCandidate{
+				{label: lowLatencyLabel, dialAddress: lowLatencyAddr},
+				{label: bulkLabel, dialAddress: bulkAddr},
+			},
+		},
+	}, cache)
+	if len(annotated) != 1 {
+		t.Fatalf("annotated = %+v", annotated)
+	}
+	if len(annotated[0].Children) != 2 {
+		t.Fatalf("children = %+v", annotated[0].Children)
+	}
+
+	preferredChild := annotated[0].Children[0].Adaptive
+	otherChild := annotated[0].Children[1].Adaptive
+	if preferredChild == nil || otherChild == nil {
+		t.Fatalf("children = %+v", annotated[0].Children)
+	}
+	if !preferredChild.Preferred {
+		t.Fatalf("first resolved child must stay preferred: %+v", annotated[0].Children)
+	}
+	if preferredChild.PerformanceScore <= otherChild.PerformanceScore {
+		t.Fatalf("resolved HTTP summaries must use shared traffic mix so the preferred child does not show a lower score: preferred=%+v other=%+v", preferredChild, otherChild)
 	}
 }
 
@@ -554,7 +794,7 @@ func TestHTTPProberDiagnoseSerializesAdaptiveRecoveryFields(t *testing.T) {
 	if adaptive["slow_start_active"] != true {
 		t.Fatalf("slow_start_active = %#v", adaptive["slow_start_active"])
 	}
-	if adaptive["outlier"] != true {
+	if _, ok := adaptive["outlier"]; ok {
 		t.Fatalf("outlier = %#v", adaptive["outlier"])
 	}
 	if adaptive["traffic_share_hint"] != "recovery" {

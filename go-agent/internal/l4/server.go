@@ -227,7 +227,7 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 		s.observeCandidateFailure(candidate)
 		return
 	}
-	s.observeCandidateSuccess(candidate, connectDuration, connectDuration, 0)
+	s.observeCandidateSuccess(candidate, connectDuration)
 
 	done := make(chan struct{}, 2)
 	go func() {
@@ -618,7 +618,7 @@ func (s *Server) pipeUDPReplies(session *udpSession) {
 		s.observeCandidateSuccess(l4Candidate{
 			address:               session.targetAddr,
 			backendObservationKey: session.backendObservationKey,
-		}, replyDuration, replyDuration, int64(len(payload)))
+		}, replyDuration)
 		if _, err := session.listener.WriteToUDP(payload, session.peer); err != nil {
 			return
 		}
@@ -736,7 +736,7 @@ func l4Candidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule)
 	}
 
 	scope := strings.ToLower(rule.Protocol) + ":" + net.JoinHostPort(rule.ListenHost, strconv.Itoa(rule.ListenPort))
-	orderedBackends := cache.Order(scope, rule.LoadBalancing.Strategy, placeholders)
+	orderedBackends := cache.OrderLatencyOnly(scope, rule.LoadBalancing.Strategy, placeholders)
 	out := make([]l4Candidate, 0, len(rawBackends))
 	for _, ordered := range orderedBackends {
 		indexes := indexesByID[ordered.Address]
@@ -760,7 +760,7 @@ func l4Candidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule)
 			}
 			continue
 		}
-		resolved = cache.PreferResolvedCandidates(resolved)
+		resolved = cache.PreferResolvedCandidatesLatencyOnly(resolved)
 		for _, candidate := range resolved {
 			if cache.IsInBackoff(candidate.Address) {
 				continue
@@ -807,19 +807,12 @@ func (s *Server) observeCandidateFailure(candidate l4Candidate) {
 	}
 }
 
-func (s *Server) observeCandidateSuccess(candidate l4Candidate, headerLatency time.Duration, totalDuration time.Duration, bytesTransferred int64) {
+func (s *Server) observeCandidateSuccess(candidate l4Candidate, headerLatency time.Duration) {
 	if s == nil || s.cache == nil || candidate.address == "" {
 		return
 	}
-	if totalDuration <= 0 {
-		totalDuration = headerLatency
-	}
 	if candidate.backendObservationKey != "" {
-		s.cache.ObserveBackendSuccess(candidate.backendObservationKey, headerLatency, totalDuration, bytesTransferred)
-	}
-	if bytesTransferred > 0 {
-		s.cache.ObserveTransferSuccess(candidate.address, headerLatency, totalDuration, bytesTransferred)
-		return
+		s.cache.ObserveBackendSuccess(candidate.backendObservationKey, headerLatency, 0, 0)
 	}
 	s.cache.ObserveSuccess(candidate.address, headerLatency)
 }

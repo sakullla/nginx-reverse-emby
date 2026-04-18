@@ -559,6 +559,41 @@ func TestTCPConnectObservesSuccessBeforeSessionTeardown(t *testing.T) {
 	t.Fatalf("expected prompt tcp success observation while session stayed open; resolved=%+v backend=%+v", resolved, backend)
 }
 
+func TestObserveCandidateSuccessDoesNotLearnThroughput(t *testing.T) {
+	base := time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC)
+	cache := backends.NewCache(backends.Config{
+		Now: func() time.Time {
+			return base
+		},
+	})
+	srv := &Server{cache: cache}
+	scope := "tcp:0.0.0.0:9550"
+	candidate := l4Candidate{
+		address:               "203.0.113.10:9001",
+		backendObservationKey: backends.BackendObservationKey(scope, backends.StableBackendID("203.0.113.10:9001")),
+	}
+
+	for i := 0; i < 3; i++ {
+		srv.observeCandidateSuccess(candidate, 20*time.Millisecond)
+	}
+
+	resolved := cache.Summary(candidate.address)
+	if resolved.RecentSucceeded != 3 {
+		t.Fatalf("resolved summary = %+v", resolved)
+	}
+	if resolved.HasBandwidth {
+		t.Fatalf("l4 runtime must not learn throughput for resolved address summaries: %+v", resolved)
+	}
+
+	backend := cache.Summary(candidate.backendObservationKey)
+	if backend.RecentSucceeded != 3 {
+		t.Fatalf("backend summary = %+v", backend)
+	}
+	if backend.HasBandwidth {
+		t.Fatalf("l4 runtime must not learn throughput for backend summaries: %+v", backend)
+	}
+}
+
 func TestL4CandidatesAdaptiveExploresColdBackendWhenBudgetTriggers(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
 	cache := backends.NewCache(backends.Config{
@@ -672,6 +707,107 @@ func TestL4CandidatesAdaptivePromotesRecoveredResolvedCandidateOnlyDuringSlowSta
 	summary := cache.Summary(recoveredAddress)
 	if summary.State != backends.ObservationStateWarm || !summary.SlowStartActive {
 		t.Fatalf("Summary = %+v", summary)
+	}
+}
+
+func TestL4CandidatesUseLatencyOnlyResolvedOrdering(t *testing.T) {
+	base := time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC)
+	cache := backends.NewCache(backends.Config{
+		Resolver: resolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
+			switch host {
+			case "resolved.example":
+				return []net.IPAddr{
+					{IP: net.ParseIP("127.0.0.71")},
+					{IP: net.ParseIP("127.0.0.70")},
+				}, nil
+			default:
+				return nil, fmt.Errorf("unexpected host %q", host)
+			}
+		}),
+		Now: func() time.Time {
+			return base
+		},
+	})
+
+	slowHighThroughput := "127.0.0.71:9001"
+	fastLowerThroughput := "127.0.0.70:9001"
+	for i := 0; i < 3; i++ {
+		cache.ObserveTransferSuccess(slowHighThroughput, 45*time.Millisecond, 120*time.Millisecond, 2*1024*1024)
+		cache.ObserveTransferSuccess(fastLowerThroughput, 10*time.Millisecond, 350*time.Millisecond, 512*1024)
+	}
+
+	resolved, err := cache.Resolve(context.Background(), backends.Endpoint{Host: "resolved.example", Port: 9001})
+	if err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	if got := cache.PreferResolvedCandidates(resolved); got[0].Address != slowHighThroughput {
+		t.Fatalf("fixture must diverge under throughput-aware resolved ordering: %+v", got)
+	}
+
+	candidates, err := l4Candidates(context.Background(), cache, model.L4Rule{
+		Protocol:      "tcp",
+		ListenHost:    "0.0.0.0",
+		ListenPort:    9446,
+		LoadBalancing: model.LoadBalancing{Strategy: "adaptive"},
+		Backends: []model.L4Backend{
+			{Host: "resolved.example", Port: 9001},
+		},
+	})
+	if err != nil {
+		t.Fatalf("l4Candidates() error = %v", err)
+	}
+	if len(candidates) < 2 {
+		t.Fatalf("candidates = %+v", candidates)
+	}
+	if candidates[0].address != fastLowerThroughput {
+		t.Fatalf("l4Candidates() must keep latency-only resolved ordering: %+v", candidates)
+	}
+}
+
+func TestL4CandidatesUseLatencyOnlyPlaceholderOrdering(t *testing.T) {
+	base := time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC)
+	cache := backends.NewCache(backends.Config{
+		Now: func() time.Time {
+			return base
+		},
+	})
+
+	scope := "tcp:0.0.0.0:9447"
+	slowHighThroughput := "127.0.0.91:9001"
+	fastLowerThroughput := "127.0.0.90:9001"
+	slowBackendID := backends.StableBackendID(slowHighThroughput)
+	fastBackendID := backends.StableBackendID(fastLowerThroughput)
+	for i := 0; i < 3; i++ {
+		cache.ObserveBackendSuccess(backends.BackendObservationKey(scope, slowBackendID), 45*time.Millisecond, 120*time.Millisecond, 2*1024*1024)
+		cache.ObserveBackendSuccess(backends.BackendObservationKey(scope, fastBackendID), 10*time.Millisecond, 350*time.Millisecond, 512*1024)
+	}
+
+	placeholders := []backends.Candidate{
+		{Address: slowBackendID},
+		{Address: fastBackendID},
+	}
+	if got := cache.Order(scope, backends.StrategyAdaptive, placeholders); got[0].Address != slowBackendID {
+		t.Fatalf("fixture must diverge under throughput-aware placeholder ordering: %+v", got)
+	}
+
+	candidates, err := l4Candidates(context.Background(), cache, model.L4Rule{
+		Protocol:      "tcp",
+		ListenHost:    "0.0.0.0",
+		ListenPort:    9447,
+		LoadBalancing: model.LoadBalancing{Strategy: "adaptive"},
+		Backends: []model.L4Backend{
+			{Host: "127.0.0.91", Port: 9001},
+			{Host: "127.0.0.90", Port: 9001},
+		},
+	})
+	if err != nil {
+		t.Fatalf("l4Candidates() error = %v", err)
+	}
+	if len(candidates) < 2 {
+		t.Fatalf("candidates = %+v", candidates)
+	}
+	if candidates[0].address != fastLowerThroughput {
+		t.Fatalf("l4Candidates() must keep latency-only placeholder ordering: %+v", candidates)
 	}
 }
 

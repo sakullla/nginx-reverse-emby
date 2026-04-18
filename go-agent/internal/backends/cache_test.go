@@ -2,11 +2,13 @@ package backends
 
 import (
 	"context"
+	"math"
 	"net"
 	"reflect"
 	"sync"
 	"testing"
 	"time"
+	"unsafe"
 )
 
 func TestCacheResolveUsesFixedDNSCacheTTL(t *testing.T) {
@@ -186,12 +188,128 @@ func TestCacheOrderAdaptiveUsesCombinedPerformanceNotLatencyOnly(t *testing.T) {
 		{Address: "fast"},
 	}
 
-	cache.ObserveBackendSuccess(BackendObservationKey(scope, "bulk"), 12*time.Millisecond, 100*time.Millisecond, 64*1024)
-	cache.ObserveBackendSuccess(BackendObservationKey(scope, "fast"), 18*time.Millisecond, 100*time.Millisecond, 2*1024*1024)
+	bulkKey := BackendObservationKey(scope, "bulk")
+	fastKey := BackendObservationKey(scope, "fast")
+	cache.ObserveBackendSuccess(bulkKey, 12*time.Millisecond, 100*time.Millisecond, 512*1024)
+	cache.ObserveBackendSuccess(bulkKey, 12*time.Millisecond, 100*time.Millisecond, 512*1024)
+	cache.ObserveBackendSuccess(fastKey, 18*time.Millisecond, 100*time.Millisecond, 2*1024*1024)
+	cache.ObserveBackendSuccess(fastKey, 18*time.Millisecond, 100*time.Millisecond, 2*1024*1024)
 
 	got := cache.Order(scope, StrategyAdaptive, candidates)
 	if ordered := addresses(got); !reflect.DeepEqual(ordered, []string{"fast", "bulk"}) {
 		t.Fatalf("unexpected adaptive order with combined performance scoring: %v", ordered)
+	}
+}
+
+func TestCacheOrderLatencyOnlyIgnoresBackendThroughput(t *testing.T) {
+	base := time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC)
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return base
+		},
+	})
+	scope := "tcp:rule-placeholder-latency-only"
+	candidates := []Candidate{
+		{Address: "slow"},
+		{Address: "fast"},
+	}
+
+	for i := 0; i < 3; i++ {
+		cache.ObserveBackendSuccess(BackendObservationKey(scope, "slow"), 45*time.Millisecond, 120*time.Millisecond, 2*1024*1024)
+		cache.ObserveBackendSuccess(BackendObservationKey(scope, "fast"), 10*time.Millisecond, 350*time.Millisecond, 512*1024)
+	}
+
+	if got := cache.Order(scope, StrategyAdaptive, candidates); !reflect.DeepEqual(addresses(got), []string{"slow", "fast"}) {
+		t.Fatalf("fixture must diverge under throughput-aware ordering: %v", addresses(got))
+	}
+
+	got := cache.OrderLatencyOnly(scope, StrategyAdaptive, candidates)
+	if ordered := addresses(got); !reflect.DeepEqual(ordered, []string{"fast", "slow"}) {
+		t.Fatalf("latency-only adaptive ordering must ignore backend throughput history: %v", ordered)
+	}
+}
+
+func TestCacheOrderAdaptivePrefersLowerLatencyWhenOnlySmallResponsesExist(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	cache := NewCache(Config{
+		Now: func() time.Time { return base },
+	})
+	scope := "http:rule-small-only"
+	candidates := []Candidate{{Address: "low-latency"}, {Address: "high-latency"}}
+
+	lowLatencyKey := BackendObservationKey(scope, "low-latency")
+	highLatencyKey := BackendObservationKey(scope, "high-latency")
+
+	for i := 0; i < 20; i++ {
+		cache.ObserveBackendSuccess(lowLatencyKey, 10*time.Millisecond, 60*time.Millisecond, 4*1024*1024)
+	}
+	cache.ObserveBackendSuccess(lowLatencyKey, 10*time.Millisecond, 200*time.Millisecond, 512*1024)
+	cache.ObserveBackendSuccess(lowLatencyKey, 10*time.Millisecond, 400*time.Millisecond, 1024*1024)
+
+	for i := 0; i < 4; i++ {
+		cache.ObserveBackendSuccess(highLatencyKey, 50*time.Millisecond, 120*time.Millisecond, 3*1024*1024)
+	}
+
+	lowObservation := cache.observationFor(lowLatencyKey)
+	highObservation := cache.observationFor(highLatencyKey)
+	lowLocalMix := lowObservation.recentTrafficMix(base)
+	highLocalMix := highObservation.recentTrafficMix(base)
+	lowLocalPerformance := lowObservation.preference(base, true, lowLocalMix).performance
+	highLocalPerformance := highObservation.preference(base, true, highLocalMix).performance
+	if lowLocalPerformance >= highLocalPerformance {
+		t.Fatalf("fixture must prefer the higher-throughput candidate under candidate-local weighting: low=%v high=%v", lowLocalPerformance, highLocalPerformance)
+	}
+
+	sharedMix := trafficMix{
+		small: lowLocalMix.small + highLocalMix.small,
+		bulk:  lowLocalMix.bulk + highLocalMix.bulk,
+	}
+	lowSharedPerformance := lowObservation.preference(base, true, sharedMix).performance
+	highSharedPerformance := highObservation.preference(base, true, sharedMix).performance
+	if lowSharedPerformance <= highSharedPerformance {
+		t.Fatalf("fixture must flip once shared small-heavy scope mix is applied: low=%v high=%v mix=%+v", lowSharedPerformance, highSharedPerformance, sharedMix)
+	}
+
+	got := cache.Order(scope, StrategyAdaptive, candidates)
+	if ordered := addresses(got); !reflect.DeepEqual(ordered, []string{"low-latency", "high-latency"}) {
+		t.Fatalf("shared small-heavy traffic should keep adaptive ordering latency-biased: %v", ordered)
+	}
+}
+
+func TestCacheOrderAdaptivePrefersBulkCandidateWhenQualifiedThroughputDominates(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	cache := NewCache(Config{
+		Now: func() time.Time { return base },
+	})
+	scope := "http:rule-bulk"
+	candidates := []Candidate{{Address: "latency-first"}, {Address: "bulk-first"}}
+
+	latencyFirstKey := BackendObservationKey(scope, "latency-first")
+	bulkFirstKey := BackendObservationKey(scope, "bulk-first")
+
+	for i := 0; i < 12; i++ {
+		cache.ObserveBackendSuccess(latencyFirstKey, 10*time.Millisecond, 60*time.Millisecond, 4*1024*1024)
+	}
+	cache.ObserveBackendSuccess(latencyFirstKey, 10*time.Millisecond, 200*time.Millisecond, 512*1024)
+	cache.ObserveBackendSuccess(latencyFirstKey, 10*time.Millisecond, 400*time.Millisecond, 1024*1024)
+
+	for i := 0; i < 25; i++ {
+		cache.ObserveBackendSuccess(bulkFirstKey, 75*time.Millisecond, 280*time.Millisecond, 3*1024*1024)
+	}
+
+	latencyFirstObservation := cache.observationFor(latencyFirstKey)
+	bulkFirstObservation := cache.observationFor(bulkFirstKey)
+	latencyFirstLocalMix := latencyFirstObservation.recentTrafficMix(base)
+	bulkFirstLocalMix := bulkFirstObservation.recentTrafficMix(base)
+	latencyFirstLocalPerformance := latencyFirstObservation.preference(base, true, latencyFirstLocalMix).performance
+	bulkFirstLocalPerformance := bulkFirstObservation.preference(base, true, bulkFirstLocalMix).performance
+	if latencyFirstLocalPerformance <= bulkFirstLocalPerformance {
+		t.Fatalf("fixture must prefer the latency-first candidate under candidate-local weighting: latency=%v bulk=%v", latencyFirstLocalPerformance, bulkFirstLocalPerformance)
+	}
+
+	got := cache.Order(scope, StrategyAdaptive, candidates)
+	if ordered := addresses(got); !reflect.DeepEqual(ordered, []string{"bulk-first", "latency-first"}) {
+		t.Fatalf("shared bulk-heavy traffic should allow higher throughput candidate to win: %v", ordered)
 	}
 }
 
@@ -303,6 +421,123 @@ func TestCacheSummaryReportsRecoveringStateAfterBackoffExpires(t *testing.T) {
 	}
 	if summary.TrafficShareHint != "recovery" {
 		t.Fatalf("TrafficShareHint = %q", summary.TrafficShareHint)
+	}
+}
+
+func TestCacheSummaryRequiresQualifiedThroughputSamples(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	cache := NewCache(Config{
+		Now: func() time.Time { return base },
+	})
+	addr := "10.0.0.40:443"
+
+	cache.ObserveTransferSuccess(addr, 20*time.Millisecond, 120*time.Millisecond, 2*1024*1024)
+
+	first := cache.Summary(addr)
+	if first.HasBandwidth {
+		t.Fatalf("expected throughput to stay hidden after one qualified sample: %+v", first)
+	}
+
+	cache.ObserveTransferSuccess(addr, 20*time.Millisecond, 120*time.Millisecond, 512*1024)
+
+	second := cache.Summary(addr)
+	if !second.HasBandwidth {
+		t.Fatalf("expected throughput after 2 qualified samples with total weight 1.5: %+v", second)
+	}
+}
+
+func TestCacheSummaryDoesNotPromoteSmallResponsesToQualifiedThroughput(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	cache := NewCache(Config{
+		Now: func() time.Time { return base },
+	})
+	addr := "10.0.0.41:443"
+
+	cache.ObserveTransferSuccess(addr, 20*time.Millisecond, 120*time.Millisecond, 2*1024*1024)
+	cache.ObserveTransferSuccess(addr, 20*time.Millisecond, 60*time.Millisecond, 2*1024*1024)
+
+	summary := cache.Summary(addr)
+	if summary.HasBandwidth {
+		t.Fatalf("small responses must not count toward qualified throughput readiness: %+v", summary)
+	}
+}
+
+func TestCacheSummaryKeepsMediumOnlyThroughputHidden(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	cache := NewCache(Config{
+		Now: func() time.Time { return base },
+	})
+	addr := "10.0.0.42:443"
+
+	cache.ObserveTransferSuccess(addr, 20*time.Millisecond, 100*time.Millisecond, 512*1024)
+	cache.ObserveTransferSuccess(addr, 20*time.Millisecond, 1500*time.Millisecond, 512*1024)
+
+	summary := cache.Summary(addr)
+	if summary.HasBandwidth {
+		t.Fatalf("two medium samples must keep throughput hidden until total qualified weight reaches 1.5: %+v", summary)
+	}
+	if summary.Outlier {
+		t.Fatalf("hidden throughput must not surface as an outlier before readiness: %+v", summary)
+	}
+}
+
+func TestCacheSummaryReadinessTransitionDoesNotTriggerOutlier(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	cache := NewCache(Config{
+		Now: func() time.Time { return base },
+	})
+	addr := "10.0.0.43:443"
+
+	cache.ObserveTransferSuccess(addr, 20*time.Millisecond, 100*time.Millisecond, 2*1024*1024)
+	cache.ObserveTransferSuccess(addr, 20*time.Millisecond, 1500*time.Millisecond, 512*1024)
+
+	summary := cache.Summary(addr)
+	if !summary.HasBandwidth {
+		t.Fatalf("expected threshold-crossing sample to make throughput visible: %+v", summary)
+	}
+	if summary.Outlier {
+		t.Fatalf("threshold-crossing sample must not inherit outlier state from pre-ready throughput history: %+v", summary)
+	}
+}
+
+func TestCacheSummaryAppliesQualifiedThroughputSampleWeightToEWMA(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	cache := NewCache(Config{
+		Now: func() time.Time { return base },
+	})
+	addr := "10.0.0.46:443"
+
+	cache.ObserveTransferSuccess(addr, 20*time.Millisecond, 100*time.Millisecond, 2*1024*1024)
+	cache.ObserveTransferSuccess(addr, 20*time.Millisecond, time.Second, 512*1024)
+
+	summary := cache.Summary(addr)
+	if !summary.HasBandwidth {
+		t.Fatalf("expected qualified throughput after one large and one medium sample: %+v", summary)
+	}
+
+	firstSample := float64(2*1024*1024) / (100 * time.Millisecond).Seconds()
+	secondSample := float64(512*1024) / time.Second.Seconds()
+	want := (1-observationAlpha*mediumThroughputWeight)*firstSample + observationAlpha*mediumThroughputWeight*secondSample
+	if math.Abs(summary.Bandwidth-want) > 1 {
+		t.Fatalf("weighted throughput EWMA = %v, want %v", summary.Bandwidth, want)
+	}
+}
+
+func TestCacheUpwardThroughputJumpDoesNotLatchOutlierWindow(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	cache := NewCache(Config{
+		Now: func() time.Time { return base },
+	})
+	addr := "10.0.0.44:443"
+
+	cache.ObserveTransferSuccess(addr, 20*time.Millisecond, 4*time.Second, 2*1024*1024)
+	cache.ObserveTransferSuccess(addr, 20*time.Millisecond, 4*time.Second, 2*1024*1024)
+	cache.ObserveTransferSuccess(addr, 20*time.Millisecond, 4*time.Second, 2*1024*1024)
+	cache.ObserveTransferSuccess(addr, 20*time.Millisecond, 100*time.Millisecond, 2*1024*1024)
+
+	observation := cache.observationFor(addr)
+	if !observation.outlierUntil.IsZero() {
+		t.Fatalf("upward throughput jump must not latch outlierUntil: %+v", observation)
 	}
 }
 
@@ -517,7 +752,7 @@ func TestCacheSummaryMarksOutlierBeforeHardBackoff(t *testing.T) {
 	for i := 0; i < 4; i++ {
 		cache.ObserveTransferSuccess(addr, 20*time.Millisecond, 200*time.Millisecond, 512*1024)
 	}
-	cache.ObserveTransferSuccess(addr, 600*time.Millisecond, 2*time.Second, 4*1024)
+	cache.ObserveTransferSuccess(addr, 600*time.Millisecond, 2*time.Second, 512*1024)
 
 	summary := cache.Summary(addr)
 	if !summary.Outlier {
@@ -525,6 +760,210 @@ func TestCacheSummaryMarksOutlierBeforeHardBackoff(t *testing.T) {
 	}
 	if summary.InBackoff {
 		t.Fatalf("expected outlier demotion before hard backoff: %+v", summary)
+	}
+}
+
+func TestCacheSummaryDoesNotMarkOutlierFromSlowSmallResponseAfterQualifiedHistory(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	cache := NewCache(Config{
+		Now: func() time.Time { return base },
+	})
+	addr := "10.0.0.45:443"
+
+	for i := 0; i < 4; i++ {
+		cache.ObserveTransferSuccess(addr, 20*time.Millisecond, 200*time.Millisecond, 512*1024)
+	}
+	cache.ObserveTransferSuccess(addr, 600*time.Millisecond, 2*time.Second, 4*1024)
+
+	summary := cache.Summary(addr)
+	if summary.Outlier {
+		t.Fatalf("slow small responses must not mark throughput outlier when the sample is unqualified: %+v", summary)
+	}
+}
+
+func TestPerformanceScoreUsesFullThroughputScoreWhenLatencyMissing(t *testing.T) {
+	preference := candidatePreference{
+		bandwidth:    8 * 1024 * 1024,
+		hasBandwidth: true,
+	}
+	mix := trafficMix{
+		small: 1,
+		bulk:  1,
+	}
+
+	got := performanceScore(preference, true, mix)
+	want := math.Log1p(8) / math.Log1p(16)
+	if got != want {
+		t.Fatalf("performanceScore() without latency = %v, want %v", got, want)
+	}
+}
+
+func TestCachePreferResolvedCandidatesIgnoresUnqualifiedThroughputOutliers(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return base
+		},
+	})
+	hiddenAddr := "10.0.0.25:443"
+	controlAddr := "10.0.0.24:443"
+	candidates := []Candidate{
+		{Address: hiddenAddr},
+		{Address: controlAddr},
+	}
+
+	cache.ObserveTransferSuccess(hiddenAddr, 20*time.Millisecond, 40*time.Millisecond, 64*1024)
+	cache.ObserveTransferSuccess(hiddenAddr, 20*time.Millisecond, 100*time.Millisecond, 512*1024)
+	cache.ObserveTransferSuccess(hiddenAddr, 20*time.Millisecond, 1500*time.Millisecond, 512*1024)
+
+	cache.ObserveTransferSuccess(controlAddr, 20*time.Millisecond, 40*time.Millisecond, 64*1024)
+	cache.ObserveTransferSuccess(controlAddr, 20*time.Millisecond, 40*time.Millisecond, 64*1024)
+	cache.ObserveTransferSuccess(controlAddr, 20*time.Millisecond, 40*time.Millisecond, 64*1024)
+
+	hiddenSummary := cache.Summary(hiddenAddr)
+	if hiddenSummary.HasBandwidth {
+		t.Fatalf("expected hidden throughput candidate to remain bandwidth-hidden: %+v", hiddenSummary)
+	}
+	if hiddenSummary.Outlier {
+		t.Fatalf("hidden throughput must not participate in ordering via outlier state: %+v", hiddenSummary)
+	}
+
+	got := cache.PreferResolvedCandidates(candidates)
+	if !reflect.DeepEqual(addresses(got), []string{hiddenAddr, controlAddr}) {
+		t.Fatalf("unexpected preferred order when throughput is still unqualified: %v", addresses(got))
+	}
+}
+
+func TestCachePreferResolvedCandidatesLatencyOnlyIgnoresHTTPThroughput(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	cache := NewCache(Config{
+		Now: func() time.Time { return base },
+	})
+	candidates := []Candidate{
+		{Address: "10.0.0.50:443"},
+		{Address: "10.0.0.51:443"},
+	}
+
+	cache.ObserveTransferSuccess("10.0.0.50:443", 20*time.Millisecond, 120*time.Millisecond, 2*1024*1024)
+	cache.ObserveTransferSuccess("10.0.0.50:443", 20*time.Millisecond, 120*time.Millisecond, 512*1024)
+	cache.ObserveTransferSuccess("10.0.0.51:443", 10*time.Millisecond, 120*time.Millisecond, 128*1024)
+	cache.ObserveTransferSuccess("10.0.0.51:443", 10*time.Millisecond, 120*time.Millisecond, 128*1024)
+
+	got := cache.PreferResolvedCandidatesLatencyOnly(candidates)
+	if ordered := addresses(got); !reflect.DeepEqual(ordered, []string{"10.0.0.51:443", "10.0.0.50:443"}) {
+		t.Fatalf("l4 resolved ranking must ignore HTTP throughput signals: %v", ordered)
+	}
+}
+
+func TestCachePreferResolvedCandidatesLatencyOnlyIgnoresThroughputOutlierPenalty(t *testing.T) {
+	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
+	cache := NewCache(Config{
+		Now: func() time.Time { return base },
+	})
+	candidates := []Candidate{
+		{Address: "10.0.0.60:443"},
+		{Address: "10.0.0.61:443"},
+	}
+
+	for i := 0; i < 4; i++ {
+		cache.ObserveTransferSuccess("10.0.0.60:443", 10*time.Millisecond, 200*time.Millisecond, 512*1024)
+	}
+	cache.ObserveTransferSuccess("10.0.0.60:443", 10*time.Millisecond, 2*time.Second, 512*1024)
+
+	for i := 0; i < 5; i++ {
+		cache.ObserveSuccess("10.0.0.61:443", 25*time.Millisecond)
+	}
+
+	if summary := cache.Summary("10.0.0.60:443"); !summary.Outlier {
+		t.Fatalf("expected qualified slow sample to mark throughput outlier before latency-only ranking: %+v", summary)
+	}
+
+	got := cache.PreferResolvedCandidatesLatencyOnly(candidates)
+	if ordered := addresses(got); !reflect.DeepEqual(ordered, []string{"10.0.0.60:443", "10.0.0.61:443"}) {
+		t.Fatalf("latency-only ranking must ignore throughput outlier penalties: %v", ordered)
+	}
+}
+
+func TestClassifyThroughputSampleBoundaries(t *testing.T) {
+	tests := []struct {
+		name       string
+		duration   time.Duration
+		bytes      int64
+		wantWeight float64
+		wantReady  bool
+		wantBucket string
+	}{
+		{
+			name:       "exact small byte and duration threshold becomes medium",
+			duration:   80 * time.Millisecond,
+			bytes:      128 * 1024,
+			wantWeight: mediumThroughputWeight,
+			wantReady:  true,
+			wantBucket: "medium",
+		},
+		{
+			name:       "exact large byte threshold becomes large",
+			duration:   80 * time.Millisecond,
+			bytes:      1024 * 1024,
+			wantWeight: largeThroughputWeight,
+			wantReady:  true,
+			wantBucket: "large",
+		},
+		{
+			name:       "just below byte threshold stays small",
+			duration:   80 * time.Millisecond,
+			bytes:      128*1024 - 1,
+			wantWeight: 1.0,
+			wantReady:  false,
+			wantBucket: "small",
+		},
+		{
+			name:       "just below duration threshold stays small",
+			duration:   80*time.Millisecond - time.Nanosecond,
+			bytes:      128 * 1024,
+			wantWeight: 1.0,
+			wantReady:  false,
+			wantBucket: "small",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotWeight, gotReady, gotBucket := classifyThroughputSample(tt.duration, tt.bytes)
+			if gotWeight != tt.wantWeight || gotReady != tt.wantReady || gotBucket != tt.wantBucket {
+				t.Fatalf("classifyThroughputSample(%s, %d) = (%v, %v, %q), want (%v, %v, %q)", tt.duration, tt.bytes, gotWeight, gotReady, gotBucket, tt.wantWeight, tt.wantReady, tt.wantBucket)
+			}
+		})
+	}
+}
+
+func TestObservationBucketLayoutStaysCompact(t *testing.T) {
+	if got := unsafe.Sizeof(observationBucket{}); got > 32 {
+		t.Fatalf("observationBucket size = %d, want <= 32 bytes", got)
+	}
+}
+
+func TestObservationBucketStoresTrafficWeightsAsIntegerUnits(t *testing.T) {
+	typ := reflect.TypeOf(observationBucket{})
+	for _, fieldName := range []string{
+		"smallWeightUnits",
+		"mediumWeightUnits",
+		"largeWeightUnits",
+		"qualifiedThroughputWeightUnits",
+	} {
+		field, ok := typ.FieldByName(fieldName)
+		if !ok {
+			t.Fatalf("missing field %q", fieldName)
+		}
+		if field.Type.Kind() != reflect.Uint32 {
+			t.Fatalf("%s kind = %s, want uint32", fieldName, field.Type.Kind())
+		}
+	}
+}
+
+func TestCandidateSnapshotStaysLightweight(t *testing.T) {
+	if got := unsafe.Sizeof(candidateSnapshot{}); got > 256 {
+		t.Fatalf("candidateSnapshot size = %d, want <= 256 bytes", got)
 	}
 }
 
@@ -786,7 +1225,11 @@ func TestCachePreferResolvedCandidatesUsesBandwidthAfterStabilityAndLatency(t *t
 		{Address: "10.0.0.15:443"},
 	}
 
-	cache.ObserveTransferSuccess("10.0.0.14:443", 30*time.Millisecond, 100*time.Millisecond, 128*1024)
+	cache.ObserveTransferSuccess("10.0.0.14:443", 30*time.Millisecond, 100*time.Millisecond, 512*1024)
+	cache.ObserveTransferSuccess("10.0.0.14:443", 30*time.Millisecond, 100*time.Millisecond, 512*1024)
+	cache.ObserveTransferSuccess("10.0.0.14:443", 30*time.Millisecond, 100*time.Millisecond, 512*1024)
+	cache.ObserveTransferSuccess("10.0.0.15:443", 30*time.Millisecond, 100*time.Millisecond, 2*1024*1024)
+	cache.ObserveTransferSuccess("10.0.0.15:443", 30*time.Millisecond, 100*time.Millisecond, 2*1024*1024)
 	cache.ObserveTransferSuccess("10.0.0.15:443", 30*time.Millisecond, 100*time.Millisecond, 2*1024*1024)
 
 	got := cache.PreferResolvedCandidates(candidates)
@@ -807,7 +1250,11 @@ func TestCachePreferResolvedCandidatesUsesCombinedPerformanceNotLatencyOnly(t *t
 		{Address: "10.0.0.17:443"},
 	}
 
-	cache.ObserveTransferSuccess("10.0.0.16:443", 12*time.Millisecond, 100*time.Millisecond, 64*1024)
+	cache.ObserveTransferSuccess("10.0.0.16:443", 12*time.Millisecond, 100*time.Millisecond, 512*1024)
+	cache.ObserveTransferSuccess("10.0.0.16:443", 12*time.Millisecond, 100*time.Millisecond, 512*1024)
+	cache.ObserveTransferSuccess("10.0.0.16:443", 12*time.Millisecond, 100*time.Millisecond, 512*1024)
+	cache.ObserveTransferSuccess("10.0.0.17:443", 18*time.Millisecond, 100*time.Millisecond, 2*1024*1024)
+	cache.ObserveTransferSuccess("10.0.0.17:443", 18*time.Millisecond, 100*time.Millisecond, 2*1024*1024)
 	cache.ObserveTransferSuccess("10.0.0.17:443", 18*time.Millisecond, 100*time.Millisecond, 2*1024*1024)
 
 	got := cache.PreferResolvedCandidates(candidates)

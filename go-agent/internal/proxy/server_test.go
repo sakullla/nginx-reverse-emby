@@ -582,7 +582,7 @@ func TestRouteEntryServeHTTPRecordsSuccessfulLatencyObservation(t *testing.T) {
 	}
 }
 
-func TestRouteEntryObserveSuccessfulBackendUsesBandwidthForFutureRanking(t *testing.T) {
+func TestRouteEntryObserveSuccessfulBackendUsesTransferDurationForFutureRanking(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
 	cache := backends.NewCache(backends.Config{
 		Now: func() time.Time {
@@ -593,15 +593,17 @@ func TestRouteEntryObserveSuccessfulBackendUsesBandwidthForFutureRanking(t *test
 		backendCache: cache,
 	}
 
-	entry.observeSuccessfulBackend("", "203.0.113.20:80", 30*time.Millisecond, 100*time.Millisecond, 2*1024*1024)
-	cache.ObserveTransferSuccess("203.0.113.21:80", 30*time.Millisecond, 100*time.Millisecond, 128*1024)
+	entry.observeSuccessfulBackend("", "203.0.113.20:80", 900*time.Millisecond, time.Second, 2*1024*1024)
+	entry.observeSuccessfulBackend("", "203.0.113.20:80", 900*time.Millisecond, time.Second, 2*1024*1024)
+	cache.ObserveTransferSuccess("203.0.113.21:80", 20*time.Millisecond, 200*time.Millisecond, 1024*1024)
+	cache.ObserveTransferSuccess("203.0.113.21:80", 20*time.Millisecond, 200*time.Millisecond, 512*1024)
 
 	candidates := cache.PreferResolvedCandidates([]backends.Candidate{
 		{Address: "203.0.113.21:80"},
 		{Address: "203.0.113.20:80"},
 	})
 	if candidates[0].Address != "203.0.113.20:80" {
-		t.Fatalf("unexpected candidate ranking after bandwidth observation: %+v", candidates)
+		t.Fatalf("transfer duration should make the delayed-header backend win: %+v", candidates)
 	}
 }
 
@@ -654,8 +656,12 @@ func TestRouteEntryCandidatesAdaptivePrefersBackendBeforeResolvedCandidate(t *te
 			return base
 		},
 	})
-	cache.ObserveBackendSuccess(backends.BackendObservationKey("edge.example.test", backends.StableBackendID("http://bulk.example:8096")), 30*time.Millisecond, 200*time.Millisecond, 4*1024*1024)
-	cache.ObserveBackendSuccess(backends.BackendObservationKey("edge.example.test", backends.StableBackendID("http://fast.example:8096")), 10*time.Millisecond, 200*time.Millisecond, 64*1024)
+	bulkKey := backends.BackendObservationKey("edge.example.test", backends.StableBackendID("http://bulk.example:8096"))
+	fastKey := backends.BackendObservationKey("edge.example.test", backends.StableBackendID("http://fast.example:8096"))
+	cache.ObserveBackendSuccess(bulkKey, 30*time.Millisecond, 100*time.Millisecond, 4*1024*1024)
+	cache.ObserveBackendSuccess(bulkKey, 30*time.Millisecond, 100*time.Millisecond, 4*1024*1024)
+	cache.ObserveBackendSuccess(fastKey, 10*time.Millisecond, 200*time.Millisecond, 64*1024)
+	cache.ObserveBackendSuccess(fastKey, 10*time.Millisecond, 200*time.Millisecond, 64*1024)
 
 	entry := &routeEntry{
 		rule: model.HTTPRule{

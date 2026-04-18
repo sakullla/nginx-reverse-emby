@@ -132,7 +132,7 @@ func tcpCandidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule
 	}
 
 	scope := "tcp:" + net.JoinHostPort(rule.ListenHost, strconv.Itoa(rule.ListenPort))
-	ordered := cache.Order(scope, rule.LoadBalancing.Strategy, placeholders)
+	ordered := cache.OrderLatencyOnly(scope, rule.LoadBalancing.Strategy, placeholders)
 	out := make([]tcpProbeCandidate, 0, len(rawBackends))
 	for _, placeholder := range ordered {
 		indexes := indexesByID[placeholder.Address]
@@ -149,7 +149,7 @@ func tcpCandidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule
 		if err != nil {
 			continue
 		}
-		resolved = cache.PreferResolvedCandidates(resolved)
+		resolved = cache.PreferResolvedCandidatesLatencyOnly(resolved)
 		for _, candidate := range resolved {
 			if cache.IsInBackoff(candidate.Address) {
 				continue
@@ -195,11 +195,11 @@ func buildTCPAdaptiveReports(reports []BackendReport, candidates []tcpProbeCandi
 		if !ok {
 			continue
 		}
-		report.Adaptive = adaptiveSummaryFromObservation(cache.Summary(tcpAdaptiveSummaryKey(candidate)), false, "")
+		report.Adaptive = adaptiveSummaryFromObservation(cache.SummaryLatencyOnly(tcpAdaptiveSummaryKey(candidate)), false, "", adaptiveSummaryOptions{})
 		annotated = append(annotated, report)
 	}
 	if len(annotated) > 0 {
-		annotated[0].Adaptive = adaptiveSummaryFromObservation(cache.Summary(tcpAdaptiveSummaryKey(candidates[0])), true, "performance_higher")
+		annotated[0].Adaptive = adaptiveSummaryFromObservation(cache.SummaryLatencyOnly(tcpAdaptiveSummaryKey(candidates[0])), true, "performance_higher", adaptiveSummaryOptions{})
 	}
 	return annotated
 }

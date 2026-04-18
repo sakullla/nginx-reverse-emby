@@ -94,13 +94,13 @@
                   <span class="diagnostic-metric__label">稳定性</span>
                   <strong class="diagnostic-metric__value">{{ formatPercent(backend.adaptive?.stability) }}</strong>
                 </div>
-                <div class="diagnostic-metric">
+                <div v-if="showHTTPAdaptiveMetrics" class="diagnostic-metric">
                   <span class="diagnostic-metric__label">综合性能</span>
                   <strong class="diagnostic-metric__value">{{ formatScore(backend.adaptive?.performance_score) }}</strong>
                 </div>
-                <div class="diagnostic-metric">
-                  <span class="diagnostic-metric__label">评估带宽</span>
-                  <strong class="diagnostic-metric__value">{{ formatBandwidth(backend.adaptive?.estimated_bandwidth_bps) }}</strong>
+                <div v-if="showHTTPAdaptiveMetrics && hasThroughput(backend.adaptive?.sustained_throughput_bps)" class="diagnostic-metric">
+                  <span class="diagnostic-metric__label">持续吞吐</span>
+                  <strong class="diagnostic-metric__value">{{ formatThroughput(backend.adaptive?.sustained_throughput_bps) }}</strong>
                 </div>
               </div>
 
@@ -121,15 +121,15 @@
                       <span class="diagnostic-factor__label">延迟</span>
                       <strong class="diagnostic-factor__value">{{ backend.adaptive?.latency_ms ?? backend.summary?.avg_latency_ms ?? 0 }} ms</strong>
                     </div>
-                    <div class="diagnostic-factor">
-                      <span class="diagnostic-factor__label">评估带宽</span>
-                      <strong class="diagnostic-factor__value">{{ formatBandwidth(backend.adaptive?.estimated_bandwidth_bps) }}</strong>
+                    <div v-if="showHTTPAdaptiveMetrics && hasThroughput(backend.adaptive?.sustained_throughput_bps)" class="diagnostic-factor">
+                      <span class="diagnostic-factor__label">持续吞吐</span>
+                      <strong class="diagnostic-factor__value">{{ formatThroughput(backend.adaptive?.sustained_throughput_bps) }}</strong>
                     </div>
-                    <div class="diagnostic-factor">
+                    <div v-if="showHTTPAdaptiveMetrics" class="diagnostic-factor">
                       <span class="diagnostic-factor__label">综合性能</span>
                       <strong class="diagnostic-factor__value">{{ formatScore(backend.adaptive?.performance_score) }}</strong>
                     </div>
-                    <div class="diagnostic-factor">
+                    <div v-if="showHTTPAdaptiveMetrics" class="diagnostic-factor">
                       <span class="diagnostic-factor__label">异常检测</span>
                       <strong class="diagnostic-factor__value">{{ outlierLabel(backend.adaptive?.outlier) }}</strong>
                     </div>
@@ -138,7 +138,7 @@
                       <strong class="diagnostic-factor__value">{{ trafficShareLabel(backend.adaptive?.traffic_share_hint) }}</strong>
                     </div>
                   </div>
-                  <div v-if="backend.adaptive?.reason" class="diagnostic-backend-item__reason">
+                  <div v-if="showHTTPAdaptiveMetrics && backend.adaptive?.reason" class="diagnostic-backend-item__reason">
                     原因: {{ reasonLabel(backend.adaptive?.reason) }}
                   </div>
                 </div>
@@ -152,8 +152,8 @@
                     <span v-if="child.adaptive?.preferred" class="diagnostic-backend-item__preferred">当前优选</span>
                     <span class="diagnostic-child-item__metric">延迟 {{ child.adaptive?.latency_ms ?? child.summary?.avg_latency_ms ?? 0 }} ms</span>
                     <span class="diagnostic-child-item__metric">稳定性 {{ formatPercent(child.adaptive?.stability) }}</span>
-                    <span class="diagnostic-child-item__metric">综合性能 {{ formatScore(child.adaptive?.performance_score) }}</span>
-                    <span class="diagnostic-child-item__metric">评估带宽 {{ formatBandwidth(child.adaptive?.estimated_bandwidth_bps) }}</span>
+                    <span v-if="showHTTPAdaptiveMetrics" class="diagnostic-child-item__metric">综合性能 {{ formatScore(child.adaptive?.performance_score) }}</span>
+                    <span v-if="showHTTPAdaptiveMetrics && hasThroughput(child.adaptive?.sustained_throughput_bps)" class="diagnostic-child-item__metric">持续吞吐 {{ formatThroughput(child.adaptive?.sustained_throughput_bps) }}</span>
                   </div>
                 </div>
               </div>
@@ -213,6 +213,7 @@ const stateLabel = computed(() => diagnosticStateLabel(state.value))
 const tone = computed(() => diagnosticStateTone(state.value))
 const agentLabel = computed(() => props.task?.agent_id || '')
 const isHTTP = computed(() => props.kind === 'http')
+const showHTTPAdaptiveMetrics = computed(() => isHTTP.value)
 const showSamples = ref(false)
 const showBackends = ref(false)
 const expandedAdaptive = ref(new Set())
@@ -279,9 +280,14 @@ function formatPercent(value) {
   return `${Math.round(Number(value) * 100)}%`
 }
 
-function formatBandwidth(value) {
-  const num = Number(value || 0)
-  if (!num) return '-'
+function hasThroughput(value) {
+  return value != null
+}
+
+function formatThroughput(value) {
+  if (value == null) return '-'
+  const num = Number(value)
+  if (!Number.isFinite(num)) return '-'
   if (num >= 1024 * 1024) return `${(num / (1024 * 1024)).toFixed(1)} MB/s`
   if (num >= 1024) return `${(num / 1024).toFixed(1)} KB/s`
   return `${num.toFixed(0)} B/s`

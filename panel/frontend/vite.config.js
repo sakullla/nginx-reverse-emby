@@ -7,6 +7,10 @@ export default defineConfig({
     vue(),
     UnoCSS()
   ],
+  test: {
+    environment: 'jsdom',
+    include: ['src/components/**/*.test.js']
+  },
   build: {
     outDir: 'dist',
     assetsDir: 'assets',
