@@ -89,7 +89,9 @@ print(secrets.token_hex(24))
 PY
         return 0
     fi
-    date +%s | cksum | awk '{print $1 $2}' | cut -c1-48
+    echo "[ERROR] Cannot generate a cryptographically strong agent token: neither openssl nor python3 is available." >&2
+    echo "Install openssl or python3, or provide --agent-token explicitly." >&2
+    return 1
 }
 
 absolute_path() {
@@ -500,6 +502,38 @@ verify_master_connectivity() {
     return 1
 }
 
+verify_agent_heartbeat() {
+    agent_heartbeat_interval="${NRE_HEARTBEAT_INTERVAL:-10}"
+    wait_seconds=$((agent_heartbeat_interval * 2))
+    if [ "$wait_seconds" -lt 15 ]; then
+        wait_seconds=15
+    fi
+    echo "[MIGRATE] Waiting ${wait_seconds}s for agent to complete first heartbeat cycle"
+    sleep "$wait_seconds"
+
+    service_start="$(run_root_cmd systemctl show -p ActiveEnterTimestamp nginx-reverse-emby-agent.service 2>/dev/null | cut -d= -f2- || true)"
+    if [ -n "$service_start" ]; then
+        error_lines="$(run_root_cmd journalctl -u nginx-reverse-emby-agent.service --since "$service_start" --no-pager 2>/dev/null | grep -c 'sync error\|heartbeat failed\|runtime apply error' || true)"
+        if [ "$error_lines" -gt 0 ]; then
+            echo "[MIGRATE] Agent logged $error_lines heartbeat/sync error(s) since startup, aborting migration" >&2
+            return 1
+        fi
+    fi
+
+    echo "[MIGRATE] Probing heartbeat endpoint with agent credentials to confirm registration"
+    heartbeat_resp="$(curl -fsS -o /dev/null -w '%{http_code}' \
+        -H "X-Agent-Token: $AGENT_TOKEN" \
+        -H "Content-Type: application/json" \
+        -d '{"version":"1"}' \
+        "$MASTER_URL/panel-api/agents/heartbeat" 2>/dev/null || true)"
+    if [ "$heartbeat_resp" != "200" ]; then
+        echo "[MIGRATE] Heartbeat probe returned HTTP $heartbeat_resp (expected 200), agent may be unauthorized or misconfigured" >&2
+        return 1
+    fi
+
+    return 0
+}
+
 list_legacy_cert_domains() {
     tmp_domains=$(mktemp)
     if [ -d "$OLD_DIRECT_CERT_DIR" ]; then
@@ -811,7 +845,14 @@ run_migrate_from_main() {
         exit 1
     fi
 
-    echo "[MIGRATE] New go-agent service is active and master is reachable, cleaning legacy runtime"
+    if ! verify_agent_heartbeat; then
+        echo "[MIGRATE] agent heartbeat verification failed, restoring legacy services" >&2
+        disable_systemd_unit_if_present nginx-reverse-emby-agent.service
+        restore_legacy_units
+        exit 1
+    fi
+
+    echo "[MIGRATE] New go-agent service is active, heartbeat verified, cleaning legacy runtime"
     cleanup_legacy_runtime
 }
 
