@@ -574,7 +574,7 @@ func TestObserveCandidateSuccessDoesNotLearnThroughput(t *testing.T) {
 	}
 
 	for i := 0; i < 3; i++ {
-		srv.observeCandidateSuccess(candidate, 20*time.Millisecond, 250*time.Millisecond, 2*1024*1024)
+		srv.observeCandidateSuccess(candidate, 20*time.Millisecond)
 	}
 
 	resolved := cache.Summary(candidate.address)

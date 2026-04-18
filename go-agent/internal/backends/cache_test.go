@@ -943,6 +943,30 @@ func TestObservationBucketLayoutStaysCompact(t *testing.T) {
 	}
 }
 
+func TestObservationBucketStoresTrafficWeightsAsIntegerUnits(t *testing.T) {
+	typ := reflect.TypeOf(observationBucket{})
+	for _, fieldName := range []string{
+		"smallWeightUnits",
+		"mediumWeightUnits",
+		"largeWeightUnits",
+		"qualifiedThroughputWeightUnits",
+	} {
+		field, ok := typ.FieldByName(fieldName)
+		if !ok {
+			t.Fatalf("missing field %q", fieldName)
+		}
+		if field.Type.Kind() != reflect.Uint32 {
+			t.Fatalf("%s kind = %s, want uint32", fieldName, field.Type.Kind())
+		}
+	}
+}
+
+func TestCandidateSnapshotStaysLightweight(t *testing.T) {
+	if got := unsafe.Sizeof(candidateSnapshot{}); got > 256 {
+		t.Fatalf("candidateSnapshot size = %d, want <= 256 bytes", got)
+	}
+}
+
 func TestCacheOrderAdaptivePreservesInputOrderOnTie(t *testing.T) {
 	cache := NewCache(Config{})
 	scope := "http:rule-adaptive-tie"

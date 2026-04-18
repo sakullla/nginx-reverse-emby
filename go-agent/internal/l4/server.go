@@ -227,7 +227,7 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 		s.observeCandidateFailure(candidate)
 		return
 	}
-	s.observeCandidateSuccess(candidate, connectDuration, 0, 0)
+	s.observeCandidateSuccess(candidate, connectDuration)
 
 	done := make(chan struct{}, 2)
 	go func() {
@@ -618,7 +618,7 @@ func (s *Server) pipeUDPReplies(session *udpSession) {
 		s.observeCandidateSuccess(l4Candidate{
 			address:               session.targetAddr,
 			backendObservationKey: session.backendObservationKey,
-		}, replyDuration, 0, 0)
+		}, replyDuration)
 		if _, err := session.listener.WriteToUDP(payload, session.peer); err != nil {
 			return
 		}
@@ -807,7 +807,7 @@ func (s *Server) observeCandidateFailure(candidate l4Candidate) {
 	}
 }
 
-func (s *Server) observeCandidateSuccess(candidate l4Candidate, headerLatency time.Duration, _ time.Duration, _ int64) {
+func (s *Server) observeCandidateSuccess(candidate l4Candidate, headerLatency time.Duration) {
 	if s == nil || s.cache == nil || candidate.address == "" {
 		return
 	}
