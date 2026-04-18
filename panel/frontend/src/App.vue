@@ -375,6 +375,67 @@
               </div>
             </div>
 
+            <section class="data-management">
+              <div class="data-management__header">
+                <div>
+                  <h3 class="data-management__title">数据管理</h3>
+                  <p class="data-management__subtitle">导出或导入与纯 Go 控制面兼容的便携备份包。</p>
+                </div>
+                <div class="data-management__actions">
+                  <button class="btn btn--secondary" :disabled="backupBusy" @click="handleExportBackup">
+                    <span v-if="backupBusy" class="spinner spinner--sm mr-2"></span>
+                    <span>导出备份</span>
+                  </button>
+                  <button class="btn btn--primary" :disabled="backupBusy" @click="openBackupImportPicker">
+                    <span v-if="backupBusy" class="spinner spinner--sm mr-2"></span>
+                    <span>导入备份</span>
+                  </button>
+                </div>
+              </div>
+
+              <input
+                ref="backupFileInput"
+                type="file"
+                accept=".tar.gz,.tgz,application/gzip,application/x-gzip"
+                class="data-management__input"
+                @change="handleBackupImportChange"
+              >
+
+              <div class="backup-report__warning">
+                {{ BACKUP_SENSITIVE_WARNING }}
+              </div>
+
+              <div v-if="backupImportResult" class="backup-report">
+                <div class="backup-report__summary">
+                  <div class="backup-report__summary-row">
+                    <span class="backup-report__summary-pill backup-report__summary-pill--imported">已导入 {{ backupSummary.imported }}</span>
+                    <span class="backup-report__summary-pill">冲突跳过 {{ backupSummary.skipped_conflict }}</span>
+                    <span class="backup-report__summary-pill">无效跳过 {{ backupSummary.skipped_invalid }}</span>
+                    <span class="backup-report__summary-pill">缺少证书材料 {{ backupSummary.skipped_missing_material }}</span>
+                  </div>
+                  <div class="backup-report__meta">
+                    <span>来源 {{ backupImportResult.manifest?.source_architecture || 'unknown' }}</span>
+                    <span>导出于 {{ formatBackupTimestamp(backupImportResult.manifest?.exported_at) }}</span>
+                  </div>
+                </div>
+
+                <div class="backup-report__details">
+                  <div v-for="bucket in backupReportBuckets" :key="bucket.key" class="backup-report__bucket">
+                    <div class="backup-report__bucket-header">
+                      <span>{{ bucket.label }}</span>
+                      <span>{{ bucket.items.length }}</span>
+                    </div>
+                    <div v-if="bucket.items.length" class="backup-report__bucket-list">
+                      <div v-for="(item, index) in bucket.items" :key="`${bucket.key}-${index}`" class="backup-report__item">
+                        {{ formatBackupReportItem(item) }}
+                      </div>
+                    </div>
+                    <div v-else class="backup-report__empty">无</div>
+                  </div>
+                </div>
+              </div>
+            </section>
+
             <!-- Rules Content -->
             <div class="rules-section">
               <RuleList v-if="activeTab === 'http'" @add="showAddModal = true" />
@@ -729,6 +790,14 @@ import TokenAuth from './components/base/TokenAuth.vue'
 import BaseModal from './components/base/BaseModal.vue'
 import StatusMessage from './components/StatusMessage.vue'
 import { getAgentSyncStatus } from './utils/syncStatus'
+import {
+  BACKUP_IMPORT_CONFIRMATION_MESSAGE,
+  BACKUP_SENSITIVE_WARNING,
+  getBackupDownloadRevokeDelayMs,
+  getBackupSummaryTotals,
+  formatBackupReportItem
+} from './utils/backupImport'
+import { exportBackupPackage, importBackupPackage } from './api'
 
 const ruleStore = useRuleStore()
 const activeTab = ref('http')
@@ -736,6 +805,9 @@ const showAddModal = ref(false)
 const showL4Modal = ref(false)
 const showCertModal = ref(false)
 const showJoinModal = ref(false)
+const backupFileInput = ref(null)
+const backupBusy = ref(false)
+const backupImportResult = ref(null)
 const sidebarOpen = ref(false)
 const sidebarCollapsed = ref(localStorage.getItem('sidebar_collapsed') === 'true')
 const agentSearchQuery = ref('')
@@ -825,6 +897,20 @@ const activeL4Count = computed(() => {
 
 const activeCertsCount = computed(() => {
   return ruleStore.certificates.filter(c => c.enabled).length
+})
+
+const backupSummary = computed(() => {
+  return getBackupSummaryTotals(backupImportResult.value?.summary)
+})
+
+const backupReportBuckets = computed(() => {
+  const report = backupImportResult.value?.report || {}
+  return [
+    { key: 'imported', label: '已导入', items: Array.isArray(report.imported) ? report.imported : [] },
+    { key: 'skipped_conflict', label: '冲突跳过', items: Array.isArray(report.skipped_conflict) ? report.skipped_conflict : [] },
+    { key: 'skipped_invalid', label: '无效跳过', items: Array.isArray(report.skipped_invalid) ? report.skipped_invalid : [] },
+    { key: 'skipped_missing_material', label: '缺少证书材料', items: Array.isArray(report.skipped_missing_material) ? report.skipped_missing_material : [] }
+  ]
 })
 
 // Returns the tooltip text shown when hovering over an agent in the sidebar.
@@ -959,6 +1045,62 @@ async function openGlobalSearch() {
   showGlobalSearch.value = true
   await nextTick()
   globalSearchInput.value?.focus()
+}
+
+function openBackupImportPicker() {
+  backupFileInput.value?.click()
+}
+
+function formatBackupTimestamp(value) {
+  if (!value) return '-'
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) return String(value)
+  return parsed.toLocaleString()
+}
+
+async function handleExportBackup() {
+  if (backupBusy.value) return
+  backupBusy.value = true
+  try {
+    const { blob, filename } = await exportBackupPackage()
+    const downloadUrl = window.URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    anchor.href = downloadUrl
+    anchor.download = filename || 'nre-backup.tar.gz'
+    document.body.appendChild(anchor)
+    anchor.click()
+    document.body.removeChild(anchor)
+    window.setTimeout(() => window.URL.revokeObjectURL(downloadUrl), getBackupDownloadRevokeDelayMs())
+    ruleStore.showSuccess('备份导出已开始')
+  } catch (err) {
+    ruleStore.showError(err.message || '导出备份失败')
+  } finally {
+    backupBusy.value = false
+  }
+}
+
+async function handleBackupImportChange(event) {
+  const file = event.target?.files?.[0]
+  if (!file || backupBusy.value) {
+    if (event.target) event.target.value = ''
+    return
+  }
+  if (!window.confirm(BACKUP_IMPORT_CONFIRMATION_MESSAGE)) {
+    if (event.target) event.target.value = ''
+    return
+  }
+
+  backupBusy.value = true
+  try {
+    backupImportResult.value = await importBackupPackage(file)
+    await ruleStore.initialize()
+    ruleStore.showSuccess('备份导入完成')
+  } catch (err) {
+    ruleStore.showError(err.message || '导入备份失败')
+  } finally {
+    backupBusy.value = false
+    if (event.target) event.target.value = ''
+  }
 }
 
 function debouncedGlobalSearch() {
@@ -2472,6 +2614,144 @@ onUnmounted(() => {
 }
 
 /* ==========================================
+   Data Management
+   ========================================== */
+.data-management {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-4);
+  background: var(--color-bg-surface);
+  border: 1.5px solid var(--color-border-default);
+  border-radius: var(--radius-2xl);
+  box-shadow: var(--shadow-sm);
+}
+
+.data-management__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  flex-wrap: wrap;
+}
+
+.data-management__title {
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-base);
+  color: var(--color-text-primary);
+}
+
+.data-management__subtitle {
+  margin: 0;
+  color: var(--color-text-tertiary);
+  font-size: var(--text-sm);
+}
+
+.data-management__actions {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.data-management__input {
+  display: none;
+}
+
+.backup-report {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.backup-report__warning {
+  padding: var(--space-3);
+  border: 1px solid var(--color-warning);
+  border-radius: var(--radius-xl);
+  background: var(--color-warning-50);
+  color: var(--color-warning);
+  font-size: var(--text-xs);
+  line-height: 1.6;
+}
+
+.backup-report__summary {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  background: var(--color-bg-subtle);
+  border-radius: var(--radius-xl);
+}
+
+.backup-report__summary-row {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.backup-report__summary-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--space-1) var(--space-2);
+  border-radius: var(--radius-full);
+  background: var(--color-bg-surface);
+  color: var(--color-text-secondary);
+  font-size: var(--text-xs);
+  font-weight: var(--font-medium);
+}
+
+.backup-report__summary-pill--imported {
+  background: var(--color-success-50);
+  color: var(--color-success);
+}
+
+.backup-report__meta {
+  display: flex;
+  gap: var(--space-3);
+  flex-wrap: wrap;
+  font-size: var(--text-xs);
+  color: var(--color-text-tertiary);
+}
+
+.backup-report__details {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--space-3);
+}
+
+.backup-report__bucket {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-xl);
+  background: var(--color-bg-subtle);
+}
+
+.backup-report__bucket-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  font-size: var(--text-sm);
+  font-weight: var(--font-semibold);
+  color: var(--color-text-primary);
+}
+
+.backup-report__bucket-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.backup-report__item,
+.backup-report__empty {
+  font-size: var(--text-xs);
+  color: var(--color-text-secondary);
+  word-break: break-all;
+}
+
+/* ==========================================
    Rules Section
    ========================================== */
 .rules-section {
@@ -2694,6 +2974,19 @@ onUnmounted(() => {
 
   .content__title {
     font-size: var(--text-lg);
+  }
+
+  .data-management__actions {
+    width: 100%;
+  }
+
+  .data-management__actions .btn {
+    flex: 1;
+    justify-content: center;
+  }
+
+  .backup-report__details {
+    grid-template-columns: 1fr;
   }
 
   .stats-row {

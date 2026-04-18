@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { createBackupImportDevMock } from './backupDevMock'
 
 const isDev = import.meta.env.DEV
 const sleep = (ms = 500) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -32,6 +33,10 @@ api.interceptors.request.use((config) => {
   const token = localStorage.getItem('panel_token')
   if (token) {
     config.headers['X-Panel-Token'] = token
+  }
+  if (typeof FormData !== 'undefined' && config.data instanceof FormData) {
+    delete config.headers['Content-Type']
+    delete config.headers['content-type']
   }
   return config
 })
@@ -246,6 +251,50 @@ export async function fetchSystemInfo() {
     }
   }
   const { data } = await api.get('/info')
+  return data
+}
+
+function readDownloadFilename(disposition) {
+  const encodedMatch = /filename\*=UTF-8''([^;]+)/i.exec(String(disposition || ''))
+  if (encodedMatch?.[1]) {
+    try {
+      return decodeURIComponent(encodedMatch[1])
+    } catch {}
+  }
+  const plainMatch = /filename="?([^"]+)"?/i.exec(String(disposition || ''))
+  return plainMatch?.[1] || 'nre-backup.tar.gz'
+}
+
+export async function exportBackupPackage() {
+  if (isDev) {
+    await sleep(500)
+    return {
+      blob: new Blob([JSON.stringify({ ok: true })], { type: 'application/gzip' }),
+      filename: 'nre-backup.tar.gz'
+    }
+  }
+  const response = await api.get('/system/backup/export', {
+    ...longRunningRequest,
+    responseType: 'blob'
+  })
+  return {
+    blob: response.data,
+    filename: readDownloadFilename(response.headers?.['content-disposition'])
+  }
+}
+
+export async function importBackupPackage(file) {
+  const body = new FormData()
+  body.append('file', file)
+
+  if (isDev) {
+    await sleep(1200)
+    return createBackupImportDevMock()
+  }
+
+  const { data } = await api.post('/system/backup/import', body, {
+    ...longRunningRequest
+  })
   return data
 }
 

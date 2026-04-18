@@ -6,6 +6,7 @@ const http = require("http");
 const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
+const zlib = require("zlib");
 const { spawnSync } = require("child_process");
 
 const HOST = process.env.PANEL_BACKEND_HOST || "127.0.0.1";
@@ -62,6 +63,8 @@ const AGENT_API_TOKEN = process.env.AGENT_API_TOKEN || process.env.API_TOKEN || 
 const AGENT_NAME = process.env.AGENT_NAME || os.hostname();
 const AGENT_PUBLIC_URL = trimSlash(process.env.AGENT_PUBLIC_URL || "");
 const AGENT_VERSION = process.env.AGENT_VERSION || "1";
+const PANEL_APP_VERSION =
+  process.env.PANEL_APP_VERSION || process.env.npm_package_version || "";
 const AGENT_TAGS = normalizeTags(
   (process.env.AGENT_TAGS || "")
     .split(",")
@@ -107,6 +110,17 @@ const LOCAL_AGENT_TAGS = normalizeTags(
     .map((item) => item.trim())
     .filter(Boolean),
 );
+const BACKUP_PACKAGE_VERSION = 1;
+const BACKUP_SOURCE_ARCHITECTURE = "main-legacy";
+const BACKUP_REQUIRED_JSON_FILES = [
+  "manifest.json",
+  "agents.json",
+  "http_rules.json",
+  "l4_rules.json",
+  "relay_listeners.json",
+  "certificates.json",
+  "version_policies.json",
+];
 
 const PROJECT_ROOT = path.resolve(__dirname, "..", "..");
 const PUBLIC_AGENT_ASSETS = {
@@ -381,7 +395,7 @@ function normalizeCapabilities(capabilities) {
       (Array.isArray(capabilities) ? capabilities : [])
         .map((item) => String(item || "").trim())
         .filter((item) => allowed.has(item)),
-    ),
+      ),
   ];
 }
 
@@ -2668,6 +2682,1015 @@ async function handleLegacyLocalRules(req, res, urlPath) {
 
   sendJson(res, 404, errorPayload("not found"));
 }
+function readMultipartBoundary(contentType) {
+  const match = /boundary=(?:"([^"]+)"|([^;]+))/i.exec(String(contentType || ""));
+  const boundary = (match?.[1] || match?.[2] || "").trim();
+  if (!boundary) {
+    throw new Error("multipart boundary is required");
+  }
+  return boundary;
+}
+
+async function parseBackupUpload(req, maxBytes = 128 * 1024 * 1024) {
+  const boundary = Buffer.from(`--${readMultipartBoundary(req.headers["content-type"])}`);
+  const preferredNames = new Set(["file", "backup", "package"]);
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    size += buffer.length;
+    if (size > maxBytes) {
+      req.destroy();
+      throw new Error("request body too large");
+    }
+    chunks.push(buffer);
+  }
+
+  const bodyBuffer = Buffer.concat(chunks);
+  let cursor = bodyBuffer.indexOf(boundary);
+  if (cursor === -1) {
+    throw new Error("invalid multipart payload");
+  }
+
+  let fallbackUpload = null;
+  while (cursor !== -1) {
+    cursor += boundary.length;
+    if (bodyBuffer.slice(cursor, cursor + 2).equals(Buffer.from("--"))) {
+      break;
+    }
+    if (bodyBuffer.slice(cursor, cursor + 2).equals(Buffer.from("\r\n"))) {
+      cursor += 2;
+    }
+
+    const headerEnd = bodyBuffer.indexOf(Buffer.from("\r\n\r\n"), cursor);
+    if (headerEnd === -1) {
+      throw new Error("invalid multipart headers");
+    }
+    const rawHeaders = bodyBuffer.slice(cursor, headerEnd).toString("utf8");
+    const contentDisposition = rawHeaders
+      .split("\r\n")
+      .find((line) => line.toLowerCase().startsWith("content-disposition:")) || "";
+    const fieldNameMatch = /name="([^"]+)"/i.exec(contentDisposition);
+    const fileNameMatch = /filename="([^"]*)"/i.exec(contentDisposition);
+    const contentStart = headerEnd + 4;
+    const nextBoundary = bodyBuffer.indexOf(boundary, contentStart);
+    if (nextBoundary === -1) {
+      throw new Error("unterminated multipart payload");
+    }
+    let contentEnd = nextBoundary;
+    if (bodyBuffer.slice(contentEnd - 2, contentEnd).equals(Buffer.from("\r\n"))) {
+      contentEnd -= 2;
+    }
+
+    const upload = {
+      name: fieldNameMatch?.[1] || "",
+      filename: fileNameMatch?.[1] || "",
+      content: bodyBuffer.slice(contentStart, contentEnd),
+    };
+    if (upload.filename && preferredNames.has(upload.name)) {
+      return upload;
+    }
+    if (upload.filename && !fallbackUpload) {
+      fallbackUpload = upload;
+    }
+    cursor = nextBoundary;
+  }
+
+  return fallbackUpload;
+}
+
+function writeTarString(header, offset, length, value) {
+  const source = Buffer.from(String(value || ""), "utf8");
+  source.copy(header, offset, 0, Math.min(source.length, length));
+}
+
+function writeTarOctal(header, offset, length, value) {
+  const encoded = Math.max(0, Number(value) || 0).toString(8).padStart(length - 1, "0");
+  writeTarString(header, offset, length, `${encoded}\0`);
+}
+
+function splitTarPath(name) {
+  const normalized = String(name || "").replace(/\\/g, "/");
+  const size = Buffer.byteLength(normalized);
+  if (size <= 100) {
+    return { name: normalized, prefix: "" };
+  }
+  const slashIndex = normalized.lastIndexOf("/");
+  if (slashIndex === -1) {
+    return null;
+  }
+  const prefix = normalized.slice(0, slashIndex);
+  const base = normalized.slice(slashIndex + 1);
+  if (Buffer.byteLength(base) > 100 || Buffer.byteLength(prefix) > 155) {
+    return null;
+  }
+  return { name: base, prefix };
+}
+
+function createTarHeader(name, size, options = {}) {
+  const {
+    mode = 0o644,
+    type = "0",
+    mtime = Math.floor(Date.now() / 1000),
+  } = options;
+  const header = Buffer.alloc(512, 0);
+  const split = splitTarPath(name);
+  if (!split) {
+    throw new Error(`tar path too long: ${name}`);
+  }
+  writeTarString(header, 0, 100, split.name);
+  writeTarOctal(header, 100, 8, mode);
+  writeTarOctal(header, 108, 8, 0);
+  writeTarOctal(header, 116, 8, 0);
+  writeTarOctal(header, 124, 12, size);
+  writeTarOctal(header, 136, 12, mtime);
+  writeTarString(header, 148, 8, "        ");
+  writeTarString(header, 156, 1, type);
+  writeTarString(header, 257, 6, "ustar");
+  writeTarString(header, 263, 2, "00");
+  writeTarString(header, 345, 155, split.prefix);
+
+  let checksum = 0;
+  for (const byte of header) {
+    checksum += byte;
+  }
+  writeTarString(header, 148, 8, `${checksum.toString(8).padStart(6, "0")}\0 `);
+  return header;
+}
+
+function createPaxRecord(key, value) {
+  const payload = `${key}=${value}\n`;
+  let size = Buffer.byteLength(payload, "utf8") + 3;
+  while (true) {
+    const record = `${size} ${payload}`;
+    const actual = Buffer.byteLength(record, "utf8");
+    if (actual === size) {
+      return record;
+    }
+    size = actual;
+  }
+}
+
+function buildTarEntryBuffers(name, body, index) {
+  const content = Buffer.isBuffer(body) ? body : Buffer.from(body);
+  const buffers = [];
+  const needsPax =
+    Buffer.byteLength(String(name || ""), "utf8") > 100 ||
+    /[^\x20-\x7E]/.test(String(name || ""));
+
+  if (needsPax) {
+    const paxName = `PaxHeaders.${index}/${String(index).padStart(4, "0")}`;
+    const paxBody = Buffer.from(createPaxRecord("path", String(name || "")), "utf8");
+    buffers.push(createTarHeader(paxName, paxBody.length, { type: "x", mode: 0o644 }));
+    buffers.push(paxBody);
+    const paxPadding = (512 - (paxBody.length % 512)) % 512;
+    if (paxPadding > 0) {
+      buffers.push(Buffer.alloc(paxPadding, 0));
+    }
+    const fallbackName = path.posix.basename(String(name || "")) || `entry-${index}`;
+    buffers.push(createTarHeader(fallbackName.slice(0, 100), content.length, { type: "0", mode: 0o644 }));
+  } else {
+    buffers.push(createTarHeader(name, content.length, { type: "0", mode: 0o644 }));
+  }
+
+  buffers.push(content);
+  const padding = (512 - (content.length % 512)) % 512;
+  if (padding > 0) {
+    buffers.push(Buffer.alloc(padding, 0));
+  }
+  return buffers;
+}
+
+function buildTarArchive(entries) {
+  const buffers = [];
+  (Array.isArray(entries) ? entries : []).forEach((entry, index) => {
+    buffers.push(...buildTarEntryBuffers(entry.name, entry.body, index));
+  });
+  buffers.push(Buffer.alloc(1024, 0));
+  return Buffer.concat(buffers);
+}
+
+function buildTarGzArchive(entries) {
+  return zlib.gzipSync(buildTarArchive(entries));
+}
+
+function parseTarOctal(header, offset, length) {
+  const raw = header
+    .slice(offset, offset + length)
+    .toString("utf8")
+    .replace(/\0.*$/, "")
+    .trim();
+  if (!raw) return 0;
+  return Number.parseInt(raw, 8) || 0;
+}
+
+function parsePaxHeaders(content) {
+  const headers = {};
+  let cursor = 0;
+  const raw = String(content || "");
+  while (cursor < raw.length) {
+    const spaceIndex = raw.indexOf(" ", cursor);
+    if (spaceIndex === -1) break;
+    const length = Number.parseInt(raw.slice(cursor, spaceIndex), 10);
+    if (!Number.isFinite(length) || length <= 0) break;
+    const record = raw.slice(spaceIndex + 1, cursor + length - 1);
+    const equalsIndex = record.indexOf("=");
+    if (equalsIndex !== -1) {
+      headers[record.slice(0, equalsIndex)] = record.slice(equalsIndex + 1);
+    }
+    cursor += length;
+  }
+  return headers;
+}
+
+function parseTarArchive(buffer) {
+  const entries = new Map();
+  let cursor = 0;
+  let pendingPaxHeaders = null;
+
+  while (cursor + 512 <= buffer.length) {
+    const header = buffer.slice(cursor, cursor + 512);
+    cursor += 512;
+    if (header.every((byte) => byte === 0)) {
+      break;
+    }
+
+    const type = header.slice(156, 157).toString("utf8").replace(/\0/g, "") || "0";
+    const name = header
+      .slice(0, 100)
+      .toString("utf8")
+      .replace(/\0.*$/, "");
+    const prefix = header
+      .slice(345, 500)
+      .toString("utf8")
+      .replace(/\0.*$/, "");
+    const size = parseTarOctal(header, 124, 12);
+    const combinedName = pendingPaxHeaders?.path || (prefix ? `${prefix}/${name}` : name);
+    const content = buffer.slice(cursor, cursor + size);
+    const padding = (512 - (size % 512)) % 512;
+    cursor += size + padding;
+
+    if (type === "x") {
+      pendingPaxHeaders = parsePaxHeaders(content.toString("utf8"));
+      continue;
+    }
+
+    if (type === "0" || type === "") {
+      entries.set(combinedName, Buffer.from(content));
+    }
+    pendingPaxHeaders = null;
+  }
+
+  return entries;
+}
+
+function parseTarGzArchive(buffer) {
+  return parseTarArchive(zlib.gunzipSync(buffer));
+}
+
+function parseBackupJson(entries, fileName, fallback = null) {
+  const entry = entries.get(fileName);
+  if (!entry) {
+    if (fallback !== null) return fallback;
+    throw new Error(`backup package missing ${fileName}`);
+  }
+  try {
+    return JSON.parse(entry.toString("utf8"));
+  } catch (err) {
+    throw new Error(`invalid ${fileName}: ${String(err.message || err)}`);
+  }
+}
+
+function buildPortableBackupAgents() {
+  const exportedAgents = [];
+  if (LOCAL_AGENT_ENABLED) {
+    const localAgent = makeLocalAgent();
+    if (localAgent) {
+      exportedAgents.push({
+        id: localAgent.id,
+        name: localAgent.name,
+        agent_url: localAgent.agent_url,
+        version: localAgent.version,
+        tags: normalizeTags(localAgent.tags || []),
+        mode: "local",
+        is_local: true,
+        capabilities: normalizeCapabilities(localAgent.capabilities || []),
+      });
+    }
+  }
+
+  for (const agent of loadRegisteredAgents()) {
+    const normalized = ensureAgentState({ ...agent });
+    exportedAgents.push({
+      id: String(normalized.id || ""),
+      name: String(normalized.name || "").trim(),
+      agent_url: trimSlash(normalized.agent_url || ""),
+      agent_token: String(normalized.agent_token || "").trim(),
+      version: String(normalized.version || ""),
+      tags: normalizeTags(normalized.tags || []),
+      mode: normalized.mode,
+      is_local: false,
+      capabilities: normalizeCapabilities(normalized.capabilities || []),
+    });
+  }
+
+  return exportedAgents;
+}
+
+function buildPortableHTTPRules(agentIds) {
+  const exported = [];
+  for (const agentId of agentIds) {
+    for (const rule of loadRulesForAgent(agentId)) {
+      exported.push({
+        id: Number(rule.id) || 0,
+        agent_id: agentId,
+        frontend_url: String(rule.frontend_url || ""),
+        backend_url: String(rule.backend_url || ""),
+        enabled: rule.enabled !== false,
+        tags: normalizeTags(rule.tags || []),
+        proxy_redirect: rule.proxy_redirect !== false,
+        revision: normalizeRuleRevision(rule.revision),
+      });
+    }
+  }
+  return exported;
+}
+
+function buildPortableL4Rules(agentIds) {
+  const exported = [];
+  for (const agentId of agentIds) {
+    for (const rule of loadL4RulesForAgent(agentId)) {
+      exported.push({
+        id: Number(rule.id) || 0,
+        agent_id: agentId,
+        name: String(rule.name || ""),
+        protocol: String(rule.protocol || ""),
+        listen_host: String(rule.listen_host || ""),
+        listen_port: Number(rule.listen_port) || 0,
+        upstream_host: String(rule.upstream_host || ""),
+        upstream_port: Number(rule.upstream_port) || 0,
+        backends: Array.isArray(rule.backends) ? rule.backends : [],
+        load_balancing: rule.load_balancing || { strategy: "round_robin" },
+        enabled: rule.enabled !== false,
+        tags: normalizeTags(rule.tags || []),
+        revision: normalizeL4RuleRevision(rule.revision),
+      });
+    }
+  }
+  return exported;
+}
+
+function buildPortableCertificates() {
+  return loadManagedCertificates().map((cert) => ({
+    id: Number(cert.id) || 0,
+    domain: String(cert.domain || "").toLowerCase(),
+    enabled: cert.enabled !== false,
+    scope: String(cert.scope || "domain"),
+    issuer_mode: String(cert.issuer_mode || "master_cf_dns"),
+    target_agent_ids: Array.isArray(cert.target_agent_ids)
+      ? cert.target_agent_ids.map((item) => String(item || "").trim()).filter(Boolean)
+      : [],
+    status: String(cert.status || "pending"),
+    last_issue_at: cert.last_issue_at || null,
+    last_error: String(cert.last_error || ""),
+    material_hash: String(cert.material_hash || ""),
+    agent_reports: cert.agent_reports && typeof cert.agent_reports === "object"
+      ? cert.agent_reports
+      : {},
+    acme_info: normalizeManagedCertificateAcmeInfo(cert.acme_info || {}),
+    tags: normalizeTags(cert.tags || []),
+    revision: normalizeRevision(cert.revision),
+  }));
+}
+
+function buildPortableBackupPackage() {
+  const agents = buildPortableBackupAgents();
+  const agentIds = agents
+    .map((agent) => String(agent.id || "").trim())
+    .filter(Boolean);
+  const httpRules = buildPortableHTTPRules(agentIds);
+  const l4Rules = buildPortableL4Rules(agentIds);
+  const certificates = buildPortableCertificates();
+  const relayListeners = [];
+  const versionPolicies = [];
+  const manifest = {
+    package_version: BACKUP_PACKAGE_VERSION,
+    source_architecture: BACKUP_SOURCE_ARCHITECTURE,
+    exported_at: nowIso(),
+    includes_certificates: certificates.some((cert) => !!readManagedCertificateMaterial(cert.domain)),
+    counts: {
+      agents: agents.length,
+      http_rules: httpRules.length,
+      l4_rules: l4Rules.length,
+      relay_listeners: relayListeners.length,
+      certificates: certificates.length,
+      version_policies: versionPolicies.length,
+    },
+  };
+  if (PANEL_APP_VERSION) {
+    manifest.source_app_version = PANEL_APP_VERSION;
+  }
+
+  const entries = [
+    { name: "manifest.json", body: JSON.stringify(manifest, null, 2) },
+    { name: "agents.json", body: JSON.stringify(agents, null, 2) },
+    { name: "http_rules.json", body: JSON.stringify(httpRules, null, 2) },
+    { name: "l4_rules.json", body: JSON.stringify(l4Rules, null, 2) },
+    { name: "relay_listeners.json", body: JSON.stringify(relayListeners, null, 2) },
+    { name: "certificates.json", body: JSON.stringify(certificates, null, 2) },
+    { name: "version_policies.json", body: JSON.stringify(versionPolicies, null, 2) },
+  ];
+
+  for (const cert of certificates) {
+    const material = readManagedCertificateMaterial(cert.domain);
+    if (!material || !material.cert_pem || !material.key_pem) continue;
+    entries.push({
+      name: `certificate_material/${cert.domain}/cert.pem`,
+      body: material.cert_pem,
+    });
+    entries.push({
+      name: `certificate_material/${cert.domain}/key.pem`,
+      body: material.key_pem,
+    });
+  }
+
+  return {
+    fileName: `nre-backup-${nowIso().replace(/[:]/g, "-")}.tar.gz`,
+    manifest,
+    body: buildTarGzArchive(entries),
+  };
+}
+
+async function writeManagedCertificateMaterial(domain, material) {
+  const normalizedDomain = normalizeHost(domain).toLowerCase();
+  const targetDir = getCertStoreDir(normalizedDomain);
+  await fs.promises.mkdir(targetDir, { recursive: true });
+  await Promise.all([
+    fs.promises.writeFile(path.join(targetDir, "cert"), String(material.cert_pem || ""), "utf8"),
+    fs.promises.writeFile(path.join(targetDir, "key"), String(material.key_pem || ""), "utf8"),
+  ]);
+}
+
+function createBackupImportReport() {
+  return {
+    imported: [],
+    skipped_conflict: [],
+    skipped_invalid: [],
+    skipped_missing_material: [],
+  };
+}
+
+function pushBackupImportReport(report, bucket, resource, identifier, detail, extra = {}) {
+  if (!report[bucket]) {
+    report[bucket] = [];
+  }
+  report[bucket].push({
+    resource,
+    identifier: String(identifier || ""),
+    detail: String(detail || ""),
+    ...extra,
+  });
+}
+
+function buildBackupSummary(report) {
+  return {
+    imported: Array.isArray(report?.imported) ? report.imported.length : 0,
+    skipped_conflict: Array.isArray(report?.skipped_conflict) ? report.skipped_conflict.length : 0,
+    skipped_invalid: Array.isArray(report?.skipped_invalid) ? report.skipped_invalid.length : 0,
+    skipped_missing_material: Array.isArray(report?.skipped_missing_material)
+      ? report.skipped_missing_material.length
+      : 0,
+  };
+}
+
+function isPortableLocalAgentRecord(agent) {
+  if (!agent || typeof agent !== "object") return false;
+  if (agent.is_local === true) return true;
+  if (String(agent.mode || "").trim().toLowerCase() === "local") return true;
+  return String(agent.id || "").trim() === LOCAL_AGENT_ID;
+}
+
+function buildPortableLocalAliasSet(agents) {
+  const aliases = new Set([LOCAL_AGENT_ID]);
+  for (const agent of Array.isArray(agents) ? agents : []) {
+    if (!isPortableLocalAgentRecord(agent)) continue;
+    const agentId = String(agent.id || "").trim();
+    if (agentId) {
+      aliases.add(agentId);
+    }
+  }
+  return aliases;
+}
+
+function resolvePortableAgentId(agentId, localAliases) {
+  const normalized = String(agentId || "").trim();
+  if (!normalized) return "";
+  return localAliases.has(normalized) ? LOCAL_AGENT_ID : normalized;
+}
+
+function getHTTPRuleConflictKey(rule) {
+  return String(rule?.frontend_url || "").trim();
+}
+
+function getL4RuleConflictKey(rule) {
+  return [
+    String(rule?.protocol || "").trim().toLowerCase(),
+    normalizeHost(rule?.listen_host || "").toLowerCase(),
+    Number(rule?.listen_port) || 0,
+  ].join("|");
+}
+
+function getNextImportedConfigRevision(agentId, rulesByAgent, l4RulesByAgent) {
+  const agent = getAgentById(agentId);
+  const httpRules = rulesByAgent.get(agentId) || loadRulesForAgent(agentId);
+  const l4Rules = l4RulesByAgent.get(agentId) || loadL4RulesForAgent(agentId);
+  const maxRevision = Math.max(
+    normalizeRevision(agent?.desired_revision),
+    normalizeRevision(agent?.current_revision),
+    getAgentLastApplyRevision(agent),
+    getHighestRuleRevision(httpRules),
+    getHighestL4RuleRevision(l4Rules),
+    getHighestManagedCertificateRevisionForAgent(agentId),
+  );
+  return maxRevision + 1;
+}
+
+function parsePortableBackupPackage(buffer) {
+  const entries = parseTarGzArchive(buffer);
+  for (const fileName of BACKUP_REQUIRED_JSON_FILES) {
+    if (!entries.has(fileName)) {
+      throw new Error(`backup package missing ${fileName}`);
+    }
+  }
+
+  const manifest = parseBackupJson(entries, "manifest.json");
+  const agents = parseBackupJson(entries, "agents.json", []);
+  const httpRules = parseBackupJson(entries, "http_rules.json", []);
+  const l4Rules = parseBackupJson(entries, "l4_rules.json", []);
+  const relayListeners = parseBackupJson(entries, "relay_listeners.json", []);
+  const certificates = parseBackupJson(entries, "certificates.json", []);
+  const versionPolicies = parseBackupJson(entries, "version_policies.json", []);
+  const materials = new Map();
+
+  for (const [entryName, content] of entries.entries()) {
+    const match = /^certificate_material\/(.+)\/(cert\.pem|key\.pem)$/.exec(entryName);
+    if (!match) continue;
+    const domain = normalizeHost(match[1]).toLowerCase();
+    if (!domain) continue;
+    const existing = materials.get(domain) || { cert_pem: "", key_pem: "" };
+    if (match[2] === "cert.pem") {
+      existing.cert_pem = content.toString("utf8");
+    } else {
+      existing.key_pem = content.toString("utf8");
+    }
+    materials.set(domain, existing);
+  }
+
+  return {
+    manifest,
+    agents,
+    http_rules: httpRules,
+    l4_rules: l4Rules,
+    relay_listeners: relayListeners,
+    certificates,
+    version_policies: versionPolicies,
+    certificate_materials: materials,
+  };
+}
+
+async function importPortableBackupPackage(buffer) {
+  const payload = parsePortableBackupPackage(buffer);
+  const report = createBackupImportReport();
+  const localAliases = buildPortableLocalAliasSet(payload.agents);
+  const now = nowIso();
+
+  const existingAgents = loadRegisteredAgents().map((agent) => ensureAgentState({ ...agent }));
+  const existingAgentNames = new Set(
+    existingAgents.map((agent) => String(agent.name || "").trim()).filter(Boolean),
+  );
+  if (LOCAL_AGENT_ENABLED) {
+    existingAgentNames.add(String(LOCAL_AGENT_NAME || "").trim());
+  }
+  const knownAgentIds = new Set(existingAgents.map((agent) => String(agent.id || "").trim()).filter(Boolean));
+  if (LOCAL_AGENT_ENABLED) {
+    knownAgentIds.add(LOCAL_AGENT_ID);
+  }
+  const importedAgentIdMap = new Map();
+
+  for (const rawAgent of Array.isArray(payload.agents) ? payload.agents : []) {
+    try {
+      const name = String(rawAgent?.name || "").trim();
+      if (!name) {
+        throw new Error("agent name is required");
+      }
+
+      if (isPortableLocalAgentRecord(rawAgent)) {
+        if (!LOCAL_AGENT_ENABLED) {
+          pushBackupImportReport(
+            report,
+            "skipped_invalid",
+            "agent",
+            name,
+            "local agent import requires local agent to be enabled",
+          );
+          continue;
+        }
+        importedAgentIdMap.set(String(rawAgent.id || LOCAL_AGENT_ID), LOCAL_AGENT_ID);
+        pushBackupImportReport(
+          report,
+          "imported",
+          "agent",
+          name,
+          "mapped to local agent",
+          { agent_id: LOCAL_AGENT_ID },
+        );
+        continue;
+      }
+
+      if (existingAgentNames.has(name)) {
+        const existingAgent = existingAgents.find(
+          (agent) => String(agent?.name || "").trim() === name,
+        );
+        if (existingAgent?.id) {
+          importedAgentIdMap.set(String(rawAgent?.id || name), String(existingAgent.id));
+        }
+        pushBackupImportReport(
+          report,
+          "skipped_conflict",
+          "agent",
+          name,
+          "agent name already exists",
+        );
+        continue;
+      }
+
+      const nextUrl = trimSlash(rawAgent?.agent_url || rawAgent?.url || "");
+      if (nextUrl && !validateUrl(nextUrl)) {
+        throw new Error("agent_url must be a valid http/https URL");
+      }
+
+      let nextId = String(rawAgent?.id || "").trim();
+      if (!nextId || nextId === LOCAL_AGENT_ID || knownAgentIds.has(nextId)) {
+        nextId = crypto.randomUUID();
+      }
+
+      const importedAgent = ensureAgentState({
+        id: nextId,
+        name,
+        agent_url: nextUrl,
+        agent_token: String(rawAgent?.agent_token || "").trim(),
+        version: String(rawAgent?.version || ""),
+        tags: normalizeTags(rawAgent?.tags || []),
+        capabilities: normalizeCapabilities(rawAgent?.capabilities || []),
+        created_at: now,
+        updated_at: now,
+        last_seen_at: null,
+        last_apply_status: null,
+        last_apply_message: "",
+        desired_revision: 0,
+        current_revision: 0,
+        last_apply_revision: 0,
+      });
+
+      existingAgents.push(importedAgent);
+      existingAgentNames.add(name);
+      knownAgentIds.add(nextId);
+      importedAgentIdMap.set(String(rawAgent?.id || nextId), nextId);
+      pushBackupImportReport(
+        report,
+        "imported",
+        "agent",
+        name,
+        "agent imported",
+        { agent_id: nextId },
+      );
+    } catch (err) {
+      pushBackupImportReport(
+        report,
+        "skipped_invalid",
+        "agent",
+        rawAgent?.name || rawAgent?.id || "unknown",
+        String(err.message || err),
+      );
+    }
+  }
+
+  saveRegisteredAgents(existingAgents);
+
+  const rulesByAgent = new Map();
+  const l4RulesByAgent = new Map();
+  const changedRuleAgentIds = new Set();
+  const changedL4AgentIds = new Set();
+
+  for (const agentId of knownAgentIds) {
+    if (agentId === LOCAL_AGENT_ID || getAgentById(agentId)) {
+      rulesByAgent.set(agentId, loadRulesForAgent(agentId));
+      l4RulesByAgent.set(agentId, loadL4RulesForAgent(agentId));
+    }
+  }
+
+  const httpConflictKeys = new Set();
+  for (const rules of rulesByAgent.values()) {
+    for (const rule of rules) {
+      httpConflictKeys.add(getHTTPRuleConflictKey(rule));
+    }
+  }
+
+  for (const rawRule of Array.isArray(payload.http_rules) ? payload.http_rules : []) {
+    try {
+      const requestedAgentId =
+        resolvePortableAgentId(rawRule?.agent_id || LOCAL_AGENT_ID, localAliases) || LOCAL_AGENT_ID;
+      const resolvedAgentId = importedAgentIdMap.get(requestedAgentId) || requestedAgentId;
+      const agent = getAgentById(resolvedAgentId);
+      if (!agent) {
+        throw new Error(`target agent not found: ${resolvedAgentId}`);
+      }
+      const normalized = normalizeRulePayload(rawRule || {}, {}, 1);
+      const conflictKey = getHTTPRuleConflictKey(normalized);
+      if (!conflictKey) {
+        throw new Error("frontend_url is required");
+      }
+      if (httpConflictKeys.has(conflictKey)) {
+        pushBackupImportReport(
+          report,
+          "skipped_conflict",
+          "http_rule",
+          conflictKey,
+          "frontend_url already exists",
+          { agent_id: resolvedAgentId },
+        );
+        continue;
+      }
+
+      const agentRules = rulesByAgent.get(resolvedAgentId) || [];
+      const nextId = agentRules.reduce((max, item) => Math.max(max, Number(item.id) || 0), 0) + 1;
+      const nextRule = normalizeRulePayload(rawRule || {}, {}, nextId);
+      nextRule.id = nextId;
+      nextRule.revision = getNextImportedConfigRevision(
+        resolvedAgentId,
+        rulesByAgent,
+        l4RulesByAgent,
+      );
+      agentRules.push(nextRule);
+      rulesByAgent.set(resolvedAgentId, agentRules);
+      httpConflictKeys.add(conflictKey);
+      changedRuleAgentIds.add(resolvedAgentId);
+      pushBackupImportReport(
+        report,
+        "imported",
+        "http_rule",
+        conflictKey,
+        "rule imported",
+        { agent_id: resolvedAgentId },
+      );
+    } catch (err) {
+      pushBackupImportReport(
+        report,
+        "skipped_invalid",
+        "http_rule",
+        rawRule?.frontend_url || rawRule?.id || "unknown",
+        String(err.message || err),
+      );
+    }
+  }
+
+  for (const agentId of changedRuleAgentIds) {
+    saveRulesForAgent(agentId, rulesByAgent.get(agentId) || []);
+  }
+
+  const l4ConflictKeys = new Set();
+  for (const rules of l4RulesByAgent.values()) {
+    for (const rule of rules) {
+      l4ConflictKeys.add(getL4RuleConflictKey(rule));
+    }
+  }
+
+  for (const rawRule of Array.isArray(payload.l4_rules) ? payload.l4_rules : []) {
+    try {
+      const requestedAgentId =
+        resolvePortableAgentId(rawRule?.agent_id || LOCAL_AGENT_ID, localAliases) || LOCAL_AGENT_ID;
+      const resolvedAgentId = importedAgentIdMap.get(requestedAgentId) || requestedAgentId;
+      const agent = getAgentById(resolvedAgentId);
+      if (!agent) {
+        throw new Error(`target agent not found: ${resolvedAgentId}`);
+      }
+      if (!agentHasCapability(agent, "l4")) {
+        throw new Error(`target agent does not support L4 rules: ${agent.name || resolvedAgentId}`);
+      }
+
+      const normalized = normalizeL4RulePayload(rawRule || {}, {}, 1);
+      const conflictKey = getL4RuleConflictKey(normalized);
+      if (l4ConflictKeys.has(conflictKey)) {
+        pushBackupImportReport(
+          report,
+          "skipped_conflict",
+          "l4_rule",
+          `${normalized.protocol}:${normalized.listen_host}:${normalized.listen_port}`,
+          "listen endpoint already exists",
+          { agent_id: resolvedAgentId },
+        );
+        continue;
+      }
+
+      const agentRules = l4RulesByAgent.get(resolvedAgentId) || [];
+      const nextId = agentRules.reduce((max, item) => Math.max(max, Number(item.id) || 0), 0) + 1;
+      const nextRule = normalizeL4RulePayload(rawRule || {}, {}, nextId);
+      nextRule.id = nextId;
+      nextRule.revision = getNextImportedConfigRevision(
+        resolvedAgentId,
+        rulesByAgent,
+        l4RulesByAgent,
+      );
+      agentRules.push(nextRule);
+      l4RulesByAgent.set(resolvedAgentId, agentRules);
+      l4ConflictKeys.add(conflictKey);
+      changedL4AgentIds.add(resolvedAgentId);
+      pushBackupImportReport(
+        report,
+        "imported",
+        "l4_rule",
+        `${normalized.protocol}:${normalized.listen_host}:${normalized.listen_port}`,
+        "rule imported",
+        { agent_id: resolvedAgentId },
+      );
+    } catch (err) {
+      pushBackupImportReport(
+        report,
+        "skipped_invalid",
+        "l4_rule",
+        rawRule?.name || rawRule?.id || "unknown",
+        String(err.message || err),
+      );
+    }
+  }
+
+  for (const agentId of changedL4AgentIds) {
+    saveL4RulesForAgent(agentId, l4RulesByAgent.get(agentId) || []);
+  }
+
+  const changedCertAgentIds = new Set();
+  let existingCerts = loadManagedCertificates();
+  const existingCertDomains = new Set(
+    existingCerts.map((cert) => normalizeHost(cert.domain || "").toLowerCase()).filter(Boolean),
+  );
+
+  for (const rawCert of Array.isArray(payload.certificates) ? payload.certificates : []) {
+    const identifier = rawCert?.domain || rawCert?.id || "unknown";
+    try {
+      const material = payload.certificate_materials.get(
+        normalizeHost(rawCert?.domain || "").toLowerCase(),
+      );
+      const hasMaterial = !!(material && material.cert_pem && material.key_pem);
+      const requestedTargets = Array.isArray(rawCert?.target_agent_ids)
+        ? rawCert.target_agent_ids
+        : [];
+      const mappedTargets = requestedTargets
+        .map((agentId) => {
+          const resolved = resolvePortableAgentId(agentId, localAliases);
+          return importedAgentIdMap.get(resolved) || resolved;
+        })
+        .filter(Boolean);
+      if (!mappedTargets.length) {
+        throw new Error("target_agent_ids is required");
+      }
+
+      const normalized = normalizeManagedCertificatePayload(
+        {
+          ...rawCert,
+          target_agent_ids: mappedTargets,
+          material_hash: hasMaterial
+            ? hashManagedCertificateMaterial(material)
+            : String(rawCert?.material_hash || ""),
+        },
+        {},
+        1,
+      );
+      const domain = normalizeHost(normalized.domain || "").toLowerCase();
+      const requiresMaterial =
+        normalized.enabled !== false &&
+        normalized.status &&
+        String(normalized.status).toLowerCase() === "issued";
+      if (requiresMaterial && !hasMaterial) {
+        pushBackupImportReport(
+          report,
+          "skipped_missing_material",
+          "certificate",
+          identifier,
+          "certificate material is missing",
+        );
+        continue;
+      }
+
+      if (existingCertDomains.has(domain)) {
+        pushBackupImportReport(
+          report,
+          "skipped_conflict",
+          "certificate",
+          domain,
+          "certificate domain already exists",
+        );
+        continue;
+      }
+
+      validateManagedCertificateTargets(normalized);
+      const nextId = existingCerts.reduce((max, cert) => Math.max(max, Number(cert.id) || 0), 0) + 1;
+      const nextCert = {
+        ...normalized,
+        id: nextId,
+        revision: getNextGlobalRevision(),
+      };
+      if (hasMaterial) {
+        await writeManagedCertificateMaterial(domain, material);
+        nextCert.material_hash = getManagedCertificateMaterialHash(domain) || nextCert.material_hash;
+      }
+      existingCerts.push(nextCert);
+      existingCertDomains.add(domain);
+      saveManagedCertificates(existingCerts);
+      existingCerts = loadManagedCertificates();
+      for (const agentId of mappedTargets) {
+        changedCertAgentIds.add(agentId);
+      }
+      pushBackupImportReport(
+        report,
+        "imported",
+        "certificate",
+        domain,
+        "certificate imported",
+        { agent_ids: mappedTargets },
+      );
+    } catch (err) {
+      pushBackupImportReport(
+        report,
+        "skipped_invalid",
+        "certificate",
+        identifier,
+        String(err.message || err),
+      );
+    }
+  }
+
+  for (const listener of Array.isArray(payload.relay_listeners) ? payload.relay_listeners : []) {
+    pushBackupImportReport(
+      report,
+      "skipped_invalid",
+      "relay_listener",
+      listener?.name || listener?.id || "unknown",
+      "legacy main control plane does not support relay listeners",
+    );
+  }
+
+  for (const policy of Array.isArray(payload.version_policies) ? payload.version_policies : []) {
+    pushBackupImportReport(
+      report,
+      "skipped_invalid",
+      "version_policy",
+      policy?.id || "unknown",
+      "legacy main control plane does not support version policies",
+    );
+  }
+
+  if (changedCertAgentIds.size > 0) {
+    try {
+      await syncManagedCertificateAgentIds([...changedCertAgentIds], {
+        applyNow: AUTO_APPLY,
+      });
+    } catch (err) {
+      pushBackupImportReport(
+        report,
+        "skipped_invalid",
+        "system",
+        "certificate-sync",
+        String(err.message || err),
+      );
+    }
+  }
+
+  if (AUTO_APPLY) {
+    const alreadyApplied = new Set(changedCertAgentIds);
+    const affectedAgentIds = new Set([...changedRuleAgentIds, ...changedL4AgentIds]);
+    for (const agentId of affectedAgentIds) {
+      if (alreadyApplied.has(agentId)) continue;
+      try {
+        await applyAgent(agentId);
+      } catch (err) {
+        pushBackupImportReport(
+          report,
+          "skipped_invalid",
+          "system",
+          `apply:${agentId}`,
+          String(err.message || err),
+        );
+      }
+    }
+  }
+
+  return {
+    manifest: payload.manifest,
+    report,
+    summary: buildBackupSummary(report),
+  };
+}
+
 async function handleMasterApi(req, res) {
   const urlPath = (req.url || "").split("?")[0];
 
@@ -2703,6 +3726,61 @@ async function handleMasterApi(req, res) {
       cf_token_configured: !!CF_TOKEN,
       acme_dns_provider: ACME_DNS_PROVIDER || null,
     });
+    return;
+  }
+
+  if (req.method === "GET" && urlPath === "/api/system/backup/export") {
+    if (!isPanelAuthorized(req)) {
+      sendJson(
+        res,
+        401,
+        errorPayload("Unauthorized: Invalid or missing X-Panel-Token"),
+      );
+      return;
+    }
+    try {
+      const backup = buildPortableBackupPackage();
+      res.writeHead(200, {
+        "Content-Type": "application/gzip",
+        "Content-Disposition": `attachment; filename="${backup.fileName}"`,
+        "Content-Length": String(backup.body.length),
+        "Cache-Control": "no-store",
+      });
+      res.end(backup.body);
+    } catch (err) {
+      sendJson(
+        res,
+        500,
+        errorPayload("backup export failed", String(err.message || err)),
+      );
+    }
+    return;
+  }
+
+  if (req.method === "POST" && urlPath === "/api/system/backup/import") {
+    if (!isPanelAuthorized(req)) {
+      sendJson(
+        res,
+        401,
+        errorPayload("Unauthorized: Invalid or missing X-Panel-Token"),
+      );
+      return;
+    }
+    try {
+      const upload = await parseBackupUpload(req);
+      if (!upload || !upload.content?.length) {
+        sendJson(res, 400, errorPayload("backup file is required"));
+        return;
+      }
+      const result = await importPortableBackupPackage(upload.content);
+      sendJson(res, 200, { ok: true, ...result });
+    } catch (err) {
+      sendJson(
+        res,
+        400,
+        errorPayload("backup import failed", String(err.message || err)),
+      );
+    }
     return;
   }
 
