@@ -725,7 +725,7 @@ func (s *certificateService) finishManagedCertificateMutation(ctx context.Contex
 		removedAgentIDs = differenceManagedCertificateAgentIDs(previous.TargetAgentIDs, current.TargetAgentIDs)
 	}
 
-	if current.Enabled && current.Scope == "domain" && current.IssuerMode == "master_cf_dns" {
+	if current.Enabled && current.Scope == "domain" && current.IssuerMode == "master_cf_dns" && managedCertificateMutationNeedsManagedDNSIssue(previous, current) {
 		issued, err := s.issueManagedCertificateWithoutRevisionBump(ctx, rows, targetIndex, current, maxRevision)
 		if err != nil {
 			return ManagedCertificate{}, err
@@ -749,6 +749,23 @@ func (s *certificateService) finishManagedCertificateMutation(ctx context.Contex
 		return ManagedCertificate{}, err
 	}
 	return current, nil
+}
+
+func managedCertificateMutationNeedsManagedDNSIssue(previous *ManagedCertificate, current ManagedCertificate) bool {
+	if !current.Enabled || current.Scope != "domain" || current.IssuerMode != "master_cf_dns" {
+		return false
+	}
+	if previous == nil {
+		return true
+	}
+	if !previous.Enabled {
+		return true
+	}
+	return previous.Domain != current.Domain ||
+		previous.Scope != current.Scope ||
+		previous.IssuerMode != current.IssuerMode ||
+		previous.CertificateType != current.CertificateType ||
+		!reflect.DeepEqual(previous.TargetAgentIDs, current.TargetAgentIDs)
 }
 
 func (s *certificateService) issueManagedCertificateWithoutRevisionBump(ctx context.Context, rows []storage.ManagedCertificateRow, targetIndex int, current ManagedCertificate, maxRevision int) (ManagedCertificate, error) {

@@ -291,6 +291,85 @@ func TestCertificateServiceUpdateRejectsMasterCFDNSTargetExpansion(t *testing.T)
 	}
 }
 
+func TestCertificateServiceUpdateMasterCFDNSWildcardMetadataOnlyDoesNotReissue(t *testing.T) {
+	now := time.Date(2026, time.April, 11, 20, 21, 22, 0, time.UTC)
+	unexpectedReissue := mustCreateSelfSignedCA(t, "unexpected-reissue.example.test")
+	store := &relayCertStore{
+		localSnapshot: storage.Snapshot{Revision: 6},
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              15,
+			Domain:          "*.redacted.example.test",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "master_cf_dns",
+			TargetAgentIDs:  `["local"]`,
+			Status:          "active",
+			LastIssueAt:     "2026-04-10T01:02:03Z",
+			LastError:       "",
+			MaterialHash:    "existing-hash",
+			ACMEInfo:        `{"Main_Domain":"*.redacted.example.test","CA":"LetsEncrypt","Renew":"2026-07-10T00:00:00Z"}`,
+			TagsJSON:        `["existing-tag"]`,
+			CertificateType: "acme",
+			Usage:           "https",
+			Revision:        6,
+		}},
+	}
+	issuer := &fakeManagedCertificateRenewalIssuer{
+		results: map[int]managedCertificateRenewalResult{
+			15: {
+				LastIssueAt:  now.UTC().Format(time.RFC3339),
+				MaterialHash: "unexpected-reissue-hash",
+				ACMEInfo: ManagedCertificateACMEInfo{
+					MainDomain: "*.redacted.example.test",
+					CA:         "LetsEncrypt",
+				},
+				Material: storage.ManagedCertificateBundle{
+					CertPEM: strings.TrimSpace(unexpectedReissue.CertPEM),
+					KeyPEM:  strings.TrimSpace(unexpectedReissue.KeyPEM),
+				},
+			},
+		},
+	}
+	svc := newCertificateServiceWithRenewal(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store, issuer)
+	svc.now = func() time.Time { return now }
+
+	updated, err := svc.Update(context.Background(), "local", 15, ManagedCertificateInput{
+		Tags: &[]string{"existing-tag", "metadata-only"},
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	if len(issuer.calls) != 0 {
+		t.Fatalf("issuer calls = %+v, want no automatic reissue on metadata-only save", issuer.calls)
+	}
+	if updated.Status != "active" {
+		t.Fatalf("updated.Status = %q", updated.Status)
+	}
+	if updated.LastIssueAt != "2026-04-10T01:02:03Z" {
+		t.Fatalf("updated.LastIssueAt = %q", updated.LastIssueAt)
+	}
+	if updated.MaterialHash != "existing-hash" {
+		t.Fatalf("updated.MaterialHash = %q", updated.MaterialHash)
+	}
+	if updated.Revision != 7 {
+		t.Fatalf("updated.Revision = %d", updated.Revision)
+	}
+	if store.saveRuntimeCalls != 1 {
+		t.Fatalf("saveRuntimeCalls = %d", store.saveRuntimeCalls)
+	}
+	row := managedCertificateFromRow(store.managedCerts[0])
+	if row.Status != "active" || row.LastIssueAt != "2026-04-10T01:02:03Z" || row.MaterialHash != "existing-hash" {
+		t.Fatalf("saved row changed unexpectedly: %+v", row)
+	}
+	if len(row.Tags) != 2 || row.Tags[0] != "existing-tag" || row.Tags[1] != "metadata-only" {
+		t.Fatalf("saved row tags = %+v", row.Tags)
+	}
+}
+
 func TestCertificateServiceCreateUploadedPersistsValidatedMaterialAndHash(t *testing.T) {
 	ca := mustCreateSelfSignedCA(t, "Upload Test CA")
 	leaf := mustCreateLeafSignedByCA(t, "uploaded.example.com", ca)
@@ -1023,6 +1102,70 @@ func TestCertificateServiceCreateMasterCFDNSIssuesImmediatelyWithoutExtraRevisio
 	row := managedCertificateFromRow(store.managedCerts[0])
 	if row.Status != "active" || row.Revision != 1 || row.MaterialHash != "issued-hash" {
 		t.Fatalf("saved row = %+v", row)
+	}
+}
+
+func TestCertificateServiceUpdateMasterCFDNSEnableTriggersIssue(t *testing.T) {
+	now := time.Date(2026, time.April, 11, 21, 22, 23, 0, time.UTC)
+	issuedMaterial := mustCreateSelfSignedCA(t, "enable-master.example.test")
+	store := &relayCertStore{
+		localSnapshot: storage.Snapshot{Revision: 6},
+		managedCerts: []storage.ManagedCertificateRow{{
+			ID:              97,
+			Domain:          "*.enable.example.test",
+			Enabled:         false,
+			Scope:           "domain",
+			IssuerMode:      "master_cf_dns",
+			TargetAgentIDs:  `["local"]`,
+			Status:          "pending",
+			CertificateType: "acme",
+			Usage:           "https",
+			Revision:        6,
+		}},
+	}
+	issuer := &fakeManagedCertificateRenewalIssuer{
+		results: map[int]managedCertificateRenewalResult{
+			97: {
+				LastIssueAt:  now.UTC().Format(time.RFC3339),
+				MaterialHash: "enabled-issue-hash",
+				ACMEInfo: ManagedCertificateACMEInfo{
+					MainDomain: "*.enable.example.test",
+					CA:         "LetsEncrypt",
+				},
+				Material: storage.ManagedCertificateBundle{
+					CertPEM: strings.TrimSpace(issuedMaterial.CertPEM),
+					KeyPEM:  strings.TrimSpace(issuedMaterial.KeyPEM),
+				},
+			},
+		},
+	}
+	svc := newCertificateServiceWithRenewal(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store, issuer)
+	svc.now = func() time.Time { return now }
+
+	updated, err := svc.Update(context.Background(), "local", 97, ManagedCertificateInput{
+		Enabled: boolPtr(true),
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	if len(issuer.calls) != 1 || issuer.calls[0] != 97 {
+		t.Fatalf("issuer calls = %+v", issuer.calls)
+	}
+	if updated.Status != "active" {
+		t.Fatalf("updated.Status = %q", updated.Status)
+	}
+	if updated.LastIssueAt != now.UTC().Format(time.RFC3339) {
+		t.Fatalf("updated.LastIssueAt = %q", updated.LastIssueAt)
+	}
+	if updated.MaterialHash != "enabled-issue-hash" {
+		t.Fatalf("updated.MaterialHash = %q", updated.MaterialHash)
+	}
+	if updated.Revision != 7 {
+		t.Fatalf("updated.Revision = %d", updated.Revision)
 	}
 }
 
