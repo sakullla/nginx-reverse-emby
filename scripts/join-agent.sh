@@ -13,7 +13,14 @@ case "$DEFAULT_ASSET_BASE_URL" in __DEFAULT_*__) DEFAULT_ASSET_BASE_URL="" ;; es
 
 usage() {
     cat <<EOF
-Usage: join-agent.sh --register-token TOKEN [options]
+Usage:
+  join-agent.sh --register-token TOKEN [options]
+  join-agent.sh migrate-from-main --register-token TOKEN [options]
+  join-agent.sh uninstall-agent [options]
+
+Commands:
+  migrate-from-main       Migrate a legacy lightweight Agent node to go-agent
+  uninstall-agent         Remove the local Agent runtime from this host
 
 Required:
   --register-token TOKEN   Master registration token
@@ -24,18 +31,21 @@ Optional:
   --agent-name NAME        Agent name, default: current hostname
   --agent-token TOKEN      Agent heartbeat token, default: auto-generated
   --agent-url URL          Optional public URL for display / direct access
-  --data-dir DIR           Install directory, default: ./agent-data
+  --data-dir DIR           Install directory, default: /var/lib/nre-agent
   --version VERSION        Agent version sent during registration, default: 1
   --tags TAGS              Comma-separated tags, e.g. edge,emby
   --binary-url URL         Download URL override for the nre-agent binary
   --install-systemd        Install and start a systemd service (Linux)
   --install-launchd        Install and load a launchd agent (macOS)
+  --source-dir DIR         Legacy lightweight Agent directory for migrate-from-main or uninstall-agent
   -h, --help               Show help
 
 Examples:
   curl -fsSL ${DEFAULT_MASTER_URL:-http://master.example.com:3000}/panel-api/public/join-agent.sh | sh -s -- --register-token change-this-register-token --install-systemd
   join-agent.sh --master-url http://master.example.com:3000 --register-token change-this-register-token --install-systemd
   join-agent.sh --register-token change-this-register-token --install-launchd
+  join-agent.sh migrate-from-main --master-url http://master.example.com:3000 --register-token change-this-register-token
+  join-agent.sh uninstall-agent --data-dir /var/lib/nre-agent
 EOF
 }
 
@@ -218,8 +228,37 @@ build_tags_json() {
     printf ']'
 }
 
+build_capabilities_json() {
+    if [ -z "$1" ]; then
+        printf '["http_rules","l4","cert_install"]'
+        return 0
+    fi
+
+    old_ifs=$IFS
+    IFS=,
+    set -- $1
+    IFS=$old_ifs
+
+    first=1
+    printf '['
+    for capability in "$@"; do
+        trimmed=$(printf '%s' "$capability" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+        [ -n "$trimmed" ] || continue
+        if [ "$first" -eq 0 ]; then
+            printf ','
+        fi
+        json_string "$trimmed"
+        first=0
+    done
+    if [ "$first" -eq 1 ]; then
+        printf '"http_rules","l4","cert_install"'
+    fi
+    printf ']'
+}
+
 build_register_payload() {
     tags_json=$(build_tags_json "$AGENT_TAGS")
+    capabilities_json=$(build_capabilities_json "$AGENT_CAPABILITIES")
     printf '{'
     printf '"name":%s,' "$(json_string "$AGENT_NAME")"
     printf '"agent_url":%s,' "$(json_string "$AGENT_URL")"
@@ -227,125 +266,53 @@ build_register_payload() {
     printf '"version":%s,' "$(json_string "$AGENT_VERSION")"
     printf '"platform":%s,' "$(json_string "$PLATFORM-$ARCH")"
     printf '"tags":%s,' "$tags_json"
-    printf '"capabilities":["http_rules","l4","cert_install"],'
+    printf '"capabilities":%s,' "$capabilities_json"
     printf '"mode":"pull",'
     printf '"register_token":%s' "$(json_string "$REGISTER_TOKEN")"
     printf '}'
 }
 
-MASTER_URL="$DEFAULT_MASTER_URL"
-ASSET_BASE_URL="$DEFAULT_ASSET_BASE_URL"
-REGISTER_TOKEN=""
-AGENT_NAME="${HOSTNAME:-$(hostname)}"
-AGENT_TOKEN=""
-AGENT_URL=""
-DATA_DIR="./agent-data"
-AGENT_VERSION="1"
-AGENT_TAGS=""
-INSTALL_SYSTEMD="0"
-INSTALL_LAUNCHD="0"
-BINARY_URL=""
-SCRIPT_DIR="$(resolve_script_dir 2>/dev/null || true)"
-PLATFORM="$(detect_platform)"
-ARCH="$(detect_arch)"
-
-while [ $# -gt 0 ]; do
-    case "$1" in
-        --master-url) MASTER_URL="$2"; shift 2 ;;
-        --asset-base-url) ASSET_BASE_URL="$2"; shift 2 ;;
-        --register-token) REGISTER_TOKEN="$2"; shift 2 ;;
-        --agent-name) AGENT_NAME="$2"; shift 2 ;;
-        --agent-token) AGENT_TOKEN="$2"; shift 2 ;;
-        --agent-url) AGENT_URL="$2"; shift 2 ;;
-        --data-dir) DATA_DIR="$2"; shift 2 ;;
-        --version) AGENT_VERSION="$2"; shift 2 ;;
-        --tags) AGENT_TAGS="$2"; shift 2 ;;
-        --binary-url) BINARY_URL="$2"; shift 2 ;;
-        --install-systemd) INSTALL_SYSTEMD="1"; shift 1 ;;
-        --install-launchd) INSTALL_LAUNCHD="1"; shift 1 ;;
-        -h|--help) usage; exit 0 ;;
-        *) echo "Unknown argument: $1" >&2; usage >&2; exit 1 ;;
-    esac
-done
-
-[ -n "$REGISTER_TOKEN" ] || { echo "Missing --register-token" >&2; exit 1; }
-[ -n "$MASTER_URL" ] || {
-    echo "Missing --master-url and no embedded control-plane URL is available" >&2
-    exit 1
-}
-MASTER_URL="$(normalize_master_url "$MASTER_URL")"
-if ! is_valid_master_url "$MASTER_URL"; then
-    echo "Invalid --master-url: $MASTER_URL" >&2
-    echo "Expected format: http://host:port or https://host" >&2
-    exit 1
-fi
-[ "$INSTALL_SYSTEMD$INSTALL_LAUNCHD" != "11" ] || {
-    echo "Use either --install-systemd or --install-launchd, not both" >&2
-    exit 1
-}
-
-case "$PLATFORM" in
-    linux|darwin) ;;
-    *) echo "Unsupported platform for join-agent.sh: $PLATFORM" >&2; exit 1 ;;
-esac
-case "$ARCH" in
-    amd64|arm64) ;;
-    *) echo "Unsupported architecture for join-agent.sh: $ARCH" >&2; exit 1 ;;
-esac
-
-command -v curl >/dev/null 2>&1 || { echo "curl is required" >&2; exit 1; }
-
-ASSET_BASE_URL="$(trim_slash "$ASSET_BASE_URL")"
-AGENT_URL="$(trim_slash "$AGENT_URL")"
-AGENT_TOKEN="${AGENT_TOKEN:-$(generate_token)}"
-DATA_DIR="$(absolute_path "$DATA_DIR")"
-BIN_DIR="$DATA_DIR/bin"
-ENV_FILE="$DATA_DIR/agent.env"
-BIN_PATH="$BIN_DIR/nre-agent"
-BIN_TMP_PATH="$BIN_PATH.tmp.$$"
-ASSET_NAME="nre-agent-$PLATFORM-$ARCH"
-
-mkdir -p "$BIN_DIR"
-echo "[JOIN] Installing nre-agent to: $BIN_PATH"
-rm -f "$BIN_TMP_PATH"
-copy_or_download_binary "$ASSET_NAME" "$BIN_TMP_PATH"
-
-cat > "$ENV_FILE" <<EOF
+write_agent_env() {
+    env_file="$1"
+    cat > "$env_file" <<EOF
 NRE_MASTER_URL=$(shell_quote "$MASTER_URL")
 NRE_AGENT_NAME=$(shell_quote "$AGENT_NAME")
 NRE_AGENT_TOKEN=$(shell_quote "$AGENT_TOKEN")
 NRE_AGENT_URL=$(shell_quote "$AGENT_URL")
 NRE_AGENT_VERSION=$(shell_quote "$AGENT_VERSION")
 NRE_AGENT_TAGS=$(shell_quote "$AGENT_TAGS")
+NRE_AGENT_CAPABILITIES=$(shell_quote "$AGENT_CAPABILITIES")
+NRE_DATA_DIR=$(shell_quote "$DATA_DIR")
 EOF
-
-PAYLOAD=$(build_register_payload)
-
-echo "[JOIN] Registering Go agent to: $MASTER_URL/panel-api/agents/register"
-REGISTER_RESPONSE=$(curl -fsS \
-  -H "Content-Type: application/json" \
-  -H "X-Register-Token: $REGISTER_TOKEN" \
-  -H "X-Agent-Token: $AGENT_TOKEN" \
-  -d "$PAYLOAD" \
-  "$MASTER_URL/panel-api/agents/register")
-REGISTERED_AGENT_ID="$(extract_registered_agent_id "$REGISTER_RESPONSE")"
-[ -n "$REGISTERED_AGENT_ID" ] || {
-    echo "Registered agent id missing from register response" >&2
-    exit 1
 }
-printf 'NRE_AGENT_ID=%s\n' "$(shell_quote "$REGISTERED_AGENT_ID")" >> "$ENV_FILE"
 
-echo "[JOIN] Registered successfully: $REGISTER_RESPONSE"
-echo "[JOIN] Agent binary: $BIN_PATH"
-echo "[JOIN] Agent env: $ENV_FILE"
+register_agent() {
+    PAYLOAD=$(build_register_payload)
 
-if [ "$INSTALL_SYSTEMD" = "1" ]; then
+    echo "[JOIN] Registering Go agent to: $MASTER_URL/panel-api/agents/register"
+    REGISTER_RESPONSE=$(curl -fsS \
+      -H "Content-Type: application/json" \
+      -H "X-Register-Token: $REGISTER_TOKEN" \
+      -H "X-Agent-Token: $AGENT_TOKEN" \
+      -d "$PAYLOAD" \
+      "$MASTER_URL/panel-api/agents/register")
+    REGISTERED_AGENT_ID="$(extract_registered_agent_id "$REGISTER_RESPONSE")"
+    [ -n "$REGISTERED_AGENT_ID" ] || {
+        echo "Registered agent id missing from register response" >&2
+        exit 1
+    }
+    printf 'NRE_AGENT_ID=%s\n' "$(shell_quote "$REGISTERED_AGENT_ID")" >> "$ENV_FILE"
+    echo "[JOIN] Registered successfully: $REGISTER_RESPONSE"
+}
+
+install_systemd_service() {
     [ "$PLATFORM" = "linux" ] || { echo "--install-systemd is only supported on Linux" >&2; exit 1; }
     SUDO_BIN="$(require_root_or_sudo)" || {
         echo "Installing systemd services requires root or sudo" >&2
         exit 1
     }
     command -v systemctl >/dev/null 2>&1 || { echo "systemctl is required for --install-systemd" >&2; exit 1; }
+
     SERVICE_FILE="/etc/systemd/system/nginx-reverse-emby-agent.service"
     cat <<EOF | run_root_cmd tee "$SERVICE_FILE" >/dev/null
 [Unit]
@@ -359,12 +326,13 @@ EnvironmentFile=$ENV_FILE
 WorkingDirectory=$DATA_DIR
 ExecStart=$BIN_PATH
 Restart=always
-    RestartSec=5
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 EOF
     run_root_cmd systemctl daemon-reload
+
     SERVICE_EXISTS="0"
     SERVICE_WAS_ACTIVE="0"
     if service_exists; then
@@ -376,6 +344,7 @@ EOF
     if [ "$SERVICE_WAS_ACTIVE" = "1" ]; then
         run_root_cmd systemctl stop nginx-reverse-emby-agent.service
     fi
+
     run_root_cmd mv "$BIN_TMP_PATH" "$BIN_PATH"
     if [ "$SERVICE_EXISTS" = "1" ]; then
         run_root_cmd systemctl enable nginx-reverse-emby-agent.service
@@ -384,7 +353,9 @@ EOF
         run_root_cmd systemctl enable --now nginx-reverse-emby-agent.service
     fi
     echo "[JOIN] Installed and started systemd service: nginx-reverse-emby-agent.service"
-elif [ "$INSTALL_LAUNCHD" = "1" ]; then
+}
+
+install_launchd_service() {
     [ "$PLATFORM" = "darwin" ] || { echo "--install-launchd is only supported on macOS" >&2; exit 1; }
     command -v launchctl >/dev/null 2>&1 || { echo "launchctl is required for --install-launchd" >&2; exit 1; }
     LAUNCHD_DIR="$HOME/Library/LaunchAgents"
@@ -422,8 +393,472 @@ EOF
     launchctl unload "$SERVICE_FILE" >/dev/null 2>&1 || true
     launchctl load -w "$SERVICE_FILE"
     echo "[JOIN] Installed and loaded launchd agent: $SERVICE_LABEL"
-else
+}
+
+install_manual_runtime() {
     mv "$BIN_TMP_PATH" "$BIN_PATH"
     echo "[JOIN] Start command:"
     echo "  set -a && . $ENV_FILE && set +a && $BIN_PATH"
+}
+
+migrate_data_dir_contents() {
+    old_data_dir="$1"
+    new_data_dir="$2"
+
+    [ -d "$old_data_dir" ] || return 0
+    mkdir -p "$new_data_dir"
+    cp -Rp "$old_data_dir"/. "$new_data_dir"/
+    rm -rf "$old_data_dir"
+}
+
+load_existing_agent_env_if_present() {
+    env_file="$1"
+    [ -f "$env_file" ] || return 0
+
+    NRE_MASTER_URL=""
+    NRE_AGENT_NAME=""
+    NRE_AGENT_TOKEN=""
+    NRE_AGENT_URL=""
+    NRE_AGENT_VERSION=""
+    NRE_AGENT_TAGS=""
+    NRE_AGENT_CAPABILITIES=""
+    NRE_AGENT_ID=""
+
+    set -a
+    . "$env_file"
+    set +a
+
+    MASTER_URL="${MASTER_URL:-$NRE_MASTER_URL}"
+    AGENT_NAME="${AGENT_NAME:-$NRE_AGENT_NAME}"
+    AGENT_TOKEN="${AGENT_TOKEN:-$NRE_AGENT_TOKEN}"
+    AGENT_URL="${AGENT_URL:-$NRE_AGENT_URL}"
+    AGENT_VERSION="${AGENT_VERSION:-$NRE_AGENT_VERSION}"
+    AGENT_TAGS="${AGENT_TAGS:-$NRE_AGENT_TAGS}"
+    AGENT_CAPABILITIES="${AGENT_CAPABILITIES:-$NRE_AGENT_CAPABILITIES}"
+}
+
+systemd_unit_exists() {
+    unit_name="$1"
+    command -v systemctl >/dev/null 2>&1 || return 1
+    systemctl list-unit-files "$unit_name" --no-legend 2>/dev/null | grep -q "^$unit_name[[:space:]]"
+}
+
+disable_systemd_unit_if_present() {
+    unit_name="$1"
+    if systemd_unit_exists "$unit_name"; then
+        run_root_cmd systemctl disable --now "$unit_name"
+    fi
+}
+
+backup_legacy_unit() {
+    unit_name="$1"
+    unit_path="/etc/systemd/system/$unit_name"
+    backup_path="$DATA_DIR/$unit_name.bak"
+    if [ -f "$unit_path" ]; then
+        cp "$unit_path" "$backup_path"
+    fi
+}
+
+restore_legacy_units() {
+    restored=0
+    for bak in "$DATA_DIR"/*.bak; do
+        [ -f "$bak" ] || continue
+        unit_name="$(basename "$bak" .bak)"
+        unit_path="/etc/systemd/system/$unit_name"
+        run_root_cmd cp "$bak" "$unit_path"
+        run_root_cmd systemctl daemon-reload
+        run_root_cmd systemctl enable --now "$unit_name"
+        rm -f "$bak"
+        restored=1
+    done
+    if [ "$restored" -eq 1 ]; then
+        echo "[MIGRATE] Restored legacy agent services from backup"
+    fi
+}
+
+verify_systemd_service_active() {
+    attempts=0
+    while [ "$attempts" -lt 10 ]; do
+        if run_root_cmd systemctl is-active --quiet nginx-reverse-emby-agent.service; then
+            return 0
+        fi
+        attempts=$((attempts + 1))
+        sleep 1
+    done
+    return 1
+}
+
+verify_master_connectivity() {
+    attempts=0
+    while [ "$attempts" -lt 6 ]; do
+        if curl -fsS -o /dev/null "$MASTER_URL/panel-api/health" 2>/dev/null; then
+            return 0
+        fi
+        attempts=$((attempts + 1))
+        sleep 5
+    done
+    return 1
+}
+
+list_legacy_cert_domains() {
+    tmp_domains=$(mktemp)
+    if [ -d "$OLD_DIRECT_CERT_DIR" ]; then
+        for cert_dir in "$OLD_DIRECT_CERT_DIR"/*; do
+            [ -d "$cert_dir" ] || continue
+            basename -- "$cert_dir" >> "$tmp_domains"
+        done
+    fi
+    if [ -f "$OLD_MANAGED_CERTS_JSON" ]; then
+        grep -o '"domain"[[:space:]]*:[[:space:]]*"[^"]*"' "$OLD_MANAGED_CERTS_JSON" 2>/dev/null | \
+            sed 's/.*"domain"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/' >> "$tmp_domains" || true
+    fi
+    if [ -s "$tmp_domains" ]; then
+        sort -u "$tmp_domains"
+    fi
+    rm -f "$tmp_domains"
+}
+
+cleanup_legacy_acme() {
+    [ -x "$OLD_ACME_HOME/acme.sh" ] || return 0
+
+    tmp_domains=$(mktemp)
+    list_legacy_cert_domains > "$tmp_domains"
+    [ -s "$tmp_domains" ] || {
+        rm -f "$tmp_domains"
+        return 0
+    }
+
+    while IFS= read -r cert_domain; do
+        [ -n "$cert_domain" ] || continue
+        echo "[MIGRATE] Removing legacy acme record: $cert_domain"
+        if "$OLD_ACME_HOME/acme.sh" --home "$OLD_ACME_HOME" --config-home "$OLD_ACME_HOME" --cert-home "$OLD_ACME_HOME" --remove -d "$cert_domain" --ecc >/dev/null 2>&1; then
+            continue
+        fi
+        if "$OLD_ACME_HOME/acme.sh" --home "$OLD_ACME_HOME" --config-home "$OLD_ACME_HOME" --cert-home "$OLD_ACME_HOME" --remove -d "$cert_domain" >/dev/null 2>&1; then
+            continue
+        fi
+        rm -f "$tmp_domains"
+        echo "failed to remove legacy acme record: $cert_domain" >&2
+        exit 1
+    done < "$tmp_domains"
+    rm -f "$tmp_domains"
+}
+
+cleanup_legacy_nginx_runtime() {
+    if command -v systemctl >/dev/null 2>&1; then
+        run_root_cmd systemctl disable --now nginx.service >/dev/null 2>&1 || true
+    fi
+    run_root_cmd rm -f /etc/nginx/conf.d/zz-nginx-reverse-emby-agent.include.conf
+    run_root_cmd rm -f /etc/nginx/conf.d/zz-nginx-reverse-emby-agent.globals.conf
+    run_root_cmd rm -f /etc/nginx/conf.d/zz-nginx-reverse-emby-agent.status.conf
+    run_root_cmd rm -rf /etc/nginx/conf.d/dynamic
+    run_root_cmd rm -rf /etc/nginx/stream-conf.d/dynamic
+}
+
+cleanup_legacy_runtime() {
+    cleanup_legacy_acme
+
+    disable_systemd_unit_if_present nginx-reverse-emby-agent-renew.service
+    if [ -f /etc/systemd/system/nginx-reverse-emby-agent-renew.service ]; then
+        run_root_cmd rm -f /etc/systemd/system/nginx-reverse-emby-agent-renew.service
+        run_root_cmd systemctl daemon-reload
+    fi
+    cleanup_legacy_nginx_runtime
+    run_root_cmd rm -rf "$OLD_SOURCE_DIR"
+    rm -f "$DATA_DIR"/*.bak
+}
+
+cleanup_local_agent_runtime() {
+    if [ "$PLATFORM" = "linux" ]; then
+        SUDO_BIN="$(require_root_or_sudo)" || {
+            echo "Uninstalling systemd services requires root or sudo" >&2
+            exit 1
+        }
+        disable_systemd_unit_if_present nginx-reverse-emby-agent.service
+        disable_systemd_unit_if_present nginx-reverse-emby-agent-renew.service
+        run_root_cmd rm -f /etc/systemd/system/nginx-reverse-emby-agent.service
+        run_root_cmd rm -f /etc/systemd/system/nginx-reverse-emby-agent-renew.service
+        if command -v systemctl >/dev/null 2>&1; then
+            run_root_cmd systemctl daemon-reload
+        fi
+        run_root_cmd rm -rf "$DATA_DIR"
+        if [ -n "${SOURCE_DIR:-}" ]; then
+            SOURCE_DIR="$(absolute_path "$SOURCE_DIR")"
+            run_root_cmd rm -rf "$SOURCE_DIR"
+        fi
+    elif [ "$PLATFORM" = "darwin" ]; then
+        SERVICE_FILE="$HOME/Library/LaunchAgents/com.nginx-reverse-emby.agent.plist"
+        if [ -f "$SERVICE_FILE" ]; then
+            launchctl unload "$SERVICE_FILE" >/dev/null 2>&1 || true
+            rm -f "$SERVICE_FILE"
+        fi
+        rm -rf "$DATA_DIR"
+        if [ -n "${SOURCE_DIR:-}" ]; then
+            SOURCE_DIR="$(absolute_path "$SOURCE_DIR")"
+            rm -rf "$SOURCE_DIR"
+        fi
+    else
+        rm -rf "$DATA_DIR"
+        if [ -n "${SOURCE_DIR:-}" ]; then
+            SOURCE_DIR="$(absolute_path "$SOURCE_DIR")"
+            rm -rf "$SOURCE_DIR"
+        fi
+    fi
+    cleanup_legacy_nginx_runtime
+}
+
+load_legacy_runtime() {
+    OLD_SOURCE_DIR="$(absolute_path "$SOURCE_DIR")"
+    OLD_ENV_FILE="$OLD_SOURCE_DIR/agent.env"
+    OLD_MANAGED_CERTS_JSON="$OLD_SOURCE_DIR/managed_certificates.json"
+
+    [ -f "$OLD_ENV_FILE" ] || {
+        echo "legacy agent env not found: $OLD_ENV_FILE" >&2
+        exit 1
+    }
+
+    set -a
+    . "$OLD_ENV_FILE"
+    set +a
+
+    OLD_DIRECT_CERT_DIR="${DIRECT_CERT_DIR:-$OLD_SOURCE_DIR/certs}"
+    OLD_ACME_HOME="${ACME_HOME:-$OLD_SOURCE_DIR/.acme.sh}"
+
+    MASTER_URL="${MASTER_URL:-${MASTER_PANEL_URL:-}}"
+    AGENT_NAME="${AGENT_NAME:-${NRE_AGENT_NAME:-${AGENT_NAME:-}}}"
+    AGENT_TOKEN="${AGENT_TOKEN:-${NRE_AGENT_TOKEN:-${AGENT_TOKEN:-}}}"
+    AGENT_URL="${AGENT_URL:-${NRE_AGENT_URL:-${AGENT_PUBLIC_URL:-}}}"
+    AGENT_VERSION="${AGENT_VERSION:-${NRE_AGENT_VERSION:-${AGENT_VERSION:-}}}"
+    AGENT_TAGS="${AGENT_TAGS:-${NRE_AGENT_TAGS:-${AGENT_TAGS:-}}}"
+    AGENT_CAPABILITIES="${AGENT_CAPABILITIES:-${AGENT_CAPABILITIES:-http_rules,local_acme,cert_install,l4}}"
+}
+
+run_join() {
+    [ "$INSTALL_SYSTEMD$INSTALL_LAUNCHD" != "11" ] || {
+        echo "Use either --install-systemd or --install-launchd, not both" >&2
+        exit 1
+    }
+
+    case "$PLATFORM" in
+        linux|darwin) ;;
+        *) echo "Unsupported platform for join-agent.sh: $PLATFORM" >&2; exit 1 ;;
+    esac
+    case "$ARCH" in
+        amd64|arm64) ;;
+        *) echo "Unsupported architecture for join-agent.sh: $ARCH" >&2; exit 1 ;;
+    esac
+
+    command -v curl >/dev/null 2>&1 || { echo "curl is required" >&2; exit 1; }
+
+    if [ "$INSTALL_SYSTEMD" = "1" ] && [ "$USER_DATA_DIR_DEFAULT" = "1" ]; then
+        OLD_DATA_DIR="$(absolute_path "./agent-data")"
+    elif [ "$USER_DATA_DIR_DEFAULT" = "1" ]; then
+        DATA_DIR="$HOME/.nre-agent"
+    fi
+
+    DATA_DIR="$(absolute_path "$DATA_DIR")"
+    if [ "${OLD_DATA_DIR:-}" ] && [ ! -f "$DATA_DIR/agent.env" ] && [ -f "$OLD_DATA_DIR/agent.env" ]; then
+        echo "[JOIN] Migrating agent data from $OLD_DATA_DIR to $DATA_DIR"
+        migrate_data_dir_contents "$OLD_DATA_DIR" "$DATA_DIR"
+    fi
+
+    BIN_DIR="$DATA_DIR/bin"
+    ENV_FILE="$DATA_DIR/agent.env"
+    BIN_PATH="$BIN_DIR/nre-agent"
+    BIN_TMP_PATH="$BIN_PATH.tmp.$$"
+    ASSET_NAME="nre-agent-$PLATFORM-$ARCH"
+
+    load_existing_agent_env_if_present "$ENV_FILE"
+
+    AGENT_NAME="${AGENT_NAME:-${HOSTNAME:-$(hostname)}}"
+    AGENT_VERSION="${AGENT_VERSION:-1}"
+
+    [ -n "$REGISTER_TOKEN" ] || { echo "Missing --register-token" >&2; exit 1; }
+    [ -n "$MASTER_URL" ] || {
+        echo "Missing --master-url and no embedded control-plane URL is available" >&2
+        exit 1
+    }
+    MASTER_URL="$(normalize_master_url "$MASTER_URL")"
+    if ! is_valid_master_url "$MASTER_URL"; then
+        echo "Invalid --master-url: $MASTER_URL" >&2
+        echo "Expected format: http://host:port or https://host" >&2
+        exit 1
+    fi
+
+    ASSET_BASE_URL="$(trim_slash "$ASSET_BASE_URL")"
+    AGENT_URL="$(trim_slash "$AGENT_URL")"
+    AGENT_TOKEN="${AGENT_TOKEN:-$(generate_token)}"
+
+    mkdir -p "$BIN_DIR"
+    echo "[JOIN] Installing nre-agent to: $BIN_PATH"
+    rm -f "$BIN_TMP_PATH"
+    copy_or_download_binary "$ASSET_NAME" "$BIN_TMP_PATH"
+    write_agent_env "$ENV_FILE"
+    register_agent
+
+    echo "[JOIN] Agent binary: $BIN_PATH"
+    echo "[JOIN] Agent env: $ENV_FILE"
+
+    if [ "$INSTALL_SYSTEMD" = "1" ]; then
+        install_systemd_service
+    elif [ "$INSTALL_LAUNCHD" = "1" ]; then
+        install_launchd_service
+    else
+        install_manual_runtime
+    fi
+}
+
+run_migrate_from_main() {
+    [ "$PLATFORM" = "linux" ] || { echo "migrate-from-main is only supported on Linux" >&2; exit 1; }
+    INSTALL_LAUNCHD="0"
+    if [ "$INSTALL_SYSTEMD" != "1" ]; then
+        INSTALL_SYSTEMD="1"
+    fi
+
+    load_legacy_runtime
+
+    AGENT_NAME="${AGENT_NAME:-${HOSTNAME:-$(hostname)}}"
+    AGENT_VERSION="${AGENT_VERSION:-1}"
+
+    [ -n "$REGISTER_TOKEN" ] || { echo "Missing --register-token" >&2; exit 1; }
+    [ -n "$MASTER_URL" ] || {
+        echo "Missing --master-url and legacy agent env does not provide MASTER_PANEL_URL" >&2
+        exit 1
+    }
+    [ -n "$AGENT_TOKEN" ] || {
+        echo "legacy agent token missing" >&2
+        exit 1
+    }
+
+    MASTER_URL="$(normalize_master_url "$MASTER_URL")"
+    if ! is_valid_master_url "$MASTER_URL"; then
+        echo "Invalid --master-url: $MASTER_URL" >&2
+        echo "Expected format: http://host:port or https://host" >&2
+        exit 1
+    fi
+
+    command -v curl >/dev/null 2>&1 || { echo "curl is required" >&2; exit 1; }
+    command -v systemctl >/dev/null 2>&1 || { echo "systemctl is required for migrate-from-main" >&2; exit 1; }
+
+    DATA_DIR="$(absolute_path "$DATA_DIR")"
+    if [ "$DATA_DIR" = "$OLD_SOURCE_DIR" ]; then
+        echo "--data-dir must not be the same as --source-dir during migration" >&2
+        exit 1
+    fi
+
+    ASSET_BASE_URL="$(trim_slash "$ASSET_BASE_URL")"
+    AGENT_URL="$(trim_slash "$AGENT_URL")"
+    BIN_DIR="$DATA_DIR/bin"
+    ENV_FILE="$DATA_DIR/agent.env"
+    BIN_PATH="$BIN_DIR/nre-agent"
+    BIN_TMP_PATH="$BIN_PATH.tmp.$$"
+    ASSET_NAME="nre-agent-$PLATFORM-$ARCH"
+
+    mkdir -p "$BIN_DIR"
+    echo "[MIGRATE] Preparing go-agent install: $BIN_PATH"
+    rm -f "$BIN_TMP_PATH"
+    copy_or_download_binary "$ASSET_NAME" "$BIN_TMP_PATH"
+    write_agent_env "$ENV_FILE"
+
+    SUDO_BIN="$(require_root_or_sudo)" || {
+        echo "Migrating systemd services requires root or sudo" >&2
+        exit 1
+    }
+
+    register_agent
+
+    echo "[MIGRATE] Backing up legacy unit files"
+    backup_legacy_unit nginx-reverse-emby-agent.service
+    backup_legacy_unit nginx-reverse-emby-agent-renew.service
+
+    echo "[MIGRATE] Stopping legacy lightweight Agent services"
+    disable_systemd_unit_if_present nginx-reverse-emby-agent.service
+    disable_systemd_unit_if_present nginx-reverse-emby-agent-renew.service
+
+    install_systemd_service
+
+    if ! verify_systemd_service_active; then
+        echo "[MIGRATE] new go-agent service failed to become active, restoring legacy services" >&2
+        disable_systemd_unit_if_present nginx-reverse-emby-agent.service
+        restore_legacy_units
+        exit 1
+    fi
+
+    if ! verify_master_connectivity; then
+        echo "[MIGRATE] master is not reachable at $MASTER_URL, restoring legacy services" >&2
+        disable_systemd_unit_if_present nginx-reverse-emby-agent.service
+        restore_legacy_units
+        exit 1
+    fi
+
+    echo "[MIGRATE] New go-agent service is active and master is reachable, cleaning legacy runtime"
+    cleanup_legacy_runtime
+}
+
+run_uninstall_agent() {
+    if [ "$USER_DATA_DIR_DEFAULT" = "1" ]; then
+        if [ -d "/var/lib/nre-agent" ]; then
+            DATA_DIR="/var/lib/nre-agent"
+        elif [ -n "${HOME:-}" ] && [ -d "$HOME/.nre-agent" ]; then
+            DATA_DIR="$HOME/.nre-agent"
+        fi
+    fi
+    DATA_DIR="$(absolute_path "$DATA_DIR")"
+    cleanup_local_agent_runtime
+    echo "[UNINSTALL] Local agent runtime removed. Delete the agent record from the control panel if it is no longer needed."
+}
+
+COMMAND="join"
+MASTER_URL="$DEFAULT_MASTER_URL"
+ASSET_BASE_URL="$DEFAULT_ASSET_BASE_URL"
+REGISTER_TOKEN=""
+AGENT_NAME=""
+AGENT_TOKEN=""
+AGENT_URL=""
+DATA_DIR="/var/lib/nre-agent"
+USER_DATA_DIR_DEFAULT="1"
+AGENT_VERSION=""
+AGENT_TAGS=""
+AGENT_CAPABILITIES=""
+INSTALL_SYSTEMD="0"
+INSTALL_LAUNCHD="0"
+BINARY_URL=""
+SOURCE_DIR="/opt/nginx-reverse-emby-agent"
+SCRIPT_DIR="$(resolve_script_dir 2>/dev/null || true)"
+PLATFORM="$(detect_platform)"
+ARCH="$(detect_arch)"
+
+if [ $# -gt 0 ] && [ "$1" = "migrate-from-main" ]; then
+    COMMAND="migrate-from-main"
+    shift 1
+elif [ $# -gt 0 ] && [ "$1" = "uninstall-agent" ]; then
+    COMMAND="uninstall-agent"
+    shift 1
 fi
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --master-url) MASTER_URL="$2"; shift 2 ;;
+        --asset-base-url) ASSET_BASE_URL="$2"; shift 2 ;;
+        --register-token) REGISTER_TOKEN="$2"; shift 2 ;;
+        --agent-name) AGENT_NAME="$2"; shift 2 ;;
+        --agent-token) AGENT_TOKEN="$2"; shift 2 ;;
+        --agent-url) AGENT_URL="$2"; shift 2 ;;
+        --data-dir) DATA_DIR="$2"; USER_DATA_DIR_DEFAULT="0"; shift 2 ;;
+        --version) AGENT_VERSION="$2"; shift 2 ;;
+        --tags) AGENT_TAGS="$2"; shift 2 ;;
+        --binary-url) BINARY_URL="$2"; shift 2 ;;
+        --source-dir) SOURCE_DIR="$2"; shift 2 ;;
+        --install-systemd) INSTALL_SYSTEMD="1"; shift 1 ;;
+        --install-launchd) INSTALL_LAUNCHD="1"; shift 1 ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "Unknown argument: $1" >&2; usage >&2; exit 1 ;;
+    esac
+done
+
+case "$COMMAND" in
+    join) run_join ;;
+    migrate-from-main) run_migrate_from_main ;;
+    uninstall-agent) run_uninstall_agent ;;
+    *) echo "Unknown command: $COMMAND" >&2; exit 1 ;;
+esac
