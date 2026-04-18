@@ -37,6 +37,12 @@ type backupService struct {
 	now   func() time.Time
 }
 
+type modifiedAgentRevisions map[string]int
+
+type importRevisionAllocator struct {
+	nextByAgent map[string]int
+}
+
 type backupStore interface {
 	storage.Store
 	DeleteAgent(context.Context, string) error
@@ -201,21 +207,30 @@ func (s *backupService) importBundle(ctx context.Context, bundle BackupBundle) (
 		}
 	}
 
+	var localState storage.LocalAgentStateRow
+	if s.cfg.EnableLocalAgent {
+		localState, err = s.store.LoadLocalAgentState(ctx)
+		if err != nil {
+			return BackupImportResult{}, err
+		}
+	}
+	revisionAllocator := newImportRevisionAllocator(s.cfg, agentRows, localState)
+	modifiedAgents := modifiedAgentRevisions{}
+
 	certRows, err := s.store.ListManagedCertificates(ctx)
 	if err != nil {
 		return BackupImportResult{}, err
 	}
-	certIDMap, err := s.importCertificates(ctx, certRows, bundle.Certificates, bundle.Materials, agentIDMap, &result)
+	certIDMap, err := s.importCertificates(ctx, certRows, bundle.Certificates, bundle.Materials, agentIDMap, &result, modifiedAgents, revisionAllocator)
 	if err != nil {
 		return BackupImportResult{}, err
 	}
 
-	modifiedAgents := map[string]bool{}
 	listenerRows, err := s.store.ListRelayListeners(ctx, "")
 	if err != nil {
 		return BackupImportResult{}, err
 	}
-	listenerIDMap, err := s.importRelayListeners(ctx, listenerRows, bundle.RelayListeners, agentIDMap, certIDMap, &result, modifiedAgents)
+	listenerIDMap, err := s.importRelayListeners(ctx, listenerRows, bundle.RelayListeners, agentIDMap, certIDMap, &result, modifiedAgents, revisionAllocator)
 	if err != nil {
 		return BackupImportResult{}, err
 	}
@@ -228,10 +243,10 @@ func (s *backupService) importBundle(ctx context.Context, bundle BackupBundle) (
 		return BackupImportResult{}, err
 	}
 
-	if err := s.importHTTPRules(ctx, bundle.HTTPRules, agentIDMap, listenerIDMap, &result, modifiedAgents); err != nil {
+	if err := s.importHTTPRules(ctx, bundle.HTTPRules, agentIDMap, listenerIDMap, &result, modifiedAgents, revisionAllocator); err != nil {
 		return BackupImportResult{}, err
 	}
-	if err := s.importL4Rules(ctx, bundle.L4Rules, agentIDMap, listenerIDMap, &result, modifiedAgents); err != nil {
+	if err := s.importL4Rules(ctx, bundle.L4Rules, agentIDMap, listenerIDMap, &result, modifiedAgents, revisionAllocator); err != nil {
 		return BackupImportResult{}, err
 	}
 	if err := s.bumpModifiedAgents(ctx, modifiedAgents); err != nil {
@@ -241,7 +256,7 @@ func (s *backupService) importBundle(ctx context.Context, bundle BackupBundle) (
 	return result, nil
 }
 
-func (s *backupService) bumpModifiedAgents(ctx context.Context, modifiedAgents map[string]bool) error {
+func (s *backupService) bumpModifiedAgents(ctx context.Context, modifiedAgents modifiedAgentRevisions) error {
 	rows, err := s.store.ListAgents(ctx)
 	if err != nil {
 		return err
@@ -251,7 +266,7 @@ func (s *backupService) bumpModifiedAgents(ctx context.Context, modifiedAgents m
 		rowsByID[row.ID] = row
 	}
 
-	for agentID := range modifiedAgents {
+	for agentID, importedRevision := range modifiedAgents {
 		if s.cfg.EnableLocalAgent && agentID == s.cfg.LocalAgentID {
 			continue
 		}
@@ -259,8 +274,12 @@ func (s *backupService) bumpModifiedAgents(ctx context.Context, modifiedAgents m
 		if !ok {
 			continue
 		}
-		if row.DesiredRevision < row.CurrentRevision+1 {
-			row.DesiredRevision = row.CurrentRevision + 1
+		nextDesired := row.CurrentRevision + 1
+		if importedRevision > nextDesired {
+			nextDesired = importedRevision
+		}
+		if row.DesiredRevision < nextDesired {
+			row.DesiredRevision = nextDesired
 			if err := s.store.SaveAgent(ctx, row); err != nil {
 				return err
 			}
@@ -339,18 +358,22 @@ func (s *backupService) importAgents(ctx context.Context, existing []storage.Age
 	return agentIDMap, nil
 }
 
-func (s *backupService) importCertificates(ctx context.Context, existing []storage.ManagedCertificateRow, incoming []BackupCertificate, materials []BackupCertificateFile, agentIDMap map[string]string, result *BackupImportResult) (map[int]int, error) {
+func (s *backupService) importCertificates(ctx context.Context, existing []storage.ManagedCertificateRow, incoming []BackupCertificate, materials []BackupCertificateFile, agentIDMap map[string]string, result *BackupImportResult, modifiedAgents modifiedAgentRevisions, revisions *importRevisionAllocator) (map[int]int, error) {
 	certSvc := newCertificateServiceWithRenewal(s.cfg, s.store, nil)
 	certIDMap := map[int]int{}
 	existingByDomain := make(map[string]ManagedCertificate, len(existing))
 	usedIDs := map[int]struct{}{}
 	maxID := 0
+	maxRevision := 0
 	for _, row := range existing {
 		cert := managedCertificateFromRow(row)
 		existingByDomain[cert.Domain] = cert
 		usedIDs[cert.ID] = struct{}{}
 		if cert.ID > maxID {
 			maxID = cert.ID
+		}
+		if row.Revision > maxRevision {
+			maxRevision = row.Revision
 		}
 		certIDMap[cert.ID] = cert.ID
 	}
@@ -434,6 +457,13 @@ func (s *backupService) importCertificates(ctx context.Context, existing []stora
 		usedIDs[assignedID] = struct{}{}
 		certIDMap[item.ID] = assignedID
 		normalized.ID = assignedID
+		normalized.Revision = revisions.allocateForTargets(targetIDs, maxRevision)
+		if normalized.Revision > maxRevision {
+			maxRevision = normalized.Revision
+		}
+		for _, targetID := range targetIDs {
+			recordModifiedAgentRevision(modifiedAgents, targetID, normalized.Revision)
+		}
 		if hasMaterial {
 			normalized.MaterialHash = hashManagedCertificateMaterial(strings.TrimSpace(material.CertPEM), strings.TrimSpace(material.KeyPEM))
 			pendingMaterials = append(pendingMaterials, BackupCertificateFile{
@@ -464,10 +494,11 @@ func (s *backupService) importCertificates(ctx context.Context, existing []stora
 	return certIDMap, nil
 }
 
-func (s *backupService) importRelayListeners(ctx context.Context, existing []storage.RelayListenerRow, incoming []BackupRelayListener, agentIDMap map[string]string, certIDMap map[int]int, result *BackupImportResult, modifiedAgents map[string]bool) (map[int]int, error) {
+func (s *backupService) importRelayListeners(ctx context.Context, existing []storage.RelayListenerRow, incoming []BackupRelayListener, agentIDMap map[string]string, certIDMap map[int]int, result *BackupImportResult, modifiedAgents modifiedAgentRevisions, revisions *importRevisionAllocator) (map[int]int, error) {
 	listenerIDMap := map[int]int{}
 	usedIDs := map[int]struct{}{}
 	maxID := 0
+	maxRevisionByAgent := map[string]int{}
 	grouped := map[string][]storage.RelayListenerRow{}
 	conflictIndex := map[string]RelayListener{}
 
@@ -479,6 +510,9 @@ func (s *backupService) importRelayListeners(ctx context.Context, existing []sto
 		usedIDs[listener.ID] = struct{}{}
 		if listener.ID > maxID {
 			maxID = listener.ID
+		}
+		if row.Revision > maxRevisionByAgent[row.AgentID] {
+			maxRevisionByAgent[row.AgentID] = row.Revision
 		}
 	}
 
@@ -526,8 +560,13 @@ func (s *backupService) importRelayListeners(ctx context.Context, existing []sto
 		usedIDs[assignedID] = struct{}{}
 		listenerIDMap[item.ID] = assignedID
 		normalized.ID = assignedID
+		normalized.Revision = revisions.allocateForAgent(resolvedAgentID, maxRevisionByAgent[resolvedAgentID])
+		if normalized.Revision > maxRevisionByAgent[resolvedAgentID] {
+			maxRevisionByAgent[resolvedAgentID] = normalized.Revision
+		}
 		conflictIndex[conflictKey] = normalized
 		grouped[resolvedAgentID] = append(grouped[resolvedAgentID], relayListenerToRow(normalized))
+		recordModifiedAgentRevision(modifiedAgents, resolvedAgentID, normalized.Revision)
 		result.addImported("relay_listener", conflictKey)
 	}
 
@@ -542,7 +581,6 @@ func (s *backupService) importRelayListeners(ctx context.Context, existing []sto
 		if err := s.store.SaveRelayListeners(ctx, agentID, rows); err != nil {
 			return nil, err
 		}
-		modifiedAgents[agentID] = true
 	}
 	return listenerIDMap, nil
 }
@@ -587,7 +625,7 @@ func (s *backupService) importVersionPolicies(ctx context.Context, existing []st
 	return nil
 }
 
-func (s *backupService) importHTTPRules(ctx context.Context, incoming []BackupHTTPRule, agentIDMap map[string]string, listenerIDMap map[int]int, result *BackupImportResult, modifiedAgents map[string]bool) error {
+func (s *backupService) importHTTPRules(ctx context.Context, incoming []BackupHTTPRule, agentIDMap map[string]string, listenerIDMap map[int]int, result *BackupImportResult, modifiedAgents modifiedAgentRevisions, revisions *importRevisionAllocator) error {
 	ruleSvc := &ruleService{cfg: s.cfg, store: s.store}
 	knownAgentIDs, err := allKnownAgentIDs(ctx, s.cfg, s.store)
 	if err != nil {
@@ -600,6 +638,7 @@ func (s *backupService) importHTTPRules(ctx context.Context, incoming []BackupHT
 	conflictSet := map[string]struct{}{}
 	grouped := map[string][]storage.HTTPRuleRow{}
 	maxIDs := map[string]int{}
+	maxRevisionByAgent := map[string]int{}
 	usedIDs := map[string]map[int]struct{}{}
 
 	for _, row := range existingRules {
@@ -613,6 +652,9 @@ func (s *backupService) importHTTPRules(ctx context.Context, incoming []BackupHT
 			usedIDs[row.AgentID] = map[int]struct{}{}
 		}
 		usedIDs[row.AgentID][row.ID] = struct{}{}
+		if row.Revision > maxRevisionByAgent[row.AgentID] {
+			maxRevisionByAgent[row.AgentID] = row.Revision
+		}
 	}
 
 	for _, item := range incoming {
@@ -654,8 +696,13 @@ func (s *backupService) importHTTPRules(ctx context.Context, incoming []BackupHT
 		}
 		usedIDs[resolvedAgentID][assignedID] = struct{}{}
 		normalized.ID = assignedID
+		normalized.Revision = revisions.allocateForAgent(resolvedAgentID, maxRevisionByAgent[resolvedAgentID])
+		if normalized.Revision > maxRevisionByAgent[resolvedAgentID] {
+			maxRevisionByAgent[resolvedAgentID] = normalized.Revision
+		}
 		grouped[resolvedAgentID] = append(grouped[resolvedAgentID], httpRuleToRow(normalized))
 		conflictSet[key] = struct{}{}
+		recordModifiedAgentRevision(modifiedAgents, resolvedAgentID, normalized.Revision)
 		result.addImported("http_rule", key)
 	}
 
@@ -670,12 +717,11 @@ func (s *backupService) importHTTPRules(ctx context.Context, incoming []BackupHT
 		if err := s.store.SaveHTTPRules(ctx, agentID, rows); err != nil {
 			return err
 		}
-		modifiedAgents[agentID] = true
 	}
 	return nil
 }
 
-func (s *backupService) importL4Rules(ctx context.Context, incoming []BackupL4Rule, agentIDMap map[string]string, listenerIDMap map[int]int, result *BackupImportResult, modifiedAgents map[string]bool) error {
+func (s *backupService) importL4Rules(ctx context.Context, incoming []BackupL4Rule, agentIDMap map[string]string, listenerIDMap map[int]int, result *BackupImportResult, modifiedAgents modifiedAgentRevisions, revisions *importRevisionAllocator) error {
 	l4Svc := &l4Service{cfg: s.cfg, store: s.store}
 	knownAgentIDs, err := allKnownAgentIDs(ctx, s.cfg, s.store)
 	if err != nil {
@@ -688,6 +734,7 @@ func (s *backupService) importL4Rules(ctx context.Context, incoming []BackupL4Ru
 	conflictSet := map[string]struct{}{}
 	grouped := map[string][]storage.L4RuleRow{}
 	maxIDs := map[string]int{}
+	maxRevisionByAgent := map[string]int{}
 	usedIDs := map[string]map[int]struct{}{}
 
 	for _, row := range existingRules {
@@ -701,6 +748,9 @@ func (s *backupService) importL4Rules(ctx context.Context, incoming []BackupL4Ru
 			usedIDs[row.AgentID] = map[int]struct{}{}
 		}
 		usedIDs[row.AgentID][row.ID] = struct{}{}
+		if row.Revision > maxRevisionByAgent[row.AgentID] {
+			maxRevisionByAgent[row.AgentID] = row.Revision
+		}
 	}
 
 	for _, item := range incoming {
@@ -746,8 +796,13 @@ func (s *backupService) importL4Rules(ctx context.Context, incoming []BackupL4Ru
 		}
 		usedIDs[resolvedAgentID][assignedID] = struct{}{}
 		normalized.ID = assignedID
+		normalized.Revision = revisions.allocateForAgent(resolvedAgentID, maxRevisionByAgent[resolvedAgentID])
+		if normalized.Revision > maxRevisionByAgent[resolvedAgentID] {
+			maxRevisionByAgent[resolvedAgentID] = normalized.Revision
+		}
 		grouped[resolvedAgentID] = append(grouped[resolvedAgentID], l4RuleToRow(normalized))
 		conflictSet[key] = struct{}{}
+		recordModifiedAgentRevision(modifiedAgents, resolvedAgentID, normalized.Revision)
 		result.addImported("l4_rule", key)
 	}
 
@@ -762,9 +817,64 @@ func (s *backupService) importL4Rules(ctx context.Context, incoming []BackupL4Ru
 		if err := s.store.SaveL4Rules(ctx, agentID, rows); err != nil {
 			return err
 		}
-		modifiedAgents[agentID] = true
 	}
 	return nil
+}
+
+func newImportRevisionAllocator(cfg config.Config, agentRows []storage.AgentRow, localState storage.LocalAgentStateRow) *importRevisionAllocator {
+	nextByAgent := make(map[string]int, len(agentRows)+1)
+	for _, row := range agentRows {
+		next := row.CurrentRevision
+		if row.DesiredRevision > next {
+			next = row.DesiredRevision
+		}
+		nextByAgent[row.ID] = next + 1
+	}
+	if cfg.EnableLocalAgent {
+		next := localState.CurrentRevision
+		if localState.DesiredRevision > next {
+			next = localState.DesiredRevision
+		}
+		nextByAgent[cfg.LocalAgentID] = next + 1
+	}
+	return &importRevisionAllocator{nextByAgent: nextByAgent}
+}
+
+func (a *importRevisionAllocator) allocateForAgent(agentID string, maxExistingRevision int) int {
+	next := maxExistingRevision + 1
+	if a != nil && a.nextByAgent[agentID] > next {
+		next = a.nextByAgent[agentID]
+	}
+	if a != nil {
+		a.nextByAgent[agentID] = next + 1
+	}
+	return next
+}
+
+func (a *importRevisionAllocator) allocateForTargets(agentIDs []string, maxExistingRevision int) int {
+	next := maxExistingRevision + 1
+	if a != nil {
+		for _, agentID := range agentIDs {
+			if a.nextByAgent[agentID] > next {
+				next = a.nextByAgent[agentID]
+			}
+		}
+		for _, agentID := range agentIDs {
+			if a.nextByAgent[agentID] < next+1 {
+				a.nextByAgent[agentID] = next + 1
+			}
+		}
+	}
+	return next
+}
+
+func recordModifiedAgentRevision(modifiedAgents modifiedAgentRevisions, agentID string, revision int) {
+	if revision <= 0 {
+		return
+	}
+	if modifiedAgents[agentID] < revision {
+		modifiedAgents[agentID] = revision
+	}
 }
 
 func (s *backupService) listAllHTTPRules(ctx context.Context, agentIDs []string) ([]storage.HTTPRuleRow, error) {

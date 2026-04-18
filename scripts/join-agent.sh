@@ -531,10 +531,11 @@ cleanup_legacy_acme() {
     while IFS= read -r cert_domain; do
         [ -n "$cert_domain" ] || continue
         echo "[MIGRATE] Removing legacy acme record: $cert_domain"
-        if "$OLD_ACME_HOME/acme.sh" --home "$OLD_ACME_HOME" --config-home "$OLD_ACME_HOME" --cert-home "$OLD_ACME_HOME" --remove -d "$cert_domain" --ecc >/dev/null 2>&1; then
+        acme_domain="$(normalize_legacy_acme_domain "$cert_domain")"
+        if "$OLD_ACME_HOME/acme.sh" --home "$OLD_ACME_HOME" --config-home "$OLD_ACME_HOME" --cert-home "$OLD_ACME_HOME" --remove -d "$acme_domain" --ecc >/dev/null 2>&1; then
             continue
         fi
-        if "$OLD_ACME_HOME/acme.sh" --home "$OLD_ACME_HOME" --config-home "$OLD_ACME_HOME" --cert-home "$OLD_ACME_HOME" --remove -d "$cert_domain" >/dev/null 2>&1; then
+        if "$OLD_ACME_HOME/acme.sh" --home "$OLD_ACME_HOME" --config-home "$OLD_ACME_HOME" --cert-home "$OLD_ACME_HOME" --remove -d "$acme_domain" >/dev/null 2>&1; then
             continue
         fi
         rm -f "$tmp_domains"
@@ -542,6 +543,13 @@ cleanup_legacy_acme() {
         exit 1
     done < "$tmp_domains"
     rm -f "$tmp_domains"
+}
+
+normalize_legacy_acme_domain() {
+    case "$1" in
+        \*.*) printf '%s\n' "${1#*.}" ;;
+        *) printf '%s\n' "$1" ;;
+    esac
 }
 
 cleanup_legacy_nginx_runtime() {

@@ -372,6 +372,166 @@ func TestBackupServiceRollbackOnImportFailure(t *testing.T) {
 	}
 }
 
+func TestBackupServiceImportBumpsLocalSnapshotRevisionForRestoredLocalRules(t *testing.T) {
+	sourceStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "local-source"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(source) error = %v", err)
+	}
+	defer sourceStore.Close()
+
+	ctx := t.Context()
+	if err := sourceStore.SaveHTTPRules(ctx, "local", []storage.HTTPRuleRow{{
+		ID:                1,
+		AgentID:           "local",
+		FrontendURL:       "https://restored.example.com",
+		BackendURL:        "http://127.0.0.1:8096",
+		BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		Enabled:           true,
+		RelayChainJSON:    `[]`,
+		TagsJSON:          `[]`,
+		CustomHeadersJSON: `[]`,
+		Revision:          4,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules() error = %v", err)
+	}
+
+	sourceSvc := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, sourceStore)
+	archive, _, err := sourceSvc.Export(ctx)
+	if err != nil {
+		t.Fatalf("Export() error = %v", err)
+	}
+
+	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "local-target"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(target) error = %v", err)
+	}
+	defer targetStore.Close()
+	if err := targetStore.SaveLocalRuntimeState(ctx, "local", storage.RuntimeState{
+		CurrentRevision:   10,
+		LastApplyRevision: 10,
+		LastApplyStatus:   "success",
+	}); err != nil {
+		t.Fatalf("SaveLocalRuntimeState() error = %v", err)
+	}
+
+	targetSvc := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, targetStore)
+	if _, err := targetSvc.Import(ctx, archive); err != nil {
+		t.Fatalf("Import() error = %v", err)
+	}
+
+	snapshot, err := targetStore.LoadLocalSnapshot(ctx, "local")
+	if err != nil {
+		t.Fatalf("LoadLocalSnapshot() error = %v", err)
+	}
+	if len(snapshot.Rules) != 1 {
+		t.Fatalf("local snapshot rules = %+v", snapshot.Rules)
+	}
+	if snapshot.Revision <= 10 {
+		t.Fatalf("local snapshot revision = %d, want > 10 after import", snapshot.Revision)
+	}
+}
+
+func TestBackupServiceImportBumpsDesiredRevisionForCertificateOnlyRestore(t *testing.T) {
+	sourceStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "cert-source"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(source) error = %v", err)
+	}
+	defer sourceStore.Close()
+
+	ctx := t.Context()
+	if err := sourceStore.SaveAgent(ctx, storage.AgentRow{
+		ID:              "edge-a",
+		Name:            "edge-a",
+		AgentToken:      "token-edge-a",
+		Platform:        "linux-amd64",
+		CapabilitiesJSON: `["cert_install"]`,
+		DesiredRevision: 2,
+		CurrentRevision: 2,
+	}); err != nil {
+		t.Fatalf("SaveAgent(source) error = %v", err)
+	}
+	if err := sourceStore.SaveManagedCertificates(ctx, []storage.ManagedCertificateRow{{
+		ID:              1,
+		Domain:          "cert-only.example.com",
+		Enabled:         true,
+		Scope:           "domain",
+		IssuerMode:      "local_http01",
+		TargetAgentIDs:  `["edge-a"]`,
+		Status:          "active",
+		MaterialHash:    "hash-a",
+		AgentReports:    `{}`,
+		ACMEInfo:        `{}`,
+		Usage:           "https",
+		CertificateType: "uploaded",
+		TagsJSON:        `[]`,
+		Revision:        3,
+	}}); err != nil {
+		t.Fatalf("SaveManagedCertificates(source) error = %v", err)
+	}
+	if err := sourceStore.SaveManagedCertificateMaterial(ctx, "cert-only.example.com", storage.ManagedCertificateBundle{
+		Domain:  "cert-only.example.com",
+		CertPEM: "cert-pem",
+		KeyPEM:  "key-pem",
+	}); err != nil {
+		t.Fatalf("SaveManagedCertificateMaterial() error = %v", err)
+	}
+
+	sourceSvc := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, sourceStore)
+	archive, _, err := sourceSvc.Export(ctx)
+	if err != nil {
+		t.Fatalf("Export() error = %v", err)
+	}
+
+	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "cert-target"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(target) error = %v", err)
+	}
+	defer targetStore.Close()
+	if err := targetStore.SaveAgent(ctx, storage.AgentRow{
+		ID:              "edge-a",
+		Name:            "edge-a",
+		AgentToken:      "token-edge-a",
+		Platform:        "linux-amd64",
+		CapabilitiesJSON: `["cert_install"]`,
+		DesiredRevision: 50,
+		CurrentRevision: 50,
+	}); err != nil {
+		t.Fatalf("SaveAgent(target) error = %v", err)
+	}
+
+	targetSvc := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, targetStore)
+	if _, err := targetSvc.Import(ctx, archive); err != nil {
+		t.Fatalf("Import() error = %v", err)
+	}
+
+	agents, err := targetStore.ListAgents(ctx)
+	if err != nil {
+		t.Fatalf("ListAgents() error = %v", err)
+	}
+	if len(agents) != 1 {
+		t.Fatalf("agents = %+v", agents)
+	}
+	if agents[0].DesiredRevision <= 50 {
+		t.Fatalf("desired revision = %d, want > 50 after cert-only restore", agents[0].DesiredRevision)
+	}
+
+	snapshot, err := targetStore.LoadAgentSnapshot(ctx, "edge-a", storage.AgentSnapshotInput{
+		DesiredRevision: agents[0].DesiredRevision,
+		CurrentRevision: agents[0].CurrentRevision,
+		Platform:        agents[0].Platform,
+	})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot() error = %v", err)
+	}
+	if snapshot.Revision <= 50 {
+		t.Fatalf("snapshot revision = %d, want > 50 after cert-only restore", snapshot.Revision)
+	}
+	if len(snapshot.Certificates) != 1 {
+		t.Fatalf("snapshot certificates = %+v", snapshot.Certificates)
+	}
+}
+
 func TestBackupServiceBumpModifiedAgentsListsAgentsOnce(t *testing.T) {
 	store, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "counting-target"), "local")
 	if err != nil {
@@ -392,7 +552,7 @@ func TestBackupServiceBumpModifiedAgentsListsAgentsOnce(t *testing.T) {
 	countingStore := &countingBackupStore{backupStore: store}
 	svc := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, countingStore)
 
-	if err := svc.bumpModifiedAgents(ctx, map[string]bool{"edge-a": true, "edge-b": true}); err != nil {
+	if err := svc.bumpModifiedAgents(ctx, modifiedAgentRevisions{"edge-a": 4, "edge-b": 9}); err != nil {
 		t.Fatalf("bumpModifiedAgents() error = %v", err)
 	}
 	if countingStore.listAgentsCalls != 1 {

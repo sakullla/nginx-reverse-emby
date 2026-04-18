@@ -218,8 +218,14 @@ func TestJoinScriptIncludesMigrateFromMainCommand(t *testing.T) {
 	if !strings.Contains(script, "cleanup_legacy_acme()") {
 		t.Fatalf("join-agent.sh missing legacy acme cleanup helper")
 	}
-	if !strings.Contains(script, `--remove -d "$cert_domain" --ecc`) {
-		t.Fatalf("join-agent.sh missing acme remove command")
+	if !strings.Contains(script, "normalize_legacy_acme_domain()") {
+		t.Fatalf("join-agent.sh missing wildcard acme normalization helper")
+	}
+	if !strings.Contains(script, `acme_domain="$(normalize_legacy_acme_domain "$cert_domain")"`) {
+		t.Fatalf("join-agent.sh missing normalized acme domain usage")
+	}
+	if !strings.Contains(script, `--remove -d "$acme_domain" --ecc`) {
+		t.Fatalf("join-agent.sh missing normalized acme remove command")
 	}
 }
 
@@ -256,6 +262,17 @@ func TestJoinScriptIncludesUninstallAndLegacyNginxCleanup(t *testing.T) {
 	}
 	if !strings.Contains(script, "cleanup_local_agent_runtime()") {
 		t.Fatalf("join-agent.sh missing local uninstall cleanup helper")
+	}
+	localCleanupBody, found := strings.CutPrefix(script[strings.Index(script, "cleanup_local_agent_runtime()"):], "cleanup_local_agent_runtime() {\n")
+	if !found {
+		t.Fatalf("join-agent.sh missing cleanup_local_agent_runtime body")
+	}
+	localCleanupBody, _, _ = strings.Cut(localCleanupBody, "\n}\n\nload_legacy_runtime()")
+	if !strings.Contains(localCleanupBody, "cleanup_legacy_nginx_runtime") {
+		t.Fatalf("join-agent.sh uninstall cleanup should stop host nginx via legacy cleanup helper: %s", localCleanupBody)
+	}
+	if !strings.Contains(localCleanupBody, "nginx.service") && !strings.Contains(script, `systemctl disable --now nginx.service`) {
+		t.Fatalf("join-agent.sh uninstall cleanup should stop host nginx: %s", localCleanupBody)
 	}
 	if strings.Contains(script, "/panel-api/agents/$NRE_AGENT_ID") {
 		t.Fatalf("join-agent.sh unexpectedly attempts control-plane unregister during uninstall")
