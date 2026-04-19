@@ -71,7 +71,7 @@ function normalizeHttpRulePayloadObject(payload = {}, options = {}) {
     load_balancing: {
       strategy: normalizeLoadBalancingStrategy(payload.load_balancing?.strategy)
     },
-    tags: Array.isArray(payload.tags) ? payload.tags : [],
+    tags: payload.tags != null ? payload.tags : undefined,
     enabled: payload.enabled !== false,
     proxy_redirect: payload.proxy_redirect !== false,
     pass_proxy_headers: payload.pass_proxy_headers === true,

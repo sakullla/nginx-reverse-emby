@@ -225,6 +225,13 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 	relaySvc.SetLocalApplyTrigger(runtime.SyncNow)
 	certSvc.SetLocalApplyTrigger(runtime.SyncNow)
 
+	taskSvc := service.NewTaskService(service.TaskServiceConfig{})
+
+	localTaskSession := localagent.NewLocalTaskSession(cfg.LocalAgentID, taskSvc, serviceStore)
+	if err := localTaskSession.Register(); err != nil {
+		log.Printf("[local-agent] failed to register local task session: %v", err)
+	}
+
 	handler, err := newHandlerWithDependencies(cfg, httpapi.Dependencies{
 		SystemService:        systemSvc,
 		AgentService:         agentSvc,
@@ -234,6 +241,7 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 		RelayListenerService: relaySvc,
 		CertificateService:   certSvc,
 		BackupService:        service.NewBackupService(cfg, serviceStore),
+		TaskService:          taskSvc,
 	})
 	if err != nil {
 		return nil, err
