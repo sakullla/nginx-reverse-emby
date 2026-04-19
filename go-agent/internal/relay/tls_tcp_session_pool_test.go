@@ -171,7 +171,7 @@ func TestTLSTCPLogicalStreamReadFromFitsSmallPayloadIntoSingleMuxFrame(t *testin
 	}
 }
 
-func TestTLSTCPLogicalStreamReadFromCoalescesImmediateSourceChunks(t *testing.T) {
+func TestTLSTCPLogicalStreamReadFromDoesNotWaitToCoalesceImmediateSourceChunks(t *testing.T) {
 	var wire bytes.Buffer
 	tunnel := &tlsTCPTunnel{
 		rawConn:    noopDeadlineConn{},
@@ -218,9 +218,36 @@ func TestTLSTCPLogicalStreamReadFromCoalescesImmediateSourceChunks(t *testing.T)
 		}
 		frames++
 	}
-	if frames != 1 {
-		t.Fatalf("data frame count = %d, want 1", frames)
+	if frames != 4 {
+		t.Fatalf("data frame count = %d, want 4", frames)
 	}
+}
+
+func TestTLSTCPTunnelWriteFrameReusesRecentWriteDeadline(t *testing.T) {
+	withRelayTimeouts(time.Second, time.Second, time.Second, time.Second, func() {
+		conn := &countingDeadlineConn{}
+		tunnel := &tlsTCPTunnel{
+			rawConn:    conn,
+			writer:     conn,
+			closeOuter: func() error { return nil },
+			streams:    make(map[uint32]*tlsTCPLogicalStream),
+			closed:     make(chan struct{}),
+		}
+
+		for i := 0; i < 2; i++ {
+			if err := tunnel.writeFrame(context.Background(), muxFrame{
+				Type:     muxFrameTypeData,
+				StreamID: uint32(i + 1),
+				Payload:  []byte("payload"),
+			}); err != nil {
+				t.Fatalf("writeFrame(%d) error = %v", i, err)
+			}
+		}
+
+		if conn.writeDeadlineCalls != 1 {
+			t.Fatalf("SetWriteDeadline calls = %d, want 1", conn.writeDeadlineCalls)
+		}
+	})
 }
 
 func TestTLSTCPLogicalStreamReadReleasesConsumedChunk(t *testing.T) {
@@ -503,5 +530,23 @@ func (c *markingConn) SetReadDeadline(time.Time) error {
 	return nil
 }
 func (c *markingConn) SetWriteDeadline(time.Time) error {
+	return nil
+}
+
+type countingDeadlineConn struct {
+	bytes.Buffer
+	writeDeadlineCalls int
+}
+
+func (c *countingDeadlineConn) Read([]byte) (int, error)  { return 0, io.EOF }
+func (c *countingDeadlineConn) Close() error              { return nil }
+func (c *countingDeadlineConn) LocalAddr() net.Addr       { return nil }
+func (c *countingDeadlineConn) RemoteAddr() net.Addr      { return nil }
+func (c *countingDeadlineConn) SetDeadline(time.Time) error { return nil }
+func (c *countingDeadlineConn) SetReadDeadline(time.Time) error {
+	return nil
+}
+func (c *countingDeadlineConn) SetWriteDeadline(time.Time) error {
+	c.writeDeadlineCalls++
 	return nil
 }
