@@ -19,8 +19,7 @@ import (
 )
 
 const (
-	relayInitialPayloadMax  = 32 * 1024
-	relayInitialPayloadWait = 10 * time.Millisecond
+	relayInitialPayloadMax = 32 * 1024
 )
 
 type RelayMaterialProvider interface {
@@ -259,7 +258,7 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 	<-done
 }
 
-func (s *Server) prefetchRelayInitialPayload(client net.Conn, source io.Reader) ([]byte, io.Reader, error) {
+func (s *Server) prefetchRelayInitialPayload(_ net.Conn, source io.Reader) ([]byte, io.Reader, error) {
 	if source == nil {
 		return nil, source, nil
 	}
@@ -276,32 +275,9 @@ func (s *Server) prefetchRelayInitialPayload(client net.Conn, source io.Reader) 
 		return buf[:n], source, nil
 	}
 
-	deadline := s.now().Add(relayInitialPayloadWait)
-	if err := client.SetReadDeadline(deadline); err != nil {
-		return nil, source, nil
-	}
-	defer client.SetReadDeadline(time.Time{})
-
-	buf := make([]byte, relayInitialPayloadMax)
-	n, err := source.Read(buf)
-	if n > 0 {
-		payload := append([]byte(nil), buf[:n]...)
-		if err != nil && !errors.Is(err, io.EOF) && !isTimeoutError(err) {
-			return payload, source, err
-		}
-		return payload, source, nil
-	}
-	if err == nil || errors.Is(err, io.EOF) || isTimeoutError(err) {
-		// A short prefetch timeout just means there is no early payload to fold
-		// into OPEN; the downstream reader stays in place for normal relay copy.
-		return nil, source, nil
-	}
-	return nil, source, err
-}
-
-func isTimeoutError(err error) bool {
-	var netErr net.Error
-	return errors.As(err, &netErr) && netErr.Timeout()
+	// Do not stall relay dials waiting for client bytes. Only buffered downstream
+	// data is folded into OPEN; raw connections fall back to normal relay copy.
+	return nil, source, nil
 }
 
 func (s *Server) prepareTCPDownstream(client net.Conn, rule model.L4Rule) (io.Reader, *proxyInfo, error) {

@@ -933,8 +933,8 @@ func TestTCPRelayProxy(t *testing.T) {
 		if relayReq.Target != upstreamAddress {
 			t.Fatalf("unexpected relay target %q", relayReq.Target)
 		}
-		if !bytes.Equal(relayReq.InitialData, payload) {
-			t.Fatalf("initial relay payload = %q, want %q", relayReq.InitialData, payload)
+		if len(relayReq.InitialData) != 0 {
+			t.Fatalf("initial relay payload = %q, want empty for raw downstream", relayReq.InitialData)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected l4 tcp proxy to traverse relay listener")
@@ -968,7 +968,7 @@ func TestPrefetchRelayInitialPayloadUsesBufferedData(t *testing.T) {
 	}
 }
 
-func TestPrefetchRelayInitialPayloadTimesOutEmptyRead(t *testing.T) {
+func TestPrefetchRelayInitialPayloadLeavesRawConnUntouched(t *testing.T) {
 	client, peer := net.Pipe()
 	defer client.Close()
 	defer peer.Close()
@@ -986,6 +986,28 @@ func TestPrefetchRelayInitialPayloadTimesOutEmptyRead(t *testing.T) {
 	}
 }
 
+func TestPrefetchRelayInitialPayloadSkipsRawConnWait(t *testing.T) {
+	client := &prefetchProbeConn{readErr: timeoutNetError{}}
+	srv := &Server{now: time.Now}
+
+	payload, source, err := srv.prefetchRelayInitialPayload(client, client)
+	if err != nil {
+		t.Fatalf("prefetchRelayInitialPayload() error = %v", err)
+	}
+	if payload != nil {
+		t.Fatalf("payload = %q, want nil", payload)
+	}
+	if source != client {
+		t.Fatalf("source changed after raw prefetch")
+	}
+	if client.readCalls != 0 {
+		t.Fatalf("readCalls = %d, want 0", client.readCalls)
+	}
+	if client.setReadDeadlineCalls != 0 {
+		t.Fatalf("setReadDeadlineCalls = %d, want 0", client.setReadDeadlineCalls)
+	}
+}
+
 type chunkedReader struct {
 	chunks [][]byte
 }
@@ -998,6 +1020,39 @@ func (r *chunkedReader) Read(p []byte) (int, error) {
 	r.chunks = r.chunks[1:]
 	return copy(p, chunk), nil
 }
+
+type prefetchProbeConn struct {
+	readCalls             int
+	setReadDeadlineCalls  int
+	readErr               error
+}
+
+func (c *prefetchProbeConn) Read(_ []byte) (int, error) {
+	c.readCalls++
+	if c.readErr != nil {
+		return 0, c.readErr
+	}
+	return 0, io.EOF
+}
+
+func (c *prefetchProbeConn) Write(p []byte) (int, error) { return len(p), nil }
+func (c *prefetchProbeConn) Close() error                { return nil }
+func (c *prefetchProbeConn) LocalAddr() net.Addr         { return &net.TCPAddr{} }
+func (c *prefetchProbeConn) RemoteAddr() net.Addr        { return &net.TCPAddr{} }
+func (c *prefetchProbeConn) SetDeadline(_ time.Time) error {
+	return nil
+}
+func (c *prefetchProbeConn) SetReadDeadline(_ time.Time) error {
+	c.setReadDeadlineCalls++
+	return nil
+}
+func (c *prefetchProbeConn) SetWriteDeadline(_ time.Time) error { return nil }
+
+type timeoutNetError struct{}
+
+func (timeoutNetError) Error() string   { return "timeout" }
+func (timeoutNetError) Timeout() bool   { return true }
+func (timeoutNetError) Temporary() bool { return true }
 
 func TestTCPRelayProxyPassesObfsTransportMode(t *testing.T) {
 	relayCert := mustIssueL4RelayCertificate(t, "relay.internal.test")
