@@ -492,20 +492,22 @@ func (s *tlsTCPLogicalStream) WriteTo(w io.Writer) (int64, error) {
 		s.readMu.Lock()
 		if len(s.readChunks) > 0 {
 			head := s.readChunks[0]
-			wrote := len(head) - s.readOffset
-			n, err := w.Write(head[s.readOffset:])
-			total += int64(n)
-			s.readOffset += n
-			if s.readOffset >= len(head) {
-				s.readChunks[0] = nil
-				s.readChunks = s.readChunks[1:]
-				s.readOffset = 0
-			}
+			chunk := head[s.readOffset:]
+			s.readChunks[0] = nil
+			s.readChunks = s.readChunks[1:]
+			s.readOffset = 0
 			s.readMu.Unlock()
+
+			n, err := w.Write(chunk)
+			total += int64(n)
 			if err != nil {
+				if n < len(chunk) {
+					s.prependReadChunk(chunk[n:])
+				}
 				return total, err
 			}
-			if n != wrote {
+			if n != len(chunk) {
+				s.prependReadChunk(chunk[n:])
 				return total, io.ErrShortWrite
 			}
 			continue
@@ -526,6 +528,17 @@ func (s *tlsTCPLogicalStream) WriteTo(w io.Writer) (int64, error) {
 			return total, io.EOF
 		}
 	}
+}
+
+func (s *tlsTCPLogicalStream) prependReadChunk(chunk []byte) {
+	if len(chunk) == 0 {
+		return
+	}
+	s.readMu.Lock()
+	s.readChunks = append([][]byte{chunk}, s.readChunks...)
+	s.readOffset = 0
+	s.readMu.Unlock()
+	s.notifyReadable()
 }
 
 func (s *tlsTCPLogicalStream) Close() error {

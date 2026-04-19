@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"sync"
 	"testing"
 	"time"
 )
@@ -155,6 +156,49 @@ func TestTLSTCPLogicalStreamWriteToDrainsQueuedChunks(t *testing.T) {
 	}
 }
 
+func TestTLSTCPLogicalStreamWriteToDoesNotHoldReadMuWhileWriting(t *testing.T) {
+	stream := &tlsTCPLogicalStream{
+		tunnel: &tlsTCPTunnel{
+			closed: make(chan struct{}),
+		},
+		readCh: make(chan struct{}, 1),
+	}
+	stream.appendData([]byte("blocked"))
+	writer := newBlockingFirstWrite()
+	done := make(chan error, 1)
+
+	go func() {
+		_, err := stream.WriteTo(writer)
+		done <- err
+	}()
+
+	<-writer.started
+	appendDone := make(chan struct{})
+	go func() {
+		stream.appendData([]byte("next"))
+		close(appendDone)
+	}()
+
+	select {
+	case <-appendDone:
+	case <-time.After(100 * time.Millisecond):
+		close(writer.release)
+		<-appendDone
+		stream.setReadError(io.EOF)
+		<-done
+		t.Fatal("appendData blocked while WriteTo was writing to a slow destination")
+	}
+
+	stream.setReadError(io.EOF)
+	close(writer.release)
+	if err := <-done; err != nil {
+		t.Fatalf("WriteTo() error = %v", err)
+	}
+	if got := writer.String(); got != "blockednext" {
+		t.Fatalf("WriteTo() payload = %q, want %q", got, "blockednext")
+	}
+}
+
 func TestWrapIdleConnPreservesTLSTCPBulkInterfaces(t *testing.T) {
 	stream := &tlsTCPLogicalStream{readCh: make(chan struct{}, 1)}
 	wrapped := wrapIdleConn(stream)
@@ -172,3 +216,42 @@ type noopDeadlineConn struct{ net.Conn }
 func (noopDeadlineConn) SetDeadline(time.Time) error      { return nil }
 func (noopDeadlineConn) SetReadDeadline(time.Time) error  { return nil }
 func (noopDeadlineConn) SetWriteDeadline(time.Time) error { return nil }
+
+type blockingFirstWrite struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+	mu      sync.Mutex
+	buf     bytes.Buffer
+}
+
+func newBlockingFirstWrite() *blockingFirstWrite {
+	return &blockingFirstWrite{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+}
+
+func (w *blockingFirstWrite) Write(p []byte) (int, error) {
+	blocked := false
+	w.once.Do(func() {
+		close(w.started)
+		<-w.release
+		blocked = true
+	})
+	if !blocked {
+		select {
+		case <-w.release:
+		default:
+		}
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.Write(p)
+}
+
+func (w *blockingFirstWrite) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.String()
+}

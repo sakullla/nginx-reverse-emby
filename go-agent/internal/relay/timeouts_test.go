@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net"
@@ -146,6 +147,48 @@ func TestTuneBulkRelayConnIgnoresUnsupportedConnections(t *testing.T) {
 	tuneBulkRelayConn(struct{}{})
 }
 
+func TestIdleDeadlineConnReadFromRefreshesWriteDeadlinePerChunk(t *testing.T) {
+	conn := &recordingBulkConn{}
+	wrapped := &idleDeadlineConn{Conn: conn, timeout: time.Minute}
+
+	n, err := wrapped.ReadFrom(&relayChunkedReader{chunks: [][]byte{
+		[]byte("first"),
+		[]byte("second"),
+	}})
+	if err != nil {
+		t.Fatalf("ReadFrom() error = %v", err)
+	}
+	if n != int64(len("firstsecond")) {
+		t.Fatalf("ReadFrom() = %d, want %d", n, len("firstsecond"))
+	}
+	if conn.writeDeadlineCalls < 2 {
+		t.Fatalf("SetWriteDeadline calls = %d, want at least 2", conn.writeDeadlineCalls)
+	}
+}
+
+func TestIdleDeadlineConnWriteToRefreshesReadDeadlinePerChunk(t *testing.T) {
+	conn := &recordingBulkConn{readChunks: [][]byte{
+		[]byte("first"),
+		[]byte("second"),
+	}}
+	wrapped := &idleDeadlineConn{Conn: conn, timeout: time.Minute}
+
+	var dst bytes.Buffer
+	n, err := wrapped.WriteTo(&dst)
+	if err != nil {
+		t.Fatalf("WriteTo() error = %v", err)
+	}
+	if n != int64(len("firstsecond")) {
+		t.Fatalf("WriteTo() = %d, want %d", n, len("firstsecond"))
+	}
+	if got := dst.String(); got != "firstsecond" {
+		t.Fatalf("WriteTo() payload = %q, want %q", got, "firstsecond")
+	}
+	if conn.readDeadlineCalls < 2 {
+		t.Fatalf("SetReadDeadline calls = %d, want at least 2", conn.readDeadlineCalls)
+	}
+}
+
 func TestDialTCPDoesNotTuneSocketBuffersForDirectConnections(t *testing.T) {
 	originalDial := relayDialContext
 	conn := &fakeRelayTCPBufferConn{}
@@ -206,4 +249,71 @@ func TestDialRelayTCPTunesSocketBuffersForRelayConnections(t *testing.T) {
 	if conn.writeBuffer != relayBulkSocketBufferBytes {
 		t.Fatalf("writeBuffer = %d, want %d", conn.writeBuffer, relayBulkSocketBufferBytes)
 	}
+}
+
+type recordingBulkConn struct {
+	readChunks         [][]byte
+	readDeadlineCalls  int
+	writeDeadlineCalls int
+}
+
+func (c *recordingBulkConn) Read(p []byte) (int, error) {
+	if len(c.readChunks) == 0 {
+		return 0, io.EOF
+	}
+	chunk := c.readChunks[0]
+	c.readChunks = c.readChunks[1:]
+	return copy(p, chunk), nil
+}
+
+func (c *recordingBulkConn) Write(p []byte) (int, error) {
+	return len(p), nil
+}
+
+func (c *recordingBulkConn) Close() error                       { return nil }
+func (c *recordingBulkConn) LocalAddr() net.Addr                { return nil }
+func (c *recordingBulkConn) RemoteAddr() net.Addr               { return nil }
+func (c *recordingBulkConn) SetDeadline(_ time.Time) error      { return nil }
+func (c *recordingBulkConn) SetReadDeadline(_ time.Time) error  { c.readDeadlineCalls++; return nil }
+func (c *recordingBulkConn) SetWriteDeadline(_ time.Time) error { c.writeDeadlineCalls++; return nil }
+
+func (c *recordingBulkConn) ReadFrom(r io.Reader) (int64, error) {
+	return io.Copy(io.Discard, r)
+}
+
+func (c *recordingBulkConn) WriteTo(w io.Writer) (int64, error) {
+	var total int64
+	for {
+		buf := make([]byte, 1024)
+		n, err := c.Read(buf)
+		if n > 0 {
+			written, writeErr := w.Write(buf[:n])
+			total += int64(written)
+			if writeErr != nil {
+				return total, writeErr
+			}
+			if written != n {
+				return total, io.ErrShortWrite
+			}
+		}
+		if err != nil {
+			if err == io.EOF {
+				return total, nil
+			}
+			return total, err
+		}
+	}
+}
+
+type relayChunkedReader struct {
+	chunks [][]byte
+}
+
+func (r *relayChunkedReader) Read(p []byte) (int, error) {
+	if len(r.chunks) == 0 {
+		return 0, io.EOF
+	}
+	chunk := r.chunks[0]
+	r.chunks = r.chunks[1:]
+	return copy(p, chunk), nil
 }
