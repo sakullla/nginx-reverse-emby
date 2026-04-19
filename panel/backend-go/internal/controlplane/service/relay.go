@@ -102,7 +102,7 @@ func NewRelayListenerService(cfg config.Config, store storage.Store) *relayServi
 }
 
 func (s *relayService) SetLocalApplyTrigger(trigger func(context.Context) error) {
-	s.localApplyTrigger = trigger
+	s.localApplyTrigger = wrapLocalApplyTrigger(trigger)
 }
 
 func (s *relayService) triggerLocalApply(ctx context.Context, agentID string) error {

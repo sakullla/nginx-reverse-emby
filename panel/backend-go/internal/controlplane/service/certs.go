@@ -121,7 +121,7 @@ func newCertificateServiceWithRenewal(cfg config.Config, store storage.Store, is
 }
 
 func (s *certificateService) SetLocalApplyTrigger(trigger func(context.Context) error) {
-	s.localApplyTrigger = trigger
+	s.localApplyTrigger = wrapLocalApplyTrigger(trigger)
 }
 
 func (s *certificateService) List(ctx context.Context, agentID string) ([]ManagedCertificate, error) {

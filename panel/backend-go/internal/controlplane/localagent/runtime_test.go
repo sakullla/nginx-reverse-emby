@@ -229,6 +229,67 @@ func TestLocalSyncSourceReturnsSnapshotFromControlPlaneStore(t *testing.T) {
 	}
 }
 
+func TestToEmbeddedSnapshotPreservesRelayTransportFields(t *testing.T) {
+	snapshot := Snapshot{
+		Revision: 15,
+		L4Rules: []storage.L4Rule{{
+			Protocol:   "tcp",
+			ListenHost: "0.0.0.0",
+			ListenPort: 19000,
+			Backends: []storage.L4Backend{{
+				Host: "relay-echo-test",
+				Port: 18081,
+			}},
+			RelayChain: []int{1},
+			RelayObfs:  true,
+			Revision:   3,
+		}},
+		RelayListeners: []storage.RelayListener{{
+			ID:                     1,
+			AgentID:                "local",
+			Name:                   "relay-self",
+			ListenHost:             "0.0.0.0",
+			BindHosts:              []string{"0.0.0.0"},
+			ListenPort:             9443,
+			PublicHost:             "127.0.0.1",
+			PublicPort:             9443,
+			Enabled:                true,
+			TLSMode:                "pin_and_ca",
+			TransportMode:          "quic",
+			AllowTransportFallback: true,
+			ObfsMode:               "early_window_v2",
+			PinSet: []storage.RelayPin{{
+				Type:  "spki_sha256",
+				Value: "pin",
+			}},
+			TrustedCACertificateIDs: []int{1},
+			AllowSelfSigned:         true,
+			Revision:                2,
+		}},
+	}
+
+	embedded := toEmbeddedSnapshot(snapshot)
+
+	if len(embedded.L4Rules) != 1 {
+		t.Fatalf("embedded L4Rules len = %d, want 1", len(embedded.L4Rules))
+	}
+	if !embedded.L4Rules[0].RelayObfs {
+		t.Fatalf("embedded L4Rules[0].RelayObfs = false, want true")
+	}
+	if len(embedded.RelayListeners) != 1 {
+		t.Fatalf("embedded RelayListeners len = %d, want 1", len(embedded.RelayListeners))
+	}
+	if embedded.RelayListeners[0].TransportMode != "quic" {
+		t.Fatalf("embedded RelayListeners[0].TransportMode = %q, want quic", embedded.RelayListeners[0].TransportMode)
+	}
+	if !embedded.RelayListeners[0].AllowTransportFallback {
+		t.Fatalf("embedded RelayListeners[0].AllowTransportFallback = false, want true")
+	}
+	if embedded.RelayListeners[0].ObfsMode != "early_window_v2" {
+		t.Fatalf("embedded RelayListeners[0].ObfsMode = %q, want early_window_v2", embedded.RelayListeners[0].ObfsMode)
+	}
+}
+
 func TestLocalStateSinkPersistsRuntimeStateToControlPlaneStore(t *testing.T) {
 	store := &bridgeStoreStub{}
 	sink := NewStateSink(store, "local")

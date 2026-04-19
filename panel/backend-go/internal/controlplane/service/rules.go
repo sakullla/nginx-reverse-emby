@@ -53,7 +53,7 @@ func NewRuleService(cfg config.Config, store ruleStore) *ruleService {
 }
 
 func (s *ruleService) SetLocalApplyTrigger(trigger func(context.Context) error) {
-	s.localApplyTrigger = trigger
+	s.localApplyTrigger = wrapLocalApplyTrigger(trigger)
 }
 
 func (s *ruleService) triggerLocalApply(ctx context.Context, agentID string) error {

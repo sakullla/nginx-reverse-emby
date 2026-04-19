@@ -163,6 +163,7 @@ func toEmbeddedSnapshot(snapshot Snapshot) goagentembedded.Snapshot {
 					},
 				},
 				RelayChain: append([]int(nil), rule.RelayChain...),
+				RelayObfs:  rule.RelayObfs,
 				Revision:   rule.Revision,
 			})
 		}
@@ -182,6 +183,9 @@ func toEmbeddedSnapshot(snapshot Snapshot) goagentembedded.Snapshot {
 				Enabled:                 listener.Enabled,
 				CertificateID:           copyOptionalInt(listener.CertificateID),
 				TLSMode:                 listener.TLSMode,
+				TransportMode:           listener.TransportMode,
+				AllowTransportFallback:  listener.AllowTransportFallback,
+				ObfsMode:                listener.ObfsMode,
 				PinSet:                  toEmbeddedRelayPins(listener.PinSet),
 				TrustedCACertificateIDs: append([]int(nil), listener.TrustedCACertificateIDs...),
 				AllowSelfSigned:         listener.AllowSelfSigned,

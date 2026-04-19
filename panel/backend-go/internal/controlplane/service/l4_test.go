@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
@@ -319,6 +320,49 @@ func TestL4RuleServiceCreateClearsRelayObfsWithoutRelayChain(t *testing.T) {
 	}
 	if rule.RelayObfs {
 		t.Fatalf("expected relay_obfs to be cleared when relay_chain is empty")
+	}
+}
+
+func TestL4RuleServiceCreateDetachesCanceledTriggerContext(t *testing.T) {
+	store := &fakeL4Store{
+		l4RulesByID: map[string][]storage.L4RuleRow{},
+		relayByAgent: map[string][]storage.RelayListenerRow{
+			"local": {},
+		},
+	}
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	type requestContextKey string
+	requestCtx := context.WithValue(context.Background(), requestContextKey("trace"), "l4-create")
+	requestCtx, cancel := context.WithCancel(requestCtx)
+	cancel()
+
+	triggerCalls := 0
+	svc.SetLocalApplyTrigger(func(ctx context.Context) error {
+		triggerCalls++
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("trigger ctx err = %v", err)
+		}
+		if got := ctx.Value(requestContextKey("trace")); got != "l4-create" {
+			return fmt.Errorf("trigger ctx trace = %v", got)
+		}
+		return nil
+	})
+
+	rule, err := svc.Create(requestCtx, "local", L4RuleInput{
+		Protocol:     stringPtrL4("tcp"),
+		ListenPort:   intPtrL4(9000),
+		UpstreamHost: stringPtrL4("upstream"),
+		UpstreamPort: intPtrL4(9001),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if rule.ID != 1 {
+		t.Fatalf("Create() rule = %+v", rule)
+	}
+	if triggerCalls != 1 {
+		t.Fatalf("triggerCalls = %d", triggerCalls)
 	}
 }
 
