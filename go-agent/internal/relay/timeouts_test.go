@@ -12,6 +12,7 @@ import (
 type fakeRelayTCPBufferConn struct {
 	readBuffer  int
 	writeBuffer int
+	noDelay     bool
 }
 
 func (c *fakeRelayTCPBufferConn) Read(_ []byte) (int, error)         { return 0, io.EOF }
@@ -30,6 +31,11 @@ func (c *fakeRelayTCPBufferConn) SetReadBuffer(bytes int) error {
 
 func (c *fakeRelayTCPBufferConn) SetWriteBuffer(bytes int) error {
 	c.writeBuffer = bytes
+	return nil
+}
+
+func (c *fakeRelayTCPBufferConn) SetNoDelay(noDelay bool) error {
+	c.noDelay = noDelay
 	return nil
 }
 
@@ -248,6 +254,19 @@ func TestDialRelayTCPTunesSocketBuffersForRelayConnections(t *testing.T) {
 	}
 	if conn.writeBuffer != relayBulkSocketBufferBytes {
 		t.Fatalf("writeBuffer = %d, want %d", conn.writeBuffer, relayBulkSocketBufferBytes)
+	}
+	if !conn.noDelay {
+		t.Fatal("relay TCP connection should enable TCP_NODELAY")
+	}
+}
+
+func TestTuneBulkRelayConnEnablesNoDelay(t *testing.T) {
+	conn := &fakeRelayTCPBufferConn{}
+
+	tuneBulkRelayConn(conn)
+
+	if !conn.noDelay {
+		t.Fatal("TCP_NODELAY not enabled")
 	}
 }
 

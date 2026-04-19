@@ -136,6 +136,8 @@ func (s *Server) handleConn(rawConn net.Conn, listener Listener) {
 	defer s.untrackConn(rawConn)
 	defer rawConn.Close()
 
+	tuneBulkRelayConn(rawConn)
+
 	tlsConfig, err := serverTLSConfig(s.ctx, s.provider, listener)
 	if err != nil {
 		return

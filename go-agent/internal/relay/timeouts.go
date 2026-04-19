@@ -42,6 +42,10 @@ type relayTCPBufferTuner interface {
 	SetWriteBuffer(bytes int) error
 }
 
+type relayTCPNoDelayTuner interface {
+	SetNoDelay(noDelay bool) error
+}
+
 type relayDialContextFunc func(ctx context.Context, network, address string) (net.Conn, error)
 
 var relayDialContext relayDialContextFunc = func(ctx context.Context, network, address string) (net.Conn, error) {
@@ -278,6 +282,9 @@ func getRelayIdleTimeout() time.Duration {
 }
 
 func tuneBulkRelayConn(conn any) {
+	if tuner, ok := conn.(relayTCPNoDelayTuner); ok {
+		_ = tuner.SetNoDelay(true)
+	}
 	tuner, ok := conn.(relayTCPBufferTuner)
 	if !ok {
 		return
