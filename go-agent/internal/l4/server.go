@@ -292,6 +292,8 @@ func (s *Server) prefetchRelayInitialPayload(client net.Conn, source io.Reader) 
 		return payload, source, nil
 	}
 	if err == nil || errors.Is(err, io.EOF) || isTimeoutError(err) {
+		// A short prefetch timeout just means there is no early payload to fold
+		// into OPEN; the downstream reader stays in place for normal relay copy.
 		return nil, source, nil
 	}
 	return nil, source, err

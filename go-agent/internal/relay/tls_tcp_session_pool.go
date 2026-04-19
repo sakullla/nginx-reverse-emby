@@ -396,6 +396,8 @@ func (t *tlsTCPTunnel) writeFrame(ctx context.Context, frame muxFrame) error {
 	if err := t.refreshWriteDeadlineLocked(); err != nil {
 		return err
 	}
+	// This synchronous path owns frame payload lifetime. Queued writers hand
+	// payload release to the write pump via writeRequestBatch/enqueueWriteFrame.
 	err := writeMuxFrame(t.writer, frame)
 	frame.releasePayload()
 	return err
@@ -716,8 +718,9 @@ func (s *tlsTCPLogicalStream) ReadFrom(r io.Reader) (int64, error) {
 	for {
 		n, err := r.Read(buf)
 		if n > 0 {
-			// writeFrame is synchronous under the tunnel write lock, so this
-			// pooled buffer is consumed before the next read reuses it.
+			// Multi-stream writes stay on the synchronous writeFrame path, so the
+			// shared bulk buffer is consumed before the next read reuses it. The
+			// single-stream fast path above copies into queued frames instead.
 			if frameErr := s.tunnel.writeFrame(context.Background(), muxFrame{
 				Type:     muxFrameTypeData,
 				StreamID: s.streamID,
