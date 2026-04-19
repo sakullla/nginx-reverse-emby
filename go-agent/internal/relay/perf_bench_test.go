@@ -73,3 +73,20 @@ func BenchmarkReadMuxFrame64KiB(b *testing.B) {
 		frame.releasePayload()
 	}
 }
+
+func BenchmarkWriteMuxFrame64KiB(b *testing.B) {
+	payload := bytes.Repeat([]byte("w"), 64*1024)
+
+	b.ReportAllocs()
+	b.SetBytes(int64(len(payload)))
+	for i := 0; i < b.N; i++ {
+		var wire bytes.Buffer
+		if err := writeMuxFrame(&wire, muxFrame{
+			Type:     muxFrameTypeData,
+			StreamID: 1,
+			Payload:  payload,
+		}); err != nil {
+			b.Fatalf("writeMuxFrame() error = %v", err)
+		}
+	}
+}

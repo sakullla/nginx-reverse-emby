@@ -4,12 +4,20 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"sync"
 )
 
 const (
 	muxProtocolVersion = 1
 	maxMuxPayloadBytes = maxRequestSize
+	muxFrameHeaderSize = 11
 )
+
+var muxFrameWriteBufferPool = sync.Pool{
+	New: func() any {
+		return make([]byte, muxFrameHeaderSize+tlsTCPBulkFrameSize)
+	},
+}
 
 type muxFrameType byte
 
@@ -45,7 +53,21 @@ func writeMuxFrame(w io.Writer, frame muxFrame) error {
 		return fmt.Errorf("mux payload exceeds %d bytes", maxMuxPayloadBytes)
 	}
 
-	var header [11]byte
+	if len(frame.Payload) <= tlsTCPBulkFrameSize {
+		buf := muxFrameWriteBufferPool.Get().([]byte)
+		defer muxFrameWriteBufferPool.Put(buf)
+
+		header := buf[:muxFrameHeaderSize]
+		header[0] = frame.Version
+		header[1] = byte(frame.Type)
+		header[2] = byte(frame.Flags)
+		binary.BigEndian.PutUint32(header[3:7], frame.StreamID)
+		binary.BigEndian.PutUint32(header[7:11], uint32(len(frame.Payload)))
+		copy(buf[muxFrameHeaderSize:], frame.Payload)
+		return writeAll(w, buf[:muxFrameHeaderSize+len(frame.Payload)])
+	}
+
+	var header [muxFrameHeaderSize]byte
 	header[0] = frame.Version
 	header[1] = byte(frame.Type)
 	header[2] = byte(frame.Flags)
