@@ -19,6 +19,8 @@ var relayTLSTCPSessionPool = newTLSTCPSessionPool()
 const tlsTCPBulkFrameSize = 64 * 1024
 const tlsTCPMuxSessionsPerKey = 4
 const tlsTCPMuxTargetStreamsPerSession = 2
+const tlsTCPWriteQueueDepth = 8
+const tlsTCPSingleStreamWritePipeline = 4
 
 var tlsTCPBulkBufferPool = sync.Pool{
 	New: func() any {
@@ -45,6 +47,8 @@ type tlsTCPTunnel struct {
 
 	writeMu           sync.Mutex
 	writeDeadlineNext time.Time
+	writeReqCh        chan *tlsTCPWriteRequest
+	writePumpOnce     sync.Once
 
 	streamsMu      sync.Mutex
 	streams        map[uint32]*tlsTCPLogicalStream
@@ -72,6 +76,11 @@ type tlsTCPLogicalStream struct {
 type tlsTCPReadChunk struct {
 	payload []byte
 	release func()
+}
+
+type tlsTCPWriteRequest struct {
+	frame muxFrame
+	done  chan error
 }
 
 func (c *tlsTCPReadChunk) consume(n int) {
@@ -387,7 +396,9 @@ func (t *tlsTCPTunnel) writeFrame(ctx context.Context, frame muxFrame) error {
 	if err := t.refreshWriteDeadlineLocked(); err != nil {
 		return err
 	}
-	return writeMuxFrame(t.writer, frame)
+	err := writeMuxFrame(t.writer, frame)
+	frame.releasePayload()
+	return err
 }
 
 func (t *tlsTCPTunnel) refreshWriteDeadlineLocked() error {
@@ -407,6 +418,119 @@ func (t *tlsTCPTunnel) refreshWriteDeadlineLocked() error {
 	}
 	t.writeDeadlineNext = next
 	return nil
+}
+
+func (t *tlsTCPTunnel) startWritePump() {
+	t.writePumpOnce.Do(func() {
+		t.writeReqCh = make(chan *tlsTCPWriteRequest, tlsTCPWriteQueueDepth)
+		go t.writePump()
+	})
+}
+
+func (t *tlsTCPTunnel) writePump() {
+	for {
+		select {
+		case <-t.closed:
+			return
+		case req := <-t.writeReqCh:
+			if req == nil {
+				continue
+			}
+			batch := []*tlsTCPWriteRequest{req}
+		drain:
+			for len(batch) < tlsTCPWriteQueueDepth {
+				select {
+				case next := <-t.writeReqCh:
+					if next != nil {
+						batch = append(batch, next)
+					}
+				default:
+					break drain
+				}
+			}
+
+			err := t.writeRequestBatch(batch)
+			for _, item := range batch {
+				item.done <- err
+			}
+			if err != nil {
+				t.failQueuedWriteRequests(err)
+				_ = t.close()
+				return
+			}
+		}
+	}
+}
+
+func (t *tlsTCPTunnel) writeRequestBatch(batch []*tlsTCPWriteRequest) error {
+	t.writeMu.Lock()
+	defer t.writeMu.Unlock()
+
+	if err := t.refreshWriteDeadlineLocked(); err != nil {
+		for _, req := range batch {
+			req.frame.releasePayload()
+		}
+		return err
+	}
+	for i, req := range batch {
+		if err := writeMuxFrame(t.writer, req.frame); err != nil {
+			req.frame.releasePayload()
+			for _, pending := range batch[i+1:] {
+				pending.frame.releasePayload()
+			}
+			return err
+		}
+		req.frame.releasePayload()
+	}
+	return nil
+}
+
+func (t *tlsTCPTunnel) failQueuedWriteRequests(err error) {
+	if t.writeReqCh == nil {
+		return
+	}
+	for {
+		select {
+		case req := <-t.writeReqCh:
+			if req == nil {
+				continue
+			}
+			req.frame.releasePayload()
+			req.done <- err
+		default:
+			return
+		}
+	}
+}
+
+func (t *tlsTCPTunnel) enqueueWriteFrame(ctx context.Context, frame muxFrame) (*tlsTCPWriteRequest, error) {
+	t.startWritePump()
+
+	req := &tlsTCPWriteRequest{
+		frame: frame,
+		done:  make(chan error, 1),
+	}
+	select {
+	case <-t.closed:
+		frame.releasePayload()
+		return nil, io.EOF
+	case <-ctx.Done():
+		frame.releasePayload()
+		return nil, ctx.Err()
+	case t.writeReqCh <- req:
+		return req, nil
+	}
+}
+
+func waitTLSTCPWriteRequest(ctx context.Context, req *tlsTCPWriteRequest, tunnel *tlsTCPTunnel) error {
+	select {
+	case err := <-req.done:
+		return err
+	case <-tunnel.closed:
+		return io.EOF
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (t *tlsTCPTunnel) readLoop() {
@@ -584,6 +708,10 @@ func (s *tlsTCPLogicalStream) ReadFrom(r io.Reader) (int64, error) {
 	buf := tlsTCPBulkBufferPool.Get().([]byte)
 	defer tlsTCPBulkBufferPool.Put(buf)
 
+	if s.tunnel.logicalStreamCount() <= 1 {
+		return s.readFromSingleStream(r, buf)
+	}
+
 	var total int64
 	for {
 		n, err := r.Read(buf)
@@ -605,6 +733,58 @@ func (s *tlsTCPLogicalStream) ReadFrom(r io.Reader) (int64, error) {
 		if err != nil {
 			return total, err
 		}
+	}
+}
+
+func (s *tlsTCPLogicalStream) readFromSingleStream(r io.Reader, buf []byte) (int64, error) {
+	var total int64
+	var inflight []*tlsTCPWriteRequest
+	flushOldest := func() error {
+		err := waitTLSTCPWriteRequest(context.Background(), inflight[0], s.tunnel)
+		inflight = inflight[1:]
+		return err
+	}
+
+	for {
+		n, err := r.Read(buf)
+		if n > 0 {
+			frame := newQueuedTLSTCPDataFrame(s.streamID, buf[:n])
+			req, enqueueErr := s.tunnel.enqueueWriteFrame(context.Background(), frame)
+			if enqueueErr != nil {
+				return total, enqueueErr
+			}
+			inflight = append(inflight, req)
+			total += int64(n)
+			if len(inflight) >= tlsTCPSingleStreamWritePipeline {
+				if waitErr := flushOldest(); waitErr != nil {
+					return total, waitErr
+				}
+			}
+		}
+		if errors.Is(err, io.EOF) {
+			for len(inflight) > 0 {
+				if waitErr := flushOldest(); waitErr != nil {
+					return total, waitErr
+				}
+			}
+			return total, nil
+		}
+		if err != nil {
+			return total, err
+		}
+	}
+}
+
+func newQueuedTLSTCPDataFrame(streamID uint32, payload []byte) muxFrame {
+	buf := tlsTCPBulkBufferPool.Get().([]byte)
+	copy(buf, payload)
+	return muxFrame{
+		Type:     muxFrameTypeData,
+		StreamID: streamID,
+		Payload:  buf[:len(payload)],
+		payloadRelease: func() {
+			tlsTCPBulkBufferPool.Put(buf)
+		},
 	}
 }
 

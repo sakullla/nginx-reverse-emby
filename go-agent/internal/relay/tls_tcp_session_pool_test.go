@@ -250,6 +250,59 @@ func TestTLSTCPTunnelWriteFrameReusesRecentWriteDeadline(t *testing.T) {
 	})
 }
 
+func TestTLSTCPLogicalStreamReadFromSingleStreamQueuesAheadOfSlowWriter(t *testing.T) {
+	writer := newBlockingFirstWrite()
+	tunnel := &tlsTCPTunnel{
+		rawConn:    noopDeadlineConn{},
+		writer:     writer,
+		closeOuter: func() error { return nil },
+		streams:    make(map[uint32]*tlsTCPLogicalStream),
+		closed:     make(chan struct{}),
+	}
+	tunnel.startWritePump()
+	stream := &tlsTCPLogicalStream{
+		tunnel:       tunnel,
+		streamID:     12,
+		readCh:       make(chan struct{}, 1),
+		openResultCh: make(chan error, 1),
+	}
+	tunnel.registerStream(stream)
+
+	src := &countingChunkConn{
+		chunks: [][]byte{
+			bytes.Repeat([]byte("a"), 16*1024),
+			bytes.Repeat([]byte("b"), 16*1024),
+			bytes.Repeat([]byte("c"), 16*1024),
+			bytes.Repeat([]byte("d"), 16*1024),
+			bytes.Repeat([]byte("e"), 16*1024),
+		},
+	}
+	done := make(chan error, 1)
+	go func() {
+		_, err := stream.ReadFrom(&idleDeadlineConn{Conn: src, timeout: time.Minute})
+		done <- err
+	}()
+
+	<-writer.started
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if src.readCalls >= 4 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if src.readCalls < 4 {
+		close(writer.release)
+		<-done
+		t.Fatalf("source read calls = %d, want at least 4 queued frames before backpressure", src.readCalls)
+	}
+
+	close(writer.release)
+	if err := <-done; err != nil {
+		t.Fatalf("ReadFrom() error = %v", err)
+	}
+}
+
 func TestTLSTCPLogicalStreamReadReleasesConsumedChunk(t *testing.T) {
 	released := 0
 	stream := &tlsTCPLogicalStream{
@@ -530,6 +583,34 @@ func (c *markingConn) SetReadDeadline(time.Time) error {
 	return nil
 }
 func (c *markingConn) SetWriteDeadline(time.Time) error {
+	return nil
+}
+
+type countingChunkConn struct {
+	net.Conn
+	readCalls int
+	chunks    [][]byte
+}
+
+func (c *countingChunkConn) Read(p []byte) (int, error) {
+	if len(c.chunks) == 0 {
+		return 0, io.EOF
+	}
+	chunk := c.chunks[0]
+	c.chunks = c.chunks[1:]
+	c.readCalls++
+	return copy(p, chunk), nil
+}
+
+func (c *countingChunkConn) Write(p []byte) (int, error) { return len(p), nil }
+func (c *countingChunkConn) Close() error                { return nil }
+func (c *countingChunkConn) LocalAddr() net.Addr         { return nil }
+func (c *countingChunkConn) RemoteAddr() net.Addr        { return nil }
+func (c *countingChunkConn) SetDeadline(time.Time) error { return nil }
+func (c *countingChunkConn) SetReadDeadline(time.Time) error {
+	return nil
+}
+func (c *countingChunkConn) SetWriteDeadline(time.Time) error {
 	return nil
 }
 
