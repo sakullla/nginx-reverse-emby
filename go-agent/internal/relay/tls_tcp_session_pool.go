@@ -17,6 +17,8 @@ import (
 var relayTLSTCPSessionPool = newTLSTCPSessionPool()
 
 const tlsTCPBulkFrameSize = 64 * 1024
+const tlsTCPMuxSessionsPerKey = 4
+const tlsTCPMuxTargetStreamsPerSession = 2
 
 var tlsTCPBulkBufferPool = sync.Pool{
 	New: func() any {
@@ -31,7 +33,7 @@ type tlsTCPSessionPoolStats struct {
 
 type tlsTCPSessionPool struct {
 	mu       sync.Mutex
-	sessions map[string]*tlsTCPTunnel
+	sessions map[string][]*tlsTCPTunnel
 }
 
 type tlsTCPTunnel struct {
@@ -43,9 +45,10 @@ type tlsTCPTunnel struct {
 
 	writeMu sync.Mutex
 
-	streamsMu    sync.Mutex
-	streams      map[uint32]*tlsTCPLogicalStream
-	nextStreamID atomic.Uint32
+	streamsMu      sync.Mutex
+	streams        map[uint32]*tlsTCPLogicalStream
+	nextStreamID   atomic.Uint32
+	pendingStreams atomic.Int64
 
 	closed    chan struct{}
 	closeOnce sync.Once
@@ -68,7 +71,7 @@ type tlsTCPLogicalStream struct {
 
 func newTLSTCPSessionPool() *tlsTCPSessionPool {
 	return &tlsTCPSessionPool{
-		sessions: make(map[string]*tlsTCPTunnel),
+		sessions: make(map[string][]*tlsTCPTunnel),
 	}
 }
 
@@ -76,9 +79,12 @@ func currentTLSTCPSessionPoolStats() tlsTCPSessionPoolStats {
 	relayTLSTCPSessionPool.mu.Lock()
 	defer relayTLSTCPSessionPool.mu.Unlock()
 
-	stats := tlsTCPSessionPoolStats{ActiveSessions: len(relayTLSTCPSessionPool.sessions)}
-	for _, session := range relayTLSTCPSessionPool.sessions {
-		stats.LogicalStreams += session.logicalStreamCount()
+	stats := tlsTCPSessionPoolStats{}
+	for _, sessions := range relayTLSTCPSessionPool.sessions {
+		stats.ActiveSessions += len(sessions)
+		for _, session := range sessions {
+			stats.LogicalStreams += session.logicalStreamCount()
+		}
 	}
 	return stats
 }
@@ -86,72 +92,131 @@ func currentTLSTCPSessionPoolStats() tlsTCPSessionPoolStats {
 func resetTLSTCPSessionPoolForTest() {
 	relayTLSTCPSessionPool.mu.Lock()
 	sessions := relayTLSTCPSessionPool.sessions
-	relayTLSTCPSessionPool.sessions = make(map[string]*tlsTCPTunnel)
+	relayTLSTCPSessionPool.sessions = make(map[string][]*tlsTCPTunnel)
 	relayTLSTCPSessionPool.mu.Unlock()
 
-	for _, session := range sessions {
-		_ = session.close()
+	for _, sessionGroup := range sessions {
+		for _, session := range sessionGroup {
+			_ = session.close()
+		}
 	}
 }
 
-func (p *tlsTCPSessionPool) getOrDial(ctx context.Context, key string, dial func(context.Context) (*tlsTCPTunnel, error)) (*tlsTCPTunnel, error) {
-	if existing := p.get(key); existing != nil {
-		return existing, nil
+func (p *tlsTCPSessionPool) allTunnelsForTest() []*tlsTCPTunnel {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	var tunnels []*tlsTCPTunnel
+	for _, sessions := range p.sessions {
+		tunnels = append(tunnels, sessions...)
+	}
+	return tunnels
+}
+
+func (p *tlsTCPSessionPool) getOrDial(ctx context.Context, key string, dial func(context.Context) (*tlsTCPTunnel, error)) (*tlsTCPTunnel, func(), error) {
+	if existing, release := p.reserveExisting(key); existing != nil {
+		return existing, release, nil
 	}
 
 	tunnel, err := dial(ctx)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return p.store(key, tunnel), nil
+	stored, release := p.storeOrReserve(key, tunnel)
+	if stored != tunnel {
+		_ = tunnel.close()
+	}
+	return stored, release, nil
 }
 
-func (p *tlsTCPSessionPool) get(key string) *tlsTCPTunnel {
+func (p *tlsTCPSessionPool) reserveExisting(key string) (*tlsTCPTunnel, func()) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	tunnel := p.sessions[key]
-	if tunnel == nil {
-		return nil
+	sessions := p.activeSessionsLocked(key)
+	if len(sessions) == 0 {
+		return nil, nil
 	}
-	select {
-	case <-tunnel.closed:
-		delete(p.sessions, key)
-		return nil
-	default:
-		return tunnel
+
+	least := leastLoadedTLSTCPTunnel(sessions)
+	if len(sessions) < tlsTCPMuxSessionsPerKey && least.tlsTCPLoad() >= tlsTCPMuxTargetStreamsPerSession {
+		return nil, nil
 	}
+	return least, least.reserveStreamSlot()
 }
 
-func (p *tlsTCPSessionPool) store(key string, tunnel *tlsTCPTunnel) *tlsTCPTunnel {
+func (p *tlsTCPSessionPool) storeOrReserve(key string, tunnel *tlsTCPTunnel) (*tlsTCPTunnel, func()) {
 	p.mu.Lock()
-	existing := p.sessions[key]
-	if existing != nil {
-		select {
-		case <-existing.closed:
-		default:
-			p.mu.Unlock()
-			_ = tunnel.close()
-			return existing
-		}
+	defer p.mu.Unlock()
+
+	sessions := p.activeSessionsLocked(key)
+	if len(sessions) >= tlsTCPMuxSessionsPerKey {
+		least := leastLoadedTLSTCPTunnel(sessions)
+		return least, least.reserveStreamSlot()
 	}
-	p.sessions[key] = tunnel
-	p.mu.Unlock()
+	p.sessions[key] = append(sessions, tunnel)
+	release := tunnel.reserveStreamSlot()
 
 	go func() {
 		<-tunnel.closed
 		p.remove(key, tunnel)
 	}()
 
-	return tunnel
+	return tunnel, release
+}
+
+func (p *tlsTCPSessionPool) activeSessionsLocked(key string) []*tlsTCPTunnel {
+	sessions := p.sessions[key]
+	if len(sessions) == 0 {
+		return nil
+	}
+	active := sessions[:0]
+	for _, tunnel := range sessions {
+		select {
+		case <-tunnel.closed:
+		default:
+			active = append(active, tunnel)
+		}
+	}
+	if len(active) == 0 {
+		delete(p.sessions, key)
+		return nil
+	}
+	p.sessions[key] = active
+	return active
+}
+
+func leastLoadedTLSTCPTunnel(sessions []*tlsTCPTunnel) *tlsTCPTunnel {
+	least := sessions[0]
+	leastLoad := least.tlsTCPLoad()
+	for _, tunnel := range sessions[1:] {
+		if load := tunnel.tlsTCPLoad(); load < leastLoad {
+			least = tunnel
+			leastLoad = load
+		}
+	}
+	return least
 }
 
 func (p *tlsTCPSessionPool) remove(key string, tunnel *tlsTCPTunnel) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if existing := p.sessions[key]; existing == tunnel {
-		delete(p.sessions, key)
+
+	sessions := p.sessions[key]
+	for i, existing := range sessions {
+		if existing != tunnel {
+			continue
+		}
+		copy(sessions[i:], sessions[i+1:])
+		sessions[len(sessions)-1] = nil
+		sessions = sessions[:len(sessions)-1]
+		break
 	}
+	if len(sessions) == 0 {
+		delete(p.sessions, key)
+		return
+	}
+	p.sessions[key] = sessions
 }
 
 func dialTLSTCPMux(ctx context.Context, network, target string, chain []Hop, provider TLSMaterialProvider, options DialOptions) (net.Conn, error) {
@@ -161,12 +226,13 @@ func dialTLSTCPMux(ctx context.Context, network, target string, chain []Hop, pro
 		return nil, err
 	}
 
-	tunnel, err := relayTLSTCPSessionPool.getOrDial(ctx, sessionKey, func(dialCtx context.Context) (*tlsTCPTunnel, error) {
+	tunnel, release, err := relayTLSTCPSessionPool.getOrDial(ctx, sessionKey, func(dialCtx context.Context) (*tlsTCPTunnel, error) {
 		return dialNewTLSTCPTunnel(dialCtx, firstHop, provider)
 	})
 	if err != nil {
 		return nil, err
 	}
+	defer release()
 
 	return tunnel.openStream(ctx, relayOpenFrame{
 		Kind:        network,
@@ -358,6 +424,20 @@ func (t *tlsTCPTunnel) logicalStreamCount() int {
 	t.streamsMu.Lock()
 	defer t.streamsMu.Unlock()
 	return len(t.streams)
+}
+
+func (t *tlsTCPTunnel) tlsTCPLoad() int64 {
+	return int64(t.logicalStreamCount()) + t.pendingStreams.Load()
+}
+
+func (t *tlsTCPTunnel) reserveStreamSlot() func() {
+	t.pendingStreams.Add(1)
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			t.pendingStreams.Add(-1)
+		})
+	}
 }
 
 func (t *tlsTCPTunnel) registerStream(stream *tlsTCPLogicalStream) {

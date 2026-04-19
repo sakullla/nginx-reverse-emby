@@ -1,0 +1,75 @@
+services:
+  perf:
+    image: golang:1.26.2-trixie
+    container_name: nre-perf
+    working_dir: /work
+    command: ["go", "run", "/work/harness.go"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/healthz"]
+      interval: 200ms
+      timeout: 200ms
+      retries: 100
+    volumes:
+      - ./harness.go:/work/harness.go:ro
+    networks:
+      - relayperf
+
+  agent-a:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+      target: go-agent-runtime
+    image: nre-agent-perf:latest
+    container_name: nre-agent-a
+    environment:
+      NRE_AGENT_ID: agent-a
+      NRE_AGENT_NAME: agent-a
+      NRE_AGENT_TOKEN: token
+      NRE_MASTER_URL: http://perf:8080
+      NRE_HEARTBEAT_INTERVAL: 500ms
+      NRE_DATA_DIR: /data
+    depends_on:
+      perf:
+        condition: service_healthy
+    networks:
+      - relayperf
+
+  relay-a:
+    image: nre-agent-perf:latest
+    container_name: nre-relay-a
+    environment:
+      NRE_AGENT_ID: relay-a
+      NRE_AGENT_NAME: relay-a
+      NRE_AGENT_TOKEN: token
+      NRE_MASTER_URL: http://perf:8080
+      NRE_HEARTBEAT_INTERVAL: 500ms
+      NRE_DATA_DIR: /data
+    depends_on:
+      perf:
+        condition: service_healthy
+      agent-a:
+        condition: service_started
+    networks:
+      - relayperf
+
+  agent-b:
+    image: nre-agent-perf:latest
+    container_name: nre-agent-b
+    environment:
+      NRE_AGENT_ID: agent-b
+      NRE_AGENT_NAME: agent-b
+      NRE_AGENT_TOKEN: token
+      NRE_MASTER_URL: http://perf:8080
+      NRE_HEARTBEAT_INTERVAL: 500ms
+      NRE_DATA_DIR: /data
+    depends_on:
+      perf:
+        condition: service_healthy
+      agent-a:
+        condition: service_started
+    networks:
+      - relayperf
+
+networks:
+  relayperf:
+    name: nre-relay-perf

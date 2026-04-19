@@ -2,6 +2,7 @@ package relay
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"net"
@@ -137,6 +138,47 @@ func TestTLSTCPLogicalStreamReadFromSplitsLargePayloadIntoMuxFrames(t *testing.T
 	}
 }
 
+func TestIdleDeadlineConnCopyToWrappedTLSTCPStreamUsesReadFromFastPath(t *testing.T) {
+	var wire bytes.Buffer
+	tunnel := &tlsTCPTunnel{
+		rawConn:    noopDeadlineConn{},
+		writer:     &wire,
+		closeOuter: func() error { return nil },
+		streams:    make(map[uint32]*tlsTCPLogicalStream),
+		closed:     make(chan struct{}),
+	}
+	stream := &tlsTCPLogicalStream{
+		tunnel:       tunnel,
+		streamID:     9,
+		readCh:       make(chan struct{}, 1),
+		openResultCh: make(chan error, 1),
+	}
+	source := &markingConn{
+		onRead: func() {
+			stream.readMu.Lock()
+			stream.writeClosed = true
+			stream.readMu.Unlock()
+		},
+		chunks: [][]byte{[]byte("fast-path-payload")},
+	}
+
+	n, err := io.Copy(&idleDeadlineConn{Conn: stream, timeout: time.Minute}, &idleDeadlineConn{Conn: source, timeout: time.Minute})
+	if err != nil {
+		t.Fatalf("io.Copy() error = %v", err)
+	}
+	if n != int64(len("fast-path-payload")) {
+		t.Fatalf("io.Copy() = %d, want %d", n, len("fast-path-payload"))
+	}
+
+	frame, err := readMuxFrame(bytes.NewReader(wire.Bytes()))
+	if err != nil {
+		t.Fatalf("readMuxFrame() error = %v", err)
+	}
+	if got := string(frame.Payload); got != "fast-path-payload" {
+		t.Fatalf("frame payload = %q, want %q", got, "fast-path-payload")
+	}
+}
+
 func TestTLSTCPLogicalStreamWriteToDrainsQueuedChunks(t *testing.T) {
 	stream := &tlsTCPLogicalStream{readCh: make(chan struct{}, 1)}
 	stream.appendData([]byte("hello"))
@@ -199,6 +241,44 @@ func TestTLSTCPLogicalStreamWriteToDoesNotHoldReadMuWhileWriting(t *testing.T) {
 	}
 }
 
+func TestTLSTCPSessionPoolStripesBusySessions(t *testing.T) {
+	pool := newTLSTCPSessionPool()
+	dials := 0
+	var releases []func()
+	defer func() {
+		for _, release := range releases {
+			release()
+		}
+		for _, tunnel := range pool.allTunnelsForTest() {
+			_ = tunnel.close()
+		}
+	}()
+
+	for i := 0; i < 5; i++ {
+		tunnel, release, err := pool.getOrDial(context.Background(), "relay-key", func(context.Context) (*tlsTCPTunnel, error) {
+			dials++
+			return &tlsTCPTunnel{
+				key:        "relay-key",
+				rawConn:    noopDeadlineConn{},
+				closeOuter: func() error { return nil },
+				streams:    make(map[uint32]*tlsTCPLogicalStream),
+				closed:     make(chan struct{}),
+			}, nil
+		})
+		if err != nil {
+			t.Fatalf("getOrDial(%d) error = %v", i, err)
+		}
+		if tunnel == nil {
+			t.Fatalf("getOrDial(%d) tunnel = nil", i)
+		}
+		releases = append(releases, release)
+	}
+
+	if dials < 3 {
+		t.Fatalf("dials = %d, want at least 3 busy striped sessions", dials)
+	}
+}
+
 func TestWrapIdleConnPreservesTLSTCPBulkInterfaces(t *testing.T) {
 	stream := &tlsTCPLogicalStream{readCh: make(chan struct{}, 1)}
 	wrapped := wrapIdleConn(stream)
@@ -254,4 +334,35 @@ func (w *blockingFirstWrite) String() string {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	return w.buf.String()
+}
+
+type markingConn struct {
+	net.Conn
+	onRead func()
+	chunks [][]byte
+}
+
+func (c *markingConn) Read(p []byte) (int, error) {
+	if len(c.chunks) == 0 {
+		return 0, io.EOF
+	}
+	if c.onRead != nil {
+		c.onRead()
+		c.onRead = nil
+	}
+	chunk := c.chunks[0]
+	c.chunks = c.chunks[1:]
+	return copy(p, chunk), nil
+}
+
+func (c *markingConn) Write(p []byte) (int, error) { return len(p), nil }
+func (c *markingConn) Close() error                { return nil }
+func (c *markingConn) LocalAddr() net.Addr         { return nil }
+func (c *markingConn) RemoteAddr() net.Addr        { return nil }
+func (c *markingConn) SetDeadline(time.Time) error { return nil }
+func (c *markingConn) SetReadDeadline(time.Time) error {
+	return nil
+}
+func (c *markingConn) SetWriteDeadline(time.Time) error {
+	return nil
 }
