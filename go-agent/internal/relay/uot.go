@@ -53,7 +53,7 @@ func readUOTPacketInto(r io.Reader, buf []byte) ([]byte, error) {
 
 	size := int(binary.BigEndian.Uint16(header[:]))
 	if size > len(buf) {
-		return nil, fmt.Errorf("uot packet exceeds buffer size %d", len(buf))
+		return nil, fmt.Errorf("uot packet size %d exceeds buffer %d", size, len(buf))
 	}
 	payload := buf[:size]
 	if _, err := io.ReadFull(r, payload); err != nil {

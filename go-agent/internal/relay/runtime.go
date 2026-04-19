@@ -189,6 +189,9 @@ func (s *Server) openUDPPeer(target string, chain []Hop) (udpPacketPeer, error) 
 }
 
 func Dial(ctx context.Context, network, target string, chain []Hop, provider TLSMaterialProvider, opts ...DialOptions) (net.Conn, error) {
+	if len(opts) > 1 {
+		return nil, fmt.Errorf("multiple relay dial options are not supported")
+	}
 	options := DialOptions{}
 	if len(opts) > 0 {
 		options = opts[0].clone()
@@ -237,6 +240,8 @@ func Dial(ctx context.Context, network, target string, chain []Hop, provider TLS
 	return dialTLSTCPMux(ctx, network, target, chain, provider, options)
 }
 
+// dialTLSTCP is the legacy one-stream-per-TLS-connection path. Runtime relay
+// dialing uses dialTLSTCPMux, so InitialPayload is intentionally not accepted here.
 func dialTLSTCP(ctx context.Context, network, target string, chain []Hop, provider TLSMaterialProvider) (net.Conn, error) {
 	firstHop := chain[0]
 

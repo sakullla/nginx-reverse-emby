@@ -2,7 +2,9 @@ package relay
 
 import (
 	"bytes"
+	"context"
 	"io"
+	"strings"
 	"testing"
 )
 
@@ -81,6 +83,24 @@ func TestDialOptionsCloneInitialPayload(t *testing.T) {
 
 	if got := string(clone.InitialPayload); got != "abc" {
 		t.Fatalf("clone.InitialPayload = %q, want %q", got, "abc")
+	}
+}
+
+func TestDialRejectsMultipleDialOptions(t *testing.T) {
+	_, err := Dial(
+		context.Background(),
+		"tcp",
+		"127.0.0.1:9000",
+		[]Hop{{Address: "127.0.0.1:9443"}},
+		nil,
+		DialOptions{},
+		DialOptions{},
+	)
+	if err == nil {
+		t.Fatal("Dial() error = nil")
+	}
+	if got, want := err.Error(), "multiple relay dial options"; !strings.Contains(got, want) {
+		t.Fatalf("Dial() error = %q, want containing %q", got, want)
 	}
 }
 

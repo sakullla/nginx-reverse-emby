@@ -364,11 +364,7 @@ func cloneTCPAddr(addr *net.TCPAddr) *net.TCPAddr {
 	return &out
 }
 
-func (s *Server) dialTCPUpstream(rule model.L4Rule, opts ...relay.DialOptions) (net.Conn, l4Candidate, time.Duration, error) {
-	dialOptions := relay.DialOptions{}
-	if len(opts) > 0 {
-		dialOptions = opts[0]
-	}
+func (s *Server) dialTCPUpstream(rule model.L4Rule, dialOptions relay.DialOptions) (net.Conn, l4Candidate, time.Duration, error) {
 	candidates, err := l4Candidates(s.ctx, s.cache, rule)
 	if err != nil {
 		return nil, l4Candidate{}, 0, err

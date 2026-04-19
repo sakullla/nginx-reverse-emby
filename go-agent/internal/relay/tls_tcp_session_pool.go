@@ -466,6 +466,8 @@ func (s *tlsTCPLogicalStream) ReadFrom(r io.Reader) (int64, error) {
 	for {
 		n, err := r.Read(buf)
 		if n > 0 {
+			// writeFrame is synchronous under the tunnel write lock, so this
+			// pooled buffer is consumed before the next read reuses it.
 			if frameErr := s.tunnel.writeFrame(context.Background(), muxFrame{
 				Type:     muxFrameTypeData,
 				StreamID: s.streamID,

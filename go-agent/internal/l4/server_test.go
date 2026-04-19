@@ -854,7 +854,7 @@ func TestDialTCPUpstreamStopsWhenServerContextCancelled(t *testing.T) {
 		},
 	}
 
-	_, _, _, err := srv.dialTCPUpstream(rule)
+	_, _, _, err := srv.dialTCPUpstream(rule, relay.DialOptions{})
 	if err == nil {
 		t.Fatal("dialTCPUpstream() error = nil")
 	}
@@ -939,6 +939,64 @@ func TestTCPRelayProxy(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected l4 tcp proxy to traverse relay listener")
 	}
+}
+
+func TestPrefetchRelayInitialPayloadUsesBufferedData(t *testing.T) {
+	reader := bufio.NewReader(&chunkedReader{chunks: [][]byte{
+		[]byte("buffered"),
+		[]byte("-payload"),
+	}})
+	if _, err := reader.Peek(len("buffered")); err != nil {
+		t.Fatalf("Peek() error = %v", err)
+	}
+	srv := &Server{now: time.Now}
+
+	payload, source, err := srv.prefetchRelayInitialPayload(nil, reader)
+	if err != nil {
+		t.Fatalf("prefetchRelayInitialPayload() error = %v", err)
+	}
+	if got := string(payload); got != "buffered" {
+		t.Fatalf("payload = %q, want %q", got, "buffered")
+	}
+
+	remaining, err := io.ReadAll(source)
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	if got := string(remaining); got != "-payload" {
+		t.Fatalf("remaining source = %q, want %q", got, "-payload")
+	}
+}
+
+func TestPrefetchRelayInitialPayloadTimesOutEmptyRead(t *testing.T) {
+	client, peer := net.Pipe()
+	defer client.Close()
+	defer peer.Close()
+	srv := &Server{now: time.Now}
+
+	payload, source, err := srv.prefetchRelayInitialPayload(client, client)
+	if err != nil {
+		t.Fatalf("prefetchRelayInitialPayload() error = %v", err)
+	}
+	if payload != nil {
+		t.Fatalf("payload = %q, want nil", payload)
+	}
+	if source != client {
+		t.Fatalf("source changed after timeout")
+	}
+}
+
+type chunkedReader struct {
+	chunks [][]byte
+}
+
+func (r *chunkedReader) Read(p []byte) (int, error) {
+	if len(r.chunks) == 0 {
+		return 0, io.EOF
+	}
+	chunk := r.chunks[0]
+	r.chunks = r.chunks[1:]
+	return copy(p, chunk), nil
 }
 
 func TestTCPRelayProxyPassesObfsTransportMode(t *testing.T) {
