@@ -558,6 +558,72 @@ func TestRuleServiceCreateRejectsDuplicateRelayChainEntries(t *testing.T) {
 	}
 }
 
+func TestRuleServiceCreateRejectsDuplicateFrontendBindingOnSameAgent(t *testing.T) {
+	store := &fakeRuleStore{
+		rulesByAgent: map[string][]storage.HTTPRuleRow{
+			"local": {{
+				ID:          1,
+				AgentID:     "local",
+				FrontendURL: "http://media.example.com/emby",
+				BackendURL:  "http://127.0.0.1:8096",
+				Enabled:     true,
+				Revision:    2,
+			}},
+		},
+	}
+	svc := NewRuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	_, err := svc.Create(context.Background(), "local", HTTPRuleInput{
+		FrontendURL: stringPtrRule("http://media.example.com/emby/"),
+		BackendURL:  stringPtrRule("http://127.0.0.1:8097"),
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if err.Error() != "invalid argument: frontend_url conflicts with existing rule: 1" {
+		t.Fatalf("Create() error = %v", err)
+	}
+}
+
+func TestRuleServiceUpdateRejectsDuplicateFrontendBindingOnSameAgent(t *testing.T) {
+	store := &fakeRuleStore{
+		rulesByAgent: map[string][]storage.HTTPRuleRow{
+			"local": {{
+				ID:          1,
+				AgentID:     "local",
+				FrontendURL: "http://media.example.com/emby",
+				BackendURL:  "http://127.0.0.1:8096",
+				Enabled:     true,
+				Revision:    2,
+			}, {
+				ID:          2,
+				AgentID:     "local",
+				FrontendURL: "http://media.example.com/jellyfin",
+				BackendURL:  "http://127.0.0.1:8097",
+				Enabled:     true,
+				Revision:    3,
+			}},
+		},
+	}
+	svc := NewRuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	_, err := svc.Update(context.Background(), "local", 2, HTTPRuleInput{
+		FrontendURL: stringPtrRule("http://media.example.com/emby"),
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if err.Error() != "invalid argument: frontend_url conflicts with existing rule: 1" {
+		t.Fatalf("Update() error = %v", err)
+	}
+}
+
 func TestRuleServiceCreateUpdatesRemoteAgentDesiredRevision(t *testing.T) {
 	store := &fakeRuleStore{
 		agents: []storage.AgentRow{{
