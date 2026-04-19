@@ -4,16 +4,15 @@ Date: 2026-04-19
 
 ## Overview
 
-Redesign the system settings page from a single-page card layout to a Tab-based layout with scrollable pill-style navigation. Add three new settings categories: Security (API Token), Agent Management (heartbeat + registration), and Certificate Rotation (full management panel).
+Redesign the system settings page from a single-page card layout to a Tab-based layout with scrollable pill-style navigation. Add two new settings categories: Security (API Token) and Agent Management (heartbeat + registration). Redesign the Data tab with selective export/import.
 
 ## Goals
 
 - Reorganize settings into clear Tab categories
 - Add API Token management
 - Add Agent heartbeat configuration and registration/approval settings
-- Add self-signed certificate management panel with rotation
-- Improve import flow with three-stage modal
-- Keep existing functionality (theme, backup, about) intact
+- Redesign data export/import with selective category control
+- Keep existing functionality (theme, about) intact
 
 ## Page Structure
 
@@ -23,7 +22,7 @@ Redesign the system settings page from a single-page card layout to a Tab-based 
 ┌──────────────────────────────────────────┐
 │  系统设置                                │
 ├──────────────────────────────────────────┤
-│  [外观] [安全] [Agent] [证书] [数据] [关于]│  ← pill tabs, scrollable
+│  [外观] [安全] [Agent] [数据] [关于]  │  ← pill tabs, scrollable
 ├──────────────────────────────────────────┤
 │                                          │
 │  Active tab content area                 │
@@ -46,7 +45,6 @@ Redesign the system settings page from a single-page card layout to a Tab-based 
 | 外观   | 🎨   | `SettingsTabAppearance.vue`      |
 | 安全   | 🔒   | `SettingsTabSecurity.vue`        |
 | Agent  | 🤖   | `SettingsTabAgent.vue`           |
-| 证书   | 📜   | `SettingsTabCertificate.vue`     |
 | 数据   | 💾   | `SettingsTabData.vue`            |
 | 关于   | ℹ️   | `SettingsTabAbout.vue`           |
 
@@ -89,43 +87,40 @@ Unchanged from current implementation. Three theme cards: 二次元, 晴空, 暗
 - `POST /api/auth/regenerate-register-token` — regenerate register token
 - `PUT /api/settings/registration` — update approval mode
 
-### Tab 4: 证书 (Certificate)
+### Tab 4: 数据 (Data)
 
-**Section 1: Certificate Status Card**
-- Display: CN, Issuer, Valid From, Valid To, Days Remaining
-- Status indicator: green (healthy) / yellow (expiring soon <30d) / red (expired)
-- Auto-refresh status
+Redesigned with selective export/import and conflict resolution.
 
-**Section 2: Rotation Policy**
-- Auto-rotation toggle (switch)
-- Rotation period selector: 30 / 90 / 180 / 365 days
-- Next rotation date display (computed from last rotation + period)
+**Export:**
+- Click "导出备份" opens a modal with category checkboxes:
+  - Agents
+  - HTTP 规则 (HTTP Rules)
+  - L4 规则 (L4 Rules)
+  - 中继监听 (Relay Listeners)
+  - 证书 (Certificates)
+  - 版本策略 (Version Policies)
+- "全选" / "取消全选" toggle
+- Only checked categories are included in the exported `.tar.gz`
+- If no category selected, export button is disabled
 
-**Section 3: Manual Rotation**
-- "Rotate Now" button with confirmation dialog
-- Shows which certificates will be affected
+**Import:**
+- Three-stage modal flow:
+1. **Upload stage** — drag-and-drop zone + file button, validates format and size
+2. **Preview stage** — parses the backup file and displays:
+   - Manifest info (source architecture, export time)
+   - Available categories with item counts from the backup file
+   - Checkboxes to select which categories to import
+   - Global conflict strategy: radio group "覆盖已有" (overwrite) or "跳过冲突" (skip)
+3. **Result stage** — color-coded statistics:
+   - Green: imported count per category
+   - Yellow: skipped conflicts (if skip mode)
+   - Red: skipped invalid / missing material
 
-**Section 4: Rotation History**
-- Recent 10 rotation records
-- Each record: timestamp, trigger type (auto/manual), result (success/failed), affected count
+**Backend API changes:**
+- `GET /api/system/backup/export?categories=agents,http_rules,l4_rules` — export selected categories
+- `POST /api/system/backup/import` — accepts `categories` and `conflictStrategy` fields alongside the file
 
-**Backend API:**
-- `GET /api/settings/certificate` — certificate status + rotation policy + history
-- `PUT /api/settings/certificate/policy` — update rotation policy
-- `POST /api/settings/certificate/rotate` — trigger manual rotation
-
-### Tab 5: 数据 (Data)
-
-Keep current export/import functionality with upgrade:
-
-**Export:** Unchanged — downloads `.tar.gz` backup.
-
-**Import:** Three-stage modal flow:
-1. **Upload stage** — drag-and-drop zone, file validation
-2. **Preview stage** — show manifest info and import summary before applying
-3. **Result stage** — color-coded statistics (green imported, yellow conflicts, red failures)
-
-### Tab 6: 关于 (About)
+### Tab 5: 关于 (About)
 
 - Application version
 - Project name
@@ -140,8 +135,9 @@ SettingsPage.vue
 ├── SettingsTabAppearance.vue   (theme selection)
 ├── SettingsTabSecurity.vue     (API token management)
 ├── SettingsTabAgent.vue        (heartbeat + registration)
-├── SettingsTabCertificate.vue  (certificate management)
 ├── SettingsTabData.vue         (backup export/import)
+│   ├── ExportModal.vue         (selective category export)
+│   └── ImportModal.vue         (three-stage import flow)
 └── SettingsTabAbout.vue        (system info)
 ```
 
@@ -153,6 +149,7 @@ SettingsPage.vue
 - Settings data: fetched from API on tab activation (lazy loading)
 - Form saves: optimistic UI with rollback on error, toast notifications for feedback
 - Token operations: always require explicit user confirmation before execution
+- Backup logic moves from `SettingsPage.vue` to `SettingsTabData.vue` with new sub-components
 
 ## Error Handling
 
