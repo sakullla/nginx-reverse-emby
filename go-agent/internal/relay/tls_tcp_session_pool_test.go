@@ -106,14 +106,14 @@ func TestTLSTCPLogicalStreamReadFromSplitsLargePayloadIntoMuxFrames(t *testing.T
 		readCh:       make(chan struct{}, 1),
 		openResultCh: make(chan error, 1),
 	}
-	src := bytes.NewReader(bytes.Repeat([]byte("a"), 150000))
+	src := bytes.NewReader(bytes.Repeat([]byte("a"), 600000))
 
 	n, err := stream.ReadFrom(src)
 	if err != nil {
 		t.Fatalf("ReadFrom() error = %v", err)
 	}
-	if n != 150000 {
-		t.Fatalf("ReadFrom() = %d, want %d", n, 150000)
+	if n != 600000 {
+		t.Fatalf("ReadFrom() = %d, want %d", n, 600000)
 	}
 
 	frameReader := bytes.NewReader(wire.Bytes())
@@ -133,8 +133,102 @@ func TestTLSTCPLogicalStreamReadFromSplitsLargePayloadIntoMuxFrames(t *testing.T
 	if frames < 2 {
 		t.Fatalf("data frame count = %d, want at least 2", frames)
 	}
-	if got := payload.Len(); got != 150000 {
-		t.Fatalf("payload len = %d, want %d", got, 150000)
+	if got := payload.Len(); got != 600000 {
+		t.Fatalf("payload len = %d, want %d", got, 600000)
+	}
+}
+
+func TestTLSTCPLogicalStreamReadFromFitsMediumPayloadIntoSingleMuxFrame(t *testing.T) {
+	var wire bytes.Buffer
+	tunnel := &tlsTCPTunnel{
+		rawConn:    noopDeadlineConn{},
+		writer:     &wire,
+		closeOuter: func() error { return nil },
+		streams:    make(map[uint32]*tlsTCPLogicalStream),
+		closed:     make(chan struct{}),
+	}
+	stream := &tlsTCPLogicalStream{
+		tunnel:       tunnel,
+		streamID:     8,
+		readCh:       make(chan struct{}, 1),
+		openResultCh: make(chan error, 1),
+	}
+	src := bytes.NewReader(bytes.Repeat([]byte("b"), 200000))
+
+	n, err := stream.ReadFrom(src)
+	if err != nil {
+		t.Fatalf("ReadFrom() error = %v", err)
+	}
+	if n != 200000 {
+		t.Fatalf("ReadFrom() = %d, want %d", n, 200000)
+	}
+
+	frameReader := bytes.NewReader(wire.Bytes())
+	frames := 0
+	for frameReader.Len() > 0 {
+		frame, err := readMuxFrame(frameReader)
+		if err != nil {
+			t.Fatalf("readMuxFrame() error = %v", err)
+		}
+		if frame.Type != muxFrameTypeData {
+			t.Fatalf("frame.Type = %v, want %v", frame.Type, muxFrameTypeData)
+		}
+		frames++
+	}
+	if frames != 1 {
+		t.Fatalf("data frame count = %d, want 1", frames)
+	}
+}
+
+func TestTLSTCPLogicalStreamReadFromCoalescesImmediateSourceChunks(t *testing.T) {
+	var wire bytes.Buffer
+	tunnel := &tlsTCPTunnel{
+		rawConn:    noopDeadlineConn{},
+		writer:     &wire,
+		closeOuter: func() error { return nil },
+		streams:    make(map[uint32]*tlsTCPLogicalStream),
+		closed:     make(chan struct{}),
+	}
+	stream := &tlsTCPLogicalStream{
+		tunnel:       tunnel,
+		streamID:     10,
+		readCh:       make(chan struct{}, 1),
+		openResultCh: make(chan error, 1),
+	}
+	src := &idleDeadlineConn{
+		Conn: &markingConn{
+			chunks: [][]byte{
+				bytes.Repeat([]byte("c"), 64*1024),
+				bytes.Repeat([]byte("d"), 64*1024),
+				bytes.Repeat([]byte("e"), 64*1024),
+				bytes.Repeat([]byte("f"), 3392),
+			},
+		},
+		timeout: time.Minute,
+	}
+
+	n, err := stream.ReadFrom(src)
+	if err != nil {
+		t.Fatalf("ReadFrom() error = %v", err)
+	}
+	if n != 200000 {
+		t.Fatalf("ReadFrom() = %d, want %d", n, 200000)
+	}
+
+	frameReader := bytes.NewReader(wire.Bytes())
+	frames := 0
+	for frameReader.Len() > 0 {
+		frame, err := readMuxFrame(frameReader)
+		if err != nil {
+			t.Fatalf("readMuxFrame() error = %v", err)
+		}
+		if frame.Type != muxFrameTypeData {
+			t.Fatalf("frame.Type = %v, want %v", frame.Type, muxFrameTypeData)
+		}
+		frames++
+	}
+	if frames != 1 {
+		t.Fatalf("data frame count = %d, want 1", frames)
 	}
 }
 

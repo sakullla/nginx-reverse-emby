@@ -16,7 +16,7 @@ import (
 
 var relayTLSTCPSessionPool = newTLSTCPSessionPool()
 
-const tlsTCPBulkFrameSize = 64 * 1024
+const tlsTCPBulkFrameSize = 256 * 1024
 const tlsTCPMuxSessionsPerKey = 4
 const tlsTCPMuxTargetStreamsPerSession = 2
 
@@ -546,6 +546,8 @@ func (s *tlsTCPLogicalStream) ReadFrom(r io.Reader) (int64, error) {
 	for {
 		n, err := r.Read(buf)
 		if n > 0 {
+			n, err = coalesceReadableTLSTCPSource(r, buf, n, err)
+
 			// writeFrame is synchronous under the tunnel write lock, so this
 			// pooled buffer is consumed before the next read reuses it.
 			if frameErr := s.tunnel.writeFrame(context.Background(), muxFrame{
@@ -564,6 +566,56 @@ func (s *tlsTCPLogicalStream) ReadFrom(r io.Reader) (int64, error) {
 			return total, err
 		}
 	}
+}
+
+func coalesceReadableTLSTCPSource(r io.Reader, buf []byte, filled int, readErr error) (int, error) {
+	if filled >= len(buf) || readErr != nil {
+		return filled, readErr
+	}
+
+	var conn interface {
+		Read([]byte) (int, error)
+		SetReadDeadline(time.Time) error
+	}
+	switch src := r.(type) {
+	case *idleDeadlineConn:
+		if deadlineConn, ok := src.Conn.(interface {
+			Read([]byte) (int, error)
+			SetReadDeadline(time.Time) error
+		}); ok {
+			conn = deadlineConn
+		}
+	case interface {
+		Read([]byte) (int, error)
+		SetReadDeadline(time.Time) error
+	}:
+		conn = src
+	}
+	if conn == nil {
+		return filled, readErr
+	}
+
+	defer conn.SetReadDeadline(time.Time{})
+	for filled < len(buf) {
+		_ = conn.SetReadDeadline(time.Now())
+		n, err := conn.Read(buf[filled:])
+		if n > 0 {
+			filled += n
+		}
+		if err == nil {
+			continue
+		}
+		if isRelayTimeoutError(err) {
+			return filled, nil
+		}
+		return filled, err
+	}
+	return filled, readErr
+}
+
+func isRelayTimeoutError(err error) bool {
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
 func (s *tlsTCPLogicalStream) WriteTo(w io.Writer) (int64, error) {

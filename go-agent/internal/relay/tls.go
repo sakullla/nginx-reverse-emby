@@ -28,8 +28,9 @@ func serverTLSConfig(ctx context.Context, provider TLSMaterialProvider, listener
 	}
 
 	return &tls.Config{
-		Certificates: []tls.Certificate{*cert},
-		MinVersion:   tls.VersionTLS12,
+		Certificates:                 []tls.Certificate{*cert},
+		MinVersion:                   tls.VersionTLS12,
+		DynamicRecordSizingDisabled: true,
 	}, nil
 }
 
@@ -54,9 +55,10 @@ func clientTLSConfig(ctx context.Context, provider TLSMaterialProvider, listener
 	}
 
 	return &tls.Config{
-		InsecureSkipVerify: true,
-		MinVersion:         tls.VersionTLS12,
-		ServerName:         serverName,
+		InsecureSkipVerify:           true,
+		MinVersion:                   tls.VersionTLS12,
+		ServerName:                   serverName,
+		DynamicRecordSizingDisabled: true,
 		VerifyConnection: func(state tls.ConnectionState) error {
 			pinErr := verifyPinSet(listener, state.PeerCertificates)
 			caErr := verifyCertificateAuthority(listener, rootCAs, serverName, state.PeerCertificates)
