@@ -16,7 +16,7 @@ import (
 
 var relayTLSTCPSessionPool = newTLSTCPSessionPool()
 
-const tlsTCPBulkFrameSize = 256 * 1024
+const tlsTCPBulkFrameSize = 64 * 1024
 const tlsTCPMuxSessionsPerKey = 4
 const tlsTCPMuxTargetStreamsPerSession = 2
 
@@ -59,14 +59,29 @@ type tlsTCPLogicalStream struct {
 	streamID uint32
 
 	readMu      sync.Mutex
-	readChunks  [][]byte
-	readOffset  int
+	readChunks  []tlsTCPReadChunk
 	readCh      chan struct{}
 	readErr     error
 	readErrSet  bool
 	writeClosed bool
 
 	openResultCh chan error
+}
+
+type tlsTCPReadChunk struct {
+	payload []byte
+	release func()
+}
+
+func (c *tlsTCPReadChunk) consume(n int) {
+	c.payload = c.payload[n:]
+}
+
+func (c *tlsTCPReadChunk) releaseNow() {
+	if c.release != nil {
+		c.release()
+		c.release = nil
+	}
 }
 
 func newTLSTCPSessionPool() *tlsTCPSessionPool {
@@ -384,12 +399,14 @@ func (t *tlsTCPTunnel) readLoop() {
 
 		stream := t.getStream(frame.StreamID)
 		if stream == nil {
+			frame.releasePayload()
 			continue
 		}
 
 		switch frame.Type {
 		case muxFrameTypeOpenResult:
 			result, err := readMuxOpenResultPayload(frame.Payload)
+			frame.releasePayload()
 			if err != nil {
 				stream.deliverOpenResult(err)
 				continue
@@ -400,13 +417,17 @@ func (t *tlsTCPTunnel) readLoop() {
 			}
 			stream.deliverOpenResult(nil)
 		case muxFrameTypeData:
-			stream.appendData(frame.Payload)
+			stream.appendDataChunk(frame.takeReadChunk())
 		case muxFrameTypeFin:
+			frame.releasePayload()
 			stream.setReadError(io.EOF)
 			t.removeStream(frame.StreamID)
 		case muxFrameTypeRst:
+			frame.releasePayload()
 			stream.setReadError(io.ErrClosedPipe)
 			t.removeStream(frame.StreamID)
+		default:
+			frame.releasePayload()
 		}
 	}
 }
@@ -479,22 +500,22 @@ func (s *tlsTCPLogicalStream) Read(p []byte) (int, error) {
 		if len(s.readChunks) > 0 {
 			total := 0
 			for total < len(p) && len(s.readChunks) > 0 {
-				head := s.readChunks[0]
-				if len(head) == 0 {
-					s.readChunks[0] = nil
+				head := &s.readChunks[0]
+				if len(head.payload) == 0 {
+					head.releaseNow()
+					s.readChunks[0] = tlsTCPReadChunk{}
 					s.readChunks = s.readChunks[1:]
-					s.readOffset = 0
 					continue
 				}
-				n := copy(p[total:], head[s.readOffset:])
+				n := copy(p[total:], head.payload)
 				total += n
-				s.readOffset += n
-				if s.readOffset < len(head) {
+				head.consume(n)
+				if len(head.payload) > 0 {
 					break
 				}
-				s.readChunks[0] = nil
+				head.releaseNow()
+				s.readChunks[0] = tlsTCPReadChunk{}
 				s.readChunks = s.readChunks[1:]
-				s.readOffset = 0
 			}
 			s.readMu.Unlock()
 			return total, nil
@@ -624,24 +645,28 @@ func (s *tlsTCPLogicalStream) WriteTo(w io.Writer) (int64, error) {
 		s.readMu.Lock()
 		if len(s.readChunks) > 0 {
 			head := s.readChunks[0]
-			chunk := head[s.readOffset:]
-			s.readChunks[0] = nil
+			chunk := head.payload
+			s.readChunks[0] = tlsTCPReadChunk{}
 			s.readChunks = s.readChunks[1:]
-			s.readOffset = 0
 			s.readMu.Unlock()
 
 			n, err := w.Write(chunk)
 			total += int64(n)
 			if err != nil {
 				if n < len(chunk) {
-					s.prependReadChunk(chunk[n:])
+					head.payload = chunk[n:]
+					s.prependReadChunk(head)
+				} else {
+					head.releaseNow()
 				}
 				return total, err
 			}
 			if n != len(chunk) {
-				s.prependReadChunk(chunk[n:])
+				head.payload = chunk[n:]
+				s.prependReadChunk(head)
 				return total, io.ErrShortWrite
 			}
+			head.releaseNow()
 			continue
 		}
 		if s.readErrSet {
@@ -662,13 +687,13 @@ func (s *tlsTCPLogicalStream) WriteTo(w io.Writer) (int64, error) {
 	}
 }
 
-func (s *tlsTCPLogicalStream) prependReadChunk(chunk []byte) {
-	if len(chunk) == 0 {
+func (s *tlsTCPLogicalStream) prependReadChunk(chunk tlsTCPReadChunk) {
+	if len(chunk.payload) == 0 {
+		chunk.releaseNow()
 		return
 	}
 	s.readMu.Lock()
-	s.readChunks = append([][]byte{chunk}, s.readChunks...)
-	s.readOffset = 0
+	s.readChunks = append([]tlsTCPReadChunk{chunk}, s.readChunks...)
 	s.readMu.Unlock()
 	s.notifyReadable()
 }
@@ -676,6 +701,7 @@ func (s *tlsTCPLogicalStream) prependReadChunk(chunk []byte) {
 func (s *tlsTCPLogicalStream) Close() error {
 	_ = s.CloseWrite()
 	s.tunnel.removeStream(s.streamID)
+	s.discardReadChunks()
 	s.setReadError(io.EOF)
 	return nil
 }
@@ -718,6 +744,7 @@ func (s *tlsTCPLogicalStream) CloseWrite() error {
 }
 
 func (s *tlsTCPLogicalStream) CloseRead() error {
+	s.discardReadChunks()
 	s.setReadError(io.EOF)
 	return nil
 }
@@ -730,13 +757,29 @@ func (s *tlsTCPLogicalStream) ConnectionState() tls.ConnectionState {
 }
 
 func (s *tlsTCPLogicalStream) appendData(payload []byte) {
-	if len(payload) == 0 {
+	s.appendDataChunk(tlsTCPReadChunk{payload: payload})
+}
+
+func (s *tlsTCPLogicalStream) appendDataChunk(chunk tlsTCPReadChunk) {
+	if len(chunk.payload) == 0 {
+		chunk.releaseNow()
 		return
 	}
 	s.readMu.Lock()
-	s.readChunks = append(s.readChunks, payload)
+	s.readChunks = append(s.readChunks, chunk)
 	s.readMu.Unlock()
 	s.notifyReadable()
+}
+
+func (s *tlsTCPLogicalStream) discardReadChunks() {
+	s.readMu.Lock()
+	chunks := s.readChunks
+	s.readChunks = nil
+	s.readMu.Unlock()
+
+	for i := range chunks {
+		chunks[i].releaseNow()
+	}
 }
 
 func (s *tlsTCPLogicalStream) setReadError(err error) {
@@ -798,6 +841,7 @@ func (s *serverTLSTCPSession) run(listener Listener) {
 		switch frame.Type {
 		case muxFrameTypeOpen:
 			request, err := readMuxOpenPayload(frame.Payload)
+			frame.releasePayload()
 			if err != nil {
 				_ = s.writeOpenResult(frame.StreamID, muxOpenResult{OK: false, Error: err.Error()})
 				continue
@@ -817,18 +861,24 @@ func (s *serverTLSTCPSession) run(listener Listener) {
 			go s.handleStream(listener, stream, request)
 		case muxFrameTypeData:
 			if stream := s.tunnel.getStream(frame.StreamID); stream != nil {
-				stream.appendData(frame.Payload)
+				stream.appendDataChunk(frame.takeReadChunk())
+			} else {
+				frame.releasePayload()
 			}
 		case muxFrameTypeFin:
+			frame.releasePayload()
 			if stream := s.tunnel.getStream(frame.StreamID); stream != nil {
 				stream.setReadError(io.EOF)
 				s.tunnel.removeStream(frame.StreamID)
 			}
 		case muxFrameTypeRst:
+			frame.releasePayload()
 			if stream := s.tunnel.getStream(frame.StreamID); stream != nil {
 				stream.setReadError(io.ErrClosedPipe)
 				s.tunnel.removeStream(frame.StreamID)
 			}
+		default:
+			frame.releasePayload()
 		}
 	}
 }

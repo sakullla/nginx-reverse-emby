@@ -18,9 +18,6 @@ func TestTLSTCPLogicalStreamReadConsumesQueuedChunksInOrder(t *testing.T) {
 	if got := len(stream.readChunks); got != 2 {
 		t.Fatalf("len(readChunks) = %d, want 2", got)
 	}
-	if stream.readOffset != 0 {
-		t.Fatalf("readOffset = %d, want 0", stream.readOffset)
-	}
 
 	buf := make([]byte, 7)
 	n, err := stream.Read(buf)
@@ -33,9 +30,6 @@ func TestTLSTCPLogicalStreamReadConsumesQueuedChunksInOrder(t *testing.T) {
 	if got := len(stream.readChunks); got != 1 {
 		t.Fatalf("len(readChunks) after first read = %d, want 1", got)
 	}
-	if stream.readOffset != 2 {
-		t.Fatalf("readOffset after first read = %d, want 2", stream.readOffset)
-	}
 
 	buf = make([]byte, 3)
 	n, err = stream.Read(buf)
@@ -47,9 +41,6 @@ func TestTLSTCPLogicalStreamReadConsumesQueuedChunksInOrder(t *testing.T) {
 	}
 	if got := len(stream.readChunks); got != 0 {
 		t.Fatalf("len(readChunks) after second read = %d, want 0", got)
-	}
-	if stream.readOffset != 0 {
-		t.Fatalf("readOffset after second read = %d, want 0", stream.readOffset)
 	}
 }
 
@@ -106,14 +97,14 @@ func TestTLSTCPLogicalStreamReadFromSplitsLargePayloadIntoMuxFrames(t *testing.T
 		readCh:       make(chan struct{}, 1),
 		openResultCh: make(chan error, 1),
 	}
-	src := bytes.NewReader(bytes.Repeat([]byte("a"), 600000))
+	src := bytes.NewReader(bytes.Repeat([]byte("a"), 150000))
 
 	n, err := stream.ReadFrom(src)
 	if err != nil {
 		t.Fatalf("ReadFrom() error = %v", err)
 	}
-	if n != 600000 {
-		t.Fatalf("ReadFrom() = %d, want %d", n, 600000)
+	if n != 150000 {
+		t.Fatalf("ReadFrom() = %d, want %d", n, 150000)
 	}
 
 	frameReader := bytes.NewReader(wire.Bytes())
@@ -133,12 +124,12 @@ func TestTLSTCPLogicalStreamReadFromSplitsLargePayloadIntoMuxFrames(t *testing.T
 	if frames < 2 {
 		t.Fatalf("data frame count = %d, want at least 2", frames)
 	}
-	if got := payload.Len(); got != 600000 {
-		t.Fatalf("payload len = %d, want %d", got, 600000)
+	if got := payload.Len(); got != 150000 {
+		t.Fatalf("payload len = %d, want %d", got, 150000)
 	}
 }
 
-func TestTLSTCPLogicalStreamReadFromFitsMediumPayloadIntoSingleMuxFrame(t *testing.T) {
+func TestTLSTCPLogicalStreamReadFromFitsSmallPayloadIntoSingleMuxFrame(t *testing.T) {
 	var wire bytes.Buffer
 	tunnel := &tlsTCPTunnel{
 		rawConn:    noopDeadlineConn{},
@@ -153,14 +144,14 @@ func TestTLSTCPLogicalStreamReadFromFitsMediumPayloadIntoSingleMuxFrame(t *testi
 		readCh:       make(chan struct{}, 1),
 		openResultCh: make(chan error, 1),
 	}
-	src := bytes.NewReader(bytes.Repeat([]byte("b"), 200000))
+	src := bytes.NewReader(bytes.Repeat([]byte("b"), 60000))
 
 	n, err := stream.ReadFrom(src)
 	if err != nil {
 		t.Fatalf("ReadFrom() error = %v", err)
 	}
-	if n != 200000 {
-		t.Fatalf("ReadFrom() = %d, want %d", n, 200000)
+	if n != 60000 {
+		t.Fatalf("ReadFrom() = %d, want %d", n, 60000)
 	}
 
 	frameReader := bytes.NewReader(wire.Bytes())
@@ -198,10 +189,10 @@ func TestTLSTCPLogicalStreamReadFromCoalescesImmediateSourceChunks(t *testing.T)
 	src := &idleDeadlineConn{
 		Conn: &markingConn{
 			chunks: [][]byte{
-				bytes.Repeat([]byte("c"), 64*1024),
-				bytes.Repeat([]byte("d"), 64*1024),
-				bytes.Repeat([]byte("e"), 64*1024),
-				bytes.Repeat([]byte("f"), 3392),
+				bytes.Repeat([]byte("c"), 16*1024),
+				bytes.Repeat([]byte("d"), 16*1024),
+				bytes.Repeat([]byte("e"), 16*1024),
+				bytes.Repeat([]byte("f"), 16*1024),
 			},
 		},
 		timeout: time.Minute,
@@ -211,8 +202,8 @@ func TestTLSTCPLogicalStreamReadFromCoalescesImmediateSourceChunks(t *testing.T)
 	if err != nil {
 		t.Fatalf("ReadFrom() error = %v", err)
 	}
-	if n != 200000 {
-		t.Fatalf("ReadFrom() = %d, want %d", n, 200000)
+	if n != 64*1024 {
+		t.Fatalf("ReadFrom() = %d, want %d", n, 64*1024)
 	}
 
 	frameReader := bytes.NewReader(wire.Bytes())
@@ -229,6 +220,60 @@ func TestTLSTCPLogicalStreamReadFromCoalescesImmediateSourceChunks(t *testing.T)
 	}
 	if frames != 1 {
 		t.Fatalf("data frame count = %d, want 1", frames)
+	}
+}
+
+func TestTLSTCPLogicalStreamReadReleasesConsumedChunk(t *testing.T) {
+	released := 0
+	stream := &tlsTCPLogicalStream{
+		readCh: make(chan struct{}, 1),
+		readChunks: []tlsTCPReadChunk{{
+			payload: []byte("payload"),
+			release: func() { released++ },
+		}},
+	}
+
+	buf := make([]byte, len("payload"))
+	n, err := stream.Read(buf)
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	if got := string(buf[:n]); got != "payload" {
+		t.Fatalf("Read() = %q, want %q", got, "payload")
+	}
+	if released != 1 {
+		t.Fatalf("release calls = %d, want 1", released)
+	}
+}
+
+func TestTLSTCPLogicalStreamWriteToReleasesConsumedChunk(t *testing.T) {
+	released := 0
+	stream := &tlsTCPLogicalStream{
+		tunnel: &tlsTCPTunnel{
+			closed: make(chan struct{}),
+		},
+		readCh: make(chan struct{}, 1),
+		readChunks: []tlsTCPReadChunk{{
+			payload: []byte("payload"),
+			release: func() { released++ },
+		}},
+		readErr:    io.EOF,
+		readErrSet: true,
+	}
+
+	var dst bytes.Buffer
+	n, err := stream.WriteTo(&dst)
+	if err != nil {
+		t.Fatalf("WriteTo() error = %v", err)
+	}
+	if n != int64(len("payload")) {
+		t.Fatalf("WriteTo() = %d, want %d", n, len("payload"))
+	}
+	if got := dst.String(); got != "payload" {
+		t.Fatalf("WriteTo() payload = %q, want %q", got, "payload")
+	}
+	if released != 1 {
+		t.Fatalf("release calls = %d, want 1", released)
 	}
 }
 

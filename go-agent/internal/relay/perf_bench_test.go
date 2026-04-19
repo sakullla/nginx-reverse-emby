@@ -47,3 +47,29 @@ func BenchmarkUOTPacketRoundTrip1400B(b *testing.B) {
 		}
 	}
 }
+
+func BenchmarkReadMuxFrame64KiB(b *testing.B) {
+	payload := bytes.Repeat([]byte("m"), 64*1024)
+	var wire bytes.Buffer
+	if err := writeMuxFrame(&wire, muxFrame{
+		Type:     muxFrameTypeData,
+		StreamID: 1,
+		Payload:  payload,
+	}); err != nil {
+		b.Fatalf("writeMuxFrame() error = %v", err)
+	}
+	frameBytes := wire.Bytes()
+
+	b.ReportAllocs()
+	b.SetBytes(int64(len(payload)))
+	for i := 0; i < b.N; i++ {
+		frame, err := readMuxFrame(bytes.NewReader(frameBytes))
+		if err != nil {
+			b.Fatalf("readMuxFrame() error = %v", err)
+		}
+		if len(frame.Payload) != len(payload) {
+			b.Fatalf("payload len = %d, want %d", len(frame.Payload), len(payload))
+		}
+		frame.releasePayload()
+	}
+}
