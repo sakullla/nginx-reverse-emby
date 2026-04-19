@@ -81,6 +81,78 @@ func TestServerRoutesByHostAndRewritesLocation(t *testing.T) {
 	}
 }
 
+func TestServerRoutesByLongestMatchingPathWithinSameHost(t *testing.T) {
+	var embyPath string
+	embyBackend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		embyPath = r.URL.Path
+		_, _ = w.Write([]byte("emby"))
+	}))
+	defer embyBackend.Close()
+
+	var jellyfinPath string
+	jellyfinBackend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		jellyfinPath = r.URL.Path
+		_, _ = w.Write([]byte("jellyfin"))
+	}))
+	defer jellyfinBackend.Close()
+
+	listener := model.HTTPListener{
+		Rules: []model.HTTPRule{
+			{
+				FrontendURL: "http://route.example/emby",
+				BackendURL:  embyBackend.URL,
+			},
+			{
+				FrontendURL: "http://route.example/jellyfin",
+				BackendURL:  jellyfinBackend.URL,
+			},
+		},
+	}
+
+	server := NewServer(listener)
+	proxy := httptest.NewServer(server)
+	defer proxy.Close()
+
+	for _, tc := range []struct {
+		name         string
+		path         string
+		wantBody     string
+		wantUpstream string
+	}{
+		{name: "emby path", path: "/emby/library", wantBody: "emby", wantUpstream: "/library"},
+		{name: "jellyfin path", path: "/jellyfin/library", wantBody: "jellyfin", wantUpstream: "/library"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodGet, proxy.URL+tc.path, nil)
+			if err != nil {
+				t.Fatalf("failed to create request: %v", err)
+			}
+			req.Host = "route.example"
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("proxy request failed: %v", err)
+			}
+			defer resp.Body.Close()
+
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("failed to read response body: %v", err)
+			}
+			if string(body) != tc.wantBody {
+				t.Fatalf("unexpected response body %q, want %q", string(body), tc.wantBody)
+			}
+		})
+	}
+
+	if embyPath != "/library" {
+		t.Fatalf("expected /emby request to reach emby backend as /library, got %q", embyPath)
+	}
+	if jellyfinPath != "/library" {
+		t.Fatalf("expected /jellyfin request to reach jellyfin backend as /library, got %q", jellyfinPath)
+	}
+}
+
 func TestServerReturns404ForUnknownHost(t *testing.T) {
 	var backend *httptest.Server
 	backend = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -184,8 +256,10 @@ func TestPassProxyHeadersUsesIncomingScheme(t *testing.T) {
 	}
 
 	server := NewServer(listener)
-	for _, entry := range server.routes {
-		entry.transport = backend.Client().Transport.(*http.Transport).Clone()
+	for _, entries := range server.routes {
+		for _, entry := range entries {
+			entry.transport = backend.Client().Transport.(*http.Transport).Clone()
+		}
 	}
 
 	proxy := httptest.NewServer(server)
@@ -1370,8 +1444,13 @@ func TestNewServerReusesSharedTransportPoolOnRouteEntries(t *testing.T) {
 	}
 
 	server := NewServer(listener)
-	first := server.routes["edge.example.test"]
-	second := server.routes["edge-two.example.test"]
+	firstRoutes := server.routes["edge.example.test"]
+	secondRoutes := server.routes["edge-two.example.test"]
+	if len(firstRoutes) != 1 || len(secondRoutes) != 1 {
+		t.Fatalf("expected one route entry per host, got %d and %d", len(firstRoutes), len(secondRoutes))
+	}
+	first := firstRoutes[0]
+	second := secondRoutes[0]
 	if first == nil || second == nil {
 		t.Fatalf("expected route entries for both hosts")
 	}
