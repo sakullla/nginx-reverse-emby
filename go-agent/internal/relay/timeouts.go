@@ -3,6 +3,7 @@ package relay
 import (
 	"context"
 	"crypto/tls"
+	"io"
 	"net"
 	"sync"
 	"time"
@@ -171,6 +172,68 @@ func (c *idleDeadlineConn) Read(p []byte) (int, error) {
 func (c *idleDeadlineConn) Write(p []byte) (int, error) {
 	_ = c.Conn.SetWriteDeadline(time.Now().Add(c.timeout))
 	return c.Conn.Write(p)
+}
+
+func (c *idleDeadlineConn) ReadFrom(r io.Reader) (int64, error) {
+	if readerFrom, ok := c.Conn.(io.ReaderFrom); ok {
+		_ = c.Conn.SetWriteDeadline(time.Now().Add(c.timeout))
+		return readerFrom.ReadFrom(r)
+	}
+
+	buf := tlsTCPBulkBufferPool.Get().([]byte)
+	defer tlsTCPBulkBufferPool.Put(buf)
+
+	var total int64
+	for {
+		n, readErr := r.Read(buf)
+		if n > 0 {
+			written, writeErr := c.Write(buf[:n])
+			total += int64(written)
+			if writeErr != nil {
+				return total, writeErr
+			}
+			if written != n {
+				return total, io.ErrShortWrite
+			}
+		}
+		if readErr == io.EOF {
+			return total, nil
+		}
+		if readErr != nil {
+			return total, readErr
+		}
+	}
+}
+
+func (c *idleDeadlineConn) WriteTo(w io.Writer) (int64, error) {
+	if writerTo, ok := c.Conn.(io.WriterTo); ok {
+		_ = c.Conn.SetReadDeadline(time.Now().Add(c.timeout))
+		return writerTo.WriteTo(w)
+	}
+
+	buf := tlsTCPBulkBufferPool.Get().([]byte)
+	defer tlsTCPBulkBufferPool.Put(buf)
+
+	var total int64
+	for {
+		n, readErr := c.Read(buf)
+		if n > 0 {
+			written, writeErr := w.Write(buf[:n])
+			total += int64(written)
+			if writeErr != nil {
+				return total, writeErr
+			}
+			if written != n {
+				return total, io.ErrShortWrite
+			}
+		}
+		if readErr == io.EOF {
+			return total, nil
+		}
+		if readErr != nil {
+			return total, readErr
+		}
+	}
 }
 
 func (c *idleDeadlineConn) CloseWrite() error {

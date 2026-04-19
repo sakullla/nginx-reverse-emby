@@ -933,6 +933,9 @@ func TestTCPRelayProxy(t *testing.T) {
 		if relayReq.Target != upstreamAddress {
 			t.Fatalf("unexpected relay target %q", relayReq.Target)
 		}
+		if !bytes.Equal(relayReq.InitialData, payload) {
+			t.Fatalf("initial relay payload = %q, want %q", relayReq.InitialData, payload)
+		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected l4 tcp proxy to traverse relay listener")
 	}
@@ -2206,15 +2209,17 @@ func (p *runtimeL4RelayProvider) TrustedCAPool(_ context.Context, _ []int) (*x50
 }
 
 type l4RelayTestRequest struct {
-	Network string      `json:"network"`
-	Target  string      `json:"target"`
-	Chain   []relay.Hop `json:"chain,omitempty"`
+	Network     string      `json:"network"`
+	Target      string      `json:"target"`
+	Chain       []relay.Hop `json:"chain,omitempty"`
+	InitialData []byte      `json:"initial_data,omitempty"`
 }
 
 type l4RelayTestOpenFrame struct {
-	Kind   string      `json:"kind"`
-	Target string      `json:"target"`
-	Chain  []relay.Hop `json:"chain,omitempty"`
+	Kind        string      `json:"kind"`
+	Target      string      `json:"target"`
+	Chain       []relay.Hop `json:"chain,omitempty"`
+	InitialData []byte      `json:"initial_data,omitempty"`
 }
 
 type l4RelayTestMuxFrame struct {
@@ -2268,6 +2273,11 @@ func startL4RelayServer(
 		}
 
 		dataConn := net.Conn(relayConn)
+		if len(request.InitialData) > 0 {
+			if _, err := dataConn.Write(request.InitialData); err != nil {
+				return
+			}
+		}
 		_ = dataConn.SetReadDeadline(time.Now().Add(2 * time.Second))
 
 		buf := make([]byte, 1024)
@@ -2363,9 +2373,10 @@ func readL4RelayTestRequest(conn net.Conn) (l4RelayTestRequest, uint32, error) {
 		return l4RelayTestRequest{}, 0, err
 	}
 	return l4RelayTestRequest{
-		Network: request.Kind,
-		Target:  request.Target,
-		Chain:   request.Chain,
+		Network:     request.Kind,
+		Target:      request.Target,
+		Chain:       request.Chain,
+		InitialData: append([]byte(nil), request.InitialData...),
 	}, frame.StreamID, nil
 }
 

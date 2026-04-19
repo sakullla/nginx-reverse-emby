@@ -14,7 +14,16 @@ import (
 	"github.com/quic-go/quic-go"
 )
 
-type DialOptions struct{}
+type DialOptions struct {
+	InitialPayload []byte
+}
+
+func (o DialOptions) clone() DialOptions {
+	if len(o.InitialPayload) == 0 {
+		return DialOptions{}
+	}
+	return DialOptions{InitialPayload: append([]byte(nil), o.InitialPayload...)}
+}
 
 type Server struct {
 	ctx      context.Context
@@ -180,6 +189,10 @@ func (s *Server) openUDPPeer(target string, chain []Hop) (udpPacketPeer, error) 
 }
 
 func Dial(ctx context.Context, network, target string, chain []Hop, provider TLSMaterialProvider, opts ...DialOptions) (net.Conn, error) {
+	options := DialOptions{}
+	if len(opts) > 0 {
+		options = opts[0].clone()
+	}
 	if provider == nil {
 		return nil, fmt.Errorf("tls material provider is required")
 	}
@@ -206,7 +219,7 @@ func Dial(ctx context.Context, network, target string, chain []Hop, provider TLS
 	}
 
 	if transportMode == ListenerTransportModeQUIC {
-		conn, err := dialQUIC(ctx, network, target, chain, provider)
+		conn, err := dialQUIC(ctx, network, target, chain, provider, options)
 		if err == nil {
 			return conn, nil
 		}
@@ -214,14 +227,14 @@ func Dial(ctx context.Context, network, target string, chain []Hop, provider TLS
 			return nil, err
 		}
 
-		fallbackConn, fallbackErr := dialTLSTCPMux(ctx, network, target, chain, provider)
+		fallbackConn, fallbackErr := dialTLSTCPMux(ctx, network, target, chain, provider, options)
 		if fallbackErr != nil {
 			return nil, fmt.Errorf("quic relay failed: %v; tls_tcp fallback failed: %w", err, fallbackErr)
 		}
 		return fallbackConn, nil
 	}
 
-	return dialTLSTCPMux(ctx, network, target, chain, provider)
+	return dialTLSTCPMux(ctx, network, target, chain, provider, options)
 }
 
 func dialTLSTCP(ctx context.Context, network, target string, chain []Hop, provider TLSMaterialProvider) (net.Conn, error) {
@@ -416,6 +429,14 @@ func (s *Server) handleQUICStream(conn *quic.Conn, stream *quic.Stream, listener
 	defer s.untrackConn(upstream)
 	defer upstream.Close()
 
+	if len(request.InitialData) > 0 {
+		if _, err := upstream.Write(request.InitialData); err != nil {
+			_ = withFrameDeadline(clientConn, func() error {
+				return writeRelayResponse(clientConn, relayResponse{OK: false, Error: err.Error()})
+			})
+			return
+		}
+	}
 	if err := withFrameDeadline(clientConn, func() error {
 		return writeRelayResponse(clientConn, relayResponse{OK: true})
 	}); err != nil {
@@ -459,8 +480,9 @@ func pipeUDPPackets(clientConn net.Conn, upstream udpPacketPeer) {
 
 	go func() {
 		defer upstream.Close()
+		buf := make([]byte, maxUOTPacketSize)
 		for {
-			payload, err := readUOTPacket(clientConn)
+			payload, err := readUOTPacketInto(clientConn, buf)
 			if err != nil {
 				done <- struct{}{}
 				return

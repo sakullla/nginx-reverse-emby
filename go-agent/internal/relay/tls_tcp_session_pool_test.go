@@ -1,9 +1,12 @@
 package relay
 
 import (
+	"bytes"
 	"errors"
 	"io"
+	"net"
 	"testing"
+	"time"
 )
 
 func TestTLSTCPLogicalStreamReadConsumesQueuedChunksInOrder(t *testing.T) {
@@ -85,3 +88,87 @@ func TestTLSTCPLogicalStreamReadDoesNotReturnZeroNilForEmptyDataFrame(t *testing
 		t.Fatalf("Read() n = %d, want 0", n)
 	}
 }
+
+func TestTLSTCPLogicalStreamReadFromSplitsLargePayloadIntoMuxFrames(t *testing.T) {
+	var wire bytes.Buffer
+	tunnel := &tlsTCPTunnel{
+		rawConn:    noopDeadlineConn{},
+		writer:     &wire,
+		closeOuter: func() error { return nil },
+		streams:    make(map[uint32]*tlsTCPLogicalStream),
+		closed:     make(chan struct{}),
+	}
+	stream := &tlsTCPLogicalStream{
+		tunnel:       tunnel,
+		streamID:     7,
+		readCh:       make(chan struct{}, 1),
+		openResultCh: make(chan error, 1),
+	}
+	src := bytes.NewReader(bytes.Repeat([]byte("a"), 150000))
+
+	n, err := stream.ReadFrom(src)
+	if err != nil {
+		t.Fatalf("ReadFrom() error = %v", err)
+	}
+	if n != 150000 {
+		t.Fatalf("ReadFrom() = %d, want %d", n, 150000)
+	}
+
+	frameReader := bytes.NewReader(wire.Bytes())
+	frames := 0
+	var payload bytes.Buffer
+	for frameReader.Len() > 0 {
+		frame, err := readMuxFrame(frameReader)
+		if err != nil {
+			t.Fatalf("readMuxFrame() error = %v", err)
+		}
+		if frame.Type != muxFrameTypeData {
+			t.Fatalf("frame.Type = %v, want %v", frame.Type, muxFrameTypeData)
+		}
+		frames++
+		payload.Write(frame.Payload)
+	}
+	if frames < 2 {
+		t.Fatalf("data frame count = %d, want at least 2", frames)
+	}
+	if got := payload.Len(); got != 150000 {
+		t.Fatalf("payload len = %d, want %d", got, 150000)
+	}
+}
+
+func TestTLSTCPLogicalStreamWriteToDrainsQueuedChunks(t *testing.T) {
+	stream := &tlsTCPLogicalStream{readCh: make(chan struct{}, 1)}
+	stream.appendData([]byte("hello"))
+	stream.appendData([]byte("world"))
+	stream.setReadError(io.EOF)
+
+	var dst bytes.Buffer
+	n, err := stream.WriteTo(&dst)
+	if err != nil {
+		t.Fatalf("WriteTo() error = %v", err)
+	}
+	if n != int64(len("helloworld")) {
+		t.Fatalf("WriteTo() = %d, want %d", n, len("helloworld"))
+	}
+	if got := dst.String(); got != "helloworld" {
+		t.Fatalf("WriteTo() payload = %q, want %q", got, "helloworld")
+	}
+}
+
+func TestWrapIdleConnPreservesTLSTCPBulkInterfaces(t *testing.T) {
+	stream := &tlsTCPLogicalStream{readCh: make(chan struct{}, 1)}
+	wrapped := wrapIdleConn(stream)
+
+	if _, ok := wrapped.(io.ReaderFrom); !ok {
+		t.Fatalf("wrapped tls tcp stream does not implement io.ReaderFrom")
+	}
+	if _, ok := wrapped.(io.WriterTo); !ok {
+		t.Fatalf("wrapped tls tcp stream does not implement io.WriterTo")
+	}
+}
+
+type noopDeadlineConn struct{ net.Conn }
+
+func (noopDeadlineConn) SetDeadline(time.Time) error      { return nil }
+func (noopDeadlineConn) SetReadDeadline(time.Time) error  { return nil }
+func (noopDeadlineConn) SetWriteDeadline(time.Time) error { return nil }

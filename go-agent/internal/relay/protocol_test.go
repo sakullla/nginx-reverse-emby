@@ -54,6 +54,36 @@ func TestRelayRequestRoundTripsTransportMode(t *testing.T) {
 	}
 }
 
+func TestRelayOpenFrameRoundTripsInitialData(t *testing.T) {
+	payload, err := marshalMuxOpenPayload(relayOpenFrame{
+		Kind:        "tcp",
+		Target:      "127.0.0.1:9000",
+		InitialData: []byte("hello"),
+	})
+	if err != nil {
+		t.Fatalf("marshalMuxOpenPayload() error = %v", err)
+	}
+
+	frame, err := readMuxOpenPayload(payload)
+	if err != nil {
+		t.Fatalf("readMuxOpenPayload() error = %v", err)
+	}
+
+	if got := string(frame.InitialData); got != "hello" {
+		t.Fatalf("InitialData = %q, want %q", got, "hello")
+	}
+}
+
+func TestDialOptionsCloneInitialPayload(t *testing.T) {
+	opts := DialOptions{InitialPayload: []byte("abc")}
+	clone := opts.clone()
+	opts.InitialPayload[0] = 'z'
+
+	if got := string(clone.InitialPayload); got != "abc" {
+		t.Fatalf("clone.InitialPayload = %q, want %q", got, "abc")
+	}
+}
+
 type shortWriter struct {
 	target io.Writer
 	limit  int

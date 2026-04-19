@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -14,6 +15,14 @@ import (
 )
 
 var relayTLSTCPSessionPool = newTLSTCPSessionPool()
+
+const tlsTCPBulkFrameSize = 64 * 1024
+
+var tlsTCPBulkBufferPool = sync.Pool{
+	New: func() any {
+		return make([]byte, tlsTCPBulkFrameSize)
+	},
+}
 
 type tlsTCPSessionPoolStats struct {
 	ActiveSessions int
@@ -145,7 +154,7 @@ func (p *tlsTCPSessionPool) remove(key string, tunnel *tlsTCPTunnel) {
 	}
 }
 
-func dialTLSTCPMux(ctx context.Context, network, target string, chain []Hop, provider TLSMaterialProvider) (net.Conn, error) {
+func dialTLSTCPMux(ctx context.Context, network, target string, chain []Hop, provider TLSMaterialProvider, options DialOptions) (net.Conn, error) {
 	firstHop := chain[0]
 	sessionKey, err := tlsTCPSessionPoolKey(firstHop)
 	if err != nil {
@@ -160,9 +169,10 @@ func dialTLSTCPMux(ctx context.Context, network, target string, chain []Hop, pro
 	}
 
 	return tunnel.openStream(ctx, relayOpenFrame{
-		Kind:   network,
-		Target: target,
-		Chain:  append([]Hop(nil), chain[1:]...),
+		Kind:        network,
+		Target:      target,
+		Chain:       append([]Hop(nil), chain[1:]...),
+		InitialData: options.InitialPayload,
 	})
 }
 
@@ -441,6 +451,81 @@ func (s *tlsTCPLogicalStream) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+func (s *tlsTCPLogicalStream) ReadFrom(r io.Reader) (int64, error) {
+	s.readMu.Lock()
+	writeClosed := s.writeClosed
+	s.readMu.Unlock()
+	if writeClosed {
+		return 0, io.ErrClosedPipe
+	}
+
+	buf := tlsTCPBulkBufferPool.Get().([]byte)
+	defer tlsTCPBulkBufferPool.Put(buf)
+
+	var total int64
+	for {
+		n, err := r.Read(buf)
+		if n > 0 {
+			if frameErr := s.tunnel.writeFrame(context.Background(), muxFrame{
+				Type:     muxFrameTypeData,
+				StreamID: s.streamID,
+				Payload:  buf[:n],
+			}); frameErr != nil {
+				return total, frameErr
+			}
+			total += int64(n)
+		}
+		if errors.Is(err, io.EOF) {
+			return total, nil
+		}
+		if err != nil {
+			return total, err
+		}
+	}
+}
+
+func (s *tlsTCPLogicalStream) WriteTo(w io.Writer) (int64, error) {
+	var total int64
+	for {
+		s.readMu.Lock()
+		if len(s.readChunks) > 0 {
+			head := s.readChunks[0]
+			wrote := len(head) - s.readOffset
+			n, err := w.Write(head[s.readOffset:])
+			total += int64(n)
+			s.readOffset += n
+			if s.readOffset >= len(head) {
+				s.readChunks[0] = nil
+				s.readChunks = s.readChunks[1:]
+				s.readOffset = 0
+			}
+			s.readMu.Unlock()
+			if err != nil {
+				return total, err
+			}
+			if n != wrote {
+				return total, io.ErrShortWrite
+			}
+			continue
+		}
+		if s.readErrSet {
+			err := s.readErr
+			s.readMu.Unlock()
+			if errors.Is(err, io.EOF) {
+				return total, nil
+			}
+			return total, err
+		}
+		s.readMu.Unlock()
+
+		select {
+		case <-s.readCh:
+		case <-s.tunnel.closed:
+			return total, io.EOF
+		}
+	}
+}
+
 func (s *tlsTCPLogicalStream) Close() error {
 	_ = s.CloseWrite()
 	s.tunnel.removeStream(s.streamID)
@@ -617,6 +702,13 @@ func (s *serverTLSTCPSession) handleStream(listener Listener, stream *tlsTCPLogi
 	defer s.server.untrackConn(upstream)
 	defer upstream.Close()
 
+	if len(request.InitialData) > 0 {
+		if _, err := upstream.Write(request.InitialData); err != nil {
+			_ = s.writeOpenResult(stream.streamID, muxOpenResult{OK: false, Error: err.Error()})
+			s.tunnel.removeStream(stream.streamID)
+			return
+		}
+	}
 	if err := s.writeOpenResult(stream.streamID, muxOpenResult{OK: true}); err != nil {
 		s.tunnel.removeStream(stream.streamID)
 		return

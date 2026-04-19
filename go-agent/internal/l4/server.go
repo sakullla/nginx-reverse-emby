@@ -18,6 +18,11 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 )
 
+const (
+	relayInitialPayloadMax  = 32 * 1024
+	relayInitialPayloadWait = 10 * time.Millisecond
+)
+
 type RelayMaterialProvider interface {
 	relay.TLSMaterialProvider
 }
@@ -215,7 +220,15 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 		return
 	}
 
-	upstream, candidate, connectDuration, err := s.dialTCPUpstream(rule)
+	var initialPayload []byte
+	if len(rule.RelayChain) > 0 && !rule.Tuning.ProxyProtocol.Send {
+		initialPayload, downstreamSource, err = s.prefetchRelayInitialPayload(client, downstreamSource)
+		if err != nil {
+			return
+		}
+	}
+
+	upstream, candidate, connectDuration, err := s.dialTCPUpstream(rule, relay.DialOptions{InitialPayload: initialPayload})
 	if err != nil {
 		return
 	}
@@ -244,6 +257,49 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 	}()
 	<-done
 	<-done
+}
+
+func (s *Server) prefetchRelayInitialPayload(client net.Conn, source io.Reader) ([]byte, io.Reader, error) {
+	if source == nil {
+		return nil, source, nil
+	}
+	if buffered, ok := source.(*bufio.Reader); ok && buffered.Buffered() > 0 {
+		limit := buffered.Buffered()
+		if limit > relayInitialPayloadMax {
+			limit = relayInitialPayloadMax
+		}
+		buf := make([]byte, limit)
+		n, err := io.ReadFull(buffered, buf)
+		if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
+			return nil, source, err
+		}
+		return buf[:n], source, nil
+	}
+
+	deadline := s.now().Add(relayInitialPayloadWait)
+	if err := client.SetReadDeadline(deadline); err != nil {
+		return nil, source, nil
+	}
+	defer client.SetReadDeadline(time.Time{})
+
+	buf := make([]byte, relayInitialPayloadMax)
+	n, err := source.Read(buf)
+	if n > 0 {
+		payload := append([]byte(nil), buf[:n]...)
+		if err != nil && !errors.Is(err, io.EOF) && !isTimeoutError(err) {
+			return payload, source, err
+		}
+		return payload, source, nil
+	}
+	if err == nil || errors.Is(err, io.EOF) || isTimeoutError(err) {
+		return nil, source, nil
+	}
+	return nil, source, err
+}
+
+func isTimeoutError(err error) bool {
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
 func (s *Server) prepareTCPDownstream(client net.Conn, rule model.L4Rule) (io.Reader, *proxyInfo, error) {
@@ -308,7 +364,11 @@ func cloneTCPAddr(addr *net.TCPAddr) *net.TCPAddr {
 	return &out
 }
 
-func (s *Server) dialTCPUpstream(rule model.L4Rule) (net.Conn, l4Candidate, time.Duration, error) {
+func (s *Server) dialTCPUpstream(rule model.L4Rule, opts ...relay.DialOptions) (net.Conn, l4Candidate, time.Duration, error) {
+	dialOptions := relay.DialOptions{}
+	if len(opts) > 0 {
+		dialOptions = opts[0]
+	}
 	candidates, err := l4Candidates(s.ctx, s.cache, rule)
 	if err != nil {
 		return nil, l4Candidate{}, 0, err
@@ -329,7 +389,7 @@ func (s *Server) dialTCPUpstream(rule model.L4Rule) (net.Conn, l4Candidate, time
 			if hopErr != nil {
 				return nil, l4Candidate{}, 0, hopErr
 			}
-			upstream, err = relay.Dial(s.ctx, "tcp", target, hops, s.relayProvider)
+			upstream, err = relay.Dial(s.ctx, "tcp", target, hops, s.relayProvider, dialOptions)
 		}
 		if err != nil {
 			if ctxErr := s.ctx.Err(); ctxErr != nil {

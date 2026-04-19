@@ -23,10 +23,11 @@ type relayRequest struct {
 }
 
 type relayOpenFrame struct {
-	Kind     string         `json:"kind"`
-	Target   string         `json:"target"`
-	Chain    []Hop          `json:"chain,omitempty"`
-	Metadata map[string]any `json:"metadata,omitempty"`
+	Kind        string         `json:"kind"`
+	Target      string         `json:"target"`
+	Chain       []Hop          `json:"chain,omitempty"`
+	Metadata    map[string]any `json:"metadata,omitempty"`
+	InitialData []byte         `json:"initial_data,omitempty"`
 }
 
 type relayResponse struct {

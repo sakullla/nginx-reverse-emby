@@ -1,10 +1,12 @@
 package relay
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"testing"
 
@@ -40,6 +42,40 @@ func TestDialQUICRoundTripTCP(t *testing.T) {
 	defer conn.Close()
 
 	assertRoundTrip(t, conn, []byte("quic-round-trip"))
+}
+
+func TestDialQUICForwardsInitialPayload(t *testing.T) {
+	backendAddr, stopBackend := startTCPEchoServer(t)
+	defer stopBackend()
+
+	provider := newFakeTLSMaterialProvider()
+	listener, hop := newRelayEndpoint(t, provider, 1, "relay-quic-initial", "pin_only", true, false)
+	listener.ListenPort = pickFreeUDPPort(t)
+	listener.TransportMode = "quic"
+	listener.AllowTransportFallback = false
+	hop.Address = net.JoinHostPort(listener.ListenHost, fmt.Sprintf("%d", listener.ListenPort))
+	hop.Listener = listener
+
+	server, err := Start(context.Background(), []Listener{listener}, provider)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer server.Close()
+
+	initial := []byte("quic-initial-payload")
+	conn, err := Dial(context.Background(), "tcp", backendAddr, []Hop{hop}, provider, DialOptions{InitialPayload: initial})
+	if err != nil {
+		t.Fatalf("Dial() error = %v", err)
+	}
+	defer conn.Close()
+
+	reply := make([]byte, len(initial))
+	if _, err := io.ReadFull(conn, reply); err != nil {
+		t.Fatalf("read initial payload reply: %v", err)
+	}
+	if !bytes.Equal(reply, initial) {
+		t.Fatalf("initial payload reply = %q, want %q", reply, initial)
+	}
 }
 
 func TestPickFreeUDPPortReturnsBindablePort(t *testing.T) {
