@@ -23,7 +23,7 @@ var (
 	defaultRelayIdleTimeout      = 2 * time.Minute
 )
 
-const relayBulkSocketBufferBytes = 1 << 20
+const relayBulkSocketBufferBytes = 0
 
 type relayTimeoutOverride struct {
 	id  uint64
@@ -284,6 +284,9 @@ func getRelayIdleTimeout() time.Duration {
 func tuneBulkRelayConn(conn any) {
 	if tuner, ok := conn.(relayTCPNoDelayTuner); ok {
 		_ = tuner.SetNoDelay(true)
+	}
+	if relayBulkSocketBufferBytes <= 0 {
+		return
 	}
 	tuner, ok := conn.(relayTCPBufferTuner)
 	if !ok {

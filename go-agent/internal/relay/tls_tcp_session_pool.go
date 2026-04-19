@@ -22,6 +22,9 @@ const tlsTCPMuxTargetStreamsPerSession = 2
 const tlsTCPWriteQueueDepth = 8
 const tlsTCPSingleStreamWritePipeline = 4
 
+var tlsTCPMaxBufferedReadBytes = 32 << 20
+var tlsTCPResumeBufferedReadBytes = 16 << 20
+
 var tlsTCPBulkBufferPool = sync.Pool{
 	New: func() any {
 		return make([]byte, tlsTCPBulkFrameSize)
@@ -63,12 +66,14 @@ type tlsTCPLogicalStream struct {
 	tunnel   *tlsTCPTunnel
 	streamID uint32
 
-	readMu      sync.Mutex
-	readChunks  []tlsTCPReadChunk
-	readCh      chan struct{}
-	readErr     error
-	readErrSet  bool
-	writeClosed bool
+	readMu            sync.Mutex
+	readChunks        []tlsTCPReadChunk
+	readBufferedBytes int
+	readCh            chan struct{}
+	readSpaceCh       chan struct{}
+	readErr           error
+	readErrSet        bool
+	writeClosed       bool
 
 	openResultCh chan error
 }
@@ -643,6 +648,7 @@ func (t *tlsTCPTunnel) failAllStreams(err error) {
 
 func (s *tlsTCPLogicalStream) Read(p []byte) (int, error) {
 	for {
+		notifyReadSpace := false
 		s.readMu.Lock()
 		if len(s.readChunks) > 0 {
 			total := 0
@@ -656,6 +662,7 @@ func (s *tlsTCPLogicalStream) Read(p []byte) (int, error) {
 				}
 				n := copy(p[total:], head.payload)
 				total += n
+				s.readBufferedBytes -= n
 				head.consume(n)
 				if len(head.payload) > 0 {
 					break
@@ -665,6 +672,12 @@ func (s *tlsTCPLogicalStream) Read(p []byte) (int, error) {
 				s.readChunks = s.readChunks[1:]
 			}
 			s.readMu.Unlock()
+			if total > 0 {
+				notifyReadSpace = true
+			}
+			if notifyReadSpace {
+				s.notifyReadSpace()
+			}
 			return total, nil
 		}
 		if s.readErrSet {
@@ -794,16 +807,22 @@ func newQueuedTLSTCPDataFrame(streamID uint32, payload []byte) muxFrame {
 func (s *tlsTCPLogicalStream) WriteTo(w io.Writer) (int64, error) {
 	var total int64
 	for {
+		notifyReadSpace := false
 		s.readMu.Lock()
 		if len(s.readChunks) > 0 {
 			head := s.readChunks[0]
 			chunk := head.payload
 			s.readChunks[0] = tlsTCPReadChunk{}
 			s.readChunks = s.readChunks[1:]
+			s.readBufferedBytes -= len(chunk)
 			s.readMu.Unlock()
+			notifyReadSpace = len(chunk) > 0
 
 			n, err := w.Write(chunk)
 			total += int64(n)
+			if notifyReadSpace {
+				s.notifyReadSpace()
+			}
 			if err != nil {
 				if n < len(chunk) {
 					head.payload = chunk[n:]
@@ -845,7 +864,9 @@ func (s *tlsTCPLogicalStream) prependReadChunk(chunk tlsTCPReadChunk) {
 		return
 	}
 	s.readMu.Lock()
+	s.ensureReadSpaceChLocked()
 	s.readChunks = append([]tlsTCPReadChunk{chunk}, s.readChunks...)
+	s.readBufferedBytes += len(chunk.payload)
 	s.readMu.Unlock()
 	s.notifyReadable()
 }
@@ -917,17 +938,54 @@ func (s *tlsTCPLogicalStream) appendDataChunk(chunk tlsTCPReadChunk) {
 		chunk.releaseNow()
 		return
 	}
-	s.readMu.Lock()
-	s.readChunks = append(s.readChunks, chunk)
-	s.readMu.Unlock()
-	s.notifyReadable()
+	blocked := false
+	for {
+		s.readMu.Lock()
+		waitCh := s.ensureReadSpaceChLocked()
+		if s.readErrSet {
+			s.readMu.Unlock()
+			chunk.releaseNow()
+			return
+		}
+		if blocked && tlsTCPMaxBufferedReadBytes > 0 && s.readBufferedBytes > tlsTCPResumeThreshold() {
+			s.readMu.Unlock()
+			select {
+			case <-waitCh:
+			case <-s.tunnel.closed:
+				chunk.releaseNow()
+				return
+			}
+			continue
+		}
+		canQueue := tlsTCPMaxBufferedReadBytes <= 0 ||
+			s.readBufferedBytes == 0 ||
+			s.readBufferedBytes+len(chunk.payload) <= tlsTCPMaxBufferedReadBytes
+		if canQueue {
+			s.readChunks = append(s.readChunks, chunk)
+			s.readBufferedBytes += len(chunk.payload)
+			s.readMu.Unlock()
+			s.notifyReadable()
+			return
+		}
+		blocked = true
+		s.readMu.Unlock()
+
+		select {
+		case <-waitCh:
+		case <-s.tunnel.closed:
+			chunk.releaseNow()
+			return
+		}
+	}
 }
 
 func (s *tlsTCPLogicalStream) discardReadChunks() {
 	s.readMu.Lock()
 	chunks := s.readChunks
 	s.readChunks = nil
+	s.readBufferedBytes = 0
 	s.readMu.Unlock()
+	s.notifyReadSpace()
 
 	for i := range chunks {
 		chunks[i].releaseNow()
@@ -942,6 +1000,7 @@ func (s *tlsTCPLogicalStream) setReadError(err error) {
 	}
 	s.readMu.Unlock()
 	s.notifyReadable()
+	s.notifyReadSpace()
 }
 
 func (s *tlsTCPLogicalStream) deliverOpenResult(err error) {
@@ -954,6 +1013,33 @@ func (s *tlsTCPLogicalStream) deliverOpenResult(err error) {
 func (s *tlsTCPLogicalStream) notifyReadable() {
 	select {
 	case s.readCh <- struct{}{}:
+	default:
+	}
+}
+
+func (s *tlsTCPLogicalStream) ensureReadSpaceChLocked() chan struct{} {
+	if s.readSpaceCh == nil {
+		s.readSpaceCh = make(chan struct{}, 1)
+	}
+	return s.readSpaceCh
+}
+
+func tlsTCPResumeThreshold() int {
+	if tlsTCPResumeBufferedReadBytes < 0 {
+		return 0
+	}
+	if tlsTCPResumeBufferedReadBytes >= tlsTCPMaxBufferedReadBytes {
+		return tlsTCPMaxBufferedReadBytes / 2
+	}
+	return tlsTCPResumeBufferedReadBytes
+}
+
+func (s *tlsTCPLogicalStream) notifyReadSpace() {
+	s.readMu.Lock()
+	ch := s.ensureReadSpaceChLocked()
+	s.readMu.Unlock()
+	select {
+	case ch <- struct{}{}:
 	default:
 	}
 }

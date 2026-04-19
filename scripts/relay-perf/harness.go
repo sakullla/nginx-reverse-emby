@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
+	"encoding/binary"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -26,14 +27,23 @@ import (
 )
 
 type config struct {
-	masterAddr     string
-	echoAddr       string
-	entryAddress   string
-	directAddress  string
-	rttIterations  int
-	c1Bytes        int64
-	c8BytesPerConn int64
-	c8Concurrency  int
+	mode            string
+	masterAddr      string
+	entryAddress    string
+	directAddress   string
+	rttIterations   int
+	c1Bytes         int64
+	c1Duration      time.Duration
+	c8BytesPerConn  int64
+	c8Duration      time.Duration
+	c8Concurrency   int
+	preMeasureWait  time.Duration
+	backendAddr     string
+	backendHost     string
+	backendPort     int
+	relayTargetHost string
+	relayPublicHost string
+	relayPublicPort int
 }
 
 type snapshot struct {
@@ -124,11 +134,27 @@ type result struct {
 	P99US       float64 `json:"p99_us,omitempty"`
 }
 
+const (
+	protocolModeEcho              = 1
+	protocolModeDownload          = 2
+	protocolModeDownloadUnlimited = 3
+)
+
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	cfg := loadConfig()
 
-	certPEM, keyPEM, pin, err := issueRelayCert()
+	if cfg.mode == "backend" {
+		ctx := context.Background()
+		if err := startBackend(ctx, cfg.backendAddr); err != nil {
+			log.Fatal(err)
+		}
+		log.Printf("backend listening on %s", cfg.backendAddr)
+		select {}
+		return
+	}
+
+	certPEM, keyPEM, pin, err := issueRelayCert(cfg.relayPublicHost)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -137,24 +163,25 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	if err := startEcho(ctx, cfg.echoAddr); err != nil {
-		log.Fatal(err)
-	}
 	if err := startMaster(ctx, cfg.masterAddr, snapshots); err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("mock master listening on %s, echo backend on %s", cfg.masterAddr, cfg.echoAddr)
+	log.Printf("mock master listening on %s, backend on %s", cfg.masterAddr, cfg.backendAddr)
 
 	mustWaitForEcho("direct-b", cfg.directAddress, 40*time.Second)
 	mustWaitForEcho("entry-a-relay", cfg.entryAddress, 40*time.Second)
+	if cfg.preMeasureWait > 0 {
+		log.Printf("waiting %s before measurements", cfg.preMeasureWait)
+		time.Sleep(cfg.preMeasureWait)
+	}
 
 	results := []result{
 		measureRTT("direct_b_rtt", cfg.directAddress, cfg.rttIterations),
 		measureRTT("relay_a_to_b_rtt", cfg.entryAddress, cfg.rttIterations),
-		measureThroughput("direct_b_c1", cfg.directAddress, 1, cfg.c1Bytes),
-		measureThroughput("relay_a_to_b_c1", cfg.entryAddress, 1, cfg.c1Bytes),
-		measureThroughput("direct_b_c8", cfg.directAddress, cfg.c8Concurrency, cfg.c8BytesPerConn),
-		measureThroughput("relay_a_to_b_c8", cfg.entryAddress, cfg.c8Concurrency, cfg.c8BytesPerConn),
+		measureThroughput("direct_b_c1", cfg.directAddress, 1, cfg.c1Bytes, cfg.c1Duration),
+		measureThroughput("relay_a_to_b_c1", cfg.entryAddress, 1, cfg.c1Bytes, cfg.c1Duration),
+		measureThroughput("direct_b_c8", cfg.directAddress, cfg.c8Concurrency, cfg.c8BytesPerConn, cfg.c8Duration),
+		measureThroughput("relay_a_to_b_c8", cfg.entryAddress, cfg.c8Concurrency, cfg.c8BytesPerConn, cfg.c8Duration),
 	}
 	for _, res := range results {
 		emit("RESULT", res)
@@ -163,15 +190,27 @@ func main() {
 }
 
 func loadConfig() config {
+	backendHost := envString("HARNESS_BACKEND_HOST", "172.29.3.13")
+	backendPort := envInt("HARNESS_BACKEND_PORT", 9002)
+	backendListenAddr := envString("HARNESS_BACKEND_LISTEN_ADDR", fmt.Sprintf(":%d", backendPort))
 	return config{
-		masterAddr:     envString("HARNESS_MASTER_ADDR", ":8080"),
-		echoAddr:       envString("HARNESS_ECHO_ADDR", ":9002"),
-		entryAddress:   envString("HARNESS_ENTRY_ADDRESS", "agent-a:7000"),
-		directAddress:  envString("HARNESS_DIRECT_ADDRESS", "agent-b:9001"),
-		rttIterations:  envInt("HARNESS_RTT_ITERATIONS", 300),
-		c1Bytes:        envBytes("HARNESS_C1_BYTES", 512<<20),
-		c8BytesPerConn: envBytes("HARNESS_C8_BYTES_PER_CONN", 256<<20),
-		c8Concurrency:  envInt("HARNESS_C8_CONCURRENCY", 8),
+		mode:            envString("HARNESS_MODE", "bench"),
+		masterAddr:      envString("HARNESS_MASTER_ADDR", ":8080"),
+		entryAddress:    envString("HARNESS_ENTRY_ADDRESS", "172.29.1.10:7000"),
+		directAddress:   envString("HARNESS_DIRECT_ADDRESS", "172.29.0.12:9001"),
+		rttIterations:   envInt("HARNESS_RTT_ITERATIONS", 300),
+		c1Bytes:         envBytes("HARNESS_C1_BYTES", 512<<20),
+		c1Duration:      envSeconds("HARNESS_C1_DURATION_SECONDS", 0),
+		c8BytesPerConn:  envBytes("HARNESS_C8_BYTES_PER_CONN", 256<<20),
+		c8Duration:      envSeconds("HARNESS_C8_DURATION_SECONDS", 0),
+		c8Concurrency:   envInt("HARNESS_C8_CONCURRENCY", 8),
+		preMeasureWait:  time.Duration(envInt("HARNESS_PRE_MEASURE_DELAY_MS", 0)) * time.Millisecond,
+		backendAddr:     backendListenAddr,
+		backendHost:     backendHost,
+		backendPort:     backendPort,
+		relayTargetHost: envString("HARNESS_RELAY_TARGET_HOST", "172.29.3.12"),
+		relayPublicHost: envString("HARNESS_RELAY_PUBLIC_HOST", "172.29.2.11"),
+		relayPublicPort: envInt("HARNESS_RELAY_PUBLIC_PORT", 9443),
 	}
 }
 
@@ -179,13 +218,13 @@ func buildSnapshots(cfg config, certPEM, keyPEM, pin string) map[string]snapshot
 	certID := 10
 	listener := relayListener{
 		ID:            1,
-		AgentID:       "relay-a",
-		Name:          "relay-a",
+		AgentID:       "relay-b",
+		Name:          "relay-b",
 		ListenHost:    "0.0.0.0",
 		BindHosts:     []string{"0.0.0.0"},
-		ListenPort:    9443,
-		PublicHost:    "relay-a",
-		PublicPort:    9443,
+		ListenPort:    cfg.relayPublicPort,
+		PublicHost:    cfg.relayPublicHost,
+		PublicPort:    cfg.relayPublicPort,
 		Enabled:       true,
 		CertificateID: &certID,
 		TLSMode:       "pin_only",
@@ -199,14 +238,14 @@ func buildSnapshots(cfg config, certPEM, keyPEM, pin string) map[string]snapshot
 	}
 	certs := []certificateBundle{{
 		ID:       certID,
-		Domain:   "relay-a",
+		Domain:   cfg.relayPublicHost,
 		Revision: 1,
 		CertPEM:  certPEM,
 		KeyPEM:   keyPEM,
 	}}
 	policies := []certificatePolicy{{
 		ID:              certID,
-		Domain:          "relay-a",
+		Domain:          cfg.relayPublicHost,
 		Enabled:         true,
 		Scope:           "domain",
 		IssuerMode:      "local_http01",
@@ -228,7 +267,7 @@ func buildSnapshots(cfg config, certPEM, keyPEM, pin string) map[string]snapshot
 				Protocol:     "tcp",
 				ListenHost:   "0.0.0.0",
 				ListenPort:   7000,
-				UpstreamHost: "agent-b",
+				UpstreamHost: cfg.relayTargetHost,
 				UpstreamPort: 9001,
 				RelayChain:   []int{1},
 				Enabled:      true,
@@ -238,7 +277,7 @@ func buildSnapshots(cfg config, certPEM, keyPEM, pin string) map[string]snapshot
 			Certificates:        []certificateBundle{},
 			CertificatePolicies: []certificatePolicy{},
 		},
-		"relay-a": {
+		"relay-b": {
 			DesiredVersion:      "perf",
 			DesiredRevision:     1,
 			Rules:               []httpRule{},
@@ -257,8 +296,8 @@ func buildSnapshots(cfg config, certPEM, keyPEM, pin string) map[string]snapshot
 				Protocol:     "tcp",
 				ListenHost:   "0.0.0.0",
 				ListenPort:   9001,
-				UpstreamHost: "perf",
-				UpstreamPort: portOf(cfg.echoAddr),
+				UpstreamHost: cfg.backendHost,
+				UpstreamPort: cfg.backendPort,
 				Enabled:      true,
 				Revision:     1,
 			}},
@@ -305,7 +344,7 @@ func startMaster(ctx context.Context, address string, snapshots map[string]snaps
 	return nil
 }
 
-func startEcho(ctx context.Context, address string) error {
+func startBackend(ctx context.Context, address string) error {
 	ln, err := net.Listen("tcp", address)
 	if err != nil {
 		return err
@@ -322,11 +361,50 @@ func startEcho(ctx context.Context, address string) error {
 			}
 			go func(c net.Conn) {
 				defer c.Close()
-				_, _ = io.Copy(c, c)
+				handleBackendConn(c)
 			}(conn)
 		}
 	}()
 	return nil
+}
+
+func handleBackendConn(conn net.Conn) {
+	var mode [1]byte
+	if _, err := io.ReadFull(conn, mode[:]); err != nil {
+		return
+	}
+
+	switch mode[0] {
+	case protocolModeEcho:
+		_, _ = io.Copy(conn, conn)
+	case protocolModeDownload:
+		var sizeBuf [8]byte
+		if _, err := io.ReadFull(conn, sizeBuf[:]); err != nil {
+			return
+		}
+		remaining := int64(binary.BigEndian.Uint64(sizeBuf[:]))
+		payload := bytes.Repeat([]byte{7}, 64*1024)
+		for remaining > 0 {
+			chunk := payload
+			if remaining < int64(len(chunk)) {
+				chunk = chunk[:remaining]
+			}
+			n, err := conn.Write(chunk)
+			if err != nil {
+				return
+			}
+			remaining -= int64(n)
+		}
+	case protocolModeDownloadUnlimited:
+		payload := bytes.Repeat([]byte{7}, 64*1024)
+		for {
+			if _, err := conn.Write(payload); err != nil {
+				return
+			}
+		}
+	default:
+		return
+	}
 }
 
 func mustWaitForEcho(name, address string, timeout time.Duration) {
@@ -351,6 +429,9 @@ func echoOnce(address string, payload []byte) error {
 	if tcp, ok := conn.(*net.TCPConn); ok {
 		_ = tcp.SetNoDelay(true)
 	}
+	if _, err := conn.Write([]byte{protocolModeEcho}); err != nil {
+		return err
+	}
 	if _, err := conn.Write(payload); err != nil {
 		return err
 	}
@@ -374,6 +455,9 @@ func measureRTT(name, address string, iterations int) result {
 		_ = tcp.SetNoDelay(true)
 	}
 	_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
+	if _, err := conn.Write([]byte{protocolModeEcho}); err != nil {
+		log.Fatalf("%s init: %v", name, err)
+	}
 
 	buf := []byte{1}
 	reply := []byte{0}
@@ -410,8 +494,9 @@ func measureRTT(name, address string, iterations int) result {
 	}
 }
 
-func measureThroughput(name, address string, concurrency int, bytesPerConn int64) result {
+func measureThroughput(name, address string, concurrency int, bytesPerConn int64, duration time.Duration) result {
 	start := time.Now()
+	deadline := start.Add(duration)
 	var wg sync.WaitGroup
 	errCh := make(chan error, concurrency)
 	var total int64
@@ -421,7 +506,15 @@ func measureThroughput(name, address string, concurrency int, bytesPerConn int64
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			n, err := transfer(address, bytesPerConn)
+			var (
+				n   int64
+				err error
+			)
+			if duration > 0 {
+				n, err = transferForDuration(address, deadline)
+			} else {
+				n, err = transfer(address, bytesPerConn)
+			}
 			totalMu.Lock()
 			total += n
 			totalMu.Unlock()
@@ -459,48 +552,71 @@ func transfer(address string, totalBytes int64) (int64, error) {
 		_ = tcp.SetNoDelay(true)
 	}
 	_ = conn.SetDeadline(time.Now().Add(2 * time.Minute))
+	req := make([]byte, 9)
+	req[0] = protocolModeDownload
+	binary.BigEndian.PutUint64(req[1:], uint64(totalBytes))
+	if _, err := conn.Write(req); err != nil {
+		return 0, err
+	}
 
-	chunk := bytes.Repeat([]byte{7}, 64*1024)
-	readDone := make(chan error, 1)
+	buf := make([]byte, 64*1024)
 	var readBytes int64
-
-	go func() {
-		buf := make([]byte, len(chunk))
-		for readBytes < totalBytes {
-			want := len(buf)
-			if remaining := totalBytes - readBytes; remaining < int64(want) {
-				want = int(remaining)
-			}
-			n, err := io.ReadFull(conn, buf[:want])
-			readBytes += int64(n)
-			if err != nil {
-				readDone <- err
-				return
-			}
-		}
-		readDone <- nil
-	}()
-
-	var written int64
-	for written < totalBytes {
-		want := len(chunk)
-		if remaining := totalBytes - written; remaining < int64(want) {
+	for readBytes < totalBytes {
+		want := len(buf)
+		if remaining := totalBytes - readBytes; remaining < int64(want) {
 			want = int(remaining)
 		}
-		n, err := conn.Write(chunk[:want])
-		written += int64(n)
+		n, err := io.ReadFull(conn, buf[:want])
+		readBytes += int64(n)
 		if err != nil {
 			return readBytes, err
 		}
 	}
-
-	if err := <-readDone; err != nil {
-		return readBytes, err
-	}
 	return readBytes, nil
 }
 
-func issueRelayCert() (string, string, string, error) {
+func transferForDuration(address string, deadline time.Time) (int64, error) {
+	if time.Until(deadline) <= 0 {
+		return 0, nil
+	}
+
+	dialTimeout := 2 * time.Second
+	if remaining := time.Until(deadline); remaining < dialTimeout {
+		dialTimeout = remaining
+	}
+
+	conn, err := net.DialTimeout("tcp", address, dialTimeout)
+	if err != nil {
+		return 0, err
+	}
+	defer conn.Close()
+	if tcp, ok := conn.(*net.TCPConn); ok {
+		_ = tcp.SetNoDelay(true)
+	}
+	_ = conn.SetReadDeadline(deadline)
+	if _, err := conn.Write([]byte{protocolModeDownloadUnlimited}); err != nil {
+		return 0, err
+	}
+
+	buf := make([]byte, 64*1024)
+	var readBytes int64
+	for {
+		n, err := conn.Read(buf)
+		readBytes += int64(n)
+		if err == nil {
+			continue
+		}
+		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+			return readBytes, nil
+		}
+		if err == io.EOF {
+			return readBytes, nil
+		}
+		return readBytes, err
+	}
+}
+
+func issueRelayCert(host string) (string, string, string, error) {
 	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		return "", "", "", err
@@ -508,14 +624,18 @@ func issueRelayCert() (string, string, string, error) {
 	template := &x509.Certificate{
 		SerialNumber: big.NewInt(1),
 		Subject: pkix.Name{
-			CommonName: "relay-a",
+			CommonName: host,
 		},
-		DNSNames:              []string{"relay-a"},
 		NotBefore:             time.Now().Add(-time.Hour),
 		NotAfter:              time.Now().Add(24 * time.Hour),
 		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		template.IPAddresses = []net.IP{ip}
+	} else {
+		template.DNSNames = []string{host}
 	}
 	der, err := x509.CreateCertificate(rand.Reader, template, template, &privateKey.PublicKey, privateKey)
 	if err != nil {
@@ -584,14 +704,6 @@ func envBytes(name string, fallback int64) int64 {
 	return parsed
 }
 
-func portOf(address string) int {
-	_, port, err := net.SplitHostPort(address)
-	if err != nil {
-		log.Fatalf("split host port %q: %v", address, err)
-	}
-	parsed, err := strconv.Atoi(port)
-	if err != nil {
-		log.Fatalf("atoi %q: %v", port, err)
-	}
-	return parsed
+func envSeconds(name string, fallback int) time.Duration {
+	return time.Duration(envInt(name, fallback)) * time.Second
 }

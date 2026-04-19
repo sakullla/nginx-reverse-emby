@@ -1,0 +1,9 @@
+FROM golang:1.26.2-trixie
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends iproute2; \
+    rm -rf /var/lib/apt/lists/*
+
+ENV GOCACHE=/tmp/go-build
+WORKDIR /work

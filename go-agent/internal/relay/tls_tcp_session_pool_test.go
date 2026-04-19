@@ -460,6 +460,47 @@ func TestTLSTCPLogicalStreamWriteToDoesNotHoldReadMuWhileWriting(t *testing.T) {
 	}
 }
 
+func TestTLSTCPLogicalStreamAppendDataChunkBackpressuresSlowReader(t *testing.T) {
+	withTLSTCPBufferedReadLimitForTest(8, func() {
+		stream := &tlsTCPLogicalStream{
+			tunnel: &tlsTCPTunnel{
+				closed: make(chan struct{}),
+			},
+			readCh: make(chan struct{}, 1),
+		}
+
+		stream.appendData([]byte("1234"))
+		stream.appendData([]byte("5678"))
+
+		blockedAppendDone := make(chan struct{})
+		go func() {
+			stream.appendData([]byte("abcd"))
+			close(blockedAppendDone)
+		}()
+
+		select {
+		case <-blockedAppendDone:
+			t.Fatal("appendData() completed before queued bytes were drained")
+		case <-time.After(50 * time.Millisecond):
+		}
+
+		buf := make([]byte, 4)
+		n, err := stream.Read(buf)
+		if err != nil {
+			t.Fatalf("Read() error = %v", err)
+		}
+		if got := string(buf[:n]); got != "1234" {
+			t.Fatalf("Read() = %q, want %q", got, "1234")
+		}
+
+		select {
+		case <-blockedAppendDone:
+		case <-time.After(200 * time.Millisecond):
+			t.Fatal("appendData() did not resume after queued bytes were drained")
+		}
+	})
+}
+
 func TestTLSTCPSessionPoolStripesBusySessions(t *testing.T) {
 	pool := newTLSTCPSessionPool()
 	dials := 0
@@ -515,6 +556,18 @@ type noopDeadlineConn struct{ net.Conn }
 func (noopDeadlineConn) SetDeadline(time.Time) error      { return nil }
 func (noopDeadlineConn) SetReadDeadline(time.Time) error  { return nil }
 func (noopDeadlineConn) SetWriteDeadline(time.Time) error { return nil }
+
+func withTLSTCPBufferedReadLimitForTest(limit int, fn func()) {
+	previousLimit := tlsTCPMaxBufferedReadBytes
+	previousResume := tlsTCPResumeBufferedReadBytes
+	tlsTCPMaxBufferedReadBytes = limit
+	tlsTCPResumeBufferedReadBytes = limit / 2
+	defer func() {
+		tlsTCPMaxBufferedReadBytes = previousLimit
+		tlsTCPResumeBufferedReadBytes = previousResume
+	}()
+	fn()
+}
 
 type blockingFirstWrite struct {
 	started chan struct{}

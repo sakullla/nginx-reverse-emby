@@ -249,7 +249,7 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 		done <- struct{}{}
 	}()
 	go func() {
-		_, _ = io.Copy(client, upstream)
+		_, _ = copyPreferReaderFrom(client, upstream)
 		closeTCPWrite(client)
 		closeTCPRead(upstream)
 		done <- struct{}{}

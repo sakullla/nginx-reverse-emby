@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
-	"io"
 	"net"
 	"reflect"
 	"strconv"
@@ -565,14 +564,14 @@ func pipeBothWays(left, right net.Conn) {
 	done := make(chan struct{}, 2)
 
 	go func() {
-		_, _ = io.Copy(right, left)
+		_, _ = copyGeneric(right, left)
 		closeWrite(right)
 		closeRead(left)
 		done <- struct{}{}
 	}()
 
 	go func() {
-		_, _ = io.Copy(left, right)
+		_, _ = copyGeneric(left, right)
 		closeWrite(left)
 		closeRead(right)
 		done <- struct{}{}
