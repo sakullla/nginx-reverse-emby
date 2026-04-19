@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"strings"
 	"time"
 
@@ -182,11 +183,15 @@ func (s *relayService) Create(ctx context.Context, agentID string, input RelayLi
 		return RelayListener{}, err
 	}
 
+	existing := make([]RelayListener, 0, len(rows))
 	maxRevision := 0
 	for _, row := range allRows {
 		if row.Revision > maxRevision {
 			maxRevision = row.Revision
 		}
+	}
+	for _, row := range rows {
+		existing = append(existing, relayListenerFromRow(row))
 	}
 
 	allocatedID := allocator.AllocateListenerID(preferredInt(input.ID))
@@ -201,6 +206,9 @@ func (s *relayService) Create(ctx context.Context, agentID string, input RelayLi
 	listener := prepared.Listener
 	listener.AgentID = resolvedID
 	listener.Revision = allocator.AllocateRevisionForAgent(resolvedID, maxRevision)
+	if err := ensureUniqueRelayListen(existing, listener, 0); err != nil {
+		return RelayListener{}, err
+	}
 
 	if prepared.PersistCertificates {
 		if err := s.store.SaveManagedCertificates(ctx, prepared.NextCertRows); err != nil {
@@ -250,16 +258,19 @@ func (s *relayService) Update(ctx context.Context, agentID string, id int, input
 		return RelayListener{}, err
 	}
 
+	existing := make([]RelayListener, 0, len(rows))
 	maxRevision := 0
 	targetIndex := -1
 	var current RelayListener
 	for i, row := range rows {
+		listener := relayListenerFromRow(row)
+		existing = append(existing, listener)
 		if row.Revision > maxRevision {
 			maxRevision = row.Revision
 		}
 		if row.ID == id {
 			targetIndex = i
-			current = relayListenerFromRow(row)
+			current = listener
 		}
 	}
 	if targetIndex < 0 {
@@ -289,6 +300,9 @@ func (s *relayService) Update(ctx context.Context, agentID string, id int, input
 	}
 	listener.AgentID = resolvedID
 	listener.Revision = allocator.AllocateRevisionForAgent(resolvedID, maxRevision)
+	if err := ensureUniqueRelayListen(existing, listener, id); err != nil {
+		return RelayListener{}, err
+	}
 
 	if prepared.PersistCertificates {
 		if err := s.store.SaveManagedCertificates(ctx, prepared.NextCertRows); err != nil {
@@ -1208,6 +1222,121 @@ func normalizeRelayCAIDs(values []int) []int {
 		normalized = append(normalized, value)
 	}
 	return normalized
+}
+
+func ensureUniqueRelayListen(listeners []RelayListener, next RelayListener, excludeID int) error {
+	nextTransport := normalizeRelayTransportModeIdentity(next.TransportMode)
+	for _, listener := range listeners {
+		if listener.ID == excludeID {
+			continue
+		}
+		if normalizeRelayTransportModeIdentity(listener.TransportMode) != nextTransport || listener.ListenPort != next.ListenPort {
+			continue
+		}
+		if conflictHost, ok := relayBindHostConflict(listener.BindHosts, next.BindHosts); ok {
+			return fmt.Errorf(
+				"%w: relay listen %s:%d on host %s conflicts with relay listener #%d",
+				ErrInvalidArgument,
+				nextTransport,
+				next.ListenPort,
+				conflictHost,
+				listener.ID,
+			)
+		}
+	}
+	return nil
+}
+
+func normalizeRelayTransportModeIdentity(value string) string {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	switch normalized {
+	case "", "tls_tcp":
+		return "tls_tcp"
+	case "quic":
+		return "quic"
+	default:
+		return normalized
+	}
+}
+
+func relayBindHostConflict(left []string, right []string) (string, bool) {
+	seen := make(map[string]struct{}, len(left))
+	leftHasIPv4 := false
+	leftHasIPv6 := false
+	leftHasIPv4Wildcard := false
+	leftHasIPv6Wildcard := false
+	for _, value := range left {
+		host := strings.TrimSpace(value)
+		if host == "" {
+			continue
+		}
+		switch relayBindHostFamily(host) {
+		case relayBindHostIPv4:
+			leftHasIPv4 = true
+		case relayBindHostIPv4Wildcard:
+			leftHasIPv4 = true
+			leftHasIPv4Wildcard = true
+		case relayBindHostIPv6:
+			leftHasIPv6 = true
+		case relayBindHostIPv6Wildcard:
+			leftHasIPv6 = true
+			leftHasIPv6Wildcard = true
+		}
+		seen[host] = struct{}{}
+	}
+	for _, value := range right {
+		host := strings.TrimSpace(value)
+		if host == "" {
+			continue
+		}
+		if _, ok := seen[host]; ok {
+			return host, true
+		}
+		switch relayBindHostFamily(host) {
+		case relayBindHostIPv4Wildcard:
+			if leftHasIPv4 {
+				return host, true
+			}
+		case relayBindHostIPv6Wildcard:
+			if leftHasIPv6 {
+				return host, true
+			}
+		case relayBindHostIPv4:
+			if leftHasIPv4Wildcard {
+				return host, true
+			}
+		case relayBindHostIPv6:
+			if leftHasIPv6Wildcard {
+				return host, true
+			}
+		}
+	}
+	return "", false
+}
+
+const (
+	relayBindHostOther = iota
+	relayBindHostIPv4
+	relayBindHostIPv4Wildcard
+	relayBindHostIPv6
+	relayBindHostIPv6Wildcard
+)
+
+func relayBindHostFamily(host string) int {
+	ip := net.ParseIP(strings.TrimSpace(host))
+	if ip == nil {
+		return relayBindHostOther
+	}
+	if ip4 := ip.To4(); ip4 != nil {
+		if ip4.Equal(net.IPv4zero) {
+			return relayBindHostIPv4Wildcard
+		}
+		return relayBindHostIPv4
+	}
+	if ip.Equal(net.IPv6zero) {
+		return relayBindHostIPv6Wildcard
+	}
+	return relayBindHostIPv6
 }
 
 func relayListenerFromRow(row storage.RelayListenerRow) RelayListener {
