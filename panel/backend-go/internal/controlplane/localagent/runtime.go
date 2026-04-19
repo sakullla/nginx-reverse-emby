@@ -128,50 +128,45 @@ func toEmbeddedSnapshot(snapshot Snapshot) goagentembedded.Snapshot {
 			Size:     snapshot.VersionPackage.Size,
 		}
 	}
-	if len(snapshot.Rules) > 0 {
-		embedded.Rules = make([]goagentembedded.HTTPRule, 0, len(snapshot.Rules))
-		for _, rule := range snapshot.Rules {
-			embedded.Rules = append(embedded.Rules, goagentembedded.HTTPRule{
-				FrontendURL:      rule.FrontendURL,
-				BackendURL:       rule.BackendURL,
-				Backends:         toEmbeddedHTTPBackends(rule.Backends),
-				LoadBalancing:    goagentembedded.LoadBalancing{Strategy: rule.LoadBalancing.Strategy},
-				ProxyRedirect:    rule.ProxyRedirect,
-				PassProxyHeaders: rule.PassProxyHeaders,
-				UserAgent:        rule.UserAgent,
-				CustomHeaders:    toEmbeddedHTTPHeaders(rule.CustomHeaders),
-				RelayChain:       append([]int(nil), rule.RelayChain...),
-				Revision:         rule.Revision,
-			})
-		}
+	embedded.Rules = make([]goagentembedded.HTTPRule, 0, len(snapshot.Rules))
+	for _, rule := range snapshot.Rules {
+		embedded.Rules = append(embedded.Rules, goagentembedded.HTTPRule{
+			FrontendURL:      rule.FrontendURL,
+			BackendURL:       rule.BackendURL,
+			Backends:         toEmbeddedHTTPBackends(rule.Backends),
+			LoadBalancing:    goagentembedded.LoadBalancing{Strategy: rule.LoadBalancing.Strategy},
+			ProxyRedirect:    rule.ProxyRedirect,
+			PassProxyHeaders: rule.PassProxyHeaders,
+			UserAgent:        rule.UserAgent,
+			CustomHeaders:    toEmbeddedHTTPHeaders(rule.CustomHeaders),
+			RelayChain:       append([]int(nil), rule.RelayChain...),
+			Revision:         rule.Revision,
+		})
 	}
-	if len(snapshot.L4Rules) > 0 {
-		embedded.L4Rules = make([]goagentembedded.L4Rule, 0, len(snapshot.L4Rules))
-		for _, rule := range snapshot.L4Rules {
-			embedded.L4Rules = append(embedded.L4Rules, goagentembedded.L4Rule{
-				Protocol:      rule.Protocol,
-				ListenHost:    rule.ListenHost,
-				ListenPort:    rule.ListenPort,
-				UpstreamHost:  rule.UpstreamHost,
-				UpstreamPort:  rule.UpstreamPort,
-				Backends:      toEmbeddedL4Backends(rule.Backends),
-				LoadBalancing: goagentembedded.LoadBalancing{Strategy: rule.LoadBalancing.Strategy},
-				Tuning: goagentembedded.L4Tuning{
-					ProxyProtocol: goagentembedded.L4ProxyProtocolTuning{
-						Decode: rule.Tuning.ProxyProtocol.Decode,
-						Send:   rule.Tuning.ProxyProtocol.Send,
-					},
+	embedded.L4Rules = make([]goagentembedded.L4Rule, 0, len(snapshot.L4Rules))
+	for _, rule := range snapshot.L4Rules {
+		embedded.L4Rules = append(embedded.L4Rules, goagentembedded.L4Rule{
+			Protocol:      rule.Protocol,
+			ListenHost:    rule.ListenHost,
+			ListenPort:    rule.ListenPort,
+			UpstreamHost:  rule.UpstreamHost,
+			UpstreamPort:  rule.UpstreamPort,
+			Backends:      toEmbeddedL4Backends(rule.Backends),
+			LoadBalancing: goagentembedded.LoadBalancing{Strategy: rule.LoadBalancing.Strategy},
+			Tuning: goagentembedded.L4Tuning{
+				ProxyProtocol: goagentembedded.L4ProxyProtocolTuning{
+					Decode: rule.Tuning.ProxyProtocol.Decode,
+					Send:   rule.Tuning.ProxyProtocol.Send,
 				},
-				RelayChain: append([]int(nil), rule.RelayChain...),
-				RelayObfs:  rule.RelayObfs,
-				Revision:   rule.Revision,
-			})
-		}
+			},
+			RelayChain: append([]int(nil), rule.RelayChain...),
+			RelayObfs:  rule.RelayObfs,
+			Revision:   rule.Revision,
+		})
 	}
-	if len(snapshot.RelayListeners) > 0 {
-		embedded.RelayListeners = make([]goagentembedded.RelayListener, 0, len(snapshot.RelayListeners))
-		for _, listener := range snapshot.RelayListeners {
-			embedded.RelayListeners = append(embedded.RelayListeners, goagentembedded.RelayListener{
+	embedded.RelayListeners = make([]goagentembedded.RelayListener, 0, len(snapshot.RelayListeners))
+	for _, listener := range snapshot.RelayListeners {
+		embedded.RelayListeners = append(embedded.RelayListeners, goagentembedded.RelayListener{
 				ID:                      listener.ID,
 				AgentID:                 listener.AgentID,
 				Name:                    listener.Name,
@@ -191,49 +186,44 @@ func toEmbeddedSnapshot(snapshot Snapshot) goagentembedded.Snapshot {
 				AllowSelfSigned:         listener.AllowSelfSigned,
 				Tags:                    append([]string(nil), listener.Tags...),
 				Revision:                listener.Revision,
-			})
-		}
+		})
 	}
-	if len(snapshot.Certificates) > 0 {
-		embedded.Certificates = make([]goagentembedded.ManagedCertificateBundle, 0, len(snapshot.Certificates))
-		for _, bundle := range snapshot.Certificates {
-			embedded.Certificates = append(embedded.Certificates, goagentembedded.ManagedCertificateBundle{
-				ID:       bundle.ID,
-				Domain:   bundle.Domain,
-				Revision: bundle.Revision,
-				CertPEM:  bundle.CertPEM,
-				KeyPEM:   bundle.KeyPEM,
-			})
-		}
+	embedded.Certificates = make([]goagentembedded.ManagedCertificateBundle, 0, len(snapshot.Certificates))
+	for _, bundle := range snapshot.Certificates {
+		embedded.Certificates = append(embedded.Certificates, goagentembedded.ManagedCertificateBundle{
+			ID:       bundle.ID,
+			Domain:   bundle.Domain,
+			Revision: bundle.Revision,
+			CertPEM:  bundle.CertPEM,
+			KeyPEM:   bundle.KeyPEM,
+		})
 	}
-	if len(snapshot.CertificatePolicies) > 0 {
-		embedded.CertificatePolicies = make([]goagentembedded.ManagedCertificatePolicy, 0, len(snapshot.CertificatePolicies))
-		for _, policy := range snapshot.CertificatePolicies {
-			embedded.CertificatePolicies = append(embedded.CertificatePolicies, goagentembedded.ManagedCertificatePolicy{
-				ID:          policy.ID,
-				Domain:      policy.Domain,
-				Enabled:     policy.Enabled,
-				Scope:       policy.Scope,
-				IssuerMode:  policy.IssuerMode,
-				Status:      policy.Status,
-				LastIssueAt: policy.LastIssueAt,
-				LastError:   policy.LastError,
-				ACMEInfo: goagentembedded.ManagedCertificateACMEInfo{
-					MainDomain: policy.ACMEInfo.MainDomain,
-					KeyLength:  policy.ACMEInfo.KeyLength,
-					SANDomains: policy.ACMEInfo.SANDomains,
-					Profile:    policy.ACMEInfo.Profile,
-					CA:         policy.ACMEInfo.CA,
-					Created:    policy.ACMEInfo.Created,
-					Renew:      policy.ACMEInfo.Renew,
-				},
-				Tags:            append([]string(nil), policy.Tags...),
-				Revision:        policy.Revision,
-				Usage:           policy.Usage,
-				CertificateType: policy.CertificateType,
-				SelfSigned:      policy.SelfSigned,
-			})
-		}
+	embedded.CertificatePolicies = make([]goagentembedded.ManagedCertificatePolicy, 0, len(snapshot.CertificatePolicies))
+	for _, policy := range snapshot.CertificatePolicies {
+		embedded.CertificatePolicies = append(embedded.CertificatePolicies, goagentembedded.ManagedCertificatePolicy{
+			ID:          policy.ID,
+			Domain:      policy.Domain,
+			Enabled:     policy.Enabled,
+			Scope:       policy.Scope,
+			IssuerMode:  policy.IssuerMode,
+			Status:      policy.Status,
+			LastIssueAt: policy.LastIssueAt,
+			LastError:   policy.LastError,
+			ACMEInfo: goagentembedded.ManagedCertificateACMEInfo{
+				MainDomain: policy.ACMEInfo.MainDomain,
+				KeyLength:  policy.ACMEInfo.KeyLength,
+				SANDomains: policy.ACMEInfo.SANDomains,
+				Profile:    policy.ACMEInfo.Profile,
+				CA:         policy.ACMEInfo.CA,
+				Created:    policy.ACMEInfo.Created,
+				Renew:      policy.ACMEInfo.Renew,
+			},
+			Tags:            append([]string(nil), policy.Tags...),
+			Revision:        policy.Revision,
+			Usage:           policy.Usage,
+			CertificateType: policy.CertificateType,
+			SelfSigned:      policy.SelfSigned,
+		})
 	}
 	return embedded
 }
