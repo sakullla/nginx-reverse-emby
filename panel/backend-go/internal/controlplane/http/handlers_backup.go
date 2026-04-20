@@ -6,6 +6,8 @@ import (
 	"mime"
 	"net/http"
 	"strings"
+
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 )
 
 var backupImportMaxBytes int64 = 32 << 20
@@ -15,7 +17,16 @@ func (d Dependencies) handleBackupExport(w http.ResponseWriter, r *http.Request)
 		http.NotFound(w, r)
 		return
 	}
-	body, filename, err := d.BackupService.Export(r.Context())
+	includeParam := r.URL.Query().Get("include")
+	var body []byte
+	var filename string
+	var err error
+	if includeParam != "" {
+		opts := parseExportOptions(includeParam)
+		body, filename, err = d.BackupService.ExportSelective(r.Context(), opts)
+	} else {
+		body, filename, err = d.BackupService.Export(r.Context())
+	}
 	if err != nil {
 		status, payload := mapServiceError(err)
 		writeJSON(w, status, payload)
@@ -25,6 +36,38 @@ func (d Dependencies) handleBackupExport(w http.ResponseWriter, r *http.Request)
 	w.Header().Set("Content-Disposition", backupContentDisposition(filename))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(body)
+}
+
+func parseExportOptions(include string) service.BackupExportOptions {
+	parts := map[string]bool{}
+	for _, p := range strings.Split(include, ",") {
+		parts[strings.TrimSpace(p)] = true
+	}
+	return service.BackupExportOptions{
+		Agents:          parts["agents"],
+		HTTPRules:       parts["http_rules"],
+		L4Rules:         parts["l4_rules"],
+		RelayListeners:  parts["relay_listeners"],
+		Certificates:    parts["certificates"],
+		VersionPolicies: parts["version_policies"],
+	}
+}
+
+func (d Dependencies) handleBackupResourceCounts(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.NotFound(w, r)
+		return
+	}
+	counts, err := d.BackupService.ResourceCounts(r.Context())
+	if err != nil {
+		status, payload := mapServiceError(err)
+		writeJSON(w, status, payload)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":     true,
+		"counts": counts,
+	})
 }
 
 func (d Dependencies) handleBackupImport(w http.ResponseWriter, r *http.Request) {

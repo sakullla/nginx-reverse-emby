@@ -74,7 +74,10 @@ type CertificateService interface {
 
 type BackupService interface {
 	Export(context.Context) ([]byte, string, error)
+	ExportSelective(context.Context, service.BackupExportOptions) ([]byte, string, error)
 	Import(context.Context, []byte) (service.BackupImportResult, error)
+	ResourceCounts(context.Context) (service.BackupCounts, error)
+	Preview(context.Context, []byte) (service.BackupImportResult, error)
 }
 
 type Dependencies struct {
@@ -104,7 +107,19 @@ func (unavailableBackupService) Export(context.Context) ([]byte, string, error) 
 	return nil, "", fmt.Errorf("backup service unavailable")
 }
 
+func (unavailableBackupService) ExportSelective(context.Context, service.BackupExportOptions) ([]byte, string, error) {
+	return nil, "", fmt.Errorf("backup service unavailable")
+}
+
 func (unavailableBackupService) Import(context.Context, []byte) (service.BackupImportResult, error) {
+	return service.BackupImportResult{}, fmt.Errorf("backup service unavailable")
+}
+
+func (unavailableBackupService) ResourceCounts(context.Context) (service.BackupCounts, error) {
+	return service.BackupCounts{}, fmt.Errorf("backup service unavailable")
+}
+
+func (unavailableBackupService) Preview(context.Context, []byte) (service.BackupImportResult, error) {
 	return service.BackupImportResult{}, fmt.Errorf("backup service unavailable")
 }
 
@@ -157,6 +172,7 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 		if resolved.BackupService != nil {
 			mux.Handle(prefix+"/system/backup/export", resolved.requirePanelToken(http.HandlerFunc(resolved.handleBackupExport)))
 			mux.Handle(prefix+"/system/backup/import", resolved.requirePanelToken(http.HandlerFunc(resolved.handleBackupImport)))
+			mux.Handle(prefix+"/system/backup/counts", resolved.requirePanelToken(http.HandlerFunc(resolved.handleBackupResourceCounts)))
 		}
 		mux.Handle(prefix+"/agents", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgents)))
 		mux.Handle(prefix+"/agents/{agentID}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgent)))

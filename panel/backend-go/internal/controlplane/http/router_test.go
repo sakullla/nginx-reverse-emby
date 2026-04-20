@@ -465,6 +465,13 @@ func (f fakeBackupService) Export(context.Context) ([]byte, string, error) {
 	return f.exportBody, f.exportFilename, nil
 }
 
+func (f fakeBackupService) ExportSelective(_ context.Context, opts service.BackupExportOptions) ([]byte, string, error) {
+	if opts.Agents && opts.HTTPRules && opts.L4Rules && opts.RelayListeners && opts.Certificates && opts.VersionPolicies {
+		return f.exportBody, f.exportFilename, nil
+	}
+	return f.exportBody, f.exportFilename, nil
+}
+
 func (f fakeBackupService) Import(_ context.Context, body []byte) (service.BackupImportResult, error) {
 	if f.state != nil {
 		copyBody := append([]byte(nil), body...)
@@ -474,6 +481,14 @@ func (f fakeBackupService) Import(_ context.Context, body []byte) (service.Backu
 		return service.BackupImportResult{}, f.importErr
 	}
 	return f.importResult, nil
+}
+
+func (f fakeBackupService) ResourceCounts(context.Context) (service.BackupCounts, error) {
+	return service.BackupCounts{}, nil
+}
+
+func (f fakeBackupService) Preview(_ context.Context, _ []byte) (service.BackupImportResult, error) {
+	return service.BackupImportResult{}, nil
 }
 
 func TestRouterServesPanelAuthAndInfoEndpoints(t *testing.T) {
