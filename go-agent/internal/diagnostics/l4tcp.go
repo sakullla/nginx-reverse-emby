@@ -142,6 +142,18 @@ func tcpCandidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule
 		backendIndex := indexes[0]
 		indexesByID[placeholder.Address] = indexes[1:]
 		backend := rawBackends[backendIndex]
+		if len(rule.RelayChain) > 0 {
+			address := net.JoinHostPort(backend.Host, strconv.Itoa(backend.Port))
+			if cache.IsInBackoff(address) {
+				continue
+			}
+			out = append(out, tcpProbeCandidate{
+				address:               address,
+				backendLabel:          tcpProbeBackendLabel(address, placeholder.Address, backendIndex, duplicateCounts[placeholder.Address]),
+				backendObservationKey: tcpProbeObservationKey(scope, placeholder.Address, backendIndex, duplicateCounts[placeholder.Address]),
+			})
+			continue
+		}
 		resolved, err := cache.Resolve(ctx, backends.Endpoint{
 			Host: backend.Host,
 			Port: backend.Port,

@@ -183,6 +183,25 @@ func httpCandidates(ctx context.Context, cache *backends.Cache, rule model.HTTPR
 			continue
 		}
 		target := parsed[indices[idx]]
+		if len(rule.RelayChain) > 0 {
+			dialAddress := httpProbeTargetAddress(target)
+			if cache.IsInBackoff(dialAddress) {
+				continue
+			}
+			clone := *target
+			out = append(out, httpProbeCandidate{
+				targetURL:             &clone,
+				backendLabel:          clone.String(),
+				dialAddress:           dialAddress,
+				backendObservationKey: backends.BackendObservationKey(scope, backends.StableBackendID(clone.String())),
+				configuredURL:         clone.String(),
+				resolvedCandidates: []httpResolvedCandidate{{
+					label:       clone.String(),
+					dialAddress: dialAddress,
+				}},
+			})
+			continue
+		}
 		endpoint := backends.Endpoint{
 			Host: target.Hostname(),
 			Port: httpPortWithDefault(target),

@@ -2,6 +2,7 @@ package diagnostics
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"strconv"
 	"testing"
@@ -527,6 +528,42 @@ func TestTCPCandidatesAssignDistinctObservationKeysToDuplicateBackends(t *testin
 	}
 	if candidates[0].backendObservationKey == candidates[1].backendObservationKey {
 		t.Fatalf("duplicate backends must not share observation keys: %+v", candidates)
+	}
+}
+
+func TestTCPCandidatesRelayChainPreservesConfiguredHostname(t *testing.T) {
+	resolverCalls := 0
+	cache := backends.NewCache(backends.Config{
+		Resolver: diagnosticResolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
+			resolverCalls++
+			return nil, fmt.Errorf("unexpected resolve %q", host)
+		}),
+	})
+
+	rule := model.L4Rule{
+		ID:         2,
+		Protocol:   "tcp",
+		ListenHost: "0.0.0.0",
+		ListenPort: 9550,
+		RelayChain: []int{302},
+		Backends: []model.L4Backend{{
+			Host: "relay-target.example",
+			Port: 9001,
+		}},
+	}
+
+	candidates, err := tcpCandidates(context.Background(), cache, rule)
+	if err != nil {
+		t.Fatalf("tcpCandidates() error = %v", err)
+	}
+	if resolverCalls != 0 {
+		t.Fatalf("resolver called %d times", resolverCalls)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("candidates = %+v", candidates)
+	}
+	if got := candidates[0].address; got != "relay-target.example:9001" {
+		t.Fatalf("address = %q", got)
 	}
 }
 
