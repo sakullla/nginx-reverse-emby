@@ -45,15 +45,16 @@ func (s *finalHopSelector) resolvedCandidates(ctx context.Context, target string
 	if err != nil {
 		return nil, fmt.Errorf("invalid relay target %q: %w", target, err)
 	}
+	var resolved []backends.Candidate
 	if ip := net.ParseIP(strings.TrimSpace(host)); ip != nil {
-		return []backends.Candidate{{Address: net.JoinHostPort(ip.String(), strconv.Itoa(port))}}, nil
+		resolved = []backends.Candidate{{Address: net.JoinHostPort(ip.String(), strconv.Itoa(port))}}
+	} else {
+		resolved, err = s.cache.Resolve(ctx, backends.Endpoint{Host: host, Port: port})
+		if err != nil {
+			return nil, err
+		}
+		resolved = s.cache.PreferResolvedCandidatesLatencyOnly(resolved)
 	}
-
-	resolved, err := s.cache.Resolve(ctx, backends.Endpoint{Host: host, Port: port})
-	if err != nil {
-		return nil, err
-	}
-	resolved = s.cache.PreferResolvedCandidatesLatencyOnly(resolved)
 
 	filtered := make([]backends.Candidate, 0, len(resolved))
 	for _, candidate := range resolved {

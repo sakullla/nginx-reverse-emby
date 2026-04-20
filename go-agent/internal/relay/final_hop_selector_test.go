@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net"
+	"strings"
 	"testing"
 	"time"
 )
@@ -56,6 +57,18 @@ func TestFinalHopSelectorDialTCPRetriesResolvedCandidatesAndBacksOffFailures(t *
 	if selectedAgain != net.JoinHostPort("127.0.0.1", port) {
 		t.Fatalf("selectedAgain = %q", selectedAgain)
 	}
+
+	selector = newFinalHopSelector(finalHopSelectorConfig{})
+	literalTarget := net.JoinHostPort("127.0.0.2", port)
+	if _, _, err := selector.dialTCP(context.Background(), literalTarget); err == nil {
+		t.Fatal("expected literal IP dialTCP() to fail")
+	}
+	if !selector.cache.IsInBackoff(literalTarget) {
+		t.Fatalf("expected literal IP %q to enter backoff", literalTarget)
+	}
+	if _, _, err := selector.dialTCP(context.Background(), literalTarget); err == nil || !strings.Contains(err.Error(), "no healthy relay target candidates") {
+		t.Fatalf("expected literal IP in backoff to be skipped, got err = %v", err)
+	}
 }
 
 func TestFinalHopSelectorOpenUDPPeerBacksOffFailedResolvedCandidate(t *testing.T) {
@@ -106,6 +119,33 @@ func TestFinalHopSelectorOpenUDPPeerBacksOffFailedResolvedCandidate(t *testing.T
 	defer peer.Close()
 	if secondSelected != net.JoinHostPort("127.0.0.1", port) {
 		t.Fatalf("secondSelected = %q", secondSelected)
+	}
+
+	selector = newFinalHopSelector(finalHopSelectorConfig{})
+	literalTarget := net.JoinHostPort("127.0.0.2", port)
+	literalPeer, literalSelected, err := selector.openUDPPeer(context.Background(), literalTarget)
+	if err != nil {
+		t.Fatalf("literal openUDPPeer() error = %v", err)
+	}
+	if literalSelected != literalTarget {
+		t.Fatalf("literalSelected = %q", literalSelected)
+	}
+	if err := literalPeer.SetReadDeadline(time.Now().Add(50 * time.Millisecond)); err != nil {
+		t.Fatalf("literal SetReadDeadline() error = %v", err)
+	}
+	if err := literalPeer.WritePacket([]byte("ping")); err != nil {
+		t.Fatalf("literal WritePacket() error = %v", err)
+	}
+	if _, err := literalPeer.ReadPacket(); err == nil {
+		t.Fatal("expected literal UDP peer to fail")
+	}
+	_ = literalPeer.Close()
+
+	if !selector.cache.IsInBackoff(literalTarget) {
+		t.Fatalf("expected literal UDP target %q to enter backoff", literalTarget)
+	}
+	if _, _, err := selector.openUDPPeer(context.Background(), literalTarget); err == nil || !strings.Contains(err.Error(), "no healthy relay target candidates") {
+		t.Fatalf("expected literal UDP target in backoff to be skipped, got err = %v", err)
 	}
 }
 
