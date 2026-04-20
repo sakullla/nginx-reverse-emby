@@ -57,6 +57,7 @@ type udpSession struct {
 	upstream              udpUpstream
 	lastActive            time.Time
 	targetAddr            string
+	backoffKey            string
 	backendObservationKey string
 	pendingReplies        int
 	awaitingSince         time.Time
@@ -458,6 +459,7 @@ func (s *Server) proxyUDPPacket(listener *net.UDPConn, rule model.L4Rule, payloa
 	if err := session.upstream.WritePacket(payload); err != nil {
 		s.observeCandidateFailure(l4Candidate{
 			address:               session.targetAddr,
+			backoffKey:            session.backoffKey,
 			backendObservationKey: session.backendObservationKey,
 		})
 		s.closeUDPSession(session.key)
@@ -568,6 +570,7 @@ func (s *Server) sessionForPeer(rule model.L4Rule, listener *net.UDPConn, peer *
 	s.udpMu.Lock()
 	session.upstream = upstream
 	session.targetAddr = candidate.address
+	session.backoffKey = candidate.backoffKey
 	session.backendObservationKey = candidate.backendObservationKey
 	close(session.ready)
 	session.ready = nil
@@ -634,6 +637,7 @@ func (s *Server) pipeUDPReplies(session *udpSession) {
 				if s.shouldFailUDPSession(session.key) {
 					s.observeCandidateFailure(l4Candidate{
 						address:               session.targetAddr,
+						backoffKey:            session.backoffKey,
 						backendObservationKey: session.backendObservationKey,
 					})
 					return
@@ -652,6 +656,7 @@ func (s *Server) pipeUDPReplies(session *udpSession) {
 		s.markUDPSessionReply(session.key)
 		s.observeCandidateSuccess(l4Candidate{
 			address:               session.targetAddr,
+			backoffKey:            session.backoffKey,
 			backendObservationKey: session.backendObservationKey,
 		}, replyDuration)
 		if _, err := session.listener.WriteToUDP(payload, session.peer); err != nil {

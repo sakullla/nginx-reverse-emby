@@ -99,12 +99,6 @@ type observedUDPPeer struct {
 	success      sync.Once
 	failure      sync.Once
 	hasSucceeded atomic.Bool
-	wasClosed    atomic.Bool
-}
-
-func (p *observedUDPPeer) Close() error {
-	p.wasClosed.Store(true)
-	return p.udpPacketPeer.Close()
 }
 
 func (p *observedUDPPeer) WritePacket(payload []byte) error {
@@ -118,7 +112,7 @@ func (p *observedUDPPeer) WritePacket(payload []byte) error {
 func (p *observedUDPPeer) ReadPacket() ([]byte, error) {
 	payload, err := p.udpPacketPeer.ReadPacket()
 	if err != nil {
-		if !p.hasSucceeded.Load() && !p.wasClosed.Load() {
+		if !p.hasSucceeded.Load() {
 			p.failure.Do(func() { p.selector.cache.MarkFailure(p.address) })
 		}
 		return nil, err
