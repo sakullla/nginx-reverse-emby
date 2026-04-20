@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
@@ -92,11 +93,12 @@ func (s *finalHopSelector) dialTCP(ctx context.Context, target string) (net.Conn
 
 type observedUDPPeer struct {
 	udpPacketPeer
-	selector *finalHopSelector
-	address  string
-	openedAt time.Time
-	success  sync.Once
-	failure  sync.Once
+	selector     *finalHopSelector
+	address      string
+	openedAt     time.Time
+	success      sync.Once
+	failure      sync.Once
+	hasSucceeded atomic.Bool
 }
 
 func (p *observedUDPPeer) WritePacket(payload []byte) error {
@@ -110,9 +112,12 @@ func (p *observedUDPPeer) WritePacket(payload []byte) error {
 func (p *observedUDPPeer) ReadPacket() ([]byte, error) {
 	payload, err := p.udpPacketPeer.ReadPacket()
 	if err != nil {
-		p.failure.Do(func() { p.selector.cache.MarkFailure(p.address) })
+		if !p.hasSucceeded.Load() {
+			p.failure.Do(func() { p.selector.cache.MarkFailure(p.address) })
+		}
 		return nil, err
 	}
+	p.hasSucceeded.Store(true)
 	p.success.Do(func() {
 		p.selector.cache.ObserveTransferSuccess(p.address, p.selector.now().Sub(p.openedAt), 0, 0)
 	})
