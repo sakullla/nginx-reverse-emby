@@ -2,11 +2,13 @@ package localagent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -129,7 +131,17 @@ func (s *LocalTaskSession) diagnoseHTTPRule(ctx context.Context, payload map[str
 		return nil, fmt.Errorf("http rule %d is disabled", ruleID)
 	}
 
-	return probeHTTPBackend(ctx, row.BackendURL, ruleID)
+	backends := parseHTTPBackendsFromRow(row)
+	if len(backends) == 0 {
+		return nil, fmt.Errorf("http rule %d has no backend url", ruleID)
+	}
+
+	customHeaders := parseCustomHeadersJSON(row.CustomHeadersJSON)
+	samples := make([]probeSample, 0, len(backends))
+	for _, backendURL := range backends {
+		samples = append(samples, probeHTTPBackendDirect(ctx, backendURL, row.UserAgent, customHeaders))
+	}
+	return buildDiagnosticsReport("http", ruleID, samples), nil
 }
 
 func (s *LocalTaskSession) diagnoseL4TCPRule(ctx context.Context, payload map[string]any) (map[string]any, error) {
@@ -157,8 +169,16 @@ func (s *LocalTaskSession) diagnoseL4TCPRule(ctx context.Context, payload map[st
 		return nil, fmt.Errorf("l4 rule %d is disabled", ruleID)
 	}
 
-	addr := net.JoinHostPort(target.ListenHost, fmt.Sprintf("%d", target.ListenPort))
-	return probeTCPAddr(ctx, addr, ruleID)
+	upstreams := parseL4UpstreamsFromRow(*target)
+	if len(upstreams) == 0 {
+		return nil, fmt.Errorf("l4 rule %d has no upstream address", ruleID)
+	}
+
+	samples := make([]probeSample, 0, len(upstreams))
+	for _, addr := range upstreams {
+		samples = append(samples, probeTCPDirect(ctx, addr))
+	}
+	return buildDiagnosticsReport("l4_tcp", ruleID, samples), nil
 }
 
 func taskRuleID(payload map[string]any) (int, error) {
@@ -182,7 +202,13 @@ func taskRuleID(payload map[string]any) (int, error) {
 	}
 }
 
-func probeHTTPBackend(ctx context.Context, backendURL string, ruleID int) (map[string]any, error) {
+type probeSample struct {
+	backend string
+	latency float64
+	ok      bool
+}
+
+func probeHTTPBackendDirect(ctx context.Context, backendURL string, userAgent string, headers []customHeader) probeSample {
 	client := &http.Client{
 		Timeout: 10 * time.Second,
 		CheckRedirect: func(req *http.Request, via []*http.Request) error {
@@ -190,59 +216,185 @@ func probeHTTPBackend(ctx context.Context, backendURL string, ruleID int) (map[s
 		},
 	}
 
-	start := time.Now()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, backendURL, nil)
 	if err != nil {
-		return diagnosticResult("http", ruleID, backendURL, 0, false), nil
+		return probeSample{backend: backendURL, latency: 0, ok: false}
 	}
+	if userAgent != "" {
+		req.Header.Set("User-Agent", userAgent)
+	}
+	for _, h := range headers {
+		req.Header.Set(h.Name, h.Value)
+	}
+
+	start := time.Now()
 	resp, err := client.Do(req)
 	elapsed := time.Since(start).Seconds() * 1000
 	if err != nil {
-		return diagnosticResult("http", ruleID, backendURL, elapsed, false), nil
+		return probeSample{backend: backendURL, latency: elapsed, ok: false}
 	}
 	resp.Body.Close()
-	return diagnosticResult("http", ruleID, backendURL, elapsed, true), nil
+	return probeSample{backend: backendURL, latency: elapsed, ok: true}
 }
 
-func probeTCPAddr(ctx context.Context, addr string, ruleID int) (map[string]any, error) {
+func probeTCPDirect(ctx context.Context, addr string) probeSample {
 	start := time.Now()
 	d := net.Dialer{Timeout: 10 * time.Second}
 	conn, err := d.DialContext(ctx, "tcp", addr)
 	elapsed := time.Since(start).Seconds() * 1000
 	if err != nil {
-		return diagnosticResult("l4_tcp", ruleID, addr, elapsed, false), nil
+		return probeSample{backend: addr, latency: elapsed, ok: false}
 	}
 	conn.Close()
-	return diagnosticResult("l4_tcp", ruleID, addr, elapsed, true), nil
+	return probeSample{backend: addr, latency: elapsed, ok: true}
 }
 
-func diagnosticResult(kind string, ruleID int, backend string, latency float64, ok bool) map[string]any {
+func buildDiagnosticsReport(kind string, ruleID int, samples []probeSample) map[string]any {
 	succeeded := 0
-	failed := 1
+	failed := 0
+	var totalLatency float64
+	var minLatency float64 = -1
+	var maxLatency float64
+
+	backendReports := make([]map[string]any, 0, len(samples))
+	for _, s := range samples {
+		bSucceeded := 0
+		bFailed := 1
+		bQuality := "down"
+		bLatency := s.latency
+		if s.ok {
+			succeeded++
+			bSucceeded = 1
+			bFailed = 0
+			bQuality = "excellent"
+			totalLatency += s.latency
+			if minLatency < 0 || s.latency < minLatency {
+				minLatency = s.latency
+			}
+			if s.latency > maxLatency {
+				maxLatency = s.latency
+			}
+		} else {
+			failed++
+			if minLatency < 0 {
+				minLatency = 0
+			}
+		}
+		backendReports = append(backendReports, map[string]any{
+			"backend": s.backend,
+			"summary": map[string]any{
+				"sent":           1,
+				"succeeded":      bSucceeded,
+				"failed":         bFailed,
+				"loss_rate":      float64(bFailed),
+				"avg_latency_ms": bLatency,
+				"min_latency_ms": bLatency,
+				"max_latency_ms": bLatency,
+				"quality":        bQuality,
+			},
+		})
+	}
+
+	var avgLatency float64
+	if succeeded > 0 {
+		avgLatency = totalLatency / float64(succeeded)
+	}
+	if minLatency < 0 {
+		minLatency = 0
+	}
+
 	quality := "down"
-	if ok {
-		succeeded = 1
-		failed = 0
+	if failed == 0 && succeeded > 0 {
 		quality = "excellent"
+	} else if succeeded > 0 {
+		quality = "degraded"
 	}
-	summary := map[string]any{
-		"sent":           1,
-		"succeeded":      succeeded,
-		"failed":         failed,
-		"loss_rate":      float64(failed),
-		"avg_latency_ms": latency,
-		"min_latency_ms": latency,
-		"max_latency_ms": latency,
-		"quality":        quality,
-	}
-	result := map[string]any{
+
+	return map[string]any{
 		"kind":    kind,
 		"rule_id": ruleID,
-		"summary": summary,
-		"backends": []map[string]any{
-			{"backend": backend, "summary": summary},
+		"summary": map[string]any{
+			"sent":           len(samples),
+			"succeeded":      succeeded,
+			"failed":         failed,
+			"loss_rate":      float64(failed) / float64(len(samples)),
+			"avg_latency_ms": avgLatency,
+			"min_latency_ms": minLatency,
+			"max_latency_ms": maxLatency,
+			"quality":        quality,
 		},
-		"samples": 1,
+		"backends": backendReports,
+		"samples":  len(samples),
 	}
-	return result
+}
+
+// --- JSON parsing helpers for storage row fields ---
+
+type customHeader struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+func parseHTTPBackendsFromRow(row storage.HTTPRuleRow) []string {
+	type rawBackend struct {
+		URL string `json:"url"`
+	}
+	var backends []rawBackend
+	if err := json.Unmarshal([]byte(defaultJSON(row.BackendsJSON, "[]")), &backends); err != nil {
+		backends = nil
+	}
+	var urls []string
+	for _, b := range backends {
+		if u := strings.TrimSpace(b.URL); u != "" {
+			urls = append(urls, u)
+		}
+	}
+	if len(urls) == 0 {
+		if u := strings.TrimSpace(row.BackendURL); u != "" {
+			urls = []string{u}
+		}
+	}
+	return urls
+}
+
+func parseCustomHeadersJSON(raw string) []customHeader {
+	var headers []customHeader
+	if err := json.Unmarshal([]byte(defaultJSON(raw, "[]")), &headers); err != nil {
+		return nil
+	}
+	out := make([]customHeader, 0, len(headers))
+	for _, h := range headers {
+		if strings.TrimSpace(h.Name) != "" {
+			out = append(out, h)
+		}
+	}
+	return out
+}
+
+func parseL4UpstreamsFromRow(row storage.L4RuleRow) []string {
+	type rawL4Backend struct {
+		Host string `json:"host"`
+		Port int    `json:"port"`
+	}
+	var backends []rawL4Backend
+	if err := json.Unmarshal([]byte(defaultJSON(row.BackendsJSON, "[]")), &backends); err != nil {
+		backends = nil
+	}
+	var addrs []string
+	for _, b := range backends {
+		if h := strings.TrimSpace(b.Host); h != "" && b.Port > 0 {
+			addrs = append(addrs, net.JoinHostPort(h, strconv.Itoa(b.Port)))
+		}
+	}
+	if len(addrs) == 0 && strings.TrimSpace(row.UpstreamHost) != "" && row.UpstreamPort > 0 {
+		addrs = []string{net.JoinHostPort(strings.TrimSpace(row.UpstreamHost), strconv.Itoa(row.UpstreamPort))}
+	}
+	return addrs
+}
+
+func defaultJSON(raw, fallback string) string {
+	if strings.TrimSpace(raw) == "" {
+		return fallback
+	}
+	return raw
 }
