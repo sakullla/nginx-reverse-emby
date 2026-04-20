@@ -781,6 +781,17 @@ func l4Candidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule)
 		indexesByID[ordered.Address] = indexes[1:]
 		backend := rawBackends[backendIndex]
 		backendID := backends.StableBackendID(net.JoinHostPort(backend.Host, strconv.Itoa(backend.Port)))
+		if len(rule.RelayChain) > 0 {
+			dialAddress := net.JoinHostPort(backend.Host, strconv.Itoa(backend.Port))
+			if cache.IsInBackoff(dialAddress) {
+				continue
+			}
+			out = append(out, l4Candidate{
+				address:               dialAddress,
+				backendObservationKey: l4ObservationKey(scope, backendID, backendIndex, duplicateCounts[backendID]),
+			})
+			continue
+		}
 		endpoint := backends.Endpoint{
 			Host: backend.Host,
 			Port: backend.Port,

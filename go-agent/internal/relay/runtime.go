@@ -25,9 +25,10 @@ func (o DialOptions) clone() DialOptions {
 }
 
 type Server struct {
-	ctx      context.Context
-	cancel   context.CancelFunc
-	provider TLSMaterialProvider
+	ctx              context.Context
+	cancel           context.CancelFunc
+	provider         TLSMaterialProvider
+	finalHopSelector *finalHopSelector
 
 	wg sync.WaitGroup
 
@@ -46,11 +47,12 @@ func Start(ctx context.Context, listeners []Listener, provider TLSMaterialProvid
 
 	runtimeCtx, cancel := context.WithCancel(ctx)
 	server := &Server{
-		ctx:       runtimeCtx,
-		cancel:    cancel,
-		provider:  provider,
-		conns:     make(map[net.Conn]struct{}),
-		quicConns: make(map[*quic.Conn]struct{}),
+		ctx:              runtimeCtx,
+		cancel:           cancel,
+		provider:         provider,
+		finalHopSelector: newFinalHopSelector(finalHopSelectorConfig{}),
+		conns:            make(map[net.Conn]struct{}),
+		quicConns:        make(map[*quic.Conn]struct{}),
 	}
 
 	for _, listener := range listeners {
@@ -162,11 +164,13 @@ func (s *Server) openUpstream(network, target string, chain []Hop, options DialO
 	if !strings.EqualFold(network, "tcp") {
 		return nil, fmt.Errorf("unsupported network %q", network)
 	}
-	if _, _, err := net.SplitHostPort(target); err != nil {
-		return nil, fmt.Errorf("invalid relay target %q: %w", target, err)
-	}
 
-	return dialTCP(s.ctx, target)
+	selector := s.finalHopSelector
+	if selector == nil {
+		selector = newFinalHopSelector(finalHopSelectorConfig{})
+	}
+	conn, _, err := selector.dialTCP(s.ctx, target)
+	return conn, err
 }
 
 func (s *Server) openUDPPeer(target string, chain []Hop) (udpPacketPeer, error) {
@@ -178,15 +182,12 @@ func (s *Server) openUDPPeer(target string, chain []Hop) (udpPacketPeer, error) 
 		return newUDPStreamPeer(conn), nil
 	}
 
-	addr, err := net.ResolveUDPAddr("udp", target)
-	if err != nil {
-		return nil, fmt.Errorf("invalid relay target %q: %w", target, err)
+	selector := s.finalHopSelector
+	if selector == nil {
+		selector = newFinalHopSelector(finalHopSelectorConfig{})
 	}
-	conn, err := net.DialUDP("udp", nil, addr)
-	if err != nil {
-		return nil, err
-	}
-	return newUDPSocketPeer(conn), nil
+	peer, _, err := selector.openUDPPeer(s.ctx, target)
+	return peer, err
 }
 
 func Dial(ctx context.Context, network, target string, chain []Hop, provider TLSMaterialProvider, opts ...DialOptions) (net.Conn, error) {
