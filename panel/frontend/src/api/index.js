@@ -52,3 +52,6 @@ export const fetchVersionPolicies = (...args) => call('fetchVersionPolicies', ..
 export const createVersionPolicy = (...args) => call('createVersionPolicy', ...args)
 export const updateVersionPolicy = (...args) => call('updateVersionPolicy', ...args)
 export const deleteVersionPolicy = (...args) => call('deleteVersionPolicy', ...args)
+export const exportBackupSelective = (...args) => call('exportBackupSelective', ...args)
+export const importBackupPreview = (...args) => call('importBackupPreview', ...args)
+export const fetchBackupResourceCounts = (...args) => call('fetchBackupResourceCounts', ...args)
