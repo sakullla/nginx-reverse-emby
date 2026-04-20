@@ -67,6 +67,7 @@ type udpSession struct {
 
 type l4Candidate struct {
 	address               string
+	backoffKey            string
 	backendObservationKey string
 }
 
@@ -784,11 +785,13 @@ func l4Candidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule)
 		if len(rule.RelayChain) > 0 {
 			// Preserve the configured host for relay chains so the final hop resolves DNS.
 			dialAddress := net.JoinHostPort(backend.Host, strconv.Itoa(backend.Port))
-			if cache.IsInBackoff(dialAddress) {
+			bk := backends.RelayBackoffKey(rule.RelayChain, dialAddress)
+			if cache.IsInBackoff(bk) {
 				continue
 			}
 			out = append(out, l4Candidate{
 				address:               dialAddress,
+				backoffKey:            bk,
 				backendObservationKey: l4ObservationKey(scope, backendID, backendIndex, duplicateCounts[backendID]),
 			})
 			continue
@@ -841,6 +844,13 @@ func cloneUDPAddr(addr *net.UDPAddr) *net.UDPAddr {
 	return &out
 }
 
+func l4CandidateBackoffAddr(candidate l4Candidate) string {
+	if candidate.backoffKey != "" {
+		return candidate.backoffKey
+	}
+	return candidate.address
+}
+
 func (s *Server) observeCandidateFailure(candidate l4Candidate) {
 	if s == nil || s.cache == nil {
 		return
@@ -848,8 +858,8 @@ func (s *Server) observeCandidateFailure(candidate l4Candidate) {
 	if candidate.backendObservationKey != "" {
 		s.cache.ObserveBackendFailure(candidate.backendObservationKey)
 	}
-	if candidate.address != "" {
-		s.cache.MarkFailure(candidate.address)
+	if addr := l4CandidateBackoffAddr(candidate); addr != "" {
+		s.cache.MarkFailure(addr)
 	}
 }
 
@@ -860,7 +870,7 @@ func (s *Server) observeCandidateSuccess(candidate l4Candidate, headerLatency ti
 	if candidate.backendObservationKey != "" {
 		s.cache.ObserveBackendSuccess(candidate.backendObservationKey, headerLatency, 0, 0)
 	}
-	s.cache.ObserveSuccess(candidate.address, headerLatency)
+	s.cache.ObserveSuccess(l4CandidateBackoffAddr(candidate), headerLatency)
 }
 
 func (s *Server) validateRelayChain(rule model.L4Rule) error {

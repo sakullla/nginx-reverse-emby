@@ -307,9 +307,9 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 				return err
 			}
 			actualDialAddress := dialAddressFromContext(attemptReq.Context(), candidate.dialAddress)
-			backoffAddr := candidate.backoffKey
-			if backoffAddr == "" {
-				backoffAddr = actualDialAddress
+			backoffAddr := actualDialAddress
+			if len(e.rule.RelayChain) > 0 {
+				backoffAddr = backends.RelayBackoffKey(e.rule.RelayChain, actualDialAddress)
 			}
 			if e.backendCache.IsInBackoff(backoffAddr) {
 				break
@@ -429,7 +429,6 @@ func isRetrySafeMethod(method string) bool {
 type httpCandidate struct {
 	target                *url.URL
 	dialAddress           string
-	backoffKey            string
 	backendHost           string
 	backendObservationKey string
 }
@@ -462,14 +461,12 @@ func (e *routeEntry) candidates(ctx context.Context) ([]httpCandidate, error) {
 		if len(e.rule.RelayChain) > 0 {
 			// Preserve the configured host for relay chains so the final hop resolves DNS.
 			dialAddress := httpBackendDialAddress(backend.target)
-			bk := relayBackoffKey(e.rule.RelayChain, dialAddress)
-			if e.backendCache.IsInBackoff(bk) {
+			if e.backendCache.IsInBackoff(backends.RelayBackoffKey(e.rule.RelayChain, dialAddress)) {
 				continue
 			}
 			out = append(out, httpCandidate{
 				target:                cloneURL(backend.target),
 				dialAddress:           dialAddress,
-				backoffKey:            bk,
 				backendHost:           backend.backendHost,
 				backendObservationKey: backendObservationKey,
 			})
@@ -1190,14 +1187,6 @@ func httpBackendDialAddress(target *url.URL) string {
 		return target.Host
 	}
 	return net.JoinHostPort(target.Hostname(), strconv.Itoa(portWithDefault(target)))
-}
-
-func relayBackoffKey(chain []int, addr string) string {
-	parts := make([]string, len(chain))
-	for i, id := range chain {
-		parts[i] = strconv.Itoa(id)
-	}
-	return "relay|" + strings.Join(parts, "-") + "|" + addr
 }
 
 func mapValues(values map[int]model.RelayListener) []model.RelayListener {
