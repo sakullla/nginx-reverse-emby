@@ -151,7 +151,7 @@ func TestFinalHopSelectorOpenUDPPeerBacksOffFailedResolvedCandidate(t *testing.T
 	}
 }
 
-func TestObservedUDPPeerDoesNotBackOffLocalCloseBeforeFirstReply(t *testing.T) {
+func TestObservedUDPPeerBacksOffLocalCloseBeforeFirstReply(t *testing.T) {
 	selector := newFinalHopSelector(finalHopSelectorConfig{})
 	address := "127.0.0.1:12345"
 	rawPeer := newCloseUnblocksUDPPeer()
@@ -184,8 +184,8 @@ func TestObservedUDPPeerDoesNotBackOffLocalCloseBeforeFirstReply(t *testing.T) {
 		t.Fatal("ReadPacket() did not unblock after Close()")
 	}
 
-	if selector.cache.IsInBackoff(address) {
-		t.Fatalf("local Close() should not put %q into backoff", address)
+	if !selector.cache.IsInBackoff(address) {
+		t.Fatalf("local Close() should put %q into backoff before first reply", address)
 	}
 }
 
