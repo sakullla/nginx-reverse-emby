@@ -186,7 +186,7 @@ func httpCandidates(ctx context.Context, cache *backends.Cache, rule model.HTTPR
 		if len(rule.RelayChain) > 0 {
 			// Preserve the configured host for relay chains so the final hop resolves DNS.
 			dialAddress := httpProbeTargetAddress(target)
-			if cache.IsInBackoff(dialAddress) {
+			if cache.IsInBackoff(backends.RelayBackoffKey(rule.RelayChain, dialAddress)) {
 				continue
 			}
 			clone := *target
