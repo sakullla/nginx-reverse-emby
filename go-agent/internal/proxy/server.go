@@ -454,6 +454,19 @@ func (e *routeEntry) candidates(ctx context.Context) ([]httpCandidate, error) {
 		indexesByID[ordered.Address] = indexes[1:]
 		backend := e.backends[backendIndex]
 		backendObservationKey := backends.BackendObservationKey(e.selectionScope, backends.StableBackendID(backend.target.String()))
+		if len(e.rule.RelayChain) > 0 {
+			dialAddress := httpBackendDialAddress(backend.target)
+			if e.backendCache.IsInBackoff(dialAddress) {
+				continue
+			}
+			out = append(out, httpCandidate{
+				target:                cloneURL(backend.target),
+				dialAddress:           dialAddress,
+				backendHost:           backend.backendHost,
+				backendObservationKey: backendObservationKey,
+			})
+			continue
+		}
 		endpoint := backends.Endpoint{
 			Host: backend.target.Hostname(),
 			Port: portWithDefault(backend.target),
@@ -1162,6 +1175,16 @@ func addressWithDefaultPort(target *url.URL) string {
 		return target.Host
 	}
 	return net.JoinHostPort(target.Hostname(), strconv.Itoa(defaultPort(target.Scheme)))
+}
+
+func httpBackendDialAddress(target *url.URL) string {
+	if target == nil {
+		return ""
+	}
+	if target.Port() != "" {
+		return target.Host
+	}
+	return net.JoinHostPort(target.Hostname(), strconv.Itoa(portWithDefault(target)))
 }
 
 func mapValues(values map[int]model.RelayListener) []model.RelayListener {
