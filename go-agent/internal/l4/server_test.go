@@ -834,6 +834,41 @@ func TestL4CandidatesAssignDistinctObservationKeysToDuplicateBackends(t *testing
 	}
 }
 
+func TestL4CandidatesRelayChainPreservesConfiguredHostname(t *testing.T) {
+	resolverCalls := 0
+	cache := backends.NewCache(backends.Config{
+		Resolver: resolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
+			resolverCalls++
+			return nil, fmt.Errorf("unexpected resolve %q", host)
+		}),
+	})
+
+	rule := model.L4Rule{
+		Protocol:   "tcp",
+		ListenHost: "0.0.0.0",
+		ListenPort: 9448,
+		RelayChain: []int{201},
+		Backends: []model.L4Backend{{
+			Host: "relay-upstream.example",
+			Port: 9001,
+		}},
+	}
+
+	candidates, err := l4Candidates(context.Background(), cache, rule)
+	if err != nil {
+		t.Fatalf("l4Candidates() error = %v", err)
+	}
+	if resolverCalls != 0 {
+		t.Fatalf("resolver called %d times", resolverCalls)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("candidates = %+v", candidates)
+	}
+	if got := candidates[0].address; got != "relay-upstream.example:9001" {
+		t.Fatalf("address = %q", got)
+	}
+}
+
 func TestDialTCPUpstreamStopsWhenServerContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -1022,9 +1057,9 @@ func (r *chunkedReader) Read(p []byte) (int, error) {
 }
 
 type prefetchProbeConn struct {
-	readCalls             int
-	setReadDeadlineCalls  int
-	readErr               error
+	readCalls            int
+	setReadDeadlineCalls int
+	readErr              error
 }
 
 func (c *prefetchProbeConn) Read(_ []byte) (int, error) {
