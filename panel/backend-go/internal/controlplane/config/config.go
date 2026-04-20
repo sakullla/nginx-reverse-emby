@@ -40,6 +40,10 @@ type Config struct {
 	LocalAgentRelayTimeouts           RelayTimeoutConfig
 	ManagedCertificateRenewInterval   time.Duration
 	ManagedDNSCertificatesEnabled     bool
+	AppVersion                        string
+	BuildTime                         string
+	GoVersion                         string
+	ProjectURL                        string
 }
 
 type HTTPTransportConfig struct {
@@ -304,6 +308,18 @@ func LoadFromEnv() (Config, error) {
 	acmeDNSProvider := strings.TrimSpace(firstEnv("ACME_DNS_PROVIDER"))
 	cfToken := strings.TrimSpace(firstEnv("CLOUDFLARE_DNS_API_TOKEN", "CF_DNS_API_TOKEN", "CF_TOKEN", "CF_Token"))
 	cfg.ManagedDNSCertificatesEnabled = strings.EqualFold(acmeDNSProvider, "cf") && cfToken != ""
+
+	cfg.ProjectURL = strings.TrimSpace(os.Getenv("NRE_PROJECT_URL"))
+
+	if cfg.AppVersion == "" {
+		cfg.AppVersion = "dev"
+	}
+	if cfg.BuildTime == "" {
+		cfg.BuildTime = time.Now().UTC().Format(time.RFC3339)
+	}
+	if cfg.GoVersion == "" {
+		cfg.GoVersion = "dev"
+	}
 
 	return cfg, nil
 }

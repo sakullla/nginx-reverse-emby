@@ -20,6 +20,12 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
+var (
+	appVersion = "dev"
+	buildTime  = "dev"
+	goVersion  = "dev"
+)
+
 type localAgentRuntime interface {
 	Start(context.Context) error
 	SyncNow(context.Context) error
@@ -30,6 +36,9 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	cfg.AppVersion = appVersion
+	cfg.BuildTime = buildTime
+	cfg.GoVersion = goVersion
 	logPanelTokenWarning(log.Default(), cfg)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
