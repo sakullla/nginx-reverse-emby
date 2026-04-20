@@ -160,8 +160,8 @@ func (s *Server) routeFor(host string, requestPath string) *routeEntry {
 		if entry == nil || !pathHasPrefix(normalizedPath, entry.frontendPath) {
 			continue
 		}
-		pathLen := len(normalizeURLPath(entry.frontendPath))
-		if pathLen >= bestLen {
+		pathLen := len(entry.frontendPath)
+		if pathLen > bestLen {
 			best = entry
 			bestLen = pathLen
 		}

@@ -26,6 +26,7 @@ type LocalTaskSession struct {
 
 	mu     sync.Mutex
 	closed bool
+	wg     sync.WaitGroup
 }
 
 type diagnosticRuleStore interface {
@@ -47,16 +48,24 @@ func (s *LocalTaskSession) SendTask(envelope service.TaskEnvelope) error {
 		s.mu.Unlock()
 		return fmt.Errorf("session closed")
 	}
+	s.wg.Add(1)
 	s.mu.Unlock()
 
-	go s.handleTask(envelope)
+	go func() {
+		defer s.wg.Done()
+		s.handleTask(envelope)
+	}()
 	return nil
 }
 
 func (s *LocalTaskSession) Close() error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	closed := s.closed
 	s.closed = true
+	s.mu.Unlock()
+	if !closed {
+		s.wg.Wait()
+	}
 	return nil
 }
 
@@ -184,15 +193,15 @@ func probeHTTPBackend(ctx context.Context, backendURL string, ruleID int) (map[s
 	start := time.Now()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, backendURL, nil)
 	if err != nil {
-		return diagnosticResult("http", ruleID, backendURL, 0, false, 0), nil
+		return diagnosticResult("http", ruleID, backendURL, 0, false), nil
 	}
 	resp, err := client.Do(req)
 	elapsed := time.Since(start).Seconds() * 1000
 	if err != nil {
-		return diagnosticResult("http", ruleID, backendURL, elapsed, false, 0), nil
+		return diagnosticResult("http", ruleID, backendURL, elapsed, false), nil
 	}
 	resp.Body.Close()
-	return diagnosticResult("http", ruleID, backendURL, elapsed, true, elapsed), nil
+	return diagnosticResult("http", ruleID, backendURL, elapsed, true), nil
 }
 
 func probeTCPAddr(ctx context.Context, addr string, ruleID int) (map[string]any, error) {
@@ -201,13 +210,13 @@ func probeTCPAddr(ctx context.Context, addr string, ruleID int) (map[string]any,
 	conn, err := d.DialContext(ctx, "tcp", addr)
 	elapsed := time.Since(start).Seconds() * 1000
 	if err != nil {
-		return diagnosticResult("l4_tcp", ruleID, addr, 0, false, 0), nil
+		return diagnosticResult("l4_tcp", ruleID, addr, elapsed, false), nil
 	}
 	conn.Close()
-	return diagnosticResult("l4_tcp", ruleID, addr, elapsed, true, elapsed), nil
+	return diagnosticResult("l4_tcp", ruleID, addr, elapsed, true), nil
 }
 
-func diagnosticResult(kind string, ruleID int, backend string, latency float64, ok bool, elapsed float64) map[string]any {
+func diagnosticResult(kind string, ruleID int, backend string, latency float64, ok bool) map[string]any {
 	succeeded := 0
 	failed := 1
 	quality := "down"
@@ -221,9 +230,9 @@ func diagnosticResult(kind string, ruleID int, backend string, latency float64, 
 		"succeeded":      succeeded,
 		"failed":         failed,
 		"loss_rate":      float64(failed),
-		"avg_latency_ms": elapsed,
-		"min_latency_ms": elapsed,
-		"max_latency_ms": elapsed,
+		"avg_latency_ms": latency,
+		"min_latency_ms": latency,
+		"max_latency_ms": latency,
 		"quality":        quality,
 	}
 	result := map[string]any{

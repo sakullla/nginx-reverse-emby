@@ -1227,13 +1227,13 @@ func normalizeRelayCAIDs(values []int) []int {
 func ensureUniqueRelayListen(listeners []RelayListener, next RelayListener, excludeID int) error {
 	nextTransport := normalizeRelayTransportModeIdentity(next.TransportMode)
 	for _, listener := range listeners {
-		if listener.ID == excludeID {
+		if listener.ID == excludeID || !listener.Enabled {
 			continue
 		}
 		if normalizeRelayTransportModeIdentity(listener.TransportMode) != nextTransport || listener.ListenPort != next.ListenPort {
 			continue
 		}
-		if conflictHost, ok := relayBindHostConflict(listener.BindHosts, next.BindHosts); ok {
+		if conflictHost, ok := relayBindHostConflictsWithExisting(listener.BindHosts, next.BindHosts); ok {
 			return fmt.Errorf(
 				"%w: relay listen %s:%d on host %s conflicts with relay listener #%d",
 				ErrInvalidArgument,
@@ -1247,6 +1247,7 @@ func ensureUniqueRelayListen(listeners []RelayListener, next RelayListener, excl
 	return nil
 }
 
+// Empty transport_mode defaults to "tls_tcp" (the system default when omitted).
 func normalizeRelayTransportModeIdentity(value string) string {
 	normalized := strings.ToLower(strings.TrimSpace(value))
 	switch normalized {
@@ -1259,32 +1260,34 @@ func normalizeRelayTransportModeIdentity(value string) string {
 	}
 }
 
-func relayBindHostConflict(left []string, right []string) (string, bool) {
-	seen := make(map[string]struct{}, len(left))
-	leftHasIPv4 := false
-	leftHasIPv6 := false
-	leftHasIPv4Wildcard := false
-	leftHasIPv6Wildcard := false
-	for _, value := range left {
+// relayBindHostConflictsWithExisting checks whether any host in candidate
+// overlaps with an existing listener's bind hosts (exact match or wildcard overlap).
+func relayBindHostConflictsWithExisting(existing []string, candidate []string) (string, bool) {
+	seen := make(map[string]struct{}, len(existing))
+	existingHasIPv4 := false
+	existingHasIPv6 := false
+	existingHasIPv4Wildcard := false
+	existingHasIPv6Wildcard := false
+	for _, value := range existing {
 		host := strings.TrimSpace(value)
 		if host == "" {
 			continue
 		}
 		switch relayBindHostFamily(host) {
 		case relayBindHostIPv4:
-			leftHasIPv4 = true
+			existingHasIPv4 = true
 		case relayBindHostIPv4Wildcard:
-			leftHasIPv4 = true
-			leftHasIPv4Wildcard = true
+			existingHasIPv4 = true
+			existingHasIPv4Wildcard = true
 		case relayBindHostIPv6:
-			leftHasIPv6 = true
+			existingHasIPv6 = true
 		case relayBindHostIPv6Wildcard:
-			leftHasIPv6 = true
-			leftHasIPv6Wildcard = true
+			existingHasIPv6 = true
+			existingHasIPv6Wildcard = true
 		}
 		seen[host] = struct{}{}
 	}
-	for _, value := range right {
+	for _, value := range candidate {
 		host := strings.TrimSpace(value)
 		if host == "" {
 			continue
@@ -1294,19 +1297,19 @@ func relayBindHostConflict(left []string, right []string) (string, bool) {
 		}
 		switch relayBindHostFamily(host) {
 		case relayBindHostIPv4Wildcard:
-			if leftHasIPv4 {
+			if existingHasIPv4 {
 				return host, true
 			}
 		case relayBindHostIPv6Wildcard:
-			if leftHasIPv6 {
+			if existingHasIPv6 {
 				return host, true
 			}
 		case relayBindHostIPv4:
-			if leftHasIPv4Wildcard {
+			if existingHasIPv4Wildcard {
 				return host, true
 			}
 		case relayBindHostIPv6:
-			if leftHasIPv6Wildcard {
+			if existingHasIPv6Wildcard {
 				return host, true
 			}
 		}
