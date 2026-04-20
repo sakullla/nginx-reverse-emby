@@ -167,6 +167,7 @@ func (s *Server) openUpstream(network, target string, chain []Hop, options DialO
 
 	selector := s.finalHopSelector
 	if selector == nil {
+		// Start() initializes the selector; keep a fallback for tests/manual Server construction.
 		selector = newFinalHopSelector(finalHopSelectorConfig{})
 	}
 	conn, _, err := selector.dialTCP(s.ctx, target)
@@ -184,6 +185,7 @@ func (s *Server) openUDPPeer(target string, chain []Hop) (udpPacketPeer, error) 
 
 	selector := s.finalHopSelector
 	if selector == nil {
+		// Start() initializes the selector; keep a fallback for tests/manual Server construction.
 		selector = newFinalHopSelector(finalHopSelectorConfig{})
 	}
 	peer, _, err := selector.openUDPPeer(s.ctx, target)

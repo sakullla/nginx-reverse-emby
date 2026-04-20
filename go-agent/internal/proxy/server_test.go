@@ -661,6 +661,48 @@ func TestRouteEntryCandidatesRelayChainPreservesConfiguredHostname(t *testing.T)
 	}
 }
 
+func TestRouteEntryCandidatesRelayChainUsesDefaultHTTPSPortWithoutResolving(t *testing.T) {
+	resolverCalls := 0
+	cache := backends.NewCache(backends.Config{
+		Resolver: resolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
+			resolverCalls++
+			return nil, fmt.Errorf("unexpected resolve %q", host)
+		}),
+	})
+
+	target, err := url.Parse("https://relay-target.example")
+	if err != nil {
+		t.Fatalf("url.Parse() error = %v", err)
+	}
+
+	entry := &routeEntry{
+		rule: model.HTTPRule{
+			FrontendURL: "https://frontend.example",
+			RelayChain:  []int{101},
+		},
+		backends: []httpBackend{{
+			target:      target,
+			backendHost: normalizeURLAuthority(target),
+		}},
+		backendCache:   cache,
+		selectionScope: "https://frontend.example",
+	}
+
+	candidates, err := entry.candidates(context.Background())
+	if err != nil {
+		t.Fatalf("candidates() error = %v", err)
+	}
+	if resolverCalls != 0 {
+		t.Fatalf("resolver called %d times", resolverCalls)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("candidates = %+v", candidates)
+	}
+	if got := candidates[0].dialAddress; got != "relay-target.example:443" {
+		t.Fatalf("dialAddress = %q", got)
+	}
+}
+
 func TestRouteEntryServeHTTPRecordsSuccessfulLatencyObservation(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(20 * time.Millisecond)

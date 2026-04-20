@@ -143,6 +143,7 @@ func tcpCandidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule
 		indexesByID[placeholder.Address] = indexes[1:]
 		backend := rawBackends[backendIndex]
 		if len(rule.RelayChain) > 0 {
+			// Preserve the configured host for relay chains so the final hop resolves DNS.
 			address := net.JoinHostPort(backend.Host, strconv.Itoa(backend.Port))
 			if cache.IsInBackoff(address) {
 				continue

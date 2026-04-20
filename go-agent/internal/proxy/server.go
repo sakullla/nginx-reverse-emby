@@ -455,6 +455,7 @@ func (e *routeEntry) candidates(ctx context.Context) ([]httpCandidate, error) {
 		backend := e.backends[backendIndex]
 		backendObservationKey := backends.BackendObservationKey(e.selectionScope, backends.StableBackendID(backend.target.String()))
 		if len(e.rule.RelayChain) > 0 {
+			// Preserve the configured host for relay chains so the final hop resolves DNS.
 			dialAddress := httpBackendDialAddress(backend.target)
 			if e.backendCache.IsInBackoff(dialAddress) {
 				continue
@@ -1178,9 +1179,6 @@ func addressWithDefaultPort(target *url.URL) string {
 }
 
 func httpBackendDialAddress(target *url.URL) string {
-	if target == nil {
-		return ""
-	}
 	if target.Port() != "" {
 		return target.Host
 	}

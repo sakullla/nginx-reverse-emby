@@ -782,6 +782,7 @@ func l4Candidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule)
 		backend := rawBackends[backendIndex]
 		backendID := backends.StableBackendID(net.JoinHostPort(backend.Host, strconv.Itoa(backend.Port)))
 		if len(rule.RelayChain) > 0 {
+			// Preserve the configured host for relay chains so the final hop resolves DNS.
 			dialAddress := net.JoinHostPort(backend.Host, strconv.Itoa(backend.Port))
 			if cache.IsInBackoff(dialAddress) {
 				continue
