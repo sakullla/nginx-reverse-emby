@@ -47,8 +47,8 @@ func (s *finalHopSelector) resolvedCandidates(ctx context.Context, target string
 		return nil, fmt.Errorf("invalid relay target %q: %w", target, err)
 	}
 	var resolved []backends.Candidate
-	if ip := net.ParseIP(strings.TrimSpace(host)); ip != nil {
-		resolved = []backends.Candidate{{Address: net.JoinHostPort(ip.String(), strconv.Itoa(port))}}
+	if literal, address := literalHostCandidate(host, port); literal {
+		resolved = []backends.Candidate{{Address: address}}
 	} else {
 		resolved, err = s.cache.Resolve(ctx, backends.Endpoint{Host: host, Port: port})
 		if err != nil {
@@ -68,6 +68,19 @@ func (s *finalHopSelector) resolvedCandidates(ctx context.Context, target string
 		return nil, fmt.Errorf("no healthy relay target candidates for %s", target)
 	}
 	return filtered, nil
+}
+
+func literalHostCandidate(host string, port int) (bool, string) {
+	trimmedHost := strings.TrimSpace(host)
+	if ip := net.ParseIP(trimmedHost); ip != nil {
+		return true, net.JoinHostPort(ip.String(), strconv.Itoa(port))
+	}
+	if zoneIndex := strings.LastIndex(trimmedHost, "%"); zoneIndex > 0 {
+		if ip := net.ParseIP(trimmedHost[:zoneIndex]); ip != nil && ip.To4() == nil {
+			return true, net.JoinHostPort(trimmedHost, strconv.Itoa(port))
+		}
+	}
+	return false, ""
 }
 
 func (s *finalHopSelector) dialTCP(ctx context.Context, target string) (net.Conn, string, error) {
@@ -99,6 +112,12 @@ type observedUDPPeer struct {
 	success      sync.Once
 	failure      sync.Once
 	hasSucceeded atomic.Bool
+	localClosed  atomic.Bool
+}
+
+func (p *observedUDPPeer) Close() error {
+	p.localClosed.Store(true)
+	return p.udpPacketPeer.Close()
 }
 
 func (p *observedUDPPeer) WritePacket(payload []byte) error {
@@ -112,7 +131,7 @@ func (p *observedUDPPeer) WritePacket(payload []byte) error {
 func (p *observedUDPPeer) ReadPacket() ([]byte, error) {
 	payload, err := p.udpPacketPeer.ReadPacket()
 	if err != nil {
-		if !p.hasSucceeded.Load() {
+		if !p.hasSucceeded.Load() && !p.localClosed.Load() {
 			p.failure.Do(func() { p.selector.cache.MarkFailure(p.address) })
 		}
 		return nil, err

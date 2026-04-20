@@ -2,9 +2,11 @@ package relay
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -149,6 +151,65 @@ func TestFinalHopSelectorOpenUDPPeerBacksOffFailedResolvedCandidate(t *testing.T
 	}
 }
 
+func TestObservedUDPPeerDoesNotBackOffLocalCloseBeforeFirstReply(t *testing.T) {
+	selector := newFinalHopSelector(finalHopSelectorConfig{})
+	address := "127.0.0.1:12345"
+	rawPeer := newCloseUnblocksUDPPeer()
+	peer := &observedUDPPeer{
+		udpPacketPeer: rawPeer,
+		selector:      selector,
+		address:       address,
+		openedAt:      time.Now(),
+	}
+
+	readErr := make(chan error, 1)
+	go func() {
+		_, err := peer.ReadPacket()
+		readErr <- err
+	}()
+
+	if err := peer.WritePacket([]byte("fire-and-forget")); err != nil {
+		t.Fatalf("WritePacket() error = %v", err)
+	}
+	if err := peer.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	select {
+	case err := <-readErr:
+		if err == nil {
+			t.Fatal("ReadPacket() error = nil")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ReadPacket() did not unblock after Close()")
+	}
+
+	if selector.cache.IsInBackoff(address) {
+		t.Fatalf("local Close() should not put %q into backoff", address)
+	}
+}
+
+func TestFinalHopSelectorTreatsScopedIPv6AsLiteral(t *testing.T) {
+	selector := newFinalHopSelector(finalHopSelectorConfig{
+		Resolver: relayResolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
+			t.Fatalf("resolver called for scoped IPv6 literal host %q", host)
+			return nil, nil
+		}),
+	})
+
+	target := net.JoinHostPort("fe80::1%eth0", "8096")
+	candidates, err := selector.resolvedCandidates(context.Background(), target)
+	if err != nil {
+		t.Fatalf("resolvedCandidates() error = %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("len(candidates) = %d, want 1", len(candidates))
+	}
+	if candidates[0].Address != target {
+		t.Fatalf("candidate address = %q, want %q", candidates[0].Address, target)
+	}
+}
+
 func startSelectorTCPEchoServer(t *testing.T) (string, func()) {
 	t.Helper()
 
@@ -176,6 +237,34 @@ func startSelectorTCPEchoServer(t *testing.T) (string, func()) {
 		_ = ln.Close()
 		<-done
 	}
+}
+
+type closeUnblocksUDPPeer struct {
+	closeOnce sync.Once
+	closed    chan struct{}
+}
+
+func newCloseUnblocksUDPPeer() *closeUnblocksUDPPeer {
+	return &closeUnblocksUDPPeer{closed: make(chan struct{})}
+}
+
+func (p *closeUnblocksUDPPeer) Close() error {
+	p.closeOnce.Do(func() {
+		close(p.closed)
+	})
+	return nil
+}
+
+func (p *closeUnblocksUDPPeer) SetReadDeadline(time.Time) error  { return nil }
+func (p *closeUnblocksUDPPeer) SetWriteDeadline(time.Time) error { return nil }
+
+func (p *closeUnblocksUDPPeer) ReadPacket() ([]byte, error) {
+	<-p.closed
+	return nil, errors.New("local close")
+}
+
+func (p *closeUnblocksUDPPeer) WritePacket([]byte) error {
+	return nil
 }
 
 func startSelectorUDPEchoServer(t *testing.T) (string, func()) {
