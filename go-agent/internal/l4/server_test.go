@@ -976,6 +976,81 @@ func TestTCPRelayProxy(t *testing.T) {
 	}
 }
 
+func TestTCPRelayProxyDefersHostnameResolutionToRealRelayRuntime(t *testing.T) {
+	upstream := newTCPEchoListener(t)
+	defer upstream.Close()
+
+	relayCert := mustIssueL4RelayCertificate(t, "relay.internal.test")
+	provider := &runtimeL4RelayProvider{
+		serverCertificates: map[int]tls.Certificate{
+			510: relayCert,
+		},
+	}
+
+	certificateID := 510
+	relayListener := model.RelayListener{
+		ID:            51,
+		AgentID:       "relay-agent",
+		Name:          "relay-hop",
+		ListenHost:    "127.0.0.1",
+		BindHosts:     []string{"127.0.0.1"},
+		ListenPort:    pickFreeTCPPort(t),
+		PublicHost:    "127.0.0.1",
+		PublicPort:    0,
+		Enabled:       true,
+		CertificateID: &certificateID,
+		TLSMode:       "pin_only",
+		PinSet: []model.RelayPin{{
+			Type:  "sha256",
+			Value: mustL4RelaySPKIPin(t, relayCert),
+		}},
+	}
+	relayServer, err := relay.Start(context.Background(), []relay.Listener{relayListener}, provider)
+	if err != nil {
+		t.Fatalf("failed to start relay runtime: %v", err)
+	}
+	defer relayServer.Close()
+
+	cache := backends.NewCache(backends.Config{
+		Resolver: resolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
+			t.Fatalf("origin runtime unexpectedly resolved backend host %q", host)
+			return nil, fmt.Errorf("unexpected resolver host %q", host)
+		}),
+	})
+	listenPort := pickFreeTCPPort(t)
+	srv, err := NewServerWithResources(context.Background(), []model.L4Rule{{
+		Protocol:     "tcp",
+		ListenHost:   "127.0.0.1",
+		ListenPort:   listenPort,
+		UpstreamHost: "localhost",
+		UpstreamPort: upstream.Port(),
+		RelayChain:   []int{relayListener.ID},
+	}}, []model.RelayListener{relayListener}, provider, cache)
+	if err != nil {
+		t.Fatalf("failed to start relay-backed l4 server: %v", err)
+	}
+	defer srv.Close()
+
+	client, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", listenPort))
+	if err != nil {
+		t.Fatalf("failed to dial relay-backed listener: %v", err)
+	}
+	defer client.Close()
+
+	payload := []byte("hello relay hostname")
+	if _, err := client.Write(payload); err != nil {
+		t.Fatalf("write to relay-backed proxy: %v", err)
+	}
+
+	reply := make([]byte, len(payload))
+	if _, err := io.ReadFull(client, reply); err != nil {
+		t.Fatalf("read from relay-backed proxy: %v", err)
+	}
+	if !bytes.Equal(payload, reply) {
+		t.Fatalf("relay-backed tcp payload mismatch; got %q", reply)
+	}
+}
+
 func TestPrefetchRelayInitialPayloadUsesBufferedData(t *testing.T) {
 	reader := bufio.NewReader(&chunkedReader{chunks: [][]byte{
 		[]byte("buffered"),
