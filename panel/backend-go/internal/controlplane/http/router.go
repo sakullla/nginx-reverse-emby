@@ -172,6 +172,7 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 		if resolved.BackupService != nil {
 			mux.Handle(prefix+"/system/backup/export", resolved.requirePanelToken(http.HandlerFunc(resolved.handleBackupExport)))
 			mux.Handle(prefix+"/system/backup/import", resolved.requirePanelToken(http.HandlerFunc(resolved.handleBackupImport)))
+			mux.Handle(prefix+"/system/backup/import/preview", resolved.requirePanelToken(http.HandlerFunc(resolved.handleBackupImportPreview)))
 			mux.Handle(prefix+"/system/backup/counts", resolved.requirePanelToken(http.HandlerFunc(resolved.handleBackupResourceCounts)))
 		}
 		mux.Handle(prefix+"/agents", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgents)))

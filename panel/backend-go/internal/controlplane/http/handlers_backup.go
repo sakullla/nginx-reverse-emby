@@ -122,6 +122,47 @@ func backupContentDisposition(filename string) string {
 	return value
 }
 
+func (d Dependencies) handleBackupImportPreview(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.NotFound(w, r)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, backupImportMaxBytes)
+	file, _, err := r.FormFile("file")
+	if err != nil {
+		if isBackupImportTooLarge(err) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, errorPayload("backup file too large"))
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, errorPayload("missing backup file"))
+		return
+	}
+	defer file.Close()
+
+	body, err := io.ReadAll(file)
+	if err != nil {
+		if isBackupImportTooLarge(err) {
+			writeJSON(w, http.StatusRequestEntityTooLarge, errorPayload("backup file too large"))
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, errorPayload("failed to read backup file"))
+		return
+	}
+
+	result, err := d.BackupService.Preview(r.Context(), body)
+	if err != nil {
+		status, payload := mapServiceError(err)
+		writeJSON(w, status, payload)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":       true,
+		"manifest": result.Manifest,
+		"summary":  result.Summary,
+		"report":   result.Report,
+	})
+}
+
 func isBackupImportTooLarge(err error) bool {
 	var maxErr *http.MaxBytesError
 	return errors.As(err, &maxErr) || strings.Contains(err.Error(), "request body too large") || strings.Contains(err.Error(), "multipart: message too large")
