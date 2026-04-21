@@ -107,7 +107,7 @@ func (p *HTTPProber) probeCandidate(ctx context.Context, cache *backends.Cache, 
 		if candidate.backendObservationKey != "" {
 			cache.ObserveBackendFailure(candidate.backendObservationKey)
 		}
-		markDiagnosticAddressFailure(cache, rule.RelayChain, candidate.dialAddress)
+		markDiagnosticAddressFailureAll(rule.RelayChain, candidate.dialAddress, persistentDiagnosticAddressCaches(cache, p.cache, rule.RelayChain)...)
 		return FailureSample(attempt, candidate.backendLabel, err)
 	}
 	defer resp.Body.Close()
@@ -117,7 +117,7 @@ func (p *HTTPProber) probeCandidate(ctx context.Context, cache *backends.Cache, 
 		if candidate.backendObservationKey != "" {
 			cache.ObserveBackendFailure(candidate.backendObservationKey)
 		}
-		markDiagnosticAddressFailure(cache, rule.RelayChain, candidate.dialAddress)
+		markDiagnosticAddressFailureAll(rule.RelayChain, candidate.dialAddress, persistentDiagnosticAddressCaches(cache, p.cache, rule.RelayChain)...)
 		return FailureSample(attempt, candidate.backendLabel, err)
 	}
 	totalDuration := time.Since(start)
@@ -128,7 +128,7 @@ func (p *HTTPProber) probeCandidate(ctx context.Context, cache *backends.Cache, 
 	if candidate.backendObservationKey != "" {
 		cache.ObserveBackendSuccess(candidate.backendObservationKey, headerLatency, transferDuration, written)
 	}
-	observeDiagnosticAddressSuccess(cache, rule.RelayChain, candidate.dialAddress, headerLatency, transferDuration, written)
+	observeDiagnosticAddressSuccessAll(rule.RelayChain, candidate.dialAddress, headerLatency, transferDuration, written, persistentDiagnosticAddressCaches(cache, p.cache, rule.RelayChain)...)
 
 	return LatencySample(attempt, candidate.backendLabel, totalDuration, resp.StatusCode)
 }

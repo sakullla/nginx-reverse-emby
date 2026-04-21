@@ -154,6 +154,43 @@ func TestTCPProberDiagnoseUsesRelayChainWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestTCPProberDiagnoseRelayBackoffPersistsAcrossRuns(t *testing.T) {
+	cache := backends.NewCache(backends.Config{})
+	provider := newDiagnosticTLSMaterialProvider()
+	relayListener := newDiagnosticRelayListener(t, provider, 52, "relay.internal.test")
+	stopRelay := startDiagnosticRelayRuntime(t, relayListener, provider)
+	defer stopRelay()
+
+	prober := NewTCPProber(TCPProberConfig{
+		Attempts:      1,
+		Timeout:       100 * time.Millisecond,
+		Cache:         cache,
+		RelayProvider: provider,
+	})
+	rule := model.L4Rule{
+		ID:           25,
+		Protocol:     "tcp",
+		ListenHost:   "0.0.0.0",
+		ListenPort:   9502,
+		UpstreamHost: "127.0.0.1",
+		UpstreamPort: 1,
+		RelayChain:   []int{52},
+	}
+
+	report, err := prober.Diagnose(context.Background(), rule, []model.RelayListener{relayListener})
+	if err != nil {
+		t.Fatalf("first Diagnose() error = %v", err)
+	}
+	if report.Summary.Failed != 1 {
+		t.Fatalf("first Summary = %+v", report.Summary)
+	}
+
+	_, err = prober.Diagnose(context.Background(), rule, []model.RelayListener{relayListener})
+	if err == nil || err.Error() != "no healthy backend candidates for 0.0.0.0:9502" {
+		t.Fatalf("second Diagnose() error = %v", err)
+	}
+}
+
 func TestTCPProberDiagnoseCollectsFiveSamplesPerBackend(t *testing.T) {
 	addrA, _, stopA := startDiagnosticTCPTarget(t)
 	defer stopA()
