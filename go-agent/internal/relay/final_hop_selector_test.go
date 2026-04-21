@@ -151,7 +151,7 @@ func TestFinalHopSelectorOpenUDPPeerBacksOffFailedResolvedCandidate(t *testing.T
 	}
 }
 
-func TestObservedUDPPeerBacksOffLocalCloseBeforeFirstReply(t *testing.T) {
+func TestObservedUDPPeerDoesNotBackOffLocalCloseBeforeFirstReply(t *testing.T) {
 	selector := newFinalHopSelector(finalHopSelectorConfig{})
 	address := "127.0.0.1:12345"
 	rawPeer := newCloseUnblocksUDPPeer()
@@ -184,8 +184,47 @@ func TestObservedUDPPeerBacksOffLocalCloseBeforeFirstReply(t *testing.T) {
 		t.Fatal("ReadPacket() did not unblock after Close()")
 	}
 
-	if !selector.cache.IsInBackoff(address) {
-		t.Fatalf("local Close() should put %q into backoff before first reply", address)
+	if selector.cache.IsInBackoff(address) {
+		t.Fatalf("local Close() should not put %q into backoff", address)
+	}
+}
+
+func TestObservedUDPPeerBacksOffFirstReplyTimeout(t *testing.T) {
+	restoreTimeouts := ConfigureTimeouts(TimeoutConfig{FrameTimeout: 20 * time.Millisecond})
+	defer restoreTimeouts()
+
+	selector := newFinalHopSelector(finalHopSelectorConfig{})
+	address, stopBlackhole := startSelectorUDPBlackholeServer(t)
+	defer stopBlackhole()
+
+	peer, selected, err := selector.openUDPPeer(context.Background(), address)
+	if err != nil {
+		t.Fatalf("openUDPPeer() error = %v", err)
+	}
+	defer peer.Close()
+
+	readErr := make(chan error, 1)
+	go func() {
+		_, err := peer.ReadPacket()
+		readErr <- err
+	}()
+
+	if err := peer.WritePacket([]byte("ping")); err != nil {
+		t.Fatalf("WritePacket() error = %v", err)
+	}
+
+	select {
+	case err := <-readErr:
+		var timeoutErr interface{ Timeout() bool }
+		if err == nil || !errors.As(err, &timeoutErr) || !timeoutErr.Timeout() {
+			t.Fatalf("ReadPacket() error = %v, want timeout", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ReadPacket() did not time out")
+	}
+
+	if !selector.cache.IsInBackoff(selected) {
+		t.Fatalf("first reply timeout should put %q into backoff", selected)
 	}
 }
 
@@ -289,6 +328,35 @@ func startSelectorUDPEchoServer(t *testing.T) (string, func()) {
 				return
 			}
 			if _, err := conn.WriteToUDP(buf[:n], peer); err != nil {
+				return
+			}
+		}
+	}()
+
+	return conn.LocalAddr().String(), func() {
+		_ = conn.Close()
+		<-done
+	}
+}
+
+func startSelectorUDPBlackholeServer(t *testing.T) (string, func()) {
+	t.Helper()
+
+	addr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to resolve udp addr: %v", err)
+	}
+	conn, err := net.ListenUDP("udp", addr)
+	if err != nil {
+		t.Fatalf("failed to listen udp blackhole: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		buf := make([]byte, 64*1024)
+		for {
+			if _, _, err := conn.ReadFromUDP(buf); err != nil {
 				return
 			}
 		}

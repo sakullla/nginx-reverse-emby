@@ -106,15 +106,25 @@ func (s *finalHopSelector) dialTCP(ctx context.Context, target string) (net.Conn
 
 type observedUDPPeer struct {
 	udpPacketPeer
-	selector     *finalHopSelector
-	address      string
-	openedAt     time.Time
-	success      sync.Once
-	failure      sync.Once
-	hasSucceeded atomic.Bool
+	selector          *finalHopSelector
+	address           string
+	openedAt          time.Time
+	firstReplyTimeout time.Duration
+	success           sync.Once
+	failure           sync.Once
+	hasSucceeded      atomic.Bool
+	localClosed       atomic.Bool
+}
+
+func (p *observedUDPPeer) Close() error {
+	p.localClosed.Store(true)
+	return p.udpPacketPeer.Close()
 }
 
 func (p *observedUDPPeer) WritePacket(payload []byte) error {
+	if !p.hasSucceeded.Load() && p.firstReplyTimeout > 0 {
+		_ = p.udpPacketPeer.SetReadDeadline(time.Now().Add(p.firstReplyTimeout))
+	}
 	if err := p.udpPacketPeer.WritePacket(payload); err != nil {
 		p.failure.Do(func() { p.selector.cache.MarkFailure(p.address) })
 		return err
@@ -125,12 +135,15 @@ func (p *observedUDPPeer) WritePacket(payload []byte) error {
 func (p *observedUDPPeer) ReadPacket() ([]byte, error) {
 	payload, err := p.udpPacketPeer.ReadPacket()
 	if err != nil {
-		if !p.hasSucceeded.Load() {
+		if !p.hasSucceeded.Load() && !p.localClosed.Load() {
 			p.failure.Do(func() { p.selector.cache.MarkFailure(p.address) })
 		}
 		return nil, err
 	}
 	p.hasSucceeded.Store(true)
+	if p.firstReplyTimeout > 0 {
+		_ = p.udpPacketPeer.SetReadDeadline(time.Time{})
+	}
 	p.success.Do(func() {
 		p.selector.cache.ObserveTransferSuccess(p.address, p.selector.now().Sub(p.openedAt), 0, 0)
 	})
@@ -158,10 +171,11 @@ func (s *finalHopSelector) openUDPPeer(ctx context.Context, target string) (udpP
 			continue
 		}
 		return &observedUDPPeer{
-			udpPacketPeer: newUDPSocketPeer(conn),
-			selector:      s,
-			address:       candidate.Address,
-			openedAt:      s.now(),
+			udpPacketPeer:     newUDPSocketPeer(conn),
+			selector:          s,
+			address:           candidate.Address,
+			openedAt:          s.now(),
+			firstReplyTimeout: getRelayFrameTimeout(),
 		}, candidate.Address, nil
 	}
 	return nil, "", lastErr
