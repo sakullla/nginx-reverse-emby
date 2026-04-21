@@ -2,6 +2,7 @@
   <div class="settings-page">
     <div class="settings-page__header">
       <h1 class="settings-page__title">系统设置</h1>
+      <p class="settings-page__desc">管理面板偏好与系统信息</p>
     </div>
     <div class="settings-layout">
       <SettingsNav v-model:activeTab="activeTab" />
@@ -29,21 +30,26 @@ const activeTab = ref('general')
   max-width: 900px;
   margin: 0 auto;
 }
-.settings-page__header { margin-bottom: 2rem; }
-.settings-page__title { font-size: 1.5rem; font-weight: 700; margin: 0; color: var(--color-text-primary); }
+.settings-page__header {
+  margin-bottom: 1.5rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+.settings-page__title { font-size: 1.5rem; font-weight: 700; margin: 0 0 0.25rem; color: var(--color-text-primary); }
+.settings-page__desc { font-size: 0.875rem; color: var(--color-text-tertiary); margin: 0; }
 
 .settings-layout {
   display: flex;
   gap: 0;
-  background: var(--color-bg-surface);
-  border: 1.5px solid var(--color-border-default);
+  background: var(--color-bg-subtle);
+  border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius-2xl);
   overflow: hidden;
 }
 
 .settings-content {
   flex: 1;
-  padding: 1.5rem 2rem;
+  padding: 1.5rem 2rem 2rem;
   min-width: 0;
 }
 
@@ -51,10 +57,5 @@ const activeTab = ref('general')
   .settings-page { max-width: 100%; }
   .settings-layout { flex-direction: column; }
   .settings-content { padding: 1.25rem; }
-}
-
-@media (min-width: 2560px) {
-  .settings-page { max-width: 1100px; }
-  .settings-page__title { font-size: 1.75rem; }
 }
 </style>
