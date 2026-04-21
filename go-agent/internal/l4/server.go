@@ -18,6 +18,10 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 )
 
+const (
+	relayInitialPayloadMax = 32 * 1024
+)
+
 type RelayMaterialProvider interface {
 	relay.TLSMaterialProvider
 }
@@ -53,6 +57,7 @@ type udpSession struct {
 	upstream              udpUpstream
 	lastActive            time.Time
 	targetAddr            string
+	backoffKey            string
 	backendObservationKey string
 	pendingReplies        int
 	awaitingSince         time.Time
@@ -63,6 +68,7 @@ type udpSession struct {
 
 type l4Candidate struct {
 	address               string
+	backoffKey            string
 	backendObservationKey string
 }
 
@@ -215,7 +221,15 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 		return
 	}
 
-	upstream, candidate, connectDuration, err := s.dialTCPUpstream(rule)
+	var initialPayload []byte
+	if len(rule.RelayChain) > 0 && !rule.Tuning.ProxyProtocol.Send {
+		initialPayload, downstreamSource, err = s.prefetchRelayInitialPayload(client, downstreamSource)
+		if err != nil {
+			return
+		}
+	}
+
+	upstream, candidate, connectDuration, err := s.dialTCPUpstream(rule, relay.DialOptions{InitialPayload: initialPayload})
 	if err != nil {
 		return
 	}
@@ -237,13 +251,35 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 		done <- struct{}{}
 	}()
 	go func() {
-		_, _ = io.Copy(client, upstream)
+		_, _ = copyPreferReaderFrom(client, upstream)
 		closeTCPWrite(client)
 		closeTCPRead(upstream)
 		done <- struct{}{}
 	}()
 	<-done
 	<-done
+}
+
+func (s *Server) prefetchRelayInitialPayload(_ net.Conn, source io.Reader) ([]byte, io.Reader, error) {
+	if source == nil {
+		return nil, source, nil
+	}
+	if buffered, ok := source.(*bufio.Reader); ok && buffered.Buffered() > 0 {
+		limit := buffered.Buffered()
+		if limit > relayInitialPayloadMax {
+			limit = relayInitialPayloadMax
+		}
+		buf := make([]byte, limit)
+		n, err := io.ReadFull(buffered, buf)
+		if err != nil && !errors.Is(err, io.ErrUnexpectedEOF) && !errors.Is(err, io.EOF) {
+			return nil, source, err
+		}
+		return buf[:n], source, nil
+	}
+
+	// Do not stall relay dials waiting for client bytes. Only buffered downstream
+	// data is folded into OPEN; raw connections fall back to normal relay copy.
+	return nil, source, nil
 }
 
 func (s *Server) prepareTCPDownstream(client net.Conn, rule model.L4Rule) (io.Reader, *proxyInfo, error) {
@@ -308,7 +344,7 @@ func cloneTCPAddr(addr *net.TCPAddr) *net.TCPAddr {
 	return &out
 }
 
-func (s *Server) dialTCPUpstream(rule model.L4Rule) (net.Conn, l4Candidate, time.Duration, error) {
+func (s *Server) dialTCPUpstream(rule model.L4Rule, dialOptions relay.DialOptions) (net.Conn, l4Candidate, time.Duration, error) {
 	candidates, err := l4Candidates(s.ctx, s.cache, rule)
 	if err != nil {
 		return nil, l4Candidate{}, 0, err
@@ -329,7 +365,7 @@ func (s *Server) dialTCPUpstream(rule model.L4Rule) (net.Conn, l4Candidate, time
 			if hopErr != nil {
 				return nil, l4Candidate{}, 0, hopErr
 			}
-			upstream, err = relay.Dial(s.ctx, "tcp", target, hops, s.relayProvider)
+			upstream, err = relay.Dial(s.ctx, "tcp", target, hops, s.relayProvider, dialOptions)
 		}
 		if err != nil {
 			if ctxErr := s.ctx.Err(); ctxErr != nil {
@@ -423,6 +459,7 @@ func (s *Server) proxyUDPPacket(listener *net.UDPConn, rule model.L4Rule, payloa
 	if err := session.upstream.WritePacket(payload); err != nil {
 		s.observeCandidateFailure(l4Candidate{
 			address:               session.targetAddr,
+			backoffKey:            session.backoffKey,
 			backendObservationKey: session.backendObservationKey,
 		})
 		s.closeUDPSession(session.key)
@@ -533,6 +570,7 @@ func (s *Server) sessionForPeer(rule model.L4Rule, listener *net.UDPConn, peer *
 	s.udpMu.Lock()
 	session.upstream = upstream
 	session.targetAddr = candidate.address
+	session.backoffKey = candidate.backoffKey
 	session.backendObservationKey = candidate.backendObservationKey
 	close(session.ready)
 	session.ready = nil
@@ -599,6 +637,7 @@ func (s *Server) pipeUDPReplies(session *udpSession) {
 				if s.shouldFailUDPSession(session.key) {
 					s.observeCandidateFailure(l4Candidate{
 						address:               session.targetAddr,
+						backoffKey:            session.backoffKey,
 						backendObservationKey: session.backendObservationKey,
 					})
 					return
@@ -617,6 +656,7 @@ func (s *Server) pipeUDPReplies(session *udpSession) {
 		s.markUDPSessionReply(session.key)
 		s.observeCandidateSuccess(l4Candidate{
 			address:               session.targetAddr,
+			backoffKey:            session.backoffKey,
 			backendObservationKey: session.backendObservationKey,
 		}, replyDuration)
 		if _, err := session.listener.WriteToUDP(payload, session.peer); err != nil {
@@ -747,6 +787,20 @@ func l4Candidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule)
 		indexesByID[ordered.Address] = indexes[1:]
 		backend := rawBackends[backendIndex]
 		backendID := backends.StableBackendID(net.JoinHostPort(backend.Host, strconv.Itoa(backend.Port)))
+		if len(rule.RelayChain) > 0 {
+			// Preserve the configured host for relay chains so the final hop resolves DNS.
+			dialAddress := net.JoinHostPort(backend.Host, strconv.Itoa(backend.Port))
+			bk := backends.RelayBackoffKey(rule.RelayChain, dialAddress)
+			if cache.IsInBackoff(bk) {
+				continue
+			}
+			out = append(out, l4Candidate{
+				address:               dialAddress,
+				backoffKey:            bk,
+				backendObservationKey: l4ObservationKey(scope, backendID, backendIndex, duplicateCounts[backendID]),
+			})
+			continue
+		}
 		endpoint := backends.Endpoint{
 			Host: backend.Host,
 			Port: backend.Port,
@@ -795,6 +849,13 @@ func cloneUDPAddr(addr *net.UDPAddr) *net.UDPAddr {
 	return &out
 }
 
+func l4CandidateBackoffAddr(candidate l4Candidate) string {
+	if candidate.backoffKey != "" {
+		return candidate.backoffKey
+	}
+	return candidate.address
+}
+
 func (s *Server) observeCandidateFailure(candidate l4Candidate) {
 	if s == nil || s.cache == nil {
 		return
@@ -802,8 +863,8 @@ func (s *Server) observeCandidateFailure(candidate l4Candidate) {
 	if candidate.backendObservationKey != "" {
 		s.cache.ObserveBackendFailure(candidate.backendObservationKey)
 	}
-	if candidate.address != "" {
-		s.cache.MarkFailure(candidate.address)
+	if addr := l4CandidateBackoffAddr(candidate); addr != "" {
+		s.cache.MarkFailure(addr)
 	}
 }
 
@@ -814,7 +875,7 @@ func (s *Server) observeCandidateSuccess(candidate l4Candidate, headerLatency ti
 	if candidate.backendObservationKey != "" {
 		s.cache.ObserveBackendSuccess(candidate.backendObservationKey, headerLatency, 0, 0)
 	}
-	s.cache.ObserveSuccess(candidate.address, headerLatency)
+	s.cache.ObserveSuccess(l4CandidateBackoffAddr(candidate), headerLatency)
 }
 
 func (s *Server) validateRelayChain(rule model.L4Rule) error {

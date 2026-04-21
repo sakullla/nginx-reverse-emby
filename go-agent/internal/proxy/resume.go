@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 type resumableResponse struct {
@@ -21,6 +22,15 @@ type responseValidator struct {
 	etag         string
 	lastModified string
 	ifRange      string
+}
+
+const resumableCopyBufferSize = 256 * 1024
+
+var resumableCopyBufferPool = sync.Pool{
+	New: func() any {
+		buf := make([]byte, resumableCopyBufferSize)
+		return &buf
+	},
 }
 
 func (e *routeEntry) shouldResumeResponse(req *http.Request, resp *http.Response) (resumableResponse, bool) {
@@ -89,9 +99,11 @@ func (e *routeEntry) copyResumableResponse(w http.ResponseWriter, req *http.Requ
 }
 
 func copyResumableChunk(dst http.ResponseWriter, src io.Reader) (int64, error, error) {
-	buf := make([]byte, 32*1024)
+	bufPtr := resumableCopyBufferPool.Get().(*[]byte)
+	buf := *bufPtr
+	defer resumableCopyBufferPool.Put(bufPtr)
+
 	var written int64
-	controller := http.NewResponseController(dst)
 	for {
 		n, readErr := src.Read(buf)
 		if n > 0 {
@@ -103,17 +115,24 @@ func copyResumableChunk(dst http.ResponseWriter, src io.Reader) (int64, error, e
 			if writeN != n {
 				return written, nil, io.ErrShortWrite
 			}
-			if flushErr := controller.Flush(); flushErr != nil && !errors.Is(flushErr, http.ErrNotSupported) {
-				return written, nil, flushErr
-			}
 		}
 		if readErr != nil {
 			if readErr == io.EOF {
+				if flushErr := flushBufferedResponse(dst); flushErr != nil {
+					return written, nil, flushErr
+				}
 				return written, nil, nil
 			}
 			return written, readErr, nil
 		}
 	}
+}
+
+func flushBufferedResponse(dst http.ResponseWriter) error {
+	if err := http.NewResponseController(dst).Flush(); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		return err
+	}
+	return nil
 }
 
 func newResumableResponse(req *http.Request, resp *http.Response) (resumableResponse, bool) {

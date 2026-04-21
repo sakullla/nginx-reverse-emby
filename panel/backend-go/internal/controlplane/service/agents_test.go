@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -1536,6 +1537,58 @@ func TestAgentServiceApplyLocalUsesTriggerForSynchronousEmbeddedApply(t *testing
 	}
 	if store.saveRuntimeCalls != 0 {
 		t.Fatalf("Apply(local) should rely on runtime callback, saveRuntimeCalls = %d", store.saveRuntimeCalls)
+	}
+}
+
+func TestAgentServiceApplyLocalDetachesCanceledTriggerContext(t *testing.T) {
+	cfg := config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+		LocalAgentName:   "Local",
+	}
+	store := &fakeStore{
+		localState: storage.LocalAgentStateRow{
+			DesiredRevision:   1,
+			CurrentRevision:   1,
+			LastApplyRevision: 1,
+			LastApplyStatus:   "success",
+		},
+		localSnapshot: storage.Snapshot{DesiredVersion: "1.2.3", Revision: 4},
+	}
+	svc := NewAgentService(cfg, store)
+
+	type requestContextKey string
+	requestCtx := context.WithValue(context.Background(), requestContextKey("trace"), "apply-local")
+	requestCtx, cancel := context.WithCancel(requestCtx)
+	cancel()
+
+	triggerCalls := 0
+	svc.SetLocalApplyTrigger(func(ctx context.Context) error {
+		triggerCalls++
+		if err := ctx.Err(); err != nil {
+			return fmt.Errorf("trigger ctx err = %v", err)
+		}
+		if got := ctx.Value(requestContextKey("trace")); got != "apply-local" {
+			return fmt.Errorf("trigger ctx trace = %v", got)
+		}
+		store.localState = storage.LocalAgentStateRow{
+			DesiredRevision:   4,
+			CurrentRevision:   4,
+			LastApplyRevision: 4,
+			LastApplyStatus:   "success",
+		}
+		return nil
+	})
+
+	localApply, err := svc.Apply(requestCtx, "local")
+	if err != nil {
+		t.Fatalf("Apply(local) error = %v", err)
+	}
+	if localApply.Message != "applied" || localApply.Pending || localApply.DesiredRevision != 4 {
+		t.Fatalf("Apply(local) = %+v", localApply)
+	}
+	if triggerCalls != 1 {
+		t.Fatalf("triggerCalls = %d", triggerCalls)
 	}
 }
 

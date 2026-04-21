@@ -205,7 +205,7 @@ func NewAgentService(cfg config.Config, store agentStore) *agentService {
 }
 
 func (s *agentService) SetLocalApplyTrigger(trigger func(context.Context) error) {
-	s.localApplyTrigger = trigger
+	s.localApplyTrigger = wrapLocalApplyTrigger(trigger)
 }
 
 func (s *agentService) List(ctx context.Context) ([]AgentSummary, error) {

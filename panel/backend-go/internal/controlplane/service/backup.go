@@ -45,6 +45,26 @@ type backupStore interface {
 	SaveHTTPRules(context.Context, string, []storage.HTTPRuleRow) error
 }
 
+type BackupExportOptions struct {
+	Agents          bool `json:"agents"`
+	HTTPRules       bool `json:"http_rules"`
+	L4Rules         bool `json:"l4_rules"`
+	RelayListeners  bool `json:"relay_listeners"`
+	Certificates    bool `json:"certificates"`
+	VersionPolicies bool `json:"version_policies"`
+}
+
+func AllExportOptions() BackupExportOptions {
+	return BackupExportOptions{
+		Agents:          true,
+		HTTPRules:       true,
+		L4Rules:         true,
+		RelayListeners:  true,
+		Certificates:    true,
+		VersionPolicies: true,
+	}
+}
+
 func NewBackupService(cfg config.Config, store backupStore) *backupService {
 	return &backupService{
 		cfg:   cfg,
@@ -64,6 +84,181 @@ func (s *backupService) Export(ctx context.Context) ([]byte, string, error) {
 	}
 	filename := fmt.Sprintf("nre-backup-%s.tar.gz", bundle.Manifest.ExportedAt.UTC().Format("20060102T150405Z"))
 	return archive, filename, nil
+}
+
+func (s *backupService) ExportSelective(ctx context.Context, opts BackupExportOptions) ([]byte, string, error) {
+	bundle, err := s.exportBundle(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	if !opts.Agents {
+		bundle.Agents = nil
+	}
+	if !opts.HTTPRules {
+		bundle.HTTPRules = nil
+	}
+	if !opts.L4Rules {
+		bundle.L4Rules = nil
+	}
+	if !opts.RelayListeners {
+		bundle.RelayListeners = nil
+	}
+	if !opts.Certificates {
+		bundle.Certificates = nil
+		bundle.Materials = nil
+	}
+	if !opts.VersionPolicies {
+		bundle.VersionPolicies = nil
+	}
+	bundle.Manifest.Counts = BackupCounts{
+		Agents:          len(bundle.Agents),
+		HTTPRules:       len(bundle.HTTPRules),
+		L4Rules:         len(bundle.L4Rules),
+		RelayListeners:  len(bundle.RelayListeners),
+		Certificates:    len(bundle.Certificates),
+		VersionPolicies: len(bundle.VersionPolicies),
+	}
+	bundle.Manifest.IncludesCertificates = len(bundle.Materials) > 0
+	archive, err := encodeBackupBundle(bundle)
+	if err != nil {
+		return nil, "", err
+	}
+	filename := fmt.Sprintf("nre-backup-%s.tar.gz", bundle.Manifest.ExportedAt.UTC().Format("20060102T150405Z"))
+	return archive, filename, nil
+}
+
+func (s *backupService) ResourceCounts(ctx context.Context) (BackupCounts, error) {
+	bundle, err := s.exportBundle(ctx)
+	if err != nil {
+		return BackupCounts{}, err
+	}
+	return bundle.Manifest.Counts, nil
+}
+
+func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImportResult, error) {
+	bundle, err := decodeBackupBundle(archive)
+	if err != nil {
+		return BackupImportResult{}, err
+	}
+	if bundle.Manifest.PackageVersion != BackupPackageVersion {
+		return BackupImportResult{}, fmt.Errorf("%w: unsupported backup package version %d", ErrInvalidArgument, bundle.Manifest.PackageVersion)
+	}
+	result := newBackupImportResult(bundle.Manifest)
+	existingAgents, err := s.store.ListAgents(ctx)
+	if err != nil {
+		return BackupImportResult{}, err
+	}
+	existingByName := make(map[string]storage.AgentRow, len(existingAgents))
+	existingByID := make(map[string]storage.AgentRow, len(existingAgents))
+	for _, row := range existingAgents {
+		existingByName[row.Name] = row
+		existingByID[row.ID] = row
+	}
+	for _, item := range bundle.Agents {
+		key := strings.TrimSpace(item.Name)
+		if key == "" {
+			key = strings.TrimSpace(item.ID)
+		}
+		if strings.TrimSpace(item.ID) == "" || strings.TrimSpace(item.Name) == "" {
+			result.addSkippedInvalid("agent", key, "agent id, name, and agent_token are required")
+			continue
+		}
+		if _, ok := existingByName[item.Name]; ok {
+			result.addSkippedConflict("agent", item.Name, "agent name already exists")
+			continue
+		}
+		if _, ok := existingByID[item.ID]; ok {
+			result.addSkippedConflict("agent", item.Name, "agent id already exists")
+			continue
+		}
+		result.addImported("agent", item.Name)
+	}
+	knownAgentIDs, err := allKnownAgentIDs(ctx, s.cfg, s.store)
+	if err != nil {
+		return BackupImportResult{}, err
+	}
+	existingHTTPRules, err := s.listAllHTTPRules(ctx, knownAgentIDs)
+	if err != nil {
+		return BackupImportResult{}, err
+	}
+	existingHTTPKeys := map[string]struct{}{}
+	for _, row := range existingHTTPRules {
+		existingHTTPKeys[httpRuleConflictKey(row.AgentID, row.FrontendURL)] = struct{}{}
+	}
+	for _, item := range bundle.HTTPRules {
+		key := strings.TrimSpace(item.FrontendURL)
+		conflictKey := httpRuleConflictKey(item.AgentID, item.FrontendURL)
+		if _, exists := existingHTTPKeys[conflictKey]; exists {
+			result.addSkippedConflict("http_rule", key, "frontend_url already exists")
+			continue
+		}
+		result.addImported("http_rule", key)
+	}
+	existingL4Rules, err := s.listAllL4Rules(ctx, knownAgentIDs)
+	if err != nil {
+		return BackupImportResult{}, err
+	}
+	existingL4Keys := map[string]struct{}{}
+	for _, row := range existingL4Rules {
+		existingL4Keys[l4ConflictKey(row.AgentID, row.Protocol, row.ListenHost, row.ListenPort)] = struct{}{}
+	}
+	for _, item := range bundle.L4Rules {
+		key := l4ConflictKey(item.AgentID, item.Protocol, item.ListenHost, item.ListenPort)
+		if _, exists := existingL4Keys[key]; exists {
+			result.addSkippedConflict("l4_rule", key, "protocol/listen_host/listen_port already exists")
+			continue
+		}
+		result.addImported("l4_rule", key)
+	}
+	existingRelayRows, err := s.store.ListRelayListeners(ctx, "")
+	if err != nil {
+		return BackupImportResult{}, err
+	}
+	existingRelayKeys := map[string]struct{}{}
+	for _, row := range existingRelayRows {
+		existingRelayKeys[relayConflictKey(row.AgentID, row.Name)] = struct{}{}
+	}
+	for _, item := range bundle.RelayListeners {
+		key := relayConflictKey(item.AgentID, item.Name)
+		if _, exists := existingRelayKeys[key]; exists {
+			result.addSkippedConflict("relay_listener", key, "relay listener already exists")
+			continue
+		}
+		result.addImported("relay_listener", key)
+	}
+	existingCertRows, err := s.store.ListManagedCertificates(ctx)
+	if err != nil {
+		return BackupImportResult{}, err
+	}
+	existingCertDomains := map[string]struct{}{}
+	for _, row := range existingCertRows {
+		existingCertDomains[strings.TrimSpace(row.Domain)] = struct{}{}
+	}
+	for _, item := range bundle.Certificates {
+		key := strings.TrimSpace(item.Domain)
+		if _, exists := existingCertDomains[key]; exists {
+			result.addSkippedConflict("certificate", key, "certificate domain already exists")
+			continue
+		}
+		result.addImported("certificate", key)
+	}
+	existingPolicyRows, err := s.store.ListVersionPolicies(ctx)
+	if err != nil {
+		return BackupImportResult{}, err
+	}
+	existingPolicyIDs := map[string]struct{}{}
+	for _, row := range existingPolicyRows {
+		existingPolicyIDs[strings.TrimSpace(row.ID)] = struct{}{}
+	}
+	for _, item := range bundle.VersionPolicies {
+		key := strings.TrimSpace(item.ID)
+		if _, exists := existingPolicyIDs[key]; exists {
+			result.addSkippedConflict("version_policy", key, "version policy already exists")
+			continue
+		}
+		result.addImported("version_policy", key)
+	}
+	return result, nil
 }
 
 func (s *backupService) Import(ctx context.Context, archive []byte) (BackupImportResult, error) {

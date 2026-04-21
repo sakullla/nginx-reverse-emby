@@ -3,6 +3,9 @@ package main
 import (
 	"context"
 	"log"
+	"net/http"
+	_ "net/http/pprof"
+	"os"
 	"os/signal"
 	"syscall"
 
@@ -16,6 +19,8 @@ func main() {
 		log.Fatal(err)
 	}
 
+	startPprofServer()
+
 	runtimeApp, err := app.New(cfg)
 	if err != nil {
 		log.Fatal(err)
@@ -27,4 +32,18 @@ func main() {
 	if err := runtimeApp.Run(ctx); err != nil {
 		log.Fatal(err)
 	}
+}
+
+func startPprofServer() {
+	addr := os.Getenv("NRE_PPROF_ADDR")
+	if addr == "" {
+		return
+	}
+
+	go func() {
+		log.Printf("[agent] pprof listening on %s", addr)
+		if err := http.ListenAndServe(addr, nil); err != nil {
+			log.Printf("[agent] pprof server stopped: %v", err)
+		}
+	}()
 }

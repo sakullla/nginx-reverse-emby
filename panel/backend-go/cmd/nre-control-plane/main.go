@@ -20,6 +20,12 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
+var (
+	appVersion = "dev"
+	buildTime  = "dev"
+	goVersion  = "dev"
+)
+
 type localAgentRuntime interface {
 	Start(context.Context) error
 	SyncNow(context.Context) error
@@ -30,6 +36,9 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	cfg.AppVersion = appVersion
+	cfg.BuildTime = buildTime
+	cfg.GoVersion = goVersion
 	logPanelTokenWarning(log.Default(), cfg)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -202,7 +211,7 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 		return nil, err
 	}
 
-	systemSvc := service.NewSystemService(cfg)
+	systemSvc := service.NewSystemService(cfg, serviceStore)
 	agentSvc := service.NewAgentService(cfg, serviceStore)
 	ruleSvc := service.NewRuleService(cfg, serviceStore)
 	l4Svc := service.NewL4RuleService(cfg, serviceStore)
@@ -225,6 +234,13 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 	relaySvc.SetLocalApplyTrigger(runtime.SyncNow)
 	certSvc.SetLocalApplyTrigger(runtime.SyncNow)
 
+	taskSvc := service.NewTaskService(service.TaskServiceConfig{})
+
+	localTaskSession := localagent.NewLocalTaskSession(cfg.LocalAgentID, taskSvc, serviceStore)
+	if err := localTaskSession.Register(); err != nil {
+		log.Printf("[local-agent] failed to register local task session: %v", err)
+	}
+
 	handler, err := newHandlerWithDependencies(cfg, httpapi.Dependencies{
 		SystemService:        systemSvc,
 		AgentService:         agentSvc,
@@ -234,6 +250,7 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 		RelayListenerService: relaySvc,
 		CertificateService:   certSvc,
 		BackupService:        service.NewBackupService(cfg, serviceStore),
+		TaskService:          taskSvc,
 	})
 	if err != nil {
 		return nil, err

@@ -46,7 +46,7 @@ func NewSQLiteStore(dataRoot string, localAgentID string) (*SQLiteStore, error) 
 		return nil, err
 	}
 
-	db, err := gorm.Open(sqlite.Open(filepath.Join(dataRoot, "panel.db")), &gorm.Config{})
+	db, err := gorm.Open(sqlite.Open(filepath.Join(dataRoot, "panel.db")+"?_journal_mode=WAL&_busy_timeout=5000"), &gorm.Config{})
 	if err != nil {
 		return nil, err
 	}

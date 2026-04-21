@@ -3,6 +3,7 @@ package relay
 import (
 	"context"
 	"crypto/tls"
+	"io"
 	"net"
 	"sync"
 	"time"
@@ -22,7 +23,7 @@ var (
 	defaultRelayIdleTimeout      = 2 * time.Minute
 )
 
-const relayBulkSocketBufferBytes = 1 << 20
+const relayBulkSocketBufferBytes = 0
 
 type relayTimeoutOverride struct {
 	id  uint64
@@ -39,6 +40,10 @@ type TimeoutConfig struct {
 type relayTCPBufferTuner interface {
 	SetReadBuffer(bytes int) error
 	SetWriteBuffer(bytes int) error
+}
+
+type relayTCPNoDelayTuner interface {
+	SetNoDelay(noDelay bool) error
 }
 
 type relayDialContextFunc func(ctx context.Context, network, address string) (net.Conn, error)
@@ -173,6 +178,71 @@ func (c *idleDeadlineConn) Write(p []byte) (int, error) {
 	return c.Conn.Write(p)
 }
 
+func (c *idleDeadlineConn) ReadFrom(r io.Reader) (int64, error) {
+	if stream, ok := c.Conn.(*tlsTCPLogicalStream); ok {
+		return stream.ReadFrom(r)
+	}
+
+	buf := tlsTCPBulkBufferPool.Get().([]byte)
+	defer tlsTCPBulkBufferPool.Put(buf)
+
+	var total int64
+	for {
+		n, readErr := r.Read(buf)
+		if n > 0 {
+			written, writeErr := c.Write(buf[:n])
+			total += int64(written)
+			if writeErr != nil {
+				return total, writeErr
+			}
+			if written != n {
+				return total, io.ErrShortWrite
+			}
+		}
+		if readErr == io.EOF {
+			return total, nil
+		}
+		if readErr != nil {
+			return total, readErr
+		}
+	}
+}
+
+func (c *idleDeadlineConn) WriteTo(w io.Writer) (int64, error) {
+	if stream, ok := c.Conn.(*tlsTCPLogicalStream); ok {
+		return stream.WriteTo(w)
+	}
+	if dst, ok := w.(*idleDeadlineConn); ok {
+		if stream, ok := dst.Conn.(*tlsTCPLogicalStream); ok {
+			return stream.ReadFrom(c)
+		}
+	}
+
+	buf := tlsTCPBulkBufferPool.Get().([]byte)
+	defer tlsTCPBulkBufferPool.Put(buf)
+
+	var total int64
+	for {
+		n, readErr := c.Read(buf)
+		if n > 0 {
+			written, writeErr := w.Write(buf[:n])
+			total += int64(written)
+			if writeErr != nil {
+				return total, writeErr
+			}
+			if written != n {
+				return total, io.ErrShortWrite
+			}
+		}
+		if readErr == io.EOF {
+			return total, nil
+		}
+		if readErr != nil {
+			return total, readErr
+		}
+	}
+}
+
 func (c *idleDeadlineConn) CloseWrite() error {
 	if closer, ok := c.Conn.(interface{ CloseWrite() error }); ok {
 		return closer.CloseWrite()
@@ -212,6 +282,12 @@ func getRelayIdleTimeout() time.Duration {
 }
 
 func tuneBulkRelayConn(conn any) {
+	if tuner, ok := conn.(relayTCPNoDelayTuner); ok {
+		_ = tuner.SetNoDelay(true)
+	}
+	if relayBulkSocketBufferBytes <= 0 {
+		return
+	}
 	tuner, ok := conn.(relayTCPBufferTuner)
 	if !ok {
 		return

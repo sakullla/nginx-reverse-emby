@@ -1,6 +1,9 @@
 package http
 
-import "net/http"
+import (
+	"net/http"
+	"time"
+)
 
 func (d Dependencies) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -30,6 +33,14 @@ func (d Dependencies) handleInfo(w http.ResponseWriter, r *http.Request) {
 		"default_agent_id":                info.DefaultAgentID,
 		"local_agent_enabled":             info.LocalAgentEnabled,
 		"proxy_headers_globally_disabled": info.ProxyHeadersGloballyDisabled,
+		"app_version":                     info.AppVersion,
+		"build_time":                      info.BuildTime,
+		"go_version":                      info.GoVersion,
+		"project_url":                     info.ProjectURL,
+		"data_dir":                        info.DataDir,
+		"started_at":                      info.StartedAt.Format(time.RFC3339),
+		"online_agents":                   info.OnlineAgents,
+		"total_agents":                    info.TotalAgents,
 	}
 	if d.isPanelAuthorized(r) && d.Config.RegisterToken != "" {
 		payload["master_register_token"] = d.Config.RegisterToken

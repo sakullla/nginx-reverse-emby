@@ -752,6 +752,327 @@ func TestRelayServiceRejectsDisablingReferencedListener(t *testing.T) {
 	}
 }
 
+func TestRelayServiceCreateRejectsDuplicateBindOnSameAgent(t *testing.T) {
+	store := &relayCertStore{
+		relayByAgentID: map[string][]storage.RelayListenerRow{
+			"edge-1": {{
+				ID:            1,
+				AgentID:       "edge-1",
+				Name:          "relay-a",
+				BindHostsJSON: `["0.0.0.0","127.0.0.1"]`,
+				ListenHost:    "0.0.0.0",
+				ListenPort:    7443,
+				PublicHost:    "relay-a.example.com",
+				PublicPort:    7443,
+				Enabled:       true,
+				CertificateID: intPtrStorage(7),
+				TLSMode:       "pin_only",
+				PinSetJSON:    `[{"type":"spki_sha256","value":"pin"}]`,
+				TransportMode: "tls_tcp",
+				Revision:      1,
+			}},
+		},
+		httpRulesByID: map[string][]storage.HTTPRuleRow{},
+		l4RulesByID:   map[string][]storage.L4RuleRow{},
+		agents: []storage.AgentRow{
+			{ID: "edge-1"},
+		},
+	}
+	svc := NewRelayListenerService(config.Config{
+		LocalAgentID: "local",
+	}, store)
+
+	_, err := svc.Create(context.Background(), "edge-1", RelayListenerInput{
+		Name:       stringPtr("relay-b"),
+		BindHosts:  &[]string{"127.0.0.1", "192.168.1.10"},
+		ListenPort: intPtrService(7443),
+		Enabled:    boolPtr(false),
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if !strings.Contains(err.Error(), "conflicts with relay listener #1") {
+		t.Fatalf("Create() error = %v", err)
+	}
+}
+
+func TestRelayServiceUpdateRejectsDuplicateBindOnSameAgent(t *testing.T) {
+	store := &relayCertStore{
+		relayByAgentID: map[string][]storage.RelayListenerRow{
+			"edge-1": {
+				{
+					ID:            1,
+					AgentID:       "edge-1",
+					Name:          "relay-a",
+					BindHostsJSON: `["0.0.0.0"]`,
+					ListenHost:    "0.0.0.0",
+					ListenPort:    7443,
+					PublicHost:    "relay-a.example.com",
+					PublicPort:    7443,
+					Enabled:       true,
+					CertificateID: intPtrStorage(7),
+					TLSMode:       "pin_only",
+					PinSetJSON:    `[{"type":"spki_sha256","value":"pin"}]`,
+					TransportMode: "tls_tcp",
+					Revision:      1,
+				},
+				{
+					ID:            2,
+					AgentID:       "edge-1",
+					Name:          "relay-b",
+					BindHostsJSON: `["127.0.0.1"]`,
+					ListenHost:    "127.0.0.1",
+					ListenPort:    8443,
+					PublicHost:    "relay-b.example.com",
+					PublicPort:    8443,
+					Enabled:       true,
+					CertificateID: intPtrStorage(8),
+					TLSMode:       "pin_only",
+					PinSetJSON:    `[{"type":"spki_sha256","value":"pin"}]`,
+					TransportMode: "tls_tcp",
+					Revision:      2,
+				},
+			},
+		},
+		httpRulesByID: map[string][]storage.HTTPRuleRow{},
+		l4RulesByID:   map[string][]storage.L4RuleRow{},
+		agents: []storage.AgentRow{
+			{ID: "edge-1"},
+		},
+	}
+	svc := NewRelayListenerService(config.Config{
+		LocalAgentID: "local",
+	}, store)
+
+	_, err := svc.Update(context.Background(), "edge-1", 2, RelayListenerInput{
+		BindHosts:  &[]string{"0.0.0.0"},
+		ListenPort: intPtrService(7443),
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if !strings.Contains(err.Error(), "conflicts with relay listener #1") {
+		t.Fatalf("Update() error = %v", err)
+	}
+}
+
+func TestRelayServiceCreateRejectsWildcardBindOverlapOnSameAgent(t *testing.T) {
+	store := &relayCertStore{
+		relayByAgentID: map[string][]storage.RelayListenerRow{
+			"edge-1": {{
+				ID:            1,
+				AgentID:       "edge-1",
+				Name:          "relay-a",
+				BindHostsJSON: `["0.0.0.0"]`,
+				ListenHost:    "0.0.0.0",
+				ListenPort:    7443,
+				PublicHost:    "relay-a.example.com",
+				PublicPort:    7443,
+				Enabled:       true,
+				CertificateID: intPtrStorage(7),
+				TLSMode:       "pin_only",
+				PinSetJSON:    `[{"type":"spki_sha256","value":"pin"}]`,
+				TransportMode: "tls_tcp",
+				Revision:      1,
+			}},
+		},
+		httpRulesByID: map[string][]storage.HTTPRuleRow{},
+		l4RulesByID:   map[string][]storage.L4RuleRow{},
+		agents: []storage.AgentRow{
+			{ID: "edge-1"},
+		},
+	}
+	svc := NewRelayListenerService(config.Config{
+		LocalAgentID: "local",
+	}, store)
+
+	_, err := svc.Create(context.Background(), "edge-1", RelayListenerInput{
+		Name:       stringPtr("relay-b"),
+		BindHosts:  &[]string{"127.0.0.1"},
+		ListenPort: intPtrService(7443),
+		Enabled:    boolPtr(false),
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if !strings.Contains(err.Error(), "conflicts with relay listener #1") {
+		t.Fatalf("Create() error = %v", err)
+	}
+}
+
+func TestRelayServiceCreateRejectsIPv6WildcardBindOverlapOnSameAgent(t *testing.T) {
+	store := &relayCertStore{
+		relayByAgentID: map[string][]storage.RelayListenerRow{
+			"edge-1": {{
+				ID:            1,
+				AgentID:       "edge-1",
+				Name:          "relay-a",
+				BindHostsJSON: `["::"]`,
+				ListenHost:    "::",
+				ListenPort:    7443,
+				PublicHost:    "relay-a.example.com",
+				PublicPort:    7443,
+				Enabled:       true,
+				CertificateID: intPtrStorage(7),
+				TLSMode:       "pin_only",
+				PinSetJSON:    `[{"type":"spki_sha256","value":"pin"}]`,
+				TransportMode: "tls_tcp",
+				Revision:      1,
+			}},
+		},
+		httpRulesByID: map[string][]storage.HTTPRuleRow{},
+		l4RulesByID:   map[string][]storage.L4RuleRow{},
+		agents: []storage.AgentRow{
+			{ID: "edge-1"},
+		},
+	}
+	svc := NewRelayListenerService(config.Config{
+		LocalAgentID: "local",
+	}, store)
+
+	_, err := svc.Create(context.Background(), "edge-1", RelayListenerInput{
+		Name:       stringPtr("relay-b"),
+		BindHosts:  &[]string{"::1"},
+		ListenPort: intPtrService(7443),
+		Enabled:    boolPtr(false),
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if !strings.Contains(err.Error(), "conflicts with relay listener #1") {
+		t.Fatalf("Create() error = %v", err)
+	}
+}
+
+func TestRelayServiceCreateRejectsDuplicateWildcardBindOnSameAgent(t *testing.T) {
+	store := &relayCertStore{
+		relayByAgentID: map[string][]storage.RelayListenerRow{
+			"edge-1": {{
+				ID:            1,
+				AgentID:       "edge-1",
+				Name:          "relay-a",
+				BindHostsJSON: `["0.0.0.0"]`,
+				ListenHost:    "0.0.0.0",
+				ListenPort:    7443,
+				PublicHost:    "relay-a.example.com",
+				PublicPort:    7443,
+				Enabled:       true,
+				CertificateID: intPtrStorage(7),
+				TLSMode:       "pin_only",
+				PinSetJSON:    `[{"type":"spki_sha256","value":"pin"}]`,
+				TransportMode: "tls_tcp",
+				Revision:      1,
+			}},
+		},
+		httpRulesByID: map[string][]storage.HTTPRuleRow{},
+		l4RulesByID:   map[string][]storage.L4RuleRow{},
+		agents: []storage.AgentRow{
+			{ID: "edge-1"},
+		},
+	}
+	svc := NewRelayListenerService(config.Config{
+		LocalAgentID: "local",
+	}, store)
+
+	_, err := svc.Create(context.Background(), "edge-1", RelayListenerInput{
+		Name:       stringPtr("relay-b"),
+		BindHosts:  &[]string{"0.0.0.0"},
+		ListenPort: intPtrService(7443),
+		Enabled:    boolPtr(false),
+	})
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Create() error = %v", err)
+	}
+}
+
+func TestRelayServiceCreateSucceedsWhenNoBindConflict(t *testing.T) {
+	store := &relayCertStore{
+		relayByAgentID: map[string][]storage.RelayListenerRow{
+			"edge-1": {{
+				ID:            1,
+				AgentID:       "edge-1",
+				Name:          "relay-a",
+				BindHostsJSON: `["0.0.0.0"]`,
+				ListenHost:    "0.0.0.0",
+				ListenPort:    7443,
+				PublicHost:    "relay-a.example.com",
+				PublicPort:    7443,
+				Enabled:       true,
+				CertificateID: intPtrStorage(7),
+				TLSMode:       "pin_only",
+				PinSetJSON:    `[{"type":"spki_sha256","value":"pin"}]`,
+				TransportMode: "tls_tcp",
+				Revision:      1,
+			}},
+		},
+		httpRulesByID: map[string][]storage.HTTPRuleRow{},
+		l4RulesByID:   map[string][]storage.L4RuleRow{},
+		agents: []storage.AgentRow{
+			{ID: "edge-1"},
+		},
+	}
+	svc := NewRelayListenerService(config.Config{
+		LocalAgentID: "local",
+	}, store)
+
+	listener, err := svc.Create(context.Background(), "edge-1", RelayListenerInput{
+		Name:       stringPtr("relay-b"),
+		BindHosts:  &[]string{"0.0.0.0"},
+		ListenPort: intPtrService(8443),
+		Enabled:    boolPtr(false),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if listener.ID == 0 {
+		t.Fatal("expected non-zero listener ID")
+	}
+}
+
+func TestRelayServiceCreateAllowsBindOnDisabledListenerPort(t *testing.T) {
+	store := &relayCertStore{
+		relayByAgentID: map[string][]storage.RelayListenerRow{
+			"edge-1": {{
+				ID:            1,
+				AgentID:       "edge-1",
+				Name:          "relay-a",
+				BindHostsJSON: `["0.0.0.0"]`,
+				ListenHost:    "0.0.0.0",
+				ListenPort:    7443,
+				PublicHost:    "relay-a.example.com",
+				PublicPort:    7443,
+				Enabled:       false,
+				CertificateID: intPtrStorage(7),
+				TLSMode:       "pin_only",
+				PinSetJSON:    `[{"type":"spki_sha256","value":"pin"}]`,
+				TransportMode: "tls_tcp",
+				Revision:      1,
+			}},
+		},
+		httpRulesByID: map[string][]storage.HTTPRuleRow{},
+		l4RulesByID:   map[string][]storage.L4RuleRow{},
+		agents: []storage.AgentRow{
+			{ID: "edge-1"},
+		},
+	}
+	svc := NewRelayListenerService(config.Config{
+		LocalAgentID: "local",
+	}, store)
+
+	listener, err := svc.Create(context.Background(), "edge-1", RelayListenerInput{
+		Name:       stringPtr("relay-b"),
+		BindHosts:  &[]string{"0.0.0.0"},
+		ListenPort: intPtrService(7443),
+		Enabled:    boolPtr(false),
+	})
+	if err != nil {
+		t.Fatalf("Create() should succeed when conflicting listener is disabled, got: %v", err)
+	}
+	if listener.ID == 0 {
+		t.Fatal("expected non-zero listener ID")
+	}
+}
+
 func TestRelayServiceDeleteRejectsReferencedListener(t *testing.T) {
 	store := &relayCertStore{
 		relayByAgentID: map[string][]storage.RelayListenerRow{

@@ -314,7 +314,7 @@ function normalizeHttpRulePayloadObject(payload = {}, options = {}) {
     load_balancing: {
       strategy: normalizeLoadBalancingStrategy(payload.load_balancing?.strategy)
     },
-    tags: Array.isArray(payload.tags) ? payload.tags : [],
+    tags: payload.tags != null ? payload.tags : undefined,
     enabled: payload.enabled !== false,
     proxy_redirect: payload.proxy_redirect !== false,
     pass_proxy_headers: payload.pass_proxy_headers === true,
@@ -1578,4 +1578,35 @@ export async function deleteVersionPolicy(id) {
   }
   const { data } = await api.delete(`/version-policies/${encodeURIComponent(id)}`, longRunningRequest)
   return data.policy
+}
+
+export async function exportBackupSelective(include) {
+  if (isDev) {
+    await sleep()
+    return exportBackup()
+  }
+}
+
+export async function importBackupPreview(file) {
+  if (isDev) {
+    await sleep(600)
+    return importBackup(file)
+  }
+}
+
+export async function fetchBackupResourceCounts() {
+  if (isDev) {
+    await sleep(200)
+    return {
+      ok: true,
+      counts: {
+        agents: 3,
+        http_rules: 12,
+        l4_rules: 4,
+        relay_listeners: 2,
+        certificates: 5,
+        version_policies: 1
+      }
+    }
+  }
 }

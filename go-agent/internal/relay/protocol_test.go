@@ -2,7 +2,9 @@ package relay
 
 import (
 	"bytes"
+	"context"
 	"io"
+	"strings"
 	"testing"
 )
 
@@ -51,6 +53,54 @@ func TestRelayRequestRoundTripsTransportMode(t *testing.T) {
 	}
 	if len(got.Chain) != 1 || got.Chain[0].Listener.TransportMode != ListenerTransportModeQUIC {
 		t.Fatalf("request chain = %+v", got.Chain)
+	}
+}
+
+func TestRelayOpenFrameRoundTripsInitialData(t *testing.T) {
+	payload, err := marshalMuxOpenPayload(relayOpenFrame{
+		Kind:        "tcp",
+		Target:      "127.0.0.1:9000",
+		InitialData: []byte("hello"),
+	})
+	if err != nil {
+		t.Fatalf("marshalMuxOpenPayload() error = %v", err)
+	}
+
+	frame, err := readMuxOpenPayload(payload)
+	if err != nil {
+		t.Fatalf("readMuxOpenPayload() error = %v", err)
+	}
+
+	if got := string(frame.InitialData); got != "hello" {
+		t.Fatalf("InitialData = %q, want %q", got, "hello")
+	}
+}
+
+func TestDialOptionsCloneInitialPayload(t *testing.T) {
+	opts := DialOptions{InitialPayload: []byte("abc")}
+	clone := opts.clone()
+	opts.InitialPayload[0] = 'z'
+
+	if got := string(clone.InitialPayload); got != "abc" {
+		t.Fatalf("clone.InitialPayload = %q, want %q", got, "abc")
+	}
+}
+
+func TestDialRejectsMultipleDialOptions(t *testing.T) {
+	_, err := Dial(
+		context.Background(),
+		"tcp",
+		"127.0.0.1:9000",
+		[]Hop{{Address: "127.0.0.1:9443"}},
+		nil,
+		DialOptions{},
+		DialOptions{},
+	)
+	if err == nil {
+		t.Fatal("Dial() error = nil")
+	}
+	if got, want := err.Error(), "multiple relay dial options"; !strings.Contains(got, want) {
+		t.Fatalf("Dial() error = %q, want containing %q", got, want)
 	}
 }
 

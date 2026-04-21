@@ -9,3 +9,4 @@ test-results/
 .superpowers/
 .worktrees/
 .claude/settings.local.json
+scripts/relay-perf/docker-stats.csv

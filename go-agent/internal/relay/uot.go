@@ -45,6 +45,23 @@ func readUOTPacket(r io.Reader) ([]byte, error) {
 	return payload, nil
 }
 
+func readUOTPacketInto(r io.Reader, buf []byte) ([]byte, error) {
+	var header [2]byte
+	if _, err := io.ReadFull(r, header[:]); err != nil {
+		return nil, err
+	}
+
+	size := int(binary.BigEndian.Uint16(header[:]))
+	if size > len(buf) {
+		return nil, fmt.Errorf("uot packet size %d exceeds buffer %d", size, len(buf))
+	}
+	payload := buf[:size]
+	if _, err := io.ReadFull(r, payload); err != nil {
+		return nil, err
+	}
+	return payload, nil
+}
+
 type udpPacketPeer interface {
 	Close() error
 	SetReadDeadline(time.Time) error

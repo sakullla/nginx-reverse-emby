@@ -10,6 +10,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"math/big"
@@ -752,6 +753,178 @@ func TestApplyRelayListenersAcceptsAutoDerivedPinAndCA(t *testing.T) {
 	waitForPortState(t, listenPort, false)
 }
 
+func TestNewEmbeddedRoundTripsL4ThroughManagedRelayListener(t *testing.T) {
+	backendAddr, stopBackend := startRuntimeTestTCPEchoServer(t)
+	defer stopBackend()
+
+	backendHost, backendPortString, err := net.SplitHostPort(backendAddr)
+	if err != nil {
+		t.Fatalf("failed to split backend address: %v", err)
+	}
+	backendPort, err := net.LookupPort("tcp", backendPortString)
+	if err != nil {
+		t.Fatalf("failed to parse backend port: %v", err)
+	}
+
+	relayCert, parsed := mustIssueParsedTestTLSCertificate(t)
+	relayCertPEM, relayKeyPEM := mustEncodeTLSCertificatePEM(t, relayCert)
+	relayPort := pickFreeTCPPort(t)
+	l4Port := pickFreeTCPPort(t)
+	relayCAID := 1
+	relayCertID := 2
+	dataDir := t.TempDir()
+	snapshotStore, err := store.NewFilesystem(dataDir)
+	if err != nil {
+		t.Fatalf("NewFilesystem() error = %v", err)
+	}
+
+	app, err := NewEmbedded(Config{
+		AgentID:           "local",
+		AgentName:         "local",
+		DataDir:           dataDir,
+		HeartbeatInterval: time.Hour,
+	}, snapshotStore, staticSnapshotSyncClient{
+		snapshot: Snapshot{
+			Revision: 1,
+			L4Rules: []model.L4Rule{{
+				Protocol:   "tcp",
+				ListenHost: "0.0.0.0",
+				ListenPort: l4Port,
+				Backends: []model.L4Backend{{
+					Host: backendHost,
+					Port: backendPort,
+				}},
+				LoadBalancing: model.LoadBalancing{Strategy: "adaptive"},
+				RelayChain:    []int{1},
+				Revision:      1,
+			}},
+			RelayListeners: []model.RelayListener{{
+				ID:                      1,
+				AgentID:                 "local",
+				Name:                    "relay-self",
+				ListenHost:              "0.0.0.0",
+				BindHosts:               []string{"0.0.0.0"},
+				ListenPort:              relayPort,
+				PublicHost:              "127.0.0.1",
+				PublicPort:              relayPort,
+				Enabled:                 true,
+				CertificateID:           &relayCertID,
+				TLSMode:                 "pin_and_ca",
+				TransportMode:           relay.ListenerTransportModeTLSTCP,
+				AllowTransportFallback:  true,
+				ObfsMode:                relay.RelayObfsModeOff,
+				PinSet:                  []model.RelayPin{{Type: "spki_sha256", Value: runtimeTestSPKIPin(t, parsed)}},
+				TrustedCACertificateIDs: []int{relayCAID},
+				AllowSelfSigned:         true,
+				Revision:                1,
+			}},
+			Certificates: []model.ManagedCertificateBundle{
+				{
+					ID:       relayCAID,
+					Domain:   "127.0.0.1",
+					Revision: 1,
+					CertPEM:  string(relayCertPEM),
+					KeyPEM:   string(relayKeyPEM),
+				},
+				{
+					ID:       relayCertID,
+					Domain:   "127.0.0.1",
+					Revision: 1,
+					CertPEM:  string(relayCertPEM),
+					KeyPEM:   string(relayKeyPEM),
+				},
+			},
+			CertificatePolicies: []model.ManagedCertificatePolicy{
+				{
+					ID:              relayCAID,
+					Domain:          "127.0.0.1",
+					Enabled:         true,
+					Scope:           "ip",
+					IssuerMode:      "local_http01",
+					Status:          "active",
+					Revision:        1,
+					Usage:           "relay_ca",
+					CertificateType: "uploaded",
+					SelfSigned:      true,
+				},
+				{
+					ID:              relayCertID,
+					Domain:          "127.0.0.1",
+					Enabled:         true,
+					Scope:           "ip",
+					IssuerMode:      "local_http01",
+					Status:          "active",
+					Revision:        1,
+					Usage:           "relay_tunnel",
+					CertificateType: "uploaded",
+					SelfSigned:      true,
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewEmbedded() error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	runErrCh := make(chan error, 1)
+	runErrReceived := false
+	go func() {
+		runErrCh <- app.Run(ctx)
+	}()
+	defer func() {
+		cancel()
+		if runErrReceived {
+			return
+		}
+		select {
+		case runErr := <-runErrCh:
+			runErrReceived = true
+			if runErr != nil {
+				t.Fatalf("Run() error = %v", runErr)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for embedded runtime shutdown")
+		}
+	}()
+
+	payload := []byte("embedded-l4-relay")
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		select {
+		case runErr := <-runErrCh:
+			runErrReceived = true
+			if runErr != nil {
+				t.Fatalf("Run() returned early: %v", runErr)
+			}
+			t.Fatal("Run() returned before relay runtime became reachable")
+		default:
+		}
+
+		conn, dialErr := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", l4Port), 200*time.Millisecond)
+		if dialErr != nil {
+			time.Sleep(25 * time.Millisecond)
+			continue
+		}
+
+		_ = conn.SetDeadline(time.Now().Add(500 * time.Millisecond))
+		_, writeErr := conn.Write(payload)
+		if writeErr == nil {
+			reply := make([]byte, len(payload))
+			_, readErr := io.ReadFull(conn, reply)
+			_ = conn.Close()
+			if readErr == nil && bytes.Equal(reply, payload) {
+				return
+			}
+		} else {
+			_ = conn.Close()
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+
+	t.Fatal("timed out waiting for embedded l4 relay round-trip")
+}
+
 func runtimeTestHTTPRule(port int, backendURL string) model.HTTPRule {
 	return model.HTTPRule{
 		FrontendURL: fmt.Sprintf("http://edge.example.test:%d", port),
@@ -764,6 +937,14 @@ type staticSyncClient struct{}
 
 func (staticSyncClient) Sync(context.Context, SyncRequest) (Snapshot, error) {
 	return Snapshot{}, nil
+}
+
+type staticSnapshotSyncClient struct {
+	snapshot Snapshot
+}
+
+func (c staticSnapshotSyncClient) Sync(context.Context, SyncRequest) (Snapshot, error) {
+	return c.snapshot, nil
 }
 
 func runtimeTestRelayListener(port int, certificateID int) model.RelayListener {
@@ -867,6 +1048,26 @@ func mustIssueParsedTestTLSCertificate(t *testing.T) (tls.Certificate, *x509.Cer
 		Leaf:        parsed,
 	}
 	return cert, parsed
+}
+
+func mustEncodeTLSCertificatePEM(t *testing.T, cert tls.Certificate) ([]byte, []byte) {
+	t.Helper()
+
+	if len(cert.Certificate) == 0 {
+		t.Fatal("certificate chain is empty")
+	}
+
+	var certPEM []byte
+	for _, der := range cert.Certificate {
+		certPEM = append(certPEM, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})...)
+	}
+
+	privateKey, ok := cert.PrivateKey.(*rsa.PrivateKey)
+	if !ok {
+		t.Fatalf("private key type = %T, want *rsa.PrivateKey", cert.PrivateKey)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(privateKey)})
+	return certPEM, keyPEM
 }
 
 func pickFreeTCPPort(t *testing.T) int {

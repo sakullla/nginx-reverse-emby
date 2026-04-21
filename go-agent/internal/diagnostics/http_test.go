@@ -149,6 +149,40 @@ func TestHTTPProberDiagnoseUsesRelayChainWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestHTTPProberDiagnoseRelayBackoffPersistsAcrossRuns(t *testing.T) {
+	cache := backends.NewCache(backends.Config{})
+	provider := newDiagnosticTLSMaterialProvider()
+	relayListener := newDiagnosticRelayListener(t, provider, 42, "relay.internal.test")
+	stopRelay := startDiagnosticRelayRuntime(t, relayListener, provider)
+	defer stopRelay()
+
+	prober := NewHTTPProber(HTTPProberConfig{
+		Attempts:      1,
+		Timeout:       100 * time.Millisecond,
+		Cache:         cache,
+		RelayProvider: provider,
+	})
+	rule := model.HTTPRule{
+		ID:          81,
+		FrontendURL: "https://edge.example.test",
+		BackendURL:  "http://127.0.0.1:1",
+		RelayChain:  []int{42},
+	}
+
+	report, err := prober.Diagnose(context.Background(), rule, []model.RelayListener{relayListener})
+	if err != nil {
+		t.Fatalf("first Diagnose() error = %v", err)
+	}
+	if report.Summary.Failed != 1 {
+		t.Fatalf("first Summary = %+v", report.Summary)
+	}
+
+	_, err = prober.Diagnose(context.Background(), rule, []model.RelayListener{relayListener})
+	if err == nil || err.Error() != "no healthy backend candidates for https://edge.example.test" {
+		t.Fatalf("second Diagnose() error = %v", err)
+	}
+}
+
 func TestHTTPProberDiagnoseUsesGetRequestsByDefault(t *testing.T) {
 	var (
 		mu      sync.Mutex
@@ -326,6 +360,66 @@ func TestHTTPProberDiagnoseSplitsHostnameBackendsByResolvedAddress(t *testing.T)
 	}
 	if report.Backends[0].Children[1].Backend != fmt.Sprintf("http://echo.example.test:%d/healthz [127.0.0.2:%d]", port, port) {
 		t.Fatalf("second child backend = %+v", report.Backends[0].Children[1])
+	}
+}
+
+func TestHTTPProberDiagnoseKeepsSingleResolvedAddressAsChildCandidate(t *testing.T) {
+	listener, err := net.Listen("tcp", "0.0.0.0:0")
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	defer listener.Close()
+
+	server := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		}),
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = server.Serve(listener)
+	}()
+	defer func() {
+		_ = server.Close()
+		<-done
+	}()
+
+	port := listener.Addr().(*net.TCPAddr).Port
+	cache := backends.NewCache(backends.Config{
+		Resolver: diagnosticResolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
+			if host != "echo.example.test" {
+				t.Fatalf("unexpected resolver host %q", host)
+			}
+			return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, nil
+		}),
+	})
+
+	prober := NewHTTPProber(HTTPProberConfig{
+		Attempts: 1,
+		Timeout:  time.Second,
+		Cache:    cache,
+	})
+	report, err := prober.Diagnose(context.Background(), model.HTTPRule{
+		ID:          32,
+		FrontendURL: "https://edge.example.test",
+		BackendURL:  fmt.Sprintf("http://echo.example.test:%d/healthz", port),
+	}, nil)
+	if err != nil {
+		t.Fatalf("Diagnose() error = %v", err)
+	}
+
+	if len(report.Backends) != 1 {
+		t.Fatalf("Backends = %+v", report.Backends)
+	}
+	if report.Backends[0].Backend != fmt.Sprintf("http://echo.example.test:%d/healthz", port) {
+		t.Fatalf("parent backend = %+v", report.Backends[0])
+	}
+	if len(report.Backends[0].Children) != 1 {
+		t.Fatalf("children = %+v", report.Backends[0].Children)
+	}
+	if report.Backends[0].Children[0].Backend != fmt.Sprintf("http://echo.example.test:%d/healthz [127.0.0.1:%d]", port, port) {
+		t.Fatalf("child backend = %+v", report.Backends[0].Children[0])
 	}
 }
 
@@ -511,6 +605,58 @@ func TestHTTPCandidatesPreserveDuplicateConfiguredBackends(t *testing.T) {
 	}
 	if candidates[0].backendObservationKey != candidates[1].backendObservationKey {
 		t.Fatalf("backendObservationKey mismatch = %+v", candidates)
+	}
+}
+
+func TestHTTPCandidatesRelayChainPreservesConfiguredHostname(t *testing.T) {
+	resolverCalls := 0
+	cache := backends.NewCache(backends.Config{
+		Resolver: diagnosticResolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
+			resolverCalls++
+			return nil, fmt.Errorf("unexpected resolve %q", host)
+		}),
+	})
+
+	rule := model.HTTPRule{
+		ID:          1,
+		FrontendURL: "https://frontend.example",
+		BackendURL:  "https://relay-target.example:9443",
+		RelayChain:  []int{301},
+	}
+
+	candidates, err := httpCandidates(context.Background(), cache, rule)
+	if err != nil {
+		t.Fatalf("httpCandidates() error = %v", err)
+	}
+	if resolverCalls != 0 {
+		t.Fatalf("resolver called %d times", resolverCalls)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("candidates = %+v", candidates)
+	}
+	if got := candidates[0].dialAddress; got != "relay-target.example:9443" {
+		t.Fatalf("dialAddress = %q", got)
+	}
+}
+
+func TestHTTPCandidatesRelayChainHonorsScopedBackoffKey(t *testing.T) {
+	cache := backends.NewCache(backends.Config{})
+
+	rule := model.HTTPRule{
+		ID:          1,
+		FrontendURL: "https://frontend.example",
+		BackendURL:  "https://relay-target.example:9443",
+		RelayChain:  []int{301},
+	}
+
+	cache.MarkFailure(backends.RelayBackoffKey(rule.RelayChain, "relay-target.example:9443"))
+
+	candidates, err := httpCandidates(context.Background(), cache, rule)
+	if err != nil {
+		t.Fatalf("httpCandidates() error = %v", err)
+	}
+	if len(candidates) != 0 {
+		t.Fatalf("candidates = %+v", candidates)
 	}
 }
 

@@ -494,7 +494,7 @@ func TestCopyHeadersReplacesExistingValues(t *testing.T) {
 	}
 }
 
-func TestServeHTTPResumableResponseFlushesBodyChunks(t *testing.T) {
+func TestServeHTTPResumableResponseDoesNotFlushPerChunk(t *testing.T) {
 	payload := bytes.Repeat([]byte("abcdefghijklmnopqrstuvwxyz012345"), 4096)
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Accept-Ranges", "bytes")
@@ -518,11 +518,49 @@ func TestServeHTTPResumableResponseFlushesBodyChunks(t *testing.T) {
 	if err := entry.serveHTTP(writer, req); err != nil {
 		t.Fatalf("serveHTTP() error = %v", err)
 	}
-	if writer.flushCount == 0 {
-		t.Fatal("expected resumable copy to flush streamed chunks")
+	if writer.flushCount > 1 {
+		t.Fatalf("expected buffered flush behavior, got %d flushes", writer.flushCount)
 	}
 	if got := writer.buf.Len(); got != len(payload) {
 		t.Fatalf("written bytes = %d", got)
+	}
+}
+
+func TestCopyResumableChunkDoesNotFlushEveryWrite(t *testing.T) {
+	payload := bytes.Repeat([]byte("a"), 256*1024)
+	writer := &flushingResumeResponseWriter{header: make(http.Header)}
+
+	written, readErr, writeErr := copyResumableChunk(writer, bytes.NewReader(payload))
+	if readErr != nil {
+		t.Fatalf("expected nil readErr, got %v", readErr)
+	}
+	if writeErr != nil {
+		t.Fatalf("expected nil writeErr, got %v", writeErr)
+	}
+	if written != int64(len(payload)) {
+		t.Fatalf("written = %d, want %d", written, len(payload))
+	}
+	if writer.flushCount > 1 {
+		t.Fatalf("expected at most one flush for buffered copy, got %d", writer.flushCount)
+	}
+	if got := writer.buf.Len(); got != len(payload) {
+		t.Fatalf("buffered bytes = %d, want %d", got, len(payload))
+	}
+}
+
+func TestCopyResumableChunkFlushesAtEndWhenSupported(t *testing.T) {
+	payload := bytes.Repeat([]byte("b"), 64*1024)
+	writer := &flushingResumeResponseWriter{header: make(http.Header)}
+
+	_, readErr, writeErr := copyResumableChunk(writer, bytes.NewReader(payload))
+	if readErr != nil {
+		t.Fatalf("expected nil readErr, got %v", readErr)
+	}
+	if writeErr != nil {
+		t.Fatalf("expected nil writeErr, got %v", writeErr)
+	}
+	if writer.flushCount != 1 {
+		t.Fatalf("flushCount = %d, want 1", writer.flushCount)
 	}
 }
 

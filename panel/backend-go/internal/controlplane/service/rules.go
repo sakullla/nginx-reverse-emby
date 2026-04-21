@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path"
 	"strings"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
@@ -53,7 +54,7 @@ func NewRuleService(cfg config.Config, store ruleStore) *ruleService {
 }
 
 func (s *ruleService) SetLocalApplyTrigger(trigger func(context.Context) error) {
-	s.localApplyTrigger = trigger
+	s.localApplyTrigger = wrapLocalApplyTrigger(trigger)
 }
 
 func (s *ruleService) triggerLocalApply(ctx context.Context, agentID string) error {
@@ -134,6 +135,9 @@ func (s *ruleService) Create(ctx context.Context, agentID string, input HTTPRule
 	}
 	rule.AgentID = resolvedID
 	rule.Revision = allocator.AllocateRevisionForAgent(resolvedID, maxRevision)
+	if err := validateUniqueHTTPFrontendBinding(append(rows, httpRuleToRow(rule))); err != nil {
+		return HTTPRule{}, err
+	}
 
 	nextRows := append(append([]storage.HTTPRuleRow(nil), rows...), httpRuleToRow(rule))
 	certRowsChanged := false
@@ -226,6 +230,9 @@ func (s *ruleService) Update(ctx context.Context, agentID string, id int, input 
 
 	nextRows := append([]storage.HTTPRuleRow(nil), rows...)
 	nextRows[targetIndex] = httpRuleToRow(rule)
+	if err := validateUniqueHTTPFrontendBinding(nextRows); err != nil {
+		return HTTPRule{}, err
+	}
 	originalCertRows, nextCertRows, certRowsChanged, err := s.prepareManagedCertificatesForRuleMutation(
 		ctx,
 		resolvedID,
@@ -1087,4 +1094,54 @@ func maxInt(values ...int) int {
 		}
 	}
 	return maxValue
+}
+
+func validateUniqueHTTPFrontendBinding(rows []storage.HTTPRuleRow) error {
+	seen := make(map[string]int, len(rows))
+	for _, row := range rows {
+		binding, ok := frontendBindingIdentity(httpRuleFromRow(row))
+		if !ok {
+			continue
+		}
+		if existingID, exists := seen[binding]; exists && existingID != row.ID {
+			return fmt.Errorf("%w: frontend_url conflicts with existing rule: %d", ErrInvalidArgument, existingID)
+		}
+		seen[binding] = row.ID
+	}
+	return nil
+}
+
+func frontendBindingIdentity(rule HTTPRule) (string, bool) {
+	parsed, err := url.Parse(strings.TrimSpace(rule.FrontendURL))
+	if err != nil || parsed == nil {
+		return "", false
+	}
+	scheme := strings.ToLower(strings.TrimSpace(parsed.Scheme))
+	host := strings.ToLower(strings.TrimSpace(parsed.Hostname()))
+	if scheme == "" || host == "" {
+		return "", false
+	}
+	port := parsed.Port()
+	if port == "" {
+		switch scheme {
+		case "https":
+			port = "443"
+		case "http":
+			port = "80"
+		default:
+			return "", false
+		}
+	}
+	return scheme + "://" + host + ":" + port + normalizeRuleFrontendPath(parsed.Path), true
+}
+
+func normalizeRuleFrontendPath(raw string) string {
+	if strings.TrimSpace(raw) == "" {
+		return "/"
+	}
+	cleaned := path.Clean(raw)
+	if !strings.HasPrefix(cleaned, "/") {
+		cleaned = "/" + cleaned
+	}
+	return cleaned
 }

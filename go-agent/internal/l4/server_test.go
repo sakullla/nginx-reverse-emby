@@ -834,6 +834,41 @@ func TestL4CandidatesAssignDistinctObservationKeysToDuplicateBackends(t *testing
 	}
 }
 
+func TestL4CandidatesRelayChainPreservesConfiguredHostname(t *testing.T) {
+	resolverCalls := 0
+	cache := backends.NewCache(backends.Config{
+		Resolver: resolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
+			resolverCalls++
+			return nil, fmt.Errorf("unexpected resolve %q", host)
+		}),
+	})
+
+	rule := model.L4Rule{
+		Protocol:   "tcp",
+		ListenHost: "0.0.0.0",
+		ListenPort: 9448,
+		RelayChain: []int{201},
+		Backends: []model.L4Backend{{
+			Host: "relay-upstream.example",
+			Port: 9001,
+		}},
+	}
+
+	candidates, err := l4Candidates(context.Background(), cache, rule)
+	if err != nil {
+		t.Fatalf("l4Candidates() error = %v", err)
+	}
+	if resolverCalls != 0 {
+		t.Fatalf("resolver called %d times", resolverCalls)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("candidates = %+v", candidates)
+	}
+	if got := candidates[0].address; got != "relay-upstream.example:9001" {
+		t.Fatalf("address = %q", got)
+	}
+}
+
 func TestDialTCPUpstreamStopsWhenServerContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -854,7 +889,7 @@ func TestDialTCPUpstreamStopsWhenServerContextCancelled(t *testing.T) {
 		},
 	}
 
-	_, _, _, err := srv.dialTCPUpstream(rule)
+	_, _, _, err := srv.dialTCPUpstream(rule, relay.DialOptions{})
 	if err == nil {
 		t.Fatal("dialTCPUpstream() error = nil")
 	}
@@ -933,10 +968,201 @@ func TestTCPRelayProxy(t *testing.T) {
 		if relayReq.Target != upstreamAddress {
 			t.Fatalf("unexpected relay target %q", relayReq.Target)
 		}
+		if len(relayReq.InitialData) != 0 {
+			t.Fatalf("initial relay payload = %q, want empty for raw downstream", relayReq.InitialData)
+		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected l4 tcp proxy to traverse relay listener")
 	}
 }
+
+func TestTCPRelayProxyDefersHostnameResolutionToRealRelayRuntime(t *testing.T) {
+	upstream := newTCPEchoListener(t)
+	defer upstream.Close()
+
+	relayCert := mustIssueL4RelayCertificate(t, "relay.internal.test")
+	provider := &runtimeL4RelayProvider{
+		serverCertificates: map[int]tls.Certificate{
+			510: relayCert,
+		},
+	}
+
+	certificateID := 510
+	relayListener := model.RelayListener{
+		ID:            51,
+		AgentID:       "relay-agent",
+		Name:          "relay-hop",
+		ListenHost:    "127.0.0.1",
+		BindHosts:     []string{"127.0.0.1"},
+		ListenPort:    pickFreeTCPPort(t),
+		PublicHost:    "127.0.0.1",
+		PublicPort:    0,
+		Enabled:       true,
+		CertificateID: &certificateID,
+		TLSMode:       "pin_only",
+		PinSet: []model.RelayPin{{
+			Type:  "sha256",
+			Value: mustL4RelaySPKIPin(t, relayCert),
+		}},
+	}
+	relayServer, err := relay.Start(context.Background(), []relay.Listener{relayListener}, provider)
+	if err != nil {
+		t.Fatalf("failed to start relay runtime: %v", err)
+	}
+	defer relayServer.Close()
+
+	cache := backends.NewCache(backends.Config{
+		Resolver: resolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
+			t.Fatalf("origin runtime unexpectedly resolved backend host %q", host)
+			return nil, fmt.Errorf("unexpected resolver host %q", host)
+		}),
+	})
+	listenPort := pickFreeTCPPort(t)
+	srv, err := NewServerWithResources(context.Background(), []model.L4Rule{{
+		Protocol:     "tcp",
+		ListenHost:   "127.0.0.1",
+		ListenPort:   listenPort,
+		UpstreamHost: "localhost",
+		UpstreamPort: upstream.Port(),
+		RelayChain:   []int{relayListener.ID},
+	}}, []model.RelayListener{relayListener}, provider, cache)
+	if err != nil {
+		t.Fatalf("failed to start relay-backed l4 server: %v", err)
+	}
+	defer srv.Close()
+
+	client, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", listenPort))
+	if err != nil {
+		t.Fatalf("failed to dial relay-backed listener: %v", err)
+	}
+	defer client.Close()
+
+	payload := []byte("hello relay hostname")
+	if _, err := client.Write(payload); err != nil {
+		t.Fatalf("write to relay-backed proxy: %v", err)
+	}
+
+	reply := make([]byte, len(payload))
+	if _, err := io.ReadFull(client, reply); err != nil {
+		t.Fatalf("read from relay-backed proxy: %v", err)
+	}
+	if !bytes.Equal(payload, reply) {
+		t.Fatalf("relay-backed tcp payload mismatch; got %q", reply)
+	}
+}
+
+func TestPrefetchRelayInitialPayloadUsesBufferedData(t *testing.T) {
+	reader := bufio.NewReader(&chunkedReader{chunks: [][]byte{
+		[]byte("buffered"),
+		[]byte("-payload"),
+	}})
+	if _, err := reader.Peek(len("buffered")); err != nil {
+		t.Fatalf("Peek() error = %v", err)
+	}
+	srv := &Server{now: time.Now}
+
+	payload, source, err := srv.prefetchRelayInitialPayload(nil, reader)
+	if err != nil {
+		t.Fatalf("prefetchRelayInitialPayload() error = %v", err)
+	}
+	if got := string(payload); got != "buffered" {
+		t.Fatalf("payload = %q, want %q", got, "buffered")
+	}
+
+	remaining, err := io.ReadAll(source)
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	if got := string(remaining); got != "-payload" {
+		t.Fatalf("remaining source = %q, want %q", got, "-payload")
+	}
+}
+
+func TestPrefetchRelayInitialPayloadLeavesRawConnUntouched(t *testing.T) {
+	client, peer := net.Pipe()
+	defer client.Close()
+	defer peer.Close()
+	srv := &Server{now: time.Now}
+
+	payload, source, err := srv.prefetchRelayInitialPayload(client, client)
+	if err != nil {
+		t.Fatalf("prefetchRelayInitialPayload() error = %v", err)
+	}
+	if payload != nil {
+		t.Fatalf("payload = %q, want nil", payload)
+	}
+	if source != client {
+		t.Fatalf("source changed after timeout")
+	}
+}
+
+func TestPrefetchRelayInitialPayloadSkipsRawConnWait(t *testing.T) {
+	client := &prefetchProbeConn{readErr: timeoutNetError{}}
+	srv := &Server{now: time.Now}
+
+	payload, source, err := srv.prefetchRelayInitialPayload(client, client)
+	if err != nil {
+		t.Fatalf("prefetchRelayInitialPayload() error = %v", err)
+	}
+	if payload != nil {
+		t.Fatalf("payload = %q, want nil", payload)
+	}
+	if source != client {
+		t.Fatalf("source changed after raw prefetch")
+	}
+	if client.readCalls != 0 {
+		t.Fatalf("readCalls = %d, want 0", client.readCalls)
+	}
+	if client.setReadDeadlineCalls != 0 {
+		t.Fatalf("setReadDeadlineCalls = %d, want 0", client.setReadDeadlineCalls)
+	}
+}
+
+type chunkedReader struct {
+	chunks [][]byte
+}
+
+func (r *chunkedReader) Read(p []byte) (int, error) {
+	if len(r.chunks) == 0 {
+		return 0, io.EOF
+	}
+	chunk := r.chunks[0]
+	r.chunks = r.chunks[1:]
+	return copy(p, chunk), nil
+}
+
+type prefetchProbeConn struct {
+	readCalls            int
+	setReadDeadlineCalls int
+	readErr              error
+}
+
+func (c *prefetchProbeConn) Read(_ []byte) (int, error) {
+	c.readCalls++
+	if c.readErr != nil {
+		return 0, c.readErr
+	}
+	return 0, io.EOF
+}
+
+func (c *prefetchProbeConn) Write(p []byte) (int, error) { return len(p), nil }
+func (c *prefetchProbeConn) Close() error                { return nil }
+func (c *prefetchProbeConn) LocalAddr() net.Addr         { return &net.TCPAddr{} }
+func (c *prefetchProbeConn) RemoteAddr() net.Addr        { return &net.TCPAddr{} }
+func (c *prefetchProbeConn) SetDeadline(_ time.Time) error {
+	return nil
+}
+func (c *prefetchProbeConn) SetReadDeadline(_ time.Time) error {
+	c.setReadDeadlineCalls++
+	return nil
+}
+func (c *prefetchProbeConn) SetWriteDeadline(_ time.Time) error { return nil }
+
+type timeoutNetError struct{}
+
+func (timeoutNetError) Error() string   { return "timeout" }
+func (timeoutNetError) Timeout() bool   { return true }
+func (timeoutNetError) Temporary() bool { return true }
 
 func TestTCPRelayProxyPassesObfsTransportMode(t *testing.T) {
 	relayCert := mustIssueL4RelayCertificate(t, "relay.internal.test")
@@ -2206,15 +2432,17 @@ func (p *runtimeL4RelayProvider) TrustedCAPool(_ context.Context, _ []int) (*x50
 }
 
 type l4RelayTestRequest struct {
-	Network string      `json:"network"`
-	Target  string      `json:"target"`
-	Chain   []relay.Hop `json:"chain,omitempty"`
+	Network     string      `json:"network"`
+	Target      string      `json:"target"`
+	Chain       []relay.Hop `json:"chain,omitempty"`
+	InitialData []byte      `json:"initial_data,omitempty"`
 }
 
 type l4RelayTestOpenFrame struct {
-	Kind   string      `json:"kind"`
-	Target string      `json:"target"`
-	Chain  []relay.Hop `json:"chain,omitempty"`
+	Kind        string      `json:"kind"`
+	Target      string      `json:"target"`
+	Chain       []relay.Hop `json:"chain,omitempty"`
+	InitialData []byte      `json:"initial_data,omitempty"`
 }
 
 type l4RelayTestMuxFrame struct {
@@ -2268,6 +2496,11 @@ func startL4RelayServer(
 		}
 
 		dataConn := net.Conn(relayConn)
+		if len(request.InitialData) > 0 {
+			if _, err := dataConn.Write(request.InitialData); err != nil {
+				return
+			}
+		}
 		_ = dataConn.SetReadDeadline(time.Now().Add(2 * time.Second))
 
 		buf := make([]byte, 1024)
@@ -2363,9 +2596,10 @@ func readL4RelayTestRequest(conn net.Conn) (l4RelayTestRequest, uint32, error) {
 		return l4RelayTestRequest{}, 0, err
 	}
 	return l4RelayTestRequest{
-		Network: request.Kind,
-		Target:  request.Target,
-		Chain:   request.Chain,
+		Network:     request.Kind,
+		Target:      request.Target,
+		Chain:       request.Chain,
+		InitialData: append([]byte(nil), request.InitialData...),
 	}, frame.StreamID, nil
 }
 

@@ -80,7 +80,7 @@ func NewL4RuleService(cfg config.Config, store storage.Store) *l4Service {
 }
 
 func (s *l4Service) SetLocalApplyTrigger(trigger func(context.Context) error) {
-	s.localApplyTrigger = trigger
+	s.localApplyTrigger = wrapLocalApplyTrigger(trigger)
 }
 
 func (s *l4Service) triggerLocalApply(ctx context.Context, agentID string) error {

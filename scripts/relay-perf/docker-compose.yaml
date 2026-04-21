@@ -1,0 +1,181 @@
+services:
+  perf:
+    build:
+      context: .
+      dockerfile: Dockerfile.runner
+    image: nre-relay-perf-runner:latest
+    container_name: nre-perf
+    working_dir: /work
+    command: ["go", "run", "/work/harness.go"]
+    environment:
+      HARNESS_MODE: bench
+      HARNESS_RTT_ITERATIONS: ${HARNESS_RTT_ITERATIONS:-}
+      HARNESS_C1_BYTES: ${HARNESS_C1_BYTES:-}
+      HARNESS_C1_DURATION_SECONDS: ${HARNESS_C1_DURATION_SECONDS:-}
+      HARNESS_C8_BYTES_PER_CONN: ${HARNESS_C8_BYTES_PER_CONN:-}
+      HARNESS_C8_DURATION_SECONDS: ${HARNESS_C8_DURATION_SECONDS:-}
+      HARNESS_C8_CONCURRENCY: ${HARNESS_C8_CONCURRENCY:-}
+      HARNESS_MASTER_ADDR: ${HARNESS_MASTER_ADDR:-:8080}
+      HARNESS_ENTRY_ADDRESS: ${HARNESS_ENTRY_ADDRESS:-172.29.1.10:7000}
+      HARNESS_DIRECT_ADDRESS: ${HARNESS_DIRECT_ADDRESS:-172.29.0.12:9001}
+      HARNESS_PRE_MEASURE_DELAY_MS: ${HARNESS_PRE_MEASURE_DELAY_MS:-}
+      HARNESS_BACKEND_HOST: ${HARNESS_BACKEND_HOST:-172.29.3.13}
+      HARNESS_BACKEND_PORT: ${HARNESS_BACKEND_PORT:-9002}
+      HARNESS_RELAY_PUBLIC_HOST: ${HARNESS_RELAY_PUBLIC_HOST:-172.29.2.11}
+      HARNESS_RELAY_PUBLIC_PORT: ${HARNESS_RELAY_PUBLIC_PORT:-9443}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8080/healthz"]
+      interval: 200ms
+      timeout: 200ms
+      retries: 100
+    volumes:
+      - ./harness.go:/work/harness.go:ro
+    cap_add:
+      - NET_ADMIN
+    tmpfs:
+      - /tmp:exec
+    networks:
+      control:
+        ipv4_address: 172.29.0.2
+        aliases:
+          - perf-control
+      cli_a:
+        ipv4_address: 172.29.1.2
+        aliases:
+          - cli-perf
+
+  backend-b:
+    image: nre-relay-perf-runner:latest
+    container_name: nre-backend-b
+    working_dir: /work
+    command: ["go", "run", "/work/harness.go"]
+    environment:
+      HARNESS_MODE: backend
+      HARNESS_BACKEND_LISTEN_ADDR: ${HARNESS_BACKEND_LISTEN_ADDR:-:9002}
+    volumes:
+      - ./harness.go:/work/harness.go:ro
+    tmpfs:
+      - /tmp:exec
+    networks:
+      b_local:
+        ipv4_address: 172.29.3.13
+        aliases:
+          - backend-b-local
+
+  agent-a:
+    build:
+      context: ../..
+      dockerfile: scripts/relay-perf/Dockerfile.agent
+    image: nre-agent-perf:latest
+    container_name: nre-agent-a
+    environment:
+      NRE_AGENT_ID: agent-a
+      NRE_AGENT_NAME: agent-a
+      NRE_AGENT_TOKEN: token
+      NRE_MASTER_URL: http://perf-control:8080
+      NRE_HEARTBEAT_INTERVAL: ${HARNESS_AGENT_HEARTBEAT_INTERVAL:-30s}
+      NRE_DATA_DIR: /data
+      NRE_PPROF_ADDR: ${HARNESS_AGENT_A_PPROF_ADDR:-}
+    depends_on:
+      perf:
+        condition: service_healthy
+    cap_add:
+      - NET_ADMIN
+    tmpfs:
+      - /data
+    networks:
+      control:
+        ipv4_address: 172.29.0.10
+      cli_a:
+        ipv4_address: 172.29.1.10
+        aliases:
+          - agent-a-entry
+      a_relay:
+        ipv4_address: 172.29.2.10
+
+  relay-b:
+    image: nre-agent-perf:latest
+    container_name: nre-relay-b
+    environment:
+      NRE_AGENT_ID: relay-b
+      NRE_AGENT_NAME: relay-b
+      NRE_AGENT_TOKEN: token
+      NRE_MASTER_URL: http://perf-control:8080
+      NRE_HEARTBEAT_INTERVAL: ${HARNESS_AGENT_HEARTBEAT_INTERVAL:-30s}
+      NRE_DATA_DIR: /data
+      NRE_PPROF_ADDR: ${HARNESS_RELAY_B_PPROF_ADDR:-}
+    depends_on:
+      perf:
+        condition: service_healthy
+      agent-a:
+        condition: service_started
+      backend-b:
+        condition: service_started
+    cap_add:
+      - NET_ADMIN
+      - SYS_PTRACE
+      - SYS_ADMIN
+    security_opt:
+      - seccomp:unconfined
+    tmpfs:
+      - /data
+    networks:
+      control:
+        ipv4_address: 172.29.0.11
+      a_relay:
+        ipv4_address: 172.29.2.11
+        aliases:
+          - relay-b-a-link
+      b_local:
+        ipv4_address: 172.29.3.11
+
+  agent-b:
+    image: nre-agent-perf:latest
+    container_name: nre-agent-b
+    environment:
+      NRE_AGENT_ID: agent-b
+      NRE_AGENT_NAME: agent-b
+      NRE_AGENT_TOKEN: token
+      NRE_MASTER_URL: http://perf-control:8080
+      NRE_HEARTBEAT_INTERVAL: ${HARNESS_AGENT_HEARTBEAT_INTERVAL:-30s}
+      NRE_DATA_DIR: /data
+    depends_on:
+      perf:
+        condition: service_healthy
+      relay-b:
+        condition: service_started
+      backend-b:
+        condition: service_started
+    tmpfs:
+      - /data
+    networks:
+      control:
+        ipv4_address: 172.29.0.12
+        aliases:
+          - agent-b-control
+      b_local:
+        ipv4_address: 172.29.3.12
+        aliases:
+          - agent-b-local
+
+networks:
+  control:
+    name: nre-relay-perf-control
+    ipam:
+      config:
+        - subnet: 172.29.0.0/24
+  cli_a:
+    name: nre-relay-perf-cli-a
+    ipam:
+      config:
+        - subnet: 172.29.1.0/24
+  a_relay:
+    name: nre-relay-perf-a-relay
+    ipam:
+      config:
+        - subnet: 172.29.2.0/24
+  b_local:
+    name: nre-relay-perf-b-local
+    ipam:
+      config:
+        - subnet: 172.29.3.0/24

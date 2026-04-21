@@ -1,0 +1,19 @@
+FROM golang:1.26.2-trixie AS builder
+
+WORKDIR /src/go-agent
+COPY go-agent/go.mod go-agent/go.sum ./
+RUN --mount=type=cache,target=/go/pkg/mod go mod download
+COPY go-agent/ ./
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg/mod \
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/nre-agent ./cmd/nre-agent
+
+FROM debian:trixie-slim
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates iproute2; \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /out/nre-agent /usr/local/bin/nre-agent
+ENTRYPOINT ["/usr/local/bin/nre-agent"]
