@@ -79,7 +79,7 @@ func (p *TCPProber) Diagnose(ctx context.Context, rule model.L4Rule, relayListen
 				if candidate.backendObservationKey != "" {
 					cache.ObserveBackendFailure(candidate.backendObservationKey)
 				}
-				cache.MarkFailure(candidate.address)
+				markDiagnosticAddressFailure(cache, rule.RelayChain, candidate.address)
 				samples = append(samples, FailureSample(attempt, candidate.backendLabel, err))
 				continue
 			}
@@ -88,7 +88,7 @@ func (p *TCPProber) Diagnose(ctx context.Context, rule model.L4Rule, relayListen
 			if candidate.backendObservationKey != "" {
 				cache.ObserveBackendSuccess(candidate.backendObservationKey, totalDuration, totalDuration, 0)
 			}
-			cache.MarkSuccess(candidate.address)
+			markDiagnosticAddressSuccess(cache, rule.RelayChain, candidate.address)
 			samples = append(samples, LatencySample(attempt, candidate.backendLabel, totalDuration, 0))
 		}
 	}
