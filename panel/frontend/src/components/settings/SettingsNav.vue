@@ -42,22 +42,24 @@ const tabs = [
   font-size: 0.8rem;
   color: var(--color-text-tertiary);
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.03em;
   font-weight: 600;
 }
 .settings-nav__item {
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  padding: 0.6rem 1.25rem;
+  padding: 0.55rem 1rem 0.55rem 0.875rem;
+  margin: 0 0.5rem;
   border: none;
   background: none;
   cursor: pointer;
   font-size: 0.9rem;
   color: var(--color-text-secondary);
+  border-radius: 8px;
   border-left: 3px solid transparent;
   transition: all 0.15s var(--ease-default);
-  width: 100%;
+  width: calc(100% - 1rem);
   text-align: left;
 }
 .settings-nav__item:hover {
@@ -65,7 +67,7 @@ const tabs = [
   background: var(--color-bg-subtle);
 }
 .settings-nav__item.active {
-  color: var(--color-text-primary);
+  color: var(--color-primary);
   font-weight: 600;
   border-left-color: var(--color-primary);
   background: var(--color-primary-subtle);
@@ -84,13 +86,18 @@ const tabs = [
   .settings-nav__label { display: none; }
   .settings-nav__item {
     padding: 0.75rem 1.25rem;
+    margin: 0;
+    width: auto;
     border-left: none;
+    border-radius: 0;
     border-bottom: 2px solid transparent;
     white-space: nowrap;
   }
   .settings-nav__item.active {
     border-left-color: transparent;
     border-bottom-color: var(--color-primary);
+    background: none;
+    color: var(--color-primary);
   }
 }
 </style>
