@@ -111,4 +111,35 @@ describe('RuleDiagnosticModal', () => {
     expect(wrapper.text()).not.toContain('综合性能')
     expect(wrapper.text()).not.toContain('原因:')
   })
+
+  it('shows resolved child candidates even when only one address is resolved', async () => {
+    const wrapper = mountModal({
+      task: buildTask('http', {}, [
+        {
+          backend: 'http://origin.example.test/healthz [127.0.0.1:8096]',
+          summary: {
+            sent: 1,
+            succeeded: 1,
+            failed: 0,
+            loss_rate: 0,
+            avg_latency_ms: 12,
+            min_latency_ms: 12,
+            max_latency_ms: 12,
+            quality: '极佳'
+          },
+          adaptive: {
+            preferred: true,
+            stability: 1,
+            latency_ms: 12,
+            performance_score: 0.92,
+            sustained_throughput_bps: 1024 * 1024
+          }
+        }
+      ])
+    })
+    await wrapper.get('.diagnostic-modal__section-title--toggle').trigger('click')
+
+    expect(wrapper.text()).toContain('已解析候选')
+    expect(wrapper.text()).toContain('127.0.0.1:8096')
+  })
 })

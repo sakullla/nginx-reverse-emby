@@ -285,7 +285,7 @@ func buildHTTPAdaptiveReports(reports []BackendReport, candidates []httpProbeCan
 			configured = configured[:idx]
 		}
 		children := configuredChildren[configured]
-		if len(children) <= 1 {
+		if len(children) == 0 {
 			isPreferred := configured == preferredConfigured
 			report.Adaptive = adaptiveSummaryFromObservation(configuredSummary[configured], isPreferred, preferredReason(isPreferred), adaptiveSummaryOptions{
 				includeThroughput:   true,

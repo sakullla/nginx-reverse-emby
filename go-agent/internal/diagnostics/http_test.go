@@ -363,6 +363,66 @@ func TestHTTPProberDiagnoseSplitsHostnameBackendsByResolvedAddress(t *testing.T)
 	}
 }
 
+func TestHTTPProberDiagnoseKeepsSingleResolvedAddressAsChildCandidate(t *testing.T) {
+	listener, err := net.Listen("tcp", "0.0.0.0:0")
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	defer listener.Close()
+
+	server := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusNoContent)
+		}),
+	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = server.Serve(listener)
+	}()
+	defer func() {
+		_ = server.Close()
+		<-done
+	}()
+
+	port := listener.Addr().(*net.TCPAddr).Port
+	cache := backends.NewCache(backends.Config{
+		Resolver: diagnosticResolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
+			if host != "echo.example.test" {
+				t.Fatalf("unexpected resolver host %q", host)
+			}
+			return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, nil
+		}),
+	})
+
+	prober := NewHTTPProber(HTTPProberConfig{
+		Attempts: 1,
+		Timeout:  time.Second,
+		Cache:    cache,
+	})
+	report, err := prober.Diagnose(context.Background(), model.HTTPRule{
+		ID:          32,
+		FrontendURL: "https://edge.example.test",
+		BackendURL:  fmt.Sprintf("http://echo.example.test:%d/healthz", port),
+	}, nil)
+	if err != nil {
+		t.Fatalf("Diagnose() error = %v", err)
+	}
+
+	if len(report.Backends) != 1 {
+		t.Fatalf("Backends = %+v", report.Backends)
+	}
+	if report.Backends[0].Backend != fmt.Sprintf("http://echo.example.test:%d/healthz", port) {
+		t.Fatalf("parent backend = %+v", report.Backends[0])
+	}
+	if len(report.Backends[0].Children) != 1 {
+		t.Fatalf("children = %+v", report.Backends[0].Children)
+	}
+	if report.Backends[0].Children[0].Backend != fmt.Sprintf("http://echo.example.test:%d/healthz [127.0.0.1:%d]", port, port) {
+		t.Fatalf("child backend = %+v", report.Backends[0].Children[0])
+	}
+}
+
 func TestHTTPProberProbeCandidateLearnsQualifiedThroughputFromBodyTransfer(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(900 * time.Millisecond)
