@@ -1048,6 +1048,84 @@ func TestServerCloseStopsActiveRelayConnections(t *testing.T) {
 	close(backendRelease)
 }
 
+func TestServerOpenUpstreamDefersHostnameResolutionToLastHop(t *testing.T) {
+	backendAddr, stopBackend := startTCPEchoServer(t)
+	defer stopBackend()
+
+	_, port, err := net.SplitHostPort(backendAddr)
+	if err != nil {
+		t.Fatalf("SplitHostPort() error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	server := &Server{
+		ctx: ctx,
+		finalHopSelector: newFinalHopSelector(finalHopSelectorConfig{
+			Resolver: relayResolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
+				if host != "deferred.example" {
+					t.Fatalf("unexpected host %q", host)
+				}
+				return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, nil
+			}),
+		}),
+	}
+
+	conn, err := server.openUpstream("tcp", net.JoinHostPort("deferred.example", port), nil, DialOptions{})
+	if err != nil {
+		t.Fatalf("openUpstream() error = %v", err)
+	}
+	defer conn.Close()
+
+	assertRoundTrip(t, conn, []byte("last-hop-dns"))
+}
+
+func TestServerOpenUDPPeerDefersHostnameResolutionToLastHop(t *testing.T) {
+	backendAddr, stopBackend := startUDPEchoServer(t)
+	defer stopBackend()
+
+	_, port, err := net.SplitHostPort(backendAddr)
+	if err != nil {
+		t.Fatalf("SplitHostPort() error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	server := &Server{
+		ctx: ctx,
+		finalHopSelector: newFinalHopSelector(finalHopSelectorConfig{
+			Resolver: relayResolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
+				if host != "deferred.example" {
+					t.Fatalf("unexpected host %q", host)
+				}
+				return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, nil
+			}),
+		}),
+	}
+
+	peer, err := server.openUDPPeer(net.JoinHostPort("deferred.example", port), nil)
+	if err != nil {
+		t.Fatalf("openUDPPeer() error = %v", err)
+	}
+	defer peer.Close()
+
+	if err := peer.SetReadDeadline(time.Now().Add(200 * time.Millisecond)); err != nil {
+		t.Fatalf("SetReadDeadline() error = %v", err)
+	}
+	if err := peer.WritePacket([]byte("udp-last-hop-dns")); err != nil {
+		t.Fatalf("WritePacket() error = %v", err)
+	}
+	payload, err := peer.ReadPacket()
+	if err != nil {
+		t.Fatalf("ReadPacket() error = %v", err)
+	}
+	if string(payload) != "udp-last-hop-dns" {
+		t.Fatalf("payload = %q", payload)
+	}
+}
+
 type fakeTLSMaterialProvider struct {
 	mu          sync.RWMutex
 	serverCerts map[int]tls.Certificate

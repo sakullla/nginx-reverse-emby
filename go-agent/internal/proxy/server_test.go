@@ -619,6 +619,90 @@ func TestRouteEntryCandidatesKeepBackoffBeforeLatencyPreference(t *testing.T) {
 	}
 }
 
+func TestRouteEntryCandidatesRelayChainPreservesConfiguredHostname(t *testing.T) {
+	resolverCalls := 0
+	cache := backends.NewCache(backends.Config{
+		Resolver: resolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
+			resolverCalls++
+			return nil, fmt.Errorf("unexpected resolve %q", host)
+		}),
+	})
+
+	target, err := url.Parse("https://relay-target.example:9443")
+	if err != nil {
+		t.Fatalf("url.Parse() error = %v", err)
+	}
+
+	entry := &routeEntry{
+		rule: model.HTTPRule{
+			FrontendURL: "https://frontend.example",
+			RelayChain:  []int{101},
+		},
+		backends: []httpBackend{{
+			target:      target,
+			backendHost: normalizeURLAuthority(target),
+		}},
+		backendCache:   cache,
+		selectionScope: "https://frontend.example",
+	}
+
+	candidates, err := entry.candidates(context.Background())
+	if err != nil {
+		t.Fatalf("candidates() error = %v", err)
+	}
+	if resolverCalls != 0 {
+		t.Fatalf("resolver called %d times", resolverCalls)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("candidates = %+v", candidates)
+	}
+	if got := candidates[0].dialAddress; got != "relay-target.example:9443" {
+		t.Fatalf("dialAddress = %q", got)
+	}
+}
+
+func TestRouteEntryCandidatesRelayChainUsesDefaultHTTPSPortWithoutResolving(t *testing.T) {
+	resolverCalls := 0
+	cache := backends.NewCache(backends.Config{
+		Resolver: resolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
+			resolverCalls++
+			return nil, fmt.Errorf("unexpected resolve %q", host)
+		}),
+	})
+
+	target, err := url.Parse("https://relay-target.example")
+	if err != nil {
+		t.Fatalf("url.Parse() error = %v", err)
+	}
+
+	entry := &routeEntry{
+		rule: model.HTTPRule{
+			FrontendURL: "https://frontend.example",
+			RelayChain:  []int{101},
+		},
+		backends: []httpBackend{{
+			target:      target,
+			backendHost: normalizeURLAuthority(target),
+		}},
+		backendCache:   cache,
+		selectionScope: "https://frontend.example",
+	}
+
+	candidates, err := entry.candidates(context.Background())
+	if err != nil {
+		t.Fatalf("candidates() error = %v", err)
+	}
+	if resolverCalls != 0 {
+		t.Fatalf("resolver called %d times", resolverCalls)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("candidates = %+v", candidates)
+	}
+	if got := candidates[0].dialAddress; got != "relay-target.example:443" {
+		t.Fatalf("dialAddress = %q", got)
+	}
+}
+
 func TestRouteEntryServeHTTPRecordsSuccessfulLatencyObservation(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(20 * time.Millisecond)
@@ -1987,6 +2071,98 @@ func TestStartServesHTTPRulesThroughRelayChain(t *testing.T) {
 	}
 }
 
+func TestStartServesHostnameBackendThroughRealRelayRuntime(t *testing.T) {
+	var receivedHost string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedHost = r.Host
+		_, _ = w.Write([]byte("relay-hostname-ok"))
+	}))
+	defer backend.Close()
+
+	backendURL, err := url.Parse(backend.URL)
+	if err != nil {
+		t.Fatalf("failed to parse backend URL: %v", err)
+	}
+
+	relayCert := mustIssueProxyTLSCertificate(t, "relay.internal.test")
+	provider := &testRuntimeMaterialProvider{
+		serverCertificates: map[int]tls.Certificate{
+			410: relayCert,
+		},
+	}
+	certificateID := 410
+	relayListener := model.RelayListener{
+		ID:            41,
+		AgentID:       "relay-agent",
+		Name:          "relay-hop",
+		ListenHost:    "127.0.0.1",
+		BindHosts:     []string{"127.0.0.1"},
+		ListenPort:    pickFreePort(t),
+		PublicHost:    "127.0.0.1",
+		PublicPort:    0,
+		Enabled:       true,
+		CertificateID: &certificateID,
+		TLSMode:       "pin_only",
+		PinSet: []model.RelayPin{{
+			Type:  "sha256",
+			Value: mustSPKIPin(t, relayCert),
+		}},
+	}
+	relayServer, err := relay.Start(context.Background(), []relay.Listener{relayListener}, provider)
+	if err != nil {
+		t.Fatalf("failed to start relay runtime: %v", err)
+	}
+	defer relayServer.Close()
+
+	cache := backends.NewCache(backends.Config{
+		Resolver: resolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
+			t.Fatalf("origin runtime unexpectedly resolved backend host %q", host)
+			return nil, fmt.Errorf("unexpected resolver host %q", host)
+		}),
+	})
+	frontendPort := pickFreePort(t)
+	runtime, err := StartWithResources(
+		context.Background(),
+		[]model.HTTPRule{{
+			FrontendURL: fmt.Sprintf("http://edge.example.test:%d", frontendPort),
+			BackendURL:  fmt.Sprintf("http://localhost:%s", backendURL.Port()),
+			RelayChain:  []int{relayListener.ID},
+		}},
+		[]model.RelayListener{relayListener},
+		Providers{Relay: provider},
+		cache,
+		nil,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("failed to start relay-backed runtime: %v", err)
+	}
+	defer runtime.Close()
+
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/relay-hostname", frontendPort), nil)
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+	req.Host = fmt.Sprintf("edge.example.test:%d", frontendPort)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("relay-backed request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read proxied body: %v", err)
+	}
+	if got := string(body); got != "relay-hostname-ok" {
+		t.Fatalf("unexpected body %q", got)
+	}
+	if got := receivedHost; got != "localhost:"+backendURL.Port() {
+		t.Fatalf("backend host header = %q, want %q", got, "localhost:"+backendURL.Port())
+	}
+}
+
 func TestStartServesHTTPRulesThroughRelayChainWithObfsMode(t *testing.T) {
 	frontendPort := pickFreePort(t)
 	backendPort := pickFreePort(t)
@@ -2377,13 +2553,21 @@ func mustParseCertificate(t *testing.T, cert tls.Certificate) *x509.Certificate 
 	return parsed
 }
 
-type testRuntimeMaterialProvider struct{}
+type testRuntimeMaterialProvider struct {
+	serverCertificates map[int]tls.Certificate
+}
 
 func (p *testRuntimeMaterialProvider) ServerCertificateForHost(_ context.Context, host string) (*tls.Certificate, error) {
 	return nil, fmt.Errorf("no server certificate available for host %q", host)
 }
 
 func (p *testRuntimeMaterialProvider) ServerCertificate(_ context.Context, certificateID int) (*tls.Certificate, error) {
+	if p != nil && p.serverCertificates != nil {
+		if cert, ok := p.serverCertificates[certificateID]; ok {
+			copyCert := cert
+			return &copyCert, nil
+		}
+	}
 	return nil, fmt.Errorf("server certificate %d not available in relay test provider", certificateID)
 }
 

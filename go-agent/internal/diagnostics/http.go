@@ -107,7 +107,7 @@ func (p *HTTPProber) probeCandidate(ctx context.Context, cache *backends.Cache, 
 		if candidate.backendObservationKey != "" {
 			cache.ObserveBackendFailure(candidate.backendObservationKey)
 		}
-		cache.MarkFailure(candidate.dialAddress)
+		markDiagnosticAddressFailureAll(rule.RelayChain, candidate.dialAddress, persistentDiagnosticAddressCaches(cache, p.cache, rule.RelayChain)...)
 		return FailureSample(attempt, candidate.backendLabel, err)
 	}
 	defer resp.Body.Close()
@@ -117,7 +117,7 @@ func (p *HTTPProber) probeCandidate(ctx context.Context, cache *backends.Cache, 
 		if candidate.backendObservationKey != "" {
 			cache.ObserveBackendFailure(candidate.backendObservationKey)
 		}
-		cache.MarkFailure(candidate.dialAddress)
+		markDiagnosticAddressFailureAll(rule.RelayChain, candidate.dialAddress, persistentDiagnosticAddressCaches(cache, p.cache, rule.RelayChain)...)
 		return FailureSample(attempt, candidate.backendLabel, err)
 	}
 	totalDuration := time.Since(start)
@@ -128,7 +128,7 @@ func (p *HTTPProber) probeCandidate(ctx context.Context, cache *backends.Cache, 
 	if candidate.backendObservationKey != "" {
 		cache.ObserveBackendSuccess(candidate.backendObservationKey, headerLatency, transferDuration, written)
 	}
-	cache.ObserveTransferSuccess(candidate.dialAddress, headerLatency, transferDuration, written)
+	observeDiagnosticAddressSuccessAll(rule.RelayChain, candidate.dialAddress, headerLatency, transferDuration, written, persistentDiagnosticAddressCaches(cache, p.cache, rule.RelayChain)...)
 
 	return LatencySample(attempt, candidate.backendLabel, totalDuration, resp.StatusCode)
 }
@@ -183,6 +183,26 @@ func httpCandidates(ctx context.Context, cache *backends.Cache, rule model.HTTPR
 			continue
 		}
 		target := parsed[indices[idx]]
+		if len(rule.RelayChain) > 0 {
+			// Preserve the configured host for relay chains so the final hop resolves DNS.
+			dialAddress := httpProbeTargetAddress(target)
+			if cache.IsInBackoff(backends.RelayBackoffKey(rule.RelayChain, dialAddress)) {
+				continue
+			}
+			clone := *target
+			out = append(out, httpProbeCandidate{
+				targetURL:             &clone,
+				backendLabel:          clone.String(),
+				dialAddress:           dialAddress,
+				backendObservationKey: backends.BackendObservationKey(scope, backends.StableBackendID(clone.String())),
+				configuredURL:         clone.String(),
+				resolvedCandidates: []httpResolvedCandidate{{
+					label:       clone.String(),
+					dialAddress: dialAddress,
+				}},
+			})
+			continue
+		}
 		endpoint := backends.Endpoint{
 			Host: target.Hostname(),
 			Port: httpPortWithDefault(target),

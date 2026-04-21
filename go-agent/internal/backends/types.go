@@ -3,6 +3,7 @@ package backends
 import (
 	"context"
 	"net"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -30,6 +31,14 @@ func BackendObservationKey(scope string, backendID string) string {
 
 func StableBackendID(value string) string {
 	return strings.TrimSpace(strings.ToLower(value))
+}
+
+func RelayBackoffKey(chain []int, addr string) string {
+	parts := make([]string, len(chain))
+	for i, id := range chain {
+		parts[i] = strconv.Itoa(id)
+	}
+	return "relay|" + strings.Join(parts, "-") + "|" + addr
 }
 
 type Resolver interface {

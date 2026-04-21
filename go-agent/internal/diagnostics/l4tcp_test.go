@@ -2,6 +2,7 @@ package diagnostics
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"strconv"
 	"testing"
@@ -150,6 +151,43 @@ func TestTCPProberDiagnoseUsesRelayChainWhenConfigured(t *testing.T) {
 	}
 	if provider.TrustedCAPoolCalls() == 0 {
 		t.Fatal("expected relay TLS material provider to be used")
+	}
+}
+
+func TestTCPProberDiagnoseRelayBackoffPersistsAcrossRuns(t *testing.T) {
+	cache := backends.NewCache(backends.Config{})
+	provider := newDiagnosticTLSMaterialProvider()
+	relayListener := newDiagnosticRelayListener(t, provider, 52, "relay.internal.test")
+	stopRelay := startDiagnosticRelayRuntime(t, relayListener, provider)
+	defer stopRelay()
+
+	prober := NewTCPProber(TCPProberConfig{
+		Attempts:      1,
+		Timeout:       100 * time.Millisecond,
+		Cache:         cache,
+		RelayProvider: provider,
+	})
+	rule := model.L4Rule{
+		ID:           25,
+		Protocol:     "tcp",
+		ListenHost:   "0.0.0.0",
+		ListenPort:   9502,
+		UpstreamHost: "127.0.0.1",
+		UpstreamPort: 1,
+		RelayChain:   []int{52},
+	}
+
+	report, err := prober.Diagnose(context.Background(), rule, []model.RelayListener{relayListener})
+	if err != nil {
+		t.Fatalf("first Diagnose() error = %v", err)
+	}
+	if report.Summary.Failed != 1 {
+		t.Fatalf("first Summary = %+v", report.Summary)
+	}
+
+	_, err = prober.Diagnose(context.Background(), rule, []model.RelayListener{relayListener})
+	if err == nil || err.Error() != "no healthy backend candidates for 0.0.0.0:9502" {
+		t.Fatalf("second Diagnose() error = %v", err)
 	}
 }
 
@@ -527,6 +565,68 @@ func TestTCPCandidatesAssignDistinctObservationKeysToDuplicateBackends(t *testin
 	}
 	if candidates[0].backendObservationKey == candidates[1].backendObservationKey {
 		t.Fatalf("duplicate backends must not share observation keys: %+v", candidates)
+	}
+}
+
+func TestTCPCandidatesRelayChainPreservesConfiguredHostname(t *testing.T) {
+	resolverCalls := 0
+	cache := backends.NewCache(backends.Config{
+		Resolver: diagnosticResolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
+			resolverCalls++
+			return nil, fmt.Errorf("unexpected resolve %q", host)
+		}),
+	})
+
+	rule := model.L4Rule{
+		ID:         2,
+		Protocol:   "tcp",
+		ListenHost: "0.0.0.0",
+		ListenPort: 9550,
+		RelayChain: []int{302},
+		Backends: []model.L4Backend{{
+			Host: "relay-target.example",
+			Port: 9001,
+		}},
+	}
+
+	candidates, err := tcpCandidates(context.Background(), cache, rule)
+	if err != nil {
+		t.Fatalf("tcpCandidates() error = %v", err)
+	}
+	if resolverCalls != 0 {
+		t.Fatalf("resolver called %d times", resolverCalls)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("candidates = %+v", candidates)
+	}
+	if got := candidates[0].address; got != "relay-target.example:9001" {
+		t.Fatalf("address = %q", got)
+	}
+}
+
+func TestTCPCandidatesRelayChainHonorsScopedBackoffKey(t *testing.T) {
+	cache := backends.NewCache(backends.Config{})
+
+	rule := model.L4Rule{
+		ID:         2,
+		Protocol:   "tcp",
+		ListenHost: "0.0.0.0",
+		ListenPort: 9550,
+		RelayChain: []int{302},
+		Backends: []model.L4Backend{{
+			Host: "relay-target.example",
+			Port: 9001,
+		}},
+	}
+
+	cache.MarkFailure(backends.RelayBackoffKey(rule.RelayChain, "relay-target.example:9001"))
+
+	candidates, err := tcpCandidates(context.Background(), cache, rule)
+	if err != nil {
+		t.Fatalf("tcpCandidates() error = %v", err)
+	}
+	if len(candidates) != 0 {
+		t.Fatalf("candidates = %+v", candidates)
 	}
 }
 

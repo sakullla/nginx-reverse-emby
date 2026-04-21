@@ -79,7 +79,7 @@ func (p *TCPProber) Diagnose(ctx context.Context, rule model.L4Rule, relayListen
 				if candidate.backendObservationKey != "" {
 					cache.ObserveBackendFailure(candidate.backendObservationKey)
 				}
-				cache.MarkFailure(candidate.address)
+				markDiagnosticAddressFailureAll(rule.RelayChain, candidate.address, persistentDiagnosticAddressCaches(cache, p.cache, rule.RelayChain)...)
 				samples = append(samples, FailureSample(attempt, candidate.backendLabel, err))
 				continue
 			}
@@ -88,7 +88,7 @@ func (p *TCPProber) Diagnose(ctx context.Context, rule model.L4Rule, relayListen
 			if candidate.backendObservationKey != "" {
 				cache.ObserveBackendSuccess(candidate.backendObservationKey, totalDuration, totalDuration, 0)
 			}
-			cache.MarkSuccess(candidate.address)
+			markDiagnosticAddressSuccessAll(rule.RelayChain, candidate.address, persistentDiagnosticAddressCaches(cache, p.cache, rule.RelayChain)...)
 			samples = append(samples, LatencySample(attempt, candidate.backendLabel, totalDuration, 0))
 		}
 	}
@@ -142,6 +142,19 @@ func tcpCandidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule
 		backendIndex := indexes[0]
 		indexesByID[placeholder.Address] = indexes[1:]
 		backend := rawBackends[backendIndex]
+		if len(rule.RelayChain) > 0 {
+			// Preserve the configured host for relay chains so the final hop resolves DNS.
+			address := net.JoinHostPort(backend.Host, strconv.Itoa(backend.Port))
+			if cache.IsInBackoff(backends.RelayBackoffKey(rule.RelayChain, address)) {
+				continue
+			}
+			out = append(out, tcpProbeCandidate{
+				address:               address,
+				backendLabel:          tcpProbeBackendLabel(address, placeholder.Address, backendIndex, duplicateCounts[placeholder.Address]),
+				backendObservationKey: tcpProbeObservationKey(scope, placeholder.Address, backendIndex, duplicateCounts[placeholder.Address]),
+			})
+			continue
+		}
 		resolved, err := cache.Resolve(ctx, backends.Endpoint{
 			Host: backend.Host,
 			Port: backend.Port,

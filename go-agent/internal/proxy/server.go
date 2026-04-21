@@ -307,7 +307,11 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 				return err
 			}
 			actualDialAddress := dialAddressFromContext(attemptReq.Context(), candidate.dialAddress)
-			if e.backendCache.IsInBackoff(actualDialAddress) {
+			backoffAddr := actualDialAddress
+			if len(e.rule.RelayChain) > 0 {
+				backoffAddr = backends.RelayBackoffKey(e.rule.RelayChain, actualDialAddress)
+			}
+			if e.backendCache.IsInBackoff(backoffAddr) {
 				break
 			}
 			start := time.Now()
@@ -323,7 +327,7 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 				if candidate.backendObservationKey != "" {
 					e.backendCache.ObserveBackendFailure(candidate.backendObservationKey)
 				}
-				e.backendCache.MarkFailure(actualDialAddress)
+				e.backendCache.MarkFailure(backoffAddr)
 				break
 			}
 			headerLatency := time.Since(start)
@@ -334,7 +338,7 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 					if candidate.backendObservationKey != "" {
 						e.backendCache.ObserveBackendFailure(candidate.backendObservationKey)
 					}
-					e.backendCache.MarkFailure(actualDialAddress)
+					e.backendCache.MarkFailure(backoffAddr)
 					log.Printf("[proxy] modify response error for %s: %v", e.rule.FrontendURL, err)
 					return err
 				}
@@ -344,10 +348,10 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 					if candidate.backendObservationKey != "" {
 						e.backendCache.ObserveBackendFailure(candidate.backendObservationKey)
 					}
-					e.backendCache.MarkFailure(actualDialAddress)
+					e.backendCache.MarkFailure(backoffAddr)
 					return err
 				}
-				e.observeSuccessfulBackend(candidate.backendObservationKey, actualDialAddress, headerLatency, time.Since(start), 0)
+				e.observeSuccessfulBackend(candidate.backendObservationKey, backoffAddr, headerLatency, time.Since(start), 0)
 				return nil
 			}
 			if state, ok := e.shouldResumeResponse(attemptReq, resp); ok {
@@ -357,11 +361,11 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 						if candidate.backendObservationKey != "" {
 							e.backendCache.ObserveBackendFailure(candidate.backendObservationKey)
 						}
-						e.backendCache.MarkFailure(actualDialAddress)
+						e.backendCache.MarkFailure(backoffAddr)
 					}
 					return err
 				}
-				e.observeSuccessfulBackend(candidate.backendObservationKey, actualDialAddress, headerLatency, time.Since(start), written)
+				e.observeSuccessfulBackend(candidate.backendObservationKey, backoffAddr, headerLatency, time.Since(start), written)
 				return nil
 			}
 			written, err := copyResponse(w, resp)
@@ -370,11 +374,11 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 					if candidate.backendObservationKey != "" {
 						e.backendCache.ObserveBackendFailure(candidate.backendObservationKey)
 					}
-					e.backendCache.MarkFailure(actualDialAddress)
+					e.backendCache.MarkFailure(backoffAddr)
 				}
 				return newStartedResponseError(err)
 			}
-			e.observeSuccessfulBackend(candidate.backendObservationKey, actualDialAddress, headerLatency, time.Since(start), written)
+			e.observeSuccessfulBackend(candidate.backendObservationKey, backoffAddr, headerLatency, time.Since(start), written)
 			return nil
 		}
 	}
@@ -454,6 +458,20 @@ func (e *routeEntry) candidates(ctx context.Context) ([]httpCandidate, error) {
 		indexesByID[ordered.Address] = indexes[1:]
 		backend := e.backends[backendIndex]
 		backendObservationKey := backends.BackendObservationKey(e.selectionScope, backends.StableBackendID(backend.target.String()))
+		if len(e.rule.RelayChain) > 0 {
+			// Preserve the configured host for relay chains so the final hop resolves DNS.
+			dialAddress := httpBackendDialAddress(backend.target)
+			if e.backendCache.IsInBackoff(backends.RelayBackoffKey(e.rule.RelayChain, dialAddress)) {
+				continue
+			}
+			out = append(out, httpCandidate{
+				target:                cloneURL(backend.target),
+				dialAddress:           dialAddress,
+				backendHost:           backend.backendHost,
+				backendObservationKey: backendObservationKey,
+			})
+			continue
+		}
 		endpoint := backends.Endpoint{
 			Host: backend.target.Hostname(),
 			Port: portWithDefault(backend.target),
@@ -1162,6 +1180,13 @@ func addressWithDefaultPort(target *url.URL) string {
 		return target.Host
 	}
 	return net.JoinHostPort(target.Hostname(), strconv.Itoa(defaultPort(target.Scheme)))
+}
+
+func httpBackendDialAddress(target *url.URL) string {
+	if target.Port() != "" {
+		return target.Host
+	}
+	return net.JoinHostPort(target.Hostname(), strconv.Itoa(portWithDefault(target)))
 }
 
 func mapValues(values map[int]model.RelayListener) []model.RelayListener {
