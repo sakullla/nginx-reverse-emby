@@ -14,7 +14,7 @@
             :class="{ active: currentTheme === theme.id }"
             @click="setTheme(theme.id)"
           >
-            <div class="theme-card__preview" :class="'theme-preview--' + theme.id"></div>
+            <span class="theme-card__icon">{{ themeIcons[theme.id] || '✨' }}</span>
             <span class="theme-card__label">{{ theme.label }}</span>
             <div v-if="currentTheme === theme.id" class="theme-card__indicator"></div>
           </button>
@@ -50,6 +50,15 @@ import { fetchSystemInfo } from '../../api'
 
 const { currentThemeId: currentTheme, setTheme, themes } = useTheme()
 const systemInfo = ref(null)
+
+const themeIcons = {
+  'light': '🌸',
+  'dark': '🌙',
+  'auto': '☀️',
+  '二次元': '🌸',
+  '晴空': '☀️',
+  '暗夜': '🌙'
+}
 
 onMounted(() => {
   fetchSystemInfo().then(i => { systemInfo.value = i }).catch(() => {})
@@ -99,12 +108,7 @@ onMounted(() => {
   box-shadow: 0 2px 8px color-mix(in srgb, var(--color-primary) 15%, transparent);
   transform: translateY(-1px);
 }
-.theme-card__preview {
-  width: 100%;
-  height: 32px;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--color-border-subtle);
-}
+.theme-card__icon { font-size: 1.6rem; }
 .theme-card__label { font-size: 0.875rem; font-weight: 500; color: var(--color-text-primary); }
 .theme-card__indicator {
   width: 20px;
@@ -112,9 +116,6 @@ onMounted(() => {
   border-radius: 2px;
   background: var(--color-primary);
 }
-.theme-preview--light { background: linear-gradient(135deg, #fff 50%, #f5f5f5 50%); }
-.theme-preview--dark { background: linear-gradient(135deg, #1a1a2e 50%, #16213e 50%); }
-.theme-preview--auto { background: linear-gradient(135deg, #fff 50%, #1a1a2e 50%); }
 
 .info-row {
   display: flex;
