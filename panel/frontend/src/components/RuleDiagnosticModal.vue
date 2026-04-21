@@ -121,6 +121,26 @@
                       <span class="diagnostic-factor__label">延迟</span>
                       <strong class="diagnostic-factor__value">{{ backend.adaptive?.latency_ms ?? backend.summary?.avg_latency_ms ?? 0 }} ms</strong>
                     </div>
+                    <div class="diagnostic-factor">
+                      <span class="diagnostic-factor__label">近24h成功</span>
+                      <strong class="diagnostic-factor__value">{{ backend.adaptive?.recent_succeeded ?? 0 }}</strong>
+                    </div>
+                    <div class="diagnostic-factor">
+                      <span class="diagnostic-factor__label">近24h失败</span>
+                      <strong class="diagnostic-factor__value">{{ backend.adaptive?.recent_failed ?? 0 }}</strong>
+                    </div>
+                    <div class="diagnostic-factor">
+                      <span class="diagnostic-factor__label">优选状态</span>
+                      <strong class="diagnostic-factor__value">{{ adaptiveStateLabel(backend.adaptive?.state) }}</strong>
+                    </div>
+                    <div class="diagnostic-factor">
+                      <span class="diagnostic-factor__label">采样置信</span>
+                      <strong class="diagnostic-factor__value">{{ formatPercent(backend.adaptive?.sample_confidence) }}</strong>
+                    </div>
+                    <div class="diagnostic-factor">
+                      <span class="diagnostic-factor__label">慢启动</span>
+                      <strong class="diagnostic-factor__value">{{ slowStartLabel(backend.adaptive?.slow_start_active) }}</strong>
+                    </div>
                     <div v-if="showHTTPAdaptiveMetrics" class="diagnostic-factor">
                       <span class="diagnostic-factor__label">持续吞吐</span>
                       <strong class="diagnostic-factor__value">{{ formatThroughput(backend.adaptive?.sustained_throughput_bps) }}</strong>
@@ -141,22 +161,26 @@
                   <div v-if="showHTTPAdaptiveMetrics && backend.adaptive?.reason" class="diagnostic-backend-item__reason">
                     原因: {{ reasonLabel(backend.adaptive?.reason) }}
                   </div>
-                </div>
-              </Transition>
-
-              <div v-if="backend.children?.length" class="diagnostic-backend-item__children">
-                <div class="diagnostic-backend-item__child-title">已解析候选</div>
-                <div class="diagnostic-child-list">
-                  <div v-for="(child, idx) in backend.children" :key="child.backend" class="diagnostic-child-item">
-                    <code class="diagnostic-child-item__name">{{ child.backend }}</code>
-                    <span v-if="child.adaptive?.preferred" class="diagnostic-backend-item__preferred">当前优选</span>
-                    <span class="diagnostic-child-item__metric">延迟 {{ child.adaptive?.latency_ms ?? child.summary?.avg_latency_ms ?? 0 }} ms</span>
-                    <span class="diagnostic-child-item__metric">稳定性 {{ formatPercent(child.adaptive?.stability) }}</span>
-                    <span v-if="showHTTPAdaptiveMetrics" class="diagnostic-child-item__metric">综合性能 {{ formatScore(child.adaptive?.performance_score) }}</span>
-                    <span v-if="showHTTPAdaptiveMetrics" class="diagnostic-child-item__metric">持续吞吐 {{ formatThroughput(child.adaptive?.sustained_throughput_bps) }}</span>
+                  <div v-if="backend.children?.length" class="diagnostic-backend-item__children">
+                    <div class="diagnostic-backend-item__child-title">已解析候选</div>
+                    <div class="diagnostic-child-list">
+                      <div v-for="(child, idx) in backend.children" :key="child.backend" class="diagnostic-child-item">
+                        <code class="diagnostic-child-item__name">{{ child.backend }}</code>
+                        <span v-if="child.adaptive?.preferred" class="diagnostic-backend-item__preferred">当前优选</span>
+                        <span class="diagnostic-child-item__metric">延迟 {{ child.adaptive?.latency_ms ?? child.summary?.avg_latency_ms ?? 0 }} ms</span>
+                        <span class="diagnostic-child-item__metric">稳定性 {{ formatPercent(child.adaptive?.stability) }}</span>
+                        <span class="diagnostic-child-item__metric">近24h成功 {{ child.adaptive?.recent_succeeded ?? 0 }}</span>
+                        <span class="diagnostic-child-item__metric">近24h失败 {{ child.adaptive?.recent_failed ?? 0 }}</span>
+                        <span class="diagnostic-child-item__metric">优选状态 {{ adaptiveStateLabel(child.adaptive?.state) }}</span>
+                        <span class="diagnostic-child-item__metric">采样置信 {{ formatPercent(child.adaptive?.sample_confidence) }}</span>
+                        <span class="diagnostic-child-item__metric">慢启动 {{ slowStartLabel(child.adaptive?.slow_start_active) }}</span>
+                        <span v-if="showHTTPAdaptiveMetrics" class="diagnostic-child-item__metric">综合性能 {{ formatScore(child.adaptive?.performance_score) }}</span>
+                        <span v-if="showHTTPAdaptiveMetrics" class="diagnostic-child-item__metric">持续吞吐 {{ formatThroughput(child.adaptive?.sustained_throughput_bps) }}</span>
+                      </div>
+                    </div>
                   </div>
                 </div>
-              </div>
+              </Transition>
             </article>
           </div>
           </Transition>
