@@ -14,7 +14,7 @@
             :class="{ active: currentTheme === theme.id }"
             @click="setTheme(theme.id)"
           >
-            <span class="theme-card__icon">{{ themeIcons[theme.id] || '✨' }}</span>
+            <span class="theme-card__icon">{{ theme.emoji || '✨' }}</span>
             <span class="theme-card__label">{{ theme.label }}</span>
             <div v-if="currentTheme === theme.id" class="theme-card__indicator"></div>
           </button>
@@ -50,15 +50,6 @@ import { fetchSystemInfo } from '../../api'
 
 const { currentThemeId: currentTheme, setTheme, themes } = useTheme()
 const systemInfo = ref(null)
-
-const themeIcons = {
-  'light': '🌸',
-  'dark': '🌙',
-  'auto': '☀️',
-  '二次元': '🌸',
-  '晴空': '☀️',
-  '暗夜': '🌙'
-}
 
 onMounted(() => {
   fetchSystemInfo().then(i => { systemInfo.value = i }).catch(() => {})
