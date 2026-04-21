@@ -232,6 +232,57 @@ func TestTCPProberDiagnoseCollectsFiveSamplesPerBackend(t *testing.T) {
 	}
 }
 
+func TestTCPProberDiagnoseGroupsResolvedHostnameCandidatesUnderConfiguredBackend(t *testing.T) {
+	addr, _, stopTarget := startDiagnosticTCPTarget(t)
+	defer stopTarget()
+
+	_, port := splitDiagnosticTCPAddr(t, addr)
+	cache := backends.NewCache(backends.Config{
+		Resolver: diagnosticResolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
+			if host != "resolved.example" {
+				t.Fatalf("unexpected resolver host %q", host)
+			}
+			return []net.IPAddr{
+				{IP: net.ParseIP("127.0.0.1")},
+				{IP: net.ParseIP("127.0.0.2")},
+			}, nil
+		}),
+	})
+
+	prober := NewTCPProber(TCPProberConfig{
+		Attempts: 1,
+		Timeout:  time.Second,
+		Cache:    cache,
+	})
+	report, err := prober.Diagnose(context.Background(), model.L4Rule{
+		ID:           28,
+		Protocol:     "tcp",
+		ListenHost:   "0.0.0.0",
+		ListenPort:   9600,
+		UpstreamHost: "resolved.example",
+		UpstreamPort: port,
+	}, nil)
+	if err != nil {
+		t.Fatalf("Diagnose() error = %v", err)
+	}
+
+	if len(report.Backends) != 1 {
+		t.Fatalf("Backends = %+v", report.Backends)
+	}
+	if report.Backends[0].Backend != fmt.Sprintf("resolved.example:%d", port) {
+		t.Fatalf("parent backend = %+v", report.Backends[0])
+	}
+	if len(report.Backends[0].Children) < 2 {
+		t.Fatalf("children = %+v", report.Backends[0].Children)
+	}
+	if report.Backends[0].Children[0].Backend != fmt.Sprintf("127.0.0.1:%d", port) {
+		t.Fatalf("first child backend = %+v", report.Backends[0].Children[0])
+	}
+	if report.Backends[0].Children[1].Backend != fmt.Sprintf("127.0.0.2:%d", port) {
+		t.Fatalf("second child backend = %+v", report.Backends[0].Children[1])
+	}
+}
+
 func TestTCPProberDiagnoseRecordsPerBackendFailuresSeparately(t *testing.T) {
 	addr, _, stopTarget := startDiagnosticTCPTarget(t)
 	defer stopTarget()
