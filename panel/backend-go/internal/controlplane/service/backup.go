@@ -159,7 +159,7 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 		if key == "" {
 			key = strings.TrimSpace(item.ID)
 		}
-		if strings.TrimSpace(item.ID) == "" || strings.TrimSpace(item.Name) == "" {
+		if strings.TrimSpace(item.ID) == "" || strings.TrimSpace(item.Name) == "" || strings.TrimSpace(item.AgentToken) == "" {
 			result.addSkippedInvalid("agent", key, "agent id, name, and agent_token are required")
 			continue
 		}
@@ -173,6 +173,7 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 		}
 		result.addImported("agent", item.Name)
 	}
+	agentIDMap := previewAgentIDMap(bundle.Manifest, bundle.Agents, existingByName, existingByID, s.cfg)
 	knownAgentIDs, err := allKnownAgentIDs(ctx, s.cfg, s.store)
 	if err != nil {
 		return BackupImportResult{}, err
@@ -187,7 +188,12 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 	}
 	for _, item := range bundle.HTTPRules {
 		key := strings.TrimSpace(item.FrontendURL)
-		conflictKey := httpRuleConflictKey(item.AgentID, item.FrontendURL)
+		resolvedAgentID, ok := resolveAgentID(item.AgentID, agentIDMap, s.cfg)
+		if !ok {
+			result.addSkippedInvalid("http_rule", key, "http rule references unknown agent")
+			continue
+		}
+		conflictKey := httpRuleConflictKey(resolvedAgentID, item.FrontendURL)
 		if _, exists := existingHTTPKeys[conflictKey]; exists {
 			result.addSkippedConflict("http_rule", key, "frontend_url already exists")
 			continue
@@ -203,7 +209,13 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 		existingL4Keys[l4ConflictKey(row.AgentID, row.Protocol, row.ListenHost, row.ListenPort)] = struct{}{}
 	}
 	for _, item := range bundle.L4Rules {
+		resolvedAgentID, ok := resolveAgentID(item.AgentID, agentIDMap, s.cfg)
 		key := l4ConflictKey(item.AgentID, item.Protocol, item.ListenHost, item.ListenPort)
+		if !ok {
+			result.addSkippedInvalid("l4_rule", key, "l4 rule references unknown agent")
+			continue
+		}
+		key = l4ConflictKey(resolvedAgentID, item.Protocol, item.ListenHost, item.ListenPort)
 		if _, exists := existingL4Keys[key]; exists {
 			result.addSkippedConflict("l4_rule", key, "protocol/listen_host/listen_port already exists")
 			continue
@@ -219,7 +231,13 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 		existingRelayKeys[relayConflictKey(row.AgentID, row.Name)] = struct{}{}
 	}
 	for _, item := range bundle.RelayListeners {
+		resolvedAgentID, ok := resolveAgentID(item.AgentID, agentIDMap, s.cfg)
 		key := relayConflictKey(item.AgentID, item.Name)
+		if !ok {
+			result.addSkippedInvalid("relay_listener", key, "relay listener references unknown agent")
+			continue
+		}
+		key = relayConflictKey(resolvedAgentID, item.Name)
 		if _, exists := existingRelayKeys[key]; exists {
 			result.addSkippedConflict("relay_listener", key, "relay listener already exists")
 			continue
@@ -259,6 +277,40 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 		result.addImported("version_policy", key)
 	}
 	return result, nil
+}
+
+func previewAgentIDMap(manifest BackupManifest, agents []BackupAgent, existingByName map[string]storage.AgentRow, existingByID map[string]storage.AgentRow, cfg config.Config) map[string]string {
+	agentIDMap := map[string]string{}
+	for id := range existingByID {
+		agentIDMap[id] = id
+	}
+	if cfg.EnableLocalAgent && strings.TrimSpace(cfg.LocalAgentID) != "" {
+		agentIDMap[cfg.LocalAgentID] = cfg.LocalAgentID
+	}
+	for _, item := range agents {
+		if strings.TrimSpace(item.ID) == "" || strings.TrimSpace(item.Name) == "" || strings.TrimSpace(item.AgentToken) == "" {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(item.Mode), "local") && cfg.EnableLocalAgent {
+			agentIDMap[item.ID] = cfg.LocalAgentID
+			continue
+		}
+		if existingRow, ok := existingByName[item.Name]; ok {
+			agentIDMap[item.ID] = existingRow.ID
+			continue
+		}
+		if existingRow, ok := existingByID[item.ID]; ok {
+			agentIDMap[item.ID] = existingRow.ID
+			continue
+		}
+		if trimmed := strings.TrimSpace(item.ID); trimmed != "" {
+			agentIDMap[item.ID] = trimmed
+		}
+	}
+	if srcID := strings.TrimSpace(manifest.SourceLocalAgentID); srcID != "" && cfg.EnableLocalAgent {
+		agentIDMap[srcID] = cfg.LocalAgentID
+	}
+	return agentIDMap
 }
 
 func (s *backupService) Import(ctx context.Context, archive []byte) (BackupImportResult, error) {

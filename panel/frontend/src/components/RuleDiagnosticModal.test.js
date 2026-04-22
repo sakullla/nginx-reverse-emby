@@ -145,6 +145,7 @@ describe('RuleDiagnosticModal', () => {
       task: buildTask('http', {}, [
         {
           backend: 'http://origin.example.test/healthz [127.0.0.1:8096]',
+          address: '127.0.0.1:8096',
           summary: {
             sent: 1,
             succeeded: 1,
@@ -199,6 +200,7 @@ describe('RuleDiagnosticModal', () => {
             {
               attempt: 1,
               backend: 'http://origin.example.test/healthz [127.0.0.1:8096]',
+              address: '127.0.0.1:8096',
               success: true,
               latency_ms: 12
             }

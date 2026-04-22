@@ -75,7 +75,7 @@ type tlsTCPLogicalStream struct {
 	readErrSet        bool
 	writeClosed       bool
 
-	openResultCh chan error
+	openResultCh chan muxOpenResult
 }
 
 type tlsTCPReadChunk struct {
@@ -250,6 +250,38 @@ func (p *tlsTCPSessionPool) remove(key string, tunnel *tlsTCPTunnel) {
 }
 
 func dialTLSTCPMux(ctx context.Context, network, target string, chain []Hop, provider TLSMaterialProvider, options DialOptions) (net.Conn, error) {
+	conn, _, err := dialTLSTCPMuxWithResult(ctx, network, target, chain, provider, options)
+	return conn, err
+}
+
+func dialTLSTCPMuxWithResult(ctx context.Context, network, target string, chain []Hop, provider TLSMaterialProvider, options DialOptions) (net.Conn, DialResult, error) {
+	firstHop := chain[0]
+	sessionKey, err := tlsTCPSessionPoolKey(firstHop)
+	if err != nil {
+		return nil, DialResult{}, err
+	}
+
+	tunnel, release, err := relayTLSTCPSessionPool.getOrDial(ctx, sessionKey, func(dialCtx context.Context) (*tlsTCPTunnel, error) {
+		return dialNewTLSTCPTunnel(dialCtx, firstHop, provider)
+	})
+	if err != nil {
+		return nil, DialResult{}, err
+	}
+	defer release()
+
+	conn, result, err := tunnel.openStream(ctx, relayOpenFrame{
+		Kind:        network,
+		Target:      target,
+		Chain:       append([]Hop(nil), chain[1:]...),
+		InitialData: options.InitialPayload,
+	})
+	if err != nil {
+		return nil, DialResult{}, err
+	}
+	return conn, DialResult{SelectedAddress: result.SelectedAddress}, nil
+}
+
+func resolveCandidatesTLSTCPMux(ctx context.Context, target string, chain []Hop, provider TLSMaterialProvider) ([]string, error) {
 	firstHop := chain[0]
 	sessionKey, err := tlsTCPSessionPoolKey(firstHop)
 	if err != nil {
@@ -264,12 +296,16 @@ func dialTLSTCPMux(ctx context.Context, network, target string, chain []Hop, pro
 	}
 	defer release()
 
-	return tunnel.openStream(ctx, relayOpenFrame{
-		Kind:        network,
-		Target:      target,
-		Chain:       append([]Hop(nil), chain[1:]...),
-		InitialData: options.InitialPayload,
+	stream, result, err := tunnel.openStream(ctx, relayOpenFrame{
+		Kind:   "resolve",
+		Target: target,
+		Chain:  append([]Hop(nil), chain[1:]...),
 	})
+	if err != nil {
+		return nil, err
+	}
+	_ = stream.Close()
+	return append([]string(nil), result.ResolvedCandidates...), nil
 }
 
 func dialNewTLSTCPTunnel(ctx context.Context, hop Hop, provider TLSMaterialProvider) (*tlsTCPTunnel, error) {
@@ -353,20 +389,20 @@ func valueOrZero(value *int) int {
 	return *value
 }
 
-func (t *tlsTCPTunnel) openStream(ctx context.Context, req relayOpenFrame) (net.Conn, error) {
+func (t *tlsTCPTunnel) openStream(ctx context.Context, req relayOpenFrame) (net.Conn, muxOpenResult, error) {
 	streamID := t.nextStreamID.Add(1)
 	stream := &tlsTCPLogicalStream{
 		tunnel:       t,
 		streamID:     streamID,
 		readCh:       make(chan struct{}, 1),
-		openResultCh: make(chan error, 1),
+		openResultCh: make(chan muxOpenResult, 1),
 	}
 	t.registerStream(stream)
 
 	payload, err := marshalMuxOpenPayload(req)
 	if err != nil {
 		t.removeStream(streamID)
-		return nil, err
+		return nil, muxOpenResult{}, err
 	}
 	if err := t.writeFrame(ctx, muxFrame{
 		Type:     muxFrameTypeOpen,
@@ -375,22 +411,25 @@ func (t *tlsTCPTunnel) openStream(ctx context.Context, req relayOpenFrame) (net.
 		Payload:  payload,
 	}); err != nil {
 		t.removeStream(streamID)
-		return nil, err
+		return nil, muxOpenResult{}, err
 	}
 
 	select {
-	case err := <-stream.openResultCh:
-		if err != nil {
+	case result := <-stream.openResultCh:
+		if !result.OK {
 			t.removeStream(streamID)
-			return nil, err
+			if result.Error == "" {
+				return nil, muxOpenResult{}, fmt.Errorf("relay connection failed")
+			}
+			return nil, muxOpenResult{}, fmt.Errorf("relay connection failed: %s", result.Error)
 		}
-		return stream, nil
+		return stream, result, nil
 	case <-ctx.Done():
 		t.removeStream(streamID)
-		return nil, ctx.Err()
+		return nil, muxOpenResult{}, ctx.Err()
 	case <-t.closed:
 		t.removeStream(streamID)
-		return nil, io.EOF
+		return nil, muxOpenResult{}, io.EOF
 	}
 }
 
@@ -560,14 +599,10 @@ func (t *tlsTCPTunnel) readLoop() {
 			result, err := readMuxOpenResultPayload(frame.Payload)
 			frame.releasePayload()
 			if err != nil {
-				stream.deliverOpenResult(err)
+				stream.deliverOpenResult(muxOpenResult{OK: false, Error: err.Error()})
 				continue
 			}
-			if !result.OK {
-				stream.deliverOpenResult(fmt.Errorf("relay connection failed: %s", result.Error))
-				continue
-			}
-			stream.deliverOpenResult(nil)
+			stream.deliverOpenResult(result)
 		case muxFrameTypeData:
 			stream.appendDataChunk(frame.takeReadChunk())
 		case muxFrameTypeFin:
@@ -641,7 +676,7 @@ func (t *tlsTCPTunnel) failAllStreams(err error) {
 	t.streamsMu.Unlock()
 
 	for _, stream := range streams {
-		stream.deliverOpenResult(err)
+		stream.deliverOpenResult(muxOpenResult{OK: false, Error: err.Error()})
 		stream.setReadError(err)
 	}
 }
@@ -1003,9 +1038,9 @@ func (s *tlsTCPLogicalStream) setReadError(err error) {
 	s.notifyReadSpace()
 }
 
-func (s *tlsTCPLogicalStream) deliverOpenResult(err error) {
+func (s *tlsTCPLogicalStream) deliverOpenResult(result muxOpenResult) {
 	select {
-	case s.openResultCh <- err:
+	case s.openResultCh <- result:
 	default:
 	}
 }
@@ -1084,7 +1119,7 @@ func (s *serverTLSTCPSession) run(listener Listener) {
 				_ = s.writeOpenResult(frame.StreamID, muxOpenResult{OK: false, Error: err.Error()})
 				continue
 			}
-			if !strings.EqualFold(request.Kind, "tcp") && !strings.EqualFold(request.Kind, "udp") {
+			if !strings.EqualFold(request.Kind, "tcp") && !strings.EqualFold(request.Kind, "udp") && !strings.EqualFold(request.Kind, "resolve") {
 				_ = s.writeOpenResult(frame.StreamID, muxOpenResult{OK: false, Error: fmt.Sprintf("unsupported network %q", request.Kind)})
 				continue
 			}
@@ -1093,7 +1128,7 @@ func (s *serverTLSTCPSession) run(listener Listener) {
 				tunnel:       s.tunnel,
 				streamID:     frame.StreamID,
 				readCh:       make(chan struct{}, 1),
-				openResultCh: make(chan error, 1),
+				openResultCh: make(chan muxOpenResult, 1),
 			}
 			s.tunnel.registerStream(stream)
 			go s.handleStream(listener, stream, request)
@@ -1122,12 +1157,23 @@ func (s *serverTLSTCPSession) run(listener Listener) {
 }
 
 func (s *serverTLSTCPSession) handleStream(listener Listener, stream *tlsTCPLogicalStream, request relayOpenFrame) {
+	if strings.EqualFold(request.Kind, "resolve") {
+		resolvedCandidates, err := s.server.resolveTargetCandidates(request.Target, request.Chain)
+		if err != nil {
+			_ = s.writeOpenResult(stream.streamID, muxOpenResult{OK: false, Error: err.Error()})
+			s.tunnel.removeStream(stream.streamID)
+			return
+		}
+		_ = s.writeOpenResult(stream.streamID, muxOpenResult{OK: true, ResolvedCandidates: resolvedCandidates})
+		s.tunnel.removeStream(stream.streamID)
+		return
+	}
 	if strings.EqualFold(request.Kind, "udp") {
 		s.handleUDPStream(listener, stream, request)
 		return
 	}
 
-	upstream, err := s.server.openUpstream(request.Kind, request.Target, request.Chain, DialOptions{})
+	upstream, selectedAddress, err := s.server.openUpstreamWithResult(request.Kind, request.Target, request.Chain, DialOptions{})
 	if err != nil {
 		_ = s.writeOpenResult(stream.streamID, muxOpenResult{OK: false, Error: err.Error()})
 		s.tunnel.removeStream(stream.streamID)
@@ -1144,7 +1190,7 @@ func (s *serverTLSTCPSession) handleStream(listener Listener, stream *tlsTCPLogi
 			return
 		}
 	}
-	if err := s.writeOpenResult(stream.streamID, muxOpenResult{OK: true}); err != nil {
+	if err := s.writeOpenResult(stream.streamID, muxOpenResult{OK: true, SelectedAddress: selectedAddress}); err != nil {
 		s.tunnel.removeStream(stream.streamID)
 		return
 	}
@@ -1154,7 +1200,7 @@ func (s *serverTLSTCPSession) handleStream(listener Listener, stream *tlsTCPLogi
 }
 
 func (s *serverTLSTCPSession) handleUDPStream(listener Listener, stream *tlsTCPLogicalStream, request relayOpenFrame) {
-	upstream, err := s.server.openUDPPeer(request.Target, request.Chain)
+	upstream, selectedAddress, err := s.server.openUDPPeerWithResult(request.Target, request.Chain)
 	if err != nil {
 		_ = s.writeOpenResult(stream.streamID, muxOpenResult{OK: false, Error: err.Error()})
 		s.tunnel.removeStream(stream.streamID)
@@ -1162,7 +1208,7 @@ func (s *serverTLSTCPSession) handleUDPStream(listener Listener, stream *tlsTCPL
 	}
 	defer upstream.Close()
 
-	if err := s.writeOpenResult(stream.streamID, muxOpenResult{OK: true}); err != nil {
+	if err := s.writeOpenResult(stream.streamID, muxOpenResult{OK: true, SelectedAddress: selectedAddress}); err != nil {
 		s.tunnel.removeStream(stream.streamID)
 		return
 	}

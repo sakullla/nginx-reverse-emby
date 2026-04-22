@@ -23,7 +23,7 @@ func BenchmarkTLSTCPLogicalStreamReadFrom1MiB(b *testing.B) {
 			tunnel:       tunnel,
 			streamID:     1,
 			readCh:       make(chan struct{}, 1),
-			openResultCh: make(chan error, 1),
+			openResultCh: make(chan muxOpenResult, 1),
 		}
 		if _, err := stream.ReadFrom(bytes.NewReader(payload)); err != nil {
 			b.Fatalf("ReadFrom() error = %v", err)

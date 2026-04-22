@@ -31,13 +31,17 @@ type relayOpenFrame struct {
 }
 
 type relayResponse struct {
-	OK    bool   `json:"ok"`
-	Error string `json:"error,omitempty"`
+	OK                 bool     `json:"ok"`
+	Error              string   `json:"error,omitempty"`
+	SelectedAddress    string   `json:"selected_address,omitempty"`
+	ResolvedCandidates []string `json:"resolved_candidates,omitempty"`
 }
 
 type muxOpenResult struct {
-	OK    bool   `json:"ok"`
-	Error string `json:"error,omitempty"`
+	OK                 bool     `json:"ok"`
+	Error              string   `json:"error,omitempty"`
+	SelectedAddress    string   `json:"selected_address,omitempty"`
+	ResolvedCandidates []string `json:"resolved_candidates,omitempty"`
 }
 
 func writeRelayRequest(w io.Writer, request relayRequest) error {
