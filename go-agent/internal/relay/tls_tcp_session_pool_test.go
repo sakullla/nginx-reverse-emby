@@ -95,7 +95,7 @@ func TestTLSTCPLogicalStreamReadFromSplitsLargePayloadIntoMuxFrames(t *testing.T
 		tunnel:       tunnel,
 		streamID:     7,
 		readCh:       make(chan struct{}, 1),
-		openResultCh: make(chan error, 1),
+		openResultCh: make(chan muxOpenResult, 1),
 	}
 	src := bytes.NewReader(bytes.Repeat([]byte("a"), 150000))
 
@@ -142,7 +142,7 @@ func TestTLSTCPLogicalStreamReadFromFitsSmallPayloadIntoSingleMuxFrame(t *testin
 		tunnel:       tunnel,
 		streamID:     8,
 		readCh:       make(chan struct{}, 1),
-		openResultCh: make(chan error, 1),
+		openResultCh: make(chan muxOpenResult, 1),
 	}
 	src := bytes.NewReader(bytes.Repeat([]byte("b"), 60000))
 
@@ -184,7 +184,7 @@ func TestTLSTCPLogicalStreamReadFromDoesNotWaitToCoalesceImmediateSourceChunks(t
 		tunnel:       tunnel,
 		streamID:     10,
 		readCh:       make(chan struct{}, 1),
-		openResultCh: make(chan error, 1),
+		openResultCh: make(chan muxOpenResult, 1),
 	}
 	src := &idleDeadlineConn{
 		Conn: &markingConn{
@@ -264,7 +264,7 @@ func TestTLSTCPLogicalStreamReadFromSingleStreamQueuesAheadOfSlowWriter(t *testi
 		tunnel:       tunnel,
 		streamID:     12,
 		readCh:       make(chan struct{}, 1),
-		openResultCh: make(chan error, 1),
+		openResultCh: make(chan muxOpenResult, 1),
 	}
 	tunnel.registerStream(stream)
 
@@ -370,7 +370,7 @@ func TestIdleDeadlineConnCopyToWrappedTLSTCPStreamUsesReadFromFastPath(t *testin
 		tunnel:       tunnel,
 		streamID:     9,
 		readCh:       make(chan struct{}, 1),
-		openResultCh: make(chan error, 1),
+		openResultCh: make(chan muxOpenResult, 1),
 	}
 	source := &markingConn{
 		onRead: func() {
@@ -672,10 +672,10 @@ type countingDeadlineConn struct {
 	writeDeadlineCalls int
 }
 
-func (c *countingDeadlineConn) Read([]byte) (int, error)  { return 0, io.EOF }
-func (c *countingDeadlineConn) Close() error              { return nil }
-func (c *countingDeadlineConn) LocalAddr() net.Addr       { return nil }
-func (c *countingDeadlineConn) RemoteAddr() net.Addr      { return nil }
+func (c *countingDeadlineConn) Read([]byte) (int, error)    { return 0, io.EOF }
+func (c *countingDeadlineConn) Close() error                { return nil }
+func (c *countingDeadlineConn) LocalAddr() net.Addr         { return nil }
+func (c *countingDeadlineConn) RemoteAddr() net.Addr        { return nil }
 func (c *countingDeadlineConn) SetDeadline(time.Time) error { return nil }
 func (c *countingDeadlineConn) SetReadDeadline(time.Time) error {
 	return nil

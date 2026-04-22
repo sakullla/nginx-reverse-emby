@@ -88,7 +88,7 @@
               <div class="diagnostic-backend-item__metrics">
                 <div class="diagnostic-metric">
                   <span class="diagnostic-metric__label">延迟</span>
-                  <strong class="diagnostic-metric__value">{{ backend.adaptive?.latency_ms ?? backend.summary?.avg_latency_ms ?? 0 }} ms</strong>
+                  <strong class="diagnostic-metric__value">{{ backendActualLatency(backend) }} ms</strong>
                 </div>
                 <div class="diagnostic-metric">
                   <span class="diagnostic-metric__label">稳定性</span>
@@ -105,7 +105,7 @@
               </div>
 
               <div class="diagnostic-backend-item__probe">
-                <span class="diagnostic-backend-item__probe-stat">本次延迟 <strong>{{ backend.summary?.avg_latency_ms ?? 0 }} ms</strong></span>
+                <span class="diagnostic-backend-item__probe-stat">本次测试 <strong>{{ backend.summary?.avg_latency_ms ?? 0 }} ms</strong></span>
                 <span class="diagnostic-backend-item__probe-stat">成功 <strong>{{ backend.summary?.succeeded ?? 0 }} / {{ backend.summary?.sent ?? 0 }}</strong></span>
               </div>
 
@@ -119,7 +119,15 @@
                   <div class="diagnostic-backend-item__details-grid">
                     <div class="diagnostic-factor">
                       <span class="diagnostic-factor__label">延迟</span>
-                      <strong class="diagnostic-factor__value">{{ backend.adaptive?.latency_ms ?? backend.summary?.avg_latency_ms ?? 0 }} ms</strong>
+                      <strong class="diagnostic-factor__value">{{ backendActualLatency(backend) }} ms</strong>
+                    </div>
+                    <div class="diagnostic-factor">
+                      <span class="diagnostic-factor__label">近24h成功</span>
+                      <strong class="diagnostic-factor__value">{{ backend.adaptive?.recent_succeeded ?? 0 }}</strong>
+                    </div>
+                    <div class="diagnostic-factor">
+                      <span class="diagnostic-factor__label">近24h失败</span>
+                      <strong class="diagnostic-factor__value">{{ backend.adaptive?.recent_failed ?? 0 }}</strong>
                     </div>
                     <div v-if="showHTTPAdaptiveMetrics" class="diagnostic-factor">
                       <span class="diagnostic-factor__label">持续吞吐</span>
@@ -141,22 +149,21 @@
                   <div v-if="showHTTPAdaptiveMetrics && backend.adaptive?.reason" class="diagnostic-backend-item__reason">
                     原因: {{ reasonLabel(backend.adaptive?.reason) }}
                   </div>
-                </div>
-              </Transition>
-
-              <div v-if="backend.children?.length" class="diagnostic-backend-item__children">
-                <div class="diagnostic-backend-item__child-title">已解析候选</div>
-                <div class="diagnostic-child-list">
-                  <div v-for="(child, idx) in backend.children" :key="child.backend" class="diagnostic-child-item">
-                    <code class="diagnostic-child-item__name">{{ child.backend }}</code>
-                    <span v-if="child.adaptive?.preferred" class="diagnostic-backend-item__preferred">当前优选</span>
-                    <span class="diagnostic-child-item__metric">延迟 {{ child.adaptive?.latency_ms ?? child.summary?.avg_latency_ms ?? 0 }} ms</span>
-                    <span class="diagnostic-child-item__metric">稳定性 {{ formatPercent(child.adaptive?.stability) }}</span>
-                    <span v-if="showHTTPAdaptiveMetrics" class="diagnostic-child-item__metric">综合性能 {{ formatScore(child.adaptive?.performance_score) }}</span>
-                    <span v-if="showHTTPAdaptiveMetrics" class="diagnostic-child-item__metric">持续吞吐 {{ formatThroughput(child.adaptive?.sustained_throughput_bps) }}</span>
+                  <div v-if="backend.children?.length" class="diagnostic-backend-item__children">
+                    <div class="diagnostic-backend-item__child-title">已解析候选</div>
+                    <div class="diagnostic-child-list">
+                      <div v-for="(child, idx) in backend.children" :key="child.backend" class="diagnostic-child-item">
+                        <code class="diagnostic-child-item__name">{{ backendDisplayLabel(child) }}</code>
+                        <code v-if="backendDisplayAddress(child)" class="diagnostic-child-item__address">{{ backendDisplayAddress(child) }}</code>
+                        <span v-if="child.adaptive?.preferred" class="diagnostic-backend-item__preferred">当前优选</span>
+                        <span class="diagnostic-child-item__metric">延迟 {{ backendActualLatency(child) }} ms</span>
+                        <span class="diagnostic-child-item__metric">稳定性 {{ formatPercent(child.adaptive?.stability) }}</span>
+                        <span class="diagnostic-child-item__metric">近24h成功 {{ child.adaptive?.recent_succeeded ?? 0 }}</span>
+                      </div>
+                    </div>
                   </div>
                 </div>
-              </div>
+              </Transition>
             </article>
           </div>
           </Transition>
@@ -173,7 +180,10 @@
               <div class="diagnostic-sample__left">
                 <span class="diagnostic-sample__attempt">#{{ sample.attempt }}</span>
                 <span v-if="isHTTP && sample.status_code" class="diagnostic-sample__status" :class="`diagnostic-sample__status--${httpStatusTone(sample.status_code)}`">{{ sample.status_code }}</span>
-                <code class="diagnostic-sample__backend">{{ sample.backend || '-' }}</code>
+                <div class="diagnostic-sample__backend-wrap">
+                  <code class="diagnostic-sample__backend">{{ backendDisplayLabel(sample) || '-' }}</code>
+                  <code v-if="backendDisplayAddress(sample)" class="diagnostic-sample__backend-address">{{ backendDisplayAddress(sample) }}</code>
+                </div>
               </div>
               <div class="diagnostic-sample__right">
                 <span v-if="sample.success">{{ sample.latency_ms }} ms</span>
@@ -237,6 +247,37 @@ function toggleAdaptive(backendName) {
 
 function isAdaptiveExpanded(backendName) {
   return expandedAdaptive.value.has(backendName)
+}
+
+function backendActualLatency(backend) {
+  return backend?.adaptive?.latency_ms ?? 0
+}
+
+function splitBackendIdentity(value) {
+  const explicitAddress = typeof value?.address === 'string' ? value.address.trim() : ''
+  const raw = typeof value === 'string' ? value.trim() : typeof value?.backend === 'string' ? value.backend.trim() : ''
+  if (explicitAddress) {
+    const match = raw.match(/^(.*)\s\[(.+)\]$/)
+    return {
+      label: match ? match[1].trim() : raw,
+      address: explicitAddress
+    }
+  }
+  if (!raw) return { label: '', address: '' }
+  const match = raw.match(/^(.*)\s\[(.+)\]$/)
+  if (!match) return { label: raw, address: '' }
+  return {
+    label: match[1].trim(),
+    address: match[2].trim()
+  }
+}
+
+function backendDisplayLabel(value) {
+  return splitBackendIdentity(value).label
+}
+
+function backendDisplayAddress(value) {
+  return splitBackendIdentity(value).address
 }
 
 const QUALITY_MAP = {
@@ -704,7 +745,13 @@ function qualityToneFor(value) {
   font-family: var(--font-mono);
   font-size: 0.72rem;
   color: var(--color-text-primary);
-  white-space: nowrap;
+  word-break: break-all;
+}
+.diagnostic-child-item__address {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--color-text-tertiary);
+  word-break: break-all;
 }
 .diagnostic-child-item__metric {
   font-size: 0.68rem;
@@ -789,7 +836,7 @@ function qualityToneFor(value) {
   display: flex;
   gap: 0.55rem;
   min-width: 0;
-  align-items: center;
+  align-items: flex-start;
 }
 .diagnostic-sample__attempt { font-size: 0.72rem; color: var(--color-text-tertiary); font-family: var(--font-mono); min-width: 2.2ch; text-align: right; }
 .diagnostic-sample__status { font-size: 0.65rem; font-weight: 700; padding: 1px 4px; border-radius: var(--radius-sm); font-family: var(--font-mono); }
@@ -798,13 +845,23 @@ function qualityToneFor(value) {
 .diagnostic-sample__status--warning { background: var(--color-warning-50); color: var(--color-warning); }
 .diagnostic-sample__status--danger { background: var(--color-danger-50); color: var(--color-danger); }
 .diagnostic-sample__status--muted { background: var(--color-bg-hover); color: var(--color-text-muted); }
+.diagnostic-sample__backend-wrap {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
 .diagnostic-sample__backend {
   font-family: var(--font-mono);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   font-size: 0.78rem;
   color: var(--color-text-secondary);
+  word-break: break-all;
+}
+.diagnostic-sample__backend-address {
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  color: var(--color-text-tertiary);
+  word-break: break-all;
 }
 .diagnostic-sample__right {
   font-size: 0.78rem;

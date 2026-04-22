@@ -926,3 +926,168 @@ func TestBackupServiceImportReassignsL4RuleIDAndRevisionWhenExistingHTTPRuleUses
 	assertRevisionAboveFloor(t, "imported agent desired revision", agents[0].DesiredRevision, 9)
 	assertRevisionNotBehind(t, "imported agent desired revision", agents[0].DesiredRevision, rows[0].Revision)
 }
+
+func TestBackupServicePreviewAccountsForAgentRemapBeforeConflictChecks(t *testing.T) {
+	sourceStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "preview-source"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(source) error = %v", err)
+	}
+	defer sourceStore.Close()
+
+	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "preview-target"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(target) error = %v", err)
+	}
+	defer targetStore.Close()
+
+	ctx := t.Context()
+	if err := sourceStore.SaveAgent(ctx, storage.AgentRow{
+		ID:         "edge-from-backup",
+		Name:       "edge-a",
+		AgentToken: "token-source",
+	}); err != nil {
+		t.Fatalf("SaveAgent(source) error = %v", err)
+	}
+	if err := sourceStore.SaveHTTPRules(ctx, "edge-from-backup", []storage.HTTPRuleRow{{
+		ID:                1,
+		AgentID:           "edge-from-backup",
+		FrontendURL:       "https://shared.example.com",
+		BackendURL:        "http://127.0.0.1:8096",
+		BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		Enabled:           true,
+		RelayChainJSON:    `[]`,
+		TagsJSON:          `[]`,
+		CustomHeadersJSON: `[]`,
+		Revision:          1,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules(source) error = %v", err)
+	}
+	if err := sourceStore.SaveL4Rules(ctx, "edge-from-backup", []storage.L4RuleRow{{
+		ID:                2,
+		AgentID:           "edge-from-backup",
+		Name:              "backup-l4",
+		Protocol:          "tcp",
+		ListenHost:        "0.0.0.0",
+		ListenPort:        25565,
+		UpstreamHost:      "127.0.0.1",
+		UpstreamPort:      25565,
+		BackendsJSON:      `[{"host":"127.0.0.1","port":25565}]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		TuningJSON:        `{"proxy_protocol":{"decode":false,"send":false}}`,
+		RelayChainJSON:    `[]`,
+		Enabled:           true,
+		TagsJSON:          `[]`,
+		Revision:          1,
+	}}); err != nil {
+		t.Fatalf("SaveL4Rules(source) error = %v", err)
+	}
+	if err := sourceStore.SaveRelayListeners(ctx, "edge-from-backup", []storage.RelayListenerRow{{
+		ID:                      3,
+		AgentID:                 "edge-from-backup",
+		Name:                    "shared-relay",
+		ListenHost:              "127.0.0.1",
+		BindHostsJSON:           `["127.0.0.1"]`,
+		ListenPort:              7443,
+		PublicHost:              "relay.example.com",
+		PublicPort:              7443,
+		Enabled:                 true,
+		TLSMode:                 "pin_only",
+		TransportMode:           "tls_tcp",
+		ObfsMode:                "off",
+		PinSetJSON:              `[{"type":"spki_sha256","value":"fixture-pin"}]`,
+		TrustedCACertificateIDs: `[]`,
+		TagsJSON:                `[]`,
+		Revision:                1,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(source) error = %v", err)
+	}
+
+	if err := targetStore.SaveAgent(ctx, storage.AgentRow{
+		ID:         "edge-live",
+		Name:       "edge-a",
+		AgentToken: "token-target",
+	}); err != nil {
+		t.Fatalf("SaveAgent(target) error = %v", err)
+	}
+	if err := targetStore.SaveHTTPRules(ctx, "edge-live", []storage.HTTPRuleRow{{
+		ID:                10,
+		AgentID:           "edge-live",
+		FrontendURL:       "https://shared.example.com",
+		BackendURL:        "http://127.0.0.1:9096",
+		BackendsJSON:      `[{"url":"http://127.0.0.1:9096"}]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		Enabled:           true,
+		RelayChainJSON:    `[]`,
+		TagsJSON:          `[]`,
+		CustomHeadersJSON: `[]`,
+		Revision:          10,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules(target) error = %v", err)
+	}
+	if err := targetStore.SaveL4Rules(ctx, "edge-live", []storage.L4RuleRow{{
+		ID:                11,
+		AgentID:           "edge-live",
+		Name:              "live-l4",
+		Protocol:          "tcp",
+		ListenHost:        "0.0.0.0",
+		ListenPort:        25565,
+		UpstreamHost:      "127.0.0.1",
+		UpstreamPort:      25566,
+		BackendsJSON:      `[{"host":"127.0.0.1","port":25566}]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		TuningJSON:        `{"proxy_protocol":{"decode":false,"send":false}}`,
+		RelayChainJSON:    `[]`,
+		Enabled:           true,
+		TagsJSON:          `[]`,
+		Revision:          10,
+	}}); err != nil {
+		t.Fatalf("SaveL4Rules(target) error = %v", err)
+	}
+	if err := targetStore.SaveRelayListeners(ctx, "edge-live", []storage.RelayListenerRow{{
+		ID:                      12,
+		AgentID:                 "edge-live",
+		Name:                    "shared-relay",
+		ListenHost:              "127.0.0.1",
+		BindHostsJSON:           `["127.0.0.1"]`,
+		ListenPort:              8443,
+		PublicHost:              "relay.example.com",
+		PublicPort:              8443,
+		Enabled:                 true,
+		TLSMode:                 "pin_only",
+		TransportMode:           "tls_tcp",
+		ObfsMode:                "off",
+		PinSetJSON:              `[{"type":"spki_sha256","value":"fixture-pin"}]`,
+		TrustedCACertificateIDs: `[]`,
+		TagsJSON:                `[]`,
+		Revision:                10,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(target) error = %v", err)
+	}
+
+	archive, _, err := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, sourceStore).Export(ctx)
+	if err != nil {
+		t.Fatalf("Export() error = %v", err)
+	}
+
+	result, err := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, targetStore).Preview(ctx, archive)
+	if err != nil {
+		t.Fatalf("Preview() error = %v", err)
+	}
+
+	if result.Summary.SkippedConflict.Agents != 1 {
+		t.Fatalf("agent preview conflicts = %+v", result.Summary.SkippedConflict)
+	}
+	if result.Summary.SkippedConflict.HTTPRules != 1 {
+		t.Fatalf("http preview conflicts = %+v", result.Summary.SkippedConflict)
+	}
+	if result.Summary.SkippedConflict.L4Rules != 1 {
+		t.Fatalf("l4 preview conflicts = %+v", result.Summary.SkippedConflict)
+	}
+	if result.Summary.SkippedConflict.RelayListeners != 1 {
+		t.Fatalf("relay preview conflicts = %+v", result.Summary.SkippedConflict)
+	}
+	if result.Summary.Imported.HTTPRules != 0 || result.Summary.Imported.L4Rules != 0 || result.Summary.Imported.RelayListeners != 0 {
+		t.Fatalf("preview imported summary = %+v", result.Summary.Imported)
+	}
+}

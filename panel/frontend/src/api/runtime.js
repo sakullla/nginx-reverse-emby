@@ -453,3 +453,30 @@ export async function deleteVersionPolicy(id) {
   const { data } = await api.delete(`/version-policies/${encodeURIComponent(id)}`, longRunningRequest)
   return data.policy
 }
+
+export async function exportBackupSelective(include) {
+  const params = new URLSearchParams()
+  params.set('include', include.join(','))
+  const response = await api.get(`/system/backup/export?${params.toString()}`, {
+    responseType: 'blob',
+    timeout: 0
+  })
+  return {
+    blob: response.data,
+    filename: parseDownloadFilename(response.headers['content-disposition'])
+  }
+}
+
+export async function importBackupPreview(file) {
+  const formData = new FormData()
+  formData.append('file', file)
+  const { data } = await api.post('/system/backup/import/preview', formData, {
+    timeout: 0
+  })
+  return data
+}
+
+export async function fetchBackupResourceCounts() {
+  const { data } = await api.get('/system/backup/counts')
+  return data
+}

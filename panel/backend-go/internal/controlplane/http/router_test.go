@@ -465,6 +465,13 @@ func (f fakeBackupService) Export(context.Context) ([]byte, string, error) {
 	return f.exportBody, f.exportFilename, nil
 }
 
+func (f fakeBackupService) ExportSelective(_ context.Context, opts service.BackupExportOptions) ([]byte, string, error) {
+	if opts.Agents && opts.HTTPRules && opts.L4Rules && opts.RelayListeners && opts.Certificates && opts.VersionPolicies {
+		return f.exportBody, f.exportFilename, nil
+	}
+	return f.exportBody, f.exportFilename, nil
+}
+
 func (f fakeBackupService) Import(_ context.Context, body []byte) (service.BackupImportResult, error) {
 	if f.state != nil {
 		copyBody := append([]byte(nil), body...)
@@ -474,6 +481,14 @@ func (f fakeBackupService) Import(_ context.Context, body []byte) (service.Backu
 		return service.BackupImportResult{}, f.importErr
 	}
 	return f.importResult, nil
+}
+
+func (f fakeBackupService) ResourceCounts(context.Context) (service.BackupCounts, error) {
+	return service.BackupCounts{}, nil
+}
+
+func (f fakeBackupService) Preview(_ context.Context, _ []byte) (service.BackupImportResult, error) {
+	return service.BackupImportResult{}, nil
 }
 
 func TestRouterServesPanelAuthAndInfoEndpoints(t *testing.T) {
@@ -547,6 +562,51 @@ func TestRouterServesPanelAuthAndInfoEndpoints(t *testing.T) {
 	}
 	if payload["master_register_token"] != "register-secret" {
 		t.Fatalf("master_register_token = %v", payload["master_register_token"])
+	}
+}
+
+func TestRouterInfoOmitsSensitiveFieldsWithoutPanelToken(t *testing.T) {
+	router, err := NewRouter(Dependencies{
+		Config: config.Config{
+			PanelToken:    "secret",
+			RegisterToken: "register-secret",
+		},
+		SystemService: fakeSystemService{
+			info: service.SystemInfo{
+				Role:              "master",
+				LocalApplyRuntime: "go-agent",
+				DefaultAgentID:    "local",
+				LocalAgentEnabled: true,
+				DataDir:           "C:/srv/nre/data",
+			},
+		},
+		AgentService:         fakeAgentService{},
+		RuleService:          fakeRuleService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/panel-api/info", nil)
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("GET /panel-api/info = %d", resp.Code)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if _, ok := payload["data_dir"]; ok {
+		t.Fatalf("unauthorized /info leaked data_dir: %+v", payload)
+	}
+	if _, ok := payload["master_register_token"]; ok {
+		t.Fatalf("unauthorized /info leaked register token: %+v", payload)
 	}
 }
 

@@ -703,6 +703,14 @@ func TestRouteEntryCandidatesRelayChainUsesDefaultHTTPSPortWithoutResolving(t *t
 	}
 }
 
+func TestNewSharedTransportLimitsConcurrentConnectionsPerHost(t *testing.T) {
+	transport := NewSharedTransport()
+
+	if transport.MaxConnsPerHost != 32 {
+		t.Fatalf("MaxConnsPerHost = %d", transport.MaxConnsPerHost)
+	}
+}
+
 func TestRouteEntryServeHTTPRecordsSuccessfulLatencyObservation(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(20 * time.Millisecond)

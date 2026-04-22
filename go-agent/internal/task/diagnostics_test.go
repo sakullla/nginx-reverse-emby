@@ -343,6 +343,7 @@ func TestReportToMapIncludesAdaptiveRecoveryFields(t *testing.T) {
 		},
 		Backends: []diagnostics.BackendReport{{
 			Backend: "http://backend.example.test/healthz",
+			Address: "",
 			Summary: diagnostics.Summary{
 				Sent:      1,
 				Succeeded: 1,
@@ -359,6 +360,7 @@ func TestReportToMapIncludesAdaptiveRecoveryFields(t *testing.T) {
 			},
 			Children: []diagnostics.BackendReport{{
 				Backend: "http://backend.example.test/healthz [10.0.0.10:443]",
+				Address: "10.0.0.10:443",
 				Summary: diagnostics.Summary{
 					Sent:      1,
 					Succeeded: 1,
@@ -404,6 +406,9 @@ func TestReportToMapIncludesAdaptiveRecoveryFields(t *testing.T) {
 	children, ok := backends[0]["children"].([]map[string]any)
 	if !ok || len(children) != 1 {
 		t.Fatalf("children = %#v", backends[0]["children"])
+	}
+	if children[0]["address"] != "10.0.0.10:443" {
+		t.Fatalf("child address = %#v", children[0]["address"])
 	}
 	childAdaptive, ok := children[0]["adaptive"].(map[string]any)
 	if !ok {

@@ -13,6 +13,7 @@ type TransportOptions struct {
 	ResponseHeaderTimeout time.Duration
 	IdleConnTimeout       time.Duration
 	KeepAlive             time.Duration
+	MaxConnsPerHost       int
 }
 
 type StreamResilienceOptions struct {
@@ -34,6 +35,9 @@ func ApplyTransportOptions(transport *http.Transport, options TransportOptions) 
 	}
 	if options.IdleConnTimeout > 0 {
 		transport.IdleConnTimeout = options.IdleConnTimeout
+	}
+	if options.MaxConnsPerHost > 0 {
+		transport.MaxConnsPerHost = options.MaxConnsPerHost
 	}
 
 	if options.DialTimeout <= 0 && options.KeepAlive <= 0 {
