@@ -157,6 +157,7 @@ func TestLoadFromEnvParsesHTTPResilienceSettings(t *testing.T) {
 	t.Setenv("NRE_HTTP_RESPONSE_HEADER_TIMEOUT", "45s")
 	t.Setenv("NRE_HTTP_IDLE_CONN_TIMEOUT", "3m")
 	t.Setenv("NRE_HTTP_KEEP_ALIVE", "25s")
+	t.Setenv("NRE_HTTP_MAX_CONNS_PER_HOST", "24")
 	t.Setenv("NRE_HTTP_STREAM_RESUME_ENABLED", "true")
 	t.Setenv("NRE_HTTP_STREAM_RESUME_MAX_ATTEMPTS", "2")
 	t.Setenv("NRE_HTTP_SAME_BACKEND_RETRY_ATTEMPTS", "1")
@@ -185,6 +186,9 @@ func TestLoadFromEnvParsesHTTPResilienceSettings(t *testing.T) {
 	}
 	if cfg.HTTPTransport.KeepAlive != 25*time.Second {
 		t.Fatalf("KeepAlive = %v", cfg.HTTPTransport.KeepAlive)
+	}
+	if cfg.HTTPTransport.MaxConnsPerHost != 24 {
+		t.Fatalf("MaxConnsPerHost = %d", cfg.HTTPTransport.MaxConnsPerHost)
 	}
 	if !cfg.HTTPResilience.ResumeEnabled {
 		t.Fatal("expected ResumeEnabled")
@@ -248,6 +252,9 @@ func TestLoadFromEnvUsesDefaultNetworkResilienceConfigWhenUnset(t *testing.T) {
 	if cfg.HTTPTransport.KeepAlive != 30*time.Second {
 		t.Fatalf("KeepAlive = %v", cfg.HTTPTransport.KeepAlive)
 	}
+	if cfg.HTTPTransport.MaxConnsPerHost != 32 {
+		t.Fatalf("MaxConnsPerHost = %d", cfg.HTTPTransport.MaxConnsPerHost)
+	}
 	if !cfg.HTTPResilience.ResumeEnabled {
 		t.Fatal("expected ResumeEnabled to default true")
 	}
@@ -301,6 +308,20 @@ func TestLoadFromEnvRejectsInvalidHTTPDialTimeout(t *testing.T) {
 		t.Fatal("expected invalid NRE_HTTP_DIAL_TIMEOUT error")
 	}
 	if !strings.Contains(err.Error(), "NRE_HTTP_DIAL_TIMEOUT") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestLoadFromEnvRejectsInvalidMaxConnsPerHost(t *testing.T) {
+	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
+	t.Setenv("NRE_AGENT_TOKEN", "secret")
+	t.Setenv("NRE_HTTP_MAX_CONNS_PER_HOST", "0")
+
+	_, err := LoadFromEnv()
+	if err == nil {
+		t.Fatal("expected invalid NRE_HTTP_MAX_CONNS_PER_HOST error")
+	}
+	if !strings.Contains(err.Error(), "NRE_HTTP_MAX_CONNS_PER_HOST") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

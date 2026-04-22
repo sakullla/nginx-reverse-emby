@@ -35,6 +35,7 @@ func TestHTTPRuntimeManagerUsesConfiguredTransportAndBackoff(t *testing.T) {
 			ResponseHeaderTimeout: 13 * time.Second,
 			IdleConnTimeout:       14 * time.Second,
 			KeepAlive:             15 * time.Second,
+			MaxConnsPerHost:       21,
 		},
 		HTTPResilience: config.HTTPResilienceConfig{
 			ResumeEnabled:            true,
@@ -51,6 +52,9 @@ func TestHTTPRuntimeManagerUsesConfiguredTransportAndBackoff(t *testing.T) {
 	manager := newHTTPRuntimeManagerWithConfig(cfg)
 	if manager.transport.ResponseHeaderTimeout != 13*time.Second {
 		t.Fatalf("ResponseHeaderTimeout = %v", manager.transport.ResponseHeaderTimeout)
+	}
+	if manager.transport.MaxConnsPerHost != 21 {
+		t.Fatalf("MaxConnsPerHost = %d", manager.transport.MaxConnsPerHost)
 	}
 	if got := manager.cache.MarkFailure("127.0.0.1:8096"); got != 500*time.Millisecond {
 		t.Fatalf("MarkFailure() = %v", got)

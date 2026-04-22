@@ -58,6 +58,7 @@ func newHTTPRuntimeManagerWithTLSAndHTTP3AndConfig(provider proxy.TLSMaterialPro
 		ResponseHeaderTimeout: cfg.HTTPTransport.ResponseHeaderTimeout,
 		IdleConnTimeout:       cfg.HTTPTransport.IdleConnTimeout,
 		KeepAlive:             cfg.HTTPTransport.KeepAlive,
+		MaxConnsPerHost:       cfg.HTTPTransport.MaxConnsPerHost,
 	})
 	return &httpRuntimeManager{
 		provider:  provider,

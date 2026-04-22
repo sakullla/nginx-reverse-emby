@@ -44,6 +44,7 @@ type HTTPTransportConfig struct {
 	ResponseHeaderTimeout time.Duration
 	IdleConnTimeout       time.Duration
 	KeepAlive             time.Duration
+	MaxConnsPerHost       int
 }
 
 type HTTPResilienceConfig struct {
@@ -76,6 +77,7 @@ func Default() Config {
 			ResponseHeaderTimeout: 30 * time.Second,
 			IdleConnTimeout:       90 * time.Second,
 			KeepAlive:             30 * time.Second,
+			MaxConnsPerHost:       32,
 		},
 		HTTPResilience: HTTPResilienceConfig{
 			ResumeEnabled:            true,
@@ -187,6 +189,13 @@ func loadFromEnvForExecutable(executablePath string) (Config, error) {
 			return Config{}, err
 		}
 		cfg.HTTPTransport.KeepAlive = dur
+	}
+	if val := strings.TrimSpace(os.Getenv("NRE_HTTP_MAX_CONNS_PER_HOST")); val != "" {
+		maxConns, err := parsePositiveIntEnv("NRE_HTTP_MAX_CONNS_PER_HOST", val)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.HTTPTransport.MaxConnsPerHost = maxConns
 	}
 	if val := strings.TrimSpace(os.Getenv("NRE_HTTP_STREAM_RESUME_ENABLED")); val != "" {
 		enabled, err := strconv.ParseBool(val)
