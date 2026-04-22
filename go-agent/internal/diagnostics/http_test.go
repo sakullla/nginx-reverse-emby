@@ -576,6 +576,42 @@ func TestHTTPCandidatesPreserveAllResolvedChildrenPerCandidate(t *testing.T) {
 	}
 }
 
+func TestHTTPCandidatesUseResolvedAddressLabelWhenProbeLabelDropsIP(t *testing.T) {
+	cache := backends.NewCache(backends.Config{
+		Resolver: diagnosticResolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
+			if host != "echo.example.test" {
+				t.Fatalf("unexpected resolver host %q", host)
+			}
+			return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, nil
+		}),
+	})
+
+	candidates, err := httpCandidates(context.Background(), cache, model.HTTPRule{
+		ID:          37,
+		FrontendURL: "https://edge.example.test",
+		BackendURL:  "http://echo.example.test:8096/healthz",
+	})
+	if err != nil {
+		t.Fatalf("httpCandidates() error = %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("candidates = %+v", candidates)
+	}
+
+	annotated := buildHTTPAdaptiveReports([]BackendReport{
+		{Backend: candidates[0].configuredURL, Summary: Summary{}},
+	}, candidates, cache)
+	if len(annotated) != 1 {
+		t.Fatalf("annotated = %+v", annotated)
+	}
+	if len(annotated[0].Children) != 1 {
+		t.Fatalf("children = %+v", annotated[0].Children)
+	}
+	if annotated[0].Children[0].Backend != "http://echo.example.test:8096/healthz [127.0.0.1:8096]" {
+		t.Fatalf("child backend = %+v", annotated[0].Children[0])
+	}
+}
+
 func TestHTTPCandidatesPreserveDuplicateConfiguredBackends(t *testing.T) {
 	cache := backends.NewCache(backends.Config{
 		Resolver: diagnosticResolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
