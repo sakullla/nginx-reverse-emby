@@ -15,6 +15,7 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 )
 
 func TestHTTPProberDiagnoseSummarizesSuccessfulBackendRequests(t *testing.T) {
@@ -670,7 +671,7 @@ func TestHTTPCandidatesRelayChainPreservesConfiguredHostname(t *testing.T) {
 	if got := candidates[0].dialAddress; got != "relay-target.example:9443" {
 		t.Fatalf("dialAddress = %q", got)
 	}
-	if resolverCalls != 1 {
+	if resolverCalls != 0 {
 		t.Fatalf("resolver called %d times", resolverCalls)
 	}
 	if len(candidates[0].resolvedCandidates) != 1 {
@@ -681,44 +682,90 @@ func TestHTTPCandidatesRelayChainPreservesConfiguredHostname(t *testing.T) {
 	}
 }
 
-func TestHTTPCandidatesRelayChainResolvesChildrenForDisplay(t *testing.T) {
+func TestHTTPProberDiagnoseRelayChainUsesRemoteResolvedCandidatesAndSelectedAddress(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer backend.Close()
+
+	backendURL, err := url.Parse(backend.URL)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	backendPort := backendURL.Port()
+	resolverCalls := 0
 	cache := backends.NewCache(backends.Config{
 		Resolver: diagnosticResolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
-			if host != "relay-target.example" {
-				t.Fatalf("unexpected resolver host %q", host)
-			}
-			return []net.IPAddr{
-				{IP: net.ParseIP("127.0.0.10")},
-				{IP: net.ParseIP("127.0.0.11")},
-			}, nil
+			resolverCalls++
+			return nil, fmt.Errorf("unexpected local resolve %q", host)
 		}),
 	})
+	provider := newDiagnosticTLSMaterialProvider()
+	relayListener := newDiagnosticRelayListener(t, provider, 301, "relay.internal.test")
+	selectedAddress := net.JoinHostPort("127.0.0.10", backendPort)
+	otherAddress := net.JoinHostPort("127.0.0.11", backendPort)
+	previousResolveCandidates := diagnosticRelayResolveCandidates
+	previousDialWithResult := diagnosticRelayDialWithResult
+	t.Cleanup(func() {
+		diagnosticRelayResolveCandidates = previousResolveCandidates
+		diagnosticRelayDialWithResult = previousDialWithResult
+	})
+	diagnosticRelayResolveCandidates = func(ctx context.Context, target string, chain []relay.Hop, provider relay.TLSMaterialProvider) ([]string, error) {
+		if target != "relay-target.example:"+backendPort {
+			t.Fatalf("target = %q", target)
+		}
+		return []string{selectedAddress, otherAddress}, nil
+	}
+	diagnosticRelayDialWithResult = func(ctx context.Context, network, target string, chain []relay.Hop, provider relay.TLSMaterialProvider, opts ...relay.DialOptions) (net.Conn, relay.DialResult, error) {
+		if target != "relay-target.example:"+backendPort {
+			t.Fatalf("target = %q", target)
+		}
+		conn, err := (&net.Dialer{}).DialContext(ctx, network, backendURL.Host)
+		if err != nil {
+			return nil, relay.DialResult{}, err
+		}
+		return conn, relay.DialResult{SelectedAddress: selectedAddress}, nil
+	}
 
-	rule := model.HTTPRule{
+	prober := NewHTTPProber(HTTPProberConfig{
+		Attempts:      1,
+		Timeout:       time.Second,
+		Cache:         cache,
+		RelayProvider: provider,
+	})
+	report, err := prober.Diagnose(context.Background(), model.HTTPRule{
 		ID:          101,
 		FrontendURL: "https://frontend.example",
-		BackendURL:  "https://relay-target.example:9443/healthz",
+		BackendURL:  "http://relay-target.example:" + backendPort + "/healthz",
 		RelayChain:  []int{301},
-	}
-
-	candidates, err := httpCandidates(context.Background(), cache, rule)
+	}, []model.RelayListener{relayListener})
 	if err != nil {
-		t.Fatalf("httpCandidates() error = %v", err)
+		t.Fatalf("Diagnose() error = %v", err)
 	}
-	if len(candidates) != 1 {
-		t.Fatalf("candidates = %+v", candidates)
+	if resolverCalls != 0 {
+		t.Fatalf("resolver called %d times", resolverCalls)
 	}
-	if got := candidates[0].dialAddress; got != "relay-target.example:9443" {
-		t.Fatalf("dialAddress = %q", got)
+	if len(report.Samples) != 1 {
+		t.Fatalf("Samples = %+v", report.Samples)
 	}
-	if len(candidates[0].resolvedCandidates) != 2 {
-		t.Fatalf("resolvedCandidates = %+v", candidates[0].resolvedCandidates)
+	wantChildLabel := "http://relay-target.example:" + backendPort + "/healthz [" + selectedAddress + "]"
+	if got := report.Samples[0].Address; got != selectedAddress {
+		t.Fatalf("sample address = %q", got)
 	}
-	if got := candidates[0].resolvedCandidates[0].dialAddress; got != "127.0.0.10:9443" {
-		t.Fatalf("first resolved candidate = %+v", candidates[0].resolvedCandidates[0])
+	if got := report.Samples[0].Backend; got != wantChildLabel {
+		t.Fatalf("sample backend = %q", got)
 	}
-	if got := candidates[0].resolvedCandidates[1].dialAddress; got != "127.0.0.11:9443" {
-		t.Fatalf("second resolved candidate = %+v", candidates[0].resolvedCandidates[1])
+	if len(report.Backends) != 1 {
+		t.Fatalf("Backends = %+v", report.Backends)
+	}
+	if len(report.Backends[0].Children) != 2 {
+		t.Fatalf("children = %+v", report.Backends[0].Children)
+	}
+	if got := report.Backends[0].Children[0].Backend; got != wantChildLabel {
+		t.Fatalf("first child backend = %q", got)
+	}
+	if got := report.Backends[0].Children[0].Address; got != selectedAddress {
+		t.Fatalf("first child address = %q", got)
 	}
 }
 

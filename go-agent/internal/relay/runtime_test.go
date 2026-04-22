@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/quic-go/quic-go"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 )
 
@@ -1123,6 +1124,79 @@ func TestServerOpenUDPPeerDefersHostnameResolutionToLastHop(t *testing.T) {
 	}
 	if string(payload) != "udp-last-hop-dns" {
 		t.Fatalf("payload = %q", payload)
+	}
+}
+
+func TestDialWithResultReturnsSelectedAddressFromFinalHop(t *testing.T) {
+	backendAddr, stopBackend := startTCPEchoServer(t)
+	defer stopBackend()
+
+	provider := newFakeTLSMaterialProvider()
+	listener, hop := newRelayEndpoint(t, provider, 1, "relay-selected-address", "pin_only", true, false)
+
+	server, err := Start(context.Background(), []Listener{listener}, provider)
+	if err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+	defer server.Close()
+
+	conn, result, err := DialWithResult(context.Background(), "tcp", backendAddr, []Hop{hop}, provider)
+	if err != nil {
+		t.Fatalf("DialWithResult() error = %v", err)
+	}
+	defer conn.Close()
+
+	if result.SelectedAddress != backendAddr {
+		t.Fatalf("SelectedAddress = %q, want %q", result.SelectedAddress, backendAddr)
+	}
+}
+
+func TestResolveCandidatesUsesLastHopResolution(t *testing.T) {
+	provider := newFakeTLSMaterialProvider()
+	listener, hop := newRelayEndpoint(t, provider, 1, "relay-resolve", "pin_only", true, false)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	server := &Server{
+		ctx:      ctx,
+		cancel:   cancel,
+		provider: provider,
+		finalHopSelector: newFinalHopSelector(finalHopSelectorConfig{
+			Resolver: relayResolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
+				if host != "deferred.example" {
+					t.Fatalf("unexpected host %q", host)
+				}
+				return []net.IPAddr{
+					{IP: net.ParseIP("127.0.0.10")},
+					{IP: net.ParseIP("127.0.0.11")},
+				}, nil
+			}),
+		}),
+		conns:     make(map[net.Conn]struct{}),
+		quicConns: make(map[*quic.Conn]struct{}),
+	}
+	normalizedListener, err := normalizeListener(listener)
+	if err != nil {
+		t.Fatalf("normalizeListener() error = %v", err)
+	}
+	if err := server.startListener(normalizedListener); err != nil {
+		t.Fatalf("startListener() error = %v", err)
+	}
+	defer server.Close()
+
+	addresses, err := ResolveCandidates(context.Background(), "deferred.example:8096", []Hop{hop}, provider)
+	if err != nil {
+		t.Fatalf("ResolveCandidates() error = %v", err)
+	}
+	if len(addresses) != 2 {
+		t.Fatalf("addresses = %+v", addresses)
+	}
+	if addresses[0] != "127.0.0.10:8096" {
+		t.Fatalf("first address = %q", addresses[0])
+	}
+	if addresses[1] != "127.0.0.11:8096" {
+		t.Fatalf("second address = %q", addresses[1])
 	}
 }
 

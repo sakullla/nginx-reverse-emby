@@ -58,16 +58,74 @@ func startQUICListener(ctx context.Context, provider TLSMaterialProvider, listen
 }
 
 func dialQUIC(ctx context.Context, network, target string, chain []Hop, provider TLSMaterialProvider, options DialOptions) (net.Conn, error) {
+	conn, _, err := dialQUICWithResult(ctx, network, target, chain, provider, options)
+	return conn, err
+}
+
+func dialQUICWithResult(ctx context.Context, network, target string, chain []Hop, provider TLSMaterialProvider, options DialOptions) (net.Conn, DialResult, error) {
 	if !strings.EqualFold(network, "tcp") && !strings.EqualFold(network, "udp") {
-		return nil, fmt.Errorf("unsupported network %q", network)
+		return nil, DialResult{}, fmt.Errorf("unsupported network %q", network)
 	}
 	if len(chain) == 0 {
-		return nil, fmt.Errorf("relay chain is required")
+		return nil, DialResult{}, fmt.Errorf("relay chain is required")
 	}
 	if _, _, err := net.SplitHostPort(target); err != nil {
-		return nil, fmt.Errorf("invalid relay target %q: %w", target, err)
+		return nil, DialResult{}, fmt.Errorf("invalid relay target %q: %w", target, err)
 	}
 
+	firstHop := chain[0]
+	tlsConfig, err := clientQUICTLSConfig(ctx, provider, firstHop.Listener, firstHop.Address, firstHop.ServerName)
+	if err != nil {
+		return nil, DialResult{}, err
+	}
+	sessionKey, err := quicSessionPoolKey(firstHop)
+	if err != nil {
+		return nil, DialResult{}, err
+	}
+
+	session, stream, err := openQUICStream(ctx, sessionKey, func(dialCtx context.Context) (*quic.Conn, error) {
+		return quicDialAddr(dialCtx, firstHop.Address, tlsConfig, newRelayQUICConfig())
+	})
+	if err != nil {
+		return nil, DialResult{}, err
+	}
+
+	conn := &quicStreamConn{conn: session, stream: stream}
+	request := relayOpenFrame{
+		Kind:        network,
+		Target:      target,
+		Chain:       append([]Hop(nil), chain[1:]...),
+		InitialData: options.InitialPayload,
+	}
+	if err := withFrameDeadline(conn, func() error {
+		return writeRelayOpenFrame(conn, request)
+	}); err != nil {
+		conn.Close()
+		return nil, DialResult{}, err
+	}
+
+	var response relayResponse
+	err = withFrameDeadline(conn, func() error {
+		var readErr error
+		response, readErr = readRelayResponse(conn)
+		return readErr
+	})
+	if err != nil {
+		conn.Close()
+		return nil, DialResult{}, err
+	}
+	if !response.OK {
+		conn.Close()
+		if response.Error == "" {
+			return nil, DialResult{}, fmt.Errorf("relay connection failed")
+		}
+		return nil, DialResult{}, fmt.Errorf("relay connection failed: %s", response.Error)
+	}
+
+	return conn, DialResult{SelectedAddress: response.SelectedAddress}, nil
+}
+
+func resolveCandidatesQUIC(ctx context.Context, target string, chain []Hop, provider TLSMaterialProvider) ([]string, error) {
 	firstHop := chain[0]
 	tlsConfig, err := clientQUICTLSConfig(ctx, provider, firstHop.Listener, firstHop.Address, firstHop.ServerName)
 	if err != nil {
@@ -86,16 +144,16 @@ func dialQUIC(ctx context.Context, network, target string, chain []Hop, provider
 	}
 
 	conn := &quicStreamConn{conn: session, stream: stream}
+	defer conn.Close()
+
 	request := relayOpenFrame{
-		Kind:        network,
-		Target:      target,
-		Chain:       append([]Hop(nil), chain[1:]...),
-		InitialData: options.InitialPayload,
+		Kind:   "resolve",
+		Target: target,
+		Chain:  append([]Hop(nil), chain[1:]...),
 	}
 	if err := withFrameDeadline(conn, func() error {
 		return writeRelayOpenFrame(conn, request)
 	}); err != nil {
-		conn.Close()
 		return nil, err
 	}
 
@@ -106,18 +164,15 @@ func dialQUIC(ctx context.Context, network, target string, chain []Hop, provider
 		return readErr
 	})
 	if err != nil {
-		conn.Close()
 		return nil, err
 	}
 	if !response.OK {
-		conn.Close()
 		if response.Error == "" {
-			return nil, fmt.Errorf("relay connection failed")
+			return nil, fmt.Errorf("relay resolve failed")
 		}
-		return nil, fmt.Errorf("relay connection failed: %s", response.Error)
+		return nil, fmt.Errorf("relay resolve failed: %s", response.Error)
 	}
-
-	return conn, nil
+	return append([]string(nil), response.ResolvedCandidates...), nil
 }
 
 func openQUICStream(ctx context.Context, sessionKey string, dial func(context.Context) (*quic.Conn, error)) (*quic.Conn, *quic.Stream, error) {

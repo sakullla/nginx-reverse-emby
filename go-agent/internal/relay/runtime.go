@@ -17,6 +17,10 @@ type DialOptions struct {
 	InitialPayload []byte
 }
 
+type DialResult struct {
+	SelectedAddress string
+}
+
 func (o DialOptions) clone() DialOptions {
 	if len(o.InitialPayload) == 0 {
 		return DialOptions{}
@@ -157,30 +161,21 @@ func (s *Server) handleConn(rawConn net.Conn, listener Listener) {
 }
 
 func (s *Server) openUpstream(network, target string, chain []Hop, options DialOptions) (net.Conn, error) {
-	if len(chain) > 0 {
-		return Dial(s.ctx, network, target, chain, s.provider, options)
-	}
-
-	if !strings.EqualFold(network, "tcp") {
-		return nil, fmt.Errorf("unsupported network %q", network)
-	}
-
-	selector := s.finalHopSelector
-	if selector == nil {
-		// Start() initializes the selector; keep a fallback for tests/manual Server construction.
-		selector = newFinalHopSelector(finalHopSelectorConfig{})
-	}
-	conn, _, err := selector.dialTCP(s.ctx, target)
+	conn, _, err := s.openUpstreamWithResult(network, target, chain, options)
 	return conn, err
 }
 
-func (s *Server) openUDPPeer(target string, chain []Hop) (udpPacketPeer, error) {
+func (s *Server) openUpstreamWithResult(network, target string, chain []Hop, options DialOptions) (net.Conn, string, error) {
 	if len(chain) > 0 {
-		conn, err := Dial(s.ctx, "udp", target, chain, s.provider)
+		conn, result, err := DialWithResult(s.ctx, network, target, chain, s.provider, options)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
-		return newUDPStreamPeer(conn), nil
+		return conn, result.SelectedAddress, nil
+	}
+
+	if !strings.EqualFold(network, "tcp") {
+		return nil, "", fmt.Errorf("unsupported network %q", network)
 	}
 
 	selector := s.finalHopSelector
@@ -188,23 +183,113 @@ func (s *Server) openUDPPeer(target string, chain []Hop) (udpPacketPeer, error) 
 		// Start() initializes the selector; keep a fallback for tests/manual Server construction.
 		selector = newFinalHopSelector(finalHopSelectorConfig{})
 	}
-	peer, _, err := selector.openUDPPeer(s.ctx, target)
+	conn, selectedAddress, err := selector.dialTCP(s.ctx, target)
+	return conn, selectedAddress, err
+}
+
+func (s *Server) openUDPPeer(target string, chain []Hop) (udpPacketPeer, error) {
+	peer, _, err := s.openUDPPeerWithResult(target, chain)
 	return peer, err
 }
 
+func (s *Server) openUDPPeerWithResult(target string, chain []Hop) (udpPacketPeer, string, error) {
+	if len(chain) > 0 {
+		conn, result, err := DialWithResult(s.ctx, "udp", target, chain, s.provider)
+		if err != nil {
+			return nil, "", err
+		}
+		return newUDPStreamPeer(conn), result.SelectedAddress, nil
+	}
+
+	selector := s.finalHopSelector
+	if selector == nil {
+		// Start() initializes the selector; keep a fallback for tests/manual Server construction.
+		selector = newFinalHopSelector(finalHopSelectorConfig{})
+	}
+	peer, selectedAddress, err := selector.openUDPPeer(s.ctx, target)
+	return peer, selectedAddress, err
+}
+
+func (s *Server) resolveTargetCandidates(target string, chain []Hop) ([]string, error) {
+	if len(chain) > 0 {
+		return ResolveCandidates(s.ctx, target, chain, s.provider)
+	}
+
+	selector := s.finalHopSelector
+	if selector == nil {
+		selector = newFinalHopSelector(finalHopSelectorConfig{})
+	}
+	candidates, err := selector.resolvedCandidates(s.ctx, target)
+	if err != nil {
+		return nil, err
+	}
+	addresses := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		addresses = append(addresses, candidate.Address)
+	}
+	return addresses, nil
+}
+
 func Dial(ctx context.Context, network, target string, chain []Hop, provider TLSMaterialProvider, opts ...DialOptions) (net.Conn, error) {
+	conn, _, err := DialWithResult(ctx, network, target, chain, provider, opts...)
+	return conn, err
+}
+
+func DialWithResult(ctx context.Context, network, target string, chain []Hop, provider TLSMaterialProvider, opts ...DialOptions) (net.Conn, DialResult, error) {
 	if len(opts) > 1 {
-		return nil, fmt.Errorf("multiple relay dial options are not supported")
+		return nil, DialResult{}, fmt.Errorf("multiple relay dial options are not supported")
 	}
 	options := DialOptions{}
 	if len(opts) > 0 {
 		options = opts[0].clone()
 	}
 	if provider == nil {
-		return nil, fmt.Errorf("tls material provider is required")
+		return nil, DialResult{}, fmt.Errorf("tls material provider is required")
 	}
 	if !strings.EqualFold(network, "tcp") && !strings.EqualFold(network, "udp") {
-		return nil, fmt.Errorf("unsupported network %q", network)
+		return nil, DialResult{}, fmt.Errorf("unsupported network %q", network)
+	}
+	if len(chain) == 0 {
+		return nil, DialResult{}, fmt.Errorf("relay chain is required")
+	}
+	if _, _, err := net.SplitHostPort(target); err != nil {
+		return nil, DialResult{}, fmt.Errorf("invalid relay target %q: %w", target, err)
+	}
+	firstHop := chain[0]
+	if err := ValidateListener(firstHop.Listener); err != nil {
+		return nil, DialResult{}, fmt.Errorf("relay hop listener %d: %w", firstHop.Listener.ID, err)
+	}
+	if strings.TrimSpace(firstHop.Address) == "" {
+		return nil, DialResult{}, fmt.Errorf("relay hop address is required")
+	}
+
+	transportMode, err := normalizeListenerTransportMode(firstHop.Listener.TransportMode)
+	if err != nil {
+		return nil, DialResult{}, fmt.Errorf("relay hop listener %d: %w", firstHop.Listener.ID, err)
+	}
+
+	if transportMode == ListenerTransportModeQUIC {
+		conn, result, err := dialQUICWithResult(ctx, network, target, chain, provider, options)
+		if err == nil {
+			return conn, result, nil
+		}
+		if !firstHop.Listener.AllowTransportFallback {
+			return nil, DialResult{}, err
+		}
+
+		fallbackConn, fallbackResult, fallbackErr := dialTLSTCPMuxWithResult(ctx, network, target, chain, provider, options)
+		if fallbackErr != nil {
+			return nil, DialResult{}, fmt.Errorf("quic relay failed: %v; tls_tcp fallback failed: %w", err, fallbackErr)
+		}
+		return fallbackConn, fallbackResult, nil
+	}
+
+	return dialTLSTCPMuxWithResult(ctx, network, target, chain, provider, options)
+}
+
+func ResolveCandidates(ctx context.Context, target string, chain []Hop, provider TLSMaterialProvider) ([]string, error) {
+	if provider == nil {
+		return nil, fmt.Errorf("tls material provider is required")
 	}
 	if len(chain) == 0 {
 		return nil, fmt.Errorf("relay chain is required")
@@ -226,22 +311,17 @@ func Dial(ctx context.Context, network, target string, chain []Hop, provider TLS
 	}
 
 	if transportMode == ListenerTransportModeQUIC {
-		conn, err := dialQUIC(ctx, network, target, chain, provider, options)
+		addresses, err := resolveCandidatesQUIC(ctx, target, chain, provider)
 		if err == nil {
-			return conn, nil
+			return addresses, nil
 		}
 		if !firstHop.Listener.AllowTransportFallback {
 			return nil, err
 		}
-
-		fallbackConn, fallbackErr := dialTLSTCPMux(ctx, network, target, chain, provider, options)
-		if fallbackErr != nil {
-			return nil, fmt.Errorf("quic relay failed: %v; tls_tcp fallback failed: %w", err, fallbackErr)
-		}
-		return fallbackConn, nil
+		return resolveCandidatesTLSTCPMux(ctx, target, chain, provider)
 	}
 
-	return dialTLSTCPMux(ctx, network, target, chain, provider, options)
+	return resolveCandidatesTLSTCPMux(ctx, target, chain, provider)
 }
 
 // dialTLSTCP is the legacy one-stream-per-TLS-connection path. Runtime relay
@@ -417,9 +497,22 @@ func (s *Server) handleQUICStream(conn *quic.Conn, stream *quic.Stream, listener
 	if err != nil {
 		return
 	}
-	if !strings.EqualFold(request.Kind, "tcp") && !strings.EqualFold(request.Kind, "udp") {
+	if !strings.EqualFold(request.Kind, "tcp") && !strings.EqualFold(request.Kind, "udp") && !strings.EqualFold(request.Kind, "resolve") {
 		_ = withFrameDeadline(clientConn, func() error {
 			return writeRelayResponse(clientConn, relayResponse{OK: false, Error: fmt.Sprintf("unsupported network %q", request.Kind)})
+		})
+		return
+	}
+	if strings.EqualFold(request.Kind, "resolve") {
+		resolvedCandidates, err := s.resolveTargetCandidates(request.Target, request.Chain)
+		if err != nil {
+			_ = withFrameDeadline(clientConn, func() error {
+				return writeRelayResponse(clientConn, relayResponse{OK: false, Error: err.Error()})
+			})
+			return
+		}
+		_ = withFrameDeadline(clientConn, func() error {
+			return writeRelayResponse(clientConn, relayResponse{OK: true, ResolvedCandidates: resolvedCandidates})
 		})
 		return
 	}
@@ -427,7 +520,7 @@ func (s *Server) handleQUICStream(conn *quic.Conn, stream *quic.Stream, listener
 		s.handleUDPRelayStream(clientConn, listener, request.Target, request.Chain)
 		return
 	}
-	upstream, err := s.openUpstream(request.Kind, request.Target, request.Chain, DialOptions{})
+	upstream, selectedAddress, err := s.openUpstreamWithResult(request.Kind, request.Target, request.Chain, DialOptions{})
 	if err != nil {
 		_ = withFrameDeadline(clientConn, func() error {
 			return writeRelayResponse(clientConn, relayResponse{OK: false, Error: err.Error()})
@@ -447,7 +540,7 @@ func (s *Server) handleQUICStream(conn *quic.Conn, stream *quic.Stream, listener
 		}
 	}
 	if err := withFrameDeadline(clientConn, func() error {
-		return writeRelayResponse(clientConn, relayResponse{OK: true})
+		return writeRelayResponse(clientConn, relayResponse{OK: true, SelectedAddress: selectedAddress})
 	}); err != nil {
 		return
 	}
@@ -461,7 +554,7 @@ func listenerUsesEarlyWindowMask(listener Listener) bool {
 }
 
 func (s *Server) handleUDPRelayStream(clientConn net.Conn, listener Listener, target string, chain []Hop) {
-	upstream, err := s.openUDPPeer(target, chain)
+	upstream, selectedAddress, err := s.openUDPPeerWithResult(target, chain)
 	if err != nil {
 		_ = withFrameDeadline(clientConn, func() error {
 			return writeRelayResponse(clientConn, relayResponse{OK: false, Error: err.Error()})
@@ -471,7 +564,7 @@ func (s *Server) handleUDPRelayStream(clientConn net.Conn, listener Listener, ta
 	defer upstream.Close()
 
 	if err := withFrameDeadline(clientConn, func() error {
-		return writeRelayResponse(clientConn, relayResponse{OK: true})
+		return writeRelayResponse(clientConn, relayResponse{OK: true, SelectedAddress: selectedAddress})
 	}); err != nil {
 		return
 	}
