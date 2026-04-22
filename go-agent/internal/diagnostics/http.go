@@ -60,8 +60,9 @@ func NewHTTPProber(cfg HTTPProberConfig) *HTTPProber {
 }
 
 func (p *HTTPProber) Diagnose(ctx context.Context, rule model.HTTPRule, relayListeners []model.RelayListener) (Report, error) {
-	cache := p.cache.Clone()
-	candidates, err := httpCandidates(ctx, cache, rule)
+	baseCache := p.cache
+	cache := baseCache.Clone()
+	candidates, err := httpCandidates(ctx, baseCache, rule)
 	if err != nil {
 		return Report{}, err
 	}
@@ -79,7 +80,7 @@ func (p *HTTPProber) Diagnose(ctx context.Context, rule model.HTTPRule, relayLis
 		}
 	}
 	report := BuildReport("http", rule.ID, samples)
-	report.Backends = buildHTTPAdaptiveReports(report.Backends, candidates, cache)
+	report.Backends = buildHTTPAdaptiveReports(report.Backends, candidates, baseCache)
 	return report, nil
 }
 
@@ -198,16 +199,37 @@ func httpCandidates(ctx context.Context, cache *backends.Cache, rule model.HTTPR
 				continue
 			}
 			clone := *target
+			resolvedChildren := []httpResolvedCandidate{{
+				label:       clone.String(),
+				dialAddress: dialAddress,
+			}}
+			endpoint := backends.Endpoint{
+				Host: target.Hostname(),
+				Port: httpPortWithDefault(target),
+			}
+			if resolved, err := cache.Resolve(ctx, endpoint); err == nil {
+				resolvedChildren = make([]httpResolvedCandidate, 0, len(resolved))
+				for _, resolvedCandidate := range resolved {
+					label := probeBackendLabel(&clone, resolvedCandidate.Address)
+					resolvedChildren = append(resolvedChildren, httpResolvedCandidate{
+						label:       label,
+						dialAddress: resolvedCandidate.Address,
+					})
+				}
+				if len(resolvedChildren) == 0 {
+					resolvedChildren = []httpResolvedCandidate{{
+						label:       clone.String(),
+						dialAddress: dialAddress,
+					}}
+				}
+			}
 			out = append(out, httpProbeCandidate{
 				targetURL:             &clone,
 				backendLabel:          clone.String(),
 				dialAddress:           dialAddress,
 				backendObservationKey: backends.BackendObservationKey(scope, backends.StableBackendID(clone.String())),
 				configuredURL:         clone.String(),
-				resolvedCandidates: []httpResolvedCandidate{{
-					label:       clone.String(),
-					dialAddress: dialAddress,
-				}},
+				resolvedCandidates:    resolvedChildren,
 			})
 			continue
 		}
@@ -321,15 +343,20 @@ func buildHTTPAdaptiveReports(reports []BackendReport, candidates []httpProbeCan
 		for _, child := range children {
 			childAddresses = append(childAddresses, child.dialAddress)
 		}
-		childSummaries := cache.SummariesWithSharedThroughput(childAddresses)
+		childSummaryKeys := make([]string, 0, len(children))
+		for _, childAddress := range childAddresses {
+			childSummaryKeys = append(childSummaryKeys, diagnosticAddressKey(nil, childAddress))
+		}
+		childSummaries := cache.SummariesWithSharedThroughput(childSummaryKeys)
 		preferredChildKey := preferredObservationKey(childSummaries)
 		for index, child := range children {
 			childReport := reportByLabel[child.label]
-			childSummary, ok := childSummaries[child.dialAddress]
+			childSummaryKey := diagnosticAddressKey(nil, child.dialAddress)
+			childSummary, ok := childSummaries[childSummaryKey]
 			if !ok {
-				childSummary = cache.Summary(child.dialAddress)
+				childSummary = cache.Summary(childSummaryKey)
 			}
-			isPreferredChild := child.dialAddress == preferredChildKey
+			isPreferredChild := childSummaryKey == preferredChildKey
 			if len(childSummaries) == 0 {
 				isPreferredChild = index == 0
 			}

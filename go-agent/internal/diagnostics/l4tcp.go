@@ -65,8 +65,9 @@ func NewTCPProber(cfg TCPProberConfig) *TCPProber {
 }
 
 func (p *TCPProber) Diagnose(ctx context.Context, rule model.L4Rule, relayListeners []model.RelayListener) (Report, error) {
-	cache := p.cache.Clone()
-	candidates, err := tcpCandidates(ctx, cache, rule)
+	baseCache := p.cache
+	cache := baseCache.Clone()
+	candidates, err := tcpCandidates(ctx, baseCache, rule)
 	if err != nil {
 		return Report{}, err
 	}
@@ -106,7 +107,7 @@ func (p *TCPProber) Diagnose(ctx context.Context, rule model.L4Rule, relayListen
 	}
 
 	report := BuildReport("l4_tcp", rule.ID, samples)
-	report.Backends = buildTCPAdaptiveReports(report.Backends, candidates, cache)
+	report.Backends = buildTCPAdaptiveReports(report.Backends, candidates, baseCache)
 	return report, nil
 }
 
@@ -163,16 +164,35 @@ func tcpCandidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule
 			if cache.IsInBackoff(backends.RelayBackoffKey(rule.RelayChain, address)) {
 				continue
 			}
+			resolvedCandidates := []tcpResolvedCandidate{{
+				label:   configuredLabel,
+				address: address,
+			}}
+			if resolved, err := cache.Resolve(ctx, backends.Endpoint{
+				Host: backend.Host,
+				Port: backend.Port,
+			}); err == nil {
+				resolvedCandidates = make([]tcpResolvedCandidate, 0, len(resolved))
+				for _, resolvedCandidate := range resolved {
+					resolvedCandidates = append(resolvedCandidates, tcpResolvedCandidate{
+						label:   resolvedCandidate.Address,
+						address: resolvedCandidate.Address,
+					})
+				}
+				if len(resolvedCandidates) == 0 {
+					resolvedCandidates = []tcpResolvedCandidate{{
+						label:   configuredLabel,
+						address: address,
+					}}
+				}
+			}
 			out = append(out, tcpProbeCandidate{
 				address:               address,
 				backendLabel:          configuredLabel,
 				backendObservationKey: groupKey,
 				configuredLabel:       configuredLabel,
 				groupKey:              groupKey,
-				resolvedCandidates: []tcpResolvedCandidate{{
-					label:   configuredLabel,
-					address: address,
-				}},
+				resolvedCandidates:    resolvedCandidates,
 			})
 			continue
 		}
@@ -290,17 +310,26 @@ func buildTCPAdaptiveReports(reports []BackendReport, candidates []tcpProbeCandi
 			Children: make([]BackendReport, 0, len(children)),
 		}
 
-		preferredChildAddress := children[0].address
+		childSummaryKeys := make([]string, 0, len(children))
+		for _, child := range children {
+			childSummaryKeys = append(childSummaryKeys, diagnosticAddressKey(nil, child.address))
+		}
+		childSummaries := make(map[string]backends.ObservationSummary, len(childSummaryKeys))
+		for _, key := range childSummaryKeys {
+			childSummaries[key] = cache.SummaryLatencyOnly(key)
+		}
+		preferredChildKey := preferredObservationKey(childSummaries)
 		for _, child := range children {
 			childReport, ok := reportByLabel[child.label]
 			if !ok {
 				continue
 			}
+			childSummaryKey := diagnosticAddressKey(nil, child.address)
 			childReport.Address = child.address
 			childReport.Adaptive = adaptiveSummaryFromObservation(
-				cache.SummaryLatencyOnly(child.address),
-				child.address == preferredChildAddress,
-				preferredReason(child.address == preferredChildAddress),
+				childSummaries[childSummaryKey],
+				childSummaryKey == preferredChildKey,
+				preferredReason(childSummaryKey == preferredChildKey),
 				adaptiveSummaryOptions{},
 			)
 			parent.Children = append(parent.Children, childReport)

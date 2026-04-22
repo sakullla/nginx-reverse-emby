@@ -644,14 +644,103 @@ func TestTCPCandidatesRelayChainPreservesConfiguredHostname(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tcpCandidates() error = %v", err)
 	}
-	if resolverCalls != 0 {
+	if len(candidates) != 1 {
+		t.Fatalf("candidates = %+v", candidates)
+	}
+	if got := candidates[0].address; got != "relay-target.example:9001" {
+		t.Fatalf("address = %q", got)
+	}
+	if resolverCalls != 1 {
 		t.Fatalf("resolver called %d times", resolverCalls)
+	}
+	if len(candidates[0].resolvedCandidates) != 1 {
+		t.Fatalf("resolvedCandidates = %+v", candidates[0].resolvedCandidates)
+	}
+	if got := candidates[0].resolvedCandidates[0].address; got != "relay-target.example:9001" {
+		t.Fatalf("fallback resolved candidate = %+v", candidates[0].resolvedCandidates[0])
+	}
+}
+
+func TestTCPCandidatesRelayChainResolvesChildrenForDisplay(t *testing.T) {
+	cache := backends.NewCache(backends.Config{
+		Resolver: diagnosticResolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
+			if host != "relay-target.example" {
+				t.Fatalf("unexpected resolver host %q", host)
+			}
+			return []net.IPAddr{
+				{IP: net.ParseIP("127.0.0.10")},
+				{IP: net.ParseIP("127.0.0.11")},
+			}, nil
+		}),
+	})
+
+	rule := model.L4Rule{
+		ID:         103,
+		Protocol:   "tcp",
+		ListenHost: "0.0.0.0",
+		ListenPort: 9551,
+		RelayChain: []int{302},
+		Backends: []model.L4Backend{{
+			Host: "relay-target.example",
+			Port: 9001,
+		}},
+	}
+
+	candidates, err := tcpCandidates(context.Background(), cache, rule)
+	if err != nil {
+		t.Fatalf("tcpCandidates() error = %v", err)
 	}
 	if len(candidates) != 1 {
 		t.Fatalf("candidates = %+v", candidates)
 	}
 	if got := candidates[0].address; got != "relay-target.example:9001" {
 		t.Fatalf("address = %q", got)
+	}
+	if len(candidates[0].resolvedCandidates) != 2 {
+		t.Fatalf("resolvedCandidates = %+v", candidates[0].resolvedCandidates)
+	}
+	if got := candidates[0].resolvedCandidates[0].address; got != "127.0.0.10:9001" {
+		t.Fatalf("first resolved candidate = %+v", candidates[0].resolvedCandidates[0])
+	}
+	if got := candidates[0].resolvedCandidates[1].address; got != "127.0.0.11:9001" {
+		t.Fatalf("second resolved candidate = %+v", candidates[0].resolvedCandidates[1])
+	}
+}
+
+func TestTCPProberDiagnoseAdaptiveHistoryExcludesCurrentProbeSamples(t *testing.T) {
+	addr, _, stopTarget := startDiagnosticTCPTarget(t)
+	defer stopTarget()
+
+	host, port := splitDiagnosticTCPAddr(t, addr)
+	cache := backends.NewCache(backends.Config{})
+	prober := NewTCPProber(TCPProberConfig{
+		Attempts: 1,
+		Timeout:  time.Second,
+		Cache:    cache,
+	})
+
+	report, err := prober.Diagnose(context.Background(), model.L4Rule{
+		ID:           104,
+		Protocol:     "tcp",
+		ListenHost:   "0.0.0.0",
+		ListenPort:   9552,
+		UpstreamHost: host,
+		UpstreamPort: port,
+		LoadBalancing: model.LoadBalancing{
+			Strategy: "adaptive",
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("Diagnose() error = %v", err)
+	}
+	if len(report.Backends) != 1 || report.Backends[0].Adaptive == nil {
+		t.Fatalf("Backends = %+v", report.Backends)
+	}
+	if got := report.Backends[0].Adaptive.RecentSucceeded; got != 0 {
+		t.Fatalf("RecentSucceeded = %d, want baseline history without current probe sample", got)
+	}
+	if got := report.Backends[0].Adaptive.RecentFailed; got != 0 {
+		t.Fatalf("RecentFailed = %d, want baseline history without current probe sample", got)
 	}
 }
 

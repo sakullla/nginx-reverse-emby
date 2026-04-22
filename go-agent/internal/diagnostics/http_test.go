@@ -664,14 +664,61 @@ func TestHTTPCandidatesRelayChainPreservesConfiguredHostname(t *testing.T) {
 	if err != nil {
 		t.Fatalf("httpCandidates() error = %v", err)
 	}
-	if resolverCalls != 0 {
+	if len(candidates) != 1 {
+		t.Fatalf("candidates = %+v", candidates)
+	}
+	if got := candidates[0].dialAddress; got != "relay-target.example:9443" {
+		t.Fatalf("dialAddress = %q", got)
+	}
+	if resolverCalls != 1 {
 		t.Fatalf("resolver called %d times", resolverCalls)
+	}
+	if len(candidates[0].resolvedCandidates) != 1 {
+		t.Fatalf("resolvedCandidates = %+v", candidates[0].resolvedCandidates)
+	}
+	if got := candidates[0].resolvedCandidates[0].dialAddress; got != "relay-target.example:9443" {
+		t.Fatalf("fallback resolved candidate = %+v", candidates[0].resolvedCandidates[0])
+	}
+}
+
+func TestHTTPCandidatesRelayChainResolvesChildrenForDisplay(t *testing.T) {
+	cache := backends.NewCache(backends.Config{
+		Resolver: diagnosticResolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
+			if host != "relay-target.example" {
+				t.Fatalf("unexpected resolver host %q", host)
+			}
+			return []net.IPAddr{
+				{IP: net.ParseIP("127.0.0.10")},
+				{IP: net.ParseIP("127.0.0.11")},
+			}, nil
+		}),
+	})
+
+	rule := model.HTTPRule{
+		ID:          101,
+		FrontendURL: "https://frontend.example",
+		BackendURL:  "https://relay-target.example:9443/healthz",
+		RelayChain:  []int{301},
+	}
+
+	candidates, err := httpCandidates(context.Background(), cache, rule)
+	if err != nil {
+		t.Fatalf("httpCandidates() error = %v", err)
 	}
 	if len(candidates) != 1 {
 		t.Fatalf("candidates = %+v", candidates)
 	}
 	if got := candidates[0].dialAddress; got != "relay-target.example:9443" {
 		t.Fatalf("dialAddress = %q", got)
+	}
+	if len(candidates[0].resolvedCandidates) != 2 {
+		t.Fatalf("resolvedCandidates = %+v", candidates[0].resolvedCandidates)
+	}
+	if got := candidates[0].resolvedCandidates[0].dialAddress; got != "127.0.0.10:9443" {
+		t.Fatalf("first resolved candidate = %+v", candidates[0].resolvedCandidates[0])
+	}
+	if got := candidates[0].resolvedCandidates[1].dialAddress; got != "127.0.0.11:9443" {
+		t.Fatalf("second resolved candidate = %+v", candidates[0].resolvedCandidates[1])
 	}
 }
 
@@ -744,6 +791,42 @@ func TestHTTPProberDiagnoseAdaptivePrefersConfiguredBackendOrder(t *testing.T) {
 	}
 	if report.Backends[0].Backend != bulk.URL+"/healthz" {
 		t.Fatalf("unexpected first backend report: %+v", report.Backends)
+	}
+}
+
+func TestHTTPProberDiagnoseAdaptiveHistoryExcludesCurrentProbeSamples(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	cache := backends.NewCache(backends.Config{})
+	prober := NewHTTPProber(HTTPProberConfig{
+		Attempts:   1,
+		Timeout:    time.Second,
+		HTTPClient: server.Client(),
+		Cache:      cache,
+	})
+
+	report, err := prober.Diagnose(context.Background(), model.HTTPRule{
+		ID:          102,
+		FrontendURL: "https://edge.example.test",
+		BackendURL:  server.URL + "/healthz",
+		LoadBalancing: model.LoadBalancing{
+			Strategy: "adaptive",
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("Diagnose() error = %v", err)
+	}
+	if len(report.Backends) != 1 || report.Backends[0].Adaptive == nil {
+		t.Fatalf("Backends = %+v", report.Backends)
+	}
+	if got := report.Backends[0].Adaptive.RecentSucceeded; got != 0 {
+		t.Fatalf("RecentSucceeded = %d, want baseline history without current probe sample", got)
+	}
+	if got := report.Backends[0].Adaptive.RecentFailed; got != 0 {
+		t.Fatalf("RecentFailed = %d, want baseline history without current probe sample", got)
 	}
 }
 
@@ -1084,7 +1167,7 @@ func TestHTTPProberDiagnoseSerializesAdaptiveRecoveryFields(t *testing.T) {
 	if !ok {
 		t.Fatalf("adaptive = %#v", backendPayload["adaptive"])
 	}
-	if adaptive["state"] != backends.ObservationStateWarm {
+	if adaptive["state"] != backends.ObservationStateRecovering {
 		t.Fatalf("state = %#v", adaptive["state"])
 	}
 	if adaptive["sample_confidence"] != 1.0 {
