@@ -113,20 +113,31 @@ describe('RuleDiagnosticModal', () => {
   })
 
   it('renders adaptive history stats in expanded details', async () => {
-    const wrapper = mountModal()
+    const wrapper = mountModal({
+      task: buildTask('http', {
+        stability: 0.5,
+        recent_succeeded: 0,
+        recent_failed: 3,
+        latency_ms: 0,
+        sample_confidence: 0.55,
+        state: 'cold',
+        slow_start_active: false
+      })
+    })
     await wrapper.get('.diagnostic-modal__section-title--toggle').trigger('click')
     await wrapper.get('.diagnostic-backend-item__toggle').trigger('click')
 
+    expect(wrapper.text()).not.toContain('本次延迟 18 ms')
     expect(wrapper.text()).toContain('近24h成功')
     expect(wrapper.text()).toContain('近24h失败')
-    expect(wrapper.text()).toContain('优选状态')
-    expect(wrapper.text()).toContain('采样置信')
-    expect(wrapper.text()).toContain('慢启动')
+    expect(wrapper.text()).toContain('延迟')
     expect(wrapper.text()).toContain('3')
     expect(wrapper.text()).toContain('0')
-    expect(wrapper.text()).toContain('稳定')
-    expect(wrapper.text()).toContain('100%')
-    expect(wrapper.text()).toContain('无')
+    expect(wrapper.text()).toContain('0 ms')
+    expect(wrapper.text()).toContain('50%')
+    expect(wrapper.text()).not.toContain('优选状态')
+    expect(wrapper.text()).not.toContain('采样置信')
+    expect(wrapper.text()).not.toContain('慢启动')
   })
 
   it('shows resolved child candidates even when only one address is resolved', async () => {
@@ -146,15 +157,15 @@ describe('RuleDiagnosticModal', () => {
           },
           adaptive: {
             preferred: true,
-            stability: 1,
-            recent_succeeded: 2,
+            stability: 0.5,
+            recent_succeeded: 0,
             recent_failed: 1,
-            latency_ms: 12,
+            latency_ms: 0,
             performance_score: 0.92,
             sustained_throughput_bps: 1024 * 1024,
-            state: 'recovering',
-            sample_confidence: 0.8,
-            slow_start_active: true
+            state: 'cold',
+            sample_confidence: 0.05,
+            slow_start_active: false
           }
         }
       ])
@@ -170,7 +181,36 @@ describe('RuleDiagnosticModal', () => {
 
     expect(wrapper.text()).toContain('已解析候选')
     expect(wrapper.text()).toContain('127.0.0.1:8096')
-    expect(wrapper.text()).toContain('恢复中')
-    expect(wrapper.text()).toContain('80%')
+    expect(wrapper.text()).toContain('延迟 0 ms')
+    expect(wrapper.text()).toContain('稳定性 50%')
+    expect(wrapper.text()).toContain('近24h成功 0')
+    expect(wrapper.text()).not.toContain('近24h失败 1')
+    expect(wrapper.text()).not.toContain('恢复中')
+    expect(wrapper.text()).not.toContain('80%')
+  })
+
+  it('shows resolved ip separately in probe samples', async () => {
+    const wrapper = mountModal({
+      task: {
+        ...buildTask('http'),
+        result: {
+          ...buildTask('http').result,
+          samples: [
+            {
+              attempt: 1,
+              backend: 'http://origin.example.test/healthz [127.0.0.1:8096]',
+              success: true,
+              latency_ms: 12
+            }
+          ]
+        }
+      }
+    })
+
+    const toggles = wrapper.findAll('.diagnostic-modal__section-title--toggle')
+    await toggles[1].trigger('click')
+
+    expect(wrapper.text()).toContain('http://origin.example.test/healthz')
+    expect(wrapper.text()).toContain('127.0.0.1:8096')
   })
 })

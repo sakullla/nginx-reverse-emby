@@ -137,6 +137,7 @@ curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/dep
 | `NRE_HTTP_RESPONSE_HEADER_TIMEOUT` | `30s` | 等待 upstream 响应头超时 |
 | `NRE_HTTP_IDLE_CONN_TIMEOUT` | `90s` | upstream 空闲连接回收超时 |
 | `NRE_HTTP_KEEP_ALIVE` | `30s` | upstream TCP keepalive 间隔 |
+| `NRE_HTTP_MAX_CONNS_PER_HOST` | `32` | 每个 upstream 主机允许的最大并发连接数，避免海报墙等突发图片请求把单个 Emby 后端打满 |
 | `NRE_HTTP_STREAM_RESUME_ENABLED` | `true` | 是否启用中断流恢复 |
 | `NRE_HTTP_STREAM_RESUME_MAX_ATTEMPTS` | `2` | 单次请求最多追加恢复次数（正整数） |
 | `NRE_HTTP_SAME_BACKEND_RETRY_ATTEMPTS` | `1` | 同一 backend 额外重试次数。仅对 retry-safe 方法生效，且只在上游返回响应前的可重试 transport/read 错误上触发 |

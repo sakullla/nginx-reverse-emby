@@ -59,6 +59,7 @@ type HTTPTransportConfig struct {
 	ResponseHeaderTimeout time.Duration
 	IdleConnTimeout       time.Duration
 	KeepAlive             time.Duration
+	MaxConnsPerHost       int
 }
 
 type HTTPResilienceConfig struct {
@@ -132,6 +133,7 @@ func New(cfg Config, source SyncSource, sink StateSink) (*Runtime, error) {
 			ResponseHeaderTimeout: cfg.HTTPTransport.ResponseHeaderTimeout,
 			IdleConnTimeout:       cfg.HTTPTransport.IdleConnTimeout,
 			KeepAlive:             cfg.HTTPTransport.KeepAlive,
+			MaxConnsPerHost:       cfg.HTTPTransport.MaxConnsPerHost,
 		},
 		HTTPResilience: config.HTTPResilienceConfig{
 			ResumeEnabled:            cfg.HTTPResilience.ResumeEnabled,
