@@ -163,6 +163,10 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 			result.addSkippedInvalid("agent", key, "agent id, name, and agent_token are required")
 			continue
 		}
+		if strings.EqualFold(strings.TrimSpace(item.Mode), "local") && s.cfg.EnableLocalAgent {
+			result.addSkippedConflict("agent", item.Name, "local agent remapped to target")
+			continue
+		}
 		if _, ok := existingByName[item.Name]; ok {
 			result.addSkippedConflict("agent", item.Name, "agent name already exists")
 			continue
@@ -174,6 +178,55 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 		result.addImported("agent", item.Name)
 	}
 	agentIDMap := previewAgentIDMap(bundle.Manifest, bundle.Agents, existingByName, existingByID, s.cfg)
+	existingCertRows, err := s.store.ListManagedCertificates(ctx)
+	if err != nil {
+		return BackupImportResult{}, err
+	}
+	certIDMap := previewCertificateIDMap(bundle.Certificates, bundle.Agents, existingCertRows, agentIDMap, existingByName, existingByID, s.cfg)
+	existingCertDomains := map[string]struct{}{}
+	for _, row := range existingCertRows {
+		existingCertDomains[strings.TrimSpace(row.Domain)] = struct{}{}
+	}
+	for _, item := range bundle.Certificates {
+		key := strings.TrimSpace(item.Domain)
+		if _, exists := existingCertDomains[key]; exists {
+			result.addSkippedConflict("certificate", key, "certificate domain already exists")
+			continue
+		}
+		result.addImported("certificate", key)
+	}
+	existingRelayRows, err := s.store.ListRelayListeners(ctx, "")
+	if err != nil {
+		return BackupImportResult{}, err
+	}
+	listenerIDMap := previewListenerIDMap(bundle.RelayListeners, existingRelayRows, agentIDMap, certIDMap, s.cfg)
+	existingRelayKeys := map[string]struct{}{}
+	for _, row := range existingRelayRows {
+		existingRelayKeys[relayConflictKey(row.AgentID, row.Name)] = struct{}{}
+	}
+	for _, item := range bundle.RelayListeners {
+		resolvedAgentID, ok := resolveAgentID(item.AgentID, agentIDMap, s.cfg)
+		key := relayConflictKey(item.AgentID, item.Name)
+		if !ok {
+			result.addSkippedInvalid("relay_listener", key, "relay listener references unknown agent")
+			continue
+		}
+		conflictKey := relayConflictKey(resolvedAgentID, item.Name)
+		if _, exists := existingRelayKeys[conflictKey]; exists {
+			result.addSkippedConflict("relay_listener", conflictKey, "relay listener already exists")
+			continue
+		}
+		input := relayListenerInputFromBackup(item, certIDMap)
+		if item.CertificateID != nil && input.CertificateID == nil {
+			result.addSkippedInvalid("relay_listener", conflictKey, "referenced certificate was not imported")
+			continue
+		}
+		if len(item.TrustedCACertificateIDs) > 0 && len(pointerIntSlice(input.TrustedCACertificateIDs)) != len(item.TrustedCACertificateIDs) {
+			result.addSkippedInvalid("relay_listener", conflictKey, "referenced trusted CA certificate was not imported")
+			continue
+		}
+		result.addImported("relay_listener", conflictKey)
+	}
 	knownAgentIDs, err := allKnownAgentIDs(ctx, s.cfg, s.store)
 	if err != nil {
 		return BackupImportResult{}, err
@@ -198,6 +251,11 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 			result.addSkippedConflict("http_rule", key, "frontend_url already exists")
 			continue
 		}
+		input := httpRuleInputFromBackup(item, listenerIDMap)
+		if len(item.RelayChain) > 0 && len(pointerIntSlice(input.RelayChain)) != len(item.RelayChain) {
+			result.addSkippedInvalid("http_rule", key, "relay listener reference not available")
+			continue
+		}
 		result.addImported("http_rule", key)
 	}
 	existingL4Rules, err := s.listAllL4Rules(ctx, knownAgentIDs)
@@ -220,45 +278,12 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 			result.addSkippedConflict("l4_rule", key, "protocol/listen_host/listen_port already exists")
 			continue
 		}
+		input := l4RuleInputFromBackup(item, listenerIDMap)
+		if len(item.RelayChain) > 0 && len(pointerIntSlice(input.RelayChain)) != len(item.RelayChain) {
+			result.addSkippedInvalid("l4_rule", key, "relay listener reference not available")
+			continue
+		}
 		result.addImported("l4_rule", key)
-	}
-	existingRelayRows, err := s.store.ListRelayListeners(ctx, "")
-	if err != nil {
-		return BackupImportResult{}, err
-	}
-	existingRelayKeys := map[string]struct{}{}
-	for _, row := range existingRelayRows {
-		existingRelayKeys[relayConflictKey(row.AgentID, row.Name)] = struct{}{}
-	}
-	for _, item := range bundle.RelayListeners {
-		resolvedAgentID, ok := resolveAgentID(item.AgentID, agentIDMap, s.cfg)
-		key := relayConflictKey(item.AgentID, item.Name)
-		if !ok {
-			result.addSkippedInvalid("relay_listener", key, "relay listener references unknown agent")
-			continue
-		}
-		key = relayConflictKey(resolvedAgentID, item.Name)
-		if _, exists := existingRelayKeys[key]; exists {
-			result.addSkippedConflict("relay_listener", key, "relay listener already exists")
-			continue
-		}
-		result.addImported("relay_listener", key)
-	}
-	existingCertRows, err := s.store.ListManagedCertificates(ctx)
-	if err != nil {
-		return BackupImportResult{}, err
-	}
-	existingCertDomains := map[string]struct{}{}
-	for _, row := range existingCertRows {
-		existingCertDomains[strings.TrimSpace(row.Domain)] = struct{}{}
-	}
-	for _, item := range bundle.Certificates {
-		key := strings.TrimSpace(item.Domain)
-		if _, exists := existingCertDomains[key]; exists {
-			result.addSkippedConflict("certificate", key, "certificate domain already exists")
-			continue
-		}
-		result.addImported("certificate", key)
 	}
 	existingPolicyRows, err := s.store.ListVersionPolicies(ctx)
 	if err != nil {
@@ -277,6 +302,117 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 		result.addImported("version_policy", key)
 	}
 	return result, nil
+}
+
+func previewCertificateIDMap(certs []BackupCertificate, agents []BackupAgent, existing []storage.ManagedCertificateRow, agentIDMap map[string]string, existingAgentsByName map[string]storage.AgentRow, existingAgentsByID map[string]storage.AgentRow, cfg config.Config) map[int]int {
+	certIDMap := map[int]int{}
+	existingByDomain := make(map[string]ManagedCertificate, len(existing))
+	for _, row := range existing {
+		cert := managedCertificateFromRow(row)
+		existingByDomain[cert.Domain] = cert
+		certIDMap[cert.ID] = cert.ID
+	}
+	previewAgentCaps := previewAgentCapabilities(agents, agentIDMap, existingAgentsByName, existingAgentsByID, cfg)
+
+	for _, item := range certs {
+		if existingCert, ok := existingByDomain[item.Domain]; ok {
+			certIDMap[item.ID] = existingCert.ID
+			continue
+		}
+		if !previewCertificateTargetsResolvable(item.TargetAgentIDs, agentIDMap, previewAgentCaps, cfg) {
+			continue
+		}
+		if item.ID > 0 {
+			certIDMap[item.ID] = item.ID
+		}
+	}
+	return certIDMap
+}
+
+func previewCertificateTargetsResolvable(targetAgentIDs []string, agentIDMap map[string]string, capabilitiesByAgentID map[string][]string, cfg config.Config) bool {
+	targetIDs, ok := remapAgentIDs(targetAgentIDs, agentIDMap)
+	if !ok {
+		return false
+	}
+	for _, targetID := range targetIDs {
+		if cfg.EnableLocalAgent && strings.TrimSpace(targetID) == strings.TrimSpace(cfg.LocalAgentID) {
+			if !agentHasCapability(defaultLocalCapabilities, "cert_install") {
+				return false
+			}
+			continue
+		}
+		capabilities, ok := capabilitiesByAgentID[targetID]
+		if !ok || !agentHasCapability(capabilities, "cert_install") {
+			return false
+		}
+	}
+	return true
+}
+
+func previewAgentCapabilities(agents []BackupAgent, agentIDMap map[string]string, existingAgentsByName map[string]storage.AgentRow, existingAgentsByID map[string]storage.AgentRow, cfg config.Config) map[string][]string {
+	capabilitiesByAgentID := make(map[string][]string, len(existingAgentsByID)+len(agents)+1)
+	for id, row := range existingAgentsByID {
+		capabilitiesByAgentID[id] = parseStringArray(row.CapabilitiesJSON)
+	}
+	if cfg.EnableLocalAgent && strings.TrimSpace(cfg.LocalAgentID) != "" {
+		capabilitiesByAgentID[cfg.LocalAgentID] = append([]string(nil), defaultLocalCapabilities...)
+	}
+	for _, item := range agents {
+		if strings.TrimSpace(item.ID) == "" {
+			continue
+		}
+		resolvedID := strings.TrimSpace(agentIDMap[item.ID])
+		if resolvedID == "" {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(item.Mode), "local") && cfg.EnableLocalAgent {
+			capabilitiesByAgentID[resolvedID] = append([]string(nil), defaultLocalCapabilities...)
+			continue
+		}
+		if existingRow, ok := existingAgentsByName[item.Name]; ok {
+			capabilitiesByAgentID[resolvedID] = parseStringArray(existingRow.CapabilitiesJSON)
+			continue
+		}
+		if existingRow, ok := existingAgentsByID[item.ID]; ok {
+			capabilitiesByAgentID[resolvedID] = parseStringArray(existingRow.CapabilitiesJSON)
+			continue
+		}
+		capabilitiesByAgentID[resolvedID] = append([]string(nil), item.Capabilities...)
+	}
+	return capabilitiesByAgentID
+}
+
+func previewListenerIDMap(listeners []BackupRelayListener, existing []storage.RelayListenerRow, agentIDMap map[string]string, certIDMap map[int]int, cfg config.Config) map[int]int {
+	listenerIDMap := map[int]int{}
+	conflictIndex := map[string]RelayListener{}
+	for _, row := range existing {
+		listener := relayListenerFromRow(row)
+		conflictIndex[relayConflictKey(listener.AgentID, listener.Name)] = listener
+		listenerIDMap[listener.ID] = listener.ID
+	}
+
+	for _, item := range listeners {
+		resolvedAgentID, ok := resolveAgentID(item.AgentID, agentIDMap, cfg)
+		if !ok {
+			continue
+		}
+		conflictKey := relayConflictKey(resolvedAgentID, item.Name)
+		if existingListener, ok := conflictIndex[conflictKey]; ok {
+			listenerIDMap[item.ID] = existingListener.ID
+			continue
+		}
+		input := relayListenerInputFromBackup(item, certIDMap)
+		if item.CertificateID != nil && input.CertificateID == nil {
+			continue
+		}
+		if len(item.TrustedCACertificateIDs) > 0 && len(pointerIntSlice(input.TrustedCACertificateIDs)) != len(item.TrustedCACertificateIDs) {
+			continue
+		}
+		if item.ID > 0 {
+			listenerIDMap[item.ID] = item.ID
+		}
+	}
+	return listenerIDMap
 }
 
 func previewAgentIDMap(manifest BackupManifest, agents []BackupAgent, existingByName map[string]storage.AgentRow, existingByID map[string]storage.AgentRow, cfg config.Config) map[string]string {

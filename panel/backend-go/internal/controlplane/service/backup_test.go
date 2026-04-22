@@ -1091,3 +1091,331 @@ func TestBackupServicePreviewAccountsForAgentRemapBeforeConflictChecks(t *testin
 		t.Fatalf("preview imported summary = %+v", result.Summary.Imported)
 	}
 }
+
+func TestBackupServicePreviewTreatsIncomingLocalAgentAsRemappedConflict(t *testing.T) {
+	sourceStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "preview-local-source"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(source) error = %v", err)
+	}
+	defer sourceStore.Close()
+
+	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "preview-local-target"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(target) error = %v", err)
+	}
+	defer targetStore.Close()
+
+	ctx := t.Context()
+	if err := sourceStore.SaveAgent(ctx, storage.AgentRow{
+		ID:         "source-local",
+		Name:       "embedded-source",
+		AgentToken: "token-source-local",
+		Mode:       "local",
+	}); err != nil {
+		t.Fatalf("SaveAgent(source local) error = %v", err)
+	}
+
+	archive, _, err := NewBackupService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "source-local",
+		LocalAgentName:   "embedded-source",
+	}, sourceStore).Export(ctx)
+	if err != nil {
+		t.Fatalf("Export() error = %v", err)
+	}
+
+	result, err := NewBackupService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "target-local",
+		LocalAgentName:   "embedded-target",
+	}, targetStore).Preview(ctx, archive)
+	if err != nil {
+		t.Fatalf("Preview() error = %v", err)
+	}
+
+	if result.Summary.SkippedConflict.Agents != 1 {
+		t.Fatalf("agent preview conflicts = %+v", result.Summary.SkippedConflict)
+	}
+	if result.Summary.Imported.Agents != 0 {
+		t.Fatalf("agent preview imported = %+v", result.Summary.Imported)
+	}
+
+	found := false
+	for _, item := range result.Report.SkippedConflict {
+		if item.Kind == "agent" && item.Key == "embedded-source" && item.Reason == "local agent remapped to target" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("skipped conflict report = %+v", result.Report.SkippedConflict)
+	}
+}
+
+func TestBackupServicePreviewRejectsRulesWithMissingRelayChainDependencies(t *testing.T) {
+	sourceStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "preview-relay-source"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(source) error = %v", err)
+	}
+	defer sourceStore.Close()
+
+	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "preview-relay-target"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(target) error = %v", err)
+	}
+	defer targetStore.Close()
+
+	ctx := t.Context()
+	if err := sourceStore.SaveAgent(ctx, storage.AgentRow{
+		ID:         "edge-a",
+		Name:       "edge-a",
+		AgentToken: "token-edge-a",
+	}); err != nil {
+		t.Fatalf("SaveAgent(source) error = %v", err)
+	}
+	if err := sourceStore.SaveRelayListeners(ctx, "edge-a", []storage.RelayListenerRow{{
+		ID:                      31,
+		AgentID:                 "edge-a",
+		Name:                    "relay-edge",
+		ListenHost:              "127.0.0.1",
+		BindHostsJSON:           `["127.0.0.1"]`,
+		ListenPort:              7443,
+		PublicHost:              "relay.example.com",
+		PublicPort:              7443,
+		Enabled:                 true,
+		TLSMode:                 "pin_only",
+		TransportMode:           "tls_tcp",
+		ObfsMode:                "off",
+		PinSetJSON:              `[{"type":"spki_sha256","value":"fixture-pin"}]`,
+		TrustedCACertificateIDs: `[]`,
+		TagsJSON:                `[]`,
+		Revision:                2,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(source) error = %v", err)
+	}
+	if err := sourceStore.SaveHTTPRules(ctx, "edge-a", []storage.HTTPRuleRow{{
+		ID:                11,
+		AgentID:           "edge-a",
+		FrontendURL:       "https://relay-http.example.com",
+		BackendURL:        "http://127.0.0.1:8096",
+		BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		Enabled:           true,
+		RelayChainJSON:    `[31]`,
+		TagsJSON:          `[]`,
+		CustomHeadersJSON: `[]`,
+		Revision:          2,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules(source) error = %v", err)
+	}
+	if err := sourceStore.SaveL4Rules(ctx, "edge-a", []storage.L4RuleRow{{
+		ID:                12,
+		AgentID:           "edge-a",
+		Name:              "relay-l4",
+		Protocol:          "tcp",
+		ListenHost:        "0.0.0.0",
+		ListenPort:        25565,
+		UpstreamHost:      "127.0.0.1",
+		UpstreamPort:      25565,
+		BackendsJSON:      `[{"host":"127.0.0.1","port":25565}]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		TuningJSON:        `{"proxy_protocol":{"decode":false,"send":false}}`,
+		RelayChainJSON:    `[31]`,
+		Enabled:           true,
+		TagsJSON:          `[]`,
+		Revision:          2,
+	}}); err != nil {
+		t.Fatalf("SaveL4Rules(source) error = %v", err)
+	}
+
+	archive, _, err := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, sourceStore).Export(ctx)
+	if err != nil {
+		t.Fatalf("Export() error = %v", err)
+	}
+
+	bundle, err := decodeBackupBundle(archive)
+	if err != nil {
+		t.Fatalf("decodeBackupBundle() error = %v", err)
+	}
+	bundle.RelayListeners = nil
+	bundle.Manifest.Counts.RelayListeners = 0
+
+	archive, err = encodeBackupBundle(bundle)
+	if err != nil {
+		t.Fatalf("encodeBackupBundle() error = %v", err)
+	}
+
+	result, err := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, targetStore).Preview(ctx, archive)
+	if err != nil {
+		t.Fatalf("Preview() error = %v", err)
+	}
+
+	if result.Summary.SkippedInvalid.HTTPRules != 1 || result.Summary.SkippedInvalid.L4Rules != 1 {
+		t.Fatalf("preview invalid summary = %+v", result.Summary.SkippedInvalid)
+	}
+	if result.Summary.Imported.HTTPRules != 0 || result.Summary.Imported.L4Rules != 0 {
+		t.Fatalf("preview imported summary = %+v", result.Summary.Imported)
+	}
+}
+
+func TestBackupServicePreviewRejectsRelayListenersWithMissingCertificateDependencies(t *testing.T) {
+	sourceStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "preview-cert-source"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(source) error = %v", err)
+	}
+	defer sourceStore.Close()
+
+	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "preview-cert-target"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(target) error = %v", err)
+	}
+	defer targetStore.Close()
+
+	ctx := t.Context()
+	if err := sourceStore.SaveAgent(ctx, storage.AgentRow{
+		ID:               "edge-a",
+		Name:             "edge-a",
+		AgentToken:       "token-edge-a",
+		CapabilitiesJSON: `["cert_install"]`,
+	}); err != nil {
+		t.Fatalf("SaveAgent(source) error = %v", err)
+	}
+	if err := sourceStore.SaveManagedCertificates(ctx, []storage.ManagedCertificateRow{
+		{
+			ID:              21,
+			Domain:          "leaf.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  `["edge-a"]`,
+			Status:          "active",
+			LastIssueAt:     "2026-04-18T12:00:00Z",
+			MaterialHash:    "leaf-hash",
+			AgentReports:    `{}`,
+			ACMEInfo:        `{}`,
+			Usage:           "https",
+			CertificateType: "uploaded",
+			TagsJSON:        `[]`,
+			Revision:        2,
+		},
+		{
+			ID:              22,
+			Domain:          "ca.example.com",
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			TargetAgentIDs:  `["edge-a"]`,
+			Status:          "active",
+			LastIssueAt:     "2026-04-18T12:00:00Z",
+			MaterialHash:    "ca-hash",
+			AgentReports:    `{}`,
+			ACMEInfo:        `{}`,
+			Usage:           "https",
+			CertificateType: "uploaded",
+			TagsJSON:        `[]`,
+			Revision:        3,
+		},
+	}); err != nil {
+		t.Fatalf("SaveManagedCertificates(source) error = %v", err)
+	}
+	if err := sourceStore.SaveManagedCertificateMaterial(ctx, "leaf.example.com", storage.ManagedCertificateBundle{
+		Domain:  "leaf.example.com",
+		CertPEM: "leaf-cert",
+		KeyPEM:  "leaf-key",
+	}); err != nil {
+		t.Fatalf("SaveManagedCertificateMaterial(leaf) error = %v", err)
+	}
+	if err := sourceStore.SaveManagedCertificateMaterial(ctx, "ca.example.com", storage.ManagedCertificateBundle{
+		Domain:  "ca.example.com",
+		CertPEM: "ca-cert",
+		KeyPEM:  "ca-key",
+	}); err != nil {
+		t.Fatalf("SaveManagedCertificateMaterial(ca) error = %v", err)
+	}
+	if err := sourceStore.SaveRelayListeners(ctx, "edge-a", []storage.RelayListenerRow{
+		{
+			ID:                      31,
+			AgentID:                 "edge-a",
+			Name:                    "relay-missing-cert",
+			ListenHost:              "127.0.0.1",
+			BindHostsJSON:           `["127.0.0.1"]`,
+			ListenPort:              7443,
+			PublicHost:              "relay-cert.example.com",
+			PublicPort:              7443,
+			Enabled:                 true,
+			CertificateID:           backupIntPtr(21),
+			TLSMode:                 "pin_only",
+			TransportMode:           "tls_tcp",
+			ObfsMode:                "off",
+			PinSetJSON:              `[{"type":"spki_sha256","value":"fixture-pin"}]`,
+			TrustedCACertificateIDs: `[]`,
+			TagsJSON:                `[]`,
+			Revision:                2,
+		},
+		{
+			ID:                      32,
+			AgentID:                 "edge-a",
+			Name:                    "relay-missing-trusted-ca",
+			ListenHost:              "127.0.0.1",
+			BindHostsJSON:           `["127.0.0.1"]`,
+			ListenPort:              7444,
+			PublicHost:              "relay-ca.example.com",
+			PublicPort:              7444,
+			Enabled:                 true,
+			TLSMode:                 "pin_only",
+			TransportMode:           "tls_tcp",
+			ObfsMode:                "off",
+			PinSetJSON:              `[{"type":"spki_sha256","value":"fixture-pin"}]`,
+			TrustedCACertificateIDs: `[22]`,
+			TagsJSON:                `[]`,
+			Revision:                3,
+		},
+	}); err != nil {
+		t.Fatalf("SaveRelayListeners(source) error = %v", err)
+	}
+
+	archive, _, err := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, sourceStore).Export(ctx)
+	if err != nil {
+		t.Fatalf("Export() error = %v", err)
+	}
+
+	bundle, err := decodeBackupBundle(archive)
+	if err != nil {
+		t.Fatalf("decodeBackupBundle() error = %v", err)
+	}
+	bundle.Certificates = nil
+	bundle.Materials = nil
+	bundle.Manifest.Counts.Certificates = 0
+	bundle.Manifest.IncludesCertificates = false
+
+	archive, err = encodeBackupBundle(bundle)
+	if err != nil {
+		t.Fatalf("encodeBackupBundle() error = %v", err)
+	}
+
+	result, err := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, targetStore).Preview(ctx, archive)
+	if err != nil {
+		t.Fatalf("Preview() error = %v", err)
+	}
+
+	if result.Summary.SkippedInvalid.RelayListeners != 2 {
+		t.Fatalf("relay preview invalid summary = %+v", result.Summary.SkippedInvalid)
+	}
+	if result.Summary.Imported.RelayListeners != 0 {
+		t.Fatalf("relay preview imported = %+v", result.Summary.Imported)
+	}
+
+	foundMissingCert := false
+	foundMissingCA := false
+	for _, item := range result.Report.SkippedInvalid {
+		if item.Kind == "relay_listener" && item.Key == "edge-a|relay-missing-cert" && item.Reason == "referenced certificate was not imported" {
+			foundMissingCert = true
+		}
+		if item.Kind == "relay_listener" && item.Key == "edge-a|relay-missing-trusted-ca" && item.Reason == "referenced trusted CA certificate was not imported" {
+			foundMissingCA = true
+		}
+	}
+	if !foundMissingCert || !foundMissingCA {
+		t.Fatalf("relay preview invalid report = %+v", result.Report.SkippedInvalid)
+	}
+}
