@@ -2,16 +2,14 @@ package localagent
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
-	"net"
-	"net/http"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	goagentembedded "github.com/sakullla/nginx-reverse-emby/go-agent/embedded"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
@@ -19,6 +17,19 @@ import (
 type TaskServiceRegistrar interface {
 	RegisterSession(service.TaskSessionRegistration) error
 	ApplyUpdate(ctx context.Context, input service.TaskUpdateInput) error
+}
+
+type diagnosticRunner func(context.Context, string, storage.Snapshot, service.TaskEnvelope) (map[string]any, error)
+
+var runEmbeddedDiagnostics diagnosticRunner = func(ctx context.Context, dataDir string, snapshot storage.Snapshot, envelope service.TaskEnvelope) (map[string]any, error) {
+	ruleID, err := taskRuleID(envelope.Payload)
+	if err != nil {
+		return nil, err
+	}
+	return goagentembedded.DiagnoseSnapshot(ctx, dataDir, toEmbeddedSnapshot(snapshot), goagentembedded.DiagnosticRequest{
+		TaskType: envelope.Type,
+		RuleID:   ruleID,
+	})
 }
 
 type LocalTaskSession struct {
@@ -34,6 +45,7 @@ type LocalTaskSession struct {
 type diagnosticRuleStore interface {
 	GetHTTPRule(ctx context.Context, agentID string, id int) (storage.HTTPRuleRow, bool, error)
 	ListL4Rules(ctx context.Context, agentID string) ([]storage.L4RuleRow, error)
+	LoadLocalSnapshot(ctx context.Context, agentID string) (storage.Snapshot, error)
 }
 
 func NewLocalTaskSession(agentID string, reporter TaskServiceRegistrar, store diagnosticRuleStore) *LocalTaskSession {
@@ -89,9 +101,9 @@ func (s *LocalTaskSession) handleTask(envelope service.TaskEnvelope) {
 
 	switch envelope.Type {
 	case service.TaskTypeDiagnoseHTTPRule:
-		result, taskErr = s.diagnoseHTTPRule(ctx, envelope.Payload)
+		result, taskErr = s.diagnoseHTTPRule(ctx, envelope)
 	case service.TaskTypeDiagnoseL4TCPRule:
-		result, taskErr = s.diagnoseL4TCPRule(ctx, envelope.Payload)
+		result, taskErr = s.diagnoseL4TCPRule(ctx, envelope)
 	default:
 		taskErr = fmt.Errorf("unsupported task type %q", envelope.Type)
 	}
@@ -114,8 +126,8 @@ func (s *LocalTaskSession) handleTask(envelope service.TaskEnvelope) {
 	}
 }
 
-func (s *LocalTaskSession) diagnoseHTTPRule(ctx context.Context, payload map[string]any) (map[string]any, error) {
-	ruleID, err := taskRuleID(payload)
+func (s *LocalTaskSession) diagnoseHTTPRule(ctx context.Context, envelope service.TaskEnvelope) (map[string]any, error) {
+	ruleID, err := taskRuleID(envelope.Payload)
 	if err != nil {
 		return nil, err
 	}
@@ -131,21 +143,15 @@ func (s *LocalTaskSession) diagnoseHTTPRule(ctx context.Context, payload map[str
 		return nil, fmt.Errorf("http rule %d is disabled", ruleID)
 	}
 
-	backends := parseHTTPBackendsFromRow(row)
-	if len(backends) == 0 {
-		return nil, fmt.Errorf("http rule %d has no backend url", ruleID)
+	snapshot, err := s.store.LoadLocalSnapshot(ctx, s.agentID)
+	if err != nil {
+		return nil, err
 	}
-
-	customHeaders := parseCustomHeadersJSON(row.CustomHeadersJSON)
-	samples := make([]probeSample, 0, len(backends))
-	for _, backendURL := range backends {
-		samples = append(samples, probeHTTPBackendDirect(ctx, backendURL, row.UserAgent, customHeaders))
-	}
-	return buildDiagnosticsReport("http", ruleID, samples), nil
+	return runEmbeddedDiagnostics(ctx, diagnosticDataDirFromContext(ctx), snapshot, envelope)
 }
 
-func (s *LocalTaskSession) diagnoseL4TCPRule(ctx context.Context, payload map[string]any) (map[string]any, error) {
-	ruleID, err := taskRuleID(payload)
+func (s *LocalTaskSession) diagnoseL4TCPRule(ctx context.Context, envelope service.TaskEnvelope) (map[string]any, error) {
+	ruleID, err := taskRuleID(envelope.Payload)
 	if err != nil {
 		return nil, err
 	}
@@ -169,16 +175,11 @@ func (s *LocalTaskSession) diagnoseL4TCPRule(ctx context.Context, payload map[st
 		return nil, fmt.Errorf("l4 rule %d is disabled", ruleID)
 	}
 
-	upstreams := parseL4UpstreamsFromRow(*target)
-	if len(upstreams) == 0 {
-		return nil, fmt.Errorf("l4 rule %d has no upstream address", ruleID)
+	snapshot, err := s.store.LoadLocalSnapshot(ctx, s.agentID)
+	if err != nil {
+		return nil, err
 	}
-
-	samples := make([]probeSample, 0, len(upstreams))
-	for _, addr := range upstreams {
-		samples = append(samples, probeTCPDirect(ctx, addr))
-	}
-	return buildDiagnosticsReport("l4_tcp", ruleID, samples), nil
+	return runEmbeddedDiagnostics(ctx, diagnosticDataDirFromContext(ctx), snapshot, envelope)
 }
 
 func taskRuleID(payload map[string]any) (int, error) {
@@ -202,199 +203,16 @@ func taskRuleID(payload map[string]any) (int, error) {
 	}
 }
 
-type probeSample struct {
-	backend string
-	latency float64
-	ok      bool
+type diagnosticDataDirKey struct{}
+
+func withDiagnosticDataDir(ctx context.Context, dataDir string) context.Context {
+	return context.WithValue(ctx, diagnosticDataDirKey{}, strings.TrimSpace(dataDir))
 }
 
-func probeHTTPBackendDirect(ctx context.Context, backendURL string, userAgent string, headers []customHeader) probeSample {
-	client := &http.Client{
-		Timeout: 10 * time.Second,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
+func diagnosticDataDirFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
 	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, backendURL, nil)
-	if err != nil {
-		return probeSample{backend: backendURL, latency: 0, ok: false}
-	}
-	if userAgent != "" {
-		req.Header.Set("User-Agent", userAgent)
-	}
-	for _, h := range headers {
-		req.Header.Set(h.Name, h.Value)
-	}
-
-	start := time.Now()
-	resp, err := client.Do(req)
-	elapsed := time.Since(start).Seconds() * 1000
-	if err != nil {
-		return probeSample{backend: backendURL, latency: elapsed, ok: false}
-	}
-	resp.Body.Close()
-	return probeSample{backend: backendURL, latency: elapsed, ok: true}
-}
-
-func probeTCPDirect(ctx context.Context, addr string) probeSample {
-	start := time.Now()
-	d := net.Dialer{Timeout: 10 * time.Second}
-	conn, err := d.DialContext(ctx, "tcp", addr)
-	elapsed := time.Since(start).Seconds() * 1000
-	if err != nil {
-		return probeSample{backend: addr, latency: elapsed, ok: false}
-	}
-	conn.Close()
-	return probeSample{backend: addr, latency: elapsed, ok: true}
-}
-
-func buildDiagnosticsReport(kind string, ruleID int, samples []probeSample) map[string]any {
-	succeeded := 0
-	failed := 0
-	var totalLatency float64
-	var minLatency float64 = -1
-	var maxLatency float64
-
-	backendReports := make([]map[string]any, 0, len(samples))
-	for _, s := range samples {
-		bSucceeded := 0
-		bFailed := 1
-		bQuality := "down"
-		bLatency := s.latency
-		if s.ok {
-			succeeded++
-			bSucceeded = 1
-			bFailed = 0
-			bQuality = "excellent"
-			totalLatency += s.latency
-			if minLatency < 0 || s.latency < minLatency {
-				minLatency = s.latency
-			}
-			if s.latency > maxLatency {
-				maxLatency = s.latency
-			}
-		} else {
-			failed++
-			if minLatency < 0 {
-				minLatency = 0
-			}
-		}
-		backendReports = append(backendReports, map[string]any{
-			"backend": s.backend,
-			"summary": map[string]any{
-				"sent":           1,
-				"succeeded":      bSucceeded,
-				"failed":         bFailed,
-				"loss_rate":      float64(bFailed),
-				"avg_latency_ms": bLatency,
-				"min_latency_ms": bLatency,
-				"max_latency_ms": bLatency,
-				"quality":        bQuality,
-			},
-		})
-	}
-
-	var avgLatency float64
-	if succeeded > 0 {
-		avgLatency = totalLatency / float64(succeeded)
-	}
-	if minLatency < 0 {
-		minLatency = 0
-	}
-
-	quality := "down"
-	if failed == 0 && succeeded > 0 {
-		quality = "excellent"
-	} else if succeeded > 0 {
-		quality = "degraded"
-	}
-
-	return map[string]any{
-		"kind":    kind,
-		"rule_id": ruleID,
-		"summary": map[string]any{
-			"sent":           len(samples),
-			"succeeded":      succeeded,
-			"failed":         failed,
-			"loss_rate":      float64(failed) / float64(len(samples)),
-			"avg_latency_ms": avgLatency,
-			"min_latency_ms": minLatency,
-			"max_latency_ms": maxLatency,
-			"quality":        quality,
-		},
-		"backends": backendReports,
-		"samples":  len(samples),
-	}
-}
-
-// --- JSON parsing helpers for storage row fields ---
-
-type customHeader struct {
-	Name  string `json:"name"`
-	Value string `json:"value"`
-}
-
-func parseHTTPBackendsFromRow(row storage.HTTPRuleRow) []string {
-	type rawBackend struct {
-		URL string `json:"url"`
-	}
-	var backends []rawBackend
-	if err := json.Unmarshal([]byte(defaultJSON(row.BackendsJSON, "[]")), &backends); err != nil {
-		backends = nil
-	}
-	var urls []string
-	for _, b := range backends {
-		if u := strings.TrimSpace(b.URL); u != "" {
-			urls = append(urls, u)
-		}
-	}
-	if len(urls) == 0 {
-		if u := strings.TrimSpace(row.BackendURL); u != "" {
-			urls = []string{u}
-		}
-	}
-	return urls
-}
-
-func parseCustomHeadersJSON(raw string) []customHeader {
-	var headers []customHeader
-	if err := json.Unmarshal([]byte(defaultJSON(raw, "[]")), &headers); err != nil {
-		return nil
-	}
-	out := make([]customHeader, 0, len(headers))
-	for _, h := range headers {
-		if strings.TrimSpace(h.Name) != "" {
-			out = append(out, h)
-		}
-	}
-	return out
-}
-
-func parseL4UpstreamsFromRow(row storage.L4RuleRow) []string {
-	type rawL4Backend struct {
-		Host string `json:"host"`
-		Port int    `json:"port"`
-	}
-	var backends []rawL4Backend
-	if err := json.Unmarshal([]byte(defaultJSON(row.BackendsJSON, "[]")), &backends); err != nil {
-		backends = nil
-	}
-	var addrs []string
-	for _, b := range backends {
-		if h := strings.TrimSpace(b.Host); h != "" && b.Port > 0 {
-			addrs = append(addrs, net.JoinHostPort(h, strconv.Itoa(b.Port)))
-		}
-	}
-	if len(addrs) == 0 && strings.TrimSpace(row.UpstreamHost) != "" && row.UpstreamPort > 0 {
-		addrs = []string{net.JoinHostPort(strings.TrimSpace(row.UpstreamHost), strconv.Itoa(row.UpstreamPort))}
-	}
-	return addrs
-}
-
-func defaultJSON(raw, fallback string) string {
-	if strings.TrimSpace(raw) == "" {
-		return fallback
-	}
-	return raw
+	value, _ := ctx.Value(diagnosticDataDirKey{}).(string)
+	return strings.TrimSpace(value)
 }

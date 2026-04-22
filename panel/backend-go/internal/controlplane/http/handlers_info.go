@@ -26,6 +26,7 @@ func (d Dependencies) handleVerify(w http.ResponseWriter, r *http.Request) {
 
 func (d Dependencies) handleInfo(w http.ResponseWriter, r *http.Request) {
 	info := d.SystemService.Info(r.Context())
+	authorized := d.isPanelAuthorized(r)
 	payload := map[string]any{
 		"ok":                              true,
 		"role":                            info.Role,
@@ -37,12 +38,14 @@ func (d Dependencies) handleInfo(w http.ResponseWriter, r *http.Request) {
 		"build_time":                      info.BuildTime,
 		"go_version":                      info.GoVersion,
 		"project_url":                     info.ProjectURL,
-		"data_dir":                        info.DataDir,
 		"started_at":                      info.StartedAt.Format(time.RFC3339),
 		"online_agents":                   info.OnlineAgents,
 		"total_agents":                    info.TotalAgents,
 	}
-	if d.isPanelAuthorized(r) && d.Config.RegisterToken != "" {
+	if authorized {
+		payload["data_dir"] = info.DataDir
+	}
+	if authorized && d.Config.RegisterToken != "" {
 		payload["master_register_token"] = d.Config.RegisterToken
 	}
 	writeJSON(w, http.StatusOK, payload)

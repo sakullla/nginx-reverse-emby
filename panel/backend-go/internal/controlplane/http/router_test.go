@@ -565,6 +565,51 @@ func TestRouterServesPanelAuthAndInfoEndpoints(t *testing.T) {
 	}
 }
 
+func TestRouterInfoOmitsSensitiveFieldsWithoutPanelToken(t *testing.T) {
+	router, err := NewRouter(Dependencies{
+		Config: config.Config{
+			PanelToken:    "secret",
+			RegisterToken: "register-secret",
+		},
+		SystemService: fakeSystemService{
+			info: service.SystemInfo{
+				Role:              "master",
+				LocalApplyRuntime: "go-agent",
+				DefaultAgentID:    "local",
+				LocalAgentEnabled: true,
+				DataDir:           "C:/srv/nre/data",
+			},
+		},
+		AgentService:         fakeAgentService{},
+		RuleService:          fakeRuleService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/panel-api/info", nil)
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("GET /panel-api/info = %d", resp.Code)
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if _, ok := payload["data_dir"]; ok {
+		t.Fatalf("unauthorized /info leaked data_dir: %+v", payload)
+	}
+	if _, ok := payload["master_register_token"]; ok {
+		t.Fatalf("unauthorized /info leaked register token: %+v", payload)
+	}
+}
+
 func TestTokenMatchesRequiresExactSecret(t *testing.T) {
 	if !tokenMatches("secret", "secret") {
 		t.Fatal("expected matching tokens to authorize")
