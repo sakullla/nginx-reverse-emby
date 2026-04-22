@@ -88,7 +88,9 @@ func (p *TCPProber) Diagnose(ctx context.Context, rule model.L4Rule, relayListen
 					cache.ObserveBackendFailure(candidate.backendObservationKey)
 				}
 				markDiagnosticAddressFailureAll(rule.RelayChain, candidate.address, persistentDiagnosticAddressCaches(cache, p.cache, rule.RelayChain)...)
-				samples = append(samples, FailureSample(attempt, candidate.backendLabel, err))
+				sample := FailureSample(attempt, candidate.backendLabel, err)
+				sample.Address = candidate.address
+				samples = append(samples, sample)
 				continue
 			}
 			_ = conn.Close()
@@ -97,7 +99,9 @@ func (p *TCPProber) Diagnose(ctx context.Context, rule model.L4Rule, relayListen
 				cache.ObserveBackendSuccess(candidate.backendObservationKey, totalDuration, totalDuration, 0)
 			}
 			markDiagnosticAddressSuccessAll(rule.RelayChain, candidate.address, persistentDiagnosticAddressCaches(cache, p.cache, rule.RelayChain)...)
-			samples = append(samples, LatencySample(attempt, candidate.backendLabel, totalDuration, 0))
+			sample := LatencySample(attempt, candidate.backendLabel, totalDuration, 0)
+			sample.Address = candidate.address
+			samples = append(samples, sample)
 		}
 	}
 
@@ -267,6 +271,7 @@ func buildTCPAdaptiveReports(reports []BackendReport, candidates []tcpProbeCandi
 				continue
 			}
 			report.Backend = configuredLabel
+			report.Address = ""
 			report.Adaptive = adaptiveSummaryFromObservation(cache.SummaryLatencyOnly(groupKey), preferred, preferredReason(preferred), adaptiveSummaryOptions{})
 			annotated = append(annotated, report)
 			continue
@@ -274,6 +279,7 @@ func buildTCPAdaptiveReports(reports []BackendReport, candidates []tcpProbeCandi
 
 		parent := BackendReport{
 			Backend: configuredLabel,
+			Address: "",
 			Summary: mergeTCPChildSummaries(children, reportByLabel),
 			Adaptive: adaptiveSummaryFromObservation(
 				cache.SummaryLatencyOnly(groupKey),
@@ -290,6 +296,7 @@ func buildTCPAdaptiveReports(reports []BackendReport, candidates []tcpProbeCandi
 			if !ok {
 				continue
 			}
+			childReport.Address = child.address
 			childReport.Adaptive = adaptiveSummaryFromObservation(
 				cache.SummaryLatencyOnly(child.address),
 				child.address == preferredChildAddress,

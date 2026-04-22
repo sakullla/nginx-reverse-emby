@@ -8,6 +8,7 @@ import (
 type Sample struct {
 	Attempt    int     `json:"attempt"`
 	Backend    string  `json:"backend,omitempty"`
+	Address    string  `json:"address,omitempty"`
 	Success    bool    `json:"success"`
 	LatencyMS  float64 `json:"latency_ms,omitempty"`
 	StatusCode int     `json:"status_code,omitempty"`
@@ -27,6 +28,7 @@ type Summary struct {
 
 type BackendReport struct {
 	Backend  string           `json:"backend"`
+	Address  string           `json:"address,omitempty"`
 	Summary  Summary          `json:"summary"`
 	Adaptive *AdaptiveSummary `json:"adaptive,omitempty"`
 	Children []BackendReport  `json:"children,omitempty"`

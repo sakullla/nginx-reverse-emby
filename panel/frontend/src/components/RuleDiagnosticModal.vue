@@ -153,8 +153,8 @@
                     <div class="diagnostic-backend-item__child-title">已解析候选</div>
                     <div class="diagnostic-child-list">
                       <div v-for="(child, idx) in backend.children" :key="child.backend" class="diagnostic-child-item">
-                        <code class="diagnostic-child-item__name">{{ backendDisplayLabel(child.backend) }}</code>
-                        <code v-if="backendDisplayAddress(child.backend)" class="diagnostic-child-item__address">{{ backendDisplayAddress(child.backend) }}</code>
+                        <code class="diagnostic-child-item__name">{{ backendDisplayLabel(child) }}</code>
+                        <code v-if="backendDisplayAddress(child)" class="diagnostic-child-item__address">{{ backendDisplayAddress(child) }}</code>
                         <span v-if="child.adaptive?.preferred" class="diagnostic-backend-item__preferred">当前优选</span>
                         <span class="diagnostic-child-item__metric">延迟 {{ backendActualLatency(child) }} ms</span>
                         <span class="diagnostic-child-item__metric">稳定性 {{ formatPercent(child.adaptive?.stability) }}</span>
@@ -181,8 +181,8 @@
                 <span class="diagnostic-sample__attempt">#{{ sample.attempt }}</span>
                 <span v-if="isHTTP && sample.status_code" class="diagnostic-sample__status" :class="`diagnostic-sample__status--${httpStatusTone(sample.status_code)}`">{{ sample.status_code }}</span>
                 <div class="diagnostic-sample__backend-wrap">
-                  <code class="diagnostic-sample__backend">{{ backendDisplayLabel(sample.backend) || '-' }}</code>
-                  <code v-if="backendDisplayAddress(sample.backend)" class="diagnostic-sample__backend-address">{{ backendDisplayAddress(sample.backend) }}</code>
+                  <code class="diagnostic-sample__backend">{{ backendDisplayLabel(sample) || '-' }}</code>
+                  <code v-if="backendDisplayAddress(sample)" class="diagnostic-sample__backend-address">{{ backendDisplayAddress(sample) }}</code>
                 </div>
               </div>
               <div class="diagnostic-sample__right">
@@ -254,7 +254,15 @@ function backendActualLatency(backend) {
 }
 
 function splitBackendIdentity(value) {
-  const raw = typeof value === 'string' ? value.trim() : ''
+  const explicitAddress = typeof value?.address === 'string' ? value.address.trim() : ''
+  const raw = typeof value === 'string' ? value.trim() : typeof value?.backend === 'string' ? value.backend.trim() : ''
+  if (explicitAddress) {
+    const match = raw.match(/^(.*)\s\[(.+)\]$/)
+    return {
+      label: match ? match[1].trim() : raw,
+      address: explicitAddress
+    }
+  }
   if (!raw) return { label: '', address: '' }
   const match = raw.match(/^(.*)\s\[(.+)\]$/)
   if (!match) return { label: raw, address: '' }

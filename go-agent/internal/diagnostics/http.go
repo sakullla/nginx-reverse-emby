@@ -96,7 +96,9 @@ func (p *HTTPProber) probeCandidate(ctx context.Context, cache *backends.Cache, 
 	start := time.Now()
 	client, err := p.clientForCandidate(rule, relayListeners, candidate)
 	if err != nil {
-		return FailureSample(attempt, candidate.backendLabel, err)
+		sample := FailureSample(attempt, candidate.backendLabel, err)
+		sample.Address = candidate.dialAddress
+		return sample
 	}
 
 	reqCtx, cancel := context.WithTimeout(ctx, p.timeout)
@@ -108,7 +110,9 @@ func (p *HTTPProber) probeCandidate(ctx context.Context, cache *backends.Cache, 
 			cache.ObserveBackendFailure(candidate.backendObservationKey)
 		}
 		markDiagnosticAddressFailureAll(rule.RelayChain, candidate.dialAddress, persistentDiagnosticAddressCaches(cache, p.cache, rule.RelayChain)...)
-		return FailureSample(attempt, candidate.backendLabel, err)
+		sample := FailureSample(attempt, candidate.backendLabel, err)
+		sample.Address = candidate.dialAddress
+		return sample
 	}
 	defer resp.Body.Close()
 	headerLatency := time.Since(start)
@@ -118,7 +122,9 @@ func (p *HTTPProber) probeCandidate(ctx context.Context, cache *backends.Cache, 
 			cache.ObserveBackendFailure(candidate.backendObservationKey)
 		}
 		markDiagnosticAddressFailureAll(rule.RelayChain, candidate.dialAddress, persistentDiagnosticAddressCaches(cache, p.cache, rule.RelayChain)...)
-		return FailureSample(attempt, candidate.backendLabel, err)
+		sample := FailureSample(attempt, candidate.backendLabel, err)
+		sample.Address = candidate.dialAddress
+		return sample
 	}
 	totalDuration := time.Since(start)
 	transferDuration := totalDuration - headerLatency
@@ -130,7 +136,9 @@ func (p *HTTPProber) probeCandidate(ctx context.Context, cache *backends.Cache, 
 	}
 	observeDiagnosticAddressSuccessAll(rule.RelayChain, candidate.dialAddress, headerLatency, transferDuration, written, persistentDiagnosticAddressCaches(cache, p.cache, rule.RelayChain)...)
 
-	return LatencySample(attempt, candidate.backendLabel, totalDuration, resp.StatusCode)
+	sample := LatencySample(attempt, candidate.backendLabel, totalDuration, resp.StatusCode)
+	sample.Address = candidate.dialAddress
+	return sample
 }
 
 func (p *HTTPProber) doProbeRequest(ctx context.Context, client *http.Client, rule model.HTTPRule, candidate httpProbeCandidate, method string) (*http.Response, error) {
@@ -301,6 +309,7 @@ func buildHTTPAdaptiveReports(reports []BackendReport, candidates []httpProbeCan
 		isPreferred := configured == preferredConfigured
 		parent := BackendReport{
 			Backend: configured,
+			Address: "",
 			Summary: mergeChildSummaries(children, reportByLabel),
 			Adaptive: adaptiveSummaryFromObservation(configuredSummary[configured], isPreferred, preferredReason(isPreferred), adaptiveSummaryOptions{
 				includeThroughput:   true,
@@ -326,6 +335,7 @@ func buildHTTPAdaptiveReports(reports []BackendReport, candidates []httpProbeCan
 			}
 			parent.Children = append(parent.Children, BackendReport{
 				Backend: child.label,
+				Address: child.dialAddress,
 				Summary: childReport.Summary,
 				Adaptive: adaptiveSummaryFromObservation(childSummary, isPreferredChild, preferredReason(isPreferredChild), adaptiveSummaryOptions{
 					includeThroughput:   true,

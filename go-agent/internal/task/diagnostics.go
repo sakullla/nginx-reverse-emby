@@ -143,6 +143,7 @@ func reportToMap(report diagnostics.Report) map[string]any {
 func backendReportToMap(kind string, backend diagnostics.BackendReport) map[string]any {
 	payload := map[string]any{
 		"backend": backend.Backend,
+		"address": backend.Address,
 		"summary": map[string]any{
 			"sent":           backend.Summary.Sent,
 			"succeeded":      backend.Summary.Succeeded,
