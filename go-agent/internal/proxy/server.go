@@ -101,6 +101,7 @@ func newServerWithResilience(
 	for _, relayListener := range relayListeners {
 		relayListenersByID[relayListener.ID] = relayListener
 	}
+	directInteractiveTransport, directBulkTransport := NewClassedDirectTransports(sharedTransport)
 	for _, rule := range listener.Rules {
 		hostKey := HostFromRule(rule)
 		if hostKey == "" {
@@ -111,15 +112,15 @@ func newServerWithResilience(
 			continue
 		}
 		transport := sharedTransport
-		var directInteractiveTransport *http.Transport
-		var directBulkTransport *http.Transport
+		entryDirectInteractiveTransport := directInteractiveTransport
+		entryDirectBulkTransport := directBulkTransport
 		if len(rule.RelayChain) > 0 {
 			transport, err = newRelayTransport(rule, relayListenersByID, providers.Relay, sharedTransport)
 			if err != nil {
 				return nil, err
 			}
-		} else {
-			directInteractiveTransport, directBulkTransport = NewClassedDirectTransports(sharedTransport)
+			entryDirectInteractiveTransport = nil
+			entryDirectBulkTransport = nil
 		}
 
 		frontendBaseURL := FrontendOriginFromRule(rule)
@@ -128,8 +129,8 @@ func newServerWithResilience(
 			backends:                   targets,
 			backendCache:               backendCache,
 			transport:                  transport,
-			directInteractiveTransport: directInteractiveTransport,
-			directBulkTransport:        directBulkTransport,
+			directInteractiveTransport: entryDirectInteractiveTransport,
+			directBulkTransport:        entryDirectBulkTransport,
 			resilience:                 resilience,
 			modifyResp:                 makeModifyResponse(frontendBaseURL, rule.ProxyRedirect, targets[0].backendHost, normalizeURLPath(targets[0].target.Path)),
 			selectionScope:             hostKey,

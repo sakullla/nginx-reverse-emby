@@ -553,6 +553,51 @@ func TestNewServerWiresDirectClassedTransportsForDirectRoute(t *testing.T) {
 	}
 }
 
+func TestNewServerSharesDirectClassedTransportsAcrossDirectRoutes(t *testing.T) {
+	shared := NewSharedTransport()
+	server, err := newServerWithResilience(
+		model.HTTPListener{Rules: []model.HTTPRule{
+			{
+				FrontendURL: "http://edge-a.example",
+				BackendURL:  "http://backend-a.example:8096",
+			},
+			{
+				FrontendURL: "http://edge-b.example",
+				BackendURL:  "http://backend-b.example:8096",
+			},
+		}},
+		nil,
+		Providers{},
+		backends.NewCache(backends.Config{}),
+		shared,
+		StreamResilienceOptions{},
+	)
+	if err != nil {
+		t.Fatalf("newServerWithResilience() error = %v", err)
+	}
+
+	first := server.routeFor("edge-a.example", "/library")
+	if first == nil {
+		t.Fatal("expected first direct route entry")
+	}
+	second := server.routeFor("edge-b.example", "/library")
+	if second == nil {
+		t.Fatal("expected second direct route entry")
+	}
+	if first.directInteractiveTransport == nil || second.directInteractiveTransport == nil {
+		t.Fatalf("direct interactive transports missing: first=%p second=%p", first.directInteractiveTransport, second.directInteractiveTransport)
+	}
+	if first.directInteractiveTransport != second.directInteractiveTransport {
+		t.Fatalf("direct interactive transports differ: first=%p second=%p", first.directInteractiveTransport, second.directInteractiveTransport)
+	}
+	if first.directBulkTransport == nil || second.directBulkTransport == nil {
+		t.Fatalf("direct bulk transports missing: first=%p second=%p", first.directBulkTransport, second.directBulkTransport)
+	}
+	if first.directBulkTransport != second.directBulkTransport {
+		t.Fatalf("direct bulk transports differ: first=%p second=%p", first.directBulkTransport, second.directBulkTransport)
+	}
+}
+
 func TestNewServerWiresRelayTransportWithoutDirectClassedTransports(t *testing.T) {
 	shared := NewSharedTransport()
 	server, err := newServerWithResilience(
