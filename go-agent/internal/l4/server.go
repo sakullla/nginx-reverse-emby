@@ -237,7 +237,7 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 
 	upstream, candidate, connectDuration, err := s.dialTCPUpstream(rule, relay.DialOptions{
 		InitialPayload: initialPayload,
-		TrafficClass:   upstream.TrafficClassUnknown,
+		TrafficClass:   upstream.ClassifyL4("tcp", int64(len(initialPayload)), 0),
 	})
 	if err != nil {
 		return
