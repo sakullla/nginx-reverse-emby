@@ -292,8 +292,17 @@ func DialWithResult(ctx context.Context, network, target string, chain []Hop, pr
 	}
 
 	transportMode := chooseRelayTransport(firstHop)
+	if transportMode != ListenerTransportModeQUIC && relayQUICProbeDue(firstHop) {
+		transportMode = ListenerTransportModeQUIC
+	}
 
 	if transportMode == ListenerTransportModeQUIC {
+		if !consumeRelayQUICProbe(firstHop) {
+			transportMode = chooseRelayTransport(firstHop)
+			if transportMode != ListenerTransportModeQUIC {
+				goto tlsTCPDial
+			}
+		}
 		conn, result, err := dialQUICWithResult(ctx, network, target, chain, provider, options)
 		if err == nil {
 			result.TransportMode = transportMode
@@ -311,6 +320,7 @@ func DialWithResult(ctx context.Context, network, target string, chain []Hop, pr
 		return fallbackConn, fallbackResult, nil
 	}
 
+tlsTCPDial:
 	conn, result, err := dialTLSTCPMuxWithResult(ctx, network, target, chain, provider, options)
 	if err != nil {
 		return nil, DialResult{}, err
@@ -338,6 +348,9 @@ func ResolveCandidates(ctx context.Context, target string, chain []Hop, provider
 	}
 
 	transportMode := chooseRelayTransport(firstHop)
+	if transportMode != ListenerTransportModeQUIC && relayQUICProbeDue(firstHop) {
+		transportMode = ListenerTransportModeQUIC
+	}
 
 	if transportMode == ListenerTransportModeQUIC {
 		addresses, err := resolveCandidatesQUIC(ctx, target, chain, provider)
@@ -393,10 +406,37 @@ func relayTransportCandidates(firstHop Hop) []upstream.PathSnapshot {
 	if relayRuntimeScore != nil {
 		quicState = relayRuntimeScore.State(quicKey)
 	}
-	return []upstream.PathSnapshot{{
+	candidates := []upstream.PathSnapshot{{
 		Key:        quicKey,
-		Confidence: relayPathConfidence(quicState, true),
+		Confidence: relayPathConfidence(quicState, false),
+		ProbeOnly:  quicState.ProbeOnly,
 	}}
+	if firstHop.Listener.AllowTransportFallback {
+		candidates = append(candidates, upstream.PathSnapshot{
+			Key:        upstream.PathKey{Family: upstream.PathFamilyRelayTLSTCP, Address: firstHop.Address},
+			Confidence: 0.30,
+		})
+	}
+	return candidates
+}
+
+func relayQUICProbeDue(firstHop Hop) bool {
+	if relayRuntimeScore == nil || normalizeListenerTransportModeValue(firstHop.Listener.TransportMode) != ListenerTransportModeQUIC {
+		return false
+	}
+	return relayRuntimeScore.ProbeOpportunityDue(upstream.PathKey{Family: upstream.PathFamilyRelayQUIC, Address: firstHop.Address})
+}
+
+func consumeRelayQUICProbe(firstHop Hop) bool {
+	if relayRuntimeScore == nil || normalizeListenerTransportModeValue(firstHop.Listener.TransportMode) != ListenerTransportModeQUIC {
+		return true
+	}
+	key := upstream.PathKey{Family: upstream.PathFamilyRelayQUIC, Address: firstHop.Address}
+	state := relayRuntimeScore.State(key)
+	if !state.ProbeOnly {
+		return true
+	}
+	return relayRuntimeScore.ConsumeProbeOpportunity(key, relayQUICProbeInterval)
 }
 
 func relayPathConfidence(state upstream.PathState, probeDue bool) float64 {

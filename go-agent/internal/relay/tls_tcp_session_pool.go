@@ -535,16 +535,12 @@ func (t *tlsTCPTunnel) writePump() {
 			if req == nil {
 				continue
 			}
-			t.queuedWrites.Add(-1)
-			t.bufferedBytes.Add(-int64(len(req.frame.Payload)))
 			batch := []*tlsTCPWriteRequest{req}
 		drain:
 			for len(batch) < tlsTCPWriteQueueDepth {
 				select {
 				case next := <-t.writeReqCh:
 					if next != nil {
-						t.queuedWrites.Add(-1)
-						t.bufferedBytes.Add(-int64(len(next.frame.Payload)))
 						batch = append(batch, next)
 					}
 				default:
@@ -571,18 +567,26 @@ func (t *tlsTCPTunnel) writeRequestBatch(batch []*tlsTCPWriteRequest) error {
 
 	if err := t.refreshWriteDeadlineLocked(); err != nil {
 		for _, req := range batch {
+			t.queuedWrites.Add(-1)
+			t.bufferedBytes.Add(-int64(len(req.frame.Payload)))
 			req.frame.releasePayload()
 		}
 		return err
 	}
 	for i, req := range batch {
 		if err := writeMuxFrame(t.writer, req.frame); err != nil {
+			t.queuedWrites.Add(-1)
+			t.bufferedBytes.Add(-int64(len(req.frame.Payload)))
 			req.frame.releasePayload()
 			for _, pending := range batch[i+1:] {
+				t.queuedWrites.Add(-1)
+				t.bufferedBytes.Add(-int64(len(pending.frame.Payload)))
 				pending.frame.releasePayload()
 			}
 			return err
 		}
+		t.queuedWrites.Add(-1)
+		t.bufferedBytes.Add(-int64(len(req.frame.Payload)))
 		req.frame.releasePayload()
 	}
 	return nil

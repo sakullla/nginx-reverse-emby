@@ -621,6 +621,45 @@ func TestTLSTCPSessionPoolRejectsInteractiveWhenCappedTunnelsAreCongested(t *tes
 	}
 }
 
+func TestTLSTCPTunnelKeepsCongestionCountersUntilBlockedWriteFinishes(t *testing.T) {
+	writer := newBlockingFirstWrite()
+	tunnel := &tlsTCPTunnel{
+		rawConn:    noopDeadlineConn{},
+		writer:     writer,
+		closeOuter: func() error { return nil },
+		streams:    make(map[uint32]*tlsTCPLogicalStream),
+		closed:     make(chan struct{}),
+	}
+
+	payload := bytes.Repeat([]byte("x"), tlsTCPInteractiveAdmissionBufferedBytes)
+	req, err := tunnel.enqueueWriteFrame(context.Background(), muxFrame{
+		Type:     muxFrameTypeData,
+		StreamID: 1,
+		Payload:  payload,
+	})
+	if err != nil {
+		t.Fatalf("enqueueWriteFrame() error = %v", err)
+	}
+
+	<-writer.started
+	if tunnel.canAcceptTrafficClass(upstream.TrafficClassInteractive) {
+		close(writer.release)
+		_ = waitTLSTCPWriteRequest(context.Background(), req, tunnel)
+		t.Fatal("canAcceptTrafficClass(interactive) = true while write batch is blocked")
+	}
+
+	close(writer.release)
+	if err := waitTLSTCPWriteRequest(context.Background(), req, tunnel); err != nil {
+		t.Fatalf("waitTLSTCPWriteRequest() error = %v", err)
+	}
+	if tunnel.queuedWrites.Load() != 0 {
+		t.Fatalf("queuedWrites = %d, want 0 after write completes", tunnel.queuedWrites.Load())
+	}
+	if tunnel.bufferedBytes.Load() != 0 {
+		t.Fatalf("bufferedBytes = %d, want 0 after write completes", tunnel.bufferedBytes.Load())
+	}
+}
+
 func TestWrapIdleConnPreservesTLSTCPBulkInterfaces(t *testing.T) {
 	stream := &tlsTCPLogicalStream{readCh: make(chan struct{}, 1)}
 	wrapped := wrapIdleConn(stream)

@@ -1175,10 +1175,13 @@ func TestDialWithResultUsesFallbackAfterQUICProbeDialFails(t *testing.T) {
 	}
 	defer server.Close()
 
-	score := upstream.NewScoreStore(time.Now)
+	now := time.Unix(1700000000, 0)
+	score := upstream.NewScoreStore(func() time.Time { return now })
 	key := upstream.PathKey{Family: upstream.PathFamilyRelayQUIC, Address: hop.Address}
 	score.ObserveFailure(key, upstream.FailureTimeout)
 	score.ObserveFailure(key, upstream.FailureTimeout)
+	score.ArmProbe(key, relayQUICProbeInterval)
+	now = now.Add(relayQUICProbeInterval)
 
 	restorePlanner := setRelayPlannerForTest(upstream.NewPlanner())
 	defer restorePlanner()
@@ -1193,7 +1196,6 @@ func TestDialWithResultUsesFallbackAfterQUICProbeDialFails(t *testing.T) {
 			t.Fatalf("quicDialAddr() address = %q, want %q", addr, hop.Address)
 		}
 		return nil, errors.New("quic probe failed")
-		return nil, nil
 	}
 	defer func() {
 		quicDialAddr = prevQUICDial
@@ -1260,8 +1262,8 @@ func TestDialWithResultUsesRuntimeFallbackAfterRepeatedQUICFailures(t *testing.T
 		}
 		conn.Close()
 	}
-	if attempts != 3 {
-		t.Fatalf("quic attempts = %d, want 3 failed QUIC attempts before per-request fallback", attempts)
+	if attempts != 2 {
+		t.Fatalf("quic attempts = %d, want 2 failed QUIC attempts before probe interval backoff", attempts)
 	}
 }
 
@@ -1311,6 +1313,68 @@ func TestResolveCandidatesDoesNotConsumeQUICProbeWindow(t *testing.T) {
 	state := score.State(key)
 	if state.NextProbeAt.After(now) {
 		t.Fatalf("ResolveCandidates() consumed probe window; NextProbeAt = %v now = %v", state.NextProbeAt, now)
+	}
+}
+
+func TestRelayTransportCandidatesIncludesTLSTCPFallbackWhileQUICProbeOnly(t *testing.T) {
+	now := time.Unix(1700000000, 0)
+	score := upstream.NewScoreStore(func() time.Time { return now })
+	key := upstream.PathKey{Family: upstream.PathFamilyRelayQUIC, Address: "relay.example:443"}
+	score.ObserveFailure(key, upstream.FailureTimeout)
+	score.ObserveFailure(key, upstream.FailureTimeout)
+	score.ArmProbe(key, relayQUICProbeInterval)
+
+	restoreScore := setRelayRuntimeScoreForTest(score)
+	defer restoreScore()
+
+	candidates := relayTransportCandidates(Hop{
+		Address: "relay.example:443",
+		Listener: Listener{
+			TransportMode:          ListenerTransportModeQUIC,
+			AllowTransportFallback: true,
+		},
+	})
+	if len(candidates) != 2 {
+		t.Fatalf("len(candidates) = %d, want 2", len(candidates))
+	}
+	if candidates[0].Key.Family != upstream.PathFamilyRelayQUIC {
+		t.Fatalf("primary candidate family = %q, want %q", candidates[0].Key.Family, upstream.PathFamilyRelayQUIC)
+	}
+	if !candidates[0].ProbeOnly {
+		t.Fatal("quic candidate ProbeOnly = false, want true before probe deadline")
+	}
+	if candidates[1].Key.Family != upstream.PathFamilyRelayTLSTCP {
+		t.Fatalf("fallback candidate family = %q, want %q", candidates[1].Key.Family, upstream.PathFamilyRelayTLSTCP)
+	}
+}
+
+func TestChooseRelayTransportHonorsQUICProbeInterval(t *testing.T) {
+	now := time.Unix(1700000000, 0)
+	score := upstream.NewScoreStore(func() time.Time { return now })
+	key := upstream.PathKey{Family: upstream.PathFamilyRelayQUIC, Address: "relay.example:443"}
+	score.ObserveFailure(key, upstream.FailureTimeout)
+	score.ObserveFailure(key, upstream.FailureTimeout)
+	score.ArmProbe(key, relayQUICProbeInterval)
+
+	restorePlanner := setRelayPlannerForTest(upstream.NewPlanner())
+	defer restorePlanner()
+	restoreScore := setRelayRuntimeScoreForTest(score)
+	defer restoreScore()
+
+	hop := Hop{
+		Address: "relay.example:443",
+		Listener: Listener{
+			TransportMode:          ListenerTransportModeQUIC,
+			AllowTransportFallback: true,
+		},
+	}
+	if got := chooseRelayTransport(hop); got != ListenerTransportModeTLSTCP {
+		t.Fatalf("chooseRelayTransport(before deadline) = %q, want %q", got, ListenerTransportModeTLSTCP)
+	}
+
+	now = now.Add(relayQUICProbeInterval)
+	if got := chooseRelayTransport(hop); got != ListenerTransportModeTLSTCP {
+		t.Fatalf("chooseRelayTransport(after deadline) = %q, want %q while selection remains non-consuming", got, ListenerTransportModeTLSTCP)
 	}
 }
 
@@ -1369,14 +1433,8 @@ func TestDialWithResultRecoversQUICAfterProbeSuccesses(t *testing.T) {
 		if err != nil {
 			t.Fatalf("DialWithResult(fallback %d) error = %v", i, err)
 		}
-		if i < 2 {
-			if result.TransportMode != ListenerTransportModeTLSTCP {
-				t.Fatalf("DialWithResult(fallback %d) TransportMode = %q, want %q", i, result.TransportMode, ListenerTransportModeTLSTCP)
-			}
-		} else {
-			if result.TransportMode != ListenerTransportModeQUIC {
-				t.Fatalf("DialWithResult(recovery probe) TransportMode = %q, want %q", result.TransportMode, ListenerTransportModeQUIC)
-			}
+		if result.TransportMode != ListenerTransportModeTLSTCP {
+			t.Fatalf("DialWithResult(fallback %d) TransportMode = %q, want %q before probe interval", i, result.TransportMode, ListenerTransportModeTLSTCP)
 		}
 		conn.Close()
 	}

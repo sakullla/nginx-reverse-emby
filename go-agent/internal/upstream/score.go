@@ -85,6 +85,17 @@ func (s *ScoreStore) ConsumeProbeOpportunity(key PathKey, interval time.Duration
 	return true
 }
 
+func (s *ScoreStore) ProbeOpportunityDue(key PathKey) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	st := s.state[key]
+	if !st.ProbeOnly || st.NextProbeAt.IsZero() {
+		return false
+	}
+	return !s.now().Before(st.NextProbeAt)
+}
+
 func (s *ScoreStore) State(key PathKey) PathState {
 	s.mu.Lock()
 	defer s.mu.Unlock()
