@@ -122,7 +122,10 @@ func dialQUICWithResult(ctx context.Context, network, target string, chain []Hop
 		return nil, DialResult{}, fmt.Errorf("relay connection failed: %s", response.Error)
 	}
 
-	return conn, DialResult{SelectedAddress: response.SelectedAddress}, nil
+	return conn, DialResult{
+		SelectedAddress: response.SelectedAddress,
+		TransportMode:   ListenerTransportModeQUIC,
+	}, nil
 }
 
 func resolveCandidatesQUIC(ctx context.Context, target string, chain []Hop, provider TLSMaterialProvider) ([]string, error) {

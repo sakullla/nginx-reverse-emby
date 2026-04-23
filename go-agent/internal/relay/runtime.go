@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/quic-go/quic-go"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
 type DialOptions struct {
@@ -19,6 +20,40 @@ type DialOptions struct {
 
 type DialResult struct {
 	SelectedAddress string
+	TransportMode   string
+}
+
+type relayTransportPlanner interface {
+	PreferTLSTCP(address string) bool
+}
+
+var relayPlanner relayTransportPlanner
+
+func newRelayPlanner(score *upstream.ScoreStore) relayTransportPlanner {
+	if score == nil {
+		return nil
+	}
+	return relayScorePlanner{score: score}
+}
+
+type relayScorePlanner struct {
+	score *upstream.ScoreStore
+}
+
+func (p relayScorePlanner) PreferTLSTCP(address string) bool {
+	if p.score == nil {
+		return false
+	}
+	state := p.score.State(upstream.PathKey{Family: upstream.PathFamilyRelayQUIC, Address: address})
+	return state.ProbeOnly
+}
+
+func setRelayPlannerForTest(planner relayTransportPlanner) func() {
+	prev := relayPlanner
+	relayPlanner = planner
+	return func() {
+		relayPlanner = prev
+	}
 }
 
 func (o DialOptions) clone() DialOptions {
@@ -263,14 +298,12 @@ func DialWithResult(ctx context.Context, network, target string, chain []Hop, pr
 		return nil, DialResult{}, fmt.Errorf("relay hop address is required")
 	}
 
-	transportMode, err := normalizeListenerTransportMode(firstHop.Listener.TransportMode)
-	if err != nil {
-		return nil, DialResult{}, fmt.Errorf("relay hop listener %d: %w", firstHop.Listener.ID, err)
-	}
+	transportMode := chooseRelayTransport(firstHop)
 
 	if transportMode == ListenerTransportModeQUIC {
 		conn, result, err := dialQUICWithResult(ctx, network, target, chain, provider, options)
 		if err == nil {
+			result.TransportMode = transportMode
 			return conn, result, nil
 		}
 		if !firstHop.Listener.AllowTransportFallback {
@@ -281,10 +314,16 @@ func DialWithResult(ctx context.Context, network, target string, chain []Hop, pr
 		if fallbackErr != nil {
 			return nil, DialResult{}, fmt.Errorf("quic relay failed: %v; tls_tcp fallback failed: %w", err, fallbackErr)
 		}
+		fallbackResult.TransportMode = ListenerTransportModeTLSTCP
 		return fallbackConn, fallbackResult, nil
 	}
 
-	return dialTLSTCPMuxWithResult(ctx, network, target, chain, provider, options)
+	conn, result, err := dialTLSTCPMuxWithResult(ctx, network, target, chain, provider, options)
+	if err != nil {
+		return nil, DialResult{}, err
+	}
+	result.TransportMode = transportMode
+	return conn, result, nil
 }
 
 func ResolveCandidates(ctx context.Context, target string, chain []Hop, provider TLSMaterialProvider) ([]string, error) {
@@ -305,10 +344,7 @@ func ResolveCandidates(ctx context.Context, target string, chain []Hop, provider
 		return nil, fmt.Errorf("relay hop address is required")
 	}
 
-	transportMode, err := normalizeListenerTransportMode(firstHop.Listener.TransportMode)
-	if err != nil {
-		return nil, fmt.Errorf("relay hop listener %d: %w", firstHop.Listener.ID, err)
-	}
+	transportMode := chooseRelayTransport(firstHop)
 
 	if transportMode == ListenerTransportModeQUIC {
 		addresses, err := resolveCandidatesQUIC(ctx, target, chain, provider)
@@ -322,6 +358,13 @@ func ResolveCandidates(ctx context.Context, target string, chain []Hop, provider
 	}
 
 	return resolveCandidatesTLSTCPMux(ctx, target, chain, provider)
+}
+
+func chooseRelayTransport(firstHop Hop) string {
+	if relayPlanner != nil && relayPlanner.PreferTLSTCP(firstHop.Address) && firstHop.Listener.AllowTransportFallback {
+		return ListenerTransportModeTLSTCP
+	}
+	return normalizeListenerTransportModeValue(firstHop.Listener.TransportMode)
 }
 
 // dialTLSTCP is the legacy one-stream-per-TLS-connection path. Runtime relay

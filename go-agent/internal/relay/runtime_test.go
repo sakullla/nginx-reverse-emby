@@ -22,6 +22,7 @@ import (
 
 	"github.com/quic-go/quic-go"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
 func TestValidateListener(t *testing.T) {
@@ -1148,6 +1149,50 @@ func TestDialWithResultReturnsSelectedAddressFromFinalHop(t *testing.T) {
 
 	if result.SelectedAddress != backendAddr {
 		t.Fatalf("SelectedAddress = %q, want %q", result.SelectedAddress, backendAddr)
+	}
+}
+
+func TestDialWithResultUsesFallbackWhenPrimaryRelayPathIsProbeOnly(t *testing.T) {
+	backendAddr, stopBackend := startTCPEchoServer(t)
+	defer stopBackend()
+	resetTLSTCPSessionPoolForTest()
+
+	provider := newFakeTLSMaterialProvider()
+	listener, hop := newRelayEndpoint(t, provider, 1, "relay-quic-fallback", "pin_only", true, false)
+	hop.Listener.TransportMode = "quic"
+	hop.Listener.AllowTransportFallback = true
+
+	server, err := Start(context.Background(), []Listener{listener}, provider)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer server.Close()
+
+	score := upstream.NewScoreStore(time.Now)
+	key := upstream.PathKey{Family: upstream.PathFamilyRelayQUIC, Address: hop.Address}
+	score.ObserveFailure(key, upstream.FailureTimeout)
+	score.ObserveFailure(key, upstream.FailureTimeout)
+
+	restorePlanner := setRelayPlannerForTest(newRelayPlanner(score))
+	defer restorePlanner()
+
+	prevQUICDial := quicDialAddr
+	quicDialAddr = func(ctx context.Context, addr string, tlsConf *tls.Config, conf *quic.Config) (*quic.Conn, error) {
+		t.Fatalf("quicDialAddr() called for %q despite planner preferring tls_tcp", addr)
+		return nil, nil
+	}
+	defer func() {
+		quicDialAddr = prevQUICDial
+	}()
+
+	conn, result, err := DialWithResult(context.Background(), "tcp", backendAddr, []Hop{hop}, provider)
+	if err != nil {
+		t.Fatalf("DialWithResult() error = %v", err)
+	}
+	defer conn.Close()
+
+	if result.TransportMode != ListenerTransportModeTLSTCP {
+		t.Fatalf("TransportMode = %q, want %q", result.TransportMode, ListenerTransportModeTLSTCP)
 	}
 }
 
