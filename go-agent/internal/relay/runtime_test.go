@@ -658,6 +658,119 @@ func TestFinalTargetFailureDoesNotDemoteRelayQUICTransport(t *testing.T) {
 	}
 }
 
+func TestVerifiedFallbackSurvivesTLSTCPTargetOpenFailureDuringQUICBackoff(t *testing.T) {
+	resetTLSTCPSessionPoolForTest()
+
+	now := time.Unix(1700000000, 0)
+	score := upstream.NewScoreStore(func() time.Time { return now })
+	restoreScore := setRelayRuntimeScoreForTest(score)
+	defer restoreScore()
+	restoreFallbacks := setRelayVerifiedFallbacksForTest(newRelayVerifiedFallbackStore())
+	defer restoreFallbacks()
+
+	provider := newFakeTLSMaterialProvider()
+	quicListener, hop := newRelayEndpoint(t, provider, 1, "relay-quic-backoff-target-fail", "pin_only", true, false)
+	sharedPort := pickFreeDualStackPort(t)
+	quicListener.ListenPort = sharedPort
+	quicListener.TransportMode = ListenerTransportModeQUIC
+	quicListener.AllowTransportFallback = true
+	hop.Address = net.JoinHostPort(quicListener.ListenHost, fmt.Sprintf("%d", sharedPort))
+	hop.Listener = quicListener
+
+	tlsListener := quicListener
+	tlsListener.ID = 2
+	tlsListener.Name = "relay-tls-backoff-target-fail"
+	tlsListener.TransportMode = ListenerTransportModeTLSTCP
+	tlsListener.AllowTransportFallback = false
+
+	server, err := Start(context.Background(), []Listener{tlsListener, quicListener}, provider)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer server.Close()
+
+	key := relayQUICPathKey(hop)
+	score.ObserveFailure(key, upstream.FailureTimeout)
+	score.ObserveFailure(key, upstream.FailureTimeout)
+	score.ArmProbe(key, relayQUICProbeInterval)
+	markRelayVerifiedFallback(hop)
+
+	target := net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", pickFreeTCPPort(t)))
+	conn, _, err := DialWithResult(context.Background(), "tcp", target, []Hop{hop}, provider)
+	if err == nil {
+		conn.Close()
+		t.Fatal("DialWithResult() error = nil, want final target failure")
+	}
+
+	if !relayVerifiedFallbackAvailable(hop) {
+		t.Fatal("verified fallback was cleared after TLS-TCP target-open failure")
+	}
+	if got := selectRelayRuntimeTransport(hop); got != ListenerTransportModeTLSTCP {
+		t.Fatalf("selectRelayRuntimeTransport() = %q, want %q while QUIC probe is not due", got, ListenerTransportModeTLSTCP)
+	}
+}
+
+func TestVerifiedFallbackSurvivesTLSTCPFallbackTargetOpenFailureAfterQUICProbe(t *testing.T) {
+	resetTLSTCPSessionPoolForTest()
+
+	now := time.Unix(1700000000, 0)
+	score := upstream.NewScoreStore(func() time.Time { return now })
+	restoreScore := setRelayRuntimeScoreForTest(score)
+	defer restoreScore()
+	restoreFallbacks := setRelayVerifiedFallbacksForTest(newRelayVerifiedFallbackStore())
+	defer restoreFallbacks()
+
+	provider := newFakeTLSMaterialProvider()
+	quicListener, hop := newRelayEndpoint(t, provider, 1, "relay-quic-probe-target-fail", "pin_only", true, false)
+	sharedPort := pickFreeDualStackPort(t)
+	quicListener.ListenPort = sharedPort
+	quicListener.TransportMode = ListenerTransportModeQUIC
+	quicListener.AllowTransportFallback = true
+	hop.Address = net.JoinHostPort(quicListener.ListenHost, fmt.Sprintf("%d", sharedPort))
+	hop.Listener = quicListener
+
+	tlsListener := quicListener
+	tlsListener.ID = 2
+	tlsListener.Name = "relay-tls-probe-target-fail"
+	tlsListener.TransportMode = ListenerTransportModeTLSTCP
+	tlsListener.AllowTransportFallback = false
+
+	server, err := Start(context.Background(), []Listener{tlsListener, quicListener}, provider)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer server.Close()
+
+	key := relayQUICPathKey(hop)
+	score.ObserveFailure(key, upstream.FailureTimeout)
+	score.ObserveFailure(key, upstream.FailureTimeout)
+	score.ArmProbe(key, relayQUICProbeInterval)
+	now = now.Add(relayQUICProbeInterval)
+	markRelayVerifiedFallback(hop)
+
+	prevQUICDial := quicDialAddr
+	quicDialAddr = func(ctx context.Context, addr string, tlsConf *tls.Config, conf *quic.Config) (*quic.Conn, error) {
+		return nil, errors.New("quic probe failed")
+	}
+	defer func() {
+		quicDialAddr = prevQUICDial
+	}()
+
+	target := net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", pickFreeTCPPort(t)))
+	conn, _, err := DialWithResult(context.Background(), "tcp", target, []Hop{hop}, provider)
+	if err == nil {
+		conn.Close()
+		t.Fatal("DialWithResult() error = nil, want final target failure")
+	}
+
+	if !relayVerifiedFallbackAvailable(hop) {
+		t.Fatal("verified fallback was cleared after fallback target-open failure")
+	}
+	if got := selectRelayRuntimeTransport(hop); got != ListenerTransportModeTLSTCP {
+		t.Fatalf("selectRelayRuntimeTransport() = %q, want %q after failed QUIC probe", got, ListenerTransportModeTLSTCP)
+	}
+}
+
 func TestDialSurfacesDownstreamRelayFailure(t *testing.T) {
 	backendAddr, stopBackend := startTCPEchoServer(t)
 	defer stopBackend()
