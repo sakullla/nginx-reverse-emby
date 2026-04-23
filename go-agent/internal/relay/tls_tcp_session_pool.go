@@ -181,10 +181,7 @@ func (p *tlsTCPSessionPool) reserveExisting(key string, class upstream.TrafficCl
 
 	sessions = acceptableTLSTCPTunnels(sessions, class)
 	if len(sessions) == 0 {
-		sessions = p.activeSessionsLocked(key)
-		if len(sessions) == 0 {
-			return nil, nil
-		}
+		return nil, nil
 	}
 	least := leastLoadedTLSTCPTunnel(sessions)
 	if len(sessions) < tlsTCPMuxSessionsPerKey && least.tlsTCPLoad() >= tlsTCPMuxTargetStreamsPerSession {
@@ -200,9 +197,10 @@ func (p *tlsTCPSessionPool) storeOrReserve(key string, class upstream.TrafficCla
 	sessions := p.activeSessionsLocked(key)
 	if len(sessions) >= tlsTCPMuxSessionsPerKey {
 		acceptable := acceptableTLSTCPTunnels(sessions, class)
-		if len(acceptable) > 0 {
-			sessions = acceptable
+		if len(acceptable) == 0 {
+			return nil, nil
 		}
+		sessions = acceptable
 		least := leastLoadedTLSTCPTunnel(sessions)
 		return least, least.reserveStreamSlot()
 	}

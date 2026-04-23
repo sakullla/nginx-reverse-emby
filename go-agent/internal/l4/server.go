@@ -237,7 +237,7 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 
 	upstream, candidate, connectDuration, err := s.dialTCPUpstream(rule, relay.DialOptions{
 		InitialPayload: initialPayload,
-		TrafficClass:   upstream.ClassifyL4("tcp", int64(len(initialPayload)), 0),
+		TrafficClass:   relayTCPDialTrafficClass(initialPayload),
 	})
 	if err != nil {
 		return
@@ -289,6 +289,13 @@ func (s *Server) prefetchRelayInitialPayload(_ net.Conn, source io.Reader) ([]by
 	// Do not stall relay dials waiting for client bytes. Only buffered downstream
 	// data is folded into OPEN; raw connections fall back to normal relay copy.
 	return nil, source, nil
+}
+
+func relayTCPDialTrafficClass(initialPayload []byte) upstream.TrafficClass {
+	if len(initialPayload) == 0 {
+		return upstream.TrafficClassUnknown
+	}
+	return upstream.ClassifyL4("tcp", int64(len(initialPayload)), 0)
 }
 
 func (s *Server) prepareTCPDownstream(client net.Conn, rule model.L4Rule) (io.Reader, *proxyInfo, error) {

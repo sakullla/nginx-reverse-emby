@@ -83,3 +83,14 @@ func NewClassedRelayTransports(
 	}
 	return interactive, bulk
 }
+
+func NewRelayTransport(
+	base *http.Transport,
+	dial func(context.Context, string, string, upstream.TrafficClass) (net.Conn, error),
+) *http.Transport {
+	transport := cloneTransport(base)
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		return dial(ctx, network, address, upstream.TrafficClassUnknown)
+	}
+	return transport
+}

@@ -1122,8 +1122,8 @@ func TestTCPRelayProxy(t *testing.T) {
 		if relayReq.Target != upstreamAddress {
 			t.Fatalf("unexpected relay target %q", relayReq.Target)
 		}
-		if got := relayReq.TrafficClass; got != upstream.TrafficClassInteractive {
-			t.Fatalf("relay traffic class = %q, want %q", got, upstream.TrafficClassInteractive)
+		if got := relayReq.TrafficClass; got != upstream.TrafficClassUnknown {
+			t.Fatalf("relay traffic class = %q, want %q", got, upstream.TrafficClassUnknown)
 		}
 		if len(relayReq.InitialData) != 0 {
 			t.Fatalf("initial relay payload = %q, want empty for raw downstream", relayReq.InitialData)
@@ -1272,6 +1272,18 @@ func TestPrefetchRelayInitialPayloadSkipsRawConnWait(t *testing.T) {
 	}
 	if client.setReadDeadlineCalls != 0 {
 		t.Fatalf("setReadDeadlineCalls = %d, want 0", client.setReadDeadlineCalls)
+	}
+}
+
+func TestRelayTCPDialTrafficClassUsesUnknownWithoutBufferedPayload(t *testing.T) {
+	if got := relayTCPDialTrafficClass(nil); got != upstream.TrafficClassUnknown {
+		t.Fatalf("relayTCPDialTrafficClass(nil) = %q, want %q", got, upstream.TrafficClassUnknown)
+	}
+}
+
+func TestRelayTCPDialTrafficClassUsesObservedBufferedPayload(t *testing.T) {
+	if got := relayTCPDialTrafficClass(make([]byte, 128*1024)); got != upstream.TrafficClassBulk {
+		t.Fatalf("relayTCPDialTrafficClass(128KiB) = %q, want %q", got, upstream.TrafficClassBulk)
 	}
 }
 

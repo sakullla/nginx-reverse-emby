@@ -479,18 +479,19 @@ func TestCloneProxyRequestRewritesFrontendPrefixToBackendPath(t *testing.T) {
 	}
 }
 
-func TestRouteEntryUsesInteractiveTransportForUnknownSizeGETRequests(t *testing.T) {
+func TestRouteEntryUsesBaseTransportForUnknownSizeGETRequests(t *testing.T) {
 	base := NewSharedTransport()
 	interactive, bulk := NewClassedDirectTransports(base)
 	entry := &routeEntry{
+		transport:                  base,
 		rule:                       model.HTTPRule{FrontendURL: "https://edge.example"},
 		directInteractiveTransport: interactive,
 		directBulkTransport:        bulk,
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "http://edge.example/library", nil)
-	if got := entry.transportForRequest(req); got != interactive {
-		t.Fatalf("transportForRequest() = %p, want interactive %p", got, interactive)
+	if got := entry.transportForRequest(req); got != base {
+		t.Fatalf("transportForRequest() = %p, want base %p", got, base)
 	}
 }
 
@@ -543,8 +544,8 @@ func TestNewServerWiresDirectClassedTransportsForDirectRoute(t *testing.T) {
 	if entry.directInteractiveTransport == entry.directBulkTransport {
 		t.Fatalf("direct interactive and bulk transports are the same pointer %p", entry.directInteractiveTransport)
 	}
-	if got := entry.transportForRequest(httptest.NewRequest(http.MethodGet, "http://edge.example/library", nil)); got != entry.directInteractiveTransport {
-		t.Fatalf("unknown-size GET transport = %p, want interactive %p", got, entry.directInteractiveTransport)
+	if got := entry.transportForRequest(httptest.NewRequest(http.MethodGet, "http://edge.example/library", nil)); got != entry.transport {
+		t.Fatalf("unknown-size GET transport = %p, want base transport %p", got, entry.transport)
 	}
 
 	rangeReq := httptest.NewRequest(http.MethodGet, "http://edge.example/Videos/1", nil)
@@ -657,8 +658,8 @@ func TestNewServerWiresRelayTransportWithoutDirectClassedTransports(t *testing.T
 	if got := entry.transportForRequest(rangeReq); got != entry.relayBulkTransport {
 		t.Fatalf("relay range request transport = %p, want relay bulk transport %p", got, entry.relayBulkTransport)
 	}
-	if got := entry.transportForRequest(httptest.NewRequest(http.MethodGet, "http://edge.example/library", nil)); got != entry.relayInteractiveTransport {
-		t.Fatalf("relay unknown-size GET transport = %p, want relay interactive transport %p", got, entry.relayInteractiveTransport)
+	if got := entry.transportForRequest(httptest.NewRequest(http.MethodGet, "http://edge.example/library", nil)); got != entry.transport {
+		t.Fatalf("relay unknown-size GET transport = %p, want relay base transport %p", got, entry.transport)
 	}
 }
 
@@ -2266,7 +2267,7 @@ func TestStartServesHTTPRulesThroughRelayChain(t *testing.T) {
 	}
 }
 
-func TestStartRelayHTTPRequestsPropagateInteractiveAndBulkTrafficClassMetadata(t *testing.T) {
+func TestStartRelayHTTPRequestsPropagateKnownTrafficClassMetadata(t *testing.T) {
 	frontendPort := pickFreePort(t)
 	backendPort := pickFreePort(t)
 	backendAddress := fmt.Sprintf("127.0.0.1:%d", backendPort)
@@ -2308,7 +2309,7 @@ func TestStartRelayHTTPRequestsPropagateInteractiveAndBulkTrafficClassMetadata(t
 	}
 	defer runtime.Close()
 
-	interactiveReq, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/library", frontendPort), nil)
+	interactiveReq, err := http.NewRequest(http.MethodPost, fmt.Sprintf("http://127.0.0.1:%d/library", frontendPort), strings.NewReader("hello"))
 	if err != nil {
 		t.Fatalf("failed to create interactive request: %v", err)
 	}
@@ -2349,7 +2350,11 @@ func TestStartRelayHTTPRequestsPropagateInteractiveAndBulkTrafficClassMetadata(t
 		if relayReq.Target != backendAddress {
 			t.Fatalf("unexpected relay target %q", relayReq.Target)
 		}
-		switch upstream.TrafficClass(relayReq.Metadata["traffic_class"].(string)) {
+		rawClass, ok := relayReq.Metadata["traffic_class"].(string)
+		if !ok {
+			t.Fatalf("relay request metadata missing traffic class: %+v", relayReq.Metadata)
+		}
+		switch upstream.TrafficClass(rawClass) {
 		case upstream.TrafficClassInteractive:
 			seenInteractive = true
 		case upstream.TrafficClassBulk:

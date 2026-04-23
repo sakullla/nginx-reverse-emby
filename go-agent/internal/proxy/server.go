@@ -116,14 +116,15 @@ func newServerWithResilience(
 		transport := sharedTransport
 		entryDirectInteractiveTransport := directInteractiveTransport
 		entryDirectBulkTransport := directBulkTransport
+		var relayTransport *http.Transport
 		var relayInteractiveTransport *http.Transport
 		var relayBulkTransport *http.Transport
 		if len(rule.RelayChain) > 0 {
-			relayInteractiveTransport, relayBulkTransport, err = newRelayTransports(rule, relayListenersByID, providers.Relay, sharedTransport)
+			relayTransport, relayInteractiveTransport, relayBulkTransport, err = newRelayTransports(rule, relayListenersByID, providers.Relay, sharedTransport)
 			if err != nil {
 				return nil, err
 			}
-			transport = relayInteractiveTransport
+			transport = relayTransport
 			entryDirectInteractiveTransport = nil
 			entryDirectBulkTransport = nil
 		}
@@ -403,19 +404,20 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 }
 
 func (e *routeEntry) transportForRequest(req *http.Request) *http.Transport {
+	class := upstream.ClassifyHTTPRequest(req)
 	if len(e.rule.RelayChain) > 0 {
-		if upstream.ClassifyHTTPRequest(req) == upstream.TrafficClassBulk && e.relayBulkTransport != nil {
+		if class == upstream.TrafficClassBulk && e.relayBulkTransport != nil {
 			return e.relayBulkTransport
 		}
-		if e.relayInteractiveTransport != nil {
+		if class == upstream.TrafficClassInteractive && e.relayInteractiveTransport != nil {
 			return e.relayInteractiveTransport
 		}
 		return e.transport
 	}
-	if upstream.ClassifyHTTPRequest(req) == upstream.TrafficClassBulk && e.directBulkTransport != nil {
+	if class == upstream.TrafficClassBulk && e.directBulkTransport != nil {
 		return e.directBulkTransport
 	}
-	if e.directInteractiveTransport != nil {
+	if class == upstream.TrafficClassInteractive && e.directInteractiveTransport != nil {
 		return e.directInteractiveTransport
 	}
 	return e.transport
@@ -729,20 +731,22 @@ func newRelayTransports(
 	relayListenersByID map[int]model.RelayListener,
 	provider RelayMaterialProvider,
 	base *http.Transport,
-) (*http.Transport, *http.Transport, error) {
+) (*http.Transport, *http.Transport, *http.Transport, error) {
 	if provider == nil {
-		return nil, nil, fmt.Errorf("http rule %q: relay_chain requires relay tls material provider", rule.FrontendURL)
+		return nil, nil, nil, fmt.Errorf("http rule %q: relay_chain requires relay tls material provider", rule.FrontendURL)
 	}
 	hops, err := resolveRelayHops(rule, mapValues(relayListenersByID))
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	interactive, bulk := NewClassedRelayTransports(base, func(ctx context.Context, network, addr string, class upstream.TrafficClass) (net.Conn, error) {
+	dial := func(ctx context.Context, network, addr string, class upstream.TrafficClass) (net.Conn, error) {
 		return relay.Dial(ctx, network, dialAddressFromContext(ctx, addr), hops, provider, relay.DialOptions{
 			TrafficClass: class,
 		})
-	})
-	return interactive, bulk, nil
+	}
+	transport := NewRelayTransport(base, dial)
+	interactive, bulk := NewClassedRelayTransports(base, dial)
+	return transport, interactive, bulk, nil
 }
 
 func resolveRelayHops(rule model.HTTPRule, relayListeners []model.RelayListener) ([]relay.Hop, error) {
