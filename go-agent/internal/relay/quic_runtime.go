@@ -98,6 +98,7 @@ func dialQUICWithResult(ctx context.Context, network, target string, chain []Hop
 		Kind:        network,
 		Target:      target,
 		Chain:       append([]Hop(nil), chain[1:]...),
+		Metadata:    relayMetadataForDialOptions(network, options),
 		InitialData: options.InitialPayload,
 	}
 	if err := withFrameDeadline(conn, func() error {

@@ -17,6 +17,7 @@ import (
 
 type DialOptions struct {
 	InitialPayload []byte
+	TrafficClass   upstream.TrafficClass
 }
 
 type DialResult struct {
@@ -31,6 +32,8 @@ type relayPathPlanner interface {
 var relayPlanner relayPathPlanner
 var relayRuntimeScore = upstream.NewScoreStore(time.Now)
 
+const relayQUICProbeInterval = 30 * time.Second
+
 func setRelayPlannerForTest(planner relayPathPlanner) func() {
 	prev := relayPlanner
 	relayPlanner = planner
@@ -41,9 +44,12 @@ func setRelayPlannerForTest(planner relayPathPlanner) func() {
 
 func (o DialOptions) clone() DialOptions {
 	if len(o.InitialPayload) == 0 {
-		return DialOptions{}
+		return DialOptions{TrafficClass: o.TrafficClass}
 	}
-	return DialOptions{InitialPayload: append([]byte(nil), o.InitialPayload...)}
+	return DialOptions{
+		InitialPayload: append([]byte(nil), o.InitialPayload...),
+		TrafficClass:   o.TrafficClass,
+	}
 }
 
 type Server struct {
@@ -211,8 +217,12 @@ func (s *Server) openUDPPeer(target string, chain []Hop) (udpPacketPeer, error) 
 }
 
 func (s *Server) openUDPPeerWithResult(target string, chain []Hop) (udpPacketPeer, string, error) {
+	return s.openUDPPeerWithResultOptions(target, chain, DialOptions{})
+}
+
+func (s *Server) openUDPPeerWithResultOptions(target string, chain []Hop, options DialOptions) (udpPacketPeer, string, error) {
 	if len(chain) > 0 {
-		conn, result, err := DialWithResult(s.ctx, "udp", target, chain, s.provider)
+		conn, result, err := DialWithResult(s.ctx, "udp", target, chain, s.provider, options)
 		if err != nil {
 			return nil, "", err
 		}
@@ -379,13 +389,16 @@ func relayTransportCandidates(firstHop Hop) []upstream.PathSnapshot {
 	}
 
 	quicState := upstream.PathState{}
+	probeDue := false
+	quicKey := upstream.PathKey{Family: upstream.PathFamilyRelayQUIC, Address: firstHop.Address}
 	if relayRuntimeScore != nil {
-		quicState = relayRuntimeScore.State(upstream.PathKey{Family: upstream.PathFamilyRelayQUIC, Address: firstHop.Address})
+		quicState = relayRuntimeScore.State(quicKey)
+		probeDue = relayRuntimeScore.ConsumeProbeOpportunity(quicKey, relayQUICProbeInterval)
 	}
 	candidates := []upstream.PathSnapshot{{
-		Key:        upstream.PathKey{Family: upstream.PathFamilyRelayQUIC, Address: firstHop.Address},
-		Confidence: relayPathConfidence(quicState),
-		ProbeOnly:  quicState.ProbeOnly,
+		Key:        quicKey,
+		Confidence: relayPathConfidence(quicState, probeDue),
+		ProbeOnly:  quicState.ProbeOnly && !probeDue,
 	}}
 	if firstHop.Listener.AllowTransportFallback {
 		candidates = append(candidates, upstream.PathSnapshot{
@@ -396,8 +409,11 @@ func relayTransportCandidates(firstHop Hop) []upstream.PathSnapshot {
 	return candidates
 }
 
-func relayPathConfidence(state upstream.PathState) float64 {
+func relayPathConfidence(state upstream.PathState, probeDue bool) float64 {
 	if state.ProbeOnly {
+		if probeDue {
+			return 0.31
+		}
 		return 0.10
 	}
 	return 0.80
@@ -407,10 +423,9 @@ func observeRelayQUICFailure(address string) {
 	if relayRuntimeScore == nil || strings.TrimSpace(address) == "" {
 		return
 	}
-	relayRuntimeScore.ObserveFailure(
-		upstream.PathKey{Family: upstream.PathFamilyRelayQUIC, Address: address},
-		upstream.FailureTimeout,
-	)
+	key := upstream.PathKey{Family: upstream.PathFamilyRelayQUIC, Address: address}
+	relayRuntimeScore.ObserveFailure(key, upstream.FailureTimeout)
+	relayRuntimeScore.ArmProbe(key, relayQUICProbeInterval)
 }
 
 func observeRelayQUICSuccess(address string) {
@@ -431,6 +446,32 @@ func setRelayRuntimeScoreForTest(score *upstream.ScoreStore) func() {
 	return func() {
 		relayRuntimeScore = prev
 	}
+}
+
+func relayDialTrafficClass(network string, options DialOptions) upstream.TrafficClass {
+	if options.TrafficClass != "" {
+		return options.TrafficClass
+	}
+	if strings.EqualFold(network, "udp") {
+		return upstream.TrafficClassBulk
+	}
+	return upstream.TrafficClassUnknown
+}
+
+func relayMetadataForDialOptions(network string, options DialOptions) map[string]any {
+	class := relayDialTrafficClass(network, options)
+	if class == upstream.TrafficClassUnknown {
+		return nil
+	}
+	return map[string]any{relayMetadataTrafficClass: string(class)}
+}
+
+func relayDialOptionsFromMetadata(network string, metadata map[string]any) DialOptions {
+	class := relayTrafficClassFromMetadata(metadata)
+	if class == upstream.TrafficClassUnknown {
+		class = relayDialTrafficClass(network, DialOptions{})
+	}
+	return DialOptions{TrafficClass: class}
 }
 
 // dialTLSTCP is the legacy one-stream-per-TLS-connection path. Runtime relay
@@ -626,10 +667,15 @@ func (s *Server) handleQUICStream(conn *quic.Conn, stream *quic.Stream, listener
 		return
 	}
 	if strings.EqualFold(request.Kind, "udp") {
-		s.handleUDPRelayStream(clientConn, listener, request.Target, request.Chain)
+		s.handleUDPRelayStream(clientConn, listener, request.Target, request.Chain, relayDialOptionsFromMetadata(request.Kind, request.Metadata))
 		return
 	}
-	upstream, selectedAddress, err := s.openUpstreamWithResult(request.Kind, request.Target, request.Chain, DialOptions{})
+	upstream, selectedAddress, err := s.openUpstreamWithResult(
+		request.Kind,
+		request.Target,
+		request.Chain,
+		relayDialOptionsFromMetadata(request.Kind, request.Metadata),
+	)
 	if err != nil {
 		_ = withFrameDeadline(clientConn, func() error {
 			return writeRelayResponse(clientConn, relayResponse{OK: false, Error: err.Error()})
@@ -662,8 +708,8 @@ func listenerUsesEarlyWindowMask(listener Listener) bool {
 		strings.EqualFold(strings.TrimSpace(listener.ObfsMode), RelayObfsModeEarlyWindowV2)
 }
 
-func (s *Server) handleUDPRelayStream(clientConn net.Conn, listener Listener, target string, chain []Hop) {
-	upstream, selectedAddress, err := s.openUDPPeerWithResult(target, chain)
+func (s *Server) handleUDPRelayStream(clientConn net.Conn, listener Listener, target string, chain []Hop, options DialOptions) {
+	upstream, selectedAddress, err := s.openUDPPeerWithResultOptions(target, chain, options)
 	if err != nil {
 		_ = withFrameDeadline(clientConn, func() error {
 			return writeRelayResponse(clientConn, relayResponse{OK: false, Error: err.Error()})

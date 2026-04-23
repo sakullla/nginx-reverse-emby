@@ -62,3 +62,32 @@ func TestScoreStateRequiresThreeSuccessfulProbesToRecover(t *testing.T) {
 		t.Fatalf("ProbeOnly = true after third probe, want false")
 	}
 }
+
+func TestScoreStateConsumesProbeOpportunityOnlyAfterArmingAndDeadline(t *testing.T) {
+	now := time.Unix(1700000000, 0)
+	store := NewScoreStore(func() time.Time { return now })
+	key := PathKey{Family: PathFamilyRelayQUIC, Address: "relay.example:443"}
+
+	store.ObserveFailure(key, FailureTimeout)
+	store.ObserveFailure(key, FailureTimeout)
+
+	if store.ConsumeProbeOpportunity(key, 30*time.Second) {
+		t.Fatal("ConsumeProbeOpportunity() = true before probe is armed, want false")
+	}
+
+	store.ArmProbe(key, 30*time.Second)
+
+	if store.ConsumeProbeOpportunity(key, 30*time.Second) {
+		t.Fatal("ConsumeProbeOpportunity() = true before probe deadline, want false")
+	}
+
+	now = now.Add(30 * time.Second)
+
+	if !store.ConsumeProbeOpportunity(key, 30*time.Second) {
+		t.Fatal("ConsumeProbeOpportunity() = false after probe deadline, want true")
+	}
+
+	if store.ConsumeProbeOpportunity(key, 30*time.Second) {
+		t.Fatal("ConsumeProbeOpportunity() = true immediately after consumption, want false")
+	}
+}

@@ -54,6 +54,8 @@ type routeEntry struct {
 	transport                  *http.Transport
 	directInteractiveTransport *http.Transport
 	directBulkTransport        *http.Transport
+	relayInteractiveTransport  *http.Transport
+	relayBulkTransport         *http.Transport
 	resilience                 StreamResilienceOptions
 	modifyResp                 func(*http.Response) error
 	selectionScope             string
@@ -114,11 +116,14 @@ func newServerWithResilience(
 		transport := sharedTransport
 		entryDirectInteractiveTransport := directInteractiveTransport
 		entryDirectBulkTransport := directBulkTransport
+		var relayInteractiveTransport *http.Transport
+		var relayBulkTransport *http.Transport
 		if len(rule.RelayChain) > 0 {
-			transport, err = newRelayTransport(rule, relayListenersByID, providers.Relay, sharedTransport)
+			relayInteractiveTransport, relayBulkTransport, err = newRelayTransports(rule, relayListenersByID, providers.Relay, sharedTransport)
 			if err != nil {
 				return nil, err
 			}
+			transport = relayInteractiveTransport
 			entryDirectInteractiveTransport = nil
 			entryDirectBulkTransport = nil
 		}
@@ -131,6 +136,8 @@ func newServerWithResilience(
 			transport:                  transport,
 			directInteractiveTransport: entryDirectInteractiveTransport,
 			directBulkTransport:        entryDirectBulkTransport,
+			relayInteractiveTransport:  relayInteractiveTransport,
+			relayBulkTransport:         relayBulkTransport,
 			resilience:                 resilience,
 			modifyResp:                 makeModifyResponse(frontendBaseURL, rule.ProxyRedirect, targets[0].backendHost, normalizeURLPath(targets[0].target.Path)),
 			selectionScope:             hostKey,
@@ -397,6 +404,12 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 
 func (e *routeEntry) transportForRequest(req *http.Request) *http.Transport {
 	if len(e.rule.RelayChain) > 0 {
+		if upstream.ClassifyHTTPRequest(req) == upstream.TrafficClassBulk && e.relayBulkTransport != nil {
+			return e.relayBulkTransport
+		}
+		if e.relayInteractiveTransport != nil {
+			return e.relayInteractiveTransport
+		}
 		return e.transport
 	}
 	if upstream.ClassifyHTTPRequest(req) == upstream.TrafficClassBulk && e.directBulkTransport != nil {
@@ -711,24 +724,25 @@ func newTLSListener(ctx context.Context, listener net.Listener, spec runtimeList
 	return tls.NewListener(listener, config), nil
 }
 
-func newRelayTransport(
+func newRelayTransports(
 	rule model.HTTPRule,
 	relayListenersByID map[int]model.RelayListener,
 	provider RelayMaterialProvider,
 	base *http.Transport,
-) (*http.Transport, error) {
+) (*http.Transport, *http.Transport, error) {
 	if provider == nil {
-		return nil, fmt.Errorf("http rule %q: relay_chain requires relay tls material provider", rule.FrontendURL)
+		return nil, nil, fmt.Errorf("http rule %q: relay_chain requires relay tls material provider", rule.FrontendURL)
 	}
 	hops, err := resolveRelayHops(rule, mapValues(relayListenersByID))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	transport := cloneTransport(base)
-	transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-		return relay.Dial(ctx, network, dialAddressFromContext(ctx, addr), hops, provider)
-	}
-	return transport, nil
+	interactive, bulk := NewClassedRelayTransports(base, func(ctx context.Context, network, addr string, class upstream.TrafficClass) (net.Conn, error) {
+		return relay.Dial(ctx, network, dialAddressFromContext(ctx, addr), hops, provider, relay.DialOptions{
+			TrafficClass: class,
+		})
+	})
+	return interactive, bulk, nil
 }
 
 func resolveRelayHops(rule model.HTTPRule, relayListeners []model.RelayListener) ([]relay.Hop, error) {

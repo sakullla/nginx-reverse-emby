@@ -30,6 +30,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
 func TestServerRoutesByHostAndRewritesLocation(t *testing.T) {
@@ -641,14 +642,23 @@ func TestNewServerWiresRelayTransportWithoutDirectClassedTransports(t *testing.T
 	if entry.directBulkTransport != nil {
 		t.Fatalf("relay route bulk transport = %p, want nil", entry.directBulkTransport)
 	}
+	if entry.relayInteractiveTransport == nil {
+		t.Fatal("relay route missing interactive transport")
+	}
+	if entry.relayBulkTransport == nil {
+		t.Fatal("relay route missing bulk transport")
+	}
+	if entry.relayInteractiveTransport == entry.relayBulkTransport {
+		t.Fatalf("relay interactive and bulk transports share pointer %p", entry.relayInteractiveTransport)
+	}
 
 	rangeReq := httptest.NewRequest(http.MethodGet, "http://edge.example/Videos/1", nil)
 	rangeReq.Header.Set("Range", "bytes=0-1023")
-	if got := entry.transportForRequest(rangeReq); got != entry.transport {
-		t.Fatalf("relay range request transport = %p, want relay transport %p", got, entry.transport)
+	if got := entry.transportForRequest(rangeReq); got != entry.relayBulkTransport {
+		t.Fatalf("relay range request transport = %p, want relay bulk transport %p", got, entry.relayBulkTransport)
 	}
-	if got := entry.transportForRequest(httptest.NewRequest(http.MethodGet, "http://edge.example/library", nil)); got != entry.transport {
-		t.Fatalf("relay non-range request transport = %p, want relay transport %p", got, entry.transport)
+	if got := entry.transportForRequest(httptest.NewRequest(http.MethodGet, "http://edge.example/library", nil)); got != entry.relayInteractiveTransport {
+		t.Fatalf("relay non-range request transport = %p, want relay interactive transport %p", got, entry.relayInteractiveTransport)
 	}
 }
 
@@ -2256,6 +2266,104 @@ func TestStartServesHTTPRulesThroughRelayChain(t *testing.T) {
 	}
 }
 
+func TestStartRelayHTTPRequestsPropagateTrafficClassMetadata(t *testing.T) {
+	frontendPort := pickFreePort(t)
+	backendPort := pickFreePort(t)
+	backendAddress := fmt.Sprintf("127.0.0.1:%d", backendPort)
+
+	relayCert := mustIssueProxyTLSCertificate(t, "relay.internal.test")
+	relayPublicPort := pickFreePort(t)
+	relayAccepted := make(chan relayTestRequest, 2)
+	relayStop := startTestRelayServer(t, fmt.Sprintf("127.0.0.1:%d", relayPublicPort), relayCert, relayAccepted, relay.RelayObfsModeOff)
+	defer relayStop()
+	relayListenPort := pickFreePort(t)
+
+	runtime, err := Start(
+		context.Background(),
+		[]model.HTTPRule{{
+			FrontendURL: fmt.Sprintf("http://edge.example.test:%d", frontendPort),
+			BackendURL:  "http://" + backendAddress,
+			RelayChain:  []int{41},
+		}},
+		[]model.RelayListener{{
+			ID:         41,
+			AgentID:    "remote-relay-agent",
+			Name:       "relay-hop",
+			ListenHost: "127.0.0.2",
+			BindHosts:  []string{"127.0.0.2"},
+			ListenPort: relayListenPort,
+			PublicHost: "127.0.0.1",
+			PublicPort: relayPublicPort,
+			Enabled:    true,
+			TLSMode:    "pin_only",
+			PinSet: []model.RelayPin{{
+				Type:  "sha256",
+				Value: mustSPKIPin(t, relayCert),
+			}},
+		}},
+		Providers{Relay: &testRuntimeMaterialProvider{}},
+	)
+	if err != nil {
+		t.Fatalf("failed to start relay-backed runtime: %v", err)
+	}
+	defer runtime.Close()
+
+	interactiveReq, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/library", frontendPort), nil)
+	if err != nil {
+		t.Fatalf("failed to create interactive request: %v", err)
+	}
+	interactiveReq.Host = fmt.Sprintf("edge.example.test:%d", frontendPort)
+
+	interactiveResp, err := http.DefaultClient.Do(interactiveReq)
+	if err != nil {
+		t.Fatalf("interactive relay-backed request failed: %v", err)
+	}
+	interactiveResp.Body.Close()
+
+	rangeReq, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/Videos/1", frontendPort), nil)
+	if err != nil {
+		t.Fatalf("failed to create range request: %v", err)
+	}
+	rangeReq.Host = fmt.Sprintf("edge.example.test:%d", frontendPort)
+	rangeReq.Header.Set("Range", "bytes=0-1023")
+
+	rangeResp, err := http.DefaultClient.Do(rangeReq)
+	if err != nil {
+		t.Fatalf("range relay-backed request failed: %v", err)
+	}
+	rangeResp.Body.Close()
+
+	var requests []relayTestRequest
+	for i := 0; i < 2; i++ {
+		select {
+		case relayReq := <-relayAccepted:
+			requests = append(requests, relayReq)
+		case <-time.After(2 * time.Second):
+			t.Fatal("expected both relay requests to traverse relay listener")
+		}
+	}
+
+	seenInteractive := false
+	seenBulk := false
+	for _, relayReq := range requests {
+		if relayReq.Target != backendAddress {
+			t.Fatalf("unexpected relay target %q", relayReq.Target)
+		}
+		switch upstream.TrafficClass(relayReq.Metadata["traffic_class"].(string)) {
+		case upstream.TrafficClassInteractive:
+			seenInteractive = true
+		case upstream.TrafficClassBulk:
+			seenBulk = true
+		}
+	}
+	if !seenInteractive {
+		t.Fatal("did not observe interactive relay traffic class metadata")
+	}
+	if !seenBulk {
+		t.Fatal("did not observe bulk relay traffic class metadata")
+	}
+}
+
 func TestStartServesHostnameBackendThroughRealRelayRuntime(t *testing.T) {
 	var receivedHost string
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2761,15 +2869,17 @@ func (p *testRuntimeMaterialProvider) TrustedCAPool(_ context.Context, _ []int) 
 }
 
 type relayTestRequest struct {
-	Network string      `json:"network"`
-	Target  string      `json:"target"`
-	Chain   []relay.Hop `json:"chain,omitempty"`
+	Network  string         `json:"network"`
+	Target   string         `json:"target"`
+	Chain    []relay.Hop    `json:"chain,omitempty"`
+	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
 type relayTestOpenFrame struct {
-	Kind   string      `json:"kind"`
-	Target string      `json:"target"`
-	Chain  []relay.Hop `json:"chain,omitempty"`
+	Kind     string         `json:"kind"`
+	Target   string         `json:"target"`
+	Chain    []relay.Hop    `json:"chain,omitempty"`
+	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
 type relayTestMuxFrame struct {
@@ -2805,33 +2915,41 @@ func startTestRelayServer(
 	}
 
 	done := make(chan struct{})
+	var wg sync.WaitGroup
 	go func() {
 		defer close(done)
-		conn, err := ln.Accept()
-		if err != nil {
-			return
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				break
+			}
+			wg.Add(1)
+			go func(conn net.Conn) {
+				defer wg.Done()
+				defer conn.Close()
+
+				relayConn, relayReq, err := acceptRelayTestConn(conn, obfsMode)
+				if err != nil {
+					return
+				}
+				requests <- relayReq
+
+				if err := writeRelayTestResponse(relayConn, map[string]any{"ok": true}); err != nil {
+					return
+				}
+
+				dataConn := net.Conn(relayConn)
+
+				httpReq, err := http.ReadRequest(bufio.NewReader(dataConn))
+				if err != nil {
+					return
+				}
+				_ = httpReq.Body.Close()
+
+				_, _ = dataConn.Write([]byte("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n"))
+			}(conn)
 		}
-		defer conn.Close()
-
-		relayConn, relayReq, err := acceptRelayTestConn(conn, obfsMode)
-		if err != nil {
-			return
-		}
-		requests <- relayReq
-
-		if err := writeRelayTestResponse(relayConn, map[string]any{"ok": true}); err != nil {
-			return
-		}
-
-		dataConn := net.Conn(relayConn)
-
-		httpReq, err := http.ReadRequest(bufio.NewReader(dataConn))
-		if err != nil {
-			return
-		}
-		_ = httpReq.Body.Close()
-
-		_, _ = dataConn.Write([]byte("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n"))
+		wg.Wait()
 	}()
 
 	return func() {
@@ -2858,43 +2976,51 @@ func startStreamingTestRelayServer(
 	}
 
 	done := make(chan struct{})
+	var wg sync.WaitGroup
 	go func() {
 		defer close(done)
-		conn, err := ln.Accept()
-		if err != nil {
-			return
-		}
-		defer conn.Close()
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				break
+			}
+			wg.Add(1)
+			go func(conn net.Conn) {
+				defer wg.Done()
+				defer conn.Close()
 
-		relayConn, relayReq, err := acceptRelayTestConn(conn, obfsMode)
-		if err != nil {
-			return
-		}
-		requests <- relayReq
+				relayConn, relayReq, err := acceptRelayTestConn(conn, obfsMode)
+				if err != nil {
+					return
+				}
+				requests <- relayReq
 
-		if err := writeRelayTestResponse(relayConn, map[string]any{"ok": true}); err != nil {
-			return
-		}
+				if err := writeRelayTestResponse(relayConn, map[string]any{"ok": true}); err != nil {
+					return
+				}
 
-		upstream, err := net.Dial("tcp", relayReq.Target)
-		if err != nil {
-			return
-		}
-		defer upstream.Close()
+				upstream, err := net.Dial("tcp", relayReq.Target)
+				if err != nil {
+					return
+				}
+				defer upstream.Close()
 
-		req, err := http.ReadRequest(bufio.NewReader(relayConn))
-		if err != nil {
-			return
-		}
-		if err := req.Write(upstream); err != nil {
-			_ = req.Body.Close()
-			return
-		}
-		_ = req.Body.Close()
-		closeWriteTestConn(upstream)
+				req, err := http.ReadRequest(bufio.NewReader(relayConn))
+				if err != nil {
+					return
+				}
+				if err := req.Write(upstream); err != nil {
+					_ = req.Body.Close()
+					return
+				}
+				_ = req.Body.Close()
+				closeWriteTestConn(upstream)
 
-		_, _ = io.Copy(relayConn, upstream)
-		closeWriteTestConn(relayConn)
+				_, _ = io.Copy(relayConn, upstream)
+				closeWriteTestConn(relayConn)
+			}(conn)
+		}
+		wg.Wait()
 	}()
 
 	return func() {
@@ -2930,9 +3056,10 @@ func readRelayTestRequest(conn net.Conn) (relayTestRequest, uint32, error) {
 		return relayTestRequest{}, 0, err
 	}
 	return relayTestRequest{
-		Network: request.Kind,
-		Target:  request.Target,
-		Chain:   request.Chain,
+		Network:  request.Kind,
+		Target:   request.Target,
+		Chain:    request.Chain,
+		Metadata: request.Metadata,
 	}, frame.StreamID, nil
 }
 

@@ -56,6 +56,35 @@ func (s *ScoreStore) ObserveProbeSuccess(key PathKey, handshake time.Duration, f
 	s.state[key] = st
 }
 
+func (s *ScoreStore) ArmProbe(key PathKey, after time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	st := s.state[key]
+	if !st.ProbeOnly {
+		return
+	}
+	st.NextProbeAt = s.now().Add(after)
+	s.state[key] = st
+}
+
+func (s *ScoreStore) ConsumeProbeOpportunity(key PathKey, interval time.Duration) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	st := s.state[key]
+	if !st.ProbeOnly || st.NextProbeAt.IsZero() {
+		return false
+	}
+	now := s.now()
+	if now.Before(st.NextProbeAt) {
+		return false
+	}
+	st.NextProbeAt = now.Add(interval)
+	s.state[key] = st
+	return true
+}
+
 func (s *ScoreStore) State(key PathKey) PathState {
 	s.mu.Lock()
 	defer s.mu.Unlock()

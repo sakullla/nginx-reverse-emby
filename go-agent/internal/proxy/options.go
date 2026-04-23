@@ -5,6 +5,8 @@ import (
 	"net"
 	"net/http"
 	"time"
+
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
 type TransportOptions struct {
@@ -65,5 +67,19 @@ func NewClassedDirectTransports(base *http.Transport) (*http.Transport, *http.Tr
 
 	ApplyTransportOptions(interactive, TransportOptions{MaxConnsPerHost: 16})
 	ApplyTransportOptions(bulk, TransportOptions{MaxConnsPerHost: 64})
+	return interactive, bulk
+}
+
+func NewClassedRelayTransports(
+	base *http.Transport,
+	dial func(context.Context, string, string, upstream.TrafficClass) (net.Conn, error),
+) (*http.Transport, *http.Transport) {
+	interactive, bulk := NewClassedDirectTransports(base)
+	interactive.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		return dial(ctx, network, address, upstream.TrafficClassInteractive)
+	}
+	bulk.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		return dial(ctx, network, address, upstream.TrafficClassBulk)
+	}
 	return interactive, bulk
 }

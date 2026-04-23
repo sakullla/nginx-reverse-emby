@@ -35,4 +35,5 @@ type PathState struct {
 	ProbeSuccesses          int
 	ConsecutiveHighSeverity int
 	FirstByteEstimate       time.Duration
+	NextProbeAt             time.Time
 }

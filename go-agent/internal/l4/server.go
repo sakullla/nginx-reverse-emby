@@ -235,7 +235,10 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 		}
 	}
 
-	upstream, candidate, connectDuration, err := s.dialTCPUpstream(rule, relay.DialOptions{InitialPayload: initialPayload})
+	upstream, candidate, connectDuration, err := s.dialTCPUpstream(rule, relay.DialOptions{
+		InitialPayload: initialPayload,
+		TrafficClass:   upstream.TrafficClassInteractive,
+	})
 	if err != nil {
 		return
 	}
@@ -619,7 +622,9 @@ func (s *Server) dialUDPUpstream(rule model.L4Rule) (udpUpstream, l4Candidate, e
 		if hopErr != nil {
 			return nil, l4Candidate{}, hopErr
 		}
-		upstream, err := relay.Dial(s.ctx, "udp", targetAddress, hops, s.relayProvider)
+		upstream, err := relay.Dial(s.ctx, "udp", targetAddress, hops, s.relayProvider, relay.DialOptions{
+			TrafficClass: upstream.TrafficClassBulk,
+		})
 		if err != nil {
 			s.observeCandidateFailure(candidate)
 			lastErr = err
