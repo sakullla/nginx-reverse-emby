@@ -406,22 +406,10 @@ func ResolveCandidates(ctx context.Context, target string, chain []Hop, provider
 		if !firstHop.Listener.AllowTransportFallback {
 			return nil, err
 		}
-		addresses, fallbackErr := resolveCandidatesTLSTCPMux(ctx, target, chain, provider)
-		if fallbackErr != nil {
-			clearRelayVerifiedFallback(firstHop)
-			return nil, fallbackErr
-		}
-		markRelayVerifiedFallback(firstHop)
-		return addresses, nil
+		return resolveCandidatesTLSTCPMux(ctx, target, chain, provider)
 	}
 
-	addresses, err := resolveCandidatesTLSTCPMux(ctx, target, chain, provider)
-	if err != nil {
-		clearRelayVerifiedFallback(firstHop)
-		return nil, err
-	}
-	markRelayVerifiedFallback(firstHop)
-	return addresses, nil
+	return resolveCandidatesTLSTCPMux(ctx, target, chain, provider)
 }
 
 func selectRelayRuntimeTransport(firstHop Hop) string {

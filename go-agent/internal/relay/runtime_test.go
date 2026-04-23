@@ -1374,6 +1374,123 @@ func TestResolveCandidatesDoesNotConsumeQUICProbeWindow(t *testing.T) {
 	}
 }
 
+func TestResolveCandidatesDoesNotMutateRelayVerifiedFallbackState(t *testing.T) {
+	resetTLSTCPSessionPoolForTest()
+	restoreFallbacks := setRelayVerifiedFallbacksForTest(newRelayVerifiedFallbackStore())
+	defer restoreFallbacks()
+
+	provider := newFakeTLSMaterialProvider()
+	quicListener, hop := newRelayEndpoint(t, provider, 1, "relay-resolve-fallback-state", "pin_only", true, false)
+	sharedPort := pickFreeDualStackPort(t)
+	quicListener.ListenPort = sharedPort
+	quicListener.TransportMode = ListenerTransportModeQUIC
+	quicListener.AllowTransportFallback = true
+	hop.Address = net.JoinHostPort(quicListener.ListenHost, fmt.Sprintf("%d", sharedPort))
+	hop.Listener = quicListener
+
+	tlsListener := quicListener
+	tlsListener.ID = 2
+	tlsListener.Name = "relay-tls-resolve-fallback-state"
+	tlsListener.TransportMode = ListenerTransportModeTLSTCP
+	tlsListener.AllowTransportFallback = false
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	server := &Server{
+		ctx:      ctx,
+		cancel:   cancel,
+		provider: provider,
+		finalHopSelector: newFinalHopSelector(finalHopSelectorConfig{
+			Resolver: relayResolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
+				if host != "deferred.example" {
+					t.Fatalf("unexpected host %q", host)
+				}
+				return []net.IPAddr{
+					{IP: net.ParseIP("127.0.0.10")},
+					{IP: net.ParseIP("127.0.0.11")},
+				}, nil
+			}),
+		}),
+		conns:     make(map[net.Conn]struct{}),
+		quicConns: make(map[*quic.Conn]struct{}),
+	}
+	normalizedTLS, err := normalizeListener(tlsListener)
+	if err != nil {
+		t.Fatalf("normalizeListener(tls) error = %v", err)
+	}
+	if err := server.startListener(normalizedTLS); err != nil {
+		t.Fatalf("startListener(tls) error = %v", err)
+	}
+	normalizedQUIC, err := normalizeListener(quicListener)
+	if err != nil {
+		t.Fatalf("normalizeListener(quic) error = %v", err)
+	}
+	if err := server.startListener(normalizedQUIC); err != nil {
+		t.Fatalf("startListener(quic) error = %v", err)
+	}
+	defer server.Close()
+
+	prevQUICDial := quicDialAddr
+	quicDialAddr = func(ctx context.Context, addr string, tlsConf *tls.Config, conf *quic.Config) (*quic.Conn, error) {
+		return nil, errors.New("quic unavailable")
+	}
+	defer func() {
+		quicDialAddr = prevQUICDial
+	}()
+
+	addresses, err := ResolveCandidates(context.Background(), "deferred.example:8096", []Hop{hop}, provider)
+	if err != nil {
+		t.Fatalf("ResolveCandidates() error = %v", err)
+	}
+	if len(addresses) == 0 {
+		t.Fatal("ResolveCandidates() returned no addresses")
+	}
+	if relayVerifiedFallbackAvailable(hop) {
+		t.Fatal("ResolveCandidates() marked relay fallback verified; diagnostics must not mutate live fallback state")
+	}
+}
+
+func TestResolveCandidatesDoesNotClearRelayVerifiedFallbackState(t *testing.T) {
+	resetTLSTCPSessionPoolForTest()
+	restoreFallbacks := setRelayVerifiedFallbacksForTest(newRelayVerifiedFallbackStore())
+	defer restoreFallbacks()
+
+	provider := newFakeTLSMaterialProvider()
+	listener, hop := newRelayEndpoint(t, provider, 1, "relay-resolve-fallback-clear", "pin_only", true, false)
+	listener.ListenPort = pickFreeDualStackPort(t)
+	listener.TransportMode = ListenerTransportModeQUIC
+	listener.AllowTransportFallback = true
+	hop.Listener = listener
+	hop.Address = net.JoinHostPort(listener.ListenHost, fmt.Sprintf("%d", listener.ListenPort))
+
+	server, err := Start(context.Background(), []Listener{listener}, provider)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer server.Close()
+
+	markRelayVerifiedFallback(hop)
+	if !relayVerifiedFallbackAvailable(hop) {
+		t.Fatal("precondition failed: expected verified fallback state")
+	}
+
+	prevQUICDial := quicDialAddr
+	quicDialAddr = func(ctx context.Context, addr string, tlsConf *tls.Config, conf *quic.Config) (*quic.Conn, error) {
+		return nil, errors.New("quic unavailable")
+	}
+	defer func() {
+		quicDialAddr = prevQUICDial
+	}()
+
+	if _, err := ResolveCandidates(context.Background(), "deferred.example:8096", []Hop{hop}, provider); err == nil {
+		t.Fatal("ResolveCandidates() error = nil, want combined fallback failure")
+	}
+	if !relayVerifiedFallbackAvailable(hop) {
+		t.Fatal("ResolveCandidates() cleared verified fallback state; diagnostics must not mutate live fallback state")
+	}
+}
+
 func TestRelayTransportCandidatesDoesNotAssumeTLSTCPFallbackExistsForQUICHop(t *testing.T) {
 	now := time.Unix(1700000000, 0)
 	score := upstream.NewScoreStore(func() time.Time { return now })
