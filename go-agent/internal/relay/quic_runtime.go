@@ -20,6 +20,17 @@ var (
 	relaySessionPool = newSessionPool()
 )
 
+type relayApplicationError struct {
+	message string
+}
+
+func (e *relayApplicationError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return e.message
+}
+
 type quicStreamConn struct {
 	conn   *quic.Conn
 	stream *quic.Stream
@@ -122,11 +133,10 @@ func dialQUICWithResult(ctx context.Context, network, target string, chain []Hop
 	}
 	if !response.OK {
 		conn.Close()
-		observeRelayQUICFailureForHop(firstHop)
 		if response.Error == "" {
-			return nil, DialResult{}, fmt.Errorf("relay connection failed")
+			return nil, DialResult{}, &relayApplicationError{message: "relay connection failed"}
 		}
-		return nil, DialResult{}, fmt.Errorf("relay connection failed: %s", response.Error)
+		return nil, DialResult{}, &relayApplicationError{message: fmt.Sprintf("relay connection failed: %s", response.Error)}
 	}
 	observeRelayQUICSuccessForHop(firstHop)
 
@@ -260,10 +270,7 @@ func (c *quicStreamConn) Close() error {
 	if c.stream == nil {
 		return nil
 	}
-	_ = c.stream.Close()
-	c.stream.CancelRead(0)
-	c.stream.CancelWrite(0)
-	return nil
+	return c.closeWithCancel(false)
 }
 
 func (c *quicStreamConn) LocalAddr() net.Addr {
@@ -293,6 +300,18 @@ func (c *quicStreamConn) CloseWrite() error {
 func (c *quicStreamConn) CloseRead() error {
 	c.stream.CancelRead(0)
 	return nil
+}
+
+func (c *quicStreamConn) closeWithCancel(cancel bool) error {
+	if c.stream == nil {
+		return nil
+	}
+	err := c.stream.Close()
+	if cancel {
+		c.stream.CancelRead(0)
+		c.stream.CancelWrite(0)
+	}
+	return err
 }
 
 func (h *quicListenerHandle) Close() error {

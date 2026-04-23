@@ -3,6 +3,7 @@ package relay
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"reflect"
@@ -347,6 +348,10 @@ func DialWithResult(ctx context.Context, network, target string, chain []Hop, pr
 		if err == nil {
 			result.TransportMode = transportMode
 			return conn, result, nil
+		}
+		var appErr *relayApplicationError
+		if errors.As(err, &appErr) {
+			return nil, DialResult{}, err
 		}
 		if !firstHop.Listener.AllowTransportFallback {
 			return nil, DialResult{}, err
@@ -777,7 +782,10 @@ func (s *Server) handleQUICConn(conn *quic.Conn, listener Listener) {
 
 func (s *Server) handleQUICStream(conn *quic.Conn, stream *quic.Stream, listener Listener) {
 	clientConn := &quicStreamConn{conn: conn, stream: stream}
-	defer clientConn.Close()
+	cancelStream := true
+	defer func() {
+		_ = clientConn.closeWithCancel(cancelStream)
+	}()
 
 	var request relayOpenFrame
 	err := withFrameDeadline(clientConn, func() error {
@@ -792,6 +800,7 @@ func (s *Server) handleQUICStream(conn *quic.Conn, stream *quic.Stream, listener
 		_ = withFrameDeadline(clientConn, func() error {
 			return writeRelayResponse(clientConn, relayResponse{OK: false, Error: fmt.Sprintf("unsupported network %q", request.Kind)})
 		})
+		cancelStream = false
 		return
 	}
 	if strings.EqualFold(request.Kind, "resolve") {
@@ -800,11 +809,13 @@ func (s *Server) handleQUICStream(conn *quic.Conn, stream *quic.Stream, listener
 			_ = withFrameDeadline(clientConn, func() error {
 				return writeRelayResponse(clientConn, relayResponse{OK: false, Error: err.Error()})
 			})
+			cancelStream = false
 			return
 		}
 		_ = withFrameDeadline(clientConn, func() error {
 			return writeRelayResponse(clientConn, relayResponse{OK: true, ResolvedCandidates: resolvedCandidates})
 		})
+		cancelStream = false
 		return
 	}
 	if strings.EqualFold(request.Kind, "udp") {
@@ -821,6 +832,7 @@ func (s *Server) handleQUICStream(conn *quic.Conn, stream *quic.Stream, listener
 		_ = withFrameDeadline(clientConn, func() error {
 			return writeRelayResponse(clientConn, relayResponse{OK: false, Error: err.Error()})
 		})
+		cancelStream = false
 		return
 	}
 	s.trackConn(upstream)
@@ -832,6 +844,7 @@ func (s *Server) handleQUICStream(conn *quic.Conn, stream *quic.Stream, listener
 			_ = withFrameDeadline(clientConn, func() error {
 				return writeRelayResponse(clientConn, relayResponse{OK: false, Error: err.Error()})
 			})
+			cancelStream = false
 			return
 		}
 	}
@@ -840,6 +853,7 @@ func (s *Server) handleQUICStream(conn *quic.Conn, stream *quic.Stream, listener
 	}); err != nil {
 		return
 	}
+	cancelStream = false
 
 	pipeBothWays(wrapIdleConn(clientConn), wrapIdleConn(upstream))
 }

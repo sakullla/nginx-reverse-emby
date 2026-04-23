@@ -604,6 +604,60 @@ func TestDialSurfacesFinalTargetFailure(t *testing.T) {
 	}
 }
 
+func TestFinalTargetFailureDoesNotDemoteRelayQUICTransport(t *testing.T) {
+	resetTLSTCPSessionPoolForTest()
+
+	now := time.Unix(1700000000, 0)
+	score := upstream.NewScoreStore(func() time.Time { return now })
+	restoreScore := setRelayRuntimeScoreForTest(score)
+	defer restoreScore()
+	restoreFallbacks := setRelayVerifiedFallbacksForTest(newRelayVerifiedFallbackStore())
+	defer restoreFallbacks()
+
+	provider := newFakeTLSMaterialProvider()
+	quicListener, hop := newRelayEndpoint(t, provider, 1, "relay-quic-target-fail", "pin_only", true, false)
+	sharedPort := pickFreeDualStackPort(t)
+	quicListener.ListenPort = sharedPort
+	quicListener.TransportMode = ListenerTransportModeQUIC
+	quicListener.AllowTransportFallback = true
+	hop.Address = net.JoinHostPort(quicListener.ListenHost, fmt.Sprintf("%d", sharedPort))
+	hop.Listener = quicListener
+
+	tlsListener := quicListener
+	tlsListener.ID = 2
+	tlsListener.Name = "relay-tls-target-fail"
+	tlsListener.TransportMode = ListenerTransportModeTLSTCP
+	tlsListener.AllowTransportFallback = false
+
+	server, err := Start(context.Background(), []Listener{tlsListener, quicListener}, provider)
+	if err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+	defer server.Close()
+
+	markRelayVerifiedFallback(hop)
+
+	target := net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", pickFreeTCPPort(t)))
+	for i := 0; i < 2; i++ {
+		conn, result, err := DialWithResult(context.Background(), "tcp", target, []Hop{hop}, provider)
+		if err == nil {
+			conn.Close()
+			t.Fatalf("DialWithResult(%d) error = nil, want final target failure", i)
+		}
+		if result.TransportMode != "" {
+			t.Fatalf("DialWithResult(%d) TransportMode = %q, want empty result on failed open", i, result.TransportMode)
+		}
+	}
+
+	state := score.State(relayQUICPathKey(hop))
+	if state.ProbeOnly {
+		t.Fatal("ProbeOnly = true after final target failures, want false for healthy QUIC transport")
+	}
+	if got := selectRelayRuntimeTransport(hop); got != ListenerTransportModeQUIC {
+		t.Fatalf("selectRelayRuntimeTransport() = %q, want %q after backend-only failures", got, ListenerTransportModeQUIC)
+	}
+}
+
 func TestDialSurfacesDownstreamRelayFailure(t *testing.T) {
 	backendAddr, stopBackend := startTCPEchoServer(t)
 	defer stopBackend()
