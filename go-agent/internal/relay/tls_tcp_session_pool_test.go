@@ -591,6 +591,36 @@ func TestTLSTCPSessionPoolAvoidsCongestedTunnelForInteractiveTraffic(t *testing.
 	}
 }
 
+func TestTLSTCPSessionPoolRejectsInteractiveWhenCappedTunnelsAreCongested(t *testing.T) {
+	pool := newTLSTCPSessionPool()
+	for i := 0; i < tlsTCPMuxSessionsPerKey; i++ {
+		tunnel := &tlsTCPTunnel{
+			key:        "relay-key",
+			rawConn:    noopDeadlineConn{},
+			closeOuter: func() error { return nil },
+			streams:    make(map[uint32]*tlsTCPLogicalStream),
+			closed:     make(chan struct{}),
+		}
+		tunnel.queuedWrites.Store(tlsTCPInteractiveAdmissionQueuedWrites)
+		tunnel.bufferedBytes.Store(tlsTCPInteractiveAdmissionBufferedBytes)
+		pool.sessions["relay-key"] = append(pool.sessions["relay-key"], tunnel)
+	}
+
+	selected, release, err := pool.getOrDial(context.Background(), "relay-key", upstream.TrafficClassInteractive, func(context.Context) (*tlsTCPTunnel, error) {
+		t.Fatal("unexpected dial beyond session cap")
+		return nil, nil
+	})
+	if err == nil {
+		if release != nil {
+			release()
+		}
+		t.Fatalf("getOrDial() selected congested tunnel %p, want admission error", selected)
+	}
+	if selected != nil {
+		t.Fatalf("selected tunnel = %p, want nil on admission error", selected)
+	}
+}
+
 func TestWrapIdleConnPreservesTLSTCPBulkInterfaces(t *testing.T) {
 	stream := &tlsTCPLogicalStream{readCh: make(chan struct{}, 1)}
 	wrapped := wrapIdleConn(stream)

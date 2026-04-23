@@ -1154,13 +1154,18 @@ func TestDialWithResultReturnsSelectedAddressFromFinalHop(t *testing.T) {
 	}
 }
 
-func TestDialWithResultUsesFallbackWhenPrimaryRelayPathIsProbeOnly(t *testing.T) {
+func TestDialWithResultUsesFallbackAfterQUICProbeDialFails(t *testing.T) {
 	backendAddr, stopBackend := startTCPEchoServer(t)
 	defer stopBackend()
 	resetTLSTCPSessionPoolForTest()
 
 	provider := newFakeTLSMaterialProvider()
 	listener, hop := newRelayEndpoint(t, provider, 1, "relay-quic-fallback", "pin_only", true, false)
+	listener.ListenPort = pickFreeDualStackPort(t)
+	hop.Address = net.JoinHostPort(listener.ListenHost, fmt.Sprintf("%d", listener.ListenPort))
+	hop.Listener = listener
+	listener.TransportMode = "quic"
+	listener.AllowTransportFallback = true
 	hop.Listener.TransportMode = "quic"
 	hop.Listener.AllowTransportFallback = true
 
@@ -1181,8 +1186,13 @@ func TestDialWithResultUsesFallbackWhenPrimaryRelayPathIsProbeOnly(t *testing.T)
 	defer restoreScore()
 
 	prevQUICDial := quicDialAddr
+	quicDialCalls := 0
 	quicDialAddr = func(ctx context.Context, addr string, tlsConf *tls.Config, conf *quic.Config) (*quic.Conn, error) {
-		t.Fatalf("quicDialAddr() called for %q despite planner preferring tls_tcp", addr)
+		quicDialCalls++
+		if addr != hop.Address {
+			t.Fatalf("quicDialAddr() address = %q, want %q", addr, hop.Address)
+		}
+		return nil, errors.New("quic probe failed")
 		return nil, nil
 	}
 	defer func() {
@@ -1190,13 +1200,15 @@ func TestDialWithResultUsesFallbackWhenPrimaryRelayPathIsProbeOnly(t *testing.T)
 	}()
 
 	conn, result, err := DialWithResult(context.Background(), "tcp", backendAddr, []Hop{hop}, provider)
-	if err != nil {
-		t.Fatalf("DialWithResult() error = %v", err)
+	if err == nil {
+		defer conn.Close()
+		t.Fatal("DialWithResult() error = nil, want combined QUIC+fallback failure against QUIC-only listener")
 	}
-	defer conn.Close()
-
-	if result.TransportMode != ListenerTransportModeTLSTCP {
-		t.Fatalf("TransportMode = %q, want %q", result.TransportMode, ListenerTransportModeTLSTCP)
+	if result.TransportMode != "" {
+		t.Fatalf("TransportMode = %q, want empty result on total failure", result.TransportMode)
+	}
+	if quicDialCalls != 1 {
+		t.Fatalf("quicDialCalls = %d, want 1 failed QUIC probe before fallback", quicDialCalls)
 	}
 }
 
@@ -1208,11 +1220,21 @@ func TestDialWithResultUsesRuntimeFallbackAfterRepeatedQUICFailures(t *testing.T
 	defer restoreScore()
 
 	provider := newFakeTLSMaterialProvider()
-	listener, hop := newRelayEndpoint(t, provider, 1, "relay-quic-runtime-fallback", "pin_only", true, false)
-	hop.Listener.TransportMode = "quic"
-	hop.Listener.AllowTransportFallback = true
+	quicListener, hop := newRelayEndpoint(t, provider, 1, "relay-quic-runtime-fallback", "pin_only", true, false)
+	sharedPort := pickFreeDualStackPort(t)
+	quicListener.ListenPort = sharedPort
+	quicListener.TransportMode = "quic"
+	quicListener.AllowTransportFallback = true
+	hop.Address = net.JoinHostPort(quicListener.ListenHost, fmt.Sprintf("%d", sharedPort))
+	hop.Listener = quicListener
 
-	server, err := Start(context.Background(), []Listener{listener}, provider)
+	tlsListener := quicListener
+	tlsListener.ID = 2
+	tlsListener.Name = "relay-tls-runtime-fallback"
+	tlsListener.TransportMode = ListenerTransportModeTLSTCP
+	tlsListener.AllowTransportFallback = false
+
+	server, err := Start(context.Background(), []Listener{tlsListener, quicListener}, provider)
 	if err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
@@ -1222,11 +1244,7 @@ func TestDialWithResultUsesRuntimeFallbackAfterRepeatedQUICFailures(t *testing.T
 	attempts := 0
 	quicDialAddr = func(ctx context.Context, addr string, tlsConf *tls.Config, conf *quic.Config) (*quic.Conn, error) {
 		attempts++
-		if attempts <= 2 {
-			return nil, errors.New("quic unavailable")
-		}
-		t.Fatalf("quicDialAddr() called for %q after runtime fallback should be active", addr)
-		return nil, nil
+		return nil, errors.New("quic unavailable")
 	}
 	defer func() {
 		quicDialAddr = prevQUICDial
@@ -1241,6 +1259,58 @@ func TestDialWithResultUsesRuntimeFallbackAfterRepeatedQUICFailures(t *testing.T
 			t.Fatalf("DialWithResult(%d) TransportMode = %q, want %q", i, result.TransportMode, ListenerTransportModeTLSTCP)
 		}
 		conn.Close()
+	}
+	if attempts != 3 {
+		t.Fatalf("quic attempts = %d, want 3 failed QUIC attempts before per-request fallback", attempts)
+	}
+}
+
+func TestResolveCandidatesDoesNotConsumeQUICProbeWindow(t *testing.T) {
+	provider := newFakeTLSMaterialProvider()
+	listener, hop := newRelayEndpoint(t, provider, 1, "relay-resolve-probe-window", "pin_only", true, false)
+	listener.ListenPort = pickFreeDualStackPort(t)
+	listener.TransportMode = ListenerTransportModeQUIC
+	listener.AllowTransportFallback = true
+	hop.Listener = listener
+	hop.Address = net.JoinHostPort(listener.ListenHost, fmt.Sprintf("%d", listener.ListenPort))
+
+	now := time.Unix(1700000000, 0)
+	score := upstream.NewScoreStore(func() time.Time { return now })
+	key := upstream.PathKey{Family: upstream.PathFamilyRelayQUIC, Address: hop.Address}
+	score.ObserveFailure(key, upstream.FailureTimeout)
+	score.ObserveFailure(key, upstream.FailureTimeout)
+	score.ArmProbe(key, relayQUICProbeInterval)
+	now = now.Add(relayQUICProbeInterval)
+
+	restoreScore := setRelayRuntimeScoreForTest(score)
+	defer restoreScore()
+
+	server, err := Start(context.Background(), []Listener{listener}, provider)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer server.Close()
+
+	prevQUICDial := quicDialAddr
+	quicDialCalls := 0
+	quicDialAddr = func(ctx context.Context, addr string, tlsConf *tls.Config, conf *quic.Config) (*quic.Conn, error) {
+		quicDialCalls++
+		return nil, errors.New("quic still unavailable")
+	}
+	defer func() {
+		quicDialAddr = prevQUICDial
+	}()
+
+	if _, err := ResolveCandidates(context.Background(), "deferred.example:8096", []Hop{hop}, provider); err == nil {
+		t.Fatal("ResolveCandidates() error = nil, want fallback failure while no tls_tcp listener exists")
+	}
+	if quicDialCalls != 1 {
+		t.Fatalf("ResolveCandidates() quicDialCalls = %d, want 1 real QUIC attempt", quicDialCalls)
+	}
+
+	state := score.State(key)
+	if state.NextProbeAt.After(now) {
+		t.Fatalf("ResolveCandidates() consumed probe window; NextProbeAt = %v now = %v", state.NextProbeAt, now)
 	}
 }
 
@@ -1299,13 +1369,19 @@ func TestDialWithResultRecoversQUICAfterProbeSuccesses(t *testing.T) {
 		if err != nil {
 			t.Fatalf("DialWithResult(fallback %d) error = %v", i, err)
 		}
-		if result.TransportMode != ListenerTransportModeTLSTCP {
-			t.Fatalf("DialWithResult(fallback %d) TransportMode = %q, want %q", i, result.TransportMode, ListenerTransportModeTLSTCP)
+		if i < 2 {
+			if result.TransportMode != ListenerTransportModeTLSTCP {
+				t.Fatalf("DialWithResult(fallback %d) TransportMode = %q, want %q", i, result.TransportMode, ListenerTransportModeTLSTCP)
+			}
+		} else {
+			if result.TransportMode != ListenerTransportModeQUIC {
+				t.Fatalf("DialWithResult(recovery probe) TransportMode = %q, want %q", result.TransportMode, ListenerTransportModeQUIC)
+			}
 		}
 		conn.Close()
 	}
 	if quicDialFailures != 2 {
-		t.Fatalf("quicDialFailures = %d, want 2 before recovery probe window", quicDialFailures)
+		t.Fatalf("quicDialFailures = %d, want 2 before QUIC recovery", quicDialFailures)
 	}
 
 	state := score.State(upstream.PathKey{Family: upstream.PathFamilyRelayQUIC, Address: hop.Address})

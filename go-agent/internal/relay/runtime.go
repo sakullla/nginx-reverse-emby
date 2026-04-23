@@ -389,24 +389,14 @@ func relayTransportCandidates(firstHop Hop) []upstream.PathSnapshot {
 	}
 
 	quicState := upstream.PathState{}
-	probeDue := false
 	quicKey := upstream.PathKey{Family: upstream.PathFamilyRelayQUIC, Address: firstHop.Address}
 	if relayRuntimeScore != nil {
 		quicState = relayRuntimeScore.State(quicKey)
-		probeDue = relayRuntimeScore.ConsumeProbeOpportunity(quicKey, relayQUICProbeInterval)
 	}
-	candidates := []upstream.PathSnapshot{{
+	return []upstream.PathSnapshot{{
 		Key:        quicKey,
-		Confidence: relayPathConfidence(quicState, probeDue),
-		ProbeOnly:  quicState.ProbeOnly && !probeDue,
+		Confidence: relayPathConfidence(quicState, true),
 	}}
-	if firstHop.Listener.AllowTransportFallback {
-		candidates = append(candidates, upstream.PathSnapshot{
-			Key:        upstream.PathKey{Family: upstream.PathFamilyRelayTLSTCP, Address: firstHop.Address},
-			Confidence: 0.30,
-		})
-	}
-	return candidates
 }
 
 func relayPathConfidence(state upstream.PathState, probeDue bool) float64 {

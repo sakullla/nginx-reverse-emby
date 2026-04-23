@@ -17,6 +17,7 @@ import (
 )
 
 var relayTLSTCPSessionPool = newTLSTCPSessionPool()
+var errTLSTCPInteractiveAdmissionRejected = errors.New("tls_tcp relay interactive admission rejected: all tunnels are congested")
 
 const tlsTCPBulkFrameSize = 64 * 1024
 const tlsTCPMuxSessionsPerKey = 4
@@ -153,16 +154,38 @@ func (p *tlsTCPSessionPool) getOrDial(ctx context.Context, key string, class ups
 	if existing, release := p.reserveExisting(key, class); existing != nil {
 		return existing, release, nil
 	}
+	if p.cappedWithoutAcceptableTunnel(key, class) {
+		return nil, nil, errTLSTCPInteractiveAdmissionRejected
+	}
 
 	tunnel, err := dial(ctx)
 	if err != nil {
 		return nil, nil, err
 	}
 	stored, release := p.storeOrReserve(key, class, tunnel)
+	if stored == nil {
+		_ = tunnel.close()
+		return nil, nil, errTLSTCPInteractiveAdmissionRejected
+	}
 	if stored != tunnel {
 		_ = tunnel.close()
 	}
 	return stored, release, nil
+}
+
+func (p *tlsTCPSessionPool) cappedWithoutAcceptableTunnel(key string, class upstream.TrafficClass) bool {
+	if !isConservativeInteractiveClass(class) {
+		return false
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	sessions := p.activeSessionsLocked(key)
+	if len(sessions) < tlsTCPMuxSessionsPerKey {
+		return false
+	}
+	return len(acceptableTLSTCPTunnels(sessions, class)) == 0
 }
 
 func (p *tlsTCPSessionPool) reserveExisting(key string, class upstream.TrafficClass) (*tlsTCPTunnel, func()) {
@@ -191,9 +214,11 @@ func (p *tlsTCPSessionPool) storeOrReserve(key string, class upstream.TrafficCla
 
 	sessions := p.activeSessionsLocked(key)
 	if len(sessions) >= tlsTCPMuxSessionsPerKey {
-		if acceptable := acceptableTLSTCPTunnels(sessions, class); len(acceptable) > 0 {
-			sessions = acceptable
+		acceptable := acceptableTLSTCPTunnels(sessions, class)
+		if len(acceptable) == 0 {
+			return nil, nil
 		}
+		sessions = acceptable
 		least := leastLoadedTLSTCPTunnel(sessions)
 		return least, least.reserveStreamSlot()
 	}
