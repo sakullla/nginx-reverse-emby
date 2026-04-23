@@ -5,32 +5,9 @@ import (
 	"time"
 )
 
-type PathFamily string
-
-const (
-	PathFamilyDirectHTTP PathFamily = "direct_http"
-	PathFamilyRelayQUIC  PathFamily = "relay_quic"
-)
-
-type FailureKind string
-
-const (
-	FailureTimeout FailureKind = "timeout"
-)
-
-type PathKey struct {
-	Family  PathFamily
-	Address string
-}
-
-type PathState struct {
-	ProbeOnly               bool
-	ProbeSuccesses          int
-	ConsecutiveHighSeverity int
-}
-
 type ScoreStore struct {
-	mu    sync.Mutex
+	mu sync.Mutex
+	// Reserved for later timing/confidence work; kept now for planned API shape.
 	now   func() time.Time
 	state map[PathKey]PathState
 }
