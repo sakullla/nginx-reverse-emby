@@ -509,6 +509,104 @@ func TestRouteEntryUsesBulkTransportForRangeRequests(t *testing.T) {
 	}
 }
 
+func TestNewServerWiresDirectClassedTransportsForDirectRoute(t *testing.T) {
+	shared := NewSharedTransport()
+	server, err := newServerWithResilience(
+		model.HTTPListener{Rules: []model.HTTPRule{{
+			FrontendURL: "http://edge.example",
+			BackendURL:  "http://backend.example:8096",
+		}}},
+		nil,
+		Providers{},
+		backends.NewCache(backends.Config{}),
+		shared,
+		StreamResilienceOptions{},
+	)
+	if err != nil {
+		t.Fatalf("newServerWithResilience() error = %v", err)
+	}
+
+	entry := server.routeFor("edge.example", "/library")
+	if entry == nil {
+		t.Fatal("expected direct route entry")
+	}
+	if entry.transport != shared {
+		t.Fatalf("direct route base transport = %p, want shared %p", entry.transport, shared)
+	}
+	if entry.directInteractiveTransport == nil {
+		t.Fatal("direct route missing interactive transport")
+	}
+	if entry.directBulkTransport == nil {
+		t.Fatal("direct route missing bulk transport")
+	}
+	if entry.directInteractiveTransport == entry.directBulkTransport {
+		t.Fatalf("direct interactive and bulk transports are the same pointer %p", entry.directInteractiveTransport)
+	}
+	if got := entry.transportForRequest(httptest.NewRequest(http.MethodGet, "http://edge.example/library", nil)); got != entry.directInteractiveTransport {
+		t.Fatalf("non-range request transport = %p, want interactive %p", got, entry.directInteractiveTransport)
+	}
+
+	rangeReq := httptest.NewRequest(http.MethodGet, "http://edge.example/Videos/1", nil)
+	rangeReq.Header.Set("Range", "bytes=0-1023")
+	if got := entry.transportForRequest(rangeReq); got != entry.directBulkTransport {
+		t.Fatalf("range request transport = %p, want bulk %p", got, entry.directBulkTransport)
+	}
+}
+
+func TestNewServerWiresRelayTransportWithoutDirectClassedTransports(t *testing.T) {
+	shared := NewSharedTransport()
+	server, err := newServerWithResilience(
+		model.HTTPListener{Rules: []model.HTTPRule{{
+			FrontendURL: "http://edge.example",
+			BackendURL:  "http://backend.example:8096",
+			RelayChain:  []int{101},
+		}}},
+		[]model.RelayListener{{
+			ID:         101,
+			ListenHost: "127.0.0.1",
+			ListenPort: 18443,
+			PublicHost: "127.0.0.1",
+			PublicPort: 18443,
+			Enabled:    true,
+			TLSMode:    "pin_only",
+			PinSet:     []model.RelayPin{{Type: "sha256", Value: "relay-pin"}},
+		}},
+		Providers{Relay: &testRuntimeMaterialProvider{}},
+		backends.NewCache(backends.Config{}),
+		shared,
+		StreamResilienceOptions{},
+	)
+	if err != nil {
+		t.Fatalf("newServerWithResilience() error = %v", err)
+	}
+
+	entry := server.routeFor("edge.example", "/library")
+	if entry == nil {
+		t.Fatal("expected relay route entry")
+	}
+	if entry.transport == nil {
+		t.Fatal("relay route missing transport")
+	}
+	if entry.transport == shared {
+		t.Fatalf("relay route transport = shared %p, want relay-specific transport", shared)
+	}
+	if entry.directInteractiveTransport != nil {
+		t.Fatalf("relay route interactive transport = %p, want nil", entry.directInteractiveTransport)
+	}
+	if entry.directBulkTransport != nil {
+		t.Fatalf("relay route bulk transport = %p, want nil", entry.directBulkTransport)
+	}
+
+	rangeReq := httptest.NewRequest(http.MethodGet, "http://edge.example/Videos/1", nil)
+	rangeReq.Header.Set("Range", "bytes=0-1023")
+	if got := entry.transportForRequest(rangeReq); got != entry.transport {
+		t.Fatalf("relay range request transport = %p, want relay transport %p", got, entry.transport)
+	}
+	if got := entry.transportForRequest(httptest.NewRequest(http.MethodGet, "http://edge.example/library", nil)); got != entry.transport {
+		t.Fatalf("relay non-range request transport = %p, want relay transport %p", got, entry.transport)
+	}
+}
+
 func TestRouteEntryDoesNotRetryNonUpstreamUnavailableErrors(t *testing.T) {
 	cache := backends.NewCache(backends.Config{})
 	entry := &routeEntry{
