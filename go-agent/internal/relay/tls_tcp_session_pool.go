@@ -735,7 +735,7 @@ func (t *tlsTCPTunnel) canAcceptTrafficClass(class upstream.TrafficClass) bool {
 }
 
 func isConservativeInteractiveClass(class upstream.TrafficClass) bool {
-	return class == upstream.TrafficClassUnknown || class == upstream.TrafficClassInteractive
+	return class == upstream.TrafficClassInteractive
 }
 
 func (t *tlsTCPTunnel) registerStream(stream *tlsTCPLogicalStream) {

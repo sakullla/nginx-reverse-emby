@@ -621,6 +621,36 @@ func TestTLSTCPSessionPoolRejectsInteractiveWhenCappedTunnelsAreCongested(t *tes
 	}
 }
 
+func TestTLSTCPSessionPoolAllowsUnknownWhenCappedTunnelsAreCongested(t *testing.T) {
+	pool := newTLSTCPSessionPool()
+	for i := 0; i < tlsTCPMuxSessionsPerKey; i++ {
+		tunnel := &tlsTCPTunnel{
+			key:        "relay-key",
+			rawConn:    noopDeadlineConn{},
+			closeOuter: func() error { return nil },
+			streams:    make(map[uint32]*tlsTCPLogicalStream),
+			closed:     make(chan struct{}),
+		}
+		tunnel.queuedWrites.Store(tlsTCPInteractiveAdmissionQueuedWrites)
+		tunnel.bufferedBytes.Store(tlsTCPInteractiveAdmissionBufferedBytes)
+		pool.sessions["relay-key"] = append(pool.sessions["relay-key"], tunnel)
+	}
+
+	selected, release, err := pool.getOrDial(context.Background(), "relay-key", upstream.TrafficClassUnknown, func(context.Context) (*tlsTCPTunnel, error) {
+		t.Fatal("unexpected dial beyond session cap")
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("getOrDial() error = %v", err)
+	}
+	if selected == nil {
+		t.Fatal("selected tunnel = nil, want existing tunnel reuse for unknown class")
+	}
+	if release != nil {
+		release()
+	}
+}
+
 func TestTLSTCPTunnelKeepsCongestionCountersUntilBlockedWriteFinishes(t *testing.T) {
 	writer := newBlockingFirstWrite()
 	tunnel := &tlsTCPTunnel{

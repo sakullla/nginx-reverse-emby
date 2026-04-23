@@ -1122,8 +1122,8 @@ func TestTCPRelayProxy(t *testing.T) {
 		if relayReq.Target != upstreamAddress {
 			t.Fatalf("unexpected relay target %q", relayReq.Target)
 		}
-		if got := relayReq.TrafficClass; got != upstream.TrafficClassBulk {
-			t.Fatalf("relay traffic class = %q, want %q", got, upstream.TrafficClassBulk)
+		if got := relayReq.TrafficClass; got != upstream.TrafficClassUnknown {
+			t.Fatalf("relay traffic class = %q, want %q", got, upstream.TrafficClassUnknown)
 		}
 		if len(relayReq.InitialData) != 0 {
 			t.Fatalf("initial relay payload = %q, want empty for raw downstream", relayReq.InitialData)
