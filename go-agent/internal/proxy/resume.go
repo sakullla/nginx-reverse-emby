@@ -84,7 +84,7 @@ func (e *routeEntry) copyResumableResponse(w http.ResponseWriter, req *http.Requ
 		if err != nil {
 			return fail(sentBytes, err)
 		}
-		nextResp, err := e.transport.RoundTrip(nextReq)
+		nextResp, err := e.transportForRequest(nextReq).RoundTrip(nextReq)
 		if err != nil {
 			return fail(sentBytes, err)
 		}

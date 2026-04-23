@@ -46,11 +46,11 @@ func (s *ScoreStore) ObserveProbeSuccess(key PathKey, handshake time.Duration, f
 
 	st := s.state[key]
 	st.FirstByteEstimate = firstByte
+	st.ConsecutiveHighSeverity = 0
 	if st.ProbeOnly {
 		st.ProbeSuccesses++
 		if st.ProbeSuccesses >= 3 {
 			st.ProbeOnly = false
-			st.ConsecutiveHighSeverity = 0
 		}
 	}
 	s.state[key] = st

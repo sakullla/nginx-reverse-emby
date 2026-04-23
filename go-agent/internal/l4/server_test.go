@@ -1122,6 +1122,9 @@ func TestTCPRelayProxy(t *testing.T) {
 		if relayReq.Target != upstreamAddress {
 			t.Fatalf("unexpected relay target %q", relayReq.Target)
 		}
+		if got := relayReq.TrafficClass; got != upstream.TrafficClassUnknown {
+			t.Fatalf("relay traffic class = %q, want %q", got, upstream.TrafficClassUnknown)
+		}
 		if len(relayReq.InitialData) != 0 {
 			t.Fatalf("initial relay payload = %q, want empty for raw downstream", relayReq.InitialData)
 		}
@@ -2586,17 +2589,19 @@ func (p *runtimeL4RelayProvider) TrustedCAPool(_ context.Context, _ []int) (*x50
 }
 
 type l4RelayTestRequest struct {
-	Network     string      `json:"network"`
-	Target      string      `json:"target"`
-	Chain       []relay.Hop `json:"chain,omitempty"`
-	InitialData []byte      `json:"initial_data,omitempty"`
+	Network      string      `json:"network"`
+	Target       string      `json:"target"`
+	Chain        []relay.Hop `json:"chain,omitempty"`
+	TrafficClass upstream.TrafficClass
+	InitialData  []byte `json:"initial_data,omitempty"`
 }
 
 type l4RelayTestOpenFrame struct {
-	Kind        string      `json:"kind"`
-	Target      string      `json:"target"`
-	Chain       []relay.Hop `json:"chain,omitempty"`
-	InitialData []byte      `json:"initial_data,omitempty"`
+	Kind        string         `json:"kind"`
+	Target      string         `json:"target"`
+	Chain       []relay.Hop    `json:"chain,omitempty"`
+	Metadata    map[string]any `json:"metadata,omitempty"`
+	InitialData []byte         `json:"initial_data,omitempty"`
 }
 
 type l4RelayTestMuxFrame struct {
@@ -2750,11 +2755,27 @@ func readL4RelayTestRequest(conn net.Conn) (l4RelayTestRequest, uint32, error) {
 		return l4RelayTestRequest{}, 0, err
 	}
 	return l4RelayTestRequest{
-		Network:     request.Kind,
-		Target:      request.Target,
-		Chain:       request.Chain,
-		InitialData: append([]byte(nil), request.InitialData...),
+		Network:      request.Kind,
+		Target:       request.Target,
+		Chain:        request.Chain,
+		TrafficClass: relayTrafficClassFromTestMetadata(request.Metadata),
+		InitialData:  append([]byte(nil), request.InitialData...),
 	}, frame.StreamID, nil
+}
+
+func relayTrafficClassFromTestMetadata(metadata map[string]any) upstream.TrafficClass {
+	if len(metadata) == 0 {
+		return upstream.TrafficClassUnknown
+	}
+	raw, ok := metadata["traffic_class"]
+	if !ok {
+		return upstream.TrafficClassUnknown
+	}
+	value, ok := raw.(string)
+	if !ok {
+		return upstream.TrafficClassUnknown
+	}
+	return upstream.TrafficClass(value)
 }
 
 func writeL4RelayTestResponse(conn net.Conn, payload any) error {

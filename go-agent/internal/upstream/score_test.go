@@ -63,6 +63,24 @@ func TestScoreStateRequiresThreeSuccessfulProbesToRecover(t *testing.T) {
 	}
 }
 
+func TestScoreStateResetsConsecutiveTimeoutsAfterProbeSuccess(t *testing.T) {
+	now := time.Unix(1700000000, 0)
+	store := NewScoreStore(func() time.Time { return now })
+	key := PathKey{Family: PathFamilyRelayQUIC, Address: "relay.example:443"}
+
+	store.ObserveFailure(key, FailureTimeout)
+	store.ObserveProbeSuccess(key, 20*time.Millisecond, 2*time.Millisecond, 1<<20)
+	store.ObserveFailure(key, FailureTimeout)
+
+	state := store.State(key)
+	if state.ProbeOnly {
+		t.Fatalf("ProbeOnly = true after non-consecutive timeouts, want false")
+	}
+	if state.ConsecutiveHighSeverity != 1 {
+		t.Fatalf("ConsecutiveHighSeverity = %d, want 1", state.ConsecutiveHighSeverity)
+	}
+}
+
 func TestScoreStateConsumesProbeOpportunityOnlyAfterArmingAndDeadline(t *testing.T) {
 	now := time.Unix(1700000000, 0)
 	store := NewScoreStore(func() time.Time { return now })

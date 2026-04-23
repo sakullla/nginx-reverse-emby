@@ -628,6 +628,95 @@ func TestCopyResumableResponseDrainsInterruptedBodyBeforeRetry(t *testing.T) {
 	}
 }
 
+func TestCopyResumableResponseUsesBulkTransportForRelayRangeRetry(t *testing.T) {
+	payload := []byte("0123456789abcdefghijklmnopqrstuvwxyz")
+	split := len(payload) / 2
+
+	var resumedRanges []string
+	bulkTransport := &http.Transport{}
+	bulkTransport.RegisterProtocol("resume-test", roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		resumedRanges = append(resumedRanges, req.Header.Get("Range"))
+		if got := req.Header.Get("Range"); got != fmt.Sprintf("bytes=%d-%d", split, len(payload)-1) {
+			return nil, fmt.Errorf("unexpected resumed range %q", got)
+		}
+
+		resp := &http.Response{
+			StatusCode:    http.StatusPartialContent,
+			Header:        make(http.Header),
+			Body:          io.NopCloser(bytes.NewReader(payload[split:])),
+			ContentLength: int64(len(payload) - split),
+		}
+		resp.Header.Set("Accept-Ranges", "bytes")
+		resp.Header.Set("ETag", `"stable"`)
+		resp.Header.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", split, len(payload)-1, len(payload)))
+		resp.Request = req
+		return resp, nil
+	}))
+
+	entry := &routeEntry{
+		rule: model.HTTPRule{
+			FrontendURL: "http://edge.example.test",
+			RelayChain:  []int{1},
+		},
+		transport: transportWithProtocolHandler("resume-test", roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			return nil, fmt.Errorf("fallback transport used for %q", req.Header.Get("Range"))
+		})),
+		relayInteractiveTransport: transportWithProtocolHandler("resume-test", roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			return nil, fmt.Errorf("interactive transport used for %q", req.Header.Get("Range"))
+		})),
+		relayBulkTransport: bulkTransport,
+		resilience: StreamResilienceOptions{
+			ResumeEnabled:     true,
+			ResumeMaxAttempts: 1,
+		},
+	}
+
+	body := &drainTrackingBody{
+		chunks: [][]byte{
+			payload[:split],
+			payload[split:],
+		},
+		failAfterChunk: 0,
+		err:            io.ErrUnexpectedEOF,
+	}
+	resp := &http.Response{
+		StatusCode:    http.StatusPartialContent,
+		Header:        make(http.Header),
+		Body:          body,
+		ContentLength: int64(len(payload)),
+	}
+	resp.Header.Set("Accept-Ranges", "bytes")
+	resp.Header.Set("ETag", `"stable"`)
+	resp.Header.Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", 0, len(payload)-1, len(payload)))
+
+	req := httptest.NewRequest(http.MethodGet, "resume-test://edge.example.test/video", nil)
+	req.Header.Set("Range", fmt.Sprintf("bytes=%d-%d", 0, len(payload)-1))
+	recorder := httptest.NewRecorder()
+
+	written, err := entry.copyResumableResponse(recorder, req, resp, resumableResponse{
+		initialStatus: http.StatusPartialContent,
+		rangeStart:    0,
+		rangeEnd:      int64(len(payload) - 1),
+		resourceSize:  int64(len(payload)),
+		validator: responseValidator{
+			etag:    `"stable"`,
+			ifRange: `"stable"`,
+		},
+	})
+	if err != nil {
+		t.Fatalf("copyResumableResponse() error = %v", err)
+	}
+	if written != int64(len(payload)) {
+		t.Fatalf("written = %d, want %d", written, len(payload))
+	}
+	if got := recorder.Body.Bytes(); string(got) != string(payload) {
+		t.Fatalf("response body = %q, want %q", string(got), string(payload))
+	}
+	if len(resumedRanges) != 1 {
+		t.Fatalf("resumed requests = %d, want 1", len(resumedRanges))
+	}
+}
+
 func resumableTestRouteEntry(t *testing.T, backendRawURL string) *routeEntry {
 	t.Helper()
 
@@ -672,6 +761,12 @@ type drainTrackingBody struct {
 	err            error
 	index          int
 	drained        bool
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
 }
 
 func (w *failingResumeResponseWriter) Header() http.Header {
@@ -747,4 +842,10 @@ func (w *flushingResumeResponseWriter) Write(p []byte) (int, error) {
 
 func (w *flushingResumeResponseWriter) Flush() {
 	w.flushCount++
+}
+
+func transportWithProtocolHandler(scheme string, handler http.RoundTripper) *http.Transport {
+	transport := &http.Transport{}
+	transport.RegisterProtocol(scheme, handler)
+	return transport
 }
