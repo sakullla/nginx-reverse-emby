@@ -1158,6 +1158,8 @@ func TestDialWithResultUsesFallbackAfterQUICProbeDialFails(t *testing.T) {
 	backendAddr, stopBackend := startTCPEchoServer(t)
 	defer stopBackend()
 	resetTLSTCPSessionPoolForTest()
+	restoreFallbacks := setRelayVerifiedFallbacksForTest(newRelayVerifiedFallbackStore())
+	defer restoreFallbacks()
 
 	provider := newFakeTLSMaterialProvider()
 	listener, hop := newRelayEndpoint(t, provider, 1, "relay-quic-fallback", "pin_only", true, false)
@@ -1177,7 +1179,7 @@ func TestDialWithResultUsesFallbackAfterQUICProbeDialFails(t *testing.T) {
 
 	now := time.Unix(1700000000, 0)
 	score := upstream.NewScoreStore(func() time.Time { return now })
-	key := upstream.PathKey{Family: upstream.PathFamilyRelayQUIC, Address: hop.Address}
+	key := relayQUICPathKey(hop)
 	score.ObserveFailure(key, upstream.FailureTimeout)
 	score.ObserveFailure(key, upstream.FailureTimeout)
 	score.ArmProbe(key, relayQUICProbeInterval)
@@ -1220,6 +1222,8 @@ func TestDialWithResultUsesRuntimeFallbackAfterRepeatedQUICFailures(t *testing.T
 	resetTLSTCPSessionPoolForTest()
 	restoreScore := setRelayRuntimeScoreForTest(upstream.NewScoreStore(time.Now))
 	defer restoreScore()
+	restoreFallbacks := setRelayVerifiedFallbacksForTest(newRelayVerifiedFallbackStore())
+	defer restoreFallbacks()
 
 	provider := newFakeTLSMaterialProvider()
 	quicListener, hop := newRelayEndpoint(t, provider, 1, "relay-quic-runtime-fallback", "pin_only", true, false)
@@ -1263,7 +1267,7 @@ func TestDialWithResultUsesRuntimeFallbackAfterRepeatedQUICFailures(t *testing.T
 		conn.Close()
 	}
 	if attempts != 2 {
-		t.Fatalf("quic attempts = %d, want 2 failed QUIC attempts before probe interval backoff", attempts)
+		t.Fatalf("quic attempts = %d, want 2 initial QUIC failures before probe interval backoff", attempts)
 	}
 }
 
@@ -1278,7 +1282,7 @@ func TestResolveCandidatesDoesNotConsumeQUICProbeWindow(t *testing.T) {
 
 	now := time.Unix(1700000000, 0)
 	score := upstream.NewScoreStore(func() time.Time { return now })
-	key := upstream.PathKey{Family: upstream.PathFamilyRelayQUIC, Address: hop.Address}
+	key := relayQUICPathKey(hop)
 	score.ObserveFailure(key, upstream.FailureTimeout)
 	score.ObserveFailure(key, upstream.FailureTimeout)
 	score.ArmProbe(key, relayQUICProbeInterval)
@@ -1316,65 +1320,116 @@ func TestResolveCandidatesDoesNotConsumeQUICProbeWindow(t *testing.T) {
 	}
 }
 
-func TestRelayTransportCandidatesIncludesTLSTCPFallbackWhileQUICProbeOnly(t *testing.T) {
+func TestRelayTransportCandidatesDoesNotAssumeTLSTCPFallbackExistsForQUICHop(t *testing.T) {
 	now := time.Unix(1700000000, 0)
 	score := upstream.NewScoreStore(func() time.Time { return now })
-	key := upstream.PathKey{Family: upstream.PathFamilyRelayQUIC, Address: "relay.example:443"}
+	hop := Hop{
+		Address: "relay.example:443",
+		Listener: Listener{
+			ID:                     11,
+			Revision:               7,
+			TransportMode:          ListenerTransportModeQUIC,
+			AllowTransportFallback: true,
+		},
+		ServerName: "relay-a.example",
+	}
+	key := relayQUICPathKey(hop)
 	score.ObserveFailure(key, upstream.FailureTimeout)
 	score.ObserveFailure(key, upstream.FailureTimeout)
 	score.ArmProbe(key, relayQUICProbeInterval)
 
 	restoreScore := setRelayRuntimeScoreForTest(score)
 	defer restoreScore()
+	restoreFallbacks := setRelayVerifiedFallbacksForTest(newRelayVerifiedFallbackStore())
+	defer restoreFallbacks()
 
-	candidates := relayTransportCandidates(Hop{
-		Address: "relay.example:443",
-		Listener: Listener{
-			TransportMode:          ListenerTransportModeQUIC,
-			AllowTransportFallback: true,
-		},
-	})
-	if len(candidates) != 2 {
-		t.Fatalf("len(candidates) = %d, want 2", len(candidates))
+	candidates := relayTransportCandidates(hop)
+	if len(candidates) != 1 {
+		t.Fatalf("len(candidates) = %d, want 1 without verified tls_tcp fallback identity", len(candidates))
 	}
 	if candidates[0].Key.Family != upstream.PathFamilyRelayQUIC {
-		t.Fatalf("primary candidate family = %q, want %q", candidates[0].Key.Family, upstream.PathFamilyRelayQUIC)
-	}
-	if !candidates[0].ProbeOnly {
-		t.Fatal("quic candidate ProbeOnly = false, want true before probe deadline")
-	}
-	if candidates[1].Key.Family != upstream.PathFamilyRelayTLSTCP {
-		t.Fatalf("fallback candidate family = %q, want %q", candidates[1].Key.Family, upstream.PathFamilyRelayTLSTCP)
+		t.Fatalf("candidate family = %q, want %q", candidates[0].Key.Family, upstream.PathFamilyRelayQUIC)
 	}
 }
 
-func TestChooseRelayTransportHonorsQUICProbeInterval(t *testing.T) {
+func TestRelayQUICHealthIsScopedPerHopIdentity(t *testing.T) {
 	now := time.Unix(1700000000, 0)
 	score := upstream.NewScoreStore(func() time.Time { return now })
-	key := upstream.PathKey{Family: upstream.PathFamilyRelayQUIC, Address: "relay.example:443"}
-	score.ObserveFailure(key, upstream.FailureTimeout)
-	score.ObserveFailure(key, upstream.FailureTimeout)
-	score.ArmProbe(key, relayQUICProbeInterval)
+	restoreScore := setRelayRuntimeScoreForTest(score)
+	defer restoreScore()
+	restoreFallbacks := setRelayVerifiedFallbacksForTest(newRelayVerifiedFallbackStore())
+	defer restoreFallbacks()
 
+	hopA := Hop{
+		Address: "relay.example:443",
+		Listener: Listener{
+			ID:            101,
+			Revision:      1,
+			TransportMode: ListenerTransportModeQUIC,
+		},
+		ServerName: "relay-a.example",
+	}
+	hopB := Hop{
+		Address: "relay.example:443",
+		Listener: Listener{
+			ID:            202,
+			Revision:      2,
+			TransportMode: ListenerTransportModeQUIC,
+		},
+		ServerName: "relay-b.example",
+	}
+
+	observeRelayQUICFailureForHop(hopA)
+	observeRelayQUICFailureForHop(hopA)
+
+	candidatesA := relayTransportCandidates(hopA)
+	if !candidatesA[0].ProbeOnly {
+		t.Fatal("hopA ProbeOnly = false after repeated failures, want true")
+	}
+
+	candidatesB := relayTransportCandidates(hopB)
+	if candidatesB[0].ProbeOnly {
+		t.Fatal("hopB ProbeOnly = true after unrelated hopA failures, want false")
+	}
+}
+
+func TestSelectRelayRuntimeTransportHonorsQUICProbeInterval(t *testing.T) {
+	now := time.Unix(1700000000, 0)
+	score := upstream.NewScoreStore(func() time.Time { return now })
 	restorePlanner := setRelayPlannerForTest(upstream.NewPlanner())
 	defer restorePlanner()
 	restoreScore := setRelayRuntimeScoreForTest(score)
 	defer restoreScore()
+	restoreFallbacks := setRelayVerifiedFallbacksForTest(newRelayVerifiedFallbackStore())
+	defer restoreFallbacks()
 
 	hop := Hop{
 		Address: "relay.example:443",
 		Listener: Listener{
 			TransportMode:          ListenerTransportModeQUIC,
 			AllowTransportFallback: true,
+			ID:                     77,
+			Revision:               5,
 		},
+		ServerName: "relay.example",
 	}
-	if got := chooseRelayTransport(hop); got != ListenerTransportModeTLSTCP {
-		t.Fatalf("chooseRelayTransport(before deadline) = %q, want %q", got, ListenerTransportModeTLSTCP)
+	key := relayQUICPathKey(hop)
+	score.ObserveFailure(key, upstream.FailureTimeout)
+	score.ObserveFailure(key, upstream.FailureTimeout)
+	score.ArmProbe(key, relayQUICProbeInterval)
+
+	if got := selectRelayRuntimeTransport(hop); got != ListenerTransportModeQUIC {
+		t.Fatalf("selectRelayRuntimeTransport(before fallback verified) = %q, want %q", got, ListenerTransportModeQUIC)
+	}
+
+	markRelayVerifiedFallback(hop)
+	if got := selectRelayRuntimeTransport(hop); got != ListenerTransportModeTLSTCP {
+		t.Fatalf("selectRelayRuntimeTransport(before deadline with verified fallback) = %q, want %q", got, ListenerTransportModeTLSTCP)
 	}
 
 	now = now.Add(relayQUICProbeInterval)
-	if got := chooseRelayTransport(hop); got != ListenerTransportModeTLSTCP {
-		t.Fatalf("chooseRelayTransport(after deadline) = %q, want %q while selection remains non-consuming", got, ListenerTransportModeTLSTCP)
+	if got := selectRelayRuntimeTransport(hop); got != ListenerTransportModeQUIC {
+		t.Fatalf("selectRelayRuntimeTransport(after deadline) = %q, want %q", got, ListenerTransportModeQUIC)
 	}
 }
 
@@ -1393,6 +1448,8 @@ func TestDialWithResultRecoversQUICAfterProbeSuccesses(t *testing.T) {
 	score := upstream.NewScoreStore(func() time.Time { return now })
 	restoreScore := setRelayRuntimeScoreForTest(score)
 	defer restoreScore()
+	restoreFallbacks := setRelayVerifiedFallbacksForTest(newRelayVerifiedFallbackStore())
+	defer restoreFallbacks()
 
 	provider := newFakeTLSMaterialProvider()
 	quicListener, hop := newRelayEndpoint(t, provider, 1, "relay-quic-recovery", "pin_only", true, false)
@@ -1442,7 +1499,7 @@ func TestDialWithResultRecoversQUICAfterProbeSuccesses(t *testing.T) {
 		t.Fatalf("quicDialFailures = %d, want 2 before QUIC recovery", quicDialFailures)
 	}
 
-	state := score.State(upstream.PathKey{Family: upstream.PathFamilyRelayQUIC, Address: hop.Address})
+	state := score.State(relayQUICPathKey(hop))
 	if !state.ProbeOnly {
 		t.Fatal("ProbeOnly = false after repeated QUIC failures, want true")
 	}
@@ -1460,7 +1517,7 @@ func TestDialWithResultRecoversQUICAfterProbeSuccesses(t *testing.T) {
 		conn.Close()
 	}
 
-	state = score.State(upstream.PathKey{Family: upstream.PathFamilyRelayQUIC, Address: hop.Address})
+	state = score.State(relayQUICPathKey(hop))
 	if state.ProbeOnly {
 		t.Fatal("ProbeOnly = true after three successful QUIC probes, want false")
 	}
