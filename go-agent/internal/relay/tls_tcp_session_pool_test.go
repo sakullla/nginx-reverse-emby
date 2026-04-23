@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
 func TestTLSTCPLogicalStreamReadConsumesQueuedChunksInOrder(t *testing.T) {
@@ -515,7 +517,7 @@ func TestTLSTCPSessionPoolStripesBusySessions(t *testing.T) {
 	}()
 
 	for i := 0; i < 5; i++ {
-		tunnel, release, err := pool.getOrDial(context.Background(), "relay-key", func(context.Context) (*tlsTCPTunnel, error) {
+		tunnel, release, err := pool.getOrDial(context.Background(), "relay-key", upstream.TrafficClassUnknown, func(context.Context) (*tlsTCPTunnel, error) {
 			dials++
 			return &tlsTCPTunnel{
 				key:        "relay-key",
@@ -536,6 +538,159 @@ func TestTLSTCPSessionPoolStripesBusySessions(t *testing.T) {
 
 	if dials < 3 {
 		t.Fatalf("dials = %d, want at least 3 busy striped sessions", dials)
+	}
+}
+
+func TestTLSTCPTunnelRejectsInteractiveAdmissionWhenCongested(t *testing.T) {
+	tunnel := &tlsTCPTunnel{
+		writeReqCh: make(chan *tlsTCPWriteRequest, 8),
+		closed:     make(chan struct{}),
+	}
+	tunnel.queuedWrites.Store(5)
+	tunnel.bufferedBytes.Store(600 << 10)
+
+	if tunnel.canAcceptTrafficClass(upstream.TrafficClassInteractive) {
+		t.Fatal("canAcceptTrafficClass(interactive) = true, want false")
+	}
+	if !tunnel.canAcceptTrafficClass(upstream.TrafficClassBulk) {
+		t.Fatal("canAcceptTrafficClass(bulk) = false, want true")
+	}
+}
+
+func TestTLSTCPSessionPoolAvoidsCongestedTunnelForInteractiveTraffic(t *testing.T) {
+	pool := newTLSTCPSessionPool()
+	congested := &tlsTCPTunnel{
+		key:        "relay-key",
+		rawConn:    noopDeadlineConn{},
+		closeOuter: func() error { return nil },
+		streams:    make(map[uint32]*tlsTCPLogicalStream),
+		closed:     make(chan struct{}),
+	}
+	idle := &tlsTCPTunnel{
+		key:        "relay-key",
+		rawConn:    noopDeadlineConn{},
+		closeOuter: func() error { return nil },
+		streams:    make(map[uint32]*tlsTCPLogicalStream),
+		closed:     make(chan struct{}),
+	}
+	congested.queuedWrites.Store(5)
+	congested.bufferedBytes.Store(600 << 10)
+	pool.sessions["relay-key"] = []*tlsTCPTunnel{congested, idle}
+
+	selected, release, err := pool.getOrDial(context.Background(), "relay-key", upstream.TrafficClassInteractive, func(context.Context) (*tlsTCPTunnel, error) {
+		t.Fatal("unexpected dial for available non-congested tunnel")
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("getOrDial() error = %v", err)
+	}
+	defer release()
+
+	if selected != idle {
+		t.Fatalf("selected tunnel = %p, want idle tunnel %p", selected, idle)
+	}
+}
+
+func TestTLSTCPSessionPoolReusesLeastLoadedInteractiveWhenCappedTunnelsAreCongested(t *testing.T) {
+	pool := newTLSTCPSessionPool()
+	var leastLoaded *tlsTCPTunnel
+	for i := 0; i < tlsTCPMuxSessionsPerKey; i++ {
+		tunnel := &tlsTCPTunnel{
+			key:        "relay-key",
+			rawConn:    noopDeadlineConn{},
+			closeOuter: func() error { return nil },
+			streams:    make(map[uint32]*tlsTCPLogicalStream),
+			closed:     make(chan struct{}),
+		}
+		tunnel.queuedWrites.Store(tlsTCPInteractiveAdmissionQueuedWrites + int64(i))
+		tunnel.bufferedBytes.Store(tlsTCPInteractiveAdmissionBufferedBytes + int64(i))
+		pool.sessions["relay-key"] = append(pool.sessions["relay-key"], tunnel)
+		if i == 0 {
+			leastLoaded = tunnel
+		}
+	}
+
+	selected, release, err := pool.getOrDial(context.Background(), "relay-key", upstream.TrafficClassInteractive, func(context.Context) (*tlsTCPTunnel, error) {
+		t.Fatal("unexpected dial beyond session cap")
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("getOrDial() error = %v", err)
+	}
+	if selected != leastLoaded {
+		t.Fatalf("selected tunnel = %p, want least-loaded tunnel %p", selected, leastLoaded)
+	}
+	if release != nil {
+		release()
+	}
+}
+
+func TestTLSTCPSessionPoolAllowsUnknownWhenCappedTunnelsAreCongested(t *testing.T) {
+	pool := newTLSTCPSessionPool()
+	for i := 0; i < tlsTCPMuxSessionsPerKey; i++ {
+		tunnel := &tlsTCPTunnel{
+			key:        "relay-key",
+			rawConn:    noopDeadlineConn{},
+			closeOuter: func() error { return nil },
+			streams:    make(map[uint32]*tlsTCPLogicalStream),
+			closed:     make(chan struct{}),
+		}
+		tunnel.queuedWrites.Store(tlsTCPInteractiveAdmissionQueuedWrites)
+		tunnel.bufferedBytes.Store(tlsTCPInteractiveAdmissionBufferedBytes)
+		pool.sessions["relay-key"] = append(pool.sessions["relay-key"], tunnel)
+	}
+
+	selected, release, err := pool.getOrDial(context.Background(), "relay-key", upstream.TrafficClassUnknown, func(context.Context) (*tlsTCPTunnel, error) {
+		t.Fatal("unexpected dial beyond session cap")
+		return nil, nil
+	})
+	if err != nil {
+		t.Fatalf("getOrDial() error = %v", err)
+	}
+	if selected == nil {
+		t.Fatal("selected tunnel = nil, want existing tunnel reuse for unknown class")
+	}
+	if release != nil {
+		release()
+	}
+}
+
+func TestTLSTCPTunnelKeepsCongestionCountersUntilBlockedWriteFinishes(t *testing.T) {
+	writer := newBlockingFirstWrite()
+	tunnel := &tlsTCPTunnel{
+		rawConn:    noopDeadlineConn{},
+		writer:     writer,
+		closeOuter: func() error { return nil },
+		streams:    make(map[uint32]*tlsTCPLogicalStream),
+		closed:     make(chan struct{}),
+	}
+
+	payload := bytes.Repeat([]byte("x"), tlsTCPInteractiveAdmissionBufferedBytes)
+	req, err := tunnel.enqueueWriteFrame(context.Background(), muxFrame{
+		Type:     muxFrameTypeData,
+		StreamID: 1,
+		Payload:  payload,
+	})
+	if err != nil {
+		t.Fatalf("enqueueWriteFrame() error = %v", err)
+	}
+
+	<-writer.started
+	if tunnel.canAcceptTrafficClass(upstream.TrafficClassInteractive) {
+		close(writer.release)
+		_ = waitTLSTCPWriteRequest(context.Background(), req, tunnel)
+		t.Fatal("canAcceptTrafficClass(interactive) = true while write batch is blocked")
+	}
+
+	close(writer.release)
+	if err := waitTLSTCPWriteRequest(context.Background(), req, tunnel); err != nil {
+		t.Fatalf("waitTLSTCPWriteRequest() error = %v", err)
+	}
+	if tunnel.queuedWrites.Load() != 0 {
+		t.Fatalf("queuedWrites = %d, want 0 after write completes", tunnel.queuedWrites.Load())
+	}
+	if tunnel.bufferedBytes.Load() != 0 {
+		t.Fatalf("bufferedBytes = %d, want 0 after write completes", tunnel.bufferedBytes.Load())
 	}
 }
 

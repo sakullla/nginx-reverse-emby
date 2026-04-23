@@ -5,6 +5,8 @@ import (
 	"net"
 	"net/http"
 	"time"
+
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
 type TransportOptions struct {
@@ -57,4 +59,38 @@ func ApplyTransportOptions(transport *http.Transport, options TransportOptions) 
 	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
 		return dialer.DialContext(ctx, network, dialAddressFromContext(ctx, address))
 	}
+}
+
+func NewClassedDirectTransports(base *http.Transport) (*http.Transport, *http.Transport) {
+	interactive := cloneTransport(base)
+	bulk := cloneTransport(base)
+
+	ApplyTransportOptions(interactive, TransportOptions{MaxConnsPerHost: 16})
+	ApplyTransportOptions(bulk, TransportOptions{MaxConnsPerHost: 64})
+	return interactive, bulk
+}
+
+func NewClassedRelayTransports(
+	base *http.Transport,
+	dial func(context.Context, string, string, upstream.TrafficClass) (net.Conn, error),
+) (*http.Transport, *http.Transport) {
+	interactive, bulk := NewClassedDirectTransports(base)
+	interactive.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		return dial(ctx, network, address, upstream.TrafficClassInteractive)
+	}
+	bulk.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		return dial(ctx, network, address, upstream.TrafficClassBulk)
+	}
+	return interactive, bulk
+}
+
+func NewRelayTransport(
+	base *http.Transport,
+	dial func(context.Context, string, string, upstream.TrafficClass) (net.Conn, error),
+) *http.Transport {
+	transport := cloneTransport(base)
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		return dial(ctx, network, address, upstream.TrafficClassUnknown)
+	}
+	return transport
 }

@@ -11,10 +11,12 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"math/big"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -22,6 +24,7 @@ import (
 
 	"github.com/quic-go/quic-go"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
 func TestValidateListener(t *testing.T) {
@@ -601,6 +604,60 @@ func TestDialSurfacesFinalTargetFailure(t *testing.T) {
 	}
 }
 
+func TestFinalTargetFailureDoesNotDemoteRelayQUICTransport(t *testing.T) {
+	resetTLSTCPSessionPoolForTest()
+
+	now := time.Unix(1700000000, 0)
+	score := upstream.NewScoreStore(func() time.Time { return now })
+	restoreScore := setRelayRuntimeScoreForTest(score)
+	defer restoreScore()
+	restoreFallbacks := setRelayVerifiedFallbacksForTest(newRelayVerifiedFallbackStore())
+	defer restoreFallbacks()
+
+	provider := newFakeTLSMaterialProvider()
+	quicListener, hop := newRelayEndpoint(t, provider, 1, "relay-quic-target-fail", "pin_only", true, false)
+	sharedPort := pickFreeDualStackPort(t)
+	quicListener.ListenPort = sharedPort
+	quicListener.TransportMode = ListenerTransportModeQUIC
+	quicListener.AllowTransportFallback = true
+	hop.Address = net.JoinHostPort(quicListener.ListenHost, fmt.Sprintf("%d", sharedPort))
+	hop.Listener = quicListener
+
+	tlsListener := quicListener
+	tlsListener.ID = 2
+	tlsListener.Name = "relay-tls-target-fail"
+	tlsListener.TransportMode = ListenerTransportModeTLSTCP
+	tlsListener.AllowTransportFallback = false
+
+	server, err := Start(context.Background(), []Listener{tlsListener, quicListener}, provider)
+	if err != nil {
+		t.Fatalf("Start returned error: %v", err)
+	}
+	defer server.Close()
+
+	markRelayVerifiedFallback(hop)
+
+	target := net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", pickFreeTCPPort(t)))
+	for i := 0; i < 2; i++ {
+		conn, result, err := DialWithResult(context.Background(), "tcp", target, []Hop{hop}, provider)
+		if err == nil {
+			conn.Close()
+			t.Fatalf("DialWithResult(%d) error = nil, want final target failure", i)
+		}
+		if result.TransportMode != "" {
+			t.Fatalf("DialWithResult(%d) TransportMode = %q, want empty result on failed open", i, result.TransportMode)
+		}
+	}
+
+	state := score.State(relayQUICPathKey(hop))
+	if state.ProbeOnly {
+		t.Fatal("ProbeOnly = true after final target failures, want false for healthy QUIC transport")
+	}
+	if got := selectRelayRuntimeTransport(hop); got != ListenerTransportModeQUIC {
+		t.Fatalf("selectRelayRuntimeTransport() = %q, want %q after backend-only failures", got, ListenerTransportModeQUIC)
+	}
+}
+
 func TestDialSurfacesDownstreamRelayFailure(t *testing.T) {
 	backendAddr, stopBackend := startTCPEchoServer(t)
 	defer stopBackend()
@@ -1151,6 +1208,502 @@ func TestDialWithResultReturnsSelectedAddressFromFinalHop(t *testing.T) {
 	}
 }
 
+func TestDialWithResultUsesFallbackAfterQUICProbeDialFails(t *testing.T) {
+	backendAddr, stopBackend := startTCPEchoServer(t)
+	defer stopBackend()
+	resetTLSTCPSessionPoolForTest()
+	restoreFallbacks := setRelayVerifiedFallbacksForTest(newRelayVerifiedFallbackStore())
+	defer restoreFallbacks()
+
+	provider := newFakeTLSMaterialProvider()
+	listener, hop := newRelayEndpoint(t, provider, 1, "relay-quic-fallback", "pin_only", true, false)
+	listener.ListenPort = pickFreeDualStackPort(t)
+	hop.Address = net.JoinHostPort(listener.ListenHost, fmt.Sprintf("%d", listener.ListenPort))
+	hop.Listener = listener
+	listener.TransportMode = "quic"
+	listener.AllowTransportFallback = true
+	hop.Listener.TransportMode = "quic"
+	hop.Listener.AllowTransportFallback = true
+
+	server, err := Start(context.Background(), []Listener{listener}, provider)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer server.Close()
+
+	now := time.Unix(1700000000, 0)
+	score := upstream.NewScoreStore(func() time.Time { return now })
+	key := relayQUICPathKey(hop)
+	score.ObserveFailure(key, upstream.FailureTimeout)
+	score.ObserveFailure(key, upstream.FailureTimeout)
+	score.ArmProbe(key, relayQUICProbeInterval)
+	now = now.Add(relayQUICProbeInterval)
+
+	restorePlanner := setRelayPlannerForTest(upstream.NewPlanner())
+	defer restorePlanner()
+	restoreScore := setRelayRuntimeScoreForTest(score)
+	defer restoreScore()
+
+	prevQUICDial := quicDialAddr
+	quicDialCalls := 0
+	quicDialAddr = func(ctx context.Context, addr string, tlsConf *tls.Config, conf *quic.Config) (*quic.Conn, error) {
+		quicDialCalls++
+		if addr != hop.Address {
+			t.Fatalf("quicDialAddr() address = %q, want %q", addr, hop.Address)
+		}
+		return nil, errors.New("quic probe failed")
+	}
+	defer func() {
+		quicDialAddr = prevQUICDial
+	}()
+
+	conn, result, err := DialWithResult(context.Background(), "tcp", backendAddr, []Hop{hop}, provider)
+	if err == nil {
+		defer conn.Close()
+		t.Fatal("DialWithResult() error = nil, want combined QUIC+fallback failure against QUIC-only listener")
+	}
+	if result.TransportMode != "" {
+		t.Fatalf("TransportMode = %q, want empty result on total failure", result.TransportMode)
+	}
+	if quicDialCalls != 1 {
+		t.Fatalf("quicDialCalls = %d, want 1 failed QUIC probe before fallback", quicDialCalls)
+	}
+}
+
+func TestDialWithResultUsesRuntimeFallbackAfterRepeatedQUICFailures(t *testing.T) {
+	backendAddr, stopBackend := startTCPEchoServer(t)
+	defer stopBackend()
+	resetTLSTCPSessionPoolForTest()
+	restoreScore := setRelayRuntimeScoreForTest(upstream.NewScoreStore(time.Now))
+	defer restoreScore()
+	restoreFallbacks := setRelayVerifiedFallbacksForTest(newRelayVerifiedFallbackStore())
+	defer restoreFallbacks()
+
+	provider := newFakeTLSMaterialProvider()
+	quicListener, hop := newRelayEndpoint(t, provider, 1, "relay-quic-runtime-fallback", "pin_only", true, false)
+	sharedPort := pickFreeDualStackPort(t)
+	quicListener.ListenPort = sharedPort
+	quicListener.TransportMode = "quic"
+	quicListener.AllowTransportFallback = true
+	hop.Address = net.JoinHostPort(quicListener.ListenHost, fmt.Sprintf("%d", sharedPort))
+	hop.Listener = quicListener
+
+	tlsListener := quicListener
+	tlsListener.ID = 2
+	tlsListener.Name = "relay-tls-runtime-fallback"
+	tlsListener.TransportMode = ListenerTransportModeTLSTCP
+	tlsListener.AllowTransportFallback = false
+
+	server, err := Start(context.Background(), []Listener{tlsListener, quicListener}, provider)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer server.Close()
+
+	prevQUICDial := quicDialAddr
+	attempts := 0
+	quicDialAddr = func(ctx context.Context, addr string, tlsConf *tls.Config, conf *quic.Config) (*quic.Conn, error) {
+		attempts++
+		return nil, errors.New("quic unavailable")
+	}
+	defer func() {
+		quicDialAddr = prevQUICDial
+	}()
+
+	for i := 0; i < 3; i++ {
+		conn, result, err := DialWithResult(context.Background(), "tcp", backendAddr, []Hop{hop}, provider)
+		if err != nil {
+			t.Fatalf("DialWithResult(%d) error = %v", i, err)
+		}
+		if result.TransportMode != ListenerTransportModeTLSTCP {
+			t.Fatalf("DialWithResult(%d) TransportMode = %q, want %q", i, result.TransportMode, ListenerTransportModeTLSTCP)
+		}
+		conn.Close()
+	}
+	if attempts != 2 {
+		t.Fatalf("quic attempts = %d, want 2 initial QUIC failures before probe interval backoff", attempts)
+	}
+}
+
+func TestResolveCandidatesDoesNotConsumeQUICProbeWindow(t *testing.T) {
+	provider := newFakeTLSMaterialProvider()
+	listener, hop := newRelayEndpoint(t, provider, 1, "relay-resolve-probe-window", "pin_only", true, false)
+	listener.ListenPort = pickFreeDualStackPort(t)
+	listener.TransportMode = ListenerTransportModeQUIC
+	listener.AllowTransportFallback = true
+	hop.Listener = listener
+	hop.Address = net.JoinHostPort(listener.ListenHost, fmt.Sprintf("%d", listener.ListenPort))
+
+	now := time.Unix(1700000000, 0)
+	score := upstream.NewScoreStore(func() time.Time { return now })
+	key := relayQUICPathKey(hop)
+	score.ObserveFailure(key, upstream.FailureTimeout)
+	score.ObserveFailure(key, upstream.FailureTimeout)
+	score.ArmProbe(key, relayQUICProbeInterval)
+	now = now.Add(relayQUICProbeInterval)
+
+	restoreScore := setRelayRuntimeScoreForTest(score)
+	defer restoreScore()
+
+	server, err := Start(context.Background(), []Listener{listener}, provider)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer server.Close()
+
+	prevQUICDial := quicDialAddr
+	quicDialCalls := 0
+	quicDialAddr = func(ctx context.Context, addr string, tlsConf *tls.Config, conf *quic.Config) (*quic.Conn, error) {
+		quicDialCalls++
+		return nil, errors.New("quic still unavailable")
+	}
+	defer func() {
+		quicDialAddr = prevQUICDial
+	}()
+
+	if _, err := ResolveCandidates(context.Background(), "deferred.example:8096", []Hop{hop}, provider); err == nil {
+		t.Fatal("ResolveCandidates() error = nil, want fallback failure while no tls_tcp listener exists")
+	}
+	if quicDialCalls != 1 {
+		t.Fatalf("ResolveCandidates() quicDialCalls = %d, want 1 real QUIC attempt", quicDialCalls)
+	}
+
+	state := score.State(key)
+	if state.NextProbeAt.After(now) {
+		t.Fatalf("ResolveCandidates() consumed probe window; NextProbeAt = %v now = %v", state.NextProbeAt, now)
+	}
+}
+
+func TestResolveCandidatesDoesNotMutateRelayVerifiedFallbackState(t *testing.T) {
+	resetTLSTCPSessionPoolForTest()
+	restoreFallbacks := setRelayVerifiedFallbacksForTest(newRelayVerifiedFallbackStore())
+	defer restoreFallbacks()
+
+	provider := newFakeTLSMaterialProvider()
+	quicListener, hop := newRelayEndpoint(t, provider, 1, "relay-resolve-fallback-state", "pin_only", true, false)
+	sharedPort := pickFreeDualStackPort(t)
+	quicListener.ListenPort = sharedPort
+	quicListener.TransportMode = ListenerTransportModeQUIC
+	quicListener.AllowTransportFallback = true
+	hop.Address = net.JoinHostPort(quicListener.ListenHost, fmt.Sprintf("%d", sharedPort))
+	hop.Listener = quicListener
+
+	tlsListener := quicListener
+	tlsListener.ID = 2
+	tlsListener.Name = "relay-tls-resolve-fallback-state"
+	tlsListener.TransportMode = ListenerTransportModeTLSTCP
+	tlsListener.AllowTransportFallback = false
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	server := &Server{
+		ctx:      ctx,
+		cancel:   cancel,
+		provider: provider,
+		finalHopSelector: newFinalHopSelector(finalHopSelectorConfig{
+			Resolver: relayResolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
+				if host != "deferred.example" {
+					t.Fatalf("unexpected host %q", host)
+				}
+				return []net.IPAddr{
+					{IP: net.ParseIP("127.0.0.10")},
+					{IP: net.ParseIP("127.0.0.11")},
+				}, nil
+			}),
+		}),
+		conns:     make(map[net.Conn]struct{}),
+		quicConns: make(map[*quic.Conn]struct{}),
+	}
+	normalizedTLS, err := normalizeListener(tlsListener)
+	if err != nil {
+		t.Fatalf("normalizeListener(tls) error = %v", err)
+	}
+	if err := server.startListener(normalizedTLS); err != nil {
+		t.Fatalf("startListener(tls) error = %v", err)
+	}
+	normalizedQUIC, err := normalizeListener(quicListener)
+	if err != nil {
+		t.Fatalf("normalizeListener(quic) error = %v", err)
+	}
+	if err := server.startListener(normalizedQUIC); err != nil {
+		t.Fatalf("startListener(quic) error = %v", err)
+	}
+	defer server.Close()
+
+	prevQUICDial := quicDialAddr
+	quicDialAddr = func(ctx context.Context, addr string, tlsConf *tls.Config, conf *quic.Config) (*quic.Conn, error) {
+		return nil, errors.New("quic unavailable")
+	}
+	defer func() {
+		quicDialAddr = prevQUICDial
+	}()
+
+	addresses, err := ResolveCandidates(context.Background(), "deferred.example:8096", []Hop{hop}, provider)
+	if err != nil {
+		t.Fatalf("ResolveCandidates() error = %v", err)
+	}
+	if len(addresses) == 0 {
+		t.Fatal("ResolveCandidates() returned no addresses")
+	}
+	if relayVerifiedFallbackAvailable(hop) {
+		t.Fatal("ResolveCandidates() marked relay fallback verified; diagnostics must not mutate live fallback state")
+	}
+}
+
+func TestResolveCandidatesDoesNotClearRelayVerifiedFallbackState(t *testing.T) {
+	resetTLSTCPSessionPoolForTest()
+	restoreFallbacks := setRelayVerifiedFallbacksForTest(newRelayVerifiedFallbackStore())
+	defer restoreFallbacks()
+
+	provider := newFakeTLSMaterialProvider()
+	listener, hop := newRelayEndpoint(t, provider, 1, "relay-resolve-fallback-clear", "pin_only", true, false)
+	listener.ListenPort = pickFreeDualStackPort(t)
+	listener.TransportMode = ListenerTransportModeQUIC
+	listener.AllowTransportFallback = true
+	hop.Listener = listener
+	hop.Address = net.JoinHostPort(listener.ListenHost, fmt.Sprintf("%d", listener.ListenPort))
+
+	server, err := Start(context.Background(), []Listener{listener}, provider)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer server.Close()
+
+	markRelayVerifiedFallback(hop)
+	if !relayVerifiedFallbackAvailable(hop) {
+		t.Fatal("precondition failed: expected verified fallback state")
+	}
+
+	prevQUICDial := quicDialAddr
+	quicDialAddr = func(ctx context.Context, addr string, tlsConf *tls.Config, conf *quic.Config) (*quic.Conn, error) {
+		return nil, errors.New("quic unavailable")
+	}
+	defer func() {
+		quicDialAddr = prevQUICDial
+	}()
+
+	if _, err := ResolveCandidates(context.Background(), "deferred.example:8096", []Hop{hop}, provider); err == nil {
+		t.Fatal("ResolveCandidates() error = nil, want combined fallback failure")
+	}
+	if !relayVerifiedFallbackAvailable(hop) {
+		t.Fatal("ResolveCandidates() cleared verified fallback state; diagnostics must not mutate live fallback state")
+	}
+}
+
+func TestRelayTransportCandidatesDoesNotAssumeTLSTCPFallbackExistsForQUICHop(t *testing.T) {
+	now := time.Unix(1700000000, 0)
+	score := upstream.NewScoreStore(func() time.Time { return now })
+	hop := Hop{
+		Address: "relay.example:443",
+		Listener: Listener{
+			ID:                     11,
+			Revision:               7,
+			TransportMode:          ListenerTransportModeQUIC,
+			AllowTransportFallback: true,
+		},
+		ServerName: "relay-a.example",
+	}
+	key := relayQUICPathKey(hop)
+	score.ObserveFailure(key, upstream.FailureTimeout)
+	score.ObserveFailure(key, upstream.FailureTimeout)
+	score.ArmProbe(key, relayQUICProbeInterval)
+
+	restoreScore := setRelayRuntimeScoreForTest(score)
+	defer restoreScore()
+	restoreFallbacks := setRelayVerifiedFallbacksForTest(newRelayVerifiedFallbackStore())
+	defer restoreFallbacks()
+
+	candidates := relayTransportCandidates(hop)
+	if len(candidates) != 1 {
+		t.Fatalf("len(candidates) = %d, want 1 without verified tls_tcp fallback identity", len(candidates))
+	}
+	if candidates[0].Key.Family != upstream.PathFamilyRelayQUIC {
+		t.Fatalf("candidate family = %q, want %q", candidates[0].Key.Family, upstream.PathFamilyRelayQUIC)
+	}
+}
+
+func TestRelayQUICHealthIsScopedPerHopIdentity(t *testing.T) {
+	now := time.Unix(1700000000, 0)
+	score := upstream.NewScoreStore(func() time.Time { return now })
+	restoreScore := setRelayRuntimeScoreForTest(score)
+	defer restoreScore()
+	restoreFallbacks := setRelayVerifiedFallbacksForTest(newRelayVerifiedFallbackStore())
+	defer restoreFallbacks()
+
+	hopA := Hop{
+		Address: "relay.example:443",
+		Listener: Listener{
+			ID:            101,
+			Revision:      1,
+			TransportMode: ListenerTransportModeQUIC,
+		},
+		ServerName: "relay-a.example",
+	}
+	hopB := Hop{
+		Address: "relay.example:443",
+		Listener: Listener{
+			ID:            202,
+			Revision:      2,
+			TransportMode: ListenerTransportModeQUIC,
+		},
+		ServerName: "relay-b.example",
+	}
+
+	observeRelayQUICFailureForHop(hopA)
+	observeRelayQUICFailureForHop(hopA)
+
+	candidatesA := relayTransportCandidates(hopA)
+	if !candidatesA[0].ProbeOnly {
+		t.Fatal("hopA ProbeOnly = false after repeated failures, want true")
+	}
+
+	candidatesB := relayTransportCandidates(hopB)
+	if candidatesB[0].ProbeOnly {
+		t.Fatal("hopB ProbeOnly = true after unrelated hopA failures, want false")
+	}
+}
+
+func TestSelectRelayRuntimeTransportHonorsQUICProbeInterval(t *testing.T) {
+	now := time.Unix(1700000000, 0)
+	score := upstream.NewScoreStore(func() time.Time { return now })
+	restorePlanner := setRelayPlannerForTest(upstream.NewPlanner())
+	defer restorePlanner()
+	restoreScore := setRelayRuntimeScoreForTest(score)
+	defer restoreScore()
+	restoreFallbacks := setRelayVerifiedFallbacksForTest(newRelayVerifiedFallbackStore())
+	defer restoreFallbacks()
+
+	hop := Hop{
+		Address: "relay.example:443",
+		Listener: Listener{
+			TransportMode:          ListenerTransportModeQUIC,
+			AllowTransportFallback: true,
+			ID:                     77,
+			Revision:               5,
+		},
+		ServerName: "relay.example",
+	}
+	key := relayQUICPathKey(hop)
+	score.ObserveFailure(key, upstream.FailureTimeout)
+	score.ObserveFailure(key, upstream.FailureTimeout)
+	score.ArmProbe(key, relayQUICProbeInterval)
+
+	if got := selectRelayRuntimeTransport(hop); got != ListenerTransportModeQUIC {
+		t.Fatalf("selectRelayRuntimeTransport(before fallback verified) = %q, want %q", got, ListenerTransportModeQUIC)
+	}
+
+	markRelayVerifiedFallback(hop)
+	if got := selectRelayRuntimeTransport(hop); got != ListenerTransportModeTLSTCP {
+		t.Fatalf("selectRelayRuntimeTransport(before deadline with verified fallback) = %q, want %q", got, ListenerTransportModeTLSTCP)
+	}
+
+	now = now.Add(relayQUICProbeInterval)
+	if got := selectRelayRuntimeTransport(hop); got != ListenerTransportModeQUIC {
+		t.Fatalf("selectRelayRuntimeTransport(after deadline) = %q, want %q", got, ListenerTransportModeQUIC)
+	}
+}
+
+func TestDialWithResultRecoversQUICAfterProbeSuccesses(t *testing.T) {
+	backendAddr, stopBackend := startTCPEchoServer(t)
+	defer stopBackend()
+	resetTLSTCPSessionPoolForTest()
+
+	prevSessionPool := relaySessionPool
+	relaySessionPool = newSessionPool()
+	defer func() {
+		relaySessionPool = prevSessionPool
+	}()
+
+	now := time.Unix(1700000000, 0)
+	score := upstream.NewScoreStore(func() time.Time { return now })
+	restoreScore := setRelayRuntimeScoreForTest(score)
+	defer restoreScore()
+	restoreFallbacks := setRelayVerifiedFallbacksForTest(newRelayVerifiedFallbackStore())
+	defer restoreFallbacks()
+
+	provider := newFakeTLSMaterialProvider()
+	quicListener, hop := newRelayEndpoint(t, provider, 1, "relay-quic-recovery", "pin_only", true, false)
+	sharedPort := pickFreeDualStackPort(t)
+	quicListener.ListenPort = sharedPort
+	quicListener.TransportMode = "quic"
+	quicListener.AllowTransportFallback = true
+	hop.Address = net.JoinHostPort(quicListener.ListenHost, fmt.Sprintf("%d", sharedPort))
+	hop.Listener = quicListener
+
+	tlsListener := quicListener
+	tlsListener.ID = 2
+	tlsListener.Name = "relay-tls-recovery"
+	tlsListener.TransportMode = ListenerTransportModeTLSTCP
+	tlsListener.AllowTransportFallback = false
+
+	server, err := Start(context.Background(), []Listener{tlsListener, quicListener}, provider)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer server.Close()
+
+	prevQUICDial := quicDialAddr
+	quicDialFailures := 0
+	quicDialAddr = func(ctx context.Context, addr string, tlsConf *tls.Config, conf *quic.Config) (*quic.Conn, error) {
+		if quicDialFailures < 2 {
+			quicDialFailures++
+			return nil, errors.New("quic unavailable")
+		}
+		return prevQUICDial(ctx, addr, tlsConf, conf)
+	}
+	defer func() {
+		quicDialAddr = prevQUICDial
+	}()
+
+	for i := 0; i < 3; i++ {
+		conn, result, err := DialWithResult(context.Background(), "tcp", backendAddr, []Hop{hop}, provider)
+		if err != nil {
+			t.Fatalf("DialWithResult(fallback %d) error = %v", i, err)
+		}
+		if result.TransportMode != ListenerTransportModeTLSTCP {
+			t.Fatalf("DialWithResult(fallback %d) TransportMode = %q, want %q before probe interval", i, result.TransportMode, ListenerTransportModeTLSTCP)
+		}
+		conn.Close()
+	}
+	if quicDialFailures != 2 {
+		t.Fatalf("quicDialFailures = %d, want 2 before QUIC recovery", quicDialFailures)
+	}
+
+	state := score.State(relayQUICPathKey(hop))
+	if !state.ProbeOnly {
+		t.Fatal("ProbeOnly = false after repeated QUIC failures, want true")
+	}
+
+	for probe := 0; probe < 3; probe++ {
+		now = now.Add(relayQUICProbeInterval)
+		conn, result, err := DialWithResult(context.Background(), "tcp", backendAddr, []Hop{hop}, provider)
+		if err != nil {
+			t.Fatalf("DialWithResult(probe %d) error = %v", probe, err)
+		}
+		if result.TransportMode != ListenerTransportModeQUIC {
+			t.Fatalf("DialWithResult(probe %d) TransportMode = %q, want %q", probe, result.TransportMode, ListenerTransportModeQUIC)
+		}
+		assertRoundTrip(t, conn, []byte(fmt.Sprintf("probe-%d", probe)))
+		conn.Close()
+	}
+
+	state = score.State(relayQUICPathKey(hop))
+	if state.ProbeOnly {
+		t.Fatal("ProbeOnly = true after three successful QUIC probes, want false")
+	}
+
+	conn, result, err := DialWithResult(context.Background(), "tcp", backendAddr, []Hop{hop}, provider)
+	if err != nil {
+		t.Fatalf("DialWithResult(recovered) error = %v", err)
+	}
+	defer conn.Close()
+
+	if result.TransportMode != ListenerTransportModeQUIC {
+		t.Fatalf("DialWithResult(recovered) TransportMode = %q, want %q", result.TransportMode, ListenerTransportModeQUIC)
+	}
+}
+
 func TestResolveCandidatesUsesLastHopResolution(t *testing.T) {
 	provider := newFakeTLSMaterialProvider()
 	listener, hop := newRelayEndpoint(t, provider, 1, "relay-resolve", "pin_only", true, false)
@@ -1493,6 +2046,66 @@ func pickFreeUDPPort(t *testing.T) int {
 	defer ln.Close()
 
 	return ln.LocalAddr().(*net.UDPAddr).Port
+}
+
+func pickFreeDualStackPort(t *testing.T) int {
+	t.Helper()
+
+	tryPair := func(tcpFirst bool) (int, bool) {
+		if tcpFirst {
+			tcpLn, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				return 0, false
+			}
+			port := tcpLn.Addr().(*net.TCPAddr).Port
+			udpLn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: port})
+			if err != nil {
+				_ = tcpLn.Close()
+				return 0, false
+			}
+			_ = udpLn.Close()
+			_ = tcpLn.Close()
+			return port, true
+		}
+
+		udpLn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+		if err != nil {
+			return 0, false
+		}
+		port := udpLn.LocalAddr().(*net.UDPAddr).Port
+		tcpLn, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+		if err != nil {
+			_ = udpLn.Close()
+			return 0, false
+		}
+		_ = tcpLn.Close()
+		_ = udpLn.Close()
+		return port, true
+	}
+
+	for attempt := 0; attempt < 64; attempt++ {
+		if port, ok := tryPair(attempt%2 == 0); ok {
+			return port
+		}
+	}
+
+	for attempt := 0; attempt < 64; attempt++ {
+		tcpLn, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("failed to reserve dual-stack tcp port: %v", err)
+		}
+		port := tcpLn.Addr().(*net.TCPAddr).Port
+		udpLn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: port})
+		if err == nil {
+			_ = udpLn.Close()
+			_ = tcpLn.Close()
+			return port
+		}
+		_ = tcpLn.Close()
+	}
+
+	t.Fatal("failed to reserve port usable for both tcp and udp")
+	return 0
 }
 
 func withRelayTimeouts(dial, handshake, frame, idle time.Duration, fn func()) {

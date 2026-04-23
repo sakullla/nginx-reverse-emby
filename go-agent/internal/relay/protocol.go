@@ -5,9 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strings"
+
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
 const maxRequestSize = 1 << 20
+const relayMetadataTrafficClass = "traffic_class"
 
 const (
 	ListenerTransportModeTLSTCP = "tls_tcp"
@@ -171,4 +175,26 @@ func writeAll(w io.Writer, payload []byte) error {
 		payload = payload[n:]
 	}
 	return nil
+}
+
+func relayTrafficClassFromMetadata(metadata map[string]any) upstream.TrafficClass {
+	if len(metadata) == 0 {
+		return upstream.TrafficClassUnknown
+	}
+	raw, ok := metadata[relayMetadataTrafficClass]
+	if !ok {
+		return upstream.TrafficClassUnknown
+	}
+	value, ok := raw.(string)
+	if !ok {
+		return upstream.TrafficClassUnknown
+	}
+	switch upstream.TrafficClass(strings.ToLower(strings.TrimSpace(value))) {
+	case upstream.TrafficClassInteractive:
+		return upstream.TrafficClassInteractive
+	case upstream.TrafficClassBulk:
+		return upstream.TrafficClassBulk
+	default:
+		return upstream.TrafficClassUnknown
+	}
 }

@@ -12,15 +12,20 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
 var relayTLSTCPSessionPool = newTLSTCPSessionPool()
+var errTLSTCPInteractiveAdmissionRejected = errors.New("tls_tcp relay interactive admission rejected: all tunnels are congested")
 
 const tlsTCPBulkFrameSize = 64 * 1024
 const tlsTCPMuxSessionsPerKey = 4
 const tlsTCPMuxTargetStreamsPerSession = 2
 const tlsTCPWriteQueueDepth = 8
 const tlsTCPSingleStreamWritePipeline = 4
+const tlsTCPInteractiveAdmissionQueuedWrites = 4
+const tlsTCPInteractiveAdmissionBufferedBytes = 512 << 10
 
 var tlsTCPMaxBufferedReadBytes = 32 << 20
 var tlsTCPResumeBufferedReadBytes = 16 << 20
@@ -57,6 +62,8 @@ type tlsTCPTunnel struct {
 	streams        map[uint32]*tlsTCPLogicalStream
 	nextStreamID   atomic.Uint32
 	pendingStreams atomic.Int64
+	queuedWrites   atomic.Int64
+	bufferedBytes  atomic.Int64
 
 	closed    chan struct{}
 	closeOnce sync.Once
@@ -143,8 +150,8 @@ func (p *tlsTCPSessionPool) allTunnelsForTest() []*tlsTCPTunnel {
 	return tunnels
 }
 
-func (p *tlsTCPSessionPool) getOrDial(ctx context.Context, key string, dial func(context.Context) (*tlsTCPTunnel, error)) (*tlsTCPTunnel, func(), error) {
-	if existing, release := p.reserveExisting(key); existing != nil {
+func (p *tlsTCPSessionPool) getOrDial(ctx context.Context, key string, class upstream.TrafficClass, dial func(context.Context) (*tlsTCPTunnel, error)) (*tlsTCPTunnel, func(), error) {
+	if existing, release := p.reserveExisting(key, class); existing != nil {
 		return existing, release, nil
 	}
 
@@ -152,14 +159,18 @@ func (p *tlsTCPSessionPool) getOrDial(ctx context.Context, key string, dial func
 	if err != nil {
 		return nil, nil, err
 	}
-	stored, release := p.storeOrReserve(key, tunnel)
+	stored, release := p.storeOrReserve(key, class, tunnel)
+	if stored == nil {
+		_ = tunnel.close()
+		return nil, nil, errTLSTCPInteractiveAdmissionRejected
+	}
 	if stored != tunnel {
 		_ = tunnel.close()
 	}
 	return stored, release, nil
 }
 
-func (p *tlsTCPSessionPool) reserveExisting(key string) (*tlsTCPTunnel, func()) {
+func (p *tlsTCPSessionPool) reserveExisting(key string, class upstream.TrafficClass) (*tlsTCPTunnel, func()) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -168,6 +179,12 @@ func (p *tlsTCPSessionPool) reserveExisting(key string) (*tlsTCPTunnel, func()) 
 		return nil, nil
 	}
 
+	acceptable := acceptableTLSTCPTunnels(sessions, class)
+	if len(acceptable) > 0 {
+		sessions = acceptable
+	} else if len(sessions) < tlsTCPMuxSessionsPerKey {
+		return nil, nil
+	}
 	least := leastLoadedTLSTCPTunnel(sessions)
 	if len(sessions) < tlsTCPMuxSessionsPerKey && least.tlsTCPLoad() >= tlsTCPMuxTargetStreamsPerSession {
 		return nil, nil
@@ -175,12 +192,16 @@ func (p *tlsTCPSessionPool) reserveExisting(key string) (*tlsTCPTunnel, func()) 
 	return least, least.reserveStreamSlot()
 }
 
-func (p *tlsTCPSessionPool) storeOrReserve(key string, tunnel *tlsTCPTunnel) (*tlsTCPTunnel, func()) {
+func (p *tlsTCPSessionPool) storeOrReserve(key string, class upstream.TrafficClass, tunnel *tlsTCPTunnel) (*tlsTCPTunnel, func()) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	sessions := p.activeSessionsLocked(key)
 	if len(sessions) >= tlsTCPMuxSessionsPerKey {
+		acceptable := acceptableTLSTCPTunnels(sessions, class)
+		if len(acceptable) > 0 {
+			sessions = acceptable
+		}
 		least := leastLoadedTLSTCPTunnel(sessions)
 		return least, least.reserveStreamSlot()
 	}
@@ -228,6 +249,19 @@ func leastLoadedTLSTCPTunnel(sessions []*tlsTCPTunnel) *tlsTCPTunnel {
 	return least
 }
 
+func acceptableTLSTCPTunnels(sessions []*tlsTCPTunnel, class upstream.TrafficClass) []*tlsTCPTunnel {
+	if !isConservativeInteractiveClass(class) {
+		return sessions
+	}
+	acceptable := make([]*tlsTCPTunnel, 0, len(sessions))
+	for _, tunnel := range sessions {
+		if tunnel.canAcceptTrafficClass(class) {
+			acceptable = append(acceptable, tunnel)
+		}
+	}
+	return acceptable
+}
+
 func (p *tlsTCPSessionPool) remove(key string, tunnel *tlsTCPTunnel) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -260,8 +294,9 @@ func dialTLSTCPMuxWithResult(ctx context.Context, network, target string, chain 
 	if err != nil {
 		return nil, DialResult{}, err
 	}
+	trafficClass := relayDialTrafficClass(network, options)
 
-	tunnel, release, err := relayTLSTCPSessionPool.getOrDial(ctx, sessionKey, func(dialCtx context.Context) (*tlsTCPTunnel, error) {
+	tunnel, release, err := relayTLSTCPSessionPool.getOrDial(ctx, sessionKey, trafficClass, func(dialCtx context.Context) (*tlsTCPTunnel, error) {
 		return dialNewTLSTCPTunnel(dialCtx, firstHop, provider)
 	})
 	if err != nil {
@@ -273,6 +308,7 @@ func dialTLSTCPMuxWithResult(ctx context.Context, network, target string, chain 
 		Kind:        network,
 		Target:      target,
 		Chain:       append([]Hop(nil), chain[1:]...),
+		Metadata:    relayMetadataForDialOptions(network, options),
 		InitialData: options.InitialPayload,
 	})
 	if err != nil {
@@ -288,7 +324,7 @@ func resolveCandidatesTLSTCPMux(ctx context.Context, target string, chain []Hop,
 		return nil, err
 	}
 
-	tunnel, release, err := relayTLSTCPSessionPool.getOrDial(ctx, sessionKey, func(dialCtx context.Context) (*tlsTCPTunnel, error) {
+	tunnel, release, err := relayTLSTCPSessionPool.getOrDial(ctx, sessionKey, upstream.TrafficClassUnknown, func(dialCtx context.Context) (*tlsTCPTunnel, error) {
 		return dialNewTLSTCPTunnel(dialCtx, firstHop, provider)
 	})
 	if err != nil {
@@ -514,18 +550,26 @@ func (t *tlsTCPTunnel) writeRequestBatch(batch []*tlsTCPWriteRequest) error {
 
 	if err := t.refreshWriteDeadlineLocked(); err != nil {
 		for _, req := range batch {
+			t.queuedWrites.Add(-1)
+			t.bufferedBytes.Add(-int64(len(req.frame.Payload)))
 			req.frame.releasePayload()
 		}
 		return err
 	}
 	for i, req := range batch {
 		if err := writeMuxFrame(t.writer, req.frame); err != nil {
+			t.queuedWrites.Add(-1)
+			t.bufferedBytes.Add(-int64(len(req.frame.Payload)))
 			req.frame.releasePayload()
 			for _, pending := range batch[i+1:] {
+				t.queuedWrites.Add(-1)
+				t.bufferedBytes.Add(-int64(len(pending.frame.Payload)))
 				pending.frame.releasePayload()
 			}
 			return err
 		}
+		t.queuedWrites.Add(-1)
+		t.bufferedBytes.Add(-int64(len(req.frame.Payload)))
 		req.frame.releasePayload()
 	}
 	return nil
@@ -541,6 +585,8 @@ func (t *tlsTCPTunnel) failQueuedWriteRequests(err error) {
 			if req == nil {
 				continue
 			}
+			t.queuedWrites.Add(-1)
+			t.bufferedBytes.Add(-int64(len(req.frame.Payload)))
 			req.frame.releasePayload()
 			req.done <- err
 		default:
@@ -552,15 +598,22 @@ func (t *tlsTCPTunnel) failQueuedWriteRequests(err error) {
 func (t *tlsTCPTunnel) enqueueWriteFrame(ctx context.Context, frame muxFrame) (*tlsTCPWriteRequest, error) {
 	t.startWritePump()
 
+	payloadSize := int64(len(frame.Payload))
 	req := &tlsTCPWriteRequest{
 		frame: frame,
 		done:  make(chan error, 1),
 	}
+	t.queuedWrites.Add(1)
+	t.bufferedBytes.Add(payloadSize)
 	select {
 	case <-t.closed:
+		t.queuedWrites.Add(-1)
+		t.bufferedBytes.Add(-payloadSize)
 		frame.releasePayload()
 		return nil, io.EOF
 	case <-ctx.Done():
+		t.queuedWrites.Add(-1)
+		t.bufferedBytes.Add(-payloadSize)
 		frame.releasePayload()
 		return nil, ctx.Err()
 	case t.writeReqCh <- req:
@@ -635,7 +688,10 @@ func (t *tlsTCPTunnel) logicalStreamCount() int {
 }
 
 func (t *tlsTCPTunnel) tlsTCPLoad() int64 {
-	return int64(t.logicalStreamCount()) + t.pendingStreams.Load()
+	return int64(t.logicalStreamCount()) +
+		t.pendingStreams.Load() +
+		t.queuedWrites.Load() +
+		(t.bufferedBytes.Load() / tlsTCPBulkFrameSize)
 }
 
 func (t *tlsTCPTunnel) reserveStreamSlot() func() {
@@ -646,6 +702,23 @@ func (t *tlsTCPTunnel) reserveStreamSlot() func() {
 			t.pendingStreams.Add(-1)
 		})
 	}
+}
+
+func (t *tlsTCPTunnel) canAcceptTrafficClass(class upstream.TrafficClass) bool {
+	if !isConservativeInteractiveClass(class) {
+		return true
+	}
+	if t.queuedWrites.Load() >= tlsTCPInteractiveAdmissionQueuedWrites {
+		return false
+	}
+	if t.bufferedBytes.Load() >= tlsTCPInteractiveAdmissionBufferedBytes {
+		return false
+	}
+	return true
+}
+
+func isConservativeInteractiveClass(class upstream.TrafficClass) bool {
+	return class == upstream.TrafficClassInteractive
 }
 
 func (t *tlsTCPTunnel) registerStream(stream *tlsTCPLogicalStream) {
@@ -1157,6 +1230,7 @@ func (s *serverTLSTCPSession) run(listener Listener) {
 }
 
 func (s *serverTLSTCPSession) handleStream(listener Listener, stream *tlsTCPLogicalStream, request relayOpenFrame) {
+	options := relayDialOptionsFromMetadata(request.Kind, request.Metadata)
 	if strings.EqualFold(request.Kind, "resolve") {
 		resolvedCandidates, err := s.server.resolveTargetCandidates(request.Target, request.Chain)
 		if err != nil {
@@ -1173,7 +1247,7 @@ func (s *serverTLSTCPSession) handleStream(listener Listener, stream *tlsTCPLogi
 		return
 	}
 
-	upstream, selectedAddress, err := s.server.openUpstreamWithResult(request.Kind, request.Target, request.Chain, DialOptions{})
+	upstream, selectedAddress, err := s.server.openUpstreamWithResult(request.Kind, request.Target, request.Chain, options)
 	if err != nil {
 		_ = s.writeOpenResult(stream.streamID, muxOpenResult{OK: false, Error: err.Error()})
 		s.tunnel.removeStream(stream.streamID)
@@ -1200,7 +1274,11 @@ func (s *serverTLSTCPSession) handleStream(listener Listener, stream *tlsTCPLogi
 }
 
 func (s *serverTLSTCPSession) handleUDPStream(listener Listener, stream *tlsTCPLogicalStream, request relayOpenFrame) {
-	upstream, selectedAddress, err := s.server.openUDPPeerWithResult(request.Target, request.Chain)
+	upstream, selectedAddress, err := s.server.openUDPPeerWithResultOptions(
+		request.Target,
+		request.Chain,
+		relayDialOptionsFromMetadata(request.Kind, request.Metadata),
+	)
 	if err != nil {
 		_ = s.writeOpenResult(stream.streamID, muxOpenResult{OK: false, Error: err.Error()})
 		s.tunnel.removeStream(stream.streamID)

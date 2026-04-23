@@ -3,29 +3,55 @@ package relay
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net"
 	"reflect"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/quic-go/quic-go"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
 type DialOptions struct {
 	InitialPayload []byte
+	TrafficClass   upstream.TrafficClass
 }
 
 type DialResult struct {
 	SelectedAddress string
+	TransportMode   string
+}
+
+type relayPathPlanner interface {
+	Plan(input upstream.PlanInput) upstream.PlanResult
+}
+
+var relayPlanner relayPathPlanner
+var relayRuntimeScore = upstream.NewScoreStore(time.Now)
+var relayVerifiedFallbacks = newRelayVerifiedFallbackStore()
+
+const relayQUICProbeInterval = 30 * time.Second
+
+func setRelayPlannerForTest(planner relayPathPlanner) func() {
+	prev := relayPlanner
+	relayPlanner = planner
+	return func() {
+		relayPlanner = prev
+	}
 }
 
 func (o DialOptions) clone() DialOptions {
 	if len(o.InitialPayload) == 0 {
-		return DialOptions{}
+		return DialOptions{TrafficClass: o.TrafficClass}
 	}
-	return DialOptions{InitialPayload: append([]byte(nil), o.InitialPayload...)}
+	return DialOptions{
+		InitialPayload: append([]byte(nil), o.InitialPayload...),
+		TrafficClass:   o.TrafficClass,
+	}
 }
 
 type Server struct {
@@ -42,6 +68,48 @@ type Server struct {
 	conns         map[net.Conn]struct{}
 	quicConns     map[*quic.Conn]struct{}
 	closing       bool
+}
+
+type relayVerifiedFallbackStore struct {
+	mu       sync.Mutex
+	verified map[string]struct{}
+}
+
+func newRelayVerifiedFallbackStore() *relayVerifiedFallbackStore {
+	return &relayVerifiedFallbackStore{
+		verified: make(map[string]struct{}),
+	}
+}
+
+func (s *relayVerifiedFallbackStore) Mark(firstHop Hop) {
+	key := relayHopIdentityKey(firstHop)
+	if key == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.verified[key] = struct{}{}
+}
+
+func (s *relayVerifiedFallbackStore) Clear(firstHop Hop) {
+	key := relayHopIdentityKey(firstHop)
+	if key == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.verified, key)
+}
+
+func (s *relayVerifiedFallbackStore) Has(firstHop Hop) bool {
+	key := relayHopIdentityKey(firstHop)
+	if key == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.verified[key]
+	return ok
 }
 
 func Start(ctx context.Context, listeners []Listener, provider TLSMaterialProvider) (*Server, error) {
@@ -193,8 +261,12 @@ func (s *Server) openUDPPeer(target string, chain []Hop) (udpPacketPeer, error) 
 }
 
 func (s *Server) openUDPPeerWithResult(target string, chain []Hop) (udpPacketPeer, string, error) {
+	return s.openUDPPeerWithResultOptions(target, chain, DialOptions{})
+}
+
+func (s *Server) openUDPPeerWithResultOptions(target string, chain []Hop, options DialOptions) (udpPacketPeer, string, error) {
 	if len(chain) > 0 {
-		conn, result, err := DialWithResult(s.ctx, "udp", target, chain, s.provider)
+		conn, result, err := DialWithResult(s.ctx, "udp", target, chain, s.provider, options)
 		if err != nil {
 			return nil, "", err
 		}
@@ -263,15 +335,23 @@ func DialWithResult(ctx context.Context, network, target string, chain []Hop, pr
 		return nil, DialResult{}, fmt.Errorf("relay hop address is required")
 	}
 
-	transportMode, err := normalizeListenerTransportMode(firstHop.Listener.TransportMode)
-	if err != nil {
-		return nil, DialResult{}, fmt.Errorf("relay hop listener %d: %w", firstHop.Listener.ID, err)
-	}
+	transportMode := selectRelayRuntimeTransport(firstHop)
 
 	if transportMode == ListenerTransportModeQUIC {
+		if !consumeRelayQUICProbe(firstHop) {
+			transportMode = selectRelayRuntimeTransport(firstHop)
+			if transportMode != ListenerTransportModeQUIC {
+				goto tlsTCPDial
+			}
+		}
 		conn, result, err := dialQUICWithResult(ctx, network, target, chain, provider, options)
 		if err == nil {
+			result.TransportMode = transportMode
 			return conn, result, nil
+		}
+		var appErr *relayApplicationError
+		if errors.As(err, &appErr) {
+			return nil, DialResult{}, err
 		}
 		if !firstHop.Listener.AllowTransportFallback {
 			return nil, DialResult{}, err
@@ -279,12 +359,23 @@ func DialWithResult(ctx context.Context, network, target string, chain []Hop, pr
 
 		fallbackConn, fallbackResult, fallbackErr := dialTLSTCPMuxWithResult(ctx, network, target, chain, provider, options)
 		if fallbackErr != nil {
+			clearRelayVerifiedFallback(firstHop)
 			return nil, DialResult{}, fmt.Errorf("quic relay failed: %v; tls_tcp fallback failed: %w", err, fallbackErr)
 		}
+		markRelayVerifiedFallback(firstHop)
+		fallbackResult.TransportMode = ListenerTransportModeTLSTCP
 		return fallbackConn, fallbackResult, nil
 	}
 
-	return dialTLSTCPMuxWithResult(ctx, network, target, chain, provider, options)
+tlsTCPDial:
+	conn, result, err := dialTLSTCPMuxWithResult(ctx, network, target, chain, provider, options)
+	if err != nil {
+		clearRelayVerifiedFallback(firstHop)
+		return nil, DialResult{}, err
+	}
+	markRelayVerifiedFallback(firstHop)
+	result.TransportMode = transportMode
+	return conn, result, nil
 }
 
 func ResolveCandidates(ctx context.Context, target string, chain []Hop, provider TLSMaterialProvider) ([]string, error) {
@@ -305,10 +396,7 @@ func ResolveCandidates(ctx context.Context, target string, chain []Hop, provider
 		return nil, fmt.Errorf("relay hop address is required")
 	}
 
-	transportMode, err := normalizeListenerTransportMode(firstHop.Listener.TransportMode)
-	if err != nil {
-		return nil, fmt.Errorf("relay hop listener %d: %w", firstHop.Listener.ID, err)
-	}
+	transportMode := selectRelayRuntimeTransport(firstHop)
 
 	if transportMode == ListenerTransportModeQUIC {
 		addresses, err := resolveCandidatesQUIC(ctx, target, chain, provider)
@@ -322,6 +410,202 @@ func ResolveCandidates(ctx context.Context, target string, chain []Hop, provider
 	}
 
 	return resolveCandidatesTLSTCPMux(ctx, target, chain, provider)
+}
+
+func selectRelayRuntimeTransport(firstHop Hop) string {
+	transportMode := chooseRelayTransport(firstHop)
+	if transportMode != ListenerTransportModeQUIC {
+		if relayQUICProbeDue(firstHop) {
+			return ListenerTransportModeQUIC
+		}
+		return transportMode
+	}
+	if relayQUICProbeDue(firstHop) {
+		return ListenerTransportModeQUIC
+	}
+	if relayQUICBackoffActive(firstHop) && relayVerifiedFallbackAvailable(firstHop) {
+		return ListenerTransportModeTLSTCP
+	}
+	return ListenerTransportModeQUIC
+}
+
+func chooseRelayTransport(firstHop Hop) string {
+	planner := relayPlanner
+	if planner == nil {
+		planner = upstream.NewPlanner()
+	}
+	candidates := relayTransportCandidates(firstHop)
+	if len(candidates) == 0 {
+		return normalizeListenerTransportModeValue(firstHop.Listener.TransportMode)
+	}
+	result := planner.Plan(upstream.PlanInput{
+		Paths:            candidates,
+		Class:            upstream.TrafficClassUnknown,
+		ResourcePressure: upstream.ResourcePressureLow,
+	})
+	if len(result.Ordered) == 0 {
+		return normalizeListenerTransportModeValue(firstHop.Listener.TransportMode)
+	}
+	switch result.Ordered[0].Key.Family {
+	case upstream.PathFamilyRelayQUIC:
+		return ListenerTransportModeQUIC
+	case upstream.PathFamilyRelayTLSTCP:
+		return ListenerTransportModeTLSTCP
+	}
+	return normalizeListenerTransportModeValue(firstHop.Listener.TransportMode)
+}
+
+func relayTransportCandidates(firstHop Hop) []upstream.PathSnapshot {
+	baseMode := normalizeListenerTransportModeValue(firstHop.Listener.TransportMode)
+	if baseMode != ListenerTransportModeQUIC {
+		return []upstream.PathSnapshot{{
+			Key:        upstream.PathKey{Family: upstream.PathFamilyRelayTLSTCP, Address: firstHop.Address},
+			Confidence: 1.0,
+		}}
+	}
+
+	quicState := upstream.PathState{}
+	quicKey := relayQUICPathKey(firstHop)
+	if relayRuntimeScore != nil {
+		quicState = relayRuntimeScore.State(quicKey)
+	}
+	return []upstream.PathSnapshot{{
+		Key:        quicKey,
+		Confidence: relayPathConfidence(quicState, false),
+		ProbeOnly:  quicState.ProbeOnly,
+	}}
+}
+
+func relayQUICProbeDue(firstHop Hop) bool {
+	if relayRuntimeScore == nil || normalizeListenerTransportModeValue(firstHop.Listener.TransportMode) != ListenerTransportModeQUIC {
+		return false
+	}
+	return relayRuntimeScore.ProbeOpportunityDue(relayQUICPathKey(firstHop))
+}
+
+func relayQUICBackoffActive(firstHop Hop) bool {
+	if relayRuntimeScore == nil || normalizeListenerTransportModeValue(firstHop.Listener.TransportMode) != ListenerTransportModeQUIC {
+		return false
+	}
+	return relayRuntimeScore.State(relayQUICPathKey(firstHop)).ProbeOnly
+}
+
+func consumeRelayQUICProbe(firstHop Hop) bool {
+	if relayRuntimeScore == nil || normalizeListenerTransportModeValue(firstHop.Listener.TransportMode) != ListenerTransportModeQUIC {
+		return true
+	}
+	key := relayQUICPathKey(firstHop)
+	state := relayRuntimeScore.State(key)
+	if !state.ProbeOnly {
+		return true
+	}
+	return relayRuntimeScore.ConsumeProbeOpportunity(key, relayQUICProbeInterval)
+}
+
+func relayPathConfidence(state upstream.PathState, probeDue bool) float64 {
+	if state.ProbeOnly {
+		if probeDue {
+			return 0.31
+		}
+		return 0.10
+	}
+	return 0.80
+}
+
+func relayQUICPathKey(firstHop Hop) upstream.PathKey {
+	if sessionKey, err := quicSessionPoolKey(firstHop); err == nil && strings.TrimSpace(sessionKey) != "" {
+		return upstream.PathKey{Family: upstream.PathFamilyRelayQUIC, Address: sessionKey}
+	}
+	return upstream.PathKey{Family: upstream.PathFamilyRelayQUIC, Address: firstHop.Address}
+}
+
+func relayHopIdentityKey(firstHop Hop) string {
+	return relayQUICPathKey(firstHop).Address
+}
+
+func relayVerifiedFallbackAvailable(firstHop Hop) bool {
+	if !firstHop.Listener.AllowTransportFallback || normalizeListenerTransportModeValue(firstHop.Listener.TransportMode) != ListenerTransportModeQUIC {
+		return false
+	}
+	return relayVerifiedFallbacks != nil && relayVerifiedFallbacks.Has(firstHop)
+}
+
+func markRelayVerifiedFallback(firstHop Hop) {
+	if !firstHop.Listener.AllowTransportFallback || normalizeListenerTransportModeValue(firstHop.Listener.TransportMode) != ListenerTransportModeQUIC {
+		return
+	}
+	if relayVerifiedFallbacks != nil {
+		relayVerifiedFallbacks.Mark(firstHop)
+	}
+}
+
+func clearRelayVerifiedFallback(firstHop Hop) {
+	if relayVerifiedFallbacks != nil {
+		relayVerifiedFallbacks.Clear(firstHop)
+	}
+}
+
+func observeRelayQUICFailureForHop(firstHop Hop) {
+	if relayRuntimeScore == nil {
+		return
+	}
+	key := relayQUICPathKey(firstHop)
+	relayRuntimeScore.ObserveFailure(key, upstream.FailureTimeout)
+	relayRuntimeScore.ArmProbe(key, relayQUICProbeInterval)
+}
+
+func observeRelayQUICSuccessForHop(firstHop Hop) {
+	if relayRuntimeScore == nil {
+		return
+	}
+	relayRuntimeScore.ObserveProbeSuccess(
+		relayQUICPathKey(firstHop),
+		0,
+		0,
+		0,
+	)
+}
+
+func setRelayRuntimeScoreForTest(score *upstream.ScoreStore) func() {
+	prev := relayRuntimeScore
+	relayRuntimeScore = score
+	return func() {
+		relayRuntimeScore = prev
+	}
+}
+
+func setRelayVerifiedFallbacksForTest(store *relayVerifiedFallbackStore) func() {
+	prev := relayVerifiedFallbacks
+	relayVerifiedFallbacks = store
+	return func() {
+		relayVerifiedFallbacks = prev
+	}
+}
+
+func relayDialTrafficClass(network string, options DialOptions) upstream.TrafficClass {
+	if options.TrafficClass != "" {
+		return options.TrafficClass
+	}
+	if strings.EqualFold(network, "udp") {
+		return upstream.TrafficClassBulk
+	}
+	return upstream.TrafficClassUnknown
+}
+
+func relayMetadataForDialOptions(network string, options DialOptions) map[string]any {
+	class := relayDialTrafficClass(network, options)
+	if class == upstream.TrafficClassUnknown {
+		return nil
+	}
+	return map[string]any{relayMetadataTrafficClass: string(class)}
+}
+
+func relayDialOptionsFromMetadata(network string, metadata map[string]any) DialOptions {
+	class := relayTrafficClassFromMetadata(metadata)
+	if class == upstream.TrafficClassUnknown {
+		class = relayDialTrafficClass(network, DialOptions{})
+	}
+	return DialOptions{TrafficClass: class}
 }
 
 // dialTLSTCP is the legacy one-stream-per-TLS-connection path. Runtime relay
@@ -486,7 +770,10 @@ func (s *Server) handleQUICConn(conn *quic.Conn, listener Listener) {
 
 func (s *Server) handleQUICStream(conn *quic.Conn, stream *quic.Stream, listener Listener) {
 	clientConn := &quicStreamConn{conn: conn, stream: stream}
-	defer clientConn.Close()
+	cancelStream := true
+	defer func() {
+		_ = clientConn.closeWithCancel(cancelStream)
+	}()
 
 	var request relayOpenFrame
 	err := withFrameDeadline(clientConn, func() error {
@@ -501,6 +788,7 @@ func (s *Server) handleQUICStream(conn *quic.Conn, stream *quic.Stream, listener
 		_ = withFrameDeadline(clientConn, func() error {
 			return writeRelayResponse(clientConn, relayResponse{OK: false, Error: fmt.Sprintf("unsupported network %q", request.Kind)})
 		})
+		cancelStream = false
 		return
 	}
 	if strings.EqualFold(request.Kind, "resolve") {
@@ -509,22 +797,30 @@ func (s *Server) handleQUICStream(conn *quic.Conn, stream *quic.Stream, listener
 			_ = withFrameDeadline(clientConn, func() error {
 				return writeRelayResponse(clientConn, relayResponse{OK: false, Error: err.Error()})
 			})
+			cancelStream = false
 			return
 		}
 		_ = withFrameDeadline(clientConn, func() error {
 			return writeRelayResponse(clientConn, relayResponse{OK: true, ResolvedCandidates: resolvedCandidates})
 		})
+		cancelStream = false
 		return
 	}
 	if strings.EqualFold(request.Kind, "udp") {
-		s.handleUDPRelayStream(clientConn, listener, request.Target, request.Chain)
+		s.handleUDPRelayStream(clientConn, listener, request.Target, request.Chain, relayDialOptionsFromMetadata(request.Kind, request.Metadata))
 		return
 	}
-	upstream, selectedAddress, err := s.openUpstreamWithResult(request.Kind, request.Target, request.Chain, DialOptions{})
+	upstream, selectedAddress, err := s.openUpstreamWithResult(
+		request.Kind,
+		request.Target,
+		request.Chain,
+		relayDialOptionsFromMetadata(request.Kind, request.Metadata),
+	)
 	if err != nil {
 		_ = withFrameDeadline(clientConn, func() error {
 			return writeRelayResponse(clientConn, relayResponse{OK: false, Error: err.Error()})
 		})
+		cancelStream = false
 		return
 	}
 	s.trackConn(upstream)
@@ -536,6 +832,7 @@ func (s *Server) handleQUICStream(conn *quic.Conn, stream *quic.Stream, listener
 			_ = withFrameDeadline(clientConn, func() error {
 				return writeRelayResponse(clientConn, relayResponse{OK: false, Error: err.Error()})
 			})
+			cancelStream = false
 			return
 		}
 	}
@@ -544,6 +841,7 @@ func (s *Server) handleQUICStream(conn *quic.Conn, stream *quic.Stream, listener
 	}); err != nil {
 		return
 	}
+	cancelStream = false
 
 	pipeBothWays(wrapIdleConn(clientConn), wrapIdleConn(upstream))
 }
@@ -553,8 +851,8 @@ func listenerUsesEarlyWindowMask(listener Listener) bool {
 		strings.EqualFold(strings.TrimSpace(listener.ObfsMode), RelayObfsModeEarlyWindowV2)
 }
 
-func (s *Server) handleUDPRelayStream(clientConn net.Conn, listener Listener, target string, chain []Hop) {
-	upstream, selectedAddress, err := s.openUDPPeerWithResult(target, chain)
+func (s *Server) handleUDPRelayStream(clientConn net.Conn, listener Listener, target string, chain []Hop, options DialOptions) {
+	upstream, selectedAddress, err := s.openUDPPeerWithResultOptions(target, chain, options)
 	if err != nil {
 		_ = withFrameDeadline(clientConn, func() error {
 			return writeRelayResponse(clientConn, relayResponse{OK: false, Error: err.Error()})

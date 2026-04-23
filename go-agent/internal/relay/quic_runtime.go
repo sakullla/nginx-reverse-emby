@@ -20,6 +20,17 @@ var (
 	relaySessionPool = newSessionPool()
 )
 
+type relayApplicationError struct {
+	message string
+}
+
+func (e *relayApplicationError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return e.message
+}
+
 type quicStreamConn struct {
 	conn   *quic.Conn
 	stream *quic.Stream
@@ -76,10 +87,12 @@ func dialQUICWithResult(ctx context.Context, network, target string, chain []Hop
 	firstHop := chain[0]
 	tlsConfig, err := clientQUICTLSConfig(ctx, provider, firstHop.Listener, firstHop.Address, firstHop.ServerName)
 	if err != nil {
+		observeRelayQUICFailureIfTransportError(firstHop, ctx, err)
 		return nil, DialResult{}, err
 	}
 	sessionKey, err := quicSessionPoolKey(firstHop)
 	if err != nil {
+		observeRelayQUICFailureIfTransportError(firstHop, ctx, err)
 		return nil, DialResult{}, err
 	}
 
@@ -87,6 +100,7 @@ func dialQUICWithResult(ctx context.Context, network, target string, chain []Hop
 		return quicDialAddr(dialCtx, firstHop.Address, tlsConfig, newRelayQUICConfig())
 	})
 	if err != nil {
+		observeRelayQUICFailureIfTransportError(firstHop, ctx, err)
 		return nil, DialResult{}, err
 	}
 
@@ -95,12 +109,14 @@ func dialQUICWithResult(ctx context.Context, network, target string, chain []Hop
 		Kind:        network,
 		Target:      target,
 		Chain:       append([]Hop(nil), chain[1:]...),
+		Metadata:    relayMetadataForDialOptions(network, options),
 		InitialData: options.InitialPayload,
 	}
 	if err := withFrameDeadline(conn, func() error {
 		return writeRelayOpenFrame(conn, request)
 	}); err != nil {
 		conn.Close()
+		observeRelayQUICFailureIfTransportError(firstHop, ctx, err)
 		return nil, DialResult{}, err
 	}
 
@@ -112,17 +128,22 @@ func dialQUICWithResult(ctx context.Context, network, target string, chain []Hop
 	})
 	if err != nil {
 		conn.Close()
+		observeRelayQUICFailureIfTransportError(firstHop, ctx, err)
 		return nil, DialResult{}, err
 	}
 	if !response.OK {
 		conn.Close()
 		if response.Error == "" {
-			return nil, DialResult{}, fmt.Errorf("relay connection failed")
+			return nil, DialResult{}, &relayApplicationError{message: "relay connection failed"}
 		}
-		return nil, DialResult{}, fmt.Errorf("relay connection failed: %s", response.Error)
+		return nil, DialResult{}, &relayApplicationError{message: fmt.Sprintf("relay connection failed: %s", response.Error)}
 	}
+	observeRelayQUICSuccessForHop(firstHop)
 
-	return conn, DialResult{SelectedAddress: response.SelectedAddress}, nil
+	return conn, DialResult{
+		SelectedAddress: response.SelectedAddress,
+		TransportMode:   ListenerTransportModeQUIC,
+	}, nil
 }
 
 func resolveCandidatesQUIC(ctx context.Context, target string, chain []Hop, provider TLSMaterialProvider) ([]string, error) {
@@ -249,10 +270,7 @@ func (c *quicStreamConn) Close() error {
 	if c.stream == nil {
 		return nil
 	}
-	_ = c.stream.Close()
-	c.stream.CancelRead(0)
-	c.stream.CancelWrite(0)
-	return nil
+	return c.closeWithCancel(true)
 }
 
 func (c *quicStreamConn) LocalAddr() net.Addr {
@@ -282,6 +300,43 @@ func (c *quicStreamConn) CloseWrite() error {
 func (c *quicStreamConn) CloseRead() error {
 	c.stream.CancelRead(0)
 	return nil
+}
+
+func (c *quicStreamConn) closeWithCancel(cancel bool) error {
+	if c.stream == nil {
+		return nil
+	}
+	err := c.stream.Close()
+	if cancel {
+		c.stream.CancelRead(0)
+		c.stream.CancelWrite(0)
+	}
+	return err
+}
+
+func observeRelayQUICFailureIfTransportError(firstHop Hop, ctx context.Context, err error) {
+	if err == nil || isCallerDrivenContextError(ctx, err) {
+		return
+	}
+	observeRelayQUICFailureForHop(firstHop)
+}
+
+func isCallerDrivenContextError(ctx context.Context, err error) bool {
+	if err == nil {
+		return false
+	}
+	if ctx == nil {
+		return false
+	}
+	ctxErr := ctx.Err()
+	if ctxErr == nil {
+		return false
+	}
+	if errors.Is(err, ctxErr) {
+		return true
+	}
+	return (errors.Is(ctxErr, context.Canceled) && errors.Is(err, context.Canceled)) ||
+		(errors.Is(ctxErr, context.DeadlineExceeded) && errors.Is(err, context.DeadlineExceeded))
 }
 
 func (h *quicListenerHandle) Close() error {
