@@ -76,10 +76,12 @@ func dialQUICWithResult(ctx context.Context, network, target string, chain []Hop
 	firstHop := chain[0]
 	tlsConfig, err := clientQUICTLSConfig(ctx, provider, firstHop.Listener, firstHop.Address, firstHop.ServerName)
 	if err != nil {
+		observeRelayQUICFailure(firstHop.Address)
 		return nil, DialResult{}, err
 	}
 	sessionKey, err := quicSessionPoolKey(firstHop)
 	if err != nil {
+		observeRelayQUICFailure(firstHop.Address)
 		return nil, DialResult{}, err
 	}
 
@@ -87,6 +89,7 @@ func dialQUICWithResult(ctx context.Context, network, target string, chain []Hop
 		return quicDialAddr(dialCtx, firstHop.Address, tlsConfig, newRelayQUICConfig())
 	})
 	if err != nil {
+		observeRelayQUICFailure(firstHop.Address)
 		return nil, DialResult{}, err
 	}
 
@@ -95,12 +98,14 @@ func dialQUICWithResult(ctx context.Context, network, target string, chain []Hop
 		Kind:        network,
 		Target:      target,
 		Chain:       append([]Hop(nil), chain[1:]...),
+		Metadata:    relayMetadataForDialOptions(network, options),
 		InitialData: options.InitialPayload,
 	}
 	if err := withFrameDeadline(conn, func() error {
 		return writeRelayOpenFrame(conn, request)
 	}); err != nil {
 		conn.Close()
+		observeRelayQUICFailure(firstHop.Address)
 		return nil, DialResult{}, err
 	}
 
@@ -112,17 +117,23 @@ func dialQUICWithResult(ctx context.Context, network, target string, chain []Hop
 	})
 	if err != nil {
 		conn.Close()
+		observeRelayQUICFailure(firstHop.Address)
 		return nil, DialResult{}, err
 	}
 	if !response.OK {
 		conn.Close()
+		observeRelayQUICFailure(firstHop.Address)
 		if response.Error == "" {
 			return nil, DialResult{}, fmt.Errorf("relay connection failed")
 		}
 		return nil, DialResult{}, fmt.Errorf("relay connection failed: %s", response.Error)
 	}
+	observeRelayQUICSuccess(firstHop.Address)
 
-	return conn, DialResult{SelectedAddress: response.SelectedAddress}, nil
+	return conn, DialResult{
+		SelectedAddress: response.SelectedAddress,
+		TransportMode:   ListenerTransportModeQUIC,
+	}, nil
 }
 
 func resolveCandidatesQUIC(ctx context.Context, target string, chain []Hop, provider TLSMaterialProvider) ([]string, error) {

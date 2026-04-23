@@ -24,6 +24,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
 func TestServerCloseStopsTCPHandlers(t *testing.T) {
@@ -591,6 +592,159 @@ func TestObserveCandidateSuccessDoesNotLearnThroughput(t *testing.T) {
 	}
 	if backend.HasBandwidth {
 		t.Fatalf("l4 runtime must not learn throughput for backend summaries: %+v", backend)
+	}
+}
+
+func TestAdaptiveUDPReplyTimeoutUsesObservedPathEstimate(t *testing.T) {
+	upstreamAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("resolve upstream addr: %v", err)
+	}
+	upstreamConn, err := net.ListenUDP("udp", upstreamAddr)
+	if err != nil {
+		t.Fatalf("listen udp upstream: %v", err)
+	}
+	defer upstreamConn.Close()
+
+	const replyDelay = 300 * time.Millisecond
+	go func() {
+		buf := make([]byte, 64)
+		for {
+			n, addr, err := upstreamConn.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			time.Sleep(replyDelay)
+			_, _ = upstreamConn.WriteToUDP(buf[:n], addr)
+		}
+	}()
+
+	listenPort := pickFreeUDPPort(t)
+	srv, err := NewServer(context.Background(), []model.L4Rule{{
+		Protocol:   "udp",
+		ListenHost: "127.0.0.1",
+		ListenPort: listenPort,
+		Backends: []model.L4Backend{
+			{Host: "127.0.0.1", Port: upstreamConn.LocalAddr().(*net.UDPAddr).Port},
+		},
+		LoadBalancing: model.LoadBalancing{Strategy: "round_robin"},
+	}}, nil, nil)
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	defer srv.Close()
+
+	if srv.upstreamScore == nil {
+		t.Fatal("expected NewServer to initialize upstream score store")
+	}
+
+	client, err := net.DialUDP("udp", nil, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: listenPort})
+	if err != nil {
+		t.Fatalf("dial udp proxy: %v", err)
+	}
+	defer client.Close()
+
+	if _, err := client.Write([]byte("ping")); err != nil {
+		t.Fatalf("write udp payload: %v", err)
+	}
+	reply := make([]byte, 4)
+	if err := client.SetReadDeadline(time.Now().Add(2 * time.Second)); err != nil {
+		t.Fatalf("set udp read deadline: %v", err)
+	}
+	if _, err := io.ReadFull(client, reply); err != nil {
+		t.Fatalf("read udp reply: %v", err)
+	}
+
+	key := upstream.PathKey{Family: upstream.PathFamilyDirectUDP, Address: upstreamConn.LocalAddr().String()}
+	estimate := srv.upstreamScore.FirstByteEstimate(key)
+	if estimate < 200*time.Millisecond {
+		t.Fatalf("FirstByteEstimate() = %s, want recorded direct UDP reply estimate", estimate)
+	}
+
+	got := srv.udpReplyTimeoutForCandidate(l4Candidate{
+		address:       upstreamConn.LocalAddr().String(),
+		directUDPPath: true,
+	})
+	want := upstream.EstimateTimeout(upstream.UDPReplyTimeoutPolicy(), estimate)
+	if got != want {
+		t.Fatalf("udpReplyTimeoutForCandidate() = %s, want %s", got, want)
+	}
+	if got <= srv.udpReplyTimeout {
+		t.Fatalf("udpReplyTimeoutForCandidate() = %s, want adaptive timeout above static default %s", got, srv.udpReplyTimeout)
+	}
+}
+
+func TestAdaptiveUDPReplyTimeoutRespectsExplicitOverride(t *testing.T) {
+	srv := &Server{
+		udpReplyTimeout: 250 * time.Millisecond,
+		upstreamScore:   upstream.NewScoreStore(func() time.Time { return time.Unix(1700000000, 0) }),
+	}
+	key := upstream.PathKey{Family: upstream.PathFamilyDirectUDP, Address: "127.0.0.1:9000"}
+	srv.upstreamScore.ObserveProbeSuccess(key, 0, 800*time.Millisecond, 2048)
+
+	got := srv.udpReplyTimeoutForCandidate(l4Candidate{
+		address:       "127.0.0.1:9000",
+		directUDPPath: true,
+	})
+	if got != 250*time.Millisecond {
+		t.Fatalf("udpReplyTimeoutForCandidate() = %s, want explicit override %s", got, 250*time.Millisecond)
+	}
+}
+
+func TestAdaptiveUDPReplyTimeoutUsesObservedPathEstimateInTimeoutPath(t *testing.T) {
+	base := time.Unix(1700000000, 0)
+	now := base
+	key := upstream.PathKey{Family: upstream.PathFamilyDirectUDP, Address: "127.0.0.1:9000"}
+	srv := &Server{
+		now:             func() time.Time { return now },
+		udpReplyTimeout: time.Second,
+		upstreamScore:   upstream.NewScoreStore(func() time.Time { return now }),
+		udpSessions: map[string]*udpSession{
+			"peer": {
+				key:            "peer",
+				targetAddr:     "127.0.0.1:9000",
+				directUDPPath:  true,
+				pendingReplies: 1,
+				awaitingSince:  base,
+			},
+		},
+	}
+	srv.upstreamScore.ObserveProbeSuccess(key, 0, 800*time.Millisecond, 2048)
+
+	now = base.Add(1500 * time.Millisecond)
+	if srv.shouldFailUDPSession("peer") {
+		t.Fatal("expected direct UDP session to stay alive while adaptive timeout window remains open")
+	}
+
+	now = base.Add(5500 * time.Millisecond)
+	if !srv.shouldFailUDPSession("peer") {
+		t.Fatal("expected direct UDP session to time out once adaptive timeout window is exceeded")
+	}
+}
+
+func TestAdaptiveUDPReplyTimeoutKeepsRelaySessionOnStaticTimeoutPath(t *testing.T) {
+	base := time.Unix(1700000000, 0)
+	now := base
+	key := upstream.PathKey{Family: upstream.PathFamilyDirectUDP, Address: "relay.example:443"}
+	srv := &Server{
+		now:             func() time.Time { return now },
+		udpReplyTimeout: time.Second,
+		upstreamScore:   upstream.NewScoreStore(func() time.Time { return now }),
+		udpSessions: map[string]*udpSession{
+			"peer": {
+				key:            "peer",
+				targetAddr:     "relay.example:443",
+				directUDPPath:  false,
+				pendingReplies: 1,
+				awaitingSince:  base,
+			},
+		},
+	}
+	srv.upstreamScore.ObserveProbeSuccess(key, 0, 800*time.Millisecond, 2048)
+
+	now = base.Add(1500 * time.Millisecond)
+	if !srv.shouldFailUDPSession("peer") {
+		t.Fatal("expected relay-backed UDP session to keep static timeout path")
 	}
 }
 

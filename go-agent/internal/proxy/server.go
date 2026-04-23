@@ -19,6 +19,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
 type Server struct {
@@ -47,14 +48,18 @@ type Runtime struct {
 }
 
 type routeEntry struct {
-	rule           model.HTTPRule
-	backends       []httpBackend
-	backendCache   *backends.Cache
-	transport      *http.Transport
-	resilience     StreamResilienceOptions
-	modifyResp     func(*http.Response) error
-	selectionScope string
-	frontendPath   string
+	rule                       model.HTTPRule
+	backends                   []httpBackend
+	backendCache               *backends.Cache
+	transport                  *http.Transport
+	directInteractiveTransport *http.Transport
+	directBulkTransport        *http.Transport
+	relayInteractiveTransport  *http.Transport
+	relayBulkTransport         *http.Transport
+	resilience                 StreamResilienceOptions
+	modifyResp                 func(*http.Response) error
+	selectionScope             string
+	frontendPath               string
 }
 
 type httpBackend struct {
@@ -98,6 +103,7 @@ func newServerWithResilience(
 	for _, relayListener := range relayListeners {
 		relayListenersByID[relayListener.ID] = relayListener
 	}
+	directInteractiveTransport, directBulkTransport := NewClassedDirectTransports(sharedTransport)
 	for _, rule := range listener.Rules {
 		hostKey := HostFromRule(rule)
 		if hostKey == "" {
@@ -108,23 +114,34 @@ func newServerWithResilience(
 			continue
 		}
 		transport := sharedTransport
+		entryDirectInteractiveTransport := directInteractiveTransport
+		entryDirectBulkTransport := directBulkTransport
+		var relayInteractiveTransport *http.Transport
+		var relayBulkTransport *http.Transport
 		if len(rule.RelayChain) > 0 {
-			transport, err = newRelayTransport(rule, relayListenersByID, providers.Relay, sharedTransport)
+			relayInteractiveTransport, relayBulkTransport, err = newRelayTransports(rule, relayListenersByID, providers.Relay, sharedTransport)
 			if err != nil {
 				return nil, err
 			}
+			transport = relayInteractiveTransport
+			entryDirectInteractiveTransport = nil
+			entryDirectBulkTransport = nil
 		}
 
 		frontendBaseURL := FrontendOriginFromRule(rule)
 		s.routes[hostKey] = append(s.routes[hostKey], &routeEntry{
-			rule:           rule,
-			backends:       targets,
-			backendCache:   backendCache,
-			transport:      transport,
-			resilience:     resilience,
-			modifyResp:     makeModifyResponse(frontendBaseURL, rule.ProxyRedirect, targets[0].backendHost, normalizeURLPath(targets[0].target.Path)),
-			selectionScope: hostKey,
-			frontendPath:   FrontendPathFromRule(rule),
+			rule:                       rule,
+			backends:                   targets,
+			backendCache:               backendCache,
+			transport:                  transport,
+			directInteractiveTransport: entryDirectInteractiveTransport,
+			directBulkTransport:        entryDirectBulkTransport,
+			relayInteractiveTransport:  relayInteractiveTransport,
+			relayBulkTransport:         relayBulkTransport,
+			resilience:                 resilience,
+			modifyResp:                 makeModifyResponse(frontendBaseURL, rule.ProxyRedirect, targets[0].backendHost, normalizeURLPath(targets[0].target.Path)),
+			selectionScope:             hostKey,
+			frontendPath:               FrontendPathFromRule(rule),
 		})
 	}
 
@@ -315,7 +332,7 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 				break
 			}
 			start := time.Now()
-			resp, err := e.transport.RoundTrip(attemptReq)
+			resp, err := e.transportForRequest(attemptReq).RoundTrip(attemptReq)
 			if err != nil {
 				log.Printf("[proxy] roundtrip error for %s -> %s: %v", e.rule.FrontendURL, candidate.target, err)
 				if !isBackendRetryable(attemptReq, err) {
@@ -383,6 +400,25 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 		}
 	}
 	return fmt.Errorf("all backends failed for %s", e.rule.FrontendURL)
+}
+
+func (e *routeEntry) transportForRequest(req *http.Request) *http.Transport {
+	if len(e.rule.RelayChain) > 0 {
+		if upstream.ClassifyHTTPRequest(req) == upstream.TrafficClassBulk && e.relayBulkTransport != nil {
+			return e.relayBulkTransport
+		}
+		if e.relayInteractiveTransport != nil {
+			return e.relayInteractiveTransport
+		}
+		return e.transport
+	}
+	if upstream.ClassifyHTTPRequest(req) == upstream.TrafficClassBulk && e.directBulkTransport != nil {
+		return e.directBulkTransport
+	}
+	if e.directInteractiveTransport != nil {
+		return e.directInteractiveTransport
+	}
+	return e.transport
 }
 
 func (e *routeEntry) sameBackendRetryMaxAttempts(req *http.Request) int {
@@ -688,24 +724,25 @@ func newTLSListener(ctx context.Context, listener net.Listener, spec runtimeList
 	return tls.NewListener(listener, config), nil
 }
 
-func newRelayTransport(
+func newRelayTransports(
 	rule model.HTTPRule,
 	relayListenersByID map[int]model.RelayListener,
 	provider RelayMaterialProvider,
 	base *http.Transport,
-) (*http.Transport, error) {
+) (*http.Transport, *http.Transport, error) {
 	if provider == nil {
-		return nil, fmt.Errorf("http rule %q: relay_chain requires relay tls material provider", rule.FrontendURL)
+		return nil, nil, fmt.Errorf("http rule %q: relay_chain requires relay tls material provider", rule.FrontendURL)
 	}
 	hops, err := resolveRelayHops(rule, mapValues(relayListenersByID))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	transport := cloneTransport(base)
-	transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-		return relay.Dial(ctx, network, dialAddressFromContext(ctx, addr), hops, provider)
-	}
-	return transport, nil
+	interactive, bulk := NewClassedRelayTransports(base, func(ctx context.Context, network, addr string, class upstream.TrafficClass) (net.Conn, error) {
+		return relay.Dial(ctx, network, dialAddressFromContext(ctx, addr), hops, provider, relay.DialOptions{
+			TrafficClass: class,
+		})
+	})
+	return interactive, bulk, nil
 }
 
 func resolveRelayHops(rule model.HTTPRule, relayListeners []model.RelayListener) ([]relay.Hop, error) {

@@ -16,10 +16,12 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
 const (
 	relayInitialPayloadMax = 32 * 1024
+	defaultUDPReplyTimeout = time.Second
 )
 
 type RelayMaterialProvider interface {
@@ -41,6 +43,7 @@ type Server struct {
 	udpSessions           map[string]*udpSession
 	udpReplyTimeout       time.Duration
 	udpSessionIdleTimeout time.Duration
+	upstreamScore         *upstream.ScoreStore
 
 	relayListenersByID map[int]model.RelayListener
 	relayProvider      RelayMaterialProvider
@@ -57,6 +60,7 @@ type udpSession struct {
 	upstream              udpUpstream
 	lastActive            time.Time
 	targetAddr            string
+	directUDPPath         bool
 	backoffKey            string
 	backendObservationKey string
 	pendingReplies        int
@@ -68,6 +72,7 @@ type udpSession struct {
 
 type l4Candidate struct {
 	address               string
+	directUDPPath         bool
 	backoffKey            string
 	backendObservationKey string
 }
@@ -144,8 +149,9 @@ func NewServerWithResources(
 		tcpConns:              make(map[net.Conn]struct{}),
 		udpConns:              nil,
 		udpSessions:           make(map[string]*udpSession),
-		udpReplyTimeout:       time.Second,
+		udpReplyTimeout:       defaultUDPReplyTimeout,
 		udpSessionIdleTimeout: 30 * time.Second,
+		upstreamScore:         upstream.NewScoreStore(time.Now),
 		tcpListeners:          nil,
 		relayListenersByID:    relayListenersByID,
 		relayProvider:         relayProvider,
@@ -229,7 +235,10 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 		}
 	}
 
-	upstream, candidate, connectDuration, err := s.dialTCPUpstream(rule, relay.DialOptions{InitialPayload: initialPayload})
+	upstream, candidate, connectDuration, err := s.dialTCPUpstream(rule, relay.DialOptions{
+		InitialPayload: initialPayload,
+		TrafficClass:   upstream.TrafficClassInteractive,
+	})
 	if err != nil {
 		return
 	}
@@ -455,7 +464,10 @@ func (s *Server) proxyUDPPacket(listener *net.UDPConn, rule model.L4Rule, payloa
 	if err != nil {
 		return
 	}
-	_ = session.upstream.SetWriteDeadline(s.now().Add(s.udpReplyTimeout))
+	_ = session.upstream.SetWriteDeadline(s.now().Add(s.udpReplyTimeoutForCandidate(l4Candidate{
+		address:       session.targetAddr,
+		directUDPPath: session.directUDPPath,
+	})))
 	if err := session.upstream.WritePacket(payload); err != nil {
 		s.observeCandidateFailure(l4Candidate{
 			address:               session.targetAddr,
@@ -570,6 +582,7 @@ func (s *Server) sessionForPeer(rule model.L4Rule, listener *net.UDPConn, peer *
 	s.udpMu.Lock()
 	session.upstream = upstream
 	session.targetAddr = candidate.address
+	session.directUDPPath = candidate.directUDPPath
 	session.backoffKey = candidate.backoffKey
 	session.backendObservationKey = candidate.backendObservationKey
 	close(session.ready)
@@ -609,7 +622,9 @@ func (s *Server) dialUDPUpstream(rule model.L4Rule) (udpUpstream, l4Candidate, e
 		if hopErr != nil {
 			return nil, l4Candidate{}, hopErr
 		}
-		upstream, err := relay.Dial(s.ctx, "udp", targetAddress, hops, s.relayProvider)
+		upstream, err := relay.Dial(s.ctx, "udp", targetAddress, hops, s.relayProvider, relay.DialOptions{
+			TrafficClass: upstream.TrafficClassBulk,
+		})
 		if err != nil {
 			s.observeCandidateFailure(candidate)
 			lastErr = err
@@ -654,6 +669,14 @@ func (s *Server) pipeUDPReplies(session *udpSession) {
 		}
 		replyDuration := s.udpReplyDuration(session.key)
 		s.markUDPSessionReply(session.key)
+		if _, ok := session.upstream.(*directUDPUpstream); ok && s.upstreamScore != nil {
+			s.upstreamScore.ObserveProbeSuccess(
+				upstream.PathKey{Family: upstream.PathFamilyDirectUDP, Address: session.targetAddr},
+				0,
+				replyDuration,
+				int64(len(payload)),
+			)
+		}
 		s.observeCandidateSuccess(l4Candidate{
 			address:               session.targetAddr,
 			backoffKey:            session.backoffKey,
@@ -702,7 +725,10 @@ func (s *Server) shouldFailUDPSession(key string) bool {
 	if session == nil || session.pendingReplies == 0 || session.awaitingSince.IsZero() {
 		return false
 	}
-	return s.now().Sub(session.awaitingSince) >= s.udpReplyTimeout
+	return s.now().Sub(session.awaitingSince) >= s.udpReplyTimeoutForCandidate(l4Candidate{
+		address:       session.targetAddr,
+		directUDPPath: session.directUDPPath,
+	})
 }
 
 func (s *Server) udpReplyDuration(key string) time.Duration {
@@ -713,6 +739,21 @@ func (s *Server) udpReplyDuration(key string) time.Duration {
 		return 0
 	}
 	return s.now().Sub(session.awaitingSince)
+}
+
+func (s *Server) udpReplyTimeoutForCandidate(candidate l4Candidate) time.Duration {
+	if s.upstreamScore == nil {
+		return s.udpReplyTimeout
+	}
+	if !candidate.directUDPPath {
+		return s.udpReplyTimeout
+	}
+	if s.udpReplyTimeout != defaultUDPReplyTimeout {
+		return s.udpReplyTimeout
+	}
+	key := upstream.PathKey{Family: upstream.PathFamilyDirectUDP, Address: candidate.address}
+	estimate := s.upstreamScore.FirstByteEstimate(key)
+	return upstream.EstimateTimeout(upstream.UDPReplyTimeoutPolicy(), estimate)
 }
 
 func (s *Server) shouldExpireUDPSession(key string) bool {
@@ -796,6 +837,7 @@ func l4Candidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule)
 			}
 			out = append(out, l4Candidate{
 				address:               dialAddress,
+				directUDPPath:         false,
 				backoffKey:            bk,
 				backendObservationKey: l4ObservationKey(scope, backendID, backendIndex, duplicateCounts[backendID]),
 			})
@@ -821,6 +863,7 @@ func l4Candidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule)
 			}
 			out = append(out, l4Candidate{
 				address:               candidate.Address,
+				directUDPPath:         strings.ToLower(rule.Protocol) == "udp" && len(rule.RelayChain) == 0,
 				backendObservationKey: l4ObservationKey(scope, backendID, backendIndex, duplicateCounts[backendID]),
 			})
 		}
