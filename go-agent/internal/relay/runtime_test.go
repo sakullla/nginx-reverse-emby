@@ -16,6 +16,7 @@ import (
 	"io"
 	"math/big"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -1688,7 +1689,45 @@ func pickFreeUDPPort(t *testing.T) int {
 func pickFreeDualStackPort(t *testing.T) int {
 	t.Helper()
 
-	for attempt := 0; attempt < 16; attempt++ {
+	tryPair := func(tcpFirst bool) (int, bool) {
+		if tcpFirst {
+			tcpLn, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				return 0, false
+			}
+			port := tcpLn.Addr().(*net.TCPAddr).Port
+			udpLn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: port})
+			if err != nil {
+				_ = tcpLn.Close()
+				return 0, false
+			}
+			_ = udpLn.Close()
+			_ = tcpLn.Close()
+			return port, true
+		}
+
+		udpLn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+		if err != nil {
+			return 0, false
+		}
+		port := udpLn.LocalAddr().(*net.UDPAddr).Port
+		tcpLn, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+		if err != nil {
+			_ = udpLn.Close()
+			return 0, false
+		}
+		_ = tcpLn.Close()
+		_ = udpLn.Close()
+		return port, true
+	}
+
+	for attempt := 0; attempt < 64; attempt++ {
+		if port, ok := tryPair(attempt%2 == 0); ok {
+			return port
+		}
+	}
+
+	for attempt := 0; attempt < 64; attempt++ {
 		tcpLn, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
 			t.Fatalf("failed to reserve dual-stack tcp port: %v", err)
