@@ -295,6 +295,9 @@ func relayTCPDialTrafficClass(initialPayload []byte) upstream.TrafficClass {
 	if len(initialPayload) == 0 {
 		return upstream.TrafficClassUnknown
 	}
+	if len(initialPayload) >= relayInitialPayloadMax {
+		return upstream.TrafficClassBulk
+	}
 	return upstream.ClassifyL4("tcp", int64(len(initialPayload)), 0)
 }
 

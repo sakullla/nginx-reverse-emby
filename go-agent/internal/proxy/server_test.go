@@ -479,7 +479,7 @@ func TestCloneProxyRequestRewritesFrontendPrefixToBackendPath(t *testing.T) {
 	}
 }
 
-func TestRouteEntryUsesBaseTransportForUnknownSizeGETRequests(t *testing.T) {
+func TestRouteEntryUsesInteractiveTransportForCommonGETRequests(t *testing.T) {
 	base := NewSharedTransport()
 	interactive, bulk := NewClassedDirectTransports(base)
 	entry := &routeEntry{
@@ -490,8 +490,8 @@ func TestRouteEntryUsesBaseTransportForUnknownSizeGETRequests(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "http://edge.example/library", nil)
-	if got := entry.transportForRequest(req); got != base {
-		t.Fatalf("transportForRequest() = %p, want base %p", got, base)
+	if got := entry.transportForRequest(req); got != interactive {
+		t.Fatalf("transportForRequest() = %p, want interactive %p", got, interactive)
 	}
 }
 
@@ -544,8 +544,8 @@ func TestNewServerWiresDirectClassedTransportsForDirectRoute(t *testing.T) {
 	if entry.directInteractiveTransport == entry.directBulkTransport {
 		t.Fatalf("direct interactive and bulk transports are the same pointer %p", entry.directInteractiveTransport)
 	}
-	if got := entry.transportForRequest(httptest.NewRequest(http.MethodGet, "http://edge.example/library", nil)); got != entry.transport {
-		t.Fatalf("unknown-size GET transport = %p, want base transport %p", got, entry.transport)
+	if got := entry.transportForRequest(httptest.NewRequest(http.MethodGet, "http://edge.example/library", nil)); got != entry.directInteractiveTransport {
+		t.Fatalf("common GET transport = %p, want interactive transport %p", got, entry.directInteractiveTransport)
 	}
 
 	rangeReq := httptest.NewRequest(http.MethodGet, "http://edge.example/Videos/1", nil)
@@ -658,8 +658,8 @@ func TestNewServerWiresRelayTransportWithoutDirectClassedTransports(t *testing.T
 	if got := entry.transportForRequest(rangeReq); got != entry.relayBulkTransport {
 		t.Fatalf("relay range request transport = %p, want relay bulk transport %p", got, entry.relayBulkTransport)
 	}
-	if got := entry.transportForRequest(httptest.NewRequest(http.MethodGet, "http://edge.example/library", nil)); got != entry.transport {
-		t.Fatalf("relay unknown-size GET transport = %p, want relay base transport %p", got, entry.transport)
+	if got := entry.transportForRequest(httptest.NewRequest(http.MethodGet, "http://edge.example/library", nil)); got != entry.relayInteractiveTransport {
+		t.Fatalf("relay common GET transport = %p, want relay interactive transport %p", got, entry.relayInteractiveTransport)
 	}
 }
 

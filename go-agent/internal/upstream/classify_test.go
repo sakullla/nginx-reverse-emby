@@ -15,11 +15,19 @@ func TestClassifyHTTPRequestRangeAsBulk(t *testing.T) {
 	}
 }
 
-func TestClassifyHTTPRequestUnknownSizeGETAsUnknown(t *testing.T) {
+func TestClassifyHTTPRequestCommonGETAsInteractive(t *testing.T) {
 	req := httptest.NewRequest("GET", "http://edge.example/Users/Public", nil)
 
-	if got := ClassifyHTTPRequest(req); got != TrafficClassUnknown {
-		t.Fatalf("ClassifyHTTPRequest() = %q, want %q", got, TrafficClassUnknown)
+	if got := ClassifyHTTPRequest(req); got != TrafficClassInteractive {
+		t.Fatalf("ClassifyHTTPRequest() = %q, want %q", got, TrafficClassInteractive)
+	}
+}
+
+func TestClassifyHTTPRequestStreamingGETAsBulk(t *testing.T) {
+	req := httptest.NewRequest("GET", "http://edge.example/Videos/1/stream", nil)
+
+	if got := ClassifyHTTPRequest(req); got != TrafficClassBulk {
+		t.Fatalf("ClassifyHTTPRequest() = %q, want %q", got, TrafficClassBulk)
 	}
 }
 

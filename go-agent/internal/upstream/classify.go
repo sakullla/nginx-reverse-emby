@@ -15,7 +15,11 @@ func ClassifyHTTPRequest(req *http.Request) TrafficClass {
 	method := strings.ToUpper(strings.TrimSpace(req.Method))
 	switch method {
 	case http.MethodGet:
-		return TrafficClassUnknown
+		path := strings.ToLower(req.URL.Path)
+		if strings.Contains(path, "/stream") || strings.Contains(path, "/download") {
+			return TrafficClassBulk
+		}
+		return TrafficClassInteractive
 	case http.MethodHead, http.MethodOptions:
 		return TrafficClassInteractive
 	}

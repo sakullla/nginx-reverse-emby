@@ -1317,6 +1317,12 @@ func TestRelayTCPDialTrafficClassUsesObservedBufferedPayload(t *testing.T) {
 	}
 }
 
+func TestRelayTCPDialTrafficClassUsesBulkAtPrefetchCap(t *testing.T) {
+	if got := relayTCPDialTrafficClass(make([]byte, relayInitialPayloadMax)); got != upstream.TrafficClassBulk {
+		t.Fatalf("relayTCPDialTrafficClass(prefetch cap) = %q, want %q", got, upstream.TrafficClassBulk)
+	}
+}
+
 type chunkedReader struct {
 	chunks [][]byte
 }
