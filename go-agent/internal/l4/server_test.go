@@ -661,13 +661,33 @@ func TestAdaptiveUDPReplyTimeoutUsesObservedPathEstimate(t *testing.T) {
 		t.Fatalf("FirstByteEstimate() = %s, want recorded direct UDP reply estimate", estimate)
 	}
 
-	got := srv.udpReplyTimeoutForCandidate(l4Candidate{address: upstreamConn.LocalAddr().String()})
+	got := srv.udpReplyTimeoutForCandidate(l4Candidate{
+		address:       upstreamConn.LocalAddr().String(),
+		directUDPPath: true,
+	})
 	want := upstream.EstimateTimeout(upstream.UDPReplyTimeoutPolicy(), estimate)
 	if got != want {
 		t.Fatalf("udpReplyTimeoutForCandidate() = %s, want %s", got, want)
 	}
 	if got <= srv.udpReplyTimeout {
 		t.Fatalf("udpReplyTimeoutForCandidate() = %s, want adaptive timeout above static default %s", got, srv.udpReplyTimeout)
+	}
+}
+
+func TestAdaptiveUDPReplyTimeoutRespectsExplicitOverride(t *testing.T) {
+	srv := &Server{
+		udpReplyTimeout: 250 * time.Millisecond,
+		upstreamScore:   upstream.NewScoreStore(func() time.Time { return time.Unix(1700000000, 0) }),
+	}
+	key := upstream.PathKey{Family: upstream.PathFamilyDirectUDP, Address: "127.0.0.1:9000"}
+	srv.upstreamScore.ObserveProbeSuccess(key, 0, 800*time.Millisecond, 2048)
+
+	got := srv.udpReplyTimeoutForCandidate(l4Candidate{
+		address:       "127.0.0.1:9000",
+		directUDPPath: true,
+	})
+	if got != 250*time.Millisecond {
+		t.Fatalf("udpReplyTimeoutForCandidate() = %s, want explicit override %s", got, 250*time.Millisecond)
 	}
 }
 

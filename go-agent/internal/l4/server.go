@@ -59,6 +59,7 @@ type udpSession struct {
 	upstream              udpUpstream
 	lastActive            time.Time
 	targetAddr            string
+	directUDPPath         bool
 	backoffKey            string
 	backendObservationKey string
 	pendingReplies        int
@@ -70,6 +71,7 @@ type udpSession struct {
 
 type l4Candidate struct {
 	address               string
+	directUDPPath         bool
 	backoffKey            string
 	backendObservationKey string
 }
@@ -458,7 +460,10 @@ func (s *Server) proxyUDPPacket(listener *net.UDPConn, rule model.L4Rule, payloa
 	if err != nil {
 		return
 	}
-	_ = session.upstream.SetWriteDeadline(s.now().Add(s.udpReplyTimeoutForCandidate(l4Candidate{address: session.targetAddr})))
+	_ = session.upstream.SetWriteDeadline(s.now().Add(s.udpReplyTimeoutForCandidate(l4Candidate{
+		address:       session.targetAddr,
+		directUDPPath: session.directUDPPath,
+	})))
 	if err := session.upstream.WritePacket(payload); err != nil {
 		s.observeCandidateFailure(l4Candidate{
 			address:               session.targetAddr,
@@ -573,6 +578,7 @@ func (s *Server) sessionForPeer(rule model.L4Rule, listener *net.UDPConn, peer *
 	s.udpMu.Lock()
 	session.upstream = upstream
 	session.targetAddr = candidate.address
+	session.directUDPPath = candidate.directUDPPath
 	session.backoffKey = candidate.backoffKey
 	session.backendObservationKey = candidate.backendObservationKey
 	close(session.ready)
@@ -713,7 +719,10 @@ func (s *Server) shouldFailUDPSession(key string) bool {
 	if session == nil || session.pendingReplies == 0 || session.awaitingSince.IsZero() {
 		return false
 	}
-	return s.now().Sub(session.awaitingSince) >= s.udpReplyTimeoutForCandidate(l4Candidate{address: session.targetAddr})
+	return s.now().Sub(session.awaitingSince) >= s.udpReplyTimeoutForCandidate(l4Candidate{
+		address:       session.targetAddr,
+		directUDPPath: session.directUDPPath,
+	})
 }
 
 func (s *Server) udpReplyDuration(key string) time.Duration {
@@ -728,6 +737,9 @@ func (s *Server) udpReplyDuration(key string) time.Duration {
 
 func (s *Server) udpReplyTimeoutForCandidate(candidate l4Candidate) time.Duration {
 	if s.upstreamScore == nil {
+		return s.udpReplyTimeout
+	}
+	if !candidate.directUDPPath {
 		return s.udpReplyTimeout
 	}
 	if s.udpReplyTimeout != time.Second {
@@ -819,6 +831,7 @@ func l4Candidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule)
 			}
 			out = append(out, l4Candidate{
 				address:               dialAddress,
+				directUDPPath:         false,
 				backoffKey:            bk,
 				backendObservationKey: l4ObservationKey(scope, backendID, backendIndex, duplicateCounts[backendID]),
 			})
@@ -844,6 +857,7 @@ func l4Candidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule)
 			}
 			out = append(out, l4Candidate{
 				address:               candidate.Address,
+				directUDPPath:         strings.ToLower(rule.Protocol) == "udp" && len(rule.RelayChain) == 0,
 				backendObservationKey: l4ObservationKey(scope, backendID, backendIndex, duplicateCounts[backendID]),
 			})
 		}
