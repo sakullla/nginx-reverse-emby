@@ -87,12 +87,12 @@ func dialQUICWithResult(ctx context.Context, network, target string, chain []Hop
 	firstHop := chain[0]
 	tlsConfig, err := clientQUICTLSConfig(ctx, provider, firstHop.Listener, firstHop.Address, firstHop.ServerName)
 	if err != nil {
-		observeRelayQUICFailureForHop(firstHop)
+		observeRelayQUICFailureIfTransportError(firstHop, ctx, err)
 		return nil, DialResult{}, err
 	}
 	sessionKey, err := quicSessionPoolKey(firstHop)
 	if err != nil {
-		observeRelayQUICFailureForHop(firstHop)
+		observeRelayQUICFailureIfTransportError(firstHop, ctx, err)
 		return nil, DialResult{}, err
 	}
 
@@ -100,7 +100,7 @@ func dialQUICWithResult(ctx context.Context, network, target string, chain []Hop
 		return quicDialAddr(dialCtx, firstHop.Address, tlsConfig, newRelayQUICConfig())
 	})
 	if err != nil {
-		observeRelayQUICFailureForHop(firstHop)
+		observeRelayQUICFailureIfTransportError(firstHop, ctx, err)
 		return nil, DialResult{}, err
 	}
 
@@ -116,7 +116,7 @@ func dialQUICWithResult(ctx context.Context, network, target string, chain []Hop
 		return writeRelayOpenFrame(conn, request)
 	}); err != nil {
 		conn.Close()
-		observeRelayQUICFailureForHop(firstHop)
+		observeRelayQUICFailureIfTransportError(firstHop, ctx, err)
 		return nil, DialResult{}, err
 	}
 
@@ -128,7 +128,7 @@ func dialQUICWithResult(ctx context.Context, network, target string, chain []Hop
 	})
 	if err != nil {
 		conn.Close()
-		observeRelayQUICFailureForHop(firstHop)
+		observeRelayQUICFailureIfTransportError(firstHop, ctx, err)
 		return nil, DialResult{}, err
 	}
 	if !response.OK {
@@ -270,7 +270,7 @@ func (c *quicStreamConn) Close() error {
 	if c.stream == nil {
 		return nil
 	}
-	return c.closeWithCancel(false)
+	return c.closeWithCancel(true)
 }
 
 func (c *quicStreamConn) LocalAddr() net.Addr {
@@ -312,6 +312,30 @@ func (c *quicStreamConn) closeWithCancel(cancel bool) error {
 		c.stream.CancelWrite(0)
 	}
 	return err
+}
+
+func observeRelayQUICFailureIfTransportError(firstHop Hop, ctx context.Context, err error) {
+	if err == nil || isCallerDrivenContextError(ctx, err) {
+		return
+	}
+	observeRelayQUICFailureForHop(firstHop)
+}
+
+func isCallerDrivenContextError(ctx context.Context, err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	if ctx == nil {
+		return false
+	}
+	ctxErr := ctx.Err()
+	if ctxErr == nil {
+		return false
+	}
+	return errors.Is(err, ctxErr)
 }
 
 func (h *quicListenerHandle) Close() error {
