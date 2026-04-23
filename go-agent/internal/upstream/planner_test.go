@@ -35,3 +35,20 @@ func TestPlannerDisablesRacingUnderResourcePressure(t *testing.T) {
 		t.Fatalf("AllowRace = true, want false")
 	}
 }
+
+func TestPlannerOrdersProbeOnlyRelayQUICAfterTLSTCPFallback(t *testing.T) {
+	planner := NewPlanner()
+	result := planner.Plan(PlanInput{
+		Paths: []PathSnapshot{
+			{Key: PathKey{Family: PathFamilyRelayQUIC, Address: "relay.example:443"}, Confidence: 0.80, ProbeOnly: true},
+			{Key: PathKey{Family: PathFamilyRelayTLSTCP, Address: "relay.example:443"}, Confidence: 0.30},
+		},
+	})
+
+	if len(result.Ordered) != 2 {
+		t.Fatalf("Ordered len = %d, want 2", len(result.Ordered))
+	}
+	if got := result.Ordered[0].Key.Family; got != PathFamilyRelayTLSTCP {
+		t.Fatalf("first family = %q, want %q", got, PathFamilyRelayTLSTCP)
+	}
+}

@@ -26,6 +26,9 @@ func NewPlanner() *Planner { return &Planner{} }
 func (p *Planner) Plan(input PlanInput) PlanResult {
 	ordered := append([]PathSnapshot(nil), input.Paths...)
 	sort.SliceStable(ordered, func(i, j int) bool {
+		if ordered[i].ProbeOnly != ordered[j].ProbeOnly {
+			return !ordered[i].ProbeOnly && ordered[j].ProbeOnly
+		}
 		return ordered[i].Confidence > ordered[j].Confidence
 	})
 

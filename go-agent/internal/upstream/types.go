@@ -13,9 +13,10 @@ const (
 type PathFamily string
 
 const (
-	PathFamilyDirectHTTP PathFamily = "direct_http"
-	PathFamilyDirectUDP  PathFamily = "direct_udp"
-	PathFamilyRelayQUIC  PathFamily = "relay_quic"
+	PathFamilyDirectHTTP  PathFamily = "direct_http"
+	PathFamilyDirectUDP   PathFamily = "direct_udp"
+	PathFamilyRelayTLSTCP PathFamily = "relay_tls_tcp"
+	PathFamilyRelayQUIC   PathFamily = "relay_quic"
 )
 
 type FailureKind string

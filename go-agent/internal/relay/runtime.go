@@ -24,33 +24,14 @@ type DialResult struct {
 	TransportMode   string
 }
 
-type relayTransportPlanner interface {
-	PreferTLSTCP(address string) bool
+type relayPathPlanner interface {
+	Plan(input upstream.PlanInput) upstream.PlanResult
 }
 
-var relayPlanner relayTransportPlanner
+var relayPlanner relayPathPlanner
 var relayRuntimeScore = upstream.NewScoreStore(time.Now)
 
-func newRelayPlanner(score *upstream.ScoreStore) relayTransportPlanner {
-	if score == nil {
-		return nil
-	}
-	return relayScorePlanner{score: score}
-}
-
-type relayScorePlanner struct {
-	score *upstream.ScoreStore
-}
-
-func (p relayScorePlanner) PreferTLSTCP(address string) bool {
-	if p.score == nil {
-		return false
-	}
-	state := p.score.State(upstream.PathKey{Family: upstream.PathFamilyRelayQUIC, Address: address})
-	return state.ProbeOnly
-}
-
-func setRelayPlannerForTest(planner relayTransportPlanner) func() {
+func setRelayPlannerForTest(planner relayPathPlanner) func() {
 	prev := relayPlanner
 	relayPlanner = planner
 	return func() {
@@ -365,12 +346,61 @@ func ResolveCandidates(ctx context.Context, target string, chain []Hop, provider
 func chooseRelayTransport(firstHop Hop) string {
 	planner := relayPlanner
 	if planner == nil {
-		planner = newRelayPlanner(relayRuntimeScore)
+		planner = upstream.NewPlanner()
 	}
-	if planner != nil && planner.PreferTLSTCP(firstHop.Address) && firstHop.Listener.AllowTransportFallback {
+	candidates := relayTransportCandidates(firstHop)
+	if len(candidates) == 0 {
+		return normalizeListenerTransportModeValue(firstHop.Listener.TransportMode)
+	}
+	result := planner.Plan(upstream.PlanInput{
+		Paths:            candidates,
+		Class:            upstream.TrafficClassUnknown,
+		ResourcePressure: upstream.ResourcePressureLow,
+	})
+	if len(result.Ordered) == 0 {
+		return normalizeListenerTransportModeValue(firstHop.Listener.TransportMode)
+	}
+	switch result.Ordered[0].Key.Family {
+	case upstream.PathFamilyRelayQUIC:
+		return ListenerTransportModeQUIC
+	case upstream.PathFamilyRelayTLSTCP:
 		return ListenerTransportModeTLSTCP
 	}
 	return normalizeListenerTransportModeValue(firstHop.Listener.TransportMode)
+}
+
+func relayTransportCandidates(firstHop Hop) []upstream.PathSnapshot {
+	baseMode := normalizeListenerTransportModeValue(firstHop.Listener.TransportMode)
+	if baseMode != ListenerTransportModeQUIC {
+		return []upstream.PathSnapshot{{
+			Key:        upstream.PathKey{Family: upstream.PathFamilyRelayTLSTCP, Address: firstHop.Address},
+			Confidence: 1.0,
+		}}
+	}
+
+	quicState := upstream.PathState{}
+	if relayRuntimeScore != nil {
+		quicState = relayRuntimeScore.State(upstream.PathKey{Family: upstream.PathFamilyRelayQUIC, Address: firstHop.Address})
+	}
+	candidates := []upstream.PathSnapshot{{
+		Key:        upstream.PathKey{Family: upstream.PathFamilyRelayQUIC, Address: firstHop.Address},
+		Confidence: relayPathConfidence(quicState),
+		ProbeOnly:  quicState.ProbeOnly,
+	}}
+	if firstHop.Listener.AllowTransportFallback {
+		candidates = append(candidates, upstream.PathSnapshot{
+			Key:        upstream.PathKey{Family: upstream.PathFamilyRelayTLSTCP, Address: firstHop.Address},
+			Confidence: 0.30,
+		})
+	}
+	return candidates
+}
+
+func relayPathConfidence(state upstream.PathState) float64 {
+	if state.ProbeOnly {
+		return 0.10
+	}
+	return 0.80
 }
 
 func observeRelayQUICFailure(address string) {

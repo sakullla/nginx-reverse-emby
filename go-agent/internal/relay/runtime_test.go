@@ -1174,8 +1174,10 @@ func TestDialWithResultUsesFallbackWhenPrimaryRelayPathIsProbeOnly(t *testing.T)
 	score.ObserveFailure(key, upstream.FailureTimeout)
 	score.ObserveFailure(key, upstream.FailureTimeout)
 
-	restorePlanner := setRelayPlannerForTest(newRelayPlanner(score))
+	restorePlanner := setRelayPlannerForTest(upstream.NewPlanner())
 	defer restorePlanner()
+	restoreScore := setRelayRuntimeScoreForTest(score)
+	defer restoreScore()
 
 	prevQUICDial := quicDialAddr
 	quicDialAddr = func(ctx context.Context, addr string, tlsConf *tls.Config, conf *quic.Config) (*quic.Conn, error) {
