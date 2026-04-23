@@ -258,7 +258,10 @@ func TestPassProxyHeadersUsesIncomingScheme(t *testing.T) {
 	server := NewServer(listener)
 	for _, entries := range server.routes {
 		for _, entry := range entries {
-			entry.transport = backend.Client().Transport.(*http.Transport).Clone()
+			transport := backend.Client().Transport.(*http.Transport).Clone()
+			entry.transport = transport
+			entry.directInteractiveTransport = transport
+			entry.directBulkTransport = transport
 		}
 	}
 
@@ -472,6 +475,37 @@ func TestCloneProxyRequestRewritesFrontendPrefixToBackendPath(t *testing.T) {
 	}
 	if out.URL.RawQuery != "client=1" {
 		t.Fatalf("expected query to be preserved, got %q", out.URL.RawQuery)
+	}
+}
+
+func TestRouteEntryUsesInteractiveTransportForNonRangeRequests(t *testing.T) {
+	base := NewSharedTransport()
+	interactive, bulk := NewClassedDirectTransports(base)
+	entry := &routeEntry{
+		rule:                       model.HTTPRule{FrontendURL: "https://edge.example"},
+		directInteractiveTransport: interactive,
+		directBulkTransport:        bulk,
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "http://edge.example/library", nil)
+	if got := entry.transportForRequest(req); got != interactive {
+		t.Fatalf("transportForRequest() = %p, want interactive %p", got, interactive)
+	}
+}
+
+func TestRouteEntryUsesBulkTransportForRangeRequests(t *testing.T) {
+	base := NewSharedTransport()
+	interactive, bulk := NewClassedDirectTransports(base)
+	entry := &routeEntry{
+		rule:                       model.HTTPRule{FrontendURL: "https://edge.example"},
+		directInteractiveTransport: interactive,
+		directBulkTransport:        bulk,
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "http://edge.example/Videos/1", nil)
+	req.Header.Set("Range", "bytes=0-1023")
+	if got := entry.transportForRequest(req); got != bulk {
+		t.Fatalf("transportForRequest() = %p, want bulk %p", got, bulk)
 	}
 }
 

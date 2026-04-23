@@ -58,3 +58,12 @@ func ApplyTransportOptions(transport *http.Transport, options TransportOptions) 
 		return dialer.DialContext(ctx, network, dialAddressFromContext(ctx, address))
 	}
 }
+
+func NewClassedDirectTransports(base *http.Transport) (*http.Transport, *http.Transport) {
+	interactive := cloneTransport(base)
+	bulk := cloneTransport(base)
+
+	ApplyTransportOptions(interactive, TransportOptions{MaxConnsPerHost: 16})
+	ApplyTransportOptions(bulk, TransportOptions{MaxConnsPerHost: 64})
+	return interactive, bulk
+}

@@ -19,6 +19,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
 type Server struct {
@@ -47,14 +48,16 @@ type Runtime struct {
 }
 
 type routeEntry struct {
-	rule           model.HTTPRule
-	backends       []httpBackend
-	backendCache   *backends.Cache
-	transport      *http.Transport
-	resilience     StreamResilienceOptions
-	modifyResp     func(*http.Response) error
-	selectionScope string
-	frontendPath   string
+	rule                       model.HTTPRule
+	backends                   []httpBackend
+	backendCache               *backends.Cache
+	transport                  *http.Transport
+	directInteractiveTransport *http.Transport
+	directBulkTransport        *http.Transport
+	resilience                 StreamResilienceOptions
+	modifyResp                 func(*http.Response) error
+	selectionScope             string
+	frontendPath               string
 }
 
 type httpBackend struct {
@@ -108,23 +111,29 @@ func newServerWithResilience(
 			continue
 		}
 		transport := sharedTransport
+		var directInteractiveTransport *http.Transport
+		var directBulkTransport *http.Transport
 		if len(rule.RelayChain) > 0 {
 			transport, err = newRelayTransport(rule, relayListenersByID, providers.Relay, sharedTransport)
 			if err != nil {
 				return nil, err
 			}
+		} else {
+			directInteractiveTransport, directBulkTransport = NewClassedDirectTransports(sharedTransport)
 		}
 
 		frontendBaseURL := FrontendOriginFromRule(rule)
 		s.routes[hostKey] = append(s.routes[hostKey], &routeEntry{
-			rule:           rule,
-			backends:       targets,
-			backendCache:   backendCache,
-			transport:      transport,
-			resilience:     resilience,
-			modifyResp:     makeModifyResponse(frontendBaseURL, rule.ProxyRedirect, targets[0].backendHost, normalizeURLPath(targets[0].target.Path)),
-			selectionScope: hostKey,
-			frontendPath:   FrontendPathFromRule(rule),
+			rule:                       rule,
+			backends:                   targets,
+			backendCache:               backendCache,
+			transport:                  transport,
+			directInteractiveTransport: directInteractiveTransport,
+			directBulkTransport:        directBulkTransport,
+			resilience:                 resilience,
+			modifyResp:                 makeModifyResponse(frontendBaseURL, rule.ProxyRedirect, targets[0].backendHost, normalizeURLPath(targets[0].target.Path)),
+			selectionScope:             hostKey,
+			frontendPath:               FrontendPathFromRule(rule),
 		})
 	}
 
@@ -315,7 +324,7 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 				break
 			}
 			start := time.Now()
-			resp, err := e.transport.RoundTrip(attemptReq)
+			resp, err := e.transportForRequest(attemptReq).RoundTrip(attemptReq)
 			if err != nil {
 				log.Printf("[proxy] roundtrip error for %s -> %s: %v", e.rule.FrontendURL, candidate.target, err)
 				if !isBackendRetryable(attemptReq, err) {
@@ -383,6 +392,19 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 		}
 	}
 	return fmt.Errorf("all backends failed for %s", e.rule.FrontendURL)
+}
+
+func (e *routeEntry) transportForRequest(req *http.Request) *http.Transport {
+	if len(e.rule.RelayChain) > 0 {
+		return e.transport
+	}
+	if upstream.ClassifyHTTPRequest(req) == upstream.TrafficClassBulk && e.directBulkTransport != nil {
+		return e.directBulkTransport
+	}
+	if e.directInteractiveTransport != nil {
+		return e.directInteractiveTransport
+	}
+	return e.transport
 }
 
 func (e *routeEntry) sameBackendRetryMaxAttempts(req *http.Request) int {
