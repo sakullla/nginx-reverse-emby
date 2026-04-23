@@ -148,6 +148,7 @@ func NewServerWithResources(
 		udpSessions:           make(map[string]*udpSession),
 		udpReplyTimeout:       time.Second,
 		udpSessionIdleTimeout: 30 * time.Second,
+		upstreamScore:         upstream.NewScoreStore(time.Now),
 		tcpListeners:          nil,
 		relayListenersByID:    relayListenersByID,
 		relayProvider:         relayProvider,
@@ -656,6 +657,14 @@ func (s *Server) pipeUDPReplies(session *udpSession) {
 		}
 		replyDuration := s.udpReplyDuration(session.key)
 		s.markUDPSessionReply(session.key)
+		if _, ok := session.upstream.(*directUDPUpstream); ok && s.upstreamScore != nil {
+			s.upstreamScore.ObserveProbeSuccess(
+				upstream.PathKey{Family: upstream.PathFamilyDirectUDP, Address: session.targetAddr},
+				0,
+				replyDuration,
+				int64(len(payload)),
+			)
+		}
 		s.observeCandidateSuccess(l4Candidate{
 			address:               session.targetAddr,
 			backoffKey:            session.backoffKey,
@@ -719,6 +728,9 @@ func (s *Server) udpReplyDuration(key string) time.Duration {
 
 func (s *Server) udpReplyTimeoutForCandidate(candidate l4Candidate) time.Duration {
 	if s.upstreamScore == nil {
+		return s.udpReplyTimeout
+	}
+	if s.udpReplyTimeout != time.Second {
 		return s.udpReplyTimeout
 	}
 	key := upstream.PathKey{Family: upstream.PathFamilyDirectUDP, Address: candidate.address}
