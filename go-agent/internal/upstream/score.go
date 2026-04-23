@@ -50,6 +50,10 @@ func (s *ScoreStore) ObserveFailure(key PathKey, kind FailureKind) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if kind != FailureTimeout {
+		return
+	}
+
 	st := s.state[key]
 	st.ConsecutiveHighSeverity++
 	if st.ConsecutiveHighSeverity >= 2 {
