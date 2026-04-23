@@ -691,6 +691,63 @@ func TestAdaptiveUDPReplyTimeoutRespectsExplicitOverride(t *testing.T) {
 	}
 }
 
+func TestAdaptiveUDPReplyTimeoutUsesObservedPathEstimateInTimeoutPath(t *testing.T) {
+	base := time.Unix(1700000000, 0)
+	now := base
+	key := upstream.PathKey{Family: upstream.PathFamilyDirectUDP, Address: "127.0.0.1:9000"}
+	srv := &Server{
+		now:             func() time.Time { return now },
+		udpReplyTimeout: time.Second,
+		upstreamScore:   upstream.NewScoreStore(func() time.Time { return now }),
+		udpSessions: map[string]*udpSession{
+			"peer": {
+				key:            "peer",
+				targetAddr:     "127.0.0.1:9000",
+				directUDPPath:  true,
+				pendingReplies: 1,
+				awaitingSince:  base,
+			},
+		},
+	}
+	srv.upstreamScore.ObserveProbeSuccess(key, 0, 800*time.Millisecond, 2048)
+
+	now = base.Add(1500 * time.Millisecond)
+	if srv.shouldFailUDPSession("peer") {
+		t.Fatal("expected direct UDP session to stay alive while adaptive timeout window remains open")
+	}
+
+	now = base.Add(5500 * time.Millisecond)
+	if !srv.shouldFailUDPSession("peer") {
+		t.Fatal("expected direct UDP session to time out once adaptive timeout window is exceeded")
+	}
+}
+
+func TestAdaptiveUDPReplyTimeoutKeepsRelaySessionOnStaticTimeoutPath(t *testing.T) {
+	base := time.Unix(1700000000, 0)
+	now := base
+	key := upstream.PathKey{Family: upstream.PathFamilyDirectUDP, Address: "relay.example:443"}
+	srv := &Server{
+		now:             func() time.Time { return now },
+		udpReplyTimeout: time.Second,
+		upstreamScore:   upstream.NewScoreStore(func() time.Time { return now }),
+		udpSessions: map[string]*udpSession{
+			"peer": {
+				key:            "peer",
+				targetAddr:     "relay.example:443",
+				directUDPPath:  false,
+				pendingReplies: 1,
+				awaitingSince:  base,
+			},
+		},
+	}
+	srv.upstreamScore.ObserveProbeSuccess(key, 0, 800*time.Millisecond, 2048)
+
+	now = base.Add(1500 * time.Millisecond)
+	if !srv.shouldFailUDPSession("peer") {
+		t.Fatal("expected relay-backed UDP session to keep static timeout path")
+	}
+}
+
 func TestL4CandidatesAdaptiveExploresColdBackendWhenBudgetTriggers(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
 	cache := backends.NewCache(backends.Config{

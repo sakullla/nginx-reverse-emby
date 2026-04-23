@@ -21,6 +21,7 @@ import (
 
 const (
 	relayInitialPayloadMax = 32 * 1024
+	defaultUDPReplyTimeout = time.Second
 )
 
 type RelayMaterialProvider interface {
@@ -148,7 +149,7 @@ func NewServerWithResources(
 		tcpConns:              make(map[net.Conn]struct{}),
 		udpConns:              nil,
 		udpSessions:           make(map[string]*udpSession),
-		udpReplyTimeout:       time.Second,
+		udpReplyTimeout:       defaultUDPReplyTimeout,
 		udpSessionIdleTimeout: 30 * time.Second,
 		upstreamScore:         upstream.NewScoreStore(time.Now),
 		tcpListeners:          nil,
@@ -742,7 +743,7 @@ func (s *Server) udpReplyTimeoutForCandidate(candidate l4Candidate) time.Duratio
 	if !candidate.directUDPPath {
 		return s.udpReplyTimeout
 	}
-	if s.udpReplyTimeout != time.Second {
+	if s.udpReplyTimeout != defaultUDPReplyTimeout {
 		return s.udpReplyTimeout
 	}
 	key := upstream.PathKey{Family: upstream.PathFamilyDirectUDP, Address: candidate.address}
