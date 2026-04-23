@@ -657,6 +657,12 @@ func (s *Server) pipeUDPReplies(session *udpSession) {
 		if err != nil {
 			if ne, ok := err.(net.Error); ok && ne.Timeout() {
 				if s.shouldFailUDPSession(session.key) {
+					if _, ok := session.upstream.(*directUDPUpstream); ok && s.upstreamScore != nil {
+						s.upstreamScore.ObserveFailure(
+							upstream.PathKey{Family: upstream.PathFamilyDirectUDP, Address: session.targetAddr},
+							upstream.FailureTimeout,
+						)
+					}
 					s.observeCandidateFailure(l4Candidate{
 						address:               session.targetAddr,
 						backoffKey:            session.backoffKey,
@@ -759,6 +765,9 @@ func (s *Server) udpReplyTimeoutForCandidate(candidate l4Candidate) time.Duratio
 		return s.udpReplyTimeout
 	}
 	key := upstream.PathKey{Family: upstream.PathFamilyDirectUDP, Address: candidate.address}
+	if s.upstreamScore.State(key).ConsecutiveHighSeverity > 0 {
+		return s.udpReplyTimeout
+	}
 	estimate := s.upstreamScore.FirstByteEstimate(key)
 	return upstream.EstimateTimeout(upstream.UDPReplyTimeoutPolicy(), estimate)
 }

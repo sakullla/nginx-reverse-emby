@@ -591,8 +591,9 @@ func TestTLSTCPSessionPoolAvoidsCongestedTunnelForInteractiveTraffic(t *testing.
 	}
 }
 
-func TestTLSTCPSessionPoolRejectsInteractiveWhenCappedTunnelsAreCongested(t *testing.T) {
+func TestTLSTCPSessionPoolReusesLeastLoadedInteractiveWhenCappedTunnelsAreCongested(t *testing.T) {
 	pool := newTLSTCPSessionPool()
+	var leastLoaded *tlsTCPTunnel
 	for i := 0; i < tlsTCPMuxSessionsPerKey; i++ {
 		tunnel := &tlsTCPTunnel{
 			key:        "relay-key",
@@ -604,25 +605,23 @@ func TestTLSTCPSessionPoolRejectsInteractiveWhenCappedTunnelsAreCongested(t *tes
 		tunnel.queuedWrites.Store(tlsTCPInteractiveAdmissionQueuedWrites + int64(i))
 		tunnel.bufferedBytes.Store(tlsTCPInteractiveAdmissionBufferedBytes + int64(i))
 		pool.sessions["relay-key"] = append(pool.sessions["relay-key"], tunnel)
+		if i == 0 {
+			leastLoaded = tunnel
+		}
 	}
 
 	selected, release, err := pool.getOrDial(context.Background(), "relay-key", upstream.TrafficClassInteractive, func(context.Context) (*tlsTCPTunnel, error) {
-		return &tlsTCPTunnel{
-			key:        "relay-key",
-			rawConn:    noopDeadlineConn{},
-			closeOuter: func() error { return nil },
-			streams:    make(map[uint32]*tlsTCPLogicalStream),
-			closed:     make(chan struct{}),
-		}, nil
+		t.Fatal("unexpected dial beyond session cap")
+		return nil, nil
 	})
-	if !errors.Is(err, errTLSTCPInteractiveAdmissionRejected) {
-		t.Fatalf("getOrDial() error = %v, want %v", err, errTLSTCPInteractiveAdmissionRejected)
+	if err != nil {
+		t.Fatalf("getOrDial() error = %v", err)
 	}
-	if selected != nil {
-		t.Fatalf("selected tunnel = %p, want nil", selected)
+	if selected != leastLoaded {
+		t.Fatalf("selected tunnel = %p, want least-loaded tunnel %p", selected, leastLoaded)
 	}
 	if release != nil {
-		t.Fatal("release = non-nil, want nil on rejected interactive admission")
+		release()
 	}
 }
 

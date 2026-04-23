@@ -31,6 +31,15 @@ func TestClassifyHTTPRequestSmallKnownBodyAsInteractive(t *testing.T) {
 	}
 }
 
+func TestClassifyHTTPRequestChunkedControlRequestAsUnknown(t *testing.T) {
+	req := httptest.NewRequest("POST", "http://edge.example/Users/Authenticate", strings.NewReader("token"))
+	req.ContentLength = -1
+
+	if got := ClassifyHTTPRequest(req); got != TrafficClassUnknown {
+		t.Fatalf("ClassifyHTTPRequest() = %q, want %q", got, TrafficClassUnknown)
+	}
+}
+
 func TestClassifyHTTPRequestHeadAsInteractive(t *testing.T) {
 	req := httptest.NewRequest("HEAD", "http://edge.example/System/Info", nil)
 

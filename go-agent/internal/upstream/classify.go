@@ -19,6 +19,9 @@ func ClassifyHTTPRequest(req *http.Request) TrafficClass {
 	case http.MethodHead, http.MethodOptions:
 		return TrafficClassInteractive
 	}
+	if req.ContentLength < 0 {
+		return TrafficClassUnknown
+	}
 	if req.ContentLength >= 0 && req.ContentLength <= 64*1024 {
 		return TrafficClassInteractive
 	}

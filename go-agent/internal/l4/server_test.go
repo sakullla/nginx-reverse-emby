@@ -722,6 +722,36 @@ func TestAdaptiveUDPReplyTimeoutUsesObservedPathEstimateInTimeoutPath(t *testing
 	}
 }
 
+func TestAdaptiveUDPReplyTimeoutFallsBackAfterDirectTimeoutFailures(t *testing.T) {
+	now := time.Unix(1700000000, 0)
+	srv := &Server{
+		now:             func() time.Time { return now },
+		udpReplyTimeout: time.Second,
+		upstreamScore:   upstream.NewScoreStore(func() time.Time { return now }),
+	}
+	key := upstream.PathKey{Family: upstream.PathFamilyDirectUDP, Address: "127.0.0.1:9000"}
+	srv.upstreamScore.ObserveProbeSuccess(key, 0, 800*time.Millisecond, 2048)
+
+	got := srv.udpReplyTimeoutForCandidate(l4Candidate{
+		address:       "127.0.0.1:9000",
+		directUDPPath: true,
+	})
+	if got <= time.Second {
+		t.Fatalf("udpReplyTimeoutForCandidate() = %s, want adaptive timeout above default before failures", got)
+	}
+
+	srv.upstreamScore.ObserveFailure(key, upstream.FailureTimeout)
+	srv.upstreamScore.ObserveFailure(key, upstream.FailureTimeout)
+
+	got = srv.udpReplyTimeoutForCandidate(l4Candidate{
+		address:       "127.0.0.1:9000",
+		directUDPPath: true,
+	})
+	if got != time.Second {
+		t.Fatalf("udpReplyTimeoutForCandidate() after failures = %s, want default %s", got, time.Second)
+	}
+}
+
 func TestAdaptiveUDPReplyTimeoutKeepsRelaySessionOnStaticTimeoutPath(t *testing.T) {
 	base := time.Unix(1700000000, 0)
 	now := base
