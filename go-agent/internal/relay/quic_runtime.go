@@ -76,10 +76,12 @@ func dialQUICWithResult(ctx context.Context, network, target string, chain []Hop
 	firstHop := chain[0]
 	tlsConfig, err := clientQUICTLSConfig(ctx, provider, firstHop.Listener, firstHop.Address, firstHop.ServerName)
 	if err != nil {
+		observeRelayQUICFailure(firstHop.Address)
 		return nil, DialResult{}, err
 	}
 	sessionKey, err := quicSessionPoolKey(firstHop)
 	if err != nil {
+		observeRelayQUICFailure(firstHop.Address)
 		return nil, DialResult{}, err
 	}
 
@@ -87,6 +89,7 @@ func dialQUICWithResult(ctx context.Context, network, target string, chain []Hop
 		return quicDialAddr(dialCtx, firstHop.Address, tlsConfig, newRelayQUICConfig())
 	})
 	if err != nil {
+		observeRelayQUICFailure(firstHop.Address)
 		return nil, DialResult{}, err
 	}
 
@@ -101,6 +104,7 @@ func dialQUICWithResult(ctx context.Context, network, target string, chain []Hop
 		return writeRelayOpenFrame(conn, request)
 	}); err != nil {
 		conn.Close()
+		observeRelayQUICFailure(firstHop.Address)
 		return nil, DialResult{}, err
 	}
 
@@ -112,15 +116,18 @@ func dialQUICWithResult(ctx context.Context, network, target string, chain []Hop
 	})
 	if err != nil {
 		conn.Close()
+		observeRelayQUICFailure(firstHop.Address)
 		return nil, DialResult{}, err
 	}
 	if !response.OK {
 		conn.Close()
+		observeRelayQUICFailure(firstHop.Address)
 		if response.Error == "" {
 			return nil, DialResult{}, fmt.Errorf("relay connection failed")
 		}
 		return nil, DialResult{}, fmt.Errorf("relay connection failed: %s", response.Error)
 	}
+	observeRelayQUICSuccess(firstHop.Address)
 
 	return conn, DialResult{
 		SelectedAddress: response.SelectedAddress,

@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/quic-go/quic-go"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
@@ -28,6 +29,7 @@ type relayTransportPlanner interface {
 }
 
 var relayPlanner relayTransportPlanner
+var relayRuntimeScore = upstream.NewScoreStore(time.Now)
 
 func newRelayPlanner(score *upstream.ScoreStore) relayTransportPlanner {
 	if score == nil {
@@ -361,10 +363,44 @@ func ResolveCandidates(ctx context.Context, target string, chain []Hop, provider
 }
 
 func chooseRelayTransport(firstHop Hop) string {
-	if relayPlanner != nil && relayPlanner.PreferTLSTCP(firstHop.Address) && firstHop.Listener.AllowTransportFallback {
+	planner := relayPlanner
+	if planner == nil {
+		planner = newRelayPlanner(relayRuntimeScore)
+	}
+	if planner != nil && planner.PreferTLSTCP(firstHop.Address) && firstHop.Listener.AllowTransportFallback {
 		return ListenerTransportModeTLSTCP
 	}
 	return normalizeListenerTransportModeValue(firstHop.Listener.TransportMode)
+}
+
+func observeRelayQUICFailure(address string) {
+	if relayRuntimeScore == nil || strings.TrimSpace(address) == "" {
+		return
+	}
+	relayRuntimeScore.ObserveFailure(
+		upstream.PathKey{Family: upstream.PathFamilyRelayQUIC, Address: address},
+		upstream.FailureTimeout,
+	)
+}
+
+func observeRelayQUICSuccess(address string) {
+	if relayRuntimeScore == nil || strings.TrimSpace(address) == "" {
+		return
+	}
+	relayRuntimeScore.ObserveProbeSuccess(
+		upstream.PathKey{Family: upstream.PathFamilyRelayQUIC, Address: address},
+		0,
+		0,
+		0,
+	)
+}
+
+func setRelayRuntimeScoreForTest(score *upstream.ScoreStore) func() {
+	prev := relayRuntimeScore
+	relayRuntimeScore = score
+	return func() {
+		relayRuntimeScore = prev
+	}
 }
 
 // dialTLSTCP is the legacy one-stream-per-TLS-connection path. Runtime relay
