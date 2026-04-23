@@ -24,6 +24,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
 func TestServerCloseStopsTCPHandlers(t *testing.T) {
@@ -591,6 +592,18 @@ func TestObserveCandidateSuccessDoesNotLearnThroughput(t *testing.T) {
 	}
 	if backend.HasBandwidth {
 		t.Fatalf("l4 runtime must not learn throughput for backend summaries: %+v", backend)
+	}
+}
+
+func TestAdaptiveUDPReplyTimeoutUsesObservedPathEstimate(t *testing.T) {
+	srv := &Server{}
+	key := upstream.PathKey{Family: upstream.PathFamilyDirectUDP, Address: "127.0.0.1:9000"}
+	srv.upstreamScore = upstream.NewScoreStore(func() time.Time { return time.Unix(1700000000, 0) })
+	srv.upstreamScore.ObserveProbeSuccess(key, 0, 800*time.Millisecond, 2048)
+
+	got := srv.udpReplyTimeoutForCandidate(l4Candidate{address: "127.0.0.1:9000"})
+	if got < 500*time.Millisecond || got > 5*time.Second {
+		t.Fatalf("udpReplyTimeoutForCandidate() = %s, want bounded adaptive timeout", got)
 	}
 }
 

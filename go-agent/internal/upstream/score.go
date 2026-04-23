@@ -45,6 +45,7 @@ func (s *ScoreStore) ObserveProbeSuccess(key PathKey, handshake time.Duration, f
 	defer s.mu.Unlock()
 
 	st := s.state[key]
+	st.FirstByteEstimate = firstByte
 	if st.ProbeOnly {
 		st.ProbeSuccesses++
 		if st.ProbeSuccesses >= 3 {
@@ -60,4 +61,11 @@ func (s *ScoreStore) State(key PathKey) PathState {
 	defer s.mu.Unlock()
 
 	return s.state[key]
+}
+
+func (s *ScoreStore) FirstByteEstimate(key PathKey) time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return s.state[key].FirstByteEstimate
 }

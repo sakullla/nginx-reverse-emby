@@ -1,5 +1,7 @@
 package upstream
 
+import "time"
+
 type TrafficClass string
 
 const (
@@ -12,6 +14,7 @@ type PathFamily string
 
 const (
 	PathFamilyDirectHTTP PathFamily = "direct_http"
+	PathFamilyDirectUDP  PathFamily = "direct_udp"
 	PathFamilyRelayQUIC  PathFamily = "relay_quic"
 )
 
@@ -30,4 +33,5 @@ type PathState struct {
 	ProbeOnly               bool
 	ProbeSuccesses          int
 	ConsecutiveHighSeverity int
+	FirstByteEstimate       time.Duration
 }

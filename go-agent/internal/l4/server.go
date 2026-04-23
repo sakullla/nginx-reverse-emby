@@ -16,6 +16,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
 const (
@@ -41,6 +42,7 @@ type Server struct {
 	udpSessions           map[string]*udpSession
 	udpReplyTimeout       time.Duration
 	udpSessionIdleTimeout time.Duration
+	upstreamScore         *upstream.ScoreStore
 
 	relayListenersByID map[int]model.RelayListener
 	relayProvider      RelayMaterialProvider
@@ -455,7 +457,7 @@ func (s *Server) proxyUDPPacket(listener *net.UDPConn, rule model.L4Rule, payloa
 	if err != nil {
 		return
 	}
-	_ = session.upstream.SetWriteDeadline(s.now().Add(s.udpReplyTimeout))
+	_ = session.upstream.SetWriteDeadline(s.now().Add(s.udpReplyTimeoutForCandidate(l4Candidate{address: session.targetAddr})))
 	if err := session.upstream.WritePacket(payload); err != nil {
 		s.observeCandidateFailure(l4Candidate{
 			address:               session.targetAddr,
@@ -702,7 +704,7 @@ func (s *Server) shouldFailUDPSession(key string) bool {
 	if session == nil || session.pendingReplies == 0 || session.awaitingSince.IsZero() {
 		return false
 	}
-	return s.now().Sub(session.awaitingSince) >= s.udpReplyTimeout
+	return s.now().Sub(session.awaitingSince) >= s.udpReplyTimeoutForCandidate(l4Candidate{address: session.targetAddr})
 }
 
 func (s *Server) udpReplyDuration(key string) time.Duration {
@@ -713,6 +715,15 @@ func (s *Server) udpReplyDuration(key string) time.Duration {
 		return 0
 	}
 	return s.now().Sub(session.awaitingSince)
+}
+
+func (s *Server) udpReplyTimeoutForCandidate(candidate l4Candidate) time.Duration {
+	if s.upstreamScore == nil {
+		return s.udpReplyTimeout
+	}
+	key := upstream.PathKey{Family: upstream.PathFamilyDirectUDP, Address: candidate.address}
+	estimate := s.upstreamScore.FirstByteEstimate(key)
+	return upstream.EstimateTimeout(upstream.UDPReplyTimeoutPolicy(), estimate)
 }
 
 func (s *Server) shouldExpireUDPSession(key string) bool {
