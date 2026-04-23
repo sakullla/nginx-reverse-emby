@@ -249,3 +249,39 @@ func TestDialQUICDoesNotScoreCallerCancellationAsTransportFailure(t *testing.T) 
 		t.Fatal("ProbeOnly = true after caller-side cancellations, want false")
 	}
 }
+
+func TestDialQUICScoresInternalOpenStreamTimeoutAsTransportFailure(t *testing.T) {
+	now := time.Unix(1700000000, 0)
+	score := upstream.NewScoreStore(func() time.Time { return now })
+	restoreScore := setRelayRuntimeScoreForTest(score)
+	defer restoreScore()
+
+	provider := newFakeTLSMaterialProvider()
+	listener, hop := newRelayEndpoint(t, provider, 1, "relay-quic-timeout", "pin_only", true, false)
+	listener.TransportMode = ListenerTransportModeQUIC
+	listener.AllowTransportFallback = false
+	hop.Listener = listener
+
+	prevDial := quicDialAddr
+	quicDialAddr = func(ctx context.Context, addr string, tlsConf *tls.Config, conf *quic.Config) (*quic.Conn, error) {
+		return nil, context.DeadlineExceeded
+	}
+	defer func() {
+		quicDialAddr = prevDial
+	}()
+
+	for i := 0; i < 2; i++ {
+		_, _, err := DialWithResult(context.Background(), "tcp", "127.0.0.1:80", []Hop{hop}, provider)
+		if !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("DialWithResult(%d) error = %v, want deadline exceeded", i, err)
+		}
+	}
+
+	state := score.State(relayQUICPathKey(hop))
+	if state.ConsecutiveHighSeverity != 2 {
+		t.Fatalf("ConsecutiveHighSeverity = %d, want 2 after internal QUIC timeouts", state.ConsecutiveHighSeverity)
+	}
+	if !state.ProbeOnly {
+		t.Fatal("ProbeOnly = false after repeated internal QUIC timeouts, want true")
+	}
+}

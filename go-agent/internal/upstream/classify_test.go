@@ -2,6 +2,7 @@ package upstream
 
 import (
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -14,8 +15,24 @@ func TestClassifyHTTPRequestRangeAsBulk(t *testing.T) {
 	}
 }
 
-func TestClassifyHTTPRequestWithoutRangeAsInteractive(t *testing.T) {
+func TestClassifyHTTPRequestUnknownSizeGETAsBulk(t *testing.T) {
 	req := httptest.NewRequest("GET", "http://edge.example/Users/Public", nil)
+
+	if got := ClassifyHTTPRequest(req); got != TrafficClassBulk {
+		t.Fatalf("ClassifyHTTPRequest() = %q, want %q", got, TrafficClassBulk)
+	}
+}
+
+func TestClassifyHTTPRequestSmallKnownBodyAsInteractive(t *testing.T) {
+	req := httptest.NewRequest("POST", "http://edge.example/Users/Authenticate", strings.NewReader("token"))
+
+	if got := ClassifyHTTPRequest(req); got != TrafficClassInteractive {
+		t.Fatalf("ClassifyHTTPRequest() = %q, want %q", got, TrafficClassInteractive)
+	}
+}
+
+func TestClassifyHTTPRequestHeadAsInteractive(t *testing.T) {
+	req := httptest.NewRequest("HEAD", "http://edge.example/System/Info", nil)
 
 	if got := ClassifyHTTPRequest(req); got != TrafficClassInteractive {
 		t.Fatalf("ClassifyHTTPRequest() = %q, want %q", got, TrafficClassInteractive)

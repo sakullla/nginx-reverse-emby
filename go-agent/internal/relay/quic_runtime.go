@@ -325,9 +325,6 @@ func isCallerDrivenContextError(ctx context.Context, err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return true
-	}
 	if ctx == nil {
 		return false
 	}
@@ -335,7 +332,11 @@ func isCallerDrivenContextError(ctx context.Context, err error) bool {
 	if ctxErr == nil {
 		return false
 	}
-	return errors.Is(err, ctxErr)
+	if errors.Is(err, ctxErr) {
+		return true
+	}
+	return (errors.Is(ctxErr, context.Canceled) && errors.Is(err, context.Canceled)) ||
+		(errors.Is(ctxErr, context.DeadlineExceeded) && errors.Is(err, context.DeadlineExceeded))
 }
 
 func (h *quicListenerHandle) Close() error {

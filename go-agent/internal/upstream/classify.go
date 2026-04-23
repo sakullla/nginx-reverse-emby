@@ -12,7 +12,16 @@ func ClassifyHTTPRequest(req *http.Request) TrafficClass {
 	if strings.TrimSpace(req.Header.Get("Range")) != "" {
 		return TrafficClassBulk
 	}
-	return TrafficClassInteractive
+	switch strings.ToUpper(strings.TrimSpace(req.Method)) {
+	case http.MethodHead, http.MethodOptions:
+		return TrafficClassInteractive
+	case http.MethodGet:
+		return TrafficClassBulk
+	}
+	if req.ContentLength >= 0 && req.ContentLength <= 64*1024 {
+		return TrafficClassInteractive
+	}
+	return TrafficClassBulk
 }
 
 func ClassifyL4(protocol string, bytesTransferred int64, durationSeconds int64) TrafficClass {

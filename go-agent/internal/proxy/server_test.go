@@ -479,7 +479,7 @@ func TestCloneProxyRequestRewritesFrontendPrefixToBackendPath(t *testing.T) {
 	}
 }
 
-func TestRouteEntryUsesInteractiveTransportForNonRangeRequests(t *testing.T) {
+func TestRouteEntryUsesBulkTransportForUnknownSizeGETRequests(t *testing.T) {
 	base := NewSharedTransport()
 	interactive, bulk := NewClassedDirectTransports(base)
 	entry := &routeEntry{
@@ -489,8 +489,8 @@ func TestRouteEntryUsesInteractiveTransportForNonRangeRequests(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "http://edge.example/library", nil)
-	if got := entry.transportForRequest(req); got != interactive {
-		t.Fatalf("transportForRequest() = %p, want interactive %p", got, interactive)
+	if got := entry.transportForRequest(req); got != bulk {
+		t.Fatalf("transportForRequest() = %p, want bulk %p", got, bulk)
 	}
 }
 
@@ -543,8 +543,8 @@ func TestNewServerWiresDirectClassedTransportsForDirectRoute(t *testing.T) {
 	if entry.directInteractiveTransport == entry.directBulkTransport {
 		t.Fatalf("direct interactive and bulk transports are the same pointer %p", entry.directInteractiveTransport)
 	}
-	if got := entry.transportForRequest(httptest.NewRequest(http.MethodGet, "http://edge.example/library", nil)); got != entry.directInteractiveTransport {
-		t.Fatalf("non-range request transport = %p, want interactive %p", got, entry.directInteractiveTransport)
+	if got := entry.transportForRequest(httptest.NewRequest(http.MethodGet, "http://edge.example/library", nil)); got != entry.directBulkTransport {
+		t.Fatalf("unknown-size GET transport = %p, want bulk %p", got, entry.directBulkTransport)
 	}
 
 	rangeReq := httptest.NewRequest(http.MethodGet, "http://edge.example/Videos/1", nil)
@@ -657,8 +657,8 @@ func TestNewServerWiresRelayTransportWithoutDirectClassedTransports(t *testing.T
 	if got := entry.transportForRequest(rangeReq); got != entry.relayBulkTransport {
 		t.Fatalf("relay range request transport = %p, want relay bulk transport %p", got, entry.relayBulkTransport)
 	}
-	if got := entry.transportForRequest(httptest.NewRequest(http.MethodGet, "http://edge.example/library", nil)); got != entry.relayInteractiveTransport {
-		t.Fatalf("relay non-range request transport = %p, want relay interactive transport %p", got, entry.relayInteractiveTransport)
+	if got := entry.transportForRequest(httptest.NewRequest(http.MethodGet, "http://edge.example/library", nil)); got != entry.relayBulkTransport {
+		t.Fatalf("relay unknown-size GET transport = %p, want relay bulk transport %p", got, entry.relayBulkTransport)
 	}
 }
 
@@ -2266,7 +2266,7 @@ func TestStartServesHTTPRulesThroughRelayChain(t *testing.T) {
 	}
 }
 
-func TestStartRelayHTTPRequestsPropagateTrafficClassMetadata(t *testing.T) {
+func TestStartRelayHTTPRequestsPropagateBulkTrafficClassMetadata(t *testing.T) {
 	frontendPort := pickFreePort(t)
 	backendPort := pickFreePort(t)
 	backendAddress := fmt.Sprintf("127.0.0.1:%d", backendPort)
@@ -2343,24 +2343,82 @@ func TestStartRelayHTTPRequestsPropagateTrafficClassMetadata(t *testing.T) {
 		}
 	}
 
-	seenInteractive := false
 	seenBulk := false
 	for _, relayReq := range requests {
 		if relayReq.Target != backendAddress {
 			t.Fatalf("unexpected relay target %q", relayReq.Target)
 		}
 		switch upstream.TrafficClass(relayReq.Metadata["traffic_class"].(string)) {
-		case upstream.TrafficClassInteractive:
-			seenInteractive = true
 		case upstream.TrafficClassBulk:
 			seenBulk = true
 		}
 	}
-	if !seenInteractive {
-		t.Fatal("did not observe interactive relay traffic class metadata")
-	}
 	if !seenBulk {
 		t.Fatal("did not observe bulk relay traffic class metadata")
+	}
+}
+
+func TestStartRelayHTTPSmallPostPropagatesInteractiveTrafficClassMetadata(t *testing.T) {
+	frontendPort := pickFreePort(t)
+	backendPort := pickFreePort(t)
+	backendAddress := fmt.Sprintf("127.0.0.1:%d", backendPort)
+
+	relayCert := mustIssueProxyTLSCertificate(t, "relay.internal.test")
+	relayPublicPort := pickFreePort(t)
+	relayAccepted := make(chan relayTestRequest, 1)
+	relayStop := startTestRelayServer(t, fmt.Sprintf("127.0.0.1:%d", relayPublicPort), relayCert, relayAccepted, relay.RelayObfsModeOff)
+	defer relayStop()
+	relayListenPort := pickFreePort(t)
+
+	runtime, err := Start(
+		context.Background(),
+		[]model.HTTPRule{{
+			FrontendURL: fmt.Sprintf("http://edge.example.test:%d", frontendPort),
+			BackendURL:  "http://" + backendAddress,
+			RelayChain:  []int{41},
+		}},
+		[]model.RelayListener{{
+			ID:         41,
+			AgentID:    "remote-relay-agent",
+			Name:       "relay-hop",
+			ListenHost: "127.0.0.2",
+			BindHosts:  []string{"127.0.0.2"},
+			ListenPort: relayListenPort,
+			PublicHost: "127.0.0.1",
+			PublicPort: relayPublicPort,
+			Enabled:    true,
+			TLSMode:    "pin_only",
+			PinSet: []model.RelayPin{{
+				Type:  "sha256",
+				Value: mustSPKIPin(t, relayCert),
+			}},
+		}},
+		Providers{Relay: &testRuntimeMaterialProvider{}},
+	)
+	if err != nil {
+		t.Fatalf("failed to start relay-backed runtime: %v", err)
+	}
+	defer runtime.Close()
+
+	req, err := http.NewRequest(http.MethodPost, fmt.Sprintf("http://127.0.0.1:%d/relay-check", frontendPort), strings.NewReader("hello"))
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+	req.Host = fmt.Sprintf("edge.example.test:%d", frontendPort)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("relay-backed POST request failed: %v", err)
+	}
+	resp.Body.Close()
+
+	select {
+	case relayReq := <-relayAccepted:
+		if got := upstream.TrafficClass(relayReq.Metadata["traffic_class"].(string)); got != upstream.TrafficClassInteractive {
+			t.Fatalf("traffic class = %q, want %q", got, upstream.TrafficClassInteractive)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected relay POST request to traverse relay listener")
 	}
 }
 
