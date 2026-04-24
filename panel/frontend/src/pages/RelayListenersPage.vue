@@ -82,6 +82,15 @@
         <div v-if="listener.tags?.length" class='relay-card__tags'>
           <span v-for='tag in listener.tags' :key='tag' class='tag'>{{ tag }}</span>
         </div>
+
+        <div
+          class="relay-card__expand"
+          :class="{ 'relay-card__expand--open': isCardExpanded(listener.id) }"
+          @click="toggleCardExpand(listener.id)"
+        >
+          <span>{{ isCardExpanded(listener.id) ? '▲' : '▼' }}</span>
+          <span>{{ isCardExpanded(listener.id) ? '收起链路拓扑' : '查看链路拓扑' }}</span>
+        </div>
       </article>
     </div>
 
@@ -247,6 +256,19 @@ function confirmDelete() {
     }
   })
 }
+
+const expandedCards = ref(new Set())
+
+function toggleCardExpand(listenerId) {
+  const s = new Set(expandedCards.value)
+  if (s.has(listenerId)) s.delete(listenerId)
+  else s.add(listenerId)
+  expandedCards.value = s
+}
+
+function isCardExpanded(listenerId) {
+  return expandedCards.value.has(listenerId)
+}
 </script>
 
 <style scoped>
@@ -358,20 +380,20 @@ function confirmDelete() {
 }
 
 .relay-card__status {
-  font-size: 0.75rem;
-  font-weight: 600;
+  font-size: 0.7rem;
+  font-weight: 700;
   padding: 2px 8px;
   border-radius: var(--radius-full);
 }
-
 .relay-card__status--active {
   background: var(--color-success-50);
   color: var(--color-success);
+  border: 1px solid var(--color-success);
 }
-
 .relay-card__status--disabled {
-  background: var(--color-bg-subtle);
+  background: var(--color-bg-hover);
   color: var(--color-text-muted);
+  border: 1px solid var(--color-border-subtle);
 }
 
 .relay-card__actions {
@@ -473,6 +495,22 @@ function confirmDelete() {
   color: var(--color-primary);
   border-radius: var(--radius-full);
   font-weight: 500;
+}
+
+.relay-card__expand {
+  margin-top: 0.5rem;
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--color-border-default);
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  color: var(--color-primary);
+  font-size: 0.75rem;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+.relay-card__expand:hover {
+  color: var(--color-primary-hover);
 }
 
 /* Buttons */
