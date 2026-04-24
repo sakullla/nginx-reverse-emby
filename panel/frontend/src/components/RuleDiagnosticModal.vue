@@ -34,20 +34,16 @@
       <template v-else-if="summary">
         <div class="diagnostic-modal__stats">
           <div class="diagnostic-stat">
-            <span class="diagnostic-stat__label">平均延迟</span>
-            <strong class="diagnostic-stat__value">{{ summary.avg_latency_ms ?? 0 }} ms</strong>
+            <span class="diagnostic-stat__label">{{ hasRelayPaths ? '总路径数' : '总测试数' }}</span>
+            <strong class="diagnostic-stat__value">{{ hasRelayPaths ? pathStats.total : (summary.sent ?? 0) }}</strong>
           </div>
-          <div class="diagnostic-stat">
-            <span class="diagnostic-stat__label">丢包率</span>
-            <strong class="diagnostic-stat__value">{{ formatPercent(summary.loss_rate) }}</strong>
+          <div class="diagnostic-stat diagnostic-stat--success">
+            <span class="diagnostic-stat__label">{{ hasRelayPaths ? '成功路径' : '成功' }}</span>
+            <strong class="diagnostic-stat__value">{{ hasRelayPaths ? pathStats.success : (summary.succeeded ?? 0) }}</strong>
           </div>
-          <div class="diagnostic-stat">
-            <span class="diagnostic-stat__label">成功 / 总数</span>
-            <strong class="diagnostic-stat__value">{{ summary.succeeded ?? 0 }} / {{ summary.sent ?? 0 }}</strong>
-          </div>
-          <div class="diagnostic-stat">
-            <span class="diagnostic-stat__label">链路质量</span>
-            <strong class="diagnostic-stat__value diagnostic-stat__value--caps" :class="`diagnostic-stat__value--${qualityTone}`">{{ qualityLabel }}</strong>
+          <div class="diagnostic-stat diagnostic-stat--danger">
+            <span class="diagnostic-stat__label">{{ hasRelayPaths ? '失败路径' : '失败' }}</span>
+            <strong class="diagnostic-stat__value">{{ hasRelayPaths ? pathStats.failed : (summary.failed ?? 0) }}</strong>
           </div>
         </div>
 
@@ -216,7 +212,6 @@ const state = computed(() => props.task?.state || 'pending')
 const busy = computed(() => !['completed', 'failed'].includes(state.value))
 const summary = computed(() => props.task?.result?.summary || null)
 const backendSummaries = computed(() => props.task?.result?.backends || [])
-const samples = computed(() => props.task?.result?.samples || [])
 const title = computed(() => props.kind === 'l4_tcp' ? 'L4 规则诊断' : 'HTTP 规则诊断')
 const kindLabel = computed(() => props.kind === 'l4_tcp' ? 'TCP PATH DIAGNOSIS' : 'HTTP PATH DIAGNOSIS')
 const stateLabel = computed(() => diagnosticStateLabel(state.value))
@@ -224,6 +219,18 @@ const tone = computed(() => diagnosticStateTone(state.value))
 const agentLabel = computed(() => props.task?.agent_id || '')
 const isHTTP = computed(() => props.kind === 'http')
 const showHTTPAdaptiveMetrics = computed(() => isHTTP.value)
+const relayPaths = computed(() => props.task?.result?.relay_paths || [])
+const selectedRelayPath = computed(() => props.task?.result?.selected_relay_path || [])
+const hasRelayPaths = computed(() => relayPaths.value.length > 0)
+const pathStats = computed(() => {
+  const paths = relayPaths.value
+  if (!paths.length) return null
+  const total = paths.length
+  const success = paths.filter(p => p.success).length
+  return { total, success, failed: total - success }
+})
+
+const samples = computed(() => props.task?.result?.samples || [])
 const showSamples = ref(false)
 const showBackends = ref(false)
 const expandedAdaptive = ref(new Set())
@@ -256,6 +263,16 @@ function backendActualLatency(backend) {
   if (Number.isFinite(summaryLatency)) return summaryLatency
   return 0
 }
+
+const latencyBarPct = computed(() => {
+  if (!summary.value) return 0
+  const min = summary.value.min_latency_ms ?? 0
+  const max = summary.value.max_latency_ms ?? 0
+  const avg = summary.value.avg_latency_ms ?? 0
+  if (max <= min) return 50
+  const pct = ((avg - min) / (max - min)) * 100
+  return Math.max(8, Math.min(92, pct))
+})
 
 function splitBackendIdentity(value) {
   const explicitAddress = typeof value?.address === 'string' ? value.address.trim() : ''
@@ -308,16 +325,6 @@ const qualityLabel = computed(() => {
 
 const qualityTone = computed(() => {
   return QUALITY_MAP[qualityLabel.value] || 'muted'
-})
-
-const latencyBarPct = computed(() => {
-  if (!summary.value) return 0
-  const min = summary.value.min_latency_ms ?? 0
-  const max = summary.value.max_latency_ms ?? 0
-  const avg = summary.value.avg_latency_ms ?? 0
-  if (max <= min) return 50
-  const pct = ((avg - min) / (max - min)) * 100
-  return Math.max(8, Math.min(92, pct))
 })
 
 function formatPercent(value) {
@@ -409,23 +416,7 @@ function qualityToneFor(value) {
   padding: 1rem 1.1rem;
   border-radius: 16px;
   background: var(--color-bg-surface);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
   border: 1px solid var(--color-border-default);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.04);
-  position: relative;
-  overflow: hidden;
-}
-.diagnostic-modal__hero::after {
-  content: '';
-  position: absolute;
-  top: -24px;
-  right: -24px;
-  width: 100px;
-  height: 100px;
-  background: radial-gradient(circle, var(--color-primary-subtle) 0%, transparent 70%);
-  opacity: 0.7;
-  pointer-events: none;
 }
 .diagnostic-modal__hero-text { min-width: 0; position: relative; }
 .diagnostic-modal__eyebrow { font-size: 0.7rem; letter-spacing: 0.08em; color: var(--color-text-tertiary); font-weight: 600; }
@@ -473,25 +464,32 @@ function qualityToneFor(value) {
 /* ── Stats Grid ── */
 .diagnostic-modal__stats {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.7rem;
-}
-@media (min-width: 520px) {
-  .diagnostic-modal__stats {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
 }
 .diagnostic-stat {
-  padding: 0.65rem 0.8rem;
-  border-radius: 12px;
+  padding: 0.875rem 1rem;
+  border-radius: 14px;
   background: var(--color-bg-surface);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
   border: 1px solid var(--color-border-subtle);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
   display: flex;
   flex-direction: column;
-  gap: 0.15rem;
+  gap: 0.25rem;
+  text-align: center;
+}
+.diagnostic-stat--success {
+  background: var(--color-success-50);
+  border-color: var(--color-success);
+}
+.diagnostic-stat--success .diagnostic-stat__value {
+  color: var(--color-success);
+}
+.diagnostic-stat--danger {
+  background: var(--color-danger-50);
+  border-color: var(--color-danger);
+}
+.diagnostic-stat--danger .diagnostic-stat__value {
+  color: var(--color-danger);
 }
 .diagnostic-stat__label { font-size: 0.68rem; color: var(--color-primary); font-weight: 500; }
 .diagnostic-stat__value { font-size: 0.95rem; color: var(--color-text-primary); font-weight: 700; }
