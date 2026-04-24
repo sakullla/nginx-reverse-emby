@@ -49,6 +49,45 @@ func TestHTTPProberDiagnoseSummarizesSuccessfulBackendRequests(t *testing.T) {
 	}
 }
 
+func TestHTTPProberDiagnoseReportsCurrentProbeThroughput(t *testing.T) {
+	payload := bytes.Repeat([]byte("a"), 256*1024)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatal("response writer does not support flushing")
+		}
+		for i := 0; i < 4; i++ {
+			_, _ = w.Write(payload)
+			flusher.Flush()
+			time.Sleep(25 * time.Millisecond)
+		}
+	}))
+	defer server.Close()
+
+	prober := NewHTTPProber(HTTPProberConfig{
+		Attempts:   2,
+		Timeout:    3 * time.Second,
+		HTTPClient: server.Client(),
+	})
+	report, err := prober.Diagnose(context.Background(), model.HTTPRule{
+		ID:          77,
+		FrontendURL: "https://edge.example.test/bulk",
+		BackendURL:  server.URL + "/bulk",
+		LoadBalancing: model.LoadBalancing{
+			Strategy: "adaptive",
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("Diagnose() error = %v", err)
+	}
+	if len(report.Backends) != 1 || report.Backends[0].Adaptive == nil {
+		t.Fatalf("Backends = %+v", report.Backends)
+	}
+	if got := report.Backends[0].Adaptive.SustainedThroughputBps; got <= 0 {
+		t.Fatalf("SustainedThroughputBps = %v, want current probe throughput", got)
+	}
+}
+
 func TestHTTPProberDiagnoseReportsLossAcrossMixedBackends(t *testing.T) {
 	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

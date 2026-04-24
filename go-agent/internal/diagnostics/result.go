@@ -6,13 +6,15 @@ import (
 )
 
 type Sample struct {
-	Attempt    int     `json:"attempt"`
-	Backend    string  `json:"backend,omitempty"`
-	Address    string  `json:"address,omitempty"`
-	Success    bool    `json:"success"`
-	LatencyMS  float64 `json:"latency_ms,omitempty"`
-	StatusCode int     `json:"status_code,omitempty"`
-	Error      string  `json:"error,omitempty"`
+	Attempt       int     `json:"attempt"`
+	Backend       string  `json:"backend,omitempty"`
+	Address       string  `json:"address,omitempty"`
+	Success       bool    `json:"success"`
+	LatencyMS     float64 `json:"latency_ms,omitempty"`
+	StatusCode    int     `json:"status_code,omitempty"`
+	BytesRead     int64   `json:"bytes_read,omitempty"`
+	ThroughputBps float64 `json:"throughput_bps,omitempty"`
+	Error         string  `json:"error,omitempty"`
 }
 
 type Summary struct {
@@ -141,6 +143,15 @@ func LatencySample(attempt int, backend string, latency time.Duration, statusCod
 		LatencyMS:  roundMetric(float64(latency) / float64(time.Millisecond)),
 		StatusCode: statusCode,
 	}
+}
+
+func TransferSample(attempt int, backend string, latency time.Duration, statusCode int, bytesRead int64, transferDuration time.Duration) Sample {
+	sample := LatencySample(attempt, backend, latency, statusCode)
+	sample.BytesRead = bytesRead
+	if bytesRead > 0 && transferDuration > 0 {
+		sample.ThroughputBps = roundMetric(float64(bytesRead) / transferDuration.Seconds())
+	}
+	return sample
 }
 
 func FailureSample(attempt int, backend string, err error) Sample {

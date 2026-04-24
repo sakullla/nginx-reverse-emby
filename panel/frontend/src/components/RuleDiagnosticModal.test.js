@@ -88,12 +88,13 @@ describe('RuleDiagnosticModal', () => {
 
   it('keeps throughput metrics visible for HTTP diagnostics even when throughput is unavailable', async () => {
     const wrapper = mountModal({
-      task: buildTask('http', { sustained_throughput_bps: null })
+      task: buildTask('http', { sustained_throughput_bps: 0 })
     })
     await wrapper.get('.diagnostic-modal__section-title--toggle').trigger('click')
 
     expect(wrapper.text()).toContain('持续吞吐')
     expect(wrapper.text()).toContain('-')
+    expect(wrapper.text()).not.toContain('0 B/s')
   })
 
   it('omits HTTP-only adaptive fields for l4 diagnostics', async () => {
@@ -133,11 +134,46 @@ describe('RuleDiagnosticModal', () => {
     expect(wrapper.text()).toContain('延迟')
     expect(wrapper.text()).toContain('3')
     expect(wrapper.text()).toContain('0')
-    expect(wrapper.text()).toContain('0 ms')
+    expect(wrapper.text()).toContain('18 ms')
     expect(wrapper.text()).toContain('50%')
     expect(wrapper.text()).not.toContain('优选状态')
     expect(wrapper.text()).not.toContain('采样置信')
     expect(wrapper.text()).not.toContain('慢启动')
+  })
+
+  it('falls back to current probe latency when adaptive latency is cold', async () => {
+    const wrapper = mountModal({
+      task: buildTask('http', {
+        latency_ms: 0,
+        state: 'cold'
+      }, [
+        {
+          backend: 'http://origin.example.test/healthz [127.0.0.1:8096]',
+          address: '127.0.0.1:8096',
+          summary: {
+            sent: 5,
+            succeeded: 5,
+            failed: 0,
+            loss_rate: 0,
+            avg_latency_ms: 12.4,
+            min_latency_ms: 10,
+            max_latency_ms: 14,
+            quality: '极佳'
+          },
+          adaptive: {
+            preferred: true,
+            latency_ms: 0,
+            stability: 0.5,
+            recent_succeeded: 0
+          }
+        }
+      ])
+    })
+    await wrapper.get('.diagnostic-modal__section-title--toggle').trigger('click')
+    await wrapper.get('.diagnostic-backend-item__toggle').trigger('click')
+
+    expect(wrapper.text()).toContain('18 ms')
+    expect(wrapper.text()).toContain('12.4 ms')
   })
 
   it('shows resolved child candidates even when only one address is resolved', async () => {
@@ -182,7 +218,7 @@ describe('RuleDiagnosticModal', () => {
 
     expect(wrapper.text()).toContain('已解析候选')
     expect(wrapper.text()).toContain('127.0.0.1:8096')
-    expect(wrapper.text()).toContain('延迟 0 ms')
+    expect(wrapper.text()).toContain('延迟 12 ms')
     expect(wrapper.text()).toContain('稳定性 50%')
     expect(wrapper.text()).toContain('近24h成功 0')
     expect(wrapper.text()).not.toContain('近24h失败 1')

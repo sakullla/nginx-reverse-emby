@@ -191,8 +191,8 @@ func (s *SQLiteStore) LoadAgentSnapshot(ctx context.Context, agentID string, inp
 		DesiredVersion:      strings.TrimSpace(input.DesiredVersion),
 		Revision:            int64(computeDesiredRevision(revisionState, httpRows, l4Rows, relayRows, relevantCertRows)),
 		VersionPackage:      resolveVersionPackageForPlatform(versionPolicies, input.DesiredVersion, input.Platform),
-		Rules:               snapshotHTTPRules(httpRows),
-		L4Rules:             snapshotL4Rules(l4Rows),
+		Rules:               SnapshotHTTPRules(httpRows),
+		L4Rules:             SnapshotL4Rules(l4Rows),
 		RelayListeners:      snapshotRelayListeners(relayRows),
 		Certificates:        s.snapshotCertificateBundles(relevantCertRows),
 		CertificatePolicies: snapshotCertificatePolicies(relevantCertRows, resolvedAgentID),
@@ -781,7 +781,7 @@ func isSyncL4RuleRowValid(row L4RuleRow) bool {
 	return row.UpstreamPort >= 1 && row.UpstreamPort <= 65535
 }
 
-func snapshotHTTPRules(rows []HTTPRuleRow) []HTTPRule {
+func SnapshotHTTPRules(rows []HTTPRuleRow) []HTTPRule {
 	rules := make([]HTTPRule, 0, len(rows))
 	for _, row := range rows {
 		if !row.Enabled {
@@ -814,7 +814,7 @@ func snapshotHTTPRules(rows []HTTPRuleRow) []HTTPRule {
 	return rules
 }
 
-func snapshotL4Rules(rows []L4RuleRow) []L4Rule {
+func SnapshotL4Rules(rows []L4RuleRow) []L4Rule {
 	rules := make([]L4Rule, 0, len(rows))
 	for _, row := range rows {
 		if !row.Enabled {

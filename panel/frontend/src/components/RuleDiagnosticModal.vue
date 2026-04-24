@@ -250,7 +250,11 @@ function isAdaptiveExpanded(backendName) {
 }
 
 function backendActualLatency(backend) {
-  return backend?.adaptive?.latency_ms ?? 0
+  const adaptiveLatency = Number(backend?.adaptive?.latency_ms)
+  if (Number.isFinite(adaptiveLatency) && adaptiveLatency > 0) return adaptiveLatency
+  const summaryLatency = Number(backend?.summary?.avg_latency_ms)
+  if (Number.isFinite(summaryLatency)) return summaryLatency
+  return 0
 }
 
 function splitBackendIdentity(value) {
@@ -324,7 +328,7 @@ function formatPercent(value) {
 function formatThroughput(value) {
   if (value == null) return '-'
   const num = Number(value)
-  if (!Number.isFinite(num)) return '-'
+  if (!Number.isFinite(num) || num <= 0) return '-'
   if (num >= 1024 * 1024) return `${(num / (1024 * 1024)).toFixed(1)} MB/s`
   if (num >= 1024) return `${(num / 1024).toFixed(1)} KB/s`
   return `${num.toFixed(0)} B/s`

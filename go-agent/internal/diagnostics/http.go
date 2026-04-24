@@ -87,6 +87,7 @@ func (p *HTTPProber) Diagnose(ctx context.Context, rule model.HTTPRule, relayLis
 	}
 	report := BuildReport("http", rule.ID, samples)
 	report.Backends = buildHTTPAdaptiveReports(report.Backends, candidates, baseCache)
+	applyCurrentHTTPThroughput(report.Backends, samples)
 	return report, nil
 }
 
@@ -151,7 +152,7 @@ func (p *HTTPProber) probeCandidate(ctx context.Context, cache *backends.Cache, 
 	actualAddress := resolveProbeAddress(candidate.dialAddress, selectedAddress())
 	observeDiagnosticAddressSuccessAll(rule.RelayChain, actualAddress, headerLatency, transferDuration, written, persistentDiagnosticAddressCaches(cache, p.cache, rule.RelayChain)...)
 
-	sample := LatencySample(attempt, httpProbeLabelForAddress(candidate, actualAddress), totalDuration, resp.StatusCode)
+	sample := TransferSample(attempt, httpProbeLabelForAddress(candidate, actualAddress), totalDuration, resp.StatusCode, written, transferDuration)
 	sample.Address = actualAddress
 	return sample
 }
@@ -487,6 +488,51 @@ func adaptiveSummaryFromObservation(summary backends.ObservationSummary, preferr
 		adaptive.SustainedThroughputBps = roundMetric(summary.Bandwidth)
 	}
 	return adaptive
+}
+
+func applyCurrentHTTPThroughput(reports []BackendReport, samples []Sample) {
+	throughputByBackend := currentThroughputByBackend(samples)
+	for i := range reports {
+		applyCurrentHTTPThroughputToReport(&reports[i], throughputByBackend)
+	}
+}
+
+func applyCurrentHTTPThroughputToReport(report *BackendReport, throughputByBackend map[string]float64) float64 {
+	maxThroughput := throughputByBackend[report.Backend]
+	for i := range report.Children {
+		childThroughput := applyCurrentHTTPThroughputToReport(&report.Children[i], throughputByBackend)
+		if childThroughput > maxThroughput {
+			maxThroughput = childThroughput
+		}
+	}
+	if maxThroughput > 0 && report.Adaptive != nil && report.Adaptive.SustainedThroughputBps <= 0 {
+		report.Adaptive.SustainedThroughputBps = roundMetric(maxThroughput)
+	}
+	return maxThroughput
+}
+
+func currentThroughputByBackend(samples []Sample) map[string]float64 {
+	weightedBytes := make(map[string]float64)
+	weightedSeconds := make(map[string]float64)
+	for _, sample := range samples {
+		if !sample.Success || strings.TrimSpace(sample.Backend) == "" || sample.BytesRead <= 0 || sample.ThroughputBps <= 0 {
+			continue
+		}
+		seconds := float64(sample.BytesRead) / sample.ThroughputBps
+		if seconds <= 0 {
+			continue
+		}
+		weightedBytes[sample.Backend] += float64(sample.BytesRead)
+		weightedSeconds[sample.Backend] += seconds
+	}
+	throughput := make(map[string]float64, len(weightedBytes))
+	for backend, bytesRead := range weightedBytes {
+		seconds := weightedSeconds[backend]
+		if seconds > 0 {
+			throughput[backend] = bytesRead / seconds
+		}
+	}
+	return throughput
 }
 
 func preferredReason(preferred bool) string {
