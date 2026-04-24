@@ -52,7 +52,6 @@
             <div class="latency-bar__track">
               <div
                 class="latency-bar__fill"
-                :style="{ width: latencyBarPct + '%' }"
               ></div>
             </div>
             <div class="latency-bar__labels">
@@ -62,139 +61,13 @@
           </div>
         </div>
 
-        <div v-if="backendSummaries.length" class="diagnostic-modal__backends">
-          <button type="button" class="diagnostic-modal__section-title diagnostic-modal__section-title--toggle" @click="showBackends = !showBackends">
-            <span>后端延迟</span>
-            <span v-if="backendSummaries.length" class="diagnostic-modal__sample-count">{{ backendSummaries.length }} 个</span>
-            <span class="diagnostic-modal__toggle" :class="{ 'diagnostic-modal__toggle--open': showBackends }">▸</span>
-          </button>
-          <Transition name="slide-expand">
-          <div v-if="showBackends" class="diagnostic-backend-list">
-            <article v-for="backend in backendSummaries" :key="backend.backend" class="diagnostic-backend-item">
-              <div class="diagnostic-backend-item__header">
-                <code class="diagnostic-backend-item__name">{{ backend.backend }}</code>
-                <div class="diagnostic-backend-item__badges">
-                  <span v-if="backend.adaptive?.preferred" class="diagnostic-backend-item__preferred">当前优选</span>
-                  <span class="diagnostic-backend-item__quality" :class="`diagnostic-backend-item__quality--${qualityToneFor(backend.summary?.quality)}`">
-                    {{ qualityLabelFor(backend.summary?.quality) }}
-                  </span>
-                </div>
-              </div>
-
-              <div class="diagnostic-backend-item__metrics">
-                <div class="diagnostic-metric">
-                  <span class="diagnostic-metric__label">延迟</span>
-                  <strong class="diagnostic-metric__value">{{ backendActualLatency(backend) }} ms</strong>
-                </div>
-                <div class="diagnostic-metric">
-                  <span class="diagnostic-metric__label">稳定性</span>
-                  <strong class="diagnostic-metric__value">{{ formatPercent(backend.adaptive?.stability) }}</strong>
-                </div>
-                <div v-if="showHTTPAdaptiveMetrics" class="diagnostic-metric">
-                  <span class="diagnostic-metric__label">综合性能</span>
-                  <strong class="diagnostic-metric__value">{{ formatScore(backend.adaptive?.performance_score) }}</strong>
-                </div>
-                <div v-if="showHTTPAdaptiveMetrics" class="diagnostic-metric">
-                  <span class="diagnostic-metric__label">持续吞吐</span>
-                  <strong class="diagnostic-metric__value">{{ formatThroughput(backend.adaptive?.sustained_throughput_bps) }}</strong>
-                </div>
-              </div>
-
-              <div class="diagnostic-backend-item__probe">
-                <span class="diagnostic-backend-item__probe-stat">本次测试 <strong>{{ backend.summary?.avg_latency_ms ?? 0 }} ms</strong></span>
-                <span class="diagnostic-backend-item__probe-stat">成功 <strong>{{ backend.summary?.succeeded ?? 0 }} / {{ backend.summary?.sent ?? 0 }}</strong></span>
-              </div>
-
-              <button type="button" class="diagnostic-backend-item__toggle" @click="toggleAdaptive(backend.backend)">
-                <span>{{ isAdaptiveExpanded(backend.backend) ? '收起' : '展开更多' }}</span>
-                <span class="diagnostic-backend-item__toggle-icon" :class="{ 'diagnostic-backend-item__toggle-icon--open': isAdaptiveExpanded(backend.backend) }">▸</span>
-              </button>
-
-              <Transition name="slide-expand">
-                <div v-if="isAdaptiveExpanded(backend.backend)" class="diagnostic-backend-item__details">
-                  <div class="diagnostic-backend-item__details-grid">
-                    <div class="diagnostic-factor">
-                      <span class="diagnostic-factor__label">延迟</span>
-                      <strong class="diagnostic-factor__value">{{ backendActualLatency(backend) }} ms</strong>
-                    </div>
-                    <div class="diagnostic-factor">
-                      <span class="diagnostic-factor__label">近24h成功</span>
-                      <strong class="diagnostic-factor__value">{{ backend.adaptive?.recent_succeeded ?? 0 }}</strong>
-                    </div>
-                    <div class="diagnostic-factor">
-                      <span class="diagnostic-factor__label">近24h失败</span>
-                      <strong class="diagnostic-factor__value">{{ backend.adaptive?.recent_failed ?? 0 }}</strong>
-                    </div>
-                    <div v-if="showHTTPAdaptiveMetrics" class="diagnostic-factor">
-                      <span class="diagnostic-factor__label">持续吞吐</span>
-                      <strong class="diagnostic-factor__value">{{ formatThroughput(backend.adaptive?.sustained_throughput_bps) }}</strong>
-                    </div>
-                    <div v-if="showHTTPAdaptiveMetrics" class="diagnostic-factor">
-                      <span class="diagnostic-factor__label">综合性能</span>
-                      <strong class="diagnostic-factor__value">{{ formatScore(backend.adaptive?.performance_score) }}</strong>
-                    </div>
-                    <div v-if="showHTTPAdaptiveMetrics" class="diagnostic-factor">
-                      <span class="diagnostic-factor__label">异常检测</span>
-                      <strong class="diagnostic-factor__value">{{ outlierLabel(backend.adaptive?.outlier) }}</strong>
-                    </div>
-                    <div class="diagnostic-factor">
-                      <span class="diagnostic-factor__label">流量阶段</span>
-                      <strong class="diagnostic-factor__value">{{ trafficShareLabel(backend.adaptive?.traffic_share_hint) }}</strong>
-                    </div>
-                  </div>
-                  <div v-if="showHTTPAdaptiveMetrics && backend.adaptive?.reason" class="diagnostic-backend-item__reason">
-                    原因: {{ reasonLabel(backend.adaptive?.reason) }}
-                  </div>
-                  <div v-if="backend.children?.length" class="diagnostic-backend-item__children">
-                    <div class="diagnostic-backend-item__child-title">已解析候选</div>
-                    <div class="diagnostic-child-list">
-                      <div v-for="(child, idx) in backend.children" :key="child.backend" class="diagnostic-child-item">
-                        <code class="diagnostic-child-item__name">{{ backendDisplayLabel(child) }}</code>
-                        <code v-if="backendDisplayAddress(child)" class="diagnostic-child-item__address">{{ backendDisplayAddress(child) }}</code>
-                        <span v-if="child.adaptive?.preferred" class="diagnostic-backend-item__preferred">当前优选</span>
-                        <span class="diagnostic-child-item__metric">延迟 {{ backendActualLatency(child) }} ms</span>
-                        <span class="diagnostic-child-item__metric">稳定性 {{ formatPercent(child.adaptive?.stability) }}</span>
-                        <span class="diagnostic-child-item__metric">近24h成功 {{ child.adaptive?.recent_succeeded ?? 0 }}</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </Transition>
-            </article>
-          </div>
-          </Transition>
-        </div>
-
-        <div class="diagnostic-modal__samples">
-          <button type="button" class="diagnostic-modal__section-title diagnostic-modal__section-title--toggle" @click="showSamples = !showSamples">
-            <span>探测样本</span>
-            <span v-if="samples.length" class="diagnostic-modal__sample-count">{{ samples.length }} 次</span>
-            <span class="diagnostic-modal__toggle" :class="{ 'diagnostic-modal__toggle--open': showSamples }">▸</span>
-          </button>
-          <div v-if="showSamples" class="diagnostic-sample-list">
-            <div class="diagnostic-sample" v-for="sample in samples" :key="`${sample.attempt}-${sample.backend}`" :class="{ 'diagnostic-sample--failed': !sample.success }">
-              <div class="diagnostic-sample__left">
-                <span class="diagnostic-sample__attempt">#{{ sample.attempt }}</span>
-                <span v-if="isHTTP && sample.status_code" class="diagnostic-sample__status" :class="`diagnostic-sample__status--${httpStatusTone(sample.status_code)}`">{{ sample.status_code }}</span>
-                <div class="diagnostic-sample__backend-wrap">
-                  <code class="diagnostic-sample__backend">{{ backendDisplayLabel(sample) || '-' }}</code>
-                  <code v-if="backendDisplayAddress(sample)" class="diagnostic-sample__backend-address">{{ backendDisplayAddress(sample) }}</code>
-                </div>
-              </div>
-              <div class="diagnostic-sample__right">
-                <span v-if="sample.success">{{ sample.latency_ms }} ms</span>
-                <span v-else>{{ sample.error || '失败' }}</span>
-              </div>
-            </div>
-          </div>
-        </div>
       </template>
     </div>
   </BaseModal>
 </template>
 
 <script setup>
-import { computed, ref, watch } from 'vue'
+import { computed } from 'vue'
 import BaseModal from './base/BaseModal.vue'
 import { diagnosticStateLabel, diagnosticStateTone } from '../hooks/useDiagnostics'
 
@@ -228,50 +101,6 @@ const pathStats = computed(() => {
   const total = paths.length
   const success = paths.filter(p => p.success).length
   return { total, success, failed: total - success }
-})
-
-const samples = computed(() => props.task?.result?.samples || [])
-const showSamples = ref(false)
-const showBackends = ref(false)
-const expandedAdaptive = ref(new Set())
-
-function resetExpandedState() {
-  showSamples.value = false
-  showBackends.value = false
-  expandedAdaptive.value = new Set()
-}
-
-watch(() => props.modelValue, () => {
-  resetExpandedState()
-})
-
-function toggleAdaptive(backendName) {
-  const s = new Set(expandedAdaptive.value)
-  if (s.has(backendName)) s.delete(backendName)
-  else s.add(backendName)
-  expandedAdaptive.value = s
-}
-
-function isAdaptiveExpanded(backendName) {
-  return expandedAdaptive.value.has(backendName)
-}
-
-function backendActualLatency(backend) {
-  const adaptiveLatency = Number(backend?.adaptive?.latency_ms)
-  if (Number.isFinite(adaptiveLatency) && adaptiveLatency > 0) return adaptiveLatency
-  const summaryLatency = Number(backend?.summary?.avg_latency_ms)
-  if (Number.isFinite(summaryLatency)) return summaryLatency
-  return 0
-}
-
-const latencyBarPct = computed(() => {
-  if (!summary.value) return 0
-  const min = summary.value.min_latency_ms ?? 0
-  const max = summary.value.max_latency_ms ?? 0
-  const avg = summary.value.avg_latency_ms ?? 0
-  if (max <= min) return 50
-  const pct = ((avg - min) / (max - min)) * 100
-  return Math.max(8, Math.min(92, pct))
 })
 
 function splitBackendIdentity(value) {
