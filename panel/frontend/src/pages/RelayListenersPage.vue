@@ -394,21 +394,6 @@ function isCardExpanded(listenerId) {
   text-align: center;
 }
 
-.relay-page__error {
-  margin: var(--space-3) 0 0;
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-md);
-  background: var(--color-danger-50);
-  color: var(--color-danger);
-  font-size: var(--text-sm);
-}
-
-.relay-page__warning {
-  margin: var(--space-3) 0 0;
-  font-size: var(--text-sm);
-  color: var(--color-text-secondary);
-}
-
 .relay-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
@@ -600,17 +585,6 @@ function isCardExpanded(listenerId) {
 
 .btn-primary {
   background: var(--gradient-primary);
-  color: white;
-}
-
-.btn-secondary {
-  background: var(--color-bg-subtle);
-  color: var(--color-text-primary);
-  border: 1px solid var(--color-border-default);
-}
-
-.btn-danger {
-  background: var(--color-danger);
   color: white;
 }
 

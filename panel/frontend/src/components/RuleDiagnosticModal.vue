@@ -407,12 +407,6 @@ function qualityToneFor(value) {
 }
 .diagnostic-stat__label { font-size: 0.68rem; color: var(--color-primary); font-weight: 500; }
 .diagnostic-stat__value { font-size: 0.95rem; color: var(--color-text-primary); font-weight: 700; }
-.diagnostic-stat__value--caps { text-transform: uppercase; letter-spacing: 0.06em; font-size: 0.88rem; }
-.diagnostic-stat__value--success { color: var(--color-success); }
-.diagnostic-stat__value--info { color: var(--color-primary); }
-.diagnostic-stat__value--warning { color: var(--color-warning); }
-.diagnostic-stat__value--danger { color: var(--color-danger); }
-.diagnostic-stat__value--muted { color: var(--color-text-muted); }
 
 /* ── Expand/Collapse Animation ── */
 .slide-expand-enter-active,
