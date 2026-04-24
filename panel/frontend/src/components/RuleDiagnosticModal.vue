@@ -64,7 +64,6 @@
                   <span>路径</span>
                   <span style="text-align:center">状态</span>
                   <span style="text-align:center">延迟</span>
-                  <span style="text-align:center">丢包率</span>
                   <span style="text-align:center">质量</span>
                 </div>
                 <div
@@ -89,7 +88,6 @@
                       {{ hop.success ? (hop.latency_ms + ' ms') : '—' }}
                     </span>
                   </span>
-                  <span class="diagnostic-table__cell" style="text-align:center">—</span>
                   <span class="diagnostic-table__cell" style="text-align:center">
                     <span :class="`pill pill--${qualityToneFor(classifyHopQuality(hop.latency_ms))}`">
                       {{ hop.success ? classifyHopQuality(hop.latency_ms) : '不可用' }}
@@ -168,7 +166,7 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import BaseModal from './base/BaseModal.vue'
 import { diagnosticStateLabel, diagnosticStateTone } from '../hooks/useDiagnostics'
 
@@ -202,6 +200,9 @@ const pathStats = computed(() => {
 })
 
 const showBackends = ref(false)
+watch(() => props.modelValue, () => {
+  showBackends.value = false
+})
 const isHTTP = computed(() => props.kind === 'http')
 const backendSummaries = computed(() => props.task?.result?.backends || [])
 const backendTableGridStyle = computed(() => ({
@@ -244,24 +245,6 @@ const QUALITY_MAP = {
   '较差': 'danger',
   '不可用': 'danger'
 }
-
-const qualityLabel = computed(() => {
-  const q = summary.value?.quality
-  if (!q) return '-'
-  // Support both Chinese (new) and English (legacy data) from backend
-  const cn = {
-    excellent: '极佳',
-    good: '良好',
-    fair: '一般',
-    poor: '较差',
-    down: '不可用'
-  }[q]
-  return cn || q || '-'
-})
-
-const qualityTone = computed(() => {
-  return QUALITY_MAP[qualityLabel.value] || 'muted'
-})
 
 function formatPercent(value) {
   if (value == null) return '-'
@@ -448,7 +431,7 @@ function qualityToneFor(value) {
 }
 .diagnostic-table__header {
   display: grid;
-  grid-template-columns: 1fr 80px 80px 80px 80px;
+  grid-template-columns: 1fr 80px 80px 80px;
   gap: 0.5rem;
   padding: 0.5rem 0.75rem;
   font-size: 0.7rem;
@@ -458,7 +441,7 @@ function qualityToneFor(value) {
 }
 .diagnostic-table__row {
   display: grid;
-  grid-template-columns: 1fr 80px 80px 80px 80px;
+  grid-template-columns: 1fr 80px 80px 80px;
   gap: 0.5rem;
   padding: 0.55rem 0.75rem;
   align-items: center;

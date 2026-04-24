@@ -95,7 +95,7 @@
         <Transition name="slide-expand">
           <div v-if="isCardExpanded(listener.id)" class="relay-chain">
             <div class="relay-chain__node">
-              <div class="relay-chain__dot" style="background:#38bdf8">
+              <div class="relay-chain__dot relay-chain__dot--1">
                 <span>1</span>
               </div>
               <div class="relay-chain__content">
@@ -111,7 +111,7 @@
             <div class="relay-chain__arrow">↓</div>
 
             <div class="relay-chain__node">
-              <div class="relay-chain__dot" style="background:#a78bfa">
+              <div class="relay-chain__dot relay-chain__dot--2">
                 <span>2</span>
               </div>
               <div class="relay-chain__content">
@@ -123,7 +123,7 @@
             <div class="relay-chain__arrow">↓</div>
 
             <div class="relay-chain__node">
-              <div class="relay-chain__dot" style="background:#fbbf24">
+              <div class="relay-chain__dot relay-chain__dot--3">
                 <span>3</span>
               </div>
               <div class="relay-chain__content">
@@ -139,7 +139,7 @@
             <div class="relay-chain__arrow">↓</div>
 
             <div class="relay-chain__node">
-              <div class="relay-chain__dot" style="background:#34d399">
+              <div class="relay-chain__dot relay-chain__dot--4">
                 <span>4</span>
               </div>
               <div class="relay-chain__content">
@@ -151,7 +151,7 @@
             <div class="relay-chain__arrow">↓</div>
 
             <div class="relay-chain__node">
-              <div class="relay-chain__dot" style="background:#f87171">
+              <div class="relay-chain__dot relay-chain__dot--5">
                 <span>5</span>
               </div>
               <div class="relay-chain__content">
@@ -567,6 +567,9 @@ function isCardExpanded(listenerId) {
 .relay-card__expand:hover {
   color: var(--color-primary-hover);
 }
+.relay-card__expand--open {
+  color: var(--color-primary-hover);
+}
 
 /* Buttons */
 .btn {
@@ -636,6 +639,11 @@ function isCardExpanded(listenerId) {
   flex-shrink: 0;
   margin-top: 0.1rem;
 }
+.relay-chain__dot--1 { background: var(--color-primary); }
+.relay-chain__dot--2 { background: #a78bfa; }
+.relay-chain__dot--3 { background: var(--color-warning); }
+.relay-chain__dot--4 { background: var(--color-success); }
+.relay-chain__dot--5 { background: var(--color-danger); }
 .relay-chain__arrow {
   padding-left: 7px;
   color: var(--color-text-muted);
