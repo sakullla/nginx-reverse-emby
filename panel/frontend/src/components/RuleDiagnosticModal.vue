@@ -47,16 +47,60 @@
           </div>
         </div>
 
-        <div class="diagnostic-modal__range">
-          <div class="latency-bar">
-            <div class="latency-bar__track">
-              <div
-                class="latency-bar__fill"
-              ></div>
+        <div v-if="hasRelayPaths" class="diagnostic-modal__relay-paths">
+          <div v-for="(pathReport, pathIndex) in relayPaths" :key="pathIndex" class="relay-path-section">
+            <div class="relay-path-section__header">
+              <span class="relay-path-section__icon">🔄</span>
+              <span class="relay-path-section__title">路径 {{ pathIndex + 1 }} ({{ pathReport.path.map(id => '#' + id).join(' → ') }})</span>
+              <span v-if="isSelectedPath(pathReport.path)" class="pill pill--success">已选中</span>
+              <span :class="`pill pill--${pathReport.success ? 'success' : 'danger'}`">
+                {{ pathReport.success ? '成功' : '失败' }}
+              </span>
             </div>
-            <div class="latency-bar__labels">
-              <span>最小 {{ summary.min_latency_ms ?? 0 }} ms</span>
-              <span>最大 {{ summary.max_latency_ms ?? 0 }} ms</span>
+
+            <div class="relay-path-section__table-wrap">
+              <div class="diagnostic-table">
+                <div class="diagnostic-table__header">
+                  <span>路径</span>
+                  <span style="text-align:center">状态</span>
+                  <span style="text-align:center">延迟</span>
+                  <span style="text-align:center">丢包率</span>
+                  <span style="text-align:center">质量</span>
+                </div>
+                <div
+                  v-for="(hop, hopIndex) in pathReport.hops"
+                  :key="hopIndex"
+                  class="diagnostic-table__row"
+                  :class="{ 'diagnostic-table__row--failed': !hop.success }"
+                >
+                  <div class="diagnostic-table__cell">
+                    <span :class="hop.success ? 'status-icon--success' : 'status-icon--danger'">
+                      {{ hop.success ? '✓' : '✕' }}
+                    </span>
+                    <span>{{ formatHopPath(hop) }} → {{ formatHopTarget(hop) }}</span>
+                  </div>
+                  <span class="diagnostic-table__cell" style="text-align:center">
+                    <span :class="`pill pill--${hop.success ? 'success' : 'danger'}`">
+                      {{ hop.success ? '成功' : '失败' }}
+                    </span>
+                  </span>
+                  <span class="diagnostic-table__cell" style="text-align:center">
+                    <span :class="hop.success ? 'value-primary' : 'value-danger'">
+                      {{ hop.success ? (hop.latency_ms + ' ms') : '—' }}
+                    </span>
+                  </span>
+                  <span class="diagnostic-table__cell" style="text-align:center">—</span>
+                  <span class="diagnostic-table__cell" style="text-align:center">
+                    <span :class="`pill pill--${qualityToneFor(classifyHopQuality(hop.latency_ms))}`">
+                      {{ hop.success ? classifyHopQuality(hop.latency_ms) : '不可用' }}
+                    </span>
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <div v-if="pathReport.error" class="relay-path-section__error">
+              错误: {{ pathReport.error }}
             </div>
           </div>
         </div>
@@ -84,14 +128,11 @@ defineEmits(['update:modelValue'])
 const state = computed(() => props.task?.state || 'pending')
 const busy = computed(() => !['completed', 'failed'].includes(state.value))
 const summary = computed(() => props.task?.result?.summary || null)
-const backendSummaries = computed(() => props.task?.result?.backends || [])
 const title = computed(() => props.kind === 'l4_tcp' ? 'L4 规则诊断' : 'HTTP 规则诊断')
 const kindLabel = computed(() => props.kind === 'l4_tcp' ? 'TCP PATH DIAGNOSIS' : 'HTTP PATH DIAGNOSIS')
 const stateLabel = computed(() => diagnosticStateLabel(state.value))
 const tone = computed(() => diagnosticStateTone(state.value))
 const agentLabel = computed(() => props.task?.agent_id || '')
-const isHTTP = computed(() => props.kind === 'http')
-const showHTTPAdaptiveMetrics = computed(() => isHTTP.value)
 const relayPaths = computed(() => props.task?.result?.relay_paths || [])
 const selectedRelayPath = computed(() => props.task?.result?.selected_relay_path || [])
 const hasRelayPaths = computed(() => relayPaths.value.length > 0)
@@ -161,60 +202,29 @@ function formatPercent(value) {
   return `${Math.round(Number(value) * 100)}%`
 }
 
-function formatThroughput(value) {
-  if (value == null) return '-'
-  const num = Number(value)
-  if (!Number.isFinite(num) || num <= 0) return '-'
-  if (num >= 1024 * 1024) return `${(num / (1024 * 1024)).toFixed(1)} MB/s`
-  if (num >= 1024) return `${(num / 1024).toFixed(1)} KB/s`
-  return `${num.toFixed(0)} B/s`
+function formatHopPath(hop) {
+  if (hop.from === 'client') return '入口'
+  if (hop.from_listener_id) return `#${hop.from_listener_id}`
+  return hop.from || '-'
 }
 
-function formatScore(value) {
-  if (value == null) return '-'
-  return Number(value).toFixed(2)
+function formatHopTarget(hop) {
+  if (!hop.to_listener_id) return `出口(${hop.to || '-'})`
+  return `#${hop.to_listener_id}`
 }
 
-function reasonLabel(value) {
-  return {
-    performance_higher: '综合性能更高',
-    stability_higher: '近24h稳定性更高'
-  }[value] || value || '-'
+function isSelectedPath(path) {
+  if (!selectedRelayPath.value.length) return false
+  if (path.length !== selectedRelayPath.value.length) return false
+  return path.every((id, i) => id === selectedRelayPath.value[i])
 }
 
-function adaptiveStateLabel(value) {
-  return {
-    cold: '冷启动',
-    recovering: '恢复中',
-    warm: '稳定'
-  }[value] || value || '-'
-}
-
-function trafficShareLabel(value) {
-  return {
-    normal: '主流量',
-    cold: '冷启动探索',
-    recovery: '恢复探索'
-  }[value] || value || '-'
-}
-
-function slowStartLabel(value) {
-  if (value == null) return '-'
-  return value ? '进行中' : '无'
-}
-
-function outlierLabel(value) {
-  if (value == null) return '-'
-  return value ? '已降权' : '正常'
-}
-
-function httpStatusTone(code) {
-  if (!code) return 'muted'
-  if (code >= 200 && code < 300) return 'success'
-  if (code >= 300 && code < 400) return 'info'
-  if (code >= 400 && code < 500) return 'warning'
-  if (code >= 500) return 'danger'
-  return 'muted'
+function classifyHopQuality(latencyMs) {
+  if (latencyMs == null) return '不可用'
+  if (latencyMs <= 50) return '优秀'
+  if (latencyMs <= 150) return '良好'
+  if (latencyMs <= 300) return '一般'
+  return '较差'
 }
 
 function qualityLabelFor(value) {
@@ -329,181 +339,6 @@ function qualityToneFor(value) {
 .diagnostic-stat__value--danger { color: var(--color-danger); }
 .diagnostic-stat__value--muted { color: var(--color-text-muted); }
 
-/* ── Latency Bar ── */
-.diagnostic-modal__range {
-  padding: 0 0.1rem;
-}
-.latency-bar { display: flex; flex-direction: column; gap: 0.35rem; }
-.latency-bar__track {
-  height: 4px;
-  border-radius: 999px;
-  background: var(--color-bg-hover);
-  overflow: hidden;
-}
-.latency-bar__fill {
-  height: 100%;
-  border-radius: 999px;
-  background: linear-gradient(90deg, var(--color-success), var(--color-primary));
-  box-shadow: 0 0 8px var(--color-primary-subtle);
-  transition: width 0.4s ease;
-}
-.latency-bar__labels {
-  display: flex;
-  justify-content: space-between;
-  font-size: 0.78rem;
-  color: var(--color-text-tertiary);
-}
-
-/* ── Backend Cards ── */
-.diagnostic-modal__backends {
-  display: flex;
-  flex-direction: column;
-  gap: 0.6rem;
-}
-.diagnostic-backend-list {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-.diagnostic-backend-item {
-  padding: 0.85rem 1rem;
-  border-radius: 16px;
-  background: linear-gradient(135deg, var(--color-primary-subtle) 0%, rgba(0,0,0,0) 100%);
-  backdrop-filter: blur(20px);
-  -webkit-backdrop-filter: blur(20px);
-  border: 1px solid var(--color-border-subtle);
-  box-shadow: 0 2px 16px rgba(0,0,0,0.08), inset 0 1px 0 rgba(255,255,255,0.04);
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  position: relative;
-  overflow: hidden;
-}
-.diagnostic-backend-item::after {
-  content: '';
-  position: absolute;
-  top: -20px;
-  right: -20px;
-  width: 80px;
-  height: 80px;
-  background: radial-gradient(circle, var(--color-primary-subtle) 0%, transparent 70%);
-  opacity: 0.6;
-  pointer-events: none;
-}
-.diagnostic-backend-item__header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 0.75rem;
-  position: relative;
-}
-.diagnostic-backend-item__name {
-  font-family: var(--font-mono);
-  font-size: 0.75rem;
-  color: var(--color-text-primary);
-  word-break: break-all;
-}
-.diagnostic-backend-item__badges {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 0.3rem;
-}
-.diagnostic-backend-item__preferred {
-  display: inline-flex;
-  align-items: center;
-  padding: 2px 10px;
-  border-radius: 999px;
-  font-size: 0.62rem;
-  font-weight: 700;
-  background: linear-gradient(135deg, rgba(16, 185, 129, 0.15), rgba(16, 185, 129, 0.08));
-  color: var(--color-success);
-  border: 1px solid rgba(16, 185, 129, 0.25);
-  box-shadow: 0 0 8px rgba(16, 185, 129, 0.1);
-}
-.diagnostic-backend-item__quality {
-  flex-shrink: 0;
-  font-size: 0.62rem;
-  font-weight: 700;
-  padding: 2px 10px;
-  border-radius: 999px;
-  background: var(--color-bg-hover);
-  color: var(--color-text-muted);
-}
-.diagnostic-backend-item__quality--success { background: linear-gradient(135deg, rgba(16,185,129,0.14), rgba(16,185,129,0.07)); color: var(--color-success); box-shadow: 0 0 8px rgba(16,185,129,0.08); }
-.diagnostic-backend-item__quality--info { background: linear-gradient(135deg, rgba(56,189,248,0.14), rgba(56,189,248,0.07)); color: var(--color-primary); box-shadow: 0 0 8px rgba(56,189,248,0.08); }
-.diagnostic-backend-item__quality--warning { background: linear-gradient(135deg, rgba(217,119,6,0.14), rgba(217,119,6,0.07)); color: var(--color-warning); box-shadow: 0 0 8px rgba(217,119,6,0.08); }
-.diagnostic-backend-item__quality--danger { background: linear-gradient(135deg, rgba(239,68,68,0.14), rgba(239,68,68,0.07)); color: var(--color-danger); box-shadow: 0 0 8px rgba(239,68,68,0.08); }
-
-/* ── Metrics Grid ── */
-.diagnostic-backend-item__metrics {
-  display: flex;
-  gap: 0.4rem;
-}
-.diagnostic-metric {
-  flex: 1 1 0;
-  min-width: 0;
-  padding: 0.4rem 0.5rem;
-  border-radius: 10px;
-  background: var(--color-primary-subtle);
-  border: 1px solid var(--color-border-subtle);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
-  display: flex;
-  flex-direction: column;
-  gap: 0.05rem;
-}
-.diagnostic-metric__label {
-  font-size: 0.6rem;
-  color: var(--color-primary);
-  font-weight: 500;
-}
-.diagnostic-metric__value {
-  font-size: 0.84rem;
-  color: var(--color-text-primary);
-  font-weight: 700;
-}
-
-/* ── Probe Stats ── */
-.diagnostic-backend-item__probe {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-  font-size: 0.72rem;
-  color: var(--color-text-secondary);
-}
-.diagnostic-backend-item__probe-stat strong {
-  color: var(--color-primary);
-  font-weight: 600;
-}
-
-/* ── Toggle Button ── */
-.diagnostic-backend-item__toggle {
-  align-self: flex-start;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  padding: 0.22rem 0.6rem;
-  border-radius: 8px;
-  border: 1px solid var(--color-border-subtle);
-  background: var(--color-primary-subtle);
-  color: var(--color-primary);
-  font-size: 0.72rem;
-  cursor: pointer;
-  transition: background 0.15s ease, box-shadow 0.15s ease;
-}
-.diagnostic-backend-item__toggle:hover {
-  background: var(--color-bg-hover);
-  box-shadow: 0 0 6px var(--color-primary-subtle);
-}
-.diagnostic-backend-item__toggle-icon {
-  font-size: 0.7rem;
-  color: var(--color-primary);
-  transition: transform 0.25s ease;
-}
-.diagnostic-backend-item__toggle-icon--open {
-  transform: rotate(90deg);
-}
-
 /* ── Expand/Collapse Animation ── */
 .slide-expand-enter-active,
 .slide-expand-leave-active {
@@ -521,186 +356,77 @@ function qualityToneFor(value) {
   opacity: 1;
 }
 
-/* ── Details (expanded) ── */
-.diagnostic-backend-item__details {
-  display: flex;
-  flex-direction: column;
-  gap: 0.4rem;
-}
-.diagnostic-backend-item__details-grid {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 0.4rem;
-}
-@media (max-width: 520px) {
-  .diagnostic-backend-item__details-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-.diagnostic-backend-item__reason {
-  font-size: 0.72rem;
-  color: var(--color-text-secondary);
-}
-
-/* ── Children ── */
-.diagnostic-backend-item__children {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-  padding-top: 0.4rem;
-  border-top: 1px solid var(--color-border-subtle);
-}
-.diagnostic-backend-item__child-title {
-  font-size: 0.68rem;
-  font-weight: 600;
-  color: var(--color-text-tertiary);
-  margin-bottom: 0.15rem;
-}
-.diagnostic-child-list {
-  display: flex;
-  flex-direction: column;
-  gap: 0.35rem;
-}
-.diagnostic-child-item {
-  display: flex;
+/* ── Generic Pill ── */
+.pill {
+  display: inline-flex;
   align-items: center;
-  flex-wrap: wrap;
-  gap: 0.4rem;
-  padding: 0.25rem 0;
-  border-bottom: 1px solid var(--color-border-subtle);
+  padding: 2px 10px;
+  border-radius: var(--radius-full);
+  font-size: 0.65rem;
+  font-weight: 700;
 }
-.diagnostic-child-item:last-child {
-  border-bottom: none;
+.pill--success { background: var(--color-success-50); color: var(--color-success); border: 1px solid var(--color-success); }
+.pill--danger { background: var(--color-danger-50); color: var(--color-danger); border: 1px solid var(--color-danger); }
+.pill--warning { background: var(--color-warning-50); color: var(--color-warning); border: 1px solid var(--color-warning); }
+.pill--info { background: var(--color-primary-subtle); color: var(--color-primary); border: 1px solid var(--color-primary); }
+
+/* ── Generic Table ── */
+.diagnostic-table {
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-default);
+  border-radius: 12px;
+  overflow: hidden;
 }
-.diagnostic-child-item__name {
-  font-family: var(--font-mono);
-  font-size: 0.72rem;
-  color: var(--color-text-primary);
-  word-break: break-all;
-}
-.diagnostic-child-item__address {
-  font-family: var(--font-mono);
+.diagnostic-table__header {
+  display: grid;
+  grid-template-columns: 1fr 80px 80px 80px 80px;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
   font-size: 0.7rem;
   color: var(--color-text-tertiary);
-  word-break: break-all;
+  font-weight: 600;
+  border-bottom: 1px solid var(--color-border-default);
 }
-.diagnostic-child-item__metric {
-  font-size: 0.68rem;
-  color: var(--color-text-secondary);
-  white-space: nowrap;
-}
-
-/* ── Factor (in expanded details) ── */
-.diagnostic-factor {
-  padding: 0.4rem 0.5rem;
-  border-radius: 10px;
-  background: var(--color-primary-subtle);
-  border: 1px solid var(--color-border-subtle);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
-  display: flex;
-  flex-direction: column;
-  gap: 0.1rem;
-}
-.diagnostic-factor__label {
-  font-size: 0.6rem;
-  color: var(--color-primary);
-  font-weight: 500;
-}
-.diagnostic-factor__value {
-  font-size: 0.82rem;
-  color: var(--color-text-primary);
-}
-
-/* ── Section Titles ── */
-.diagnostic-modal__section-title { font-weight: 700; color: var(--color-text-primary); margin-bottom: 0.35rem; display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; }
-.diagnostic-modal__section-title--toggle {
-  width: 100%;
-  background: transparent;
-  border: none;
-  padding: 0.3rem 0;
-  cursor: pointer;
-  font: inherit;
-  text-align: left;
-  border-radius: 8px;
-  transition: background 0.15s ease;
-}
-.diagnostic-modal__section-title--toggle:hover {
-  background: var(--color-bg-hover);
-}
-.diagnostic-modal__toggle { font-size: 0.85rem; color: var(--color-text-tertiary); transition: transform 0.2s ease; margin-left: auto; }
-.diagnostic-modal__toggle--open { transform: rotate(90deg); }
-.diagnostic-modal__sample-count { font-size: 0.68rem; font-weight: 600; color: var(--color-text-tertiary); background: var(--color-bg-hover); padding: 2px 7px; border-radius: 999px; }
-
-/* ── Samples ── */
-.diagnostic-modal__samples { display: flex; flex-direction: column; }
-.diagnostic-sample-list {
-  max-height: 220px;
-  overflow-y: auto;
-  border: 1px solid var(--color-border-subtle);
-  border-radius: 14px;
-  padding: 0.3rem 0.4rem;
-  background: var(--color-bg-surface);
-  backdrop-filter: blur(16px);
-  -webkit-backdrop-filter: blur(16px);
-  box-shadow: inset 0 1px 0 rgba(255,255,255,0.03);
-}
-.diagnostic-sample-list::-webkit-scrollbar { width: 6px; }
-.diagnostic-sample-list::-webkit-scrollbar-thumb { background: var(--color-border-default); border-radius: 3px; }
-.diagnostic-sample {
-  display: flex;
-  justify-content: space-between;
-  gap: 1rem;
-  padding: 0.4rem 0.5rem;
+.diagnostic-table__row {
+  display: grid;
+  grid-template-columns: 1fr 80px 80px 80px 80px;
+  gap: 0.5rem;
+  padding: 0.55rem 0.75rem;
+  align-items: center;
   border-bottom: 1px solid var(--color-border-subtle);
-  transition: background 0.12s ease;
 }
-.diagnostic-sample:last-child {
-  border-bottom: none;
-}
-.diagnostic-sample + .diagnostic-sample {
-  margin-top: 0;
-}
-.diagnostic-sample:hover { background: var(--color-bg-hover); }
-.diagnostic-sample--failed { color: var(--color-danger); background: rgba(239, 68, 68, 0.04); }
-.diagnostic-sample--failed:hover { background: rgba(239, 68, 68, 0.08); }
-.diagnostic-sample__left {
+.diagnostic-table__row:last-child { border-bottom: none; }
+.diagnostic-table__row--failed { background: var(--color-danger-50); }
+.diagnostic-table__cell {
   display: flex;
-  gap: 0.55rem;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.82rem;
   min-width: 0;
-  align-items: flex-start;
 }
-.diagnostic-sample__attempt { font-size: 0.72rem; color: var(--color-text-tertiary); font-family: var(--font-mono); min-width: 2.2ch; text-align: right; }
-.diagnostic-sample__status { font-size: 0.65rem; font-weight: 700; padding: 1px 4px; border-radius: var(--radius-sm); font-family: var(--font-mono); }
-.diagnostic-sample__status--success { background: var(--color-success-50); color: var(--color-success); }
-.diagnostic-sample__status--info { background: rgba(56, 189, 248, 0.12); color: #0ea5e9; }
-.diagnostic-sample__status--warning { background: var(--color-warning-50); color: var(--color-warning); }
-.diagnostic-sample__status--danger { background: var(--color-danger-50); color: var(--color-danger); }
-.diagnostic-sample__status--muted { background: var(--color-bg-hover); color: var(--color-text-muted); }
-.diagnostic-sample__backend-wrap {
-  min-width: 0;
+.status-icon--success { color: var(--color-success); }
+.status-icon--danger { color: var(--color-danger); }
+.value-primary { color: var(--color-primary); font-weight: 600; }
+.value-danger { color: var(--color-danger); font-weight: 600; }
+
+/* ── Relay Path Section ── */
+.relay-path-section { margin-bottom: 1rem; }
+.relay-path-section__header {
   display: flex;
-  flex-direction: column;
-  gap: 0.1rem;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+  font-weight: 600;
+  font-size: 0.85rem;
 }
-.diagnostic-sample__backend {
-  font-family: var(--font-mono);
+.relay-path-section__icon { font-size: 1rem; }
+.relay-path-section__title { color: var(--color-text-primary); }
+.relay-path-section__error {
+  margin-top: 0.4rem;
   font-size: 0.78rem;
-  color: var(--color-text-secondary);
-  word-break: break-all;
+  color: var(--color-danger);
+  padding-left: 0.5rem;
 }
-.diagnostic-sample__backend-address {
-  font-family: var(--font-mono);
-  font-size: 0.72rem;
-  color: var(--color-text-tertiary);
-  word-break: break-all;
-}
-.diagnostic-sample__right {
-  font-size: 0.78rem;
-  color: var(--color-text-secondary);
-  white-space: nowrap;
-  font-family: var(--font-mono);
-}
-.diagnostic-sample--failed .diagnostic-sample__right { font-weight: 500; }
 
 /* ── Pulse Animation ── */
 @keyframes diag-pulse {
