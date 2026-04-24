@@ -105,13 +105,70 @@
           </div>
         </div>
 
+        <div class="diagnostic-modal__backend-section">
+          <button
+            type="button"
+            class="diagnostic-modal__section-toggle"
+            @click="showBackends = !showBackends"
+          >
+            <span>{{ showBackends ? '▾' : '▸' }}</span>
+            <span>后端探测结果</span>
+            <span v-if="backendSummaries.length" class="count-badge">{{ backendSummaries.length }} 个</span>
+          </button>
+
+          <Transition name="slide-expand">
+            <div v-if="showBackends" class="diagnostic-table-wrap">
+              <div class="diagnostic-table">
+                <div class="diagnostic-table__header" :style="backendTableGridStyle">
+                  <span>路径</span>
+                  <span style="text-align:center">状态</span>
+                  <span style="text-align:center">延迟</span>
+                  <span style="text-align:center">丢包率</span>
+                  <span v-if="isHTTP" style="text-align:center">持续吞吐</span>
+                  <span style="text-align:center">质量</span>
+                </div>
+                <div
+                  v-for="backend in backendSummaries"
+                  :key="backend.backend"
+                  class="diagnostic-table__row"
+                  :class="{ 'diagnostic-table__row--failed': backend.summary?.succeeded !== backend.summary?.sent }"
+                  :style="backendTableGridStyle"
+                >
+                  <div class="diagnostic-table__cell">
+                    <span :class="(backend.summary?.succeeded === backend.summary?.sent) ? 'status-icon--success' : 'status-icon--danger'">
+                      {{ (backend.summary?.succeeded === backend.summary?.sent) ? '✓' : '✕' }}
+                    </span>
+                    <span class="truncate">{{ ruleLabel }} → {{ backendDisplayLabel(backend) }}{{ backendDisplayAddress(backend) ? ' [' + backendDisplayAddress(backend) + ']' : '' }}</span>
+                  </div>
+                  <span class="diagnostic-table__cell" style="text-align:center">
+                    <span :class="`pill pill--${(backend.summary?.succeeded === backend.summary?.sent) ? 'success' : 'danger'}`">
+                      {{ (backend.summary?.succeeded === backend.summary?.sent) ? '成功' : '失败' }}
+                    </span>
+                  </span>
+                  <span class="diagnostic-table__cell" style="text-align:center">
+                    <span class="value-primary">{{ backend.summary?.avg_latency_ms ?? 0 }} ms</span>
+                  </span>
+                  <span class="diagnostic-table__cell" style="text-align:center">{{ formatPercent(backend.summary?.loss_rate) }}</span>
+                  <span v-if="isHTTP" class="diagnostic-table__cell" style="text-align:center">
+                    <span class="value-primary">{{ formatThroughput(backend.adaptive?.sustained_throughput_bps) }}</span>
+                  </span>
+                  <span class="diagnostic-table__cell" style="text-align:center">
+                    <span :class="`pill pill--${qualityToneFor(backend.summary?.quality)}`">
+                      {{ qualityLabelFor(backend.summary?.quality) }}
+                    </span>
+                  </span>
+                </div>
+              </div>
+            </div>
+          </Transition>
+        </div>
       </template>
     </div>
   </BaseModal>
 </template>
 
 <script setup>
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import BaseModal from './base/BaseModal.vue'
 import { diagnosticStateLabel, diagnosticStateTone } from '../hooks/useDiagnostics'
 
@@ -143,6 +200,15 @@ const pathStats = computed(() => {
   const success = paths.filter(p => p.success).length
   return { total, success, failed: total - success }
 })
+
+const showBackends = ref(false)
+const isHTTP = computed(() => props.kind === 'http')
+const backendSummaries = computed(() => props.task?.result?.backends || [])
+const backendTableGridStyle = computed(() => ({
+  gridTemplateColumns: isHTTP.value
+    ? '1fr 70px 70px 70px 90px 70px'
+    : '1fr 70px 70px 70px 70px'
+}))
 
 function splitBackendIdentity(value) {
   const explicitAddress = typeof value?.address === 'string' ? value.address.trim() : ''
@@ -200,6 +266,15 @@ const qualityTone = computed(() => {
 function formatPercent(value) {
   if (value == null) return '-'
   return `${Math.round(Number(value) * 100)}%`
+}
+
+function formatThroughput(value) {
+  if (value == null) return '-'
+  const num = Number(value)
+  if (!Number.isFinite(num) || num <= 0) return '-'
+  if (num >= 1024 * 1024) return `${(num / (1024 * 1024)).toFixed(1)} MB/s`
+  if (num >= 1024) return `${(num / 1024).toFixed(1)} KB/s`
+  return `${num.toFixed(0)} B/s`
 }
 
 function formatHopPath(hop) {
@@ -433,5 +508,40 @@ function qualityToneFor(value) {
   0% { box-shadow: 0 0 0 0 rgba(13, 148, 136, 0.4); }
   70% { box-shadow: 0 0 14px 8px rgba(13, 148, 136, 0); }
   100% { box-shadow: 0 0 0 0 rgba(13, 148, 136, 0); }
+}
+
+/* ── Backend Section Toggle ── */
+.diagnostic-modal__backend-section { margin-top: 0.5rem; }
+.diagnostic-modal__section-toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: transparent;
+  border: none;
+  padding: 0.5rem 0;
+  color: var(--color-primary);
+  font: inherit;
+  font-weight: 600;
+  font-size: 0.85rem;
+  cursor: pointer;
+  width: 100%;
+  text-align: left;
+}
+.diagnostic-modal__section-toggle:hover {
+  background: var(--color-bg-hover);
+  border-radius: 8px;
+}
+.count-badge {
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--color-text-tertiary);
+  background: var(--color-bg-hover);
+  padding: 2px 7px;
+  border-radius: var(--radius-full);
+}
+.truncate {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 </style>
