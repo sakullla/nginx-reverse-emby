@@ -91,6 +91,76 @@
           <span>{{ isCardExpanded(listener.id) ? '▲' : '▼' }}</span>
           <span>{{ isCardExpanded(listener.id) ? '收起链路拓扑' : '查看链路拓扑' }}</span>
         </div>
+
+        <Transition name="slide-expand">
+          <div v-if="isCardExpanded(listener.id)" class="relay-chain">
+            <div class="relay-chain__node">
+              <div class="relay-chain__dot" style="background:#38bdf8">
+                <span>1</span>
+              </div>
+              <div class="relay-chain__content">
+                <div class="relay-chain__label">绑定地址</div>
+                <div class="relay-chain__values">
+                  <code v-for="host in resolveBindHosts(listener)" :key="host" class="relay-chain__value">
+                    {{ host }}:{{ normalizePort(listener.listen_port) }}
+                  </code>
+                </div>
+              </div>
+            </div>
+
+            <div class="relay-chain__arrow">↓</div>
+
+            <div class="relay-chain__node">
+              <div class="relay-chain__dot" style="background:#a78bfa">
+                <span>2</span>
+              </div>
+              <div class="relay-chain__content">
+                <div class="relay-chain__label">公网端点</div>
+                <code class="relay-chain__value">{{ formatPublicEndpoint(listener) }}</code>
+              </div>
+            </div>
+
+            <div class="relay-chain__arrow">↓</div>
+
+            <div class="relay-chain__node">
+              <div class="relay-chain__dot" style="background:#fbbf24">
+                <span>3</span>
+              </div>
+              <div class="relay-chain__content">
+                <div class="relay-chain__label">传输配置</div>
+                <div class="relay-chain__tags">
+                  <span class="relay-chain__tag">{{ transportSummary(listener) }}</span>
+                  <span class="relay-chain__tag">{{ obfsSummary(listener) }}</span>
+                  <span v-if="listener.transport_mode === 'quic'" class="relay-chain__tag">{{ fallbackSummary(listener) }}</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="relay-chain__arrow">↓</div>
+
+            <div class="relay-chain__node">
+              <div class="relay-chain__dot" style="background:#34d399">
+                <span>4</span>
+              </div>
+              <div class="relay-chain__content">
+                <div class="relay-chain__label">TLS 信任模式</div>
+                <span class="relay-chain__tag">{{ trustSummary(listener) }}</span>
+              </div>
+            </div>
+
+            <div class="relay-chain__arrow">↓</div>
+
+            <div class="relay-chain__node">
+              <div class="relay-chain__dot" style="background:#f87171">
+                <span>5</span>
+              </div>
+              <div class="relay-chain__content">
+                <div class="relay-chain__label">证书</div>
+                <span class="relay-chain__tag">{{ listener.certificate_id ? '证书 #' + listener.certificate_id : '未绑定证书' }}</span>
+              </div>
+            </div>
+          </div>
+        </Transition>
       </article>
     </div>
 
@@ -564,5 +634,90 @@ function isCardExpanded(listenerId) {
   .btn-text {
     display: none;
   }
+}
+
+/* ── Chain Topology ── */
+.relay-chain {
+  margin-top: 0.75rem;
+  padding: 0.75rem;
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-default);
+  border-radius: 12px;
+}
+.relay-chain__node {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+.relay-chain__dot {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #0f172a;
+  font-size: 0.65rem;
+  font-weight: 700;
+  flex-shrink: 0;
+  margin-top: 0.1rem;
+}
+.relay-chain__arrow {
+  padding-left: 7px;
+  color: var(--color-text-muted);
+  font-size: 0.8rem;
+  line-height: 1.2;
+}
+.relay-chain__content {
+  flex: 1;
+}
+.relay-chain__label {
+  font-size: 0.72rem;
+  color: var(--color-text-tertiary);
+  margin-bottom: 0.2rem;
+}
+.relay-chain__values {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+.relay-chain__value {
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--color-text-primary);
+  background: var(--color-bg-canvas);
+  padding: 0.25rem 0.5rem;
+  border-radius: 6px;
+  display: inline-block;
+}
+.relay-chain__tags {
+  display: flex;
+  gap: 0.25rem;
+  flex-wrap: wrap;
+}
+.relay-chain__tag {
+  font-size: 0.7rem;
+  padding: 2px 8px;
+  background: var(--color-bg-canvas);
+  color: var(--color-text-secondary);
+  border: 1px solid var(--color-border-default);
+  border-radius: 6px;
+}
+
+/* ── Slide Expand Transition ── */
+.slide-expand-enter-active,
+.slide-expand-leave-active {
+  transition: max-height 0.3s ease, opacity 0.25s ease;
+  overflow: hidden;
+}
+.slide-expand-enter-from,
+.slide-expand-leave-to {
+  max-height: 0;
+  opacity: 0;
+}
+.slide-expand-enter-to,
+.slide-expand-leave-from {
+  max-height: 400px;
+  opacity: 1;
 }
 </style>
