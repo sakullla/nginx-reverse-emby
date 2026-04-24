@@ -28,6 +28,39 @@ func normalizeRelayChainInput(values []int, protocol string) ([]int, error) {
 	return normalized, nil
 }
 
+func normalizeRelayLayersInput(layers [][]int, protocol string) ([][]int, error) {
+	normalized := make([][]int, 0, len(layers))
+	for _, layer := range layers {
+		normalizedLayer, err := normalizeRelayChainInput(layer, protocol)
+		if err != nil {
+			return nil, err
+		}
+		if len(normalizedLayer) > 0 {
+			normalized = append(normalized, normalizedLayer)
+		}
+	}
+	return normalized, nil
+}
+
+func flattenRelayLayers(layers [][]int) []int {
+	flattened := make([]int, 0)
+	for _, layer := range layers {
+		flattened = append(flattened, layer...)
+	}
+	return flattened
+}
+
+func cloneIntLayers(layers [][]int) [][]int {
+	if layers == nil {
+		return nil
+	}
+	cloned := make([][]int, len(layers))
+	for i, layer := range layers {
+		cloned[i] = append([]int(nil), layer...)
+	}
+	return cloned
+}
+
 func validateRelayChainReferences(ctx context.Context, store relayChainLookupStore, knownAgentIDs []string, relayChain []int) error {
 	if len(relayChain) == 0 {
 		return nil

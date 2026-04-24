@@ -100,6 +100,7 @@ type HTTPRule struct {
 	Tags             []string           `json:"tags"`
 	ProxyRedirect    bool               `json:"proxy_redirect"`
 	RelayChain       []int              `json:"relay_chain"`
+	RelayLayers      [][]int            `json:"relay_layers"`
 	RelayObfs        bool               `json:"relay_obfs"`
 	PassProxyHeaders bool               `json:"pass_proxy_headers"`
 	UserAgent        string             `json:"user_agent"`
@@ -1027,6 +1028,17 @@ func parseIntArray(raw string) []int {
 	}
 	if values == nil {
 		return []int{}
+	}
+	return values
+}
+
+func parseIntLayers(raw string) [][]int {
+	var values [][]int
+	if err := json.Unmarshal([]byte(defaultString(raw, "[]")), &values); err != nil {
+		return [][]int{}
+	}
+	if values == nil {
+		return [][]int{}
 	}
 	return values
 }

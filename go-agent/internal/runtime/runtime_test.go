@@ -249,6 +249,7 @@ func TestActiveSnapshotReturnsSliceIsolation(t *testing.T) {
 				Name:  "X-Test",
 				Value: "one",
 			}},
+			RelayLayers: [][]int{{1, 2}, {3}},
 			Revision: 1,
 		}},
 		L4Rules: []model.L4Rule{{
@@ -270,8 +271,9 @@ func TestActiveSnapshotReturnsSliceIsolation(t *testing.T) {
 					Send:   true,
 				},
 			},
-			RelayChain: []int{1, 2},
-			Revision:   1,
+			RelayChain:  []int{1, 2},
+			RelayLayers: [][]int{{4}, {5, 6}},
+			Revision:    1,
 		}},
 		RelayListeners: []model.RelayListener{{
 			ID:         10,
@@ -316,7 +318,9 @@ func TestActiveSnapshotReturnsSliceIsolation(t *testing.T) {
 	snap := r.ActiveSnapshot()
 	snap.Rules[0].CustomHeaders[0].Value = "mutated"
 	snap.Rules[0].Backends[0].URL = "http://mutated.example.internal:8096"
+	snap.Rules[0].RelayLayers[0][0] = 99
 	snap.L4Rules[0].RelayChain[0] = 99
+	snap.L4Rules[0].RelayLayers[1][0] = 88
 	snap.L4Rules[0].Backends[0].Host = "mutated-host"
 	snap.RelayListeners[0].BindHosts[0] = "127.0.0.99"
 	snap.RelayListeners[0].PinSet[0].Value = "mutated"
@@ -332,8 +336,14 @@ func TestActiveSnapshotReturnsSliceIsolation(t *testing.T) {
 	if current.Rules[0].Backends[0].URL != "http://10.0.0.11:8096" {
 		t.Fatalf("http backends leaked mutation: %+v", current.Rules[0].Backends)
 	}
+	if current.Rules[0].RelayLayers[0][0] != 1 {
+		t.Fatalf("http relay_layers leaked mutation: %+v", current.Rules)
+	}
 	if current.L4Rules[0].RelayChain[0] != 1 {
 		t.Fatalf("l4 relay_chain leaked mutation: %+v", current.L4Rules)
+	}
+	if current.L4Rules[0].RelayLayers[1][0] != 5 {
+		t.Fatalf("l4 relay_layers leaked mutation: %+v", current.L4Rules)
 	}
 	if current.L4Rules[0].Backends[0].Host != "10.0.0.21" {
 		t.Fatalf("l4 backends leaked mutation: %+v", current.L4Rules[0].Backends)

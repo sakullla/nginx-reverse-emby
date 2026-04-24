@@ -141,6 +141,7 @@ func toEmbeddedSnapshot(snapshot Snapshot) goagentembedded.Snapshot {
 			UserAgent:        rule.UserAgent,
 			CustomHeaders:    toEmbeddedHTTPHeaders(rule.CustomHeaders),
 			RelayChain:       append([]int(nil), rule.RelayChain...),
+			RelayLayers:      cloneRelayLayers(rule.RelayLayers),
 			Revision:         rule.Revision,
 		})
 	}
@@ -162,9 +163,10 @@ func toEmbeddedSnapshot(snapshot Snapshot) goagentembedded.Snapshot {
 					Send:   rule.Tuning.ProxyProtocol.Send,
 				},
 			},
-			RelayChain: append([]int(nil), rule.RelayChain...),
-			RelayObfs:  rule.RelayObfs,
-			Revision:   rule.Revision,
+			RelayChain:  append([]int(nil), rule.RelayChain...),
+			RelayLayers: cloneRelayLayers(rule.RelayLayers),
+			RelayObfs:   rule.RelayObfs,
+			Revision:    rule.Revision,
 		})
 	}
 	embedded.RelayListeners = make([]goagentembedded.RelayListener, 0, len(snapshot.RelayListeners))
@@ -281,6 +283,17 @@ func fromEmbeddedSyncRequest(request goagentembedded.SyncRequest) SyncRequest {
 		})
 	}
 	return copyValue
+}
+
+func cloneRelayLayers(layers [][]int) [][]int {
+	if layers == nil {
+		return nil
+	}
+	cloned := make([][]int, len(layers))
+	for i, layer := range layers {
+		cloned[i] = append([]int(nil), layer...)
+	}
+	return cloned
 }
 
 func toEmbeddedHTTPBackends(backends []storage.HTTPBackend) []goagentembedded.HTTPBackend {

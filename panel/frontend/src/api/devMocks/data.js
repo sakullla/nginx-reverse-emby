@@ -261,6 +261,15 @@ function normalizeLoadBalancingStrategy(value) {
   return SUPPORTED_LOAD_BALANCING_STRATEGIES.has(strategy) ? strategy : 'adaptive'
 }
 
+function normalizeRelayLayers(value) {
+  if (!Array.isArray(value)) return []
+  return value
+    .map((layer) => Array.isArray(layer)
+      ? layer.map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0)
+      : [])
+    .filter((layer) => layer.length > 0)
+}
+
 function normalizeHttpRule(rule = {}) {
   const backends = normalizeHttpBackends(rule)
   return {
@@ -326,6 +335,11 @@ function normalizeHttpRulePayloadObject(payload = {}, options = {}) {
   } else if (includeRelayDefaults) {
     normalizedPayload.relay_chain = []
   }
+  if (Array.isArray(payload.relay_layers)) {
+    normalizedPayload.relay_layers = normalizeRelayLayers(payload.relay_layers)
+  } else if (includeRelayDefaults) {
+    normalizedPayload.relay_layers = []
+  }
   if (payload.relay_obfs != null) {
     normalizedPayload.relay_obfs = payload.relay_obfs === true
   } else if (includeRelayDefaults) {
@@ -373,6 +387,11 @@ function normalizeL4RulePayload(payload = {}, options = {}) {
     normalizedPayload.relay_chain = payload.relay_chain
   } else if (includeRelayDefaults) {
     normalizedPayload.relay_chain = []
+  }
+  if (Array.isArray(payload.relay_layers)) {
+    normalizedPayload.relay_layers = normalizeRelayLayers(payload.relay_layers)
+  } else if (includeRelayDefaults) {
+    normalizedPayload.relay_layers = []
   }
   if (payload.relay_obfs != null) {
     normalizedPayload.relay_obfs = payload.relay_obfs === true
@@ -771,6 +790,32 @@ function buildMockDiagnosticResult(kind, ruleId) {
         quality: failed === 0 && avg < 60 ? 'excellent' : failed === 0 ? 'good' : 'fair'
       },
       backends,
+      relay_paths: [
+        {
+          path: [1, 4],
+          selected: true,
+          success: true,
+          latency_ms: Number((avg * 0.7).toFixed(1)),
+          adaptive: { preferred: true, state: 'warm', latency_ms: Number((avg * 0.7).toFixed(1)) },
+          hops: [
+            { from: 'client', to_listener_id: 1, latency_ms: 12.1, success: true },
+            { from_listener_id: 1, to_listener_id: 4, latency_ms: 15.4, success: true },
+            { from_listener_id: 4, to: backendLabels[0], latency_ms: Number(Math.max(5, avg - 12).toFixed(1)), success: true }
+          ]
+        },
+        {
+          path: [2, 4],
+          selected: false,
+          success: failed === 0,
+          latency_ms: failed === 0 ? Number((avg * 1.1).toFixed(1)) : 0,
+          error: failed === 0 ? '' : 'relay dial timeout',
+          adaptive: { preferred: false, state: failed === 0 ? 'recovering' : 'cold' },
+          hops: [
+            { from: 'client', to_listener_id: 2, latency_ms: failed === 0 ? 24.8 : 0, success: failed === 0, error: failed === 0 ? '' : 'timeout' }
+          ]
+        }
+      ],
+      selected_relay_path: [1, 4],
       samples
     }
   }

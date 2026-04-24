@@ -26,6 +26,7 @@ type L4Rule struct {
 	LoadBalancing LoadBalancing `json:"load_balancing,omitempty"`
 	Tuning        L4Tuning      `json:"tuning,omitempty"`
 	RelayChain    []int         `json:"relay_chain,omitempty"`
+	RelayLayers   [][]int       `json:"relay_layers,omitempty"`
 	RelayObfs     bool          `json:"relay_obfs,omitempty"`
 	Enabled       bool          `json:"enabled,omitempty"`
 	Tags          []string      `json:"tags,omitempty"`

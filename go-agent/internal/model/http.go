@@ -24,6 +24,7 @@ type HTTPRule struct {
 	UserAgent        string        `json:"user_agent,omitempty"`
 	CustomHeaders    []HTTPHeader  `json:"custom_headers,omitempty"`
 	RelayChain       []int         `json:"relay_chain,omitempty"`
+	RelayLayers      [][]int       `json:"relay_layers,omitempty"`
 	RelayObfs        bool          `json:"relay_obfs,omitempty"`
 	Enabled          bool          `json:"enabled,omitempty"`
 	Tags             []string      `json:"tags,omitempty"`

@@ -122,11 +122,11 @@ func TestL4RuleServiceCreateAllowsRelayChainForUDP(t *testing.T) {
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{},
 		relayByAgent: map[string][]storage.RelayListenerRow{
-			"local": {{
-				ID:      7,
-				AgentID: "local",
-				Enabled: true,
-			}},
+			"local": {
+				{ID: 7, AgentID: "local", Enabled: true},
+				{ID: 8, AgentID: "local", Enabled: true},
+				{ID: 9, AgentID: "local", Enabled: true},
+			},
 		},
 	}
 	svc := NewL4RuleService(config.Config{
@@ -140,12 +140,19 @@ func TestL4RuleServiceCreateAllowsRelayChainForUDP(t *testing.T) {
 		UpstreamHost: stringPtrL4("upstream"),
 		UpstreamPort: intPtrL4(9001),
 		RelayChain:   &[]int{7},
+		RelayLayers:  &[][]int{{7}, {8, 9}},
 	})
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
 	if len(rule.RelayChain) != 1 || rule.RelayChain[0] != 7 {
 		t.Fatalf("RelayChain = %+v", rule.RelayChain)
+	}
+	if len(rule.RelayLayers) != 2 || len(rule.RelayLayers[1]) != 2 || rule.RelayLayers[1][1] != 9 {
+		t.Fatalf("RelayLayers = %+v", rule.RelayLayers)
+	}
+	if got := store.l4RulesByID["local"][0].RelayLayersJSON; got != `[[7],[8,9]]` {
+		t.Fatalf("persisted relay_layers = %s", got)
 	}
 }
 

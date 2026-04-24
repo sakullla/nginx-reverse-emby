@@ -431,6 +431,44 @@ func TestReportToMapIncludesAdaptiveRecoveryFields(t *testing.T) {
 	}
 }
 
+func TestReportToMapIncludesRelayPathHops(t *testing.T) {
+	report := diagnostics.Report{
+		Kind:   "http",
+		RuleID: 7,
+		Summary: diagnostics.Summary{
+			Sent:      1,
+			Succeeded: 1,
+			Quality:   "good",
+		},
+		RelayPaths: []diagnostics.RelayPathReport{{
+			Path:      []int{1, 4},
+			Selected:  true,
+			Success:   true,
+			LatencyMS: 42.7,
+			Hops: []diagnostics.RelayHopReport{{
+				From:         "client",
+				ToListenerID: 1,
+				LatencyMS:    12.1,
+				Success:      true,
+			}},
+		}},
+		SelectedRelayPath: []int{1, 4},
+	}
+
+	payload := reportToMap(report)
+	relayPaths, ok := payload["relay_paths"].([]diagnostics.RelayPathReport)
+	if !ok || len(relayPaths) != 1 {
+		t.Fatalf("relay_paths = %#v", payload["relay_paths"])
+	}
+	if relayPaths[0].Hops[0].LatencyMS != 12.1 {
+		t.Fatalf("relay hop latency = %+v", relayPaths[0].Hops)
+	}
+	selected, ok := payload["selected_relay_path"].([]int)
+	if !ok || len(selected) != 2 || selected[1] != 4 {
+		t.Fatalf("selected_relay_path = %#v", payload["selected_relay_path"])
+	}
+}
+
 func TestReportToMapOmitsSustainedThroughputWhenAdaptiveSummaryHasNoThroughput(t *testing.T) {
 	report := diagnostics.Report{
 		Kind: "l4_tcp",

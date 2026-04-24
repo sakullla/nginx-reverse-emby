@@ -46,6 +46,7 @@ type L4Rule struct {
 	LoadBalancing L4LoadBalancing `json:"load_balancing"`
 	Tuning        L4Tuning        `json:"tuning"`
 	RelayChain    []int           `json:"relay_chain"`
+	RelayLayers   [][]int         `json:"relay_layers"`
 	RelayObfs     bool            `json:"relay_obfs"`
 	Enabled       bool            `json:"enabled"`
 	Tags          []string        `json:"tags"`
@@ -64,6 +65,7 @@ type L4RuleInput struct {
 	LoadBalancing *L4LoadBalancing `json:"load_balancing,omitempty"`
 	Tuning        *L4Tuning        `json:"tuning,omitempty"`
 	RelayChain    *[]int           `json:"relay_chain,omitempty"`
+	RelayLayers   *[][]int         `json:"relay_layers,omitempty"`
 	RelayObfs     *bool            `json:"relay_obfs,omitempty"`
 	Enabled       *bool            `json:"enabled,omitempty"`
 	Tags          *[]string        `json:"tags,omitempty"`
@@ -387,6 +389,13 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 			return L4Rule{}, err
 		}
 	}
+	relayLayers := cloneIntLayers(fallback.RelayLayers)
+	if input.RelayLayers != nil {
+		relayLayers, err = normalizeRelayLayersInput(*input.RelayLayers, protocol)
+		if err != nil {
+			return L4Rule{}, err
+		}
+	}
 
 	relayObfs := false
 	if fallback.ID > 0 {
@@ -436,6 +445,7 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 		LoadBalancing: loadBalancing,
 		Tuning:        tuning,
 		RelayChain:    relayChain,
+		RelayLayers:   relayLayers,
 		RelayObfs:     relayObfs,
 		Enabled:       enabled,
 		Tags:          tags,
@@ -566,6 +576,7 @@ func l4RuleFromRow(row storage.L4RuleRow) L4Rule {
 		LoadBalancing: L4LoadBalancing{Strategy: "adaptive"},
 		Tuning:        L4Tuning{ProxyProtocol: L4ProxyProtocolTuning{}},
 		RelayChain:    []int{},
+		RelayLayers:   [][]int{},
 		RelayObfs:     row.RelayObfs,
 		Enabled:       row.Enabled,
 		Tags:          parseStringArray(row.TagsJSON),
@@ -587,6 +598,7 @@ func l4RuleFromRow(row storage.L4RuleRow) L4Rule {
 		rule.Tuning = tuning
 	}
 	rule.RelayChain = parseIntArray(row.RelayChainJSON)
+	rule.RelayLayers = parseIntLayers(row.RelayLayersJSON)
 	return rule
 }
 
@@ -604,6 +616,7 @@ func l4RuleToRow(rule L4Rule) storage.L4RuleRow {
 		LoadBalancingJSON: marshalJSON(rule.LoadBalancing, `{"strategy":"adaptive"}`),
 		TuningJSON:        marshalJSON(rule.Tuning, `{"proxy_protocol":{"decode":false,"send":false}}`),
 		RelayChainJSON:    marshalJSON(rule.RelayChain, "[]"),
+		RelayLayersJSON:   marshalJSON(rule.RelayLayers, "[]"),
 		RelayObfs:         rule.RelayObfs,
 		Enabled:           rule.Enabled,
 		TagsJSON:          marshalJSON(rule.Tags, "[]"),

@@ -502,6 +502,7 @@ func normalizeHTTPRuleRow(row *HTTPRuleRow) {
 	row.LoadBalancingJSON = normalizeLoadBalancingJSON(row.LoadBalancingJSON)
 	row.TagsJSON = defaultJSON(row.TagsJSON, "[]")
 	row.RelayChainJSON = defaultJSON(row.RelayChainJSON, "[]")
+	row.RelayLayersJSON = defaultJSON(row.RelayLayersJSON, "[]")
 	row.UserAgent = defaultString(row.UserAgent, "")
 	row.CustomHeadersJSON = defaultJSON(row.CustomHeadersJSON, "[]")
 }
@@ -521,6 +522,7 @@ func normalizeL4RuleRow(row *L4RuleRow) {
 	row.LoadBalancingJSON = normalizeLoadBalancingJSON(row.LoadBalancingJSON)
 	row.TuningJSON = defaultJSON(row.TuningJSON, "{}")
 	row.RelayChainJSON = defaultJSON(row.RelayChainJSON, "[]")
+	row.RelayLayersJSON = defaultJSON(row.RelayLayersJSON, "[]")
 	row.TagsJSON = defaultJSON(row.TagsJSON, "[]")
 }
 
@@ -807,6 +809,7 @@ func SnapshotHTTPRules(rows []HTTPRuleRow) []HTTPRule {
 			UserAgent:        row.UserAgent,
 			CustomHeaders:    parseHTTPHeaders(row.CustomHeadersJSON),
 			RelayChain:       parseIntSlice(row.RelayChainJSON),
+			RelayLayers:      parseIntLayers(row.RelayLayersJSON),
 			RelayObfs:        row.RelayObfs,
 			Revision:         int64(row.Revision),
 		})
@@ -843,6 +846,7 @@ func SnapshotL4Rules(rows []L4RuleRow) []L4Rule {
 			LoadBalancing: parseLoadBalancingStrategy(row.LoadBalancingJSON),
 			Tuning:        parseL4Tuning(row.TuningJSON),
 			RelayChain:    parseIntSlice(row.RelayChainJSON),
+			RelayLayers:   parseIntLayers(row.RelayLayersJSON),
 			RelayObfs:     row.RelayObfs,
 			Revision:      int64(row.Revision),
 		})
@@ -1235,6 +1239,26 @@ func parseIntSlice(raw string) []int {
 	for _, value := range values {
 		if value > 0 {
 			normalized = append(normalized, value)
+		}
+	}
+	return normalized
+}
+
+func parseIntLayers(raw string) [][]int {
+	var values [][]int
+	if err := json.Unmarshal([]byte(defaultString(raw, "[]")), &values); err != nil {
+		return [][]int{}
+	}
+	normalized := make([][]int, 0, len(values))
+	for _, layer := range values {
+		normalizedLayer := make([]int, 0, len(layer))
+		for _, value := range layer {
+			if value > 0 {
+				normalizedLayer = append(normalizedLayer, value)
+			}
+		}
+		if len(normalizedLayer) > 0 {
+			normalized = append(normalized, normalizedLayer)
 		}
 	}
 	return normalized

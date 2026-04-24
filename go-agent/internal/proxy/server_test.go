@@ -2784,6 +2784,29 @@ func TestResolveRelayHopsFormatsIPv6PublicEndpoint(t *testing.T) {
 	}
 }
 
+func TestResolveRelayPathsExpandsRelayLayers(t *testing.T) {
+	rule := model.HTTPRule{
+		FrontendURL: "https://frontend.example",
+		RelayLayers: [][]int{{1, 2}, {3}},
+	}
+	listeners := []model.RelayListener{
+		{ID: 1, Name: "one", ListenHost: "127.0.0.1", ListenPort: 9001, Enabled: true, TLSMode: "pin_only", PinSet: []model.RelayPin{{Type: "sha256", Value: "pin1"}}},
+		{ID: 2, Name: "two", ListenHost: "127.0.0.1", ListenPort: 9002, Enabled: true, TLSMode: "pin_only", PinSet: []model.RelayPin{{Type: "sha256", Value: "pin2"}}},
+		{ID: 3, Name: "three", ListenHost: "127.0.0.1", ListenPort: 9003, Enabled: true, TLSMode: "pin_only", PinSet: []model.RelayPin{{Type: "sha256", Value: "pin3"}}},
+	}
+
+	paths, err := resolveRelayPaths(rule, listeners, "backend:443")
+	if err != nil {
+		t.Fatalf("resolveRelayPaths() error = %v", err)
+	}
+	if len(paths) != 2 {
+		t.Fatalf("paths len = %d, want 2", len(paths))
+	}
+	if !reflect.DeepEqual(paths[0].IDs, []int{1, 3}) || !reflect.DeepEqual(paths[1].IDs, []int{2, 3}) {
+		t.Fatalf("paths = %+v", paths)
+	}
+}
+
 func TestNewTLSListenerAdvertisesHTTP2AndHTTP11Only(t *testing.T) {
 	provider := &testTLSProvider{
 		certificates: map[string]tls.Certificate{

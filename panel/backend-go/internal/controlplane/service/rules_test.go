@@ -121,12 +121,11 @@ func (f *fakeRuleStore) CleanupManagedCertificateMaterial(_ context.Context, pre
 
 func TestRuleServiceCreateNormalizesAndPersists(t *testing.T) {
 	store := &fakeRuleStore{
-		listeners: []storage.RelayListenerRow{{
-			ID:       7,
-			AgentID:  "local",
-			Enabled:  true,
-			Revision: 1,
-		}},
+		listeners: []storage.RelayListenerRow{
+			{ID: 7, AgentID: "local", Enabled: true, Revision: 1},
+			{ID: 8, AgentID: "local", Enabled: true, Revision: 1},
+			{ID: 9, AgentID: "local", Enabled: true, Revision: 1},
+		},
 		rulesByAgent: map[string][]storage.HTTPRuleRow{
 			"local": {{
 				ID:                1,
@@ -160,6 +159,7 @@ func TestRuleServiceCreateNormalizesAndPersists(t *testing.T) {
 		LoadBalancing:    &HTTPLoadBalancing{Strategy: "RANDOM"},
 		Tags:             &[]string{" edge ", ""},
 		RelayChain:       &[]int{7},
+		RelayLayers:      &[][]int{{7}, {8, 9}},
 		RelayObfs:        boolPtrRule(true),
 		CustomHeaders:    &[]HTTPCustomHeader{{Name: "", Value: "drop"}, {Name: " X-Test ", Value: "1"}},
 		PassProxyHeaders: boolPtrRule(false),
@@ -186,6 +186,9 @@ func TestRuleServiceCreateNormalizesAndPersists(t *testing.T) {
 	if len(rule.RelayChain) != 1 || rule.RelayChain[0] != 7 {
 		t.Fatalf("Create() relay_chain = %+v", rule.RelayChain)
 	}
+	if len(rule.RelayLayers) != 2 || len(rule.RelayLayers[1]) != 2 || rule.RelayLayers[1][1] != 9 {
+		t.Fatalf("Create() relay_layers = %+v", rule.RelayLayers)
+	}
 	if !rule.RelayObfs {
 		t.Fatalf("Create() relay_obfs = false")
 	}
@@ -197,6 +200,9 @@ func TestRuleServiceCreateNormalizesAndPersists(t *testing.T) {
 	}
 	if got := len(store.rulesByAgent["local"]); got != 2 {
 		t.Fatalf("persisted rules = %d", got)
+	}
+	if got := store.rulesByAgent["local"][1].RelayLayersJSON; got != `[[7],[8,9]]` {
+		t.Fatalf("persisted relay_layers = %s", got)
 	}
 }
 

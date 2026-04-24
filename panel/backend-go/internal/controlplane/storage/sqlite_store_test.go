@@ -441,6 +441,92 @@ func TestStorePersistsHTTPRules(t *testing.T) {
 	}
 }
 
+func TestStorePersistsHTTPRuleRelayLayers(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromGORM(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	err = store.SaveHTTPRules(t.Context(), "local", []HTTPRuleRow{{
+		ID:                9,
+		AgentID:           "local",
+		FrontendURL:       "https://fanout.example.com",
+		BackendURL:        "http://emby:8096",
+		BackendsJSON:      `[{"url":"http://emby:8096"}]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		Enabled:           true,
+		TagsJSON:          `[]`,
+		RelayChainJSON:    `[1,4]`,
+		RelayLayersJSON:   `[[1,2],[4,5]]`,
+		CustomHeadersJSON: `[]`,
+		Revision:          14,
+	}})
+	if err != nil {
+		t.Fatalf("SaveHTTPRules() error = %v", err)
+	}
+
+	rules, err := store.ListHTTPRules(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListHTTPRules() error = %v", err)
+	}
+	if len(rules) != 1 || rules[0].RelayLayersJSON != `[[1,2],[4,5]]` {
+		t.Fatalf("ListHTTPRules() relay_layers = %+v", rules)
+	}
+}
+
+func TestStorePersistsL4RuleRelayLayers(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromGORM(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	err = store.SaveL4Rules(t.Context(), "local", []L4RuleRow{{
+		ID:                7,
+		AgentID:           "local",
+		Name:              "fanout-l4",
+		Protocol:          "tcp",
+		ListenHost:        "0.0.0.0",
+		ListenPort:        9000,
+		UpstreamHost:      "backend",
+		UpstreamPort:      9001,
+		BackendsJSON:      `[{"host":"backend","port":9001}]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		TuningJSON:        `{"proxy_protocol":{"decode":false,"send":false}}`,
+		RelayChainJSON:    `[7,9]`,
+		RelayLayersJSON:   `[[7,8],[9]]`,
+		Enabled:           true,
+		TagsJSON:          `[]`,
+		Revision:          15,
+	}})
+	if err != nil {
+		t.Fatalf("SaveL4Rules() error = %v", err)
+	}
+
+	rules, err := store.ListL4Rules(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListL4Rules() error = %v", err)
+	}
+	if len(rules) != 1 || rules[0].RelayLayersJSON != `[[7,8],[9]]` {
+		t.Fatalf("ListL4Rules() relay_layers = %+v", rules)
+	}
+}
+
 func TestStoreNormalizesAdaptiveLoadBalancingForHTTPAndL4(t *testing.T) {
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
