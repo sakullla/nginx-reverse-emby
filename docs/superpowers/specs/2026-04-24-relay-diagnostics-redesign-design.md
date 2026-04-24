@@ -55,9 +55,9 @@
 
 | 卡片 | 内容 | 样式 |
 |------|------|------|
-| 总测试数 | `summary.sent` | 默认背景 `var(--color-bg-surface)` |
-| 成功 | `summary.succeeded` | 绿色语义背景 `rgba(16,185,129,0.08)` + 绿色文字 |
-| 失败 | `summary.sent - summary.succeeded` | 红色语义背景 `rgba(239,68,68,0.08)` + 红色文字 |
+| 总测试数 | `summary.sent` | 语义背景 `var(--color-primary-subtle)` + 主题色文字 |
+| 成功 | `summary.succeeded` | 语义背景 `var(--color-success-50)` + `var(--color-success)` 文字 |
+| 失败 | `summary.sent - summary.succeeded` | 语义背景 `var(--color-danger-50)` + `var(--color-danger)` 文字 |
 
 ### 1.4 后端探测结果表格
 
@@ -95,7 +95,7 @@
 
 ### 1.7 失败行高亮
 
-后端探测失败时，整行背景使用 `rgba(239,68,68,0.04)` 轻微高亮，状态列显示红色 pill。
+后端探测失败时，整行背景使用 `var(--color-danger-50)` 轻微高亮，状态列显示 danger pill。
 
 ---
 
@@ -113,6 +113,8 @@
 ### 2.2 链式详情展开
 
 点击「查看链路拓扑」后，在卡片内部下方展开链式详情区域。
+
+> **注意**：当前后端 API 仅返回 Relay 监听器的**配置信息**，不返回每层链路的运行时状态或延迟数据。因此链式详情目前只展示配置拓扑（地址、端口、模式等）。未来后端支持每层状态返回后，可在各节点上叠加状态指示（如延迟、健康状态）。
 
 #### 链路节点（5 个环节）
 
@@ -155,12 +157,12 @@
 
 | 语义 | 参考图（浅色） | 暗色适配 |
 |------|---------------|----------|
-| 成功/优秀 | 绿色 `#16a34a` | `var(--color-success)` |
-| 一般/警告 | 橙色 `#d97706` | `var(--color-warning)` |
-| 失败/很差 | 红色 `#dc2626` | `var(--color-danger)` |
-| 信息 | 蓝色 `#0ea5e9` | `var(--color-primary)` |
-| 背景卡片 | 白色 `#ffffff` | `var(--color-bg-surface)` |
-| 边框 | 浅灰 `#e2e8f0` | `var(--color-border-default)` |
+| 成功/优秀 | 绿色 | `var(--color-success)` |
+| 一般/警告 | 橙色 | `var(--color-warning)` |
+| 失败/很差 | 红色 | `var(--color-danger)` |
+| 信息 | 蓝色 | `var(--color-primary)` |
+| 背景卡片 | 白色 | `var(--color-bg-surface)` |
+| 边框 | 浅灰 | `var(--color-border-default)` |
 
 ---
 
