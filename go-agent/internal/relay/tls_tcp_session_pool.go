@@ -455,9 +455,9 @@ func (t *tlsTCPTunnel) openStream(ctx context.Context, req relayOpenFrame) (net.
 		if !result.OK {
 			t.removeStream(streamID)
 			if result.Error == "" {
-				return nil, muxOpenResult{}, fmt.Errorf("relay connection failed")
+				return nil, muxOpenResult{}, &relayApplicationError{message: "relay connection failed"}
 			}
-			return nil, muxOpenResult{}, fmt.Errorf("relay connection failed: %s", result.Error)
+			return nil, muxOpenResult{}, &relayApplicationError{message: fmt.Sprintf("relay connection failed: %s", result.Error)}
 		}
 		return stream, result, nil
 	case <-ctx.Done():

@@ -359,7 +359,9 @@ func DialWithResult(ctx context.Context, network, target string, chain []Hop, pr
 
 		fallbackConn, fallbackResult, fallbackErr := dialTLSTCPMuxWithResult(ctx, network, target, chain, provider, options)
 		if fallbackErr != nil {
-			clearRelayVerifiedFallback(firstHop)
+			if !isRelayApplicationError(fallbackErr) {
+				clearRelayVerifiedFallback(firstHop)
+			}
 			return nil, DialResult{}, fmt.Errorf("quic relay failed: %v; tls_tcp fallback failed: %w", err, fallbackErr)
 		}
 		markRelayVerifiedFallback(firstHop)
@@ -370,7 +372,9 @@ func DialWithResult(ctx context.Context, network, target string, chain []Hop, pr
 tlsTCPDial:
 	conn, result, err := dialTLSTCPMuxWithResult(ctx, network, target, chain, provider, options)
 	if err != nil {
-		clearRelayVerifiedFallback(firstHop)
+		if !isRelayApplicationError(err) {
+			clearRelayVerifiedFallback(firstHop)
+		}
 		return nil, DialResult{}, err
 	}
 	markRelayVerifiedFallback(firstHop)
@@ -528,6 +532,11 @@ func relayVerifiedFallbackAvailable(firstHop Hop) bool {
 		return false
 	}
 	return relayVerifiedFallbacks != nil && relayVerifiedFallbacks.Has(firstHop)
+}
+
+func isRelayApplicationError(err error) bool {
+	var appErr *relayApplicationError
+	return errors.As(err, &appErr)
 }
 
 func markRelayVerifiedFallback(firstHop Hop) {
