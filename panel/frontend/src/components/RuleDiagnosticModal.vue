@@ -221,7 +221,7 @@ function isSelectedPath(path) {
 
 function classifyHopQuality(latencyMs) {
   if (latencyMs == null) return '不可用'
-  if (latencyMs <= 50) return '优秀'
+  if (latencyMs <= 50) return '极佳'
   if (latencyMs <= 150) return '良好'
   if (latencyMs <= 300) return '一般'
   return '较差'
