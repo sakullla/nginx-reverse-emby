@@ -39,7 +39,6 @@
         <div class='relay-card__header'>
           <div class='relay-card__badges'>
             <span class='relay-card__id'>#{{ listener.id }} · {{ listener.name }}</span>
-            <span class='relay-card__status' :class="`relay-card__status--${statusClass(listener)}`">{{ statusLabel(listener) }}</span>
           </div>
           <div class='relay-card__actions'>
             <button class='relay-card__action relay-card__action--toggle' :title="listener.enabled ? '停用' : '启用'" @click='toggleListener(listener)'>
@@ -82,85 +81,6 @@
         <div v-if="listener.tags?.length" class='relay-card__tags'>
           <span v-for='tag in listener.tags' :key='tag' class='tag'>{{ tag }}</span>
         </div>
-
-        <div
-          class="relay-card__expand"
-          :class="{ 'relay-card__expand--open': isCardExpanded(listener.id) }"
-          @click="toggleCardExpand(listener.id)"
-        >
-          <span>{{ isCardExpanded(listener.id) ? '▲' : '▼' }}</span>
-          <span>{{ isCardExpanded(listener.id) ? '收起链路拓扑' : '查看链路拓扑' }}</span>
-        </div>
-
-        <Transition name="slide-expand">
-          <div v-if="isCardExpanded(listener.id)" class="relay-chain">
-            <div class="relay-chain__node">
-              <div class="relay-chain__dot relay-chain__dot--1">
-                <span>1</span>
-              </div>
-              <div class="relay-chain__content">
-                <div class="relay-chain__label">绑定地址</div>
-                <div class="relay-chain__values">
-                  <code v-for="host in resolveBindHosts(listener)" :key="host" class="relay-chain__value">
-                    {{ host }}:{{ normalizePort(listener.listen_port) }}
-                  </code>
-                </div>
-              </div>
-            </div>
-
-            <div class="relay-chain__arrow">↓</div>
-
-            <div class="relay-chain__node">
-              <div class="relay-chain__dot relay-chain__dot--2">
-                <span>2</span>
-              </div>
-              <div class="relay-chain__content">
-                <div class="relay-chain__label">公网端点</div>
-                <code class="relay-chain__value">{{ formatPublicEndpoint(listener) }}</code>
-              </div>
-            </div>
-
-            <div class="relay-chain__arrow">↓</div>
-
-            <div class="relay-chain__node">
-              <div class="relay-chain__dot relay-chain__dot--3">
-                <span>3</span>
-              </div>
-              <div class="relay-chain__content">
-                <div class="relay-chain__label">传输配置</div>
-                <div class="relay-chain__tags">
-                  <span class="relay-chain__tag">{{ transportSummary(listener) }}</span>
-                  <span class="relay-chain__tag">{{ obfsSummary(listener) }}</span>
-                  <span v-if="listener.transport_mode === 'quic'" class="relay-chain__tag">{{ fallbackSummary(listener) }}</span>
-                </div>
-              </div>
-            </div>
-
-            <div class="relay-chain__arrow">↓</div>
-
-            <div class="relay-chain__node">
-              <div class="relay-chain__dot relay-chain__dot--4">
-                <span>4</span>
-              </div>
-              <div class="relay-chain__content">
-                <div class="relay-chain__label">TLS 信任模式</div>
-                <span class="relay-chain__tag">{{ trustSummary(listener) }}</span>
-              </div>
-            </div>
-
-            <div class="relay-chain__arrow">↓</div>
-
-            <div class="relay-chain__node">
-              <div class="relay-chain__dot relay-chain__dot--5">
-                <span>5</span>
-              </div>
-              <div class="relay-chain__content">
-                <div class="relay-chain__label">证书</div>
-                <span class="relay-chain__tag">{{ listener.certificate_id ? '证书 #' + listener.certificate_id : '未绑定证书' }}</span>
-              </div>
-            </div>
-          </div>
-        </Transition>
       </article>
     </div>
 
@@ -223,16 +143,6 @@ const showAddForm = ref(false)
 const editingListener = ref(null)
 const deletingListener = ref(null)
 const deleteError = ref('')
-
-function statusClass(listener) {
-  if (!listener.enabled) return 'disabled'
-  return 'active'
-}
-
-function statusLabel(listener) {
-  if (!listener.enabled) return '已禁用'
-  return '已启用'
-}
 
 function trustSummary(listener) {
   if (listener.trust_mode_source === 'auto') return '自动 Relay CA + Pin'
@@ -327,18 +237,6 @@ function confirmDelete() {
   })
 }
 
-const expandedCards = ref(new Set())
-
-function toggleCardExpand(listenerId) {
-  const s = new Set(expandedCards.value)
-  if (s.has(listenerId)) s.delete(listenerId)
-  else s.add(listenerId)
-  expandedCards.value = s
-}
-
-function isCardExpanded(listenerId) {
-  return expandedCards.value.has(listenerId)
-}
 </script>
 
 <style scoped>
@@ -432,23 +330,6 @@ function isCardExpanded(listenerId) {
   font-size: 0.75rem;
   font-family: var(--font-mono);
   color: var(--color-text-tertiary);
-}
-
-.relay-card__status {
-  font-size: 0.7rem;
-  font-weight: 700;
-  padding: 2px 8px;
-  border-radius: var(--radius-full);
-}
-.relay-card__status--active {
-  background: var(--color-success-50);
-  color: var(--color-success);
-  border: 1px solid var(--color-success);
-}
-.relay-card__status--disabled {
-  background: var(--color-bg-hover);
-  color: var(--color-text-muted);
-  border: 1px solid var(--color-border-subtle);
 }
 
 .relay-card__actions {
@@ -552,25 +433,6 @@ function isCardExpanded(listenerId) {
   font-weight: 500;
 }
 
-.relay-card__expand {
-  margin-top: 0.5rem;
-  padding-top: 0.5rem;
-  border-top: 1px solid var(--color-border-default);
-  display: flex;
-  align-items: center;
-  gap: 0.4rem;
-  color: var(--color-primary);
-  font-size: 0.75rem;
-  cursor: pointer;
-  transition: color 0.15s;
-}
-.relay-card__expand:hover {
-  color: var(--color-primary-hover);
-}
-.relay-card__expand--open {
-  color: var(--color-primary-hover);
-}
-
 /* Buttons */
 .btn {
   padding: 0.5rem 1rem;
@@ -613,93 +475,4 @@ function isCardExpanded(listenerId) {
   }
 }
 
-/* ── Chain Topology ── */
-.relay-chain {
-  margin-top: 0.75rem;
-  padding: 0.75rem;
-  background: var(--color-bg-surface);
-  border: 1px solid var(--color-border-default);
-  border-radius: 12px;
-}
-.relay-chain__node {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.5rem;
-}
-.relay-chain__dot {
-  width: 22px;
-  height: 22px;
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #0f172a;
-  font-size: 0.65rem;
-  font-weight: 700;
-  flex-shrink: 0;
-  margin-top: 0.1rem;
-}
-.relay-chain__dot--1 { background: var(--color-primary); }
-.relay-chain__dot--2 { background: #a78bfa; }
-.relay-chain__dot--3 { background: var(--color-warning); }
-.relay-chain__dot--4 { background: var(--color-success); }
-.relay-chain__dot--5 { background: var(--color-danger); }
-.relay-chain__arrow {
-  padding-left: 7px;
-  color: var(--color-text-muted);
-  font-size: 0.8rem;
-  line-height: 1.2;
-}
-.relay-chain__content {
-  flex: 1;
-}
-.relay-chain__label {
-  font-size: 0.72rem;
-  color: var(--color-text-tertiary);
-  margin-bottom: 0.2rem;
-}
-.relay-chain__values {
-  display: flex;
-  flex-direction: column;
-  gap: 0.15rem;
-}
-.relay-chain__value {
-  font-family: var(--font-mono);
-  font-size: 0.8rem;
-  color: var(--color-text-primary);
-  background: var(--color-bg-canvas);
-  padding: 0.25rem 0.5rem;
-  border-radius: 6px;
-  display: inline-block;
-}
-.relay-chain__tags {
-  display: flex;
-  gap: 0.25rem;
-  flex-wrap: wrap;
-}
-.relay-chain__tag {
-  font-size: 0.7rem;
-  padding: 2px 8px;
-  background: var(--color-bg-canvas);
-  color: var(--color-text-secondary);
-  border: 1px solid var(--color-border-default);
-  border-radius: 6px;
-}
-
-/* ── Slide Expand Transition ── */
-.slide-expand-enter-active,
-.slide-expand-leave-active {
-  transition: max-height 0.3s ease, opacity 0.25s ease;
-  overflow: hidden;
-}
-.slide-expand-enter-from,
-.slide-expand-leave-to {
-  max-height: 0;
-  opacity: 0;
-}
-.slide-expand-enter-to,
-.slide-expand-leave-from {
-  max-height: 400px;
-  opacity: 1;
-}
 </style>

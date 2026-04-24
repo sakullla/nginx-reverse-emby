@@ -125,7 +125,7 @@
     <BaseModal
       :model-value="showAddForm || !!editingRule"
       :title="editingRule ? '编辑规则' : '添加规则'"
-      size="lg"
+      size="xl"
       :close-on-click-modal="false"
       @update:model-value="closeForm"
     >
@@ -136,7 +136,7 @@
     <BaseModal
       :model-value="showCopyModal"
       title="复制规则"
-      size="lg"
+      size="xl"
       :close-on-click-modal="false"
       @update:model-value="closeForm"
     >

@@ -192,7 +192,7 @@
         <span>当前没有可用的 Relay 监听器，请先创建监听器后再配置链路</span>
       </div>
 
-      <div v-else-if="!form.relay_chain.length" class="relay-alert relay-alert--info">
+      <div v-else-if="!hasRelayConfig" class="relay-alert relay-alert--info">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <circle cx="12" cy="12" r="10"/>
           <line x1="12" y1="16" x2="12" y2="12"/>
@@ -223,7 +223,7 @@
         </div>
 
         <RelayChainInput
-          v-model="form.relay_chain"
+          v-model="form.relay_layers"
           :listeners="relayListeners"
         />
       </div>
@@ -263,7 +263,7 @@
         </div>
         <ul class="relay-help__list">
           <li>Relay 链路支持 TCP 和 UDP；UDP 会通过 UOT 或 QUIC Relay 进行中继</li>
-          <li>链路按顺序转发：客户端 → 中继节点 1 → 中继节点 2 → ... → 后端服务</li>
+          <li>链路按层顺序转发：客户端 → 第 1 层 → 第 2 层 → ... → 后端服务，每层可配置多个并行节点</li>
           <li>每个中继节点需要配置对应的 Relay 监听器</li>
           <li>可通过上下按钮调整链路顺序</li>
           <li>隐私增强仅对首跳为 TLS/TCP 的 TCP 中继生效，UDP 会自动关闭</li>
@@ -350,7 +350,8 @@ function createFormState(initialData) {
     tuning: mergeTuning(initialData?.tuning, protocol),
     enabled: initialData?.enabled !== false,
     tags: Array.isArray(initialData?.tags) ? [...initialData.tags] : [],
-    relay_chain: Array.isArray(initialData?.relay_chain) ? [...initialData.relay_chain] : [],
+    relay_layers: getRelayLayers(initialData),
+    relay_chain: [],
     relay_obfs: initialData?.relay_obfs === true,
   }
 }
@@ -424,17 +425,47 @@ const hasProtocolTuning = computed(() => {
   )
 })
 
+function getRelayLayers(value) {
+  if (Array.isArray(value?.relay_layers) && value.relay_layers.length > 0) {
+    return value.relay_layers
+  }
+  if (Array.isArray(value?.relay_chain) && value.relay_chain.length > 0) {
+    return value.relay_chain.map((id) => [id])
+  }
+  return []
+}
+
+function flattenRelayLayers(layers) {
+  if (!Array.isArray(layers)) return []
+  const result = []
+  for (const layer of layers) {
+    if (Array.isArray(layer) && layer.length > 0) {
+      result.push(layer[0])
+    }
+  }
+  return result
+}
+
 const hasRelayConfig = computed(() => {
-  return Array.isArray(form.value.relay_chain) && form.value.relay_chain.length > 0
+  return Array.isArray(form.value.relay_layers) && form.value.relay_layers.length > 0
 })
 const selectedRelayListeners = computed(() => {
   const listenerMap = new Map(relayListeners.value.map((listener) => [Number(listener.id), listener]))
-  return (Array.isArray(form.value.relay_chain) ? form.value.relay_chain : [])
+  const layers = getRelayLayers(form.value)
+  if (!layers.length) return []
+  return (layers[0] || [])
     .map((id) => listenerMap.get(Number(id)) || null)
+    .filter(Boolean)
 })
-const firstRelayListener = computed(() => selectedRelayListeners.value[0] ?? null)
+const firstRelayListener = computed(() => {
+  const layers = getRelayLayers(form.value)
+  if (!layers.length || !layers[0]?.length) return null
+  const listenerMap = new Map(relayListeners.value.map((listener) => [Number(listener.id), listener]))
+  return listenerMap.get(Number(layers[0][0])) || null
+})
 const relayObfsUnsupportedReason = computed(() => {
-  if (!Array.isArray(form.value.relay_chain) || form.value.relay_chain.length === 0) {
+  const layers = getRelayLayers(form.value)
+  if (!layers.length || !layers[0]?.length) {
     return '当前为直连模式，此选项不会生效'
   }
   if (form.value.protocol !== 'tcp') {
@@ -465,10 +496,10 @@ watch(() => form.value.protocol, (newProto) => {
   }
 })
 
-watch([() => form.value.relay_chain, firstRelayListener], ([relayChain]) => {
+watch([() => form.value.relay_layers, firstRelayListener], ([relayLayers]) => {
   if (
-    !Array.isArray(relayChain)
-    || relayChain.length === 0
+    !Array.isArray(relayLayers)
+    || relayLayers.length === 0
     || firstRelayListener.value?.transport_mode !== 'tls_tcp'
   ) {
     form.value.relay_obfs = false
@@ -575,11 +606,12 @@ function buildPayload() {
     },
     enabled: form.value.enabled,
     tags: [...sysTags, ...userTags],
-    relay_chain: [...form.value.relay_chain],
+    relay_layers: Array.isArray(form.value.relay_layers) ? form.value.relay_layers.map((l) => [...l]) : [],
+    relay_chain: flattenRelayLayers(form.value.relay_layers),
     relay_obfs: form.value.protocol === 'tcp'
       && firstRelayListener.value?.transport_mode === 'tls_tcp'
-      && Array.isArray(form.value.relay_chain)
-      && form.value.relay_chain.length > 0
+      && Array.isArray(form.value.relay_layers)
+      && form.value.relay_layers.length > 0
       && form.value.relay_obfs === true,
   }
 
@@ -718,8 +750,8 @@ async function handleSubmit() {
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  padding: var(--space-3);
-  background: var(--color-bg-subtle);
+  padding: var(--space-2) var(--space-3);
+  background: var(--color-bg-surface);
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-lg);
   transition: all var(--duration-fast);
@@ -810,9 +842,10 @@ async function handleSubmit() {
 /* Tab Bar */
 .form-tabs {
   display: flex;
-  border-bottom: 1px solid var(--color-border-default);
+  border-bottom: 1.5px solid var(--color-border-subtle);
   gap: 0;
-  margin-bottom: var(--space-4);
+  margin-bottom: var(--space-2);
+  padding: 0 var(--space-2);
 }
 
 .form-tabs__btn {
@@ -823,15 +856,16 @@ async function handleSubmit() {
   font-size: var(--text-sm);
   font-weight: var(--font-medium);
   color: var(--color-text-muted);
-  border-bottom: 2px solid transparent;
+  border-bottom: 2.5px solid transparent;
   transition: all var(--duration-fast);
   display: flex;
   align-items: center;
   gap: var(--space-2);
+  margin-bottom: -1px;
 }
 
-.form-tabs__btn:hover { color: var(--color-text-secondary); background: var(--color-bg-hover); }
-.form-tabs__btn--active { color: var(--color-primary); border-bottom-color: var(--color-primary); }
+.form-tabs__btn:hover { color: var(--color-text-secondary); }
+.form-tabs__btn--active { color: var(--color-primary); border-bottom-color: var(--color-primary); font-weight: var(--font-semibold); }
 
 .form-tabs__badge {
   font-size: 9px;
@@ -846,8 +880,8 @@ async function handleSubmit() {
 .form-tab-panel {
   display: flex;
   flex-direction: column;
-  gap: var(--space-4);
-  margin-bottom: var(--space-4);
+  gap: var(--space-3);
+  padding-top: var(--space-1);
 }
 
 .advanced-group {
@@ -941,7 +975,7 @@ async function handleSubmit() {
 .tag-input {
   background: var(--color-bg-surface);
   border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-md);
+  border-radius: var(--radius-lg);
   transition: all var(--duration-fast) var(--ease-default);
   max-width: 100%;
   overflow: hidden;
@@ -1081,13 +1115,13 @@ async function handleSubmit() {
 }
 
 .relay-alert--warning {
-  background: var(--color-warning-50);
+  background: var(--color-bg-surface);
   border: 1px solid var(--color-warning);
   color: var(--color-warning);
 }
 
 .relay-alert--info {
-  background: var(--color-primary-subtle);
+  background: var(--color-bg-surface);
   border: 1px solid var(--color-primary);
   color: var(--color-primary);
 }
@@ -1113,10 +1147,10 @@ async function handleSubmit() {
 }
 
 .relay-help {
-  padding: var(--space-4);
-  background: var(--color-bg-subtle);
-  border: 1px solid var(--color-border-subtle);
-  border-radius: var(--radius-lg);
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-xl);
 }
 
 .relay-help__title {
@@ -1149,11 +1183,12 @@ async function handleSubmit() {
 .settings-card {
   display: flex;
   flex-direction: column;
-  gap: var(--space-2);
-  padding: var(--space-3);
-  background: var(--color-bg-subtle);
-  border: 1px solid var(--color-border-subtle);
-  border-radius: var(--radius-lg);
+  gap: var(--space-3);
+  padding: var(--space-4);
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--shadow-sm);
 }
 
 .form-tab-panel > .settings-card {
@@ -1225,8 +1260,8 @@ async function handleSubmit() {
 .form-tab-panel .toggle--card {
   padding: 10px var(--space-3);
   background: var(--color-bg-surface);
-  border-radius: var(--radius-md);
-  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-border-default);
 }
 
 .form-tab-panel .toggle--card .toggle__label {

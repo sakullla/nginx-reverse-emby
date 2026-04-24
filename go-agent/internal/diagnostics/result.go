@@ -49,8 +49,12 @@ type Report struct {
 type RelayHopReport struct {
 	From           string  `json:"from,omitempty"`
 	FromListenerID int     `json:"from_listener_id,omitempty"`
+	FromListenerName string `json:"from_listener_name,omitempty"`
+	FromAgentName    string `json:"from_agent_name,omitempty"`
 	To             string  `json:"to,omitempty"`
 	ToListenerID   int     `json:"to_listener_id,omitempty"`
+	ToListenerName string  `json:"to_listener_name,omitempty"`
+	ToAgentName    string  `json:"to_agent_name,omitempty"`
 	LatencyMS      float64 `json:"latency_ms,omitempty"`
 	Success        bool    `json:"success"`
 	Error          string  `json:"error,omitempty"`

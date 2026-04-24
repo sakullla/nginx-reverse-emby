@@ -798,9 +798,9 @@ function buildMockDiagnosticResult(kind, ruleId) {
           latency_ms: Number((avg * 0.7).toFixed(1)),
           adaptive: { preferred: true, state: 'warm', latency_ms: Number((avg * 0.7).toFixed(1)) },
           hops: [
-            { from: 'client', to_listener_id: 1, latency_ms: 12.1, success: true },
-            { from_listener_id: 1, to_listener_id: 4, latency_ms: 15.4, success: true },
-            { from_listener_id: 4, to: backendLabels[0], latency_ms: Number(Math.max(5, avg - 12).toFixed(1)), success: true }
+            { from: 'client', to_listener_id: 1, to_listener_name: 'relay-a', to_agent_name: '本机 Agent', latency_ms: 12.1, success: true },
+            { from_listener_id: 1, from_listener_name: 'relay-a', from_agent_name: '本机 Agent', to_listener_id: 4, to_listener_name: 'relay-d', to_agent_name: 'edge-1', latency_ms: 15.4, success: true },
+            { from_listener_id: 4, from_listener_name: 'relay-d', from_agent_name: 'edge-1', to: backendLabels[0], latency_ms: Number(Math.max(5, avg - 12).toFixed(1)), success: true }
           ]
         },
         {
@@ -811,7 +811,9 @@ function buildMockDiagnosticResult(kind, ruleId) {
           error: failed === 0 ? '' : 'relay dial timeout',
           adaptive: { preferred: false, state: failed === 0 ? 'recovering' : 'cold' },
           hops: [
-            { from: 'client', to_listener_id: 2, latency_ms: failed === 0 ? 24.8 : 0, success: failed === 0, error: failed === 0 ? '' : 'timeout' }
+            { from: 'client', to_listener_id: 2, to_listener_name: 'relay-b', to_agent_name: 'edge-1', latency_ms: failed === 0 ? 24.8 : 0, success: failed === 0, error: failed === 0 ? '' : 'timeout' },
+            { from_listener_id: 2, from_listener_name: 'relay-b', from_agent_name: 'edge-1', to_listener_id: 4, to_listener_name: 'relay-d', to_agent_name: 'edge-1', latency_ms: failed === 0 ? 18.2 : 0, success: failed === 0, error: failed === 0 ? '' : 'timeout' },
+            { from_listener_id: 4, from_listener_name: 'relay-d', from_agent_name: 'edge-1', to: backendLabels[1], latency_ms: failed === 0 ? Number(Math.max(5, avg - 8).toFixed(1)) : 0, success: failed === 0, error: failed === 0 ? '' : 'timeout' }
           ]
         }
       ],
@@ -1254,11 +1256,32 @@ const mockRelayListenersByAgent = {
       allow_self_signed: true,
       tags: ['relay', 'shared'],
       revision: 3
+    },
+    {
+      id: 4,
+      agent_id: 'edge-1',
+      name: 'relay-d',
+      bind_hosts: ['0.0.0.0'],
+      listen_port: 9443,
+      public_host: 'relay-d.example.com',
+      enabled: true,
+      certificate_id: 2,
+      certificate_source: 'auto_relay_ca',
+      trust_mode_source: 'auto',
+      tls_mode: 'pin_and_ca',
+      transport_mode: 'tls_tcp',
+      allow_transport_fallback: true,
+      obfs_mode: 'off',
+      pin_set: [{ type: 'spki_sha256', value: 'derived-pin-d' }],
+      trusted_ca_certificate_ids: [4],
+      allow_self_signed: true,
+      tags: ['relay', 'shared'],
+      revision: 1
     }
   ]
 }
 
-let mockRelayListenerIdCounter = 2
+let mockRelayListenerIdCounter = 4
 
 function findMockRelayListenerCertificate(agentId, certificateId) {
   const certificates = mockCertsByAgent[agentId] || []

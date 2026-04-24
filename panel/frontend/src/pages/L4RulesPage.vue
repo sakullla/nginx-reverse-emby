@@ -68,7 +68,7 @@
     <BaseModal
       :model-value="showAddForm || !!editingRule"
       :title="editingRule ? '编辑 L4 规则' : '添加 L4 规则'"
-      size="lg"
+      size="xl"
       :close-on-click-modal="false"
       @update:model-value="closeForm"
     >
@@ -79,7 +79,7 @@
     <BaseModal
       :model-value="showCopyModal"
       title="复制 L4 规则"
-      size="lg"
+      size="xl"
       :close-on-click-modal="false"
       @update:model-value="closeCopy"
     >
