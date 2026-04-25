@@ -34,6 +34,12 @@
           </svg>
           L4 规则
         </RouterLink>
+        <RouterLink to="/relay-listeners" class="more-dropdown__item" @click.stop="moreOpen = false">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M8 12h8"/><path d="M6 8h12"/><path d="M10 16h4"/><circle cx="4" cy="12" r="2"/><circle cx="20" cy="12" r="2"/>
+          </svg>
+          Relay 监听器
+        </RouterLink>
         <RouterLink to="/agents" class="more-dropdown__item" @click.stop="moreOpen = false">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
@@ -62,6 +68,7 @@ const moreRef = ref(null)
 
 const isMoreActive = computed(() =>
   route.path.startsWith('/l4') ||
+  route.path.startsWith('/relay-listeners') ||
   route.path.startsWith('/agents') ||
   route.path.startsWith('/settings')
 )

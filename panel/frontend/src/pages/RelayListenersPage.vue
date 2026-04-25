@@ -473,6 +473,19 @@ function confirmDelete() {
   .btn-text {
     display: none;
   }
+  .relay-grid {
+    grid-template-columns: 1fr;
+  }
+  .relay-card {
+    padding: 1rem;
+  }
+  .relay-card__action {
+    width: 36px;
+    height: 36px;
+  }
+  .relay-page__header {
+    margin-bottom: 1rem;
+  }
 }
 
 </style>

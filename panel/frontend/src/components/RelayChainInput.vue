@@ -140,7 +140,7 @@
                   type="button"
                   class="relay-editor__add-btn"
                   :disabled="disabled || !availableForLayer(layerIndex).length"
-                  @click="toggleDropdown(layerIndex)"
+                  @click.stop="toggleDropdown(layerIndex)"
                 >
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                     <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
@@ -164,7 +164,7 @@
                     v-for="listener in filteredAvailableForLayer(layerIndex)"
                     :key="listener.id"
                     class="relay-editor__dropdown-item"
-                    @click="addNode(layerIndex, listener.id)"
+                    @click.stop="addNode(layerIndex, listener.id)"
                   >
                     <span class="relay-editor__dropdown-id">#{{ listener.id }}</span>
                     <span class="relay-editor__dropdown-name">{{ listener.name || `监听器 ${listener.id}` }}</span>
@@ -425,11 +425,11 @@ function onDocumentClick(e) {
 }
 
 onMounted(() => {
-  document.addEventListener('click', onDocumentClick)
+  document.addEventListener('click', onDocumentClick, true)
 })
 
 onUnmounted(() => {
-  document.removeEventListener('click', onDocumentClick)
+  document.removeEventListener('click', onDocumentClick, true)
 })
 </script>
 
@@ -941,6 +941,64 @@ onUnmounted(() => {
 
 .relay-editor__path-arrow {
   color: var(--color-text-muted);
+}
+
+/* Mobile responsive */
+@media (max-width: 640px) {
+  .relay-editor__flow {
+    padding: 0.5rem 0.75rem;
+    gap: 0.125rem;
+  }
+  .relay-editor__flow-node {
+    padding: 0.25rem 0.5rem;
+    font-size: 0.6875rem;
+  }
+  .relay-editor__flow-arrow svg {
+    width: 12px;
+    height: 12px;
+  }
+  .relay-editor__layer-header {
+    padding: 0.5rem 0.625rem;
+  }
+  .relay-editor__layer-body {
+    padding: 0.625rem;
+    gap: 0.5rem;
+  }
+  .relay-editor__action {
+    width: 32px;
+    height: 32px;
+  }
+  .relay-editor__chip {
+    padding: 0.5rem 0.75rem;
+    font-size: 0.875rem;
+  }
+  .relay-editor__chip-remove {
+    width: 24px;
+    height: 24px;
+  }
+  .relay-editor__add-btn {
+    padding: 0.5rem 0.875rem;
+    font-size: 0.875rem;
+  }
+  .relay-editor__dropdown-menu {
+    left: auto;
+    right: 0;
+    min-width: unset;
+    width: min(320px, calc(100vw - 2rem));
+    max-height: 240px;
+  }
+  .relay-editor__dropdown-item {
+    padding: 0.625rem 0.75rem;
+  }
+  .relay-editor__add-layer {
+    padding: 0.75rem;
+  }
+  .relay-editor__preview-toggle {
+    padding: 0.75rem 0.625rem;
+  }
+  .relay-editor__path-row {
+    padding: 0.5rem 0.625rem;
+  }
 }
 
 /* Empty state - no listeners */
