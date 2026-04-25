@@ -24,7 +24,8 @@ func (d Dependencies) handleAgentRuleDiagnose(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	if _, err := d.RuleService.Get(r.Context(), agentID, ruleID); err != nil {
+	rule, err := d.RuleService.Get(r.Context(), agentID, ruleID)
+	if err != nil {
 		status, body := mapServiceError(err)
 		writeJSON(w, status, body)
 		return
@@ -37,6 +38,7 @@ func (d Dependencies) handleAgentRuleDiagnose(w http.ResponseWriter, r *http.Req
 			"rule_id":   ruleID,
 			"rule_kind": "http",
 		},
+		TTL: diagnosticTaskTTL(service.TaskTypeDiagnoseHTTPRule, diagnosticHTTPBackendCount(rule)),
 	})
 	if err != nil {
 		status, body := mapServiceError(err)
@@ -82,6 +84,7 @@ func (d Dependencies) handleAgentL4RuleDiagnose(w http.ResponseWriter, r *http.R
 			"rule_id":   ruleID,
 			"rule_kind": "l4_tcp",
 		},
+		TTL: diagnosticTaskTTL(service.TaskTypeDiagnoseL4TCPRule, diagnosticL4BackendCount(rule)),
 	})
 	if err != nil {
 		status, body := mapServiceError(err)
@@ -94,6 +97,41 @@ func (d Dependencies) handleAgentL4RuleDiagnose(w http.ResponseWriter, r *http.R
 		"task_id": task.ID,
 		"task":    task,
 	})
+}
+
+func diagnosticTaskTTL(taskType string, backendCount int) time.Duration {
+	if backendCount <= 0 {
+		backendCount = 1
+	}
+	candidateCount := backendCount * 2
+	var perAttempt time.Duration
+	switch taskType {
+	case service.TaskTypeDiagnoseL4TCPRule:
+		perAttempt = 3 * time.Second
+	default:
+		perAttempt = 5 * time.Second
+	}
+	return time.Duration(5*candidateCount)*perAttempt + 15*time.Second
+}
+
+func diagnosticHTTPBackendCount(rule service.HTTPRule) int {
+	if len(rule.Backends) > 0 {
+		return len(rule.Backends)
+	}
+	if strings.TrimSpace(rule.BackendURL) != "" {
+		return 1
+	}
+	return 1
+}
+
+func diagnosticL4BackendCount(rule service.L4Rule) int {
+	if len(rule.Backends) > 0 {
+		return len(rule.Backends)
+	}
+	if strings.TrimSpace(rule.UpstreamHost) != "" && rule.UpstreamPort > 0 {
+		return 1
+	}
+	return 1
 }
 
 func (d Dependencies) handleAgentTask(w http.ResponseWriter, r *http.Request) {

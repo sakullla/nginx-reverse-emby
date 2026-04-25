@@ -4,6 +4,7 @@ import (
 	"context"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
@@ -170,6 +171,55 @@ func TestLocalTaskSessionDiagnoseHTTPRuleUsesEmbeddedDiagnosticsPayload(t *testi
 	}
 	if store.snapAgent != "agent-1" {
 		t.Fatalf("LoadLocalSnapshot() agent = %q", store.snapAgent)
+	}
+}
+
+func TestLocalTaskSessionUsesEnvelopeDeadlineForDiagnosticsContext(t *testing.T) {
+	reporter := &stubReporter{}
+	store := &stubStore{
+		httpRule: storage.HTTPRuleRow{
+			ID:      10,
+			AgentID: "agent-1",
+			Enabled: true,
+		},
+		httpOk: true,
+		snapshot: storage.Snapshot{
+			Rules: []storage.HTTPRule{{
+				ID:          10,
+				AgentID:     "agent-1",
+				FrontendURL: "https://media.example.com",
+				BackendURL:  "http://127.0.0.1:8096",
+				Backends:    []storage.HTTPBackend{{URL: "http://127.0.0.1:8096"}},
+			}},
+		},
+	}
+
+	deadline := time.Now().Add(2 * time.Minute).UTC()
+	previousRunner := runEmbeddedDiagnostics
+	t.Cleanup(func() { runEmbeddedDiagnostics = previousRunner })
+	runEmbeddedDiagnostics = func(ctx context.Context, _ string, _ storage.Snapshot, _ service.TaskEnvelope) (map[string]any, error) {
+		got, ok := ctx.Deadline()
+		if !ok {
+			t.Fatalf("diagnostic context has no deadline")
+		}
+		if got.Before(deadline.Add(-time.Second)) || got.After(deadline.Add(time.Second)) {
+			t.Fatalf("deadline = %s, want near envelope deadline %s", got, deadline)
+		}
+		return map[string]any{"kind": "http", "rule_id": 10, "summary": map[string]any{"sent": 1}}, nil
+	}
+
+	sess := NewLocalTaskSession("agent-1", reporter, store)
+	sess.SendTask(service.TaskEnvelope{
+		ID:       "task-deadline",
+		Type:     service.TaskTypeDiagnoseHTTPRule,
+		Payload:  map[string]any{"rule_id": 10},
+		Deadline: deadline,
+	})
+	sess.Close()
+
+	update := reporter.lastUpdate()
+	if update.State != "completed" {
+		t.Fatalf("state = %q, want completed; error = %q", update.State, update.Error)
 	}
 }
 

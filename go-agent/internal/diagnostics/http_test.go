@@ -1427,6 +1427,67 @@ func TestHTTPProberDiagnoseAdaptiveHistoryExcludesCurrentProbeSamples(t *testing
 	}
 }
 
+func TestHTTPProberDiagnoseRelayResolvedChildAdaptiveHistoryExcludesCurrentProbeSamples(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	backendURL, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	provider := newDiagnosticTLSMaterialProvider()
+	listener := newDiagnosticRelayListener(t, provider, 541, "relay.internal.test")
+	previousDialWithResult := diagnosticRelayDialWithResult
+	previousResolveCandidates := diagnosticRelayResolveCandidates
+	t.Cleanup(func() {
+		diagnosticRelayDialWithResult = previousDialWithResult
+		diagnosticRelayResolveCandidates = previousResolveCandidates
+	})
+
+	target := "relay-target.example:" + backendURL.Port()
+	diagnosticRelayResolveCandidates = func(ctx context.Context, target string, chain []relay.Hop, provider relay.TLSMaterialProvider) ([]string, error) {
+		return []string{target}, nil
+	}
+	diagnosticRelayDialWithResult = func(ctx context.Context, network, target string, chain []relay.Hop, provider relay.TLSMaterialProvider, opts ...relay.DialOptions) (net.Conn, relay.DialResult, error) {
+		conn, err := (&net.Dialer{}).DialContext(ctx, network, backendURL.Host)
+		if err != nil {
+			return nil, relay.DialResult{}, err
+		}
+		return conn, relay.DialResult{SelectedAddress: target}, nil
+	}
+
+	cache := backends.NewCache(backends.Config{})
+	baselineKey := backends.RelayBackoffKey([]int{541}, target)
+	cache.ObserveTransferSuccess(baselineKey, 40*time.Millisecond, 80*time.Millisecond, 256*1024)
+	prober := NewHTTPProber(HTTPProberConfig{
+		Attempts:      3,
+		Timeout:       time.Second,
+		Cache:         cache,
+		RelayProvider: provider,
+	})
+
+	report, err := prober.Diagnose(context.Background(), model.HTTPRule{
+		ID:          203,
+		FrontendURL: "https://frontend.example",
+		BackendURL:  "http://" + target + "/healthz",
+		RelayChain:  []int{541},
+	}, []model.RelayListener{listener})
+	if err != nil {
+		t.Fatalf("Diagnose() error = %v", err)
+	}
+	if summary := cache.Summary(baselineKey); summary.RecentSucceeded != 4 {
+		t.Fatalf("shared relay summary = %+v, want diagnostic samples persisted for path health", summary)
+	}
+	if len(report.Backends) != 1 || len(report.Backends[0].Children) != 1 || report.Backends[0].Children[0].Adaptive == nil {
+		t.Fatalf("Backends = %+v", report.Backends)
+	}
+	if got := report.Backends[0].Children[0].Adaptive.RecentSucceeded; got != 1 {
+		t.Fatalf("child RecentSucceeded = %d, want baseline history without current diagnostic samples", got)
+	}
+}
+
 func TestBuildHTTPAdaptiveReportsUsesSharedTrafficMixForConfiguredPerformance(t *testing.T) {
 	base := time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
 	cache := backends.NewCache(backends.Config{

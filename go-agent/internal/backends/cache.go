@@ -39,6 +39,7 @@ const (
 	throughputWeightUnitScale           = 2.0
 	minQualifiedThroughputSamples       = 2
 	minQualifiedThroughputWeight        = 1.5
+	pruneInterval                       = 5 * time.Minute
 )
 
 type Cache struct {
@@ -48,11 +49,19 @@ type Cache struct {
 	randomIntn   func(n int) int
 	backoffBase  time.Duration
 	backoffLimit time.Duration
+	lastPruned   time.Time
 
 	dnsCache   map[string]dnsCacheEntry
 	failures   map[string]failureEntry
 	roundRobin map[string]int
 	observed   map[string]candidateObservation
+}
+
+type PruneStats struct {
+	DNSEntries         int
+	FailureEntries     int
+	RoundRobinEntries  int
+	ObservationEntries int
 }
 
 type dnsCacheEntry struct {
@@ -219,7 +228,69 @@ func (c *Cache) Clone() *Cache {
 	return clone
 }
 
+func (c *Cache) Prune() PruneStats {
+	if c == nil {
+		return PruneStats{}
+	}
+
+	now := c.now()
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return c.pruneLocked(now, true)
+}
+
+func (c *Cache) maybePrune() {
+	if c == nil {
+		return
+	}
+	now := c.now()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.pruneLocked(now, false)
+}
+
+func (c *Cache) pruneLocked(now time.Time, force bool) PruneStats {
+	if !force && !c.lastPruned.IsZero() && now.Sub(c.lastPruned) < pruneInterval {
+		return PruneStats{}
+	}
+	c.lastPruned = now
+
+	stats := PruneStats{}
+	for key, entry := range c.dnsCache {
+		if !now.Before(entry.expiresAt) {
+			delete(c.dnsCache, key)
+			stats.DNSEntries++
+		}
+	}
+	if force {
+		for key, entry := range c.failures {
+			observation := c.observed[key]
+			if !now.Before(entry.retryAfter) && !observation.retainsFailureState(now) {
+				delete(c.failures, key)
+				stats.FailureEntries++
+			}
+		}
+	}
+	for key, observation := range c.observed {
+		if observation.inactive(now) {
+			delete(c.observed, key)
+			stats.ObservationEntries++
+		}
+	}
+	if force {
+		for key := range c.roundRobin {
+			delete(c.roundRobin, key)
+			stats.RoundRobinEntries++
+		}
+	}
+	return stats
+}
+
 func (c *Cache) Resolve(ctx context.Context, endpoint Endpoint) ([]Candidate, error) {
+	c.maybePrune()
+
 	host := strings.TrimSpace(endpoint.Host)
 	if host == "" {
 		return nil, fmt.Errorf("backend host is required")
@@ -328,6 +399,7 @@ func (c *Cache) ObserveBackendSuccess(scope string, latency time.Duration, total
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	c.pruneLocked(now, false)
 	entry := c.observed[key]
 	entry.recordSuccess(now, latency, totalDuration, bytesTransferred, c.slowStartWindowForKey(key))
 	c.observed[key] = entry
@@ -345,6 +417,7 @@ func (c *Cache) ObserveBackendFailure(scope string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	c.pruneLocked(now, false)
 	c.applyFailureLocked(key, now)
 }
 
@@ -359,6 +432,7 @@ func (c *Cache) ObserveTransferSuccess(address string, latency time.Duration, to
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	c.pruneLocked(now, false)
 	entry := c.observed[key]
 	entry.recordSuccess(now, latency, totalDuration, bytesTransferred, c.slowStartWindowForKey(key))
 	c.observed[key] = entry
@@ -413,6 +487,7 @@ func (c *Cache) MarkFailure(address string) time.Duration {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	c.pruneLocked(now, false)
 	return c.applyFailureLocked(key, now)
 }
 
@@ -917,6 +992,48 @@ func effectivePerformance(preference candidatePreference, allowThroughput bool, 
 func (o candidateObservation) recentCounts(now time.Time) (int, int) {
 	successes, failures, _, _, _ := o.windowStats(now)
 	return successes, failures
+}
+
+func (o candidateObservation) inactive(now time.Time) bool {
+	successes, failures, _, samples, weight := o.windowStats(now)
+	if successes > 0 || failures > 0 || samples > 0 || weight > 0 {
+		return false
+	}
+	if o.inBackoff(now) {
+		return false
+	}
+	if !o.recoveryUntil.IsZero() && now.Before(o.recoveryUntil) {
+		return false
+	}
+	if !o.slowStartUntil.IsZero() && now.Before(o.slowStartUntil) {
+		return false
+	}
+	if !o.outlierUntil.IsZero() && now.Before(o.outlierUntil) {
+		return false
+	}
+	if !o.lastSuccessAt.IsZero() && now.Sub(o.lastSuccessAt) < observationWindow {
+		return false
+	}
+	if !o.lastThroughputAt.IsZero() && now.Sub(o.lastThroughputAt) < observationWindow {
+		return false
+	}
+	if !o.lastUpdated.IsZero() && now.Sub(o.lastUpdated) < observationWindow {
+		return false
+	}
+	return true
+}
+
+func (o candidateObservation) retainsFailureState(now time.Time) bool {
+	if o.inBackoff(now) {
+		return true
+	}
+	if o.hadBackoff && !o.recoveryUntil.IsZero() && now.Before(o.recoveryUntil) {
+		return true
+	}
+	if !o.slowStartUntil.IsZero() && now.Before(o.slowStartUntil) {
+		return true
+	}
+	return false
 }
 
 func (o candidateObservation) recentTrafficMix(now time.Time) trafficMix {

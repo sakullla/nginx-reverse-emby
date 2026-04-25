@@ -488,6 +488,41 @@ func TestTCPAdaptiveReportsOmitHTTPOnlyAdaptiveSignals(t *testing.T) {
 	}
 }
 
+func TestTCPAdaptiveReportsPreferScopedBackendHistoryForSingleResolvedChild(t *testing.T) {
+	cache := backends.NewCache(backends.Config{})
+
+	groupKey := "backend|tcp:0.0.0.0:9551|single.example:9001"
+	configuredLabel := "single.example:9001"
+	childAddress := "10.0.0.10:9001"
+
+	cache.ObserveBackendSuccess(groupKey, 15*time.Millisecond, 15*time.Millisecond, 0)
+	cache.ObserveBackendSuccess(groupKey, 15*time.Millisecond, 15*time.Millisecond, 0)
+	cache.ObserveTransferSuccess(childAddress, 80*time.Millisecond, 80*time.Millisecond, 0)
+
+	annotated := buildTCPAdaptiveReports([]BackendReport{
+		{Backend: childAddress, Summary: Summary{}},
+	}, []tcpProbeCandidate{{
+		address:         childAddress,
+		backendLabel:    childAddress,
+		configuredLabel: configuredLabel,
+		groupKey:        groupKey,
+		resolvedCandidates: []tcpResolvedCandidate{{
+			label:   childAddress,
+			address: childAddress,
+		}},
+	}}, cache)
+
+	if len(annotated) != 1 || annotated[0].Adaptive == nil {
+		t.Fatalf("annotated = %+v", annotated)
+	}
+	if got := annotated[0].Adaptive.RecentSucceeded; got != 2 {
+		t.Fatalf("RecentSucceeded = %d, want scoped backend history", got)
+	}
+	if got := annotated[0].Adaptive.LatencyMS; got != 15 {
+		t.Fatalf("LatencyMS = %v, want scoped backend history", got)
+	}
+}
+
 func TestTCPAdaptiveReportsUsePerChildRelayPathSummaries(t *testing.T) {
 	base := time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC)
 	cache := backends.NewCache(backends.Config{
@@ -1044,6 +1079,67 @@ func TestTCPProberDiagnoseAdaptiveHistoryExcludesCurrentProbeSamples(t *testing.
 	}
 	if got := report.Backends[0].Adaptive.RecentFailed; got != 0 {
 		t.Fatalf("RecentFailed = %d, want baseline history without current probe sample", got)
+	}
+}
+
+func TestTCPProberDiagnoseRelayResolvedChildAdaptiveHistoryExcludesCurrentProbeSamples(t *testing.T) {
+	actualAddress, _, stopTarget := startDiagnosticTCPTarget(t)
+	defer stopTarget()
+
+	_, actualPort := splitDiagnosticTCPAddr(t, actualAddress)
+	provider := newDiagnosticTLSMaterialProvider()
+	listener := newDiagnosticRelayListener(t, provider, 542, "relay.internal.test")
+	previousDialWithResult := diagnosticRelayDialWithResult
+	previousResolveCandidates := diagnosticRelayResolveCandidates
+	t.Cleanup(func() {
+		diagnosticRelayDialWithResult = previousDialWithResult
+		diagnosticRelayResolveCandidates = previousResolveCandidates
+	})
+
+	target := "relay-target.example:" + strconv.Itoa(actualPort)
+	diagnosticRelayResolveCandidates = func(ctx context.Context, target string, chain []relay.Hop, provider relay.TLSMaterialProvider) ([]string, error) {
+		return []string{target}, nil
+	}
+	diagnosticRelayDialWithResult = func(ctx context.Context, network, target string, chain []relay.Hop, provider relay.TLSMaterialProvider, opts ...relay.DialOptions) (net.Conn, relay.DialResult, error) {
+		conn, err := (&net.Dialer{}).DialContext(ctx, network, actualAddress)
+		if err != nil {
+			return nil, relay.DialResult{}, err
+		}
+		return conn, relay.DialResult{SelectedAddress: target}, nil
+	}
+
+	cache := backends.NewCache(backends.Config{})
+	baselineKey := backends.RelayBackoffKey([]int{542}, target)
+	cache.ObserveTransferSuccess(baselineKey, 40*time.Millisecond, 40*time.Millisecond, 0)
+	prober := NewTCPProber(TCPProberConfig{
+		Attempts:      3,
+		Timeout:       time.Second,
+		Cache:         cache,
+		RelayProvider: provider,
+	})
+
+	report, err := prober.Diagnose(context.Background(), model.L4Rule{
+		ID:         204,
+		Protocol:   "tcp",
+		ListenHost: "0.0.0.0",
+		ListenPort: 9556,
+		RelayChain: []int{542},
+		Backends: []model.L4Backend{{
+			Host: "relay-target.example",
+			Port: actualPort,
+		}},
+	}, []model.RelayListener{listener})
+	if err != nil {
+		t.Fatalf("Diagnose() error = %v", err)
+	}
+	if summary := cache.Summary(baselineKey); summary.RecentSucceeded != 4 {
+		t.Fatalf("shared relay summary = %+v, want diagnostic samples persisted for path health", summary)
+	}
+	if len(report.Backends) != 1 || report.Backends[0].Adaptive == nil {
+		t.Fatalf("Backends = %+v", report.Backends)
+	}
+	if got := report.Backends[0].Adaptive.RecentSucceeded; got != 1 {
+		t.Fatalf("backend RecentSucceeded = %d, want baseline history without current diagnostic samples", got)
 	}
 }
 

@@ -776,6 +776,115 @@ func TestHandleAgentRuleDiagnoseDispatchesTask(t *testing.T) {
 	}
 }
 
+func TestHandleAgentRuleDiagnoseBudgetsMultiBackendTaskTTL(t *testing.T) {
+	taskState := &fakeTaskServiceState{}
+	router, err := NewRouter(Dependencies{
+		Config: config.Config{PanelToken: "secret"},
+		SystemService: fakeSystemService{
+			info: service.SystemInfo{
+				Role:              "master",
+				LocalApplyRuntime: "go-agent",
+				DefaultAgentID:    "local",
+				LocalAgentEnabled: true,
+			},
+		},
+		AgentService: fakeAgentService{},
+		RuleService: fakeRuleService{
+			rules: map[string][]service.HTTPRule{
+				"edge-a": {{
+					ID:          7,
+					AgentID:     "edge-a",
+					FrontendURL: "https://edge.example.test",
+					Backends: []service.HTTPRuleBackend{
+						{URL: "http://127.0.0.1:8080"},
+						{URL: "http://127.0.0.2:8080"},
+					},
+				}},
+			},
+		},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+		TaskService: fakeTaskService{
+			createResult: service.TaskRecord{ID: "task-1", AgentID: "edge-a", Type: service.TaskTypeDiagnoseHTTPRule, State: "dispatched"},
+			state:        taskState,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/panel-api/agents/edge-a/rules/7/diagnose", nil)
+	req.Header.Set("X-Panel-Token", "secret")
+	resp := httptest.NewRecorder()
+
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", resp.Code, http.StatusAccepted)
+	}
+	if len(taskState.createRequests) != 1 {
+		t.Fatalf("createRequests = %+v", taskState.createRequests)
+	}
+	if got := taskState.createRequests[0].TTL; got <= 30*time.Second {
+		t.Fatalf("diagnostic TTL = %s, want longer than default 30s", got)
+	}
+}
+
+func TestHandleAgentRuleDiagnoseBudgetsResolvedHTTPCandidates(t *testing.T) {
+	taskState := &fakeTaskServiceState{}
+	router, err := NewRouter(Dependencies{
+		Config: config.Config{PanelToken: "secret"},
+		SystemService: fakeSystemService{
+			info: service.SystemInfo{
+				Role:              "master",
+				LocalApplyRuntime: "go-agent",
+				DefaultAgentID:    "local",
+				LocalAgentEnabled: true,
+			},
+		},
+		AgentService: fakeAgentService{},
+		RuleService: fakeRuleService{
+			rules: map[string][]service.HTTPRule{
+				"edge-a": {{
+					ID:          7,
+					AgentID:     "edge-a",
+					FrontendURL: "https://edge.example.test",
+					BackendURL:  "http://origin.example.test:8080",
+				}},
+			},
+		},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+		TaskService: fakeTaskService{
+			createResult: service.TaskRecord{ID: "task-1", AgentID: "edge-a", Type: service.TaskTypeDiagnoseHTTPRule, State: "dispatched"},
+			state:        taskState,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/panel-api/agents/edge-a/rules/7/diagnose", nil)
+	req.Header.Set("X-Panel-Token", "secret")
+	resp := httptest.NewRecorder()
+
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d", resp.Code, http.StatusAccepted)
+	}
+	if len(taskState.createRequests) != 1 {
+		t.Fatalf("createRequests = %+v", taskState.createRequests)
+	}
+	if got, wantAtLeast := taskState.createRequests[0].TTL, 65*time.Second; got < wantAtLeast {
+		t.Fatalf("diagnostic TTL = %s, want at least %s for two resolved candidates", got, wantAtLeast)
+	}
+}
+
 func TestHandleAgentL4RuleDiagnoseDispatchesTask(t *testing.T) {
 	taskState := &fakeTaskServiceState{}
 	router, err := NewRouter(Dependencies{
