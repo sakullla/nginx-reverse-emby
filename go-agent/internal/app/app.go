@@ -282,6 +282,9 @@ func (a *App) DiagnoseSnapshot(ctx context.Context, snapshot Snapshot, taskType 
 	if a == nil || a.httpProber == nil || a.tcpProber == nil {
 		return nil, errors.New("diagnostic handler is not configured")
 	}
+	if err := a.applyManagedCertificates(ctx, snapshot); err != nil {
+		return nil, err
+	}
 	mem := store.NewInMemory()
 	if err := mem.SaveAppliedSnapshot(snapshot); err != nil {
 		return nil, err
