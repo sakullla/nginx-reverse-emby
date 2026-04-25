@@ -181,10 +181,9 @@ onUnmounted(() => {
   align-items: center;
   justify-content: space-between;
   gap: var(--space-4);
-  padding: var(--space-5) var(--space-6);
+  padding: var(--space-4) var(--space-6);
   border-bottom: 1px solid var(--color-border-subtle);
   flex-shrink: 0;
-  background: var(--gradient-soft);
 }
 
 .modal__title {

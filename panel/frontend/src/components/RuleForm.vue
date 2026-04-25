@@ -16,7 +16,7 @@
         @click="activeTab = 'headers'"
       >
         高级配置
-        <span v-if="hasRequestHeaderConfig" class="form-tabs__badge">已配置</span>
+        <span v-if="hasRequestHeaderConfig" class="form-tabs__dot" title="已配置"></span>
       </button>
       <button
         type="button"
@@ -25,7 +25,7 @@
         @click="activeTab = 'relay'"
       >
         Relay 配置
-        <span v-if="hasRelayConfig" class="form-tabs__badge">已配置</span>
+        <span v-if="hasRelayConfig" class="form-tabs__dot" title="已配置"></span>
       </button>
     </div>
 
@@ -1020,27 +1020,31 @@ async function handleSubmit() {
 
 .form-tabs {
   display: flex;
-  border-bottom: 1.5px solid var(--color-border-subtle);
-  gap: 0;
-  margin-bottom: var(--space-2);
+  gap: 2px;
+  margin-bottom: var(--space-3);
   flex-shrink: 0;
-  padding: 0 var(--space-2);
+  padding: 3px;
+  background: var(--color-bg-subtle);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-lg);
 }
 
 .form-tabs__btn {
-  padding: var(--space-2) var(--space-4);
+  padding: 6px var(--space-4);
   border: none;
   background: transparent;
   cursor: pointer;
   font-size: var(--text-sm);
   font-weight: var(--font-medium);
   color: var(--color-text-muted);
-  border-bottom: 2.5px solid transparent;
+  border-radius: var(--radius-md);
   transition: all var(--duration-fast);
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  margin-bottom: -1px;
+  flex: 1;
+  justify-content: center;
+  white-space: nowrap;
 }
 
 .form-tabs__btn:hover {
@@ -1049,17 +1053,17 @@ async function handleSubmit() {
 
 .form-tabs__btn--active {
   color: var(--color-primary);
-  border-bottom-color: var(--color-primary);
+  background: var(--color-bg-surface);
   font-weight: var(--font-semibold);
+  box-shadow: var(--shadow-sm);
 }
 
-.form-tabs__badge {
-  font-size: 10px;
-  font-weight: var(--font-bold);
-  padding: 1px 6px;
-  background: var(--color-primary-subtle);
-  color: var(--color-primary);
-  border-radius: var(--radius-sm);
+.form-tabs__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-success);
+  flex-shrink: 0;
 }
 
 .form-tab-panel {
@@ -1964,13 +1968,8 @@ async function handleSubmit() {
   }
 
   .form-tabs__btn {
-    padding: var(--space-2) var(--space-3);
+    padding: 5px var(--space-3);
     font-size: var(--text-xs);
-  }
-
-  .form-tabs__badge {
-    font-size: 8px;
-    padding: 0 4px;
   }
 
   .settings-card {
@@ -2048,7 +2047,7 @@ async function handleSubmit() {
 /* iPhone SE 等小屏幕 */
 @media (max-width: 375px) and (max-height: 812px) {
   .form-tabs__btn {
-    padding: var(--space-2) var(--space-2);
+    padding: 5px var(--space-2);
     font-size: 11px;
   }
 
