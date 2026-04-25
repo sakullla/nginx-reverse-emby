@@ -44,7 +44,7 @@
     </div>
 
     <div class="agent-detail__tabs">
-      <button v-for="tab in tabs" :key="tab.id" class="tab-btn" :class="{ active: activeTab === tab.id }" @click="activeTab = tab.id">{{ tab.label }}</button>
+      <button v-for="tab in tabs" :key="tab.id" class="tab-btn" :class="{ 'tab-btn--active': activeTab === tab.id }" @click="activeTab = tab.id">{{ tab.label }}</button>
     </div>
 
     <div class="agent-detail__tab-content">
@@ -223,9 +223,10 @@ function timeAgo(date) {
 .stat-mini { flex: 1; background: var(--color-bg-surface); border: 1.5px solid var(--color-border-default); border-radius: var(--radius-xl); padding: 1rem; text-align: center; }
 .stat-mini__value { display: block; font-size: 1.5rem; font-weight: 700; color: var(--color-text-primary); }
 .stat-mini__label { font-size: 0.75rem; color: var(--color-text-tertiary); }
-.agent-detail__tabs { display: flex; gap: 0.25rem; border-bottom: 1.5px solid var(--color-border-default); margin-bottom: 1.5rem; }
-.tab-btn { padding: 0.5rem 1rem; border: none; background: transparent; color: var(--color-text-secondary); font-size: 0.875rem; cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1.5px; transition: all 0.15s; font-family: inherit; }
-.tab-btn.active { color: var(--color-primary); border-bottom-color: var(--color-primary); font-weight: 500; }
+.agent-detail__tabs { display: flex; gap: 2px; margin-bottom: 1.5rem; padding: 3px; background: var(--color-bg-subtle); border: 1px solid var(--color-border-default); border-radius: var(--radius-lg); }
+.tab-btn { padding: 6px 1rem; border: none; background: transparent; color: var(--color-text-muted); font-size: 0.875rem; font-weight: 500; cursor: pointer; border-radius: var(--radius-md); transition: all 0.15s; font-family: inherit; flex: 1; text-align: center; white-space: nowrap; }
+.tab-btn:hover { color: var(--color-text-secondary); }
+.tab-btn--active { color: var(--color-primary); background: var(--color-bg-surface); font-weight: 600; box-shadow: var(--shadow-sm); }
 .tab-panel__header { display: flex; justify-content: flex-end; margin-bottom: 1rem; }
 .rules-preview { display: flex; flex-direction: column; gap: 0.5rem; }
 .rule-preview-item { display: flex; gap: 0.75rem; padding: 0.75rem 1rem; background: var(--color-bg-surface); border: 1px solid var(--color-border-subtle); border-radius: var(--radius-lg); font-size: 0.8125rem; }

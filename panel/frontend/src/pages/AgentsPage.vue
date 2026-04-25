@@ -27,46 +27,50 @@
       </div>
     </div>
 
-    <!-- No search results -->
+    <!-- Filter Bar -->
+    <AgentFilterBar
+      v-model:view="view"
+      v-model:status-filter="statusFilter"
+      v-model:mode-filter="modeFilter"
+      v-model:tag-filter="tagFilter"
+      v-model:sort-field="sortField"
+      v-model:sort-order="sortOrder"
+      :available-tags="availableTags"
+      :has-active-filters="hasActiveFilters"
+      @clear-filters="clearFilters"
+      @toggle-sort-order="toggleSortOrder"
+    />
+
+    <!-- Empty with filters -->
     <div v-if="agents.length && !filteredAgents.length" class="agents-page__empty">
       <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
         <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
       </svg>
-      <p>没有匹配的节点</p>
+      <p>没有符合筛选条件的节点</p>
+      <button class="btn btn-secondary" @click="clearFilters">清除筛选</button>
     </div>
 
-    <!-- Card grid -->
-    <div v-if="filteredAgents.length" class="agent-grid">
-      <div v-for="agent in filteredAgents" :key="agent.id" class="agent-card" @click="router.push(`/agents/${agent.id}`)">
-        <div class="agent-card__header">
-          <div class="agent-card__badges">
-            <span class="agent-card__status-badge" :class="`agent-card__status-badge--${getStatus(agent)}`">{{ getStatusLabel(agent) }}</span>
-            <span class="agent-card__mode-badge">{{ getModeLabel(agent.mode) }}</span>
-          </div>
-          <div class="agent-card__actions" @click.stop>
-            <button class="agent-card__action" title="重命名" @click="startRename(agent)">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-            </button>
-            <button v-if="!agent.is_local" class="agent-card__action agent-card__action--delete" title="删除" @click="startDelete(agent)">
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-            </button>
-          </div>
-        </div>
-        <div class="agent-card__name">{{ agent.name }}</div>
-        <div class="agent-card__url">{{ agent.agent_url ? getHostname(agent.agent_url) : (agent.last_seen_ip || '—') }}</div>
-        <div class="agent-card__stats">
-          <span class="agent-card__stat">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/></svg>
-            HTTP {{ agent.http_rules_count || 0 }}
-          </span>
-          <span class="agent-card__stat">
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/></svg>
-            L4 {{ agent.l4_rules_count || 0 }}
-          </span>
-          <span class="agent-card__last-seen">{{ timeAgo(agent.last_seen_at) }}</span>
-        </div>
-      </div>
+    <!-- Card View -->
+    <div v-else-if="view === 'card' && filteredAgents.length" class="agent-grid">
+      <AgentCard
+        v-for="agent in filteredAgents"
+        :key="agent.id"
+        :agent="agent"
+        @click="router.push(`/agents/${agent.id}`)"
+        @rename="startRename(agent)"
+        @delete="startDelete(agent)"
+      />
     </div>
+
+    <!-- List View -->
+    <AgentTable
+      v-else-if="view === 'list' && filteredAgents.length"
+      :agents="filteredAgents"
+      :clickable="true"
+      @click="agent => router.push(`/agents/${agent.id}`)"
+      @rename="startRename"
+      @delete="startDelete"
+    />
 
     <div v-if="!agents.length && !isLoading" class="agents-page__empty">
       <p>暂无节点</p>
@@ -76,6 +80,7 @@
       <div class="spinner"></div>
     </div>
 
+    <!-- Join Modal -->
     <Teleport to="body">
       <div v-if="showJoinModal" class="modal-overlay">
         <div class="modal modal--lg">
@@ -99,6 +104,7 @@
       </div>
     </Teleport>
 
+    <!-- Rename Modal -->
     <Teleport to="body">
       <div v-if="renamingAgent" class="modal-overlay">
         <div class="modal">
@@ -134,6 +140,10 @@
 import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAgents, useRenameAgent, useDeleteAgent } from '../hooks/useAgents'
+import { useAgentFilters } from '../hooks/useAgentFilters'
+import AgentFilterBar from '../components/AgentFilterBar.vue'
+import AgentCard from '../components/AgentCard.vue'
+import AgentTable from '../components/AgentTable.vue'
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
 import { fetchSystemInfo, applyConfig } from '../api'
 import { useAgent } from '../context/AgentContext'
@@ -147,6 +157,22 @@ const renameAgent = useRenameAgent()
 const deleteAgent = useDeleteAgent()
 const agents = computed(() => data.value ?? [])
 
+// Filter/sort state
+const {
+  view,
+  statusFilter,
+  modeFilter,
+  tagFilter,
+  sortField,
+  sortOrder,
+  searchQuery,
+  availableTags,
+  filteredAgents,
+  hasActiveFilters,
+  clearFilters,
+  toggleSortOrder
+} = useAgentFilters(agents)
+
 const showJoinModal = ref(false)
 const selectedPlatform = ref('linux')
 const copied = ref(false)
@@ -156,23 +182,8 @@ const deletingAgent = ref(null)
 const applying = ref(false)
 
 // Search
-const searchQuery = ref('')
 const searchInputRef = ref(null)
 function focusSearch() { searchInputRef.value?.focus() }
-
-const filteredAgents = computed(() => {
-  const raw = searchQuery.value.trim()
-  if (!raw) return agents.value
-  const idMatch = raw.match(/^#id=(\S+)$/)
-  if (idMatch) return agents.value.filter(agent => String(agent.id) === idMatch[1])
-  const q = raw.toLowerCase()
-  return agents.value.filter(agent =>
-    String(agent.name || '').toLowerCase().includes(q) ||
-    String(agent.agent_url || '').toLowerCase().includes(q) ||
-    String(agent.last_seen_ip || '').toLowerCase().includes(q) ||
-    (agent.tags || []).some(tag => String(tag).toLowerCase().includes(q))
-  )
-})
 
 async function handleApply() {
   if (!selectedAgentId.value || applying.value) return
@@ -212,39 +223,6 @@ const totalHttpRules = computed(() => {
 const totalL4Rules = computed(() => {
   return (agents.value || []).reduce((sum, a) => sum + (a.l4_rules_count || 0), 0)
 })
-
-function getStatus(agent) {
-  if (agent.status === 'offline') return 'offline'
-  if (agent.last_apply_status === 'failed') return 'failed'
-  if (agent.desired_revision > agent.current_revision) return 'pending'
-  return 'online'
-}
-
-function getStatusLabel(agent) {
-  const map = { online: '在线', offline: '离线', failed: '失败', pending: '同步中' }
-  return map[getStatus(agent)] || '—'
-}
-
-function getHostname(url) {
-  try { return url ? new URL(url).hostname : '' } catch { return '' }
-}
-
-function getModeLabel(mode) {
-  if (mode === 'local') return '本机'
-  if (mode === 'master') return '主控'
-  return '拉取'
-}
-
-function timeAgo(date) {
-  if (!date) return '—'
-  const seconds = Math.floor((Date.now() - new Date(date)) / 1000)
-  if (seconds < 60) return '刚刚'
-  const m = Math.floor(seconds / 60)
-  if (m < 60) return `${m}m`
-  const h = Math.floor(m / 60)
-  if (h < 24) return `${h}h`
-  return `${Math.floor(h / 24)}d`
-}
 
 function getCurrentCommand() {
   return platforms.value.find(p => p.id === selectedPlatform.value)?.command || ''
@@ -312,65 +290,10 @@ function confirmDelete() {
 .agents-page__title { font-size: 1.5rem; font-weight: 700; margin: 0 0 0.25rem; color: var(--color-text-primary); }
 .agents-page__subtitle { font-size: 0.875rem; color: var(--color-text-tertiary); margin: 0; }
 
-/* Search wrapper */
-.search-wrapper { display: flex; align-items: center; position: relative; }
-.search-icon-btn { display: none; }
-.search-input { flex: 1; min-width: 0; padding: 0.5rem 2rem 0.5rem 0.75rem; border-radius: var(--radius-lg); border: 1.5px solid var(--color-border-default); background: var(--color-bg-subtle); font-size: 0.875rem; color: var(--color-text-primary); outline: none; font-family: inherit; transition: border-color 0.15s, width 0.2s; box-sizing: border-box; }
-.search-input:focus { border-color: var(--color-primary); width: 280px; }
-.search-input::placeholder { color: var(--color-text-muted); }
-.clear-btn { display: flex; align-items: center; justify-content: center; width: 18px; height: 18px; border: none; background: var(--color-bg-hover); border-radius: 50%; color: var(--color-text-secondary); cursor: pointer; flex-shrink: 0; padding: 0; position: absolute; right: 8px; z-index: 2; }
-
-@media (max-width: 640px) {
-  .search-wrapper { width: 36px; height: 36px; border-radius: var(--radius-lg); border: 1.5px solid var(--color-border-default); background: var(--color-bg-subtle); cursor: pointer; display: flex; align-items: center; justify-content: center; position: relative; }
-  .search-icon-btn { display: flex; color: var(--color-text-secondary); }
-  .search-input { position: absolute; left: 0; top: 0; width: 200px; height: 36px; opacity: 0; pointer-events: none; transition: opacity 0.2s, width 0.2s; }
-  .search-wrapper:focus-within { width: 200px; }
-  .search-wrapper:focus-within .search-input { opacity: 1; pointer-events: auto; border-color: var(--color-primary); }
-  .search-wrapper:focus-within .clear-btn { opacity: 1; pointer-events: auto; }
-  .clear-btn { opacity: 0; pointer-events: none; position: absolute; right: 8px; z-index: 2; transition: opacity 0.2s; }
-}
-
 /* Card grid */
-.agent-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1rem; }
-.agent-card {
-  background: var(--color-bg-surface);
-  border: 1.5px solid var(--color-border-default);
-  border-radius: var(--radius-xl);
-  padding: 1.125rem 1.25rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  cursor: pointer;
-  transition: border-color 0.15s, transform 0.1s;
-}
-.agent-card:hover { border-color: var(--color-primary); transform: translateY(-1px); }
-.agent-card__header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.125rem; }
-.agent-card__badges { display: flex; align-items: center; gap: 0.5rem; }
-.agent-card__status-badge { font-size: 0.75rem; font-weight: 600; padding: 2px 8px; border-radius: var(--radius-full); }
-.agent-card__status-badge--online { background: var(--color-success-50); color: var(--color-success); }
-.agent-card__status-badge--offline { background: var(--color-bg-subtle); color: var(--color-text-muted); }
-.agent-card__status-badge--failed { background: var(--color-danger-50); color: var(--color-danger); }
-.agent-card__status-badge--pending { background: var(--color-warning-50); color: var(--color-warning); }
-.agent-card__mode-badge { font-size: 0.75rem; padding: 1px 6px; background: var(--color-primary-subtle); color: var(--color-primary); border-radius: var(--radius-full); font-weight: 500; }
-.agent-card__name { font-size: 1rem; font-weight: 600; color: var(--color-text-primary); }
-.agent-card__url { font-size: 0.8125rem; color: var(--color-text-tertiary); font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.agent-card__stats { display: flex; align-items: center; gap: 0.75rem; margin-top: 0.25rem; }
-.agent-card__stat { display: flex; align-items: center; gap: 0.25rem; font-size: 0.75rem; color: var(--color-text-tertiary); }
-.agent-card__last-seen { font-size: 0.75rem; color: var(--color-text-muted); margin-left: auto; }
-.agent-card__actions { display: flex; gap: 0.25rem; }
-.agent-card__action { display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; border-radius: var(--radius-md); border: none; background: transparent; color: var(--color-text-tertiary); cursor: pointer; transition: all 0.15s; }
-.agent-card__action:hover { background: var(--color-bg-hover); color: var(--color-text-primary); }
-.agent-card__action--delete:hover { background: var(--color-danger-50); color: var(--color-danger); }
+.agent-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1rem; }
 
 .agents-page__empty, .agents-page__loading { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.75rem; padding: 4rem 2rem; color: var(--color-text-muted); text-align: center; }
-
-.btn { padding: 0.5rem 1rem; border-radius: var(--radius-lg); font-size: 0.875rem; font-weight: 500; cursor: pointer; transition: all 0.15s; border: none; font-family: inherit; display: inline-flex; align-items: center; gap: 0.375rem; }
-.btn-primary { background: var(--gradient-primary); color: white; }
-.btn-secondary { background: var(--color-bg-subtle); color: var(--color-text-primary); border: 1px solid var(--color-border-default); }
-.btn-danger { background: var(--color-danger); color: white; }
-.btn-sm { padding: 0.25rem 0.75rem; font-size: 0.8125rem; }
-.spinner { width: 24px; height: 24px; border: 2px solid var(--color-border-default); border-top-color: var(--color-primary); border-radius: 50%; animation: spin 1s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
 
 /* Modals */
 .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); backdrop-filter: blur(4px); z-index: var(--z-modal); display: flex; align-items: center; justify-content: center; }

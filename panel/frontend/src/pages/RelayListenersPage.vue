@@ -21,7 +21,10 @@
       <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
         <path d="M8 12h8"/><path d="M6 8h12"/><path d="M10 16h4"/><circle cx="4" cy="12" r="2"/><circle cx="20" cy="12" r="2"/>
       </svg>
-      <p>请从侧边栏选择一个节点</p>
+      <p>请选择一个节点来管理 Relay 监听器</p>
+      <AgentPicker :agents="allAgents" @select="handleAgentSelect" />
+      <p class="relay-page__prompt-hint">或前往节点管理页面添加新节点</p>
+      <RouterLink to="/agents" class="btn btn-primary">加入节点</RouterLink>
     </div>
 
     <!-- Agent selected, no listeners -->
@@ -35,53 +38,14 @@
 
     <!-- Listener card grid -->
     <div v-if='agentId && listeners.length' class='relay-grid'>
-      <article v-for='listener in listeners' :key='listener.id' class='relay-card' :class="{ 'relay-card--disabled': !listener.enabled }">
-        <div class='relay-card__header'>
-          <div class='relay-card__badges'>
-            <span class='relay-card__id'>#{{ listener.id }} · {{ listener.name }}</span>
-          </div>
-          <div class='relay-card__actions'>
-            <button class='relay-card__action relay-card__action--toggle' :title="listener.enabled ? '停用' : '启用'" @click='toggleListener(listener)'>
-              <svg v-if="listener.enabled" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/></svg>
-              <svg v-else width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
-            </button>
-            <button class='relay-card__action' title="编辑" @click='startEdit(listener)'>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
-            </button>
-            <button class='relay-card__action relay-card__action--delete' title="删除" @click='startDelete(listener)'>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
-            </button>
-          </div>
-        </div>
-
-        <div class='relay-card__mapping'>
-          <div class='relay-card__endpoint'>
-            <span class='relay-card__url-icon'>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
-            </span>
-            <code class='relay-card__addr'>{{ formatPublicEndpoint(listener) }}</code>
-          </div>
-          <div class='relay-card__endpoint'>
-            <span class='relay-card__url-icon'>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/><path d="M12 5l7 7-7 7"/></svg>
-            </span>
-            <code class='relay-card__addr'>{{ formatBindEndpoint(listener) }}</code>
-          </div>
-        </div>
-
-        <div class='relay-card__meta'>
-          <span class='relay-card__badge'>{{ listener.certificate_id ? `证书 #${listener.certificate_id}` : '未绑定证书' }}</span>
-          <span class='relay-card__badge'>{{ transportSummary(listener) }}</span>
-          <span class='relay-card__badge'>{{ obfsSummary(listener) }}</span>
-          <span class='relay-card__badge'>{{ trustSummary(listener) }}</span>
-          <span v-if="listener.transport_mode === 'quic'" class='relay-card__badge'>{{ fallbackSummary(listener) }}</span>
-          <span v-if="listener.allow_self_signed" class='relay-card__badge relay-card__badge--warn'>允许自签</span>
-        </div>
-
-        <div v-if="listener.tags?.length" class='relay-card__tags'>
-          <span v-for='tag in listener.tags' :key='tag' class='tag'>{{ tag }}</span>
-        </div>
-      </article>
+      <RelayCard
+        v-for='listener in listeners'
+        :key='listener.id'
+        :listener='listener'
+        @edit='startEdit'
+        @toggle='toggleListener'
+        @delete='startDelete'
+      />
     </div>
 
     <!-- Loading -->
@@ -114,17 +78,21 @@
 
 <script setup>
 import { computed, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useAgent } from '../context/AgentContext'
 import { useAgents } from '../hooks/useAgents'
 import { useRelayListeners, useDeleteRelayListener, useUpdateRelayListener } from '../hooks/useRelayListeners'
 import RelayListenerForm from '../components/RelayListenerForm.vue'
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
 import BaseModal from '../components/base/BaseModal.vue'
+import AgentPicker from '../components/AgentPicker.vue'
+import RelayCard from '../components/relay/RelayCard.vue'
 
 const route = useRoute()
+const router = useRouter()
 const { selectedAgentId } = useAgent()
 const { data: agentsData } = useAgents()
+const allAgents = computed(() => agentsData.value ?? [])
 
 const selectedOrRouteAgentId = computed(() => route.query.agentId || selectedAgentId.value)
 const registeredAgentIds = computed(() => new Set((agentsData.value || []).map((agent) => String(agent.id))))
@@ -144,66 +112,8 @@ const editingListener = ref(null)
 const deletingListener = ref(null)
 const deleteError = ref('')
 
-function trustSummary(listener) {
-  if (listener.trust_mode_source === 'auto') return '自动 Relay CA + Pin'
-  if (listener.tls_mode === 'pin_and_ca') return 'Pin + CA'
-  if (listener.tls_mode === 'pin_only') return '仅 Pin'
-  if (listener.tls_mode === 'ca_only') return '仅 CA'
-  return '兼容模式'
-}
-
-function normalizeTransportMode(listener) {
-  return listener?.transport_mode === 'quic' ? 'quic' : 'tls_tcp'
-}
-
-function normalizeObfsMode(listener) {
-  return normalizeTransportMode(listener) === 'tls_tcp' && listener?.obfs_mode === 'early_window_v2'
-    ? 'early_window_v2'
-    : 'off'
-}
-
-function transportSummary(listener) {
-  return normalizeTransportMode(listener) === 'quic' ? 'QUIC' : 'TLS/TCP'
-}
-
-function obfsSummary(listener) {
-  return normalizeObfsMode(listener) === 'early_window_v2'
-    ? '隐匿 early_window_v2'
-    : '隐匿关闭'
-}
-
-function fallbackSummary(listener) {
-  return listener?.allow_transport_fallback === false ? '禁止回退' : '允许回退 TLS/TCP'
-}
-
-function normalizePort(port) {
-  const value = Number(port)
-  return Number.isInteger(value) && value > 0 ? value : null
-}
-
-function resolveBindHosts(listener) {
-  if (Array.isArray(listener?.bind_hosts) && listener.bind_hosts.length) {
-    return listener.bind_hosts
-      .map((item) => String(item || '').trim())
-      .filter(Boolean)
-  }
-  const legacyHost = String(listener?.listen_host || '').trim()
-  return legacyHost ? [legacyHost] : []
-}
-
-function formatPublicEndpoint(listener) {
-  const publicHost = String(listener?.public_host || '').trim()
-  const bindHosts = resolveBindHosts(listener)
-  const host = publicHost || bindHosts[0] || '-'
-  const port = normalizePort(listener?.public_port) ?? normalizePort(listener?.listen_port)
-  return port ? `${host}:${port}` : host
-}
-
-function formatBindEndpoint(listener) {
-  const bindHosts = resolveBindHosts(listener)
-  const bindLabel = bindHosts.length ? bindHosts.join(', ') : '-'
-  const listenPort = normalizePort(listener?.listen_port)
-  return listenPort ? `${bindLabel}:${listenPort}` : bindLabel
+function handleAgentSelect(agent) {
+  router.replace({ query: { ...route.query, agentId: agent.id } })
 }
 
 function startEdit(listener) {
@@ -236,7 +146,6 @@ function confirmDelete() {
     }
   })
 }
-
 </script>
 
 <style scoped>
@@ -298,177 +207,6 @@ function confirmDelete() {
   gap: 1rem;
 }
 
-/* Card styles matching L4 rules */
-.relay-card {
-  background: var(--color-bg-surface);
-  border: 1.5px solid var(--color-border-default);
-  border-radius: var(--radius-xl);
-  padding: 1.25rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-  transition: opacity 0.15s;
-}
-
-.relay-card--disabled {
-  opacity: 0.6;
-}
-
-.relay-card__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-.relay-card__badges {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-}
-
-.relay-card__id {
-  font-size: 0.75rem;
-  font-family: var(--font-mono);
-  color: var(--color-text-tertiary);
-}
-
-.relay-card__actions {
-  display: flex;
-  gap: 0.25rem;
-}
-
-.relay-card__action {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  border-radius: var(--radius-md);
-  border: none;
-  background: transparent;
-  color: var(--color-text-tertiary);
-  cursor: pointer;
-  transition: all 0.15s;
-}
-
-.relay-card__action:hover {
-  background: var(--color-bg-hover);
-  color: var(--color-text-primary);
-}
-
-.relay-card__action--delete:hover {
-  background: var(--color-danger-50);
-  color: var(--color-danger);
-}
-
-.relay-card__action--toggle:hover {
-  background: var(--color-warning-50);
-  color: var(--color-warning);
-}
-
-.relay-card__mapping {
-  display: flex;
-  flex-direction: column;
-  gap: 0.375rem;
-}
-
-.relay-card__endpoint {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  min-width: 0;
-}
-
-.relay-card__addr {
-  font-family: var(--font-mono);
-  font-size: 0.875rem;
-  font-weight: 500;
-  color: var(--color-text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.relay-card__url-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--color-text-tertiary);
-  flex-shrink: 0;
-}
-
-.relay-card__meta {
-  display: flex;
-  gap: 0.25rem;
-  flex-wrap: wrap;
-}
-
-.relay-card__badge {
-  font-size: 0.7rem;
-  padding: 1px 6px;
-  background: var(--color-bg-subtle);
-  border: 1px solid var(--color-border-subtle);
-  border-radius: var(--radius-sm);
-  color: var(--color-text-secondary);
-  font-family: var(--font-mono);
-}
-
-.relay-card__badge--warn {
-  background: var(--color-warning-50);
-  color: var(--color-warning);
-}
-
-.relay-card__tags {
-  display: flex;
-  gap: 0.25rem;
-  flex-wrap: wrap;
-}
-
-.tag {
-  font-size: 0.75rem;
-  padding: 2px 8px;
-  background: var(--color-primary-subtle);
-  color: var(--color-primary);
-  border-radius: var(--radius-full);
-  font-weight: 500;
-}
-
-/* Buttons */
-.btn {
-  padding: 0.5rem 1rem;
-  border-radius: var(--radius-lg);
-  font-size: 0.875rem;
-  font-weight: 500;
-  cursor: pointer;
-  transition: all 0.15s;
-  border: none;
-  font-family: inherit;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.375rem;
-}
-
-.btn-primary {
-  background: var(--gradient-primary);
-  color: white;
-}
-
-/* Spinner */
-.spinner {
-  width: 24px;
-  height: 24px;
-  border: 2px solid var(--color-border-default);
-  border-top-color: var(--color-primary);
-  border-radius: 50%;
-  animation: spin 1s linear infinite;
-}
-
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
 @media (max-width: 640px) {
   .btn-text {
     display: none;
@@ -476,16 +214,8 @@ function confirmDelete() {
   .relay-grid {
     grid-template-columns: 1fr;
   }
-  .relay-card {
-    padding: 1rem;
-  }
-  .relay-card__action {
-    width: 36px;
-    height: 36px;
-  }
   .relay-page__header {
     margin-bottom: 1rem;
   }
 }
-
 </style>

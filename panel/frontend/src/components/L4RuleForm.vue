@@ -3,8 +3,8 @@
     <!-- Tab Bar -->
     <div class="form-tabs">
       <button type="button" class="form-tabs__btn" :class="{ 'form-tabs__btn--active': activeTab === 'basic' }" @click="activeTab = 'basic'">基础配置</button>
-      <button type="button" class="form-tabs__btn" :class="{ 'form-tabs__btn--active': activeTab === 'protocol' }" @click="activeTab = 'protocol'">协议与监听 <span v-if="hasProtocolTuning" class="form-tabs__badge">已配置</span></button>
-      <button type="button" class="form-tabs__btn" :class="{ 'form-tabs__btn--active': activeTab === 'relay' }" @click="activeTab = 'relay'">Relay 配置 <span v-if="hasRelayConfig" class="form-tabs__badge">已配置</span></button>
+      <button type="button" class="form-tabs__btn" :class="{ 'form-tabs__btn--active': activeTab === 'protocol' }" @click="activeTab = 'protocol'">协议与监听 <span v-if="hasProtocolTuning" class="form-tabs__dot" title="已配置"></span></button>
+      <button type="button" class="form-tabs__btn" :class="{ 'form-tabs__btn--active': activeTab === 'relay' }" @click="activeTab = 'relay'">Relay 配置 <span v-if="hasRelayConfig" class="form-tabs__dot" title="已配置"></span></button>
     </div>
 
     <!-- Tab 1: Basic -->
@@ -842,38 +842,50 @@ async function handleSubmit() {
 /* Tab Bar */
 .form-tabs {
   display: flex;
-  border-bottom: 1.5px solid var(--color-border-subtle);
-  gap: 0;
-  margin-bottom: var(--space-2);
-  padding: 0 var(--space-2);
+  gap: 2px;
+  margin-bottom: var(--space-3);
+  flex-shrink: 0;
+  padding: 3px;
+  background: var(--color-bg-subtle);
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-lg);
 }
 
 .form-tabs__btn {
-  padding: var(--space-3) var(--space-4);
+  padding: 6px var(--space-4);
   border: none;
   background: transparent;
   cursor: pointer;
   font-size: var(--text-sm);
   font-weight: var(--font-medium);
   color: var(--color-text-muted);
-  border-bottom: 2.5px solid transparent;
+  border-radius: var(--radius-md);
   transition: all var(--duration-fast);
   display: flex;
   align-items: center;
   gap: var(--space-2);
-  margin-bottom: -1px;
+  flex: 1;
+  justify-content: center;
+  white-space: nowrap;
 }
 
-.form-tabs__btn:hover { color: var(--color-text-secondary); }
-.form-tabs__btn--active { color: var(--color-primary); border-bottom-color: var(--color-primary); font-weight: var(--font-semibold); }
+.form-tabs__btn:hover {
+  color: var(--color-text-secondary);
+}
 
-.form-tabs__badge {
-  font-size: 9px;
-  font-weight: var(--font-bold);
-  padding: 1px 6px;
-  background: var(--color-primary-subtle);
+.form-tabs__btn--active {
   color: var(--color-primary);
-  border-radius: var(--radius-sm);
+  background: var(--color-bg-surface);
+  font-weight: var(--font-semibold);
+  box-shadow: var(--shadow-sm);
+}
+
+.form-tabs__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--color-success);
+  flex-shrink: 0;
 }
 
 /* Tab Panel */
