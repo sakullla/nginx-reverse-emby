@@ -488,6 +488,41 @@ func TestTCPAdaptiveReportsOmitHTTPOnlyAdaptiveSignals(t *testing.T) {
 	}
 }
 
+func TestTCPAdaptiveReportsPreferScopedBackendHistoryForSingleResolvedChild(t *testing.T) {
+	cache := backends.NewCache(backends.Config{})
+
+	groupKey := "backend|tcp:0.0.0.0:9551|single.example:9001"
+	configuredLabel := "single.example:9001"
+	childAddress := "10.0.0.10:9001"
+
+	cache.ObserveBackendSuccess(groupKey, 15*time.Millisecond, 15*time.Millisecond, 0)
+	cache.ObserveBackendSuccess(groupKey, 15*time.Millisecond, 15*time.Millisecond, 0)
+	cache.ObserveTransferSuccess(childAddress, 80*time.Millisecond, 80*time.Millisecond, 0)
+
+	annotated := buildTCPAdaptiveReports([]BackendReport{
+		{Backend: childAddress, Summary: Summary{}},
+	}, []tcpProbeCandidate{{
+		address:         childAddress,
+		backendLabel:    childAddress,
+		configuredLabel: configuredLabel,
+		groupKey:        groupKey,
+		resolvedCandidates: []tcpResolvedCandidate{{
+			label:   childAddress,
+			address: childAddress,
+		}},
+	}}, cache)
+
+	if len(annotated) != 1 || annotated[0].Adaptive == nil {
+		t.Fatalf("annotated = %+v", annotated)
+	}
+	if got := annotated[0].Adaptive.RecentSucceeded; got != 2 {
+		t.Fatalf("RecentSucceeded = %d, want scoped backend history", got)
+	}
+	if got := annotated[0].Adaptive.LatencyMS; got != 15 {
+		t.Fatalf("LatencyMS = %v, want scoped backend history", got)
+	}
+}
+
 func TestTCPAdaptiveReportsUsePerChildRelayPathSummaries(t *testing.T) {
 	base := time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC)
 	cache := backends.NewCache(backends.Config{

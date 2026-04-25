@@ -431,16 +431,17 @@ func buildTCPAdaptiveReports(reports []BackendReport, candidates []tcpProbeCandi
 			}
 			report.Backend = configuredLabel
 			report.Address = ""
-			summaryKey := groupKey
-			if len(children) == 1 {
+			groupSummary := cache.SummaryLatencyOnly(groupKey)
+			summary := groupSummary
+			if len(children) == 1 && !observationSummaryHasHistory(groupSummary) {
 				relayChain := groupRelayChains[groupKey]
 				childRelayChains := groupChildRelayChains[groupKey]
 				childKey := diagnosticAddressKey(tcpChildRelayChain(childRelayChains, children[0].address, relayChain), children[0].address)
 				if childSummary := cache.SummaryLatencyOnly(childKey); observationSummaryHasHistory(childSummary) {
-					summaryKey = childKey
+					summary = childSummary
 				}
 			}
-			report.Adaptive = adaptiveSummaryFromObservation(cache.SummaryLatencyOnly(summaryKey), preferred, preferredReason(preferred), adaptiveSummaryOptions{})
+			report.Adaptive = adaptiveSummaryFromObservation(summary, preferred, preferredReason(preferred), adaptiveSummaryOptions{})
 			annotated = append(annotated, report)
 			continue
 		}
