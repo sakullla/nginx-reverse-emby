@@ -871,17 +871,21 @@ func (s *ruleService) normalizeHTTPRuleInput(ctx context.Context, input HTTPRule
 			return HTTPRule{}, err
 		}
 	}
-	if err := s.validateRelayChain(ctx, relayChain); err != nil {
-		return HTTPRule{}, err
-	}
 	relayLayers := cloneIntLayers(fallback.RelayLayers)
 	if input.RelayLayers != nil {
 		relayLayers, err = normalizeRelayLayersInput(*input.RelayLayers, "tcp")
 		if err != nil {
 			return HTTPRule{}, err
 		}
-	} else if input.RelayChain != nil {
+	}
+	if fallback.ID > 0 && input.RelayLayers != nil && input.RelayChain == nil {
+		relayChain = []int{}
+	}
+	if input.RelayLayers == nil && input.RelayChain != nil {
 		relayLayers = [][]int{}
+	}
+	if err := s.validateRelayChain(ctx, relayChain); err != nil {
+		return HTTPRule{}, err
 	}
 	if err := s.validateRelayChain(ctx, flattenRelayLayers(relayLayers)); err != nil {
 		return HTTPRule{}, err

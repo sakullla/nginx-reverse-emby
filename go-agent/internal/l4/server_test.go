@@ -29,14 +29,20 @@ import (
 )
 
 type fakeL4RelayPathDialer struct {
-	mu    sync.Mutex
-	calls [][]int
-	conn  net.Conn
+	mu      sync.Mutex
+	calls   [][]int
+	options []relay.DialOptions
+	conn    net.Conn
 }
 
-func (d *fakeL4RelayPathDialer) DialPath(_ context.Context, _ relayplan.Request, path relayplan.Path) (net.Conn, relay.DialResult, error) {
+func (d *fakeL4RelayPathDialer) DialPath(_ context.Context, req relayplan.Request, path relayplan.Path) (net.Conn, relay.DialResult, error) {
+	options := relay.DialOptions{}
+	if len(req.Options) > 0 {
+		options = req.Options[0]
+	}
 	d.mu.Lock()
 	d.calls = append(d.calls, append([]int(nil), path.IDs...))
+	d.options = append(d.options, cloneRelayDialOptionsForL4Test(options))
 	d.mu.Unlock()
 	if path.IDs[0] == 2 {
 		return d.conn, relay.DialResult{}, nil
@@ -52,6 +58,23 @@ func (d *fakeL4RelayPathDialer) calledPaths() [][]int {
 		out[i] = append([]int(nil), call...)
 	}
 	return out
+}
+
+func (d *fakeL4RelayPathDialer) calledOptions() []relay.DialOptions {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make([]relay.DialOptions, len(d.options))
+	for i, options := range d.options {
+		out[i] = cloneRelayDialOptionsForL4Test(options)
+	}
+	return out
+}
+
+func cloneRelayDialOptionsForL4Test(options relay.DialOptions) relay.DialOptions {
+	return relay.DialOptions{
+		InitialPayload: append([]byte(nil), options.InitialPayload...),
+		TrafficClass:   options.TrafficClass,
+	}
 }
 
 func TestServerCloseStopsTCPHandlers(t *testing.T) {
@@ -1144,6 +1167,71 @@ func TestDialTCPUpstreamUsesRelayLayerRacer(t *testing.T) {
 	}
 	if !waitForL4RelayPathCalls(dialer, 1, 2) {
 		t.Fatalf("dialed paths = %+v, want paths [1] and [2]", dialer.calledPaths())
+	}
+}
+
+func TestDialTCPUpstreamSendsInitialPayloadOnlyAfterRelayPathWins(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+	dialer := &fakeL4RelayPathDialer{conn: clientConn}
+	srv := &Server{
+		ctx:   context.Background(),
+		cache: backends.NewCache(backends.Config{}),
+		now:   time.Now,
+		relayListenersByID: map[int]model.RelayListener{
+			1: {ID: 1, Name: "one", ListenHost: "127.0.0.1", ListenPort: 9001, Enabled: true, TLSMode: "pin_only", PinSet: []model.RelayPin{{Type: "sha256", Value: "pin1"}}},
+			2: {ID: 2, Name: "two", ListenHost: "127.0.0.1", ListenPort: 9002, Enabled: true, TLSMode: "pin_only", PinSet: []model.RelayPin{{Type: "sha256", Value: "pin2"}}},
+		},
+		relayPathDialer: dialer,
+	}
+	rule := model.L4Rule{
+		Protocol:    "tcp",
+		ListenHost:  "0.0.0.0",
+		ListenPort:  9446,
+		RelayLayers: [][]int{{1, 2}},
+		Backends:    []model.L4Backend{{Host: "backend.example", Port: 9001}},
+	}
+
+	payloadCh := make(chan []byte, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		payload := make([]byte, len("hello"))
+		if err := serverConn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+			errCh <- err
+			return
+		}
+		if _, err := io.ReadFull(serverConn, payload); err != nil {
+			errCh <- err
+			return
+		}
+		payloadCh <- payload
+	}()
+
+	conn, _, _, err := srv.dialTCPUpstream(rule, relay.DialOptions{
+		InitialPayload: []byte("hello"),
+		TrafficClass:   upstream.TrafficClassInteractive,
+	})
+	if err != nil {
+		t.Fatalf("dialTCPUpstream() error = %v", err)
+	}
+	defer conn.Close()
+	if !waitForL4RelayPathCalls(dialer, 1, 2) {
+		t.Fatalf("dialed paths = %+v, want paths [1] and [2]", dialer.calledPaths())
+	}
+	for _, options := range dialer.calledOptions() {
+		if len(options.InitialPayload) != 0 {
+			t.Fatalf("raced dial received initial payload %q", options.InitialPayload)
+		}
+	}
+	select {
+	case err := <-errCh:
+		t.Fatalf("read selected relay payload: %v", err)
+	case payload := <-payloadCh:
+		if string(payload) != "hello" {
+			t.Fatalf("selected relay payload = %q", payload)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for selected relay payload")
 	}
 }
 

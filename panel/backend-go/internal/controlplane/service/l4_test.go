@@ -511,6 +511,89 @@ func TestL4RuleServiceUpdateClearsRelayLayersWhenRelayChainOnlyUpdate(t *testing
 	}
 }
 
+func TestL4RuleServiceUpdateClearsRelayChainWhenRelayLayersSupplied(t *testing.T) {
+	store := &fakeL4Store{
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"local": {{
+				ID:              1,
+				AgentID:         "local",
+				Name:            "relay rule",
+				Protocol:        "tcp",
+				ListenHost:      "0.0.0.0",
+				ListenPort:      9000,
+				UpstreamHost:    "upstream",
+				UpstreamPort:    9001,
+				RelayChainJSON:  `[7]`,
+				RelayLayersJSON: `[[7]]`,
+				Enabled:         true,
+				Revision:        3,
+			}},
+		},
+		relayByAgent: map[string][]storage.RelayListenerRow{
+			"local": {{
+				ID:      8,
+				AgentID: "local",
+				Enabled: true,
+			}},
+		},
+	}
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	rule, err := svc.Update(context.Background(), "local", 1, L4RuleInput{
+		RelayLayers: &[][]int{{8}},
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if len(rule.RelayChain) != 0 {
+		t.Fatalf("expected relay_chain to be cleared, got %+v", rule.RelayChain)
+	}
+	if len(rule.RelayLayers) != 1 || len(rule.RelayLayers[0]) != 1 || rule.RelayLayers[0][0] != 8 {
+		t.Fatalf("expected relay_layers to update, got %+v", rule.RelayLayers)
+	}
+	if got := store.l4RulesByID["local"][0].RelayChainJSON; got != `[]` {
+		t.Fatalf("persisted relay_chain = %s", got)
+	}
+}
+
+func TestL4RuleServiceUpdateClearsRelayWhenRelayLayersCleared(t *testing.T) {
+	store := &fakeL4Store{
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"local": {{
+				ID:              1,
+				AgentID:         "local",
+				Name:            "relay rule",
+				Protocol:        "tcp",
+				ListenHost:      "0.0.0.0",
+				ListenPort:      9000,
+				UpstreamHost:    "upstream",
+				UpstreamPort:    9001,
+				RelayChainJSON:  `[7]`,
+				RelayLayersJSON: `[[7]]`,
+				Enabled:         true,
+				Revision:        3,
+			}},
+		},
+	}
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	rule, err := svc.Update(context.Background(), "local", 1, L4RuleInput{
+		RelayLayers: &[][]int{},
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if len(rule.RelayChain) != 0 {
+		t.Fatalf("expected relay_chain to be cleared, got %+v", rule.RelayChain)
+	}
+	if len(rule.RelayLayers) != 0 {
+		t.Fatalf("expected relay_layers to be cleared, got %+v", rule.RelayLayers)
+	}
+	if got := store.l4RulesByID["local"][0].RelayChainJSON; got != `[]` {
+		t.Fatalf("persisted relay_chain = %s", got)
+	}
+}
+
 func TestL4RuleServiceUpdateDefaultsInvalidLoadBalancingToAdaptive(t *testing.T) {
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{

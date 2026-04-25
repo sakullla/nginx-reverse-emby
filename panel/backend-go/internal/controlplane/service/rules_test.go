@@ -579,6 +579,81 @@ func TestRuleServiceUpdateClearsRelayLayersWhenRelayChainOnlyUpdate(t *testing.T
 	}
 }
 
+func TestRuleServiceUpdateClearsRelayChainWhenRelayLayersSupplied(t *testing.T) {
+	store := &fakeRuleStore{
+		rulesByAgent: map[string][]storage.HTTPRuleRow{
+			"local": {{
+				ID:              1,
+				AgentID:         "local",
+				FrontendURL:     "https://relay.example.com",
+				BackendURL:      "http://127.0.0.1:8096",
+				BackendsJSON:    `[{"url":"http://127.0.0.1:8096"}]`,
+				RelayChainJSON:  `[7]`,
+				RelayLayersJSON: `[[7]]`,
+				Enabled:         true,
+				Revision:        2,
+			}},
+		},
+		listeners: []storage.RelayListenerRow{{
+			ID:      8,
+			AgentID: "local",
+			Enabled: true,
+		}},
+	}
+	svc := NewRuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	rule, err := svc.Update(context.Background(), "local", 1, HTTPRuleInput{
+		RelayLayers: &[][]int{{8}},
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if len(rule.RelayChain) != 0 {
+		t.Fatalf("expected relay_chain to be cleared, got %+v", rule.RelayChain)
+	}
+	if len(rule.RelayLayers) != 1 || len(rule.RelayLayers[0]) != 1 || rule.RelayLayers[0][0] != 8 {
+		t.Fatalf("expected relay_layers to update, got %+v", rule.RelayLayers)
+	}
+	if got := store.rulesByAgent["local"][0].RelayChainJSON; got != `[]` {
+		t.Fatalf("persisted relay_chain = %s", got)
+	}
+}
+
+func TestRuleServiceUpdateClearsRelayWhenRelayLayersCleared(t *testing.T) {
+	store := &fakeRuleStore{
+		rulesByAgent: map[string][]storage.HTTPRuleRow{
+			"local": {{
+				ID:              1,
+				AgentID:         "local",
+				FrontendURL:     "https://relay.example.com",
+				BackendURL:      "http://127.0.0.1:8096",
+				BackendsJSON:    `[{"url":"http://127.0.0.1:8096"}]`,
+				RelayChainJSON:  `[7]`,
+				RelayLayersJSON: `[[7]]`,
+				Enabled:         true,
+				Revision:        2,
+			}},
+		},
+	}
+	svc := NewRuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	rule, err := svc.Update(context.Background(), "local", 1, HTTPRuleInput{
+		RelayLayers: &[][]int{},
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if len(rule.RelayChain) != 0 {
+		t.Fatalf("expected relay_chain to be cleared, got %+v", rule.RelayChain)
+	}
+	if len(rule.RelayLayers) != 0 {
+		t.Fatalf("expected relay_layers to be cleared, got %+v", rule.RelayLayers)
+	}
+	if got := store.rulesByAgent["local"][0].RelayChainJSON; got != `[]` {
+		t.Fatalf("persisted relay_chain = %s", got)
+	}
+}
+
 func TestRuleServiceCreateRejectsInvalidRelayChainEntry(t *testing.T) {
 	store := &fakeRuleStore{
 		listeners: []storage.RelayListenerRow{{
