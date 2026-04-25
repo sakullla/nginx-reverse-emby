@@ -827,6 +827,7 @@ func TestHTTPProberDiagnoseReportsRelayLayerPaths(t *testing.T) {
 	provider := newDiagnosticTLSMaterialProvider()
 	listenerA := newDiagnosticRelayListener(t, provider, 401, "relay-a.internal.test")
 	listenerA.Name = "Relay A"
+	listenerA.AgentID = "3c65c453649aa9f80adc5ee6727a7ba2"
 	listenerB := newDiagnosticRelayListener(t, provider, 402, "relay-b.internal.test")
 	listenerB.Name = "Relay B"
 	previousDialWithResult := diagnosticRelayDialWithResult
@@ -838,7 +839,13 @@ func TestHTTPProberDiagnoseReportsRelayLayerPaths(t *testing.T) {
 		if err != nil {
 			return nil, relay.DialResult{}, err
 		}
-		return conn, relay.DialResult{SelectedAddress: target}, nil
+		return conn, relay.DialResult{
+			SelectedAddress: target,
+			HopTimings: []relay.HopTiming{
+				{ToListenerID: chain[0].Listener.ID, LatencyMS: 7.1},
+				{To: target, LatencyMS: 11.2},
+			},
+		}, nil
 	}
 
 	prober := NewHTTPProber(HTTPProberConfig{
@@ -870,14 +877,17 @@ func TestHTTPProberDiagnoseReportsRelayLayerPaths(t *testing.T) {
 	if got := report.RelayPaths[0].Hops[0].ToListenerName; got != "Relay A" {
 		t.Fatalf("first hop listener name = %q", got)
 	}
+	if got := report.RelayPaths[0].Hops[0].ToAgentName; got != "" {
+		t.Fatalf("first hop agent name = %q, want empty when only agent id is known", got)
+	}
 	if !report.RelayPaths[0].Success || report.RelayPaths[0].LatencyMS <= 0 {
 		t.Fatalf("first relay path status = %+v", report.RelayPaths[0])
 	}
-	if report.RelayPaths[0].Hops[0].LatencyMS != 0 {
-		t.Fatalf("intermediate relay hop latency = %v, want omitted", report.RelayPaths[0].Hops[0].LatencyMS)
+	if report.RelayPaths[0].Hops[0].LatencyMS != 7.1 {
+		t.Fatalf("intermediate relay hop latency = %v, want hop timing", report.RelayPaths[0].Hops[0].LatencyMS)
 	}
-	if report.RelayPaths[0].Hops[len(report.RelayPaths[0].Hops)-1].LatencyMS <= 0 {
-		t.Fatalf("final relay hop latency = %v, want path latency", report.RelayPaths[0].Hops[len(report.RelayPaths[0].Hops)-1].LatencyMS)
+	if report.RelayPaths[0].Hops[len(report.RelayPaths[0].Hops)-1].LatencyMS != 11.2 {
+		t.Fatalf("final relay hop latency = %v, want final hop timing", report.RelayPaths[0].Hops[len(report.RelayPaths[0].Hops)-1].LatencyMS)
 	}
 	selectedCount := 0
 	for _, relayPath := range report.RelayPaths {

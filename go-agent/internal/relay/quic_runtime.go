@@ -85,6 +85,7 @@ func dialQUICWithResult(ctx context.Context, network, target string, chain []Hop
 	}
 
 	firstHop := chain[0]
+	startedAt := time.Now()
 	tlsConfig, err := clientQUICTLSConfig(ctx, provider, firstHop.Listener, firstHop.Address, firstHop.ServerName)
 	if err != nil {
 		observeRelayQUICFailureIfTransportError(firstHop, ctx, err)
@@ -119,6 +120,7 @@ func dialQUICWithResult(ctx context.Context, network, target string, chain []Hop
 		observeRelayQUICFailureIfTransportError(firstHop, ctx, err)
 		return nil, DialResult{}, err
 	}
+	firstHopLatency := time.Since(startedAt)
 
 	var response relayResponse
 	err = withFrameDeadline(conn, func() error {
@@ -143,6 +145,7 @@ func dialQUICWithResult(ctx context.Context, network, target string, chain []Hop
 	return conn, DialResult{
 		SelectedAddress: response.SelectedAddress,
 		TransportMode:   ListenerTransportModeQUIC,
+		HopTimings:      prependRelayHopTiming(firstHop, firstHopLatency, response.HopTimings),
 	}, nil
 }
 

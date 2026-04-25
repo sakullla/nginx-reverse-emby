@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"reflect"
 	"strconv"
@@ -24,6 +25,13 @@ type DialOptions struct {
 type DialResult struct {
 	SelectedAddress string
 	TransportMode   string
+	HopTimings      []HopTiming
+}
+
+type HopTiming struct {
+	ToListenerID int     `json:"to_listener_id,omitempty"`
+	To           string  `json:"to,omitempty"`
+	LatencyMS    float64 `json:"latency_ms,omitempty"`
 }
 
 type relayPathPlanner interface {
@@ -233,17 +241,17 @@ func (s *Server) openUpstream(network, target string, chain []Hop, options DialO
 	return conn, err
 }
 
-func (s *Server) openUpstreamWithResult(network, target string, chain []Hop, options DialOptions) (net.Conn, string, error) {
+func (s *Server) openUpstreamWithResult(network, target string, chain []Hop, options DialOptions) (net.Conn, DialResult, error) {
 	if len(chain) > 0 {
 		conn, result, err := DialWithResult(s.ctx, network, target, chain, s.provider, options)
 		if err != nil {
-			return nil, "", err
+			return nil, DialResult{}, err
 		}
-		return conn, result.SelectedAddress, nil
+		return conn, result, nil
 	}
 
 	if !strings.EqualFold(network, "tcp") {
-		return nil, "", fmt.Errorf("unsupported network %q", network)
+		return nil, DialResult{}, fmt.Errorf("unsupported network %q", network)
 	}
 
 	selector := s.finalHopSelector
@@ -251,8 +259,15 @@ func (s *Server) openUpstreamWithResult(network, target string, chain []Hop, opt
 		// Start() initializes the selector; keep a fallback for tests/manual Server construction.
 		selector = newFinalHopSelector(finalHopSelectorConfig{})
 	}
+	startedAt := time.Now()
 	conn, selectedAddress, err := selector.dialTCP(s.ctx, target)
-	return conn, selectedAddress, err
+	if err != nil {
+		return nil, DialResult{}, err
+	}
+	return conn, DialResult{
+		SelectedAddress: selectedAddress,
+		HopTimings:      []HopTiming{relayTargetHopTiming(selectedAddress, time.Since(startedAt))},
+	}, nil
 }
 
 func (s *Server) openUDPPeer(target string, chain []Hop) (udpPacketPeer, error) {
@@ -617,6 +632,35 @@ func relayDialOptionsFromMetadata(network string, metadata map[string]any) DialO
 	return DialOptions{TrafficClass: class}
 }
 
+func prependRelayHopTiming(firstHop Hop, latency time.Duration, downstream []HopTiming) []HopTiming {
+	timings := make([]HopTiming, 0, len(downstream)+1)
+	timings = append(timings, relayListenerHopTiming(firstHop, latency))
+	timings = append(timings, downstream...)
+	return timings
+}
+
+func relayListenerHopTiming(hop Hop, latency time.Duration) HopTiming {
+	return HopTiming{
+		ToListenerID: hop.Listener.ID,
+		LatencyMS:    relayLatencyMS(latency),
+	}
+}
+
+func relayTargetHopTiming(target string, latency time.Duration) HopTiming {
+	return HopTiming{
+		To:        strings.TrimSpace(target),
+		LatencyMS: relayLatencyMS(latency),
+	}
+}
+
+func relayLatencyMS(latency time.Duration) float64 {
+	ms := math.Round(float64(latency)/float64(time.Millisecond)*10) / 10
+	if ms <= 0 {
+		return 0.1
+	}
+	return ms
+}
+
 // dialTLSTCP is the legacy one-stream-per-TLS-connection path. Runtime relay
 // dialing uses dialTLSTCPMux, so InitialPayload is intentionally not accepted here.
 func dialTLSTCP(ctx context.Context, network, target string, chain []Hop, provider TLSMaterialProvider) (net.Conn, error) {
@@ -819,7 +863,7 @@ func (s *Server) handleQUICStream(conn *quic.Conn, stream *quic.Stream, listener
 		s.handleUDPRelayStream(clientConn, listener, request.Target, request.Chain, relayDialOptionsFromMetadata(request.Kind, request.Metadata))
 		return
 	}
-	upstream, selectedAddress, err := s.openUpstreamWithResult(
+	upstream, upstreamResult, err := s.openUpstreamWithResult(
 		request.Kind,
 		request.Target,
 		request.Chain,
@@ -846,7 +890,11 @@ func (s *Server) handleQUICStream(conn *quic.Conn, stream *quic.Stream, listener
 		}
 	}
 	if err := withFrameDeadline(clientConn, func() error {
-		return writeRelayResponse(clientConn, relayResponse{OK: true, SelectedAddress: selectedAddress})
+		return writeRelayResponse(clientConn, relayResponse{
+			OK:              true,
+			SelectedAddress: upstreamResult.SelectedAddress,
+			HopTimings:      upstreamResult.HopTimings,
+		})
 	}); err != nil {
 		return
 	}

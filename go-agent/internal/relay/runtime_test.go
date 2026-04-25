@@ -1321,6 +1321,49 @@ func TestDialWithResultReturnsSelectedAddressFromFinalHop(t *testing.T) {
 	}
 }
 
+func TestDialWithResultReturnsHopTimingsForRelayChain(t *testing.T) {
+	backendAddr, stopBackend := startTCPEchoServer(t)
+	defer stopBackend()
+	resetTLSTCPSessionPoolForTest()
+
+	provider := newFakeTLSMaterialProvider()
+	listenerA, hopA := newRelayEndpoint(t, provider, 1, "relay-timing-a", "pin_only", true, false)
+	listenerB, hopB := newRelayEndpoint(t, provider, 2, "relay-timing-b", "pin_only", true, false)
+
+	serverA, err := Start(context.Background(), []Listener{listenerA}, provider)
+	if err != nil {
+		t.Fatalf("Start(A) error = %v", err)
+	}
+	defer serverA.Close()
+	serverB, err := Start(context.Background(), []Listener{listenerB}, provider)
+	if err != nil {
+		t.Fatalf("Start(B) error = %v", err)
+	}
+	defer serverB.Close()
+
+	conn, result, err := DialWithResult(context.Background(), "tcp", backendAddr, []Hop{hopA, hopB}, provider)
+	if err != nil {
+		t.Fatalf("DialWithResult() error = %v", err)
+	}
+	defer conn.Close()
+
+	if result.SelectedAddress != backendAddr {
+		t.Fatalf("SelectedAddress = %q, want %q", result.SelectedAddress, backendAddr)
+	}
+	if len(result.HopTimings) != 3 {
+		t.Fatalf("HopTimings = %+v, want relay A, relay B, final backend timings", result.HopTimings)
+	}
+	if result.HopTimings[0].ToListenerID != listenerA.ID || result.HopTimings[0].LatencyMS <= 0 {
+		t.Fatalf("first hop timing = %+v, want listener %d with latency", result.HopTimings[0], listenerA.ID)
+	}
+	if result.HopTimings[1].ToListenerID != listenerB.ID || result.HopTimings[1].LatencyMS <= 0 {
+		t.Fatalf("second hop timing = %+v, want listener %d with latency", result.HopTimings[1], listenerB.ID)
+	}
+	if result.HopTimings[2].To != backendAddr || result.HopTimings[2].LatencyMS <= 0 {
+		t.Fatalf("final hop timing = %+v, want backend %q with latency", result.HopTimings[2], backendAddr)
+	}
+}
+
 func TestDialWithResultUsesFallbackAfterQUICProbeDialFails(t *testing.T) {
 	backendAddr, stopBackend := startTCPEchoServer(t)
 	defer stopBackend()

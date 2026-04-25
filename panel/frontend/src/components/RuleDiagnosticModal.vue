@@ -345,22 +345,32 @@ function formatPathRoute(pathReport) {
 function formatHopLabel(hop) {
   if (hop.from === 'client') {
     if (hop.to_listener_name) {
-      const agentLabel = hop.to_agent_name ? ` (${hop.to_agent_name})` : ''
+      const agentLabel = formatRelayAgentLabel(hop.to_agent_name)
       return `入口 → ${hop.to_listener_name}${agentLabel}`
     }
     if (hop.to_listener_id) return `入口 → 中继器 #${hop.to_listener_id}`
     return `入口 → 后端(${hop.to || '-'})`
   }
-  const fromAgent = hop.from_agent_name ? ` (${hop.from_agent_name})` : ''
+  const fromAgent = formatRelayAgentLabel(hop.from_agent_name)
   const from = hop.from_listener_name
     ? `${hop.from_listener_name}${fromAgent}`
     : (hop.from_listener_id ? `中继器 #${hop.from_listener_id}` : (hop.from || '-'))
   if (hop.to_listener_name) {
-    const toAgent = hop.to_agent_name ? ` (${hop.to_agent_name})` : ''
+    const toAgent = formatRelayAgentLabel(hop.to_agent_name)
     return `${from} → ${hop.to_listener_name}${toAgent}`
   }
   if (hop.to_listener_id) return `${from} → 中继器 #${hop.to_listener_id}`
   return `${from} → 后端(${hop.to || '-'})`
+}
+
+function formatRelayAgentLabel(value) {
+  const label = typeof value === 'string' ? value.trim() : ''
+  if (!label || isOpaqueAgentIdentifier(label)) return ''
+  return ` (${label})`
+}
+
+function isOpaqueAgentIdentifier(value) {
+  return /^[a-f0-9]{24,}$/i.test(value) || /^[a-f0-9-]{32,}$/i.test(value)
 }
 
 const QUALITY_MAP = {
@@ -368,6 +378,7 @@ const QUALITY_MAP = {
   '良好': 'info',
   '一般': 'warning',
   '较差': 'danger',
+  '已连通': 'success',
   '不可用': 'danger'
 }
 
@@ -433,7 +444,7 @@ function hopHasLatency(hop) {
 
 function hopQualityLabel(hop) {
   if (!hop?.success) return '不可用'
-  if (!hopHasLatency(hop)) return '待测量'
+  if (!hopHasLatency(hop)) return '已连通'
   return classifyHopQuality(Number(hop.latency_ms))
 }
 

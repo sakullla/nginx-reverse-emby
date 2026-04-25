@@ -252,7 +252,7 @@ describe('RuleDiagnosticModal', () => {
     expect(wrapper.text()).toContain('127.0.0.1:8096')
   })
 
-  it('renders relay hops without latency as placeholders', () => {
+  it('renders relay hop latency when isolated timing is reported', () => {
     const wrapper = mountModal({
       task: {
         ...buildTask('http'),
@@ -268,7 +268,8 @@ describe('RuleDiagnosticModal', () => {
                   success: true,
                   to_listener_id: 1,
                   to_listener_name: 'Relay A',
-                  to_agent_name: 'agent-a'
+                  to_agent_name: 'agent-a',
+                  latency_ms: 7.2
                 },
                 {
                   success: true,
@@ -285,7 +286,49 @@ describe('RuleDiagnosticModal', () => {
     })
 
     expect(wrapper.text()).not.toContain('undefined ms')
-    expect(wrapper.text()).toContain('—')
-    expect(wrapper.text()).toContain('待测量')
+    expect(wrapper.text()).toContain('7.2 ms')
+    expect(wrapper.text()).toContain('12 ms')
+    expect(wrapper.text()).not.toContain('待测量')
+  })
+
+  it('hides opaque relay agent identifiers in hop labels', () => {
+    const opaqueAgentID = '3c65c453649aa9f80adc5ee6727a7ba2'
+    const wrapper = mountModal({
+      task: {
+        ...buildTask('http'),
+        result: {
+          ...buildTask('http').result,
+          relay_paths: [
+            {
+              path: [1],
+              success: true,
+              latency_ms: 12,
+              hops: [
+                {
+                  from: 'client',
+                  success: true,
+                  to_listener_id: 1,
+                  to_listener_name: 'fastu9929',
+                  to_agent_name: opaqueAgentID,
+                  latency_ms: 7.2
+                },
+                {
+                  success: true,
+                  from_listener_id: 1,
+                  from_listener_name: 'fastu9929',
+                  from_agent_name: opaqueAgentID,
+                  to: 'backend.example:8096',
+                  latency_ms: 12
+                }
+              ]
+            }
+          ]
+        }
+      }
+    })
+
+    expect(wrapper.text()).toContain('入口 → fastu9929')
+    expect(wrapper.text()).toContain('fastu9929 → 后端(backend.example:8096)')
+    expect(wrapper.text()).not.toContain(opaqueAgentID)
   })
 })

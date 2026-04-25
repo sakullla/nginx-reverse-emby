@@ -84,7 +84,7 @@ func probeDiagnosticRelayPaths(ctx context.Context, network string, target strin
 			Path:      append([]int(nil), path.IDs...),
 			Success:   success,
 			LatencyMS: latencyMS,
-			Hops:      relayPathHopReports(path.Hops, reportTarget, success, latencyMS, err),
+			Hops:      relayPathHopReports(path.Hops, reportTarget, success, latencyMS, err, dialResult.HopTimings),
 		}
 		if err != nil {
 			report.Error = err.Error()
@@ -144,14 +144,14 @@ func relayPathReportKey(path []int) string {
 	return relayplan.PathKey("relay_path_report", path, "")
 }
 
-func relayPathHopReports(hops []relay.Hop, target string, success bool, latencyMS float64, err error) []RelayHopReport {
+func relayPathHopReports(hops []relay.Hop, target string, success bool, latencyMS float64, err error, timings []relay.HopTiming) []RelayHopReport {
+	timingByListenerID, finalLatencyMS := relayHopTimingLookup(timings)
 	reports := make([]RelayHopReport, 0, len(hops)+1)
 	for i, hop := range hops {
 		report := RelayHopReport{
 			Success:        success,
 			ToListenerID:   hop.Listener.ID,
 			ToListenerName: hop.Listener.Name,
-			ToAgentName:    hop.Listener.AgentID,
 		}
 		if i == 0 {
 			report.From = "client"
@@ -159,14 +159,19 @@ func relayPathHopReports(hops []relay.Hop, target string, success bool, latencyM
 			previous := hops[i-1].Listener
 			report.FromListenerID = previous.ID
 			report.FromListenerName = previous.Name
-			report.FromAgentName = previous.AgentID
 		}
 		if err != nil {
 			report.Error = err.Error()
 		}
+		if success {
+			report.LatencyMS = timingByListenerID[hop.Listener.ID]
+		}
 		reports = append(reports, report)
 	}
 
+	if success && finalLatencyMS > 0 {
+		latencyMS = finalLatencyMS
+	}
 	final := RelayHopReport{
 		To:        target,
 		Success:   success,
@@ -178,11 +183,26 @@ func relayPathHopReports(hops []relay.Hop, target string, success bool, latencyM
 		previous := hops[len(hops)-1].Listener
 		final.FromListenerID = previous.ID
 		final.FromListenerName = previous.Name
-		final.FromAgentName = previous.AgentID
 	}
 	if err != nil {
 		final.Error = err.Error()
 	}
 	reports = append(reports, final)
 	return reports
+}
+
+func relayHopTimingLookup(timings []relay.HopTiming) (map[int]float64, float64) {
+	byListenerID := make(map[int]float64, len(timings))
+	finalLatencyMS := 0.0
+	for _, timing := range timings {
+		if timing.LatencyMS <= 0 {
+			continue
+		}
+		if timing.ToListenerID > 0 {
+			byListenerID[timing.ToListenerID] = timing.LatencyMS
+			continue
+		}
+		finalLatencyMS = timing.LatencyMS
+	}
+	return byListenerID, finalLatencyMS
 }
