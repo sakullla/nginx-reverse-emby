@@ -30,12 +30,19 @@ func normalizeRelayChainInput(values []int, protocol string) ([]int, error) {
 
 func normalizeRelayLayersInput(layers [][]int, protocol string) ([][]int, error) {
 	normalized := make([][]int, 0, len(layers))
+	seenAcrossLayers := make(map[int]struct{})
 	for _, layer := range layers {
 		normalizedLayer, err := normalizeRelayChainInput(layer, protocol)
 		if err != nil {
 			return nil, err
 		}
 		if len(normalizedLayer) > 0 {
+			for _, listenerID := range normalizedLayer {
+				if _, ok := seenAcrossLayers[listenerID]; ok {
+					return nil, fmt.Errorf("%w: relay_layers entries must not repeat listener IDs across layers", ErrInvalidArgument)
+				}
+				seenAcrossLayers[listenerID] = struct{}{}
+			}
 			normalized = append(normalized, normalizedLayer)
 		}
 	}

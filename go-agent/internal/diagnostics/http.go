@@ -14,6 +14,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayplan"
 )
 
 type HTTPProberConfig struct {
@@ -62,6 +63,15 @@ func NewHTTPProber(cfg HTTPProberConfig) *HTTPProber {
 func (p *HTTPProber) Diagnose(ctx context.Context, rule model.HTTPRule, relayListeners []model.RelayListener) (Report, error) {
 	baseCache := p.cache
 	cache := baseCache.Clone()
+	if len(rule.RelayLayers) > 0 {
+		paths, err := resolveDiagnosticHTTPRelayPaths(rule, relayListeners, "")
+		if err != nil {
+			return Report{}, err
+		}
+		if len(paths) > 0 {
+			rule.RelayChain = append([]int(nil), paths[0].IDs...)
+		}
+	}
 	candidates, err := httpCandidates(ctx, baseCache, rule)
 	if err != nil {
 		return Report{}, err
@@ -88,6 +98,18 @@ func (p *HTTPProber) Diagnose(ctx context.Context, rule model.HTTPRule, relayLis
 	report := BuildReport("http", rule.ID, samples)
 	report.Backends = buildHTTPAdaptiveReports(report.Backends, candidates, baseCache)
 	applyCurrentHTTPThroughput(report.Backends, samples)
+	if len(rule.RelayLayers) > 0 && len(candidates) > 0 {
+		paths, err := resolveDiagnosticHTTPRelayPaths(rule, relayListeners, candidates[0].dialAddress)
+		if err != nil {
+			return Report{}, err
+		}
+		relayReports, selectedPath, err := probeDiagnosticRelayPaths(ctx, "tcp", candidates[0].dialAddress, paths, p.relayProvider)
+		if err != nil {
+			return Report{}, err
+		}
+		report.RelayPaths = relayReports
+		report.SelectedRelayPath = selectedPath
+	}
 	return report, nil
 }
 
@@ -667,31 +689,15 @@ func httpPortWithDefault(target *url.URL) int {
 }
 
 func resolveHTTPRelayHops(rule model.HTTPRule, relayListeners []model.RelayListener) ([]relay.Hop, error) {
-	relayListenersByID := make(map[int]model.RelayListener, len(relayListeners))
-	for _, listener := range relayListeners {
-		relayListenersByID[listener.ID] = listener
+	paths, err := resolveDiagnosticHTTPRelayPaths(rule, relayListeners, "")
+	if err != nil || len(paths) == 0 {
+		return nil, err
 	}
+	return paths[0].Hops, nil
+}
 
-	hops := make([]relay.Hop, 0, len(rule.RelayChain))
-	for _, listenerID := range rule.RelayChain {
-		listener, ok := relayListenersByID[listenerID]
-		if !ok {
-			return nil, fmt.Errorf("http rule %q: relay listener %d not found", rule.FrontendURL, listenerID)
-		}
-		if !listener.Enabled {
-			return nil, fmt.Errorf("http rule %q: relay listener %d is disabled", rule.FrontendURL, listenerID)
-		}
-		if err := relay.ValidateListener(listener); err != nil {
-			return nil, fmt.Errorf("http rule %q: relay listener %d: %w", rule.FrontendURL, listenerID, err)
-		}
-		host, port := relayHopDialEndpoint(listener)
-		hops = append(hops, relay.Hop{
-			Address:    net.JoinHostPort(host, strconv.Itoa(port)),
-			ServerName: host,
-			Listener:   listener,
-		})
-	}
-	return hops, nil
+func resolveDiagnosticHTTPRelayPaths(rule model.HTTPRule, relayListeners []model.RelayListener, target string) ([]relayplan.Path, error) {
+	return resolveDiagnosticRelayPaths(fmt.Sprintf("http rule %q", rule.FrontendURL), rule.RelayChain, rule.RelayLayers, relayListeners, target)
 }
 
 func relayHopDialEndpoint(listener model.RelayListener) (string, int) {

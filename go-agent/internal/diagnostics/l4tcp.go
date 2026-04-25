@@ -10,6 +10,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayplan"
 )
 
 type TCPProberConfig struct {
@@ -68,6 +69,15 @@ func NewTCPProber(cfg TCPProberConfig) *TCPProber {
 func (p *TCPProber) Diagnose(ctx context.Context, rule model.L4Rule, relayListeners []model.RelayListener) (Report, error) {
 	baseCache := p.cache
 	cache := baseCache.Clone()
+	if len(rule.RelayLayers) > 0 {
+		paths, err := resolveDiagnosticL4RelayPaths(rule, relayListeners, "")
+		if err != nil {
+			return Report{}, err
+		}
+		if len(paths) > 0 {
+			rule.RelayChain = append([]int(nil), paths[0].IDs...)
+		}
+	}
 	candidates, err := tcpCandidates(ctx, baseCache, rule)
 	if err != nil {
 		return Report{}, err
@@ -117,6 +127,18 @@ func (p *TCPProber) Diagnose(ctx context.Context, rule model.L4Rule, relayListen
 
 	report := BuildReport("l4_tcp", rule.ID, samples)
 	report.Backends = buildTCPAdaptiveReports(report.Backends, candidates, baseCache)
+	if len(rule.RelayLayers) > 0 && len(candidates) > 0 {
+		paths, err := resolveDiagnosticL4RelayPaths(rule, relayListeners, candidates[0].address)
+		if err != nil {
+			return Report{}, err
+		}
+		relayReports, selectedPath, err := probeDiagnosticRelayPaths(ctx, "tcp", candidates[0].address, paths, p.relayProvider)
+		if err != nil {
+			return Report{}, err
+		}
+		report.RelayPaths = relayReports
+		report.SelectedRelayPath = selectedPath
+	}
 	return report, nil
 }
 
@@ -428,29 +450,13 @@ func tcpAdaptiveSummaryKey(candidate tcpProbeCandidate) string {
 }
 
 func resolveL4RelayHops(rule model.L4Rule, relayListeners []model.RelayListener) ([]relay.Hop, error) {
-	relayListenersByID := make(map[int]model.RelayListener, len(relayListeners))
-	for _, listener := range relayListeners {
-		relayListenersByID[listener.ID] = listener
+	paths, err := resolveDiagnosticL4RelayPaths(rule, relayListeners, "")
+	if err != nil || len(paths) == 0 {
+		return nil, err
 	}
+	return paths[0].Hops, nil
+}
 
-	hops := make([]relay.Hop, 0, len(rule.RelayChain))
-	for _, listenerID := range rule.RelayChain {
-		listener, ok := relayListenersByID[listenerID]
-		if !ok {
-			return nil, fmt.Errorf("relay listener %d not found", listenerID)
-		}
-		if !listener.Enabled {
-			return nil, fmt.Errorf("relay listener %d is disabled", listenerID)
-		}
-		if err := relay.ValidateListener(listener); err != nil {
-			return nil, fmt.Errorf("relay listener %d: %w", listenerID, err)
-		}
-		host, port := relayHopDialEndpoint(listener)
-		hops = append(hops, relay.Hop{
-			Address:    net.JoinHostPort(host, strconv.Itoa(port)),
-			ServerName: host,
-			Listener:   listener,
-		})
-	}
-	return hops, nil
+func resolveDiagnosticL4RelayPaths(rule model.L4Rule, relayListeners []model.RelayListener, target string) ([]relayplan.Path, error) {
+	return resolveDiagnosticRelayPaths(fmt.Sprintf("l4 rule %s:%d", rule.ListenHost, rule.ListenPort), rule.RelayChain, rule.RelayLayers, relayListeners, target)
 }

@@ -119,6 +119,7 @@ func (r Racer) Race(ctx context.Context, req Request) (Result, error) {
 		case result := <-results:
 			running--
 			attempts = append(attempts, result.attempt)
+			r.observeAttempt(req, result.attempt)
 			if result.attempt.Success {
 				cancel()
 				go func() {
@@ -130,6 +131,7 @@ func (r Racer) Race(ctx context.Context, req Request) (Result, error) {
 						_ = loser.conn.Close()
 					}
 					attempts = append(attempts, loser.attempt)
+					r.observeAttempt(req, loser.attempt)
 				}
 				return Result{Conn: result.conn, Selected: result.attempt.Path, DialResult: result.dialResult, Attempts: attempts}, nil
 			}
@@ -149,6 +151,24 @@ func (r Racer) Race(ctx context.Context, req Request) (Result, error) {
 	return Result{Attempts: attempts}, fmt.Errorf("%w: %s", ErrNoRelayPathSucceeded, strings.Join(failures, "; "))
 }
 
+func (r Racer) observeAttempt(req Request, attempt Attempt) {
+	if r.Cache == nil || attempt.Canceled {
+		return
+	}
+	key := attempt.Path.Key
+	if strings.TrimSpace(key) == "" {
+		key = PathKey("relay_path", attempt.Path.IDs, req.Target)
+	}
+	observationKey := backends.BackendObservationKey(relayPathScope(req.Target), key)
+	if attempt.Success {
+		r.Cache.ObserveBackendSuccess(observationKey, attempt.Latency, attempt.Latency, 0)
+		return
+	}
+	if attempt.Error != "" {
+		r.Cache.ObserveBackendFailure(observationKey)
+	}
+}
+
 func (r Racer) orderPaths(req Request) []Path {
 	paths := append([]Path(nil), req.Paths...)
 	if r.Cache == nil || len(paths) <= 1 {
@@ -164,7 +184,7 @@ func (r Racer) orderPaths(req Request) []Path {
 		pathsByKey[key] = path
 		candidates = append(candidates, backends.Candidate{Address: key})
 	}
-	scope := "relay_path|" + strings.TrimSpace(req.Target)
+	scope := relayPathScope(req.Target)
 	ordered := r.Cache.Order(scope, backends.StrategyAdaptive, candidates)
 	out := make([]Path, 0, len(ordered))
 	for _, candidate := range ordered {
@@ -178,4 +198,8 @@ func (r Racer) orderPaths(req Request) []Path {
 		return paths
 	}
 	return out
+}
+
+func relayPathScope(target string) string {
+	return "relay_path|" + strings.TrimSpace(target)
 }

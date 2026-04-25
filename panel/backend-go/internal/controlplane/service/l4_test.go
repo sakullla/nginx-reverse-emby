@@ -584,6 +584,35 @@ func TestL4RuleServiceCreateRejectsDuplicateRelayChainEntries(t *testing.T) {
 	}
 }
 
+func TestL4RuleServiceCreateRejectsDuplicateRelayLayerEntriesAcrossLayers(t *testing.T) {
+	store := &fakeL4Store{
+		l4RulesByID: map[string][]storage.L4RuleRow{},
+		relayByAgent: map[string][]storage.RelayListenerRow{
+			"local": {
+				{ID: 7, AgentID: "local", Enabled: true},
+				{ID: 8, AgentID: "local", Enabled: true},
+			},
+		},
+	}
+	svc := NewL4RuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	_, err := svc.Create(context.Background(), "local", L4RuleInput{
+		ListenPort:   intPtrL4(9000),
+		UpstreamHost: stringPtrL4("upstream"),
+		UpstreamPort: intPtrL4(9001),
+		RelayLayers:  &[][]int{{7, 8}, {7}},
+	})
+	if err == nil {
+		t.Fatal("Create() error = nil")
+	}
+	if err.Error() != "invalid argument: relay_layers entries must not repeat listener IDs across layers" {
+		t.Fatalf("Create() error = %v", err)
+	}
+}
+
 func TestL4RuleServiceDeleteUpdatesRemoteAgentDesiredRevision(t *testing.T) {
 	store := &fakeL4Store{
 		agents: []storage.AgentRow{{

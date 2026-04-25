@@ -747,6 +747,70 @@ func TestTCPProberDiagnoseRelayChainUsesRemoteResolvedCandidatesAndSelectedAddre
 	}
 }
 
+func TestTCPProberDiagnoseReportsRelayLayerPaths(t *testing.T) {
+	actualAddress, _, stopTarget := startDiagnosticTCPTarget(t)
+	defer stopTarget()
+
+	_, actualPort := splitDiagnosticTCPAddr(t, actualAddress)
+	provider := newDiagnosticTLSMaterialProvider()
+	listenerA := newDiagnosticRelayListener(t, provider, 501, "relay-a.internal.test")
+	listenerA.Name = "Relay A"
+	listenerB := newDiagnosticRelayListener(t, provider, 502, "relay-b.internal.test")
+	listenerB.Name = "Relay B"
+	previousDialWithResult := diagnosticRelayDialWithResult
+	t.Cleanup(func() {
+		diagnosticRelayDialWithResult = previousDialWithResult
+	})
+	diagnosticRelayDialWithResult = func(ctx context.Context, network, target string, chain []relay.Hop, provider relay.TLSMaterialProvider, opts ...relay.DialOptions) (net.Conn, relay.DialResult, error) {
+		conn, err := (&net.Dialer{}).DialContext(ctx, network, actualAddress)
+		if err != nil {
+			return nil, relay.DialResult{}, err
+		}
+		return conn, relay.DialResult{SelectedAddress: target}, nil
+	}
+
+	prober := NewTCPProber(TCPProberConfig{
+		Attempts:      1,
+		Timeout:       time.Second,
+		RelayProvider: provider,
+	})
+	report, err := prober.Diagnose(context.Background(), model.L4Rule{
+		ID:         113,
+		Protocol:   "tcp",
+		ListenHost: "0.0.0.0",
+		ListenPort: 9553,
+		RelayLayers: [][]int{{
+			501,
+			502,
+		}},
+		Backends: []model.L4Backend{{
+			Host: "relay-target.example",
+			Port: actualPort,
+		}},
+	}, []model.RelayListener{listenerA, listenerB})
+	if err != nil {
+		t.Fatalf("Diagnose() error = %v", err)
+	}
+	if len(report.RelayPaths) != 2 {
+		t.Fatalf("RelayPaths = %+v", report.RelayPaths)
+	}
+	if len(report.SelectedRelayPath) != 1 {
+		t.Fatalf("SelectedRelayPath = %+v", report.SelectedRelayPath)
+	}
+	if !report.RelayPaths[0].Selected || report.RelayPaths[0].Path[0] != 501 {
+		t.Fatalf("first relay path = %+v", report.RelayPaths[0])
+	}
+	if len(report.RelayPaths[0].Hops) != 2 {
+		t.Fatalf("first relay path hops = %+v", report.RelayPaths[0].Hops)
+	}
+	if got := report.RelayPaths[0].Hops[0].ToListenerName; got != "Relay A" {
+		t.Fatalf("first hop listener name = %q", got)
+	}
+	if !report.RelayPaths[0].Success || report.RelayPaths[0].LatencyMS <= 0 {
+		t.Fatalf("first relay path status = %+v", report.RelayPaths[0])
+	}
+}
+
 func TestTCPProberDiagnoseAdaptiveHistoryExcludesCurrentProbeSamples(t *testing.T) {
 	addr, _, stopTarget := startDiagnosticTCPTarget(t)
 	defer stopTarget()

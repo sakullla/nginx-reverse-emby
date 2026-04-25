@@ -564,6 +564,32 @@ func TestRuleServiceCreateRejectsDuplicateRelayChainEntries(t *testing.T) {
 	}
 }
 
+func TestRuleServiceCreateRejectsDuplicateRelayLayerEntriesAcrossLayers(t *testing.T) {
+	store := &fakeRuleStore{
+		listeners: []storage.RelayListenerRow{
+			{ID: 7, AgentID: "local", Enabled: true},
+			{ID: 8, AgentID: "local", Enabled: true},
+		},
+		rulesByAgent: map[string][]storage.HTTPRuleRow{},
+	}
+	svc := NewRuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	_, err := svc.Create(context.Background(), "local", HTTPRuleInput{
+		FrontendURL: stringPtrRule("https://duplicate-layers.example.com"),
+		BackendURL:  stringPtrRule("http://upstream:8096"),
+		RelayLayers: &[][]int{{7, 8}, {7}},
+	})
+	if err == nil {
+		t.Fatal("Create() error = nil")
+	}
+	if err.Error() != "invalid argument: relay_layers entries must not repeat listener IDs across layers" {
+		t.Fatalf("Create() error = %v", err)
+	}
+}
+
 func TestRuleServiceCreateRejectsDuplicateFrontendBindingOnSameAgent(t *testing.T) {
 	store := &fakeRuleStore{
 		rulesByAgent: map[string][]storage.HTTPRuleRow{

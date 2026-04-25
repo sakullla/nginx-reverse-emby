@@ -99,89 +99,130 @@
           </div>
         </div>
 
-        <!-- Backend Probe Results -->
-        <div v-if="backendSummaries.length" class="diagnostic-section">
-          <div class="diagnostic-section__title">后端探测结果</div>
-          <div class="diagnostic-table">
-            <div class="diagnostic-table__header" :style="backendTableGridStyle">
-              <span>后端</span>
-              <span style="text-align:center">状态</span>
-              <span style="text-align:center">延迟</span>
-              <span style="text-align:center">丢包率</span>
-              <span v-if="isHTTP" style="text-align:center">吞吐</span>
-              <span style="text-align:center">质量</span>
+        <div v-if="backendSummaries.length" class="diagnostic-modal__backends">
+          <button type="button" class="diagnostic-modal__section-title diagnostic-modal__section-title--toggle" @click="showBackends = !showBackends">
+            <span>后端延迟</span>
+            <span v-if="backendSummaries.length" class="diagnostic-modal__sample-count">{{ backendSummaries.length }} 个</span>
+            <span class="diagnostic-modal__toggle" :class="{ 'diagnostic-modal__toggle--open': showBackends }">▸</span>
+          </button>
+          <Transition name="slide-expand">
+            <div v-if="showBackends" class="diagnostic-backend-list">
+              <article v-for="backend in backendSummaries" :key="backend.backend" class="diagnostic-backend-item">
+                <div class="diagnostic-backend-item__header">
+                  <code class="diagnostic-backend-item__name">{{ backendDisplayLabel(backend) }}</code>
+                  <div class="diagnostic-backend-item__badges">
+                    <span v-if="backend.adaptive?.preferred" class="diagnostic-backend-item__preferred">当前优选</span>
+                    <span class="diagnostic-backend-item__quality" :class="`diagnostic-backend-item__quality--${qualityToneFor(backend.summary?.quality)}`">
+                      {{ qualityLabelFor(backend.summary?.quality) }}
+                    </span>
+                  </div>
+                </div>
+
+                <div class="diagnostic-backend-item__metrics">
+                  <div class="diagnostic-metric">
+                    <span class="diagnostic-metric__label">延迟</span>
+                    <strong class="diagnostic-metric__value">{{ backendActualLatency(backend) }} ms</strong>
+                  </div>
+                  <div class="diagnostic-metric">
+                    <span class="diagnostic-metric__label">稳定性</span>
+                    <strong class="diagnostic-metric__value">{{ formatPercent(backend.adaptive?.stability) }}</strong>
+                  </div>
+                  <div v-if="showHTTPAdaptiveMetrics" class="diagnostic-metric">
+                    <span class="diagnostic-metric__label">综合性能</span>
+                    <strong class="diagnostic-metric__value">{{ formatScore(backend.adaptive?.performance_score) }}</strong>
+                  </div>
+                  <div v-if="showHTTPAdaptiveMetrics" class="diagnostic-metric">
+                    <span class="diagnostic-metric__label">持续吞吐</span>
+                    <strong class="diagnostic-metric__value">{{ formatThroughput(backend.adaptive?.sustained_throughput_bps) }}</strong>
+                  </div>
+                </div>
+
+                <div class="diagnostic-backend-item__probe">
+                  <span class="diagnostic-backend-item__probe-stat">本次测试 <strong>{{ backend.summary?.avg_latency_ms ?? 0 }} ms</strong></span>
+                  <span class="diagnostic-backend-item__probe-stat">成功 <strong>{{ backend.summary?.succeeded ?? 0 }} / {{ backend.summary?.sent ?? 0 }}</strong></span>
+                </div>
+
+                <button type="button" class="diagnostic-backend-item__toggle" @click="toggleAdaptive(backend.backend)">
+                  <span>{{ isAdaptiveExpanded(backend.backend) ? '收起' : '展开更多' }}</span>
+                  <span class="diagnostic-backend-item__toggle-icon" :class="{ 'diagnostic-backend-item__toggle-icon--open': isAdaptiveExpanded(backend.backend) }">▸</span>
+                </button>
+
+                <Transition name="slide-expand">
+                  <div v-if="isAdaptiveExpanded(backend.backend)" class="diagnostic-backend-item__details">
+                    <div class="diagnostic-backend-item__details-grid">
+                      <div class="diagnostic-factor">
+                        <span class="diagnostic-factor__label">延迟</span>
+                        <strong class="diagnostic-factor__value">{{ backendActualLatency(backend) }} ms</strong>
+                      </div>
+                      <div class="diagnostic-factor">
+                        <span class="diagnostic-factor__label">近24h成功</span>
+                        <strong class="diagnostic-factor__value">{{ backend.adaptive?.recent_succeeded ?? 0 }}</strong>
+                      </div>
+                      <div class="diagnostic-factor">
+                        <span class="diagnostic-factor__label">近24h失败</span>
+                        <strong class="diagnostic-factor__value">{{ backend.adaptive?.recent_failed ?? 0 }}</strong>
+                      </div>
+                      <div v-if="showHTTPAdaptiveMetrics" class="diagnostic-factor">
+                        <span class="diagnostic-factor__label">持续吞吐</span>
+                        <strong class="diagnostic-factor__value">{{ formatThroughput(backend.adaptive?.sustained_throughput_bps) }}</strong>
+                      </div>
+                      <div v-if="showHTTPAdaptiveMetrics" class="diagnostic-factor">
+                        <span class="diagnostic-factor__label">综合性能</span>
+                        <strong class="diagnostic-factor__value">{{ formatScore(backend.adaptive?.performance_score) }}</strong>
+                      </div>
+                      <div v-if="showHTTPAdaptiveMetrics" class="diagnostic-factor">
+                        <span class="diagnostic-factor__label">异常检测</span>
+                        <strong class="diagnostic-factor__value">{{ outlierLabel(backend.adaptive?.outlier) }}</strong>
+                      </div>
+                      <div class="diagnostic-factor">
+                        <span class="diagnostic-factor__label">流量阶段</span>
+                        <strong class="diagnostic-factor__value">{{ trafficShareLabel(backend.adaptive?.traffic_share_hint) }}</strong>
+                      </div>
+                    </div>
+                    <div v-if="showHTTPAdaptiveMetrics && backend.adaptive?.reason" class="diagnostic-backend-item__reason">
+                      原因: {{ reasonLabel(backend.adaptive?.reason) }}
+                    </div>
+                    <div v-if="backend.children?.length" class="diagnostic-backend-item__children">
+                      <div class="diagnostic-backend-item__child-title">已解析候选</div>
+                      <div class="diagnostic-child-list">
+                        <div v-for="child in backend.children" :key="child.backend" class="diagnostic-child-item">
+                          <code class="diagnostic-child-item__name">{{ backendDisplayLabel(child) }}</code>
+                          <code v-if="backendDisplayAddress(child)" class="diagnostic-child-item__address">{{ backendDisplayAddress(child) }}</code>
+                          <span v-if="child.adaptive?.preferred" class="diagnostic-backend-item__preferred">当前优选</span>
+                          <span class="diagnostic-child-item__metric">延迟 {{ backendActualLatency(child) }} ms</span>
+                          <span class="diagnostic-child-item__metric">稳定性 {{ formatPercent(child.adaptive?.stability) }}</span>
+                          <span class="diagnostic-child-item__metric">近24h成功 {{ child.adaptive?.recent_succeeded ?? 0 }}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </Transition>
+              </article>
             </div>
-            <template v-for="backend in backendSummaries" :key="backend.backend">
-              <div
-                class="diagnostic-table__row"
-                :class="{ 'diagnostic-table__row--failed': backend.summary?.succeeded !== backend.summary?.sent, 'diagnostic-table__row--expandable': backend.children && backend.children.length > 0 }"
-                :style="backendTableGridStyle"
-                @click="backend.children && backend.children.length > 0 ? toggleChildren(backend.backend) : null"
-              >
-                <div class="diagnostic-table__cell">
-                  <span :class="(backend.summary?.succeeded === backend.summary?.sent) ? 'status-icon--success' : 'status-icon--danger'">
-                    {{ (backend.summary?.succeeded === backend.summary?.sent) ? '✓' : '✕' }}
-                  </span>
-                  <span class="truncate">{{ backendDisplayLabel(backend) }}</span>
-                  <span v-if="backend.adaptive?.preferred" class="pill pill--preferred">优选</span>
-                  <span v-if="backend.children && backend.children.length" class="expand-chevron">
-                    {{ isChildrenExpanded(backend.backend) ? '▼' : '▶' }}
-                    <span class="expand-hint">{{ backend.children.length }} 个候选</span>
-                  </span>
+          </Transition>
+        </div>
+
+        <div class="diagnostic-modal__samples">
+          <button type="button" class="diagnostic-modal__section-title diagnostic-modal__section-title--toggle" @click="showSamples = !showSamples">
+            <span>探测样本</span>
+            <span v-if="samples.length" class="diagnostic-modal__sample-count">{{ samples.length }} 次</span>
+            <span class="diagnostic-modal__toggle" :class="{ 'diagnostic-modal__toggle--open': showSamples }">▸</span>
+          </button>
+          <div v-if="showSamples" class="diagnostic-sample-list">
+            <div class="diagnostic-sample" v-for="sample in samples" :key="`${sample.attempt}-${sample.backend}`" :class="{ 'diagnostic-sample--failed': !sample.success }">
+              <div class="diagnostic-sample__left">
+                <span class="diagnostic-sample__attempt">#{{ sample.attempt }}</span>
+                <span v-if="isHTTP && sample.status_code" class="diagnostic-sample__status" :class="`diagnostic-sample__status--${httpStatusTone(sample.status_code)}`">{{ sample.status_code }}</span>
+                <div class="diagnostic-sample__backend-wrap">
+                  <code class="diagnostic-sample__backend">{{ backendDisplayLabel(sample) || '-' }}</code>
+                  <code v-if="backendDisplayAddress(sample)" class="diagnostic-sample__backend-address">{{ backendDisplayAddress(sample) }}</code>
                 </div>
-                <span class="diagnostic-table__cell" style="text-align:center">
-                  <span :class="`pill pill--${(backend.summary?.succeeded === backend.summary?.sent) ? 'success' : 'danger'}`">
-                    {{ (backend.summary?.succeeded === backend.summary?.sent) ? '成功' : '失败' }}
-                  </span>
-                </span>
-                <span class="diagnostic-table__cell" style="text-align:center">
-                  <span class="value-primary">{{ backend.summary?.avg_latency_ms ?? 0 }} ms</span>
-                </span>
-                <span class="diagnostic-table__cell" style="text-align:center">{{ formatPercent(backend.summary?.loss_rate) }}</span>
-                <span v-if="isHTTP" class="diagnostic-table__cell" style="text-align:center">
-                  <span class="value-primary">{{ formatThroughput(backend.adaptive?.sustained_throughput_bps) }}</span>
-                </span>
-                <span class="diagnostic-table__cell" style="text-align:center">
-                  <span :class="`pill pill--${qualityToneFor(backend.summary?.quality)}`">
-                    {{ qualityLabelFor(backend.summary?.quality) }}
-                  </span>
-                </span>
               </div>
-              <!-- Children (resolved addresses) -->
-              <div
-                v-for="child in backend.children"
-                :key="child.backend"
-                v-show="isChildrenExpanded(backend.backend)"
-                class="diagnostic-table__row diagnostic-table__row--child"
-                :class="{ 'diagnostic-table__row--failed': child.summary?.succeeded !== child.summary?.sent }"
-                :style="backendTableGridStyle"
-              >
-                <div class="diagnostic-table__cell">
-                  <span :class="(child.summary?.succeeded === child.summary?.sent) ? 'status-icon--success' : 'status-icon--danger'">
-                    {{ (child.summary?.succeeded === child.summary?.sent) ? '✓' : '✕' }}
-                  </span>
-                  <span class="truncate">{{ backendDisplayAddress(child) || backendDisplayLabel(child) }}</span>
-                  <span v-if="child.adaptive?.preferred" class="pill pill--preferred">优选</span>
-                </div>
-                <span class="diagnostic-table__cell" style="text-align:center">
-                  <span :class="`pill pill--${(child.summary?.succeeded === child.summary?.sent) ? 'success' : 'danger'}`">
-                    {{ (child.summary?.succeeded === child.summary?.sent) ? '成功' : '失败' }}
-                  </span>
-                </span>
-                <span class="diagnostic-table__cell" style="text-align:center">
-                  <span class="value-primary">{{ child.summary?.avg_latency_ms ?? 0 }} ms</span>
-                </span>
-                <span class="diagnostic-table__cell" style="text-align:center">{{ formatPercent(child.summary?.loss_rate) }}</span>
-                <span v-if="isHTTP" class="diagnostic-table__cell" style="text-align:center">
-                  <span class="value-primary">{{ formatThroughput(child.adaptive?.sustained_throughput_bps) }}</span>
-                </span>
-                <span class="diagnostic-table__cell" style="text-align:center">
-                  <span :class="`pill pill--${qualityToneFor(child.summary?.quality)}`">
-                    {{ qualityLabelFor(child.summary?.quality) }}
-                  </span>
-                </span>
+              <div class="diagnostic-sample__right">
+                <span v-if="sample.success">{{ sample.latency_ms }} ms</span>
+                <span v-else>{{ sample.error || '失败' }}</span>
               </div>
-            </template>
+            </div>
           </div>
         </div>
       </template>
@@ -212,6 +253,8 @@ const kindLabel = computed(() => props.kind === 'l4_tcp' ? 'TCP PATH DIAGNOSIS' 
 const stateLabel = computed(() => diagnosticStateLabel(state.value))
 const tone = computed(() => diagnosticStateTone(state.value))
 const agentLabel = computed(() => props.task?.agent_id || '')
+const backendSummaries = computed(() => props.task?.result?.backends || [])
+const samples = computed(() => props.task?.result?.samples || [])
 const relayPaths = computed(() => props.task?.result?.relay_paths || [])
 const selectedRelayPath = computed(() => props.task?.result?.selected_relay_path || [])
 const hasRelayPaths = computed(() => relayPaths.value.length > 0)
@@ -224,23 +267,34 @@ const pathStats = computed(() => {
 })
 
 const isHTTP = computed(() => props.kind === 'http')
-const backendSummaries = computed(() => props.task?.result?.backends || [])
+const showHTTPAdaptiveMetrics = computed(() => isHTTP.value)
 const backendTableGridStyle = computed(() => ({
   gridTemplateColumns: isHTTP.value
     ? '1fr 70px 70px 70px 90px 70px'
     : '1fr 70px 70px 70px 70px'
 }))
 
-const expandedChildren = ref(new Set())
-function toggleChildren(backendKey) {
-  if (expandedChildren.value.has(backendKey)) {
-    expandedChildren.value.delete(backendKey)
-  } else {
-    expandedChildren.value.add(backendKey)
-  }
+const showSamples = ref(false)
+const showBackends = ref(false)
+const expandedAdaptive = ref(new Set())
+
+function toggleAdaptive(backendName) {
+  const next = new Set(expandedAdaptive.value)
+  if (next.has(backendName)) next.delete(backendName)
+  else next.add(backendName)
+  expandedAdaptive.value = next
 }
-function isChildrenExpanded(backendKey) {
-  return expandedChildren.value.has(backendKey)
+
+function isAdaptiveExpanded(backendName) {
+  return expandedAdaptive.value.has(backendName)
+}
+
+function backendActualLatency(backend) {
+  const adaptiveLatency = Number(backend?.adaptive?.latency_ms)
+  if (Number.isFinite(adaptiveLatency) && adaptiveLatency > 0) return adaptiveLatency
+  const summaryLatency = Number(backend?.summary?.avg_latency_ms)
+  if (Number.isFinite(summaryLatency)) return summaryLatency
+  return 0
 }
 
 function splitBackendIdentity(value) {
@@ -329,6 +383,40 @@ function formatThroughput(value) {
   if (num >= 1024 * 1024) return `${(num / (1024 * 1024)).toFixed(1)} MB/s`
   if (num >= 1024) return `${(num / 1024).toFixed(1)} KB/s`
   return `${num.toFixed(0)} B/s`
+}
+
+function formatScore(value) {
+  if (value == null) return '-'
+  return Number(value).toFixed(2)
+}
+
+function reasonLabel(value) {
+  return {
+    performance_higher: '综合性能更高',
+    stability_higher: '近24h稳定性更高'
+  }[value] || value || '-'
+}
+
+function trafficShareLabel(value) {
+  return {
+    normal: '主流量',
+    cold: '冷启动探索',
+    recovery: '恢复探索'
+  }[value] || value || '-'
+}
+
+function outlierLabel(value) {
+  if (value == null) return '-'
+  return value ? '已降权' : '正常'
+}
+
+function httpStatusTone(code) {
+  if (!code) return 'muted'
+  if (code >= 200 && code < 300) return 'success'
+  if (code >= 300 && code < 400) return 'info'
+  if (code >= 400 && code < 500) return 'warning'
+  if (code >= 500) return 'danger'
+  return 'muted'
 }
 
 function classifyHopQuality(latencyMs) {
@@ -485,23 +573,6 @@ function qualityToneFor(value) {
 }
 .diagnostic-table__row:last-child { border-bottom: none; }
 .diagnostic-table__row--failed { background: var(--color-danger-50); }
-.diagnostic-table__row--expandable { cursor: pointer; }
-.diagnostic-table__row--expandable:hover { background: var(--color-bg-hover); }
-.diagnostic-table__row--child { padding-left: 1.5rem; background: rgba(0,0,0,0.02); border-left: 3px solid var(--color-border-subtle); }
-
-.expand-chevron {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-  margin-left: 0.3rem;
-  font-size: 0.7rem;
-  color: var(--color-text-tertiary);
-  cursor: pointer;
-}
-.expand-hint {
-  font-size: 0.65rem;
-  color: var(--color-text-muted);
-}
 .diagnostic-table__cell {
   display: flex;
   align-items: center;
@@ -527,6 +598,347 @@ function qualityToneFor(value) {
 .pill--warning { background: var(--color-warning-50); color: var(--color-warning); border: 1px solid var(--color-warning); }
 .pill--info { background: var(--color-primary-subtle); color: var(--color-primary); border: 1px solid var(--color-primary); }
 .pill--preferred { background: rgba(245, 158, 11, 0.12); color: #d97706; border: 1px solid rgba(245, 158, 11, 0.35); font-size: 0.6rem; padding: 1px 6px; }
+
+.slide-expand-enter-active,
+.slide-expand-leave-active {
+  transition: max-height 0.3s ease, opacity 0.25s ease;
+  overflow: hidden;
+}
+.slide-expand-enter-from,
+.slide-expand-leave-to {
+  max-height: 0;
+  opacity: 0;
+}
+.slide-expand-enter-to,
+.slide-expand-leave-from {
+  max-height: 400px;
+  opacity: 1;
+}
+
+.diagnostic-modal__backends {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.diagnostic-backend-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.diagnostic-backend-item {
+  padding: 0.85rem 1rem;
+  border-radius: 12px;
+  background: var(--color-bg-surface);
+  border: 1px solid var(--color-border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+.diagnostic-backend-item__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+.diagnostic-backend-item__name {
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  color: var(--color-text-primary);
+  word-break: break-all;
+}
+.diagnostic-backend-item__badges {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.3rem;
+}
+.diagnostic-backend-item__preferred {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 0.62rem;
+  font-weight: 700;
+  background: rgba(16, 185, 129, 0.12);
+  color: var(--color-success);
+  border: 1px solid rgba(16, 185, 129, 0.25);
+}
+.diagnostic-backend-item__quality {
+  flex-shrink: 0;
+  font-size: 0.62rem;
+  font-weight: 700;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: var(--color-bg-hover);
+  color: var(--color-text-muted);
+}
+.diagnostic-backend-item__quality--success { background: var(--color-success-50); color: var(--color-success); }
+.diagnostic-backend-item__quality--info { background: var(--color-primary-subtle); color: var(--color-primary); }
+.diagnostic-backend-item__quality--warning { background: var(--color-warning-50); color: var(--color-warning); }
+.diagnostic-backend-item__quality--danger { background: var(--color-danger-50); color: var(--color-danger); }
+
+.diagnostic-backend-item__metrics {
+  display: flex;
+  gap: 0.4rem;
+}
+.diagnostic-metric {
+  flex: 1 1 0;
+  min-width: 0;
+  padding: 0.4rem 0.5rem;
+  border-radius: 10px;
+  background: var(--color-primary-subtle);
+  border: 1px solid var(--color-border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 0.05rem;
+}
+.diagnostic-metric__label {
+  font-size: 0.6rem;
+  color: var(--color-primary);
+  font-weight: 500;
+}
+.diagnostic-metric__value {
+  font-size: 0.84rem;
+  color: var(--color-text-primary);
+  font-weight: 700;
+}
+.diagnostic-backend-item__probe {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  font-size: 0.72rem;
+  color: var(--color-text-secondary);
+}
+.diagnostic-backend-item__probe-stat strong {
+  color: var(--color-primary);
+  font-weight: 600;
+}
+.diagnostic-backend-item__toggle {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.22rem 0.6rem;
+  border-radius: 8px;
+  border: 1px solid var(--color-border-subtle);
+  background: var(--color-primary-subtle);
+  color: var(--color-primary);
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+.diagnostic-backend-item__toggle:hover {
+  background: var(--color-bg-hover);
+}
+.diagnostic-backend-item__toggle-icon {
+  font-size: 0.7rem;
+  color: var(--color-primary);
+  transition: transform 0.25s ease;
+}
+.diagnostic-backend-item__toggle-icon--open {
+  transform: rotate(90deg);
+}
+.diagnostic-backend-item__details {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.diagnostic-backend-item__details-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.4rem;
+}
+@media (max-width: 520px) {
+  .diagnostic-backend-item__details-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+.diagnostic-backend-item__reason {
+  font-size: 0.72rem;
+  color: var(--color-text-secondary);
+}
+.diagnostic-backend-item__children {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding-top: 0.4rem;
+  border-top: 1px solid var(--color-border-subtle);
+}
+.diagnostic-backend-item__child-title {
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--color-text-tertiary);
+  margin-bottom: 0.15rem;
+}
+.diagnostic-child-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.diagnostic-child-item {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  padding: 0.25rem 0;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+.diagnostic-child-item:last-child {
+  border-bottom: none;
+}
+.diagnostic-child-item__name,
+.diagnostic-child-item__address {
+  font-family: var(--font-mono);
+  word-break: break-all;
+}
+.diagnostic-child-item__name {
+  font-size: 0.72rem;
+  color: var(--color-text-primary);
+}
+.diagnostic-child-item__address {
+  font-size: 0.7rem;
+  color: var(--color-text-tertiary);
+}
+.diagnostic-child-item__metric {
+  font-size: 0.68rem;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+}
+.diagnostic-factor {
+  padding: 0.4rem 0.5rem;
+  border-radius: 10px;
+  background: var(--color-primary-subtle);
+  border: 1px solid var(--color-border-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+.diagnostic-factor__label {
+  font-size: 0.6rem;
+  color: var(--color-primary);
+  font-weight: 500;
+}
+.diagnostic-factor__value {
+  font-size: 0.82rem;
+  color: var(--color-text-primary);
+}
+.diagnostic-modal__section-title {
+  font-weight: 700;
+  color: var(--color-text-primary);
+  margin-bottom: 0.35rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+}
+.diagnostic-modal__section-title--toggle {
+  width: 100%;
+  background: transparent;
+  border: none;
+  padding: 0.3rem 0;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  border-radius: 8px;
+}
+.diagnostic-modal__section-title--toggle:hover {
+  background: var(--color-bg-hover);
+}
+.diagnostic-modal__toggle {
+  font-size: 0.85rem;
+  color: var(--color-text-tertiary);
+  transition: transform 0.2s ease;
+  margin-left: auto;
+}
+.diagnostic-modal__toggle--open {
+  transform: rotate(90deg);
+}
+.diagnostic-modal__sample-count {
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--color-text-tertiary);
+  background: var(--color-bg-hover);
+  padding: 2px 7px;
+  border-radius: 999px;
+}
+.diagnostic-modal__samples {
+  display: flex;
+  flex-direction: column;
+}
+.diagnostic-sample-list {
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 12px;
+  padding: 0.3rem 0.4rem;
+  background: var(--color-bg-surface);
+}
+.diagnostic-sample {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.4rem 0.5rem;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+.diagnostic-sample:last-child {
+  border-bottom: none;
+}
+.diagnostic-sample--failed {
+  color: var(--color-danger);
+  background: rgba(239, 68, 68, 0.04);
+}
+.diagnostic-sample__left {
+  display: flex;
+  gap: 0.55rem;
+  min-width: 0;
+  align-items: flex-start;
+}
+.diagnostic-sample__attempt {
+  font-size: 0.72rem;
+  color: var(--color-text-tertiary);
+  font-family: var(--font-mono);
+  min-width: 2.2ch;
+  text-align: right;
+}
+.diagnostic-sample__status {
+  font-size: 0.65rem;
+  font-weight: 700;
+  padding: 1px 4px;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+}
+.diagnostic-sample__status--success { background: var(--color-success-50); color: var(--color-success); }
+.diagnostic-sample__status--info { background: rgba(56, 189, 248, 0.12); color: #0ea5e9; }
+.diagnostic-sample__status--warning { background: var(--color-warning-50); color: var(--color-warning); }
+.diagnostic-sample__status--danger { background: var(--color-danger-50); color: var(--color-danger); }
+.diagnostic-sample__status--muted { background: var(--color-bg-hover); color: var(--color-text-muted); }
+.diagnostic-sample__backend-wrap {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+}
+.diagnostic-sample__backend,
+.diagnostic-sample__backend-address {
+  font-family: var(--font-mono);
+  word-break: break-all;
+}
+.diagnostic-sample__backend {
+  font-size: 0.78rem;
+  color: var(--color-text-secondary);
+}
+.diagnostic-sample__backend-address {
+  font-size: 0.72rem;
+  color: var(--color-text-tertiary);
+}
+.diagnostic-sample__right {
+  font-size: 0.78rem;
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+  font-family: var(--font-mono);
+}
+.diagnostic-sample--failed .diagnostic-sample__right {
+  font-weight: 500;
+}
 
 .truncate {
   overflow: hidden;

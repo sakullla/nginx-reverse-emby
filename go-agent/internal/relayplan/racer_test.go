@@ -21,8 +21,9 @@ type fakePathDialer struct {
 }
 
 type fakeDialResult struct {
-	conn net.Conn
-	err  error
+	conn  net.Conn
+	err   error
+	delay time.Duration
 }
 
 func newFakePathDialer() *fakePathDialer {
@@ -46,6 +47,16 @@ func (d *fakePathDialer) DialPath(ctx context.Context, _ Request, path Path) (ne
 		d.canceled[pathKeyForTest(path.IDs)] = true
 		d.mu.Unlock()
 		return nil, relay.DialResult{}, ctx.Err()
+	}
+	if result.delay > 0 {
+		select {
+		case <-time.After(result.delay):
+		case <-ctx.Done():
+			d.mu.Lock()
+			d.canceled[pathKeyForTest(path.IDs)] = true
+			d.mu.Unlock()
+			return nil, relay.DialResult{}, ctx.Err()
+		}
 	}
 	if result.err != nil {
 		return nil, relay.DialResult{}, result.err
@@ -137,6 +148,39 @@ func TestRacerOrdersPathsByAdaptiveObservations(t *testing.T) {
 	}
 	if got := dialer.calledPaths(); len(got) == 0 || !reflect.DeepEqual(got[0], []int{2}) {
 		t.Fatalf("first dialed path = %#v, want [2]", got)
+	}
+}
+
+func TestRacerObservesSuccessfulAndFailedPathAttempts(t *testing.T) {
+	dialer := newFakePathDialer()
+	conn, peer := net.Pipe()
+	defer peer.Close()
+	dialer.set([]int{1}, fakeDialResult{err: errors.New("first failed")})
+	dialer.set([]int{2}, fakeDialResult{conn: conn, delay: time.Millisecond})
+	cache := backends.NewCache(backends.Config{})
+	racer := Racer{Dialer: dialer, Cache: cache, Concurrency: 1, MaxPaths: 8}
+
+	result, err := racer.Race(context.Background(), Request{
+		Network: "tcp",
+		Target:  "backend:443",
+		Paths: []Path{
+			{IDs: []int{1}, Key: PathKey("relay_path", []int{1}, "backend:443")},
+			{IDs: []int{2}, Key: PathKey("relay_path", []int{2}, "backend:443")},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Race() error = %v", err)
+	}
+	defer result.Conn.Close()
+
+	scope := "relay_path|backend:443"
+	failedSummary := cache.Summary(backends.BackendObservationKey(scope, PathKey("relay_path", []int{1}, "backend:443")))
+	if failedSummary.RecentFailed != 1 {
+		t.Fatalf("failed path RecentFailed = %d, want 1", failedSummary.RecentFailed)
+	}
+	successSummary := cache.Summary(backends.BackendObservationKey(scope, PathKey("relay_path", []int{2}, "backend:443")))
+	if successSummary.RecentSucceeded != 1 || !successSummary.HasLatency {
+		t.Fatalf("success path summary = %+v, want observed success with latency", successSummary)
 	}
 }
 
