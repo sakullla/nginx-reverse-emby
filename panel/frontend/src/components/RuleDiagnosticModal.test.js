@@ -226,6 +226,84 @@ describe('RuleDiagnosticModal', () => {
     expect(wrapper.text()).not.toContain('80%')
   })
 
+  it('uses the preferred resolved child adaptive values for parent backend display fields', async () => {
+    const wrapper = mountModal({
+      task: buildTask('http', {
+        stability: 0.5,
+        recent_succeeded: 0,
+        recent_failed: 0,
+        latency_ms: 0,
+        performance_score: 0,
+        traffic_share_hint: 'cold'
+      }, [
+        {
+          backend: 'https://origin.example.test/healthz [104.21.15.245:443]',
+          address: '104.21.15.245:443',
+          summary: {
+            sent: 5,
+            succeeded: 5,
+            failed: 0,
+            loss_rate: 0,
+            avg_latency_ms: 176.6,
+            min_latency_ms: 170,
+            max_latency_ms: 185,
+            quality: '良好'
+          },
+          adaptive: {
+            preferred: true,
+            stability: 1,
+            recent_succeeded: 19,
+            recent_failed: 1,
+            latency_ms: 176.6,
+            performance_score: 0.73,
+            sustained_throughput_bps: 72.6 * 1024 * 1024,
+            traffic_share_hint: 'normal',
+            outlier: false
+          }
+        },
+        {
+          backend: 'https://origin.example.test/healthz [172.67.165.85:443]',
+          address: '172.67.165.85:443',
+          summary: {
+            sent: 5,
+            succeeded: 5,
+            failed: 0,
+            loss_rate: 0,
+            avg_latency_ms: 217.6,
+            min_latency_ms: 210,
+            max_latency_ms: 225,
+            quality: '一般'
+          },
+          adaptive: {
+            preferred: false,
+            stability: 1,
+            recent_succeeded: 20,
+            recent_failed: 0,
+            latency_ms: 217.6,
+            performance_score: 0.61,
+            sustained_throughput_bps: 40 * 1024 * 1024,
+            traffic_share_hint: 'normal',
+            outlier: false
+          }
+        }
+      ])
+    })
+
+    await wrapper.get('.diagnostic-modal__section-title--toggle').trigger('click')
+    await wrapper.get('.diagnostic-backend-item__toggle').trigger('click')
+
+    const parentFactorTexts = wrapper
+      .findAll('.diagnostic-backend-item__details-grid .diagnostic-factor')
+      .map(factor => factor.text())
+
+    expect(parentFactorTexts).toContain('综合性能0.73')
+    expect(parentFactorTexts).toContain('近24h成功19')
+    expect(parentFactorTexts).toContain('近24h失败1')
+    expect(parentFactorTexts).toContain('流量阶段主流量')
+    expect(parentFactorTexts).not.toContain('综合性能0.00')
+    expect(parentFactorTexts).not.toContain('流量阶段冷启动探索')
+  })
+
   it('shows resolved ip separately in probe samples', async () => {
     const wrapper = mountModal({
       task: {

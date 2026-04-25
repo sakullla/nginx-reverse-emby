@@ -125,15 +125,15 @@
                   </div>
                   <div class="diagnostic-metric">
                     <span class="diagnostic-metric__label">稳定性</span>
-                    <strong class="diagnostic-metric__value">{{ formatPercent(backend.adaptive?.stability) }}</strong>
+                    <strong class="diagnostic-metric__value">{{ formatPercent(displayAdaptive(backend)?.stability) }}</strong>
                   </div>
                   <div v-if="showHTTPAdaptiveMetrics" class="diagnostic-metric">
                     <span class="diagnostic-metric__label">综合性能</span>
-                    <strong class="diagnostic-metric__value">{{ formatScore(backend.adaptive?.performance_score) }}</strong>
+                    <strong class="diagnostic-metric__value">{{ formatScore(displayAdaptive(backend)?.performance_score) }}</strong>
                   </div>
                   <div v-if="showHTTPAdaptiveMetrics" class="diagnostic-metric">
                     <span class="diagnostic-metric__label">持续吞吐</span>
-                    <strong class="diagnostic-metric__value">{{ formatThroughput(backend.adaptive?.sustained_throughput_bps) }}</strong>
+                    <strong class="diagnostic-metric__value">{{ formatThroughput(displayAdaptive(backend)?.sustained_throughput_bps) }}</strong>
                   </div>
                 </div>
 
@@ -156,31 +156,31 @@
                       </div>
                       <div class="diagnostic-factor">
                         <span class="diagnostic-factor__label">近24h成功</span>
-                        <strong class="diagnostic-factor__value">{{ backend.adaptive?.recent_succeeded ?? 0 }}</strong>
+                        <strong class="diagnostic-factor__value">{{ displayAdaptive(backend)?.recent_succeeded ?? 0 }}</strong>
                       </div>
                       <div class="diagnostic-factor">
                         <span class="diagnostic-factor__label">近24h失败</span>
-                        <strong class="diagnostic-factor__value">{{ backend.adaptive?.recent_failed ?? 0 }}</strong>
+                        <strong class="diagnostic-factor__value">{{ displayAdaptive(backend)?.recent_failed ?? 0 }}</strong>
                       </div>
                       <div v-if="showHTTPAdaptiveMetrics" class="diagnostic-factor">
                         <span class="diagnostic-factor__label">持续吞吐</span>
-                        <strong class="diagnostic-factor__value">{{ formatThroughput(backend.adaptive?.sustained_throughput_bps) }}</strong>
+                        <strong class="diagnostic-factor__value">{{ formatThroughput(displayAdaptive(backend)?.sustained_throughput_bps) }}</strong>
                       </div>
                       <div v-if="showHTTPAdaptiveMetrics" class="diagnostic-factor">
                         <span class="diagnostic-factor__label">综合性能</span>
-                        <strong class="diagnostic-factor__value">{{ formatScore(backend.adaptive?.performance_score) }}</strong>
+                        <strong class="diagnostic-factor__value">{{ formatScore(displayAdaptive(backend)?.performance_score) }}</strong>
                       </div>
                       <div v-if="showHTTPAdaptiveMetrics" class="diagnostic-factor">
                         <span class="diagnostic-factor__label">异常检测</span>
-                        <strong class="diagnostic-factor__value">{{ outlierLabel(backend.adaptive?.outlier) }}</strong>
+                        <strong class="diagnostic-factor__value">{{ outlierLabel(displayAdaptive(backend)?.outlier) }}</strong>
                       </div>
                       <div class="diagnostic-factor">
                         <span class="diagnostic-factor__label">流量阶段</span>
-                        <strong class="diagnostic-factor__value">{{ trafficShareLabel(backend.adaptive?.traffic_share_hint) }}</strong>
+                        <strong class="diagnostic-factor__value">{{ trafficShareLabel(displayAdaptive(backend)?.traffic_share_hint) }}</strong>
                       </div>
                     </div>
-                    <div v-if="showHTTPAdaptiveMetrics && backend.adaptive?.reason" class="diagnostic-backend-item__reason">
-                      原因: {{ reasonLabel(backend.adaptive?.reason) }}
+                    <div v-if="showHTTPAdaptiveMetrics && displayAdaptive(backend)?.reason" class="diagnostic-backend-item__reason">
+                      原因: {{ reasonLabel(displayAdaptive(backend)?.reason) }}
                     </div>
                     <div v-if="backend.children?.length" class="diagnostic-backend-item__children">
                       <div class="diagnostic-backend-item__child-title">已解析候选</div>
@@ -300,6 +300,29 @@ function backendActualLatency(backend) {
   const summaryLatency = Number(backend?.summary?.avg_latency_ms)
   if (Number.isFinite(summaryLatency)) return summaryLatency
   return 0
+}
+
+function displayAdaptive(backend) {
+  const parentAdaptive = backend?.adaptive || null
+  const preferredChild = (backend?.children || []).find(child => child?.adaptive?.preferred && adaptiveHasRecentSamples(child.adaptive))
+  if (!preferredChild || adaptiveHasRecentSamples(parentAdaptive)) return parentAdaptive
+  return mergeAdaptiveForDisplay(parentAdaptive, preferredChild.adaptive)
+}
+
+function adaptiveHasRecentSamples(adaptive) {
+  return Number(adaptive?.recent_succeeded || 0) > 0 || Number(adaptive?.recent_failed || 0) > 0
+}
+
+function mergeAdaptiveForDisplay(parentAdaptive, childAdaptive) {
+  if (!parentAdaptive) return childAdaptive || null
+  if (!childAdaptive) return parentAdaptive
+  return {
+    ...parentAdaptive,
+    ...childAdaptive,
+    preferred: parentAdaptive.preferred,
+    reason: parentAdaptive.reason || childAdaptive.reason,
+    sustained_throughput_bps: childAdaptive.sustained_throughput_bps || parentAdaptive.sustained_throughput_bps
+  }
 }
 
 function splitBackendIdentity(value) {

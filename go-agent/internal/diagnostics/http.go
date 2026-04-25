@@ -77,6 +77,7 @@ func (p *HTTPProber) Diagnose(ctx context.Context, rule model.HTTPRule, relayLis
 	if len(candidates) == 0 {
 		return Report{}, fmt.Errorf("no healthy backend candidates for %s", rule.FrontendURL)
 	}
+	reportCache := baseCache.Clone()
 
 	samples := make([]Sample, 0, p.attempts*len(candidates))
 	attempt := 0
@@ -92,7 +93,7 @@ func (p *HTTPProber) Diagnose(ctx context.Context, rule model.HTTPRule, relayLis
 		}
 	}
 	report := BuildReport("http", rule.ID, samples)
-	report.Backends = buildHTTPAdaptiveReports(report.Backends, candidates, baseCache)
+	report.Backends = buildHTTPAdaptiveReports(report.Backends, candidates, reportCache)
 	applyCurrentHTTPThroughput(report.Backends, samples)
 	if ruleUsesHTTPRelay(rule) && len(candidates) > 0 {
 		probeTarget := httpRelayProbeTarget(candidates[0])
@@ -457,6 +458,14 @@ func compareObservationSummary(left, right backends.ObservationSummary) int {
 		return -1
 	}
 	return 0
+}
+
+func observationSummaryHasHistory(summary backends.ObservationSummary) bool {
+	return summary.RecentSucceeded > 0 ||
+		summary.RecentFailed > 0 ||
+		summary.HasLatency ||
+		summary.HasBandwidth ||
+		summary.InBackoff
 }
 
 func mergeChildSummaries(children []httpResolvedCandidate, reports map[string]BackendReport) Summary {

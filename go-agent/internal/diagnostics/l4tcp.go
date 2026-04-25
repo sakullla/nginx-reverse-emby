@@ -85,6 +85,7 @@ func (p *TCPProber) Diagnose(ctx context.Context, rule model.L4Rule, relayListen
 	if len(candidates) == 0 {
 		return Report{}, fmt.Errorf("no healthy backend candidates for %s:%d", rule.ListenHost, rule.ListenPort)
 	}
+	reportCache := baseCache.Clone()
 
 	samples := make([]Sample, 0, p.attempts*len(candidates))
 	attempt := 0
@@ -125,7 +126,7 @@ func (p *TCPProber) Diagnose(ctx context.Context, rule model.L4Rule, relayListen
 	}
 
 	report := BuildReport("l4_tcp", rule.ID, samples)
-	report.Backends = buildTCPAdaptiveReports(report.Backends, candidates, baseCache)
+	report.Backends = buildTCPAdaptiveReports(report.Backends, candidates, reportCache)
 	if ruleUsesL4Relay(rule) && len(candidates) > 0 {
 		probeTarget := tcpRelayProbeTarget(candidates[0])
 		paths, err := resolveDiagnosticL4RelayPaths(rule, relayListeners, probeTarget)
@@ -430,7 +431,16 @@ func buildTCPAdaptiveReports(reports []BackendReport, candidates []tcpProbeCandi
 			}
 			report.Backend = configuredLabel
 			report.Address = ""
-			report.Adaptive = adaptiveSummaryFromObservation(cache.SummaryLatencyOnly(groupKey), preferred, preferredReason(preferred), adaptiveSummaryOptions{})
+			summaryKey := groupKey
+			if len(children) == 1 {
+				relayChain := groupRelayChains[groupKey]
+				childRelayChains := groupChildRelayChains[groupKey]
+				childKey := diagnosticAddressKey(tcpChildRelayChain(childRelayChains, children[0].address, relayChain), children[0].address)
+				if childSummary := cache.SummaryLatencyOnly(childKey); observationSummaryHasHistory(childSummary) {
+					summaryKey = childKey
+				}
+			}
+			report.Adaptive = adaptiveSummaryFromObservation(cache.SummaryLatencyOnly(summaryKey), preferred, preferredReason(preferred), adaptiveSummaryOptions{})
 			annotated = append(annotated, report)
 			continue
 		}
