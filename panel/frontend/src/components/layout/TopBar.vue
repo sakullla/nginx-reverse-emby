@@ -273,7 +273,7 @@ function handleLogout() {
 .agent-switcher__dropdown {
   position: absolute; top: calc(100% + 6px); right: 0;
   width: 280px;
-  background: var(--color-bg-surface);
+  background: var(--color-bg-surface-raised);
   border: 1.5px solid var(--color-border-default);
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-xl);
@@ -291,7 +291,11 @@ function handleLogout() {
   box-sizing: border-box;
 }
 .agent-switcher__search-input:focus { border-color: var(--color-primary); }
-.agent-switcher__list { max-height: 280px; overflow-y: auto; padding: 0.25rem; }
+.agent-switcher__list { max-height: 280px; overflow-y: auto; padding: 0.25rem; scrollbar-width: thin; }
+.agent-switcher__list::-webkit-scrollbar { width: 6px; }
+.agent-switcher__list::-webkit-scrollbar-track { background: transparent; }
+.agent-switcher__list::-webkit-scrollbar-thumb { background: var(--color-border-default); border-radius: 3px; }
+.agent-switcher__list::-webkit-scrollbar-thumb:hover { background: var(--color-text-muted); }
 .agent-switcher__item {
   display: flex; align-items: center; gap: 0.5rem;
   width: 100%; padding: 0.5rem 0.625rem;

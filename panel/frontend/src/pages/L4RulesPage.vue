@@ -239,69 +239,6 @@ function closeDiagnostic() { showDiagnostic.value = false; diagnosticRule.value 
 .rules-page__title { font-size: 1.5rem; font-weight: 700; margin: 0 0 0.25rem; color: var(--color-text-primary); }
 .rules-page__subtitle { font-size: 0.875rem; color: var(--color-text-tertiary); margin: 0; }
 .rules-page__prompt, .rules-page__empty, .rules-page__loading { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.75rem; padding: 4rem 2rem; color: var(--color-text-muted); text-align: center; }
-/* Toolbar */
-.rules-page__toolbar { margin-bottom: 1.5rem; }
 /* Card grid */
 .rule-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1rem; }
-.search-wrapper { position: relative; display: flex; align-items: center; }
-.search-icon-btn { display: none; }
-.search-input { flex: 1; min-width: 0; padding: 0.625rem 2rem 0.625rem 0.875rem; border-radius: var(--radius-lg); border: 1.5px solid var(--color-border-default); background: var(--color-bg-subtle); font-size: 0.875rem; color: var(--color-text-primary); outline: none; font-family: inherit; transition: border-color 0.15s, width 0.2s; box-sizing: border-box; }
-.search-input:focus { border-color: var(--color-primary); width: 280px; }
-.search-input::placeholder { color: var(--color-text-muted); }
-.clear-btn { display: flex; align-items: center; justify-content: center; width: 18px; height: 18px; border: none; background: var(--color-bg-hover); border-radius: 50%; color: var(--color-text-secondary); cursor: pointer; flex-shrink: 0; padding: 0; position: absolute; right: 8px; z-index: 2; }
-
-@media (max-width: 640px) {
-  .search-wrapper {
-    width: 36px;
-    height: 36px;
-    border-radius: var(--radius-lg);
-    border: 1.5px solid var(--color-border-default);
-    background: var(--color-bg-subtle);
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    position: relative;
-  }
-  .search-icon-btn { display: flex; color: var(--color-text-secondary); }
-  .search-input {
-    position: absolute;
-    left: 0;
-    top: 0;
-    width: 200px;
-    height: 36px;
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity 0.2s, width 0.2s;
-  }
-  .search-wrapper:focus-within {
-    width: 200px;
-  }
-  .search-wrapper:focus-within .search-input {
-    opacity: 1;
-    pointer-events: auto;
-    border-color: var(--color-primary);
-  }
-  .search-wrapper:focus-within .clear-btn {
-    opacity: 1;
-    pointer-events: auto;
-  }
-  .clear-btn {
-    opacity: 0;
-    pointer-events: none;
-    position: absolute;
-    right: 8px;
-    z-index: 2;
-    transition: opacity 0.2s;
-  }
-  .btn-text { display: none; }
-}
-/* Buttons (still used by header + empty state + delete modal) */
-.btn { padding: 0.5rem 1rem; border-radius: var(--radius-lg); font-size: 0.875rem; font-weight: 500; cursor: pointer; transition: all 0.15s; border: none; font-family: inherit; display: inline-flex; align-items: center; gap: 0.375rem; }
-.btn-primary { background: var(--gradient-primary); color: white; }
-.btn-secondary { background: var(--color-bg-subtle); color: var(--color-text-primary); border: 1px solid var(--color-border-default); }
-.btn-danger { background: var(--color-danger); color: white; }
-/* Spinner */
-.spinner { width: 24px; height: 24px; border: 2px solid var(--color-border-default); border-top-color: var(--color-primary); border-radius: 50%; animation: spin 1s linear infinite; }
-@keyframes spin { to { transform: rotate(360deg); } }
 </style>

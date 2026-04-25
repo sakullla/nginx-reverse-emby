@@ -168,7 +168,7 @@ onUnmounted(() => document.removeEventListener('mousedown', handleClickOutside))
   left: 0;
   width: 100%;
   min-width: 280px;
-  background: var(--color-bg-surface);
+  background: var(--color-bg-surface-raised);
   border: 1.5px solid var(--color-border-default);
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-xl);
@@ -217,7 +217,12 @@ onUnmounted(() => document.removeEventListener('mousedown', handleClickOutside))
   max-height: 240px;
   overflow-y: auto;
   padding: 0.25rem;
+  scrollbar-width: thin;
 }
+.agent-picker__list::-webkit-scrollbar { width: 6px; }
+.agent-picker__list::-webkit-scrollbar-track { background: transparent; }
+.agent-picker__list::-webkit-scrollbar-thumb { background: var(--color-border-default); border-radius: 3px; }
+.agent-picker__list::-webkit-scrollbar-thumb:hover { background: var(--color-text-muted); }
 .agent-picker__item {
   display: flex;
   align-items: center;
