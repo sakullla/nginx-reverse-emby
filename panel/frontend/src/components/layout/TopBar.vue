@@ -37,9 +37,20 @@
           <div class="agent-switcher__search">
             <input v-model="agentSearchQuery" name="agent-switcher-search" class="agent-switcher__search-input" placeholder="搜索节点..." />
           </div>
+          <div class="agent-switcher__filters">
+            <button
+              v-for="opt in switcherStatusOptions"
+              :key="opt.value"
+              class="agent-switcher__filter-btn"
+              :class="{ active: switcherStatusFilter === opt.value }"
+              @click="switcherStatusFilter = opt.value"
+            >
+              {{ opt.label }}
+            </button>
+          </div>
           <div class="agent-switcher__list">
             <button
-              v-for="agent in filteredAgents"
+              v-for="agent in switcherAgents"
               :key="agent.id"
               class="agent-switcher__item"
               :class="{ active: agent.id === effectiveAgentId }"
@@ -47,7 +58,25 @@
             >
               <span class="agent-switcher__dot" :class="`agent-switcher__dot--${getAgentStatus(agent)}`"></span>
               <span class="agent-switcher__item-name">{{ agent.name }}</span>
-              <span class="agent-switcher__item-url">{{ agent.agent_url ? getHostname(agent.agent_url) : (agent.last_seen_ip || '') }}</span>
+              <span class="agent-switcher__item-time">{{ timeAgo(agent.last_seen_at) }}</span>
+            </button>
+            <div v-if="!switcherAgents.length" class="agent-switcher__empty">没有匹配的节点</div>
+          </div>
+          <div class="agent-switcher__sort">
+            <span>排序:</span>
+            <button
+              class="agent-switcher__sort-btn"
+              :class="{ active: switcherSort === 'last_seen' }"
+              @click="switcherSort = 'last_seen'"
+            >
+              最近活跃
+            </button>
+            <button
+              class="agent-switcher__sort-btn"
+              :class="{ active: switcherSort === 'name' }"
+              @click="switcherSort = 'name'"
+            >
+              名称
             </button>
           </div>
         </div>
@@ -70,6 +99,7 @@ import { useRouter, useRoute } from 'vue-router'
 import { useAgent } from '../../context/AgentContext'
 import { useAgents } from '../../hooks/useAgents'
 import { useAuthState } from '../../context/useAuthState'
+import { getAgentStatus, timeAgo } from '../../utils/agentHelpers.js'
 import ThemeSelector from '../base/ThemeSelector.vue'
 
 const router = useRouter()
@@ -81,6 +111,14 @@ const { clearToken } = useAuthState()
 const agentDropdownOpen = ref(false)
 const agentSearchQuery = ref('')
 const agentSwitcherRef = ref(null)
+const switcherStatusFilter = ref('')
+const switcherSort = ref('last_seen')
+
+const switcherStatusOptions = [
+  { value: '', label: '全部' },
+  { value: 'online', label: '在线' },
+  { value: 'offline', label: '离线' }
+]
 
 // Effective agent mirrors what the page uses: route.params.id (agent-detail) wins, then
 // route.query.agentId (list pages), then context selection
@@ -99,28 +137,35 @@ const currentAgent = computed(() => {
   return agentsData.value.find(a => a.id === effectiveAgentId.value)
 })
 
-const filteredAgents = computed(() => {
-  const agents = agentsData.value || []
-  if (!agentSearchQuery.value.trim()) return agents
-  const q = agentSearchQuery.value.toLowerCase()
-  return agents.filter(a =>
-    a.name.toLowerCase().includes(q) ||
-    (a.agent_url || '').toLowerCase().includes(q) ||
-    (a.last_seen_ip || '').toLowerCase().includes(q)
-  )
+const switcherAgents = computed(() => {
+  let result = agentsData.value || []
+
+  // Filter by status
+  if (switcherStatusFilter.value) {
+    result = result.filter(a => getAgentStatus(a) === switcherStatusFilter.value)
+  }
+
+  // Filter by search
+  const q = agentSearchQuery.value.trim().toLowerCase()
+  if (q) {
+    result = result.filter(a =>
+      a.name.toLowerCase().includes(q) ||
+      (a.agent_url || '').toLowerCase().includes(q) ||
+      (a.last_seen_ip || '').toLowerCase().includes(q)
+    )
+  }
+
+  // Sort
+  result.sort((a, b) => {
+    if (switcherSort.value === 'name') {
+      return a.name.localeCompare(b.name)
+    }
+    // Default: last_seen desc
+    return new Date(b.last_seen_at || 0) - new Date(a.last_seen_at || 0)
+  })
+
+  return result
 })
-
-function getAgentStatus(agent) {
-  if (!agent) return 'offline'
-  if (agent.status === 'offline') return 'offline'
-  if (agent.last_apply_status === 'failed') return 'failed'
-  if ((agent.desired_revision || 0) > (agent.current_revision || 0)) return 'pending'
-  return 'online'
-}
-
-function getHostname(url) {
-  try { return url ? new URL(url).hostname : '' } catch { return '' }
-}
 
 function selectAgent(agent) {
   setSelectedAgentId(agent.id)
@@ -133,12 +178,14 @@ function selectAgent(agent) {
   }
   agentDropdownOpen.value = false
   agentSearchQuery.value = ''
+  switcherStatusFilter.value = ''
 }
 
 function handleClickOutside(e) {
   if (agentSwitcherRef.value && !agentSwitcherRef.value.contains(e.target)) {
     agentDropdownOpen.value = false
     agentSearchQuery.value = ''
+    switcherStatusFilter.value = ''
   }
 }
 
@@ -225,7 +272,7 @@ function handleLogout() {
 }
 .agent-switcher__dropdown {
   position: absolute; top: calc(100% + 6px); right: 0;
-  width: 240px;
+  width: 280px;
   background: var(--color-bg-surface);
   border: 1.5px solid var(--color-border-default);
   border-radius: var(--radius-xl);
@@ -261,6 +308,62 @@ function handleLogout() {
 .agent-switcher__item-url {
   font-size: 0.7rem; color: var(--color-text-muted);
   font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis;
+}
+.agent-switcher__filters {
+  display: flex;
+  gap: 0.25rem;
+  padding: 0.5rem;
+  border-bottom: 1px solid var(--color-border-subtle);
+  overflow-x: auto;
+}
+.agent-switcher__filter-btn {
+  padding: 0.25rem 0.625rem;
+  border: none;
+  border-radius: var(--radius-md);
+  background: var(--color-bg-subtle);
+  color: var(--color-text-secondary);
+  font-size: 0.75rem;
+  cursor: pointer;
+  white-space: nowrap;
+  font-family: inherit;
+}
+.agent-switcher__filter-btn.active {
+  background: var(--color-primary);
+  color: white;
+}
+.agent-switcher__item-time {
+  font-size: 0.7rem;
+  color: var(--color-text-muted);
+}
+.agent-switcher__sort {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem;
+  border-top: 1px solid var(--color-border-subtle);
+  font-size: 0.75rem;
+  color: var(--color-text-secondary);
+}
+.agent-switcher__sort-btn {
+  padding: 0.125rem 0.375rem;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: 0.75rem;
+  cursor: pointer;
+  font-family: inherit;
+}
+.agent-switcher__sort-btn.active {
+  background: var(--color-primary-subtle);
+  color: var(--color-primary);
+  font-weight: 500;
+}
+.agent-switcher__empty {
+  padding: 1rem;
+  text-align: center;
+  font-size: 0.8125rem;
+  color: var(--color-text-muted);
 }
 
 @media (max-width: 768px) {
