@@ -723,6 +723,8 @@ onUnmounted(() => {
   max-height: 280px;
   overflow-y: auto;
   background: var(--color-bg-surface);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
   border: 1px solid var(--color-border-default);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-lg);
