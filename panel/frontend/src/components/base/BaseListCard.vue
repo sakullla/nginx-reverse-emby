@@ -3,12 +3,12 @@
     :is="as"
     class="base-list-card"
     :class="{
-      'base-list-card--clickable': clickable && !disabled,
+      'base-list-card--clickable': clickable,
       'base-list-card--disabled': disabled,
     }"
     :style="accentStyle"
     :data-status="status"
-    :tabindex="clickable && !disabled ? 0 : null"
+    :tabindex="clickable ? 0 : null"
     @click="onClick"
     @keydown.enter="onKey"
     @keydown.space.prevent="onKey"
@@ -69,12 +69,12 @@ const accentStyle = computed(() => {
 })
 
 function onClick(e) {
-  if (!props.clickable || props.disabled) return
+  if (!props.clickable) return
   emit('click', e)
 }
 
 function onKey(e) {
-  if (!props.clickable || props.disabled) return
+  if (!props.clickable) return
   emit('click', e)
 }
 </script>
@@ -129,7 +129,6 @@ function onKey(e) {
 
 .base-list-card--disabled {
   opacity: 0.6;
-  cursor: default;
 }
 
 .base-list-card__header {
