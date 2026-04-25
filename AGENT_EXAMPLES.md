@@ -38,4 +38,4 @@ curl -fsSL http://master.example.com:3000/panel-api/public/join-agent.sh | sh -s
 
 ## Windows
 
-Windows 执行面同样使用 Go agent，但通常建议直接分发独立安装包或由控制面公开的二进制资产手工安装。
+当前控制面镜像不构建、不公开 Windows 原生 `nre-agent.exe` 资产。Windows 节点后续通过客户端方式接入，客户端安装包从 GitHub Release 下载，不再随控制面镜像发布。

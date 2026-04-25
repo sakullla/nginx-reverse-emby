@@ -38,9 +38,9 @@
     Heartbeat Pull      Heartbeat Pull
          │                    │
 ┌────────▼──────┐  ┌─────────▼─────────┐
-│  Remote Agent │  │  Remote Agent     │
-│  (go-agent)   │  │  (go-agent)       │
-│  Linux/macOS  │  │  Windows          │
+│  Remote Agent │  │  Client Agent     │
+│  (go-agent)   │  │  (Windows client) │
+│  Linux/macOS  │  │  GitHub download  │
 └───────────────┘  └───────────────────┘
 ```
 
@@ -200,12 +200,12 @@ curl -fsSL http://master.example.com:8080/panel-api/public/join-agent.sh | sh -s
 
 **Windows：**
 
-控制面镜像默认只公开 Linux/macOS agent 资产。Windows 节点需使用自行构建的 `nre-agent.exe` 手工安装：
+当前控制面镜像不构建、不公开 Windows 原生 `nre-agent.exe` 资产。Windows 节点后续通过客户端方式接入，客户端安装包从 GitHub Release 下载，不再随控制面镜像发布。
 
 1. 在控制面获取 `register token`
-2. 准备 `nre-agent.exe` 安装包
-3. 手工向控制面注册 agent，或先在其他平台注册后复用 `agent_token`
-4. 在 Windows 服务或计划任务中启动 `nre-agent.exe`，确保能访问控制面 URL
+2. 从 GitHub Release 下载 Windows 客户端安装包
+3. 在客户端中配置控制面 URL 和注册令牌
+4. 由客户端完成注册、运行和后续连接管理
 
 常见可选参数：
 
@@ -275,7 +275,7 @@ curl -fsSL http://master.example.com:8080/panel-api/public/join-agent.sh | sh -s
 `desired_version` 由控制面下发，驱动 Go agent 版本升级：
 
 1. 在控制面为 agent 或版本策略设置 `desired_version`
-2. 准备安装包来源：使用控制面公开的 agent 资产，或在版本策略中配置自托管 URL 与 `sha256`
+2. 准备安装包来源：Linux/macOS 可使用控制面公开的 agent 资产，或在版本策略中配置自托管 URL 与 `sha256`；Windows 客户端包从 GitHub Release 获取
 3. Agent 在心跳同步时收到 `desired_version`、`version_package` 与 `version_sha256`
 4. 平台匹配且包信息完整时，agent 下载、校验并执行更新，后续心跳上报新版本
 
@@ -342,7 +342,7 @@ docker build -t nginx-reverse-emby .
 docker compose up -d
 ```
 
-Dockerfile 使用多阶段构建，自动交叉编译 Go agent 到 Linux/macOS/Windows 的 AMD64/ARM64 平台。
+Dockerfile 使用多阶段构建，自动交叉编译 Go agent 到 Linux/macOS 的 AMD64/ARM64 平台。Windows 客户端包不随控制面镜像构建或公开，后续通过 GitHub Release 分发。
 
 ## 常见问题
 

@@ -17,9 +17,7 @@ RUN --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/nre-agent-linux-amd64 ./cmd/nre-agent && \
     CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o /out/nre-agent-linux-arm64 ./cmd/nre-agent && \
     CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -o /out/nre-agent-darwin-amd64 ./cmd/nre-agent && \
-    CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o /out/nre-agent-darwin-arm64 ./cmd/nre-agent && \
-    CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o /out/nre-agent-windows-amd64 ./cmd/nre-agent && \
-    CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build -o /out/nre-agent-windows-arm64 ./cmd/nre-agent
+    CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o /out/nre-agent-darwin-arm64 ./cmd/nre-agent
 ARG TARGETOS=linux
 ARG TARGETARCH=amd64
 RUN --mount=type=cache,target=/root/.cache/go-build \
@@ -63,8 +61,6 @@ COPY --from=go-builder /out/nre-agent-linux-amd64 ./panel/public/agent-assets/nr
 COPY --from=go-builder /out/nre-agent-linux-arm64 ./panel/public/agent-assets/nre-agent-linux-arm64
 COPY --from=go-builder /out/nre-agent-darwin-amd64 ./panel/public/agent-assets/nre-agent-darwin-amd64
 COPY --from=go-builder /out/nre-agent-darwin-arm64 ./panel/public/agent-assets/nre-agent-darwin-arm64
-COPY --from=go-builder /out/nre-agent-windows-amd64 ./panel/public/agent-assets/nre-agent-windows-amd64
-COPY --from=go-builder /out/nre-agent-windows-arm64 ./panel/public/agent-assets/nre-agent-windows-arm64
 RUN set -eux; \
     find ./scripts -type f -name '*.sh' -exec sed -i 's/\r$//' {} +; \
     chmod +x /usr/local/bin/nre-control-plane ./scripts/*.sh ./panel/public/agent-assets/*; \
