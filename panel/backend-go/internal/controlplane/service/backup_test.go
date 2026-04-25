@@ -303,6 +303,87 @@ func TestBackupServiceExportImportRoundTripAndConflictReport(t *testing.T) {
 	}
 }
 
+func TestBackupServiceImportSkipsRulesWithMissingRelayLayerDependencies(t *testing.T) {
+	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "target"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(target) error = %v", err)
+	}
+	defer targetStore.Close()
+
+	ctx := t.Context()
+	bundle := BackupBundle{
+		Manifest: BackupManifest{
+			PackageVersion:     BackupPackageVersion,
+			SourceArchitecture: BackupSourceArchitectureGo,
+			ExportedAt:         time.Date(2026, 4, 18, 9, 30, 0, 0, time.UTC),
+			Counts: BackupCounts{
+				Agents:    1,
+				HTTPRules: 1,
+				L4Rules:   1,
+			},
+		},
+		Agents: []BackupAgent{{
+			ID:         "edge-a",
+			Name:       "edge-a",
+			AgentToken: "token-edge-a",
+		}},
+		HTTPRules: []BackupHTTPRule{{
+			ID:               11,
+			AgentID:          "edge-a",
+			FrontendURL:      "https://missing-layer.example.com",
+			BackendURL:       "http://127.0.0.1:8096",
+			Backends:         []HTTPRuleBackend{{URL: "http://127.0.0.1:8096"}},
+			Enabled:          true,
+			RelayLayers:      [][]int{{999}},
+			ProxyRedirect:    true,
+			PassProxyHeaders: defaultPassProxyHeaders(),
+		}},
+		L4Rules: []BackupL4Rule{{
+			ID:           12,
+			AgentID:      "edge-a",
+			Name:         "missing layer",
+			Protocol:     "tcp",
+			ListenHost:   "0.0.0.0",
+			ListenPort:   9000,
+			UpstreamHost: "127.0.0.1",
+			UpstreamPort: 9001,
+			Backends:     []L4Backend{{Host: "127.0.0.1", Port: 9001}},
+			Enabled:      true,
+			RelayLayers:  [][]int{{999}},
+		}},
+	}
+	archive, err := encodeBackupBundle(bundle)
+	if err != nil {
+		t.Fatalf("encodeBackupBundle() error = %v", err)
+	}
+
+	result, err := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, targetStore).Import(ctx, archive)
+	if err != nil {
+		t.Fatalf("Import() error = %v", err)
+	}
+	if result.Summary.SkippedInvalid.HTTPRules != 1 || result.Summary.SkippedInvalid.L4Rules != 1 {
+		t.Fatalf("import invalid summary = %+v", result.Summary.SkippedInvalid)
+	}
+	if result.Summary.Imported.HTTPRules != 0 || result.Summary.Imported.L4Rules != 0 {
+		t.Fatalf("imported summary = %+v", result.Summary.Imported)
+	}
+
+	httpRules, err := targetStore.ListHTTPRules(ctx, "edge-a")
+	if err != nil {
+		t.Fatalf("ListHTTPRules() error = %v", err)
+	}
+	if len(httpRules) != 0 {
+		t.Fatalf("expected no imported http rules, got %+v", httpRules)
+	}
+	l4Rules, err := targetStore.ListL4Rules(ctx, "edge-a")
+	if err != nil {
+		t.Fatalf("ListL4Rules() error = %v", err)
+	}
+	if len(l4Rules) != 0 {
+		t.Fatalf("expected no imported l4 rules, got %+v", l4Rules)
+	}
+}
+
 type failingBackupStore struct {
 	backupStore
 	remainingVersionPolicyFailures int

@@ -132,7 +132,7 @@ func (p *TCPProber) Diagnose(ctx context.Context, rule model.L4Rule, relayListen
 		if err != nil {
 			return Report{}, err
 		}
-		relayReports, selectedPath, err := probeDiagnosticRelayPaths(ctx, "tcp", candidates[0].address, paths, p.relayProvider)
+		relayReports, selectedPath, err := probeDiagnosticRelayPaths(ctx, "tcp", candidates[0].address, paths, p.relayProvider, p.cache)
 		if err != nil {
 			return Report{}, err
 		}

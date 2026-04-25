@@ -1017,6 +1017,10 @@ func (s *backupService) importHTTPRules(ctx context.Context, incoming []BackupHT
 			result.addSkippedInvalid("http_rule", key, "relay listener reference not available")
 			continue
 		}
+		if !remappedIntLayersComplete(item.RelayLayers, input.RelayLayers) {
+			result.addSkippedInvalid("http_rule", key, "relay listener reference not available")
+			continue
+		}
 
 		normalized, err := ruleSvc.normalizeHTTPRuleInput(ctx, input, HTTPRule{AgentID: resolvedAgentID}, 0)
 		if err != nil {
@@ -1088,6 +1092,10 @@ func (s *backupService) importL4Rules(ctx context.Context, incoming []BackupL4Ru
 
 		input := l4RuleInputFromBackup(item, listenerIDMap)
 		if len(item.RelayChain) > 0 && len(pointerIntSlice(input.RelayChain)) != len(item.RelayChain) {
+			result.addSkippedInvalid("l4_rule", key, "relay listener reference not available")
+			continue
+		}
+		if !remappedIntLayersComplete(item.RelayLayers, input.RelayLayers) {
 			result.addSkippedInvalid("l4_rule", key, "relay listener reference not available")
 			continue
 		}

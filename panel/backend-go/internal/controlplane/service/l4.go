@@ -415,7 +415,7 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 	if relayObfs && protocol != "tcp" {
 		relayObfs = false
 	}
-	if relayObfs && len(relayChain) == 0 {
+	if relayObfs && len(relayChain) == 0 && len(relayLayers) == 0 {
 		relayObfs = false
 	}
 

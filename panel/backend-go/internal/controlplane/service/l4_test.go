@@ -156,6 +156,38 @@ func TestL4RuleServiceCreateAllowsRelayChainForUDP(t *testing.T) {
 	}
 }
 
+func TestL4RuleServiceCreatePreservesRelayObfsForRelayLayersOnly(t *testing.T) {
+	store := &fakeL4Store{
+		l4RulesByID: map[string][]storage.L4RuleRow{},
+		relayByAgent: map[string][]storage.RelayListenerRow{
+			"local": {{
+				ID:      7,
+				AgentID: "local",
+				Enabled: true,
+			}},
+		},
+	}
+	svc := NewL4RuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	rule, err := svc.Create(context.Background(), "local", L4RuleInput{
+		Protocol:     stringPtrL4("tcp"),
+		ListenPort:   intPtrL4(9000),
+		UpstreamHost: stringPtrL4("upstream"),
+		UpstreamPort: intPtrL4(9001),
+		RelayLayers:  &[][]int{{7}},
+		RelayObfs:    boolPtrL4(true),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if !rule.RelayObfs {
+		t.Fatalf("expected relay_obfs to be preserved for relay_layers-only rule")
+	}
+}
+
 func TestL4RuleServiceCreateNormalizesLoadBalancingStrategies(t *testing.T) {
 	tests := []struct {
 		name     string

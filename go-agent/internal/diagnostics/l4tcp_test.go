@@ -797,7 +797,7 @@ func TestTCPProberDiagnoseReportsRelayLayerPaths(t *testing.T) {
 	if len(report.SelectedRelayPath) != 1 {
 		t.Fatalf("SelectedRelayPath = %+v", report.SelectedRelayPath)
 	}
-	if !report.RelayPaths[0].Selected || report.RelayPaths[0].Path[0] != 501 {
+	if report.RelayPaths[0].Path[0] != 501 {
 		t.Fatalf("first relay path = %+v", report.RelayPaths[0])
 	}
 	if len(report.RelayPaths[0].Hops) != 2 {
@@ -808,6 +808,15 @@ func TestTCPProberDiagnoseReportsRelayLayerPaths(t *testing.T) {
 	}
 	if !report.RelayPaths[0].Success || report.RelayPaths[0].LatencyMS <= 0 {
 		t.Fatalf("first relay path status = %+v", report.RelayPaths[0])
+	}
+	selectedCount := 0
+	for _, relayPath := range report.RelayPaths {
+		if relayPath.Selected {
+			selectedCount++
+		}
+	}
+	if selectedCount != 1 {
+		t.Fatalf("selected relay paths = %+v", report.RelayPaths)
 	}
 }
 

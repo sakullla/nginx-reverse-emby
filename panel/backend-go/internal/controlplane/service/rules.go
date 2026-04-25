@@ -894,7 +894,7 @@ func (s *ruleService) normalizeHTTPRuleInput(ctx context.Context, input HTTPRule
 	if input.RelayObfs != nil {
 		relayObfs = *input.RelayObfs
 	}
-	if relayObfs && len(relayChain) == 0 {
+	if relayObfs && len(relayChain) == 0 && len(relayLayers) == 0 {
 		relayObfs = false
 	}
 

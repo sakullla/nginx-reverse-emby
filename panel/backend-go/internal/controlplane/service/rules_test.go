@@ -206,6 +206,35 @@ func TestRuleServiceCreateNormalizesAndPersists(t *testing.T) {
 	}
 }
 
+func TestRuleServiceCreatePreservesRelayObfsForRelayLayersOnly(t *testing.T) {
+	store := &fakeRuleStore{
+		listeners: []storage.RelayListenerRow{{
+			ID:       7,
+			AgentID:  "local",
+			Enabled:  true,
+			Revision: 1,
+		}},
+		rulesByAgent: map[string][]storage.HTTPRuleRow{},
+	}
+	svc := NewRuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	rule, err := svc.Create(context.Background(), "local", HTTPRuleInput{
+		FrontendURL: stringPtrRule("https://layer-obfs.example.com"),
+		BackendURL:  stringPtrRule("http://upstream:8096"),
+		RelayLayers: &[][]int{{7}},
+		RelayObfs:   boolPtrRule(true),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if !rule.RelayObfs {
+		t.Fatalf("expected relay_obfs to be preserved for relay_layers-only rule")
+	}
+}
+
 func TestRuleServiceCreateNormalizesLoadBalancingStrategies(t *testing.T) {
 	tests := []struct {
 		name     string

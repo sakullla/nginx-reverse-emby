@@ -94,7 +94,7 @@ func (p *HTTPProber) Diagnose(ctx context.Context, rule model.HTTPRule, relayLis
 		if err != nil {
 			return Report{}, err
 		}
-		relayReports, selectedPath, err := probeDiagnosticRelayPaths(ctx, "tcp", candidates[0].dialAddress, paths, p.relayProvider)
+		relayReports, selectedPath, err := probeDiagnosticRelayPaths(ctx, "tcp", candidates[0].dialAddress, paths, p.relayProvider, p.cache)
 		if err != nil {
 			return Report{}, err
 		}
