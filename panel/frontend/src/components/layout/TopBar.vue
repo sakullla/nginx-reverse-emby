@@ -138,7 +138,7 @@ const currentAgent = computed(() => {
 })
 
 const switcherAgents = computed(() => {
-  let result = agentsData.value || []
+  let result = [...(agentsData.value || [])]
 
   // Filter by status
   if (switcherStatusFilter.value) {
