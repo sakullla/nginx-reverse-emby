@@ -132,6 +132,32 @@ func TestCachePruneKeepsActiveObservationAndBackoff(t *testing.T) {
 	}
 }
 
+func TestCachePrunePreservesRecoveryFailureCount(t *testing.T) {
+	base := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	now := base
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return now
+		},
+		FailureBackoffBase:  time.Second,
+		FailureBackoffLimit: 10 * time.Second,
+	})
+
+	if backoff := cache.MarkFailure("10.0.0.2:8096"); backoff != time.Second {
+		t.Fatalf("first backoff = %s, want 1s", backoff)
+	}
+
+	now = base.Add(2 * time.Second)
+	removed := cache.Prune()
+	if removed.FailureEntries != 0 {
+		t.Fatalf("removed failure entries = %d, want 0 while recovery is active", removed.FailureEntries)
+	}
+
+	if backoff := cache.MarkFailure("10.0.0.2:8096"); backoff != 2*time.Second {
+		t.Fatalf("second backoff after prune = %s, want escalated 2s", backoff)
+	}
+}
+
 func TestCacheAutoPrunesOnWriteAfterInterval(t *testing.T) {
 	base := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
 	now := base

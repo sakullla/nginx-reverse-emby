@@ -266,7 +266,8 @@ func (c *Cache) pruneLocked(now time.Time, force bool) PruneStats {
 	}
 	if force {
 		for key, entry := range c.failures {
-			if !now.Before(entry.retryAfter) {
+			observation := c.observed[key]
+			if !now.Before(entry.retryAfter) && !observation.retainsFailureState(now) {
 				delete(c.failures, key)
 				stats.FailureEntries++
 			}
@@ -1020,6 +1021,19 @@ func (o candidateObservation) inactive(now time.Time) bool {
 		return false
 	}
 	return true
+}
+
+func (o candidateObservation) retainsFailureState(now time.Time) bool {
+	if o.inBackoff(now) {
+		return true
+	}
+	if o.hadBackoff && !o.recoveryUntil.IsZero() && now.Before(o.recoveryUntil) {
+		return true
+	}
+	if !o.slowStartUntil.IsZero() && now.Before(o.slowStartUntil) {
+		return true
+	}
+	return false
 }
 
 func (o candidateObservation) recentTrafficMix(now time.Time) trafficMix {
