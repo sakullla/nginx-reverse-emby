@@ -204,6 +204,100 @@ func TestTaskServiceAcceptsImmediateTaskUpdateDuringDispatch(t *testing.T) {
 	}
 }
 
+func TestTaskServiceMarksExpiredActiveTaskFailedOnGet(t *testing.T) {
+	now := time.Unix(1700000000, 0).UTC()
+	service := NewTaskService(TaskServiceConfig{
+		Now: func() time.Time {
+			return now
+		},
+		TaskTTL: 30 * time.Second,
+	})
+	session := newStubTaskSession("agent-a")
+	if err := service.RegisterSession(TaskSessionRegistration{
+		AgentID:   "agent-a",
+		SessionID: "session-1",
+		Session:   session,
+	}); err != nil {
+		t.Fatalf("RegisterSession() error = %v", err)
+	}
+
+	record, err := service.CreateAndDispatch(TaskCreateRequest{
+		AgentID: "agent-a",
+		Type:    TaskTypeDiagnoseHTTPRule,
+		Payload: map[string]any{"rule_id": 7},
+	})
+	if err != nil {
+		t.Fatalf("CreateAndDispatch() error = %v", err)
+	}
+
+	now = now.Add(31 * time.Second)
+	got, err := service.Get(context.Background(), "agent-a", record.ID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got.State != "failed" {
+		t.Fatalf("state = %q, want failed", got.State)
+	}
+	if got.Error != "task deadline exceeded" {
+		t.Fatalf("error = %q, want deadline error", got.Error)
+	}
+	if !got.UpdatedAt.Equal(now) {
+		t.Fatalf("UpdatedAt = %s, want %s", got.UpdatedAt, now)
+	}
+}
+
+func TestTaskServiceRejectsLateUpdateAfterDeadline(t *testing.T) {
+	now := time.Unix(1700000000, 0).UTC()
+	service := NewTaskService(TaskServiceConfig{
+		Now: func() time.Time {
+			return now
+		},
+		TaskTTL: 30 * time.Second,
+	})
+	session := newStubTaskSession("agent-a")
+	if err := service.RegisterSession(TaskSessionRegistration{
+		AgentID:   "agent-a",
+		SessionID: "session-1",
+		Session:   session,
+	}); err != nil {
+		t.Fatalf("RegisterSession() error = %v", err)
+	}
+
+	record, err := service.CreateAndDispatch(TaskCreateRequest{
+		AgentID: "agent-a",
+		Type:    TaskTypeDiagnoseHTTPRule,
+		Payload: map[string]any{"rule_id": 7},
+	})
+	if err != nil {
+		t.Fatalf("CreateAndDispatch() error = %v", err)
+	}
+
+	now = now.Add(31 * time.Second)
+	err = service.ApplyUpdate(context.Background(), TaskUpdateInput{
+		AgentID: "agent-a",
+		TaskID:  record.ID,
+		State:   "completed",
+		Result:  map[string]any{"ok": true},
+	})
+	if err != nil {
+		t.Fatalf("ApplyUpdate() error = %v", err)
+	}
+
+	got, err := service.Get(context.Background(), "agent-a", record.ID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got.State != "failed" {
+		t.Fatalf("state = %q, want failed", got.State)
+	}
+	if got.Error != "task deadline exceeded" {
+		t.Fatalf("error = %q, want deadline error", got.Error)
+	}
+	if len(got.Result) != 0 {
+		t.Fatalf("result = %#v, want no late result", got.Result)
+	}
+}
+
 func TestTaskServiceRegisterSessionDoesNotCloseExistingSessionWhileLocked(t *testing.T) {
 	service := NewTaskService(TaskServiceConfig{
 		Now: func() time.Time {

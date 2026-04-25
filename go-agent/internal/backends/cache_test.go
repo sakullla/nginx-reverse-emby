@@ -59,6 +59,101 @@ func TestCacheResolveUsesFixedDNSCacheTTL(t *testing.T) {
 	}
 }
 
+func TestCachePruneRemovesExpiredAndInactiveEntries(t *testing.T) {
+	base := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	now := base
+	cache := NewCache(Config{
+		Resolver: &stubResolver{
+			results: [][]net.IPAddr{
+				{{IP: net.ParseIP("10.0.0.1")}},
+			},
+		},
+		Now: func() time.Time {
+			return now
+		},
+	})
+
+	if _, err := cache.Resolve(context.Background(), Endpoint{Host: "backend.example.internal", Port: 8096}); err != nil {
+		t.Fatalf("Resolve() error = %v", err)
+	}
+	cache.ObserveTransferSuccess("10.0.0.1:8096", 20*time.Millisecond, 100*time.Millisecond, 1024)
+	cache.MarkFailure("10.0.0.2:8096")
+	cache.Order("http:rule-a", StrategyRoundRobin, []Candidate{
+		{Address: "10.0.0.1:8096"},
+		{Address: "10.0.0.2:8096"},
+	})
+
+	now = base.Add(observationWindow + time.Hour)
+	removed := cache.Prune()
+	if removed.DNSEntries != 1 {
+		t.Fatalf("removed DNS entries = %d, want 1", removed.DNSEntries)
+	}
+	if removed.FailureEntries != 1 {
+		t.Fatalf("removed failure entries = %d, want 1", removed.FailureEntries)
+	}
+	if removed.ObservationEntries != 2 {
+		t.Fatalf("removed observation entries = %d, want 2", removed.ObservationEntries)
+	}
+	if removed.RoundRobinEntries != 1 {
+		t.Fatalf("removed round robin entries = %d, want 1", removed.RoundRobinEntries)
+	}
+	if got := cache.Summary("10.0.0.1:8096"); got.RecentSucceeded != 0 || got.HasLatency {
+		t.Fatalf("summary after prune = %+v, want cold empty summary", got)
+	}
+}
+
+func TestCachePruneKeepsActiveObservationAndBackoff(t *testing.T) {
+	base := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	now := base
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return now
+		},
+		FailureBackoffBase:  10 * time.Minute,
+		FailureBackoffLimit: 10 * time.Minute,
+	})
+
+	cache.ObserveTransferSuccess("10.0.0.1:8096", 20*time.Millisecond, 100*time.Millisecond, 1024)
+	cache.MarkFailure("10.0.0.2:8096")
+
+	now = base.Add(30 * time.Second)
+	removed := cache.Prune()
+	if removed.ObservationEntries != 0 {
+		t.Fatalf("removed observation entries = %d, want 0", removed.ObservationEntries)
+	}
+	if removed.FailureEntries != 0 {
+		t.Fatalf("removed failure entries = %d, want 0", removed.FailureEntries)
+	}
+	if got := cache.Summary("10.0.0.1:8096"); got.RecentSucceeded != 1 || !got.HasLatency {
+		t.Fatalf("summary after prune = %+v, want retained observation", got)
+	}
+	if !cache.IsInBackoff("10.0.0.2:8096") {
+		t.Fatalf("active backoff was pruned")
+	}
+}
+
+func TestCacheAutoPrunesOnWriteAfterInterval(t *testing.T) {
+	base := time.Date(2026, 4, 9, 10, 0, 0, 0, time.UTC)
+	now := base
+	cache := NewCache(Config{
+		Now: func() time.Time {
+			return now
+		},
+	})
+
+	cache.ObserveTransferSuccess("10.0.0.1:8096", 20*time.Millisecond, 100*time.Millisecond, 1024)
+
+	now = base.Add(observationWindow + time.Hour)
+	cache.ObserveTransferSuccess("10.0.0.2:8096", 30*time.Millisecond, 100*time.Millisecond, 1024)
+
+	if got := cache.Summary("10.0.0.1:8096"); got.RecentSucceeded != 0 || got.HasLatency {
+		t.Fatalf("stale summary after auto prune = %+v, want removed", got)
+	}
+	if got := cache.Summary("10.0.0.2:8096"); got.RecentSucceeded != 1 || !got.HasLatency {
+		t.Fatalf("fresh summary after auto prune = %+v, want retained", got)
+	}
+}
+
 func TestCacheOrderRoundRobinTracksPerScope(t *testing.T) {
 	cache := NewCache(Config{})
 	candidates := []Candidate{

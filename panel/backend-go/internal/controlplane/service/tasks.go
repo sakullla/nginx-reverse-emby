@@ -14,6 +14,8 @@ const (
 	TaskTypeDiagnoseL4TCPRule = "diagnose_l4_tcp_rule"
 )
 
+const taskDeadlineExceededError = "task deadline exceeded"
+
 var ErrTaskNotFound = fmt.Errorf("%w: task not found", ErrRuleNotFound)
 
 var errTaskSessionUnavailable = fmt.Errorf("%w: task session unavailable", ErrAgentNotFound)
@@ -199,8 +201,8 @@ func (s *TaskService) CreateAndDispatch(req TaskCreateRequest) (TaskRecord, erro
 }
 
 func (s *TaskService) Get(_ context.Context, agentID string, taskID string) (TaskRecord, error) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	record, ok := s.tasks[strings.TrimSpace(taskID)]
 	if !ok {
@@ -209,6 +211,8 @@ func (s *TaskService) Get(_ context.Context, agentID string, taskID string) (Tas
 	if strings.TrimSpace(agentID) != "" && record.AgentID != strings.TrimSpace(agentID) {
 		return TaskRecord{}, ErrTaskNotFound
 	}
+	record = s.expireTaskIfDeadlineExceededLocked(record, s.now().UTC())
+	s.tasks[record.ID] = record
 	return record, nil
 }
 
@@ -229,12 +233,37 @@ func (s *TaskService) ApplyUpdate(_ context.Context, input TaskUpdateInput) erro
 	if !ok || record.AgentID != agentID {
 		return ErrTaskNotFound
 	}
+	record = s.expireTaskIfDeadlineExceededLocked(record, s.now().UTC())
+	if isTerminalTaskState(record.State) {
+		s.tasks[taskID] = record
+		return nil
+	}
 	record.State = strings.TrimSpace(input.State)
 	record.Result = cloneTaskPayload(input.Result)
 	record.Error = strings.TrimSpace(input.Error)
 	record.UpdatedAt = s.now().UTC()
 	s.tasks[taskID] = record
 	return nil
+}
+
+func (s *TaskService) expireTaskIfDeadlineExceededLocked(record TaskRecord, now time.Time) TaskRecord {
+	if isTerminalTaskState(record.State) || record.Deadline.IsZero() || !now.After(record.Deadline) {
+		return record
+	}
+	record.State = "failed"
+	record.Result = map[string]any{}
+	record.Error = taskDeadlineExceededError
+	record.UpdatedAt = now
+	return record
+}
+
+func isTerminalTaskState(state string) bool {
+	switch strings.TrimSpace(state) {
+	case "completed", "failed":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *TaskService) nextTaskID() string {
