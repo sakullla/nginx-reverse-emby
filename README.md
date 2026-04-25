@@ -97,7 +97,7 @@ curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/dep
 | `-m, --cert-domain` | 手动指定证书主域名 | `-m example.com` |
 | `-d, --parse-cert-domain` | 自动提取根域名作为证书域名 | `-d` |
 | `-D, --dns` | 使用 DNS API 模式申请证书 | `-D cf` |
-| `-R, --resolver` | 手动指定 DNS 解析服务器 | `-R 8.8.8.8` |
+| `-R, --resolver` | 手动指定 DNS 解析服务器 | `-R <DNS_IP>` |
 | `--no-proxy-redirect` | 禁用 302/307 重定向代理 | `--no-proxy-redirect` |
 | `--gh-proxy` | 指定 GitHub 加速代理 | `--gh-proxy https://gh.example.com` |
 | `--cf-token` | Cloudflare API Token | `--cf-token xxxx` |

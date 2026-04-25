@@ -31,7 +31,7 @@
           v-model='form.domain'
           class='input'
           :class="{ 'input--error': errors.domain }"
-          placeholder='media.example.com 或 1.2.3.4'
+          placeholder='media.example.com 或 203.0.113.4'
           :disabled='isProtectedSystemRelayCA'
           @input='errors.domain = ""'
         >

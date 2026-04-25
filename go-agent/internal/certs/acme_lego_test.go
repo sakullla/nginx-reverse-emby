@@ -10,7 +10,7 @@ func TestConfigureLegoClientConfigDisablesCommonNameForIPCertificates(t *testing
 	config := lego.NewConfig(&legoUser{})
 
 	configureLegoClientConfig(config, acmeIssueRequest{
-		Domain:       "140.235.9.54",
+		Domain:       "203.0.113.54",
 		Scope:        "ip",
 		DirectoryURL: "https://acme.example.test/directory",
 	})

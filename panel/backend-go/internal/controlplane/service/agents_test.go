@@ -318,7 +318,7 @@ func TestAgentServiceRegisterReusesPullAgentByNameAndResetsRuntimeState(t *testi
 			LastApplyMessage:       "heartbeat failed: 503 Service Unavailable",
 			LastReportedStatsJSON:  `{"status":"old"}`,
 			LastSeenAt:             "2026-04-12T16:05:46Z",
-			LastSeenIP:             "142.248.151.126",
+			LastSeenIP:             "203.0.113.126",
 		}},
 	}
 	svc := NewAgentService(config.Config{}, store)

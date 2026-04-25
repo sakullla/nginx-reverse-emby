@@ -70,21 +70,21 @@
                 v-for="(hop, hopIndex) in pathReport.hops"
                 :key="hopIndex"
                 class="diagnostic-table__row"
-                :class="{ 'diagnostic-table__row--failed': !hop.success }"
+                :class="{ 'diagnostic-table__row--failed': hopIsFailed(hop) }"
               >
                 <div class="diagnostic-table__cell">
-                  <span :class="hop.success ? 'status-icon--success' : 'status-icon--danger'">
-                    {{ hop.success ? '✓' : '✕' }}
+                  <span :class="hopStatusIconClass(hop)">
+                    {{ hopStatusIcon(hop) }}
                   </span>
                   <span>{{ formatHopLabel(hop) }}</span>
                 </div>
                 <span class="diagnostic-table__cell" style="text-align:center">
-                  <span :class="`pill pill--${hop.success ? 'success' : 'danger'}`">
-                    {{ hop.success ? '成功' : '失败' }}
+                  <span :class="`pill pill--${hopStatusTone(hop)}`">
+                    {{ hopStatusLabel(hop) }}
                   </span>
                 </span>
                 <span class="diagnostic-table__cell" style="text-align:center">
-                  <span :class="hopHasLatency(hop) ? 'value-primary' : (hop.success ? 'value-muted' : 'value-danger')">
+                  <span :class="hopLatencyClass(hop)">
                     {{ hopHasLatency(hop) ? (hop.latency_ms + ' ms') : '—' }}
                   </span>
                 </span>
@@ -379,6 +379,7 @@ const QUALITY_MAP = {
   '一般': 'warning',
   '较差': 'danger',
   '已连通': 'success',
+  '未检测': 'muted',
   '不可用': 'danger'
 }
 
@@ -442,8 +443,57 @@ function hopHasLatency(hop) {
   return Number.isFinite(Number(hop?.latency_ms))
 }
 
+function hopState(hop) {
+  if (hop?.state) return hop.state
+  return hop?.success ? 'success' : 'failed'
+}
+
+function hopIsSuccess(hop) {
+  return hopState(hop) === 'success'
+}
+
+function hopIsFailed(hop) {
+  return hopState(hop) === 'failed'
+}
+
+function hopStatusLabel(hop) {
+  return {
+    success: '成功',
+    failed: '失败',
+    untested: '未检测'
+  }[hopState(hop)] || '未知'
+}
+
+function hopStatusTone(hop) {
+  return {
+    success: 'success',
+    failed: 'danger',
+    untested: 'muted'
+  }[hopState(hop)] || 'muted'
+}
+
+function hopStatusIcon(hop) {
+  return {
+    success: '✓',
+    failed: '✕',
+    untested: '—'
+  }[hopState(hop)] || '—'
+}
+
+function hopStatusIconClass(hop) {
+  return `status-icon--${hopStatusTone(hop)}`
+}
+
+function hopLatencyClass(hop) {
+  if (hopHasLatency(hop)) return 'value-primary'
+  if (hopIsSuccess(hop)) return 'value-muted'
+  if (hopIsFailed(hop)) return 'value-danger'
+  return 'value-muted'
+}
+
 function hopQualityLabel(hop) {
-  if (!hop?.success) return '不可用'
+  if (hopState(hop) === 'untested') return '未检测'
+  if (!hopIsSuccess(hop)) return '不可用'
   if (!hopHasLatency(hop)) return '已连通'
   return classifyHopQuality(Number(hop.latency_ms))
 }
@@ -603,8 +653,10 @@ function qualityToneFor(value) {
 }
 .status-icon--success { color: var(--color-success); }
 .status-icon--danger { color: var(--color-danger); }
+.status-icon--muted { color: var(--color-text-muted); }
 .value-primary { color: var(--color-primary); font-weight: 600; }
 .value-danger { color: var(--color-danger); font-weight: 600; }
+.value-muted { color: var(--color-text-muted); }
 
 .pill {
   display: inline-flex;
@@ -619,6 +671,7 @@ function qualityToneFor(value) {
 .pill--warning { background: var(--color-warning-50); color: var(--color-warning); border: 1px solid var(--color-warning); }
 .pill--info { background: var(--color-primary-subtle); color: var(--color-primary); border: 1px solid var(--color-primary); }
 .pill--preferred { background: rgba(245, 158, 11, 0.12); color: #d97706; border: 1px solid rgba(245, 158, 11, 0.35); font-size: 0.6rem; padding: 1px 6px; }
+.pill--muted { background: var(--color-bg-hover); color: var(--color-text-muted); border: 1px solid var(--color-border-subtle); }
 
 .slide-expand-enter-active,
 .slide-expand-leave-active {

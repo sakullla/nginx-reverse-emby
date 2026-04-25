@@ -90,8 +90,10 @@ func (s *finalHopSelector) dialTCP(ctx context.Context, target string) (net.Conn
 	}
 
 	var lastErr error
+	lastAddress := ""
 	for _, candidate := range candidates {
 		start := s.now()
+		lastAddress = candidate.Address
 		conn, err := dialTCP(ctx, candidate.Address)
 		if err != nil {
 			s.cache.MarkFailure(candidate.Address)
@@ -101,7 +103,7 @@ func (s *finalHopSelector) dialTCP(ctx context.Context, target string) (net.Conn
 		s.cache.ObserveTransferSuccess(candidate.Address, s.now().Sub(start), 0, 0)
 		return conn, candidate.Address, nil
 	}
-	return nil, "", lastErr
+	return nil, lastAddress, lastErr
 }
 
 type observedUDPPeer struct {

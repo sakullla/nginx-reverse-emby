@@ -237,7 +237,7 @@ func (s *Server) openUpstreamWithResult(network, target string, chain []Hop, opt
 	if len(chain) > 0 {
 		conn, result, err := DialWithResult(s.ctx, network, target, chain, s.provider, options)
 		if err != nil {
-			return nil, DialResult{}, err
+			return nil, result, err
 		}
 		return conn, result, nil
 	}
@@ -351,7 +351,7 @@ func DialWithResult(ctx context.Context, network, target string, chain []Hop, pr
 		}
 		var appErr *relayApplicationError
 		if errors.As(err, &appErr) {
-			return nil, DialResult{}, err
+			return nil, DialResult{SelectedAddress: result.SelectedAddress}, err
 		}
 		if !firstHop.Listener.AllowTransportFallback {
 			return nil, DialResult{}, err
@@ -362,7 +362,7 @@ func DialWithResult(ctx context.Context, network, target string, chain []Hop, pr
 			if !isRelayApplicationError(fallbackErr) {
 				clearRelayVerifiedFallback(firstHop)
 			}
-			return nil, DialResult{}, fmt.Errorf("quic relay failed: %v; tls_tcp fallback failed: %w", err, fallbackErr)
+			return nil, DialResult{SelectedAddress: fallbackResult.SelectedAddress}, fmt.Errorf("quic relay failed: %v; tls_tcp fallback failed: %w", err, fallbackErr)
 		}
 		markRelayVerifiedFallback(firstHop)
 		fallbackResult.TransportMode = ListenerTransportModeTLSTCP
@@ -375,7 +375,7 @@ tlsTCPDial:
 		if !isRelayApplicationError(err) {
 			clearRelayVerifiedFallback(firstHop)
 		}
-		return nil, DialResult{}, err
+		return nil, DialResult{SelectedAddress: result.SelectedAddress}, err
 	}
 	markRelayVerifiedFallback(firstHop)
 	result.TransportMode = transportMode
@@ -842,7 +842,7 @@ func (s *Server) handleQUICStream(conn *quic.Conn, stream *quic.Stream, listener
 	)
 	if err != nil {
 		_ = withFrameDeadline(clientConn, func() error {
-			return writeRelayResponse(clientConn, relayResponse{OK: false, Error: err.Error()})
+			return writeRelayResponse(clientConn, relayResponse{OK: false, Error: err.Error(), SelectedAddress: upstreamResult.SelectedAddress})
 		})
 		cancelStream = false
 		return

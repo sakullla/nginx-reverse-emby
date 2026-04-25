@@ -14,6 +14,12 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayplan"
 )
 
+const (
+	relayHopStateSuccess  = "success"
+	relayHopStateFailed   = "failed"
+	relayHopStateUntested = "untested"
+)
+
 func resolveDiagnosticRelayPaths(ruleLabel string, chain []int, layers [][]int, relayListeners []model.RelayListener, target string) ([]relayplan.Path, error) {
 	normalizedLayers := relayplan.NormalizeLayers(chain, layers)
 	pathIDs, err := relayplan.ExpandPaths(normalizedLayers, 32)
@@ -153,14 +159,18 @@ func relayPathReportKey(path []int) string {
 
 func relayPathHopReports(hops []relay.Hop, target string, success bool, latencyMS float64, err error, timings []relay.ProbeTiming) []RelayHopReport {
 	timingByListenerID, finalLatencyMS := relayHopTimingLookup(timings)
+	failedIndex := relayPathFailedHopIndex(hops, target, err)
 	reports := make([]RelayHopReport, 0, len(hops)+1)
 	for i, hop := range hops {
+		state := relayHopStateForIndex(i, len(hops), success, failedIndex)
 		report := RelayHopReport{
 			Success:        success,
+			State:          state,
 			ToListenerID:   hop.Listener.ID,
 			ToListenerName: hop.Listener.Name,
 			ToAgentName:    relayListenerNodeName(hop.Listener),
 		}
+		report.Success = state == relayHopStateSuccess
 		if i == 0 {
 			report.From = "client"
 		} else {
@@ -169,10 +179,10 @@ func relayPathHopReports(hops []relay.Hop, target string, success bool, latencyM
 			report.FromListenerName = previous.Name
 			report.FromAgentName = relayListenerNodeName(previous)
 		}
-		if err != nil {
+		if state == relayHopStateFailed && err != nil {
 			report.Error = err.Error()
 		}
-		if success {
+		if report.Success {
 			report.LatencyMS = timingByListenerID[hop.Listener.ID]
 		}
 		reports = append(reports, report)
@@ -182,9 +192,11 @@ func relayPathHopReports(hops []relay.Hop, target string, success bool, latencyM
 	if len(hops) == 0 && success && finalHopLatencyMS <= 0 {
 		finalHopLatencyMS = latencyMS
 	}
+	finalState := relayHopStateForIndex(len(hops), len(hops), success, failedIndex)
 	final := RelayHopReport{
 		To:        target,
-		Success:   success,
+		Success:   finalState == relayHopStateSuccess,
+		State:     finalState,
 		LatencyMS: finalHopLatencyMS,
 	}
 	if len(hops) == 0 {
@@ -195,11 +207,160 @@ func relayPathHopReports(hops []relay.Hop, target string, success bool, latencyM
 		final.FromListenerName = previous.Name
 		final.FromAgentName = relayListenerNodeName(previous)
 	}
-	if err != nil {
+	if final.State == relayHopStateFailed && err != nil {
 		final.Error = err.Error()
 	}
 	reports = append(reports, final)
 	return reports
+}
+
+func relayHopStateForIndex(index int, finalIndex int, pathSuccess bool, failedIndex int) string {
+	if pathSuccess {
+		return relayHopStateSuccess
+	}
+	if failedIndex < 0 {
+		if finalIndex == 0 && index == 0 {
+			return relayHopStateFailed
+		}
+		return relayHopStateUntested
+	}
+	switch {
+	case index < failedIndex:
+		return relayHopStateSuccess
+	case index == failedIndex:
+		return relayHopStateFailed
+	default:
+		return relayHopStateUntested
+	}
+}
+
+func relayPathFailedHopIndex(hops []relay.Hop, target string, err error) int {
+	if err == nil {
+		return -1
+	}
+	message := err.Error()
+	for i, hop := range hops {
+		if endpointHostPortAppearsInError(message, hop.Address) {
+			return i
+		}
+	}
+	if endpointHostPortAppearsInError(message, target) {
+		return len(hops)
+	}
+	if lookupHost := lookupHostFromError(message); lookupHost != "" {
+		return relayPathFailedLookupHostIndex(hops, target, lookupHost)
+	}
+	return -1
+}
+
+func endpointHostPortAppearsInError(message string, endpoint string) bool {
+	message = strings.TrimSpace(message)
+	endpoint = strings.TrimSpace(endpoint)
+	if message == "" || endpoint == "" {
+		return false
+	}
+	if endpointTokenAppearsInError(message, endpoint) {
+		return true
+	}
+	host, port, err := net.SplitHostPort(endpoint)
+	if err != nil {
+		return false
+	}
+	host = strings.Trim(host, "[]")
+	if endpointTokenAppearsInError(message, net.JoinHostPort(host, port)) {
+		return true
+	}
+	if !strings.Contains(host, ":") && endpointTokenAppearsInError(message, host+":"+port) {
+		return true
+	}
+	return false
+}
+
+func endpointTokenAppearsInError(message string, endpoint string) bool {
+	message = strings.ToLower(strings.TrimSpace(message))
+	endpoint = strings.ToLower(strings.TrimSpace(endpoint))
+	if message == "" || endpoint == "" {
+		return false
+	}
+	offset := 0
+	for {
+		index := strings.Index(message[offset:], endpoint)
+		if index < 0 {
+			return false
+		}
+		start := offset + index
+		end := start + len(endpoint)
+		if endpointTokenBoundaryBefore(message, start) && endpointTokenBoundaryAfter(message, end) {
+			return true
+		}
+		offset = start + 1
+	}
+}
+
+func endpointTokenBoundaryBefore(message string, start int) bool {
+	if start <= 0 {
+		return true
+	}
+	return !isEndpointTokenChar(message[start-1])
+}
+
+func endpointTokenBoundaryAfter(message string, end int) bool {
+	if end >= len(message) {
+		return true
+	}
+	next := message[end]
+	if next == ':' {
+		return true
+	}
+	return !isEndpointTokenChar(next)
+}
+
+func isEndpointTokenChar(ch byte) bool {
+	return ch == '.' || ch == '-' || ch == '_' || ch == '[' || ch == ']' || ch == '%' ||
+		(ch >= '0' && ch <= '9') ||
+		(ch >= 'a' && ch <= 'z')
+}
+
+func lookupHostFromError(message string) string {
+	const marker = "lookup "
+	index := strings.Index(message, marker)
+	if index < 0 {
+		return ""
+	}
+	remainder := strings.TrimSpace(message[index+len(marker):])
+	if remainder == "" {
+		return ""
+	}
+	host := strings.Fields(remainder)[0]
+	return strings.Trim(strings.TrimSuffix(host, ":"), "[]")
+}
+
+func relayPathFailedLookupHostIndex(hops []relay.Hop, target string, lookupHost string) int {
+	lookupHost = strings.Trim(lookupHost, "[]")
+	matchedIndex := -1
+	matches := 0
+	for i, hop := range hops {
+		if endpointHostEquals(hop.Address, lookupHost) {
+			matchedIndex = i
+			matches++
+		}
+	}
+	if endpointHostEquals(target, lookupHost) {
+		matchedIndex = len(hops)
+		matches++
+	}
+	if matches != 1 {
+		return -1
+	}
+	return matchedIndex
+}
+
+func endpointHostEquals(endpoint string, host string) bool {
+	endpointHost, _, err := net.SplitHostPort(strings.TrimSpace(endpoint))
+	if err != nil {
+		return false
+	}
+	return strings.EqualFold(strings.Trim(endpointHost, "[]"), strings.Trim(host, "[]"))
 }
 
 func relayListenerNodeName(listener relay.Listener) string {

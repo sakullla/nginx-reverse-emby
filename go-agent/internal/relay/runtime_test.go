@@ -647,6 +647,9 @@ func TestFinalTargetFailureDoesNotDemoteRelayQUICTransport(t *testing.T) {
 		if result.TransportMode != "" {
 			t.Fatalf("DialWithResult(%d) TransportMode = %q, want empty result on failed open", i, result.TransportMode)
 		}
+		if i == 0 && result.SelectedAddress != target {
+			t.Fatalf("DialWithResult(%d) SelectedAddress = %q, want %q", i, result.SelectedAddress, target)
+		}
 	}
 
 	state := score.State(relayQUICPathKey(hop))
@@ -1318,6 +1321,56 @@ func TestDialWithResultReturnsSelectedAddressFromFinalHop(t *testing.T) {
 
 	if result.SelectedAddress != backendAddr {
 		t.Fatalf("SelectedAddress = %q, want %q", result.SelectedAddress, backendAddr)
+	}
+}
+
+func TestDialWithResultPreservesSelectedAddressFromNestedRelayFailure(t *testing.T) {
+	provider := newFakeTLSMaterialProvider()
+	listenerA, hopA := newRelayEndpoint(t, provider, 1, "relay-selected-address-a", "pin_only", true, false)
+	listenerB, hopB := newRelayEndpoint(t, provider, 2, "relay-selected-address-b", "pin_only", true, false)
+
+	serverA, err := Start(context.Background(), []Listener{listenerA}, provider)
+	if err != nil {
+		t.Fatalf("Start(A) error = %v", err)
+	}
+	defer serverA.Close()
+
+	selectedPort := pickFreeTCPPort(t)
+	selectedAddress := net.JoinHostPort("127.0.0.1", fmt.Sprintf("%d", selectedPort))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serverB := &Server{
+		ctx:      ctx,
+		cancel:   cancel,
+		provider: provider,
+		finalHopSelector: newFinalHopSelector(finalHopSelectorConfig{
+			Resolver: relayResolverFunc(func(ctx context.Context, host string) ([]net.IPAddr, error) {
+				if host != "deferred.example" {
+					t.Fatalf("unexpected host %q", host)
+				}
+				return []net.IPAddr{{IP: net.ParseIP("127.0.0.1")}}, nil
+			}),
+		}),
+		conns:     make(map[net.Conn]struct{}),
+		quicConns: make(map[*quic.Conn]struct{}),
+	}
+	normalizedListenerB, err := normalizeListener(listenerB)
+	if err != nil {
+		t.Fatalf("normalizeListener(B) error = %v", err)
+	}
+	if err := serverB.startListener(normalizedListenerB); err != nil {
+		t.Fatalf("startListener(B) error = %v", err)
+	}
+	defer serverB.Close()
+
+	target := net.JoinHostPort("deferred.example", fmt.Sprintf("%d", selectedPort))
+	conn, result, err := DialWithResult(context.Background(), "tcp", target, []Hop{hopA, hopB}, provider)
+	if err == nil {
+		conn.Close()
+		t.Fatal("DialWithResult() error = nil, want final target failure")
+	}
+	if result.SelectedAddress != selectedAddress {
+		t.Fatalf("SelectedAddress = %q, want %q", result.SelectedAddress, selectedAddress)
 	}
 }
 

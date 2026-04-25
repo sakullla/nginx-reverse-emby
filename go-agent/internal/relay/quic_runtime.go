@@ -134,9 +134,9 @@ func dialQUICWithResult(ctx context.Context, network, target string, chain []Hop
 	if !response.OK {
 		conn.Close()
 		if response.Error == "" {
-			return nil, DialResult{}, &relayApplicationError{message: "relay connection failed"}
+			return nil, DialResult{SelectedAddress: response.SelectedAddress}, &relayApplicationError{message: "relay connection failed"}
 		}
-		return nil, DialResult{}, &relayApplicationError{message: fmt.Sprintf("relay connection failed: %s", response.Error)}
+		return nil, DialResult{SelectedAddress: response.SelectedAddress}, &relayApplicationError{message: fmt.Sprintf("relay connection failed: %s", response.Error)}
 	}
 	observeRelayQUICSuccessForHop(firstHop)
 

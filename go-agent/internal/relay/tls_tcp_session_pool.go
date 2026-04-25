@@ -312,7 +312,7 @@ func dialTLSTCPMuxWithResult(ctx context.Context, network, target string, chain 
 		InitialData: options.InitialPayload,
 	})
 	if err != nil {
-		return nil, DialResult{}, err
+		return nil, DialResult{SelectedAddress: result.SelectedAddress}, err
 	}
 	return conn, DialResult{SelectedAddress: result.SelectedAddress}, nil
 }
@@ -455,9 +455,9 @@ func (t *tlsTCPTunnel) openStream(ctx context.Context, req relayOpenFrame) (net.
 		if !result.OK {
 			t.removeStream(streamID)
 			if result.Error == "" {
-				return nil, muxOpenResult{}, &relayApplicationError{message: "relay connection failed"}
+				return nil, result, &relayApplicationError{message: "relay connection failed"}
 			}
-			return nil, muxOpenResult{}, &relayApplicationError{message: fmt.Sprintf("relay connection failed: %s", result.Error)}
+			return nil, result, &relayApplicationError{message: fmt.Sprintf("relay connection failed: %s", result.Error)}
 		}
 		return stream, result, nil
 	case <-ctx.Done():
@@ -1260,7 +1260,7 @@ func (s *serverTLSTCPSession) handleStream(listener Listener, stream *tlsTCPLogi
 
 	upstream, upstreamResult, err := s.server.openUpstreamWithResult(request.Kind, request.Target, request.Chain, options)
 	if err != nil {
-		_ = s.writeOpenResult(stream.streamID, muxOpenResult{OK: false, Error: err.Error()})
+		_ = s.writeOpenResult(stream.streamID, muxOpenResult{OK: false, Error: err.Error(), SelectedAddress: upstreamResult.SelectedAddress})
 		s.tunnel.removeStream(stream.streamID)
 		return
 	}
