@@ -1432,6 +1432,42 @@ func TestAgentServiceDeleteRejectsReferencedRelayListenerAndCleansUpRemoteAgent(
 	}
 }
 
+func TestAgentServiceDeleteRejectsRelayLayerOnlyReference(t *testing.T) {
+	cfg := config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}
+	store := &fakeStore{
+		agents: []storage.AgentRow{
+			{ID: "edge-a", Name: "edge-a", AgentToken: "token-a"},
+			{ID: "edge-b", Name: "edge-b", AgentToken: "token-b"},
+		},
+		relayByID: map[string][]storage.RelayListenerRow{
+			"edge-a": {{
+				ID:      8,
+				AgentID: "edge-a",
+				Name:    "relay-b",
+			}},
+		},
+		rulesByID: map[string][]storage.HTTPRuleRow{
+			"edge-b": {{
+				ID:              10,
+				AgentID:         "edge-b",
+				FrontendURL:     "https://relay.example.com",
+				RelayChainJSON:  `[7]`,
+				RelayLayersJSON: `[[7,8]]`,
+			}},
+		},
+		l4RulesByID: map[string][]storage.L4RuleRow{},
+	}
+	svc := NewAgentService(cfg, store)
+
+	_, err := svc.Delete(context.Background(), "edge-a")
+	if err == nil || err.Error() != "invalid argument: cannot delete agent edge-a: relay listener 8 is referenced by HTTP rule #10 on agent edge-b" {
+		t.Fatalf("Delete() error = %v", err)
+	}
+}
+
 func TestAgentServiceStatsFallbackAndApplyBehavior(t *testing.T) {
 	cfg := config.Config{
 		EnableLocalAgent: true,

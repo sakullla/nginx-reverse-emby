@@ -57,6 +57,10 @@ func flattenRelayLayers(layers [][]int) []int {
 	return flattened
 }
 
+func relayConfigReferencesListener(chainJSON string, layersJSON string, listenerID int) bool {
+	return containsInt(parseIntArray(chainJSON), listenerID) || containsInt(flattenRelayLayers(parseIntLayers(layersJSON)), listenerID)
+}
+
 func cloneIntLayers(layers [][]int) [][]int {
 	if layers == nil {
 		return nil

@@ -165,6 +165,9 @@ func (s *l4Service) Create(ctx context.Context, agentID string, input L4RuleInpu
 	if err := s.validateRelayChain(ctx, rule.RelayChain); err != nil {
 		return L4Rule{}, err
 	}
+	if err := s.validateRelayChain(ctx, flattenRelayLayers(rule.RelayLayers)); err != nil {
+		return L4Rule{}, err
+	}
 
 	if err := ensureUniqueL4Listen(existing, rule, 0); err != nil {
 		return L4Rule{}, err
@@ -224,6 +227,9 @@ func (s *l4Service) Update(ctx context.Context, agentID string, id int, input L4
 	rule.AgentID = resolvedID
 	rule.Revision = allocator.AllocateRevisionForAgent(resolvedID, maxRevision)
 	if err := s.validateRelayChain(ctx, rule.RelayChain); err != nil {
+		return L4Rule{}, err
+	}
+	if err := s.validateRelayChain(ctx, flattenRelayLayers(rule.RelayLayers)); err != nil {
 		return L4Rule{}, err
 	}
 

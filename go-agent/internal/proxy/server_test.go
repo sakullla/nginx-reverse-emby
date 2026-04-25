@@ -30,8 +30,19 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayplan"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
+
+type recordingRelayPathDialer struct {
+	calls [][]int
+	conn  net.Conn
+}
+
+func (d *recordingRelayPathDialer) DialPath(_ context.Context, _ relayplan.Request, path relayplan.Path) (net.Conn, relay.DialResult, error) {
+	d.calls = append(d.calls, append([]int(nil), path.IDs...))
+	return d.conn, relay.DialResult{}, nil
+}
 
 func TestServerRoutesByHostAndRewritesLocation(t *testing.T) {
 	var backend *httptest.Server
@@ -2804,6 +2815,44 @@ func TestResolveRelayPathsExpandsRelayLayers(t *testing.T) {
 	}
 	if !reflect.DeepEqual(paths[0].IDs, []int{1, 3}) || !reflect.DeepEqual(paths[1].IDs, []int{2, 3}) {
 		t.Fatalf("paths = %+v", paths)
+	}
+}
+
+func TestNewRelayTransportsOrdersPathsByBackendCache(t *testing.T) {
+	cache := backends.NewCache(backends.Config{})
+	target := "backend:443"
+	scope := "relay_path|" + target
+	slowKey := relayplan.PathKey("relay_path", []int{1}, target)
+	fastKey := relayplan.PathKey("relay_path", []int{2}, target)
+	cache.ObserveBackendFailure(backends.BackendObservationKey(scope, slowKey))
+	cache.ObserveBackendSuccess(backends.BackendObservationKey(scope, fastKey), 10*time.Millisecond, 10*time.Millisecond, 0)
+
+	rule := model.HTTPRule{
+		FrontendURL: "https://frontend.example",
+		RelayLayers: [][]int{{1, 2}},
+	}
+	listeners := map[int]model.RelayListener{
+		1: {ID: 1, Name: "slow", ListenHost: "127.0.0.1", ListenPort: 9001, Enabled: true, TLSMode: "pin_only", PinSet: []model.RelayPin{{Type: "sha256", Value: "pin1"}}},
+		2: {ID: 2, Name: "fast", ListenHost: "127.0.0.1", ListenPort: 9002, Enabled: true, TLSMode: "pin_only", PinSet: []model.RelayPin{{Type: "sha256", Value: "pin2"}}},
+	}
+
+	paths, err := resolveRelayPaths(rule, mapValues(listeners), target)
+	if err != nil {
+		t.Fatalf("resolveRelayPaths() error = %v", err)
+	}
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+	dialer := &recordingRelayPathDialer{conn: clientConn}
+	racer := newRelayPathRacer(&testRuntimeMaterialProvider{}, cache)
+	racer.Dialer = dialer
+	racer.Concurrency = 1
+	result, err := racer.Race(context.Background(), relayplan.Request{Target: target, Paths: paths})
+	if err != nil {
+		t.Fatalf("Race() error = %v", err)
+	}
+	defer result.Conn.Close()
+	if len(dialer.calls) != 1 || !reflect.DeepEqual(dialer.calls[0], []int{2}) {
+		t.Fatalf("called paths = %+v, want fast path first", dialer.calls)
 	}
 }
 

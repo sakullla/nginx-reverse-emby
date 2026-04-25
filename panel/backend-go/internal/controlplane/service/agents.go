@@ -961,7 +961,7 @@ func (s *agentService) findRelayListenerReference(ctx context.Context, excludedA
 			return nil, err
 		}
 		for _, row := range httpRules {
-			if containsInt(parseIntArray(row.RelayChainJSON), listenerID) {
+			if relayConfigReferencesListener(row.RelayChainJSON, row.RelayLayersJSON, listenerID) {
 				return &agentRelayRuleReference{AgentID: agentID, RuleID: row.ID, RuleType: "HTTP"}, nil
 			}
 		}
@@ -970,7 +970,7 @@ func (s *agentService) findRelayListenerReference(ctx context.Context, excludedA
 			return nil, err
 		}
 		for _, row := range l4Rules {
-			if containsInt(parseIntArray(row.RelayChainJSON), listenerID) {
+			if relayConfigReferencesListener(row.RelayChainJSON, row.RelayLayersJSON, listenerID) {
 				return &agentRelayRuleReference{AgentID: agentID, RuleID: row.ID, RuleType: "L4"}, nil
 			}
 		}

@@ -133,7 +133,7 @@ func newServerWithResilience(
 		var relayInteractiveTransport *http.Transport
 		var relayBulkTransport *http.Transport
 		if ruleUsesRelay(rule) {
-			relayTransport, relayInteractiveTransport, relayBulkTransport, err = newRelayTransports(rule, relayListenersByID, providers.Relay, sharedTransport)
+			relayTransport, relayInteractiveTransport, relayBulkTransport, err = newRelayTransports(rule, relayListenersByID, providers.Relay, sharedTransport, backendCache)
 			if err != nil {
 				return nil, err
 			}
@@ -744,6 +744,7 @@ func newRelayTransports(
 	relayListenersByID map[int]model.RelayListener,
 	provider RelayMaterialProvider,
 	base *http.Transport,
+	cache *backends.Cache,
 ) (*http.Transport, *http.Transport, *http.Transport, error) {
 	if provider == nil {
 		return nil, nil, nil, fmt.Errorf("http rule %q: relay_chain requires relay tls material provider", rule.FrontendURL)
@@ -752,7 +753,7 @@ func newRelayTransports(
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	racer := relayplan.Racer{Dialer: relayPathDialer{provider: provider}, Concurrency: 3, MaxPaths: 32}
+	racer := newRelayPathRacer(provider, cache)
 	dial := func(ctx context.Context, network, addr string, class upstream.TrafficClass) (net.Conn, error) {
 		target := dialAddressFromContext(ctx, addr)
 		requestPaths := cloneRelayPlanPaths(paths)
@@ -772,6 +773,10 @@ func newRelayTransports(
 	transport := NewRelayTransport(base, dial)
 	interactive, bulk := NewClassedRelayTransports(base, dial)
 	return transport, interactive, bulk, nil
+}
+
+func newRelayPathRacer(provider RelayMaterialProvider, cache *backends.Cache) relayplan.Racer {
+	return relayplan.Racer{Dialer: relayPathDialer{provider: provider}, Cache: cache, Concurrency: 3, MaxPaths: 32}
 }
 
 func resolveRelayHops(rule model.HTTPRule, relayListeners []model.RelayListener) ([]relay.Hop, error) {

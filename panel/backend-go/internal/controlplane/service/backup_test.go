@@ -126,6 +126,7 @@ func TestBackupServiceExportImportRoundTripAndConflictReport(t *testing.T) {
 		TagsJSON:          `["media"]`,
 		ProxyRedirect:     true,
 		RelayChainJSON:    `[]`,
+		RelayLayersJSON:   `[[31]]`,
 		PassProxyHeaders:  true,
 		CustomHeadersJSON: `[]`,
 		Revision:          2,
@@ -145,6 +146,7 @@ func TestBackupServiceExportImportRoundTripAndConflictReport(t *testing.T) {
 		LoadBalancingJSON: `{"strategy":"adaptive"}`,
 		TuningJSON:        `{"proxy_protocol":{"decode":false,"send":false}}`,
 		RelayChainJSON:    `[]`,
+		RelayLayersJSON:   `[[31]]`,
 		Enabled:           true,
 		TagsJSON:          `["game"]`,
 		Revision:          2,
@@ -240,6 +242,19 @@ func TestBackupServiceExportImportRoundTripAndConflictReport(t *testing.T) {
 	}
 	if len(rules) != 1 || rules[0].FrontendURL != "https://media.example.com" {
 		t.Fatalf("imported http rules = %+v", rules)
+	}
+	if got := rules[0].RelayLayersJSON; got != `[[31]]` {
+		t.Fatalf("imported http relay_layers = %s", got)
+	}
+	l4Rules, err := targetStore.ListL4Rules(ctx, "edge-a")
+	if err != nil {
+		t.Fatalf("ListL4Rules() error = %v", err)
+	}
+	if len(l4Rules) != 1 || l4Rules[0].Name != "TCP 25565" {
+		t.Fatalf("imported l4 rules = %+v", l4Rules)
+	}
+	if got := l4Rules[0].RelayLayersJSON; got != `[[31]]` {
+		t.Fatalf("imported l4 relay_layers = %s", got)
 	}
 	certs, err := targetStore.ListManagedCertificates(ctx)
 	if err != nil {
