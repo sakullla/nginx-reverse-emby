@@ -256,6 +256,7 @@ func TestToEmbeddedSnapshotPreservesRelayTransportFields(t *testing.T) {
 		RelayListeners: []storage.RelayListener{{
 			ID:                     1,
 			AgentID:                "local",
+			AgentName:              "Local Node",
 			Name:                   "relay-self",
 			ListenHost:             "0.0.0.0",
 			BindHosts:              []string{"0.0.0.0"},
@@ -300,6 +301,9 @@ func TestToEmbeddedSnapshotPreservesRelayTransportFields(t *testing.T) {
 	}
 	if len(embedded.RelayListeners) != 1 {
 		t.Fatalf("embedded RelayListeners len = %d, want 1", len(embedded.RelayListeners))
+	}
+	if embedded.RelayListeners[0].AgentName != "Local Node" {
+		t.Fatalf("embedded RelayListeners[0].AgentName = %q, want Local Node", embedded.RelayListeners[0].AgentName)
 	}
 	if embedded.RelayListeners[0].TransportMode != "quic" {
 		t.Fatalf("embedded RelayListeners[0].TransportMode = %q, want quic", embedded.RelayListeners[0].TransportMode)

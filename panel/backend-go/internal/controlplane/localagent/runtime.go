@@ -174,6 +174,7 @@ func toEmbeddedSnapshot(snapshot Snapshot) goagentembedded.Snapshot {
 		embedded.RelayListeners = append(embedded.RelayListeners, goagentembedded.RelayListener{
 			ID:                      listener.ID,
 			AgentID:                 listener.AgentID,
+			AgentName:               listener.AgentName,
 			Name:                    listener.Name,
 			ListenHost:              listener.ListenHost,
 			BindHosts:               append([]string(nil), listener.BindHosts...),
