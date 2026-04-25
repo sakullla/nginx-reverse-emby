@@ -103,6 +103,7 @@ func diagnosticTaskTTL(taskType string, backendCount int) time.Duration {
 	if backendCount <= 0 {
 		backendCount = 1
 	}
+	candidateCount := backendCount * 2
 	var perAttempt time.Duration
 	switch taskType {
 	case service.TaskTypeDiagnoseL4TCPRule:
@@ -110,7 +111,7 @@ func diagnosticTaskTTL(taskType string, backendCount int) time.Duration {
 	default:
 		perAttempt = 5 * time.Second
 	}
-	return time.Duration(5*backendCount)*perAttempt + 15*time.Second
+	return time.Duration(5*candidateCount)*perAttempt + 15*time.Second
 }
 
 func diagnosticHTTPBackendCount(rule service.HTTPRule) int {
