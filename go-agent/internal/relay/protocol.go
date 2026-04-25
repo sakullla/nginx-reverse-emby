@@ -35,19 +35,19 @@ type relayOpenFrame struct {
 }
 
 type relayResponse struct {
-	OK                 bool        `json:"ok"`
-	Error              string      `json:"error,omitempty"`
-	SelectedAddress    string      `json:"selected_address,omitempty"`
-	ResolvedCandidates []string    `json:"resolved_candidates,omitempty"`
-	HopTimings         []HopTiming `json:"hop_timings,omitempty"`
+	OK                 bool          `json:"ok"`
+	Error              string        `json:"error,omitempty"`
+	SelectedAddress    string        `json:"selected_address,omitempty"`
+	ResolvedCandidates []string      `json:"resolved_candidates,omitempty"`
+	ProbeTimings       []ProbeTiming `json:"probe_timings,omitempty"`
 }
 
 type muxOpenResult struct {
-	OK                 bool        `json:"ok"`
-	Error              string      `json:"error,omitempty"`
-	SelectedAddress    string      `json:"selected_address,omitempty"`
-	ResolvedCandidates []string    `json:"resolved_candidates,omitempty"`
-	HopTimings         []HopTiming `json:"hop_timings,omitempty"`
+	OK                 bool          `json:"ok"`
+	Error              string        `json:"error,omitempty"`
+	SelectedAddress    string        `json:"selected_address,omitempty"`
+	ResolvedCandidates []string      `json:"resolved_candidates,omitempty"`
+	ProbeTimings       []ProbeTiming `json:"probe_timings,omitempty"`
 }
 
 func writeRelayRequest(w io.Writer, request relayRequest) error {

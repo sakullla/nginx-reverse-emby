@@ -8,6 +8,7 @@ type RelayPin struct {
 type RelayListener struct {
 	ID                      int        `json:"id"`
 	AgentID                 string     `json:"agent_id"`
+	AgentName               string     `json:"agent_name,omitempty"`
 	Name                    string     `json:"name"`
 	ListenHost              string     `json:"listen_host"`
 	BindHosts               []string   `json:"bind_hosts"`

@@ -26,3 +26,13 @@ var diagnosticRelayResolveCandidates = func(
 ) ([]string, error) {
 	return relay.ResolveCandidates(ctx, target, chain, provider)
 }
+
+var diagnosticRelayProbePath = func(
+	ctx context.Context,
+	network string,
+	target string,
+	chain []relay.Hop,
+	provider relay.TLSMaterialProvider,
+) ([]relay.ProbeTiming, error) {
+	return relay.ProbePath(ctx, network, target, chain, provider)
+}

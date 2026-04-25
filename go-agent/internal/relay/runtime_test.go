@@ -1321,14 +1321,14 @@ func TestDialWithResultReturnsSelectedAddressFromFinalHop(t *testing.T) {
 	}
 }
 
-func TestDialWithResultReturnsHopTimingsForRelayChain(t *testing.T) {
+func TestProbePathReturnsIndependentHopTimingsForRelayChain(t *testing.T) {
 	backendAddr, stopBackend := startTCPEchoServer(t)
 	defer stopBackend()
 	resetTLSTCPSessionPoolForTest()
 
 	provider := newFakeTLSMaterialProvider()
-	listenerA, hopA := newRelayEndpoint(t, provider, 1, "relay-timing-a", "pin_only", true, false)
-	listenerB, hopB := newRelayEndpoint(t, provider, 2, "relay-timing-b", "pin_only", true, false)
+	listenerA, hopA := newRelayEndpoint(t, provider, 1, "relay-probe-a", "pin_only", true, false)
+	listenerB, hopB := newRelayEndpoint(t, provider, 2, "relay-probe-b", "pin_only", true, false)
 
 	serverA, err := Start(context.Background(), []Listener{listenerA}, provider)
 	if err != nil {
@@ -1341,26 +1341,21 @@ func TestDialWithResultReturnsHopTimingsForRelayChain(t *testing.T) {
 	}
 	defer serverB.Close()
 
-	conn, result, err := DialWithResult(context.Background(), "tcp", backendAddr, []Hop{hopA, hopB}, provider)
+	timings, err := ProbePath(context.Background(), "tcp", backendAddr, []Hop{hopA, hopB}, provider)
 	if err != nil {
-		t.Fatalf("DialWithResult() error = %v", err)
+		t.Fatalf("ProbePath() error = %v", err)
 	}
-	defer conn.Close()
-
-	if result.SelectedAddress != backendAddr {
-		t.Fatalf("SelectedAddress = %q, want %q", result.SelectedAddress, backendAddr)
+	if len(timings) != 3 {
+		t.Fatalf("ProbePath() timings = %+v, want relay A, relay B, final backend timings", timings)
 	}
-	if len(result.HopTimings) != 3 {
-		t.Fatalf("HopTimings = %+v, want relay A, relay B, final backend timings", result.HopTimings)
+	if timings[0].ToListenerID != listenerA.ID || timings[0].LatencyMS <= 0 {
+		t.Fatalf("first probe timing = %+v, want listener %d with latency", timings[0], listenerA.ID)
 	}
-	if result.HopTimings[0].ToListenerID != listenerA.ID || result.HopTimings[0].LatencyMS <= 0 {
-		t.Fatalf("first hop timing = %+v, want listener %d with latency", result.HopTimings[0], listenerA.ID)
+	if timings[1].ToListenerID != listenerB.ID || timings[1].LatencyMS <= 0 {
+		t.Fatalf("second probe timing = %+v, want listener %d with latency", timings[1], listenerB.ID)
 	}
-	if result.HopTimings[1].ToListenerID != listenerB.ID || result.HopTimings[1].LatencyMS <= 0 {
-		t.Fatalf("second hop timing = %+v, want listener %d with latency", result.HopTimings[1], listenerB.ID)
-	}
-	if result.HopTimings[2].To != backendAddr || result.HopTimings[2].LatencyMS <= 0 {
-		t.Fatalf("final hop timing = %+v, want backend %q with latency", result.HopTimings[2], backendAddr)
+	if timings[2].To != backendAddr || timings[2].LatencyMS <= 0 {
+		t.Fatalf("final probe timing = %+v, want backend %q with latency", timings[2], backendAddr)
 	}
 }
 

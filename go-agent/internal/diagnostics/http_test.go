@@ -827,24 +827,29 @@ func TestHTTPProberDiagnoseReportsRelayLayerPaths(t *testing.T) {
 	provider := newDiagnosticTLSMaterialProvider()
 	listenerA := newDiagnosticRelayListener(t, provider, 401, "relay-a.internal.test")
 	listenerA.Name = "Relay A"
-	listenerA.AgentID = "3c65c453649aa9f80adc5ee6727a7ba2"
+	listenerA.AgentID = "agent-a"
+	listenerA.AgentName = "Node A"
 	listenerB := newDiagnosticRelayListener(t, provider, 402, "relay-b.internal.test")
 	listenerB.Name = "Relay B"
+	listenerB.AgentID = "agent-b"
+	listenerB.AgentName = "Node B"
 	previousDialWithResult := diagnosticRelayDialWithResult
+	previousProbePath := diagnosticRelayProbePath
 	t.Cleanup(func() {
 		diagnosticRelayDialWithResult = previousDialWithResult
+		diagnosticRelayProbePath = previousProbePath
 	})
 	diagnosticRelayDialWithResult = func(ctx context.Context, network, target string, chain []relay.Hop, provider relay.TLSMaterialProvider, opts ...relay.DialOptions) (net.Conn, relay.DialResult, error) {
 		conn, err := (&net.Dialer{}).DialContext(ctx, network, backendURL.Host)
 		if err != nil {
 			return nil, relay.DialResult{}, err
 		}
-		return conn, relay.DialResult{
-			SelectedAddress: target,
-			HopTimings: []relay.HopTiming{
-				{ToListenerID: chain[0].Listener.ID, LatencyMS: 7.1},
-				{To: target, LatencyMS: 11.2},
-			},
+		return conn, relay.DialResult{SelectedAddress: target}, nil
+	}
+	diagnosticRelayProbePath = func(ctx context.Context, network, target string, chain []relay.Hop, provider relay.TLSMaterialProvider) ([]relay.ProbeTiming, error) {
+		return []relay.ProbeTiming{
+			{ToListenerID: chain[0].Listener.ID, LatencyMS: 7.1},
+			{To: target, LatencyMS: 11.2},
 		}, nil
 	}
 
@@ -877,17 +882,20 @@ func TestHTTPProberDiagnoseReportsRelayLayerPaths(t *testing.T) {
 	if got := report.RelayPaths[0].Hops[0].ToListenerName; got != "Relay A" {
 		t.Fatalf("first hop listener name = %q", got)
 	}
-	if got := report.RelayPaths[0].Hops[0].ToAgentName; got != "" {
-		t.Fatalf("first hop agent name = %q, want empty when only agent id is known", got)
+	if got := report.RelayPaths[0].Hops[0].ToAgentName; got != "Node A" {
+		t.Fatalf("first hop agent name = %q, want node name", got)
+	}
+	if got := report.RelayPaths[0].Hops[1].FromAgentName; got != "Node A" {
+		t.Fatalf("final hop from agent name = %q, want node name", got)
 	}
 	if !report.RelayPaths[0].Success || report.RelayPaths[0].LatencyMS <= 0 {
 		t.Fatalf("first relay path status = %+v", report.RelayPaths[0])
 	}
 	if report.RelayPaths[0].Hops[0].LatencyMS != 7.1 {
-		t.Fatalf("intermediate relay hop latency = %v, want hop timing", report.RelayPaths[0].Hops[0].LatencyMS)
+		t.Fatalf("intermediate relay hop latency = %v, want active probe timing", report.RelayPaths[0].Hops[0].LatencyMS)
 	}
 	if report.RelayPaths[0].Hops[len(report.RelayPaths[0].Hops)-1].LatencyMS != 11.2 {
-		t.Fatalf("final relay hop latency = %v, want final hop timing", report.RelayPaths[0].Hops[len(report.RelayPaths[0].Hops)-1].LatencyMS)
+		t.Fatalf("final relay hop latency = %v, want active probe timing", report.RelayPaths[0].Hops[len(report.RelayPaths[0].Hops)-1].LatencyMS)
 	}
 	selectedCount := 0
 	for _, relayPath := range report.RelayPaths {
@@ -897,6 +905,65 @@ func TestHTTPProberDiagnoseReportsRelayLayerPaths(t *testing.T) {
 	}
 	if selectedCount != 1 {
 		t.Fatalf("selected relay paths = %+v", report.RelayPaths)
+	}
+}
+
+func TestHTTPProberDiagnoseDoesNotReusePathLatencyForUnmeasuredRelayHops(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer backend.Close()
+
+	backendURL, err := url.Parse(backend.URL)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	provider := newDiagnosticTLSMaterialProvider()
+	listener := newDiagnosticRelayListener(t, provider, 431, "relay-unmeasured.internal.test")
+	previousDialWithResult := diagnosticRelayDialWithResult
+	previousProbePath := diagnosticRelayProbePath
+	t.Cleanup(func() {
+		diagnosticRelayDialWithResult = previousDialWithResult
+		diagnosticRelayProbePath = previousProbePath
+	})
+	diagnosticRelayDialWithResult = func(ctx context.Context, network, target string, chain []relay.Hop, provider relay.TLSMaterialProvider, opts ...relay.DialOptions) (net.Conn, relay.DialResult, error) {
+		conn, err := (&net.Dialer{}).DialContext(ctx, network, backendURL.Host)
+		if err != nil {
+			return nil, relay.DialResult{}, err
+		}
+		return conn, relay.DialResult{SelectedAddress: target}, nil
+	}
+	diagnosticRelayProbePath = func(ctx context.Context, network, target string, chain []relay.Hop, provider relay.TLSMaterialProvider) ([]relay.ProbeTiming, error) {
+		return nil, fmt.Errorf("probe unavailable")
+	}
+
+	prober := NewHTTPProber(HTTPProberConfig{
+		Attempts:      1,
+		Timeout:       time.Second,
+		RelayProvider: provider,
+	})
+	report, err := prober.Diagnose(context.Background(), model.HTTPRule{
+		ID:          112,
+		FrontendURL: "https://frontend.example",
+		BackendURL:  "http://relay-target.example:" + backendURL.Port() + "/healthz",
+		RelayLayers: [][]int{{431}},
+	}, []model.RelayListener{listener})
+	if err != nil {
+		t.Fatalf("Diagnose() error = %v", err)
+	}
+	if len(report.RelayPaths) != 1 {
+		t.Fatalf("RelayPaths = %+v", report.RelayPaths)
+	}
+	if !report.RelayPaths[0].Success || report.RelayPaths[0].LatencyMS <= 0 {
+		t.Fatalf("relay path status = %+v", report.RelayPaths[0])
+	}
+	if len(report.RelayPaths[0].Hops) != 2 {
+		t.Fatalf("relay path hops = %+v", report.RelayPaths[0].Hops)
+	}
+	for _, hop := range report.RelayPaths[0].Hops {
+		if hop.LatencyMS != 0 {
+			t.Fatalf("unmeasured hop latency = %v, want 0 in %+v", hop.LatencyMS, report.RelayPaths[0].Hops)
+		}
 	}
 }
 

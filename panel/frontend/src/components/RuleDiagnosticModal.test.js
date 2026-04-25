@@ -265,6 +265,7 @@ describe('RuleDiagnosticModal', () => {
               latency_ms: 12,
               hops: [
                 {
+                  from: 'client',
                   success: true,
                   to_listener_id: 1,
                   to_listener_name: 'Relay A',
@@ -286,6 +287,7 @@ describe('RuleDiagnosticModal', () => {
     })
 
     expect(wrapper.text()).not.toContain('undefined ms')
+    expect(wrapper.text()).toContain('入口 → Relay A (agent-a)')
     expect(wrapper.text()).toContain('7.2 ms')
     expect(wrapper.text()).toContain('12 ms')
     expect(wrapper.text()).not.toContain('待测量')

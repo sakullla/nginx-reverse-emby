@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
@@ -80,11 +81,17 @@ func probeDiagnosticRelayPaths(ctx context.Context, network string, target strin
 			latencyMS = 0.1
 		}
 		reportTarget := resolveProbeAddress(target, dialResult.SelectedAddress)
+		var probeTimings []relay.ProbeTiming
+		if success {
+			if timings, probeErr := diagnosticRelayProbePath(ctx, network, reportTarget, path.Hops, provider); probeErr == nil {
+				probeTimings = timings
+			}
+		}
 		report := RelayPathReport{
 			Path:      append([]int(nil), path.IDs...),
 			Success:   success,
 			LatencyMS: latencyMS,
-			Hops:      relayPathHopReports(path.Hops, reportTarget, success, latencyMS, err, dialResult.HopTimings),
+			Hops:      relayPathHopReports(path.Hops, reportTarget, success, latencyMS, err, probeTimings),
 		}
 		if err != nil {
 			report.Error = err.Error()
@@ -144,7 +151,7 @@ func relayPathReportKey(path []int) string {
 	return relayplan.PathKey("relay_path_report", path, "")
 }
 
-func relayPathHopReports(hops []relay.Hop, target string, success bool, latencyMS float64, err error, timings []relay.HopTiming) []RelayHopReport {
+func relayPathHopReports(hops []relay.Hop, target string, success bool, latencyMS float64, err error, timings []relay.ProbeTiming) []RelayHopReport {
 	timingByListenerID, finalLatencyMS := relayHopTimingLookup(timings)
 	reports := make([]RelayHopReport, 0, len(hops)+1)
 	for i, hop := range hops {
@@ -152,6 +159,7 @@ func relayPathHopReports(hops []relay.Hop, target string, success bool, latencyM
 			Success:        success,
 			ToListenerID:   hop.Listener.ID,
 			ToListenerName: hop.Listener.Name,
+			ToAgentName:    relayListenerNodeName(hop.Listener),
 		}
 		if i == 0 {
 			report.From = "client"
@@ -159,6 +167,7 @@ func relayPathHopReports(hops []relay.Hop, target string, success bool, latencyM
 			previous := hops[i-1].Listener
 			report.FromListenerID = previous.ID
 			report.FromListenerName = previous.Name
+			report.FromAgentName = relayListenerNodeName(previous)
 		}
 		if err != nil {
 			report.Error = err.Error()
@@ -169,13 +178,14 @@ func relayPathHopReports(hops []relay.Hop, target string, success bool, latencyM
 		reports = append(reports, report)
 	}
 
-	if success && finalLatencyMS > 0 {
-		latencyMS = finalLatencyMS
+	finalHopLatencyMS := finalLatencyMS
+	if len(hops) == 0 && success && finalHopLatencyMS <= 0 {
+		finalHopLatencyMS = latencyMS
 	}
 	final := RelayHopReport{
 		To:        target,
 		Success:   success,
-		LatencyMS: latencyMS,
+		LatencyMS: finalHopLatencyMS,
 	}
 	if len(hops) == 0 {
 		final.From = "client"
@@ -183,6 +193,7 @@ func relayPathHopReports(hops []relay.Hop, target string, success bool, latencyM
 		previous := hops[len(hops)-1].Listener
 		final.FromListenerID = previous.ID
 		final.FromListenerName = previous.Name
+		final.FromAgentName = relayListenerNodeName(previous)
 	}
 	if err != nil {
 		final.Error = err.Error()
@@ -191,7 +202,14 @@ func relayPathHopReports(hops []relay.Hop, target string, success bool, latencyM
 	return reports
 }
 
-func relayHopTimingLookup(timings []relay.HopTiming) (map[int]float64, float64) {
+func relayListenerNodeName(listener relay.Listener) string {
+	if name := strings.TrimSpace(listener.AgentName); name != "" {
+		return name
+	}
+	return strings.TrimSpace(listener.AgentID)
+}
+
+func relayHopTimingLookup(timings []relay.ProbeTiming) (map[int]float64, float64) {
 	byListenerID := make(map[int]float64, len(timings))
 	finalLatencyMS := 0.0
 	for _, timing := range timings {

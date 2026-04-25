@@ -1089,6 +1089,9 @@ func TestStoreLoadsAgentSnapshotWithReferencedRelayListenersAndCertificates(t *t
 	if snapshot.RelayListeners[1].AgentID != "remote-agent-b" {
 		t.Fatalf("RelayListeners[1].AgentID = %q", snapshot.RelayListeners[1].AgentID)
 	}
+	if snapshot.RelayListeners[1].AgentName != "remote-agent-b" {
+		t.Fatalf("RelayListeners[1].AgentName = %q", snapshot.RelayListeners[1].AgentName)
+	}
 	if len(snapshot.Certificates) != 3 {
 		t.Fatalf("Certificates = %+v", snapshot.Certificates)
 	}

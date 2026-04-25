@@ -187,13 +187,18 @@ func (s *SQLiteStore) LoadAgentSnapshot(ctx context.Context, agentID string, inp
 		CurrentRevision: input.CurrentRevision,
 	}
 
+	agentNames, err := s.relayListenerAgentNames(ctx, relayRows)
+	if err != nil {
+		return Snapshot{}, err
+	}
+
 	return Snapshot{
 		DesiredVersion:      strings.TrimSpace(input.DesiredVersion),
 		Revision:            int64(computeDesiredRevision(revisionState, httpRows, l4Rows, relayRows, relevantCertRows)),
 		VersionPackage:      resolveVersionPackageForPlatform(versionPolicies, input.DesiredVersion, input.Platform),
 		Rules:               SnapshotHTTPRules(httpRows),
 		L4Rules:             SnapshotL4Rules(l4Rows),
-		RelayListeners:      snapshotRelayListeners(relayRows),
+		RelayListeners:      snapshotRelayListeners(relayRows, agentNames),
 		Certificates:        s.snapshotCertificateBundles(relevantCertRows),
 		CertificatePolicies: snapshotCertificatePolicies(relevantCertRows, resolvedAgentID),
 	}, nil
@@ -870,12 +875,30 @@ func SnapshotL4Rules(rows []L4RuleRow) []L4Rule {
 	return rules
 }
 
-func snapshotRelayListeners(rows []RelayListenerRow) []RelayListener {
+func (s *SQLiteStore) relayListenerAgentNames(ctx context.Context, rows []RelayListenerRow) (map[string]string, error) {
+	if len(rows) == 0 {
+		return nil, nil
+	}
+	agents, err := s.ListAgents(ctx)
+	if err != nil {
+		return nil, err
+	}
+	names := make(map[string]string, len(agents))
+	for _, agent := range agents {
+		if name := strings.TrimSpace(agent.Name); agent.ID != "" && name != "" {
+			names[agent.ID] = name
+		}
+	}
+	return names, nil
+}
+
+func snapshotRelayListeners(rows []RelayListenerRow, agentNames map[string]string) []RelayListener {
 	listeners := make([]RelayListener, 0, len(rows))
 	for _, row := range rows {
 		listeners = append(listeners, RelayListener{
 			ID:                      row.ID,
 			AgentID:                 row.AgentID,
+			AgentName:               agentNames[row.AgentID],
 			Name:                    row.Name,
 			ListenHost:              defaultString(row.ListenHost, "0.0.0.0"),
 			BindHosts:               parseStringSlice(row.BindHostsJSON),
