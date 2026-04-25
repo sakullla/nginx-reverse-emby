@@ -72,7 +72,7 @@ describe('diagnostic pages initial task echo', () => {
     const { default: RulesPage } = await import('./RulesPage.vue')
     const wrapper = mount(RulesPage, { global: { stubs: commonStubs } })
 
-    await wrapper.get('.rule-card__action--diagnose').trigger('click')
+    await wrapper.get('[title="诊断"]').trigger('click')
     await nextTick()
 
     expect(wrapper.get('[data-testid="diagnostic-modal"]').attributes('data-task-id')).toBe('task-http-1')
@@ -83,7 +83,7 @@ describe('diagnostic pages initial task echo', () => {
     const { default: L4RulesPage } = await import('./L4RulesPage.vue')
     const wrapper = mount(L4RulesPage, { global: { stubs: commonStubs } })
 
-    await wrapper.get('.l4-card__action--diagnose').trigger('click')
+    await wrapper.get('[title="诊断"]').trigger('click')
     await nextTick()
 
     expect(wrapper.get('[data-testid="diagnostic-modal"]').attributes('data-task-id')).toBe('task-l4-1')

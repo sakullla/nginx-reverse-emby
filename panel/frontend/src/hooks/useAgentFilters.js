@@ -29,16 +29,24 @@ export function useAgentFilters(agentsRef) {
 
   // Sync filters/sort to URL query
   function syncQuery(overrides = {}) {
-    const query = {
-      ...route.query,
-      view: view.value,
-      ...(statusFilter.value ? { status: statusFilter.value } : {}),
-      ...(modeFilter.value ? { mode: modeFilter.value } : {}),
-      ...(tagFilter.value ? { tag: tagFilter.value } : {}),
-      sort: sortField.value,
-      order: sortOrder.value,
-      ...overrides
-    }
+    const query = { ...route.query }
+
+    // Remove cleared filter keys so stale values don't persist
+    if (!statusFilter.value) delete query.status
+    else query.status = statusFilter.value
+
+    if (!modeFilter.value) delete query.mode
+    else query.mode = modeFilter.value
+
+    if (!tagFilter.value) delete query.tag
+    else query.tag = tagFilter.value
+
+    query.view = view.value
+    query.sort = sortField.value
+    query.order = sortOrder.value
+
+    Object.assign(query, overrides)
+
     // Remove empty values
     Object.keys(query).forEach(key => {
       if (!query[key] && key !== 'sort' && key !== 'order' && key !== 'view') {
