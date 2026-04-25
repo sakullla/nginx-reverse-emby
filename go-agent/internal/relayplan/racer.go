@@ -71,6 +71,7 @@ func (r Racer) Race(ctx context.Context, req Request) (Result, error) {
 	if r.MaxPaths > 0 && len(paths) > r.MaxPaths {
 		return Result{}, fmt.Errorf("relay paths exceed maximum %d", r.MaxPaths)
 	}
+	paths = r.filterBackedOffPaths(req, paths)
 	concurrency := r.Concurrency
 	if concurrency <= 0 || concurrency > len(paths) {
 		concurrency = len(paths)
@@ -154,11 +155,7 @@ func (r Racer) observeAttempt(req Request, attempt Attempt) {
 	if r.Cache == nil || attempt.Canceled {
 		return
 	}
-	key := attempt.Path.Key
-	if strings.TrimSpace(key) == "" {
-		key = PathKey("relay_path", attempt.Path.IDs, req.Target)
-	}
-	observationKey := backends.BackendObservationKey(relayPathScope(req.Target), key)
+	observationKey := r.pathObservationKey(req, attempt.Path)
 	if attempt.Success {
 		r.Cache.ObserveBackendSuccess(observationKey, attempt.Latency, attempt.Latency, 0)
 		return
@@ -197,6 +194,30 @@ func (r Racer) orderPaths(req Request) []Path {
 		return paths
 	}
 	return out
+}
+
+func (r Racer) filterBackedOffPaths(req Request, paths []Path) []Path {
+	if r.Cache == nil || len(paths) <= 1 {
+		return paths
+	}
+	available := make([]Path, 0, len(paths))
+	for _, path := range paths {
+		if !r.Cache.IsInBackoff(r.pathObservationKey(req, path)) {
+			available = append(available, path)
+		}
+	}
+	if len(available) == 0 {
+		return paths
+	}
+	return available
+}
+
+func (r Racer) pathObservationKey(req Request, path Path) string {
+	key := path.Key
+	if strings.TrimSpace(key) == "" {
+		key = PathKey("relay_path", path.IDs, req.Target)
+	}
+	return backends.BackendObservationKey(relayPathScope(req.Target), key)
 }
 
 func relayPathScope(target string) string {

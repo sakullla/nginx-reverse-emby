@@ -86,20 +86,25 @@ func (p *TCPProber) Diagnose(ctx context.Context, rule model.L4Rule, relayListen
 
 	samples := make([]Sample, 0, p.attempts*len(candidates))
 	attempt := 0
-	for _, candidate := range candidates {
+	for candidateIndex, candidate := range candidates {
 		for i := 0; i < p.attempts; i++ {
 			attempt++
 			reqCtx, cancel := context.WithTimeout(ctx, p.timeout)
 			start := time.Now()
-			conn, selectedAddress, err := p.dialCandidate(reqCtx, rule, relayListeners, candidate)
+			conn, selectedAddress, selectedRelayPath, err := p.dialCandidate(reqCtx, rule, relayListeners, candidate)
 			cancel()
+			if len(selectedRelayPath) > 0 {
+				candidate.relayChain = selectedRelayPath
+				candidates[candidateIndex].relayChain = selectedRelayPath
+			}
 			actualAddress := resolveProbeAddress(candidate.address, selectedAddress)
 			backendLabel := tcpProbeLabelForAddress(candidate, actualAddress)
+			relayChain := diagnosticRelayChainForObservation(rule.RelayChain, candidate.relayChain, selectedRelayPath)
 			if err != nil {
 				if candidate.backendObservationKey != "" {
 					cache.ObserveBackendFailure(candidate.backendObservationKey)
 				}
-				markDiagnosticAddressFailureAll(rule.RelayChain, actualAddress, persistentDiagnosticAddressCaches(cache, p.cache, rule.RelayChain)...)
+				markDiagnosticAddressFailureAll(relayChain, actualAddress, persistentDiagnosticAddressCaches(cache, p.cache, relayChain)...)
 				sample := FailureSample(attempt, backendLabel, err)
 				sample.Address = actualAddress
 				samples = append(samples, sample)
@@ -110,7 +115,7 @@ func (p *TCPProber) Diagnose(ctx context.Context, rule model.L4Rule, relayListen
 			if candidate.backendObservationKey != "" {
 				cache.ObserveBackendSuccess(candidate.backendObservationKey, totalDuration, totalDuration, 0)
 			}
-			markDiagnosticAddressSuccessAll(rule.RelayChain, actualAddress, persistentDiagnosticAddressCaches(cache, p.cache, rule.RelayChain)...)
+			observeDiagnosticAddressSuccessAll(relayChain, actualAddress, totalDuration, totalDuration, 0, persistentDiagnosticAddressCaches(cache, p.cache, relayChain)...)
 			sample := LatencySample(attempt, backendLabel, totalDuration, 0)
 			sample.Address = actualAddress
 			samples = append(samples, sample)
@@ -134,20 +139,20 @@ func (p *TCPProber) Diagnose(ctx context.Context, rule model.L4Rule, relayListen
 	return report, nil
 }
 
-func (p *TCPProber) dialCandidate(ctx context.Context, rule model.L4Rule, relayListeners []model.RelayListener, candidate tcpProbeCandidate) (net.Conn, string, error) {
+func (p *TCPProber) dialCandidate(ctx context.Context, rule model.L4Rule, relayListeners []model.RelayListener, candidate tcpProbeCandidate) (net.Conn, string, []int, error) {
 	if !ruleUsesL4Relay(rule) {
 		conn, err := p.dialer.DialContext(ctx, "tcp", candidate.address)
-		return conn, "", err
+		return conn, "", nil, err
 	}
 	if p.relayProvider == nil {
-		return nil, "", fmt.Errorf("relay provider is required")
+		return nil, "", nil, fmt.Errorf("relay provider is required")
 	}
 	paths := candidate.relayPaths
 	if len(paths) == 0 {
 		var err error
 		paths, err = resolveDiagnosticL4RelayPaths(rule, relayListeners, candidate.address)
 		if err != nil {
-			return nil, "", err
+			return nil, "", nil, err
 		}
 	}
 	racer := relayplan.Racer{Dialer: diagnosticRelayPathDialer{provider: p.relayProvider}, Cache: p.cache, Concurrency: 3, MaxPaths: 32}
@@ -161,9 +166,9 @@ func (p *TCPProber) dialCandidate(ctx context.Context, rule model.L4Rule, relayL
 		Paths:   requestPaths,
 	})
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
-	return result.Conn, result.DialResult.SelectedAddress, nil
+	return result.Conn, result.DialResult.SelectedAddress, append([]int(nil), result.Selected.IDs...), nil
 }
 
 func tcpCandidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule) ([]tcpProbeCandidate, error) {

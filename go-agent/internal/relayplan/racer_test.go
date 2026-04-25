@@ -185,6 +185,65 @@ func TestRacerOrdersPathsByAdaptiveObservations(t *testing.T) {
 	}
 }
 
+func TestRacerSkipsBackedOffPathsWhenAlternatesAvailable(t *testing.T) {
+	dialer := newFakePathDialer()
+	conn, peer := net.Pipe()
+	defer peer.Close()
+	dialer.set([]int{2}, fakeDialResult{conn: conn})
+	cache := backends.NewCache(backends.Config{})
+	scope := "relay_path|backend:443"
+	cache.ObserveBackendFailure(backends.BackendObservationKey(scope, PathKey("relay_path", []int{1}, "backend:443")))
+	racer := Racer{Dialer: dialer, Cache: cache, Concurrency: 3, MaxPaths: 8}
+
+	result, err := racer.Race(context.Background(), Request{
+		Network: "tcp",
+		Target:  "backend:443",
+		Paths: []Path{
+			{IDs: []int{1}, Key: PathKey("relay_path", []int{1}, "backend:443")},
+			{IDs: []int{2}, Key: PathKey("relay_path", []int{2}, "backend:443")},
+			{IDs: []int{3}, Key: PathKey("relay_path", []int{3}, "backend:443")},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Race() error = %v", err)
+	}
+	defer result.Conn.Close()
+	for _, call := range dialer.calledPaths() {
+		if reflect.DeepEqual(call, []int{1}) {
+			t.Fatalf("backed-off path was dialed: calls=%+v", dialer.calledPaths())
+		}
+	}
+}
+
+func TestRacerDialsBackedOffPathsWhenEveryPathBackedOff(t *testing.T) {
+	dialer := newFakePathDialer()
+	conn, peer := net.Pipe()
+	defer peer.Close()
+	dialer.set([]int{2}, fakeDialResult{conn: conn})
+	cache := backends.NewCache(backends.Config{})
+	scope := "relay_path|backend:443"
+	for _, ids := range [][]int{{1}, {2}} {
+		cache.ObserveBackendFailure(backends.BackendObservationKey(scope, PathKey("relay_path", ids, "backend:443")))
+	}
+	racer := Racer{Dialer: dialer, Cache: cache, Concurrency: 2, MaxPaths: 8}
+
+	result, err := racer.Race(context.Background(), Request{
+		Network: "tcp",
+		Target:  "backend:443",
+		Paths: []Path{
+			{IDs: []int{1}, Key: PathKey("relay_path", []int{1}, "backend:443")},
+			{IDs: []int{2}, Key: PathKey("relay_path", []int{2}, "backend:443")},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Race() error = %v", err)
+	}
+	defer result.Conn.Close()
+	if len(dialer.calledPaths()) == 0 {
+		t.Fatal("expected backed-off paths to be dialed when all paths are backed off")
+	}
+}
+
 func TestRacerObservesSuccessfulAndFailedPathAttempts(t *testing.T) {
 	dialer := newFakePathDialer()
 	conn, peer := net.Pipe()

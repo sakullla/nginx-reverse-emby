@@ -876,6 +876,67 @@ func TestTCPProberDiagnoseUsesSuccessfulRelayLayerPathForSamples(t *testing.T) {
 	}
 }
 
+func TestTCPProberDiagnoseAttributesRelayLayerSampleToSelectedPath(t *testing.T) {
+	actualAddress, _, stopTarget := startDiagnosticTCPTarget(t)
+	defer stopTarget()
+
+	_, actualPort := splitDiagnosticTCPAddr(t, actualAddress)
+	provider := newDiagnosticTLSMaterialProvider()
+	listenerA := newDiagnosticRelayListener(t, provider, 521, "relay-a.internal.test")
+	listenerB := newDiagnosticRelayListener(t, provider, 522, "relay-b.internal.test")
+	previousDialWithResult := diagnosticRelayDialWithResult
+	t.Cleanup(func() {
+		diagnosticRelayDialWithResult = previousDialWithResult
+	})
+	diagnosticRelayDialWithResult = func(ctx context.Context, network, target string, chain []relay.Hop, provider relay.TLSMaterialProvider, opts ...relay.DialOptions) (net.Conn, relay.DialResult, error) {
+		if len(chain) > 0 && chain[0].Listener.ID == 521 {
+			return nil, relay.DialResult{}, fmt.Errorf("relay path unavailable")
+		}
+		conn, err := (&net.Dialer{}).DialContext(ctx, network, actualAddress)
+		if err != nil {
+			return nil, relay.DialResult{}, err
+		}
+		return conn, relay.DialResult{SelectedAddress: target}, nil
+	}
+
+	cache := backends.NewCache(backends.Config{})
+	prober := NewTCPProber(TCPProberConfig{
+		Attempts:      1,
+		Timeout:       time.Second,
+		Cache:         cache,
+		RelayProvider: provider,
+	})
+	target := "relay-target.example:" + strconv.Itoa(actualPort)
+	_, err := prober.Diagnose(context.Background(), model.L4Rule{
+		ID:         115,
+		Protocol:   "tcp",
+		ListenHost: "0.0.0.0",
+		ListenPort: 9555,
+		RelayLayers: [][]int{{
+			521,
+			522,
+		}},
+		Backends: []model.L4Backend{{
+			Host: "relay-target.example",
+			Port: actualPort,
+		}},
+	}, []model.RelayListener{listenerA, listenerB})
+	if err != nil {
+		t.Fatalf("Diagnose() error = %v", err)
+	}
+	selectedKey := backends.RelayBackoffKey([]int{522}, target)
+	firstKey := backends.RelayBackoffKey([]int{521}, target)
+	if summary := cache.Summary(selectedKey); summary.RecentSucceeded != 1 {
+		t.Fatalf("selected path summary = %+v, want success at %s", summary, selectedKey)
+	}
+	if summary := cache.Summary(firstKey); summary.RecentSucceeded != 0 {
+		t.Fatalf("first path summary = %+v, want no selected-path success at %s", summary, firstKey)
+	}
+	if summary := cache.Summary(target); summary.RecentSucceeded != 0 {
+		t.Fatalf("direct target summary = %+v, want no relay-layer success on direct key", summary)
+	}
+}
+
 func TestTCPProberDiagnoseAdaptiveHistoryExcludesCurrentProbeSamples(t *testing.T) {
 	addr, _, stopTarget := startDiagnosticTCPTarget(t)
 	defer stopTarget()

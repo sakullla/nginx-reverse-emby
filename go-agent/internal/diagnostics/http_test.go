@@ -540,7 +540,7 @@ func TestHTTPProberProbeCandidateTreatsTimedOutBodyReadAsFailure(t *testing.T) {
 		backendObservationKey: backends.BackendObservationKey("https://edge.example.test", backends.StableBackendID(server.URL)),
 	}
 
-	sample := prober.probeCandidate(context.Background(), cache, 1, model.HTTPRule{}, nil, candidate)
+	sample, _ := prober.probeCandidate(context.Background(), cache, 1, model.HTTPRule{}, nil, candidate)
 	if sample.Success {
 		t.Fatalf("expected probe failure when body read times out, got %+v", sample)
 	}
@@ -934,6 +934,64 @@ func TestHTTPProberDiagnoseUsesSuccessfulRelayLayerPathForSamples(t *testing.T) 
 	}
 	if len(report.SelectedRelayPath) != 1 || report.SelectedRelayPath[0] != 412 {
 		t.Fatalf("SelectedRelayPath = %+v", report.SelectedRelayPath)
+	}
+}
+
+func TestHTTPProberDiagnoseAttributesRelayLayerSampleToSelectedPath(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer backend.Close()
+
+	backendURL, err := url.Parse(backend.URL)
+	if err != nil {
+		t.Fatalf("Parse() error = %v", err)
+	}
+	provider := newDiagnosticTLSMaterialProvider()
+	listenerA := newDiagnosticRelayListener(t, provider, 441, "relay-a.internal.test")
+	listenerB := newDiagnosticRelayListener(t, provider, 442, "relay-b.internal.test")
+	previousDialWithResult := diagnosticRelayDialWithResult
+	t.Cleanup(func() {
+		diagnosticRelayDialWithResult = previousDialWithResult
+	})
+	diagnosticRelayDialWithResult = func(ctx context.Context, network, target string, chain []relay.Hop, provider relay.TLSMaterialProvider, opts ...relay.DialOptions) (net.Conn, relay.DialResult, error) {
+		if len(chain) > 0 && chain[0].Listener.ID == 441 {
+			return nil, relay.DialResult{}, fmt.Errorf("relay path unavailable")
+		}
+		conn, err := (&net.Dialer{}).DialContext(ctx, network, backendURL.Host)
+		if err != nil {
+			return nil, relay.DialResult{}, err
+		}
+		return conn, relay.DialResult{SelectedAddress: target}, nil
+	}
+
+	cache := backends.NewCache(backends.Config{})
+	prober := NewHTTPProber(HTTPProberConfig{
+		Attempts:      1,
+		Timeout:       time.Second,
+		Cache:         cache,
+		RelayProvider: provider,
+	})
+	target := "relay-target.example:" + backendURL.Port()
+	_, err = prober.Diagnose(context.Background(), model.HTTPRule{
+		ID:          114,
+		FrontendURL: "https://frontend.example",
+		BackendURL:  "http://" + target + "/healthz",
+		RelayLayers: [][]int{{441, 442}},
+	}, []model.RelayListener{listenerA, listenerB})
+	if err != nil {
+		t.Fatalf("Diagnose() error = %v", err)
+	}
+	selectedKey := backends.RelayBackoffKey([]int{442}, target)
+	firstKey := backends.RelayBackoffKey([]int{441}, target)
+	if summary := cache.Summary(selectedKey); summary.RecentSucceeded != 1 {
+		t.Fatalf("selected path summary = %+v, want success at %s", summary, selectedKey)
+	}
+	if summary := cache.Summary(firstKey); summary.RecentSucceeded != 0 {
+		t.Fatalf("first path summary = %+v, want no selected-path success at %s", summary, firstKey)
+	}
+	if summary := cache.Summary(target); summary.RecentSucceeded != 0 {
+		t.Fatalf("direct target summary = %+v, want no relay-layer success on direct key", summary)
 	}
 }
 
