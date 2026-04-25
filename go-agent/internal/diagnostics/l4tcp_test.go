@@ -820,6 +820,62 @@ func TestTCPProberDiagnoseReportsRelayLayerPaths(t *testing.T) {
 	}
 }
 
+func TestTCPProberDiagnoseUsesSuccessfulRelayLayerPathForSamples(t *testing.T) {
+	actualAddress, _, stopTarget := startDiagnosticTCPTarget(t)
+	defer stopTarget()
+
+	_, actualPort := splitDiagnosticTCPAddr(t, actualAddress)
+	provider := newDiagnosticTLSMaterialProvider()
+	listenerA := newDiagnosticRelayListener(t, provider, 511, "relay-a.internal.test")
+	listenerB := newDiagnosticRelayListener(t, provider, 512, "relay-b.internal.test")
+	previousDialWithResult := diagnosticRelayDialWithResult
+	t.Cleanup(func() {
+		diagnosticRelayDialWithResult = previousDialWithResult
+	})
+	diagnosticRelayDialWithResult = func(ctx context.Context, network, target string, chain []relay.Hop, provider relay.TLSMaterialProvider, opts ...relay.DialOptions) (net.Conn, relay.DialResult, error) {
+		if len(chain) > 0 && chain[0].Listener.ID == 511 {
+			return nil, relay.DialResult{}, fmt.Errorf("relay path unavailable")
+		}
+		conn, err := (&net.Dialer{}).DialContext(ctx, network, actualAddress)
+		if err != nil {
+			return nil, relay.DialResult{}, err
+		}
+		return conn, relay.DialResult{SelectedAddress: target}, nil
+	}
+
+	prober := NewTCPProber(TCPProberConfig{
+		Attempts:      1,
+		Timeout:       time.Second,
+		RelayProvider: provider,
+	})
+	report, err := prober.Diagnose(context.Background(), model.L4Rule{
+		ID:         114,
+		Protocol:   "tcp",
+		ListenHost: "0.0.0.0",
+		ListenPort: 9554,
+		RelayLayers: [][]int{{
+			511,
+			512,
+		}},
+		Backends: []model.L4Backend{{
+			Host: "relay-target.example",
+			Port: actualPort,
+		}},
+	}, []model.RelayListener{listenerA, listenerB})
+	if err != nil {
+		t.Fatalf("Diagnose() error = %v", err)
+	}
+	if report.Summary.Succeeded != 1 || report.Summary.Failed != 0 {
+		t.Fatalf("Summary = %+v", report.Summary)
+	}
+	if len(report.Samples) != 1 || !report.Samples[0].Success {
+		t.Fatalf("Samples = %+v", report.Samples)
+	}
+	if len(report.SelectedRelayPath) != 1 || report.SelectedRelayPath[0] != 512 {
+		t.Fatalf("SelectedRelayPath = %+v", report.SelectedRelayPath)
+	}
+}
+
 func TestTCPProberDiagnoseAdaptiveHistoryExcludesCurrentProbeSamples(t *testing.T) {
 	addr, _, stopTarget := startDiagnosticTCPTarget(t)
 	defer stopTarget()
