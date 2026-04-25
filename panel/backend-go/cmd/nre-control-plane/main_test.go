@@ -12,6 +12,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	httpapi "github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/http"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/localagent"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
@@ -32,6 +33,10 @@ func (s localAgentRuntimeStub) SyncNow(ctx context.Context) error {
 		return s.syncNow(ctx)
 	}
 	return nil
+}
+
+func (s localAgentRuntimeStub) DiagnoseSnapshot(context.Context, storage.Snapshot, service.TaskEnvelope) (map[string]any, error) {
+	return map[string]any{}, nil
 }
 
 func TestNewLocalAgentStarterBuildsSQLiteStoreAndInvokesRuntime(t *testing.T) {

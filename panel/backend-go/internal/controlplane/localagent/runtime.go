@@ -2,9 +2,11 @@ package localagent
 
 import (
 	"context"
+	"errors"
 
 	goagentembedded "github.com/sakullla/nginx-reverse-emby/go-agent/embedded"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
@@ -16,6 +18,7 @@ type Store interface {
 type embeddedRuntimeRunner interface {
 	Run(context.Context) error
 	SyncNow(context.Context) error
+	DiagnoseSnapshot(context.Context, goagentembedded.Snapshot, goagentembedded.DiagnosticRequest) (map[string]any, error)
 }
 
 var newEmbeddedRuntime = func(cfg goagentembedded.Config, source goagentembedded.SyncSource, sink goagentembedded.StateSink) (embeddedRuntimeRunner, error) {
@@ -92,6 +95,20 @@ func (r *Runtime) SyncSource() *SyncSource {
 
 func (r *Runtime) StateSink() *StateSink {
 	return r.sink
+}
+
+func (r *Runtime) DiagnoseSnapshot(ctx context.Context, snapshot Snapshot, envelope service.TaskEnvelope) (map[string]any, error) {
+	if r == nil || r.runtime == nil {
+		return nil, errors.New("embedded runtime is not initialized")
+	}
+	ruleID, err := taskRuleID(envelope.Payload)
+	if err != nil {
+		return nil, err
+	}
+	return r.runtime.DiagnoseSnapshot(ctx, toEmbeddedSnapshot(snapshot), goagentembedded.DiagnosticRequest{
+		TaskType: envelope.Type,
+		RuleID:   ruleID,
+	})
 }
 
 type syncSourceAdapter struct {

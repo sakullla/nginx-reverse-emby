@@ -6,6 +6,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/certs"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
+	agenttask "github.com/sakullla/nginx-reverse-emby/go-agent/internal/task"
 )
 
 func NewEmbedded(cfg Config, st store.Store, client SyncClient) (*App, error) {
@@ -40,17 +41,22 @@ func NewEmbedded(cfg Config, st store.Store, client SyncClient) (*App, error) {
 		return nil, err
 	}
 
+	httpManager := newHTTPRuntimeManagerWithTLSAndHTTP3AndConfig(certManager, cfg.HTTP3Enabled, cfg)
+	l4Manager := newL4RuntimeManagerWithRelayAndConfig(certManager, cfg)
+	httpProber, tcpProber := newRuntimeDiagnosticProbers(certManager, httpManager, l4Manager)
+	diagnosticHandler := agenttask.NewDiagnosticHandler(st, httpProber, tcpProber)
 	app := newAppWithAllDeps(
 		cfg,
 		st,
 		client,
-		newHTTPRuntimeManagerWithTLSAndHTTP3AndConfig(certManager, cfg.HTTP3Enabled, cfg),
+		httpManager,
 		certManager,
-		newL4RuntimeManagerWithRelayAndConfig(certManager, cfg),
+		l4Manager,
 		newRelayRuntimeManager(certManager),
 		nil,
 		nil,
 	)
+	app.setDiagnostics(diagnosticHandler, httpProber, tcpProber)
 	app.relayTimeoutReset = resetRelayTimeouts
 	restoreRelayTimeouts = false
 	return app, nil

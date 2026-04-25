@@ -40,6 +40,10 @@ func (s embeddedRuntimeStub) SyncNow(context.Context) error {
 	return nil
 }
 
+func (s embeddedRuntimeStub) DiagnoseSnapshot(context.Context, goagentembedded.Snapshot, goagentembedded.DiagnosticRequest) (map[string]any, error) {
+	return map[string]any{}, nil
+}
+
 func (s *bridgeStoreStub) LoadLocalSnapshot(_ context.Context, agentID string) (Snapshot, error) {
 	s.loadAgentID = agentID
 	return s.snapshot, nil

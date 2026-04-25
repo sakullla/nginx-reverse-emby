@@ -167,6 +167,19 @@ func (r *Runtime) SyncNow(ctx context.Context) error {
 	return r.app.SyncNow(ctx)
 }
 
+func (r *Runtime) DiagnoseSnapshot(ctx context.Context, snapshot Snapshot, req DiagnosticRequest) (map[string]any, error) {
+	if r == nil || r.app == nil {
+		return nil, errors.New("embedded runtime is not initialized")
+	}
+	diagnoser, ok := r.app.(interface {
+		DiagnoseSnapshot(context.Context, agentapp.Snapshot, string, int) (map[string]any, error)
+	})
+	if !ok {
+		return nil, errors.New("embedded runtime diagnostics are not available")
+	}
+	return diagnoser.DiagnoseSnapshot(ctx, sanitizeSnapshot(snapshot), req.TaskType, req.RuleID)
+}
+
 func (r *Runtime) Close() error {
 	if r == nil || r.app == nil {
 		return nil

@@ -101,18 +101,65 @@ func TestNewPropagatesHTTPTransportConfigToSyncAndTaskClients(t *testing.T) {
 	}
 }
 
+func TestNewSharesRuntimeBackendCachesWithDiagnosticTaskHandler(t *testing.T) {
+	cfg := Config{
+		AgentID:        "agent",
+		AgentName:      "agent",
+		MasterURL:      "https://master.example.com",
+		AgentToken:     "token",
+		CurrentVersion: "0.1.0",
+		DataDir:        t.TempDir(),
+	}
+
+	app, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	httpManager, ok := app.httpApplier.(*httpRuntimeManager)
+	if !ok {
+		t.Fatalf("httpApplier type = %T", app.httpApplier)
+	}
+	l4Manager, ok := app.l4Applier.(*l4RuntimeManager)
+	if !ok {
+		t.Fatalf("l4Applier type = %T", app.l4Applier)
+	}
+	if app.taskClient == nil {
+		t.Fatal("expected task client")
+	}
+
+	handler := extractPrivateField(t, app.taskClient, "cfg").FieldByName("Handler")
+	httpProber := extractPrivateField(t, handler.Interface(), "httpProber")
+	tcpProber := extractPrivateField(t, handler.Interface(), "tcpProber")
+	httpDiagnosticCache := extractPrivateField(t, httpProber.Interface(), "cache").Interface()
+	tcpDiagnosticCache := extractPrivateField(t, tcpProber.Interface(), "cache").Interface()
+
+	if httpDiagnosticCache != httpManager.cache {
+		t.Fatal("http diagnostic prober does not share the runtime backend cache")
+	}
+	if tcpDiagnosticCache != l4Manager.cache {
+		t.Fatal("tcp diagnostic prober does not share the runtime backend cache")
+	}
+}
+
 func extractPrivateTransport(t *testing.T, client any) *http.Transport {
 	t.Helper()
 
-	value := reflect.ValueOf(client)
+	return extractPrivateField(t, client, "transport").Interface().(*http.Transport)
+}
+
+func extractPrivateField(t *testing.T, target any, name string) reflect.Value {
+	t.Helper()
+
+	value := reflect.ValueOf(target)
 	if value.Kind() != reflect.Pointer || value.IsNil() {
-		t.Fatalf("client = %T", client)
+		t.Fatalf("target = %T", target)
 	}
-	field := value.Elem().FieldByName("transport")
-	if !field.IsValid() || field.IsNil() {
-		return nil
+	field := value.Elem().FieldByName(name)
+	if !field.IsValid() {
+		t.Fatalf("field %q not found on %T", name, target)
 	}
-	return reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem().Interface().(*http.Transport)
+	return reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem()
 }
 
 func TestNewAdvertisesRelayQUICAndConditionalHTTP3IngressCapabilities(t *testing.T) {

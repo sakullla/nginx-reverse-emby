@@ -74,6 +74,9 @@ type App struct {
 	updater           Updater
 	runtime           *agentruntime.Runtime
 	taskClient        *agenttask.Client
+	diagnosticHandler *agenttask.DiagnosticHandler
+	httpProber        *diagnostics.HTTPProber
+	tcpProber         *diagnostics.TCPProber
 	relayTimeoutReset func()
 	closeOnce         sync.Once
 	syncMu            sync.Mutex
@@ -156,13 +159,28 @@ func New(cfg Config) (*App, error) {
 	if err != nil {
 		return nil, err
 	}
+	httpManager := newHTTPRuntimeManagerWithTLSAndHTTP3AndConfig(certManager, cfg.HTTP3Enabled, cfg)
+	l4Manager := newL4RuntimeManagerWithRelayAndConfig(certManager, cfg)
+	httpProber, tcpProber := newRuntimeDiagnosticProbers(certManager, httpManager, l4Manager)
+	diagnosticHandler := agenttask.NewDiagnosticHandler(st, httpProber, tcpProber)
+	taskClient := agenttask.NewClient(agenttask.ClientConfig{
+		MasterURL:     cfg.MasterURL,
+		AgentToken:    cfg.AgentToken,
+		AgentID:       cfg.AgentID,
+		AgentName:     cfg.AgentName,
+		Version:       cfg.CurrentVersion,
+		Capabilities:  advertisedCapabilities(cfg),
+		ReconnectWait: time.Second,
+		HTTPTransport: cfg.HTTPTransport,
+		Handler:       diagnosticHandler,
+	})
 	app := newAppWithAllDeps(
 		cfg,
 		st,
 		client,
-		newHTTPRuntimeManagerWithTLSAndHTTP3AndConfig(certManager, cfg.HTTP3Enabled, cfg),
+		httpManager,
 		certManager,
-		newL4RuntimeManagerWithRelayAndConfig(certManager, cfg),
+		l4Manager,
 		newRelayRuntimeManager(certManager),
 		agentupdate.NewManager(
 			cfg.DataDir,
@@ -172,22 +190,9 @@ func New(cfg Config) (*App, error) {
 			platformlinux.ExecReplacement,
 			nil,
 		),
-		agenttask.NewClient(agenttask.ClientConfig{
-			MasterURL:     cfg.MasterURL,
-			AgentToken:    cfg.AgentToken,
-			AgentID:       cfg.AgentID,
-			AgentName:     cfg.AgentName,
-			Version:       cfg.CurrentVersion,
-			Capabilities:  advertisedCapabilities(cfg),
-			ReconnectWait: time.Second,
-			HTTPTransport: cfg.HTTPTransport,
-			Handler: agenttask.NewDiagnosticHandler(
-				st,
-				diagnostics.NewHTTPProber(diagnostics.HTTPProberConfig{Attempts: 5, RelayProvider: certManager}),
-				diagnostics.NewTCPProber(diagnostics.TCPProberConfig{Attempts: 5, RelayProvider: certManager}),
-			),
-		}),
+		taskClient,
 	)
+	app.setDiagnostics(diagnosticHandler, httpProber, tcpProber)
 	app.relayTimeoutReset = resetRelayTimeouts
 	restoreRelayTimeouts = false
 	return app, nil
@@ -243,6 +248,49 @@ func newAppWithAllDeps(
 	}
 	app.runtime = agentruntime.NewWithActivator(app.snapshotActivator())
 	return app
+}
+
+func newRuntimeDiagnosticProbers(relayProvider relay.TLSMaterialProvider, httpApplier HTTPApplier, l4Applier L4Applier) (*diagnostics.HTTPProber, *diagnostics.TCPProber) {
+	httpCfg := diagnostics.HTTPProberConfig{Attempts: 5, RelayProvider: relayProvider}
+	if manager, ok := httpApplier.(*httpRuntimeManager); ok {
+		httpCfg.Cache = manager.cache
+	}
+	tcpCfg := diagnostics.TCPProberConfig{Attempts: 5, RelayProvider: relayProvider}
+	if manager, ok := l4Applier.(*l4RuntimeManager); ok {
+		tcpCfg.Cache = manager.cache
+	}
+	return diagnostics.NewHTTPProber(httpCfg), diagnostics.NewTCPProber(tcpCfg)
+}
+
+func (a *App) setDiagnostics(handler *agenttask.DiagnosticHandler, httpProber *diagnostics.HTTPProber, tcpProber *diagnostics.TCPProber) {
+	a.diagnosticHandler = handler
+	a.httpProber = httpProber
+	a.tcpProber = tcpProber
+}
+
+func (a *App) Diagnose(ctx context.Context, taskType string, ruleID int) (map[string]any, error) {
+	if a == nil || a.diagnosticHandler == nil {
+		return nil, errors.New("diagnostic handler is not configured")
+	}
+	return a.diagnosticHandler.HandleTask(ctx, agenttask.TaskMessage{
+		TaskType:   taskType,
+		RawPayload: map[string]any{"rule_id": ruleID},
+	})
+}
+
+func (a *App) DiagnoseSnapshot(ctx context.Context, snapshot Snapshot, taskType string, ruleID int) (map[string]any, error) {
+	if a == nil || a.httpProber == nil || a.tcpProber == nil {
+		return nil, errors.New("diagnostic handler is not configured")
+	}
+	mem := store.NewInMemory()
+	if err := mem.SaveAppliedSnapshot(snapshot); err != nil {
+		return nil, err
+	}
+	handler := agenttask.NewDiagnosticHandler(mem, a.httpProber, a.tcpProber)
+	return handler.HandleTask(ctx, agenttask.TaskMessage{
+		TaskType:   taskType,
+		RawPayload: map[string]any{"rule_id": ruleID},
+	})
 }
 
 func (a *App) Run(ctx context.Context) error {

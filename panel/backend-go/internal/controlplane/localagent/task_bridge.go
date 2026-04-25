@@ -32,10 +32,15 @@ var runEmbeddedDiagnostics diagnosticRunner = func(ctx context.Context, dataDir 
 	})
 }
 
+type runtimeDiagnosticRunner interface {
+	DiagnoseSnapshot(context.Context, storage.Snapshot, service.TaskEnvelope) (map[string]any, error)
+}
+
 type LocalTaskSession struct {
-	agentID  string
-	reporter TaskServiceRegistrar
-	store    diagnosticRuleStore
+	agentID     string
+	reporter    TaskServiceRegistrar
+	store       diagnosticRuleStore
+	diagnostics runtimeDiagnosticRunner
 
 	mu     sync.Mutex
 	closed bool
@@ -49,10 +54,15 @@ type diagnosticRuleStore interface {
 }
 
 func NewLocalTaskSession(agentID string, reporter TaskServiceRegistrar, store diagnosticRuleStore) *LocalTaskSession {
+	return NewLocalTaskSessionWithDiagnostics(agentID, reporter, store, nil)
+}
+
+func NewLocalTaskSessionWithDiagnostics(agentID string, reporter TaskServiceRegistrar, store diagnosticRuleStore, diagnostics runtimeDiagnosticRunner) *LocalTaskSession {
 	return &LocalTaskSession{
-		agentID:  agentID,
-		reporter: reporter,
-		store:    store,
+		agentID:     agentID,
+		reporter:    reporter,
+		store:       store,
+		diagnostics: diagnostics,
 	}
 }
 
@@ -155,7 +165,7 @@ func (s *LocalTaskSession) diagnoseHTTPRule(ctx context.Context, envelope servic
 		return nil, err
 	}
 	snapshot.Rules = upsertHTTPDiagnosticRule(snapshot.Rules, row)
-	return runEmbeddedDiagnostics(ctx, diagnosticDataDirFromContext(ctx), snapshot, envelope)
+	return s.runDiagnostics(ctx, snapshot, envelope)
 }
 
 func (s *LocalTaskSession) diagnoseL4TCPRule(ctx context.Context, envelope service.TaskEnvelope) (map[string]any, error) {
@@ -188,6 +198,13 @@ func (s *LocalTaskSession) diagnoseL4TCPRule(ctx context.Context, envelope servi
 		return nil, err
 	}
 	snapshot.L4Rules = upsertL4DiagnosticRule(snapshot.L4Rules, *target)
+	return s.runDiagnostics(ctx, snapshot, envelope)
+}
+
+func (s *LocalTaskSession) runDiagnostics(ctx context.Context, snapshot storage.Snapshot, envelope service.TaskEnvelope) (map[string]any, error) {
+	if s.diagnostics != nil {
+		return s.diagnostics.DiagnoseSnapshot(ctx, snapshot, envelope)
+	}
 	return runEmbeddedDiagnostics(ctx, diagnosticDataDirFromContext(ctx), snapshot, envelope)
 }
 
