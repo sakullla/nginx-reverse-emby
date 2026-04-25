@@ -806,6 +806,12 @@ func TestHTTPProberDiagnoseRelayChainUsesRemoteResolvedCandidatesAndSelectedAddr
 	if got := report.Backends[0].Children[0].Address; got != selectedAddress {
 		t.Fatalf("first child address = %q", got)
 	}
+	if len(report.RelayPaths) != 1 {
+		t.Fatalf("RelayPaths = %+v", report.RelayPaths)
+	}
+	if len(report.SelectedRelayPath) != 1 || report.SelectedRelayPath[0] != 301 {
+		t.Fatalf("SelectedRelayPath = %+v", report.SelectedRelayPath)
+	}
 }
 
 func TestHTTPProberDiagnoseReportsRelayLayerPaths(t *testing.T) {

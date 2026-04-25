@@ -93,7 +93,7 @@ func (p *HTTPProber) Diagnose(ctx context.Context, rule model.HTTPRule, relayLis
 	report := BuildReport("http", rule.ID, samples)
 	report.Backends = buildHTTPAdaptiveReports(report.Backends, candidates, baseCache)
 	applyCurrentHTTPThroughput(report.Backends, samples)
-	if len(rule.RelayLayers) > 0 && len(candidates) > 0 {
+	if ruleUsesHTTPRelay(rule) && len(candidates) > 0 {
 		paths, err := resolveDiagnosticHTTPRelayPaths(rule, relayListeners, candidates[0].dialAddress)
 		if err != nil {
 			return Report{}, err

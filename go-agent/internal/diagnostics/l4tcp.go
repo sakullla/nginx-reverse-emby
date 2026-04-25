@@ -124,7 +124,7 @@ func (p *TCPProber) Diagnose(ctx context.Context, rule model.L4Rule, relayListen
 
 	report := BuildReport("l4_tcp", rule.ID, samples)
 	report.Backends = buildTCPAdaptiveReports(report.Backends, candidates, baseCache)
-	if len(rule.RelayLayers) > 0 && len(candidates) > 0 {
+	if ruleUsesL4Relay(rule) && len(candidates) > 0 {
 		paths, err := resolveDiagnosticL4RelayPaths(rule, relayListeners, candidates[0].address)
 		if err != nil {
 			return Report{}, err
