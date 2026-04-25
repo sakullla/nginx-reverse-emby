@@ -116,6 +116,8 @@ func (r Racer) Race(ctx context.Context, req Request) (Result, error) {
 		case <-ctx.Done():
 			cancel()
 			wg.Wait()
+			close(results)
+			r.drainRaceResults(req, results)
 			return Result{}, ctx.Err()
 		case result := <-results:
 			running--
@@ -126,12 +128,7 @@ func (r Racer) Race(ctx context.Context, req Request) (Result, error) {
 				go func() {
 					wg.Wait()
 					close(results)
-					for loser := range results {
-						if loser.conn != nil {
-							_ = loser.conn.Close()
-						}
-						r.observeAttempt(req, loser.attempt)
-					}
+					r.drainRaceResults(req, results)
 				}()
 				return Result{Conn: result.conn, Selected: result.attempt.Path, DialResult: result.dialResult, Attempts: attempts}, nil
 			}
@@ -149,6 +146,15 @@ func (r Racer) Race(ctx context.Context, req Request) (Result, error) {
 		return Result{Attempts: attempts}, ErrNoRelayPathSucceeded
 	}
 	return Result{Attempts: attempts}, fmt.Errorf("%w: %s", ErrNoRelayPathSucceeded, strings.Join(failures, "; "))
+}
+
+func (r Racer) drainRaceResults(req Request, results <-chan raceAttemptResult) {
+	for result := range results {
+		if result.conn != nil {
+			_ = result.conn.Close()
+		}
+		r.observeAttempt(req, result.attempt)
+	}
 }
 
 func (r Racer) observeAttempt(req Request, attempt Attempt) {

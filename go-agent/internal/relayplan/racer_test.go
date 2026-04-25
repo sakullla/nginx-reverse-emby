@@ -138,6 +138,44 @@ func TestRacerReturnsWinnerBeforeSlowLoserObservesCancellation(t *testing.T) {
 	}
 }
 
+func TestRacerClosesSuccessfulConnectionsAfterCallerCancellation(t *testing.T) {
+	dialer := newFakePathDialer()
+	clientConn, serverConn := net.Pipe()
+	trackedConn := &closeTrackingConn{Conn: clientConn, closed: make(chan struct{})}
+	t.Cleanup(func() {
+		_ = trackedConn.Close()
+		_ = serverConn.Close()
+	})
+	dialer.set([]int{1}, fakeDialResult{conn: trackedConn, delay: 50 * time.Millisecond, ignoreCancel: true})
+	racer := Racer{Dialer: dialer, Concurrency: 1, MaxPaths: 8}
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := racer.Race(ctx, Request{
+			Network: "tcp",
+			Target:  "backend:443",
+			Paths:   []Path{{IDs: []int{1}}},
+		})
+		done <- err
+	}()
+
+	if !waitForRelayplanCondition(200*time.Millisecond, func() bool {
+		return len(dialer.calledPaths()) == 1
+	}) {
+		t.Fatal("path was not dialed")
+	}
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Race() error = %v, want context.Canceled", err)
+	}
+	select {
+	case <-trackedConn.closed:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("successful connection returned after cancellation was not closed")
+	}
+}
+
 func TestRacerReturnsAggregateErrorWhenAllPathsFail(t *testing.T) {
 	dialer := newFakePathDialer()
 	dialer.set([]int{1}, fakeDialResult{err: errors.New("first failed")})
@@ -290,4 +328,17 @@ func waitForRelayplanCondition(timeout time.Duration, condition func() bool) boo
 		time.Sleep(time.Millisecond)
 	}
 	return condition()
+}
+
+type closeTrackingConn struct {
+	net.Conn
+	once   sync.Once
+	closed chan struct{}
+}
+
+func (c *closeTrackingConn) Close() error {
+	c.once.Do(func() {
+		close(c.closed)
+	})
+	return c.Conn.Close()
 }
