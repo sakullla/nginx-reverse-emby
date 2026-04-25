@@ -149,7 +149,6 @@ func relayPathHopReports(hops []relay.Hop, target string, success bool, latencyM
 	for i, hop := range hops {
 		report := RelayHopReport{
 			Success:        success,
-			LatencyMS:      latencyMS,
 			ToListenerID:   hop.Listener.ID,
 			ToListenerName: hop.Listener.Name,
 			ToAgentName:    hop.Listener.AgentID,

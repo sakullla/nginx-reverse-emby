@@ -860,6 +860,40 @@ func TestRouteEntryCandidatesRelayChainPreservesConfiguredHostname(t *testing.T)
 	}
 }
 
+func TestRouteEntryCandidatesRelayLayersUseLayeredBackoffKey(t *testing.T) {
+	cache := backends.NewCache(backends.Config{})
+	target, err := url.Parse("https://relay-target.example:9443")
+	if err != nil {
+		t.Fatalf("url.Parse() error = %v", err)
+	}
+	rule := model.HTTPRule{
+		FrontendURL: "https://frontend.example",
+		RelayLayers: [][]int{
+			{101, 102},
+			{201},
+		},
+	}
+	cache.MarkFailure(backends.RelayBackoffKey(rule.RelayChain, "relay-target.example:9443"))
+
+	entry := &routeEntry{
+		rule: rule,
+		backends: []httpBackend{{
+			target:      target,
+			backendHost: normalizeURLAuthority(target),
+		}},
+		backendCache:   cache,
+		selectionScope: "https://frontend.example",
+	}
+
+	candidates, err := entry.candidates(context.Background())
+	if err != nil {
+		t.Fatalf("candidates() error = %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("candidates = %+v", candidates)
+	}
+}
+
 func TestRouteEntryCandidatesRelayChainUsesDefaultHTTPSPortWithoutResolving(t *testing.T) {
 	resolverCalls := 0
 	cache := backends.NewCache(backends.Config{

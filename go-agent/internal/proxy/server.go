@@ -340,7 +340,7 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 			actualDialAddress := dialAddressFromContext(attemptReq.Context(), candidate.dialAddress)
 			backoffAddr := actualDialAddress
 			if ruleUsesRelay(e.rule) {
-				backoffAddr = backends.RelayBackoffKey(e.rule.RelayChain, actualDialAddress)
+				backoffAddr = backends.RelayBackoffKeyForLayers(e.rule.RelayChain, e.rule.RelayLayers, actualDialAddress)
 			}
 			if e.backendCache.IsInBackoff(backoffAddr) {
 				break
@@ -512,7 +512,7 @@ func (e *routeEntry) candidates(ctx context.Context) ([]httpCandidate, error) {
 		if ruleUsesRelay(e.rule) {
 			// Preserve the configured host for relay chains so the final hop resolves DNS.
 			dialAddress := httpBackendDialAddress(backend.target)
-			if e.backendCache.IsInBackoff(backends.RelayBackoffKey(e.rule.RelayChain, dialAddress)) {
+			if e.backendCache.IsInBackoff(backends.RelayBackoffKeyForLayers(e.rule.RelayChain, e.rule.RelayLayers, dialAddress)) {
 				continue
 			}
 			out = append(out, httpCandidate{

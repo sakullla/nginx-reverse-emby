@@ -901,7 +901,7 @@ func l4Candidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule)
 		if ruleUsesRelay(rule) {
 			// Preserve the configured host for relay chains so the final hop resolves DNS.
 			dialAddress := net.JoinHostPort(backend.Host, strconv.Itoa(backend.Port))
-			bk := backends.RelayBackoffKey(rule.RelayChain, dialAddress)
+			bk := backends.RelayBackoffKeyForLayers(rule.RelayChain, rule.RelayLayers, dialAddress)
 			if cache.IsInBackoff(bk) {
 				continue
 			}

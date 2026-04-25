@@ -867,6 +867,12 @@ func TestHTTPProberDiagnoseReportsRelayLayerPaths(t *testing.T) {
 	if !report.RelayPaths[0].Success || report.RelayPaths[0].LatencyMS <= 0 {
 		t.Fatalf("first relay path status = %+v", report.RelayPaths[0])
 	}
+	if report.RelayPaths[0].Hops[0].LatencyMS != 0 {
+		t.Fatalf("intermediate relay hop latency = %v, want omitted", report.RelayPaths[0].Hops[0].LatencyMS)
+	}
+	if report.RelayPaths[0].Hops[len(report.RelayPaths[0].Hops)-1].LatencyMS <= 0 {
+		t.Fatalf("final relay hop latency = %v, want path latency", report.RelayPaths[0].Hops[len(report.RelayPaths[0].Hops)-1].LatencyMS)
+	}
 	selectedCount := 0
 	for _, relayPath := range report.RelayPaths {
 		if relayPath.Selected {

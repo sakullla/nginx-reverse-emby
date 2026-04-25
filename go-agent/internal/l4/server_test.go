@@ -1103,6 +1103,32 @@ func TestL4CandidatesRelayChainPreservesConfiguredHostname(t *testing.T) {
 	}
 }
 
+func TestL4CandidatesRelayLayersUseLayeredBackoffKey(t *testing.T) {
+	cache := backends.NewCache(backends.Config{})
+	rule := model.L4Rule{
+		Protocol:   "tcp",
+		ListenHost: "0.0.0.0",
+		ListenPort: 9448,
+		RelayLayers: [][]int{
+			{201, 202},
+			{301},
+		},
+		Backends: []model.L4Backend{{
+			Host: "relay-upstream.example",
+			Port: 9001,
+		}},
+	}
+	cache.MarkFailure(backends.RelayBackoffKey(rule.RelayChain, "relay-upstream.example:9001"))
+
+	candidates, err := l4Candidates(context.Background(), cache, rule)
+	if err != nil {
+		t.Fatalf("l4Candidates() error = %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("candidates = %+v", candidates)
+	}
+}
+
 func TestDialTCPUpstreamStopsWhenServerContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
