@@ -95,7 +95,7 @@ func probeDiagnosticRelayPaths(ctx context.Context, network string, target strin
 
 	selectedIndex := diagnosticSelectedRelayPathIndex(ctx, network, target, paths, provider, cache, reportsByPath, reports)
 	if selectedIndex < 0 {
-		selectedIndex = 0
+		return reports, nil, nil
 	}
 	reports[selectedIndex].Selected = true
 	return reports, append([]int(nil), reports[selectedIndex].Path...), nil
