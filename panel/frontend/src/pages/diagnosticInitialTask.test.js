@@ -6,7 +6,8 @@ let diagnoseRuleResponse
 let diagnoseL4RuleResponse
 
 vi.mock('vue-router', () => ({
-  useRoute: () => ({ query: { agentId: 'edge-a' } })
+  useRoute: () => ({ query: { agentId: 'edge-a' } }),
+  useRouter: () => ({ replace: vi.fn() })
 }))
 
 vi.mock('../context/AgentContext', () => ({
@@ -48,7 +49,9 @@ const commonStubs = {
   L4RuleForm: true,
   DeleteConfirmDialog: true,
   BaseModal: true,
-  RuleDiagnosticModal: modalStub
+  RuleDiagnosticModal: modalStub,
+  RouterLink: true,
+  AgentPicker: true
 }
 
 beforeEach(() => {

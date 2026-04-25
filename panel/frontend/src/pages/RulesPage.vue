@@ -35,8 +35,10 @@
         <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
         <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
       </svg>
-      <p>请从侧边栏选择一个节点</p>
-      <p class="rules-page__prompt-hint">选择节点后即可管理其 HTTP 规则</p>
+      <p>请选择一个节点来管理规则</p>
+      <AgentPicker :agents="allAgents" @select="handleAgentSelect" />
+      <p class="rules-page__prompt-hint">或前往节点管理页面添加新节点</p>
+      <RouterLink to="/agents" class="btn btn-primary">加入节点</RouterLink>
     </div>
 
     <!-- Agent selected, no rules -->
@@ -169,7 +171,7 @@
 
 <script setup>
 import { ref, computed, watchEffect } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useAgent } from '../context/AgentContext'
 import { useRules, useCreateRule, useUpdateRule, useDeleteRule } from '../hooks/useRules'
 import { useDiagnoseRule, useDiagnosticTask } from '../hooks/useDiagnostics'
@@ -179,9 +181,11 @@ import RuleForm from '../components/RuleForm.vue'
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
 import BaseModal from '../components/base/BaseModal.vue'
 import RuleDiagnosticModal from '../components/RuleDiagnosticModal.vue'
+import AgentPicker from '../components/AgentPicker.vue'
 import { messageStore } from '../stores/messages'
 
 const route = useRoute()
+const router = useRouter()
 const { selectedAgentId } = useAgent()
 
 // 优先从 URL query 获取，否则 fall back 到 AgentContext
@@ -196,8 +200,13 @@ const rules = computed(() => _rulesData.value ?? [])
 
 // Agents list for sync status derivation
 const { data: agentsData } = useAgents()
+const allAgents = computed(() => agentsData.value ?? [])
 const selectedAgent = computed(() => agentsData.value?.find(a => a.id === agentId.value))
 const selectedAgentLabel = computed(() => String(selectedAgent.value?.name || agentId.value || '').trim())
+
+function handleAgentSelect(agent) {
+  router.replace({ query: { ...route.query, agentId: agent.id } })
+}
 
 // Search
 const searchQuery = ref('')

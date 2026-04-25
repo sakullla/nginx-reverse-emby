@@ -34,7 +34,10 @@
       <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
         <rect x="2" y="2" width="20" height="8" rx="2"/><rect x="2" y="14" width="20" height="8" rx="2"/>
       </svg>
-      <p>请从侧边栏选择一个节点</p>
+      <p>请选择一个节点来管理 L4 规则</p>
+      <AgentPicker :agents="allAgents" @select="handleAgentSelect" />
+      <p class="rules-page__prompt-hint">或前往节点管理页面添加新节点</p>
+      <RouterLink to="/agents" class="btn btn-primary">加入节点</RouterLink>
     </div>
 
     <!-- Agent selected, no rules -->
@@ -112,7 +115,7 @@
 
 <script setup>
 import { ref, computed, watchEffect } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useAgent } from '../context/AgentContext'
 import { useL4Rules, useCreateL4Rule, useUpdateL4Rule, useDeleteL4Rule } from '../hooks/useL4Rules'
 import { useDiagnoseL4Rule, useDiagnosticTask } from '../hooks/useDiagnostics'
@@ -122,9 +125,11 @@ import L4RuleItem from '../components/l4/L4RuleItem.vue'
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
 import BaseModal from '../components/base/BaseModal.vue'
 import RuleDiagnosticModal from '../components/RuleDiagnosticModal.vue'
+import AgentPicker from '../components/AgentPicker.vue'
 import { messageStore } from '../stores/messages'
 
 const route = useRoute()
+const router = useRouter()
 const { selectedAgentId } = useAgent()
 const agentId = computed(() => route.query.agentId || selectedAgentId.value)
 
@@ -132,7 +137,12 @@ const { data: _rulesData, isLoading } = useL4Rules(agentId)
 
 // Agents list for sync status derivation
 const { data: agentsData } = useAgents()
+const allAgents = computed(() => agentsData.value ?? [])
 const selectedAgent = computed(() => agentsData.value?.find(a => a.id === agentId.value))
+
+function handleAgentSelect(agent) {
+  router.replace({ query: { ...route.query, agentId: agent.id } })
+}
 const selectedAgentLabel = computed(() => String(selectedAgent.value?.name || agentId.value || '').trim())
 const createL4Rule = useCreateL4Rule(agentId)
 const updateL4Rule = useUpdateL4Rule(agentId)

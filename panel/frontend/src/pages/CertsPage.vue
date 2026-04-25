@@ -41,7 +41,10 @@
         <rect x='3' y='11' width='18' height='11' rx='2' ry='2' />
         <path d='M7 11V7a5 5 0 0 1 10 0v4' />
       </svg>
-      <p>请从侧边栏选择一个节点</p>
+      <p>请选择一个节点来管理证书</p>
+      <AgentPicker :agents="allAgents" @select="handleAgentSelect" />
+      <p class="certs-page__prompt-hint">或前往节点管理页面添加新节点</p>
+      <RouterLink to="/agents" class="btn btn-primary">加入节点</RouterLink>
     </div>
 
     <div v-else-if='isLoading' class='certs-page__loading'>
@@ -157,12 +160,14 @@
 
 <script setup>
 import { computed, ref, watchEffect } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useAgent } from '../context/AgentContext'
+import { useAgents } from '../hooks/useAgents'
 import { useCertificates, useDeleteCertificate, useIssueCertificate } from '../hooks/useCertificates'
 import CertificateForm from '../components/CertificateForm.vue'
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
 import BaseModal from '../components/base/BaseModal.vue'
+import AgentPicker from '../components/AgentPicker.vue'
 import {
   getCertificateSourceLabel,
   getCertificateUsageLabel,
@@ -171,11 +176,18 @@ import {
 } from '../utils/certificateTemplates'
 
 const route = useRoute()
+const router = useRouter()
 const { selectedAgentId } = useAgent()
+const { data: agentsData } = useAgents()
+const allAgents = computed(() => agentsData.value ?? [])
 
 const agentId = computed(() => route.query.agentId || selectedAgentId.value)
 
 const { data: certsData, isLoading } = useCertificates(agentId)
+
+function handleAgentSelect(agent) {
+  router.replace({ query: { ...route.query, agentId: agent.id } })
+}
 const deleteCertificate = useDeleteCertificate(agentId)
 const issueCertificate = useIssueCertificate(agentId)
 const certificates = computed(() => certsData.value ?? [])

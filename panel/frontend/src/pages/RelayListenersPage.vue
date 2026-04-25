@@ -21,7 +21,10 @@
       <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
         <path d="M8 12h8"/><path d="M6 8h12"/><path d="M10 16h4"/><circle cx="4" cy="12" r="2"/><circle cx="20" cy="12" r="2"/>
       </svg>
-      <p>请从侧边栏选择一个节点</p>
+      <p>请选择一个节点来管理 Relay 监听器</p>
+      <AgentPicker :agents="allAgents" @select="handleAgentSelect" />
+      <p class="relay-page__prompt-hint">或前往节点管理页面添加新节点</p>
+      <RouterLink to="/agents" class="btn btn-primary">加入节点</RouterLink>
     </div>
 
     <!-- Agent selected, no listeners -->
@@ -114,17 +117,20 @@
 
 <script setup>
 import { computed, ref } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useAgent } from '../context/AgentContext'
 import { useAgents } from '../hooks/useAgents'
 import { useRelayListeners, useDeleteRelayListener, useUpdateRelayListener } from '../hooks/useRelayListeners'
 import RelayListenerForm from '../components/RelayListenerForm.vue'
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
 import BaseModal from '../components/base/BaseModal.vue'
+import AgentPicker from '../components/AgentPicker.vue'
 
 const route = useRoute()
+const router = useRouter()
 const { selectedAgentId } = useAgent()
 const { data: agentsData } = useAgents()
+const allAgents = computed(() => agentsData.value ?? [])
 
 const selectedOrRouteAgentId = computed(() => route.query.agentId || selectedAgentId.value)
 const registeredAgentIds = computed(() => new Set((agentsData.value || []).map((agent) => String(agent.id))))
@@ -204,6 +210,10 @@ function formatBindEndpoint(listener) {
   const bindLabel = bindHosts.length ? bindHosts.join(', ') : '-'
   const listenPort = normalizePort(listener?.listen_port)
   return listenPort ? `${bindLabel}:${listenPort}` : bindLabel
+}
+
+function handleAgentSelect(agent) {
+  router.replace({ query: { ...route.query, agentId: agent.id } })
 }
 
 function startEdit(listener) {
