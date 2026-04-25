@@ -59,16 +59,17 @@ type snapshot struct {
 type httpRule struct{}
 
 type l4Rule struct {
-	ID           int    `json:"id,omitempty"`
-	Name         string `json:"name,omitempty"`
-	Protocol     string `json:"protocol"`
-	ListenHost   string `json:"listen_host"`
-	ListenPort   int    `json:"listen_port"`
-	UpstreamHost string `json:"upstream_host"`
-	UpstreamPort int    `json:"upstream_port"`
-	RelayChain   []int  `json:"relay_chain,omitempty"`
-	Enabled      bool   `json:"enabled"`
-	Revision     int64  `json:"revision"`
+	ID           int     `json:"id,omitempty"`
+	Name         string  `json:"name,omitempty"`
+	Protocol     string  `json:"protocol"`
+	ListenHost   string  `json:"listen_host"`
+	ListenPort   int     `json:"listen_port"`
+	UpstreamHost string  `json:"upstream_host"`
+	UpstreamPort int     `json:"upstream_port"`
+	RelayChain   []int   `json:"relay_chain,omitempty"`
+	RelayLayers  [][]int `json:"relay_layers,omitempty"`
+	Enabled      bool    `json:"enabled"`
+	Revision     int64   `json:"revision"`
 }
 
 type relayListener struct {
@@ -197,7 +198,7 @@ func loadConfig() config {
 		mode:            envString("HARNESS_MODE", "bench"),
 		masterAddr:      envString("HARNESS_MASTER_ADDR", ":8080"),
 		entryAddress:    envString("HARNESS_ENTRY_ADDRESS", "172.29.1.10:7000"),
-		directAddress:   envString("HARNESS_DIRECT_ADDRESS", "172.29.0.12:9001"),
+		directAddress:   envString("HARNESS_DIRECT_ADDRESS", "172.29.0.20:9001"),
 		rttIterations:   envInt("HARNESS_RTT_ITERATIONS", 300),
 		c1Bytes:         envBytes("HARNESS_C1_BYTES", 512<<20),
 		c1Duration:      envSeconds("HARNESS_C1_DURATION_SECONDS", 0),
@@ -215,46 +216,36 @@ func loadConfig() config {
 }
 
 func buildSnapshots(cfg config, certPEM, keyPEM, pin string) map[string]snapshot {
-	certID := 10
-	listener := relayListener{
-		ID:            1,
-		AgentID:       "relay-b",
-		Name:          "relay-b",
-		ListenHost:    "0.0.0.0",
-		BindHosts:     []string{"0.0.0.0"},
-		ListenPort:    cfg.relayPublicPort,
-		PublicHost:    cfg.relayPublicHost,
-		PublicPort:    cfg.relayPublicPort,
-		Enabled:       true,
-		CertificateID: &certID,
-		TLSMode:       "pin_only",
-		TransportMode: "tls_tcp",
-		PinSet: []relayPin{{
-			Type:  "spki_sha256",
-			Value: pin,
-		}},
-		AllowSelfSigned: true,
-		Revision:        1,
+	listeners := []relayListener{
+		newHarnessRelayListener(1, "relay-a1", "172.29.2.11", 9443, certIDForRelay(1), pin),
+		newHarnessRelayListener(2, "relay-a2", "172.29.2.12", 9443, certIDForRelay(2), pin),
+		newHarnessRelayListener(3, "relay-b3", "172.29.4.13", 9443, certIDForRelay(3), pin),
+		newHarnessRelayListener(4, "relay-b4", "172.29.4.14", 9443, certIDForRelay(4), pin),
 	}
-	certs := []certificateBundle{{
-		ID:       certID,
-		Domain:   cfg.relayPublicHost,
-		Revision: 1,
-		CertPEM:  certPEM,
-		KeyPEM:   keyPEM,
-	}}
-	policies := []certificatePolicy{{
-		ID:              certID,
-		Domain:          cfg.relayPublicHost,
-		Enabled:         true,
-		Scope:           "domain",
-		IssuerMode:      "local_http01",
-		Status:          "active",
-		Revision:        1,
-		Usage:           "relay_tunnel",
-		CertificateType: "uploaded",
-		SelfSigned:      true,
-	}}
+	certs := make([]certificateBundle, 0, len(listeners))
+	policies := make([]certificatePolicy, 0, len(listeners))
+	for _, listener := range listeners {
+		certID := *listener.CertificateID
+		certs = append(certs, certificateBundle{
+			ID:       certID,
+			Domain:   listener.PublicHost,
+			Revision: 1,
+			CertPEM:  certPEM,
+			KeyPEM:   keyPEM,
+		})
+		policies = append(policies, certificatePolicy{
+			ID:              certID,
+			Domain:          listener.PublicHost,
+			Enabled:         true,
+			Scope:           "domain",
+			IssuerMode:      "local_http01",
+			Status:          "active",
+			Revision:        1,
+			Usage:           "relay_tunnel",
+			CertificateType: "uploaded",
+			SelfSigned:      true,
+		})
+	}
 
 	return map[string]snapshot{
 		"agent-a": {
@@ -263,26 +254,53 @@ func buildSnapshots(cfg config, certPEM, keyPEM, pin string) map[string]snapshot
 			Rules:           []httpRule{},
 			L4Rules: []l4Rule{{
 				ID:           101,
-				Name:         "entry-a-relay-to-b",
+				Name:         "entry-a-layered-relay-to-b",
 				Protocol:     "tcp",
 				ListenHost:   "0.0.0.0",
 				ListenPort:   7000,
-				UpstreamHost: cfg.relayTargetHost,
-				UpstreamPort: 9001,
-				RelayChain:   []int{1},
+				UpstreamHost: cfg.backendHost,
+				UpstreamPort: cfg.backendPort,
+				RelayLayers:  [][]int{{1, 2}, {3, 4}},
 				Enabled:      true,
 				Revision:     1,
 			}},
-			RelayListeners:      []relayListener{listener},
+			RelayListeners:      listeners,
 			Certificates:        []certificateBundle{},
 			CertificatePolicies: []certificatePolicy{},
 		},
-		"relay-b": {
+		"relay-a1": {
 			DesiredVersion:      "perf",
 			DesiredRevision:     1,
 			Rules:               []httpRule{},
 			L4Rules:             []l4Rule{},
-			RelayListeners:      []relayListener{listener},
+			RelayListeners:      listeners,
+			Certificates:        certs,
+			CertificatePolicies: policies,
+		},
+		"relay-a2": {
+			DesiredVersion:      "perf",
+			DesiredRevision:     1,
+			Rules:               []httpRule{},
+			L4Rules:             []l4Rule{},
+			RelayListeners:      listeners,
+			Certificates:        certs,
+			CertificatePolicies: policies,
+		},
+		"relay-b3": {
+			DesiredVersion:      "perf",
+			DesiredRevision:     1,
+			Rules:               []httpRule{},
+			L4Rules:             []l4Rule{},
+			RelayListeners:      listeners,
+			Certificates:        certs,
+			CertificatePolicies: policies,
+		},
+		"relay-b4": {
+			DesiredVersion:      "perf",
+			DesiredRevision:     1,
+			Rules:               []httpRule{},
+			L4Rules:             []l4Rule{},
+			RelayListeners:      listeners,
 			Certificates:        certs,
 			CertificatePolicies: policies,
 		},
@@ -301,11 +319,38 @@ func buildSnapshots(cfg config, certPEM, keyPEM, pin string) map[string]snapshot
 				Enabled:      true,
 				Revision:     1,
 			}},
-			RelayListeners:      []relayListener{listener},
+			RelayListeners:      listeners,
 			Certificates:        []certificateBundle{},
 			CertificatePolicies: []certificatePolicy{},
 		},
 	}
+}
+
+func newHarnessRelayListener(id int, agentID, publicHost string, publicPort, certID int, pin string) relayListener {
+	return relayListener{
+		ID:            id,
+		AgentID:       agentID,
+		Name:          agentID,
+		ListenHost:    "0.0.0.0",
+		BindHosts:     []string{"0.0.0.0"},
+		ListenPort:    publicPort,
+		PublicHost:    publicHost,
+		PublicPort:    publicPort,
+		Enabled:       true,
+		CertificateID: &certID,
+		TLSMode:       "pin_only",
+		TransportMode: "tls_tcp",
+		PinSet: []relayPin{{
+			Type:  "spki_sha256",
+			Value: pin,
+		}},
+		AllowSelfSigned: true,
+		Revision:        1,
+	}
+}
+
+func certIDForRelay(id int) int {
+	return 10 + id
 }
 
 func startMaster(ctx context.Context, address string, snapshots map[string]snapshot) error {

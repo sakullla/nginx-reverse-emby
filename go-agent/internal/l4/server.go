@@ -48,10 +48,23 @@ type Server struct {
 
 	relayListenersByID map[int]model.RelayListener
 	relayProvider      RelayMaterialProvider
+	relayPathDialer    relayplan.Dialer
 
 	tcpMu    sync.Mutex
 	tcpConns map[net.Conn]struct{}
 	closing  bool
+}
+
+type relayPathDialer struct {
+	provider RelayMaterialProvider
+}
+
+func (d relayPathDialer) DialPath(ctx context.Context, req relayplan.Request, path relayplan.Path) (net.Conn, relay.DialResult, error) {
+	options := relay.DialOptions{}
+	if len(req.Options) > 0 {
+		options = req.Options[0]
+	}
+	return relay.DialWithResult(ctx, req.Network, req.Target, path.Hops, d.provider, options)
 }
 
 type udpSession struct {
@@ -156,6 +169,7 @@ func NewServerWithResources(
 		tcpListeners:          nil,
 		relayListenersByID:    relayListenersByID,
 		relayProvider:         relayProvider,
+		relayPathDialer:       relayPathDialer{provider: relayProvider},
 	}
 	for _, rule := range rules {
 		if err := ValidateRule(rule); err != nil {
@@ -381,11 +395,7 @@ func (s *Server) dialTCPUpstream(rule model.L4Rule, dialOptions relay.DialOption
 		if !ruleUsesRelay(rule) {
 			upstream, err = (&net.Dialer{}).DialContext(s.ctx, "tcp", target)
 		} else {
-			hops, hopErr := s.resolveRelayHops(rule)
-			if hopErr != nil {
-				return nil, l4Candidate{}, 0, hopErr
-			}
-			upstream, err = relay.Dial(s.ctx, "tcp", target, hops, s.relayProvider, dialOptions)
+			upstream, err = s.dialRelayPath("tcp", target, rule, dialOptions)
 		}
 		if err != nil {
 			if ctxErr := s.ctx.Err(); ctxErr != nil {
@@ -402,6 +412,42 @@ func (s *Server) dialTCPUpstream(rule model.L4Rule, dialOptions relay.DialOption
 		return nil, l4Candidate{}, 0, lastErr
 	}
 	return nil, l4Candidate{}, 0, fmt.Errorf("all backends failed for %s:%d", rule.ListenHost, rule.ListenPort)
+}
+
+func (s *Server) dialRelayPath(network, target string, rule model.L4Rule, dialOptions relay.DialOptions) (net.Conn, error) {
+	paths, err := s.resolveRelayPaths(rule)
+	if err != nil {
+		return nil, err
+	}
+	requestPaths := cloneRelayPlanPaths(paths)
+	for i := range requestPaths {
+		requestPaths[i].Key = relayplan.PathKey("relay_path", requestPaths[i].IDs, target)
+	}
+	dialer := s.relayPathDialer
+	if dialer == nil {
+		dialer = relayPathDialer{provider: s.relayProvider}
+	}
+	racer := relayplan.Racer{Dialer: dialer, Cache: s.cache, Concurrency: 3, MaxPaths: 32}
+	result, err := racer.Race(s.ctx, relayplan.Request{
+		Network: network,
+		Target:  target,
+		Paths:   requestPaths,
+		Options: []relay.DialOptions{dialOptions},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return result.Conn, nil
+}
+
+func cloneRelayPlanPaths(paths []relayplan.Path) []relayplan.Path {
+	cloned := make([]relayplan.Path, len(paths))
+	for i, path := range paths {
+		cloned[i] = path
+		cloned[i].IDs = append([]int(nil), path.IDs...)
+		cloned[i].Hops = append([]relay.Hop(nil), path.Hops...)
+	}
+	return cloned
 }
 
 func closeTCPWrite(conn net.Conn) {
@@ -629,11 +675,7 @@ func (s *Server) dialUDPUpstream(rule model.L4Rule) (udpUpstream, l4Candidate, e
 			return &directUDPUpstream{conn: upstream}, candidate, nil
 		}
 
-		hops, hopErr := s.resolveRelayHops(rule)
-		if hopErr != nil {
-			return nil, l4Candidate{}, hopErr
-		}
-		upstream, err := relay.Dial(s.ctx, "udp", targetAddress, hops, s.relayProvider, relay.DialOptions{
+		upstream, err := s.dialRelayPath("udp", targetAddress, rule, relay.DialOptions{
 			TrafficClass: upstream.TrafficClassBulk,
 		})
 		if err != nil {
