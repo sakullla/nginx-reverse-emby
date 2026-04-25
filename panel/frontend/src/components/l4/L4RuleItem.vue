@@ -111,9 +111,12 @@ const status = computed(() => getRuleEffectiveStatus(props.rule, props.agent))
 const statusTone = computed(() => STATUS_TONE[status.value] || 'neutral')
 const statusLabel = computed(() => STATUS_LABEL[status.value] || '未知')
 
-const protoTone = computed(() =>
-  String(props.rule?.protocol || '').toLowerCase() === 'udp' ? 'primary' : 'warning'
-)
+const protoTone = computed(() => {
+  const proto = String(props.rule?.protocol || '').toLowerCase()
+  if (proto === 'udp') return 'primary'
+  if (proto === 'tcp') return 'warning'
+  return 'neutral'
+})
 const canDiagnose = computed(() => String(props.rule?.protocol || '').toLowerCase() === 'tcp')
 
 const backends = computed(() => {

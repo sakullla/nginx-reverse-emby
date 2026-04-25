@@ -56,7 +56,7 @@ export function useAgentFilters(agentsRef) {
     router.replace({ query })
   }
 
-  watch([statusFilter, modeFilter, tagFilter, sortField, sortOrder], () => {
+  watch([statusFilter, modeFilter, tagFilter, sortField, sortOrder, searchQuery], () => {
     syncQuery()
   }, { deep: true })
 

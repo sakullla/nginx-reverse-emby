@@ -74,10 +74,11 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { getAgentStatus, timeAgo } from '../utils/agentHelpers.js'
 
 const props = defineProps({
-  agents: { type: Array, default: () => [] }
+  agents: { type: Array, default: () => [] },
+  modelValue: { type: Object, default: null }
 })
 
-const emit = defineEmits(['select'])
+const emit = defineEmits(['select', 'update:modelValue'])
 
 const open = ref(false)
 const searchQuery = ref('')
@@ -91,7 +92,9 @@ const statusOptions = [
   { value: 'offline', label: '离线' }
 ]
 
-const selectedLabel = computed(() => '选择节点...')
+const selectedLabel = computed(() =>
+  props.modelValue ? props.modelValue.name : '选择节点...'
+)
 
 const displayedAgents = computed(() => {
   let result = [...(props.agents || [])]
@@ -124,6 +127,7 @@ const displayedAgents = computed(() => {
 })
 
 function selectAgent(agent) {
+  emit('update:modelValue', agent)
   emit('select', agent)
   open.value = false
   searchQuery.value = ''
