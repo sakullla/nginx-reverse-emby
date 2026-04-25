@@ -466,6 +466,7 @@ func TestAgentServiceListHTTPRulesNormalizesStoredFields(t *testing.T) {
 				TagsJSON:          `["media"]`,
 				ProxyRedirect:     true,
 				RelayChainJSON:    `[1,2]`,
+				RelayLayersJSON:   `[[1,3],[2]]`,
 				PassProxyHeaders:  true,
 				UserAgent:         "",
 				CustomHeadersJSON: `[{"name":"X-Test","value":"1"}]`,
@@ -488,6 +489,9 @@ func TestAgentServiceListHTTPRulesNormalizesStoredFields(t *testing.T) {
 	}
 	if rule.LoadBalancing.Strategy != "adaptive" {
 		t.Fatalf("LoadBalancing = %+v", rule.LoadBalancing)
+	}
+	if len(rule.RelayLayers) != 2 || len(rule.RelayLayers[0]) != 2 || rule.RelayLayers[0][1] != 3 {
+		t.Fatalf("RelayLayers = %+v", rule.RelayLayers)
 	}
 	if len(rule.CustomHeaders) != 1 || rule.CustomHeaders[0].Name != "X-Test" {
 		t.Fatalf("CustomHeaders = %+v", rule.CustomHeaders)

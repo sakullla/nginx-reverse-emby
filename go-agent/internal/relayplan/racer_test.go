@@ -21,9 +21,10 @@ type fakePathDialer struct {
 }
 
 type fakeDialResult struct {
-	conn  net.Conn
-	err   error
-	delay time.Duration
+	conn         net.Conn
+	err          error
+	delay        time.Duration
+	ignoreCancel bool
 }
 
 func newFakePathDialer() *fakePathDialer {
@@ -49,13 +50,17 @@ func (d *fakePathDialer) DialPath(ctx context.Context, _ Request, path Path) (ne
 		return nil, relay.DialResult{}, ctx.Err()
 	}
 	if result.delay > 0 {
-		select {
-		case <-time.After(result.delay):
-		case <-ctx.Done():
-			d.mu.Lock()
-			d.canceled[pathKeyForTest(path.IDs)] = true
-			d.mu.Unlock()
-			return nil, relay.DialResult{}, ctx.Err()
+		if result.ignoreCancel {
+			time.Sleep(result.delay)
+		} else {
+			select {
+			case <-time.After(result.delay):
+			case <-ctx.Done():
+				d.mu.Lock()
+				d.canceled[pathKeyForTest(path.IDs)] = true
+				d.mu.Unlock()
+				return nil, relay.DialResult{}, ctx.Err()
+			}
 		}
 	}
 	if result.err != nil {
@@ -99,8 +104,37 @@ func TestRacerReturnsFirstSuccessfulPathAndCancelsLosers(t *testing.T) {
 	if !reflect.DeepEqual(result.Selected.IDs, []int{2}) {
 		t.Fatalf("selected path = %#v, want [2]", result.Selected.IDs)
 	}
-	if !dialer.wasCanceled([]int{1}) {
+	if !waitForRelayplanCondition(200*time.Millisecond, func() bool {
+		return dialer.wasCanceled([]int{1})
+	}) {
 		t.Fatal("loser path was not canceled")
+	}
+}
+
+func TestRacerReturnsWinnerBeforeSlowLoserObservesCancellation(t *testing.T) {
+	dialer := newFakePathDialer()
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+	dialer.set([]int{1}, fakeDialResult{err: errors.New("slow loser"), delay: 300 * time.Millisecond, ignoreCancel: true})
+	dialer.set([]int{2}, fakeDialResult{conn: clientConn, delay: 10 * time.Millisecond})
+	racer := Racer{Dialer: dialer, Concurrency: 2, MaxPaths: 8}
+
+	startedAt := time.Now()
+	result, err := racer.Race(context.Background(), Request{
+		Network: "tcp",
+		Target:  "backend:443",
+		Paths:   []Path{{IDs: []int{1}}, {IDs: []int{2}}},
+	})
+	elapsed := time.Since(startedAt)
+	if err != nil {
+		t.Fatalf("Race() error = %v", err)
+	}
+	defer result.Conn.Close()
+	if !reflect.DeepEqual(result.Selected.IDs, []int{2}) {
+		t.Fatalf("selected path = %#v, want [2]", result.Selected.IDs)
+	}
+	if elapsed >= 150*time.Millisecond {
+		t.Fatalf("Race() returned after %s, want before slow loser delay", elapsed)
 	}
 }
 
@@ -186,4 +220,15 @@ func TestRacerObservesSuccessfulAndFailedPathAttempts(t *testing.T) {
 
 func pathKeyForTest(path []int) string {
 	return PathKey("test", path, "target")
+}
+
+func waitForRelayplanCondition(timeout time.Duration, condition func() bool) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if condition() {
+			return true
+		}
+		time.Sleep(time.Millisecond)
+	}
+	return condition()
 }

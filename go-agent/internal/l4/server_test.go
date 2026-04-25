@@ -29,16 +29,29 @@ import (
 )
 
 type fakeL4RelayPathDialer struct {
+	mu    sync.Mutex
 	calls [][]int
 	conn  net.Conn
 }
 
 func (d *fakeL4RelayPathDialer) DialPath(_ context.Context, _ relayplan.Request, path relayplan.Path) (net.Conn, relay.DialResult, error) {
+	d.mu.Lock()
 	d.calls = append(d.calls, append([]int(nil), path.IDs...))
+	d.mu.Unlock()
 	if path.IDs[0] == 2 {
 		return d.conn, relay.DialResult{}, nil
 	}
 	return nil, relay.DialResult{}, fmt.Errorf("path %v failed", path.IDs)
+}
+
+func (d *fakeL4RelayPathDialer) calledPaths() [][]int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make([][]int, len(d.calls))
+	for i, call := range d.calls {
+		out[i] = append([]int(nil), call...)
+	}
+	return out
 }
 
 func TestServerCloseStopsTCPHandlers(t *testing.T) {
@@ -1129,8 +1142,8 @@ func TestDialTCPUpstreamUsesRelayLayerRacer(t *testing.T) {
 	if candidate.address != "backend.example:9001" {
 		t.Fatalf("candidate address = %q", candidate.address)
 	}
-	if len(dialer.calls) != 2 || !hasL4RelayPathCall(dialer.calls, 1) || !hasL4RelayPathCall(dialer.calls, 2) {
-		t.Fatalf("dialed paths = %+v, want paths [1] and [2]", dialer.calls)
+	if !waitForL4RelayPathCalls(dialer, 1, 2) {
+		t.Fatalf("dialed paths = %+v, want paths [1] and [2]", dialer.calledPaths())
 	}
 }
 
@@ -1164,9 +1177,36 @@ func TestDialUDPUpstreamUsesRelayLayerRacer(t *testing.T) {
 	if candidate.address != "backend.example:9001" {
 		t.Fatalf("candidate address = %q", candidate.address)
 	}
-	if len(dialer.calls) != 2 || !hasL4RelayPathCall(dialer.calls, 1) || !hasL4RelayPathCall(dialer.calls, 2) {
-		t.Fatalf("dialed paths = %+v, want paths [1] and [2]", dialer.calls)
+	if !waitForL4RelayPathCalls(dialer, 1, 2) {
+		t.Fatalf("dialed paths = %+v, want paths [1] and [2]", dialer.calledPaths())
 	}
+}
+
+func waitForL4RelayPathCalls(dialer *fakeL4RelayPathDialer, firstIDs ...int) bool {
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		calls := dialer.calledPaths()
+		if len(calls) >= len(firstIDs) {
+			allFound := true
+			for _, firstID := range firstIDs {
+				if !hasL4RelayPathCall(calls, firstID) {
+					allFound = false
+					break
+				}
+			}
+			if allFound {
+				return true
+			}
+		}
+		time.Sleep(time.Millisecond)
+	}
+	calls := dialer.calledPaths()
+	for _, firstID := range firstIDs {
+		if !hasL4RelayPathCall(calls, firstID) {
+			return false
+		}
+	}
+	return len(calls) >= len(firstIDs)
 }
 
 func hasL4RelayPathCall(calls [][]int, firstID int) bool {

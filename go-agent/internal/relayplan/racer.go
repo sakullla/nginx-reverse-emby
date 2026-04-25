@@ -125,14 +125,13 @@ func (r Racer) Race(ctx context.Context, req Request) (Result, error) {
 				go func() {
 					wg.Wait()
 					close(results)
-				}()
-				for loser := range results {
-					if loser.conn != nil {
-						_ = loser.conn.Close()
+					for loser := range results {
+						if loser.conn != nil {
+							_ = loser.conn.Close()
+						}
+						r.observeAttempt(req, loser.attempt)
 					}
-					attempts = append(attempts, loser.attempt)
-					r.observeAttempt(req, loser.attempt)
-				}
+				}()
 				return Result{Conn: result.conn, Selected: result.attempt.Path, DialResult: result.dialResult, Attempts: attempts}, nil
 			}
 			if result.attempt.Error != "" && !result.attempt.Canceled {
