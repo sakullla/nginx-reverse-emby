@@ -8,6 +8,8 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
+const maxRelayLayerPaths = 32
+
 type relayChainLookupStore interface {
 	ListRelayListeners(context.Context, string) ([]storage.RelayListenerRow, error)
 }
@@ -46,7 +48,27 @@ func normalizeRelayLayersInput(layers [][]int, protocol string) ([][]int, error)
 			normalized = append(normalized, normalizedLayer)
 		}
 	}
+	if relayLayerPathCountExceeds(normalized, maxRelayLayerPaths) {
+		return nil, fmt.Errorf("%w: relay_layers expand to more than %d relay paths", ErrInvalidArgument, maxRelayLayerPaths)
+	}
 	return normalized, nil
+}
+
+func relayLayerPathCountExceeds(layers [][]int, maxPaths int) bool {
+	if len(layers) == 0 || maxPaths <= 0 {
+		return false
+	}
+	pathCount := 1
+	for _, layer := range layers {
+		if len(layer) == 0 {
+			continue
+		}
+		if pathCount > maxPaths/len(layer) {
+			return true
+		}
+		pathCount *= len(layer)
+	}
+	return pathCount > maxPaths
 }
 
 func flattenRelayLayers(layers [][]int) []int {

@@ -63,20 +63,11 @@ func NewHTTPProber(cfg HTTPProberConfig) *HTTPProber {
 func (p *HTTPProber) Diagnose(ctx context.Context, rule model.HTTPRule, relayListeners []model.RelayListener) (Report, error) {
 	baseCache := p.cache
 	cache := baseCache.Clone()
-	if len(rule.RelayLayers) > 0 {
-		paths, err := resolveDiagnosticHTTPRelayPaths(rule, relayListeners, "")
-		if err != nil {
-			return Report{}, err
-		}
-		if len(paths) > 0 {
-			rule.RelayChain = append([]int(nil), paths[0].IDs...)
-		}
-	}
 	candidates, err := httpCandidates(ctx, baseCache, rule)
 	if err != nil {
 		return Report{}, err
 	}
-	if len(rule.RelayChain) > 0 {
+	if ruleUsesHTTPRelay(rule) {
 		candidates, err = p.hydrateRelayCandidates(ctx, rule, relayListeners, candidates)
 		if err != nil {
 			return Report{}, err
@@ -121,6 +112,7 @@ type httpProbeCandidate struct {
 	configuredURL         string
 	resolvedCandidates    []httpResolvedCandidate
 	relayChain            []int
+	relayPaths            []relayplan.Path
 }
 
 func (p *HTTPProber) probeCandidate(ctx context.Context, cache *backends.Cache, attempt int, rule model.HTTPRule, relayListeners []model.RelayListener, candidate httpProbeCandidate) Sample {
@@ -229,7 +221,7 @@ func httpCandidates(ctx context.Context, cache *backends.Cache, rule model.HTTPR
 			continue
 		}
 		target := parsed[indices[idx]]
-		if len(rule.RelayChain) > 0 {
+		if ruleUsesHTTPRelay(rule) {
 			// Preserve the configured host for relay chains so the final hop resolves DNS.
 			dialAddress := httpProbeTargetAddress(target)
 			if cache.IsInBackoff(backends.RelayBackoffKey(rule.RelayChain, dialAddress)) {
@@ -586,20 +578,28 @@ func httpProbeTargetAddress(target *url.URL) string {
 }
 
 func (p *HTTPProber) hydrateRelayCandidates(ctx context.Context, rule model.HTTPRule, relayListeners []model.RelayListener, candidates []httpProbeCandidate) ([]httpProbeCandidate, error) {
-	if len(rule.RelayChain) == 0 || len(candidates) == 0 {
+	if !ruleUsesHTTPRelay(rule) || len(candidates) == 0 {
 		return candidates, nil
 	}
 	if p.relayProvider == nil {
 		return nil, fmt.Errorf("relay provider is required")
 	}
-	hops, err := resolveHTTPRelayHops(rule, relayListeners)
-	if err != nil {
-		return nil, err
-	}
 
 	out := make([]httpProbeCandidate, 0, len(candidates))
 	for _, candidate := range candidates {
 		hydrated := candidate
+		paths, err := resolveDiagnosticHTTPRelayPaths(rule, relayListeners, candidate.dialAddress)
+		if err != nil {
+			return nil, err
+		}
+		hydrated.relayPaths = paths
+		if len(paths) > 0 {
+			hydrated.relayChain = append([]int(nil), paths[0].IDs...)
+		}
+		hops := []relay.Hop(nil)
+		if len(paths) > 0 {
+			hops = paths[0].Hops
+		}
 		addresses, err := diagnosticRelayResolveCandidates(ctx, candidate.dialAddress, hops, p.relayProvider)
 		if err == nil && len(addresses) > 0 {
 			hydrated.resolvedCandidates = make([]httpResolvedCandidate, 0, len(addresses))
@@ -643,21 +643,34 @@ func (p *HTTPProber) clientForCandidate(rule model.HTTPRule, relayListeners []mo
 	}
 	selectedAddress := ""
 
-	if len(rule.RelayChain) > 0 {
+	if ruleUsesHTTPRelay(rule) {
 		if p.relayProvider == nil {
 			return nil, nil, fmt.Errorf("relay provider is required")
 		}
-		hops, err := resolveHTTPRelayHops(rule, relayListeners)
-		if err != nil {
-			return nil, nil, err
+		paths := candidate.relayPaths
+		if len(paths) == 0 {
+			var err error
+			paths, err = resolveDiagnosticHTTPRelayPaths(rule, relayListeners, candidate.dialAddress)
+			if err != nil {
+				return nil, nil, err
+			}
 		}
+		racer := relayplan.Racer{Dialer: diagnosticRelayPathDialer{provider: p.relayProvider}, Cache: p.cache, Concurrency: 3, MaxPaths: 32}
 		baseTransport.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
-			conn, result, err := diagnosticRelayDialWithResult(ctx, network, candidate.dialAddress, hops, p.relayProvider)
+			requestPaths := cloneDiagnosticRelayPaths(paths)
+			for i := range requestPaths {
+				requestPaths[i].Key = relayplan.PathKey("relay_path", requestPaths[i].IDs, candidate.dialAddress)
+			}
+			result, err := racer.Race(ctx, relayplan.Request{
+				Network: network,
+				Target:  candidate.dialAddress,
+				Paths:   requestPaths,
+			})
 			if err != nil {
 				return nil, err
 			}
-			selectedAddress = result.SelectedAddress
-			return conn, nil
+			selectedAddress = result.DialResult.SelectedAddress
+			return result.Conn, nil
 		}
 	} else {
 		dialer := &net.Dialer{Timeout: p.timeout}
@@ -688,6 +701,10 @@ func httpPortWithDefault(target *url.URL) int {
 	return 80
 }
 
+func ruleUsesHTTPRelay(rule model.HTTPRule) bool {
+	return len(rule.RelayChain) > 0 || len(rule.RelayLayers) > 0
+}
+
 func resolveHTTPRelayHops(rule model.HTTPRule, relayListeners []model.RelayListener) ([]relay.Hop, error) {
 	paths, err := resolveDiagnosticHTTPRelayPaths(rule, relayListeners, "")
 	if err != nil || len(paths) == 0 {
@@ -698,6 +715,26 @@ func resolveHTTPRelayHops(rule model.HTTPRule, relayListeners []model.RelayListe
 
 func resolveDiagnosticHTTPRelayPaths(rule model.HTTPRule, relayListeners []model.RelayListener, target string) ([]relayplan.Path, error) {
 	return resolveDiagnosticRelayPaths(fmt.Sprintf("http rule %q", rule.FrontendURL), rule.RelayChain, rule.RelayLayers, relayListeners, target)
+}
+
+type diagnosticRelayPathDialer struct {
+	provider relay.TLSMaterialProvider
+}
+
+func (d diagnosticRelayPathDialer) DialPath(ctx context.Context, req relayplan.Request, path relayplan.Path) (net.Conn, relay.DialResult, error) {
+	return diagnosticRelayDialWithResult(ctx, req.Network, req.Target, path.Hops, d.provider, req.Options...)
+}
+
+func cloneDiagnosticRelayPaths(paths []relayplan.Path) []relayplan.Path {
+	cloned := make([]relayplan.Path, len(paths))
+	for i, path := range paths {
+		cloned[i] = relayplan.Path{
+			IDs:  append([]int(nil), path.IDs...),
+			Hops: append([]relay.Hop(nil), path.Hops...),
+			Key:  path.Key,
+		}
+	}
+	return cloned
 }
 
 func relayHopDialEndpoint(listener model.RelayListener) (string, int) {

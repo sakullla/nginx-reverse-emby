@@ -1103,6 +1103,117 @@ func TestStoreLoadsAgentSnapshotWithReferencedRelayListenersAndCertificates(t *t
 	}
 }
 
+func TestStoreLoadsAgentSnapshotWithRelayLayerOnlyListeners(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromGORM(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	for _, agentID := range []string{"relay-layer-agent", "relay-layer-peer", "relay-layer-l4-peer"} {
+		if err := store.SaveAgent(t.Context(), AgentRow{
+			ID:             agentID,
+			Name:           agentID,
+			AgentToken:     "token-" + agentID,
+			DesiredVersion: "1.2.3",
+		}); err != nil {
+			t.Fatalf("SaveAgent(%s) error = %v", agentID, err)
+		}
+	}
+
+	if err := store.SaveHTTPRules(t.Context(), "relay-layer-agent", []HTTPRuleRow{{
+		ID:                41,
+		AgentID:           "relay-layer-agent",
+		FrontendURL:       "https://layer-http.example.com",
+		BackendURL:        "http://127.0.0.1:8096",
+		BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		Enabled:           true,
+		RelayChainJSON:    `[11]`,
+		RelayLayersJSON:   `[[11,22]]`,
+		PassProxyHeaders:  true,
+		Revision:          5,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules() error = %v", err)
+	}
+	if err := store.SaveL4Rules(t.Context(), "relay-layer-agent", []L4RuleRow{{
+		ID:                42,
+		AgentID:           "relay-layer-agent",
+		Name:              "layer-l4",
+		Protocol:          "tcp",
+		ListenHost:        "0.0.0.0",
+		ListenPort:        9000,
+		UpstreamHost:      "backend",
+		UpstreamPort:      9001,
+		BackendsJSON:      `[{"host":"backend","port":9001}]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		RelayChainJSON:    `[11]`,
+		RelayLayersJSON:   `[[11,33]]`,
+		Enabled:           true,
+		Revision:          6,
+	}}); err != nil {
+		t.Fatalf("SaveL4Rules() error = %v", err)
+	}
+
+	if err := store.SaveRelayListeners(t.Context(), "relay-layer-agent", []RelayListenerRow{{
+		ID:         11,
+		AgentID:    "relay-layer-agent",
+		Name:       "relay-local",
+		ListenHost: "127.0.0.1",
+		ListenPort: 7443,
+		PublicHost: "relay-local.example.com",
+		PublicPort: 7443,
+		Enabled:    true,
+		Revision:   7,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(relay-layer-agent) error = %v", err)
+	}
+	if err := store.SaveRelayListeners(t.Context(), "relay-layer-peer", []RelayListenerRow{{
+		ID:         22,
+		AgentID:    "relay-layer-peer",
+		Name:       "relay-http-peer",
+		ListenHost: "127.0.0.1",
+		ListenPort: 8443,
+		PublicHost: "relay-http-peer.example.com",
+		PublicPort: 8443,
+		Enabled:    true,
+		Revision:   8,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(relay-layer-peer) error = %v", err)
+	}
+	if err := store.SaveRelayListeners(t.Context(), "relay-layer-l4-peer", []RelayListenerRow{{
+		ID:         33,
+		AgentID:    "relay-layer-l4-peer",
+		Name:       "relay-l4-peer",
+		ListenHost: "127.0.0.1",
+		ListenPort: 9443,
+		PublicHost: "relay-l4-peer.example.com",
+		PublicPort: 9443,
+		Enabled:    true,
+		Revision:   9,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(relay-layer-l4-peer) error = %v", err)
+	}
+
+	snapshot, err := store.LoadAgentSnapshot(t.Context(), "relay-layer-agent", AgentSnapshotInput{})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot() error = %v", err)
+	}
+	if len(snapshot.RelayListeners) != 3 {
+		t.Fatalf("RelayListeners = %+v", snapshot.RelayListeners)
+	}
+	if snapshot.RelayListeners[0].ID != 11 || snapshot.RelayListeners[1].ID != 22 || snapshot.RelayListeners[2].ID != 33 {
+		t.Fatalf("RelayListeners order/ids = %+v", snapshot.RelayListeners)
+	}
+}
+
 func TestStoreLoadAgentSnapshotIncludesHTTPSCertificateReferencedByRemoteRuleWithoutTargetAssignment(t *testing.T) {
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 

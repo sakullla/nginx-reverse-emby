@@ -722,8 +722,8 @@ func (s *SQLiteStore) loadRelayListenersForSync(
 func referencedRelayListenerIDs(httpRows []HTTPRuleRow, l4Rows []L4RuleRow) []int {
 	referenced := make([]int, 0)
 	seen := make(map[int]struct{})
-	addRelayChain := func(chainJSON string) {
-		for _, listenerID := range parseIntSlice(chainJSON) {
+	addListenerIDs := func(listenerIDs []int) {
+		for _, listenerID := range listenerIDs {
 			if listenerID <= 0 {
 				continue
 			}
@@ -734,20 +734,36 @@ func referencedRelayListenerIDs(httpRows []HTTPRuleRow, l4Rows []L4RuleRow) []in
 			referenced = append(referenced, listenerID)
 		}
 	}
+	addRelayChain := func(chainJSON string) {
+		addListenerIDs(parseIntSlice(chainJSON))
+	}
+	addRelayLayers := func(layersJSON string) {
+		addListenerIDs(flattenIntLayers(parseIntLayers(layersJSON)))
+	}
 
 	for _, row := range httpRows {
 		if !row.Enabled {
 			continue
 		}
 		addRelayChain(row.RelayChainJSON)
+		addRelayLayers(row.RelayLayersJSON)
 	}
 	for _, row := range l4Rows {
 		if !row.Enabled {
 			continue
 		}
 		addRelayChain(row.RelayChainJSON)
+		addRelayLayers(row.RelayLayersJSON)
 	}
 	return referenced
+}
+
+func flattenIntLayers(layers [][]int) []int {
+	flattened := make([]int, 0)
+	for _, layer := range layers {
+		flattened = append(flattened, layer...)
+	}
+	return flattened
 }
 
 func filterSyncL4RuleRows(rows []L4RuleRow) []L4RuleRow {
