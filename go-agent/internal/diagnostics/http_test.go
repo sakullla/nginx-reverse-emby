@@ -755,15 +755,19 @@ func TestHTTPProberDiagnoseRelayChainUsesRemoteResolvedCandidatesAndSelectedAddr
 		}
 		return []string{selectedAddress, otherAddress}, nil
 	}
+	dialedTargets := make(map[string]int)
 	diagnosticRelayDialWithResult = func(ctx context.Context, network, target string, chain []relay.Hop, provider relay.TLSMaterialProvider, opts ...relay.DialOptions) (net.Conn, relay.DialResult, error) {
-		if target != "relay-target.example:"+backendPort {
+		switch target {
+		case selectedAddress, otherAddress, "relay-target.example:" + backendPort:
+			dialedTargets[target]++
+		default:
 			t.Fatalf("target = %q", target)
 		}
 		conn, err := (&net.Dialer{}).DialContext(ctx, network, backendURL.Host)
 		if err != nil {
 			return nil, relay.DialResult{}, err
 		}
-		return conn, relay.DialResult{SelectedAddress: selectedAddress}, nil
+		return conn, relay.DialResult{SelectedAddress: resolveProbeAddress(selectedAddress, target)}, nil
 	}
 
 	prober := NewHTTPProber(HTTPProberConfig{
@@ -784,15 +788,15 @@ func TestHTTPProberDiagnoseRelayChainUsesRemoteResolvedCandidatesAndSelectedAddr
 	if resolverCalls != 0 {
 		t.Fatalf("resolver called %d times", resolverCalls)
 	}
-	if len(report.Samples) != 1 {
+	if len(report.Samples) != 2 {
 		t.Fatalf("Samples = %+v", report.Samples)
 	}
 	wantChildLabel := "http://relay-target.example:" + backendPort + "/healthz [" + selectedAddress + "]"
-	if got := report.Samples[0].Address; got != selectedAddress {
-		t.Fatalf("sample address = %q", got)
+	if dialedTargets[selectedAddress] == 0 {
+		t.Fatalf("selected resolved candidate was not probed; targets = %+v", dialedTargets)
 	}
-	if got := report.Samples[0].Backend; got != wantChildLabel {
-		t.Fatalf("sample backend = %q", got)
+	if dialedTargets[otherAddress] == 0 {
+		t.Fatalf("other resolved candidate was not probed; targets = %+v", dialedTargets)
 	}
 	if len(report.Backends) != 1 {
 		t.Fatalf("Backends = %+v", report.Backends)
@@ -805,6 +809,12 @@ func TestHTTPProberDiagnoseRelayChainUsesRemoteResolvedCandidatesAndSelectedAddr
 	}
 	if got := report.Backends[0].Children[0].Address; got != selectedAddress {
 		t.Fatalf("first child address = %q", got)
+	}
+	if report.Backends[0].Children[0].Summary.Sent == 0 {
+		t.Fatalf("first child summary = %+v, want probed", report.Backends[0].Children[0].Summary)
+	}
+	if report.Backends[0].Children[1].Summary.Sent == 0 {
+		t.Fatalf("second child summary = %+v, want probed", report.Backends[0].Children[1].Summary)
 	}
 	if len(report.RelayPaths) != 1 {
 		t.Fatalf("RelayPaths = %+v", report.RelayPaths)
@@ -1217,6 +1227,119 @@ func TestHTTPCandidatesRelayLayersHonorLayeredBackoffKey(t *testing.T) {
 	}
 }
 
+func TestHTTPRelayHydrationSkipsBackedOffResolvedTargets(t *testing.T) {
+	cache := backends.NewCache(backends.Config{})
+	provider := newDiagnosticTLSMaterialProvider()
+	relayListener := newDiagnosticRelayListener(t, provider, 341, "relay.internal.test")
+	rule := model.HTTPRule{
+		ID:          1,
+		FrontendURL: "https://frontend.example",
+		BackendURL:  "https://relay-target.example:9443",
+		RelayChain:  []int{341},
+	}
+	candidates, err := httpCandidates(context.Background(), cache, rule)
+	if err != nil {
+		t.Fatalf("httpCandidates() error = %v", err)
+	}
+
+	backedOffAddress := "127.0.0.10:9443"
+	healthyAddress := "127.0.0.11:9443"
+	cache.MarkFailure(backends.RelayBackoffKey(rule.RelayChain, backedOffAddress))
+
+	previousResolveCandidates := diagnosticRelayResolveCandidates
+	t.Cleanup(func() {
+		diagnosticRelayResolveCandidates = previousResolveCandidates
+	})
+	diagnosticRelayResolveCandidates = func(ctx context.Context, target string, chain []relay.Hop, provider relay.TLSMaterialProvider) ([]string, error) {
+		return []string{backedOffAddress, healthyAddress}, nil
+	}
+
+	prober := NewHTTPProber(HTTPProberConfig{
+		Cache:         cache,
+		RelayProvider: provider,
+	})
+	hydrated, err := prober.hydrateRelayCandidates(context.Background(), rule, []model.RelayListener{relayListener}, candidates)
+	if err != nil {
+		t.Fatalf("hydrateRelayCandidates() error = %v", err)
+	}
+	if len(hydrated) != 1 {
+		t.Fatalf("hydrated = %+v", hydrated)
+	}
+	if hydrated[0].dialAddress != healthyAddress {
+		t.Fatalf("dialAddress = %q, want %q", hydrated[0].dialAddress, healthyAddress)
+	}
+	if len(hydrated[0].resolvedCandidates) != 1 {
+		t.Fatalf("resolvedCandidates = %+v, want only kept target", hydrated[0].resolvedCandidates)
+	}
+	if hydrated[0].resolvedCandidates[0].dialAddress != healthyAddress {
+		t.Fatalf("resolved candidate address = %q, want %q", hydrated[0].resolvedCandidates[0].dialAddress, healthyAddress)
+	}
+
+	cache.MarkFailure(backends.RelayBackoffKey(rule.RelayChain, healthyAddress))
+	hydrated, err = prober.hydrateRelayCandidates(context.Background(), rule, []model.RelayListener{relayListener}, candidates)
+	if err != nil {
+		t.Fatalf("hydrateRelayCandidates(all backed off) error = %v", err)
+	}
+	if len(hydrated) != 0 {
+		t.Fatalf("hydrated with all targets backed off = %+v", hydrated)
+	}
+}
+
+func TestHTTPRelayHydrationKeepsLayerResolvedTargetWhenAnyPathIsHealthy(t *testing.T) {
+	cache := backends.NewCache(backends.Config{})
+	provider := newDiagnosticTLSMaterialProvider()
+	firstRelay := newDiagnosticRelayListener(t, provider, 351, "relay-a.internal.test")
+	secondRelay := newDiagnosticRelayListener(t, provider, 352, "relay-b.internal.test")
+	rule := model.HTTPRule{
+		ID:          1,
+		FrontendURL: "https://frontend.example",
+		BackendURL:  "https://relay-target.example:9443",
+		RelayLayers: [][]int{{351, 352}},
+	}
+	candidates, err := httpCandidates(context.Background(), cache, rule)
+	if err != nil {
+		t.Fatalf("httpCandidates() error = %v", err)
+	}
+
+	resolvedAddress := "127.0.0.10:9443"
+	cache.MarkFailure(backends.RelayBackoffKey([]int{351}, resolvedAddress))
+
+	previousResolveCandidates := diagnosticRelayResolveCandidates
+	t.Cleanup(func() {
+		diagnosticRelayResolveCandidates = previousResolveCandidates
+	})
+	diagnosticRelayResolveCandidates = func(ctx context.Context, target string, chain []relay.Hop, provider relay.TLSMaterialProvider) ([]string, error) {
+		return []string{resolvedAddress}, nil
+	}
+
+	prober := NewHTTPProber(HTTPProberConfig{
+		Cache:         cache,
+		RelayProvider: provider,
+	})
+	hydrated, err := prober.hydrateRelayCandidates(context.Background(), rule, []model.RelayListener{firstRelay, secondRelay}, candidates)
+	if err != nil {
+		t.Fatalf("hydrateRelayCandidates() error = %v", err)
+	}
+	if len(hydrated) != 1 {
+		t.Fatalf("hydrated = %+v, want target kept while second path is healthy", hydrated)
+	}
+	if len(hydrated[0].relayPaths) != 1 {
+		t.Fatalf("relayPaths = %+v, want backed-off path filtered", hydrated[0].relayPaths)
+	}
+	if len(hydrated[0].relayChain) != 1 || hydrated[0].relayChain[0] != 352 {
+		t.Fatalf("relayChain = %+v, want remaining healthy path", hydrated[0].relayChain)
+	}
+
+	cache.MarkFailure(backends.RelayBackoffKey([]int{352}, resolvedAddress))
+	hydrated, err = prober.hydrateRelayCandidates(context.Background(), rule, []model.RelayListener{firstRelay, secondRelay}, candidates)
+	if err != nil {
+		t.Fatalf("hydrateRelayCandidates(all paths backed off) error = %v", err)
+	}
+	if len(hydrated) != 0 {
+		t.Fatalf("hydrated with all paths backed off = %+v", hydrated)
+	}
+}
+
 func TestHTTPProberDiagnoseAdaptivePrefersConfiguredBackendOrder(t *testing.T) {
 	bulk := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
@@ -1550,6 +1673,62 @@ func TestBuildHTTPAdaptiveReportsMarksPreferredResolvedChildByAdaptivePreference
 	}
 	if !secondChild.Adaptive.Preferred {
 		t.Fatalf("resolved child with stronger adaptive summary must be marked preferred: %+v", annotated[0].Children)
+	}
+}
+
+func TestBuildHTTPAdaptiveReportsUsesPerChildRelayPathSummaries(t *testing.T) {
+	base := time.Date(2026, 4, 18, 10, 0, 0, 0, time.UTC)
+	cache := backends.NewCache(backends.Config{
+		Now: func() time.Time {
+			return base
+		},
+	})
+
+	configuredURL := "http://origin.example:8096/healthz"
+	firstAddr := "10.0.0.10:8096"
+	secondAddr := "10.0.0.11:8096"
+	firstLabel := configuredURL + " [" + firstAddr + "]"
+	secondLabel := configuredURL + " [" + secondAddr + "]"
+	firstPath := []int{101}
+	secondPath := []int{202}
+
+	cache.ObserveTransferSuccess(diagnosticAddressKey(firstPath, firstAddr), 10*time.Millisecond, 20*time.Millisecond, 1024)
+	cache.ObserveTransferSuccess(diagnosticAddressKey(secondPath, secondAddr), 30*time.Millisecond, 40*time.Millisecond, 1024)
+	cache.ObserveTransferSuccess(diagnosticAddressKey(secondPath, secondAddr), 30*time.Millisecond, 40*time.Millisecond, 1024)
+
+	annotated := buildHTTPAdaptiveReports([]BackendReport{
+		{Backend: firstLabel, Summary: Summary{}},
+		{Backend: secondLabel, Summary: Summary{}},
+	}, []httpProbeCandidate{
+		{
+			backendLabel:  firstLabel,
+			dialAddress:   firstAddr,
+			configuredURL: configuredURL,
+			relayChain:    firstPath,
+			resolvedCandidates: []httpResolvedCandidate{
+				{label: firstLabel, dialAddress: firstAddr},
+				{label: secondLabel, dialAddress: secondAddr},
+			},
+		},
+		{
+			backendLabel:  secondLabel,
+			dialAddress:   secondAddr,
+			configuredURL: configuredURL,
+			relayChain:    secondPath,
+			resolvedCandidates: []httpResolvedCandidate{
+				{label: firstLabel, dialAddress: firstAddr},
+				{label: secondLabel, dialAddress: secondAddr},
+			},
+		},
+	}, cache)
+	if len(annotated) != 1 || len(annotated[0].Children) != 2 {
+		t.Fatalf("annotated = %+v", annotated)
+	}
+	if got := annotated[0].Children[0].Adaptive.RecentSucceeded; got != 1 {
+		t.Fatalf("first child RecentSucceeded = %d, want first path summary", got)
+	}
+	if got := annotated[0].Children[1].Adaptive.RecentSucceeded; got != 2 {
+		t.Fatalf("second child RecentSucceeded = %d, want second path summary", got)
 	}
 }
 

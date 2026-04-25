@@ -36,6 +36,7 @@ type HTTPProber struct {
 type httpResolvedCandidate struct {
 	label       string
 	dialAddress string
+	relayChain  []int
 }
 
 func NewHTTPProber(cfg HTTPProberConfig) *HTTPProber {
@@ -94,11 +95,12 @@ func (p *HTTPProber) Diagnose(ctx context.Context, rule model.HTTPRule, relayLis
 	report.Backends = buildHTTPAdaptiveReports(report.Backends, candidates, baseCache)
 	applyCurrentHTTPThroughput(report.Backends, samples)
 	if ruleUsesHTTPRelay(rule) && len(candidates) > 0 {
-		paths, err := resolveDiagnosticHTTPRelayPaths(rule, relayListeners, candidates[0].dialAddress)
+		probeTarget := httpRelayProbeTarget(candidates[0])
+		paths, err := resolveDiagnosticHTTPRelayPaths(rule, relayListeners, probeTarget)
 		if err != nil {
 			return Report{}, err
 		}
-		relayReports, selectedPath, err := probeDiagnosticRelayPaths(ctx, "tcp", candidates[0].dialAddress, paths, p.relayProvider, p.cache)
+		relayReports, selectedPath, err := probeDiagnosticRelayPaths(ctx, "tcp", probeTarget, paths, p.relayProvider, p.cache)
 		if err != nil {
 			return Report{}, err
 		}
@@ -115,6 +117,7 @@ type httpProbeCandidate struct {
 	backendObservationKey string
 	configuredURL         string
 	resolvedCandidates    []httpResolvedCandidate
+	relayProbeTarget      string
 	relayChain            []int
 	relayPaths            []relayplan.Path
 }
@@ -250,6 +253,7 @@ func httpCandidates(ctx context.Context, cache *backends.Cache, rule model.HTTPR
 				backendObservationKey: backends.BackendObservationKey(scope, backends.StableBackendID(clone.String())),
 				configuredURL:         clone.String(),
 				resolvedCandidates:    resolvedChildren,
+				relayProbeTarget:      dialAddress,
 				relayChain:            append([]int(nil), rule.RelayChain...),
 			})
 			continue
@@ -298,6 +302,7 @@ func buildHTTPAdaptiveReports(reports []BackendReport, candidates []httpProbeCan
 	configuredChildren := make(map[string][]httpResolvedCandidate)
 	configuredKeys := make(map[string]string)
 	configuredRelayChains := make(map[string][]int)
+	configuredChildRelayChains := make(map[string]map[string][]int)
 	configuredSummary := make(map[string]backends.ObservationSummary)
 	sharedConfiguredKeys := make([]string, 0, len(candidates))
 	for _, candidate := range candidates {
@@ -315,6 +320,14 @@ func buildHTTPAdaptiveReports(reports []BackendReport, candidates []httpProbeCan
 		}
 		if _, ok := configuredRelayChains[candidate.configuredURL]; !ok {
 			configuredRelayChains[candidate.configuredURL] = append([]int(nil), candidate.relayChain...)
+		}
+		if candidate.dialAddress != "" && len(candidate.relayChain) > 0 {
+			childRelayChains := configuredChildRelayChains[candidate.configuredURL]
+			if childRelayChains == nil {
+				childRelayChains = make(map[string][]int)
+				configuredChildRelayChains[candidate.configuredURL] = childRelayChains
+			}
+			childRelayChains[candidate.dialAddress] = append([]int(nil), candidate.relayChain...)
 		}
 	}
 	sharedConfiguredSummary := cache.SummariesWithSharedThroughput(sharedConfiguredKeys)
@@ -371,14 +384,15 @@ func buildHTTPAdaptiveReports(reports []BackendReport, candidates []httpProbeCan
 		}
 		childSummaryKeys := make([]string, 0, len(children))
 		relayChain := configuredRelayChains[configured]
+		childRelayChains := configuredChildRelayChains[configured]
 		for _, childAddress := range childAddresses {
-			childSummaryKeys = append(childSummaryKeys, diagnosticAddressKey(relayChain, childAddress))
+			childSummaryKeys = append(childSummaryKeys, diagnosticAddressKey(httpChildRelayChain(childRelayChains, childAddress, relayChain), childAddress))
 		}
 		childSummaries := cache.SummariesWithSharedThroughput(childSummaryKeys)
 		preferredChildKey := preferredObservationKey(childSummaries)
 		for index, child := range children {
 			childReport := reportByLabel[child.label]
-			childSummaryKey := diagnosticAddressKey(relayChain, child.dialAddress)
+			childSummaryKey := diagnosticAddressKey(httpChildRelayChain(childRelayChains, child.dialAddress, relayChain), child.dialAddress)
 			childSummary, ok := childSummaries[childSummaryKey]
 			if !ok {
 				childSummary = cache.Summary(childSummaryKey)
@@ -400,6 +414,15 @@ func buildHTTPAdaptiveReports(reports []BackendReport, candidates []httpProbeCan
 		annotated = append(annotated, parent)
 	}
 	return annotated
+}
+
+func httpChildRelayChain(childRelayChains map[string][]int, address string, fallback []int) []int {
+	if childRelayChains != nil {
+		if chain := childRelayChains[address]; len(chain) > 0 {
+			return chain
+		}
+	}
+	return fallback
 }
 
 func preferredObservationKey(summaries map[string]backends.ObservationSummary) string {
@@ -599,11 +622,13 @@ func (p *HTTPProber) hydrateRelayCandidates(ctx context.Context, rule model.HTTP
 	out := make([]httpProbeCandidate, 0, len(candidates))
 	for _, candidate := range candidates {
 		hydrated := candidate
-		paths, err := resolveDiagnosticHTTPRelayPaths(rule, relayListeners, candidate.dialAddress)
+		probeTarget := httpRelayProbeTarget(candidate)
+		paths, err := resolveDiagnosticHTTPRelayPaths(rule, relayListeners, probeTarget)
 		if err != nil {
 			return nil, err
 		}
 		hydrated.relayPaths = paths
+		hydrated.relayProbeTarget = probeTarget
 		if len(paths) > 0 {
 			hydrated.relayChain = append([]int(nil), paths[0].IDs...)
 		}
@@ -620,10 +645,45 @@ func (p *HTTPProber) hydrateRelayCandidates(ctx context.Context, rule model.HTTP
 					dialAddress: address,
 				})
 			}
+			keptResolved := make([]httpResolvedCandidate, 0, len(hydrated.resolvedCandidates))
+			availablePathsByAddress := make(map[string][]relayplan.Path, len(hydrated.resolvedCandidates))
+			for _, resolved := range hydrated.resolvedCandidates {
+				availablePaths := relayPathsAvailableForAddress(p.cache, hydrated.relayChain, hydrated.relayPaths, resolved.dialAddress)
+				if len(hydrated.relayPaths) > 0 && len(availablePaths) == 0 {
+					continue
+				}
+				if len(hydrated.relayPaths) == 0 && relayResolvedAddressBackedOffForAllPaths(p.cache, hydrated.relayChain, hydrated.relayPaths, resolved.dialAddress) {
+					continue
+				}
+				availablePathsByAddress[resolved.dialAddress] = availablePaths
+				if len(availablePaths) > 0 {
+					resolved.relayChain = append([]int(nil), availablePaths[0].IDs...)
+				} else {
+					resolved.relayChain = append([]int(nil), hydrated.relayChain...)
+				}
+				keptResolved = append(keptResolved, resolved)
+			}
+			for _, resolved := range keptResolved {
+				expanded := hydrated
+				expanded.resolvedCandidates = append([]httpResolvedCandidate(nil), keptResolved...)
+				expanded.backendLabel = resolved.label
+				expanded.dialAddress = resolved.dialAddress
+				expanded.relayChain = append([]int(nil), resolved.relayChain...)
+				expanded.relayPaths = append([]relayplan.Path(nil), availablePathsByAddress[resolved.dialAddress]...)
+				out = append(out, expanded)
+			}
+			continue
 		}
 		out = append(out, hydrated)
 	}
 	return out, nil
+}
+
+func httpRelayProbeTarget(candidate httpProbeCandidate) string {
+	if candidate.relayProbeTarget != "" {
+		return candidate.relayProbeTarget
+	}
+	return candidate.dialAddress
 }
 
 func resolveProbeAddress(fallback string, selected string) string {

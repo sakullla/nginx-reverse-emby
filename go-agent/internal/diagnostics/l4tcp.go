@@ -36,13 +36,15 @@ type tcpProbeCandidate struct {
 	configuredLabel       string
 	groupKey              string
 	resolvedCandidates    []tcpResolvedCandidate
+	relayProbeTarget      string
 	relayChain            []int
 	relayPaths            []relayplan.Path
 }
 
 type tcpResolvedCandidate struct {
-	label   string
-	address string
+	label      string
+	address    string
+	relayChain []int
 }
 
 func NewTCPProber(cfg TCPProberConfig) *TCPProber {
@@ -125,11 +127,12 @@ func (p *TCPProber) Diagnose(ctx context.Context, rule model.L4Rule, relayListen
 	report := BuildReport("l4_tcp", rule.ID, samples)
 	report.Backends = buildTCPAdaptiveReports(report.Backends, candidates, baseCache)
 	if ruleUsesL4Relay(rule) && len(candidates) > 0 {
-		paths, err := resolveDiagnosticL4RelayPaths(rule, relayListeners, candidates[0].address)
+		probeTarget := tcpRelayProbeTarget(candidates[0])
+		paths, err := resolveDiagnosticL4RelayPaths(rule, relayListeners, probeTarget)
 		if err != nil {
 			return Report{}, err
 		}
-		relayReports, selectedPath, err := probeDiagnosticRelayPaths(ctx, "tcp", candidates[0].address, paths, p.relayProvider, p.cache)
+		relayReports, selectedPath, err := probeDiagnosticRelayPaths(ctx, "tcp", probeTarget, paths, p.relayProvider, p.cache)
 		if err != nil {
 			return Report{}, err
 		}
@@ -221,6 +224,7 @@ func tcpCandidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule
 				configuredLabel:       configuredLabel,
 				groupKey:              groupKey,
 				resolvedCandidates:    resolvedCandidates,
+				relayProbeTarget:      address,
 				relayChain:            append([]int(nil), rule.RelayChain...),
 			})
 			continue
@@ -283,11 +287,13 @@ func (p *TCPProber) hydrateRelayCandidates(ctx context.Context, rule model.L4Rul
 	out := make([]tcpProbeCandidate, 0, len(candidates))
 	for _, candidate := range candidates {
 		hydrated := candidate
-		paths, err := resolveDiagnosticL4RelayPaths(rule, relayListeners, candidate.address)
+		probeTarget := tcpRelayProbeTarget(candidate)
+		paths, err := resolveDiagnosticL4RelayPaths(rule, relayListeners, probeTarget)
 		if err != nil {
 			return nil, err
 		}
 		hydrated.relayPaths = paths
+		hydrated.relayProbeTarget = probeTarget
 		if len(paths) > 0 {
 			hydrated.relayChain = append([]int(nil), paths[0].IDs...)
 		}
@@ -304,10 +310,45 @@ func (p *TCPProber) hydrateRelayCandidates(ctx context.Context, rule model.L4Rul
 					address: address,
 				})
 			}
+			keptResolved := make([]tcpResolvedCandidate, 0, len(hydrated.resolvedCandidates))
+			availablePathsByAddress := make(map[string][]relayplan.Path, len(hydrated.resolvedCandidates))
+			for _, resolved := range hydrated.resolvedCandidates {
+				availablePaths := relayPathsAvailableForAddress(p.cache, hydrated.relayChain, hydrated.relayPaths, resolved.address)
+				if len(hydrated.relayPaths) > 0 && len(availablePaths) == 0 {
+					continue
+				}
+				if len(hydrated.relayPaths) == 0 && relayResolvedAddressBackedOffForAllPaths(p.cache, hydrated.relayChain, hydrated.relayPaths, resolved.address) {
+					continue
+				}
+				availablePathsByAddress[resolved.address] = availablePaths
+				if len(availablePaths) > 0 {
+					resolved.relayChain = append([]int(nil), availablePaths[0].IDs...)
+				} else {
+					resolved.relayChain = append([]int(nil), hydrated.relayChain...)
+				}
+				keptResolved = append(keptResolved, resolved)
+			}
+			for _, resolved := range keptResolved {
+				expanded := hydrated
+				expanded.resolvedCandidates = append([]tcpResolvedCandidate(nil), keptResolved...)
+				expanded.address = resolved.address
+				expanded.backendLabel = resolved.label
+				expanded.relayChain = append([]int(nil), resolved.relayChain...)
+				expanded.relayPaths = append([]relayplan.Path(nil), availablePathsByAddress[resolved.address]...)
+				out = append(out, expanded)
+			}
+			continue
 		}
 		out = append(out, hydrated)
 	}
 	return out, nil
+}
+
+func tcpRelayProbeTarget(candidate tcpProbeCandidate) string {
+	if candidate.relayProbeTarget != "" {
+		return candidate.relayProbeTarget
+	}
+	return candidate.address
 }
 
 func ruleUsesL4Relay(rule model.L4Rule) bool {
@@ -336,6 +377,7 @@ func buildTCPAdaptiveReports(reports []BackendReport, candidates []tcpProbeCandi
 	configuredByGroup := make(map[string]string, len(candidates))
 	childrenByGroup := make(map[string][]tcpResolvedCandidate, len(candidates))
 	groupRelayChains := make(map[string][]int, len(candidates))
+	groupChildRelayChains := make(map[string]map[string][]int)
 	for _, candidate := range candidates {
 		groupKey := candidate.groupKey
 		if groupKey == "" {
@@ -361,6 +403,14 @@ func buildTCPAdaptiveReports(reports []BackendReport, candidates []tcpProbeCandi
 		}
 		if _, ok := groupRelayChains[groupKey]; !ok {
 			groupRelayChains[groupKey] = append([]int(nil), candidate.relayChain...)
+		}
+		if candidate.address != "" && len(candidate.relayChain) > 0 {
+			childRelayChains := groupChildRelayChains[groupKey]
+			if childRelayChains == nil {
+				childRelayChains = make(map[string][]int)
+				groupChildRelayChains[groupKey] = childRelayChains
+			}
+			childRelayChains[candidate.address] = append([]int(nil), candidate.relayChain...)
 		}
 	}
 
@@ -400,8 +450,9 @@ func buildTCPAdaptiveReports(reports []BackendReport, candidates []tcpProbeCandi
 
 		childSummaryKeys := make([]string, 0, len(children))
 		relayChain := groupRelayChains[groupKey]
+		childRelayChains := groupChildRelayChains[groupKey]
 		for _, child := range children {
-			childSummaryKeys = append(childSummaryKeys, diagnosticAddressKey(relayChain, child.address))
+			childSummaryKeys = append(childSummaryKeys, diagnosticAddressKey(tcpChildRelayChain(childRelayChains, child.address, relayChain), child.address))
 		}
 		childSummaries := make(map[string]backends.ObservationSummary, len(childSummaryKeys))
 		for _, key := range childSummaryKeys {
@@ -410,7 +461,7 @@ func buildTCPAdaptiveReports(reports []BackendReport, candidates []tcpProbeCandi
 		preferredChildKey := preferredObservationKey(childSummaries)
 		for _, child := range children {
 			childReport := reportByLabel[child.label]
-			childSummaryKey := diagnosticAddressKey(relayChain, child.address)
+			childSummaryKey := diagnosticAddressKey(tcpChildRelayChain(childRelayChains, child.address, relayChain), child.address)
 			childReport.Address = child.address
 			childReport.Adaptive = adaptiveSummaryFromObservation(
 				childSummaries[childSummaryKey],
@@ -423,6 +474,15 @@ func buildTCPAdaptiveReports(reports []BackendReport, candidates []tcpProbeCandi
 		annotated = append(annotated, parent)
 	}
 	return annotated
+}
+
+func tcpChildRelayChain(childRelayChains map[string][]int, address string, fallback []int) []int {
+	if childRelayChains != nil {
+		if chain := childRelayChains[address]; len(chain) > 0 {
+			return chain
+		}
+	}
+	return fallback
 }
 
 func mergeTCPChildSummaries(children []tcpResolvedCandidate, reports map[string]BackendReport) Summary {

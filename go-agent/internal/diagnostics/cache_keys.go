@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayplan"
 )
 
 func diagnosticAddressKey(relayChain []int, address string) string {
@@ -82,4 +83,34 @@ func persistentDiagnosticAddressCaches(runCache *backends.Cache, sharedCache *ba
 		return uniqueDiagnosticCaches(runCache)
 	}
 	return uniqueDiagnosticCaches(runCache, sharedCache)
+}
+
+func relayResolvedAddressBackedOffForAllPaths(cache *backends.Cache, fallbackChain []int, paths []relayplan.Path, address string) bool {
+	if cache == nil {
+		return false
+	}
+	if len(paths) == 0 {
+		return cache.IsInBackoff(diagnosticAddressKey(fallbackChain, address))
+	}
+	return len(relayPathsAvailableForAddress(cache, fallbackChain, paths, address)) == 0
+}
+
+func relayPathsAvailableForAddress(cache *backends.Cache, fallbackChain []int, paths []relayplan.Path, address string) []relayplan.Path {
+	if cache == nil {
+		return append([]relayplan.Path(nil), paths...)
+	}
+	if len(paths) == 0 {
+		if cache.IsInBackoff(diagnosticAddressKey(fallbackChain, address)) {
+			return nil
+		}
+		return append([]relayplan.Path(nil), paths...)
+	}
+	available := make([]relayplan.Path, 0, len(paths))
+	for _, path := range paths {
+		if cache.IsInBackoff(diagnosticAddressKey(path.IDs, address)) {
+			continue
+		}
+		available = append(available, path)
+	}
+	return available
 }

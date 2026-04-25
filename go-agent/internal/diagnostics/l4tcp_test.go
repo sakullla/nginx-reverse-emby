@@ -488,6 +488,63 @@ func TestTCPAdaptiveReportsOmitHTTPOnlyAdaptiveSignals(t *testing.T) {
 	}
 }
 
+func TestTCPAdaptiveReportsUsePerChildRelayPathSummaries(t *testing.T) {
+	base := time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC)
+	cache := backends.NewCache(backends.Config{
+		Now: func() time.Time {
+			return base
+		},
+	})
+
+	groupKey := "backend|tcp:0.0.0.0:9550|relay-target.example:9001"
+	configuredLabel := "relay-target.example:9001"
+	firstAddr := "10.0.0.10:9001"
+	secondAddr := "10.0.0.11:9001"
+	firstPath := []int{101}
+	secondPath := []int{202}
+
+	cache.ObserveTransferSuccess(diagnosticAddressKey(firstPath, firstAddr), 10*time.Millisecond, 10*time.Millisecond, 0)
+	cache.ObserveTransferSuccess(diagnosticAddressKey(secondPath, secondAddr), 30*time.Millisecond, 30*time.Millisecond, 0)
+	cache.ObserveTransferSuccess(diagnosticAddressKey(secondPath, secondAddr), 30*time.Millisecond, 30*time.Millisecond, 0)
+
+	annotated := buildTCPAdaptiveReports([]BackendReport{
+		{Backend: firstAddr, Summary: Summary{}},
+		{Backend: secondAddr, Summary: Summary{}},
+	}, []tcpProbeCandidate{
+		{
+			address:         firstAddr,
+			backendLabel:    firstAddr,
+			configuredLabel: configuredLabel,
+			groupKey:        groupKey,
+			relayChain:      firstPath,
+			resolvedCandidates: []tcpResolvedCandidate{
+				{label: firstAddr, address: firstAddr},
+				{label: secondAddr, address: secondAddr},
+			},
+		},
+		{
+			address:         secondAddr,
+			backendLabel:    secondAddr,
+			configuredLabel: configuredLabel,
+			groupKey:        groupKey,
+			relayChain:      secondPath,
+			resolvedCandidates: []tcpResolvedCandidate{
+				{label: firstAddr, address: firstAddr},
+				{label: secondAddr, address: secondAddr},
+			},
+		},
+	}, cache)
+	if len(annotated) != 1 || len(annotated[0].Children) != 2 {
+		t.Fatalf("annotated = %+v", annotated)
+	}
+	if got := annotated[0].Children[0].Adaptive.RecentSucceeded; got != 1 {
+		t.Fatalf("first child RecentSucceeded = %d, want first path summary", got)
+	}
+	if got := annotated[0].Children[1].Adaptive.RecentSucceeded; got != 2 {
+		t.Fatalf("second child RecentSucceeded = %d, want second path summary", got)
+	}
+}
+
 func TestTCPCandidatesUseLatencyOnlyResolvedOrdering(t *testing.T) {
 	base := time.Date(2026, 4, 18, 12, 0, 0, 0, time.UTC)
 	cache := backends.NewCache(backends.Config{
@@ -690,15 +747,19 @@ func TestTCPProberDiagnoseRelayChainUsesRemoteResolvedCandidatesAndSelectedAddre
 		}
 		return []string{selectedAddress, otherAddress}, nil
 	}
+	dialedTargets := make(map[string]int)
 	diagnosticRelayDialWithResult = func(ctx context.Context, network, target string, chain []relay.Hop, provider relay.TLSMaterialProvider, opts ...relay.DialOptions) (net.Conn, relay.DialResult, error) {
-		if target != "relay-target.example:"+strconv.Itoa(actualPort) {
+		switch target {
+		case selectedAddress, otherAddress, "relay-target.example:" + strconv.Itoa(actualPort):
+			dialedTargets[target]++
+		default:
 			t.Fatalf("target = %q", target)
 		}
 		conn, err := (&net.Dialer{}).DialContext(ctx, network, actualAddress)
 		if err != nil {
 			return nil, relay.DialResult{}, err
 		}
-		return conn, relay.DialResult{SelectedAddress: selectedAddress}, nil
+		return conn, relay.DialResult{SelectedAddress: resolveProbeAddress(selectedAddress, target)}, nil
 	}
 
 	prober := NewTCPProber(TCPProberConfig{
@@ -724,14 +785,14 @@ func TestTCPProberDiagnoseRelayChainUsesRemoteResolvedCandidatesAndSelectedAddre
 	if resolverCalls != 0 {
 		t.Fatalf("resolver called %d times", resolverCalls)
 	}
-	if len(report.Samples) != 1 {
+	if len(report.Samples) != 2 {
 		t.Fatalf("Samples = %+v", report.Samples)
 	}
-	if got := report.Samples[0].Address; got != selectedAddress {
-		t.Fatalf("sample address = %q", got)
+	if dialedTargets[selectedAddress] == 0 {
+		t.Fatalf("selected resolved candidate was not probed; targets = %+v", dialedTargets)
 	}
-	if got := report.Samples[0].Backend; got != selectedAddress {
-		t.Fatalf("sample backend = %q", got)
+	if dialedTargets[otherAddress] == 0 {
+		t.Fatalf("other resolved candidate was not probed; targets = %+v", dialedTargets)
 	}
 	if len(report.Backends) != 1 {
 		t.Fatalf("Backends = %+v", report.Backends)
@@ -744,6 +805,12 @@ func TestTCPProberDiagnoseRelayChainUsesRemoteResolvedCandidatesAndSelectedAddre
 	}
 	if got := report.Backends[0].Children[0].Address; got != selectedAddress {
 		t.Fatalf("first child address = %q", got)
+	}
+	if report.Backends[0].Children[0].Summary.Sent == 0 {
+		t.Fatalf("first child summary = %+v, want probed", report.Backends[0].Children[0].Summary)
+	}
+	if report.Backends[0].Children[1].Summary.Sent == 0 {
+		t.Fatalf("second child summary = %+v, want probed", report.Backends[0].Children[1].Summary)
 	}
 	if len(report.RelayPaths) != 1 {
 		t.Fatalf("RelayPaths = %+v", report.RelayPaths)
@@ -1040,6 +1107,131 @@ func TestTCPCandidatesRelayLayersHonorLayeredBackoffKey(t *testing.T) {
 	}
 	if len(candidates) != 0 {
 		t.Fatalf("layered relay backoff key did not filter candidates: %+v", candidates)
+	}
+}
+
+func TestTCPRelayHydrationSkipsBackedOffResolvedTargets(t *testing.T) {
+	cache := backends.NewCache(backends.Config{})
+	provider := newDiagnosticTLSMaterialProvider()
+	relayListener := newDiagnosticRelayListener(t, provider, 342, "relay.internal.test")
+	rule := model.L4Rule{
+		ID:         2,
+		Protocol:   "tcp",
+		ListenHost: "0.0.0.0",
+		ListenPort: 9550,
+		RelayChain: []int{342},
+		Backends: []model.L4Backend{{
+			Host: "relay-target.example",
+			Port: 9001,
+		}},
+	}
+	candidates, err := tcpCandidates(context.Background(), cache, rule)
+	if err != nil {
+		t.Fatalf("tcpCandidates() error = %v", err)
+	}
+
+	backedOffAddress := "127.0.0.10:9001"
+	healthyAddress := "127.0.0.11:9001"
+	cache.MarkFailure(backends.RelayBackoffKey(rule.RelayChain, backedOffAddress))
+
+	previousResolveCandidates := diagnosticRelayResolveCandidates
+	t.Cleanup(func() {
+		diagnosticRelayResolveCandidates = previousResolveCandidates
+	})
+	diagnosticRelayResolveCandidates = func(ctx context.Context, target string, chain []relay.Hop, provider relay.TLSMaterialProvider) ([]string, error) {
+		return []string{backedOffAddress, healthyAddress}, nil
+	}
+
+	prober := NewTCPProber(TCPProberConfig{
+		Cache:         cache,
+		RelayProvider: provider,
+	})
+	hydrated, err := prober.hydrateRelayCandidates(context.Background(), rule, []model.RelayListener{relayListener}, candidates)
+	if err != nil {
+		t.Fatalf("hydrateRelayCandidates() error = %v", err)
+	}
+	if len(hydrated) != 1 {
+		t.Fatalf("hydrated = %+v", hydrated)
+	}
+	if hydrated[0].address != healthyAddress {
+		t.Fatalf("address = %q, want %q", hydrated[0].address, healthyAddress)
+	}
+	if len(hydrated[0].resolvedCandidates) != 1 {
+		t.Fatalf("resolvedCandidates = %+v, want only kept target", hydrated[0].resolvedCandidates)
+	}
+	if hydrated[0].resolvedCandidates[0].address != healthyAddress {
+		t.Fatalf("resolved candidate address = %q, want %q", hydrated[0].resolvedCandidates[0].address, healthyAddress)
+	}
+
+	cache.MarkFailure(backends.RelayBackoffKey(rule.RelayChain, healthyAddress))
+	hydrated, err = prober.hydrateRelayCandidates(context.Background(), rule, []model.RelayListener{relayListener}, candidates)
+	if err != nil {
+		t.Fatalf("hydrateRelayCandidates(all backed off) error = %v", err)
+	}
+	if len(hydrated) != 0 {
+		t.Fatalf("hydrated with all targets backed off = %+v", hydrated)
+	}
+}
+
+func TestTCPRelayHydrationKeepsLayerResolvedTargetWhenAnyPathIsHealthy(t *testing.T) {
+	cache := backends.NewCache(backends.Config{})
+	provider := newDiagnosticTLSMaterialProvider()
+	firstRelay := newDiagnosticRelayListener(t, provider, 361, "relay-a.internal.test")
+	secondRelay := newDiagnosticRelayListener(t, provider, 362, "relay-b.internal.test")
+	rule := model.L4Rule{
+		ID:         2,
+		Protocol:   "tcp",
+		ListenHost: "0.0.0.0",
+		ListenPort: 9550,
+		RelayLayers: [][]int{
+			{361, 362},
+		},
+		Backends: []model.L4Backend{{
+			Host: "relay-target.example",
+			Port: 9001,
+		}},
+	}
+	candidates, err := tcpCandidates(context.Background(), cache, rule)
+	if err != nil {
+		t.Fatalf("tcpCandidates() error = %v", err)
+	}
+
+	resolvedAddress := "127.0.0.10:9001"
+	cache.MarkFailure(backends.RelayBackoffKey([]int{361}, resolvedAddress))
+
+	previousResolveCandidates := diagnosticRelayResolveCandidates
+	t.Cleanup(func() {
+		diagnosticRelayResolveCandidates = previousResolveCandidates
+	})
+	diagnosticRelayResolveCandidates = func(ctx context.Context, target string, chain []relay.Hop, provider relay.TLSMaterialProvider) ([]string, error) {
+		return []string{resolvedAddress}, nil
+	}
+
+	prober := NewTCPProber(TCPProberConfig{
+		Cache:         cache,
+		RelayProvider: provider,
+	})
+	hydrated, err := prober.hydrateRelayCandidates(context.Background(), rule, []model.RelayListener{firstRelay, secondRelay}, candidates)
+	if err != nil {
+		t.Fatalf("hydrateRelayCandidates() error = %v", err)
+	}
+	if len(hydrated) != 1 {
+		t.Fatalf("hydrated = %+v, want target kept while second path is healthy", hydrated)
+	}
+	if len(hydrated[0].relayPaths) != 1 {
+		t.Fatalf("relayPaths = %+v, want backed-off path filtered", hydrated[0].relayPaths)
+	}
+	if len(hydrated[0].relayChain) != 1 || hydrated[0].relayChain[0] != 362 {
+		t.Fatalf("relayChain = %+v, want remaining healthy path", hydrated[0].relayChain)
+	}
+
+	cache.MarkFailure(backends.RelayBackoffKey([]int{362}, resolvedAddress))
+	hydrated, err = prober.hydrateRelayCandidates(context.Background(), rule, []model.RelayListener{firstRelay, secondRelay}, candidates)
+	if err != nil {
+		t.Fatalf("hydrateRelayCandidates(all paths backed off) error = %v", err)
+	}
+	if len(hydrated) != 0 {
+		t.Fatalf("hydrated with all paths backed off = %+v", hydrated)
 	}
 }
 
