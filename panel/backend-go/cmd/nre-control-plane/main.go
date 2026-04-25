@@ -29,6 +29,7 @@ var (
 type localAgentRuntime interface {
 	Start(context.Context) error
 	SyncNow(context.Context) error
+	DiagnoseSnapshot(context.Context, storage.Snapshot, service.TaskEnvelope) (map[string]any, error)
 }
 
 func main() {
@@ -236,7 +237,7 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 
 	taskSvc := service.NewTaskService(service.TaskServiceConfig{})
 
-	localTaskSession := localagent.NewLocalTaskSession(cfg.LocalAgentID, taskSvc, serviceStore)
+	localTaskSession := localagent.NewLocalTaskSessionWithDiagnostics(cfg.LocalAgentID, taskSvc, serviceStore, runtime)
 	if err := localTaskSession.Register(); err != nil {
 		log.Printf("[local-agent] failed to register local task session: %v", err)
 	}
