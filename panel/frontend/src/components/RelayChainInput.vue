@@ -718,7 +718,8 @@ onUnmounted(() => {
   top: calc(100% + 4px);
   left: 0;
   z-index: 50;
-  min-width: 260px;
+  min-width: 320px;
+  max-width: 380px;
   max-height: 280px;
   overflow-y: auto;
   background: var(--color-bg-surface);
@@ -771,6 +772,7 @@ onUnmounted(() => {
   cursor: pointer;
   font-size: 0.8125rem;
   transition: background 0.1s;
+  min-width: 0;
 }
 
 .relay-editor__dropdown-item:hover {
@@ -787,7 +789,11 @@ onUnmounted(() => {
 .relay-editor__dropdown-name {
   font-weight: 500;
   color: var(--color-text-primary);
-  flex-shrink: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 1;
+  min-width: 0;
 }
 
 .relay-editor__dropdown-endpoint {
@@ -795,6 +801,12 @@ onUnmounted(() => {
   color: var(--color-text-muted);
   font-family: var(--font-mono);
   margin-left: auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex-shrink: 1;
+  min-width: 0;
+  max-width: 160px;
 }
 
 .relay-editor__dropdown-empty {
