@@ -65,37 +65,12 @@
         <h2 class="dashboard-section__title">节点状态</h2>
         <RouterLink to="/agents" class="dashboard-section__link">查看全部 →</RouterLink>
       </div>
-      <div class="dashboard-table-wrap">
-        <table class="dashboard-table">
-          <thead>
-            <tr>
-              <th>节点</th>
-              <th>状态</th>
-              <th>HTTP 规则</th>
-              <th>L4 规则</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="agent in displayedAgents" :key="agent.id">
-              <td>
-                <div class="agent-cell">
-                  <span class="agent-cell__name">{{ agent.name }}</span>
-                  <span class="agent-cell__url">{{ agent.agent_url ? getHostname(agent.agent_url) : (agent.last_seen_ip || '—') }}</span>
-                </div>
-              </td>
-              <td>
-                <span class="status-dot" :class="`status-dot--${getStatus(agent)}`"></span>
-              </td>
-              <td>
-                <span class="tag">{{ agent.http_rules_count || 0 }}</span>
-              </td>
-              <td>
-                <span class="tag">{{ agent.l4_rules_count || 0 }}</span>
-              </td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
+      <AgentTable
+        :agents="displayedAgents"
+        :show-actions="false"
+        :clickable="true"
+        @click="navigateToAgent"
+      />
     </div>
 
     <!-- Loading state -->
@@ -119,8 +94,11 @@
 
 <script setup>
 import { computed } from 'vue'
+import { useRouter } from 'vue-router'
 import { useAgents } from '../hooks/useAgents'
+import AgentTable from '../components/AgentTable.vue'
 
+const router = useRouter()
 const { data: agents, isLoading } = useAgents()
 
 const onlineCount = computed(() => agents.value?.filter(a => a.status === 'online').length || 0)
@@ -135,15 +113,8 @@ const l4Count = computed(() => {
 
 const displayedAgents = computed(() => (agents.value || []).slice(0, 8))
 
-function getHostname(url) {
-  try { return url ? new URL(url).hostname : '' } catch { return '' }
-}
-
-function getStatus(agent) {
-  if (agent.status === 'offline') return 'offline'
-  if (agent.last_apply_status === 'failed') return 'failed'
-  if (agent.desired_revision > agent.current_revision) return 'pending'
-  return 'online'
+function navigateToAgent(agent) {
+  router.push(`/agents/${agent.id}`)
 }
 </script>
 
@@ -260,17 +231,4 @@ function getStatus(agent) {
 .dashboard-section__header { display: flex; align-items: center; justify-content: space-between; padding: 1rem 1.25rem; border-bottom: 1px solid var(--color-border-subtle); }
 .dashboard-section__title { font-size: 0.875rem; font-weight: 600; color: var(--color-text-primary); margin: 0; }
 .dashboard-section__link { font-size: 0.8rem; color: var(--color-primary); text-decoration: none; }
-.dashboard-table-wrap { overflow-x: auto; }
-.dashboard-table { width: 100%; border-collapse: collapse; }
-.dashboard-table th { text-align: left; padding: 0.6rem 1rem; font-size: 0.7rem; font-weight: 600; color: var(--color-text-tertiary); border-bottom: 1px solid var(--color-border-subtle); }
-.dashboard-table td { padding: 0.75rem 1rem; border-bottom: 1px solid var(--color-border-subtle); }
-.dashboard-table tr:last-child td { border-bottom: none; }
-.agent-cell__name { display: block; font-size: 0.875rem; font-weight: 500; color: var(--color-text-primary); }
-.agent-cell__url { display: block; font-size: 0.75rem; color: var(--color-text-tertiary); font-family: var(--font-mono); }
-.status-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
-.status-dot--online { background: var(--color-success); }
-.status-dot--offline { background: var(--color-text-muted); }
-.status-dot--failed { background: var(--color-danger); }
-.status-dot--pending { background: var(--color-warning); }
-.tag { display: inline-block; font-size: 0.75rem; padding: 2px 6px; background: var(--color-primary-subtle); color: var(--color-primary); border-radius: var(--radius-full); font-weight: 500; }
 </style>
