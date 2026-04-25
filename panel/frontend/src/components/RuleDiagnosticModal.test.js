@@ -251,4 +251,41 @@ describe('RuleDiagnosticModal', () => {
     expect(wrapper.text()).toContain('http://origin.example.test/healthz')
     expect(wrapper.text()).toContain('127.0.0.1:8096')
   })
+
+  it('renders relay hops without latency as placeholders', () => {
+    const wrapper = mountModal({
+      task: {
+        ...buildTask('http'),
+        result: {
+          ...buildTask('http').result,
+          relay_paths: [
+            {
+              path: [1, 2],
+              success: true,
+              latency_ms: 12,
+              hops: [
+                {
+                  success: true,
+                  to_listener_id: 1,
+                  to_listener_name: 'Relay A',
+                  to_agent_name: 'agent-a'
+                },
+                {
+                  success: true,
+                  from_listener_id: 1,
+                  from_listener_name: 'Relay A',
+                  to: 'backend.example:8096',
+                  latency_ms: 12
+                }
+              ]
+            }
+          ]
+        }
+      }
+    })
+
+    expect(wrapper.text()).not.toContain('undefined ms')
+    expect(wrapper.text()).toContain('—')
+    expect(wrapper.text()).toContain('待测量')
+  })
 })

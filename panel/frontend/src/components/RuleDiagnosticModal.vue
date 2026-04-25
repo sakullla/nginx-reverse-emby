@@ -84,13 +84,13 @@
                   </span>
                 </span>
                 <span class="diagnostic-table__cell" style="text-align:center">
-                  <span :class="hop.success ? 'value-primary' : 'value-danger'">
-                    {{ hop.success ? (hop.latency_ms + ' ms') : '—' }}
+                  <span :class="hopHasLatency(hop) ? 'value-primary' : (hop.success ? 'value-muted' : 'value-danger')">
+                    {{ hopHasLatency(hop) ? (hop.latency_ms + ' ms') : '—' }}
                   </span>
                 </span>
                 <span class="diagnostic-table__cell" style="text-align:center">
-                  <span :class="`pill pill--${qualityToneFor(hop.success ? classifyHopQuality(hop.latency_ms) : 'down')}`">
-                    {{ hop.success ? classifyHopQuality(hop.latency_ms) : '不可用' }}
+                  <span :class="`pill pill--${qualityToneFor(hopQualityLabel(hop))}`">
+                    {{ hopQualityLabel(hop) }}
                   </span>
                 </span>
               </div>
@@ -425,6 +425,16 @@ function classifyHopQuality(latencyMs) {
   if (latencyMs <= 150) return '良好'
   if (latencyMs <= 300) return '一般'
   return '较差'
+}
+
+function hopHasLatency(hop) {
+  return Number.isFinite(Number(hop?.latency_ms))
+}
+
+function hopQualityLabel(hop) {
+  if (!hop?.success) return '不可用'
+  if (!hopHasLatency(hop)) return '待测量'
+  return classifyHopQuality(Number(hop.latency_ms))
 }
 
 function qualityLabelFor(value) {

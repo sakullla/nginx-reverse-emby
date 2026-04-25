@@ -202,7 +202,7 @@ func tcpCandidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule
 		if ruleUsesL4Relay(rule) {
 			// Preserve the configured host for relay chains so the final hop resolves DNS.
 			address := configuredAddress
-			if cache.IsInBackoff(backends.RelayBackoffKey(rule.RelayChain, address)) {
+			if cache.IsInBackoff(backends.RelayBackoffKeyForLayers(rule.RelayChain, rule.RelayLayers, address)) {
 				continue
 			}
 			resolvedCandidates := []tcpResolvedCandidate{{

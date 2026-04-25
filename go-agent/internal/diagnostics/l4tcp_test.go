@@ -939,6 +939,43 @@ func TestTCPCandidatesRelayChainHonorsScopedBackoffKey(t *testing.T) {
 	}
 }
 
+func TestTCPCandidatesRelayLayersHonorLayeredBackoffKey(t *testing.T) {
+	cache := backends.NewCache(backends.Config{})
+
+	rule := model.L4Rule{
+		ID:         2,
+		Protocol:   "tcp",
+		ListenHost: "0.0.0.0",
+		ListenPort: 9550,
+		RelayLayers: [][]int{
+			{302, 303},
+			{402},
+		},
+		Backends: []model.L4Backend{{
+			Host: "relay-target.example",
+			Port: 9001,
+		}},
+	}
+
+	cache.MarkFailure(backends.RelayBackoffKey(rule.RelayChain, "relay-target.example:9001"))
+	candidates, err := tcpCandidates(context.Background(), cache, rule)
+	if err != nil {
+		t.Fatalf("tcpCandidates() error = %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("legacy relay backoff key filtered layered candidates: %+v", candidates)
+	}
+
+	cache.MarkFailure(backends.RelayBackoffKeyForLayers(rule.RelayChain, rule.RelayLayers, "relay-target.example:9001"))
+	candidates, err = tcpCandidates(context.Background(), cache, rule)
+	if err != nil {
+		t.Fatalf("tcpCandidates() error = %v", err)
+	}
+	if len(candidates) != 0 {
+		t.Fatalf("layered relay backoff key did not filter candidates: %+v", candidates)
+	}
+}
+
 func splitDiagnosticTCPAddr(t *testing.T, addr string) (string, int) {
 	t.Helper()
 	host, portString, err := net.SplitHostPort(addr)

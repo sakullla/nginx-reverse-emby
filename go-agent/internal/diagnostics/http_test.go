@@ -1047,6 +1047,35 @@ func TestHTTPCandidatesRelayChainHonorsScopedBackoffKey(t *testing.T) {
 	}
 }
 
+func TestHTTPCandidatesRelayLayersHonorLayeredBackoffKey(t *testing.T) {
+	cache := backends.NewCache(backends.Config{})
+
+	rule := model.HTTPRule{
+		ID:          1,
+		FrontendURL: "https://frontend.example",
+		BackendURL:  "https://relay-target.example:9443",
+		RelayLayers: [][]int{{301, 302}, {401}},
+	}
+
+	cache.MarkFailure(backends.RelayBackoffKey(rule.RelayChain, "relay-target.example:9443"))
+	candidates, err := httpCandidates(context.Background(), cache, rule)
+	if err != nil {
+		t.Fatalf("httpCandidates() error = %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("legacy relay backoff key filtered layered candidates: %+v", candidates)
+	}
+
+	cache.MarkFailure(backends.RelayBackoffKeyForLayers(rule.RelayChain, rule.RelayLayers, "relay-target.example:9443"))
+	candidates, err = httpCandidates(context.Background(), cache, rule)
+	if err != nil {
+		t.Fatalf("httpCandidates() error = %v", err)
+	}
+	if len(candidates) != 0 {
+		t.Fatalf("layered relay backoff key did not filter candidates: %+v", candidates)
+	}
+}
+
 func TestHTTPProberDiagnoseAdaptivePrefersConfiguredBackendOrder(t *testing.T) {
 	bulk := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)

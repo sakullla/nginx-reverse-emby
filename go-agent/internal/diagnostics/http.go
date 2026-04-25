@@ -224,7 +224,7 @@ func httpCandidates(ctx context.Context, cache *backends.Cache, rule model.HTTPR
 		if ruleUsesHTTPRelay(rule) {
 			// Preserve the configured host for relay chains so the final hop resolves DNS.
 			dialAddress := httpProbeTargetAddress(target)
-			if cache.IsInBackoff(backends.RelayBackoffKey(rule.RelayChain, dialAddress)) {
+			if cache.IsInBackoff(backends.RelayBackoffKeyForLayers(rule.RelayChain, rule.RelayLayers, dialAddress)) {
 				continue
 			}
 			clone := *target
