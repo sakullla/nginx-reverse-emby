@@ -256,6 +256,10 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 			result.addSkippedInvalid("http_rule", key, "relay listener reference not available")
 			continue
 		}
+		if !remappedIntLayersComplete(item.RelayLayers, input.RelayLayers) {
+			result.addSkippedInvalid("http_rule", key, "relay listener reference not available")
+			continue
+		}
 		result.addImported("http_rule", key)
 	}
 	existingL4Rules, err := s.listAllL4Rules(ctx, knownAgentIDs)
@@ -280,6 +284,10 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 		}
 		input := l4RuleInputFromBackup(item, listenerIDMap)
 		if len(item.RelayChain) > 0 && len(pointerIntSlice(input.RelayChain)) != len(item.RelayChain) {
+			result.addSkippedInvalid("l4_rule", key, "relay listener reference not available")
+			continue
+		}
+		if !remappedIntLayersComplete(item.RelayLayers, input.RelayLayers) {
 			result.addSkippedInvalid("l4_rule", key, "relay listener reference not available")
 			continue
 		}
@@ -1009,6 +1017,10 @@ func (s *backupService) importHTTPRules(ctx context.Context, incoming []BackupHT
 			result.addSkippedInvalid("http_rule", key, "relay listener reference not available")
 			continue
 		}
+		if !remappedIntLayersComplete(item.RelayLayers, input.RelayLayers) {
+			result.addSkippedInvalid("http_rule", key, "relay listener reference not available")
+			continue
+		}
 
 		normalized, err := ruleSvc.normalizeHTTPRuleInput(ctx, input, HTTPRule{AgentID: resolvedAgentID}, 0)
 		if err != nil {
@@ -1083,6 +1095,10 @@ func (s *backupService) importL4Rules(ctx context.Context, incoming []BackupL4Ru
 			result.addSkippedInvalid("l4_rule", key, "relay listener reference not available")
 			continue
 		}
+		if !remappedIntLayersComplete(item.RelayLayers, input.RelayLayers) {
+			result.addSkippedInvalid("l4_rule", key, "relay listener reference not available")
+			continue
+		}
 
 		normalized, err := normalizeL4RuleInput(input, L4Rule{AgentID: resolvedAgentID}, 0)
 		if err != nil {
@@ -1090,6 +1106,10 @@ func (s *backupService) importL4Rules(ctx context.Context, incoming []BackupL4Ru
 			continue
 		}
 		if err := l4Svc.validateRelayChain(ctx, normalized.RelayChain); err != nil {
+			result.addSkippedInvalid("l4_rule", key, err.Error())
+			continue
+		}
+		if err := l4Svc.validateRelayChain(ctx, flattenRelayLayers(normalized.RelayLayers)); err != nil {
 			result.addSkippedInvalid("l4_rule", key, err.Error())
 			continue
 		}
@@ -1408,6 +1428,7 @@ func certificateRequiresMaterial(cert ManagedCertificate) bool {
 
 func httpRuleInputFromBackup(rule BackupHTTPRule, listenerIDMap map[int]int) HTTPRuleInput {
 	relayChain := remapIntSlice(rule.RelayChain, listenerIDMap)
+	relayLayers := remapIntLayers(rule.RelayLayers, listenerIDMap)
 	return HTTPRuleInput{
 		FrontendURL:      backupStringPtr(rule.FrontendURL),
 		BackendURL:       backupStringPtr(rule.BackendURL),
@@ -1417,6 +1438,7 @@ func httpRuleInputFromBackup(rule BackupHTTPRule, listenerIDMap map[int]int) HTT
 		Tags:             &rule.Tags,
 		ProxyRedirect:    backupBoolPtr(rule.ProxyRedirect),
 		RelayChain:       relayChain,
+		RelayLayers:      relayLayers,
 		RelayObfs:        backupBoolPtr(rule.RelayObfs),
 		PassProxyHeaders: backupBoolPtr(rule.PassProxyHeaders),
 		UserAgent:        backupStringPtr(rule.UserAgent),
@@ -1426,6 +1448,7 @@ func httpRuleInputFromBackup(rule BackupHTTPRule, listenerIDMap map[int]int) HTT
 
 func l4RuleInputFromBackup(rule BackupL4Rule, listenerIDMap map[int]int) L4RuleInput {
 	relayChain := remapIntSlice(rule.RelayChain, listenerIDMap)
+	relayLayers := remapIntLayers(rule.RelayLayers, listenerIDMap)
 	return L4RuleInput{
 		Name:          backupStringPtr(rule.Name),
 		Protocol:      backupStringPtr(rule.Protocol),
@@ -1437,6 +1460,7 @@ func l4RuleInputFromBackup(rule BackupL4Rule, listenerIDMap map[int]int) L4RuleI
 		LoadBalancing: &rule.LoadBalancing,
 		Tuning:        &rule.Tuning,
 		RelayChain:    relayChain,
+		RelayLayers:   relayLayers,
 		RelayObfs:     backupBoolPtr(rule.RelayObfs),
 		Enabled:       backupBoolPtr(rule.Enabled),
 		Tags:          &rule.Tags,
@@ -1489,6 +1513,41 @@ func remapIntSlice(values []int, mapping map[int]int) *[]int {
 		mapped = append(mapped, next)
 	}
 	return &mapped
+}
+
+func remapIntLayers(values [][]int, mapping map[int]int) *[][]int {
+	if values == nil {
+		return nil
+	}
+	mapped := make([][]int, 0, len(values))
+	for _, layer := range values {
+		mappedLayer := make([]int, 0, len(layer))
+		for _, value := range layer {
+			next, ok := mapping[value]
+			if !ok || next <= 0 {
+				empty := [][]int{}
+				return &empty
+			}
+			mappedLayer = append(mappedLayer, next)
+		}
+		mapped = append(mapped, mappedLayer)
+	}
+	return &mapped
+}
+
+func remappedIntLayersComplete(original [][]int, mapped *[][]int) bool {
+	if len(original) == 0 {
+		return true
+	}
+	if mapped == nil || len(*mapped) != len(original) {
+		return false
+	}
+	for i := range original {
+		if len((*mapped)[i]) != len(original[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 func pointerIntSlice(values *[]int) []int {

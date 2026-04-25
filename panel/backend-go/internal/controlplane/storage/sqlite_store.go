@@ -191,8 +191,8 @@ func (s *SQLiteStore) LoadAgentSnapshot(ctx context.Context, agentID string, inp
 		DesiredVersion:      strings.TrimSpace(input.DesiredVersion),
 		Revision:            int64(computeDesiredRevision(revisionState, httpRows, l4Rows, relayRows, relevantCertRows)),
 		VersionPackage:      resolveVersionPackageForPlatform(versionPolicies, input.DesiredVersion, input.Platform),
-		Rules:               snapshotHTTPRules(httpRows),
-		L4Rules:             snapshotL4Rules(l4Rows),
+		Rules:               SnapshotHTTPRules(httpRows),
+		L4Rules:             SnapshotL4Rules(l4Rows),
 		RelayListeners:      snapshotRelayListeners(relayRows),
 		Certificates:        s.snapshotCertificateBundles(relevantCertRows),
 		CertificatePolicies: snapshotCertificatePolicies(relevantCertRows, resolvedAgentID),
@@ -502,6 +502,7 @@ func normalizeHTTPRuleRow(row *HTTPRuleRow) {
 	row.LoadBalancingJSON = normalizeLoadBalancingJSON(row.LoadBalancingJSON)
 	row.TagsJSON = defaultJSON(row.TagsJSON, "[]")
 	row.RelayChainJSON = defaultJSON(row.RelayChainJSON, "[]")
+	row.RelayLayersJSON = defaultJSON(row.RelayLayersJSON, "[]")
 	row.UserAgent = defaultString(row.UserAgent, "")
 	row.CustomHeadersJSON = defaultJSON(row.CustomHeadersJSON, "[]")
 }
@@ -521,6 +522,7 @@ func normalizeL4RuleRow(row *L4RuleRow) {
 	row.LoadBalancingJSON = normalizeLoadBalancingJSON(row.LoadBalancingJSON)
 	row.TuningJSON = defaultJSON(row.TuningJSON, "{}")
 	row.RelayChainJSON = defaultJSON(row.RelayChainJSON, "[]")
+	row.RelayLayersJSON = defaultJSON(row.RelayLayersJSON, "[]")
 	row.TagsJSON = defaultJSON(row.TagsJSON, "[]")
 }
 
@@ -720,8 +722,8 @@ func (s *SQLiteStore) loadRelayListenersForSync(
 func referencedRelayListenerIDs(httpRows []HTTPRuleRow, l4Rows []L4RuleRow) []int {
 	referenced := make([]int, 0)
 	seen := make(map[int]struct{})
-	addRelayChain := func(chainJSON string) {
-		for _, listenerID := range parseIntSlice(chainJSON) {
+	addListenerIDs := func(listenerIDs []int) {
+		for _, listenerID := range listenerIDs {
 			if listenerID <= 0 {
 				continue
 			}
@@ -732,20 +734,36 @@ func referencedRelayListenerIDs(httpRows []HTTPRuleRow, l4Rows []L4RuleRow) []in
 			referenced = append(referenced, listenerID)
 		}
 	}
+	addRelayChain := func(chainJSON string) {
+		addListenerIDs(parseIntSlice(chainJSON))
+	}
+	addRelayLayers := func(layersJSON string) {
+		addListenerIDs(flattenIntLayers(parseIntLayers(layersJSON)))
+	}
 
 	for _, row := range httpRows {
 		if !row.Enabled {
 			continue
 		}
 		addRelayChain(row.RelayChainJSON)
+		addRelayLayers(row.RelayLayersJSON)
 	}
 	for _, row := range l4Rows {
 		if !row.Enabled {
 			continue
 		}
 		addRelayChain(row.RelayChainJSON)
+		addRelayLayers(row.RelayLayersJSON)
 	}
 	return referenced
+}
+
+func flattenIntLayers(layers [][]int) []int {
+	flattened := make([]int, 0)
+	for _, layer := range layers {
+		flattened = append(flattened, layer...)
+	}
+	return flattened
 }
 
 func filterSyncL4RuleRows(rows []L4RuleRow) []L4RuleRow {
@@ -781,7 +799,7 @@ func isSyncL4RuleRowValid(row L4RuleRow) bool {
 	return row.UpstreamPort >= 1 && row.UpstreamPort <= 65535
 }
 
-func snapshotHTTPRules(rows []HTTPRuleRow) []HTTPRule {
+func SnapshotHTTPRules(rows []HTTPRuleRow) []HTTPRule {
 	rules := make([]HTTPRule, 0, len(rows))
 	for _, row := range rows {
 		if !row.Enabled {
@@ -807,6 +825,7 @@ func snapshotHTTPRules(rows []HTTPRuleRow) []HTTPRule {
 			UserAgent:        row.UserAgent,
 			CustomHeaders:    parseHTTPHeaders(row.CustomHeadersJSON),
 			RelayChain:       parseIntSlice(row.RelayChainJSON),
+			RelayLayers:      parseIntLayers(row.RelayLayersJSON),
 			RelayObfs:        row.RelayObfs,
 			Revision:         int64(row.Revision),
 		})
@@ -814,7 +833,7 @@ func snapshotHTTPRules(rows []HTTPRuleRow) []HTTPRule {
 	return rules
 }
 
-func snapshotL4Rules(rows []L4RuleRow) []L4Rule {
+func SnapshotL4Rules(rows []L4RuleRow) []L4Rule {
 	rules := make([]L4Rule, 0, len(rows))
 	for _, row := range rows {
 		if !row.Enabled {
@@ -843,6 +862,7 @@ func snapshotL4Rules(rows []L4RuleRow) []L4Rule {
 			LoadBalancing: parseLoadBalancingStrategy(row.LoadBalancingJSON),
 			Tuning:        parseL4Tuning(row.TuningJSON),
 			RelayChain:    parseIntSlice(row.RelayChainJSON),
+			RelayLayers:   parseIntLayers(row.RelayLayersJSON),
 			RelayObfs:     row.RelayObfs,
 			Revision:      int64(row.Revision),
 		})
@@ -1235,6 +1255,26 @@ func parseIntSlice(raw string) []int {
 	for _, value := range values {
 		if value > 0 {
 			normalized = append(normalized, value)
+		}
+	}
+	return normalized
+}
+
+func parseIntLayers(raw string) [][]int {
+	var values [][]int
+	if err := json.Unmarshal([]byte(defaultString(raw, "[]")), &values); err != nil {
+		return [][]int{}
+	}
+	normalized := make([][]int, 0, len(values))
+	for _, layer := range values {
+		normalizedLayer := make([]int, 0, len(layer))
+		for _, value := range layer {
+			if value > 0 {
+				normalizedLayer = append(normalizedLayer, value)
+			}
+		}
+		if len(normalizedLayer) > 0 {
+			normalized = append(normalized, normalizedLayer)
 		}
 	}
 	return normalized

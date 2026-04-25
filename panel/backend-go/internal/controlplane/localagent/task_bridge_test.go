@@ -173,6 +173,71 @@ func TestLocalTaskSessionDiagnoseHTTPRuleUsesEmbeddedDiagnosticsPayload(t *testi
 	}
 }
 
+func TestLocalTaskSessionDiagnoseHTTPRuleInjectsPendingLocalRuleIntoSnapshot(t *testing.T) {
+	reporter := &stubReporter{}
+	store := &stubStore{
+		httpRule: storage.HTTPRuleRow{
+			ID:                10,
+			AgentID:           "agent-1",
+			FrontendURL:       "https://pending.example.com",
+			BackendURL:        "http://127.0.0.1:8096",
+			BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+			LoadBalancingJSON: `{"strategy":"adaptive"}`,
+			Enabled:           true,
+			ProxyRedirect:     true,
+			PassProxyHeaders:  true,
+			Revision:          2,
+		},
+		httpOk: true,
+		snapshot: storage.Snapshot{
+			Rules: []storage.HTTPRule{{
+				ID:          9,
+				AgentID:     "agent-1",
+				FrontendURL: "https://applied.example.com",
+				BackendURL:  "http://127.0.0.1:8095",
+				Backends:    []storage.HTTPBackend{{URL: "http://127.0.0.1:8095"}},
+			}},
+		},
+	}
+
+	previousRunner := runEmbeddedDiagnostics
+	t.Cleanup(func() { runEmbeddedDiagnostics = previousRunner })
+	runEmbeddedDiagnostics = func(_ context.Context, _ string, snapshot storage.Snapshot, envelope service.TaskEnvelope) (map[string]any, error) {
+		if envelope.Type != service.TaskTypeDiagnoseHTTPRule {
+			t.Fatalf("task type = %q", envelope.Type)
+		}
+		if len(snapshot.Rules) != 2 {
+			t.Fatalf("snapshot rules = %+v, want applied and pending rules", snapshot.Rules)
+		}
+		var got *storage.HTTPRule
+		for i := range snapshot.Rules {
+			if snapshot.Rules[i].ID == 10 {
+				got = &snapshot.Rules[i]
+			}
+		}
+		if got == nil {
+			t.Fatalf("pending rule was not injected into snapshot: %+v", snapshot.Rules)
+		}
+		if got.FrontendURL != "https://pending.example.com" || len(got.Backends) != 1 || got.Backends[0].URL != "http://127.0.0.1:8096" {
+			t.Fatalf("injected rule = %+v", *got)
+		}
+		return map[string]any{"kind": "http", "rule_id": 10, "summary": map[string]any{"sent": 1}}, nil
+	}
+
+	sess := NewLocalTaskSession("agent-1", reporter, store)
+	sess.SendTask(service.TaskEnvelope{
+		ID:      "task-pending-http",
+		Type:    service.TaskTypeDiagnoseHTTPRule,
+		Payload: map[string]any{"rule_id": 10},
+	})
+	sess.Close()
+
+	update := reporter.lastUpdate()
+	if update.State != "completed" {
+		t.Fatalf("state = %q, want completed; error = %q", update.State, update.Error)
+	}
+}
+
 func TestLocalTaskSessionDiagnoseHTTPRuleDisabled(t *testing.T) {
 	reporter := &stubReporter{}
 	sess := NewLocalTaskSession("agent-1", reporter, &stubStore{

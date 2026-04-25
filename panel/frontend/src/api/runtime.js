@@ -18,6 +18,15 @@ function normalizeLoadBalancingStrategy(value) {
   return SUPPORTED_LOAD_BALANCING_STRATEGIES.has(strategy) ? strategy : 'adaptive'
 }
 
+function normalizeRelayLayers(value) {
+  if (!Array.isArray(value)) return []
+  return value
+    .map((layer) => Array.isArray(layer)
+      ? layer.map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0)
+      : [])
+    .filter((layer) => layer.length > 0)
+}
+
 function normalizeHttpRule(rule = {}) {
   const backends = normalizeHttpBackends(rule)
   return {
@@ -83,6 +92,11 @@ function normalizeHttpRulePayloadObject(payload = {}, options = {}) {
   } else if (includeRelayDefaults) {
     normalizedPayload.relay_chain = []
   }
+  if (Array.isArray(payload.relay_layers)) {
+    normalizedPayload.relay_layers = normalizeRelayLayers(payload.relay_layers)
+  } else if (includeRelayDefaults) {
+    normalizedPayload.relay_layers = []
+  }
   if (payload.relay_obfs != null) {
     normalizedPayload.relay_obfs = payload.relay_obfs === true
   } else if (includeRelayDefaults) {
@@ -130,6 +144,11 @@ function normalizeL4RulePayload(payload = {}, options = {}) {
     normalizedPayload.relay_chain = payload.relay_chain
   } else if (includeRelayDefaults) {
     normalizedPayload.relay_chain = []
+  }
+  if (Array.isArray(payload.relay_layers)) {
+    normalizedPayload.relay_layers = normalizeRelayLayers(payload.relay_layers)
+  } else if (includeRelayDefaults) {
+    normalizedPayload.relay_layers = []
   }
   if (payload.relay_obfs != null) {
     normalizedPayload.relay_obfs = payload.relay_obfs === true

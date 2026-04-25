@@ -122,11 +122,11 @@ func TestL4RuleServiceCreateAllowsRelayChainForUDP(t *testing.T) {
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{},
 		relayByAgent: map[string][]storage.RelayListenerRow{
-			"local": {{
-				ID:      7,
-				AgentID: "local",
-				Enabled: true,
-			}},
+			"local": {
+				{ID: 7, AgentID: "local", Enabled: true},
+				{ID: 8, AgentID: "local", Enabled: true},
+				{ID: 9, AgentID: "local", Enabled: true},
+			},
 		},
 	}
 	svc := NewL4RuleService(config.Config{
@@ -140,12 +140,51 @@ func TestL4RuleServiceCreateAllowsRelayChainForUDP(t *testing.T) {
 		UpstreamHost: stringPtrL4("upstream"),
 		UpstreamPort: intPtrL4(9001),
 		RelayChain:   &[]int{7},
+		RelayLayers:  &[][]int{{7}, {8, 9}},
 	})
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
 	if len(rule.RelayChain) != 1 || rule.RelayChain[0] != 7 {
 		t.Fatalf("RelayChain = %+v", rule.RelayChain)
+	}
+	if len(rule.RelayLayers) != 2 || len(rule.RelayLayers[1]) != 2 || rule.RelayLayers[1][1] != 9 {
+		t.Fatalf("RelayLayers = %+v", rule.RelayLayers)
+	}
+	if got := store.l4RulesByID["local"][0].RelayLayersJSON; got != `[[7],[8,9]]` {
+		t.Fatalf("persisted relay_layers = %s", got)
+	}
+}
+
+func TestL4RuleServiceCreatePreservesRelayObfsForRelayLayersOnly(t *testing.T) {
+	store := &fakeL4Store{
+		l4RulesByID: map[string][]storage.L4RuleRow{},
+		relayByAgent: map[string][]storage.RelayListenerRow{
+			"local": {{
+				ID:      7,
+				AgentID: "local",
+				Enabled: true,
+			}},
+		},
+	}
+	svc := NewL4RuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	rule, err := svc.Create(context.Background(), "local", L4RuleInput{
+		Protocol:     stringPtrL4("tcp"),
+		ListenPort:   intPtrL4(9000),
+		UpstreamHost: stringPtrL4("upstream"),
+		UpstreamPort: intPtrL4(9001),
+		RelayLayers:  &[][]int{{7}},
+		RelayObfs:    boolPtrL4(true),
+	})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if !rule.RelayObfs {
+		t.Fatalf("expected relay_obfs to be preserved for relay_layers-only rule")
 	}
 }
 
@@ -427,6 +466,134 @@ func TestL4RuleServiceUpdateClearsRelayObfsWhenRelayChainRemoved(t *testing.T) {
 	}
 }
 
+func TestL4RuleServiceUpdateClearsRelayLayersWhenRelayChainOnlyUpdate(t *testing.T) {
+	store := &fakeL4Store{
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"local": {{
+				ID:              1,
+				AgentID:         "local",
+				Name:            "relay rule",
+				Protocol:        "tcp",
+				ListenHost:      "0.0.0.0",
+				ListenPort:      9000,
+				UpstreamHost:    "upstream",
+				UpstreamPort:    9001,
+				RelayChainJSON:  `[7]`,
+				RelayLayersJSON: `[[7],[8,9]]`,
+				Enabled:         true,
+				Revision:        3,
+			}},
+		},
+		relayByAgent: map[string][]storage.RelayListenerRow{
+			"local": {{
+				ID:      5,
+				AgentID: "local",
+				Enabled: true,
+			}},
+		},
+	}
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	rule, err := svc.Update(context.Background(), "local", 1, L4RuleInput{
+		RelayChain: &[]int{5},
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if len(rule.RelayChain) != 1 || rule.RelayChain[0] != 5 {
+		t.Fatalf("expected relay_chain to update, got %+v", rule.RelayChain)
+	}
+	if len(rule.RelayLayers) != 0 {
+		t.Fatalf("expected relay_layers to be cleared, got %+v", rule.RelayLayers)
+	}
+	if got := store.l4RulesByID["local"][0].RelayLayersJSON; got != `[]` {
+		t.Fatalf("persisted relay_layers = %s", got)
+	}
+}
+
+func TestL4RuleServiceUpdateClearsRelayChainWhenRelayLayersSupplied(t *testing.T) {
+	store := &fakeL4Store{
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"local": {{
+				ID:              1,
+				AgentID:         "local",
+				Name:            "relay rule",
+				Protocol:        "tcp",
+				ListenHost:      "0.0.0.0",
+				ListenPort:      9000,
+				UpstreamHost:    "upstream",
+				UpstreamPort:    9001,
+				RelayChainJSON:  `[7]`,
+				RelayLayersJSON: `[[7]]`,
+				Enabled:         true,
+				Revision:        3,
+			}},
+		},
+		relayByAgent: map[string][]storage.RelayListenerRow{
+			"local": {{
+				ID:      8,
+				AgentID: "local",
+				Enabled: true,
+			}},
+		},
+	}
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	rule, err := svc.Update(context.Background(), "local", 1, L4RuleInput{
+		RelayLayers: &[][]int{{8}},
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if len(rule.RelayChain) != 0 {
+		t.Fatalf("expected relay_chain to be cleared, got %+v", rule.RelayChain)
+	}
+	if len(rule.RelayLayers) != 1 || len(rule.RelayLayers[0]) != 1 || rule.RelayLayers[0][0] != 8 {
+		t.Fatalf("expected relay_layers to update, got %+v", rule.RelayLayers)
+	}
+	if got := store.l4RulesByID["local"][0].RelayChainJSON; got != `[]` {
+		t.Fatalf("persisted relay_chain = %s", got)
+	}
+}
+
+func TestL4RuleServiceUpdateClearsRelayWhenRelayLayersCleared(t *testing.T) {
+	store := &fakeL4Store{
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"local": {{
+				ID:              1,
+				AgentID:         "local",
+				Name:            "relay rule",
+				Protocol:        "tcp",
+				ListenHost:      "0.0.0.0",
+				ListenPort:      9000,
+				UpstreamHost:    "upstream",
+				UpstreamPort:    9001,
+				RelayChainJSON:  `[7]`,
+				RelayLayersJSON: `[[7]]`,
+				Enabled:         true,
+				Revision:        3,
+			}},
+		},
+	}
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	rule, err := svc.Update(context.Background(), "local", 1, L4RuleInput{
+		RelayLayers: &[][]int{},
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if len(rule.RelayChain) != 0 {
+		t.Fatalf("expected relay_chain to be cleared, got %+v", rule.RelayChain)
+	}
+	if len(rule.RelayLayers) != 0 {
+		t.Fatalf("expected relay_layers to be cleared, got %+v", rule.RelayLayers)
+	}
+	if got := store.l4RulesByID["local"][0].RelayChainJSON; got != `[]` {
+		t.Fatalf("persisted relay_chain = %s", got)
+	}
+}
+
 func TestL4RuleServiceUpdateDefaultsInvalidLoadBalancingToAdaptive(t *testing.T) {
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{
@@ -573,6 +740,63 @@ func TestL4RuleServiceCreateRejectsDuplicateRelayChainEntries(t *testing.T) {
 		t.Fatal("Create() error = nil")
 	}
 	if err.Error() != "invalid argument: relay_chain entries must not contain duplicates" {
+		t.Fatalf("Create() error = %v", err)
+	}
+}
+
+func TestL4RuleServiceCreateRejectsDuplicateRelayLayerEntriesAcrossLayers(t *testing.T) {
+	store := &fakeL4Store{
+		l4RulesByID: map[string][]storage.L4RuleRow{},
+		relayByAgent: map[string][]storage.RelayListenerRow{
+			"local": {
+				{ID: 7, AgentID: "local", Enabled: true},
+				{ID: 8, AgentID: "local", Enabled: true},
+			},
+		},
+	}
+	svc := NewL4RuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	_, err := svc.Create(context.Background(), "local", L4RuleInput{
+		ListenPort:   intPtrL4(9000),
+		UpstreamHost: stringPtrL4("upstream"),
+		UpstreamPort: intPtrL4(9001),
+		RelayLayers:  &[][]int{{7, 8}, {7}},
+	})
+	if err == nil {
+		t.Fatal("Create() error = nil")
+	}
+	if err.Error() != "invalid argument: relay_layers entries must not repeat listener IDs across layers" {
+		t.Fatalf("Create() error = %v", err)
+	}
+}
+
+func TestL4RuleServiceCreateRejectsUnknownRelayLayerListener(t *testing.T) {
+	store := &fakeL4Store{
+		l4RulesByID: map[string][]storage.L4RuleRow{},
+		relayByAgent: map[string][]storage.RelayListenerRow{
+			"local": {
+				{ID: 7, AgentID: "local", Enabled: true},
+			},
+		},
+	}
+	svc := NewL4RuleService(config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}, store)
+
+	_, err := svc.Create(context.Background(), "local", L4RuleInput{
+		ListenPort:   intPtrL4(9000),
+		UpstreamHost: stringPtrL4("upstream"),
+		UpstreamPort: intPtrL4(9001),
+		RelayLayers:  &[][]int{{7, 8}},
+	})
+	if err == nil {
+		t.Fatal("Create() error = nil")
+	}
+	if err.Error() != "invalid argument: relay listener not found: 8" {
 		t.Fatalf("Create() error = %v", err)
 	}
 }

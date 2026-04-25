@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 )
@@ -166,6 +167,87 @@ func TestTaskServiceDispatchFailureEvictsStaleSession(t *testing.T) {
 	}
 }
 
+func TestTaskServiceAcceptsImmediateTaskUpdateDuringDispatch(t *testing.T) {
+	service := NewTaskService(TaskServiceConfig{
+		Now: func() time.Time {
+			return time.Unix(1700000000, 0).UTC()
+		},
+		TaskTTL: 30 * time.Second,
+	})
+	session := &immediateUpdateTaskSession{service: service, agentID: "agent-a"}
+	if err := service.RegisterSession(TaskSessionRegistration{
+		AgentID:   "agent-a",
+		SessionID: "session-1",
+		Session:   session,
+	}); err != nil {
+		t.Fatalf("RegisterSession() error = %v", err)
+	}
+
+	record, err := service.CreateAndDispatch(TaskCreateRequest{
+		AgentID: "agent-a",
+		Type:    TaskTypeDiagnoseHTTPRule,
+		Payload: map[string]any{"rule_id": 7},
+	})
+	if err != nil {
+		t.Fatalf("CreateAndDispatch() error = %v", err)
+	}
+
+	got, err := service.Get(context.Background(), "agent-a", record.ID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got.State != "completed" {
+		t.Fatalf("state = %q, want completed", got.State)
+	}
+	if got.Result["ok"] != true {
+		t.Fatalf("result = %#v, want ok true", got.Result)
+	}
+}
+
+func TestTaskServiceRegisterSessionDoesNotCloseExistingSessionWhileLocked(t *testing.T) {
+	service := NewTaskService(TaskServiceConfig{
+		Now: func() time.Time {
+			return time.Unix(1700000000, 0).UTC()
+		},
+		TaskTTL: 30 * time.Second,
+	})
+	blocking := &lockCheckingCloseTaskSession{service: service, agentID: "agent-a"}
+	if err := service.RegisterSession(TaskSessionRegistration{
+		AgentID:   "agent-a",
+		SessionID: "session-1",
+		Session:   blocking,
+	}); err != nil {
+		t.Fatalf("RegisterSession() error = %v", err)
+	}
+	record, err := service.CreateAndDispatch(TaskCreateRequest{
+		AgentID: "agent-a",
+		Type:    TaskTypeDiagnoseHTTPRule,
+		Payload: map[string]any{"rule_id": 7},
+	})
+	if err != nil {
+		t.Fatalf("CreateAndDispatch() error = %v", err)
+	}
+	blocking.taskID = record.ID
+
+	done := make(chan error, 1)
+	go func() {
+		done <- service.RegisterSession(TaskSessionRegistration{
+			AgentID:   "agent-a",
+			SessionID: "session-2",
+			Session:   newStubTaskSession("agent-a"),
+		})
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RegisterSession() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("RegisterSession() deadlocked while closing previous session")
+	}
+}
+
 type stubTaskSession struct {
 	agentID string
 	tasks   chan TaskEnvelope
@@ -202,6 +284,46 @@ func (s *stubTaskSession) WaitForTask(t *testing.T) TaskEnvelope {
 type closableStubTaskSession struct {
 	*stubTaskSession
 	closed bool
+}
+
+type immediateUpdateTaskSession struct {
+	service *TaskService
+	agentID string
+}
+
+func (s *immediateUpdateTaskSession) SendTask(task TaskEnvelope) error {
+	return s.service.ApplyUpdate(context.Background(), TaskUpdateInput{
+		AgentID: s.agentID,
+		TaskID:  task.ID,
+		State:   "completed",
+		Result:  map[string]any{"ok": true},
+	})
+}
+
+func (s *immediateUpdateTaskSession) Close() error {
+	return nil
+}
+
+type lockCheckingCloseTaskSession struct {
+	service *TaskService
+	agentID string
+	taskID  string
+	once    sync.Once
+}
+
+func (s *lockCheckingCloseTaskSession) SendTask(TaskEnvelope) error {
+	return nil
+}
+
+func (s *lockCheckingCloseTaskSession) Close() error {
+	s.once.Do(func() {
+		_ = s.service.ApplyUpdate(context.Background(), TaskUpdateInput{
+			AgentID: s.agentID,
+			TaskID:  s.taskID,
+			State:   "completed",
+		})
+	})
+	return nil
 }
 
 func newClosableStubTaskSession(agentID string) *closableStubTaskSession {

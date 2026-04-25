@@ -1063,6 +1063,23 @@ func TestCacheFailureBackoffCapsAndSuccessResetsState(t *testing.T) {
 	}
 }
 
+func TestRelayBackoffKeyForLayersIncludesFullLayerShape(t *testing.T) {
+	addr := "relay-target.example:9443"
+	legacy := RelayBackoffKey([]int{1}, addr)
+	layered := RelayBackoffKeyForLayers([]int{1}, [][]int{{1, 2}, {3}}, addr)
+	layeredAlternate := RelayBackoffKeyForLayers([]int{1}, [][]int{{1, 2}, {3, 4}}, addr)
+
+	if layered == legacy {
+		t.Fatalf("layered backoff key reused legacy key %q", layered)
+	}
+	if layered == layeredAlternate {
+		t.Fatalf("different relay layers produced same key %q", layered)
+	}
+	if got := RelayBackoffKeyForLayers([]int{1}, nil, addr); got != legacy {
+		t.Fatalf("chain-only key = %q, want %q", got, legacy)
+	}
+}
+
 func TestCacheFailureBackoffUsesConfiguredBaseAndLimit(t *testing.T) {
 	cache := NewCache(Config{
 		FailureBackoffBase:  500 * time.Millisecond,

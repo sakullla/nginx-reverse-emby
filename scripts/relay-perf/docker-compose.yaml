@@ -17,7 +17,7 @@ services:
       HARNESS_C8_CONCURRENCY: ${HARNESS_C8_CONCURRENCY:-}
       HARNESS_MASTER_ADDR: ${HARNESS_MASTER_ADDR:-:8080}
       HARNESS_ENTRY_ADDRESS: ${HARNESS_ENTRY_ADDRESS:-172.29.1.10:7000}
-      HARNESS_DIRECT_ADDRESS: ${HARNESS_DIRECT_ADDRESS:-172.29.0.12:9001}
+      HARNESS_DIRECT_ADDRESS: ${HARNESS_DIRECT_ADDRESS:-172.29.0.20:9001}
       HARNESS_PRE_MEASURE_DELAY_MS: ${HARNESS_PRE_MEASURE_DELAY_MS:-}
       HARNESS_BACKEND_HOST: ${HARNESS_BACKEND_HOST:-172.29.3.13}
       HARNESS_BACKEND_PORT: ${HARNESS_BACKEND_PORT:-9002}
@@ -93,17 +93,16 @@ services:
       a_relay:
         ipv4_address: 172.29.2.10
 
-  relay-b:
+  relay-a1:
     image: nre-agent-perf:latest
-    container_name: nre-relay-b
+    container_name: nre-relay-a1
     environment:
-      NRE_AGENT_ID: relay-b
-      NRE_AGENT_NAME: relay-b
+      NRE_AGENT_ID: relay-a1
+      NRE_AGENT_NAME: relay-a1
       NRE_AGENT_TOKEN: token
       NRE_MASTER_URL: http://perf-control:8080
       NRE_HEARTBEAT_INTERVAL: ${HARNESS_AGENT_HEARTBEAT_INTERVAL:-30s}
       NRE_DATA_DIR: /data
-      NRE_PPROF_ADDR: ${HARNESS_RELAY_B_PPROF_ADDR:-}
     depends_on:
       perf:
         condition: service_healthy
@@ -125,9 +124,118 @@ services:
       a_relay:
         ipv4_address: 172.29.2.11
         aliases:
-          - relay-b-a-link
+          - relay-a1-link
+      relay_mid:
+        ipv4_address: 172.29.4.11
+
+  relay-a2:
+    image: nre-agent-perf:latest
+    container_name: nre-relay-a2
+    environment:
+      NRE_AGENT_ID: relay-a2
+      NRE_AGENT_NAME: relay-a2
+      NRE_AGENT_TOKEN: token
+      NRE_MASTER_URL: http://perf-control:8080
+      NRE_HEARTBEAT_INTERVAL: ${HARNESS_AGENT_HEARTBEAT_INTERVAL:-30s}
+      NRE_DATA_DIR: /data
+    depends_on:
+      perf:
+        condition: service_healthy
+      agent-a:
+        condition: service_started
+      backend-b:
+        condition: service_started
+    cap_add:
+      - NET_ADMIN
+      - SYS_PTRACE
+      - SYS_ADMIN
+    security_opt:
+      - seccomp:unconfined
+    tmpfs:
+      - /data
+    networks:
+      control:
+        ipv4_address: 172.29.0.12
+      a_relay:
+        ipv4_address: 172.29.2.12
+        aliases:
+          - relay-a2-link
+      relay_mid:
+        ipv4_address: 172.29.4.12
+
+  relay-b3:
+    image: nre-agent-perf:latest
+    container_name: nre-relay-b3
+    environment:
+      NRE_AGENT_ID: relay-b3
+      NRE_AGENT_NAME: relay-b3
+      NRE_AGENT_TOKEN: token
+      NRE_MASTER_URL: http://perf-control:8080
+      NRE_HEARTBEAT_INTERVAL: ${HARNESS_AGENT_HEARTBEAT_INTERVAL:-30s}
+      NRE_DATA_DIR: /data
+    depends_on:
+      perf:
+        condition: service_healthy
+      relay-a1:
+        condition: service_started
+      relay-a2:
+        condition: service_started
+      backend-b:
+        condition: service_started
+    cap_add:
+      - NET_ADMIN
+      - SYS_PTRACE
+      - SYS_ADMIN
+    security_opt:
+      - seccomp:unconfined
+    tmpfs:
+      - /data
+    networks:
+      control:
+        ipv4_address: 172.29.0.13
+      relay_mid:
+        ipv4_address: 172.29.4.13
+        aliases:
+          - relay-b3-link
       b_local:
         ipv4_address: 172.29.3.11
+
+  relay-b4:
+    image: nre-agent-perf:latest
+    container_name: nre-relay-b4
+    environment:
+      NRE_AGENT_ID: relay-b4
+      NRE_AGENT_NAME: relay-b4
+      NRE_AGENT_TOKEN: token
+      NRE_MASTER_URL: http://perf-control:8080
+      NRE_HEARTBEAT_INTERVAL: ${HARNESS_AGENT_HEARTBEAT_INTERVAL:-30s}
+      NRE_DATA_DIR: /data
+    depends_on:
+      perf:
+        condition: service_healthy
+      relay-a1:
+        condition: service_started
+      relay-a2:
+        condition: service_started
+      backend-b:
+        condition: service_started
+    cap_add:
+      - NET_ADMIN
+      - SYS_PTRACE
+      - SYS_ADMIN
+    security_opt:
+      - seccomp:unconfined
+    tmpfs:
+      - /data
+    networks:
+      control:
+        ipv4_address: 172.29.0.14
+      relay_mid:
+        ipv4_address: 172.29.4.14
+        aliases:
+          - relay-b4-link
+      b_local:
+        ipv4_address: 172.29.3.14
 
   agent-b:
     image: nre-agent-perf:latest
@@ -142,7 +250,9 @@ services:
     depends_on:
       perf:
         condition: service_healthy
-      relay-b:
+      relay-b3:
+        condition: service_started
+      relay-b4:
         condition: service_started
       backend-b:
         condition: service_started
@@ -150,7 +260,7 @@ services:
       - /data
     networks:
       control:
-        ipv4_address: 172.29.0.12
+        ipv4_address: 172.29.0.20
         aliases:
           - agent-b-control
       b_local:
@@ -174,6 +284,11 @@ networks:
     ipam:
       config:
         - subnet: 172.29.2.0/24
+  relay_mid:
+    name: nre-relay-perf-relay-mid
+    ipam:
+      config:
+        - subnet: 172.29.4.0/24
   b_local:
     name: nre-relay-perf-b-local
     ipam:

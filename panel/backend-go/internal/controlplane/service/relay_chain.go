@@ -8,6 +8,8 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
+const maxRelayLayerPaths = 32
+
 type relayChainLookupStore interface {
 	ListRelayListeners(context.Context, string) ([]storage.RelayListenerRow, error)
 }
@@ -26,6 +28,70 @@ func normalizeRelayChainInput(values []int, protocol string) ([]int, error) {
 		normalized = append(normalized, value)
 	}
 	return normalized, nil
+}
+
+func normalizeRelayLayersInput(layers [][]int, protocol string) ([][]int, error) {
+	normalized := make([][]int, 0, len(layers))
+	seenAcrossLayers := make(map[int]struct{})
+	for _, layer := range layers {
+		normalizedLayer, err := normalizeRelayChainInput(layer, protocol)
+		if err != nil {
+			return nil, err
+		}
+		if len(normalizedLayer) > 0 {
+			for _, listenerID := range normalizedLayer {
+				if _, ok := seenAcrossLayers[listenerID]; ok {
+					return nil, fmt.Errorf("%w: relay_layers entries must not repeat listener IDs across layers", ErrInvalidArgument)
+				}
+				seenAcrossLayers[listenerID] = struct{}{}
+			}
+			normalized = append(normalized, normalizedLayer)
+		}
+	}
+	if relayLayerPathCountExceeds(normalized, maxRelayLayerPaths) {
+		return nil, fmt.Errorf("%w: relay_layers expand to more than %d relay paths", ErrInvalidArgument, maxRelayLayerPaths)
+	}
+	return normalized, nil
+}
+
+func relayLayerPathCountExceeds(layers [][]int, maxPaths int) bool {
+	if len(layers) == 0 || maxPaths <= 0 {
+		return false
+	}
+	pathCount := 1
+	for _, layer := range layers {
+		if len(layer) == 0 {
+			continue
+		}
+		if pathCount > maxPaths/len(layer) {
+			return true
+		}
+		pathCount *= len(layer)
+	}
+	return pathCount > maxPaths
+}
+
+func flattenRelayLayers(layers [][]int) []int {
+	flattened := make([]int, 0)
+	for _, layer := range layers {
+		flattened = append(flattened, layer...)
+	}
+	return flattened
+}
+
+func relayConfigReferencesListener(chainJSON string, layersJSON string, listenerID int) bool {
+	return containsInt(parseIntArray(chainJSON), listenerID) || containsInt(flattenRelayLayers(parseIntLayers(layersJSON)), listenerID)
+}
+
+func cloneIntLayers(layers [][]int) [][]int {
+	if layers == nil {
+		return nil
+	}
+	cloned := make([][]int, len(layers))
+	for i, layer := range layers {
+		cloned[i] = append([]int(nil), layer...)
+	}
+	return cloned
 }
 
 func validateRelayChainReferences(ctx context.Context, store relayChainLookupStore, knownAgentIDs []string, relayChain []int) error {

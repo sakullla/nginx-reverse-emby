@@ -11,6 +11,7 @@ export default defineConfig({
     environment: 'jsdom',
     include: [
       'src/components/**/*.test.js',
+      'src/pages/**/*.test.js',
       'src/api/**/*.test.mjs',
       'src/context/**/*.test.mjs'
     ]

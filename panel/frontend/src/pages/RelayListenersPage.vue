@@ -39,7 +39,6 @@
         <div class='relay-card__header'>
           <div class='relay-card__badges'>
             <span class='relay-card__id'>#{{ listener.id }} · {{ listener.name }}</span>
-            <span class='relay-card__status' :class="`relay-card__status--${statusClass(listener)}`">{{ statusLabel(listener) }}</span>
           </div>
           <div class='relay-card__actions'>
             <button class='relay-card__action relay-card__action--toggle' :title="listener.enabled ? '停用' : '启用'" @click='toggleListener(listener)'>
@@ -145,16 +144,6 @@ const editingListener = ref(null)
 const deletingListener = ref(null)
 const deleteError = ref('')
 
-function statusClass(listener) {
-  if (!listener.enabled) return 'disabled'
-  return 'active'
-}
-
-function statusLabel(listener) {
-  if (!listener.enabled) return '已禁用'
-  return '已启用'
-}
-
 function trustSummary(listener) {
   if (listener.trust_mode_source === 'auto') return '自动 Relay CA + Pin'
   if (listener.tls_mode === 'pin_and_ca') return 'Pin + CA'
@@ -247,6 +236,7 @@ function confirmDelete() {
     }
   })
 }
+
 </script>
 
 <style scoped>
@@ -302,21 +292,6 @@ function confirmDelete() {
   text-align: center;
 }
 
-.relay-page__error {
-  margin: var(--space-3) 0 0;
-  padding: var(--space-2) var(--space-3);
-  border-radius: var(--radius-md);
-  background: var(--color-danger-50);
-  color: var(--color-danger);
-  font-size: var(--text-sm);
-}
-
-.relay-page__warning {
-  margin: var(--space-3) 0 0;
-  font-size: var(--text-sm);
-  color: var(--color-text-secondary);
-}
-
 .relay-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
@@ -355,23 +330,6 @@ function confirmDelete() {
   font-size: 0.75rem;
   font-family: var(--font-mono);
   color: var(--color-text-tertiary);
-}
-
-.relay-card__status {
-  font-size: 0.75rem;
-  font-weight: 600;
-  padding: 2px 8px;
-  border-radius: var(--radius-full);
-}
-
-.relay-card__status--active {
-  background: var(--color-success-50);
-  color: var(--color-success);
-}
-
-.relay-card__status--disabled {
-  background: var(--color-bg-subtle);
-  color: var(--color-text-muted);
 }
 
 .relay-card__actions {
@@ -495,17 +453,6 @@ function confirmDelete() {
   color: white;
 }
 
-.btn-secondary {
-  background: var(--color-bg-subtle);
-  color: var(--color-text-primary);
-  border: 1px solid var(--color-border-default);
-}
-
-.btn-danger {
-  background: var(--color-danger);
-  color: white;
-}
-
 /* Spinner */
 .spinner {
   width: 24px;
@@ -527,4 +474,5 @@ function confirmDelete() {
     display: none;
   }
 }
+
 </style>

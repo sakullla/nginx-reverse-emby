@@ -100,6 +100,7 @@ type HTTPRule struct {
 	Tags             []string           `json:"tags"`
 	ProxyRedirect    bool               `json:"proxy_redirect"`
 	RelayChain       []int              `json:"relay_chain"`
+	RelayLayers      [][]int            `json:"relay_layers"`
 	RelayObfs        bool               `json:"relay_obfs"`
 	PassProxyHeaders bool               `json:"pass_proxy_headers"`
 	UserAgent        string             `json:"user_agent"`
@@ -382,6 +383,7 @@ func (s *agentService) ListHTTPRules(ctx context.Context, agentID string) ([]HTT
 			Tags:             parseStringArray(row.TagsJSON),
 			ProxyRedirect:    row.ProxyRedirect,
 			RelayChain:       parseIntArray(row.RelayChainJSON),
+			RelayLayers:      parseIntLayers(row.RelayLayersJSON),
 			RelayObfs:        row.RelayObfs,
 			PassProxyHeaders: row.PassProxyHeaders,
 			UserAgent:        row.UserAgent,
@@ -960,7 +962,7 @@ func (s *agentService) findRelayListenerReference(ctx context.Context, excludedA
 			return nil, err
 		}
 		for _, row := range httpRules {
-			if containsInt(parseIntArray(row.RelayChainJSON), listenerID) {
+			if relayConfigReferencesListener(row.RelayChainJSON, row.RelayLayersJSON, listenerID) {
 				return &agentRelayRuleReference{AgentID: agentID, RuleID: row.ID, RuleType: "HTTP"}, nil
 			}
 		}
@@ -969,7 +971,7 @@ func (s *agentService) findRelayListenerReference(ctx context.Context, excludedA
 			return nil, err
 		}
 		for _, row := range l4Rules {
-			if containsInt(parseIntArray(row.RelayChainJSON), listenerID) {
+			if relayConfigReferencesListener(row.RelayChainJSON, row.RelayLayersJSON, listenerID) {
 				return &agentRelayRuleReference{AgentID: agentID, RuleID: row.ID, RuleType: "L4"}, nil
 			}
 		}
@@ -1027,6 +1029,17 @@ func parseIntArray(raw string) []int {
 	}
 	if values == nil {
 		return []int{}
+	}
+	return values
+}
+
+func parseIntLayers(raw string) [][]int {
+	var values [][]int
+	if err := json.Unmarshal([]byte(defaultString(raw, "[]")), &values); err != nil {
+		return [][]int{}
+	}
+	if values == nil {
+		return [][]int{}
 	}
 	return values
 }

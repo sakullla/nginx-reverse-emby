@@ -24,8 +24,58 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayplan"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
+
+type fakeL4RelayPathDialer struct {
+	mu      sync.Mutex
+	calls   [][]int
+	options []relay.DialOptions
+	conn    net.Conn
+}
+
+func (d *fakeL4RelayPathDialer) DialPath(_ context.Context, req relayplan.Request, path relayplan.Path) (net.Conn, relay.DialResult, error) {
+	options := relay.DialOptions{}
+	if len(req.Options) > 0 {
+		options = req.Options[0]
+	}
+	d.mu.Lock()
+	d.calls = append(d.calls, append([]int(nil), path.IDs...))
+	d.options = append(d.options, cloneRelayDialOptionsForL4Test(options))
+	d.mu.Unlock()
+	if path.IDs[0] == 2 {
+		return d.conn, relay.DialResult{}, nil
+	}
+	return nil, relay.DialResult{}, fmt.Errorf("path %v failed", path.IDs)
+}
+
+func (d *fakeL4RelayPathDialer) calledPaths() [][]int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make([][]int, len(d.calls))
+	for i, call := range d.calls {
+		out[i] = append([]int(nil), call...)
+	}
+	return out
+}
+
+func (d *fakeL4RelayPathDialer) calledOptions() []relay.DialOptions {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	out := make([]relay.DialOptions, len(d.options))
+	for i, options := range d.options {
+		out[i] = cloneRelayDialOptionsForL4Test(options)
+	}
+	return out
+}
+
+func cloneRelayDialOptionsForL4Test(options relay.DialOptions) relay.DialOptions {
+	return relay.DialOptions{
+		InitialPayload: append([]byte(nil), options.InitialPayload...),
+		TrafficClass:   options.TrafficClass,
+	}
+}
 
 func TestServerCloseStopsTCPHandlers(t *testing.T) {
 	upstreamLn, err := net.Listen("tcp", "127.0.0.1:0")
@@ -1053,6 +1103,32 @@ func TestL4CandidatesRelayChainPreservesConfiguredHostname(t *testing.T) {
 	}
 }
 
+func TestL4CandidatesRelayLayersUseLayeredBackoffKey(t *testing.T) {
+	cache := backends.NewCache(backends.Config{})
+	rule := model.L4Rule{
+		Protocol:   "tcp",
+		ListenHost: "0.0.0.0",
+		ListenPort: 9448,
+		RelayLayers: [][]int{
+			{201, 202},
+			{301},
+		},
+		Backends: []model.L4Backend{{
+			Host: "relay-upstream.example",
+			Port: 9001,
+		}},
+	}
+	cache.MarkFailure(backends.RelayBackoffKey(rule.RelayChain, "relay-upstream.example:9001"))
+
+	candidates, err := l4Candidates(context.Background(), cache, rule)
+	if err != nil {
+		t.Fatalf("l4Candidates() error = %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("candidates = %+v", candidates)
+	}
+}
+
 func TestDialTCPUpstreamStopsWhenServerContextCancelled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -1083,6 +1159,177 @@ func TestDialTCPUpstreamStopsWhenServerContextCancelled(t *testing.T) {
 	if cache.IsInBackoff("127.0.0.1:9001") || cache.IsInBackoff("127.0.0.1:9002") {
 		t.Fatalf("expected cancelled dial to stop before marking candidates failed")
 	}
+}
+
+func TestDialTCPUpstreamUsesRelayLayerRacer(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+	dialer := &fakeL4RelayPathDialer{conn: clientConn}
+	srv := &Server{
+		ctx:   context.Background(),
+		cache: backends.NewCache(backends.Config{}),
+		now:   time.Now,
+		relayListenersByID: map[int]model.RelayListener{
+			1: {ID: 1, Name: "one", ListenHost: "127.0.0.1", ListenPort: 9001, Enabled: true, TLSMode: "pin_only", PinSet: []model.RelayPin{{Type: "sha256", Value: "pin1"}}},
+			2: {ID: 2, Name: "two", ListenHost: "127.0.0.1", ListenPort: 9002, Enabled: true, TLSMode: "pin_only", PinSet: []model.RelayPin{{Type: "sha256", Value: "pin2"}}},
+		},
+		relayPathDialer: dialer,
+	}
+	rule := model.L4Rule{
+		Protocol:    "tcp",
+		ListenHost:  "0.0.0.0",
+		ListenPort:  9446,
+		RelayLayers: [][]int{{1, 2}},
+		Backends:    []model.L4Backend{{Host: "backend.example", Port: 9001}},
+	}
+
+	conn, candidate, _, err := srv.dialTCPUpstream(rule, relay.DialOptions{})
+	if err != nil {
+		t.Fatalf("dialTCPUpstream() error = %v", err)
+	}
+	defer conn.Close()
+	if candidate.address != "backend.example:9001" {
+		t.Fatalf("candidate address = %q", candidate.address)
+	}
+	if !waitForL4RelayPathCalls(dialer, 1, 2) {
+		t.Fatalf("dialed paths = %+v, want paths [1] and [2]", dialer.calledPaths())
+	}
+}
+
+func TestDialTCPUpstreamSendsInitialPayloadOnlyAfterRelayPathWins(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+	dialer := &fakeL4RelayPathDialer{conn: clientConn}
+	srv := &Server{
+		ctx:   context.Background(),
+		cache: backends.NewCache(backends.Config{}),
+		now:   time.Now,
+		relayListenersByID: map[int]model.RelayListener{
+			1: {ID: 1, Name: "one", ListenHost: "127.0.0.1", ListenPort: 9001, Enabled: true, TLSMode: "pin_only", PinSet: []model.RelayPin{{Type: "sha256", Value: "pin1"}}},
+			2: {ID: 2, Name: "two", ListenHost: "127.0.0.1", ListenPort: 9002, Enabled: true, TLSMode: "pin_only", PinSet: []model.RelayPin{{Type: "sha256", Value: "pin2"}}},
+		},
+		relayPathDialer: dialer,
+	}
+	rule := model.L4Rule{
+		Protocol:    "tcp",
+		ListenHost:  "0.0.0.0",
+		ListenPort:  9446,
+		RelayLayers: [][]int{{1, 2}},
+		Backends:    []model.L4Backend{{Host: "backend.example", Port: 9001}},
+	}
+
+	payloadCh := make(chan []byte, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		payload := make([]byte, len("hello"))
+		if err := serverConn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+			errCh <- err
+			return
+		}
+		if _, err := io.ReadFull(serverConn, payload); err != nil {
+			errCh <- err
+			return
+		}
+		payloadCh <- payload
+	}()
+
+	conn, _, _, err := srv.dialTCPUpstream(rule, relay.DialOptions{
+		InitialPayload: []byte("hello"),
+		TrafficClass:   upstream.TrafficClassInteractive,
+	})
+	if err != nil {
+		t.Fatalf("dialTCPUpstream() error = %v", err)
+	}
+	defer conn.Close()
+	if !waitForL4RelayPathCalls(dialer, 1, 2) {
+		t.Fatalf("dialed paths = %+v, want paths [1] and [2]", dialer.calledPaths())
+	}
+	for _, options := range dialer.calledOptions() {
+		if len(options.InitialPayload) != 0 {
+			t.Fatalf("raced dial received initial payload %q", options.InitialPayload)
+		}
+	}
+	select {
+	case err := <-errCh:
+		t.Fatalf("read selected relay payload: %v", err)
+	case payload := <-payloadCh:
+		if string(payload) != "hello" {
+			t.Fatalf("selected relay payload = %q", payload)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for selected relay payload")
+	}
+}
+
+func TestDialUDPUpstreamUsesRelayLayerRacer(t *testing.T) {
+	clientConn, serverConn := net.Pipe()
+	defer serverConn.Close()
+	dialer := &fakeL4RelayPathDialer{conn: clientConn}
+	srv := &Server{
+		ctx:   context.Background(),
+		cache: backends.NewCache(backends.Config{}),
+		now:   time.Now,
+		relayListenersByID: map[int]model.RelayListener{
+			1: {ID: 1, Name: "one", ListenHost: "127.0.0.1", ListenPort: 9001, Enabled: true, TLSMode: "pin_only", PinSet: []model.RelayPin{{Type: "sha256", Value: "pin1"}}},
+			2: {ID: 2, Name: "two", ListenHost: "127.0.0.1", ListenPort: 9002, Enabled: true, TLSMode: "pin_only", PinSet: []model.RelayPin{{Type: "sha256", Value: "pin2"}}},
+		},
+		relayPathDialer: dialer,
+	}
+	rule := model.L4Rule{
+		Protocol:    "udp",
+		ListenHost:  "0.0.0.0",
+		ListenPort:  9446,
+		RelayLayers: [][]int{{1, 2}},
+		Backends:    []model.L4Backend{{Host: "backend.example", Port: 9001}},
+	}
+
+	upstreamConn, candidate, err := srv.dialUDPUpstream(rule)
+	if err != nil {
+		t.Fatalf("dialUDPUpstream() error = %v", err)
+	}
+	defer upstreamConn.Close()
+	if candidate.address != "backend.example:9001" {
+		t.Fatalf("candidate address = %q", candidate.address)
+	}
+	if !waitForL4RelayPathCalls(dialer, 1, 2) {
+		t.Fatalf("dialed paths = %+v, want paths [1] and [2]", dialer.calledPaths())
+	}
+}
+
+func waitForL4RelayPathCalls(dialer *fakeL4RelayPathDialer, firstIDs ...int) bool {
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		calls := dialer.calledPaths()
+		if len(calls) >= len(firstIDs) {
+			allFound := true
+			for _, firstID := range firstIDs {
+				if !hasL4RelayPathCall(calls, firstID) {
+					allFound = false
+					break
+				}
+			}
+			if allFound {
+				return true
+			}
+		}
+		time.Sleep(time.Millisecond)
+	}
+	calls := dialer.calledPaths()
+	for _, firstID := range firstIDs {
+		if !hasL4RelayPathCall(calls, firstID) {
+			return false
+		}
+	}
+	return len(calls) >= len(firstIDs)
+}
+
+func hasL4RelayPathCall(calls [][]int, firstID int) bool {
+	for _, call := range calls {
+		if len(call) > 0 && call[0] == firstID {
+			return true
+		}
+	}
+	return false
 }
 
 func TestTCPRelayProxy(t *testing.T) {
@@ -1661,6 +1908,133 @@ func TestTCPRelayProxySupportsIPv6EntryThroughIPv4AndIPv6RelayChainToIPv6Backend
 	}
 	if !bytes.Equal(payload, reply) {
 		t.Fatalf("mixed-family relay chain payload mismatch; got %q", reply)
+	}
+}
+
+func TestTCPRelayProxySupportsLayeredRelayFanoutFullChain(t *testing.T) {
+	backendLn, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to listen on backend B: %v", err)
+	}
+	defer backendLn.Close()
+
+	go func() {
+		for {
+			conn, err := backendLn.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				_, _ = io.Copy(c, c)
+			}(conn)
+		}
+	}()
+
+	listenerIDs := []int{1, 2, 3, 4}
+	provider := &runtimeL4RelayProvider{serverCertificates: make(map[int]tls.Certificate)}
+	relayListeners := make([]relay.Listener, 0, len(listenerIDs))
+	modelListeners := make([]model.RelayListener, 0, len(listenerIDs))
+	for _, id := range listenerIDs {
+		certID := id + 100
+		cert := mustIssueL4RelayCertificate(t, fmt.Sprintf("relay-%d.internal.test", id))
+		provider.serverCertificates[certID] = cert
+
+		listener := relay.Listener{
+			ID:            id,
+			AgentID:       fmt.Sprintf("relay-agent-%d", id),
+			Name:          fmt.Sprintf("relay-%d", id),
+			ListenHost:    "127.0.0.1",
+			BindHosts:     []string{"127.0.0.1"},
+			ListenPort:    pickFreeTCPPort(t),
+			PublicHost:    "127.0.0.1",
+			Enabled:       true,
+			CertificateID: &certID,
+			TLSMode:       "pin_only",
+			PinSet: []model.RelayPin{{
+				Type:  "sha256",
+				Value: mustL4RelaySPKIPin(t, cert),
+			}},
+		}
+		listener.PublicPort = listener.ListenPort
+		relayListeners = append(relayListeners, listener)
+		modelListeners = append(modelListeners, model.RelayListener{
+			ID:            listener.ID,
+			AgentID:       listener.AgentID,
+			Name:          listener.Name,
+			ListenHost:    listener.ListenHost,
+			BindHosts:     listener.BindHosts,
+			ListenPort:    listener.ListenPort,
+			PublicHost:    listener.PublicHost,
+			PublicPort:    listener.PublicPort,
+			Enabled:       listener.Enabled,
+			CertificateID: listener.CertificateID,
+			TLSMode:       listener.TLSMode,
+			PinSet:        listener.PinSet,
+		})
+	}
+
+	relayServer, err := relay.Start(context.Background(), relayListeners, provider)
+	if err != nil {
+		t.Fatalf("failed to start layered relay fanout servers: %v", err)
+	}
+	defer relayServer.Close()
+
+	listenPort := pickFreeTCPPort(t)
+	rule := model.L4Rule{
+		Protocol:     "tcp",
+		ListenHost:   "127.0.0.1",
+		ListenPort:   listenPort,
+		UpstreamHost: "127.0.0.1",
+		UpstreamPort: backendLn.Addr().(*net.TCPAddr).Port,
+		RelayLayers:  [][]int{{1, 2}, {3, 4}},
+	}
+
+	srv, err := NewServer(context.Background(), []model.L4Rule{rule}, modelListeners, provider)
+	if err != nil {
+		t.Fatalf("failed to start layered relay-backed l4 server: %v", err)
+	}
+	defer srv.Close()
+
+	paths, err := srv.resolveRelayPaths(rule)
+	if err != nil {
+		t.Fatalf("resolveRelayPaths returned error: %v", err)
+	}
+	assertL4RelayPathSet(t, paths, [][]int{{1, 3}, {1, 4}, {2, 3}, {2, 4}})
+
+	client, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", listenPort))
+	if err != nil {
+		t.Fatalf("failed to dial client A entry listener: %v", err)
+	}
+	defer client.Close()
+
+	payload := []byte("client-a-through-relay-a12-relay-b34-to-backend-b")
+	if _, err := client.Write(payload); err != nil {
+		t.Fatalf("write layered relay payload: %v", err)
+	}
+
+	reply := make([]byte, len(payload))
+	if _, err := io.ReadFull(client, reply); err != nil {
+		t.Fatalf("read layered relay reply: %v", err)
+	}
+	if !bytes.Equal(payload, reply) {
+		t.Fatalf("layered relay payload mismatch; got %q", reply)
+	}
+}
+
+func assertL4RelayPathSet(t *testing.T, paths []relayplan.Path, want [][]int) {
+	t.Helper()
+	if len(paths) != len(want) {
+		t.Fatalf("relay path count = %d, want %d: %+v", len(paths), len(want), paths)
+	}
+	seen := make(map[string]bool, len(paths))
+	for _, path := range paths {
+		seen[fmt.Sprint(path.IDs)] = true
+	}
+	for _, ids := range want {
+		if !seen[fmt.Sprint(ids)] {
+			t.Fatalf("relay paths = %+v, missing %v", paths, ids)
+		}
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayplan"
 )
 
 type HTTPProberConfig struct {
@@ -66,7 +67,7 @@ func (p *HTTPProber) Diagnose(ctx context.Context, rule model.HTTPRule, relayLis
 	if err != nil {
 		return Report{}, err
 	}
-	if len(rule.RelayChain) > 0 {
+	if ruleUsesHTTPRelay(rule) {
 		candidates, err = p.hydrateRelayCandidates(ctx, rule, relayListeners, candidates)
 		if err != nil {
 			return Report{}, err
@@ -78,15 +79,32 @@ func (p *HTTPProber) Diagnose(ctx context.Context, rule model.HTTPRule, relayLis
 
 	samples := make([]Sample, 0, p.attempts*len(candidates))
 	attempt := 0
-	for _, candidate := range candidates {
+	for candidateIndex, candidate := range candidates {
 		for i := 0; i < p.attempts; i++ {
 			attempt++
-			sample := p.probeCandidate(ctx, cache, attempt, rule, relayListeners, candidate)
+			sample, selectedRelayPath := p.probeCandidate(ctx, cache, attempt, rule, relayListeners, candidate)
+			if len(selectedRelayPath) > 0 {
+				candidate.relayChain = selectedRelayPath
+				candidates[candidateIndex].relayChain = selectedRelayPath
+			}
 			samples = append(samples, sample)
 		}
 	}
 	report := BuildReport("http", rule.ID, samples)
 	report.Backends = buildHTTPAdaptiveReports(report.Backends, candidates, baseCache)
+	applyCurrentHTTPThroughput(report.Backends, samples)
+	if ruleUsesHTTPRelay(rule) && len(candidates) > 0 {
+		paths, err := resolveDiagnosticHTTPRelayPaths(rule, relayListeners, candidates[0].dialAddress)
+		if err != nil {
+			return Report{}, err
+		}
+		relayReports, selectedPath, err := probeDiagnosticRelayPaths(ctx, "tcp", candidates[0].dialAddress, paths, p.relayProvider, p.cache)
+		if err != nil {
+			return Report{}, err
+		}
+		report.RelayPaths = relayReports
+		report.SelectedRelayPath = selectedPath
+	}
 	return report, nil
 }
 
@@ -98,22 +116,24 @@ type httpProbeCandidate struct {
 	configuredURL         string
 	resolvedCandidates    []httpResolvedCandidate
 	relayChain            []int
+	relayPaths            []relayplan.Path
 }
 
-func (p *HTTPProber) probeCandidate(ctx context.Context, cache *backends.Cache, attempt int, rule model.HTTPRule, relayListeners []model.RelayListener, candidate httpProbeCandidate) Sample {
+func (p *HTTPProber) probeCandidate(ctx context.Context, cache *backends.Cache, attempt int, rule model.HTTPRule, relayListeners []model.RelayListener, candidate httpProbeCandidate) (Sample, []int) {
 	start := time.Now()
 	client, selectedAddress, err := p.clientForCandidate(rule, relayListeners, candidate)
 	if err != nil {
 		sample := FailureSample(attempt, candidate.backendLabel, err)
 		sample.Address = candidate.dialAddress
-		return sample
+		return sample, nil
 	}
 
 	reqCtx, cancel := context.WithTimeout(ctx, p.timeout)
 	defer cancel()
 
 	resolveSample := func(err error) Sample {
-		actualAddress := resolveProbeAddress(candidate.dialAddress, selectedAddress())
+		selection := selectedAddress()
+		actualAddress := resolveProbeAddress(candidate.dialAddress, selection.address)
 		backendLabel := httpProbeLabelForAddress(candidate, actualAddress)
 		sample := FailureSample(attempt, backendLabel, err)
 		sample.Address = actualAddress
@@ -125,9 +145,11 @@ func (p *HTTPProber) probeCandidate(ctx context.Context, cache *backends.Cache, 
 		if candidate.backendObservationKey != "" {
 			cache.ObserveBackendFailure(candidate.backendObservationKey)
 		}
-		actualAddress := resolveProbeAddress(candidate.dialAddress, selectedAddress())
-		markDiagnosticAddressFailureAll(rule.RelayChain, actualAddress, persistentDiagnosticAddressCaches(cache, p.cache, rule.RelayChain)...)
-		return resolveSample(err)
+		selection := selectedAddress()
+		actualAddress := resolveProbeAddress(candidate.dialAddress, selection.address)
+		relayChain := diagnosticRelayChainForObservation(rule.RelayChain, candidate.relayChain, selection.path)
+		markDiagnosticAddressFailureAll(relayChain, actualAddress, persistentDiagnosticAddressCaches(cache, p.cache, relayChain)...)
+		return resolveSample(err), selection.path
 	}
 	defer resp.Body.Close()
 	headerLatency := time.Since(start)
@@ -136,9 +158,11 @@ func (p *HTTPProber) probeCandidate(ctx context.Context, cache *backends.Cache, 
 		if candidate.backendObservationKey != "" {
 			cache.ObserveBackendFailure(candidate.backendObservationKey)
 		}
-		actualAddress := resolveProbeAddress(candidate.dialAddress, selectedAddress())
-		markDiagnosticAddressFailureAll(rule.RelayChain, actualAddress, persistentDiagnosticAddressCaches(cache, p.cache, rule.RelayChain)...)
-		return resolveSample(err)
+		selection := selectedAddress()
+		actualAddress := resolveProbeAddress(candidate.dialAddress, selection.address)
+		relayChain := diagnosticRelayChainForObservation(rule.RelayChain, candidate.relayChain, selection.path)
+		markDiagnosticAddressFailureAll(relayChain, actualAddress, persistentDiagnosticAddressCaches(cache, p.cache, relayChain)...)
+		return resolveSample(err), selection.path
 	}
 	totalDuration := time.Since(start)
 	transferDuration := totalDuration - headerLatency
@@ -148,12 +172,14 @@ func (p *HTTPProber) probeCandidate(ctx context.Context, cache *backends.Cache, 
 	if candidate.backendObservationKey != "" {
 		cache.ObserveBackendSuccess(candidate.backendObservationKey, headerLatency, transferDuration, written)
 	}
-	actualAddress := resolveProbeAddress(candidate.dialAddress, selectedAddress())
-	observeDiagnosticAddressSuccessAll(rule.RelayChain, actualAddress, headerLatency, transferDuration, written, persistentDiagnosticAddressCaches(cache, p.cache, rule.RelayChain)...)
+	selection := selectedAddress()
+	actualAddress := resolveProbeAddress(candidate.dialAddress, selection.address)
+	relayChain := diagnosticRelayChainForObservation(rule.RelayChain, candidate.relayChain, selection.path)
+	observeDiagnosticAddressSuccessAll(relayChain, actualAddress, headerLatency, transferDuration, written, persistentDiagnosticAddressCaches(cache, p.cache, relayChain)...)
 
-	sample := LatencySample(attempt, httpProbeLabelForAddress(candidate, actualAddress), totalDuration, resp.StatusCode)
+	sample := TransferSample(attempt, httpProbeLabelForAddress(candidate, actualAddress), totalDuration, resp.StatusCode, written, transferDuration)
 	sample.Address = actualAddress
-	return sample
+	return sample, selection.path
 }
 
 func (p *HTTPProber) doProbeRequest(ctx context.Context, client *http.Client, rule model.HTTPRule, candidate httpProbeCandidate, method string) (*http.Response, error) {
@@ -206,10 +232,10 @@ func httpCandidates(ctx context.Context, cache *backends.Cache, rule model.HTTPR
 			continue
 		}
 		target := parsed[indices[idx]]
-		if len(rule.RelayChain) > 0 {
+		if ruleUsesHTTPRelay(rule) {
 			// Preserve the configured host for relay chains so the final hop resolves DNS.
 			dialAddress := httpProbeTargetAddress(target)
-			if cache.IsInBackoff(backends.RelayBackoffKey(rule.RelayChain, dialAddress)) {
+			if cache.IsInBackoff(backends.RelayBackoffKeyForLayers(rule.RelayChain, rule.RelayLayers, dialAddress)) {
 				continue
 			}
 			clone := *target
@@ -489,6 +515,51 @@ func adaptiveSummaryFromObservation(summary backends.ObservationSummary, preferr
 	return adaptive
 }
 
+func applyCurrentHTTPThroughput(reports []BackendReport, samples []Sample) {
+	throughputByBackend := currentThroughputByBackend(samples)
+	for i := range reports {
+		applyCurrentHTTPThroughputToReport(&reports[i], throughputByBackend)
+	}
+}
+
+func applyCurrentHTTPThroughputToReport(report *BackendReport, throughputByBackend map[string]float64) float64 {
+	maxThroughput := throughputByBackend[report.Backend]
+	for i := range report.Children {
+		childThroughput := applyCurrentHTTPThroughputToReport(&report.Children[i], throughputByBackend)
+		if childThroughput > maxThroughput {
+			maxThroughput = childThroughput
+		}
+	}
+	if maxThroughput > 0 && report.Adaptive != nil && report.Adaptive.SustainedThroughputBps <= 0 {
+		report.Adaptive.SustainedThroughputBps = roundMetric(maxThroughput)
+	}
+	return maxThroughput
+}
+
+func currentThroughputByBackend(samples []Sample) map[string]float64 {
+	weightedBytes := make(map[string]float64)
+	weightedSeconds := make(map[string]float64)
+	for _, sample := range samples {
+		if !sample.Success || strings.TrimSpace(sample.Backend) == "" || sample.BytesRead <= 0 || sample.ThroughputBps <= 0 {
+			continue
+		}
+		seconds := float64(sample.BytesRead) / sample.ThroughputBps
+		if seconds <= 0 {
+			continue
+		}
+		weightedBytes[sample.Backend] += float64(sample.BytesRead)
+		weightedSeconds[sample.Backend] += seconds
+	}
+	throughput := make(map[string]float64, len(weightedBytes))
+	for backend, bytesRead := range weightedBytes {
+		seconds := weightedSeconds[backend]
+		if seconds > 0 {
+			throughput[backend] = bytesRead / seconds
+		}
+	}
+	return throughput
+}
+
 func preferredReason(preferred bool) string {
 	if !preferred {
 		return ""
@@ -518,20 +589,28 @@ func httpProbeTargetAddress(target *url.URL) string {
 }
 
 func (p *HTTPProber) hydrateRelayCandidates(ctx context.Context, rule model.HTTPRule, relayListeners []model.RelayListener, candidates []httpProbeCandidate) ([]httpProbeCandidate, error) {
-	if len(rule.RelayChain) == 0 || len(candidates) == 0 {
+	if !ruleUsesHTTPRelay(rule) || len(candidates) == 0 {
 		return candidates, nil
 	}
 	if p.relayProvider == nil {
 		return nil, fmt.Errorf("relay provider is required")
 	}
-	hops, err := resolveHTTPRelayHops(rule, relayListeners)
-	if err != nil {
-		return nil, err
-	}
 
 	out := make([]httpProbeCandidate, 0, len(candidates))
 	for _, candidate := range candidates {
 		hydrated := candidate
+		paths, err := resolveDiagnosticHTTPRelayPaths(rule, relayListeners, candidate.dialAddress)
+		if err != nil {
+			return nil, err
+		}
+		hydrated.relayPaths = paths
+		if len(paths) > 0 {
+			hydrated.relayChain = append([]int(nil), paths[0].IDs...)
+		}
+		hops := []relay.Hop(nil)
+		if len(paths) > 0 {
+			hops = paths[0].Hops
+		}
 		addresses, err := diagnosticRelayResolveCandidates(ctx, candidate.dialAddress, hops, p.relayProvider)
 		if err == nil && len(addresses) > 0 {
 			hydrated.resolvedCandidates = make([]httpResolvedCandidate, 0, len(addresses))
@@ -566,30 +645,51 @@ func httpProbeLabelForAddress(candidate httpProbeCandidate, address string) stri
 	return candidate.backendLabel
 }
 
-func (p *HTTPProber) clientForCandidate(rule model.HTTPRule, relayListeners []model.RelayListener, candidate httpProbeCandidate) (*http.Client, func() string, error) {
+type diagnosticRelaySelection struct {
+	address string
+	path    []int
+}
+
+func (p *HTTPProber) clientForCandidate(rule model.HTTPRule, relayListeners []model.RelayListener, candidate httpProbeCandidate) (*http.Client, func() diagnosticRelaySelection, error) {
 	baseTransport, ok := p.httpClient.Transport.(*http.Transport)
 	if !ok || baseTransport == nil {
 		baseTransport = http.DefaultTransport.(*http.Transport).Clone()
 	} else {
 		baseTransport = baseTransport.Clone()
 	}
-	selectedAddress := ""
+	selected := diagnosticRelaySelection{}
 
-	if len(rule.RelayChain) > 0 {
+	if ruleUsesHTTPRelay(rule) {
 		if p.relayProvider == nil {
 			return nil, nil, fmt.Errorf("relay provider is required")
 		}
-		hops, err := resolveHTTPRelayHops(rule, relayListeners)
-		if err != nil {
-			return nil, nil, err
+		paths := candidate.relayPaths
+		if len(paths) == 0 {
+			var err error
+			paths, err = resolveDiagnosticHTTPRelayPaths(rule, relayListeners, candidate.dialAddress)
+			if err != nil {
+				return nil, nil, err
+			}
 		}
+		racer := relayplan.Racer{Dialer: diagnosticRelayPathDialer{provider: p.relayProvider}, Cache: p.cache, Concurrency: 3, MaxPaths: 32}
 		baseTransport.DialContext = func(ctx context.Context, network, _ string) (net.Conn, error) {
-			conn, result, err := diagnosticRelayDialWithResult(ctx, network, candidate.dialAddress, hops, p.relayProvider)
+			requestPaths := cloneDiagnosticRelayPaths(paths)
+			for i := range requestPaths {
+				requestPaths[i].Key = relayplan.PathKey("relay_path", requestPaths[i].IDs, candidate.dialAddress)
+			}
+			result, err := racer.Race(ctx, relayplan.Request{
+				Network: network,
+				Target:  candidate.dialAddress,
+				Paths:   requestPaths,
+			})
 			if err != nil {
 				return nil, err
 			}
-			selectedAddress = result.SelectedAddress
-			return conn, nil
+			selected = diagnosticRelaySelection{
+				address: result.DialResult.SelectedAddress,
+				path:    append([]int(nil), result.Selected.IDs...),
+			}
+			return result.Conn, nil
 		}
 	} else {
 		dialer := &net.Dialer{Timeout: p.timeout}
@@ -601,8 +701,8 @@ func (p *HTTPProber) clientForCandidate(rule model.HTTPRule, relayListeners []mo
 	return &http.Client{
 			Timeout:   p.timeout,
 			Transport: baseTransport,
-		}, func() string {
-			return selectedAddress
+		}, func() diagnosticRelaySelection {
+			return selected
 		}, nil
 }
 
@@ -620,32 +720,40 @@ func httpPortWithDefault(target *url.URL) int {
 	return 80
 }
 
-func resolveHTTPRelayHops(rule model.HTTPRule, relayListeners []model.RelayListener) ([]relay.Hop, error) {
-	relayListenersByID := make(map[int]model.RelayListener, len(relayListeners))
-	for _, listener := range relayListeners {
-		relayListenersByID[listener.ID] = listener
-	}
+func ruleUsesHTTPRelay(rule model.HTTPRule) bool {
+	return len(rule.RelayChain) > 0 || len(rule.RelayLayers) > 0
+}
 
-	hops := make([]relay.Hop, 0, len(rule.RelayChain))
-	for _, listenerID := range rule.RelayChain {
-		listener, ok := relayListenersByID[listenerID]
-		if !ok {
-			return nil, fmt.Errorf("http rule %q: relay listener %d not found", rule.FrontendURL, listenerID)
-		}
-		if !listener.Enabled {
-			return nil, fmt.Errorf("http rule %q: relay listener %d is disabled", rule.FrontendURL, listenerID)
-		}
-		if err := relay.ValidateListener(listener); err != nil {
-			return nil, fmt.Errorf("http rule %q: relay listener %d: %w", rule.FrontendURL, listenerID, err)
-		}
-		host, port := relayHopDialEndpoint(listener)
-		hops = append(hops, relay.Hop{
-			Address:    net.JoinHostPort(host, strconv.Itoa(port)),
-			ServerName: host,
-			Listener:   listener,
-		})
+func resolveHTTPRelayHops(rule model.HTTPRule, relayListeners []model.RelayListener) ([]relay.Hop, error) {
+	paths, err := resolveDiagnosticHTTPRelayPaths(rule, relayListeners, "")
+	if err != nil || len(paths) == 0 {
+		return nil, err
 	}
-	return hops, nil
+	return paths[0].Hops, nil
+}
+
+func resolveDiagnosticHTTPRelayPaths(rule model.HTTPRule, relayListeners []model.RelayListener, target string) ([]relayplan.Path, error) {
+	return resolveDiagnosticRelayPaths(fmt.Sprintf("http rule %q", rule.FrontendURL), rule.RelayChain, rule.RelayLayers, relayListeners, target)
+}
+
+type diagnosticRelayPathDialer struct {
+	provider relay.TLSMaterialProvider
+}
+
+func (d diagnosticRelayPathDialer) DialPath(ctx context.Context, req relayplan.Request, path relayplan.Path) (net.Conn, relay.DialResult, error) {
+	return diagnosticRelayDialWithResult(ctx, req.Network, req.Target, path.Hops, d.provider, req.Options...)
+}
+
+func cloneDiagnosticRelayPaths(paths []relayplan.Path) []relayplan.Path {
+	cloned := make([]relayplan.Path, len(paths))
+	for i, path := range paths {
+		cloned[i] = relayplan.Path{
+			IDs:  append([]int(nil), path.IDs...),
+			Hops: append([]relay.Hop(nil), path.Hops...),
+			Key:  path.Key,
+		}
+	}
+	return cloned
 }
 
 func relayHopDialEndpoint(listener model.RelayListener) (string, int) {

@@ -1124,6 +1124,46 @@ func TestRelayServiceDeleteRejectsReferencedListener(t *testing.T) {
 	}
 }
 
+func TestRelayServiceDeleteRejectsRelayLayerOnlyReference(t *testing.T) {
+	store := &relayCertStore{
+		relayByAgentID: map[string][]storage.RelayListenerRow{
+			"edge-1": {{
+				ID:         2,
+				AgentID:    "edge-1",
+				Name:       "relay-b",
+				ListenHost: "0.0.0.0",
+				ListenPort: 7444,
+				Enabled:    true,
+				TLSMode:    "pin_only",
+				PinSetJSON: `[{"type":"spki_sha256","value":"pin"}]`,
+			}},
+		},
+		httpRulesByID: map[string][]storage.HTTPRuleRow{
+			"edge-2": {{
+				ID:              22,
+				AgentID:         "edge-2",
+				FrontendURL:     "https://relay.example.com",
+				RelayChainJSON:  `[1]`,
+				RelayLayersJSON: `[[1,2]]`,
+			}},
+		},
+		l4RulesByID: map[string][]storage.L4RuleRow{},
+		agents: []storage.AgentRow{
+			{ID: "edge-1"},
+			{ID: "edge-2"},
+		},
+	}
+	svc := NewRelayListenerService(config.Config{LocalAgentID: "local"}, store)
+
+	_, err := svc.Delete(context.Background(), "edge-1", 2)
+	if !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Delete() error = %v", err)
+	}
+	if !strings.Contains(err.Error(), "referenced by HTTP rule #22") {
+		t.Fatalf("Delete() error = %v", err)
+	}
+}
+
 func TestRelayServiceUpdateSwitchingAwayFromAutoCertificateCleansUpOldCert(t *testing.T) {
 	relayCA := mustCreateSelfSignedCA(t, "__relay-ca.internal")
 	manualMaterial := mustCreateSelfSignedCA(t, "manual.example.com")

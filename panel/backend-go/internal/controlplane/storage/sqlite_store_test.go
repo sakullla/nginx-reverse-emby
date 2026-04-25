@@ -441,6 +441,92 @@ func TestStorePersistsHTTPRules(t *testing.T) {
 	}
 }
 
+func TestStorePersistsHTTPRuleRelayLayers(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromGORM(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	err = store.SaveHTTPRules(t.Context(), "local", []HTTPRuleRow{{
+		ID:                9,
+		AgentID:           "local",
+		FrontendURL:       "https://fanout.example.com",
+		BackendURL:        "http://emby:8096",
+		BackendsJSON:      `[{"url":"http://emby:8096"}]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		Enabled:           true,
+		TagsJSON:          `[]`,
+		RelayChainJSON:    `[1,4]`,
+		RelayLayersJSON:   `[[1,2],[4,5]]`,
+		CustomHeadersJSON: `[]`,
+		Revision:          14,
+	}})
+	if err != nil {
+		t.Fatalf("SaveHTTPRules() error = %v", err)
+	}
+
+	rules, err := store.ListHTTPRules(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListHTTPRules() error = %v", err)
+	}
+	if len(rules) != 1 || rules[0].RelayLayersJSON != `[[1,2],[4,5]]` {
+		t.Fatalf("ListHTTPRules() relay_layers = %+v", rules)
+	}
+}
+
+func TestStorePersistsL4RuleRelayLayers(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromGORM(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	err = store.SaveL4Rules(t.Context(), "local", []L4RuleRow{{
+		ID:                7,
+		AgentID:           "local",
+		Name:              "fanout-l4",
+		Protocol:          "tcp",
+		ListenHost:        "0.0.0.0",
+		ListenPort:        9000,
+		UpstreamHost:      "backend",
+		UpstreamPort:      9001,
+		BackendsJSON:      `[{"host":"backend","port":9001}]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		TuningJSON:        `{"proxy_protocol":{"decode":false,"send":false}}`,
+		RelayChainJSON:    `[7,9]`,
+		RelayLayersJSON:   `[[7,8],[9]]`,
+		Enabled:           true,
+		TagsJSON:          `[]`,
+		Revision:          15,
+	}})
+	if err != nil {
+		t.Fatalf("SaveL4Rules() error = %v", err)
+	}
+
+	rules, err := store.ListL4Rules(t.Context(), "local")
+	if err != nil {
+		t.Fatalf("ListL4Rules() error = %v", err)
+	}
+	if len(rules) != 1 || rules[0].RelayLayersJSON != `[[7,8],[9]]` {
+		t.Fatalf("ListL4Rules() relay_layers = %+v", rules)
+	}
+}
+
 func TestStoreNormalizesAdaptiveLoadBalancingForHTTPAndL4(t *testing.T) {
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -1014,6 +1100,117 @@ func TestStoreLoadsAgentSnapshotWithReferencedRelayListenersAndCertificates(t *t
 	}
 	if !containsPolicyID(snapshot.CertificatePolicies, 10) || !containsPolicyID(snapshot.CertificatePolicies, 11) || !containsPolicyID(snapshot.CertificatePolicies, 12) {
 		t.Fatalf("CertificatePolicies missing expected relay dependency ids 10/11/12: %+v", snapshot.CertificatePolicies)
+	}
+}
+
+func TestStoreLoadsAgentSnapshotWithRelayLayerOnlyListeners(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromGORM(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	for _, agentID := range []string{"relay-layer-agent", "relay-layer-peer", "relay-layer-l4-peer"} {
+		if err := store.SaveAgent(t.Context(), AgentRow{
+			ID:             agentID,
+			Name:           agentID,
+			AgentToken:     "token-" + agentID,
+			DesiredVersion: "1.2.3",
+		}); err != nil {
+			t.Fatalf("SaveAgent(%s) error = %v", agentID, err)
+		}
+	}
+
+	if err := store.SaveHTTPRules(t.Context(), "relay-layer-agent", []HTTPRuleRow{{
+		ID:                41,
+		AgentID:           "relay-layer-agent",
+		FrontendURL:       "https://layer-http.example.com",
+		BackendURL:        "http://127.0.0.1:8096",
+		BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		Enabled:           true,
+		RelayChainJSON:    `[11]`,
+		RelayLayersJSON:   `[[11,22]]`,
+		PassProxyHeaders:  true,
+		Revision:          5,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules() error = %v", err)
+	}
+	if err := store.SaveL4Rules(t.Context(), "relay-layer-agent", []L4RuleRow{{
+		ID:                42,
+		AgentID:           "relay-layer-agent",
+		Name:              "layer-l4",
+		Protocol:          "tcp",
+		ListenHost:        "0.0.0.0",
+		ListenPort:        9000,
+		UpstreamHost:      "backend",
+		UpstreamPort:      9001,
+		BackendsJSON:      `[{"host":"backend","port":9001}]`,
+		LoadBalancingJSON: `{"strategy":"adaptive"}`,
+		RelayChainJSON:    `[11]`,
+		RelayLayersJSON:   `[[11,33]]`,
+		Enabled:           true,
+		Revision:          6,
+	}}); err != nil {
+		t.Fatalf("SaveL4Rules() error = %v", err)
+	}
+
+	if err := store.SaveRelayListeners(t.Context(), "relay-layer-agent", []RelayListenerRow{{
+		ID:         11,
+		AgentID:    "relay-layer-agent",
+		Name:       "relay-local",
+		ListenHost: "127.0.0.1",
+		ListenPort: 7443,
+		PublicHost: "relay-local.example.com",
+		PublicPort: 7443,
+		Enabled:    true,
+		Revision:   7,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(relay-layer-agent) error = %v", err)
+	}
+	if err := store.SaveRelayListeners(t.Context(), "relay-layer-peer", []RelayListenerRow{{
+		ID:         22,
+		AgentID:    "relay-layer-peer",
+		Name:       "relay-http-peer",
+		ListenHost: "127.0.0.1",
+		ListenPort: 8443,
+		PublicHost: "relay-http-peer.example.com",
+		PublicPort: 8443,
+		Enabled:    true,
+		Revision:   8,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(relay-layer-peer) error = %v", err)
+	}
+	if err := store.SaveRelayListeners(t.Context(), "relay-layer-l4-peer", []RelayListenerRow{{
+		ID:         33,
+		AgentID:    "relay-layer-l4-peer",
+		Name:       "relay-l4-peer",
+		ListenHost: "127.0.0.1",
+		ListenPort: 9443,
+		PublicHost: "relay-l4-peer.example.com",
+		PublicPort: 9443,
+		Enabled:    true,
+		Revision:   9,
+	}}); err != nil {
+		t.Fatalf("SaveRelayListeners(relay-layer-l4-peer) error = %v", err)
+	}
+
+	snapshot, err := store.LoadAgentSnapshot(t.Context(), "relay-layer-agent", AgentSnapshotInput{})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot() error = %v", err)
+	}
+	if len(snapshot.RelayListeners) != 3 {
+		t.Fatalf("RelayListeners = %+v", snapshot.RelayListeners)
+	}
+	if snapshot.RelayListeners[0].ID != 11 || snapshot.RelayListeners[1].ID != 22 || snapshot.RelayListeners[2].ID != 33 {
+		t.Fatalf("RelayListeners order/ids = %+v", snapshot.RelayListeners)
 	}
 }
 

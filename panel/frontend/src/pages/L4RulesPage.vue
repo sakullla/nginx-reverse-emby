@@ -68,7 +68,7 @@
     <BaseModal
       :model-value="showAddForm || !!editingRule"
       :title="editingRule ? '编辑 L4 规则' : '添加 L4 规则'"
-      size="lg"
+      size="xl"
       :close-on-click-modal="false"
       @update:model-value="closeForm"
     >
@@ -79,7 +79,7 @@
     <BaseModal
       :model-value="showCopyModal"
       title="复制 L4 规则"
-      size="lg"
+      size="xl"
       :close-on-click-modal="false"
       @update:model-value="closeCopy"
     >
@@ -193,8 +193,9 @@ const deletingRule = ref(null)
 const showDiagnostic = ref(false)
 const diagnosticRule = ref(null)
 const diagnosticTaskId = ref('')
+const initialDiagnosticTask = ref(null)
 const { data: diagnosticTaskData } = useDiagnosticTask(agentId, diagnosticTaskId)
-const diagnosticTask = computed(() => diagnosticTaskData.value?.task || null)
+const diagnosticTask = computed(() => diagnosticTaskData.value?.task || initialDiagnosticTask.value)
 
 function startEdit(rule) { editingRule.value = rule }
 function handleCopy(rule) { const { id, ...rest } = rule; copyingRule.value = rest; showCopyModal.value = true }
@@ -208,13 +209,14 @@ async function openDiagnostic(rule) {
   showDiagnostic.value = true
   try {
     const response = await diagnoseL4Rule.mutateAsync(rule.id)
+    initialDiagnosticTask.value = response.task || null
     diagnosticTaskId.value = response.task_id
   } catch (error) {
     closeDiagnostic()
     messageStore.error(error, '启动 L4 规则诊断失败')
   }
 }
-function closeDiagnostic() { showDiagnostic.value = false; diagnosticRule.value = null; diagnosticTaskId.value = '' }
+function closeDiagnostic() { showDiagnostic.value = false; diagnosticRule.value = null; diagnosticTaskId.value = ''; initialDiagnosticTask.value = null }
 </script>
 
 <style scoped>

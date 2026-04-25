@@ -6,13 +6,15 @@ import (
 )
 
 type Sample struct {
-	Attempt    int     `json:"attempt"`
-	Backend    string  `json:"backend,omitempty"`
-	Address    string  `json:"address,omitempty"`
-	Success    bool    `json:"success"`
-	LatencyMS  float64 `json:"latency_ms,omitempty"`
-	StatusCode int     `json:"status_code,omitempty"`
-	Error      string  `json:"error,omitempty"`
+	Attempt       int     `json:"attempt"`
+	Backend       string  `json:"backend,omitempty"`
+	Address       string  `json:"address,omitempty"`
+	Success       bool    `json:"success"`
+	LatencyMS     float64 `json:"latency_ms,omitempty"`
+	StatusCode    int     `json:"status_code,omitempty"`
+	BytesRead     int64   `json:"bytes_read,omitempty"`
+	ThroughputBps float64 `json:"throughput_bps,omitempty"`
+	Error         string  `json:"error,omitempty"`
 }
 
 type Summary struct {
@@ -35,11 +37,37 @@ type BackendReport struct {
 }
 
 type Report struct {
-	Kind     string          `json:"kind"`
-	RuleID   int             `json:"rule_id"`
-	Summary  Summary         `json:"summary"`
-	Backends []BackendReport `json:"backends,omitempty"`
-	Samples  []Sample        `json:"samples"`
+	Kind              string            `json:"kind"`
+	RuleID            int               `json:"rule_id"`
+	Summary           Summary           `json:"summary"`
+	Backends          []BackendReport   `json:"backends,omitempty"`
+	Samples           []Sample          `json:"samples"`
+	RelayPaths        []RelayPathReport `json:"relay_paths,omitempty"`
+	SelectedRelayPath []int             `json:"selected_relay_path,omitempty"`
+}
+
+type RelayHopReport struct {
+	From           string  `json:"from,omitempty"`
+	FromListenerID int     `json:"from_listener_id,omitempty"`
+	FromListenerName string `json:"from_listener_name,omitempty"`
+	FromAgentName    string `json:"from_agent_name,omitempty"`
+	To             string  `json:"to,omitempty"`
+	ToListenerID   int     `json:"to_listener_id,omitempty"`
+	ToListenerName string  `json:"to_listener_name,omitempty"`
+	ToAgentName    string  `json:"to_agent_name,omitempty"`
+	LatencyMS      float64 `json:"latency_ms,omitempty"`
+	Success        bool    `json:"success"`
+	Error          string  `json:"error,omitempty"`
+}
+
+type RelayPathReport struct {
+	Path      []int            `json:"path"`
+	Selected  bool             `json:"selected,omitempty"`
+	Success   bool             `json:"success"`
+	LatencyMS float64          `json:"latency_ms,omitempty"`
+	Error     string           `json:"error,omitempty"`
+	Adaptive  *AdaptiveSummary `json:"adaptive,omitempty"`
+	Hops      []RelayHopReport `json:"hops,omitempty"`
 }
 
 type AdaptiveSummary struct {
@@ -141,6 +169,15 @@ func LatencySample(attempt int, backend string, latency time.Duration, statusCod
 		LatencyMS:  roundMetric(float64(latency) / float64(time.Millisecond)),
 		StatusCode: statusCode,
 	}
+}
+
+func TransferSample(attempt int, backend string, latency time.Duration, statusCode int, bytesRead int64, transferDuration time.Duration) Sample {
+	sample := LatencySample(attempt, backend, latency, statusCode)
+	sample.BytesRead = bytesRead
+	if bytesRead > 0 && transferDuration > 0 {
+		sample.ThroughputBps = roundMetric(float64(bytesRead) / transferDuration.Seconds())
+	}
+	return sample
 }
 
 func FailureSample(attempt int, backend string, err error) Sample {

@@ -745,6 +745,202 @@ func TestTCPProberDiagnoseRelayChainUsesRemoteResolvedCandidatesAndSelectedAddre
 	if got := report.Backends[0].Children[0].Address; got != selectedAddress {
 		t.Fatalf("first child address = %q", got)
 	}
+	if len(report.RelayPaths) != 1 {
+		t.Fatalf("RelayPaths = %+v", report.RelayPaths)
+	}
+	if len(report.SelectedRelayPath) != 1 || report.SelectedRelayPath[0] != 302 {
+		t.Fatalf("SelectedRelayPath = %+v", report.SelectedRelayPath)
+	}
+}
+
+func TestTCPProberDiagnoseReportsRelayLayerPaths(t *testing.T) {
+	actualAddress, _, stopTarget := startDiagnosticTCPTarget(t)
+	defer stopTarget()
+
+	_, actualPort := splitDiagnosticTCPAddr(t, actualAddress)
+	provider := newDiagnosticTLSMaterialProvider()
+	listenerA := newDiagnosticRelayListener(t, provider, 501, "relay-a.internal.test")
+	listenerA.Name = "Relay A"
+	listenerB := newDiagnosticRelayListener(t, provider, 502, "relay-b.internal.test")
+	listenerB.Name = "Relay B"
+	previousDialWithResult := diagnosticRelayDialWithResult
+	t.Cleanup(func() {
+		diagnosticRelayDialWithResult = previousDialWithResult
+	})
+	diagnosticRelayDialWithResult = func(ctx context.Context, network, target string, chain []relay.Hop, provider relay.TLSMaterialProvider, opts ...relay.DialOptions) (net.Conn, relay.DialResult, error) {
+		conn, err := (&net.Dialer{}).DialContext(ctx, network, actualAddress)
+		if err != nil {
+			return nil, relay.DialResult{}, err
+		}
+		return conn, relay.DialResult{SelectedAddress: target}, nil
+	}
+
+	prober := NewTCPProber(TCPProberConfig{
+		Attempts:      1,
+		Timeout:       time.Second,
+		RelayProvider: provider,
+	})
+	report, err := prober.Diagnose(context.Background(), model.L4Rule{
+		ID:         113,
+		Protocol:   "tcp",
+		ListenHost: "0.0.0.0",
+		ListenPort: 9553,
+		RelayLayers: [][]int{{
+			501,
+			502,
+		}},
+		Backends: []model.L4Backend{{
+			Host: "relay-target.example",
+			Port: actualPort,
+		}},
+	}, []model.RelayListener{listenerA, listenerB})
+	if err != nil {
+		t.Fatalf("Diagnose() error = %v", err)
+	}
+	if len(report.RelayPaths) != 2 {
+		t.Fatalf("RelayPaths = %+v", report.RelayPaths)
+	}
+	if len(report.SelectedRelayPath) != 1 {
+		t.Fatalf("SelectedRelayPath = %+v", report.SelectedRelayPath)
+	}
+	if report.RelayPaths[0].Path[0] != 501 {
+		t.Fatalf("first relay path = %+v", report.RelayPaths[0])
+	}
+	if len(report.RelayPaths[0].Hops) != 2 {
+		t.Fatalf("first relay path hops = %+v", report.RelayPaths[0].Hops)
+	}
+	if got := report.RelayPaths[0].Hops[0].ToListenerName; got != "Relay A" {
+		t.Fatalf("first hop listener name = %q", got)
+	}
+	if !report.RelayPaths[0].Success || report.RelayPaths[0].LatencyMS <= 0 {
+		t.Fatalf("first relay path status = %+v", report.RelayPaths[0])
+	}
+	selectedCount := 0
+	for _, relayPath := range report.RelayPaths {
+		if relayPath.Selected {
+			selectedCount++
+		}
+	}
+	if selectedCount != 1 {
+		t.Fatalf("selected relay paths = %+v", report.RelayPaths)
+	}
+}
+
+func TestTCPProberDiagnoseUsesSuccessfulRelayLayerPathForSamples(t *testing.T) {
+	actualAddress, _, stopTarget := startDiagnosticTCPTarget(t)
+	defer stopTarget()
+
+	_, actualPort := splitDiagnosticTCPAddr(t, actualAddress)
+	provider := newDiagnosticTLSMaterialProvider()
+	listenerA := newDiagnosticRelayListener(t, provider, 511, "relay-a.internal.test")
+	listenerB := newDiagnosticRelayListener(t, provider, 512, "relay-b.internal.test")
+	previousDialWithResult := diagnosticRelayDialWithResult
+	t.Cleanup(func() {
+		diagnosticRelayDialWithResult = previousDialWithResult
+	})
+	diagnosticRelayDialWithResult = func(ctx context.Context, network, target string, chain []relay.Hop, provider relay.TLSMaterialProvider, opts ...relay.DialOptions) (net.Conn, relay.DialResult, error) {
+		if len(chain) > 0 && chain[0].Listener.ID == 511 {
+			return nil, relay.DialResult{}, fmt.Errorf("relay path unavailable")
+		}
+		conn, err := (&net.Dialer{}).DialContext(ctx, network, actualAddress)
+		if err != nil {
+			return nil, relay.DialResult{}, err
+		}
+		return conn, relay.DialResult{SelectedAddress: target}, nil
+	}
+
+	prober := NewTCPProber(TCPProberConfig{
+		Attempts:      1,
+		Timeout:       time.Second,
+		RelayProvider: provider,
+	})
+	report, err := prober.Diagnose(context.Background(), model.L4Rule{
+		ID:         114,
+		Protocol:   "tcp",
+		ListenHost: "0.0.0.0",
+		ListenPort: 9554,
+		RelayLayers: [][]int{{
+			511,
+			512,
+		}},
+		Backends: []model.L4Backend{{
+			Host: "relay-target.example",
+			Port: actualPort,
+		}},
+	}, []model.RelayListener{listenerA, listenerB})
+	if err != nil {
+		t.Fatalf("Diagnose() error = %v", err)
+	}
+	if report.Summary.Succeeded != 1 || report.Summary.Failed != 0 {
+		t.Fatalf("Summary = %+v", report.Summary)
+	}
+	if len(report.Samples) != 1 || !report.Samples[0].Success {
+		t.Fatalf("Samples = %+v", report.Samples)
+	}
+	if len(report.SelectedRelayPath) != 1 || report.SelectedRelayPath[0] != 512 {
+		t.Fatalf("SelectedRelayPath = %+v", report.SelectedRelayPath)
+	}
+}
+
+func TestTCPProberDiagnoseAttributesRelayLayerSampleToSelectedPath(t *testing.T) {
+	actualAddress, _, stopTarget := startDiagnosticTCPTarget(t)
+	defer stopTarget()
+
+	_, actualPort := splitDiagnosticTCPAddr(t, actualAddress)
+	provider := newDiagnosticTLSMaterialProvider()
+	listenerA := newDiagnosticRelayListener(t, provider, 521, "relay-a.internal.test")
+	listenerB := newDiagnosticRelayListener(t, provider, 522, "relay-b.internal.test")
+	previousDialWithResult := diagnosticRelayDialWithResult
+	t.Cleanup(func() {
+		diagnosticRelayDialWithResult = previousDialWithResult
+	})
+	diagnosticRelayDialWithResult = func(ctx context.Context, network, target string, chain []relay.Hop, provider relay.TLSMaterialProvider, opts ...relay.DialOptions) (net.Conn, relay.DialResult, error) {
+		if len(chain) > 0 && chain[0].Listener.ID == 521 {
+			return nil, relay.DialResult{}, fmt.Errorf("relay path unavailable")
+		}
+		conn, err := (&net.Dialer{}).DialContext(ctx, network, actualAddress)
+		if err != nil {
+			return nil, relay.DialResult{}, err
+		}
+		return conn, relay.DialResult{SelectedAddress: target}, nil
+	}
+
+	cache := backends.NewCache(backends.Config{})
+	prober := NewTCPProber(TCPProberConfig{
+		Attempts:      1,
+		Timeout:       time.Second,
+		Cache:         cache,
+		RelayProvider: provider,
+	})
+	target := "relay-target.example:" + strconv.Itoa(actualPort)
+	_, err := prober.Diagnose(context.Background(), model.L4Rule{
+		ID:         115,
+		Protocol:   "tcp",
+		ListenHost: "0.0.0.0",
+		ListenPort: 9555,
+		RelayLayers: [][]int{{
+			521,
+			522,
+		}},
+		Backends: []model.L4Backend{{
+			Host: "relay-target.example",
+			Port: actualPort,
+		}},
+	}, []model.RelayListener{listenerA, listenerB})
+	if err != nil {
+		t.Fatalf("Diagnose() error = %v", err)
+	}
+	selectedKey := backends.RelayBackoffKey([]int{522}, target)
+	firstKey := backends.RelayBackoffKey([]int{521}, target)
+	if summary := cache.Summary(selectedKey); summary.RecentSucceeded != 1 {
+		t.Fatalf("selected path summary = %+v, want success at %s", summary, selectedKey)
+	}
+	if summary := cache.Summary(firstKey); summary.RecentSucceeded != 0 {
+		t.Fatalf("first path summary = %+v, want no selected-path success at %s", summary, firstKey)
+	}
+	if summary := cache.Summary(target); summary.RecentSucceeded != 0 {
+		t.Fatalf("direct target summary = %+v, want no relay-layer success on direct key", summary)
+	}
 }
 
 func TestTCPProberDiagnoseAdaptiveHistoryExcludesCurrentProbeSamples(t *testing.T) {
@@ -807,6 +1003,43 @@ func TestTCPCandidatesRelayChainHonorsScopedBackoffKey(t *testing.T) {
 	}
 	if len(candidates) != 0 {
 		t.Fatalf("candidates = %+v", candidates)
+	}
+}
+
+func TestTCPCandidatesRelayLayersHonorLayeredBackoffKey(t *testing.T) {
+	cache := backends.NewCache(backends.Config{})
+
+	rule := model.L4Rule{
+		ID:         2,
+		Protocol:   "tcp",
+		ListenHost: "0.0.0.0",
+		ListenPort: 9550,
+		RelayLayers: [][]int{
+			{302, 303},
+			{402},
+		},
+		Backends: []model.L4Backend{{
+			Host: "relay-target.example",
+			Port: 9001,
+		}},
+	}
+
+	cache.MarkFailure(backends.RelayBackoffKey(rule.RelayChain, "relay-target.example:9001"))
+	candidates, err := tcpCandidates(context.Background(), cache, rule)
+	if err != nil {
+		t.Fatalf("tcpCandidates() error = %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("legacy relay backoff key filtered layered candidates: %+v", candidates)
+	}
+
+	cache.MarkFailure(backends.RelayBackoffKeyForLayers(rule.RelayChain, rule.RelayLayers, "relay-target.example:9001"))
+	candidates, err = tcpCandidates(context.Background(), cache, rule)
+	if err != nil {
+		t.Fatalf("tcpCandidates() error = %v", err)
+	}
+	if len(candidates) != 0 {
+		t.Fatalf("layered relay backoff key did not filter candidates: %+v", candidates)
 	}
 }
 

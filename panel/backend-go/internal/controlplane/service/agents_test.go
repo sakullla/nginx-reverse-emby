@@ -466,6 +466,7 @@ func TestAgentServiceListHTTPRulesNormalizesStoredFields(t *testing.T) {
 				TagsJSON:          `["media"]`,
 				ProxyRedirect:     true,
 				RelayChainJSON:    `[1,2]`,
+				RelayLayersJSON:   `[[1,3],[2]]`,
 				PassProxyHeaders:  true,
 				UserAgent:         "",
 				CustomHeadersJSON: `[{"name":"X-Test","value":"1"}]`,
@@ -488,6 +489,9 @@ func TestAgentServiceListHTTPRulesNormalizesStoredFields(t *testing.T) {
 	}
 	if rule.LoadBalancing.Strategy != "adaptive" {
 		t.Fatalf("LoadBalancing = %+v", rule.LoadBalancing)
+	}
+	if len(rule.RelayLayers) != 2 || len(rule.RelayLayers[0]) != 2 || rule.RelayLayers[0][1] != 3 {
+		t.Fatalf("RelayLayers = %+v", rule.RelayLayers)
 	}
 	if len(rule.CustomHeaders) != 1 || rule.CustomHeaders[0].Name != "X-Test" {
 		t.Fatalf("CustomHeaders = %+v", rule.CustomHeaders)
@@ -1429,6 +1433,42 @@ func TestAgentServiceDeleteRejectsReferencedRelayListenerAndCleansUpRemoteAgent(
 	}
 	if len(store.rulesByID["edge-a"]) != 0 || len(store.l4RulesByID["edge-a"]) != 0 || len(store.relayByID["edge-a"]) != 0 {
 		t.Fatalf("agent resources not cleaned up: rules=%+v l4=%+v relay=%+v", store.rulesByID["edge-a"], store.l4RulesByID["edge-a"], store.relayByID["edge-a"])
+	}
+}
+
+func TestAgentServiceDeleteRejectsRelayLayerOnlyReference(t *testing.T) {
+	cfg := config.Config{
+		EnableLocalAgent: true,
+		LocalAgentID:     "local",
+	}
+	store := &fakeStore{
+		agents: []storage.AgentRow{
+			{ID: "edge-a", Name: "edge-a", AgentToken: "token-a"},
+			{ID: "edge-b", Name: "edge-b", AgentToken: "token-b"},
+		},
+		relayByID: map[string][]storage.RelayListenerRow{
+			"edge-a": {{
+				ID:      8,
+				AgentID: "edge-a",
+				Name:    "relay-b",
+			}},
+		},
+		rulesByID: map[string][]storage.HTTPRuleRow{
+			"edge-b": {{
+				ID:              10,
+				AgentID:         "edge-b",
+				FrontendURL:     "https://relay.example.com",
+				RelayChainJSON:  `[7]`,
+				RelayLayersJSON: `[[7,8]]`,
+			}},
+		},
+		l4RulesByID: map[string][]storage.L4RuleRow{},
+	}
+	svc := NewAgentService(cfg, store)
+
+	_, err := svc.Delete(context.Background(), "edge-a")
+	if err == nil || err.Error() != "invalid argument: cannot delete agent edge-a: relay listener 8 is referenced by HTTP rule #10 on agent edge-b" {
+		t.Fatalf("Delete() error = %v", err)
 	}
 }
 

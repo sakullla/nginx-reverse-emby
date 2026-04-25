@@ -147,6 +147,7 @@ func (s *LocalTaskSession) diagnoseHTTPRule(ctx context.Context, envelope servic
 	if err != nil {
 		return nil, err
 	}
+	snapshot.Rules = upsertHTTPDiagnosticRule(snapshot.Rules, row)
 	return runEmbeddedDiagnostics(ctx, diagnosticDataDirFromContext(ctx), snapshot, envelope)
 }
 
@@ -179,7 +180,40 @@ func (s *LocalTaskSession) diagnoseL4TCPRule(ctx context.Context, envelope servi
 	if err != nil {
 		return nil, err
 	}
+	snapshot.L4Rules = upsertL4DiagnosticRule(snapshot.L4Rules, *target)
 	return runEmbeddedDiagnostics(ctx, diagnosticDataDirFromContext(ctx), snapshot, envelope)
+}
+
+func upsertHTTPDiagnosticRule(rules []storage.HTTPRule, row storage.HTTPRuleRow) []storage.HTTPRule {
+	converted := storage.SnapshotHTTPRules([]storage.HTTPRuleRow{row})
+	if len(converted) == 0 {
+		return rules
+	}
+	target := converted[0]
+	next := append([]storage.HTTPRule(nil), rules...)
+	for i := range next {
+		if next[i].ID == target.ID {
+			next[i] = target
+			return next
+		}
+	}
+	return append(next, target)
+}
+
+func upsertL4DiagnosticRule(rules []storage.L4Rule, row storage.L4RuleRow) []storage.L4Rule {
+	converted := storage.SnapshotL4Rules([]storage.L4RuleRow{row})
+	if len(converted) == 0 {
+		return rules
+	}
+	target := converted[0]
+	next := append([]storage.L4Rule(nil), rules...)
+	for i := range next {
+		if next[i].ID == target.ID {
+			next[i] = target
+			return next
+		}
+	}
+	return append(next, target)
 }
 
 func taskRuleID(payload map[string]any) (int, error) {

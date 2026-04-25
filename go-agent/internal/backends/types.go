@@ -41,6 +41,21 @@ func RelayBackoffKey(chain []int, addr string) string {
 	return "relay|" + strings.Join(parts, "-") + "|" + addr
 }
 
+func RelayBackoffKeyForLayers(chain []int, layers [][]int, addr string) string {
+	if len(layers) == 0 {
+		return RelayBackoffKey(chain, addr)
+	}
+	layerParts := make([]string, 0, len(layers))
+	for _, layer := range layers {
+		ids := make([]string, 0, len(layer))
+		for _, id := range layer {
+			ids = append(ids, strconv.Itoa(id))
+		}
+		layerParts = append(layerParts, strings.Join(ids, "-"))
+	}
+	return "relay_layers|" + strings.Join(layerParts, "/") + "|" + addr
+}
+
 type Resolver interface {
 	LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error)
 }

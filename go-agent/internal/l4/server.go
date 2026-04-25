@@ -16,6 +16,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayplan"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
@@ -47,10 +48,23 @@ type Server struct {
 
 	relayListenersByID map[int]model.RelayListener
 	relayProvider      RelayMaterialProvider
+	relayPathDialer    relayplan.Dialer
 
 	tcpMu    sync.Mutex
 	tcpConns map[net.Conn]struct{}
 	closing  bool
+}
+
+type relayPathDialer struct {
+	provider RelayMaterialProvider
+}
+
+func (d relayPathDialer) DialPath(ctx context.Context, req relayplan.Request, path relayplan.Path) (net.Conn, relay.DialResult, error) {
+	options := relay.DialOptions{}
+	if len(req.Options) > 0 {
+		options = req.Options[0]
+	}
+	return relay.DialWithResult(ctx, req.Network, req.Target, path.Hops, d.provider, options)
 }
 
 type udpSession struct {
@@ -155,6 +169,7 @@ func NewServerWithResources(
 		tcpListeners:          nil,
 		relayListenersByID:    relayListenersByID,
 		relayProvider:         relayProvider,
+		relayPathDialer:       relayPathDialer{provider: relayProvider},
 	}
 	for _, rule := range rules {
 		if err := ValidateRule(rule); err != nil {
@@ -228,7 +243,7 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 	}
 
 	var initialPayload []byte
-	if len(rule.RelayChain) > 0 && !rule.Tuning.ProxyProtocol.Send {
+	if ruleUsesRelay(rule) && !rule.Tuning.ProxyProtocol.Send {
 		initialPayload, downstreamSource, err = s.prefetchRelayInitialPayload(client, downstreamSource)
 		if err != nil {
 			return
@@ -377,14 +392,10 @@ func (s *Server) dialTCPUpstream(rule model.L4Rule, dialOptions relay.DialOption
 		target := candidate.address
 		start := s.now()
 		var upstream net.Conn
-		if len(rule.RelayChain) == 0 {
+		if !ruleUsesRelay(rule) {
 			upstream, err = (&net.Dialer{}).DialContext(s.ctx, "tcp", target)
 		} else {
-			hops, hopErr := s.resolveRelayHops(rule)
-			if hopErr != nil {
-				return nil, l4Candidate{}, 0, hopErr
-			}
-			upstream, err = relay.Dial(s.ctx, "tcp", target, hops, s.relayProvider, dialOptions)
+			upstream, err = s.dialRelayPath("tcp", target, rule, dialOptions)
 		}
 		if err != nil {
 			if ctxErr := s.ctx.Err(); ctxErr != nil {
@@ -401,6 +412,50 @@ func (s *Server) dialTCPUpstream(rule model.L4Rule, dialOptions relay.DialOption
 		return nil, l4Candidate{}, 0, lastErr
 	}
 	return nil, l4Candidate{}, 0, fmt.Errorf("all backends failed for %s:%d", rule.ListenHost, rule.ListenPort)
+}
+
+func (s *Server) dialRelayPath(network, target string, rule model.L4Rule, dialOptions relay.DialOptions) (net.Conn, error) {
+	paths, err := s.resolveRelayPaths(rule)
+	if err != nil {
+		return nil, err
+	}
+	initialPayload := append([]byte(nil), dialOptions.InitialPayload...)
+	dialOptions.InitialPayload = nil
+	requestPaths := cloneRelayPlanPaths(paths)
+	for i := range requestPaths {
+		requestPaths[i].Key = relayplan.PathKey("relay_path", requestPaths[i].IDs, target)
+	}
+	dialer := s.relayPathDialer
+	if dialer == nil {
+		dialer = relayPathDialer{provider: s.relayProvider}
+	}
+	racer := relayplan.Racer{Dialer: dialer, Cache: s.cache, Concurrency: 3, MaxPaths: 32}
+	result, err := racer.Race(s.ctx, relayplan.Request{
+		Network: network,
+		Target:  target,
+		Paths:   requestPaths,
+		Options: []relay.DialOptions{dialOptions},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(initialPayload) > 0 {
+		if _, err := result.Conn.Write(initialPayload); err != nil {
+			_ = result.Conn.Close()
+			return nil, err
+		}
+	}
+	return result.Conn, nil
+}
+
+func cloneRelayPlanPaths(paths []relayplan.Path) []relayplan.Path {
+	cloned := make([]relayplan.Path, len(paths))
+	for i, path := range paths {
+		cloned[i] = path
+		cloned[i].IDs = append([]int(nil), path.IDs...)
+		cloned[i].Hops = append([]relay.Hop(nil), path.Hops...)
+	}
+	return cloned
 }
 
 func closeTCPWrite(conn net.Conn) {
@@ -613,7 +668,7 @@ func (s *Server) dialUDPUpstream(rule model.L4Rule) (udpUpstream, l4Candidate, e
 	var lastErr error
 	for _, candidate := range candidates {
 		targetAddress := candidate.address
-		if len(rule.RelayChain) == 0 {
+		if !ruleUsesRelay(rule) {
 			addr, err := net.ResolveUDPAddr("udp", targetAddress)
 			if err != nil {
 				lastErr = err
@@ -628,11 +683,7 @@ func (s *Server) dialUDPUpstream(rule model.L4Rule) (udpUpstream, l4Candidate, e
 			return &directUDPUpstream{conn: upstream}, candidate, nil
 		}
 
-		hops, hopErr := s.resolveRelayHops(rule)
-		if hopErr != nil {
-			return nil, l4Candidate{}, hopErr
-		}
-		upstream, err := relay.Dial(s.ctx, "udp", targetAddress, hops, s.relayProvider, relay.DialOptions{
+		upstream, err := s.dialRelayPath("udp", targetAddress, rule, relay.DialOptions{
 			TrafficClass: upstream.TrafficClassBulk,
 		})
 		if err != nil {
@@ -847,10 +898,10 @@ func l4Candidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule)
 		indexesByID[ordered.Address] = indexes[1:]
 		backend := rawBackends[backendIndex]
 		backendID := backends.StableBackendID(net.JoinHostPort(backend.Host, strconv.Itoa(backend.Port)))
-		if len(rule.RelayChain) > 0 {
+		if ruleUsesRelay(rule) {
 			// Preserve the configured host for relay chains so the final hop resolves DNS.
 			dialAddress := net.JoinHostPort(backend.Host, strconv.Itoa(backend.Port))
-			bk := backends.RelayBackoffKey(rule.RelayChain, dialAddress)
+			bk := backends.RelayBackoffKeyForLayers(rule.RelayChain, rule.RelayLayers, dialAddress)
 			if cache.IsInBackoff(bk) {
 				continue
 			}
@@ -882,7 +933,7 @@ func l4Candidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule)
 			}
 			out = append(out, l4Candidate{
 				address:               candidate.Address,
-				directUDPPath:         strings.ToLower(rule.Protocol) == "udp" && len(rule.RelayChain) == 0,
+				directUDPPath:         strings.ToLower(rule.Protocol) == "udp" && !ruleUsesRelay(rule),
 				backendObservationKey: l4ObservationKey(scope, backendID, backendIndex, duplicateCounts[backendID]),
 			})
 		}
@@ -941,7 +992,7 @@ func (s *Server) observeCandidateSuccess(candidate l4Candidate, headerLatency ti
 }
 
 func (s *Server) validateRelayChain(rule model.L4Rule) error {
-	if len(rule.RelayChain) == 0 {
+	if !ruleUsesRelay(rule) {
 		return nil
 	}
 	if s.relayProvider == nil {
@@ -952,26 +1003,43 @@ func (s *Server) validateRelayChain(rule model.L4Rule) error {
 }
 
 func (s *Server) resolveRelayHops(rule model.L4Rule) ([]relay.Hop, error) {
-	hops := make([]relay.Hop, 0, len(rule.RelayChain))
-	for _, listenerID := range rule.RelayChain {
-		listener, ok := s.relayListenersByID[listenerID]
-		if !ok {
-			return nil, fmt.Errorf("relay listener %d not found", listenerID)
-		}
-		if !listener.Enabled {
-			return nil, fmt.Errorf("relay listener %d is disabled", listenerID)
-		}
-		if err := relay.ValidateListener(listener); err != nil {
-			return nil, fmt.Errorf("relay listener %d: %w", listenerID, err)
-		}
-		host, port := relayHopDialEndpoint(listener)
-		hops = append(hops, relay.Hop{
-			Address:    net.JoinHostPort(host, strconv.Itoa(port)),
-			ServerName: host,
-			Listener:   listener,
-		})
+	paths, err := s.resolveRelayPaths(rule)
+	if err != nil || len(paths) == 0 {
+		return nil, err
 	}
-	return hops, nil
+	return paths[0].Hops, nil
+}
+
+func (s *Server) resolveRelayPaths(rule model.L4Rule) ([]relayplan.Path, error) {
+	layers := relayplan.NormalizeLayers(rule.RelayChain, rule.RelayLayers)
+	pathIDs, err := relayplan.ExpandPaths(layers, 32)
+	if err != nil {
+		return nil, err
+	}
+	paths := make([]relayplan.Path, 0, len(pathIDs))
+	for _, ids := range pathIDs {
+		hops := make([]relay.Hop, 0, len(ids))
+		for _, listenerID := range ids {
+			listener, ok := s.relayListenersByID[listenerID]
+			if !ok {
+				return nil, fmt.Errorf("relay listener %d not found", listenerID)
+			}
+			if !listener.Enabled {
+				return nil, fmt.Errorf("relay listener %d is disabled", listenerID)
+			}
+			if err := relay.ValidateListener(listener); err != nil {
+				return nil, fmt.Errorf("relay listener %d: %w", listenerID, err)
+			}
+			host, port := relayHopDialEndpoint(listener)
+			hops = append(hops, relay.Hop{Address: net.JoinHostPort(host, strconv.Itoa(port)), ServerName: host, Listener: listener})
+		}
+		paths = append(paths, relayplan.Path{IDs: append([]int(nil), ids...), Hops: hops})
+	}
+	return paths, nil
+}
+
+func ruleUsesRelay(rule model.L4Rule) bool {
+	return len(rule.RelayChain) > 0 || len(rule.RelayLayers) > 0
 }
 
 func relayHopDialEndpoint(listener model.RelayListener) (string, int) {
@@ -1000,6 +1068,13 @@ func RelayInputsChanged(rules []model.L4Rule, previousRelayListeners, nextRelayL
 		for _, listenerID := range rule.RelayChain {
 			if relayListenerChangedByID(listenerID, previousRelayListeners, nextRelayListeners) {
 				return true
+			}
+		}
+		for _, layer := range rule.RelayLayers {
+			for _, listenerID := range layer {
+				if relayListenerChangedByID(listenerID, previousRelayListeners, nextRelayListeners) {
+					return true
+				}
 			}
 		}
 	}

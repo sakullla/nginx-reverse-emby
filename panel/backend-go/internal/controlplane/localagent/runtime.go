@@ -131,6 +131,7 @@ func toEmbeddedSnapshot(snapshot Snapshot) goagentembedded.Snapshot {
 	embedded.Rules = make([]goagentembedded.HTTPRule, 0, len(snapshot.Rules))
 	for _, rule := range snapshot.Rules {
 		embedded.Rules = append(embedded.Rules, goagentembedded.HTTPRule{
+			ID:               rule.ID,
 			FrontendURL:      rule.FrontendURL,
 			BackendURL:       rule.BackendURL,
 			Backends:         toEmbeddedHTTPBackends(rule.Backends),
@@ -140,12 +141,15 @@ func toEmbeddedSnapshot(snapshot Snapshot) goagentembedded.Snapshot {
 			UserAgent:        rule.UserAgent,
 			CustomHeaders:    toEmbeddedHTTPHeaders(rule.CustomHeaders),
 			RelayChain:       append([]int(nil), rule.RelayChain...),
+			RelayLayers:      cloneRelayLayers(rule.RelayLayers),
 			Revision:         rule.Revision,
 		})
 	}
 	embedded.L4Rules = make([]goagentembedded.L4Rule, 0, len(snapshot.L4Rules))
 	for _, rule := range snapshot.L4Rules {
 		embedded.L4Rules = append(embedded.L4Rules, goagentembedded.L4Rule{
+			ID:            rule.ID,
+			Name:          rule.Name,
 			Protocol:      rule.Protocol,
 			ListenHost:    rule.ListenHost,
 			ListenPort:    rule.ListenPort,
@@ -159,33 +163,34 @@ func toEmbeddedSnapshot(snapshot Snapshot) goagentembedded.Snapshot {
 					Send:   rule.Tuning.ProxyProtocol.Send,
 				},
 			},
-			RelayChain: append([]int(nil), rule.RelayChain...),
-			RelayObfs:  rule.RelayObfs,
-			Revision:   rule.Revision,
+			RelayChain:  append([]int(nil), rule.RelayChain...),
+			RelayLayers: cloneRelayLayers(rule.RelayLayers),
+			RelayObfs:   rule.RelayObfs,
+			Revision:    rule.Revision,
 		})
 	}
 	embedded.RelayListeners = make([]goagentembedded.RelayListener, 0, len(snapshot.RelayListeners))
 	for _, listener := range snapshot.RelayListeners {
 		embedded.RelayListeners = append(embedded.RelayListeners, goagentembedded.RelayListener{
-				ID:                      listener.ID,
-				AgentID:                 listener.AgentID,
-				Name:                    listener.Name,
-				ListenHost:              listener.ListenHost,
-				BindHosts:               append([]string(nil), listener.BindHosts...),
-				ListenPort:              listener.ListenPort,
-				PublicHost:              listener.PublicHost,
-				PublicPort:              listener.PublicPort,
-				Enabled:                 listener.Enabled,
-				CertificateID:           copyOptionalInt(listener.CertificateID),
-				TLSMode:                 listener.TLSMode,
-				TransportMode:           listener.TransportMode,
-				AllowTransportFallback:  listener.AllowTransportFallback,
-				ObfsMode:                listener.ObfsMode,
-				PinSet:                  toEmbeddedRelayPins(listener.PinSet),
-				TrustedCACertificateIDs: append([]int(nil), listener.TrustedCACertificateIDs...),
-				AllowSelfSigned:         listener.AllowSelfSigned,
-				Tags:                    append([]string(nil), listener.Tags...),
-				Revision:                listener.Revision,
+			ID:                      listener.ID,
+			AgentID:                 listener.AgentID,
+			Name:                    listener.Name,
+			ListenHost:              listener.ListenHost,
+			BindHosts:               append([]string(nil), listener.BindHosts...),
+			ListenPort:              listener.ListenPort,
+			PublicHost:              listener.PublicHost,
+			PublicPort:              listener.PublicPort,
+			Enabled:                 listener.Enabled,
+			CertificateID:           copyOptionalInt(listener.CertificateID),
+			TLSMode:                 listener.TLSMode,
+			TransportMode:           listener.TransportMode,
+			AllowTransportFallback:  listener.AllowTransportFallback,
+			ObfsMode:                listener.ObfsMode,
+			PinSet:                  toEmbeddedRelayPins(listener.PinSet),
+			TrustedCACertificateIDs: append([]int(nil), listener.TrustedCACertificateIDs...),
+			AllowSelfSigned:         listener.AllowSelfSigned,
+			Tags:                    append([]string(nil), listener.Tags...),
+			Revision:                listener.Revision,
 		})
 	}
 	embedded.Certificates = make([]goagentembedded.ManagedCertificateBundle, 0, len(snapshot.Certificates))
@@ -278,6 +283,17 @@ func fromEmbeddedSyncRequest(request goagentembedded.SyncRequest) SyncRequest {
 		})
 	}
 	return copyValue
+}
+
+func cloneRelayLayers(layers [][]int) [][]int {
+	if layers == nil {
+		return nil
+	}
+	cloned := make([][]int, len(layers))
+	for i, layer := range layers {
+		cloned[i] = append([]int(nil), layer...)
+	}
+	return cloned
 }
 
 func toEmbeddedHTTPBackends(backends []storage.HTTPBackend) []goagentembedded.HTTPBackend {

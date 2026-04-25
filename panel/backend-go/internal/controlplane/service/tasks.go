@@ -111,16 +111,20 @@ func (s *TaskService) RegisterSession(reg TaskSessionRegistration) error {
 		return fmt.Errorf("%w: task session is required", ErrInvalidArgument)
 	}
 
+	var existingSession TaskSession
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
 	if existing, ok := s.sessions[agentID]; ok && existing.session != nil {
-		_ = existing.session.Close()
+		existingSession = existing.session
 	}
 	s.sessions[agentID] = taskSessionState{
 		id:         strings.TrimSpace(reg.SessionID),
 		remoteAddr: strings.TrimSpace(reg.RemoteAddr),
 		session:    reg.Session,
+	}
+	s.mu.Unlock()
+
+	if existingSession != nil {
+		_ = existingSession.Close()
 	}
 	return nil
 }
@@ -160,22 +164,35 @@ func (s *TaskService) CreateAndDispatch(req TaskCreateRequest) (TaskRecord, erro
 		CreatedAt: record.CreatedAt,
 	}
 
+	s.mu.Lock()
+	s.tasks[record.ID] = record
+	s.mu.Unlock()
+
 	if err := sessionState.session.SendTask(envelope); err != nil {
 		s.mu.Lock()
 		current, stillPresent := s.sessions[agentID]
 		if stillPresent && current.session == sessionState.session {
 			delete(s.sessions, agentID)
 		}
+		currentTask, taskPresent := s.tasks[record.ID]
+		if taskPresent && currentTask.State == "pending" {
+			delete(s.tasks, record.ID)
+		}
 		s.mu.Unlock()
 		_ = sessionState.session.Close()
 		return TaskRecord{}, errTaskSessionUnavailable
 	}
 
-	record.State = "dispatched"
-	record.UpdatedAt = s.now().UTC()
-
 	s.mu.Lock()
-	s.tasks[record.ID] = record
+	currentTask, taskPresent := s.tasks[record.ID]
+	if taskPresent && currentTask.State == "pending" {
+		currentTask.State = "dispatched"
+		currentTask.UpdatedAt = s.now().UTC()
+		s.tasks[record.ID] = currentTask
+		record = currentTask
+	} else if taskPresent {
+		record = currentTask
+	}
 	s.mu.Unlock()
 
 	return record, nil

@@ -200,8 +200,10 @@ type fakeRuleService struct {
 type fakeRuleServiceState struct {
 	listAgentIDs   []string
 	createAgentIDs []string
+	createInputs   []service.HTTPRuleInput
 	updateAgentIDs []string
 	updateIDs      []int
+	updateInputs   []service.HTTPRuleInput
 	deleteAgentIDs []string
 	deleteIDs      []int
 }
@@ -233,17 +235,19 @@ func (f fakeRuleService) Get(_ context.Context, agentID string, id int) (service
 	return service.HTTPRule{}, service.ErrRuleNotFound
 }
 
-func (f fakeRuleService) Create(_ context.Context, agentID string, _ service.HTTPRuleInput) (service.HTTPRule, error) {
+func (f fakeRuleService) Create(_ context.Context, agentID string, input service.HTTPRuleInput) (service.HTTPRule, error) {
 	if f.state != nil {
 		f.state.createAgentIDs = append(f.state.createAgentIDs, agentID)
+		f.state.createInputs = append(f.state.createInputs, input)
 	}
 	return f.createdRule, nil
 }
 
-func (f fakeRuleService) Update(_ context.Context, agentID string, id int, _ service.HTTPRuleInput) (service.HTTPRule, error) {
+func (f fakeRuleService) Update(_ context.Context, agentID string, id int, input service.HTTPRuleInput) (service.HTTPRule, error) {
 	if f.state != nil {
 		f.state.updateAgentIDs = append(f.state.updateAgentIDs, agentID)
 		f.state.updateIDs = append(f.state.updateIDs, id)
+		f.state.updateInputs = append(f.state.updateInputs, input)
 	}
 	return f.updatedRule, nil
 }
@@ -2086,6 +2090,7 @@ func TestMapServiceErrorMapsAgentNotFound(t *testing.T) {
 }
 
 func TestRouterServesHTTPRuleCRUDAndValidation(t *testing.T) {
+	ruleState := &fakeRuleServiceState{}
 	router, err := NewRouter(Dependencies{
 		Config: config.Config{PanelToken: "secret"},
 		SystemService: fakeSystemService{
@@ -2116,9 +2121,10 @@ func TestRouterServesHTTPRuleCRUDAndValidation(t *testing.T) {
 					Revision:         3,
 				}},
 			},
-			createdRule: service.HTTPRule{ID: 2, AgentID: "local", FrontendURL: "https://new.example.com", BackendURL: "http://emby:8096"},
-			updatedRule: service.HTTPRule{ID: 2, AgentID: "local", FrontendURL: "https://updated.example.com", BackendURL: "http://emby:8096"},
+			createdRule: service.HTTPRule{ID: 2, AgentID: "local", FrontendURL: "https://new.example.com", BackendURL: "http://emby:8096", RelayLayers: [][]int{{1, 2}, {3}}},
+			updatedRule: service.HTTPRule{ID: 2, AgentID: "local", FrontendURL: "https://updated.example.com", BackendURL: "http://emby:8096", RelayLayers: [][]int{{4}, {5, 6}}},
 			deletedRule: service.HTTPRule{ID: 2, AgentID: "local", FrontendURL: "https://updated.example.com", BackendURL: "http://emby:8096"},
+			state:       ruleState,
 		},
 		L4RuleService:        fakeL4RuleService{},
 		VersionPolicyService: fakeVersionPolicyService{},
@@ -2155,7 +2161,7 @@ func TestRouterServesHTTPRuleCRUDAndValidation(t *testing.T) {
 		t.Fatalf("GET /api/agents/local/rules = %d", getAliasResp.Code)
 	}
 
-	createReq := httptest.NewRequest(http.MethodPost, "/panel-api/agents/local/rules", bytes.NewBufferString(`{"frontend_url":"https://new.example.com","backend_url":"http://emby:8096"}`))
+	createReq := httptest.NewRequest(http.MethodPost, "/panel-api/agents/local/rules", bytes.NewBufferString(`{"frontend_url":"https://new.example.com","backend_url":"http://emby:8096","relay_layers":[[1,2],[3]]}`))
 	createReq.Header.Set("X-Panel-Token", "secret")
 	createReq.Header.Set("Content-Type", "application/json")
 	createResp := httptest.NewRecorder()
@@ -2173,14 +2179,26 @@ func TestRouterServesHTTPRuleCRUDAndValidation(t *testing.T) {
 	if _, found := createPayload["rule"]; !found {
 		t.Fatalf("POST payload missing rule: %+v", createPayload)
 	}
+	if len(ruleState.createInputs) != 1 || ruleState.createInputs[0].RelayLayers == nil || len(*ruleState.createInputs[0].RelayLayers) != 2 {
+		t.Fatalf("POST relay_layers input = %+v", ruleState.createInputs)
+	}
+	if !strings.Contains(createResp.Body.String(), `"relay_layers":[[1,2],[3]]`) {
+		t.Fatalf("POST response missing relay_layers: %s", createResp.Body.String())
+	}
 
-	updateReq := httptest.NewRequest(http.MethodPut, "/panel-api/agents/local/rules/2", bytes.NewBufferString(`{"frontend_url":"https://updated.example.com"}`))
+	updateReq := httptest.NewRequest(http.MethodPut, "/panel-api/agents/local/rules/2", bytes.NewBufferString(`{"frontend_url":"https://updated.example.com","relay_layers":[[4],[5,6]]}`))
 	updateReq.Header.Set("X-Panel-Token", "secret")
 	updateReq.Header.Set("Content-Type", "application/json")
 	updateResp := httptest.NewRecorder()
 	router.ServeHTTP(updateResp, updateReq)
 	if updateResp.Code != http.StatusOK {
 		t.Fatalf("PUT /panel-api/agents/local/rules/2 = %d", updateResp.Code)
+	}
+	if len(ruleState.updateInputs) != 1 || ruleState.updateInputs[0].RelayLayers == nil || len(*ruleState.updateInputs[0].RelayLayers) != 2 {
+		t.Fatalf("PUT relay_layers input = %+v", ruleState.updateInputs)
+	}
+	if !strings.Contains(updateResp.Body.String(), `"relay_layers":[[4],[5,6]]`) {
+		t.Fatalf("PUT response missing relay_layers: %s", updateResp.Body.String())
 	}
 	var updatePayload map[string]any
 	if err := json.Unmarshal(updateResp.Body.Bytes(), &updatePayload); err != nil {

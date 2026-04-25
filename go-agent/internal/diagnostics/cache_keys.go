@@ -18,6 +18,16 @@ func diagnosticAddressKey(relayChain []int, address string) string {
 	return backends.RelayBackoffKey(relayChain, trimmed)
 }
 
+func diagnosticRelayChainForObservation(configured []int, candidate []int, selected []int) []int {
+	if len(selected) > 0 {
+		return append([]int(nil), selected...)
+	}
+	if len(candidate) > 0 {
+		return append([]int(nil), candidate...)
+	}
+	return append([]int(nil), configured...)
+}
+
 func markDiagnosticAddressFailure(cache *backends.Cache, relayChain []int, address string) {
 	markDiagnosticAddressFailureAll(relayChain, address, cache)
 }

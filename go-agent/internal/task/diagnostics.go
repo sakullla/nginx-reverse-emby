@@ -122,7 +122,7 @@ func reportToMap(report diagnostics.Report) map[string]any {
 	for _, backend := range report.Backends {
 		backends = append(backends, backendReportToMap(report.Kind, backend))
 	}
-	return map[string]any{
+	payload := map[string]any{
 		"kind":    report.Kind,
 		"rule_id": report.RuleID,
 		"summary": map[string]any{
@@ -138,6 +138,13 @@ func reportToMap(report diagnostics.Report) map[string]any {
 		"backends": backends,
 		"samples":  report.Samples,
 	}
+	if len(report.RelayPaths) > 0 {
+		payload["relay_paths"] = report.RelayPaths
+	}
+	if len(report.SelectedRelayPath) > 0 {
+		payload["selected_relay_path"] = report.SelectedRelayPath
+	}
+	return payload
 }
 
 func backendReportToMap(kind string, backend diagnostics.BackendReport) map[string]any {

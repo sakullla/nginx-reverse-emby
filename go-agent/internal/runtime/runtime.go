@@ -195,6 +195,7 @@ func cloneSnapshot(snapshot model.Snapshot) model.Snapshot {
 				cloned.Rules[i].RelayChain = make([]int, len(rule.RelayChain))
 				copy(cloned.Rules[i].RelayChain, rule.RelayChain)
 			}
+			cloned.Rules[i].RelayLayers = cloneRelayLayers(rule.RelayLayers)
 		}
 	}
 	if snapshot.L4Rules != nil {
@@ -209,6 +210,7 @@ func cloneSnapshot(snapshot model.Snapshot) model.Snapshot {
 				cloned.L4Rules[i].RelayChain = make([]int, len(rule.RelayChain))
 				copy(cloned.L4Rules[i].RelayChain, rule.RelayChain)
 			}
+			cloned.L4Rules[i].RelayLayers = cloneRelayLayers(rule.RelayLayers)
 		}
 	}
 	if snapshot.RelayListeners != nil {
@@ -251,6 +253,17 @@ func cloneSnapshot(snapshot model.Snapshot) model.Snapshot {
 	return cloned
 }
 
+func cloneRelayLayers(layers [][]int) [][]int {
+	if layers == nil {
+		return nil
+	}
+	cloned := make([][]int, len(layers))
+	for i, layer := range layers {
+		cloned[i] = append([]int(nil), layer...)
+	}
+	return cloned
+}
+
 func describeSnapshot(snapshot model.Snapshot) string {
 	return fmt.Sprintf(
 		"revision=%d desired_version=%q has_version_package=%t certificates=%d certificate_policies=%d",
@@ -280,6 +293,13 @@ func httpRelayInputsChanged(previous, next model.Snapshot) bool {
 		for _, listenerID := range rule.RelayChain {
 			if relayListenerChangedByID(listenerID, previous.RelayListeners, next.RelayListeners) {
 				return true
+			}
+		}
+		for _, layer := range rule.RelayLayers {
+			for _, listenerID := range layer {
+				if relayListenerChangedByID(listenerID, previous.RelayListeners, next.RelayListeners) {
+					return true
+				}
 			}
 		}
 	}

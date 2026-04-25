@@ -19,6 +19,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayplan"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
@@ -32,6 +33,18 @@ type TLSMaterialProvider interface {
 
 type RelayMaterialProvider interface {
 	relay.TLSMaterialProvider
+}
+
+type relayPathDialer struct {
+	provider RelayMaterialProvider
+}
+
+func (d relayPathDialer) DialPath(ctx context.Context, req relayplan.Request, path relayplan.Path) (net.Conn, relay.DialResult, error) {
+	options := relay.DialOptions{}
+	if len(req.Options) > 0 {
+		options = req.Options[0]
+	}
+	return relay.DialWithResult(ctx, req.Network, req.Target, path.Hops, d.provider, options)
 }
 
 type Providers struct {
@@ -119,8 +132,8 @@ func newServerWithResilience(
 		var relayTransport *http.Transport
 		var relayInteractiveTransport *http.Transport
 		var relayBulkTransport *http.Transport
-		if len(rule.RelayChain) > 0 {
-			relayTransport, relayInteractiveTransport, relayBulkTransport, err = newRelayTransports(rule, relayListenersByID, providers.Relay, sharedTransport)
+		if ruleUsesRelay(rule) {
+			relayTransport, relayInteractiveTransport, relayBulkTransport, err = newRelayTransports(rule, relayListenersByID, providers.Relay, sharedTransport, backendCache)
 			if err != nil {
 				return nil, err
 			}
@@ -326,8 +339,8 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 			}
 			actualDialAddress := dialAddressFromContext(attemptReq.Context(), candidate.dialAddress)
 			backoffAddr := actualDialAddress
-			if len(e.rule.RelayChain) > 0 {
-				backoffAddr = backends.RelayBackoffKey(e.rule.RelayChain, actualDialAddress)
+			if ruleUsesRelay(e.rule) {
+				backoffAddr = backends.RelayBackoffKeyForLayers(e.rule.RelayChain, e.rule.RelayLayers, actualDialAddress)
 			}
 			if e.backendCache.IsInBackoff(backoffAddr) {
 				break
@@ -405,7 +418,7 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 
 func (e *routeEntry) transportForRequest(req *http.Request) *http.Transport {
 	class := upstream.ClassifyHTTPRequest(req)
-	if len(e.rule.RelayChain) > 0 {
+	if ruleUsesRelay(e.rule) {
 		if class == upstream.TrafficClassBulk && e.relayBulkTransport != nil {
 			return e.relayBulkTransport
 		}
@@ -496,10 +509,10 @@ func (e *routeEntry) candidates(ctx context.Context) ([]httpCandidate, error) {
 		indexesByID[ordered.Address] = indexes[1:]
 		backend := e.backends[backendIndex]
 		backendObservationKey := backends.BackendObservationKey(e.selectionScope, backends.StableBackendID(backend.target.String()))
-		if len(e.rule.RelayChain) > 0 {
+		if ruleUsesRelay(e.rule) {
 			// Preserve the configured host for relay chains so the final hop resolves DNS.
 			dialAddress := httpBackendDialAddress(backend.target)
-			if e.backendCache.IsInBackoff(backends.RelayBackoffKey(e.rule.RelayChain, dialAddress)) {
+			if e.backendCache.IsInBackoff(backends.RelayBackoffKeyForLayers(e.rule.RelayChain, e.rule.RelayLayers, dialAddress)) {
 				continue
 			}
 			out = append(out, httpCandidate{
@@ -634,7 +647,7 @@ func buildRuntimeListenerSpecs(ctx context.Context, rules []model.HTTPRule, rela
 }
 
 func validateRelayChain(rule model.HTTPRule, relayListeners []model.RelayListener, provider RelayMaterialProvider) error {
-	if len(rule.RelayChain) == 0 {
+	if !ruleUsesRelay(rule) {
 		return nil
 	}
 	if provider == nil {
@@ -731,50 +744,101 @@ func newRelayTransports(
 	relayListenersByID map[int]model.RelayListener,
 	provider RelayMaterialProvider,
 	base *http.Transport,
+	cache *backends.Cache,
 ) (*http.Transport, *http.Transport, *http.Transport, error) {
 	if provider == nil {
 		return nil, nil, nil, fmt.Errorf("http rule %q: relay_chain requires relay tls material provider", rule.FrontendURL)
 	}
-	hops, err := resolveRelayHops(rule, mapValues(relayListenersByID))
+	paths, err := resolveRelayPaths(rule, mapValues(relayListenersByID), "")
 	if err != nil {
 		return nil, nil, nil, err
 	}
+	racer := newRelayPathRacer(provider, cache)
 	dial := func(ctx context.Context, network, addr string, class upstream.TrafficClass) (net.Conn, error) {
-		return relay.Dial(ctx, network, dialAddressFromContext(ctx, addr), hops, provider, relay.DialOptions{
-			TrafficClass: class,
+		target := dialAddressFromContext(ctx, addr)
+		requestPaths := cloneRelayPlanPaths(paths)
+		for i := range requestPaths {
+			requestPaths[i].Key = relayplan.PathKey("relay_path", requestPaths[i].IDs, target)
+		}
+		result, err := racer.Race(ctx, relayplan.Request{
+			Network: network,
+			Target:  target,
+			Paths:   requestPaths,
+			Options: []relay.DialOptions{{
+				TrafficClass: class,
+			}},
 		})
+		return result.Conn, err
 	}
 	transport := NewRelayTransport(base, dial)
 	interactive, bulk := NewClassedRelayTransports(base, dial)
 	return transport, interactive, bulk, nil
 }
 
+func newRelayPathRacer(provider RelayMaterialProvider, cache *backends.Cache) relayplan.Racer {
+	return relayplan.Racer{Dialer: relayPathDialer{provider: provider}, Cache: cache, Concurrency: 3, MaxPaths: 32}
+}
+
 func resolveRelayHops(rule model.HTTPRule, relayListeners []model.RelayListener) ([]relay.Hop, error) {
+	paths, err := resolveRelayPaths(rule, relayListeners, "")
+	if err != nil {
+		return nil, err
+	}
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	return paths[0].Hops, nil
+}
+
+func ruleUsesRelay(rule model.HTTPRule) bool {
+	return len(rule.RelayChain) > 0 || len(rule.RelayLayers) > 0
+}
+
+func resolveRelayPaths(rule model.HTTPRule, relayListeners []model.RelayListener, target string) ([]relayplan.Path, error) {
 	relayListenersByID := make(map[int]model.RelayListener, len(relayListeners))
 	for _, listener := range relayListeners {
 		relayListenersByID[listener.ID] = listener
 	}
 
-	hops := make([]relay.Hop, 0, len(rule.RelayChain))
-	for _, listenerID := range rule.RelayChain {
-		listener, ok := relayListenersByID[listenerID]
-		if !ok {
-			return nil, fmt.Errorf("http rule %q: relay listener %d not found", rule.FrontendURL, listenerID)
-		}
-		if !listener.Enabled {
-			return nil, fmt.Errorf("http rule %q: relay listener %d is disabled", rule.FrontendURL, listenerID)
-		}
-		if err := relay.ValidateListener(listener); err != nil {
-			return nil, fmt.Errorf("http rule %q: relay listener %d: %w", rule.FrontendURL, listenerID, err)
-		}
-		host, port := relayHopDialEndpoint(listener)
-		hops = append(hops, relay.Hop{
-			Address:    net.JoinHostPort(host, strconv.Itoa(port)),
-			ServerName: host,
-			Listener:   listener,
-		})
+	layers := relayplan.NormalizeLayers(rule.RelayChain, rule.RelayLayers)
+	ids, err := relayplan.ExpandPaths(layers, 32)
+	if err != nil {
+		return nil, fmt.Errorf("http rule %q: %w", rule.FrontendURL, err)
 	}
-	return hops, nil
+	paths := make([]relayplan.Path, 0, len(ids))
+	for _, pathIDs := range ids {
+		hops := make([]relay.Hop, 0, len(pathIDs))
+		for _, listenerID := range pathIDs {
+			listener, ok := relayListenersByID[listenerID]
+			if !ok {
+				return nil, fmt.Errorf("http rule %q: relay listener %d not found", rule.FrontendURL, listenerID)
+			}
+			if !listener.Enabled {
+				return nil, fmt.Errorf("http rule %q: relay listener %d is disabled", rule.FrontendURL, listenerID)
+			}
+			if err := relay.ValidateListener(listener); err != nil {
+				return nil, fmt.Errorf("http rule %q: relay listener %d: %w", rule.FrontendURL, listenerID, err)
+			}
+			host, port := relayHopDialEndpoint(listener)
+			hops = append(hops, relay.Hop{
+				Address:    net.JoinHostPort(host, strconv.Itoa(port)),
+				ServerName: host,
+				Listener:   listener,
+			})
+		}
+		paths = append(paths, relayplan.Path{IDs: append([]int(nil), pathIDs...), Hops: hops, Key: relayplan.PathKey("relay_path", pathIDs, target)})
+	}
+	return paths, nil
+}
+
+func cloneRelayPlanPaths(paths []relayplan.Path) []relayplan.Path {
+	cloned := make([]relayplan.Path, len(paths))
+	for i, path := range paths {
+		cloned[i] = path
+		cloned[i].IDs = append([]int(nil), path.IDs...)
+		cloned[i].Hops = append([]relay.Hop(nil), path.Hops...)
+	}
+	return cloned
 }
 
 func relayHopDialEndpoint(listener model.RelayListener) (string, int) {

@@ -10,6 +10,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayplan"
 )
 
 type TCPProberConfig struct {
@@ -36,6 +37,7 @@ type tcpProbeCandidate struct {
 	groupKey              string
 	resolvedCandidates    []tcpResolvedCandidate
 	relayChain            []int
+	relayPaths            []relayplan.Path
 }
 
 type tcpResolvedCandidate struct {
@@ -72,7 +74,7 @@ func (p *TCPProber) Diagnose(ctx context.Context, rule model.L4Rule, relayListen
 	if err != nil {
 		return Report{}, err
 	}
-	if len(rule.RelayChain) > 0 {
+	if ruleUsesL4Relay(rule) {
 		candidates, err = p.hydrateRelayCandidates(ctx, rule, relayListeners, candidates)
 		if err != nil {
 			return Report{}, err
@@ -84,20 +86,25 @@ func (p *TCPProber) Diagnose(ctx context.Context, rule model.L4Rule, relayListen
 
 	samples := make([]Sample, 0, p.attempts*len(candidates))
 	attempt := 0
-	for _, candidate := range candidates {
+	for candidateIndex, candidate := range candidates {
 		for i := 0; i < p.attempts; i++ {
 			attempt++
 			reqCtx, cancel := context.WithTimeout(ctx, p.timeout)
 			start := time.Now()
-			conn, selectedAddress, err := p.dialCandidate(reqCtx, rule, relayListeners, candidate.address)
+			conn, selectedAddress, selectedRelayPath, err := p.dialCandidate(reqCtx, rule, relayListeners, candidate)
 			cancel()
+			if len(selectedRelayPath) > 0 {
+				candidate.relayChain = selectedRelayPath
+				candidates[candidateIndex].relayChain = selectedRelayPath
+			}
 			actualAddress := resolveProbeAddress(candidate.address, selectedAddress)
 			backendLabel := tcpProbeLabelForAddress(candidate, actualAddress)
+			relayChain := diagnosticRelayChainForObservation(rule.RelayChain, candidate.relayChain, selectedRelayPath)
 			if err != nil {
 				if candidate.backendObservationKey != "" {
 					cache.ObserveBackendFailure(candidate.backendObservationKey)
 				}
-				markDiagnosticAddressFailureAll(rule.RelayChain, actualAddress, persistentDiagnosticAddressCaches(cache, p.cache, rule.RelayChain)...)
+				markDiagnosticAddressFailureAll(relayChain, actualAddress, persistentDiagnosticAddressCaches(cache, p.cache, relayChain)...)
 				sample := FailureSample(attempt, backendLabel, err)
 				sample.Address = actualAddress
 				samples = append(samples, sample)
@@ -108,7 +115,7 @@ func (p *TCPProber) Diagnose(ctx context.Context, rule model.L4Rule, relayListen
 			if candidate.backendObservationKey != "" {
 				cache.ObserveBackendSuccess(candidate.backendObservationKey, totalDuration, totalDuration, 0)
 			}
-			markDiagnosticAddressSuccessAll(rule.RelayChain, actualAddress, persistentDiagnosticAddressCaches(cache, p.cache, rule.RelayChain)...)
+			observeDiagnosticAddressSuccessAll(relayChain, actualAddress, totalDuration, totalDuration, 0, persistentDiagnosticAddressCaches(cache, p.cache, relayChain)...)
 			sample := LatencySample(attempt, backendLabel, totalDuration, 0)
 			sample.Address = actualAddress
 			samples = append(samples, sample)
@@ -117,26 +124,51 @@ func (p *TCPProber) Diagnose(ctx context.Context, rule model.L4Rule, relayListen
 
 	report := BuildReport("l4_tcp", rule.ID, samples)
 	report.Backends = buildTCPAdaptiveReports(report.Backends, candidates, baseCache)
+	if ruleUsesL4Relay(rule) && len(candidates) > 0 {
+		paths, err := resolveDiagnosticL4RelayPaths(rule, relayListeners, candidates[0].address)
+		if err != nil {
+			return Report{}, err
+		}
+		relayReports, selectedPath, err := probeDiagnosticRelayPaths(ctx, "tcp", candidates[0].address, paths, p.relayProvider, p.cache)
+		if err != nil {
+			return Report{}, err
+		}
+		report.RelayPaths = relayReports
+		report.SelectedRelayPath = selectedPath
+	}
 	return report, nil
 }
 
-func (p *TCPProber) dialCandidate(ctx context.Context, rule model.L4Rule, relayListeners []model.RelayListener, address string) (net.Conn, string, error) {
-	if len(rule.RelayChain) == 0 {
-		conn, err := p.dialer.DialContext(ctx, "tcp", address)
-		return conn, "", err
+func (p *TCPProber) dialCandidate(ctx context.Context, rule model.L4Rule, relayListeners []model.RelayListener, candidate tcpProbeCandidate) (net.Conn, string, []int, error) {
+	if !ruleUsesL4Relay(rule) {
+		conn, err := p.dialer.DialContext(ctx, "tcp", candidate.address)
+		return conn, "", nil, err
 	}
 	if p.relayProvider == nil {
-		return nil, "", fmt.Errorf("relay provider is required")
+		return nil, "", nil, fmt.Errorf("relay provider is required")
 	}
-	hops, err := resolveL4RelayHops(rule, relayListeners)
+	paths := candidate.relayPaths
+	if len(paths) == 0 {
+		var err error
+		paths, err = resolveDiagnosticL4RelayPaths(rule, relayListeners, candidate.address)
+		if err != nil {
+			return nil, "", nil, err
+		}
+	}
+	racer := relayplan.Racer{Dialer: diagnosticRelayPathDialer{provider: p.relayProvider}, Cache: p.cache, Concurrency: 3, MaxPaths: 32}
+	requestPaths := cloneDiagnosticRelayPaths(paths)
+	for i := range requestPaths {
+		requestPaths[i].Key = relayplan.PathKey("relay_path", requestPaths[i].IDs, candidate.address)
+	}
+	result, err := racer.Race(ctx, relayplan.Request{
+		Network: "tcp",
+		Target:  candidate.address,
+		Paths:   requestPaths,
+	})
 	if err != nil {
-		return nil, "", err
+		return nil, "", nil, err
 	}
-	conn, result, err := diagnosticRelayDialWithResult(ctx, "tcp", address, hops, p.relayProvider)
-	if err != nil {
-		return nil, "", err
-	}
-	return conn, result.SelectedAddress, nil
+	return result.Conn, result.DialResult.SelectedAddress, append([]int(nil), result.Selected.IDs...), nil
 }
 
 func tcpCandidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule) ([]tcpProbeCandidate, error) {
@@ -172,10 +204,10 @@ func tcpCandidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule
 		configuredAddress := net.JoinHostPort(backend.Host, strconv.Itoa(backend.Port))
 		configuredLabel := tcpProbeBackendLabel(configuredAddress, placeholder.Address, backendIndex, duplicateCounts[placeholder.Address])
 		groupKey := tcpProbeObservationKey(scope, placeholder.Address, backendIndex, duplicateCounts[placeholder.Address])
-		if len(rule.RelayChain) > 0 {
+		if ruleUsesL4Relay(rule) {
 			// Preserve the configured host for relay chains so the final hop resolves DNS.
 			address := configuredAddress
-			if cache.IsInBackoff(backends.RelayBackoffKey(rule.RelayChain, address)) {
+			if cache.IsInBackoff(backends.RelayBackoffKeyForLayers(rule.RelayChain, rule.RelayLayers, address)) {
 				continue
 			}
 			resolvedCandidates := []tcpResolvedCandidate{{
@@ -241,20 +273,28 @@ func tcpProbeObservationKey(scope string, backendID string, backendIndex int, du
 }
 
 func (p *TCPProber) hydrateRelayCandidates(ctx context.Context, rule model.L4Rule, relayListeners []model.RelayListener, candidates []tcpProbeCandidate) ([]tcpProbeCandidate, error) {
-	if len(rule.RelayChain) == 0 || len(candidates) == 0 {
+	if !ruleUsesL4Relay(rule) || len(candidates) == 0 {
 		return candidates, nil
 	}
 	if p.relayProvider == nil {
 		return nil, fmt.Errorf("relay provider is required")
 	}
-	hops, err := resolveL4RelayHops(rule, relayListeners)
-	if err != nil {
-		return nil, err
-	}
 
 	out := make([]tcpProbeCandidate, 0, len(candidates))
 	for _, candidate := range candidates {
 		hydrated := candidate
+		paths, err := resolveDiagnosticL4RelayPaths(rule, relayListeners, candidate.address)
+		if err != nil {
+			return nil, err
+		}
+		hydrated.relayPaths = paths
+		if len(paths) > 0 {
+			hydrated.relayChain = append([]int(nil), paths[0].IDs...)
+		}
+		hops := []relay.Hop(nil)
+		if len(paths) > 0 {
+			hops = paths[0].Hops
+		}
 		addresses, err := diagnosticRelayResolveCandidates(ctx, candidate.address, hops, p.relayProvider)
 		if err == nil && len(addresses) > 0 {
 			hydrated.resolvedCandidates = make([]tcpResolvedCandidate, 0, len(addresses))
@@ -268,6 +308,10 @@ func (p *TCPProber) hydrateRelayCandidates(ctx context.Context, rule model.L4Rul
 		out = append(out, hydrated)
 	}
 	return out, nil
+}
+
+func ruleUsesL4Relay(rule model.L4Rule) bool {
+	return len(rule.RelayChain) > 0 || len(rule.RelayLayers) > 0
 }
 
 func tcpProbeLabelForAddress(candidate tcpProbeCandidate, address string) string {
@@ -428,29 +472,13 @@ func tcpAdaptiveSummaryKey(candidate tcpProbeCandidate) string {
 }
 
 func resolveL4RelayHops(rule model.L4Rule, relayListeners []model.RelayListener) ([]relay.Hop, error) {
-	relayListenersByID := make(map[int]model.RelayListener, len(relayListeners))
-	for _, listener := range relayListeners {
-		relayListenersByID[listener.ID] = listener
+	paths, err := resolveDiagnosticL4RelayPaths(rule, relayListeners, "")
+	if err != nil || len(paths) == 0 {
+		return nil, err
 	}
+	return paths[0].Hops, nil
+}
 
-	hops := make([]relay.Hop, 0, len(rule.RelayChain))
-	for _, listenerID := range rule.RelayChain {
-		listener, ok := relayListenersByID[listenerID]
-		if !ok {
-			return nil, fmt.Errorf("relay listener %d not found", listenerID)
-		}
-		if !listener.Enabled {
-			return nil, fmt.Errorf("relay listener %d is disabled", listenerID)
-		}
-		if err := relay.ValidateListener(listener); err != nil {
-			return nil, fmt.Errorf("relay listener %d: %w", listenerID, err)
-		}
-		host, port := relayHopDialEndpoint(listener)
-		hops = append(hops, relay.Hop{
-			Address:    net.JoinHostPort(host, strconv.Itoa(port)),
-			ServerName: host,
-			Listener:   listener,
-		})
-	}
-	return hops, nil
+func resolveDiagnosticL4RelayPaths(rule model.L4Rule, relayListeners []model.RelayListener, target string) ([]relayplan.Path, error) {
+	return resolveDiagnosticRelayPaths(fmt.Sprintf("l4 rule %s:%d", rule.ListenHost, rule.ListenPort), rule.RelayChain, rule.RelayLayers, relayListeners, target)
 }

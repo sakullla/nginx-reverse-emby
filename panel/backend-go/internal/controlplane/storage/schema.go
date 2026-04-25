@@ -63,12 +63,31 @@ func BootstrapSQLiteSchema(ctx context.Context, db *gorm.DB) error {
 		}
 	}
 
+	ruleColumnMigrations := []struct {
+		model  any
+		column string
+		sql    string
+	}{
+		{model: &HTTPRuleRow{}, column: "relay_layers", sql: `ALTER TABLE rules ADD COLUMN relay_layers TEXT NOT NULL DEFAULT '[]'`},
+		{model: &L4RuleRow{}, column: "relay_layers", sql: `ALTER TABLE l4_rules ADD COLUMN relay_layers TEXT NOT NULL DEFAULT '[]'`},
+	}
+	for _, migration := range ruleColumnMigrations {
+		if tx.Migrator().HasColumn(migration.model, migration.column) {
+			continue
+		}
+		if err := tx.Exec(migration.sql).Error; err != nil {
+			return err
+		}
+	}
+
 	normalizationStatements := []string{
 		`UPDATE rules SET pass_proxy_headers = 1 WHERE pass_proxy_headers IS NULL`,
 		`UPDATE rules SET user_agent = '' WHERE user_agent IS NULL`,
 		`UPDATE rules SET custom_headers = '[]' WHERE custom_headers IS NULL OR trim(custom_headers) = ''`,
 		`UPDATE rules SET relay_chain = '[]' WHERE relay_chain IS NULL OR trim(relay_chain) = ''`,
+		`UPDATE rules SET relay_layers = '[]' WHERE relay_layers IS NULL OR trim(relay_layers) = ''`,
 		`UPDATE rules SET relay_obfs = 0 WHERE relay_obfs IS NULL`,
+		`UPDATE l4_rules SET relay_layers = '[]' WHERE relay_layers IS NULL OR trim(relay_layers) = ''`,
 		`UPDATE l4_rules SET relay_obfs = 0 WHERE relay_obfs IS NULL`,
 		`UPDATE agents SET desired_version = '' WHERE desired_version IS NULL`,
 		`UPDATE agents SET platform = '' WHERE platform IS NULL`,
