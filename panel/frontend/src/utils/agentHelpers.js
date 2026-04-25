@@ -1,7 +1,7 @@
 export function getAgentStatus(agent) {
   if (!agent) return 'offline'
   if (agent.status === 'offline') return 'offline'
-  if (agent.last_apply_status === 'failed') return 'failed'
+  if (agent.last_apply_status && agent.last_apply_status !== 'success') return 'failed'
   if ((agent.desired_revision || 0) > (agent.current_revision || 0)) return 'pending'
   return 'online'
 }
