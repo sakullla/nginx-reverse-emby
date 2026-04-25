@@ -99,6 +99,55 @@ func TestTaskServiceStoresCompletedDiagnosticResult(t *testing.T) {
 	}
 }
 
+func TestTaskServiceAcceptsCompletionWithinRequestTTL(t *testing.T) {
+	now := time.Unix(1700000000, 0).UTC()
+	service := NewTaskService(TaskServiceConfig{
+		Now: func() time.Time {
+			return now
+		},
+		TaskTTL: 30 * time.Second,
+	})
+	session := newStubTaskSession("agent-a")
+	if err := service.RegisterSession(TaskSessionRegistration{
+		AgentID:   "agent-a",
+		SessionID: "session-1",
+		Session:   session,
+	}); err != nil {
+		t.Fatalf("RegisterSession() error = %v", err)
+	}
+
+	record, err := service.CreateAndDispatch(TaskCreateRequest{
+		AgentID: "agent-a",
+		Type:    TaskTypeDiagnoseHTTPRule,
+		Payload: map[string]any{"rule_id": 7},
+		TTL:     2 * time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("CreateAndDispatch() error = %v", err)
+	}
+
+	now = now.Add(45 * time.Second)
+	if err := service.ApplyUpdate(context.Background(), TaskUpdateInput{
+		AgentID: "agent-a",
+		TaskID:  record.ID,
+		State:   "completed",
+		Result:  map[string]any{"ok": true},
+	}); err != nil {
+		t.Fatalf("ApplyUpdate() error = %v", err)
+	}
+
+	got, err := service.Get(context.Background(), "agent-a", record.ID)
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if got.State != "completed" {
+		t.Fatalf("state = %q, want completed", got.State)
+	}
+	if got.Result["ok"] != true {
+		t.Fatalf("result = %#v, want ok true", got.Result)
+	}
+}
+
 func TestTaskServiceClosedSessionIsNotReusedForDispatch(t *testing.T) {
 	service := NewTaskService(TaskServiceConfig{
 		Now: func() time.Time {

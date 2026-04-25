@@ -93,7 +93,7 @@ func (s *LocalTaskSession) Register() error {
 }
 
 func (s *LocalTaskSession) handleTask(envelope service.TaskEnvelope) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := contextWithTaskDeadline(context.Background(), envelope.Deadline)
 	defer cancel()
 
 	var result map[string]any
@@ -124,6 +124,13 @@ func (s *LocalTaskSession) handleTask(envelope service.TaskEnvelope) {
 	}); reportErr != nil {
 		log.Printf("[local-agent] failed to report task result: %v", reportErr)
 	}
+}
+
+func contextWithTaskDeadline(parent context.Context, deadline time.Time) (context.Context, context.CancelFunc) {
+	if deadline.IsZero() {
+		return context.WithTimeout(parent, 30*time.Second)
+	}
+	return context.WithDeadline(parent, deadline)
 }
 
 func (s *LocalTaskSession) diagnoseHTTPRule(ctx context.Context, envelope service.TaskEnvelope) (map[string]any, error) {

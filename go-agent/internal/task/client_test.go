@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -262,6 +263,76 @@ func TestTaskClientConsumesTaskEventAndReportsLifecycle(t *testing.T) {
 	}
 	if avg, ok := summary["avg_latency_ms"].(float64); !ok || avg != 11 {
 		t.Fatalf("avg_latency_ms = %#v", summary["avg_latency_ms"])
+	}
+}
+
+func TestTaskClientUsesTaskDeadlineForHandlerContext(t *testing.T) {
+	deadline := time.Now().Add(2 * time.Minute).UTC().Format(time.RFC3339)
+	handlerDeadline := make(chan time.Time, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/api/agents/task-session":
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(fmt.Sprintf("event: task\ndata: {\"task_id\":\"task-1\",\"task_type\":\"diagnose_http_rule\",\"deadline\":%q,\"payload\":{\"rule_id\":7}}\n\n", deadline)))
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			<-r.Context().Done()
+		case r.Method == http.MethodPost && r.URL.Path == "/api/agent-tasks/task-1/updates":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client := NewClient(ClientConfig{
+		MasterURL:     server.URL,
+		AgentToken:    "token",
+		AgentID:       "edge-a",
+		ReconnectWait: 10 * time.Millisecond,
+		HTTPClient:    server.Client(),
+		Handler: TaskHandlerFunc(func(ctx context.Context, _ TaskMessage) (map[string]any, error) {
+			got, ok := ctx.Deadline()
+			if !ok {
+				return nil, errors.New("handler context has no deadline")
+			}
+			handlerDeadline <- got
+			return map[string]any{"ok": true}, nil
+		}),
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- client.Run(ctx)
+	}()
+
+	select {
+	case got := <-handlerDeadline:
+		want, err := time.Parse(time.RFC3339, deadline)
+		if err != nil {
+			t.Fatalf("Parse() error = %v", err)
+		}
+		if got.Before(want.Add(-time.Second)) || got.After(want.Add(time.Second)) {
+			t.Fatalf("handler deadline = %s, want near %s", got, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for handler deadline")
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for client shutdown")
 	}
 }
 

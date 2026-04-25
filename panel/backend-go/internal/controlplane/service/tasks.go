@@ -41,6 +41,7 @@ type TaskCreateRequest struct {
 	AgentID string
 	Type    string
 	Payload map[string]any
+	TTL     time.Duration
 }
 
 type TaskEnvelope struct {
@@ -148,6 +149,10 @@ func (s *TaskService) CreateAndDispatch(req TaskCreateRequest) (TaskRecord, erro
 	}
 
 	now := s.now().UTC()
+	taskTTL := s.taskTTL
+	if req.TTL > 0 {
+		taskTTL = req.TTL
+	}
 	record := TaskRecord{
 		ID:        s.nextTaskID(),
 		AgentID:   agentID,
@@ -156,7 +161,7 @@ func (s *TaskService) CreateAndDispatch(req TaskCreateRequest) (TaskRecord, erro
 		Payload:   cloneTaskPayload(req.Payload),
 		CreatedAt: now,
 		UpdatedAt: now,
-		Deadline:  now.Add(s.taskTTL),
+		Deadline:  now.Add(taskTTL),
 	}
 	envelope := TaskEnvelope{
 		ID:        record.ID,

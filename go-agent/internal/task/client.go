@@ -210,7 +210,10 @@ func (c *Client) handleSSEEvent(ctx context.Context, eventName string, data stri
 		})
 	}
 
-	result, err := c.cfg.Handler.HandleTask(ctx, task)
+	taskCtx, cancel := contextWithTaskDeadline(ctx, task.Deadline)
+	defer cancel()
+
+	result, err := c.cfg.Handler.HandleTask(taskCtx, task)
 	if err != nil {
 		return c.postUpdate(ctx, task.TaskID, map[string]any{
 			"state": "failed",
@@ -221,6 +224,14 @@ func (c *Client) handleSSEEvent(ctx context.Context, eventName string, data stri
 		"state":  "completed",
 		"result": result,
 	})
+}
+
+func contextWithTaskDeadline(parent context.Context, rawDeadline string) (context.Context, context.CancelFunc) {
+	deadline, err := time.Parse(time.RFC3339, strings.TrimSpace(rawDeadline))
+	if err != nil || deadline.IsZero() {
+		return context.WithCancel(parent)
+	}
+	return context.WithDeadline(parent, deadline)
 }
 
 func (c *Client) postUpdate(ctx context.Context, taskID string, payload map[string]any) error {
