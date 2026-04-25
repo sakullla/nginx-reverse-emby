@@ -181,7 +181,7 @@ function toggleSortOrder() {
   transition: all 0.15s;
 }
 .view-toggle__btn.active {
-  background: var(--color-bg-surface);
+  background: var(--color-primary-subtle);
   color: var(--color-primary);
   box-shadow: var(--shadow-sm);
 }
@@ -216,6 +216,11 @@ function toggleSortOrder() {
   background: var(--color-bg-subtle);
   color: var(--color-text-secondary);
   cursor: pointer;
+  transition: all 0.15s;
+}
+.sort-order-btn:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
 }
 .clear-filters-btn {
   padding: 0.375rem 0.75rem;
