@@ -240,7 +240,8 @@ const props = defineProps({
   task: { type: Object, default: null },
   kind: { type: String, default: 'http' },
   ruleLabel: { type: String, default: '' },
-  endpointLabel: { type: String, default: '' }
+  endpointLabel: { type: String, default: '' },
+  agentLabel: { type: String, default: '' }
 })
 
 defineEmits(['update:modelValue'])
@@ -252,7 +253,11 @@ const title = computed(() => props.kind === 'l4_tcp' ? 'L4 规则诊断' : 'HTTP
 const kindLabel = computed(() => props.kind === 'l4_tcp' ? 'TCP PATH DIAGNOSIS' : 'HTTP PATH DIAGNOSIS')
 const stateLabel = computed(() => diagnosticStateLabel(state.value))
 const tone = computed(() => diagnosticStateTone(state.value))
-const agentLabel = computed(() => props.task?.agent_id || '')
+const agentLabel = computed(() => {
+  const explicitLabel = props.agentLabel.trim()
+  if (explicitLabel) return explicitLabel
+  return props.task?.agent_id || ''
+})
 const backendSummaries = computed(() => props.task?.result?.backends || [])
 const samples = computed(() => props.task?.result?.samples || [])
 const relayPaths = computed(() => props.task?.result?.relay_paths || [])

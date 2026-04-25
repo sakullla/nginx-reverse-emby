@@ -333,4 +333,18 @@ describe('RuleDiagnosticModal', () => {
     expect(wrapper.text()).toContain('fastu9929 → 后端(backend.example:8096)')
     expect(wrapper.text()).not.toContain(opaqueAgentID)
   })
+
+  it('prefers the provided node name over an opaque task agent id', () => {
+    const opaqueAgentID = '31a37f180de98c927326c0eb614a38cb'
+    const wrapper = mountModal({
+      agentLabel: 'Edge Node A',
+      task: {
+        ...buildTask('http'),
+        agent_id: opaqueAgentID
+      }
+    })
+
+    expect(wrapper.text()).toContain('节点: Edge Node A')
+    expect(wrapper.text()).not.toContain(opaqueAgentID)
+  })
 })

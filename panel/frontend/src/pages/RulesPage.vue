@@ -161,6 +161,7 @@
       kind="http"
       :rule-label="diagnosticRule?.frontend_url || ''"
       :endpoint-label="formatHttpBackend(diagnosticRule || {})"
+      :agent-label="selectedAgentLabel"
       @update:model-value="closeDiagnostic"
     />
   </div>
@@ -196,6 +197,7 @@ const rules = computed(() => _rulesData.value ?? [])
 // Agents list for sync status derivation
 const { data: agentsData } = useAgents()
 const selectedAgent = computed(() => agentsData.value?.find(a => a.id === agentId.value))
+const selectedAgentLabel = computed(() => String(selectedAgent.value?.name || agentId.value || '').trim())
 
 // Search
 const searchQuery = ref('')

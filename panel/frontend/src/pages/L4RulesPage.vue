@@ -104,6 +104,7 @@
       kind="l4_tcp"
       :rule-label="diagnosticRule?.name || `${diagnosticRule?.listen_host || ''}:${diagnosticRule?.listen_port || ''}`"
       :endpoint-label="diagnosticRule ? l4BackendAddresses(diagnosticRule).join(', ') : ''"
+      :agent-label="selectedAgentLabel"
       @update:model-value="closeDiagnostic"
     />
   </div>
@@ -132,6 +133,7 @@ const { data: _rulesData, isLoading } = useL4Rules(agentId)
 // Agents list for sync status derivation
 const { data: agentsData } = useAgents()
 const selectedAgent = computed(() => agentsData.value?.find(a => a.id === agentId.value))
+const selectedAgentLabel = computed(() => String(selectedAgent.value?.name || agentId.value || '').trim())
 const createL4Rule = useCreateL4Rule(agentId)
 const updateL4Rule = useUpdateL4Rule(agentId)
 const deleteL4Rule = useDeleteL4Rule(agentId)
