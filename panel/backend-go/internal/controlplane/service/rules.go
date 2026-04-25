@@ -880,6 +880,8 @@ func (s *ruleService) normalizeHTTPRuleInput(ctx context.Context, input HTTPRule
 		if err != nil {
 			return HTTPRule{}, err
 		}
+	} else if input.RelayChain != nil {
+		relayLayers = [][]int{}
 	}
 	if err := s.validateRelayChain(ctx, flattenRelayLayers(relayLayers)); err != nil {
 		return HTTPRule{}, err

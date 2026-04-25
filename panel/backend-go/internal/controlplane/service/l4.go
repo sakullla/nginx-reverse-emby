@@ -401,6 +401,8 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 		if err != nil {
 			return L4Rule{}, err
 		}
+	} else if input.RelayChain != nil {
+		relayLayers = [][]int{}
 	}
 
 	relayObfs := false
