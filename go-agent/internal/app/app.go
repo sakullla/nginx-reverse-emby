@@ -601,6 +601,9 @@ func (a *App) snapshotActivator() agentruntime.Activator {
 	certActivator := agentruntime.NewSnapshotActivator(agentruntime.SnapshotActivationHandlers{
 		ActivateManagedCertificates: handlers.ActivateManagedCertificates,
 	})
+	configActivator := agentruntime.NewSnapshotActivator(agentruntime.SnapshotActivationHandlers{
+		ActivateAgentConfig: handlers.ActivateAgentConfig,
+	})
 	rulesActivator := agentruntime.NewSnapshotActivator(agentruntime.SnapshotActivationHandlers{
 		ActivateHTTPRules: handlers.ActivateHTTPRules,
 		ActivateL4Rules:   handlers.ActivateL4Rules,
@@ -611,6 +614,9 @@ func (a *App) snapshotActivator() agentruntime.Activator {
 
 	return func(ctx context.Context, previous, next model.Snapshot) error {
 		if err := certActivator(ctx, previous, next); err != nil {
+			return err
+		}
+		if err := configActivator(ctx, previous, next); err != nil {
 			return err
 		}
 
@@ -629,6 +635,10 @@ func (a *App) snapshotActivator() agentruntime.Activator {
 
 func (a *App) snapshotActivationHandlers() agentruntime.SnapshotActivationHandlers {
 	return agentruntime.SnapshotActivationHandlers{
+		ActivateAgentConfig: func(_ context.Context, cfg model.AgentConfig) error {
+			relay.SetOutboundProxyURL(cfg.OutboundProxyURL)
+			return nil
+		},
 		ActivateManagedCertificates: func(ctx context.Context, bundles []model.ManagedCertificateBundle, policies []model.ManagedCertificatePolicy) error {
 			return a.applyManagedCertificates(ctx, Snapshot{
 				Certificates:        bundles,

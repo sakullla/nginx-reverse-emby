@@ -207,3 +207,41 @@ func TestRuntimeSkipsHTTPAndL4ForUnrelatedRelayListenerChanges(t *testing.T) {
 		t.Fatalf("expected relay activation on relay listener change, got %d", relayCalls)
 	}
 }
+
+func TestRuntimeActivatesAgentConfigWhenOutboundProxyChanges(t *testing.T) {
+	ctx := context.Background()
+
+	var configs []model.AgentConfig
+	r := NewWithActivator(NewSnapshotActivator(SnapshotActivationHandlers{
+		ActivateAgentConfig: func(_ context.Context, cfg model.AgentConfig) error {
+			configs = append(configs, cfg)
+			return nil
+		},
+	}))
+
+	previous := model.Snapshot{
+		DesiredVersion: "v1",
+		Revision:       1,
+		AgentConfig: model.AgentConfig{
+			OutboundProxyURL: "",
+		},
+	}
+	if err := r.Apply(ctx, model.Snapshot{}, previous); err != nil {
+		t.Fatalf("priming apply failed: %v", err)
+	}
+	configs = nil
+
+	next := previous
+	next.Revision = 2
+	next.AgentConfig.OutboundProxyURL = "http://127.0.0.1:8080"
+	if err := r.Apply(ctx, previous, next); err != nil {
+		t.Fatalf("apply failed: %v", err)
+	}
+
+	if len(configs) != 1 {
+		t.Fatalf("agent config activations = %d, want 1", len(configs))
+	}
+	if configs[0].OutboundProxyURL != "http://127.0.0.1:8080" {
+		t.Fatalf("OutboundProxyURL = %q", configs[0].OutboundProxyURL)
+	}
+}

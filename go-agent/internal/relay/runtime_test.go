@@ -24,6 +24,7 @@ import (
 
 	"github.com/quic-go/quic-go"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
@@ -602,6 +603,130 @@ func TestDialSurfacesFinalTargetFailure(t *testing.T) {
 		conn.Close()
 		t.Fatal("expected final target dial failure")
 	}
+}
+
+func TestDialTLSTCPUsesOutboundProxy(t *testing.T) {
+	resetTLSTCPSessionPoolForTest()
+
+	backendAddr, stopBackend := startTCPEchoServer(t)
+	defer stopBackend()
+
+	provider := newFakeTLSMaterialProvider()
+	listener, hop := newRelayEndpoint(t, provider, 701, "relay-proxy", "pin_only", true, false)
+	listener.TransportMode = ListenerTransportModeTLSTCP
+	hop.Listener = listener
+
+	server, err := Start(context.Background(), []Listener{listener}, provider)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer server.Close()
+
+	proxy := startRelayHTTPConnectProxy(t)
+	conn, result, err := DialWithResult(context.Background(), "tcp", backendAddr, []Hop{hop}, provider, DialOptions{
+		OutboundProxyURL: proxy.URL,
+	})
+	if err != nil {
+		t.Fatalf("DialWithResult() error = %v", err)
+	}
+	defer conn.Close()
+	if result.TransportMode != ListenerTransportModeTLSTCP {
+		t.Fatalf("TransportMode = %q, want %q", result.TransportMode, ListenerTransportModeTLSTCP)
+	}
+	assertRoundTrip(t, conn, []byte("relay-proxy"))
+	if !proxy.SawConnectTo(hop.Address) {
+		t.Fatalf("proxy did not see CONNECT to %s", hop.Address)
+	}
+}
+
+func TestDialTLSTCPUsesConfiguredOutboundProxy(t *testing.T) {
+	resetTLSTCPSessionPoolForTest()
+	previous := OutboundProxyURL()
+	defer SetOutboundProxyURL(previous)
+
+	backendAddr, stopBackend := startTCPEchoServer(t)
+	defer stopBackend()
+
+	provider := newFakeTLSMaterialProvider()
+	listener, hop := newRelayEndpoint(t, provider, 702, "relay-global-proxy", "pin_only", true, false)
+	listener.TransportMode = ListenerTransportModeTLSTCP
+	hop.Listener = listener
+
+	server, err := Start(context.Background(), []Listener{listener}, provider)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer server.Close()
+
+	proxy := startRelayHTTPConnectProxy(t)
+	SetOutboundProxyURL(proxy.URL)
+	conn, _, err := DialWithResult(context.Background(), "tcp", backendAddr, []Hop{hop}, provider)
+	if err != nil {
+		t.Fatalf("DialWithResult() error = %v", err)
+	}
+	defer conn.Close()
+	assertRoundTrip(t, conn, []byte("relay-global-proxy"))
+	if !proxy.SawConnectTo(hop.Address) {
+		t.Fatalf("proxy did not see CONNECT to %s", hop.Address)
+	}
+}
+
+type relayHTTPConnectProxy struct {
+	URL string
+
+	mu      sync.Mutex
+	targets []string
+}
+
+func startRelayHTTPConnectProxy(t *testing.T) *relayHTTPConnectProxy {
+	t.Helper()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	proxy := &relayHTTPConnectProxy{URL: "http://" + ln.Addr().String()}
+	go func() {
+		for {
+			client, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go proxy.handleConn(client)
+		}
+	}()
+	return proxy
+}
+
+func (p *relayHTTPConnectProxy) handleConn(client net.Conn) {
+	defer client.Close()
+	req, err := proxyproto.ReadClientRequest(context.Background(), client, proxyproto.EntryAuth{})
+	if err != nil {
+		return
+	}
+	p.mu.Lock()
+	p.targets = append(p.targets, req.Target)
+	p.mu.Unlock()
+
+	upstream, err := net.DialTimeout("tcp", req.Target, 5*time.Second)
+	if err != nil {
+		return
+	}
+	defer upstream.Close()
+	pipeBothWays(client, upstream)
+}
+
+func (p *relayHTTPConnectProxy) SawConnectTo(target string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, seen := range p.targets {
+		if seen == target {
+			return true
+		}
+	}
+	return false
 }
 
 func TestFinalTargetFailureDoesNotDemoteRelayQUICTransport(t *testing.T) {
