@@ -165,6 +165,77 @@ func TestServerRoutesByLongestMatchingPathWithinSameHost(t *testing.T) {
 	}
 }
 
+func TestServerRoutesPathRuleBeforeRootRuleOnSameHost(t *testing.T) {
+	var rootPath string
+	rootBackend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rootPath = r.URL.Path
+		_, _ = w.Write([]byte("root"))
+	}))
+	defer rootBackend.Close()
+
+	var embyPath string
+	embyBackend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		embyPath = r.URL.Path
+		_, _ = w.Write([]byte("emby"))
+	}))
+	defer embyBackend.Close()
+
+	listener := model.HTTPListener{
+		Rules: []model.HTTPRule{
+			{
+				FrontendURL: "http://route.example",
+				BackendURL:  rootBackend.URL,
+			},
+			{
+				FrontendURL: "http://route.example/emby",
+				BackendURL:  embyBackend.URL,
+			},
+		},
+	}
+
+	server := NewServer(listener)
+	proxy := httptest.NewServer(server)
+	defer proxy.Close()
+
+	for _, tc := range []struct {
+		name     string
+		path     string
+		wantBody string
+	}{
+		{name: "root path", path: "/movies", wantBody: "root"},
+		{name: "emby path", path: "/emby/library", wantBody: "emby"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodGet, proxy.URL+tc.path, nil)
+			if err != nil {
+				t.Fatalf("failed to create request: %v", err)
+			}
+			req.Host = "route.example"
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				t.Fatalf("proxy request failed: %v", err)
+			}
+			defer resp.Body.Close()
+
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				t.Fatalf("failed to read response body: %v", err)
+			}
+			if string(body) != tc.wantBody {
+				t.Fatalf("unexpected response body %q, want %q", string(body), tc.wantBody)
+			}
+		})
+	}
+
+	if rootPath != "/movies" {
+		t.Fatalf("expected root request to reach root backend as /movies, got %q", rootPath)
+	}
+	if embyPath != "/library" {
+		t.Fatalf("expected /emby request to reach emby backend as /library, got %q", embyPath)
+	}
+}
+
 func TestServerReturns404ForUnknownHost(t *testing.T) {
 	var backend *httptest.Server
 	backend = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
