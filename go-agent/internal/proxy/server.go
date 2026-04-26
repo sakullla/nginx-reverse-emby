@@ -1395,6 +1395,9 @@ func selectedRelaySelectionFromContext(ctx context.Context) (string, []int) {
 }
 
 func selectedRelaySelectionFromConn(conn net.Conn) (string, []int) {
+	if tlsConn, ok := conn.(*tls.Conn); ok {
+		return selectedRelaySelectionFromConn(tlsConn.NetConn())
+	}
 	if selected, ok := conn.(interface{ selectedRelaySelection() (string, []int) }); ok {
 		return selected.selectedRelaySelection()
 	}

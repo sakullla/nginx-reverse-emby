@@ -3259,6 +3259,66 @@ func TestNewRelayTransportKeepsHealthyIdleConnections(t *testing.T) {
 	}
 }
 
+func TestRelayTransportSupportsHTTP2HTTPSUpstreamsAndPreservesSelectedPath(t *testing.T) {
+	var upstreamProto atomic.Value
+	backend := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamProto.Store(r.Proto)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	backend.EnableHTTP2 = true
+	backend.StartTLS()
+	defer backend.Close()
+
+	backendURL, err := url.Parse(backend.URL)
+	if err != nil {
+		t.Fatalf("backend URL parse error: %v", err)
+	}
+	base := NewSharedTransport()
+	base.TLSClientConfig = backend.Client().Transport.(*http.Transport).TLSClientConfig.Clone()
+
+	selectedAddress := "relay-target.example:443"
+	selectedPath := []int{101, 201}
+	var dials atomic.Int32
+	transport := NewRelayTransport(base, func(ctx context.Context, network, address string, class upstream.TrafficClass) (net.Conn, error) {
+		dials.Add(1)
+		setSelectedRelaySelection(ctx, selectedAddress, selectedPath)
+		var dialer net.Dialer
+		return dialer.DialContext(ctx, network, backendURL.Host)
+	})
+	client := &http.Client{Transport: transport}
+
+	for i := 0; i < 2; i++ {
+		holder := &selectedRelayAddressHolder{}
+		ctx := withSelectedRelayAddressHolder(context.Background(), holder)
+		ctx = withSelectedRelayConnTrace(ctx, holder)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, backend.URL, nil)
+		if err != nil {
+			t.Fatalf("NewRequestWithContext(%d) error = %v", i, err)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("Do(%d) error = %v", i, err)
+		}
+		body, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err != nil {
+			t.Fatalf("ReadAll(%d) error = %v", i, err)
+		}
+		if string(body) != "ok" {
+			t.Fatalf("body(%d) = %q", i, body)
+		}
+		if selected, path := holder.get(); selected != selectedAddress || !reflect.DeepEqual(path, selectedPath) {
+			t.Fatalf("selected relay path(%d) = %q/%+v, want %q/%+v", i, selected, path, selectedAddress, selectedPath)
+		}
+	}
+	if got := upstreamProto.Load(); got != "HTTP/2.0" {
+		t.Fatalf("upstream protocol = %v, want HTTP/2.0", got)
+	}
+	if got := dials.Load(); got != 1 {
+		t.Fatalf("relay transport dials = %d, want HTTPS HTTP/2 relay connection reused", got)
+	}
+}
+
 func TestRouteEntryMarksReusedRelayConnectionPathOnFailure(t *testing.T) {
 	cache := backends.NewCache(backends.Config{})
 	selectedAddress := "relay-target.example:80"
