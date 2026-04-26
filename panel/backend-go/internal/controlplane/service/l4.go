@@ -460,6 +460,9 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 		if proxyEgressMode == "proxy" && proxyEgressURL == "" {
 			return L4Rule{}, fmt.Errorf("%w: proxy_egress_url is required for proxy egress", ErrInvalidArgument)
 		}
+		backends = []L4Backend{}
+		upstreamHost = ""
+		upstreamPort = 0
 	}
 
 	relayObfs := false

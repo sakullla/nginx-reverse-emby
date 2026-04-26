@@ -383,6 +383,52 @@ func TestNormalizeL4RuleInputAcceptsProxyEntryProxyEgress(t *testing.T) {
 	}
 }
 
+func TestL4RuleServiceUpdateProxyEntryClearsBackendFields(t *testing.T) {
+	store := &fakeL4Store{
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"local": {{
+				ID:           1,
+				AgentID:      "local",
+				Name:         "forwarding rule",
+				Protocol:     "tcp",
+				ListenHost:   "0.0.0.0",
+				ListenPort:   9000,
+				UpstreamHost: "upstream",
+				UpstreamPort: 9001,
+				BackendsJSON: `[{"host":"upstream","port":9001}]`,
+				Enabled:      true,
+				Revision:     3,
+			}},
+		},
+		relayByAgent: map[string][]storage.RelayListenerRow{
+			"local": {{
+				ID:      7,
+				AgentID: "local",
+				Enabled: true,
+			}},
+		},
+	}
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	listenMode := "proxy"
+	egressMode := "relay"
+	rule, err := svc.Update(context.Background(), "local", 1, L4RuleInput{
+		ListenMode:      &listenMode,
+		ProxyEgressMode: &egressMode,
+		RelayLayers:     &[][]int{{7}},
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if len(rule.Backends) != 0 || rule.UpstreamHost != "" || rule.UpstreamPort != 0 {
+		t.Fatalf("rule backend fields = backends=%+v upstream=%q:%d", rule.Backends, rule.UpstreamHost, rule.UpstreamPort)
+	}
+	row := store.l4RulesByID["local"][0]
+	if row.BackendsJSON != "[]" || row.UpstreamHost != "" || row.UpstreamPort != 0 {
+		t.Fatalf("persisted backend fields = backends=%s upstream=%q:%d", row.BackendsJSON, row.UpstreamHost, row.UpstreamPort)
+	}
+}
+
 func TestL4RuleServiceCreateAllocatesGlobalIDsAcrossAgentsInSQLiteStore(t *testing.T) {
 	dataRoot := t.TempDir()
 	store, err := storage.NewSQLiteStore(dataRoot, "local")
