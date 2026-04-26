@@ -439,16 +439,17 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 		relayLayers = [][]int{}
 	}
 
-	proxyEntryAuth := fallback.ProxyEntryAuth
+	proxyEntryAuth, proxyEgressMode, proxyEgressURL := normalizeL4ProxyEntryFields(
+		listenMode,
+		fallback.ProxyEntryAuth,
+		defaultString(pointerString(input.ProxyEgressMode), fallback.ProxyEgressMode),
+		defaultString(pointerString(input.ProxyEgressURL), fallback.ProxyEgressURL),
+	)
 	if input.ProxyEntryAuth != nil {
 		proxyEntryAuth = normalizeL4ProxyEntryAuth(*input.ProxyEntryAuth)
 	}
-	proxyEgressMode := strings.ToLower(strings.TrimSpace(defaultString(pointerString(input.ProxyEgressMode), fallback.ProxyEgressMode)))
-	proxyEgressURL := strings.TrimSpace(defaultString(pointerString(input.ProxyEgressURL), fallback.ProxyEgressURL))
 	if listenMode != "proxy" {
-		proxyEntryAuth = L4ProxyEntryAuth{}
-		proxyEgressMode = ""
-		proxyEgressURL = ""
+		proxyEntryAuth, proxyEgressMode, proxyEgressURL = normalizeL4ProxyEntryFields(listenMode, proxyEntryAuth, proxyEgressMode, proxyEgressURL)
 	} else {
 		if proxyEgressMode != "relay" && proxyEgressMode != "proxy" {
 			return L4Rule{}, fmt.Errorf("%w: proxy_egress_mode must be relay or proxy", ErrInvalidArgument)
@@ -609,6 +610,13 @@ func normalizeL4ProxyEntryAuth(auth L4ProxyEntryAuth) L4ProxyEntryAuth {
 	}
 }
 
+func normalizeL4ProxyEntryFields(listenMode string, auth L4ProxyEntryAuth, egressMode string, egressURL string) (L4ProxyEntryAuth, string, string) {
+	if strings.ToLower(strings.TrimSpace(listenMode)) != "proxy" {
+		return L4ProxyEntryAuth{}, "", ""
+	}
+	return normalizeL4ProxyEntryAuth(auth), strings.ToLower(strings.TrimSpace(egressMode)), strings.TrimSpace(egressURL)
+}
+
 func normalizeTags(values []string) []string {
 	normalized := make([]string, 0, len(values))
 	for _, value := range values {
@@ -640,6 +648,17 @@ func ensureUniqueL4Listen(rules []L4Rule, next L4Rule, excludeID int) error {
 }
 
 func l4RuleFromRow(row storage.L4RuleRow) L4Rule {
+	listenMode := strings.ToLower(strings.TrimSpace(defaultString(row.ListenMode, "tcp")))
+	if listenMode == "" {
+		listenMode = "tcp"
+	}
+	proxyEntryAuth, proxyEgressMode, proxyEgressURL := normalizeL4ProxyEntryFields(
+		listenMode,
+		parseL4ProxyEntryAuth(row.ProxyEntryAuthJSON),
+		row.ProxyEgressMode,
+		row.ProxyEgressURL,
+	)
+
 	rule := L4Rule{
 		ID:              row.ID,
 		AgentID:         row.AgentID,
@@ -654,10 +673,10 @@ func l4RuleFromRow(row storage.L4RuleRow) L4Rule {
 		RelayChain:      []int{},
 		RelayLayers:     [][]int{},
 		RelayObfs:       row.RelayObfs,
-		ListenMode:      defaultString(row.ListenMode, "tcp"),
-		ProxyEntryAuth:  parseL4ProxyEntryAuth(row.ProxyEntryAuthJSON),
-		ProxyEgressMode: strings.TrimSpace(row.ProxyEgressMode),
-		ProxyEgressURL:  strings.TrimSpace(row.ProxyEgressURL),
+		ListenMode:      listenMode,
+		ProxyEntryAuth:  proxyEntryAuth,
+		ProxyEgressMode: proxyEgressMode,
+		ProxyEgressURL:  proxyEgressURL,
 		Enabled:         row.Enabled,
 		Tags:            parseStringArray(row.TagsJSON),
 		Revision:        row.Revision,

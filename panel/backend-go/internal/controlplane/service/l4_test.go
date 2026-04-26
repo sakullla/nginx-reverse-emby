@@ -244,6 +244,29 @@ func TestL4RuleFromRowDefaultsLoadBalancingToAdaptive(t *testing.T) {
 	}
 }
 
+func TestL4RuleFromRowClearsProxyEntryFieldsForTCPMode(t *testing.T) {
+	rule := l4RuleFromRow(storage.L4RuleRow{
+		ID:                 1,
+		AgentID:            "local",
+		Protocol:           "tcp",
+		ListenHost:         "0.0.0.0",
+		ListenPort:         9000,
+		UpstreamHost:       "upstream",
+		UpstreamPort:       9001,
+		ListenMode:         " TCP ",
+		ProxyEntryAuthJSON: `{"enabled":true,"username":"u","password":"p"}`,
+		ProxyEgressMode:    "relay",
+		ProxyEgressURL:     "socks://user:pass@127.0.0.1:1080",
+	})
+
+	if rule.ListenMode != "tcp" {
+		t.Fatalf("ListenMode = %q", rule.ListenMode)
+	}
+	if rule.ProxyEntryAuth != (L4ProxyEntryAuth{}) || rule.ProxyEgressMode != "" || rule.ProxyEgressURL != "" {
+		t.Fatalf("proxy entry fields = auth=%+v mode=%q url=%q", rule.ProxyEntryAuth, rule.ProxyEgressMode, rule.ProxyEgressURL)
+	}
+}
+
 func TestNormalizeL4RuleInputAcceptsProxyEntryRelayEgress(t *testing.T) {
 	protocol := "tcp"
 	listenMode := "proxy"
@@ -270,6 +293,25 @@ func TestNormalizeL4RuleInputAcceptsProxyEntryRelayEgress(t *testing.T) {
 	}
 }
 
+func TestNormalizeL4RuleInputRejectsProxyEntryUDP(t *testing.T) {
+	protocol := "udp"
+	listenMode := "proxy"
+	egressMode := "relay"
+	relayLayers := [][]int{{101}}
+	input := L4RuleInput{
+		Protocol:        &protocol,
+		ListenHost:      stringPtrL4("127.0.0.1"),
+		ListenPort:      intPtrL4(1080),
+		ListenMode:      &listenMode,
+		ProxyEgressMode: &egressMode,
+		RelayLayers:     &relayLayers,
+	}
+	_, err := normalizeL4RuleInput(input, L4Rule{}, 1)
+	if err == nil || !strings.Contains(err.Error(), "listen_mode=proxy requires protocol tcp") {
+		t.Fatalf("error = %v, want proxy udp validation", err)
+	}
+}
+
 func TestNormalizeL4RuleInputRejectsProxyEntryWithoutEgress(t *testing.T) {
 	protocol := "tcp"
 	listenMode := "proxy"
@@ -278,6 +320,40 @@ func TestNormalizeL4RuleInputRejectsProxyEntryWithoutEgress(t *testing.T) {
 		ListenHost: stringPtrL4("127.0.0.1"),
 		ListenPort: intPtrL4(1080),
 		ListenMode: &listenMode,
+	}
+	_, err := normalizeL4RuleInput(input, L4Rule{}, 1)
+	if err == nil || !strings.Contains(err.Error(), "proxy_egress_mode") {
+		t.Fatalf("error = %v, want proxy_egress_mode validation", err)
+	}
+}
+
+func TestNormalizeL4RuleInputRejectsProxyEntryMissingProxyEgressURL(t *testing.T) {
+	protocol := "tcp"
+	listenMode := "proxy"
+	egressMode := "proxy"
+	input := L4RuleInput{
+		Protocol:        &protocol,
+		ListenHost:      stringPtrL4("127.0.0.1"),
+		ListenPort:      intPtrL4(1080),
+		ListenMode:      &listenMode,
+		ProxyEgressMode: &egressMode,
+	}
+	_, err := normalizeL4RuleInput(input, L4Rule{}, 1)
+	if err == nil || !strings.Contains(err.Error(), "proxy_egress_url") {
+		t.Fatalf("error = %v, want proxy_egress_url validation", err)
+	}
+}
+
+func TestNormalizeL4RuleInputRejectsProxyEntryInvalidEgressMode(t *testing.T) {
+	protocol := "tcp"
+	listenMode := "proxy"
+	egressMode := "direct"
+	input := L4RuleInput{
+		Protocol:        &protocol,
+		ListenHost:      stringPtrL4("127.0.0.1"),
+		ListenPort:      intPtrL4(1080),
+		ListenMode:      &listenMode,
+		ProxyEgressMode: &egressMode,
 	}
 	_, err := normalizeL4RuleInput(input, L4Rule{}, 1)
 	if err == nil || !strings.Contains(err.Error(), "proxy_egress_mode") {

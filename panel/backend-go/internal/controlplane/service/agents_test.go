@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -451,6 +452,101 @@ func TestAgentServiceUpdatePersistsOutboundProxyURL(t *testing.T) {
 	}
 	if agent.OutboundProxyURL != "socks://user:pass@127.0.0.1:1080" {
 		t.Fatalf("OutboundProxyURL = %q", agent.OutboundProxyURL)
+	}
+}
+
+func TestAgentServiceUpdateRejectsInvalidOutboundProxyURL(t *testing.T) {
+	ctx := context.Background()
+	store := &fakeStore{}
+	if err := store.SaveAgent(ctx, storage.AgentRow{
+		ID:               "edge-a",
+		Name:             "Edge A",
+		AgentToken:       "token-a",
+		CapabilitiesJSON: `["http_rules","l4","relay"]`,
+		LastApplyStatus:  "success",
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	svc := NewAgentService(config.Config{}, store)
+	_, err := svc.Update(ctx, "edge-a", UpdateAgentRequest{
+		OutboundProxyURL: stringPtr("127.0.0.1:1080"),
+	})
+	if err == nil || !strings.Contains(err.Error(), "outbound_proxy_url") {
+		t.Fatalf("Update() error = %v, want outbound_proxy_url validation", err)
+	}
+}
+
+func TestAgentServiceUpdateTrimsOutboundProxyURL(t *testing.T) {
+	ctx := context.Background()
+	store := &fakeStore{}
+	if err := store.SaveAgent(ctx, storage.AgentRow{
+		ID:               "edge-a",
+		Name:             "Edge A",
+		AgentToken:       "token-a",
+		CapabilitiesJSON: `["http_rules","l4","relay"]`,
+		LastApplyStatus:  "success",
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	svc := NewAgentService(config.Config{}, store)
+	agent, err := svc.Update(ctx, "edge-a", UpdateAgentRequest{
+		OutboundProxyURL: stringPtr("  socks://user:pass@127.0.0.1:1080  "),
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if agent.OutboundProxyURL != "socks://user:pass@127.0.0.1:1080" || store.savedAgent.OutboundProxyURL != "socks://user:pass@127.0.0.1:1080" {
+		t.Fatalf("OutboundProxyURL agent=%q saved=%q", agent.OutboundProxyURL, store.savedAgent.OutboundProxyURL)
+	}
+}
+
+func TestAgentServiceUpdateClearsOutboundProxyURL(t *testing.T) {
+	ctx := context.Background()
+	store := &fakeStore{}
+	if err := store.SaveAgent(ctx, storage.AgentRow{
+		ID:               "edge-a",
+		Name:             "Edge A",
+		AgentToken:       "token-a",
+		CapabilitiesJSON: `["http_rules","l4","relay"]`,
+		OutboundProxyURL: "socks://user:pass@127.0.0.1:1080",
+		LastApplyStatus:  "success",
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	svc := NewAgentService(config.Config{}, store)
+	agent, err := svc.Update(ctx, "edge-a", UpdateAgentRequest{
+		OutboundProxyURL: stringPtr(" "),
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if agent.OutboundProxyURL != "" || store.savedAgent.OutboundProxyURL != "" {
+		t.Fatalf("OutboundProxyURL agent=%q saved=%q", agent.OutboundProxyURL, store.savedAgent.OutboundProxyURL)
+	}
+}
+
+func TestAgentServiceUpdatePreservesOmittedOutboundProxyURL(t *testing.T) {
+	ctx := context.Background()
+	store := &fakeStore{}
+	if err := store.SaveAgent(ctx, storage.AgentRow{
+		ID:               "edge-a",
+		Name:             "Edge A",
+		AgentToken:       "token-a",
+		CapabilitiesJSON: `["http_rules","l4","relay"]`,
+		OutboundProxyURL: "socks://user:pass@127.0.0.1:1080",
+		LastApplyStatus:  "success",
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	svc := NewAgentService(config.Config{}, store)
+	agent, err := svc.Update(ctx, "edge-a", UpdateAgentRequest{
+		Name: stringPtr("Edge A Updated"),
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if agent.OutboundProxyURL != "socks://user:pass@127.0.0.1:1080" || store.savedAgent.OutboundProxyURL != "socks://user:pass@127.0.0.1:1080" {
+		t.Fatalf("OutboundProxyURL agent=%q saved=%q", agent.OutboundProxyURL, store.savedAgent.OutboundProxyURL)
 	}
 }
 
