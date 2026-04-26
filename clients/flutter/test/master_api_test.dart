@@ -100,4 +100,81 @@ void main() {
       ),
     );
   });
+
+  test('register reports HTTP status for non-json backend errors', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(server.close);
+    server.listen((request) async {
+      await utf8.decoder.bind(request).join();
+      request.response
+        ..statusCode = HttpStatus.internalServerError
+        ..headers.contentType = ContentType.text
+        ..write('backend unavailable');
+      await request.response.close();
+    });
+
+    final api = HttpMasterApi();
+
+    expect(
+      () => api.register(
+        MasterApiConfig(
+          masterUrl: 'http://${server.address.host}:${server.port}',
+          registerToken: 'register-secret',
+        ),
+        const RegisterClientRequest(
+          name: 'phone-a',
+          agentToken: 'agent-secret',
+          version: '1.0.0',
+          platform: 'android',
+        ),
+      ),
+      throwsA(
+        isA<MasterApiException>().having(
+          (error) => error.message,
+          'message',
+          'Registration failed with HTTP 500',
+        ),
+      ),
+    );
+  });
+
+  test(
+    'register reports invalid backend response for malformed success',
+    () async {
+      final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+      addTearDown(server.close);
+      server.listen((request) async {
+        await utf8.decoder.bind(request).join();
+        request.response
+          ..statusCode = HttpStatus.ok
+          ..headers.contentType = ContentType.text
+          ..write('not json');
+        await request.response.close();
+      });
+
+      final api = HttpMasterApi();
+
+      expect(
+        () => api.register(
+          MasterApiConfig(
+            masterUrl: 'http://${server.address.host}:${server.port}',
+            registerToken: 'register-secret',
+          ),
+          const RegisterClientRequest(
+            name: 'phone-a',
+            agentToken: 'agent-secret',
+            version: '1.0.0',
+            platform: 'android',
+          ),
+        ),
+        throwsA(
+          isA<MasterApiException>().having(
+            (error) => error.message,
+            'message',
+            startsWith('Invalid backend response:'),
+          ),
+        ),
+      );
+    },
+  );
 }

@@ -93,10 +93,11 @@ class HttpMasterApi implements MasterApi {
 
       final response = await httpRequest.close();
       final responseText = await utf8.decoder.bind(response).join();
-      final payload = _decodePayload(responseText);
       if (response.statusCode < 200 || response.statusCode >= 300) {
+        final payload = _decodeErrorPayload(responseText);
         throw MasterApiException(_extractError(payload, response.statusCode));
       }
+      final payload = _decodePayload(responseText);
       final agent = payload['agent'];
       final agentId = agent is Map ? (agent['id'] as String? ?? '') : '';
       if (payload['ok'] != true || agentId.trim().isEmpty) {
@@ -109,13 +110,21 @@ class HttpMasterApi implements MasterApi {
         agentToken: request.agentToken,
       );
     } on FormatException catch (error) {
-      throw MasterApiException('Invalid registration URL: ${error.message}');
+      throw MasterApiException('Invalid backend response: ${error.message}');
     } on SocketException catch (error) {
       throw MasterApiException('Registration failed: ${error.message}');
     } on HttpException catch (error) {
       throw MasterApiException('Registration failed: ${error.message}');
     } finally {
       client.close(force: true);
+    }
+  }
+
+  Map<String, Object?> _decodeErrorPayload(String responseText) {
+    try {
+      return _decodePayload(responseText);
+    } on FormatException {
+      return const {};
     }
   }
 

@@ -1,6 +1,8 @@
 /.gradle
 /captures/
 /local.properties
+/build/
+/app/build/
 GeneratedPluginRegistrant.java
 .cxx/
 
