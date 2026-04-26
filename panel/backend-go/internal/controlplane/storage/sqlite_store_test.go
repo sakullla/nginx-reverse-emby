@@ -457,7 +457,7 @@ func TestSQLiteStorePersistsL4ProxyEntryFields(t *testing.T) {
 		ListenMode:         "proxy",
 		ProxyEntryAuthJSON: `{"enabled":true,"username":"u","password":"p"}`,
 		ProxyEgressMode:    "relay",
-		ProxyEgressURL:     "",
+		ProxyEgressURL:     "socks://user:pass@127.0.0.1:1080",
 		Enabled:            true,
 		TagsJSON:           `[]`,
 		Revision:           1,
@@ -473,7 +473,10 @@ func TestSQLiteStorePersistsL4ProxyEntryFields(t *testing.T) {
 		t.Fatalf("ListL4Rules() len = %d", len(rows))
 	}
 	got := rows[0]
-	if got.ListenMode != "proxy" || got.ProxyEgressMode != "relay" || got.ProxyEntryAuthJSON == "" {
+	if got.ListenMode != row.ListenMode ||
+		got.ProxyEntryAuthJSON != row.ProxyEntryAuthJSON ||
+		got.ProxyEgressMode != row.ProxyEgressMode ||
+		got.ProxyEgressURL != row.ProxyEgressURL {
 		t.Fatalf("proxy fields not persisted: %+v", got)
 	}
 }
