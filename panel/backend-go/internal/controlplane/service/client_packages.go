@@ -233,6 +233,12 @@ func normalizeClientPackageInput(input ClientPackageInput, fallback ClientPackag
 	if platform == "cloudflare_worker" && (arch != "script" || kind != "worker_script") {
 		return ClientPackage{}, fmt.Errorf("%w: cloudflare_worker packages must use arch=script and kind=worker_script", ErrInvalidArgument)
 	}
+	if kind == "worker_script" && (platform != "cloudflare_worker" || arch != "script") {
+		return ClientPackage{}, fmt.Errorf("%w: worker_script packages must use platform=cloudflare_worker and arch=script", ErrInvalidArgument)
+	}
+	if arch == "script" && (platform != "cloudflare_worker" || kind != "worker_script") {
+		return ClientPackage{}, fmt.Errorf("%w: script packages must use platform=cloudflare_worker and kind=worker_script", ErrInvalidArgument)
+	}
 
 	downloadURL := trimmedInput(input.DownloadURL, fallback.DownloadURL)
 	if !validHTTPSURL(downloadURL) {

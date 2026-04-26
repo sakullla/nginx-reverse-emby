@@ -272,6 +272,21 @@ func TestClientPackageServiceValidationErrors(t *testing.T) {
 	if _, err := svc.Create(ctx, badWorkerKind); !errors.Is(err, ErrInvalidArgument) {
 		t.Fatalf("Create() bad worker kind error = %v, want ErrInvalidArgument", err)
 	}
+
+	badWorkerScriptKindPlatform := clientPackageInput("1.0.4", "windows", "amd64", "worker_script", "5")
+	if _, err := svc.Create(ctx, badWorkerScriptKindPlatform); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Create() bad worker_script platform error = %v, want ErrInvalidArgument", err)
+	}
+
+	badScriptArchPlatform := clientPackageInput("1.0.5", "windows", "script", "flutter_gui", "6")
+	if _, err := svc.Create(ctx, badScriptArchPlatform); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Create() bad script arch platform error = %v, want ErrInvalidArgument", err)
+	}
+
+	validWorker := clientPackageInput("1.0.6", "cloudflare_worker", "script", "worker_script", "7")
+	if _, err := svc.Create(ctx, validWorker); err != nil {
+		t.Fatalf("Create() valid worker package error = %v", err)
+	}
 }
 
 func TestClientPackageServiceMissingIDErrors(t *testing.T) {
