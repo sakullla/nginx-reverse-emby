@@ -398,6 +398,11 @@ func buildHTTPAdaptiveReports(reports []BackendReport, candidates []httpProbeCan
 			if !ok {
 				childSummary = cache.Summary(childSummaryKey)
 			}
+			if len(children) == 1 && !observationSummaryHasHistory(childSummary) {
+				if configuredHistory := configuredSummary[configured]; observationSummaryHasHistory(configuredHistory) {
+					childSummary = configuredHistory
+				}
+			}
 			isPreferredChild := childSummaryKey == preferredChildKey
 			if len(childSummaries) == 0 {
 				isPreferredChild = index == 0

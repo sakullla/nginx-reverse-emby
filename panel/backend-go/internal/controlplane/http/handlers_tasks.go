@@ -38,7 +38,7 @@ func (d Dependencies) handleAgentRuleDiagnose(w http.ResponseWriter, r *http.Req
 			"rule_id":   ruleID,
 			"rule_kind": "http",
 		},
-		TTL: diagnosticTaskTTL(service.TaskTypeDiagnoseHTTPRule, diagnosticHTTPBackendCount(rule)),
+		TTL: diagnosticHTTPTaskTTL(rule),
 	})
 	if err != nil {
 		status, body := mapServiceError(err)
@@ -84,7 +84,7 @@ func (d Dependencies) handleAgentL4RuleDiagnose(w http.ResponseWriter, r *http.R
 			"rule_id":   ruleID,
 			"rule_kind": "l4_tcp",
 		},
-		TTL: diagnosticTaskTTL(service.TaskTypeDiagnoseL4TCPRule, diagnosticL4BackendCount(rule)),
+		TTL: diagnosticL4TaskTTL(rule),
 	})
 	if err != nil {
 		status, body := mapServiceError(err)
@@ -112,6 +112,38 @@ func diagnosticTaskTTL(taskType string, backendCount int) time.Duration {
 		perAttempt = 5 * time.Second
 	}
 	return time.Duration(5*candidateCount)*perAttempt + 15*time.Second
+}
+
+func diagnosticHTTPTaskTTL(rule service.HTTPRule) time.Duration {
+	backendCount := diagnosticHTTPBackendCount(rule)
+	pathCount := diagnosticRelayPathCount(rule.RelayLayers)
+	return diagnosticTaskTTL(service.TaskTypeDiagnoseHTTPRule, backendCount*pathCount)
+}
+
+func diagnosticL4TaskTTL(rule service.L4Rule) time.Duration {
+	backendCount := diagnosticL4BackendCount(rule)
+	pathCount := diagnosticRelayPathCount(rule.RelayLayers)
+	return diagnosticTaskTTL(service.TaskTypeDiagnoseL4TCPRule, backendCount*pathCount)
+}
+
+func diagnosticRelayPathCount(layers [][]int) int {
+	if len(layers) == 0 {
+		return 1
+	}
+	count := 1
+	for _, layer := range layers {
+		if len(layer) == 0 {
+			continue
+		}
+		count *= len(layer)
+		if count >= 32 {
+			return 32
+		}
+	}
+	if count <= 0 {
+		return 1
+	}
+	return count
 }
 
 func diagnosticHTTPBackendCount(rule service.HTTPRule) int {

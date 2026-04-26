@@ -304,6 +304,72 @@ describe('RuleDiagnosticModal', () => {
     expect(parentFactorTexts).not.toContain('流量阶段冷启动探索')
   })
 
+  it('omits unavailable probe summary when real adaptive traffic history exists', async () => {
+    const wrapper = mountModal({
+      task: {
+        ...buildTask('http'),
+        result: {
+          ...buildTask('http').result,
+          backends: [
+            {
+              backend: 'https://origin.example.test',
+              summary: {
+                sent: 0,
+                succeeded: 0,
+                failed: 0,
+                avg_latency_ms: 0,
+                quality: '不可用'
+              },
+              adaptive: {
+                preferred: true,
+                stability: 1,
+                recent_succeeded: 8,
+                recent_failed: 0,
+                latency_ms: 261.5,
+                performance_score: 0.2,
+                sustained_throughput_bps: 2 * 1024 * 1024,
+                traffic_share_hint: 'normal',
+                outlier: false
+              },
+              children: [
+                {
+                  backend: 'https://origin.example.test [origin.example.test:443]',
+                  address: 'origin.example.test:443',
+                  summary: {
+                    sent: 0,
+                    succeeded: 0,
+                    failed: 0,
+                    avg_latency_ms: 0,
+                    quality: '不可用'
+                  },
+                  adaptive: {
+                    preferred: true,
+                    stability: 1,
+                    recent_succeeded: 8,
+                    recent_failed: 0,
+                    latency_ms: 261.5
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      }
+    })
+    await wrapper.get('.diagnostic-modal__section-title--toggle').trigger('click')
+    await wrapper.get('.diagnostic-backend-item__toggle').trigger('click')
+
+    expect(wrapper.find('.diagnostic-backend-item__quality').exists()).toBe(false)
+    expect(wrapper.find('.diagnostic-backend-item__probe').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('本次测试 0 ms')
+    expect(wrapper.text()).not.toContain('成功 0 / 0')
+    expect(wrapper.text()).not.toContain('不可用')
+    expect(wrapper.text()).toContain('261.5 ms')
+    expect(wrapper.text()).toContain('近24h成功8')
+    expect(wrapper.text()).toContain('近24h成功 8')
+    expect(wrapper.text()).toContain('2.0 MB/s')
+  })
+
   it('shows resolved ip separately in probe samples', async () => {
     const wrapper = mountModal({
       task: {

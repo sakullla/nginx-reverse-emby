@@ -112,7 +112,7 @@
                   <code class="diagnostic-backend-item__name">{{ backendDisplayLabel(backend) }}</code>
                   <div class="diagnostic-backend-item__badges">
                     <span v-if="backend.adaptive?.preferred" class="diagnostic-backend-item__preferred">当前优选</span>
-                    <span class="diagnostic-backend-item__quality" :class="`diagnostic-backend-item__quality--${qualityToneFor(backend.summary?.quality)}`">
+                    <span v-if="hasProbeSummary(backend)" class="diagnostic-backend-item__quality" :class="`diagnostic-backend-item__quality--${qualityToneFor(backend.summary?.quality)}`">
                       {{ qualityLabelFor(backend.summary?.quality) }}
                     </span>
                   </div>
@@ -137,7 +137,7 @@
                   </div>
                 </div>
 
-                <div class="diagnostic-backend-item__probe">
+                <div v-if="hasProbeSummary(backend)" class="diagnostic-backend-item__probe">
                   <span class="diagnostic-backend-item__probe-stat">本次测试 <strong>{{ backend.summary?.avg_latency_ms ?? 0 }} ms</strong></span>
                   <span class="diagnostic-backend-item__probe-stat">成功 <strong>{{ backend.summary?.succeeded ?? 0 }} / {{ backend.summary?.sent ?? 0 }}</strong></span>
                 </div>
@@ -300,6 +300,10 @@ function backendActualLatency(backend) {
   const summaryLatency = Number(backend?.summary?.avg_latency_ms)
   if (Number.isFinite(summaryLatency)) return summaryLatency
   return 0
+}
+
+function hasProbeSummary(backend) {
+  return Number(backend?.summary?.sent || 0) > 0
 }
 
 function displayAdaptive(backend) {

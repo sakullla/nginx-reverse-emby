@@ -1832,6 +1832,39 @@ func TestBuildHTTPAdaptiveReportsMarksPreferredResolvedChildByAdaptivePreference
 	}
 }
 
+func TestBuildHTTPAdaptiveReportsUsesConfiguredHistoryForSingleResolvedChild(t *testing.T) {
+	cache := backends.NewCache(backends.Config{})
+	configuredURL := "https://origin.example.test"
+	childAddr := "origin.example.test:443"
+	childLabel := configuredURL + " [" + childAddr + "]"
+	configuredKey := backends.BackendObservationKey("https://edge.example.test", backends.StableBackendID(configuredURL))
+	cache.ObserveBackendSuccess(configuredKey, 261500*time.Microsecond, 600*time.Millisecond, 2*1024*1024)
+
+	annotated := buildHTTPAdaptiveReports([]BackendReport{
+		{Backend: childLabel, Summary: Summary{}},
+	}, []httpProbeCandidate{
+		{
+			backendLabel:          childLabel,
+			dialAddress:           childAddr,
+			configuredURL:         configuredURL,
+			backendObservationKey: configuredKey,
+			resolvedCandidates: []httpResolvedCandidate{
+				{label: childLabel, dialAddress: childAddr},
+			},
+		},
+	}, cache)
+	if len(annotated) != 1 || len(annotated[0].Children) != 1 || annotated[0].Children[0].Adaptive == nil {
+		t.Fatalf("annotated = %+v", annotated)
+	}
+	childAdaptive := annotated[0].Children[0].Adaptive
+	if got := childAdaptive.RecentSucceeded; got != 1 {
+		t.Fatalf("child RecentSucceeded = %d, want configured backend history", got)
+	}
+	if got := childAdaptive.LatencyMS; got != 261.5 {
+		t.Fatalf("child LatencyMS = %v, want configured backend history", got)
+	}
+}
+
 func TestBuildHTTPAdaptiveReportsUsesPerChildRelayPathSummaries(t *testing.T) {
 	base := time.Date(2026, 4, 18, 10, 0, 0, 0, time.UTC)
 	cache := backends.NewCache(backends.Config{

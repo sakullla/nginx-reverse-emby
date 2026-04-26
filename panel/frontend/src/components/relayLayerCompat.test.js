@@ -11,15 +11,17 @@ function read(name) {
 }
 
 describe('relay layer compatibility fields', () => {
-  it('keeps every HTTP relay layer listener in legacy relay_chain', () => {
+  it('sends one compatible HTTP relay path in legacy relay_chain', () => {
     const source = read('RuleForm.vue')
-    expect(source).not.toMatch(/result\.push\(layer\[0\]\)/)
-    expect(source).toMatch(/result\.push\(\.\.\.layer\.map\(\(id\) => Number\(id\)\)\.filter\(\(id\) => Number\.isFinite\(id\)\)\)/)
+    expect(source).toMatch(/const id = Number\(layer\[0\]\)/)
+    expect(source).toMatch(/result\.push\(id\)/)
+    expect(source).not.toMatch(/result\.push\(\.\.\.layer\.map/)
   })
 
-  it('keeps every L4 relay layer listener in legacy relay_chain', () => {
+  it('sends one compatible L4 relay path in legacy relay_chain', () => {
     const source = read('L4RuleForm.vue')
-    expect(source).not.toMatch(/result\.push\(layer\[0\]\)/)
-    expect(source).toMatch(/result\.push\(\.\.\.layer\.map\(\(id\) => Number\(id\)\)\.filter\(\(id\) => Number\.isFinite\(id\)\)\)/)
+    expect(source).toMatch(/const id = Number\(layer\[0\]\)/)
+    expect(source).toMatch(/result\.push\(id\)/)
+    expect(source).not.toMatch(/result\.push\(\.\.\.layer\.map/)
   })
 })
