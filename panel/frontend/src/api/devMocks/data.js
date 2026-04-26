@@ -1605,6 +1605,9 @@ const mockClientPackages = [
 
 let mockVersionPolicyIdCounter = 10
 let mockClientPackageIdCounter = 10
+const CLIENT_PACKAGE_PLATFORMS = new Set(['windows', 'macos', 'android', 'cloudflare_worker'])
+const CLIENT_PACKAGE_ARCHES = new Set(['amd64', 'arm64', 'universal', 'script'])
+const CLIENT_PACKAGE_KINDS = new Set(['flutter_gui', 'go_agent', 'worker_script'])
 
 function normalizeMockVersionPolicyPayload(payload = {}) {
   const desiredVersion = String(payload.desired_version || '').trim()
@@ -1629,19 +1632,50 @@ function normalizeMockVersionPolicyPayload(payload = {}) {
   }
 }
 
+function isMockHttpsUrl(value) {
+  try {
+    const parsed = new URL(String(value || '').trim())
+    return parsed.protocol === 'https:' && !!parsed.host
+  } catch {
+    return false
+  }
+}
+
+function isMockSha256(value) {
+  return /^[a-f0-9]{64}$/.test(String(value || '').trim())
+}
+
 function normalizeMockClientPackagePayload(payload = {}) {
   const version = String(payload.version || '').trim()
-  const platform = String(payload.platform || '').trim()
-  const arch = String(payload.arch || '').trim()
-  const kind = String(payload.kind || '').trim()
+  const platform = String(payload.platform || '').trim().toLowerCase()
+  const arch = String(payload.arch || '').trim().toLowerCase()
+  const kind = String(payload.kind || '').trim().toLowerCase()
   const downloadUrl = String(payload.download_url || '').trim()
-  const sha256 = String(payload.sha256 || '').trim()
+  const sha256 = String(payload.sha256 || '').trim().toLowerCase()
   if (!version) throw new Error('version is required')
   if (!platform) throw new Error('platform is required')
   if (!arch) throw new Error('arch is required')
   if (!kind) throw new Error('kind is required')
-  if (!downloadUrl) throw new Error('download_url is required')
-  if (!sha256) throw new Error('sha256 is required')
+  if (!CLIENT_PACKAGE_PLATFORMS.has(platform)) {
+    throw new Error('platform must be windows, macos, android, or cloudflare_worker')
+  }
+  if (!CLIENT_PACKAGE_ARCHES.has(arch)) {
+    throw new Error('arch must be amd64, arm64, universal, or script')
+  }
+  if (!CLIENT_PACKAGE_KINDS.has(kind)) {
+    throw new Error('kind must be flutter_gui, go_agent, or worker_script')
+  }
+  if (platform === 'cloudflare_worker' && (arch !== 'script' || kind !== 'worker_script')) {
+    throw new Error('cloudflare_worker packages must use arch=script and kind=worker_script')
+  }
+  if (kind === 'worker_script' && (platform !== 'cloudflare_worker' || arch !== 'script')) {
+    throw new Error('worker_script packages must use platform=cloudflare_worker and arch=script')
+  }
+  if (arch === 'script' && (platform !== 'cloudflare_worker' || kind !== 'worker_script')) {
+    throw new Error('script packages must use platform=cloudflare_worker and kind=worker_script')
+  }
+  if (!isMockHttpsUrl(downloadUrl)) throw new Error('download_url must be an absolute HTTPS URL')
+  if (!isMockSha256(sha256)) throw new Error('sha256 must be 64 hex characters')
   return {
     ...payload,
     version,
@@ -1652,6 +1686,60 @@ function normalizeMockClientPackagePayload(payload = {}) {
     sha256,
     notes: String(payload.notes || '').trim()
   }
+}
+
+function parseMockClientPackageVersion(value) {
+  const version = { core: [0, 0, 0], prerelease: [] }
+  const coreAndPrerelease = String(value || '').trim().split('+', 1)[0]
+  const [core, prerelease = ''] = coreAndPrerelease.split('-', 2)
+  core.split('.').slice(0, 3).forEach((part, index) => {
+    const number = Number.parseInt(part, 10)
+    if (!Number.isNaN(number)) version.core[index] = number
+  })
+  if (prerelease) version.prerelease = prerelease.split('.')
+  return version
+}
+
+function parseMockNumericIdentifier(value) {
+  if (!/^[0-9]+$/.test(value)) return { numeric: false, value }
+  return { numeric: true, value: Number.parseInt(value, 10) }
+}
+
+function compareMockPrereleaseIdentifier(left, right) {
+  const leftParsed = parseMockNumericIdentifier(left)
+  const rightParsed = parseMockNumericIdentifier(right)
+  if (leftParsed.numeric && rightParsed.numeric) return Math.sign(leftParsed.value - rightParsed.value)
+  if (leftParsed.numeric) return -1
+  if (rightParsed.numeric) return 1
+  return Math.sign(left.localeCompare(right))
+}
+
+function compareMockPrerelease(left, right) {
+  const length = Math.max(left.length, right.length)
+  for (let i = 0; i < length; i += 1) {
+    if (i >= left.length) return -1
+    if (i >= right.length) return 1
+    const result = compareMockPrereleaseIdentifier(left[i], right[i])
+    if (result !== 0) return result
+  }
+  return 0
+}
+
+function compareMockClientPackageVersions(left, right) {
+  const leftVersion = parseMockClientPackageVersion(left)
+  const rightVersion = parseMockClientPackageVersion(right)
+  for (let i = 0; i < 3; i += 1) {
+    if (leftVersion.core[i] > rightVersion.core[i]) return 1
+    if (leftVersion.core[i] < rightVersion.core[i]) return -1
+  }
+  const leftHasPrerelease = leftVersion.prerelease.length > 0
+  const rightHasPrerelease = rightVersion.prerelease.length > 0
+  if (!leftHasPrerelease && rightHasPrerelease) return 1
+  if (leftHasPrerelease && !rightHasPrerelease) return -1
+  if (leftHasPrerelease && rightHasPrerelease) {
+    return compareMockPrerelease(leftVersion.prerelease, rightVersion.prerelease)
+  }
+  return 0
 }
 
 export async function fetchVersionPolicies() {
@@ -1751,14 +1839,16 @@ export async function deleteClientPackage(id) {
 export async function fetchLatestClientPackage(params = {}) {
   if (isDev) {
     await sleep()
-    const platform = String(params.platform || '').trim()
-    const arch = String(params.arch || '').trim()
-    const kind = String(params.kind || '').trim()
-    return mockClientPackages.find((item) =>
+    const platform = String(params.platform || '').trim().toLowerCase()
+    const arch = String(params.arch || '').trim().toLowerCase()
+    const kind = String(params.kind || '').trim().toLowerCase()
+    return mockClientPackages
+      .filter((item) =>
       (!platform || item.platform === platform) &&
       (!arch || item.arch === arch) &&
       (!kind || item.kind === kind)
-    ) || null
+      )
+      .sort((left, right) => compareMockClientPackageVersions(right.version, left.version))[0] || null
   }
   const search = new URLSearchParams(params)
   const { data } = await api.get(`/client-packages/latest?${search.toString()}`)

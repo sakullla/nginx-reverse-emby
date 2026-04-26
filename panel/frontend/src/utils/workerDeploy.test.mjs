@@ -23,6 +23,7 @@ describe('workerDeploy', () => {
       token: 'secret',
       packageRecord: {
         platform: 'cloudflare_worker',
+        arch: 'script',
         kind: 'worker_script'
       }
     })).toEqual({
@@ -30,23 +31,70 @@ describe('workerDeploy', () => {
     })
   })
 
-  it('builds GitHub-hosted script deployment output', () => {
-    const model = buildWorkerDeployModel({
+  it('rejects unsafe Worker names', () => {
+    expect(validateWorkerDeployInput({
+      workerName: 'nre-edge; rm -rf /',
+      masterUrl: 'https://panel.example.com',
+      token: 'secret',
+      packageRecord: {
+        platform: 'cloudflare_worker',
+        arch: 'script',
+        kind: 'worker_script',
+        download_url: 'https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/v1.1.0/workers/cloudflare/nre-worker.js',
+        sha256: 'a'.repeat(64)
+      }
+    })).toEqual({
+      workerName: 'Worker 名称仅支持小写字母、数字和连字符，且需以字母或数字开头和结尾'
+    })
+  })
+
+  it('rejects Worker script packages with non-script arch', () => {
+    expect(validateWorkerDeployInput({
       workerName: 'nre-edge',
       masterUrl: 'https://panel.example.com',
       token: 'secret',
       packageRecord: {
         platform: 'cloudflare_worker',
+        arch: 'amd64',
+        kind: 'worker_script',
+        download_url: 'https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/v1.1.0/workers/cloudflare/nre-worker.js',
+        sha256: 'a'.repeat(64)
+      }
+    })).toEqual({
+      packageRecord: '请选择 Cloudflare Worker 脚本包'
+    })
+  })
+
+  it('builds GitHub-hosted script deployment output', () => {
+    const model = buildWorkerDeployModel({
+      workerName: 'nre-edge',
+      masterUrl: 'https://panel.example.com/',
+      token: 'secret',
+      packageRecord: {
+        platform: 'cloudflare_worker',
+        arch: 'script',
         kind: 'worker_script',
         version: '1.1.0',
         download_url: 'https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/v1.1.0/workers/cloudflare/nre-worker.js',
         sha256: 'a'.repeat(64)
       }
     })
-    expect(model.env.NRE_MASTER_URL).toBe('https://panel.example.com')
-    expect(model.command).toContain('wrangler deploy')
-    expect(model.command).toContain('nre-edge')
-    expect(model.scriptUrl).toContain('raw.githubusercontent.com')
-    expect(model.sha256).toBe('a'.repeat(64))
+    expect(model).toEqual({
+      workerName: 'nre-edge',
+      scriptUrl: 'https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/v1.1.0/workers/cloudflare/nre-worker.js',
+      sha256: 'a'.repeat(64),
+      env: {
+        NRE_MASTER_URL: 'https://panel.example.com',
+        NRE_WORKER_TOKEN: 'secret'
+      },
+      commandArgs: [
+        'wrangler deploy',
+        '--name',
+        'nre-edge',
+        '--compatibility-date 2026-04-26',
+        'https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/v1.1.0/workers/cloudflare/nre-worker.js'
+      ],
+      command: 'wrangler deploy --name nre-edge --compatibility-date 2026-04-26 https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/v1.1.0/workers/cloudflare/nre-worker.js'
+    })
   })
 })
