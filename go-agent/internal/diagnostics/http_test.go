@@ -1356,7 +1356,7 @@ func TestHTTPProberDiagnoseAdaptivePrefersConfiguredBackendOrder(t *testing.T) {
 			return time.Date(2026, 4, 17, 12, 0, 0, 0, time.UTC)
 		},
 	})
-	scope := "https://edge.example.test"
+	scope := "edge.example.test"
 	bulkKey := backends.BackendObservationKey(scope, backends.StableBackendID(bulk.URL+"/healthz"))
 	fastKey := backends.BackendObservationKey(scope, backends.StableBackendID(fast.URL+"/healthz"))
 	cache.ObserveBackendSuccess(bulkKey, 30*time.Millisecond, 100*time.Millisecond, 4*1024*1024)
@@ -1424,6 +1424,42 @@ func TestHTTPProberDiagnoseAdaptiveHistoryExcludesCurrentProbeSamples(t *testing
 	}
 	if got := report.Backends[0].Adaptive.RecentFailed; got != 0 {
 		t.Fatalf("RecentFailed = %d, want baseline history without current probe sample", got)
+	}
+}
+
+func TestHTTPProberDiagnoseUsesRuntimeHostScopeForAdaptiveHistory(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	cache := backends.NewCache(backends.Config{})
+	runtimeScope := "edge.example.test"
+	backendKey := backends.BackendObservationKey(runtimeScope, backends.StableBackendID(server.URL+"/healthz"))
+	cache.ObserveBackendSuccess(backendKey, 15*time.Millisecond, 15*time.Millisecond, 0)
+
+	prober := NewHTTPProber(HTTPProberConfig{
+		Attempts:   1,
+		Timeout:    time.Second,
+		HTTPClient: server.Client(),
+		Cache:      cache,
+	})
+	report, err := prober.Diagnose(context.Background(), model.HTTPRule{
+		ID:          103,
+		FrontendURL: "https://edge.example.test/emby",
+		BackendURL:  server.URL + "/healthz",
+		LoadBalancing: model.LoadBalancing{
+			Strategy: "adaptive",
+		},
+	}, nil)
+	if err != nil {
+		t.Fatalf("Diagnose() error = %v", err)
+	}
+	if len(report.Backends) != 1 || report.Backends[0].Adaptive == nil {
+		t.Fatalf("Backends = %+v", report.Backends)
+	}
+	if got := report.Backends[0].Adaptive.RecentSucceeded; got != 1 {
+		t.Fatalf("RecentSucceeded = %d, want runtime host-scope history", got)
 	}
 }
 
@@ -1495,7 +1531,7 @@ func TestBuildHTTPAdaptiveReportsUsesSharedTrafficMixForConfiguredPerformance(t 
 			return base
 		},
 	})
-	scope := "https://edge.example.test"
+	scope := "edge.example.test"
 	lowLatencyURL := "http://low.example:8096/healthz"
 	bulkURL := "http://bulk.example:8096/healthz"
 	lowLatencyKey := backends.BackendObservationKey(scope, backends.StableBackendID(lowLatencyURL))
@@ -1627,7 +1663,7 @@ func TestBuildHTTPAdaptiveReportsMarksPreferredConfiguredBackendByAdaptivePrefer
 			return base
 		},
 	})
-	scope := "https://edge.example.test"
+	scope := "edge.example.test"
 	coldURL := "http://cold.example:8096/healthz"
 	warmURL := "http://warm.example:8096/healthz"
 	coldKey := backends.BackendObservationKey(scope, backends.StableBackendID(coldURL))
@@ -1834,7 +1870,7 @@ func TestHTTPProberDiagnoseSerializesAdaptiveRecoveryFields(t *testing.T) {
 
 	frontendURL := "https://edge.example.test"
 	backendURL := fmt.Sprintf("http://echo.example.test:%d/healthz", port)
-	backendKey := backends.BackendObservationKey(frontendURL, backends.StableBackendID(backendURL))
+	backendKey := backends.BackendObservationKey("edge.example.test", backends.StableBackendID(backendURL))
 	for i := 0; i < 4; i++ {
 		cache.ObserveBackendSuccess(backendKey, 20*time.Millisecond, 200*time.Millisecond, 512*1024)
 	}

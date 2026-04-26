@@ -223,7 +223,7 @@ func httpCandidates(ctx context.Context, cache *backends.Cache, rule model.HTTPR
 		indicesByID[id] = append(indicesByID[id], i)
 	}
 
-	scope := strings.ToLower(strings.TrimSpace(rule.FrontendURL))
+	scope := httpRuleObservationScope(rule)
 	ordered := cache.Order(scope, rule.LoadBalancing.Strategy, placeholders)
 	out := make([]httpProbeCandidate, 0, len(rawBackends))
 	var lastResolveErr error
@@ -297,6 +297,21 @@ func httpCandidates(ctx context.Context, cache *backends.Cache, rule model.HTTPR
 		return nil, fmt.Errorf("resolve backend candidates: %w", lastResolveErr)
 	}
 	return out, nil
+}
+
+func httpRuleObservationScope(rule model.HTTPRule) string {
+	frontend, err := url.Parse(strings.TrimSpace(rule.FrontendURL))
+	if err != nil {
+		return strings.ToLower(strings.TrimSpace(rule.FrontendURL))
+	}
+	host := strings.TrimSpace(frontend.Host)
+	if host == "" {
+		return strings.ToLower(strings.TrimSpace(rule.FrontendURL))
+	}
+	if splitHost, _, err := net.SplitHostPort(host); err == nil {
+		host = splitHost
+	}
+	return strings.ToLower(host)
 }
 
 func buildHTTPAdaptiveReports(reports []BackendReport, candidates []httpProbeCandidate, cache *backends.Cache) []BackendReport {

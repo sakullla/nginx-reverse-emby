@@ -25,6 +25,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
+	agenttask "github.com/sakullla/nginx-reverse-emby/go-agent/internal/task"
 )
 
 func TestHTTPRuntimeManagerUsesConfiguredTransportAndBackoff(t *testing.T) {
@@ -158,6 +159,77 @@ func TestHTTPRuntimeManagerRuntimeUsesConfiguredSameBackendRetryAttempts(t *test
 	}
 	if requests != 2 {
 		t.Fatalf("expected same backend retry to make 2 attempts, got %d", requests)
+	}
+}
+
+func TestNewEmbeddedDiagnoseSnapshotIncludesLiveHTTPRuntimeHistory(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer backend.Close()
+
+	listenPort := pickFreeTCPPort(t)
+	rule := runtimeTestHTTPRule(listenPort, backend.URL+"/healthz")
+	rule.ID = 77
+	rule.LoadBalancing = model.LoadBalancing{Strategy: "adaptive"}
+	snapshot := Snapshot{
+		Revision: 1,
+		Rules:    []model.HTTPRule{rule},
+	}
+	mem := store.NewInMemory()
+	if err := mem.SaveAppliedSnapshot(snapshot); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+	app, err := NewEmbedded(Config{
+		AgentID:   "local",
+		AgentName: "local",
+		DataDir:   t.TempDir(),
+	}, mem, staticSnapshotSyncClient{snapshot: snapshot})
+	if err != nil {
+		t.Fatalf("NewEmbedded() error = %v", err)
+	}
+	defer app.Close()
+
+	if err := app.runtime.Apply(context.Background(), Snapshot{}, snapshot); err != nil {
+		t.Fatalf("failed to apply runtime snapshot: %v", err)
+	}
+
+	var resp *http.Response
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		req, reqErr := http.NewRequest(http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/emby", listenPort), nil)
+		if reqErr != nil {
+			t.Fatalf("failed to create runtime request: %v", reqErr)
+		}
+		req.Host = fmt.Sprintf("edge.example.test:%d", listenPort)
+		resp, err = http.DefaultClient.Do(req)
+		if err == nil {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("runtime request failed: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("runtime response status = %d", resp.StatusCode)
+	}
+
+	result, err := app.DiagnoseSnapshot(context.Background(), snapshot, agenttask.TaskTypeDiagnoseHTTPRule, rule.ID)
+	if err != nil {
+		t.Fatalf("DiagnoseSnapshot() error = %v", err)
+	}
+	backendsPayload, ok := result["backends"].([]map[string]any)
+	if !ok || len(backendsPayload) != 1 {
+		t.Fatalf("backends payload = %#v", result["backends"])
+	}
+	adaptive, ok := backendsPayload[0]["adaptive"].(map[string]any)
+	if !ok {
+		t.Fatalf("adaptive payload = %#v", backendsPayload[0]["adaptive"])
+	}
+	if got := adaptive["recent_succeeded"]; got != 1 {
+		t.Fatalf("recent_succeeded = %#v, want live runtime history", got)
 	}
 }
 
