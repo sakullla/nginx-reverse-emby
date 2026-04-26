@@ -10,6 +10,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"strconv"
 	"strings"
@@ -491,6 +492,7 @@ func (e *routeEntry) markCandidateFailure(candidate httpCandidate, req *http.Req
 				selectedPath = candidate.relayChain
 			}
 			e.backendCache.MarkFailure(backends.RelayBackoffKey(selectedPath, selectedAddress))
+			e.closeRelayIdleConnections()
 			return
 		}
 		if len(e.rule.RelayLayers) > 0 {
@@ -498,6 +500,17 @@ func (e *routeEntry) markCandidateFailure(candidate httpCandidate, req *http.Req
 		}
 	}
 	e.backendCache.MarkFailure(address)
+}
+
+func (e *routeEntry) closeRelayIdleConnections() {
+	if e == nil || !ruleUsesRelay(e.rule) {
+		return
+	}
+	for _, transport := range []*http.Transport{e.transport, e.relayInteractiveTransport, e.relayBulkTransport} {
+		if transport != nil {
+			transport.CloseIdleConnections()
+		}
+	}
 }
 
 func isRetrySafeMethod(method string) bool {
@@ -1025,7 +1038,10 @@ func cloneProxyRequest(req *http.Request, body *reusableRequestBody, candidate h
 	out.Host = targetURL.Host
 	out = out.WithContext(withDialAddress(out.Context(), dialAddress))
 	if ruleUsesRelay(rule) {
-		out = out.WithContext(withSelectedRelayAddressHolder(out.Context(), &selectedRelayAddressHolder{}))
+		holder := &selectedRelayAddressHolder{}
+		ctx := withSelectedRelayAddressHolder(out.Context(), holder)
+		ctx = withSelectedRelayConnTrace(ctx, holder)
+		out = out.WithContext(ctx)
 	}
 	if body != nil {
 		out.Body, out.ContentLength, out.GetBody = body.Open()
@@ -1046,7 +1062,7 @@ func isBackendRetryable(req *http.Request, err error) bool {
 	if req != nil && req.Context().Err() != nil {
 		return false
 	}
-	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.ErrClosedPipe) {
 		return true
 	}
 	var opErr *net.OpError
@@ -1281,8 +1297,43 @@ type dialAddressContextKey struct{}
 type selectedRelayAddressContextKey struct{}
 
 type selectedRelayAddressHolder struct {
+	mu      sync.Mutex
 	address string
 	path    []int
+}
+
+type selectedRelayConn struct {
+	net.Conn
+	address string
+	path    []int
+}
+
+func newSelectedRelayConn(conn net.Conn, address string, path []int) net.Conn {
+	address = strings.TrimSpace(address)
+	if conn == nil || address == "" {
+		return conn
+	}
+	return &selectedRelayConn{
+		Conn:    conn,
+		address: address,
+		path:    append([]int(nil), path...),
+	}
+}
+
+func (c *selectedRelayConn) selectedRelaySelection() (string, []int) {
+	if c == nil || strings.TrimSpace(c.address) == "" {
+		return "", nil
+	}
+	return strings.TrimSpace(c.address), append([]int(nil), c.path...)
+}
+
+func (c *selectedRelayConn) ConnectionState() tls.ConnectionState {
+	if c != nil {
+		if stateConn, ok := c.Conn.(interface{ ConnectionState() tls.ConnectionState }); ok {
+			return stateConn.ConnectionState()
+		}
+	}
+	return tls.ConnectionState{}
 }
 
 func withDialAddress(ctx context.Context, address string) context.Context {
@@ -1309,6 +1360,20 @@ func withSelectedRelayAddressHolder(ctx context.Context, holder *selectedRelayAd
 	return context.WithValue(ctx, selectedRelayAddressContextKey{}, holder)
 }
 
+func withSelectedRelayConnTrace(ctx context.Context, holder *selectedRelayAddressHolder) context.Context {
+	if ctx == nil || holder == nil {
+		return ctx
+	}
+	trace := &httptrace.ClientTrace{
+		GotConn: func(info httptrace.GotConnInfo) {
+			if selectedAddress, selectedPath := selectedRelaySelectionFromConn(info.Conn); selectedAddress != "" {
+				holder.set(selectedAddress, selectedPath)
+			}
+		},
+	}
+	return httptrace.WithClientTrace(ctx, trace)
+}
+
 func setSelectedRelaySelection(ctx context.Context, address string, path []int) {
 	if ctx == nil {
 		return
@@ -1317,17 +1382,45 @@ func setSelectedRelaySelection(ctx context.Context, address string, path []int) 
 	if !ok || holder == nil {
 		return
 	}
-	holder.address = strings.TrimSpace(address)
-	holder.path = append([]int(nil), path...)
+	holder.set(address, path)
 }
 
 func selectedRelaySelectionFromContext(ctx context.Context) (string, []int) {
 	if ctx != nil {
-		if holder, ok := ctx.Value(selectedRelayAddressContextKey{}).(*selectedRelayAddressHolder); ok && holder != nil && strings.TrimSpace(holder.address) != "" {
-			return strings.TrimSpace(holder.address), append([]int(nil), holder.path...)
+		if holder, ok := ctx.Value(selectedRelayAddressContextKey{}).(*selectedRelayAddressHolder); ok && holder != nil {
+			return holder.get()
 		}
 	}
 	return "", nil
+}
+
+func selectedRelaySelectionFromConn(conn net.Conn) (string, []int) {
+	if selected, ok := conn.(interface{ selectedRelaySelection() (string, []int) }); ok {
+		return selected.selectedRelaySelection()
+	}
+	return "", nil
+}
+
+func (h *selectedRelayAddressHolder) set(address string, path []int) {
+	if h == nil {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.address = strings.TrimSpace(address)
+	h.path = append([]int(nil), path...)
+}
+
+func (h *selectedRelayAddressHolder) get() (string, []int) {
+	if h == nil {
+		return "", nil
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if strings.TrimSpace(h.address) == "" {
+		return "", nil
+	}
+	return strings.TrimSpace(h.address), append([]int(nil), h.path...)
 }
 
 func requestContext(req *http.Request) context.Context {

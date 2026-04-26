@@ -3224,6 +3224,118 @@ func TestNewRelayTransportsOrdersPathsByBackendCache(t *testing.T) {
 	}
 }
 
+func TestNewRelayTransportKeepsHealthyIdleConnections(t *testing.T) {
+	var dials atomic.Int32
+	base := NewSharedTransport()
+	transport := NewRelayTransport(base, func(ctx context.Context, network, address string, class upstream.TrafficClass) (net.Conn, error) {
+		dials.Add(1)
+		clientConn, serverConn := net.Pipe()
+		listener := newSingleConnListener(serverConn)
+		go func() {
+			_ = http.Serve(listener, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_, _ = w.Write([]byte("ok"))
+			}))
+		}()
+		return clientConn, nil
+	})
+
+	client := &http.Client{Transport: transport}
+	for i := 0; i < 2; i++ {
+		resp, err := client.Get("http://backend.example/movie")
+		if err != nil {
+			t.Fatalf("Get(%d) error = %v", i, err)
+		}
+		body, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err != nil {
+			t.Fatalf("ReadAll(%d) error = %v", i, err)
+		}
+		if string(body) != "ok" {
+			t.Fatalf("body(%d) = %q", i, body)
+		}
+	}
+	if got := dials.Load(); got != 1 {
+		t.Fatalf("relay transport dials = %d, want healthy idle relay connection reused", got)
+	}
+}
+
+func TestRouteEntryMarksReusedRelayConnectionPathOnFailure(t *testing.T) {
+	cache := backends.NewCache(backends.Config{})
+	selectedAddress := "relay-target.example:80"
+	selectedPath := []int{101, 201}
+	var dials atomic.Int32
+	var requests atomic.Int32
+	transport := NewRelayTransport(NewSharedTransport(), func(ctx context.Context, network, address string, class upstream.TrafficClass) (net.Conn, error) {
+		dials.Add(1)
+		setSelectedRelaySelection(ctx, selectedAddress, selectedPath)
+		clientConn, serverConn := net.Pipe()
+		listener := newSingleConnListener(serverConn)
+		go func() {
+			_ = http.Serve(listener, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if requests.Add(1) == 1 {
+					_, _ = w.Write([]byte("ok"))
+					return
+				}
+				hijacker, ok := w.(http.Hijacker)
+				if !ok {
+					t.Errorf("response writer does not support hijack")
+					return
+				}
+				conn, rw, err := hijacker.Hijack()
+				if err != nil {
+					t.Errorf("hijack failed: %v", err)
+					return
+				}
+				_, _ = rw.WriteString("HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nok")
+				_ = rw.Flush()
+				_ = conn.Close()
+			}))
+		}()
+		return clientConn, nil
+	})
+	entry := &routeEntry{
+		rule: model.HTTPRule{
+			FrontendURL: "http://frontend.example",
+			RelayLayers: [][]int{
+				{101, 102},
+				{201},
+			},
+			LoadBalancing: model.LoadBalancing{
+				Strategy: "round_robin",
+			},
+		},
+		backends: []httpBackend{{
+			target:      mustParseBackendURL(t, "http://relay-target.example"),
+			backendHost: "relay-target.example",
+		}},
+		backendCache:   cache,
+		transport:      transport,
+		selectionScope: "http://frontend.example",
+	}
+
+	firstReq := httptest.NewRequest(http.MethodGet, "http://frontend.example/movie", nil)
+	firstReq.Host = "frontend.example"
+	if err := entry.serveHTTP(httptest.NewRecorder(), firstReq); err != nil {
+		t.Fatalf("first serveHTTP() error = %v", err)
+	}
+	secondReq := httptest.NewRequest(http.MethodGet, "http://frontend.example/movie", nil)
+	secondReq.Host = "frontend.example"
+	if err := entry.serveHTTP(httptest.NewRecorder(), secondReq); err == nil {
+		t.Fatal("second serveHTTP() error = nil, want truncated reused relay response")
+	}
+	if got := dials.Load(); got != 1 {
+		t.Fatalf("relay transport dials = %d, want second request to reuse first relay connection", got)
+	}
+	aggregateKey := backends.RelayBackoffKeyForLayers(entry.rule.RelayChain, entry.rule.RelayLayers, selectedAddress)
+	if cache.IsInBackoff(aggregateKey) {
+		t.Fatalf("aggregate relay layer key %q was marked in backoff", aggregateKey)
+	}
+	selectedKey := backends.RelayBackoffKey(selectedPath, selectedAddress)
+	if !cache.IsInBackoff(selectedKey) {
+		t.Fatalf("selected relay path key %q was not marked in backoff", selectedKey)
+	}
+}
+
 func TestNewTLSListenerAdvertisesHTTP2AndHTTP11Only(t *testing.T) {
 	provider := &testTLSProvider{
 		certificates: map[string]tls.Certificate{
@@ -3749,6 +3861,54 @@ type resolverFunc func(context.Context, string) ([]net.IPAddr, error)
 
 func (f resolverFunc) LookupIPAddr(ctx context.Context, host string) ([]net.IPAddr, error) {
 	return f(ctx, host)
+}
+
+type singleConnListener struct {
+	conn      net.Conn
+	closed    chan struct{}
+	accept    sync.Once
+	closeOnce sync.Once
+}
+
+func newSingleConnListener(conn net.Conn) *singleConnListener {
+	return &singleConnListener{conn: conn, closed: make(chan struct{})}
+}
+
+func (l *singleConnListener) Accept() (net.Conn, error) {
+	var conn net.Conn
+	l.accept.Do(func() {
+		conn = l.conn
+	})
+	if conn != nil {
+		return conn, nil
+	}
+	if l == nil || l.closed == nil {
+		return nil, net.ErrClosed
+	}
+	<-l.closed
+	return nil, net.ErrClosed
+}
+
+func (l *singleConnListener) Close() error {
+	if l == nil {
+		return nil
+	}
+	l.closeOnce.Do(func() {
+		if l.closed != nil {
+			close(l.closed)
+		}
+		if l.conn != nil {
+			_ = l.conn.Close()
+		}
+	})
+	return nil
+}
+
+func (l *singleConnListener) Addr() net.Addr {
+	if l == nil || l.conn == nil {
+		return &net.TCPAddr{}
+	}
+	return l.conn.LocalAddr()
 }
 
 type rewriteHostTransport struct {

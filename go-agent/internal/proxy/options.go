@@ -2,8 +2,10 @@ package proxy
 
 import (
 	"context"
+	"crypto/tls"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
@@ -75,12 +77,8 @@ func NewClassedRelayTransports(
 	dial func(context.Context, string, string, upstream.TrafficClass) (net.Conn, error),
 ) (*http.Transport, *http.Transport) {
 	interactive, bulk := NewClassedDirectTransports(base)
-	interactive.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
-		return dial(ctx, network, address, upstream.TrafficClassInteractive)
-	}
-	bulk.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
-		return dial(ctx, network, address, upstream.TrafficClassBulk)
-	}
+	configureRelayTransport(interactive, upstream.TrafficClassInteractive, dial)
+	configureRelayTransport(bulk, upstream.TrafficClassBulk, dial)
 	return interactive, bulk
 }
 
@@ -89,8 +87,76 @@ func NewRelayTransport(
 	dial func(context.Context, string, string, upstream.TrafficClass) (net.Conn, error),
 ) *http.Transport {
 	transport := cloneTransport(base)
-	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
-		return dial(ctx, network, address, upstream.TrafficClassUnknown)
-	}
+	configureRelayTransport(transport, upstream.TrafficClassUnknown, dial)
 	return transport
+}
+
+func configureRelayTransport(
+	transport *http.Transport,
+	class upstream.TrafficClass,
+	dial func(context.Context, string, string, upstream.TrafficClass) (net.Conn, error),
+) {
+	if transport == nil {
+		return
+	}
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		return dialRelayTransportConn(ctx, network, address, class, dial)
+	}
+	transport.DialTLSContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		rawConn, err := dialRelayTransportConn(ctx, network, address, class, dial)
+		if err != nil {
+			return nil, err
+		}
+		tlsConfig := relayTransportTLSConfig(transport.TLSClientConfig, address, transport.ForceAttemptHTTP2)
+		tlsConn := tls.Client(rawConn, tlsConfig)
+		handshakeCtx := ctx
+		cancel := func() {}
+		if transport.TLSHandshakeTimeout > 0 {
+			handshakeCtx, cancel = context.WithTimeout(ctx, transport.TLSHandshakeTimeout)
+		}
+		defer cancel()
+		if err := tlsConn.HandshakeContext(handshakeCtx); err != nil {
+			_ = rawConn.Close()
+			return nil, err
+		}
+		if selectedAddress, selectedPath := selectedRelaySelectionFromConn(rawConn); selectedAddress != "" {
+			return newSelectedRelayConn(tlsConn, selectedAddress, selectedPath), nil
+		}
+		return tlsConn, nil
+	}
+}
+
+func dialRelayTransportConn(
+	ctx context.Context,
+	network string,
+	address string,
+	class upstream.TrafficClass,
+	dial func(context.Context, string, string, upstream.TrafficClass) (net.Conn, error),
+) (net.Conn, error) {
+	conn, err := dial(ctx, network, address, class)
+	if err != nil {
+		return nil, err
+	}
+	if selectedAddress, selectedPath := selectedRelaySelectionFromContext(ctx); selectedAddress != "" {
+		return newSelectedRelayConn(conn, selectedAddress, selectedPath), nil
+	}
+	return conn, nil
+}
+
+func relayTransportTLSConfig(base *tls.Config, address string, forceHTTP2 bool) *tls.Config {
+	var cfg *tls.Config
+	if base != nil {
+		cfg = base.Clone()
+	} else {
+		cfg = &tls.Config{}
+	}
+	if forceHTTP2 && len(cfg.NextProtos) == 0 {
+		cfg.NextProtos = []string{"h2", "http/1.1"}
+	}
+	if strings.TrimSpace(cfg.ServerName) == "" {
+		if host, _, err := net.SplitHostPort(address); err == nil {
+			cfg.ServerName = strings.Trim(host, "[]")
+		}
+	}
+	return cfg
 }

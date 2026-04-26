@@ -6,6 +6,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
@@ -73,37 +74,10 @@ func probeDiagnosticRelayPaths(ctx context.Context, network string, target strin
 		return nil, nil, fmt.Errorf("relay provider is required")
 	}
 
-	reports := make([]RelayPathReport, 0, len(paths))
+	reports := probeDiagnosticRelayPathReports(ctx, network, target, paths, provider)
 	reportsByPath := make(map[string]int, len(paths))
-	for _, path := range paths {
-		startedAt := time.Now()
-		conn, dialResult, err := diagnosticRelayDialWithResult(ctx, network, target, path.Hops, provider)
-		if conn != nil {
-			_ = conn.Close()
-		}
-		latencyMS := roundMetric(float64(time.Since(startedAt)) / float64(time.Millisecond))
-		success := err == nil
-		if success && latencyMS <= 0 {
-			latencyMS = 0.1
-		}
-		reportTarget := resolveProbeAddress(target, dialResult.SelectedAddress)
-		var probeTimings []relay.ProbeTiming
-		if success {
-			if timings, probeErr := diagnosticRelayProbePath(ctx, network, reportTarget, path.Hops, provider); probeErr == nil {
-				probeTimings = timings
-			}
-		}
-		report := RelayPathReport{
-			Path:      append([]int(nil), path.IDs...),
-			Success:   success,
-			LatencyMS: latencyMS,
-			Hops:      relayPathHopReports(path.Hops, reportTarget, success, latencyMS, err, probeTimings),
-		}
-		if err != nil {
-			report.Error = err.Error()
-		}
-		reportsByPath[relayPathReportKey(path.IDs)] = len(reports)
-		reports = append(reports, report)
+	for index, report := range reports {
+		reportsByPath[relayPathReportKey(report.Path)] = index
 	}
 
 	selectedIndex := preferredRelayPathIndex(target, paths, preferenceCache, reportsByPath, reports)
@@ -115,6 +89,63 @@ func probeDiagnosticRelayPaths(ctx context.Context, network string, target strin
 	}
 	reports[selectedIndex].Selected = true
 	return reports, append([]int(nil), reports[selectedIndex].Path...), nil
+}
+
+func probeDiagnosticRelayPathReports(ctx context.Context, network string, target string, paths []relayplan.Path, provider relay.TLSMaterialProvider) []RelayPathReport {
+	reports := make([]RelayPathReport, len(paths))
+	concurrency := 3
+	if concurrency > len(paths) {
+		concurrency = len(paths)
+	}
+	if concurrency <= 0 {
+		return reports
+	}
+
+	sem := make(chan struct{}, concurrency)
+	var wg sync.WaitGroup
+	for index, path := range paths {
+		index := index
+		path := path
+		sem <- struct{}{}
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			defer func() { <-sem }()
+			reports[index] = probeDiagnosticRelayPathReport(ctx, network, target, path, provider)
+		}()
+	}
+	wg.Wait()
+	return reports
+}
+
+func probeDiagnosticRelayPathReport(ctx context.Context, network string, target string, path relayplan.Path, provider relay.TLSMaterialProvider) RelayPathReport {
+	startedAt := time.Now()
+	conn, dialResult, err := diagnosticRelayDialWithResult(ctx, network, target, path.Hops, provider)
+	if conn != nil {
+		_ = conn.Close()
+	}
+	latencyMS := roundMetric(float64(time.Since(startedAt)) / float64(time.Millisecond))
+	success := err == nil
+	if success && latencyMS <= 0 {
+		latencyMS = 0.1
+	}
+	reportTarget := resolveProbeAddress(target, dialResult.SelectedAddress)
+	var probeTimings []relay.ProbeTiming
+	if success {
+		if timings, probeErr := diagnosticRelayProbePath(ctx, network, reportTarget, path.Hops, provider); probeErr == nil {
+			probeTimings = timings
+		}
+	}
+	report := RelayPathReport{
+		Path:      append([]int(nil), path.IDs...),
+		Success:   success,
+		LatencyMS: latencyMS,
+		Hops:      relayPathHopReports(path.Hops, reportTarget, success, latencyMS, err, probeTimings),
+	}
+	if err != nil {
+		report.Error = err.Error()
+	}
+	return report
 }
 
 func preferredRelayPathIndex(target string, paths []relayplan.Path, cache *backends.Cache, reportsByPath map[string]int, reports []RelayPathReport) int {
