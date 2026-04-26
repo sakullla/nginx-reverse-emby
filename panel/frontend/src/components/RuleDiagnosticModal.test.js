@@ -382,6 +382,66 @@ describe('RuleDiagnosticModal', () => {
     expect(wrapper.text()).toContain('2.0 MB/s')
   })
 
+  it('uses resolved child probe data when parent backend summary is empty', async () => {
+    const wrapper = mountModal({
+      task: {
+        ...buildTask('http'),
+        result: {
+          ...buildTask('http').result,
+          backends: [
+            {
+              backend: 'https://origin.example.test',
+              summary: {
+                sent: 0,
+                succeeded: 0,
+                failed: 0,
+                avg_latency_ms: 0,
+                quality: '不可用'
+              },
+              adaptive: {
+                preferred: true,
+                stability: 1,
+                recent_succeeded: 5,
+                recent_failed: 0,
+                latency_ms: 88
+              },
+              children: [
+                {
+                  backend: 'https://origin.example.test [104.21.15.245:443]',
+                  address: '104.21.15.245:443',
+                  summary: {
+                    sent: 5,
+                    succeeded: 5,
+                    failed: 0,
+                    loss_rate: 0,
+                    avg_latency_ms: 91.4,
+                    min_latency_ms: 84,
+                    max_latency_ms: 103,
+                    quality: '极佳'
+                  },
+                  adaptive: {
+                    preferred: true,
+                    stability: 1,
+                    recent_succeeded: 5,
+                    recent_failed: 0,
+                    latency_ms: 91.4
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      }
+    })
+    await wrapper.get('.diagnostic-modal__section-title--toggle').trigger('click')
+
+    const cardMetrics = wrapper.findAll('.diagnostic-backend-item__metrics .diagnostic-metric').map(metric => metric.text())
+    expect(cardMetrics).toContain('延迟91.4 ms')
+    expect(cardMetrics).toContain('成功5 / 5')
+    expect(cardMetrics).toContain('失败0')
+    expect(cardMetrics).toContain('质量极佳')
+  })
+
   it('shows resolved ip separately in probe samples', async () => {
     const wrapper = mountModal({
       task: {

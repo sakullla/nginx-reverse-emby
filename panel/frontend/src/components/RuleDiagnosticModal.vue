@@ -112,8 +112,8 @@
                   <code class="diagnostic-backend-item__name">{{ backendDisplayLabel(backend) }}</code>
                   <div class="diagnostic-backend-item__badges">
                     <span v-if="backend.adaptive?.preferred" class="diagnostic-backend-item__preferred">当前优选</span>
-                    <span v-if="hasProbeSummary(backend)" class="diagnostic-backend-item__quality" :class="`diagnostic-backend-item__quality--${qualityToneFor(backend.summary?.quality)}`">
-                      {{ qualityLabelFor(backend.summary?.quality) }}
+                    <span v-if="hasProbeSummary(backend)" class="diagnostic-backend-item__quality" :class="`diagnostic-backend-item__quality--${qualityToneFor(probeSummaryFor(backend)?.quality)}`">
+                      {{ qualityLabelFor(probeSummaryFor(backend)?.quality) }}
                     </span>
                   </div>
                 </div>
@@ -294,25 +294,29 @@ function isAdaptiveExpanded(backendName) {
 }
 
 function formatProbeLatency(backend) {
-  if (!hasProbeSummary(backend)) return '-'
-  const latency = Number(backend?.summary?.avg_latency_ms)
+  const summary = probeSummaryFor(backend)
+  if (!summary) return '-'
+  const latency = Number(summary.avg_latency_ms)
   if (!Number.isFinite(latency) || latency <= 0) return '-'
   return `${latency} ms`
 }
 
 function formatProbeSuccess(backend) {
-  if (!hasProbeSummary(backend)) return '-'
-  return `${backend.summary?.succeeded ?? 0} / ${backend.summary?.sent ?? 0}`
+  const summary = probeSummaryFor(backend)
+  if (!summary) return '-'
+  return `${summary.succeeded ?? 0} / ${summary.sent ?? 0}`
 }
 
 function formatProbeFailed(backend) {
-  if (!hasProbeSummary(backend)) return '-'
-  return String(backend.summary?.failed ?? 0)
+  const summary = probeSummaryFor(backend)
+  if (!summary) return '-'
+  return String(summary.failed ?? 0)
 }
 
 function formatProbeQuality(backend) {
-  if (!hasProbeSummary(backend)) return '-'
-  return qualityLabelFor(backend?.summary?.quality)
+  const summary = probeSummaryFor(backend)
+  if (!summary) return '-'
+  return qualityLabelFor(summary.quality)
 }
 
 function formatHistoryLatency(adaptive) {
@@ -322,7 +326,148 @@ function formatHistoryLatency(adaptive) {
 }
 
 function hasProbeSummary(backend) {
-  return Number(backend?.summary?.sent || 0) > 0
+  return Boolean(probeSummaryFor(backend))
+}
+
+function probeSummaryFor(backend) {
+  if (summaryHasProbeSamples(backend?.summary)) return backend.summary
+
+  const childSummary = mergeProbeSummaries((backend?.children || []).map(child => probeSummaryFor(child)).filter(Boolean))
+  if (childSummary) return childSummary
+
+  return summaryFromSamplesForBackend(backend)
+}
+
+function summaryHasProbeSamples(summary) {
+  return Number(summary?.sent || 0) > 0
+}
+
+function mergeProbeSummaries(summaries) {
+  const valid = summaries.filter(summaryHasProbeSamples)
+  if (!valid.length) return null
+
+  let sent = 0
+  let succeeded = 0
+  let failed = 0
+  let totalLatency = 0
+  let minLatency = 0
+  let maxLatency = 0
+  for (const summary of valid) {
+    const currentSent = Number(summary.sent || 0)
+    const currentSucceeded = Number(summary.succeeded || 0)
+    const currentFailed = Number(summary.failed || 0)
+    sent += currentSent
+    succeeded += currentSucceeded
+    failed += currentFailed
+    if (currentSucceeded > 0) {
+      const avgLatency = Number(summary.avg_latency_ms || 0)
+      totalLatency += avgLatency * currentSucceeded
+      const currentMin = Number(summary.min_latency_ms || avgLatency)
+      const currentMax = Number(summary.max_latency_ms || avgLatency)
+      if (minLatency === 0 || currentMin < minLatency) minLatency = currentMin
+      if (currentMax > maxLatency) maxLatency = currentMax
+    }
+  }
+
+  return finalizeProbeSummary({ sent, succeeded, failed, totalLatency, minLatency, maxLatency })
+}
+
+function summaryFromSamplesForBackend(backend) {
+  const matched = samples.value.filter(sample => sampleMatchesBackend(sample, backend))
+  if (!matched.length) return null
+
+  let succeeded = 0
+  let totalLatency = 0
+  let minLatency = 0
+  let maxLatency = 0
+  for (const sample of matched) {
+    if (!sample.success) continue
+    succeeded += 1
+    const latency = Number(sample.latency_ms || 0)
+    totalLatency += latency
+    if (minLatency === 0 || latency < minLatency) minLatency = latency
+    if (latency > maxLatency) maxLatency = latency
+  }
+
+  return finalizeProbeSummary({
+    sent: matched.length,
+    succeeded,
+    failed: matched.length - succeeded,
+    totalLatency,
+    minLatency,
+    maxLatency
+  })
+}
+
+function sampleMatchesBackend(sample, backend) {
+  if (!sample || !backend) return false
+  const sampleBackend = String(sample.backend || '').trim()
+  const sampleAddress = String(sample.address || '').trim()
+  const identities = backendProbeIdentities(backend)
+  if (sampleBackend && identities.has(sampleBackend)) return true
+  if (sampleAddress && identities.has(sampleAddress)) return true
+
+  const sampleBaseLabel = splitBackendIdentity(sampleBackend).label
+  return sampleBaseLabel && identities.has(sampleBaseLabel)
+}
+
+function backendProbeIdentities(backend) {
+  const identities = new Set()
+  const add = (value) => {
+    const text = String(value || '').trim()
+    if (text) identities.add(text)
+  }
+  const addBackend = (value) => {
+    if (!value) return
+    add(value.backend)
+    add(value.address)
+    const identity = splitBackendIdentity(value)
+    add(identity.label)
+    add(identity.address)
+  }
+  addBackend(backend)
+  for (const child of backend?.children || []) {
+    addBackend(child)
+  }
+  return identities
+}
+
+function finalizeProbeSummary(summary) {
+  const sent = Number(summary.sent || 0)
+  const succeeded = Number(summary.succeeded || 0)
+  const failed = Number(summary.failed || Math.max(0, sent - succeeded))
+  const avgLatency = succeeded > 0 ? roundMetric(Number(summary.totalLatency || 0) / succeeded) : 0
+  const result = {
+    sent,
+    succeeded,
+    failed,
+    loss_rate: sent > 0 ? roundMetric(failed / sent) : 0,
+    avg_latency_ms: avgLatency,
+    min_latency_ms: succeeded > 0 ? roundMetric(Number(summary.minLatency || avgLatency)) : 0,
+    max_latency_ms: succeeded > 0 ? roundMetric(Number(summary.maxLatency || avgLatency)) : 0
+  }
+  result.quality = classifyProbeSummary(result)
+  return result
+}
+
+function classifyProbeSummary(summary) {
+  if (Number(summary.succeeded || 0) <= 0) return '不可用'
+  const lossRate = Number(summary.loss_rate || 0)
+  const latency = Number(summary.avg_latency_ms || 0)
+  if (isHTTP.value) {
+    if (lossRate <= 0.05 && latency <= 150) return '极佳'
+    if (lossRate <= 0.10 && latency <= 400) return '良好'
+    if (lossRate <= 0.20 && latency <= 800) return '一般'
+    return '较差'
+  }
+  if (lossRate <= 0.05 && latency <= 50) return '极佳'
+  if (lossRate <= 0.10 && latency <= 120) return '良好'
+  if (lossRate <= 0.20 && latency <= 250) return '一般'
+  return '较差'
+}
+
+function roundMetric(value) {
+  return Math.round(Number(value || 0) * 10) / 10
 }
 
 function displayAdaptive(backend) {
