@@ -1196,6 +1196,40 @@ func TestDialTCPUpstreamUsesRelayLayerRacer(t *testing.T) {
 	}
 }
 
+func TestDialTCPUpstreamRelayLayersFailureDoesNotMarkAggregateBackoff(t *testing.T) {
+	dialer := &fakeL4RelayPathDialer{}
+	cache := backends.NewCache(backends.Config{})
+	srv := &Server{
+		ctx:   context.Background(),
+		cache: cache,
+		now:   time.Now,
+		relayListenersByID: map[int]model.RelayListener{
+			1: {ID: 1, Name: "one", ListenHost: "127.0.0.1", ListenPort: 9001, Enabled: true, TLSMode: "pin_only", PinSet: []model.RelayPin{{Type: "sha256", Value: "pin1"}}},
+			2: {ID: 2, Name: "two", ListenHost: "127.0.0.1", ListenPort: 9002, Enabled: true, TLSMode: "pin_only", PinSet: []model.RelayPin{{Type: "sha256", Value: "pin2"}}},
+		},
+		relayPathDialer: dialer,
+	}
+	rule := model.L4Rule{
+		Protocol:    "tcp",
+		ListenHost:  "0.0.0.0",
+		ListenPort:  9446,
+		RelayLayers: [][]int{{1, 2}},
+		Backends:    []model.L4Backend{{Host: "backend.example", Port: 9001}},
+	}
+
+	_, _, _, err := srv.dialTCPUpstream(rule, relay.DialOptions{})
+	if err == nil {
+		t.Fatal("dialTCPUpstream() error = nil")
+	}
+	aggregateKey := backends.RelayBackoffKeyForLayers(rule.RelayChain, rule.RelayLayers, "backend.example:9001")
+	if cache.IsInBackoff(aggregateKey) {
+		t.Fatalf("aggregate relay layer key %q was marked in backoff after path-level failures", aggregateKey)
+	}
+	if _, err := l4Candidates(context.Background(), cache, rule); err != nil {
+		t.Fatalf("l4Candidates() after path failures = %v", err)
+	}
+}
+
 func TestDialTCPUpstreamPreservesRelayRaceInitialPayload(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer serverConn.Close()

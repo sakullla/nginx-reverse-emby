@@ -1044,6 +1044,65 @@ func TestTCPProberDiagnoseMarksRelayLayerAdaptivePreferredPathAsSelected(t *test
 	}
 }
 
+func TestTCPProberDiagnoseFallsBackWhenAdaptivePreferredRelayPathFails(t *testing.T) {
+	actualAddress, _, stopTarget := startDiagnosticTCPTarget(t)
+	defer stopTarget()
+
+	_, actualPort := splitDiagnosticTCPAddr(t, actualAddress)
+	provider := newDiagnosticTLSMaterialProvider()
+	listenerA := newDiagnosticRelayListener(t, provider, 551, "relay-a.internal.test")
+	listenerB := newDiagnosticRelayListener(t, provider, 552, "relay-b.internal.test")
+	previousDialWithResult := diagnosticRelayDialWithResult
+	t.Cleanup(func() {
+		diagnosticRelayDialWithResult = previousDialWithResult
+	})
+	diagnosticRelayDialWithResult = func(ctx context.Context, network, target string, chain []relay.Hop, provider relay.TLSMaterialProvider, opts ...relay.DialOptions) (net.Conn, relay.DialResult, error) {
+		if len(chain) > 0 && chain[0].Listener.ID == 551 {
+			return nil, relay.DialResult{}, fmt.Errorf("relay path unavailable")
+		}
+		conn, err := (&net.Dialer{}).DialContext(ctx, network, actualAddress)
+		if err != nil {
+			return nil, relay.DialResult{}, err
+		}
+		return conn, relay.DialResult{SelectedAddress: target}, nil
+	}
+
+	cache := backends.NewCache(backends.Config{})
+	target := "relay-target.example:" + strconv.Itoa(actualPort)
+	preferredPathKey := relayplan.PathKey("relay_path", []int{551}, target)
+	cache.ObserveBackendSuccess(backends.BackendObservationKey(relayplan.RelayPathScope(target), preferredPathKey), 80*time.Millisecond, 100*time.Millisecond, 128*1024)
+
+	prober := NewTCPProber(TCPProberConfig{
+		Attempts:      1,
+		Timeout:       time.Second,
+		Cache:         cache,
+		RelayProvider: provider,
+	})
+	report, err := prober.Diagnose(context.Background(), model.L4Rule{
+		ID:         117,
+		Protocol:   "tcp",
+		ListenHost: "0.0.0.0",
+		ListenPort: 9557,
+		RelayLayers: [][]int{{
+			551,
+			552,
+		}},
+		Backends: []model.L4Backend{{
+			Host: "relay-target.example",
+			Port: actualPort,
+		}},
+	}, []model.RelayListener{listenerA, listenerB})
+	if err != nil {
+		t.Fatalf("Diagnose() error = %v", err)
+	}
+	if len(report.SelectedRelayPath) != 1 || report.SelectedRelayPath[0] != 552 {
+		t.Fatalf("SelectedRelayPath = %+v", report.SelectedRelayPath)
+	}
+	if len(report.RelayPaths) != 2 || report.RelayPaths[0].Selected || report.RelayPaths[0].Success || !report.RelayPaths[1].Selected {
+		t.Fatalf("RelayPaths = %+v", report.RelayPaths)
+	}
+}
+
 func TestTCPProberDiagnoseAttributesRelayLayerSampleToSelectedPath(t *testing.T) {
 	actualAddress, _, stopTarget := startDiagnosticTCPTarget(t)
 	defer stopTarget()
@@ -1329,7 +1388,7 @@ func TestTCPRelayHydrationSkipsBackedOffResolvedTargets(t *testing.T) {
 	}
 }
 
-func TestTCPRelayHydrationKeepsLayerResolvedTargetWhenAnyPathIsHealthy(t *testing.T) {
+func TestTCPRelayHydrationSkipsLayerPreResolutionForMultiplePaths(t *testing.T) {
 	cache := backends.NewCache(backends.Config{})
 	provider := newDiagnosticTLSMaterialProvider()
 	firstRelay := newDiagnosticRelayListener(t, provider, 361, "relay-a.internal.test")
@@ -1352,15 +1411,14 @@ func TestTCPRelayHydrationKeepsLayerResolvedTargetWhenAnyPathIsHealthy(t *testin
 		t.Fatalf("tcpCandidates() error = %v", err)
 	}
 
-	resolvedAddress := "127.0.0.10:9001"
-	cache.MarkFailure(backends.RelayBackoffKey([]int{361}, resolvedAddress))
-
 	previousResolveCandidates := diagnosticRelayResolveCandidates
 	t.Cleanup(func() {
 		diagnosticRelayResolveCandidates = previousResolveCandidates
 	})
+	resolveCalls := 0
 	diagnosticRelayResolveCandidates = func(ctx context.Context, target string, chain []relay.Hop, provider relay.TLSMaterialProvider) ([]string, error) {
-		return []string{resolvedAddress}, nil
+		resolveCalls++
+		return []string{"127.0.0.10:9001"}, nil
 	}
 
 	prober := NewTCPProber(TCPProberConfig{
@@ -1371,23 +1429,20 @@ func TestTCPRelayHydrationKeepsLayerResolvedTargetWhenAnyPathIsHealthy(t *testin
 	if err != nil {
 		t.Fatalf("hydrateRelayCandidates() error = %v", err)
 	}
+	if resolveCalls != 0 {
+		t.Fatalf("diagnosticRelayResolveCandidates called %d times, want skipped for multiple relay paths", resolveCalls)
+	}
 	if len(hydrated) != 1 {
-		t.Fatalf("hydrated = %+v, want target kept while second path is healthy", hydrated)
+		t.Fatalf("hydrated = %+v", hydrated)
 	}
-	if len(hydrated[0].relayPaths) != 1 {
-		t.Fatalf("relayPaths = %+v, want backed-off path filtered", hydrated[0].relayPaths)
+	if hydrated[0].address != "relay-target.example:9001" {
+		t.Fatalf("address = %q, want original backend hostname", hydrated[0].address)
 	}
-	if len(hydrated[0].relayChain) != 1 || hydrated[0].relayChain[0] != 362 {
-		t.Fatalf("relayChain = %+v, want remaining healthy path", hydrated[0].relayChain)
+	if len(hydrated[0].relayPaths) != 2 {
+		t.Fatalf("relayPaths = %+v, want all expanded paths", hydrated[0].relayPaths)
 	}
-
-	cache.MarkFailure(backends.RelayBackoffKey([]int{362}, resolvedAddress))
-	hydrated, err = prober.hydrateRelayCandidates(context.Background(), rule, []model.RelayListener{firstRelay, secondRelay}, candidates)
-	if err != nil {
-		t.Fatalf("hydrateRelayCandidates(all paths backed off) error = %v", err)
-	}
-	if len(hydrated) != 0 {
-		t.Fatalf("hydrated with all paths backed off = %+v", hydrated)
+	if len(hydrated[0].resolvedCandidates) != 1 || hydrated[0].resolvedCandidates[0].address != "relay-target.example:9001" {
+		t.Fatalf("resolvedCandidates = %+v, want original backend hostname only", hydrated[0].resolvedCandidates)
 	}
 }
 

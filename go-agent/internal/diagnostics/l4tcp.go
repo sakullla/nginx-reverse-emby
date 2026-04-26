@@ -298,6 +298,10 @@ func (p *TCPProber) hydrateRelayCandidates(ctx context.Context, rule model.L4Rul
 		if len(paths) > 0 {
 			hydrated.relayChain = append([]int(nil), paths[0].IDs...)
 		}
+		if len(paths) > 1 {
+			out = append(out, hydrated)
+			continue
+		}
 		hops := []relay.Hop(nil)
 		if len(paths) > 0 {
 			hops = paths[0].Hops

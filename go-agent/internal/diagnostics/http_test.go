@@ -1145,7 +1145,7 @@ func TestHTTPProberDiagnoseMarksRelayLayerAdaptivePreferredPathAsSelected(t *tes
 	}
 }
 
-func TestHTTPProberDiagnoseKeepsFailedAdaptivePreferredRelayPathSelected(t *testing.T) {
+func TestHTTPProberDiagnoseFallsBackWhenAdaptivePreferredRelayPathFails(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -1193,10 +1193,10 @@ func TestHTTPProberDiagnoseKeepsFailedAdaptivePreferredRelayPathSelected(t *test
 	if err != nil {
 		t.Fatalf("Diagnose() error = %v", err)
 	}
-	if len(report.SelectedRelayPath) != 1 || report.SelectedRelayPath[0] != 461 {
+	if len(report.SelectedRelayPath) != 1 || report.SelectedRelayPath[0] != 462 {
 		t.Fatalf("SelectedRelayPath = %+v", report.SelectedRelayPath)
 	}
-	if len(report.RelayPaths) != 2 || !report.RelayPaths[0].Selected || report.RelayPaths[0].Success || report.RelayPaths[1].Selected {
+	if len(report.RelayPaths) != 2 || report.RelayPaths[0].Selected || report.RelayPaths[0].Success || !report.RelayPaths[1].Selected {
 		t.Fatalf("RelayPaths = %+v", report.RelayPaths)
 	}
 }
@@ -1348,7 +1348,7 @@ func TestHTTPRelayHydrationSkipsBackedOffResolvedTargets(t *testing.T) {
 	}
 }
 
-func TestHTTPRelayHydrationKeepsLayerResolvedTargetWhenAnyPathIsHealthy(t *testing.T) {
+func TestHTTPRelayHydrationSkipsLayerPreResolutionForMultiplePaths(t *testing.T) {
 	cache := backends.NewCache(backends.Config{})
 	provider := newDiagnosticTLSMaterialProvider()
 	firstRelay := newDiagnosticRelayListener(t, provider, 351, "relay-a.internal.test")
@@ -1364,15 +1364,14 @@ func TestHTTPRelayHydrationKeepsLayerResolvedTargetWhenAnyPathIsHealthy(t *testi
 		t.Fatalf("httpCandidates() error = %v", err)
 	}
 
-	resolvedAddress := "127.0.0.10:9443"
-	cache.MarkFailure(backends.RelayBackoffKey([]int{351}, resolvedAddress))
-
 	previousResolveCandidates := diagnosticRelayResolveCandidates
 	t.Cleanup(func() {
 		diagnosticRelayResolveCandidates = previousResolveCandidates
 	})
+	resolveCalls := 0
 	diagnosticRelayResolveCandidates = func(ctx context.Context, target string, chain []relay.Hop, provider relay.TLSMaterialProvider) ([]string, error) {
-		return []string{resolvedAddress}, nil
+		resolveCalls++
+		return []string{"127.0.0.10:9443"}, nil
 	}
 
 	prober := NewHTTPProber(HTTPProberConfig{
@@ -1383,23 +1382,20 @@ func TestHTTPRelayHydrationKeepsLayerResolvedTargetWhenAnyPathIsHealthy(t *testi
 	if err != nil {
 		t.Fatalf("hydrateRelayCandidates() error = %v", err)
 	}
+	if resolveCalls != 0 {
+		t.Fatalf("diagnosticRelayResolveCandidates called %d times, want skipped for multiple relay paths", resolveCalls)
+	}
 	if len(hydrated) != 1 {
-		t.Fatalf("hydrated = %+v, want target kept while second path is healthy", hydrated)
+		t.Fatalf("hydrated = %+v", hydrated)
 	}
-	if len(hydrated[0].relayPaths) != 1 {
-		t.Fatalf("relayPaths = %+v, want backed-off path filtered", hydrated[0].relayPaths)
+	if hydrated[0].dialAddress != "relay-target.example:9443" {
+		t.Fatalf("dialAddress = %q, want original backend hostname", hydrated[0].dialAddress)
 	}
-	if len(hydrated[0].relayChain) != 1 || hydrated[0].relayChain[0] != 352 {
-		t.Fatalf("relayChain = %+v, want remaining healthy path", hydrated[0].relayChain)
+	if len(hydrated[0].relayPaths) != 2 {
+		t.Fatalf("relayPaths = %+v, want all expanded paths", hydrated[0].relayPaths)
 	}
-
-	cache.MarkFailure(backends.RelayBackoffKey([]int{352}, resolvedAddress))
-	hydrated, err = prober.hydrateRelayCandidates(context.Background(), rule, []model.RelayListener{firstRelay, secondRelay}, candidates)
-	if err != nil {
-		t.Fatalf("hydrateRelayCandidates(all paths backed off) error = %v", err)
-	}
-	if len(hydrated) != 0 {
-		t.Fatalf("hydrated with all paths backed off = %+v", hydrated)
+	if len(hydrated[0].resolvedCandidates) != 1 || hydrated[0].resolvedCandidates[0].dialAddress != "relay-target.example:9443" {
+		t.Fatalf("resolvedCandidates = %+v, want original backend hostname only", hydrated[0].resolvedCandidates)
 	}
 }
 

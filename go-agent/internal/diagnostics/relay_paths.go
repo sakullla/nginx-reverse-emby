@@ -146,7 +146,7 @@ func preferredRelayPathIndex(target string, paths []relayplan.Path, cache *backe
 			continue
 		}
 		index, ok := reportsByPath[relayPathReportKey(path.IDs)]
-		if ok {
+		if ok && reports[index].Success {
 			return index
 		}
 	}
