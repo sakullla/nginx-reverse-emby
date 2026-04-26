@@ -860,21 +860,25 @@ func SnapshotL4Rules(rows []L4RuleRow) []L4Rule {
 			upstreamPort = backends[0].Port
 		}
 		rules = append(rules, L4Rule{
-			ID:            row.ID,
-			AgentID:       row.AgentID,
-			Name:          row.Name,
-			Protocol:      defaultString(row.Protocol, "tcp"),
-			ListenHost:    defaultString(row.ListenHost, "0.0.0.0"),
-			ListenPort:    row.ListenPort,
-			UpstreamHost:  upstreamHost,
-			UpstreamPort:  upstreamPort,
-			Backends:      backends,
-			LoadBalancing: parseLoadBalancingStrategy(row.LoadBalancingJSON),
-			Tuning:        parseL4Tuning(row.TuningJSON),
-			RelayChain:    parseIntSlice(row.RelayChainJSON),
-			RelayLayers:   parseIntLayers(row.RelayLayersJSON),
-			RelayObfs:     row.RelayObfs,
-			Revision:      int64(row.Revision),
+			ID:              row.ID,
+			AgentID:         row.AgentID,
+			Name:            row.Name,
+			Protocol:        defaultString(row.Protocol, "tcp"),
+			ListenHost:      defaultString(row.ListenHost, "0.0.0.0"),
+			ListenPort:      row.ListenPort,
+			UpstreamHost:    upstreamHost,
+			UpstreamPort:    upstreamPort,
+			Backends:        backends,
+			LoadBalancing:   parseLoadBalancingStrategy(row.LoadBalancingJSON),
+			Tuning:          parseL4Tuning(row.TuningJSON),
+			RelayChain:      parseIntSlice(row.RelayChainJSON),
+			RelayLayers:     parseIntLayers(row.RelayLayersJSON),
+			RelayObfs:       row.RelayObfs,
+			ListenMode:      defaultString(row.ListenMode, "tcp"),
+			ProxyEntryAuth:  parseL4ProxyEntryAuth(row.ProxyEntryAuthJSON),
+			ProxyEgressMode: row.ProxyEgressMode,
+			ProxyEgressURL:  row.ProxyEgressURL,
+			Revision:        int64(row.Revision),
 		})
 	}
 	return rules
@@ -1165,6 +1169,16 @@ func parseL4Tuning(raw string) L4Tuning {
 		return L4Tuning{}
 	}
 	return tuning
+}
+
+func parseL4ProxyEntryAuth(raw string) L4ProxyEntryAuth {
+	var auth L4ProxyEntryAuth
+	if err := json.Unmarshal([]byte(defaultString(raw, "{}")), &auth); err != nil {
+		return L4ProxyEntryAuth{}
+	}
+	auth.Username = strings.TrimSpace(auth.Username)
+	auth.Password = strings.TrimSpace(auth.Password)
+	return auth
 }
 
 func parseRelayPins(raw string) []RelayPin {

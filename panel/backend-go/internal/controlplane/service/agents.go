@@ -143,6 +143,11 @@ type HeartbeatReply struct {
 	RelayListeners      []storage.RelayListener            `json:"relay_listeners"`
 	Certificates        []storage.ManagedCertificateBundle `json:"certificates"`
 	CertificatePolicies []storage.ManagedCertificatePolicy `json:"certificate_policies"`
+	OutboundProxyURL    string                             `json:"-"`
+}
+
+type AgentRuntimeConfig struct {
+	OutboundProxyURL string `json:"outbound_proxy_url"`
 }
 
 type RuntimePackageInfo struct {
@@ -687,6 +692,7 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 		RelayListeners:      snapshot.RelayListeners,
 		Certificates:        snapshot.Certificates,
 		CertificatePolicies: snapshot.CertificatePolicies,
+		OutboundProxyURL:    strings.TrimSpace(row.OutboundProxyURL),
 	}
 	if snapshot.VersionPackage != nil {
 		pkgCopy := *snapshot.VersionPackage
