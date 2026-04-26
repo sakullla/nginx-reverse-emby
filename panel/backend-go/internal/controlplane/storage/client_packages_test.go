@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -14,29 +15,31 @@ func TestSQLiteStoreClientPackagesRoundTrip(t *testing.T) {
 	defer store.Close()
 
 	ctx := context.Background()
+	windowsPackage := ClientPackageRow{
+		ID:          "pkg-windows-amd64",
+		Version:     "1.1.0",
+		Platform:    "windows",
+		Arch:        "amd64",
+		Kind:        "flutter_gui",
+		DownloadURL: "https://github.com/sakullla/nginx-reverse-emby/releases/download/v1.1.0/nre-client-windows-amd64.zip",
+		SHA256:      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+		Notes:       "desktop gui",
+		CreatedAt:   "2026-04-26T00:00:00Z",
+	}
+	workerPackage := ClientPackageRow{
+		ID:          "pkg-worker-script",
+		Version:     "1.1.0",
+		Platform:    "cloudflare_worker",
+		Arch:        "script",
+		Kind:        "worker_script",
+		DownloadURL: "https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/v1.1.0/workers/cloudflare/nre-worker.js",
+		SHA256:      "abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd",
+		Notes:       "worker script",
+		CreatedAt:   "2026-04-26T00:01:00Z",
+	}
 	rows := []ClientPackageRow{
-		{
-			ID:          "pkg-windows-amd64",
-			Version:     "1.1.0",
-			Platform:    "windows",
-			Arch:        "amd64",
-			Kind:        "flutter_gui",
-			DownloadURL: "https://github.com/sakullla/nginx-reverse-emby/releases/download/v1.1.0/nre-client-windows-amd64.zip",
-			SHA256:      "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-			Notes:       "desktop gui",
-			CreatedAt:   "2026-04-26T00:00:00Z",
-		},
-		{
-			ID:          "pkg-worker-script",
-			Version:     "1.1.0",
-			Platform:    "cloudflare_worker",
-			Arch:        "script",
-			Kind:        "worker_script",
-			DownloadURL: "https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/v1.1.0/workers/cloudflare/nre-worker.js",
-			SHA256:      "abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd",
-			Notes:       "worker script",
-			CreatedAt:   "2026-04-26T00:01:00Z",
-		},
+		workerPackage,
+		windowsPackage,
 	}
 
 	if err := store.SaveClientPackages(ctx, rows); err != nil {
@@ -46,21 +49,20 @@ func TestSQLiteStoreClientPackagesRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListClientPackages() error = %v", err)
 	}
-	if len(got) != 2 {
-		t.Fatalf("len(got) = %d, want 2: %+v", len(got), got)
-	}
-	if got[0].ID != "pkg-windows-amd64" || got[1].ID != "pkg-worker-script" {
-		t.Fatalf("got IDs [%q, %q], want [pkg-windows-amd64, pkg-worker-script]: %+v", got[0].ID, got[1].ID, got)
+	want := []ClientPackageRow{windowsPackage, workerPackage}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ListClientPackages() = %+v, want %+v", got, want)
 	}
 
-	if err := store.SaveClientPackages(ctx, rows[:1]); err != nil {
+	if err := store.SaveClientPackages(ctx, []ClientPackageRow{windowsPackage}); err != nil {
 		t.Fatalf("SaveClientPackages(replace) error = %v", err)
 	}
 	got, err = store.ListClientPackages(ctx)
 	if err != nil {
 		t.Fatalf("ListClientPackages() after replace error = %v", err)
 	}
-	if len(got) != 1 || got[0].ID != "pkg-windows-amd64" {
-		t.Fatalf("replace got %+v", got)
+	want = []ClientPackageRow{windowsPackage}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ListClientPackages() after replace = %+v, want %+v", got, want)
 	}
 }
