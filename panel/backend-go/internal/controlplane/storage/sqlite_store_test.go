@@ -729,6 +729,42 @@ func parseL4LoadBalancingStrategy(t *testing.T, raw string) LoadBalancing {
 	}
 	return LoadBalancing{Strategy: strings.ToLower(strings.TrimSpace(lb.Strategy))}
 }
+
+func TestSnapshotL4RulesPreservesProxyEntryPasswordAndTrimsUsername(t *testing.T) {
+	rules := SnapshotL4Rules([]L4RuleRow{{
+		ID:                 1,
+		AgentID:            "local",
+		Protocol:           "tcp",
+		ListenHost:         "127.0.0.1",
+		ListenPort:         1080,
+		BackendsJSON:       `[]`,
+		LoadBalancingJSON:  `{}`,
+		TuningJSON:         `{}`,
+		RelayChainJSON:     `[101]`,
+		RelayLayersJSON:    `[]`,
+		ListenMode:         "proxy",
+		ProxyEntryAuthJSON: `{"enabled":true,"username":" u ","password":" p "}`,
+		ProxyEgressMode:    "proxy",
+		ProxyEgressURL:     "socks://127.0.0.1:1080",
+		Enabled:            true,
+		Revision:           3,
+	}})
+
+	if len(rules) != 1 {
+		t.Fatalf("expected one l4 rule, got %d", len(rules))
+	}
+	auth := rules[0].ProxyEntryAuth
+	if !auth.Enabled {
+		t.Fatalf("ProxyEntryAuth.Enabled = false")
+	}
+	if auth.Username != "u" {
+		t.Fatalf("ProxyEntryAuth.Username = %q", auth.Username)
+	}
+	if auth.Password != " p " {
+		t.Fatalf("ProxyEntryAuth.Password = %q", auth.Password)
+	}
+}
+
 func TestStorePersistsRelayListenersAndManagedCertificates(t *testing.T) {
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 

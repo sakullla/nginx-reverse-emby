@@ -464,7 +464,9 @@ func TestHeartbeatResponseIncludesProxyEntryAndOutboundProxy(t *testing.T) {
 				ListenHost:      "127.0.0.1",
 				ListenPort:      1080,
 				ListenMode:      "proxy",
+				ProxyEntryAuth:  storage.L4ProxyEntryAuth{Enabled: true, Username: "u", Password: " p "},
 				ProxyEgressMode: "relay",
+				ProxyEgressURL:  "socks://127.0.0.1:1081",
 			}},
 		}},
 		RuleService:          fakeRuleService{},
@@ -492,8 +494,14 @@ func TestHeartbeatResponseIncludesProxyEntryAndOutboundProxy(t *testing.T) {
 				OutboundProxyURL string `json:"outbound_proxy_url"`
 			} `json:"agent_config"`
 			L4Rules []struct {
-				ListenMode      string `json:"listen_mode"`
+				ListenMode     string `json:"listen_mode"`
+				ProxyEntryAuth struct {
+					Enabled  bool   `json:"enabled"`
+					Username string `json:"username"`
+					Password string `json:"password"`
+				} `json:"proxy_entry_auth"`
 				ProxyEgressMode string `json:"proxy_egress_mode"`
+				ProxyEgressURL  string `json:"proxy_egress_url"`
 			} `json:"l4_rules"`
 		} `json:"sync"`
 	}
@@ -509,8 +517,14 @@ func TestHeartbeatResponseIncludesProxyEntryAndOutboundProxy(t *testing.T) {
 	if payload.Sync.L4Rules[0].ListenMode != "proxy" {
 		t.Fatalf("sync.l4_rules[0].listen_mode = %q", payload.Sync.L4Rules[0].ListenMode)
 	}
+	if !payload.Sync.L4Rules[0].ProxyEntryAuth.Enabled || payload.Sync.L4Rules[0].ProxyEntryAuth.Username != "u" || payload.Sync.L4Rules[0].ProxyEntryAuth.Password != " p " {
+		t.Fatalf("sync.l4_rules[0].proxy_entry_auth = %+v", payload.Sync.L4Rules[0].ProxyEntryAuth)
+	}
 	if payload.Sync.L4Rules[0].ProxyEgressMode != "relay" {
 		t.Fatalf("sync.l4_rules[0].proxy_egress_mode = %q", payload.Sync.L4Rules[0].ProxyEgressMode)
+	}
+	if payload.Sync.L4Rules[0].ProxyEgressURL != "socks://127.0.0.1:1081" {
+		t.Fatalf("sync.l4_rules[0].proxy_egress_url = %q", payload.Sync.L4Rules[0].ProxyEgressURL)
 	}
 }
 

@@ -1177,7 +1177,6 @@ func parseL4ProxyEntryAuth(raw string) L4ProxyEntryAuth {
 		return L4ProxyEntryAuth{}
 	}
 	auth.Username = strings.TrimSpace(auth.Username)
-	auth.Password = strings.TrimSpace(auth.Password)
 	return auth
 }
 
