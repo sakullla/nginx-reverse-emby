@@ -348,6 +348,35 @@ func (f fakeVersionPolicyService) Delete(context.Context, string) (service.Versi
 	return f.deletedPolicy, nil
 }
 
+type fakeClientPackageService struct {
+	packages       []service.ClientPackage
+	createdPackage service.ClientPackage
+	updatedPackage service.ClientPackage
+	deletedPackage service.ClientPackage
+	latestPackage  service.ClientPackage
+	err            error
+}
+
+func (f fakeClientPackageService) List(context.Context) ([]service.ClientPackage, error) {
+	return f.packages, f.err
+}
+
+func (f fakeClientPackageService) Create(context.Context, service.ClientPackageInput) (service.ClientPackage, error) {
+	return f.createdPackage, f.err
+}
+
+func (f fakeClientPackageService) Update(context.Context, string, service.ClientPackageInput) (service.ClientPackage, error) {
+	return f.updatedPackage, f.err
+}
+
+func (f fakeClientPackageService) Delete(context.Context, string) (service.ClientPackage, error) {
+	return f.deletedPackage, f.err
+}
+
+func (f fakeClientPackageService) Latest(context.Context, service.ClientPackageQuery) (service.ClientPackage, error) {
+	return f.latestPackage, f.err
+}
+
 type fakeRelayListenerService struct {
 	listeners       map[string][]service.RelayListener
 	createdListener service.RelayListener
@@ -513,6 +542,7 @@ func TestRouterServesPanelAuthAndInfoEndpoints(t *testing.T) {
 		RuleService:          fakeRuleService{},
 		L4RuleService:        fakeL4RuleService{},
 		VersionPolicyService: fakeVersionPolicyService{},
+		ClientPackageService: fakeClientPackageService{},
 		RelayListenerService: fakeRelayListenerService{},
 		CertificateService:   fakeCertificateService{},
 	})
@@ -588,6 +618,7 @@ func TestRouterInfoOmitsSensitiveFieldsWithoutPanelToken(t *testing.T) {
 		RuleService:          fakeRuleService{},
 		L4RuleService:        fakeL4RuleService{},
 		VersionPolicyService: fakeVersionPolicyService{},
+		ClientPackageService: fakeClientPackageService{},
 		RelayListenerService: fakeRelayListenerService{},
 		CertificateService:   fakeCertificateService{},
 	})
@@ -672,6 +703,7 @@ func TestRouterServesAgentsAndRulesEndpoints(t *testing.T) {
 		},
 		L4RuleService:        fakeL4RuleService{},
 		VersionPolicyService: fakeVersionPolicyService{},
+		ClientPackageService: fakeClientPackageService{},
 		RelayListenerService: fakeRelayListenerService{},
 		CertificateService:   fakeCertificateService{},
 	})
@@ -748,6 +780,7 @@ func TestHandleAgentRuleDiagnoseDispatchesTask(t *testing.T) {
 		},
 		L4RuleService:        fakeL4RuleService{},
 		VersionPolicyService: fakeVersionPolicyService{},
+		ClientPackageService: fakeClientPackageService{},
 		RelayListenerService: fakeRelayListenerService{},
 		CertificateService:   fakeCertificateService{},
 		TaskService: fakeTaskService{
@@ -804,6 +837,7 @@ func TestHandleAgentRuleDiagnoseBudgetsMultiBackendTaskTTL(t *testing.T) {
 		},
 		L4RuleService:        fakeL4RuleService{},
 		VersionPolicyService: fakeVersionPolicyService{},
+		ClientPackageService: fakeClientPackageService{},
 		RelayListenerService: fakeRelayListenerService{},
 		CertificateService:   fakeCertificateService{},
 		TaskService: fakeTaskService{
@@ -857,6 +891,7 @@ func TestHandleAgentRuleDiagnoseBudgetsResolvedHTTPCandidates(t *testing.T) {
 		},
 		L4RuleService:        fakeL4RuleService{},
 		VersionPolicyService: fakeVersionPolicyService{},
+		ClientPackageService: fakeClientPackageService{},
 		RelayListenerService: fakeRelayListenerService{},
 		CertificateService:   fakeCertificateService{},
 		TaskService: fakeTaskService{
@@ -914,6 +949,7 @@ func TestHandleAgentL4RuleDiagnoseDispatchesTask(t *testing.T) {
 			},
 		},
 		VersionPolicyService: fakeVersionPolicyService{},
+		ClientPackageService: fakeClientPackageService{},
 		RelayListenerService: fakeRelayListenerService{},
 		CertificateService:   fakeCertificateService{},
 		TaskService: fakeTaskService{
@@ -958,6 +994,7 @@ func TestHandleAgentTaskReturnsTaskRecord(t *testing.T) {
 		RuleService:          fakeRuleService{},
 		L4RuleService:        fakeL4RuleService{},
 		VersionPolicyService: fakeVersionPolicyService{},
+		ClientPackageService: fakeClientPackageService{},
 		RelayListenerService: fakeRelayListenerService{},
 		CertificateService:   fakeCertificateService{},
 		TaskService: fakeTaskService{
@@ -1007,6 +1044,7 @@ func TestHandleAgentTaskSessionResolvesAgentFromToken(t *testing.T) {
 		RuleService:          fakeRuleService{},
 		L4RuleService:        fakeL4RuleService{},
 		VersionPolicyService: fakeVersionPolicyService{},
+		ClientPackageService: fakeClientPackageService{},
 		RelayListenerService: fakeRelayListenerService{},
 		CertificateService:   fakeCertificateService{},
 		TaskService: fakeTaskService{
@@ -1082,6 +1120,7 @@ func TestHandleAgentTaskUpdateAcceptsAgentResult(t *testing.T) {
 		RuleService:          fakeRuleService{},
 		L4RuleService:        fakeL4RuleService{},
 		VersionPolicyService: fakeVersionPolicyService{},
+		ClientPackageService: fakeClientPackageService{},
 		RelayListenerService: fakeRelayListenerService{},
 		CertificateService:   fakeCertificateService{},
 		TaskService: fakeTaskService{
@@ -1171,6 +1210,7 @@ func TestRouterServesAgentControlEndpoints(t *testing.T) {
 		RuleService:          fakeRuleService{},
 		L4RuleService:        fakeL4RuleService{},
 		VersionPolicyService: fakeVersionPolicyService{},
+		ClientPackageService: fakeClientPackageService{},
 		RelayListenerService: fakeRelayListenerService{},
 		CertificateService:   fakeCertificateService{},
 	})
@@ -1321,6 +1361,7 @@ func TestRouterServesL4AndVersionPolicyEndpoints(t *testing.T) {
 			updatedPolicy: service.VersionPolicy{ID: "beta", Channel: "beta", DesiredVersion: "1.3.1", Packages: []service.VersionPackage{{Platform: "linux-amd64", URL: "https://example.com/nre-agent-beta-2", SHA256: "ghi789"}}, Tags: []string{"canary"}},
 			deletedPolicy: service.VersionPolicy{ID: "beta", Channel: "beta", DesiredVersion: "1.3.1"},
 		},
+		ClientPackageService: fakeClientPackageService{},
 		RelayListenerService: fakeRelayListenerService{},
 		CertificateService:   fakeCertificateService{},
 	})
@@ -1397,6 +1438,79 @@ func TestRouterServesL4AndVersionPolicyEndpoints(t *testing.T) {
 	}
 }
 
+func TestRouterClientPackageRoutes(t *testing.T) {
+	router, err := NewRouter(Dependencies{
+		Config: config.Config{PanelToken: "secret"},
+		SystemService: fakeSystemService{
+			info: service.SystemInfo{
+				Role:              "master",
+				LocalApplyRuntime: "go-agent",
+				DefaultAgentID:    "local",
+				LocalAgentEnabled: true,
+			},
+		},
+		AgentService:         fakeAgentService{},
+		RuleService:          fakeRuleService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		ClientPackageService: fakeClientPackageService{
+			packages: []service.ClientPackage{{
+				ID:          "flutter_gui-windows-amd64-1-1-0",
+				Version:     "1.1.0",
+				Platform:    "windows",
+				Arch:        "amd64",
+				Kind:        "flutter_gui",
+				DownloadURL: "https://example.com/client.zip",
+				SHA256:      strings.Repeat("a", 64),
+			}},
+			createdPackage: service.ClientPackage{ID: "created", Version: "1.1.0", Platform: "android", Arch: "universal", Kind: "flutter_gui", DownloadURL: "https://example.com/app.apk", SHA256: strings.Repeat("b", 64)},
+			updatedPackage: service.ClientPackage{ID: "created", Version: "1.1.1", Platform: "android", Arch: "universal", Kind: "flutter_gui", DownloadURL: "https://example.com/app.apk", SHA256: strings.Repeat("c", 64)},
+			deletedPackage: service.ClientPackage{ID: "created", Version: "1.1.1", Platform: "android", Arch: "universal", Kind: "flutter_gui", DownloadURL: "https://example.com/app.apk", SHA256: strings.Repeat("c", 64)},
+			latestPackage:  service.ClientPackage{ID: "latest", Version: "1.2.0", Platform: "windows", Arch: "amd64", Kind: "flutter_gui", DownloadURL: "https://example.com/latest.zip", SHA256: strings.Repeat("d", 64)},
+		},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	for _, tc := range []struct {
+		method string
+		path   string
+		body   string
+		status int
+		field  string
+	}{
+		{http.MethodGet, "/panel-api/client-packages", "", http.StatusOK, "packages"},
+		{http.MethodPost, "/panel-api/client-packages", `{"version":"1.1.0","platform":"android","arch":"universal","kind":"flutter_gui","download_url":"https://example.com/app.apk","sha256":"` + strings.Repeat("b", 64) + `"}`, http.StatusCreated, "package"},
+		{http.MethodPut, "/panel-api/client-packages/created", `{"version":"1.1.1"}`, http.StatusOK, "package"},
+		{http.MethodDelete, "/panel-api/client-packages/created", "", http.StatusOK, "package"},
+		{http.MethodGet, "/panel-api/client-packages/latest?platform=windows&arch=amd64&kind=flutter_gui", "", http.StatusOK, "package"},
+	} {
+		req := httptest.NewRequest(tc.method, tc.path, bytes.NewBufferString(tc.body))
+		req.Header.Set("X-Panel-Token", "secret")
+		if tc.body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		resp := httptest.NewRecorder()
+		router.ServeHTTP(resp, req)
+		if resp.Code != tc.status {
+			t.Fatalf("%s %s = %d, want %d; body: %s", tc.method, tc.path, resp.Code, tc.status, resp.Body.String())
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+			t.Fatalf("json.Unmarshal(%s %s) error = %v", tc.method, tc.path, err)
+		}
+		if ok, cast := payload["ok"].(bool); !cast || !ok {
+			t.Fatalf("%s %s ok = %v", tc.method, tc.path, payload["ok"])
+		}
+		if _, found := payload[tc.field]; !found {
+			t.Fatalf("%s %s payload missing %q: %+v", tc.method, tc.path, tc.field, payload)
+		}
+	}
+}
+
 func TestRouterServesRelayListenerAndCertificateEndpoints(t *testing.T) {
 	router, err := NewRouter(Dependencies{
 		Config: config.Config{PanelToken: "secret"},
@@ -1412,6 +1526,7 @@ func TestRouterServesRelayListenerAndCertificateEndpoints(t *testing.T) {
 		RuleService:          fakeRuleService{},
 		L4RuleService:        fakeL4RuleService{},
 		VersionPolicyService: fakeVersionPolicyService{},
+		ClientPackageService: fakeClientPackageService{},
 		RelayListenerService: fakeRelayListenerService{
 			listeners: map[string][]service.RelayListener{
 				"local": {{
@@ -1581,6 +1696,7 @@ func TestRouterServesBackupExportAndImport(t *testing.T) {
 			RuleService:          fakeRuleService{},
 			L4RuleService:        fakeL4RuleService{},
 			VersionPolicyService: fakeVersionPolicyService{},
+			ClientPackageService: fakeClientPackageService{},
 			RelayListenerService: fakeRelayListenerService{},
 			CertificateService:   fakeCertificateService{},
 			BackupService: fakeBackupService{
@@ -1672,6 +1788,7 @@ func TestRouterBackupRoutesRemainRegisteredWhenBackupServiceIsNotInjected(t *tes
 		RuleService:          fakeRuleService{},
 		L4RuleService:        fakeL4RuleService{},
 		VersionPolicyService: fakeVersionPolicyService{},
+		ClientPackageService: fakeClientPackageService{},
 		RelayListenerService: fakeRelayListenerService{},
 		CertificateService:   fakeCertificateService{},
 		TaskService:          fakeTaskService{},
@@ -1707,6 +1824,7 @@ func TestRouterBackupExportSanitizesContentDispositionFilename(t *testing.T) {
 		RuleService:          fakeRuleService{},
 		L4RuleService:        fakeL4RuleService{},
 		VersionPolicyService: fakeVersionPolicyService{},
+		ClientPackageService: fakeClientPackageService{},
 		RelayListenerService: fakeRelayListenerService{},
 		CertificateService:   fakeCertificateService{},
 		BackupService: fakeBackupService{
@@ -1750,6 +1868,7 @@ func TestRouterBackupImportRejectsOversizedUpload(t *testing.T) {
 		RuleService:          fakeRuleService{},
 		L4RuleService:        fakeL4RuleService{},
 		VersionPolicyService: fakeVersionPolicyService{},
+		ClientPackageService: fakeClientPackageService{},
 		RelayListenerService: fakeRelayListenerService{},
 		CertificateService:   fakeCertificateService{},
 		BackupService: fakeBackupService{
@@ -1803,6 +1922,7 @@ func TestRouterRelayListenerWriteOnlyControlFieldsReachServiceButNotResponse(t *
 		RuleService:          fakeRuleService{},
 		L4RuleService:        fakeL4RuleService{},
 		VersionPolicyService: fakeVersionPolicyService{},
+		ClientPackageService: fakeClientPackageService{},
 		RelayListenerService: fakeRelayListenerService{
 			state:           state,
 			createdListener: service.RelayListener{ID: 2, AgentID: "local", Name: "relay-b", BindHosts: []string{"0.0.0.0"}, ListenHost: "0.0.0.0", ListenPort: 8443, PublicHost: "relay-b.example.com", PublicPort: 8443, Enabled: true, CertificateID: intPtr(12), TLSMode: "pin_only", PinSet: []service.RelayPin{{Type: "spki_sha256", Value: "def"}}, TrustedCACertificateIDs: []int{}, AllowSelfSigned: false, Tags: []string{"edge"}, Revision: 4},
@@ -1873,6 +1993,7 @@ func TestRouterRelayListenerDecodeTracksExplicitNullAndTrustFieldPresence(t *tes
 		RuleService:          fakeRuleService{},
 		L4RuleService:        fakeL4RuleService{},
 		VersionPolicyService: fakeVersionPolicyService{},
+		ClientPackageService: fakeClientPackageService{},
 		RelayListenerService: fakeRelayListenerService{
 			state:           state,
 			createdListener: service.RelayListener{ID: 2, AgentID: "local", Name: "relay-b"},
@@ -1961,6 +2082,7 @@ func TestRouterCertificatePEMFieldsReachServiceOnCreateAndUpdate(t *testing.T) {
 		RuleService:          fakeRuleService{},
 		L4RuleService:        fakeL4RuleService{},
 		VersionPolicyService: fakeVersionPolicyService{},
+		ClientPackageService: fakeClientPackageService{},
 		RelayListenerService: fakeRelayListenerService{},
 		CertificateService: fakeCertificateService{
 			state:              state,
@@ -2042,6 +2164,7 @@ func TestRouterCertificateIssueRoutesPassRequestedAgentContext(t *testing.T) {
 		RuleService:          fakeRuleService{},
 		L4RuleService:        fakeL4RuleService{},
 		VersionPolicyService: fakeVersionPolicyService{},
+		ClientPackageService: fakeClientPackageService{},
 		RelayListenerService: fakeRelayListenerService{},
 		CertificateService: fakeCertificateService{
 			certificates: map[string][]service.ManagedCertificate{
@@ -2098,6 +2221,7 @@ func TestRouterCertificateIssuePerAgentMissingAgentReturnsNotFoundBeforeIssue(t 
 		RuleService:          fakeRuleService{},
 		L4RuleService:        fakeL4RuleService{},
 		VersionPolicyService: fakeVersionPolicyService{},
+		ClientPackageService: fakeClientPackageService{},
 		RelayListenerService: fakeRelayListenerService{},
 		CertificateService: fakeCertificateService{
 			certificates: map[string][]service.ManagedCertificate{
@@ -2147,6 +2271,7 @@ func TestRouterCertificateIssuePerAgentUnassignedCertificateReturnsNotFoundBefor
 		RuleService:          fakeRuleService{},
 		L4RuleService:        fakeL4RuleService{},
 		VersionPolicyService: fakeVersionPolicyService{},
+		ClientPackageService: fakeClientPackageService{},
 		RelayListenerService: fakeRelayListenerService{},
 		CertificateService: fakeCertificateService{
 			certificates: map[string][]service.ManagedCertificate{
@@ -2237,6 +2362,7 @@ func TestRouterServesHTTPRuleCRUDAndValidation(t *testing.T) {
 		},
 		L4RuleService:        fakeL4RuleService{},
 		VersionPolicyService: fakeVersionPolicyService{},
+		ClientPackageService: fakeClientPackageService{},
 		RelayListenerService: fakeRelayListenerService{},
 		CertificateService:   fakeCertificateService{},
 	})
@@ -2389,6 +2515,7 @@ func TestRouterLegacyLocalAPIRoutesMapToLocalAgent(t *testing.T) {
 			},
 			L4RuleService:        fakeL4RuleService{},
 			VersionPolicyService: fakeVersionPolicyService{},
+			ClientPackageService: fakeClientPackageService{},
 			RelayListenerService: fakeRelayListenerService{},
 			CertificateService:   fakeCertificateService{},
 		})
@@ -2512,6 +2639,7 @@ func TestRouterGlobalCertificateCRUDRoutesUseGlobalContext(t *testing.T) {
 			RuleService:          fakeRuleService{},
 			L4RuleService:        fakeL4RuleService{},
 			VersionPolicyService: fakeVersionPolicyService{},
+			ClientPackageService: fakeClientPackageService{},
 			RelayListenerService: fakeRelayListenerService{},
 			CertificateService: fakeCertificateService{
 				certificates: map[string][]service.ManagedCertificate{

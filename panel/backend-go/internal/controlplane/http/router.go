@@ -57,6 +57,14 @@ type VersionPolicyService interface {
 	Delete(context.Context, string) (service.VersionPolicy, error)
 }
 
+type ClientPackageService interface {
+	List(context.Context) ([]service.ClientPackage, error)
+	Create(context.Context, service.ClientPackageInput) (service.ClientPackage, error)
+	Update(context.Context, string, service.ClientPackageInput) (service.ClientPackage, error)
+	Delete(context.Context, string) (service.ClientPackage, error)
+	Latest(context.Context, service.ClientPackageQuery) (service.ClientPackage, error)
+}
+
 type RelayListenerService interface {
 	List(context.Context, string) ([]service.RelayListener, error)
 	Create(context.Context, string, service.RelayListenerInput) (service.RelayListener, error)
@@ -87,6 +95,7 @@ type Dependencies struct {
 	RuleService          RuleService
 	L4RuleService        L4RuleService
 	VersionPolicyService VersionPolicyService
+	ClientPackageService ClientPackageService
 	RelayListenerService RelayListenerService
 	CertificateService   CertificateService
 	TaskService          TaskService
@@ -200,6 +209,9 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 		mux.Handle(prefix+"/apply", resolved.requirePanelToken(http.HandlerFunc(resolved.handleLocalApply)))
 		mux.Handle(prefix+"/version-policies", resolved.requirePanelToken(http.HandlerFunc(resolved.handleVersionPolicies)))
 		mux.Handle(prefix+"/version-policies/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleVersionPolicy)))
+		mux.Handle(prefix+"/client-packages", resolved.requirePanelToken(http.HandlerFunc(resolved.handleClientPackages)))
+		mux.Handle(prefix+"/client-packages/latest", resolved.requirePanelToken(http.HandlerFunc(resolved.handleLatestClientPackage)))
+		mux.Handle(prefix+"/client-packages/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleClientPackage)))
 	}
 	mux.Handle("/", resolved.staticHandler())
 
@@ -245,6 +257,9 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 	if d.VersionPolicyService == nil {
 		d.VersionPolicyService = service.NewVersionPolicyService(store)
 	}
+	if d.ClientPackageService == nil {
+		d.ClientPackageService = service.NewClientPackageService(store)
+	}
 	if d.RelayListenerService == nil {
 		d.RelayListenerService = service.NewRelayListenerService(d.Config, store)
 	}
@@ -267,6 +282,7 @@ func (d Dependencies) hasCoreServices() bool {
 		d.RuleService != nil &&
 		d.L4RuleService != nil &&
 		d.VersionPolicyService != nil &&
+		d.ClientPackageService != nil &&
 		d.RelayListenerService != nil &&
 		d.CertificateService != nil
 }
@@ -281,6 +297,8 @@ func mapServiceError(err error) (int, map[string]any) {
 		return http.StatusNotFound, errorPayload("rule id not found")
 	case errors.Is(err, service.ErrVersionPolicyNotFound):
 		return http.StatusNotFound, errorPayload("version policy not found")
+	case errors.Is(err, service.ErrClientPackageNotFound):
+		return http.StatusNotFound, errorPayload("client package not found")
 	case errors.Is(err, service.ErrRelayListenerNotFound):
 		return http.StatusNotFound, errorPayload("relay listener not found")
 	case errors.Is(err, service.ErrCertificateNotFound):

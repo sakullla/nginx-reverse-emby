@@ -57,6 +57,7 @@ func TestRouterServesJoinScriptAndHeartbeat(t *testing.T) {
 		RuleService:          fakeRuleService{},
 		L4RuleService:        fakeL4RuleService{},
 		VersionPolicyService: fakeVersionPolicyService{},
+		ClientPackageService: fakeClientPackageService{},
 		RelayListenerService: fakeRelayListenerService{},
 		CertificateService:   fakeCertificateService{},
 	})
@@ -357,6 +358,7 @@ func TestHeartbeatResponseKeepsRelayCertificatesWhenRelayListenersPresentWithout
 		RuleService:          fakeRuleService{},
 		L4RuleService:        fakeL4RuleService{},
 		VersionPolicyService: fakeVersionPolicyService{},
+		ClientPackageService: fakeClientPackageService{},
 		RelayListenerService: fakeRelayListenerService{},
 		CertificateService:   fakeCertificateService{},
 	})
@@ -414,6 +416,7 @@ func TestHeartbeatResponseIncludesEmptyArraysWhenUpdateClearsState(t *testing.T)
 		RuleService:          fakeRuleService{},
 		L4RuleService:        fakeL4RuleService{},
 		VersionPolicyService: fakeVersionPolicyService{},
+		ClientPackageService: fakeClientPackageService{},
 		RelayListenerService: fakeRelayListenerService{},
 		CertificateService:   fakeCertificateService{},
 	})
@@ -469,6 +472,7 @@ func TestHeartbeatResponseIncludesVersionPackageMetadataWithoutDesiredVersion(t 
 		RuleService:          fakeRuleService{},
 		L4RuleService:        fakeL4RuleService{},
 		VersionPolicyService: fakeVersionPolicyService{},
+		ClientPackageService: fakeClientPackageService{},
 		RelayListenerService: fakeRelayListenerService{},
 		CertificateService:   fakeCertificateService{},
 	})
@@ -525,6 +529,7 @@ func TestHeartbeatUsesRemoteAddrHostWhenForwardedMissing(t *testing.T) {
 		RuleService:          fakeRuleService{},
 		L4RuleService:        fakeL4RuleService{},
 		VersionPolicyService: fakeVersionPolicyService{},
+		ClientPackageService: fakeClientPackageService{},
 		RelayListenerService: fakeRelayListenerService{},
 		CertificateService:   fakeCertificateService{},
 	})
