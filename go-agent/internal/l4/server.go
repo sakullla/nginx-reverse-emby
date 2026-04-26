@@ -76,6 +76,7 @@ type udpSession struct {
 	targetAddr            string
 	directUDPPath         bool
 	backoffKey            string
+	markBackoffOnFailure  bool
 	backendObservationKey string
 	pendingReplies        int
 	awaitingSince         time.Time
@@ -88,6 +89,7 @@ type l4Candidate struct {
 	address               string
 	directUDPPath         bool
 	backoffKey            string
+	markBackoffOnFailure  bool
 	backendObservationKey string
 }
 
@@ -529,6 +531,7 @@ func (s *Server) proxyUDPPacket(listener *net.UDPConn, rule model.L4Rule, payloa
 		s.observeCandidateFailure(l4Candidate{
 			address:               session.targetAddr,
 			backoffKey:            session.backoffKey,
+			markBackoffOnFailure:  session.markBackoffOnFailure,
 			backendObservationKey: session.backendObservationKey,
 		})
 		s.closeUDPSession(session.key)
@@ -641,6 +644,7 @@ func (s *Server) sessionForPeer(rule model.L4Rule, listener *net.UDPConn, peer *
 	session.targetAddr = candidate.address
 	session.directUDPPath = candidate.directUDPPath
 	session.backoffKey = candidate.backoffKey
+	session.markBackoffOnFailure = candidate.markBackoffOnFailure
 	session.backendObservationKey = candidate.backendObservationKey
 	close(session.ready)
 	session.ready = nil
@@ -712,6 +716,7 @@ func (s *Server) pipeUDPReplies(session *udpSession) {
 					s.observeCandidateFailure(l4Candidate{
 						address:               session.targetAddr,
 						backoffKey:            session.backoffKey,
+						markBackoffOnFailure:  session.markBackoffOnFailure,
 						backendObservationKey: session.backendObservationKey,
 					})
 					return
@@ -739,6 +744,7 @@ func (s *Server) pipeUDPReplies(session *udpSession) {
 		s.observeCandidateSuccess(l4Candidate{
 			address:               session.targetAddr,
 			backoffKey:            session.backoffKey,
+			markBackoffOnFailure:  session.markBackoffOnFailure,
 			backendObservationKey: session.backendObservationKey,
 		}, replyDuration)
 		if _, err := session.listener.WriteToUDP(payload, session.peer); err != nil {
@@ -901,6 +907,7 @@ func l4Candidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule)
 				address:               dialAddress,
 				directUDPPath:         false,
 				backoffKey:            bk,
+				markBackoffOnFailure:  len(rule.RelayLayers) == 0,
 				backendObservationKey: l4ObservationKey(scope, backendID, backendIndex, duplicateCounts[backendID]),
 			})
 			continue
@@ -926,6 +933,7 @@ func l4Candidates(ctx context.Context, cache *backends.Cache, rule model.L4Rule)
 			out = append(out, l4Candidate{
 				address:               candidate.Address,
 				directUDPPath:         strings.ToLower(rule.Protocol) == "udp" && !ruleUsesRelay(rule),
+				markBackoffOnFailure:  true,
 				backendObservationKey: l4ObservationKey(scope, backendID, backendIndex, duplicateCounts[backendID]),
 			})
 		}
@@ -968,7 +976,7 @@ func (s *Server) observeCandidateFailure(candidate l4Candidate) {
 	if candidate.backendObservationKey != "" {
 		s.cache.ObserveBackendFailure(candidate.backendObservationKey)
 	}
-	if addr := l4CandidateBackoffAddr(candidate); addr != "" {
+	if addr := l4CandidateBackoffAddr(candidate); addr != "" && candidate.markBackoffOnFailure {
 		s.cache.MarkFailure(addr)
 	}
 }
