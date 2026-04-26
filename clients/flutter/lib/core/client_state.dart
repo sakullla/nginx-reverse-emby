@@ -44,6 +44,12 @@ class ClientState {
     this.lastError = '',
   });
 
+  factory ClientState.empty() {
+    return const ClientState(
+      profile: ClientProfile(masterUrl: '', displayName: ''),
+    );
+  }
+
   final ClientProfile profile;
   final ClientRuntimeStatus runtimeStatus;
   final String lastError;
