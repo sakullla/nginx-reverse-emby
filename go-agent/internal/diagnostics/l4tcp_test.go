@@ -11,6 +11,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayplan"
 )
 
 func TestTCPProberDiagnoseSummarizesSuccessfulConnects(t *testing.T) {
@@ -981,6 +982,65 @@ func TestTCPProberDiagnoseUsesSuccessfulRelayLayerPathForSamples(t *testing.T) {
 	}
 	if len(report.SelectedRelayPath) != 1 || report.SelectedRelayPath[0] != 512 {
 		t.Fatalf("SelectedRelayPath = %+v", report.SelectedRelayPath)
+	}
+}
+
+func TestTCPProberDiagnoseMarksRelayLayerAdaptivePreferredPathAsSelected(t *testing.T) {
+	actualAddress, _, stopTarget := startDiagnosticTCPTarget(t)
+	defer stopTarget()
+
+	_, actualPort := splitDiagnosticTCPAddr(t, actualAddress)
+	provider := newDiagnosticTLSMaterialProvider()
+	listenerA := newDiagnosticRelayListener(t, provider, 531, "relay-a.internal.test")
+	listenerB := newDiagnosticRelayListener(t, provider, 532, "relay-b.internal.test")
+	previousDialWithResult := diagnosticRelayDialWithResult
+	t.Cleanup(func() {
+		diagnosticRelayDialWithResult = previousDialWithResult
+	})
+	diagnosticRelayDialWithResult = func(ctx context.Context, network, target string, chain []relay.Hop, provider relay.TLSMaterialProvider, opts ...relay.DialOptions) (net.Conn, relay.DialResult, error) {
+		if len(chain) > 0 && chain[0].Listener.ID == 531 {
+			time.Sleep(75 * time.Millisecond)
+		}
+		conn, err := (&net.Dialer{}).DialContext(ctx, network, actualAddress)
+		if err != nil {
+			return nil, relay.DialResult{}, err
+		}
+		return conn, relay.DialResult{SelectedAddress: target}, nil
+	}
+
+	cache := backends.NewCache(backends.Config{})
+	target := "relay-target.example:" + strconv.Itoa(actualPort)
+	preferredPathKey := relayplan.PathKey("relay_path", []int{531}, target)
+	cache.ObserveBackendSuccess(backends.BackendObservationKey(relayplan.RelayPathScope(target), preferredPathKey), 80*time.Millisecond, 100*time.Millisecond, 128*1024)
+
+	prober := NewTCPProber(TCPProberConfig{
+		Attempts:      1,
+		Timeout:       time.Second,
+		Cache:         cache,
+		RelayProvider: provider,
+	})
+	report, err := prober.Diagnose(context.Background(), model.L4Rule{
+		ID:         116,
+		Protocol:   "tcp",
+		ListenHost: "0.0.0.0",
+		ListenPort: 9556,
+		RelayLayers: [][]int{{
+			531,
+			532,
+		}},
+		Backends: []model.L4Backend{{
+			Host: "relay-target.example",
+			Port: actualPort,
+		}},
+	}, []model.RelayListener{listenerA, listenerB})
+	if err != nil {
+		t.Fatalf("Diagnose() error = %v", err)
+	}
+	if len(report.SelectedRelayPath) != 1 || report.SelectedRelayPath[0] != 531 {
+		t.Fatalf("SelectedRelayPath = %+v", report.SelectedRelayPath)
+	}
+	if len(report.RelayPaths) != 2 || !report.RelayPaths[0].Selected || report.RelayPaths[1].Selected {
+		t.Fatalf("RelayPaths = %+v", report.RelayPaths)
 	}
 }
 

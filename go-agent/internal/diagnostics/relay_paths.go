@@ -65,7 +65,7 @@ func resolveDiagnosticRelayPaths(ruleLabel string, chain []int, layers [][]int, 
 	return paths, nil
 }
 
-func probeDiagnosticRelayPaths(ctx context.Context, network string, target string, paths []relayplan.Path, provider relay.TLSMaterialProvider, cache *backends.Cache) ([]RelayPathReport, []int, error) {
+func probeDiagnosticRelayPaths(ctx context.Context, network string, target string, paths []relayplan.Path, provider relay.TLSMaterialProvider, cache *backends.Cache, preferenceCache *backends.Cache) ([]RelayPathReport, []int, error) {
 	if len(paths) == 0 {
 		return nil, nil, nil
 	}
@@ -106,12 +106,51 @@ func probeDiagnosticRelayPaths(ctx context.Context, network string, target strin
 		reports = append(reports, report)
 	}
 
-	selectedIndex := diagnosticSelectedRelayPathIndex(ctx, network, target, paths, provider, cache, reportsByPath, reports)
+	selectedIndex := preferredRelayPathIndex(target, paths, preferenceCache, reportsByPath, reports)
+	if selectedIndex < 0 {
+		selectedIndex = diagnosticSelectedRelayPathIndex(ctx, network, target, paths, provider, cache, reportsByPath, reports)
+	}
 	if selectedIndex < 0 {
 		return reports, nil, nil
 	}
 	reports[selectedIndex].Selected = true
 	return reports, append([]int(nil), reports[selectedIndex].Path...), nil
+}
+
+func preferredRelayPathIndex(target string, paths []relayplan.Path, cache *backends.Cache, reportsByPath map[string]int, reports []RelayPathReport) int {
+	if cache == nil || len(paths) == 0 {
+		return -1
+	}
+	candidates := make([]backends.Candidate, 0, len(paths))
+	pathsByKey := make(map[string]relayplan.Path, len(paths))
+	observed := false
+	for _, path := range paths {
+		key := path.Key
+		if strings.TrimSpace(key) == "" {
+			key = relayplan.PathKey("relay_path", path.IDs, target)
+		}
+		summary := cache.Summary(backends.BackendObservationKey(relayplan.RelayPathScope(target), key))
+		if observationSummaryHasHistory(summary) {
+			observed = true
+		}
+		pathsByKey[key] = path
+		candidates = append(candidates, backends.Candidate{Address: key})
+	}
+	if !observed {
+		return -1
+	}
+	ordered := cache.Order(relayplan.RelayPathScope(target), backends.StrategyAdaptive, candidates)
+	for _, candidate := range ordered {
+		path, ok := pathsByKey[candidate.Address]
+		if !ok {
+			continue
+		}
+		index, ok := reportsByPath[relayPathReportKey(path.IDs)]
+		if ok {
+			return index
+		}
+	}
+	return -1
 }
 
 func diagnosticSelectedRelayPathIndex(ctx context.Context, network string, target string, paths []relayplan.Path, provider relay.TLSMaterialProvider, cache *backends.Cache, reportsByPath map[string]int, reports []RelayPathReport) int {
