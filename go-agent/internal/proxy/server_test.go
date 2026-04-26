@@ -944,6 +944,29 @@ func TestNewSharedTransportLimitsConcurrentConnectionsPerHost(t *testing.T) {
 	}
 }
 
+func TestNewServerUsesFullFrontendURLAsAdaptiveObservationScope(t *testing.T) {
+	cache := backends.NewCache(backends.Config{})
+	transport := NewSharedTransport()
+	server, err := newServer(model.HTTPListener{
+		Rules: []model.HTTPRule{{
+			FrontendURL: "http://edge.example.test/emby",
+			BackendURL:  "http://backend.example:8096",
+			Backends:    []model.HTTPBackend{{URL: "http://backend.example:8096"}},
+		}},
+	}, nil, Providers{}, cache, transport)
+	if err != nil {
+		t.Fatalf("newServer() error = %v", err)
+	}
+
+	entry := server.routeFor("edge.example.test", "/emby")
+	if entry == nil {
+		t.Fatal("route entry not found")
+	}
+	if entry.selectionScope != "http://edge.example.test/emby" {
+		t.Fatalf("selectionScope = %q, want full frontend URL", entry.selectionScope)
+	}
+}
+
 func TestRouteEntryServeHTTPRecordsSuccessfulLatencyObservation(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(20 * time.Millisecond)

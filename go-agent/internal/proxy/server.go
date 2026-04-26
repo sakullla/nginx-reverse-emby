@@ -154,7 +154,7 @@ func newServerWithResilience(
 			relayBulkTransport:         relayBulkTransport,
 			resilience:                 resilience,
 			modifyResp:                 makeModifyResponse(frontendBaseURL, rule.ProxyRedirect, targets[0].backendHost, normalizeURLPath(targets[0].target.Path)),
-			selectionScope:             hostKey,
+			selectionScope:             strings.ToLower(strings.TrimSpace(rule.FrontendURL)),
 			frontendPath:               FrontendPathFromRule(rule),
 		})
 	}
