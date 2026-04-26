@@ -14,7 +14,7 @@ type AgentRow struct {
 	DesiredVersion         string `gorm:"column:desired_version"`
 	TagsJSON               string `gorm:"column:tags"`
 	CapabilitiesJSON       string `gorm:"column:capabilities"`
-	OutboundProxyURL       string `gorm:"column:outbound_proxy_url"`
+	OutboundProxyURL       string `gorm:"column:outbound_proxy_url;not null;default:''"`
 	Mode                   string `gorm:"column:mode"`
 	DesiredRevision        int    `gorm:"column:desired_revision"`
 	CurrentRevision        int    `gorm:"column:current_revision"`
@@ -71,10 +71,10 @@ type L4RuleRow struct {
 	RelayChainJSON     string `gorm:"column:relay_chain"`
 	RelayLayersJSON    string `gorm:"column:relay_layers"`
 	RelayObfs          bool   `gorm:"column:relay_obfs"`
-	ListenMode         string `gorm:"column:listen_mode"`
-	ProxyEntryAuthJSON string `gorm:"column:proxy_entry_auth"`
-	ProxyEgressMode    string `gorm:"column:proxy_egress_mode"`
-	ProxyEgressURL     string `gorm:"column:proxy_egress_url"`
+	ListenMode         string `gorm:"column:listen_mode;not null;default:'tcp'"`
+	ProxyEntryAuthJSON string `gorm:"column:proxy_entry_auth;not null;default:'{}'"`
+	ProxyEgressMode    string `gorm:"column:proxy_egress_mode;not null;default:''"`
+	ProxyEgressURL     string `gorm:"column:proxy_egress_url;not null;default:''"`
 	Enabled            bool   `gorm:"column:enabled"`
 	TagsJSON           string `gorm:"column:tags"`
 	Revision           int    `gorm:"column:revision"`

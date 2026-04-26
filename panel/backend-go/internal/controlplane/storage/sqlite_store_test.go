@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"os"
@@ -82,6 +83,29 @@ func TestBootstrapSQLiteSchemaCreatesFreshPanelDatabaseWithoutSQLFixtures(t *tes
 	if localStateRows != 1 {
 		t.Fatalf("expected exactly one local_agent_state row, got %d", localStateRows)
 	}
+}
+
+func TestBootstrapSQLiteSchemaCreatesProxyColumnsWithDefaults(t *testing.T) {
+	dataRoot := t.TempDir()
+
+	db, err := openSQLiteForTest(filepath.Join(dataRoot, "panel.db"))
+	if err != nil {
+		t.Fatalf("openSQLiteForTest() error = %v", err)
+	}
+	defer closeSQLiteForTest(t, db)
+
+	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
+		t.Fatalf("BootstrapSQLiteSchema() error = %v", err)
+	}
+
+	agentColumns := loadSQLiteTableInfo(t, db, "agents")
+	assertSQLiteColumnContract(t, agentColumns, "outbound_proxy_url", 1, `""`)
+
+	l4Columns := loadSQLiteTableInfo(t, db, "l4_rules")
+	assertSQLiteColumnContract(t, l4Columns, "listen_mode", 1, `"tcp"`)
+	assertSQLiteColumnContract(t, l4Columns, "proxy_entry_auth", 1, `"{}"`)
+	assertSQLiteColumnContract(t, l4Columns, "proxy_egress_mode", 1, `""`)
+	assertSQLiteColumnContract(t, l4Columns, "proxy_egress_url", 1, `""`)
 }
 
 func TestBootstrapSQLiteSchemaUpgradesLegacySQLiteAndNormalizesBackfills(t *testing.T) {
@@ -2099,6 +2123,56 @@ func closeSQLiteForTest(t *testing.T, db *gorm.DB) {
 	}
 	if err := sqlDB.Close(); err != nil {
 		t.Fatalf("sqlDB.Close() error = %v", err)
+	}
+}
+
+type sqliteTableColumn struct {
+	Name         string
+	NotNull      int
+	DefaultValue sql.NullString
+}
+
+func loadSQLiteTableInfo(t *testing.T, db *gorm.DB, tableName string) map[string]sqliteTableColumn {
+	t.Helper()
+
+	rows, err := db.Raw("PRAGMA table_info(" + tableName + ")").Rows()
+	if err != nil {
+		t.Fatalf("PRAGMA table_info(%s) error = %v", tableName, err)
+	}
+	defer rows.Close()
+
+	columns := make(map[string]sqliteTableColumn)
+	for rows.Next() {
+		var cid int
+		var columnType string
+		var column sqliteTableColumn
+		var primaryKey int
+		if err := rows.Scan(&cid, &column.Name, &columnType, &column.NotNull, &column.DefaultValue, &primaryKey); err != nil {
+			t.Fatalf("scan PRAGMA table_info(%s) error = %v", tableName, err)
+		}
+		columns[column.Name] = column
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate PRAGMA table_info(%s) error = %v", tableName, err)
+	}
+	return columns
+}
+
+func assertSQLiteColumnContract(t *testing.T, columns map[string]sqliteTableColumn, columnName string, wantNotNull int, wantDefault string) {
+	t.Helper()
+
+	column, ok := columns[columnName]
+	if !ok {
+		t.Fatalf("column %q not found", columnName)
+	}
+	if column.NotNull != wantNotNull {
+		t.Fatalf("%s notnull = %d, want %d", columnName, column.NotNull, wantNotNull)
+	}
+	if !column.DefaultValue.Valid {
+		t.Fatalf("%s dflt_value is NULL, want %q", columnName, wantDefault)
+	}
+	if column.DefaultValue.String != wantDefault {
+		t.Fatalf("%s dflt_value = %q, want %q", columnName, column.DefaultValue.String, wantDefault)
 	}
 }
 
