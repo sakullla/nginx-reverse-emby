@@ -120,6 +120,10 @@ func (s *relayCertStore) ListVersionPolicies(context.Context) ([]storage.Version
 	return nil, nil
 }
 
+func (s *relayCertStore) ListClientPackages(context.Context) ([]storage.ClientPackageRow, error) {
+	return nil, nil
+}
+
 func (s *relayCertStore) ListManagedCertificates(context.Context) ([]storage.ManagedCertificateRow, error) {
 	return append([]storage.ManagedCertificateRow(nil), s.managedCerts...), nil
 }
@@ -151,6 +155,10 @@ func (s *relayCertStore) SaveRelayListeners(_ context.Context, agentID string, r
 }
 
 func (s *relayCertStore) SaveVersionPolicies(context.Context, []storage.VersionPolicyRow) error {
+	return nil
+}
+
+func (s *relayCertStore) SaveClientPackages(context.Context, []storage.ClientPackageRow) error {
 	return nil
 }
 

@@ -73,6 +73,10 @@ func (f *fakeL4Store) ListVersionPolicies(context.Context) ([]storage.VersionPol
 	return nil, nil
 }
 
+func (f *fakeL4Store) ListClientPackages(context.Context) ([]storage.ClientPackageRow, error) {
+	return nil, nil
+}
+
 func (f *fakeL4Store) ListManagedCertificates(context.Context) ([]storage.ManagedCertificateRow, error) {
 	return nil, nil
 }
@@ -99,6 +103,10 @@ func (f *fakeL4Store) SaveRelayListeners(context.Context, string, []storage.Rela
 }
 
 func (f *fakeL4Store) SaveVersionPolicies(context.Context, []storage.VersionPolicyRow) error {
+	return nil
+}
+
+func (f *fakeL4Store) SaveClientPackages(context.Context, []storage.ClientPackageRow) error {
 	return nil
 }
 

@@ -49,8 +49,8 @@ func TestSQLiteStoreClientPackagesRoundTrip(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("len(got) = %d, want 2: %+v", len(got), got)
 	}
-	if got[0].ID != "pkg-worker-script" && got[1].ID != "pkg-worker-script" {
-		t.Fatalf("worker package missing: %+v", got)
+	if got[0].ID != "pkg-windows-amd64" || got[1].ID != "pkg-worker-script" {
+		t.Fatalf("got IDs [%q, %q], want [pkg-windows-amd64, pkg-worker-script]: %+v", got[0].ID, got[1].ID, got)
 	}
 
 	if err := store.SaveClientPackages(ctx, rows[:1]); err != nil {
