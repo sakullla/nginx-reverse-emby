@@ -1,7 +1,10 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { ref } from 'vue'
 import ClientPackagesPage from './ClientPackagesPage.vue'
+
+const originalClipboard = navigator.clipboard
+const originalIsSecureContext = window.isSecureContext
 
 const packages = [
   {
@@ -58,6 +61,18 @@ function mountPage() {
 }
 
 describe('ClientPackagesPage', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: originalClipboard
+    })
+    Object.defineProperty(window, 'isSecureContext', {
+      configurable: true,
+      value: originalIsSecureContext
+    })
+  })
+
   it('renders GitHub-distributed client package records', () => {
     const wrapper = mountPage()
 
@@ -77,9 +92,36 @@ describe('ClientPackagesPage', () => {
     await wrapper.get('button[data-testid="build-worker-command"]').trigger('click')
 
     expect(wrapper.text()).toContain('wrangler deploy --name nre-edge')
-    expect(wrapper.text()).toContain('NRE_MASTER_URL=https://panel.example.com')
-    expect(wrapper.text()).toContain('NRE_WORKER_TOKEN=worker-secret')
+    expect(wrapper.text()).toContain('wrangler deploy --name nre-edge --compatibility-date 2026-04-26 nre-worker.js')
+    expect(wrapper.text()).toContain('curl -fsSL \'https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/v1.1.0/workers/cloudflare/nre-worker.js\' -o \'nre-worker.js\'')
+    expect(wrapper.text()).toContain('sha256sum \'nre-worker.js\'')
+    expect(wrapper.text()).toContain('wrangler secret put NRE_MASTER_URL --name nre-edge')
+    expect(wrapper.text()).toContain("NRE_MASTER_URL='https://panel.example.com'")
+    expect(wrapper.text()).toContain("NRE_WORKER_TOKEN='worker-secret'")
     expect(wrapper.text()).toContain('b'.repeat(64))
     expect(wrapper.text()).not.toContain('c'.repeat(64))
+  })
+
+  it('copies shell-escaped Worker environment assignments', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText }
+    })
+    Object.defineProperty(window, 'isSecureContext', {
+      configurable: true,
+      value: true
+    })
+    const wrapper = mountPage()
+
+    await wrapper.get('input[name="worker-name"]').setValue('nre-edge')
+    await wrapper.get('input[name="worker-master-url"]').setValue('https://panel.example.com/path;id/')
+    await wrapper.get('input[name="worker-token"]').setValue('secret; id #')
+    await wrapper.get('button[data-testid="build-worker-command"]').trigger('click')
+    await wrapper.get('.worker-panel__actions .btn-secondary').trigger('click')
+
+    expect(writeText).toHaveBeenCalledWith(expect.stringContaining("NRE_MASTER_URL='https://panel.example.com/path;id'"))
+    expect(writeText).toHaveBeenCalledWith(expect.stringContaining("NRE_WORKER_TOKEN='secret; id #'"))
+    expect(writeText.mock.calls[0][0]).not.toContain('NRE_WORKER_TOKEN=secret; id #')
   })
 })

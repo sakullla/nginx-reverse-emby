@@ -84,17 +84,18 @@
 
       <div v-if="workerDeployModel" class="deploy-output">
         <div>
-          <span class="deploy-output__label">环境变量</span>
-          <pre>NRE_MASTER_URL={{ workerDeployModel.env.NRE_MASTER_URL }}
-NRE_WORKER_TOKEN={{ workerDeployModel.env.NRE_WORKER_TOKEN }}</pre>
+          <span class="deploy-output__label">环境变量命令</span>
+          <pre>{{ workerDeployModel.envCommands.join('\n') }}</pre>
         </div>
         <div>
           <span class="deploy-output__label">Wrangler 命令</span>
-          <pre>{{ workerDeployModel.command }}</pre>
+          <pre>{{ workerDeployModel.secretCommands.join('\n') }}
+{{ workerDeployModel.command }}</pre>
         </div>
         <div>
-          <span class="deploy-output__label">脚本校验</span>
-          <pre>{{ workerDeployModel.scriptUrl }}
+          <span class="deploy-output__label">下载与校验</span>
+          <pre>{{ workerDeployModel.downloadCommand }}
+{{ workerDeployModel.checksumCommand }}
 sha256: {{ workerDeployModel.sha256 }}</pre>
         </div>
       </div>
@@ -414,8 +415,10 @@ function buildWorkerCommand() {
 async function copyWorkerCommand() {
   if (!workerDeployModel.value) return
   const text = [
-    `NRE_MASTER_URL=${workerDeployModel.value.env.NRE_MASTER_URL}`,
-    `NRE_WORKER_TOKEN=${workerDeployModel.value.env.NRE_WORKER_TOKEN}`,
+    ...workerDeployModel.value.envCommands,
+    workerDeployModel.value.downloadCommand,
+    workerDeployModel.value.checksumCommand,
+    ...workerDeployModel.value.secretCommands,
     workerDeployModel.value.command
   ].join('\n')
   try {

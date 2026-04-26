@@ -65,7 +65,47 @@ describe('workerDeploy', () => {
     })
   })
 
-  it('builds GitHub-hosted script deployment output', () => {
+  it('shell-escapes Worker script URLs before rendering download commands', () => {
+    const model = buildWorkerDeployModel({
+      workerName: 'nre-edge',
+      masterUrl: 'https://panel.example.com/',
+      token: 'secret',
+      packageRecord: {
+        platform: 'cloudflare_worker',
+        arch: 'script',
+        kind: 'worker_script',
+        version: '1.1.0',
+        download_url: 'https://example.com/nre-worker.js\'"; echo pwned; #',
+        sha256: 'a'.repeat(64)
+      }
+    })
+
+    expect(model.downloadCommand).toBe('curl -fsSL \'https://example.com/nre-worker.js\'\\\'\'"; echo pwned; #\' -o \'nre-worker.js\'')
+    expect(model.downloadCommand).not.toContain('curl -fsSL "')
+  })
+
+  it('shell-escapes environment assignments for pasteable deploy commands', () => {
+    const model = buildWorkerDeployModel({
+      workerName: 'nre-edge',
+      masterUrl: 'https://panel.example.com/path;id/',
+      token: 'secret; id #',
+      packageRecord: {
+        platform: 'cloudflare_worker',
+        arch: 'script',
+        kind: 'worker_script',
+        version: '1.1.0',
+        download_url: 'https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/v1.1.0/workers/cloudflare/nre-worker.js',
+        sha256: 'a'.repeat(64)
+      }
+    })
+
+    expect(model.envCommands).toEqual([
+      "NRE_MASTER_URL='https://panel.example.com/path;id'",
+      "NRE_WORKER_TOKEN='secret; id #'"
+    ])
+  })
+
+  it('builds local verified script deployment output', () => {
     const model = buildWorkerDeployModel({
       workerName: 'nre-edge',
       masterUrl: 'https://panel.example.com/',
@@ -83,18 +123,29 @@ describe('workerDeploy', () => {
       workerName: 'nre-edge',
       scriptUrl: 'https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/v1.1.0/workers/cloudflare/nre-worker.js',
       sha256: 'a'.repeat(64),
+      scriptFile: 'nre-worker.js',
       env: {
         NRE_MASTER_URL: 'https://panel.example.com',
         NRE_WORKER_TOKEN: 'secret'
       },
+      envCommands: [
+        "NRE_MASTER_URL='https://panel.example.com'",
+        "NRE_WORKER_TOKEN='secret'"
+      ],
+      downloadCommand: 'curl -fsSL \'https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/v1.1.0/workers/cloudflare/nre-worker.js\' -o \'nre-worker.js\'',
+      checksumCommand: 'sha256sum \'nre-worker.js\'',
+      secretCommands: [
+        'wrangler secret put NRE_MASTER_URL --name nre-edge',
+        'wrangler secret put NRE_WORKER_TOKEN --name nre-edge'
+      ],
       commandArgs: [
         'wrangler deploy',
         '--name',
         'nre-edge',
         '--compatibility-date 2026-04-26',
-        'https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/v1.1.0/workers/cloudflare/nre-worker.js'
+        'nre-worker.js'
       ],
-      command: 'wrangler deploy --name nre-edge --compatibility-date 2026-04-26 https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/v1.1.0/workers/cloudflare/nre-worker.js'
+      command: 'wrangler deploy --name nre-edge --compatibility-date 2026-04-26 nre-worker.js'
     })
   })
 })

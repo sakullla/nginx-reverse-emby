@@ -15,6 +15,10 @@ function isSafeWorkerName(value) {
   return /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(value)
 }
 
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`
+}
+
 export function validateWorkerDeployInput(input = {}) {
   const errors = {}
   const workerName = String(input.workerName || '').trim()
@@ -51,21 +55,33 @@ export function buildWorkerDeployModel(input = {}) {
   const masterUrl = String(input.masterUrl || '').trim().replace(/\/+$/, '')
   const token = String(input.token || '').trim()
   const pkg = input.packageRecord
+  const scriptFile = 'nre-worker.js'
   const commandArgs = [
     'wrangler deploy',
     '--name',
     workerName,
     '--compatibility-date 2026-04-26',
-    pkg.download_url
+    scriptFile
   ]
   return {
     workerName,
     scriptUrl: pkg.download_url,
     sha256: pkg.sha256,
+    scriptFile,
     env: {
       NRE_MASTER_URL: masterUrl,
       NRE_WORKER_TOKEN: token
     },
+    envCommands: [
+      `NRE_MASTER_URL=${shellQuote(masterUrl)}`,
+      `NRE_WORKER_TOKEN=${shellQuote(token)}`
+    ],
+    downloadCommand: `curl -fsSL ${shellQuote(pkg.download_url)} -o ${shellQuote(scriptFile)}`,
+    checksumCommand: `sha256sum ${shellQuote(scriptFile)}`,
+    secretCommands: [
+      `wrangler secret put NRE_MASTER_URL --name ${workerName}`,
+      `wrangler secret put NRE_WORKER_TOKEN --name ${workerName}`
+    ],
     commandArgs,
     command: commandArgs.join(' ')
   }
