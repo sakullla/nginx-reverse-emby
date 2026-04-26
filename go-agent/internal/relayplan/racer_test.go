@@ -192,6 +192,36 @@ func TestRacerReturnsAggregateErrorWhenAllPathsFail(t *testing.T) {
 	}
 }
 
+func TestRacerTreatsNilSuccessfulConnectionAsFailedAttempt(t *testing.T) {
+	dialer := newFakePathDialer()
+	dialer.set([]int{1}, fakeDialResult{})
+	cache := backends.NewCache(backends.Config{})
+	racer := Racer{Dialer: dialer, Cache: cache, Concurrency: 1, MaxPaths: 8}
+
+	result, err := racer.Race(context.Background(), Request{
+		Network: "tcp",
+		Target:  "backend:443",
+		Paths: []Path{{
+			IDs: []int{1},
+			Key: PathKey("relay_path", []int{1}, "backend:443"),
+		}},
+	})
+	if !errors.Is(err, ErrNoRelayPathSucceeded) {
+		t.Fatalf("Race() error = %v, want ErrNoRelayPathSucceeded", err)
+	}
+	if result.Conn != nil {
+		t.Fatalf("Race() returned nil-success connection as usable: %#v", result.Conn)
+	}
+	if len(result.Attempts) != 1 || result.Attempts[0].Success {
+		t.Fatalf("Attempts = %+v, want one failed attempt", result.Attempts)
+	}
+	scope := "relay_path|backend:443"
+	summary := cache.Summary(backends.BackendObservationKey(scope, PathKey("relay_path", []int{1}, "backend:443")))
+	if summary.RecentFailed != 1 || summary.RecentSucceeded != 0 {
+		t.Fatalf("nil connection summary = %+v, want one failed observation", summary)
+	}
+}
+
 func TestRacerOrdersPathsByAdaptiveObservations(t *testing.T) {
 	dialer := newFakePathDialer()
 	conn, peer := net.Pipe()

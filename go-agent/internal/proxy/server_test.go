@@ -1088,8 +1088,8 @@ func TestRouteEntryObserveSuccessfulBackendUsesTransferDurationForFutureRanking(
 		backendCache: cache,
 	}
 
-	entry.observeSuccessfulBackend("", "203.0.113.20:80", 900*time.Millisecond, time.Second, 2*1024*1024)
-	entry.observeSuccessfulBackend("", "203.0.113.20:80", 900*time.Millisecond, time.Second, 2*1024*1024)
+	entry.observeSuccessfulBackend(httpCandidate{}, nil, "203.0.113.20:80", 900*time.Millisecond, time.Second, 2*1024*1024)
+	entry.observeSuccessfulBackend(httpCandidate{}, nil, "203.0.113.20:80", 900*time.Millisecond, time.Second, 2*1024*1024)
 	cache.ObserveTransferSuccess("203.0.113.21:80", 20*time.Millisecond, 200*time.Millisecond, 1024*1024)
 	cache.ObserveTransferSuccess("203.0.113.21:80", 20*time.Millisecond, 200*time.Millisecond, 512*1024)
 
@@ -1119,8 +1119,8 @@ func TestRouteEntryObserveSuccessfulBackendStartsSlowStartAfterRecovery(t *testi
 
 	cache.ObserveBackendFailure(backendKey)
 	now = now.Add(1100 * time.Millisecond)
-	entry.observeSuccessfulBackend(backendKey, address, 20*time.Millisecond, 40*time.Millisecond, 128*1024)
-	entry.observeSuccessfulBackend(backendKey, address, 20*time.Millisecond, 40*time.Millisecond, 128*1024)
+	entry.observeSuccessfulBackend(httpCandidate{backendObservationKey: backendKey}, nil, address, 20*time.Millisecond, 40*time.Millisecond, 128*1024)
+	entry.observeSuccessfulBackend(httpCandidate{backendObservationKey: backendKey}, nil, address, 20*time.Millisecond, 40*time.Millisecond, 128*1024)
 
 	summary := cache.Summary(backendKey)
 	if summary.State != backends.ObservationStateWarm {
@@ -2767,6 +2767,89 @@ func TestStartServesHostnameBackendThroughRealRelayRuntime(t *testing.T) {
 	}
 	if got := receivedHost; got != "localhost:"+backendURL.Port() {
 		t.Fatalf("backend host header = %q, want %q", got, "localhost:"+backendURL.Port())
+	}
+}
+
+func TestStartRelayRuntimeRecordsSelectedResolvedCandidateHistory(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("relay-hostname-ok"))
+	}))
+	defer backend.Close()
+
+	backendURL, err := url.Parse(backend.URL)
+	if err != nil {
+		t.Fatalf("failed to parse backend URL: %v", err)
+	}
+
+	relayCert := mustIssueProxyTLSCertificate(t, "relay.internal.test")
+	provider := &testRuntimeMaterialProvider{
+		serverCertificates: map[int]tls.Certificate{
+			411: relayCert,
+		},
+	}
+	certificateID := 411
+	relayListener := model.RelayListener{
+		ID:            42,
+		AgentID:       "relay-agent",
+		Name:          "relay-hop",
+		ListenHost:    "127.0.0.1",
+		BindHosts:     []string{"127.0.0.1"},
+		ListenPort:    pickFreePort(t),
+		PublicHost:    "127.0.0.1",
+		PublicPort:    0,
+		Enabled:       true,
+		CertificateID: &certificateID,
+		TLSMode:       "pin_only",
+		PinSet: []model.RelayPin{{
+			Type:  "sha256",
+			Value: mustSPKIPin(t, relayCert),
+		}},
+	}
+	relayServer, err := relay.Start(context.Background(), []relay.Listener{relayListener}, provider)
+	if err != nil {
+		t.Fatalf("failed to start relay runtime: %v", err)
+	}
+	defer relayServer.Close()
+
+	cache := backends.NewCache(backends.Config{})
+	frontendPort := pickFreePort(t)
+	runtime, err := StartWithResources(
+		context.Background(),
+		[]model.HTTPRule{{
+			FrontendURL: fmt.Sprintf("http://edge.example.test:%d", frontendPort),
+			BackendURL:  fmt.Sprintf("http://localhost:%s", backendURL.Port()),
+			RelayLayers: [][]int{{relayListener.ID}},
+		}},
+		[]model.RelayListener{relayListener},
+		Providers{Relay: provider},
+		cache,
+		nil,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("failed to start relay-backed runtime: %v", err)
+	}
+	defer runtime.Close()
+
+	req, err := http.NewRequest(http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/relay-hostname", frontendPort), nil)
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+	req.Host = fmt.Sprintf("edge.example.test:%d", frontendPort)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("relay-backed request failed: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	selectedAddress := "127.0.0.1:" + backendURL.Port()
+	key := backends.RelayBackoffKey([]int{relayListener.ID}, selectedAddress)
+	if summary := cache.Summary(key); summary.RecentSucceeded != 1 {
+		t.Fatalf("selected resolved candidate summary = %+v, want runtime access success at %s", summary, key)
 	}
 }
 

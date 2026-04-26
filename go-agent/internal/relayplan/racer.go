@@ -101,6 +101,11 @@ func (r Racer) Race(ctx context.Context, req Request) (Result, error) {
 				results <- raceAttemptResult{attempt: attempt}
 				return
 			}
+			if conn == nil {
+				attempt.Error = "relay path dialer returned nil connection"
+				results <- raceAttemptResult{attempt: attempt}
+				return
+			}
 			attempt.Success = true
 			results <- raceAttemptResult{attempt: attempt, conn: conn, dialResult: dialResult}
 		}()
@@ -186,7 +191,7 @@ func (r Racer) orderPaths(req Request) []Path {
 		pathsByKey[key] = path
 		candidates = append(candidates, backends.Candidate{Address: key})
 	}
-	scope := relayPathScope(req.Target)
+	scope := RelayPathScope(req.Target)
 	ordered := r.Cache.Order(scope, backends.StrategyAdaptive, candidates)
 	out := make([]Path, 0, len(ordered))
 	for _, candidate := range ordered {
@@ -223,9 +228,9 @@ func (r Racer) pathObservationKey(req Request, path Path) string {
 	if strings.TrimSpace(key) == "" {
 		key = PathKey("relay_path", path.IDs, req.Target)
 	}
-	return backends.BackendObservationKey(relayPathScope(req.Target), key)
+	return backends.BackendObservationKey(RelayPathScope(req.Target), key)
 }
 
-func relayPathScope(target string) string {
+func RelayPathScope(target string) string {
 	return "relay_path|" + strings.TrimSpace(target)
 }

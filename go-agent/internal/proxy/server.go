@@ -386,7 +386,7 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 					e.backendCache.MarkFailure(backoffAddr)
 					return err
 				}
-				e.observeSuccessfulBackend(candidate.backendObservationKey, backoffAddr, headerLatency, time.Since(start), 0)
+				e.observeSuccessfulBackend(candidate, attemptReq, backoffAddr, headerLatency, time.Since(start), 0)
 				return nil
 			}
 			if state, ok := e.shouldResumeResponse(attemptReq, resp); ok {
@@ -400,7 +400,7 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 					}
 					return err
 				}
-				e.observeSuccessfulBackend(candidate.backendObservationKey, backoffAddr, headerLatency, time.Since(start), written)
+				e.observeSuccessfulBackend(candidate, attemptReq, backoffAddr, headerLatency, time.Since(start), written)
 				return nil
 			}
 			written, err := copyResponse(w, resp)
@@ -413,7 +413,7 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 				}
 				return newStartedResponseError(err)
 			}
-			e.observeSuccessfulBackend(candidate.backendObservationKey, backoffAddr, headerLatency, time.Since(start), written)
+			e.observeSuccessfulBackend(candidate, attemptReq, backoffAddr, headerLatency, time.Since(start), written)
 			return nil
 		}
 	}
@@ -451,7 +451,7 @@ func (e *routeEntry) sameBackendRetryMaxAttempts(req *http.Request) int {
 	return attempts
 }
 
-func (e *routeEntry) observeSuccessfulBackend(backendObservationKey string, address string, headerLatency time.Duration, totalDuration time.Duration, bytesTransferred int64) {
+func (e *routeEntry) observeSuccessfulBackend(candidate httpCandidate, req *http.Request, address string, headerLatency time.Duration, totalDuration time.Duration, bytesTransferred int64) {
 	if e == nil || e.backendCache == nil {
 		return
 	}
@@ -462,8 +462,17 @@ func (e *routeEntry) observeSuccessfulBackend(backendObservationKey string, addr
 	if transferDuration < 0 {
 		transferDuration = 0
 	}
-	if backendObservationKey != "" {
-		e.backendCache.ObserveBackendSuccess(backendObservationKey, headerLatency, transferDuration, bytesTransferred)
+	if candidate.backendObservationKey != "" {
+		e.backendCache.ObserveBackendSuccess(candidate.backendObservationKey, headerLatency, transferDuration, bytesTransferred)
+	}
+	if ruleUsesRelay(e.rule) {
+		if selectedAddress, selectedPath := selectedRelaySelectionFromContext(requestContext(req)); selectedAddress != "" {
+			if len(selectedPath) == 0 {
+				selectedPath = candidate.relayChain
+			}
+			selectedKey := backends.RelayBackoffKey(selectedPath, selectedAddress)
+			e.backendCache.ObserveTransferSuccess(selectedKey, headerLatency, transferDuration, bytesTransferred)
+		}
 	}
 	if bytesTransferred > 0 {
 		e.backendCache.ObserveTransferSuccess(address, headerLatency, transferDuration, bytesTransferred)
@@ -486,6 +495,7 @@ type httpCandidate struct {
 	dialAddress           string
 	backendHost           string
 	backendObservationKey string
+	relayChain            []int
 }
 
 func (e *routeEntry) candidates(ctx context.Context) ([]httpCandidate, error) {
@@ -524,6 +534,7 @@ func (e *routeEntry) candidates(ctx context.Context) ([]httpCandidate, error) {
 				dialAddress:           dialAddress,
 				backendHost:           backend.backendHost,
 				backendObservationKey: backendObservationKey,
+				relayChain:            append([]int(nil), e.rule.RelayChain...),
 			})
 			continue
 		}
@@ -772,6 +783,9 @@ func newRelayTransports(
 				TrafficClass: class,
 			}},
 		})
+		if result.DialResult.SelectedAddress != "" {
+			setSelectedRelaySelection(ctx, result.DialResult.SelectedAddress, result.Selected.IDs)
+		}
 		return result.Conn, err
 	}
 	transport := NewRelayTransport(base, dial)
@@ -991,6 +1005,9 @@ func cloneProxyRequest(req *http.Request, body *reusableRequestBody, candidate h
 	out.RequestURI = ""
 	out.Host = targetURL.Host
 	out = out.WithContext(withDialAddress(out.Context(), dialAddress))
+	if ruleUsesRelay(rule) {
+		out = out.WithContext(withSelectedRelayAddressHolder(out.Context(), &selectedRelayAddressHolder{}))
+	}
 	if body != nil {
 		out.Body, out.ContentLength, out.GetBody = body.Open()
 	} else {
@@ -1242,6 +1259,12 @@ func cloneURL(src *url.URL) *url.URL {
 }
 
 type dialAddressContextKey struct{}
+type selectedRelayAddressContextKey struct{}
+
+type selectedRelayAddressHolder struct {
+	address string
+	path    []int
+}
 
 func withDialAddress(ctx context.Context, address string) context.Context {
 	address = strings.TrimSpace(address)
@@ -1258,6 +1281,41 @@ func dialAddressFromContext(ctx context.Context, fallback string) string {
 		}
 	}
 	return strings.TrimSpace(fallback)
+}
+
+func withSelectedRelayAddressHolder(ctx context.Context, holder *selectedRelayAddressHolder) context.Context {
+	if ctx == nil || holder == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, selectedRelayAddressContextKey{}, holder)
+}
+
+func setSelectedRelaySelection(ctx context.Context, address string, path []int) {
+	if ctx == nil {
+		return
+	}
+	holder, ok := ctx.Value(selectedRelayAddressContextKey{}).(*selectedRelayAddressHolder)
+	if !ok || holder == nil {
+		return
+	}
+	holder.address = strings.TrimSpace(address)
+	holder.path = append([]int(nil), path...)
+}
+
+func selectedRelaySelectionFromContext(ctx context.Context) (string, []int) {
+	if ctx != nil {
+		if holder, ok := ctx.Value(selectedRelayAddressContextKey{}).(*selectedRelayAddressHolder); ok && holder != nil && strings.TrimSpace(holder.address) != "" {
+			return strings.TrimSpace(holder.address), append([]int(nil), holder.path...)
+		}
+	}
+	return "", nil
+}
+
+func requestContext(req *http.Request) context.Context {
+	if req == nil {
+		return nil
+	}
+	return req.Context()
 }
 
 func upgradeType(h http.Header) string {
