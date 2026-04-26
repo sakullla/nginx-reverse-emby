@@ -358,7 +358,7 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 				if candidate.backendObservationKey != "" {
 					e.backendCache.ObserveBackendFailure(candidate.backendObservationKey)
 				}
-				e.backendCache.MarkFailure(backoffAddr)
+				e.markCandidateFailure(candidate, attemptReq, backoffAddr)
 				break
 			}
 			headerLatency := time.Since(start)
@@ -373,7 +373,7 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 					if candidate.backendObservationKey != "" {
 						e.backendCache.ObserveBackendFailure(candidate.backendObservationKey)
 					}
-					e.backendCache.MarkFailure(backoffAddr)
+					e.markCandidateFailure(candidate, attemptReq, backoffAddr)
 					log.Printf("[proxy] modify response error for %s: %v", e.rule.FrontendURL, err)
 					return err
 				}
@@ -383,7 +383,7 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 					if candidate.backendObservationKey != "" {
 						e.backendCache.ObserveBackendFailure(candidate.backendObservationKey)
 					}
-					e.backendCache.MarkFailure(backoffAddr)
+					e.markCandidateFailure(candidate, attemptReq, backoffAddr)
 					return err
 				}
 				e.observeSuccessfulBackend(candidate, attemptReq, backoffAddr, headerLatency, time.Since(start), 0)
@@ -396,7 +396,7 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 						if candidate.backendObservationKey != "" {
 							e.backendCache.ObserveBackendFailure(candidate.backendObservationKey)
 						}
-						e.backendCache.MarkFailure(backoffAddr)
+						e.markCandidateFailure(candidate, attemptReq, backoffAddr)
 					}
 					return err
 				}
@@ -409,7 +409,7 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 					if candidate.backendObservationKey != "" {
 						e.backendCache.ObserveBackendFailure(candidate.backendObservationKey)
 					}
-					e.backendCache.MarkFailure(backoffAddr)
+					e.markCandidateFailure(candidate, attemptReq, backoffAddr)
 				}
 				return newStartedResponseError(err)
 			}
@@ -479,6 +479,25 @@ func (e *routeEntry) observeSuccessfulBackend(candidate httpCandidate, req *http
 		return
 	}
 	e.backendCache.ObserveSuccess(address, headerLatency)
+}
+
+func (e *routeEntry) markCandidateFailure(candidate httpCandidate, req *http.Request, address string) {
+	if e == nil || e.backendCache == nil {
+		return
+	}
+	if ruleUsesRelay(e.rule) {
+		if selectedAddress, selectedPath := selectedRelaySelectionFromContext(requestContext(req)); selectedAddress != "" {
+			if len(selectedPath) == 0 {
+				selectedPath = candidate.relayChain
+			}
+			e.backendCache.MarkFailure(backends.RelayBackoffKey(selectedPath, selectedAddress))
+			return
+		}
+		if len(e.rule.RelayLayers) > 0 {
+			return
+		}
+	}
+	e.backendCache.MarkFailure(address)
 }
 
 func isRetrySafeMethod(method string) bool {

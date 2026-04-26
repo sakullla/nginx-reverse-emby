@@ -965,6 +965,57 @@ func TestRouteEntryCandidatesRelayLayersUseLayeredBackoffKey(t *testing.T) {
 	}
 }
 
+func TestRouteEntryRelayLayerFailureMarksSelectedPathBackoff(t *testing.T) {
+	cache := backends.NewCache(backends.Config{})
+	rule := model.HTTPRule{
+		FrontendURL: "http://frontend.example",
+		RelayLayers: [][]int{
+			{101, 102},
+			{201},
+		},
+		LoadBalancing: model.LoadBalancing{
+			Strategy: "round_robin",
+		},
+	}
+	selectedAddress := "relay-target.example:80"
+	selectedPath := []int{101, 201}
+	transport := NewSharedTransport()
+	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
+		setSelectedRelaySelection(ctx, selectedAddress, selectedPath)
+		client, server := net.Pipe()
+		go func() {
+			defer server.Close()
+			_, _ = io.WriteString(server, "HTTP/1.1 200 OK\r\nContent-Length: 8\r\n\r\nok")
+		}()
+		return client, nil
+	}
+	entry := &routeEntry{
+		rule: rule,
+		backends: []httpBackend{{
+			target:      mustParseBackendURL(t, "http://relay-target.example"),
+			backendHost: "relay-target.example",
+		}},
+		backendCache:   cache,
+		transport:      transport,
+		selectionScope: "http://frontend.example",
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "http://frontend.example/movie", nil)
+	req.Host = "frontend.example"
+	err := entry.serveHTTP(httptest.NewRecorder(), req)
+	if err == nil {
+		t.Fatal("serveHTTP() error = nil, want truncated response error")
+	}
+	aggregateKey := backends.RelayBackoffKeyForLayers(rule.RelayChain, rule.RelayLayers, selectedAddress)
+	if cache.IsInBackoff(aggregateKey) {
+		t.Fatalf("aggregate relay layer key %q was marked in backoff", aggregateKey)
+	}
+	selectedKey := backends.RelayBackoffKey(selectedPath, selectedAddress)
+	if !cache.IsInBackoff(selectedKey) {
+		t.Fatalf("selected relay path key %q was not marked in backoff", selectedKey)
+	}
+}
+
 func TestRouteEntryCandidatesRelayChainUsesDefaultHTTPSPortWithoutResolving(t *testing.T) {
 	resolverCalls := 0
 	cache := backends.NewCache(backends.Config{

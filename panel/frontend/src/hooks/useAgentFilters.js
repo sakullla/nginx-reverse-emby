@@ -4,15 +4,26 @@ import { getAgentStatus } from '../utils/agentHelpers.js'
 
 const STORAGE_KEY = 'agent-list-view'
 
+function normalizeAgentView(value) {
+  const raw = Array.isArray(value) ? value[0] : value
+  const normalized = String(raw || '').trim().toLowerCase()
+  return normalized === 'list' ? 'list' : 'card'
+}
+
 export function useAgentFilters(agentsRef) {
   const route = useRoute()
   const router = useRouter()
 
   // View preference (card/list) with localStorage fallback
-  const view = ref(route.query.view || localStorage.getItem(STORAGE_KEY) || 'card')
+  const view = ref(normalizeAgentView(route.query.view || localStorage.getItem(STORAGE_KEY)))
   watch(view, (v) => {
-    localStorage.setItem(STORAGE_KEY, v)
-    syncQuery({ view: v })
+    const normalized = normalizeAgentView(v)
+    if (normalized !== v) {
+      view.value = normalized
+      return
+    }
+    localStorage.setItem(STORAGE_KEY, normalized)
+    syncQuery({ view: normalized })
   })
 
   // Filters
