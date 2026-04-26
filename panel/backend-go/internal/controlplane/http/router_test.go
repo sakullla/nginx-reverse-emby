@@ -1264,6 +1264,58 @@ func TestRouterServesAgentControlEndpoints(t *testing.T) {
 	}
 }
 
+func TestRouterUpdatesAgentOutboundProxyAndRedactsResponse(t *testing.T) {
+	state := &fakeAgentServiceState{}
+	router, err := NewRouter(Dependencies{
+		Config: config.Config{PanelToken: "secret"},
+		SystemService: fakeSystemService{
+			info: service.SystemInfo{
+				Role:              "master",
+				LocalApplyRuntime: "go-agent",
+				DefaultAgentID:    "local",
+				LocalAgentEnabled: true,
+			},
+		},
+		AgentService: fakeAgentService{
+			updateAgent: service.AgentSummary{
+				ID:               "edge-1",
+				Name:             "Edge 1",
+				OutboundProxyURL: "socks://user:pass@127.0.0.1:1080",
+			},
+			state: state,
+		},
+		RuleService:          fakeRuleService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPatch, "/panel-api/agents/edge-1", bytes.NewBufferString(`{"outbound_proxy_url":"socks://user:pass@127.0.0.1:1080"}`))
+	req.Header.Set("X-Panel-Token", "secret")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("PATCH /panel-api/agents/edge-1 = %d body=%s", resp.Code, resp.Body.String())
+	}
+	if state.updateAgentID != "edge-1" || state.updateInput.OutboundProxyURL == nil || *state.updateInput.OutboundProxyURL != "socks://user:pass@127.0.0.1:1080" {
+		t.Fatalf("update state = %+v", state)
+	}
+
+	var payload struct {
+		Agent service.AgentSummary `json:"agent"`
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if payload.Agent.OutboundProxyURL != "socks://user:xxxxx@127.0.0.1:1080" {
+		t.Fatalf("outbound_proxy_url = %q", payload.Agent.OutboundProxyURL)
+	}
+}
+
 func TestRouterServesL4AndVersionPolicyEndpoints(t *testing.T) {
 	router, err := NewRouter(Dependencies{
 		Config: config.Config{PanelToken: "secret"},

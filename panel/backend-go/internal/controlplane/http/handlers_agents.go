@@ -3,6 +3,7 @@ package http
 import (
 	"encoding/json"
 	"net/http"
+	"net/url"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 )
@@ -32,7 +33,7 @@ func (d Dependencies) handleRegisterAgent(w http.ResponseWriter, r *http.Request
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":    true,
-		"agent": agent,
+		"agent": redactAgentSummary(agent),
 	})
 }
 
@@ -46,7 +47,7 @@ func (d Dependencies) handleAgents(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ok":     true,
-		"agents": agents,
+		"agents": redactAgentSummaries(agents),
 	})
 }
 
@@ -63,7 +64,7 @@ func (d Dependencies) handleAgent(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":    true,
-			"agent": agent,
+			"agent": redactAgentSummary(agent),
 		})
 	case http.MethodPut, http.MethodPatch:
 		var payload service.UpdateAgentRequest
@@ -79,7 +80,7 @@ func (d Dependencies) handleAgent(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":    true,
-			"agent": agent,
+			"agent": redactAgentSummary(agent),
 		})
 	case http.MethodDelete:
 		agent, err := d.AgentService.Delete(r.Context(), agentID)
@@ -90,11 +91,40 @@ func (d Dependencies) handleAgent(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":    true,
-			"agent": agent,
+			"agent": redactAgentSummary(agent),
 		})
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func redactAgentSummaries(agents []service.AgentSummary) []service.AgentSummary {
+	if agents == nil {
+		return nil
+	}
+	out := make([]service.AgentSummary, len(agents))
+	for i, agent := range agents {
+		out[i] = redactAgentSummary(agent)
+	}
+	return out
+}
+
+func redactAgentSummary(agent service.AgentSummary) service.AgentSummary {
+	agent.OutboundProxyURL = redactProxyURL(agent.OutboundProxyURL)
+	return agent
+}
+
+func redactProxyURL(raw string) string {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.User == nil {
+		return raw
+	}
+	password, ok := parsed.User.Password()
+	if !ok || password == "" {
+		return raw
+	}
+	parsed.User = url.UserPassword(parsed.User.Username(), "xxxxx")
+	return parsed.String()
 }
 
 func (d Dependencies) handleAgentStats(w http.ResponseWriter, r *http.Request) {
