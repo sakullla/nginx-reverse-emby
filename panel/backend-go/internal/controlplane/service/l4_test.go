@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
@@ -240,6 +241,69 @@ func TestL4RuleFromRowDefaultsLoadBalancingToAdaptive(t *testing.T) {
 
 	if rule.LoadBalancing.Strategy != "adaptive" {
 		t.Fatalf("l4RuleFromRow() load_balancing = %+v", rule.LoadBalancing)
+	}
+}
+
+func TestNormalizeL4RuleInputAcceptsProxyEntryRelayEgress(t *testing.T) {
+	protocol := "tcp"
+	listenMode := "proxy"
+	egressMode := "relay"
+	relayLayers := [][]int{{101}}
+	input := L4RuleInput{
+		Protocol:        &protocol,
+		ListenHost:      stringPtrL4("127.0.0.1"),
+		ListenPort:      intPtrL4(1080),
+		ListenMode:      &listenMode,
+		ProxyEntryAuth:  &L4ProxyEntryAuth{Enabled: true, Username: "u", Password: "p"},
+		ProxyEgressMode: &egressMode,
+		RelayLayers:     &relayLayers,
+	}
+	rule, err := normalizeL4RuleInput(input, L4Rule{}, 1)
+	if err != nil {
+		t.Fatalf("normalizeL4RuleInput() error = %v", err)
+	}
+	if rule.ListenMode != "proxy" || rule.ProxyEgressMode != "relay" {
+		t.Fatalf("proxy entry fields = %+v", rule)
+	}
+	if !rule.ProxyEntryAuth.Enabled || rule.ProxyEntryAuth.Username != "u" || rule.ProxyEntryAuth.Password != "p" {
+		t.Fatalf("ProxyEntryAuth = %+v", rule.ProxyEntryAuth)
+	}
+}
+
+func TestNormalizeL4RuleInputRejectsProxyEntryWithoutEgress(t *testing.T) {
+	protocol := "tcp"
+	listenMode := "proxy"
+	input := L4RuleInput{
+		Protocol:   &protocol,
+		ListenHost: stringPtrL4("127.0.0.1"),
+		ListenPort: intPtrL4(1080),
+		ListenMode: &listenMode,
+	}
+	_, err := normalizeL4RuleInput(input, L4Rule{}, 1)
+	if err == nil || !strings.Contains(err.Error(), "proxy_egress_mode") {
+		t.Fatalf("error = %v, want proxy_egress_mode validation", err)
+	}
+}
+
+func TestNormalizeL4RuleInputAcceptsProxyEntryProxyEgress(t *testing.T) {
+	protocol := "tcp"
+	listenMode := "proxy"
+	egressMode := "proxy"
+	egressURL := "http://user:pass@127.0.0.1:8080"
+	input := L4RuleInput{
+		Protocol:        &protocol,
+		ListenHost:      stringPtrL4("127.0.0.1"),
+		ListenPort:      intPtrL4(1080),
+		ListenMode:      &listenMode,
+		ProxyEgressMode: &egressMode,
+		ProxyEgressURL:  &egressURL,
+	}
+	rule, err := normalizeL4RuleInput(input, L4Rule{}, 1)
+	if err != nil {
+		t.Fatalf("normalizeL4RuleInput() error = %v", err)
+	}
+	if rule.ProxyEgressURL != egressURL {
+		t.Fatalf("ProxyEgressURL = %q", rule.ProxyEgressURL)
 	}
 }
 

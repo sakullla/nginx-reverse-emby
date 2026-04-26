@@ -429,6 +429,31 @@ func TestAgentServiceRegisterCapabilitiesDefaultingByPresence(t *testing.T) {
 	}
 }
 
+func TestAgentServiceUpdatePersistsOutboundProxyURL(t *testing.T) {
+	ctx := context.Background()
+	store := &fakeStore{}
+	if err := store.SaveAgent(ctx, storage.AgentRow{
+		ID:               "edge-a",
+		Name:             "Edge A",
+		AgentToken:       "token-a",
+		CapabilitiesJSON: `["http_rules","l4","relay"]`,
+		LastApplyStatus:  "success",
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	svc := NewAgentService(config.Config{}, store)
+	input := UpdateAgentRequest{
+		OutboundProxyURL: stringPtr("socks://user:pass@127.0.0.1:1080"),
+	}
+	agent, err := svc.Update(ctx, "edge-a", input)
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if agent.OutboundProxyURL != "socks://user:pass@127.0.0.1:1080" {
+		t.Fatalf("OutboundProxyURL = %q", agent.OutboundProxyURL)
+	}
+}
+
 func TestNormalizeCapabilitiesPreservesRelayQUICAndHTTP3Ingress(t *testing.T) {
 	got := normalizeCapabilities([]string{
 		"http_rules",

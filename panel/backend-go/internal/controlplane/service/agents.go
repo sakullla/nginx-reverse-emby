@@ -60,6 +60,7 @@ type AgentSummary struct {
 	PackageSyncStatus      string   `json:"package_sync_status"`
 	DesiredVersion         string   `json:"desired_version"`
 	Tags                   []string `json:"tags"`
+	OutboundProxyURL       string   `json:"outbound_proxy_url"`
 	Mode                   string   `json:"mode"`
 	DesiredRevision        int      `json:"desired_revision"`
 	CurrentRevision        int      `json:"current_revision"`
@@ -165,12 +166,13 @@ type RegisterRequest struct {
 }
 
 type UpdateAgentRequest struct {
-	Name         *string   `json:"name,omitempty"`
-	AgentURL     *string   `json:"agent_url,omitempty"`
-	AgentToken   *string   `json:"agent_token,omitempty"`
-	Version      *string   `json:"version,omitempty"`
-	Tags         *[]string `json:"tags,omitempty"`
-	Capabilities *[]string `json:"capabilities,omitempty"`
+	Name             *string   `json:"name,omitempty"`
+	AgentURL         *string   `json:"agent_url,omitempty"`
+	AgentToken       *string   `json:"agent_token,omitempty"`
+	Version          *string   `json:"version,omitempty"`
+	Tags             *[]string `json:"tags,omitempty"`
+	Capabilities     *[]string `json:"capabilities,omitempty"`
+	OutboundProxyURL *string   `json:"outbound_proxy_url,omitempty"`
 }
 
 type AgentStats map[string]any
@@ -441,6 +443,13 @@ func (s *agentService) Update(ctx context.Context, agentID string, input UpdateA
 	}
 	if input.Capabilities != nil {
 		row.CapabilitiesJSON = marshalStringArray(normalizeCapabilities(*input.Capabilities))
+	}
+	if input.OutboundProxyURL != nil {
+		outboundProxyURL := strings.TrimSpace(*input.OutboundProxyURL)
+		if outboundProxyURL != "" && !strings.Contains(outboundProxyURL, "://") {
+			return AgentSummary{}, fmt.Errorf("%w: outbound_proxy_url must include a scheme", ErrInvalidArgument)
+		}
+		row.OutboundProxyURL = outboundProxyURL
 	}
 
 	if err := s.store.SaveAgent(ctx, row); err != nil {
@@ -841,6 +850,7 @@ func (s *agentService) summaryForRow(ctx context.Context, row storage.AgentRow) 
 		PackageSyncStatus:      packageSyncStatus,
 		DesiredVersion:         row.DesiredVersion,
 		Tags:                   parseStringArray(row.TagsJSON),
+		OutboundProxyURL:       strings.TrimSpace(row.OutboundProxyURL),
 		Mode:                   defaultString(row.Mode, "pull"),
 		DesiredRevision:        row.DesiredRevision,
 		CurrentRevision:        row.CurrentRevision,

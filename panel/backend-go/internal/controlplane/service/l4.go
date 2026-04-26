@@ -29,46 +29,60 @@ type L4ProxyProtocolTuning struct {
 	Send   bool `json:"send"`
 }
 
+type L4ProxyEntryAuth struct {
+	Enabled  bool   `json:"enabled"`
+	Username string `json:"username"`
+	Password string `json:"password,omitempty"`
+}
+
 type L4Tuning struct {
 	ProxyProtocol L4ProxyProtocolTuning `json:"proxy_protocol"`
 }
 
 type L4Rule struct {
-	ID            int             `json:"id"`
-	AgentID       string          `json:"agent_id"`
-	Name          string          `json:"name"`
-	Protocol      string          `json:"protocol"`
-	ListenHost    string          `json:"listen_host"`
-	ListenPort    int             `json:"listen_port"`
-	UpstreamHost  string          `json:"upstream_host"`
-	UpstreamPort  int             `json:"upstream_port"`
-	Backends      []L4Backend     `json:"backends"`
-	LoadBalancing L4LoadBalancing `json:"load_balancing"`
-	Tuning        L4Tuning        `json:"tuning"`
-	RelayChain    []int           `json:"relay_chain"`
-	RelayLayers   [][]int         `json:"relay_layers"`
-	RelayObfs     bool            `json:"relay_obfs"`
-	Enabled       bool            `json:"enabled"`
-	Tags          []string        `json:"tags"`
-	Revision      int             `json:"revision"`
+	ID              int              `json:"id"`
+	AgentID         string           `json:"agent_id"`
+	Name            string           `json:"name"`
+	Protocol        string           `json:"protocol"`
+	ListenHost      string           `json:"listen_host"`
+	ListenPort      int              `json:"listen_port"`
+	UpstreamHost    string           `json:"upstream_host"`
+	UpstreamPort    int              `json:"upstream_port"`
+	Backends        []L4Backend      `json:"backends"`
+	LoadBalancing   L4LoadBalancing  `json:"load_balancing"`
+	Tuning          L4Tuning         `json:"tuning"`
+	RelayChain      []int            `json:"relay_chain"`
+	RelayLayers     [][]int          `json:"relay_layers"`
+	RelayObfs       bool             `json:"relay_obfs"`
+	ListenMode      string           `json:"listen_mode"`
+	ProxyEntryAuth  L4ProxyEntryAuth `json:"proxy_entry_auth"`
+	ProxyEgressMode string           `json:"proxy_egress_mode"`
+	ProxyEgressURL  string           `json:"proxy_egress_url"`
+	Enabled         bool             `json:"enabled"`
+	Tags            []string         `json:"tags"`
+	Revision        int              `json:"revision"`
 }
 
 type L4RuleInput struct {
-	ID            *int             `json:"id,omitempty"`
-	Name          *string          `json:"name,omitempty"`
-	Protocol      *string          `json:"protocol,omitempty"`
-	ListenHost    *string          `json:"listen_host,omitempty"`
-	ListenPort    *int             `json:"listen_port,omitempty"`
-	UpstreamHost  *string          `json:"upstream_host,omitempty"`
-	UpstreamPort  *int             `json:"upstream_port,omitempty"`
-	Backends      *[]L4Backend     `json:"backends,omitempty"`
-	LoadBalancing *L4LoadBalancing `json:"load_balancing,omitempty"`
-	Tuning        *L4Tuning        `json:"tuning,omitempty"`
-	RelayChain    *[]int           `json:"relay_chain,omitempty"`
-	RelayLayers   *[][]int         `json:"relay_layers,omitempty"`
-	RelayObfs     *bool            `json:"relay_obfs,omitempty"`
-	Enabled       *bool            `json:"enabled,omitempty"`
-	Tags          *[]string        `json:"tags,omitempty"`
+	ID              *int              `json:"id,omitempty"`
+	Name            *string           `json:"name,omitempty"`
+	Protocol        *string           `json:"protocol,omitempty"`
+	ListenHost      *string           `json:"listen_host,omitempty"`
+	ListenPort      *int              `json:"listen_port,omitempty"`
+	UpstreamHost    *string           `json:"upstream_host,omitempty"`
+	UpstreamPort    *int              `json:"upstream_port,omitempty"`
+	Backends        *[]L4Backend      `json:"backends,omitempty"`
+	LoadBalancing   *L4LoadBalancing  `json:"load_balancing,omitempty"`
+	Tuning          *L4Tuning         `json:"tuning,omitempty"`
+	RelayChain      *[]int            `json:"relay_chain,omitempty"`
+	RelayLayers     *[][]int          `json:"relay_layers,omitempty"`
+	RelayObfs       *bool             `json:"relay_obfs,omitempty"`
+	ListenMode      *string           `json:"listen_mode,omitempty"`
+	ProxyEntryAuth  *L4ProxyEntryAuth `json:"proxy_entry_auth,omitempty"`
+	ProxyEgressMode *string           `json:"proxy_egress_mode,omitempty"`
+	ProxyEgressURL  *string           `json:"proxy_egress_url,omitempty"`
+	Enabled         *bool             `json:"enabled,omitempty"`
+	Tags            *[]string         `json:"tags,omitempty"`
 }
 
 type l4Service struct {
@@ -359,6 +373,17 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 		return L4Rule{}, fmt.Errorf("%w: protocol must be tcp or udp", ErrInvalidArgument)
 	}
 
+	listenMode := strings.ToLower(strings.TrimSpace(defaultString(pointerString(input.ListenMode), fallback.ListenMode)))
+	if listenMode == "" {
+		listenMode = "tcp"
+	}
+	if listenMode != "tcp" && listenMode != "proxy" {
+		return L4Rule{}, fmt.Errorf("%w: listen_mode must be tcp or proxy", ErrInvalidArgument)
+	}
+	if listenMode == "proxy" && protocol != "tcp" {
+		return L4Rule{}, fmt.Errorf("%w: listen_mode=proxy requires protocol tcp", ErrInvalidArgument)
+	}
+
 	listenHost := defaultString(pointerString(input.ListenHost), fallback.ListenHost)
 	if listenHost == "" {
 		listenHost = "0.0.0.0"
@@ -382,7 +407,12 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 
 	backends, upstreamHost, upstreamPort, err := normalizeL4BackendsInput(input, fallback)
 	if err != nil {
-		return L4Rule{}, err
+		if listenMode != "proxy" {
+			return L4Rule{}, err
+		}
+		backends = []L4Backend{}
+		upstreamHost = ""
+		upstreamPort = 0
 	}
 
 	loadBalancing := normalizeL4LoadBalancingInput(input.LoadBalancing, fallback.LoadBalancing)
@@ -407,6 +437,28 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 	}
 	if input.RelayLayers == nil && input.RelayChain != nil {
 		relayLayers = [][]int{}
+	}
+
+	proxyEntryAuth := fallback.ProxyEntryAuth
+	if input.ProxyEntryAuth != nil {
+		proxyEntryAuth = normalizeL4ProxyEntryAuth(*input.ProxyEntryAuth)
+	}
+	proxyEgressMode := strings.ToLower(strings.TrimSpace(defaultString(pointerString(input.ProxyEgressMode), fallback.ProxyEgressMode)))
+	proxyEgressURL := strings.TrimSpace(defaultString(pointerString(input.ProxyEgressURL), fallback.ProxyEgressURL))
+	if listenMode != "proxy" {
+		proxyEntryAuth = L4ProxyEntryAuth{}
+		proxyEgressMode = ""
+		proxyEgressURL = ""
+	} else {
+		if proxyEgressMode != "relay" && proxyEgressMode != "proxy" {
+			return L4Rule{}, fmt.Errorf("%w: proxy_egress_mode must be relay or proxy", ErrInvalidArgument)
+		}
+		if proxyEgressMode == "relay" && len(flattenRelayLayers(relayLayers)) == 0 && len(relayChain) == 0 {
+			return L4Rule{}, fmt.Errorf("%w: proxy relay egress requires relay_chain or relay_layers", ErrInvalidArgument)
+		}
+		if proxyEgressMode == "proxy" && proxyEgressURL == "" {
+			return L4Rule{}, fmt.Errorf("%w: proxy_egress_url is required for proxy egress", ErrInvalidArgument)
+		}
 	}
 
 	relayObfs := false
@@ -445,23 +497,27 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 	}
 
 	return L4Rule{
-		ID:            id,
-		AgentID:       fallback.AgentID,
-		Name:          name,
-		Protocol:      protocol,
-		ListenHost:    listenHost,
-		ListenPort:    listenPort,
-		UpstreamHost:  upstreamHost,
-		UpstreamPort:  upstreamPort,
-		Backends:      backends,
-		LoadBalancing: loadBalancing,
-		Tuning:        tuning,
-		RelayChain:    relayChain,
-		RelayLayers:   relayLayers,
-		RelayObfs:     relayObfs,
-		Enabled:       enabled,
-		Tags:          tags,
-		Revision:      fallback.Revision,
+		ID:              id,
+		AgentID:         fallback.AgentID,
+		Name:            name,
+		Protocol:        protocol,
+		ListenHost:      listenHost,
+		ListenPort:      listenPort,
+		UpstreamHost:    upstreamHost,
+		UpstreamPort:    upstreamPort,
+		Backends:        backends,
+		LoadBalancing:   loadBalancing,
+		Tuning:          tuning,
+		RelayChain:      relayChain,
+		RelayLayers:     relayLayers,
+		RelayObfs:       relayObfs,
+		ListenMode:      listenMode,
+		ProxyEntryAuth:  proxyEntryAuth,
+		ProxyEgressMode: proxyEgressMode,
+		ProxyEgressURL:  proxyEgressURL,
+		Enabled:         enabled,
+		Tags:            tags,
+		Revision:        fallback.Revision,
 	}, nil
 }
 
@@ -545,6 +601,14 @@ func normalizeL4TuningInput(protocol string, input *L4Tuning, fallback L4Tuning)
 	return tuning
 }
 
+func normalizeL4ProxyEntryAuth(auth L4ProxyEntryAuth) L4ProxyEntryAuth {
+	return L4ProxyEntryAuth{
+		Enabled:  auth.Enabled,
+		Username: strings.TrimSpace(auth.Username),
+		Password: auth.Password,
+	}
+}
+
 func normalizeTags(values []string) []string {
 	normalized := make([]string, 0, len(values))
 	for _, value := range values {
@@ -577,22 +641,26 @@ func ensureUniqueL4Listen(rules []L4Rule, next L4Rule, excludeID int) error {
 
 func l4RuleFromRow(row storage.L4RuleRow) L4Rule {
 	rule := L4Rule{
-		ID:            row.ID,
-		AgentID:       row.AgentID,
-		Name:          row.Name,
-		Protocol:      defaultString(row.Protocol, "tcp"),
-		ListenHost:    defaultString(row.ListenHost, "0.0.0.0"),
-		ListenPort:    row.ListenPort,
-		UpstreamHost:  row.UpstreamHost,
-		UpstreamPort:  row.UpstreamPort,
-		LoadBalancing: L4LoadBalancing{Strategy: "adaptive"},
-		Tuning:        L4Tuning{ProxyProtocol: L4ProxyProtocolTuning{}},
-		RelayChain:    []int{},
-		RelayLayers:   [][]int{},
-		RelayObfs:     row.RelayObfs,
-		Enabled:       row.Enabled,
-		Tags:          parseStringArray(row.TagsJSON),
-		Revision:      row.Revision,
+		ID:              row.ID,
+		AgentID:         row.AgentID,
+		Name:            row.Name,
+		Protocol:        defaultString(row.Protocol, "tcp"),
+		ListenHost:      defaultString(row.ListenHost, "0.0.0.0"),
+		ListenPort:      row.ListenPort,
+		UpstreamHost:    row.UpstreamHost,
+		UpstreamPort:    row.UpstreamPort,
+		LoadBalancing:   L4LoadBalancing{Strategy: "adaptive"},
+		Tuning:          L4Tuning{ProxyProtocol: L4ProxyProtocolTuning{}},
+		RelayChain:      []int{},
+		RelayLayers:     [][]int{},
+		RelayObfs:       row.RelayObfs,
+		ListenMode:      defaultString(row.ListenMode, "tcp"),
+		ProxyEntryAuth:  parseL4ProxyEntryAuth(row.ProxyEntryAuthJSON),
+		ProxyEgressMode: strings.TrimSpace(row.ProxyEgressMode),
+		ProxyEgressURL:  strings.TrimSpace(row.ProxyEgressURL),
+		Enabled:         row.Enabled,
+		Tags:            parseStringArray(row.TagsJSON),
+		Revision:        row.Revision,
 	}
 
 	if backends := parseL4Backends(row.BackendsJSON); len(backends) > 0 {
@@ -616,23 +684,27 @@ func l4RuleFromRow(row storage.L4RuleRow) L4Rule {
 
 func l4RuleToRow(rule L4Rule) storage.L4RuleRow {
 	return storage.L4RuleRow{
-		ID:                rule.ID,
-		AgentID:           rule.AgentID,
-		Name:              rule.Name,
-		Protocol:          rule.Protocol,
-		ListenHost:        rule.ListenHost,
-		ListenPort:        rule.ListenPort,
-		UpstreamHost:      rule.UpstreamHost,
-		UpstreamPort:      rule.UpstreamPort,
-		BackendsJSON:      marshalJSON(rule.Backends, "[]"),
-		LoadBalancingJSON: marshalJSON(rule.LoadBalancing, `{"strategy":"adaptive"}`),
-		TuningJSON:        marshalJSON(rule.Tuning, `{"proxy_protocol":{"decode":false,"send":false}}`),
-		RelayChainJSON:    marshalJSON(rule.RelayChain, "[]"),
-		RelayLayersJSON:   marshalJSON(rule.RelayLayers, "[]"),
-		RelayObfs:         rule.RelayObfs,
-		Enabled:           rule.Enabled,
-		TagsJSON:          marshalJSON(rule.Tags, "[]"),
-		Revision:          rule.Revision,
+		ID:                 rule.ID,
+		AgentID:            rule.AgentID,
+		Name:               rule.Name,
+		Protocol:           rule.Protocol,
+		ListenHost:         rule.ListenHost,
+		ListenPort:         rule.ListenPort,
+		UpstreamHost:       rule.UpstreamHost,
+		UpstreamPort:       rule.UpstreamPort,
+		BackendsJSON:       marshalJSON(rule.Backends, "[]"),
+		LoadBalancingJSON:  marshalJSON(rule.LoadBalancing, `{"strategy":"adaptive"}`),
+		TuningJSON:         marshalJSON(rule.Tuning, `{"proxy_protocol":{"decode":false,"send":false}}`),
+		RelayChainJSON:     marshalJSON(rule.RelayChain, "[]"),
+		RelayLayersJSON:    marshalJSON(rule.RelayLayers, "[]"),
+		RelayObfs:          rule.RelayObfs,
+		ListenMode:         defaultString(rule.ListenMode, "tcp"),
+		ProxyEntryAuthJSON: marshalJSON(rule.ProxyEntryAuth, "{}"),
+		ProxyEgressMode:    rule.ProxyEgressMode,
+		ProxyEgressURL:     rule.ProxyEgressURL,
+		Enabled:            rule.Enabled,
+		TagsJSON:           marshalJSON(rule.Tags, "[]"),
+		Revision:           rule.Revision,
 	}
 }
 
@@ -658,6 +730,17 @@ func parseL4Tuning(raw string) L4Tuning {
 		return L4Tuning{ProxyProtocol: L4ProxyProtocolTuning{}}
 	}
 	return tuning
+}
+
+func parseL4ProxyEntryAuth(raw string) L4ProxyEntryAuth {
+	var auth L4ProxyEntryAuth
+	if strings.TrimSpace(raw) == "" {
+		return auth
+	}
+	if err := json.Unmarshal([]byte(raw), &auth); err != nil {
+		return L4ProxyEntryAuth{}
+	}
+	return normalizeL4ProxyEntryAuth(auth)
 }
 
 func marshalJSON(value any, fallback string) string {
