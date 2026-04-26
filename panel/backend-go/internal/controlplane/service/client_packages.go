@@ -35,7 +35,6 @@ type ClientPackageInput struct {
 	DownloadURL *string `json:"download_url,omitempty"`
 	SHA256      *string `json:"sha256,omitempty"`
 	Notes       *string `json:"notes,omitempty"`
-	CreatedAt   *string `json:"created_at,omitempty"`
 }
 
 type ClientPackageQuery struct {
@@ -248,9 +247,6 @@ func normalizeClientPackageInput(input ClientPackageInput, fallback ClientPackag
 	if createdAt == "" {
 		createdAt = fallback.CreatedAt
 	}
-	if input.CreatedAt != nil && allowID {
-		createdAt = strings.TrimSpace(*input.CreatedAt)
-	}
 
 	return ClientPackage{
 		ID:          id,
@@ -312,38 +308,117 @@ func generatedClientPackageID(pkg ClientPackage) string {
 }
 
 func compareClientPackageVersions(left, right string) int {
-	leftParts := strings.Split(left, ".")
-	rightParts := strings.Split(right, ".")
-	length := len(leftParts)
-	if len(rightParts) > length {
-		length = len(rightParts)
-	}
-	for i := 0; i < length; i++ {
-		leftValue := clientPackageVersionPart(leftParts, i)
-		rightValue := clientPackageVersionPart(rightParts, i)
-		if leftValue > rightValue {
+	leftVersion := parseClientPackageVersion(left)
+	rightVersion := parseClientPackageVersion(right)
+
+	for i := 0; i < 3; i++ {
+		if leftVersion.core[i] > rightVersion.core[i] {
 			return 1
 		}
-		if leftValue < rightValue {
+		if leftVersion.core[i] < rightVersion.core[i] {
 			return -1
 		}
 	}
-	return strings.Compare(left, right)
+
+	leftHasPrerelease := len(leftVersion.prerelease) > 0
+	rightHasPrerelease := len(rightVersion.prerelease) > 0
+	if !leftHasPrerelease && rightHasPrerelease {
+		return 1
+	}
+	if leftHasPrerelease && !rightHasPrerelease {
+		return -1
+	}
+	if leftHasPrerelease && rightHasPrerelease {
+		if result := compareClientPackagePrerelease(leftVersion.prerelease, rightVersion.prerelease); result != 0 {
+			return result
+		}
+	}
+
+	return 0
 }
 
-func clientPackageVersionPart(parts []string, index int) int {
-	if index >= len(parts) {
+type parsedClientPackageVersion struct {
+	core       [3]int
+	prerelease []string
+}
+
+func parseClientPackageVersion(value string) parsedClientPackageVersion {
+	version := parsedClientPackageVersion{}
+	coreAndPrerelease := strings.SplitN(strings.TrimSpace(value), "+", 2)[0]
+	core := coreAndPrerelease
+	prerelease := ""
+	if parts := strings.SplitN(coreAndPrerelease, "-", 2); len(parts) == 2 {
+		core = parts[0]
+		prerelease = parts[1]
+	}
+
+	coreParts := strings.Split(core, ".")
+	for i := 0; i < len(version.core) && i < len(coreParts); i++ {
+		n, err := strconv.Atoi(coreParts[i])
+		if err == nil {
+			version.core[i] = n
+		}
+	}
+	if prerelease != "" {
+		version.prerelease = strings.Split(prerelease, ".")
+	}
+	return version
+}
+
+func compareClientPackagePrerelease(left, right []string) int {
+	length := len(left)
+	if len(right) > length {
+		length = len(right)
+	}
+	for i := 0; i < length; i++ {
+		if i >= len(left) {
+			return -1
+		}
+		if i >= len(right) {
+			return 1
+		}
+		if result := compareClientPackagePrereleaseIdentifier(left[i], right[i]); result != 0 {
+			return result
+		}
+	}
+	return 0
+}
+
+func compareClientPackagePrereleaseIdentifier(left, right string) int {
+	leftNumber, leftNumeric := parseClientPackageNumericIdentifier(left)
+	rightNumber, rightNumeric := parseClientPackageNumericIdentifier(right)
+	switch {
+	case leftNumeric && rightNumeric:
+		if leftNumber > rightNumber {
+			return 1
+		}
+		if leftNumber < rightNumber {
+			return -1
+		}
 		return 0
+	case leftNumeric:
+		return -1
+	case rightNumeric:
+		return 1
+	default:
+		return strings.Compare(left, right)
 	}
-	part := parts[index]
-	if dash := strings.Index(part, "-"); dash >= 0 {
-		part = part[:dash]
+}
+
+func parseClientPackageNumericIdentifier(value string) (int, bool) {
+	if value == "" {
+		return 0, false
 	}
-	value, err := strconv.Atoi(part)
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return 0, false
+		}
+	}
+	number, err := strconv.Atoi(value)
 	if err != nil {
-		return 0
+		return 0, false
 	}
-	return value
+	return number, true
 }
 
 func clientPackageFromRow(row storage.ClientPackageRow) ClientPackage {

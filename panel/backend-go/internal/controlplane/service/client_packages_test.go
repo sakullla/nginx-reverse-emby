@@ -5,6 +5,7 @@ import (
 	"errors"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -152,6 +153,159 @@ func TestClientPackageServiceLatestCompatible(t *testing.T) {
 	}
 	if latest.Version != "1.2.0" {
 		t.Fatalf("Latest() Version = %q, want 1.2.0", latest.Version)
+	}
+}
+
+func TestClientPackageServiceLatestSemverPrecedence(t *testing.T) {
+	store, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "data"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	svc := NewClientPackageService(store)
+
+	for _, input := range []ClientPackageInput{
+		clientPackageInput("1.9.0", "windows", "amd64", "flutter_gui", "1"),
+		clientPackageInput("1.10.0", "windows", "amd64", "flutter_gui", "2"),
+		clientPackageInput("1.2.0-rc.1", "macos", "arm64", "flutter_gui", "3"),
+		clientPackageInput("1.2.0", "macos", "arm64", "flutter_gui", "4"),
+		clientPackageInput("2.0.0+build.2", "android", "arm64", "flutter_gui", "5"),
+		clientPackageInput("2.0.0+build.1", "android", "arm64", "flutter_gui", "6"),
+	} {
+		if _, err := svc.Create(ctx, input); err != nil {
+			t.Fatalf("Create(%s) error = %v", *input.Version, err)
+		}
+	}
+
+	latestWindows, err := svc.Latest(ctx, ClientPackageQuery{
+		Platform: "windows",
+		Arch:     "amd64",
+		Kind:     "flutter_gui",
+	})
+	if err != nil {
+		t.Fatalf("Latest(windows) error = %v", err)
+	}
+	if latestWindows.Version != "1.10.0" {
+		t.Fatalf("Latest(windows) Version = %q, want 1.10.0", latestWindows.Version)
+	}
+
+	latestMacOS, err := svc.Latest(ctx, ClientPackageQuery{
+		Platform: "macos",
+		Arch:     "arm64",
+		Kind:     "flutter_gui",
+	})
+	if err != nil {
+		t.Fatalf("Latest(macos) error = %v", err)
+	}
+	if latestMacOS.Version != "1.2.0" {
+		t.Fatalf("Latest(macos) Version = %q, want 1.2.0", latestMacOS.Version)
+	}
+
+	latestAndroid, err := svc.Latest(ctx, ClientPackageQuery{
+		Platform: "android",
+		Arch:     "arm64",
+		Kind:     "flutter_gui",
+	})
+	if err != nil {
+		t.Fatalf("Latest(android) error = %v", err)
+	}
+	if latestAndroid.Version != "2.0.0+build.1" {
+		t.Fatalf("Latest(android) Version = %q, want deterministic equivalent version without build metadata precedence", latestAndroid.Version)
+	}
+}
+
+func TestClientPackageServiceLatestNoMatch(t *testing.T) {
+	store, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "data"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	svc := NewClientPackageService(store)
+	if _, err := svc.Create(ctx, clientPackageInput("1.0.0", "windows", "amd64", "flutter_gui", "1")); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	if _, err := svc.Latest(ctx, ClientPackageQuery{
+		Platform: "windows",
+		Arch:     "arm64",
+		Kind:     "flutter_gui",
+	}); !errors.Is(err, ErrClientPackageNotFound) {
+		t.Fatalf("Latest() no match error = %v, want ErrClientPackageNotFound", err)
+	}
+}
+
+func TestClientPackageServiceValidationErrors(t *testing.T) {
+	store, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "data"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	svc := NewClientPackageService(store)
+
+	input := clientPackageInput("1.0.0", "windows", "amd64", "flutter_gui", "1")
+	input.ID = strPtr("duplicate")
+	if _, err := svc.Create(ctx, input); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if _, err := svc.Create(ctx, input); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Create() duplicate ID error = %v, want ErrInvalidArgument", err)
+	}
+
+	nonHTTPS := clientPackageInput("1.0.1", "windows", "amd64", "flutter_gui", "2")
+	nonHTTPS.DownloadURL = strPtr("http://example.com/client.zip")
+	if _, err := svc.Create(ctx, nonHTTPS); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Create() non-HTTPS error = %v, want ErrInvalidArgument", err)
+	}
+
+	badWorkerArch := clientPackageInput("1.0.2", "cloudflare_worker", "amd64", "worker_script", "3")
+	if _, err := svc.Create(ctx, badWorkerArch); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Create() bad worker arch error = %v, want ErrInvalidArgument", err)
+	}
+
+	badWorkerKind := clientPackageInput("1.0.3", "cloudflare_worker", "script", "flutter_gui", "4")
+	if _, err := svc.Create(ctx, badWorkerKind); !errors.Is(err, ErrInvalidArgument) {
+		t.Fatalf("Create() bad worker kind error = %v, want ErrInvalidArgument", err)
+	}
+}
+
+func TestClientPackageServiceMissingIDErrors(t *testing.T) {
+	store, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "data"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	svc := NewClientPackageService(store)
+
+	if _, err := svc.Update(ctx, "missing", ClientPackageInput{Notes: strPtr("notes")}); !errors.Is(err, ErrClientPackageNotFound) {
+		t.Fatalf("Update() missing ID error = %v, want ErrClientPackageNotFound", err)
+	}
+	if _, err := svc.Update(ctx, "", ClientPackageInput{Notes: strPtr("notes")}); !errors.Is(err, ErrClientPackageNotFound) {
+		t.Fatalf("Update() empty ID error = %v, want ErrClientPackageNotFound", err)
+	}
+	if _, err := svc.Delete(ctx, "missing"); !errors.Is(err, ErrClientPackageNotFound) {
+		t.Fatalf("Delete() missing ID error = %v, want ErrClientPackageNotFound", err)
+	}
+	if _, err := svc.Delete(ctx, " "); !errors.Is(err, ErrClientPackageNotFound) {
+		t.Fatalf("Delete() empty ID error = %v, want ErrClientPackageNotFound", err)
+	}
+}
+
+func clientPackageInput(version, platform, arch, kind, shaSeed string) ClientPackageInput {
+	return ClientPackageInput{
+		Version:     strPtr(version),
+		Platform:    strPtr(platform),
+		Arch:        strPtr(arch),
+		Kind:        strPtr(kind),
+		DownloadURL: strPtr("https://example.com/" + version + "/" + platform + "-" + arch + ".zip"),
+		SHA256:      strPtr(strings.Repeat(shaSeed, 64)),
 	}
 }
 
