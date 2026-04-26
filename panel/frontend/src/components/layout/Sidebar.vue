@@ -53,6 +53,14 @@
         </svg>
         <span>节点管理</span>
       </RouterLink>
+      <RouterLink to="/client-packages" class="sidebar__nav-item" active-class="sidebar__nav-item--active">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+          <path d="M3.3 7 12 12l8.7-5"/>
+          <path d="M12 22V12"/>
+        </svg>
+        <span>客户端发布包</span>
+      </RouterLink>
       <RouterLink to="/settings" class="sidebar__nav-item" active-class="sidebar__nav-item--active">
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <circle cx="12" cy="12" r="3"/>
@@ -97,6 +105,13 @@
       <RouterLink to="/agents" class="sidebar__nav-icon" title="节点管理" :class="{ 'sidebar__nav-icon--active': route.name === 'agents' || route.name === 'agent-detail' }">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
           <rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
+        </svg>
+      </RouterLink>
+      <RouterLink to="/client-packages" class="sidebar__nav-icon" title="客户端发布包" active-class="sidebar__nav-icon--active">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/>
+          <path d="M3.3 7 12 12l8.7-5"/>
+          <path d="M12 22V12"/>
         </svg>
       </RouterLink>
       <RouterLink to="/settings" class="sidebar__nav-icon" title="设置" active-class="sidebar__nav-icon--active">

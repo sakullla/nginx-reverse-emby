@@ -66,6 +66,12 @@ const routes = [
         meta: { title: '版本策略' }
       },
       {
+        path: 'client-packages',
+        name: 'client-packages',
+        component: () => import('../pages/ClientPackagesPage.vue'),
+        meta: { title: '客户端发布包' }
+      },
+      {
         path: 'settings',
         name: 'settings',
         component: () => import('../pages/SettingsPage.vue'),

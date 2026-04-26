@@ -1,5 +1,6 @@
 import axios from 'axios'
 import { clearAuthToken } from '../authState.js'
+import { compareClientPackageVersions } from '../../utils/clientPackageVersions.js'
 
 const isDev = import.meta.env.DEV
 const sleep = (ms = 500) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -1688,60 +1689,6 @@ function normalizeMockClientPackagePayload(payload = {}) {
   }
 }
 
-function parseMockClientPackageVersion(value) {
-  const version = { core: [0, 0, 0], prerelease: [] }
-  const coreAndPrerelease = String(value || '').trim().split('+', 1)[0]
-  const [core, prerelease = ''] = coreAndPrerelease.split('-', 2)
-  core.split('.').slice(0, 3).forEach((part, index) => {
-    const number = Number.parseInt(part, 10)
-    if (!Number.isNaN(number)) version.core[index] = number
-  })
-  if (prerelease) version.prerelease = prerelease.split('.')
-  return version
-}
-
-function parseMockNumericIdentifier(value) {
-  if (!/^[0-9]+$/.test(value)) return { numeric: false, value }
-  return { numeric: true, value: Number.parseInt(value, 10) }
-}
-
-function compareMockPrereleaseIdentifier(left, right) {
-  const leftParsed = parseMockNumericIdentifier(left)
-  const rightParsed = parseMockNumericIdentifier(right)
-  if (leftParsed.numeric && rightParsed.numeric) return Math.sign(leftParsed.value - rightParsed.value)
-  if (leftParsed.numeric) return -1
-  if (rightParsed.numeric) return 1
-  return Math.sign(left.localeCompare(right))
-}
-
-function compareMockPrerelease(left, right) {
-  const length = Math.max(left.length, right.length)
-  for (let i = 0; i < length; i += 1) {
-    if (i >= left.length) return -1
-    if (i >= right.length) return 1
-    const result = compareMockPrereleaseIdentifier(left[i], right[i])
-    if (result !== 0) return result
-  }
-  return 0
-}
-
-function compareMockClientPackageVersions(left, right) {
-  const leftVersion = parseMockClientPackageVersion(left)
-  const rightVersion = parseMockClientPackageVersion(right)
-  for (let i = 0; i < 3; i += 1) {
-    if (leftVersion.core[i] > rightVersion.core[i]) return 1
-    if (leftVersion.core[i] < rightVersion.core[i]) return -1
-  }
-  const leftHasPrerelease = leftVersion.prerelease.length > 0
-  const rightHasPrerelease = rightVersion.prerelease.length > 0
-  if (!leftHasPrerelease && rightHasPrerelease) return 1
-  if (leftHasPrerelease && !rightHasPrerelease) return -1
-  if (leftHasPrerelease && rightHasPrerelease) {
-    return compareMockPrerelease(leftVersion.prerelease, rightVersion.prerelease)
-  }
-  return 0
-}
-
 export async function fetchVersionPolicies() {
   if (isDev) {
     await sleep()
@@ -1848,7 +1795,7 @@ export async function fetchLatestClientPackage(params = {}) {
       (!arch || item.arch === arch) &&
       (!kind || item.kind === kind)
       )
-      .sort((left, right) => compareMockClientPackageVersions(right.version, left.version))[0] || null
+      .sort((left, right) => compareClientPackageVersions(right.version, left.version))[0] || null
   }
   const search = new URLSearchParams(params)
   const { data } = await api.get(`/client-packages/latest?${search.toString()}`)
