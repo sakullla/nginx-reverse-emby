@@ -355,25 +355,47 @@ type fakeClientPackageService struct {
 	deletedPackage service.ClientPackage
 	latestPackage  service.ClientPackage
 	err            error
+	state          *fakeClientPackageServiceState
+}
+
+type fakeClientPackageServiceState struct {
+	createInputs  []service.ClientPackageInput
+	updateIDs     []string
+	updateInputs  []service.ClientPackageInput
+	deleteIDs     []string
+	latestQueries []service.ClientPackageQuery
 }
 
 func (f fakeClientPackageService) List(context.Context) ([]service.ClientPackage, error) {
 	return f.packages, f.err
 }
 
-func (f fakeClientPackageService) Create(context.Context, service.ClientPackageInput) (service.ClientPackage, error) {
+func (f fakeClientPackageService) Create(_ context.Context, input service.ClientPackageInput) (service.ClientPackage, error) {
+	if f.state != nil {
+		f.state.createInputs = append(f.state.createInputs, input)
+	}
 	return f.createdPackage, f.err
 }
 
-func (f fakeClientPackageService) Update(context.Context, string, service.ClientPackageInput) (service.ClientPackage, error) {
+func (f fakeClientPackageService) Update(_ context.Context, id string, input service.ClientPackageInput) (service.ClientPackage, error) {
+	if f.state != nil {
+		f.state.updateIDs = append(f.state.updateIDs, id)
+		f.state.updateInputs = append(f.state.updateInputs, input)
+	}
 	return f.updatedPackage, f.err
 }
 
-func (f fakeClientPackageService) Delete(context.Context, string) (service.ClientPackage, error) {
+func (f fakeClientPackageService) Delete(_ context.Context, id string) (service.ClientPackage, error) {
+	if f.state != nil {
+		f.state.deleteIDs = append(f.state.deleteIDs, id)
+	}
 	return f.deletedPackage, f.err
 }
 
-func (f fakeClientPackageService) Latest(context.Context, service.ClientPackageQuery) (service.ClientPackage, error) {
+func (f fakeClientPackageService) Latest(_ context.Context, query service.ClientPackageQuery) (service.ClientPackage, error) {
+	if f.state != nil {
+		f.state.latestQueries = append(f.state.latestQueries, query)
+	}
 	return f.latestPackage, f.err
 }
 
@@ -1439,6 +1461,7 @@ func TestRouterServesL4AndVersionPolicyEndpoints(t *testing.T) {
 }
 
 func TestRouterClientPackageRoutes(t *testing.T) {
+	packageState := &fakeClientPackageServiceState{}
 	router, err := NewRouter(Dependencies{
 		Config: config.Config{PanelToken: "secret"},
 		SystemService: fakeSystemService{
@@ -1467,6 +1490,7 @@ func TestRouterClientPackageRoutes(t *testing.T) {
 			updatedPackage: service.ClientPackage{ID: "created", Version: "1.1.1", Platform: "android", Arch: "universal", Kind: "flutter_gui", DownloadURL: "https://example.com/app.apk", SHA256: strings.Repeat("c", 64)},
 			deletedPackage: service.ClientPackage{ID: "created", Version: "1.1.1", Platform: "android", Arch: "universal", Kind: "flutter_gui", DownloadURL: "https://example.com/app.apk", SHA256: strings.Repeat("c", 64)},
 			latestPackage:  service.ClientPackage{ID: "latest", Version: "1.2.0", Platform: "windows", Arch: "amd64", Kind: "flutter_gui", DownloadURL: "https://example.com/latest.zip", SHA256: strings.Repeat("d", 64)},
+			state:          packageState,
 		},
 		RelayListenerService: fakeRelayListenerService{},
 		CertificateService:   fakeCertificateService{},
@@ -1487,6 +1511,7 @@ func TestRouterClientPackageRoutes(t *testing.T) {
 		{http.MethodPut, "/panel-api/client-packages/created", `{"version":"1.1.1"}`, http.StatusOK, "package"},
 		{http.MethodDelete, "/panel-api/client-packages/created", "", http.StatusOK, "package"},
 		{http.MethodGet, "/panel-api/client-packages/latest?platform=windows&arch=amd64&kind=flutter_gui", "", http.StatusOK, "package"},
+		{http.MethodGet, "/api/client-packages/latest?platform=windows&arch=amd64&kind=flutter_gui", "", http.StatusOK, "package"},
 	} {
 		req := httptest.NewRequest(tc.method, tc.path, bytes.NewBufferString(tc.body))
 		req.Header.Set("X-Panel-Token", "secret")
@@ -1507,6 +1532,59 @@ func TestRouterClientPackageRoutes(t *testing.T) {
 		}
 		if _, found := payload[tc.field]; !found {
 			t.Fatalf("%s %s payload missing %q: %+v", tc.method, tc.path, tc.field, payload)
+		}
+	}
+
+	if len(packageState.createInputs) != 1 {
+		t.Fatalf("create inputs = %+v", packageState.createInputs)
+	}
+	createInput := packageState.createInputs[0]
+	if createInput.Version == nil || *createInput.Version != "1.1.0" ||
+		createInput.Platform == nil || *createInput.Platform != "android" ||
+		createInput.Arch == nil || *createInput.Arch != "universal" ||
+		createInput.Kind == nil || *createInput.Kind != "flutter_gui" ||
+		createInput.DownloadURL == nil || *createInput.DownloadURL != "https://example.com/app.apk" ||
+		createInput.SHA256 == nil || *createInput.SHA256 != strings.Repeat("b", 64) {
+		t.Fatalf("create input = %+v", createInput)
+	}
+
+	if len(packageState.updateIDs) != 1 || packageState.updateIDs[0] != "created" {
+		t.Fatalf("update IDs = %+v", packageState.updateIDs)
+	}
+	if len(packageState.updateInputs) != 1 || packageState.updateInputs[0].Version == nil || *packageState.updateInputs[0].Version != "1.1.1" {
+		t.Fatalf("update inputs = %+v", packageState.updateInputs)
+	}
+
+	if len(packageState.deleteIDs) != 1 || packageState.deleteIDs[0] != "created" {
+		t.Fatalf("delete IDs = %+v", packageState.deleteIDs)
+	}
+
+	if len(packageState.latestQueries) != 2 {
+		t.Fatalf("latest queries = %+v", packageState.latestQueries)
+	}
+	for _, query := range packageState.latestQueries {
+		if query.Platform != "windows" || query.Arch != "amd64" || query.Kind != "flutter_gui" {
+			t.Fatalf("latest query = %+v", query)
+		}
+	}
+
+	for _, tc := range []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{http.MethodGet, "/panel-api/client-packages", ""},
+		{http.MethodPut, "/panel-api/client-packages/created", `{"version":"1.1.1"}`},
+		{http.MethodGet, "/panel-api/client-packages/latest?platform=windows&arch=amd64&kind=flutter_gui", ""},
+	} {
+		req := httptest.NewRequest(tc.method, tc.path, bytes.NewBufferString(tc.body))
+		if tc.body != "" {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		resp := httptest.NewRecorder()
+		router.ServeHTTP(resp, req)
+		if resp.Code != http.StatusUnauthorized {
+			t.Fatalf("%s %s without token = %d, want %d", tc.method, tc.path, resp.Code, http.StatusUnauthorized)
 		}
 	}
 }
