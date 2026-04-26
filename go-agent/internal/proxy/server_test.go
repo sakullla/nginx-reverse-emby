@@ -2020,6 +2020,51 @@ func TestServerRewritesExternalLocationToInternalRedirectPath(t *testing.T) {
 	}
 }
 
+func TestServerPreservesRelativeRedirectFromConfiguredBackend(t *testing.T) {
+	var backend *httptest.Server
+	backend = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", "/login?next=/library")
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer backend.Close()
+
+	listener := model.HTTPListener{
+		Rules: []model.HTTPRule{
+			{
+				FrontendURL:   "https://route.example/emby",
+				BackendURL:    backend.URL,
+				ProxyRedirect: true,
+			},
+		},
+	}
+
+	server := NewServer(listener)
+	proxy := httptest.NewServer(server)
+	defer proxy.Close()
+
+	req, err := http.NewRequest("GET", proxy.URL+"/emby/videos/1/original.mp4", nil)
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+	req.Host = "route.example"
+
+	client := &http.Client{
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("proxy request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if got := resp.Header.Get("Location"); got != "/login?next=/library" {
+		t.Fatalf("unexpected relative backend location: %q", got)
+	}
+}
+
 func TestServerProxiesFollowUpRequestForInternalRedirectPath(t *testing.T) {
 	var streamer *httptest.Server
 	streamer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2077,6 +2122,67 @@ func TestServerProxiesFollowUpRequestForInternalRedirectPath(t *testing.T) {
 	}
 	if string(body) != "proxied-stream" {
 		t.Fatalf("unexpected proxied response body %q", string(body))
+	}
+}
+
+func TestServerRewritesRelativeRedirectFromInternalRedirectTarget(t *testing.T) {
+	var streamer *httptest.Server
+	streamer = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/stream" {
+			t.Fatalf("expected streamer path /stream, got %q", r.URL.Path)
+		}
+		w.Header().Set("Location", "/tokenized/stream.m3u8?sign=next")
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer streamer.Close()
+
+	var backend *httptest.Server
+	backend = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", streamer.URL+"/stream?sign=abc")
+		w.WriteHeader(http.StatusMovedPermanently)
+	}))
+	defer backend.Close()
+
+	listener := model.HTTPListener{
+		Rules: []model.HTTPRule{
+			{
+				FrontendURL:   "https://route.example/emby",
+				BackendURL:    backend.URL,
+				ProxyRedirect: true,
+			},
+		},
+	}
+
+	server := NewServer(listener)
+	proxy := httptest.NewServer(server)
+	defer proxy.Close()
+
+	client := &http.Client{
+		Transport: &rewriteHostTransport{
+			base:       http.DefaultTransport,
+			targetHost: "route.example",
+			actualURL:  proxy.URL,
+		},
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) == 2 {
+				return http.ErrUseLastResponse
+			}
+			return nil
+		},
+	}
+
+	resp, err := client.Get("https://route.example/emby/videos/1/original.mp4")
+	if err != nil {
+		t.Fatalf("proxy request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("expected 302 from streamer follow-up, got %d", resp.StatusCode)
+	}
+	wantLocation := "https://route.example/emby/__nre_redirect/http/" + streamer.Listener.Addr().String() + "/tokenized/stream.m3u8?sign=next"
+	if got := resp.Header.Get("Location"); got != wantLocation {
+		t.Fatalf("unexpected chained redirect location %q, want %q", got, wantLocation)
 	}
 }
 

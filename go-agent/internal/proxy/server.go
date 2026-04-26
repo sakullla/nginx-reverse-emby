@@ -153,7 +153,7 @@ func newServerWithResilience(
 			relayInteractiveTransport:  relayInteractiveTransport,
 			relayBulkTransport:         relayBulkTransport,
 			resilience:                 resilience,
-			modifyResp:                 makeModifyResponse(frontendBaseURL, rule.ProxyRedirect, targets[0].backendHost, normalizeURLPath(targets[0].target.Path)),
+			modifyResp:                 makeModifyResponse(frontendBaseURL, rule.ProxyRedirect, targets[0].backendHost, normalizeURLPath(targets[0].target.Path), nil),
 			selectionScope:             strings.ToLower(strings.TrimSpace(rule.FrontendURL)),
 			frontendPath:               FrontendPathFromRule(rule),
 		})
@@ -363,7 +363,11 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 			}
 			headerLatency := time.Since(start)
 			if e.modifyResp != nil {
-				modify := makeModifyResponse(FrontendOriginFromRule(e.rule), e.rule.ProxyRedirect, candidate.backendHost, normalizeURLPath(candidate.target.Path))
+				var relativeLocationBase *url.URL
+				if _, ok := parseInternalRedirectTarget(req.URL.Path, e.frontendPath); ok {
+					relativeLocationBase = attemptReq.URL
+				}
+				modify := makeModifyResponse(FrontendOriginFromRule(e.rule), e.rule.ProxyRedirect, candidate.backendHost, normalizeURLPath(candidate.target.Path), relativeLocationBase)
 				if err := modify(resp); err != nil {
 					_ = resp.Body.Close()
 					if candidate.backendObservationKey != "" {

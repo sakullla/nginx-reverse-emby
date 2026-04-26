@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"net/http/httptest"
+	"net/url"
 	"testing"
 )
 
@@ -51,5 +52,17 @@ func TestRewriteExternalLocationToProxyPath(t *testing.T) {
 	)
 	if got != "https://frontend.example/emby/__nre_redirect/https/streamer.example/stream?sign=abc" {
 		t.Fatalf("unexpected external redirect rewrite: %q", got)
+	}
+}
+
+func TestResolveRelativeLocationUsesCurrentProxyTarget(t *testing.T) {
+	base, err := url.Parse("http://streamer.example/videos/stream.m3u8?sign=old")
+	if err != nil {
+		t.Fatalf("failed to parse base URL: %v", err)
+	}
+
+	got := resolveRelativeLocation("/tokenized/stream.m3u8?sign=next", base)
+	if got != "http://streamer.example/tokenized/stream.m3u8?sign=next" {
+		t.Fatalf("unexpected resolved location: %q", got)
 	}
 }

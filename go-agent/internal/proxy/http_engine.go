@@ -59,6 +59,17 @@ func rewriteExternalLocationToProxyPath(rawLocation string, rawFrontendBaseURL s
 	return locationURL.String()
 }
 
+func resolveRelativeLocation(rawLocation string, baseURL *url.URL) string {
+	if baseURL == nil || baseURL.Scheme == "" || baseURL.Host == "" {
+		return rawLocation
+	}
+	locationURL, err := url.Parse(rawLocation)
+	if err != nil || locationURL.IsAbs() {
+		return rawLocation
+	}
+	return baseURL.ResolveReference(locationURL).String()
+}
+
 func joinURLPath(parts ...string) string {
 	filtered := make([]string, 0, len(parts))
 	for _, part := range parts {
@@ -345,7 +356,7 @@ func requestScheme(req *http.Request) string {
 	return "http"
 }
 
-func makeModifyResponse(frontendBaseURL string, proxyRedirect bool, backendHost string, backendBasePath string) func(*http.Response) error {
+func makeModifyResponse(frontendBaseURL string, proxyRedirect bool, backendHost string, backendBasePath string, requestTarget *url.URL) func(*http.Response) error {
 	if !proxyRedirect {
 		return nil
 	}
@@ -358,6 +369,7 @@ func makeModifyResponse(frontendBaseURL string, proxyRedirect bool, backendHost 
 			resp.Header.Set("Location", rewriteLocation(location, frontendBaseURL, backendBasePath))
 			return nil
 		}
+		location = resolveRelativeLocation(location, requestTarget)
 		resp.Header.Set("Location", rewriteExternalLocationToProxyPath(location, frontendBaseURL))
 		return nil
 	}
