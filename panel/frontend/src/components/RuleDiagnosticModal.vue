@@ -121,29 +121,24 @@
                 <div class="diagnostic-backend-item__metrics">
                   <div class="diagnostic-metric">
                     <span class="diagnostic-metric__label">延迟</span>
-                    <strong class="diagnostic-metric__value">{{ backendActualLatency(backend) }} ms</strong>
+                    <strong class="diagnostic-metric__value">{{ formatProbeLatency(backend) }}</strong>
                   </div>
                   <div class="diagnostic-metric">
-                    <span class="diagnostic-metric__label">稳定性</span>
-                    <strong class="diagnostic-metric__value">{{ formatPercent(displayAdaptive(backend)?.stability) }}</strong>
+                    <span class="diagnostic-metric__label">成功</span>
+                    <strong class="diagnostic-metric__value">{{ formatProbeSuccess(backend) }}</strong>
                   </div>
-                  <div v-if="showHTTPAdaptiveMetrics" class="diagnostic-metric">
-                    <span class="diagnostic-metric__label">综合性能</span>
-                    <strong class="diagnostic-metric__value">{{ formatScore(displayAdaptive(backend)?.performance_score) }}</strong>
+                  <div class="diagnostic-metric">
+                    <span class="diagnostic-metric__label">失败</span>
+                    <strong class="diagnostic-metric__value">{{ formatProbeFailed(backend) }}</strong>
                   </div>
-                  <div v-if="showHTTPAdaptiveMetrics" class="diagnostic-metric">
-                    <span class="diagnostic-metric__label">持续吞吐</span>
-                    <strong class="diagnostic-metric__value">{{ formatThroughput(displayAdaptive(backend)?.sustained_throughput_bps) }}</strong>
+                  <div class="diagnostic-metric">
+                    <span class="diagnostic-metric__label">质量</span>
+                    <strong class="diagnostic-metric__value">{{ formatProbeQuality(backend) }}</strong>
                   </div>
-                </div>
-
-                <div v-if="hasProbeSummary(backend)" class="diagnostic-backend-item__probe">
-                  <span class="diagnostic-backend-item__probe-stat">本次测试 <strong>{{ backend.summary?.avg_latency_ms ?? 0 }} ms</strong></span>
-                  <span class="diagnostic-backend-item__probe-stat">成功 <strong>{{ backend.summary?.succeeded ?? 0 }} / {{ backend.summary?.sent ?? 0 }}</strong></span>
                 </div>
 
                 <button type="button" class="diagnostic-backend-item__toggle" @click="toggleAdaptive(backend.backend)">
-                  <span>{{ isAdaptiveExpanded(backend.backend) ? '收起' : '展开更多' }}</span>
+                  <span>{{ isAdaptiveExpanded(backend.backend) ? '收起历史统计' : '历史统计' }}</span>
                   <span class="diagnostic-backend-item__toggle-icon" :class="{ 'diagnostic-backend-item__toggle-icon--open': isAdaptiveExpanded(backend.backend) }">▸</span>
                 </button>
 
@@ -151,8 +146,12 @@
                   <div v-if="isAdaptiveExpanded(backend.backend)" class="diagnostic-backend-item__details">
                     <div class="diagnostic-backend-item__details-grid">
                       <div class="diagnostic-factor">
-                        <span class="diagnostic-factor__label">延迟</span>
-                        <strong class="diagnostic-factor__value">{{ backendActualLatency(backend) }} ms</strong>
+                        <span class="diagnostic-factor__label">历史延迟</span>
+                        <strong class="diagnostic-factor__value">{{ formatHistoryLatency(displayAdaptive(backend)) }}</strong>
+                      </div>
+                      <div class="diagnostic-factor">
+                        <span class="diagnostic-factor__label">稳定性</span>
+                        <strong class="diagnostic-factor__value">{{ formatPercent(displayAdaptive(backend)?.stability) }}</strong>
                       </div>
                       <div class="diagnostic-factor">
                         <span class="diagnostic-factor__label">近24h成功</span>
@@ -189,7 +188,7 @@
                           <code class="diagnostic-child-item__name">{{ backendDisplayLabel(child) }}</code>
                           <code v-if="backendDisplayAddress(child)" class="diagnostic-child-item__address">{{ backendDisplayAddress(child) }}</code>
                           <span v-if="child.adaptive?.preferred" class="diagnostic-backend-item__preferred">当前优选</span>
-                          <span class="diagnostic-child-item__metric">延迟 {{ backendActualLatency(child) }} ms</span>
+                          <span class="diagnostic-child-item__metric">历史延迟 {{ formatHistoryLatency(child.adaptive) }}</span>
                           <span class="diagnostic-child-item__metric">稳定性 {{ formatPercent(child.adaptive?.stability) }}</span>
                           <span class="diagnostic-child-item__metric">近24h成功 {{ child.adaptive?.recent_succeeded ?? 0 }}</span>
                         </div>
@@ -294,12 +293,32 @@ function isAdaptiveExpanded(backendName) {
   return expandedAdaptive.value.has(backendName)
 }
 
-function backendActualLatency(backend) {
-  const adaptiveLatency = Number(backend?.adaptive?.latency_ms)
-  if (Number.isFinite(adaptiveLatency) && adaptiveLatency > 0) return adaptiveLatency
-  const summaryLatency = Number(backend?.summary?.avg_latency_ms)
-  if (Number.isFinite(summaryLatency)) return summaryLatency
-  return 0
+function formatProbeLatency(backend) {
+  if (!hasProbeSummary(backend)) return '-'
+  const latency = Number(backend?.summary?.avg_latency_ms)
+  if (!Number.isFinite(latency) || latency <= 0) return '-'
+  return `${latency} ms`
+}
+
+function formatProbeSuccess(backend) {
+  if (!hasProbeSummary(backend)) return '-'
+  return `${backend.summary?.succeeded ?? 0} / ${backend.summary?.sent ?? 0}`
+}
+
+function formatProbeFailed(backend) {
+  if (!hasProbeSummary(backend)) return '-'
+  return String(backend.summary?.failed ?? 0)
+}
+
+function formatProbeQuality(backend) {
+  if (!hasProbeSummary(backend)) return '-'
+  return qualityLabelFor(backend?.summary?.quality)
+}
+
+function formatHistoryLatency(adaptive) {
+  const latency = Number(adaptive?.latency_ms)
+  if (!Number.isFinite(latency) || latency <= 0) return '-'
+  return `${latency} ms`
 }
 
 function hasProbeSummary(backend) {
@@ -807,17 +826,6 @@ function qualityToneFor(value) {
   font-size: 0.84rem;
   color: var(--color-text-primary);
   font-weight: 700;
-}
-.diagnostic-backend-item__probe {
-  display: flex;
-  align-items: center;
-  gap: 1rem;
-  font-size: 0.72rem;
-  color: var(--color-text-secondary);
-}
-.diagnostic-backend-item__probe-stat strong {
-  color: var(--color-primary);
-  font-weight: 600;
 }
 .diagnostic-backend-item__toggle {
   align-self: flex-start;

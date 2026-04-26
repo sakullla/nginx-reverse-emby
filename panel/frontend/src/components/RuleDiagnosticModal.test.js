@@ -77,9 +77,14 @@ function mountModal(props = {}) {
 }
 
 describe('RuleDiagnosticModal', () => {
-  it('renders HTTP-only adaptive throughput and performance fields from DOM state', async () => {
+  it('renders HTTP-only adaptive throughput and performance fields in history details', async () => {
     const wrapper = mountModal()
     await wrapper.get('.diagnostic-modal__section-title--toggle').trigger('click')
+
+    expect(wrapper.text()).not.toContain('持续吞吐')
+    expect(wrapper.text()).not.toContain('综合性能')
+
+    await wrapper.get('.diagnostic-backend-item__toggle').trigger('click')
 
     expect(wrapper.text()).toContain('持续吞吐')
     expect(wrapper.text()).toContain('综合性能')
@@ -91,6 +96,7 @@ describe('RuleDiagnosticModal', () => {
       task: buildTask('http', { sustained_throughput_bps: 0 })
     })
     await wrapper.get('.diagnostic-modal__section-title--toggle').trigger('click')
+    await wrapper.get('.diagnostic-backend-item__toggle').trigger('click')
 
     expect(wrapper.text()).toContain('持续吞吐')
     expect(wrapper.text()).toContain('-')
@@ -128,20 +134,21 @@ describe('RuleDiagnosticModal', () => {
     await wrapper.get('.diagnostic-modal__section-title--toggle').trigger('click')
     await wrapper.get('.diagnostic-backend-item__toggle').trigger('click')
 
+    expect(wrapper.text()).toContain('历史统计')
     expect(wrapper.text()).not.toContain('本次延迟 18 ms')
     expect(wrapper.text()).toContain('近24h成功')
     expect(wrapper.text()).toContain('近24h失败')
-    expect(wrapper.text()).toContain('延迟')
+    expect(wrapper.text()).toContain('历史延迟')
     expect(wrapper.text()).toContain('3')
     expect(wrapper.text()).toContain('0')
-    expect(wrapper.text()).toContain('18 ms')
+    expect(wrapper.text()).not.toContain('历史延迟18 ms')
     expect(wrapper.text()).toContain('50%')
     expect(wrapper.text()).not.toContain('优选状态')
     expect(wrapper.text()).not.toContain('采样置信')
     expect(wrapper.text()).not.toContain('慢启动')
   })
 
-  it('falls back to current probe latency when adaptive latency is cold', async () => {
+  it('keeps current probe latency in the card and history latency in expanded details', async () => {
     const wrapper = mountModal({
       task: buildTask('http', {
         latency_ms: 0,
@@ -170,10 +177,18 @@ describe('RuleDiagnosticModal', () => {
       ])
     })
     await wrapper.get('.diagnostic-modal__section-title--toggle').trigger('click')
+
+    const cardMetrics = wrapper.findAll('.diagnostic-backend-item__metrics .diagnostic-metric').map(metric => metric.text())
+    expect(cardMetrics).toContain('延迟18 ms')
+    expect(cardMetrics).toContain('成功3 / 3')
+
     await wrapper.get('.diagnostic-backend-item__toggle').trigger('click')
 
     expect(wrapper.text()).toContain('18 ms')
-    expect(wrapper.text()).toContain('12.4 ms')
+    const historyFactors = wrapper.findAll('.diagnostic-backend-item__details-grid .diagnostic-factor').map(factor => factor.text())
+    expect(historyFactors).toContain('历史延迟-')
+    expect(historyFactors).not.toContain('历史延迟18 ms')
+    expect(historyFactors).not.toContain('历史延迟12.4 ms')
   })
 
   it('shows resolved child candidates even when only one address is resolved', async () => {
@@ -218,7 +233,7 @@ describe('RuleDiagnosticModal', () => {
 
     expect(wrapper.text()).toContain('已解析候选')
     expect(wrapper.text()).toContain('127.0.0.1:8096')
-    expect(wrapper.text()).toContain('延迟 12 ms')
+    expect(wrapper.text()).toContain('历史延迟 -')
     expect(wrapper.text()).toContain('稳定性 50%')
     expect(wrapper.text()).toContain('近24h成功 0')
     expect(wrapper.text()).not.toContain('近24h失败 1')
@@ -359,11 +374,8 @@ describe('RuleDiagnosticModal', () => {
     await wrapper.get('.diagnostic-modal__section-title--toggle').trigger('click')
     await wrapper.get('.diagnostic-backend-item__toggle').trigger('click')
 
-    expect(wrapper.find('.diagnostic-backend-item__quality').exists()).toBe(false)
-    expect(wrapper.find('.diagnostic-backend-item__probe').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('本次测试 0 ms')
     expect(wrapper.text()).not.toContain('成功 0 / 0')
-    expect(wrapper.text()).not.toContain('不可用')
     expect(wrapper.text()).toContain('261.5 ms')
     expect(wrapper.text()).toContain('近24h成功8')
     expect(wrapper.text()).toContain('近24h成功 8')
