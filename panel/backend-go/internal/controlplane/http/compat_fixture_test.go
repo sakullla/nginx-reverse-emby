@@ -94,6 +94,7 @@ func TestRouterCompatibilityFixtureServesKeySQLiteBackedPanelEndpoints(t *testin
 		RuleService:          service.NewRuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local", LocalAgentName: "Local Agent"}, store),
 		L4RuleService:        service.NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local", LocalAgentName: "Local Agent"}, store),
 		VersionPolicyService: service.NewVersionPolicyService(store),
+		ClientPackageService: service.NewClientPackageService(store),
 		RelayListenerService: service.NewRelayListenerService(config.Config{EnableLocalAgent: true, LocalAgentID: "local", LocalAgentName: "Local Agent"}, store),
 		CertificateService:   service.NewCertificateService(config.Config{EnableLocalAgent: true, LocalAgentID: "local", LocalAgentName: "Local Agent"}, store),
 	})

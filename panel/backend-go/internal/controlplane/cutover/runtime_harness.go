@@ -158,6 +158,7 @@ func tryStartCutoverHarness(t *testing.T, options cutoverHarnessOptions) (*cutov
 		RuleService:          service.NewRuleService(cfg, apiStore),
 		L4RuleService:        service.NewL4RuleService(cfg, apiStore),
 		VersionPolicyService: service.NewVersionPolicyService(apiStore),
+		ClientPackageService: service.NewClientPackageService(apiStore),
 		RelayListenerService: relayService,
 		CertificateService:   certificateService,
 	})
