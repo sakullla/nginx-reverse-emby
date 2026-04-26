@@ -1196,7 +1196,7 @@ func TestDialTCPUpstreamUsesRelayLayerRacer(t *testing.T) {
 	}
 }
 
-func TestDialTCPUpstreamSendsInitialPayloadOnlyAfterRelayPathWins(t *testing.T) {
+func TestDialTCPUpstreamPreservesRelayRaceInitialPayload(t *testing.T) {
 	clientConn, serverConn := net.Pipe()
 	defer serverConn.Close()
 	dialer := &fakeL4RelayPathDialer{conn: clientConn}
@@ -1218,19 +1218,20 @@ func TestDialTCPUpstreamSendsInitialPayloadOnlyAfterRelayPathWins(t *testing.T) 
 		Backends:    []model.L4Backend{{Host: "backend.example", Port: 9001}},
 	}
 
-	payloadCh := make(chan []byte, 1)
-	errCh := make(chan error, 1)
+	duplicatePayload := make(chan []byte, 1)
+	readErr := make(chan error, 1)
 	go func() {
-		payload := make([]byte, len("hello"))
-		if err := serverConn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
-			errCh <- err
+		if err := serverConn.SetReadDeadline(time.Now().Add(250 * time.Millisecond)); err != nil {
+			readErr <- err
 			return
 		}
-		if _, err := io.ReadFull(serverConn, payload); err != nil {
-			errCh <- err
+		buf := make([]byte, len("hello"))
+		n, err := serverConn.Read(buf)
+		if err != nil {
+			readErr <- err
 			return
 		}
-		payloadCh <- payload
+		duplicatePayload <- buf[:n]
 	}()
 
 	conn, _, _, err := srv.dialTCPUpstream(rule, relay.DialOptions{
@@ -1245,19 +1246,19 @@ func TestDialTCPUpstreamSendsInitialPayloadOnlyAfterRelayPathWins(t *testing.T) 
 		t.Fatalf("dialed paths = %+v, want paths [1] and [2]", dialer.calledPaths())
 	}
 	for _, options := range dialer.calledOptions() {
-		if len(options.InitialPayload) != 0 {
-			t.Fatalf("raced dial received initial payload %q", options.InitialPayload)
+		if string(options.InitialPayload) != "hello" {
+			t.Fatalf("raced dial initial payload = %q, want hello", options.InitialPayload)
 		}
 	}
 	select {
-	case err := <-errCh:
-		t.Fatalf("read selected relay payload: %v", err)
-	case payload := <-payloadCh:
-		if string(payload) != "hello" {
-			t.Fatalf("selected relay payload = %q", payload)
+	case payload := <-duplicatePayload:
+		t.Fatalf("selected relay connection received duplicate payload %q", payload)
+	case err := <-readErr:
+		if netErr, ok := err.(net.Error); !ok || !netErr.Timeout() {
+			t.Fatalf("read selected relay connection: %v", err)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for selected relay payload")
+		t.Fatal("timed out checking selected relay connection for duplicate payload")
 	}
 }
 

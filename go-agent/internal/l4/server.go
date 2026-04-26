@@ -419,8 +419,6 @@ func (s *Server) dialRelayPath(network, target string, rule model.L4Rule, dialOp
 	if err != nil {
 		return nil, err
 	}
-	initialPayload := append([]byte(nil), dialOptions.InitialPayload...)
-	dialOptions.InitialPayload = nil
 	requestPaths := cloneRelayPlanPaths(paths)
 	for i := range requestPaths {
 		requestPaths[i].Key = relayplan.PathKey("relay_path", requestPaths[i].IDs, target)
@@ -438,12 +436,6 @@ func (s *Server) dialRelayPath(network, target string, rule model.L4Rule, dialOp
 	})
 	if err != nil {
 		return nil, err
-	}
-	if len(initialPayload) > 0 {
-		if _, err := result.Conn.Write(initialPayload); err != nil {
-			_ = result.Conn.Close()
-			return nil, err
-		}
 	}
 	return result.Conn, nil
 }

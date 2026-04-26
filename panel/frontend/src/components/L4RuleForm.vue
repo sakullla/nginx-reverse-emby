@@ -440,7 +440,7 @@ function flattenRelayLayers(layers) {
   const result = []
   for (const layer of layers) {
     if (Array.isArray(layer) && layer.length > 0) {
-      result.push(layer[0])
+      result.push(...layer.map((id) => Number(id)).filter((id) => Number.isFinite(id)))
     }
   }
   return result
