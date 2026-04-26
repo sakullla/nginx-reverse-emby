@@ -63,6 +63,39 @@ func BootstrapSQLiteSchema(ctx context.Context, db *gorm.DB) error {
 		}
 	}
 
+	agentColumnMigrations := []struct {
+		column string
+		sql    string
+	}{
+		{column: "outbound_proxy_url", sql: `ALTER TABLE agents ADD COLUMN outbound_proxy_url TEXT NOT NULL DEFAULT ''`},
+	}
+	for _, migration := range agentColumnMigrations {
+		if tx.Migrator().HasColumn(&AgentRow{}, migration.column) {
+			continue
+		}
+		if err := tx.Exec(migration.sql).Error; err != nil {
+			return err
+		}
+	}
+
+	l4ColumnMigrations := []struct {
+		column string
+		sql    string
+	}{
+		{column: "listen_mode", sql: `ALTER TABLE l4_rules ADD COLUMN listen_mode TEXT NOT NULL DEFAULT 'tcp'`},
+		{column: "proxy_entry_auth", sql: `ALTER TABLE l4_rules ADD COLUMN proxy_entry_auth TEXT NOT NULL DEFAULT '{}'`},
+		{column: "proxy_egress_mode", sql: `ALTER TABLE l4_rules ADD COLUMN proxy_egress_mode TEXT NOT NULL DEFAULT ''`},
+		{column: "proxy_egress_url", sql: `ALTER TABLE l4_rules ADD COLUMN proxy_egress_url TEXT NOT NULL DEFAULT ''`},
+	}
+	for _, migration := range l4ColumnMigrations {
+		if tx.Migrator().HasColumn(&L4RuleRow{}, migration.column) {
+			continue
+		}
+		if err := tx.Exec(migration.sql).Error; err != nil {
+			return err
+		}
+	}
+
 	ruleColumnMigrations := []struct {
 		model  any
 		column string
@@ -89,12 +122,17 @@ func BootstrapSQLiteSchema(ctx context.Context, db *gorm.DB) error {
 		`UPDATE rules SET relay_obfs = 0 WHERE relay_obfs IS NULL`,
 		`UPDATE l4_rules SET relay_layers = '[]' WHERE relay_layers IS NULL OR trim(relay_layers) = ''`,
 		`UPDATE l4_rules SET relay_obfs = 0 WHERE relay_obfs IS NULL`,
+		`UPDATE l4_rules SET listen_mode = 'tcp' WHERE listen_mode IS NULL OR trim(listen_mode) = ''`,
+		`UPDATE l4_rules SET proxy_entry_auth = '{}' WHERE proxy_entry_auth IS NULL OR trim(proxy_entry_auth) = ''`,
+		`UPDATE l4_rules SET proxy_egress_mode = '' WHERE proxy_egress_mode IS NULL`,
+		`UPDATE l4_rules SET proxy_egress_url = '' WHERE proxy_egress_url IS NULL`,
 		`UPDATE agents SET desired_version = '' WHERE desired_version IS NULL`,
 		`UPDATE agents SET platform = '' WHERE platform IS NULL`,
 		`UPDATE agents SET runtime_package_version = '' WHERE runtime_package_version IS NULL`,
 		`UPDATE agents SET runtime_package_platform = '' WHERE runtime_package_platform IS NULL`,
 		`UPDATE agents SET runtime_package_arch = '' WHERE runtime_package_arch IS NULL`,
 		`UPDATE agents SET runtime_package_sha256 = '' WHERE runtime_package_sha256 IS NULL`,
+		`UPDATE agents SET outbound_proxy_url = '' WHERE outbound_proxy_url IS NULL`,
 		`UPDATE local_agent_state SET desired_version = '' WHERE desired_version IS NULL`,
 		`UPDATE local_agent_state SET last_apply_status = 'success' WHERE last_apply_status IS NULL OR trim(last_apply_status) = ''`,
 		`UPDATE local_agent_state SET last_apply_message = '' WHERE last_apply_message IS NULL`,

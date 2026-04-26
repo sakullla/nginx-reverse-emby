@@ -494,6 +494,7 @@ func (s *SQLiteStore) initializeSchema(ctx context.Context) error {
 func normalizeAgentRow(row *AgentRow) {
 	row.TagsJSON = defaultJSON(row.TagsJSON, "[]")
 	row.CapabilitiesJSON = defaultJSON(row.CapabilitiesJSON, "[]")
+	row.OutboundProxyURL = defaultString(row.OutboundProxyURL, "")
 	row.Mode = defaultString(row.Mode, "pull")
 	row.LastApplyStatus = defaultString(row.LastApplyStatus, "")
 	row.LastApplyMessage = defaultString(row.LastApplyMessage, "")
@@ -528,6 +529,10 @@ func normalizeL4RuleRow(row *L4RuleRow) {
 	row.TuningJSON = defaultJSON(row.TuningJSON, "{}")
 	row.RelayChainJSON = defaultJSON(row.RelayChainJSON, "[]")
 	row.RelayLayersJSON = defaultJSON(row.RelayLayersJSON, "[]")
+	row.ListenMode = defaultString(row.ListenMode, "tcp")
+	row.ProxyEntryAuthJSON = defaultJSON(row.ProxyEntryAuthJSON, "{}")
+	row.ProxyEgressMode = defaultString(row.ProxyEgressMode, "")
+	row.ProxyEgressURL = defaultString(row.ProxyEgressURL, "")
 	row.TagsJSON = defaultJSON(row.TagsJSON, "[]")
 }
 

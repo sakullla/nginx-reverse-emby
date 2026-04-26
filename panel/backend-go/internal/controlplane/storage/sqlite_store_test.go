@@ -398,6 +398,86 @@ func TestStorePersistsL4RulesAndVersionPolicies(t *testing.T) {
 	}
 }
 
+func TestSQLiteStorePersistsAgentOutboundProxyURL(t *testing.T) {
+	ctx := context.Background()
+	dataRoot := t.TempDir()
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+
+	agent := AgentRow{
+		ID:               "edge-a",
+		Name:             "Edge A",
+		CapabilitiesJSON: `["l4_rules","relay"]`,
+		OutboundProxyURL: "socks://user:pass@127.0.0.1:1080",
+	}
+	if err := store.SaveAgent(ctx, agent); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	agents, err := store.ListAgents(ctx)
+	if err != nil {
+		t.Fatalf("ListAgents() error = %v", err)
+	}
+	if len(agents) != 1 {
+		t.Fatalf("ListAgents() len = %d", len(agents))
+	}
+	got := agents[0]
+	if got.OutboundProxyURL != agent.OutboundProxyURL {
+		t.Fatalf("OutboundProxyURL = %q, want %q", got.OutboundProxyURL, agent.OutboundProxyURL)
+	}
+}
+
+func TestSQLiteStorePersistsL4ProxyEntryFields(t *testing.T) {
+	ctx := context.Background()
+	dataRoot := t.TempDir()
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+
+	row := L4RuleRow{
+		ID:                 10,
+		AgentID:            "edge-a",
+		Name:               "proxy-entry",
+		Protocol:           "tcp",
+		ListenHost:         "127.0.0.1",
+		ListenPort:         1080,
+		UpstreamHost:       "",
+		UpstreamPort:       0,
+		BackendsJSON:       `[]`,
+		LoadBalancingJSON:  `{"strategy":"round_robin"}`,
+		TuningJSON:         `{"proxy_protocol":{"decode":false,"send":false}}`,
+		RelayChainJSON:     `[101]`,
+		RelayLayersJSON:    `[[101]]`,
+		ListenMode:         "proxy",
+		ProxyEntryAuthJSON: `{"enabled":true,"username":"u","password":"p"}`,
+		ProxyEgressMode:    "relay",
+		ProxyEgressURL:     "",
+		Enabled:            true,
+		TagsJSON:           `[]`,
+		Revision:           1,
+	}
+	if err := store.SaveL4Rules(ctx, "edge-a", []L4RuleRow{row}); err != nil {
+		t.Fatalf("SaveL4Rules() error = %v", err)
+	}
+	rows, err := store.ListL4Rules(ctx, "edge-a")
+	if err != nil {
+		t.Fatalf("ListL4Rules() error = %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("ListL4Rules() len = %d", len(rows))
+	}
+	got := rows[0]
+	if got.ListenMode != "proxy" || got.ProxyEgressMode != "relay" || got.ProxyEntryAuthJSON == "" {
+		t.Fatalf("proxy fields not persisted: %+v", got)
+	}
+}
+
 func TestStorePersistsHTTPRules(t *testing.T) {
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
