@@ -107,3 +107,39 @@ func TestValidateRuleRejectsInvalidBackendPort(t *testing.T) {
 		t.Fatalf("ValidateRule() error = %v", err)
 	}
 }
+
+func TestValidateRuleAcceptsProxyEntryWithRelayEgress(t *testing.T) {
+	rule := model.L4Rule{
+		Protocol:        "tcp",
+		ListenHost:      "127.0.0.1",
+		ListenPort:      1080,
+		ListenMode:      "proxy",
+		ProxyEgressMode: "relay",
+		RelayChain:      []int{101},
+	}
+	if err := ValidateRule(rule); err != nil {
+		t.Fatalf("ValidateRule() error = %v", err)
+	}
+}
+
+func TestValidateRuleRejectsProxyEntryUDP(t *testing.T) {
+	rule := model.L4Rule{Protocol: "udp", ListenHost: "127.0.0.1", ListenPort: 1080, ListenMode: "proxy"}
+	err := ValidateRule(rule)
+	if err == nil || !strings.Contains(err.Error(), "listen_mode=proxy") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestValidateRuleAcceptsProxyEntryWithProxyEgress(t *testing.T) {
+	rule := model.L4Rule{
+		Protocol:        "tcp",
+		ListenHost:      "127.0.0.1",
+		ListenPort:      1080,
+		ListenMode:      "proxy",
+		ProxyEgressMode: "proxy",
+		ProxyEgressURL:  "http://127.0.0.1:8080",
+	}
+	if err := ValidateRule(rule); err != nil {
+		t.Fatalf("ValidateRule() error = %v", err)
+	}
+}

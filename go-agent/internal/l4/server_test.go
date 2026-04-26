@@ -23,6 +23,7 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayplan"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
@@ -211,6 +212,101 @@ func TestTCPDirectProxy(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		// allow upstream goroutine to exit naturally
+	}
+}
+
+func TestL4ProxyEntrySOCKS5RelayEgress(t *testing.T) {
+	clientConn, relayConn := net.Pipe()
+	defer relayConn.Close()
+	go func() {
+		defer clientConn.Close()
+		_, _ = io.Copy(clientConn, clientConn)
+	}()
+
+	listenPort := pickFreeTCPPort(t)
+	rule := model.L4Rule{
+		Protocol:        "tcp",
+		ListenHost:      "127.0.0.1",
+		ListenPort:      listenPort,
+		ListenMode:      "proxy",
+		ProxyEgressMode: "relay",
+		RelayChain:      []int{2},
+	}
+	srv, err := NewServer(context.Background(), []model.L4Rule{rule}, []model.RelayListener{{
+		ID:         2,
+		Name:       "two",
+		ListenHost: "127.0.0.1",
+		ListenPort: 9002,
+		Enabled:    true,
+		TLSMode:    "pin_only",
+		PinSet:     []model.RelayPin{{Type: "sha256", Value: "pin2"}},
+	}}, &testL4RelayProvider{})
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	defer srv.Close()
+	dialer := &fakeL4RelayPathDialer{conn: relayConn}
+	srv.relayPathDialer = dialer
+
+	conn, err := proxyproto.Dial(context.Background(), fmt.Sprintf("socks5://127.0.0.1:%d", listenPort), "example.com:443")
+	if err != nil {
+		t.Fatalf("Dial() error = %v", err)
+	}
+	defer conn.Close()
+
+	payload := []byte("proxy-relay")
+	if _, err := conn.Write(payload); err != nil {
+		t.Fatalf("write payload: %v", err)
+	}
+	reply := make([]byte, len(payload))
+	if _, err := io.ReadFull(conn, reply); err != nil {
+		t.Fatalf("read reply: %v", err)
+	}
+	if !bytes.Equal(payload, reply) {
+		t.Fatalf("reply = %q, want %q", reply, payload)
+	}
+	if !waitForL4RelayPathCalls(dialer, 2) {
+		t.Fatalf("dialed paths = %+v, want path [2]", dialer.calledPaths())
+	}
+}
+
+func TestL4ProxyEntryHTTPConnectProxyEgress(t *testing.T) {
+	backend := newTCPEchoListener(t)
+	defer backend.Close()
+	upstreamProxyURL := startL4ProxyEntryUpstreamProxy(t)
+
+	listenPort := pickFreeTCPPort(t)
+	rule := model.L4Rule{
+		Protocol:        "tcp",
+		ListenHost:      "127.0.0.1",
+		ListenPort:      listenPort,
+		ListenMode:      "proxy",
+		ProxyEgressMode: "proxy",
+		ProxyEgressURL:  upstreamProxyURL,
+	}
+	srv, err := NewServer(context.Background(), []model.L4Rule{rule}, nil, nil)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	defer srv.Close()
+
+	target := net.JoinHostPort("127.0.0.1", strconv.Itoa(backend.Port()))
+	conn, err := proxyproto.Dial(context.Background(), fmt.Sprintf("http://127.0.0.1:%d", listenPort), target)
+	if err != nil {
+		t.Fatalf("Dial() error = %v", err)
+	}
+	defer conn.Close()
+
+	payload := []byte("proxy-egress")
+	if _, err := conn.Write(payload); err != nil {
+		t.Fatalf("write payload: %v", err)
+	}
+	reply := make([]byte, len(payload))
+	if _, err := io.ReadFull(conn, reply); err != nil {
+		t.Fatalf("read reply: %v", err)
+	}
+	if !bytes.Equal(payload, reply) {
+		t.Fatalf("reply = %q, want %q", reply, payload)
 	}
 }
 
@@ -3449,6 +3545,55 @@ func newTCPEchoListener(t *testing.T) *tcpEchoListener {
 	}()
 
 	return &tcpEchoListener{ln: ln}
+}
+
+func startL4ProxyEntryUpstreamProxy(t *testing.T) string {
+	t.Helper()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen upstream proxy: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(client net.Conn) {
+				defer client.Close()
+				req, err := proxyproto.ReadClientRequest(context.Background(), client, proxyproto.EntryAuth{})
+				if err != nil {
+					return
+				}
+				upstream, err := net.DialTimeout("tcp", req.Target, 5*time.Second)
+				if err != nil {
+					return
+				}
+				defer upstream.Close()
+				copyTCPPairForTest(client, upstream)
+			}(conn)
+		}
+	}()
+
+	return "http://" + ln.Addr().String()
+}
+
+func copyTCPPairForTest(a net.Conn, b net.Conn) {
+	done := make(chan struct{}, 2)
+	go func() {
+		_, _ = io.Copy(a, b)
+		closeTCPWrite(a)
+		done <- struct{}{}
+	}()
+	go func() {
+		_, _ = io.Copy(b, a)
+		closeTCPWrite(b)
+		done <- struct{}{}
+	}()
+	<-done
 }
 
 func (l *tcpEchoListener) Close() error {

@@ -15,6 +15,7 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayplan"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
@@ -239,6 +240,11 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 	defer s.untrackTCPConn(client)
 	defer client.Close()
 
+	if strings.EqualFold(strings.TrimSpace(rule.ListenMode), "proxy") {
+		s.handleProxyEntryConnection(client, rule)
+		return
+	}
+
 	downstreamSource, downstreamProxyInfo, err := s.prepareTCPDownstream(client, rule)
 	if err != nil {
 		return
@@ -280,6 +286,56 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 		_, _ = copyPreferReaderFrom(client, upstream)
 		closeTCPWrite(client)
 		closeTCPRead(upstream)
+		done <- struct{}{}
+	}()
+	<-done
+	<-done
+}
+
+func (s *Server) handleProxyEntryConnection(client net.Conn, rule model.L4Rule) {
+	auth := proxyproto.EntryAuth{
+		Enabled:  rule.ProxyEntryAuth.Enabled,
+		Username: rule.ProxyEntryAuth.Username,
+		Password: rule.ProxyEntryAuth.Password,
+	}
+	req, err := proxyproto.ReadClientRequest(s.ctx, client, auth)
+	if err != nil {
+		return
+	}
+	upstream, err := s.dialProxyEntryUpstream(rule, req.Target)
+	if err != nil {
+		return
+	}
+	s.trackTCPConn(upstream)
+	defer s.untrackTCPConn(upstream)
+	defer upstream.Close()
+
+	copyBidirectionalTCP(client, upstream)
+}
+
+func (s *Server) dialProxyEntryUpstream(rule model.L4Rule, target string) (net.Conn, error) {
+	switch strings.ToLower(strings.TrimSpace(rule.ProxyEgressMode)) {
+	case "relay":
+		return s.dialRelayPath("tcp", target, rule, relay.DialOptions{})
+	case "proxy":
+		return proxyproto.Dial(s.ctx, rule.ProxyEgressURL, target)
+	default:
+		return nil, fmt.Errorf("unsupported proxy_egress_mode %q", rule.ProxyEgressMode)
+	}
+}
+
+func copyBidirectionalTCP(a net.Conn, b net.Conn) {
+	done := make(chan struct{}, 2)
+	go func() {
+		_, _ = io.Copy(b, a)
+		closeTCPWrite(b)
+		closeTCPRead(a)
+		done <- struct{}{}
+	}()
+	go func() {
+		_, _ = copyPreferReaderFrom(a, b)
+		closeTCPWrite(a)
+		closeTCPRead(b)
 		done <- struct{}{}
 	}()
 	<-done
