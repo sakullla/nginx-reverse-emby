@@ -24,6 +24,7 @@ func BootstrapSQLiteSchema(ctx context.Context, db *gorm.DB) error {
 		&ManagedCertificateRow{},
 		&LocalAgentStateRow{},
 		&VersionPolicyRow{},
+		&ClientPackageRow{},
 		&MetaRow{},
 	); err != nil {
 		return err

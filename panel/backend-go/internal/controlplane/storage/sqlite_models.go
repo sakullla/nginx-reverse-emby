@@ -83,6 +83,18 @@ type VersionPolicyRow struct {
 	TagsJSON       string `gorm:"column:tags"`
 }
 
+type ClientPackageRow struct {
+	ID          string `gorm:"column:id;primaryKey"`
+	Version     string `gorm:"column:version;index:idx_client_packages_match"`
+	Platform    string `gorm:"column:platform;index:idx_client_packages_match"`
+	Arch        string `gorm:"column:arch;index:idx_client_packages_match"`
+	Kind        string `gorm:"column:kind;index:idx_client_packages_match"`
+	DownloadURL string `gorm:"column:download_url"`
+	SHA256      string `gorm:"column:sha256"`
+	Notes       string `gorm:"column:notes"`
+	CreatedAt   string `gorm:"column:created_at"`
+}
+
 type RelayListenerRow struct {
 	ID                      int    `gorm:"column:id;primaryKey"`
 	AgentID                 string `gorm:"column:agent_id;index:idx_relay_listeners_agent"`
@@ -148,6 +160,10 @@ func (L4RuleRow) TableName() string {
 
 func (VersionPolicyRow) TableName() string {
 	return "version_policy"
+}
+
+func (ClientPackageRow) TableName() string {
+	return "client_packages"
 }
 
 func (RelayListenerRow) TableName() string {

@@ -24,11 +24,13 @@ type Store interface {
 	LoadLocalAgentState(context.Context) (LocalAgentStateRow, error)
 	LoadAgentSnapshot(context.Context, string, AgentSnapshotInput) (Snapshot, error)
 	ListVersionPolicies(context.Context) ([]VersionPolicyRow, error)
+	ListClientPackages(context.Context) ([]ClientPackageRow, error)
 	ListManagedCertificates(context.Context) ([]ManagedCertificateRow, error)
 	SaveAgent(context.Context, AgentRow) error
 	SaveL4Rules(context.Context, string, []L4RuleRow) error
 	SaveRelayListeners(context.Context, string, []RelayListenerRow) error
 	SaveVersionPolicies(context.Context, []VersionPolicyRow) error
+	SaveClientPackages(context.Context, []ClientPackageRow) error
 	SaveManagedCertificates(context.Context, []ManagedCertificateRow) error
 	LoadManagedCertificateMaterial(context.Context, string) (ManagedCertificateBundle, bool, error)
 	SaveManagedCertificateMaterial(context.Context, string, ManagedCertificateBundle) error
@@ -252,6 +254,17 @@ func (s *SQLiteStore) ListVersionPolicies(ctx context.Context) ([]VersionPolicyR
 	return policies, nil
 }
 
+func (s *SQLiteStore) ListClientPackages(ctx context.Context) ([]ClientPackageRow, error) {
+	var rows []ClientPackageRow
+	if err := s.db.WithContext(ctx).Order("kind, platform, arch, version, id").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	for i := range rows {
+		normalizeClientPackageRow(&rows[i])
+	}
+	return rows, nil
+}
+
 func (s *SQLiteStore) ListRelayListeners(ctx context.Context, agentID string) ([]RelayListenerRow, error) {
 	query := s.db.WithContext(ctx).Order("id")
 	if strings.TrimSpace(agentID) != "" {
@@ -404,6 +417,23 @@ func (s *SQLiteStore) SaveVersionPolicies(ctx context.Context, policies []Versio
 	})
 }
 
+func (s *SQLiteStore) SaveClientPackages(ctx context.Context, packages []ClientPackageRow) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&ClientPackageRow{}).Error; err != nil {
+			return err
+		}
+		if len(packages) == 0 {
+			return nil
+		}
+		rows := make([]ClientPackageRow, 0, len(packages))
+		for _, row := range packages {
+			normalizeClientPackageRow(&row)
+			rows = append(rows, row)
+		}
+		return tx.Create(&rows).Error
+	})
+}
+
 func (s *SQLiteStore) SaveRelayListeners(ctx context.Context, agentID string, listeners []RelayListenerRow) error {
 	if agentID == "" {
 		agentID = s.localAgentID
@@ -536,6 +566,18 @@ func normalizeVersionPolicyRow(row *VersionPolicyRow) {
 	row.DesiredVersion = defaultString(row.DesiredVersion, "")
 	row.PackagesJSON = defaultJSON(row.PackagesJSON, "[]")
 	row.TagsJSON = defaultJSON(row.TagsJSON, "[]")
+}
+
+func normalizeClientPackageRow(row *ClientPackageRow) {
+	row.ID = defaultString(row.ID, "")
+	row.Version = defaultString(row.Version, "")
+	row.Platform = defaultString(row.Platform, "")
+	row.Arch = defaultString(row.Arch, "")
+	row.Kind = defaultString(row.Kind, "")
+	row.DownloadURL = defaultString(row.DownloadURL, "")
+	row.SHA256 = defaultString(row.SHA256, "")
+	row.Notes = defaultString(row.Notes, "")
+	row.CreatedAt = defaultString(row.CreatedAt, "")
 }
 
 func normalizeRelayListenerRow(row *RelayListenerRow) {
