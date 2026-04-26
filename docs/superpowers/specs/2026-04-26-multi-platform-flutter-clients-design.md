@@ -16,13 +16,14 @@ In scope:
 - Let the Android app connect to the Master, show registered clients and agent status, view diagnostics, and open the control panel.
 - Add control-plane metadata for client release packages across GUI clients, Go agent packages, and Worker scripts.
 - Add a Cloudflare Worker deployment wizard in the panel that generates script/config instructions.
+- Distribute Flutter clients, desktop agent packages, and Worker scripts through GitHub Release or repository-hosted URLs.
 
 Out of scope for the first release:
 
 - Android local proxy, VPNService, or relay execution.
 - A native GUI for Cloudflare Worker.
 - Replacing the existing Go agent protocol or proxy engine.
-- Shipping Windows client packages from the control-plane container image.
+- Building or embedding any GUI client, desktop agent package, Android APK, or Worker script in the control-plane container image.
 
 ## Architecture
 
@@ -65,6 +66,8 @@ Each package has:
 
 The control plane exposes APIs to list matching packages, select latest compatible packages, and return checksum information for client-side verification.
 
+Release artifacts are distributed through GitHub, not through the control-plane image. The Docker image stores no client binaries, APKs, desktop installers, or Worker script bundles. Package records point at GitHub Release assets or repository-hosted raw files and include checksums for verification.
+
 ## Data Flow
 
 Desktop registration:
@@ -88,7 +91,7 @@ Cloudflare Worker deployment:
 
 1. User opens the Worker wizard in the panel.
 2. Panel validates Worker name, Master URL, token/secret fields, and target script package.
-3. Panel renders the script, environment variables, deploy command, and verification steps.
+3. Panel renders the GitHub-hosted script reference, environment variables, deploy command, checksum, and verification steps.
 4. User deploys the Worker outside the panel. The first release does not call the Cloudflare API directly.
 
 ## Error Handling
