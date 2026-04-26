@@ -16,6 +16,20 @@ describe('workerDeploy', () => {
     })
   })
 
+  it('rejects Worker script packages without deployable artifact metadata', () => {
+    expect(validateWorkerDeployInput({
+      workerName: 'nre-edge',
+      masterUrl: 'https://panel.example.com',
+      token: 'secret',
+      packageRecord: {
+        platform: 'cloudflare_worker',
+        kind: 'worker_script'
+      }
+    })).toEqual({
+      packageRecord: '请选择有效的 Cloudflare Worker 脚本包'
+    })
+  })
+
   it('builds GitHub-hosted script deployment output', () => {
     const model = buildWorkerDeployModel({
       workerName: 'nre-edge',

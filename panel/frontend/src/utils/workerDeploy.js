@@ -7,6 +7,10 @@ function isHttpsUrl(value) {
   }
 }
 
+function isSha256(value) {
+  return /^[a-f0-9]{64}$/i.test(String(value || '').trim())
+}
+
 export function validateWorkerDeployInput(input = {}) {
   const errors = {}
   const workerName = String(input.workerName || '').trim()
@@ -18,6 +22,8 @@ export function validateWorkerDeployInput(input = {}) {
   if (!token) errors.token = '请输入 Worker 访问令牌'
   if (!packageRecord || packageRecord.platform !== 'cloudflare_worker' || packageRecord.kind !== 'worker_script') {
     errors.packageRecord = '请选择 Cloudflare Worker 脚本包'
+  } else if (!isHttpsUrl(packageRecord.download_url) || !isSha256(packageRecord.sha256)) {
+    errors.packageRecord = '请选择有效的 Cloudflare Worker 脚本包'
   }
   return errors
 }
