@@ -6,6 +6,8 @@
 panel/frontend/node_modules
 panel/frontend/.vite
 panel/frontend/dist
+clients/
+workers/
 
 # Local specs / IDE
 .kiro
