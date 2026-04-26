@@ -14,6 +14,26 @@ describe('getAgentStatus', () => {
     expect(getAgentStatus({ status: 'online', last_apply_status: 'failed' })).toBe('failed')
   })
 
+  it('returns pending when a newer desired revision is retrying after an older apply failure', () => {
+    expect(getAgentStatus({
+      status: 'online',
+      desired_revision: 5,
+      current_revision: 4,
+      last_apply_revision: 4,
+      last_apply_status: 'failed'
+    })).toBe('pending')
+  })
+
+  it('returns failed when a failed apply has reached the desired revision', () => {
+    expect(getAgentStatus({
+      status: 'online',
+      desired_revision: 5,
+      current_revision: 4,
+      last_apply_revision: 5,
+      last_apply_status: 'failed'
+    })).toBe('failed')
+  })
+
   it('returns pending when desired_revision > current_revision', () => {
     expect(getAgentStatus({ status: 'online', desired_revision: 5, current_revision: 3 })).toBe('pending')
   })

@@ -1,9 +1,25 @@
 export function getAgentStatus(agent) {
   if (!agent) return 'offline'
   if (agent.status === 'offline') return 'offline'
-  if (agent.last_apply_status && agent.last_apply_status !== 'success') return 'failed'
-  if ((agent.desired_revision || 0) > (agent.current_revision || 0)) return 'pending'
+
+  const desired = normalizeRevision(agent.desired_revision)
+  const current = normalizeRevision(agent.current_revision)
+  const lastApplyRevision = normalizeRevision(agent.last_apply_revision, current)
+  const applyStatus = agent.last_apply_status
+  const applyFailed = applyStatus !== null && applyStatus !== undefined && applyStatus !== 'success'
+
+  if (desired > current) {
+    if (applyFailed && lastApplyRevision >= desired) return 'failed'
+    return 'pending'
+  }
+
+  if (applyFailed) return 'failed'
   return 'online'
+}
+
+function normalizeRevision(value, fallback = 0) {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback
 }
 
 export function getAgentStatusLabel(status) {
