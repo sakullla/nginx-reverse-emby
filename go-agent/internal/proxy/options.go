@@ -97,6 +97,8 @@ func configureRelayTransport(
 	if transport == nil {
 		return
 	}
+	transport.DialTLS = nil
+	transport.DialTLSContext = nil
 	transport.DialContext = func(ctx context.Context, network, address string) (net.Conn, error) {
 		return dialRelayTransportConn(ctx, network, address, class, dial)
 	}
