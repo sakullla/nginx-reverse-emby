@@ -6,7 +6,6 @@
       'base-list-card--clickable': clickable,
       'base-list-card--disabled': disabled,
     }"
-    :style="accentStyle"
     :data-status="status"
     :tabindex="clickable ? 0 : null"
     @click="onClick"
@@ -41,7 +40,6 @@
 </template>
 
 <script setup>
-import { computed } from 'vue'
 
 const props = defineProps({
   status: {
@@ -56,17 +54,6 @@ const props = defineProps({
 })
 
 const emit = defineEmits(['click'])
-
-const accentStyle = computed(() => {
-  const map = {
-    success: 'var(--color-primary)',
-    warning: 'var(--color-warning)',
-    danger: 'var(--color-danger)',
-    neutral: 'var(--color-text-muted)',
-  }
-  const color = props.status ? map[props.status] : 'transparent'
-  return { '--list-card-accent': color }
-})
 
 function onClick(e) {
   if (!props.clickable) return
@@ -93,18 +80,6 @@ function onKey(e) {
   transition: border-color 150ms var(--ease-default, cubic-bezier(0.4, 0, 0.2, 1)),
     transform 150ms var(--ease-default, cubic-bezier(0.4, 0, 0.2, 1)),
     box-shadow 200ms var(--ease-default, cubic-bezier(0.4, 0, 0.2, 1));
-}
-
-/* Left status accent bar */
-.base-list-card::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
-  width: 4px;
-  background: var(--list-card-accent, transparent);
-  pointer-events: none;
 }
 
 .base-list-card--clickable {
