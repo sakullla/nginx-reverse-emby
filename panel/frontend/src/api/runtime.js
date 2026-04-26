@@ -57,6 +57,7 @@ function normalizeL4Backends(rule = {}) {
 
 function normalizeL4Rule(rule = {}) {
   const backends = normalizeL4Backends(rule)
+  const listenMode = rule.listen_mode === 'proxy' ? 'proxy' : 'tcp'
   return {
     ...rule,
     upstream_host: backends[0]?.host || String(rule.upstream_host || '').trim(),
@@ -65,7 +66,15 @@ function normalizeL4Rule(rule = {}) {
     load_balancing: {
       strategy: normalizeLoadBalancingStrategy(rule.load_balancing?.strategy)
     },
-    relay_obfs: rule.relay_obfs === true
+    relay_obfs: rule.relay_obfs === true,
+    listen_mode: listenMode,
+    proxy_entry_auth: {
+      enabled: rule.proxy_entry_auth?.enabled === true,
+      username: String(rule.proxy_entry_auth?.username || ''),
+      password: String(rule.proxy_entry_auth?.password || '')
+    },
+    proxy_egress_mode: listenMode === 'proxy' ? String(rule.proxy_egress_mode || 'relay') : '',
+    proxy_egress_url: listenMode === 'proxy' ? String(rule.proxy_egress_url || '') : ''
   }
 }
 
@@ -214,6 +223,11 @@ export async function fetchAgents() {
 export async function fetchAgentStats(agentId) {
   const { data } = await api.get(`/agents/${encodeURIComponent(agentId)}/stats`)
   return data.stats
+}
+
+export async function updateAgent(agentId, payload) {
+  const { data } = await api.patch(`/agents/${encodeURIComponent(agentId)}`, payload)
+  return data.agent
 }
 
 export async function fetchRules(agentId) {
