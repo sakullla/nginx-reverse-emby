@@ -37,5 +37,10 @@ export {
   fetchVersionPolicies,
   createVersionPolicy,
   updateVersionPolicy,
-  deleteVersionPolicy
+  deleteVersionPolicy,
+  fetchClientPackages,
+  createClientPackage,
+  updateClientPackage,
+  deleteClientPackage,
+  fetchLatestClientPackage
 } from './devMocks/index.js'

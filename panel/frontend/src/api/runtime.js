@@ -473,6 +473,32 @@ export async function deleteVersionPolicy(id) {
   return data.policy
 }
 
+export async function fetchClientPackages() {
+  const { data } = await api.get('/client-packages')
+  return data.packages || []
+}
+
+export async function createClientPackage(payload) {
+  const { data } = await api.post('/client-packages', payload, longRunningRequest)
+  return data.package
+}
+
+export async function updateClientPackage(id, payload) {
+  const { data } = await api.put(`/client-packages/${encodeURIComponent(id)}`, payload, longRunningRequest)
+  return data.package
+}
+
+export async function deleteClientPackage(id) {
+  const { data } = await api.delete(`/client-packages/${encodeURIComponent(id)}`, longRunningRequest)
+  return data.package
+}
+
+export async function fetchLatestClientPackage(params) {
+  const search = new URLSearchParams(params)
+  const { data } = await api.get(`/client-packages/latest?${search.toString()}`)
+  return data.package
+}
+
 export async function exportBackupSelective(include) {
   const params = new URLSearchParams()
   params.set('include', include.join(','))

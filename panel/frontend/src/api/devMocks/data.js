@@ -1578,7 +1578,33 @@ const mockVersionPolicies = [
   }
 ]
 
+const mockClientPackages = [
+  {
+    id: 'flutter_gui-windows-amd64-1-1-0',
+    version: '1.1.0',
+    platform: 'windows',
+    arch: 'amd64',
+    kind: 'flutter_gui',
+    download_url: 'https://github.com/sakullla/nginx-reverse-emby/releases/download/v1.1.0/nre-client-windows-amd64.zip',
+    sha256: 'a'.repeat(64),
+    notes: 'Windows Flutter GUI',
+    created_at: new Date().toISOString()
+  },
+  {
+    id: 'worker_script-cloudflare_worker-script-1-1-0',
+    version: '1.1.0',
+    platform: 'cloudflare_worker',
+    arch: 'script',
+    kind: 'worker_script',
+    download_url: 'https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/v1.1.0/workers/cloudflare/nre-worker.js',
+    sha256: 'b'.repeat(64),
+    notes: 'Cloudflare Worker script',
+    created_at: new Date().toISOString()
+  }
+]
+
 let mockVersionPolicyIdCounter = 10
+let mockClientPackageIdCounter = 10
 
 function normalizeMockVersionPolicyPayload(payload = {}) {
   const desiredVersion = String(payload.desired_version || '').trim()
@@ -1600,6 +1626,31 @@ function normalizeMockVersionPolicyPayload(payload = {}) {
     ...payload,
     desired_version: desiredVersion,
     packages
+  }
+}
+
+function normalizeMockClientPackagePayload(payload = {}) {
+  const version = String(payload.version || '').trim()
+  const platform = String(payload.platform || '').trim()
+  const arch = String(payload.arch || '').trim()
+  const kind = String(payload.kind || '').trim()
+  const downloadUrl = String(payload.download_url || '').trim()
+  const sha256 = String(payload.sha256 || '').trim()
+  if (!version) throw new Error('version is required')
+  if (!platform) throw new Error('platform is required')
+  if (!arch) throw new Error('arch is required')
+  if (!kind) throw new Error('kind is required')
+  if (!downloadUrl) throw new Error('download_url is required')
+  if (!sha256) throw new Error('sha256 is required')
+  return {
+    ...payload,
+    version,
+    platform,
+    arch,
+    kind,
+    download_url: downloadUrl,
+    sha256,
+    notes: String(payload.notes || '').trim()
   }
 }
 
@@ -1646,6 +1697,72 @@ export async function deleteVersionPolicy(id) {
   }
   const { data } = await api.delete(`/version-policies/${encodeURIComponent(id)}`, longRunningRequest)
   return data.policy
+}
+
+export async function fetchClientPackages() {
+  if (isDev) {
+    await sleep()
+    return [...mockClientPackages]
+  }
+  const { data } = await api.get('/client-packages')
+  return data.packages || []
+}
+
+export async function createClientPackage(payload) {
+  if (isDev) {
+    await sleep()
+    const normalizedPayload = normalizeMockClientPackagePayload(payload)
+    const item = {
+      id: `cp-${++mockClientPackageIdCounter}`,
+      created_at: new Date().toISOString(),
+      ...normalizedPayload
+    }
+    mockClientPackages.push(item)
+    return item
+  }
+  const { data } = await api.post('/client-packages', payload, longRunningRequest)
+  return data.package
+}
+
+export async function updateClientPackage(id, payload) {
+  if (isDev) {
+    await sleep()
+    const idx = mockClientPackages.findIndex((item) => String(item.id) === String(id))
+    if (idx === -1) return null
+    const normalizedPayload = normalizeMockClientPackagePayload({ ...mockClientPackages[idx], ...payload })
+    mockClientPackages[idx] = { ...mockClientPackages[idx], ...normalizedPayload }
+    return mockClientPackages[idx]
+  }
+  const { data } = await api.put(`/client-packages/${encodeURIComponent(id)}`, payload, longRunningRequest)
+  return data.package
+}
+
+export async function deleteClientPackage(id) {
+  if (isDev) {
+    await sleep()
+    const idx = mockClientPackages.findIndex((item) => String(item.id) === String(id))
+    if (idx === -1) return null
+    return mockClientPackages.splice(idx, 1)[0]
+  }
+  const { data } = await api.delete(`/client-packages/${encodeURIComponent(id)}`, longRunningRequest)
+  return data.package
+}
+
+export async function fetchLatestClientPackage(params = {}) {
+  if (isDev) {
+    await sleep()
+    const platform = String(params.platform || '').trim()
+    const arch = String(params.arch || '').trim()
+    const kind = String(params.kind || '').trim()
+    return mockClientPackages.find((item) =>
+      (!platform || item.platform === platform) &&
+      (!arch || item.arch === arch) &&
+      (!kind || item.kind === kind)
+    ) || null
+  }
+  const search = new URLSearchParams(params)
+  const { data } = await api.get(`/client-packages/latest?${search.toString()}`)
+  return data.package
 }
 
 export async function exportBackupSelective(include) {
