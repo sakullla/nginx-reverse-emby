@@ -712,9 +712,13 @@ func (p *relayHTTPConnectProxy) handleConn(client net.Conn) {
 
 	upstream, err := net.DialTimeout("tcp", req.Target, 5*time.Second)
 	if err != nil {
+		_ = proxyproto.WriteClientRequestFailure(client, req, 0)
 		return
 	}
 	defer upstream.Close()
+	if err := proxyproto.WriteClientRequestSuccess(client, req); err != nil {
+		return
+	}
 	pipeBothWays(client, upstream)
 }
 

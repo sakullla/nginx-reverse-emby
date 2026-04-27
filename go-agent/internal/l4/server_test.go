@@ -311,6 +311,47 @@ func TestL4ProxyEntryHTTPConnectProxyEgress(t *testing.T) {
 	}
 }
 
+func TestL4ProxyEntryHTTPConnectDefersSuccessUntilUpstreamConnected(t *testing.T) {
+	upstreamProxyURL := startRejectingL4ProxyEntryUpstreamProxy(t)
+
+	listenPort := pickFreeTCPPort(t)
+	rule := model.L4Rule{
+		Protocol:        "tcp",
+		ListenHost:      "127.0.0.1",
+		ListenPort:      listenPort,
+		ListenMode:      "proxy",
+		ProxyEgressMode: "proxy",
+		ProxyEgressURL:  upstreamProxyURL,
+	}
+	srv, err := NewServer(context.Background(), []model.L4Rule{rule}, nil, nil)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	defer srv.Close()
+
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(listenPort)), 5*time.Second)
+	if err != nil {
+		t.Fatalf("DialTimeout() error = %v", err)
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("SetDeadline() error = %v", err)
+	}
+
+	_, err = fmt.Fprint(conn, "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n")
+	if err != nil {
+		t.Fatalf("write CONNECT: %v", err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("ReadResponse() error = %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		t.Fatalf("CONNECT status = %s, want non-200 when upstream dial fails", resp.Status)
+	}
+}
+
 func TestL4ProxyEntryHTTPConnectProxyEgressPreservesCoalescedTunnelBytes(t *testing.T) {
 	backend := newTCPEchoListener(t)
 	defer backend.Close()
@@ -3625,10 +3666,40 @@ func startL4ProxyEntryUpstreamProxy(t *testing.T) string {
 				}
 				upstream, err := net.DialTimeout("tcp", req.Target, 5*time.Second)
 				if err != nil {
+					_ = proxyproto.WriteClientRequestFailure(client, req, 0)
 					return
 				}
 				defer upstream.Close()
+				if err := proxyproto.WriteClientRequestSuccess(client, req); err != nil {
+					return
+				}
 				copyTCPPairForTest(client, upstream)
+			}(conn)
+		}
+	}()
+
+	return "http://" + ln.Addr().String()
+}
+
+func startRejectingL4ProxyEntryUpstreamProxy(t *testing.T) string {
+	t.Helper()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen rejecting upstream proxy: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(client net.Conn) {
+				defer client.Close()
+				_ = client.SetDeadline(time.Now().Add(5 * time.Second))
+				_, _ = proxyproto.ReadClientRequest(context.Background(), client, proxyproto.EntryAuth{})
 			}(conn)
 		}
 	}()

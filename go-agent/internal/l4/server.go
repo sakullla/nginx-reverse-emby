@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"reflect"
 	"strconv"
 	"strings"
@@ -304,6 +305,10 @@ func (s *Server) handleProxyEntryConnection(client net.Conn, rule model.L4Rule) 
 	}
 	upstream, err := s.dialProxyEntryUpstream(rule, req.Target)
 	if err != nil {
+		_ = proxyproto.WriteClientRequestFailure(client, req, http.StatusBadGateway)
+		return
+	}
+	if err := proxyproto.WriteClientRequestSuccess(client, req); err != nil {
 		return
 	}
 	s.trackTCPConn(upstream)

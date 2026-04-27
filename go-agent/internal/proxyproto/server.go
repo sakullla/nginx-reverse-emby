@@ -187,8 +187,30 @@ func readHTTPConnectRequest(first byte, conn net.Conn, auth EntryAuth) (ClientRe
 		writeHTTPProxyError(conn, http.StatusBadRequest)
 		return ClientRequest{}, err
 	}
-	_, _ = io.WriteString(conn, "HTTP/1.1 200 Connection Established\r\n\r\n")
 	return newClientRequest("http", host, port)
+}
+
+func WriteClientRequestSuccess(conn net.Conn, req ClientRequest) error {
+	switch req.Protocol {
+	case "http":
+		_, err := io.WriteString(conn, "HTTP/1.1 200 Connection Established\r\n\r\n")
+		return err
+	default:
+		return nil
+	}
+}
+
+func WriteClientRequestFailure(conn net.Conn, req ClientRequest, status int) error {
+	switch req.Protocol {
+	case "http":
+		if status <= 0 {
+			status = http.StatusBadGateway
+		}
+		_, err := fmt.Fprintf(conn, "HTTP/1.1 %d %s\r\nContent-Length: 0\r\n\r\n", status, http.StatusText(status))
+		return err
+	default:
+		return nil
+	}
 }
 
 func readHTTPHeader(first byte, reader io.Reader) ([]byte, error) {

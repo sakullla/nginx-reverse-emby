@@ -116,7 +116,15 @@ func handshakeSOCKS5(conn net.Conn, cfg ProxyURL, host string, port int) error {
 		}
 	}
 
-	req, err := socks5ConnectRequest(host, port)
+	connectHost := host
+	if !cfg.RemoteDNS {
+		resolvedHost, err := resolveLocalIP(host)
+		if err != nil {
+			return err
+		}
+		connectHost = resolvedHost
+	}
+	req, err := socks5ConnectRequest(connectHost, port)
 	if err != nil {
 		return err
 	}
@@ -137,7 +145,15 @@ func handshakeSOCKS5(conn net.Conn, cfg ProxyURL, host string, port int) error {
 }
 
 func handshakeSOCKS4(conn net.Conn, cfg ProxyURL, host string, port int) error {
-	ip := net.ParseIP(host).To4()
+	connectHost := host
+	if !cfg.RemoteDNS {
+		resolvedHost, err := resolveLocalIP(host)
+		if err != nil {
+			return err
+		}
+		connectHost = resolvedHost
+	}
+	ip := net.ParseIP(connectHost).To4()
 	useDomain := cfg.RemoteDNS && ip == nil
 	if ip == nil && !useDomain {
 		return fmt.Errorf("SOCKS4 requires an IPv4 target")
@@ -150,7 +166,7 @@ func handshakeSOCKS4(conn net.Conn, cfg ProxyURL, host string, port int) error {
 	req = append(req, []byte(cfg.Username)...)
 	req = append(req, 0)
 	if useDomain {
-		req = append(req, []byte(host)...)
+		req = append(req, []byte(connectHost)...)
 		req = append(req, 0)
 	}
 	if _, err := conn.Write(req); err != nil {
@@ -164,6 +180,27 @@ func handshakeSOCKS4(conn net.Conn, cfg ProxyURL, host string, port int) error {
 		return fmt.Errorf("SOCKS4 CONNECT failed with status %d", reply[1])
 	}
 	return nil
+}
+
+func resolveLocalIP(host string) (string, error) {
+	if ip := net.ParseIP(host); ip != nil {
+		return host, nil
+	}
+	ips, err := net.LookupIP(host)
+	if err != nil {
+		return "", fmt.Errorf("resolve proxy target locally: %w", err)
+	}
+	for _, ip := range ips {
+		if ipv4 := ip.To4(); ipv4 != nil {
+			return ipv4.String(), nil
+		}
+	}
+	for _, ip := range ips {
+		if ip16 := ip.To16(); ip16 != nil {
+			return ip16.String(), nil
+		}
+	}
+	return "", fmt.Errorf("resolve proxy target locally: no IPs for %s", host)
 }
 
 func writeSOCKS5PasswordAuth(conn net.Conn, username string, password string) error {

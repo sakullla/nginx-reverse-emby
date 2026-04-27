@@ -303,6 +303,52 @@ func TestBackupServiceExportImportRoundTripAndConflictReport(t *testing.T) {
 	}
 }
 
+func TestBackupServicePreservesAgentOutboundProxyURL(t *testing.T) {
+	ctx := context.Background()
+	cfg := config.Config{EnableLocalAgent: true, LocalAgentID: "local"}
+	sourceStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "proxy-source"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(source) error = %v", err)
+	}
+	defer sourceStore.Close()
+	if err := sourceStore.SaveAgent(ctx, storage.AgentRow{
+		ID:               "edge-proxy",
+		Name:             "Edge Proxy",
+		AgentToken:       "token-proxy",
+		CapabilitiesJSON: `["http_rules","l4","relay_quic"]`,
+		OutboundProxyURL: "socks://user:pass@127.0.0.1:1080",
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+
+	sourceSvc := NewBackupService(cfg, sourceStore)
+	archive, _, err := sourceSvc.Export(ctx)
+	if err != nil {
+		t.Fatalf("Export() error = %v", err)
+	}
+
+	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "proxy-target"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(target) error = %v", err)
+	}
+	defer targetStore.Close()
+	targetSvc := NewBackupService(cfg, targetStore)
+	if _, err := targetSvc.Import(ctx, archive); err != nil {
+		t.Fatalf("Import() error = %v", err)
+	}
+
+	agents, err := targetStore.ListAgents(ctx)
+	if err != nil {
+		t.Fatalf("ListAgents() error = %v", err)
+	}
+	if len(agents) != 1 {
+		t.Fatalf("agents len = %d, want 1", len(agents))
+	}
+	if agents[0].OutboundProxyURL != "socks://user:pass@127.0.0.1:1080" {
+		t.Fatalf("OutboundProxyURL = %q", agents[0].OutboundProxyURL)
+	}
+}
+
 func TestBackupServiceImportSkipsRulesWithMissingRelayLayerDependencies(t *testing.T) {
 	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "target"), "local")
 	if err != nil {
