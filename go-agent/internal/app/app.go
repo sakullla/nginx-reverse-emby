@@ -554,6 +554,9 @@ func mergeSnapshotPayload(next, previous Snapshot) Snapshot {
 	if next.VersionPackage == nil {
 		merged.VersionPackage = previous.VersionPackage
 	}
+	if !next.HasAgentConfig() {
+		merged.AgentConfig = previous.AgentConfig
+	}
 	if next.Rules == nil {
 		merged.Rules = previous.Rules
 	}

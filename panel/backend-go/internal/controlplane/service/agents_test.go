@@ -476,6 +476,34 @@ func TestAgentServiceUpdateRejectsInvalidOutboundProxyURL(t *testing.T) {
 	}
 }
 
+func TestAgentServiceUpdateRejectsUnsupportedOutboundProxyURL(t *testing.T) {
+	ctx := context.Background()
+	store := &fakeStore{}
+	if err := store.SaveAgent(ctx, storage.AgentRow{
+		ID:               "edge-a",
+		Name:             "Edge A",
+		AgentToken:       "token-a",
+		CapabilitiesJSON: `["http_rules","l4","relay"]`,
+		LastApplyStatus:  "success",
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	svc := NewAgentService(config.Config{}, store)
+
+	for _, raw := range []string{
+		"ftp://proxy.local:21",
+		"http://127.0.0.1",
+		"socks5://proxy.local:notaport",
+	} {
+		_, err := svc.Update(ctx, "edge-a", UpdateAgentRequest{
+			OutboundProxyURL: stringPtr(raw),
+		})
+		if err == nil || !strings.Contains(err.Error(), "invalid outbound_proxy_url") {
+			t.Fatalf("Update(%q) error = %v, want invalid outbound_proxy_url validation", raw, err)
+		}
+	}
+}
+
 func TestAgentServiceUpdateTrimsOutboundProxyURL(t *testing.T) {
 	ctx := context.Background()
 	store := &fakeStore{}

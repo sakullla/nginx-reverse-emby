@@ -451,8 +451,10 @@ func (s *agentService) Update(ctx context.Context, agentID string, input UpdateA
 	}
 	if input.OutboundProxyURL != nil {
 		outboundProxyURL := strings.TrimSpace(*input.OutboundProxyURL)
-		if outboundProxyURL != "" && !strings.Contains(outboundProxyURL, "://") {
-			return AgentSummary{}, fmt.Errorf("%w: outbound_proxy_url must include a scheme", ErrInvalidArgument)
+		if outboundProxyURL != "" {
+			if err := validateL4ProxyEgressURL(outboundProxyURL); err != nil {
+				return AgentSummary{}, fmt.Errorf("%w: invalid outbound_proxy_url: %v", ErrInvalidArgument, err)
+			}
 		}
 		row.OutboundProxyURL = outboundProxyURL
 	}

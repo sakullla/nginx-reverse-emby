@@ -611,6 +611,46 @@ func TestRunMergesOmittedSyncFieldsOntoPreviouslyAppliedSnapshot(t *testing.T) {
 	}
 }
 
+func TestMergeSnapshotPayloadPreservesOmittedAgentConfig(t *testing.T) {
+	previous := Snapshot{
+		DesiredVersion: "previous",
+		Revision:       4,
+		AgentConfig: model.AgentConfig{
+			OutboundProxyURL: "socks://127.0.0.1:1080",
+		},
+	}
+	var next Snapshot
+	if err := json.Unmarshal([]byte(`{"desired_version":"next","desired_revision":4}`), &next); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+
+	merged := mergeSnapshotPayload(next, previous)
+
+	if merged.AgentConfig.OutboundProxyURL != "socks://127.0.0.1:1080" {
+		t.Fatalf("AgentConfig.OutboundProxyURL = %q", merged.AgentConfig.OutboundProxyURL)
+	}
+}
+
+func TestMergeSnapshotPayloadAppliesExplicitEmptyAgentConfig(t *testing.T) {
+	previous := Snapshot{
+		DesiredVersion: "previous",
+		Revision:       4,
+		AgentConfig: model.AgentConfig{
+			OutboundProxyURL: "socks://127.0.0.1:1080",
+		},
+	}
+	var next Snapshot
+	if err := json.Unmarshal([]byte(`{"desired_version":"next","desired_revision":4,"agent_config":{}}`), &next); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+
+	merged := mergeSnapshotPayload(next, previous)
+
+	if merged.AgentConfig.OutboundProxyURL != "" {
+		t.Fatalf("AgentConfig.OutboundProxyURL = %q, want cleared", merged.AgentConfig.OutboundProxyURL)
+	}
+}
+
 func TestRunDoesNotAdvanceAppliedSnapshotOrCurrentRevisionOnApplyFailure(t *testing.T) {
 	cfg := Config{HeartbeatInterval: time.Hour}
 	mem := store.NewInMemory()

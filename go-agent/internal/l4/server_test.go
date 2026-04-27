@@ -16,6 +16,7 @@ import (
 	"io"
 	"math/big"
 	"net"
+	"net/http"
 	"strconv"
 	"sync"
 	"testing"
@@ -303,6 +304,60 @@ func TestL4ProxyEntryHTTPConnectProxyEgress(t *testing.T) {
 	}
 	reply := make([]byte, len(payload))
 	if _, err := io.ReadFull(conn, reply); err != nil {
+		t.Fatalf("read reply: %v", err)
+	}
+	if !bytes.Equal(payload, reply) {
+		t.Fatalf("reply = %q, want %q", reply, payload)
+	}
+}
+
+func TestL4ProxyEntryHTTPConnectProxyEgressPreservesCoalescedTunnelBytes(t *testing.T) {
+	backend := newTCPEchoListener(t)
+	defer backend.Close()
+	upstreamProxyURL := startL4ProxyEntryUpstreamProxy(t)
+
+	listenPort := pickFreeTCPPort(t)
+	rule := model.L4Rule{
+		Protocol:        "tcp",
+		ListenHost:      "127.0.0.1",
+		ListenPort:      listenPort,
+		ListenMode:      "proxy",
+		ProxyEgressMode: "proxy",
+		ProxyEgressURL:  upstreamProxyURL,
+	}
+	srv, err := NewServer(context.Background(), []model.L4Rule{rule}, nil, nil)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	defer srv.Close()
+
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(listenPort)), 5*time.Second)
+	if err != nil {
+		t.Fatalf("DialTimeout() error = %v", err)
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("SetDeadline() error = %v", err)
+	}
+
+	target := net.JoinHostPort("127.0.0.1", strconv.Itoa(backend.Port()))
+	payload := []byte("coalesced-connect-payload")
+	if _, err := fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n%s", target, target, payload); err != nil {
+		t.Fatalf("write CONNECT and payload: %v", err)
+	}
+
+	reader := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(reader, nil)
+	if err != nil {
+		t.Fatalf("ReadResponse() error = %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("CONNECT status = %s", resp.Status)
+	}
+
+	reply := make([]byte, len(payload))
+	if _, err := io.ReadFull(reader, reply); err != nil {
 		t.Fatalf("read reply: %v", err)
 	}
 	if !bytes.Equal(payload, reply) {
