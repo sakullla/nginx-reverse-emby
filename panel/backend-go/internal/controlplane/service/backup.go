@@ -1464,8 +1464,16 @@ func l4RuleInputFromBackup(rule BackupL4Rule, listenerIDMap map[int]int) L4RuleI
 		RelayChain:    relayChain,
 		RelayLayers:   relayLayers,
 		RelayObfs:     backupBoolPtr(rule.RelayObfs),
-		Enabled:       backupBoolPtr(rule.Enabled),
-		Tags:          &rule.Tags,
+		ListenMode:    backupStringPtr(rule.ListenMode),
+		ProxyEntryAuth: &L4ProxyEntryAuth{
+			Enabled:  rule.ProxyEntryAuth.Enabled,
+			Username: rule.ProxyEntryAuth.Username,
+			Password: rule.ProxyEntryAuth.Password,
+		},
+		ProxyEgressMode: backupStringPtr(rule.ProxyEgressMode),
+		ProxyEgressURL:  backupStringPtr(rule.ProxyEgressURL),
+		Enabled:         backupBoolPtr(rule.Enabled),
+		Tags:            &rule.Tags,
 	}
 }
 
