@@ -671,6 +671,62 @@ func TestDialTLSTCPUsesConfiguredOutboundProxy(t *testing.T) {
 	}
 }
 
+func TestDialWithOutboundProxyForcesTLSTCPForQUICHop(t *testing.T) {
+	resetTLSTCPSessionPoolForTest()
+	backendAddr, stopBackend := startTCPEchoServer(t)
+	defer stopBackend()
+
+	provider := newFakeTLSMaterialProvider()
+	listener, hop := newRelayEndpoint(t, provider, 703, "relay-quic-proxy", "pin_only", true, false)
+	sharedPort := pickFreeDualStackPort(t)
+	listener.ListenPort = sharedPort
+	listener.TransportMode = ListenerTransportModeQUIC
+	listener.AllowTransportFallback = true
+	hop.Address = net.JoinHostPort(listener.ListenHost, fmt.Sprintf("%d", sharedPort))
+	hop.Listener = listener
+
+	tlsListener := listener
+	tlsListener.ID = 704
+	tlsListener.Name = "relay-quic-proxy-tls"
+	tlsListener.TransportMode = ListenerTransportModeTLSTCP
+	tlsListener.AllowTransportFallback = false
+
+	server, err := Start(context.Background(), []Listener{tlsListener, listener}, provider)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer server.Close()
+
+	prevQUICDial := quicDialAddr
+	quicDialCalls := 0
+	quicDialAddr = func(ctx context.Context, addr string, tlsConf *tls.Config, conf *quic.Config) (*quic.Conn, error) {
+		quicDialCalls++
+		return prevQUICDial(ctx, addr, tlsConf, conf)
+	}
+	defer func() {
+		quicDialAddr = prevQUICDial
+	}()
+
+	proxy := startRelayHTTPConnectProxy(t)
+	conn, result, err := DialWithResult(context.Background(), "tcp", backendAddr, []Hop{hop}, provider, DialOptions{
+		OutboundProxyURL: proxy.URL,
+	})
+	if err != nil {
+		t.Fatalf("DialWithResult() error = %v", err)
+	}
+	defer conn.Close()
+	if quicDialCalls != 0 {
+		t.Fatalf("quicDialCalls = %d, want 0 when outbound proxy is configured", quicDialCalls)
+	}
+	if result.TransportMode != ListenerTransportModeTLSTCP {
+		t.Fatalf("TransportMode = %q, want %q", result.TransportMode, ListenerTransportModeTLSTCP)
+	}
+	if !proxy.SawConnectTo(hop.Address) {
+		t.Fatalf("proxy did not see CONNECT to %s", hop.Address)
+	}
+	assertRoundTrip(t, conn, []byte("relay-quic-proxy"))
+}
+
 func TestDialTLSTCPOutboundProxyHandshakeUsesRelayDialTimeout(t *testing.T) {
 	resetTLSTCPSessionPoolForTest()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

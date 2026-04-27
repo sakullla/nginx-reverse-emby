@@ -442,11 +442,19 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 		relayLayers = [][]int{}
 	}
 
+	rawProxyEgressMode := fallback.ProxyEgressMode
+	if input.ProxyEgressMode != nil {
+		rawProxyEgressMode = *input.ProxyEgressMode
+	}
+	rawProxyEgressURL := fallback.ProxyEgressURL
+	if input.ProxyEgressURL != nil {
+		rawProxyEgressURL = *input.ProxyEgressURL
+	}
 	proxyEntryAuth, proxyEgressMode, proxyEgressURL := normalizeL4ProxyEntryFields(
 		listenMode,
 		fallback.ProxyEntryAuth,
-		defaultString(pointerString(input.ProxyEgressMode), fallback.ProxyEgressMode),
-		defaultString(pointerString(input.ProxyEgressURL), fallback.ProxyEgressURL),
+		rawProxyEgressMode,
+		rawProxyEgressURL,
 	)
 	if input.ProxyEntryAuth != nil {
 		proxyEntryAuth = normalizeL4ProxyEntryAuth(*input.ProxyEntryAuth)
@@ -456,6 +464,9 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 	} else {
 		if proxyEgressMode != "relay" && proxyEgressMode != "proxy" {
 			return L4Rule{}, fmt.Errorf("%w: proxy_egress_mode must be relay or proxy", ErrInvalidArgument)
+		}
+		if proxyEgressMode != "proxy" {
+			proxyEgressURL = ""
 		}
 		if proxyEgressMode == "relay" && len(flattenRelayLayers(relayLayers)) == 0 && len(relayChain) == 0 {
 			return L4Rule{}, fmt.Errorf("%w: proxy relay egress requires relay_chain or relay_layers", ErrInvalidArgument)

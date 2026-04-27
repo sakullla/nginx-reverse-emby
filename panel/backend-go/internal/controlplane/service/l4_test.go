@@ -411,6 +411,36 @@ func TestNormalizeL4RuleInputAcceptsProxyEntryProxyEgress(t *testing.T) {
 	}
 }
 
+func TestNormalizeL4RuleInputClearsProxyEgressURLWhenSwitchingToRelay(t *testing.T) {
+	egressMode := "relay"
+	egressURL := ""
+	relayLayers := [][]int{{101}}
+	fallback := L4Rule{
+		ID:              1,
+		Protocol:        "tcp",
+		ListenHost:      "127.0.0.1",
+		ListenPort:      1080,
+		ListenMode:      "proxy",
+		ProxyEgressMode: "proxy",
+		ProxyEgressURL:  "socks5://user:secret@127.0.0.1:1080",
+		Enabled:         true,
+	}
+	rule, err := normalizeL4RuleInput(L4RuleInput{
+		ProxyEgressMode: &egressMode,
+		ProxyEgressURL:  &egressURL,
+		RelayLayers:     &relayLayers,
+	}, fallback, fallback.ID)
+	if err != nil {
+		t.Fatalf("normalizeL4RuleInput() error = %v", err)
+	}
+	if rule.ProxyEgressMode != "relay" {
+		t.Fatalf("ProxyEgressMode = %q, want relay", rule.ProxyEgressMode)
+	}
+	if rule.ProxyEgressURL != "" {
+		t.Fatalf("ProxyEgressURL = %q, want cleared", rule.ProxyEgressURL)
+	}
+}
+
 func TestL4RuleServiceUpdateProxyEntryClearsBackendFields(t *testing.T) {
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{

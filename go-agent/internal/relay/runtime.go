@@ -344,6 +344,9 @@ func DialWithResult(ctx context.Context, network, target string, chain []Hop, pr
 	}
 
 	transportMode := selectRelayRuntimeTransport(firstHop)
+	if strings.TrimSpace(options.OutboundProxyURL) != "" && transportMode == ListenerTransportModeQUIC {
+		transportMode = ListenerTransportModeTLSTCP
+	}
 
 	if transportMode == ListenerTransportModeQUIC {
 		if !consumeRelayQUICProbe(firstHop) {
