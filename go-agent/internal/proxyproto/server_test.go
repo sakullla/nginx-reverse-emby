@@ -52,6 +52,27 @@ func TestReadClientRequestSOCKS4a(t *testing.T) {
 	}
 }
 
+func TestReadClientRequestRejectsSOCKS4WhenAuthEnabled(t *testing.T) {
+	client, server := newPipe(t)
+	defer client.Close()
+	defer server.Close()
+
+	go func() {
+		_, _ = client.Write([]byte{0x04, 0x01, 0x01, 0xbb, 127, 0, 0, 1})
+		_, _ = client.Write([]byte("user\x00"))
+		reply := make([]byte, 8)
+		_, _ = io.ReadFull(client, reply)
+		if reply[1] == 0x5a {
+			t.Errorf("SOCKS4 reply = success, want rejection")
+		}
+	}()
+
+	_, err := ReadClientRequest(context.Background(), server, EntryAuth{Enabled: true, Username: "u", Password: "p"})
+	if err == nil {
+		t.Fatalf("ReadClientRequest() error = nil, want SOCKS4 auth rejection")
+	}
+}
+
 func TestReadClientRequestSOCKS5PasswordAuth(t *testing.T) {
 	client, server := newPipe(t)
 	defer client.Close()

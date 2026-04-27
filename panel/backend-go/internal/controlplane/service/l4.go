@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
@@ -460,6 +463,11 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 		if proxyEgressMode == "proxy" && proxyEgressURL == "" {
 			return L4Rule{}, fmt.Errorf("%w: proxy_egress_url is required for proxy egress", ErrInvalidArgument)
 		}
+		if proxyEgressMode == "proxy" {
+			if err := validateL4ProxyEgressURL(proxyEgressURL); err != nil {
+				return L4Rule{}, fmt.Errorf("%w: invalid proxy_egress_url: %v", ErrInvalidArgument, err)
+			}
+		}
 		backends = []L4Backend{}
 		upstreamHost = ""
 		upstreamPort = 0
@@ -611,6 +619,42 @@ func normalizeL4ProxyEntryAuth(auth L4ProxyEntryAuth) L4ProxyEntryAuth {
 		Username: strings.TrimSpace(auth.Username),
 		Password: auth.Password,
 	}
+}
+
+func validateL4ProxyEgressURL(raw string) error {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return fmt.Errorf("parse proxy URL: %w", err)
+	}
+	if parsed.Scheme == "" {
+		return fmt.Errorf("proxy URL missing scheme")
+	}
+	if parsed.Host == "" {
+		return fmt.Errorf("proxy URL missing host")
+	}
+	switch strings.ToLower(parsed.Scheme) {
+	case "socks", "socks4", "socks4a", "socks5", "socks5h", "http":
+	default:
+		return fmt.Errorf("unsupported proxy URL scheme %q", parsed.Scheme)
+	}
+	host, port, err := net.SplitHostPort(parsed.Host)
+	if err != nil {
+		return fmt.Errorf("proxy URL must include host and port: %w", err)
+	}
+	if host == "" {
+		return fmt.Errorf("proxy URL missing host")
+	}
+	if port == "" {
+		return fmt.Errorf("proxy URL missing port")
+	}
+	n, err := strconv.Atoi(port)
+	if err != nil {
+		return fmt.Errorf("proxy URL port must be numeric: %w", err)
+	}
+	if n < 1 || n > 65535 {
+		return fmt.Errorf("proxy URL port out of range")
+	}
+	return nil
 }
 
 func normalizeL4ProxyEntryFields(listenMode string, auth L4ProxyEntryAuth, egressMode string, egressURL string) (L4ProxyEntryAuth, string, string) {

@@ -45,6 +45,10 @@ func ReadClientRequest(ctx context.Context, conn net.Conn, auth EntryAuth) (Clie
 
 	switch first[0] {
 	case 0x04:
+		if auth.Enabled {
+			writeSOCKS4Reply(conn, false, 0, nil)
+			return ClientRequest{}, fmt.Errorf("SOCKS4 does not support proxy entry authentication")
+		}
 		return readSOCKS4Request(conn, conn)
 	case 0x05:
 		return readSOCKS5Request(conn, conn, auth)

@@ -21,7 +21,7 @@ func (d Dependencies) handleAgentL4Rules(w http.ResponseWriter, r *http.Request)
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":    true,
-			"rules": rules,
+			"rules": redactL4Rules(rules),
 		})
 	case http.MethodPost:
 		var payload service.L4RuleInput
@@ -37,7 +37,7 @@ func (d Dependencies) handleAgentL4Rules(w http.ResponseWriter, r *http.Request)
 		}
 		writeJSON(w, http.StatusCreated, map[string]any{
 			"ok":   true,
-			"rule": rule,
+			"rule": redactL4Rule(rule),
 		})
 	default:
 		http.NotFound(w, r)
@@ -67,7 +67,7 @@ func (d Dependencies) handleAgentL4Rule(w http.ResponseWriter, r *http.Request) 
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":   true,
-			"rule": rule,
+			"rule": redactL4Rule(rule),
 		})
 	case http.MethodDelete:
 		rule, err := d.L4RuleService.Delete(r.Context(), agentID, ruleID)
@@ -78,9 +78,26 @@ func (d Dependencies) handleAgentL4Rule(w http.ResponseWriter, r *http.Request) 
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"ok":   true,
-			"rule": rule,
+			"rule": redactL4Rule(rule),
 		})
 	default:
 		http.NotFound(w, r)
 	}
+}
+
+func redactL4Rules(rules []service.L4Rule) []service.L4Rule {
+	if rules == nil {
+		return nil
+	}
+	out := make([]service.L4Rule, len(rules))
+	for i, rule := range rules {
+		out[i] = redactL4Rule(rule)
+	}
+	return out
+}
+
+func redactL4Rule(rule service.L4Rule) service.L4Rule {
+	rule.ProxyEntryAuth.Password = ""
+	rule.ProxyEgressURL = redactProxyURL(rule.ProxyEgressURL)
+	return rule
 }

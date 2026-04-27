@@ -344,6 +344,34 @@ func TestNormalizeL4RuleInputRejectsProxyEntryMissingProxyEgressURL(t *testing.T
 	}
 }
 
+func TestNormalizeL4RuleInputRejectsInvalidProxyEgressURL(t *testing.T) {
+	protocol := "tcp"
+	listenMode := "proxy"
+	egressMode := "proxy"
+	tests := []string{
+		"127.0.0.1:1080",
+		"ftp://127.0.0.1:1080",
+		"socks://127.0.0.1",
+		"http://127.0.0.1:70000",
+	}
+	for _, egressURL := range tests {
+		t.Run(egressURL, func(t *testing.T) {
+			input := L4RuleInput{
+				Protocol:        &protocol,
+				ListenHost:      stringPtrL4("127.0.0.1"),
+				ListenPort:      intPtrL4(1080),
+				ListenMode:      &listenMode,
+				ProxyEgressMode: &egressMode,
+				ProxyEgressURL:  &egressURL,
+			}
+			_, err := normalizeL4RuleInput(input, L4Rule{}, 1)
+			if err == nil || !strings.Contains(err.Error(), "invalid proxy_egress_url") {
+				t.Fatalf("error = %v, want invalid proxy_egress_url validation", err)
+			}
+		})
+	}
+}
+
 func TestNormalizeL4RuleInputRejectsProxyEntryInvalidEgressMode(t *testing.T) {
 	protocol := "tcp"
 	listenMode := "proxy"
