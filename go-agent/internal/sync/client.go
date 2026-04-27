@@ -136,22 +136,45 @@ func (c *Client) Sync(ctx context.Context, request SyncRequest) (Snapshot, error
 	}
 
 	var reply struct {
-		Sync struct {
-			Snapshot
-			VersionPackageURL  string                `json:"version_package"`
-			VersionPackageMeta *model.VersionPackage `json:"version_package_meta"`
-			VersionSHA256      string                `json:"version_sha256"`
-		} `json:"sync"`
+		Sync json.RawMessage `json:"sync"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&reply); err != nil {
 		return Snapshot{}, err
 	}
+	if len(reply.Sync) == 0 {
+		return Snapshot{}, nil
+	}
 
-	snapshot := reply.Sync.Snapshot
+	snapshotPayload := append([]byte(nil), reply.Sync...)
+	var syncFields map[string]json.RawMessage
+	if err := json.Unmarshal(reply.Sync, &syncFields); err != nil {
+		return Snapshot{}, err
+	}
+	if _, ok := syncFields["version_package"]; ok {
+		delete(syncFields, "version_package")
+		var err error
+		snapshotPayload, err = json.Marshal(syncFields)
+		if err != nil {
+			return Snapshot{}, err
+		}
+	}
+
+	var snapshot Snapshot
+	if err := json.Unmarshal(snapshotPayload, &snapshot); err != nil {
+		return Snapshot{}, err
+	}
+	var syncMeta struct {
+		VersionPackageURL  string                `json:"version_package"`
+		VersionPackageMeta *model.VersionPackage `json:"version_package_meta"`
+		VersionSHA256      string                `json:"version_sha256"`
+	}
+	if err := json.Unmarshal(reply.Sync, &syncMeta); err != nil {
+		return Snapshot{}, err
+	}
 	snapshot.VersionPackage = normalizeVersionPackage(
-		reply.Sync.VersionPackageMeta,
-		reply.Sync.VersionPackageURL,
-		reply.Sync.VersionSHA256,
+		syncMeta.VersionPackageMeta,
+		syncMeta.VersionPackageURL,
+		syncMeta.VersionSHA256,
 	)
 
 	return snapshot, nil

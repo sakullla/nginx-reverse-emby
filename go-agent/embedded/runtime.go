@@ -22,6 +22,7 @@ type LoadBalancing = model.LoadBalancing
 type HTTPRule = model.HTTPRule
 type L4Backend = model.L4Backend
 type L4ProxyProtocolTuning = model.L4ProxyProtocolTuning
+type L4ProxyEntryAuth = model.L4ProxyEntryAuth
 type L4Tuning = model.L4Tuning
 type L4Rule = model.L4Rule
 type RelayPin = model.RelayPin
