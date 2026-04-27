@@ -114,7 +114,7 @@
               <label>节点名称</label>
               <input v-model="editName" class="input-base" placeholder="输入节点名称" @keyup.enter="confirmEdit" />
             </div>
-            <div class="form-group">
+            <div v-if="!editingAgent?.is_local" class="form-group">
               <label>出网代理</label>
               <input
                 v-model="editOutboundProxy"
@@ -271,7 +271,7 @@ async function copyCommand() {
 function startEdit(agent) {
   editingAgent.value = agent
   editName.value = agent.name
-  editOutboundProxy.value = agent.outbound_proxy_url || ''
+  editOutboundProxy.value = agent.is_local ? '' : agent.outbound_proxy_url || ''
 }
 
 async function confirmEdit() {
@@ -281,18 +281,20 @@ async function confirmEdit() {
   if (name && name !== editingAgent.value.name) {
     payload.name = name
   }
-  try {
-    const proxyPayload = buildOutboundProxyPayload(
-      editingAgent.value.outbound_proxy_url,
-      editOutboundProxy.value
-    )
-    Object.assign(payload, proxyPayload)
-  } catch (error) {
-    messageStore.warning(error.message, '出网代理密码已隐藏')
-    editingAgent.value = null
-    editName.value = ''
-    editOutboundProxy.value = ''
-    return
+  if (!editingAgent.value.is_local) {
+    try {
+      const proxyPayload = buildOutboundProxyPayload(
+        editingAgent.value.outbound_proxy_url,
+        editOutboundProxy.value
+      )
+      Object.assign(payload, proxyPayload)
+    } catch (error) {
+      messageStore.warning(error.message, '出网代理密码已隐藏')
+      editingAgent.value = null
+      editName.value = ''
+      editOutboundProxy.value = ''
+      return
+    }
   }
   if (Object.keys(payload).length > 0) {
     await updateAgent.mutateAsync({
