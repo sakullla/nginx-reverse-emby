@@ -673,6 +673,8 @@ func TestDialTLSTCPUsesConfiguredOutboundProxy(t *testing.T) {
 
 func TestDialWithOutboundProxyForcesTLSTCPForQUICHop(t *testing.T) {
 	resetTLSTCPSessionPoolForTest()
+	restoreFallbacks := setRelayVerifiedFallbacksForTest(newRelayVerifiedFallbackStore())
+	defer restoreFallbacks()
 	backendAddr, stopBackend := startTCPEchoServer(t)
 	defer stopBackend()
 
@@ -696,6 +698,7 @@ func TestDialWithOutboundProxyForcesTLSTCPForQUICHop(t *testing.T) {
 		t.Fatalf("Start() error = %v", err)
 	}
 	defer server.Close()
+	markRelayVerifiedFallback(hop)
 
 	prevQUICDial := quicDialAddr
 	quicDialCalls := 0
@@ -725,6 +728,87 @@ func TestDialWithOutboundProxyForcesTLSTCPForQUICHop(t *testing.T) {
 		t.Fatalf("proxy did not see CONNECT to %s", hop.Address)
 	}
 	assertRoundTrip(t, conn, []byte("relay-quic-proxy"))
+}
+
+func TestDialWithOutboundProxyRejectsQUICOnlyHop(t *testing.T) {
+	resetTLSTCPSessionPoolForTest()
+	backendAddr, stopBackend := startTCPEchoServer(t)
+	defer stopBackend()
+
+	provider := newFakeTLSMaterialProvider()
+	listener, hop := newRelayEndpoint(t, provider, 705, "relay-quic-only-proxy", "pin_only", true, false)
+	listener.TransportMode = ListenerTransportModeQUIC
+	listener.AllowTransportFallback = false
+	hop.Listener = listener
+
+	server, err := Start(context.Background(), []Listener{listener}, provider)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer server.Close()
+
+	prevQUICDial := quicDialAddr
+	quicDialCalls := 0
+	quicDialAddr = func(ctx context.Context, addr string, tlsConf *tls.Config, conf *quic.Config) (*quic.Conn, error) {
+		quicDialCalls++
+		return prevQUICDial(ctx, addr, tlsConf, conf)
+	}
+	defer func() {
+		quicDialAddr = prevQUICDial
+	}()
+
+	proxy := startRelayHTTPConnectProxy(t)
+	conn, _, err := DialWithResult(context.Background(), "tcp", backendAddr, []Hop{hop}, provider, DialOptions{
+		OutboundProxyURL: proxy.URL,
+	})
+	if err == nil {
+		conn.Close()
+		t.Fatal("DialWithResult() error = nil, want outbound proxy QUIC rejection")
+	}
+	if !strings.Contains(err.Error(), "outbound proxy does not support quic relay transport") {
+		t.Fatalf("DialWithResult() error = %v, want outbound proxy QUIC rejection", err)
+	}
+	if quicDialCalls != 0 {
+		t.Fatalf("quicDialCalls = %d, want 0 when outbound proxy rejects QUIC", quicDialCalls)
+	}
+	if proxy.SawConnectTo(hop.Address) {
+		t.Fatalf("proxy saw CONNECT to %s, want no TLS-TCP dial for QUIC-only hop", hop.Address)
+	}
+}
+
+func TestDialWithOutboundProxyRejectsUnverifiedQUICFallback(t *testing.T) {
+	resetTLSTCPSessionPoolForTest()
+	restoreFallbacks := setRelayVerifiedFallbacksForTest(newRelayVerifiedFallbackStore())
+	defer restoreFallbacks()
+	backendAddr, stopBackend := startTCPEchoServer(t)
+	defer stopBackend()
+
+	provider := newFakeTLSMaterialProvider()
+	listener, hop := newRelayEndpoint(t, provider, 706, "relay-quic-unverified-proxy", "pin_only", true, false)
+	listener.TransportMode = ListenerTransportModeQUIC
+	listener.AllowTransportFallback = true
+	hop.Listener = listener
+
+	server, err := Start(context.Background(), []Listener{listener}, provider)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer server.Close()
+
+	proxy := startRelayHTTPConnectProxy(t)
+	conn, _, err := DialWithResult(context.Background(), "tcp", backendAddr, []Hop{hop}, provider, DialOptions{
+		OutboundProxyURL: proxy.URL,
+	})
+	if err == nil {
+		conn.Close()
+		t.Fatal("DialWithResult() error = nil, want outbound proxy QUIC fallback rejection")
+	}
+	if !strings.Contains(err.Error(), "outbound proxy requires a verified tls_tcp fallback for quic relay transport") {
+		t.Fatalf("DialWithResult() error = %v, want unverified fallback rejection", err)
+	}
+	if proxy.SawConnectTo(hop.Address) {
+		t.Fatalf("proxy saw CONNECT to %s, want no TLS-TCP dial before fallback is verified", hop.Address)
+	}
 }
 
 func TestDialTLSTCPOutboundProxyHandshakeUsesRelayDialTimeout(t *testing.T) {

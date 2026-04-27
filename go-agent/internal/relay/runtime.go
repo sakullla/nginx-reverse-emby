@@ -345,6 +345,12 @@ func DialWithResult(ctx context.Context, network, target string, chain []Hop, pr
 
 	transportMode := selectRelayRuntimeTransport(firstHop)
 	if strings.TrimSpace(options.OutboundProxyURL) != "" && transportMode == ListenerTransportModeQUIC {
+		if !firstHop.Listener.AllowTransportFallback {
+			return nil, DialResult{}, fmt.Errorf("outbound proxy does not support quic relay transport")
+		}
+		if !relayVerifiedFallbackAvailable(firstHop) {
+			return nil, DialResult{}, fmt.Errorf("outbound proxy requires a verified tls_tcp fallback for quic relay transport")
+		}
 		transportMode = ListenerTransportModeTLSTCP
 	}
 
