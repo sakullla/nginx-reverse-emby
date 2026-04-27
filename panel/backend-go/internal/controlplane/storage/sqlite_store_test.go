@@ -1782,6 +1782,76 @@ func TestStoreLoadAgentSnapshotSkipsMalformedL4Rows(t *testing.T) {
 	}
 }
 
+func TestStoreLoadAgentSnapshotIncludesProxyEntryL4RuleWithoutBackend(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromGORM(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	if err := store.SaveAgent(t.Context(), AgentRow{
+		ID:              "proxy-entry-agent",
+		Name:            "proxy-entry-agent",
+		AgentToken:      "token-proxy-entry-agent",
+		DesiredRevision: 0,
+		CurrentRevision: 0,
+		LastApplyStatus: "success",
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+
+	if err := store.SaveL4Rules(t.Context(), "proxy-entry-agent", []L4RuleRow{{
+		ID:                 71,
+		AgentID:            "proxy-entry-agent",
+		Name:               "proxy-entry",
+		Protocol:           "tcp",
+		ListenHost:         "0.0.0.0",
+		ListenPort:         1080,
+		BackendsJSON:       `[]`,
+		LoadBalancingJSON:  `{}`,
+		TuningJSON:         `{}`,
+		RelayChainJSON:     `[]`,
+		RelayLayersJSON:    `[]`,
+		ListenMode:         "proxy",
+		ProxyEntryAuthJSON: `{"enabled":true,"username":"client","password":"secret"}`,
+		ProxyEgressMode:    "proxy",
+		ProxyEgressURL:     "socks://egress.example.test:1080",
+		Enabled:            true,
+		Revision:           17,
+	}}); err != nil {
+		t.Fatalf("SaveL4Rules() error = %v", err)
+	}
+
+	snapshot, err := store.LoadAgentSnapshot(t.Context(), "proxy-entry-agent", AgentSnapshotInput{
+		DesiredRevision: 0,
+		CurrentRevision: 0,
+	})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot() error = %v", err)
+	}
+
+	if snapshot.Revision != 17 {
+		t.Fatalf("Revision = %d", snapshot.Revision)
+	}
+	if len(snapshot.L4Rules) != 1 {
+		t.Fatalf("L4Rules = %+v", snapshot.L4Rules)
+	}
+	rule := snapshot.L4Rules[0]
+	if rule.ID != 71 || rule.ListenMode != "proxy" || rule.ProxyEgressMode != "proxy" || rule.ProxyEgressURL == "" {
+		t.Fatalf("L4Rules[0] = %+v", rule)
+	}
+	if len(rule.Backends) != 0 || rule.UpstreamHost != "" || rule.UpstreamPort != 0 {
+		t.Fatalf("proxy entry targets = backends=%+v upstream=%s:%d", rule.Backends, rule.UpstreamHost, rule.UpstreamPort)
+	}
+}
+
 func TestStoreLoadAgentSnapshotIncludesRelayObfsFlags(t *testing.T) {
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 

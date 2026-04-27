@@ -130,6 +130,8 @@ import { useRoute, useRouter } from 'vue-router'
 import { useRules } from '../hooks/useRules'
 import { useL4Rules } from '../hooks/useL4Rules'
 import { useAgents, useUpdateAgent } from '../hooks/useAgents'
+import { messageStore } from '../stores/messages'
+import { buildOutboundProxyPayload } from './outboundProxyURL'
 
 const route = useRoute()
 const router = useRouter()
@@ -161,9 +163,17 @@ watch(agent, (value) => {
 
 async function saveOutboundProxy() {
   if (!agent.value) return
+  let payload
+  try {
+    payload = buildOutboundProxyPayload(agent.value.outbound_proxy_url, outboundProxyURL.value)
+  } catch (error) {
+    messageStore.warning(error.message, '出网代理密码已隐藏')
+    return
+  }
+  if (Object.keys(payload).length === 0) return
   await updateAgent.mutateAsync({
     agentId: agent.value.id,
-    payload: { outbound_proxy_url: outboundProxyURL.value.trim() }
+    payload
   })
 }
 

@@ -799,6 +799,10 @@ func isSyncL4RuleRowValid(row L4RuleRow) bool {
 		return false
 	}
 
+	if strings.ToLower(strings.TrimSpace(row.ListenMode)) == "proxy" {
+		return protocol == "tcp"
+	}
+
 	if len(parseL4Backends(row.BackendsJSON)) > 0 {
 		return true
 	}
