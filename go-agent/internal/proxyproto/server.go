@@ -93,7 +93,6 @@ func readSOCKS4Request(reader io.Reader, conn net.Conn) (ClientRequest, error) {
 		writeSOCKS4Reply(conn, false, port, ip.To4())
 		return ClientRequest{}, err
 	}
-	writeSOCKS4Reply(conn, true, port, ip.To4())
 	return req, nil
 }
 
@@ -149,7 +148,6 @@ func readSOCKS5Request(reader io.Reader, conn net.Conn, auth EntryAuth) (ClientR
 		writeSOCKS5Reply(conn, 0x01)
 		return ClientRequest{}, err
 	}
-	writeSOCKS5Reply(conn, 0x00)
 	return req, nil
 }
 
@@ -195,6 +193,12 @@ func WriteClientRequestSuccess(conn net.Conn, req ClientRequest) error {
 	case "http":
 		_, err := io.WriteString(conn, "HTTP/1.1 200 Connection Established\r\n\r\n")
 		return err
+	case "socks4", "socks4a":
+		writeSOCKS4Reply(conn, true, req.Port, net.ParseIP(req.Host))
+		return nil
+	case "socks5":
+		writeSOCKS5Reply(conn, 0x00)
+		return nil
 	default:
 		return nil
 	}
@@ -208,6 +212,12 @@ func WriteClientRequestFailure(conn net.Conn, req ClientRequest, status int) err
 		}
 		_, err := fmt.Fprintf(conn, "HTTP/1.1 %d %s\r\nContent-Length: 0\r\n\r\n", status, http.StatusText(status))
 		return err
+	case "socks4", "socks4a":
+		writeSOCKS4Reply(conn, false, req.Port, net.ParseIP(req.Host))
+		return nil
+	case "socks5":
+		writeSOCKS5Reply(conn, 0x01)
+		return nil
 	default:
 		return nil
 	}

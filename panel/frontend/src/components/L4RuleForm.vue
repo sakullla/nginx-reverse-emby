@@ -321,6 +321,7 @@ import { useCreateL4Rule, useUpdateL4Rule } from '../hooks/useL4Rules'
 import { useAllRelayListeners } from '../hooks/useRelayListeners'
 import RelayChainInput from './RelayChainInput.vue'
 import { buildProxyEntryAuthPayload } from './l4/proxyEntryAuth'
+import { buildProxyEgressURLPayload } from './l4/proxyEgressURL'
 import { getDefaultTuning, mergeTuning, resetTuningForProtocol } from './l4/tuningState'
 
 const props = defineProps({
@@ -652,6 +653,9 @@ function buildPayload() {
   const proxyEntryAuth = isProxyEntry.value
     ? buildProxyEntryAuthPayload(props.initialData?.proxy_entry_auth, form.value.proxy_entry_auth)
     : { enabled: false, username: '', password: '' }
+  const proxyEgressURL = isProxyEntry.value && form.value.proxy_egress_mode === 'proxy'
+    ? buildProxyEgressURLPayload(props.initialData?.proxy_egress_url, form.value.proxy_egress_url)
+    : ''
 
   const payload = {
     protocol: form.value.protocol,
@@ -667,9 +671,6 @@ function buildPayload() {
     tags: [...sysTags, ...userTags],
     listen_mode: form.value.protocol === 'tcp' ? form.value.listen_mode : 'tcp',
     proxy_egress_mode: isProxyEntry.value ? form.value.proxy_egress_mode : '',
-    proxy_egress_url: isProxyEntry.value && form.value.proxy_egress_mode === 'proxy'
-      ? form.value.proxy_egress_url.trim()
-      : '',
     relay_layers: Array.isArray(form.value.relay_layers) ? form.value.relay_layers.map((l) => [...l]) : [],
     relay_chain: flattenRelayLayers(form.value.relay_layers),
     relay_obfs: form.value.protocol === 'tcp'
@@ -680,6 +681,9 @@ function buildPayload() {
   }
   if (proxyEntryAuth !== undefined) {
     payload.proxy_entry_auth = proxyEntryAuth
+  }
+  if (proxyEgressURL !== undefined) {
+    payload.proxy_egress_url = proxyEgressURL
   }
 
   // Only send tuning if advanced panel has non-default values or editing existing rule with tuning

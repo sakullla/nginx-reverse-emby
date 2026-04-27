@@ -159,6 +159,11 @@ func startObservingSOCKS5Proxy(t *testing.T, observe func(*testing.T, ClientRequ
 			return
 		}
 		observe(t, req)
+		if err := WriteClientRequestSuccess(client, req); err != nil {
+			t.Errorf("WriteClientRequestSuccess() error = %v", err)
+			close(done)
+			return
+		}
 		close(done)
 	}()
 	t.Cleanup(func() {

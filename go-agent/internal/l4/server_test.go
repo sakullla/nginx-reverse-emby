@@ -352,6 +352,106 @@ func TestL4ProxyEntryHTTPConnectDefersSuccessUntilUpstreamConnected(t *testing.T
 	}
 }
 
+func TestL4ProxyEntrySOCKS5DefersSuccessUntilUpstreamConnected(t *testing.T) {
+	upstreamProxyURL := startRejectingL4ProxyEntryUpstreamProxy(t)
+
+	listenPort := pickFreeTCPPort(t)
+	rule := model.L4Rule{
+		Protocol:        "tcp",
+		ListenHost:      "127.0.0.1",
+		ListenPort:      listenPort,
+		ListenMode:      "proxy",
+		ProxyEgressMode: "proxy",
+		ProxyEgressURL:  upstreamProxyURL,
+	}
+	srv, err := NewServer(context.Background(), []model.L4Rule{rule}, nil, nil)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	defer srv.Close()
+
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(listenPort)), 5*time.Second)
+	if err != nil {
+		t.Fatalf("DialTimeout() error = %v", err)
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("SetDeadline() error = %v", err)
+	}
+
+	if _, err := conn.Write([]byte{0x05, 0x01, 0x00}); err != nil {
+		t.Fatalf("write methods: %v", err)
+	}
+	methodReply := make([]byte, 2)
+	if _, err := io.ReadFull(conn, methodReply); err != nil {
+		t.Fatalf("read method reply: %v", err)
+	}
+	if !bytes.Equal(methodReply, []byte{0x05, 0x00}) {
+		t.Fatalf("method reply = %v, want no-auth selection", methodReply)
+	}
+
+	if _, err := conn.Write([]byte{0x05, 0x01, 0x00, 0x03, 11}); err != nil {
+		t.Fatalf("write connect header: %v", err)
+	}
+	if _, err := conn.Write([]byte("example.com")); err != nil {
+		t.Fatalf("write connect host: %v", err)
+	}
+	if _, err := conn.Write([]byte{0x01, 0xbb}); err != nil {
+		t.Fatalf("write connect port: %v", err)
+	}
+
+	reply := make([]byte, 10)
+	if _, err := io.ReadFull(conn, reply); err != nil {
+		t.Fatalf("read connect reply: %v", err)
+	}
+	if reply[1] == 0x00 {
+		t.Fatalf("SOCKS5 reply = success, want failure when upstream dial fails: %v", reply)
+	}
+}
+
+func TestL4ProxyEntrySOCKS4DefersSuccessUntilUpstreamConnected(t *testing.T) {
+	upstreamProxyURL := startRejectingL4ProxyEntryUpstreamProxy(t)
+
+	listenPort := pickFreeTCPPort(t)
+	rule := model.L4Rule{
+		Protocol:        "tcp",
+		ListenHost:      "127.0.0.1",
+		ListenPort:      listenPort,
+		ListenMode:      "proxy",
+		ProxyEgressMode: "proxy",
+		ProxyEgressURL:  upstreamProxyURL,
+	}
+	srv, err := NewServer(context.Background(), []model.L4Rule{rule}, nil, nil)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	defer srv.Close()
+
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(listenPort)), 5*time.Second)
+	if err != nil {
+		t.Fatalf("DialTimeout() error = %v", err)
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("SetDeadline() error = %v", err)
+	}
+
+	if _, err := conn.Write([]byte{0x04, 0x01, 0x01, 0xbb, 127, 0, 0, 1}); err != nil {
+		t.Fatalf("write SOCKS4 header: %v", err)
+	}
+	if _, err := conn.Write([]byte("user\x00")); err != nil {
+		t.Fatalf("write SOCKS4 user: %v", err)
+	}
+
+	reply := make([]byte, 8)
+	if _, err := io.ReadFull(conn, reply); err != nil {
+		t.Fatalf("read SOCKS4 reply: %v", err)
+	}
+	if reply[1] == 0x5a {
+		t.Fatalf("SOCKS4 reply = success, want failure when upstream dial fails: %v", reply)
+	}
+}
+
 func TestL4ProxyEntryHTTPConnectProxyEgressPreservesCoalescedTunnelBytes(t *testing.T) {
 	backend := newTCPEchoListener(t)
 	defer backend.Close()

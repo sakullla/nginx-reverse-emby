@@ -18,8 +18,6 @@ func TestReadClientRequestSOCKS4(t *testing.T) {
 	go func() {
 		_, _ = client.Write([]byte{0x04, 0x01, 0x01, 0xbb, 127, 0, 0, 1})
 		_, _ = client.Write([]byte("user\x00"))
-		reply := make([]byte, 8)
-		_, _ = io.ReadFull(client, reply)
 	}()
 
 	req, err := ReadClientRequest(context.Background(), server, EntryAuth{})
@@ -39,8 +37,6 @@ func TestReadClientRequestSOCKS4a(t *testing.T) {
 	go func() {
 		_, _ = client.Write([]byte{0x04, 0x01, 0x01, 0xbb, 0, 0, 0, 1})
 		_, _ = client.Write([]byte("user\x00example.com\x00"))
-		reply := make([]byte, 8)
-		_, _ = io.ReadFull(client, reply)
 	}()
 
 	req, err := ReadClientRequest(context.Background(), server, EntryAuth{})
@@ -87,7 +83,6 @@ func TestReadClientRequestSOCKS5PasswordAuth(t *testing.T) {
 		_, _ = client.Write([]byte{0x05, 0x01, 0x00, 0x03, 11})
 		_, _ = client.Write([]byte("example.com"))
 		_, _ = client.Write([]byte{0x01, 0xbb})
-		_, _ = io.ReadFull(client, make([]byte, 10))
 	}()
 
 	req, err := ReadClientRequest(context.Background(), server, EntryAuth{Enabled: true, Username: "u", Password: "p"})
