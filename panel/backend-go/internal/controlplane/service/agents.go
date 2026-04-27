@@ -450,6 +450,7 @@ func (s *agentService) Update(ctx context.Context, agentID string, input UpdateA
 		row.CapabilitiesJSON = marshalStringArray(normalizeCapabilities(*input.Capabilities))
 	}
 	if input.OutboundProxyURL != nil {
+		previousOutboundProxyURL := strings.TrimSpace(row.OutboundProxyURL)
 		outboundProxyURL := strings.TrimSpace(*input.OutboundProxyURL)
 		if outboundProxyURL != "" {
 			if err := validateL4ProxyEgressURL(outboundProxyURL); err != nil {
@@ -457,6 +458,13 @@ func (s *agentService) Update(ctx context.Context, agentID string, input UpdateA
 			}
 		}
 		row.OutboundProxyURL = outboundProxyURL
+		if outboundProxyURL != previousOutboundProxyURL {
+			allocator, err := newConfigIdentityAllocatorFromStore(ctx, s.cfg, s.store)
+			if err != nil {
+				return AgentSummary{}, err
+			}
+			row.DesiredRevision = allocator.AllocateRevisionForAgent(row.ID, row.DesiredRevision)
+		}
 	}
 
 	if err := s.store.SaveAgent(ctx, row); err != nil {

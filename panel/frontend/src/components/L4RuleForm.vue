@@ -320,6 +320,7 @@ import { computed, ref, watch } from 'vue'
 import { useCreateL4Rule, useUpdateL4Rule } from '../hooks/useL4Rules'
 import { useAllRelayListeners } from '../hooks/useRelayListeners'
 import RelayChainInput from './RelayChainInput.vue'
+import { buildProxyEntryAuthPayload } from './l4/proxyEntryAuth'
 import { getDefaultTuning, mergeTuning, resetTuningForProtocol } from './l4/tuningState'
 
 const props = defineProps({
@@ -648,6 +649,10 @@ function buildPayload() {
       port: Number(b.port),
     }))
 
+  const proxyEntryAuth = isProxyEntry.value
+    ? buildProxyEntryAuthPayload(props.initialData?.proxy_entry_auth, form.value.proxy_entry_auth)
+    : { enabled: false, username: '', password: '' }
+
   const payload = {
     protocol: form.value.protocol,
     listen_host: form.value.listen_host.trim(),
@@ -661,11 +666,6 @@ function buildPayload() {
     enabled: form.value.enabled,
     tags: [...sysTags, ...userTags],
     listen_mode: form.value.protocol === 'tcp' ? form.value.listen_mode : 'tcp',
-    proxy_entry_auth: isProxyEntry.value ? {
-      enabled: form.value.proxy_entry_auth.enabled === true,
-      username: form.value.proxy_entry_auth.username.trim(),
-      password: form.value.proxy_entry_auth.password,
-    } : { enabled: false, username: '', password: '' },
     proxy_egress_mode: isProxyEntry.value ? form.value.proxy_egress_mode : '',
     proxy_egress_url: isProxyEntry.value && form.value.proxy_egress_mode === 'proxy'
       ? form.value.proxy_egress_url.trim()
@@ -677,6 +677,9 @@ function buildPayload() {
       && Array.isArray(form.value.relay_layers)
       && form.value.relay_layers.length > 0
       && form.value.relay_obfs === true,
+  }
+  if (proxyEntryAuth !== undefined) {
+    payload.proxy_entry_auth = proxyEntryAuth
   }
 
   // Only send tuning if advanced panel has non-default values or editing existing rule with tuning
@@ -728,8 +731,8 @@ async function handleSubmit() {
     return
   }
 
-  const payload = buildPayload()
   try {
+    const payload = buildPayload()
     if (isEdit.value) {
       await updateL4Rule.mutateAsync({ id: props.initialData.id, ...payload })
     } else {
