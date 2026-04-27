@@ -671,6 +671,45 @@ func TestDialTLSTCPUsesConfiguredOutboundProxy(t *testing.T) {
 	}
 }
 
+func TestDialTLSTCPOutboundProxyHandshakeUsesRelayDialTimeout(t *testing.T) {
+	resetTLSTCPSessionPoolForTest()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	defer ln.Close()
+
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		accepted <- conn
+	}()
+	defer func() {
+		select {
+		case conn := <-accepted:
+			_ = conn.Close()
+		default:
+		}
+	}()
+
+	withRelayTimeouts(50*time.Millisecond, 5*time.Second, 5*time.Second, 5*time.Second, func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		started := time.Now()
+		conn, err := dialRelayTCPWithProxy(ctx, "127.0.0.1:443", Listener{}, "http://"+ln.Addr().String())
+		if err == nil {
+			_ = conn.Close()
+			t.Fatal("dialRelayTCPWithProxy() error = nil, want proxy handshake timeout")
+		}
+		if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+			t.Fatalf("dialRelayTCPWithProxy() elapsed = %v, want relay dial timeout before context timeout", elapsed)
+		}
+	})
+}
+
 type relayHTTPConnectProxy struct {
 	URL string
 

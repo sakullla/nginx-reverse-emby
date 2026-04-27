@@ -638,7 +638,15 @@ func dialRelayTCPWithProxy(ctx context.Context, address string, _ Listener, prox
 	if strings.TrimSpace(proxyURL) == "" {
 		return dialRelayTCP(ctx, address)
 	}
-	return proxyproto.Dial(ctx, proxyURL, address)
+	dialCtx, cancel := context.WithTimeout(ctx, getRelayDialTimeout())
+	defer cancel()
+
+	conn, err := proxyproto.Dial(dialCtx, proxyURL, address)
+	if err != nil {
+		return nil, err
+	}
+	tuneBulkRelayConn(conn)
+	return conn, nil
 }
 
 // dialTLSTCP is the legacy one-stream-per-TLS-connection path. Runtime relay

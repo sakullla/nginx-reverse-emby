@@ -75,7 +75,7 @@
       </div>
 
       <div v-if="activeTab === 'info'" class="tab-panel">
-        <div class="agent-setting">
+        <div v-if="!agent.is_local" class="agent-setting">
           <label class="agent-setting__label" for="agent-outbound-proxy">出网代理</label>
           <div class="agent-setting__control">
             <input
@@ -162,7 +162,7 @@ watch(agent, (value) => {
 }, { immediate: true })
 
 async function saveOutboundProxy() {
-  if (!agent.value) return
+  if (!agent.value || agent.value.is_local) return
   let payload
   try {
     payload = buildOutboundProxyPayload(agent.value.outbound_proxy_url, outboundProxyURL.value)

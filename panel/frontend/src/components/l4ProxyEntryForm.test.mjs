@@ -25,6 +25,7 @@ test('Agent detail exposes outbound proxy update control', () => {
   assert.match(source, /outbound_proxy_url/)
   assert.match(source, /useUpdateAgent/)
   assert.match(source, /saveOutboundProxy/)
+  assert.match(source, /v-if="!agent\.is_local"\s+class="agent-setting"/)
 })
 
 test('frontend API exposes agent update path', () => {
