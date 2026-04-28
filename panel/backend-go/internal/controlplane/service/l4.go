@@ -483,6 +483,8 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 			if err := validateL4ProxyEgressURL(proxyEgressURL); err != nil {
 				return L4Rule{}, fmt.Errorf("%w: invalid proxy_egress_url: %v", ErrInvalidArgument, err)
 			}
+			relayChain = []int{}
+			relayLayers = [][]int{}
 		}
 		backends = []L4Backend{}
 		upstreamHost = ""
@@ -495,6 +497,9 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 	}
 	if input.RelayObfs != nil {
 		relayObfs = *input.RelayObfs
+	}
+	if listenMode == "proxy" && proxyEgressMode == "proxy" {
+		relayObfs = false
 	}
 	if relayObfs && protocol != "tcp" {
 		relayObfs = false

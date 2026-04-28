@@ -411,6 +411,46 @@ func TestNormalizeL4RuleInputAcceptsProxyEntryProxyEgress(t *testing.T) {
 	}
 }
 
+func TestL4RuleServiceUpdateProxyEgressClearsStaleRelayFields(t *testing.T) {
+	current := L4Rule{
+		ID:              1,
+		AgentID:         "local",
+		Name:            "proxy entry",
+		Protocol:        "tcp",
+		ListenHost:      "0.0.0.0",
+		ListenPort:      1080,
+		ListenMode:      "proxy",
+		ProxyEgressMode: "relay",
+		RelayChain:      []int{101},
+		RelayLayers:     [][]int{{101}},
+		RelayObfs:       true,
+		Enabled:         true,
+		Revision:        3,
+	}
+	store := &fakeL4Store{
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"local": {l4RuleToRow(current)},
+		},
+		relayByAgent: map[string][]storage.RelayListenerRow{},
+	}
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	rule, err := svc.Update(context.Background(), "local", 1, L4RuleInput{
+		ProxyEgressMode: stringPtrL4("proxy"),
+		ProxyEgressURL:  stringPtrL4("socks://127.0.0.1:1080"),
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if len(rule.RelayChain) != 0 || len(rule.RelayLayers) != 0 || rule.RelayObfs {
+		t.Fatalf("relay fields = chain=%+v layers=%+v obfs=%v", rule.RelayChain, rule.RelayLayers, rule.RelayObfs)
+	}
+	row := store.l4RulesByID["local"][0]
+	if row.RelayChainJSON != "[]" || row.RelayLayersJSON != "[]" || row.RelayObfs {
+		t.Fatalf("persisted relay fields = chain=%s layers=%s obfs=%v", row.RelayChainJSON, row.RelayLayersJSON, row.RelayObfs)
+	}
+}
+
 func TestNormalizeL4RuleInputClearsProxyEgressURLWhenSwitchingToRelay(t *testing.T) {
 	egressMode := "relay"
 	egressURL := ""
