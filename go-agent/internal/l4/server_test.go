@@ -311,6 +311,40 @@ func TestL4ProxyEntryHTTPConnectProxyEgress(t *testing.T) {
 	}
 }
 
+func TestL4ProxyEntryClosesUpstreamWhenClientSuccessReplyFails(t *testing.T) {
+	upstream := &closeObservedConn{}
+	dialer := &fakeL4RelayPathDialer{conn: upstream}
+	srv := &Server{
+		ctx: context.Background(),
+		relayListenersByID: map[int]model.RelayListener{
+			2: {
+				ID:         2,
+				Name:       "two",
+				ListenHost: "127.0.0.1",
+				ListenPort: 9002,
+				Enabled:    true,
+				TLSMode:    "pin_only",
+				PinSet:     []model.RelayPin{{Type: "sha256", Value: "pin2"}},
+			},
+		},
+		relayPathDialer: dialer,
+	}
+
+	client := &writeFailAfterRequestConn{
+		reader: bytes.NewBufferString("CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n"),
+	}
+	srv.handleProxyEntryConnection(client, model.L4Rule{
+		Protocol:        "tcp",
+		ListenMode:      "proxy",
+		ProxyEgressMode: "relay",
+		RelayChain:      []int{2},
+	})
+
+	if !upstream.closed {
+		t.Fatalf("upstream was not closed after client success reply failed")
+	}
+}
+
 func TestL4ProxyEntryHTTPConnectDefersSuccessUntilUpstreamConnected(t *testing.T) {
 	upstreamProxyURL := startRejectingL4ProxyEntryUpstreamProxy(t)
 
@@ -1936,6 +1970,41 @@ func (c *prefetchProbeConn) SetReadDeadline(_ time.Time) error {
 	return nil
 }
 func (c *prefetchProbeConn) SetWriteDeadline(_ time.Time) error { return nil }
+
+type writeFailAfterRequestConn struct {
+	reader *bytes.Buffer
+}
+
+func (c *writeFailAfterRequestConn) Read(p []byte) (int, error) {
+	return c.reader.Read(p)
+}
+
+func (c *writeFailAfterRequestConn) Write(_ []byte) (int, error) {
+	return 0, io.ErrClosedPipe
+}
+
+func (c *writeFailAfterRequestConn) Close() error                       { return nil }
+func (c *writeFailAfterRequestConn) LocalAddr() net.Addr                { return &net.TCPAddr{} }
+func (c *writeFailAfterRequestConn) RemoteAddr() net.Addr               { return &net.TCPAddr{} }
+func (c *writeFailAfterRequestConn) SetDeadline(_ time.Time) error      { return nil }
+func (c *writeFailAfterRequestConn) SetReadDeadline(_ time.Time) error  { return nil }
+func (c *writeFailAfterRequestConn) SetWriteDeadline(_ time.Time) error { return nil }
+
+type closeObservedConn struct {
+	closed bool
+}
+
+func (c *closeObservedConn) Read(_ []byte) (int, error)  { return 0, io.EOF }
+func (c *closeObservedConn) Write(p []byte) (int, error) { return len(p), nil }
+func (c *closeObservedConn) Close() error {
+	c.closed = true
+	return nil
+}
+func (c *closeObservedConn) LocalAddr() net.Addr                { return &net.TCPAddr{} }
+func (c *closeObservedConn) RemoteAddr() net.Addr               { return &net.TCPAddr{} }
+func (c *closeObservedConn) SetDeadline(_ time.Time) error      { return nil }
+func (c *closeObservedConn) SetReadDeadline(_ time.Time) error  { return nil }
+func (c *closeObservedConn) SetWriteDeadline(_ time.Time) error { return nil }
 
 type timeoutNetError struct{}
 

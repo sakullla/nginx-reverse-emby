@@ -308,12 +308,12 @@ func (s *Server) handleProxyEntryConnection(client net.Conn, rule model.L4Rule) 
 		_ = proxyproto.WriteClientRequestFailure(client, req, http.StatusBadGateway)
 		return
 	}
-	if err := proxyproto.WriteClientRequestSuccess(client, req); err != nil {
-		return
-	}
 	s.trackTCPConn(upstream)
 	defer s.untrackTCPConn(upstream)
 	defer upstream.Close()
+	if err := proxyproto.WriteClientRequestSuccess(client, req); err != nil {
+		return
+	}
 
 	copyBidirectionalTCP(client, upstream)
 }

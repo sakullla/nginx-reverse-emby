@@ -18,6 +18,8 @@ var ErrInvalidArgument = errors.New("invalid argument")
 var ErrRuleNotFound = errors.New("rule not found")
 var ErrL4Unsupported = errors.New("agent does not support L4 rules")
 
+const redactedProxyPassword = "xxxxx"
+
 type L4Backend struct {
 	Host string `json:"host"`
 	Port int    `json:"port"`
@@ -448,7 +450,10 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 	}
 	rawProxyEgressURL := fallback.ProxyEgressURL
 	if input.ProxyEgressURL != nil {
-		rawProxyEgressURL = *input.ProxyEgressURL
+		rawProxyEgressURL, err = normalizeProxyEgressURLUpdate(*input.ProxyEgressURL, fallback.ProxyEgressURL)
+		if err != nil {
+			return L4Rule{}, err
+		}
 	}
 	proxyEntryAuth, proxyEgressMode, proxyEgressURL := normalizeL4ProxyEntryFields(
 		listenMode,
@@ -457,7 +462,7 @@ func normalizeL4RuleInput(input L4RuleInput, fallback L4Rule, suggestedID int) (
 		rawProxyEgressURL,
 	)
 	if input.ProxyEntryAuth != nil {
-		proxyEntryAuth = normalizeL4ProxyEntryAuth(*input.ProxyEntryAuth)
+		proxyEntryAuth = normalizeL4ProxyEntryAuthUpdate(*input.ProxyEntryAuth, fallback.ProxyEntryAuth)
 	}
 	if listenMode != "proxy" {
 		proxyEntryAuth, proxyEgressMode, proxyEgressURL = normalizeL4ProxyEntryFields(listenMode, proxyEntryAuth, proxyEgressMode, proxyEgressURL)
@@ -630,6 +635,47 @@ func normalizeL4ProxyEntryAuth(auth L4ProxyEntryAuth) L4ProxyEntryAuth {
 		Username: strings.TrimSpace(auth.Username),
 		Password: auth.Password,
 	}
+}
+
+func normalizeL4ProxyEntryAuthUpdate(auth L4ProxyEntryAuth, fallback L4ProxyEntryAuth) L4ProxyEntryAuth {
+	normalized := normalizeL4ProxyEntryAuth(auth)
+	if normalized.Enabled && normalized.Password == "" && fallback.Password != "" {
+		normalized.Password = fallback.Password
+	}
+	return normalized
+}
+
+func normalizeProxyEgressURLUpdate(raw string, fallback string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if !hasRedactedProxyPassword(trimmed) {
+		return trimmed, nil
+	}
+	if trimmed == redactProxyURLPassword(fallback) {
+		return strings.TrimSpace(fallback), nil
+	}
+	return "", fmt.Errorf("%w: proxy_egress_url password is redacted; re-enter the password before saving changes", ErrInvalidArgument)
+}
+
+func hasRedactedProxyPassword(raw string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.User == nil {
+		return false
+	}
+	password, ok := parsed.User.Password()
+	return ok && password == redactedProxyPassword
+}
+
+func redactProxyURLPassword(raw string) string {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.User == nil {
+		return strings.TrimSpace(raw)
+	}
+	password, ok := parsed.User.Password()
+	if !ok || password == "" {
+		return strings.TrimSpace(raw)
+	}
+	parsed.User = url.UserPassword(parsed.User.Username(), redactedProxyPassword)
+	return parsed.String()
 }
 
 func validateL4ProxyEgressURL(raw string) error {

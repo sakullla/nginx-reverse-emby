@@ -441,6 +441,53 @@ func TestNormalizeL4RuleInputClearsProxyEgressURLWhenSwitchingToRelay(t *testing
 	}
 }
 
+func TestL4RuleServiceUpdatePreservesRedactedProxyEntrySecrets(t *testing.T) {
+	current := L4Rule{
+		ID:         1,
+		AgentID:    "local",
+		Name:       "proxy entry",
+		Protocol:   "tcp",
+		ListenHost: "0.0.0.0",
+		ListenPort: 1080,
+		ListenMode: "proxy",
+		ProxyEntryAuth: L4ProxyEntryAuth{
+			Enabled:  true,
+			Username: "client",
+			Password: "entry-secret",
+		},
+		ProxyEgressMode: "proxy",
+		ProxyEgressURL:  "socks://egress:egress-secret@127.0.0.1:1080",
+		Enabled:         true,
+		Revision:        4,
+	}
+	store := &fakeL4Store{
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"local": {l4RuleToRow(current)},
+		},
+	}
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	rule, err := svc.Update(context.Background(), "local", 1, L4RuleInput{
+		Protocol:        stringPtrL4("tcp"),
+		ListenHost:      stringPtrL4("0.0.0.0"),
+		ListenPort:      intPtrL4(1080),
+		ListenMode:      stringPtrL4("proxy"),
+		ProxyEntryAuth:  &L4ProxyEntryAuth{Enabled: true, Username: "client"},
+		ProxyEgressMode: stringPtrL4("proxy"),
+		ProxyEgressURL:  stringPtrL4("socks://egress:xxxxx@127.0.0.1:1080"),
+		Enabled:         boolPtrL4(true),
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if rule.ProxyEntryAuth.Password != "entry-secret" {
+		t.Fatalf("ProxyEntryAuth.Password = %q, want preserved secret", rule.ProxyEntryAuth.Password)
+	}
+	if rule.ProxyEgressURL != "socks://egress:egress-secret@127.0.0.1:1080" {
+		t.Fatalf("ProxyEgressURL = %q, want preserved secret URL", rule.ProxyEgressURL)
+	}
+}
+
 func TestL4RuleServiceUpdateProxyEntryClearsBackendFields(t *testing.T) {
 	store := &fakeL4Store{
 		l4RulesByID: map[string][]storage.L4RuleRow{
