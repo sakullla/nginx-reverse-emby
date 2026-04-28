@@ -83,6 +83,24 @@ func (s *SQLiteStore) ListAgents(ctx context.Context) ([]AgentRow, error) {
 	return agents, nil
 }
 
+func (s *SQLiteStore) loadAgentRevisionState(ctx context.Context, agentID string) (LocalAgentStateRow, error) {
+	var row AgentRow
+	err := s.db.WithContext(ctx).
+		Where("id = ?", agentID).
+		First(&row).Error
+	if err == nil {
+		normalizeAgentRow(&row)
+		return LocalAgentStateRow{
+			DesiredRevision: row.DesiredRevision,
+			CurrentRevision: row.CurrentRevision,
+		}, nil
+	}
+	if err == gorm.ErrRecordNotFound {
+		return LocalAgentStateRow{}, nil
+	}
+	return LocalAgentStateRow{}, err
+}
+
 func (s *SQLiteStore) ListHTTPRules(ctx context.Context, agentID string) ([]HTTPRuleRow, error) {
 	if agentID == "" {
 		agentID = s.localAgentID
@@ -182,9 +200,13 @@ func (s *SQLiteStore) LoadAgentSnapshot(ctx context.Context, agentID string, inp
 	}
 
 	relevantCertRows := filterManagedCertificatesForAgent(certRows, resolvedAgentID, httpRows, relayRows)
+	agentRevisionState, err := s.loadAgentRevisionState(ctx, resolvedAgentID)
+	if err != nil {
+		return Snapshot{}, err
+	}
 	revisionState := LocalAgentStateRow{
-		DesiredRevision: input.DesiredRevision,
-		CurrentRevision: input.CurrentRevision,
+		DesiredRevision: maxInt(input.DesiredRevision, agentRevisionState.DesiredRevision),
+		CurrentRevision: maxInt(input.CurrentRevision, agentRevisionState.CurrentRevision),
 	}
 
 	agentNames, err := s.relayListenerAgentNames(ctx, relayRows)

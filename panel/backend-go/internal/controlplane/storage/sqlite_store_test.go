@@ -2002,6 +2002,41 @@ func TestStoreLoadAgentSnapshotKeepsEffectiveRevisionWhenCurrentMatches(t *testi
 	}
 }
 
+func TestStoreLoadAgentSnapshotUsesStoredAgentDesiredRevisionForProxyOnlyConfig(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromGORM(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	if err := store.SaveAgent(t.Context(), AgentRow{
+		ID:               "remote-proxy-only",
+		Name:             "remote proxy only",
+		AgentToken:       "token-remote-proxy-only",
+		OutboundProxyURL: "socks://127.0.0.1:1080",
+		DesiredRevision:  8,
+		CurrentRevision:  7,
+		LastApplyStatus:  "success",
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+
+	snapshot, err := store.LoadAgentSnapshot(t.Context(), "remote-proxy-only", AgentSnapshotInput{})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot() error = %v", err)
+	}
+	if snapshot.Revision != 8 {
+		t.Fatalf("snapshot revision = %d, want stored agent desired revision 8", snapshot.Revision)
+	}
+}
+
 func TestStoreSavesSuccessfulLocalRuntimeStateIntoLocalAgentState(t *testing.T) {
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
