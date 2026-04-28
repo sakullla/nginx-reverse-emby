@@ -88,6 +88,7 @@ const mockAgents = [
     mode: 'local',
     status: 'online',
     is_local: true,
+    outbound_proxy_url: '',
     last_seen_at: new Date().toISOString(),
     http_rules_count: 12,
     l4_rules_count: 3,
@@ -113,6 +114,7 @@ const mockAgents = [
     mode: 'master',
     status: 'online',
     is_local: false,
+    outbound_proxy_url: 'socks://user:xxxxx@127.0.0.1:1080',
     last_seen_at: new Date().toISOString(),
     http_rules_count: 8,
     l4_rules_count: 2,
@@ -138,6 +140,7 @@ const mockAgents = [
     mode: 'master',
     status: 'online',
     is_local: false,
+    outbound_proxy_url: '',
     last_seen_at: new Date().toISOString(),
     http_rules_count: 5,
     l4_rules_count: 1,
@@ -171,6 +174,7 @@ const mockAgents = [
       mode: isMasterMode ? 'master' : 'pull',
       status: i % 6 === 5 ? 'offline' : 'online',
       is_local: false,
+      outbound_proxy_url: '',
       last_seen_at: new Date().toISOString(),
       last_seen_ip: `10.0.${Math.floor(i / 10) + 1}.${(i % 10) + 10}`,
       http_rules_count: (i % 20) + 1,
@@ -301,6 +305,7 @@ function normalizeL4Backends(rule = {}) {
 
 function normalizeL4Rule(rule = {}) {
   const backends = normalizeL4Backends(rule)
+  const listenMode = rule.listen_mode === 'proxy' ? 'proxy' : 'tcp'
   return {
     ...rule,
     upstream_host: backends[0]?.host || String(rule.upstream_host || '').trim(),
@@ -309,7 +314,15 @@ function normalizeL4Rule(rule = {}) {
     load_balancing: {
       strategy: normalizeLoadBalancingStrategy(rule.load_balancing?.strategy)
     },
-    relay_obfs: rule.relay_obfs === true
+    relay_obfs: rule.relay_obfs === true,
+    listen_mode: listenMode,
+    proxy_entry_auth: {
+      enabled: rule.proxy_entry_auth?.enabled === true,
+      username: String(rule.proxy_entry_auth?.username || ''),
+      password: String(rule.proxy_entry_auth?.password || '')
+    },
+    proxy_egress_mode: listenMode === 'proxy' ? String(rule.proxy_egress_mode || 'relay') : '',
+    proxy_egress_url: listenMode === 'proxy' ? String(rule.proxy_egress_url || '') : ''
   }
 }
 
@@ -905,6 +918,23 @@ export async function renameAgent(agentId, newName) {
     return agent
   }
   const { data } = await api.patch(`/agents/${encodeURIComponent(agentId)}`, { name: newName })
+  return data.agent
+}
+
+export async function updateAgent(agentId, payload = {}) {
+  if (isDev) {
+    await sleep()
+    const agent = mockAgents.find((a) => a.id === agentId)
+    if (!agent) throw new Error('节点不存在')
+    if (Object.prototype.hasOwnProperty.call(payload, 'name')) {
+      agent.name = String(payload.name || '').trim()
+    }
+    if (Object.prototype.hasOwnProperty.call(payload, 'outbound_proxy_url')) {
+      agent.outbound_proxy_url = String(payload.outbound_proxy_url || '').trim()
+    }
+    return { ...agent }
+  }
+  const { data } = await api.patch(`/agents/${encodeURIComponent(agentId)}`, payload)
   return data.agent
 }
 

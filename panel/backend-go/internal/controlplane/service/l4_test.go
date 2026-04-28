@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
@@ -248,6 +249,336 @@ func TestL4RuleFromRowDefaultsLoadBalancingToAdaptive(t *testing.T) {
 
 	if rule.LoadBalancing.Strategy != "adaptive" {
 		t.Fatalf("l4RuleFromRow() load_balancing = %+v", rule.LoadBalancing)
+	}
+}
+
+func TestL4RuleFromRowClearsProxyEntryFieldsForTCPMode(t *testing.T) {
+	rule := l4RuleFromRow(storage.L4RuleRow{
+		ID:                 1,
+		AgentID:            "local",
+		Protocol:           "tcp",
+		ListenHost:         "0.0.0.0",
+		ListenPort:         9000,
+		UpstreamHost:       "upstream",
+		UpstreamPort:       9001,
+		ListenMode:         " TCP ",
+		ProxyEntryAuthJSON: `{"enabled":true,"username":"u","password":"p"}`,
+		ProxyEgressMode:    "relay",
+		ProxyEgressURL:     "socks://user:pass@127.0.0.1:1080",
+	})
+
+	if rule.ListenMode != "tcp" {
+		t.Fatalf("ListenMode = %q", rule.ListenMode)
+	}
+	if rule.ProxyEntryAuth != (L4ProxyEntryAuth{}) || rule.ProxyEgressMode != "" || rule.ProxyEgressURL != "" {
+		t.Fatalf("proxy entry fields = auth=%+v mode=%q url=%q", rule.ProxyEntryAuth, rule.ProxyEgressMode, rule.ProxyEgressURL)
+	}
+}
+
+func TestNormalizeL4RuleInputAcceptsProxyEntryRelayEgress(t *testing.T) {
+	protocol := "tcp"
+	listenMode := "proxy"
+	egressMode := "relay"
+	relayLayers := [][]int{{101}}
+	input := L4RuleInput{
+		Protocol:        &protocol,
+		ListenHost:      stringPtrL4("127.0.0.1"),
+		ListenPort:      intPtrL4(1080),
+		ListenMode:      &listenMode,
+		ProxyEntryAuth:  &L4ProxyEntryAuth{Enabled: true, Username: "u", Password: "p"},
+		ProxyEgressMode: &egressMode,
+		RelayLayers:     &relayLayers,
+	}
+	rule, err := normalizeL4RuleInput(input, L4Rule{}, 1)
+	if err != nil {
+		t.Fatalf("normalizeL4RuleInput() error = %v", err)
+	}
+	if rule.ListenMode != "proxy" || rule.ProxyEgressMode != "relay" {
+		t.Fatalf("proxy entry fields = %+v", rule)
+	}
+	if !rule.ProxyEntryAuth.Enabled || rule.ProxyEntryAuth.Username != "u" || rule.ProxyEntryAuth.Password != "p" {
+		t.Fatalf("ProxyEntryAuth = %+v", rule.ProxyEntryAuth)
+	}
+}
+
+func TestNormalizeL4RuleInputRejectsProxyEntryUDP(t *testing.T) {
+	protocol := "udp"
+	listenMode := "proxy"
+	egressMode := "relay"
+	relayLayers := [][]int{{101}}
+	input := L4RuleInput{
+		Protocol:        &protocol,
+		ListenHost:      stringPtrL4("127.0.0.1"),
+		ListenPort:      intPtrL4(1080),
+		ListenMode:      &listenMode,
+		ProxyEgressMode: &egressMode,
+		RelayLayers:     &relayLayers,
+	}
+	_, err := normalizeL4RuleInput(input, L4Rule{}, 1)
+	if err == nil || !strings.Contains(err.Error(), "listen_mode=proxy requires protocol tcp") {
+		t.Fatalf("error = %v, want proxy udp validation", err)
+	}
+}
+
+func TestNormalizeL4RuleInputRejectsProxyEntryWithoutEgress(t *testing.T) {
+	protocol := "tcp"
+	listenMode := "proxy"
+	input := L4RuleInput{
+		Protocol:   &protocol,
+		ListenHost: stringPtrL4("127.0.0.1"),
+		ListenPort: intPtrL4(1080),
+		ListenMode: &listenMode,
+	}
+	_, err := normalizeL4RuleInput(input, L4Rule{}, 1)
+	if err == nil || !strings.Contains(err.Error(), "proxy_egress_mode") {
+		t.Fatalf("error = %v, want proxy_egress_mode validation", err)
+	}
+}
+
+func TestNormalizeL4RuleInputRejectsProxyEntryMissingProxyEgressURL(t *testing.T) {
+	protocol := "tcp"
+	listenMode := "proxy"
+	egressMode := "proxy"
+	input := L4RuleInput{
+		Protocol:        &protocol,
+		ListenHost:      stringPtrL4("127.0.0.1"),
+		ListenPort:      intPtrL4(1080),
+		ListenMode:      &listenMode,
+		ProxyEgressMode: &egressMode,
+	}
+	_, err := normalizeL4RuleInput(input, L4Rule{}, 1)
+	if err == nil || !strings.Contains(err.Error(), "proxy_egress_url") {
+		t.Fatalf("error = %v, want proxy_egress_url validation", err)
+	}
+}
+
+func TestNormalizeL4RuleInputRejectsInvalidProxyEgressURL(t *testing.T) {
+	protocol := "tcp"
+	listenMode := "proxy"
+	egressMode := "proxy"
+	tests := []string{
+		"127.0.0.1:1080",
+		"ftp://127.0.0.1:1080",
+		"socks://127.0.0.1",
+		"http://127.0.0.1:70000",
+	}
+	for _, egressURL := range tests {
+		t.Run(egressURL, func(t *testing.T) {
+			input := L4RuleInput{
+				Protocol:        &protocol,
+				ListenHost:      stringPtrL4("127.0.0.1"),
+				ListenPort:      intPtrL4(1080),
+				ListenMode:      &listenMode,
+				ProxyEgressMode: &egressMode,
+				ProxyEgressURL:  &egressURL,
+			}
+			_, err := normalizeL4RuleInput(input, L4Rule{}, 1)
+			if err == nil || !strings.Contains(err.Error(), "invalid proxy_egress_url") {
+				t.Fatalf("error = %v, want invalid proxy_egress_url validation", err)
+			}
+		})
+	}
+}
+
+func TestNormalizeL4RuleInputRejectsProxyEntryInvalidEgressMode(t *testing.T) {
+	protocol := "tcp"
+	listenMode := "proxy"
+	egressMode := "direct"
+	input := L4RuleInput{
+		Protocol:        &protocol,
+		ListenHost:      stringPtrL4("127.0.0.1"),
+		ListenPort:      intPtrL4(1080),
+		ListenMode:      &listenMode,
+		ProxyEgressMode: &egressMode,
+	}
+	_, err := normalizeL4RuleInput(input, L4Rule{}, 1)
+	if err == nil || !strings.Contains(err.Error(), "proxy_egress_mode") {
+		t.Fatalf("error = %v, want proxy_egress_mode validation", err)
+	}
+}
+
+func TestNormalizeL4RuleInputAcceptsProxyEntryProxyEgress(t *testing.T) {
+	protocol := "tcp"
+	listenMode := "proxy"
+	egressMode := "proxy"
+	egressURL := "http://user:pass@127.0.0.1:8080"
+	input := L4RuleInput{
+		Protocol:        &protocol,
+		ListenHost:      stringPtrL4("127.0.0.1"),
+		ListenPort:      intPtrL4(1080),
+		ListenMode:      &listenMode,
+		ProxyEgressMode: &egressMode,
+		ProxyEgressURL:  &egressURL,
+	}
+	rule, err := normalizeL4RuleInput(input, L4Rule{}, 1)
+	if err != nil {
+		t.Fatalf("normalizeL4RuleInput() error = %v", err)
+	}
+	if rule.ProxyEgressURL != egressURL {
+		t.Fatalf("ProxyEgressURL = %q", rule.ProxyEgressURL)
+	}
+}
+
+func TestL4RuleServiceUpdateProxyEgressClearsStaleRelayFields(t *testing.T) {
+	current := L4Rule{
+		ID:              1,
+		AgentID:         "local",
+		Name:            "proxy entry",
+		Protocol:        "tcp",
+		ListenHost:      "0.0.0.0",
+		ListenPort:      1080,
+		ListenMode:      "proxy",
+		ProxyEgressMode: "relay",
+		RelayChain:      []int{101},
+		RelayLayers:     [][]int{{101}},
+		RelayObfs:       true,
+		Enabled:         true,
+		Revision:        3,
+	}
+	store := &fakeL4Store{
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"local": {l4RuleToRow(current)},
+		},
+		relayByAgent: map[string][]storage.RelayListenerRow{},
+	}
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	rule, err := svc.Update(context.Background(), "local", 1, L4RuleInput{
+		ProxyEgressMode: stringPtrL4("proxy"),
+		ProxyEgressURL:  stringPtrL4("socks://127.0.0.1:1080"),
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if len(rule.RelayChain) != 0 || len(rule.RelayLayers) != 0 || rule.RelayObfs {
+		t.Fatalf("relay fields = chain=%+v layers=%+v obfs=%v", rule.RelayChain, rule.RelayLayers, rule.RelayObfs)
+	}
+	row := store.l4RulesByID["local"][0]
+	if row.RelayChainJSON != "[]" || row.RelayLayersJSON != "[]" || row.RelayObfs {
+		t.Fatalf("persisted relay fields = chain=%s layers=%s obfs=%v", row.RelayChainJSON, row.RelayLayersJSON, row.RelayObfs)
+	}
+}
+
+func TestNormalizeL4RuleInputClearsProxyEgressURLWhenSwitchingToRelay(t *testing.T) {
+	egressMode := "relay"
+	egressURL := ""
+	relayLayers := [][]int{{101}}
+	fallback := L4Rule{
+		ID:              1,
+		Protocol:        "tcp",
+		ListenHost:      "127.0.0.1",
+		ListenPort:      1080,
+		ListenMode:      "proxy",
+		ProxyEgressMode: "proxy",
+		ProxyEgressURL:  "socks5://user:secret@127.0.0.1:1080",
+		Enabled:         true,
+	}
+	rule, err := normalizeL4RuleInput(L4RuleInput{
+		ProxyEgressMode: &egressMode,
+		ProxyEgressURL:  &egressURL,
+		RelayLayers:     &relayLayers,
+	}, fallback, fallback.ID)
+	if err != nil {
+		t.Fatalf("normalizeL4RuleInput() error = %v", err)
+	}
+	if rule.ProxyEgressMode != "relay" {
+		t.Fatalf("ProxyEgressMode = %q, want relay", rule.ProxyEgressMode)
+	}
+	if rule.ProxyEgressURL != "" {
+		t.Fatalf("ProxyEgressURL = %q, want cleared", rule.ProxyEgressURL)
+	}
+}
+
+func TestL4RuleServiceUpdatePreservesRedactedProxyEntrySecrets(t *testing.T) {
+	current := L4Rule{
+		ID:         1,
+		AgentID:    "local",
+		Name:       "proxy entry",
+		Protocol:   "tcp",
+		ListenHost: "0.0.0.0",
+		ListenPort: 1080,
+		ListenMode: "proxy",
+		ProxyEntryAuth: L4ProxyEntryAuth{
+			Enabled:  true,
+			Username: "client",
+			Password: "entry-secret",
+		},
+		ProxyEgressMode: "proxy",
+		ProxyEgressURL:  "socks://egress:egress-secret@127.0.0.1:1080",
+		Enabled:         true,
+		Revision:        4,
+	}
+	store := &fakeL4Store{
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"local": {l4RuleToRow(current)},
+		},
+	}
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	rule, err := svc.Update(context.Background(), "local", 1, L4RuleInput{
+		Protocol:        stringPtrL4("tcp"),
+		ListenHost:      stringPtrL4("0.0.0.0"),
+		ListenPort:      intPtrL4(1080),
+		ListenMode:      stringPtrL4("proxy"),
+		ProxyEntryAuth:  &L4ProxyEntryAuth{Enabled: true, Username: "client"},
+		ProxyEgressMode: stringPtrL4("proxy"),
+		ProxyEgressURL:  stringPtrL4("socks://egress:xxxxx@127.0.0.1:1080"),
+		Enabled:         boolPtrL4(true),
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if rule.ProxyEntryAuth.Password != "entry-secret" {
+		t.Fatalf("ProxyEntryAuth.Password = %q, want preserved secret", rule.ProxyEntryAuth.Password)
+	}
+	if rule.ProxyEgressURL != "socks://egress:egress-secret@127.0.0.1:1080" {
+		t.Fatalf("ProxyEgressURL = %q, want preserved secret URL", rule.ProxyEgressURL)
+	}
+}
+
+func TestL4RuleServiceUpdateProxyEntryClearsBackendFields(t *testing.T) {
+	store := &fakeL4Store{
+		l4RulesByID: map[string][]storage.L4RuleRow{
+			"local": {{
+				ID:           1,
+				AgentID:      "local",
+				Name:         "forwarding rule",
+				Protocol:     "tcp",
+				ListenHost:   "0.0.0.0",
+				ListenPort:   9000,
+				UpstreamHost: "upstream",
+				UpstreamPort: 9001,
+				BackendsJSON: `[{"host":"upstream","port":9001}]`,
+				Enabled:      true,
+				Revision:     3,
+			}},
+		},
+		relayByAgent: map[string][]storage.RelayListenerRow{
+			"local": {{
+				ID:      7,
+				AgentID: "local",
+				Enabled: true,
+			}},
+		},
+	}
+	svc := NewL4RuleService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, store)
+
+	listenMode := "proxy"
+	egressMode := "relay"
+	rule, err := svc.Update(context.Background(), "local", 1, L4RuleInput{
+		ListenMode:      &listenMode,
+		ProxyEgressMode: &egressMode,
+		RelayLayers:     &[][]int{{7}},
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if len(rule.Backends) != 0 || rule.UpstreamHost != "" || rule.UpstreamPort != 0 {
+		t.Fatalf("rule backend fields = backends=%+v upstream=%q:%d", rule.Backends, rule.UpstreamHost, rule.UpstreamPort)
+	}
+	row := store.l4RulesByID["local"][0]
+	if row.BackendsJSON != "[]" || row.UpstreamHost != "" || row.UpstreamPort != 0 {
+		t.Fatalf("persisted backend fields = backends=%s upstream=%q:%d", row.BackendsJSON, row.UpstreamHost, row.UpstreamPort)
 	}
 }
 

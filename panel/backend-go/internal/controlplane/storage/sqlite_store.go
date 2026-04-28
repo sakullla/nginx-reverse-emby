@@ -85,6 +85,24 @@ func (s *SQLiteStore) ListAgents(ctx context.Context) ([]AgentRow, error) {
 	return agents, nil
 }
 
+func (s *SQLiteStore) loadAgentRevisionState(ctx context.Context, agentID string) (LocalAgentStateRow, error) {
+	var row AgentRow
+	err := s.db.WithContext(ctx).
+		Where("id = ?", agentID).
+		First(&row).Error
+	if err == nil {
+		normalizeAgentRow(&row)
+		return LocalAgentStateRow{
+			DesiredRevision: row.DesiredRevision,
+			CurrentRevision: row.CurrentRevision,
+		}, nil
+	}
+	if err == gorm.ErrRecordNotFound {
+		return LocalAgentStateRow{}, nil
+	}
+	return LocalAgentStateRow{}, err
+}
+
 func (s *SQLiteStore) ListHTTPRules(ctx context.Context, agentID string) ([]HTTPRuleRow, error) {
 	if agentID == "" {
 		agentID = s.localAgentID
@@ -184,9 +202,13 @@ func (s *SQLiteStore) LoadAgentSnapshot(ctx context.Context, agentID string, inp
 	}
 
 	relevantCertRows := filterManagedCertificatesForAgent(certRows, resolvedAgentID, httpRows, relayRows)
+	agentRevisionState, err := s.loadAgentRevisionState(ctx, resolvedAgentID)
+	if err != nil {
+		return Snapshot{}, err
+	}
 	revisionState := LocalAgentStateRow{
-		DesiredRevision: input.DesiredRevision,
-		CurrentRevision: input.CurrentRevision,
+		DesiredRevision: maxInt(input.DesiredRevision, agentRevisionState.DesiredRevision),
+		CurrentRevision: maxInt(input.CurrentRevision, agentRevisionState.CurrentRevision),
 	}
 
 	agentNames, err := s.relayListenerAgentNames(ctx, relayRows)
@@ -524,6 +546,7 @@ func (s *SQLiteStore) initializeSchema(ctx context.Context) error {
 func normalizeAgentRow(row *AgentRow) {
 	row.TagsJSON = defaultJSON(row.TagsJSON, "[]")
 	row.CapabilitiesJSON = defaultJSON(row.CapabilitiesJSON, "[]")
+	row.OutboundProxyURL = defaultString(row.OutboundProxyURL, "")
 	row.Mode = defaultString(row.Mode, "pull")
 	row.LastApplyStatus = defaultString(row.LastApplyStatus, "")
 	row.LastApplyMessage = defaultString(row.LastApplyMessage, "")
@@ -558,6 +581,10 @@ func normalizeL4RuleRow(row *L4RuleRow) {
 	row.TuningJSON = defaultJSON(row.TuningJSON, "{}")
 	row.RelayChainJSON = defaultJSON(row.RelayChainJSON, "[]")
 	row.RelayLayersJSON = defaultJSON(row.RelayLayersJSON, "[]")
+	row.ListenMode = defaultString(row.ListenMode, "tcp")
+	row.ProxyEntryAuthJSON = defaultJSON(row.ProxyEntryAuthJSON, "{}")
+	row.ProxyEgressMode = defaultString(row.ProxyEgressMode, "")
+	row.ProxyEgressURL = defaultString(row.ProxyEgressURL, "")
 	row.TagsJSON = defaultJSON(row.TagsJSON, "[]")
 }
 
@@ -836,6 +863,10 @@ func isSyncL4RuleRowValid(row L4RuleRow) bool {
 		return false
 	}
 
+	if strings.ToLower(strings.TrimSpace(row.ListenMode)) == "proxy" {
+		return protocol == "tcp"
+	}
+
 	if len(parseL4Backends(row.BackendsJSON)) > 0 {
 		return true
 	}
@@ -897,21 +928,25 @@ func SnapshotL4Rules(rows []L4RuleRow) []L4Rule {
 			upstreamPort = backends[0].Port
 		}
 		rules = append(rules, L4Rule{
-			ID:            row.ID,
-			AgentID:       row.AgentID,
-			Name:          row.Name,
-			Protocol:      defaultString(row.Protocol, "tcp"),
-			ListenHost:    defaultString(row.ListenHost, "0.0.0.0"),
-			ListenPort:    row.ListenPort,
-			UpstreamHost:  upstreamHost,
-			UpstreamPort:  upstreamPort,
-			Backends:      backends,
-			LoadBalancing: parseLoadBalancingStrategy(row.LoadBalancingJSON),
-			Tuning:        parseL4Tuning(row.TuningJSON),
-			RelayChain:    parseIntSlice(row.RelayChainJSON),
-			RelayLayers:   parseIntLayers(row.RelayLayersJSON),
-			RelayObfs:     row.RelayObfs,
-			Revision:      int64(row.Revision),
+			ID:              row.ID,
+			AgentID:         row.AgentID,
+			Name:            row.Name,
+			Protocol:        defaultString(row.Protocol, "tcp"),
+			ListenHost:      defaultString(row.ListenHost, "0.0.0.0"),
+			ListenPort:      row.ListenPort,
+			UpstreamHost:    upstreamHost,
+			UpstreamPort:    upstreamPort,
+			Backends:        backends,
+			LoadBalancing:   parseLoadBalancingStrategy(row.LoadBalancingJSON),
+			Tuning:          parseL4Tuning(row.TuningJSON),
+			RelayChain:      parseIntSlice(row.RelayChainJSON),
+			RelayLayers:     parseIntLayers(row.RelayLayersJSON),
+			RelayObfs:       row.RelayObfs,
+			ListenMode:      defaultString(row.ListenMode, "tcp"),
+			ProxyEntryAuth:  parseL4ProxyEntryAuth(row.ProxyEntryAuthJSON),
+			ProxyEgressMode: row.ProxyEgressMode,
+			ProxyEgressURL:  row.ProxyEgressURL,
+			Revision:        int64(row.Revision),
 		})
 	}
 	return rules
@@ -1202,6 +1237,15 @@ func parseL4Tuning(raw string) L4Tuning {
 		return L4Tuning{}
 	}
 	return tuning
+}
+
+func parseL4ProxyEntryAuth(raw string) L4ProxyEntryAuth {
+	var auth L4ProxyEntryAuth
+	if err := json.Unmarshal([]byte(defaultString(raw, "{}")), &auth); err != nil {
+		return L4ProxyEntryAuth{}
+	}
+	auth.Username = strings.TrimSpace(auth.Username)
+	return auth
 }
 
 func parseRelayPins(raw string) []RelayPin {

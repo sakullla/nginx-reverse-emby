@@ -243,11 +243,15 @@ func TestToEmbeddedSnapshotPreservesRelayTransportFields(t *testing.T) {
 			RelayLayers: [][]int{{1, 2}, {3}},
 		}},
 		L4Rules: []storage.L4Rule{{
-			ID:         11,
-			Name:       "tcp-game",
-			Protocol:   "tcp",
-			ListenHost: "0.0.0.0",
-			ListenPort: 19000,
+			ID:              11,
+			Name:            "tcp-game",
+			Protocol:        "tcp",
+			ListenHost:      "0.0.0.0",
+			ListenPort:      19000,
+			ListenMode:      "proxy",
+			ProxyEntryAuth:  storage.L4ProxyEntryAuth{Enabled: true, Username: "client", Password: "secret"},
+			ProxyEgressMode: "proxy",
+			ProxyEgressURL:  "socks5h://egress:pass@127.0.0.1:1080",
 			Backends: []storage.L4Backend{{
 				Host: "relay-echo-test",
 				Port: 18081,
@@ -299,6 +303,15 @@ func TestToEmbeddedSnapshotPreservesRelayTransportFields(t *testing.T) {
 	}
 	if !embedded.L4Rules[0].RelayObfs {
 		t.Fatalf("embedded L4Rules[0].RelayObfs = false, want true")
+	}
+	if embedded.L4Rules[0].ListenMode != "proxy" {
+		t.Fatalf("embedded L4Rules[0].ListenMode = %q, want proxy", embedded.L4Rules[0].ListenMode)
+	}
+	if !embedded.L4Rules[0].ProxyEntryAuth.Enabled || embedded.L4Rules[0].ProxyEntryAuth.Username != "client" || embedded.L4Rules[0].ProxyEntryAuth.Password != "secret" {
+		t.Fatalf("embedded L4Rules[0].ProxyEntryAuth = %+v", embedded.L4Rules[0].ProxyEntryAuth)
+	}
+	if embedded.L4Rules[0].ProxyEgressMode != "proxy" || embedded.L4Rules[0].ProxyEgressURL != "socks5h://egress:pass@127.0.0.1:1080" {
+		t.Fatalf("embedded L4Rules[0] proxy egress = mode %q url %q", embedded.L4Rules[0].ProxyEgressMode, embedded.L4Rules[0].ProxyEgressURL)
 	}
 	if len(embedded.L4Rules[0].RelayLayers) != 2 || embedded.L4Rules[0].RelayLayers[1][1] != 3 {
 		t.Fatalf("embedded L4Rules[0].RelayLayers = %+v", embedded.L4Rules[0].RelayLayers)

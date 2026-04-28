@@ -51,6 +51,7 @@ type BackupAgent struct {
 	RuntimePackageSHA256   string   `json:"runtime_package_sha256,omitempty"`
 	DesiredVersion         string   `json:"desired_version,omitempty"`
 	DesiredRevision        int      `json:"desired_revision,omitempty"`
+	OutboundProxyURL       string   `json:"outbound_proxy_url,omitempty"`
 	Tags                   []string `json:"tags,omitempty"`
 	Capabilities           []string `json:"capabilities,omitempty"`
 	Mode                   string   `json:"mode,omitempty"`
