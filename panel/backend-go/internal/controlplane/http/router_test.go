@@ -1264,6 +1264,134 @@ func TestRouterServesAgentControlEndpoints(t *testing.T) {
 	}
 }
 
+func TestRouterUpdatesAgentOutboundProxyAndRedactsResponse(t *testing.T) {
+	state := &fakeAgentServiceState{}
+	router, err := NewRouter(Dependencies{
+		Config: config.Config{PanelToken: "secret"},
+		SystemService: fakeSystemService{
+			info: service.SystemInfo{
+				Role:              "master",
+				LocalApplyRuntime: "go-agent",
+				DefaultAgentID:    "local",
+				LocalAgentEnabled: true,
+			},
+		},
+		AgentService: fakeAgentService{
+			updateAgent: service.AgentSummary{
+				ID:               "edge-1",
+				Name:             "Edge 1",
+				OutboundProxyURL: "socks://user:pass@127.0.0.1:1080",
+			},
+			state: state,
+		},
+		RuleService:          fakeRuleService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPatch, "/panel-api/agents/edge-1", bytes.NewBufferString(`{"outbound_proxy_url":"socks://user:pass@127.0.0.1:1080"}`))
+	req.Header.Set("X-Panel-Token", "secret")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("PATCH /panel-api/agents/edge-1 = %d body=%s", resp.Code, resp.Body.String())
+	}
+	if state.updateAgentID != "edge-1" || state.updateInput.OutboundProxyURL == nil || *state.updateInput.OutboundProxyURL != "socks://user:pass@127.0.0.1:1080" {
+		t.Fatalf("update state = %+v", state)
+	}
+
+	var payload struct {
+		Agent service.AgentSummary `json:"agent"`
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if payload.Agent.OutboundProxyURL != "socks://user:xxxxx@127.0.0.1:1080" {
+		t.Fatalf("outbound_proxy_url = %q", payload.Agent.OutboundProxyURL)
+	}
+}
+
+func TestRouterRedactsL4ProxyCredentials(t *testing.T) {
+	secretRule := service.L4Rule{
+		ID:         7,
+		AgentID:    "local",
+		Name:       "proxy-entry",
+		Protocol:   "tcp",
+		ListenHost: "0.0.0.0",
+		ListenPort: 1080,
+		ListenMode: "proxy",
+		ProxyEntryAuth: service.L4ProxyEntryAuth{
+			Enabled:  true,
+			Username: "client",
+			Password: "entry-secret",
+		},
+		ProxyEgressMode: "proxy",
+		ProxyEgressURL:  "socks://egress:egress-secret@127.0.0.1:1080",
+		Enabled:         true,
+	}
+	router, err := NewRouter(Dependencies{
+		Config: config.Config{PanelToken: "secret"},
+		SystemService: fakeSystemService{
+			info: service.SystemInfo{
+				Role:              "master",
+				LocalApplyRuntime: "go-agent",
+				DefaultAgentID:    "local",
+				LocalAgentEnabled: true,
+			},
+		},
+		AgentService:         fakeAgentService{},
+		RuleService:          fakeRuleService{},
+		L4RuleService:        fakeL4RuleService{rules: map[string][]service.L4Rule{"local": {secretRule}}, createdRule: secretRule, updatedRule: secretRule, deletedRule: secretRule},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	cases := []struct {
+		name   string
+		method string
+		path   string
+		body   string
+		status int
+		field  string
+	}{
+		{name: "list", method: http.MethodGet, path: "/panel-api/agents/local/l4-rules", status: http.StatusOK, field: "rules"},
+		{name: "create", method: http.MethodPost, path: "/panel-api/agents/local/l4-rules", body: `{}`, status: http.StatusCreated, field: "rule"},
+		{name: "update", method: http.MethodPut, path: "/panel-api/agents/local/l4-rules/7", body: `{}`, status: http.StatusOK, field: "rule"},
+		{name: "delete", method: http.MethodDelete, path: "/panel-api/agents/local/l4-rules/7", status: http.StatusOK, field: "rule"},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(tt.method, tt.path, bytes.NewBufferString(tt.body))
+			req.Header.Set("X-Panel-Token", "secret")
+			req.Header.Set("Content-Type", "application/json")
+			resp := httptest.NewRecorder()
+			router.ServeHTTP(resp, req)
+			if resp.Code != tt.status {
+				t.Fatalf("%s %s = %d body=%s", tt.method, tt.path, resp.Code, resp.Body.String())
+			}
+			body := resp.Body.String()
+			if strings.Contains(body, "entry-secret") || strings.Contains(body, "egress-secret") {
+				t.Fatalf("response leaked secret: %s", body)
+			}
+			if !strings.Contains(body, `"proxy_egress_url":"socks://egress:xxxxx@127.0.0.1:1080"`) {
+				t.Fatalf("response did not redact egress URL: %s", body)
+			}
+			if strings.Contains(body, `"password"`) {
+				t.Fatalf("response included proxy auth password field: %s", body)
+			}
+		})
+	}
+}
+
 func TestRouterServesL4AndVersionPolicyEndpoints(t *testing.T) {
 	router, err := NewRouter(Dependencies{
 		Config: config.Config{PanelToken: "secret"},

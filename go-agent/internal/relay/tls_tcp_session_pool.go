@@ -290,14 +290,14 @@ func dialTLSTCPMux(ctx context.Context, network, target string, chain []Hop, pro
 
 func dialTLSTCPMuxWithResult(ctx context.Context, network, target string, chain []Hop, provider TLSMaterialProvider, options DialOptions) (net.Conn, DialResult, error) {
 	firstHop := chain[0]
-	sessionKey, err := tlsTCPSessionPoolKey(firstHop)
+	sessionKey, err := tlsTCPSessionPoolKey(firstHop, options.OutboundProxyURL)
 	if err != nil {
 		return nil, DialResult{}, err
 	}
 	trafficClass := relayDialTrafficClass(network, options)
 
 	tunnel, release, err := relayTLSTCPSessionPool.getOrDial(ctx, sessionKey, trafficClass, func(dialCtx context.Context) (*tlsTCPTunnel, error) {
-		return dialNewTLSTCPTunnel(dialCtx, firstHop, provider)
+		return dialNewTLSTCPTunnelWithOptions(dialCtx, firstHop, provider, options)
 	})
 	if err != nil {
 		return nil, DialResult{}, err
@@ -319,13 +319,14 @@ func dialTLSTCPMuxWithResult(ctx context.Context, network, target string, chain 
 
 func resolveCandidatesTLSTCPMux(ctx context.Context, target string, chain []Hop, provider TLSMaterialProvider) ([]string, error) {
 	firstHop := chain[0]
-	sessionKey, err := tlsTCPSessionPoolKey(firstHop)
+	options := DialOptions{OutboundProxyURL: OutboundProxyURL()}
+	sessionKey, err := tlsTCPSessionPoolKey(firstHop, options.OutboundProxyURL)
 	if err != nil {
 		return nil, err
 	}
 
 	tunnel, release, err := relayTLSTCPSessionPool.getOrDial(ctx, sessionKey, upstream.TrafficClassUnknown, func(dialCtx context.Context) (*tlsTCPTunnel, error) {
-		return dialNewTLSTCPTunnel(dialCtx, firstHop, provider)
+		return dialNewTLSTCPTunnelWithOptions(dialCtx, firstHop, provider, options)
 	})
 	if err != nil {
 		return nil, err
@@ -345,12 +346,16 @@ func resolveCandidatesTLSTCPMux(ctx context.Context, target string, chain []Hop,
 }
 
 func dialNewTLSTCPTunnel(ctx context.Context, hop Hop, provider TLSMaterialProvider) (*tlsTCPTunnel, error) {
+	return dialNewTLSTCPTunnelWithOptions(ctx, hop, provider, DialOptions{})
+}
+
+func dialNewTLSTCPTunnelWithOptions(ctx context.Context, hop Hop, provider TLSMaterialProvider, options DialOptions) (*tlsTCPTunnel, error) {
 	tlsConfig, err := clientTLSConfig(ctx, provider, hop.Listener, hop.Address, hop.ServerName)
 	if err != nil {
 		return nil, err
 	}
 
-	rawConn, err := dialRelayTCP(ctx, hop.Address)
+	rawConn, err := dialRelayTCPWithProxy(ctx, hop.Address, hop.Listener, options.OutboundProxyURL)
 	if err != nil {
 		return nil, err
 	}
@@ -382,7 +387,7 @@ func dialNewTLSTCPTunnel(ctx context.Context, hop Hop, provider TLSMaterialProvi
 	return tunnel, nil
 }
 
-func tlsTCPSessionPoolKey(hop Hop) (string, error) {
+func tlsTCPSessionPoolKey(hop Hop, outboundProxyURL string) (string, error) {
 	serverName, err := verificationServerName(hop.Address, hop.ServerName)
 	if err != nil {
 		return "", err
@@ -396,7 +401,7 @@ func tlsTCPSessionPoolKey(hop Hop) (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf(
-		"%d|%d|%s|%s|%s|%s|%t|%d|%s|%s",
+		"%d|%d|%s|%s|%s|%s|%t|%d|%s|%s|%s",
 		hop.Listener.ID,
 		hop.Listener.Revision,
 		hop.Address,
@@ -407,6 +412,7 @@ func tlsTCPSessionPoolKey(hop Hop) (string, error) {
 		valueOrZero(hop.Listener.CertificateID),
 		string(pinSetJSON),
 		string(trustedCAJSON),
+		strings.TrimSpace(outboundProxyURL),
 	), nil
 }
 

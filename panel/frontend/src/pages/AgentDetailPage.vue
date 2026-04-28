@@ -75,6 +75,25 @@
       </div>
 
       <div v-if="activeTab === 'info'" class="tab-panel">
+        <div v-if="!agent.is_local" class="agent-setting">
+          <label class="agent-setting__label" for="agent-outbound-proxy">出网代理</label>
+          <div class="agent-setting__control">
+            <input
+              id="agent-outbound-proxy"
+              v-model="outboundProxyURL"
+              class="agent-setting__input"
+              placeholder="socks://user:pass@127.0.0.1:1080"
+            >
+            <button
+              class="btn btn-primary"
+              type="button"
+              :disabled="updateAgent.isPending.value"
+              @click="saveOutboundProxy"
+            >
+              保存
+            </button>
+          </div>
+        </div>
         <div class="info-grid">
           <div class="info-row"><span>版本</span><span>{{ agent.version || agent.runtime_package_version || '—' }}</span></div>
           <div class="info-row"><span>平台</span><span>{{ agent.runtime_package_platform || agent.platform || '—' }}</span></div>
@@ -106,11 +125,13 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useRules } from '../hooks/useRules'
 import { useL4Rules } from '../hooks/useL4Rules'
-import { useAgents } from '../hooks/useAgents'
+import { useAgents, useUpdateAgent } from '../hooks/useAgents'
+import { messageStore } from '../stores/messages'
+import { buildOutboundProxyPayload } from './outboundProxyURL'
 
 const route = useRoute()
 const router = useRouter()
@@ -118,6 +139,8 @@ const agentId = computed(() => route.params.id)
 
 const { data: agentsData, isLoading } = useAgents()
 const agent = computed(() => agentsData.value?.find(a => a.id === agentId.value))
+const updateAgent = useUpdateAgent()
+const outboundProxyURL = ref('')
 
 const { data: httpRulesData } = useRules(agentId)
 const httpRules = computed(() => httpRulesData.value ?? [])
@@ -133,6 +156,26 @@ const tabs = [
   { id: 'l4', label: 'L4 规则' },
   { id: 'info', label: '系统信息' }
 ]
+
+watch(agent, (value) => {
+  outboundProxyURL.value = value?.outbound_proxy_url || ''
+}, { immediate: true })
+
+async function saveOutboundProxy() {
+  if (!agent.value || agent.value.is_local) return
+  let payload
+  try {
+    payload = buildOutboundProxyPayload(agent.value.outbound_proxy_url, outboundProxyURL.value)
+  } catch (error) {
+    messageStore.warning(error.message, '出网代理密码已隐藏')
+    return
+  }
+  if (Object.keys(payload).length === 0) return
+  await updateAgent.mutateAsync({
+    agentId: agent.value.id,
+    payload
+  })
+}
 
 function firstHttpBackend(rule) {
   if (Array.isArray(rule?.backends) && rule.backends.length > 0) {
@@ -234,6 +277,11 @@ function timeAgo(date) {
 .rule-preview-item__backend { color: var(--color-text-tertiary); font-family: var(--font-mono); }
 .empty-hint { text-align: center; color: var(--color-text-muted); padding: 2rem; font-size: 0.875rem; }
 .info-grid { display: flex; flex-direction: column; gap: 0.5rem; }
+.agent-setting { display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 1rem; padding: 1rem; background: var(--color-bg-surface); border: 1px solid var(--color-border-subtle); border-radius: var(--radius-lg); }
+.agent-setting__label { color: var(--color-text-secondary); font-size: 0.875rem; font-weight: 500; }
+.agent-setting__control { display: flex; gap: 0.5rem; align-items: center; }
+.agent-setting__input { flex: 1; min-width: 0; padding: 0.5rem 0.75rem; border: 1px solid var(--color-border-default); border-radius: var(--radius-md); background: var(--color-bg-surface); color: var(--color-text-primary); font-size: 0.875rem; font-family: var(--font-mono); box-sizing: border-box; }
+.agent-setting__input:focus { outline: none; border-color: var(--color-primary); box-shadow: var(--shadow-focus); }
 .info-row { display: flex; justify-content: space-between; padding: 0.75rem 1rem; background: var(--color-bg-surface); border-radius: var(--radius-lg); font-size: 0.875rem; }
 .info-row span:first-child { color: var(--color-text-secondary); }
 .info-row span:last-child { color: var(--color-text-primary); font-weight: 500; }
@@ -249,4 +297,5 @@ function timeAgo(date) {
 @keyframes spin { to { transform: rotate(360deg); } }
 .btn { padding: 0.5rem 1rem; border-radius: var(--radius-lg); font-size: 0.875rem; font-weight: 500; cursor: pointer; transition: all 0.15s; border: none; font-family: inherit; display: inline-flex; align-items: center; gap: 0.375rem; }
 .btn-primary { background: var(--gradient-primary); color: white; }
+.btn:disabled { opacity: 0.6; cursor: not-allowed; }
 </style>

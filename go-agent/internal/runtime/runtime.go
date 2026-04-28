@@ -15,6 +15,7 @@ import (
 type Activator func(ctx context.Context, previous, next model.Snapshot) error
 
 type SnapshotActivationHandlers struct {
+	ActivateAgentConfig         func(context.Context, model.AgentConfig) error
 	ActivateManagedCertificates func(context.Context, []model.ManagedCertificateBundle, []model.ManagedCertificatePolicy) error
 	ActivateHTTPRules           func(context.Context, []model.HTTPRule, []model.RelayListener) error
 	ActivateRelayListeners      func(context.Context, []model.RelayListener) error
@@ -25,6 +26,12 @@ func NewSnapshotActivator(handlers SnapshotActivationHandlers) Activator {
 	return func(ctx context.Context, previous, next model.Snapshot) error {
 		if certificatesChanged(previous, next) && handlers.ActivateManagedCertificates != nil {
 			if err := handlers.ActivateManagedCertificates(ctx, next.Certificates, next.CertificatePolicies); err != nil {
+				return err
+			}
+		}
+
+		if agentConfigChanged(previous, next) && handlers.ActivateAgentConfig != nil {
+			if err := handlers.ActivateAgentConfig(ctx, next.AgentConfig); err != nil {
 				return err
 			}
 		}
@@ -278,6 +285,10 @@ func describeSnapshot(snapshot model.Snapshot) string {
 func certificatesChanged(previous, next model.Snapshot) bool {
 	return !reflect.DeepEqual(previous.Certificates, next.Certificates) ||
 		!reflect.DeepEqual(previous.CertificatePolicies, next.CertificatePolicies)
+}
+
+func agentConfigChanged(previous, next model.Snapshot) bool {
+	return !reflect.DeepEqual(previous.AgentConfig, next.AgentConfig)
 }
 
 func httpRulesChanged(previous, next model.Snapshot) bool {

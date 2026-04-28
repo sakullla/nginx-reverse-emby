@@ -43,7 +43,7 @@
       </div>
 
       <!-- Backends List -->
-      <div class="form-group">
+      <div v-if="!isProxyEntry" class="form-group">
         <div class="backends-header">
           <label class="form-label form-label--required">后端服务器</label>
           <button type="button" class="btn btn--sm btn--secondary" @click="addBackend">
@@ -163,6 +163,48 @@
 
     <!-- Tab 3: Protocol & Listen -->
     <div v-if="activeTab === 'protocol'" class="form-tab-panel">
+      <!-- Proxy Entry -->
+      <div v-if="form.protocol === 'tcp'" class="advanced-group">
+        <div class="advanced-group__title">代理入口</div>
+        <div class="form-row">
+          <div class="form-group">
+            <label class="form-label">监听模式</label>
+            <select v-model="form.listen_mode" class="input">
+              <option value="tcp">TCP 转发</option>
+              <option value="proxy">SOCKS / HTTP 代理</option>
+            </select>
+          </div>
+          <div v-if="form.listen_mode === 'proxy'" class="form-group">
+            <label class="form-label">出口模式</label>
+            <select v-model="form.proxy_egress_mode" class="input">
+              <option value="relay">Relay</option>
+              <option value="proxy">SOCKS / HTTP 代理</option>
+            </select>
+          </div>
+        </div>
+
+        <div v-if="form.listen_mode === 'proxy'" class="advanced-checks">
+          <label class="backend-checkbox">
+            <input v-model="form.proxy_entry_auth.enabled" type="checkbox">
+            <span>启用入口认证</span>
+          </label>
+        </div>
+        <div v-if="form.listen_mode === 'proxy' && form.proxy_entry_auth.enabled" class="form-row">
+          <div class="form-group">
+            <label class="form-label">用户名</label>
+            <input v-model="form.proxy_entry_auth.username" class="input" autocomplete="off">
+          </div>
+          <div class="form-group">
+            <label class="form-label">密码</label>
+            <input v-model="form.proxy_entry_auth.password" class="input" type="password" autocomplete="new-password">
+          </div>
+        </div>
+        <div v-if="form.listen_mode === 'proxy' && form.proxy_egress_mode === 'proxy'" class="form-group">
+          <label class="form-label">出口代理 URL</label>
+          <input v-model="form.proxy_egress_url" class="input" placeholder="socks://user:pass@127.0.0.1:1080">
+        </div>
+      </div>
+
       <!-- Proxy Protocol -->
       <div v-if="form.protocol === 'tcp'" class="advanced-group">
         <div class="advanced-group__title">代理协议 (PROXY Protocol)</div>
@@ -278,6 +320,8 @@ import { computed, ref, watch } from 'vue'
 import { useCreateL4Rule, useUpdateL4Rule } from '../hooks/useL4Rules'
 import { useAllRelayListeners } from '../hooks/useRelayListeners'
 import RelayChainInput from './RelayChainInput.vue'
+import { buildProxyEntryAuthPayload } from './l4/proxyEntryAuth'
+import { buildProxyEgressURLPayload } from './l4/proxyEgressURL'
 import { getDefaultTuning, mergeTuning, resetTuningForProtocol } from './l4/tuningState'
 
 const props = defineProps({
@@ -350,6 +394,14 @@ function createFormState(initialData) {
     tuning: mergeTuning(initialData?.tuning, protocol),
     enabled: initialData?.enabled !== false,
     tags: Array.isArray(initialData?.tags) ? [...initialData.tags] : [],
+    listen_mode: protocol === 'tcp' ? (initialData?.listen_mode || 'tcp') : 'tcp',
+    proxy_entry_auth: {
+      enabled: initialData?.proxy_entry_auth?.enabled === true,
+      username: initialData?.proxy_entry_auth?.username || '',
+      password: initialData?.proxy_entry_auth?.password || '',
+    },
+    proxy_egress_mode: initialData?.proxy_egress_mode || 'relay',
+    proxy_egress_url: initialData?.proxy_egress_url || '',
     relay_layers: getRelayLayers(initialData),
     relay_chain: [],
     relay_obfs: initialData?.relay_obfs === true,
@@ -407,6 +459,7 @@ const hasTuningChanges = computed(() => {
 })
 
 const activeTab = ref('basic')
+const isProxyEntry = computed(() => form.value.protocol === 'tcp' && form.value.listen_mode === 'proxy')
 
 const hasProtocolTuning = computed(() => {
   const defaults = getDefaultTuning(form.value.protocol)
@@ -414,6 +467,7 @@ const hasProtocolTuning = computed(() => {
   return (
     t.proxy_protocol.decode !== defaults.proxy_protocol.decode ||
     t.proxy_protocol.send !== defaults.proxy_protocol.send ||
+    isProxyEntry.value ||
     t.listen.reuseport !== defaults.listen.reuseport ||
     t.listen.tcp_nodelay !== defaults.listen.tcp_nodelay ||
     t.listen.so_keepalive !== defaults.listen.so_keepalive ||
@@ -494,6 +548,7 @@ watch(() => form.value.protocol, (newProto) => {
   form.value.tuning = resetTuningForProtocol(form.value.tuning, newProto)
   if (newProto === 'udp') {
     form.value.relay_obfs = false
+    form.value.listen_mode = 'tcp'
   }
 })
 
@@ -595,6 +650,13 @@ function buildPayload() {
       port: Number(b.port),
     }))
 
+  const proxyEntryAuth = isProxyEntry.value
+    ? buildProxyEntryAuthPayload(props.initialData?.proxy_entry_auth, form.value.proxy_entry_auth)
+    : { enabled: false, username: '', password: '' }
+  const proxyEgressURL = isProxyEntry.value && form.value.proxy_egress_mode === 'proxy'
+    ? buildProxyEgressURLPayload(props.initialData?.proxy_egress_url, form.value.proxy_egress_url)
+    : ''
+
   const payload = {
     protocol: form.value.protocol,
     listen_host: form.value.listen_host.trim(),
@@ -607,6 +669,8 @@ function buildPayload() {
     },
     enabled: form.value.enabled,
     tags: [...sysTags, ...userTags],
+    listen_mode: form.value.protocol === 'tcp' ? form.value.listen_mode : 'tcp',
+    proxy_egress_mode: isProxyEntry.value ? form.value.proxy_egress_mode : '',
     relay_layers: Array.isArray(form.value.relay_layers) ? form.value.relay_layers.map((l) => [...l]) : [],
     relay_chain: flattenRelayLayers(form.value.relay_layers),
     relay_obfs: form.value.protocol === 'tcp'
@@ -614,6 +678,12 @@ function buildPayload() {
       && Array.isArray(form.value.relay_layers)
       && form.value.relay_layers.length > 0
       && form.value.relay_obfs === true,
+  }
+  if (proxyEntryAuth !== undefined) {
+    payload.proxy_entry_auth = proxyEntryAuth
+  }
+  if (proxyEgressURL !== undefined) {
+    payload.proxy_egress_url = proxyEgressURL
   }
 
   // Only send tuning if advanced panel has non-default values or editing existing rule with tuning
@@ -660,13 +730,13 @@ async function handleSubmit() {
   error.value = ''
   form.value.backends.forEach((_, index) => parseBackendAddress(index))
   const validBackends = form.value.backends.filter(b => b.host && b.port)
-  if (validBackends.length === 0) {
+  if (!isProxyEntry.value && validBackends.length === 0) {
     error.value = '至少需要一个有效的后端服务器'
     return
   }
 
-  const payload = buildPayload()
   try {
+    const payload = buildPayload()
     if (isEdit.value) {
       await updateL4Rule.mutateAsync({ id: props.initialData.id, ...payload })
     } else {

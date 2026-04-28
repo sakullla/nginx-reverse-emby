@@ -116,3 +116,44 @@ func TestSnapshotDecodePreservesRelayBindAndPublicFields(t *testing.T) {
 		t.Fatalf("expected relay public_port 443, got %d", snapshot.RelayListeners[0].PublicPort)
 	}
 }
+
+func TestSnapshotDecodePreservesAgentConfigAndL4ProxyEntryFields(t *testing.T) {
+	raw := []byte(`{
+		"agent_config":{"outbound_proxy_url":"socks://127.0.0.1:1080"},
+		"l4_rules":[{
+			"id":1,
+			"protocol":"tcp",
+			"listen_host":"127.0.0.1",
+			"listen_port":1080,
+			"listen_mode":"proxy",
+			"proxy_entry_auth":{"enabled":true,"username":"u","password":"p"},
+			"proxy_egress_mode":"relay",
+			"relay_chain":[101]
+		}]
+	}`)
+
+	var snapshot Snapshot
+	if err := json.Unmarshal(raw, &snapshot); err != nil {
+		t.Fatalf("decode snapshot: %v", err)
+	}
+
+	if snapshot.AgentConfig.OutboundProxyURL != "socks://127.0.0.1:1080" {
+		t.Fatalf("AgentConfig.OutboundProxyURL = %q", snapshot.AgentConfig.OutboundProxyURL)
+	}
+	if len(snapshot.L4Rules) != 1 {
+		t.Fatalf("expected one l4 rule, got %d", len(snapshot.L4Rules))
+	}
+	rule := snapshot.L4Rules[0]
+	if rule.ListenMode != "proxy" {
+		t.Fatalf("ListenMode = %q", rule.ListenMode)
+	}
+	if !rule.ProxyEntryAuth.Enabled || rule.ProxyEntryAuth.Username != "u" || rule.ProxyEntryAuth.Password != "p" {
+		t.Fatalf("ProxyEntryAuth = %+v", rule.ProxyEntryAuth)
+	}
+	if rule.ProxyEgressMode != "relay" {
+		t.Fatalf("ProxyEgressMode = %q", rule.ProxyEgressMode)
+	}
+	if !reflect.DeepEqual(rule.RelayChain, []int{101}) {
+		t.Fatalf("RelayChain = %+v", rule.RelayChain)
+	}
+}

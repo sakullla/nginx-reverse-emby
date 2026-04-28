@@ -10,25 +10,35 @@ type L4ProxyProtocolTuning struct {
 	Send   bool `json:"send,omitempty"`
 }
 
+type L4ProxyEntryAuth struct {
+	Enabled  bool   `json:"enabled,omitempty"`
+	Username string `json:"username,omitempty"`
+	Password string `json:"password,omitempty"`
+}
+
 type L4Tuning struct {
 	ProxyProtocol L4ProxyProtocolTuning `json:"proxy_protocol,omitempty"`
 }
 
 type L4Rule struct {
-	ID            int           `json:"id,omitempty"`
-	Name          string        `json:"name,omitempty"`
-	Protocol      string        `json:"protocol"`
-	ListenHost    string        `json:"listen_host"`
-	ListenPort    int           `json:"listen_port"`
-	UpstreamHost  string        `json:"upstream_host"`
-	UpstreamPort  int           `json:"upstream_port"`
-	Backends      []L4Backend   `json:"backends,omitempty"`
-	LoadBalancing LoadBalancing `json:"load_balancing,omitempty"`
-	Tuning        L4Tuning      `json:"tuning,omitempty"`
-	RelayChain    []int         `json:"relay_chain,omitempty"`
-	RelayLayers   [][]int       `json:"relay_layers,omitempty"`
-	RelayObfs     bool          `json:"relay_obfs,omitempty"`
-	Enabled       bool          `json:"enabled,omitempty"`
-	Tags          []string      `json:"tags,omitempty"`
-	Revision      int64         `json:"revision,omitempty"`
+	ID              int              `json:"id,omitempty"`
+	Name            string           `json:"name,omitempty"`
+	Protocol        string           `json:"protocol"`
+	ListenHost      string           `json:"listen_host"`
+	ListenPort      int              `json:"listen_port"`
+	UpstreamHost    string           `json:"upstream_host"`
+	UpstreamPort    int              `json:"upstream_port"`
+	Backends        []L4Backend      `json:"backends,omitempty"`
+	LoadBalancing   LoadBalancing    `json:"load_balancing,omitempty"`
+	Tuning          L4Tuning         `json:"tuning,omitempty"`
+	RelayChain      []int            `json:"relay_chain,omitempty"`
+	RelayLayers     [][]int          `json:"relay_layers,omitempty"`
+	RelayObfs       bool             `json:"relay_obfs,omitempty"`
+	ListenMode      string           `json:"listen_mode,omitempty"`
+	ProxyEntryAuth  L4ProxyEntryAuth `json:"proxy_entry_auth,omitempty"`
+	ProxyEgressMode string           `json:"proxy_egress_mode,omitempty"`
+	ProxyEgressURL  string           `json:"proxy_egress_url,omitempty"`
+	Enabled         bool             `json:"enabled,omitempty"`
+	Tags            []string         `json:"tags,omitempty"`
+	Revision        int64            `json:"revision,omitempty"`
 }

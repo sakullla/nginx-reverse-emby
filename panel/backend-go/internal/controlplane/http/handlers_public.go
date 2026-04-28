@@ -64,6 +64,9 @@ func heartbeatSyncPayload(reply service.HeartbeatReply, baseURL string) map[stri
 		"current_revision": reply.CurrentRevision,
 		"relay_listeners":  reply.RelayListeners,
 	}
+	payload["agent_config"] = service.AgentRuntimeConfig{
+		OutboundProxyURL: reply.OutboundProxyURL,
+	}
 	if reply.VersionPackage != "" {
 		payload["version_package"] = absolutePublicURL(baseURL, reply.VersionPackage)
 	}

@@ -16,6 +16,7 @@ import (
 	"io"
 	"math/big"
 	"net"
+	"net/http"
 	"strconv"
 	"sync"
 	"testing"
@@ -23,6 +24,7 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayplan"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
@@ -211,6 +213,330 @@ func TestTCPDirectProxy(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		// allow upstream goroutine to exit naturally
+	}
+}
+
+func TestL4ProxyEntrySOCKS5RelayEgress(t *testing.T) {
+	clientConn, relayConn := net.Pipe()
+	defer relayConn.Close()
+	go func() {
+		defer clientConn.Close()
+		_, _ = io.Copy(clientConn, clientConn)
+	}()
+
+	listenPort := pickFreeTCPPort(t)
+	rule := model.L4Rule{
+		Protocol:        "tcp",
+		ListenHost:      "127.0.0.1",
+		ListenPort:      listenPort,
+		ListenMode:      "proxy",
+		ProxyEgressMode: "relay",
+		RelayChain:      []int{2},
+	}
+	srv, err := NewServer(context.Background(), []model.L4Rule{rule}, []model.RelayListener{{
+		ID:         2,
+		Name:       "two",
+		ListenHost: "127.0.0.1",
+		ListenPort: 9002,
+		Enabled:    true,
+		TLSMode:    "pin_only",
+		PinSet:     []model.RelayPin{{Type: "sha256", Value: "pin2"}},
+	}}, &testL4RelayProvider{})
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	defer srv.Close()
+	dialer := &fakeL4RelayPathDialer{conn: relayConn}
+	srv.relayPathDialer = dialer
+
+	conn, err := proxyproto.Dial(context.Background(), fmt.Sprintf("socks5://127.0.0.1:%d", listenPort), "example.com:443")
+	if err != nil {
+		t.Fatalf("Dial() error = %v", err)
+	}
+	defer conn.Close()
+
+	payload := []byte("proxy-relay")
+	if _, err := conn.Write(payload); err != nil {
+		t.Fatalf("write payload: %v", err)
+	}
+	reply := make([]byte, len(payload))
+	if _, err := io.ReadFull(conn, reply); err != nil {
+		t.Fatalf("read reply: %v", err)
+	}
+	if !bytes.Equal(payload, reply) {
+		t.Fatalf("reply = %q, want %q", reply, payload)
+	}
+	if !waitForL4RelayPathCalls(dialer, 2) {
+		t.Fatalf("dialed paths = %+v, want path [2]", dialer.calledPaths())
+	}
+}
+
+func TestL4ProxyEntryHTTPConnectProxyEgress(t *testing.T) {
+	backend := newTCPEchoListener(t)
+	defer backend.Close()
+	upstreamProxyURL := startL4ProxyEntryUpstreamProxy(t)
+
+	listenPort := pickFreeTCPPort(t)
+	rule := model.L4Rule{
+		Protocol:        "tcp",
+		ListenHost:      "127.0.0.1",
+		ListenPort:      listenPort,
+		ListenMode:      "proxy",
+		ProxyEgressMode: "proxy",
+		ProxyEgressURL:  upstreamProxyURL,
+	}
+	srv, err := NewServer(context.Background(), []model.L4Rule{rule}, nil, nil)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	defer srv.Close()
+
+	target := net.JoinHostPort("127.0.0.1", strconv.Itoa(backend.Port()))
+	conn, err := proxyproto.Dial(context.Background(), fmt.Sprintf("http://127.0.0.1:%d", listenPort), target)
+	if err != nil {
+		t.Fatalf("Dial() error = %v", err)
+	}
+	defer conn.Close()
+
+	payload := []byte("proxy-egress")
+	if _, err := conn.Write(payload); err != nil {
+		t.Fatalf("write payload: %v", err)
+	}
+	reply := make([]byte, len(payload))
+	if _, err := io.ReadFull(conn, reply); err != nil {
+		t.Fatalf("read reply: %v", err)
+	}
+	if !bytes.Equal(payload, reply) {
+		t.Fatalf("reply = %q, want %q", reply, payload)
+	}
+}
+
+func TestL4ProxyEntryClosesUpstreamWhenClientSuccessReplyFails(t *testing.T) {
+	upstream := &closeObservedConn{}
+	dialer := &fakeL4RelayPathDialer{conn: upstream}
+	srv := &Server{
+		ctx: context.Background(),
+		relayListenersByID: map[int]model.RelayListener{
+			2: {
+				ID:         2,
+				Name:       "two",
+				ListenHost: "127.0.0.1",
+				ListenPort: 9002,
+				Enabled:    true,
+				TLSMode:    "pin_only",
+				PinSet:     []model.RelayPin{{Type: "sha256", Value: "pin2"}},
+			},
+		},
+		relayPathDialer: dialer,
+	}
+
+	client := &writeFailAfterRequestConn{
+		reader: bytes.NewBufferString("CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n"),
+	}
+	srv.handleProxyEntryConnection(client, model.L4Rule{
+		Protocol:        "tcp",
+		ListenMode:      "proxy",
+		ProxyEgressMode: "relay",
+		RelayChain:      []int{2},
+	})
+
+	if !upstream.closed {
+		t.Fatalf("upstream was not closed after client success reply failed")
+	}
+}
+
+func TestL4ProxyEntryHTTPConnectDefersSuccessUntilUpstreamConnected(t *testing.T) {
+	upstreamProxyURL := startRejectingL4ProxyEntryUpstreamProxy(t)
+
+	listenPort := pickFreeTCPPort(t)
+	rule := model.L4Rule{
+		Protocol:        "tcp",
+		ListenHost:      "127.0.0.1",
+		ListenPort:      listenPort,
+		ListenMode:      "proxy",
+		ProxyEgressMode: "proxy",
+		ProxyEgressURL:  upstreamProxyURL,
+	}
+	srv, err := NewServer(context.Background(), []model.L4Rule{rule}, nil, nil)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	defer srv.Close()
+
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(listenPort)), 5*time.Second)
+	if err != nil {
+		t.Fatalf("DialTimeout() error = %v", err)
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("SetDeadline() error = %v", err)
+	}
+
+	_, err = fmt.Fprint(conn, "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n")
+	if err != nil {
+		t.Fatalf("write CONNECT: %v", err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("ReadResponse() error = %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode == http.StatusOK {
+		t.Fatalf("CONNECT status = %s, want non-200 when upstream dial fails", resp.Status)
+	}
+}
+
+func TestL4ProxyEntrySOCKS5DefersSuccessUntilUpstreamConnected(t *testing.T) {
+	upstreamProxyURL := startRejectingL4ProxyEntryUpstreamProxy(t)
+
+	listenPort := pickFreeTCPPort(t)
+	rule := model.L4Rule{
+		Protocol:        "tcp",
+		ListenHost:      "127.0.0.1",
+		ListenPort:      listenPort,
+		ListenMode:      "proxy",
+		ProxyEgressMode: "proxy",
+		ProxyEgressURL:  upstreamProxyURL,
+	}
+	srv, err := NewServer(context.Background(), []model.L4Rule{rule}, nil, nil)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	defer srv.Close()
+
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(listenPort)), 5*time.Second)
+	if err != nil {
+		t.Fatalf("DialTimeout() error = %v", err)
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("SetDeadline() error = %v", err)
+	}
+
+	if _, err := conn.Write([]byte{0x05, 0x01, 0x00}); err != nil {
+		t.Fatalf("write methods: %v", err)
+	}
+	methodReply := make([]byte, 2)
+	if _, err := io.ReadFull(conn, methodReply); err != nil {
+		t.Fatalf("read method reply: %v", err)
+	}
+	if !bytes.Equal(methodReply, []byte{0x05, 0x00}) {
+		t.Fatalf("method reply = %v, want no-auth selection", methodReply)
+	}
+
+	if _, err := conn.Write([]byte{0x05, 0x01, 0x00, 0x03, 11}); err != nil {
+		t.Fatalf("write connect header: %v", err)
+	}
+	if _, err := conn.Write([]byte("example.com")); err != nil {
+		t.Fatalf("write connect host: %v", err)
+	}
+	if _, err := conn.Write([]byte{0x01, 0xbb}); err != nil {
+		t.Fatalf("write connect port: %v", err)
+	}
+
+	reply := make([]byte, 10)
+	if _, err := io.ReadFull(conn, reply); err != nil {
+		t.Fatalf("read connect reply: %v", err)
+	}
+	if reply[1] == 0x00 {
+		t.Fatalf("SOCKS5 reply = success, want failure when upstream dial fails: %v", reply)
+	}
+}
+
+func TestL4ProxyEntrySOCKS4DefersSuccessUntilUpstreamConnected(t *testing.T) {
+	upstreamProxyURL := startRejectingL4ProxyEntryUpstreamProxy(t)
+
+	listenPort := pickFreeTCPPort(t)
+	rule := model.L4Rule{
+		Protocol:        "tcp",
+		ListenHost:      "127.0.0.1",
+		ListenPort:      listenPort,
+		ListenMode:      "proxy",
+		ProxyEgressMode: "proxy",
+		ProxyEgressURL:  upstreamProxyURL,
+	}
+	srv, err := NewServer(context.Background(), []model.L4Rule{rule}, nil, nil)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	defer srv.Close()
+
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(listenPort)), 5*time.Second)
+	if err != nil {
+		t.Fatalf("DialTimeout() error = %v", err)
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("SetDeadline() error = %v", err)
+	}
+
+	if _, err := conn.Write([]byte{0x04, 0x01, 0x01, 0xbb, 127, 0, 0, 1}); err != nil {
+		t.Fatalf("write SOCKS4 header: %v", err)
+	}
+	if _, err := conn.Write([]byte("user\x00")); err != nil {
+		t.Fatalf("write SOCKS4 user: %v", err)
+	}
+
+	reply := make([]byte, 8)
+	if _, err := io.ReadFull(conn, reply); err != nil {
+		t.Fatalf("read SOCKS4 reply: %v", err)
+	}
+	if reply[1] == 0x5a {
+		t.Fatalf("SOCKS4 reply = success, want failure when upstream dial fails: %v", reply)
+	}
+}
+
+func TestL4ProxyEntryHTTPConnectProxyEgressPreservesCoalescedTunnelBytes(t *testing.T) {
+	backend := newTCPEchoListener(t)
+	defer backend.Close()
+	upstreamProxyURL := startL4ProxyEntryUpstreamProxy(t)
+
+	listenPort := pickFreeTCPPort(t)
+	rule := model.L4Rule{
+		Protocol:        "tcp",
+		ListenHost:      "127.0.0.1",
+		ListenPort:      listenPort,
+		ListenMode:      "proxy",
+		ProxyEgressMode: "proxy",
+		ProxyEgressURL:  upstreamProxyURL,
+	}
+	srv, err := NewServer(context.Background(), []model.L4Rule{rule}, nil, nil)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	defer srv.Close()
+
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(listenPort)), 5*time.Second)
+	if err != nil {
+		t.Fatalf("DialTimeout() error = %v", err)
+	}
+	defer conn.Close()
+	if err := conn.SetDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatalf("SetDeadline() error = %v", err)
+	}
+
+	target := net.JoinHostPort("127.0.0.1", strconv.Itoa(backend.Port()))
+	payload := []byte("coalesced-connect-payload")
+	if _, err := fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n%s", target, target, payload); err != nil {
+		t.Fatalf("write CONNECT and payload: %v", err)
+	}
+
+	reader := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(reader, nil)
+	if err != nil {
+		t.Fatalf("ReadResponse() error = %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("CONNECT status = %s", resp.Status)
+	}
+
+	reply := make([]byte, len(payload))
+	if _, err := io.ReadFull(reader, reply); err != nil {
+		t.Fatalf("read reply: %v", err)
+	}
+	if !bytes.Equal(payload, reply) {
+		t.Fatalf("reply = %q, want %q", reply, payload)
 	}
 }
 
@@ -1644,6 +1970,41 @@ func (c *prefetchProbeConn) SetReadDeadline(_ time.Time) error {
 	return nil
 }
 func (c *prefetchProbeConn) SetWriteDeadline(_ time.Time) error { return nil }
+
+type writeFailAfterRequestConn struct {
+	reader *bytes.Buffer
+}
+
+func (c *writeFailAfterRequestConn) Read(p []byte) (int, error) {
+	return c.reader.Read(p)
+}
+
+func (c *writeFailAfterRequestConn) Write(_ []byte) (int, error) {
+	return 0, io.ErrClosedPipe
+}
+
+func (c *writeFailAfterRequestConn) Close() error                       { return nil }
+func (c *writeFailAfterRequestConn) LocalAddr() net.Addr                { return &net.TCPAddr{} }
+func (c *writeFailAfterRequestConn) RemoteAddr() net.Addr               { return &net.TCPAddr{} }
+func (c *writeFailAfterRequestConn) SetDeadline(_ time.Time) error      { return nil }
+func (c *writeFailAfterRequestConn) SetReadDeadline(_ time.Time) error  { return nil }
+func (c *writeFailAfterRequestConn) SetWriteDeadline(_ time.Time) error { return nil }
+
+type closeObservedConn struct {
+	closed bool
+}
+
+func (c *closeObservedConn) Read(_ []byte) (int, error)  { return 0, io.EOF }
+func (c *closeObservedConn) Write(p []byte) (int, error) { return len(p), nil }
+func (c *closeObservedConn) Close() error {
+	c.closed = true
+	return nil
+}
+func (c *closeObservedConn) LocalAddr() net.Addr                { return &net.TCPAddr{} }
+func (c *closeObservedConn) RemoteAddr() net.Addr               { return &net.TCPAddr{} }
+func (c *closeObservedConn) SetDeadline(_ time.Time) error      { return nil }
+func (c *closeObservedConn) SetReadDeadline(_ time.Time) error  { return nil }
+func (c *closeObservedConn) SetWriteDeadline(_ time.Time) error { return nil }
 
 type timeoutNetError struct{}
 
@@ -3449,6 +3810,85 @@ func newTCPEchoListener(t *testing.T) *tcpEchoListener {
 	}()
 
 	return &tcpEchoListener{ln: ln}
+}
+
+func startL4ProxyEntryUpstreamProxy(t *testing.T) string {
+	t.Helper()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen upstream proxy: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(client net.Conn) {
+				defer client.Close()
+				req, err := proxyproto.ReadClientRequest(context.Background(), client, proxyproto.EntryAuth{})
+				if err != nil {
+					return
+				}
+				upstream, err := net.DialTimeout("tcp", req.Target, 5*time.Second)
+				if err != nil {
+					_ = proxyproto.WriteClientRequestFailure(client, req, 0)
+					return
+				}
+				defer upstream.Close()
+				if err := proxyproto.WriteClientRequestSuccess(client, req); err != nil {
+					return
+				}
+				copyTCPPairForTest(client, upstream)
+			}(conn)
+		}
+	}()
+
+	return "http://" + ln.Addr().String()
+}
+
+func startRejectingL4ProxyEntryUpstreamProxy(t *testing.T) string {
+	t.Helper()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen rejecting upstream proxy: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(client net.Conn) {
+				defer client.Close()
+				_ = client.SetDeadline(time.Now().Add(5 * time.Second))
+				_, _ = proxyproto.ReadClientRequest(context.Background(), client, proxyproto.EntryAuth{})
+			}(conn)
+		}
+	}()
+
+	return "http://" + ln.Addr().String()
+}
+
+func copyTCPPairForTest(a net.Conn, b net.Conn) {
+	done := make(chan struct{}, 2)
+	go func() {
+		_, _ = io.Copy(a, b)
+		closeTCPWrite(a)
+		done <- struct{}{}
+	}()
+	go func() {
+		_, _ = io.Copy(b, a)
+		closeTCPWrite(b)
+		done <- struct{}{}
+	}()
+	<-done
 }
 
 func (l *tcpEchoListener) Close() error {

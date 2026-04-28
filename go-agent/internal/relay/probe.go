@@ -172,12 +172,13 @@ func probeRelayRequestQUIC(ctx context.Context, hop Hop, provider TLSMaterialPro
 }
 
 func probeRelayRequestTLSTCPMux(ctx context.Context, hop Hop, provider TLSMaterialProvider, request relayOpenFrame) (relayResponse, error) {
-	sessionKey, err := tlsTCPSessionPoolKey(hop)
+	options := DialOptions{OutboundProxyURL: OutboundProxyURL()}
+	sessionKey, err := tlsTCPSessionPoolKey(hop, options.OutboundProxyURL)
 	if err != nil {
 		return relayResponse{}, err
 	}
 	tunnel, release, err := relayTLSTCPSessionPool.getOrDial(ctx, sessionKey, upstream.TrafficClassUnknown, func(dialCtx context.Context) (*tlsTCPTunnel, error) {
-		return dialNewTLSTCPTunnel(dialCtx, hop, provider)
+		return dialNewTLSTCPTunnelWithOptions(dialCtx, hop, provider, options)
 	})
 	if err != nil {
 		return relayResponse{}, err

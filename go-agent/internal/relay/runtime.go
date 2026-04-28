@@ -10,15 +10,18 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/quic-go/quic-go"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
 type DialOptions struct {
-	InitialPayload []byte
-	TrafficClass   upstream.TrafficClass
+	InitialPayload   []byte
+	TrafficClass     upstream.TrafficClass
+	OutboundProxyURL string
 }
 
 type DialResult struct {
@@ -33,6 +36,7 @@ type relayPathPlanner interface {
 var relayPlanner relayPathPlanner
 var relayRuntimeScore = upstream.NewScoreStore(time.Now)
 var relayVerifiedFallbacks = newRelayVerifiedFallbackStore()
+var relayOutboundProxyURL atomic.Value
 
 const relayQUICProbeInterval = 30 * time.Second
 
@@ -46,11 +50,12 @@ func setRelayPlannerForTest(planner relayPathPlanner) func() {
 
 func (o DialOptions) clone() DialOptions {
 	if len(o.InitialPayload) == 0 {
-		return DialOptions{TrafficClass: o.TrafficClass}
+		return DialOptions{TrafficClass: o.TrafficClass, OutboundProxyURL: o.OutboundProxyURL}
 	}
 	return DialOptions{
-		InitialPayload: append([]byte(nil), o.InitialPayload...),
-		TrafficClass:   o.TrafficClass,
+		InitialPayload:   append([]byte(nil), o.InitialPayload...),
+		TrafficClass:     o.TrafficClass,
+		OutboundProxyURL: o.OutboundProxyURL,
 	}
 }
 
@@ -315,6 +320,9 @@ func DialWithResult(ctx context.Context, network, target string, chain []Hop, pr
 	if len(opts) > 0 {
 		options = opts[0].clone()
 	}
+	if strings.TrimSpace(options.OutboundProxyURL) == "" {
+		options.OutboundProxyURL = OutboundProxyURL()
+	}
 	if provider == nil {
 		return nil, DialResult{}, fmt.Errorf("tls material provider is required")
 	}
@@ -336,6 +344,15 @@ func DialWithResult(ctx context.Context, network, target string, chain []Hop, pr
 	}
 
 	transportMode := selectRelayRuntimeTransport(firstHop)
+	if strings.TrimSpace(options.OutboundProxyURL) != "" && transportMode == ListenerTransportModeQUIC {
+		if !firstHop.Listener.AllowTransportFallback {
+			return nil, DialResult{}, fmt.Errorf("outbound proxy does not support quic relay transport")
+		}
+		if !relayVerifiedFallbackAvailable(firstHop) {
+			return nil, DialResult{}, fmt.Errorf("outbound proxy requires a verified tls_tcp fallback for quic relay transport")
+		}
+		transportMode = ListenerTransportModeTLSTCP
+	}
 
 	if transportMode == ListenerTransportModeQUIC {
 		if !consumeRelayQUICProbe(firstHop) {
@@ -380,6 +397,15 @@ tlsTCPDial:
 	markRelayVerifiedFallback(firstHop)
 	result.TransportMode = transportMode
 	return conn, result, nil
+}
+
+func SetOutboundProxyURL(raw string) {
+	relayOutboundProxyURL.Store(strings.TrimSpace(raw))
+}
+
+func OutboundProxyURL() string {
+	value, _ := relayOutboundProxyURL.Load().(string)
+	return strings.TrimSpace(value)
 }
 
 func ResolveCandidates(ctx context.Context, target string, chain []Hop, provider TLSMaterialProvider) ([]string, error) {
@@ -615,6 +641,21 @@ func relayDialOptionsFromMetadata(network string, metadata map[string]any) DialO
 		class = relayDialTrafficClass(network, DialOptions{})
 	}
 	return DialOptions{TrafficClass: class}
+}
+
+func dialRelayTCPWithProxy(ctx context.Context, address string, _ Listener, proxyURL string) (net.Conn, error) {
+	if strings.TrimSpace(proxyURL) == "" {
+		return dialRelayTCP(ctx, address)
+	}
+	dialCtx, cancel := context.WithTimeout(ctx, getRelayDialTimeout())
+	defer cancel()
+
+	conn, err := proxyproto.Dial(dialCtx, proxyURL, address)
+	if err != nil {
+		return nil, err
+	}
+	tuneBulkRelayConn(conn)
+	return conn, nil
 }
 
 // dialTLSTCP is the legacy one-stream-per-TLS-connection path. Runtime relay

@@ -7,6 +7,7 @@ export {
   importBackupPreview,
   fetchBackupResourceCounts,
   fetchAgents,
+  updateAgent,
   fetchAgentStats,
   fetchRules,
   createRule,

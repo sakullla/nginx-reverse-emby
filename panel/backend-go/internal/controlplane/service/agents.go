@@ -60,6 +60,7 @@ type AgentSummary struct {
 	PackageSyncStatus      string   `json:"package_sync_status"`
 	DesiredVersion         string   `json:"desired_version"`
 	Tags                   []string `json:"tags"`
+	OutboundProxyURL       string   `json:"outbound_proxy_url"`
 	Mode                   string   `json:"mode"`
 	DesiredRevision        int      `json:"desired_revision"`
 	CurrentRevision        int      `json:"current_revision"`
@@ -142,6 +143,11 @@ type HeartbeatReply struct {
 	RelayListeners      []storage.RelayListener            `json:"relay_listeners"`
 	Certificates        []storage.ManagedCertificateBundle `json:"certificates"`
 	CertificatePolicies []storage.ManagedCertificatePolicy `json:"certificate_policies"`
+	OutboundProxyURL    string                             `json:"-"`
+}
+
+type AgentRuntimeConfig struct {
+	OutboundProxyURL string `json:"outbound_proxy_url"`
 }
 
 type RuntimePackageInfo struct {
@@ -165,12 +171,13 @@ type RegisterRequest struct {
 }
 
 type UpdateAgentRequest struct {
-	Name         *string   `json:"name,omitempty"`
-	AgentURL     *string   `json:"agent_url,omitempty"`
-	AgentToken   *string   `json:"agent_token,omitempty"`
-	Version      *string   `json:"version,omitempty"`
-	Tags         *[]string `json:"tags,omitempty"`
-	Capabilities *[]string `json:"capabilities,omitempty"`
+	Name             *string   `json:"name,omitempty"`
+	AgentURL         *string   `json:"agent_url,omitempty"`
+	AgentToken       *string   `json:"agent_token,omitempty"`
+	Version          *string   `json:"version,omitempty"`
+	Tags             *[]string `json:"tags,omitempty"`
+	Capabilities     *[]string `json:"capabilities,omitempty"`
+	OutboundProxyURL *string   `json:"outbound_proxy_url,omitempty"`
 }
 
 type AgentStats map[string]any
@@ -442,11 +449,39 @@ func (s *agentService) Update(ctx context.Context, agentID string, input UpdateA
 	if input.Capabilities != nil {
 		row.CapabilitiesJSON = marshalStringArray(normalizeCapabilities(*input.Capabilities))
 	}
+	if input.OutboundProxyURL != nil {
+		previousOutboundProxyURL := strings.TrimSpace(row.OutboundProxyURL)
+		outboundProxyURL, err := normalizeOutboundProxyURLUpdate(*input.OutboundProxyURL, row.OutboundProxyURL)
+		if err != nil {
+			return AgentSummary{}, err
+		}
+		if outboundProxyURL != "" {
+			if err := validateL4ProxyEgressURL(outboundProxyURL); err != nil {
+				return AgentSummary{}, fmt.Errorf("%w: invalid outbound_proxy_url: %v", ErrInvalidArgument, err)
+			}
+		}
+		row.OutboundProxyURL = outboundProxyURL
+		if outboundProxyURL != previousOutboundProxyURL {
+			allocator, err := newConfigIdentityAllocatorFromStore(ctx, s.cfg, s.store)
+			if err != nil {
+				return AgentSummary{}, err
+			}
+			row.DesiredRevision = allocator.AllocateRevisionForAgent(row.ID, row.DesiredRevision)
+		}
+	}
 
 	if err := s.store.SaveAgent(ctx, row); err != nil {
 		return AgentSummary{}, err
 	}
 	return s.summaryForRow(ctx, row)
+}
+
+func normalizeOutboundProxyURLUpdate(raw string, fallback string) (string, error) {
+	normalized, err := normalizeProxyEgressURLUpdate(raw, fallback)
+	if err != nil {
+		return "", fmt.Errorf("%w: outbound_proxy_url password is redacted; re-enter the password before saving changes", ErrInvalidArgument)
+	}
+	return normalized, nil
 }
 
 func (s *agentService) Delete(ctx context.Context, agentID string) (AgentSummary, error) {
@@ -678,6 +713,7 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 		RelayListeners:      snapshot.RelayListeners,
 		Certificates:        snapshot.Certificates,
 		CertificatePolicies: snapshot.CertificatePolicies,
+		OutboundProxyURL:    strings.TrimSpace(row.OutboundProxyURL),
 	}
 	if snapshot.VersionPackage != nil {
 		pkgCopy := *snapshot.VersionPackage
@@ -841,6 +877,7 @@ func (s *agentService) summaryForRow(ctx context.Context, row storage.AgentRow) 
 		PackageSyncStatus:      packageSyncStatus,
 		DesiredVersion:         row.DesiredVersion,
 		Tags:                   parseStringArray(row.TagsJSON),
+		OutboundProxyURL:       strings.TrimSpace(row.OutboundProxyURL),
 		Mode:                   defaultString(row.Mode, "pull"),
 		DesiredRevision:        row.DesiredRevision,
 		CurrentRevision:        row.CurrentRevision,

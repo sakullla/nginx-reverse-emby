@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"os"
@@ -82,6 +83,29 @@ func TestBootstrapSQLiteSchemaCreatesFreshPanelDatabaseWithoutSQLFixtures(t *tes
 	if localStateRows != 1 {
 		t.Fatalf("expected exactly one local_agent_state row, got %d", localStateRows)
 	}
+}
+
+func TestBootstrapSQLiteSchemaCreatesProxyColumnsWithDefaults(t *testing.T) {
+	dataRoot := t.TempDir()
+
+	db, err := openSQLiteForTest(filepath.Join(dataRoot, "panel.db"))
+	if err != nil {
+		t.Fatalf("openSQLiteForTest() error = %v", err)
+	}
+	defer closeSQLiteForTest(t, db)
+
+	if err := BootstrapSQLiteSchema(t.Context(), db); err != nil {
+		t.Fatalf("BootstrapSQLiteSchema() error = %v", err)
+	}
+
+	agentColumns := loadSQLiteTableInfo(t, db, "agents")
+	assertSQLiteColumnContract(t, agentColumns, "outbound_proxy_url", 1, `""`)
+
+	l4Columns := loadSQLiteTableInfo(t, db, "l4_rules")
+	assertSQLiteColumnContract(t, l4Columns, "listen_mode", 1, `"tcp"`)
+	assertSQLiteColumnContract(t, l4Columns, "proxy_entry_auth", 1, `"{}"`)
+	assertSQLiteColumnContract(t, l4Columns, "proxy_egress_mode", 1, `""`)
+	assertSQLiteColumnContract(t, l4Columns, "proxy_egress_url", 1, `""`)
 }
 
 func TestBootstrapSQLiteSchemaUpgradesLegacySQLiteAndNormalizesBackfills(t *testing.T) {
@@ -398,6 +422,89 @@ func TestStorePersistsL4RulesAndVersionPolicies(t *testing.T) {
 	}
 }
 
+func TestSQLiteStorePersistsAgentOutboundProxyURL(t *testing.T) {
+	ctx := context.Background()
+	dataRoot := t.TempDir()
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+
+	agent := AgentRow{
+		ID:               "edge-a",
+		Name:             "Edge A",
+		CapabilitiesJSON: `["l4_rules","relay"]`,
+		OutboundProxyURL: "socks://user:pass@127.0.0.1:1080",
+	}
+	if err := store.SaveAgent(ctx, agent); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	agents, err := store.ListAgents(ctx)
+	if err != nil {
+		t.Fatalf("ListAgents() error = %v", err)
+	}
+	if len(agents) != 1 {
+		t.Fatalf("ListAgents() len = %d", len(agents))
+	}
+	got := agents[0]
+	if got.OutboundProxyURL != agent.OutboundProxyURL {
+		t.Fatalf("OutboundProxyURL = %q, want %q", got.OutboundProxyURL, agent.OutboundProxyURL)
+	}
+}
+
+func TestSQLiteStorePersistsL4ProxyEntryFields(t *testing.T) {
+	ctx := context.Background()
+	dataRoot := t.TempDir()
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+
+	row := L4RuleRow{
+		ID:                 10,
+		AgentID:            "edge-a",
+		Name:               "proxy-entry",
+		Protocol:           "tcp",
+		ListenHost:         "127.0.0.1",
+		ListenPort:         1080,
+		UpstreamHost:       "",
+		UpstreamPort:       0,
+		BackendsJSON:       `[]`,
+		LoadBalancingJSON:  `{"strategy":"round_robin"}`,
+		TuningJSON:         `{"proxy_protocol":{"decode":false,"send":false}}`,
+		RelayChainJSON:     `[101]`,
+		RelayLayersJSON:    `[[101]]`,
+		ListenMode:         "proxy",
+		ProxyEntryAuthJSON: `{"enabled":true,"username":"u","password":"p"}`,
+		ProxyEgressMode:    "relay",
+		ProxyEgressURL:     "socks://user:pass@127.0.0.1:1080",
+		Enabled:            true,
+		TagsJSON:           `[]`,
+		Revision:           1,
+	}
+	if err := store.SaveL4Rules(ctx, "edge-a", []L4RuleRow{row}); err != nil {
+		t.Fatalf("SaveL4Rules() error = %v", err)
+	}
+	rows, err := store.ListL4Rules(ctx, "edge-a")
+	if err != nil {
+		t.Fatalf("ListL4Rules() error = %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("ListL4Rules() len = %d", len(rows))
+	}
+	got := rows[0]
+	if got.ListenMode != row.ListenMode ||
+		got.ProxyEntryAuthJSON != row.ProxyEntryAuthJSON ||
+		got.ProxyEgressMode != row.ProxyEgressMode ||
+		got.ProxyEgressURL != row.ProxyEgressURL {
+		t.Fatalf("proxy fields not persisted: %+v", got)
+	}
+}
+
 func TestStorePersistsHTTPRules(t *testing.T) {
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -622,6 +729,42 @@ func parseL4LoadBalancingStrategy(t *testing.T, raw string) LoadBalancing {
 	}
 	return LoadBalancing{Strategy: strings.ToLower(strings.TrimSpace(lb.Strategy))}
 }
+
+func TestSnapshotL4RulesPreservesProxyEntryPasswordAndTrimsUsername(t *testing.T) {
+	rules := SnapshotL4Rules([]L4RuleRow{{
+		ID:                 1,
+		AgentID:            "local",
+		Protocol:           "tcp",
+		ListenHost:         "127.0.0.1",
+		ListenPort:         1080,
+		BackendsJSON:       `[]`,
+		LoadBalancingJSON:  `{}`,
+		TuningJSON:         `{}`,
+		RelayChainJSON:     `[101]`,
+		RelayLayersJSON:    `[]`,
+		ListenMode:         "proxy",
+		ProxyEntryAuthJSON: `{"enabled":true,"username":" u ","password":" p "}`,
+		ProxyEgressMode:    "proxy",
+		ProxyEgressURL:     "socks://127.0.0.1:1080",
+		Enabled:            true,
+		Revision:           3,
+	}})
+
+	if len(rules) != 1 {
+		t.Fatalf("expected one l4 rule, got %d", len(rules))
+	}
+	auth := rules[0].ProxyEntryAuth
+	if !auth.Enabled {
+		t.Fatalf("ProxyEntryAuth.Enabled = false")
+	}
+	if auth.Username != "u" {
+		t.Fatalf("ProxyEntryAuth.Username = %q", auth.Username)
+	}
+	if auth.Password != " p " {
+		t.Fatalf("ProxyEntryAuth.Password = %q", auth.Password)
+	}
+}
+
 func TestStorePersistsRelayListenersAndManagedCertificates(t *testing.T) {
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -1639,6 +1782,76 @@ func TestStoreLoadAgentSnapshotSkipsMalformedL4Rows(t *testing.T) {
 	}
 }
 
+func TestStoreLoadAgentSnapshotIncludesProxyEntryL4RuleWithoutBackend(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromGORM(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	if err := store.SaveAgent(t.Context(), AgentRow{
+		ID:              "proxy-entry-agent",
+		Name:            "proxy-entry-agent",
+		AgentToken:      "token-proxy-entry-agent",
+		DesiredRevision: 0,
+		CurrentRevision: 0,
+		LastApplyStatus: "success",
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+
+	if err := store.SaveL4Rules(t.Context(), "proxy-entry-agent", []L4RuleRow{{
+		ID:                 71,
+		AgentID:            "proxy-entry-agent",
+		Name:               "proxy-entry",
+		Protocol:           "tcp",
+		ListenHost:         "0.0.0.0",
+		ListenPort:         1080,
+		BackendsJSON:       `[]`,
+		LoadBalancingJSON:  `{}`,
+		TuningJSON:         `{}`,
+		RelayChainJSON:     `[]`,
+		RelayLayersJSON:    `[]`,
+		ListenMode:         "proxy",
+		ProxyEntryAuthJSON: `{"enabled":true,"username":"client","password":"secret"}`,
+		ProxyEgressMode:    "proxy",
+		ProxyEgressURL:     "socks://egress.example.test:1080",
+		Enabled:            true,
+		Revision:           17,
+	}}); err != nil {
+		t.Fatalf("SaveL4Rules() error = %v", err)
+	}
+
+	snapshot, err := store.LoadAgentSnapshot(t.Context(), "proxy-entry-agent", AgentSnapshotInput{
+		DesiredRevision: 0,
+		CurrentRevision: 0,
+	})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot() error = %v", err)
+	}
+
+	if snapshot.Revision != 17 {
+		t.Fatalf("Revision = %d", snapshot.Revision)
+	}
+	if len(snapshot.L4Rules) != 1 {
+		t.Fatalf("L4Rules = %+v", snapshot.L4Rules)
+	}
+	rule := snapshot.L4Rules[0]
+	if rule.ID != 71 || rule.ListenMode != "proxy" || rule.ProxyEgressMode != "proxy" || rule.ProxyEgressURL == "" {
+		t.Fatalf("L4Rules[0] = %+v", rule)
+	}
+	if len(rule.Backends) != 0 || rule.UpstreamHost != "" || rule.UpstreamPort != 0 {
+		t.Fatalf("proxy entry targets = backends=%+v upstream=%s:%d", rule.Backends, rule.UpstreamHost, rule.UpstreamPort)
+	}
+}
+
 func TestStoreLoadAgentSnapshotIncludesRelayObfsFlags(t *testing.T) {
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -1786,6 +1999,41 @@ func TestStoreLoadAgentSnapshotKeepsEffectiveRevisionWhenCurrentMatches(t *testi
 	}
 	if secondSnapshot.Revision != 2 {
 		t.Fatalf("second snapshot revision = %d", secondSnapshot.Revision)
+	}
+}
+
+func TestStoreLoadAgentSnapshotUsesStoredAgentDesiredRevisionForProxyOnlyConfig(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromGORM(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	if err := store.SaveAgent(t.Context(), AgentRow{
+		ID:               "remote-proxy-only",
+		Name:             "remote proxy only",
+		AgentToken:       "token-remote-proxy-only",
+		OutboundProxyURL: "socks://127.0.0.1:1080",
+		DesiredRevision:  8,
+		CurrentRevision:  7,
+		LastApplyStatus:  "success",
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+
+	snapshot, err := store.LoadAgentSnapshot(t.Context(), "remote-proxy-only", AgentSnapshotInput{})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot() error = %v", err)
+	}
+	if snapshot.Revision != 8 {
+		t.Fatalf("snapshot revision = %d, want stored agent desired revision 8", snapshot.Revision)
 	}
 }
 
@@ -2016,6 +2264,56 @@ func closeSQLiteForTest(t *testing.T, db *gorm.DB) {
 	}
 	if err := sqlDB.Close(); err != nil {
 		t.Fatalf("sqlDB.Close() error = %v", err)
+	}
+}
+
+type sqliteTableColumn struct {
+	Name         string
+	NotNull      int
+	DefaultValue sql.NullString
+}
+
+func loadSQLiteTableInfo(t *testing.T, db *gorm.DB, tableName string) map[string]sqliteTableColumn {
+	t.Helper()
+
+	rows, err := db.Raw("PRAGMA table_info(" + tableName + ")").Rows()
+	if err != nil {
+		t.Fatalf("PRAGMA table_info(%s) error = %v", tableName, err)
+	}
+	defer rows.Close()
+
+	columns := make(map[string]sqliteTableColumn)
+	for rows.Next() {
+		var cid int
+		var columnType string
+		var column sqliteTableColumn
+		var primaryKey int
+		if err := rows.Scan(&cid, &column.Name, &columnType, &column.NotNull, &column.DefaultValue, &primaryKey); err != nil {
+			t.Fatalf("scan PRAGMA table_info(%s) error = %v", tableName, err)
+		}
+		columns[column.Name] = column
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("iterate PRAGMA table_info(%s) error = %v", tableName, err)
+	}
+	return columns
+}
+
+func assertSQLiteColumnContract(t *testing.T, columns map[string]sqliteTableColumn, columnName string, wantNotNull int, wantDefault string) {
+	t.Helper()
+
+	column, ok := columns[columnName]
+	if !ok {
+		t.Fatalf("column %q not found", columnName)
+	}
+	if column.NotNull != wantNotNull {
+		t.Fatalf("%s notnull = %d, want %d", columnName, column.NotNull, wantNotNull)
+	}
+	if !column.DefaultValue.Valid {
+		t.Fatalf("%s dflt_value is NULL, want %q", columnName, wantDefault)
+	}
+	if column.DefaultValue.String != wantDefault {
+		t.Fatalf("%s dflt_value = %q, want %q", columnName, column.DefaultValue.String, wantDefault)
 	}
 }
 
