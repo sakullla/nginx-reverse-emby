@@ -102,10 +102,7 @@ class _NreClientHomeState extends State<NreClientHome> {
         platform: widget.platform,
         version: widget.version,
       ),
-      RuntimeScreen(
-        state: state,
-        controller: widget.localAgentController,
-      ),
+      RuntimeScreen(state: state, controller: widget.localAgentController),
       const LogsScreen(),
       const UpdatesScreen(),
       SettingsScreen(state: state),

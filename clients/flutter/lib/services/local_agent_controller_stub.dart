@@ -4,7 +4,8 @@ import 'local_agent_controller.dart';
 class UnsupportedLocalAgentController implements LocalAgentController {
   const UnsupportedLocalAgentController();
 
-  static const _message = 'Local agent runtime is not available on this platform';
+  static const _message =
+      'Local agent runtime is not available on this platform';
 
   @override
   Future<LocalAgentRuntimeSnapshot> status(ClientProfile profile) async =>

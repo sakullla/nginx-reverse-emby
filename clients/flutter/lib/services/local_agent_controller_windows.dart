@@ -96,12 +96,12 @@ class WindowsLocalAgentController implements LocalAgentController {
   WindowsLocalAgentController({
     String? appDataDir,
     WindowsProcessManager? processManager,
-  })  : paths = LocalAgentPaths.fromAppData(
-          appDataDir ??
-              Platform.environment['LOCALAPPDATA'] ??
-              Directory.current.path,
-        ),
-        _processManager = processManager ?? DartWindowsProcessManager();
+  }) : paths = LocalAgentPaths.fromAppData(
+         appDataDir ??
+             Platform.environment['LOCALAPPDATA'] ??
+             Directory.current.path,
+       ),
+       _processManager = processManager ?? DartWindowsProcessManager();
 
   final LocalAgentPaths paths;
   final WindowsProcessManager _processManager;
