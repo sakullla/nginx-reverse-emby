@@ -15,6 +15,15 @@ class ClientProfile {
     this.token = '',
   });
 
+  factory ClientProfile.fromJson(Map<String, Object?> json) {
+    return ClientProfile(
+      masterUrl: _requiredString(json, 'masterUrl'),
+      displayName: _requiredString(json, 'displayName'),
+      agentId: _requiredString(json, 'agentId'),
+      token: _requiredString(json, 'token'),
+    );
+  }
+
   final String masterUrl;
   final String displayName;
   final String agentId;
@@ -35,6 +44,23 @@ class ClientProfile {
       token: token ?? this.token,
     );
   }
+
+  Map<String, Object?> toJson() {
+    return {
+      'masterUrl': masterUrl,
+      'displayName': displayName,
+      'agentId': agentId,
+      'token': token,
+    };
+  }
+}
+
+String _requiredString(Map<String, Object?> json, String key) {
+  final value = json[key];
+  if (value is String) {
+    return value;
+  }
+  throw FormatException('Invalid client profile: $key is required');
 }
 
 class ClientState {

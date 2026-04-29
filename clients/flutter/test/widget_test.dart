@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nre_client/app.dart';
 import 'package:nre_client/core/client_state.dart';
+import 'package:nre_client/services/client_profile_store.dart';
 import 'package:nre_client/services/local_agent_controller.dart';
 import 'package:nre_client/services/master_api.dart';
 
@@ -43,9 +44,32 @@ class FakeLocalAgentController implements LocalAgentController {
   Future<String> readRecentLogs() async => '';
 }
 
+class FakeClientProfileStore implements ClientProfileStore {
+  FakeClientProfileStore([
+    this.profile = const ClientProfile(masterUrl: '', displayName: ''),
+  ]);
+
+  ClientProfile profile;
+  ClientProfile? savedProfile;
+
+  @override
+  Future<ClientProfile> load() async => profile;
+
+  @override
+  Future<void> save(ClientProfile profile) async {
+    savedProfile = profile;
+    this.profile = profile;
+  }
+}
+
 void main() {
   testWidgets('client app opens on overview screen', (tester) async {
-    await tester.pumpWidget(const NreClientApp());
+    await tester.pumpWidget(
+      NreClientApp(
+        profileStore: FakeClientProfileStore(),
+        localAgentController: FakeLocalAgentController(),
+      ),
+    );
 
     expect(find.text('Overview'), findsWidgets);
     expect(find.text('Master'), findsOneWidget);
@@ -53,7 +77,12 @@ void main() {
   });
 
   testWidgets('navigation preserves register form state', (tester) async {
-    await tester.pumpWidget(const NreClientApp());
+    await tester.pumpWidget(
+      NreClientApp(
+        profileStore: FakeClientProfileStore(),
+        localAgentController: FakeLocalAgentController(),
+      ),
+    );
 
     await tester.tap(find.text('Register').last);
     await tester.pumpAndSettle();
@@ -74,11 +103,13 @@ void main() {
     tester,
   ) async {
     final api = FakeMasterApi();
+    final profileStore = FakeClientProfileStore();
 
     await tester.pumpWidget(
       NreClientApp(
         api: api,
         generateAgentToken: () => 'generated-token',
+        profileStore: profileStore,
         localAgentController: FakeLocalAgentController(),
         platform: 'android',
         version: '1.0.0',
@@ -106,7 +137,33 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(api.lastRequest?.agentToken, 'generated-token');
+    expect(profileStore.savedProfile?.agentId, 'agent-1');
+    expect(profileStore.savedProfile?.token, 'generated-token');
     expect(find.text('http://panel.example.com'), findsOneWidget);
+    expect(find.text('Registered: agent-1'), findsOneWidget);
+  });
+
+  testWidgets('client app restores saved registration state on startup', (
+    tester,
+  ) async {
+    final profileStore = FakeClientProfileStore(
+      const ClientProfile(
+        masterUrl: 'https://panel.example.com',
+        displayName: 'desktop-a',
+        agentId: 'agent-1',
+        token: 'agent-secret',
+      ),
+    );
+
+    await tester.pumpWidget(
+      NreClientApp(
+        profileStore: profileStore,
+        localAgentController: FakeLocalAgentController(),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('https://panel.example.com'), findsOneWidget);
     expect(find.text('Registered: agent-1'), findsOneWidget);
   });
 
@@ -114,7 +171,10 @@ void main() {
     tester,
   ) async {
     await tester.pumpWidget(
-      NreClientApp(localAgentController: FakeLocalAgentController()),
+      NreClientApp(
+        profileStore: FakeClientProfileStore(),
+        localAgentController: FakeLocalAgentController(),
+      ),
     );
 
     await tester.tap(find.text('Runtime').last);

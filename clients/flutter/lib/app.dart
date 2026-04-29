@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform;
 import 'package:flutter/material.dart';
@@ -10,6 +12,7 @@ import 'screens/register_screen.dart';
 import 'screens/runtime_screen.dart';
 import 'screens/settings_screen.dart';
 import 'screens/updates_screen.dart';
+import 'services/client_profile_store.dart';
 import 'services/local_agent_controller.dart';
 import 'services/local_agent_controller_factory.dart';
 import 'services/master_api.dart';
@@ -19,6 +22,7 @@ class NreClientApp extends StatelessWidget {
     super.key,
     this.api = const HttpMasterApi(),
     this.generateAgentToken = defaultAgentTokenGenerator,
+    this.profileStore,
     this.localAgentController,
     this.platform,
     this.version = '1',
@@ -26,6 +30,7 @@ class NreClientApp extends StatelessWidget {
 
   final MasterApi api;
   final AgentTokenGenerator generateAgentToken;
+  final ClientProfileStore? profileStore;
   final LocalAgentController? localAgentController;
   final String? platform;
   final String version;
@@ -40,6 +45,7 @@ class NreClientApp extends StatelessWidget {
       home: NreClientHome(
         api: api,
         generateAgentToken: generateAgentToken,
+        profileStore: profileStore ?? PathProviderClientProfileStore(),
         localAgentController:
             localAgentController ?? createLocalAgentController(),
         platform: resolvedPlatform,
@@ -71,6 +77,7 @@ class NreClientHome extends StatefulWidget {
     super.key,
     required this.api,
     required this.generateAgentToken,
+    required this.profileStore,
     required this.localAgentController,
     required this.platform,
     required this.version,
@@ -78,6 +85,7 @@ class NreClientHome extends StatefulWidget {
 
   final MasterApi api;
   final AgentTokenGenerator generateAgentToken;
+  final ClientProfileStore profileStore;
   final LocalAgentController localAgentController;
   final String platform;
   final String version;
@@ -91,13 +99,39 @@ class _NreClientHomeState extends State<NreClientHome> {
   ClientState state = ClientState.empty();
 
   @override
+  void initState() {
+    super.initState();
+    _loadProfile();
+  }
+
+  Future<void> _loadProfile() async {
+    final profile = await widget.profileStore.load();
+    if (!mounted || !profile.isRegistered) {
+      return;
+    }
+    setState(() {
+      state = state.copyWith(
+        profile: profile,
+        runtimeStatus: ClientRuntimeStatus.registered,
+      );
+    });
+  }
+
+  void _setStateAndPersist(ClientState nextState) {
+    setState(() => state = nextState);
+    if (nextState.profile.isRegistered) {
+      unawaited(widget.profileStore.save(nextState.profile));
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     final screens = [
       OverviewScreen(state: state),
       RegisterScreen(
         api: widget.api,
         initialState: state,
-        onStateChanged: (nextState) => setState(() => state = nextState),
+        onStateChanged: _setStateAndPersist,
         generateAgentToken: widget.generateAgentToken,
         platform: widget.platform,
         version: widget.version,
