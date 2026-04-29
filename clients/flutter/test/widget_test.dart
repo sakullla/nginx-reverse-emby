@@ -79,6 +79,7 @@ void main() {
       NreClientApp(
         api: api,
         generateAgentToken: () => 'generated-token',
+        localAgentController: FakeLocalAgentController(),
         platform: 'android',
         version: '1.0.0',
       ),
