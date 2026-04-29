@@ -71,7 +71,7 @@
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { getAgentStatus, timeAgo } from '../utils/agentHelpers.js'
+import { getAgentStatus, timeAgo } from '../../utils/agentHelpers.js'
 
 const props = defineProps({
   agents: { type: Array, default: () => [] },

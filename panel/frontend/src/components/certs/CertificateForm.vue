@@ -191,14 +191,14 @@
 
 <script setup>
 import { computed, reactive, ref } from 'vue'
-import { useCreateCertificate, useUpdateCertificate } from '../hooks/useCertificates'
+import { useCreateCertificate, useUpdateCertificate } from '../../hooks/useCertificates'
 import {
   CERTIFICATE_TEMPLATES,
   applyCertificateTemplate,
   inferCertificateTemplate,
   isSystemManagedRelayListenerCertificate,
   isSystemRelayCA
-} from '../utils/certificateTemplates'
+} from '../../utils/certificateTemplates'
 
 const props = defineProps({
   initialData: { type: Object, default: null },

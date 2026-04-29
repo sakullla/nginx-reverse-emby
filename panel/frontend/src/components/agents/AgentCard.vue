@@ -46,10 +46,10 @@
 <script setup>
 import { computed } from 'vue'
 import AgentStatusBadge from './AgentStatusBadge.vue'
-import BaseListCard from './base/BaseListCard.vue'
-import BaseBadge from './base/BaseBadge.vue'
-import BaseIconButton from './base/BaseIconButton.vue'
-import { getAgentStatus, getModeLabel, getHostname, timeAgo } from '../utils/agentHelpers.js'
+import BaseListCard from '../base/BaseListCard.vue'
+import BaseBadge from '../base/BaseBadge.vue'
+import BaseIconButton from '../base/BaseIconButton.vue'
+import { getAgentStatus, getModeLabel, getHostname, timeAgo } from '../../utils/agentHelpers.js'
 
 const props = defineProps({
   agent: { type: Object, required: true }

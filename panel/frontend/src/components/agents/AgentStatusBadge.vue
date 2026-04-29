@@ -6,8 +6,8 @@
 
 <script setup>
 import { computed } from 'vue'
-import BaseBadge from './base/BaseBadge.vue'
-import { getAgentStatus, getAgentStatusLabel } from '../utils/agentHelpers.js'
+import BaseBadge from '../base/BaseBadge.vue'
+import { getAgentStatus, getAgentStatusLabel } from '../../utils/agentHelpers.js'
 
 const props = defineProps({
   agent: { type: Object, required: true },

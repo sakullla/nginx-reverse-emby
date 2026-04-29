@@ -12,14 +12,14 @@ function read(name) {
 
 describe('relay layer compatibility fields', () => {
   it('sends one compatible HTTP relay path in legacy relay_chain', () => {
-    const source = read('RuleForm.vue')
+    const source = read('../rules/RuleForm.vue')
     expect(source).toMatch(/const id = Number\(layer\[0\]\)/)
     expect(source).toMatch(/result\.push\(id\)/)
     expect(source).not.toMatch(/result\.push\(\.\.\.layer\.map/)
   })
 
   it('sends one compatible L4 relay path in legacy relay_chain', () => {
-    const source = read('L4RuleForm.vue')
+    const source = read('../l4/L4RuleForm.vue')
     expect(source).toMatch(/const id = Number\(layer\[0\]\)/)
     expect(source).toMatch(/result\.push\(id\)/)
     expect(source).not.toMatch(/result\.push\(\.\.\.layer\.map/)

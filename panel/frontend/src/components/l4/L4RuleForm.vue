@@ -317,12 +317,12 @@
 
 <script setup>
 import { computed, ref, watch } from 'vue'
-import { useCreateL4Rule, useUpdateL4Rule } from '../hooks/useL4Rules'
-import { useAllRelayListeners } from '../hooks/useRelayListeners'
-import RelayChainInput from './RelayChainInput.vue'
-import { buildProxyEntryAuthPayload } from './l4/proxyEntryAuth'
-import { buildProxyEgressURLPayload } from './l4/proxyEgressURL'
-import { getDefaultTuning, mergeTuning, resetTuningForProtocol } from './l4/tuningState'
+import { useCreateL4Rule, useUpdateL4Rule } from '../../hooks/useL4Rules'
+import { useAllRelayListeners } from '../../hooks/useRelayListeners'
+import RelayChainInput from '../relay/RelayChainInput.vue'
+import { buildProxyEntryAuthPayload } from './proxyEntryAuth'
+import { buildProxyEgressURLPayload } from './proxyEgressURL'
+import { getDefaultTuning, mergeTuning, resetTuningForProtocol } from './tuningState'
 
 const props = defineProps({
   initialData: { type: Object, default: null },

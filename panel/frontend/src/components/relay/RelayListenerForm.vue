@@ -228,14 +228,14 @@
 
 <script setup>
 import { computed, ref, watch } from 'vue'
-import { useCreateRelayListener, useUpdateRelayListener } from '../hooks/useRelayListeners'
-import { useCertificates } from '../hooks/useCertificates'
+import { useCreateRelayListener, useUpdateRelayListener } from '../../hooks/useRelayListeners'
+import { useCertificates } from '../../hooks/useCertificates'
 import {
   parsePublicEndpoint,
   buildPublicEndpoint,
   normalizeBindHosts,
   buildBindHostsText
-} from './relay/endpointState.mjs'
+} from './endpointState.mjs'
 
 const props = defineProps({
   initialData: { type: Object, default: null },

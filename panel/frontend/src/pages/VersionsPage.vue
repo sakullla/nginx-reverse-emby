@@ -113,7 +113,7 @@ import {
   useUpdateVersionPolicy,
   useDeleteVersionPolicy
 } from '../hooks/useVersionPolicies'
-import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
+import DeleteConfirmDialog from '../components/dialogs/DeleteConfirmDialog.vue'
 
 const { data: policiesData, isLoading } = useVersionPolicies()
 const createPolicy = useCreateVersionPolicy()

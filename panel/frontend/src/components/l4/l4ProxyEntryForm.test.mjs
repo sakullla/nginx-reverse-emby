@@ -6,14 +6,14 @@ import { fileURLToPath } from 'node:url'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
-const srcDir = path.resolve(__dirname, '..')
+const srcDir = path.resolve(__dirname, '../..')
 
 function read(relativePath) {
   return fs.readFileSync(path.resolve(srcDir, relativePath), 'utf8')
 }
 
 test('L4 RuleForm exposes proxy entry controls and payload fields', () => {
-  const source = read('components/L4RuleForm.vue')
+  const source = read('components/l4/L4RuleForm.vue')
   assert.match(source, /listen_mode/)
   assert.match(source, /proxy_entry_auth/)
   assert.match(source, /proxy_egress_mode/)

@@ -108,10 +108,10 @@ import { useRoute, useRouter } from 'vue-router'
 import { useAgent } from '../context/AgentContext'
 import { useAgents } from '../hooks/useAgents'
 import { useCertificates, useDeleteCertificate, useIssueCertificate } from '../hooks/useCertificates'
-import CertificateForm from '../components/CertificateForm.vue'
-import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
+import CertificateForm from '../components/certs/CertificateForm.vue'
+import DeleteConfirmDialog from '../components/dialogs/DeleteConfirmDialog.vue'
 import BaseModal from '../components/base/BaseModal.vue'
-import AgentPicker from '../components/AgentPicker.vue'
+import AgentPicker from '../components/agents/AgentPicker.vue'
 import CertCard from '../components/certs/CertCard.vue'
 import {
   isSystemRelayCA

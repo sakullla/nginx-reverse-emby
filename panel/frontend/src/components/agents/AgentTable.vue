@@ -57,7 +57,7 @@
 
 <script setup>
 import AgentStatusBadge from './AgentStatusBadge.vue'
-import { getModeLabel, getHostname, timeAgo } from '../utils/agentHelpers.js'
+import { getModeLabel, getHostname, timeAgo } from '../../utils/agentHelpers.js'
 
 const props = defineProps({
   agents: { type: Array, default: () => [] },

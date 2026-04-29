@@ -245,7 +245,7 @@ import {
 } from '../hooks/useClientPackages'
 import { compareClientPackageVersions } from '../utils/clientPackageVersions'
 import { buildWorkerDeployModel } from '../utils/workerDeploy'
-import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
+import DeleteConfirmDialog from '../components/dialogs/DeleteConfirmDialog.vue'
 import { messageStore } from '../stores/messages'
 
 const { data: packagesData, isLoading } = useClientPackages()

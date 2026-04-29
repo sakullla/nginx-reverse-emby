@@ -117,6 +117,9 @@
                 <span class="relay-editor__chip-id">#{{ listenerId }}</span>
                 <span class="relay-editor__chip-name">{{ listenerName(listenerId) }}</span>
                 <span class="relay-editor__chip-endpoint">{{ listenerEndpoint(listenerId) }}</span>
+                <span class="relay-editor__chip-transport" :title="formatTransportHint(listenerById(listenerId))">
+                  {{ formatTransportLabel(listenerById(listenerId)) }}
+                </span>
                 <button
                   type="button"
                   class="relay-editor__chip-remove"
@@ -168,6 +171,9 @@
                   >
                     <span class="relay-editor__dropdown-id">#{{ listener.id }}</span>
                     <span class="relay-editor__dropdown-name">{{ listener.name || `监听器 ${listener.id}` }}</span>
+                    <span class="relay-editor__dropdown-transport" :title="formatTransportHint(listener)">
+                      {{ formatTransportLabel(listener) }}
+                    </span>
                     <span class="relay-editor__dropdown-endpoint">{{ formatPublicEndpoint(listener) }}</span>
                   </div>
                   <div v-if="!filteredAvailableForLayer(layerIndex).length" class="relay-editor__dropdown-empty">
@@ -307,13 +313,29 @@ const showPaths = ref(false)
 const layerSearchQueries = ref({})
 
 function listenerName(id) {
-  const l = listenerMap.value.get(Number(id))
+  const l = listenerById(id)
   return l?.name || ''
 }
 
 function listenerEndpoint(id) {
-  const l = listenerMap.value.get(Number(id))
+  const l = listenerById(id)
   return l ? formatPublicEndpoint(l) : ''
+}
+
+function listenerById(id) {
+  return listenerMap.value.get(Number(id)) || null
+}
+
+function formatTransportLabel(listener) {
+  return listener?.transport_mode === 'quic' ? 'QUIC' : 'TLS/TCP'
+}
+
+function formatTransportHint(listener) {
+  if (!listener) return ''
+  if (listener.transport_mode === 'quic') {
+    return listener.allow_transport_fallback === false ? 'QUIC，禁止回退 TLS/TCP' : 'QUIC，可回退 TLS/TCP'
+  }
+  return listener.obfs_mode === 'early_window_v2' ? 'TLS/TCP，启用 early_window_v2 隐匿' : 'TLS/TCP'
 }
 
 function formatPublicEndpoint(listener) {
@@ -656,6 +678,17 @@ onUnmounted(() => {
   font-family: var(--font-mono);
 }
 
+.relay-editor__chip-transport {
+  flex-shrink: 0;
+  padding: 0.0625rem 0.375rem;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
+  background: var(--color-bg-surface);
+  font-size: 0.6875rem;
+  font-weight: 700;
+}
+
 .relay-editor__chip-remove {
   display: flex;
   align-items: center;
@@ -796,6 +829,17 @@ onUnmounted(() => {
   white-space: nowrap;
   flex-shrink: 1;
   min-width: 0;
+}
+
+.relay-editor__dropdown-transport {
+  flex-shrink: 0;
+  padding: 0.0625rem 0.375rem;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
+  background: var(--color-bg-subtle);
+  font-size: 0.6875rem;
+  font-weight: 700;
 }
 
 .relay-editor__dropdown-endpoint {

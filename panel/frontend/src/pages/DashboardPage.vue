@@ -80,7 +80,7 @@
 import { computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useAgents } from '../hooks/useAgents'
-import AgentTable from '../components/AgentTable.vue'
+import AgentTable from '../components/agents/AgentTable.vue'
 import StatCard from '../components/base/StatCard.vue'
 
 const router = useRouter()

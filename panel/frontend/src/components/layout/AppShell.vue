@@ -23,7 +23,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import TopBar from './TopBar.vue'
 import Sidebar from './Sidebar.vue'
 import BottomNav from './BottomNav.vue'
-import GlobalSearch from '../GlobalSearch.vue'
+import GlobalSearch from './GlobalSearch.vue'
 
 const mobileSidebarOpen = ref(false)
 const searchOpen = ref(false)

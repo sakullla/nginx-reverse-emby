@@ -80,8 +80,8 @@
 <script setup>
 import { ref, watch, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { useAgents } from '../hooks/useAgents'
-import * as api from '../api'
+import { useAgents } from '../../hooks/useAgents'
+import * as api from '../../api'
 
 // Result type: 'rule' | 'l4' | 'cert'
 function makeResult(type, agentId, agentName, online, items) {

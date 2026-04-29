@@ -82,10 +82,10 @@ import { useRoute, useRouter } from 'vue-router'
 import { useAgent } from '../context/AgentContext'
 import { useAgents } from '../hooks/useAgents'
 import { useRelayListeners, useDeleteRelayListener, useUpdateRelayListener } from '../hooks/useRelayListeners'
-import RelayListenerForm from '../components/RelayListenerForm.vue'
-import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
+import RelayListenerForm from '../components/relay/RelayListenerForm.vue'
+import DeleteConfirmDialog from '../components/dialogs/DeleteConfirmDialog.vue'
 import BaseModal from '../components/base/BaseModal.vue'
-import AgentPicker from '../components/AgentPicker.vue'
+import AgentPicker from '../components/agents/AgentPicker.vue'
 import RelayCard from '../components/relay/RelayCard.vue'
 
 const route = useRoute()

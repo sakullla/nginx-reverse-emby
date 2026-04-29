@@ -231,8 +231,8 @@
 
 <script setup>
 import { computed, ref } from 'vue'
-import BaseModal from './base/BaseModal.vue'
-import { diagnosticStateLabel, diagnosticStateTone } from '../hooks/useDiagnostics'
+import BaseModal from '../base/BaseModal.vue'
+import { diagnosticStateLabel, diagnosticStateTone } from '../../hooks/useDiagnostics'
 
 const props = defineProps({
   modelValue: { type: Boolean, required: true },
