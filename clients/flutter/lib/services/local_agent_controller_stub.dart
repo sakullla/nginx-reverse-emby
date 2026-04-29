@@ -1,25 +1,22 @@
+import '../core/client_state.dart';
 import 'local_agent_controller.dart';
 
 class UnsupportedLocalAgentController implements LocalAgentController {
   const UnsupportedLocalAgentController();
 
-  @override
-  Future<LocalAgentControllerStatus> status() async =>
-      LocalAgentControllerStatus.unavailable;
+  static const _message = 'Local agent runtime is not available on this platform';
 
   @override
-  Future<void> start() async {
-    throw UnsupportedError(
-      'Local agent runtime is not available on this platform',
-    );
-  }
+  Future<LocalAgentRuntimeSnapshot> status(ClientProfile profile) async =>
+      LocalAgentRuntimeSnapshot.unavailable(message: _message, binaryPath: '');
 
   @override
-  Future<void> stop() async {
-    throw UnsupportedError(
-      'Local agent runtime is not available on this platform',
-    );
-  }
+  Future<LocalAgentRuntimeSnapshot> start(ClientProfile profile) async =>
+      LocalAgentRuntimeSnapshot.unavailable(message: _message, binaryPath: '');
+
+  @override
+  Future<LocalAgentRuntimeSnapshot> stop(ClientProfile profile) async =>
+      LocalAgentRuntimeSnapshot.unavailable(message: _message, binaryPath: '');
 
   @override
   Future<String> readRecentLogs() async => '';

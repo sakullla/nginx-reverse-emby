@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nre_client/app.dart';
+import 'package:nre_client/core/client_state.dart';
+import 'package:nre_client/services/local_agent_controller.dart';
 import 'package:nre_client/services/master_api.dart';
 
 class FakeMasterApi implements MasterApi {
@@ -19,6 +21,26 @@ class FakeMasterApi implements MasterApi {
       agentToken: request.agentToken,
     );
   }
+}
+
+class FakeLocalAgentController implements LocalAgentController {
+  @override
+  Future<LocalAgentRuntimeSnapshot> status(ClientProfile profile) async =>
+      LocalAgentRuntimeSnapshot.unavailable(
+        message: 'fake runtime unavailable',
+        binaryPath: 'C:\\fake\\nre-agent.exe',
+      );
+
+  @override
+  Future<LocalAgentRuntimeSnapshot> start(ClientProfile profile) async =>
+      LocalAgentRuntimeSnapshot.stopped(binaryPath: 'C:\\fake\\nre-agent.exe');
+
+  @override
+  Future<LocalAgentRuntimeSnapshot> stop(ClientProfile profile) async =>
+      LocalAgentRuntimeSnapshot.stopped(binaryPath: 'C:\\fake\\nre-agent.exe');
+
+  @override
+  Future<String> readRecentLogs() async => '';
 }
 
 void main() {
@@ -85,5 +107,18 @@ void main() {
     expect(api.lastRequest?.agentToken, 'generated-token');
     expect(find.text('http://panel.example.com'), findsOneWidget);
     expect(find.text('Registered: agent-1'), findsOneWidget);
+  });
+
+  testWidgets('client app injects local agent controller into runtime screen', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      NreClientApp(localAgentController: FakeLocalAgentController()),
+    );
+
+    await tester.tap(find.text('Runtime').last);
+    await tester.pumpAndSettle();
+
+    expect(find.text('fake runtime unavailable'), findsOneWidget);
   });
 }

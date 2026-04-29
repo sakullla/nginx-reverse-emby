@@ -10,6 +10,8 @@ import 'screens/register_screen.dart';
 import 'screens/runtime_screen.dart';
 import 'screens/settings_screen.dart';
 import 'screens/updates_screen.dart';
+import 'services/local_agent_controller.dart';
+import 'services/local_agent_controller_factory.dart';
 import 'services/master_api.dart';
 
 class NreClientApp extends StatelessWidget {
@@ -17,12 +19,14 @@ class NreClientApp extends StatelessWidget {
     super.key,
     this.api = const HttpMasterApi(),
     this.generateAgentToken = defaultAgentTokenGenerator,
+    this.localAgentController,
     this.platform,
     this.version = '1',
   });
 
   final MasterApi api;
   final AgentTokenGenerator generateAgentToken;
+  final LocalAgentController? localAgentController;
   final String? platform;
   final String version;
 
@@ -36,6 +40,8 @@ class NreClientApp extends StatelessWidget {
       home: NreClientHome(
         api: api,
         generateAgentToken: generateAgentToken,
+        localAgentController:
+            localAgentController ?? createLocalAgentController(),
         platform: resolvedPlatform,
         version: version,
       ),
@@ -65,12 +71,14 @@ class NreClientHome extends StatefulWidget {
     super.key,
     required this.api,
     required this.generateAgentToken,
+    required this.localAgentController,
     required this.platform,
     required this.version,
   });
 
   final MasterApi api;
   final AgentTokenGenerator generateAgentToken;
+  final LocalAgentController localAgentController;
   final String platform;
   final String version;
 
@@ -94,7 +102,10 @@ class _NreClientHomeState extends State<NreClientHome> {
         platform: widget.platform,
         version: widget.version,
       ),
-      const RuntimeScreen(),
+      RuntimeScreen(
+        state: state,
+        controller: widget.localAgentController,
+      ),
       const LogsScreen(),
       const UpdatesScreen(),
       SettingsScreen(state: state),
