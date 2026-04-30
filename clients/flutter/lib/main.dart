@@ -1,9 +1,8 @@
 import 'dart:io';
-
 import 'package:flutter/material.dart';
-import 'package:tray_manager/tray_manager.dart' as tray;
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:window_manager/window_manager.dart';
-
+import 'package:tray_manager/tray_manager.dart' as tray;
 import 'app.dart';
 
 Future<void> main() async {
@@ -11,27 +10,26 @@ Future<void> main() async {
 
   if (_isDesktop) {
     await windowManager.ensureInitialized();
-    const windowOptions = WindowOptions(
-      size: Size(1024, 700),
-      minimumSize: Size(720, 520),
-      center: true,
-      title: 'NRE Client',
-      backgroundColor: Colors.transparent,
-      skipTaskbar: false,
+    await windowManager.waitUntilReadyToShow(
+      const WindowOptions(
+        size: Size(1024, 700),
+        minimumSize: Size(720, 520),
+        center: true,
+        title: 'NRE Client',
+        backgroundColor: Colors.transparent,
+        skipTaskbar: false,
+      ),
+      () async {
+        await windowManager.show();
+        await windowManager.focus();
+      },
     );
-    await windowManager.waitUntilReadyToShow(windowOptions, () async {
-      await windowManager.show();
-      await windowManager.focus();
-    });
 
-    // Setup system tray
     await _setupTray();
-
-    // Intercept close to hide instead of quit
     windowManager.addListener(_WindowCloseHandler());
   }
 
-  runApp(const NreClientApp());
+  runApp(const ProviderScope(child: NreClientApp()));
 }
 
 bool get _isDesktop =>
@@ -51,15 +49,13 @@ Future<void> _setupTray() async {
     );
     tray.trayManager.addListener(_TrayHandler());
   } catch (_) {
-    // Tray may not be available in all environments
+    // Tray may not be available
   }
 }
 
 class _TrayHandler extends tray.TrayListener {
   @override
-  void onTrayIconMouseDown() {
-    tray.trayManager.popUpContextMenu();
-  }
+  void onTrayIconMouseDown() => tray.trayManager.popUpContextMenu();
 
   @override
   void onTrayMenuItemClick(tray.MenuItem menuItem) async {
@@ -76,7 +72,5 @@ class _TrayHandler extends tray.TrayListener {
 
 class _WindowCloseHandler extends WindowListener {
   @override
-  void onWindowClose() async {
-    await windowManager.hide();
-  }
+  void onWindowClose() async => await windowManager.hide();
 }
