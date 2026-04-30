@@ -111,6 +111,27 @@ class NreClientApp extends StatelessWidget {
         indicatorColor: scheme.primaryContainer,
         labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
       ),
+      navigationRailTheme: NavigationRailThemeData(
+        backgroundColor: scheme.surfaceContainerHighest,
+        indicatorColor: scheme.primaryContainer,
+        selectedIconTheme: IconThemeData(color: scheme.onPrimaryContainer),
+        unselectedIconTheme: IconThemeData(color: scheme.onSurfaceVariant),
+        selectedLabelTextStyle: TextStyle(
+          color: scheme.onSurface,
+          fontWeight: FontWeight.w600,
+          fontSize: 12,
+        ),
+        unselectedLabelTextStyle: TextStyle(
+          color: scheme.onSurfaceVariant,
+          fontSize: 12,
+        ),
+      ),
+      scrollbarTheme: ScrollbarThemeData(
+        thickness: WidgetStateProperty.all(6),
+        radius: const Radius.circular(3),
+        thumbVisibility: WidgetStateProperty.all(true),
+        trackVisibility: WidgetStateProperty.all(false),
+      ),
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
         fillColor: scheme.surfaceContainerHighest.withValues(alpha: 0.6),
@@ -241,61 +262,109 @@ class _NreClientHomeState extends State<NreClientHome> {
     unawaited(widget.profileStore.save(empty.profile));
   }
 
+  void _setIndex(int value) => setState(() => index = value);
+
+  List<Widget> get _screens => [
+    DashboardScreen(
+      state: state,
+      controller: widget.localAgentController,
+      onNavigateToAgent: () => _setIndex(1),
+      onNavigateToRegistration: () => _setIndex(1),
+    ),
+    AgentScreen(
+      api: widget.api,
+      initialState: state,
+      onStateChanged: _setStateAndPersist,
+      generateAgentToken: widget.generateAgentToken,
+      platform: widget.platform,
+      version: widget.version,
+      enableAutoRefresh: widget.enableAutoRefresh,
+      controller: widget.localAgentController,
+    ),
+    RulesScreen(state: state),
+    SettingsScreen(
+      state: state,
+      onClearProfile: _clearProfile,
+    ),
+  ];
+
   @override
   Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context)!;
-    final screens = [
-      DashboardScreen(
-        state: state,
-        controller: widget.localAgentController,
-        onNavigateToAgent: () => setState(() => index = 1),
-        onNavigateToRegistration: () => setState(() => index = 1),
-      ),
-      AgentScreen(
-        api: widget.api,
-        initialState: state,
-        onStateChanged: _setStateAndPersist,
-        generateAgentToken: widget.generateAgentToken,
-        platform: widget.platform,
-        version: widget.version,
-        enableAutoRefresh: widget.enableAutoRefresh,
-        controller: widget.localAgentController,
-      ),
-      RulesScreen(state: state),
-      SettingsScreen(
-        state: state,
-        onClearProfile: _clearProfile,
-      ),
-    ];
+    final screens = _screens;
 
-    return Scaffold(
-      body: IndexedStack(index: index, children: screens),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: index,
-        onDestinationSelected: (value) => setState(() => index = value),
-        destinations: [
-          NavigationDestination(
-            icon: const Icon(Icons.dashboard_outlined),
-            selectedIcon: const Icon(Icons.dashboard),
-            label: l10n.navDashboard,
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final isDesktop = constraints.maxWidth >= 600;
+        if (isDesktop) {
+          return Scaffold(
+            body: Row(
+              children: [
+                NavigationRail(
+                  selectedIndex: index,
+                  onDestinationSelected: _setIndex,
+                  labelType: NavigationRailLabelType.all,
+                  destinations: [
+                    NavigationRailDestination(
+                      icon: const Icon(Icons.dashboard_outlined),
+                      selectedIcon: const Icon(Icons.dashboard),
+                      label: Text(l10n.navDashboard),
+                    ),
+                    NavigationRailDestination(
+                      icon: const Icon(Icons.memory_outlined),
+                      selectedIcon: const Icon(Icons.memory),
+                      label: Text(l10n.navAgent),
+                    ),
+                    NavigationRailDestination(
+                      icon: const Icon(Icons.rule_outlined),
+                      selectedIcon: const Icon(Icons.rule),
+                      label: Text(l10n.navRules),
+                    ),
+                    NavigationRailDestination(
+                      icon: const Icon(Icons.settings_outlined),
+                      selectedIcon: const Icon(Icons.settings),
+                      label: Text(l10n.navSettings),
+                    ),
+                  ],
+                ),
+                const VerticalDivider(thickness: 1, width: 1),
+                Expanded(
+                  child: IndexedStack(index: index, children: screens),
+                ),
+              ],
+            ),
+          );
+        }
+        return Scaffold(
+          body: IndexedStack(index: index, children: screens),
+          bottomNavigationBar: NavigationBar(
+            selectedIndex: index,
+            onDestinationSelected: _setIndex,
+            destinations: [
+              NavigationDestination(
+                icon: const Icon(Icons.dashboard_outlined),
+                selectedIcon: const Icon(Icons.dashboard),
+                label: l10n.navDashboard,
+              ),
+              NavigationDestination(
+                icon: const Icon(Icons.memory_outlined),
+                selectedIcon: const Icon(Icons.memory),
+                label: l10n.navAgent,
+              ),
+              NavigationDestination(
+                icon: const Icon(Icons.rule_outlined),
+                selectedIcon: const Icon(Icons.rule),
+                label: l10n.navRules,
+              ),
+              NavigationDestination(
+                icon: const Icon(Icons.settings_outlined),
+                selectedIcon: const Icon(Icons.settings),
+                label: l10n.navSettings,
+              ),
+            ],
           ),
-          NavigationDestination(
-            icon: const Icon(Icons.memory_outlined),
-            selectedIcon: const Icon(Icons.memory),
-            label: l10n.navAgent,
-          ),
-          NavigationDestination(
-            icon: const Icon(Icons.rule_outlined),
-            selectedIcon: const Icon(Icons.rule),
-            label: l10n.navRules,
-          ),
-          NavigationDestination(
-            icon: const Icon(Icons.settings_outlined),
-            selectedIcon: const Icon(Icons.settings),
-            label: l10n.navSettings,
-          ),
-        ],
-      ),
+        );
+      },
     );
   }
 }

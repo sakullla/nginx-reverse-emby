@@ -332,10 +332,13 @@ class _AgentScreenState extends State<AgentScreen> {
   }
 
   Widget _buildRegistrationForm(ThemeData theme, AppLocalizations l10n) {
-    return ListView(
-      padding: const EdgeInsets.all(16),
-      children: [
-        Card(
+    return Center(
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 560),
+        child: ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            Card(
           child: Padding(
             padding: const EdgeInsets.all(16),
             child: Form(
@@ -424,8 +427,10 @@ class _AgentScreenState extends State<AgentScreen> {
           ),
         ),
       ],
-    );
-  }
+    ),
+  ),
+);
+}
 
   Widget _buildControlTab(ThemeData theme, ClientProfile profile, AppLocalizations l10n) {
     final snapshot = _snapshot;

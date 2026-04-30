@@ -91,13 +91,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
             icon: isRegistered ? Icons.check_circle : Icons.error,
             iconColor: isRegistered ? Colors.green : colorScheme.error,
             subtitle: isRegistered ? l10n.statusRegistered : l10n.statusNotRegistered,
+            subtitleColor: isRegistered ? Colors.green : colorScheme.error,
             children: [
               if (isRegistered) ...[
                 _InfoRow(label: l10n.labelMasterUrl, value: profile.masterUrl),
                 _InfoRow(label: l10n.labelAgentId, value: profile.agentId),
-                _InfoRow(label: l10n.labelDisplayName, value: profile.displayName.isEmpty ? l10n.valueDash : profile.displayName),
+                _InfoRow(
+                  label: l10n.labelDisplayName,
+                  value: profile.displayName.isEmpty ? l10n.valueDash : profile.displayName,
+                ),
               ] else ...[
-                Text(l10n.descRegisterClient, style: theme.textTheme.bodyMedium?.copyWith(color: colorScheme.outline)),
+                Text(
+                  l10n.descRegisterClient,
+                  style: theme.textTheme.bodyMedium?.copyWith(color: colorScheme.outline),
+                ),
                 const SizedBox(height: 12),
                 FilledButton(
                   onPressed: widget.onNavigateToRegistration,
@@ -114,9 +121,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
             icon: _agentStatusIcon(snapshot?.status),
             iconColor: _agentStatusColor(snapshot?.status, colorScheme),
             subtitle: _agentStatusText(snapshot?.status, l10n),
+            subtitleColor: _agentStatusColor(snapshot?.status, colorScheme),
             children: [
               if (snapshot != null) ...[
-                _InfoRow(label: l10n.labelPid, value: snapshot.pid?.toString() ?? l10n.valueDash),
+                _InfoRow(
+                  label: l10n.labelPid,
+                  value: snapshot.pid?.toString() ?? l10n.valueDash,
+                ),
                 _InfoRow(label: l10n.labelBinaryPath, value: snapshot.binaryPath),
                 _InfoRow(label: l10n.labelDataDir, value: snapshot.dataDir),
                 if (snapshot.message.isNotEmpty)
@@ -124,6 +135,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 const SizedBox(height: 12),
                 Wrap(
                   spacing: 8,
+                  runSpacing: 8,
                   children: [
                     if (snapshot.canStart)
                       FilledButton(
@@ -142,7 +154,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   ],
                 ),
               ] else if (!_loading) ...[
-                Text(l10n.descUnableDetermineStatus, style: theme.textTheme.bodyMedium?.copyWith(color: colorScheme.outline)),
+                Text(
+                  l10n.descUnableDetermineStatus,
+                  style: theme.textTheme.bodyMedium?.copyWith(color: colorScheme.outline),
+                ),
               ],
             ],
           ),
@@ -154,6 +169,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             icon: Icons.analytics,
             iconColor: colorScheme.primary,
             subtitle: l10n.msgLastUpdated(DateFormat('HH:mm:ss').format(_lastCheck)),
+            subtitleColor: colorScheme.outline,
             children: [
               _StatRow(
                 icon: Icons.dns,
@@ -262,6 +278,7 @@ class _StatusCard extends StatelessWidget {
     required this.icon,
     required this.iconColor,
     required this.subtitle,
+    required this.subtitleColor,
     required this.children,
   });
 
@@ -269,6 +286,7 @@ class _StatusCard extends StatelessWidget {
   final IconData icon;
   final Color iconColor;
   final String subtitle;
+  final Color subtitleColor;
   final List<Widget> children;
 
   @override
@@ -283,20 +301,23 @@ class _StatusCard extends StatelessWidget {
           children: [
             Row(
               children: [
-                Icon(icon, color: iconColor),
-                const SizedBox(width: 8),
-                Text(title, style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold)),
+                Icon(icon, color: iconColor, size: 22),
+                const SizedBox(width: 10),
+                Text(
+                  title,
+                  style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
+                ),
                 const Spacer(),
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                   decoration: BoxDecoration(
-                    color: iconColor.withValues(alpha: 0.1),
+                    color: subtitleColor.withValues(alpha: 0.1),
                     borderRadius: BorderRadius.circular(20),
                   ),
                   child: Text(
                     subtitle,
                     style: theme.textTheme.bodySmall?.copyWith(
-                      color: iconColor,
+                      color: subtitleColor,
                       fontWeight: FontWeight.w600,
                     ),
                   ),

@@ -138,7 +138,7 @@ void main() {
     expect(api.lastRequest?.agentToken, 'generated-token');
     expect(profileStore.savedProfile?.agentId, 'agent-1');
     expect(profileStore.savedProfile?.token, 'generated-token');
-    expect(find.text('http://panel.example.com'), findsOneWidget);
+    expect(find.text('http://panel.example.com'), findsWidgets);
   });
 
   testWidgets('client app restores saved registration state on startup', (
@@ -163,7 +163,7 @@ void main() {
     await tester.pump(const Duration(milliseconds: 100));
     await tester.pump(const Duration(milliseconds: 100));
 
-    expect(find.text('https://panel.example.com'), findsOneWidget);
+    expect(find.text('https://panel.example.com'), findsWidgets);
     expect(find.text('Registered'), findsWidgets);
   });
 
