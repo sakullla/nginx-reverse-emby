@@ -260,6 +260,22 @@ func TestDialRelayTCPTunesSocketBuffersForRelayConnections(t *testing.T) {
 	}
 }
 
+func TestRelayTCPDialerEnablesMultipathTCP(t *testing.T) {
+	dialer := newRelayTCPDialer()
+
+	if !dialer.MultipathTCP() {
+		t.Fatal("relay TCP dialer should enable MPTCP")
+	}
+}
+
+func TestRelayTCPListenConfigEnablesMultipathTCP(t *testing.T) {
+	listenConfig := newRelayTCPListenConfig()
+
+	if !listenConfig.MultipathTCP() {
+		t.Fatal("relay TCP listener should enable MPTCP")
+	}
+}
+
 func TestTuneBulkRelayConnEnablesNoDelay(t *testing.T) {
 	conn := &fakeRelayTCPBufferConn{}
 

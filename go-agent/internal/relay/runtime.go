@@ -176,7 +176,8 @@ func (s *Server) startListener(listener Listener) error {
 			s.wg.Add(1)
 			go s.acceptQUICLoop(ln.listener, listener)
 		default:
-			ln, err := net.Listen("tcp", addr)
+			listenConfig := newRelayTCPListenConfig()
+			ln, err := listenConfig.Listen(s.ctx, "tcp", addr)
 			if err != nil {
 				return err
 			}
