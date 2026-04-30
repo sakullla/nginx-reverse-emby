@@ -1,3 +1,6 @@
+import 'dart:convert';
+import 'dart:io';
+import 'dart:math';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
 import '../../data/models/auth_models.dart';
 import '../../data/repositories/auth_repository.dart';
@@ -5,6 +8,20 @@ import '../../data/repositories/auth_repository.dart';
 part 'auth_provider.g.dart';
 
 final authRepositoryProvider = Provider((ref) => AuthRepository());
+
+String _generateAgentToken() {
+  final random = Random.secure();
+  final bytes = List<int>.generate(24, (_) => random.nextInt(256));
+  return bytes.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join();
+}
+
+String _normalizeMasterUrl(String value) {
+  var normalized = value.trim();
+  while (normalized.endsWith('/')) {
+    normalized = normalized.substring(0, normalized.length - 1);
+  }
+  return normalized;
+}
 
 @riverpod
 class AuthNotifier extends _$AuthNotifier {
@@ -25,15 +42,66 @@ class AuthNotifier extends _$AuthNotifier {
     state = const AsyncData(AuthStateLoading());
 
     try {
-      final profile = ClientProfile(
-        masterUrl: masterUrl,
-        displayName: name,
-        agentId: 'agent-${DateTime.now().millisecondsSinceEpoch}',
-        token: 'tok-${DateTime.now().millisecondsSinceEpoch}',
-      );
+      final normalizedUrl = _normalizeMasterUrl(masterUrl);
+      final uri = Uri.parse('$normalizedUrl/panel-api/agents/register');
+      if (uri.scheme != 'http' && uri.scheme != 'https') {
+        throw const FormatException('Master URL must use http or https');
+      }
+      if (uri.host.trim().isEmpty) {
+        throw const FormatException('Master URL must include a host');
+      }
 
-      await ref.read(authRepositoryProvider).saveProfile(profile);
-      state = AsyncData(AuthStateAuthenticated(profile));
+      final agentToken = _generateAgentToken();
+      final trimmedToken = registerToken.trim();
+
+      final client = HttpClient();
+      try {
+        final request = await client.postUrl(uri);
+        request.headers.contentType = ContentType.json;
+        request.headers.set('X-Register-Token', trimmedToken);
+        request.headers.set('X-Agent-Token', agentToken);
+        request.write(jsonEncode({
+          'name': name.trim(),
+          'agent_url': '',
+          'agent_token': agentToken,
+          'version': '2.1.0',
+          'platform': 'windows',
+          'tags': <String>[],
+          'capabilities': const ['http_rules'],
+          'mode': 'pull',
+          'register_token': trimmedToken,
+        }));
+
+        final response = await request.close();
+        final responseText = await utf8.decoder.bind(response).join();
+
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          final payload = _decodeJson(responseText);
+          final error = payload['error'] ?? payload['message'];
+          throw Exception(error is String && error.isNotEmpty
+              ? error
+              : 'Registration failed with HTTP ${response.statusCode}');
+        }
+
+        final payload = _decodeJson(responseText);
+        final agent = payload['agent'];
+        final agentId = agent is Map ? (agent['id'] as String? ?? '') : '';
+        if (payload['ok'] != true || agentId.isEmpty) {
+          throw Exception('Registration response did not include an agent id');
+        }
+
+        final profile = ClientProfile(
+          masterUrl: normalizedUrl,
+          displayName: name.trim(),
+          agentId: agentId,
+          token: agentToken,
+        );
+
+        await ref.read(authRepositoryProvider).saveProfile(profile);
+        state = AsyncData(AuthStateAuthenticated(profile));
+      } finally {
+        client.close(force: true);
+      }
     } catch (e) {
       state = AsyncData(AuthStateError(e.toString()));
     }
@@ -42,5 +110,15 @@ class AuthNotifier extends _$AuthNotifier {
   Future<void> logout() async {
     await ref.read(authRepositoryProvider).clearProfile();
     state = const AsyncData(AuthStateUnauthenticated());
+  }
+
+  Map<String, dynamic> _decodeJson(String text) {
+    if (text.trim().isEmpty) return const {};
+    try {
+      final decoded = jsonDecode(text);
+      return decoded is Map<String, dynamic> ? decoded : const {};
+    } on FormatException {
+      return const {};
+    }
   }
 }
