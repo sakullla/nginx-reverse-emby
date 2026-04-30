@@ -39,11 +39,13 @@ func NewRuntime(cfg config.Config, store Store) (*Runtime, error) {
 
 	runtime, err := newEmbeddedRuntime(
 		goagentembedded.Config{
-			AgentID:           cfg.LocalAgentID,
-			AgentName:         cfg.LocalAgentName,
-			DataDir:           cfg.DataDir,
-			HeartbeatInterval: cfg.HeartbeatInterval,
-			HTTP3Enabled:      cfg.LocalAgentHTTP3Enabled,
+			AgentID:              cfg.LocalAgentID,
+			AgentName:            cfg.LocalAgentName,
+			DataDir:              cfg.DataDir,
+			HeartbeatInterval:    cfg.HeartbeatInterval,
+			HTTP3Enabled:         cfg.LocalAgentHTTP3Enabled,
+			TrafficStatsEnabled:  cfg.LocalAgentTrafficStatsEnabled,
+			TrafficStatsExplicit: cfg.LocalAgentTrafficStatsExplicit,
 			HTTPTransport: goagentembedded.HTTPTransportConfig{
 				DialTimeout:           cfg.LocalAgentHTTPTransport.DialTimeout,
 				TLSHandshakeTimeout:   cfg.LocalAgentHTTPTransport.TLSHandshakeTimeout,

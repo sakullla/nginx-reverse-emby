@@ -30,6 +30,41 @@ func TestAddIgnoresNegativeValues(t *testing.T) {
 	assertTrafficCounters(t, traffic["total"], 0, 0)
 }
 
+func TestDisabledTrafficStatsDoNotRecordOrSnapshot(t *testing.T) {
+	Reset()
+	SetEnabled(false)
+	t.Cleanup(func() {
+		SetEnabled(true)
+		Reset()
+	})
+
+	AddHTTP(100, 200)
+	AddL4(300, 400)
+	AddRelay(500, 600)
+
+	if stats := Snapshot(); stats != nil {
+		t.Fatalf("Snapshot() = %#v, want nil when disabled", stats)
+	}
+}
+
+func TestRecorderBatchesTrafficUntilFlush(t *testing.T) {
+	Reset()
+
+	recorder := NewHTTPRecorder()
+	recorder.Add(10, 20)
+	recorder.Add(30, 40)
+
+	stats := Snapshot()
+	traffic := stats["traffic"].(map[string]any)
+	assertTrafficCounters(t, traffic["http"], 0, 0)
+
+	recorder.Flush()
+
+	stats = Snapshot()
+	traffic = stats["traffic"].(map[string]any)
+	assertTrafficCounters(t, traffic["http"], 40, 60)
+}
+
 func assertTrafficCounters(t *testing.T, raw any, wantRX uint64, wantTX uint64) {
 	t.Helper()
 

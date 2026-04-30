@@ -1049,7 +1049,7 @@ func cloneProxyRequest(req *http.Request, body *reusableRequestBody, candidate h
 		out.Body, out.ContentLength, out.GetBody = body.Open()
 		if out.Body != nil {
 			if out.ContentLength <= 0 {
-				out.Body = trafficReadCloser{ReadCloser: out.Body}
+				out.Body = newTrafficReadCloser(out.Body)
 			}
 		}
 	} else {
@@ -1064,12 +1064,28 @@ func cloneProxyRequest(req *http.Request, body *reusableRequestBody, candidate h
 
 type trafficReadCloser struct {
 	io.ReadCloser
+	recorder *traffic.Recorder
+}
+
+func newTrafficReadCloser(delegate io.ReadCloser) io.ReadCloser {
+	return &trafficReadCloser{
+		ReadCloser: delegate,
+		recorder:   traffic.NewHTTPRecorder(),
+	}
 }
 
 func (c trafficReadCloser) Read(p []byte) (int, error) {
 	n, err := c.ReadCloser.Read(p)
-	traffic.AddHTTP(int64(n), 0)
+	c.recorder.Add(int64(n), 0)
+	if err != nil {
+		c.recorder.Flush()
+	}
 	return n, err
+}
+
+func (c trafficReadCloser) Close() error {
+	c.recorder.Flush()
+	return c.ReadCloser.Close()
 }
 
 func isBackendRetryable(req *http.Request, err error) bool {

@@ -112,12 +112,16 @@ func normalizeConstructorConfig(cfg Config) Config {
 	if cfg.HTTPResilience == (config.HTTPResilienceConfig{}) {
 		cfg.HTTPResilience = defaults.HTTPResilience
 	}
+	if !cfg.TrafficStatsExplicit {
+		cfg.TrafficStatsEnabled = defaults.TrafficStatsEnabled
+	}
 
 	return cfg
 }
 
 func New(cfg Config) (*App, error) {
 	cfg = normalizeConstructorConfig(cfg)
+	traffic.SetEnabled(cfg.TrafficStatsEnabled)
 
 	resetRelayTimeouts := relay.ConfigureTimeouts(relay.TimeoutConfig{
 		DialTimeout:      cfg.RelayTimeouts.DialTimeout,
@@ -386,7 +390,9 @@ func (a *App) syncRequest(ctx context.Context, applied Snapshot) (SyncRequest, e
 	if req.LastApplyStatus == "" {
 		req.LastApplyStatus = "success"
 	}
-	req.Stats = traffic.Snapshot()
+	if stats := traffic.Snapshot(); stats != nil {
+		req.Stats = stats
+	}
 
 	if reporter, ok := a.certApplier.(ManagedCertificateReporter); ok {
 		reports, err := reporter.ManagedCertificateReports(ctx)

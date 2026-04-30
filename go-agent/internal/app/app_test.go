@@ -1904,7 +1904,7 @@ func waitForLastSyncError(t *testing.T, timeout time.Duration, load func() (stor
 func TestPerformSyncIncludesApplyStatusAndManagedCertificateReports(t *testing.T) {
 	traffic.Reset()
 	traffic.AddHTTP(11, 22)
-	defer traffic.Reset()
+	t.Cleanup(traffic.Reset)
 
 	cfg := Config{CurrentVersion: "1.0.0"}
 	mem := store.NewInMemory()
@@ -1965,6 +1965,35 @@ func TestPerformSyncIncludesApplyStatusAndManagedCertificateReports(t *testing.T
 	}
 	if len(req.ManagedCertificateReports) != 1 || req.ManagedCertificateReports[0].ID != 21 {
 		t.Fatalf("unexpected managed certificate reports in sync request: %+v", req.ManagedCertificateReports)
+	}
+}
+
+func TestPerformSyncOmitsStatsWhenTrafficStatsDisabled(t *testing.T) {
+	traffic.Reset()
+	traffic.SetEnabled(false)
+	t.Cleanup(func() {
+		traffic.SetEnabled(true)
+		traffic.Reset()
+	})
+	traffic.AddHTTP(11, 22)
+
+	cfg := Config{CurrentVersion: "1.0.0", TrafficStatsEnabled: false}
+	mem := store.NewInMemory()
+	applied := Snapshot{DesiredVersion: "1.0.0", Revision: 7}
+	if err := mem.SaveAppliedSnapshot(applied); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+
+	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{DesiredVersion: "ok", Revision: 7}})
+	app := newAppWithDeps(cfg, mem, client, &testCertificateApplier{}, nil, nil)
+
+	if err := app.performSync(context.Background()); err != nil {
+		t.Fatalf("performSync() error = %v", err)
+	}
+
+	req := waitForRequest(t, client, time.Second)
+	if req.Stats != nil {
+		t.Fatalf("Stats = %#v, want nil when traffic stats disabled", req.Stats)
 	}
 }
 

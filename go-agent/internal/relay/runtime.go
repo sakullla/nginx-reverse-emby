@@ -944,9 +944,17 @@ func (s *Server) handleUDPRelayStream(clientConn net.Conn, listener Listener, ta
 
 func pipeUDPPackets(clientConn net.Conn, upstream udpPacketPeer) {
 	done := make(chan struct{}, 2)
+	recorder := traffic.NewRelayRecorder()
+	var flushOnce sync.Once
+	flush := func() {
+		flushOnce.Do(func() {
+			recorder.Flush()
+		})
+	}
 
 	go func() {
 		defer upstream.Close()
+		defer flush()
 		buf := make([]byte, maxUOTPacketSize)
 		for {
 			payload, err := readUOTPacketInto(clientConn, buf)
@@ -958,12 +966,13 @@ func pipeUDPPackets(clientConn net.Conn, upstream udpPacketPeer) {
 				done <- struct{}{}
 				return
 			}
-			traffic.AddRelay(int64(len(payload)), 0)
+			recorder.Add(int64(len(payload)), 0)
 		}
 	}()
 
 	go func() {
 		defer clientConn.Close()
+		defer flush()
 		for {
 			payload, err := upstream.ReadPacket()
 			if err != nil {
@@ -974,7 +983,7 @@ func pipeUDPPackets(clientConn net.Conn, upstream udpPacketPeer) {
 				done <- struct{}{}
 				return
 			}
-			traffic.AddRelay(0, int64(len(payload)))
+			recorder.Add(0, int64(len(payload)))
 		}
 	}()
 

@@ -86,6 +86,7 @@ type udpSession struct {
 	pendingReplyTimes     []time.Time
 	ready                 chan struct{}
 	initErr               error
+	trafficRecorder       *traffic.Recorder
 }
 
 type l4Candidate struct {
@@ -603,7 +604,7 @@ func (s *Server) proxyUDPPacket(listener *net.UDPConn, rule model.L4Rule, payloa
 		s.closeUDPSession(session.key)
 		return
 	}
-	traffic.AddL4(int64(len(payload)), 0)
+	session.trafficRecorder.Add(int64(len(payload)), 0)
 	s.markUDPSessionWrite(session.key)
 }
 
@@ -687,11 +688,12 @@ func (s *Server) sessionForPeer(rule model.L4Rule, listener *net.UDPConn, peer *
 	}
 
 	session := &udpSession{
-		key:        key,
-		peer:       cloneUDPAddr(peer),
-		listener:   listener,
-		lastActive: s.now(),
-		ready:      make(chan struct{}),
+		key:             key,
+		peer:            cloneUDPAddr(peer),
+		listener:        listener,
+		lastActive:      s.now(),
+		ready:           make(chan struct{}),
+		trafficRecorder: traffic.NewL4Recorder(),
 	}
 	s.udpSessions[key] = session
 	s.udpMu.Unlock()
@@ -765,6 +767,7 @@ func (s *Server) dialUDPUpstream(rule model.L4Rule) (udpUpstream, l4Candidate, e
 func (s *Server) pipeUDPReplies(session *udpSession) {
 	defer s.wg.Done()
 	defer s.closeUDPSession(session.key)
+	defer session.trafficRecorder.Flush()
 
 	for {
 		if err := session.upstream.SetReadDeadline(s.now().Add(250 * time.Millisecond)); err != nil {
@@ -817,7 +820,7 @@ func (s *Server) pipeUDPReplies(session *udpSession) {
 		if _, err := session.listener.WriteToUDP(payload, session.peer); err != nil {
 			return
 		}
-		traffic.AddL4(0, int64(len(payload)))
+		session.trafficRecorder.Add(0, int64(len(payload)))
 	}
 }
 

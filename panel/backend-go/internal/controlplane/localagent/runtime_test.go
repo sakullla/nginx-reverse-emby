@@ -82,6 +82,7 @@ func TestNewRuntimeStartsEmbeddedRuntimeWithBridgeAdapters(t *testing.T) {
 	cfg.LocalAgentBackendFailures.BackoffLimit = 15 * time.Second
 	cfg.LocalAgentBackendFailuresExplicit = true
 	cfg.LocalAgentRelayTimeouts.IdleTimeout = 12 * time.Second
+	cfg.LocalAgentTrafficStatsEnabled = false
 
 	store := &bridgeStoreStub{
 		snapshot: Snapshot{
@@ -114,6 +115,9 @@ func TestNewRuntimeStartsEmbeddedRuntimeWithBridgeAdapters(t *testing.T) {
 		}
 		if cfg.RelayTimeouts.IdleTimeout != 12*time.Second {
 			t.Fatalf("IdleTimeout = %v", cfg.RelayTimeouts.IdleTimeout)
+		}
+		if cfg.TrafficStatsEnabled {
+			t.Fatal("expected TrafficStatsEnabled to propagate")
 		}
 		request := mustDecodeEmbeddedSyncRequest(t, `{
 			"CurrentRevision": 14,

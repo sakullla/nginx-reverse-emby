@@ -38,6 +38,8 @@ type Config struct {
 	LocalAgentBackendFailures         BackendFailureConfig
 	LocalAgentBackendFailuresExplicit bool
 	LocalAgentRelayTimeouts           RelayTimeoutConfig
+	LocalAgentTrafficStatsEnabled     bool
+	LocalAgentTrafficStatsExplicit    bool
 	ManagedCertificateRenewInterval   time.Duration
 	ManagedDNSCertificatesEnabled     bool
 	AppVersion                        string
@@ -104,6 +106,7 @@ func Default() Config {
 			FrameTimeout:     5 * time.Second,
 			IdleTimeout:      2 * time.Minute,
 		},
+		LocalAgentTrafficStatsEnabled:   true,
 		ManagedCertificateRenewInterval: defaultManagedCertRenew,
 	}
 }
@@ -181,6 +184,14 @@ func LoadFromEnv() (Config, error) {
 			return Config{}, fmt.Errorf("invalid NRE_HTTP3_ENABLED: %w", err)
 		}
 		cfg.LocalAgentHTTP3Enabled = enabled
+	}
+	if val := strings.TrimSpace(os.Getenv("NRE_TRAFFIC_STATS_ENABLED")); val != "" {
+		enabled, err := strconv.ParseBool(val)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid NRE_TRAFFIC_STATS_ENABLED: %w", err)
+		}
+		cfg.LocalAgentTrafficStatsEnabled = enabled
+		cfg.LocalAgentTrafficStatsExplicit = true
 	}
 	if val := strings.TrimSpace(os.Getenv("NRE_HTTP_DIAL_TIMEOUT")); val != "" {
 		dur, err := parsePositiveDurationEnv("NRE_HTTP_DIAL_TIMEOUT", val)

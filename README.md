@@ -121,6 +121,7 @@ curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/dep
 | `NRE_LOCAL_AGENT_ID` | `local` | Local agent 标识 |
 | `NRE_LOCAL_AGENT_NAME` | `local` | Local agent 显示名称 |
 | `NRE_HEARTBEAT_INTERVAL` | `30s` | 心跳同步间隔（Go duration 格式） |
+| `NRE_TRAFFIC_STATS_ENABLED` | `true` | 是否启用 Agent 侧 HTTP/L4/Relay 流量统计；关闭后不采集也不上报流量 stats |
 | `NRE_MANAGED_CERT_RENEW_INTERVAL` | `24h` | 托管证书续期检查间隔 |
 | `ACME_DNS_PROVIDER` | - | DNS 验证提供商（如 `cf`） |
 | `CF_Token` / `CF_TOKEN` | - | Cloudflare API Token |
