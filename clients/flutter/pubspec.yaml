@@ -20,6 +20,9 @@ dependencies:
   window_manager: ^0.4.3
   tray_manager: ^0.3.2
 
+  # Storage
+  shared_preferences: ^2.3.0
+
   # UI
   gap: ^3.0.1
 
@@ -51,6 +54,9 @@ dev_dependencies:
   freezed: ^3.0.0
   json_serializable: ^6.9.4
   riverpod_generator: ^2.6.5
+
+  # Testing
+  mocktail: ^1.0.0
 
   # Windows packaging
   msix: ^3.16.8
