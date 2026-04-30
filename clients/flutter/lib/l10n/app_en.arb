@@ -257,5 +257,17 @@
   "valueDash": "-",
   "@valueDash": {},
   "titleAgentProcessControl": "Agent Process Control",
-  "@titleAgentProcessControl": {}
+  "@titleAgentProcessControl": {},
+  "labelTheme": "Theme",
+  "@labelTheme": {},
+  "valueThemeSystem": "System",
+  "@valueThemeSystem": {},
+  "valueThemeLight": "Light",
+  "@valueThemeLight": {},
+  "valueThemeDark": "Dark",
+  "@valueThemeDark": {},
+  "trayShow": "Show",
+  "@trayShow": {},
+  "trayQuit": "Quit",
+  "@trayQuit": {}
 }

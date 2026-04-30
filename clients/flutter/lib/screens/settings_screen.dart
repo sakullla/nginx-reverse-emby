@@ -12,10 +12,14 @@ class SettingsScreen extends StatefulWidget {
     super.key,
     required this.state,
     this.onClearProfile,
+    this.themeMode = ThemeMode.system,
+    this.onThemeModeChanged,
   });
 
   final ClientState state;
   final VoidCallback? onClearProfile;
+  final ThemeMode themeMode;
+  final ValueChanged<ThemeMode>? onThemeModeChanged;
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -176,6 +180,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
             title: l10n.labelPlatform,
             subtitle: Platform.operatingSystem,
           ),
+          _ThemeSelector(
+            themeMode: widget.themeMode,
+            onChanged: widget.onThemeModeChanged,
+          ),
 
           const Divider(),
 
@@ -287,6 +295,54 @@ class _StartAtLoginSwitchState extends State<_StartAtLoginSwitch> {
           ),
         );
       },
+    );
+  }
+}
+
+class _ThemeSelector extends StatelessWidget {
+  const _ThemeSelector({
+    required this.themeMode,
+    this.onChanged,
+  });
+
+  final ThemeMode themeMode;
+  final ValueChanged<ThemeMode>? onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
+
+    return ListTile(
+      leading: const Icon(Icons.dark_mode),
+      title: Text(l10n.labelTheme),
+      trailing: ConstrainedBox(
+        constraints: const BoxConstraints(minWidth: 120),
+        child: DropdownButton<ThemeMode>(
+          value: themeMode,
+          isDense: true,
+          underline: const SizedBox.shrink(),
+          alignment: AlignmentDirectional.centerEnd,
+          items: [
+            DropdownMenuItem(
+              value: ThemeMode.system,
+              child: Text(l10n.valueThemeSystem),
+            ),
+            DropdownMenuItem(
+              value: ThemeMode.light,
+              child: Text(l10n.valueThemeLight),
+            ),
+            DropdownMenuItem(
+              value: ThemeMode.dark,
+              child: Text(l10n.valueThemeDark),
+            ),
+          ],
+          onChanged: onChanged == null
+              ? null
+              : (mode) {
+                  if (mode != null) onChanged!(mode);
+                },
+        ),
+      ),
     );
   }
 }

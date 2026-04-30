@@ -15,7 +15,7 @@ import 'services/local_agent_controller.dart';
 import 'services/local_agent_controller_factory.dart';
 import 'services/master_api.dart';
 
-class NreClientApp extends StatelessWidget {
+class NreClientApp extends StatefulWidget {
   const NreClientApp({
     super.key,
     this.api = const HttpMasterApi(),
@@ -25,6 +25,7 @@ class NreClientApp extends StatelessWidget {
     this.platform,
     this.version = '2.0.0',
     this.enableAutoRefresh = true,
+    this.initialThemeMode = ThemeMode.system,
   });
 
   final MasterApi api;
@@ -34,6 +35,26 @@ class NreClientApp extends StatelessWidget {
   final String? platform;
   final String version;
   final bool enableAutoRefresh;
+  final ThemeMode initialThemeMode;
+
+  @override
+  State<NreClientApp> createState() => _NreClientAppState();
+}
+
+class _NreClientAppState extends State<NreClientApp> {
+  late ThemeMode _themeMode;
+
+  @override
+  void initState() {
+    super.initState();
+    _themeMode = widget.initialThemeMode;
+  }
+
+  void _setThemeMode(ThemeMode mode) {
+    if (_themeMode != mode) {
+      setState(() => _themeMode = mode);
+    }
+  }
 
   static final _lightScheme = ColorScheme.fromSeed(
     seedColor: const Color(0xFF006D77),
@@ -58,24 +79,27 @@ class NreClientApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final resolvedPlatform = platform ?? currentClientPlatform();
+    final resolvedPlatform = widget.platform ?? currentClientPlatform();
 
     return MaterialApp(
       title: 'NRE Client',
       debugShowCheckedModeBanner: false,
+      themeMode: _themeMode,
       theme: _buildTheme(_lightScheme, Brightness.light),
       darkTheme: _buildTheme(_darkScheme, Brightness.dark),
       localizationsDelegates: AppLocalizations.localizationsDelegates,
       supportedLocales: AppLocalizations.supportedLocales,
       home: NreClientHome(
-        api: api,
-        generateAgentToken: generateAgentToken,
-        profileStore: profileStore ?? PathProviderClientProfileStore(),
+        api: widget.api,
+        generateAgentToken: widget.generateAgentToken,
+        profileStore: widget.profileStore ?? PathProviderClientProfileStore(),
         localAgentController:
-            localAgentController ?? createLocalAgentController(),
+            widget.localAgentController ?? createLocalAgentController(),
         platform: resolvedPlatform,
-        version: version,
-        enableAutoRefresh: enableAutoRefresh,
+        version: widget.version,
+        enableAutoRefresh: widget.enableAutoRefresh,
+        themeMode: _themeMode,
+        onThemeModeChanged: _setThemeMode,
       ),
     );
   }
@@ -211,6 +235,8 @@ class NreClientHome extends StatefulWidget {
     required this.platform,
     required this.version,
     this.enableAutoRefresh = true,
+    this.themeMode = ThemeMode.system,
+    this.onThemeModeChanged,
   });
 
   final MasterApi api;
@@ -220,6 +246,8 @@ class NreClientHome extends StatefulWidget {
   final String platform;
   final String version;
   final bool enableAutoRefresh;
+  final ThemeMode themeMode;
+  final ValueChanged<ThemeMode>? onThemeModeChanged;
 
   @override
   State<NreClientHome> createState() => _NreClientHomeState();
@@ -285,6 +313,8 @@ class _NreClientHomeState extends State<NreClientHome> {
     SettingsScreen(
       state: state,
       onClearProfile: _clearProfile,
+      themeMode: widget.themeMode,
+      onThemeModeChanged: widget.onThemeModeChanged,
     ),
   ];
 

@@ -367,4 +367,22 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get titleAgentProcessControl => '代理进程控制';
+
+  @override
+  String get labelTheme => '主题';
+
+  @override
+  String get valueThemeSystem => '跟随系统';
+
+  @override
+  String get valueThemeLight => '浅色';
+
+  @override
+  String get valueThemeDark => '深色';
+
+  @override
+  String get trayShow => '显示';
+
+  @override
+  String get trayQuit => '退出';
 }

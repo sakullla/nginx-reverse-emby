@@ -787,6 +787,42 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Agent Process Control'**
   String get titleAgentProcessControl;
+
+  /// No description provided for @labelTheme.
+  ///
+  /// In en, this message translates to:
+  /// **'Theme'**
+  String get labelTheme;
+
+  /// No description provided for @valueThemeSystem.
+  ///
+  /// In en, this message translates to:
+  /// **'System'**
+  String get valueThemeSystem;
+
+  /// No description provided for @valueThemeLight.
+  ///
+  /// In en, this message translates to:
+  /// **'Light'**
+  String get valueThemeLight;
+
+  /// No description provided for @valueThemeDark.
+  ///
+  /// In en, this message translates to:
+  /// **'Dark'**
+  String get valueThemeDark;
+
+  /// No description provided for @trayShow.
+  ///
+  /// In en, this message translates to:
+  /// **'Show'**
+  String get trayShow;
+
+  /// No description provided for @trayQuit.
+  ///
+  /// In en, this message translates to:
+  /// **'Quit'**
+  String get trayQuit;
 }
 
 class _AppLocalizationsDelegate

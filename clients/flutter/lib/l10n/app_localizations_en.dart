@@ -375,4 +375,22 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get titleAgentProcessControl => 'Agent Process Control';
+
+  @override
+  String get labelTheme => 'Theme';
+
+  @override
+  String get valueThemeSystem => 'System';
+
+  @override
+  String get valueThemeLight => 'Light';
+
+  @override
+  String get valueThemeDark => 'Dark';
+
+  @override
+  String get trayShow => 'Show';
+
+  @override
+  String get trayQuit => 'Quit';
 }

@@ -114,5 +114,11 @@
   "valueContainerPolicyDesc": "客户端构件未嵌入控制平面镜像中",
   "valueLoading": "加载中...",
   "valueDash": "-",
-  "titleAgentProcessControl": "代理进程控制"
+  "titleAgentProcessControl": "代理进程控制",
+  "labelTheme": "主题",
+  "valueThemeSystem": "跟随系统",
+  "valueThemeLight": "浅色",
+  "valueThemeDark": "深色",
+  "trayShow": "显示",
+  "trayQuit": "退出"
 }
