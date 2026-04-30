@@ -3,6 +3,8 @@ import 'package:go_router/go_router.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../platform/platform_capabilities.dart';
 import 'route_names.dart';
+import '../../features/auth/data/models/auth_models.dart';
+import '../../features/auth/presentation/providers/auth_provider.dart';
 import '../../features/auth/presentation/screens/connect_screen.dart';
 import '../../features/dashboard/presentation/screens/dashboard_screen.dart';
 import '../../features/rules/presentation/screens/rules_list_screen.dart';
@@ -21,7 +23,13 @@ final routerProvider = Provider<GoRouter>((ref) {
     navigatorKey: _rootNavigatorKey,
     initialLocation: RouteNames.dashboard,
     redirect: (context, state) {
-      // TODO: Add auth guard once auth provider is built
+      final auth = ref.read(authNotifierProvider);
+      final isAuth = auth.value is AuthStateAuthenticated;
+
+      final isConnectRoute = state.matchedLocation == RouteNames.connect;
+
+      if (!isAuth && !isConnectRoute) return RouteNames.connect;
+      if (isAuth && isConnectRoute) return RouteNames.dashboard;
       return null;
     },
     routes: [
