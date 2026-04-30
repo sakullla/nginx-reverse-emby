@@ -5,6 +5,19 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:nre_client/services/master_api.dart';
 
 void main() {
+  test('normalizeMasterUrl accepts panel-api and join script URLs', () {
+    expect(
+      normalizeMasterUrl(
+        'https://panel.example.com/panel-api/public/join-agent.sh',
+      ),
+      'https://panel.example.com',
+    );
+    expect(
+      normalizeMasterUrl('https://panel.example.com/panel-api/'),
+      'https://panel.example.com',
+    );
+  });
+
   test('register posts expected backend request and parses agent id', () async {
     late HttpRequest captured;
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);

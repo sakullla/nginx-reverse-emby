@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
+import '../../../../services/master_api.dart';
 import '../../data/models/auth_models.dart';
 import '../../data/repositories/auth_repository.dart';
 
@@ -13,14 +14,6 @@ String _generateAgentToken() {
   final random = Random.secure();
   final bytes = List<int>.generate(24, (_) => random.nextInt(256));
   return bytes.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join();
-}
-
-String _normalizeMasterUrl(String value) {
-  var normalized = value.trim();
-  while (normalized.endsWith('/')) {
-    normalized = normalized.substring(0, normalized.length - 1);
-  }
-  return normalized;
 }
 
 @riverpod
@@ -42,7 +35,7 @@ class AuthNotifier extends _$AuthNotifier {
     state = const AsyncData(AuthStateLoading());
 
     try {
-      final normalizedUrl = _normalizeMasterUrl(masterUrl);
+      final normalizedUrl = normalizeMasterUrl(masterUrl);
       final uri = Uri.parse('$normalizedUrl/panel-api/agents/register');
       if (uri.scheme != 'http' && uri.scheme != 'https') {
         throw const FormatException('Master URL must use http or https');
@@ -60,17 +53,19 @@ class AuthNotifier extends _$AuthNotifier {
         request.headers.contentType = ContentType.json;
         request.headers.set('X-Register-Token', trimmedToken);
         request.headers.set('X-Agent-Token', agentToken);
-        request.write(jsonEncode({
-          'name': name.trim(),
-          'agent_url': '',
-          'agent_token': agentToken,
-          'version': '2.1.0',
-          'platform': 'windows',
-          'tags': <String>[],
-          'capabilities': const ['http_rules'],
-          'mode': 'pull',
-          'register_token': trimmedToken,
-        }));
+        request.write(
+          jsonEncode({
+            'name': name.trim(),
+            'agent_url': '',
+            'agent_token': agentToken,
+            'version': '2.1.0',
+            'platform': 'windows',
+            'tags': <String>[],
+            'capabilities': const ['http_rules'],
+            'mode': 'pull',
+            'register_token': trimmedToken,
+          }),
+        );
 
         final response = await request.close();
         final responseText = await utf8.decoder.bind(response).join();
@@ -78,9 +73,11 @@ class AuthNotifier extends _$AuthNotifier {
         if (response.statusCode < 200 || response.statusCode >= 300) {
           final payload = _decodeJson(responseText);
           final error = payload['error'] ?? payload['message'];
-          throw Exception(error is String && error.isNotEmpty
-              ? error
-              : 'Registration failed with HTTP ${response.statusCode}');
+          throw Exception(
+            error is String && error.isNotEmpty
+                ? error
+                : 'Registration failed with HTTP ${response.statusCode}',
+          );
         }
 
         final payload = _decodeJson(responseText);
