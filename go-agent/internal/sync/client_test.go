@@ -134,6 +134,11 @@ func TestHeartbeatSync(t *testing.T) {
 		LastApplyRevision: 41,
 		LastApplyStatus:   "success",
 		LastApplyMessage:  "",
+		Stats: map[string]any{
+			"traffic": map[string]any{
+				"total": map[string]uint64{"rx_bytes": 10, "tx_bytes": 20},
+			},
+		},
 		ManagedCertificateReports: []model.ManagedCertificateReport{{
 			ID:           21,
 			Domain:       "sync.example.com",
@@ -250,6 +255,7 @@ func TestHeartbeatSync(t *testing.T) {
 			LastApplyRevision         int                              `json:"last_apply_revision"`
 			LastApplyStatus           string                           `json:"last_apply_status"`
 			LastApplyMessage          string                           `json:"last_apply_message"`
+			Stats                     map[string]any                   `json:"stats"`
 			ManagedCertificateReports []model.ManagedCertificateReport `json:"managed_certificate_reports"`
 			Version                   string                           `json:"version"`
 			Platform                  string                           `json:"platform"`
@@ -268,6 +274,17 @@ func TestHeartbeatSync(t *testing.T) {
 		}
 		if payload.LastApplyRevision != 41 || payload.LastApplyStatus != "success" || payload.LastApplyMessage != "" {
 			t.Fatalf("unexpected apply status payload %+v", payload)
+		}
+		traffic, ok := payload.Stats["traffic"].(map[string]any)
+		if !ok {
+			t.Fatalf("traffic stats missing in heartbeat payload: %+v", payload.Stats)
+		}
+		total, ok := traffic["total"].(map[string]any)
+		if !ok {
+			t.Fatalf("total traffic stats missing in heartbeat payload: %+v", traffic)
+		}
+		if total["rx_bytes"] != float64(10) || total["tx_bytes"] != float64(20) {
+			t.Fatalf("unexpected traffic totals in heartbeat payload: %+v", total)
 		}
 		if len(payload.ManagedCertificateReports) != 1 || payload.ManagedCertificateReports[0].ID != 21 {
 			t.Fatalf("unexpected managed_certificate_reports payload %+v", payload.ManagedCertificateReports)

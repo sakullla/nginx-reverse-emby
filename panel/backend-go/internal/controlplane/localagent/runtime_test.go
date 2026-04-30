@@ -541,6 +541,45 @@ func TestMergeRuntimeStateWithSyncRequestPreservesAuthoritativeMetadataApplyOutc
 	}
 }
 
+func TestMergeRuntimeStateWithSyncRequestPersistsStatsMetadata(t *testing.T) {
+	state := RuntimeState{}
+	request := SyncRequest{
+		Stats: map[string]any{
+			"traffic": map[string]any{
+				"total": map[string]any{
+					"rx_bytes": float64(123),
+					"tx_bytes": float64(456),
+				},
+			},
+		},
+	}
+
+	merged := mergeRuntimeStateWithSyncRequest(state, request)
+
+	if merged.Metadata["stats"] == "" {
+		t.Fatalf("merge did not persist stats metadata: %+v", merged.Metadata)
+	}
+}
+
+func TestFromEmbeddedSyncRequestCopiesStats(t *testing.T) {
+	request := goagentembedded.SyncRequest{
+		Stats: map[string]any{
+			"traffic": map[string]any{
+				"total": map[string]any{
+					"rx_bytes": float64(123),
+					"tx_bytes": float64(456),
+				},
+			},
+		},
+	}
+
+	converted := fromEmbeddedSyncRequest(request)
+
+	if converted.Stats["traffic"] == nil {
+		t.Fatalf("fromEmbeddedSyncRequest() Stats = %+v", converted.Stats)
+	}
+}
+
 func TestLocalStateSinkMetadataErrorWinsOverStaleBridgeApplyStatus(t *testing.T) {
 	store := &bridgeStoreStub{
 		managedCerts: []storage.ManagedCertificateRow{{

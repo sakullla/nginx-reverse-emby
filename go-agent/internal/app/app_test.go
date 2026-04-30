@@ -21,6 +21,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
 	agentsync "github.com/sakullla/nginx-reverse-emby/go-agent/internal/sync"
 	agenttask "github.com/sakullla/nginx-reverse-emby/go-agent/internal/task"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
 	agentupdate "github.com/sakullla/nginx-reverse-emby/go-agent/internal/update"
 )
 
@@ -1901,6 +1902,10 @@ func waitForLastSyncError(t *testing.T, timeout time.Duration, load func() (stor
 }
 
 func TestPerformSyncIncludesApplyStatusAndManagedCertificateReports(t *testing.T) {
+	traffic.Reset()
+	traffic.AddHTTP(11, 22)
+	defer traffic.Reset()
+
 	cfg := Config{CurrentVersion: "1.0.0"}
 	mem := store.NewInMemory()
 	applied := Snapshot{
@@ -1943,6 +1948,20 @@ func TestPerformSyncIncludesApplyStatusAndManagedCertificateReports(t *testing.T
 	}
 	if req.LastApplyRevision != 6 || req.LastApplyStatus != "error" || req.LastApplyMessage != "previous apply failed" {
 		t.Fatalf("unexpected apply metadata in sync request: %+v", req)
+	}
+	if req.Stats == nil {
+		t.Fatal("expected traffic stats in sync request")
+	}
+	trafficStats, ok := req.Stats["traffic"].(map[string]any)
+	if !ok {
+		t.Fatalf("traffic stats missing in sync request: %+v", req.Stats)
+	}
+	total, ok := trafficStats["total"].(map[string]uint64)
+	if !ok {
+		t.Fatalf("total traffic stats missing in sync request: %+v", trafficStats)
+	}
+	if total["rx_bytes"] != 11 || total["tx_bytes"] != 22 {
+		t.Fatalf("unexpected traffic totals: %+v", total)
 	}
 	if len(req.ManagedCertificateReports) != 1 || req.ManagedCertificateReports[0].ID != 21 {
 		t.Fatalf("unexpected managed certificate reports in sync request: %+v", req.ManagedCertificateReports)

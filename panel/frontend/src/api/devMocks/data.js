@@ -434,10 +434,18 @@ const mockRulesByAgent = {
 }
 
 function getMockStats(agentId) {
+  const rx = agentId === 'local' ? 4_625_219_584 : 712_441_856
+  const tx = agentId === 'local' ? 9_219_637_248 : 1_284_505_600
   return {
     activeConnections: agentId === 'local' ? '12' : '4',
     totalRequests: agentId === 'local' ? '8.4K' : '1.3K',
-    status: '正常 (Mock)'
+    status: '正常 (Mock)',
+    traffic: {
+      total: { rx_bytes: rx, tx_bytes: tx },
+      http: { rx_bytes: Math.floor(rx * 0.62), tx_bytes: Math.floor(tx * 0.66) },
+      l4: { rx_bytes: Math.floor(rx * 0.25), tx_bytes: Math.floor(tx * 0.22) },
+      relay: { rx_bytes: Math.floor(rx * 0.13), tx_bytes: Math.floor(tx * 0.12) }
+    }
   }
 }
 

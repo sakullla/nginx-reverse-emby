@@ -46,6 +46,10 @@ func (f *fakeStore) LoadLocalAgentState(context.Context) (storage.LocalAgentStat
 	return f.localState, nil
 }
 
+func (f *fakeStore) LoadLocalRuntimeState(context.Context) (storage.RuntimeState, error) {
+	return f.savedRuntimeState, nil
+}
+
 func (f *fakeStore) SaveAgent(_ context.Context, row storage.AgentRow) error {
 	f.savedAgent = row
 	f.savedAgentCalls++
@@ -1726,6 +1730,11 @@ func TestAgentServiceStatsFallbackAndApplyBehavior(t *testing.T) {
 		},
 		snapshot:      storage.Snapshot{DesiredVersion: "1.2.3", Revision: 5},
 		localSnapshot: storage.Snapshot{DesiredVersion: "1.2.3", Revision: 4},
+		savedRuntimeState: storage.RuntimeState{
+			Metadata: map[string]string{
+				"stats": `{"traffic":{"total":{"rx_bytes":123,"tx_bytes":456}}}`,
+			},
+		},
 	}
 	svc := NewAgentService(cfg, store)
 
@@ -1741,7 +1750,15 @@ func TestAgentServiceStatsFallbackAndApplyBehavior(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stats(local) error = %v", err)
 	}
-	if localStats["status"] != "运行中" {
+	traffic, ok := localStats["traffic"].(map[string]any)
+	if !ok {
+		t.Fatalf("Stats(local) missing traffic = %+v", localStats)
+	}
+	total, ok := traffic["total"].(map[string]any)
+	if !ok {
+		t.Fatalf("Stats(local) missing total traffic = %+v", localStats)
+	}
+	if total["rx_bytes"] != float64(123) || total["tx_bytes"] != float64(456) {
 		t.Fatalf("Stats(local) = %+v", localStats)
 	}
 

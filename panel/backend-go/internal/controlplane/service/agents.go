@@ -31,6 +31,7 @@ type agentStore interface {
 	ListL4Rules(context.Context, string) ([]storage.L4RuleRow, error)
 	ListRelayListeners(context.Context, string) ([]storage.RelayListenerRow, error)
 	LoadLocalAgentState(context.Context) (storage.LocalAgentStateRow, error)
+	LoadLocalRuntimeState(context.Context) (storage.RuntimeState, error)
 	LoadAgentSnapshot(context.Context, string, storage.AgentSnapshotInput) (storage.Snapshot, error)
 	LoadLocalSnapshot(context.Context, string) (storage.Snapshot, error)
 	ListManagedCertificates(context.Context) ([]storage.ManagedCertificateRow, error)
@@ -556,11 +557,19 @@ func (s *agentService) Delete(ctx context.Context, agentID string) (AgentSummary
 
 func (s *agentService) Stats(ctx context.Context, agentID string) (AgentStats, error) {
 	if s.cfg.EnableLocalAgent && agentID == s.cfg.LocalAgentID {
-		return AgentStats{
-			"activeConnections": "0",
-			"totalRequests":     "0",
-			"status":            "运行中",
-		}, nil
+		runtimeState, err := s.store.LoadLocalRuntimeState(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if runtimeState.Metadata != nil {
+			if stats := parseAgentStats(runtimeState.Metadata["stats"]); len(stats) > 0 {
+				if _, ok := stats["status"]; !ok {
+					stats["status"] = "运行中"
+				}
+				return stats, nil
+			}
+		}
+		return localFallbackStats(), nil
 	}
 	row, err := s.findAgentByID(ctx, agentID)
 	if err != nil {
@@ -577,6 +586,14 @@ func (s *agentService) Stats(ctx context.Context, agentID string) (AgentStats, e
 		"totalRequests": "0",
 		"status":        status,
 	}, nil
+}
+
+func localFallbackStats() AgentStats {
+	return AgentStats{
+		"activeConnections": "0",
+		"totalRequests":     "0",
+		"status":            "运行中",
+	}
 }
 
 func (s *agentService) Apply(ctx context.Context, agentID string) (ApplyAgentResult, error) {

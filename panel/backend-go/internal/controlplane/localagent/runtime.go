@@ -2,6 +2,7 @@ package localagent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	goagentembedded "github.com/sakullla/nginx-reverse-emby/go-agent/embedded"
@@ -282,6 +283,14 @@ func fromEmbeddedSyncRequest(request goagentembedded.SyncRequest) SyncRequest {
 		LastApplyRevision: request.LastApplyRevision,
 		LastApplyStatus:   request.LastApplyStatus,
 		LastApplyMessage:  request.LastApplyMessage,
+	}
+	if len(request.Stats) > 0 {
+		if data, err := json.Marshal(request.Stats); err == nil {
+			var stats map[string]any
+			if json.Unmarshal(data, &stats) == nil {
+				copyValue.Stats = stats
+			}
+		}
 	}
 	if len(request.ManagedCertificateReports) == 0 {
 		return copyValue

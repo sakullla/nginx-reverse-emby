@@ -19,6 +19,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayplan"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
@@ -278,13 +279,15 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 
 	done := make(chan struct{}, 2)
 	go func() {
-		_, _ = io.Copy(upstream, downstreamSource)
+		n, _ := io.Copy(upstream, downstreamSource)
+		traffic.AddL4(n+int64(len(initialPayload)), 0)
 		closeTCPWrite(upstream)
 		closeTCPRead(client)
 		done <- struct{}{}
 	}()
 	go func() {
-		_, _ = copyPreferReaderFrom(client, upstream)
+		n, _ := copyPreferReaderFrom(client, upstream)
+		traffic.AddL4(0, n)
 		closeTCPWrite(client)
 		closeTCPRead(upstream)
 		done <- struct{}{}
@@ -332,13 +335,15 @@ func (s *Server) dialProxyEntryUpstream(rule model.L4Rule, target string) (net.C
 func copyBidirectionalTCP(a net.Conn, b net.Conn) {
 	done := make(chan struct{}, 2)
 	go func() {
-		_, _ = io.Copy(b, a)
+		n, _ := io.Copy(b, a)
+		traffic.AddL4(n, 0)
 		closeTCPWrite(b)
 		closeTCPRead(a)
 		done <- struct{}{}
 	}()
 	go func() {
-		_, _ = copyPreferReaderFrom(a, b)
+		n, _ := copyPreferReaderFrom(a, b)
+		traffic.AddL4(0, n)
 		closeTCPWrite(a)
 		closeTCPRead(b)
 		done <- struct{}{}
@@ -598,6 +603,7 @@ func (s *Server) proxyUDPPacket(listener *net.UDPConn, rule model.L4Rule, payloa
 		s.closeUDPSession(session.key)
 		return
 	}
+	traffic.AddL4(int64(len(payload)), 0)
 	s.markUDPSessionWrite(session.key)
 }
 
@@ -811,6 +817,7 @@ func (s *Server) pipeUDPReplies(session *udpSession) {
 		if _, err := session.listener.WriteToUDP(payload, session.peer); err != nil {
 			return
 		}
+		traffic.AddL4(0, int64(len(payload)))
 	}
 }
 

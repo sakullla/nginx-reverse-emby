@@ -21,6 +21,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayplan"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
@@ -984,6 +985,7 @@ func prepareReusableBody(req *http.Request, maxAttempts int) (*reusableRequestBo
 	if err != nil {
 		return nil, err
 	}
+	traffic.AddHTTP(int64(len(body)), 0)
 	return &reusableRequestBody{buffered: body}, nil
 }
 
@@ -1045,6 +1047,11 @@ func cloneProxyRequest(req *http.Request, body *reusableRequestBody, candidate h
 	}
 	if body != nil {
 		out.Body, out.ContentLength, out.GetBody = body.Open()
+		if out.Body != nil {
+			if out.ContentLength <= 0 {
+				out.Body = trafficReadCloser{ReadCloser: out.Body}
+			}
+		}
 	} else {
 		out.Body = nil
 		out.ContentLength = 0
@@ -1053,6 +1060,16 @@ func cloneProxyRequest(req *http.Request, body *reusableRequestBody, candidate h
 		ApplyHeaderOverrides(out, overrides)
 	}
 	return out, nil
+}
+
+type trafficReadCloser struct {
+	io.ReadCloser
+}
+
+func (c trafficReadCloser) Read(p []byte) (int, error) {
+	n, err := c.ReadCloser.Read(p)
+	traffic.AddHTTP(int64(n), 0)
+	return n, err
 }
 
 func isBackendRetryable(req *http.Request, err error) bool {
@@ -1127,6 +1144,7 @@ func copyResponse(w http.ResponseWriter, resp *http.Response) (int64, error) {
 	if resp.Body != nil {
 		n, err := io.Copy(w, resp.Body)
 		written = n
+		traffic.AddHTTP(0, n)
 		if err != nil {
 			return written, err
 		}
@@ -1200,7 +1218,9 @@ type switchProtocolCopier struct {
 }
 
 func (c switchProtocolCopier) copyFromBackend(errc chan<- error) {
-	if _, err := io.Copy(c.user, c.backend); err != nil {
+	n, err := io.Copy(c.user, c.backend)
+	traffic.AddHTTP(0, n)
+	if err != nil {
 		errc <- err
 		return
 	}
@@ -1212,7 +1232,9 @@ func (c switchProtocolCopier) copyFromBackend(errc chan<- error) {
 }
 
 func (c switchProtocolCopier) copyToBackend(errc chan<- error) {
-	if _, err := io.Copy(c.backend, c.user); err != nil {
+	n, err := io.Copy(c.backend, c.user)
+	traffic.AddHTTP(n, 0)
+	if err != nil {
 		errc <- err
 		return
 	}

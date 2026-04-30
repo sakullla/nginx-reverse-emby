@@ -40,6 +40,7 @@ type SyncRequest struct {
 	LastApplyRevision         int
 	LastApplyStatus           string
 	LastApplyMessage          string
+	Stats                     map[string]any
 	ManagedCertificateReports []model.ManagedCertificateReport
 }
 
@@ -92,6 +93,7 @@ func (c *Client) Sync(ctx context.Context, request SyncRequest) (Snapshot, error
 		LastApplyRevision         int                              `json:"last_apply_revision"`
 		LastApplyStatus           string                           `json:"last_apply_status"`
 		LastApplyMessage          string                           `json:"last_apply_message"`
+		Stats                     map[string]any                   `json:"stats,omitempty"`
 		ManagedCertificateReports []model.ManagedCertificateReport `json:"managed_certificate_reports"`
 		Version                   string                           `json:"version"`
 		Platform                  string                           `json:"platform"`
@@ -108,6 +110,7 @@ func (c *Client) Sync(ctx context.Context, request SyncRequest) (Snapshot, error
 	payload.LastApplyRevision = request.LastApplyRevision
 	payload.LastApplyStatus = request.LastApplyStatus
 	payload.LastApplyMessage = request.LastApplyMessage
+	payload.Stats = request.Stats
 	payload.ManagedCertificateReports = request.ManagedCertificateReports
 
 	data, err := json.Marshal(payload)

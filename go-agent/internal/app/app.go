@@ -22,6 +22,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
 	agentsync "github.com/sakullla/nginx-reverse-emby/go-agent/internal/sync"
 	agenttask "github.com/sakullla/nginx-reverse-emby/go-agent/internal/task"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
 	agentupdate "github.com/sakullla/nginx-reverse-emby/go-agent/internal/update"
 )
 
@@ -385,6 +386,7 @@ func (a *App) syncRequest(ctx context.Context, applied Snapshot) (SyncRequest, e
 	if req.LastApplyStatus == "" {
 		req.LastApplyStatus = "success"
 	}
+	req.Stats = traffic.Snapshot()
 
 	if reporter, ok := a.certApplier.(ManagedCertificateReporter); ok {
 		reports, err := reporter.ManagedCertificateReports(ctx)

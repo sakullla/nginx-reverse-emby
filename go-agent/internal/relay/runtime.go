@@ -15,6 +15,7 @@ import (
 
 	"github.com/quic-go/quic-go"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
@@ -957,6 +958,7 @@ func pipeUDPPackets(clientConn net.Conn, upstream udpPacketPeer) {
 				done <- struct{}{}
 				return
 			}
+			traffic.AddRelay(int64(len(payload)), 0)
 		}
 	}()
 
@@ -972,6 +974,7 @@ func pipeUDPPackets(clientConn net.Conn, upstream udpPacketPeer) {
 				done <- struct{}{}
 				return
 			}
+			traffic.AddRelay(0, int64(len(payload)))
 		}
 	}()
 
@@ -1024,14 +1027,16 @@ func pipeBothWays(left, right net.Conn) {
 	done := make(chan struct{}, 2)
 
 	go func() {
-		_, _ = copyGeneric(right, left)
+		n, _ := copyGeneric(right, left)
+		traffic.AddRelay(n, 0)
 		closeWrite(right)
 		closeRead(left)
 		done <- struct{}{}
 	}()
 
 	go func() {
-		_, _ = copyGeneric(left, right)
+		n, _ := copyGeneric(left, right)
+		traffic.AddRelay(0, n)
 		closeWrite(left)
 		closeRead(right)
 		done <- struct{}{}

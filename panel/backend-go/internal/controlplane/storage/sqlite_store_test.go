@@ -2072,6 +2072,48 @@ func TestStoreSavesSuccessfulLocalRuntimeStateIntoLocalAgentState(t *testing.T) 
 	if state.LastApplyMessage != "" {
 		t.Fatalf("LastApplyMessage = %q", state.LastApplyMessage)
 	}
+
+	runtimeState, err := store.LoadLocalRuntimeState(t.Context())
+	if err != nil {
+		t.Fatalf("LoadLocalRuntimeState() error = %v", err)
+	}
+	if runtimeState.CurrentRevision != 9 || runtimeState.Status != "active" {
+		t.Fatalf("LoadLocalRuntimeState() = %+v", runtimeState)
+	}
+}
+
+func TestStorePersistsLocalRuntimeStateMetadata(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromGORM(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	err = store.SaveLocalRuntimeState(t.Context(), "local", RuntimeState{
+		CurrentRevision: 9,
+		Status:          "active",
+		Metadata: map[string]string{
+			"stats": `{"traffic":{"total":{"rx_bytes":123,"tx_bytes":456}}}`,
+		},
+	})
+	if err != nil {
+		t.Fatalf("SaveLocalRuntimeState() error = %v", err)
+	}
+
+	runtimeState, err := store.LoadLocalRuntimeState(t.Context())
+	if err != nil {
+		t.Fatalf("LoadLocalRuntimeState() error = %v", err)
+	}
+	if runtimeState.Metadata["stats"] != `{"traffic":{"total":{"rx_bytes":123,"tx_bytes":456}}}` {
+		t.Fatalf("LoadLocalRuntimeState() metadata = %+v", runtimeState.Metadata)
+	}
 }
 
 func TestStoreSaveLocalRuntimeStateUsesExplicitApplyMetadata(t *testing.T) {
