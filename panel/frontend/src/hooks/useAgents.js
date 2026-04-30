@@ -40,3 +40,17 @@ export function useRenameAgent() {
     }
   })
 }
+
+export function useUpdateAgent() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ agentId, payload }) => api.updateAgent(agentId, payload),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['agents'] })
+      messageStore.success('节点设置已更新')
+    },
+    onError: (error) => {
+      messageStore.error(error, '更新节点设置失败')
+    }
+  })
+}

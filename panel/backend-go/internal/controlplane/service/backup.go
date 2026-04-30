@@ -726,6 +726,7 @@ func (s *backupService) importAgents(ctx context.Context, existing []storage.Age
 			RuntimePackageSHA256:   strings.TrimSpace(item.RuntimePackageSHA256),
 			DesiredVersion:         strings.TrimSpace(item.DesiredVersion),
 			DesiredRevision:        item.DesiredRevision,
+			OutboundProxyURL:       strings.TrimSpace(item.OutboundProxyURL),
 			TagsJSON:               marshalJSON(normalizeTags(item.Tags), "[]"),
 			CapabilitiesJSON:       marshalJSON(normalizeTags(item.Capabilities), "[]"),
 			Mode:                   strings.TrimSpace(item.Mode),
@@ -1188,6 +1189,7 @@ func backupAgentFromRow(row storage.AgentRow) BackupAgent {
 		RuntimePackageSHA256:   row.RuntimePackageSHA256,
 		DesiredVersion:         row.DesiredVersion,
 		DesiredRevision:        row.DesiredRevision,
+		OutboundProxyURL:       row.OutboundProxyURL,
 		Tags:                   parseStringArray(row.TagsJSON),
 		Capabilities:           parseStringArray(row.CapabilitiesJSON),
 		Mode:                   row.Mode,
@@ -1462,8 +1464,16 @@ func l4RuleInputFromBackup(rule BackupL4Rule, listenerIDMap map[int]int) L4RuleI
 		RelayChain:    relayChain,
 		RelayLayers:   relayLayers,
 		RelayObfs:     backupBoolPtr(rule.RelayObfs),
-		Enabled:       backupBoolPtr(rule.Enabled),
-		Tags:          &rule.Tags,
+		ListenMode:    backupStringPtr(rule.ListenMode),
+		ProxyEntryAuth: &L4ProxyEntryAuth{
+			Enabled:  rule.ProxyEntryAuth.Enabled,
+			Username: rule.ProxyEntryAuth.Username,
+			Password: rule.ProxyEntryAuth.Password,
+		},
+		ProxyEgressMode: backupStringPtr(rule.ProxyEgressMode),
+		ProxyEgressURL:  backupStringPtr(rule.ProxyEgressURL),
+		Enabled:         backupBoolPtr(rule.Enabled),
+		Tags:            &rule.Tags,
 	}
 }
 

@@ -24,6 +24,7 @@ import (
 
 	"github.com/quic-go/quic-go"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
@@ -602,6 +603,313 @@ func TestDialSurfacesFinalTargetFailure(t *testing.T) {
 		conn.Close()
 		t.Fatal("expected final target dial failure")
 	}
+}
+
+func TestDialTLSTCPUsesOutboundProxy(t *testing.T) {
+	resetTLSTCPSessionPoolForTest()
+
+	backendAddr, stopBackend := startTCPEchoServer(t)
+	defer stopBackend()
+
+	provider := newFakeTLSMaterialProvider()
+	listener, hop := newRelayEndpoint(t, provider, 701, "relay-proxy", "pin_only", true, false)
+	listener.TransportMode = ListenerTransportModeTLSTCP
+	hop.Listener = listener
+
+	server, err := Start(context.Background(), []Listener{listener}, provider)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer server.Close()
+
+	proxy := startRelayHTTPConnectProxy(t)
+	conn, result, err := DialWithResult(context.Background(), "tcp", backendAddr, []Hop{hop}, provider, DialOptions{
+		OutboundProxyURL: proxy.URL,
+	})
+	if err != nil {
+		t.Fatalf("DialWithResult() error = %v", err)
+	}
+	defer conn.Close()
+	if result.TransportMode != ListenerTransportModeTLSTCP {
+		t.Fatalf("TransportMode = %q, want %q", result.TransportMode, ListenerTransportModeTLSTCP)
+	}
+	assertRoundTrip(t, conn, []byte("relay-proxy"))
+	if !proxy.SawConnectTo(hop.Address) {
+		t.Fatalf("proxy did not see CONNECT to %s", hop.Address)
+	}
+}
+
+func TestDialTLSTCPUsesConfiguredOutboundProxy(t *testing.T) {
+	resetTLSTCPSessionPoolForTest()
+	previous := OutboundProxyURL()
+	defer SetOutboundProxyURL(previous)
+
+	backendAddr, stopBackend := startTCPEchoServer(t)
+	defer stopBackend()
+
+	provider := newFakeTLSMaterialProvider()
+	listener, hop := newRelayEndpoint(t, provider, 702, "relay-global-proxy", "pin_only", true, false)
+	listener.TransportMode = ListenerTransportModeTLSTCP
+	hop.Listener = listener
+
+	server, err := Start(context.Background(), []Listener{listener}, provider)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer server.Close()
+
+	proxy := startRelayHTTPConnectProxy(t)
+	SetOutboundProxyURL(proxy.URL)
+	conn, _, err := DialWithResult(context.Background(), "tcp", backendAddr, []Hop{hop}, provider)
+	if err != nil {
+		t.Fatalf("DialWithResult() error = %v", err)
+	}
+	defer conn.Close()
+	assertRoundTrip(t, conn, []byte("relay-global-proxy"))
+	if !proxy.SawConnectTo(hop.Address) {
+		t.Fatalf("proxy did not see CONNECT to %s", hop.Address)
+	}
+}
+
+func TestDialWithOutboundProxyForcesTLSTCPForQUICHop(t *testing.T) {
+	resetTLSTCPSessionPoolForTest()
+	restoreFallbacks := setRelayVerifiedFallbacksForTest(newRelayVerifiedFallbackStore())
+	defer restoreFallbacks()
+	backendAddr, stopBackend := startTCPEchoServer(t)
+	defer stopBackend()
+
+	provider := newFakeTLSMaterialProvider()
+	listener, hop := newRelayEndpoint(t, provider, 703, "relay-quic-proxy", "pin_only", true, false)
+	sharedPort := pickFreeDualStackPort(t)
+	listener.ListenPort = sharedPort
+	listener.TransportMode = ListenerTransportModeQUIC
+	listener.AllowTransportFallback = true
+	hop.Address = net.JoinHostPort(listener.ListenHost, fmt.Sprintf("%d", sharedPort))
+	hop.Listener = listener
+
+	tlsListener := listener
+	tlsListener.ID = 704
+	tlsListener.Name = "relay-quic-proxy-tls"
+	tlsListener.TransportMode = ListenerTransportModeTLSTCP
+	tlsListener.AllowTransportFallback = false
+
+	server, err := Start(context.Background(), []Listener{tlsListener, listener}, provider)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer server.Close()
+	markRelayVerifiedFallback(hop)
+
+	prevQUICDial := quicDialAddr
+	quicDialCalls := 0
+	quicDialAddr = func(ctx context.Context, addr string, tlsConf *tls.Config, conf *quic.Config) (*quic.Conn, error) {
+		quicDialCalls++
+		return prevQUICDial(ctx, addr, tlsConf, conf)
+	}
+	defer func() {
+		quicDialAddr = prevQUICDial
+	}()
+
+	proxy := startRelayHTTPConnectProxy(t)
+	conn, result, err := DialWithResult(context.Background(), "tcp", backendAddr, []Hop{hop}, provider, DialOptions{
+		OutboundProxyURL: proxy.URL,
+	})
+	if err != nil {
+		t.Fatalf("DialWithResult() error = %v", err)
+	}
+	defer conn.Close()
+	if quicDialCalls != 0 {
+		t.Fatalf("quicDialCalls = %d, want 0 when outbound proxy is configured", quicDialCalls)
+	}
+	if result.TransportMode != ListenerTransportModeTLSTCP {
+		t.Fatalf("TransportMode = %q, want %q", result.TransportMode, ListenerTransportModeTLSTCP)
+	}
+	if !proxy.SawConnectTo(hop.Address) {
+		t.Fatalf("proxy did not see CONNECT to %s", hop.Address)
+	}
+	assertRoundTrip(t, conn, []byte("relay-quic-proxy"))
+}
+
+func TestDialWithOutboundProxyRejectsQUICOnlyHop(t *testing.T) {
+	resetTLSTCPSessionPoolForTest()
+	backendAddr, stopBackend := startTCPEchoServer(t)
+	defer stopBackend()
+
+	provider := newFakeTLSMaterialProvider()
+	listener, hop := newRelayEndpoint(t, provider, 705, "relay-quic-only-proxy", "pin_only", true, false)
+	listener.TransportMode = ListenerTransportModeQUIC
+	listener.AllowTransportFallback = false
+	hop.Listener = listener
+
+	server, err := Start(context.Background(), []Listener{listener}, provider)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer server.Close()
+
+	prevQUICDial := quicDialAddr
+	quicDialCalls := 0
+	quicDialAddr = func(ctx context.Context, addr string, tlsConf *tls.Config, conf *quic.Config) (*quic.Conn, error) {
+		quicDialCalls++
+		return prevQUICDial(ctx, addr, tlsConf, conf)
+	}
+	defer func() {
+		quicDialAddr = prevQUICDial
+	}()
+
+	proxy := startRelayHTTPConnectProxy(t)
+	conn, _, err := DialWithResult(context.Background(), "tcp", backendAddr, []Hop{hop}, provider, DialOptions{
+		OutboundProxyURL: proxy.URL,
+	})
+	if err == nil {
+		conn.Close()
+		t.Fatal("DialWithResult() error = nil, want outbound proxy QUIC rejection")
+	}
+	if !strings.Contains(err.Error(), "outbound proxy does not support quic relay transport") {
+		t.Fatalf("DialWithResult() error = %v, want outbound proxy QUIC rejection", err)
+	}
+	if quicDialCalls != 0 {
+		t.Fatalf("quicDialCalls = %d, want 0 when outbound proxy rejects QUIC", quicDialCalls)
+	}
+	if proxy.SawConnectTo(hop.Address) {
+		t.Fatalf("proxy saw CONNECT to %s, want no TLS-TCP dial for QUIC-only hop", hop.Address)
+	}
+}
+
+func TestDialWithOutboundProxyRejectsUnverifiedQUICFallback(t *testing.T) {
+	resetTLSTCPSessionPoolForTest()
+	restoreFallbacks := setRelayVerifiedFallbacksForTest(newRelayVerifiedFallbackStore())
+	defer restoreFallbacks()
+	backendAddr, stopBackend := startTCPEchoServer(t)
+	defer stopBackend()
+
+	provider := newFakeTLSMaterialProvider()
+	listener, hop := newRelayEndpoint(t, provider, 706, "relay-quic-unverified-proxy", "pin_only", true, false)
+	listener.TransportMode = ListenerTransportModeQUIC
+	listener.AllowTransportFallback = true
+	hop.Listener = listener
+
+	server, err := Start(context.Background(), []Listener{listener}, provider)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer server.Close()
+
+	proxy := startRelayHTTPConnectProxy(t)
+	conn, _, err := DialWithResult(context.Background(), "tcp", backendAddr, []Hop{hop}, provider, DialOptions{
+		OutboundProxyURL: proxy.URL,
+	})
+	if err == nil {
+		conn.Close()
+		t.Fatal("DialWithResult() error = nil, want outbound proxy QUIC fallback rejection")
+	}
+	if !strings.Contains(err.Error(), "outbound proxy requires a verified tls_tcp fallback for quic relay transport") {
+		t.Fatalf("DialWithResult() error = %v, want unverified fallback rejection", err)
+	}
+	if proxy.SawConnectTo(hop.Address) {
+		t.Fatalf("proxy saw CONNECT to %s, want no TLS-TCP dial before fallback is verified", hop.Address)
+	}
+}
+
+func TestDialTLSTCPOutboundProxyHandshakeUsesRelayDialTimeout(t *testing.T) {
+	resetTLSTCPSessionPoolForTest()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	defer ln.Close()
+
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		accepted <- conn
+	}()
+	defer func() {
+		select {
+		case conn := <-accepted:
+			_ = conn.Close()
+		default:
+		}
+	}()
+
+	withRelayTimeouts(50*time.Millisecond, 5*time.Second, 5*time.Second, 5*time.Second, func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		started := time.Now()
+		conn, err := dialRelayTCPWithProxy(ctx, "127.0.0.1:443", Listener{}, "http://"+ln.Addr().String())
+		if err == nil {
+			_ = conn.Close()
+			t.Fatal("dialRelayTCPWithProxy() error = nil, want proxy handshake timeout")
+		}
+		if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+			t.Fatalf("dialRelayTCPWithProxy() elapsed = %v, want relay dial timeout before context timeout", elapsed)
+		}
+	})
+}
+
+type relayHTTPConnectProxy struct {
+	URL string
+
+	mu      sync.Mutex
+	targets []string
+}
+
+func startRelayHTTPConnectProxy(t *testing.T) *relayHTTPConnectProxy {
+	t.Helper()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	proxy := &relayHTTPConnectProxy{URL: "http://" + ln.Addr().String()}
+	go func() {
+		for {
+			client, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go proxy.handleConn(client)
+		}
+	}()
+	return proxy
+}
+
+func (p *relayHTTPConnectProxy) handleConn(client net.Conn) {
+	defer client.Close()
+	req, err := proxyproto.ReadClientRequest(context.Background(), client, proxyproto.EntryAuth{})
+	if err != nil {
+		return
+	}
+	p.mu.Lock()
+	p.targets = append(p.targets, req.Target)
+	p.mu.Unlock()
+
+	upstream, err := net.DialTimeout("tcp", req.Target, 5*time.Second)
+	if err != nil {
+		_ = proxyproto.WriteClientRequestFailure(client, req, 0)
+		return
+	}
+	defer upstream.Close()
+	if err := proxyproto.WriteClientRequestSuccess(client, req); err != nil {
+		return
+	}
+	pipeBothWays(client, upstream)
+}
+
+func (p *relayHTTPConnectProxy) SawConnectTo(target string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, seen := range p.targets {
+		if seen == target {
+			return true
+		}
+	}
+	return false
 }
 
 func TestFinalTargetFailureDoesNotDemoteRelayQUICTransport(t *testing.T) {

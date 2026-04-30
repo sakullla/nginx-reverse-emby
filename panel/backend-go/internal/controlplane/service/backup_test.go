@@ -303,6 +303,128 @@ func TestBackupServiceExportImportRoundTripAndConflictReport(t *testing.T) {
 	}
 }
 
+func TestBackupServicePreservesAgentOutboundProxyURL(t *testing.T) {
+	ctx := context.Background()
+	cfg := config.Config{EnableLocalAgent: true, LocalAgentID: "local"}
+	sourceStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "proxy-source"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(source) error = %v", err)
+	}
+	defer sourceStore.Close()
+	if err := sourceStore.SaveAgent(ctx, storage.AgentRow{
+		ID:               "edge-proxy",
+		Name:             "Edge Proxy",
+		AgentToken:       "token-proxy",
+		CapabilitiesJSON: `["http_rules","l4","relay_quic"]`,
+		OutboundProxyURL: "socks://user:pass@127.0.0.1:1080",
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+
+	sourceSvc := NewBackupService(cfg, sourceStore)
+	archive, _, err := sourceSvc.Export(ctx)
+	if err != nil {
+		t.Fatalf("Export() error = %v", err)
+	}
+
+	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "proxy-target"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(target) error = %v", err)
+	}
+	defer targetStore.Close()
+	targetSvc := NewBackupService(cfg, targetStore)
+	if _, err := targetSvc.Import(ctx, archive); err != nil {
+		t.Fatalf("Import() error = %v", err)
+	}
+
+	agents, err := targetStore.ListAgents(ctx)
+	if err != nil {
+		t.Fatalf("ListAgents() error = %v", err)
+	}
+	if len(agents) != 1 {
+		t.Fatalf("agents len = %d, want 1", len(agents))
+	}
+	if agents[0].OutboundProxyURL != "socks://user:pass@127.0.0.1:1080" {
+		t.Fatalf("OutboundProxyURL = %q", agents[0].OutboundProxyURL)
+	}
+}
+
+func TestBackupServiceImportPreservesL4ProxyEntryFields(t *testing.T) {
+	ctx := context.Background()
+	cfg := config.Config{EnableLocalAgent: true, LocalAgentID: "local"}
+	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "target"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(target) error = %v", err)
+	}
+	defer targetStore.Close()
+
+	bundle := BackupBundle{
+		Manifest: BackupManifest{
+			PackageVersion:     BackupPackageVersion,
+			SourceArchitecture: BackupSourceArchitectureGo,
+			ExportedAt:         time.Date(2026, 4, 18, 9, 30, 0, 0, time.UTC),
+			Counts: BackupCounts{
+				Agents:  1,
+				L4Rules: 1,
+			},
+		},
+		Agents: []BackupAgent{{
+			ID:           "edge-proxy-entry",
+			Name:         "edge-proxy-entry",
+			AgentToken:   "token-proxy-entry",
+			Capabilities: []string{"l4"},
+		}},
+		L4Rules: []BackupL4Rule{{
+			ID:              45,
+			AgentID:         "edge-proxy-entry",
+			Name:            "proxy entry",
+			Protocol:        "tcp",
+			ListenHost:      "0.0.0.0",
+			ListenPort:      1080,
+			ListenMode:      "proxy",
+			ProxyEntryAuth:  L4ProxyEntryAuth{Enabled: true, Username: "client", Password: "secret"},
+			ProxyEgressMode: "proxy",
+			ProxyEgressURL:  "socks5h://egress:pass@127.0.0.1:1081",
+			Enabled:         true,
+			Tags:            []string{"proxy-entry"},
+		}},
+	}
+	archive, err := encodeBackupBundle(bundle)
+	if err != nil {
+		t.Fatalf("encodeBackupBundle() error = %v", err)
+	}
+
+	result, err := NewBackupService(cfg, targetStore).Import(ctx, archive)
+	if err != nil {
+		t.Fatalf("Import() error = %v", err)
+	}
+	if result.Summary.Imported.L4Rules != 1 || result.Summary.SkippedInvalid.L4Rules != 0 {
+		t.Fatalf("import summary = %+v", result.Summary)
+	}
+
+	rows, err := targetStore.ListL4Rules(ctx, "edge-proxy-entry")
+	if err != nil {
+		t.Fatalf("ListL4Rules() error = %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("l4 rules len = %d, want 1: %+v", len(rows), rows)
+	}
+	row := rows[0]
+	if row.ListenMode != "proxy" {
+		t.Fatalf("ListenMode = %q", row.ListenMode)
+	}
+	if row.ProxyEgressMode != "proxy" || row.ProxyEgressURL != "socks5h://egress:pass@127.0.0.1:1081" {
+		t.Fatalf("proxy egress = mode %q url %q", row.ProxyEgressMode, row.ProxyEgressURL)
+	}
+	var auth L4ProxyEntryAuth
+	if err := json.Unmarshal([]byte(row.ProxyEntryAuthJSON), &auth); err != nil {
+		t.Fatalf("unmarshal ProxyEntryAuthJSON: %v", err)
+	}
+	if !auth.Enabled || auth.Username != "client" || auth.Password != "secret" {
+		t.Fatalf("ProxyEntryAuth = %+v", auth)
+	}
+}
+
 func TestBackupServiceImportSkipsRulesWithMissingRelayLayerDependencies(t *testing.T) {
 	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "target"), "local")
 	if err != nil {

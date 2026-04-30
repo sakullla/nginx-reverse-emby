@@ -4,6 +4,7 @@ export {
   exportBackup,
   importBackup,
   fetchAgents,
+  updateAgent,
   fetchAgentStats,
   fetchRules,
   createRule,

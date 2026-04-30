@@ -445,6 +445,37 @@ func TestHeartbeatSyncPreservesExplicitEmptyCertificatePayloads(t *testing.T) {
 	}
 }
 
+func TestHeartbeatSyncPreservesExplicitEmptyAgentConfig(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"sync":{"desired_version":"1.2.3","desired_revision":7,"agent_config":{}}}`)
+	}))
+	defer server.Close()
+
+	client := NewClient(ClientConfig{
+		MasterURL:      server.URL,
+		AgentToken:     "token",
+		AgentID:        "node",
+		AgentName:      "local",
+		CurrentVersion: "0.1.0",
+		Platform:       "linux-amd64",
+	}, server.Client())
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	snap, err := client.Sync(ctx, SyncRequest{CurrentRevision: 42})
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+	if !snap.HasAgentConfig() {
+		t.Fatalf("expected explicit empty agent_config to be preserved")
+	}
+	if snap.AgentConfig.OutboundProxyURL != "" {
+		t.Fatalf("AgentConfig.OutboundProxyURL = %q, want cleared", snap.AgentConfig.OutboundProxyURL)
+	}
+}
+
 func TestHeartbeatSyncBuildsVersionPackageFromLegacyFields(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

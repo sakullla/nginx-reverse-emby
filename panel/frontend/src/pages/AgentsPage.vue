@@ -57,7 +57,7 @@
         :key="agent.id"
         :agent="agent"
         @click="router.push(`/agents/${agent.id}`)"
-        @rename="startRename(agent)"
+        @rename="startEdit(agent)"
         @delete="startDelete(agent)"
       />
     </div>
@@ -68,7 +68,7 @@
       :agents="filteredAgents"
       :clickable="true"
       @click="agent => router.push(`/agents/${agent.id}`)"
-      @rename="startRename"
+      @rename="startEdit"
       @delete="startDelete"
     />
 
@@ -104,20 +104,29 @@
       </div>
     </Teleport>
 
-    <!-- Rename Modal -->
+    <!-- Edit Modal -->
     <Teleport to="body">
-      <div v-if="renamingAgent" class="modal-overlay">
+      <div v-if="editingAgent" class="modal-overlay">
         <div class="modal">
-          <div class="modal__header">重命名节点</div>
+          <div class="modal__header">编辑节点</div>
           <div class="modal__body">
             <div class="form-group">
               <label>节点名称</label>
-              <input v-model="newAgentName" class="input-base" placeholder="输入节点名称" @keyup.enter="confirmRename" />
+              <input v-model="editName" class="input-base" placeholder="输入节点名称" @keyup.enter="confirmEdit" />
+            </div>
+            <div v-if="!editingAgent?.is_local" class="form-group">
+              <label>出网代理</label>
+              <input
+                v-model="editOutboundProxy"
+                class="input-base"
+                placeholder="socks://user:pass@127.0.0.1:1080"
+                @keyup.enter="confirmEdit"
+              />
             </div>
           </div>
           <div class="modal__footer">
-            <button class="btn btn-secondary" @click="renamingAgent = null">取消</button>
-            <button class="btn btn-primary" @click="confirmRename">保存</button>
+            <button class="btn btn-secondary" @click="editingAgent = null">取消</button>
+            <button class="btn btn-primary" :disabled="updateAgent.isPending.value" @click="confirmEdit">保存</button>
           </div>
         </div>
       </div>
@@ -139,7 +148,8 @@
 <script setup>
 import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
-import { useAgents, useRenameAgent, useDeleteAgent } from '../hooks/useAgents'
+import { useAgents, useUpdateAgent, useDeleteAgent } from '../hooks/useAgents'
+import { buildOutboundProxyPayload } from './outboundProxyURL'
 import { useAgentFilters } from '../hooks/useAgentFilters'
 import AgentFilterBar from '../components/AgentFilterBar.vue'
 import AgentCard from '../components/AgentCard.vue'
@@ -153,7 +163,7 @@ const router = useRouter()
 const { selectedAgentId } = useAgent()
 
 const { data, isLoading } = useAgents()
-const renameAgent = useRenameAgent()
+const updateAgent = useUpdateAgent()
 const deleteAgent = useDeleteAgent()
 const agents = computed(() => data.value ?? [])
 
@@ -176,8 +186,9 @@ const {
 const showJoinModal = ref(false)
 const selectedPlatform = ref('linux')
 const copied = ref(false)
-const renamingAgent = ref(null)
-const newAgentName = ref('')
+const editingAgent = ref(null)
+const editName = ref('')
+const editOutboundProxy = ref('')
 const deletingAgent = ref(null)
 const applying = ref(false)
 
@@ -257,17 +268,43 @@ async function copyCommand() {
   }
 }
 
-function startRename(agent) {
-  renamingAgent.value = agent
-  newAgentName.value = agent.name
+function startEdit(agent) {
+  editingAgent.value = agent
+  editName.value = agent.name
+  editOutboundProxy.value = agent.is_local ? '' : agent.outbound_proxy_url || ''
 }
 
-function confirmRename() {
-  if (renamingAgent.value && newAgentName.value.trim()) {
-    renameAgent.mutate({ agentId: renamingAgent.value.id, name: newAgentName.value.trim() })
+async function confirmEdit() {
+  if (!editingAgent.value) return
+  const payload = {}
+  const name = editName.value.trim()
+  if (name && name !== editingAgent.value.name) {
+    payload.name = name
   }
-  renamingAgent.value = null
-  newAgentName.value = ''
+  if (!editingAgent.value.is_local) {
+    try {
+      const proxyPayload = buildOutboundProxyPayload(
+        editingAgent.value.outbound_proxy_url,
+        editOutboundProxy.value
+      )
+      Object.assign(payload, proxyPayload)
+    } catch (error) {
+      messageStore.warning(error.message, '出网代理密码已隐藏')
+      editingAgent.value = null
+      editName.value = ''
+      editOutboundProxy.value = ''
+      return
+    }
+  }
+  if (Object.keys(payload).length > 0) {
+    await updateAgent.mutateAsync({
+      agentId: editingAgent.value.id,
+      payload
+    })
+  }
+  editingAgent.value = null
+  editName.value = ''
+  editOutboundProxy.value = ''
 }
 
 function startDelete(agent) {

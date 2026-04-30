@@ -183,7 +183,15 @@ func toEmbeddedSnapshot(snapshot Snapshot) goagentembedded.Snapshot {
 			RelayChain:  append([]int(nil), rule.RelayChain...),
 			RelayLayers: cloneRelayLayers(rule.RelayLayers),
 			RelayObfs:   rule.RelayObfs,
-			Revision:    rule.Revision,
+			ListenMode:  rule.ListenMode,
+			ProxyEntryAuth: goagentembedded.L4ProxyEntryAuth{
+				Enabled:  rule.ProxyEntryAuth.Enabled,
+				Username: rule.ProxyEntryAuth.Username,
+				Password: rule.ProxyEntryAuth.Password,
+			},
+			ProxyEgressMode: rule.ProxyEgressMode,
+			ProxyEgressURL:  rule.ProxyEgressURL,
+			Revision:        rule.Revision,
 		})
 	}
 	embedded.RelayListeners = make([]goagentembedded.RelayListener, 0, len(snapshot.RelayListeners))
