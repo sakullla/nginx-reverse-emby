@@ -4,8 +4,8 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 
 import '../core/client_state.dart';
+import '../l10n/app_localizations.dart';
 
-/// A rule entry returned by the master API.
 class ProxyRule {
   const ProxyRule({
     required this.id,
@@ -111,11 +111,12 @@ class _RulesScreenState extends State<RulesScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final l10n = AppLocalizations.of(context)!;
     final isRegistered = widget.state.profile.isRegistered;
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Rules'),
+        title: Text(l10n.titleRules),
         actions: [
           if (isRegistered)
             IconButton(
@@ -130,16 +131,16 @@ class _RulesScreenState extends State<RulesScreen> {
         ],
       ),
       body: !isRegistered
-          ? _buildNotRegistered(theme)
+          ? _buildNotRegistered(theme, l10n)
           : _error != null
-              ? _buildError(theme)
+              ? _buildError(theme, l10n)
               : _rules.isEmpty && !_loading
-                  ? _buildEmpty(theme)
-                  : _buildRulesList(theme),
+                  ? _buildEmpty(theme, l10n)
+                  : _buildRulesList(theme, l10n),
     );
   }
 
-  Widget _buildNotRegistered(ThemeData theme) {
+  Widget _buildNotRegistered(ThemeData theme, AppLocalizations l10n) {
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(32),
@@ -149,12 +150,12 @@ class _RulesScreenState extends State<RulesScreen> {
             Icon(Icons.cloud_off, size: 48, color: theme.colorScheme.outline),
             const SizedBox(height: 16),
             Text(
-              'Not Connected',
+              l10n.titleNotConnected,
               style: theme.textTheme.titleMedium,
             ),
             const SizedBox(height: 8),
             Text(
-              'Register your agent on the Agent page to view rules from the master server.',
+              l10n.descNotConnected,
               textAlign: TextAlign.center,
               style: theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.outline),
             ),
@@ -164,7 +165,7 @@ class _RulesScreenState extends State<RulesScreen> {
     );
   }
 
-  Widget _buildError(ThemeData theme) {
+  Widget _buildError(ThemeData theme, AppLocalizations l10n) {
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(32),
@@ -173,7 +174,7 @@ class _RulesScreenState extends State<RulesScreen> {
           children: [
             Icon(Icons.error, size: 48, color: theme.colorScheme.error),
             const SizedBox(height: 16),
-            Text('Error', style: theme.textTheme.titleMedium),
+            Text(l10n.titleError, style: theme.textTheme.titleMedium),
             const SizedBox(height: 8),
             Text(
               _error!,
@@ -181,14 +182,14 @@ class _RulesScreenState extends State<RulesScreen> {
               style: TextStyle(color: theme.colorScheme.error),
             ),
             const SizedBox(height: 16),
-            FilledButton(onPressed: _fetchRules, child: const Text('Retry')),
+            FilledButton(onPressed: _fetchRules, child: Text(l10n.btnRetry)),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildEmpty(ThemeData theme) {
+  Widget _buildEmpty(ThemeData theme, AppLocalizations l10n) {
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(32),
@@ -197,10 +198,10 @@ class _RulesScreenState extends State<RulesScreen> {
           children: [
             Icon(Icons.format_list_bulleted, size: 48, color: theme.colorScheme.outline),
             const SizedBox(height: 16),
-            Text('No Rules', style: theme.textTheme.titleMedium),
+            Text(l10n.titleNoRules, style: theme.textTheme.titleMedium),
             const SizedBox(height: 8),
             Text(
-              'No proxy rules are configured on the master server.',
+              l10n.descNoRules,
               textAlign: TextAlign.center,
               style: theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.outline),
             ),
@@ -210,7 +211,7 @@ class _RulesScreenState extends State<RulesScreen> {
     );
   }
 
-  Widget _buildRulesList(ThemeData theme) {
+  Widget _buildRulesList(ThemeData theme, AppLocalizations l10n) {
     return ListView.separated(
       padding: const EdgeInsets.all(16),
       itemCount: _rules.length,
@@ -227,8 +228,8 @@ class _RulesScreenState extends State<RulesScreen> {
             subtitle: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text('Target: ${rule.target}'),
-                Text('Type: ${rule.type.toUpperCase()}'),
+                Text('${l10n.labelTarget}: ${rule.target}'),
+                Text('${l10n.labelType}: ${rule.type.toUpperCase()}'),
               ],
             ),
             isThreeLine: true,
@@ -241,7 +242,7 @@ class _RulesScreenState extends State<RulesScreen> {
                 borderRadius: BorderRadius.circular(8),
               ),
               child: Text(
-                rule.enabled ? 'Enabled' : 'Disabled',
+                rule.enabled ? l10n.labelEnabled : l10n.labelDisabled,
                 style: TextStyle(
                   fontSize: 12,
                   fontWeight: FontWeight.w600,

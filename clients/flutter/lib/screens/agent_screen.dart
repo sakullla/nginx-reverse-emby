@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../core/client_state.dart';
+import '../l10n/app_localizations.dart';
 import '../services/local_agent_controller.dart';
 import '../services/local_agent_controller_factory.dart';
 import '../services/master_api.dart';
@@ -35,7 +36,6 @@ class AgentScreen extends StatefulWidget {
 }
 
 class _AgentScreenState extends State<AgentScreen> {
-  // Registration state
   final _formKey = GlobalKey<FormState>();
   final _masterUrl = TextEditingController();
   final _token = TextEditingController();
@@ -43,13 +43,11 @@ class _AgentScreenState extends State<AgentScreen> {
   bool _submitting = false;
   String _error = '';
 
-  // Agent runtime state
   LocalAgentController? _controller;
   LocalAgentRuntimeSnapshot? _snapshot;
   var _agentLoading = false;
   Timer? _refreshTimer;
 
-  // Logs state
   final _logScrollController = ScrollController();
   String _logs = '';
   var _logsLoading = false;
@@ -115,9 +113,8 @@ class _AgentScreenState extends State<AgentScreen> {
     super.dispose();
   }
 
-  // ── Registration ──
-
   Future<void> _register() async {
+    final l10n = AppLocalizations.of(context)!;
     if (_submitting || !(_formKey.currentState?.validate() ?? false)) return;
 
     final masterUrl = normalizeMasterUrl(_masterUrl.text);
@@ -152,34 +149,34 @@ class _AgentScreenState extends State<AgentScreen> {
       );
       widget.onStateChanged?.call(nextState);
       if (mounted) {
-        _showSnack('Registered agent ${result.agentId}');
+        _showSnack(l10n.msgRegistered(result.agentId));
         _startAutoRefresh();
         _refreshAgentStatus();
       }
     } on MasterApiException catch (error) {
       if (mounted) setState(() => _error = error.message);
     } catch (error) {
-      if (mounted) setState(() => _error = 'Registration failed: $error');
+      if (mounted) setState(() => _error = l10n.errorRegistrationFailed(error.toString()));
     } finally {
       if (mounted) setState(() => _submitting = false);
     }
   }
 
   Future<void> _unregister() async {
+    final l10n = AppLocalizations.of(context)!;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Unregister Agent'),
-        content: const Text('This will remove the local registration. The agent on the master server will need to be re-registered.'),
+        title: Text(l10n.titleUnregisterAgent),
+        content: Text(l10n.descUnregisterConfirm),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Unregister')),
+          TextButton(onPressed: () => Navigator.pop(context, false), child: Text(l10n.btnCancel)),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: Text(l10n.btnUnregister)),
         ],
       ),
     );
     if (confirmed != true || !mounted) return;
 
-    // Stop agent first if running
     if (_snapshot?.status == LocalAgentControllerStatus.running) {
       await _controller?.stop(_currentState.profile);
     }
@@ -191,7 +188,7 @@ class _AgentScreenState extends State<AgentScreen> {
       _snapshot = null;
       _logs = '';
     });
-    _showSnack('Unregistered');
+    _showSnack(l10n.msgUnregistered);
   }
 
   String _existingAgentToken() {
@@ -199,8 +196,6 @@ class _AgentScreenState extends State<AgentScreen> {
     if (existing.isNotEmpty) return existing;
     return widget.generateAgentToken();
   }
-
-  // ── Agent Control ──
 
   Future<void> _refreshAgentStatus({bool silent = false}) async {
     final controller = _controller;
@@ -249,8 +244,6 @@ class _AgentScreenState extends State<AgentScreen> {
     }
   }
 
-  // ── Logs ──
-
   Future<void> _refreshLogs({bool silent = false}) async {
     final controller = _controller;
     if (controller == null) return;
@@ -269,14 +262,15 @@ class _AgentScreenState extends State<AgentScreen> {
   }
 
   Future<void> _clearLogs() async {
+    final l10n = AppLocalizations.of(context)!;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Clear Logs'),
-        content: const Text('This only clears the displayed logs. The log file on disk is not affected.'),
+        title: Text(l10n.titleClearLogs),
+        content: Text(l10n.descClearLogs),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Clear')),
+          TextButton(onPressed: () => Navigator.pop(context, false), child: Text(l10n.btnCancel)),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: Text(l10n.btnClear)),
         ],
       ),
     );
@@ -285,13 +279,11 @@ class _AgentScreenState extends State<AgentScreen> {
     }
   }
 
-  // ── UI ──
-
   void _showSnack(String message, {bool isError = false}) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),
-        backgroundColor: isError ? Theme.of(context).colorScheme.error : null,
+        backgroundColor: isError ? Theme.of(context).colorScheme.errorContainer : null,
         duration: const Duration(seconds: 3),
       ),
     );
@@ -300,6 +292,7 @@ class _AgentScreenState extends State<AgentScreen> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final l10n = AppLocalizations.of(context)!;
     final profile = _currentState.profile;
     final isRegistered = profile.isRegistered;
 
@@ -307,12 +300,12 @@ class _AgentScreenState extends State<AgentScreen> {
       length: 2,
       child: Scaffold(
         appBar: AppBar(
-          title: const Text('Agent'),
+          title: Text(l10n.titleAgent),
           bottom: isRegistered
-              ? const TabBar(
+              ? TabBar(
                   tabs: [
-                    Tab(icon: Icon(Icons.settings), text: 'Control'),
-                    Tab(icon: Icon(Icons.article), text: 'Logs'),
+                    Tab(icon: const Icon(Icons.settings), text: l10n.titleControl),
+                    Tab(icon: const Icon(Icons.article), text: l10n.titleLogs),
                   ],
                 )
               : null,
@@ -329,18 +322,16 @@ class _AgentScreenState extends State<AgentScreen> {
         body: isRegistered
             ? TabBarView(
                 children: [
-                  _buildControlTab(theme, profile),
-                  _buildLogsTab(theme),
+                  _buildControlTab(theme, profile, l10n),
+                  _buildLogsTab(theme, l10n),
                 ],
               )
-            : _buildRegistrationForm(theme),
+            : _buildRegistrationForm(theme, l10n),
       ),
     );
   }
 
-  // ── Registration Form (shown when not registered) ──
-
-  Widget _buildRegistrationForm(ThemeData theme) {
+  Widget _buildRegistrationForm(ThemeData theme, AppLocalizations l10n) {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
@@ -352,47 +343,44 @@ class _AgentScreenState extends State<AgentScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text('Register Agent', style: theme.textTheme.titleLarge),
+                  Text(l10n.titleRegisterAgent, style: theme.textTheme.titleLarge),
                   const SizedBox(height: 8),
                   Text(
-                    'Connect this client to a master server. You will need a register token from the server.',
+                    l10n.descRegisterAgent,
                     style: theme.textTheme.bodyMedium?.copyWith(color: theme.colorScheme.outline),
                   ),
                   const SizedBox(height: 24),
                   TextFormField(
                     controller: _masterUrl,
-                    decoration: const InputDecoration(
-                      labelText: 'Master URL',
-                      hintText: 'https://your-server.com',
-                      prefixIcon: Icon(Icons.link),
-                      border: OutlineInputBorder(),
+                    decoration: InputDecoration(
+                      labelText: l10n.labelMasterUrl,
+                      hintText: l10n.hintMasterUrl,
+                      prefixIcon: const Icon(Icons.link),
                     ),
                     validator: (value) => (value == null || value.trim().isEmpty)
-                        ? 'Master URL is required'
+                        ? l10n.errorRequiredMasterUrl
                         : null,
                   ),
                   const SizedBox(height: 16),
                   TextFormField(
                     controller: _token,
-                    decoration: const InputDecoration(
-                      labelText: 'Register token',
-                      hintText: 'Enter token from master server',
-                      prefixIcon: Icon(Icons.key),
-                      border: OutlineInputBorder(),
+                    decoration: InputDecoration(
+                      labelText: l10n.labelRegisterToken,
+                      hintText: l10n.hintRegisterToken,
+                      prefixIcon: const Icon(Icons.key),
                     ),
                     obscureText: true,
                     validator: (value) => (value == null || value.trim().isEmpty)
-                        ? 'Register token is required'
+                        ? l10n.errorRequiredRegisterToken
                         : null,
                   ),
                   const SizedBox(height: 16),
                   TextFormField(
                     controller: _name,
-                    decoration: const InputDecoration(
-                      labelText: 'Client name',
-                      hintText: 'nre-client',
-                      prefixIcon: Icon(Icons.badge),
-                      border: OutlineInputBorder(),
+                    decoration: InputDecoration(
+                      labelText: l10n.labelClientName,
+                      hintText: l10n.hintClientName,
+                      prefixIcon: const Icon(Icons.badge),
                     ),
                   ),
                   const SizedBox(height: 24),
@@ -427,7 +415,7 @@ class _AgentScreenState extends State<AgentScreen> {
                               dimension: 18,
                               child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
                             )
-                          : const Text('Register'),
+                          : Text(l10n.btnRegister),
                     ),
                   ),
                 ],
@@ -439,9 +427,7 @@ class _AgentScreenState extends State<AgentScreen> {
     );
   }
 
-  // ── Control Tab (shown when registered) ──
-
-  Widget _buildControlTab(ThemeData theme, ClientProfile profile) {
+  Widget _buildControlTab(ThemeData theme, ClientProfile profile, AppLocalizations l10n) {
     final snapshot = _snapshot;
     final status = snapshot?.status;
     final isRunning = status == LocalAgentControllerStatus.running;
@@ -450,7 +436,6 @@ class _AgentScreenState extends State<AgentScreen> {
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
-        // Registration Info Card
         Card(
           child: Padding(
             padding: const EdgeInsets.all(16),
@@ -461,14 +446,14 @@ class _AgentScreenState extends State<AgentScreen> {
                   children: [
                     Icon(Icons.link, color: theme.colorScheme.primary),
                     const SizedBox(width: 8),
-                    Text('Registration', style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold)),
+                    Text(l10n.titleRegistration, style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold)),
                   ],
                 ),
                 const Divider(height: 24),
-                _InfoRow(label: 'Master URL', value: profile.masterUrl),
-                _InfoRow(label: 'Agent ID', value: profile.agentId),
-                _InfoRow(label: 'Display Name', value: profile.displayName.isEmpty ? '-' : profile.displayName),
-                _InfoRow(label: 'Token', value: '${profile.token.substring(0, profile.token.length > 8 ? 8 : profile.token.length)}...'),
+                _InfoRow(label: l10n.labelMasterUrl, value: profile.masterUrl),
+                _InfoRow(label: l10n.labelAgentId, value: profile.agentId),
+                _InfoRow(label: l10n.labelDisplayName, value: profile.displayName.isEmpty ? l10n.valueDash : profile.displayName),
+                _InfoRow(label: l10n.labelToken, value: '${profile.token.substring(0, profile.token.length > 8 ? 8 : profile.token.length)}...'),
                 const SizedBox(height: 12),
                 Wrap(
                   spacing: 8,
@@ -476,15 +461,15 @@ class _AgentScreenState extends State<AgentScreen> {
                     OutlinedButton.icon(
                       onPressed: () {
                         Clipboard.setData(ClipboardData(text: profile.agentId));
-                        _showSnack('Agent ID copied');
+                        _showSnack(l10n.msgCopied);
                       },
                       icon: const Icon(Icons.copy, size: 16),
-                      label: const Text('Copy ID'),
+                      label: Text(l10n.btnCopyId),
                     ),
                     OutlinedButton.icon(
                       onPressed: _unregister,
                       icon: const Icon(Icons.logout, size: 16),
-                      label: const Text('Unregister'),
+                      label: Text(l10n.btnUnregister),
                     ),
                   ],
                 ),
@@ -495,7 +480,6 @@ class _AgentScreenState extends State<AgentScreen> {
 
         const SizedBox(height: 16),
 
-        // Agent Process Card
         Card(
           child: Padding(
             padding: const EdgeInsets.all(16),
@@ -509,7 +493,7 @@ class _AgentScreenState extends State<AgentScreen> {
                       color: isRunning ? Colors.green : (isStopped ? Colors.orange : theme.colorScheme.error),
                     ),
                     const SizedBox(width: 8),
-                    Text('Local Agent Process', style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold)),
+                    Text(l10n.titleLocalAgentProcess, style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold)),
                     const Spacer(),
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
@@ -518,7 +502,7 @@ class _AgentScreenState extends State<AgentScreen> {
                         borderRadius: BorderRadius.circular(12),
                       ),
                       child: Text(
-                        _statusLabel(status),
+                        _statusLabel(status, l10n),
                         style: TextStyle(
                           fontSize: 12,
                           fontWeight: FontWeight.w600,
@@ -530,12 +514,12 @@ class _AgentScreenState extends State<AgentScreen> {
                 ),
                 const Divider(height: 24),
                 if (snapshot != null) ...[
-                  _InfoRow(label: 'PID', value: snapshot.pid?.toString() ?? '-'),
-                  _InfoRow(label: 'Binary Path', value: snapshot.binaryPath),
-                  _InfoRow(label: 'Data Directory', value: snapshot.dataDir),
-                  _InfoRow(label: 'Log Path', value: snapshot.logPath),
+                  _InfoRow(label: l10n.labelPid, value: snapshot.pid?.toString() ?? l10n.valueDash),
+                  _InfoRow(label: l10n.labelBinaryPath, value: snapshot.binaryPath),
+                  _InfoRow(label: l10n.labelDataDir, value: snapshot.dataDir),
+                  _InfoRow(label: l10n.labelLogPath, value: snapshot.logPath),
                   if (snapshot.message.isNotEmpty)
-                    _InfoRow(label: 'Message', value: snapshot.message),
+                    _InfoRow(label: l10n.labelMessage, value: snapshot.message),
                   const SizedBox(height: 16),
                   Row(
                     children: [
@@ -543,7 +527,7 @@ class _AgentScreenState extends State<AgentScreen> {
                         child: FilledButton.icon(
                           onPressed: !_agentLoading && isStopped ? _startAgent : null,
                           icon: const Icon(Icons.play_arrow),
-                          label: const Text('Start'),
+                          label: Text(l10n.btnStart),
                         ),
                       ),
                       const SizedBox(width: 8),
@@ -551,7 +535,7 @@ class _AgentScreenState extends State<AgentScreen> {
                         child: FilledButton.tonalIcon(
                           onPressed: !_agentLoading && isRunning ? _stopAgent : null,
                           icon: const Icon(Icons.stop),
-                          label: const Text('Stop'),
+                          label: Text(l10n.btnStop),
                         ),
                       ),
                       const SizedBox(width: 8),
@@ -559,13 +543,13 @@ class _AgentScreenState extends State<AgentScreen> {
                         child: OutlinedButton.icon(
                           onPressed: !_agentLoading && isRunning ? _restartAgent : null,
                           icon: const Icon(Icons.restart_alt),
-                          label: const Text('Restart'),
+                          label: Text(l10n.btnRestart),
                         ),
                       ),
                     ],
                   ),
                 ] else ...[
-                  const Center(child: Text('Unable to determine agent status')),
+                  Center(child: Text(l10n.descUnableDetermineStatus)),
                 ],
               ],
             ),
@@ -575,9 +559,7 @@ class _AgentScreenState extends State<AgentScreen> {
     );
   }
 
-  // ── Logs Tab ──
-
-  Widget _buildLogsTab(ThemeData theme) {
+  Widget _buildLogsTab(ThemeData theme, AppLocalizations l10n) {
     return Column(
       children: [
         Container(
@@ -588,19 +570,19 @@ class _AgentScreenState extends State<AgentScreen> {
           ),
           child: Row(
             children: [
-              Text('Agent Logs', style: theme.textTheme.titleSmall),
+              Text(l10n.titleAgentLogs, style: theme.textTheme.titleSmall),
               const Spacer(),
               IconButton(
                 onPressed: _logsLoading ? null : () => _refreshLogs(),
                 icon: _logsLoading
                     ? const SizedBox.square(dimension: 16, child: CircularProgressIndicator(strokeWidth: 2))
                     : const Icon(Icons.refresh, size: 18),
-                tooltip: 'Refresh',
+                tooltip: l10n.btnRefresh,
               ),
               IconButton(
                 onPressed: _logs.isEmpty ? null : _clearLogs,
                 icon: const Icon(Icons.clear_all, size: 18),
-                tooltip: 'Clear view',
+                tooltip: l10n.btnClear,
               ),
             ],
           ),
@@ -609,11 +591,11 @@ class _AgentScreenState extends State<AgentScreen> {
           child: Container(
             color: const Color(0xFF1E1E1E),
             child: _logs.isEmpty
-                ? const Center(
+                ? Center(
                     child: Text(
-                      'No logs available.\nStart the agent to see logs.',
+                      l10n.msgNoLogs,
                       textAlign: TextAlign.center,
-                      style: TextStyle(color: Colors.white54),
+                      style: const TextStyle(color: Colors.white54),
                     ),
                   )
                 : SingleChildScrollView(
@@ -636,16 +618,16 @@ class _AgentScreenState extends State<AgentScreen> {
     );
   }
 
-  String _statusLabel(LocalAgentControllerStatus? status) {
+  String _statusLabel(LocalAgentControllerStatus? status, AppLocalizations l10n) {
     switch (status) {
       case LocalAgentControllerStatus.running:
-        return 'Running';
+        return l10n.statusRunning;
       case LocalAgentControllerStatus.stopped:
-        return 'Stopped';
+        return l10n.statusStopped;
       case LocalAgentControllerStatus.unavailable:
-        return 'Unavailable';
+        return l10n.statusUnavailable;
       case null:
-        return 'Checking';
+        return l10n.statusChecking;
     }
   }
 }

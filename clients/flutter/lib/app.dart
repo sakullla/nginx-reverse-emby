@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart'
 import 'package:flutter/material.dart';
 
 import 'core/client_state.dart';
+import 'l10n/app_localizations.dart';
 import 'screens/agent_screen.dart';
 import 'screens/dashboard_screen.dart';
 import 'screens/rules_screen.dart';
@@ -34,21 +35,38 @@ class NreClientApp extends StatelessWidget {
   final String version;
   final bool enableAutoRefresh;
 
+  static final _lightScheme = ColorScheme.fromSeed(
+    seedColor: const Color(0xFF006D77),
+    brightness: Brightness.light,
+  ).copyWith(
+    error: const Color(0xFFC1121F),
+    errorContainer: const Color(0xFFFFDAD6),
+    onErrorContainer: const Color(0xFF410002),
+    surfaceContainerHighest: const Color(0xFFEFF1F3),
+  );
+
+  static final _darkScheme = ColorScheme.fromSeed(
+    seedColor: const Color(0xFF4FD1C5),
+    brightness: Brightness.dark,
+  ).copyWith(
+    error: const Color(0xFFFF6B6B),
+    errorContainer: const Color(0xFF93000A),
+    onErrorContainer: const Color(0xFFFFDAD6),
+    surface: const Color(0xFF0F1419),
+    surfaceContainerHighest: const Color(0xFF1E293B),
+  );
+
   @override
   Widget build(BuildContext context) {
     final resolvedPlatform = platform ?? currentClientPlatform();
 
     return MaterialApp(
       title: 'NRE Client',
-      theme: ThemeData(
-        useMaterial3: true,
-        colorSchemeSeed: Colors.teal,
-      ),
-      darkTheme: ThemeData(
-        useMaterial3: true,
-        colorSchemeSeed: Colors.teal,
-        brightness: Brightness.dark,
-      ),
+      debugShowCheckedModeBanner: false,
+      theme: _buildTheme(_lightScheme, Brightness.light),
+      darkTheme: _buildTheme(_darkScheme, Brightness.dark),
+      localizationsDelegates: AppLocalizations.localizationsDelegates,
+      supportedLocales: AppLocalizations.supportedLocales,
       home: NreClientHome(
         api: api,
         generateAgentToken: generateAgentToken,
@@ -58,6 +76,88 @@ class NreClientApp extends StatelessWidget {
         platform: resolvedPlatform,
         version: version,
         enableAutoRefresh: enableAutoRefresh,
+      ),
+    );
+  }
+
+  ThemeData _buildTheme(ColorScheme scheme, Brightness brightness) {
+    return ThemeData(
+      useMaterial3: true,
+      colorScheme: scheme,
+      scaffoldBackgroundColor: scheme.surface,
+      cardTheme: CardThemeData(
+        elevation: 0,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: BorderSide(color: scheme.outlineVariant.withValues(alpha: 0.5)),
+        ),
+        color: scheme.surfaceContainerHighest,
+      ),
+      appBarTheme: AppBarTheme(
+        centerTitle: false,
+        backgroundColor: scheme.surface,
+        foregroundColor: scheme.onSurface,
+        elevation: 0,
+        scrolledUnderElevation: 0.5,
+        titleTextStyle: TextStyle(
+          fontSize: 20,
+          fontWeight: FontWeight.w600,
+          color: scheme.onSurface,
+        ),
+      ),
+      navigationBarTheme: NavigationBarThemeData(
+        elevation: 1,
+        backgroundColor: scheme.surfaceContainerHighest,
+        indicatorColor: scheme.primaryContainer,
+        labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
+      ),
+      inputDecorationTheme: InputDecorationTheme(
+        filled: true,
+        fillColor: scheme.surfaceContainerHighest.withValues(alpha: 0.6),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide(color: scheme.outlineVariant),
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide(color: scheme.outlineVariant),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide(color: scheme.primary, width: 2),
+        ),
+        errorBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide(color: scheme.error, width: 1),
+        ),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      ),
+      filledButtonTheme: FilledButtonThemeData(
+        style: FilledButton.styleFrom(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        ),
+      ),
+      outlinedButtonTheme: OutlinedButtonThemeData(
+        style: OutlinedButton.styleFrom(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        ),
+      ),
+      snackBarTheme: SnackBarThemeData(
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        backgroundColor: scheme.inverseSurface,
+        contentTextStyle: TextStyle(color: scheme.onInverseSurface),
+      ),
+      dividerTheme: DividerThemeData(
+        color: scheme.outlineVariant.withValues(alpha: 0.5),
+        space: 1,
+      ),
+      tabBarTheme: TabBarThemeData(
+        indicatorSize: TabBarIndicatorSize.tab,
+        dividerColor: scheme.outlineVariant.withValues(alpha: 0.3),
+        labelStyle: const TextStyle(fontWeight: FontWeight.w600),
       ),
     );
   }
@@ -143,6 +243,7 @@ class _NreClientHomeState extends State<NreClientHome> {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
     final screens = [
       DashboardScreen(
         state: state,
@@ -172,26 +273,26 @@ class _NreClientHomeState extends State<NreClientHome> {
       bottomNavigationBar: NavigationBar(
         selectedIndex: index,
         onDestinationSelected: (value) => setState(() => index = value),
-        destinations: const [
+        destinations: [
           NavigationDestination(
-            icon: Icon(Icons.dashboard_outlined),
-            selectedIcon: Icon(Icons.dashboard),
-            label: 'Dashboard',
+            icon: const Icon(Icons.dashboard_outlined),
+            selectedIcon: const Icon(Icons.dashboard),
+            label: l10n.navDashboard,
           ),
           NavigationDestination(
-            icon: Icon(Icons.memory_outlined),
-            selectedIcon: Icon(Icons.memory),
-            label: 'Agent',
+            icon: const Icon(Icons.memory_outlined),
+            selectedIcon: const Icon(Icons.memory),
+            label: l10n.navAgent,
           ),
           NavigationDestination(
-            icon: Icon(Icons.rule_outlined),
-            selectedIcon: Icon(Icons.rule),
-            label: 'Rules',
+            icon: const Icon(Icons.rule_outlined),
+            selectedIcon: const Icon(Icons.rule),
+            label: l10n.navRules,
           ),
           NavigationDestination(
-            icon: Icon(Icons.settings_outlined),
-            selectedIcon: Icon(Icons.settings),
-            label: 'Settings',
+            icon: const Icon(Icons.settings_outlined),
+            selectedIcon: const Icon(Icons.settings),
+            label: l10n.navSettings,
           ),
         ],
       ),

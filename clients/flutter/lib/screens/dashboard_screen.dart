@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
 import '../core/client_state.dart';
+import '../l10n/app_localizations.dart';
 import '../services/local_agent_controller.dart';
 
 class DashboardScreen extends StatefulWidget {
@@ -62,13 +63,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
+    final l10n = AppLocalizations.of(context)!;
     final profile = widget.state.profile;
     final isRegistered = profile.isRegistered;
     final snapshot = _snapshot;
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Dashboard'),
+        title: Text(l10n.titleDashboard),
         actions: [
           IconButton(
             onPressed: _loading ? null : _refresh,
@@ -84,23 +86,22 @@ class _DashboardScreenState extends State<DashboardScreen> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          // Connection Status Card
           _StatusCard(
-            title: 'Connection',
+            title: l10n.titleConnection,
             icon: isRegistered ? Icons.check_circle : Icons.error,
             iconColor: isRegistered ? Colors.green : colorScheme.error,
-            subtitle: isRegistered ? 'Registered' : 'Not registered',
+            subtitle: isRegistered ? l10n.statusRegistered : l10n.statusNotRegistered,
             children: [
               if (isRegistered) ...[
-                _InfoRow(label: 'Master URL', value: profile.masterUrl),
-                _InfoRow(label: 'Agent ID', value: profile.agentId),
-                _InfoRow(label: 'Display Name', value: profile.displayName.isEmpty ? '-' : profile.displayName),
+                _InfoRow(label: l10n.labelMasterUrl, value: profile.masterUrl),
+                _InfoRow(label: l10n.labelAgentId, value: profile.agentId),
+                _InfoRow(label: l10n.labelDisplayName, value: profile.displayName.isEmpty ? l10n.valueDash : profile.displayName),
               ] else ...[
-                const Text('Register this client to connect to a master server.'),
+                Text(l10n.descRegisterClient, style: theme.textTheme.bodyMedium?.copyWith(color: colorScheme.outline)),
                 const SizedBox(height: 12),
                 FilledButton(
                   onPressed: widget.onNavigateToRegistration,
-                  child: const Text('Register Now'),
+                  child: Text(l10n.btnRegisterNow),
                 ),
               ],
             ],
@@ -108,72 +109,70 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
           const SizedBox(height: 16),
 
-          // Agent Status Card
           _StatusCard(
-            title: 'Local Agent',
+            title: l10n.titleLocalAgent,
             icon: _agentStatusIcon(snapshot?.status),
             iconColor: _agentStatusColor(snapshot?.status, colorScheme),
-            subtitle: _agentStatusText(snapshot?.status),
+            subtitle: _agentStatusText(snapshot?.status, l10n),
             children: [
               if (snapshot != null) ...[
-                _InfoRow(label: 'PID', value: snapshot.pid?.toString() ?? '-'),
-                _InfoRow(label: 'Binary', value: snapshot.binaryPath),
-                _InfoRow(label: 'Data Directory', value: snapshot.dataDir),
+                _InfoRow(label: l10n.labelPid, value: snapshot.pid?.toString() ?? l10n.valueDash),
+                _InfoRow(label: l10n.labelBinaryPath, value: snapshot.binaryPath),
+                _InfoRow(label: l10n.labelDataDir, value: snapshot.dataDir),
                 if (snapshot.message.isNotEmpty)
-                  _InfoRow(label: 'Message', value: snapshot.message),
+                  _InfoRow(label: l10n.labelMessage, value: snapshot.message),
                 const SizedBox(height: 12),
                 Wrap(
                   spacing: 8,
                   children: [
                     if (snapshot.canStart)
                       FilledButton(
-                        onPressed: () => _startAgent(),
-                        child: const Text('Start Agent'),
+                        onPressed: () => _startAgent(l10n),
+                        child: Text(l10n.btnStart),
                       ),
                     if (snapshot.canStop)
                       FilledButton.tonal(
-                        onPressed: () => _stopAgent(),
-                        child: const Text('Stop Agent'),
+                        onPressed: () => _stopAgent(l10n),
+                        child: Text(l10n.btnStop),
                       ),
                     OutlinedButton(
                       onPressed: widget.onNavigateToAgent,
-                      child: const Text('View Details'),
+                      child: Text(l10n.btnViewDetails),
                     ),
                   ],
                 ),
               ] else if (!_loading) ...[
-                const Text('Unable to determine agent status.'),
+                Text(l10n.descUnableDetermineStatus, style: theme.textTheme.bodyMedium?.copyWith(color: colorScheme.outline)),
               ],
             ],
           ),
 
           const SizedBox(height: 16),
 
-          // Quick Stats Card
           _StatusCard(
-            title: 'Overview',
+            title: l10n.titleOverview,
             icon: Icons.analytics,
             iconColor: colorScheme.primary,
-            subtitle: 'Last updated: ${DateFormat('HH:mm:ss').format(_lastCheck)}',
+            subtitle: l10n.msgLastUpdated(DateFormat('HH:mm:ss').format(_lastCheck)),
             children: [
               _StatRow(
                 icon: Icons.dns,
-                label: 'Master URL',
-                value: profile.masterUrl.isEmpty ? 'Not configured' : profile.masterUrl,
+                label: l10n.labelMasterUrl,
+                value: profile.masterUrl.isEmpty ? l10n.labelNotConfigured : profile.masterUrl,
               ),
               _StatRow(
                 icon: Icons.badge,
-                label: 'Agent ID',
-                value: profile.agentId.isEmpty ? '-' : profile.agentId,
+                label: l10n.labelAgentId,
+                value: profile.agentId.isEmpty ? l10n.valueDash : profile.agentId,
               ),
               _StatRow(
                 icon: Icons.memory,
-                label: 'Agent Status',
-                value: _agentStatusText(snapshot?.status),
+                label: l10n.labelAgentStatus,
+                value: _agentStatusText(snapshot?.status, l10n),
               ),
               _StatRow(
                 icon: Icons.info,
-                label: 'Platform',
+                label: l10n.labelPlatform,
                 value: widget.state.platform,
               ),
             ],
@@ -183,27 +182,27 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  Future<void> _startAgent() async {
+  Future<void> _startAgent(AppLocalizations l10n) async {
     try {
       final s = await widget.controller.start(widget.state.profile);
       if (mounted) {
         setState(() => _snapshot = s);
-        _showSnack('Agent started (PID: ${s.pid})');
+        _showSnack(l10n.msgAgentStarted(s.pid?.toString() ?? l10n.valueDash));
       }
     } catch (e) {
-      if (mounted) _showSnack('Failed to start agent: $e', isError: true);
+      if (mounted) _showSnack(l10n.msgActionFailed(e.toString()), isError: true);
     }
   }
 
-  Future<void> _stopAgent() async {
+  Future<void> _stopAgent(AppLocalizations l10n) async {
     try {
       final s = await widget.controller.stop(widget.state.profile);
       if (mounted) {
         setState(() => _snapshot = s);
-        _showSnack('Agent stopped');
+        _showSnack(l10n.msgAgentStopped);
       }
     } catch (e) {
-      if (mounted) _showSnack('Failed to stop agent: $e', isError: true);
+      if (mounted) _showSnack(l10n.msgActionFailed(e.toString()), isError: true);
     }
   }
 
@@ -211,7 +210,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),
-        backgroundColor: isError ? Theme.of(context).colorScheme.error : null,
+        backgroundColor: isError ? Theme.of(context).colorScheme.errorContainer : null,
         duration: const Duration(seconds: 3),
       ),
     );
@@ -243,16 +242,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
-  String _agentStatusText(LocalAgentControllerStatus? status) {
+  String _agentStatusText(LocalAgentControllerStatus? status, AppLocalizations l10n) {
     switch (status) {
       case LocalAgentControllerStatus.running:
-        return 'Running';
+        return l10n.statusRunning;
       case LocalAgentControllerStatus.stopped:
-        return 'Stopped';
+        return l10n.statusStopped;
       case LocalAgentControllerStatus.unavailable:
-        return 'Unavailable';
+        return l10n.statusUnavailable;
       case null:
-        return 'Unknown';
+        return l10n.statusUnknown;
     }
   }
 }
@@ -288,9 +287,19 @@ class _StatusCard extends StatelessWidget {
                 const SizedBox(width: 8),
                 Text(title, style: theme.textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold)),
                 const Spacer(),
-                Text(
-                  subtitle,
-                  style: theme.textTheme.bodySmall?.copyWith(color: theme.colorScheme.outline),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: iconColor.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Text(
+                    subtitle,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: iconColor,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
                 ),
               ],
             ),

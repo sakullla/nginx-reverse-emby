@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
 
 import '../core/client_state.dart';
+import '../l10n/app_localizations.dart';
 
 class SettingsScreen extends StatefulWidget {
   const SettingsScreen({
@@ -40,14 +41,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _exportConfig() async {
+    final l10n = AppLocalizations.of(context)!;
     final profile = widget.state.profile;
     if (!profile.isRegistered) {
-      _showSnack('No registered profile to export');
+      _showSnack(l10n.msgNoProfileToExport);
       return;
     }
     final json = profile.toJson().toString();
     await Clipboard.setData(ClipboardData(text: json));
-    _showSnack('Profile JSON copied to clipboard');
+    _showSnack(l10n.msgProfileExported);
   }
 
   void _showSnack(String message) {
@@ -57,151 +59,146 @@ class _SettingsScreenState extends State<SettingsScreen> {
   }
 
   Future<void> _showClearDataDialog() async {
+    final l10n = AppLocalizations.of(context)!;
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('Clear All Data'),
-        content: const Text(
-          'This will erase all local data including your registration profile. '
-          'The agent on the master server will remain but this client will need to be re-registered.',
-        ),
+        title: Text(l10n.titleClearAllData),
+        content: Text(l10n.descClearAllData),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context, false),
-            child: const Text('Cancel'),
+            child: Text(l10n.btnCancel),
           ),
           FilledButton(
             onPressed: () => Navigator.pop(context, true),
             style: FilledButton.styleFrom(
               backgroundColor: Theme.of(context).colorScheme.error,
             ),
-            child: const Text('Clear'),
+            child: Text(l10n.btnClear),
           ),
         ],
       ),
     );
     if (confirmed == true) {
       widget.onClearProfile?.call();
-      _showSnack('All local data cleared');
+      _showSnack(l10n.msgAllDataCleared);
     }
   }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final l10n = AppLocalizations.of(context)!;
     final profile = widget.state.profile;
     final isRegistered = profile.isRegistered;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Settings')),
+      appBar: AppBar(title: Text(l10n.titleSettings)),
       body: ListView(
         children: [
-          // Connection Section
-          _SectionHeader(title: 'Connection', icon: Icons.link),
+          _SectionHeader(title: l10n.titleConnection, icon: Icons.link),
           _SettingTile(
             icon: Icons.dns,
-            title: 'Master URL',
-            subtitle: profile.masterUrl.isEmpty ? 'Not configured' : profile.masterUrl,
+            title: l10n.labelMasterUrl,
+            subtitle: profile.masterUrl.isEmpty ? l10n.labelNotConfigured : profile.masterUrl,
             trailing: isRegistered
                 ? IconButton(
                     icon: const Icon(Icons.copy, size: 18),
                     onPressed: () {
                       Clipboard.setData(ClipboardData(text: profile.masterUrl));
-                      _showSnack('Copied');
+                      _showSnack(l10n.msgCopied);
                     },
                   )
                 : null,
           ),
           _SettingTile(
             icon: Icons.badge,
-            title: 'Agent ID',
-            subtitle: profile.agentId.isEmpty ? 'Not registered' : profile.agentId,
+            title: l10n.labelAgentId,
+            subtitle: profile.agentId.isEmpty ? l10n.labelNotRegistered : profile.agentId,
             trailing: isRegistered
                 ? IconButton(
                     icon: const Icon(Icons.copy, size: 18),
                     onPressed: () {
                       Clipboard.setData(ClipboardData(text: profile.agentId));
-                      _showSnack('Copied');
+                      _showSnack(l10n.msgCopied);
                     },
                   )
                 : null,
           ),
           _SettingTile(
             icon: Icons.key,
-            title: 'Agent Token',
-            subtitle: isRegistered ? '••••••••${profile.token.length > 8 ? profile.token.substring(profile.token.length - 4) : ''}' : 'Not registered',
+            title: l10n.labelToken,
+            subtitle: isRegistered ? '••••••••${profile.token.length > 8 ? profile.token.substring(profile.token.length - 4) : ''}' : l10n.labelNotRegistered,
           ),
 
           const Divider(),
 
-          // Local Storage Section
-          _SectionHeader(title: 'Local Storage', icon: Icons.storage),
+          _SectionHeader(title: l10n.titleLocalStorage, icon: Icons.storage),
           _SettingTile(
             icon: Icons.folder,
-            title: 'Data Directory',
-            subtitle: _dataDir.isEmpty ? 'Loading...' : _dataDir,
+            title: l10n.labelDataDir,
+            subtitle: _dataDir.isEmpty ? l10n.valueLoading : _dataDir,
             trailing: _dataDir.isNotEmpty
                 ? IconButton(
                     icon: const Icon(Icons.copy, size: 18),
                     onPressed: () {
                       Clipboard.setData(ClipboardData(text: _dataDir));
-                      _showSnack('Copied');
+                      _showSnack(l10n.msgCopied);
                     },
                   )
                 : null,
           ),
           ListTile(
             leading: const Icon(Icons.upload_file),
-            title: const Text('Export Profile'),
-            subtitle: const Text('Copy profile JSON to clipboard'),
+            title: Text(l10n.titleExportProfile),
+            subtitle: Text(l10n.descExportProfile),
             onTap: _exportConfig,
           ),
           ListTile(
             leading: Icon(Icons.delete_forever, color: theme.colorScheme.error),
-            title: Text('Clear All Data', style: TextStyle(color: theme.colorScheme.error)),
-            subtitle: const Text('Remove registration and local cache'),
+            title: Text(l10n.titleClearAllData, style: TextStyle(color: theme.colorScheme.error)),
+            subtitle: Text(l10n.descClearData),
             onTap: _showClearDataDialog,
           ),
 
           const Divider(),
 
-          // System Section
-          _SectionHeader(title: 'System', icon: Icons.computer),
-          const ListTile(
-            leading: Icon(Icons.login),
-            title: Text('Start at Login'),
-            subtitle: Text('Launch client when system starts'),
-            trailing: _StartAtLoginSwitch(),
+          _SectionHeader(title: l10n.titleSystem, icon: Icons.computer),
+          ListTile(
+            leading: const Icon(Icons.login),
+            title: Text(l10n.titleStartAtLogin),
+            subtitle: Text(l10n.descStartAtLogin),
+            trailing: const _StartAtLoginSwitch(),
           ),
           _SettingTile(
             icon: Icons.info,
-            title: 'Platform',
+            title: l10n.labelPlatform,
             subtitle: Platform.operatingSystem,
           ),
 
           const Divider(),
 
-          // About Section (merged from AboutScreen)
-          _SectionHeader(title: 'About', icon: Icons.info_outline),
+          _SectionHeader(title: l10n.titleAbout, icon: Icons.info_outline),
           _SettingTile(
             icon: Icons.app_shortcut,
-            title: 'Application',
-            subtitle: 'NRE Client',
+            title: l10n.labelApplication,
+            subtitle: l10n.valueAppName,
           ),
           _SettingTile(
             icon: Icons.tag,
-            title: 'Version',
+            title: l10n.labelVersion,
             subtitle: _appVersion,
           ),
           _SettingTile(
             icon: Icons.code,
-            title: 'Distribution',
-            subtitle: 'GitHub Release',
+            title: l10n.labelDistribution,
+            subtitle: l10n.valueGithubRelease,
           ),
-          const _SettingTile(
+          _SettingTile(
             icon: Icons.cloud_off,
-            title: 'Container Policy',
-            subtitle: 'Client artifacts are not embedded in the control-plane image',
+            title: l10n.labelContainerPolicy,
+            subtitle: l10n.valueContainerPolicyDesc,
           ),
         ],
       ),
@@ -277,6 +274,7 @@ class _StartAtLoginSwitchState extends State<_StartAtLoginSwitch> {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
     return Switch(
       value: _value,
       onChanged: (value) {
@@ -284,8 +282,8 @@ class _StartAtLoginSwitchState extends State<_StartAtLoginSwitch> {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(value
-                ? 'Start at login enabled (placeholder)'
-                : 'Start at login disabled (placeholder)'),
+                ? l10n.msgStartAtLoginEnabled
+                : l10n.msgStartAtLoginDisabled),
           ),
         );
       },

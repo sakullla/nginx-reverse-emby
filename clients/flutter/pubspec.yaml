@@ -13,6 +13,8 @@ dependencies:
   cupertino_icons: ^1.0.8
   path_provider: ^2.1.5
   intl: ^0.20.0
+  flutter_localizations:
+    sdk: flutter
 
   # Windows desktop
   window_manager: ^0.4.3
@@ -54,4 +56,5 @@ dev_dependencies:
   msix: ^3.16.8
 
 flutter:
+  generate: true
   uses-material-design: true
