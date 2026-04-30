@@ -68,6 +68,7 @@ class ClientState {
     required this.profile,
     this.runtimeStatus = ClientRuntimeStatus.unconfigured,
     this.lastError = '',
+    this.platform = 'unknown',
   });
 
   factory ClientState.empty() {
@@ -79,16 +80,19 @@ class ClientState {
   final ClientProfile profile;
   final ClientRuntimeStatus runtimeStatus;
   final String lastError;
+  final String platform;
 
   ClientState copyWith({
     ClientProfile? profile,
     ClientRuntimeStatus? runtimeStatus,
     String? lastError,
+    String? platform,
   }) {
     return ClientState(
       profile: profile ?? this.profile,
       runtimeStatus: runtimeStatus ?? this.runtimeStatus,
       lastError: lastError ?? this.lastError,
+      platform: platform ?? this.platform,
     );
   }
 }

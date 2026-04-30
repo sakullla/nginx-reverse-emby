@@ -1,5 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
+
+import '../core/client_state.dart';
 
 class MasterApiConfig {
   const MasterApiConfig({required this.masterUrl, required this.registerToken});
@@ -166,4 +169,15 @@ String normalizeMasterUrl(String value) {
     );
   }
   return normalized;
+}
+
+// Types used across the app for registration flow
+
+typedef ClientStateChanged = void Function(ClientState state);
+typedef AgentTokenGenerator = String Function();
+
+String defaultAgentTokenGenerator() {
+  final random = Random.secure();
+  final bytes = List<int>.generate(24, (_) => random.nextInt(256));
+  return bytes.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join();
 }

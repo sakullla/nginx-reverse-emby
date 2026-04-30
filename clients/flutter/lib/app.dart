@@ -5,13 +5,10 @@ import 'package:flutter/foundation.dart'
 import 'package:flutter/material.dart';
 
 import 'core/client_state.dart';
-import 'screens/about_screen.dart';
-import 'screens/logs_screen.dart';
-import 'screens/overview_screen.dart';
-import 'screens/register_screen.dart';
-import 'screens/runtime_screen.dart';
+import 'screens/agent_screen.dart';
+import 'screens/dashboard_screen.dart';
+import 'screens/rules_screen.dart';
 import 'screens/settings_screen.dart';
-import 'screens/updates_screen.dart';
 import 'services/client_profile_store.dart';
 import 'services/local_agent_controller.dart';
 import 'services/local_agent_controller_factory.dart';
@@ -25,7 +22,8 @@ class NreClientApp extends StatelessWidget {
     this.profileStore,
     this.localAgentController,
     this.platform,
-    this.version = '1',
+    this.version = '2.0.0',
+    this.enableAutoRefresh = true,
   });
 
   final MasterApi api;
@@ -34,6 +32,7 @@ class NreClientApp extends StatelessWidget {
   final LocalAgentController? localAgentController;
   final String? platform;
   final String version;
+  final bool enableAutoRefresh;
 
   @override
   Widget build(BuildContext context) {
@@ -41,7 +40,15 @@ class NreClientApp extends StatelessWidget {
 
     return MaterialApp(
       title: 'NRE Client',
-      theme: ThemeData(useMaterial3: true, colorSchemeSeed: Colors.teal),
+      theme: ThemeData(
+        useMaterial3: true,
+        colorSchemeSeed: Colors.teal,
+      ),
+      darkTheme: ThemeData(
+        useMaterial3: true,
+        colorSchemeSeed: Colors.teal,
+        brightness: Brightness.dark,
+      ),
       home: NreClientHome(
         api: api,
         generateAgentToken: generateAgentToken,
@@ -50,6 +57,7 @@ class NreClientApp extends StatelessWidget {
             localAgentController ?? createLocalAgentController(),
         platform: resolvedPlatform,
         version: version,
+        enableAutoRefresh: enableAutoRefresh,
       ),
     );
   }
@@ -81,6 +89,7 @@ class NreClientHome extends StatefulWidget {
     required this.localAgentController,
     required this.platform,
     required this.version,
+    this.enableAutoRefresh = true,
   });
 
   final MasterApi api;
@@ -89,6 +98,7 @@ class NreClientHome extends StatefulWidget {
   final LocalAgentController localAgentController;
   final String platform;
   final String version;
+  final bool enableAutoRefresh;
 
   @override
   State<NreClientHome> createState() => _NreClientHomeState();
@@ -113,34 +123,48 @@ class _NreClientHomeState extends State<NreClientHome> {
       state = state.copyWith(
         profile: profile,
         runtimeStatus: ClientRuntimeStatus.registered,
+        platform: widget.platform,
       );
     });
   }
 
   void _setStateAndPersist(ClientState nextState) {
-    setState(() => state = nextState);
+    setState(() => state = nextState.copyWith(platform: widget.platform));
     if (nextState.profile.isRegistered) {
       unawaited(widget.profileStore.save(nextState.profile));
     }
   }
 
+  void _clearProfile() {
+    final empty = ClientState.empty().copyWith(platform: widget.platform);
+    setState(() => state = empty);
+    unawaited(widget.profileStore.save(empty.profile));
+  }
+
   @override
   Widget build(BuildContext context) {
     final screens = [
-      OverviewScreen(state: state),
-      RegisterScreen(
+      DashboardScreen(
+        state: state,
+        controller: widget.localAgentController,
+        onNavigateToAgent: () => setState(() => index = 1),
+        onNavigateToRegistration: () => setState(() => index = 1),
+      ),
+      AgentScreen(
         api: widget.api,
         initialState: state,
         onStateChanged: _setStateAndPersist,
         generateAgentToken: widget.generateAgentToken,
         platform: widget.platform,
         version: widget.version,
+        enableAutoRefresh: widget.enableAutoRefresh,
+        controller: widget.localAgentController,
       ),
-      RuntimeScreen(state: state, controller: widget.localAgentController),
-      const LogsScreen(),
-      const UpdatesScreen(),
-      SettingsScreen(state: state),
-      const AboutScreen(),
+      RulesScreen(state: state),
+      SettingsScreen(
+        state: state,
+        onClearProfile: _clearProfile,
+      ),
     ];
 
     return Scaffold(
@@ -149,16 +173,26 @@ class _NreClientHomeState extends State<NreClientHome> {
         selectedIndex: index,
         onDestinationSelected: (value) => setState(() => index = value),
         destinations: const [
-          NavigationDestination(icon: Icon(Icons.dashboard), label: 'Overview'),
-          NavigationDestination(icon: Icon(Icons.login), label: 'Register'),
-          NavigationDestination(icon: Icon(Icons.memory), label: 'Runtime'),
-          NavigationDestination(icon: Icon(Icons.article), label: 'Logs'),
           NavigationDestination(
-            icon: Icon(Icons.system_update),
-            label: 'Updates',
+            icon: Icon(Icons.dashboard_outlined),
+            selectedIcon: Icon(Icons.dashboard),
+            label: 'Dashboard',
           ),
-          NavigationDestination(icon: Icon(Icons.settings), label: 'Settings'),
-          NavigationDestination(icon: Icon(Icons.info), label: 'About'),
+          NavigationDestination(
+            icon: Icon(Icons.memory_outlined),
+            selectedIcon: Icon(Icons.memory),
+            label: 'Agent',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.rule_outlined),
+            selectedIcon: Icon(Icons.rule),
+            label: 'Rules',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.settings_outlined),
+            selectedIcon: Icon(Icons.settings),
+            label: 'Settings',
+          ),
         ],
       ),
     );

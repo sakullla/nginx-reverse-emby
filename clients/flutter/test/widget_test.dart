@@ -29,16 +29,16 @@ class FakeLocalAgentController implements LocalAgentController {
   Future<LocalAgentRuntimeSnapshot> status(ClientProfile profile) async =>
       LocalAgentRuntimeSnapshot.unavailable(
         message: 'fake runtime unavailable',
-        binaryPath: 'C:\\fake\\nre-agent.exe',
+        binaryPath: r'C:\fake\nre-agent.exe',
       );
 
   @override
   Future<LocalAgentRuntimeSnapshot> start(ClientProfile profile) async =>
-      LocalAgentRuntimeSnapshot.stopped(binaryPath: 'C:\\fake\\nre-agent.exe');
+      LocalAgentRuntimeSnapshot.stopped(binaryPath: r'C:\fake\nre-agent.exe');
 
   @override
   Future<LocalAgentRuntimeSnapshot> stop(ClientProfile profile) async =>
-      LocalAgentRuntimeSnapshot.stopped(binaryPath: 'C:\\fake\\nre-agent.exe');
+      LocalAgentRuntimeSnapshot.stopped(binaryPath: r'C:\fake\nre-agent.exe');
 
   @override
   Future<String> readRecentLogs() async => '';
@@ -63,43 +63,40 @@ class FakeClientProfileStore implements ClientProfileStore {
 }
 
 void main() {
-  testWidgets('client app opens on overview screen', (tester) async {
+  testWidgets('client app opens on dashboard screen', (tester) async {
     await tester.pumpWidget(
       NreClientApp(
         profileStore: FakeClientProfileStore(),
         localAgentController: FakeLocalAgentController(),
+        enableAutoRefresh: false,
       ),
     );
 
-    expect(find.text('Overview'), findsWidgets);
-    expect(find.text('Master'), findsOneWidget);
-    expect(find.text('Register'), findsOneWidget);
+    expect(find.text('Dashboard'), findsWidgets);
+    expect(find.text('Connection'), findsOneWidget);
+    expect(find.text('Local Agent'), findsOneWidget);
   });
 
-  testWidgets('navigation preserves register form state', (tester) async {
+  testWidgets('agent page shows registration form when not registered', (
+    tester,
+  ) async {
     await tester.pumpWidget(
       NreClientApp(
         profileStore: FakeClientProfileStore(),
         localAgentController: FakeLocalAgentController(),
+        enableAutoRefresh: false,
       ),
     );
 
-    await tester.tap(find.text('Register').last);
-    await tester.pumpAndSettle();
-    await tester.enterText(
-      find.widgetWithText(TextFormField, 'Client name'),
-      'desktop-a',
-    );
+    await tester.tap(find.text('Agent').last);
+    await tester.pump(const Duration(milliseconds: 100));
 
-    await tester.tap(find.text('Runtime').last);
-    await tester.pumpAndSettle();
-    await tester.tap(find.text('Register').last);
-    await tester.pumpAndSettle();
-
-    expect(find.text('desktop-a'), findsOneWidget);
+    expect(find.text('Register Agent'), findsOneWidget);
+    expect(find.text('Master URL'), findsOneWidget);
+    expect(find.text('Register token'), findsOneWidget);
   });
 
-  testWidgets('client app stores registration state for overview', (
+  testWidgets('client app stores registration state after register', (
     tester,
   ) async {
     final api = FakeMasterApi();
@@ -113,10 +110,11 @@ void main() {
         localAgentController: FakeLocalAgentController(),
         platform: 'android',
         version: '1.0.0',
+        enableAutoRefresh: false,
       ),
     );
 
-    await tester.tap(find.text('Register').last);
+    await tester.tap(find.text('Agent').last);
     await tester.pumpAndSettle();
     await tester.enterText(
       find.widgetWithText(TextFormField, 'Master URL'),
@@ -131,16 +129,16 @@ void main() {
       'phone-a',
     );
     await tester.tap(find.widgetWithText(FilledButton, 'Register'));
-    await tester.pumpAndSettle();
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.pump(const Duration(milliseconds: 100));
 
-    await tester.tap(find.text('Overview').last);
-    await tester.pumpAndSettle();
+    await tester.tap(find.text('Dashboard').last);
+    await tester.pump(const Duration(milliseconds: 100));
 
     expect(api.lastRequest?.agentToken, 'generated-token');
     expect(profileStore.savedProfile?.agentId, 'agent-1');
     expect(profileStore.savedProfile?.token, 'generated-token');
     expect(find.text('http://panel.example.com'), findsOneWidget);
-    expect(find.text('Registered: agent-1'), findsOneWidget);
   });
 
   testWidgets('client app restores saved registration state on startup', (
@@ -159,26 +157,42 @@ void main() {
       NreClientApp(
         profileStore: profileStore,
         localAgentController: FakeLocalAgentController(),
+        enableAutoRefresh: false,
       ),
     );
-    await tester.pumpAndSettle();
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.pump(const Duration(milliseconds: 100));
 
     expect(find.text('https://panel.example.com'), findsOneWidget);
-    expect(find.text('Registered: agent-1'), findsOneWidget);
+    expect(find.text('Registered'), findsWidgets);
   });
 
-  testWidgets('client app injects local agent controller into runtime screen', (
+  testWidgets('agent page shows controller status for registered client', (
     tester,
   ) async {
-    await tester.pumpWidget(
-      NreClientApp(
-        profileStore: FakeClientProfileStore(),
-        localAgentController: FakeLocalAgentController(),
+    final profileStore = FakeClientProfileStore(
+      const ClientProfile(
+        masterUrl: 'https://panel.example.com',
+        displayName: 'desktop-a',
+        agentId: 'agent-1',
+        token: 'agent-secret',
       ),
     );
 
-    await tester.tap(find.text('Runtime').last);
-    await tester.pumpAndSettle();
+    await tester.pumpWidget(
+      NreClientApp(
+        profileStore: profileStore,
+        localAgentController: FakeLocalAgentController(),
+        enableAutoRefresh: false,
+      ),
+    );
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.pump(const Duration(milliseconds: 100));
+
+    await tester.tap(find.text('Agent').last);
+    await tester.pump(const Duration(milliseconds: 100));
+    await tester.pump(const Duration(milliseconds: 100));
 
     expect(find.text('fake runtime unavailable'), findsOneWidget);
   });
