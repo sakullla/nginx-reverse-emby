@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
+import '../../../../core/routing/route_names.dart';
 import '../../data/models/auth_models.dart';
 import '../providers/auth_provider.dart';
 
@@ -29,6 +31,12 @@ class _ConnectScreenState extends ConsumerState<ConnectScreen> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final authAsync = ref.watch(authNotifierProvider);
+
+    ref.listen(authNotifierProvider, (_, next) {
+      if (next.value is AuthStateAuthenticated) {
+        context.go(RouteNames.dashboard);
+      }
+    });
 
     return Scaffold(
       body: Center(

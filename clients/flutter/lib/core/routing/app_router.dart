@@ -19,6 +19,9 @@ final _shellNavigatorKey = GlobalKey<NavigatorState>();
 final routerProvider = Provider<GoRouter>((ref) {
   final caps = PlatformCapabilities.current;
 
+  // Watch auth state so router rebuilds when auth changes
+  ref.watch(authNotifierProvider);
+
   return GoRouter(
     navigatorKey: _rootNavigatorKey,
     initialLocation: RouteNames.dashboard,
