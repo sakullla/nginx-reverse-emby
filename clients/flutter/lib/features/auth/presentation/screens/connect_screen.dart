@@ -25,6 +25,7 @@ class _ConnectScreenState extends ConsumerState<ConnectScreen> {
   final _urlController = TextEditingController();
   final _tokenController = TextEditingController();
   final _nameController = TextEditingController(text: 'nre-client');
+  var _mode = ConnectionMode.management;
   var _step = 0;
 
   @override
@@ -38,12 +39,18 @@ class _ConnectScreenState extends ConsumerState<ConnectScreen> {
   @override
   Widget build(BuildContext context) {
     final accent = ref.watch(
-      themeControllerProvider.select((s) => s.value?.accent ?? AccentThemes.defaults),
+      themeControllerProvider.select(
+        (s) => s.value?.accent ?? AccentThemes.defaults,
+      ),
     );
     final authAsync = ref.watch(authNotifierProvider);
     final loc = AppLocalizations.of(context)!;
 
-    final stepLabels = [loc.stepServerUrl, loc.stepRegisterToken, loc.stepClientName];
+    final stepLabels = [
+      loc.stepServerUrl,
+      loc.stepRegisterToken,
+      loc.stepClientName,
+    ];
 
     ref.listen(authNotifierProvider, (_, next) {
       if (next.value is AuthStateAuthenticated) {
@@ -105,26 +112,52 @@ class _ConnectScreenState extends ConsumerState<ConnectScreen> {
                     ),
                     const SizedBox(height: AppSpacing.s8),
 
-                    // -- Step indicator -----------------------------------------
+                    // -- Mode selector ------------------------------------------
                     Center(
-                      child: _StepIndicator(
-                        currentStep: _step,
-                        totalSteps: 3,
-                        accent: accent,
-                      ),
-                    ),
-                    const SizedBox(height: AppSpacing.s4),
-                    Center(
-                      child: Text(
-                        stepLabels[_step],
-                        style: const TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w500,
-                          color: AppColors.textMuted,
-                        ),
+                      child: SegmentedButton<ConnectionMode>(
+                        segments: const [
+                          ButtonSegment(
+                            value: ConnectionMode.management,
+                            label: Text('Management'),
+                          ),
+                          ButtonSegment(
+                            value: ConnectionMode.agent,
+                            label: Text('Agent'),
+                          ),
+                        ],
+                        selected: {_mode},
+                        onSelectionChanged: (selected) {
+                          setState(() {
+                            _mode = selected.single;
+                            _step = 0;
+                          });
+                        },
                       ),
                     ),
                     const SizedBox(height: AppSpacing.s20),
+
+                    if (_mode == ConnectionMode.agent) ...[
+                      // -- Step indicator ---------------------------------------
+                      Center(
+                        child: _StepIndicator(
+                          currentStep: _step,
+                          totalSteps: 3,
+                          accent: accent,
+                        ),
+                      ),
+                      const SizedBox(height: AppSpacing.s4),
+                      Center(
+                        child: Text(
+                          stepLabels[_step],
+                          style: const TextStyle(
+                            fontSize: 11,
+                            fontWeight: FontWeight.w500,
+                            color: AppColors.textMuted,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: AppSpacing.s20),
+                    ],
 
                     // -- Step content -------------------------------------------
                     _buildStepContent(loc),
@@ -161,6 +194,42 @@ class _ConnectScreenState extends ConsumerState<ConnectScreen> {
   }
 
   Widget _buildStepContent(AppLocalizations loc) {
+    if (_mode == ConnectionMode.management) {
+      return Column(
+        children: [
+          TextFormField(
+            controller: _urlController,
+            decoration: InputDecoration(
+              labelText: loc.labelMasterUrl,
+              hintText: loc.hintMasterUrl,
+              prefixIcon: const Icon(Icons.link, size: 18),
+            ),
+            validator: (v) => v == null || v.isEmpty ? loc.errorEnterUrl : null,
+          ),
+          const SizedBox(height: AppSpacing.s12),
+          TextFormField(
+            controller: _tokenController,
+            decoration: InputDecoration(
+              labelText: loc.labelPanelToken,
+              prefixIcon: const Icon(Icons.key, size: 18),
+            ),
+            obscureText: true,
+            validator: (v) =>
+                v == null || v.isEmpty ? loc.errorEnterToken : null,
+          ),
+          const SizedBox(height: AppSpacing.s12),
+          TextFormField(
+            controller: _nameController,
+            decoration: InputDecoration(
+              labelText: loc.labelClientName,
+              hintText: loc.hintClientName,
+              prefixIcon: const Icon(Icons.badge, size: 18),
+            ),
+          ),
+        ],
+      );
+    }
+
     return AnimatedSwitcher(
       duration: const Duration(milliseconds: 200),
       child: KeyedSubtree(
@@ -205,12 +274,16 @@ class _ConnectScreenState extends ConsumerState<ConnectScreen> {
     );
   }
 
-  Widget _buildNavButtons(AsyncValue<AuthState> authAsync, AccentColors accent, AppLocalizations loc) {
+  Widget _buildNavButtons(
+    AsyncValue<AuthState> authAsync,
+    AccentColors accent,
+    AppLocalizations loc,
+  ) {
     final isLoading = authAsync.value is AuthStateLoading;
 
     return Row(
       children: [
-        if (_step > 0) ...[
+        if (_mode == ConnectionMode.agent && _step > 0) ...[
           GlassButton.secondary(
             label: loc.btnPrevious,
             onPressed: isLoading ? null : () => setState(() => _step--),
@@ -219,7 +292,9 @@ class _ConnectScreenState extends ConsumerState<ConnectScreen> {
         ] else
           const Spacer(),
         GlassButton.primary(
-          label: _step < 2 ? loc.btnNext : loc.btnConnect,
+          label: _mode == ConnectionMode.agent && _step < 2
+              ? loc.btnNext
+              : loc.btnConnect,
           onPressed: isLoading ? null : _onNext,
           accentStart: accent.primaryStart,
           accentEnd: accent.primaryEnd,
@@ -230,10 +305,23 @@ class _ConnectScreenState extends ConsumerState<ConnectScreen> {
 
   void _onNext() {
     if (!(_formKey.currentState?.validate() ?? false)) return;
+    if (_mode == ConnectionMode.management) {
+      ref
+          .read(authNotifierProvider.notifier)
+          .connectManagement(
+            masterUrl: _urlController.text.trim(),
+            panelToken: _tokenController.text.trim(),
+            name: _nameController.text.trim(),
+          );
+      return;
+    }
+
     if (_step < 2) {
       setState(() => _step++);
     } else {
-      ref.read(authNotifierProvider.notifier).register(
+      ref
+          .read(authNotifierProvider.notifier)
+          .register(
             masterUrl: _urlController.text.trim(),
             registerToken: _tokenController.text.trim(),
             name: _nameController.text.trim(),
@@ -276,8 +364,8 @@ class _StepIndicator extends StatelessWidget {
               color: isActive
                   ? accent.primaryStart
                   : isCompleted
-                      ? accent.primaryStart.withValues(alpha: 0.4)
-                      : AppColors.textMuted.withValues(alpha: 0.3),
+                  ? accent.primaryStart.withValues(alpha: 0.4)
+                  : AppColors.textMuted.withValues(alpha: 0.3),
               borderRadius: BorderRadius.circular(4),
             ),
           ),

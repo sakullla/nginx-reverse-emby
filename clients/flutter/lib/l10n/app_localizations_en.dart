@@ -78,6 +78,18 @@ class AppLocalizationsEn extends AppLocalizations {
   String get labelRegisterToken => 'Register token';
 
   @override
+  String get labelPanelToken => 'Panel token';
+
+  @override
+  String get labelActiveMode => 'Active mode';
+
+  @override
+  String get labelStatus => 'Status';
+
+  @override
+  String get labelConfigured => 'Configured';
+
+  @override
   String get labelPid => 'PID';
 
   @override
@@ -270,6 +282,12 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get titleConnection => 'Connection';
+
+  @override
+  String get titleManagementProfile => 'Management profile';
+
+  @override
+  String get titleAgentProfile => 'Agent profile';
 
   @override
   String get titleLocalAgent => 'Local Agent';
@@ -561,6 +579,12 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get valueThemeDark => 'Dark';
+
+  @override
+  String get modeManagement => 'Management';
+
+  @override
+  String get modeAgent => 'Agent';
 
   @override
   String get trayShow => 'Show';

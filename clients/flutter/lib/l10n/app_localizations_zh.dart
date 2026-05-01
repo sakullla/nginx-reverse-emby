@@ -78,6 +78,18 @@ class AppLocalizationsZh extends AppLocalizations {
   String get labelRegisterToken => '注册令牌';
 
   @override
+  String get labelPanelToken => '面板令牌';
+
+  @override
+  String get labelActiveMode => '当前模式';
+
+  @override
+  String get labelStatus => '状态';
+
+  @override
+  String get labelConfigured => '已配置';
+
+  @override
   String get labelPid => '进程 ID';
 
   @override
@@ -269,6 +281,12 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get titleConnection => '连接';
+
+  @override
+  String get titleManagementProfile => '管理配置';
+
+  @override
+  String get titleAgentProfile => '代理配置';
 
   @override
   String get titleLocalAgent => '本地代理';
@@ -547,6 +565,12 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get valueThemeDark => '深色';
+
+  @override
+  String get modeManagement => '管理';
+
+  @override
+  String get modeAgent => '代理';
 
   @override
   String get trayShow => '显示';

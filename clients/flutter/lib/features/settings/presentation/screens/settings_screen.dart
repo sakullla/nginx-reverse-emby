@@ -21,9 +21,9 @@ class SettingsScreen extends ConsumerWidget {
 
     return themeAsync.when(
       data: (settings) {
-        final masterUrl = authAsync.valueOrNull is AuthStateAuthenticated
-            ? (authAsync.valueOrNull as AuthStateAuthenticated).profile.masterUrl
-            : '';
+        final profile = authAsync.valueOrNull is AuthStateAuthenticated
+            ? (authAsync.valueOrNull as AuthStateAuthenticated).profile
+            : null;
         final loc = AppLocalizations.of(context)!;
 
         return SingleChildScrollView(
@@ -40,7 +40,7 @@ class SettingsScreen extends ConsumerWidget {
               // -- Connection Section ----
               _SectionTitle(title: loc.titleConnection),
               const SizedBox(height: AppSpacing.s8),
-              _ConnectionSection(masterUrl: masterUrl, loc: loc),
+              _ConnectionSection(profile: profile, loc: loc),
               const SizedBox(height: AppSpacing.s20),
 
               // -- About Section ----
@@ -153,9 +153,7 @@ class _ThemeModeToggles extends StatelessWidget {
             label: entry.$2,
             isSelected: isSelected,
             // Only Dark is functional for glassmorphism
-            onTap: entry.$1 == ThemeMode.dark
-                ? () {}
-                : null,
+            onTap: entry.$1 == ThemeMode.dark ? () {} : null,
           ),
         );
       }).toList(),
@@ -179,7 +177,9 @@ class _ThemeModeButton extends StatelessWidget {
     return GestureDetector(
       onTap: onTap,
       child: MouseRegion(
-        cursor: onTap != null ? SystemMouseCursors.click : SystemMouseCursors.basic,
+        cursor: onTap != null
+            ? SystemMouseCursors.click
+            : SystemMouseCursors.basic,
         child: Container(
           padding: const EdgeInsets.symmetric(
             horizontal: AppSpacing.s14,
@@ -231,8 +231,9 @@ class _AccentSwatches extends ConsumerWidget {
         return Padding(
           padding: const EdgeInsets.only(right: AppSpacing.s12),
           child: GestureDetector(
-            onTap: () =>
-                ref.read(themeControllerProvider.notifier).setAccent(accent.name),
+            onTap: () => ref
+                .read(themeControllerProvider.notifier)
+                .setAccent(accent.name),
             child: MouseRegion(
               cursor: SystemMouseCursors.click,
               child: Container(
@@ -255,11 +256,7 @@ class _AccentSwatches extends ConsumerWidget {
                       : null,
                 ),
                 child: isActive
-                    ? const Icon(
-                        Icons.check,
-                        size: 20,
-                        color: Colors.white,
-                      )
+                    ? const Icon(Icons.check, size: 20, color: Colors.white)
                     : null,
               ),
             ),
@@ -275,37 +272,145 @@ class _AccentSwatches extends ConsumerWidget {
 // ---------------------------------------------------------------------------
 
 class _ConnectionSection extends ConsumerWidget {
-  const _ConnectionSection({required this.masterUrl, required this.loc});
+  const _ConnectionSection({required this.profile, required this.loc});
 
-  final String masterUrl;
+  final ClientProfile? profile;
   final AppLocalizations loc;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final activeMode = switch (profile?.activeMode) {
+      ConnectionMode.management => loc.modeManagement,
+      ConnectionMode.agent => loc.modeAgent,
+      null => loc.statusNotConnected,
+    };
+    final masterUrl = profile?.masterUrl ?? '';
+    final managementConfigured = profile?.management.isConfigured ?? false;
+    final agent = profile?.agent ?? const AgentProfile();
+    final agentRegistered = agent.isRegistered;
+
     return GlassCard(
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(
-            loc.labelMasterUrl,
-            style: AppTypography.bodyMedium.copyWith(
-              color: AppColors.textSecondary,
-            ),
-          ),
-          const SizedBox(height: AppSpacing.s4),
-          Text(
-            masterUrl.isNotEmpty ? masterUrl : loc.descNotConnectedMaster,
-            style: AppTypography.metadata.copyWith(
-              color: AppColors.textMuted,
+          _ProfileRow(label: loc.labelActiveMode, value: activeMode),
+          const SizedBox(height: AppSpacing.s12),
+          _ProfileBlock(
+            title: loc.titleManagementProfile,
+            rows: [
+              _ProfileRow(
+                label: loc.labelMasterUrl,
+                value: masterUrl.isNotEmpty
+                    ? masterUrl
+                    : loc.descNotConnectedMaster,
+              ),
+              _ProfileRow(
+                label: loc.labelStatus,
+                value: managementConfigured
+                    ? loc.labelConfigured
+                    : loc.labelNotConfigured,
+              ),
+            ],
+            action: GlassButton.secondary(
+              label: loc.btnClear,
+              onPressed: managementConfigured
+                  ? () => ref
+                        .read(authNotifierProvider.notifier)
+                        .clearManagement()
+                  : null,
             ),
           ),
           const SizedBox(height: AppSpacing.s16),
-          GlassButton.danger(
-            label: loc.btnDisconnect,
-            onPressed: () => ref.read(authNotifierProvider.notifier).logout(),
+          _ProfileBlock(
+            title: loc.titleAgentProfile,
+            rows: [
+              _ProfileRow(
+                label: loc.labelAgentId,
+                value: agentRegistered ? agent.agentId : loc.labelNotRegistered,
+              ),
+              _ProfileRow(
+                label: loc.labelStatus,
+                value: agentRegistered
+                    ? loc.statusRegistered
+                    : loc.labelNotRegistered,
+              ),
+            ],
+            action: GlassButton.secondary(
+              label: loc.btnClear,
+              onPressed: agentRegistered
+                  ? () => ref.read(authNotifierProvider.notifier).clearAgent()
+                  : null,
+            ),
           ),
         ],
       ),
+    );
+  }
+}
+
+class _ProfileBlock extends StatelessWidget {
+  const _ProfileBlock({
+    required this.title,
+    required this.rows,
+    required this.action,
+  });
+
+  final String title;
+  final List<Widget> rows;
+  final Widget action;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                title,
+                style: AppTypography.bodyMedium.copyWith(
+                  color: AppColors.textSecondary,
+                ),
+              ),
+            ),
+            action,
+          ],
+        ),
+        const SizedBox(height: AppSpacing.s8),
+        ...rows.expand((row) => [row, const SizedBox(height: AppSpacing.s4)]),
+      ],
+    );
+  }
+}
+
+class _ProfileRow extends StatelessWidget {
+  const _ProfileRow({required this.label, required this.value});
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: 120,
+          child: Text(
+            label,
+            style: AppTypography.metadata.copyWith(color: AppColors.textMuted),
+          ),
+        ),
+        Expanded(
+          child: Text(
+            value,
+            style: AppTypography.bodyMedium.copyWith(
+              color: AppColors.textPrimary,
+            ),
+          ),
+        ),
+      ],
     );
   }
 }
@@ -347,9 +452,7 @@ class _AboutRow extends StatelessWidget {
       children: [
         Text(
           label,
-          style: AppTypography.body.copyWith(
-            color: AppColors.textSecondary,
-          ),
+          style: AppTypography.body.copyWith(color: AppColors.textSecondary),
         ),
         Text(
           value,

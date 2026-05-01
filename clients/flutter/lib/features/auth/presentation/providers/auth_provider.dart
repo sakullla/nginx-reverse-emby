@@ -152,6 +152,19 @@ class AuthNotifier extends _$AuthNotifier {
     }
   }
 
+  Future<void> clearAgent() async {
+    final repo = ref.read(authRepositoryProvider);
+    final current = await repo.loadProfile();
+    final next = current.clearAgent();
+    if (next.hasAnyCredentials) {
+      await repo.saveProfile(next);
+      state = AsyncData(AuthStateAuthenticated(next));
+    } else {
+      await repo.clearProfile();
+      state = const AsyncData(AuthStateUnauthenticated());
+    }
+  }
+
   Future<void> logout() async {
     await ref.read(authRepositoryProvider).clearProfile();
     state = const AsyncData(AuthStateUnauthenticated());

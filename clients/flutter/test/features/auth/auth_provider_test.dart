@@ -117,4 +117,29 @@ void main() {
     expect(profile.agent.agentId, 'agent-1');
     expect(profile.activeMode, ConnectionMode.agent);
   });
+
+  test('clearAgent preserves management profile', () async {
+    final repo = MockAuthRepository();
+    final loaded = ClientProfile(
+      masterUrl: 'https://panel.example.com',
+      activeMode: ConnectionMode.agent,
+      management: const ManagementProfile(panelToken: 'panel-secret'),
+      agent: const AgentProfile(agentId: 'agent-1', agentToken: 'agent-secret'),
+    );
+    when(repo.loadProfile).thenAnswer((_) async => loaded);
+    when(() => repo.saveProfile(any())).thenAnswer((_) async {});
+    final container = ProviderContainer(
+      overrides: [authRepositoryProvider.overrideWithValue(repo)],
+    );
+    addTearDown(container.dispose);
+
+    await container.read(authNotifierProvider.future);
+    await container.read(authNotifierProvider.notifier).clearAgent();
+
+    final state = container.read(authNotifierProvider).value;
+    final profile = (state as AuthStateAuthenticated).profile;
+    expect(profile.hasAgentCredentials, isFalse);
+    expect(profile.management.panelToken, 'panel-secret');
+    expect(profile.activeMode, ConnectionMode.management);
+  });
 }

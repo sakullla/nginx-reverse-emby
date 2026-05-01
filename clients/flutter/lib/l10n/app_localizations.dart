@@ -236,6 +236,30 @@ abstract class AppLocalizations {
   /// **'Register token'**
   String get labelRegisterToken;
 
+  /// No description provided for @labelPanelToken.
+  ///
+  /// In en, this message translates to:
+  /// **'Panel token'**
+  String get labelPanelToken;
+
+  /// No description provided for @labelActiveMode.
+  ///
+  /// In en, this message translates to:
+  /// **'Active mode'**
+  String get labelActiveMode;
+
+  /// No description provided for @labelStatus.
+  ///
+  /// In en, this message translates to:
+  /// **'Status'**
+  String get labelStatus;
+
+  /// No description provided for @labelConfigured.
+  ///
+  /// In en, this message translates to:
+  /// **'Configured'**
+  String get labelConfigured;
+
   /// No description provided for @labelPid.
   ///
   /// In en, this message translates to:
@@ -613,6 +637,18 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Connection'**
   String get titleConnection;
+
+  /// No description provided for @titleManagementProfile.
+  ///
+  /// In en, this message translates to:
+  /// **'Management profile'**
+  String get titleManagementProfile;
+
+  /// No description provided for @titleAgentProfile.
+  ///
+  /// In en, this message translates to:
+  /// **'Agent profile'**
+  String get titleAgentProfile;
 
   /// No description provided for @titleLocalAgent.
   ///
@@ -1135,6 +1171,18 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Dark'**
   String get valueThemeDark;
+
+  /// No description provided for @modeManagement.
+  ///
+  /// In en, this message translates to:
+  /// **'Management'**
+  String get modeManagement;
+
+  /// No description provided for @modeAgent.
+  ///
+  /// In en, this message translates to:
+  /// **'Agent'**
+  String get modeAgent;
 
   /// No description provided for @trayShow.
   ///
