@@ -66,7 +66,10 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Relay listener'), findsOneWidget);
     expect(find.text('Listen port'), findsOneWidget);
-    await tester.enterText(find.widgetWithText(TextField, 'Name'), 'edge relay');
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Name'),
+      'edge relay',
+    );
     await tester.enterText(
       find.widgetWithText(TextField, 'Listen port'),
       '9443',
@@ -84,6 +87,8 @@ void main() {
     final createRequest =
         createVerification.captured.single as CreateRelayListenerRequest;
     expect(createRequest.agentId, 'edge-1');
+    expect(createRequest.certificateSource, 'auto_relay_ca');
+    expect(createRequest.tlsMode, 'pin_or_ca');
 
     await tester.tap(find.byIcon(Icons.more_horiz).last);
     await tester.pumpAndSettle();
@@ -92,5 +97,6 @@ void main() {
 
     expect(find.text('Relay listener'), findsOneWidget);
     expect(find.text('Certificate source'), findsOneWidget);
+    expect(find.text('auto_relay_ca'), findsOneWidget);
   });
 }

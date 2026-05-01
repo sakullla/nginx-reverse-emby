@@ -14,6 +14,9 @@ import '../../../../l10n/app_localizations.dart';
 import '../../data/models/relay_models.dart';
 import '../providers/relay_provider.dart';
 
+const _relayCertificateSources = ['auto_relay_ca', 'existing_certificate'];
+const _relayTrustModes = ['pin_only', 'ca_only', 'pin_or_ca', 'pin_and_ca'];
+
 class RelayScreen extends ConsumerWidget {
   const RelayScreen({super.key});
 
@@ -305,9 +308,8 @@ class _RelayCard extends ConsumerWidget {
             value: relay.enabled,
             onChanged: (v) => _runRelayAction(
               context,
-              () => ref
-                  .read(relayListProvider.notifier)
-                  .toggleRelay(relay.id, v),
+              () =>
+                  ref.read(relayListProvider.notifier).toggleRelay(relay.id, v),
             ),
           ),
           const SizedBox(width: AppSpacing.s4),
@@ -458,12 +460,13 @@ Future<void> showRelayFormDialog(
   final hostsController = TextEditingController(
     text: existing?.bindHosts.join(', ') ?? '',
   );
-  final certSourceController = TextEditingController(
-    text: existing?.certificateSource ?? '',
-  );
-  final trustModeController = TextEditingController(
-    text: existing?.tlsMode ?? '',
-  );
+  var certificateSource =
+      _relayCertificateSources.contains(existing?.certificateSource)
+      ? existing!.certificateSource!
+      : 'auto_relay_ca';
+  var trustMode = _relayTrustModes.contains(existing?.tlsMode)
+      ? existing!.tlsMode!
+      : 'pin_or_ca';
   var enabled = existing?.enabled ?? true;
 
   return showDialog<void>(
@@ -494,15 +497,37 @@ Future<void> showRelayFormDialog(
                 value: enabled,
                 onChanged: (value) => setState(() => enabled = value),
               ),
-              TextField(
-                controller: certSourceController,
+              DropdownButtonFormField<String>(
+                initialValue: certificateSource,
                 decoration: const InputDecoration(
                   labelText: 'Certificate source',
                 ),
+                items: _relayCertificateSources
+                    .map(
+                      (value) =>
+                          DropdownMenuItem(value: value, child: Text(value)),
+                    )
+                    .toList(),
+                onChanged: (value) {
+                  if (value != null) {
+                    setState(() => certificateSource = value);
+                  }
+                },
               ),
-              TextField(
-                controller: trustModeController,
+              DropdownButtonFormField<String>(
+                initialValue: trustMode,
                 decoration: const InputDecoration(labelText: 'Trust mode'),
+                items: _relayTrustModes
+                    .map(
+                      (value) =>
+                          DropdownMenuItem(value: value, child: Text(value)),
+                    )
+                    .toList(),
+                onChanged: (value) {
+                  if (value != null) {
+                    setState(() => trustMode = value);
+                  }
+                },
               ),
             ],
           ),
@@ -521,23 +546,21 @@ Future<void> showRelayFormDialog(
                   .map((host) => host.trim())
                   .where((host) => host.isNotEmpty)
                   .toList();
-              final certSource = certSourceController.text.trim();
-              final trustMode = trustModeController.text.trim();
               if (existing == null) {
                 final agentId = ref.read(selectedAgentIdProvider);
                 final success = await _runRelayAction(
                   context,
-                  () => ref.read(relayListProvider.notifier).createRelay(
+                  () => ref
+                      .read(relayListProvider.notifier)
+                      .createRelay(
                         CreateRelayListenerRequest(
                           agentId: agentId,
                           name: nameController.text.trim(),
                           listenPort: listenPort,
                           bindHosts: bindHosts,
                           enabled: enabled,
-                          certificateSource: certSource.isEmpty
-                              ? null
-                              : certSource,
-                          tlsMode: trustMode.isEmpty ? null : trustMode,
+                          certificateSource: certificateSource,
+                          tlsMode: trustMode,
                         ),
                       ),
                 );
@@ -545,17 +568,17 @@ Future<void> showRelayFormDialog(
               } else {
                 final success = await _runRelayAction(
                   context,
-                  () => ref.read(relayListProvider.notifier).updateRelay(
+                  () => ref
+                      .read(relayListProvider.notifier)
+                      .updateRelay(
                         existing.id,
                         UpdateRelayListenerRequest(
                           name: nameController.text.trim(),
                           listenPort: listenPort,
                           bindHosts: bindHosts,
                           enabled: enabled,
-                          certificateSource: certSource.isEmpty
-                              ? null
-                              : certSource,
-                          tlsMode: trustMode.isEmpty ? null : trustMode,
+                          certificateSource: certificateSource,
+                          tlsMode: trustMode,
                         ),
                       ),
                 );
