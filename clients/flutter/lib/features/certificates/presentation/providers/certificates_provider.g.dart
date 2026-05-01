@@ -47,7 +47,7 @@ final certStatusFilterNotifierProvider =
     );
 
 typedef _$CertStatusFilterNotifier = AutoDisposeNotifier<CertStatusFilter>;
-String _$certificatesListHash() => r'15d417b9d084bebcea3ab9ed5fe1902cbd1c64ef';
+String _$certificatesListHash() => r'6c2b2ae49b9dc1131b2508966e4e93f588f58411';
 
 /// See also [CertificatesList].
 @ProviderFor(CertificatesList)

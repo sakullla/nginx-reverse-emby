@@ -11,6 +11,12 @@ import 'package:nre_client/l10n/app_localizations.dart';
 class _MockPanelApiClient extends Mock implements PanelApiClient {}
 
 void main() {
+  setUpAll(() {
+    registerFallbackValue(
+      const CreateCertificateRequest(domain: 'fallback.example.com'),
+    );
+  });
+
   testWidgets('certificate actions open dialogs and renew via provider', (
     tester,
   ) async {
@@ -21,6 +27,12 @@ void main() {
       expiresAt: DateTime.now().add(const Duration(days: 2)),
     );
     when(() => api.fetchCertificates('local')).thenAnswer((_) async => [cert]);
+    when(() => api.createCertificate('local', any())).thenAnswer(
+      (_) async => const Certificate(
+        id: 'cert-2',
+        domain: 'new.example.com',
+      ),
+    );
     when(() => api.issueCertificate('local', 'cert-1')).thenAnswer(
       (_) async => Certificate(
         id: 'cert-1',
@@ -48,10 +60,28 @@ void main() {
     await tester.tap(find.text('Import'));
     await tester.pumpAndSettle();
     expect(find.text('Import certificate'), findsOneWidget);
-    await tester.tap(find.text('Cancel'));
+    await tester.enterText(find.byType(TextField).first, 'new.example.com');
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Certificate PEM'),
+      '---CERT---',
+    );
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Private key PEM'),
+      '---KEY---',
+    );
+    await tester.tap(find.text('Save'));
     await tester.pumpAndSettle();
+    final importVerification = verify(
+      () => api.createCertificate('local', captureAny()),
+    );
+    importVerification.called(1);
+    final importRequest =
+        importVerification.captured.single as CreateCertificateRequest;
+    expect(importRequest.domain, 'new.example.com');
+    expect(importRequest.certificateType, 'uploaded');
+    expect(importRequest.targetAgentIds, ['local']);
 
-    await tester.tap(find.text('Details'));
+    await tester.tap(find.text('Details').first);
     await tester.pumpAndSettle();
     expect(find.text('Certificate details'), findsOneWidget);
     await tester.tap(find.text('Close'));

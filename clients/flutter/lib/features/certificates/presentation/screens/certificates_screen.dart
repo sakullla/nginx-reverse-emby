@@ -7,6 +7,7 @@ import '../../../../core/design/components/glass_chip.dart';
 import '../../../../core/design/tokens/app_colors.dart';
 import '../../../../core/design/tokens/app_spacing.dart';
 import '../../../../core/design/tokens/app_typography.dart';
+import '../../../../core/network/panel_api_provider.dart';
 import '../../../../l10n/app_localizations.dart';
 import '../../data/models/certificate_models.dart';
 import '../providers/certificates_provider.dart';
@@ -100,7 +101,11 @@ class _TopActionsBar extends ConsumerWidget {
           label: loc.btnImport,
           icon: '↑',
           onPressed: () =>
-              _showCertificateFormDialog(context, 'Import certificate'),
+              _showCertificateFormDialog(
+                context,
+                ref,
+                mode: _CertificateFormMode.import,
+              ),
         ),
         const SizedBox(width: AppSpacing.s8),
 
@@ -109,7 +114,11 @@ class _TopActionsBar extends ConsumerWidget {
           label: loc.btnRequest,
           icon: '+',
           onPressed: () =>
-              _showCertificateFormDialog(context, 'Request certificate'),
+              _showCertificateFormDialog(
+                context,
+                ref,
+                mode: _CertificateFormMode.request,
+              ),
         ),
         const SizedBox(width: AppSpacing.s12),
 
@@ -638,13 +647,13 @@ class _ActionRow extends ConsumerWidget {
 // Empty state
 // ---------------------------------------------------------------------------
 
-class _EmptyState extends StatelessWidget {
+class _EmptyState extends ConsumerWidget {
   const _EmptyState({required this.loc});
 
   final AppLocalizations loc;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     return Center(
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 80),
@@ -672,8 +681,11 @@ class _EmptyState extends StatelessWidget {
             GlassButton.secondary(
               label: loc.btnImport,
               icon: '↑',
-              onPressed: () =>
-                  _showCertificateFormDialog(context, 'Import certificate'),
+              onPressed: () => _showCertificateFormDialog(
+                context,
+                ref,
+                mode: _CertificateFormMode.import,
+              ),
             ),
           ],
         ),
@@ -682,28 +694,88 @@ class _EmptyState extends StatelessWidget {
   }
 }
 
-void _showCertificateFormDialog(BuildContext context, String title) {
+enum _CertificateFormMode { import, request }
+
+void _showCertificateFormDialog(
+  BuildContext context,
+  WidgetRef ref, {
+  required _CertificateFormMode mode,
+}) {
   final domainController = TextEditingController();
+  final certPemController = TextEditingController();
+  final keyPemController = TextEditingController();
+  final caPemController = TextEditingController();
+  final isImport = mode == _CertificateFormMode.import;
   showDialog<void>(
     context: context,
     builder: (ctx) => AlertDialog(
-      title: Text(title),
-      content: TextField(
-        controller: domainController,
-        decoration: const InputDecoration(labelText: 'Domain'),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(ctx).pop(),
-          child: const Text('Cancel'),
+        title: Text(isImport ? 'Import certificate' : 'Request certificate'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: domainController,
+                decoration: const InputDecoration(labelText: 'Domain'),
+              ),
+              if (isImport) ...[
+                TextField(
+                  controller: certPemController,
+                  decoration: const InputDecoration(
+                    labelText: 'Certificate PEM',
+                  ),
+                  minLines: 2,
+                  maxLines: 4,
+                ),
+                TextField(
+                  controller: keyPemController,
+                  decoration: const InputDecoration(labelText: 'Private key PEM'),
+                  minLines: 2,
+                  maxLines: 4,
+                ),
+                TextField(
+                  controller: caPemController,
+                  decoration: const InputDecoration(labelText: 'CA PEM'),
+                  minLines: 1,
+                  maxLines: 3,
+                ),
+              ],
+            ],
+          ),
         ),
-        TextButton(
-          onPressed: () => Navigator.of(ctx).pop(),
-          child: const Text('Save'),
-        ),
-      ],
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              final domain = domainController.text.trim();
+              if (domain.isEmpty) return;
+              final selectedAgentId = ref.read(selectedAgentIdProvider);
+              ref.read(certificatesListProvider.notifier).createCertificate(
+                    CreateCertificateRequest(
+                      domain: domain,
+                      issuerMode: isImport ? 'uploaded' : 'local_http01',
+                      certificateType: isImport ? 'uploaded' : 'acme',
+                      targetAgentIds: [selectedAgentId],
+                      certificatePem: _emptyToNull(certPemController.text),
+                      privateKeyPem: _emptyToNull(keyPemController.text),
+                      caPem: _emptyToNull(caPemController.text),
+                    ),
+                  );
+              Navigator.of(ctx).pop();
+            },
+            child: const Text('Save'),
+          ),
+        ],
     ),
   );
+}
+
+String? _emptyToNull(String value) {
+  final trimmed = value.trim();
+  return trimmed.isEmpty ? null : trimmed;
 }
 
 void _showCertificateDetailsDialog(BuildContext context, Certificate cert) {

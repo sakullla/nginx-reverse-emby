@@ -55,6 +55,20 @@ class CertificatesList extends _$CertificatesList {
     });
   }
 
+  Future<Certificate> createCertificate(CreateCertificateRequest request) async {
+    final previous = state.value ?? [];
+    try {
+      final api = ref.read(panelApiClientProvider);
+      final agentId = ref.read(selectedAgentIdProvider);
+      final created = await api.createCertificate(agentId, request);
+      state = AsyncData([...previous, created]);
+      return created;
+    } catch (e) {
+      state = AsyncData(previous);
+      rethrow;
+    }
+  }
+
   Future<Certificate> issueCertificate(String id) async {
     final api = ref.read(panelApiClientProvider);
     final agentId = ref.read(selectedAgentIdProvider);

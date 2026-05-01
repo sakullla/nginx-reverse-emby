@@ -114,6 +114,20 @@ class PanelApiClient {
     ).map(Certificate.fromJson).toList();
   }
 
+  Future<Certificate> createCertificate(
+    String agentId,
+    CreateCertificateRequest request,
+  ) async {
+    final data = await _requestMap(
+      () => _dio.post(
+        '/agents/${_segment(agentId)}/certificates',
+        data: request.toJson(),
+        options: _longRunningOptions,
+      ),
+    );
+    return Certificate.fromJson(_extractMap(data, 'certificate'));
+  }
+
   Future<Certificate> issueCertificate(String agentId, String id) async {
     final data = await _requestMap(
       () => _dio.post(

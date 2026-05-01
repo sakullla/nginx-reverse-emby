@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nre_client/core/network/panel_api_client.dart';
+import 'package:nre_client/features/certificates/data/models/certificate_models.dart';
 import 'package:nre_client/features/relay/data/models/relay_models.dart';
 import 'package:nre_client/features/rules/data/models/rule_models.dart';
 
@@ -551,6 +552,54 @@ void main() {
       '/panel-api/agents/local/certificates/cert-1/issue',
     );
     expect(certificate.id, 'cert-1');
+  });
+
+  test('createCertificate posts selected agent certificate payload', () async {
+    late HttpRequest captured;
+    late Map<String, dynamic> body;
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(server.close);
+    server.listen((request) async {
+      captured = request;
+      body =
+          jsonDecode(await utf8.decoder.bind(request).join())
+              as Map<String, dynamic>;
+      request.response
+        ..headers.contentType = ContentType.json
+        ..statusCode = HttpStatus.created
+        ..write(
+          jsonEncode({
+            'ok': true,
+            'certificate': {
+              'id': 'cert-2',
+              'domain': body['domain'],
+              'certificate_type': body['certificate_type'],
+            },
+          }),
+        );
+      await request.response.close();
+    });
+
+    final api = PanelApiClient(
+      baseUrl: 'http://${server.address.host}:${server.port}',
+      panelToken: 'panel-secret',
+    );
+
+    final certificate = await api.createCertificate(
+      'local',
+      const CreateCertificateRequest(
+        domain: 'new.example.com',
+        issuerMode: 'local_http01',
+        certificateType: 'acme',
+        targetAgentIds: ['local'],
+      ),
+    );
+
+    expect(captured.method, 'POST');
+    expect(captured.uri.path, '/panel-api/agents/local/certificates');
+    expect(body['domain'], 'new.example.com');
+    expect(body['target_agent_ids'], ['local']);
+    expect(certificate.domain, 'new.example.com');
   });
 
   test('deleteCertificate deletes selected certificate', () async {

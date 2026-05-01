@@ -100,3 +100,39 @@ class Certificate {
     'target_agent_ids': targetAgentIds,
   };
 }
+
+class CreateCertificateRequest {
+  const CreateCertificateRequest({
+    required this.domain,
+    this.enabled = true,
+    this.scope = 'domain',
+    this.issuerMode = 'local_http01',
+    this.certificateType = 'acme',
+    this.targetAgentIds = const [],
+    this.certificatePem,
+    this.privateKeyPem,
+    this.caPem,
+  });
+
+  final String domain;
+  final bool enabled;
+  final String scope;
+  final String issuerMode;
+  final String certificateType;
+  final List<String> targetAgentIds;
+  final String? certificatePem;
+  final String? privateKeyPem;
+  final String? caPem;
+
+  Map<String, dynamic> toJson() => {
+    'domain': domain,
+    'enabled': enabled,
+    'scope': scope,
+    'issuer_mode': issuerMode,
+    'certificate_type': certificateType,
+    'target_agent_ids': targetAgentIds,
+    if (certificatePem != null) 'certificate_pem': certificatePem,
+    if (privateKeyPem != null) 'private_key_pem': privateKeyPem,
+    if (caPem != null) 'ca_pem': caPem,
+  };
+}

@@ -9,6 +9,7 @@ import '../../../../core/design/components/glass_toggle.dart';
 import '../../../../core/design/tokens/app_colors.dart';
 import '../../../../core/design/tokens/app_spacing.dart';
 import '../../../../core/design/tokens/app_typography.dart';
+import '../../../../core/network/panel_api_provider.dart';
 import '../../../../l10n/app_localizations.dart';
 import '../../data/models/relay_models.dart';
 import '../providers/relay_provider.dart';
@@ -514,11 +515,12 @@ Future<void> showRelayFormDialog(
               final certSource = certSourceController.text.trim();
               final trustMode = trustModeController.text.trim();
               if (existing == null) {
+                final agentId = ref.read(selectedAgentIdProvider);
                 ref
                     .read(relayListProvider.notifier)
                     .createRelay(
                       CreateRelayListenerRequest(
-                        agentId: 'local',
+                        agentId: agentId,
                         name: nameController.text.trim(),
                         listenPort: listenPort,
                         bindHosts: bindHosts,

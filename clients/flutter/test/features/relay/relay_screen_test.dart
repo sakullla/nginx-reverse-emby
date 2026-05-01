@@ -24,7 +24,7 @@ void main() {
 
   testWidgets('relay screen opens new and edit forms', (tester) async {
     final api = _MockPanelApiClient();
-    when(() => api.fetchRelayListeners('local')).thenAnswer(
+    when(() => api.fetchRelayListeners('edge-1')).thenAnswer(
       (_) async => [
         RelayListener(
           id: 'relay-1',
@@ -37,7 +37,7 @@ void main() {
         ),
       ],
     );
-    when(() => api.createRelayListener('local', any())).thenAnswer(
+    when(() => api.createRelayListener('edge-1', any())).thenAnswer(
       (_) async => RelayListener(
         id: 'relay-2',
         name: 'created',
@@ -49,7 +49,7 @@ void main() {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
-          selectedAgentIdProvider.overrideWith((ref) => 'local'),
+          selectedAgentIdProvider.overrideWith((ref) => 'edge-1'),
           panelApiClientProvider.overrideWith((ref) => api),
         ],
         child: const MaterialApp(
@@ -66,10 +66,26 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Relay listener'), findsOneWidget);
     expect(find.text('Listen port'), findsOneWidget);
-    await tester.tap(find.text('Cancel'));
+    await tester.enterText(find.widgetWithText(TextField, 'Name'), 'edge relay');
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Listen port'),
+      '9443',
+    );
+    await tester.enterText(
+      find.widgetWithText(TextField, 'Bind hosts'),
+      '0.0.0.0',
+    );
+    await tester.tap(find.text('Save'));
     await tester.pumpAndSettle();
+    final createVerification = verify(
+      () => api.createRelayListener('edge-1', captureAny()),
+    );
+    createVerification.called(1);
+    final createRequest =
+        createVerification.captured.single as CreateRelayListenerRequest;
+    expect(createRequest.agentId, 'edge-1');
 
-    await tester.tap(find.byIcon(Icons.more_horiz));
+    await tester.tap(find.byIcon(Icons.more_horiz).last);
     await tester.pumpAndSettle();
     await tester.tap(find.text('Edit'));
     await tester.pumpAndSettle();
