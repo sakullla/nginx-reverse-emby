@@ -60,4 +60,43 @@ void main() {
 
     expect(filtered.map((cert) => cert.domain), ['emby.example.com']);
   });
+
+  test(
+    'filteredCertificates keeps expiry filters for backend certificates',
+    () async {
+      final api = _MockPanelApiClient();
+      when(() => api.fetchCertificates('local')).thenAnswer(
+        (_) async => [
+          Certificate(
+            id: '21',
+            domain: 'expiring.example.com',
+            backendStatus: 'active',
+            expiresAt: DateTime.now().add(const Duration(days: 2)),
+          ),
+          Certificate(
+            id: '22',
+            domain: 'valid.example.com',
+            backendStatus: 'active',
+            expiresAt: DateTime.now().add(const Duration(days: 90)),
+          ),
+        ],
+      );
+      final container = ProviderContainer(
+        overrides: [
+          selectedAgentIdProvider.overrideWith((ref) => 'local'),
+          panelApiClientProvider.overrideWith((ref) => api),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      await container.read(certificatesListProvider.future);
+      container
+          .read(certStatusFilterNotifierProvider.notifier)
+          .update(CertStatusFilter.expiring);
+
+      final filtered = container.read(filteredCertificatesProvider);
+
+      expect(filtered.map((cert) => cert.domain), ['expiring.example.com']);
+    },
+  );
 }

@@ -29,7 +29,18 @@ List<Certificate> filteredCertificates(FilteredCertificatesRef ref) {
 
   return certs.where((cert) {
     if (statusFilter == CertStatusFilter.all) return true;
-    return cert.displayStatus == statusFilter.name;
+    switch (statusFilter) {
+      case CertStatusFilter.active:
+      case CertStatusFilter.pending:
+      case CertStatusFilter.error:
+        return cert.displayStatus == statusFilter.name;
+      case CertStatusFilter.valid:
+      case CertStatusFilter.expiring:
+      case CertStatusFilter.expired:
+        return cert.status.name == statusFilter.name;
+      case CertStatusFilter.all:
+        return true;
+    }
   }).toList();
 }
 
