@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
+import '../../../../core/network/panel_api_client.dart';
 import '../../../../services/master_api.dart';
 import '../../data/models/auth_models.dart';
 import '../../data/repositories/auth_repository.dart';
@@ -9,6 +10,14 @@ import '../../data/repositories/auth_repository.dart';
 part 'auth_provider.g.dart';
 
 final authRepositoryProvider = Provider((ref) => AuthRepository());
+
+final panelApiClientFactoryProvider =
+    Provider<PanelApiClient Function(String baseUrl, String panelToken)>(
+  (ref) => (baseUrl, panelToken) => PanelApiClient(
+    baseUrl: baseUrl,
+    panelToken: panelToken,
+  ),
+);
 
 String _generateAgentToken() {
   final random = Random.secure();
@@ -101,7 +110,7 @@ class AuthNotifier extends _$AuthNotifier {
         client.close(force: true);
       }
     } catch (e) {
-      state = AsyncData(AuthStateError(e.toString()));
+      state = AsyncData(AuthStateError(_describeError(e)));
     }
   }
 
@@ -125,6 +134,11 @@ class AuthNotifier extends _$AuthNotifier {
       if (token.isEmpty) {
         throw const FormatException('Panel token is required');
       }
+      final panelApi = ref.read(panelApiClientFactoryProvider)(
+        normalizedUrl,
+        token,
+      );
+      await panelApi.fetchAgents();
       final current = await ref.read(authRepositoryProvider).loadProfile();
       final profile = current.copyWith(
         masterUrl: normalizedUrl,
@@ -135,7 +149,7 @@ class AuthNotifier extends _$AuthNotifier {
       await ref.read(authRepositoryProvider).saveProfile(profile);
       state = AsyncData(AuthStateAuthenticated(profile));
     } catch (e) {
-      state = AsyncData(AuthStateError(e.toString()));
+      state = AsyncData(AuthStateError(_describeError(e)));
     }
   }
 
@@ -178,5 +192,25 @@ class AuthNotifier extends _$AuthNotifier {
     } on FormatException {
       return const {};
     }
+  }
+
+  String _describeError(Object error) {
+    if (error is FormatException && error.message.isNotEmpty) {
+      return error.message;
+    }
+    if (error is PanelApiException) {
+      return error.message;
+    }
+    if (error is SocketException) {
+      return 'Unable to reach the panel';
+    }
+    final text = error.toString();
+    const prefixes = ['Exception: ', 'Error: '];
+    for (final prefix in prefixes) {
+      if (text.startsWith(prefix)) {
+        return text.substring(prefix.length);
+      }
+    }
+    return text;
   }
 }

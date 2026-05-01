@@ -1,11 +1,14 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
+import 'package:nre_client/core/network/panel_api_client.dart';
 import 'package:nre_client/features/auth/data/models/auth_models.dart';
 import 'package:nre_client/features/auth/data/repositories/auth_repository.dart';
 import 'package:nre_client/features/auth/presentation/providers/auth_provider.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 class MockAuthRepository extends Mock implements AuthRepository {}
+
+class MockPanelApiClient extends Mock implements PanelApiClient {}
 
 void main() {
   setUpAll(() {
@@ -16,10 +19,17 @@ void main() {
     'connectManagement saves panel token profile without agent credentials',
     () async {
       final repo = MockAuthRepository();
+      final panelApi = MockPanelApiClient();
       when(repo.loadProfile).thenAnswer((_) async => const ClientProfile());
       when(() => repo.saveProfile(any())).thenAnswer((_) async {});
+      when(panelApi.fetchAgents).thenAnswer((_) async => const []);
       final container = ProviderContainer(
-        overrides: [authRepositoryProvider.overrideWithValue(repo)],
+        overrides: [
+          authRepositoryProvider.overrideWithValue(repo),
+          panelApiClientFactoryProvider.overrideWithValue(
+            (baseUrl, panelToken) => panelApi,
+          ),
+        ],
       );
       addTearDown(container.dispose);
 
@@ -90,6 +100,38 @@ void main() {
 
     final state = container.read(authNotifierProvider).value;
     expect(state, isA<AuthStateError>());
+    verifyNever(() => repo.saveProfile(any()));
+  });
+
+  test('connectManagement reports panel api failures and does not save', () async {
+    final repo = MockAuthRepository();
+    final panelApi = MockPanelApiClient();
+    when(repo.loadProfile).thenAnswer((_) async => const ClientProfile());
+    when(() => repo.saveProfile(any())).thenAnswer((_) async {});
+    when(panelApi.fetchAgents)
+        .thenThrow(const PanelApiException('token rejected'));
+    final container = ProviderContainer(
+      overrides: [
+        authRepositoryProvider.overrideWithValue(repo),
+        panelApiClientFactoryProvider.overrideWithValue(
+          (baseUrl, panelToken) => panelApi,
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    await container.read(authNotifierProvider.future);
+    await container
+        .read(authNotifierProvider.notifier)
+        .connectManagement(
+          masterUrl: 'https://panel.example.com',
+          panelToken: 'panel-secret',
+          name: 'ops-laptop',
+        );
+
+    final state = container.read(authNotifierProvider).value;
+    expect(state, isA<AuthStateError>());
+    expect((state as AuthStateError).message, 'token rejected');
     verifyNever(() => repo.saveProfile(any()));
   });
 
