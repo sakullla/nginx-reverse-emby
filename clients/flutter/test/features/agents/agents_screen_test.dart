@@ -5,6 +5,7 @@ import 'package:nre_client/core/client_state.dart' as runtime_state;
 import 'package:nre_client/features/agents/presentation/screens/agents_screen.dart';
 import 'package:nre_client/features/auth/data/models/auth_models.dart';
 import 'package:nre_client/features/auth/presentation/providers/auth_provider.dart';
+import 'package:nre_client/l10n/app_localizations.dart';
 import 'package:nre_client/services/local_agent_controller.dart';
 import 'package:nre_client/services/local_agent_controller_provider.dart';
 
@@ -24,19 +25,23 @@ void main() {
           authNotifierProvider.overrideWith(() => AuthNotifierTestDouble()),
           localAgentControllerProvider.overrideWithValue(controller),
         ],
-        child: const MaterialApp(home: AgentsScreen()),
+        child: const MaterialApp(
+          localizationsDelegates: AppLocalizations.localizationsDelegates,
+          supportedLocales: AppLocalizations.supportedLocales,
+          home: AgentsScreen(),
+        ),
       ),
     );
 
     await tester.pumpAndSettle();
-    await tester.tap(find.text('Local'));
+    await tester.tap(find.text('LOCAL AGENT'));
     await tester.pumpAndSettle();
     await tester.tap(find.text('Start'));
     await tester.pumpAndSettle();
 
     expect(controller.startCalls, 1);
-    expect(find.text('PID: 4321'), findsOneWidget);
-    expect(find.text('Status: Running'), findsOneWidget);
+    expect(find.textContaining('PID: 4321'), findsOneWidget);
+    expect(find.text('Running'), findsOneWidget);
   });
 }
 
