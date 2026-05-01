@@ -20,7 +20,7 @@ import '../../../../services/local_agent_controller.dart';
 import '../../../../services/local_agent_controller_provider.dart';
 import '../../../auth/data/models/auth_models.dart';
 import '../../../auth/presentation/providers/auth_provider.dart';
-import '../../../rules/presentation/providers/rules_provider.dart';
+import '../providers/dashboard_provider.dart';
 
 class DashboardScreen extends ConsumerWidget {
   const DashboardScreen({super.key});
@@ -55,7 +55,9 @@ class DashboardScreen extends ConsumerWidget {
             const SizedBox(height: AppSpacing.s4),
             Text(
               loc.descPleaseConnectFirst,
-              style: AppTypography.metadata.copyWith(color: AppColors.textMuted),
+              style: AppTypography.metadata.copyWith(
+                color: AppColors.textMuted,
+              ),
             ),
             const SizedBox(height: AppSpacing.s16),
             GlassButton.primary(
@@ -81,7 +83,10 @@ class DashboardScreen extends ConsumerWidget {
               (_) => const Expanded(
                 child: Padding(
                   padding: EdgeInsets.symmetric(horizontal: AppSpacing.s4),
-                  child: _SkeletonBox(height: 100, borderRadius: AppRadius.card),
+                  child: _SkeletonBox(
+                    height: 100,
+                    borderRadius: AppRadius.card,
+                  ),
                 ),
               ),
             ),
@@ -93,7 +98,10 @@ class DashboardScreen extends ConsumerWidget {
               (_) => const Expanded(
                 child: Padding(
                   padding: EdgeInsets.symmetric(horizontal: AppSpacing.s4),
-                  child: _SkeletonBox(height: 180, borderRadius: AppRadius.card),
+                  child: _SkeletonBox(
+                    height: 180,
+                    borderRadius: AppRadius.card,
+                  ),
                 ),
               ),
             ),
@@ -235,7 +243,7 @@ class _DashboardContentState extends ConsumerState<_DashboardContent> {
     final caps = PlatformCapabilities.current;
     final themeAsync = ref.watch(themeControllerProvider);
     final accent = themeAsync.valueOrNull?.accent ?? AccentThemes.defaults;
-    final rulesAsync = ref.watch(rulesListProvider);
+    final summary = ref.watch(dashboardSummaryProvider);
     final snapshot = _snapshot;
     final isRunning = snapshot?.status == LocalAgentControllerStatus.running;
     final isStopped = snapshot?.status == LocalAgentControllerStatus.stopped;
@@ -258,7 +266,7 @@ class _DashboardContentState extends ConsumerState<_DashboardContent> {
           _StatsGrid(
             isWide: isWide,
             accent: accent,
-            rulesAsync: rulesAsync,
+            summary: summary,
             isRunning: isRunning,
             agentLoading: _agentLoading,
             loc: AppLocalizations.of(context)!,
@@ -295,7 +303,11 @@ class _DashboardContentState extends ConsumerState<_DashboardContent> {
 
               // Quick Actions
               Expanded(
-                child: _QuickActions(caps: caps, accent: accent, loc: AppLocalizations.of(context)!),
+                child: _QuickActions(
+                  caps: caps,
+                  accent: accent,
+                  loc: AppLocalizations.of(context)!,
+                ),
               ),
             ],
           ),
@@ -320,7 +332,10 @@ class _StatusBanner extends StatelessWidget {
     return ClipRRect(
       borderRadius: BorderRadius.circular(AppRadius.card),
       child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: AppBlur.standard, sigmaY: AppBlur.standard),
+        filter: ImageFilter.blur(
+          sigmaX: AppBlur.standard,
+          sigmaY: AppBlur.standard,
+        ),
         child: Container(
           padding: const EdgeInsets.all(AppSpacing.s16),
           decoration: BoxDecoration(
@@ -398,7 +413,7 @@ class _StatsGrid extends StatelessWidget {
   const _StatsGrid({
     required this.isWide,
     required this.accent,
-    required this.rulesAsync,
+    required this.summary,
     required this.isRunning,
     required this.agentLoading,
     required this.loc,
@@ -406,40 +421,45 @@ class _StatsGrid extends StatelessWidget {
 
   final bool isWide;
   final AccentColors accent;
-  final AsyncValue rulesAsync;
+  final DashboardSummary summary;
   final bool isRunning;
   final bool agentLoading;
   final AppLocalizations loc;
 
   @override
   Widget build(BuildContext context) {
-    final rulesCount = rulesAsync.valueOrNull?.length ?? 0;
-    final disabledCount =
-        rulesAsync.valueOrNull?.where((r) => !r.enabled).length ?? 0;
-
     final cards = [
       StatCard(
         label: loc.navRules,
-        value: '$rulesCount',
-        subtitle: disabledCount > 0 ? loc.labelDisabledCount(disabledCount) : null,
+        value: '${summary.rulesTotal}',
+        subtitle: summary.rulesDisabled > 0
+            ? loc.labelDisabledCount(summary.rulesDisabled)
+            : null,
         accentColor: accent.primaryStart,
       ),
       StatCard(
         label: loc.navAgent,
-        value: isRunning ? '1' : '0',
-        subtitle: isRunning ? '● ${loc.labelAllOnline}' : loc.labelOffline(0),
+        value: '${summary.agentsTotal}',
+        subtitle: summary.agentsOffline == 0
+            ? '● ${loc.labelAllOnline}'
+            : loc.labelOffline(summary.agentsOffline),
         accentColor: accent.primaryStart,
       ),
       StatCard(
         label: loc.navCertificates,
-        value: '—',
-        subtitle: null,
+        value: '${summary.certificatesTotal}',
+        subtitle: summary.certificatesExpiring > 0
+            ? loc.labelExpiringWarning(
+                summary.certificatesExpiring,
+                summary.certificatesExpiring == 1 ? '' : 's',
+              )
+            : null,
         accentColor: accent.primaryStart,
       ),
       StatCard(
         label: loc.navRelay,
-        value: '—',
-        subtitle: '● ${loc.statusActive}',
+        value: '${summary.relaysTotal}',
+        subtitle: '● ${summary.relaysActive} ${loc.statusActive}',
         accentColor: accent.primaryStart,
       ),
     ];
@@ -451,7 +471,9 @@ class _StatsGrid extends StatelessWidget {
             .map(
               (card) => Expanded(
                 child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: AppSpacing.s4),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: AppSpacing.s4,
+                  ),
                   child: card,
                 ),
               ),
@@ -465,27 +487,35 @@ class _StatsGrid extends StatelessWidget {
       children: [
         Row(
           children: [
-            Expanded(child: Padding(
-              padding: const EdgeInsets.only(right: AppSpacing.s4),
-              child: cards[0],
-            )),
-            Expanded(child: Padding(
-              padding: const EdgeInsets.only(left: AppSpacing.s4),
-              child: cards[1],
-            )),
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.only(right: AppSpacing.s4),
+                child: cards[0],
+              ),
+            ),
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.only(left: AppSpacing.s4),
+                child: cards[1],
+              ),
+            ),
           ],
         ),
         const SizedBox(height: AppSpacing.s8),
         Row(
           children: [
-            Expanded(child: Padding(
-              padding: const EdgeInsets.only(right: AppSpacing.s4),
-              child: cards[2],
-            )),
-            Expanded(child: Padding(
-              padding: const EdgeInsets.only(left: AppSpacing.s4),
-              child: cards[3],
-            )),
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.only(right: AppSpacing.s4),
+                child: cards[2],
+              ),
+            ),
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.only(left: AppSpacing.s4),
+                child: cards[3],
+              ),
+            ),
           ],
         ),
       ],
@@ -554,9 +584,18 @@ class _LocalAgentCard extends StatelessWidget {
             InfoGrid(
               cells: [
                 InfoCell(label: loc.labelPid, value: '${snapshot!.pid ?? '—'}'),
-                InfoCell(label: loc.metaUptime.toUpperCase(), value: loc.statusActive),
-                InfoCell(label: loc.metaVersion.toUpperCase(), value: loc.valueAppVersion.replaceAll('v', '')),
-                InfoCell(label: loc.metaLastSync.toUpperCase(), value: loc.metaSync30sAgo),
+                InfoCell(
+                  label: loc.metaUptime.toUpperCase(),
+                  value: loc.statusActive,
+                ),
+                InfoCell(
+                  label: loc.metaVersion.toUpperCase(),
+                  value: loc.valueAppVersion.replaceAll('v', ''),
+                ),
+                InfoCell(
+                  label: loc.metaLastSync.toUpperCase(),
+                  value: loc.metaSync30sAgo,
+                ),
               ],
             )
           else if (isStopped)
@@ -620,7 +659,11 @@ class _LocalAgentCard extends StatelessWidget {
 // ---------------------------------------------------------------------------
 
 class _QuickActions extends StatelessWidget {
-  const _QuickActions({required this.caps, required this.accent, required this.loc});
+  const _QuickActions({
+    required this.caps,
+    required this.accent,
+    required this.loc,
+  });
 
   final PlatformCapabilities caps;
   final AccentColors accent;
@@ -664,16 +707,12 @@ class _QuickActions extends StatelessWidget {
       final second = i + 1 < actions.length ? actions[i + 1] : null;
       rows.add(
         Padding(
-          padding: EdgeInsets.only(
-            top: i > 0 ? AppSpacing.s8 : 0,
-          ),
+          padding: EdgeInsets.only(top: i > 0 ? AppSpacing.s8 : 0),
           child: Row(
             children: [
               Expanded(child: first),
               const SizedBox(width: AppSpacing.s8),
-              Expanded(
-                child: second ?? const SizedBox.shrink(),
-              ),
+              Expanded(child: second ?? const SizedBox.shrink()),
             ],
           ),
         ),
@@ -767,10 +806,7 @@ class _QuickActionItem extends StatelessWidget {
 // ---------------------------------------------------------------------------
 
 class _SkeletonBox extends StatefulWidget {
-  const _SkeletonBox({
-    required this.height,
-    required this.borderRadius,
-  });
+  const _SkeletonBox({required this.height, required this.borderRadius});
 
   final double height;
   final double borderRadius;
