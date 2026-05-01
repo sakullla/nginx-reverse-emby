@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nre_client/core/network/panel_api_client.dart';
 import 'package:nre_client/features/rules/data/models/rule_models.dart';
@@ -57,6 +58,30 @@ void main() {
     expect(captured.uri.path, '/panel-api/agents');
     expect(captured.headers.value('X-Panel-Token'), 'panel-secret');
     expect(agents.single.id, 'agent-1');
+  });
+
+  test('injected Dio still gets normalized panel api base and token', () async {
+    late HttpRequest captured;
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(server.close);
+    server.listen((request) async {
+      captured = request;
+      request.response
+        ..headers.contentType = ContentType.json
+        ..write(jsonEncode({'ok': true, 'agents': []}));
+      await request.response.close();
+    });
+
+    final api = PanelApiClient(
+      baseUrl: 'http://${server.address.host}:${server.port}',
+      panelToken: 'panel-secret',
+      dio: Dio(),
+    );
+
+    await api.fetchAgents();
+
+    expect(captured.uri.path, '/panel-api/agents');
+    expect(captured.headers.value('X-Panel-Token'), 'panel-secret');
   });
 
   test(
@@ -548,6 +573,37 @@ void main() {
           (error) => error.message,
           'message',
           'Invalid backend response',
+        ),
+      ),
+    );
+  });
+
+  test('throws PanelApiException for malformed list entries', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(server.close);
+    server.listen((request) async {
+      request.response
+        ..headers.contentType = ContentType.json
+        ..write(
+          jsonEncode({
+            'agents': ['bad'],
+          }),
+        );
+      await request.response.close();
+    });
+
+    final api = PanelApiClient(
+      baseUrl: 'http://${server.address.host}:${server.port}',
+      panelToken: 'panel-secret',
+    );
+
+    expect(
+      () => api.fetchAgents(),
+      throwsA(
+        isA<PanelApiException>().having(
+          (error) => error.message,
+          'message',
+          'Backend response missing agents',
         ),
       ),
     );

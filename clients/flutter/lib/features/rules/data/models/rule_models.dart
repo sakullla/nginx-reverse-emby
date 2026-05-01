@@ -10,6 +10,12 @@ class HttpBackend {
   final int? weight;
   final String? name;
 
+  HttpBackend copyWith({String? url, int? weight, String? name}) => HttpBackend(
+    url: url ?? this.url,
+    weight: weight ?? this.weight,
+    name: name ?? this.name,
+  );
+
   factory HttpBackend.fromJson(Map<String, dynamic> json) => HttpBackend(
     url: json['url']?.toString() ?? '',
     weight: json['weight'] is int ? json['weight'] as int : null,
@@ -28,6 +34,9 @@ class HttpHeaderEntry {
 
   final String name;
   final String value;
+
+  HttpHeaderEntry copyWith({String? name, String? value}) =>
+      HttpHeaderEntry(name: name ?? this.name, value: value ?? this.value);
 
   factory HttpHeaderEntry.fromJson(Map<String, dynamic> json) =>
       HttpHeaderEntry(

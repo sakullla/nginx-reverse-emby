@@ -20,16 +20,11 @@ class PanelApiClient {
     required String baseUrl,
     required String panelToken,
     Dio? dio,
-  }) : _dio =
-           dio ??
-           Dio(
-             BaseOptions(
-               baseUrl: _normalizeBaseUrl(baseUrl),
-               connectTimeout: const Duration(seconds: 10),
-               receiveTimeout: const Duration(seconds: 10),
-               headers: {'X-Panel-Token': panelToken},
-             ),
-           );
+  }) : _dio = _configureDio(
+         dio ?? Dio(),
+         baseUrl: baseUrl,
+         panelToken: panelToken,
+       );
 
   final Dio _dio;
 
@@ -148,6 +143,9 @@ class PanelApiClient {
       throw PanelApiException('Backend response missing $key');
     }
     final value = data[key] as List<dynamic>;
+    if (value.any((item) => item is! Map)) {
+      throw PanelApiException('Backend response missing $key');
+    }
     return value
         .whereType<Map>()
         .map((item) => Map<String, dynamic>.from(item))
@@ -175,3 +173,16 @@ String _normalizeBaseUrl(String value) {
 }
 
 String _segment(String value) => Uri.encodeComponent(value);
+
+Dio _configureDio(
+  Dio dio, {
+  required String baseUrl,
+  required String panelToken,
+}) {
+  dio.options
+    ..baseUrl = _normalizeBaseUrl(baseUrl)
+    ..connectTimeout ??= const Duration(seconds: 10)
+    ..receiveTimeout ??= const Duration(seconds: 10);
+  dio.options.headers['X-Panel-Token'] = panelToken;
+  return dio;
+}

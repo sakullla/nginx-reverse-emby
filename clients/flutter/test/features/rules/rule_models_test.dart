@@ -56,4 +56,12 @@ void main() {
       'relay_obfs': true,
     });
   });
+
+  test('HttpBackend and HttpHeaderEntry support copyWith', () {
+    final backend = const HttpBackend(url: 'http://emby:8096', weight: 1);
+    final header = const HttpHeaderEntry(name: 'X-Test', value: 'yes');
+
+    expect(backend.copyWith(url: 'http://emby:8920').url, 'http://emby:8920');
+    expect(header.copyWith(value: 'no').value, 'no');
+  });
 }
