@@ -72,6 +72,8 @@ func mergeRuntimeStateWithSyncRequest(state RuntimeState, request SyncRequest) R
 			}
 			state.Metadata["stats"] = string(statsJSON)
 		}
+	} else if state.Metadata != nil {
+		delete(state.Metadata, "stats")
 	}
 	return state
 }

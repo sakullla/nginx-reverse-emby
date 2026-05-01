@@ -565,6 +565,24 @@ func TestMergeRuntimeStateWithSyncRequestPersistsStatsMetadata(t *testing.T) {
 	}
 }
 
+func TestMergeRuntimeStateWithSyncRequestClearsStatsMetadataWhenStatsOmitted(t *testing.T) {
+	state := RuntimeState{
+		Metadata: map[string]string{
+			"stats":             `{"traffic":{"total":{"rx_bytes":123,"tx_bytes":456}}}`,
+			"last_apply_status": "success",
+		},
+	}
+
+	merged := mergeRuntimeStateWithSyncRequest(state, SyncRequest{})
+
+	if _, ok := merged.Metadata["stats"]; ok {
+		t.Fatalf("merge retained stale stats metadata: %+v", merged.Metadata)
+	}
+	if merged.Metadata["last_apply_status"] != "success" {
+		t.Fatalf("merge removed unrelated metadata: %+v", merged.Metadata)
+	}
+}
+
 func TestFromEmbeddedSyncRequestCopiesStats(t *testing.T) {
 	request := goagentembedded.SyncRequest{
 		Stats: map[string]any{
