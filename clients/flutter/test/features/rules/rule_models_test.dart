@@ -64,4 +64,18 @@ void main() {
     expect(backend.copyWith(url: 'http://emby:8920').url, 'http://emby:8920');
     expect(header.copyWith(value: 'no').value, 'no');
   });
+
+  test('ProxyRule parses backend-shaped HTTP rule payload', () {
+    final rule = ProxyRule.fromJson({
+      'id': 7,
+      'frontend_url': 'https://emby.example.com',
+      'backend_url': 'http://emby:8096',
+    });
+
+    expect(rule.id, '7');
+    expect(rule.domain, 'https://emby.example.com');
+    expect(rule.target, 'http://emby:8096');
+    expect(rule.type, 'http');
+    expect(rule.enabled, isTrue);
+  });
 }

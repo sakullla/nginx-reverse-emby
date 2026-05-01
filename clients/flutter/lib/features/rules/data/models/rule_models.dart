@@ -302,10 +302,10 @@ class ProxyRule {
   final bool enabled;
 
   factory ProxyRule.fromJson(Map<String, dynamic> json) => ProxyRule(
-    id: json['id'] as String,
-    domain: json['domain'] as String,
-    target: json['target'] as String,
-    type: json['type'] as String,
+    id: stringId(json['id']),
+    domain: (json['domain'] ?? json['frontend_url'])?.toString() ?? '',
+    target: (json['target'] ?? json['backend_url'])?.toString() ?? '',
+    type: json['type']?.toString() ?? 'http',
     enabled: json['enabled'] as bool? ?? true,
   );
 
