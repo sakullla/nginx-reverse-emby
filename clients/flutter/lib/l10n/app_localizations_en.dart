@@ -24,6 +24,12 @@ class AppLocalizationsEn extends AppLocalizations {
   String get navSettings => 'Settings';
 
   @override
+  String get navCertificates => 'Certificates';
+
+  @override
+  String get navRelay => 'Relay';
+
+  @override
   String get statusRegistered => 'Registered';
 
   @override
@@ -43,6 +49,15 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get statusChecking => 'Checking';
+
+  @override
+  String get statusActive => 'Active';
+
+  @override
+  String get statusDisabled => 'Disabled';
+
+  @override
+  String get statusNotConnected => 'Not Connected';
 
   @override
   String get labelMasterUrl => 'Master URL';
@@ -102,6 +117,9 @@ class AppLocalizationsEn extends AppLocalizations {
   String get labelNotRegistered => 'Not registered';
 
   @override
+  String get labelDomain => 'Domain';
+
+  @override
   String get hintMasterUrl => 'https://your-server.com';
 
   @override
@@ -109,6 +127,12 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get hintClientName => 'nre-client';
+
+  @override
+  String get hintSearchRules => 'Search rules...';
+
+  @override
+  String get hintSearchRelays => 'Search relays...';
 
   @override
   String get errorRequiredMasterUrl => 'Master URL is required';
@@ -135,6 +159,12 @@ class AppLocalizationsEn extends AppLocalizations {
   String errorInvalidResponse(String message) {
     return 'Invalid backend response: $message';
   }
+
+  @override
+  String get errorEnterUrl => 'Please enter URL';
+
+  @override
+  String get errorEnterToken => 'Please enter Token';
 
   @override
   String get btnRegister => 'Register';
@@ -174,6 +204,48 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get btnRegisterNow => 'Register Now';
+
+  @override
+  String get btnImport => 'Import';
+
+  @override
+  String get btnRequest => 'Request';
+
+  @override
+  String get btnRenew => 'Renew';
+
+  @override
+  String get btnDetails => 'Details';
+
+  @override
+  String get btnSave => 'Save';
+
+  @override
+  String get btnSaving => 'Saving...';
+
+  @override
+  String get btnDelete => 'Delete';
+
+  @override
+  String get btnConnect => 'Connect';
+
+  @override
+  String get btnDisconnect => 'Disconnect';
+
+  @override
+  String get btnPrevious => 'Previous';
+
+  @override
+  String get btnNext => 'Next';
+
+  @override
+  String get btnNew => '+ New';
+
+  @override
+  String get btnCreateRule => '+ Create Rule';
+
+  @override
+  String get btnViewLogs => 'View Logs';
 
   @override
   String get titleRegisterAgent => 'Register Agent';
@@ -248,6 +320,48 @@ class AppLocalizationsEn extends AppLocalizations {
   String get titleStartAtLogin => 'Start at Login';
 
   @override
+  String get titleAppearance => 'Appearance';
+
+  @override
+  String get titleThemeMode => 'Theme Mode';
+
+  @override
+  String get titleAccentColor => 'Accent Color';
+
+  @override
+  String get titleConnectToMaster => 'Connect to Master';
+
+  @override
+  String get titleNewRule => 'New Rule';
+
+  @override
+  String get titleEditRule => 'Edit Rule';
+
+  @override
+  String get titleDeleteRule => 'Delete Rule';
+
+  @override
+  String get titleDeleteRelay => 'Delete Relay Listener';
+
+  @override
+  String get titleNoCertificates => 'No Certificates';
+
+  @override
+  String get titleNoRemoteAgents => 'No remote agents';
+
+  @override
+  String get titleNoRelayListeners => 'No Relay Listeners';
+
+  @override
+  String get titleQuickActions => 'Quick Actions';
+
+  @override
+  String get titleRemoteAgents => 'Remote Agents';
+
+  @override
+  String get titleSelfSigned => 'Self-signed';
+
+  @override
   String get descRegisterAgent =>
       'Connect this client to a master server. You will need a register token from the server.';
 
@@ -286,6 +400,55 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get descStartAtLogin => 'Launch client when system starts';
+
+  @override
+  String get descPleaseConnectFirst =>
+      'Please connect to a Master server first';
+
+  @override
+  String get descCreateFirstRule =>
+      'Create your first proxy rule to get started';
+
+  @override
+  String get descImportOrRequestCert =>
+      'Import or request SSL certificates to get started';
+
+  @override
+  String get descRemoteAgentsAppearHere =>
+      'Remote agents that register with this master will appear here.';
+
+  @override
+  String get descRelayListenersAppearHere =>
+      'Relay listeners will appear here once configured';
+
+  @override
+  String descDeleteRuleConfirm(String domain) {
+    return 'Are you sure you want to delete \"$domain\"? This action cannot be undone.';
+  }
+
+  @override
+  String descDeleteRelayConfirm(String address, String protocol) {
+    return 'Are you sure you want to delete \"$address\" ($protocol)? This action cannot be undone.';
+  }
+
+  @override
+  String get descSystemRunningNormal => 'System running normally';
+
+  @override
+  String get descAllAgentsOnlineLastSync =>
+      'All agents online · Last sync: 30s ago';
+
+  @override
+  String get descNotRunning => 'Not Running';
+
+  @override
+  String get descNotAvailable => 'Not Available';
+
+  @override
+  String get descNoAgentAssigned => 'No agent assigned';
+
+  @override
+  String get descNotConnectedMaster => 'Not connected';
 
   @override
   String msgRegistered(String agentId) {
@@ -346,6 +509,14 @@ class AppLocalizationsEn extends AppLocalizations {
   String get msgLogsCleared => 'Logs view cleared';
 
   @override
+  String get msgRuleCopiedToClipboard => 'Rule copied to clipboard';
+
+  @override
+  String msgFailedToSaveRule(String error) {
+    return 'Failed to save rule: $error';
+  }
+
+  @override
   String get labelApplication => 'Application';
 
   @override
@@ -374,6 +545,9 @@ class AppLocalizationsEn extends AppLocalizations {
   String get valueDash => '-';
 
   @override
+  String get valueAppVersion => 'v2.1.0';
+
+  @override
   String get titleAgentProcessControl => 'Agent Process Control';
 
   @override
@@ -393,4 +567,128 @@ class AppLocalizationsEn extends AppLocalizations {
 
   @override
   String get trayQuit => 'Quit';
+
+  @override
+  String get filterStatus => 'Status';
+
+  @override
+  String get filterType => 'Type';
+
+  @override
+  String get filterAllStatus => 'All Status';
+
+  @override
+  String get filterAllProtocols => 'All Protocols';
+
+  @override
+  String get certStatusValid => 'Valid';
+
+  @override
+  String get certStatusExpiring => 'Expiring';
+
+  @override
+  String get certStatusExpired => 'Expired';
+
+  @override
+  String get labelOverdue => 'overdue';
+
+  @override
+  String get labelRemaining => 'remaining';
+
+  @override
+  String labelIssued(String date) {
+    return 'Issued: $date';
+  }
+
+  @override
+  String get labelUsedBy => 'Used by:';
+
+  @override
+  String labelAgent(String name) {
+    return 'Agent: $name';
+  }
+
+  @override
+  String labelCertificateCount(int count, String plural) {
+    return '$count certificate$plural';
+  }
+
+  @override
+  String labelRelayCount(int count, String plural) {
+    return '$count relay$plural';
+  }
+
+  @override
+  String labelRegisteredCount(int count) {
+    return '$count registered';
+  }
+
+  @override
+  String labelDisabledCount(int count) {
+    return '$count disabled';
+  }
+
+  @override
+  String get labelAllOnline => 'All online';
+
+  @override
+  String labelOffline(int count) {
+    return '$count offline';
+  }
+
+  @override
+  String labelExpiringWarning(int count, String plural) {
+    return '$count certificate$plural expiring within 14 days';
+  }
+
+  @override
+  String get labelReview => 'Review →';
+
+  @override
+  String get stepServerUrl => 'Server URL';
+
+  @override
+  String get stepRegisterToken => 'Register Token';
+
+  @override
+  String get stepClientName => 'Client Name';
+
+  @override
+  String get actionNewRule => 'New Rule';
+
+  @override
+  String get actionAddCertificate => 'Add Certificate';
+
+  @override
+  String get actionAddAgent => 'Add Agent';
+
+  @override
+  String get actionNewRelay => 'New Relay';
+
+  @override
+  String get metaUptime => 'Uptime';
+
+  @override
+  String get metaVersion => 'Version';
+
+  @override
+  String get metaLastSync => 'Last sync';
+
+  @override
+  String get metaSync30sAgo => '30s ago';
+
+  @override
+  String get failedToLoadDashboard => 'Failed to load dashboard';
+
+  @override
+  String get failedToLoadRules => 'Failed to load rules';
+
+  @override
+  String get failedToLoadCertificates => 'Failed to load certificates';
+
+  @override
+  String get failedToLoadRelays => 'Failed to load relay listeners';
+
+  @override
+  String get navMore => 'More';
 }

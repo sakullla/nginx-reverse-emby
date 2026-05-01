@@ -24,6 +24,12 @@ class AppLocalizationsZh extends AppLocalizations {
   String get navSettings => '设置';
 
   @override
+  String get navCertificates => '证书';
+
+  @override
+  String get navRelay => '中继';
+
+  @override
   String get statusRegistered => '已注册';
 
   @override
@@ -43,6 +49,15 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get statusChecking => '检测中';
+
+  @override
+  String get statusActive => '活跃';
+
+  @override
+  String get statusDisabled => '已禁用';
+
+  @override
+  String get statusNotConnected => '未连接';
 
   @override
   String get labelMasterUrl => '主控地址';
@@ -102,6 +117,9 @@ class AppLocalizationsZh extends AppLocalizations {
   String get labelNotRegistered => '未注册';
 
   @override
+  String get labelDomain => '域名';
+
+  @override
   String get hintMasterUrl => 'https://your-server.com';
 
   @override
@@ -109,6 +127,12 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get hintClientName => 'nre-client';
+
+  @override
+  String get hintSearchRules => '搜索规则...';
+
+  @override
+  String get hintSearchRelays => '搜索中继...';
 
   @override
   String get errorRequiredMasterUrl => '主控地址不能为空';
@@ -134,6 +158,12 @@ class AppLocalizationsZh extends AppLocalizations {
   String errorInvalidResponse(String message) {
     return '后端响应无效: $message';
   }
+
+  @override
+  String get errorEnterUrl => '请输入地址';
+
+  @override
+  String get errorEnterToken => '请输入令牌';
 
   @override
   String get btnRegister => '注册';
@@ -173,6 +203,48 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get btnRegisterNow => '立即注册';
+
+  @override
+  String get btnImport => '导入';
+
+  @override
+  String get btnRequest => '申请';
+
+  @override
+  String get btnRenew => '续期';
+
+  @override
+  String get btnDetails => '详情';
+
+  @override
+  String get btnSave => '保存';
+
+  @override
+  String get btnSaving => '保存中...';
+
+  @override
+  String get btnDelete => '删除';
+
+  @override
+  String get btnConnect => '连接';
+
+  @override
+  String get btnDisconnect => '断开';
+
+  @override
+  String get btnPrevious => '上一步';
+
+  @override
+  String get btnNext => '下一步';
+
+  @override
+  String get btnNew => '+ 新建';
+
+  @override
+  String get btnCreateRule => '+ 创建规则';
+
+  @override
+  String get btnViewLogs => '查看日志';
 
   @override
   String get titleRegisterAgent => '注册代理';
@@ -247,6 +319,48 @@ class AppLocalizationsZh extends AppLocalizations {
   String get titleStartAtLogin => '开机自启';
 
   @override
+  String get titleAppearance => '外观';
+
+  @override
+  String get titleThemeMode => '主题模式';
+
+  @override
+  String get titleAccentColor => '强调色';
+
+  @override
+  String get titleConnectToMaster => '连接主控';
+
+  @override
+  String get titleNewRule => '新建规则';
+
+  @override
+  String get titleEditRule => '编辑规则';
+
+  @override
+  String get titleDeleteRule => '删除规则';
+
+  @override
+  String get titleDeleteRelay => '删除中继监听';
+
+  @override
+  String get titleNoCertificates => '无证书';
+
+  @override
+  String get titleNoRemoteAgents => '无远程代理';
+
+  @override
+  String get titleNoRelayListeners => '无中继监听';
+
+  @override
+  String get titleQuickActions => '快捷操作';
+
+  @override
+  String get titleRemoteAgents => '远程代理';
+
+  @override
+  String get titleSelfSigned => '自签名';
+
+  @override
   String get descRegisterAgent => '将本客户端连接到主控服务器。你需要从服务器获取注册令牌。';
 
   @override
@@ -279,6 +393,49 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get descStartAtLogin => '系统启动时自动运行客户端';
+
+  @override
+  String get descPleaseConnectFirst => '请先连接到主控服务器';
+
+  @override
+  String get descCreateFirstRule => '创建你的第一条代理规则以开始使用';
+
+  @override
+  String get descImportOrRequestCert => '导入或申请 SSL 证书以开始使用';
+
+  @override
+  String get descRemoteAgentsAppearHere => '注册到此主控的远程代理将显示在此处。';
+
+  @override
+  String get descRelayListenersAppearHere => '配置的中继监听将显示在此处';
+
+  @override
+  String descDeleteRuleConfirm(String domain) {
+    return '确定要删除 \"$domain\" 吗？此操作无法撤销。';
+  }
+
+  @override
+  String descDeleteRelayConfirm(String address, String protocol) {
+    return '确定要删除 \"$address\" ($protocol) 吗？此操作无法撤销。';
+  }
+
+  @override
+  String get descSystemRunningNormal => '系统运行正常';
+
+  @override
+  String get descAllAgentsOnlineLastSync => '所有代理在线 · 最后同步: 30秒前';
+
+  @override
+  String get descNotRunning => '未运行';
+
+  @override
+  String get descNotAvailable => '不可用';
+
+  @override
+  String get descNoAgentAssigned => '未分配代理';
+
+  @override
+  String get descNotConnectedMaster => '未连接';
 
   @override
   String msgRegistered(String agentId) {
@@ -339,6 +496,14 @@ class AppLocalizationsZh extends AppLocalizations {
   String get msgLogsCleared => '日志视图已清空';
 
   @override
+  String get msgRuleCopiedToClipboard => '规则已复制到剪贴板';
+
+  @override
+  String msgFailedToSaveRule(String error) {
+    return '保存规则失败: $error';
+  }
+
+  @override
   String get labelApplication => '应用';
 
   @override
@@ -366,6 +531,9 @@ class AppLocalizationsZh extends AppLocalizations {
   String get valueDash => '-';
 
   @override
+  String get valueAppVersion => 'v2.1.0';
+
+  @override
   String get titleAgentProcessControl => '代理进程控制';
 
   @override
@@ -385,4 +553,128 @@ class AppLocalizationsZh extends AppLocalizations {
 
   @override
   String get trayQuit => '退出';
+
+  @override
+  String get filterStatus => '状态';
+
+  @override
+  String get filterType => '类型';
+
+  @override
+  String get filterAllStatus => '全部状态';
+
+  @override
+  String get filterAllProtocols => '全部协议';
+
+  @override
+  String get certStatusValid => '有效';
+
+  @override
+  String get certStatusExpiring => '即将过期';
+
+  @override
+  String get certStatusExpired => '已过期';
+
+  @override
+  String get labelOverdue => '已逾期';
+
+  @override
+  String get labelRemaining => '剩余';
+
+  @override
+  String labelIssued(String date) {
+    return '签发于: $date';
+  }
+
+  @override
+  String get labelUsedBy => '关联规则:';
+
+  @override
+  String labelAgent(String name) {
+    return '代理: $name';
+  }
+
+  @override
+  String labelCertificateCount(int count, String plural) {
+    return '$count 个证书';
+  }
+
+  @override
+  String labelRelayCount(int count, String plural) {
+    return '$count 个中继';
+  }
+
+  @override
+  String labelRegisteredCount(int count) {
+    return '$count 已注册';
+  }
+
+  @override
+  String labelDisabledCount(int count) {
+    return '$count 已禁用';
+  }
+
+  @override
+  String get labelAllOnline => '全部在线';
+
+  @override
+  String labelOffline(int count) {
+    return '$count 离线';
+  }
+
+  @override
+  String labelExpiringWarning(int count, String plural) {
+    return '$count 个证书将在 14 天内过期';
+  }
+
+  @override
+  String get labelReview => '查看 →';
+
+  @override
+  String get stepServerUrl => '服务器地址';
+
+  @override
+  String get stepRegisterToken => '注册令牌';
+
+  @override
+  String get stepClientName => '客户端名称';
+
+  @override
+  String get actionNewRule => '新建规则';
+
+  @override
+  String get actionAddCertificate => '添加证书';
+
+  @override
+  String get actionAddAgent => '添加代理';
+
+  @override
+  String get actionNewRelay => '新建中继';
+
+  @override
+  String get metaUptime => '运行时间';
+
+  @override
+  String get metaVersion => '版本';
+
+  @override
+  String get metaLastSync => '最后同步';
+
+  @override
+  String get metaSync30sAgo => '30秒前';
+
+  @override
+  String get failedToLoadDashboard => '加载仪表盘失败';
+
+  @override
+  String get failedToLoadRules => '加载规则失败';
+
+  @override
+  String get failedToLoadCertificates => '加载证书失败';
+
+  @override
+  String get failedToLoadRelays => '加载中继监听失败';
+
+  @override
+  String get navMore => '更多';
 }

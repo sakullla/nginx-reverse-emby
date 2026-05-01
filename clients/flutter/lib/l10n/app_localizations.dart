@@ -128,6 +128,18 @@ abstract class AppLocalizations {
   /// **'Settings'**
   String get navSettings;
 
+  /// No description provided for @navCertificates.
+  ///
+  /// In en, this message translates to:
+  /// **'Certificates'**
+  String get navCertificates;
+
+  /// No description provided for @navRelay.
+  ///
+  /// In en, this message translates to:
+  /// **'Relay'**
+  String get navRelay;
+
   /// No description provided for @statusRegistered.
   ///
   /// In en, this message translates to:
@@ -169,6 +181,24 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Checking'**
   String get statusChecking;
+
+  /// No description provided for @statusActive.
+  ///
+  /// In en, this message translates to:
+  /// **'Active'**
+  String get statusActive;
+
+  /// No description provided for @statusDisabled.
+  ///
+  /// In en, this message translates to:
+  /// **'Disabled'**
+  String get statusDisabled;
+
+  /// No description provided for @statusNotConnected.
+  ///
+  /// In en, this message translates to:
+  /// **'Not Connected'**
+  String get statusNotConnected;
 
   /// No description provided for @labelMasterUrl.
   ///
@@ -284,6 +314,12 @@ abstract class AppLocalizations {
   /// **'Not registered'**
   String get labelNotRegistered;
 
+  /// No description provided for @labelDomain.
+  ///
+  /// In en, this message translates to:
+  /// **'Domain'**
+  String get labelDomain;
+
   /// No description provided for @hintMasterUrl.
   ///
   /// In en, this message translates to:
@@ -301,6 +337,18 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'nre-client'**
   String get hintClientName;
+
+  /// No description provided for @hintSearchRules.
+  ///
+  /// In en, this message translates to:
+  /// **'Search rules...'**
+  String get hintSearchRules;
+
+  /// No description provided for @hintSearchRelays.
+  ///
+  /// In en, this message translates to:
+  /// **'Search relays...'**
+  String get hintSearchRelays;
 
   /// No description provided for @errorRequiredMasterUrl.
   ///
@@ -343,6 +391,18 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Invalid backend response: {message}'**
   String errorInvalidResponse(String message);
+
+  /// No description provided for @errorEnterUrl.
+  ///
+  /// In en, this message translates to:
+  /// **'Please enter URL'**
+  String get errorEnterUrl;
+
+  /// No description provided for @errorEnterToken.
+  ///
+  /// In en, this message translates to:
+  /// **'Please enter Token'**
+  String get errorEnterToken;
 
   /// No description provided for @btnRegister.
   ///
@@ -421,6 +481,90 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Register Now'**
   String get btnRegisterNow;
+
+  /// No description provided for @btnImport.
+  ///
+  /// In en, this message translates to:
+  /// **'Import'**
+  String get btnImport;
+
+  /// No description provided for @btnRequest.
+  ///
+  /// In en, this message translates to:
+  /// **'Request'**
+  String get btnRequest;
+
+  /// No description provided for @btnRenew.
+  ///
+  /// In en, this message translates to:
+  /// **'Renew'**
+  String get btnRenew;
+
+  /// No description provided for @btnDetails.
+  ///
+  /// In en, this message translates to:
+  /// **'Details'**
+  String get btnDetails;
+
+  /// No description provided for @btnSave.
+  ///
+  /// In en, this message translates to:
+  /// **'Save'**
+  String get btnSave;
+
+  /// No description provided for @btnSaving.
+  ///
+  /// In en, this message translates to:
+  /// **'Saving...'**
+  String get btnSaving;
+
+  /// No description provided for @btnDelete.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete'**
+  String get btnDelete;
+
+  /// No description provided for @btnConnect.
+  ///
+  /// In en, this message translates to:
+  /// **'Connect'**
+  String get btnConnect;
+
+  /// No description provided for @btnDisconnect.
+  ///
+  /// In en, this message translates to:
+  /// **'Disconnect'**
+  String get btnDisconnect;
+
+  /// No description provided for @btnPrevious.
+  ///
+  /// In en, this message translates to:
+  /// **'Previous'**
+  String get btnPrevious;
+
+  /// No description provided for @btnNext.
+  ///
+  /// In en, this message translates to:
+  /// **'Next'**
+  String get btnNext;
+
+  /// No description provided for @btnNew.
+  ///
+  /// In en, this message translates to:
+  /// **'+ New'**
+  String get btnNew;
+
+  /// No description provided for @btnCreateRule.
+  ///
+  /// In en, this message translates to:
+  /// **'+ Create Rule'**
+  String get btnCreateRule;
+
+  /// No description provided for @btnViewLogs.
+  ///
+  /// In en, this message translates to:
+  /// **'View Logs'**
+  String get btnViewLogs;
 
   /// No description provided for @titleRegisterAgent.
   ///
@@ -566,6 +710,90 @@ abstract class AppLocalizations {
   /// **'Start at Login'**
   String get titleStartAtLogin;
 
+  /// No description provided for @titleAppearance.
+  ///
+  /// In en, this message translates to:
+  /// **'Appearance'**
+  String get titleAppearance;
+
+  /// No description provided for @titleThemeMode.
+  ///
+  /// In en, this message translates to:
+  /// **'Theme Mode'**
+  String get titleThemeMode;
+
+  /// No description provided for @titleAccentColor.
+  ///
+  /// In en, this message translates to:
+  /// **'Accent Color'**
+  String get titleAccentColor;
+
+  /// No description provided for @titleConnectToMaster.
+  ///
+  /// In en, this message translates to:
+  /// **'Connect to Master'**
+  String get titleConnectToMaster;
+
+  /// No description provided for @titleNewRule.
+  ///
+  /// In en, this message translates to:
+  /// **'New Rule'**
+  String get titleNewRule;
+
+  /// No description provided for @titleEditRule.
+  ///
+  /// In en, this message translates to:
+  /// **'Edit Rule'**
+  String get titleEditRule;
+
+  /// No description provided for @titleDeleteRule.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete Rule'**
+  String get titleDeleteRule;
+
+  /// No description provided for @titleDeleteRelay.
+  ///
+  /// In en, this message translates to:
+  /// **'Delete Relay Listener'**
+  String get titleDeleteRelay;
+
+  /// No description provided for @titleNoCertificates.
+  ///
+  /// In en, this message translates to:
+  /// **'No Certificates'**
+  String get titleNoCertificates;
+
+  /// No description provided for @titleNoRemoteAgents.
+  ///
+  /// In en, this message translates to:
+  /// **'No remote agents'**
+  String get titleNoRemoteAgents;
+
+  /// No description provided for @titleNoRelayListeners.
+  ///
+  /// In en, this message translates to:
+  /// **'No Relay Listeners'**
+  String get titleNoRelayListeners;
+
+  /// No description provided for @titleQuickActions.
+  ///
+  /// In en, this message translates to:
+  /// **'Quick Actions'**
+  String get titleQuickActions;
+
+  /// No description provided for @titleRemoteAgents.
+  ///
+  /// In en, this message translates to:
+  /// **'Remote Agents'**
+  String get titleRemoteAgents;
+
+  /// No description provided for @titleSelfSigned.
+  ///
+  /// In en, this message translates to:
+  /// **'Self-signed'**
+  String get titleSelfSigned;
+
   /// No description provided for @descRegisterAgent.
   ///
   /// In en, this message translates to:
@@ -631,6 +859,84 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Launch client when system starts'**
   String get descStartAtLogin;
+
+  /// No description provided for @descPleaseConnectFirst.
+  ///
+  /// In en, this message translates to:
+  /// **'Please connect to a Master server first'**
+  String get descPleaseConnectFirst;
+
+  /// No description provided for @descCreateFirstRule.
+  ///
+  /// In en, this message translates to:
+  /// **'Create your first proxy rule to get started'**
+  String get descCreateFirstRule;
+
+  /// No description provided for @descImportOrRequestCert.
+  ///
+  /// In en, this message translates to:
+  /// **'Import or request SSL certificates to get started'**
+  String get descImportOrRequestCert;
+
+  /// No description provided for @descRemoteAgentsAppearHere.
+  ///
+  /// In en, this message translates to:
+  /// **'Remote agents that register with this master will appear here.'**
+  String get descRemoteAgentsAppearHere;
+
+  /// No description provided for @descRelayListenersAppearHere.
+  ///
+  /// In en, this message translates to:
+  /// **'Relay listeners will appear here once configured'**
+  String get descRelayListenersAppearHere;
+
+  /// No description provided for @descDeleteRuleConfirm.
+  ///
+  /// In en, this message translates to:
+  /// **'Are you sure you want to delete \"{domain}\"? This action cannot be undone.'**
+  String descDeleteRuleConfirm(String domain);
+
+  /// No description provided for @descDeleteRelayConfirm.
+  ///
+  /// In en, this message translates to:
+  /// **'Are you sure you want to delete \"{address}\" ({protocol})? This action cannot be undone.'**
+  String descDeleteRelayConfirm(String address, String protocol);
+
+  /// No description provided for @descSystemRunningNormal.
+  ///
+  /// In en, this message translates to:
+  /// **'System running normally'**
+  String get descSystemRunningNormal;
+
+  /// No description provided for @descAllAgentsOnlineLastSync.
+  ///
+  /// In en, this message translates to:
+  /// **'All agents online · Last sync: 30s ago'**
+  String get descAllAgentsOnlineLastSync;
+
+  /// No description provided for @descNotRunning.
+  ///
+  /// In en, this message translates to:
+  /// **'Not Running'**
+  String get descNotRunning;
+
+  /// No description provided for @descNotAvailable.
+  ///
+  /// In en, this message translates to:
+  /// **'Not Available'**
+  String get descNotAvailable;
+
+  /// No description provided for @descNoAgentAssigned.
+  ///
+  /// In en, this message translates to:
+  /// **'No agent assigned'**
+  String get descNoAgentAssigned;
+
+  /// No description provided for @descNotConnectedMaster.
+  ///
+  /// In en, this message translates to:
+  /// **'Not connected'**
+  String get descNotConnectedMaster;
 
   /// No description provided for @msgRegistered.
   ///
@@ -728,6 +1034,18 @@ abstract class AppLocalizations {
   /// **'Logs view cleared'**
   String get msgLogsCleared;
 
+  /// No description provided for @msgRuleCopiedToClipboard.
+  ///
+  /// In en, this message translates to:
+  /// **'Rule copied to clipboard'**
+  String get msgRuleCopiedToClipboard;
+
+  /// No description provided for @msgFailedToSaveRule.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed to save rule: {error}'**
+  String msgFailedToSaveRule(String error);
+
   /// No description provided for @labelApplication.
   ///
   /// In en, this message translates to:
@@ -782,6 +1100,12 @@ abstract class AppLocalizations {
   /// **'-'**
   String get valueDash;
 
+  /// No description provided for @valueAppVersion.
+  ///
+  /// In en, this message translates to:
+  /// **'v2.1.0'**
+  String get valueAppVersion;
+
   /// No description provided for @titleAgentProcessControl.
   ///
   /// In en, this message translates to:
@@ -823,6 +1147,222 @@ abstract class AppLocalizations {
   /// In en, this message translates to:
   /// **'Quit'**
   String get trayQuit;
+
+  /// No description provided for @filterStatus.
+  ///
+  /// In en, this message translates to:
+  /// **'Status'**
+  String get filterStatus;
+
+  /// No description provided for @filterType.
+  ///
+  /// In en, this message translates to:
+  /// **'Type'**
+  String get filterType;
+
+  /// No description provided for @filterAllStatus.
+  ///
+  /// In en, this message translates to:
+  /// **'All Status'**
+  String get filterAllStatus;
+
+  /// No description provided for @filterAllProtocols.
+  ///
+  /// In en, this message translates to:
+  /// **'All Protocols'**
+  String get filterAllProtocols;
+
+  /// No description provided for @certStatusValid.
+  ///
+  /// In en, this message translates to:
+  /// **'Valid'**
+  String get certStatusValid;
+
+  /// No description provided for @certStatusExpiring.
+  ///
+  /// In en, this message translates to:
+  /// **'Expiring'**
+  String get certStatusExpiring;
+
+  /// No description provided for @certStatusExpired.
+  ///
+  /// In en, this message translates to:
+  /// **'Expired'**
+  String get certStatusExpired;
+
+  /// No description provided for @labelOverdue.
+  ///
+  /// In en, this message translates to:
+  /// **'overdue'**
+  String get labelOverdue;
+
+  /// No description provided for @labelRemaining.
+  ///
+  /// In en, this message translates to:
+  /// **'remaining'**
+  String get labelRemaining;
+
+  /// No description provided for @labelIssued.
+  ///
+  /// In en, this message translates to:
+  /// **'Issued: {date}'**
+  String labelIssued(String date);
+
+  /// No description provided for @labelUsedBy.
+  ///
+  /// In en, this message translates to:
+  /// **'Used by:'**
+  String get labelUsedBy;
+
+  /// No description provided for @labelAgent.
+  ///
+  /// In en, this message translates to:
+  /// **'Agent: {name}'**
+  String labelAgent(String name);
+
+  /// No description provided for @labelCertificateCount.
+  ///
+  /// In en, this message translates to:
+  /// **'{count} certificate{plural}'**
+  String labelCertificateCount(int count, String plural);
+
+  /// No description provided for @labelRelayCount.
+  ///
+  /// In en, this message translates to:
+  /// **'{count} relay{plural}'**
+  String labelRelayCount(int count, String plural);
+
+  /// No description provided for @labelRegisteredCount.
+  ///
+  /// In en, this message translates to:
+  /// **'{count} registered'**
+  String labelRegisteredCount(int count);
+
+  /// No description provided for @labelDisabledCount.
+  ///
+  /// In en, this message translates to:
+  /// **'{count} disabled'**
+  String labelDisabledCount(int count);
+
+  /// No description provided for @labelAllOnline.
+  ///
+  /// In en, this message translates to:
+  /// **'All online'**
+  String get labelAllOnline;
+
+  /// No description provided for @labelOffline.
+  ///
+  /// In en, this message translates to:
+  /// **'{count} offline'**
+  String labelOffline(int count);
+
+  /// No description provided for @labelExpiringWarning.
+  ///
+  /// In en, this message translates to:
+  /// **'{count} certificate{plural} expiring within 14 days'**
+  String labelExpiringWarning(int count, String plural);
+
+  /// No description provided for @labelReview.
+  ///
+  /// In en, this message translates to:
+  /// **'Review →'**
+  String get labelReview;
+
+  /// No description provided for @stepServerUrl.
+  ///
+  /// In en, this message translates to:
+  /// **'Server URL'**
+  String get stepServerUrl;
+
+  /// No description provided for @stepRegisterToken.
+  ///
+  /// In en, this message translates to:
+  /// **'Register Token'**
+  String get stepRegisterToken;
+
+  /// No description provided for @stepClientName.
+  ///
+  /// In en, this message translates to:
+  /// **'Client Name'**
+  String get stepClientName;
+
+  /// No description provided for @actionNewRule.
+  ///
+  /// In en, this message translates to:
+  /// **'New Rule'**
+  String get actionNewRule;
+
+  /// No description provided for @actionAddCertificate.
+  ///
+  /// In en, this message translates to:
+  /// **'Add Certificate'**
+  String get actionAddCertificate;
+
+  /// No description provided for @actionAddAgent.
+  ///
+  /// In en, this message translates to:
+  /// **'Add Agent'**
+  String get actionAddAgent;
+
+  /// No description provided for @actionNewRelay.
+  ///
+  /// In en, this message translates to:
+  /// **'New Relay'**
+  String get actionNewRelay;
+
+  /// No description provided for @metaUptime.
+  ///
+  /// In en, this message translates to:
+  /// **'Uptime'**
+  String get metaUptime;
+
+  /// No description provided for @metaVersion.
+  ///
+  /// In en, this message translates to:
+  /// **'Version'**
+  String get metaVersion;
+
+  /// No description provided for @metaLastSync.
+  ///
+  /// In en, this message translates to:
+  /// **'Last sync'**
+  String get metaLastSync;
+
+  /// No description provided for @metaSync30sAgo.
+  ///
+  /// In en, this message translates to:
+  /// **'30s ago'**
+  String get metaSync30sAgo;
+
+  /// No description provided for @failedToLoadDashboard.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed to load dashboard'**
+  String get failedToLoadDashboard;
+
+  /// No description provided for @failedToLoadRules.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed to load rules'**
+  String get failedToLoadRules;
+
+  /// No description provided for @failedToLoadCertificates.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed to load certificates'**
+  String get failedToLoadCertificates;
+
+  /// No description provided for @failedToLoadRelays.
+  ///
+  /// In en, this message translates to:
+  /// **'Failed to load relay listeners'**
+  String get failedToLoadRelays;
+
+  /// No description provided for @navMore.
+  ///
+  /// In en, this message translates to:
+  /// **'More'**
+  String get navMore;
 }
 
 class _AppLocalizationsDelegate

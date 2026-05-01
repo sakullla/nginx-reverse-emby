@@ -1,7 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+
+import '../../../../core/design/components/glass_button.dart';
+import '../../../../core/design/components/glass_card.dart';
+import '../../../../core/design/theme/accent_themes.dart';
+import '../../../../core/design/theme/theme_controller.dart';
+import '../../../../core/design/tokens/app_colors.dart';
+import '../../../../core/design/tokens/app_spacing.dart';
 import '../../../../core/routing/route_names.dart';
+import '../../../../l10n/app_localizations.dart';
 import '../../data/models/auth_models.dart';
 import '../providers/auth_provider.dart';
 
@@ -29,8 +37,13 @@ class _ConnectScreenState extends ConsumerState<ConnectScreen> {
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
+    final accent = ref.watch(
+      themeControllerProvider.select((s) => s.value?.accent ?? AccentThemes.defaults),
+    );
     final authAsync = ref.watch(authNotifierProvider);
+    final loc = AppLocalizations.of(context)!;
+
+    final stepLabels = [loc.stepServerUrl, loc.stepRegisterToken, loc.stepClientName];
 
     ref.listen(authNotifierProvider, (_, next) {
       if (next.value is AuthStateAuthenticated) {
@@ -39,94 +52,105 @@ class _ConnectScreenState extends ConsumerState<ConnectScreen> {
     });
 
     return Scaffold(
+      backgroundColor: Colors.transparent,
       body: Center(
         child: ConstrainedBox(
-          constraints: const BoxConstraints(maxWidth: 480),
+          constraints: const BoxConstraints(maxWidth: 400),
           child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: Card(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Form(
-                  key: _formKey,
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        'Connect to Master',
-                        style: theme.textTheme.headlineSmall?.copyWith(
-                          fontWeight: FontWeight.bold,
+            padding: const EdgeInsets.symmetric(horizontal: AppSpacing.s20),
+            child: GlassCard(
+              blur: AppBlur.heavy,
+              borderRadius: AppRadius.largeCard,
+              padding: const EdgeInsets.all(AppSpacing.s20),
+              child: Form(
+                key: _formKey,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    // -- Logo ---------------------------------------------------
+                    Center(
+                      child: Container(
+                        width: 48,
+                        height: 48,
+                        decoration: BoxDecoration(
+                          gradient: accent.primaryGradient,
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        alignment: Alignment.center,
+                        child: const Text(
+                          'N',
+                          style: TextStyle(
+                            color: AppColors.textPrimary,
+                            fontSize: 24,
+                            fontWeight: FontWeight.w700,
+                            height: 1.0,
+                          ),
                         ),
                       ),
-                      const SizedBox(height: 8),
-                      Text(
-                        'Step ${_step + 1} of 3',
-                        style: theme.textTheme.bodyMedium?.copyWith(
-                          color: theme.colorScheme.outline,
+                    ),
+                    const SizedBox(height: AppSpacing.s16),
+
+                    // -- Title --------------------------------------------------
+                    Center(
+                      child: Text(
+                        loc.titleConnectToMaster,
+                        style: const TextStyle(
+                          fontSize: 18,
+                          fontWeight: FontWeight.w700,
+                          color: AppColors.textPrimary,
+                          height: 1.4,
                         ),
                       ),
-                      const SizedBox(height: 24),
-                      if (_step == 0) ...[
-                        TextFormField(
-                          controller: _urlController,
-                          decoration: const InputDecoration(
-                            labelText: 'Master URL',
-                            hintText: 'https://your-server.com',
-                            prefixIcon: Icon(Icons.link),
-                          ),
-                          validator: (v) => v == null || v.isEmpty ? 'Please enter URL' : null,
+                    ),
+                    const SizedBox(height: AppSpacing.s8),
+
+                    // -- Step indicator -----------------------------------------
+                    Center(
+                      child: _StepIndicator(
+                        currentStep: _step,
+                        totalSteps: 3,
+                        accent: accent,
+                      ),
+                    ),
+                    const SizedBox(height: AppSpacing.s4),
+                    Center(
+                      child: Text(
+                        stepLabels[_step],
+                        style: const TextStyle(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w500,
+                          color: AppColors.textMuted,
                         ),
-                      ] else if (_step == 1) ...[
-                        TextFormField(
-                          controller: _tokenController,
-                          decoration: const InputDecoration(
-                            labelText: 'Register Token',
-                            hintText: 'Registration token from server',
-                            prefixIcon: Icon(Icons.key),
-                          ),
-                          obscureText: true,
-                          validator: (v) => v == null || v.isEmpty ? 'Please enter Token' : null,
+                      ),
+                    ),
+                    const SizedBox(height: AppSpacing.s20),
+
+                    // -- Step content -------------------------------------------
+                    _buildStepContent(loc),
+
+                    // -- Error state --------------------------------------------
+                    if (authAsync.value is AuthStateError) ...[
+                      const SizedBox(height: AppSpacing.s12),
+                      Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: AppSpacing.s4,
                         ),
-                      ] else ...[
-                        TextFormField(
-                          controller: _nameController,
-                          decoration: const InputDecoration(
-                            labelText: 'Client Name',
-                            hintText: 'nre-client',
-                            prefixIcon: Icon(Icons.badge),
-                          ),
-                        ),
-                      ],
-                      if (authAsync.value is AuthStateError) ...[
-                        const SizedBox(height: 16),
-                        Text(
+                        child: Text(
                           (authAsync.value as AuthStateError).message,
-                          style: TextStyle(color: theme.colorScheme.error),
-                        ),
-                      ],
-                      const SizedBox(height: 24),
-                      Row(
-                        children: [
-                          if (_step > 0)
-                            OutlinedButton(
-                              onPressed: () => setState(() => _step--),
-                              child: const Text('Previous'),
-                            ),
-                          const Spacer(),
-                          FilledButton(
-                            onPressed: authAsync.isLoading ? null : _onNext,
-                            child: authAsync.isLoading
-                                ? const SizedBox.square(
-                                    dimension: 18,
-                                    child: CircularProgressIndicator(strokeWidth: 2),
-                                  )
-                                : Text(_step < 2 ? 'Next' : 'Connect'),
+                          style: const TextStyle(
+                            fontSize: 12,
+                            color: AppColors.error,
                           ),
-                        ],
+                        ),
                       ),
                     ],
-                  ),
+
+                    const SizedBox(height: AppSpacing.s20),
+
+                    // -- Navigation buttons -------------------------------------
+                    _buildNavButtons(authAsync, accent, loc),
+                  ],
                 ),
               ),
             ),
@@ -136,16 +160,129 @@ class _ConnectScreenState extends ConsumerState<ConnectScreen> {
     );
   }
 
+  Widget _buildStepContent(AppLocalizations loc) {
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 200),
+      child: KeyedSubtree(
+        key: ValueKey(_step),
+        child: Column(
+          children: [
+            if (_step == 0)
+              TextFormField(
+                controller: _urlController,
+                decoration: InputDecoration(
+                  labelText: loc.labelMasterUrl,
+                  hintText: loc.hintMasterUrl,
+                  prefixIcon: const Icon(Icons.link, size: 18),
+                ),
+                validator: (v) =>
+                    v == null || v.isEmpty ? loc.errorEnterUrl : null,
+              )
+            else if (_step == 1)
+              TextFormField(
+                controller: _tokenController,
+                decoration: InputDecoration(
+                  labelText: loc.labelRegisterToken,
+                  hintText: loc.hintRegisterToken,
+                  prefixIcon: const Icon(Icons.key, size: 18),
+                ),
+                obscureText: true,
+                validator: (v) =>
+                    v == null || v.isEmpty ? loc.errorEnterToken : null,
+              )
+            else
+              TextFormField(
+                controller: _nameController,
+                decoration: InputDecoration(
+                  labelText: loc.labelClientName,
+                  hintText: loc.hintClientName,
+                  prefixIcon: const Icon(Icons.badge, size: 18),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildNavButtons(AsyncValue<AuthState> authAsync, AccentColors accent, AppLocalizations loc) {
+    final isLoading = authAsync.value is AuthStateLoading;
+
+    return Row(
+      children: [
+        if (_step > 0) ...[
+          GlassButton.secondary(
+            label: loc.btnPrevious,
+            onPressed: isLoading ? null : () => setState(() => _step--),
+          ),
+          const Spacer(),
+        ] else
+          const Spacer(),
+        GlassButton.primary(
+          label: _step < 2 ? loc.btnNext : loc.btnConnect,
+          onPressed: isLoading ? null : _onNext,
+          accentStart: accent.primaryStart,
+          accentEnd: accent.primaryEnd,
+        ),
+      ],
+    );
+  }
+
   void _onNext() {
     if (!(_formKey.currentState?.validate() ?? false)) return;
     if (_step < 2) {
       setState(() => _step++);
     } else {
       ref.read(authNotifierProvider.notifier).register(
-        masterUrl: _urlController.text.trim(),
-        registerToken: _tokenController.text.trim(),
-        name: _nameController.text.trim(),
-      );
+            masterUrl: _urlController.text.trim(),
+            registerToken: _tokenController.text.trim(),
+            name: _nameController.text.trim(),
+          );
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Step indicator dots
+// ---------------------------------------------------------------------------
+
+class _StepIndicator extends StatelessWidget {
+  const _StepIndicator({
+    required this.currentStep,
+    required this.totalSteps,
+    required this.accent,
+  });
+
+  final int currentStep;
+  final int totalSteps;
+  final AccentColors accent;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: List.generate(totalSteps, (index) {
+        final isActive = index == currentStep;
+        final isCompleted = index < currentStep;
+        return Padding(
+          padding: EdgeInsets.only(
+            right: index < totalSteps - 1 ? AppSpacing.s8 : 0,
+          ),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 200),
+            width: isActive ? 20 : 8,
+            height: 8,
+            decoration: BoxDecoration(
+              color: isActive
+                  ? accent.primaryStart
+                  : isCompleted
+                      ? accent.primaryStart.withValues(alpha: 0.4)
+                      : AppColors.textMuted.withValues(alpha: 0.3),
+              borderRadius: BorderRadius.circular(4),
+            ),
+          ),
+        );
+      }),
+    );
   }
 }

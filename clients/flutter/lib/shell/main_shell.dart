@@ -4,6 +4,7 @@ import 'package:go_router/go_router.dart';
 
 import '../core/platform/platform_capabilities.dart';
 import '../core/routing/route_names.dart';
+import '../l10n/app_localizations.dart';
 import 'sidebar.dart';
 import 'topbar.dart';
 
@@ -11,13 +12,14 @@ import 'topbar.dart';
 // Route title mapping
 // ---------------------------------------------------------------------------
 
-String _routeTitle(String location) {
-  if (location.startsWith(RouteNames.rules)) return '规则';
-  if (location.startsWith(RouteNames.certificates)) return '证书';
-  if (location.startsWith(RouteNames.agents)) return '代理';
-  if (location.startsWith(RouteNames.relay)) return '中继';
-  if (location.startsWith(RouteNames.settings)) return '设置';
-  return '面板';
+String _routeTitle(BuildContext context, String location) {
+  final loc = AppLocalizations.of(context)!;
+  if (location.startsWith(RouteNames.rules)) return loc.navRules;
+  if (location.startsWith(RouteNames.certificates)) return loc.navCertificates;
+  if (location.startsWith(RouteNames.agents)) return loc.navAgent;
+  if (location.startsWith(RouteNames.relay)) return loc.navRelay;
+  if (location.startsWith(RouteNames.settings)) return loc.navSettings;
+  return loc.navDashboard;
 }
 
 // ---------------------------------------------------------------------------
@@ -64,7 +66,7 @@ class _DesktopShell extends StatelessWidget {
           Expanded(
             child: Column(
               children: [
-                GlassTopBar(title: _routeTitle(location)),
+                GlassTopBar(title: _routeTitle(context, location)),
                 Expanded(child: child),
               ],
             ),
@@ -87,6 +89,7 @@ class _MobileShell extends StatelessWidget {
   Widget build(BuildContext context) {
     final location = GoRouterState.of(context).matchedLocation;
     final caps = PlatformCapabilities.current;
+    final loc = AppLocalizations.of(context)!;
 
     final routes = [
       RouteNames.dashboard,
@@ -108,7 +111,7 @@ class _MobileShell extends StatelessWidget {
       backgroundColor: Colors.transparent,
       body: Column(
         children: [
-          GlassTopBar(title: _routeTitle(location)),
+          GlassTopBar(title: _routeTitle(context, location)),
           Expanded(child: child),
         ],
       ),
@@ -129,21 +132,21 @@ class _MobileShell extends StatelessWidget {
             context.go(routes[index]);
           },
           destinations: [
-            const NavigationDestination(
-              icon: Icon(Icons.dashboard_rounded),
-              label: '面板',
+            NavigationDestination(
+              icon: const Icon(Icons.dashboard_rounded),
+              label: loc.navDashboard,
             ),
-            const NavigationDestination(
-              icon: Icon(Icons.rule_rounded),
-              label: '规则',
+            NavigationDestination(
+              icon: const Icon(Icons.rule_rounded),
+              label: loc.navRules,
             ),
-            const NavigationDestination(
-              icon: Icon(Icons.smart_toy_outlined),
-              label: '代理',
+            NavigationDestination(
+              icon: const Icon(Icons.smart_toy_outlined),
+              label: loc.navAgent,
             ),
             NavigationDestination(
               icon: const Icon(Icons.settings_outlined),
-              label: caps.canManageCertificates ? '更多' : '设置',
+              label: caps.canManageCertificates ? loc.navMore : loc.navSettings,
             ),
           ],
         ),

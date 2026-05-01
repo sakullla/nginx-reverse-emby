@@ -7,6 +7,7 @@ import '../../../../core/design/tokens/app_spacing.dart';
 import '../../../../core/design/tokens/app_typography.dart';
 import '../../../../core/design/theme/accent_themes.dart';
 import '../../../../core/design/theme/theme_controller.dart';
+import '../../../../l10n/app_localizations.dart';
 import '../../../auth/data/models/auth_models.dart';
 import '../../../auth/presentation/providers/auth_provider.dart';
 
@@ -23,6 +24,7 @@ class SettingsScreen extends ConsumerWidget {
         final masterUrl = authAsync.valueOrNull is AuthStateAuthenticated
             ? (authAsync.valueOrNull as AuthStateAuthenticated).profile.masterUrl
             : '';
+        final loc = AppLocalizations.of(context)!;
 
         return SingleChildScrollView(
           padding: const EdgeInsets.all(AppSpacing.s16),
@@ -30,21 +32,21 @@ class SettingsScreen extends ConsumerWidget {
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               // -- Appearance Section ----
-              _SectionTitle(title: 'Appearance'),
+              _SectionTitle(title: loc.titleAppearance),
               const SizedBox(height: AppSpacing.s8),
-              _AppearanceSection(settings: settings),
+              _AppearanceSection(settings: settings, loc: loc),
               const SizedBox(height: AppSpacing.s20),
 
               // -- Connection Section ----
-              _SectionTitle(title: 'Connection'),
+              _SectionTitle(title: loc.titleConnection),
               const SizedBox(height: AppSpacing.s8),
-              _ConnectionSection(masterUrl: masterUrl),
+              _ConnectionSection(masterUrl: masterUrl, loc: loc),
               const SizedBox(height: AppSpacing.s20),
 
               // -- About Section ----
-              _SectionTitle(title: 'About'),
+              _SectionTitle(title: loc.titleAbout),
               const SizedBox(height: AppSpacing.s8),
-              const _AboutSection(),
+              _AboutSection(loc: loc),
             ],
           ),
         );
@@ -87,9 +89,10 @@ class _SectionTitle extends StatelessWidget {
 // ---------------------------------------------------------------------------
 
 class _AppearanceSection extends ConsumerWidget {
-  const _AppearanceSection({required this.settings});
+  const _AppearanceSection({required this.settings, required this.loc});
 
   final ThemeSettings settings;
+  final AppLocalizations loc;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -99,18 +102,18 @@ class _AppearanceSection extends ConsumerWidget {
         children: [
           // -- Theme Mode ----
           Text(
-            'Theme Mode',
+            loc.titleThemeMode,
             style: AppTypography.bodyMedium.copyWith(
               color: AppColors.textSecondary,
             ),
           ),
           const SizedBox(height: AppSpacing.s10),
-          _ThemeModeToggles(currentMode: settings.themeMode),
+          _ThemeModeToggles(currentMode: settings.themeMode, loc: loc),
           const SizedBox(height: AppSpacing.s20),
 
           // -- Accent Color ----
           Text(
-            'Accent Color',
+            loc.titleAccentColor,
             style: AppTypography.bodyMedium.copyWith(
               color: AppColors.textSecondary,
             ),
@@ -128,16 +131,17 @@ class _AppearanceSection extends ConsumerWidget {
 // ---------------------------------------------------------------------------
 
 class _ThemeModeToggles extends StatelessWidget {
-  const _ThemeModeToggles({required this.currentMode});
+  const _ThemeModeToggles({required this.currentMode, required this.loc});
 
   final ThemeMode currentMode;
+  final AppLocalizations loc;
 
   @override
   Widget build(BuildContext context) {
     final modes = [
-      (ThemeMode.system, 'System'),
-      (ThemeMode.light, 'Light'),
-      (ThemeMode.dark, 'Dark'),
+      (ThemeMode.system, loc.valueThemeSystem),
+      (ThemeMode.light, loc.valueThemeLight),
+      (ThemeMode.dark, loc.valueThemeDark),
     ];
 
     return Row(
@@ -271,9 +275,10 @@ class _AccentSwatches extends ConsumerWidget {
 // ---------------------------------------------------------------------------
 
 class _ConnectionSection extends ConsumerWidget {
-  const _ConnectionSection({required this.masterUrl});
+  const _ConnectionSection({required this.masterUrl, required this.loc});
 
   final String masterUrl;
+  final AppLocalizations loc;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -282,21 +287,21 @@ class _ConnectionSection extends ConsumerWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            'Master URL',
+            loc.labelMasterUrl,
             style: AppTypography.bodyMedium.copyWith(
               color: AppColors.textSecondary,
             ),
           ),
           const SizedBox(height: AppSpacing.s4),
           Text(
-            masterUrl.isNotEmpty ? masterUrl : 'Not connected',
+            masterUrl.isNotEmpty ? masterUrl : loc.descNotConnectedMaster,
             style: AppTypography.metadata.copyWith(
               color: AppColors.textMuted,
             ),
           ),
           const SizedBox(height: AppSpacing.s16),
           GlassButton.danger(
-            label: 'Disconnect',
+            label: loc.btnDisconnect,
             onPressed: () => ref.read(authNotifierProvider.notifier).logout(),
           ),
         ],
@@ -310,7 +315,9 @@ class _ConnectionSection extends ConsumerWidget {
 // ---------------------------------------------------------------------------
 
 class _AboutSection extends StatelessWidget {
-  const _AboutSection();
+  const _AboutSection({required this.loc});
+
+  final AppLocalizations loc;
 
   @override
   Widget build(BuildContext context) {
@@ -318,9 +325,9 @@ class _AboutSection extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          _AboutRow(label: 'Application', value: 'NRE Client'),
+          _AboutRow(label: loc.labelApplication, value: loc.valueAppName),
           const SizedBox(height: AppSpacing.s10),
-          _AboutRow(label: 'Version', value: 'v2.1.0'),
+          _AboutRow(label: loc.labelVersion, value: loc.valueAppVersion),
         ],
       ),
     );

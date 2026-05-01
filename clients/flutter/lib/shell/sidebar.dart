@@ -9,6 +9,7 @@ import '../core/design/tokens/app_spacing.dart';
 import '../core/design/tokens/app_typography.dart';
 import '../core/platform/platform_capabilities.dart';
 import '../core/routing/route_names.dart';
+import '../l10n/app_localizations.dart';
 
 // ---------------------------------------------------------------------------
 // Navigation item descriptor
@@ -41,33 +42,35 @@ class GlassSidebar extends ConsumerWidget {
     final caps = PlatformCapabilities.current;
     final location = GoRouterState.of(context).matchedLocation;
 
+    final loc = AppLocalizations.of(context)!;
+
     // Build the platform-aware navigation items.
     final items = [
-      const _NavItem(
+      _NavItem(
         icon: Icons.dashboard_rounded,
-        label: '面板',
+        label: loc.navDashboard,
         route: RouteNames.dashboard,
       ),
-      const _NavItem(
+      _NavItem(
         icon: Icons.rule_rounded,
-        label: '规则',
+        label: loc.navRules,
         route: RouteNames.rules,
       ),
-      const _NavItem(
+      _NavItem(
         icon: Icons.smart_toy_outlined,
-        label: '代理',
+        label: loc.navAgent,
         route: RouteNames.agents,
       ),
       if (caps.canManageCertificates)
-        const _NavItem(
+        _NavItem(
           icon: Icons.verified_user_outlined,
-          label: '证书',
+          label: loc.navCertificates,
           route: RouteNames.certificates,
         ),
       if (caps.canManageRelay)
-        const _NavItem(
+        _NavItem(
           icon: Icons.settings_ethernet_outlined,
-          label: '中继',
+          label: loc.navRelay,
           route: RouteNames.relay,
         ),
     ];
@@ -121,7 +124,7 @@ class GlassSidebar extends ConsumerWidget {
           ),
           _SidebarItem(
             icon: Icons.settings_outlined,
-            label: '设置',
+            label: loc.navSettings,
             route: RouteNames.settings,
             isActive: location == RouteNames.settings,
             accent: accent,

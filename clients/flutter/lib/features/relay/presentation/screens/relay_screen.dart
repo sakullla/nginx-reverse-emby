@@ -9,6 +9,7 @@ import '../../../../core/design/components/glass_toggle.dart';
 import '../../../../core/design/tokens/app_colors.dart';
 import '../../../../core/design/tokens/app_spacing.dart';
 import '../../../../core/design/tokens/app_typography.dart';
+import '../../../../l10n/app_localizations.dart';
 import '../../data/models/relay_models.dart';
 import '../providers/relay_provider.dart';
 
@@ -26,19 +27,19 @@ class RelayScreen extends ConsumerWidget {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           // -- Filter bar ----
-          _FilterBar(total: relayAsync.valueOrNull?.length ?? 0),
+          _FilterBar(total: relayAsync.valueOrNull?.length ?? 0, loc: AppLocalizations.of(context)!),
           const SizedBox(height: AppSpacing.s12),
 
           // -- Content ----
           relayAsync.when(
             data: (_) {
               if (filteredRelays.isEmpty) {
-                return const _EmptyState();
+                return _EmptyState(loc: AppLocalizations.of(context)!);
               }
-              return _RelayListView(relays: filteredRelays);
+              return _RelayListView(relays: filteredRelays, loc: AppLocalizations.of(context)!);
             },
             loading: () => const _SkeletonList(),
-            error: (err, _) => _ErrorState(error: err),
+            error: (err, _) => _ErrorState(error: err, loc: AppLocalizations.of(context)!),
           ),
         ],
       ),
@@ -51,9 +52,10 @@ class RelayScreen extends ConsumerWidget {
 // ---------------------------------------------------------------------------
 
 class _FilterBar extends ConsumerWidget {
-  const _FilterBar({required this.total});
+  const _FilterBar({required this.total, required this.loc});
 
   final int total;
+  final AppLocalizations loc;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -62,7 +64,7 @@ class _FilterBar extends ConsumerWidget {
         // Search bar
         Expanded(
           child: GlassSearchBar(
-            hint: 'Search relays...',
+            hint: loc.hintSearchRelays,
             onChanged: (query) {
               ref.read(relaySearchQueryProvider.notifier).update(query);
             },
@@ -73,6 +75,7 @@ class _FilterBar extends ConsumerWidget {
         // Protocol filter
         _ProtocolFilterDropdown(
           value: ref.watch(relayProtocolFilterNotifierProvider),
+          loc: loc,
           onChanged: (v) {
             if (v != null) {
               ref.read(relayProtocolFilterNotifierProvider.notifier).update(v);
@@ -84,7 +87,7 @@ class _FilterBar extends ConsumerWidget {
 
         // Count
         Text(
-          '$total relay${total == 1 ? '' : 's'}',
+          loc.labelRelayCount(total, total == 1 ? '' : 's'),
           style: AppTypography.metadata.copyWith(
             color: AppColors.textMuted,
           ),
@@ -101,16 +104,18 @@ class _FilterBar extends ConsumerWidget {
 class _ProtocolFilterDropdown extends StatelessWidget {
   const _ProtocolFilterDropdown({
     required this.value,
+    required this.loc,
     required this.onChanged,
   });
 
   final RelayProtocolFilter value;
+  final AppLocalizations loc;
   final ValueChanged<RelayProtocolFilter?> onChanged;
 
   String _label(RelayProtocolFilter f) {
     switch (f) {
       case RelayProtocolFilter.all:
-        return 'All Protocols';
+        return loc.filterAllProtocols;
       case RelayProtocolFilter.tcp:
         return 'TCP';
       case RelayProtocolFilter.udp:
@@ -178,9 +183,10 @@ class _ProtocolFilterDropdown extends StatelessWidget {
 // ---------------------------------------------------------------------------
 
 class _RelayListView extends ConsumerWidget {
-  const _RelayListView({required this.relays});
+  const _RelayListView({required this.relays, required this.loc});
 
   final List<RelayListener> relays;
+  final AppLocalizations loc;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -189,7 +195,7 @@ class _RelayListView extends ConsumerWidget {
           .map(
             (relay) => Padding(
               padding: const EdgeInsets.only(bottom: AppSpacing.s8),
-              child: _RelayCard(relay: relay),
+              child: _RelayCard(relay: relay, loc: loc),
             ),
           )
           .toList(),
@@ -202,9 +208,10 @@ class _RelayListView extends ConsumerWidget {
 // ---------------------------------------------------------------------------
 
 class _RelayCard extends ConsumerWidget {
-  const _RelayCard({required this.relay});
+  const _RelayCard({required this.relay, required this.loc});
 
   final RelayListener relay;
+  final AppLocalizations loc;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -261,8 +268,8 @@ class _RelayCard extends ConsumerWidget {
                 // Agent info
                 Text(
                   relay.agentName != null && relay.agentName!.isNotEmpty
-                      ? 'Agent: ${relay.agentName}'
-                      : 'No agent assigned',
+                      ? loc.labelAgent(relay.agentName!)
+                      : loc.descNoAgentAssigned,
                   style: AppTypography.metadataSmall.copyWith(
                     color: AppColors.textMuted,
                   ),
@@ -275,10 +282,10 @@ class _RelayCard extends ConsumerWidget {
 
           // -- Right: status + toggle + menu ----
           if (relay.enabled)
-            GlassChip.success(label: 'Active', showDot: true)
+            GlassChip.success(label: loc.statusActive, showDot: true)
           else
             GlassChip(
-              label: 'Disabled',
+              label: loc.statusDisabled,
               color: AppColors.textMuted,
             ),
           const SizedBox(width: AppSpacing.s8),
@@ -342,6 +349,7 @@ class _RelayMenu extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
+    final loc = AppLocalizations.of(context)!;
     return PopupMenuButton<String>(
       icon: Icon(
         Icons.more_horiz,
@@ -354,25 +362,25 @@ class _RelayMenu extends ConsumerWidget {
       color: const Color(0xFF1E293B),
       onSelected: (action) => _handleAction(context, ref, action),
       itemBuilder: (context) => [
-        const PopupMenuItem(
+        PopupMenuItem(
           value: 'edit',
           height: 36,
           child: Row(
             children: [
-              Icon(Icons.edit_outlined, size: 16, color: AppColors.textSecondary),
-              SizedBox(width: AppSpacing.s8),
-              Text('Edit', style: TextStyle(fontSize: 12, color: AppColors.textPrimary)),
+              const Icon(Icons.edit_outlined, size: 16, color: AppColors.textSecondary),
+              const SizedBox(width: AppSpacing.s8),
+              Text(loc.btnViewDetails, style: const TextStyle(fontSize: 12, color: AppColors.textPrimary)),
             ],
           ),
         ),
-        const PopupMenuItem(
+        PopupMenuItem(
           value: 'delete',
           height: 36,
           child: Row(
             children: [
-              Icon(Icons.delete_outline, size: 16, color: AppColors.error),
-              SizedBox(width: AppSpacing.s8),
-              Text('Delete', style: TextStyle(fontSize: 12, color: AppColors.error)),
+              const Icon(Icons.delete_outline, size: 16, color: AppColors.error),
+              const SizedBox(width: AppSpacing.s8),
+              Text(loc.btnDelete, style: const TextStyle(fontSize: 12, color: AppColors.error)),
             ],
           ),
         ),
@@ -421,6 +429,7 @@ class _DeleteConfirmDialog extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final loc = AppLocalizations.of(context)!;
     return Center(
       child: ClipRRect(
         borderRadius: BorderRadius.circular(AppRadius.largeCard),
@@ -442,7 +451,7 @@ class _DeleteConfirmDialog extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Delete Relay Listener',
+                  loc.titleDeleteRelay,
                   style: AppTypography.title.copyWith(
                     color: AppColors.textPrimary,
                     fontSize: 16,
@@ -450,7 +459,10 @@ class _DeleteConfirmDialog extends StatelessWidget {
                 ),
                 const SizedBox(height: AppSpacing.s12),
                 Text(
-                  'Are you sure you want to delete "${relay.listenAddress}" (${relay.protocol.toUpperCase()})? This action cannot be undone.',
+                  loc.descDeleteRelayConfirm(
+                      relay.listenAddress,
+                      relay.protocol.toUpperCase(),
+                  ),
                   style: AppTypography.body.copyWith(
                     color: AppColors.textSecondary,
                   ),
@@ -460,12 +472,12 @@ class _DeleteConfirmDialog extends StatelessWidget {
                   mainAxisAlignment: MainAxisAlignment.end,
                   children: [
                     GlassButton.secondary(
-                      label: 'Cancel',
+                      label: loc.btnCancel,
                       onPressed: () => Navigator.of(context).pop(),
                     ),
                     const SizedBox(width: AppSpacing.s8),
                     GlassButton.danger(
-                      label: 'Delete',
+                      label: loc.btnDelete,
                       onPressed: onConfirm,
                     ),
                   ],
@@ -484,7 +496,9 @@ class _DeleteConfirmDialog extends StatelessWidget {
 // ---------------------------------------------------------------------------
 
 class _EmptyState extends StatelessWidget {
-  const _EmptyState();
+  const _EmptyState({required this.loc});
+
+  final AppLocalizations loc;
 
   @override
   Widget build(BuildContext context) {
@@ -501,14 +515,14 @@ class _EmptyState extends StatelessWidget {
             ),
             const SizedBox(height: AppSpacing.s12),
             Text(
-              'No Relay Listeners',
+              loc.titleNoRelayListeners,
               style: AppTypography.title.copyWith(
                 color: AppColors.textMuted,
               ),
             ),
             const SizedBox(height: AppSpacing.s4),
             Text(
-              'Relay listeners will appear here once configured',
+              loc.descRelayListenersAppearHere,
               style: AppTypography.metadata.copyWith(
                 color: AppColors.textMuted.withValues(alpha: 0.7),
               ),
@@ -525,9 +539,10 @@ class _EmptyState extends StatelessWidget {
 // ---------------------------------------------------------------------------
 
 class _ErrorState extends StatelessWidget {
-  const _ErrorState({required this.error});
+  const _ErrorState({required this.error, required this.loc});
 
   final Object error;
+  final AppLocalizations loc;
 
   @override
   Widget build(BuildContext context) {
@@ -544,7 +559,7 @@ class _ErrorState extends StatelessWidget {
             ),
             const SizedBox(height: AppSpacing.s12),
             Text(
-              'Failed to load relay listeners',
+              loc.failedToLoadRelays,
               style: AppTypography.title.copyWith(
                 color: AppColors.textPrimary,
               ),

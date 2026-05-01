@@ -10,6 +10,10 @@
   "@navRules": {},
   "navSettings": "Settings",
   "@navSettings": {},
+  "navCertificates": "Certificates",
+  "@navCertificates": {},
+  "navRelay": "Relay",
+  "@navRelay": {},
   "statusRegistered": "Registered",
   "@statusRegistered": {},
   "statusNotRegistered": "Not registered",
@@ -24,6 +28,12 @@
   "@statusUnknown": {},
   "statusChecking": "Checking",
   "@statusChecking": {},
+  "statusActive": "Active",
+  "@statusActive": {},
+  "statusDisabled": "Disabled",
+  "@statusDisabled": {},
+  "statusNotConnected": "Not Connected",
+  "@statusNotConnected": {},
   "labelMasterUrl": "Master URL",
   "@labelMasterUrl": {},
   "labelAgentId": "Agent ID",
@@ -62,12 +72,18 @@
   "@labelNotConfigured": {},
   "labelNotRegistered": "Not registered",
   "@labelNotRegistered": {},
+  "labelDomain": "Domain",
+  "@labelDomain": {},
   "hintMasterUrl": "https://your-server.com",
   "@hintMasterUrl": {},
   "hintRegisterToken": "Enter token from master server",
   "@hintRegisterToken": {},
   "hintClientName": "nre-client",
   "@hintClientName": {},
+  "hintSearchRules": "Search rules...",
+  "@hintSearchRules": {},
+  "hintSearchRelays": "Search relays...",
+  "@hintSearchRelays": {},
   "errorRequiredMasterUrl": "Master URL is required",
   "@errorRequiredMasterUrl": {},
   "errorRequiredRegisterToken": "Register token is required",
@@ -90,6 +106,10 @@
       "message": {"type": "String"}
     }
   },
+  "errorEnterUrl": "Please enter URL",
+  "@errorEnterUrl": {},
+  "errorEnterToken": "Please enter Token",
+  "@errorEnterToken": {},
   "btnRegister": "Register",
   "@btnRegister": {},
   "btnUnregister": "Unregister",
@@ -116,6 +136,34 @@
   "@btnViewDetails": {},
   "btnRegisterNow": "Register Now",
   "@btnRegisterNow": {},
+  "btnImport": "Import",
+  "@btnImport": {},
+  "btnRequest": "Request",
+  "@btnRequest": {},
+  "btnRenew": "Renew",
+  "@btnRenew": {},
+  "btnDetails": "Details",
+  "@btnDetails": {},
+  "btnSave": "Save",
+  "@btnSave": {},
+  "btnSaving": "Saving...",
+  "@btnSaving": {},
+  "btnDelete": "Delete",
+  "@btnDelete": {},
+  "btnConnect": "Connect",
+  "@btnConnect": {},
+  "btnDisconnect": "Disconnect",
+  "@btnDisconnect": {},
+  "btnPrevious": "Previous",
+  "@btnPrevious": {},
+  "btnNext": "Next",
+  "@btnNext": {},
+  "btnNew": "+ New",
+  "@btnNew": {},
+  "btnCreateRule": "+ Create Rule",
+  "@btnCreateRule": {},
+  "btnViewLogs": "View Logs",
+  "@btnViewLogs": {},
   "titleRegisterAgent": "Register Agent",
   "@titleRegisterAgent": {},
   "titleAgent": "Agent",
@@ -164,6 +212,34 @@
   "@titleExportProfile": {},
   "titleStartAtLogin": "Start at Login",
   "@titleStartAtLogin": {},
+  "titleAppearance": "Appearance",
+  "@titleAppearance": {},
+  "titleThemeMode": "Theme Mode",
+  "@titleThemeMode": {},
+  "titleAccentColor": "Accent Color",
+  "@titleAccentColor": {},
+  "titleConnectToMaster": "Connect to Master",
+  "@titleConnectToMaster": {},
+  "titleNewRule": "New Rule",
+  "@titleNewRule": {},
+  "titleEditRule": "Edit Rule",
+  "@titleEditRule": {},
+  "titleDeleteRule": "Delete Rule",
+  "@titleDeleteRule": {},
+  "titleDeleteRelay": "Delete Relay Listener",
+  "@titleDeleteRelay": {},
+  "titleNoCertificates": "No Certificates",
+  "@titleNoCertificates": {},
+  "titleNoRemoteAgents": "No remote agents",
+  "@titleNoRemoteAgents": {},
+  "titleNoRelayListeners": "No Relay Listeners",
+  "@titleNoRelayListeners": {},
+  "titleQuickActions": "Quick Actions",
+  "@titleQuickActions": {},
+  "titleRemoteAgents": "Remote Agents",
+  "@titleRemoteAgents": {},
+  "titleSelfSigned": "Self-signed",
+  "@titleSelfSigned": {},
   "descRegisterAgent": "Connect this client to a master server. You will need a register token from the server.",
   "@descRegisterAgent": {},
   "descUnregisterConfirm": "This will remove the local registration. The agent on the master server will need to be re-registered.",
@@ -186,6 +262,41 @@
   "@descClearData": {},
   "descStartAtLogin": "Launch client when system starts",
   "@descStartAtLogin": {},
+  "descPleaseConnectFirst": "Please connect to a Master server first",
+  "@descPleaseConnectFirst": {},
+  "descCreateFirstRule": "Create your first proxy rule to get started",
+  "@descCreateFirstRule": {},
+  "descImportOrRequestCert": "Import or request SSL certificates to get started",
+  "@descImportOrRequestCert": {},
+  "descRemoteAgentsAppearHere": "Remote agents that register with this master will appear here.",
+  "@descRemoteAgentsAppearHere": {},
+  "descRelayListenersAppearHere": "Relay listeners will appear here once configured",
+  "@descRelayListenersAppearHere": {},
+  "descDeleteRuleConfirm": "Are you sure you want to delete \"{domain}\"? This action cannot be undone.",
+  "@descDeleteRuleConfirm": {
+    "placeholders": {
+      "domain": {"type": "String"}
+    }
+  },
+  "descDeleteRelayConfirm": "Are you sure you want to delete \"{address}\" ({protocol})? This action cannot be undone.",
+  "@descDeleteRelayConfirm": {
+    "placeholders": {
+      "address": {"type": "String"},
+      "protocol": {"type": "String"}
+    }
+  },
+  "descSystemRunningNormal": "System running normally",
+  "@descSystemRunningNormal": {},
+  "descAllAgentsOnlineLastSync": "All agents online · Last sync: 30s ago",
+  "@descAllAgentsOnlineLastSync": {},
+  "descNotRunning": "Not Running",
+  "@descNotRunning": {},
+  "descNotAvailable": "Not Available",
+  "@descNotAvailable": {},
+  "descNoAgentAssigned": "No agent assigned",
+  "@descNoAgentAssigned": {},
+  "descNotConnectedMaster": "Not connected",
+  "@descNotConnectedMaster": {},
   "msgRegistered": "Registered agent {agentId}",
   "@msgRegistered": {
     "placeholders": {
@@ -238,6 +349,14 @@
   "@msgNoLogs": {},
   "msgLogsCleared": "Logs view cleared",
   "@msgLogsCleared": {},
+  "msgRuleCopiedToClipboard": "Rule copied to clipboard",
+  "@msgRuleCopiedToClipboard": {},
+  "msgFailedToSaveRule": "Failed to save rule: {error}",
+  "@msgFailedToSaveRule": {
+    "placeholders": {
+      "error": {"type": "String"}
+    }
+  },
   "labelApplication": "Application",
   "@labelApplication": {},
   "labelVersion": "Version",
@@ -256,6 +375,8 @@
   "@valueLoading": {},
   "valueDash": "-",
   "@valueDash": {},
+  "valueAppVersion": "v2.1.0",
+  "@valueAppVersion": {},
   "titleAgentProcessControl": "Agent Process Control",
   "@titleAgentProcessControl": {},
   "labelTheme": "Theme",
@@ -269,5 +390,112 @@
   "trayShow": "Show",
   "@trayShow": {},
   "trayQuit": "Quit",
-  "@trayQuit": {}
+  "@trayQuit": {},
+  "filterStatus": "Status",
+  "@filterStatus": {},
+  "filterType": "Type",
+  "@filterType": {},
+  "filterAllStatus": "All Status",
+  "@filterAllStatus": {},
+  "filterAllProtocols": "All Protocols",
+  "@filterAllProtocols": {},
+  "certStatusValid": "Valid",
+  "@certStatusValid": {},
+  "certStatusExpiring": "Expiring",
+  "@certStatusExpiring": {},
+  "certStatusExpired": "Expired",
+  "@certStatusExpired": {},
+  "labelOverdue": "overdue",
+  "@labelOverdue": {},
+  "labelRemaining": "remaining",
+  "@labelRemaining": {},
+  "labelIssued": "Issued: {date}",
+  "@labelIssued": {
+    "placeholders": {
+      "date": {"type": "String"}
+    }
+  },
+  "labelUsedBy": "Used by:",
+  "@labelUsedBy": {},
+  "labelAgent": "Agent: {name}",
+  "@labelAgent": {
+    "placeholders": {
+      "name": {"type": "String"}
+    }
+  },
+  "labelCertificateCount": "{count} certificate{plural}",
+  "@labelCertificateCount": {
+    "placeholders": {
+      "count": {"type": "int"},
+      "plural": {"type": "String"}
+    }
+  },
+  "labelRelayCount": "{count} relay{plural}",
+  "@labelRelayCount": {
+    "placeholders": {
+      "count": {"type": "int"},
+      "plural": {"type": "String"}
+    }
+  },
+  "labelRegisteredCount": "{count} registered",
+  "@labelRegisteredCount": {
+    "placeholders": {
+      "count": {"type": "int"}
+    }
+  },
+  "labelDisabledCount": "{count} disabled",
+  "@labelDisabledCount": {
+    "placeholders": {
+      "count": {"type": "int"}
+    }
+  },
+  "labelAllOnline": "All online",
+  "@labelAllOnline": {},
+  "labelOffline": "{count} offline",
+  "@labelOffline": {
+    "placeholders": {
+      "count": {"type": "int"}
+    }
+  },
+  "labelExpiringWarning": "{count} certificate{plural} expiring within 14 days",
+  "@labelExpiringWarning": {
+    "placeholders": {
+      "count": {"type": "int"},
+      "plural": {"type": "String"}
+    }
+  },
+  "labelReview": "Review →",
+  "@labelReview": {},
+  "stepServerUrl": "Server URL",
+  "@stepServerUrl": {},
+  "stepRegisterToken": "Register Token",
+  "@stepRegisterToken": {},
+  "stepClientName": "Client Name",
+  "@stepClientName": {},
+  "actionNewRule": "New Rule",
+  "@actionNewRule": {},
+  "actionAddCertificate": "Add Certificate",
+  "@actionAddCertificate": {},
+  "actionAddAgent": "Add Agent",
+  "@actionAddAgent": {},
+  "actionNewRelay": "New Relay",
+  "@actionNewRelay": {},
+  "metaUptime": "Uptime",
+  "@metaUptime": {},
+  "metaVersion": "Version",
+  "@metaVersion": {},
+  "metaLastSync": "Last sync",
+  "@metaLastSync": {},
+  "metaSync30sAgo": "30s ago",
+  "@metaSync30sAgo": {},
+  "failedToLoadDashboard": "Failed to load dashboard",
+  "@failedToLoadDashboard": {},
+  "failedToLoadRules": "Failed to load rules",
+  "@failedToLoadRules": {},
+  "failedToLoadCertificates": "Failed to load certificates",
+  "@failedToLoadCertificates": {},
+  "failedToLoadRelays": "Failed to load relay listeners",
+  "@failedToLoadRelays": {},
+  "navMore": "More",
+  "@navMore": {}
 }
