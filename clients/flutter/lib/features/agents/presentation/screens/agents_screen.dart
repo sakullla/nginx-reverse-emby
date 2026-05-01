@@ -202,13 +202,20 @@ class _RemoteAgentMenu extends ConsumerWidget {
     );
   }
 
-  void _handleAction(BuildContext context, WidgetRef ref, String action) {
+  Future<void> _handleAction(
+    BuildContext context,
+    WidgetRef ref,
+    String action,
+  ) async {
     switch (action) {
       case 'rename':
         _showRenameDialog(context, ref);
         break;
       case 'apply':
-        ref.read(agentsListProvider.notifier).applyConfig(agent.id);
+        await _runAction(
+          context,
+          () => ref.read(agentsListProvider.notifier).applyConfig(agent.id),
+        );
         break;
       case 'delete':
         _showDeleteDialog(context, ref);
@@ -232,11 +239,18 @@ class _RemoteAgentMenu extends ConsumerWidget {
             child: const Text('Cancel'),
           ),
           TextButton(
-            onPressed: () {
-              ref
-                  .read(agentsListProvider.notifier)
-                  .renameAgent(agent.id, controller.text.trim());
-              Navigator.of(ctx).pop();
+            onPressed: () async {
+              final name = controller.text.trim();
+              if (name.isEmpty) return;
+              final success = await _runAction(
+                context,
+                () => ref
+                    .read(agentsListProvider.notifier)
+                    .renameAgent(agent.id, name),
+              );
+              if (success && ctx.mounted) {
+                Navigator.of(ctx).pop();
+              }
             },
             child: const Text('Save'),
           ),
@@ -257,15 +271,40 @@ class _RemoteAgentMenu extends ConsumerWidget {
             child: const Text('Cancel'),
           ),
           TextButton(
-            onPressed: () {
-              ref.read(agentsListProvider.notifier).deleteAgent(agent.id);
-              Navigator.of(ctx).pop();
+            onPressed: () async {
+              final success = await _runAction(
+                context,
+                () => ref.read(agentsListProvider.notifier).deleteAgent(agent.id),
+              );
+              if (success && ctx.mounted) {
+                Navigator.of(ctx).pop();
+              }
             },
             child: const Text('Delete'),
           ),
         ],
       ),
     );
+  }
+
+  Future<bool> _runAction(
+    BuildContext context,
+    Future<void> Function() action,
+  ) async {
+    try {
+      await action();
+      return true;
+    } catch (error) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(error.toString()),
+            backgroundColor: AppColors.error,
+          ),
+        );
+      }
+      return false;
+    }
   }
 }
 

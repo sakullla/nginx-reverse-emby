@@ -232,14 +232,14 @@ class _StatusFilterDropdown extends StatelessWidget {
 // Expiry warning banner
 // ---------------------------------------------------------------------------
 
-class _ExpiryWarningBanner extends StatelessWidget {
+class _ExpiryWarningBanner extends ConsumerWidget {
   const _ExpiryWarningBanner({required this.expiringCount, required this.loc});
 
   final int expiringCount;
   final AppLocalizations loc;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     return GlassCard(
       accentBorder: true,
       accentColor: AppColors.warning,
@@ -262,7 +262,9 @@ class _ExpiryWarningBanner extends StatelessWidget {
           ),
           GestureDetector(
             onTap: () {
-              // Could navigate or filter to show only expiring certs
+              ref
+                  .read(certStatusFilterNotifierProvider.notifier)
+                  .update(CertStatusFilter.expiring);
             },
             child: Text(
               loc.labelReview,
@@ -623,9 +625,12 @@ class _ActionRow extends ConsumerWidget {
         if (isExpiring) ...[
           GlassButton.warning(
             label: loc.btnRenew,
-            onPressed: () => ref
-                .read(certificatesListProvider.notifier)
-                .issueCertificate(cert.id),
+            onPressed: () => _runCertificateAction(
+              context,
+              () => ref
+                  .read(certificatesListProvider.notifier)
+                  .issueCertificate(cert.id),
+            ),
           ),
           const SizedBox(width: AppSpacing.s8),
         ],
@@ -709,66 +714,73 @@ void _showCertificateFormDialog(
   showDialog<void>(
     context: context,
     builder: (ctx) => AlertDialog(
-        title: Text(isImport ? 'Import certificate' : 'Request certificate'),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
+      title: Text(isImport ? 'Import certificate' : 'Request certificate'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: domainController,
+              decoration: const InputDecoration(labelText: 'Domain'),
+            ),
+            if (isImport) ...[
               TextField(
-                controller: domainController,
-                decoration: const InputDecoration(labelText: 'Domain'),
+                controller: certPemController,
+                decoration: const InputDecoration(
+                  labelText: 'Certificate PEM',
+                ),
+                minLines: 2,
+                maxLines: 4,
               ),
-              if (isImport) ...[
-                TextField(
-                  controller: certPemController,
-                  decoration: const InputDecoration(
-                    labelText: 'Certificate PEM',
-                  ),
-                  minLines: 2,
-                  maxLines: 4,
-                ),
-                TextField(
-                  controller: keyPemController,
-                  decoration: const InputDecoration(labelText: 'Private key PEM'),
-                  minLines: 2,
-                  maxLines: 4,
-                ),
-                TextField(
-                  controller: caPemController,
-                  decoration: const InputDecoration(labelText: 'CA PEM'),
-                  minLines: 1,
-                  maxLines: 3,
-                ),
-              ],
+              TextField(
+                controller: keyPemController,
+                decoration: const InputDecoration(labelText: 'Private key PEM'),
+                minLines: 2,
+                maxLines: 4,
+              ),
+              TextField(
+                controller: caPemController,
+                decoration: const InputDecoration(labelText: 'CA PEM'),
+                minLines: 1,
+                maxLines: 3,
+              ),
             ],
-          ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(ctx).pop(),
-            child: const Text('Cancel'),
-          ),
-          TextButton(
-            onPressed: () {
-              final domain = domainController.text.trim();
-              if (domain.isEmpty) return;
-              final selectedAgentId = ref.read(selectedAgentIdProvider);
-              ref.read(certificatesListProvider.notifier).createCertificate(
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(ctx).pop(),
+          child: const Text('Cancel'),
+        ),
+        TextButton(
+          onPressed: () async {
+            final domain = domainController.text.trim();
+            if (domain.isEmpty) return;
+            final selectedAgentId = ref.read(selectedAgentIdProvider);
+            final success = await _runCertificateAction(
+              context,
+              () => ref
+                  .read(certificatesListProvider.notifier)
+                  .createCertificate(
                     CreateCertificateRequest(
                       domain: domain,
-                      issuerMode: isImport ? 'uploaded' : 'local_http01',
+                      issuerMode: 'local_http01',
                       certificateType: isImport ? 'uploaded' : 'acme',
                       targetAgentIds: [selectedAgentId],
                       certificatePem: _emptyToNull(certPemController.text),
                       privateKeyPem: _emptyToNull(keyPemController.text),
                       caPem: _emptyToNull(caPemController.text),
                     ),
-                  );
+                  ),
+            );
+            if (success && ctx.mounted) {
               Navigator.of(ctx).pop();
-            },
-            child: const Text('Save'),
-          ),
-        ],
+            }
+          },
+          child: const Text('Save'),
+        ),
+      ],
     ),
   );
 }
@@ -821,17 +833,42 @@ void _showDeleteCertificateDialog(
           child: const Text('Cancel'),
         ),
         TextButton(
-          onPressed: () {
-            ref
-                .read(certificatesListProvider.notifier)
-                .deleteCertificate(cert.id);
-            Navigator.of(ctx).pop();
+          onPressed: () async {
+            final success = await _runCertificateAction(
+              context,
+              () => ref
+                  .read(certificatesListProvider.notifier)
+                  .deleteCertificate(cert.id),
+            );
+            if (success && ctx.mounted) {
+              Navigator.of(ctx).pop();
+            }
           },
           child: const Text('Delete'),
         ),
       ],
     ),
   );
+}
+
+Future<bool> _runCertificateAction(
+  BuildContext context,
+  Future<Object?> Function() action,
+) async {
+  try {
+    await action();
+    return true;
+  } catch (error) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(error.toString()),
+          backgroundColor: AppColors.error,
+        ),
+      );
+    }
+    return false;
+  }
 }
 
 // ---------------------------------------------------------------------------

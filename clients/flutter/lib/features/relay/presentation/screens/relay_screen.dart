@@ -303,8 +303,12 @@ class _RelayCard extends ConsumerWidget {
 
           GlassToggle(
             value: relay.enabled,
-            onChanged: (v) =>
-                ref.read(relayListProvider.notifier).toggleRelay(relay.id, v),
+            onChanged: (v) => _runRelayAction(
+              context,
+              () => ref
+                  .read(relayListProvider.notifier)
+                  .toggleRelay(relay.id, v),
+            ),
           ),
           const SizedBox(width: AppSpacing.s4),
 
@@ -428,9 +432,14 @@ class _RelayMenu extends ConsumerWidget {
       barrierColor: Colors.black.withValues(alpha: 0.5),
       builder: (ctx) => _DeleteConfirmDialog(
         relay: relay,
-        onConfirm: () {
-          ref.read(relayListProvider.notifier).deleteRelay(relay.id);
-          Navigator.of(ctx).pop();
+        onConfirm: () async {
+          final success = await _runRelayAction(
+            context,
+            () => ref.read(relayListProvider.notifier).deleteRelay(relay.id),
+          );
+          if (success && ctx.mounted) {
+            Navigator.of(ctx).pop();
+          }
         },
       ),
     );
@@ -504,7 +513,7 @@ Future<void> showRelayFormDialog(
             child: const Text('Cancel'),
           ),
           TextButton(
-            onPressed: () {
+            onPressed: () async {
               final listenPort = int.tryParse(portController.text.trim());
               if (listenPort == null) return;
               final bindHosts = hostsController.text
@@ -516,39 +525,45 @@ Future<void> showRelayFormDialog(
               final trustMode = trustModeController.text.trim();
               if (existing == null) {
                 final agentId = ref.read(selectedAgentIdProvider);
-                ref
-                    .read(relayListProvider.notifier)
-                    .createRelay(
-                      CreateRelayListenerRequest(
-                        agentId: agentId,
-                        name: nameController.text.trim(),
-                        listenPort: listenPort,
-                        bindHosts: bindHosts,
-                        enabled: enabled,
-                        certificateSource: certSource.isEmpty
-                            ? null
-                            : certSource,
-                        tlsMode: trustMode.isEmpty ? null : trustMode,
+                final success = await _runRelayAction(
+                  context,
+                  () => ref.read(relayListProvider.notifier).createRelay(
+                        CreateRelayListenerRequest(
+                          agentId: agentId,
+                          name: nameController.text.trim(),
+                          listenPort: listenPort,
+                          bindHosts: bindHosts,
+                          enabled: enabled,
+                          certificateSource: certSource.isEmpty
+                              ? null
+                              : certSource,
+                          tlsMode: trustMode.isEmpty ? null : trustMode,
+                        ),
                       ),
-                    );
+                );
+                if (!success) return;
               } else {
-                ref
-                    .read(relayListProvider.notifier)
-                    .updateRelay(
-                      existing.id,
-                      UpdateRelayListenerRequest(
-                        name: nameController.text.trim(),
-                        listenPort: listenPort,
-                        bindHosts: bindHosts,
-                        enabled: enabled,
-                        certificateSource: certSource.isEmpty
-                            ? null
-                            : certSource,
-                        tlsMode: trustMode.isEmpty ? null : trustMode,
+                final success = await _runRelayAction(
+                  context,
+                  () => ref.read(relayListProvider.notifier).updateRelay(
+                        existing.id,
+                        UpdateRelayListenerRequest(
+                          name: nameController.text.trim(),
+                          listenPort: listenPort,
+                          bindHosts: bindHosts,
+                          enabled: enabled,
+                          certificateSource: certSource.isEmpty
+                              ? null
+                              : certSource,
+                          tlsMode: trustMode.isEmpty ? null : trustMode,
+                        ),
                       ),
-                    );
+                );
+                if (!success) return;
               }
-              Navigator.of(ctx).pop();
+              if (ctx.mounted) {
+                Navigator.of(ctx).pop();
+              }
             },
             child: const Text('Save'),
           ),
@@ -629,6 +644,26 @@ class _DeleteConfirmDialog extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+Future<bool> _runRelayAction(
+  BuildContext context,
+  Future<Object?> Function() action,
+) async {
+  try {
+    await action();
+    return true;
+  } catch (error) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(error.toString()),
+          backgroundColor: AppColors.error,
+        ),
+      );
+    }
+    return false;
   }
 }
 
