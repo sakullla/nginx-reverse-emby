@@ -1968,6 +1968,34 @@ func TestPerformSyncIncludesApplyStatusAndManagedCertificateReports(t *testing.T
 	}
 }
 
+func TestPerformSyncOmitsZeroOnlyTrafficStats(t *testing.T) {
+	traffic.Reset()
+	traffic.SetEnabled(true)
+	t.Cleanup(func() {
+		traffic.SetEnabled(true)
+		traffic.Reset()
+	})
+
+	cfg := Config{CurrentVersion: "1.0.0", TrafficStatsEnabled: true, TrafficStatsExplicit: true}
+	mem := store.NewInMemory()
+	applied := Snapshot{DesiredVersion: "1.0.0", Revision: 7}
+	if err := mem.SaveAppliedSnapshot(applied); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+
+	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{DesiredVersion: "ok", Revision: 7}})
+	app := newAppWithDeps(cfg, mem, client, &testCertificateApplier{}, nil, nil)
+
+	if err := app.performSync(context.Background()); err != nil {
+		t.Fatalf("performSync() error = %v", err)
+	}
+
+	req := waitForRequest(t, client, time.Second)
+	if req.Stats != nil {
+		t.Fatalf("Stats = %#v, want nil before traffic is recorded", req.Stats)
+	}
+}
+
 func TestPerformSyncOmitsStatsWhenTrafficStatsDisabled(t *testing.T) {
 	traffic.Reset()
 	traffic.SetEnabled(false)

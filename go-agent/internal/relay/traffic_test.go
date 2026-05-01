@@ -55,6 +55,50 @@ func TestPipeBothWaysRecordsRelayTraffic(t *testing.T) {
 	}
 }
 
+func TestPipeBothWaysReportsRelayTrafficBeforeStreamsClose(t *testing.T) {
+	traffic.Reset()
+	defer traffic.Reset()
+
+	left, clientPeer := net.Pipe()
+	right, upstreamPeer := net.Pipe()
+	defer left.Close()
+	defer clientPeer.Close()
+	defer right.Close()
+	defer upstreamPeer.Close()
+
+	done := make(chan struct{})
+	go func() {
+		pipeBothWays(left, right)
+		close(done)
+	}()
+
+	if _, err := clientPeer.Write([]byte("active-inbound")); err != nil {
+		t.Fatalf("client write error: %v", err)
+	}
+	readRelayExact(t, upstreamPeer, len("active-inbound"))
+
+	if _, err := upstreamPeer.Write([]byte("active-outbound")); err != nil {
+		t.Fatalf("upstream write error: %v", err)
+	}
+	readRelayExact(t, clientPeer, len("active-outbound"))
+
+	relayStats := waitForRelayTraffic(t, len("active-inbound"), len("active-outbound"))
+	if relayStats["rx_bytes"] != uint64(len("active-inbound")) {
+		t.Fatalf("relay rx_bytes while stream active = %d", relayStats["rx_bytes"])
+	}
+	if relayStats["tx_bytes"] != uint64(len("active-outbound")) {
+		t.Fatalf("relay tx_bytes while stream active = %d", relayStats["tx_bytes"])
+	}
+
+	_ = clientPeer.Close()
+	_ = upstreamPeer.Close()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("pipeBothWays did not exit")
+	}
+}
+
 func TestPipeUDPPacketsFlushesTrafficAfterBothDirectionsFinish(t *testing.T) {
 	traffic.Reset()
 	defer traffic.Reset()
@@ -95,6 +139,23 @@ func readRelayExact(t *testing.T, r io.Reader, size int) {
 	buf := make([]byte, size)
 	if _, err := io.ReadFull(r, buf); err != nil {
 		t.Fatalf("read error: %v", err)
+	}
+}
+
+func waitForRelayTraffic(t *testing.T, wantRX int, wantTX int) map[string]uint64 {
+	t.Helper()
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		stats := traffic.Snapshot()["traffic"].(map[string]any)
+		relayStats := stats["relay"].(map[string]uint64)
+		if relayStats["rx_bytes"] == uint64(wantRX) && relayStats["tx_bytes"] == uint64(wantTX) {
+			return relayStats
+		}
+		if time.Now().After(deadline) {
+			return relayStats
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 

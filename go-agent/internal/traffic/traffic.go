@@ -87,21 +87,20 @@ func Snapshot() map[string]any {
 	if !Enabled() {
 		return nil
 	}
-	http := snapshotCounters(&httpCounters)
-	l4 := snapshotCounters(&l4Counters)
-	relay := snapshotCounters(&relayCounters)
-	total := map[string]uint64{
-		"rx_bytes": http["rx_bytes"] + l4["rx_bytes"] + relay["rx_bytes"],
-		"tx_bytes": http["tx_bytes"] + l4["tx_bytes"] + relay["tx_bytes"],
+	return snapshot()
+}
+
+func SnapshotNonZero() map[string]any {
+	if !Enabled() {
+		return nil
 	}
-	return map[string]any{
-		"traffic": map[string]any{
-			"total": total,
-			"http":  http,
-			"l4":    l4,
-			"relay": relay,
-		},
+	stats := snapshot()
+	trafficStats := stats["traffic"].(map[string]any)
+	total := trafficStats["total"].(map[string]uint64)
+	if total["rx_bytes"] == 0 && total["tx_bytes"] == 0 {
+		return nil
 	}
+	return stats
 }
 
 func Reset() {
@@ -141,5 +140,23 @@ func snapshotCounters(counter *counters) map[string]uint64 {
 	return map[string]uint64{
 		"rx_bytes": counter.rx.Load(),
 		"tx_bytes": counter.tx.Load(),
+	}
+}
+
+func snapshot() map[string]any {
+	http := snapshotCounters(&httpCounters)
+	l4 := snapshotCounters(&l4Counters)
+	relay := snapshotCounters(&relayCounters)
+	total := map[string]uint64{
+		"rx_bytes": http["rx_bytes"] + l4["rx_bytes"] + relay["rx_bytes"],
+		"tx_bytes": http["tx_bytes"] + l4["tx_bytes"] + relay["tx_bytes"],
+	}
+	return map[string]any{
+		"traffic": map[string]any{
+			"total": total,
+			"http":  http,
+			"l4":    l4,
+			"relay": relay,
+		},
 	}
 }

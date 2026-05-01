@@ -390,7 +390,7 @@ func (a *App) syncRequest(ctx context.Context, applied Snapshot) (SyncRequest, e
 	if req.LastApplyStatus == "" {
 		req.LastApplyStatus = "success"
 	}
-	if stats := traffic.Snapshot(); stats != nil {
+	if stats := traffic.SnapshotNonZero(); stats != nil {
 		req.Stats = stats
 	}
 

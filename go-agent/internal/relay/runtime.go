@@ -1027,18 +1027,17 @@ func (s *Server) closeQUICConns() {
 
 func pipeBothWays(left, right net.Conn) {
 	done := make(chan struct{}, 2)
+	recorder := traffic.NewRelayRecorder()
 
 	go func() {
-		n, _ := copyGeneric(right, left)
-		traffic.AddRelay(n, 0)
+		_, _ = copyRelayTraffic(right, left, true, recorder)
 		closeWrite(right)
 		closeRead(left)
 		done <- struct{}{}
 	}()
 
 	go func() {
-		n, _ := copyGeneric(left, right)
-		traffic.AddRelay(0, n)
+		_, _ = copyRelayTraffic(left, right, false, recorder)
 		closeWrite(left)
 		closeRead(right)
 		done <- struct{}{}
@@ -1046,6 +1045,7 @@ func pipeBothWays(left, right net.Conn) {
 
 	<-done
 	<-done
+	recorder.Flush()
 }
 
 func closeWrite(conn net.Conn) {
