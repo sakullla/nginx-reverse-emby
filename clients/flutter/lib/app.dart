@@ -40,7 +40,7 @@ class NreClientApp extends ConsumerWidget {
       loading: () => const MaterialApp(
         home: Scaffold(body: Center(child: CircularProgressIndicator())),
       ),
-      error: (_, __) => const MaterialApp(
+      error: (error, stackTrace) => const MaterialApp(
         home: Scaffold(body: Center(child: Text('Failed to load theme'))),
       ),
     );

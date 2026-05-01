@@ -3,7 +3,7 @@ import 'package:mocktail/mocktail.dart';
 import 'package:nre_client/features/auth/data/models/auth_models.dart';
 import 'package:nre_client/features/auth/data/repositories/auth_repository.dart';
 import 'package:nre_client/features/auth/presentation/providers/auth_provider.dart';
-import 'package:riverpod/riverpod.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 class MockAuthRepository extends Mock implements AuthRepository {}
 

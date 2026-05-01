@@ -2,7 +2,6 @@ import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:nre_client/core/network/master_api.dart';
-import 'package:nre_client/features/rules/data/models/rule_models.dart';
 
 class MockDio extends Mock implements Dio {}
 
