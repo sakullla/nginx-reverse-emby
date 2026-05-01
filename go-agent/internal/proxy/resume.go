@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
 )
 
 type resumableResponse struct {
@@ -57,6 +59,7 @@ func (e *routeEntry) copyResumableResponse(w http.ResponseWriter, req *http.Requ
 	for {
 		n, readErr, writeErr := copyResumableChunk(w, current.Body)
 		sentBytes += n
+		traffic.AddHTTP(0, n)
 		if writeErr != nil {
 			_ = current.Body.Close()
 			return fail(sentBytes, writeErr)

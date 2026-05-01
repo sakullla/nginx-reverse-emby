@@ -11,8 +11,8 @@ type counters struct {
 
 type Recorder struct {
 	counter *counters
-	rx      uint64
-	tx      uint64
+	rx      atomic.Uint64
+	tx      atomic.Uint64
 }
 
 var (
@@ -62,13 +62,16 @@ func (r *Recorder) Add(rxBytes, txBytes int64) {
 	if r == nil || r.counter == nil || !Enabled() {
 		return
 	}
+	var added uint64
 	if rxBytes > 0 {
-		r.rx += uint64(rxBytes)
+		added += uint64(rxBytes)
+		r.rx.Add(uint64(rxBytes))
 	}
 	if txBytes > 0 {
-		r.tx += uint64(txBytes)
+		added += uint64(txBytes)
+		r.tx.Add(uint64(txBytes))
 	}
-	if r.rx+r.tx >= recorderFlushThreshold {
+	if added > 0 && r.rx.Load()+r.tx.Load() >= recorderFlushThreshold {
 		r.Flush()
 	}
 }
@@ -77,9 +80,7 @@ func (r *Recorder) Flush() {
 	if r == nil || r.counter == nil || !Enabled() {
 		return
 	}
-	addUint64(r.counter, r.rx, r.tx)
-	r.rx = 0
-	r.tx = 0
+	addUint64(r.counter, r.rx.Swap(0), r.tx.Swap(0))
 }
 
 func Snapshot() map[string]any {

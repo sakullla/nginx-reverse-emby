@@ -26,6 +26,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
 	agenttask "github.com/sakullla/nginx-reverse-emby/go-agent/internal/task"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
 )
 
 func TestHTTPRuntimeManagerUsesConfiguredTransportAndBackoff(t *testing.T) {
@@ -62,6 +63,34 @@ func TestHTTPRuntimeManagerUsesConfiguredTransportAndBackoff(t *testing.T) {
 	}
 	if !manager.options.ResumeEnabled {
 		t.Fatal("expected resume to be enabled")
+	}
+}
+
+func TestNewEmbeddedAppliesTrafficStatsToggle(t *testing.T) {
+	traffic.SetEnabled(true)
+	t.Cleanup(func() {
+		traffic.SetEnabled(true)
+		traffic.Reset()
+	})
+
+	app, err := NewEmbedded(Config{
+		AgentID:              "local",
+		AgentName:            "local",
+		DataDir:              t.TempDir(),
+		TrafficStatsEnabled:  false,
+		TrafficStatsExplicit: true,
+	}, store.NewInMemory(), staticSyncClient{})
+	if err != nil {
+		t.Fatalf("NewEmbedded() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := app.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+
+	if traffic.Enabled() {
+		t.Fatal("traffic stats should be disabled for embedded app")
 	}
 }
 

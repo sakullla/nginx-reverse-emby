@@ -7,6 +7,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
 	agenttask "github.com/sakullla/nginx-reverse-emby/go-agent/internal/task"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
 )
 
 func NewEmbedded(cfg Config, st store.Store, client SyncClient) (*App, error) {
@@ -18,6 +19,7 @@ func NewEmbedded(cfg Config, st store.Store, client SyncClient) (*App, error) {
 	}
 
 	cfg = normalizeConstructorConfig(cfg)
+	traffic.SetEnabled(cfg.TrafficStatsEnabled)
 
 	resetRelayTimeouts := relay.ConfigureTimeouts(relay.TimeoutConfig{
 		DialTimeout:      cfg.RelayTimeouts.DialTimeout,

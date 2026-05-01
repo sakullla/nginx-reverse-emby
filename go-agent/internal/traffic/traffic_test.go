@@ -1,6 +1,9 @@
 package traffic
 
-import "testing"
+import (
+	"sync"
+	"testing"
+)
 
 func TestSnapshotAggregatesTrafficByCategory(t *testing.T) {
 	Reset()
@@ -63,6 +66,32 @@ func TestRecorderBatchesTrafficUntilFlush(t *testing.T) {
 	stats = Snapshot()
 	traffic = stats["traffic"].(map[string]any)
 	assertTrafficCounters(t, traffic["http"], 40, 60)
+}
+
+func TestRecorderCanBeSharedAcrossConcurrentDirections(t *testing.T) {
+	Reset()
+
+	recorder := NewL4Recorder()
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func(direction int) {
+			defer wg.Done()
+			for j := 0; j < 1000; j++ {
+				if direction == 0 {
+					recorder.Add(7, 0)
+					continue
+				}
+				recorder.Add(0, 11)
+			}
+		}(i)
+	}
+	wg.Wait()
+	recorder.Flush()
+
+	stats := Snapshot()
+	traffic := stats["traffic"].(map[string]any)
+	assertTrafficCounters(t, traffic["l4"], 7000, 11000)
 }
 
 func assertTrafficCounters(t *testing.T, raw any, wantRX uint64, wantTX uint64) {
