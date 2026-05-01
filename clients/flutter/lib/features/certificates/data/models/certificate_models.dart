@@ -1,3 +1,11 @@
+String stringId(dynamic value) => value?.toString() ?? '';
+
+List<String> stringList(dynamic value) =>
+    value is List ? value.map((item) => item.toString()).toList() : const [];
+
+DateTime? dateTimeOrNull(dynamic value) =>
+    value is String ? DateTime.tryParse(value) : null;
+
 /// Certificate status derived from the expiry date.
 enum CertStatus { valid, expiring, expired }
 
@@ -12,6 +20,11 @@ class Certificate {
     this.isSelfSigned = false,
     this.associatedRules = const [],
     this.fingerprint,
+    this.scope,
+    this.issuerMode,
+    this.certificateType,
+    this.backendStatus,
+    this.targetAgentIds = const [],
   });
 
   final String id;
@@ -22,6 +35,11 @@ class Certificate {
   final bool isSelfSigned;
   final List<String> associatedRules; // domain names using this cert
   final String? fingerprint;
+  final String? scope;
+  final String? issuerMode;
+  final String? certificateType;
+  final String? backendStatus;
+  final List<String> targetAgentIds;
 
   /// Derive status from [expiresAt].
   CertStatus get status {
@@ -51,31 +69,34 @@ class Certificate {
   }
 
   factory Certificate.fromJson(Map<String, dynamic> json) => Certificate(
-        id: json['id'] as String? ?? '',
-        domain: json['domain'] as String? ?? '',
-        ca: json['ca'] as String?,
-        issuedAt: json['issued_at'] != null
-            ? DateTime.tryParse(json['issued_at'] as String)
-            : null,
-        expiresAt: json['expires_at'] != null
-            ? DateTime.tryParse(json['expires_at'] as String)
-            : null,
-        isSelfSigned: json['self_signed'] as bool? ?? false,
-        associatedRules: (json['associated_rules'] as List<dynamic>?)
-                ?.whereType<String>()
-                .toList() ??
-            [],
-        fingerprint: json['fingerprint'] as String?,
-      );
+    id: stringId(json['id']),
+    domain: json['domain'] as String? ?? '',
+    ca: json['ca'] as String?,
+    issuedAt: dateTimeOrNull(json['issued_at']),
+    expiresAt: dateTimeOrNull(json['expires_at']),
+    isSelfSigned: json['self_signed'] as bool? ?? false,
+    associatedRules: stringList(json['associated_rules']),
+    fingerprint: json['fingerprint'] as String?,
+    scope: json['scope']?.toString(),
+    issuerMode: json['issuer_mode']?.toString(),
+    certificateType: json['certificate_type']?.toString(),
+    backendStatus: json['status']?.toString(),
+    targetAgentIds: stringList(json['target_agent_ids']),
+  );
 
   Map<String, dynamic> toJson() => {
-        'id': id,
-        'domain': domain,
-        if (ca != null) 'ca': ca,
-        if (issuedAt != null) 'issued_at': issuedAt!.toIso8601String(),
-        if (expiresAt != null) 'expires_at': expiresAt!.toIso8601String(),
-        'self_signed': isSelfSigned,
-        'associated_rules': associatedRules,
-        if (fingerprint != null) 'fingerprint': fingerprint,
-      };
+    'id': id,
+    'domain': domain,
+    if (ca != null) 'ca': ca,
+    if (issuedAt != null) 'issued_at': issuedAt!.toIso8601String(),
+    if (expiresAt != null) 'expires_at': expiresAt!.toIso8601String(),
+    'self_signed': isSelfSigned,
+    'associated_rules': associatedRules,
+    if (fingerprint != null) 'fingerprint': fingerprint,
+    if (scope != null) 'scope': scope,
+    if (issuerMode != null) 'issuer_mode': issuerMode,
+    if (certificateType != null) 'certificate_type': certificateType,
+    if (backendStatus != null) 'status': backendStatus,
+    'target_agent_ids': targetAgentIds,
+  };
 }
