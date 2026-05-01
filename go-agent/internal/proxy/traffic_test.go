@@ -34,7 +34,7 @@ func TestCopyResponseRecordsHTTPTraffic(t *testing.T) {
 	}
 }
 
-func TestPrepareReusableBodyRecordsBufferedRequestBodyTraffic(t *testing.T) {
+func TestPrepareReusableBodyDoesNotRecordBufferedRequestBodyTrafficBeforeRead(t *testing.T) {
 	traffic.Reset()
 	defer traffic.Reset()
 
@@ -45,8 +45,36 @@ func TestPrepareReusableBodyRecordsBufferedRequestBodyTraffic(t *testing.T) {
 
 	stats := traffic.Snapshot()["traffic"].(map[string]any)
 	httpStats := stats["http"].(map[string]uint64)
-	if httpStats["rx_bytes"] != uint64(len("request-body")) {
-		t.Fatalf("http rx_bytes = %d, want %d", httpStats["rx_bytes"], len("request-body"))
+	if httpStats["rx_bytes"] != 0 {
+		t.Fatalf("http rx_bytes = %d, want 0 before upstream reads", httpStats["rx_bytes"])
+	}
+}
+
+func TestCloneProxyRequestRecordsBufferedRequestBodyTrafficPerAttemptOnRead(t *testing.T) {
+	traffic.Reset()
+	defer traffic.Reset()
+
+	const payload = "request-body"
+	req := httptest.NewRequest(http.MethodGet, "https://frontend.example.com/upload", ioNopCloser{Reader: bytes.NewReader([]byte(payload))})
+	body, err := prepareReusableBody(req, 2)
+	if err != nil {
+		t.Fatalf("prepareReusableBody() error = %v", err)
+	}
+
+	for i := 0; i < 2; i++ {
+		cloned, err := cloneProxyRequest(req, body, httpCandidate{target: mustParseURLForTrafficTest(t, "http://backend.example.com")}, model.HTTPRule{}, "/")
+		if err != nil {
+			t.Fatalf("cloneProxyRequest(%d) error = %v", i, err)
+		}
+		if _, err := io.ReadAll(cloned.Body); err != nil {
+			t.Fatalf("ReadAll(cloned.Body %d) error = %v", i, err)
+		}
+	}
+
+	stats := traffic.Snapshot()["traffic"].(map[string]any)
+	httpStats := stats["http"].(map[string]uint64)
+	if httpStats["rx_bytes"] != uint64(len(payload)*2) {
+		t.Fatalf("http rx_bytes = %d, want %d", httpStats["rx_bytes"], len(payload)*2)
 	}
 }
 

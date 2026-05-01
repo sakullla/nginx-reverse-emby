@@ -985,7 +985,6 @@ func prepareReusableBody(req *http.Request, maxAttempts int) (*reusableRequestBo
 	if err != nil {
 		return nil, err
 	}
-	traffic.AddHTTP(int64(len(body)), 0)
 	return &reusableRequestBody{buffered: body}, nil
 }
 
@@ -1048,8 +1047,16 @@ func cloneProxyRequest(req *http.Request, body *reusableRequestBody, candidate h
 	if body != nil {
 		out.Body, out.ContentLength, out.GetBody = body.Open()
 		if out.Body != nil {
-			if out.ContentLength <= 0 {
-				out.Body = newTrafficReadCloser(out.Body)
+			out.Body = newTrafficReadCloser(out.Body)
+			if out.GetBody != nil {
+				getBody := out.GetBody
+				out.GetBody = func() (io.ReadCloser, error) {
+					body, err := getBody()
+					if err != nil {
+						return nil, err
+					}
+					return newTrafficReadCloser(body), nil
+				}
 			}
 		}
 	} else {
