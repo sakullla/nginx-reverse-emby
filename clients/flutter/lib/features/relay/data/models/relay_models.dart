@@ -16,6 +16,7 @@ class RelayListener {
     this.listenPort,
     this.bindHosts = const [],
     this.tlsMode,
+    this.trustModeSource,
     this.certificateSource,
     this.certificateId,
   }) : listenAddress =
@@ -34,6 +35,7 @@ class RelayListener {
   final int? listenPort;
   final List<String> bindHosts;
   final String? tlsMode;
+  final String? trustModeSource;
   final String? certificateSource;
   final String? certificateId;
 
@@ -54,6 +56,7 @@ class RelayListener {
       listenPort: listenPort,
       bindHosts: bindHosts,
       tlsMode: json['tls_mode']?.toString(),
+      trustModeSource: json['trust_mode_source']?.toString(),
       certificateSource: json['certificate_source']?.toString(),
       certificateId: json['certificate_id']?.toString(),
     );
@@ -70,6 +73,7 @@ class RelayListener {
     if (listenPort != null) 'listen_port': listenPort,
     'bind_hosts': bindHosts,
     if (tlsMode != null) 'tls_mode': tlsMode,
+    if (trustModeSource != null) 'trust_mode_source': trustModeSource,
     if (certificateSource != null) 'certificate_source': certificateSource,
     if (certificateId != null) 'certificate_id': certificateId,
   };
@@ -85,6 +89,7 @@ class RelayListener {
     int? listenPort,
     List<String>? bindHosts,
     String? tlsMode,
+    String? trustModeSource,
     String? certificateSource,
     String? certificateId,
   }) => RelayListener(
@@ -98,6 +103,7 @@ class RelayListener {
     listenPort: listenPort ?? this.listenPort,
     bindHosts: bindHosts ?? this.bindHosts,
     tlsMode: tlsMode ?? this.tlsMode,
+    trustModeSource: trustModeSource ?? this.trustModeSource,
     certificateSource: certificateSource ?? this.certificateSource,
     certificateId: certificateId ?? this.certificateId,
   );
@@ -111,6 +117,7 @@ class CreateRelayListenerRequest {
     this.bindHosts = const [],
     this.enabled = true,
     this.tlsMode,
+    this.trustModeSource,
     this.certificateSource,
     this.certificateId,
   });
@@ -121,6 +128,7 @@ class CreateRelayListenerRequest {
   final List<String> bindHosts;
   final bool enabled;
   final String? tlsMode;
+  final String? trustModeSource;
   final String? certificateSource;
   final String? certificateId;
 
@@ -131,6 +139,7 @@ class CreateRelayListenerRequest {
     'bind_hosts': bindHosts,
     'enabled': enabled,
     if (tlsMode != null) 'tls_mode': tlsMode,
+    if (trustModeSource != null) 'trust_mode_source': trustModeSource,
     if (certificateSource != null) 'certificate_source': certificateSource,
     if (certificateId != null) 'certificate_id': certificateId,
   };
@@ -143,6 +152,7 @@ class UpdateRelayListenerRequest {
     this.bindHosts,
     this.enabled,
     this.tlsMode,
+    this.trustModeSource,
     this.certificateSource,
     this.certificateId,
   });
@@ -152,6 +162,7 @@ class UpdateRelayListenerRequest {
   final List<String>? bindHosts;
   final bool? enabled;
   final String? tlsMode;
+  final String? trustModeSource;
   final String? certificateSource;
   final String? certificateId;
 
@@ -161,6 +172,7 @@ class UpdateRelayListenerRequest {
     if (bindHosts != null) 'bind_hosts': bindHosts,
     if (enabled != null) 'enabled': enabled,
     if (tlsMode != null) 'tls_mode': tlsMode,
+    if (trustModeSource != null) 'trust_mode_source': trustModeSource,
     if (certificateSource != null) 'certificate_source': certificateSource,
     if (certificateId != null) 'certificate_id': certificateId,
   };

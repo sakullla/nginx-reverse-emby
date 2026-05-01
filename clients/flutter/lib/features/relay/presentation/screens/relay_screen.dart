@@ -16,6 +16,7 @@ import '../providers/relay_provider.dart';
 
 const _relayCertificateSources = ['auto_relay_ca', 'existing_certificate'];
 const _relayTrustModes = ['pin_only', 'ca_only', 'pin_or_ca', 'pin_and_ca'];
+const _relayTrustModeSources = ['auto', 'custom'];
 
 class RelayScreen extends ConsumerWidget {
   const RelayScreen({super.key});
@@ -464,9 +465,15 @@ Future<void> showRelayFormDialog(
       _relayCertificateSources.contains(existing?.certificateSource)
       ? existing!.certificateSource!
       : 'auto_relay_ca';
+  var trustModeSource =
+      _relayTrustModeSources.contains(existing?.trustModeSource)
+      ? existing!.trustModeSource!
+      : existing == null
+      ? 'auto'
+      : 'custom';
   var trustMode = _relayTrustModes.contains(existing?.tlsMode)
       ? existing!.tlsMode!
-      : 'pin_or_ca';
+      : 'pin_and_ca';
   var enabled = existing?.enabled ?? true;
 
   return showDialog<void>(
@@ -511,6 +518,28 @@ Future<void> showRelayFormDialog(
                 onChanged: (value) {
                   if (value != null) {
                     setState(() => certificateSource = value);
+                  }
+                },
+              ),
+              DropdownButtonFormField<String>(
+                initialValue: trustModeSource,
+                decoration: const InputDecoration(
+                  labelText: 'Trust mode source',
+                ),
+                items: _relayTrustModeSources
+                    .map(
+                      (value) =>
+                          DropdownMenuItem(value: value, child: Text(value)),
+                    )
+                    .toList(),
+                onChanged: (value) {
+                  if (value != null) {
+                    setState(() {
+                      trustModeSource = value;
+                      if (value == 'auto') {
+                        trustMode = 'pin_and_ca';
+                      }
+                    });
                   }
                 },
               ),
@@ -560,6 +589,7 @@ Future<void> showRelayFormDialog(
                           bindHosts: bindHosts,
                           enabled: enabled,
                           certificateSource: certificateSource,
+                          trustModeSource: trustModeSource,
                           tlsMode: trustMode,
                         ),
                       ),
@@ -578,6 +608,7 @@ Future<void> showRelayFormDialog(
                           bindHosts: bindHosts,
                           enabled: enabled,
                           certificateSource: certificateSource,
+                          trustModeSource: trustModeSource,
                           tlsMode: trustMode,
                         ),
                       ),

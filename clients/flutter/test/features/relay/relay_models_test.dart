@@ -21,4 +21,20 @@ void main() {
     expect(listener.agentName, 'edge-a');
     expect(listener.certificateId, '21');
   });
+
+  test('CreateRelayListenerRequest serializes auto trust controls', () {
+    final json = const CreateRelayListenerRequest(
+      agentId: 'local',
+      name: 'public-tls',
+      listenPort: 8443,
+      bindHosts: ['0.0.0.0'],
+      certificateSource: 'auto_relay_ca',
+      trustModeSource: 'auto',
+      tlsMode: 'pin_and_ca',
+    ).toJson();
+
+    expect(json['certificate_source'], 'auto_relay_ca');
+    expect(json['trust_mode_source'], 'auto');
+    expect(json['tls_mode'], 'pin_and_ca');
+  });
 }

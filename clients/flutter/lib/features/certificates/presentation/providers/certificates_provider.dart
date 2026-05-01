@@ -8,7 +8,7 @@ part 'certificates_provider.g.dart';
 // Filter state
 // ---------------------------------------------------------------------------
 
-enum CertStatusFilter { all, valid, expiring, expired }
+enum CertStatusFilter { all, active, pending, error, valid, expiring, expired }
 
 @riverpod
 class CertStatusFilterNotifier extends _$CertStatusFilterNotifier {
@@ -29,7 +29,7 @@ List<Certificate> filteredCertificates(FilteredCertificatesRef ref) {
 
   return certs.where((cert) {
     if (statusFilter == CertStatusFilter.all) return true;
-    return cert.status.name == statusFilter.name;
+    return cert.displayStatus == statusFilter.name;
   }).toList();
 }
 
@@ -55,7 +55,9 @@ class CertificatesList extends _$CertificatesList {
     });
   }
 
-  Future<Certificate> createCertificate(CreateCertificateRequest request) async {
+  Future<Certificate> createCertificate(
+    CreateCertificateRequest request,
+  ) async {
     final previous = state.value ?? [];
     try {
       final api = ref.read(panelApiClientProvider);

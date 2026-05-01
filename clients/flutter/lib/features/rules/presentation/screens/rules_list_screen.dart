@@ -298,9 +298,12 @@ class _RuleCard extends ConsumerWidget {
           GlassToggle(
             value: rule.enabled,
             onChanged: canEdit
-                ? (v) => ref
-                      .read(rulesListProvider.notifier)
-                      .toggleRule(rule.id, v)
+                ? (v) => _runRuleAction(
+                    context,
+                    () => ref
+                        .read(rulesListProvider.notifier)
+                        .toggleRule(rule.id, v),
+                  )
                 : null,
           ),
           if (canEdit) ...[
@@ -462,12 +465,34 @@ class _RuleMenu extends ConsumerWidget {
       barrierColor: Colors.black.withValues(alpha: 0.5),
       builder: (ctx) => _DeleteConfirmDialog(
         rule: rule,
-        onConfirm: () {
-          ref.read(rulesListProvider.notifier).deleteRule(rule.id);
-          Navigator.of(ctx).pop();
+        onConfirm: () async {
+          final success = await _runRuleAction(
+            context,
+            () => ref.read(rulesListProvider.notifier).deleteRule(rule.id),
+          );
+          if (success && ctx.mounted) {
+            Navigator.of(ctx).pop();
+          }
         },
       ),
     );
+  }
+}
+
+Future<bool> _runRuleAction(
+  BuildContext context,
+  Future<void> Function() action,
+) async {
+  try {
+    await action();
+    return true;
+  } catch (error) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(error.toString())));
+    }
+    return false;
   }
 }
 
@@ -479,7 +504,7 @@ class _DeleteConfirmDialog extends StatelessWidget {
   const _DeleteConfirmDialog({required this.rule, required this.onConfirm});
 
   final HttpProxyRule rule;
-  final VoidCallback onConfirm;
+  final Future<void> Function() onConfirm;
 
   @override
   Widget build(BuildContext context) {

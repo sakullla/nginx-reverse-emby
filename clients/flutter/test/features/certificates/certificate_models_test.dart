@@ -20,6 +20,8 @@ void main() {
     expect(cert.id, '21');
     expect(cert.domain, 'emby.example.com');
     expect(cert.issuerMode, 'local_http01');
+    expect(cert.backendStatus, 'active');
+    expect(cert.displayStatus, 'active');
     expect(cert.targetAgentIds, ['local']);
   });
 }

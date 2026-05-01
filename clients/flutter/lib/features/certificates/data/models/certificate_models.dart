@@ -41,6 +41,12 @@ class Certificate {
   final String? backendStatus;
   final List<String> targetAgentIds;
 
+  String get displayStatus => backendStatus?.trim().isNotEmpty == true
+      ? backendStatus!.trim()
+      : status.name;
+
+  bool get canIssue => certificateType != 'uploaded';
+
   /// Derive status from [expiresAt].
   CertStatus get status {
     if (expiresAt == null) return CertStatus.valid;

@@ -32,8 +32,9 @@ void main() {
           listenPort: 8443,
           bindHosts: const ['0.0.0.0'],
           protocol: 'TLS',
-          certificateSource: 'managed',
-          tlsMode: 'strict',
+          certificateSource: 'existing_certificate',
+          trustModeSource: 'custom',
+          tlsMode: 'pin_only',
         ),
       ],
     );
@@ -88,15 +89,17 @@ void main() {
         createVerification.captured.single as CreateRelayListenerRequest;
     expect(createRequest.agentId, 'edge-1');
     expect(createRequest.certificateSource, 'auto_relay_ca');
-    expect(createRequest.tlsMode, 'pin_or_ca');
+    expect(createRequest.trustModeSource, 'auto');
+    expect(createRequest.tlsMode, 'pin_and_ca');
 
-    await tester.tap(find.byIcon(Icons.more_horiz).last);
+    await tester.tap(find.byIcon(Icons.more_horiz).first);
     await tester.pumpAndSettle();
     await tester.tap(find.text('Edit'));
     await tester.pumpAndSettle();
 
     expect(find.text('Relay listener'), findsOneWidget);
     expect(find.text('Certificate source'), findsOneWidget);
-    expect(find.text('auto_relay_ca'), findsOneWidget);
+    expect(find.text('existing_certificate'), findsOneWidget);
+    expect(find.text('custom'), findsOneWidget);
   });
 }

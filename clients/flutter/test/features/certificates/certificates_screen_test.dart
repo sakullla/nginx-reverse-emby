@@ -28,10 +28,7 @@ void main() {
     );
     when(() => api.fetchCertificates('local')).thenAnswer((_) async => [cert]);
     when(() => api.createCertificate('local', any())).thenAnswer(
-      (_) async => const Certificate(
-        id: 'cert-2',
-        domain: 'new.example.com',
-      ),
+      (_) async => const Certificate(id: 'cert-2', domain: 'new.example.com'),
     );
     when(() => api.issueCertificate('local', 'cert-1')).thenAnswer(
       (_) async => Certificate(
@@ -87,8 +84,45 @@ void main() {
     await tester.tap(find.text('Close'));
     await tester.pumpAndSettle();
 
-    await tester.tap(find.text('Renew'));
+    await tester.tap(find.text('Renew').first);
     await tester.pumpAndSettle();
     verify(() => api.issueCertificate('local', 'cert-1')).called(1);
+  });
+
+  testWidgets('certificate import requires certificate and private key pem', (
+    tester,
+  ) async {
+    final api = _MockPanelApiClient();
+    when(
+      () => api.fetchCertificates('local'),
+    ).thenAnswer((_) async => const []);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          selectedAgentIdProvider.overrideWith((ref) => 'local'),
+          panelApiClientProvider.overrideWith((ref) => api),
+        ],
+        child: const MaterialApp(
+          localizationsDelegates: AppLocalizations.localizationsDelegates,
+          supportedLocales: AppLocalizations.supportedLocales,
+          home: CertificatesScreen(),
+        ),
+      ),
+    );
+
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Import').first);
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField).first, 'new.example.com');
+    await tester.tap(find.text('Save'));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.text('Certificate PEM and private key are required'),
+      findsOneWidget,
+    );
+    verifyNever(() => api.createCertificate('local', any()));
   });
 }

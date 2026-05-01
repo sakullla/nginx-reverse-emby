@@ -100,12 +100,11 @@ class _TopActionsBar extends ConsumerWidget {
         GlassButton.secondary(
           label: loc.btnImport,
           icon: '↑',
-          onPressed: () =>
-              _showCertificateFormDialog(
-                context,
-                ref,
-                mode: _CertificateFormMode.import,
-              ),
+          onPressed: () => _showCertificateFormDialog(
+            context,
+            ref,
+            mode: _CertificateFormMode.import,
+          ),
         ),
         const SizedBox(width: AppSpacing.s8),
 
@@ -113,12 +112,11 @@ class _TopActionsBar extends ConsumerWidget {
         GlassButton.primary(
           label: loc.btnRequest,
           icon: '+',
-          onPressed: () =>
-              _showCertificateFormDialog(
-                context,
-                ref,
-                mode: _CertificateFormMode.request,
-              ),
+          onPressed: () => _showCertificateFormDialog(
+            context,
+            ref,
+            mode: _CertificateFormMode.request,
+          ),
         ),
         const SizedBox(width: AppSpacing.s12),
 
@@ -166,6 +164,12 @@ class _StatusFilterDropdown extends StatelessWidget {
     switch (f) {
       case CertStatusFilter.all:
         return loc.filterAllStatus;
+      case CertStatusFilter.active:
+        return 'Active';
+      case CertStatusFilter.pending:
+        return 'Pending';
+      case CertStatusFilter.error:
+        return 'Error';
       case CertStatusFilter.valid:
         return loc.certStatusValid;
       case CertStatusFilter.expiring:
@@ -367,7 +371,7 @@ class _HeaderRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final statusColor = _statusColor(cert.status);
+    final statusColor = _statusColor(cert);
 
     return Row(
       children: [
@@ -406,7 +410,7 @@ class _HeaderRow extends StatelessWidget {
                     ),
                   ),
                   const SizedBox(width: AppSpacing.s8),
-                  _StatusBadge(status: cert.status, loc: loc),
+                  _StatusBadge(cert: cert, loc: loc),
                   if (cert.isSelfSigned) ...[
                     const SizedBox(width: AppSpacing.s4),
                     GlassChip(
@@ -447,11 +451,21 @@ class _HeaderRow extends StatelessWidget {
     );
   }
 
-  Color _statusColor(CertStatus status) => switch (status) {
-    CertStatus.valid => AppColors.success,
-    CertStatus.expiring => AppColors.warning,
-    CertStatus.expired => AppColors.error,
-  };
+  Color _statusColor(Certificate cert) {
+    switch (cert.displayStatus) {
+      case 'active':
+        return AppColors.success;
+      case 'pending':
+        return AppColors.warning;
+      case 'error':
+        return AppColors.error;
+    }
+    return switch (cert.status) {
+      CertStatus.valid => AppColors.success,
+      CertStatus.expiring => AppColors.warning,
+      CertStatus.expired => AppColors.error,
+    };
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -459,14 +473,22 @@ class _HeaderRow extends StatelessWidget {
 // ---------------------------------------------------------------------------
 
 class _StatusBadge extends StatelessWidget {
-  const _StatusBadge({required this.status, required this.loc});
+  const _StatusBadge({required this.cert, required this.loc});
 
-  final CertStatus status;
+  final Certificate cert;
   final AppLocalizations loc;
 
   @override
   Widget build(BuildContext context) {
-    return switch (status) {
+    switch (cert.displayStatus) {
+      case 'active':
+        return GlassChip.success(label: 'Active', showDot: true);
+      case 'pending':
+        return GlassChip.warning(label: 'Pending', showDot: true);
+      case 'error':
+        return GlassChip.error(label: 'Error', showDot: true);
+    }
+    return switch (cert.status) {
       CertStatus.valid => GlassChip.success(
         label: loc.certStatusValid,
         showDot: true,
@@ -618,11 +640,9 @@ class _ActionRow extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final isExpiring = cert.status == CertStatus.expiring;
-
     return Row(
       children: [
-        if (isExpiring) ...[
+        if (cert.canIssue) ...[
           GlassButton.warning(
             label: loc.btnRenew,
             onPressed: () => _runCertificateAction(
@@ -711,76 +731,101 @@ void _showCertificateFormDialog(
   final keyPemController = TextEditingController();
   final caPemController = TextEditingController();
   final isImport = mode == _CertificateFormMode.import;
+  var validationError = '';
   showDialog<void>(
     context: context,
-    builder: (ctx) => AlertDialog(
-      title: Text(isImport ? 'Import certificate' : 'Request certificate'),
-      content: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(
-              controller: domainController,
-              decoration: const InputDecoration(labelText: 'Domain'),
-            ),
-            if (isImport) ...[
+    builder: (ctx) => StatefulBuilder(
+      builder: (ctx, setState) => AlertDialog(
+        title: Text(isImport ? 'Import certificate' : 'Request certificate'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
               TextField(
-                controller: certPemController,
-                decoration: const InputDecoration(
-                  labelText: 'Certificate PEM',
-                ),
-                minLines: 2,
-                maxLines: 4,
+                controller: domainController,
+                decoration: const InputDecoration(labelText: 'Domain'),
               ),
-              TextField(
-                controller: keyPemController,
-                decoration: const InputDecoration(labelText: 'Private key PEM'),
-                minLines: 2,
-                maxLines: 4,
-              ),
-              TextField(
-                controller: caPemController,
-                decoration: const InputDecoration(labelText: 'CA PEM'),
-                minLines: 1,
-                maxLines: 3,
-              ),
-            ],
-          ],
-        ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(ctx).pop(),
-          child: const Text('Cancel'),
-        ),
-        TextButton(
-          onPressed: () async {
-            final domain = domainController.text.trim();
-            if (domain.isEmpty) return;
-            final selectedAgentId = ref.read(selectedAgentIdProvider);
-            final success = await _runCertificateAction(
-              context,
-              () => ref
-                  .read(certificatesListProvider.notifier)
-                  .createCertificate(
-                    CreateCertificateRequest(
-                      domain: domain,
-                      issuerMode: 'local_http01',
-                      certificateType: isImport ? 'uploaded' : 'acme',
-                      targetAgentIds: [selectedAgentId],
-                      certificatePem: _emptyToNull(certPemController.text),
-                      privateKeyPem: _emptyToNull(keyPemController.text),
-                      caPem: _emptyToNull(caPemController.text),
-                    ),
+              if (isImport) ...[
+                TextField(
+                  controller: certPemController,
+                  decoration: const InputDecoration(
+                    labelText: 'Certificate PEM',
                   ),
-            );
-            if (success && ctx.mounted) {
-              Navigator.of(ctx).pop();
-            }
-          },
-          child: const Text('Save'),
+                  minLines: 2,
+                  maxLines: 4,
+                ),
+                TextField(
+                  controller: keyPemController,
+                  decoration: const InputDecoration(
+                    labelText: 'Private key PEM',
+                  ),
+                  minLines: 2,
+                  maxLines: 4,
+                ),
+                TextField(
+                  controller: caPemController,
+                  decoration: const InputDecoration(labelText: 'CA PEM'),
+                  minLines: 1,
+                  maxLines: 3,
+                ),
+              ],
+              if (validationError.isNotEmpty)
+                Padding(
+                  padding: const EdgeInsets.only(top: AppSpacing.s8),
+                  child: Text(
+                    validationError,
+                    style: const TextStyle(color: AppColors.error),
+                  ),
+                ),
+            ],
+          ),
         ),
-      ],
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () async {
+              final domain = domainController.text.trim();
+              if (domain.isEmpty) {
+                setState(() => validationError = 'Domain is required');
+                return;
+              }
+              if (isImport &&
+                  (certPemController.text.trim().isEmpty ||
+                      keyPemController.text.trim().isEmpty)) {
+                setState(
+                  () => validationError =
+                      'Certificate PEM and private key are required',
+                );
+                return;
+              }
+              final selectedAgentId = ref.read(selectedAgentIdProvider);
+              final success = await _runCertificateAction(
+                context,
+                () => ref
+                    .read(certificatesListProvider.notifier)
+                    .createCertificate(
+                      CreateCertificateRequest(
+                        domain: domain,
+                        issuerMode: 'local_http01',
+                        certificateType: isImport ? 'uploaded' : 'acme',
+                        targetAgentIds: [selectedAgentId],
+                        certificatePem: _emptyToNull(certPemController.text),
+                        privateKeyPem: _emptyToNull(keyPemController.text),
+                        caPem: _emptyToNull(caPemController.text),
+                      ),
+                    ),
+              );
+              if (success && ctx.mounted) {
+                Navigator.of(ctx).pop();
+              }
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      ),
     ),
   );
 }
