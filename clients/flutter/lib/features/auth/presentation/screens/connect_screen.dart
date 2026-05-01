@@ -115,14 +115,14 @@ class _ConnectScreenState extends ConsumerState<ConnectScreen> {
                     // -- Mode selector ------------------------------------------
                     Center(
                       child: SegmentedButton<ConnectionMode>(
-                        segments: const [
+                        segments: [
                           ButtonSegment(
                             value: ConnectionMode.management,
-                            label: Text('Management'),
+                            label: Text(loc.modeManagement),
                           ),
                           ButtonSegment(
                             value: ConnectionMode.agent,
-                            label: Text('Agent'),
+                            label: Text(loc.modeAgent),
                           ),
                         ],
                         selected: {_mode},
