@@ -63,9 +63,10 @@ class ClientProfile {
       _agent ?? AgentProfile(agentId: _legacyAgentId, agentToken: _legacyToken);
   String get agentId => agent.agentId;
   String get token => agent.agentToken;
-  bool get isRegistered => agent.isRegistered || management.isConfigured;
+  bool get isRegistered => agent.isRegistered;
   bool get hasAgentCredentials => agent.isRegistered;
   bool get hasManagementCredentials => management.isConfigured;
+  bool get hasAnyCredentials => hasAgentCredentials || hasManagementCredentials;
 
   Map<String, dynamic> toJson() => {
     'masterUrl': masterUrl,

@@ -22,7 +22,7 @@ class AuthNotifier extends _$AuthNotifier {
   Future<AuthState> build() async {
     final repo = ref.read(authRepositoryProvider);
     final profile = await repo.loadProfile();
-    return profile.isRegistered
+    return profile.hasAnyCredentials
         ? AuthStateAuthenticated(profile)
         : const AuthStateUnauthenticated();
   }
@@ -113,6 +113,14 @@ class AuthNotifier extends _$AuthNotifier {
     state = const AsyncData(AuthStateLoading());
     try {
       final normalizedUrl = normalizeMasterUrl(masterUrl);
+      final uri = Uri.parse(normalizedUrl);
+      if (uri.scheme != 'http' && uri.scheme != 'https') {
+        throw const FormatException('Master URL must use http or https');
+      }
+      if (uri.host.trim().isEmpty) {
+        throw const FormatException('Master URL must include a host');
+      }
+
       final token = panelToken.trim();
       if (token.isEmpty) {
         throw const FormatException('Panel token is required');
@@ -135,7 +143,7 @@ class AuthNotifier extends _$AuthNotifier {
     final repo = ref.read(authRepositoryProvider);
     final current = await repo.loadProfile();
     final next = current.clearManagement();
-    if (next.hasAgentCredentials || next.hasManagementCredentials) {
+    if (next.hasAnyCredentials) {
       await repo.saveProfile(next);
       state = AsyncData(AuthStateAuthenticated(next));
     } else {

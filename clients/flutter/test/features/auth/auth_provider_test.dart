@@ -39,9 +39,59 @@ void main() {
       expect(profile.activeMode, ConnectionMode.management);
       expect(profile.management.panelToken, 'panel-secret');
       expect(profile.hasAgentCredentials, isFalse);
-      verify(() => repo.saveProfile(any(that: isA<ClientProfile>()))).called(1);
+      final saved = verify(() => repo.saveProfile(captureAny())).captured;
+      expect(saved, hasLength(1));
+      final savedProfile = saved.single as ClientProfile;
+      expect(savedProfile.masterUrl, 'https://panel.example.com');
+      expect(savedProfile.displayName, 'ops-laptop');
+      expect(savedProfile.activeMode, ConnectionMode.management);
+      expect(savedProfile.management.panelToken, 'panel-secret');
     },
   );
+
+  test('build authenticates management-only saved profile', () async {
+    final repo = MockAuthRepository();
+    final loaded = ClientProfile(
+      masterUrl: 'https://panel.example.com',
+      activeMode: ConnectionMode.management,
+      management: const ManagementProfile(panelToken: 'panel-secret'),
+    );
+    when(repo.loadProfile).thenAnswer((_) async => loaded);
+    final container = ProviderContainer(
+      overrides: [authRepositoryProvider.overrideWithValue(repo)],
+    );
+    addTearDown(container.dispose);
+
+    final state = await container.read(authNotifierProvider.future);
+
+    expect(state, isA<AuthStateAuthenticated>());
+    final profile = (state as AuthStateAuthenticated).profile;
+    expect(profile.hasManagementCredentials, isTrue);
+    expect(profile.isRegistered, isFalse);
+  });
+
+  test('connectManagement rejects invalid URL and does not save', () async {
+    final repo = MockAuthRepository();
+    when(repo.loadProfile).thenAnswer((_) async => const ClientProfile());
+    when(() => repo.saveProfile(any())).thenAnswer((_) async {});
+    final container = ProviderContainer(
+      overrides: [authRepositoryProvider.overrideWithValue(repo)],
+    );
+    addTearDown(container.dispose);
+
+    await container.read(authNotifierProvider.future);
+    await container
+        .read(authNotifierProvider.notifier)
+        .connectManagement(
+          masterUrl: 'panel.example.com',
+          panelToken: 'panel-secret',
+          name: 'ops-laptop',
+        );
+
+    final state = container.read(authNotifierProvider).value;
+    expect(state, isA<AuthStateError>());
+    verifyNever(() => repo.saveProfile(any()));
+  });
 
   test('clearManagement preserves agent profile', () async {
     final repo = MockAuthRepository();

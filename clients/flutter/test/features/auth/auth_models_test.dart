@@ -19,10 +19,25 @@ void main() {
       expect(profile.hasManagementCredentials, isTrue);
       expect(profile.hasAgentCredentials, isTrue);
       expect(profile.isRegistered, isTrue);
+      expect(profile.hasAnyCredentials, isTrue);
       expect(profile.management.panelToken, 'panel-secret');
       expect(profile.agent.agentToken, 'agent-secret');
     },
   );
+
+  test('management-only profile is authenticated but not agent registered', () {
+    final profile = ClientProfile(
+      masterUrl: 'https://panel.example.com',
+      displayName: 'ops-laptop',
+      activeMode: ConnectionMode.management,
+      management: const ManagementProfile(panelToken: 'panel-secret'),
+    );
+
+    expect(profile.hasManagementCredentials, isTrue);
+    expect(profile.hasAgentCredentials, isFalse);
+    expect(profile.isRegistered, isFalse);
+    expect(profile.hasAnyCredentials, isTrue);
+  });
 
   test('ClientProfile parses legacy agentId token profile', () {
     final profile = ClientProfile.fromJson({
