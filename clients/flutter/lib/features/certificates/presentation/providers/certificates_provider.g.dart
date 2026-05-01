@@ -7,7 +7,7 @@ part of 'certificates_provider.dart';
 // **************************************************************************
 
 String _$filteredCertificatesHash() =>
-    r'467786f9d08ff1e99ce43f099fc5b94a6ed74acf';
+    r'2cba35f553b1067c92d221aaa5d001bf4c8370a5';
 
 /// Computed filtered list based on status filter.
 ///

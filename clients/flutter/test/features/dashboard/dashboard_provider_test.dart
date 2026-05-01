@@ -86,7 +86,7 @@ void main() {
       container.read(certificatesListProvider.future),
       container.read(relayListProvider.future),
     ]);
-    final summary = container.read(dashboardSummaryProvider);
+    final summary = container.read(dashboardSummaryProvider).value!;
 
     expect(summary.rulesTotal, 2);
     expect(summary.rulesDisabled, 1);
@@ -96,5 +96,35 @@ void main() {
     expect(summary.certificatesExpiring, 1);
     expect(summary.relaysTotal, 2);
     expect(summary.relaysActive, 1);
+  });
+
+  test('dashboardSummary stays loading until feature providers resolve', () {
+    final api = _MockPanelApiClient();
+    when(() => api.fetchRules('local')).thenAnswer(
+      (_) => Future<List<HttpProxyRule>>.delayed(
+        const Duration(minutes: 1),
+        () => const [],
+      ),
+    );
+    when(() => api.fetchAgents()).thenAnswer((_) async => const []);
+    when(
+      () => api.fetchCertificates('local'),
+    ).thenAnswer((_) async => const []);
+    when(
+      () => api.fetchRelayListeners('local'),
+    ).thenAnswer((_) async => const []);
+
+    final container = ProviderContainer(
+      overrides: [
+        selectedAgentIdProvider.overrideWith((ref) => 'local'),
+        panelApiClientProvider.overrideWith((ref) => api),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    final summary = container.read(dashboardSummaryProvider);
+
+    expect(summary.isLoading, isTrue);
+    expect(summary.valueOrNull, isNull);
   });
 }

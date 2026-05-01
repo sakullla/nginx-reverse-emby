@@ -266,9 +266,7 @@ class _DashboardContentState extends ConsumerState<_DashboardContent> {
           _StatsGrid(
             isWide: isWide,
             accent: accent,
-            summary: summary,
-            isRunning: isRunning,
-            agentLoading: _agentLoading,
+            summaryAsync: summary,
             loc: AppLocalizations.of(context)!,
           ),
           const SizedBox(height: AppSpacing.s12),
@@ -413,53 +411,61 @@ class _StatsGrid extends StatelessWidget {
   const _StatsGrid({
     required this.isWide,
     required this.accent,
-    required this.summary,
-    required this.isRunning,
-    required this.agentLoading,
+    required this.summaryAsync,
     required this.loc,
   });
 
   final bool isWide;
   final AccentColors accent;
-  final DashboardSummary summary;
-  final bool isRunning;
-  final bool agentLoading;
+  final AsyncValue<DashboardSummary> summaryAsync;
   final AppLocalizations loc;
 
   @override
   Widget build(BuildContext context) {
+    final summary = summaryAsync.valueOrNull;
+    final isUnavailable = summary == null;
     final cards = [
       StatCard(
         label: loc.navRules,
-        value: '${summary.rulesTotal}',
-        subtitle: summary.rulesDisabled > 0
+        value: summary == null ? '—' : '${summary.rulesTotal}',
+        subtitle: summary != null && summary.rulesDisabled > 0
             ? loc.labelDisabledCount(summary.rulesDisabled)
+            : summaryAsync.hasError
+            ? loc.statusUnavailable
             : null,
         accentColor: accent.primaryStart,
       ),
       StatCard(
         label: loc.navAgent,
-        value: '${summary.agentsTotal}',
-        subtitle: summary.agentsOffline == 0
+        value: summary == null ? '—' : '${summary.agentsTotal}',
+        subtitle: summary == null
+            ? loc.statusUnavailable
+            : summary.agentsTotal == 0
+            ? loc.labelOffline(0)
+            : summary.agentsOffline == 0
             ? '● ${loc.labelAllOnline}'
             : loc.labelOffline(summary.agentsOffline),
         accentColor: accent.primaryStart,
       ),
       StatCard(
         label: loc.navCertificates,
-        value: '${summary.certificatesTotal}',
-        subtitle: summary.certificatesExpiring > 0
+        value: summary == null ? '—' : '${summary.certificatesTotal}',
+        subtitle: summary != null && summary.certificatesExpiring > 0
             ? loc.labelExpiringWarning(
                 summary.certificatesExpiring,
                 summary.certificatesExpiring == 1 ? '' : 's',
               )
+            : isUnavailable && summaryAsync.hasError
+            ? loc.statusUnavailable
             : null,
         accentColor: accent.primaryStart,
       ),
       StatCard(
         label: loc.navRelay,
-        value: '${summary.relaysTotal}',
-        subtitle: '● ${summary.relaysActive} ${loc.statusActive}',
+        value: summary == null ? '—' : '${summary.relaysTotal}',
+        subtitle: summary == null
+            ? loc.statusUnavailable
+            : '● ${summary.relaysActive} ${loc.statusActive}',
         accentColor: accent.primaryStart,
       ),
     ];
