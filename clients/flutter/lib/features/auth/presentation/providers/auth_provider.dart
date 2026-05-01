@@ -87,11 +87,12 @@ class AuthNotifier extends _$AuthNotifier {
           throw Exception('Registration response did not include an agent id');
         }
 
-        final profile = ClientProfile(
+        final current = await ref.read(authRepositoryProvider).loadProfile();
+        final profile = current.copyWith(
           masterUrl: normalizedUrl,
           displayName: name.trim(),
-          agentId: agentId,
-          token: agentToken,
+          activeMode: ConnectionMode.agent,
+          agent: AgentProfile(agentId: agentId, agentToken: agentToken),
         );
 
         await ref.read(authRepositoryProvider).saveProfile(profile);
@@ -101,6 +102,45 @@ class AuthNotifier extends _$AuthNotifier {
       }
     } catch (e) {
       state = AsyncData(AuthStateError(e.toString()));
+    }
+  }
+
+  Future<void> connectManagement({
+    required String masterUrl,
+    required String panelToken,
+    required String name,
+  }) async {
+    state = const AsyncData(AuthStateLoading());
+    try {
+      final normalizedUrl = normalizeMasterUrl(masterUrl);
+      final token = panelToken.trim();
+      if (token.isEmpty) {
+        throw const FormatException('Panel token is required');
+      }
+      final current = await ref.read(authRepositoryProvider).loadProfile();
+      final profile = current.copyWith(
+        masterUrl: normalizedUrl,
+        displayName: name.trim().isEmpty ? current.displayName : name.trim(),
+        activeMode: ConnectionMode.management,
+        management: ManagementProfile(panelToken: token),
+      );
+      await ref.read(authRepositoryProvider).saveProfile(profile);
+      state = AsyncData(AuthStateAuthenticated(profile));
+    } catch (e) {
+      state = AsyncData(AuthStateError(e.toString()));
+    }
+  }
+
+  Future<void> clearManagement() async {
+    final repo = ref.read(authRepositoryProvider);
+    final current = await repo.loadProfile();
+    final next = current.clearManagement();
+    if (next.hasAgentCredentials || next.hasManagementCredentials) {
+      await repo.saveProfile(next);
+      state = AsyncData(AuthStateAuthenticated(next));
+    } else {
+      await repo.clearProfile();
+      state = const AsyncData(AuthStateUnauthenticated());
     }
   }
 
