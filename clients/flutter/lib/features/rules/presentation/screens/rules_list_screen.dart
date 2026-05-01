@@ -43,7 +43,8 @@ class RulesListScreen extends ConsumerWidget {
               return _RuleListView(rules: filteredRules, caps: caps);
             },
             loading: () => const _SkeletonList(),
-            error: (err, _) => _ErrorState(error: err, loc: AppLocalizations.of(context)!),
+            error: (err, _) =>
+                _ErrorState(error: err, loc: AppLocalizations.of(context)!),
           ),
         ],
       ),
@@ -95,9 +96,8 @@ class _FilterBar extends ConsumerWidget {
         _FilterDropdown<RuleTypeFilter>(
           value: ref.watch(rulesTypeFilterProvider),
           items: RuleTypeFilter.values,
-          labelBuilder: (v) => v == RuleTypeFilter.all
-              ? loc.filterType
-              : v.name.toUpperCase(),
+          labelBuilder: (v) =>
+              v == RuleTypeFilter.all ? loc.filterType : v.name.toUpperCase(),
           onChanged: (v) {
             if (v != null) {
               ref.read(rulesTypeFilterProvider.notifier).update(v);
@@ -193,12 +193,9 @@ class _FilterDropdown<T> extends StatelessWidget {
 // ---------------------------------------------------------------------------
 
 class _RuleListView extends ConsumerWidget {
-  const _RuleListView({
-    required this.rules,
-    required this.caps,
-  });
+  const _RuleListView({required this.rules, required this.caps});
 
-  final List<ProxyRule> rules;
+  final List<HttpProxyRule> rules;
   final PlatformCapabilities caps;
 
   @override
@@ -221,19 +218,17 @@ class _RuleListView extends ConsumerWidget {
 // ---------------------------------------------------------------------------
 
 class _RuleCard extends ConsumerWidget {
-  const _RuleCard({
-    required this.rule,
-    required this.canEdit,
-  });
+  const _RuleCard({required this.rule, required this.canEdit});
 
-  final ProxyRule rule;
+  final HttpProxyRule rule;
   final bool canEdit;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final loc = AppLocalizations.of(context)!;
-    final typeColor = _typeColor(rule.type);
-    final typeIcon = _typeIcon(rule.type);
+    final ruleType = _ruleType(rule);
+    final typeColor = _typeColor(ruleType);
+    final typeIcon = _typeIcon(ruleType);
 
     Widget card = GlassCard(
       padding: const EdgeInsets.symmetric(
@@ -249,9 +244,7 @@ class _RuleCard extends ConsumerWidget {
             decoration: BoxDecoration(
               color: typeColor.withValues(alpha: 0.12),
               borderRadius: BorderRadius.circular(AppRadius.medium),
-              border: Border.all(
-                color: typeColor.withValues(alpha: 0.2),
-              ),
+              border: Border.all(color: typeColor.withValues(alpha: 0.2)),
             ),
             child: Icon(typeIcon, size: 18, color: typeColor),
           ),
@@ -267,7 +260,7 @@ class _RuleCard extends ConsumerWidget {
                   children: [
                     Flexible(
                       child: Text(
-                        rule.domain,
+                        rule.frontendUrl,
                         style: AppTypography.bodyMedium.copyWith(
                           color: AppColors.textPrimary,
                         ),
@@ -276,7 +269,7 @@ class _RuleCard extends ConsumerWidget {
                     ),
                     const SizedBox(width: AppSpacing.s8),
                     GlassChip.accent(
-                      label: rule.type.toUpperCase(),
+                      label: ruleType.toUpperCase(),
                       accentColor: typeColor,
                     ),
                   ],
@@ -284,7 +277,7 @@ class _RuleCard extends ConsumerWidget {
                 const SizedBox(height: 2),
                 // Target + updated text
                 Text(
-                  '→ ${rule.target}',
+                  '-> ${rule.backendUrl}',
                   style: AppTypography.metadataSmall.copyWith(
                     color: AppColors.textMuted,
                   ),
@@ -299,18 +292,15 @@ class _RuleCard extends ConsumerWidget {
           if (rule.enabled)
             GlassChip.success(label: loc.statusActive, showDot: true)
           else
-            GlassChip(
-              label: loc.statusDisabled,
-              color: AppColors.textMuted,
-            ),
+            GlassChip(label: loc.statusDisabled, color: AppColors.textMuted),
           const SizedBox(width: AppSpacing.s8),
 
           GlassToggle(
             value: rule.enabled,
             onChanged: canEdit
                 ? (v) => ref
-                    .read(rulesListProvider.notifier)
-                    .toggleRule(rule.id, v)
+                      .read(rulesListProvider.notifier)
+                      .toggleRule(rule.id, v)
                 : null,
           ),
           if (canEdit) ...[
@@ -354,6 +344,9 @@ class _RuleCard extends ConsumerWidget {
         return Icons.swap_horiz;
     }
   }
+
+  String _ruleType(HttpProxyRule rule) =>
+      rule.frontendUrl.toLowerCase().startsWith('https://') ? 'https' : 'http';
 }
 
 // ---------------------------------------------------------------------------
@@ -363,17 +356,13 @@ class _RuleCard extends ConsumerWidget {
 class _RuleMenu extends ConsumerWidget {
   const _RuleMenu({required this.rule});
 
-  final ProxyRule rule;
+  final HttpProxyRule rule;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final loc = AppLocalizations.of(context)!;
     return PopupMenuButton<String>(
-      icon: Icon(
-        Icons.more_horiz,
-        size: 18,
-        color: AppColors.textMuted,
-      ),
+      icon: Icon(Icons.more_horiz, size: 18, color: AppColors.textMuted),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(AppRadius.medium),
       ),
@@ -385,9 +374,19 @@ class _RuleMenu extends ConsumerWidget {
           height: 36,
           child: Row(
             children: [
-              const Icon(Icons.edit_outlined, size: 16, color: AppColors.textSecondary),
+              const Icon(
+                Icons.edit_outlined,
+                size: 16,
+                color: AppColors.textSecondary,
+              ),
               const SizedBox(width: AppSpacing.s8),
-              Text(loc.btnViewDetails, style: const TextStyle(fontSize: 12, color: AppColors.textPrimary)),
+              Text(
+                loc.btnViewDetails,
+                style: const TextStyle(
+                  fontSize: 12,
+                  color: AppColors.textPrimary,
+                ),
+              ),
             ],
           ),
         ),
@@ -398,7 +397,13 @@ class _RuleMenu extends ConsumerWidget {
             children: [
               const Icon(Icons.copy, size: 16, color: AppColors.textSecondary),
               const SizedBox(width: AppSpacing.s8),
-              Text(loc.btnCopy, style: const TextStyle(fontSize: 12, color: AppColors.textPrimary)),
+              Text(
+                loc.btnCopy,
+                style: const TextStyle(
+                  fontSize: 12,
+                  color: AppColors.textPrimary,
+                ),
+              ),
             ],
           ),
         ),
@@ -407,9 +412,16 @@ class _RuleMenu extends ConsumerWidget {
           height: 36,
           child: Row(
             children: [
-              const Icon(Icons.delete_outline, size: 16, color: AppColors.error),
+              const Icon(
+                Icons.delete_outline,
+                size: 16,
+                color: AppColors.error,
+              ),
               const SizedBox(width: AppSpacing.s8),
-              Text(loc.btnDelete, style: const TextStyle(fontSize: 12, color: AppColors.error)),
+              Text(
+                loc.btnDelete,
+                style: const TextStyle(fontSize: 12, color: AppColors.error),
+              ),
             ],
           ),
         ),
@@ -429,7 +441,7 @@ class _RuleMenu extends ConsumerWidget {
         break;
       case 'copy':
         Clipboard.setData(
-          ClipboardData(text: '${rule.domain} -> ${rule.target}'),
+          ClipboardData(text: '${rule.frontendUrl} -> ${rule.backendUrl}'),
         );
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -464,12 +476,9 @@ class _RuleMenu extends ConsumerWidget {
 // ---------------------------------------------------------------------------
 
 class _DeleteConfirmDialog extends StatelessWidget {
-  const _DeleteConfirmDialog({
-    required this.rule,
-    required this.onConfirm,
-  });
+  const _DeleteConfirmDialog({required this.rule, required this.onConfirm});
 
-  final ProxyRule rule;
+  final HttpProxyRule rule;
   final VoidCallback onConfirm;
 
   @override
@@ -504,7 +513,7 @@ class _DeleteConfirmDialog extends StatelessWidget {
                 ),
                 const SizedBox(height: AppSpacing.s12),
                 Text(
-                  loc.descDeleteRuleConfirm(rule.domain),
+                  loc.descDeleteRuleConfirm(rule.frontendUrl),
                   style: AppTypography.body.copyWith(
                     color: AppColors.textSecondary,
                   ),
@@ -558,9 +567,7 @@ class _EmptyState extends StatelessWidget {
             const SizedBox(height: AppSpacing.s12),
             Text(
               loc.titleNoRules,
-              style: AppTypography.title.copyWith(
-                color: AppColors.textMuted,
-              ),
+              style: AppTypography.title.copyWith(color: AppColors.textMuted),
             ),
             const SizedBox(height: AppSpacing.s4),
             Text(
@@ -599,17 +606,11 @@ class _ErrorState extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(
-              Icons.error_outline,
-              size: 48,
-              color: AppColors.error,
-            ),
+            const Icon(Icons.error_outline, size: 48, color: AppColors.error),
             const SizedBox(height: AppSpacing.s12),
             Text(
               loc.failedToLoadRules,
-              style: AppTypography.title.copyWith(
-                color: AppColors.textPrimary,
-              ),
+              style: AppTypography.title.copyWith(color: AppColors.textPrimary),
             ),
             const SizedBox(height: AppSpacing.s4),
             Text(

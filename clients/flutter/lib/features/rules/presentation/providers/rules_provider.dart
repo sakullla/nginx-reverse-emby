@@ -1,29 +1,8 @@
-import 'package:dio/dio.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
-import '../../../auth/data/models/auth_models.dart';
-import '../../../auth/presentation/providers/auth_provider.dart';
 import '../../data/models/rule_models.dart';
-import '../../../../core/network/api_client.dart';
-import '../../../../core/network/master_api.dart';
-import '../../../../core/network/dio_client.dart';
+import '../../../../core/network/panel_api_provider.dart';
 
 part 'rules_provider.g.dart';
-
-/// Provides the [ApiClient] based on the current auth profile.
-@riverpod
-ApiClient apiClient(ApiClientRef ref) {
-  final authAsync = ref.watch(authNotifierProvider);
-  final authState = authAsync.valueOrNull;
-  if (authState is AuthStateAuthenticated) {
-    final clientProfile = authState.profile;
-    final dioClient = DioClient(
-      baseUrl: clientProfile.masterUrl,
-      token: clientProfile.token,
-    );
-    return MasterApi(dio: dioClient.dio);
-  }
-  throw StateError('Not authenticated');
-}
 
 // ---------------------------------------------------------------------------
 // Search / filter state
@@ -65,7 +44,7 @@ class RulesTypeFilter extends _$RulesTypeFilter {
 
 /// Computed filtered list based on search query, status filter and type filter.
 @riverpod
-List<ProxyRule> filteredRules(FilteredRulesRef ref) {
+List<HttpProxyRule> filteredRules(FilteredRulesRef ref) {
   final rulesAsync = ref.watch(rulesListProvider);
   final rules = rulesAsync.valueOrNull ?? [];
   final query = ref.watch(rulesSearchQueryProvider).toLowerCase();
@@ -76,8 +55,8 @@ List<ProxyRule> filteredRules(FilteredRulesRef ref) {
     // Search filter
     if (query.isNotEmpty) {
       final matchesSearch =
-          rule.domain.toLowerCase().contains(query) ||
-          rule.target.toLowerCase().contains(query);
+          rule.frontendUrl.toLowerCase().contains(query) ||
+          rule.backendUrl.toLowerCase().contains(query);
       if (!matchesSearch) return false;
     }
 
@@ -88,7 +67,10 @@ List<ProxyRule> filteredRules(FilteredRulesRef ref) {
     // Type filter
     if (typeFilter != RuleTypeFilter.all) {
       final filterType = typeFilter.name.toUpperCase();
-      if (rule.type.toUpperCase() != filterType) return false;
+      if (filterType != 'HTTP' && filterType != 'HTTPS') return false;
+      final isHttps = rule.frontendUrl.toLowerCase().startsWith('https://');
+      if (filterType == 'HTTPS' && !isHttps) return false;
+      if (filterType == 'HTTP' && isHttps) return false;
     }
 
     return true;
@@ -102,80 +84,91 @@ List<ProxyRule> filteredRules(FilteredRulesRef ref) {
 @riverpod
 class RulesList extends _$RulesList {
   @override
-  Future<List<ProxyRule>> build() async {
-    try {
-      final api = ref.read(apiClientProvider);
-      return api.getRules();
-    } on StateError {
-      // Not authenticated yet — return empty list
-      return [];
-    } on DioException {
-      return [];
-    }
+  Future<List<HttpProxyRule>> build() async {
+    final api = ref.read(panelApiClientProvider);
+    final agentId = ref.watch(selectedAgentIdProvider);
+    return api.fetchRules(agentId);
   }
 
   Future<void> refresh() async {
     state = const AsyncLoading();
     state = await AsyncValue.guard(() async {
-      final api = ref.read(apiClientProvider);
-      return api.getRules();
+      final api = ref.read(panelApiClientProvider);
+      final agentId = ref.read(selectedAgentIdProvider);
+      return api.fetchRules(agentId);
     });
   }
 
   Future<void> toggleRule(String id, bool enabled) async {
     final previous = state.value ?? [];
-    // Optimistic update
-    state = AsyncData(previous.map((r) {
-      if (r.id == id) {
-        return ProxyRule(
-          id: r.id,
-          domain: r.domain,
-          target: r.target,
-          type: r.type,
-          enabled: enabled,
-        );
-      }
-      return r;
-    }).toList());
+    final existing = previous.where((rule) => rule.id == id).firstOrNull;
+    if (existing == null) return;
+    final updated = existing.copyWith(enabled: enabled);
+    state = AsyncData(
+      previous.map((rule) => rule.id == id ? updated : rule).toList(),
+    );
 
     try {
-      final api = ref.read(apiClientProvider);
-      await api.toggleRule(id, enabled);
+      final api = ref.read(panelApiClientProvider);
+      final agentId = ref.read(selectedAgentIdProvider);
+      final saved = await api.updateRule(
+        agentId,
+        id,
+        UpdateHttpRuleRequest.fromRule(updated),
+      );
+      final current = state.value ?? [];
+      state = AsyncData(
+        current.map((rule) => rule.id == id ? saved : rule).toList(),
+      );
     } catch (e) {
-      // Revert on failure
       state = AsyncData(previous);
       rethrow;
     }
   }
 
-  Future<ProxyRule> createRule(CreateRuleRequest request) async {
-    final api = ref.read(apiClientProvider);
-    final newRule = await api.createRule(request);
-    // Append to current list
-    final current = state.value ?? [];
-    state = AsyncData([...current, newRule]);
-    return newRule;
+  Future<HttpProxyRule> createRule(CreateHttpRuleRequest request) async {
+    final previous = state.value ?? [];
+    try {
+      final api = ref.read(panelApiClientProvider);
+      final agentId = ref.read(selectedAgentIdProvider);
+      final rule = await api.createRule(agentId, request);
+      state = AsyncData([...previous, rule]);
+      return rule;
+    } catch (e) {
+      state = AsyncData(previous);
+      rethrow;
+    }
   }
 
-  Future<ProxyRule> updateRule(String id, UpdateRuleRequest request) async {
-    final api = ref.read(apiClientProvider);
-    final updatedRule = await api.updateRule(id, request);
-    // Replace in current list
-    final current = state.value ?? [];
-    state = AsyncData(current.map((r) => r.id == id ? updatedRule : r).toList());
-    return updatedRule;
+  Future<HttpProxyRule> updateRule(
+    String id,
+    UpdateHttpRuleRequest request,
+  ) async {
+    final previous = state.value ?? [];
+    try {
+      final api = ref.read(panelApiClientProvider);
+      final agentId = ref.read(selectedAgentIdProvider);
+      final updatedRule = await api.updateRule(agentId, id, request);
+      final current = state.value ?? [];
+      state = AsyncData(
+        current.map((rule) => rule.id == id ? updatedRule : rule).toList(),
+      );
+      return updatedRule;
+    } catch (e) {
+      state = AsyncData(previous);
+      rethrow;
+    }
   }
 
   Future<void> deleteRule(String id) async {
     final previous = state.value ?? [];
-    // Optimistic remove
-    state = AsyncData(previous.where((r) => r.id != id).toList());
+    state = AsyncData(previous.where((rule) => rule.id != id).toList());
 
     try {
-      final api = ref.read(apiClientProvider);
-      await api.deleteRule(id);
+      final api = ref.read(panelApiClientProvider);
+      final agentId = ref.read(selectedAgentIdProvider);
+      await api.deleteRule(agentId, id);
     } catch (e) {
-      // Revert on failure
       state = AsyncData(previous);
       rethrow;
     }

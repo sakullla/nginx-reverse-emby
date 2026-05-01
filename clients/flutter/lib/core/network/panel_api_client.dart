@@ -38,6 +38,17 @@ class PanelApiClient {
     return _extractList(data, 'agents').map(AgentSummary.fromJson).toList();
   }
 
+  Future<AgentSummary> renameAgent(String agentId, String name) async {
+    final data = await _requestMap(
+      () => _dio.patch('/agents/${_segment(agentId)}', data: {'name': name}),
+    );
+    return AgentSummary.fromJson(_extractMap(data, 'agent'));
+  }
+
+  Future<void> deleteAgent(String agentId) async {
+    await _requestMap(() => _dio.delete('/agents/${_segment(agentId)}'));
+  }
+
   Future<List<HttpProxyRule>> fetchRules(String agentId) async {
     final data = await _requestMap(
       () => _dio.get('/agents/${_segment(agentId)}/rules'),
@@ -87,6 +98,7 @@ class PanelApiClient {
     await _requestMap(
       () => _dio.post(
         '/agents/${_segment(agentId)}/apply',
+        data: const <String, dynamic>{},
         options: _longRunningOptions,
       ),
     );
@@ -102,11 +114,69 @@ class PanelApiClient {
     ).map(Certificate.fromJson).toList();
   }
 
+  Future<Certificate> issueCertificate(String agentId, String id) async {
+    final data = await _requestMap(
+      () => _dio.post(
+        '/agents/${_segment(agentId)}/certificates/${_segment(id)}/issue',
+        data: const <String, dynamic>{},
+        options: _longRunningOptions,
+      ),
+    );
+    return Certificate.fromJson(_extractMap(data, 'certificate'));
+  }
+
+  Future<void> deleteCertificate(String agentId, String id) async {
+    await _requestMap(
+      () => _dio.delete(
+        '/agents/${_segment(agentId)}/certificates/${_segment(id)}',
+        options: _longRunningOptions,
+      ),
+    );
+  }
+
   Future<List<RelayListener>> fetchRelayListeners(String agentId) async {
     final data = await _requestMap(
       () => _dio.get('/agents/${_segment(agentId)}/relay-listeners'),
     );
     return _extractList(data, 'listeners').map(RelayListener.fromJson).toList();
+  }
+
+  Future<RelayListener> createRelayListener(
+    String agentId,
+    CreateRelayListenerRequest request,
+  ) async {
+    final data = await _requestMap(
+      () => _dio.post(
+        '/agents/${_segment(agentId)}/relay-listeners',
+        data: request.toJson(),
+        options: _longRunningOptions,
+      ),
+    );
+    return RelayListener.fromJson(_extractMap(data, 'listener'));
+  }
+
+  Future<RelayListener> updateRelayListener(
+    String agentId,
+    String id,
+    UpdateRelayListenerRequest request,
+  ) async {
+    final data = await _requestMap(
+      () => _dio.put(
+        '/agents/${_segment(agentId)}/relay-listeners/${_segment(id)}',
+        data: request.toJson(),
+        options: _longRunningOptions,
+      ),
+    );
+    return RelayListener.fromJson(_extractMap(data, 'listener'));
+  }
+
+  Future<void> deleteRelayListener(String agentId, String id) async {
+    await _requestMap(
+      () => _dio.delete(
+        '/agents/${_segment(agentId)}/relay-listeners/${_segment(id)}',
+        options: _longRunningOptions,
+      ),
+    );
   }
 
   Future<Map<String, dynamic>> _requestMap(

@@ -1,29 +1,8 @@
-import 'package:dio/dio.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
-import '../../../auth/data/models/auth_models.dart';
-import '../../../auth/presentation/providers/auth_provider.dart';
 import '../../data/models/certificate_models.dart';
-import '../../../../core/network/api_client.dart';
-import '../../../../core/network/master_api.dart';
-import '../../../../core/network/dio_client.dart';
+import '../../../../core/network/panel_api_provider.dart';
 
 part 'certificates_provider.g.dart';
-
-/// Re-use the same [ApiClient] provider pattern as rules.
-@riverpod
-ApiClient certApiClient(CertApiClientRef ref) {
-  final authAsync = ref.watch(authNotifierProvider);
-  final authState = authAsync.valueOrNull;
-  if (authState is AuthStateAuthenticated) {
-    final clientProfile = authState.profile;
-    final dioClient = DioClient(
-      baseUrl: clientProfile.masterUrl,
-      token: clientProfile.token,
-    );
-    return MasterApi(dio: dioClient.dio);
-  }
-  throw StateError('Not authenticated');
-}
 
 // ---------------------------------------------------------------------------
 // Filter state
@@ -62,24 +41,42 @@ List<Certificate> filteredCertificates(FilteredCertificatesRef ref) {
 class CertificatesList extends _$CertificatesList {
   @override
   Future<List<Certificate>> build() async {
-    try {
-      final api = ref.read(certApiClientProvider);
-      final rawList = await api.getCertificates();
-      return rawList.map(Certificate.fromJson).toList();
-    } on StateError {
-      // Not authenticated yet — return empty list
-      return [];
-    } on DioException {
-      return [];
-    }
+    final api = ref.read(panelApiClientProvider);
+    final agentId = ref.watch(selectedAgentIdProvider);
+    return api.fetchCertificates(agentId);
   }
 
   Future<void> refresh() async {
     state = const AsyncLoading();
     state = await AsyncValue.guard(() async {
-      final api = ref.read(certApiClientProvider);
-      final rawList = await api.getCertificates();
-      return rawList.map(Certificate.fromJson).toList();
+      final api = ref.read(panelApiClientProvider);
+      final agentId = ref.read(selectedAgentIdProvider);
+      return api.fetchCertificates(agentId);
     });
+  }
+
+  Future<Certificate> issueCertificate(String id) async {
+    final api = ref.read(panelApiClientProvider);
+    final agentId = ref.read(selectedAgentIdProvider);
+    final updated = await api.issueCertificate(agentId, id);
+    final current = state.value ?? [];
+    state = AsyncData(
+      current.map((cert) => cert.id == id ? updated : cert).toList(),
+    );
+    return updated;
+  }
+
+  Future<void> deleteCertificate(String id) async {
+    final previous = state.value ?? [];
+    state = AsyncData(previous.where((cert) => cert.id != id).toList());
+
+    try {
+      final api = ref.read(panelApiClientProvider);
+      final agentId = ref.read(selectedAgentIdProvider);
+      await api.deleteCertificate(agentId, id);
+    } catch (e) {
+      state = AsyncData(previous);
+      rethrow;
+    }
   }
 }

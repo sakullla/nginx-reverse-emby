@@ -6,32 +6,13 @@ part of 'rules_provider.dart';
 // RiverpodGenerator
 // **************************************************************************
 
-String _$apiClientHash() => r'231c0983cd389b4da6887210a37165392b66370b';
-
-/// Provides the [ApiClient] based on the current auth profile.
-///
-/// Copied from [apiClient].
-@ProviderFor(apiClient)
-final apiClientProvider = AutoDisposeProvider<ApiClient>.internal(
-  apiClient,
-  name: r'apiClientProvider',
-  debugGetCreateSourceHash: const bool.fromEnvironment('dart.vm.product')
-      ? null
-      : _$apiClientHash,
-  dependencies: null,
-  allTransitiveDependencies: null,
-);
-
-@Deprecated('Will be removed in 3.0. Use Ref instead')
-// ignore: unused_element
-typedef ApiClientRef = AutoDisposeProviderRef<ApiClient>;
-String _$filteredRulesHash() => r'ff1e038fbb7b064dced9db188dadf4faf63871af';
+String _$filteredRulesHash() => r'1fcd83914482b96d5e90cbe89b5d3a4dbb0fc404';
 
 /// Computed filtered list based on search query, status filter and type filter.
 ///
 /// Copied from [filteredRules].
 @ProviderFor(filteredRules)
-final filteredRulesProvider = AutoDisposeProvider<List<ProxyRule>>.internal(
+final filteredRulesProvider = AutoDisposeProvider<List<HttpProxyRule>>.internal(
   filteredRules,
   name: r'filteredRulesProvider',
   debugGetCreateSourceHash: const bool.fromEnvironment('dart.vm.product')
@@ -43,7 +24,7 @@ final filteredRulesProvider = AutoDisposeProvider<List<ProxyRule>>.internal(
 
 @Deprecated('Will be removed in 3.0. Use Ref instead')
 // ignore: unused_element
-typedef FilteredRulesRef = AutoDisposeProviderRef<List<ProxyRule>>;
+typedef FilteredRulesRef = AutoDisposeProviderRef<List<HttpProxyRule>>;
 String _$rulesSearchQueryHash() => r'a2a1a358fbde070867ec7a74a558bc6c8b264baa';
 
 /// See also [RulesSearchQuery].
@@ -92,12 +73,12 @@ final rulesTypeFilterProvider =
     );
 
 typedef _$RulesTypeFilter = AutoDisposeNotifier<RuleTypeFilter>;
-String _$rulesListHash() => r'b18eeb684efd6cc4918ff09b948f3e6a8eec0d02';
+String _$rulesListHash() => r'77fc1bc2d48e7280cd355e43252d01ec67c121dd';
 
 /// See also [RulesList].
 @ProviderFor(RulesList)
 final rulesListProvider =
-    AutoDisposeAsyncNotifierProvider<RulesList, List<ProxyRule>>.internal(
+    AutoDisposeAsyncNotifierProvider<RulesList, List<HttpProxyRule>>.internal(
       RulesList.new,
       name: r'rulesListProvider',
       debugGetCreateSourceHash: const bool.fromEnvironment('dart.vm.product')
@@ -107,6 +88,6 @@ final rulesListProvider =
       allTransitiveDependencies: null,
     );
 
-typedef _$RulesList = AutoDisposeAsyncNotifier<List<ProxyRule>>;
+typedef _$RulesList = AutoDisposeAsyncNotifier<List<HttpProxyRule>>;
 // ignore_for_file: type=lint
 // ignore_for_file: subtype_of_sealed_class, invalid_use_of_internal_member, invalid_use_of_visible_for_testing_member, deprecated_member_use_from_same_package

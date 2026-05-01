@@ -6,27 +6,8 @@ part of 'relay_provider.dart';
 // RiverpodGenerator
 // **************************************************************************
 
-String _$relayApiClientHash() => r'8a0e018b8f29706348b76200c02e97efaa7b9c86';
-
-/// Provides the [ApiClient] for relay endpoints.
-///
-/// Copied from [relayApiClient].
-@ProviderFor(relayApiClient)
-final relayApiClientProvider = AutoDisposeProvider<ApiClient>.internal(
-  relayApiClient,
-  name: r'relayApiClientProvider',
-  debugGetCreateSourceHash: const bool.fromEnvironment('dart.vm.product')
-      ? null
-      : _$relayApiClientHash,
-  dependencies: null,
-  allTransitiveDependencies: null,
-);
-
-@Deprecated('Will be removed in 3.0. Use Ref instead')
-// ignore: unused_element
-typedef RelayApiClientRef = AutoDisposeProviderRef<ApiClient>;
 String _$filteredRelayListenersHash() =>
-    r'4be68153f7262afb5ae743f08da04980edd9a30c';
+    r'dda8138e54e662a43ddfede20134683bbbbc445d';
 
 /// Computed filtered list based on search query and protocol filter.
 ///
@@ -83,7 +64,7 @@ final relayProtocolFilterNotifierProvider =
 
 typedef _$RelayProtocolFilterNotifier =
     AutoDisposeNotifier<RelayProtocolFilter>;
-String _$relayListHash() => r'004bb5601fc1074d8b5ed09cc0cc93f4f6cf8550';
+String _$relayListHash() => r'8cadb13e366e3b40eded03c922ee21a1f29cc26a';
 
 /// See also [RelayList].
 @ProviderFor(RelayList)

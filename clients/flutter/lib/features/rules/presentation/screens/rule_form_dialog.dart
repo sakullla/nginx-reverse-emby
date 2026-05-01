@@ -19,15 +19,13 @@ enum RuleFormMode { create, edit }
 Future<bool?> showRuleFormDialog(
   BuildContext context, {
   RuleFormMode mode = RuleFormMode.create,
-  ProxyRule? existingRule,
+  HttpProxyRule? existingRule,
 }) {
   return showDialog<bool>(
     context: context,
     barrierColor: Colors.black.withValues(alpha: 0.5),
-    builder: (context) => _RuleFormDialog(
-      mode: mode,
-      existingRule: existingRule,
-    ),
+    builder: (context) =>
+        _RuleFormDialog(mode: mode, existingRule: existingRule),
   );
 }
 
@@ -36,13 +34,10 @@ Future<bool?> showRuleFormDialog(
 // ---------------------------------------------------------------------------
 
 class _RuleFormDialog extends ConsumerStatefulWidget {
-  const _RuleFormDialog({
-    required this.mode,
-    this.existingRule,
-  });
+  const _RuleFormDialog({required this.mode, this.existingRule});
 
   final RuleFormMode mode;
-  final ProxyRule? existingRule;
+  final HttpProxyRule? existingRule;
 
   @override
   ConsumerState<_RuleFormDialog> createState() => _RuleFormDialogState();
@@ -60,11 +55,16 @@ class _RuleFormDialogState extends ConsumerState<_RuleFormDialog> {
   void initState() {
     super.initState();
     if (widget.mode == RuleFormMode.edit && widget.existingRule != null) {
-      _domainController =
-          TextEditingController(text: widget.existingRule!.domain);
-      _targetController =
-          TextEditingController(text: widget.existingRule!.target);
-      _selectedType = widget.existingRule!.type.toLowerCase();
+      _domainController = TextEditingController(
+        text: widget.existingRule!.frontendUrl,
+      );
+      _targetController = TextEditingController(
+        text: widget.existingRule!.backendUrl,
+      );
+      _selectedType =
+          widget.existingRule!.frontendUrl.toLowerCase().startsWith('https://')
+          ? 'https'
+          : 'http';
     } else {
       _domainController = TextEditingController();
       _targetController = TextEditingController();
@@ -94,17 +94,15 @@ class _RuleFormDialogState extends ConsumerState<_RuleFormDialog> {
 
     try {
       if (widget.mode == RuleFormMode.create) {
-        final request = CreateRuleRequest(
-          domain: domain,
-          target: target,
-          type: _selectedType,
+        final request = CreateHttpRuleRequest(
+          frontendUrl: domain,
+          backends: [HttpBackend(url: target)],
         );
         await ref.read(rulesListProvider.notifier).createRule(request);
       } else {
-        final request = UpdateRuleRequest(
-          domain: domain,
-          target: target,
-          type: _selectedType,
+        final request = UpdateHttpRuleRequest(
+          frontendUrl: domain,
+          backends: [HttpBackend(url: target)],
         );
         await ref
             .read(rulesListProvider.notifier)
@@ -264,7 +262,10 @@ class _GlassTextField extends StatelessWidget {
     return ClipRRect(
       borderRadius: BorderRadius.circular(AppRadius.medium),
       child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: AppBlur.subtle, sigmaY: AppBlur.subtle),
+        filter: ImageFilter.blur(
+          sigmaX: AppBlur.subtle,
+          sigmaY: AppBlur.subtle,
+        ),
         child: Container(
           decoration: BoxDecoration(
             color: Colors.white.withValues(alpha: AppColors.surfaceOpacityCard),
@@ -312,11 +313,12 @@ class _GlassTypeDropdown extends StatelessWidget {
     return ClipRRect(
       borderRadius: BorderRadius.circular(AppRadius.medium),
       child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: AppBlur.subtle, sigmaY: AppBlur.subtle),
+        filter: ImageFilter.blur(
+          sigmaX: AppBlur.subtle,
+          sigmaY: AppBlur.subtle,
+        ),
         child: Container(
-          padding: const EdgeInsets.symmetric(
-            horizontal: AppSpacing.s12,
-          ),
+          padding: const EdgeInsets.symmetric(horizontal: AppSpacing.s12),
           decoration: BoxDecoration(
             color: Colors.white.withValues(alpha: AppColors.surfaceOpacityCard),
             borderRadius: BorderRadius.circular(AppRadius.medium),

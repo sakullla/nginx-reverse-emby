@@ -1,29 +1,8 @@
-import 'package:dio/dio.dart';
 import 'package:riverpod_annotation/riverpod_annotation.dart';
-import '../../../auth/data/models/auth_models.dart';
-import '../../../auth/presentation/providers/auth_provider.dart';
 import '../../data/models/relay_models.dart';
-import '../../../../core/network/api_client.dart';
-import '../../../../core/network/master_api.dart';
-import '../../../../core/network/dio_client.dart';
+import '../../../../core/network/panel_api_provider.dart';
 
 part 'relay_provider.g.dart';
-
-/// Provides the [ApiClient] for relay endpoints.
-@riverpod
-ApiClient relayApiClient(RelayApiClientRef ref) {
-  final authAsync = ref.watch(authNotifierProvider);
-  final authState = authAsync.valueOrNull;
-  if (authState is AuthStateAuthenticated) {
-    final clientProfile = authState.profile;
-    final dioClient = DioClient(
-      baseUrl: clientProfile.masterUrl,
-      token: clientProfile.token,
-    );
-    return MasterApi(dio: dioClient.dio);
-  }
-  throw StateError('Not authenticated');
-}
 
 // ---------------------------------------------------------------------------
 // Search / filter state
@@ -88,42 +67,78 @@ List<RelayListener> filteredRelayListeners(FilteredRelayListenersRef ref) {
 class RelayList extends _$RelayList {
   @override
   Future<List<RelayListener>> build() async {
-    try {
-      final api = ref.read(relayApiClientProvider);
-      final rawList = await api.getRelayListeners();
-      return rawList.map(RelayListener.fromJson).toList();
-    } on StateError {
-      // Not authenticated yet — return empty list
-      return [];
-    } on DioException {
-      return [];
-    }
+    final api = ref.read(panelApiClientProvider);
+    final agentId = ref.watch(selectedAgentIdProvider);
+    return api.fetchRelayListeners(agentId);
   }
 
   Future<void> refresh() async {
     state = const AsyncLoading();
     state = await AsyncValue.guard(() async {
-      final api = ref.read(relayApiClientProvider);
-      final rawList = await api.getRelayListeners();
-      return rawList.map(RelayListener.fromJson).toList();
+      final api = ref.read(panelApiClientProvider);
+      final agentId = ref.read(selectedAgentIdProvider);
+      return api.fetchRelayListeners(agentId);
     });
   }
 
   Future<void> toggleRelay(String id, bool enabled) async {
     final previous = state.value ?? [];
-    // Optimistic update
-    state = AsyncData(previous.map((r) {
-      if (r.id == id) {
-        return r.copyWith(enabled: enabled);
-      }
-      return r;
-    }).toList());
+    final updated = previous
+        .where((relay) => relay.id == id)
+        .firstOrNull
+        ?.copyWith(enabled: enabled);
+    if (updated == null) return;
+    state = AsyncData(
+      previous.map((relay) => relay.id == id ? updated : relay).toList(),
+    );
 
     try {
-      final api = ref.read(relayApiClientProvider);
-      await api.toggleRelayListener(id, enabled);
+      final api = ref.read(panelApiClientProvider);
+      final agentId = ref.read(selectedAgentIdProvider);
+      final saved = await api.updateRelayListener(
+        agentId,
+        id,
+        UpdateRelayListenerRequest(enabled: enabled),
+      );
+      final current = state.value ?? [];
+      state = AsyncData(
+        current.map((relay) => relay.id == id ? saved : relay).toList(),
+      );
     } catch (e) {
-      // Revert on failure
+      state = AsyncData(previous);
+      rethrow;
+    }
+  }
+
+  Future<RelayListener> createRelay(CreateRelayListenerRequest request) async {
+    final previous = state.value ?? [];
+    try {
+      final api = ref.read(panelApiClientProvider);
+      final agentId = ref.read(selectedAgentIdProvider);
+      final listener = await api.createRelayListener(agentId, request);
+      state = AsyncData([...previous, listener]);
+      return listener;
+    } catch (e) {
+      state = AsyncData(previous);
+      rethrow;
+    }
+  }
+
+  Future<RelayListener> updateRelay(
+    String id,
+    UpdateRelayListenerRequest request,
+  ) async {
+    final previous = state.value ?? [];
+    try {
+      final api = ref.read(panelApiClientProvider);
+      final agentId = ref.read(selectedAgentIdProvider);
+      final listener = await api.updateRelayListener(agentId, id, request);
+      final current = state.value ?? [];
+      state = AsyncData(
+        current.map((relay) => relay.id == id ? listener : relay).toList(),
+      );
+      return listener;
+    } catch (e) {
       state = AsyncData(previous);
       rethrow;
     }
@@ -131,14 +146,13 @@ class RelayList extends _$RelayList {
 
   Future<void> deleteRelay(String id) async {
     final previous = state.value ?? [];
-    // Optimistic remove
-    state = AsyncData(previous.where((r) => r.id != id).toList());
+    state = AsyncData(previous.where((relay) => relay.id != id).toList());
 
     try {
-      final api = ref.read(relayApiClientProvider);
-      await api.deleteRelayListener(id);
+      final api = ref.read(panelApiClientProvider);
+      final agentId = ref.read(selectedAgentIdProvider);
+      await api.deleteRelayListener(agentId, id);
     } catch (e) {
-      // Revert on failure
       state = AsyncData(previous);
       rethrow;
     }
