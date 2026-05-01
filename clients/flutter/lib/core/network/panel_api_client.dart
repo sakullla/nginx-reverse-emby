@@ -103,7 +103,9 @@ class PanelApiClient {
   }
 
   Future<List<RelayListener>> fetchRelayListeners(String agentId) async {
-    final data = await _requestMap(() => _dio.get('/agents/$agentId/relay'));
+    final data = await _requestMap(
+      () => _dio.get('/agents/$agentId/relay-listeners'),
+    );
     return _extractList(data, 'listeners').map(RelayListener.fromJson).toList();
   }
 
