@@ -99,6 +99,48 @@ func TestPipeBothWaysReportsRelayTrafficBeforeStreamsClose(t *testing.T) {
 	}
 }
 
+func TestPipeBothWaysIncludesInitialPayloadTraffic(t *testing.T) {
+	traffic.Reset()
+	defer traffic.Reset()
+
+	initial := []byte("initial-payload")
+	left, clientPeer := net.Pipe()
+	right, upstreamPeer := net.Pipe()
+	defer left.Close()
+	defer clientPeer.Close()
+	defer right.Close()
+	defer upstreamPeer.Close()
+
+	initialWrite := make(chan error, 1)
+	go func() {
+		_, err := right.Write(initial)
+		initialWrite <- err
+	}()
+	readRelayExact(t, upstreamPeer, len(initial))
+	if err := <-initialWrite; err != nil {
+		t.Fatalf("initial write error: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		pipeBothWaysWithInitialRelayRX(left, right, int64(len(initial)))
+		close(done)
+	}()
+
+	relayStats := waitForRelayTraffic(t, len(initial), 0)
+	if relayStats["rx_bytes"] != uint64(len(initial)) {
+		t.Fatalf("relay rx_bytes with initial payload = %d", relayStats["rx_bytes"])
+	}
+
+	_ = clientPeer.Close()
+	_ = upstreamPeer.Close()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("pipeBothWays did not exit")
+	}
+}
+
 func TestPipeUDPPacketsFlushesTrafficAfterBothDirectionsFinish(t *testing.T) {
 	traffic.Reset()
 	defer traffic.Reset()

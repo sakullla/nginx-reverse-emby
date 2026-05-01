@@ -294,6 +294,51 @@ func TestHeartbeatSync(t *testing.T) {
 	}
 }
 
+func TestHeartbeatSyncSendsExplicitEmptyStats(t *testing.T) {
+	reqs := make(chan []byte, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		reqs <- body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"sync":{"desired_version":"1.2.3","desired_revision":7}}`)
+	}))
+	defer server.Close()
+
+	client := NewClient(ClientConfig{
+		MasterURL:      server.URL,
+		AgentToken:     "token",
+		AgentID:        "agent",
+		AgentName:      "agent",
+		CurrentVersion: "0.1.0",
+	}, server.Client())
+
+	if _, err := client.Sync(context.Background(), SyncRequest{
+		CurrentRevision: 7,
+		Stats:           map[string]any{},
+		StatsPresent:    true,
+	}); err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+
+	select {
+	case body := <-reqs:
+		var payload struct {
+			Stats *map[string]any `json:"stats"`
+		}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("json.Unmarshal() error = %v", err)
+		}
+		if payload.Stats == nil {
+			t.Fatalf("stats field missing from heartbeat payload: %s", string(body))
+		}
+		if len(*payload.Stats) != 0 {
+			t.Fatalf("stats = %#v, want empty object", *payload.Stats)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("heartbeat not sent")
+	}
+}
+
 func TestHeartbeatSyncSupportsMasterURLWithApiPrefix(t *testing.T) {
 	type captured struct {
 		Path string

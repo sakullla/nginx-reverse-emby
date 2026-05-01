@@ -2020,8 +2020,14 @@ func TestPerformSyncOmitsStatsWhenTrafficStatsDisabled(t *testing.T) {
 	}
 
 	req := waitForRequest(t, client, time.Second)
-	if req.Stats != nil {
-		t.Fatalf("Stats = %#v, want nil when traffic stats disabled", req.Stats)
+	if req.Stats == nil {
+		t.Fatal("Stats = nil, want explicit empty stats when traffic stats disabled")
+	}
+	if len(req.Stats) != 0 {
+		t.Fatalf("Stats = %#v, want explicit empty stats when traffic stats disabled", req.Stats)
+	}
+	if !req.StatsPresent {
+		t.Fatal("StatsPresent = false, want true when traffic stats disabled")
 	}
 }
 

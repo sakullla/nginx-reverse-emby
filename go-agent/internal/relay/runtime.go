@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"reflect"
 	"strconv"
@@ -895,9 +896,17 @@ func (s *Server) handleQUICStream(conn *quic.Conn, stream *quic.Stream, listener
 	defer upstream.Close()
 
 	if len(request.InitialData) > 0 {
-		if _, err := upstream.Write(request.InitialData); err != nil {
+		n, err := upstream.Write(request.InitialData)
+		if err != nil {
 			_ = withFrameDeadline(clientConn, func() error {
 				return writeRelayResponse(clientConn, relayResponse{OK: false, Error: err.Error()})
+			})
+			cancelStream = false
+			return
+		}
+		if n != len(request.InitialData) {
+			_ = withFrameDeadline(clientConn, func() error {
+				return writeRelayResponse(clientConn, relayResponse{OK: false, Error: io.ErrShortWrite.Error()})
 			})
 			cancelStream = false
 			return
@@ -910,7 +919,7 @@ func (s *Server) handleQUICStream(conn *quic.Conn, stream *quic.Stream, listener
 	}
 	cancelStream = false
 
-	pipeBothWays(wrapIdleConn(clientConn), wrapIdleConn(upstream))
+	pipeBothWaysWithInitialRelayRX(wrapIdleConn(clientConn), wrapIdleConn(upstream), int64(len(request.InitialData)))
 }
 
 func listenerUsesEarlyWindowMask(listener Listener) bool {
@@ -1026,8 +1035,14 @@ func (s *Server) closeQUICConns() {
 }
 
 func pipeBothWays(left, right net.Conn) {
+	pipeBothWaysWithInitialRelayRX(left, right, 0)
+}
+
+func pipeBothWaysWithInitialRelayRX(left, right net.Conn, initialRX int64) {
 	done := make(chan struct{}, 2)
 	recorder := traffic.NewRelayRecorder()
+	recorder.Add(initialRX, 0)
+	recorder.Flush()
 
 	go func() {
 		_, _ = copyRelayTraffic(right, left, true, recorder)

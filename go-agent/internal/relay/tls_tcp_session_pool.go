@@ -1275,8 +1275,14 @@ func (s *serverTLSTCPSession) handleStream(listener Listener, stream *tlsTCPLogi
 	defer upstream.Close()
 
 	if len(request.InitialData) > 0 {
-		if _, err := upstream.Write(request.InitialData); err != nil {
+		n, err := upstream.Write(request.InitialData)
+		if err != nil {
 			_ = s.writeOpenResult(stream.streamID, muxOpenResult{OK: false, Error: err.Error()})
+			s.tunnel.removeStream(stream.streamID)
+			return
+		}
+		if n != len(request.InitialData) {
+			_ = s.writeOpenResult(stream.streamID, muxOpenResult{OK: false, Error: io.ErrShortWrite.Error()})
 			s.tunnel.removeStream(stream.streamID)
 			return
 		}
@@ -1289,7 +1295,7 @@ func (s *serverTLSTCPSession) handleStream(listener Listener, stream *tlsTCPLogi
 		return
 	}
 
-	pipeBothWays(wrapIdleConn(stream), wrapIdleConn(upstream))
+	pipeBothWaysWithInitialRelayRX(wrapIdleConn(stream), wrapIdleConn(upstream), int64(len(request.InitialData)))
 	s.tunnel.removeStream(stream.streamID)
 }
 
