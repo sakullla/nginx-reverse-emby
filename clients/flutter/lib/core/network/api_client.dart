@@ -17,4 +17,6 @@ abstract class ApiClient {
   Future<Map<String, dynamic>> stopLocalAgent();
 
   Future<List<Map<String, dynamic>>> getRelayListeners();
+  Future<void> toggleRelayListener(String id, bool enabled);
+  Future<void> deleteRelayListener(String id);
 }

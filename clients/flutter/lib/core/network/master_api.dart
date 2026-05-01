@@ -92,6 +92,16 @@ class MasterApi implements ApiClient {
     return _extractList(response.data);
   }
 
+  @override
+  Future<void> toggleRelayListener(String id, bool enabled) async {
+    await _dio.patch('/api/relay/$id', data: {'enabled': enabled});
+  }
+
+  @override
+  Future<void> deleteRelayListener(String id) async {
+    await _dio.delete('/api/relay/$id');
+  }
+
   List<Map<String, dynamic>> _extractList(dynamic data) {
     List<dynamic> items = [];
     if (data is List) {
