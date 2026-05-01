@@ -210,6 +210,26 @@ lib/
 - `SearchBar` — Glassmorphism search input
 - `FilterDropdown` — Glassmorphism dropdown button
 
+## Additional Pages
+
+These pages adopt the glassmorphism styling but follow established patterns:
+
+### Connect Wizard (/connect)
+- Keep current 3-step flow (Master URL → Register Token → Client Name)
+- Restyle with glassmorphism cards and accent gradient buttons
+- Dark gradient background consistent with main app
+
+### Settings (/settings)
+- Theme picker: 4 accent color swatches + light/dark/system toggle
+- Disconnect button
+- App info (version, build)
+- Glass card sections
+
+### Relay (/relay)
+- Same card-list pattern as Rules
+- Each relay shows: listen address, protocol, status, associated agent
+- Create/Edit/Delete actions
+
 ## Localization
 - Maintain existing en/zh support
 - All new UI strings must have l10n keys
