@@ -44,7 +44,9 @@ class PanelApiClient {
   }
 
   Future<List<HttpProxyRule>> fetchRules(String agentId) async {
-    final data = await _requestMap(() => _dio.get('/agents/$agentId/rules'));
+    final data = await _requestMap(
+      () => _dio.get('/agents/${_segment(agentId)}/rules'),
+    );
     return _extractList(data, 'rules').map(HttpProxyRule.fromJson).toList();
   }
 
@@ -54,7 +56,7 @@ class PanelApiClient {
   ) async {
     final data = await _requestMap(
       () => _dio.post(
-        '/agents/$agentId/rules',
+        '/agents/${_segment(agentId)}/rules',
         data: request.toJson(),
         options: _longRunningOptions,
       ),
@@ -69,7 +71,7 @@ class PanelApiClient {
   ) async {
     final data = await _requestMap(
       () => _dio.put(
-        '/agents/$agentId/rules/$id',
+        '/agents/${_segment(agentId)}/rules/${_segment(id)}',
         data: request.toJson(),
         options: _longRunningOptions,
       ),
@@ -80,7 +82,7 @@ class PanelApiClient {
   Future<void> deleteRule(String agentId, String id) async {
     await _requestMap(
       () => _dio.delete(
-        '/agents/$agentId/rules/$id',
+        '/agents/${_segment(agentId)}/rules/${_segment(id)}',
         options: _longRunningOptions,
       ),
     );
@@ -88,13 +90,16 @@ class PanelApiClient {
 
   Future<void> applyConfig(String agentId) async {
     await _requestMap(
-      () => _dio.post('/agents/$agentId/apply', options: _longRunningOptions),
+      () => _dio.post(
+        '/agents/${_segment(agentId)}/apply',
+        options: _longRunningOptions,
+      ),
     );
   }
 
   Future<List<Certificate>> fetchCertificates(String agentId) async {
     final data = await _requestMap(
-      () => _dio.get('/agents/$agentId/certificates'),
+      () => _dio.get('/agents/${_segment(agentId)}/certificates'),
     );
     return _extractList(
       data,
@@ -104,7 +109,7 @@ class PanelApiClient {
 
   Future<List<RelayListener>> fetchRelayListeners(String agentId) async {
     final data = await _requestMap(
-      () => _dio.get('/agents/$agentId/relay-listeners'),
+      () => _dio.get('/agents/${_segment(agentId)}/relay-listeners'),
     );
     return _extractList(data, 'listeners').map(RelayListener.fromJson).toList();
   }
@@ -117,7 +122,7 @@ class PanelApiClient {
       final data = response.data;
       if (data is Map<String, dynamic>) return data;
       if (data is Map) return Map<String, dynamic>.from(data);
-      return const {};
+      throw const PanelApiException('Invalid backend response');
     } on DioException catch (error) {
       throw _exceptionFromDio(error);
     }
@@ -139,8 +144,10 @@ class PanelApiClient {
     Map<String, dynamic> data,
     String key,
   ) {
-    final value = data[key] ?? data['items'] ?? data['data'];
-    if (value is! List) return const [];
+    if (!data.containsKey(key) || data[key] is! List) {
+      throw PanelApiException('Backend response missing $key');
+    }
+    final value = data[key] as List<dynamic>;
     return value
         .whereType<Map>()
         .map((item) => Map<String, dynamic>.from(item))
@@ -151,10 +158,10 @@ class PanelApiClient {
     Map<String, dynamic> data,
     String key,
   ) {
-    final value = data[key] ?? data['data'];
+    final value = data[key];
     if (value is Map<String, dynamic>) return value;
     if (value is Map) return Map<String, dynamic>.from(value);
-    return data;
+    throw PanelApiException('Backend response missing $key');
   }
 }
 
@@ -166,3 +173,5 @@ String _normalizeBaseUrl(String value) {
   if (baseUrl.endsWith('/panel-api')) return baseUrl;
   return '$baseUrl/panel-api';
 }
+
+String _segment(String value) => Uri.encodeComponent(value);

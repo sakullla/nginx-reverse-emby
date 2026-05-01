@@ -22,4 +22,22 @@ void main() {
     expect(agent.hasPendingRevision, isTrue);
     expect(agent.tags, ['edge']);
   });
+
+  test(
+    'AgentSummary parses backend aliases for last seen and desired revision',
+    () {
+      final agent = AgentSummary.fromJson({
+        'id': 'agent-1',
+        'name': 'edge-a',
+        'status': 'online',
+        'last_seen_at': '2026-05-01T10:00:00Z',
+        'current_revision': 3,
+        'desired_revision': 5,
+      });
+
+      expect(agent.lastSeen, DateTime.parse('2026-05-01T10:00:00Z'));
+      expect(agent.targetRevision, 5);
+      expect(agent.hasPendingRevision, isTrue);
+    },
+  );
 }

@@ -3,8 +3,11 @@ String stringId(dynamic value) => value?.toString() ?? '';
 List<String> stringList(dynamic value) =>
     value is List ? value.map((item) => item.toString()).toList() : const [];
 
-DateTime? dateTimeOrNull(dynamic value) =>
-    value is String ? DateTime.tryParse(value) : null;
+DateTime? dateTimeOrNull(dynamic value) {
+  if (value is DateTime) return value;
+  if (value == null) return null;
+  return DateTime.tryParse(value.toString());
+}
 
 class AgentSummary {
   const AgentSummary({
@@ -47,9 +50,11 @@ class AgentSummary {
     mode: json['mode']?.toString(),
     platform: json['platform']?.toString(),
     version: json['version']?.toString(),
-    lastSeen: dateTimeOrNull(json['last_seen']),
+    lastSeen: dateTimeOrNull(json['last_seen_at'] ?? json['last_seen']),
     currentRevision: _intOrNull(json['current_revision']),
-    targetRevision: _intOrNull(json['target_revision']),
+    targetRevision: _intOrNull(
+      json['desired_revision'] ?? json['target_revision'],
+    ),
     tags: stringList(json['tags']),
     capabilities: stringList(json['capabilities']),
   );

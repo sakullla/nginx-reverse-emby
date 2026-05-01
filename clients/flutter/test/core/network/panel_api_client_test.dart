@@ -99,6 +99,28 @@ void main() {
     },
   );
 
+  test('fetchRules encodes agent id path segment', () async {
+    late HttpRequest captured;
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(server.close);
+    server.listen((request) async {
+      captured = request;
+      request.response
+        ..headers.contentType = ContentType.json
+        ..write(jsonEncode({'ok': true, 'rules': []}));
+      await request.response.close();
+    });
+
+    final api = PanelApiClient(
+      baseUrl: 'http://${server.address.host}:${server.port}',
+      panelToken: 'panel-secret',
+    );
+
+    await api.fetchRules('agent/a b');
+
+    expect(captured.uri.path, '/panel-api/agents/agent%2Fa%20b/rules');
+  });
+
   test('createRule posts normalized payload to selected agent', () async {
     late Map<String, dynamic> body;
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
@@ -140,6 +162,44 @@ void main() {
 
     expect(body['backend_url'], 'http://emby:8096');
     expect(rule.id, '9');
+  });
+
+  test('createRule encodes agent id path segment', () async {
+    late HttpRequest captured;
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(server.close);
+    server.listen((request) async {
+      captured = request;
+      await utf8.decoder.bind(request).join();
+      request.response
+        ..headers.contentType = ContentType.json
+        ..write(
+          jsonEncode({
+            'ok': true,
+            'rule': {
+              'id': 9,
+              'frontend_url': 'https://emby.example.com',
+              'backend_url': 'http://emby:8096',
+            },
+          }),
+        );
+      await request.response.close();
+    });
+
+    final api = PanelApiClient(
+      baseUrl: 'http://${server.address.host}:${server.port}',
+      panelToken: 'panel-secret',
+    );
+
+    await api.createRule(
+      'agent/a b',
+      const CreateHttpRuleRequest(
+        frontendUrl: 'https://emby.example.com',
+        backends: [HttpBackend(url: 'http://emby:8096')],
+      ),
+    );
+
+    expect(captured.uri.path, '/panel-api/agents/agent%2Fa%20b/rules');
   });
 
   test('updateRule puts normalized payload to selected rule', () async {
@@ -189,6 +249,45 @@ void main() {
     expect(rule.enabled, isFalse);
   });
 
+  test('updateRule encodes agent and rule id path segments', () async {
+    late HttpRequest captured;
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(server.close);
+    server.listen((request) async {
+      captured = request;
+      await utf8.decoder.bind(request).join();
+      request.response
+        ..headers.contentType = ContentType.json
+        ..write(
+          jsonEncode({
+            'ok': true,
+            'rule': {
+              'id': 'rule/1',
+              'frontend_url': 'https://emby.example.com',
+              'backend_url': 'http://emby:8096',
+            },
+          }),
+        );
+      await request.response.close();
+    });
+
+    final api = PanelApiClient(
+      baseUrl: 'http://${server.address.host}:${server.port}',
+      panelToken: 'panel-secret',
+    );
+
+    await api.updateRule(
+      'agent/a b',
+      'rule/1',
+      const UpdateHttpRuleRequest(
+        frontendUrl: 'https://emby.example.com',
+        backends: [HttpBackend(url: 'http://emby:8096')],
+      ),
+    );
+
+    expect(captured.uri.path, '/panel-api/agents/agent%2Fa%20b/rules/rule%2F1');
+  });
+
   test('deleteRule deletes selected rule', () async {
     late HttpRequest captured;
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
@@ -212,6 +311,28 @@ void main() {
     expect(captured.uri.path, '/panel-api/agents/local/rules/9');
   });
 
+  test('deleteRule encodes agent and rule id path segments', () async {
+    late HttpRequest captured;
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(server.close);
+    server.listen((request) async {
+      captured = request;
+      request.response
+        ..headers.contentType = ContentType.json
+        ..write(jsonEncode({'ok': true}));
+      await request.response.close();
+    });
+
+    final api = PanelApiClient(
+      baseUrl: 'http://${server.address.host}:${server.port}',
+      panelToken: 'panel-secret',
+    );
+
+    await api.deleteRule('agent/a b', 'rule/1');
+
+    expect(captured.uri.path, '/panel-api/agents/agent%2Fa%20b/rules/rule%2F1');
+  });
+
   test('applyConfig posts to selected agent apply endpoint', () async {
     late HttpRequest captured;
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
@@ -233,6 +354,28 @@ void main() {
 
     expect(captured.method, 'POST');
     expect(captured.uri.path, '/panel-api/agents/local/apply');
+  });
+
+  test('applyConfig encodes agent id path segment', () async {
+    late HttpRequest captured;
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(server.close);
+    server.listen((request) async {
+      captured = request;
+      request.response
+        ..headers.contentType = ContentType.json
+        ..write(jsonEncode({'ok': true}));
+      await request.response.close();
+    });
+
+    final api = PanelApiClient(
+      baseUrl: 'http://${server.address.host}:${server.port}',
+      panelToken: 'panel-secret',
+    );
+
+    await api.applyConfig('agent/a b');
+
+    expect(captured.uri.path, '/panel-api/agents/agent%2Fa%20b/apply');
   });
 
   test(
@@ -268,6 +411,28 @@ void main() {
       expect(certificates.single.id, '21');
     },
   );
+
+  test('fetchCertificates encodes agent id path segment', () async {
+    late HttpRequest captured;
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(server.close);
+    server.listen((request) async {
+      captured = request;
+      request.response
+        ..headers.contentType = ContentType.json
+        ..write(jsonEncode({'ok': true, 'certificates': []}));
+      await request.response.close();
+    });
+
+    final api = PanelApiClient(
+      baseUrl: 'http://${server.address.host}:${server.port}',
+      panelToken: 'panel-secret',
+    );
+
+    await api.fetchCertificates('agent/a b');
+
+    expect(captured.uri.path, '/panel-api/agents/agent%2Fa%20b/certificates');
+  });
 
   test(
     'fetchRelayListeners gets selected agent listeners and parses envelope',
@@ -308,6 +473,85 @@ void main() {
       expect(listeners.single.listenAddress, '0.0.0.0:8443');
     },
   );
+
+  test('fetchRelayListeners encodes agent id path segment', () async {
+    late HttpRequest captured;
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(server.close);
+    server.listen((request) async {
+      captured = request;
+      request.response
+        ..headers.contentType = ContentType.json
+        ..write(jsonEncode({'ok': true, 'listeners': []}));
+      await request.response.close();
+    });
+
+    final api = PanelApiClient(
+      baseUrl: 'http://${server.address.host}:${server.port}',
+      panelToken: 'panel-secret',
+    );
+
+    await api.fetchRelayListeners('agent/a b');
+
+    expect(
+      captured.uri.path,
+      '/panel-api/agents/agent%2Fa%20b/relay-listeners',
+    );
+  });
+
+  test('throws PanelApiException when rules envelope is missing', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(server.close);
+    server.listen((request) async {
+      request.response
+        ..headers.contentType = ContentType.json
+        ..write(jsonEncode({'ok': true}));
+      await request.response.close();
+    });
+
+    final api = PanelApiClient(
+      baseUrl: 'http://${server.address.host}:${server.port}',
+      panelToken: 'panel-secret',
+    );
+
+    expect(
+      () => api.fetchRules('local'),
+      throwsA(
+        isA<PanelApiException>().having(
+          (error) => error.message,
+          'message',
+          'Backend response missing rules',
+        ),
+      ),
+    );
+  });
+
+  test('throws PanelApiException for non-map success response', () async {
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(server.close);
+    server.listen((request) async {
+      request.response
+        ..headers.contentType = ContentType.text
+        ..write('not json');
+      await request.response.close();
+    });
+
+    final api = PanelApiClient(
+      baseUrl: 'http://${server.address.host}:${server.port}',
+      panelToken: 'panel-secret',
+    );
+
+    expect(
+      api.fetchAgents,
+      throwsA(
+        isA<PanelApiException>().having(
+          (error) => error.message,
+          'message',
+          'Invalid backend response',
+        ),
+      ),
+    );
+  });
 
   test('throws PanelApiException with backend message', () async {
     final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
