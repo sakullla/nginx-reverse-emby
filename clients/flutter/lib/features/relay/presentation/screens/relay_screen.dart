@@ -27,7 +27,10 @@ class RelayScreen extends ConsumerWidget {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           // -- Filter bar ----
-          _FilterBar(total: relayAsync.valueOrNull?.length ?? 0, loc: AppLocalizations.of(context)!),
+          _FilterBar(
+            total: relayAsync.valueOrNull?.length ?? 0,
+            loc: AppLocalizations.of(context)!,
+          ),
           const SizedBox(height: AppSpacing.s12),
 
           // -- Content ----
@@ -36,10 +39,14 @@ class RelayScreen extends ConsumerWidget {
               if (filteredRelays.isEmpty) {
                 return _EmptyState(loc: AppLocalizations.of(context)!);
               }
-              return _RelayListView(relays: filteredRelays, loc: AppLocalizations.of(context)!);
+              return _RelayListView(
+                relays: filteredRelays,
+                loc: AppLocalizations.of(context)!,
+              );
             },
             loading: () => const _SkeletonList(),
-            error: (err, _) => _ErrorState(error: err, loc: AppLocalizations.of(context)!),
+            error: (err, _) =>
+                _ErrorState(error: err, loc: AppLocalizations.of(context)!),
           ),
         ],
       ),
@@ -61,36 +68,44 @@ class _FilterBar extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     return Row(
       children: [
-        // Search bar
         Expanded(
-          child: GlassSearchBar(
-            hint: loc.hintSearchRelays,
-            onChanged: (query) {
-              ref.read(relaySearchQueryProvider.notifier).update(query);
-            },
+          child: Material(
+            color: Colors.transparent,
+            child: GlassSearchBar(
+              hint: loc.hintSearchRelays,
+              onChanged: (query) {
+                ref.read(relaySearchQueryProvider.notifier).update(query);
+              },
+            ),
           ),
         ),
         const SizedBox(width: AppSpacing.s8),
 
-        // Protocol filter
-        _ProtocolFilterDropdown(
-          value: ref.watch(relayProtocolFilterNotifierProvider),
-          loc: loc,
-          onChanged: (v) {
-            if (v != null) {
-              ref.read(relayProtocolFilterNotifierProvider.notifier).update(v);
-            }
-          },
+        Material(
+          color: Colors.transparent,
+          child: _ProtocolFilterDropdown(
+            value: ref.watch(relayProtocolFilterNotifierProvider),
+            loc: loc,
+            onChanged: (v) {
+              if (v != null) {
+                ref
+                    .read(relayProtocolFilterNotifierProvider.notifier)
+                    .update(v);
+              }
+            },
+          ),
         ),
 
         const SizedBox(width: AppSpacing.s12),
+        GlassButton.primary(
+          label: loc.btnNew,
+          onPressed: () => showRelayFormDialog(context, ref),
+        ),
+        const SizedBox(width: AppSpacing.s12),
 
-        // Count
         Text(
           loc.labelRelayCount(total, total == 1 ? '' : 's'),
-          style: AppTypography.metadata.copyWith(
-            color: AppColors.textMuted,
-          ),
+          style: AppTypography.metadata.copyWith(color: AppColors.textMuted),
         ),
       ],
     );
@@ -232,9 +247,7 @@ class _RelayCard extends ConsumerWidget {
             decoration: BoxDecoration(
               color: protoColor.withValues(alpha: 0.12),
               borderRadius: BorderRadius.circular(AppRadius.medium),
-              border: Border.all(
-                color: protoColor.withValues(alpha: 0.2),
-              ),
+              border: Border.all(color: protoColor.withValues(alpha: 0.2)),
             ),
             child: Icon(protoIcon, size: 18, color: protoColor),
           ),
@@ -284,17 +297,13 @@ class _RelayCard extends ConsumerWidget {
           if (relay.enabled)
             GlassChip.success(label: loc.statusActive, showDot: true)
           else
-            GlassChip(
-              label: loc.statusDisabled,
-              color: AppColors.textMuted,
-            ),
+            GlassChip(label: loc.statusDisabled, color: AppColors.textMuted),
           const SizedBox(width: AppSpacing.s8),
 
           GlassToggle(
             value: relay.enabled,
-            onChanged: (v) => ref
-                .read(relayListProvider.notifier)
-                .toggleRelay(relay.id, v),
+            onChanged: (v) =>
+                ref.read(relayListProvider.notifier).toggleRelay(relay.id, v),
           ),
           const SizedBox(width: AppSpacing.s4),
 
@@ -351,11 +360,7 @@ class _RelayMenu extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final loc = AppLocalizations.of(context)!;
     return PopupMenuButton<String>(
-      icon: Icon(
-        Icons.more_horiz,
-        size: 18,
-        color: AppColors.textMuted,
-      ),
+      icon: Icon(Icons.more_horiz, size: 18, color: AppColors.textMuted),
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(AppRadius.medium),
       ),
@@ -367,9 +372,19 @@ class _RelayMenu extends ConsumerWidget {
           height: 36,
           child: Row(
             children: [
-              const Icon(Icons.edit_outlined, size: 16, color: AppColors.textSecondary),
+              const Icon(
+                Icons.edit_outlined,
+                size: 16,
+                color: AppColors.textSecondary,
+              ),
               const SizedBox(width: AppSpacing.s8),
-              Text(loc.btnViewDetails, style: const TextStyle(fontSize: 12, color: AppColors.textPrimary)),
+              Text(
+                'Edit',
+                style: const TextStyle(
+                  fontSize: 12,
+                  color: AppColors.textPrimary,
+                ),
+              ),
             ],
           ),
         ),
@@ -378,9 +393,16 @@ class _RelayMenu extends ConsumerWidget {
           height: 36,
           child: Row(
             children: [
-              const Icon(Icons.delete_outline, size: 16, color: AppColors.error),
+              const Icon(
+                Icons.delete_outline,
+                size: 16,
+                color: AppColors.error,
+              ),
               const SizedBox(width: AppSpacing.s8),
-              Text(loc.btnDelete, style: const TextStyle(fontSize: 12, color: AppColors.error)),
+              Text(
+                loc.btnDelete,
+                style: const TextStyle(fontSize: 12, color: AppColors.error),
+              ),
             ],
           ),
         ),
@@ -391,7 +413,7 @@ class _RelayMenu extends ConsumerWidget {
   void _handleAction(BuildContext context, WidgetRef ref, String action) {
     switch (action) {
       case 'edit':
-        // Placeholder — edit dialog not yet implemented
+        showRelayFormDialog(context, ref, existing: relay);
         break;
       case 'delete':
         _confirmDelete(context, ref);
@@ -414,15 +436,132 @@ class _RelayMenu extends ConsumerWidget {
   }
 }
 
+Future<void> showRelayFormDialog(
+  BuildContext context,
+  WidgetRef ref, {
+  RelayListener? existing,
+}) {
+  final nameController = TextEditingController(text: existing?.name ?? '');
+  final portController = TextEditingController(
+    text: existing?.listenPort?.toString() ?? '',
+  );
+  final hostsController = TextEditingController(
+    text: existing?.bindHosts.join(', ') ?? '',
+  );
+  final certSourceController = TextEditingController(
+    text: existing?.certificateSource ?? '',
+  );
+  final trustModeController = TextEditingController(
+    text: existing?.tlsMode ?? '',
+  );
+  var enabled = existing?.enabled ?? true;
+
+  return showDialog<void>(
+    context: context,
+    builder: (ctx) => StatefulBuilder(
+      builder: (context, setState) => AlertDialog(
+        title: const Text('Relay listener'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextField(
+                controller: nameController,
+                decoration: const InputDecoration(labelText: 'Name'),
+              ),
+              TextField(
+                controller: portController,
+                decoration: const InputDecoration(labelText: 'Listen port'),
+                keyboardType: TextInputType.number,
+              ),
+              TextField(
+                controller: hostsController,
+                decoration: const InputDecoration(labelText: 'Bind hosts'),
+              ),
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('Enabled'),
+                value: enabled,
+                onChanged: (value) => setState(() => enabled = value),
+              ),
+              TextField(
+                controller: certSourceController,
+                decoration: const InputDecoration(
+                  labelText: 'Certificate source',
+                ),
+              ),
+              TextField(
+                controller: trustModeController,
+                decoration: const InputDecoration(labelText: 'Trust mode'),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              final listenPort = int.tryParse(portController.text.trim());
+              if (listenPort == null) return;
+              final bindHosts = hostsController.text
+                  .split(',')
+                  .map((host) => host.trim())
+                  .where((host) => host.isNotEmpty)
+                  .toList();
+              final certSource = certSourceController.text.trim();
+              final trustMode = trustModeController.text.trim();
+              if (existing == null) {
+                ref
+                    .read(relayListProvider.notifier)
+                    .createRelay(
+                      CreateRelayListenerRequest(
+                        agentId: 'local',
+                        name: nameController.text.trim(),
+                        listenPort: listenPort,
+                        bindHosts: bindHosts,
+                        enabled: enabled,
+                        certificateSource: certSource.isEmpty
+                            ? null
+                            : certSource,
+                        tlsMode: trustMode.isEmpty ? null : trustMode,
+                      ),
+                    );
+              } else {
+                ref
+                    .read(relayListProvider.notifier)
+                    .updateRelay(
+                      existing.id,
+                      UpdateRelayListenerRequest(
+                        name: nameController.text.trim(),
+                        listenPort: listenPort,
+                        bindHosts: bindHosts,
+                        enabled: enabled,
+                        certificateSource: certSource.isEmpty
+                            ? null
+                            : certSource,
+                        tlsMode: trustMode.isEmpty ? null : trustMode,
+                      ),
+                    );
+              }
+              Navigator.of(ctx).pop();
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Delete confirmation dialog
 // ---------------------------------------------------------------------------
 
 class _DeleteConfirmDialog extends StatelessWidget {
-  const _DeleteConfirmDialog({
-    required this.relay,
-    required this.onConfirm,
-  });
+  const _DeleteConfirmDialog({required this.relay, required this.onConfirm});
 
   final RelayListener relay;
   final VoidCallback onConfirm;
@@ -460,8 +599,8 @@ class _DeleteConfirmDialog extends StatelessWidget {
                 const SizedBox(height: AppSpacing.s12),
                 Text(
                   loc.descDeleteRelayConfirm(
-                      relay.listenAddress,
-                      relay.protocol.toUpperCase(),
+                    relay.listenAddress,
+                    relay.protocol.toUpperCase(),
                   ),
                   style: AppTypography.body.copyWith(
                     color: AppColors.textSecondary,
@@ -516,9 +655,7 @@ class _EmptyState extends StatelessWidget {
             const SizedBox(height: AppSpacing.s12),
             Text(
               loc.titleNoRelayListeners,
-              style: AppTypography.title.copyWith(
-                color: AppColors.textMuted,
-              ),
+              style: AppTypography.title.copyWith(color: AppColors.textMuted),
             ),
             const SizedBox(height: AppSpacing.s4),
             Text(
@@ -552,17 +689,11 @@ class _ErrorState extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(
-              Icons.error_outline,
-              size: 48,
-              color: AppColors.error,
-            ),
+            const Icon(Icons.error_outline, size: 48, color: AppColors.error),
             const SizedBox(height: AppSpacing.s12),
             Text(
               loc.failedToLoadRelays,
-              style: AppTypography.title.copyWith(
-                color: AppColors.textPrimary,
-              ),
+              style: AppTypography.title.copyWith(color: AppColors.textPrimary),
             ),
             const SizedBox(height: AppSpacing.s4),
             Text(

@@ -6,6 +6,7 @@ import '../../../../core/client_state.dart' as runtime_state;
 import '../../../../core/design/components/glass_button.dart';
 import '../../../../core/design/components/glass_card.dart';
 import '../../../../core/design/components/glass_chip.dart';
+import '../../../../core/design/components/glass_search_bar.dart';
 import '../../../../core/design/tokens/app_colors.dart';
 import '../../../../core/design/tokens/app_spacing.dart';
 import '../../../../core/design/tokens/app_typography.dart';
@@ -15,6 +16,12 @@ import '../../../auth/data/models/auth_models.dart';
 import '../../../auth/presentation/providers/auth_provider.dart';
 import '../../../../services/local_agent_controller.dart';
 import '../../../../services/local_agent_controller_provider.dart';
+import '../../data/models/agent_models.dart';
+import '../providers/agents_provider.dart';
+
+final _agentSearchQueryProvider = StateProvider.autoDispose<String>(
+  (ref) => '',
+);
 
 class AgentsScreen extends ConsumerWidget {
   const AgentsScreen({super.key});
@@ -23,6 +30,17 @@ class AgentsScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final caps = PlatformCapabilities.current;
     final loc = AppLocalizations.of(context)!;
+    final agentsAsync = ref.watch(agentsListProvider);
+    final query = ref.watch(_agentSearchQueryProvider).toLowerCase();
+    final agents = (agentsAsync.valueOrNull ?? [])
+        .where(
+          (agent) =>
+              agent.name.toLowerCase().contains(query) ||
+              agent.id.toLowerCase().contains(query) ||
+              agent.status.toLowerCase().contains(query) ||
+              (agent.platform?.toLowerCase().contains(query) ?? false),
+        )
+        .toList();
 
     return SingleChildScrollView(
       padding: const EdgeInsets.all(AppSpacing.s16),
@@ -41,16 +59,251 @@ class AgentsScreen extends ConsumerWidget {
           _SectionHeader(
             title: loc.titleRemoteAgents,
             trailing: GlassChip(
-              label: loc.labelRegisteredCount(0),
+              label: loc.labelRegisteredCount(
+                agentsAsync.valueOrNull?.length ?? 0,
+              ),
               color: AppColors.textMuted,
             ),
           ),
           const SizedBox(height: AppSpacing.s12),
-          const _RemoteAgentsEmptyState(),
+          Material(
+            color: Colors.transparent,
+            child: GlassSearchBar(
+              hint: 'Search agents...',
+              onChanged: (value) =>
+                  ref.read(_agentSearchQueryProvider.notifier).state = value,
+            ),
+          ),
+          const SizedBox(height: AppSpacing.s12),
+          agentsAsync.when(
+            data: (_) => agents.isEmpty
+                ? const _RemoteAgentsEmptyState()
+                : _RemoteAgentsList(agents: agents),
+            loading: () => const _RemoteAgentsSkeleton(),
+            error: (error, _) => _RemoteAgentsError(error: error),
+          ),
         ],
       ),
     );
   }
+}
+
+class _RemoteAgentsList extends StatelessWidget {
+  const _RemoteAgentsList({required this.agents});
+
+  final List<AgentSummary> agents;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: agents
+          .map(
+            (agent) => Padding(
+              padding: const EdgeInsets.only(bottom: AppSpacing.s8),
+              child: _RemoteAgentCard(agent: agent),
+            ),
+          )
+          .toList(),
+    );
+  }
+}
+
+class _RemoteAgentCard extends ConsumerWidget {
+  const _RemoteAgentCard({required this.agent});
+
+  final AgentSummary agent;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final statusColor = agent.isOnline ? AppColors.success : AppColors.warning;
+    final revision = agent.hasPendingRevision
+        ? 'Revision ${agent.currentRevision ?? '-'} -> ${agent.targetRevision ?? '-'}'
+        : 'Revision current';
+    return GlassCard(
+      padding: const EdgeInsets.all(AppSpacing.s16),
+      child: Row(
+        children: [
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              color: statusColor.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(AppRadius.medium),
+              border: Border.all(color: statusColor.withValues(alpha: 0.2)),
+            ),
+            child: Icon(Icons.devices_outlined, color: statusColor, size: 20),
+          ),
+          const SizedBox(width: AppSpacing.s12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Flexible(
+                      child: Text(
+                        agent.name.isEmpty ? agent.id : agent.name,
+                        style: AppTypography.bodyMedium.copyWith(
+                          color: AppColors.textPrimary,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    const SizedBox(width: AppSpacing.s8),
+                    agent.isOnline
+                        ? GlassChip.success(label: agent.status, showDot: true)
+                        : GlassChip.warning(label: agent.status),
+                  ],
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  [
+                    if (agent.platform != null) agent.platform!,
+                    if (agent.version != null) agent.version!,
+                    if (agent.mode != null) agent.mode!,
+                    revision,
+                    'Last seen ${_formatLastSeen(agent.lastSeen)}',
+                  ].join('  ·  '),
+                  style: AppTypography.metadataSmall.copyWith(
+                    color: AppColors.textMuted,
+                  ),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: AppSpacing.s8),
+          _RemoteAgentMenu(agent: agent),
+        ],
+      ),
+    );
+  }
+}
+
+class _RemoteAgentMenu extends ConsumerWidget {
+  const _RemoteAgentMenu({required this.agent});
+
+  final AgentSummary agent;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return PopupMenuButton<String>(
+      icon: Icon(Icons.more_horiz, size: 18, color: AppColors.textMuted),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(AppRadius.medium),
+      ),
+      color: const Color(0xFF1E293B),
+      onSelected: (action) => _handleAction(context, ref, action),
+      itemBuilder: (context) => const [
+        PopupMenuItem(value: 'rename', child: Text('Rename')),
+        PopupMenuItem(value: 'apply', child: Text('Apply config')),
+        PopupMenuItem(value: 'delete', child: Text('Delete')),
+      ],
+    );
+  }
+
+  void _handleAction(BuildContext context, WidgetRef ref, String action) {
+    switch (action) {
+      case 'rename':
+        _showRenameDialog(context, ref);
+        break;
+      case 'apply':
+        ref.read(agentsListProvider.notifier).applyConfig(agent.id);
+        break;
+      case 'delete':
+        _showDeleteDialog(context, ref);
+        break;
+    }
+  }
+
+  void _showRenameDialog(BuildContext context, WidgetRef ref) {
+    final controller = TextEditingController(text: agent.name);
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Rename agent'),
+        content: TextField(
+          controller: controller,
+          decoration: const InputDecoration(labelText: 'Name'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              ref
+                  .read(agentsListProvider.notifier)
+                  .renameAgent(agent.id, controller.text.trim());
+              Navigator.of(ctx).pop();
+            },
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showDeleteDialog(BuildContext context, WidgetRef ref) {
+    showDialog<void>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete agent'),
+        content: Text('Delete ${agent.name.isEmpty ? agent.id : agent.name}?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              ref.read(agentsListProvider.notifier).deleteAgent(agent.id);
+              Navigator.of(ctx).pop();
+            },
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _RemoteAgentsSkeleton extends StatelessWidget {
+  const _RemoteAgentsSkeleton();
+
+  @override
+  Widget build(BuildContext context) {
+    return const GlassCard(child: SizedBox(height: 80));
+  }
+}
+
+class _RemoteAgentsError extends StatelessWidget {
+  const _RemoteAgentsError({required this.error});
+
+  final Object error;
+
+  @override
+  Widget build(BuildContext context) {
+    return GlassCard(
+      child: Padding(
+        padding: const EdgeInsets.all(AppSpacing.s16),
+        child: Text(
+          error.toString(),
+          style: AppTypography.metadata.copyWith(color: AppColors.error),
+        ),
+      ),
+    );
+  }
+}
+
+String _formatLastSeen(DateTime? value) {
+  if (value == null) return '-';
+  final month = value.month.toString().padLeft(2, '0');
+  final day = value.day.toString().padLeft(2, '0');
+  final hour = value.hour.toString().padLeft(2, '0');
+  final minute = value.minute.toString().padLeft(2, '0');
+  return '${value.year}-$month-$day $hour:$minute';
 }
 
 // ---------------------------------------------------------------------------
@@ -58,10 +311,7 @@ class AgentsScreen extends ConsumerWidget {
 // ---------------------------------------------------------------------------
 
 class _SectionHeader extends StatelessWidget {
-  const _SectionHeader({
-    required this.title,
-    this.trailing,
-  });
+  const _SectionHeader({required this.title, this.trailing});
 
   final String title;
   final Widget? trailing;
@@ -76,11 +326,7 @@ class _SectionHeader extends StatelessWidget {
         ),
         const SizedBox(width: AppSpacing.s8),
         const Expanded(
-          child: Divider(
-            color: AppColors.border,
-            thickness: 1,
-            height: 1,
-          ),
+          child: Divider(color: AppColors.border, thickness: 1, height: 1),
         ),
         if (trailing != null) ...[
           const SizedBox(width: AppSpacing.s8),
@@ -271,9 +517,7 @@ class _LocalAgentCardState extends ConsumerState<_LocalAgentCard> {
               end: Alignment.centerRight,
             ),
             borderRadius: BorderRadius.circular(AppRadius.card),
-            border: Border.all(
-              color: AppColors.info.withValues(alpha: 0.15),
-            ),
+            border: Border.all(color: AppColors.info.withValues(alpha: 0.15)),
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -292,10 +536,7 @@ class _LocalAgentCardState extends ConsumerState<_LocalAgentCard> {
                       borderRadius: BorderRadius.circular(12),
                     ),
                     child: const Center(
-                      child: Text(
-                        '🖥️',
-                        style: TextStyle(fontSize: 22),
-                      ),
+                      child: Text('🖥️', style: TextStyle(fontSize: 22)),
                     ),
                   ),
                   const SizedBox(width: AppSpacing.s12),
@@ -393,27 +634,30 @@ class _LocalAgentCardState extends ConsumerState<_LocalAgentCard> {
     );
   }
 
-  Widget _buildStatusChip(BuildContext context, LocalAgentControllerStatus? status) {
+  Widget _buildStatusChip(
+    BuildContext context,
+    LocalAgentControllerStatus? status,
+  ) {
     final loc = AppLocalizations.of(context)!;
     return switch (status) {
       LocalAgentControllerStatus.running => GlassChip.success(
-          label: loc.statusRunning,
-          showDot: true,
-        ),
+        label: loc.statusRunning,
+        showDot: true,
+      ),
       LocalAgentControllerStatus.stopped => GlassChip.warning(
-          label: loc.statusStopped,
-        ),
+        label: loc.statusStopped,
+      ),
       LocalAgentControllerStatus.unavailable => GlassChip.error(
-          label: loc.statusUnavailable,
-        ),
-      null => GlassChip(
-          label: loc.statusUnknown,
-          color: AppColors.textMuted,
-        ),
+        label: loc.statusUnavailable,
+      ),
+      null => GlassChip(label: loc.statusUnknown, color: AppColors.textMuted),
     };
   }
 
-  Widget _buildMetadataRow(BuildContext context, LocalAgentRuntimeSnapshot? snapshot) {
+  Widget _buildMetadataRow(
+    BuildContext context,
+    LocalAgentRuntimeSnapshot? snapshot,
+  ) {
     final loc = AppLocalizations.of(context)!;
     final items = <String>[
       '${loc.labelPid}: ${snapshot?.pid?.toString() ?? '—'}',
@@ -424,9 +668,7 @@ class _LocalAgentCardState extends ConsumerState<_LocalAgentCard> {
 
     return Text(
       items.join('  ·  '),
-      style: AppTypography.metadataSmall.copyWith(
-        color: AppColors.textMuted,
-      ),
+      style: AppTypography.metadataSmall.copyWith(color: AppColors.textMuted),
       overflow: TextOverflow.ellipsis,
     );
   }
@@ -441,9 +683,7 @@ class _LocalAgentCardState extends ConsumerState<_LocalAgentCard> {
     if (status == LocalAgentControllerStatus.unavailable) {
       return Text(
         loc.descNotAvailable,
-        style: AppTypography.metadata.copyWith(
-          color: AppColors.textMuted,
-        ),
+        style: AppTypography.metadata.copyWith(color: AppColors.textMuted),
       );
     }
 
@@ -602,9 +842,7 @@ class _RemoteAgentsEmptyState extends StatelessWidget {
             const SizedBox(height: AppSpacing.s16),
             Text(
               loc.titleNoRemoteAgents,
-              style: AppTypography.title.copyWith(
-                color: AppColors.textPrimary,
-              ),
+              style: AppTypography.title.copyWith(color: AppColors.textPrimary),
             ),
             const SizedBox(height: AppSpacing.s4),
             Text(

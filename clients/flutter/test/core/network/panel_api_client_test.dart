@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:nre_client/core/network/panel_api_client.dart';
+import 'package:nre_client/features/relay/data/models/relay_models.dart';
 import 'package:nre_client/features/rules/data/models/rule_models.dart';
 
 void main() {
@@ -403,6 +404,66 @@ void main() {
     expect(captured.uri.path, '/panel-api/agents/agent%2Fa%20b/apply');
   });
 
+  test('renameAgent patches selected agent', () async {
+    late HttpRequest captured;
+    late Map<String, dynamic> body;
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(server.close);
+    server.listen((request) async {
+      captured = request;
+      body =
+          jsonDecode(await utf8.decoder.bind(request).join())
+              as Map<String, dynamic>;
+      request.response
+        ..headers.contentType = ContentType.json
+        ..write(
+          jsonEncode({
+            'ok': true,
+            'agent': {
+              'id': 'agent-1',
+              'name': body['name'],
+              'status': 'online',
+            },
+          }),
+        );
+      await request.response.close();
+    });
+
+    final api = PanelApiClient(
+      baseUrl: 'http://${server.address.host}:${server.port}',
+      panelToken: 'panel-secret',
+    );
+
+    final agent = await api.renameAgent('agent-1', 'edge-a');
+
+    expect(captured.method, 'PATCH');
+    expect(captured.uri.path, '/panel-api/agents/agent-1');
+    expect(agent.name, 'edge-a');
+  });
+
+  test('deleteAgent deletes selected agent', () async {
+    late HttpRequest captured;
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(server.close);
+    server.listen((request) async {
+      captured = request;
+      request.response
+        ..headers.contentType = ContentType.json
+        ..write(jsonEncode({'ok': true}));
+      await request.response.close();
+    });
+
+    final api = PanelApiClient(
+      baseUrl: 'http://${server.address.host}:${server.port}',
+      panelToken: 'panel-secret',
+    );
+
+    await api.deleteAgent('agent-1');
+
+    expect(captured.method, 'DELETE');
+    expect(captured.uri.path, '/panel-api/agents/agent-1');
+  });
+
   test(
     'fetchCertificates gets selected agent certificates and parses envelope',
     () async {
@@ -457,6 +518,62 @@ void main() {
     await api.fetchCertificates('agent/a b');
 
     expect(captured.uri.path, '/panel-api/agents/agent%2Fa%20b/certificates');
+  });
+
+  test('issueCertificate posts selected certificate issue endpoint', () async {
+    late HttpRequest captured;
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(server.close);
+    server.listen((request) async {
+      captured = request;
+      await utf8.decoder.bind(request).join();
+      request.response
+        ..headers.contentType = ContentType.json
+        ..write(
+          jsonEncode({
+            'ok': true,
+            'certificate': {'id': 'cert-1', 'domain': 'emby.example.com'},
+          }),
+        );
+      await request.response.close();
+    });
+
+    final api = PanelApiClient(
+      baseUrl: 'http://${server.address.host}:${server.port}',
+      panelToken: 'panel-secret',
+    );
+
+    final certificate = await api.issueCertificate('local', 'cert-1');
+
+    expect(captured.method, 'POST');
+    expect(
+      captured.uri.path,
+      '/panel-api/agents/local/certificates/cert-1/issue',
+    );
+    expect(certificate.id, 'cert-1');
+  });
+
+  test('deleteCertificate deletes selected certificate', () async {
+    late HttpRequest captured;
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(server.close);
+    server.listen((request) async {
+      captured = request;
+      request.response
+        ..headers.contentType = ContentType.json
+        ..write(jsonEncode({'ok': true}));
+      await request.response.close();
+    });
+
+    final api = PanelApiClient(
+      baseUrl: 'http://${server.address.host}:${server.port}',
+      panelToken: 'panel-secret',
+    );
+
+    await api.deleteCertificate('local', 'cert-1');
+
+    expect(captured.method, 'DELETE');
+    expect(captured.uri.path, '/panel-api/agents/local/certificates/cert-1');
   });
 
   test(
@@ -521,6 +638,128 @@ void main() {
     expect(
       captured.uri.path,
       '/panel-api/agents/agent%2Fa%20b/relay-listeners',
+    );
+  });
+
+  test('createRelayListener posts selected agent listener', () async {
+    late HttpRequest captured;
+    late Map<String, dynamic> body;
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(server.close);
+    server.listen((request) async {
+      captured = request;
+      body =
+          jsonDecode(await utf8.decoder.bind(request).join())
+              as Map<String, dynamic>;
+      request.response
+        ..headers.contentType = ContentType.json
+        ..write(
+          jsonEncode({
+            'ok': true,
+            'listener': {
+              'id': 'listener-1',
+              'agent_id': body['agent_id'],
+              'name': body['name'],
+              'listen_port': body['listen_port'],
+              'bind_hosts': body['bind_hosts'],
+            },
+          }),
+        );
+      await request.response.close();
+    });
+
+    final api = PanelApiClient(
+      baseUrl: 'http://${server.address.host}:${server.port}',
+      panelToken: 'panel-secret',
+    );
+
+    final listener = await api.createRelayListener(
+      'local',
+      const CreateRelayListenerRequest(
+        agentId: 'local',
+        name: 'public-tls',
+        listenPort: 8443,
+        bindHosts: ['0.0.0.0'],
+      ),
+    );
+
+    expect(captured.method, 'POST');
+    expect(captured.uri.path, '/panel-api/agents/local/relay-listeners');
+    expect(listener.listenAddress, '0.0.0.0:8443');
+  });
+
+  test('updateRelayListener puts selected listener', () async {
+    late HttpRequest captured;
+    late Map<String, dynamic> body;
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(server.close);
+    server.listen((request) async {
+      captured = request;
+      body =
+          jsonDecode(await utf8.decoder.bind(request).join())
+              as Map<String, dynamic>;
+      request.response
+        ..headers.contentType = ContentType.json
+        ..write(
+          jsonEncode({
+            'ok': true,
+            'listener': {
+              'id': 'listener-1',
+              'name': body['name'],
+              'listen_port': body['listen_port'],
+              'bind_hosts': body['bind_hosts'],
+            },
+          }),
+        );
+      await request.response.close();
+    });
+
+    final api = PanelApiClient(
+      baseUrl: 'http://${server.address.host}:${server.port}',
+      panelToken: 'panel-secret',
+    );
+
+    final listener = await api.updateRelayListener(
+      'local',
+      'listener-1',
+      const UpdateRelayListenerRequest(
+        name: 'public-tls',
+        listenPort: 9443,
+        bindHosts: ['127.0.0.1'],
+      ),
+    );
+
+    expect(captured.method, 'PUT');
+    expect(
+      captured.uri.path,
+      '/panel-api/agents/local/relay-listeners/listener-1',
+    );
+    expect(listener.listenAddress, '127.0.0.1:9443');
+  });
+
+  test('deleteRelayListener deletes selected listener', () async {
+    late HttpRequest captured;
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(server.close);
+    server.listen((request) async {
+      captured = request;
+      request.response
+        ..headers.contentType = ContentType.json
+        ..write(jsonEncode({'ok': true}));
+      await request.response.close();
+    });
+
+    final api = PanelApiClient(
+      baseUrl: 'http://${server.address.host}:${server.port}',
+      panelToken: 'panel-secret',
+    );
+
+    await api.deleteRelayListener('local', 'listener-1');
+
+    expect(captured.method, 'DELETE');
+    expect(
+      captured.uri.path,
+      '/panel-api/agents/local/relay-listeners/listener-1',
     );
   });
 

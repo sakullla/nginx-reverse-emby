@@ -44,44 +44,53 @@ class _RuleFormDialog extends ConsumerStatefulWidget {
 }
 
 class _RuleFormDialogState extends ConsumerState<_RuleFormDialog> {
-  late final TextEditingController _domainController;
-  late final TextEditingController _targetController;
-  String _selectedType = 'http';
+  late final TextEditingController _frontendController;
+  late final TextEditingController _backendController;
+  late final TextEditingController _tagsController;
+  late final TextEditingController _userAgentController;
+  late bool _enabled;
+  late bool _proxyRedirect;
+  late bool _passProxyHeaders;
   bool _saving = false;
-
-  static const _typeOptions = ['http', 'https', 'l4'];
 
   @override
   void initState() {
     super.initState();
     if (widget.mode == RuleFormMode.edit && widget.existingRule != null) {
-      _domainController = TextEditingController(
+      final rule = widget.existingRule!;
+      _frontendController = TextEditingController(
         text: widget.existingRule!.frontendUrl,
       );
-      _targetController = TextEditingController(
-        text: widget.existingRule!.backendUrl,
-      );
-      _selectedType =
-          widget.existingRule!.frontendUrl.toLowerCase().startsWith('https://')
-          ? 'https'
-          : 'http';
+      _backendController = TextEditingController(text: rule.backendUrl);
+      _tagsController = TextEditingController(text: rule.tags.join(', '));
+      _userAgentController = TextEditingController(text: rule.userAgent ?? '');
+      _enabled = rule.enabled;
+      _proxyRedirect = rule.proxyRedirect ?? false;
+      _passProxyHeaders = rule.passProxyHeaders ?? true;
     } else {
-      _domainController = TextEditingController();
-      _targetController = TextEditingController();
+      _frontendController = TextEditingController();
+      _backendController = TextEditingController();
+      _tagsController = TextEditingController();
+      _userAgentController = TextEditingController();
+      _enabled = true;
+      _proxyRedirect = false;
+      _passProxyHeaders = true;
     }
   }
 
   @override
   void dispose() {
-    _domainController.dispose();
-    _targetController.dispose();
+    _frontendController.dispose();
+    _backendController.dispose();
+    _tagsController.dispose();
+    _userAgentController.dispose();
     super.dispose();
   }
 
   bool get _isValid {
-    final domain = _domainController.text.trim();
-    final target = _targetController.text.trim();
-    return domain.isNotEmpty && target.isNotEmpty;
+    final frontend = _frontendController.text.trim();
+    final backend = _backendController.text.trim();
+    return frontend.isNotEmpty && backend.isNotEmpty;
   }
 
   Future<void> _save() async {
@@ -89,21 +98,43 @@ class _RuleFormDialogState extends ConsumerState<_RuleFormDialog> {
 
     setState(() => _saving = true);
 
-    final domain = _domainController.text.trim();
-    final target = _targetController.text.trim();
+    final frontendUrl = _frontendController.text.trim();
+    final backendUrl = _backendController.text.trim();
+    final tags = _tagsController.text
+        .split(',')
+        .map((tag) => tag.trim())
+        .where((tag) => tag.isNotEmpty)
+        .toList();
+    final userAgent = _userAgentController.text.trim();
+    final editedRule = HttpProxyRule(
+      id: widget.existingRule?.id ?? '',
+      frontendUrl: frontendUrl,
+      backends: [HttpBackend(url: backendUrl)],
+      enabled: _enabled,
+      tags: tags,
+      proxyRedirect: _proxyRedirect,
+      passProxyHeaders: _passProxyHeaders,
+      userAgent: userAgent.isEmpty ? null : userAgent,
+      customHeaders: widget.existingRule?.customHeaders ?? const [],
+      loadBalancingStrategy: widget.existingRule?.loadBalancingStrategy,
+      relayLayers: widget.existingRule?.relayLayers ?? const [],
+      relayObfs: widget.existingRule?.relayObfs,
+    );
 
     try {
       if (widget.mode == RuleFormMode.create) {
         final request = CreateHttpRuleRequest(
-          frontendUrl: domain,
-          backends: [HttpBackend(url: target)],
+          frontendUrl: frontendUrl,
+          backends: [HttpBackend(url: backendUrl)],
+          enabled: _enabled,
+          tags: tags,
+          proxyRedirect: _proxyRedirect,
+          passProxyHeaders: _passProxyHeaders,
+          userAgent: userAgent.isEmpty ? null : userAgent,
         );
         await ref.read(rulesListProvider.notifier).createRule(request);
       } else {
-        final request = UpdateHttpRuleRequest(
-          frontendUrl: domain,
-          backends: [HttpBackend(url: target)],
-        );
+        final request = UpdateHttpRuleRequest.fromRule(editedRule);
         await ref
             .read(rulesListProvider.notifier)
             .updateRule(widget.existingRule!.id, request);
@@ -152,72 +183,90 @@ class _RuleFormDialogState extends ConsumerState<_RuleFormDialog> {
               borderRadius: BorderRadius.circular(AppRadius.largeCard),
               border: Border.all(color: AppColors.border),
             ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                // -- Header ----
-                Text(
-                  isEdit ? loc.titleEditRule : loc.titleNewRule,
-                  style: AppTypography.title.copyWith(
-                    color: AppColors.textPrimary,
-                    fontSize: 16,
-                  ),
-                ),
-                const SizedBox(height: AppSpacing.s20),
-
-                // -- Domain field ----
-                _FieldLabel(loc.labelDomain),
-                const SizedBox(height: AppSpacing.s4),
-                _GlassTextField(
-                  controller: _domainController,
-                  hint: 'example.com',
-                  onChanged: (_) => setState(() {}),
-                ),
-                const SizedBox(height: AppSpacing.s14),
-
-                // -- Target field ----
-                _FieldLabel(loc.labelTarget),
-                const SizedBox(height: AppSpacing.s4),
-                _GlassTextField(
-                  controller: _targetController,
-                  hint: 'localhost:8080',
-                  onChanged: (_) => setState(() {}),
-                ),
-                const SizedBox(height: AppSpacing.s14),
-
-                // -- Type dropdown ----
-                _FieldLabel(loc.labelType),
-                const SizedBox(height: AppSpacing.s4),
-                _GlassTypeDropdown(
-                  value: _selectedType,
-                  items: _typeOptions,
-                  onChanged: (value) {
-                    if (value != null) {
-                      setState(() => _selectedType = value);
-                    }
-                  },
-                ),
-                const SizedBox(height: AppSpacing.s20),
-
-                // -- Actions ----
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.end,
+            child: Material(
+              color: Colors.transparent,
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    GlassButton.secondary(
-                      label: loc.btnCancel,
-                      onPressed: _saving
-                          ? null
-                          : () => Navigator.of(context).pop(null),
+                    Text(
+                      isEdit ? loc.titleEditRule : loc.titleNewRule,
+                      style: AppTypography.title.copyWith(
+                        color: AppColors.textPrimary,
+                        fontSize: 16,
+                      ),
                     ),
-                    const SizedBox(width: AppSpacing.s8),
-                    GlassButton.primary(
-                      label: _saving ? loc.btnSaving : loc.btnSave,
-                      onPressed: _isValid && !_saving ? _save : null,
+                    const SizedBox(height: AppSpacing.s20),
+                    const _FieldLabel('Frontend URL'),
+                    const SizedBox(height: AppSpacing.s4),
+                    _GlassTextField(
+                      controller: _frontendController,
+                      hint: 'https://emby.example.com',
+                      onChanged: (_) => setState(() {}),
+                    ),
+                    const SizedBox(height: AppSpacing.s14),
+                    const _FieldLabel('Backend URL'),
+                    const SizedBox(height: AppSpacing.s4),
+                    _GlassTextField(
+                      controller: _backendController,
+                      hint: 'http://emby:8096',
+                      onChanged: (_) => setState(() {}),
+                    ),
+                    const SizedBox(height: AppSpacing.s14),
+                    _SwitchRow(
+                      label: 'Enabled',
+                      value: _enabled,
+                      onChanged: (value) => setState(() => _enabled = value),
+                    ),
+                    const SizedBox(height: AppSpacing.s14),
+                    const _FieldLabel('Tags'),
+                    const SizedBox(height: AppSpacing.s4),
+                    _GlassTextField(
+                      controller: _tagsController,
+                      hint: 'media, edge',
+                    ),
+                    const SizedBox(height: AppSpacing.s14),
+                    _SwitchRow(
+                      label: 'Proxy redirect',
+                      value: _proxyRedirect,
+                      onChanged: (value) =>
+                          setState(() => _proxyRedirect = value),
+                    ),
+                    const SizedBox(height: AppSpacing.s8),
+                    _SwitchRow(
+                      label: 'Pass proxy headers',
+                      value: _passProxyHeaders,
+                      onChanged: (value) =>
+                          setState(() => _passProxyHeaders = value),
+                    ),
+                    const SizedBox(height: AppSpacing.s14),
+                    const _FieldLabel('User agent'),
+                    const SizedBox(height: AppSpacing.s4),
+                    _GlassTextField(
+                      controller: _userAgentController,
+                      hint: 'Optional',
+                    ),
+                    const SizedBox(height: AppSpacing.s20),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.end,
+                      children: [
+                        GlassButton.secondary(
+                          label: loc.btnCancel,
+                          onPressed: _saving
+                              ? null
+                              : () => Navigator.of(context).pop(null),
+                        ),
+                        const SizedBox(width: AppSpacing.s8),
+                        GlassButton.primary(
+                          label: _saving ? loc.btnSaving : loc.btnSave,
+                          onPressed: _isValid && !_saving ? _save : null,
+                        ),
+                      ],
                     ),
                   ],
                 ),
-              ],
+              ),
             ),
           ),
         ),
@@ -297,16 +346,16 @@ class _GlassTextField extends StatelessWidget {
   }
 }
 
-class _GlassTypeDropdown extends StatelessWidget {
-  const _GlassTypeDropdown({
+class _SwitchRow extends StatelessWidget {
+  const _SwitchRow({
+    required this.label,
     required this.value,
-    required this.items,
     required this.onChanged,
   });
 
-  final String value;
-  final List<String> items;
-  final ValueChanged<String?> onChanged;
+  final String label;
+  final bool value;
+  final ValueChanged<bool> onChanged;
 
   @override
   Widget build(BuildContext context) {
@@ -318,36 +367,33 @@ class _GlassTypeDropdown extends StatelessWidget {
           sigmaY: AppBlur.subtle,
         ),
         child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: AppSpacing.s12),
+          padding: const EdgeInsets.symmetric(
+            horizontal: AppSpacing.s12,
+            vertical: AppSpacing.s4,
+          ),
           decoration: BoxDecoration(
             color: Colors.white.withValues(alpha: AppColors.surfaceOpacityCard),
             borderRadius: BorderRadius.circular(AppRadius.medium),
             border: Border.all(color: AppColors.border),
           ),
-          child: DropdownButtonHideUnderline(
-            child: DropdownButton<String>(
-              value: value,
-              items: items
-                  .map(
-                    (item) => DropdownMenuItem(
-                      value: item,
-                      child: Text(
-                        item.toUpperCase(),
-                        style: AppTypography.body.copyWith(
-                          color: AppColors.textPrimary,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                    ),
-                  )
-                  .toList(),
-              onChanged: onChanged,
-              dropdownColor: const Color(0xFF1E293B),
-              iconEnabledColor: AppColors.textMuted,
-              style: AppTypography.body.copyWith(color: AppColors.textPrimary),
-              isDense: true,
-              isExpanded: true,
-            ),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  label,
+                  style: AppTypography.body.copyWith(
+                    color: AppColors.textPrimary,
+                  ),
+                ),
+              ),
+              Switch(
+                value: value,
+                onChanged: onChanged,
+                activeThumbColor: AppColors.info,
+                inactiveThumbColor: AppColors.textMuted,
+                inactiveTrackColor: AppColors.textMuted.withValues(alpha: 0.2),
+              ),
+            ],
           ),
         ),
       ),

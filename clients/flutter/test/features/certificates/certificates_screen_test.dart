@@ -1,0 +1,64 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:mocktail/mocktail.dart';
+import 'package:nre_client/core/network/panel_api_client.dart';
+import 'package:nre_client/core/network/panel_api_provider.dart';
+import 'package:nre_client/features/certificates/data/models/certificate_models.dart';
+import 'package:nre_client/features/certificates/presentation/screens/certificates_screen.dart';
+import 'package:nre_client/l10n/app_localizations.dart';
+
+class _MockPanelApiClient extends Mock implements PanelApiClient {}
+
+void main() {
+  testWidgets('certificate actions open dialogs and renew via provider', (
+    tester,
+  ) async {
+    final api = _MockPanelApiClient();
+    final cert = Certificate(
+      id: 'cert-1',
+      domain: 'emby.example.com',
+      expiresAt: DateTime.now().add(const Duration(days: 2)),
+    );
+    when(() => api.fetchCertificates('local')).thenAnswer((_) async => [cert]);
+    when(() => api.issueCertificate('local', 'cert-1')).thenAnswer(
+      (_) async => Certificate(
+        id: 'cert-1',
+        domain: 'emby.example.com',
+        expiresAt: DateTime.now().add(const Duration(days: 90)),
+      ),
+    );
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          selectedAgentIdProvider.overrideWith((ref) => 'local'),
+          panelApiClientProvider.overrideWith((ref) => api),
+        ],
+        child: const MaterialApp(
+          localizationsDelegates: AppLocalizations.localizationsDelegates,
+          supportedLocales: AppLocalizations.supportedLocales,
+          home: CertificatesScreen(),
+        ),
+      ),
+    );
+
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Import'));
+    await tester.pumpAndSettle();
+    expect(find.text('Import certificate'), findsOneWidget);
+    await tester.tap(find.text('Cancel'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Details'));
+    await tester.pumpAndSettle();
+    expect(find.text('Certificate details'), findsOneWidget);
+    await tester.tap(find.text('Close'));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('Renew'));
+    await tester.pumpAndSettle();
+    verify(() => api.issueCertificate('local', 'cert-1')).called(1);
+  });
+}

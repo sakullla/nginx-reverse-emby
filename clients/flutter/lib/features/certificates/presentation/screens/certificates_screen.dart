@@ -37,13 +37,17 @@ class CertificatesScreen extends ConsumerWidget {
           if (certsAsync.hasValue) ...[
             ...() {
               final certs = certsAsync.value!;
-              final expiringCount =
-                  certs.where((c) => c.status == CertStatus.expiring).length;
+              final expiringCount = certs
+                  .where((c) => c.status == CertStatus.expiring)
+                  .length;
               if (expiringCount > 0) {
                 return [
                   Padding(
                     padding: const EdgeInsets.only(bottom: AppSpacing.s12),
-                    child: _ExpiryWarningBanner(expiringCount: expiringCount, loc: AppLocalizations.of(context)!),
+                    child: _ExpiryWarningBanner(
+                      expiringCount: expiringCount,
+                      loc: AppLocalizations.of(context)!,
+                    ),
                   ),
                 ];
               }
@@ -57,10 +61,14 @@ class CertificatesScreen extends ConsumerWidget {
               if (filteredCerts.isEmpty) {
                 return _EmptyState(loc: AppLocalizations.of(context)!);
               }
-              return _CertificateListView(certificates: filteredCerts, loc: AppLocalizations.of(context)!);
+              return _CertificateListView(
+                certificates: filteredCerts,
+                loc: AppLocalizations.of(context)!,
+              );
             },
             loading: () => const _SkeletonList(),
-            error: (err, _) => _ErrorState(error: err, loc: AppLocalizations.of(context)!),
+            error: (err, _) =>
+                _ErrorState(error: err, loc: AppLocalizations.of(context)!),
           ),
         ],
       ),
@@ -91,9 +99,8 @@ class _TopActionsBar extends ConsumerWidget {
         GlassButton.secondary(
           label: loc.btnImport,
           icon: '↑',
-          onPressed: () {
-            // placeholder — no file picker logic yet
-          },
+          onPressed: () =>
+              _showCertificateFormDialog(context, 'Import certificate'),
         ),
         const SizedBox(width: AppSpacing.s8),
 
@@ -101,30 +108,30 @@ class _TopActionsBar extends ConsumerWidget {
         GlassButton.primary(
           label: loc.btnRequest,
           icon: '+',
-          onPressed: () {
-            // placeholder — no ACME logic yet
-          },
+          onPressed: () =>
+              _showCertificateFormDialog(context, 'Request certificate'),
         ),
         const SizedBox(width: AppSpacing.s12),
 
         // Certificate count
         Text(
           loc.labelCertificateCount(totalCerts, totalCerts == 1 ? '' : 's'),
-          style: AppTypography.metadata.copyWith(
-            color: AppColors.textMuted,
-          ),
+          style: AppTypography.metadata.copyWith(color: AppColors.textMuted),
         ),
         const Spacer(),
 
         // Status filter
-        _StatusFilterDropdown(
-          value: statusFilter,
-          loc: loc,
-          onChanged: (v) {
-            if (v != null) {
-              ref.read(certStatusFilterNotifierProvider.notifier).update(v);
-            }
-          },
+        Material(
+          color: Colors.transparent,
+          child: _StatusFilterDropdown(
+            value: statusFilter,
+            loc: loc,
+            onChanged: (v) {
+              if (v != null) {
+                ref.read(certStatusFilterNotifierProvider.notifier).update(v);
+              }
+            },
+          ),
         ),
       ],
     );
@@ -233,17 +240,15 @@ class _ExpiryWarningBanner extends StatelessWidget {
       ),
       child: Row(
         children: [
-          Text(
-            '⚠',
-            style: TextStyle(fontSize: 16, color: AppColors.warning),
-          ),
+          Text('⚠', style: TextStyle(fontSize: 16, color: AppColors.warning)),
           const SizedBox(width: AppSpacing.s12),
           Expanded(
             child: Text(
-              loc.labelExpiringWarning(expiringCount, expiringCount == 1 ? '' : 's'),
-              style: AppTypography.body.copyWith(
-                color: AppColors.warning,
+              loc.labelExpiringWarning(
+                expiringCount,
+                expiringCount == 1 ? '' : 's',
               ),
+              style: AppTypography.body.copyWith(color: AppColors.warning),
             ),
           ),
           GestureDetector(
@@ -362,9 +367,7 @@ class _HeaderRow extends StatelessWidget {
           decoration: BoxDecoration(
             color: statusColor.withValues(alpha: 0.12),
             borderRadius: BorderRadius.circular(AppRadius.medium),
-            border: Border.all(
-              color: statusColor.withValues(alpha: 0.2),
-            ),
+            border: Border.all(color: statusColor.withValues(alpha: 0.2)),
           ),
           child: Icon(
             Icons.verified_user_outlined,
@@ -417,8 +420,8 @@ class _HeaderRow extends StatelessWidget {
                 color: cert.remainingDays < 0
                     ? AppColors.error
                     : cert.remainingDays <= 14
-                        ? AppColors.warning
-                        : AppColors.textPrimary,
+                    ? AppColors.warning
+                    : AppColors.textPrimary,
               ),
             ),
             Text(
@@ -434,10 +437,10 @@ class _HeaderRow extends StatelessWidget {
   }
 
   Color _statusColor(CertStatus status) => switch (status) {
-        CertStatus.valid => AppColors.success,
-        CertStatus.expiring => AppColors.warning,
-        CertStatus.expired => AppColors.error,
-      };
+    CertStatus.valid => AppColors.success,
+    CertStatus.expiring => AppColors.warning,
+    CertStatus.expired => AppColors.error,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -453,9 +456,18 @@ class _StatusBadge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return switch (status) {
-      CertStatus.valid => GlassChip.success(label: loc.certStatusValid, showDot: true),
-      CertStatus.expiring => GlassChip.warning(label: loc.certStatusExpiring, showDot: true),
-      CertStatus.expired => GlassChip.error(label: loc.certStatusExpired, showDot: true),
+      CertStatus.valid => GlassChip.success(
+        label: loc.certStatusValid,
+        showDot: true,
+      ),
+      CertStatus.expiring => GlassChip.warning(
+        label: loc.certStatusExpiring,
+        showDot: true,
+      ),
+      CertStatus.expired => GlassChip.error(
+        label: loc.certStatusExpired,
+        showDot: true,
+      ),
     };
   }
 }
@@ -482,9 +494,7 @@ class _DetailsRow extends StatelessWidget {
 
     return Text(
       parts.join('  ·  '),
-      style: AppTypography.metadata.copyWith(
-        color: AppColors.textMuted,
-      ),
+      style: AppTypography.metadata.copyWith(color: AppColors.textMuted),
     );
   }
 
@@ -577,10 +587,8 @@ class _AssociatedRulesRow extends StatelessWidget {
           ),
         ),
         ...cert.associatedRules.map(
-          (domain) => GlassChip.accent(
-            label: domain,
-            accentColor: AppColors.info,
-          ),
+          (domain) =>
+              GlassChip.accent(label: domain, accentColor: AppColors.info),
         ),
       ],
     );
@@ -591,14 +599,14 @@ class _AssociatedRulesRow extends StatelessWidget {
 // Action buttons row
 // ---------------------------------------------------------------------------
 
-class _ActionRow extends StatelessWidget {
+class _ActionRow extends ConsumerWidget {
   const _ActionRow({required this.cert, required this.loc});
 
   final Certificate cert;
   final AppLocalizations loc;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final isExpiring = cert.status == CertStatus.expiring;
 
     return Row(
@@ -606,17 +614,20 @@ class _ActionRow extends StatelessWidget {
         if (isExpiring) ...[
           GlassButton.warning(
             label: loc.btnRenew,
-            onPressed: () {
-              // placeholder
-            },
+            onPressed: () => ref
+                .read(certificatesListProvider.notifier)
+                .issueCertificate(cert.id),
           ),
           const SizedBox(width: AppSpacing.s8),
         ],
         GlassButton.secondary(
           label: loc.btnDetails,
-          onPressed: () {
-            // placeholder
-          },
+          onPressed: () => _showCertificateDetailsDialog(context, cert),
+        ),
+        const SizedBox(width: AppSpacing.s8),
+        GlassButton.danger(
+          label: loc.btnDelete,
+          onPressed: () => _showDeleteCertificateDialog(context, ref, cert),
         ),
       ],
     );
@@ -648,9 +659,7 @@ class _EmptyState extends StatelessWidget {
             const SizedBox(height: AppSpacing.s12),
             Text(
               loc.titleNoCertificates,
-              style: AppTypography.title.copyWith(
-                color: AppColors.textMuted,
-              ),
+              style: AppTypography.title.copyWith(color: AppColors.textMuted),
             ),
             const SizedBox(height: AppSpacing.s4),
             Text(
@@ -663,15 +672,94 @@ class _EmptyState extends StatelessWidget {
             GlassButton.secondary(
               label: loc.btnImport,
               icon: '↑',
-              onPressed: () {
-                // placeholder
-              },
+              onPressed: () =>
+                  _showCertificateFormDialog(context, 'Import certificate'),
             ),
           ],
         ),
       ),
     );
   }
+}
+
+void _showCertificateFormDialog(BuildContext context, String title) {
+  final domainController = TextEditingController();
+  showDialog<void>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: Text(title),
+      content: TextField(
+        controller: domainController,
+        decoration: const InputDecoration(labelText: 'Domain'),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(ctx).pop(),
+          child: const Text('Cancel'),
+        ),
+        TextButton(
+          onPressed: () => Navigator.of(ctx).pop(),
+          child: const Text('Save'),
+        ),
+      ],
+    ),
+  );
+}
+
+void _showCertificateDetailsDialog(BuildContext context, Certificate cert) {
+  showDialog<void>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: const Text('Certificate details'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(cert.domain),
+          if (cert.fingerprint != null)
+            Text('Fingerprint: ${cert.fingerprint}'),
+          if (cert.scope != null) Text('Scope: ${cert.scope}'),
+          if (cert.issuerMode != null) Text('Issuer: ${cert.issuerMode}'),
+          if (cert.backendStatus != null) Text('Status: ${cert.backendStatus}'),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(ctx).pop(),
+          child: const Text('Close'),
+        ),
+      ],
+    ),
+  );
+}
+
+void _showDeleteCertificateDialog(
+  BuildContext context,
+  WidgetRef ref,
+  Certificate cert,
+) {
+  showDialog<void>(
+    context: context,
+    builder: (ctx) => AlertDialog(
+      title: const Text('Delete certificate'),
+      content: Text('Delete ${cert.domain}?'),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(ctx).pop(),
+          child: const Text('Cancel'),
+        ),
+        TextButton(
+          onPressed: () {
+            ref
+                .read(certificatesListProvider.notifier)
+                .deleteCertificate(cert.id);
+            Navigator.of(ctx).pop();
+          },
+          child: const Text('Delete'),
+        ),
+      ],
+    ),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -692,17 +780,11 @@ class _ErrorState extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(
-              Icons.error_outline,
-              size: 48,
-              color: AppColors.error,
-            ),
+            const Icon(Icons.error_outline, size: 48, color: AppColors.error),
             const SizedBox(height: AppSpacing.s12),
             Text(
               loc.failedToLoadCertificates,
-              style: AppTypography.title.copyWith(
-                color: AppColors.textPrimary,
-              ),
+              style: AppTypography.title.copyWith(color: AppColors.textPrimary),
             ),
             const SizedBox(height: AppSpacing.s4),
             Text(
