@@ -1,9 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'core/design/theme/theme_controller.dart';
+import 'core/design/tokens/app_colors.dart';
 import 'core/routing/app_router.dart';
-import 'core/theme/app_theme.dart';
-import 'core/theme/theme_controller.dart';
 
 class NreClientApp extends ConsumerWidget {
   const NreClientApp({super.key});
@@ -18,8 +18,7 @@ class NreClientApp extends ConsumerWidget {
         title: 'NRE Client',
         debugShowCheckedModeBanner: false,
         themeMode: settings.themeMode,
-        theme: AppTheme.buildTheme(settings.colorScheme, ThemeMode.light),
-        darkTheme: AppTheme.buildTheme(settings.colorScheme, ThemeMode.dark),
+        theme: settings.themeData,
         routerConfig: router,
         localizationsDelegates: const [
           GlobalMaterialLocalizations.delegate,
@@ -27,6 +26,14 @@ class NreClientApp extends ConsumerWidget {
           GlobalCupertinoLocalizations.delegate,
         ],
         supportedLocales: const [Locale('en'), Locale('zh')],
+        builder: (context, child) {
+          return Container(
+            decoration: const BoxDecoration(
+              gradient: AppColors.backgroundGradient,
+            ),
+            child: child,
+          );
+        },
       ),
       loading: () => const MaterialApp(
         home: Scaffold(body: Center(child: CircularProgressIndicator())),

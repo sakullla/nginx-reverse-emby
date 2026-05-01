@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import '../../../../core/theme/color_schemes.dart';
-import '../../../../core/theme/theme_controller.dart';
+import '../../../../core/design/theme/accent_themes.dart';
+import '../../../../core/design/theme/theme_controller.dart';
 import '../../../auth/presentation/providers/auth_provider.dart';
 
 class SettingsScreen extends ConsumerWidget {
@@ -18,40 +18,21 @@ class SettingsScreen extends ConsumerWidget {
           children: [
             _SectionHeader(title: 'Appearance', icon: Icons.palette),
             ListTile(
-              leading: const Icon(Icons.dark_mode),
-              title: const Text('Theme Mode'),
-              trailing: DropdownButton<ThemeMode>(
-                value: settings.themeMode,
-                underline: const SizedBox.shrink(),
-                items: ThemeMode.values.map((mode) => DropdownMenuItem(
-                  value: mode,
-                  child: Text(switch (mode) {
-                    ThemeMode.system => 'System',
-                    ThemeMode.light => 'Light',
-                    ThemeMode.dark => 'Dark',
-                  }),
-                )).toList(),
-                onChanged: (mode) {
-                  if (mode != null) {
-                    ref.read(themeControllerProvider.notifier).setThemeMode(mode);
-                  }
-                },
-              ),
-            ),
-            ListTile(
               leading: const Icon(Icons.color_lens),
-              title: const Text('Theme Color'),
+              title: const Text('Accent Color'),
               trailing: Wrap(
                 spacing: 8,
-                children: AppColorScheme.values.map((scheme) => InkWell(
-                  onTap: () => ref.read(themeControllerProvider.notifier).setColorScheme(scheme),
+                children: AccentThemes.all.map((accent) => InkWell(
+                  onTap: () => ref
+                      .read(themeControllerProvider.notifier)
+                      .setAccent(accent.name),
                   child: Container(
                     width: 28,
                     height: 28,
                     decoration: BoxDecoration(
-                      color: scheme.primaryLight,
+                      gradient: accent.primaryGradient,
                       shape: BoxShape.circle,
-                      border: settings.colorScheme == scheme
+                      border: settings.accent.name == accent.name
                           ? Border.all(color: Colors.white, width: 2)
                           : null,
                     ),
