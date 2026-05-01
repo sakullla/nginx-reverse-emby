@@ -42,35 +42,35 @@ class GlassSidebar extends ConsumerWidget {
     final caps = PlatformCapabilities.current;
     final location = GoRouterState.of(context).matchedLocation;
 
-    final loc = AppLocalizations.of(context)!;
+    final loc = AppLocalizations.of(context);
 
     // Build the platform-aware navigation items.
     final items = [
       _NavItem(
         icon: Icons.dashboard_rounded,
-        label: loc.navDashboard,
+        label: loc?.navDashboard ?? 'Dashboard',
         route: RouteNames.dashboard,
       ),
       _NavItem(
         icon: Icons.rule_rounded,
-        label: loc.navRules,
+        label: loc?.navRules ?? 'Rules',
         route: RouteNames.rules,
       ),
       _NavItem(
         icon: Icons.smart_toy_outlined,
-        label: loc.navAgent,
+        label: loc?.navAgent ?? 'Agents',
         route: RouteNames.agents,
       ),
       if (caps.canManageCertificates)
         _NavItem(
           icon: Icons.verified_user_outlined,
-          label: loc.navCertificates,
+          label: loc?.navCertificates ?? 'Certificates',
           route: RouteNames.certificates,
         ),
       if (caps.canManageRelay)
         _NavItem(
           icon: Icons.settings_ethernet_outlined,
-          label: loc.navRelay,
+          label: loc?.navRelay ?? 'Relay',
           route: RouteNames.relay,
         ),
     ];
@@ -124,7 +124,7 @@ class GlassSidebar extends ConsumerWidget {
           ),
           _SidebarItem(
             icon: Icons.settings_outlined,
-            label: loc.navSettings,
+            label: loc?.navSettings ?? 'Settings',
             route: RouteNames.settings,
             isActive: location == RouteNames.settings,
             accent: accent,

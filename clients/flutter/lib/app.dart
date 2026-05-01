@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'core/design/theme/theme_controller.dart';
 import 'core/design/tokens/app_colors.dart';
 import 'core/routing/app_router.dart';
+import 'l10n/app_localizations.dart';
 
 class NreClientApp extends ConsumerWidget {
   const NreClientApp({super.key});
@@ -21,6 +22,7 @@ class NreClientApp extends ConsumerWidget {
         theme: settings.themeData,
         routerConfig: router,
         localizationsDelegates: const [
+          AppLocalizations.delegate,
           GlobalMaterialLocalizations.delegate,
           GlobalWidgetsLocalizations.delegate,
           GlobalCupertinoLocalizations.delegate,

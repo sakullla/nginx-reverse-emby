@@ -13,7 +13,8 @@ import 'topbar.dart';
 // ---------------------------------------------------------------------------
 
 String _routeTitle(BuildContext context, String location) {
-  final loc = AppLocalizations.of(context)!;
+  final loc = AppLocalizations.of(context);
+  if (loc == null) return 'Dashboard';
   if (location.startsWith(RouteNames.rules)) return loc.navRules;
   if (location.startsWith(RouteNames.certificates)) return loc.navCertificates;
   if (location.startsWith(RouteNames.agents)) return loc.navAgent;
@@ -89,7 +90,7 @@ class _MobileShell extends StatelessWidget {
   Widget build(BuildContext context) {
     final location = GoRouterState.of(context).matchedLocation;
     final caps = PlatformCapabilities.current;
-    final loc = AppLocalizations.of(context)!;
+    final loc = AppLocalizations.of(context);
 
     final routes = [
       RouteNames.dashboard,
@@ -134,19 +135,19 @@ class _MobileShell extends StatelessWidget {
           destinations: [
             NavigationDestination(
               icon: const Icon(Icons.dashboard_rounded),
-              label: loc.navDashboard,
+              label: loc?.navDashboard ?? 'Dashboard',
             ),
             NavigationDestination(
               icon: const Icon(Icons.rule_rounded),
-              label: loc.navRules,
+              label: loc?.navRules ?? 'Rules',
             ),
             NavigationDestination(
               icon: const Icon(Icons.smart_toy_outlined),
-              label: loc.navAgent,
+              label: loc?.navAgent ?? 'Agents',
             ),
             NavigationDestination(
               icon: const Icon(Icons.settings_outlined),
-              label: caps.canManageCertificates ? loc.navMore : loc.navSettings,
+              label: caps.canManageCertificates ? (loc?.navMore ?? 'More') : (loc?.navSettings ?? 'Settings'),
             ),
           ],
         ),
