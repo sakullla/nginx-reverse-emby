@@ -561,6 +561,111 @@ func TestCloneProxyRequestRewritesFrontendPrefixToBackendPath(t *testing.T) {
 	}
 }
 
+func TestCloneProxyRequestPreservesStreamingBodyContentLength(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "https://frontend.example/emby/Items/1941490/PlaybackInfo", strings.NewReader("request-body"))
+	req.Host = "frontend.example"
+	body, err := prepareReusableBody(req, 1)
+	if err != nil {
+		t.Fatalf("prepareReusableBody failed: %v", err)
+	}
+	candidate := httpCandidate{
+		target: mustParseBackendURL(t, "https://backend.example"),
+	}
+
+	out, err := cloneProxyRequest(req, body, candidate, model.HTTPRule{}, "/")
+	if err != nil {
+		t.Fatalf("cloneProxyRequest failed: %v", err)
+	}
+
+	if out.ContentLength != req.ContentLength {
+		t.Fatalf("expected content length %d, got %d", req.ContentLength, out.ContentLength)
+	}
+}
+
+func TestCloneProxyRequestPreservesUnknownStreamingBodyContentLength(t *testing.T) {
+	req := httptest.NewRequest(http.MethodPost, "https://frontend.example/emby/Items/1941490/PlaybackInfo", nil)
+	req.Host = "frontend.example"
+	req.Body = io.NopCloser(strings.NewReader("request-body"))
+	req.ContentLength = -1
+	body, err := prepareReusableBody(req, 1)
+	if err != nil {
+		t.Fatalf("prepareReusableBody failed: %v", err)
+	}
+	candidate := httpCandidate{
+		target: mustParseBackendURL(t, "https://backend.example"),
+	}
+
+	out, err := cloneProxyRequest(req, body, candidate, model.HTTPRule{}, "/")
+	if err != nil {
+		t.Fatalf("cloneProxyRequest failed: %v", err)
+	}
+
+	if out.ContentLength != -1 {
+		t.Fatalf("expected unknown content length -1, got %d", out.ContentLength)
+	}
+}
+
+func TestPrepareReusableBodyBuffersRetryableBodyWithContentLengthAndGetBody(t *testing.T) {
+	const payload = "retry-body"
+	req := httptest.NewRequest(http.MethodPost, "https://frontend.example/emby/Items/1941490/PlaybackInfo", strings.NewReader(payload))
+	body, err := prepareReusableBody(req, 2)
+	if err != nil {
+		t.Fatalf("prepareReusableBody failed: %v", err)
+	}
+
+	first, contentLength, getBody := body.Open()
+	if contentLength != int64(len(payload)) {
+		t.Fatalf("expected content length %d, got %d", len(payload), contentLength)
+	}
+	if getBody == nil {
+		t.Fatal("expected buffered body to provide GetBody")
+	}
+	firstPayload, err := io.ReadAll(first)
+	if err != nil {
+		t.Fatalf("failed to read first body: %v", err)
+	}
+	_ = first.Close()
+	if string(firstPayload) != payload {
+		t.Fatalf("first body = %q, want %q", string(firstPayload), payload)
+	}
+
+	second, err := getBody()
+	if err != nil {
+		t.Fatalf("GetBody failed: %v", err)
+	}
+	secondPayload, err := io.ReadAll(second)
+	if err != nil {
+		t.Fatalf("failed to read GetBody body: %v", err)
+	}
+	_ = second.Close()
+	if string(secondPayload) != payload {
+		t.Fatalf("GetBody body = %q, want %q", string(secondPayload), payload)
+	}
+}
+
+func TestCloneProxyRequestClearsBodyWhenNoReusableBody(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "https://frontend.example/emby/System/Info", nil)
+	req.Host = "frontend.example"
+	candidate := httpCandidate{
+		target: mustParseBackendURL(t, "https://backend.example"),
+	}
+
+	out, err := cloneProxyRequest(req, nil, candidate, model.HTTPRule{}, "/")
+	if err != nil {
+		t.Fatalf("cloneProxyRequest failed: %v", err)
+	}
+
+	if out.Body != nil {
+		t.Fatal("expected nil body")
+	}
+	if out.ContentLength != 0 {
+		t.Fatalf("expected content length 0, got %d", out.ContentLength)
+	}
+	if out.GetBody != nil {
+		t.Fatal("expected nil GetBody")
+	}
+}
+
 func TestRouteEntryUsesInteractiveTransportForCommonGETRequests(t *testing.T) {
 	base := NewSharedTransport()
 	interactive, bulk := NewClassedDirectTransports(base)
