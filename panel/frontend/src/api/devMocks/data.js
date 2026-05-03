@@ -597,12 +597,14 @@ export async function verifyToken(token) {
 export async function fetchSystemInfo() {
   if (isDev) {
     await sleep()
+    const flags = readDevMockFlags()
     return {
       role: 'master',
       local_apply_runtime: 'go-agent',
       default_agent_id: 'local',
       local_agent_enabled: true,
-      proxy_headers_globally_disabled: false
+      proxy_headers_globally_disabled: false,
+      traffic_stats_enabled: flags.trafficStatsEnabled === false ? false : true
     }
   }
   const { data } = await api.get('/info')

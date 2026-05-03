@@ -29,30 +29,6 @@
       </div>
     </div>
 
-    <section class="traffic-summary">
-      <div class="traffic-summary__header">
-        <h2>流量统计</h2>
-        <span>{{ agentStats?.status || '—' }}</span>
-      </div>
-      <div class="traffic-summary__totals">
-        <div class="traffic-total">
-          <span class="traffic-total__label">入站</span>
-          <span class="traffic-total__value">{{ formatBytes(totalTraffic.rx_bytes) }}</span>
-        </div>
-        <div class="traffic-total">
-          <span class="traffic-total__label">出站</span>
-          <span class="traffic-total__value">{{ formatBytes(totalTraffic.tx_bytes) }}</span>
-        </div>
-      </div>
-      <div class="traffic-summary__breakdown">
-        <div v-for="item in trafficBreakdown" :key="item.key" class="traffic-row">
-          <span>{{ item.label }}</span>
-          <span>入 {{ formatBytes(item.rx_bytes) }}</span>
-          <span>出 {{ formatBytes(item.tx_bytes) }}</span>
-        </div>
-      </div>
-    </section>
-
     <div v-if="agent.last_apply_status === 'failed' && agent.last_apply_message" class="agent-detail__error">
       <div class="error-block">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -72,6 +48,101 @@
     </div>
 
     <div class="agent-detail__tab-content">
+      <div v-if="activeTab === 'traffic'" class="tab-panel">
+        <div class="tab-panel__header">
+          <div class="tab-panel__title-group">
+            <h2>流量统计</h2>
+            <span>{{ agentStats?.status || '—' }}</span>
+          </div>
+          <div class="tab-panel__actions">
+            <button class="btn btn-secondary" type="button" :disabled="calibrateTrafficMutation.isPending.value" @click="calibrateTrafficSummary">校准</button>
+            <button class="btn btn-secondary" type="button" :disabled="cleanupTrafficMutation.isPending.value" @click="cleanupTrafficHistory">清理</button>
+          </div>
+        </div>
+
+        <div class="traffic-summary__cards">
+          <div class="traffic-total">
+            <span class="traffic-total__label">月额度</span>
+            <span class="traffic-total__value">{{ formatQuota(trafficSummary.monthly_quota_bytes) }}</span>
+          </div>
+          <div class="traffic-total">
+            <span class="traffic-total__label">已用</span>
+            <span class="traffic-total__value">{{ formatBytes(trafficSummary.used_bytes) }}</span>
+          </div>
+          <div class="traffic-total">
+            <span class="traffic-total__label">剩余</span>
+            <span class="traffic-total__value">{{ trafficSummary.remaining_bytes == null ? '无限制' : formatBytes(trafficSummary.remaining_bytes) }}</span>
+          </div>
+          <div class="traffic-total">
+            <span class="traffic-total__label">周期</span>
+            <span class="traffic-total__value">{{ trafficSummary.cycle_start ? formatCycle(trafficSummary.cycle_start, trafficSummary.cycle_end) : '—' }}</span>
+          </div>
+        </div>
+
+        <div class="traffic-panel">
+          <div class="traffic-panel__section">
+            <div class="traffic-panel__section-header">
+              <h3>趋势</h3>
+              <span>{{ trafficTrendPoints.length }} 天</span>
+            </div>
+            <div class="traffic-trend">
+              <div v-for="point in trafficTrendPoints" :key="point.bucket_start" class="traffic-trend__item">
+                <div class="traffic-trend__bars">
+                  <div class="traffic-trend__bar traffic-trend__bar--rx" :style="{ height: trendBarHeight(point.rx_bytes) }"></div>
+                  <div class="traffic-trend__bar traffic-trend__bar--tx" :style="{ height: trendBarHeight(point.tx_bytes) }"></div>
+                </div>
+                <span class="traffic-trend__label">{{ formatTrendLabel(point.bucket_start) }}</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="traffic-panel__section">
+            <div class="traffic-panel__section-header">
+              <h3>月额度</h3>
+              <span>{{ trafficSummary.blocked ? '已阻断' : '正常' }}</span>
+            </div>
+            <div class="traffic-policy-grid">
+              <label class="traffic-setting">
+                <span class="traffic-setting__label">方向</span>
+                <select v-model="trafficPolicyForm.direction" class="traffic-setting__input">
+                  <option value="both">双向</option>
+                  <option value="rx">入站</option>
+                  <option value="tx">出站</option>
+                  <option value="max">取最大值</option>
+                </select>
+              </label>
+              <label class="traffic-setting">
+                <span class="traffic-setting__label">月周期起始日</span>
+                <input v-model.number="trafficPolicyForm.cycle_start_day" class="traffic-setting__input" type="number" min="1" max="28">
+              </label>
+              <label class="traffic-setting">
+                <span class="traffic-setting__label">月额度</span>
+                <input v-model="trafficPolicyForm.monthly_quota_bytes" class="traffic-setting__input" type="text" placeholder="留空表示无限制">
+              </label>
+              <label class="traffic-setting traffic-setting--switch">
+                <span class="traffic-setting__label">超额阻断</span>
+                <input v-model="trafficPolicyForm.block_when_exceeded" type="checkbox">
+              </label>
+              <label class="traffic-setting">
+                <span class="traffic-setting__label">小时保留</span>
+                <input v-model.number="trafficPolicyForm.hourly_retention_days" class="traffic-setting__input" type="number" min="1">
+              </label>
+              <label class="traffic-setting">
+                <span class="traffic-setting__label">日保留</span>
+                <input v-model.number="trafficPolicyForm.daily_retention_months" class="traffic-setting__input" type="number" min="1">
+              </label>
+              <label class="traffic-setting">
+                <span class="traffic-setting__label">月保留</span>
+                <input v-model="trafficPolicyForm.monthly_retention_months" class="traffic-setting__input" type="number" min="1" placeholder="留空表示永久">
+              </label>
+            </div>
+            <div class="traffic-panel__footer">
+              <button class="btn btn-primary" type="button" :disabled="updateTrafficPolicyMutation.isPending.value" @click="saveTrafficPolicy">保存</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <div v-if="activeTab === 'http'" class="tab-panel">
         <div class="tab-panel__header">
           <button class="btn btn-primary" @click="router.push({ path: '/rules', query: { agentId } })">查看全部规则</button>
@@ -174,10 +245,18 @@ import { useQuery } from '@tanstack/vue-query'
 import { useRules } from '../hooks/useRules'
 import { useL4Rules } from '../hooks/useL4Rules'
 import { useAgents, useUpdateAgent } from '../hooks/useAgents'
-import { fetchAgentStats } from '../api'
+import { fetchAgentStats, fetchSystemInfo } from '../api'
+import { useCalibrateTraffic, useCleanupTraffic, useTrafficPolicy, useTrafficSummary, useTrafficTrend, useUpdateTrafficPolicy } from '../hooks/useTraffic'
 import { messageStore } from '../stores/messages'
 import { buildOutboundProxyPayload } from './outboundProxyURL'
-import { formatBytes, normalizeTrafficBucket } from '../utils/trafficStats.js'
+import {
+  accountedBytes,
+  formatBytes,
+  formatQuota,
+  normalizeTrafficBucket,
+  normalizeTrafficPolicy,
+  normalizeTrafficTrendPoints
+} from '../utils/trafficStats.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -203,25 +282,52 @@ const { data: agentStatsData } = useQuery({
   enabled: () => !!agentId.value,
   refetchInterval: 10_000
 })
+const { data: systemInfoData } = useQuery({
+  queryKey: ['system-info'],
+  queryFn: fetchSystemInfo
+})
 const agentStats = computed(() => agentStatsData.value ?? {})
-const trafficStats = computed(() => agentStats.value?.traffic ?? {})
-const totalTraffic = computed(() => normalizeTrafficBucket(trafficStats.value.total))
-const trafficBreakdown = computed(() => [
-  { key: 'http', label: 'HTTP', ...normalizeTrafficBucket(trafficStats.value.http) },
-  { key: 'l4', label: 'L4', ...normalizeTrafficBucket(trafficStats.value.l4) },
-  { key: 'relay', label: 'Relay', ...normalizeTrafficBucket(trafficStats.value.relay) }
-])
+const systemInfo = computed(() => systemInfoData.value ?? {})
+const trafficStatsEnabled = computed(() => systemInfo.value?.traffic_stats_enabled !== false)
+const trafficPolicyQuery = useTrafficPolicy(computed(() => trafficStatsEnabled.value ? agentId.value : null))
+const trafficSummaryQuery = useTrafficSummary(computed(() => trafficStatsEnabled.value ? agentId.value : null))
+const trafficTrendQuery = useTrafficTrend(
+  computed(() => trafficStatsEnabled.value ? agentId.value : null),
+  computed(() => ({ granularity: 'day' }))
+)
+const updateTrafficPolicyMutation = useUpdateTrafficPolicy(computed(() => agentId.value))
+const calibrateTrafficMutation = useCalibrateTraffic(computed(() => agentId.value))
+const cleanupTrafficMutation = useCleanupTraffic(computed(() => agentId.value))
+const trafficPolicyForm = ref(normalizeTrafficPolicy())
+const trafficSummary = computed(() => trafficSummaryQuery.data.value ?? {})
+const trafficTrendPoints = computed(() => normalizeTrafficTrendPoints(trafficTrendQuery.data.value ?? [], trafficPolicyForm.value.direction))
 
 const activeTab = ref('http')
-const tabs = [
+const tabs = computed(() => [
   { id: 'http', label: 'HTTP 规则' },
   { id: 'l4', label: 'L4 规则' },
+  ...(trafficStatsEnabled.value ? [{ id: 'traffic', label: '流量统计' }] : []),
   { id: 'info', label: '系统信息' }
-]
+])
 
 watch(agent, (value) => {
   outboundProxyURL.value = value?.outbound_proxy_url || ''
   trafficStatsInterval.value = value?.traffic_stats_interval || ''
+}, { immediate: true })
+
+watch([trafficPolicyQuery.data, trafficStatsEnabled], ([policy, enabled]) => {
+  if (enabled && policy) {
+    trafficPolicyForm.value = {
+      ...normalizeTrafficPolicy(policy),
+      monthly_quota_bytes: policy.monthly_quota_bytes == null ? '' : String(policy.monthly_quota_bytes)
+    }
+  }
+}, { immediate: true })
+
+watch(tabs, (value) => {
+  if (!value.some((tab) => tab.id === activeTab.value)) {
+    activeTab.value = value[0]?.id || 'http'
+  }
 }, { immediate: true })
 
 async function saveOutboundProxy() {
@@ -248,6 +354,43 @@ async function saveTrafficStatsInterval() {
     agentId: agent.value.id,
     payload: { traffic_stats_interval: nextInterval }
   })
+}
+
+async function saveTrafficPolicy() {
+  if (!agent.value || !trafficStatsEnabled.value) return
+  const payload = normalizeTrafficPolicy({
+    ...trafficPolicyForm.value,
+    monthly_quota_bytes: trafficPolicyForm.value.monthly_quota_bytes === '' ? null : trafficPolicyForm.value.monthly_quota_bytes
+  })
+  await updateTrafficPolicyMutation.mutateAsync(payload)
+}
+
+async function calibrateTrafficSummary() {
+  if (!agent.value || !trafficStatsEnabled.value) return
+  const usedBytes = trafficSummary.value.used_bytes ?? accountedBytes(normalizeTrafficBucket(agentStats.value?.traffic?.total), trafficPolicyForm.value.direction)
+  await calibrateTrafficMutation.mutateAsync({ used_bytes: usedBytes })
+}
+
+async function cleanupTrafficHistory() {
+  if (!agent.value || !trafficStatsEnabled.value) return
+  await cleanupTrafficMutation.mutateAsync()
+}
+
+function formatCycle(start, end) {
+  if (!start || !end) return '—'
+  return `${new Date(start).toLocaleDateString()} - ${new Date(end).toLocaleDateString()}`
+}
+
+function formatTrendLabel(bucketStart) {
+  if (!bucketStart) return '—'
+  return new Date(bucketStart).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })
+}
+
+function trendBarHeight(bytes) {
+  const value = Number(bytes) || 0
+  const max = Math.max(...trafficTrendPoints.value.map((point) => Math.max(point.rx_bytes, point.tx_bytes)), 1)
+  const ratio = Math.max(0.08, value / max)
+  return `${Math.round(ratio * 100)}%`
 }
 
 function firstHttpBackend(rule) {
@@ -340,25 +483,41 @@ function timeAgo(date) {
 .stat-mini__value { display: block; font-size: 1.5rem; font-weight: 700; color: var(--color-text-primary); }
 .stat-mini__label { font-size: 0.75rem; color: var(--color-text-tertiary); }
 .traffic-summary { margin-bottom: 1.5rem; padding: 1rem; background: var(--color-bg-surface); border: 1px solid var(--color-border-default); border-radius: var(--radius-lg); }
-.traffic-summary__header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1rem; }
-.traffic-summary__header h2 { margin: 0; font-size: 1rem; color: var(--color-text-primary); }
-.traffic-summary__header span { color: var(--color-text-tertiary); font-size: 0.8125rem; }
-.traffic-summary__totals { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem; margin-bottom: 0.75rem; }
+.traffic-summary__cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.75rem; margin-bottom: 1rem; }
 .traffic-total { min-width: 0; padding: 0.75rem; background: var(--color-bg-subtle); border-radius: var(--radius-md); }
 .traffic-total__label { display: block; margin-bottom: 0.25rem; color: var(--color-text-tertiary); font-size: 0.75rem; }
 .traffic-total__value { display: block; color: var(--color-text-primary); font-size: 1.25rem; font-weight: 700; font-variant-numeric: tabular-nums; }
-.traffic-summary__breakdown { display: flex; flex-direction: column; gap: 0.375rem; }
-.traffic-row { display: grid; grid-template-columns: minmax(64px, 1fr) minmax(0, 1fr) minmax(0, 1fr); gap: 0.75rem; color: var(--color-text-secondary); font-size: 0.8125rem; font-variant-numeric: tabular-nums; }
-.traffic-row span:not(:first-child) { color: var(--color-text-tertiary); text-align: right; }
 .agent-detail__tabs { display: flex; gap: 2px; margin-bottom: 1.5rem; padding: 3px; background: var(--color-bg-subtle); border: 1px solid var(--color-border-default); border-radius: var(--radius-lg); }
 .tab-btn { padding: 6px 1rem; border: none; background: transparent; color: var(--color-text-muted); font-size: 0.875rem; font-weight: 500; cursor: pointer; border-radius: var(--radius-md); transition: all 0.15s; font-family: inherit; flex: 1; text-align: center; white-space: nowrap; }
 .tab-btn:hover { color: var(--color-text-secondary); }
 .tab-btn--active { color: var(--color-primary); background: var(--color-bg-surface); font-weight: 600; box-shadow: var(--shadow-sm); }
-.tab-panel__header { display: flex; justify-content: flex-end; margin-bottom: 1rem; }
+.tab-panel__header { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; margin-bottom: 1rem; }
+.tab-panel__title-group h2 { margin: 0; font-size: 1rem; color: var(--color-text-primary); }
+.tab-panel__title-group span { color: var(--color-text-tertiary); font-size: 0.8125rem; }
+.tab-panel__actions { display: flex; gap: 0.5rem; flex-wrap: wrap; }
 .rules-preview { display: flex; flex-direction: column; gap: 0.5rem; }
 .rule-preview-item { display: flex; gap: 0.75rem; padding: 0.75rem 1rem; background: var(--color-bg-surface); border: 1px solid var(--color-border-subtle); border-radius: var(--radius-lg); font-size: 0.8125rem; }
 .rule-preview-item__url { flex: 1; color: var(--color-text-primary); font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .rule-preview-item__backend { color: var(--color-text-tertiary); font-family: var(--font-mono); }
+.traffic-panel { display: grid; gap: 1rem; }
+.traffic-panel__section { padding: 1rem; background: var(--color-bg-surface); border: 1px solid var(--color-border-subtle); border-radius: var(--radius-lg); }
+.traffic-panel__section-header { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; margin-bottom: 0.75rem; }
+.traffic-panel__section-header h3 { margin: 0; font-size: 0.9375rem; color: var(--color-text-primary); }
+.traffic-panel__section-header span { color: var(--color-text-tertiary); font-size: 0.8125rem; }
+.traffic-trend { display: grid; grid-template-columns: repeat(14, minmax(0, 1fr)); gap: 0.35rem; align-items: end; min-height: 140px; }
+.traffic-trend__item { display: flex; flex-direction: column; align-items: center; gap: 0.35rem; min-width: 0; }
+.traffic-trend__bars { display: flex; align-items: end; gap: 0.2rem; width: 100%; height: 120px; padding: 0 0.125rem; }
+.traffic-trend__bar { flex: 1; min-height: 6px; border-radius: var(--radius-sm) var(--radius-sm) 0 0; }
+.traffic-trend__bar--rx { background: var(--color-primary-200); }
+.traffic-trend__bar--tx { background: var(--color-primary); }
+.traffic-trend__label { color: var(--color-text-tertiary); font-size: 0.6875rem; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; width: 100%; }
+.traffic-policy-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem; }
+.traffic-setting { display: flex; flex-direction: column; gap: 0.35rem; min-width: 0; }
+.traffic-setting--switch { flex-direction: row; align-items: center; justify-content: space-between; }
+.traffic-setting__label { color: var(--color-text-secondary); font-size: 0.8125rem; font-weight: 500; }
+.traffic-setting__input { width: 100%; min-width: 0; padding: 0.5rem 0.75rem; border: 1px solid var(--color-border-default); border-radius: var(--radius-md); background: var(--color-bg-surface); color: var(--color-text-primary); font-size: 0.875rem; box-sizing: border-box; }
+.traffic-setting__input:focus { outline: none; border-color: var(--color-primary); box-shadow: var(--shadow-focus); }
+.traffic-panel__footer { display: flex; justify-content: flex-end; margin-top: 0.75rem; }
 .empty-hint { text-align: center; color: var(--color-text-muted); padding: 2rem; font-size: 0.875rem; }
 .info-grid { display: flex; flex-direction: column; gap: 0.5rem; }
 .agent-setting { display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 1rem; padding: 1rem; background: var(--color-bg-surface); border: 1px solid var(--color-border-subtle); border-radius: var(--radius-lg); }
@@ -381,5 +540,14 @@ function timeAgo(date) {
 @keyframes spin { to { transform: rotate(360deg); } }
 .btn { padding: 0.5rem 1rem; border-radius: var(--radius-lg); font-size: 0.875rem; font-weight: 500; cursor: pointer; transition: all 0.15s; border: none; font-family: inherit; display: inline-flex; align-items: center; gap: 0.375rem; }
 .btn-primary { background: var(--gradient-primary); color: white; }
+.btn-secondary { background: var(--color-bg-subtle); color: var(--color-text-primary); border: 1px solid var(--color-border-default); }
 .btn:disabled { opacity: 0.6; cursor: not-allowed; }
+@media (max-width: 720px) {
+  .traffic-summary__cards,
+  .traffic-policy-grid { grid-template-columns: 1fr; }
+  .agent-detail__header,
+  .tab-panel__header { flex-direction: column; }
+  .agent-detail__tabs { overflow-x: auto; }
+  .tab-btn { flex: 0 0 auto; }
+}
 </style>
