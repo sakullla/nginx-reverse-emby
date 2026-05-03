@@ -1,6 +1,7 @@
 package l4
 
 import (
+	"context"
 	"io"
 	"net"
 	"testing"
@@ -8,6 +9,50 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
 )
+
+func TestL4RejectsNewConnectionWhenTrafficBlocked(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	listenPort := ln.Addr().(*net.TCPAddr).Port
+	if err := ln.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	srv, err := NewServerWithResources(context.Background(), []Rule{{
+		ID:           42,
+		Protocol:     "tcp",
+		ListenHost:   "127.0.0.1",
+		ListenPort:   listenPort,
+		UpstreamHost: "127.0.0.1",
+		UpstreamPort: 1,
+	}}, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("NewServerWithResources() error = %v", err)
+	}
+	defer srv.Close()
+	srv.SetTrafficBlockState(TrafficBlockState{Blocked: true, Reason: "monthly quota exceeded"})
+	if len(srv.tcpListeners) == 0 {
+		t.Fatal("expected tcp listener")
+	}
+
+	conn, err := net.Dial("tcp", srv.tcpListeners[0].Addr().String())
+	if err != nil {
+		t.Fatalf("Dial() error = %v", err)
+	}
+	defer conn.Close()
+
+	if _, err := conn.Write([]byte("new traffic")); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+	buf := make([]byte, 1)
+	n, err := conn.Read(buf)
+	if err == nil || n != 0 {
+		t.Fatalf("Read() n=%d err=%v, want closed connection", n, err)
+	}
+}
 
 func TestCopyBidirectionalTCPRecordsL4Traffic(t *testing.T) {
 	traffic.Reset()

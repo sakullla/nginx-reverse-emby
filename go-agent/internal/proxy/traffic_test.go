@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -13,6 +14,29 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
 )
+
+func TestHTTPReturns429WhenTrafficBlocked(t *testing.T) {
+	server := NewServer(model.HTTPListener{Rules: []model.HTTPRule{{
+		ID:          77,
+		FrontendURL: "http://frontend.example",
+		BackendURL:  "http://backend.example",
+		Enabled:     true,
+	}}})
+	server.SetTrafficBlockState(TrafficBlockState{Blocked: true, Reason: "monthly quota exceeded"})
+
+	req := httptest.NewRequest(http.MethodPost, "http://frontend.example/upload", strings.NewReader("request-body"))
+	req.Host = "frontend.example"
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d body=%q, want 429", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "monthly quota exceeded") {
+		t.Fatalf("body = %q, want block reason", rec.Body.String())
+	}
+}
 
 func TestCopyResponseRecordsHTTPTraffic(t *testing.T) {
 	traffic.Reset()

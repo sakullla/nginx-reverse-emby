@@ -56,6 +56,8 @@ type Server struct {
 	tcpMu    sync.Mutex
 	tcpConns map[net.Conn]struct{}
 	closing  bool
+
+	trafficBlockState trafficBlockStateValue
 }
 
 type relayPathDialer struct {
@@ -243,6 +245,10 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 	defer s.untrackTCPConn(client)
 	defer client.Close()
 
+	if state := s.currentTrafficBlockState(); state.Blocked {
+		return
+	}
+
 	recorder := traffic.NewL4RuleRecorder(rule.ID)
 	if strings.EqualFold(strings.TrimSpace(rule.ListenMode), "proxy") {
 		s.handleProxyEntryConnection(client, rule, recorder)
@@ -298,6 +304,20 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 	}()
 	<-done
 	<-done
+}
+
+func (s *Server) currentTrafficBlockState() TrafficBlockState {
+	if s == nil {
+		return TrafficBlockState{}
+	}
+	return s.trafficBlockState.Load()
+}
+
+func (s *Server) SetTrafficBlockState(state TrafficBlockState) {
+	if s == nil {
+		return
+	}
+	s.trafficBlockState.Store(state)
 }
 
 func (s *Server) handleProxyEntryConnection(client net.Conn, rule model.L4Rule, recorder *traffic.Recorder) {

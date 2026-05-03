@@ -19,7 +19,9 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/diagnostics"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/l4"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxy"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
 	agentsync "github.com/sakullla/nginx-reverse-emby/go-agent/internal/sync"
@@ -1715,6 +1717,90 @@ func (a *testHTTPApplier) Close() error {
 	return nil
 }
 
+type testTrafficBlockHTTPApplier struct {
+	testHTTPApplier
+	mu    sync.Mutex
+	state proxy.TrafficBlockState
+}
+
+func (a *testTrafficBlockHTTPApplier) UpdateTrafficBlockState(state proxy.TrafficBlockState) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.state = state
+}
+
+func (a *testTrafficBlockHTTPApplier) blockState() proxy.TrafficBlockState {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.state
+}
+
+func (a *testTrafficBlockHTTPApplier) applyCount() int {
+	return len(a.snapshotCalls())
+}
+
+func (a *testTrafficBlockHTTPApplier) resetApplyCalls() {
+	a.testHTTPApplier.mu.Lock()
+	defer a.testHTTPApplier.mu.Unlock()
+	a.testHTTPApplier.calls = nil
+}
+
+type testTrafficBlockL4Applier struct {
+	testL4Applier
+	mu    sync.Mutex
+	state l4.TrafficBlockState
+}
+
+func (a *testTrafficBlockL4Applier) UpdateTrafficBlockState(state l4.TrafficBlockState) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.state = state
+}
+
+func (a *testTrafficBlockL4Applier) blockState() l4.TrafficBlockState {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.state
+}
+
+func (a *testTrafficBlockL4Applier) applyCount() int {
+	return len(a.snapshotCalls())
+}
+
+func (a *testTrafficBlockL4Applier) resetApplyCalls() {
+	a.testL4Applier.mu.Lock()
+	defer a.testL4Applier.mu.Unlock()
+	a.testL4Applier.calls = nil
+}
+
+type testTrafficBlockRelayApplier struct {
+	testRelayApplier
+	mu    sync.Mutex
+	state relay.TrafficBlockState
+}
+
+func (a *testTrafficBlockRelayApplier) UpdateTrafficBlockState(state relay.TrafficBlockState) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.state = state
+}
+
+func (a *testTrafficBlockRelayApplier) blockState() relay.TrafficBlockState {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.state
+}
+
+func (a *testTrafficBlockRelayApplier) applyCount() int {
+	return len(a.snapshotCalls())
+}
+
+func (a *testTrafficBlockRelayApplier) resetApplyCalls() {
+	a.testRelayApplier.mu.Lock()
+	defer a.testRelayApplier.mu.Unlock()
+	a.testRelayApplier.calls = nil
+}
+
 type orderedApplyRecorder struct {
 	mu    sync.Mutex
 	calls []string
@@ -2098,6 +2184,91 @@ func TestPerformSyncStoresTrafficBlockedStateFromAgentConfig(t *testing.T) {
 	}
 	if state.Metadata[runtimeMetaTrafficBlockReason] != "monthly quota exceeded" {
 		t.Fatalf("traffic_block_reason = %q", state.Metadata[runtimeMetaTrafficBlockReason])
+	}
+}
+
+func TestPerformSyncUpdatesRuntimeTrafficBlockStateFromAgentConfigOnlyChange(t *testing.T) {
+	mem := store.NewInMemory()
+	previous := Snapshot{
+		DesiredVersion: "current",
+		Revision:       6,
+		AgentConfig: model.AgentConfig{
+			TrafficBlocked: false,
+		},
+		Rules: []model.HTTPRule{{
+			ID:          1,
+			FrontendURL: "http://frontend.example",
+			BackendURL:  "http://backend.example",
+			Enabled:     true,
+		}},
+		L4Rules: []model.L4Rule{{
+			ID:           2,
+			Protocol:     "tcp",
+			ListenHost:   "127.0.0.1",
+			ListenPort:   19000,
+			UpstreamHost: "127.0.0.1",
+			UpstreamPort: 19001,
+			Enabled:      true,
+		}},
+		RelayListeners: []model.RelayListener{{
+			ID:         3,
+			AgentID:    "agent-a",
+			Name:       "relay-a",
+			ListenHost: "127.0.0.1",
+			BindHosts:  []string{"127.0.0.1"},
+			ListenPort: 19443,
+			PublicHost: "127.0.0.1",
+			PublicPort: 19443,
+			Enabled:    true,
+			TLSMode:    "pin_only",
+			PinSet: []model.RelayPin{{
+				Type:  "spki_sha256",
+				Value: "cGlubmVk",
+			}},
+		}},
+	}
+	if err := mem.SaveAppliedSnapshot(previous); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+
+	next := previous
+	next.Revision = 7
+	next.AgentConfig.TrafficBlocked = true
+	next.AgentConfig.TrafficBlockReason = "monthly quota exceeded"
+	client := newTestSyncClient(nil, syncResponse{snapshot: next})
+	httpApplier := &testTrafficBlockHTTPApplier{}
+	l4Applier := &testTrafficBlockL4Applier{}
+	relayApplier := &testTrafficBlockRelayApplier{}
+	app := newAppWithHTTPDeps(Config{}, mem, client, httpApplier, nil, l4Applier, relayApplier)
+
+	if err := app.runtime.Apply(context.Background(), Snapshot{}, previous); err != nil {
+		t.Fatalf("failed to seed runtime: %v", err)
+	}
+	httpApplier.resetApplyCalls()
+	l4Applier.resetApplyCalls()
+	relayApplier.resetApplyCalls()
+
+	if err := app.performSync(context.Background()); err != nil {
+		t.Fatalf("performSync() error = %v", err)
+	}
+
+	if got := httpApplier.applyCount(); got != 0 {
+		t.Fatalf("http Apply calls = %d, want 0 for agent_config-only change", got)
+	}
+	if got := l4Applier.applyCount(); got != 0 {
+		t.Fatalf("l4 Apply calls = %d, want 0 for agent_config-only change", got)
+	}
+	if got := relayApplier.applyCount(); got != 0 {
+		t.Fatalf("relay Apply calls = %d, want 0 for agent_config-only change", got)
+	}
+	if got := httpApplier.blockState(); got.Blocked != true || got.Reason != "monthly quota exceeded" {
+		t.Fatalf("http block state = %+v", got)
+	}
+	if got := l4Applier.blockState(); got.Blocked != true || got.Reason != "monthly quota exceeded" {
+		t.Fatalf("l4 block state = %+v", got)
+	}
+	if got := relayApplier.blockState(); got.Blocked != true || got.Reason != "monthly quota exceeded" {
+		t.Fatalf("relay block state = %+v", got)
 	}
 }
 

@@ -75,6 +75,8 @@ type Server struct {
 	conns         map[net.Conn]struct{}
 	quicConns     map[*quic.Conn]struct{}
 	closing       bool
+
+	trafficBlockState trafficBlockStateValue
 }
 
 type relayVerifiedFallbackStore struct {
@@ -874,6 +876,13 @@ func (s *Server) handleQUICStream(conn *quic.Conn, stream *quic.Stream, listener
 		cancelStream = false
 		return
 	}
+	if state := s.currentTrafficBlockState(); state.Blocked {
+		_ = withFrameDeadline(clientConn, func() error {
+			return writeRelayResponse(clientConn, relayResponse{OK: false, Error: state.errorMessage()})
+		})
+		cancelStream = false
+		return
+	}
 	if strings.EqualFold(request.Kind, "udp") {
 		s.handleUDPRelayStream(clientConn, listener, request.Target, request.Chain, relayDialOptionsFromMetadata(request.Kind, request.Metadata))
 		return
@@ -921,6 +930,20 @@ func (s *Server) handleQUICStream(conn *quic.Conn, stream *quic.Stream, listener
 
 	recorder := traffic.NewRelayListenerRecorder(listener.ID)
 	pipeBothWaysWithInitialRelayRX(wrapIdleConn(clientConn), wrapIdleConn(upstream), int64(len(request.InitialData)), recorder)
+}
+
+func (s *Server) currentTrafficBlockState() TrafficBlockState {
+	if s == nil {
+		return TrafficBlockState{}
+	}
+	return s.trafficBlockState.Load()
+}
+
+func (s *Server) SetTrafficBlockState(state TrafficBlockState) {
+	if s == nil {
+		return
+	}
+	s.trafficBlockState.Store(state)
 }
 
 func listenerUsesEarlyWindowMask(listener Listener) bool {

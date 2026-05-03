@@ -26,7 +26,8 @@ import (
 )
 
 type Server struct {
-	routes map[string][]*routeEntry
+	routes            map[string][]*routeEntry
+	trafficBlockState trafficBlockStateValue
 }
 
 type TLSMaterialProvider interface {
@@ -167,6 +168,14 @@ func newServerWithResilience(
 func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	host := normalizeHost(req.Host)
 	if entry := s.routeFor(host, req.URL.Path); entry != nil {
+		if state := s.currentTrafficBlockState(); state.Blocked {
+			body := "traffic blocked"
+			if state.Reason != "" {
+				body = state.Reason
+			}
+			http.Error(w, body, http.StatusTooManyRequests)
+			return
+		}
 		if err := entry.serveHTTP(w, req); err != nil {
 			log.Printf("[proxy] bad gateway for %s %s (host=%s frontend=%s): %v", req.Method, req.URL.Path, host, entry.rule.FrontendURL, err)
 			var startedErr *startedResponseError
@@ -178,6 +187,20 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	http.NotFound(w, req)
+}
+
+func (s *Server) currentTrafficBlockState() TrafficBlockState {
+	if s == nil {
+		return TrafficBlockState{}
+	}
+	return s.trafficBlockState.Load()
+}
+
+func (s *Server) SetTrafficBlockState(state TrafficBlockState) {
+	if s == nil {
+		return
+	}
+	s.trafficBlockState.Store(state)
 }
 
 func (s *Server) routeFor(host string, requestPath string) *routeEntry {
@@ -637,6 +660,17 @@ func (r *Runtime) BindingKeys() []string {
 	out := make([]string, len(r.bindings))
 	copy(out, r.bindings)
 	return out
+}
+
+func (r *Runtime) SetTrafficBlockState(state TrafficBlockState) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for _, server := range r.servers {
+		if proxyServer, ok := server.Handler.(*Server); ok {
+			proxyServer.SetTrafficBlockState(state)
+		}
+	}
 }
 
 func buildRuntimeListenerSpecs(ctx context.Context, rules []model.HTTPRule, relayListeners []model.RelayListener, providers Providers) ([]runtimeListenerSpec, error) {

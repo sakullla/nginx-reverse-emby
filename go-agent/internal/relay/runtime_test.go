@@ -430,6 +430,32 @@ func TestTLSTCPSessionPoolReusesOuterConnection(t *testing.T) {
 	}
 }
 
+func TestTLSTCPSessionPoolRejectsNewStreamWhenTrafficBlocked(t *testing.T) {
+	backendAddr, stopBackend := startTCPEchoServer(t)
+	defer stopBackend()
+
+	provider := newFakeTLSMaterialProvider()
+	listener, hop := newRelayEndpoint(t, provider, 1, "relay-mux-blocked", "pin_only", true, false)
+
+	server, err := Start(context.Background(), []Listener{listener}, provider)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer server.Close()
+	server.SetTrafficBlockState(TrafficBlockState{Blocked: true, Reason: "monthly quota exceeded"})
+
+	resetTLSTCPSessionPoolForTest()
+
+	conn, err := Dial(context.Background(), "tcp", backendAddr, []Hop{hop}, provider)
+	if err == nil {
+		_ = conn.Close()
+		t.Fatal("Dial() succeeded, want blocked relay open failure")
+	}
+	if !strings.Contains(err.Error(), "monthly quota exceeded") {
+		t.Fatalf("Dial() error = %v, want block reason", err)
+	}
+}
+
 func TestTLSTCPSessionPoolReusesOuterConnectionForUDPStreams(t *testing.T) {
 	backendAddr, stopBackend := startUDPEchoServer(t)
 	defer stopBackend()
