@@ -2185,6 +2185,123 @@ func TestPerformSyncPersistsTrafficStatsIntervalAfterSuccessfulApply(t *testing.
 	}
 }
 
+func TestPerformSyncPersistsApplyStateAndTrafficStatsIntervalInOneRuntimeStateSave(t *testing.T) {
+	inner := store.NewInMemory()
+	fs := &failingStore{delegate: inner, failOnNthRuntimeSave: 3}
+	previous := Snapshot{
+		DesiredVersion: "stable",
+		Revision:       7,
+		AgentConfig: model.AgentConfig{
+			TrafficStatsInterval: "30s",
+		},
+	}
+	if err := fs.SaveAppliedSnapshot(previous); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+	if err := fs.SaveRuntimeState(store.RuntimeState{
+		CurrentRevision: previous.Revision,
+		Metadata: map[string]string{
+			"current_revision":                    "7",
+			"last_sync_error":                     "previous failure",
+			runtimeMetaTrafficStatsInterval:       "30s",
+			runtimeMetaLastTrafficStatsReportUnix: "123",
+			"unrelated":                           "preserved",
+		},
+	}); err != nil {
+		t.Fatalf("failed to seed runtime state: %v", err)
+	}
+
+	next := Snapshot{
+		DesiredVersion: "next",
+		Revision:       9,
+		AgentConfig: model.AgentConfig{
+			TrafficStatsInterval: "5m",
+		},
+	}
+	client := newTestSyncClient(nil, syncResponse{snapshot: next})
+	app := newAppWithDeps(Config{CurrentVersion: "1.0.0"}, fs, client, nil, nil, nil)
+	if err := app.runtime.Apply(context.Background(), Snapshot{}, previous); err != nil {
+		t.Fatalf("failed to seed runtime: %v", err)
+	}
+
+	if err := app.performSync(context.Background()); err != nil {
+		t.Fatalf("performSync() error = %v", err)
+	}
+
+	state, err := fs.LoadRuntimeState()
+	if err != nil {
+		t.Fatalf("failed to load runtime state: %v", err)
+	}
+	if state.CurrentRevision != 9 || state.Metadata["current_revision"] != "9" {
+		t.Fatalf("current revision state = %d/%q, want 9", state.CurrentRevision, state.Metadata["current_revision"])
+	}
+	if state.Metadata[runtimeMetaTrafficStatsInterval] != "5m" {
+		t.Fatalf("traffic_stats_interval = %q, want 5m", state.Metadata[runtimeMetaTrafficStatsInterval])
+	}
+	if state.Metadata[runtimeMetaLastTrafficStatsReportUnix] != "123" {
+		t.Fatalf("last traffic report metadata changed: %v", state.Metadata)
+	}
+	if state.Metadata["unrelated"] != "preserved" {
+		t.Fatalf("unrelated metadata not preserved: %v", state.Metadata)
+	}
+	if _, ok := state.Metadata["last_sync_error"]; ok {
+		t.Fatalf("last_sync_error not cleared after successful apply: %v", state.Metadata)
+	}
+}
+
+func TestPerformSyncClearsTrafficStatsIntervalInSuccessfulRuntimeStateSave(t *testing.T) {
+	mem := store.NewInMemory()
+	previous := Snapshot{
+		DesiredVersion: "stable",
+		Revision:       7,
+		AgentConfig: model.AgentConfig{
+			TrafficStatsInterval: "30s",
+		},
+	}
+	if err := mem.SaveAppliedSnapshot(previous); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+	if err := mem.SaveRuntimeState(store.RuntimeState{
+		CurrentRevision: previous.Revision,
+		Metadata: map[string]string{
+			"current_revision":              "7",
+			runtimeMetaTrafficStatsInterval: "30s",
+			"unrelated":                     "preserved",
+		},
+	}); err != nil {
+		t.Fatalf("failed to seed runtime state: %v", err)
+	}
+
+	var next Snapshot
+	if err := json.Unmarshal([]byte(`{
+		"desired_version":"next",
+		"desired_revision":9,
+		"agent_config":{}
+	}`), &next); err != nil {
+		t.Fatalf("failed to decode next snapshot: %v", err)
+	}
+	client := newTestSyncClient(nil, syncResponse{snapshot: next})
+	app := newAppWithDeps(Config{CurrentVersion: "1.0.0"}, mem, client, nil, nil, nil)
+	if err := app.runtime.Apply(context.Background(), Snapshot{}, previous); err != nil {
+		t.Fatalf("failed to seed runtime: %v", err)
+	}
+
+	if err := app.performSync(context.Background()); err != nil {
+		t.Fatalf("performSync() error = %v", err)
+	}
+
+	state, err := mem.LoadRuntimeState()
+	if err != nil {
+		t.Fatalf("failed to load runtime state: %v", err)
+	}
+	if _, ok := state.Metadata[runtimeMetaTrafficStatsInterval]; ok {
+		t.Fatalf("traffic_stats_interval not cleared: %v", state.Metadata)
+	}
+	if state.Metadata["unrelated"] != "preserved" {
+		t.Fatalf("unrelated metadata not preserved: %v", state.Metadata)
+	}
+}
+
 func TestPerformSyncKeepsTrafficStatsIntervalWhenLaterActivationFails(t *testing.T) {
 	mem := store.NewInMemory()
 	previous := Snapshot{
@@ -3681,6 +3798,8 @@ type failingStore struct {
 	saveCount            int
 	failOnNthAppliedSave int
 	appliedSaveCount     int
+	failOnNthRuntimeSave int
+	runtimeSaveCount     int
 }
 
 func (f *failingStore) SaveDesiredSnapshot(snapshot Snapshot) error {
@@ -3708,6 +3827,10 @@ func (f *failingStore) LoadAppliedSnapshot() (Snapshot, error) {
 }
 
 func (f *failingStore) SaveRuntimeState(state store.RuntimeState) error {
+	f.runtimeSaveCount++
+	if f.failOnNthRuntimeSave > 0 && f.runtimeSaveCount == f.failOnNthRuntimeSave {
+		return errors.New("runtime persistence fail")
+	}
 	return f.delegate.SaveRuntimeState(state)
 }
 

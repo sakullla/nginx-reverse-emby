@@ -443,20 +443,14 @@ func hasTrafficStatsInterval(meta map[string]string) bool {
 }
 
 func (a *App) persistTrafficStatsInterval(raw string) error {
-	interval, err := parseTrafficStatsInterval(raw)
-	if err != nil {
-		return err
-	}
 	state, err := a.store.LoadRuntimeState()
 	if err != nil {
 		return err
 	}
 	state.Metadata = ensureMetadata(state.Metadata)
-	if interval == "" {
-		delete(state.Metadata, runtimeMetaTrafficStatsInterval)
-		return a.store.SaveRuntimeState(state)
+	if err := setTrafficStatsIntervalMetadata(state.Metadata, raw); err != nil {
+		return err
 	}
-	state.Metadata[runtimeMetaTrafficStatsInterval] = interval
 	return a.store.SaveRuntimeState(state)
 }
 
@@ -473,6 +467,19 @@ func parseTrafficStatsInterval(raw string) (string, error) {
 		return "", fmt.Errorf("traffic_stats_interval must be positive")
 	}
 	return interval, nil
+}
+
+func setTrafficStatsIntervalMetadata(meta map[string]string, raw string) error {
+	interval, err := parseTrafficStatsInterval(raw)
+	if err != nil {
+		return err
+	}
+	if interval == "" {
+		delete(meta, runtimeMetaTrafficStatsInterval)
+		return nil
+	}
+	meta[runtimeMetaTrafficStatsInterval] = interval
+	return nil
 }
 
 func (a *App) syncOnce(ctx context.Context, req SyncRequest) error {
@@ -515,11 +522,6 @@ func (a *App) syncOnce(ctx context.Context, req SyncRequest) error {
 		_ = a.store.SaveAppliedSnapshot(previousApplied)
 		return a.recordPersistedRuntimeErrorWithRevision(err, candidateApplied.Revision)
 	}
-	if err := a.persistTrafficStatsInterval(candidateApplied.AgentConfig.TrafficStatsInterval); err != nil {
-		a.rollbackRuntime(ctx, candidateApplied, previousApplied)
-		_ = a.store.SaveAppliedSnapshot(previousApplied)
-		return a.recordPersistedRuntimeErrorWithRevision(err, candidateApplied.Revision)
-	}
 	return nil
 }
 
@@ -558,6 +560,9 @@ func (a *App) persistRuntimeState(clearLastSyncError bool) error {
 	}
 	state.Metadata = ensureMetadata(state.Metadata)
 	setApplyMetadata(state.Metadata, a.runtime.ActiveSnapshot().Revision, "success", "")
+	if err := setTrafficStatsIntervalMetadata(state.Metadata, a.runtime.ActiveSnapshot().AgentConfig.TrafficStatsInterval); err != nil {
+		return err
+	}
 	if clearLastSyncError {
 		delete(state.Metadata, "last_sync_error")
 	}
