@@ -475,7 +475,7 @@ func (s *agentService) Update(ctx context.Context, agentID string, input UpdateA
 		}
 	}
 	if input.TrafficStatsInterval != nil {
-		previousTrafficStatsInterval := strings.TrimSpace(row.TrafficStatsInterval)
+		previousTrafficStatsInterval := normalizeStoredTrafficStatsInterval(row.TrafficStatsInterval)
 		trafficStatsInterval, err := normalizeTrafficStatsInterval(*input.TrafficStatsInterval)
 		if err != nil {
 			return AgentSummary{}, err
@@ -514,6 +514,14 @@ func normalizeTrafficStatsInterval(raw string) (string, error) {
 		return "", fmt.Errorf("%w: traffic_stats_interval must be a positive duration", ErrInvalidArgument)
 	}
 	return dur.String(), nil
+}
+
+func normalizeStoredTrafficStatsInterval(raw string) string {
+	normalized, err := normalizeTrafficStatsInterval(raw)
+	if err != nil {
+		return strings.TrimSpace(raw)
+	}
+	return normalized
 }
 
 func (s *agentService) Delete(ctx context.Context, agentID string) (AgentSummary, error) {

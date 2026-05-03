@@ -510,6 +510,37 @@ func TestAgentServiceUpdatePersistsTrafficStatsInterval(t *testing.T) {
 	assertRevisionAboveFloor(t, "clear DesiredRevision", store.savedAgent.DesiredRevision, unchangedRevision)
 }
 
+func TestAgentServiceUpdateCanonicalizesEquivalentTrafficStatsIntervalWithoutRevisionBump(t *testing.T) {
+	ctx := context.Background()
+	store := &fakeStore{}
+	if err := store.SaveAgent(ctx, storage.AgentRow{
+		ID:                   "edge-a",
+		Name:                 "Edge A",
+		AgentToken:           "token-a",
+		CapabilitiesJSON:     `["http_rules"]`,
+		DesiredRevision:      7,
+		CurrentRevision:      7,
+		LastApplyStatus:      "success",
+		TrafficStatsInterval: "60s",
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	svc := NewAgentService(config.Config{}, store)
+
+	agent, err := svc.Update(ctx, "edge-a", UpdateAgentRequest{
+		TrafficStatsInterval: stringPtr("1m"),
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if agent.TrafficStatsInterval != "1m0s" || store.savedAgent.TrafficStatsInterval != "1m0s" {
+		t.Fatalf("TrafficStatsInterval agent=%q saved=%q", agent.TrafficStatsInterval, store.savedAgent.TrafficStatsInterval)
+	}
+	if store.savedAgent.DesiredRevision != 7 {
+		t.Fatalf("DesiredRevision = %d, want 7", store.savedAgent.DesiredRevision)
+	}
+}
+
 func TestAgentServiceUpdateRejectsInvalidTrafficStatsInterval(t *testing.T) {
 	ctx := context.Background()
 	for _, raw := range []string{"bad", "0s", "-1s"} {
