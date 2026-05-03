@@ -565,7 +565,26 @@ func TestMergeRuntimeStateWithSyncRequestPersistsStatsMetadata(t *testing.T) {
 	}
 }
 
-func TestMergeRuntimeStateWithSyncRequestClearsStatsMetadataWhenStatsOmitted(t *testing.T) {
+func TestMergeRuntimeStateWithSyncRequestPreservesStatsMetadataWhenStatsOmitted(t *testing.T) {
+	const existingStats = `{"traffic":{"total":{"rx_bytes":123,"tx_bytes":456}}}`
+	state := RuntimeState{
+		Metadata: map[string]string{
+			"stats":             existingStats,
+			"last_apply_status": "success",
+		},
+	}
+
+	merged := mergeRuntimeStateWithSyncRequest(state, SyncRequest{})
+
+	if merged.Metadata["stats"] != existingStats {
+		t.Fatalf("merge did not preserve existing stats metadata: %+v", merged.Metadata)
+	}
+	if merged.Metadata["last_apply_status"] != "success" {
+		t.Fatalf("merge removed unrelated metadata: %+v", merged.Metadata)
+	}
+}
+
+func TestMergeRuntimeStateWithSyncRequestClearsStatsMetadataWhenStatsExplicitlyEmpty(t *testing.T) {
 	state := RuntimeState{
 		Metadata: map[string]string{
 			"stats":             `{"traffic":{"total":{"rx_bytes":123,"tx_bytes":456}}}`,
@@ -573,13 +592,43 @@ func TestMergeRuntimeStateWithSyncRequestClearsStatsMetadataWhenStatsOmitted(t *
 		},
 	}
 
-	merged := mergeRuntimeStateWithSyncRequest(state, SyncRequest{})
+	merged := mergeRuntimeStateWithSyncRequest(state, SyncRequest{Stats: map[string]any{}})
 
 	if _, ok := merged.Metadata["stats"]; ok {
 		t.Fatalf("merge retained stale stats metadata: %+v", merged.Metadata)
 	}
 	if merged.Metadata["last_apply_status"] != "success" {
 		t.Fatalf("merge removed unrelated metadata: %+v", merged.Metadata)
+	}
+}
+
+func TestFromEmbeddedSyncRequestPreservesExplicitEmptyStats(t *testing.T) {
+	request := goagentembedded.SyncRequest{
+		Stats:        map[string]any{},
+		StatsPresent: true,
+	}
+
+	converted := fromEmbeddedSyncRequest(request)
+
+	if converted.Stats == nil {
+		t.Fatal("fromEmbeddedSyncRequest() Stats = nil, want explicit empty map")
+	}
+	if len(converted.Stats) != 0 {
+		t.Fatalf("fromEmbeddedSyncRequest() Stats = %+v, want empty map", converted.Stats)
+	}
+}
+
+func TestSyncRequestBridgePreservesExplicitEmptyStats(t *testing.T) {
+	bridge := newSyncRequestBridge()
+	bridge.Store(SyncRequest{Stats: map[string]any{}})
+
+	loaded := bridge.Load()
+
+	if loaded.Stats == nil {
+		t.Fatal("bridge.Load() Stats = nil, want explicit empty map")
+	}
+	if len(loaded.Stats) != 0 {
+		t.Fatalf("bridge.Load() Stats = %+v, want empty map", loaded.Stats)
 	}
 }
 

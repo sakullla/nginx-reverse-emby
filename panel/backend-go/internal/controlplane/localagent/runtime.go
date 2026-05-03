@@ -286,7 +286,7 @@ func fromEmbeddedSyncRequest(request goagentembedded.SyncRequest) SyncRequest {
 		LastApplyStatus:   request.LastApplyStatus,
 		LastApplyMessage:  request.LastApplyMessage,
 	}
-	if len(request.Stats) > 0 {
+	if request.StatsPresent || request.Stats != nil {
 		if data, err := json.Marshal(request.Stats); err == nil {
 			var stats map[string]any
 			if json.Unmarshal(data, &stats) == nil {
