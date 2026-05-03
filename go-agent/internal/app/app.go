@@ -34,6 +34,11 @@ type SyncClient interface {
 	Sync(context.Context, SyncRequest) (Snapshot, error)
 }
 
+const (
+	runtimeMetaTrafficStatsInterval       = "traffic_stats_interval"
+	runtimeMetaLastTrafficStatsReportUnix = "last_traffic_stats_report_unix"
+)
+
 type CertificateApplier interface {
 	Apply(context.Context, []model.ManagedCertificateBundle, []model.ManagedCertificatePolicy) error
 }
@@ -393,8 +398,16 @@ func (a *App) syncRequest(ctx context.Context, applied Snapshot) (SyncRequest, e
 	if !traffic.Enabled() {
 		req.Stats = map[string]any{}
 		req.StatsPresent = true
-	} else if stats := traffic.SnapshotNonZero(); stats != nil {
-		req.Stats = stats
+	} else if now := time.Now(); shouldReportTrafficStats(meta, now) {
+		stats := traffic.SnapshotNonZero()
+		if stats != nil {
+			req.Stats = stats
+			meta[runtimeMetaLastTrafficStatsReportUnix] = strconv.FormatInt(now.Unix(), 10)
+			state.Metadata = meta
+			if err := a.store.SaveRuntimeState(state); err != nil {
+				return SyncRequest{}, err
+			}
+		}
 	}
 
 	if reporter, ok := a.certApplier.(ManagedCertificateReporter); ok {
@@ -406,6 +419,36 @@ func (a *App) syncRequest(ctx context.Context, applied Snapshot) (SyncRequest, e
 	}
 
 	return req, nil
+}
+
+func shouldReportTrafficStats(meta map[string]string, now time.Time) bool {
+	interval, err := time.ParseDuration(strings.TrimSpace(meta[runtimeMetaTrafficStatsInterval]))
+	if err != nil || interval <= 0 {
+		return true
+	}
+	lastReportUnix, err := strconv.ParseInt(strings.TrimSpace(meta[runtimeMetaLastTrafficStatsReportUnix]), 10, 64)
+	if err != nil || lastReportUnix <= 0 {
+		return true
+	}
+	return !now.Before(time.Unix(lastReportUnix, 0).Add(interval))
+}
+
+func (a *App) persistTrafficStatsInterval(raw string) error {
+	interval := strings.TrimSpace(raw)
+	state, err := a.store.LoadRuntimeState()
+	if err != nil {
+		return err
+	}
+	state.Metadata = ensureMetadata(state.Metadata)
+	if interval == "" {
+		delete(state.Metadata, runtimeMetaTrafficStatsInterval)
+		return a.store.SaveRuntimeState(state)
+	}
+	if _, err := time.ParseDuration(interval); err != nil {
+		return err
+	}
+	state.Metadata[runtimeMetaTrafficStatsInterval] = interval
+	return a.store.SaveRuntimeState(state)
 }
 
 func (a *App) syncOnce(ctx context.Context, req SyncRequest) error {
@@ -651,7 +694,7 @@ func (a *App) snapshotActivationHandlers() agentruntime.SnapshotActivationHandle
 	return agentruntime.SnapshotActivationHandlers{
 		ActivateAgentConfig: func(_ context.Context, cfg model.AgentConfig) error {
 			relay.SetOutboundProxyURL(cfg.OutboundProxyURL)
-			return nil
+			return a.persistTrafficStatsInterval(cfg.TrafficStatsInterval)
 		},
 		ActivateManagedCertificates: func(ctx context.Context, bundles []model.ManagedCertificateBundle, policies []model.ManagedCertificatePolicy) error {
 			return a.applyManagedCertificates(ctx, Snapshot{

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -2028,6 +2029,128 @@ func TestPerformSyncOmitsStatsWhenTrafficStatsDisabled(t *testing.T) {
 	}
 	if !req.StatsPresent {
 		t.Fatal("StatsPresent = false, want true when traffic stats disabled")
+	}
+}
+
+func TestSyncRequestSuppressesStatsBeforeTrafficStatsInterval(t *testing.T) {
+	traffic.Reset()
+	traffic.SetEnabled(true)
+	t.Cleanup(func() {
+		traffic.SetEnabled(true)
+		traffic.Reset()
+	})
+	traffic.AddHTTP(11, 22)
+
+	mem := store.NewInMemory()
+	applied := Snapshot{DesiredVersion: "1.0.0", Revision: 7}
+	if err := mem.SaveAppliedSnapshot(applied); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+	if err := mem.SaveRuntimeState(store.RuntimeState{
+		Metadata: map[string]string{
+			runtimeMetaTrafficStatsInterval:       "1h",
+			runtimeMetaLastTrafficStatsReportUnix: strconv.FormatInt(time.Now().Add(-time.Minute).Unix(), 10),
+		},
+	}); err != nil {
+		t.Fatalf("failed to seed runtime state: %v", err)
+	}
+
+	app := newAppWithDeps(Config{CurrentVersion: "1.0.0", TrafficStatsEnabled: true, TrafficStatsExplicit: true}, mem, newTestSyncClient(nil, syncResponse{}), &testCertificateApplier{}, nil, nil)
+	req, err := app.syncRequest(context.Background(), applied)
+	if err != nil {
+		t.Fatalf("syncRequest() error = %v", err)
+	}
+
+	if req.Stats != nil {
+		t.Fatalf("Stats = %#v, want nil before traffic stats interval elapses", req.Stats)
+	}
+	if req.StatsPresent {
+		t.Fatal("StatsPresent = true, want false before traffic stats interval elapses")
+	}
+}
+
+func TestSyncRequestIncludesStatsAfterTrafficStatsInterval(t *testing.T) {
+	traffic.Reset()
+	traffic.SetEnabled(true)
+	t.Cleanup(func() {
+		traffic.SetEnabled(true)
+		traffic.Reset()
+	})
+	traffic.AddHTTP(11, 22)
+
+	mem := store.NewInMemory()
+	applied := Snapshot{DesiredVersion: "1.0.0", Revision: 7}
+	if err := mem.SaveAppliedSnapshot(applied); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+	if err := mem.SaveRuntimeState(store.RuntimeState{
+		Metadata: map[string]string{
+			runtimeMetaTrafficStatsInterval:       "1s",
+			runtimeMetaLastTrafficStatsReportUnix: strconv.FormatInt(time.Now().Add(-time.Hour).Unix(), 10),
+		},
+	}); err != nil {
+		t.Fatalf("failed to seed runtime state: %v", err)
+	}
+
+	app := newAppWithDeps(Config{CurrentVersion: "1.0.0", TrafficStatsEnabled: true, TrafficStatsExplicit: true}, mem, newTestSyncClient(nil, syncResponse{}), &testCertificateApplier{}, nil, nil)
+	req, err := app.syncRequest(context.Background(), applied)
+	if err != nil {
+		t.Fatalf("syncRequest() error = %v", err)
+	}
+
+	if req.Stats == nil {
+		t.Fatal("Stats = nil, want traffic stats after traffic stats interval elapses")
+	}
+	state, err := mem.LoadRuntimeState()
+	if err != nil {
+		t.Fatalf("failed to load runtime state: %v", err)
+	}
+	reportedAt := parseInt64(state.Metadata[runtimeMetaLastTrafficStatsReportUnix], 0)
+	if reportedAt == 0 {
+		t.Fatalf("last_traffic_stats_report_unix not persisted: %v", state.Metadata)
+	}
+	if time.Since(time.Unix(reportedAt, 0)) > time.Minute {
+		t.Fatalf("last_traffic_stats_report_unix = %d, want recent timestamp", reportedAt)
+	}
+}
+
+func TestRuntimeActivationPersistsTrafficStatsInterval(t *testing.T) {
+	mem := store.NewInMemory()
+	app := newAppWithDeps(Config{}, mem, newTestSyncClient(nil, syncResponse{}), nil, nil, nil)
+	next := Snapshot{
+		DesiredVersion: "next",
+		Revision:       7,
+		AgentConfig: model.AgentConfig{
+			TrafficStatsInterval: "30s",
+		},
+	}
+
+	if err := app.runtime.Apply(context.Background(), Snapshot{}, next); err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+
+	state, err := mem.LoadRuntimeState()
+	if err != nil {
+		t.Fatalf("failed to load runtime state: %v", err)
+	}
+	if state.Metadata[runtimeMetaTrafficStatsInterval] != "30s" {
+		t.Fatalf("traffic_stats_interval = %q, want 30s", state.Metadata[runtimeMetaTrafficStatsInterval])
+	}
+}
+
+func TestRuntimeActivationRejectsInvalidTrafficStatsInterval(t *testing.T) {
+	mem := store.NewInMemory()
+	app := newAppWithDeps(Config{}, mem, newTestSyncClient(nil, syncResponse{}), nil, nil, nil)
+	next := Snapshot{
+		DesiredVersion: "next",
+		Revision:       7,
+		AgentConfig: model.AgentConfig{
+			TrafficStatsInterval: "not-a-duration",
+		},
+	}
+
+	if err := app.runtime.Apply(context.Background(), Snapshot{}, next); err == nil {
+		t.Fatal("Apply() error = nil, want invalid traffic stats interval error")
 	}
 }
 
