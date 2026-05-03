@@ -23,7 +23,7 @@ func TestCopyResponseRecordsHTTPTraffic(t *testing.T) {
 	}
 	recorder := httptest.NewRecorder()
 
-	if _, err := copyResponse(recorder, resp); err != nil {
+	if _, err := copyResponse(recorder, resp, nil); err != nil {
 		t.Fatalf("copyResponse() error = %v", err)
 	}
 
@@ -31,6 +31,45 @@ func TestCopyResponseRecordsHTTPTraffic(t *testing.T) {
 	httpStats := stats["http"].(map[string]uint64)
 	if httpStats["tx_bytes"] != uint64(len("response-body")) {
 		t.Fatalf("http tx_bytes = %d, want %d", httpStats["tx_bytes"], len("response-body"))
+	}
+}
+
+func TestRouteEntryRecordsHTTPRuleTraffic(t *testing.T) {
+	traffic.Reset()
+	traffic.SetEnabled(true)
+	defer traffic.Reset()
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := io.ReadAll(r.Body); err != nil {
+			t.Fatalf("backend read body: %v", err)
+		}
+		_, _ = w.Write([]byte("response-body"))
+	}))
+	defer backend.Close()
+
+	server := NewServer(model.HTTPListener{Rules: []model.HTTPRule{{
+		ID:          77,
+		FrontendURL: "http://frontend.example",
+		BackendURL:  backend.URL,
+		Enabled:     true,
+	}}})
+	req := httptest.NewRequest(http.MethodPost, "http://frontend.example/upload", bytes.NewBufferString("request-body"))
+	req.Host = "frontend.example"
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%q", rec.Code, rec.Body.String())
+	}
+
+	stats := traffic.Snapshot()["traffic"].(map[string]any)
+	httpRules := stats["http_rules"].(map[string]map[string]uint64)
+	got := httpRules["77"]
+	if got["rx_bytes"] != uint64(len("request-body")) {
+		t.Fatalf("http_rules[77].rx_bytes = %d", got["rx_bytes"])
+	}
+	if got["tx_bytes"] != uint64(len("response-body")) {
+		t.Fatalf("http_rules[77].tx_bytes = %d", got["tx_bytes"])
 	}
 }
 
@@ -62,7 +101,7 @@ func TestCloneProxyRequestRecordsBufferedRequestBodyTrafficPerAttemptOnRead(t *t
 	}
 
 	for i := 0; i < 2; i++ {
-		cloned, err := cloneProxyRequest(req, body, httpCandidate{target: mustParseURLForTrafficTest(t, "http://backend.example.com")}, model.HTTPRule{}, "/")
+		cloned, err := cloneProxyRequest(req, body, httpCandidate{target: mustParseURLForTrafficTest(t, "http://backend.example.com")}, model.HTTPRule{}, "/", nil)
 		if err != nil {
 			t.Fatalf("cloneProxyRequest(%d) error = %v", i, err)
 		}
@@ -88,7 +127,7 @@ func TestCloneProxyRequestRecordsStreamingRequestBodyTrafficOnRead(t *testing.T)
 		t.Fatalf("prepareReusableBody() error = %v", err)
 	}
 
-	cloned, err := cloneProxyRequest(req, body, httpCandidate{target: mustParseURLForTrafficTest(t, "http://backend.example.com")}, model.HTTPRule{}, "/")
+	cloned, err := cloneProxyRequest(req, body, httpCandidate{target: mustParseURLForTrafficTest(t, "http://backend.example.com")}, model.HTTPRule{}, "/", nil)
 	if err != nil {
 		t.Fatalf("cloneProxyRequest() error = %v", err)
 	}

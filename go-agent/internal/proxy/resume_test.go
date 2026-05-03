@@ -617,7 +617,7 @@ func TestCopyResumableResponseDrainsInterruptedBodyBeforeRetry(t *testing.T) {
 			etag:    `"stable"`,
 			ifRange: `"stable"`,
 		},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("copyResumableResponse() error = %v", err)
 	}
@@ -661,7 +661,7 @@ func TestCopyResumableResponseRecordsHTTPTraffic(t *testing.T) {
 			etag:    `"stable"`,
 			ifRange: `"stable"`,
 		},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("copyResumableResponse() error = %v", err)
 	}
@@ -750,7 +750,7 @@ func TestCopyResumableResponseUsesBulkTransportForRelayRangeRetry(t *testing.T) 
 			etag:    `"stable"`,
 			ifRange: `"stable"`,
 		},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("copyResumableResponse() error = %v", err)
 	}

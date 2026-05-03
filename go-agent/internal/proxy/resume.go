@@ -42,7 +42,7 @@ func (e *routeEntry) shouldResumeResponse(req *http.Request, resp *http.Response
 	return newResumableResponse(req, resp)
 }
 
-func (e *routeEntry) copyResumableResponse(w http.ResponseWriter, req *http.Request, resp *http.Response, state resumableResponse) (int64, error) {
+func (e *routeEntry) copyResumableResponse(w http.ResponseWriter, req *http.Request, resp *http.Response, state resumableResponse, recorder *traffic.Recorder) (int64, error) {
 	copyProxyResponseHeaders(w.Header(), resp.Header, resp.StatusCode)
 	w.Header().Set("Content-Length", strconv.FormatInt(state.responseLength(), 10))
 	w.WriteHeader(resp.StatusCode)
@@ -59,7 +59,9 @@ func (e *routeEntry) copyResumableResponse(w http.ResponseWriter, req *http.Requ
 	for {
 		n, readErr, writeErr := copyResumableChunk(w, current.Body)
 		sentBytes += n
-		traffic.AddHTTP(0, n)
+		trafficRecorder := httpRecorderOrAggregate(recorder)
+		trafficRecorder.Add(0, n)
+		trafficRecorder.Flush()
 		if writeErr != nil {
 			_ = current.Body.Close()
 			return fail(sentBytes, writeErr)

@@ -519,7 +519,7 @@ func TestCloneProxyRequestPreservesIncomingPathQueryAndFragment(t *testing.T) {
 		target: mustParseBackendURL(t, "https://backend.example/backend/path?backend=1#backend-fragment"),
 	}
 
-	out, err := cloneProxyRequest(req, nil, candidate, model.HTTPRule{}, "/")
+	out, err := cloneProxyRequest(req, nil, candidate, model.HTTPRule{}, "/", nil)
 	if err != nil {
 		t.Fatalf("cloneProxyRequest failed: %v", err)
 	}
@@ -548,7 +548,7 @@ func TestCloneProxyRequestRewritesFrontendPrefixToBackendPath(t *testing.T) {
 		target: mustParseBackendURL(t, "https://backend.example/library"),
 	}
 
-	out, err := cloneProxyRequest(req, nil, candidate, model.HTTPRule{}, "/emby")
+	out, err := cloneProxyRequest(req, nil, candidate, model.HTTPRule{}, "/emby", nil)
 	if err != nil {
 		t.Fatalf("cloneProxyRequest failed: %v", err)
 	}
@@ -572,7 +572,7 @@ func TestCloneProxyRequestPreservesStreamingBodyContentLength(t *testing.T) {
 		target: mustParseBackendURL(t, "https://backend.example"),
 	}
 
-	out, err := cloneProxyRequest(req, body, candidate, model.HTTPRule{}, "/")
+	out, err := cloneProxyRequest(req, body, candidate, model.HTTPRule{}, "/", nil)
 	if err != nil {
 		t.Fatalf("cloneProxyRequest failed: %v", err)
 	}
@@ -595,7 +595,7 @@ func TestCloneProxyRequestPreservesUnknownStreamingBodyContentLength(t *testing.
 		target: mustParseBackendURL(t, "https://backend.example"),
 	}
 
-	out, err := cloneProxyRequest(req, body, candidate, model.HTTPRule{}, "/")
+	out, err := cloneProxyRequest(req, body, candidate, model.HTTPRule{}, "/", nil)
 	if err != nil {
 		t.Fatalf("cloneProxyRequest failed: %v", err)
 	}
@@ -650,7 +650,7 @@ func TestCloneProxyRequestClearsBodyWhenNoReusableBody(t *testing.T) {
 		target: mustParseBackendURL(t, "https://backend.example"),
 	}
 
-	out, err := cloneProxyRequest(req, nil, candidate, model.HTTPRule{}, "/")
+	out, err := cloneProxyRequest(req, nil, candidate, model.HTTPRule{}, "/", nil)
 	if err != nil {
 		t.Fatalf("cloneProxyRequest failed: %v", err)
 	}

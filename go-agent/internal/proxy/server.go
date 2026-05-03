@@ -320,6 +320,7 @@ func StartWithResourcesAndOptions(
 }
 
 func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
+	recorder := traffic.NewHTTPRuleRecorder(e.rule.ID)
 	body, err := prepareReusableBody(req, e.sameBackendRetryMaxAttempts(req))
 	if err != nil {
 		log.Printf("[proxy] read body error for %s: %v", e.rule.FrontendURL, err)
@@ -334,7 +335,7 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 	for _, candidate := range candidates {
 		maxSameBackendAttempts := e.sameBackendRetryMaxAttempts(req)
 		for attempt := 0; attempt < maxSameBackendAttempts; attempt++ {
-			attemptReq, err := cloneProxyRequest(req, body, candidate, e.rule, e.frontendPath)
+			attemptReq, err := cloneProxyRequest(req, body, candidate, e.rule, e.frontendPath, recorder)
 			if err != nil {
 				log.Printf("[proxy] clone request error for %s -> %s: %v", e.rule.FrontendURL, candidate.target, err)
 				return err
@@ -381,7 +382,7 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 				}
 			}
 			if resp.StatusCode == http.StatusSwitchingProtocols {
-				if err := handleUpgradeResponse(w, attemptReq, resp); err != nil {
+				if err := handleUpgradeResponse(w, attemptReq, resp, recorder); err != nil {
 					if candidate.backendObservationKey != "" {
 						e.backendCache.ObserveBackendFailure(candidate.backendObservationKey)
 					}
@@ -392,7 +393,7 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 				return nil
 			}
 			if state, ok := e.shouldResumeResponse(attemptReq, resp); ok {
-				written, err := e.copyResumableResponse(w, attemptReq, resp, state)
+				written, err := e.copyResumableResponse(w, attemptReq, resp, state, recorder)
 				if err != nil {
 					if attemptReq.Context().Err() == nil {
 						if candidate.backendObservationKey != "" {
@@ -405,7 +406,7 @@ func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 				e.observeSuccessfulBackend(candidate, attemptReq, backoffAddr, headerLatency, time.Since(start), written)
 				return nil
 			}
-			written, err := copyResponse(w, resp)
+			written, err := copyResponse(w, resp, recorder)
 			if err != nil {
 				if attemptReq.Context().Err() == nil {
 					if candidate.backendObservationKey != "" {
@@ -1017,7 +1018,7 @@ func (b *reusableRequestBody) Close() error {
 	return err
 }
 
-func cloneProxyRequest(req *http.Request, body *reusableRequestBody, candidate httpCandidate, rule model.HTTPRule, frontendPath string) (*http.Request, error) {
+func cloneProxyRequest(req *http.Request, body *reusableRequestBody, candidate httpCandidate, rule model.HTTPRule, frontendPath string, recorder *traffic.Recorder) (*http.Request, error) {
 	incomingHost := req.Host
 	incomingScheme := requestScheme(req)
 	out := req.Clone(req.Context())
@@ -1048,7 +1049,7 @@ func cloneProxyRequest(req *http.Request, body *reusableRequestBody, candidate h
 	if body != nil {
 		out.Body, out.ContentLength, out.GetBody = body.Open()
 		if out.Body != nil {
-			out.Body = newTrafficReadCloser(out.Body)
+			out.Body = newTrafficReadCloser(out.Body, recorder)
 			if out.GetBody != nil {
 				getBody := out.GetBody
 				out.GetBody = func() (io.ReadCloser, error) {
@@ -1056,7 +1057,7 @@ func cloneProxyRequest(req *http.Request, body *reusableRequestBody, candidate h
 					if err != nil {
 						return nil, err
 					}
-					return newTrafficReadCloser(body), nil
+					return newTrafficReadCloser(body, recorder), nil
 				}
 			}
 		}
@@ -1075,11 +1076,18 @@ type trafficReadCloser struct {
 	recorder *traffic.Recorder
 }
 
-func newTrafficReadCloser(delegate io.ReadCloser) io.ReadCloser {
+func newTrafficReadCloser(delegate io.ReadCloser, recorder *traffic.Recorder) io.ReadCloser {
 	return &trafficReadCloser{
 		ReadCloser: delegate,
-		recorder:   traffic.NewHTTPRecorder(),
+		recorder:   httpRecorderOrAggregate(recorder),
 	}
+}
+
+func httpRecorderOrAggregate(recorder *traffic.Recorder) *traffic.Recorder {
+	if recorder != nil {
+		return recorder
+	}
+	return traffic.NewHTTPRecorder()
 }
 
 func (c trafficReadCloser) Read(p []byte) (int, error) {
@@ -1155,7 +1163,7 @@ func newStartedResponseError(err error) error {
 	return &startedResponseError{err: err}
 }
 
-func copyResponse(w http.ResponseWriter, resp *http.Response) (int64, error) {
+func copyResponse(w http.ResponseWriter, resp *http.Response, recorder *traffic.Recorder) (int64, error) {
 	if resp == nil {
 		return 0, nil
 	}
@@ -1168,7 +1176,9 @@ func copyResponse(w http.ResponseWriter, resp *http.Response) (int64, error) {
 	if resp.Body != nil {
 		n, err := io.Copy(w, resp.Body)
 		written = n
-		traffic.AddHTTP(0, n)
+		trafficRecorder := httpRecorderOrAggregate(recorder)
+		trafficRecorder.Add(0, n)
+		trafficRecorder.Flush()
 		if err != nil {
 			return written, err
 		}
@@ -1176,7 +1186,7 @@ func copyResponse(w http.ResponseWriter, resp *http.Response) (int64, error) {
 	return written, nil
 }
 
-func handleUpgradeResponse(w http.ResponseWriter, req *http.Request, resp *http.Response) error {
+func handleUpgradeResponse(w http.ResponseWriter, req *http.Request, resp *http.Response, recorder *traffic.Recorder) error {
 	reqUpType := upgradeType(req.Header)
 	respUpType := upgradeType(resp.Header)
 	if reqUpType == "" || respUpType == "" {
@@ -1221,7 +1231,7 @@ func handleUpgradeResponse(w http.ResponseWriter, req *http.Request, resp *http.
 	}
 
 	errc := make(chan error, 2)
-	spc := switchProtocolCopier{user: conn, backend: backConn}
+	spc := switchProtocolCopier{user: conn, backend: backConn, recorder: httpRecorderOrAggregate(recorder)}
 	go spc.copyToBackend(errc)
 	go spc.copyFromBackend(errc)
 
@@ -1239,11 +1249,14 @@ var errCopyDone = errors.New("hijacked connection copy complete")
 
 type switchProtocolCopier struct {
 	user, backend io.ReadWriter
+	recorder      *traffic.Recorder
 }
 
 func (c switchProtocolCopier) copyFromBackend(errc chan<- error) {
 	n, err := io.Copy(c.user, c.backend)
-	traffic.AddHTTP(0, n)
+	recorder := httpRecorderOrAggregate(c.recorder)
+	recorder.Add(0, n)
+	recorder.Flush()
 	if err != nil {
 		errc <- err
 		return
@@ -1257,7 +1270,9 @@ func (c switchProtocolCopier) copyFromBackend(errc chan<- error) {
 
 func (c switchProtocolCopier) copyToBackend(errc chan<- error) {
 	n, err := io.Copy(c.backend, c.user)
-	traffic.AddHTTP(n, 0)
+	recorder := httpRecorderOrAggregate(c.recorder)
+	recorder.Add(n, 0)
+	recorder.Flush()
 	if err != nil {
 		errc <- err
 		return
