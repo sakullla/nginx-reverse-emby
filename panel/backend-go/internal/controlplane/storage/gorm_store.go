@@ -54,7 +54,11 @@ func NewStore(cfg StoreConfig) (*GormStore, error) {
 		}
 	}
 
-	db, err := gorm.Open(resolveDialector(driver, cfg), &gorm.Config{})
+	dialector, err := resolveDialector(driver, cfg)
+	if err != nil {
+		return nil, err
+	}
+	db, err := gorm.Open(dialector, &gorm.Config{})
 	if err != nil {
 		return nil, err
 	}
@@ -71,20 +75,20 @@ func NewStore(cfg StoreConfig) (*GormStore, error) {
 	return store, nil
 }
 
-func resolveDialector(driver string, cfg StoreConfig) gorm.Dialector {
+func resolveDialector(driver string, cfg StoreConfig) (gorm.Dialector, error) {
 	switch driver {
 	case "postgres":
-		return postgres.Open(cfg.DSN)
+		return postgres.Open(cfg.DSN), nil
 	case "mysql":
-		return mysql.Open(cfg.DSN)
+		return mysql.Open(cfg.DSN), nil
 	case "sqlite":
 		dsn := strings.TrimSpace(cfg.DSN)
 		if dsn == "" {
 			dsn = filepath.Join(cfg.DataRoot, "panel.db") + "?_journal_mode=WAL&_busy_timeout=5000"
 		}
-		return sqlite.Open(dsn)
+		return sqlite.Open(dsn), nil
 	default:
-		panic(fmt.Sprintf("unsupported database driver %q", driver))
+		return nil, fmt.Errorf("unsupported database driver %q", driver)
 	}
 }
 

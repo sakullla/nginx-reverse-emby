@@ -1,6 +1,7 @@
 package storage
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
@@ -30,6 +31,23 @@ func TestStoreConfigFromConfigPassesDatabaseSettings(t *testing.T) {
 	}
 	if storeCfg.TrafficStatsEnabled {
 		t.Fatal("TrafficStatsEnabled = true, want false")
+	}
+}
+
+func TestNewStoreRejectsUnsupportedDriver(t *testing.T) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			t.Fatalf("NewStore panicked: %v", recovered)
+		}
+	}()
+
+	_, err := NewStore(StoreConfig{
+		Driver:       "oracle",
+		DataRoot:     t.TempDir(),
+		LocalAgentID: "local",
+	})
+	if err == nil || !strings.Contains(err.Error(), "unsupported database driver") {
+		t.Fatalf("NewStore() error = %v, want unsupported database driver error", err)
 	}
 }
 
