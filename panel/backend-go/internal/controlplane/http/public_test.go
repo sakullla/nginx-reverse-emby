@@ -570,6 +570,59 @@ func TestHeartbeatResponseIncludesTrafficStatsInterval(t *testing.T) {
 	}
 }
 
+func TestHeartbeatResponseIncludesTrafficBlockedState(t *testing.T) {
+	trafficStatsEnabled := false
+	router, err := NewRouter(Dependencies{
+		Config:        config.Config{PanelToken: "secret"},
+		SystemService: fakeSystemService{},
+		AgentService: fakeAgentService{heartbeatReply: service.HeartbeatReply{
+			DesiredRevision:     10,
+			TrafficStatsEnabled: &trafficStatsEnabled,
+			TrafficBlocked:      false,
+			TrafficBlockReason:  "ignored while disabled",
+		}},
+		RuleService:          fakeRuleService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/panel-api/agents/heartbeat", bytes.NewBufferString(`{"current_revision":1}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Agent-Token", "agent-token")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("POST heartbeat = %d", resp.Code)
+	}
+
+	var payload struct {
+		Sync struct {
+			AgentConfig struct {
+				TrafficStatsEnabled bool   `json:"traffic_stats_enabled"`
+				TrafficBlocked      bool   `json:"traffic_blocked"`
+				TrafficBlockReason  string `json:"traffic_block_reason"`
+			} `json:"agent_config"`
+		} `json:"sync"`
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if payload.Sync.AgentConfig.TrafficStatsEnabled {
+		t.Fatal("traffic_stats_enabled = true, want false")
+	}
+	if payload.Sync.AgentConfig.TrafficBlocked {
+		t.Fatal("traffic_blocked = true, want false while module disabled")
+	}
+	if payload.Sync.AgentConfig.TrafficBlockReason != "ignored while disabled" {
+		t.Fatalf("traffic_block_reason = %q", payload.Sync.AgentConfig.TrafficBlockReason)
+	}
+}
+
 func TestHeartbeatResponseIncludesVersionPackageMetadataWithoutDesiredVersion(t *testing.T) {
 	router, err := NewRouter(Dependencies{
 		Config:        config.Config{PanelToken: "secret"},

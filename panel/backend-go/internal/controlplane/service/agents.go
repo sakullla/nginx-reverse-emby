@@ -147,11 +147,17 @@ type HeartbeatReply struct {
 	CertificatePolicies  []storage.ManagedCertificatePolicy `json:"certificate_policies"`
 	OutboundProxyURL     string                             `json:"-"`
 	TrafficStatsInterval string                             `json:"-"`
+	TrafficStatsEnabled  *bool                              `json:"-"`
+	TrafficBlocked       bool                               `json:"-"`
+	TrafficBlockReason   string                             `json:"-"`
 }
 
 type AgentRuntimeConfig struct {
 	OutboundProxyURL     string `json:"outbound_proxy_url"`
 	TrafficStatsInterval string `json:"traffic_stats_interval,omitempty"`
+	TrafficStatsEnabled  *bool  `json:"traffic_stats_enabled,omitempty"`
+	TrafficBlocked       bool   `json:"traffic_blocked,omitempty"`
+	TrafficBlockReason   string `json:"traffic_block_reason,omitempty"`
 }
 
 type RuntimePackageInfo struct {
@@ -196,10 +202,16 @@ type ApplyAgentResult struct {
 type agentService struct {
 	cfg               config.Config
 	store             agentStore
+	trafficService    heartbeatTrafficService
 	now               func() time.Time
 	localApplyTrigger func(context.Context) error
 	bundledCacheMu    sync.Mutex
 	bundledCache      map[string]bundledPackageCacheEntry
+}
+
+type heartbeatTrafficService interface {
+	IngestHeartbeat(context.Context, string, AgentStats) error
+	Summary(context.Context, string) (TrafficSummary, error)
 }
 
 type bundledPackageCacheEntry struct {
@@ -209,12 +221,32 @@ type bundledPackageCacheEntry struct {
 }
 
 func NewAgentService(cfg config.Config, store agentStore) *agentService {
-	return &agentService{
+	cfg.TrafficStatsEnabled = agentTrafficStatsEnabled(cfg)
+	svc := &agentService{
 		cfg:          cfg,
 		store:        store,
 		now:          time.Now,
 		bundledCache: make(map[string]bundledPackageCacheEntry),
 	}
+	if trafficStore, ok := store.(trafficStore); ok {
+		svc.trafficService = NewTrafficService(TrafficServiceConfig{Enabled: cfg.TrafficStatsEnabled}, trafficStore)
+	}
+	return svc
+}
+
+func agentTrafficStatsEnabled(cfg config.Config) bool {
+	if cfg.TrafficStatsEnabled {
+		return true
+	}
+	return strings.TrimSpace(cfg.ListenAddr) == "" &&
+		strings.TrimSpace(cfg.DataDir) == "" &&
+		strings.TrimSpace(cfg.DatabaseDriver) == "" &&
+		strings.TrimSpace(cfg.FrontendDistDir) == "" &&
+		strings.TrimSpace(cfg.PublicAgentAssetsDir) == ""
+}
+
+func (s *agentService) SetTrafficService(trafficService heartbeatTrafficService) {
+	s.trafficService = trafficService
 }
 
 func (s *agentService) SetLocalApplyTrigger(trigger func(context.Context) error) {
@@ -731,8 +763,14 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 	if hasCapabilities {
 		row.CapabilitiesJSON = marshalStringArray(normalizeCapabilities(request.Capabilities))
 	}
-	if request.Stats != nil {
+	trafficStatsEnabled := s.cfg.TrafficStatsEnabled
+	if request.Stats != nil && trafficStatsEnabled {
 		row.LastReportedStatsJSON = marshalAgentStats(request.Stats)
+		if s.trafficService != nil {
+			if err := s.trafficService.IngestHeartbeat(ctx, row.ID, request.Stats); err != nil {
+				return HeartbeatReply{}, err
+			}
+		}
 	}
 	if strings.TrimSpace(request.LastSeenIP) != "" {
 		row.LastSeenIP = strings.TrimSpace(request.LastSeenIP)
@@ -759,6 +797,10 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 		return HeartbeatReply{}, err
 	}
 
+	trafficBlocked, trafficBlockReason, err := s.heartbeatTrafficBlockState(ctx, row.ID, trafficStatsEnabled)
+	if err != nil {
+		return HeartbeatReply{}, err
+	}
 	reply := HeartbeatReply{
 		HasUpdate:            request.CurrentRevision < snapshot.Revision || !strings.EqualFold(strings.TrimSpace(row.LastApplyStatus), "success"),
 		DesiredVersion:       snapshot.DesiredVersion,
@@ -771,6 +813,9 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 		CertificatePolicies:  snapshot.CertificatePolicies,
 		OutboundProxyURL:     strings.TrimSpace(row.OutboundProxyURL),
 		TrafficStatsInterval: strings.TrimSpace(row.TrafficStatsInterval),
+		TrafficStatsEnabled:  heartbeatBoolPtr(trafficStatsEnabled),
+		TrafficBlocked:       trafficBlocked,
+		TrafficBlockReason:   trafficBlockReason,
 	}
 	if snapshot.VersionPackage != nil {
 		pkgCopy := *snapshot.VersionPackage
@@ -785,6 +830,27 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 		reply.CertificatePolicies = nil
 	}
 	return reply, nil
+}
+
+func (s *agentService) heartbeatTrafficBlockState(ctx context.Context, agentID string, enabled bool) (bool, string, error) {
+	if !enabled || s.trafficService == nil {
+		return false, "", nil
+	}
+	summary, err := s.trafficService.Summary(ctx, agentID)
+	if err != nil {
+		if errors.Is(err, ErrTrafficStatsDisabled) {
+			return false, "", nil
+		}
+		return false, "", err
+	}
+	if !summary.Blocked {
+		return false, "", nil
+	}
+	return true, summary.BlockReason, nil
+}
+
+func heartbeatBoolPtr(value bool) *bool {
+	return &value
 }
 
 func (s *agentService) reconcileManagedCertificatesFromHeartbeat(ctx context.Context, row storage.AgentRow, request HeartbeatRequest) error {

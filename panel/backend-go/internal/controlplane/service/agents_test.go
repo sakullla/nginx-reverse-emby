@@ -35,6 +35,32 @@ type fakeStore struct {
 	saveRuntimeCalls    int
 }
 
+type fakeHeartbeatTrafficService struct {
+	ingestCalls []fakeHeartbeatTrafficIngest
+	summary     TrafficSummary
+	summaryErr  error
+}
+
+type fakeHeartbeatTrafficIngest struct {
+	agentID string
+	stats   AgentStats
+}
+
+func (f *fakeHeartbeatTrafficService) IngestHeartbeat(_ context.Context, agentID string, stats AgentStats) error {
+	f.ingestCalls = append(f.ingestCalls, fakeHeartbeatTrafficIngest{
+		agentID: agentID,
+		stats:   stats,
+	})
+	return nil
+}
+
+func (f *fakeHeartbeatTrafficService) Summary(context.Context, string) (TrafficSummary, error) {
+	if f.summaryErr != nil {
+		return TrafficSummary{}, f.summaryErr
+	}
+	return f.summary, nil
+}
+
 func (f *fakeStore) ListAgents(context.Context) ([]storage.AgentRow, error) {
 	return append([]storage.AgentRow(nil), f.agents...), nil
 }
@@ -1344,6 +1370,127 @@ func TestAgentServiceHeartbeatPersistsReportedStats(t *testing.T) {
 	}
 	if stats["totalRequests"] != "42" || stats["status"] != "运行中" {
 		t.Fatalf("Stats() = %+v", stats)
+	}
+}
+
+func TestHeartbeatIngestsTrafficWhenModuleEnabled(t *testing.T) {
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID:              "remote-traffic",
+			Name:            "remote-traffic",
+			AgentToken:      "token-remote-traffic",
+			DesiredRevision: 2,
+			CurrentRevision: 1,
+			LastApplyStatus: "success",
+		}},
+		snapshot: storage.Snapshot{DesiredVersion: "3.0.0", Revision: 2},
+	}
+	trafficSvc := &fakeHeartbeatTrafficService{}
+	svc := NewAgentService(config.Config{TrafficStatsEnabled: true}, store)
+	svc.SetTrafficService(trafficSvc)
+
+	reply, err := svc.Heartbeat(context.Background(), HeartbeatRequest{
+		CurrentRevision: 1,
+		Stats: AgentStats{
+			"traffic": map[string]any{
+				"total": map[string]any{"rx_bytes": float64(123), "tx_bytes": float64(456)},
+			},
+		},
+	}, "token-remote-traffic")
+	if err != nil {
+		t.Fatalf("Heartbeat() error = %v", err)
+	}
+
+	if got := len(trafficSvc.ingestCalls); got != 1 {
+		t.Fatalf("traffic ingest calls = %d, want 1", got)
+	}
+	if trafficSvc.ingestCalls[0].agentID != "remote-traffic" {
+		t.Fatalf("traffic ingest agentID = %q", trafficSvc.ingestCalls[0].agentID)
+	}
+	if store.savedAgent.LastReportedStatsJSON == "" {
+		t.Fatal("LastReportedStatsJSON was not persisted")
+	}
+	if reply.TrafficStatsEnabled == nil || !*reply.TrafficStatsEnabled {
+		t.Fatalf("TrafficStatsEnabled = %v, want true", reply.TrafficStatsEnabled)
+	}
+}
+
+func TestHeartbeatIgnoresTrafficAndDisablesAgentReportingWhenModuleDisabled(t *testing.T) {
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID:                    "remote-traffic",
+			Name:                  "remote-traffic",
+			AgentToken:            "token-remote-traffic",
+			DesiredRevision:       2,
+			CurrentRevision:       1,
+			LastApplyStatus:       "success",
+			LastReportedStatsJSON: `{"traffic":{"total":{"rx_bytes":1,"tx_bytes":2}}}`,
+		}},
+		snapshot: storage.Snapshot{DesiredVersion: "3.0.0", Revision: 2},
+	}
+	trafficSvc := &fakeHeartbeatTrafficService{}
+	cfg := config.Default()
+	cfg.TrafficStatsEnabled = false
+	svc := NewAgentService(cfg, store)
+	svc.SetTrafficService(trafficSvc)
+
+	reply, err := svc.Heartbeat(context.Background(), HeartbeatRequest{
+		CurrentRevision: 1,
+		Stats: AgentStats{
+			"traffic": map[string]any{
+				"total": map[string]any{"rx_bytes": float64(123), "tx_bytes": float64(456)},
+			},
+		},
+	}, "token-remote-traffic")
+	if err != nil {
+		t.Fatalf("Heartbeat() error = %v", err)
+	}
+
+	if got := len(trafficSvc.ingestCalls); got != 0 {
+		t.Fatalf("traffic ingest calls = %d, want 0", got)
+	}
+	if store.savedAgent.LastReportedStatsJSON != `{"traffic":{"total":{"rx_bytes":1,"tx_bytes":2}}}` {
+		t.Fatalf("LastReportedStatsJSON = %q, want unchanged", store.savedAgent.LastReportedStatsJSON)
+	}
+	if reply.TrafficStatsEnabled == nil || *reply.TrafficStatsEnabled {
+		t.Fatalf("TrafficStatsEnabled = %v, want false", reply.TrafficStatsEnabled)
+	}
+	if reply.TrafficBlocked {
+		t.Fatal("TrafficBlocked = true, want false when module disabled")
+	}
+}
+
+func TestHeartbeatReplyIncludesTrafficBlockedState(t *testing.T) {
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID:              "remote-traffic",
+			Name:            "remote-traffic",
+			AgentToken:      "token-remote-traffic",
+			DesiredRevision: 2,
+			CurrentRevision: 1,
+			LastApplyStatus: "success",
+		}},
+		snapshot: storage.Snapshot{DesiredVersion: "3.0.0", Revision: 2},
+	}
+	trafficSvc := &fakeHeartbeatTrafficService{
+		summary: TrafficSummary{
+			Blocked:     true,
+			BlockReason: "monthly quota exceeded",
+		},
+	}
+	svc := NewAgentService(config.Config{TrafficStatsEnabled: true}, store)
+	svc.SetTrafficService(trafficSvc)
+
+	reply, err := svc.Heartbeat(context.Background(), HeartbeatRequest{CurrentRevision: 1}, "token-remote-traffic")
+	if err != nil {
+		t.Fatalf("Heartbeat() error = %v", err)
+	}
+
+	if !reply.TrafficBlocked {
+		t.Fatal("TrafficBlocked = false, want true")
+	}
+	if reply.TrafficBlockReason != "monthly quota exceeded" {
+		t.Fatalf("TrafficBlockReason = %q", reply.TrafficBlockReason)
 	}
 }
 

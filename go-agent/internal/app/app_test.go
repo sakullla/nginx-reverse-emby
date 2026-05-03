@@ -2034,6 +2034,73 @@ func TestPerformSyncOmitsStatsWhenTrafficStatsDisabled(t *testing.T) {
 	}
 }
 
+func TestPerformSyncAppliesTrafficStatsDisabledFromAgentConfig(t *testing.T) {
+	traffic.Reset()
+	traffic.SetEnabled(true)
+	t.Cleanup(func() {
+		traffic.SetEnabled(true)
+		traffic.Reset()
+	})
+	traffic.AddHTTP(11, 22)
+
+	trafficStatsEnabled := false
+	mem := store.NewInMemory()
+	next := Snapshot{
+		DesiredVersion: "next",
+		Revision:       7,
+		AgentConfig: model.AgentConfig{
+			TrafficStatsEnabled: &trafficStatsEnabled,
+		},
+	}
+	client := newTestSyncClient([]syncResponse{{snapshot: next}}, syncResponse{snapshot: next})
+	app := newAppWithDeps(Config{}, mem, client, nil, nil, nil)
+
+	if err := app.performSync(context.Background()); err != nil {
+		t.Fatalf("performSync() error = %v", err)
+	}
+	if traffic.Enabled() {
+		t.Fatal("traffic.Enabled() = true, want false after agent config disables stats")
+	}
+
+	if err := app.performSync(context.Background()); err != nil {
+		t.Fatalf("second performSync() error = %v", err)
+	}
+	_ = waitForRequest(t, client, time.Second)
+	req := waitForRequest(t, client, time.Second)
+	if req.Stats == nil || len(req.Stats) != 0 || !req.StatsPresent {
+		t.Fatalf("Stats = %#v StatsPresent=%v, want explicit empty stats after traffic disabled", req.Stats, req.StatsPresent)
+	}
+}
+
+func TestPerformSyncStoresTrafficBlockedStateFromAgentConfig(t *testing.T) {
+	mem := store.NewInMemory()
+	next := Snapshot{
+		DesiredVersion: "next",
+		Revision:       7,
+		AgentConfig: model.AgentConfig{
+			TrafficBlocked:     true,
+			TrafficBlockReason: "monthly quota exceeded",
+		},
+	}
+	client := newTestSyncClient(nil, syncResponse{snapshot: next})
+	app := newAppWithDeps(Config{}, mem, client, nil, nil, nil)
+
+	if err := app.performSync(context.Background()); err != nil {
+		t.Fatalf("performSync() error = %v", err)
+	}
+
+	state, err := mem.LoadRuntimeState()
+	if err != nil {
+		t.Fatalf("failed to load runtime state: %v", err)
+	}
+	if state.Metadata[runtimeMetaTrafficBlocked] != "true" {
+		t.Fatalf("traffic_blocked = %q, want true", state.Metadata[runtimeMetaTrafficBlocked])
+	}
+	if state.Metadata[runtimeMetaTrafficBlockReason] != "monthly quota exceeded" {
+		t.Fatalf("traffic_block_reason = %q", state.Metadata[runtimeMetaTrafficBlockReason])
+	}
+}
+
 func TestSyncRequestSuppressesStatsBeforeTrafficStatsInterval(t *testing.T) {
 	traffic.Reset()
 	traffic.SetEnabled(true)

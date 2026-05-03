@@ -38,6 +38,8 @@ type SyncClient interface {
 const (
 	runtimeMetaTrafficStatsInterval       = "traffic_stats_interval"
 	runtimeMetaLastTrafficStatsReportUnix = "last_traffic_stats_report_unix"
+	runtimeMetaTrafficBlocked             = "traffic_blocked"
+	runtimeMetaTrafficBlockReason         = "traffic_block_reason"
 )
 
 type CertificateApplier interface {
@@ -560,9 +562,11 @@ func (a *App) persistRuntimeState(clearLastSyncError bool) error {
 	}
 	state.Metadata = ensureMetadata(state.Metadata)
 	setApplyMetadata(state.Metadata, a.runtime.ActiveSnapshot().Revision, "success", "")
-	if err := setTrafficStatsIntervalMetadata(state.Metadata, a.runtime.ActiveSnapshot().AgentConfig.TrafficStatsInterval); err != nil {
+	activeConfig := a.runtime.ActiveSnapshot().AgentConfig
+	if err := setTrafficStatsIntervalMetadata(state.Metadata, activeConfig.TrafficStatsInterval); err != nil {
 		return err
 	}
+	setTrafficBlockedMetadata(state.Metadata, activeConfig)
 	if clearLastSyncError {
 		delete(state.Metadata, "last_sync_error")
 	}
@@ -570,6 +574,19 @@ func (a *App) persistRuntimeState(clearLastSyncError bool) error {
 		return err
 	}
 	return nil
+}
+
+func setTrafficBlockedMetadata(meta map[string]string, cfg model.AgentConfig) {
+	if cfg.TrafficBlocked {
+		meta[runtimeMetaTrafficBlocked] = "true"
+	} else {
+		meta[runtimeMetaTrafficBlocked] = "false"
+	}
+	if strings.TrimSpace(cfg.TrafficBlockReason) == "" {
+		delete(meta, runtimeMetaTrafficBlockReason)
+		return
+	}
+	meta[runtimeMetaTrafficBlockReason] = cfg.TrafficBlockReason
 }
 
 func (a *App) recordPersistedRuntimeError(syncErr error) error {
@@ -745,6 +762,9 @@ func (a *App) snapshotActivationHandlers() agentruntime.SnapshotActivationHandle
 		ActivateAgentConfig: func(_ context.Context, cfg model.AgentConfig) error {
 			if _, err := parseTrafficStatsInterval(cfg.TrafficStatsInterval); err != nil {
 				return err
+			}
+			if cfg.TrafficStatsEnabled != nil {
+				traffic.SetEnabled(*cfg.TrafficStatsEnabled)
 			}
 			relay.SetOutboundProxyURL(cfg.OutboundProxyURL)
 			return nil
