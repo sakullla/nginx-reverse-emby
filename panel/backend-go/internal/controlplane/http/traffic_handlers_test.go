@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
@@ -230,6 +231,46 @@ func TestTrafficTrendDisabledTakesPrecedenceOverInvalidGranularity(t *testing.T)
 	}
 	if payload["code"] != service.ErrCodeTrafficStatsDisabled {
 		t.Fatalf("payload = %+v", payload)
+	}
+}
+
+func TestTrafficEndpointsDisabledByConfigEvenWithPrewiredService(t *testing.T) {
+	deps := trafficTestDependencies(fakeTrafficService{})
+	deps.Config.TrafficStatsEnabled = false
+	router, err := NewRouter(deps)
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	cases := []struct {
+		method string
+		path   string
+		body   string
+	}{
+		{method: http.MethodGet, path: "/panel-api/agents/edge-1/traffic-policy"},
+		{method: http.MethodPatch, path: "/panel-api/agents/edge-1/traffic-policy", body: `{}`},
+		{method: http.MethodGet, path: "/panel-api/agents/edge-1/traffic-summary"},
+		{method: http.MethodGet, path: "/panel-api/agents/edge-1/traffic-trend"},
+		{method: http.MethodPost, path: "/panel-api/agents/edge-1/traffic-calibration", body: `{}`},
+		{method: http.MethodPost, path: "/panel-api/agents/edge-1/traffic-cleanup"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.method+" "+tc.path, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body))
+			req.Header.Set("X-Panel-Token", "secret")
+			resp := httptest.NewRecorder()
+			router.ServeHTTP(resp, req)
+			if resp.Code != http.StatusNotFound {
+				t.Fatalf("%s %s = %d body=%s", tc.method, tc.path, resp.Code, resp.Body.String())
+			}
+			var payload map[string]any
+			if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+				t.Fatalf("json.Unmarshal() error = %v", err)
+			}
+			if payload["code"] != service.ErrCodeTrafficStatsDisabled {
+				t.Fatalf("payload = %+v", payload)
+			}
+		})
 	}
 }
 

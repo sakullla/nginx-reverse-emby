@@ -9,6 +9,9 @@ import (
 )
 
 func (d Dependencies) handleAgentTrafficPolicy(w http.ResponseWriter, r *http.Request) {
+	if d.writeTrafficDisabledIfNeeded(w) {
+		return
+	}
 	agentID := r.PathValue("agentID")
 	switch r.Method {
 	case http.MethodGet:
@@ -48,6 +51,9 @@ func (d Dependencies) handleAgentTrafficSummary(w http.ResponseWriter, r *http.R
 		http.NotFound(w, r)
 		return
 	}
+	if d.writeTrafficDisabledIfNeeded(w) {
+		return
+	}
 	summary, err := d.TrafficService.Summary(r.Context(), r.PathValue("agentID"))
 	if err != nil {
 		status, payload := mapServiceError(err)
@@ -65,8 +71,7 @@ func (d Dependencies) handleAgentTrafficTrend(w http.ResponseWriter, r *http.Req
 		http.NotFound(w, r)
 		return
 	}
-	if !d.Config.TrafficStatsEnabled {
-		writeJSON(w, http.StatusNotFound, trafficStatsDisabledPayload())
+	if d.writeTrafficDisabledIfNeeded(w) {
 		return
 	}
 	query := r.URL.Query()
@@ -102,6 +107,9 @@ func (d Dependencies) handleAgentTrafficCalibration(w http.ResponseWriter, r *ht
 		http.NotFound(w, r)
 		return
 	}
+	if d.writeTrafficDisabledIfNeeded(w) {
+		return
+	}
 	var payload service.TrafficCalibrationRequest
 	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 		writeJSON(w, http.StatusBadRequest, errorPayload("invalid JSON body"))
@@ -124,6 +132,9 @@ func (d Dependencies) handleAgentTrafficCleanup(w http.ResponseWriter, r *http.R
 		http.NotFound(w, r)
 		return
 	}
+	if d.writeTrafficDisabledIfNeeded(w) {
+		return
+	}
 	result, err := d.TrafficService.Cleanup(r.Context(), r.PathValue("agentID"))
 	if err != nil {
 		status, payload := mapServiceError(err)
@@ -134,4 +145,12 @@ func (d Dependencies) handleAgentTrafficCleanup(w http.ResponseWriter, r *http.R
 		"ok":     true,
 		"result": result,
 	})
+}
+
+func (d Dependencies) writeTrafficDisabledIfNeeded(w http.ResponseWriter) bool {
+	if d.Config.TrafficStatsEnabled {
+		return false
+	}
+	writeJSON(w, http.StatusNotFound, trafficStatsDisabledPayload())
+	return true
 }
