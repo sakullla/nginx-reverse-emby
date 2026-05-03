@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -13,6 +14,29 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
 )
+
+func TestHTTPReturns429WhenTrafficBlocked(t *testing.T) {
+	server := NewServer(model.HTTPListener{Rules: []model.HTTPRule{{
+		ID:          77,
+		FrontendURL: "http://frontend.example",
+		BackendURL:  "http://backend.example",
+		Enabled:     true,
+	}}})
+	server.SetTrafficBlockState(TrafficBlockState{Blocked: true, Reason: "monthly quota exceeded"})
+
+	req := httptest.NewRequest(http.MethodPost, "http://frontend.example/upload", strings.NewReader("request-body"))
+	req.Host = "frontend.example"
+	rec := httptest.NewRecorder()
+
+	server.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d body=%q, want 429", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "monthly quota exceeded") {
+		t.Fatalf("body = %q, want block reason", rec.Body.String())
+	}
+}
 
 func TestCopyResponseRecordsHTTPTraffic(t *testing.T) {
 	traffic.Reset()
@@ -31,6 +55,9 @@ func TestCopyResponseRecordsHTTPTraffic(t *testing.T) {
 
 	stats := traffic.Snapshot()["traffic"].(map[string]any)
 	httpStats := stats["http"].(map[string]uint64)
+	if httpStats["rx_bytes"] != uint64(len("response-body")) {
+		t.Fatalf("http rx_bytes = %d, want %d", httpStats["rx_bytes"], len("response-body"))
+	}
 	if httpStats["tx_bytes"] != uint64(len("response-body")) {
 		t.Fatalf("http tx_bytes = %d, want %d", httpStats["tx_bytes"], len("response-body"))
 	}
@@ -40,7 +67,7 @@ func TestCopyResponseRecordsHTTPTrafficWhileStreaming(t *testing.T) {
 	traffic.Reset()
 	defer traffic.Reset()
 
-	body := newBlockingReadCloser([]byte("streamed-response"))
+	body := newBlockingReadCloser(bytes.Repeat([]byte("x"), int(httpResponseTrafficFlushThreshold)))
 	resp := &http.Response{
 		StatusCode: http.StatusOK,
 		Header:     make(http.Header),
@@ -55,12 +82,46 @@ func TestCopyResponseRecordsHTTPTrafficWhileStreaming(t *testing.T) {
 	}()
 
 	recorder.waitForWrite(t)
-	assertHTTPAggregateTraffic(t, 0, uint64(len("streamed-response")))
+	assertHTTPAggregateTraffic(t, httpResponseTrafficFlushThreshold, httpResponseTrafficFlushThreshold)
 
 	body.Close()
 	if err := <-done; err != nil {
 		t.Fatalf("copyResponse() error = %v", err)
 	}
+}
+
+func TestHTTPResponseTrafficWriterBuffersSmallWritesUntilFlush(t *testing.T) {
+	traffic.Reset()
+	defer traffic.Reset()
+
+	recorder := newObservedResponseWriter()
+	trafficWriter := newHTTPResponseTrafficResponseWriter(recorder, nil)
+
+	if _, err := trafficWriter.Write([]byte("small")); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	assertHTTPAggregateTrafficNow(t, 0, 0)
+
+	trafficWriter.Flush()
+	assertHTTPAggregateTraffic(t, uint64(len("small")), uint64(len("small")))
+}
+
+func TestHTTPResponseTrafficWriterFlushesAtThreshold(t *testing.T) {
+	traffic.Reset()
+	defer traffic.Reset()
+
+	recorder := newObservedResponseWriter()
+	trafficWriter := newHTTPResponseTrafficWriter(recorder, nil)
+
+	if _, err := trafficWriter.Write(bytes.Repeat([]byte("x"), int(httpResponseTrafficFlushThreshold-1))); err != nil {
+		t.Fatalf("Write(first) error = %v", err)
+	}
+	assertHTTPAggregateTrafficNow(t, 0, 0)
+
+	if _, err := trafficWriter.Write([]byte("x")); err != nil {
+		t.Fatalf("Write(second) error = %v", err)
+	}
+	assertHTTPAggregateTraffic(t, httpResponseTrafficFlushThreshold, httpResponseTrafficFlushThreshold)
 }
 
 func TestRouteEntryRecordsHTTPRuleTraffic(t *testing.T) {
@@ -99,10 +160,11 @@ func TestRouteEntryRecordsHTTPRuleTraffic(t *testing.T) {
 	stats := traffic.Snapshot()["traffic"].(map[string]any)
 	httpRules := stats["http_rules"].(map[string]map[string]uint64)
 	got := httpRules["77"]
-	if got["rx_bytes"] != uint64(len("request-body")) {
+	wantTotal := uint64(len("request-body") + len("response-body"))
+	if got["rx_bytes"] != wantTotal {
 		t.Fatalf("http_rules[77].rx_bytes = %d", got["rx_bytes"])
 	}
-	if got["tx_bytes"] != uint64(len("response-body")) {
+	if got["tx_bytes"] != wantTotal {
 		t.Fatalf("http_rules[77].tx_bytes = %d", got["tx_bytes"])
 	}
 }
@@ -140,19 +202,32 @@ func assertHTTPAggregateTraffic(t *testing.T, wantRX, wantTX uint64) {
 	t.Fatalf("http traffic = %+v, want rx >= %d tx >= %d", got, wantRX, wantTX)
 }
 
-func TestPrepareReusableBodyDoesNotRecordBufferedRequestBodyTrafficBeforeRead(t *testing.T) {
+func assertHTTPAggregateTrafficNow(t *testing.T, wantRX, wantTX uint64) {
+	t.Helper()
+
+	stats := traffic.Snapshot()["traffic"].(map[string]any)
+	got := stats["http"].(map[string]uint64)
+	if got["rx_bytes"] != wantRX || got["tx_bytes"] != wantTX {
+		t.Fatalf("http traffic = %+v, want rx %d tx %d", got, wantRX, wantTX)
+	}
+}
+
+func TestPrepareReusableBodyRecordsBufferedRequestBodyInboundTrafficBeforeUpstreamRead(t *testing.T) {
 	traffic.Reset()
 	defer traffic.Reset()
 
 	req := httptest.NewRequest(http.MethodPost, "https://frontend.example.com/upload", ioNopCloser{Reader: bytes.NewReader([]byte("request-body"))})
-	if _, err := prepareReusableBody(req, 2); err != nil {
+	if _, err := prepareReusableBody(req, 2, nil); err != nil {
 		t.Fatalf("prepareReusableBody() error = %v", err)
 	}
 
 	stats := traffic.Snapshot()["traffic"].(map[string]any)
 	httpStats := stats["http"].(map[string]uint64)
-	if httpStats["rx_bytes"] != 0 {
-		t.Fatalf("http rx_bytes = %d, want 0 before upstream reads", httpStats["rx_bytes"])
+	if httpStats["rx_bytes"] != uint64(len("request-body")) {
+		t.Fatalf("http rx_bytes = %d, want %d after client body buffered", httpStats["rx_bytes"], len("request-body"))
+	}
+	if httpStats["tx_bytes"] != 0 {
+		t.Fatalf("http tx_bytes = %d, want 0 before upstream reads", httpStats["tx_bytes"])
 	}
 }
 
@@ -162,7 +237,7 @@ func TestCloneProxyRequestRecordsBufferedRequestBodyTrafficPerAttemptOnRead(t *t
 
 	const payload = "request-body"
 	req := httptest.NewRequest(http.MethodGet, "https://frontend.example.com/upload", ioNopCloser{Reader: bytes.NewReader([]byte(payload))})
-	body, err := prepareReusableBody(req, 2)
+	body, err := prepareReusableBody(req, 2, nil)
 	if err != nil {
 		t.Fatalf("prepareReusableBody() error = %v", err)
 	}
@@ -179,8 +254,11 @@ func TestCloneProxyRequestRecordsBufferedRequestBodyTrafficPerAttemptOnRead(t *t
 
 	stats := traffic.Snapshot()["traffic"].(map[string]any)
 	httpStats := stats["http"].(map[string]uint64)
-	if httpStats["rx_bytes"] != uint64(len(payload)*2) {
-		t.Fatalf("http rx_bytes = %d, want %d", httpStats["rx_bytes"], len(payload)*2)
+	if httpStats["rx_bytes"] != uint64(len(payload)) {
+		t.Fatalf("http rx_bytes = %d, want %d", httpStats["rx_bytes"], len(payload))
+	}
+	if httpStats["tx_bytes"] != uint64(len(payload)*2) {
+		t.Fatalf("http tx_bytes = %d, want %d", httpStats["tx_bytes"], len(payload)*2)
 	}
 }
 
@@ -189,7 +267,7 @@ func TestCloneProxyRequestRecordsStreamingRequestBodyTrafficOnRead(t *testing.T)
 	defer traffic.Reset()
 
 	req := httptest.NewRequest(http.MethodPost, "https://frontend.example.com/upload", ioNopCloser{Reader: bytes.NewReader([]byte("stream-body"))})
-	body, err := prepareReusableBody(req, 1)
+	body, err := prepareReusableBody(req, 1, nil)
 	if err != nil {
 		t.Fatalf("prepareReusableBody() error = %v", err)
 	}
@@ -207,6 +285,9 @@ func TestCloneProxyRequestRecordsStreamingRequestBodyTrafficOnRead(t *testing.T)
 	if httpStats["rx_bytes"] != uint64(len("stream-body")) {
 		t.Fatalf("http rx_bytes = %d, want %d", httpStats["rx_bytes"], len("stream-body"))
 	}
+	if httpStats["tx_bytes"] != uint64(len("stream-body")) {
+		t.Fatalf("http tx_bytes = %d, want %d", httpStats["tx_bytes"], len("stream-body"))
+	}
 }
 
 type ioNopCloser struct {
@@ -217,7 +298,7 @@ func (c ioNopCloser) Close() error { return nil }
 
 type blockingReadCloser struct {
 	payload []byte
-	once    sync.Once
+	offset  int
 	closed  chan struct{}
 }
 
@@ -229,11 +310,9 @@ func newBlockingReadCloser(payload []byte) *blockingReadCloser {
 }
 
 func (r *blockingReadCloser) Read(p []byte) (int, error) {
-	var n int
-	r.once.Do(func() {
-		n = copy(p, r.payload)
-	})
-	if n > 0 {
+	if r.offset < len(r.payload) {
+		n := copy(p, r.payload[r.offset:])
+		r.offset += n
 		return n, nil
 	}
 	<-r.closed

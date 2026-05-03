@@ -132,7 +132,7 @@ import { useAgent } from '../context/AgentContext'
 import { useL4Rules, useCreateL4Rule, useUpdateL4Rule, useDeleteL4Rule } from '../hooks/useL4Rules'
 import { useDiagnoseL4Rule, useDiagnosticTask } from '../hooks/useDiagnostics'
 import { useAgents } from '../hooks/useAgents'
-import { fetchAgentStats } from '../api'
+import { fetchTrafficSummary } from '../api'
 import L4RuleForm from '../components/L4RuleForm.vue'
 import L4RuleItem from '../components/l4/L4RuleItem.vue'
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
@@ -140,11 +140,13 @@ import BaseModal from '../components/base/BaseModal.vue'
 import RuleDiagnosticModal from '../components/RuleDiagnosticModal.vue'
 import AgentPicker from '../components/AgentPicker.vue'
 import { messageStore } from '../stores/messages'
-import { bucketForObject } from '../utils/trafficStats.js'
+import { summaryBucketForObject } from '../utils/trafficStats.js'
 
 const route = useRoute()
 const router = useRouter()
-const { selectedAgentId } = useAgent()
+const agentContext = useAgent()
+const { selectedAgentId } = agentContext
+const systemInfo = agentContext.systemInfo || ref(null)
 const selectedOrRouteAgentId = computed(() => route.query.agentId || selectedAgentId.value)
 
 // Agents list for sync status derivation
@@ -160,15 +162,18 @@ const selectedAgent = computed(() => agentsData.value?.find(a => a.id === agentI
 
 const { data: _rulesData, isLoading } = useL4Rules(agentId)
 
-const { data: agentStatsData } = useQuery({
-  queryKey: ['agent-stats', agentId],
-  queryFn: () => fetchAgentStats(agentId.value),
-  enabled: () => !!agentId.value,
+const trafficStatsEnabled = computed(() => !!systemInfo.value && systemInfo.value.traffic_stats_enabled !== false)
+const { data: trafficSummaryData } = useQuery({
+  queryKey: ['traffic-summary', agentId],
+  queryFn: () => fetchTrafficSummary(agentId.value),
+  enabled: () => !!agentId.value && trafficStatsEnabled.value,
   refetchInterval: 10_000
 })
 
 function trafficForRule(rule) {
-  return bucketForObject(agentStatsData.value, 'l4_rules', rule?.id)
+  return trafficStatsEnabled.value
+    ? summaryBucketForObject(trafficSummaryData.value, 'l4_rules', rule?.id)
+    : null
 }
 
 function handleAgentSelect(agent) {

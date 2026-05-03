@@ -16,8 +16,10 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/certs"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/diagnostics"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/l4"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	platformlinux "github.com/sakullla/nginx-reverse-emby/go-agent/internal/platform/linux"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxy"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	agentruntime "github.com/sakullla/nginx-reverse-emby/go-agent/internal/runtime"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
@@ -38,6 +40,8 @@ type SyncClient interface {
 const (
 	runtimeMetaTrafficStatsInterval       = "traffic_stats_interval"
 	runtimeMetaLastTrafficStatsReportUnix = "last_traffic_stats_report_unix"
+	runtimeMetaTrafficBlocked             = "traffic_blocked"
+	runtimeMetaTrafficBlockReason         = "traffic_block_reason"
 )
 
 type CertificateApplier interface {
@@ -560,9 +564,11 @@ func (a *App) persistRuntimeState(clearLastSyncError bool) error {
 	}
 	state.Metadata = ensureMetadata(state.Metadata)
 	setApplyMetadata(state.Metadata, a.runtime.ActiveSnapshot().Revision, "success", "")
-	if err := setTrafficStatsIntervalMetadata(state.Metadata, a.runtime.ActiveSnapshot().AgentConfig.TrafficStatsInterval); err != nil {
+	activeConfig := a.runtime.ActiveSnapshot().AgentConfig
+	if err := setTrafficStatsIntervalMetadata(state.Metadata, activeConfig.TrafficStatsInterval); err != nil {
 		return err
 	}
+	setTrafficBlockedMetadata(state.Metadata, activeConfig)
 	if clearLastSyncError {
 		delete(state.Metadata, "last_sync_error")
 	}
@@ -570,6 +576,19 @@ func (a *App) persistRuntimeState(clearLastSyncError bool) error {
 		return err
 	}
 	return nil
+}
+
+func setTrafficBlockedMetadata(meta map[string]string, cfg model.AgentConfig) {
+	if cfg.TrafficBlocked {
+		meta[runtimeMetaTrafficBlocked] = "true"
+	} else {
+		meta[runtimeMetaTrafficBlocked] = "false"
+	}
+	if strings.TrimSpace(cfg.TrafficBlockReason) == "" {
+		delete(meta, runtimeMetaTrafficBlockReason)
+		return
+	}
+	meta[runtimeMetaTrafficBlockReason] = cfg.TrafficBlockReason
 }
 
 func (a *App) recordPersistedRuntimeError(syncErr error) error {
@@ -746,7 +765,11 @@ func (a *App) snapshotActivationHandlers() agentruntime.SnapshotActivationHandle
 			if _, err := parseTrafficStatsInterval(cfg.TrafficStatsInterval); err != nil {
 				return err
 			}
+			if cfg.TrafficStatsEnabled != nil {
+				traffic.SetEnabled(*cfg.TrafficStatsEnabled)
+			}
 			relay.SetOutboundProxyURL(cfg.OutboundProxyURL)
+			a.updateTrafficBlockState(cfg)
 			return nil
 		},
 		ActivateManagedCertificates: func(ctx context.Context, bundles []model.ManagedCertificateBundle, policies []model.ManagedCertificatePolicy) error {
@@ -772,6 +795,29 @@ func (a *App) snapshotActivationHandlers() agentruntime.SnapshotActivationHandle
 				RelayListeners: relayListeners,
 			})
 		},
+	}
+}
+
+func (a *App) updateTrafficBlockState(cfg model.AgentConfig) {
+	if a == nil {
+		return
+	}
+	blocked := cfg.TrafficBlocked
+	reason := cfg.TrafficBlockReason
+	if manager, ok := a.httpApplier.(interface {
+		UpdateTrafficBlockState(proxy.TrafficBlockState)
+	}); ok {
+		manager.UpdateTrafficBlockState(proxy.TrafficBlockState{Blocked: blocked, Reason: reason})
+	}
+	if manager, ok := a.l4Applier.(interface {
+		UpdateTrafficBlockState(l4.TrafficBlockState)
+	}); ok {
+		manager.UpdateTrafficBlockState(l4.TrafficBlockState{Blocked: blocked, Reason: reason})
+	}
+	if manager, ok := a.relayApplier.(interface {
+		UpdateTrafficBlockState(relay.TrafficBlockState)
+	}); ok {
+		manager.UpdateTrafficBlockState(relay.TrafficBlockState{Blocked: blocked, Reason: reason})
 	}
 }
 

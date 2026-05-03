@@ -73,5 +73,9 @@ func (c *BackupCounts) increment(kind string) {
 		c.Certificates++
 	case "version_policy":
 		c.VersionPolicies++
+	case "traffic_policy":
+		c.TrafficPolicies++
+	case "traffic_baseline":
+		c.TrafficBaselines++
 	}
 }

@@ -1203,6 +1203,10 @@ func (s *serverTLSTCPSession) run(listener Listener) {
 				_ = s.writeOpenResult(frame.StreamID, muxOpenResult{OK: false, Error: fmt.Sprintf("unsupported network %q", request.Kind)})
 				continue
 			}
+			if state := s.server.currentTrafficBlockState(); state.Blocked && (strings.EqualFold(request.Kind, "tcp") || strings.EqualFold(request.Kind, "udp")) {
+				_ = s.writeOpenResult(frame.StreamID, muxOpenResult{OK: false, Error: state.errorMessage()})
+				continue
+			}
 
 			stream := &tlsTCPLogicalStream{
 				tunnel:       s.tunnel,

@@ -565,7 +565,7 @@ func TestCloneProxyRequestRewritesFrontendPrefixToBackendPath(t *testing.T) {
 func TestCloneProxyRequestPreservesStreamingBodyContentLength(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "https://frontend.example/emby/Items/1941490/PlaybackInfo", strings.NewReader("request-body"))
 	req.Host = "frontend.example"
-	body, err := prepareReusableBody(req, 1)
+	body, err := prepareReusableBody(req, 1, nil)
 	if err != nil {
 		t.Fatalf("prepareReusableBody failed: %v", err)
 	}
@@ -588,7 +588,7 @@ func TestCloneProxyRequestPreservesUnknownStreamingBodyContentLength(t *testing.
 	req.Host = "frontend.example"
 	req.Body = io.NopCloser(strings.NewReader("request-body"))
 	req.ContentLength = -1
-	body, err := prepareReusableBody(req, 1)
+	body, err := prepareReusableBody(req, 1, nil)
 	if err != nil {
 		t.Fatalf("prepareReusableBody failed: %v", err)
 	}
@@ -609,7 +609,7 @@ func TestCloneProxyRequestPreservesUnknownStreamingBodyContentLength(t *testing.
 func TestPrepareReusableBodyBuffersRetryableBodyWithContentLengthAndGetBody(t *testing.T) {
 	const payload = "retry-body"
 	req := httptest.NewRequest(http.MethodPost, "https://frontend.example/emby/Items/1941490/PlaybackInfo", strings.NewReader(payload))
-	body, err := prepareReusableBody(req, 2)
+	body, err := prepareReusableBody(req, 2, nil)
 	if err != nil {
 		t.Fatalf("prepareReusableBody failed: %v", err)
 	}
@@ -1482,7 +1482,7 @@ func TestPrepareReusableBodyLeavesSingleAttemptRequestsStreaming(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPost, "http://edge.example.test/stream", nil)
 	req.Body = body
 
-	prepared, err := prepareReusableBody(req, 1)
+	prepared, err := prepareReusableBody(req, 1, nil)
 	if err != nil {
 		t.Fatalf("prepareReusableBody() error = %v", err)
 	}

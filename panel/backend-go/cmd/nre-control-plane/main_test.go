@@ -3,8 +3,11 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -37,6 +40,358 @@ func (s localAgentRuntimeStub) SyncNow(ctx context.Context) error {
 
 func (s localAgentRuntimeStub) DiagnoseSnapshot(context.Context, storage.Snapshot, service.TaskEnvelope) (map[string]any, error) {
 	return map[string]any{}, nil
+}
+
+type closeTrackingHandler struct {
+	http.Handler
+	closed bool
+}
+
+func (h *closeTrackingHandler) Close() error {
+	h.closed = true
+	return nil
+}
+
+func TestNewLocalAgentStarterUsesConfiguredStore(t *testing.T) {
+	cfg := config.Default()
+	cfg.EnableLocalAgent = true
+	cfg.DatabaseDriver = "mysql"
+	cfg.DatabaseDSN = "nre:nre@tcp(mysql:3306)/nre?parseTime=true"
+	cfg.DataDir = "/tmp/nre-data"
+	cfg.LocalAgentID = "edge-1"
+	cfg.TrafficStatsEnabled = false
+
+	previousOpenConfiguredStore := openConfiguredStore
+	previousNewLocalAgentRuntime := newLocalAgentRuntime
+	t.Cleanup(func() {
+		openConfiguredStore = previousOpenConfiguredStore
+		newLocalAgentRuntime = previousNewLocalAgentRuntime
+	})
+
+	var gotStoreCfg storage.StoreConfig
+	store := &storage.GormStore{}
+	openConfiguredStore = func(gotCfg config.Config) (*storage.GormStore, error) {
+		gotStoreCfg = storage.StoreConfigFromConfig(gotCfg)
+		return store, nil
+	}
+	newLocalAgentRuntime = func(_ config.Config, gotStore localagent.Store) (localAgentRuntime, error) {
+		if gotStore != store {
+			t.Fatalf("store = %p, want %p", gotStore, store)
+		}
+		return localAgentRuntimeStub{}, nil
+	}
+
+	if _, err := newLocalAgentStarter(cfg); err != nil {
+		t.Fatalf("newLocalAgentStarter() error = %v", err)
+	}
+	if gotStoreCfg.Driver != "mysql" {
+		t.Fatalf("Driver = %q", gotStoreCfg.Driver)
+	}
+	if gotStoreCfg.DSN != "nre:nre@tcp(mysql:3306)/nre?parseTime=true" {
+		t.Fatalf("DSN = %q", gotStoreCfg.DSN)
+	}
+	if gotStoreCfg.DataRoot != "/tmp/nre-data" {
+		t.Fatalf("DataRoot = %q", gotStoreCfg.DataRoot)
+	}
+	if gotStoreCfg.LocalAgentID != "edge-1" {
+		t.Fatalf("LocalAgentID = %q", gotStoreCfg.LocalAgentID)
+	}
+	if gotStoreCfg.TrafficStatsEnabled {
+		t.Fatal("TrafficStatsEnabled = true, want false")
+	}
+}
+
+func TestMigrateStorageCommandRequiresSourceAndTarget(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "missing source driver",
+			args: []string{"migrate-storage", "--from-dsn", "./data/panel.db", "--to-driver", "postgres", "--to-dsn", "postgres://nre:nre@postgres:5432/nre?sslmode=disable"},
+			want: "--from-driver",
+		},
+		{
+			name: "missing source dsn",
+			args: []string{"migrate-storage", "--from-driver", "sqlite", "--to-driver", "postgres", "--to-dsn", "postgres://nre:nre@postgres:5432/nre?sslmode=disable"},
+			want: "--from-dsn",
+		},
+		{
+			name: "missing target driver",
+			args: []string{"migrate-storage", "--from-driver", "sqlite", "--from-dsn", "./data/panel.db", "--to-dsn", "postgres://nre:nre@postgres:5432/nre?sslmode=disable"},
+			want: "--to-driver",
+		},
+		{
+			name: "missing target dsn",
+			args: []string{"migrate-storage", "--from-driver", "sqlite", "--from-dsn", "./data/panel.db", "--to-driver", "postgres"},
+			want: "--to-dsn",
+		},
+		{
+			name: "same source and target",
+			args: []string{"migrate-storage", "--from-driver", "sqlite", "--from-dsn", "./data/panel.db", "--to-driver", "sqlite", "--to-dsn", "./data/panel.db"},
+			want: "source and target storage must be different",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := parseMigrateStorageCommand(tt.args)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("parseMigrateStorageCommand() error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestMigrateStorageCommandDoesNotRunOnNormalStartup(t *testing.T) {
+	previousRunMigrateStorageCommand := runMigrateStorageCommand
+	previousRunControlPlaneFromEnv := runControlPlaneFromEnv
+	t.Cleanup(func() {
+		runMigrateStorageCommand = previousRunMigrateStorageCommand
+		runControlPlaneFromEnv = previousRunControlPlaneFromEnv
+	})
+
+	runMigrateStorageCommand = func(context.Context, migrateStorageCommand) error {
+		t.Fatal("migrate-storage command ran during normal startup")
+		return nil
+	}
+	started := false
+	runControlPlaneFromEnv = func() error {
+		started = true
+		return nil
+	}
+
+	if err := runMain(nil); err != nil {
+		t.Fatalf("runMain(nil) error = %v", err)
+	}
+	if !started {
+		t.Fatal("normal startup path was not run")
+	}
+}
+
+func TestMigrateStorageCommandDoesNotRunControlPlaneFromEnv(t *testing.T) {
+	previousRunMigrateStorageCommand := runMigrateStorageCommand
+	previousRunControlPlaneFromEnv := runControlPlaneFromEnv
+	t.Cleanup(func() {
+		runMigrateStorageCommand = previousRunMigrateStorageCommand
+		runControlPlaneFromEnv = previousRunControlPlaneFromEnv
+	})
+
+	var gotCmd migrateStorageCommand
+	runMigrateStorageCommand = func(_ context.Context, cmd migrateStorageCommand) error {
+		gotCmd = cmd
+		return nil
+	}
+	runControlPlaneFromEnv = func() error {
+		t.Fatal("runControlPlaneFromEnv called for migrate-storage command")
+		return nil
+	}
+
+	err := runMain([]string{
+		"migrate-storage",
+		"--from-driver", "sqlite",
+		"--from-dsn", "./data/panel.db",
+		"--to-driver", "postgres",
+		"--to-dsn", "postgres://nre:nre@postgres:5432/nre?sslmode=disable",
+	})
+	if err != nil {
+		t.Fatalf("runMain(migrate-storage) error = %v", err)
+	}
+	if gotCmd.FromDriver != "sqlite" || gotCmd.ToDriver != "postgres" {
+		t.Fatalf("migrate command = %+v", gotCmd)
+	}
+}
+
+func TestMigrateStorageOpensSourceWithoutBootstrapAndTargetWithMigrations(t *testing.T) {
+	previousOpenStore := openStore
+	t.Cleanup(func() {
+		openStore = previousOpenStore
+	})
+
+	var gotConfigs []storage.StoreConfig
+	openStore = func(cfg storage.StoreConfig) (*storage.GormStore, error) {
+		gotConfigs = append(gotConfigs, cfg)
+		store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+		if err != nil {
+			t.Fatalf("NewSQLiteStore() error = %v", err)
+		}
+		return store, nil
+	}
+
+	err := runMigrateStorageCommand(context.Background(), migrateStorageCommand{
+		FromDriver: "sqlite",
+		FromDSN:    "./data/panel.db",
+		ToDriver:   "postgres",
+		ToDSN:      "postgres://nre:nre@postgres:5432/nre?sslmode=disable",
+	})
+	if err != nil {
+		t.Fatalf("runMigrateStorageCommand() error = %v", err)
+	}
+	if len(gotConfigs) != 2 {
+		t.Fatalf("openStore calls = %d, want 2", len(gotConfigs))
+	}
+	if !gotConfigs[0].SkipBootstrapSchema {
+		t.Fatal("source SkipBootstrapSchema = false, want true")
+	}
+	if gotConfigs[0].TrafficStatsEnabled {
+		t.Fatal("source TrafficStatsEnabled = true, want false")
+	}
+	if gotConfigs[1].SkipBootstrapSchema {
+		t.Fatal("target SkipBootstrapSchema = true, want false")
+	}
+	if !gotConfigs[1].TrafficStatsEnabled {
+		t.Fatal("target TrafficStatsEnabled = false, want true")
+	}
+}
+
+func TestInitializeControlPlaneSkipsLegacySQLiteGuardForPostgres(t *testing.T) {
+	cfg := config.Default()
+	cfg.DatabaseDriver = "postgres"
+	cfg.DatabaseDSN = "postgres://nre:nre@postgres:5432/nre?sslmode=disable"
+	cfg.DataDir = t.TempDir()
+	cfg.LocalAgentID = "edge-1"
+
+	if err := os.WriteFile(filepath.Join(cfg.DataDir, "state.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatalf("seed legacy marker: %v", err)
+	}
+
+	previousOpenConfiguredStore := openConfiguredStore
+	t.Cleanup(func() {
+		openConfiguredStore = previousOpenConfiguredStore
+	})
+
+	called := false
+	openConfiguredStore = func(gotCfg config.Config) (*storage.GormStore, error) {
+		called = true
+		if gotCfg.DatabaseDriver != "postgres" {
+			t.Fatalf("DatabaseDriver = %q", gotCfg.DatabaseDriver)
+		}
+		store, err := storage.NewSQLiteStore(t.TempDir(), gotCfg.LocalAgentID)
+		if err != nil {
+			t.Fatalf("NewSQLiteStore() error = %v", err)
+		}
+		return store, nil
+	}
+
+	if err := initializeControlPlane(context.Background(), cfg); err != nil {
+		t.Fatalf("initializeControlPlane() error = %v", err)
+	}
+	if !called {
+		t.Fatal("openConfiguredStore was not called")
+	}
+}
+
+func TestNewControlPlaneAppInstallsNoLocalAgentHandlerCleanup(t *testing.T) {
+	cfg := config.Default()
+	cfg.EnableLocalAgent = false
+
+	previousNewHandler := newHandler
+	t.Cleanup(func() {
+		newHandler = previousNewHandler
+	})
+
+	handler := &closeTrackingHandler{Handler: http.NewServeMux()}
+	newHandler = func(config.Config) (http.Handler, error) {
+		return handler, nil
+	}
+
+	application, err := newControlPlaneApp(cfg, nil)
+	if err != nil {
+		t.Fatalf("newControlPlaneApp() error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := application.Run(ctx); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !handler.closed {
+		t.Fatal("handler cleanup was not called")
+	}
+}
+
+func TestNewControlPlaneAppClosesStoresWhenLocalRuntimeFails(t *testing.T) {
+	cfg := config.Default()
+	cfg.EnableLocalAgent = true
+	cfg.DataDir = t.TempDir()
+
+	previousOpenConfiguredStore := openConfiguredStore
+	previousNewLocalAgentRuntime := newLocalAgentRuntime
+	t.Cleanup(func() {
+		openConfiguredStore = previousOpenConfiguredStore
+		newLocalAgentRuntime = previousNewLocalAgentRuntime
+	})
+
+	var openedStores []*storage.GormStore
+	openConfiguredStore = func(gotCfg config.Config) (*storage.GormStore, error) {
+		store, err := storage.NewSQLiteStore(t.TempDir(), gotCfg.LocalAgentID)
+		if err != nil {
+			t.Fatalf("NewSQLiteStore() error = %v", err)
+		}
+		openedStores = append(openedStores, store)
+		return store, nil
+	}
+	newLocalAgentRuntime = func(config.Config, localagent.Store) (localAgentRuntime, error) {
+		return nil, errors.New("runtime failed")
+	}
+
+	if _, err := newControlPlaneApp(cfg, nil); err == nil {
+		t.Fatal("newControlPlaneApp() error = nil, want runtime failure")
+	}
+	if len(openedStores) != 2 {
+		t.Fatalf("opened stores = %d, want 2", len(openedStores))
+	}
+	for i, store := range openedStores {
+		_, err := store.ListAgents(t.Context())
+		if err == nil || !strings.Contains(err.Error(), "closed") {
+			t.Fatalf("store %d ListAgents() error = %v, want closed database error", i, err)
+		}
+	}
+}
+
+func TestNewControlPlaneAppClosesStoresWhenHandlerBuildFails(t *testing.T) {
+	cfg := config.Default()
+	cfg.EnableLocalAgent = true
+	cfg.DataDir = t.TempDir()
+
+	previousOpenConfiguredStore := openConfiguredStore
+	previousNewHandlerWithDependencies := newHandlerWithDependencies
+	previousNewLocalAgentRuntime := newLocalAgentRuntime
+	t.Cleanup(func() {
+		openConfiguredStore = previousOpenConfiguredStore
+		newHandlerWithDependencies = previousNewHandlerWithDependencies
+		newLocalAgentRuntime = previousNewLocalAgentRuntime
+	})
+
+	var openedStores []*storage.GormStore
+	openConfiguredStore = func(gotCfg config.Config) (*storage.GormStore, error) {
+		store, err := storage.NewSQLiteStore(t.TempDir(), gotCfg.LocalAgentID)
+		if err != nil {
+			t.Fatalf("NewSQLiteStore() error = %v", err)
+		}
+		openedStores = append(openedStores, store)
+		return store, nil
+	}
+	newLocalAgentRuntime = func(config.Config, localagent.Store) (localAgentRuntime, error) {
+		return localAgentRuntimeStub{}, nil
+	}
+	newHandlerWithDependencies = func(config.Config, httpapi.Dependencies) (http.Handler, error) {
+		return nil, errors.New("handler failed")
+	}
+
+	if _, err := newControlPlaneApp(cfg, nil); err == nil {
+		t.Fatal("newControlPlaneApp() error = nil, want handler failure")
+	}
+	if len(openedStores) != 2 {
+		t.Fatalf("opened stores = %d, want 2", len(openedStores))
+	}
+	for i, store := range openedStores {
+		_, err := store.ListAgents(t.Context())
+		if err == nil || !strings.Contains(err.Error(), "closed") {
+			t.Fatalf("store %d ListAgents() error = %v, want closed database error", i, err)
+		}
+	}
 }
 
 func TestNewLocalAgentStarterBuildsSQLiteStoreAndInvokesRuntime(t *testing.T) {

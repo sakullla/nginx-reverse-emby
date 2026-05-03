@@ -136,6 +136,81 @@ type MetaRow struct {
 	Value string `gorm:"column:value"`
 }
 
+type AgentTrafficPolicyRow struct {
+	AgentID                string `gorm:"column:agent_id;primaryKey"`
+	Direction              string `gorm:"column:direction;not null;default:'both'"`
+	CycleStartDay          int    `gorm:"column:cycle_start_day;not null;default:1"`
+	MonthlyQuotaBytes      *int64 `gorm:"column:monthly_quota_bytes"`
+	BlockWhenExceeded      bool   `gorm:"column:block_when_exceeded;not null;default:false"`
+	HourlyRetentionDays    int    `gorm:"column:hourly_retention_days;not null;default:180"`
+	DailyRetentionMonths   int    `gorm:"column:daily_retention_months;not null;default:24"`
+	MonthlyRetentionMonths *int   `gorm:"column:monthly_retention_months"`
+	UpdatedAt              string `gorm:"column:updated_at"`
+	CreatedAt              string `gorm:"column:created_at"`
+}
+
+type AgentTrafficBaselineRow struct {
+	AgentID           string `gorm:"column:agent_id;primaryKey"`
+	CycleStart        string `gorm:"column:cycle_start;primaryKey"`
+	RawRXBytes        uint64 `gorm:"column:raw_rx_bytes"`
+	RawTXBytes        uint64 `gorm:"column:raw_tx_bytes"`
+	RawAccountedBytes uint64 `gorm:"column:raw_accounted_bytes"`
+	AdjustUsedBytes   int64  `gorm:"column:adjust_used_bytes"`
+	UpdatedAt         string `gorm:"column:updated_at"`
+	CreatedAt         string `gorm:"column:created_at"`
+}
+
+type AgentTrafficRawCursorRow struct {
+	AgentID    string `gorm:"column:agent_id;primaryKey"`
+	ScopeType  string `gorm:"column:scope_type;primaryKey"`
+	ScopeID    string `gorm:"column:scope_id;primaryKey"`
+	RXBytes    uint64 `gorm:"column:rx_bytes"`
+	TXBytes    uint64 `gorm:"column:tx_bytes"`
+	ObservedAt string `gorm:"column:observed_at"`
+}
+
+type AgentTrafficHourlyBucketRow struct {
+	AgentID     string `gorm:"column:agent_id;primaryKey;index:idx_agent_traffic_hourly_agent_bucket"`
+	ScopeType   string `gorm:"column:scope_type;primaryKey"`
+	ScopeID     string `gorm:"column:scope_id;primaryKey"`
+	BucketStart string `gorm:"column:bucket_start;primaryKey;index:idx_agent_traffic_hourly_agent_bucket"`
+	RXBytes     uint64 `gorm:"column:rx_bytes"`
+	TXBytes     uint64 `gorm:"column:tx_bytes"`
+	UpdatedAt   string `gorm:"column:updated_at"`
+	CreatedAt   string `gorm:"column:created_at"`
+}
+
+type AgentTrafficDailySummaryRow struct {
+	AgentID     string `gorm:"column:agent_id;primaryKey;index:idx_agent_traffic_daily_agent_period"`
+	ScopeType   string `gorm:"column:scope_type;primaryKey"`
+	ScopeID     string `gorm:"column:scope_id;primaryKey"`
+	PeriodStart string `gorm:"column:period_start;primaryKey;index:idx_agent_traffic_daily_agent_period"`
+	RXBytes     uint64 `gorm:"column:rx_bytes"`
+	TXBytes     uint64 `gorm:"column:tx_bytes"`
+	UpdatedAt   string `gorm:"column:updated_at"`
+	CreatedAt   string `gorm:"column:created_at"`
+}
+
+type AgentTrafficMonthlySummaryRow struct {
+	AgentID     string `gorm:"column:agent_id;primaryKey;index:idx_agent_traffic_monthly_agent_period"`
+	ScopeType   string `gorm:"column:scope_type;primaryKey"`
+	ScopeID     string `gorm:"column:scope_id;primaryKey"`
+	PeriodStart string `gorm:"column:period_start;primaryKey;index:idx_agent_traffic_monthly_agent_period"`
+	RXBytes     uint64 `gorm:"column:rx_bytes"`
+	TXBytes     uint64 `gorm:"column:tx_bytes"`
+	UpdatedAt   string `gorm:"column:updated_at"`
+	CreatedAt   string `gorm:"column:created_at"`
+}
+
+type AgentTrafficEventRow struct {
+	ID        uint64 `gorm:"column:id;primaryKey;autoIncrement"`
+	AgentID   string `gorm:"column:agent_id;index:idx_agent_traffic_events_agent_time"`
+	EventType string `gorm:"column:event_type;index:idx_agent_traffic_events_type"`
+	Message   string `gorm:"column:message"`
+	Payload   string `gorm:"column:payload"`
+	CreatedAt string `gorm:"column:created_at;index:idx_agent_traffic_events_agent_time"`
+}
+
 func (AgentRow) TableName() string {
 	return "agents"
 }
@@ -166,4 +241,32 @@ func (ManagedCertificateRow) TableName() string {
 
 func (MetaRow) TableName() string {
 	return "meta"
+}
+
+func (AgentTrafficPolicyRow) TableName() string {
+	return "agent_traffic_policies"
+}
+
+func (AgentTrafficBaselineRow) TableName() string {
+	return "agent_traffic_baselines"
+}
+
+func (AgentTrafficRawCursorRow) TableName() string {
+	return "agent_traffic_raw_cursors"
+}
+
+func (AgentTrafficHourlyBucketRow) TableName() string {
+	return "agent_traffic_hourly_buckets"
+}
+
+func (AgentTrafficDailySummaryRow) TableName() string {
+	return "agent_traffic_daily_summaries"
+}
+
+func (AgentTrafficMonthlySummaryRow) TableName() string {
+	return "agent_traffic_monthly_summaries"
+}
+
+func (AgentTrafficEventRow) TableName() string {
+	return "agent_traffic_events"
 }

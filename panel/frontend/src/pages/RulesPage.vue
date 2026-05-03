@@ -134,7 +134,7 @@ import { useAgent } from '../context/AgentContext'
 import { useRules, useCreateRule, useUpdateRule, useDeleteRule } from '../hooks/useRules'
 import { useDiagnoseRule, useDiagnosticTask } from '../hooks/useDiagnostics'
 import { useAgents } from '../hooks/useAgents'
-import { fetchAgentStats } from '../api'
+import { fetchTrafficSummary } from '../api'
 import RuleForm from '../components/RuleForm.vue'
 import RuleCard from '../components/rules/RuleCard.vue'
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
@@ -142,11 +142,13 @@ import BaseModal from '../components/base/BaseModal.vue'
 import RuleDiagnosticModal from '../components/RuleDiagnosticModal.vue'
 import AgentPicker from '../components/AgentPicker.vue'
 import { messageStore } from '../stores/messages'
-import { bucketForObject } from '../utils/trafficStats.js'
+import { summaryBucketForObject } from '../utils/trafficStats.js'
 
 const route = useRoute()
 const router = useRouter()
-const { selectedAgentId } = useAgent()
+const agentContext = useAgent()
+const { selectedAgentId } = agentContext
+const systemInfo = agentContext.systemInfo || ref(null)
 
 // 优先从 URL query 获取，否则 fall back 到 AgentContext
 const selectedOrRouteAgentId = computed(() => route.query.agentId || selectedAgentId.value)
@@ -170,15 +172,18 @@ const deleteRule = useDeleteRule(agentId)
 const diagnoseRule = useDiagnoseRule(agentId)
 const rules = computed(() => _rulesData.value ?? [])
 
-const { data: agentStatsData } = useQuery({
-  queryKey: ['agent-stats', agentId],
-  queryFn: () => fetchAgentStats(agentId.value),
-  enabled: () => !!agentId.value,
+const trafficStatsEnabled = computed(() => !!systemInfo.value && systemInfo.value.traffic_stats_enabled !== false)
+const { data: trafficSummaryData } = useQuery({
+  queryKey: ['traffic-summary', agentId],
+  queryFn: () => fetchTrafficSummary(agentId.value),
+  enabled: () => !!agentId.value && trafficStatsEnabled.value,
   refetchInterval: 10_000
 })
 
 function trafficForRule(rule) {
-  return bucketForObject(agentStatsData.value, 'http_rules', rule?.id)
+  return trafficStatsEnabled.value
+    ? summaryBucketForObject(trafficSummaryData.value, 'http_rules', rule?.id)
+    : null
 }
 
 function handleAgentSelect(agent) {

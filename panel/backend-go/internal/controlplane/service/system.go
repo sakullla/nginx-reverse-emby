@@ -22,6 +22,7 @@ type SystemInfo struct {
 	StartedAt                    time.Time
 	OnlineAgents                 int
 	TotalAgents                  int
+	TrafficStatsEnabled          bool
 }
 
 type systemStore interface {
@@ -63,6 +64,7 @@ func (s systemService) Info(ctx context.Context) SystemInfo {
 		ProjectURL:                   s.cfg.ProjectURL,
 		DataDir:                      s.cfg.DataDir,
 		StartedAt:                    s.startedAt,
+		TrafficStatsEnabled:          s.cfg.TrafficStatsEnabled,
 	}
 
 	if s.store != nil {

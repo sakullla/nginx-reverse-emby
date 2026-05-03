@@ -75,6 +75,8 @@ type Server struct {
 	conns         map[net.Conn]struct{}
 	quicConns     map[*quic.Conn]struct{}
 	closing       bool
+
+	trafficBlockState trafficBlockStateValue
 }
 
 type relayVerifiedFallbackStore struct {
@@ -874,6 +876,13 @@ func (s *Server) handleQUICStream(conn *quic.Conn, stream *quic.Stream, listener
 		cancelStream = false
 		return
 	}
+	if state := s.currentTrafficBlockState(); state.Blocked {
+		_ = withFrameDeadline(clientConn, func() error {
+			return writeRelayResponse(clientConn, relayResponse{OK: false, Error: state.errorMessage()})
+		})
+		cancelStream = false
+		return
+	}
 	if strings.EqualFold(request.Kind, "udp") {
 		s.handleUDPRelayStream(clientConn, listener, request.Target, request.Chain, relayDialOptionsFromMetadata(request.Kind, request.Metadata))
 		return
@@ -923,6 +932,20 @@ func (s *Server) handleQUICStream(conn *quic.Conn, stream *quic.Stream, listener
 	pipeBothWaysWithInitialRelayRX(wrapIdleConn(clientConn), wrapIdleConn(upstream), int64(len(request.InitialData)), recorder)
 }
 
+func (s *Server) currentTrafficBlockState() TrafficBlockState {
+	if s == nil {
+		return TrafficBlockState{}
+	}
+	return s.trafficBlockState.Load()
+}
+
+func (s *Server) SetTrafficBlockState(state TrafficBlockState) {
+	if s == nil {
+		return
+	}
+	s.trafficBlockState.Store(state)
+}
+
 func listenerUsesEarlyWindowMask(listener Listener) bool {
 	return normalizeListenerTransportModeValue(listener.TransportMode) == ListenerTransportModeTLSTCP &&
 		strings.EqualFold(strings.TrimSpace(listener.ObfsMode), RelayObfsModeEarlyWindowV2)
@@ -969,7 +992,7 @@ func pipeUDPPackets(clientConn net.Conn, upstream udpPacketPeer, recorder *traff
 				done <- struct{}{}
 				return
 			}
-			recorder.Add(int64(len(payload)), 0)
+			recorder.Add(int64(len(payload)), int64(len(payload)))
 		}
 	}()
 
@@ -985,7 +1008,7 @@ func pipeUDPPackets(clientConn net.Conn, upstream udpPacketPeer, recorder *traff
 				done <- struct{}{}
 				return
 			}
-			recorder.Add(0, int64(len(payload)))
+			recorder.Add(int64(len(payload)), int64(len(payload)))
 		}
 	}()
 
@@ -1042,7 +1065,7 @@ func pipeBothWays(left, right net.Conn, recorder *traffic.Recorder) {
 func pipeBothWaysWithInitialRelayRX(left, right net.Conn, initialRX int64, recorder *traffic.Recorder) {
 	done := make(chan struct{}, 2)
 	recorder = relayRecorderOrAggregate(recorder)
-	recorder.Add(initialRX, 0)
+	recorder.Add(initialRX, initialRX)
 	recorder.Flush()
 
 	go func() {

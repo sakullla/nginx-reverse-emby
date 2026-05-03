@@ -1,10 +1,14 @@
 package service
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"path/filepath"
 	"testing"
 	"time"
@@ -395,6 +399,181 @@ func TestBackupServicePreservesAgentTrafficStatsInterval(t *testing.T) {
 	}
 }
 
+func TestBackupServiceTrafficPolicyAndBaselineRoundTripExcludesHistory(t *testing.T) {
+	ctx := context.Background()
+	cfg := config.Config{EnableLocalAgent: true, LocalAgentID: "local"}
+	sourceStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "traffic-source"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(source) error = %v", err)
+	}
+	defer sourceStore.Close()
+	if err := sourceStore.SaveAgent(ctx, storage.AgentRow{
+		ID:         "edge-traffic",
+		Name:       "edge-traffic",
+		AgentToken: "token-traffic",
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	quota := int64(1099511627776)
+	retentionMonths := 36
+	if err := sourceStore.SaveTrafficPolicy(ctx, storage.AgentTrafficPolicyRow{
+		AgentID:                "edge-traffic",
+		Direction:              "rx",
+		CycleStartDay:          15,
+		MonthlyQuotaBytes:      &quota,
+		BlockWhenExceeded:      true,
+		HourlyRetentionDays:    30,
+		DailyRetentionMonths:   12,
+		MonthlyRetentionMonths: &retentionMonths,
+		CreatedAt:              "2026-05-01T00:00:00Z",
+		UpdatedAt:              "2026-05-02T00:00:00Z",
+	}); err != nil {
+		t.Fatalf("SaveTrafficPolicy() error = %v", err)
+	}
+	if err := sourceStore.SaveTrafficBaseline(ctx, storage.AgentTrafficBaselineRow{
+		AgentID:           "edge-traffic",
+		CycleStart:        "2026-05-15T00:00:00Z",
+		RawRXBytes:        1000,
+		RawTXBytes:        2000,
+		RawAccountedBytes: 1000,
+		AdjustUsedBytes:   -250,
+		CreatedAt:         "2026-05-15T01:00:00Z",
+		UpdatedAt:         "2026-05-15T02:00:00Z",
+	}); err != nil {
+		t.Fatalf("SaveTrafficBaseline() error = %v", err)
+	}
+
+	archive, _, err := NewBackupService(cfg, sourceStore).Export(ctx)
+	if err != nil {
+		t.Fatalf("Export() error = %v", err)
+	}
+	files := backupArchiveFileNames(t, archive)
+	if !files["traffic_policies.json"] {
+		t.Fatalf("backup files missing traffic_policies.json: %#v", files)
+	}
+	if !files["traffic_baselines.json"] {
+		t.Fatalf("backup files missing traffic_baselines.json: %#v", files)
+	}
+	for _, name := range []string{
+		"traffic_raw_cursors.json",
+		"traffic_hourly_buckets.json",
+		"traffic_daily_summaries.json",
+		"traffic_monthly_summaries.json",
+		"traffic_events.json",
+	} {
+		if files[name] {
+			t.Fatalf("backup unexpectedly included traffic history file %s", name)
+		}
+	}
+
+	bundle, err := decodeBackupBundle(archive)
+	if err != nil {
+		t.Fatalf("decodeBackupBundle() error = %v", err)
+	}
+	if len(bundle.TrafficPolicies) != 1 || bundle.TrafficPolicies[0].AgentID != "edge-traffic" || bundle.TrafficPolicies[0].MonthlyQuotaBytes == nil || *bundle.TrafficPolicies[0].MonthlyQuotaBytes != quota {
+		t.Fatalf("traffic policies = %+v", bundle.TrafficPolicies)
+	}
+	if len(bundle.TrafficBaselines) != 1 || bundle.TrafficBaselines[0].AgentID != "edge-traffic" || bundle.TrafficBaselines[0].AdjustUsedBytes != -250 {
+		t.Fatalf("traffic baselines = %+v", bundle.TrafficBaselines)
+	}
+	policyPayload, err := json.Marshal(bundle.TrafficPolicies[0])
+	if err != nil {
+		t.Fatalf("marshal traffic policy: %v", err)
+	}
+	if !bytes.Contains(policyPayload, []byte(`"agent_id"`)) || bytes.Contains(policyPayload, []byte(`"AgentID"`)) {
+		t.Fatalf("traffic policy JSON uses unstable field names: %s", policyPayload)
+	}
+	baselinePayload, err := json.Marshal(bundle.TrafficBaselines[0])
+	if err != nil {
+		t.Fatalf("marshal traffic baseline: %v", err)
+	}
+	if !bytes.Contains(baselinePayload, []byte(`"cycle_start"`)) || bytes.Contains(baselinePayload, []byte(`"CycleStart"`)) {
+		t.Fatalf("traffic baseline JSON uses unstable field names: %s", baselinePayload)
+	}
+	if bundle.Manifest.Counts.TrafficPolicies != 1 || bundle.Manifest.Counts.TrafficBaselines != 1 {
+		t.Fatalf("manifest counts = %+v", bundle.Manifest.Counts)
+	}
+
+	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "traffic-target"), "target-local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(target) error = %v", err)
+	}
+	defer targetStore.Close()
+	if err := targetStore.SaveAgent(ctx, storage.AgentRow{
+		ID:         "target-edge",
+		Name:       "edge-traffic",
+		AgentToken: "target-token",
+	}); err != nil {
+		t.Fatalf("SaveAgent(target existing) error = %v", err)
+	}
+	result, err := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "target-local"}, targetStore).Import(ctx, archive)
+	if err != nil {
+		t.Fatalf("Import() error = %v", err)
+	}
+	if result.Summary.Imported.TrafficPolicies != 1 || result.Summary.Imported.TrafficBaselines != 1 {
+		t.Fatalf("import summary = %+v", result.Summary)
+	}
+	policies, err := targetStore.ListTrafficPolicies(ctx)
+	if err != nil {
+		t.Fatalf("ListTrafficPolicies() error = %v", err)
+	}
+	if len(policies) != 1 || policies[0].AgentID != "target-edge" || policies[0].Direction != "rx" {
+		t.Fatalf("imported policies = %+v", policies)
+	}
+	baselines, err := targetStore.ListTrafficBaselines(ctx)
+	if err != nil {
+		t.Fatalf("ListTrafficBaselines() error = %v", err)
+	}
+	if len(baselines) != 1 || baselines[0].AgentID != "target-edge" || baselines[0].CycleStart != "2026-05-15T00:00:00Z" {
+		t.Fatalf("imported baselines = %+v", baselines)
+	}
+}
+
+func TestBackupServiceImportsLegacyArchiveWithoutTrafficFiles(t *testing.T) {
+	ctx := context.Background()
+	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "legacy-no-traffic"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(target) error = %v", err)
+	}
+	defer targetStore.Close()
+
+	bundle := BackupBundle{
+		Manifest: BackupManifest{
+			PackageVersion:     BackupPackageVersion,
+			SourceArchitecture: BackupSourceArchitectureGo,
+			ExportedAt:         time.Date(2026, 4, 18, 9, 30, 0, 0, time.UTC),
+			Counts:             BackupCounts{Agents: 1},
+		},
+		Agents: []BackupAgent{{
+			ID:         "legacy-edge",
+			Name:       "legacy-edge",
+			AgentToken: "token-legacy-edge",
+		}},
+	}
+	archive, err := encodeBackupBundleWithoutTrafficFiles(bundle)
+	if err != nil {
+		t.Fatalf("encodeBackupBundleWithoutTrafficFiles() error = %v", err)
+	}
+	decoded, err := decodeBackupBundle(archive)
+	if err != nil {
+		t.Fatalf("decodeBackupBundle() error = %v", err)
+	}
+	if len(decoded.TrafficPolicies) != 0 || len(decoded.TrafficBaselines) != 0 {
+		t.Fatalf("decoded traffic payloads = policies %+v baselines %+v", decoded.TrafficPolicies, decoded.TrafficBaselines)
+	}
+	if decoded.Manifest.Counts.TrafficPolicies != 0 || decoded.Manifest.Counts.TrafficBaselines != 0 {
+		t.Fatalf("decoded manifest counts = %+v", decoded.Manifest.Counts)
+	}
+
+	result, err := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, targetStore).Import(ctx, archive)
+	if err != nil {
+		t.Fatalf("Import() error = %v", err)
+	}
+	if result.Summary.Imported.Agents != 1 || result.Summary.Imported.TrafficPolicies != 0 || result.Summary.Imported.TrafficBaselines != 0 {
+		t.Fatalf("import summary = %+v", result.Summary)
+	}
+}
+
 func TestBackupServiceImportPreservesL4ProxyEntryFields(t *testing.T) {
 	ctx := context.Background()
 	cfg := config.Config{EnableLocalAgent: true, LocalAgentID: "local"}
@@ -555,6 +734,7 @@ func TestBackupServiceImportSkipsRulesWithMissingRelayLayerDependencies(t *testi
 type failingBackupStore struct {
 	backupStore
 	remainingVersionPolicyFailures int
+	remainingHTTPRuleFailures      int
 }
 
 func (s *failingBackupStore) SaveVersionPolicies(ctx context.Context, rows []storage.VersionPolicyRow) error {
@@ -565,6 +745,14 @@ func (s *failingBackupStore) SaveVersionPolicies(ctx context.Context, rows []sto
 	return s.backupStore.SaveVersionPolicies(ctx, rows)
 }
 
+func (s *failingBackupStore) SaveHTTPRules(ctx context.Context, agentID string, rows []storage.HTTPRuleRow) error {
+	if s.remainingHTTPRuleFailures > 0 {
+		s.remainingHTTPRuleFailures--
+		return errors.New("forced http rule failure")
+	}
+	return s.backupStore.SaveHTTPRules(ctx, agentID, rows)
+}
+
 type countingBackupStore struct {
 	backupStore
 	listAgentsCalls int
@@ -573,6 +761,58 @@ type countingBackupStore struct {
 func (s *countingBackupStore) ListAgents(ctx context.Context) ([]storage.AgentRow, error) {
 	s.listAgentsCalls++
 	return s.backupStore.ListAgents(ctx)
+}
+
+func backupArchiveFileNames(t *testing.T, archive []byte) map[string]bool {
+	t.Helper()
+	gz, err := gzip.NewReader(bytes.NewReader(archive))
+	if err != nil {
+		t.Fatalf("gzip.NewReader() error = %v", err)
+	}
+	defer gz.Close()
+
+	files := map[string]bool{}
+	tr := tar.NewReader(gz)
+	for {
+		header, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("tar.Next() error = %v", err)
+		}
+		files[header.Name] = true
+	}
+	return files
+}
+
+func encodeBackupBundleWithoutTrafficFiles(bundle BackupBundle) ([]byte, error) {
+	var buffer bytes.Buffer
+	gz := gzip.NewWriter(&buffer)
+	tw := tar.NewWriter(gz)
+	for _, item := range []struct {
+		name    string
+		payload any
+	}{
+		{backupManifestFile, bundle.Manifest},
+		{backupAgentsFile, bundle.Agents},
+		{backupHTTPRulesFile, bundle.HTTPRules},
+		{backupL4RulesFile, bundle.L4Rules},
+		{backupRelayListenersFile, bundle.RelayListeners},
+		{backupCertificatesFile, bundle.Certificates},
+		{backupVersionPoliciesFile, bundle.VersionPolicies},
+	} {
+		if err := writeBackupJSONFile(tw, item.name, item.payload); err != nil {
+			return nil, err
+		}
+	}
+	if err := tw.Close(); err != nil {
+		return nil, err
+	}
+	if err := gz.Close(); err != nil {
+		return nil, err
+	}
+	return buffer.Bytes(), nil
 }
 
 func TestBackupServiceRollbackOnImportFailure(t *testing.T) {
@@ -599,6 +839,35 @@ func TestBackupServiceRollbackOnImportFailure(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("SaveVersionPolicies() error = %v", err)
 	}
+	if err := sourceStore.SaveTrafficPolicy(ctx, storage.AgentTrafficPolicyRow{
+		AgentID:       "edge-b",
+		Direction:     "rx",
+		CycleStartDay: 15,
+	}); err != nil {
+		t.Fatalf("SaveTrafficPolicy(source) error = %v", err)
+	}
+	if err := sourceStore.SaveTrafficBaseline(ctx, storage.AgentTrafficBaselineRow{
+		AgentID:           "edge-b",
+		CycleStart:        "2026-05-15T00:00:00Z",
+		RawRXBytes:        1000,
+		RawTXBytes:        2000,
+		RawAccountedBytes: 1000,
+	}); err != nil {
+		t.Fatalf("SaveTrafficBaseline(source) error = %v", err)
+	}
+	if err := sourceStore.SaveHTTPRules(ctx, "edge-b", []storage.HTTPRuleRow{{
+		AgentID:           "edge-b",
+		FrontendURL:       "https://edge-b.example.com",
+		BackendURL:        "http://127.0.0.1:8096",
+		BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+		LoadBalancingJSON: `{"strategy":"round_robin"}`,
+		Enabled:           true,
+		RelayChainJSON:    `[]`,
+		TagsJSON:          `[]`,
+		CustomHeadersJSON: `[]`,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules(source) error = %v", err)
+	}
 
 	sourceSvc := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, sourceStore)
 	archive, _, err := sourceSvc.Export(ctx)
@@ -611,10 +880,27 @@ func TestBackupServiceRollbackOnImportFailure(t *testing.T) {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
 	defer targetStore.Close()
+	if err := targetStore.SaveTrafficPolicy(ctx, storage.AgentTrafficPolicyRow{
+		AgentID:       "edge-original",
+		Direction:     "tx",
+		CycleStartDay: 3,
+	}); err != nil {
+		t.Fatalf("SaveTrafficPolicy(target original) error = %v", err)
+	}
+	if err := targetStore.SaveTrafficBaseline(ctx, storage.AgentTrafficBaselineRow{
+		AgentID:           "edge-original",
+		CycleStart:        "2026-05-03T00:00:00Z",
+		RawRXBytes:        10,
+		RawTXBytes:        20,
+		RawAccountedBytes: 20,
+		AdjustUsedBytes:   5,
+	}); err != nil {
+		t.Fatalf("SaveTrafficBaseline(target original) error = %v", err)
+	}
 
 	failingStore := &failingBackupStore{
-		backupStore:                    targetStore,
-		remainingVersionPolicyFailures: 1,
+		backupStore:               targetStore,
+		remainingHTTPRuleFailures: 1,
 	}
 	targetSvc := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, failingStore)
 	if _, err := targetSvc.Import(ctx, archive); err == nil {
@@ -634,6 +920,20 @@ func TestBackupServiceRollbackOnImportFailure(t *testing.T) {
 	}
 	if len(policies) != 0 {
 		t.Fatalf("version policies after rollback = %+v", policies)
+	}
+	trafficPolicies, err := targetStore.ListTrafficPolicies(ctx)
+	if err != nil {
+		t.Fatalf("ListTrafficPolicies() error = %v", err)
+	}
+	if len(trafficPolicies) != 1 || trafficPolicies[0].AgentID != "edge-original" || trafficPolicies[0].Direction != "tx" {
+		t.Fatalf("traffic policies after rollback = %+v", trafficPolicies)
+	}
+	trafficBaselines, err := targetStore.ListTrafficBaselines(ctx)
+	if err != nil {
+		t.Fatalf("ListTrafficBaselines() error = %v", err)
+	}
+	if len(trafficBaselines) != 1 || trafficBaselines[0].AgentID != "edge-original" || trafficBaselines[0].CycleStart != "2026-05-03T00:00:00Z" {
+		t.Fatalf("traffic baselines after rollback = %+v", trafficBaselines)
 	}
 }
 

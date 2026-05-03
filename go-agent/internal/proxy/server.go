@@ -26,7 +26,8 @@ import (
 )
 
 type Server struct {
-	routes map[string][]*routeEntry
+	routes            map[string][]*routeEntry
+	trafficBlockState trafficBlockStateValue
 }
 
 type TLSMaterialProvider interface {
@@ -167,6 +168,14 @@ func newServerWithResilience(
 func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	host := normalizeHost(req.Host)
 	if entry := s.routeFor(host, req.URL.Path); entry != nil {
+		if state := s.currentTrafficBlockState(); state.Blocked {
+			body := "traffic blocked"
+			if state.Reason != "" {
+				body = state.Reason
+			}
+			http.Error(w, body, http.StatusTooManyRequests)
+			return
+		}
 		if err := entry.serveHTTP(w, req); err != nil {
 			log.Printf("[proxy] bad gateway for %s %s (host=%s frontend=%s): %v", req.Method, req.URL.Path, host, entry.rule.FrontendURL, err)
 			var startedErr *startedResponseError
@@ -178,6 +187,20 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	http.NotFound(w, req)
+}
+
+func (s *Server) currentTrafficBlockState() TrafficBlockState {
+	if s == nil {
+		return TrafficBlockState{}
+	}
+	return s.trafficBlockState.Load()
+}
+
+func (s *Server) SetTrafficBlockState(state TrafficBlockState) {
+	if s == nil {
+		return
+	}
+	s.trafficBlockState.Store(state)
 }
 
 func (s *Server) routeFor(host string, requestPath string) *routeEntry {
@@ -321,7 +344,7 @@ func StartWithResourcesAndOptions(
 
 func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 	recorder := traffic.NewHTTPRuleRecorder(e.rule.ID)
-	body, err := prepareReusableBody(req, e.sameBackendRetryMaxAttempts(req))
+	body, err := prepareReusableBody(req, e.sameBackendRetryMaxAttempts(req), recorder)
 	if err != nil {
 		log.Printf("[proxy] read body error for %s: %v", e.rule.FrontendURL, err)
 		return err
@@ -637,6 +660,17 @@ func (r *Runtime) BindingKeys() []string {
 	out := make([]string, len(r.bindings))
 	copy(out, r.bindings)
 	return out
+}
+
+func (r *Runtime) SetTrafficBlockState(state TrafficBlockState) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	for _, server := range r.servers {
+		if proxyServer, ok := server.Handler.(*Server); ok {
+			proxyServer.SetTrafficBlockState(state)
+		}
+	}
 }
 
 func buildRuntimeListenerSpecs(ctx context.Context, rules []model.HTTPRule, relayListeners []model.RelayListener, providers Providers) ([]runtimeListenerSpec, error) {
@@ -973,9 +1007,10 @@ type reusableRequestBody struct {
 	buffered      []byte
 	stream        io.ReadCloser
 	contentLength int64
+	bufferedMode  bool
 }
 
-func prepareReusableBody(req *http.Request, maxAttempts int) (*reusableRequestBody, error) {
+func prepareReusableBody(req *http.Request, maxAttempts int, recorder *traffic.Recorder) (*reusableRequestBody, error) {
 	if req == nil || req.Body == nil {
 		return &reusableRequestBody{}, nil
 	}
@@ -987,7 +1022,10 @@ func prepareReusableBody(req *http.Request, maxAttempts int) (*reusableRequestBo
 	if err != nil {
 		return nil, err
 	}
-	return &reusableRequestBody{buffered: body, contentLength: int64(len(body))}, nil
+	trafficRecorder := httpRecorderOrAggregate(recorder)
+	trafficRecorder.Add(int64(len(body)), 0)
+	trafficRecorder.Flush()
+	return &reusableRequestBody{buffered: body, contentLength: int64(len(body)), bufferedMode: true}, nil
 }
 
 func (b *reusableRequestBody) Open() (io.ReadCloser, int64, func() (io.ReadCloser, error)) {
@@ -1049,7 +1087,7 @@ func cloneProxyRequest(req *http.Request, body *reusableRequestBody, candidate h
 	if body != nil {
 		out.Body, out.ContentLength, out.GetBody = body.Open()
 		if out.Body != nil {
-			out.Body = newTrafficReadCloser(out.Body, recorder)
+			out.Body = newTrafficReadCloser(out.Body, recorder, !body.bufferedMode)
 			if out.GetBody != nil {
 				getBody := out.GetBody
 				out.GetBody = func() (io.ReadCloser, error) {
@@ -1057,7 +1095,7 @@ func cloneProxyRequest(req *http.Request, body *reusableRequestBody, candidate h
 					if err != nil {
 						return nil, err
 					}
-					return newTrafficReadCloser(body, recorder), nil
+					return newTrafficReadCloser(body, recorder, false), nil
 				}
 			}
 		}
@@ -1073,13 +1111,15 @@ func cloneProxyRequest(req *http.Request, body *reusableRequestBody, candidate h
 
 type trafficReadCloser struct {
 	io.ReadCloser
-	recorder *traffic.Recorder
+	recorder      *traffic.Recorder
+	recordInbound bool
 }
 
-func newTrafficReadCloser(delegate io.ReadCloser, recorder *traffic.Recorder) io.ReadCloser {
+func newTrafficReadCloser(delegate io.ReadCloser, recorder *traffic.Recorder, recordInbound bool) io.ReadCloser {
 	return &trafficReadCloser{
-		ReadCloser: delegate,
-		recorder:   httpRecorderOrAggregate(recorder),
+		ReadCloser:    delegate,
+		recorder:      httpRecorderOrAggregate(recorder),
+		recordInbound: recordInbound,
 	}
 }
 
@@ -1092,7 +1132,11 @@ func httpRecorderOrAggregate(recorder *traffic.Recorder) *traffic.Recorder {
 
 func (c trafficReadCloser) Read(p []byte) (int, error) {
 	n, err := c.ReadCloser.Read(p)
-	c.recorder.Add(int64(n), 0)
+	if c.recordInbound {
+		c.recorder.Add(int64(n), int64(n))
+	} else {
+		c.recorder.Add(0, int64(n))
+	}
 	if err != nil {
 		c.recorder.Flush()
 	}
@@ -1177,6 +1221,7 @@ func copyResponse(w http.ResponseWriter, resp *http.Response, recorder *traffic.
 		trafficWriter := newHTTPResponseTrafficWriter(w, recorder)
 		n, err := io.Copy(trafficWriter, resp.Body)
 		written = n
+		trafficWriter.FlushTraffic()
 		if err != nil {
 			return written, err
 		}
@@ -1285,50 +1330,97 @@ func copySwitchProtocolTraffic(dst io.Writer, src io.Reader, rxDirection bool, r
 	return io.Copy(wrapped, src)
 }
 
-func newHTTPResponseTrafficWriter(dst io.Writer, recorder *traffic.Recorder) httpResponseTrafficWriter {
-	return httpResponseTrafficWriter{
-		dst:      dst,
-		recorder: httpRecorderOrAggregate(recorder),
+const httpResponseTrafficFlushThreshold uint64 = 64 * 1024
+
+func newHTTPResponseTrafficWriter(dst io.Writer, recorder *traffic.Recorder) *httpResponseTrafficWriter {
+	return &httpResponseTrafficWriter{
+		dst:       dst,
+		flusher:   newHTTPResponseTrafficFlusher(recorder),
+		threshold: httpResponseTrafficFlushThreshold,
 	}
 }
 
 type httpResponseTrafficWriter struct {
-	dst      io.Writer
-	recorder *traffic.Recorder
+	dst       io.Writer
+	flusher   *httpResponseTrafficFlusher
+	threshold uint64
 }
 
-func (w httpResponseTrafficWriter) Write(p []byte) (int, error) {
+func (w *httpResponseTrafficWriter) Write(p []byte) (int, error) {
 	n, err := w.dst.Write(p)
 	if n > 0 {
-		w.recorder.Add(0, int64(n))
-		w.recorder.Flush()
+		w.flusher.Add(uint64(n), w.threshold)
 	}
 	return n, err
 }
 
-func newHTTPResponseTrafficResponseWriter(dst http.ResponseWriter, recorder *traffic.Recorder) httpResponseTrafficResponseWriter {
-	return httpResponseTrafficResponseWriter{
+func (w *httpResponseTrafficWriter) FlushTraffic() {
+	w.flusher.Flush()
+}
+
+func newHTTPResponseTrafficResponseWriter(dst http.ResponseWriter, recorder *traffic.Recorder) *httpResponseTrafficResponseWriter {
+	return &httpResponseTrafficResponseWriter{
 		ResponseWriter: dst,
-		recorder:       httpRecorderOrAggregate(recorder),
+		flusher:        newHTTPResponseTrafficFlusher(recorder),
+		threshold:      httpResponseTrafficFlushThreshold,
 	}
 }
 
 type httpResponseTrafficResponseWriter struct {
 	http.ResponseWriter
-	recorder *traffic.Recorder
+	flusher   *httpResponseTrafficFlusher
+	threshold uint64
 }
 
-func (w httpResponseTrafficResponseWriter) Write(p []byte) (int, error) {
+func (w *httpResponseTrafficResponseWriter) Write(p []byte) (int, error) {
 	n, err := w.ResponseWriter.Write(p)
 	if n > 0 {
-		w.recorder.Add(0, int64(n))
-		w.recorder.Flush()
+		w.flusher.Add(uint64(n), w.threshold)
 	}
 	return n, err
 }
 
-func (w httpResponseTrafficResponseWriter) Unwrap() http.ResponseWriter {
+func (w *httpResponseTrafficResponseWriter) Flush() {
+	w.FlushTraffic()
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (w *httpResponseTrafficResponseWriter) FlushTraffic() {
+	w.flusher.Flush()
+}
+
+func (w *httpResponseTrafficResponseWriter) Unwrap() http.ResponseWriter {
 	return w.ResponseWriter
+}
+
+type httpResponseTrafficFlusher struct {
+	recorder *traffic.Recorder
+	pending  uint64
+}
+
+func newHTTPResponseTrafficFlusher(recorder *traffic.Recorder) *httpResponseTrafficFlusher {
+	return &httpResponseTrafficFlusher{recorder: httpRecorderOrAggregate(recorder)}
+}
+
+func (f *httpResponseTrafficFlusher) Add(bytes uint64, threshold uint64) {
+	if f == nil || bytes == 0 {
+		return
+	}
+	f.pending += bytes
+	if f.pending >= threshold {
+		f.Flush()
+	}
+}
+
+func (f *httpResponseTrafficFlusher) Flush() {
+	if f == nil || f.pending == 0 {
+		return
+	}
+	f.recorder.Add(int64(f.pending), int64(f.pending))
+	f.recorder.Flush()
+	f.pending = 0
 }
 
 type switchProtocolTrafficWriter struct {
@@ -1341,9 +1433,9 @@ func (w switchProtocolTrafficWriter) Write(p []byte) (int, error) {
 	n, err := w.dst.Write(p)
 	if n > 0 {
 		if w.rxDirection {
-			w.recorder.Add(int64(n), 0)
+			w.recorder.Add(int64(n), int64(n))
 		} else {
-			w.recorder.Add(0, int64(n))
+			w.recorder.Add(int64(n), int64(n))
 		}
 		w.recorder.Flush()
 	}

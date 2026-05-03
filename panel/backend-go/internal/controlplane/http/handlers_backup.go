@@ -44,12 +44,14 @@ func parseExportOptions(include string) service.BackupExportOptions {
 		parts[strings.TrimSpace(p)] = true
 	}
 	return service.BackupExportOptions{
-		Agents:          parts["agents"],
-		HTTPRules:       parts["http_rules"],
-		L4Rules:         parts["l4_rules"],
-		RelayListeners:  parts["relay_listeners"],
-		Certificates:    parts["certificates"],
-		VersionPolicies: parts["version_policies"],
+		Agents:           parts["agents"],
+		HTTPRules:        parts["http_rules"],
+		L4Rules:          parts["l4_rules"],
+		RelayListeners:   parts["relay_listeners"],
+		Certificates:     parts["certificates"],
+		VersionPolicies:  parts["version_policies"],
+		TrafficPolicies:  parts["traffic_policies"],
+		TrafficBaselines: parts["traffic_baselines"],
 	}
 }
 

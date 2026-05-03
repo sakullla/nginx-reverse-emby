@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -33,9 +35,26 @@ type localAgentRuntime interface {
 }
 
 func main() {
+	if err := runMain(os.Args[1:]); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func runMain(args []string) error {
+	migrateCommand, err := parseMigrateStorageCommand(args)
+	if err != nil {
+		return err
+	}
+	if migrateCommand != nil {
+		return runMigrateStorageCommand(context.Background(), *migrateCommand)
+	}
+	return runControlPlaneFromEnv()
+}
+
+var runControlPlaneFromEnv = func() error {
 	cfg, err := config.LoadFromEnv()
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	cfg.AppVersion = appVersion
 	cfg.BuildTime = buildTime
@@ -46,17 +65,65 @@ func main() {
 	defer stop()
 
 	if err := initializeControlPlane(ctx, cfg); err != nil {
-		log.Fatal(err)
+		return err
 	}
 	startManagedCertificateAutoRenewLoop(ctx, cfg, nil)
 
 	application, err := newControlPlaneApp(cfg, nil)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	if err := application.Run(ctx); err != nil {
-		log.Fatal(err)
+		return err
 	}
+	return nil
+}
+
+type migrateStorageCommand struct {
+	FromDriver string
+	FromDSN    string
+	ToDriver   string
+	ToDSN      string
+}
+
+func parseMigrateStorageCommand(args []string) (*migrateStorageCommand, error) {
+	if len(args) == 0 {
+		return nil, nil
+	}
+	if args[0] != "migrate-storage" {
+		return nil, fmt.Errorf("unknown command %q", args[0])
+	}
+
+	fs := flag.NewFlagSet("migrate-storage", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	cmd := migrateStorageCommand{}
+	fs.StringVar(&cmd.FromDriver, "from-driver", "", "source database driver")
+	fs.StringVar(&cmd.FromDSN, "from-dsn", "", "source database DSN")
+	fs.StringVar(&cmd.ToDriver, "to-driver", "", "target database driver")
+	fs.StringVar(&cmd.ToDSN, "to-dsn", "", "target database DSN")
+	if err := fs.Parse(args[1:]); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(cmd.FromDriver) == "" {
+		return nil, fmt.Errorf("missing --from-driver")
+	}
+	if strings.TrimSpace(cmd.FromDSN) == "" {
+		return nil, fmt.Errorf("missing --from-dsn")
+	}
+	if strings.TrimSpace(cmd.ToDriver) == "" {
+		return nil, fmt.Errorf("missing --to-driver")
+	}
+	if strings.TrimSpace(cmd.ToDSN) == "" {
+		return nil, fmt.Errorf("missing --to-dsn")
+	}
+	cmd.FromDriver = normalizeStorageDriver(cmd.FromDriver)
+	cmd.ToDriver = normalizeStorageDriver(cmd.ToDriver)
+	cmd.FromDSN = strings.TrimSpace(cmd.FromDSN)
+	cmd.ToDSN = strings.TrimSpace(cmd.ToDSN)
+	if cmd.FromDriver == cmd.ToDriver && cmd.FromDSN == cmd.ToDSN {
+		return nil, fmt.Errorf("source and target storage must be different")
+	}
+	return &cmd, nil
 }
 
 func logPanelTokenWarning(logger *log.Logger, cfg config.Config) {
@@ -80,6 +147,47 @@ var newHandlerWithDependencies = func(cfg config.Config, deps httpapi.Dependenci
 
 var newLocalAgentRuntime = func(cfg config.Config, store localagent.Store) (localAgentRuntime, error) {
 	return localagent.NewRuntime(cfg, store)
+}
+
+var openConfiguredStore = storage.NewConfiguredStore
+
+var openStore = storage.NewStore
+
+var runMigrateStorageCommand = func(ctx context.Context, cmd migrateStorageCommand) error {
+	source, err := openStore(storage.StoreConfig{
+		Driver:              cmd.FromDriver,
+		DSN:                 cmd.FromDSN,
+		SkipBootstrapSchema: true,
+		TrafficStatsEnabled: false,
+	})
+	if err != nil {
+		return fmt.Errorf("open source storage: %w", err)
+	}
+	defer func() {
+		_ = source.Close()
+	}()
+
+	target, err := openStore(storage.StoreConfig{
+		Driver:              cmd.ToDriver,
+		DSN:                 cmd.ToDSN,
+		TrafficStatsEnabled: true,
+	})
+	if err != nil {
+		return fmt.Errorf("open target storage: %w", err)
+	}
+	defer func() {
+		_ = target.Close()
+	}()
+
+	return storage.CopyDefaultMigrationRows(ctx, source, target)
+}
+
+func normalizeStorageDriver(driver string) string {
+	driver = strings.ToLower(strings.TrimSpace(driver))
+	if driver == "" {
+		return "sqlite"
+	}
+	return driver
 }
 
 func guardLegacyNonSQLiteState(dataDir string) error {
@@ -117,10 +225,12 @@ func guardLegacyNonSQLiteState(dataDir string) error {
 }
 
 var initializeControlPlane = func(ctx context.Context, cfg config.Config) error {
-	if err := guardLegacyNonSQLiteState(cfg.DataDir); err != nil {
-		return err
+	if databaseDriverUsesSQLite(cfg.DatabaseDriver) {
+		if err := guardLegacyNonSQLiteState(cfg.DataDir); err != nil {
+			return err
+		}
 	}
-	store, err := storage.NewSQLiteStore(cfg.DataDir, cfg.LocalAgentID)
+	store, err := openConfiguredStore(cfg)
 	if err != nil {
 		return err
 	}
@@ -131,8 +241,13 @@ var initializeControlPlane = func(ctx context.Context, cfg config.Config) error 
 	return service.NewRelayListenerService(cfg, store).Bootstrap(ctx)
 }
 
+func databaseDriverUsesSQLite(driver string) bool {
+	driver = strings.ToLower(strings.TrimSpace(driver))
+	return driver == "" || driver == "sqlite"
+}
+
 var runManagedCertificateRenewalPass = func(ctx context.Context, cfg config.Config) error {
-	store, err := storage.NewSQLiteStore(cfg.DataDir, cfg.LocalAgentID)
+	store, err := openConfiguredStore(cfg)
 	if err != nil {
 		return err
 	}
@@ -186,13 +301,14 @@ var newLocalAgentStarter = func(cfg config.Config) (app.LocalAgentStarter, error
 		return nil, nil
 	}
 
-	store, err := storage.NewSQLiteStore(cfg.DataDir, cfg.LocalAgentID)
+	store, err := openConfiguredStore(cfg)
 	if err != nil {
 		return nil, err
 	}
 
 	runtime, err := newLocalAgentRuntime(cfg, store)
 	if err != nil {
+		_ = store.Close()
 		return nil, err
 	}
 	return runtime.Start, nil
@@ -204,10 +320,14 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 		if err != nil {
 			return nil, err
 		}
-		return app.New(cfg, handler, logger, nil), nil
+		controlPlaneApp := app.New(cfg, handler, logger, nil)
+		if cleanup, ok := handler.(interface{ Close() error }); ok {
+			controlPlaneApp.SetCleanup(cleanup.Close)
+		}
+		return controlPlaneApp, nil
 	}
 
-	serviceStore, err := storage.NewSQLiteStore(cfg.DataDir, cfg.LocalAgentID)
+	serviceStore, err := openConfiguredStore(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -220,12 +340,19 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 	relaySvc := service.NewRelayListenerService(cfg, serviceStore)
 	certSvc := service.NewCertificateService(cfg, serviceStore)
 
-	runtimeStore, err := storage.NewSQLiteStore(cfg.DataDir, cfg.LocalAgentID)
+	runtimeStore, err := openConfiguredStore(cfg)
 	if err != nil {
+		_ = serviceStore.Close()
 		return nil, err
+	}
+	closeStores := func() error {
+		runtimeErr := runtimeStore.Close()
+		serviceErr := serviceStore.Close()
+		return errors.Join(runtimeErr, serviceErr)
 	}
 	runtime, err := newLocalAgentRuntime(cfg, runtimeStore)
 	if err != nil {
+		_ = closeStores()
 		return nil, err
 	}
 
@@ -254,17 +381,11 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 		TaskService:          taskSvc,
 	})
 	if err != nil {
+		_ = closeStores()
 		return nil, err
 	}
 
 	controlPlaneApp := app.New(cfg, handler, logger, runtime.Start)
-	controlPlaneApp.SetCleanup(func() error {
-		runtimeErr := runtimeStore.Close()
-		serviceErr := serviceStore.Close()
-		if runtimeErr != nil {
-			return runtimeErr
-		}
-		return serviceErr
-	})
+	controlPlaneApp.SetCleanup(closeStores)
 	return controlPlaneApp, nil
 }

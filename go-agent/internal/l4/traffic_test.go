@@ -1,13 +1,160 @@
 package l4
 
 import (
+	"context"
 	"io"
 	"net"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
 )
+
+func TestL4RejectsNewConnectionWhenTrafficBlocked(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	listenPort := ln.Addr().(*net.TCPAddr).Port
+	if err := ln.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	srv, err := NewServerWithResources(context.Background(), []Rule{{
+		ID:           42,
+		Protocol:     "tcp",
+		ListenHost:   "127.0.0.1",
+		ListenPort:   listenPort,
+		UpstreamHost: "127.0.0.1",
+		UpstreamPort: 1,
+	}}, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("NewServerWithResources() error = %v", err)
+	}
+	defer srv.Close()
+	srv.SetTrafficBlockState(TrafficBlockState{Blocked: true, Reason: "monthly quota exceeded"})
+	if len(srv.tcpListeners) == 0 {
+		t.Fatal("expected tcp listener")
+	}
+
+	conn, err := net.Dial("tcp", srv.tcpListeners[0].Addr().String())
+	if err != nil {
+		t.Fatalf("Dial() error = %v", err)
+	}
+	defer conn.Close()
+
+	if _, err := conn.Write([]byte("new traffic")); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+	buf := make([]byte, 1)
+	n, err := conn.Read(buf)
+	if err == nil || n != 0 {
+		t.Fatalf("Read() n=%d err=%v, want closed connection", n, err)
+	}
+}
+
+func TestL4DropsNewUDPPacketWhenTrafficBlocked(t *testing.T) {
+	traffic.Reset()
+	traffic.SetEnabled(true)
+	defer traffic.Reset()
+
+	upstreamConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("ListenUDP() upstream error = %v", err)
+	}
+	defer upstreamConn.Close()
+
+	var upstreamPackets atomic.Int32
+	upstreamDone := make(chan struct{})
+	go func() {
+		defer close(upstreamDone)
+		buf := make([]byte, 64)
+		for {
+			_ = upstreamConn.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
+			n, addr, err := upstreamConn.ReadFromUDP(buf)
+			if err != nil {
+				if ne, ok := err.(net.Error); ok && ne.Timeout() {
+					continue
+				}
+				return
+			}
+			upstreamPackets.Add(1)
+			_, _ = upstreamConn.WriteToUDP(buf[:n], addr)
+		}
+	}()
+
+	listenConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("ListenUDP() reserve error = %v", err)
+	}
+	listenPort := listenConn.LocalAddr().(*net.UDPAddr).Port
+	if err := listenConn.Close(); err != nil {
+		t.Fatalf("Close() reserve error = %v", err)
+	}
+
+	srv, err := NewServerWithResources(context.Background(), []Rule{{
+		ID:           43,
+		Protocol:     "udp",
+		ListenHost:   "127.0.0.1",
+		ListenPort:   listenPort,
+		UpstreamHost: "127.0.0.1",
+		UpstreamPort: upstreamConn.LocalAddr().(*net.UDPAddr).Port,
+	}}, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("NewServerWithResources() error = %v", err)
+	}
+	defer srv.Close()
+	srv.SetTrafficBlockState(TrafficBlockState{Blocked: true, Reason: "monthly quota exceeded"})
+	if len(srv.udpConns) == 0 {
+		t.Fatal("expected udp listener")
+	}
+
+	client, err := net.DialUDP("udp", nil, srv.udpConns[0].LocalAddr().(*net.UDPAddr))
+	if err != nil {
+		t.Fatalf("DialUDP() error = %v", err)
+	}
+	defer client.Close()
+
+	if _, err := client.Write([]byte("blocked udp")); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	reply := make([]byte, 1)
+	if err := client.SetReadDeadline(time.Now().Add(150 * time.Millisecond)); err != nil {
+		t.Fatalf("SetReadDeadline() error = %v", err)
+	}
+	if n, err := client.Read(reply); err == nil || n != 0 {
+		t.Fatalf("Read() n=%d err=%v, want dropped packet", n, err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+	if got := upstreamPackets.Load(); got != 0 {
+		t.Fatalf("upstream packets = %d, want 0", got)
+	}
+	srv.udpMu.Lock()
+	sessionCount := len(srv.udpSessions)
+	srv.udpMu.Unlock()
+	if sessionCount != 0 {
+		t.Fatalf("udp sessions = %d, want 0", sessionCount)
+	}
+	stats := traffic.Snapshot()["traffic"].(map[string]any)
+	l4Stats := stats["l4"].(map[string]uint64)
+	if l4Stats["rx_bytes"] != 0 || l4Stats["tx_bytes"] != 0 {
+		t.Fatalf("l4 traffic = %#v, want no recorded traffic", l4Stats)
+	}
+	l4Rules := stats["l4_rules"].(map[string]map[string]uint64)
+	if got := l4Rules["43"]; got != nil {
+		t.Fatalf("l4_rules[43] = %#v, want no recorded traffic", got)
+	}
+
+	_ = upstreamConn.Close()
+	select {
+	case <-upstreamDone:
+	case <-time.After(time.Second):
+		t.Fatal("upstream goroutine did not exit")
+	}
+}
 
 func TestCopyBidirectionalTCPRecordsL4Traffic(t *testing.T) {
 	traffic.Reset()
@@ -48,10 +195,11 @@ func TestCopyBidirectionalTCPRecordsL4Traffic(t *testing.T) {
 
 	stats := traffic.Snapshot()["traffic"].(map[string]any)
 	l4Stats := stats["l4"].(map[string]uint64)
-	if l4Stats["rx_bytes"] != uint64(len("client-to-upstream")) {
+	wantTotal := uint64(len("client-to-upstream") + len("upstream-to-client"))
+	if l4Stats["rx_bytes"] != wantTotal {
 		t.Fatalf("l4 rx_bytes = %d", l4Stats["rx_bytes"])
 	}
-	if l4Stats["tx_bytes"] != uint64(len("upstream-to-client")) {
+	if l4Stats["tx_bytes"] != wantTotal {
 		t.Fatalf("l4 tx_bytes = %d", l4Stats["tx_bytes"])
 	}
 }
@@ -97,10 +245,11 @@ func TestCopyBidirectionalTCPRecordsL4RuleTraffic(t *testing.T) {
 	stats := traffic.Snapshot()["traffic"].(map[string]any)
 	l4Rules := stats["l4_rules"].(map[string]map[string]uint64)
 	got := l4Rules["42"]
-	if got["rx_bytes"] != uint64(len("client-to-upstream")) {
+	wantTotal := uint64(len("client-to-upstream") + len("upstream-to-client"))
+	if got["rx_bytes"] != wantTotal {
 		t.Fatalf("l4_rules[42].rx_bytes = %d", got["rx_bytes"])
 	}
-	if got["tx_bytes"] != uint64(len("upstream-to-client")) {
+	if got["tx_bytes"] != wantTotal {
 		t.Fatalf("l4_rules[42].tx_bytes = %d", got["tx_bytes"])
 	}
 }
@@ -127,13 +276,14 @@ func TestCopyBidirectionalTCPRecordsL4RuleTrafficBeforeClose(t *testing.T) {
 		t.Fatalf("client write error: %v", err)
 	}
 	readExact(t, backend, len("client-to-upstream"))
-	waitL4RuleTraffic(t, "42", len("client-to-upstream"), 0)
+	waitL4RuleTraffic(t, "42", len("client-to-upstream"), len("client-to-upstream"))
 
 	if _, err := backend.Write([]byte("upstream-to-client")); err != nil {
 		t.Fatalf("backend write error: %v", err)
 	}
 	readExact(t, client, len("upstream-to-client"))
-	waitL4RuleTraffic(t, "42", len("client-to-upstream"), len("upstream-to-client"))
+	total := len("client-to-upstream") + len("upstream-to-client")
+	waitL4RuleTraffic(t, "42", total, total)
 
 	_ = client.Close()
 	_ = downstream.Close()
@@ -144,7 +294,7 @@ func TestCopyBidirectionalTCPRecordsL4RuleTrafficBeforeClose(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("copyBidirectionalTCP did not exit")
 	}
-	assertL4RuleTraffic(t, "42", len("client-to-upstream"), len("upstream-to-client"))
+	assertL4RuleTraffic(t, "42", total, total)
 }
 
 func waitL4RuleTraffic(t *testing.T, ruleID string, rxBytes int, txBytes int) {

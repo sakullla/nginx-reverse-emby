@@ -56,6 +56,8 @@ type Server struct {
 	tcpMu    sync.Mutex
 	tcpConns map[net.Conn]struct{}
 	closing  bool
+
+	trafficBlockState trafficBlockStateValue
 }
 
 type relayPathDialer struct {
@@ -243,6 +245,10 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 	defer s.untrackTCPConn(client)
 	defer client.Close()
 
+	if state := s.currentTrafficBlockState(); state.Blocked {
+		return
+	}
+
 	recorder := traffic.NewL4RuleRecorder(rule.ID)
 	if strings.EqualFold(strings.TrimSpace(rule.ListenMode), "proxy") {
 		s.handleProxyEntryConnection(client, rule, recorder)
@@ -282,7 +288,7 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 	done := make(chan struct{}, 2)
 	go func() {
 		if len(initialPayload) > 0 {
-			recorder.Add(int64(len(initialPayload)), 0)
+			recorder.Add(int64(len(initialPayload)), int64(len(initialPayload)))
 			recorder.Flush()
 		}
 		_, _ = copyL4TCP(upstream, downstreamSource, true, recorder)
@@ -298,6 +304,20 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 	}()
 	<-done
 	<-done
+}
+
+func (s *Server) currentTrafficBlockState() TrafficBlockState {
+	if s == nil {
+		return TrafficBlockState{}
+	}
+	return s.trafficBlockState.Load()
+}
+
+func (s *Server) SetTrafficBlockState(state TrafficBlockState) {
+	if s == nil {
+		return
+	}
+	s.trafficBlockState.Store(state)
 }
 
 func (s *Server) handleProxyEntryConnection(client net.Conn, rule model.L4Rule, recorder *traffic.Recorder) {
@@ -381,11 +401,7 @@ type l4TrafficWriter struct {
 func (w l4TrafficWriter) Write(p []byte) (int, error) {
 	n, err := w.dst.Write(p)
 	if n > 0 {
-		if w.rxDirection {
-			w.recorder.Add(int64(n), 0)
-		} else {
-			w.recorder.Add(0, int64(n))
-		}
+		w.recorder.Add(int64(n), int64(n))
 		w.recorder.Flush()
 	}
 	return n, err
@@ -625,7 +641,7 @@ func (s *Server) udpReadLoop(conn *net.UDPConn, rule model.L4Rule) {
 
 func (s *Server) proxyUDPPacket(listener *net.UDPConn, rule model.L4Rule, payload []byte, peer *net.UDPAddr) {
 	session, err := s.sessionForPeer(rule, listener, peer)
-	if err != nil {
+	if err != nil || session == nil {
 		return
 	}
 	_ = session.upstream.SetWriteDeadline(s.now().Add(s.udpReplyTimeoutForCandidate(l4Candidate{
@@ -642,7 +658,7 @@ func (s *Server) proxyUDPPacket(listener *net.UDPConn, rule model.L4Rule, payloa
 		s.closeUDPSession(session.key)
 		return
 	}
-	session.trafficRecorder.Add(int64(len(payload)), 0)
+	session.trafficRecorder.Add(int64(len(payload)), int64(len(payload)))
 	s.markUDPSessionWrite(session.key)
 }
 
@@ -723,6 +739,10 @@ func (s *Server) sessionForPeer(rule model.L4Rule, listener *net.UDPConn, peer *
 			return nil, existing.initErr
 		}
 		return existing, nil
+	}
+	if state := s.currentTrafficBlockState(); state.Blocked {
+		s.udpMu.Unlock()
+		return nil, nil
 	}
 
 	session := &udpSession{
@@ -858,7 +878,7 @@ func (s *Server) pipeUDPReplies(session *udpSession) {
 		if _, err := session.listener.WriteToUDP(payload, session.peer); err != nil {
 			return
 		}
-		session.trafficRecorder.Add(0, int64(len(payload)))
+		session.trafficRecorder.Add(int64(len(payload)), int64(len(payload)))
 	}
 }
 

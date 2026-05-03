@@ -175,3 +175,23 @@ func TestSnapshotDecodePreservesTrafficStatsInterval(t *testing.T) {
 		t.Fatalf("AgentConfig.TrafficStatsInterval = %q, want 30s", snapshot.AgentConfig.TrafficStatsInterval)
 	}
 }
+
+func TestSnapshotDecodePreservesTrafficBlockingConfig(t *testing.T) {
+	var snapshot Snapshot
+	err := json.Unmarshal([]byte(`{"agent_config":{"traffic_stats_enabled":false,"traffic_blocked":true,"traffic_block_reason":"monthly quota exceeded"}}`), &snapshot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.AgentConfig.TrafficStatsEnabled == nil {
+		t.Fatal("TrafficStatsEnabled = nil, want explicit false")
+	}
+	if *snapshot.AgentConfig.TrafficStatsEnabled {
+		t.Fatal("TrafficStatsEnabled = true, want false")
+	}
+	if !snapshot.AgentConfig.TrafficBlocked {
+		t.Fatal("TrafficBlocked = false, want true")
+	}
+	if snapshot.AgentConfig.TrafficBlockReason != "monthly quota exceeded" {
+		t.Fatalf("TrafficBlockReason = %q", snapshot.AgentConfig.TrafficBlockReason)
+	}
+}

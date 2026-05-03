@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/l4"
@@ -13,6 +14,66 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxy"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 )
+
+type proxyTrafficBlockStateValue struct {
+	value atomic.Value
+}
+
+func (v *proxyTrafficBlockStateValue) Store(state proxy.TrafficBlockState) {
+	v.value.Store(state)
+}
+
+func (v *proxyTrafficBlockStateValue) Load() proxy.TrafficBlockState {
+	if v == nil {
+		return proxy.TrafficBlockState{}
+	}
+	if raw := v.value.Load(); raw != nil {
+		if state, ok := raw.(proxy.TrafficBlockState); ok {
+			return state
+		}
+	}
+	return proxy.TrafficBlockState{}
+}
+
+type l4TrafficBlockStateValue struct {
+	value atomic.Value
+}
+
+func (v *l4TrafficBlockStateValue) Store(state l4.TrafficBlockState) {
+	v.value.Store(state)
+}
+
+func (v *l4TrafficBlockStateValue) Load() l4.TrafficBlockState {
+	if v == nil {
+		return l4.TrafficBlockState{}
+	}
+	if raw := v.value.Load(); raw != nil {
+		if state, ok := raw.(l4.TrafficBlockState); ok {
+			return state
+		}
+	}
+	return l4.TrafficBlockState{}
+}
+
+type relayTrafficBlockStateValue struct {
+	value atomic.Value
+}
+
+func (v *relayTrafficBlockStateValue) Store(state relay.TrafficBlockState) {
+	v.value.Store(state)
+}
+
+func (v *relayTrafficBlockStateValue) Load() relay.TrafficBlockState {
+	if v == nil {
+		return relay.TrafficBlockState{}
+	}
+	if raw := v.value.Load(); raw != nil {
+		if state, ok := raw.(relay.TrafficBlockState); ok {
+			return state
+		}
+	}
+	return relay.TrafficBlockState{}
+}
 
 type L4Applier interface {
 	Apply(context.Context, []model.L4Rule) error
@@ -32,6 +93,7 @@ type httpRuntimeManager struct {
 	transport    *http.Transport
 	options      proxy.StreamResilienceOptions
 	http3Enabled bool
+	blockState   proxyTrafficBlockStateValue
 }
 
 func newHTTPRuntimeManager() *httpRuntimeManager {
@@ -104,6 +166,7 @@ func (m *httpRuntimeManager) ApplyWithRelay(ctx context.Context, rules []model.H
 		if err != nil {
 			return err
 		}
+		runtime.SetTrafficBlockState(m.currentTrafficBlockState())
 		_ = previous.Close()
 		m.runtime = runtime
 		return nil
@@ -117,8 +180,23 @@ func (m *httpRuntimeManager) ApplyWithRelay(ctx context.Context, rules []model.H
 	if err != nil {
 		return err
 	}
+	runtime.SetTrafficBlockState(m.currentTrafficBlockState())
 	m.runtime = runtime
 	return nil
+}
+
+func (m *httpRuntimeManager) UpdateTrafficBlockState(state proxy.TrafficBlockState) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.blockState.Store(state)
+	if m.runtime != nil {
+		m.runtime.SetTrafficBlockState(m.currentTrafficBlockState())
+	}
+}
+
+func (m *httpRuntimeManager) currentTrafficBlockState() proxy.TrafficBlockState {
+	return m.blockState.Load()
 }
 
 func (m *httpRuntimeManager) Close() error {
@@ -134,10 +212,11 @@ func (m *httpRuntimeManager) Close() error {
 }
 
 type l4RuntimeManager struct {
-	mu       sync.Mutex
-	server   *l4.Server
-	cache    *backends.Cache
-	provider relay.TLSMaterialProvider
+	mu         sync.Mutex
+	server     *l4.Server
+	cache      *backends.Cache
+	provider   relay.TLSMaterialProvider
+	blockState l4TrafficBlockStateValue
 }
 
 func newL4RuntimeManager() *l4RuntimeManager {
@@ -188,8 +267,23 @@ func (m *l4RuntimeManager) ApplyWithRelay(ctx context.Context, rules []model.L4R
 	if err != nil {
 		return err
 	}
+	server.SetTrafficBlockState(m.currentTrafficBlockState())
 	m.server = server
 	return nil
+}
+
+func (m *l4RuntimeManager) UpdateTrafficBlockState(state l4.TrafficBlockState) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.blockState.Store(state)
+	if m.server != nil {
+		m.server.SetTrafficBlockState(m.currentTrafficBlockState())
+	}
+}
+
+func (m *l4RuntimeManager) currentTrafficBlockState() l4.TrafficBlockState {
+	return m.blockState.Load()
 }
 
 func (m *l4RuntimeManager) Close() error {
@@ -205,9 +299,10 @@ func (m *l4RuntimeManager) Close() error {
 }
 
 type relayRuntimeManager struct {
-	mu       sync.Mutex
-	server   *relay.Server
-	provider relay.TLSMaterialProvider
+	mu         sync.Mutex
+	server     *relay.Server
+	provider   relay.TLSMaterialProvider
+	blockState relayTrafficBlockStateValue
 }
 
 func newRelayRuntimeManager(provider relay.TLSMaterialProvider) *relayRuntimeManager {
@@ -239,8 +334,23 @@ func (m *relayRuntimeManager) Apply(ctx context.Context, listeners []model.Relay
 	if err != nil {
 		return err
 	}
+	server.SetTrafficBlockState(m.currentTrafficBlockState())
 	m.server = server
 	return nil
+}
+
+func (m *relayRuntimeManager) UpdateTrafficBlockState(state relay.TrafficBlockState) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	m.blockState.Store(state)
+	if m.server != nil {
+		m.server.SetTrafficBlockState(m.currentTrafficBlockState())
+	}
+}
+
+func (m *relayRuntimeManager) currentTrafficBlockState() relay.TrafficBlockState {
+	return m.blockState.Load()
 }
 
 func (m *relayRuntimeManager) Close() error {
