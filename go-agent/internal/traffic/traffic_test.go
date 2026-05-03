@@ -108,6 +108,9 @@ func TestScopedRecordersPopulatePerObjectBuckets(t *testing.T) {
 	if total["rx_bytes"] != 900 || total["tx_bytes"] != 1200 {
 		t.Fatalf("total = %+v", total)
 	}
+	assertTrafficCounters(t, stats["http"], 100, 200)
+	assertTrafficCounters(t, stats["l4"], 300, 400)
+	assertTrafficCounters(t, stats["relay"], 500, 600)
 	httpRules := stats["http_rules"].(map[string]map[string]uint64)
 	l4Rules := stats["l4_rules"].(map[string]map[string]uint64)
 	relayListeners := stats["relay_listeners"].(map[string]map[string]uint64)
@@ -120,6 +123,24 @@ func TestScopedRecordersPopulatePerObjectBuckets(t *testing.T) {
 	if relayListeners["31"]["rx_bytes"] != 500 || relayListeners["31"]["tx_bytes"] != 600 {
 		t.Fatalf("relay_listeners[31] = %+v", relayListeners["31"])
 	}
+}
+
+func TestResetKeepsLiveScopedRecorderVisible(t *testing.T) {
+	Reset()
+	SetEnabled(true)
+	defer Reset()
+
+	recorder := NewRelayListenerRecorder(31)
+	recorder.Add(1, 2)
+
+	Reset()
+
+	recorder.Add(5, 6)
+
+	stats := Snapshot()["traffic"].(map[string]any)
+	assertTrafficCounters(t, stats["relay"], 5, 6)
+	relayListeners := stats["relay_listeners"].(map[string]map[string]uint64)
+	assertTrafficCounters(t, relayListeners["31"], 5, 6)
 }
 
 func TestResetClearsScopedBuckets(t *testing.T) {

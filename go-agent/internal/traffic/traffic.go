@@ -96,6 +96,8 @@ func (r *Recorder) Add(rxBytes, txBytes int64) {
 		added += uint64(txBytes)
 		r.tx.Add(uint64(txBytes))
 	}
+	// Scoped counters are part of heartbeat snapshots, so flush them immediately
+	// instead of waiting for the aggregate recorder threshold.
 	if added > 0 && (r.scoped != nil || r.rx.Load()+r.tx.Load() >= recorderFlushThreshold) {
 		r.Flush()
 	}
@@ -170,7 +172,10 @@ func (k *keyedCounters) counterFor(id int) *counters {
 func (k *keyedCounters) reset() {
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	k.byID = nil
+	for _, counter := range k.byID {
+		counter.rx.Store(0)
+		counter.tx.Store(0)
+	}
 }
 
 func add(counter *counters, rxBytes, txBytes int64) {
