@@ -121,12 +121,15 @@ curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/dep
 | `NRE_LOCAL_AGENT_ID` | `local` | Local agent 标识 |
 | `NRE_LOCAL_AGENT_NAME` | `local` | Local agent 显示名称 |
 | `NRE_HEARTBEAT_INTERVAL` | `30s` | 心跳同步间隔（Go duration 格式） |
+| `NRE_TRAFFIC_STATS_ENABLED` | `true` | 是否启用 Agent 侧 HTTP/L4/Relay 流量统计；关闭后不采集也不上报流量 stats |
 | `NRE_MANAGED_CERT_RENEW_INTERVAL` | `24h` | 托管证书续期检查间隔 |
 | `ACME_DNS_PROVIDER` | - | DNS 验证提供商（如 `cf`） |
 | `CF_Token` / `CF_TOKEN` | - | Cloudflare API Token |
 
 > 所有 `NRE_` 前缀的环境变量同时作用于 Master 内嵌 local agent 和独立部署的 `go-agent`。
 > 时间类变量使用 Go `time.ParseDuration` 格式（如 `500ms`、`5s`、`2m`）。
+
+流量统计以最新累计计数展示到节点、HTTP 规则、L4 规则和 Relay 监听器。远程节点可在面板中配置 `traffic_stats_interval`，取值为 Go duration 格式（如 `30s`、`1m`、`5m`）。该周期只控制心跳 stats 上报频率，不会重置计数器，也不会创建历史分桶。
 
 ### HTTP 传输与流式恢复
 

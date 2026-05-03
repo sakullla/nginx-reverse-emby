@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
@@ -1275,8 +1276,14 @@ func (s *serverTLSTCPSession) handleStream(listener Listener, stream *tlsTCPLogi
 	defer upstream.Close()
 
 	if len(request.InitialData) > 0 {
-		if _, err := upstream.Write(request.InitialData); err != nil {
+		n, err := upstream.Write(request.InitialData)
+		if err != nil {
 			_ = s.writeOpenResult(stream.streamID, muxOpenResult{OK: false, Error: err.Error()})
+			s.tunnel.removeStream(stream.streamID)
+			return
+		}
+		if n != len(request.InitialData) {
+			_ = s.writeOpenResult(stream.streamID, muxOpenResult{OK: false, Error: io.ErrShortWrite.Error()})
 			s.tunnel.removeStream(stream.streamID)
 			return
 		}
@@ -1289,7 +1296,8 @@ func (s *serverTLSTCPSession) handleStream(listener Listener, stream *tlsTCPLogi
 		return
 	}
 
-	pipeBothWays(wrapIdleConn(stream), wrapIdleConn(upstream))
+	recorder := traffic.NewRelayListenerRecorder(listener.ID)
+	pipeBothWaysWithInitialRelayRX(wrapIdleConn(stream), wrapIdleConn(upstream), int64(len(request.InitialData)), recorder)
 	s.tunnel.removeStream(stream.streamID)
 }
 
@@ -1311,7 +1319,7 @@ func (s *serverTLSTCPSession) handleUDPStream(listener Listener, stream *tlsTCPL
 		return
 	}
 
-	pipeUDPPackets(stream, upstream)
+	pipeUDPPackets(stream, upstream, traffic.NewRelayListenerRecorder(listener.ID))
 	s.tunnel.removeStream(stream.streamID)
 }
 

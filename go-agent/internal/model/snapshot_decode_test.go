@@ -157,3 +157,21 @@ func TestSnapshotDecodePreservesAgentConfigAndL4ProxyEntryFields(t *testing.T) {
 		t.Fatalf("RelayChain = %+v", rule.RelayChain)
 	}
 }
+
+func TestSnapshotDecodePreservesTrafficStatsInterval(t *testing.T) {
+	var snapshot Snapshot
+	if err := json.Unmarshal([]byte(`{
+		"desired_version":"next",
+		"desired_revision":4,
+		"agent_config":{"traffic_stats_interval":"30s"}
+	}`), &snapshot); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+
+	if !snapshot.HasAgentConfig() {
+		t.Fatal("HasAgentConfig() = false, want true")
+	}
+	if snapshot.AgentConfig.TrafficStatsInterval != "30s" {
+		t.Fatalf("AgentConfig.TrafficStatsInterval = %q, want 30s", snapshot.AgentConfig.TrafficStatsInterval)
+	}
+}

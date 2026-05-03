@@ -2,6 +2,7 @@ package localagent
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
@@ -14,6 +15,7 @@ type SyncRequest struct {
 	LastApplyRevision         int
 	LastApplyStatus           string
 	LastApplyMessage          string
+	Stats                     map[string]any
 	ManagedCertificateReports []storage.ManagedCertificateReport
 }
 
@@ -71,6 +73,15 @@ func cloneSyncRequest(request SyncRequest) SyncRequest {
 	copyValue := request
 	if len(request.ManagedCertificateReports) > 0 {
 		copyValue.ManagedCertificateReports = append([]storage.ManagedCertificateReport(nil), request.ManagedCertificateReports...)
+	}
+	if request.Stats != nil {
+		data, err := json.Marshal(request.Stats)
+		if err == nil {
+			var stats map[string]any
+			if json.Unmarshal(data, &stats) == nil {
+				copyValue.Stats = stats
+			}
+		}
 	}
 	return copyValue
 }

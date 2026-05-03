@@ -528,6 +528,48 @@ func TestHeartbeatResponseIncludesProxyEntryAndOutboundProxy(t *testing.T) {
 	}
 }
 
+func TestHeartbeatResponseIncludesTrafficStatsInterval(t *testing.T) {
+	router, err := NewRouter(Dependencies{
+		Config:        config.Config{PanelToken: "secret"},
+		SystemService: fakeSystemService{},
+		AgentService: fakeAgentService{heartbeatReply: service.HeartbeatReply{
+			DesiredRevision:      10,
+			TrafficStatsInterval: "30s",
+		}},
+		RuleService:          fakeRuleService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/panel-api/agents/heartbeat", bytes.NewBufferString(`{"current_revision":1}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Agent-Token", "agent-token")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("POST heartbeat = %d", resp.Code)
+	}
+
+	var payload struct {
+		Sync struct {
+			AgentConfig struct {
+				TrafficStatsInterval string `json:"traffic_stats_interval"`
+			} `json:"agent_config"`
+		} `json:"sync"`
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if payload.Sync.AgentConfig.TrafficStatsInterval != "30s" {
+		t.Fatalf("sync.agent_config.traffic_stats_interval = %q", payload.Sync.AgentConfig.TrafficStatsInterval)
+	}
+}
+
 func TestHeartbeatResponseIncludesVersionPackageMetadataWithoutDesiredVersion(t *testing.T) {
 	router, err := NewRouter(Dependencies{
 		Config:        config.Config{PanelToken: "secret"},

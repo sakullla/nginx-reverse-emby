@@ -14,6 +14,7 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
 )
 
 func TestServeHTTPResumesInterruptedFullBodyTransfer(t *testing.T) {
@@ -616,7 +617,7 @@ func TestCopyResumableResponseDrainsInterruptedBodyBeforeRetry(t *testing.T) {
 			etag:    `"stable"`,
 			ifRange: `"stable"`,
 		},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("copyResumableResponse() error = %v", err)
 	}
@@ -625,6 +626,109 @@ func TestCopyResumableResponseDrainsInterruptedBodyBeforeRetry(t *testing.T) {
 	}
 	if !body.drained {
 		t.Fatal("expected interrupted upstream body to be drained before retry")
+	}
+}
+
+func TestCopyResumableResponseRecordsHTTPTraffic(t *testing.T) {
+	traffic.Reset()
+	defer traffic.Reset()
+
+	payload := []byte("0123456789abcdefghijklmnopqrstuvwxyz")
+	resp := &http.Response{
+		StatusCode:    http.StatusOK,
+		Header:        make(http.Header),
+		Body:          io.NopCloser(bytes.NewReader(payload)),
+		ContentLength: int64(len(payload)),
+	}
+	resp.Header.Set("Accept-Ranges", "bytes")
+	resp.Header.Set("ETag", `"stable"`)
+
+	entry := &routeEntry{
+		resilience: StreamResilienceOptions{
+			ResumeEnabled:     true,
+			ResumeMaxAttempts: 1,
+		},
+	}
+	recorder := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://edge.example.test/video", nil)
+
+	ruleRecorder := traffic.NewHTTPRuleRecorder(99)
+	written, err := entry.copyResumableResponse(recorder, req, resp, resumableResponse{
+		initialStatus: http.StatusOK,
+		rangeStart:    0,
+		rangeEnd:      int64(len(payload) - 1),
+		resourceSize:  int64(len(payload)),
+		validator: responseValidator{
+			etag:    `"stable"`,
+			ifRange: `"stable"`,
+		},
+	}, ruleRecorder)
+	if err != nil {
+		t.Fatalf("copyResumableResponse() error = %v", err)
+	}
+	if written != int64(len(payload)) {
+		t.Fatalf("written = %d, want %d", written, len(payload))
+	}
+
+	stats := traffic.Snapshot()["traffic"].(map[string]any)
+	httpStats := stats["http"].(map[string]uint64)
+	if httpStats["tx_bytes"] != uint64(len(payload)) {
+		t.Fatalf("http tx_bytes = %d, want %d", httpStats["tx_bytes"], len(payload))
+	}
+	httpRules := stats["http_rules"].(map[string]map[string]uint64)
+	got := httpRules["99"]
+	if got["tx_bytes"] != uint64(len(payload)) {
+		t.Fatalf("http_rules[99].tx_bytes = %d, want %d", got["tx_bytes"], len(payload))
+	}
+}
+
+func TestCopyResumableResponseRecordsHTTPTrafficWhileStreaming(t *testing.T) {
+	traffic.Reset()
+	defer traffic.Reset()
+
+	payload := []byte("streamed-resumable-response")
+	body := newBlockingReadCloser(payload)
+	resp := &http.Response{
+		StatusCode:    http.StatusOK,
+		Header:        make(http.Header),
+		Body:          body,
+		ContentLength: int64(len(payload)),
+	}
+	resp.Header.Set("Accept-Ranges", "bytes")
+	resp.Header.Set("ETag", `"stable"`)
+
+	entry := &routeEntry{
+		resilience: StreamResilienceOptions{
+			ResumeEnabled:     true,
+			ResumeMaxAttempts: 1,
+		},
+	}
+	recorder := newObservedResponseWriter()
+	req := httptest.NewRequest(http.MethodGet, "http://edge.example.test/video", nil)
+	ruleRecorder := traffic.NewHTTPRuleRecorder(99)
+	done := make(chan error, 1)
+
+	go func() {
+		_, err := entry.copyResumableResponse(recorder, req, resp, resumableResponse{
+			initialStatus: http.StatusOK,
+			rangeStart:    0,
+			rangeEnd:      int64(len(payload) - 1),
+			resourceSize:  int64(len(payload)),
+			validator: responseValidator{
+				etag:    `"stable"`,
+				ifRange: `"stable"`,
+			},
+		}, ruleRecorder)
+		done <- err
+	}()
+
+	recorder.waitForWrite(t)
+	assertHTTPAggregateTraffic(t, 0, uint64(len(payload)))
+	assertHTTPRuleTrafficEventually(t, "99", 0, uint64(len(payload)))
+
+	body.Close()
+	if err := <-done; err != nil {
+		t.Fatalf("copyResumableResponse() error = %v", err)
 	}
 }
 
@@ -702,7 +806,7 @@ func TestCopyResumableResponseUsesBulkTransportForRelayRangeRetry(t *testing.T) 
 			etag:    `"stable"`,
 			ifRange: `"stable"`,
 		},
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("copyResumableResponse() error = %v", err)
 	}

@@ -49,8 +49,20 @@ type relayTCPNoDelayTuner interface {
 type relayDialContextFunc func(ctx context.Context, network, address string) (net.Conn, error)
 
 var relayDialContext relayDialContextFunc = func(ctx context.Context, network, address string) (net.Conn, error) {
-	var dialer net.Dialer
+	dialer := newRelayTCPDialer()
 	return dialer.DialContext(ctx, network, address)
+}
+
+func newRelayTCPDialer() net.Dialer {
+	var dialer net.Dialer
+	dialer.SetMultipathTCP(true)
+	return dialer
+}
+
+func newRelayTCPListenConfig() net.ListenConfig {
+	var listenConfig net.ListenConfig
+	listenConfig.SetMultipathTCP(true)
+	return listenConfig
 }
 
 func ConfigureTimeouts(cfg TimeoutConfig) func() {

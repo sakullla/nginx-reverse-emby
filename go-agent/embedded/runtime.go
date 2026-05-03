@@ -47,6 +47,8 @@ type Config struct {
 	CurrentVersion          string
 	HeartbeatInterval       time.Duration
 	HTTP3Enabled            bool
+	TrafficStatsEnabled     bool
+	TrafficStatsExplicit    bool
 	HTTPTransport           HTTPTransportConfig
 	HTTPResilience          HTTPResilienceConfig
 	BackendFailures         BackendFailureConfig
@@ -122,12 +124,14 @@ func New(cfg Config, source SyncSource, sink StateSink) (*Runtime, error) {
 	}
 
 	runtimeApp, err := newEmbeddedApp(agentapp.Config{
-		AgentID:           cfg.AgentID,
-		AgentName:         cfg.AgentName,
-		DataDir:           cfg.DataDir,
-		HeartbeatInterval: cfg.HeartbeatInterval,
-		CurrentVersion:    cfg.CurrentVersion,
-		HTTP3Enabled:      cfg.HTTP3Enabled,
+		AgentID:              cfg.AgentID,
+		AgentName:            cfg.AgentName,
+		DataDir:              cfg.DataDir,
+		HeartbeatInterval:    cfg.HeartbeatInterval,
+		CurrentVersion:       cfg.CurrentVersion,
+		HTTP3Enabled:         cfg.HTTP3Enabled,
+		TrafficStatsEnabled:  cfg.TrafficStatsEnabled,
+		TrafficStatsExplicit: cfg.TrafficStatsExplicit,
 		HTTPTransport: config.HTTPTransportConfig{
 			DialTimeout:           cfg.HTTPTransport.DialTimeout,
 			TLSHandshakeTimeout:   cfg.HTTPTransport.TLSHandshakeTimeout,

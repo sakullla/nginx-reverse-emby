@@ -41,6 +41,8 @@ type SQLiteStore struct {
 	localAgentID string
 }
 
+const localRuntimeStateMetaKey = "local_runtime_state"
+
 func NewSQLiteStore(dataRoot string, localAgentID string) (*SQLiteStore, error) {
 	if err := os.MkdirAll(dataRoot, 0o755); err != nil {
 		return nil, err
@@ -155,6 +157,38 @@ func (s *SQLiteStore) LoadLocalAgentState(ctx context.Context) (LocalAgentStateR
 		}, nil
 	}
 	return LocalAgentStateRow{}, err
+}
+
+func (s *SQLiteStore) LoadLocalRuntimeState(ctx context.Context) (RuntimeState, error) {
+	var row MetaRow
+	err := s.db.WithContext(ctx).
+		Where("key = ?", localRuntimeStateMetaKey).
+		First(&row).Error
+	if err == nil {
+		var state RuntimeState
+		if unmarshalErr := json.Unmarshal([]byte(strings.TrimSpace(row.Value)), &state); unmarshalErr != nil {
+			return RuntimeState{}, unmarshalErr
+		}
+		if state.Metadata == nil {
+			state.Metadata = map[string]string{}
+		}
+		return state, nil
+	}
+	if err != gorm.ErrRecordNotFound {
+		return RuntimeState{}, err
+	}
+
+	localState, err := s.LoadLocalAgentState(ctx)
+	if err != nil {
+		return RuntimeState{}, err
+	}
+	return RuntimeState{
+		CurrentRevision:   int64(localState.CurrentRevision),
+		LastApplyRevision: int64(localState.LastApplyRevision),
+		LastApplyStatus:   localState.LastApplyStatus,
+		LastApplyMessage:  localState.LastApplyMessage,
+		Metadata:          map[string]string{},
+	}, nil
 }
 
 func (s *SQLiteStore) LoadLocalSnapshot(ctx context.Context, agentID string) (Snapshot, error) {
@@ -337,12 +371,30 @@ func (s *SQLiteStore) SaveLocalRuntimeState(ctx context.Context, agentID string,
 	}
 	normalizeLocalAgentStateRow(&row)
 
-	return s.db.WithContext(ctx).
-		Clauses(clause.OnConflict{
-			Columns:   []clause.Column{{Name: "id"}},
-			UpdateAll: true,
-		}).
-		Create(&row).Error
+	stateJSON, err := json.Marshal(runtimeState)
+	if err != nil {
+		return err
+	}
+
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.
+			Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: "id"}},
+				UpdateAll: true,
+			}).
+			Create(&row).Error; err != nil {
+			return err
+		}
+		return tx.
+			Clauses(clause.OnConflict{
+				Columns:   []clause.Column{{Name: "key"}},
+				UpdateAll: true,
+			}).
+			Create(&MetaRow{
+				Key:   localRuntimeStateMetaKey,
+				Value: string(stateJSON),
+			}).Error
+	})
 }
 
 func (s *SQLiteStore) SaveAgent(ctx context.Context, row AgentRow) error {
@@ -517,6 +569,7 @@ func normalizeAgentRow(row *AgentRow) {
 	row.TagsJSON = defaultJSON(row.TagsJSON, "[]")
 	row.CapabilitiesJSON = defaultJSON(row.CapabilitiesJSON, "[]")
 	row.OutboundProxyURL = defaultString(row.OutboundProxyURL, "")
+	row.TrafficStatsInterval = defaultString(row.TrafficStatsInterval, "")
 	row.Mode = defaultString(row.Mode, "pull")
 	row.LastApplyStatus = defaultString(row.LastApplyStatus, "")
 	row.LastApplyMessage = defaultString(row.LastApplyMessage, "")

@@ -134,6 +134,11 @@ func TestHeartbeatSync(t *testing.T) {
 		LastApplyRevision: 41,
 		LastApplyStatus:   "success",
 		LastApplyMessage:  "",
+		Stats: map[string]any{
+			"traffic": map[string]any{
+				"total": map[string]uint64{"rx_bytes": 10, "tx_bytes": 20},
+			},
+		},
 		ManagedCertificateReports: []model.ManagedCertificateReport{{
 			ID:           21,
 			Domain:       "sync.example.com",
@@ -250,6 +255,7 @@ func TestHeartbeatSync(t *testing.T) {
 			LastApplyRevision         int                              `json:"last_apply_revision"`
 			LastApplyStatus           string                           `json:"last_apply_status"`
 			LastApplyMessage          string                           `json:"last_apply_message"`
+			Stats                     map[string]any                   `json:"stats"`
 			ManagedCertificateReports []model.ManagedCertificateReport `json:"managed_certificate_reports"`
 			Version                   string                           `json:"version"`
 			Platform                  string                           `json:"platform"`
@@ -269,11 +275,67 @@ func TestHeartbeatSync(t *testing.T) {
 		if payload.LastApplyRevision != 41 || payload.LastApplyStatus != "success" || payload.LastApplyMessage != "" {
 			t.Fatalf("unexpected apply status payload %+v", payload)
 		}
+		traffic, ok := payload.Stats["traffic"].(map[string]any)
+		if !ok {
+			t.Fatalf("traffic stats missing in heartbeat payload: %+v", payload.Stats)
+		}
+		total, ok := traffic["total"].(map[string]any)
+		if !ok {
+			t.Fatalf("total traffic stats missing in heartbeat payload: %+v", traffic)
+		}
+		if total["rx_bytes"] != float64(10) || total["tx_bytes"] != float64(20) {
+			t.Fatalf("unexpected traffic totals in heartbeat payload: %+v", total)
+		}
 		if len(payload.ManagedCertificateReports) != 1 || payload.ManagedCertificateReports[0].ID != 21 {
 			t.Fatalf("unexpected managed_certificate_reports payload %+v", payload.ManagedCertificateReports)
 		}
 	case <-ctx.Done():
 		t.Fatalf("heartbeat not sent")
+	}
+}
+
+func TestHeartbeatSyncSendsExplicitEmptyStats(t *testing.T) {
+	reqs := make(chan []byte, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		reqs <- body
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"sync":{"desired_version":"1.2.3","desired_revision":7}}`)
+	}))
+	defer server.Close()
+
+	client := NewClient(ClientConfig{
+		MasterURL:      server.URL,
+		AgentToken:     "token",
+		AgentID:        "agent",
+		AgentName:      "agent",
+		CurrentVersion: "0.1.0",
+	}, server.Client())
+
+	if _, err := client.Sync(context.Background(), SyncRequest{
+		CurrentRevision: 7,
+		Stats:           map[string]any{},
+		StatsPresent:    true,
+	}); err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+
+	select {
+	case body := <-reqs:
+		var payload struct {
+			Stats *map[string]any `json:"stats"`
+		}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("json.Unmarshal() error = %v", err)
+		}
+		if payload.Stats == nil {
+			t.Fatalf("stats field missing from heartbeat payload: %s", string(body))
+		}
+		if len(*payload.Stats) != 0 {
+			t.Fatalf("stats = %#v, want empty object", *payload.Stats)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("heartbeat not sent")
 	}
 }
 

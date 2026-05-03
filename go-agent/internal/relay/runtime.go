@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"reflect"
 	"strconv"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/quic-go/quic-go"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxyproto"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
@@ -176,7 +178,8 @@ func (s *Server) startListener(listener Listener) error {
 			s.wg.Add(1)
 			go s.acceptQUICLoop(ln.listener, listener)
 		default:
-			ln, err := net.Listen("tcp", addr)
+			listenConfig := newRelayTCPListenConfig()
+			ln, err := listenConfig.Listen(s.ctx, "tcp", addr)
 			if err != nil {
 				return err
 			}
@@ -893,9 +896,17 @@ func (s *Server) handleQUICStream(conn *quic.Conn, stream *quic.Stream, listener
 	defer upstream.Close()
 
 	if len(request.InitialData) > 0 {
-		if _, err := upstream.Write(request.InitialData); err != nil {
+		n, err := upstream.Write(request.InitialData)
+		if err != nil {
 			_ = withFrameDeadline(clientConn, func() error {
 				return writeRelayResponse(clientConn, relayResponse{OK: false, Error: err.Error()})
+			})
+			cancelStream = false
+			return
+		}
+		if n != len(request.InitialData) {
+			_ = withFrameDeadline(clientConn, func() error {
+				return writeRelayResponse(clientConn, relayResponse{OK: false, Error: io.ErrShortWrite.Error()})
 			})
 			cancelStream = false
 			return
@@ -908,7 +919,8 @@ func (s *Server) handleQUICStream(conn *quic.Conn, stream *quic.Stream, listener
 	}
 	cancelStream = false
 
-	pipeBothWays(wrapIdleConn(clientConn), wrapIdleConn(upstream))
+	recorder := traffic.NewRelayListenerRecorder(listener.ID)
+	pipeBothWaysWithInitialRelayRX(wrapIdleConn(clientConn), wrapIdleConn(upstream), int64(len(request.InitialData)), recorder)
 }
 
 func listenerUsesEarlyWindowMask(listener Listener) bool {
@@ -937,11 +949,12 @@ func (s *Server) handleUDPRelayStream(clientConn net.Conn, listener Listener, ta
 		relayClientConn = wrapConnWithEarlyWindowMask(clientConn, defaultEarlyWindowMaskConfig())
 	}
 
-	pipeUDPPackets(relayClientConn, upstream)
+	pipeUDPPackets(relayClientConn, upstream, traffic.NewRelayListenerRecorder(listener.ID))
 }
 
-func pipeUDPPackets(clientConn net.Conn, upstream udpPacketPeer) {
+func pipeUDPPackets(clientConn net.Conn, upstream udpPacketPeer, recorder *traffic.Recorder) {
 	done := make(chan struct{}, 2)
+	recorder = relayRecorderOrAggregate(recorder)
 
 	go func() {
 		defer upstream.Close()
@@ -956,6 +969,7 @@ func pipeUDPPackets(clientConn net.Conn, upstream udpPacketPeer) {
 				done <- struct{}{}
 				return
 			}
+			recorder.Add(int64(len(payload)), 0)
 		}
 	}()
 
@@ -971,11 +985,13 @@ func pipeUDPPackets(clientConn net.Conn, upstream udpPacketPeer) {
 				done <- struct{}{}
 				return
 			}
+			recorder.Add(0, int64(len(payload)))
 		}
 	}()
 
 	<-done
 	<-done
+	recorder.Flush()
 }
 
 func (s *Server) trackQUICConn(conn *quic.Conn) {
@@ -1019,18 +1035,25 @@ func (s *Server) closeQUICConns() {
 	}
 }
 
-func pipeBothWays(left, right net.Conn) {
+func pipeBothWays(left, right net.Conn, recorder *traffic.Recorder) {
+	pipeBothWaysWithInitialRelayRX(left, right, 0, recorder)
+}
+
+func pipeBothWaysWithInitialRelayRX(left, right net.Conn, initialRX int64, recorder *traffic.Recorder) {
 	done := make(chan struct{}, 2)
+	recorder = relayRecorderOrAggregate(recorder)
+	recorder.Add(initialRX, 0)
+	recorder.Flush()
 
 	go func() {
-		_, _ = copyGeneric(right, left)
+		_, _ = copyRelayTraffic(right, left, true, recorder)
 		closeWrite(right)
 		closeRead(left)
 		done <- struct{}{}
 	}()
 
 	go func() {
-		_, _ = copyGeneric(left, right)
+		_, _ = copyRelayTraffic(left, right, false, recorder)
 		closeWrite(left)
 		closeRead(right)
 		done <- struct{}{}
@@ -1038,6 +1061,14 @@ func pipeBothWays(left, right net.Conn) {
 
 	<-done
 	<-done
+	recorder.Flush()
+}
+
+func relayRecorderOrAggregate(recorder *traffic.Recorder) *traffic.Recorder {
+	if recorder != nil {
+		return recorder
+	}
+	return traffic.NewRelayRecorder()
 }
 
 func closeWrite(conn net.Conn) {

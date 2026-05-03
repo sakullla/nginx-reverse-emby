@@ -3,7 +3,8 @@ package model
 import "encoding/json"
 
 type AgentConfig struct {
-	OutboundProxyURL string `json:"outbound_proxy_url,omitempty"`
+	OutboundProxyURL     string `json:"outbound_proxy_url,omitempty"`
+	TrafficStatsInterval string `json:"traffic_stats_interval,omitempty"`
 }
 
 type Snapshot struct {

@@ -34,6 +34,8 @@ type Config struct {
 	BackendFailuresExplicit bool
 	RelayTimeouts           RelayTimeoutConfig
 	HTTP3Enabled            bool
+	TrafficStatsEnabled     bool
+	TrafficStatsExplicit    bool
 	CurrentVersion          string
 	RuntimePackageSHA256    string
 }
@@ -94,7 +96,8 @@ func Default() Config {
 			FrameTimeout:     5 * time.Second,
 			IdleTimeout:      2 * time.Minute,
 		},
-		CurrentVersion: defaultAgentVersion,
+		TrafficStatsEnabled: true,
+		CurrentVersion:      defaultAgentVersion,
 	}
 }
 
@@ -154,6 +157,14 @@ func loadFromEnvForExecutable(executablePath string) (Config, error) {
 			return Config{}, fmt.Errorf("invalid NRE_HTTP3_ENABLED: %w", err)
 		}
 		cfg.HTTP3Enabled = enabled
+	}
+	if val := strings.TrimSpace(os.Getenv("NRE_TRAFFIC_STATS_ENABLED")); val != "" {
+		enabled, err := strconv.ParseBool(val)
+		if err != nil {
+			return Config{}, fmt.Errorf("invalid NRE_TRAFFIC_STATS_ENABLED: %w", err)
+		}
+		cfg.TrafficStatsEnabled = enabled
+		cfg.TrafficStatsExplicit = true
 	}
 	if val := strings.TrimSpace(os.Getenv("NRE_HTTP_DIAL_TIMEOUT")); val != "" {
 		dur, err := parsePositiveDurationEnv("NRE_HTTP_DIAL_TIMEOUT", val)

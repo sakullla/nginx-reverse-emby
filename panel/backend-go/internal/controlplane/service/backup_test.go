@@ -349,6 +349,52 @@ func TestBackupServicePreservesAgentOutboundProxyURL(t *testing.T) {
 	}
 }
 
+func TestBackupServicePreservesAgentTrafficStatsInterval(t *testing.T) {
+	ctx := context.Background()
+	cfg := config.Config{EnableLocalAgent: true, LocalAgentID: "local"}
+	sourceStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "traffic-source"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(source) error = %v", err)
+	}
+	defer sourceStore.Close()
+	if err := sourceStore.SaveAgent(ctx, storage.AgentRow{
+		ID:                   "edge-traffic",
+		Name:                 "Edge Traffic",
+		AgentToken:           "token-traffic",
+		CapabilitiesJSON:     `["http_rules"]`,
+		TrafficStatsInterval: "30s",
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+
+	sourceSvc := NewBackupService(cfg, sourceStore)
+	archive, _, err := sourceSvc.Export(ctx)
+	if err != nil {
+		t.Fatalf("Export() error = %v", err)
+	}
+
+	targetStore, err := storage.NewSQLiteStore(filepath.Join(t.TempDir(), "traffic-target"), "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore(target) error = %v", err)
+	}
+	defer targetStore.Close()
+	targetSvc := NewBackupService(cfg, targetStore)
+	if _, err := targetSvc.Import(ctx, archive); err != nil {
+		t.Fatalf("Import() error = %v", err)
+	}
+
+	agents, err := targetStore.ListAgents(ctx)
+	if err != nil {
+		t.Fatalf("ListAgents() error = %v", err)
+	}
+	if len(agents) != 1 {
+		t.Fatalf("agents len = %d, want 1", len(agents))
+	}
+	if agents[0].TrafficStatsInterval != "30s" {
+		t.Fatalf("TrafficStatsInterval = %q", agents[0].TrafficStatsInterval)
+	}
+}
+
 func TestBackupServiceImportPreservesL4ProxyEntryFields(t *testing.T) {
 	ctx := context.Background()
 	cfg := config.Config{EnableLocalAgent: true, LocalAgentID: "local"}

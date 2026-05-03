@@ -52,6 +52,7 @@ type BackupAgent struct {
 	DesiredVersion         string   `json:"desired_version,omitempty"`
 	DesiredRevision        int      `json:"desired_revision,omitempty"`
 	OutboundProxyURL       string   `json:"outbound_proxy_url,omitempty"`
+	TrafficStatsInterval   string   `json:"traffic_stats_interval,omitempty"`
 	Tags                   []string `json:"tags,omitempty"`
 	Capabilities           []string `json:"capabilities,omitempty"`
 	Mode                   string   `json:"mode,omitempty"`

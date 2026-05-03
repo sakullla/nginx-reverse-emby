@@ -88,6 +88,47 @@ func TestLoadFromEnvHTTP3EnabledDefaultsFalse(t *testing.T) {
 	}
 }
 
+func TestLoadFromEnvTrafficStatsEnabledDefaultsTrue(t *testing.T) {
+	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
+	t.Setenv("NRE_AGENT_TOKEN", "secret")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if !cfg.TrafficStatsEnabled {
+		t.Fatal("expected TrafficStatsEnabled to default true")
+	}
+}
+
+func TestLoadFromEnvTrafficStatsEnabledParsesFalse(t *testing.T) {
+	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
+	t.Setenv("NRE_AGENT_TOKEN", "secret")
+	t.Setenv("NRE_TRAFFIC_STATS_ENABLED", "false")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if cfg.TrafficStatsEnabled {
+		t.Fatal("expected TrafficStatsEnabled to be false")
+	}
+}
+
+func TestLoadFromEnvRejectsInvalidTrafficStatsEnabled(t *testing.T) {
+	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
+	t.Setenv("NRE_AGENT_TOKEN", "secret")
+	t.Setenv("NRE_TRAFFIC_STATS_ENABLED", "maybe")
+
+	_, err := LoadFromEnv()
+	if err == nil {
+		t.Fatal("expected invalid NRE_TRAFFIC_STATS_ENABLED error")
+	}
+	if !strings.Contains(err.Error(), "NRE_TRAFFIC_STATS_ENABLED") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 func TestLoadFromEnvHTTP3EnabledParsesTrue(t *testing.T) {
 	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
 	t.Setenv("NRE_AGENT_TOKEN", "secret")

@@ -82,6 +82,7 @@ func TestNewRuntimeStartsEmbeddedRuntimeWithBridgeAdapters(t *testing.T) {
 	cfg.LocalAgentBackendFailures.BackoffLimit = 15 * time.Second
 	cfg.LocalAgentBackendFailuresExplicit = true
 	cfg.LocalAgentRelayTimeouts.IdleTimeout = 12 * time.Second
+	cfg.LocalAgentTrafficStatsEnabled = false
 
 	store := &bridgeStoreStub{
 		snapshot: Snapshot{
@@ -114,6 +115,9 @@ func TestNewRuntimeStartsEmbeddedRuntimeWithBridgeAdapters(t *testing.T) {
 		}
 		if cfg.RelayTimeouts.IdleTimeout != 12*time.Second {
 			t.Fatalf("IdleTimeout = %v", cfg.RelayTimeouts.IdleTimeout)
+		}
+		if cfg.TrafficStatsEnabled {
+			t.Fatal("expected TrafficStatsEnabled to propagate")
 		}
 		request := mustDecodeEmbeddedSyncRequest(t, `{
 			"CurrentRevision": 14,
@@ -538,6 +542,112 @@ func TestMergeRuntimeStateWithSyncRequestPreservesAuthoritativeMetadataApplyOutc
 	}
 	if len(merged.ManagedCertificateReports) != 1 || merged.ManagedCertificateReports[0].ID != 21 {
 		t.Fatalf("merge did not preserve bridged managed certificate reports: %+v", merged.ManagedCertificateReports)
+	}
+}
+
+func TestMergeRuntimeStateWithSyncRequestPersistsStatsMetadata(t *testing.T) {
+	state := RuntimeState{}
+	request := SyncRequest{
+		Stats: map[string]any{
+			"traffic": map[string]any{
+				"total": map[string]any{
+					"rx_bytes": float64(123),
+					"tx_bytes": float64(456),
+				},
+			},
+		},
+	}
+
+	merged := mergeRuntimeStateWithSyncRequest(state, request)
+
+	if merged.Metadata["stats"] == "" {
+		t.Fatalf("merge did not persist stats metadata: %+v", merged.Metadata)
+	}
+}
+
+func TestMergeRuntimeStateWithSyncRequestPreservesStatsMetadataWhenStatsOmitted(t *testing.T) {
+	const existingStats = `{"traffic":{"total":{"rx_bytes":123,"tx_bytes":456}}}`
+	state := RuntimeState{
+		Metadata: map[string]string{
+			"stats":             existingStats,
+			"last_apply_status": "success",
+		},
+	}
+
+	merged := mergeRuntimeStateWithSyncRequest(state, SyncRequest{})
+
+	if merged.Metadata["stats"] != existingStats {
+		t.Fatalf("merge did not preserve existing stats metadata: %+v", merged.Metadata)
+	}
+	if merged.Metadata["last_apply_status"] != "success" {
+		t.Fatalf("merge removed unrelated metadata: %+v", merged.Metadata)
+	}
+}
+
+func TestMergeRuntimeStateWithSyncRequestClearsStatsMetadataWhenStatsExplicitlyEmpty(t *testing.T) {
+	state := RuntimeState{
+		Metadata: map[string]string{
+			"stats":             `{"traffic":{"total":{"rx_bytes":123,"tx_bytes":456}}}`,
+			"last_apply_status": "success",
+		},
+	}
+
+	merged := mergeRuntimeStateWithSyncRequest(state, SyncRequest{Stats: map[string]any{}})
+
+	if _, ok := merged.Metadata["stats"]; ok {
+		t.Fatalf("merge retained stale stats metadata: %+v", merged.Metadata)
+	}
+	if merged.Metadata["last_apply_status"] != "success" {
+		t.Fatalf("merge removed unrelated metadata: %+v", merged.Metadata)
+	}
+}
+
+func TestFromEmbeddedSyncRequestPreservesExplicitEmptyStats(t *testing.T) {
+	request := goagentembedded.SyncRequest{
+		Stats:        map[string]any{},
+		StatsPresent: true,
+	}
+
+	converted := fromEmbeddedSyncRequest(request)
+
+	if converted.Stats == nil {
+		t.Fatal("fromEmbeddedSyncRequest() Stats = nil, want explicit empty map")
+	}
+	if len(converted.Stats) != 0 {
+		t.Fatalf("fromEmbeddedSyncRequest() Stats = %+v, want empty map", converted.Stats)
+	}
+}
+
+func TestSyncRequestBridgePreservesExplicitEmptyStats(t *testing.T) {
+	bridge := newSyncRequestBridge()
+	bridge.Store(SyncRequest{Stats: map[string]any{}})
+
+	loaded := bridge.Load()
+
+	if loaded.Stats == nil {
+		t.Fatal("bridge.Load() Stats = nil, want explicit empty map")
+	}
+	if len(loaded.Stats) != 0 {
+		t.Fatalf("bridge.Load() Stats = %+v, want empty map", loaded.Stats)
+	}
+}
+
+func TestFromEmbeddedSyncRequestCopiesStats(t *testing.T) {
+	request := goagentembedded.SyncRequest{
+		Stats: map[string]any{
+			"traffic": map[string]any{
+				"total": map[string]any{
+					"rx_bytes": float64(123),
+					"tx_bytes": float64(456),
+				},
+			},
+		},
+	}
+
+	converted := fromEmbeddedSyncRequest(request)
+
+	if converted.Stats["traffic"] == nil {
+		t.Fatalf("fromEmbeddedSyncRequest() Stats = %+v", converted.Stats)
 	}
 }
 

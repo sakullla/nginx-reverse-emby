@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -44,6 +45,10 @@ func (f *fakeStore) ListHTTPRules(_ context.Context, agentID string) ([]storage.
 
 func (f *fakeStore) LoadLocalAgentState(context.Context) (storage.LocalAgentStateRow, error) {
 	return f.localState, nil
+}
+
+func (f *fakeStore) LoadLocalRuntimeState(context.Context) (storage.RuntimeState, error) {
+	return f.savedRuntimeState, nil
 }
 
 func (f *fakeStore) SaveAgent(_ context.Context, row storage.AgentRow) error {
@@ -455,6 +460,112 @@ func TestAgentServiceUpdatePersistsOutboundProxyURL(t *testing.T) {
 	}
 }
 
+func TestAgentServiceUpdatePersistsTrafficStatsInterval(t *testing.T) {
+	ctx := context.Background()
+	store := &fakeStore{}
+	if err := store.SaveAgent(ctx, storage.AgentRow{
+		ID:                   "edge-a",
+		Name:                 "Edge A",
+		AgentToken:           "token-a",
+		CapabilitiesJSON:     `["http_rules"]`,
+		DesiredRevision:      7,
+		CurrentRevision:      7,
+		LastApplyStatus:      "success",
+		TrafficStatsInterval: "30s",
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	svc := NewAgentService(config.Config{}, store)
+
+	agent, err := svc.Update(ctx, "edge-a", UpdateAgentRequest{
+		TrafficStatsInterval: stringPtr("  1m  "),
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if agent.TrafficStatsInterval != "1m0s" || store.savedAgent.TrafficStatsInterval != "1m0s" {
+		t.Fatalf("TrafficStatsInterval agent=%q saved=%q", agent.TrafficStatsInterval, store.savedAgent.TrafficStatsInterval)
+	}
+	assertRevisionAboveFloor(t, "saved DesiredRevision", store.savedAgent.DesiredRevision, 7)
+
+	_, err = svc.Update(ctx, "edge-a", UpdateAgentRequest{
+		TrafficStatsInterval: stringPtr("60s"),
+	})
+	if err != nil {
+		t.Fatalf("Update() unchanged canonical error = %v", err)
+	}
+	if store.savedAgent.TrafficStatsInterval != "1m0s" {
+		t.Fatalf("TrafficStatsInterval after unchanged update = %q", store.savedAgent.TrafficStatsInterval)
+	}
+	unchangedRevision := store.savedAgent.DesiredRevision
+
+	_, err = svc.Update(ctx, "edge-a", UpdateAgentRequest{
+		TrafficStatsInterval: stringPtr(" "),
+	})
+	if err != nil {
+		t.Fatalf("Update() clear error = %v", err)
+	}
+	if store.savedAgent.TrafficStatsInterval != "" {
+		t.Fatalf("TrafficStatsInterval after clear = %q", store.savedAgent.TrafficStatsInterval)
+	}
+	assertRevisionAboveFloor(t, "clear DesiredRevision", store.savedAgent.DesiredRevision, unchangedRevision)
+}
+
+func TestAgentServiceUpdateCanonicalizesEquivalentTrafficStatsIntervalWithoutRevisionBump(t *testing.T) {
+	ctx := context.Background()
+	store := &fakeStore{}
+	if err := store.SaveAgent(ctx, storage.AgentRow{
+		ID:                   "edge-a",
+		Name:                 "Edge A",
+		AgentToken:           "token-a",
+		CapabilitiesJSON:     `["http_rules"]`,
+		DesiredRevision:      7,
+		CurrentRevision:      7,
+		LastApplyStatus:      "success",
+		TrafficStatsInterval: "60s",
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	svc := NewAgentService(config.Config{}, store)
+
+	agent, err := svc.Update(ctx, "edge-a", UpdateAgentRequest{
+		TrafficStatsInterval: stringPtr("1m"),
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if agent.TrafficStatsInterval != "1m0s" || store.savedAgent.TrafficStatsInterval != "1m0s" {
+		t.Fatalf("TrafficStatsInterval agent=%q saved=%q", agent.TrafficStatsInterval, store.savedAgent.TrafficStatsInterval)
+	}
+	if store.savedAgent.DesiredRevision != 7 {
+		t.Fatalf("DesiredRevision = %d, want 7", store.savedAgent.DesiredRevision)
+	}
+}
+
+func TestAgentServiceUpdateRejectsInvalidTrafficStatsInterval(t *testing.T) {
+	ctx := context.Background()
+	for _, raw := range []string{"bad", "0s", "-1s"} {
+		store := &fakeStore{}
+		if err := store.SaveAgent(ctx, storage.AgentRow{
+			ID:               "edge-a",
+			Name:             "Edge A",
+			AgentToken:       "token-a",
+			CapabilitiesJSON: `["http_rules"]`,
+			LastApplyStatus:  "success",
+		}); err != nil {
+			t.Fatalf("SaveAgent() error = %v", err)
+		}
+		svc := NewAgentService(config.Config{}, store)
+
+		_, err := svc.Update(ctx, "edge-a", UpdateAgentRequest{
+			TrafficStatsInterval: stringPtr(raw),
+		})
+		if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "traffic_stats_interval") {
+			t.Fatalf("Update(%q) error = %v, want traffic_stats_interval validation", raw, err)
+		}
+	}
+}
+
 func TestAgentServiceUpdateBumpsDesiredRevisionWhenOutboundProxyURLChanges(t *testing.T) {
 	ctx := context.Background()
 	store := &fakeStore{
@@ -478,6 +589,42 @@ func TestAgentServiceUpdateBumpsDesiredRevisionWhenOutboundProxyURLChanges(t *te
 	}
 
 	assertRevisionAboveFloor(t, "saved DesiredRevision", store.savedAgent.DesiredRevision, 7)
+}
+
+func TestAgentServiceUpdateBumpsDesiredRevisionOnceWhenRuntimeConfigFieldsChange(t *testing.T) {
+	ctx := context.Background()
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID:                   "edge-a",
+			Name:                 "Edge A",
+			AgentToken:           "token-a",
+			CapabilitiesJSON:     `["http_rules","l4","relay"]`,
+			OutboundProxyURL:     "socks://127.0.0.1:1080",
+			TrafficStatsInterval: "30s",
+			DesiredRevision:      7,
+			CurrentRevision:      7,
+			LastApplyStatus:      "success",
+		}, {
+			ID:              "edge-b",
+			Name:            "Edge B",
+			AgentToken:      "token-b",
+			DesiredRevision: 9,
+			CurrentRevision: 9,
+		}},
+	}
+	svc := NewAgentService(config.Config{}, store)
+
+	_, err := svc.Update(ctx, "edge-a", UpdateAgentRequest{
+		OutboundProxyURL:     stringPtr("socks://127.0.0.1:1081"),
+		TrafficStatsInterval: stringPtr("1m"),
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	if store.savedAgent.DesiredRevision != 8 {
+		t.Fatalf("DesiredRevision = %d, want 8", store.savedAgent.DesiredRevision)
+	}
 }
 
 func TestAgentServiceUpdateRejectsInvalidOutboundProxyURL(t *testing.T) {
@@ -1726,6 +1873,11 @@ func TestAgentServiceStatsFallbackAndApplyBehavior(t *testing.T) {
 		},
 		snapshot:      storage.Snapshot{DesiredVersion: "1.2.3", Revision: 5},
 		localSnapshot: storage.Snapshot{DesiredVersion: "1.2.3", Revision: 4},
+		savedRuntimeState: storage.RuntimeState{
+			Metadata: map[string]string{
+				"stats": `{"traffic":{"total":{"rx_bytes":123,"tx_bytes":456}}}`,
+			},
+		},
 	}
 	svc := NewAgentService(cfg, store)
 
@@ -1741,7 +1893,15 @@ func TestAgentServiceStatsFallbackAndApplyBehavior(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stats(local) error = %v", err)
 	}
-	if localStats["status"] != "运行中" {
+	traffic, ok := localStats["traffic"].(map[string]any)
+	if !ok {
+		t.Fatalf("Stats(local) missing traffic = %+v", localStats)
+	}
+	total, ok := traffic["total"].(map[string]any)
+	if !ok {
+		t.Fatalf("Stats(local) missing total traffic = %+v", localStats)
+	}
+	if total["rx_bytes"] != float64(123) || total["tx_bytes"] != float64(456) {
 		t.Fatalf("Stats(local) = %+v", localStats)
 	}
 

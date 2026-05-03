@@ -31,6 +31,7 @@ type agentStore interface {
 	ListL4Rules(context.Context, string) ([]storage.L4RuleRow, error)
 	ListRelayListeners(context.Context, string) ([]storage.RelayListenerRow, error)
 	LoadLocalAgentState(context.Context) (storage.LocalAgentStateRow, error)
+	LoadLocalRuntimeState(context.Context) (storage.RuntimeState, error)
 	LoadAgentSnapshot(context.Context, string, storage.AgentSnapshotInput) (storage.Snapshot, error)
 	LoadLocalSnapshot(context.Context, string) (storage.Snapshot, error)
 	ListManagedCertificates(context.Context) ([]storage.ManagedCertificateRow, error)
@@ -61,6 +62,7 @@ type AgentSummary struct {
 	DesiredVersion         string   `json:"desired_version"`
 	Tags                   []string `json:"tags"`
 	OutboundProxyURL       string   `json:"outbound_proxy_url"`
+	TrafficStatsInterval   string   `json:"traffic_stats_interval"`
 	Mode                   string   `json:"mode"`
 	DesiredRevision        int      `json:"desired_revision"`
 	CurrentRevision        int      `json:"current_revision"`
@@ -131,23 +133,25 @@ type HeartbeatRequest struct {
 }
 
 type HeartbeatReply struct {
-	HasUpdate           bool                               `json:"has_update"`
-	DesiredVersion      string                             `json:"desired_version"`
-	DesiredRevision     int64                              `json:"desired_revision"`
-	CurrentRevision     int64                              `json:"current_revision"`
-	VersionPackage      string                             `json:"version_package,omitempty"`
-	VersionPackageMeta  *storage.VersionPackage            `json:"version_package_meta,omitempty"`
-	VersionSHA256       string                             `json:"version_sha256,omitempty"`
-	Rules               []storage.HTTPRule                 `json:"rules"`
-	L4Rules             []storage.L4Rule                   `json:"l4_rules"`
-	RelayListeners      []storage.RelayListener            `json:"relay_listeners"`
-	Certificates        []storage.ManagedCertificateBundle `json:"certificates"`
-	CertificatePolicies []storage.ManagedCertificatePolicy `json:"certificate_policies"`
-	OutboundProxyURL    string                             `json:"-"`
+	HasUpdate            bool                               `json:"has_update"`
+	DesiredVersion       string                             `json:"desired_version"`
+	DesiredRevision      int64                              `json:"desired_revision"`
+	CurrentRevision      int64                              `json:"current_revision"`
+	VersionPackage       string                             `json:"version_package,omitempty"`
+	VersionPackageMeta   *storage.VersionPackage            `json:"version_package_meta,omitempty"`
+	VersionSHA256        string                             `json:"version_sha256,omitempty"`
+	Rules                []storage.HTTPRule                 `json:"rules"`
+	L4Rules              []storage.L4Rule                   `json:"l4_rules"`
+	RelayListeners       []storage.RelayListener            `json:"relay_listeners"`
+	Certificates         []storage.ManagedCertificateBundle `json:"certificates"`
+	CertificatePolicies  []storage.ManagedCertificatePolicy `json:"certificate_policies"`
+	OutboundProxyURL     string                             `json:"-"`
+	TrafficStatsInterval string                             `json:"-"`
 }
 
 type AgentRuntimeConfig struct {
-	OutboundProxyURL string `json:"outbound_proxy_url"`
+	OutboundProxyURL     string `json:"outbound_proxy_url"`
+	TrafficStatsInterval string `json:"traffic_stats_interval,omitempty"`
 }
 
 type RuntimePackageInfo struct {
@@ -171,13 +175,14 @@ type RegisterRequest struct {
 }
 
 type UpdateAgentRequest struct {
-	Name             *string   `json:"name,omitempty"`
-	AgentURL         *string   `json:"agent_url,omitempty"`
-	AgentToken       *string   `json:"agent_token,omitempty"`
-	Version          *string   `json:"version,omitempty"`
-	Tags             *[]string `json:"tags,omitempty"`
-	Capabilities     *[]string `json:"capabilities,omitempty"`
-	OutboundProxyURL *string   `json:"outbound_proxy_url,omitempty"`
+	Name                 *string   `json:"name,omitempty"`
+	AgentURL             *string   `json:"agent_url,omitempty"`
+	AgentToken           *string   `json:"agent_token,omitempty"`
+	Version              *string   `json:"version,omitempty"`
+	Tags                 *[]string `json:"tags,omitempty"`
+	Capabilities         *[]string `json:"capabilities,omitempty"`
+	OutboundProxyURL     *string   `json:"outbound_proxy_url,omitempty"`
+	TrafficStatsInterval *string   `json:"traffic_stats_interval,omitempty"`
 }
 
 type AgentStats map[string]any
@@ -449,6 +454,7 @@ func (s *agentService) Update(ctx context.Context, agentID string, input UpdateA
 	if input.Capabilities != nil {
 		row.CapabilitiesJSON = marshalStringArray(normalizeCapabilities(*input.Capabilities))
 	}
+	configChanged := false
 	if input.OutboundProxyURL != nil {
 		previousOutboundProxyURL := strings.TrimSpace(row.OutboundProxyURL)
 		outboundProxyURL, err := normalizeOutboundProxyURLUpdate(*input.OutboundProxyURL, row.OutboundProxyURL)
@@ -462,12 +468,26 @@ func (s *agentService) Update(ctx context.Context, agentID string, input UpdateA
 		}
 		row.OutboundProxyURL = outboundProxyURL
 		if outboundProxyURL != previousOutboundProxyURL {
-			allocator, err := newConfigIdentityAllocatorFromStore(ctx, s.cfg, s.store)
-			if err != nil {
-				return AgentSummary{}, err
-			}
-			row.DesiredRevision = allocator.AllocateRevisionForAgent(row.ID, row.DesiredRevision)
+			configChanged = true
 		}
+	}
+	if input.TrafficStatsInterval != nil {
+		previousTrafficStatsInterval := normalizeStoredTrafficStatsInterval(row.TrafficStatsInterval)
+		trafficStatsInterval, err := normalizeTrafficStatsInterval(*input.TrafficStatsInterval)
+		if err != nil {
+			return AgentSummary{}, err
+		}
+		row.TrafficStatsInterval = trafficStatsInterval
+		if trafficStatsInterval != previousTrafficStatsInterval {
+			configChanged = true
+		}
+	}
+	if configChanged {
+		allocator, err := newConfigIdentityAllocatorFromStore(ctx, s.cfg, s.store)
+		if err != nil {
+			return AgentSummary{}, err
+		}
+		row.DesiredRevision = allocator.AllocateRevisionForAgent(row.ID, row.DesiredRevision)
 	}
 
 	if err := s.store.SaveAgent(ctx, row); err != nil {
@@ -482,6 +502,26 @@ func normalizeOutboundProxyURLUpdate(raw string, fallback string) (string, error
 		return "", fmt.Errorf("%w: outbound_proxy_url password is redacted; re-enter the password before saving changes", ErrInvalidArgument)
 	}
 	return normalized, nil
+}
+
+func normalizeTrafficStatsInterval(raw string) (string, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", nil
+	}
+	dur, err := time.ParseDuration(trimmed)
+	if err != nil || dur <= 0 {
+		return "", fmt.Errorf("%w: traffic_stats_interval must be a positive duration", ErrInvalidArgument)
+	}
+	return dur.String(), nil
+}
+
+func normalizeStoredTrafficStatsInterval(raw string) string {
+	normalized, err := normalizeTrafficStatsInterval(raw)
+	if err != nil {
+		return strings.TrimSpace(raw)
+	}
+	return normalized
 }
 
 func (s *agentService) Delete(ctx context.Context, agentID string) (AgentSummary, error) {
@@ -556,11 +596,19 @@ func (s *agentService) Delete(ctx context.Context, agentID string) (AgentSummary
 
 func (s *agentService) Stats(ctx context.Context, agentID string) (AgentStats, error) {
 	if s.cfg.EnableLocalAgent && agentID == s.cfg.LocalAgentID {
-		return AgentStats{
-			"activeConnections": "0",
-			"totalRequests":     "0",
-			"status":            "运行中",
-		}, nil
+		runtimeState, err := s.store.LoadLocalRuntimeState(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if runtimeState.Metadata != nil {
+			if stats := parseAgentStats(runtimeState.Metadata["stats"]); len(stats) > 0 {
+				if _, ok := stats["status"]; !ok {
+					stats["status"] = "运行中"
+				}
+				return stats, nil
+			}
+		}
+		return localFallbackStats(), nil
 	}
 	row, err := s.findAgentByID(ctx, agentID)
 	if err != nil {
@@ -577,6 +625,14 @@ func (s *agentService) Stats(ctx context.Context, agentID string) (AgentStats, e
 		"totalRequests": "0",
 		"status":        status,
 	}, nil
+}
+
+func localFallbackStats() AgentStats {
+	return AgentStats{
+		"activeConnections": "0",
+		"totalRequests":     "0",
+		"status":            "运行中",
+	}
 }
 
 func (s *agentService) Apply(ctx context.Context, agentID string) (ApplyAgentResult, error) {
@@ -704,16 +760,17 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 	}
 
 	reply := HeartbeatReply{
-		HasUpdate:           request.CurrentRevision < snapshot.Revision || !strings.EqualFold(strings.TrimSpace(row.LastApplyStatus), "success"),
-		DesiredVersion:      snapshot.DesiredVersion,
-		DesiredRevision:     snapshot.Revision,
-		CurrentRevision:     int64(row.CurrentRevision),
-		Rules:               snapshot.Rules,
-		L4Rules:             snapshot.L4Rules,
-		RelayListeners:      snapshot.RelayListeners,
-		Certificates:        snapshot.Certificates,
-		CertificatePolicies: snapshot.CertificatePolicies,
-		OutboundProxyURL:    strings.TrimSpace(row.OutboundProxyURL),
+		HasUpdate:            request.CurrentRevision < snapshot.Revision || !strings.EqualFold(strings.TrimSpace(row.LastApplyStatus), "success"),
+		DesiredVersion:       snapshot.DesiredVersion,
+		DesiredRevision:      snapshot.Revision,
+		CurrentRevision:      int64(row.CurrentRevision),
+		Rules:                snapshot.Rules,
+		L4Rules:              snapshot.L4Rules,
+		RelayListeners:       snapshot.RelayListeners,
+		Certificates:         snapshot.Certificates,
+		CertificatePolicies:  snapshot.CertificatePolicies,
+		OutboundProxyURL:     strings.TrimSpace(row.OutboundProxyURL),
+		TrafficStatsInterval: strings.TrimSpace(row.TrafficStatsInterval),
 	}
 	if snapshot.VersionPackage != nil {
 		pkgCopy := *snapshot.VersionPackage
@@ -878,6 +935,7 @@ func (s *agentService) summaryForRow(ctx context.Context, row storage.AgentRow) 
 		DesiredVersion:         row.DesiredVersion,
 		Tags:                   parseStringArray(row.TagsJSON),
 		OutboundProxyURL:       strings.TrimSpace(row.OutboundProxyURL),
+		TrafficStatsInterval:   strings.TrimSpace(row.TrafficStatsInterval),
 		Mode:                   defaultString(row.Mode, "pull"),
 		DesiredRevision:        row.DesiredRevision,
 		CurrentRevision:        row.CurrentRevision,

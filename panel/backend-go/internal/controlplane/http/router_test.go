@@ -1316,6 +1316,51 @@ func TestRouterUpdatesAgentOutboundProxyAndRedactsResponse(t *testing.T) {
 	}
 }
 
+func TestPatchAgentAcceptsTrafficStatsInterval(t *testing.T) {
+	state := &fakeAgentServiceState{}
+	router, err := NewRouter(Dependencies{
+		Config:        config.Config{PanelToken: "secret"},
+		SystemService: fakeSystemService{},
+		AgentService: fakeAgentService{
+			updateAgent: service.AgentSummary{
+				ID:                   "edge-1",
+				Name:                 "Edge 1",
+				TrafficStatsInterval: "30s",
+			},
+			state: state,
+		},
+		RuleService:          fakeRuleService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPatch, "/panel-api/agents/edge-1", bytes.NewBufferString(`{"traffic_stats_interval":"30s"}`))
+	req.Header.Set("X-Panel-Token", "secret")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("PATCH /panel-api/agents/edge-1 = %d body=%s", resp.Code, resp.Body.String())
+	}
+	if state.updateAgentID != "edge-1" || state.updateInput.TrafficStatsInterval == nil || *state.updateInput.TrafficStatsInterval != "30s" {
+		t.Fatalf("update state = %+v", state)
+	}
+
+	var payload struct {
+		Agent service.AgentSummary `json:"agent"`
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if payload.Agent.TrafficStatsInterval != "30s" {
+		t.Fatalf("traffic_stats_interval = %q", payload.Agent.TrafficStatsInterval)
+	}
+}
+
 func TestRouterRedactsL4ProxyCredentials(t *testing.T) {
 	secretRule := service.L4Rule{
 		ID:         7,

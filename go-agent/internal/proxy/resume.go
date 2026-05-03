@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
 )
 
 type resumableResponse struct {
@@ -40,7 +42,7 @@ func (e *routeEntry) shouldResumeResponse(req *http.Request, resp *http.Response
 	return newResumableResponse(req, resp)
 }
 
-func (e *routeEntry) copyResumableResponse(w http.ResponseWriter, req *http.Request, resp *http.Response, state resumableResponse) (int64, error) {
+func (e *routeEntry) copyResumableResponse(w http.ResponseWriter, req *http.Request, resp *http.Response, state resumableResponse, recorder *traffic.Recorder) (int64, error) {
 	copyProxyResponseHeaders(w.Header(), resp.Header, resp.StatusCode)
 	w.Header().Set("Content-Length", strconv.FormatInt(state.responseLength(), 10))
 	w.WriteHeader(resp.StatusCode)
@@ -55,7 +57,7 @@ func (e *routeEntry) copyResumableResponse(w http.ResponseWriter, req *http.Requ
 		current       = resp
 	)
 	for {
-		n, readErr, writeErr := copyResumableChunk(w, current.Body)
+		n, readErr, writeErr := copyResumableChunk(newHTTPResponseTrafficResponseWriter(w, recorder), current.Body)
 		sentBytes += n
 		if writeErr != nil {
 			_ = current.Body.Close()

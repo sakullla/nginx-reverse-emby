@@ -898,7 +898,7 @@ func (p *relayHTTPConnectProxy) handleConn(client net.Conn) {
 	if err := proxyproto.WriteClientRequestSuccess(client, req); err != nil {
 		return
 	}
-	pipeBothWays(client, upstream)
+	pipeBothWays(client, upstream, nil)
 }
 
 func (p *relayHTTPConnectProxy) SawConnectTo(target string) bool {

@@ -100,6 +100,7 @@ func TestBootstrapSQLiteSchemaCreatesProxyColumnsWithDefaults(t *testing.T) {
 
 	agentColumns := loadSQLiteTableInfo(t, db, "agents")
 	assertSQLiteColumnContract(t, agentColumns, "outbound_proxy_url", 1, `""`)
+	assertSQLiteColumnContract(t, agentColumns, "traffic_stats_interval", 1, `""`)
 
 	l4Columns := loadSQLiteTableInfo(t, db, "l4_rules")
 	assertSQLiteColumnContract(t, l4Columns, "listen_mode", 1, `"tcp"`)
@@ -451,6 +452,38 @@ func TestSQLiteStorePersistsAgentOutboundProxyURL(t *testing.T) {
 	got := agents[0]
 	if got.OutboundProxyURL != agent.OutboundProxyURL {
 		t.Fatalf("OutboundProxyURL = %q, want %q", got.OutboundProxyURL, agent.OutboundProxyURL)
+	}
+}
+
+func TestSQLiteStorePersistsAgentTrafficStatsInterval(t *testing.T) {
+	ctx := context.Background()
+	dataRoot := t.TempDir()
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	defer store.Close()
+
+	agent := AgentRow{
+		ID:                   "edge-a",
+		Name:                 "Edge A",
+		CapabilitiesJSON:     `["http_rules"]`,
+		TrafficStatsInterval: "30s",
+	}
+	if err := store.SaveAgent(ctx, agent); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	agents, err := store.ListAgents(ctx)
+	if err != nil {
+		t.Fatalf("ListAgents() error = %v", err)
+	}
+	if len(agents) != 1 {
+		t.Fatalf("ListAgents() len = %d", len(agents))
+	}
+	got := agents[0]
+	if got.TrafficStatsInterval != agent.TrafficStatsInterval {
+		t.Fatalf("TrafficStatsInterval = %q, want %q", got.TrafficStatsInterval, agent.TrafficStatsInterval)
 	}
 }
 
@@ -2071,6 +2104,48 @@ func TestStoreSavesSuccessfulLocalRuntimeStateIntoLocalAgentState(t *testing.T) 
 	}
 	if state.LastApplyMessage != "" {
 		t.Fatalf("LastApplyMessage = %q", state.LastApplyMessage)
+	}
+
+	runtimeState, err := store.LoadLocalRuntimeState(t.Context())
+	if err != nil {
+		t.Fatalf("LoadLocalRuntimeState() error = %v", err)
+	}
+	if runtimeState.CurrentRevision != 9 || runtimeState.Status != "active" {
+		t.Fatalf("LoadLocalRuntimeState() = %+v", runtimeState)
+	}
+}
+
+func TestStorePersistsLocalRuntimeStateMetadata(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromGORM(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	err = store.SaveLocalRuntimeState(t.Context(), "local", RuntimeState{
+		CurrentRevision: 9,
+		Status:          "active",
+		Metadata: map[string]string{
+			"stats": `{"traffic":{"total":{"rx_bytes":123,"tx_bytes":456}}}`,
+		},
+	})
+	if err != nil {
+		t.Fatalf("SaveLocalRuntimeState() error = %v", err)
+	}
+
+	runtimeState, err := store.LoadLocalRuntimeState(t.Context())
+	if err != nil {
+		t.Fatalf("LoadLocalRuntimeState() error = %v", err)
+	}
+	if runtimeState.Metadata["stats"] != `{"traffic":{"total":{"rx_bytes":123,"tx_bytes":456}}}` {
+		t.Fatalf("LoadLocalRuntimeState() metadata = %+v", runtimeState.Metadata)
 	}
 }
 

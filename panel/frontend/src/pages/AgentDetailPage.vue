@@ -29,6 +29,30 @@
       </div>
     </div>
 
+    <section class="traffic-summary">
+      <div class="traffic-summary__header">
+        <h2>流量统计</h2>
+        <span>{{ agentStats?.status || '—' }}</span>
+      </div>
+      <div class="traffic-summary__totals">
+        <div class="traffic-total">
+          <span class="traffic-total__label">入站</span>
+          <span class="traffic-total__value">{{ formatBytes(totalTraffic.rx_bytes) }}</span>
+        </div>
+        <div class="traffic-total">
+          <span class="traffic-total__label">出站</span>
+          <span class="traffic-total__value">{{ formatBytes(totalTraffic.tx_bytes) }}</span>
+        </div>
+      </div>
+      <div class="traffic-summary__breakdown">
+        <div v-for="item in trafficBreakdown" :key="item.key" class="traffic-row">
+          <span>{{ item.label }}</span>
+          <span>↓ {{ formatBytes(item.rx_bytes) }}</span>
+          <span>↑ {{ formatBytes(item.tx_bytes) }}</span>
+        </div>
+      </div>
+    </section>
+
     <div v-if="agent.last_apply_status === 'failed' && agent.last_apply_message" class="agent-detail__error">
       <div class="error-block">
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -94,6 +118,25 @@
             </button>
           </div>
         </div>
+        <div v-if="!agent.is_local" class="agent-setting">
+          <label class="agent-setting__label" for="agent-traffic-stats-interval">流量统计上报周期</label>
+          <div class="agent-setting__control">
+            <input
+              id="agent-traffic-stats-interval"
+              v-model="trafficStatsInterval"
+              class="agent-setting__input"
+              placeholder="例如 30s、1m、5m；留空表示随心跳上报"
+            >
+            <button
+              class="btn btn-primary"
+              type="button"
+              :disabled="updateAgent.isPending.value"
+              @click="saveTrafficStatsInterval"
+            >
+              保存
+            </button>
+          </div>
+        </div>
         <div class="info-grid">
           <div class="info-row"><span>版本</span><span>{{ agent.version || agent.runtime_package_version || '—' }}</span></div>
           <div class="info-row"><span>平台</span><span>{{ agent.runtime_package_platform || agent.platform || '—' }}</span></div>
@@ -127,11 +170,14 @@
 <script setup>
 import { ref, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useQuery } from '@tanstack/vue-query'
 import { useRules } from '../hooks/useRules'
 import { useL4Rules } from '../hooks/useL4Rules'
 import { useAgents, useUpdateAgent } from '../hooks/useAgents'
+import { fetchAgentStats } from '../api'
 import { messageStore } from '../stores/messages'
 import { buildOutboundProxyPayload } from './outboundProxyURL'
+import { formatBytes, normalizeTrafficBucket } from '../utils/trafficStats.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -141,6 +187,7 @@ const { data: agentsData, isLoading } = useAgents()
 const agent = computed(() => agentsData.value?.find(a => a.id === agentId.value))
 const updateAgent = useUpdateAgent()
 const outboundProxyURL = ref('')
+const trafficStatsInterval = ref('')
 
 const { data: httpRulesData } = useRules(agentId)
 const httpRules = computed(() => httpRulesData.value ?? [])
@@ -149,6 +196,21 @@ const httpRulesCount = computed(() => httpRules.value.length)
 const { data: l4RulesData } = useL4Rules(agentId)
 const l4Rules = computed(() => l4RulesData.value ?? [])
 const l4RulesCount = computed(() => l4Rules.value.length)
+
+const { data: agentStatsData } = useQuery({
+  queryKey: ['agent-stats', agentId],
+  queryFn: () => fetchAgentStats(agentId.value),
+  enabled: () => !!agentId.value,
+  refetchInterval: 10_000
+})
+const agentStats = computed(() => agentStatsData.value ?? {})
+const trafficStats = computed(() => agentStats.value?.traffic ?? {})
+const totalTraffic = computed(() => normalizeTrafficBucket(trafficStats.value.total))
+const trafficBreakdown = computed(() => [
+  { key: 'http', label: 'HTTP', ...normalizeTrafficBucket(trafficStats.value.http) },
+  { key: 'l4', label: 'L4', ...normalizeTrafficBucket(trafficStats.value.l4) },
+  { key: 'relay', label: 'Relay', ...normalizeTrafficBucket(trafficStats.value.relay) }
+])
 
 const activeTab = ref('http')
 const tabs = [
@@ -159,6 +221,7 @@ const tabs = [
 
 watch(agent, (value) => {
   outboundProxyURL.value = value?.outbound_proxy_url || ''
+  trafficStatsInterval.value = value?.traffic_stats_interval || ''
 }, { immediate: true })
 
 async function saveOutboundProxy() {
@@ -174,6 +237,16 @@ async function saveOutboundProxy() {
   await updateAgent.mutateAsync({
     agentId: agent.value.id,
     payload
+  })
+}
+
+async function saveTrafficStatsInterval() {
+  if (!agent.value || agent.value.is_local) return
+  const nextInterval = trafficStatsInterval.value.trim()
+  if (nextInterval === (agent.value.traffic_stats_interval || '')) return
+  await updateAgent.mutateAsync({
+    agentId: agent.value.id,
+    payload: { traffic_stats_interval: nextInterval }
   })
 }
 
@@ -266,6 +339,17 @@ function timeAgo(date) {
 .stat-mini { flex: 1; background: var(--color-bg-surface); border: 1.5px solid var(--color-border-default); border-radius: var(--radius-xl); padding: 1rem; text-align: center; }
 .stat-mini__value { display: block; font-size: 1.5rem; font-weight: 700; color: var(--color-text-primary); }
 .stat-mini__label { font-size: 0.75rem; color: var(--color-text-tertiary); }
+.traffic-summary { margin-bottom: 1.5rem; padding: 1rem; background: var(--color-bg-surface); border: 1px solid var(--color-border-default); border-radius: var(--radius-lg); }
+.traffic-summary__header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1rem; }
+.traffic-summary__header h2 { margin: 0; font-size: 1rem; color: var(--color-text-primary); }
+.traffic-summary__header span { color: var(--color-text-tertiary); font-size: 0.8125rem; }
+.traffic-summary__totals { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem; margin-bottom: 0.75rem; }
+.traffic-total { min-width: 0; padding: 0.75rem; background: var(--color-bg-subtle); border-radius: var(--radius-md); }
+.traffic-total__label { display: block; margin-bottom: 0.25rem; color: var(--color-text-tertiary); font-size: 0.75rem; }
+.traffic-total__value { display: block; color: var(--color-text-primary); font-size: 1.25rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+.traffic-summary__breakdown { display: flex; flex-direction: column; gap: 0.375rem; }
+.traffic-row { display: grid; grid-template-columns: minmax(64px, 1fr) minmax(0, 1fr) minmax(0, 1fr); gap: 0.75rem; color: var(--color-text-secondary); font-size: 0.8125rem; font-variant-numeric: tabular-nums; }
+.traffic-row span:not(:first-child) { color: var(--color-text-tertiary); text-align: right; }
 .agent-detail__tabs { display: flex; gap: 2px; margin-bottom: 1.5rem; padding: 3px; background: var(--color-bg-subtle); border: 1px solid var(--color-border-default); border-radius: var(--radius-lg); }
 .tab-btn { padding: 6px 1rem; border: none; background: transparent; color: var(--color-text-muted); font-size: 0.875rem; font-weight: 500; cursor: pointer; border-radius: var(--radius-md); transition: all 0.15s; font-family: inherit; flex: 1; text-align: center; white-space: nowrap; }
 .tab-btn:hover { color: var(--color-text-secondary); }

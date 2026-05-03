@@ -14,4 +14,14 @@ describe('AgentDetailPage', () => {
   it('hides outbound proxy editing for embedded local agents', () => {
     expect(readPage()).toMatch(/v-if="!agent\.is_local"\s+class="agent-setting"/)
   })
+
+  it('loads and renders agent traffic stats', () => {
+    const source = readPage()
+
+    expect(source).toContain('fetchAgentStats')
+    expect(source).toContain('流量统计')
+    expect(source).toContain('formatBytes')
+    expect(source).toContain('rx_bytes')
+    expect(source).toContain('tx_bytes')
+  })
 })

@@ -2,6 +2,7 @@ package localagent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 
 	goagentembedded "github.com/sakullla/nginx-reverse-emby/go-agent/embedded"
@@ -38,11 +39,13 @@ func NewRuntime(cfg config.Config, store Store) (*Runtime, error) {
 
 	runtime, err := newEmbeddedRuntime(
 		goagentembedded.Config{
-			AgentID:           cfg.LocalAgentID,
-			AgentName:         cfg.LocalAgentName,
-			DataDir:           cfg.DataDir,
-			HeartbeatInterval: cfg.HeartbeatInterval,
-			HTTP3Enabled:      cfg.LocalAgentHTTP3Enabled,
+			AgentID:              cfg.LocalAgentID,
+			AgentName:            cfg.LocalAgentName,
+			DataDir:              cfg.DataDir,
+			HeartbeatInterval:    cfg.HeartbeatInterval,
+			HTTP3Enabled:         cfg.LocalAgentHTTP3Enabled,
+			TrafficStatsEnabled:  cfg.LocalAgentTrafficStatsEnabled,
+			TrafficStatsExplicit: cfg.LocalAgentTrafficStatsExplicit,
 			HTTPTransport: goagentembedded.HTTPTransportConfig{
 				DialTimeout:           cfg.LocalAgentHTTPTransport.DialTimeout,
 				TLSHandshakeTimeout:   cfg.LocalAgentHTTPTransport.TLSHandshakeTimeout,
@@ -282,6 +285,14 @@ func fromEmbeddedSyncRequest(request goagentembedded.SyncRequest) SyncRequest {
 		LastApplyRevision: request.LastApplyRevision,
 		LastApplyStatus:   request.LastApplyStatus,
 		LastApplyMessage:  request.LastApplyMessage,
+	}
+	if request.StatsPresent || request.Stats != nil {
+		if data, err := json.Marshal(request.Stats); err == nil {
+			var stats map[string]any
+			if json.Unmarshal(data, &stats) == nil {
+				copyValue.Stats = stats
+			}
+		}
 	}
 	if len(request.ManagedCertificateReports) == 0 {
 		return copyValue

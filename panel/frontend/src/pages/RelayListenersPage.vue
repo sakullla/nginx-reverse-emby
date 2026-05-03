@@ -42,6 +42,7 @@
         v-for='listener in listeners'
         :key='listener.id'
         :listener='listener'
+        :traffic='trafficForListener(listener)'
         @edit='startEdit'
         @toggle='toggleListener'
         @delete='startDelete'
@@ -79,14 +80,17 @@
 <script setup>
 import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useQuery } from '@tanstack/vue-query'
 import { useAgent } from '../context/AgentContext'
 import { useAgents } from '../hooks/useAgents'
 import { useRelayListeners, useDeleteRelayListener, useUpdateRelayListener } from '../hooks/useRelayListeners'
+import { fetchAgentStats } from '../api'
 import RelayListenerForm from '../components/RelayListenerForm.vue'
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
 import BaseModal from '../components/base/BaseModal.vue'
 import AgentPicker from '../components/AgentPicker.vue'
 import RelayCard from '../components/relay/RelayCard.vue'
+import { bucketForObject } from '../utils/trafficStats.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -106,6 +110,17 @@ const { data: listenersData, isLoading } = useRelayListeners(agentId)
 const deleteRelayListener = useDeleteRelayListener(agentId)
 const updateRelayListener = useUpdateRelayListener(agentId)
 const listeners = computed(() => listenersData.value ?? [])
+
+const { data: agentStatsData } = useQuery({
+  queryKey: ['agent-stats', agentId],
+  queryFn: () => fetchAgentStats(agentId.value),
+  enabled: () => !!agentId.value,
+  refetchInterval: 10_000
+})
+
+function trafficForListener(listener) {
+  return bucketForObject(agentStatsData.value, 'relay_listeners', listener?.id)
+}
 
 const showAddForm = ref(false)
 const editingListener = ref(null)

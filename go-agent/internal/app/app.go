@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"reflect"
@@ -22,6 +23,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
 	agentsync "github.com/sakullla/nginx-reverse-emby/go-agent/internal/sync"
 	agenttask "github.com/sakullla/nginx-reverse-emby/go-agent/internal/task"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
 	agentupdate "github.com/sakullla/nginx-reverse-emby/go-agent/internal/update"
 )
 
@@ -32,6 +34,11 @@ type SyncRequest = agentsync.SyncRequest
 type SyncClient interface {
 	Sync(context.Context, SyncRequest) (Snapshot, error)
 }
+
+const (
+	runtimeMetaTrafficStatsInterval       = "traffic_stats_interval"
+	runtimeMetaLastTrafficStatsReportUnix = "last_traffic_stats_report_unix"
+)
 
 type CertificateApplier interface {
 	Apply(context.Context, []model.ManagedCertificateBundle, []model.ManagedCertificatePolicy) error
@@ -64,22 +71,23 @@ type Updater interface {
 }
 
 type App struct {
-	cfg               Config
-	syncClient        SyncClient
-	store             store.Store
-	httpApplier       HTTPApplier
-	certApplier       CertificateApplier
-	l4Applier         L4Applier
-	relayApplier      RelayApplier
-	updater           Updater
-	runtime           *agentruntime.Runtime
-	taskClient        *agenttask.Client
-	diagnosticHandler *agenttask.DiagnosticHandler
-	httpProber        *diagnostics.HTTPProber
-	tcpProber         *diagnostics.TCPProber
-	relayTimeoutReset func()
-	closeOnce         sync.Once
-	syncMu            sync.Mutex
+	cfg                           Config
+	syncClient                    SyncClient
+	store                         store.Store
+	httpApplier                   HTTPApplier
+	certApplier                   CertificateApplier
+	l4Applier                     L4Applier
+	relayApplier                  RelayApplier
+	updater                       Updater
+	runtime                       *agentruntime.Runtime
+	taskClient                    *agenttask.Client
+	diagnosticHandler             *agenttask.DiagnosticHandler
+	httpProber                    *diagnostics.HTTPProber
+	tcpProber                     *diagnostics.TCPProber
+	relayTimeoutReset             func()
+	closeOnce                     sync.Once
+	syncMu                        sync.Mutex
+	pendingTrafficStatsReportUnix string
 }
 
 func advertisedCapabilities(cfg Config) []string {
@@ -111,12 +119,16 @@ func normalizeConstructorConfig(cfg Config) Config {
 	if cfg.HTTPResilience == (config.HTTPResilienceConfig{}) {
 		cfg.HTTPResilience = defaults.HTTPResilience
 	}
+	if !cfg.TrafficStatsExplicit {
+		cfg.TrafficStatsEnabled = defaults.TrafficStatsEnabled
+	}
 
 	return cfg
 }
 
 func New(cfg Config) (*App, error) {
 	cfg = normalizeConstructorConfig(cfg)
+	traffic.SetEnabled(cfg.TrafficStatsEnabled)
 
 	resetRelayTimeouts := relay.ConfigureTimeouts(relay.TimeoutConfig{
 		DialTimeout:      cfg.RelayTimeouts.DialTimeout,
@@ -308,6 +320,9 @@ func (a *App) Run(ctx context.Context) error {
 	if err := a.runtime.Apply(ctx, Snapshot{}, applied); err != nil {
 		log.Printf("[agent] startup runtime hydration error at revision %d: %v", applied.Revision, err)
 		_ = a.recordRuntimeErrorWithRevision(err, applied.Revision)
+	} else if err := a.persistTrafficStatsInterval(applied.AgentConfig.TrafficStatsInterval); err != nil {
+		log.Printf("[agent] startup traffic stats interval hydration error at revision %d: %v", applied.Revision, err)
+		_ = a.recordRuntimeErrorWithRevision(err, applied.Revision)
 	}
 
 	if err := a.performSync(ctx); err != nil {
@@ -373,6 +388,7 @@ func (a *App) SyncNow(ctx context.Context) error {
 
 func (a *App) syncRequest(ctx context.Context, applied Snapshot) (SyncRequest, error) {
 	req := SyncRequest{CurrentRevision: int(applied.Revision)}
+	a.pendingTrafficStatsReportUnix = ""
 
 	state, err := a.store.LoadRuntimeState()
 	if err != nil {
@@ -384,6 +400,18 @@ func (a *App) syncRequest(ctx context.Context, applied Snapshot) (SyncRequest, e
 	req.LastApplyMessage = meta["last_apply_message"]
 	if req.LastApplyStatus == "" {
 		req.LastApplyStatus = "success"
+	}
+	if !traffic.Enabled() {
+		req.Stats = map[string]any{}
+		req.StatsPresent = true
+	} else if now := time.Now(); shouldReportTrafficStats(meta, now) {
+		stats := traffic.SnapshotNonZero()
+		if stats != nil {
+			req.Stats = stats
+			if hasTrafficStatsInterval(meta) {
+				a.pendingTrafficStatsReportUnix = strconv.FormatInt(now.Unix(), 10)
+			}
+		}
 	}
 
 	if reporter, ok := a.certApplier.(ManagedCertificateReporter); ok {
@@ -397,11 +425,74 @@ func (a *App) syncRequest(ctx context.Context, applied Snapshot) (SyncRequest, e
 	return req, nil
 }
 
+func shouldReportTrafficStats(meta map[string]string, now time.Time) bool {
+	interval, err := time.ParseDuration(strings.TrimSpace(meta[runtimeMetaTrafficStatsInterval]))
+	if err != nil || interval <= 0 {
+		return true
+	}
+	lastReportUnix, err := strconv.ParseInt(strings.TrimSpace(meta[runtimeMetaLastTrafficStatsReportUnix]), 10, 64)
+	if err != nil || lastReportUnix <= 0 {
+		return true
+	}
+	return !now.Before(time.Unix(lastReportUnix, 0).Add(interval))
+}
+
+func hasTrafficStatsInterval(meta map[string]string) bool {
+	interval, err := time.ParseDuration(strings.TrimSpace(meta[runtimeMetaTrafficStatsInterval]))
+	return err == nil && interval > 0
+}
+
+func (a *App) persistTrafficStatsInterval(raw string) error {
+	state, err := a.store.LoadRuntimeState()
+	if err != nil {
+		return err
+	}
+	state.Metadata = ensureMetadata(state.Metadata)
+	if err := setTrafficStatsIntervalMetadata(state.Metadata, raw); err != nil {
+		return err
+	}
+	return a.store.SaveRuntimeState(state)
+}
+
+func parseTrafficStatsInterval(raw string) (string, error) {
+	interval := strings.TrimSpace(raw)
+	if interval == "" {
+		return "", nil
+	}
+	parsed, err := time.ParseDuration(interval)
+	if err != nil {
+		return "", fmt.Errorf("traffic_stats_interval: %w", err)
+	}
+	if parsed <= 0 {
+		return "", fmt.Errorf("traffic_stats_interval must be positive")
+	}
+	return interval, nil
+}
+
+func setTrafficStatsIntervalMetadata(meta map[string]string, raw string) error {
+	interval, err := parseTrafficStatsInterval(raw)
+	if err != nil {
+		return err
+	}
+	if interval == "" {
+		delete(meta, runtimeMetaTrafficStatsInterval)
+		return nil
+	}
+	meta[runtimeMetaTrafficStatsInterval] = interval
+	return nil
+}
+
 func (a *App) syncOnce(ctx context.Context, req SyncRequest) error {
 	snapshot, err := a.syncClient.Sync(ctx, req)
 	if err != nil {
 		log.Printf("[agent] sync error: %v", err)
 		return a.recordRuntimeError(err)
+	}
+	if req.Stats != nil && a.pendingTrafficStatsReportUnix != "" {
+		if err := a.persistLastTrafficStatsReportUnix(a.pendingTrafficStatsReportUnix); err != nil {
+			return a.recordRuntimeError(err)
+		}
+		a.pendingTrafficStatsReportUnix = ""
 	}
 	existingDesired, err := a.store.LoadDesiredSnapshot()
 	if err != nil {
@@ -438,6 +529,16 @@ func (a *App) recordRuntimeError(syncErr error) error {
 	return a.recordRuntimeErrorWithRevision(syncErr, a.runtime.ActiveSnapshot().Revision)
 }
 
+func (a *App) persistLastTrafficStatsReportUnix(timestamp string) error {
+	state, err := a.store.LoadRuntimeState()
+	if err != nil {
+		return err
+	}
+	state.Metadata = ensureMetadata(state.Metadata)
+	state.Metadata[runtimeMetaLastTrafficStatsReportUnix] = timestamp
+	return a.store.SaveRuntimeState(state)
+}
+
 func (a *App) recordRuntimeErrorWithRevision(syncErr error, revision int64) error {
 	state, err := a.runtimeStateForPersistence()
 	if err != nil {
@@ -459,6 +560,9 @@ func (a *App) persistRuntimeState(clearLastSyncError bool) error {
 	}
 	state.Metadata = ensureMetadata(state.Metadata)
 	setApplyMetadata(state.Metadata, a.runtime.ActiveSnapshot().Revision, "success", "")
+	if err := setTrafficStatsIntervalMetadata(state.Metadata, a.runtime.ActiveSnapshot().AgentConfig.TrafficStatsInterval); err != nil {
+		return err
+	}
 	if clearLastSyncError {
 		delete(state.Metadata, "last_sync_error")
 	}
@@ -639,6 +743,9 @@ func (a *App) snapshotActivator() agentruntime.Activator {
 func (a *App) snapshotActivationHandlers() agentruntime.SnapshotActivationHandlers {
 	return agentruntime.SnapshotActivationHandlers{
 		ActivateAgentConfig: func(_ context.Context, cfg model.AgentConfig) error {
+			if _, err := parseTrafficStatsInterval(cfg.TrafficStatsInterval); err != nil {
+				return err
+			}
 			relay.SetOutboundProxyURL(cfg.OutboundProxyURL)
 			return nil
 		},
