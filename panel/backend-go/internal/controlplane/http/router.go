@@ -27,6 +27,15 @@ type AgentService interface {
 	Heartbeat(context.Context, service.HeartbeatRequest, string) (service.HeartbeatReply, error)
 }
 
+type TrafficService interface {
+	GetPolicy(context.Context, string) (service.TrafficPolicy, error)
+	UpdatePolicy(context.Context, string, service.TrafficPolicy) (service.TrafficPolicy, error)
+	Summary(context.Context, string) (service.TrafficSummary, error)
+	Trend(context.Context, service.TrafficTrendQuery) ([]service.TrafficTrendPoint, error)
+	Calibrate(context.Context, string, service.TrafficCalibrationRequest) (service.TrafficSummary, error)
+	Cleanup(context.Context, string) (service.TrafficCleanupResult, error)
+}
+
 type RuleService interface {
 	List(context.Context, string) ([]service.HTTPRule, error)
 	Get(context.Context, string, int) (service.HTTPRule, error)
@@ -91,6 +100,7 @@ type Dependencies struct {
 	CertificateService   CertificateService
 	TaskService          TaskService
 	BackupService        BackupService
+	TrafficService       TrafficService
 	cleanup              func() error
 }
 
@@ -105,6 +115,8 @@ type agentRuleServiceAdapter struct {
 }
 
 type unavailableBackupService struct{}
+
+type unavailableTrafficService struct{}
 
 func (unavailableBackupService) Export(context.Context) ([]byte, string, error) {
 	return nil, "", fmt.Errorf("backup service unavailable")
@@ -124,6 +136,34 @@ func (unavailableBackupService) ResourceCounts(context.Context) (service.BackupC
 
 func (unavailableBackupService) Preview(context.Context, []byte) (service.BackupImportResult, error) {
 	return service.BackupImportResult{}, fmt.Errorf("backup service unavailable")
+}
+
+func (unavailableTrafficService) GetPolicy(context.Context, string) (service.TrafficPolicy, error) {
+	return service.TrafficPolicy{}, trafficStatsDisabledError()
+}
+
+func (unavailableTrafficService) UpdatePolicy(context.Context, string, service.TrafficPolicy) (service.TrafficPolicy, error) {
+	return service.TrafficPolicy{}, trafficStatsDisabledError()
+}
+
+func (unavailableTrafficService) Summary(context.Context, string) (service.TrafficSummary, error) {
+	return service.TrafficSummary{}, trafficStatsDisabledError()
+}
+
+func (unavailableTrafficService) Trend(context.Context, service.TrafficTrendQuery) ([]service.TrafficTrendPoint, error) {
+	return nil, trafficStatsDisabledError()
+}
+
+func (unavailableTrafficService) Calibrate(context.Context, string, service.TrafficCalibrationRequest) (service.TrafficSummary, error) {
+	return service.TrafficSummary{}, trafficStatsDisabledError()
+}
+
+func (unavailableTrafficService) Cleanup(context.Context, string) (service.TrafficCleanupResult, error) {
+	return service.TrafficCleanupResult{}, trafficStatsDisabledError()
+}
+
+func trafficStatsDisabledError() error {
+	return service.TrafficServiceError{Code: service.ErrCodeTrafficStatsDisabled, Err: service.ErrTrafficStatsDisabled}
 }
 
 func (a agentRuleServiceAdapter) List(ctx context.Context, agentID string) ([]service.HTTPRule, error) {
@@ -182,6 +222,11 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 		mux.Handle(prefix+"/agents/{agentID}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgent)))
 		mux.Handle(prefix+"/agents/{agentID}/stats", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentStats)))
 		mux.Handle(prefix+"/agents/{agentID}/apply", resolved.requirePanelToken(http.HandlerFunc(resolved.handleApplyAgent)))
+		mux.Handle(prefix+"/agents/{agentID}/traffic-policy", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentTrafficPolicy)))
+		mux.Handle(prefix+"/agents/{agentID}/traffic-summary", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentTrafficSummary)))
+		mux.Handle(prefix+"/agents/{agentID}/traffic-trend", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentTrafficTrend)))
+		mux.Handle(prefix+"/agents/{agentID}/traffic-calibration", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentTrafficCalibration)))
+		mux.Handle(prefix+"/agents/{agentID}/traffic-cleanup", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentTrafficCleanup)))
 		mux.Handle(prefix+"/agents/{agentID}/rules", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentRules)))
 		mux.Handle(prefix+"/agents/{agentID}/rules/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentRule)))
 		mux.Handle(prefix+"/agents/{agentID}/rules/{id}/diagnose", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentRuleDiagnose)))
@@ -240,6 +285,9 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 	}
 
 	if d.hasCoreServices() && d.TaskService != nil && d.BackupService != nil {
+		if d.TrafficService == nil {
+			d.TrafficService = unavailableTrafficService{}
+		}
 		return d, nil
 	}
 
@@ -276,6 +324,9 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 	if d.BackupService == nil {
 		d.BackupService = service.NewBackupService(d.Config, store)
 	}
+	if d.TrafficService == nil {
+		d.TrafficService = service.NewTrafficService(service.TrafficServiceConfig{Enabled: d.Config.TrafficStatsEnabled}, store)
+	}
 
 	return d, nil
 }
@@ -291,7 +342,12 @@ func (d Dependencies) hasCoreServices() bool {
 }
 
 func mapServiceError(err error) (int, map[string]any) {
+	var trafficErr service.TrafficServiceError
 	switch {
+	case errors.As(err, &trafficErr) && trafficErr.Code == service.ErrCodeTrafficStatsDisabled:
+		return http.StatusNotFound, trafficStatsDisabledPayload()
+	case errors.Is(err, service.ErrTrafficStatsDisabled):
+		return http.StatusNotFound, trafficStatsDisabledPayload()
 	case errors.Is(err, service.ErrAgentUnauthorized):
 		return http.StatusUnauthorized, errorPayload("Unauthorized: missing agent token")
 	case errors.Is(err, service.ErrAgentNotFound):
@@ -312,5 +368,12 @@ func mapServiceError(err error) (int, map[string]any) {
 		return http.StatusBadRequest, errorPayload(err.Error())
 	default:
 		return http.StatusInternalServerError, errorPayload("internal server error")
+	}
+}
+
+func trafficStatsDisabledPayload() map[string]any {
+	return map[string]any{
+		"error": service.ErrTrafficStatsDisabled.Error(),
+		"code":  service.ErrCodeTrafficStatsDisabled,
 	}
 }

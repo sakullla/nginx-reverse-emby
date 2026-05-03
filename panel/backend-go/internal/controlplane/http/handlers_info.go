@@ -41,6 +41,7 @@ func (d Dependencies) handleInfo(w http.ResponseWriter, r *http.Request) {
 		"started_at":                      info.StartedAt.Format(time.RFC3339),
 		"online_agents":                   info.OnlineAgents,
 		"total_agents":                    info.TotalAgents,
+		"traffic_stats_enabled":           info.TrafficStatsEnabled,
 	}
 	if authorized {
 		payload["data_dir"] = info.DataDir
