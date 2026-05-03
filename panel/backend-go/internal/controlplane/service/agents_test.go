@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -559,7 +560,7 @@ func TestAgentServiceUpdateRejectsInvalidTrafficStatsInterval(t *testing.T) {
 		_, err := svc.Update(ctx, "edge-a", UpdateAgentRequest{
 			TrafficStatsInterval: stringPtr(raw),
 		})
-		if err == nil || !strings.Contains(err.Error(), "traffic_stats_interval") {
+		if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "traffic_stats_interval") {
 			t.Fatalf("Update(%q) error = %v, want traffic_stats_interval validation", raw, err)
 		}
 	}
