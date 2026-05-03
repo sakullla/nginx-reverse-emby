@@ -43,6 +43,20 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 		return err
 	}
 
+	if options.TrafficStatsEnabled {
+		if err := tx.AutoMigrate(
+			&AgentTrafficPolicyRow{},
+			&AgentTrafficBaselineRow{},
+			&AgentTrafficRawCursorRow{},
+			&AgentTrafficHourlyBucketRow{},
+			&AgentTrafficDailySummaryRow{},
+			&AgentTrafficMonthlySummaryRow{},
+			&AgentTrafficEventRow{},
+		); err != nil {
+			return err
+		}
+	}
+
 	if options.SQLiteLegacyMigrations {
 		if err := bootstrapSQLiteLegacySchema(ctx, db); err != nil {
 			return err
