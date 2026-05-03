@@ -569,6 +569,7 @@ func normalizeAgentRow(row *AgentRow) {
 	row.TagsJSON = defaultJSON(row.TagsJSON, "[]")
 	row.CapabilitiesJSON = defaultJSON(row.CapabilitiesJSON, "[]")
 	row.OutboundProxyURL = defaultString(row.OutboundProxyURL, "")
+	row.TrafficStatsInterval = defaultString(row.TrafficStatsInterval, "")
 	row.Mode = defaultString(row.Mode, "pull")
 	row.LastApplyStatus = defaultString(row.LastApplyStatus, "")
 	row.LastApplyMessage = defaultString(row.LastApplyMessage, "")

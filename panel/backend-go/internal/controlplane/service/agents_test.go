@@ -590,6 +590,42 @@ func TestAgentServiceUpdateBumpsDesiredRevisionWhenOutboundProxyURLChanges(t *te
 	assertRevisionAboveFloor(t, "saved DesiredRevision", store.savedAgent.DesiredRevision, 7)
 }
 
+func TestAgentServiceUpdateBumpsDesiredRevisionOnceWhenRuntimeConfigFieldsChange(t *testing.T) {
+	ctx := context.Background()
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID:                   "edge-a",
+			Name:                 "Edge A",
+			AgentToken:           "token-a",
+			CapabilitiesJSON:     `["http_rules","l4","relay"]`,
+			OutboundProxyURL:     "socks://127.0.0.1:1080",
+			TrafficStatsInterval: "30s",
+			DesiredRevision:      7,
+			CurrentRevision:      7,
+			LastApplyStatus:      "success",
+		}, {
+			ID:              "edge-b",
+			Name:            "Edge B",
+			AgentToken:      "token-b",
+			DesiredRevision: 9,
+			CurrentRevision: 9,
+		}},
+	}
+	svc := NewAgentService(config.Config{}, store)
+
+	_, err := svc.Update(ctx, "edge-a", UpdateAgentRequest{
+		OutboundProxyURL:     stringPtr("socks://127.0.0.1:1081"),
+		TrafficStatsInterval: stringPtr("1m"),
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+
+	if store.savedAgent.DesiredRevision != 8 {
+		t.Fatalf("DesiredRevision = %d, want 8", store.savedAgent.DesiredRevision)
+	}
+}
+
 func TestAgentServiceUpdateRejectsInvalidOutboundProxyURL(t *testing.T) {
 	ctx := context.Background()
 	store := &fakeStore{}

@@ -454,6 +454,7 @@ func (s *agentService) Update(ctx context.Context, agentID string, input UpdateA
 	if input.Capabilities != nil {
 		row.CapabilitiesJSON = marshalStringArray(normalizeCapabilities(*input.Capabilities))
 	}
+	configChanged := false
 	if input.OutboundProxyURL != nil {
 		previousOutboundProxyURL := strings.TrimSpace(row.OutboundProxyURL)
 		outboundProxyURL, err := normalizeOutboundProxyURLUpdate(*input.OutboundProxyURL, row.OutboundProxyURL)
@@ -467,11 +468,7 @@ func (s *agentService) Update(ctx context.Context, agentID string, input UpdateA
 		}
 		row.OutboundProxyURL = outboundProxyURL
 		if outboundProxyURL != previousOutboundProxyURL {
-			allocator, err := newConfigIdentityAllocatorFromStore(ctx, s.cfg, s.store)
-			if err != nil {
-				return AgentSummary{}, err
-			}
-			row.DesiredRevision = allocator.AllocateRevisionForAgent(row.ID, row.DesiredRevision)
+			configChanged = true
 		}
 	}
 	if input.TrafficStatsInterval != nil {
@@ -482,12 +479,15 @@ func (s *agentService) Update(ctx context.Context, agentID string, input UpdateA
 		}
 		row.TrafficStatsInterval = trafficStatsInterval
 		if trafficStatsInterval != previousTrafficStatsInterval {
-			allocator, err := newConfigIdentityAllocatorFromStore(ctx, s.cfg, s.store)
-			if err != nil {
-				return AgentSummary{}, err
-			}
-			row.DesiredRevision = allocator.AllocateRevisionForAgent(row.ID, row.DesiredRevision)
+			configChanged = true
 		}
+	}
+	if configChanged {
+		allocator, err := newConfigIdentityAllocatorFromStore(ctx, s.cfg, s.store)
+		if err != nil {
+			return AgentSummary{}, err
+		}
+		row.DesiredRevision = allocator.AllocateRevisionForAgent(row.ID, row.DesiredRevision)
 	}
 
 	if err := s.store.SaveAgent(ctx, row); err != nil {
