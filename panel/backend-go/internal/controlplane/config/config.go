@@ -17,6 +17,7 @@ const (
 	defaultEnableLocalAgent  = true
 	defaultLocalAgentID      = "local"
 	defaultLocalAgentName    = "local"
+	defaultDatabaseDriver    = "sqlite"
 	defaultHeartbeatInterval = 30 * time.Second
 	defaultManagedCertRenew  = 24 * time.Hour
 )
@@ -28,6 +29,9 @@ type Config struct {
 	RegisterToken                     string
 	FrontendDistDir                   string
 	PublicAgentAssetsDir              string
+	DatabaseDriver                    string
+	DatabaseDSN                       string
+	TrafficStatsEnabled               bool
 	EnableLocalAgent                  bool
 	LocalAgentID                      string
 	LocalAgentName                    string
@@ -80,6 +84,8 @@ func Default() Config {
 		DataDir:              defaultDataDir,
 		FrontendDistDir:      defaultFrontendDistDir,
 		PublicAgentAssetsDir: defaultPublicAssetsDir,
+		DatabaseDriver:       defaultDatabaseDriver,
+		TrafficStatsEnabled:  true,
 		EnableLocalAgent:     defaultEnableLocalAgent,
 		LocalAgentID:         defaultLocalAgentID,
 		LocalAgentName:       defaultLocalAgentName,
@@ -131,6 +137,18 @@ func LoadFromEnv() (Config, error) {
 	}
 	if val := strings.TrimSpace(firstEnv("NRE_CONTROL_PLANE_DATA_DIR", "PANEL_DATA_ROOT")); val != "" {
 		cfg.DataDir = val
+	}
+	if val := strings.TrimSpace(os.Getenv("NRE_DATABASE_DRIVER")); val != "" {
+		driver := strings.ToLower(val)
+		switch driver {
+		case "sqlite", "postgres", "mysql":
+			cfg.DatabaseDriver = driver
+		default:
+			return Config{}, fmt.Errorf("invalid NRE_DATABASE_DRIVER: %q", val)
+		}
+	}
+	if val := strings.TrimSpace(os.Getenv("NRE_DATABASE_DSN")); val != "" {
+		cfg.DatabaseDSN = val
 	}
 
 	panelToken := strings.TrimSpace(firstEnv("NRE_PANEL_TOKEN", "API_TOKEN"))
@@ -190,6 +208,7 @@ func LoadFromEnv() (Config, error) {
 		if err != nil {
 			return Config{}, fmt.Errorf("invalid NRE_TRAFFIC_STATS_ENABLED: %w", err)
 		}
+		cfg.TrafficStatsEnabled = enabled
 		cfg.LocalAgentTrafficStatsEnabled = enabled
 		cfg.LocalAgentTrafficStatsExplicit = true
 	}

@@ -9,7 +9,6 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -35,46 +34,20 @@ type Store interface {
 	CleanupManagedCertificateMaterial(context.Context, []ManagedCertificateRow, []ManagedCertificateRow) error
 }
 
-type SQLiteStore struct {
-	db           *gorm.DB
-	dataRoot     string
-	localAgentID string
-}
+type SQLiteStore = GormStore
 
 const localRuntimeStateMetaKey = "local_runtime_state"
 
 func NewSQLiteStore(dataRoot string, localAgentID string) (*SQLiteStore, error) {
-	if err := os.MkdirAll(dataRoot, 0o755); err != nil {
-		return nil, err
-	}
-
-	db, err := gorm.Open(sqlite.Open(filepath.Join(dataRoot, "panel.db")+"?_journal_mode=WAL&_busy_timeout=5000"), &gorm.Config{})
-	if err != nil {
-		return nil, err
-	}
-
-	store := &SQLiteStore{db: db, dataRoot: dataRoot, localAgentID: localAgentID}
-	if err := BootstrapSQLiteSchema(context.Background(), db); err != nil {
-		if sqlDB, dbErr := db.DB(); dbErr == nil {
-			_ = sqlDB.Close()
-		}
-		return nil, err
-	}
-	return store, nil
+	return NewStore(StoreConfig{
+		Driver:              "sqlite",
+		DataRoot:            dataRoot,
+		LocalAgentID:        localAgentID,
+		TrafficStatsEnabled: true,
+	})
 }
 
-func (s *SQLiteStore) Close() error {
-	if s == nil || s.db == nil {
-		return nil
-	}
-	sqlDB, err := s.db.DB()
-	if err != nil {
-		return err
-	}
-	return sqlDB.Close()
-}
-
-func (s *SQLiteStore) ListAgents(ctx context.Context) ([]AgentRow, error) {
+func (s *GormStore) ListAgents(ctx context.Context) ([]AgentRow, error) {
 	var agents []AgentRow
 	if err := s.db.WithContext(ctx).Order("id").Find(&agents).Error; err != nil {
 		return nil, err
@@ -85,7 +58,7 @@ func (s *SQLiteStore) ListAgents(ctx context.Context) ([]AgentRow, error) {
 	return agents, nil
 }
 
-func (s *SQLiteStore) loadAgentRevisionState(ctx context.Context, agentID string) (LocalAgentStateRow, error) {
+func (s *GormStore) loadAgentRevisionState(ctx context.Context, agentID string) (LocalAgentStateRow, error) {
 	var row AgentRow
 	err := s.db.WithContext(ctx).
 		Where("id = ?", agentID).
@@ -103,7 +76,7 @@ func (s *SQLiteStore) loadAgentRevisionState(ctx context.Context, agentID string
 	return LocalAgentStateRow{}, err
 }
 
-func (s *SQLiteStore) ListHTTPRules(ctx context.Context, agentID string) ([]HTTPRuleRow, error) {
+func (s *GormStore) ListHTTPRules(ctx context.Context, agentID string) ([]HTTPRuleRow, error) {
 	if agentID == "" {
 		agentID = s.localAgentID
 	}
@@ -121,7 +94,7 @@ func (s *SQLiteStore) ListHTTPRules(ctx context.Context, agentID string) ([]HTTP
 	return rules, nil
 }
 
-func (s *SQLiteStore) GetHTTPRule(ctx context.Context, agentID string, id int) (HTTPRuleRow, bool, error) {
+func (s *GormStore) GetHTTPRule(ctx context.Context, agentID string, id int) (HTTPRuleRow, bool, error) {
 	if agentID == "" {
 		agentID = s.localAgentID
 	}
@@ -140,7 +113,7 @@ func (s *SQLiteStore) GetHTTPRule(ctx context.Context, agentID string, id int) (
 	return HTTPRuleRow{}, false, err
 }
 
-func (s *SQLiteStore) LoadLocalAgentState(ctx context.Context) (LocalAgentStateRow, error) {
+func (s *GormStore) LoadLocalAgentState(ctx context.Context) (LocalAgentStateRow, error) {
 	var state LocalAgentStateRow
 	err := s.db.WithContext(ctx).
 		Where("id = ?", 1).
@@ -159,7 +132,7 @@ func (s *SQLiteStore) LoadLocalAgentState(ctx context.Context) (LocalAgentStateR
 	return LocalAgentStateRow{}, err
 }
 
-func (s *SQLiteStore) LoadLocalRuntimeState(ctx context.Context) (RuntimeState, error) {
+func (s *GormStore) LoadLocalRuntimeState(ctx context.Context) (RuntimeState, error) {
 	var row MetaRow
 	err := s.db.WithContext(ctx).
 		Where("key = ?", localRuntimeStateMetaKey).
@@ -191,7 +164,7 @@ func (s *SQLiteStore) LoadLocalRuntimeState(ctx context.Context) (RuntimeState, 
 	}, nil
 }
 
-func (s *SQLiteStore) LoadLocalSnapshot(ctx context.Context, agentID string) (Snapshot, error) {
+func (s *GormStore) LoadLocalSnapshot(ctx context.Context, agentID string) (Snapshot, error) {
 	localState, err := s.LoadLocalAgentState(ctx)
 	if err != nil {
 		return Snapshot{}, err
@@ -204,7 +177,7 @@ func (s *SQLiteStore) LoadLocalSnapshot(ctx context.Context, agentID string) (Sn
 	})
 }
 
-func (s *SQLiteStore) LoadAgentSnapshot(ctx context.Context, agentID string, input AgentSnapshotInput) (Snapshot, error) {
+func (s *GormStore) LoadAgentSnapshot(ctx context.Context, agentID string, input AgentSnapshotInput) (Snapshot, error) {
 	resolvedAgentID := s.resolveAgentID(agentID)
 
 	httpRows, err := s.ListHTTPRules(ctx, resolvedAgentID)
@@ -260,7 +233,7 @@ func (s *SQLiteStore) LoadAgentSnapshot(ctx context.Context, agentID string, inp
 	}, nil
 }
 
-func (s *SQLiteStore) ListL4Rules(ctx context.Context, agentID string) ([]L4RuleRow, error) {
+func (s *GormStore) ListL4Rules(ctx context.Context, agentID string) ([]L4RuleRow, error) {
 	if agentID == "" {
 		agentID = s.localAgentID
 	}
@@ -278,7 +251,7 @@ func (s *SQLiteStore) ListL4Rules(ctx context.Context, agentID string) ([]L4Rule
 	return rules, nil
 }
 
-func (s *SQLiteStore) GetL4Rule(ctx context.Context, agentID string, id int) (L4RuleRow, bool, error) {
+func (s *GormStore) GetL4Rule(ctx context.Context, agentID string, id int) (L4RuleRow, bool, error) {
 	if agentID == "" {
 		agentID = s.localAgentID
 	}
@@ -297,7 +270,7 @@ func (s *SQLiteStore) GetL4Rule(ctx context.Context, agentID string, id int) (L4
 	return L4RuleRow{}, false, err
 }
 
-func (s *SQLiteStore) ListVersionPolicies(ctx context.Context) ([]VersionPolicyRow, error) {
+func (s *GormStore) ListVersionPolicies(ctx context.Context) ([]VersionPolicyRow, error) {
 	var policies []VersionPolicyRow
 	if err := s.db.WithContext(ctx).Order("id").Find(&policies).Error; err != nil {
 		return nil, err
@@ -308,7 +281,7 @@ func (s *SQLiteStore) ListVersionPolicies(ctx context.Context) ([]VersionPolicyR
 	return policies, nil
 }
 
-func (s *SQLiteStore) ListRelayListeners(ctx context.Context, agentID string) ([]RelayListenerRow, error) {
+func (s *GormStore) ListRelayListeners(ctx context.Context, agentID string) ([]RelayListenerRow, error) {
 	query := s.db.WithContext(ctx).Order("id")
 	if strings.TrimSpace(agentID) != "" {
 		query = query.Where("agent_id = ?", agentID)
@@ -324,7 +297,7 @@ func (s *SQLiteStore) ListRelayListeners(ctx context.Context, agentID string) ([
 	return listeners, nil
 }
 
-func (s *SQLiteStore) ListManagedCertificates(ctx context.Context) ([]ManagedCertificateRow, error) {
+func (s *GormStore) ListManagedCertificates(ctx context.Context) ([]ManagedCertificateRow, error) {
 	var certs []ManagedCertificateRow
 	if err := s.db.WithContext(ctx).Order("id").Find(&certs).Error; err != nil {
 		return nil, err
@@ -335,7 +308,7 @@ func (s *SQLiteStore) ListManagedCertificates(ctx context.Context) ([]ManagedCer
 	return certs, nil
 }
 
-func (s *SQLiteStore) SaveLocalRuntimeState(ctx context.Context, agentID string, runtimeState RuntimeState) error {
+func (s *GormStore) SaveLocalRuntimeState(ctx context.Context, agentID string, runtimeState RuntimeState) error {
 	_ = s.resolveAgentID(agentID)
 
 	currentState, err := s.LoadLocalAgentState(ctx)
@@ -397,7 +370,7 @@ func (s *SQLiteStore) SaveLocalRuntimeState(ctx context.Context, agentID string,
 	})
 }
 
-func (s *SQLiteStore) SaveAgent(ctx context.Context, row AgentRow) error {
+func (s *GormStore) SaveAgent(ctx context.Context, row AgentRow) error {
 	normalizeAgentRow(&row)
 	return s.db.WithContext(ctx).
 		Clauses(clause.OnConflict{
@@ -407,11 +380,11 @@ func (s *SQLiteStore) SaveAgent(ctx context.Context, row AgentRow) error {
 		Create(&row).Error
 }
 
-func (s *SQLiteStore) DeleteAgent(ctx context.Context, agentID string) error {
+func (s *GormStore) DeleteAgent(ctx context.Context, agentID string) error {
 	return s.db.WithContext(ctx).Where("id = ?", agentID).Delete(&AgentRow{}).Error
 }
 
-func (s *SQLiteStore) SaveHTTPRules(ctx context.Context, agentID string, rules []HTTPRuleRow) error {
+func (s *GormStore) SaveHTTPRules(ctx context.Context, agentID string, rules []HTTPRuleRow) error {
 	if agentID == "" {
 		agentID = s.localAgentID
 	}
@@ -435,7 +408,7 @@ func (s *SQLiteStore) SaveHTTPRules(ctx context.Context, agentID string, rules [
 	})
 }
 
-func (s *SQLiteStore) SaveL4Rules(ctx context.Context, agentID string, rules []L4RuleRow) error {
+func (s *GormStore) SaveL4Rules(ctx context.Context, agentID string, rules []L4RuleRow) error {
 	if agentID == "" {
 		agentID = s.localAgentID
 	}
@@ -459,7 +432,7 @@ func (s *SQLiteStore) SaveL4Rules(ctx context.Context, agentID string, rules []L
 	})
 }
 
-func (s *SQLiteStore) SaveVersionPolicies(ctx context.Context, policies []VersionPolicyRow) error {
+func (s *GormStore) SaveVersionPolicies(ctx context.Context, policies []VersionPolicyRow) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&VersionPolicyRow{}).Error; err != nil {
 			return err
@@ -478,7 +451,7 @@ func (s *SQLiteStore) SaveVersionPolicies(ctx context.Context, policies []Versio
 	})
 }
 
-func (s *SQLiteStore) SaveRelayListeners(ctx context.Context, agentID string, listeners []RelayListenerRow) error {
+func (s *GormStore) SaveRelayListeners(ctx context.Context, agentID string, listeners []RelayListenerRow) error {
 	if agentID == "" {
 		agentID = s.localAgentID
 	}
@@ -502,7 +475,7 @@ func (s *SQLiteStore) SaveRelayListeners(ctx context.Context, agentID string, li
 	})
 }
 
-func (s *SQLiteStore) SaveManagedCertificates(ctx context.Context, certs []ManagedCertificateRow) error {
+func (s *GormStore) SaveManagedCertificates(ctx context.Context, certs []ManagedCertificateRow) error {
 	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := tx.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&ManagedCertificateRow{}).Error; err != nil {
 			return err
@@ -520,7 +493,7 @@ func (s *SQLiteStore) SaveManagedCertificates(ctx context.Context, certs []Manag
 	})
 }
 
-func (s *SQLiteStore) CleanupManagedCertificateMaterial(_ context.Context, previous []ManagedCertificateRow, next []ManagedCertificateRow) error {
+func (s *GormStore) CleanupManagedCertificateMaterial(_ context.Context, previous []ManagedCertificateRow, next []ManagedCertificateRow) error {
 	previousDomains := managedCertificateDomainSet(previous)
 	nextDomains := managedCertificateDomainSet(next)
 	baseDir := filepath.Join(s.dataRoot, "managed_certificates")
@@ -535,7 +508,7 @@ func (s *SQLiteStore) CleanupManagedCertificateMaterial(_ context.Context, previ
 	return nil
 }
 
-func (s *SQLiteStore) LoadManagedCertificateMaterial(_ context.Context, domain string) (ManagedCertificateBundle, bool, error) {
+func (s *GormStore) LoadManagedCertificateMaterial(_ context.Context, domain string) (ManagedCertificateBundle, bool, error) {
 	material, ok := s.readManagedCertificateMaterial(domain)
 	if !ok {
 		return ManagedCertificateBundle{}, false, nil
@@ -547,7 +520,7 @@ func (s *SQLiteStore) LoadManagedCertificateMaterial(_ context.Context, domain s
 	}, true, nil
 }
 
-func (s *SQLiteStore) SaveManagedCertificateMaterial(_ context.Context, domain string, bundle ManagedCertificateBundle) error {
+func (s *GormStore) SaveManagedCertificateMaterial(_ context.Context, domain string, bundle ManagedCertificateBundle) error {
 	certDir := s.managedCertificateDirectory(domain)
 	if err := os.MkdirAll(certDir, 0o755); err != nil {
 		return err
@@ -561,7 +534,7 @@ func (s *SQLiteStore) SaveManagedCertificateMaterial(_ context.Context, domain s
 	return nil
 }
 
-func (s *SQLiteStore) initializeSchema(ctx context.Context) error {
+func (s *GormStore) initializeSchema(ctx context.Context) error {
 	return BootstrapSQLiteSchema(ctx, s.db)
 }
 
@@ -675,7 +648,7 @@ func normalizeLoadBalancingJSON(value string) string {
 	return trimmed
 }
 
-func (s *SQLiteStore) resolveAgentID(agentID string) string {
+func (s *GormStore) resolveAgentID(agentID string) string {
 	if strings.TrimSpace(agentID) == "" {
 		return s.localAgentID
 	}
@@ -746,7 +719,7 @@ func highestManagedCertificateRevision(rows []ManagedCertificateRow) int {
 	return maxRevision
 }
 
-func (s *SQLiteStore) loadRelayListenersForSync(
+func (s *GormStore) loadRelayListenersForSync(
 	ctx context.Context,
 	agentID string,
 	httpRows []HTTPRuleRow,
@@ -963,7 +936,7 @@ func SnapshotL4Rules(rows []L4RuleRow) []L4Rule {
 	return rules
 }
 
-func (s *SQLiteStore) relayListenerAgentNames(ctx context.Context, rows []RelayListenerRow) (map[string]string, error) {
+func (s *GormStore) relayListenerAgentNames(ctx context.Context, rows []RelayListenerRow) (map[string]string, error) {
 	if len(rows) == 0 {
 		return nil, nil
 	}
@@ -1012,7 +985,7 @@ func snapshotRelayListeners(rows []RelayListenerRow, agentNames map[string]strin
 	return listeners
 }
 
-func (s *SQLiteStore) snapshotCertificateBundles(rows []ManagedCertificateRow) []ManagedCertificateBundle {
+func (s *GormStore) snapshotCertificateBundles(rows []ManagedCertificateRow) []ManagedCertificateBundle {
 	bundles := make([]ManagedCertificateBundle, 0, len(rows))
 	for _, row := range rows {
 		if !row.Enabled {
@@ -1447,7 +1420,7 @@ type managedCertificateMaterial struct {
 	KeyPEM  string
 }
 
-func (s *SQLiteStore) readManagedCertificateMaterial(domain string) (managedCertificateMaterial, bool) {
+func (s *GormStore) readManagedCertificateMaterial(domain string) (managedCertificateMaterial, bool) {
 	certDir := s.managedCertificateDirectory(domain)
 	certPEM, certErr := os.ReadFile(filepath.Join(certDir, "cert"))
 	keyPEM, keyErr := os.ReadFile(filepath.Join(certDir, "key"))
@@ -1460,7 +1433,7 @@ func (s *SQLiteStore) readManagedCertificateMaterial(domain string) (managedCert
 	}, true
 }
 
-func (s *SQLiteStore) managedCertificateDirectory(domain string) string {
+func (s *GormStore) managedCertificateDirectory(domain string) string {
 	return filepath.Join(s.dataRoot, "managed_certificates", normalizeManagedCertificateHost(domain))
 }
 

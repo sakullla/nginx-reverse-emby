@@ -235,6 +235,39 @@ func TestLoadFromEnvParsesLegacyManagedCertificateRenewIntervalMillis(t *testing
 	}
 }
 
+func TestLoadFromEnvParsesDatabaseConfig(t *testing.T) {
+	t.Setenv("NRE_PANEL_TOKEN", "panel")
+	t.Setenv("NRE_REGISTER_TOKEN", "register")
+	t.Setenv("NRE_DATABASE_DRIVER", "postgres")
+	t.Setenv("NRE_DATABASE_DSN", "postgres://nre:nre@postgres:5432/nre?sslmode=disable")
+	t.Setenv("NRE_TRAFFIC_STATS_ENABLED", "false")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if cfg.DatabaseDriver != "postgres" {
+		t.Fatalf("DatabaseDriver = %q", cfg.DatabaseDriver)
+	}
+	if cfg.DatabaseDSN != "postgres://nre:nre@postgres:5432/nre?sslmode=disable" {
+		t.Fatalf("DatabaseDSN = %q", cfg.DatabaseDSN)
+	}
+	if cfg.TrafficStatsEnabled {
+		t.Fatal("TrafficStatsEnabled = true, want false")
+	}
+}
+
+func TestLoadFromEnvRejectsInvalidDatabaseDriver(t *testing.T) {
+	t.Setenv("NRE_PANEL_TOKEN", "panel")
+	t.Setenv("NRE_REGISTER_TOKEN", "register")
+	t.Setenv("NRE_DATABASE_DRIVER", "oracle")
+
+	_, err := LoadFromEnv()
+	if err == nil || !strings.Contains(err.Error(), "NRE_DATABASE_DRIVER") {
+		t.Fatalf("LoadFromEnv() error = %v, want NRE_DATABASE_DRIVER error", err)
+	}
+}
+
 func TestLoadFromEnvTrafficStatsEnabledForLocalAgent(t *testing.T) {
 	t.Setenv("NRE_PANEL_TOKEN", "secret")
 	t.Setenv("NRE_REGISTER_TOKEN", "register-secret")

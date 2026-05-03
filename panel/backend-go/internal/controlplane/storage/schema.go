@@ -7,7 +7,11 @@ import (
 	"gorm.io/gorm/clause"
 )
 
-func BootstrapSQLiteSchema(ctx context.Context, db *gorm.DB) error {
+type SchemaOptions struct {
+	TrafficStatsEnabled bool
+}
+
+func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) error {
 	tx := db.WithContext(ctx)
 
 	if tx.Migrator().HasTable(&LocalAgentStateRow{}) {
@@ -180,4 +184,8 @@ func BootstrapSQLiteSchema(ctx context.Context, db *gorm.DB) error {
 			ID:              1,
 			LastApplyStatus: "success",
 		}).Error
+}
+
+func BootstrapSQLiteSchema(ctx context.Context, db *gorm.DB) error {
+	return BootstrapSchema(ctx, db, SchemaOptions{TrafficStatsEnabled: true})
 }
