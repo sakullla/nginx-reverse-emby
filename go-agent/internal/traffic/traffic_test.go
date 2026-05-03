@@ -94,6 +94,55 @@ func TestRecorderCanBeSharedAcrossConcurrentDirections(t *testing.T) {
 	assertTrafficCounters(t, traffic["l4"], 7000, 11000)
 }
 
+func TestScopedRecordersPopulatePerObjectBuckets(t *testing.T) {
+	Reset()
+	SetEnabled(true)
+	defer Reset()
+
+	NewHTTPRuleRecorder(11).Add(100, 200)
+	NewL4RuleRecorder(21).Add(300, 400)
+	NewRelayListenerRecorder(31).Add(500, 600)
+
+	stats := Snapshot()["traffic"].(map[string]any)
+	total := stats["total"].(map[string]uint64)
+	if total["rx_bytes"] != 900 || total["tx_bytes"] != 1200 {
+		t.Fatalf("total = %+v", total)
+	}
+	httpRules := stats["http_rules"].(map[string]map[string]uint64)
+	l4Rules := stats["l4_rules"].(map[string]map[string]uint64)
+	relayListeners := stats["relay_listeners"].(map[string]map[string]uint64)
+	if httpRules["11"]["rx_bytes"] != 100 || httpRules["11"]["tx_bytes"] != 200 {
+		t.Fatalf("http_rules[11] = %+v", httpRules["11"])
+	}
+	if l4Rules["21"]["rx_bytes"] != 300 || l4Rules["21"]["tx_bytes"] != 400 {
+		t.Fatalf("l4_rules[21] = %+v", l4Rules["21"])
+	}
+	if relayListeners["31"]["rx_bytes"] != 500 || relayListeners["31"]["tx_bytes"] != 600 {
+		t.Fatalf("relay_listeners[31] = %+v", relayListeners["31"])
+	}
+}
+
+func TestResetClearsScopedBuckets(t *testing.T) {
+	Reset()
+	SetEnabled(true)
+	NewHTTPRuleRecorder(11).Add(1, 2)
+	NewL4RuleRecorder(21).Add(3, 4)
+	NewRelayListenerRecorder(31).Add(5, 6)
+
+	Reset()
+
+	stats := Snapshot()["traffic"].(map[string]any)
+	if got := len(stats["http_rules"].(map[string]map[string]uint64)); got != 0 {
+		t.Fatalf("http_rules len = %d", got)
+	}
+	if got := len(stats["l4_rules"].(map[string]map[string]uint64)); got != 0 {
+		t.Fatalf("l4_rules len = %d", got)
+	}
+	if got := len(stats["relay_listeners"].(map[string]map[string]uint64)); got != 0 {
+		t.Fatalf("relay_listeners len = %d", got)
+	}
+}
+
 func assertTrafficCounters(t *testing.T, raw any, wantRX uint64, wantTX uint64) {
 	t.Helper()
 
