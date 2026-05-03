@@ -734,6 +734,7 @@ func TestBackupServiceImportSkipsRulesWithMissingRelayLayerDependencies(t *testi
 type failingBackupStore struct {
 	backupStore
 	remainingVersionPolicyFailures int
+	remainingHTTPRuleFailures      int
 }
 
 func (s *failingBackupStore) SaveVersionPolicies(ctx context.Context, rows []storage.VersionPolicyRow) error {
@@ -742,6 +743,14 @@ func (s *failingBackupStore) SaveVersionPolicies(ctx context.Context, rows []sto
 		return errors.New("forced version policy failure")
 	}
 	return s.backupStore.SaveVersionPolicies(ctx, rows)
+}
+
+func (s *failingBackupStore) SaveHTTPRules(ctx context.Context, agentID string, rows []storage.HTTPRuleRow) error {
+	if s.remainingHTTPRuleFailures > 0 {
+		s.remainingHTTPRuleFailures--
+		return errors.New("forced http rule failure")
+	}
+	return s.backupStore.SaveHTTPRules(ctx, agentID, rows)
 }
 
 type countingBackupStore struct {
@@ -830,6 +839,35 @@ func TestBackupServiceRollbackOnImportFailure(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("SaveVersionPolicies() error = %v", err)
 	}
+	if err := sourceStore.SaveTrafficPolicy(ctx, storage.AgentTrafficPolicyRow{
+		AgentID:       "edge-b",
+		Direction:     "rx",
+		CycleStartDay: 15,
+	}); err != nil {
+		t.Fatalf("SaveTrafficPolicy(source) error = %v", err)
+	}
+	if err := sourceStore.SaveTrafficBaseline(ctx, storage.AgentTrafficBaselineRow{
+		AgentID:           "edge-b",
+		CycleStart:        "2026-05-15T00:00:00Z",
+		RawRXBytes:        1000,
+		RawTXBytes:        2000,
+		RawAccountedBytes: 1000,
+	}); err != nil {
+		t.Fatalf("SaveTrafficBaseline(source) error = %v", err)
+	}
+	if err := sourceStore.SaveHTTPRules(ctx, "edge-b", []storage.HTTPRuleRow{{
+		AgentID:           "edge-b",
+		FrontendURL:       "https://edge-b.example.com",
+		BackendURL:        "http://127.0.0.1:8096",
+		BackendsJSON:      `[{"url":"http://127.0.0.1:8096"}]`,
+		LoadBalancingJSON: `{"strategy":"round_robin"}`,
+		Enabled:           true,
+		RelayChainJSON:    `[]`,
+		TagsJSON:          `[]`,
+		CustomHeadersJSON: `[]`,
+	}}); err != nil {
+		t.Fatalf("SaveHTTPRules(source) error = %v", err)
+	}
 
 	sourceSvc := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, sourceStore)
 	archive, _, err := sourceSvc.Export(ctx)
@@ -842,10 +880,27 @@ func TestBackupServiceRollbackOnImportFailure(t *testing.T) {
 		t.Fatalf("NewSQLiteStore(target) error = %v", err)
 	}
 	defer targetStore.Close()
+	if err := targetStore.SaveTrafficPolicy(ctx, storage.AgentTrafficPolicyRow{
+		AgentID:       "edge-original",
+		Direction:     "tx",
+		CycleStartDay: 3,
+	}); err != nil {
+		t.Fatalf("SaveTrafficPolicy(target original) error = %v", err)
+	}
+	if err := targetStore.SaveTrafficBaseline(ctx, storage.AgentTrafficBaselineRow{
+		AgentID:           "edge-original",
+		CycleStart:        "2026-05-03T00:00:00Z",
+		RawRXBytes:        10,
+		RawTXBytes:        20,
+		RawAccountedBytes: 20,
+		AdjustUsedBytes:   5,
+	}); err != nil {
+		t.Fatalf("SaveTrafficBaseline(target original) error = %v", err)
+	}
 
 	failingStore := &failingBackupStore{
-		backupStore:                    targetStore,
-		remainingVersionPolicyFailures: 1,
+		backupStore:               targetStore,
+		remainingHTTPRuleFailures: 1,
 	}
 	targetSvc := NewBackupService(config.Config{EnableLocalAgent: true, LocalAgentID: "local"}, failingStore)
 	if _, err := targetSvc.Import(ctx, archive); err == nil {
@@ -865,6 +920,20 @@ func TestBackupServiceRollbackOnImportFailure(t *testing.T) {
 	}
 	if len(policies) != 0 {
 		t.Fatalf("version policies after rollback = %+v", policies)
+	}
+	trafficPolicies, err := targetStore.ListTrafficPolicies(ctx)
+	if err != nil {
+		t.Fatalf("ListTrafficPolicies() error = %v", err)
+	}
+	if len(trafficPolicies) != 1 || trafficPolicies[0].AgentID != "edge-original" || trafficPolicies[0].Direction != "tx" {
+		t.Fatalf("traffic policies after rollback = %+v", trafficPolicies)
+	}
+	trafficBaselines, err := targetStore.ListTrafficBaselines(ctx)
+	if err != nil {
+		t.Fatalf("ListTrafficBaselines() error = %v", err)
+	}
+	if len(trafficBaselines) != 1 || trafficBaselines[0].AgentID != "edge-original" || trafficBaselines[0].CycleStart != "2026-05-03T00:00:00Z" {
+		t.Fatalf("traffic baselines after rollback = %+v", trafficBaselines)
 	}
 }
 

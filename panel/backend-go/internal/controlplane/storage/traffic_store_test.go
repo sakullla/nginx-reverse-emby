@@ -90,6 +90,36 @@ func TestListTrafficPolicies(t *testing.T) {
 	}
 }
 
+func TestReplaceTrafficPoliciesRemovesRowsMissingFromReplacement(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+
+	for _, row := range []AgentTrafficPolicyRow{
+		{AgentID: "edge-a", Direction: "rx"},
+		{AgentID: "edge-b", Direction: "tx"},
+	} {
+		if err := store.SaveTrafficPolicy(ctx, row); err != nil {
+			t.Fatalf("SaveTrafficPolicy(%s) error = %v", row.AgentID, err)
+		}
+	}
+
+	if err := store.ReplaceTrafficPolicies(ctx, []AgentTrafficPolicyRow{{
+		AgentID:       "edge-a",
+		Direction:     "both",
+		CycleStartDay: 5,
+	}}); err != nil {
+		t.Fatalf("ReplaceTrafficPolicies() error = %v", err)
+	}
+
+	rows, err := store.ListTrafficPolicies(ctx)
+	if err != nil {
+		t.Fatalf("ListTrafficPolicies() error = %v", err)
+	}
+	if len(rows) != 1 || rows[0].AgentID != "edge-a" || rows[0].Direction != "both" || rows[0].CycleStartDay != 5 {
+		t.Fatalf("rows after replace = %+v", rows)
+	}
+}
+
 func TestTrafficPolicyUpsertPreservesCreatedAt(t *testing.T) {
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -210,6 +240,51 @@ func TestListTrafficBaselines(t *testing.T) {
 	}
 	if rows[1].AgentID != "edge-b" || rows[1].RawAccountedBytes != 20 {
 		t.Fatalf("rows[1] = %+v", rows[1])
+	}
+}
+
+func TestReplaceTrafficBaselinesRemovesRowsMissingFromReplacementWithoutDeletingHistory(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+	cycleStart := "2026-05-01T00:00:00Z"
+
+	for _, row := range []AgentTrafficBaselineRow{
+		{AgentID: "edge-a", CycleStart: cycleStart, RawAccountedBytes: 10},
+		{AgentID: "edge-b", CycleStart: cycleStart, RawAccountedBytes: 20},
+	} {
+		if err := store.SaveTrafficBaseline(ctx, row); err != nil {
+			t.Fatalf("SaveTrafficBaseline(%s) error = %v", row.AgentID, err)
+		}
+	}
+	if err := store.SaveTrafficCursor(ctx, AgentTrafficRawCursorRow{
+		AgentID:    "edge-b",
+		ScopeType:  "agent_total",
+		RXBytes:    100,
+		TXBytes:    200,
+		ObservedAt: "2026-05-01T01:00:00Z",
+	}); err != nil {
+		t.Fatalf("SaveTrafficCursor() error = %v", err)
+	}
+
+	if err := store.ReplaceTrafficBaselines(ctx, []AgentTrafficBaselineRow{{
+		AgentID:           "edge-a",
+		CycleStart:        cycleStart,
+		RawAccountedBytes: 30,
+	}}); err != nil {
+		t.Fatalf("ReplaceTrafficBaselines() error = %v", err)
+	}
+
+	rows, err := store.ListTrafficBaselines(ctx)
+	if err != nil {
+		t.Fatalf("ListTrafficBaselines() error = %v", err)
+	}
+	if len(rows) != 1 || rows[0].AgentID != "edge-a" || rows[0].RawAccountedBytes != 30 {
+		t.Fatalf("rows after replace = %+v", rows)
+	}
+	if _, found, err := store.GetTrafficCursor(ctx, "edge-b", "agent_total", ""); err != nil {
+		t.Fatalf("GetTrafficCursor() error = %v", err)
+	} else if !found {
+		t.Fatal("traffic cursor was deleted by baseline replacement")
 	}
 }
 

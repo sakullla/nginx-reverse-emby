@@ -109,6 +109,22 @@ func (s *GormStore) ListTrafficPolicies(ctx context.Context) ([]AgentTrafficPoli
 	return rows, nil
 }
 
+func (s *GormStore) ReplaceTrafficPolicies(ctx context.Context, rows []AgentTrafficPolicyRow) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("1 = 1").Delete(&AgentTrafficPolicyRow{}).Error; err != nil {
+			return err
+		}
+		for _, row := range rows {
+			row.AgentID = s.resolveAgentID(row.AgentID)
+			normalizeTrafficPolicyRow(&row)
+			if err := tx.Create(&row).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
 func (s *GormStore) GetTrafficBaseline(ctx context.Context, agentID, cycleStart string) (AgentTrafficBaselineRow, bool, error) {
 	agentID = s.resolveAgentID(agentID)
 
@@ -154,6 +170,21 @@ func (s *GormStore) ListTrafficBaselines(ctx context.Context) ([]AgentTrafficBas
 		return nil, err
 	}
 	return rows, nil
+}
+
+func (s *GormStore) ReplaceTrafficBaselines(ctx context.Context, rows []AgentTrafficBaselineRow) error {
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Where("1 = 1").Delete(&AgentTrafficBaselineRow{}).Error; err != nil {
+			return err
+		}
+		for _, row := range rows {
+			row.AgentID = s.resolveAgentID(row.AgentID)
+			if err := tx.Create(&row).Error; err != nil {
+				return err
+			}
+		}
+		return nil
+	})
 }
 
 func (s *GormStore) GetTrafficCursor(ctx context.Context, agentID, scopeType, scopeID string) (AgentTrafficRawCursorRow, bool, error) {

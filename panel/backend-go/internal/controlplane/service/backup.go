@@ -49,6 +49,8 @@ type backupStore interface {
 	ListTrafficBaselines(context.Context) ([]storage.AgentTrafficBaselineRow, error)
 	SaveTrafficPolicy(context.Context, storage.AgentTrafficPolicyRow) error
 	SaveTrafficBaseline(context.Context, storage.AgentTrafficBaselineRow) error
+	ReplaceTrafficPolicies(context.Context, []storage.AgentTrafficPolicyRow) error
+	ReplaceTrafficBaselines(context.Context, []storage.AgentTrafficBaselineRow) error
 }
 
 type BackupExportOptions struct {
@@ -1942,15 +1944,11 @@ func (s *backupService) restoreState(ctx context.Context, snapshot backupStateSn
 	if err := s.store.SaveVersionPolicies(ctx, snapshot.versionPolicies); err != nil {
 		return err
 	}
-	for _, row := range snapshot.trafficPolicies {
-		if err := s.store.SaveTrafficPolicy(ctx, row); err != nil {
-			return err
-		}
+	if err := s.store.ReplaceTrafficPolicies(ctx, snapshot.trafficPolicies); err != nil {
+		return err
 	}
-	for _, row := range snapshot.trafficBaselines {
-		if err := s.store.SaveTrafficBaseline(ctx, row); err != nil {
-			return err
-		}
+	if err := s.store.ReplaceTrafficBaselines(ctx, snapshot.trafficBaselines); err != nil {
+		return err
 	}
 
 	originalAgents := map[string]storage.AgentRow{}
