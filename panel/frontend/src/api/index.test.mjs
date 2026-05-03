@@ -69,7 +69,7 @@ describe('api facade', () => {
     await api.fetchTrafficSummary('edge/1')
     await api.fetchTrafficTrend('edge/1', { granularity: 'day' })
     await api.calibrateTraffic('edge/1', { used_bytes: 123 })
-    await api.cleanupTraffic('edge/1', { dry_run: true })
+    await api.cleanupTraffic('edge/1')
 
     const selected = import.meta.env.DEV
       ? {
@@ -94,7 +94,7 @@ describe('api facade', () => {
     expect(selected.fetchTrafficSummary).toHaveBeenCalledWith('edge/1')
     expect(selected.fetchTrafficTrend).toHaveBeenCalledWith('edge/1', { granularity: 'day' })
     expect(selected.calibrateTraffic).toHaveBeenCalledWith('edge/1', { used_bytes: 123 })
-    expect(selected.cleanupTraffic).toHaveBeenCalledWith('edge/1', { dry_run: true })
+    expect(selected.cleanupTraffic).toHaveBeenCalledWith('edge/1')
   })
 })
 
@@ -140,7 +140,7 @@ describe('runtime traffic APIs', () => {
       scope_id: '7'
     })
     await runtime.calibrateTraffic('edge/1', { used_bytes: 123 })
-    await runtime.cleanupTraffic('edge/1', { dry_run: true })
+    await runtime.cleanupTraffic('edge/1')
 
     expect(calls.map((call) => `${call.method} ${call.url}`)).toEqual([
       'get /agents/edge%2F1/traffic-policy',
@@ -152,6 +152,6 @@ describe('runtime traffic APIs', () => {
     ])
     expect(JSON.parse(calls[1].data)).toEqual({ direction: 'rx' })
     expect(JSON.parse(calls[4].data)).toEqual({ used_bytes: 123 })
-    expect(JSON.parse(calls[5].data)).toEqual({ dry_run: true })
+    expect(calls[5].data == null || calls[5].data === '').toBe(true)
   })
 })

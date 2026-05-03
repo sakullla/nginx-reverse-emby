@@ -471,7 +471,7 @@ const mockTrafficPolicies = Object.fromEntries(mockAgents.map((agent) => [
     cycle_start_day: 1,
     monthly_quota_bytes: agent.id === 'edge-1' ? 2 * 1024 * 1024 * 1024 * 1024 : null,
     block_when_exceeded: agent.id === 'edge-1',
-    hourly_retention_days: 90,
+    hourly_retention_days: 180,
     daily_retention_months: 24,
     monthly_retention_months: null
   }
@@ -502,7 +502,7 @@ function ensureMockTrafficPolicy(agentId) {
       cycle_start_day: 1,
       monthly_quota_bytes: null,
       block_when_exceeded: false,
-      hourly_retention_days: 90,
+      hourly_retention_days: 180,
       daily_retention_months: 24,
       monthly_retention_months: null
     }
@@ -821,17 +821,17 @@ export async function calibrateTraffic(agentId, payload = {}) {
   return data.summary
 }
 
-export async function cleanupTraffic(agentId, payload = {}) {
+export async function cleanupTraffic(agentId) {
   if (isDev) {
     await sleep()
     return {
       agent_id: String(agentId || 'local'),
-      deleted_rows: payload.dry_run ? 0 : 42,
+      deleted_rows: 42,
       hourly_before: '2026-02-02T00:00:00Z',
       daily_before: '2024-05-01T00:00:00Z'
     }
   }
-  const { data } = await api.post(`/agents/${encodeURIComponent(agentId)}/traffic-cleanup`, payload)
+  const { data } = await api.post(`/agents/${encodeURIComponent(agentId)}/traffic-cleanup`)
   return data.result
 }
 

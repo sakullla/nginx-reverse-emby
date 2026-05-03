@@ -14,6 +14,12 @@ function normalizeNullableBytes(value) {
   return Number.isFinite(number) && number >= 0 ? number : null
 }
 
+function normalizeNullablePositiveInteger(value) {
+  if (value == null || value === '') return null
+  const number = Number(value)
+  return Number.isInteger(number) && number > 0 ? number : null
+}
+
 export function normalizeTrafficBucket(value) {
   return {
     rx_bytes: normalizeBytes(value?.rx_bytes),
@@ -46,11 +52,9 @@ export function normalizeTrafficPolicy(policy = {}) {
     cycle_start_day: cycleStartDay <= 28 ? cycleStartDay : 1,
     monthly_quota_bytes: normalizeNullableBytes(policy.monthly_quota_bytes),
     block_when_exceeded: policy.block_when_exceeded === true,
-    hourly_retention_days: normalizePositiveInteger(policy.hourly_retention_days, 90),
+    hourly_retention_days: normalizePositiveInteger(policy.hourly_retention_days, 180),
     daily_retention_months: normalizePositiveInteger(policy.daily_retention_months, 24),
-    monthly_retention_months: policy.monthly_retention_months == null
-      ? null
-      : normalizeNullableBytes(policy.monthly_retention_months)
+    monthly_retention_months: normalizeNullablePositiveInteger(policy.monthly_retention_months)
   }
 }
 

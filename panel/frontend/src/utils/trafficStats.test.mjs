@@ -57,10 +57,17 @@ describe('trafficStats', () => {
       cycle_start_day: 1,
       monthly_quota_bytes: null,
       block_when_exceeded: false,
-      hourly_retention_days: 90,
+      hourly_retention_days: 180,
       daily_retention_months: 12,
       monthly_retention_months: null
     })
+  })
+
+  it('normalizes monthly retention to nullable positive integers', () => {
+    expect(normalizeTrafficPolicy({ monthly_retention_months: '6' }).monthly_retention_months).toBe(6)
+    expect(normalizeTrafficPolicy({ monthly_retention_months: 1.5 }).monthly_retention_months).toBe(null)
+    expect(normalizeTrafficPolicy({ monthly_retention_months: 0 }).monthly_retention_months).toBe(null)
+    expect(normalizeTrafficPolicy({ monthly_retention_months: null }).monthly_retention_months).toBe(null)
   })
 
   it('formats quota values with an unlimited fallback', () => {

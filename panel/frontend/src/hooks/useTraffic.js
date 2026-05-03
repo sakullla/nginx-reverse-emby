@@ -106,7 +106,7 @@ export function useCalibrateTraffic(agentId) {
 export function useCleanupTraffic(agentId) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (payload) => api.cleanupTraffic(unref(agentId), payload),
+    mutationFn: () => api.cleanupTraffic(unref(agentId)),
     onSuccess: () => {
       invalidateTraffic(qc, agentId)
       messageStore.success('流量历史已清理')

@@ -544,7 +544,7 @@ export async function calibrateTraffic(agentId, payload) {
   return data.summary
 }
 
-export async function cleanupTraffic(agentId, payload = {}) {
-  const { data } = await api.post(`/agents/${encodeURIComponent(agentId)}/traffic-cleanup`, payload)
+export async function cleanupTraffic(agentId) {
+  const { data } = await api.post(`/agents/${encodeURIComponent(agentId)}/traffic-cleanup`)
   return data.result
 }
