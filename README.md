@@ -129,6 +129,8 @@ curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/dep
 > 所有 `NRE_` 前缀的环境变量同时作用于 Master 内嵌 local agent 和独立部署的 `go-agent`。
 > 时间类变量使用 Go `time.ParseDuration` 格式（如 `500ms`、`5s`、`2m`）。
 
+流量统计以最新累计计数展示到节点、HTTP 规则、L4 规则和 Relay 监听器。远程节点可在面板中配置 `traffic_stats_interval`，取值为 Go duration 格式（如 `30s`、`1m`、`5m`）。该周期只控制心跳 stats 上报频率，不会重置计数器，也不会创建历史分桶。
+
 ### HTTP 传输与流式恢复
 
 | 变量 | 默认值 | 说明 |
