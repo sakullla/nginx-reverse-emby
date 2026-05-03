@@ -5,6 +5,8 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -85,6 +87,43 @@ func TestNewLocalAgentStarterUsesConfiguredStore(t *testing.T) {
 	}
 	if gotStoreCfg.TrafficStatsEnabled {
 		t.Fatal("TrafficStatsEnabled = true, want false")
+	}
+}
+
+func TestInitializeControlPlaneSkipsLegacySQLiteGuardForPostgres(t *testing.T) {
+	cfg := config.Default()
+	cfg.DatabaseDriver = "postgres"
+	cfg.DatabaseDSN = "postgres://nre:nre@postgres:5432/nre?sslmode=disable"
+	cfg.DataDir = t.TempDir()
+	cfg.LocalAgentID = "edge-1"
+
+	if err := os.WriteFile(filepath.Join(cfg.DataDir, "state.json"), []byte("{}"), 0o600); err != nil {
+		t.Fatalf("seed legacy marker: %v", err)
+	}
+
+	previousOpenConfiguredStore := openConfiguredStore
+	t.Cleanup(func() {
+		openConfiguredStore = previousOpenConfiguredStore
+	})
+
+	called := false
+	openConfiguredStore = func(gotCfg config.Config) (*storage.GormStore, error) {
+		called = true
+		if gotCfg.DatabaseDriver != "postgres" {
+			t.Fatalf("DatabaseDriver = %q", gotCfg.DatabaseDriver)
+		}
+		store, err := storage.NewSQLiteStore(t.TempDir(), gotCfg.LocalAgentID)
+		if err != nil {
+			t.Fatalf("NewSQLiteStore() error = %v", err)
+		}
+		return store, nil
+	}
+
+	if err := initializeControlPlane(context.Background(), cfg); err != nil {
+		t.Fatalf("initializeControlPlane() error = %v", err)
+	}
+	if !called {
+		t.Fatal("openConfiguredStore was not called")
 	}
 }
 

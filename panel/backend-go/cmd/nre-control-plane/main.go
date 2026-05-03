@@ -119,8 +119,10 @@ func guardLegacyNonSQLiteState(dataDir string) error {
 }
 
 var initializeControlPlane = func(ctx context.Context, cfg config.Config) error {
-	if err := guardLegacyNonSQLiteState(cfg.DataDir); err != nil {
-		return err
+	if databaseDriverUsesSQLite(cfg.DatabaseDriver) {
+		if err := guardLegacyNonSQLiteState(cfg.DataDir); err != nil {
+			return err
+		}
 	}
 	store, err := openConfiguredStore(cfg)
 	if err != nil {
@@ -131,6 +133,11 @@ var initializeControlPlane = func(ctx context.Context, cfg config.Config) error 
 	}()
 
 	return service.NewRelayListenerService(cfg, store).Bootstrap(ctx)
+}
+
+func databaseDriverUsesSQLite(driver string) bool {
+	driver = strings.ToLower(strings.TrimSpace(driver))
+	return driver == "" || driver == "sqlite"
 }
 
 var runManagedCertificateRenewalPass = func(ctx context.Context, cfg config.Config) error {
