@@ -242,9 +242,11 @@ async function saveOutboundProxy() {
 
 async function saveTrafficStatsInterval() {
   if (!agent.value || agent.value.is_local) return
+  const nextInterval = trafficStatsInterval.value.trim()
+  if (nextInterval === (agent.value.traffic_stats_interval || '')) return
   await updateAgent.mutateAsync({
     agentId: agent.value.id,
-    payload: { traffic_stats_interval: trafficStatsInterval.value.trim() }
+    payload: { traffic_stats_interval: nextInterval }
   })
 }
 

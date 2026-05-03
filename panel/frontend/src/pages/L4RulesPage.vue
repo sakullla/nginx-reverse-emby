@@ -145,14 +145,20 @@ import { bucketForObject } from '../utils/trafficStats.js'
 const route = useRoute()
 const router = useRouter()
 const { selectedAgentId } = useAgent()
-const agentId = computed(() => route.query.agentId || selectedAgentId.value)
-
-const { data: _rulesData, isLoading } = useL4Rules(agentId)
+const selectedOrRouteAgentId = computed(() => route.query.agentId || selectedAgentId.value)
 
 // Agents list for sync status derivation
 const { data: agentsData } = useAgents()
 const allAgents = computed(() => agentsData.value ?? [])
+const registeredAgentIds = computed(() => new Set((agentsData.value || []).map((agent) => String(agent.id))))
+const agentId = computed(() => {
+  const id = selectedOrRouteAgentId.value
+  if (!id) return null
+  return registeredAgentIds.value.has(String(id)) ? id : null
+})
 const selectedAgent = computed(() => agentsData.value?.find(a => a.id === agentId.value))
+
+const { data: _rulesData, isLoading } = useL4Rules(agentId)
 
 const { data: agentStatsData } = useQuery({
   queryKey: ['agent-stats', agentId],

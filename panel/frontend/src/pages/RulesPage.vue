@@ -149,7 +149,19 @@ const router = useRouter()
 const { selectedAgentId } = useAgent()
 
 // 优先从 URL query 获取，否则 fall back 到 AgentContext
-const agentId = computed(() => route.query.agentId || selectedAgentId.value)
+const selectedOrRouteAgentId = computed(() => route.query.agentId || selectedAgentId.value)
+
+// Agents list for sync status derivation
+const { data: agentsData } = useAgents()
+const allAgents = computed(() => agentsData.value ?? [])
+const registeredAgentIds = computed(() => new Set((agentsData.value || []).map((agent) => String(agent.id))))
+const agentId = computed(() => {
+  const id = selectedOrRouteAgentId.value
+  if (!id) return null
+  return registeredAgentIds.value.has(String(id)) ? id : null
+})
+const selectedAgent = computed(() => agentsData.value?.find(a => a.id === agentId.value))
+const selectedAgentLabel = computed(() => String(selectedAgent.value?.name || agentId.value || '').trim())
 
 const { data: _rulesData, isLoading } = useRules(agentId)
 const createRule = useCreateRule(agentId)
@@ -157,12 +169,6 @@ const updateRule = useUpdateRule(agentId)
 const deleteRule = useDeleteRule(agentId)
 const diagnoseRule = useDiagnoseRule(agentId)
 const rules = computed(() => _rulesData.value ?? [])
-
-// Agents list for sync status derivation
-const { data: agentsData } = useAgents()
-const allAgents = computed(() => agentsData.value ?? [])
-const selectedAgent = computed(() => agentsData.value?.find(a => a.id === agentId.value))
-const selectedAgentLabel = computed(() => String(selectedAgent.value?.name || agentId.value || '').trim())
 
 const { data: agentStatsData } = useQuery({
   queryKey: ['agent-stats', agentId],
