@@ -37,19 +37,32 @@ type TrafficPolicy struct {
 }
 
 type TrafficSummary struct {
-	AgentID           string        `json:"agent_id"`
-	Policy            TrafficPolicy `json:"policy"`
-	CycleStart        string        `json:"cycle_start"`
-	CycleEnd          string        `json:"cycle_end"`
-	RXBytes           uint64        `json:"rx_bytes"`
-	TXBytes           uint64        `json:"tx_bytes"`
-	AccountedBytes    uint64        `json:"accounted_bytes"`
-	UsedBytes         uint64        `json:"used_bytes"`
-	MonthlyQuotaBytes *int64        `json:"monthly_quota_bytes"`
-	QuotaPercent      float64       `json:"quota_percent"`
-	RemainingBytes    *int64        `json:"remaining_bytes"`
-	Blocked           bool          `json:"blocked"`
-	BlockReason       string        `json:"block_reason,omitempty"`
+	AgentID           string                    `json:"agent_id"`
+	Policy            TrafficPolicy             `json:"policy"`
+	CycleStart        string                    `json:"cycle_start"`
+	CycleEnd          string                    `json:"cycle_end"`
+	RXBytes           uint64                    `json:"rx_bytes"`
+	TXBytes           uint64                    `json:"tx_bytes"`
+	AccountedBytes    uint64                    `json:"accounted_bytes"`
+	UsedBytes         uint64                    `json:"used_bytes"`
+	MonthlyQuotaBytes *int64                    `json:"monthly_quota_bytes"`
+	QuotaPercent      float64                   `json:"quota_percent"`
+	RemainingBytes    *int64                    `json:"remaining_bytes"`
+	OverQuota         bool                      `json:"over_quota"`
+	Blocked           bool                      `json:"blocked"`
+	BlockReason       string                    `json:"block_reason,omitempty"`
+	Aggregates        []TrafficSummaryBreakdown `json:"aggregates"`
+	HTTPRules         []TrafficSummaryBreakdown `json:"http_rules"`
+	L4Rules           []TrafficSummaryBreakdown `json:"l4_rules"`
+	RelayListeners    []TrafficSummaryBreakdown `json:"relay_listeners"`
+}
+
+type TrafficSummaryBreakdown struct {
+	ScopeType      string `json:"scope_type"`
+	ScopeID        string `json:"scope_id"`
+	RXBytes        uint64 `json:"rx_bytes"`
+	TXBytes        uint64 `json:"tx_bytes"`
+	AccountedBytes uint64 `json:"accounted_bytes"`
 }
 
 type TrafficTrendQuery struct {

@@ -259,6 +259,110 @@ func TestTrafficServiceSummaryUsesCycleBaselineAndQuota(t *testing.T) {
 	}
 }
 
+func TestTrafficServiceSummaryReportsOverQuotaWithoutBlocking(t *testing.T) {
+	fakeStore := newFakeTrafficStore()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	quota := int64(100)
+	fakeStore.policy = storage.AgentTrafficPolicyRow{
+		AgentID:           "edge-1",
+		Direction:         "both",
+		CycleStartDay:     1,
+		MonthlyQuotaBytes: &quota,
+		BlockWhenExceeded: false,
+	}
+	fakeStore.addBucket(storage.TrafficBucketRow{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		BucketStart: time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC),
+		RXBytes:     75,
+		TXBytes:     50,
+	})
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, fakeStore)
+
+	summary, err := svc.Summary(context.Background(), "edge-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !summary.OverQuota || summary.Blocked {
+		t.Fatalf("OverQuota=%v Blocked=%v, want over quota without blocking", summary.OverQuota, summary.Blocked)
+	}
+}
+
+func TestTrafficServiceSummaryReportsOverQuotaWithBlocking(t *testing.T) {
+	fakeStore := newFakeTrafficStore()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	quota := int64(100)
+	fakeStore.policy = storage.AgentTrafficPolicyRow{
+		AgentID:           "edge-1",
+		Direction:         "both",
+		CycleStartDay:     1,
+		MonthlyQuotaBytes: &quota,
+		BlockWhenExceeded: true,
+	}
+	fakeStore.addBucket(storage.TrafficBucketRow{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		BucketStart: time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC),
+		RXBytes:     75,
+		TXBytes:     50,
+	})
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, fakeStore)
+
+	summary, err := svc.Summary(context.Background(), "edge-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !summary.OverQuota || !summary.Blocked {
+		t.Fatalf("OverQuota=%v Blocked=%v, want over quota with blocking", summary.OverQuota, summary.Blocked)
+	}
+}
+
+func TestTrafficServiceSummaryIncludesBreakdowns(t *testing.T) {
+	fakeStore := newFakeTrafficStore()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	fakeStore.policy = storage.AgentTrafficPolicyRow{
+		AgentID:       "edge-1",
+		Direction:     "max",
+		CycleStartDay: 1,
+	}
+	for _, row := range []storage.TrafficBucketRow{
+		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC), RXBytes: 1, TXBytes: 2},
+		{AgentID: "edge-1", ScopeType: "http", BucketStart: time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC), RXBytes: 100, TXBytes: 40},
+		{AgentID: "edge-1", ScopeType: "l4", BucketStart: time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC), RXBytes: 50, TXBytes: 70},
+		{AgentID: "edge-1", ScopeType: "relay", BucketStart: time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC), RXBytes: 5, TXBytes: 9},
+		{AgentID: "edge-1", ScopeType: "http_rule", ScopeID: "11", BucketStart: time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC), RXBytes: 1, TXBytes: 7},
+		{AgentID: "edge-1", ScopeType: "l4_rule", ScopeID: "22", BucketStart: time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC), RXBytes: 8, TXBytes: 3},
+		{AgentID: "edge-1", ScopeType: "relay_listener", ScopeID: "33", BucketStart: time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC), RXBytes: 4, TXBytes: 6},
+	} {
+		fakeStore.addBucket(row)
+	}
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, fakeStore)
+
+	summary, err := svc.Summary(context.Background(), "edge-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSummaryBreakdown(t, summary.Aggregates, "http", "", 100, 40, 100)
+	assertSummaryBreakdown(t, summary.Aggregates, "l4", "", 50, 70, 70)
+	assertSummaryBreakdown(t, summary.Aggregates, "relay", "", 5, 9, 9)
+	assertSummaryBreakdown(t, summary.HTTPRules, "http_rule", "11", 1, 7, 7)
+	assertSummaryBreakdown(t, summary.L4Rules, "l4_rule", "22", 8, 3, 8)
+	assertSummaryBreakdown(t, summary.RelayListeners, "relay_listener", "33", 4, 6, 6)
+}
+
+func assertSummaryBreakdown(t *testing.T, rows []TrafficSummaryBreakdown, scopeType, scopeID string, rx, tx, accounted uint64) {
+	t.Helper()
+	for _, row := range rows {
+		if row.ScopeType == scopeType && row.ScopeID == scopeID {
+			if row.RXBytes != rx || row.TXBytes != tx || row.AccountedBytes != accounted {
+				t.Fatalf("%s/%s = %+v, want rx=%d tx=%d accounted=%d", scopeType, scopeID, row, rx, tx, accounted)
+			}
+			return
+		}
+	}
+	t.Fatalf("missing breakdown %s/%s in %+v", scopeType, scopeID, rows)
+}
+
 func TestTrafficServiceTrendReturnsAccountedPoints(t *testing.T) {
 	fakeStore := newFakeTrafficStore()
 	fakeStore.policy.Direction = "max"
@@ -404,6 +508,26 @@ func (s *fakeTrafficStore) ListTrafficTrend(_ context.Context, query storage.Tra
 			continue
 		}
 		if query.ScopeType != "" && (row.ScopeType != query.ScopeType || row.ScopeID != query.ScopeID) {
+			continue
+		}
+		if !query.From.IsZero() && row.BucketStart.Before(query.From) {
+			continue
+		}
+		if !query.To.IsZero() && !row.BucketStart.Before(query.To) {
+			continue
+		}
+		rows = append(rows, row)
+	}
+	return rows, nil
+}
+
+func (s *fakeTrafficStore) ListTrafficBreakdown(_ context.Context, query storage.TrafficTrendQuery) ([]storage.TrafficBucketRow, error) {
+	rows := []storage.TrafficBucketRow{}
+	for _, row := range s.buckets {
+		if row.AgentID != query.AgentID {
+			continue
+		}
+		if query.ScopeType != "" && row.ScopeType != query.ScopeType {
 			continue
 		}
 		if !query.From.IsZero() && row.BucketStart.Before(query.From) {

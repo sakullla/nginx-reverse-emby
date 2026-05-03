@@ -82,19 +82,20 @@ func quotaRemaining(used uint64, quota *int64) *int64 {
 }
 
 func quotaBlocked(used uint64, policy TrafficPolicy) (bool, string) {
-	if !policy.BlockWhenExceeded || policy.MonthlyQuotaBytes == nil {
+	if !policy.BlockWhenExceeded || !quotaOverLimit(used, policy.MonthlyQuotaBytes) {
 		return false, ""
 	}
-	if *policy.MonthlyQuotaBytes == 0 {
-		if used > 0 {
-			return true, "monthly quota exceeded"
-		}
-		return false, ""
+	return true, "monthly quota exceeded"
+}
+
+func quotaOverLimit(used uint64, quota *int64) bool {
+	if quota == nil {
+		return false
 	}
-	if used >= uint64(*policy.MonthlyQuotaBytes) {
-		return true, "monthly quota exceeded"
+	if *quota == 0 {
+		return used > 0
 	}
-	return false, ""
+	return used >= uint64(*quota)
 }
 
 func minUint64ToInt64(value uint64) int64 {

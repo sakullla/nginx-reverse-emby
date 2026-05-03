@@ -32,6 +32,10 @@ type trafficEventStore interface {
 	SaveTrafficEvent(context.Context, storage.AgentTrafficEventRow) error
 }
 
+type trafficBreakdownStore interface {
+	ListTrafficBreakdown(context.Context, storage.TrafficTrendQuery) ([]storage.TrafficBucketRow, error)
+}
+
 type trafficService struct {
 	enabled bool
 	store   trafficStore
@@ -139,6 +143,10 @@ func (s *trafficService) Summary(ctx context.Context, agentID string) (TrafficSu
 	}
 	used := uint64(usedSigned)
 	blocked, reason := quotaBlocked(used, policy)
+	breakdowns, err := s.summaryBreakdowns(ctx, agentID, policy, start, end)
+	if err != nil {
+		return TrafficSummary{}, err
+	}
 	return TrafficSummary{
 		AgentID:           agentID,
 		Policy:            policy,
@@ -151,8 +159,13 @@ func (s *trafficService) Summary(ctx context.Context, agentID string) (TrafficSu
 		MonthlyQuotaBytes: policy.MonthlyQuotaBytes,
 		QuotaPercent:      quotaPercent(used, policy.MonthlyQuotaBytes),
 		RemainingBytes:    quotaRemaining(used, policy.MonthlyQuotaBytes),
+		OverQuota:         quotaOverLimit(used, policy.MonthlyQuotaBytes),
 		Blocked:           blocked,
 		BlockReason:       reason,
+		Aggregates:        breakdowns.aggregates,
+		HTTPRules:         breakdowns.httpRules,
+		L4Rules:           breakdowns.l4Rules,
+		RelayListeners:    breakdowns.relayListeners,
 	}, nil
 }
 
@@ -337,6 +350,87 @@ func (s *trafficService) cycleStats(ctx context.Context, agentID string, policy 
 	}
 	stats.accounted = accountedBytes(policy.Direction, stats.rx, stats.tx)
 	return stats, nil
+}
+
+type trafficSummaryBreakdowns struct {
+	aggregates     []TrafficSummaryBreakdown
+	httpRules      []TrafficSummaryBreakdown
+	l4Rules        []TrafficSummaryBreakdown
+	relayListeners []TrafficSummaryBreakdown
+}
+
+func (s *trafficService) summaryBreakdowns(ctx context.Context, agentID string, policy TrafficPolicy, start, end time.Time) (trafficSummaryBreakdowns, error) {
+	out := trafficSummaryBreakdowns{
+		aggregates:     []TrafficSummaryBreakdown{},
+		httpRules:      []TrafficSummaryBreakdown{},
+		l4Rules:        []TrafficSummaryBreakdown{},
+		relayListeners: []TrafficSummaryBreakdown{},
+	}
+	for _, scopeType := range []string{"http", "l4", "relay"} {
+		rows, err := s.store.ListTrafficTrend(ctx, storage.TrafficTrendQuery{
+			AgentID:     agentID,
+			ScopeType:   scopeType,
+			Granularity: "hour",
+			From:        start.UTC(),
+			To:          end.UTC(),
+		})
+		if err != nil {
+			return trafficSummaryBreakdowns{}, err
+		}
+		switch scopeType {
+		case "http", "l4", "relay":
+			out.aggregates = append(out.aggregates, summarizeTrafficBreakdownRows(policy.Direction, rows)...)
+		}
+	}
+	breakdownStore, ok := s.store.(trafficBreakdownStore)
+	if !ok {
+		return out, nil
+	}
+	for _, scopeType := range []string{"http_rule", "l4_rule", "relay_listener"} {
+		rows, err := breakdownStore.ListTrafficBreakdown(ctx, storage.TrafficTrendQuery{
+			AgentID:     agentID,
+			ScopeType:   scopeType,
+			Granularity: "hour",
+			From:        start.UTC(),
+			To:          end.UTC(),
+		})
+		if err != nil {
+			return trafficSummaryBreakdowns{}, err
+		}
+		switch scopeType {
+		case "http_rule":
+			out.httpRules = summarizeTrafficBreakdownRows(policy.Direction, rows)
+		case "l4_rule":
+			out.l4Rules = summarizeTrafficBreakdownRows(policy.Direction, rows)
+		case "relay_listener":
+			out.relayListeners = summarizeTrafficBreakdownRows(policy.Direction, rows)
+		}
+	}
+	return out, nil
+}
+
+func summarizeTrafficBreakdownRows(direction string, rows []storage.TrafficBucketRow) []TrafficSummaryBreakdown {
+	byScope := map[string]TrafficSummaryBreakdown{}
+	order := []string{}
+	for _, row := range rows {
+		key := row.ScopeType + "\x00" + row.ScopeID
+		current, ok := byScope[key]
+		if !ok {
+			current.ScopeType = row.ScopeType
+			current.ScopeID = row.ScopeID
+			order = append(order, key)
+		}
+		current.RXBytes += row.RXBytes
+		current.TXBytes += row.TXBytes
+		byScope[key] = current
+	}
+	out := make([]TrafficSummaryBreakdown, 0, len(order))
+	for _, key := range order {
+		row := byScope[key]
+		row.AccountedBytes = accountedBytes(direction, row.RXBytes, row.TXBytes)
+		out = append(out, row)
+	}
+	return out
 }
 
 func (s *trafficService) recordCounterReset(ctx context.Context, agentID string, sample trafficSample, cursor storage.AgentTrafficRawCursorRow, observedAt time.Time) error {
