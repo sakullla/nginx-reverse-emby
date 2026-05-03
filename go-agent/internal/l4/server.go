@@ -281,17 +281,17 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 
 	done := make(chan struct{}, 2)
 	go func() {
-		n, _ := io.Copy(upstream, downstreamSource)
-		recorder.Add(n+int64(len(initialPayload)), 0)
-		recorder.Flush()
+		if len(initialPayload) > 0 {
+			recorder.Add(int64(len(initialPayload)), 0)
+			recorder.Flush()
+		}
+		_, _ = copyL4TCP(upstream, downstreamSource, true, recorder)
 		closeTCPWrite(upstream)
 		closeTCPRead(client)
 		done <- struct{}{}
 	}()
 	go func() {
-		n, _ := copyPreferReaderFrom(client, upstream)
-		recorder.Add(0, n)
-		recorder.Flush()
+		_, _ = copyL4TCP(client, upstream, false, recorder)
 		closeTCPWrite(client)
 		closeTCPRead(upstream)
 		done <- struct{}{}
@@ -300,12 +300,7 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 	<-done
 }
 
-func (s *Server) handleProxyEntryConnection(client net.Conn, rule model.L4Rule, recorders ...*traffic.Recorder) {
-	var recorder *traffic.Recorder
-	if len(recorders) > 0 {
-		recorder = recorders[0]
-	}
-
+func (s *Server) handleProxyEntryConnection(client net.Conn, rule model.L4Rule, recorder *traffic.Recorder) {
 	auth := proxyproto.EntryAuth{
 		Enabled:  rule.ProxyEntryAuth.Enabled,
 		Username: rule.ProxyEntryAuth.Username,
@@ -346,17 +341,13 @@ func copyBidirectionalTCP(a net.Conn, b net.Conn, recorder *traffic.Recorder) {
 
 	done := make(chan struct{}, 2)
 	go func() {
-		n, _ := io.Copy(b, a)
-		recorder.Add(n, 0)
-		recorder.Flush()
+		_, _ = copyL4TCP(b, a, true, recorder)
 		closeTCPWrite(b)
 		closeTCPRead(a)
 		done <- struct{}{}
 	}()
 	go func() {
-		n, _ := copyPreferReaderFrom(a, b)
-		recorder.Add(0, n)
-		recorder.Flush()
+		_, _ = copyL4TCP(a, b, false, recorder)
 		closeTCPWrite(a)
 		closeTCPRead(b)
 		done <- struct{}{}
@@ -370,6 +361,34 @@ func l4RecorderOrAggregate(recorder *traffic.Recorder) *traffic.Recorder {
 		return recorder
 	}
 	return traffic.NewL4Recorder()
+}
+
+func copyL4TCP(dst io.Writer, src io.Reader, rxDirection bool, recorder *traffic.Recorder) (int64, error) {
+	wrapped := l4TrafficWriter{
+		dst:         dst,
+		rxDirection: rxDirection,
+		recorder:    l4RecorderOrAggregate(recorder),
+	}
+	return copyPreferReaderFrom(wrapped, src)
+}
+
+type l4TrafficWriter struct {
+	dst         io.Writer
+	rxDirection bool
+	recorder    *traffic.Recorder
+}
+
+func (w l4TrafficWriter) Write(p []byte) (int, error) {
+	n, err := w.dst.Write(p)
+	if n > 0 {
+		if w.rxDirection {
+			w.recorder.Add(int64(n), 0)
+		} else {
+			w.recorder.Add(0, int64(n))
+		}
+		w.recorder.Flush()
+	}
+	return n, err
 }
 
 func (s *Server) prefetchRelayInitialPayload(_ net.Conn, source io.Reader) ([]byte, io.Reader, error) {

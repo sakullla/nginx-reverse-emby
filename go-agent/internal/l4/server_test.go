@@ -338,7 +338,7 @@ func TestL4ProxyEntryClosesUpstreamWhenClientSuccessReplyFails(t *testing.T) {
 		ListenMode:      "proxy",
 		ProxyEgressMode: "relay",
 		RelayChain:      []int{2},
-	})
+	}, nil)
 
 	if !upstream.closed {
 		t.Fatalf("upstream was not closed after client success reply failed")
