@@ -72,6 +72,11 @@
       <BaseBadge v-if="listener.allow_self_signed" tone="warning" size="sm">允许自签</BaseBadge>
     </div>
 
+    <div class="traffic-line">
+      <span>↓ {{ formatBytes(traffic.rx_bytes) }}</span>
+      <span>↑ {{ formatBytes(traffic.tx_bytes) }}</span>
+    </div>
+
     <template v-if="hasTags" #footer>
       <BaseBadge v-for="tag in listener.tags" :key="tag" tone="primary">{{ tag }}</BaseBadge>
     </template>
@@ -83,9 +88,11 @@ import { computed } from 'vue'
 import BaseListCard from '../base/BaseListCard.vue'
 import BaseBadge from '../base/BaseBadge.vue'
 import BaseIconButton from '../base/BaseIconButton.vue'
+import { formatBytes } from '../../utils/trafficStats.js'
 
 const props = defineProps({
   listener: { type: Object, required: true },
+  traffic: { type: Object, default: () => ({ rx_bytes: 0, tx_bytes: 0 }) },
 })
 
 defineEmits(['edit', 'delete', 'toggle'])
@@ -180,6 +187,13 @@ const hasTags = computed(() => Array.isArray(props.listener.tags) && props.liste
   display: flex;
   gap: 0.25rem;
   flex-wrap: wrap;
+}
+.traffic-line {
+  display: flex;
+  gap: 0.75rem;
+  color: var(--color-text-tertiary);
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
 }
 
 @media (max-width: 640px) {

@@ -47,6 +47,7 @@ export function useUpdateAgent() {
     mutationFn: ({ agentId, payload }) => api.updateAgent(agentId, payload),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ['agents'] })
+      qc.invalidateQueries({ queryKey: ['agent-stats'] })
       messageStore.success('节点设置已更新')
     },
     onError: (error) => {

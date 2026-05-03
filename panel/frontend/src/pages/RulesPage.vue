@@ -66,6 +66,7 @@
         :key="rule.id"
         :rule="rule"
         :agent="selectedAgent"
+        :traffic="trafficForRule(rule)"
         @edit="startEdit"
         @toggle="toggleRule"
         @copy="handleCopy"
@@ -128,10 +129,12 @@
 <script setup>
 import { ref, computed, watchEffect } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import { useQuery } from '@tanstack/vue-query'
 import { useAgent } from '../context/AgentContext'
 import { useRules, useCreateRule, useUpdateRule, useDeleteRule } from '../hooks/useRules'
 import { useDiagnoseRule, useDiagnosticTask } from '../hooks/useDiagnostics'
 import { useAgents } from '../hooks/useAgents'
+import { fetchAgentStats } from '../api'
 import RuleForm from '../components/RuleForm.vue'
 import RuleCard from '../components/rules/RuleCard.vue'
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
@@ -139,6 +142,7 @@ import BaseModal from '../components/base/BaseModal.vue'
 import RuleDiagnosticModal from '../components/RuleDiagnosticModal.vue'
 import AgentPicker from '../components/AgentPicker.vue'
 import { messageStore } from '../stores/messages'
+import { bucketForObject } from '../utils/trafficStats.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -159,6 +163,17 @@ const { data: agentsData } = useAgents()
 const allAgents = computed(() => agentsData.value ?? [])
 const selectedAgent = computed(() => agentsData.value?.find(a => a.id === agentId.value))
 const selectedAgentLabel = computed(() => String(selectedAgent.value?.name || agentId.value || '').trim())
+
+const { data: agentStatsData } = useQuery({
+  queryKey: ['agent-stats', agentId],
+  queryFn: () => fetchAgentStats(agentId.value),
+  enabled: () => !!agentId.value,
+  refetchInterval: 10_000
+})
+
+function trafficForRule(rule) {
+  return bucketForObject(agentStatsData.value, 'http_rules', rule?.id)
+}
 
 function handleAgentSelect(agent) {
   router.replace({ query: { ...route.query, agentId: agent.id } })

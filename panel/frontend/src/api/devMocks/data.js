@@ -114,6 +114,7 @@ const mockAgents = [
     status: 'online',
     is_local: false,
     outbound_proxy_url: 'socks://user:xxxxx@127.0.0.1:1080',
+    traffic_stats_interval: '30s',
     last_seen_at: new Date().toISOString(),
     http_rules_count: 8,
     l4_rules_count: 2,
@@ -436,6 +437,16 @@ const mockRulesByAgent = {
 function getMockStats(agentId) {
   const rx = agentId === 'local' ? 4_625_219_584 : 712_441_856
   const tx = agentId === 'local' ? 9_219_637_248 : 1_284_505_600
+  const httpRules = mockRulesByAgent[agentId] || []
+  const l4Rules = mockL4RulesByAgent[agentId] || []
+  const relayListeners = mockRelayListenersByAgent[agentId] || []
+  const bucketMap = (items, rxBase, txBase) => Object.fromEntries(items.map((item, index) => [
+    String(item.id),
+    {
+      rx_bytes: Math.floor(rxBase / (index + 2)),
+      tx_bytes: Math.floor(txBase / (index + 2))
+    }
+  ]))
   return {
     activeConnections: agentId === 'local' ? '12' : '4',
     totalRequests: agentId === 'local' ? '8.4K' : '1.3K',
@@ -444,7 +455,10 @@ function getMockStats(agentId) {
       total: { rx_bytes: rx, tx_bytes: tx },
       http: { rx_bytes: Math.floor(rx * 0.62), tx_bytes: Math.floor(tx * 0.66) },
       l4: { rx_bytes: Math.floor(rx * 0.25), tx_bytes: Math.floor(tx * 0.22) },
-      relay: { rx_bytes: Math.floor(rx * 0.13), tx_bytes: Math.floor(tx * 0.12) }
+      relay: { rx_bytes: Math.floor(rx * 0.13), tx_bytes: Math.floor(tx * 0.12) },
+      http_rules: bucketMap(httpRules, Math.floor(rx * 0.62), Math.floor(tx * 0.66)),
+      l4_rules: bucketMap(l4Rules, Math.floor(rx * 0.25), Math.floor(tx * 0.22)),
+      relay_listeners: bucketMap(relayListeners, Math.floor(rx * 0.13), Math.floor(tx * 0.12))
     }
   }
 }
@@ -938,6 +952,9 @@ export async function updateAgent(agentId, payload = {}) {
     }
     if (Object.prototype.hasOwnProperty.call(payload, 'outbound_proxy_url')) {
       agent.outbound_proxy_url = String(payload.outbound_proxy_url || '').trim()
+    }
+    if (Object.prototype.hasOwnProperty.call(payload, 'traffic_stats_interval')) {
+      agent.traffic_stats_interval = String(payload.traffic_stats_interval || '').trim()
     }
     return { ...agent }
   }

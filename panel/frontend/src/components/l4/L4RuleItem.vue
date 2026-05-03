@@ -75,6 +75,11 @@
       </BaseBadge>
     </div>
 
+    <div class="traffic-line">
+      <span>↓ {{ formatBytes(traffic.rx_bytes) }}</span>
+      <span>↑ {{ formatBytes(traffic.tx_bytes) }}</span>
+    </div>
+
     <template v-if="hasTags" #footer>
       <BaseBadge v-for="tag in rule.tags" :key="tag" tone="primary">{{ tag }}</BaseBadge>
     </template>
@@ -87,10 +92,12 @@ import BaseListCard from '../base/BaseListCard.vue'
 import BaseBadge from '../base/BaseBadge.vue'
 import BaseIconButton from '../base/BaseIconButton.vue'
 import { getRuleEffectiveStatus } from '../../utils/syncStatus'
+import { formatBytes } from '../../utils/trafficStats.js'
 
 const props = defineProps({
   rule: { type: Object, required: true },
   agent: { type: Object, default: null },
+  traffic: { type: Object, default: () => ({ rx_bytes: 0, tx_bytes: 0 }) },
 })
 defineEmits(['edit', 'delete', 'copy', 'toggle', 'diagnose'])
 
@@ -200,5 +207,12 @@ const hasTags = computed(() => Array.isArray(props.rule.tags) && props.rule.tags
   display: flex;
   gap: 0.25rem;
   flex-wrap: wrap;
+}
+.traffic-line {
+  display: flex;
+  gap: 0.75rem;
+  color: var(--color-text-tertiary);
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
 }
 </style>

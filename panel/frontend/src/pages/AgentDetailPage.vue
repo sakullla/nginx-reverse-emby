@@ -118,6 +118,25 @@
             </button>
           </div>
         </div>
+        <div v-if="!agent.is_local" class="agent-setting">
+          <label class="agent-setting__label" for="agent-traffic-stats-interval">流量统计上报周期</label>
+          <div class="agent-setting__control">
+            <input
+              id="agent-traffic-stats-interval"
+              v-model="trafficStatsInterval"
+              class="agent-setting__input"
+              placeholder="例如 30s、1m、5m；留空表示随心跳上报"
+            >
+            <button
+              class="btn btn-primary"
+              type="button"
+              :disabled="updateAgent.isPending.value"
+              @click="saveTrafficStatsInterval"
+            >
+              保存
+            </button>
+          </div>
+        </div>
         <div class="info-grid">
           <div class="info-row"><span>版本</span><span>{{ agent.version || agent.runtime_package_version || '—' }}</span></div>
           <div class="info-row"><span>平台</span><span>{{ agent.runtime_package_platform || agent.platform || '—' }}</span></div>
@@ -158,6 +177,7 @@ import { useAgents, useUpdateAgent } from '../hooks/useAgents'
 import { fetchAgentStats } from '../api'
 import { messageStore } from '../stores/messages'
 import { buildOutboundProxyPayload } from './outboundProxyURL'
+import { formatBytes, normalizeTrafficBucket } from '../utils/trafficStats.js'
 
 const route = useRoute()
 const router = useRouter()
@@ -167,6 +187,7 @@ const { data: agentsData, isLoading } = useAgents()
 const agent = computed(() => agentsData.value?.find(a => a.id === agentId.value))
 const updateAgent = useUpdateAgent()
 const outboundProxyURL = ref('')
+const trafficStatsInterval = ref('')
 
 const { data: httpRulesData } = useRules(agentId)
 const httpRules = computed(() => httpRulesData.value ?? [])
@@ -200,6 +221,7 @@ const tabs = [
 
 watch(agent, (value) => {
   outboundProxyURL.value = value?.outbound_proxy_url || ''
+  trafficStatsInterval.value = value?.traffic_stats_interval || ''
 }, { immediate: true })
 
 async function saveOutboundProxy() {
@@ -215,6 +237,14 @@ async function saveOutboundProxy() {
   await updateAgent.mutateAsync({
     agentId: agent.value.id,
     payload
+  })
+}
+
+async function saveTrafficStatsInterval() {
+  if (!agent.value || agent.value.is_local) return
+  await updateAgent.mutateAsync({
+    agentId: agent.value.id,
+    payload: { traffic_stats_interval: trafficStatsInterval.value.trim() }
   })
 }
 
@@ -277,26 +307,6 @@ function packageStatusLabel(status) {
   if (status === 'aligned') return '已同步'
   if (status === 'pending') return '待更新'
   return '—'
-}
-
-function normalizeTrafficBucket(value) {
-  return {
-    rx_bytes: Math.max(0, Number(value?.rx_bytes || 0)),
-    tx_bytes: Math.max(0, Number(value?.tx_bytes || 0))
-  }
-}
-
-function formatBytes(value) {
-  const bytes = Math.max(0, Number(value || 0))
-  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
-  let size = bytes
-  let unitIndex = 0
-  while (size >= 1024 && unitIndex < units.length - 1) {
-    size /= 1024
-    unitIndex += 1
-  }
-  if (unitIndex === 0) return `${Math.round(size)} ${units[unitIndex]}`
-  return `${size.toFixed(size >= 10 ? 1 : 2)} ${units[unitIndex]}`
 }
 
 function timeAgo(date) {
