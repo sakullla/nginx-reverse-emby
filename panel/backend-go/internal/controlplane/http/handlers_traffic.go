@@ -65,6 +65,10 @@ func (d Dependencies) handleAgentTrafficTrend(w http.ResponseWriter, r *http.Req
 		http.NotFound(w, r)
 		return
 	}
+	if !d.Config.TrafficStatsEnabled {
+		writeJSON(w, http.StatusNotFound, trafficStatsDisabledPayload())
+		return
+	}
 	query := r.URL.Query()
 	granularity := query.Get("granularity")
 	switch granularity {

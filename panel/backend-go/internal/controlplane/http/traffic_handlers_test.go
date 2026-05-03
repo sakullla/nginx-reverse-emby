@@ -116,7 +116,9 @@ func TestTrafficPolicyDisabledReturnsStable404(t *testing.T) {
 		Code: service.ErrCodeTrafficStatsDisabled,
 		Err:  service.ErrTrafficStatsDisabled,
 	}
-	router, err := NewRouter(trafficTestDependencies(fakeTrafficService{err: trafficErr}))
+	deps := trafficTestDependencies(fakeTrafficService{err: trafficErr})
+	deps.Config.TrafficStatsEnabled = false
+	router, err := NewRouter(deps)
 	if err != nil {
 		t.Fatalf("NewRouter() error = %v", err)
 	}
@@ -199,6 +201,35 @@ func TestTrafficTrendRejectsInvalidGranularity(t *testing.T) {
 
 	if resp.Code != http.StatusBadRequest {
 		t.Fatalf("GET traffic-trend invalid granularity = %d body=%s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestTrafficTrendDisabledTakesPrecedenceOverInvalidGranularity(t *testing.T) {
+	trafficErr := service.TrafficServiceError{
+		Code: service.ErrCodeTrafficStatsDisabled,
+		Err:  service.ErrTrafficStatsDisabled,
+	}
+	deps := trafficTestDependencies(fakeTrafficService{err: trafficErr})
+	deps.Config.TrafficStatsEnabled = false
+	router, err := NewRouter(deps)
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/panel-api/agents/edge-1/traffic-trend?granularity=minute", nil)
+	req.Header.Set("X-Panel-Token", "secret")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("GET traffic-trend disabled invalid granularity = %d body=%s", resp.Code, resp.Body.String())
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if payload["code"] != service.ErrCodeTrafficStatsDisabled {
+		t.Fatalf("payload = %+v", payload)
 	}
 }
 
@@ -358,19 +389,19 @@ func TestSystemInfoExposesTrafficStatsEnabled(t *testing.T) {
 	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
 		t.Fatalf("json.Unmarshal() error = %v", err)
 	}
-	if payload["traffic_stats_enabled"] != false {
+	if payload["traffic_stats_enabled"] != true {
 		t.Fatalf("traffic_stats_enabled = %v", payload["traffic_stats_enabled"])
 	}
 }
 
 func trafficTestDependencies(trafficSvc fakeTrafficService) Dependencies {
 	return Dependencies{
-		Config: config.Config{PanelToken: "secret"},
+		Config: config.Config{PanelToken: "secret", TrafficStatsEnabled: true},
 		SystemService: fakeSystemService{
 			info: service.SystemInfo{
 				Role:                "master",
 				LocalApplyRuntime:   "go-agent",
-				TrafficStatsEnabled: false,
+				TrafficStatsEnabled: true,
 			},
 		},
 		AgentService:         fakeAgentService{},
