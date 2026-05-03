@@ -2,20 +2,30 @@ package storage
 
 import (
 	"context"
+	"strings"
 
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
 type SchemaOptions struct {
-	TrafficStatsEnabled bool
+	TrafficStatsEnabled    bool
+	SQLiteLegacyMigrations bool
+}
+
+func SchemaOptionsForDriver(driver string, trafficStatsEnabled bool) SchemaOptions {
+	driver = strings.ToLower(strings.TrimSpace(driver))
+	return SchemaOptions{
+		TrafficStatsEnabled:    trafficStatsEnabled,
+		SQLiteLegacyMigrations: driver == "" || driver == "sqlite",
+	}
 }
 
 func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) error {
 	tx := db.WithContext(ctx)
 
-	if tx.Migrator().HasTable(&LocalAgentStateRow{}) {
-		if err := tx.Exec(`DELETE FROM local_agent_state WHERE id <> 1`).Error; err != nil {
+	if options.SQLiteLegacyMigrations {
+		if err := cleanupSQLiteLegacyLocalAgentState(ctx, db); err != nil {
 			return err
 		}
 	}
@@ -32,6 +42,33 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 	); err != nil {
 		return err
 	}
+
+	if options.SQLiteLegacyMigrations {
+		if err := bootstrapSQLiteLegacySchema(ctx, db); err != nil {
+			return err
+		}
+	}
+
+	return tx.
+		Clauses(clause.OnConflict{DoNothing: true}).
+		Create(&LocalAgentStateRow{
+			ID:              1,
+			LastApplyStatus: "success",
+		}).Error
+}
+
+func cleanupSQLiteLegacyLocalAgentState(ctx context.Context, db *gorm.DB) error {
+	tx := db.WithContext(ctx)
+	if tx.Migrator().HasTable(&LocalAgentStateRow{}) {
+		if err := tx.Exec(`DELETE FROM local_agent_state WHERE id <> 1`).Error; err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func bootstrapSQLiteLegacySchema(ctx context.Context, db *gorm.DB) error {
+	tx := db.WithContext(ctx)
 
 	requiredIndexes := []struct {
 		model any
@@ -178,14 +215,9 @@ func BootstrapSchema(ctx context.Context, db *gorm.DB, options SchemaOptions) er
 		return err
 	}
 
-	return tx.
-		Clauses(clause.OnConflict{DoNothing: true}).
-		Create(&LocalAgentStateRow{
-			ID:              1,
-			LastApplyStatus: "success",
-		}).Error
+	return nil
 }
 
 func BootstrapSQLiteSchema(ctx context.Context, db *gorm.DB) error {
-	return BootstrapSchema(ctx, db, SchemaOptions{TrafficStatsEnabled: true})
+	return BootstrapSchema(ctx, db, SchemaOptionsForDriver("sqlite", true))
 }

@@ -64,7 +64,7 @@ func NewStore(cfg StoreConfig) (*GormStore, error) {
 		localAgentID: cfg.LocalAgentID,
 		driver:       driver,
 	}
-	if err := BootstrapSchema(context.Background(), db, SchemaOptions{TrafficStatsEnabled: cfg.TrafficStatsEnabled}); err != nil {
+	if err := BootstrapSchema(context.Background(), db, SchemaOptionsForDriver(driver, cfg.TrafficStatsEnabled)); err != nil {
 		_ = store.Close()
 		return nil, err
 	}
