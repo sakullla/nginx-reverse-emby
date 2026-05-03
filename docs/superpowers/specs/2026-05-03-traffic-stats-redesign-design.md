@@ -12,6 +12,7 @@ In scope:
 
 - Support PostgreSQL, MySQL, and legacy SQLite through a shared GORM-backed store.
 - Change Docker defaults to PostgreSQL.
+- Add a control-plane environment variable to disable the traffic statistics module globally.
 - Provide a manual SQLite-to-PostgreSQL/MySQL migration command instead of automatic startup migration.
 - Persist raw traffic cursors, hourly buckets, daily summaries, monthly summaries, node policies, cycle baselines, and calibration adjustments.
 - Compute all node traffic displays, quota usage, rule breakdowns, cleanup decisions, and block decisions from the node traffic policy.
@@ -56,6 +57,29 @@ nre-control-plane migrate-storage --from-driver sqlite --from-dsn <sqlite file> 
 ```
 
 The control plane must not automatically migrate SQLite data on startup.
+
+## Global Module Switch
+
+The control panel should expose a process-level environment variable:
+
+- `NRE_TRAFFIC_STATS_ENABLED=true|false`
+
+The default is `true`.
+
+When `NRE_TRAFFIC_STATS_ENABLED=false`, the traffic statistics module is disabled globally:
+
+- The control plane does not run traffic-history table migrations.
+- Heartbeat traffic stats are ignored and are not persisted to raw cursors, buckets, summaries, or latest display state.
+- Traffic policy, summary, trend, calibration, and cleanup APIs return HTTP `404` with stable error code `TRAFFIC_STATS_DISABLED`.
+- Quota calculation is disabled.
+- Quota-based traffic blocking is disabled.
+- Agent runtime config must send traffic reporting disabled and `traffic_blocked=false`.
+- Panel bootstrap/config APIs expose `traffic_stats_enabled=false`.
+- The frontend hides the node Traffic tab, traffic policy controls, calibration controls, cleanup controls, trend chart, quota indicators, and per-rule/listener traffic statistics.
+
+Disabling the module must not delete existing traffic tables or history. If the process is later restarted with the module enabled, migrations run normally and existing traffic data becomes available again.
+
+This switch is intended for deployments that do not want traffic accounting overhead, quota behavior, or traffic-history storage at all. It is separate from per-node traffic policy settings.
 
 ## Traffic Tables
 
@@ -132,7 +156,7 @@ Supported scope types:
 
 ## Ingestion Flow
 
-Agents report cumulative raw counters in heartbeat payloads. The control plane ingests each reported scope independently:
+Agents report cumulative raw counters in heartbeat payloads. When the global traffic module is enabled, the control plane ingests each reported scope independently:
 
 1. Load or create the raw cursor for `(agent_id, scope_type, scope_id)`.
 2. If the new cumulative value is greater than or equal to the cursor, compute delta as `new - cursor`.
@@ -206,7 +230,7 @@ Calibration is cycle-scoped. A new billing cycle creates a new baseline from cur
 
 ## Trend APIs
 
-The backend should expose traffic APIs under the agent resource:
+When the global traffic module is enabled, the backend exposes traffic APIs under the agent resource:
 
 - `GET /api/agents/{id}/traffic-policy`
 - `PATCH /api/agents/{id}/traffic-policy`
@@ -224,6 +248,8 @@ The backend should expose traffic APIs under the agent resource:
 ## Node Detail UI
 
 Traffic should live in the node detail page as a dedicated Traffic tab.
+
+When the global traffic module is disabled, the frontend should hide this tab and all traffic-derived fields instead of rendering zero traffic. This makes the disabled state explicit and avoids suggesting that accounting is active.
 
 The tab includes:
 
@@ -244,7 +270,9 @@ The UI should make clear that `both` is the default accounting direction and tha
 
 ## Over-Quota Blocking
 
-The control plane computes quota state after ingesting traffic and when policy changes. If `block_when_exceeded` is enabled and current cycle used bytes exceed the quota, the control plane marks the node as traffic blocked.
+When the global traffic module is enabled, the control plane computes quota state after ingesting traffic and when policy changes. If `block_when_exceeded` is enabled and current cycle used bytes exceed the quota, the control plane marks the node as traffic blocked.
+
+When the global traffic module is disabled, quota-based blocking is disabled and the control plane always sends `traffic_blocked=false`.
 
 The agent runtime config should include:
 
@@ -288,6 +316,8 @@ Existing latest-stats endpoints should keep working during the transition. The n
 
 Older agents that do not report per-rule/per-listener maps still contribute aggregate node/http/l4/relay buckets. Missing object scopes are treated as empty.
 
+If an older agent reports traffic while the global traffic module is disabled, the control plane ignores the stats payload. This keeps the switch effective during rolling upgrades.
+
 Rolling upgrades should preserve:
 
 - aggregate latest stats display
@@ -299,12 +329,14 @@ Rolling upgrades should preserve:
 
 Storage tests:
 
+- Verify `NRE_TRAFFIC_STATS_ENABLED=false` skips traffic-history migrations.
 - Open the shared GORM store with SQLite for fast unit coverage.
 - Verify migrations for traffic policies, cursors, baselines, and buckets.
 - Verify dialect-aware upsert helpers through integration tests for PostgreSQL and MySQL when those services are available.
 
 Ingestion tests:
 
+- Disabled global module ignores heartbeat traffic stats.
 - Repeated identical heartbeat does not double count.
 - Increasing cumulative counters produce correct deltas.
 - Counter reset produces non-negative deltas and records an event.
@@ -321,6 +353,7 @@ Accounting tests:
 
 Blocking tests:
 
+- Disabled global module sends `traffic_blocked=false` even when stored policy/quota would otherwise block.
 - Policy update triggers block state recomputation.
 - Over-quota with blocking disabled does not block.
 - Over-quota with blocking enabled sends `traffic_blocked` to the agent.
@@ -329,6 +362,7 @@ Blocking tests:
 
 Frontend tests:
 
+- Disabled global module hides Traffic tab and traffic-derived fields.
 - Node Traffic tab renders summary, trend chart, policy form, calibration controls, and cleanup action.
 - Trend granularity switch requests the correct API.
 - Rule/listener breakdowns display accounted usage according to node policy.
