@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"reflect"
@@ -70,22 +71,23 @@ type Updater interface {
 }
 
 type App struct {
-	cfg               Config
-	syncClient        SyncClient
-	store             store.Store
-	httpApplier       HTTPApplier
-	certApplier       CertificateApplier
-	l4Applier         L4Applier
-	relayApplier      RelayApplier
-	updater           Updater
-	runtime           *agentruntime.Runtime
-	taskClient        *agenttask.Client
-	diagnosticHandler *agenttask.DiagnosticHandler
-	httpProber        *diagnostics.HTTPProber
-	tcpProber         *diagnostics.TCPProber
-	relayTimeoutReset func()
-	closeOnce         sync.Once
-	syncMu            sync.Mutex
+	cfg                           Config
+	syncClient                    SyncClient
+	store                         store.Store
+	httpApplier                   HTTPApplier
+	certApplier                   CertificateApplier
+	l4Applier                     L4Applier
+	relayApplier                  RelayApplier
+	updater                       Updater
+	runtime                       *agentruntime.Runtime
+	taskClient                    *agenttask.Client
+	diagnosticHandler             *agenttask.DiagnosticHandler
+	httpProber                    *diagnostics.HTTPProber
+	tcpProber                     *diagnostics.TCPProber
+	relayTimeoutReset             func()
+	closeOnce                     sync.Once
+	syncMu                        sync.Mutex
+	pendingTrafficStatsReportUnix string
 }
 
 func advertisedCapabilities(cfg Config) []string {
@@ -383,6 +385,7 @@ func (a *App) SyncNow(ctx context.Context) error {
 
 func (a *App) syncRequest(ctx context.Context, applied Snapshot) (SyncRequest, error) {
 	req := SyncRequest{CurrentRevision: int(applied.Revision)}
+	a.pendingTrafficStatsReportUnix = ""
 
 	state, err := a.store.LoadRuntimeState()
 	if err != nil {
@@ -402,10 +405,8 @@ func (a *App) syncRequest(ctx context.Context, applied Snapshot) (SyncRequest, e
 		stats := traffic.SnapshotNonZero()
 		if stats != nil {
 			req.Stats = stats
-			meta[runtimeMetaLastTrafficStatsReportUnix] = strconv.FormatInt(now.Unix(), 10)
-			state.Metadata = meta
-			if err := a.store.SaveRuntimeState(state); err != nil {
-				return SyncRequest{}, err
+			if hasTrafficStatsInterval(meta) {
+				a.pendingTrafficStatsReportUnix = strconv.FormatInt(now.Unix(), 10)
 			}
 		}
 	}
@@ -433,8 +434,16 @@ func shouldReportTrafficStats(meta map[string]string, now time.Time) bool {
 	return !now.Before(time.Unix(lastReportUnix, 0).Add(interval))
 }
 
+func hasTrafficStatsInterval(meta map[string]string) bool {
+	interval, err := time.ParseDuration(strings.TrimSpace(meta[runtimeMetaTrafficStatsInterval]))
+	return err == nil && interval > 0
+}
+
 func (a *App) persistTrafficStatsInterval(raw string) error {
-	interval := strings.TrimSpace(raw)
+	interval, err := parseTrafficStatsInterval(raw)
+	if err != nil {
+		return err
+	}
 	state, err := a.store.LoadRuntimeState()
 	if err != nil {
 		return err
@@ -444,11 +453,23 @@ func (a *App) persistTrafficStatsInterval(raw string) error {
 		delete(state.Metadata, runtimeMetaTrafficStatsInterval)
 		return a.store.SaveRuntimeState(state)
 	}
-	if _, err := time.ParseDuration(interval); err != nil {
-		return err
-	}
 	state.Metadata[runtimeMetaTrafficStatsInterval] = interval
 	return a.store.SaveRuntimeState(state)
+}
+
+func parseTrafficStatsInterval(raw string) (string, error) {
+	interval := strings.TrimSpace(raw)
+	if interval == "" {
+		return "", nil
+	}
+	parsed, err := time.ParseDuration(interval)
+	if err != nil {
+		return "", fmt.Errorf("traffic_stats_interval: %w", err)
+	}
+	if parsed <= 0 {
+		return "", fmt.Errorf("traffic_stats_interval must be positive")
+	}
+	return interval, nil
 }
 
 func (a *App) syncOnce(ctx context.Context, req SyncRequest) error {
@@ -456,6 +477,12 @@ func (a *App) syncOnce(ctx context.Context, req SyncRequest) error {
 	if err != nil {
 		log.Printf("[agent] sync error: %v", err)
 		return a.recordRuntimeError(err)
+	}
+	if req.Stats != nil && a.pendingTrafficStatsReportUnix != "" {
+		if err := a.persistLastTrafficStatsReportUnix(a.pendingTrafficStatsReportUnix); err != nil {
+			return a.recordRuntimeError(err)
+		}
+		a.pendingTrafficStatsReportUnix = ""
 	}
 	existingDesired, err := a.store.LoadDesiredSnapshot()
 	if err != nil {
@@ -490,6 +517,16 @@ func (a *App) syncOnce(ctx context.Context, req SyncRequest) error {
 
 func (a *App) recordRuntimeError(syncErr error) error {
 	return a.recordRuntimeErrorWithRevision(syncErr, a.runtime.ActiveSnapshot().Revision)
+}
+
+func (a *App) persistLastTrafficStatsReportUnix(timestamp string) error {
+	state, err := a.store.LoadRuntimeState()
+	if err != nil {
+		return err
+	}
+	state.Metadata = ensureMetadata(state.Metadata)
+	state.Metadata[runtimeMetaLastTrafficStatsReportUnix] = timestamp
+	return a.store.SaveRuntimeState(state)
 }
 
 func (a *App) recordRuntimeErrorWithRevision(syncErr error, revision int64) error {
@@ -693,6 +730,9 @@ func (a *App) snapshotActivator() agentruntime.Activator {
 func (a *App) snapshotActivationHandlers() agentruntime.SnapshotActivationHandlers {
 	return agentruntime.SnapshotActivationHandlers{
 		ActivateAgentConfig: func(_ context.Context, cfg model.AgentConfig) error {
+			if _, err := parseTrafficStatsInterval(cfg.TrafficStatsInterval); err != nil {
+				return err
+			}
 			relay.SetOutboundProxyURL(cfg.OutboundProxyURL)
 			return a.persistTrafficStatsInterval(cfg.TrafficStatsInterval)
 		},

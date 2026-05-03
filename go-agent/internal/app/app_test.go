@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -19,6 +20,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/diagnostics"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
 	agentsync "github.com/sakullla/nginx-reverse-emby/go-agent/internal/sync"
 	agenttask "github.com/sakullla/nginx-reverse-emby/go-agent/internal/task"
@@ -2069,7 +2071,7 @@ func TestSyncRequestSuppressesStatsBeforeTrafficStatsInterval(t *testing.T) {
 	}
 }
 
-func TestSyncRequestIncludesStatsAfterTrafficStatsInterval(t *testing.T) {
+func TestPerformSyncIncludesStatsAfterTrafficStatsInterval(t *testing.T) {
 	traffic.Reset()
 	traffic.SetEnabled(true)
 	t.Cleanup(func() {
@@ -2092,12 +2094,13 @@ func TestSyncRequestIncludesStatsAfterTrafficStatsInterval(t *testing.T) {
 		t.Fatalf("failed to seed runtime state: %v", err)
 	}
 
-	app := newAppWithDeps(Config{CurrentVersion: "1.0.0", TrafficStatsEnabled: true, TrafficStatsExplicit: true}, mem, newTestSyncClient(nil, syncResponse{}), &testCertificateApplier{}, nil, nil)
-	req, err := app.syncRequest(context.Background(), applied)
-	if err != nil {
-		t.Fatalf("syncRequest() error = %v", err)
+	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{DesiredVersion: "ok", Revision: 7}})
+	app := newAppWithDeps(Config{CurrentVersion: "1.0.0", TrafficStatsEnabled: true, TrafficStatsExplicit: true}, mem, client, &testCertificateApplier{}, nil, nil)
+	if err := app.performSync(context.Background()); err != nil {
+		t.Fatalf("performSync() error = %v", err)
 	}
 
+	req := waitForRequest(t, client, time.Second)
 	if req.Stats == nil {
 		t.Fatal("Stats = nil, want traffic stats after traffic stats interval elapses")
 	}
@@ -2111,6 +2114,49 @@ func TestSyncRequestIncludesStatsAfterTrafficStatsInterval(t *testing.T) {
 	}
 	if time.Since(time.Unix(reportedAt, 0)) > time.Minute {
 		t.Fatalf("last_traffic_stats_report_unix = %d, want recent timestamp", reportedAt)
+	}
+}
+
+func TestPerformSyncDoesNotUpdateTrafficStatsReportTimestampOnSyncFailure(t *testing.T) {
+	traffic.Reset()
+	traffic.SetEnabled(true)
+	t.Cleanup(func() {
+		traffic.SetEnabled(true)
+		traffic.Reset()
+	})
+	traffic.AddHTTP(11, 22)
+
+	mem := store.NewInMemory()
+	applied := Snapshot{DesiredVersion: "1.0.0", Revision: 7}
+	if err := mem.SaveAppliedSnapshot(applied); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+	lastReportedAt := time.Now().Add(-time.Hour).Unix()
+	if err := mem.SaveRuntimeState(store.RuntimeState{
+		Metadata: map[string]string{
+			runtimeMetaTrafficStatsInterval:       "1s",
+			runtimeMetaLastTrafficStatsReportUnix: strconv.FormatInt(lastReportedAt, 10),
+		},
+	}); err != nil {
+		t.Fatalf("failed to seed runtime state: %v", err)
+	}
+
+	client := newTestSyncClient(nil, syncResponse{err: errors.New("heartbeat failed")})
+	app := newAppWithDeps(Config{CurrentVersion: "1.0.0", TrafficStatsEnabled: true, TrafficStatsExplicit: true}, mem, client, &testCertificateApplier{}, nil, nil)
+
+	if err := app.performSync(context.Background()); err == nil || err.Error() != "heartbeat failed" {
+		t.Fatalf("performSync() error = %v, want heartbeat failed", err)
+	}
+	req := waitForRequest(t, client, time.Second)
+	if req.Stats == nil {
+		t.Fatal("Stats = nil, want traffic stats included in failed heartbeat request")
+	}
+	state, err := mem.LoadRuntimeState()
+	if err != nil {
+		t.Fatalf("failed to load runtime state: %v", err)
+	}
+	if state.Metadata[runtimeMetaLastTrafficStatsReportUnix] != strconv.FormatInt(lastReportedAt, 10) {
+		t.Fatalf("last_traffic_stats_report_unix = %q, want unchanged %d", state.Metadata[runtimeMetaLastTrafficStatsReportUnix], lastReportedAt)
 	}
 }
 
@@ -2139,18 +2185,61 @@ func TestRuntimeActivationPersistsTrafficStatsInterval(t *testing.T) {
 }
 
 func TestRuntimeActivationRejectsInvalidTrafficStatsInterval(t *testing.T) {
+	tests := []struct {
+		name     string
+		interval string
+	}{
+		{name: "malformed", interval: "not-a-duration"},
+		{name: "zero", interval: "0s"},
+		{name: "negative", interval: "-1s"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			mem := store.NewInMemory()
+			app := newAppWithDeps(Config{}, mem, newTestSyncClient(nil, syncResponse{}), nil, nil, nil)
+			next := Snapshot{
+				DesiredVersion: "next",
+				Revision:       7,
+				AgentConfig: model.AgentConfig{
+					TrafficStatsInterval: tc.interval,
+				},
+			}
+
+			err := app.runtime.Apply(context.Background(), Snapshot{}, next)
+			if err == nil {
+				t.Fatal("Apply() error = nil, want invalid traffic stats interval error")
+			}
+			if !strings.Contains(err.Error(), "traffic_stats_interval") {
+				t.Fatalf("Apply() error = %v, want traffic_stats_interval context", err)
+			}
+		})
+	}
+}
+
+func TestRuntimeActivationDoesNotMutateOutboundProxyForInvalidTrafficStatsInterval(t *testing.T) {
+	previousProxy := relay.OutboundProxyURL()
+	relay.SetOutboundProxyURL("socks://127.0.0.1:1080")
+	t.Cleanup(func() {
+		relay.SetOutboundProxyURL(previousProxy)
+	})
+
 	mem := store.NewInMemory()
 	app := newAppWithDeps(Config{}, mem, newTestSyncClient(nil, syncResponse{}), nil, nil, nil)
 	next := Snapshot{
 		DesiredVersion: "next",
 		Revision:       7,
 		AgentConfig: model.AgentConfig{
+			OutboundProxyURL:     "socks://127.0.0.1:2080",
 			TrafficStatsInterval: "not-a-duration",
 		},
 	}
 
 	if err := app.runtime.Apply(context.Background(), Snapshot{}, next); err == nil {
 		t.Fatal("Apply() error = nil, want invalid traffic stats interval error")
+	}
+	if got := relay.OutboundProxyURL(); got != "socks://127.0.0.1:1080" {
+		t.Fatalf("OutboundProxyURL() = %q, want previous proxy preserved", got)
 	}
 }
 
