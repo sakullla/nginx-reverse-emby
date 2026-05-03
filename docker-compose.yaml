@@ -1,9 +1,23 @@
 services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: nginx-reverse-emby-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: nre
+      POSTGRES_USER: nre
+      POSTGRES_PASSWORD: nre
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+
   nginx-reverse-emby:
     image: ghcr.io/sakullla/nginx-reverse-emby:latest
     container_name: nginx-reverse-emby
     restart: unless-stopped
-    network_mode: host
+    depends_on:
+      - postgres
+    ports:
+      - "8080:8080"
 
     environment:
       # 面板 / Master 角色
@@ -21,6 +35,8 @@ services:
       NRE_ENABLE_LOCAL_AGENT: "1"
       NRE_LOCAL_AGENT_ID: local
       NRE_LOCAL_AGENT_NAME: local
+      NRE_DATABASE_DRIVER: postgres
+      NRE_DATABASE_DSN: postgres://nre:nre@postgres:5432/nre?sslmode=disable
 
       # DNS 验证示例（按需启用，如 Cloudflare）
       # ACME_DNS_PROVIDER: cf

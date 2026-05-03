@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -34,9 +35,26 @@ type localAgentRuntime interface {
 }
 
 func main() {
+	if err := runMain(os.Args[1:]); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func runMain(args []string) error {
+	migrateCommand, err := parseMigrateStorageCommand(args)
+	if err != nil {
+		return err
+	}
+	if migrateCommand != nil {
+		return runMigrateStorageCommand(context.Background(), *migrateCommand)
+	}
+	return runControlPlaneFromEnv()
+}
+
+var runControlPlaneFromEnv = func() error {
 	cfg, err := config.LoadFromEnv()
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	cfg.AppVersion = appVersion
 	cfg.BuildTime = buildTime
@@ -47,17 +65,65 @@ func main() {
 	defer stop()
 
 	if err := initializeControlPlane(ctx, cfg); err != nil {
-		log.Fatal(err)
+		return err
 	}
 	startManagedCertificateAutoRenewLoop(ctx, cfg, nil)
 
 	application, err := newControlPlaneApp(cfg, nil)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	if err := application.Run(ctx); err != nil {
-		log.Fatal(err)
+		return err
 	}
+	return nil
+}
+
+type migrateStorageCommand struct {
+	FromDriver string
+	FromDSN    string
+	ToDriver   string
+	ToDSN      string
+}
+
+func parseMigrateStorageCommand(args []string) (*migrateStorageCommand, error) {
+	if len(args) == 0 {
+		return nil, nil
+	}
+	if args[0] != "migrate-storage" {
+		return nil, fmt.Errorf("unknown command %q", args[0])
+	}
+
+	fs := flag.NewFlagSet("migrate-storage", flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+	cmd := migrateStorageCommand{}
+	fs.StringVar(&cmd.FromDriver, "from-driver", "", "source database driver")
+	fs.StringVar(&cmd.FromDSN, "from-dsn", "", "source database DSN")
+	fs.StringVar(&cmd.ToDriver, "to-driver", "", "target database driver")
+	fs.StringVar(&cmd.ToDSN, "to-dsn", "", "target database DSN")
+	if err := fs.Parse(args[1:]); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(cmd.FromDriver) == "" {
+		return nil, fmt.Errorf("missing --from-driver")
+	}
+	if strings.TrimSpace(cmd.FromDSN) == "" {
+		return nil, fmt.Errorf("missing --from-dsn")
+	}
+	if strings.TrimSpace(cmd.ToDriver) == "" {
+		return nil, fmt.Errorf("missing --to-driver")
+	}
+	if strings.TrimSpace(cmd.ToDSN) == "" {
+		return nil, fmt.Errorf("missing --to-dsn")
+	}
+	cmd.FromDriver = normalizeStorageDriver(cmd.FromDriver)
+	cmd.ToDriver = normalizeStorageDriver(cmd.ToDriver)
+	cmd.FromDSN = strings.TrimSpace(cmd.FromDSN)
+	cmd.ToDSN = strings.TrimSpace(cmd.ToDSN)
+	if cmd.FromDriver == cmd.ToDriver && cmd.FromDSN == cmd.ToDSN {
+		return nil, fmt.Errorf("source and target storage must be different")
+	}
+	return &cmd, nil
 }
 
 func logPanelTokenWarning(logger *log.Logger, cfg config.Config) {
@@ -84,6 +150,44 @@ var newLocalAgentRuntime = func(cfg config.Config, store localagent.Store) (loca
 }
 
 var openConfiguredStore = storage.NewConfiguredStore
+
+var openStore = storage.NewStore
+
+var runMigrateStorageCommand = func(ctx context.Context, cmd migrateStorageCommand) error {
+	source, err := openStore(storage.StoreConfig{
+		Driver:              cmd.FromDriver,
+		DSN:                 cmd.FromDSN,
+		TrafficStatsEnabled: true,
+	})
+	if err != nil {
+		return fmt.Errorf("open source storage: %w", err)
+	}
+	defer func() {
+		_ = source.Close()
+	}()
+
+	target, err := openStore(storage.StoreConfig{
+		Driver:              cmd.ToDriver,
+		DSN:                 cmd.ToDSN,
+		TrafficStatsEnabled: true,
+	})
+	if err != nil {
+		return fmt.Errorf("open target storage: %w", err)
+	}
+	defer func() {
+		_ = target.Close()
+	}()
+
+	return storage.CopyDefaultMigrationRows(ctx, source, target)
+}
+
+func normalizeStorageDriver(driver string) string {
+	driver = strings.ToLower(strings.TrimSpace(driver))
+	if driver == "" {
+		return "sqlite"
+	}
+	return driver
+}
 
 func guardLegacyNonSQLiteState(dataDir string) error {
 	dbPath := filepath.Join(dataDir, "panel.db")

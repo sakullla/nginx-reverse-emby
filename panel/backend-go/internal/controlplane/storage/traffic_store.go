@@ -98,6 +98,17 @@ func (s *GormStore) SaveTrafficPolicy(ctx context.Context, row AgentTrafficPolic
 		Create(&row).Error
 }
 
+func (s *GormStore) ListTrafficPolicies(ctx context.Context) ([]AgentTrafficPolicyRow, error) {
+	var rows []AgentTrafficPolicyRow
+	if err := s.db.WithContext(ctx).Order("agent_id").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	for i := range rows {
+		normalizeTrafficPolicyRow(&rows[i])
+	}
+	return rows, nil
+}
+
 func (s *GormStore) GetTrafficBaseline(ctx context.Context, agentID, cycleStart string) (AgentTrafficBaselineRow, bool, error) {
 	agentID = s.resolveAgentID(agentID)
 
@@ -135,6 +146,14 @@ func (s *GormStore) SaveTrafficBaseline(ctx context.Context, row AgentTrafficBas
 			}),
 		}).
 		Create(&row).Error
+}
+
+func (s *GormStore) ListTrafficBaselines(ctx context.Context) ([]AgentTrafficBaselineRow, error) {
+	var rows []AgentTrafficBaselineRow
+	if err := s.db.WithContext(ctx).Order("agent_id, cycle_start").Find(&rows).Error; err != nil {
+		return nil, err
+	}
+	return rows, nil
 }
 
 func (s *GormStore) GetTrafficCursor(ctx context.Context, agentID, scopeType, scopeID string) (AgentTrafficRawCursorRow, bool, error) {

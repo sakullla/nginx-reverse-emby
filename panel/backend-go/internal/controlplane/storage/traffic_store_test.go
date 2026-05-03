@@ -58,6 +58,38 @@ func TestTrafficPolicySaveAndReload(t *testing.T) {
 	}
 }
 
+func TestListTrafficPolicies(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+
+	if err := store.SaveTrafficPolicy(ctx, AgentTrafficPolicyRow{
+		AgentID:   "edge-b",
+		Direction: "tx",
+	}); err != nil {
+		t.Fatalf("SaveTrafficPolicy(edge-b) error = %v", err)
+	}
+	if err := store.SaveTrafficPolicy(ctx, AgentTrafficPolicyRow{
+		AgentID:   "edge-a",
+		Direction: "rx",
+	}); err != nil {
+		t.Fatalf("SaveTrafficPolicy(edge-a) error = %v", err)
+	}
+
+	rows, err := store.ListTrafficPolicies(ctx)
+	if err != nil {
+		t.Fatalf("ListTrafficPolicies() error = %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("len(rows) = %d, want 2", len(rows))
+	}
+	if rows[0].AgentID != "edge-a" || rows[0].Direction != "rx" {
+		t.Fatalf("rows[0] = %+v", rows[0])
+	}
+	if rows[1].AgentID != "edge-b" || rows[1].Direction != "tx" {
+		t.Fatalf("rows[1] = %+v", rows[1])
+	}
+}
+
 func TestTrafficPolicyUpsertPreservesCreatedAt(t *testing.T) {
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -144,6 +176,40 @@ func TestTrafficBaselineUpsert(t *testing.T) {
 	}
 	if !found || got.RawRXBytes != 100 || got.RawTXBytes != 200 || got.RawAccountedBytes != 300 || got.AdjustUsedBytes != -50 {
 		t.Fatalf("baseline = %+v, found=%v", got, found)
+	}
+}
+
+func TestListTrafficBaselines(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+
+	if err := store.SaveTrafficBaseline(ctx, AgentTrafficBaselineRow{
+		AgentID:           "edge-b",
+		CycleStart:        "2026-06-01T00:00:00Z",
+		RawAccountedBytes: 20,
+	}); err != nil {
+		t.Fatalf("SaveTrafficBaseline(edge-b) error = %v", err)
+	}
+	if err := store.SaveTrafficBaseline(ctx, AgentTrafficBaselineRow{
+		AgentID:           "edge-a",
+		CycleStart:        "2026-05-01T00:00:00Z",
+		RawAccountedBytes: 10,
+	}); err != nil {
+		t.Fatalf("SaveTrafficBaseline(edge-a) error = %v", err)
+	}
+
+	rows, err := store.ListTrafficBaselines(ctx)
+	if err != nil {
+		t.Fatalf("ListTrafficBaselines() error = %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("len(rows) = %d, want 2", len(rows))
+	}
+	if rows[0].AgentID != "edge-a" || rows[0].RawAccountedBytes != 10 {
+		t.Fatalf("rows[0] = %+v", rows[0])
+	}
+	if rows[1].AgentID != "edge-b" || rows[1].RawAccountedBytes != 20 {
+		t.Fatalf("rows[1] = %+v", rows[1])
 	}
 }
 

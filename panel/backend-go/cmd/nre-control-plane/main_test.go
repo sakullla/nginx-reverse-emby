@@ -101,6 +101,75 @@ func TestNewLocalAgentStarterUsesConfiguredStore(t *testing.T) {
 	}
 }
 
+func TestMigrateStorageCommandRequiresSourceAndTarget(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "missing source driver",
+			args: []string{"migrate-storage", "--from-dsn", "./data/panel.db", "--to-driver", "postgres", "--to-dsn", "postgres://nre:nre@postgres:5432/nre?sslmode=disable"},
+			want: "--from-driver",
+		},
+		{
+			name: "missing source dsn",
+			args: []string{"migrate-storage", "--from-driver", "sqlite", "--to-driver", "postgres", "--to-dsn", "postgres://nre:nre@postgres:5432/nre?sslmode=disable"},
+			want: "--from-dsn",
+		},
+		{
+			name: "missing target driver",
+			args: []string{"migrate-storage", "--from-driver", "sqlite", "--from-dsn", "./data/panel.db", "--to-dsn", "postgres://nre:nre@postgres:5432/nre?sslmode=disable"},
+			want: "--to-driver",
+		},
+		{
+			name: "missing target dsn",
+			args: []string{"migrate-storage", "--from-driver", "sqlite", "--from-dsn", "./data/panel.db", "--to-driver", "postgres"},
+			want: "--to-dsn",
+		},
+		{
+			name: "same source and target",
+			args: []string{"migrate-storage", "--from-driver", "sqlite", "--from-dsn", "./data/panel.db", "--to-driver", "sqlite", "--to-dsn", "./data/panel.db"},
+			want: "source and target storage must be different",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := parseMigrateStorageCommand(tt.args)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("parseMigrateStorageCommand() error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestMigrateStorageCommandDoesNotRunOnNormalStartup(t *testing.T) {
+	previousRunMigrateStorageCommand := runMigrateStorageCommand
+	previousRunControlPlaneFromEnv := runControlPlaneFromEnv
+	t.Cleanup(func() {
+		runMigrateStorageCommand = previousRunMigrateStorageCommand
+		runControlPlaneFromEnv = previousRunControlPlaneFromEnv
+	})
+
+	runMigrateStorageCommand = func(context.Context, migrateStorageCommand) error {
+		t.Fatal("migrate-storage command ran during normal startup")
+		return nil
+	}
+	started := false
+	runControlPlaneFromEnv = func() error {
+		started = true
+		return nil
+	}
+
+	if err := runMain(nil); err != nil {
+		t.Fatalf("runMain(nil) error = %v", err)
+	}
+	if !started {
+		t.Fatal("normal startup path was not run")
+	}
+}
+
 func TestInitializeControlPlaneSkipsLegacySQLiteGuardForPostgres(t *testing.T) {
 	cfg := config.Default()
 	cfg.DatabaseDriver = "postgres"
