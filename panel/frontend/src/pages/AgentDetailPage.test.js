@@ -112,6 +112,7 @@ beforeEach(() => {
   vi.restoreAllMocks()
   vi.clearAllMocks()
   vi.spyOn(window, 'confirm').mockReturnValue(true)
+  vi.spyOn(window, 'prompt').mockReturnValue(null)
   apiCalls.fetchTrafficPolicy.mockResolvedValue({
     direction: 'both',
     cycle_start_day: 1,
@@ -160,6 +161,18 @@ describe('AgentDetailPage', () => {
     expect(apiCalls.fetchTrafficPolicy).toHaveBeenCalledWith('edge-1')
     expect(apiCalls.fetchTrafficSummary).toHaveBeenCalledWith('edge-1')
     expect(apiCalls.fetchTrafficTrend).toHaveBeenCalledWith('edge-1', expect.objectContaining({ granularity: 'day' }))
+  })
+
+  it('switches traffic trend granularity', async () => {
+    const wrapper = await mountPage()
+    await wrapper.findAll('.tab-btn').find((button) => button.text() === '流量统计').trigger('click')
+    await nextTick()
+
+    await wrapper.find('[data-testid="traffic-trend-month"]').trigger('click')
+    await nextTick()
+    await vi.dynamicImportSettled()
+
+    expect(apiCalls.fetchTrafficTrend).toHaveBeenLastCalledWith('edge-1', expect.objectContaining({ granularity: 'month' }))
   })
 
   it('hides traffic tab when traffic stats are disabled', async () => {
@@ -235,5 +248,18 @@ describe('AgentDetailPage', () => {
     await wrapper.findAll('button').find((button) => button.text() === '清理').trigger('click')
 
     expect(apiCalls.cleanupTraffic).not.toHaveBeenCalled()
+  })
+
+  it('calibrates traffic to a prompted byte value', async () => {
+    window.prompt.mockReturnValue('1.5 GiB')
+    const wrapper = await mountPage()
+    await wrapper.findAll('.tab-btn').find((button) => button.text() === '流量统计').trigger('click')
+    await nextTick()
+
+    await wrapper.findAll('button').find((button) => button.text() === '校准').trigger('click')
+
+    expect(apiCalls.calibrateTraffic).toHaveBeenCalledWith('edge-1', {
+      used_bytes: 1610612736
+    })
   })
 })

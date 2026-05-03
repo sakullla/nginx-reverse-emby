@@ -83,7 +83,19 @@
           <div class="traffic-panel__section">
             <div class="traffic-panel__section-header">
               <h3>趋势</h3>
-              <span>{{ trafficTrendPoints.length }} 天</span>
+              <div class="traffic-trend__controls" role="group" aria-label="趋势粒度">
+                <button
+                  v-for="option in trafficTrendGranularityOptions"
+                  :key="option.value"
+                  class="traffic-trend__mode"
+                  :class="{ 'traffic-trend__mode--active': trafficTrendGranularity === option.value }"
+                  :data-testid="`traffic-trend-${option.value}`"
+                  type="button"
+                  @click="trafficTrendGranularity = option.value"
+                >
+                  {{ option.label }}
+                </button>
+              </div>
             </div>
             <div class="traffic-trend">
               <div v-for="(point, index) in trafficTrendPoints" :key="trafficTrendKey(point, index)" class="traffic-trend__item">
@@ -296,9 +308,15 @@ const systemInfo = computed(() => systemInfoData.value ?? {})
 const trafficStatsEnabled = computed(() => isSystemInfoLoaded.value && systemInfo.value?.traffic_stats_enabled !== false)
 const trafficPolicyQuery = useTrafficPolicy(computed(() => trafficStatsEnabled.value ? agentId.value : null))
 const trafficSummaryQuery = useTrafficSummary(computed(() => trafficStatsEnabled.value ? agentId.value : null))
+const trafficTrendGranularityOptions = [
+  { value: 'hour', label: '小时' },
+  { value: 'day', label: '日' },
+  { value: 'month', label: '月' }
+]
+const trafficTrendGranularity = ref('day')
 const trafficTrendQuery = useTrafficTrend(
   computed(() => trafficStatsEnabled.value ? agentId.value : null),
-  computed(() => ({ granularity: 'day' }))
+  computed(() => ({ granularity: trafficTrendGranularity.value }))
 )
 const updateTrafficPolicyMutation = useUpdateTrafficPolicy(computed(() => agentId.value))
 const calibrateTrafficMutation = useCalibrateTraffic(computed(() => agentId.value))
@@ -398,7 +416,15 @@ async function saveTrafficPolicy() {
 async function calibrateTrafficSummary() {
   if (!agent.value || !trafficStatsEnabled.value) return
   const usedBytes = trafficSummary.value.used_bytes ?? accountedBytes(normalizeTrafficBucket(agentStats.value?.traffic?.total), trafficPolicyForm.value.direction)
-  await calibrateTrafficMutation.mutateAsync({ used_bytes: usedBytes })
+  if (typeof window === 'undefined' || typeof window.prompt !== 'function') return
+  const input = window.prompt('输入要校准为的已用流量，例如 1.5 GiB 或 1610612736', formatBytes(usedBytes))
+  if (input == null) return
+  const calibratedBytes = parseByteInput(input)
+  if (calibratedBytes === undefined) {
+    messageStore.warning('校准流量必须是非负数字，可带 B/KiB/MiB/GiB/TiB 单位')
+    return
+  }
+  await calibrateTrafficMutation.mutateAsync({ used_bytes: calibratedBytes })
 }
 
 async function cleanupTrafficHistory() {
@@ -449,6 +475,41 @@ function quotaInputToBytes(value, unitValue) {
   return Math.round(bytes)
 }
 
+function parseByteInput(value) {
+  const rawValue = String(value ?? '').trim()
+  if (rawValue === '') return undefined
+  const match = rawValue.match(/^([0-9]+(?:\.[0-9]+)?)\s*([kmgt]?i?b)?$/i)
+  if (!match) return undefined
+  const number = Number(match[1])
+  const unitValue = normalizeByteUnit(match[2] || 'B')
+  const unit = quotaUnits.find((item) => item.value === unitValue)
+  if (!Number.isFinite(number) || number < 0 || !unit) return undefined
+  const bytes = number * unit.factor
+  if (!Number.isFinite(bytes) || bytes < 0) return undefined
+  return Math.round(bytes)
+}
+
+function normalizeByteUnit(value) {
+  switch (String(value || '').trim().toLowerCase()) {
+    case 'b':
+      return 'B'
+    case 'kib':
+    case 'kb':
+      return 'KiB'
+    case 'mib':
+    case 'mb':
+      return 'MiB'
+    case 'gib':
+    case 'gb':
+      return 'GiB'
+    case 'tib':
+    case 'tb':
+      return 'TiB'
+    default:
+      return ''
+  }
+}
+
 function isBlankOrPositiveInteger(value) {
   if (value == null || value === '') return true
   return isPositiveInteger(value)
@@ -473,6 +534,12 @@ function formatTrendLabel(bucketStart) {
   if (!bucketStart) return '—'
   const date = new Date(bucketStart)
   if (Number.isNaN(date.getTime())) return '—'
+  if (trafficTrendGranularity.value === 'hour') {
+    return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+  }
+  if (trafficTrendGranularity.value === 'month') {
+    return date.toLocaleDateString('zh-CN', { year: '2-digit', month: 'short' })
+  }
   return date.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })
 }
 
@@ -598,6 +665,9 @@ function timeAgo(date) {
 .traffic-panel__section-header { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; margin-bottom: 0.75rem; }
 .traffic-panel__section-header h3 { margin: 0; font-size: 0.9375rem; color: var(--color-text-primary); }
 .traffic-panel__section-header span { color: var(--color-text-tertiary); font-size: 0.8125rem; }
+.traffic-trend__controls { display: inline-flex; gap: 2px; padding: 2px; background: var(--color-bg-subtle); border: 1px solid var(--color-border-default); border-radius: var(--radius-md); }
+.traffic-trend__mode { min-width: 2.75rem; padding: 0.3rem 0.55rem; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--color-text-tertiary); font-size: 0.75rem; font-weight: 600; cursor: pointer; font-family: inherit; }
+.traffic-trend__mode--active { background: var(--color-bg-surface); color: var(--color-primary); box-shadow: var(--shadow-sm); }
 .traffic-trend { display: grid; grid-template-columns: repeat(14, minmax(0, 1fr)); gap: 0.35rem; align-items: end; min-height: 140px; }
 .traffic-trend__item { display: flex; flex-direction: column; align-items: center; gap: 0.35rem; min-width: 0; }
 .traffic-trend__bars { display: flex; align-items: end; gap: 0.2rem; width: 100%; height: 120px; padding: 0 0.125rem; }
