@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -488,6 +489,105 @@ func TestIngestTrafficCursorDeltaIsIdempotent(t *testing.T) {
 	}
 	if len(rows) != 1 || rows[0].RXBytes != 100 || rows[0].TXBytes != 50 {
 		t.Fatalf("rows = %+v", rows)
+	}
+}
+
+func TestIngestTrafficCursorDeltaConcurrentFirstIngestCountsOnce(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+	observedAt := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
+	cursor := AgentTrafficRawCursorRow{
+		AgentID:    "edge-1",
+		ScopeType:  "agent_total",
+		RXBytes:    100,
+		TXBytes:    50,
+		ObservedAt: observedAt.Format(time.RFC3339),
+	}
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	errs := make(chan error, 2)
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := store.IngestTrafficCursorDelta(ctx, cursor, observedAt)
+			errs <- err
+		}()
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rows, err := store.ListTrafficTrend(ctx, TrafficTrendQuery{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		Granularity: "hour",
+		From:        observedAt,
+		To:          observedAt.Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].RXBytes != 100 || rows[0].TXBytes != 50 {
+		t.Fatalf("rows = %+v, want single first-ingest delta", rows)
+	}
+}
+
+func TestIngestTrafficCursorDeltaRollsBackWhenResetEventFails(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+	observedAt := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
+	if _, err := store.IngestTrafficCursorDelta(ctx, AgentTrafficRawCursorRow{
+		AgentID:    "edge-1",
+		ScopeType:  "agent_total",
+		RXBytes:    100,
+		TXBytes:    50,
+		ObservedAt: observedAt.Format(time.RFC3339),
+	}, observedAt); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := store.IngestTrafficCursorDeltaWithEvent(ctx, AgentTrafficRawCursorRow{
+		AgentID:    "edge-1",
+		ScopeType:  "agent_total",
+		RXBytes:    10,
+		TXBytes:    5,
+		ObservedAt: observedAt.Add(time.Hour).Format(time.RFC3339),
+	}, observedAt.Add(time.Hour), &AgentTrafficEventRow{
+		AgentID:   "edge-1",
+		Message:   "traffic counter reset",
+		CreatedAt: observedAt.Add(time.Hour).Format(time.RFC3339),
+	})
+	if err == nil {
+		t.Fatal("IngestTrafficCursorDeltaWithEvent() error = nil, want event failure")
+	}
+
+	cursor, ok, err := store.GetTrafficCursor(ctx, "edge-1", "agent_total", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || cursor.RXBytes != 100 || cursor.TXBytes != 50 {
+		t.Fatalf("cursor = %+v ok=%v, want original cursor after rollback", cursor, ok)
+	}
+	rows, err := store.ListTrafficTrend(ctx, TrafficTrendQuery{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		Granularity: "hour",
+		From:        observedAt,
+		To:          observedAt.Add(2 * time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].RXBytes != 100 || rows[0].TXBytes != 50 {
+		t.Fatalf("rows = %+v, want reset delta rolled back", rows)
 	}
 }
 

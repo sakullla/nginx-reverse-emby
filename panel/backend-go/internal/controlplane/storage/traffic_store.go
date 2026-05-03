@@ -2,8 +2,10 @@ package storage
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"gorm.io/gorm"
@@ -11,6 +13,8 @@ import (
 )
 
 const trafficTimeFormat = time.RFC3339
+
+var trafficCursorLocks sync.Map
 
 type TrafficDelta struct {
 	AgentID     string
@@ -166,6 +170,10 @@ func (s *GormStore) SaveTrafficCursor(ctx context.Context, row AgentTrafficRawCu
 }
 
 func (s *GormStore) IngestTrafficCursorDelta(ctx context.Context, cursor AgentTrafficRawCursorRow, bucketStart time.Time) (TrafficCursorDeltaResult, error) {
+	return s.IngestTrafficCursorDeltaWithEvent(ctx, cursor, bucketStart, nil)
+}
+
+func (s *GormStore) IngestTrafficCursorDeltaWithEvent(ctx context.Context, cursor AgentTrafficRawCursorRow, bucketStart time.Time, event *AgentTrafficEventRow) (TrafficCursorDeltaResult, error) {
 	var err error
 	cursor.AgentID = s.resolveAgentID(cursor.AgentID)
 	cursor.ScopeType, err = normalizeTrafficScopeType(cursor.ScopeType)
@@ -176,8 +184,19 @@ func (s *GormStore) IngestTrafficCursorDelta(ctx context.Context, cursor AgentTr
 		cursor.ObservedAt = formatTrafficTime(bucketStart.UTC())
 	}
 
+	lock := trafficCursorMutex(cursor.AgentID, cursor.ScopeType, cursor.ScopeID)
+	lock.Lock()
+	defer lock.Unlock()
+
 	var result TrafficCursorDeltaResult
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		seed := cursor
+		seed.RXBytes = 0
+		seed.TXBytes = 0
+		if err := tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&seed).Error; err != nil {
+			return err
+		}
+
 		var previous AgentTrafficRawCursorRow
 		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
 			Where("agent_id = ? AND scope_type = ? AND scope_id = ?", cursor.AgentID, cursor.ScopeType, cursor.ScopeID).
@@ -216,9 +235,39 @@ func (s *GormStore) IngestTrafficCursorDelta(ctx context.Context, cursor AgentTr
 				return err
 			}
 		}
-		return tx.Clauses(clause.OnConflict{UpdateAll: true}).Create(&cursor).Error
+		if err := tx.Clauses(clause.OnConflict{UpdateAll: true}).Create(&cursor).Error; err != nil {
+			return err
+		}
+		if event == nil || !result.CounterReset {
+			return nil
+		}
+		event.AgentID = s.resolveAgentID(event.AgentID)
+		if event.EventType == "" {
+			return fmt.Errorf("traffic event_type is required")
+		}
+		if event.Payload == "" {
+			payload, _ := json.Marshal(map[string]any{
+				"scope_type":  cursor.ScopeType,
+				"scope_id":    cursor.ScopeID,
+				"previous_rx": result.Previous.RXBytes,
+				"previous_tx": result.Previous.TXBytes,
+				"current_rx":  cursor.RXBytes,
+				"current_tx":  cursor.TXBytes,
+			})
+			event.Payload = string(payload)
+		}
+		if event.CreatedAt == "" {
+			event.CreatedAt = nowTrafficTimestamp()
+		}
+		return tx.Create(event).Error
 	})
 	return result, err
+}
+
+func trafficCursorMutex(agentID, scopeType, scopeID string) *sync.Mutex {
+	key := agentID + "\x00" + scopeType + "\x00" + scopeID
+	value, _ := trafficCursorLocks.LoadOrStore(key, &sync.Mutex{})
+	return value.(*sync.Mutex)
 }
 
 func (s *GormStore) IncrementTrafficBuckets(ctx context.Context, delta TrafficDelta) error {

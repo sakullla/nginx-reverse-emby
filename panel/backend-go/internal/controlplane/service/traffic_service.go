@@ -40,6 +40,10 @@ type trafficCursorDeltaStore interface {
 	IngestTrafficCursorDelta(context.Context, storage.AgentTrafficRawCursorRow, time.Time) (storage.TrafficCursorDeltaResult, error)
 }
 
+type trafficCursorDeltaEventStore interface {
+	IngestTrafficCursorDeltaWithEvent(context.Context, storage.AgentTrafficRawCursorRow, time.Time, *storage.AgentTrafficEventRow) (storage.TrafficCursorDeltaResult, error)
+}
+
 type trafficService struct {
 	enabled bool
 	store   trafficStore
@@ -68,15 +72,27 @@ func (s *trafficService) IngestHeartbeat(ctx context.Context, agentID string, st
 	}
 	observedAt := s.now().UTC()
 	for _, sample := range samples {
+		cursor := storage.AgentTrafficRawCursorRow{
+			AgentID:    agentID,
+			ScopeType:  sample.scopeType,
+			ScopeID:    sample.scopeID,
+			RXBytes:    sample.rx,
+			TXBytes:    sample.tx,
+			ObservedAt: observedAt.Format(time.RFC3339),
+		}
+		if ingestStore, ok := s.store.(trafficCursorDeltaEventStore); ok {
+			if _, err := ingestStore.IngestTrafficCursorDeltaWithEvent(ctx, cursor, observedAt, &storage.AgentTrafficEventRow{
+				AgentID:   agentID,
+				EventType: "counter_reset",
+				Message:   "traffic counter reset",
+				CreatedAt: observedAt.Format(time.RFC3339),
+			}); err != nil {
+				return err
+			}
+			continue
+		}
 		if ingestStore, ok := s.store.(trafficCursorDeltaStore); ok {
-			result, err := ingestStore.IngestTrafficCursorDelta(ctx, storage.AgentTrafficRawCursorRow{
-				AgentID:    agentID,
-				ScopeType:  sample.scopeType,
-				ScopeID:    sample.scopeID,
-				RXBytes:    sample.rx,
-				TXBytes:    sample.tx,
-				ObservedAt: observedAt.Format(time.RFC3339),
-			}, observedAt)
+			result, err := ingestStore.IngestTrafficCursorDelta(ctx, cursor, observedAt)
 			if err != nil {
 				return err
 			}
@@ -467,6 +483,10 @@ func (s *trafficService) recordCounterReset(ctx context.Context, agentID string,
 	if !ok {
 		return nil
 	}
+	return eventStore.SaveTrafficEvent(ctx, *s.counterResetEvent(agentID, sample, cursor, observedAt))
+}
+
+func (s *trafficService) counterResetEvent(agentID string, sample trafficSample, cursor storage.AgentTrafficRawCursorRow, observedAt time.Time) *storage.AgentTrafficEventRow {
 	payload, _ := json.Marshal(map[string]any{
 		"scope_type":  sample.scopeType,
 		"scope_id":    sample.scopeID,
@@ -475,13 +495,13 @@ func (s *trafficService) recordCounterReset(ctx context.Context, agentID string,
 		"current_rx":  sample.rx,
 		"current_tx":  sample.tx,
 	})
-	return eventStore.SaveTrafficEvent(ctx, storage.AgentTrafficEventRow{
+	return &storage.AgentTrafficEventRow{
 		AgentID:   agentID,
 		EventType: "counter_reset",
 		Message:   "traffic counter reset",
 		Payload:   string(payload),
 		CreatedAt: observedAt.Format(time.RFC3339),
-	})
+	}
 }
 
 type trafficSample struct {
