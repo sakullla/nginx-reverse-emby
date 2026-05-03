@@ -243,8 +243,9 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 	defer s.untrackTCPConn(client)
 	defer client.Close()
 
+	recorder := traffic.NewL4RuleRecorder(rule.ID)
 	if strings.EqualFold(strings.TrimSpace(rule.ListenMode), "proxy") {
-		s.handleProxyEntryConnection(client, rule)
+		s.handleProxyEntryConnection(client, rule, recorder)
 		return
 	}
 
@@ -281,14 +282,16 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 	done := make(chan struct{}, 2)
 	go func() {
 		n, _ := io.Copy(upstream, downstreamSource)
-		traffic.AddL4(n+int64(len(initialPayload)), 0)
+		recorder.Add(n+int64(len(initialPayload)), 0)
+		recorder.Flush()
 		closeTCPWrite(upstream)
 		closeTCPRead(client)
 		done <- struct{}{}
 	}()
 	go func() {
 		n, _ := copyPreferReaderFrom(client, upstream)
-		traffic.AddL4(0, n)
+		recorder.Add(0, n)
+		recorder.Flush()
 		closeTCPWrite(client)
 		closeTCPRead(upstream)
 		done <- struct{}{}
@@ -297,7 +300,12 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 	<-done
 }
 
-func (s *Server) handleProxyEntryConnection(client net.Conn, rule model.L4Rule) {
+func (s *Server) handleProxyEntryConnection(client net.Conn, rule model.L4Rule, recorders ...*traffic.Recorder) {
+	var recorder *traffic.Recorder
+	if len(recorders) > 0 {
+		recorder = recorders[0]
+	}
+
 	auth := proxyproto.EntryAuth{
 		Enabled:  rule.ProxyEntryAuth.Enabled,
 		Username: rule.ProxyEntryAuth.Username,
@@ -319,7 +327,7 @@ func (s *Server) handleProxyEntryConnection(client net.Conn, rule model.L4Rule) 
 		return
 	}
 
-	copyBidirectionalTCP(client, upstream)
+	copyBidirectionalTCP(client, upstream, recorder)
 }
 
 func (s *Server) dialProxyEntryUpstream(rule model.L4Rule, target string) (net.Conn, error) {
@@ -333,24 +341,35 @@ func (s *Server) dialProxyEntryUpstream(rule model.L4Rule, target string) (net.C
 	}
 }
 
-func copyBidirectionalTCP(a net.Conn, b net.Conn) {
+func copyBidirectionalTCP(a net.Conn, b net.Conn, recorder *traffic.Recorder) {
+	recorder = l4RecorderOrAggregate(recorder)
+
 	done := make(chan struct{}, 2)
 	go func() {
 		n, _ := io.Copy(b, a)
-		traffic.AddL4(n, 0)
+		recorder.Add(n, 0)
+		recorder.Flush()
 		closeTCPWrite(b)
 		closeTCPRead(a)
 		done <- struct{}{}
 	}()
 	go func() {
 		n, _ := copyPreferReaderFrom(a, b)
-		traffic.AddL4(0, n)
+		recorder.Add(0, n)
+		recorder.Flush()
 		closeTCPWrite(a)
 		closeTCPRead(b)
 		done <- struct{}{}
 	}()
 	<-done
 	<-done
+}
+
+func l4RecorderOrAggregate(recorder *traffic.Recorder) *traffic.Recorder {
+	if recorder != nil {
+		return recorder
+	}
+	return traffic.NewL4Recorder()
 }
 
 func (s *Server) prefetchRelayInitialPayload(_ net.Conn, source io.Reader) ([]byte, io.Reader, error) {
@@ -693,7 +712,7 @@ func (s *Server) sessionForPeer(rule model.L4Rule, listener *net.UDPConn, peer *
 		listener:        listener,
 		lastActive:      s.now(),
 		ready:           make(chan struct{}),
-		trafficRecorder: traffic.NewL4Recorder(),
+		trafficRecorder: traffic.NewL4RuleRecorder(rule.ID),
 	}
 	s.udpSessions[key] = session
 	s.udpMu.Unlock()
