@@ -57,11 +57,8 @@ func (e *routeEntry) copyResumableResponse(w http.ResponseWriter, req *http.Requ
 		current       = resp
 	)
 	for {
-		n, readErr, writeErr := copyResumableChunk(w, current.Body)
+		n, readErr, writeErr := copyResumableChunk(newHTTPResponseTrafficResponseWriter(w, recorder), current.Body)
 		sentBytes += n
-		trafficRecorder := httpRecorderOrAggregate(recorder)
-		trafficRecorder.Add(0, n)
-		trafficRecorder.Flush()
 		if writeErr != nil {
 			_ = current.Body.Close()
 			return fail(sentBytes, writeErr)

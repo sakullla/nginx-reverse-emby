@@ -1174,11 +1174,9 @@ func copyResponse(w http.ResponseWriter, resp *http.Response, recorder *traffic.
 	w.WriteHeader(resp.StatusCode)
 	var written int64
 	if resp.Body != nil {
-		n, err := io.Copy(w, resp.Body)
+		trafficWriter := newHTTPResponseTrafficWriter(w, recorder)
+		n, err := io.Copy(trafficWriter, resp.Body)
 		written = n
-		trafficRecorder := httpRecorderOrAggregate(recorder)
-		trafficRecorder.Add(0, n)
-		trafficRecorder.Flush()
 		if err != nil {
 			return written, err
 		}
@@ -1285,6 +1283,52 @@ func copySwitchProtocolTraffic(dst io.Writer, src io.Reader, rxDirection bool, r
 		recorder:    httpRecorderOrAggregate(recorder),
 	}
 	return io.Copy(wrapped, src)
+}
+
+func newHTTPResponseTrafficWriter(dst io.Writer, recorder *traffic.Recorder) httpResponseTrafficWriter {
+	return httpResponseTrafficWriter{
+		dst:      dst,
+		recorder: httpRecorderOrAggregate(recorder),
+	}
+}
+
+type httpResponseTrafficWriter struct {
+	dst      io.Writer
+	recorder *traffic.Recorder
+}
+
+func (w httpResponseTrafficWriter) Write(p []byte) (int, error) {
+	n, err := w.dst.Write(p)
+	if n > 0 {
+		w.recorder.Add(0, int64(n))
+		w.recorder.Flush()
+	}
+	return n, err
+}
+
+func newHTTPResponseTrafficResponseWriter(dst http.ResponseWriter, recorder *traffic.Recorder) httpResponseTrafficResponseWriter {
+	return httpResponseTrafficResponseWriter{
+		ResponseWriter: dst,
+		recorder:       httpRecorderOrAggregate(recorder),
+	}
+}
+
+type httpResponseTrafficResponseWriter struct {
+	http.ResponseWriter
+	recorder *traffic.Recorder
+}
+
+func (w httpResponseTrafficResponseWriter) Write(p []byte) (int, error) {
+	n, err := w.ResponseWriter.Write(p)
+	if n > 0 {
+		w.recorder.Add(0, int64(n))
+		w.recorder.Flush()
+	}
+	return n, err
+}
+
+func (w httpResponseTrafficResponseWriter) Unwrap() http.ResponseWriter {
+	return w.ResponseWriter
 }
 
 type switchProtocolTrafficWriter struct {

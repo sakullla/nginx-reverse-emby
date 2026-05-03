@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"sync"
 	"testing"
 	"time"
 
@@ -32,6 +33,33 @@ func TestCopyResponseRecordsHTTPTraffic(t *testing.T) {
 	httpStats := stats["http"].(map[string]uint64)
 	if httpStats["tx_bytes"] != uint64(len("response-body")) {
 		t.Fatalf("http tx_bytes = %d, want %d", httpStats["tx_bytes"], len("response-body"))
+	}
+}
+
+func TestCopyResponseRecordsHTTPTrafficWhileStreaming(t *testing.T) {
+	traffic.Reset()
+	defer traffic.Reset()
+
+	body := newBlockingReadCloser([]byte("streamed-response"))
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       body,
+	}
+	recorder := newObservedResponseWriter()
+	done := make(chan error, 1)
+
+	go func() {
+		_, err := copyResponse(recorder, resp, nil)
+		done <- err
+	}()
+
+	recorder.waitForWrite(t)
+	assertHTTPAggregateTraffic(t, 0, uint64(len("streamed-response")))
+
+	body.Close()
+	if err := <-done; err != nil {
+		t.Fatalf("copyResponse() error = %v", err)
 	}
 }
 
@@ -94,6 +122,22 @@ func assertHTTPRuleTrafficEventually(t *testing.T, ruleID string, wantRX, wantTX
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("http_rules[%s] = %+v, want rx >= %d tx >= %d", ruleID, got, wantRX, wantTX)
+}
+
+func assertHTTPAggregateTraffic(t *testing.T, wantRX, wantTX uint64) {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	var got map[string]uint64
+	for time.Now().Before(deadline) {
+		stats := traffic.Snapshot()["traffic"].(map[string]any)
+		got = stats["http"].(map[string]uint64)
+		if got["rx_bytes"] >= wantRX && got["tx_bytes"] >= wantTX {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("http traffic = %+v, want rx >= %d tx >= %d", got, wantRX, wantTX)
 }
 
 func TestPrepareReusableBodyDoesNotRecordBufferedRequestBodyTrafficBeforeRead(t *testing.T) {
@@ -170,6 +214,80 @@ type ioNopCloser struct {
 }
 
 func (c ioNopCloser) Close() error { return nil }
+
+type blockingReadCloser struct {
+	payload []byte
+	once    sync.Once
+	closed  chan struct{}
+}
+
+func newBlockingReadCloser(payload []byte) *blockingReadCloser {
+	return &blockingReadCloser{
+		payload: payload,
+		closed:  make(chan struct{}),
+	}
+}
+
+func (r *blockingReadCloser) Read(p []byte) (int, error) {
+	var n int
+	r.once.Do(func() {
+		n = copy(p, r.payload)
+	})
+	if n > 0 {
+		return n, nil
+	}
+	<-r.closed
+	return 0, io.EOF
+}
+
+func (r *blockingReadCloser) Close() error {
+	select {
+	case <-r.closed:
+	default:
+		close(r.closed)
+	}
+	return nil
+}
+
+type observedResponseWriter struct {
+	recorder *httptest.ResponseRecorder
+	wrote    chan struct{}
+	once     sync.Once
+}
+
+func newObservedResponseWriter() *observedResponseWriter {
+	return &observedResponseWriter{
+		recorder: httptest.NewRecorder(),
+		wrote:    make(chan struct{}),
+	}
+}
+
+func (w *observedResponseWriter) Header() http.Header {
+	return w.recorder.Header()
+}
+
+func (w *observedResponseWriter) WriteHeader(statusCode int) {
+	w.recorder.WriteHeader(statusCode)
+}
+
+func (w *observedResponseWriter) Write(p []byte) (int, error) {
+	n, err := w.recorder.Write(p)
+	if n > 0 {
+		w.once.Do(func() {
+			close(w.wrote)
+		})
+	}
+	return n, err
+}
+
+func (w *observedResponseWriter) waitForWrite(t *testing.T) {
+	t.Helper()
+	select {
+	case <-w.wrote:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for response write")
+	}
+}
 
 func mustParseURLForTrafficTest(t *testing.T, raw string) *url.URL {
 	t.Helper()

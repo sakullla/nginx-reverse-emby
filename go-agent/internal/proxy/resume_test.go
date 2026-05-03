@@ -682,6 +682,56 @@ func TestCopyResumableResponseRecordsHTTPTraffic(t *testing.T) {
 	}
 }
 
+func TestCopyResumableResponseRecordsHTTPTrafficWhileStreaming(t *testing.T) {
+	traffic.Reset()
+	defer traffic.Reset()
+
+	payload := []byte("streamed-resumable-response")
+	body := newBlockingReadCloser(payload)
+	resp := &http.Response{
+		StatusCode:    http.StatusOK,
+		Header:        make(http.Header),
+		Body:          body,
+		ContentLength: int64(len(payload)),
+	}
+	resp.Header.Set("Accept-Ranges", "bytes")
+	resp.Header.Set("ETag", `"stable"`)
+
+	entry := &routeEntry{
+		resilience: StreamResilienceOptions{
+			ResumeEnabled:     true,
+			ResumeMaxAttempts: 1,
+		},
+	}
+	recorder := newObservedResponseWriter()
+	req := httptest.NewRequest(http.MethodGet, "http://edge.example.test/video", nil)
+	ruleRecorder := traffic.NewHTTPRuleRecorder(99)
+	done := make(chan error, 1)
+
+	go func() {
+		_, err := entry.copyResumableResponse(recorder, req, resp, resumableResponse{
+			initialStatus: http.StatusOK,
+			rangeStart:    0,
+			rangeEnd:      int64(len(payload) - 1),
+			resourceSize:  int64(len(payload)),
+			validator: responseValidator{
+				etag:    `"stable"`,
+				ifRange: `"stable"`,
+			},
+		}, ruleRecorder)
+		done <- err
+	}()
+
+	recorder.waitForWrite(t)
+	assertHTTPAggregateTraffic(t, 0, uint64(len(payload)))
+	assertHTTPRuleTrafficEventually(t, "99", 0, uint64(len(payload)))
+
+	body.Close()
+	if err := <-done; err != nil {
+		t.Fatalf("copyResumableResponse() error = %v", err)
+	}
+}
+
 func TestCopyResumableResponseUsesBulkTransportForRelayRangeRetry(t *testing.T) {
 	payload := []byte("0123456789abcdefghijklmnopqrstuvwxyz")
 	split := len(payload) / 2
