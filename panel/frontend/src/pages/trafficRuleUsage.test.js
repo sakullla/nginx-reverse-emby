@@ -96,6 +96,17 @@ async function mountPage(component) {
   return wrapper
 }
 
+async function expectTrafficUsageDisabled(component) {
+  systemInfo = { traffic_stats_enabled: false }
+
+  const wrapper = await mountPage(component)
+
+  expect(apiCalls.fetchTrafficSummary).not.toHaveBeenCalled()
+  expect(wrapper.text()).not.toContain('用量')
+  expect(wrapper.text()).not.toContain('0 B')
+  expect(wrapper.text()).not.toContain('0.00')
+}
+
 beforeEach(() => {
   routeQuery = { agentId: 'edge-1' }
   selectedAgentId = 'edge-1'
@@ -147,13 +158,12 @@ describe('rule list traffic usage', () => {
   })
 
   it('hides rule traffic and skips summary requests when traffic stats are disabled', async () => {
-    systemInfo = { traffic_stats_enabled: false }
     const { default: RulesPage } = await import('./RulesPage.vue')
+    const { default: L4RulesPage } = await import('./L4RulesPage.vue')
+    const { default: RelayListenersPage } = await import('./RelayListenersPage.vue')
 
-    const wrapper = await mountPage(RulesPage)
-
-    expect(apiCalls.fetchTrafficSummary).not.toHaveBeenCalled()
-    expect(wrapper.text()).not.toContain('用量')
-    expect(wrapper.text()).not.toContain('入 0 B')
+    await expectTrafficUsageDisabled(RulesPage)
+    await expectTrafficUsageDisabled(L4RulesPage)
+    await expectTrafficUsageDisabled(RelayListenersPage)
   })
 })
