@@ -93,6 +93,8 @@ type Dependencies struct {
 	BackupService        BackupService
 }
 
+var openConfiguredStore = storage.NewConfiguredStore
+
 type legacyRuleListService interface {
 	ListHTTPRules(context.Context, string) ([]service.HTTPRule, error)
 }
@@ -225,7 +227,7 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 		return d, nil
 	}
 
-	store, err := storage.NewSQLiteStore(d.Config.DataDir, d.Config.LocalAgentID)
+	store, err := openConfiguredStore(d.Config)
 	if err != nil {
 		return Dependencies{}, err
 	}

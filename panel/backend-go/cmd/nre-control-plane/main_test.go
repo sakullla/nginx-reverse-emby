@@ -39,6 +39,55 @@ func (s localAgentRuntimeStub) DiagnoseSnapshot(context.Context, storage.Snapsho
 	return map[string]any{}, nil
 }
 
+func TestNewLocalAgentStarterUsesConfiguredStore(t *testing.T) {
+	cfg := config.Default()
+	cfg.EnableLocalAgent = true
+	cfg.DatabaseDriver = "mysql"
+	cfg.DatabaseDSN = "nre:nre@tcp(mysql:3306)/nre?parseTime=true"
+	cfg.DataDir = "/tmp/nre-data"
+	cfg.LocalAgentID = "edge-1"
+	cfg.TrafficStatsEnabled = false
+
+	previousOpenConfiguredStore := openConfiguredStore
+	previousNewLocalAgentRuntime := newLocalAgentRuntime
+	t.Cleanup(func() {
+		openConfiguredStore = previousOpenConfiguredStore
+		newLocalAgentRuntime = previousNewLocalAgentRuntime
+	})
+
+	var gotStoreCfg storage.StoreConfig
+	store := &storage.GormStore{}
+	openConfiguredStore = func(gotCfg config.Config) (*storage.GormStore, error) {
+		gotStoreCfg = storage.StoreConfigFromConfig(gotCfg)
+		return store, nil
+	}
+	newLocalAgentRuntime = func(_ config.Config, gotStore localagent.Store) (localAgentRuntime, error) {
+		if gotStore != store {
+			t.Fatalf("store = %p, want %p", gotStore, store)
+		}
+		return localAgentRuntimeStub{}, nil
+	}
+
+	if _, err := newLocalAgentStarter(cfg); err != nil {
+		t.Fatalf("newLocalAgentStarter() error = %v", err)
+	}
+	if gotStoreCfg.Driver != "mysql" {
+		t.Fatalf("Driver = %q", gotStoreCfg.Driver)
+	}
+	if gotStoreCfg.DSN != "nre:nre@tcp(mysql:3306)/nre?parseTime=true" {
+		t.Fatalf("DSN = %q", gotStoreCfg.DSN)
+	}
+	if gotStoreCfg.DataRoot != "/tmp/nre-data" {
+		t.Fatalf("DataRoot = %q", gotStoreCfg.DataRoot)
+	}
+	if gotStoreCfg.LocalAgentID != "edge-1" {
+		t.Fatalf("LocalAgentID = %q", gotStoreCfg.LocalAgentID)
+	}
+	if gotStoreCfg.TrafficStatsEnabled {
+		t.Fatal("TrafficStatsEnabled = true, want false")
+	}
+}
+
 func TestNewLocalAgentStarterBuildsSQLiteStoreAndInvokesRuntime(t *testing.T) {
 	cfg := config.Default()
 	cfg.EnableLocalAgent = true

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/glebarez/sqlite"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	"gorm.io/driver/mysql"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
@@ -26,6 +27,20 @@ type StoreConfig struct {
 	DataRoot            string
 	LocalAgentID        string
 	TrafficStatsEnabled bool
+}
+
+func StoreConfigFromConfig(cfg config.Config) StoreConfig {
+	return StoreConfig{
+		Driver:              cfg.DatabaseDriver,
+		DSN:                 cfg.DatabaseDSN,
+		DataRoot:            cfg.DataDir,
+		LocalAgentID:        cfg.LocalAgentID,
+		TrafficStatsEnabled: cfg.TrafficStatsEnabled,
+	}
+}
+
+func NewConfiguredStore(cfg config.Config) (*GormStore, error) {
+	return NewStore(StoreConfigFromConfig(cfg))
 }
 
 func NewStore(cfg StoreConfig) (*GormStore, error) {

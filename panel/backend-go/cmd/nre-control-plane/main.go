@@ -82,6 +82,8 @@ var newLocalAgentRuntime = func(cfg config.Config, store localagent.Store) (loca
 	return localagent.NewRuntime(cfg, store)
 }
 
+var openConfiguredStore = storage.NewConfiguredStore
+
 func guardLegacyNonSQLiteState(dataDir string) error {
 	dbPath := filepath.Join(dataDir, "panel.db")
 	if _, err := os.Stat(dbPath); err == nil {
@@ -120,7 +122,7 @@ var initializeControlPlane = func(ctx context.Context, cfg config.Config) error 
 	if err := guardLegacyNonSQLiteState(cfg.DataDir); err != nil {
 		return err
 	}
-	store, err := storage.NewSQLiteStore(cfg.DataDir, cfg.LocalAgentID)
+	store, err := openConfiguredStore(cfg)
 	if err != nil {
 		return err
 	}
@@ -132,7 +134,7 @@ var initializeControlPlane = func(ctx context.Context, cfg config.Config) error 
 }
 
 var runManagedCertificateRenewalPass = func(ctx context.Context, cfg config.Config) error {
-	store, err := storage.NewSQLiteStore(cfg.DataDir, cfg.LocalAgentID)
+	store, err := openConfiguredStore(cfg)
 	if err != nil {
 		return err
 	}
@@ -186,7 +188,7 @@ var newLocalAgentStarter = func(cfg config.Config) (app.LocalAgentStarter, error
 		return nil, nil
 	}
 
-	store, err := storage.NewSQLiteStore(cfg.DataDir, cfg.LocalAgentID)
+	store, err := openConfiguredStore(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -207,7 +209,7 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 		return app.New(cfg, handler, logger, nil), nil
 	}
 
-	serviceStore, err := storage.NewSQLiteStore(cfg.DataDir, cfg.LocalAgentID)
+	serviceStore, err := openConfiguredStore(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -220,7 +222,7 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 	relaySvc := service.NewRelayListenerService(cfg, serviceStore)
 	certSvc := service.NewCertificateService(cfg, serviceStore)
 
-	runtimeStore, err := storage.NewSQLiteStore(cfg.DataDir, cfg.LocalAgentID)
+	runtimeStore, err := openConfiguredStore(cfg)
 	if err != nil {
 		return nil, err
 	}
