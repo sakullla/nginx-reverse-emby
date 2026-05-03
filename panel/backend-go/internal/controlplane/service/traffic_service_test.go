@@ -40,6 +40,48 @@ func TestMonthlyCycleWindow(t *testing.T) {
 	}
 }
 
+func TestTrafficQuotaNilMeansUnlimited(t *testing.T) {
+	used := uint64(123)
+	blocked, reason := quotaBlocked(used, TrafficPolicy{MonthlyQuotaBytes: nil, BlockWhenExceeded: true})
+	if blocked || reason != "" {
+		t.Fatalf("quotaBlocked() = %v, %q; want unlimited nil quota", blocked, reason)
+	}
+	if got := quotaPercent(used, nil); got != 0 {
+		t.Fatalf("quotaPercent() = %v, want 0 for unlimited nil quota", got)
+	}
+	if got := quotaRemaining(used, nil); got != nil {
+		t.Fatalf("quotaRemaining() = %v, want nil for unlimited nil quota", *got)
+	}
+}
+
+func TestTrafficQuotaZeroIsRealQuota(t *testing.T) {
+	quota := int64(0)
+
+	blocked, reason := quotaBlocked(0, TrafficPolicy{MonthlyQuotaBytes: &quota, BlockWhenExceeded: true})
+	if blocked || reason != "" {
+		t.Fatalf("quotaBlocked(0) = %v, %q; want not blocked at zero usage", blocked, reason)
+	}
+	if got := quotaPercent(0, &quota); got != 0 {
+		t.Fatalf("quotaPercent(0) = %v, want 0", got)
+	}
+	remaining := quotaRemaining(0, &quota)
+	if remaining == nil || *remaining != 0 {
+		t.Fatalf("quotaRemaining(0) = %v, want 0", remaining)
+	}
+
+	blocked, reason = quotaBlocked(1, TrafficPolicy{MonthlyQuotaBytes: &quota, BlockWhenExceeded: true})
+	if !blocked || reason != "monthly quota exceeded" {
+		t.Fatalf("quotaBlocked(1) = %v, %q; want monthly quota exceeded", blocked, reason)
+	}
+	if got := quotaPercent(1, &quota); got != 100 {
+		t.Fatalf("quotaPercent(1) = %v, want 100 for positive usage over zero quota", got)
+	}
+	remaining = quotaRemaining(1, &quota)
+	if remaining == nil || *remaining != -1 {
+		t.Fatalf("quotaRemaining(1) = %v, want -1", remaining)
+	}
+}
+
 func TestTrafficServiceIngestHeartbeatComputesDeltas(t *testing.T) {
 	fakeStore := newFakeTrafficStore()
 	fixedNow := time.Date(2026, 5, 3, 12, 34, 0, 0, time.UTC)

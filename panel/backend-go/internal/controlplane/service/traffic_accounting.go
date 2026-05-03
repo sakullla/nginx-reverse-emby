@@ -61,14 +61,20 @@ func monthlyCycleWindow(now time.Time, cycleStartDay int) (time.Time, time.Time)
 }
 
 func quotaPercent(used uint64, quota *int64) float64 {
-	if quota == nil || *quota <= 0 {
+	if quota == nil {
 		return 0
+	}
+	if *quota == 0 {
+		if used == 0 {
+			return 0
+		}
+		return 100
 	}
 	return float64(used) * 100 / float64(*quota)
 }
 
 func quotaRemaining(used uint64, quota *int64) *int64 {
-	if quota == nil || *quota <= 0 {
+	if quota == nil {
 		return nil
 	}
 	remaining := *quota - int64(minUint64ToInt64(used))
@@ -76,7 +82,13 @@ func quotaRemaining(used uint64, quota *int64) *int64 {
 }
 
 func quotaBlocked(used uint64, policy TrafficPolicy) (bool, string) {
-	if !policy.BlockWhenExceeded || policy.MonthlyQuotaBytes == nil || *policy.MonthlyQuotaBytes <= 0 {
+	if !policy.BlockWhenExceeded || policy.MonthlyQuotaBytes == nil {
+		return false, ""
+	}
+	if *policy.MonthlyQuotaBytes == 0 {
+		if used > 0 {
+			return true, "monthly quota exceeded"
+		}
 		return false, ""
 	}
 	if used >= uint64(*policy.MonthlyQuotaBytes) {
