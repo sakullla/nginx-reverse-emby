@@ -46,6 +46,8 @@ type TrafficCleanupCutoff struct {
 }
 
 func (s *GormStore) GetTrafficPolicy(ctx context.Context, agentID string) (AgentTrafficPolicyRow, error) {
+	agentID = s.resolveAgentID(agentID)
+
 	var row AgentTrafficPolicyRow
 	err := s.db.WithContext(ctx).
 		Where("agent_id = ?", agentID).
@@ -61,17 +63,32 @@ func (s *GormStore) GetTrafficPolicy(ctx context.Context, agentID string) (Agent
 }
 
 func (s *GormStore) SaveTrafficPolicy(ctx context.Context, row AgentTrafficPolicyRow) error {
+	row.AgentID = s.resolveAgentID(row.AgentID)
 	normalizeTrafficPolicyRow(&row)
 	if row.CreatedAt == "" {
 		row.CreatedAt = nowTrafficTimestamp()
 	}
 	row.UpdatedAt = nowTrafficTimestamp()
 	return s.db.WithContext(ctx).
-		Clauses(clause.OnConflict{UpdateAll: true}).
+		Clauses(clause.OnConflict{
+			Columns: []clause.Column{{Name: "agent_id"}},
+			DoUpdates: clause.AssignmentColumns([]string{
+				"direction",
+				"cycle_start_day",
+				"monthly_quota_bytes",
+				"block_when_exceeded",
+				"hourly_retention_days",
+				"daily_retention_months",
+				"monthly_retention_months",
+				"updated_at",
+			}),
+		}).
 		Create(&row).Error
 }
 
 func (s *GormStore) GetTrafficBaseline(ctx context.Context, agentID, cycleStart string) (AgentTrafficBaselineRow, bool, error) {
+	agentID = s.resolveAgentID(agentID)
+
 	var row AgentTrafficBaselineRow
 	err := s.db.WithContext(ctx).
 		Where("agent_id = ? AND cycle_start = ?", agentID, cycleStart).
@@ -86,18 +103,37 @@ func (s *GormStore) GetTrafficBaseline(ctx context.Context, agentID, cycleStart 
 }
 
 func (s *GormStore) SaveTrafficBaseline(ctx context.Context, row AgentTrafficBaselineRow) error {
+	row.AgentID = s.resolveAgentID(row.AgentID)
 	if row.CreatedAt == "" {
 		row.CreatedAt = nowTrafficTimestamp()
 	}
 	row.UpdatedAt = nowTrafficTimestamp()
 	return s.db.WithContext(ctx).
-		Clauses(clause.OnConflict{UpdateAll: true}).
+		Clauses(clause.OnConflict{
+			Columns: []clause.Column{
+				{Name: "agent_id"},
+				{Name: "cycle_start"},
+			},
+			DoUpdates: clause.AssignmentColumns([]string{
+				"raw_rx_bytes",
+				"raw_tx_bytes",
+				"raw_accounted_bytes",
+				"adjust_used_bytes",
+				"updated_at",
+			}),
+		}).
 		Create(&row).Error
 }
 
 func (s *GormStore) GetTrafficCursor(ctx context.Context, agentID, scopeType, scopeID string) (AgentTrafficRawCursorRow, bool, error) {
+	agentID = s.resolveAgentID(agentID)
+	scopeType, err := normalizeTrafficScopeType(scopeType)
+	if err != nil {
+		return AgentTrafficRawCursorRow{}, false, err
+	}
+
 	var row AgentTrafficRawCursorRow
-	err := s.db.WithContext(ctx).
+	err = s.db.WithContext(ctx).
 		Where("agent_id = ? AND scope_type = ? AND scope_id = ?", agentID, scopeType, scopeID).
 		First(&row).Error
 	if err == nil {
@@ -110,12 +146,24 @@ func (s *GormStore) GetTrafficCursor(ctx context.Context, agentID, scopeType, sc
 }
 
 func (s *GormStore) SaveTrafficCursor(ctx context.Context, row AgentTrafficRawCursorRow) error {
+	var err error
+	row.AgentID = s.resolveAgentID(row.AgentID)
+	row.ScopeType, err = normalizeTrafficScopeType(row.ScopeType)
+	if err != nil {
+		return err
+	}
 	return s.db.WithContext(ctx).
 		Clauses(clause.OnConflict{UpdateAll: true}).
 		Create(&row).Error
 }
 
 func (s *GormStore) IncrementTrafficBuckets(ctx context.Context, delta TrafficDelta) error {
+	var err error
+	delta.AgentID = s.resolveAgentID(delta.AgentID)
+	delta.ScopeType, err = normalizeTrafficScopeType(delta.ScopeType)
+	if err != nil {
+		return err
+	}
 	bucketStart := delta.BucketStart.UTC()
 	now := nowTrafficTimestamp()
 
@@ -162,6 +210,13 @@ func (s *GormStore) IncrementTrafficBuckets(ctx context.Context, delta TrafficDe
 }
 
 func (s *GormStore) ListTrafficTrend(ctx context.Context, query TrafficTrendQuery) ([]TrafficBucketRow, error) {
+	var err error
+	query.AgentID = s.resolveAgentID(query.AgentID)
+	query.ScopeType, err = normalizeTrafficScopeType(query.ScopeType)
+	if err != nil {
+		return nil, err
+	}
+
 	switch normalizeTrafficGranularity(query.Granularity) {
 	case "hour":
 		var rows []AgentTrafficHourlyBucketRow
@@ -313,6 +368,14 @@ func normalizeTrafficPolicyRow(row *AgentTrafficPolicyRow) {
 	if row.DailyRetentionMonths == 0 {
 		row.DailyRetentionMonths = 24
 	}
+}
+
+func normalizeTrafficScopeType(scopeType string) (string, error) {
+	scopeType = strings.TrimSpace(scopeType)
+	if scopeType == "" {
+		return "", fmt.Errorf("traffic scope_type is required")
+	}
+	return scopeType, nil
 }
 
 func normalizeTrafficGranularity(granularity string) string {

@@ -3,6 +3,7 @@ package storage
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -56,6 +57,57 @@ func TestTrafficPolicySaveAndReload(t *testing.T) {
 	}
 }
 
+func TestTrafficPolicyUpsertPreservesCreatedAt(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+
+	if err := store.SaveTrafficPolicy(ctx, AgentTrafficPolicyRow{
+		AgentID:   "edge-1",
+		Direction: "rx",
+		CreatedAt: "2026-05-03T08:00:00Z",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.GetTrafficPolicy(ctx, "edge-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.SaveTrafficPolicy(ctx, AgentTrafficPolicyRow{
+		AgentID:   "edge-1",
+		Direction: "tx",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := store.GetTrafficPolicy(ctx, "edge-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updated.CreatedAt != first.CreatedAt {
+		t.Fatalf("CreatedAt = %q, want %q", updated.CreatedAt, first.CreatedAt)
+	}
+	if updated.Direction != "tx" {
+		t.Fatalf("Direction = %q, want tx", updated.Direction)
+	}
+}
+
+func TestTrafficPolicyEmptyAgentIDUsesLocalAgent(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+
+	if err := store.SaveTrafficPolicy(ctx, AgentTrafficPolicyRow{Direction: "max"}); err != nil {
+		t.Fatal(err)
+	}
+
+	policy, err := store.GetTrafficPolicy(ctx, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if policy.AgentID != "local" || policy.Direction != "max" {
+		t.Fatalf("policy = %+v", policy)
+	}
+}
+
 func TestTrafficBaselineUpsert(t *testing.T) {
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
@@ -91,6 +143,70 @@ func TestTrafficBaselineUpsert(t *testing.T) {
 	}
 	if !found || got.RawRXBytes != 100 || got.RawTXBytes != 200 || got.RawAccountedBytes != 300 || got.AdjustUsedBytes != -50 {
 		t.Fatalf("baseline = %+v, found=%v", got, found)
+	}
+}
+
+func TestTrafficBaselineUpsertPreservesCreatedAt(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+	cycleStart := "2026-05-01T00:00:00Z"
+
+	if err := store.SaveTrafficBaseline(ctx, AgentTrafficBaselineRow{
+		AgentID:    "edge-1",
+		CycleStart: cycleStart,
+		RawRXBytes: 100,
+		CreatedAt:  "2026-05-03T08:00:00Z",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	first, found, err := store.GetTrafficBaseline(ctx, "edge-1", cycleStart)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Fatal("baseline not found after save")
+	}
+
+	if err := store.SaveTrafficBaseline(ctx, AgentTrafficBaselineRow{
+		AgentID:    "edge-1",
+		CycleStart: cycleStart,
+		RawRXBytes: 200,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	updated, found, err := store.GetTrafficBaseline(ctx, "edge-1", cycleStart)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found {
+		t.Fatal("baseline not found after update")
+	}
+	if updated.CreatedAt != first.CreatedAt {
+		t.Fatalf("CreatedAt = %q, want %q", updated.CreatedAt, first.CreatedAt)
+	}
+	if updated.RawRXBytes != 200 {
+		t.Fatalf("RawRXBytes = %d, want 200", updated.RawRXBytes)
+	}
+}
+
+func TestTrafficBaselineEmptyAgentIDUsesLocalAgent(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+	cycleStart := "2026-05-01T00:00:00Z"
+
+	if err := store.SaveTrafficBaseline(ctx, AgentTrafficBaselineRow{
+		CycleStart:        cycleStart,
+		RawAccountedBytes: 100,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	baseline, found, err := store.GetTrafficBaseline(ctx, "", cycleStart)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found || baseline.AgentID != "local" || baseline.RawAccountedBytes != 100 {
+		t.Fatalf("baseline = %+v, found=%v", baseline, found)
 	}
 }
 
@@ -130,6 +246,38 @@ func TestTrafficCursorUpsert(t *testing.T) {
 	}
 	if !found || got.RXBytes != 150 || got.TXBytes != 275 || got.ObservedAt != "2026-05-03T08:01:00Z" {
 		t.Fatalf("cursor = %+v, found=%v", got, found)
+	}
+}
+
+func TestTrafficCursorValidation(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+
+	if err := store.SaveTrafficCursor(ctx, AgentTrafficRawCursorRow{AgentID: "edge-1"}); err == nil || !strings.Contains(err.Error(), "scope_type") {
+		t.Fatalf("SaveTrafficCursor() error = %v, want scope_type error", err)
+	}
+	if _, _, err := store.GetTrafficCursor(ctx, "edge-1", "", ""); err == nil || !strings.Contains(err.Error(), "scope_type") {
+		t.Fatalf("GetTrafficCursor() error = %v, want scope_type error", err)
+	}
+}
+
+func TestTrafficCursorEmptyAgentIDUsesLocalAgentAndAllowsAggregateScopeID(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+
+	if err := store.SaveTrafficCursor(ctx, AgentTrafficRawCursorRow{
+		ScopeType: "agent_total",
+		RXBytes:   100,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	cursor, found, err := store.GetTrafficCursor(ctx, "", "agent_total", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found || cursor.AgentID != "local" || cursor.ScopeID != "" || cursor.RXBytes != 100 {
+		t.Fatalf("cursor = %+v, found=%v", cursor, found)
 	}
 }
 
@@ -183,6 +331,59 @@ func TestIncrementTrafficBucketsAccumulates(t *testing.T) {
 				t.Fatalf("rows = %+v", rows)
 			}
 		})
+	}
+}
+
+func TestIncrementTrafficBucketsValidation(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+
+	err := store.IncrementTrafficBuckets(context.Background(), TrafficDelta{
+		AgentID:     "edge-1",
+		BucketStart: time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC),
+		RXBytes:     100,
+	})
+	if err == nil || !strings.Contains(err.Error(), "scope_type") {
+		t.Fatalf("IncrementTrafficBuckets() error = %v, want scope_type error", err)
+	}
+}
+
+func TestIncrementTrafficBucketsEmptyAgentIDUsesLocalAgentAndAllowsAggregateScopeID(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+	bucket := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
+
+	if err := store.IncrementTrafficBuckets(ctx, TrafficDelta{
+		ScopeType:   "agent_total",
+		BucketStart: bucket,
+		RXBytes:     100,
+		TXBytes:     200,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := store.ListTrafficTrend(ctx, TrafficTrendQuery{
+		ScopeType:   "agent_total",
+		Granularity: "hour",
+		From:        bucket,
+		To:          bucket.Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].AgentID != "local" || rows[0].ScopeID != "" || rows[0].RXBytes != 100 {
+		t.Fatalf("rows = %+v", rows)
+	}
+}
+
+func TestTrafficTrendValidation(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+
+	_, err := store.ListTrafficTrend(context.Background(), TrafficTrendQuery{
+		AgentID:     "edge-1",
+		Granularity: "hour",
+	})
+	if err == nil || !strings.Contains(err.Error(), "scope_type") {
+		t.Fatalf("ListTrafficTrend() error = %v, want scope_type error", err)
 	}
 }
 
