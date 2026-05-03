@@ -58,6 +58,37 @@ func (s *GormStore) ListAgents(ctx context.Context) ([]AgentRow, error) {
 	return agents, nil
 }
 
+func (s *GormStore) GetAgentTrafficState(ctx context.Context, agentID string) (bool, string, bool, error) {
+	if agentID == "" || agentID == s.localAgentID {
+		return false, "", false, nil
+	}
+	var row AgentRow
+	err := s.db.WithContext(ctx).
+		Select("id", "traffic_blocked", "traffic_block_reason").
+		Where("id = ?", agentID).
+		First(&row).Error
+	if err == nil {
+		return row.TrafficBlocked, defaultString(row.TrafficBlockReason, ""), true, nil
+	}
+	if err == gorm.ErrRecordNotFound {
+		return false, "", false, nil
+	}
+	return false, "", false, err
+}
+
+func (s *GormStore) SaveAgentTrafficState(ctx context.Context, agentID string, blocked bool, reason string) error {
+	if agentID == "" || agentID == s.localAgentID {
+		return nil
+	}
+	return s.db.WithContext(ctx).
+		Model(&AgentRow{}).
+		Where("id = ?", agentID).
+		Updates(map[string]any{
+			"traffic_blocked":      blocked,
+			"traffic_block_reason": defaultString(reason, ""),
+		}).Error
+}
+
 func (s *GormStore) loadAgentRevisionState(ctx context.Context, agentID string) (LocalAgentStateRow, error) {
 	var row AgentRow
 	err := s.db.WithContext(ctx).
@@ -208,10 +239,12 @@ func (s *GormStore) LoadAgentSnapshot(ctx context.Context, agentID string, input
 
 	relevantCertRows := filterManagedCertificatesForAgent(certRows, resolvedAgentID, httpRows, relayRows)
 	var agentRevisionState LocalAgentStateRow
+	agentConfig := AgentConfig{}
 	if resolvedAgentID == s.localAgentID {
 		agentRevisionState, err = s.LoadLocalAgentState(ctx)
 	} else {
 		agentRevisionState, err = s.loadAgentRevisionState(ctx, resolvedAgentID)
+		agentConfig, _ = s.loadAgentConfigForSnapshot(ctx, resolvedAgentID)
 	}
 	if err != nil {
 		return Snapshot{}, err
@@ -230,12 +263,31 @@ func (s *GormStore) LoadAgentSnapshot(ctx context.Context, agentID string, input
 		DesiredVersion:      strings.TrimSpace(input.DesiredVersion),
 		Revision:            int64(computeDesiredRevision(revisionState, httpRows, l4Rows, relayRows, relevantCertRows)),
 		VersionPackage:      resolveVersionPackageForPlatform(versionPolicies, input.DesiredVersion, input.Platform),
+		AgentConfig:         agentConfig,
 		Rules:               SnapshotHTTPRules(httpRows),
 		L4Rules:             SnapshotL4Rules(l4Rows),
 		RelayListeners:      snapshotRelayListeners(relayRows, agentNames),
 		Certificates:        s.snapshotCertificateBundles(relevantCertRows),
 		CertificatePolicies: snapshotCertificatePolicies(relevantCertRows, resolvedAgentID),
 	}, nil
+}
+
+func (s *GormStore) loadAgentConfigForSnapshot(ctx context.Context, agentID string) (AgentConfig, bool) {
+	var row AgentRow
+	err := s.db.WithContext(ctx).
+		Select("id", "outbound_proxy_url", "traffic_stats_interval", "traffic_blocked", "traffic_block_reason").
+		Where("id = ?", agentID).
+		First(&row).Error
+	if err != nil {
+		return AgentConfig{}, false
+	}
+	normalizeAgentRow(&row)
+	return AgentConfig{
+		OutboundProxyURL:     strings.TrimSpace(row.OutboundProxyURL),
+		TrafficStatsInterval: strings.TrimSpace(row.TrafficStatsInterval),
+		TrafficBlocked:       row.TrafficBlocked,
+		TrafficBlockReason:   strings.TrimSpace(row.TrafficBlockReason),
+	}, true
 }
 
 func (s *GormStore) ListL4Rules(ctx context.Context, agentID string) ([]L4RuleRow, error) {
@@ -552,6 +604,8 @@ func normalizeAgentRow(row *AgentRow) {
 	row.LastApplyStatus = defaultString(row.LastApplyStatus, "")
 	row.LastApplyMessage = defaultString(row.LastApplyMessage, "")
 	row.LastReportedStatsJSON = defaultJSON(row.LastReportedStatsJSON, "{}")
+	row.TrafficBlocked = row.TrafficBlocked
+	row.TrafficBlockReason = defaultString(row.TrafficBlockReason, "")
 	row.LastSeenAt = defaultString(row.LastSeenAt, "")
 	row.LastSeenIP = defaultString(row.LastSeenIP, "")
 }

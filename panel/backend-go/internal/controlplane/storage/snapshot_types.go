@@ -4,11 +4,20 @@ type Snapshot struct {
 	DesiredVersion      string                     `json:"desired_version"`
 	Revision            int64                      `json:"desired_revision"`
 	VersionPackage      *VersionPackage            `json:"version_package,omitempty"`
+	AgentConfig         AgentConfig                `json:"agent_config,omitempty"`
 	Rules               []HTTPRule                 `json:"rules"`
 	L4Rules             []L4Rule                   `json:"l4_rules"`
 	RelayListeners      []RelayListener            `json:"relay_listeners"`
 	Certificates        []ManagedCertificateBundle `json:"certificates"`
 	CertificatePolicies []ManagedCertificatePolicy `json:"certificate_policies"`
+}
+
+type AgentConfig struct {
+	OutboundProxyURL     string `json:"outbound_proxy_url,omitempty"`
+	TrafficStatsInterval string `json:"traffic_stats_interval,omitempty"`
+	TrafficStatsEnabled  *bool  `json:"traffic_stats_enabled,omitempty"`
+	TrafficBlocked       bool   `json:"traffic_blocked,omitempty"`
+	TrafficBlockReason   string `json:"traffic_block_reason,omitempty"`
 }
 
 type AgentSnapshotInput struct {

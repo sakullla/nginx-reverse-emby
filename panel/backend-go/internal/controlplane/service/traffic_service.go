@@ -18,6 +18,7 @@ type TrafficServiceConfig struct {
 
 type trafficStore interface {
 	GetTrafficPolicy(context.Context, string) (storage.AgentTrafficPolicyRow, error)
+	ListTrafficPolicies(context.Context) ([]storage.AgentTrafficPolicyRow, error)
 	SaveTrafficPolicy(context.Context, storage.AgentTrafficPolicyRow) error
 	GetTrafficBaseline(context.Context, string, string) (storage.AgentTrafficBaselineRow, bool, error)
 	SaveTrafficBaseline(context.Context, storage.AgentTrafficBaselineRow) error
@@ -30,6 +31,11 @@ type trafficStore interface {
 
 type trafficEventStore interface {
 	SaveTrafficEvent(context.Context, storage.AgentTrafficEventRow) error
+}
+
+type trafficBlockStateStore interface {
+	GetAgentTrafficState(context.Context, string) (bool, string, bool, error)
+	SaveAgentTrafficState(context.Context, string, bool, string) error
 }
 
 type trafficBreakdownStore interface {
@@ -291,7 +297,39 @@ func (s *trafficService) UpdatePolicy(ctx context.Context, agentID string, input
 	if err := s.store.SaveTrafficPolicy(ctx, row); err != nil {
 		return TrafficPolicy{}, err
 	}
+	if err := s.recomputeAgentTrafficBlockState(ctx, agentID); err != nil {
+		return TrafficPolicy{}, err
+	}
 	return trafficPolicyFromRow(row), nil
+}
+
+func (s *trafficService) recomputeAgentTrafficBlockState(ctx context.Context, agentID string) error {
+	stateStore, ok := s.store.(trafficBlockStateStore)
+	if !ok {
+		return nil
+	}
+	summary, err := s.Summary(ctx, agentID)
+	if err != nil {
+		return err
+	}
+	previousBlocked, previousReason, found, err := stateStore.GetAgentTrafficState(ctx, agentID)
+	if err != nil {
+		return err
+	}
+	reason := strings.TrimSpace(summary.BlockReason)
+	if found && previousBlocked == summary.Blocked && previousReason == reason {
+		return nil
+	}
+	if err := stateStore.SaveAgentTrafficState(ctx, agentID, summary.Blocked, reason); err != nil {
+		return err
+	}
+	return s.recordTrafficEvent(ctx, agentID, "traffic_block_state_changed", "traffic block state changed", map[string]any{
+		"previous_blocked": previousBlocked,
+		"previous_reason":  previousReason,
+		"blocked":          summary.Blocked,
+		"reason":           reason,
+		"source":           "policy_update",
+	})
 }
 
 func (s *trafficService) Calibrate(ctx context.Context, agentID string, request TrafficCalibrationRequest) (TrafficSummary, error) {
@@ -316,6 +354,16 @@ func (s *trafficService) Calibrate(ctx context.Context, agentID string, request 
 		RawTXBytes:        stats.tx,
 		RawAccountedBytes: stats.accounted,
 		AdjustUsedBytes:   adjust,
+	}); err != nil {
+		return TrafficSummary{}, err
+	}
+	if err := s.recordTrafficEvent(ctx, agentID, "calibration", "traffic usage calibrated", map[string]any{
+		"cycle_start":         start.UTC().Format(time.RFC3339),
+		"requested_used":      request.UsedBytes,
+		"raw_rx_bytes":        stats.rx,
+		"raw_tx_bytes":        stats.tx,
+		"raw_accounted_bytes": stats.accounted,
+		"adjust_used_bytes":   adjust,
 	}); err != nil {
 		return TrafficSummary{}, err
 	}
@@ -361,7 +409,42 @@ func (s *trafficService) Cleanup(ctx context.Context, agentID string) (TrafficCl
 	if !cutoff.MonthlyBefore.IsZero() {
 		result.MonthlyBefore = cutoff.MonthlyBefore.Format(time.RFC3339)
 	}
+	if err := s.recordTrafficEvent(ctx, agentID, "cleanup", "traffic history cleanup", map[string]any{
+		"deleted_rows":     deleted,
+		"hourly_before":    result.HourlyBefore,
+		"daily_before":     result.DailyBefore,
+		"monthly_before":   result.MonthlyBefore,
+		"retention_policy": policy,
+	}); err != nil {
+		return TrafficCleanupResult{}, err
+	}
 	return result, nil
+}
+
+func (s *trafficService) CleanupAll(ctx context.Context) (TrafficCleanupAllResult, error) {
+	if err := s.requireEnabled(); err != nil {
+		return TrafficCleanupAllResult{}, err
+	}
+	policies, err := s.store.ListTrafficPolicies(ctx)
+	if err != nil {
+		return TrafficCleanupAllResult{}, err
+	}
+	out := TrafficCleanupAllResult{
+		Results: make([]TrafficCleanupResult, 0, len(policies)),
+	}
+	for _, policy := range policies {
+		agentID := strings.TrimSpace(policy.AgentID)
+		if agentID == "" {
+			continue
+		}
+		result, err := s.Cleanup(ctx, agentID)
+		if err != nil {
+			return TrafficCleanupAllResult{}, err
+		}
+		out.DeletedRows += result.DeletedRows
+		out.Results = append(out.Results, result)
+	}
+	return out, nil
 }
 
 func (s *trafficService) requireEnabled() error {
@@ -484,6 +567,21 @@ func (s *trafficService) recordCounterReset(ctx context.Context, agentID string,
 		return nil
 	}
 	return eventStore.SaveTrafficEvent(ctx, *s.counterResetEvent(agentID, sample, cursor, observedAt))
+}
+
+func (s *trafficService) recordTrafficEvent(ctx context.Context, agentID, eventType, message string, payload map[string]any) error {
+	eventStore, ok := s.store.(trafficEventStore)
+	if !ok {
+		return nil
+	}
+	payloadJSON, _ := json.Marshal(payload)
+	return eventStore.SaveTrafficEvent(ctx, storage.AgentTrafficEventRow{
+		AgentID:   agentID,
+		EventType: eventType,
+		Message:   message,
+		Payload:   string(payloadJSON),
+		CreatedAt: s.now().UTC().Format(time.RFC3339),
+	})
 }
 
 func (s *trafficService) counterResetEvent(agentID string, sample trafficSample, cursor storage.AgentTrafficRawCursorRow, observedAt time.Time) *storage.AgentTrafficEventRow {

@@ -224,6 +224,37 @@ func TestTrafficServiceUpdatePolicyValidatesAndNormalizes(t *testing.T) {
 	}
 }
 
+func TestTrafficServiceUpdatePolicyRecomputesPersistedBlockState(t *testing.T) {
+	fakeStore := newFakeTrafficStore()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	fakeStore.addBucket(storage.TrafficBucketRow{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		BucketStart: time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC),
+		RXBytes:     75,
+		TXBytes:     50,
+	})
+	quota := int64(100)
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, fakeStore)
+
+	_, err := svc.UpdatePolicy(context.Background(), "edge-1", TrafficPolicy{
+		Direction:         "both",
+		CycleStartDay:     1,
+		MonthlyQuotaBytes: &quota,
+		BlockWhenExceeded: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !fakeStore.agentTrafficBlocked["edge-1"] || fakeStore.agentTrafficBlockReason["edge-1"] != "monthly quota exceeded" {
+		t.Fatalf("persisted block state = %v %q", fakeStore.agentTrafficBlocked["edge-1"], fakeStore.agentTrafficBlockReason["edge-1"])
+	}
+	if len(fakeStore.events) != 1 || fakeStore.events[0].EventType != "traffic_block_state_changed" {
+		t.Fatalf("events = %+v, want traffic_block_state_changed", fakeStore.events)
+	}
+}
+
 func TestTrafficServiceSummaryUsesCycleBaselineAndQuota(t *testing.T) {
 	fakeStore := newFakeTrafficStore()
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
@@ -499,6 +530,9 @@ func TestTrafficServiceCalibrateAndCleanup(t *testing.T) {
 	if baseline.RawAccountedBytes != 300 || baseline.AdjustUsedBytes != 1234 || summary.UsedBytes != 1234 {
 		t.Fatalf("baseline = %+v summary = %+v", baseline, summary)
 	}
+	if len(fakeStore.events) != 1 || fakeStore.events[0].EventType != "calibration" {
+		t.Fatalf("events after calibration = %+v, want calibration event", fakeStore.events)
+	}
 
 	result, err := svc.Cleanup(context.Background(), "edge-1")
 	if err != nil {
@@ -506,6 +540,33 @@ func TestTrafficServiceCalibrateAndCleanup(t *testing.T) {
 	}
 	if result.DeletedRows != 3 {
 		t.Fatalf("cleanup = %+v", result)
+	}
+	if len(fakeStore.events) != 2 || fakeStore.events[1].EventType != "cleanup" {
+		t.Fatalf("events after cleanup = %+v, want cleanup event", fakeStore.events)
+	}
+}
+
+func TestTrafficServiceCleanupAllUsesConfiguredPolicies(t *testing.T) {
+	fakeStore := newFakeTrafficStore()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	fakeStore.policies = []storage.AgentTrafficPolicyRow{
+		{AgentID: "edge-1", Direction: "both", CycleStartDay: 1, HourlyRetentionDays: 180, DailyRetentionMonths: 24},
+		{AgentID: "edge-2", Direction: "tx", CycleStartDay: 15, HourlyRetentionDays: 30, DailyRetentionMonths: 6},
+	}
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, fakeStore)
+
+	result, err := svc.CleanupAll(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.DeletedRows != 6 || len(result.Results) != 2 {
+		t.Fatalf("CleanupAll() = %+v, want two node results", result)
+	}
+	if result.Results[0].AgentID != "edge-1" || result.Results[1].AgentID != "edge-2" {
+		t.Fatalf("CleanupAll() results = %+v", result.Results)
+	}
+	if len(fakeStore.events) != 2 || fakeStore.events[0].EventType != "cleanup" || fakeStore.events[1].EventType != "cleanup" {
+		t.Fatalf("events = %+v, want cleanup events per node", fakeStore.events)
 	}
 }
 
@@ -553,12 +614,15 @@ type jsonNumber string
 func (n jsonNumber) String() string { return string(n) }
 
 type fakeTrafficStore struct {
-	policy     storage.AgentTrafficPolicyRow
-	cursors    map[string]storage.AgentTrafficRawCursorRow
-	buckets    map[string]storage.TrafficBucketRow
-	baselines  map[string]storage.AgentTrafficBaselineRow
-	events     []storage.AgentTrafficEventRow
-	writeCount int
+	policy                  storage.AgentTrafficPolicyRow
+	policies                []storage.AgentTrafficPolicyRow
+	cursors                 map[string]storage.AgentTrafficRawCursorRow
+	buckets                 map[string]storage.TrafficBucketRow
+	baselines               map[string]storage.AgentTrafficBaselineRow
+	events                  []storage.AgentTrafficEventRow
+	agentTrafficBlocked     map[string]bool
+	agentTrafficBlockReason map[string]string
+	writeCount              int
 }
 
 func newFakeTrafficStore() *fakeTrafficStore {
@@ -570,9 +634,11 @@ func newFakeTrafficStore() *fakeTrafficStore {
 			HourlyRetentionDays:  180,
 			DailyRetentionMonths: 24,
 		},
-		cursors:   map[string]storage.AgentTrafficRawCursorRow{},
-		buckets:   map[string]storage.TrafficBucketRow{},
-		baselines: map[string]storage.AgentTrafficBaselineRow{},
+		cursors:                 map[string]storage.AgentTrafficRawCursorRow{},
+		buckets:                 map[string]storage.TrafficBucketRow{},
+		baselines:               map[string]storage.AgentTrafficBaselineRow{},
+		agentTrafficBlocked:     map[string]bool{},
+		agentTrafficBlockReason: map[string]string{},
 	}
 }
 
@@ -598,6 +664,13 @@ func (s *fakeTrafficStore) SaveTrafficPolicy(_ context.Context, row storage.Agen
 	s.writeCount++
 	s.policy = row
 	return nil
+}
+
+func (s *fakeTrafficStore) ListTrafficPolicies(context.Context) ([]storage.AgentTrafficPolicyRow, error) {
+	if len(s.policies) > 0 {
+		return append([]storage.AgentTrafficPolicyRow(nil), s.policies...), nil
+	}
+	return []storage.AgentTrafficPolicyRow{s.policy}, nil
 }
 
 func (s *fakeTrafficStore) GetTrafficBaseline(_ context.Context, agentID, cycleStart string) (storage.AgentTrafficBaselineRow, bool, error) {
@@ -684,6 +757,18 @@ func (s *fakeTrafficStore) DeleteTrafficBefore(_ context.Context, _ string, _ st
 func (s *fakeTrafficStore) SaveTrafficEvent(_ context.Context, row storage.AgentTrafficEventRow) error {
 	s.writeCount++
 	s.events = append(s.events, row)
+	return nil
+}
+
+func (s *fakeTrafficStore) GetAgentTrafficState(_ context.Context, agentID string) (bool, string, bool, error) {
+	blocked, found := s.agentTrafficBlocked[agentID]
+	return blocked, s.agentTrafficBlockReason[agentID], found, nil
+}
+
+func (s *fakeTrafficStore) SaveAgentTrafficState(_ context.Context, agentID string, blocked bool, reason string) error {
+	s.writeCount++
+	s.agentTrafficBlocked[agentID] = blocked
+	s.agentTrafficBlockReason[agentID] = reason
 	return nil
 }
 

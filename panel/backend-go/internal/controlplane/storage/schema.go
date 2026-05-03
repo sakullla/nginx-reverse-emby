@@ -124,6 +124,8 @@ func bootstrapSQLiteLegacySchema(ctx context.Context, db *gorm.DB) error {
 	}{
 		{column: "outbound_proxy_url", sql: `ALTER TABLE agents ADD COLUMN outbound_proxy_url TEXT NOT NULL DEFAULT ''`},
 		{column: "traffic_stats_interval", sql: `ALTER TABLE agents ADD COLUMN traffic_stats_interval TEXT NOT NULL DEFAULT ''`},
+		{column: "traffic_blocked", sql: `ALTER TABLE agents ADD COLUMN traffic_blocked INTEGER NOT NULL DEFAULT 0`},
+		{column: "traffic_block_reason", sql: `ALTER TABLE agents ADD COLUMN traffic_block_reason TEXT NOT NULL DEFAULT ''`},
 	}
 	for _, migration := range agentColumnMigrations {
 		if tx.Migrator().HasColumn(&AgentRow{}, migration.column) {
@@ -190,6 +192,8 @@ func bootstrapSQLiteLegacySchema(ctx context.Context, db *gorm.DB) error {
 		`UPDATE agents SET runtime_package_sha256 = '' WHERE runtime_package_sha256 IS NULL`,
 		`UPDATE agents SET outbound_proxy_url = '' WHERE outbound_proxy_url IS NULL`,
 		`UPDATE agents SET traffic_stats_interval = '' WHERE traffic_stats_interval IS NULL`,
+		`UPDATE agents SET traffic_blocked = 0 WHERE traffic_blocked IS NULL`,
+		`UPDATE agents SET traffic_block_reason = '' WHERE traffic_block_reason IS NULL`,
 		`UPDATE local_agent_state SET desired_version = '' WHERE desired_version IS NULL`,
 		`UPDATE local_agent_state SET last_apply_status = 'success' WHERE last_apply_status IS NULL OR trim(last_apply_status) = ''`,
 		`UPDATE local_agent_state SET last_apply_message = '' WHERE last_apply_message IS NULL`,

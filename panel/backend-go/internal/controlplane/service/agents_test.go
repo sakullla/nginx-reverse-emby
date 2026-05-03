@@ -21,6 +21,7 @@ type fakeStore struct {
 	l4RulesByID         map[string][]storage.L4RuleRow
 	relayByID           map[string][]storage.RelayListenerRow
 	managedCerts        []storage.ManagedCertificateRow
+	events              []storage.AgentTrafficEventRow
 	localState          storage.LocalAgentStateRow
 	savedAgent          storage.AgentRow
 	savedAgentCalls     int
@@ -132,6 +133,11 @@ func (f *fakeStore) SaveRelayListeners(_ context.Context, agentID string, rows [
 
 func (f *fakeStore) SaveManagedCertificates(_ context.Context, rows []storage.ManagedCertificateRow) error {
 	f.managedCerts = append([]storage.ManagedCertificateRow(nil), rows...)
+	return nil
+}
+
+func (f *fakeStore) SaveTrafficEvent(_ context.Context, row storage.AgentTrafficEventRow) error {
+	f.events = append(f.events, row)
 	return nil
 }
 
@@ -1533,6 +1539,12 @@ func TestHeartbeatReplyIncludesTrafficBlockedState(t *testing.T) {
 	}
 	if reply.TrafficBlockReason != "monthly quota exceeded" {
 		t.Fatalf("TrafficBlockReason = %q", reply.TrafficBlockReason)
+	}
+	if !store.savedAgent.TrafficBlocked || store.savedAgent.TrafficBlockReason != "monthly quota exceeded" {
+		t.Fatalf("saved traffic block state = blocked=%v reason=%q", store.savedAgent.TrafficBlocked, store.savedAgent.TrafficBlockReason)
+	}
+	if len(store.events) != 1 || store.events[0].EventType != "traffic_block_state_changed" {
+		t.Fatalf("events = %+v, want traffic_block_state_changed", store.events)
 	}
 }
 

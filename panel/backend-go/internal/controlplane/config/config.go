@@ -20,6 +20,7 @@ const (
 	defaultDatabaseDriver    = "sqlite"
 	defaultHeartbeatInterval = 30 * time.Second
 	defaultManagedCertRenew  = 24 * time.Hour
+	defaultTrafficCleanup    = 24 * time.Hour
 )
 
 type Config struct {
@@ -44,6 +45,7 @@ type Config struct {
 	LocalAgentRelayTimeouts           RelayTimeoutConfig
 	LocalAgentTrafficStatsEnabled     bool
 	LocalAgentTrafficStatsExplicit    bool
+	TrafficCleanupInterval            time.Duration
 	ManagedCertificateRenewInterval   time.Duration
 	ManagedDNSCertificatesEnabled     bool
 	AppVersion                        string
@@ -113,6 +115,7 @@ func Default() Config {
 			IdleTimeout:      2 * time.Minute,
 		},
 		LocalAgentTrafficStatsEnabled:   true,
+		TrafficCleanupInterval:          defaultTrafficCleanup,
 		ManagedCertificateRenewInterval: defaultManagedCertRenew,
 	}
 }
@@ -211,6 +214,13 @@ func LoadFromEnv() (Config, error) {
 		cfg.TrafficStatsEnabled = enabled
 		cfg.LocalAgentTrafficStatsEnabled = enabled
 		cfg.LocalAgentTrafficStatsExplicit = true
+	}
+	if val := strings.TrimSpace(os.Getenv("NRE_TRAFFIC_CLEANUP_INTERVAL")); val != "" {
+		dur, err := parseOptionalDurationEnv("NRE_TRAFFIC_CLEANUP_INTERVAL", val)
+		if err != nil {
+			return Config{}, err
+		}
+		cfg.TrafficCleanupInterval = dur
 	}
 	if val := strings.TrimSpace(os.Getenv("NRE_HTTP_DIAL_TIMEOUT")); val != "" {
 		dur, err := parsePositiveDurationEnv("NRE_HTTP_DIAL_TIMEOUT", val)
@@ -372,6 +382,22 @@ func parseBool(value string) (bool, error) {
 	default:
 		return false, fmt.Errorf("unsupported boolean value %q", value)
 	}
+}
+
+func parseOptionalDurationEnv(name, value string) (time.Duration, error) {
+	trimmed := strings.ToLower(strings.TrimSpace(value))
+	switch trimmed {
+	case "", "0", "0s", "off", "false", "disabled", "disable":
+		return 0, nil
+	}
+	dur, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s: %w", name, err)
+	}
+	if dur < 0 {
+		return 0, fmt.Errorf("%s must be non-negative", name)
+	}
+	return dur, nil
 }
 
 func parsePositiveDurationEnv(name, value string) (time.Duration, error) {

@@ -56,6 +56,7 @@
           </div>
           <div class="tab-panel__actions">
             <button class="btn btn-secondary" type="button" :disabled="calibrateTrafficMutation.isPending.value" @click="calibrateTrafficSummary">校准</button>
+            <button class="btn btn-secondary" type="button" :disabled="calibrateTrafficMutation.isPending.value" @click="calibrateTrafficToZero">从现在归零</button>
             <button class="btn btn-secondary" type="button" :disabled="cleanupTrafficMutation.isPending.value" @click="cleanupTrafficHistory">清理</button>
           </div>
         </div>
@@ -76,6 +77,10 @@
           <div class="traffic-total">
             <span class="traffic-total__label">周期</span>
             <span class="traffic-total__value">{{ trafficSummary.cycle_start ? formatCycle(trafficSummary.cycle_start, trafficSummary.cycle_end) : '—' }}</span>
+          </div>
+          <div class="traffic-total">
+            <span class="traffic-total__label">计费方向</span>
+            <span class="traffic-total__value">{{ trafficDirectionLabel(trafficSummary.policy?.direction || trafficPolicyForm.direction) }}</span>
           </div>
         </div>
 
@@ -100,11 +105,26 @@
             <div class="traffic-trend">
               <div v-for="(point, index) in trafficTrendPoints" :key="trafficTrendKey(point, index)" class="traffic-trend__item">
                 <div class="traffic-trend__bars">
-                  <div class="traffic-trend__bar traffic-trend__bar--rx" :style="{ height: trendBarHeight(point.rx_bytes) }"></div>
-                  <div class="traffic-trend__bar traffic-trend__bar--tx" :style="{ height: trendBarHeight(point.tx_bytes) }"></div>
+                  <div class="traffic-trend__bar traffic-trend__bar--accounted" :style="{ height: trendBarHeight(point.accounted_bytes) }"></div>
                 </div>
                 <span class="traffic-trend__label">{{ formatTrendLabel(point.bucket_start) }}</span>
               </div>
+            </div>
+            <div v-if="trafficSummary.monthly_quota_bytes != null" class="traffic-trend__quota">月额度参考：{{ formatBytes(trafficSummary.monthly_quota_bytes) }}</div>
+          </div>
+
+          <div class="traffic-panel__section">
+            <div class="traffic-panel__section-header">
+              <h3>分项流量</h3>
+              <span>按当前计费方向统计</span>
+            </div>
+            <div class="traffic-breakdown">
+              <div v-for="row in trafficBreakdownRows" :key="trafficBreakdownKey(row)" class="traffic-breakdown__row">
+                <span class="traffic-breakdown__name">{{ trafficBreakdownLabel(row) }}</span>
+                <span class="traffic-breakdown__value">{{ formatBytes(row.accounted_bytes) }}</span>
+                <span class="traffic-breakdown__raw">RX {{ formatBytes(row.rx_bytes) }} / TX {{ formatBytes(row.tx_bytes) }}</span>
+              </div>
+              <p v-if="trafficBreakdownRows.length === 0" class="empty-hint">暂无分项流量</p>
             </div>
           </div>
 
@@ -331,6 +351,12 @@ const quotaUnits = [
 const trafficPolicyForm = ref(normalizeTrafficPolicyForm())
 const trafficSummary = computed(() => trafficSummaryQuery.data.value ?? {})
 const trafficTrendPoints = computed(() => normalizeTrafficTrendPoints(trafficTrendQuery.data.value ?? [], trafficPolicyForm.value.direction))
+const trafficBreakdownRows = computed(() => [
+  ...normalizeTrafficBreakdownRows(trafficSummary.value.aggregates),
+  ...normalizeTrafficBreakdownRows(trafficSummary.value.http_rules),
+  ...normalizeTrafficBreakdownRows(trafficSummary.value.l4_rules),
+  ...normalizeTrafficBreakdownRows(trafficSummary.value.relay_listeners)
+])
 
 const activeTab = ref('http')
 const tabs = computed(() => [
@@ -427,6 +453,11 @@ async function calibrateTrafficSummary() {
   await calibrateTrafficMutation.mutateAsync({ used_bytes: calibratedBytes })
 }
 
+async function calibrateTrafficToZero() {
+  if (!agent.value || !trafficStatsEnabled.value) return
+  await calibrateTrafficMutation.mutateAsync({ used_bytes: 0 })
+}
+
 async function cleanupTrafficHistory() {
   if (!agent.value || !trafficStatsEnabled.value) return
   if (typeof window !== 'undefined' && !window.confirm('确认清理当前保留策略之外的流量历史？')) return
@@ -510,6 +541,54 @@ function normalizeByteUnit(value) {
   }
 }
 
+function normalizeTrafficBreakdownRows(rows) {
+  if (!Array.isArray(rows)) return []
+  return rows.map((row) => ({
+    scope_type: String(row?.scope_type || ''),
+    scope_id: String(row?.scope_id || ''),
+    rx_bytes: Number(row?.rx_bytes) || 0,
+    tx_bytes: Number(row?.tx_bytes) || 0,
+    accounted_bytes: Number(row?.accounted_bytes) || 0
+  })).filter((row) => row.accounted_bytes > 0 || row.rx_bytes > 0 || row.tx_bytes > 0)
+}
+
+function trafficBreakdownKey(row) {
+  return `${row.scope_type || 'scope'}-${row.scope_id || 'aggregate'}`
+}
+
+function trafficBreakdownLabel(row) {
+  switch (row.scope_type) {
+    case 'http':
+      return 'HTTP'
+    case 'l4':
+      return 'L4'
+    case 'relay':
+      return 'Relay'
+    case 'http_rule':
+      return `HTTP 规则 #${row.scope_id}`
+    case 'l4_rule':
+      return `L4 规则 #${row.scope_id}`
+    case 'relay_listener':
+      return `Relay 监听 #${row.scope_id}`
+    default:
+      return row.scope_id ? `${row.scope_type} #${row.scope_id}` : row.scope_type || '-'
+  }
+}
+
+function trafficDirectionLabel(direction) {
+  switch (String(direction || 'both').toLowerCase()) {
+    case 'rx':
+      return '入站'
+    case 'tx':
+      return '出站'
+    case 'max':
+      return '取最大值'
+    case 'both':
+    default:
+      return '双向'
+  }
+}
+
 function isBlankOrPositiveInteger(value) {
   if (value == null || value === '') return true
   return isPositiveInteger(value)
@@ -549,7 +628,7 @@ function trafficTrendKey(point, index) {
 
 function trendBarHeight(bytes) {
   const value = Number(bytes) || 0
-  const max = Math.max(...trafficTrendPoints.value.map((point) => Math.max(point.rx_bytes, point.tx_bytes)), 1)
+  const max = Math.max(...trafficTrendPoints.value.map((point) => point.accounted_bytes), 1)
   const ratio = Math.max(0.08, value / max)
   return `${Math.round(ratio * 100)}%`
 }
@@ -644,7 +723,7 @@ function timeAgo(date) {
 .stat-mini__value { display: block; font-size: 1.5rem; font-weight: 700; color: var(--color-text-primary); }
 .stat-mini__label { font-size: 0.75rem; color: var(--color-text-tertiary); }
 .traffic-summary { margin-bottom: 1.5rem; padding: 1rem; background: var(--color-bg-surface); border: 1px solid var(--color-border-default); border-radius: var(--radius-lg); }
-.traffic-summary__cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.75rem; margin-bottom: 1rem; }
+.traffic-summary__cards { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 0.75rem; margin-bottom: 1rem; }
 .traffic-total { min-width: 0; padding: 0.75rem; background: var(--color-bg-subtle); border-radius: var(--radius-md); }
 .traffic-total__label { display: block; margin-bottom: 0.25rem; color: var(--color-text-tertiary); font-size: 0.75rem; }
 .traffic-total__value { display: block; color: var(--color-text-primary); font-size: 1.25rem; font-weight: 700; font-variant-numeric: tabular-nums; }
@@ -672,9 +751,14 @@ function timeAgo(date) {
 .traffic-trend__item { display: flex; flex-direction: column; align-items: center; gap: 0.35rem; min-width: 0; }
 .traffic-trend__bars { display: flex; align-items: end; gap: 0.2rem; width: 100%; height: 120px; padding: 0 0.125rem; }
 .traffic-trend__bar { flex: 1; min-height: 6px; border-radius: var(--radius-sm) var(--radius-sm) 0 0; }
-.traffic-trend__bar--rx { background: var(--color-primary-200); }
-.traffic-trend__bar--tx { background: var(--color-primary); }
+.traffic-trend__bar--accounted { background: var(--color-primary); }
 .traffic-trend__label { color: var(--color-text-tertiary); font-size: 0.6875rem; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; width: 100%; }
+.traffic-trend__quota { margin-top: 0.5rem; color: var(--color-text-tertiary); font-size: 0.75rem; }
+.traffic-breakdown { display: flex; flex-direction: column; gap: 0.35rem; }
+.traffic-breakdown__row { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(10rem, auto); gap: 0.75rem; align-items: center; padding: 0.55rem 0.65rem; background: var(--color-bg-subtle); border-radius: var(--radius-md); font-size: 0.8125rem; }
+.traffic-breakdown__name { min-width: 0; color: var(--color-text-primary); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.traffic-breakdown__value { color: var(--color-text-primary); font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.traffic-breakdown__raw { color: var(--color-text-tertiary); font-family: var(--font-mono); font-size: 0.75rem; text-align: right; white-space: nowrap; }
 .traffic-policy-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem; }
 .traffic-setting { display: flex; flex-direction: column; gap: 0.35rem; min-width: 0; }
 .traffic-setting--switch { flex-direction: row; align-items: center; justify-content: space-between; }
@@ -715,5 +799,7 @@ function timeAgo(date) {
   .tab-panel__header { flex-direction: column; }
   .agent-detail__tabs { overflow-x: auto; }
   .tab-btn { flex: 0 0 auto; }
+  .traffic-breakdown__row { grid-template-columns: 1fr auto; }
+  .traffic-breakdown__raw { grid-column: 1 / -1; text-align: left; }
 }
 </style>

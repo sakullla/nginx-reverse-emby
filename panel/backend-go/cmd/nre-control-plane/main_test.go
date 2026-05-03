@@ -621,6 +621,69 @@ func TestStartManagedCertificateAutoRenewLoopRunsInitialPass(t *testing.T) {
 	}
 }
 
+func TestStartTrafficCleanupLoopRunsInitialPass(t *testing.T) {
+	cfg := config.Default()
+	cfg.TrafficStatsEnabled = true
+	cfg.TrafficCleanupInterval = time.Hour
+
+	previousRunner := runTrafficCleanupPass
+	previousDelay := trafficCleanupInitialDelay
+	t.Cleanup(func() {
+		runTrafficCleanupPass = previousRunner
+		trafficCleanupInitialDelay = previousDelay
+	})
+
+	called := make(chan struct{}, 1)
+	runTrafficCleanupPass = func(context.Context, config.Config) error {
+		select {
+		case called <- struct{}{}:
+		default:
+		}
+		return nil
+	}
+	trafficCleanupInitialDelay = 0
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	startTrafficCleanupLoop(ctx, cfg, nil)
+
+	select {
+	case <-called:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for initial traffic cleanup pass")
+	}
+}
+
+func TestStartTrafficCleanupLoopSkipsWhenDisabled(t *testing.T) {
+	cfg := config.Default()
+	cfg.TrafficStatsEnabled = false
+	cfg.TrafficCleanupInterval = time.Hour
+
+	previousRunner := runTrafficCleanupPass
+	previousDelay := trafficCleanupInitialDelay
+	t.Cleanup(func() {
+		runTrafficCleanupPass = previousRunner
+		trafficCleanupInitialDelay = previousDelay
+	})
+
+	called := make(chan struct{}, 1)
+	runTrafficCleanupPass = func(context.Context, config.Config) error {
+		called <- struct{}{}
+		return nil
+	}
+	trafficCleanupInitialDelay = 0
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	startTrafficCleanupLoop(ctx, cfg, nil)
+
+	select {
+	case <-called:
+		t.Fatal("traffic cleanup pass ran while traffic stats disabled")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
 func TestLogPanelTokenWarningWarnsWhenPanelTokenMissing(t *testing.T) {
 	var buffer bytes.Buffer
 	logger := log.New(&buffer, "", 0)

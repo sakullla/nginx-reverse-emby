@@ -130,7 +130,8 @@ curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/dep
 | `NRE_DATABASE_DRIVER` | `sqlite` | 控制面数据库驱动；Docker Compose 默认设为 `postgres`，可选 `sqlite`、`postgres`、`mysql` |
 | `NRE_DATABASE_DSN` | - | 控制面数据库 DSN；SQLite 为空时使用 `NRE_DATA_DIR/panel.db` |
 | `NRE_HEARTBEAT_INTERVAL` | `30s` | 心跳同步间隔（Go duration 格式） |
-| `NRE_TRAFFIC_STATS_ENABLED` | `true` | 是否启用 Agent 侧 HTTP/L4/Relay 流量统计；关闭后不采集也不上报流量 stats |
+| `NRE_TRAFFIC_STATS_ENABLED` | `true` | 是否启用 HTTP/L4/Relay 流量统计模块；关闭后控制面不迁移 traffic history 表、不持久化 stats、不执行额度阻断 |
+| `NRE_TRAFFIC_CLEANUP_INTERVAL` | `24h` | 主动清理 traffic history 的周期；设为 `0`、`off` 或 `disabled` 可关闭，仅在 `NRE_TRAFFIC_STATS_ENABLED=true` 时生效 |
 | `NRE_MANAGED_CERT_RENEW_INTERVAL` | `24h` | 托管证书续期检查间隔 |
 | `ACME_DNS_PROVIDER` | - | DNS 验证提供商（如 `cf`） |
 | `CF_Token` / `CF_TOKEN` | - | Cloudflare API Token |
@@ -138,7 +139,9 @@ curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/dep
 > 所有 `NRE_` 前缀的环境变量同时作用于 Master 内嵌 local agent 和独立部署的 `go-agent`。
 > 时间类变量使用 Go `time.ParseDuration` 格式（如 `500ms`、`5s`、`2m`）。
 
-流量统计以最新累计计数展示到节点、HTTP 规则、L4 规则和 Relay 监听器。远程节点可在面板中配置 `traffic_stats_interval`，取值为 Go duration 格式（如 `30s`、`1m`、`5m`）。该周期只控制心跳 stats 上报频率，不会重置计数器，也不会创建历史分桶。
+流量统计会持久化 raw cursor、小时桶、日汇总、月汇总、节点策略、校准基线和事件，并在节点详情中展示周期用量、趋势、HTTP 规则、L4 规则和 Relay 监听器分项。远程节点可在面板中配置 `traffic_stats_interval`，取值为 Go duration 格式（如 `30s`、`1m`、`5m`）。该周期只控制心跳 stats 上报频率，不会重置计数器。
+
+节点详情的流量策略支持配置计费方向、每月起始日期、月额度、超额阻断、保留周期、校准当前周期初始值，以及手动清理。月额度在数据库中按 bytes 保存，面板支持以 KiB/MiB/GiB/TiB 等单位录入和展示。主动清理按每个节点自己的保留策略执行，不删除当前 raw cursor、当前周期校准基线或节点策略。
 
 如不需要流量统计或希望降低数据库写入量，可设置：
 

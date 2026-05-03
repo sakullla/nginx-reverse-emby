@@ -64,7 +64,7 @@ func mergeRuntimeStateWithSyncRequest(state RuntimeState, request SyncRequest) R
 	if len(state.ManagedCertificateReports) == 0 && len(request.ManagedCertificateReports) > 0 {
 		state.ManagedCertificateReports = append([]storage.ManagedCertificateReport(nil), request.ManagedCertificateReports...)
 	}
-	if request.Stats != nil {
+	if request.StatsPresent {
 		statsJSON, err := json.Marshal(request.Stats)
 		if err == nil {
 			if state.Metadata == nil {

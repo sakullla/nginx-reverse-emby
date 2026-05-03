@@ -15,6 +15,7 @@ import (
 
 type Snapshot = model.Snapshot
 type RuntimeState = model.RuntimeState
+type AgentConfig = model.AgentConfig
 type VersionPackage = model.VersionPackage
 type HTTPHeader = model.HTTPHeader
 type HTTPBackend = model.HTTPBackend

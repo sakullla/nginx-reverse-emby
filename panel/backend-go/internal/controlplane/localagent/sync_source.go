@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"sync"
 
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
@@ -16,6 +17,7 @@ type SyncRequest struct {
 	LastApplyStatus           string
 	LastApplyMessage          string
 	Stats                     map[string]any
+	StatsPresent              bool
 	ManagedCertificateReports []storage.ManagedCertificateReport
 }
 
@@ -23,29 +25,63 @@ type SnapshotStore interface {
 	LoadLocalSnapshot(context.Context, string) (storage.Snapshot, error)
 }
 
+type trafficSummaryService interface {
+	Summary(context.Context, string) (service.TrafficSummary, error)
+}
+
 type SyncSource struct {
-	store   SnapshotStore
-	agentID string
-	bridge  *syncRequestBridge
+	store               SnapshotStore
+	agentID             string
+	bridge              *syncRequestBridge
+	trafficService      trafficSummaryService
+	trafficStatsEnabled bool
 }
 
 func NewSyncSource(store SnapshotStore, agentID string) *SyncSource {
-	return &SyncSource{store: store, agentID: agentID}
+	return newSyncSourceWithBridge(store, agentID, nil)
 }
 
 func newSyncSourceWithBridge(store SnapshotStore, agentID string, bridge *syncRequestBridge) *SyncSource {
 	return &SyncSource{
-		store:   store,
-		agentID: agentID,
-		bridge:  bridge,
+		store:               store,
+		agentID:             agentID,
+		bridge:              bridge,
+		trafficStatsEnabled: true,
 	}
+}
+
+func (s *SyncSource) SetTrafficService(enabled bool, trafficService trafficSummaryService) {
+	s.trafficStatsEnabled = enabled
+	s.trafficService = trafficService
 }
 
 func (s *SyncSource) Sync(ctx context.Context, request SyncRequest) (Snapshot, error) {
 	if s.bridge != nil {
 		s.bridge.Store(request)
 	}
-	return s.store.LoadLocalSnapshot(ctx, s.agentID)
+	snapshot, err := s.store.LoadLocalSnapshot(ctx, s.agentID)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	snapshot.AgentConfig.TrafficStatsEnabled = boolPtr(s.trafficStatsEnabled)
+	if !s.trafficStatsEnabled || s.trafficService == nil {
+		snapshot.AgentConfig.TrafficBlocked = false
+		snapshot.AgentConfig.TrafficBlockReason = ""
+		return snapshot, nil
+	}
+	summary, err := s.trafficService.Summary(ctx, s.agentID)
+	if err != nil {
+		snapshot.AgentConfig.TrafficBlocked = false
+		snapshot.AgentConfig.TrafficBlockReason = ""
+		return snapshot, nil
+	}
+	snapshot.AgentConfig.TrafficBlocked = summary.Blocked
+	snapshot.AgentConfig.TrafficBlockReason = summary.BlockReason
+	return snapshot, nil
+}
+
+func boolPtr(value bool) *bool {
+	return &value
 }
 
 type syncRequestBridge struct {
