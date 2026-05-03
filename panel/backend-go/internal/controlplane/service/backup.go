@@ -21,14 +21,16 @@ import (
 )
 
 const (
-	backupManifestFile        = "manifest.json"
-	backupAgentsFile          = "agents.json"
-	backupHTTPRulesFile       = "http_rules.json"
-	backupL4RulesFile         = "l4_rules.json"
-	backupRelayListenersFile  = "relay_listeners.json"
-	backupCertificatesFile    = "certificates.json"
-	backupVersionPoliciesFile = "version_policies.json"
-	backupMaterialPrefix      = "certificate_material"
+	backupManifestFile         = "manifest.json"
+	backupAgentsFile           = "agents.json"
+	backupHTTPRulesFile        = "http_rules.json"
+	backupL4RulesFile          = "l4_rules.json"
+	backupRelayListenersFile   = "relay_listeners.json"
+	backupCertificatesFile     = "certificates.json"
+	backupVersionPoliciesFile  = "version_policies.json"
+	backupTrafficPoliciesFile  = "traffic_policies.json"
+	backupTrafficBaselinesFile = "traffic_baselines.json"
+	backupMaterialPrefix       = "certificate_material"
 )
 
 type backupService struct {
@@ -43,25 +45,33 @@ type backupStore interface {
 	storage.Store
 	DeleteAgent(context.Context, string) error
 	SaveHTTPRules(context.Context, string, []storage.HTTPRuleRow) error
+	ListTrafficPolicies(context.Context) ([]storage.AgentTrafficPolicyRow, error)
+	ListTrafficBaselines(context.Context) ([]storage.AgentTrafficBaselineRow, error)
+	SaveTrafficPolicy(context.Context, storage.AgentTrafficPolicyRow) error
+	SaveTrafficBaseline(context.Context, storage.AgentTrafficBaselineRow) error
 }
 
 type BackupExportOptions struct {
-	Agents          bool `json:"agents"`
-	HTTPRules       bool `json:"http_rules"`
-	L4Rules         bool `json:"l4_rules"`
-	RelayListeners  bool `json:"relay_listeners"`
-	Certificates    bool `json:"certificates"`
-	VersionPolicies bool `json:"version_policies"`
+	Agents           bool `json:"agents"`
+	HTTPRules        bool `json:"http_rules"`
+	L4Rules          bool `json:"l4_rules"`
+	RelayListeners   bool `json:"relay_listeners"`
+	Certificates     bool `json:"certificates"`
+	VersionPolicies  bool `json:"version_policies"`
+	TrafficPolicies  bool `json:"traffic_policies"`
+	TrafficBaselines bool `json:"traffic_baselines"`
 }
 
 func AllExportOptions() BackupExportOptions {
 	return BackupExportOptions{
-		Agents:          true,
-		HTTPRules:       true,
-		L4Rules:         true,
-		RelayListeners:  true,
-		Certificates:    true,
-		VersionPolicies: true,
+		Agents:           true,
+		HTTPRules:        true,
+		L4Rules:          true,
+		RelayListeners:   true,
+		Certificates:     true,
+		VersionPolicies:  true,
+		TrafficPolicies:  true,
+		TrafficBaselines: true,
 	}
 }
 
@@ -110,13 +120,21 @@ func (s *backupService) ExportSelective(ctx context.Context, opts BackupExportOp
 	if !opts.VersionPolicies {
 		bundle.VersionPolicies = nil
 	}
+	if !opts.TrafficPolicies {
+		bundle.TrafficPolicies = nil
+	}
+	if !opts.TrafficBaselines {
+		bundle.TrafficBaselines = nil
+	}
 	bundle.Manifest.Counts = BackupCounts{
-		Agents:          len(bundle.Agents),
-		HTTPRules:       len(bundle.HTTPRules),
-		L4Rules:         len(bundle.L4Rules),
-		RelayListeners:  len(bundle.RelayListeners),
-		Certificates:    len(bundle.Certificates),
-		VersionPolicies: len(bundle.VersionPolicies),
+		Agents:           len(bundle.Agents),
+		HTTPRules:        len(bundle.HTTPRules),
+		L4Rules:          len(bundle.L4Rules),
+		RelayListeners:   len(bundle.RelayListeners),
+		Certificates:     len(bundle.Certificates),
+		VersionPolicies:  len(bundle.VersionPolicies),
+		TrafficPolicies:  len(bundle.TrafficPolicies),
+		TrafficBaselines: len(bundle.TrafficBaselines),
 	}
 	bundle.Manifest.IncludesCertificates = len(bundle.Materials) > 0
 	archive, err := encodeBackupBundle(bundle)
@@ -309,6 +327,22 @@ func (s *backupService) Preview(ctx context.Context, archive []byte) (BackupImpo
 		}
 		result.addImported("version_policy", key)
 	}
+	for _, item := range bundle.TrafficPolicies {
+		key := strings.TrimSpace(item.AgentID)
+		if _, ok := resolveAgentID(item.AgentID, agentIDMap, s.cfg); !ok {
+			result.addSkippedInvalid("traffic_policy", key, "traffic policy references unknown agent")
+			continue
+		}
+		result.addImported("traffic_policy", key)
+	}
+	for _, item := range bundle.TrafficBaselines {
+		key := trafficBaselineKey(item.AgentID, item.CycleStart)
+		if _, ok := resolveAgentID(item.AgentID, agentIDMap, s.cfg); !ok {
+			result.addSkippedInvalid("traffic_baseline", key, "traffic baseline references unknown agent")
+			continue
+		}
+		result.addImported("traffic_baseline", key)
+	}
 	return result, nil
 }
 
@@ -490,13 +524,15 @@ func (s *backupService) exportBundle(ctx context.Context) (BackupBundle, error) 
 	}
 
 	bundle := BackupBundle{
-		Agents:          make([]BackupAgent, 0, len(agentRows)),
-		HTTPRules:       []BackupHTTPRule{},
-		L4Rules:         []BackupL4Rule{},
-		RelayListeners:  []BackupRelayListener{},
-		Certificates:    []BackupCertificate{},
-		VersionPolicies: []BackupVersionPolicy{},
-		Materials:       []BackupCertificateFile{},
+		Agents:           make([]BackupAgent, 0, len(agentRows)),
+		HTTPRules:        []BackupHTTPRule{},
+		L4Rules:          []BackupL4Rule{},
+		RelayListeners:   []BackupRelayListener{},
+		Certificates:     []BackupCertificate{},
+		VersionPolicies:  []BackupVersionPolicy{},
+		TrafficPolicies:  []BackupTrafficPolicy{},
+		TrafficBaselines: []BackupTrafficBaseline{},
+		Materials:        []BackupCertificateFile{},
 	}
 
 	for _, row := range agentRows {
@@ -557,6 +593,22 @@ func (s *backupService) exportBundle(ctx context.Context) (BackupBundle, error) 
 		bundle.VersionPolicies = append(bundle.VersionPolicies, versionPolicyFromRow(row))
 	}
 
+	trafficPolicies, err := s.store.ListTrafficPolicies(ctx)
+	if err != nil {
+		return BackupBundle{}, err
+	}
+	for _, row := range trafficPolicies {
+		bundle.TrafficPolicies = append(bundle.TrafficPolicies, backupTrafficPolicyFromRow(row))
+	}
+
+	trafficBaselines, err := s.store.ListTrafficBaselines(ctx)
+	if err != nil {
+		return BackupBundle{}, err
+	}
+	for _, row := range trafficBaselines {
+		bundle.TrafficBaselines = append(bundle.TrafficBaselines, backupTrafficBaselineFromRow(row))
+	}
+
 	bundle.Manifest = BackupManifest{
 		PackageVersion:       BackupPackageVersion,
 		SourceArchitecture:   BackupSourceArchitectureGo,
@@ -565,12 +617,14 @@ func (s *backupService) exportBundle(ctx context.Context) (BackupBundle, error) 
 		ExportedAt:           s.now().UTC(),
 		IncludesCertificates: len(bundle.Materials) > 0,
 		Counts: BackupCounts{
-			Agents:          len(bundle.Agents),
-			HTTPRules:       len(bundle.HTTPRules),
-			L4Rules:         len(bundle.L4Rules),
-			RelayListeners:  len(bundle.RelayListeners),
-			Certificates:    len(bundle.Certificates),
-			VersionPolicies: len(bundle.VersionPolicies),
+			Agents:           len(bundle.Agents),
+			HTTPRules:        len(bundle.HTTPRules),
+			L4Rules:          len(bundle.L4Rules),
+			RelayListeners:   len(bundle.RelayListeners),
+			Certificates:     len(bundle.Certificates),
+			VersionPolicies:  len(bundle.VersionPolicies),
+			TrafficPolicies:  len(bundle.TrafficPolicies),
+			TrafficBaselines: len(bundle.TrafficBaselines),
 		},
 	}
 	return bundle, nil
@@ -623,6 +677,13 @@ func (s *backupService) importBundle(ctx context.Context, bundle BackupBundle) (
 		return BackupImportResult{}, err
 	}
 	if err := s.importVersionPolicies(ctx, policyRows, bundle.VersionPolicies, &result); err != nil {
+		return BackupImportResult{}, err
+	}
+
+	if err := s.importTrafficPolicies(ctx, bundle.TrafficPolicies, agentIDMap, &result); err != nil {
+		return BackupImportResult{}, err
+	}
+	if err := s.importTrafficBaselines(ctx, bundle.TrafficBaselines, agentIDMap, &result); err != nil {
 		return BackupImportResult{}, err
 	}
 
@@ -978,6 +1039,42 @@ func (s *backupService) importVersionPolicies(ctx context.Context, existing []st
 	return nil
 }
 
+func (s *backupService) importTrafficPolicies(ctx context.Context, incoming []BackupTrafficPolicy, agentIDMap map[string]string, result *BackupImportResult) error {
+	for _, item := range incoming {
+		key := strings.TrimSpace(item.AgentID)
+		resolvedAgentID, ok := resolveAgentID(item.AgentID, agentIDMap, s.cfg)
+		if !ok {
+			result.addSkippedInvalid("traffic_policy", key, "traffic policy references unknown agent")
+			continue
+		}
+		row := trafficPolicyRowFromBackup(item)
+		row.AgentID = resolvedAgentID
+		if err := s.store.SaveTrafficPolicy(ctx, row); err != nil {
+			return err
+		}
+		result.addImported("traffic_policy", key)
+	}
+	return nil
+}
+
+func (s *backupService) importTrafficBaselines(ctx context.Context, incoming []BackupTrafficBaseline, agentIDMap map[string]string, result *BackupImportResult) error {
+	for _, item := range incoming {
+		key := trafficBaselineKey(item.AgentID, item.CycleStart)
+		resolvedAgentID, ok := resolveAgentID(item.AgentID, agentIDMap, s.cfg)
+		if !ok {
+			result.addSkippedInvalid("traffic_baseline", key, "traffic baseline references unknown agent")
+			continue
+		}
+		row := trafficBaselineRowFromBackup(item)
+		row.AgentID = resolvedAgentID
+		if err := s.store.SaveTrafficBaseline(ctx, row); err != nil {
+			return err
+		}
+		result.addImported("traffic_baseline", key)
+	}
+	return nil
+}
+
 func (s *backupService) importHTTPRules(ctx context.Context, incoming []BackupHTTPRule, agentIDMap map[string]string, listenerIDMap map[int]int, result *BackupImportResult, modifiedAgents modifiedAgentRevisions, allocator *configIdentityAllocator) error {
 	ruleSvc := &ruleService{cfg: s.cfg, store: s.store}
 	knownAgentIDs, err := allKnownAgentIDs(ctx, s.cfg, s.store)
@@ -1198,6 +1295,62 @@ func backupAgentFromRow(row storage.AgentRow) BackupAgent {
 	}
 }
 
+func backupTrafficPolicyFromRow(row storage.AgentTrafficPolicyRow) BackupTrafficPolicy {
+	return BackupTrafficPolicy{
+		AgentID:                row.AgentID,
+		Direction:              row.Direction,
+		CycleStartDay:          row.CycleStartDay,
+		MonthlyQuotaBytes:      row.MonthlyQuotaBytes,
+		BlockWhenExceeded:      row.BlockWhenExceeded,
+		HourlyRetentionDays:    row.HourlyRetentionDays,
+		DailyRetentionMonths:   row.DailyRetentionMonths,
+		MonthlyRetentionMonths: row.MonthlyRetentionMonths,
+		UpdatedAt:              row.UpdatedAt,
+		CreatedAt:              row.CreatedAt,
+	}
+}
+
+func trafficPolicyRowFromBackup(item BackupTrafficPolicy) storage.AgentTrafficPolicyRow {
+	return storage.AgentTrafficPolicyRow{
+		AgentID:                item.AgentID,
+		Direction:              item.Direction,
+		CycleStartDay:          item.CycleStartDay,
+		MonthlyQuotaBytes:      item.MonthlyQuotaBytes,
+		BlockWhenExceeded:      item.BlockWhenExceeded,
+		HourlyRetentionDays:    item.HourlyRetentionDays,
+		DailyRetentionMonths:   item.DailyRetentionMonths,
+		MonthlyRetentionMonths: item.MonthlyRetentionMonths,
+		UpdatedAt:              item.UpdatedAt,
+		CreatedAt:              item.CreatedAt,
+	}
+}
+
+func backupTrafficBaselineFromRow(row storage.AgentTrafficBaselineRow) BackupTrafficBaseline {
+	return BackupTrafficBaseline{
+		AgentID:           row.AgentID,
+		CycleStart:        row.CycleStart,
+		RawRXBytes:        row.RawRXBytes,
+		RawTXBytes:        row.RawTXBytes,
+		RawAccountedBytes: row.RawAccountedBytes,
+		AdjustUsedBytes:   row.AdjustUsedBytes,
+		UpdatedAt:         row.UpdatedAt,
+		CreatedAt:         row.CreatedAt,
+	}
+}
+
+func trafficBaselineRowFromBackup(item BackupTrafficBaseline) storage.AgentTrafficBaselineRow {
+	return storage.AgentTrafficBaselineRow{
+		AgentID:           item.AgentID,
+		CycleStart:        item.CycleStart,
+		RawRXBytes:        item.RawRXBytes,
+		RawTXBytes:        item.RawTXBytes,
+		RawAccountedBytes: item.RawAccountedBytes,
+		AdjustUsedBytes:   item.AdjustUsedBytes,
+		UpdatedAt:         item.UpdatedAt,
+		CreatedAt:         item.CreatedAt,
+	}
+}
+
 func encodeBackupBundle(bundle BackupBundle) ([]byte, error) {
 	var buffer bytes.Buffer
 	gz := gzip.NewWriter(&buffer)
@@ -1221,6 +1374,12 @@ func encodeBackupBundle(bundle BackupBundle) ([]byte, error) {
 		return nil, err
 	}
 	if err := writeBackupJSONFile(tw, backupVersionPoliciesFile, bundle.VersionPolicies); err != nil {
+		return nil, err
+	}
+	if err := writeBackupJSONFile(tw, backupTrafficPoliciesFile, bundle.TrafficPolicies); err != nil {
+		return nil, err
+	}
+	if err := writeBackupJSONFile(tw, backupTrafficBaselinesFile, bundle.TrafficBaselines); err != nil {
 		return nil, err
 	}
 	for _, material := range bundle.Materials {
@@ -1295,6 +1454,14 @@ func decodeBackupBundle(archive []byte) (BackupBundle, error) {
 		case backupVersionPoliciesFile:
 			if err := json.Unmarshal(content, &bundle.VersionPolicies); err != nil {
 				return BackupBundle{}, fmt.Errorf("%w: invalid version_policies.json", ErrInvalidArgument)
+			}
+		case backupTrafficPoliciesFile:
+			if err := json.Unmarshal(content, &bundle.TrafficPolicies); err != nil {
+				return BackupBundle{}, fmt.Errorf("%w: invalid traffic_policies.json", ErrInvalidArgument)
+			}
+		case backupTrafficBaselinesFile:
+			if err := json.Unmarshal(content, &bundle.TrafficBaselines); err != nil {
+				return BackupBundle{}, fmt.Errorf("%w: invalid traffic_baselines.json", ErrInvalidArgument)
 			}
 		default:
 			if !strings.HasPrefix(name, backupMaterialPrefix+"/") {
@@ -1389,6 +1556,10 @@ func httpRuleConflictKey(agentID string, frontendURL string) string {
 
 func l4ConflictKey(agentID string, protocol string, listenHost string, listenPort int) string {
 	return strings.TrimSpace(agentID) + "|" + strings.ToLower(strings.TrimSpace(protocol)) + "|" + strings.TrimSpace(listenHost) + "|" + fmt.Sprintf("%d", listenPort)
+}
+
+func trafficBaselineKey(agentID string, cycleStart string) string {
+	return strings.TrimSpace(agentID) + "|" + strings.TrimSpace(cycleStart)
 }
 
 func resolveAgentID(agentID string, agentIDMap map[string]string, cfg config.Config) (string, bool) {
@@ -1639,6 +1810,8 @@ type backupStateSnapshot struct {
 	relayByAgentID       map[string][]storage.RelayListenerRow
 	certificates         []storage.ManagedCertificateRow
 	versionPolicies      []storage.VersionPolicyRow
+	trafficPolicies      []storage.AgentTrafficPolicyRow
+	trafficBaselines     []storage.AgentTrafficBaselineRow
 	certificateMaterials map[string]storage.ManagedCertificateBundle
 }
 
@@ -1694,6 +1867,14 @@ func (s *backupService) captureState(ctx context.Context) (backupStateSnapshot, 
 	if err != nil {
 		return backupStateSnapshot{}, err
 	}
+	trafficPolicies, err := s.store.ListTrafficPolicies(ctx)
+	if err != nil {
+		return backupStateSnapshot{}, err
+	}
+	trafficBaselines, err := s.store.ListTrafficBaselines(ctx)
+	if err != nil {
+		return backupStateSnapshot{}, err
+	}
 
 	return backupStateSnapshot{
 		agents:               append([]storage.AgentRow(nil), agents...),
@@ -1702,6 +1883,8 @@ func (s *backupService) captureState(ctx context.Context) (backupStateSnapshot, 
 		relayByAgentID:       relayByAgentID,
 		certificates:         append([]storage.ManagedCertificateRow(nil), certs...),
 		versionPolicies:      append([]storage.VersionPolicyRow(nil), policies...),
+		trafficPolicies:      append([]storage.AgentTrafficPolicyRow(nil), trafficPolicies...),
+		trafficBaselines:     append([]storage.AgentTrafficBaselineRow(nil), trafficBaselines...),
 		certificateMaterials: certificateMaterials,
 	}, nil
 }
@@ -1758,6 +1941,16 @@ func (s *backupService) restoreState(ctx context.Context, snapshot backupStateSn
 
 	if err := s.store.SaveVersionPolicies(ctx, snapshot.versionPolicies); err != nil {
 		return err
+	}
+	for _, row := range snapshot.trafficPolicies {
+		if err := s.store.SaveTrafficPolicy(ctx, row); err != nil {
+			return err
+		}
+	}
+	for _, row := range snapshot.trafficBaselines {
+		if err := s.store.SaveTrafficBaseline(ctx, row); err != nil {
+			return err
+		}
 	}
 
 	originalAgents := map[string]storage.AgentRow{}

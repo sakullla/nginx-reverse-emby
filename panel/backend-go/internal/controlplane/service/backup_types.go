@@ -19,23 +19,27 @@ type BackupManifest struct {
 }
 
 type BackupCounts struct {
-	Agents          int `json:"agents"`
-	HTTPRules       int `json:"http_rules"`
-	L4Rules         int `json:"l4_rules"`
-	RelayListeners  int `json:"relay_listeners"`
-	Certificates    int `json:"certificates"`
-	VersionPolicies int `json:"version_policies"`
+	Agents           int `json:"agents"`
+	HTTPRules        int `json:"http_rules"`
+	L4Rules          int `json:"l4_rules"`
+	RelayListeners   int `json:"relay_listeners"`
+	Certificates     int `json:"certificates"`
+	VersionPolicies  int `json:"version_policies"`
+	TrafficPolicies  int `json:"traffic_policies,omitempty"`
+	TrafficBaselines int `json:"traffic_baselines,omitempty"`
 }
 
 type BackupBundle struct {
-	Manifest        BackupManifest          `json:"manifest"`
-	Agents          []BackupAgent           `json:"agents"`
-	HTTPRules       []BackupHTTPRule        `json:"http_rules"`
-	L4Rules         []BackupL4Rule          `json:"l4_rules"`
-	RelayListeners  []BackupRelayListener   `json:"relay_listeners"`
-	Certificates    []BackupCertificate     `json:"certificates"`
-	VersionPolicies []BackupVersionPolicy   `json:"version_policies"`
-	Materials       []BackupCertificateFile `json:"-"`
+	Manifest         BackupManifest          `json:"manifest"`
+	Agents           []BackupAgent           `json:"agents"`
+	HTTPRules        []BackupHTTPRule        `json:"http_rules"`
+	L4Rules          []BackupL4Rule          `json:"l4_rules"`
+	RelayListeners   []BackupRelayListener   `json:"relay_listeners"`
+	Certificates     []BackupCertificate     `json:"certificates"`
+	VersionPolicies  []BackupVersionPolicy   `json:"version_policies"`
+	TrafficPolicies  []BackupTrafficPolicy   `json:"traffic_policies,omitempty"`
+	TrafficBaselines []BackupTrafficBaseline `json:"traffic_baselines,omitempty"`
+	Materials        []BackupCertificateFile `json:"-"`
 }
 
 type BackupAgent struct {
@@ -66,6 +70,30 @@ type BackupL4Rule = L4Rule
 type BackupRelayListener = RelayListener
 type BackupCertificate = ManagedCertificate
 type BackupVersionPolicy = VersionPolicy
+
+type BackupTrafficPolicy struct {
+	AgentID                string `json:"agent_id"`
+	Direction              string `json:"direction"`
+	CycleStartDay          int    `json:"cycle_start_day"`
+	MonthlyQuotaBytes      *int64 `json:"monthly_quota_bytes,omitempty"`
+	BlockWhenExceeded      bool   `json:"block_when_exceeded"`
+	HourlyRetentionDays    int    `json:"hourly_retention_days"`
+	DailyRetentionMonths   int    `json:"daily_retention_months"`
+	MonthlyRetentionMonths *int   `json:"monthly_retention_months,omitempty"`
+	UpdatedAt              string `json:"updated_at,omitempty"`
+	CreatedAt              string `json:"created_at,omitempty"`
+}
+
+type BackupTrafficBaseline struct {
+	AgentID           string `json:"agent_id"`
+	CycleStart        string `json:"cycle_start"`
+	RawRXBytes        uint64 `json:"raw_rx_bytes"`
+	RawTXBytes        uint64 `json:"raw_tx_bytes"`
+	RawAccountedBytes uint64 `json:"raw_accounted_bytes"`
+	AdjustUsedBytes   int64  `json:"adjust_used_bytes"`
+	UpdatedAt         string `json:"updated_at,omitempty"`
+	CreatedAt         string `json:"created_at,omitempty"`
+}
 
 type BackupCertificateFile struct {
 	Domain  string `json:"domain"`
