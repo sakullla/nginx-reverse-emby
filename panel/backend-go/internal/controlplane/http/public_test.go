@@ -327,8 +327,11 @@ func TestDockerComposeMountsControlPlaneDataDir(t *testing.T) {
 		t.Fatalf("ReadFile(docker-compose.yaml) error = %v", err)
 	}
 	compose := string(composeBytes)
-	if !strings.Contains(compose, "./data:/opt/nginx-reverse-emby/panel/data") {
-		t.Fatalf("docker-compose.yaml missing control-plane data dir mount: %s", compose)
+	if !strings.Contains(compose, "./data/panel:/opt/nginx-reverse-emby/panel/data") {
+		t.Fatalf("docker-compose.yaml missing control-plane panel data dir mount: %s", compose)
+	}
+	if !strings.Contains(compose, "./data/postgres:/var/lib/postgresql/data") {
+		t.Fatalf("docker-compose.yaml missing postgres data dir mount: %s", compose)
 	}
 }
 
