@@ -1253,10 +1253,7 @@ type switchProtocolCopier struct {
 }
 
 func (c switchProtocolCopier) copyFromBackend(errc chan<- error) {
-	n, err := io.Copy(c.user, c.backend)
-	recorder := httpRecorderOrAggregate(c.recorder)
-	recorder.Add(0, n)
-	recorder.Flush()
+	_, err := copySwitchProtocolTraffic(c.user, c.backend, false, c.recorder)
 	if err != nil {
 		errc <- err
 		return
@@ -1269,10 +1266,7 @@ func (c switchProtocolCopier) copyFromBackend(errc chan<- error) {
 }
 
 func (c switchProtocolCopier) copyToBackend(errc chan<- error) {
-	n, err := io.Copy(c.backend, c.user)
-	recorder := httpRecorderOrAggregate(c.recorder)
-	recorder.Add(n, 0)
-	recorder.Flush()
+	_, err := copySwitchProtocolTraffic(c.backend, c.user, true, c.recorder)
 	if err != nil {
 		errc <- err
 		return
@@ -1282,6 +1276,34 @@ func (c switchProtocolCopier) copyToBackend(errc chan<- error) {
 		return
 	}
 	errc <- errCopyDone
+}
+
+func copySwitchProtocolTraffic(dst io.Writer, src io.Reader, rxDirection bool, recorder *traffic.Recorder) (int64, error) {
+	wrapped := switchProtocolTrafficWriter{
+		dst:         dst,
+		rxDirection: rxDirection,
+		recorder:    httpRecorderOrAggregate(recorder),
+	}
+	return io.Copy(wrapped, src)
+}
+
+type switchProtocolTrafficWriter struct {
+	dst         io.Writer
+	rxDirection bool
+	recorder    *traffic.Recorder
+}
+
+func (w switchProtocolTrafficWriter) Write(p []byte) (int, error) {
+	n, err := w.dst.Write(p)
+	if n > 0 {
+		if w.rxDirection {
+			w.recorder.Add(int64(n), 0)
+		} else {
+			w.recorder.Add(0, int64(n))
+		}
+		w.recorder.Flush()
+	}
+	return n, err
 }
 
 func copyHeaders(dst, src http.Header) {

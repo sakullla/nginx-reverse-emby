@@ -652,6 +652,7 @@ func TestCopyResumableResponseRecordsHTTPTraffic(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "http://edge.example.test/video", nil)
 
+	ruleRecorder := traffic.NewHTTPRuleRecorder(99)
 	written, err := entry.copyResumableResponse(recorder, req, resp, resumableResponse{
 		initialStatus: http.StatusOK,
 		rangeStart:    0,
@@ -661,7 +662,7 @@ func TestCopyResumableResponseRecordsHTTPTraffic(t *testing.T) {
 			etag:    `"stable"`,
 			ifRange: `"stable"`,
 		},
-	}, nil)
+	}, ruleRecorder)
 	if err != nil {
 		t.Fatalf("copyResumableResponse() error = %v", err)
 	}
@@ -673,6 +674,11 @@ func TestCopyResumableResponseRecordsHTTPTraffic(t *testing.T) {
 	httpStats := stats["http"].(map[string]uint64)
 	if httpStats["tx_bytes"] != uint64(len(payload)) {
 		t.Fatalf("http tx_bytes = %d, want %d", httpStats["tx_bytes"], len(payload))
+	}
+	httpRules := stats["http_rules"].(map[string]map[string]uint64)
+	got := httpRules["99"]
+	if got["tx_bytes"] != uint64(len(payload)) {
+		t.Fatalf("http_rules[99].tx_bytes = %d, want %d", got["tx_bytes"], len(payload))
 	}
 }
 

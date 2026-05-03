@@ -31,6 +31,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relayplan"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
@@ -1994,6 +1995,91 @@ func TestServerPreservesSwitchingProtocolsUpgradeTunnel(t *testing.T) {
 	if string(reply) != payload {
 		fail("unexpected upgraded payload: got %q want %q", string(reply), payload)
 	}
+}
+
+func TestServerRecordsHTTPRuleUpgradeTrafficBeforeTunnelCloses(t *testing.T) {
+	traffic.Reset()
+	defer traffic.Reset()
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.EqualFold(r.Header.Get("Connection"), "Upgrade") {
+			t.Errorf("expected upgrade connection header, got %q", r.Header.Get("Connection"))
+			return
+		}
+		if !strings.EqualFold(r.Header.Get("Upgrade"), "testproto") {
+			t.Errorf("expected upgrade protocol header, got %q", r.Header.Get("Upgrade"))
+			return
+		}
+		hijacker, ok := w.(http.Hijacker)
+		if !ok {
+			t.Error("backend response writer does not support hijack")
+			return
+		}
+		conn, buf, err := hijacker.Hijack()
+		if err != nil {
+			t.Errorf("backend hijack failed: %v", err)
+			return
+		}
+		defer conn.Close()
+		_, _ = buf.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: testproto\r\n\r\n")
+		_ = buf.Flush()
+		_, _ = io.Copy(conn, conn)
+	}))
+	t.Cleanup(backend.CloseClientConnections)
+
+	listener := model.HTTPListener{
+		Rules: []model.HTTPRule{{
+			ID:          88,
+			FrontendURL: "http://route.example",
+			BackendURL:  backend.URL,
+		}},
+	}
+	proxy := httptest.NewServer(NewServer(listener))
+	t.Cleanup(proxy.CloseClientConnections)
+
+	conn, err := net.Dial("tcp", strings.TrimPrefix(proxy.URL, "http://"))
+	if err != nil {
+		t.Fatalf("failed to dial proxy: %v", err)
+	}
+	defer conn.Close()
+	fail := func(format string, args ...any) {
+		_ = conn.Close()
+		proxy.CloseClientConnections()
+		backend.CloseClientConnections()
+		t.Fatalf(format, args...)
+	}
+
+	_, err = io.WriteString(conn, "GET /upgrade HTTP/1.1\r\nHost: route.example\r\nConnection: Upgrade\r\nUpgrade: testproto\r\n\r\n")
+	if err != nil {
+		fail("failed to write upgrade request: %v", err)
+	}
+
+	reader := bufio.NewReader(conn)
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	resp, err := http.ReadResponse(reader, &http.Request{Method: http.MethodGet})
+	if err != nil {
+		fail("failed to read upgrade response: %v", err)
+	}
+	_ = conn.SetReadDeadline(time.Time{})
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		fail("expected 101 response, got %d", resp.StatusCode)
+	}
+
+	payload := "ping-through-upgrade"
+	if _, err := io.WriteString(conn, payload); err != nil {
+		fail("failed to write upgrade payload: %v", err)
+	}
+	_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+	reply := make([]byte, len(payload))
+	if _, err := io.ReadFull(reader, reply); err != nil {
+		fail("failed to read upgraded payload: %v", err)
+	}
+	_ = conn.SetReadDeadline(time.Time{})
+	if string(reply) != payload {
+		fail("unexpected upgraded payload: got %q want %q", string(reply), payload)
+	}
+
+	assertHTTPRuleTrafficEventually(t, "88", uint64(len(payload)), uint64(len(payload)))
 }
 
 func TestNewServerReusesSharedTransportPoolOnRouteEntries(t *testing.T) {

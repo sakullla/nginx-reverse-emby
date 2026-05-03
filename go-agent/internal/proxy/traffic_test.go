@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"testing"
+	"time"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
@@ -36,14 +37,16 @@ func TestCopyResponseRecordsHTTPTraffic(t *testing.T) {
 
 func TestRouteEntryRecordsHTTPRuleTraffic(t *testing.T) {
 	traffic.Reset()
-	traffic.SetEnabled(true)
 	defer traffic.Reset()
 
+	backendErr := make(chan error, 1)
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if _, err := io.ReadAll(r.Body); err != nil {
-			t.Fatalf("backend read body: %v", err)
+			backendErr <- err
+			return
 		}
 		_, _ = w.Write([]byte("response-body"))
+		backendErr <- nil
 	}))
 	defer backend.Close()
 
@@ -61,6 +64,9 @@ func TestRouteEntryRecordsHTTPRuleTraffic(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body=%q", rec.Code, rec.Body.String())
 	}
+	if err := <-backendErr; err != nil {
+		t.Fatalf("backend read body: %v", err)
+	}
 
 	stats := traffic.Snapshot()["traffic"].(map[string]any)
 	httpRules := stats["http_rules"].(map[string]map[string]uint64)
@@ -71,6 +77,23 @@ func TestRouteEntryRecordsHTTPRuleTraffic(t *testing.T) {
 	if got["tx_bytes"] != uint64(len("response-body")) {
 		t.Fatalf("http_rules[77].tx_bytes = %d", got["tx_bytes"])
 	}
+}
+
+func assertHTTPRuleTrafficEventually(t *testing.T, ruleID string, wantRX, wantTX uint64) {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	var got map[string]uint64
+	for time.Now().Before(deadline) {
+		stats := traffic.Snapshot()["traffic"].(map[string]any)
+		httpRules := stats["http_rules"].(map[string]map[string]uint64)
+		got = httpRules[ruleID]
+		if got["rx_bytes"] >= wantRX && got["tx_bytes"] >= wantTX {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("http_rules[%s] = %+v, want rx >= %d tx >= %d", ruleID, got, wantRX, wantTX)
 }
 
 func TestPrepareReusableBodyDoesNotRecordBufferedRequestBodyTrafficBeforeRead(t *testing.T) {
