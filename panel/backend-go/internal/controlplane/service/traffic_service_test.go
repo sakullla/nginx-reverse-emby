@@ -238,6 +238,8 @@ func TestTrafficServiceSummaryUsesCycleBaselineAndQuota(t *testing.T) {
 	fakeStore.baselines["edge-1|2026-05-15T00:00:00Z"] = storage.AgentTrafficBaselineRow{
 		AgentID:           "edge-1",
 		CycleStart:        "2026-05-15T00:00:00Z",
+		RawRXBytes:        10,
+		RawTXBytes:        15,
 		RawAccountedBytes: 25,
 		AdjustUsedBytes:   10,
 	}
@@ -259,6 +261,40 @@ func TestTrafficServiceSummaryUsesCycleBaselineAndQuota(t *testing.T) {
 	}
 	if summary.CycleStart != "2026-05-15T00:00:00Z" || summary.CycleEnd != "2026-06-15T00:00:00Z" {
 		t.Fatalf("cycle = %s..%s", summary.CycleStart, summary.CycleEnd)
+	}
+}
+
+func TestTrafficServiceSummaryRecomputesBaselineForDirectionChange(t *testing.T) {
+	fakeStore := newFakeTrafficStore()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	fakeStore.policy = storage.AgentTrafficPolicyRow{
+		AgentID:       "edge-1",
+		Direction:     "rx",
+		CycleStartDay: 1,
+	}
+	fakeStore.baselines["edge-1|2026-05-01T00:00:00Z"] = storage.AgentTrafficBaselineRow{
+		AgentID:           "edge-1",
+		CycleStart:        "2026-05-01T00:00:00Z",
+		RawRXBytes:        100,
+		RawTXBytes:        300,
+		RawAccountedBytes: 400,
+		AdjustUsedBytes:   10,
+	}
+	fakeStore.addBucket(storage.TrafficBucketRow{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		BucketStart: time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC),
+		RXBytes:     250,
+		TXBytes:     700,
+	})
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, fakeStore)
+
+	summary, err := svc.Summary(context.Background(), "edge-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.UsedBytes != 160 {
+		t.Fatalf("UsedBytes = %d, want current rx 250 - baseline rx 100 + adjust 10", summary.UsedBytes)
 	}
 }
 
@@ -470,6 +506,45 @@ func TestTrafficServiceCalibrateAndCleanup(t *testing.T) {
 	}
 	if result.DeletedRows != 3 {
 		t.Fatalf("cleanup = %+v", result)
+	}
+}
+
+func TestTrafficServiceCleanupPreservesCurrentCycleHourlyRows(t *testing.T) {
+	store := newTrafficServiceRealStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	if err := store.SaveTrafficPolicy(ctx, storage.AgentTrafficPolicyRow{
+		AgentID:             "edge-1",
+		Direction:           "both",
+		CycleStartDay:       1,
+		HourlyRetentionDays: 7,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, delta := range []storage.TrafficDelta{
+		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 4, 30, 10, 0, 0, 0, time.UTC), RXBytes: 10},
+		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 5, 1, 0, 0, 0, 0, time.UTC), RXBytes: 20},
+		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: time.Date(2026, 5, 10, 10, 0, 0, 0, time.UTC), RXBytes: 30},
+	} {
+		if err := store.IncrementTrafficBuckets(ctx, delta); err != nil {
+			t.Fatal(err)
+		}
+	}
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, store)
+
+	result, err := svc.Cleanup(ctx, "edge-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.HourlyBefore != "2026-05-01T00:00:00Z" {
+		t.Fatalf("HourlyBefore = %q, want current cycle start", result.HourlyBefore)
+	}
+	summary, err := svc.Summary(ctx, "edge-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.RXBytes != 50 {
+		t.Fatalf("summary.RXBytes = %d, want current cycle rows preserved", summary.RXBytes)
 	}
 }
 

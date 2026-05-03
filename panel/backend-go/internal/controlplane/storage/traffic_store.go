@@ -45,6 +45,14 @@ type TrafficCleanupCutoff struct {
 	MonthlyBefore time.Time
 }
 
+type TrafficCursorDeltaResult struct {
+	Previous      AgentTrafficRawCursorRow
+	FoundPrevious bool
+	DeltaRXBytes  uint64
+	DeltaTXBytes  uint64
+	CounterReset  bool
+}
+
 func (s *GormStore) GetTrafficPolicy(ctx context.Context, agentID string) (AgentTrafficPolicyRow, error) {
 	agentID = s.resolveAgentID(agentID)
 
@@ -157,6 +165,62 @@ func (s *GormStore) SaveTrafficCursor(ctx context.Context, row AgentTrafficRawCu
 		Create(&row).Error
 }
 
+func (s *GormStore) IngestTrafficCursorDelta(ctx context.Context, cursor AgentTrafficRawCursorRow, bucketStart time.Time) (TrafficCursorDeltaResult, error) {
+	var err error
+	cursor.AgentID = s.resolveAgentID(cursor.AgentID)
+	cursor.ScopeType, err = normalizeTrafficScopeType(cursor.ScopeType)
+	if err != nil {
+		return TrafficCursorDeltaResult{}, err
+	}
+	if cursor.ObservedAt == "" {
+		cursor.ObservedAt = formatTrafficTime(bucketStart.UTC())
+	}
+
+	var result TrafficCursorDeltaResult
+	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		var previous AgentTrafficRawCursorRow
+		err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+			Where("agent_id = ? AND scope_type = ? AND scope_id = ?", cursor.AgentID, cursor.ScopeType, cursor.ScopeID).
+			First(&previous).Error
+		switch {
+		case err == nil:
+			result.Previous = previous
+			result.FoundPrevious = true
+			if cursor.RXBytes >= previous.RXBytes {
+				result.DeltaRXBytes = cursor.RXBytes - previous.RXBytes
+			} else {
+				result.DeltaRXBytes = cursor.RXBytes
+				result.CounterReset = true
+			}
+			if cursor.TXBytes >= previous.TXBytes {
+				result.DeltaTXBytes = cursor.TXBytes - previous.TXBytes
+			} else {
+				result.DeltaTXBytes = cursor.TXBytes
+				result.CounterReset = true
+			}
+		case err == gorm.ErrRecordNotFound:
+			result.DeltaRXBytes = cursor.RXBytes
+			result.DeltaTXBytes = cursor.TXBytes
+		default:
+			return err
+		}
+		if result.DeltaRXBytes > 0 || result.DeltaTXBytes > 0 {
+			if err := incrementTrafficBucketsTx(tx, TrafficDelta{
+				AgentID:     cursor.AgentID,
+				ScopeType:   cursor.ScopeType,
+				ScopeID:     cursor.ScopeID,
+				BucketStart: bucketStart,
+				RXBytes:     result.DeltaRXBytes,
+				TXBytes:     result.DeltaTXBytes,
+			}); err != nil {
+				return err
+			}
+		}
+		return tx.Clauses(clause.OnConflict{UpdateAll: true}).Create(&cursor).Error
+	})
+	return result, err
+}
+
 func (s *GormStore) IncrementTrafficBuckets(ctx context.Context, delta TrafficDelta) error {
 	var err error
 	delta.AgentID = s.resolveAgentID(delta.AgentID)
@@ -164,48 +228,52 @@ func (s *GormStore) IncrementTrafficBuckets(ctx context.Context, delta TrafficDe
 	if err != nil {
 		return err
 	}
+	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		return incrementTrafficBucketsTx(tx, delta)
+	})
+}
+
+func incrementTrafficBucketsTx(tx *gorm.DB, delta TrafficDelta) error {
 	bucketStart := delta.BucketStart.UTC()
 	now := nowTrafficTimestamp()
 
-	return s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := incrementTrafficHourlyBucket(tx, AgentTrafficHourlyBucketRow{
-			AgentID:     delta.AgentID,
-			ScopeType:   delta.ScopeType,
-			ScopeID:     delta.ScopeID,
-			BucketStart: formatTrafficTime(bucketStart.Truncate(time.Hour)),
-			RXBytes:     delta.RXBytes,
-			TXBytes:     delta.TXBytes,
-			UpdatedAt:   now,
-			CreatedAt:   now,
-		}); err != nil {
-			return err
-		}
+	if err := incrementTrafficHourlyBucket(tx, AgentTrafficHourlyBucketRow{
+		AgentID:     delta.AgentID,
+		ScopeType:   delta.ScopeType,
+		ScopeID:     delta.ScopeID,
+		BucketStart: formatTrafficTime(bucketStart.Truncate(time.Hour)),
+		RXBytes:     delta.RXBytes,
+		TXBytes:     delta.TXBytes,
+		UpdatedAt:   now,
+		CreatedAt:   now,
+	}); err != nil {
+		return err
+	}
 
-		dayStart := time.Date(bucketStart.Year(), bucketStart.Month(), bucketStart.Day(), 0, 0, 0, 0, time.UTC)
-		if err := incrementTrafficDailySummary(tx, AgentTrafficDailySummaryRow{
-			AgentID:     delta.AgentID,
-			ScopeType:   delta.ScopeType,
-			ScopeID:     delta.ScopeID,
-			PeriodStart: formatTrafficTime(dayStart),
-			RXBytes:     delta.RXBytes,
-			TXBytes:     delta.TXBytes,
-			UpdatedAt:   now,
-			CreatedAt:   now,
-		}); err != nil {
-			return err
-		}
+	dayStart := time.Date(bucketStart.Year(), bucketStart.Month(), bucketStart.Day(), 0, 0, 0, 0, time.UTC)
+	if err := incrementTrafficDailySummary(tx, AgentTrafficDailySummaryRow{
+		AgentID:     delta.AgentID,
+		ScopeType:   delta.ScopeType,
+		ScopeID:     delta.ScopeID,
+		PeriodStart: formatTrafficTime(dayStart),
+		RXBytes:     delta.RXBytes,
+		TXBytes:     delta.TXBytes,
+		UpdatedAt:   now,
+		CreatedAt:   now,
+	}); err != nil {
+		return err
+	}
 
-		monthStart := time.Date(bucketStart.Year(), bucketStart.Month(), 1, 0, 0, 0, 0, time.UTC)
-		return incrementTrafficMonthlySummary(tx, AgentTrafficMonthlySummaryRow{
-			AgentID:     delta.AgentID,
-			ScopeType:   delta.ScopeType,
-			ScopeID:     delta.ScopeID,
-			PeriodStart: formatTrafficTime(monthStart),
-			RXBytes:     delta.RXBytes,
-			TXBytes:     delta.TXBytes,
-			UpdatedAt:   now,
-			CreatedAt:   now,
-		})
+	monthStart := time.Date(bucketStart.Year(), bucketStart.Month(), 1, 0, 0, 0, 0, time.UTC)
+	return incrementTrafficMonthlySummary(tx, AgentTrafficMonthlySummaryRow{
+		AgentID:     delta.AgentID,
+		ScopeType:   delta.ScopeType,
+		ScopeID:     delta.ScopeID,
+		PeriodStart: formatTrafficTime(monthStart),
+		RXBytes:     delta.RXBytes,
+		TXBytes:     delta.TXBytes,
+		UpdatedAt:   now,
+		CreatedAt:   now,
 	})
 }
 
@@ -306,6 +374,7 @@ func (s *GormStore) SaveTrafficEvent(ctx context.Context, row AgentTrafficEventR
 }
 
 func (s *GormStore) DeleteTrafficBefore(ctx context.Context, agentID string, cutoff TrafficCleanupCutoff) (int64, error) {
+	agentID = s.resolveAgentID(agentID)
 	var deleted int64
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if !cutoff.HourlyBefore.IsZero() {

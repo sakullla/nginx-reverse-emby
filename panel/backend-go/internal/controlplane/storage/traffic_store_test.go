@@ -432,6 +432,65 @@ func TestDeleteTrafficBeforeRemovesExpiredBuckets(t *testing.T) {
 	}
 }
 
+func TestDeleteTrafficBeforeEmptyAgentIDUsesLocalAgent(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+	oldBucket := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
+
+	if err := store.IncrementTrafficBuckets(ctx, TrafficDelta{
+		ScopeType:   "agent_total",
+		BucketStart: oldBucket,
+		RXBytes:     100,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	deleted, err := store.DeleteTrafficBefore(ctx, "", TrafficCleanupCutoff{HourlyBefore: oldBucket.Add(time.Hour)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if deleted != 1 {
+		t.Fatalf("deleted = %d, want local row deleted", deleted)
+	}
+}
+
+func TestIngestTrafficCursorDeltaIsIdempotent(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+	observedAt := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
+	cursor := AgentTrafficRawCursorRow{
+		AgentID:    "edge-1",
+		ScopeType:  "agent_total",
+		RXBytes:    100,
+		TXBytes:    50,
+		ObservedAt: observedAt.Format(time.RFC3339),
+	}
+
+	first, err := store.IngestTrafficCursorDelta(ctx, cursor, observedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.IngestTrafficCursorDelta(ctx, cursor, observedAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.DeltaRXBytes != 100 || first.DeltaTXBytes != 50 || second.DeltaRXBytes != 0 || second.DeltaTXBytes != 0 {
+		t.Fatalf("first=%+v second=%+v", first, second)
+	}
+	rows, err := store.ListTrafficTrend(ctx, TrafficTrendQuery{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		Granularity: "hour",
+		From:        observedAt,
+		To:          observedAt.Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].RXBytes != 100 || rows[0].TXBytes != 50 {
+		t.Fatalf("rows = %+v", rows)
+	}
+}
+
 func TestListTrafficBreakdownGroupsByScopeID(t *testing.T) {
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()

@@ -36,6 +36,10 @@ type trafficBreakdownStore interface {
 	ListTrafficBreakdown(context.Context, storage.TrafficTrendQuery) ([]storage.TrafficBucketRow, error)
 }
 
+type trafficCursorDeltaStore interface {
+	IngestTrafficCursorDelta(context.Context, storage.AgentTrafficRawCursorRow, time.Time) (storage.TrafficCursorDeltaResult, error)
+}
+
 type trafficService struct {
 	enabled bool
 	store   trafficStore
@@ -64,6 +68,25 @@ func (s *trafficService) IngestHeartbeat(ctx context.Context, agentID string, st
 	}
 	observedAt := s.now().UTC()
 	for _, sample := range samples {
+		if ingestStore, ok := s.store.(trafficCursorDeltaStore); ok {
+			result, err := ingestStore.IngestTrafficCursorDelta(ctx, storage.AgentTrafficRawCursorRow{
+				AgentID:    agentID,
+				ScopeType:  sample.scopeType,
+				ScopeID:    sample.scopeID,
+				RXBytes:    sample.rx,
+				TXBytes:    sample.tx,
+				ObservedAt: observedAt.Format(time.RFC3339),
+			}, observedAt)
+			if err != nil {
+				return err
+			}
+			if result.CounterReset {
+				if err := s.recordCounterReset(ctx, agentID, sample, result.Previous, observedAt); err != nil {
+					return err
+				}
+			}
+			continue
+		}
 		cursor, found, err := s.store.GetTrafficCursor(ctx, agentID, sample.scopeType, sample.scopeID)
 		if err != nil {
 			return err
@@ -136,7 +159,8 @@ func (s *trafficService) Summary(ctx context.Context, agentID string) (TrafficSu
 	}
 	usedSigned := int64(minUint64ToInt64(stats.accounted))
 	if found {
-		usedSigned = int64(minUint64ToInt64(stats.accounted)) - int64(minUint64ToInt64(baseline.RawAccountedBytes)) + baseline.AdjustUsedBytes
+		baselineAccounted := accountedBytes(policy.Direction, baseline.RawRXBytes, baseline.RawTXBytes)
+		usedSigned = int64(minUint64ToInt64(stats.accounted)) - int64(minUint64ToInt64(baselineAccounted)) + baseline.AdjustUsedBytes
 	}
 	if usedSigned < 0 {
 		usedSigned = 0
@@ -295,6 +319,11 @@ func (s *trafficService) Cleanup(ctx context.Context, agentID string) (TrafficCl
 	cutoff := storage.TrafficCleanupCutoff{}
 	if policy.HourlyRetentionDays > 0 {
 		cutoff.HourlyBefore = now.AddDate(0, 0, -policy.HourlyRetentionDays).Truncate(time.Hour)
+		cycleStart, _ := monthlyCycleWindow(s.now(), policy.CycleStartDay)
+		cycleStart = cycleStart.UTC()
+		if cutoff.HourlyBefore.After(cycleStart) {
+			cutoff.HourlyBefore = cycleStart
+		}
 	}
 	if policy.DailyRetentionMonths > 0 {
 		cutoff.DailyBefore = time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, -policy.DailyRetentionMonths, 0)
