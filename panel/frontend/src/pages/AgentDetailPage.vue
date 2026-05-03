@@ -117,7 +117,12 @@
               </label>
               <label class="traffic-setting">
                 <span class="traffic-setting__label">月额度</span>
-                <input v-model="trafficPolicyForm.monthly_quota_bytes" class="traffic-setting__input" type="text" placeholder="留空表示无限制">
+                <div class="traffic-setting__quota">
+                  <input v-model="trafficPolicyForm.monthly_quota_value" class="traffic-setting__input" type="text" placeholder="留空表示无限制">
+                  <select v-model="trafficPolicyForm.monthly_quota_unit" class="traffic-setting__input traffic-setting__unit" data-testid="monthly-quota-unit">
+                    <option v-for="unit in quotaUnits" :key="unit.value" :value="unit.value">{{ unit.label }}</option>
+                  </select>
+                </div>
               </label>
               <label class="traffic-setting traffic-setting--switch">
                 <span class="traffic-setting__label">超额阻断</span>
@@ -298,7 +303,14 @@ const trafficTrendQuery = useTrafficTrend(
 const updateTrafficPolicyMutation = useUpdateTrafficPolicy(computed(() => agentId.value))
 const calibrateTrafficMutation = useCalibrateTraffic(computed(() => agentId.value))
 const cleanupTrafficMutation = useCleanupTraffic(computed(() => agentId.value))
-const trafficPolicyForm = ref(normalizeTrafficPolicy())
+const quotaUnits = [
+  { value: 'B', label: 'B', factor: 1 },
+  { value: 'KiB', label: 'KiB', factor: 1024 },
+  { value: 'MiB', label: 'MiB', factor: 1024 ** 2 },
+  { value: 'GiB', label: 'GiB', factor: 1024 ** 3 },
+  { value: 'TiB', label: 'TiB', factor: 1024 ** 4 }
+]
+const trafficPolicyForm = ref(normalizeTrafficPolicyForm())
 const trafficSummary = computed(() => trafficSummaryQuery.data.value ?? {})
 const trafficTrendPoints = computed(() => normalizeTrafficTrendPoints(trafficTrendQuery.data.value ?? [], trafficPolicyForm.value.direction))
 
@@ -317,10 +329,7 @@ watch(agent, (value) => {
 
 watch([trafficPolicyQuery.data, trafficStatsEnabled], ([policy, enabled]) => {
   if (enabled && policy) {
-    trafficPolicyForm.value = {
-      ...normalizeTrafficPolicy(policy),
-      monthly_quota_bytes: policy.monthly_quota_bytes == null ? '' : String(policy.monthly_quota_bytes)
-    }
+    trafficPolicyForm.value = normalizeTrafficPolicyForm(policy)
   }
 }, { immediate: true })
 
@@ -362,7 +371,8 @@ async function saveTrafficPolicy() {
     messageStore.warning('月周期起始日必须是 1 到 28 的整数')
     return
   }
-  if (!isBlankOrFiniteNonNegative(trafficPolicyForm.value.monthly_quota_bytes)) {
+  const monthlyQuotaBytes = quotaInputToBytes(trafficPolicyForm.value.monthly_quota_value, trafficPolicyForm.value.monthly_quota_unit)
+  if (monthlyQuotaBytes === undefined) {
     messageStore.warning('月额度必须为空或非负数字')
     return
   }
@@ -380,7 +390,7 @@ async function saveTrafficPolicy() {
   }
   const payload = normalizeTrafficPolicy({
     ...trafficPolicyForm.value,
-    monthly_quota_bytes: trafficPolicyForm.value.monthly_quota_bytes === '' ? null : trafficPolicyForm.value.monthly_quota_bytes
+    monthly_quota_bytes: monthlyQuotaBytes
   })
   await updateTrafficPolicyMutation.mutateAsync(payload)
 }
@@ -397,10 +407,46 @@ async function cleanupTrafficHistory() {
   await cleanupTrafficMutation.mutateAsync()
 }
 
-function isBlankOrFiniteNonNegative(value) {
-  if (value == null || value === '') return true
-  const number = Number(value)
-  return Number.isFinite(number) && number >= 0
+function normalizeTrafficPolicyForm(policy = {}) {
+  const normalized = normalizeTrafficPolicy(policy)
+  const quota = bytesToQuotaInput(normalized.monthly_quota_bytes)
+  return {
+    ...normalized,
+    monthly_quota_value: quota.value,
+    monthly_quota_unit: quota.unit
+  }
+}
+
+function bytesToQuotaInput(bytes) {
+  if (bytes == null) {
+    return { value: '', unit: 'GiB' }
+  }
+  const number = Number(bytes)
+  if (!Number.isFinite(number) || number < 0) {
+    return { value: '', unit: 'GiB' }
+  }
+  let selectedUnit = quotaUnits[0]
+  for (const unit of quotaUnits) {
+    if (number >= unit.factor) {
+      selectedUnit = unit
+    }
+  }
+  const value = number / selectedUnit.factor
+  return {
+    value: Number.isInteger(value) ? String(value) : String(Number(value.toFixed(3))),
+    unit: selectedUnit.value
+  }
+}
+
+function quotaInputToBytes(value, unitValue) {
+  const rawValue = String(value ?? '').trim()
+  if (rawValue === '') return null
+  const number = Number(rawValue)
+  const unit = quotaUnits.find((item) => item.value === unitValue)
+  if (!Number.isFinite(number) || number < 0 || !unit) return undefined
+  const bytes = number * unit.factor
+  if (!Number.isFinite(bytes) || bytes < 0) return undefined
+  return Math.round(bytes)
 }
 
 function isBlankOrPositiveInteger(value) {
@@ -565,6 +611,8 @@ function timeAgo(date) {
 .traffic-setting__label { color: var(--color-text-secondary); font-size: 0.8125rem; font-weight: 500; }
 .traffic-setting__input { width: 100%; min-width: 0; padding: 0.5rem 0.75rem; border: 1px solid var(--color-border-default); border-radius: var(--radius-md); background: var(--color-bg-surface); color: var(--color-text-primary); font-size: 0.875rem; box-sizing: border-box; }
 .traffic-setting__input:focus { outline: none; border-color: var(--color-primary); box-shadow: var(--shadow-focus); }
+.traffic-setting__quota { display: grid; grid-template-columns: minmax(0, 1fr) 5.5rem; gap: 0.5rem; }
+.traffic-setting__unit { font-family: var(--font-mono); }
 .traffic-panel__footer { display: flex; justify-content: flex-end; margin-top: 0.75rem; }
 .empty-hint { text-align: center; color: var(--color-text-muted); padding: 2rem; font-size: 0.875rem; }
 .info-grid { display: flex; flex-direction: column; gap: 0.5rem; }

@@ -207,7 +207,12 @@ func (s *GormStore) LoadAgentSnapshot(ctx context.Context, agentID string, input
 	}
 
 	relevantCertRows := filterManagedCertificatesForAgent(certRows, resolvedAgentID, httpRows, relayRows)
-	agentRevisionState, err := s.loadAgentRevisionState(ctx, resolvedAgentID)
+	var agentRevisionState LocalAgentStateRow
+	if resolvedAgentID == s.localAgentID {
+		agentRevisionState, err = s.LoadLocalAgentState(ctx)
+	} else {
+		agentRevisionState, err = s.loadAgentRevisionState(ctx, resolvedAgentID)
+	}
 	if err != nil {
 		return Snapshot{}, err
 	}

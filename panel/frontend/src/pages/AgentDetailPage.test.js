@@ -186,6 +186,25 @@ describe('AgentDetailPage', () => {
     expect(apiCalls.updateTrafficPolicy).not.toHaveBeenCalled()
   })
 
+  it('shows monthly quota with units and saves bytes', async () => {
+    const wrapper = await mountPage()
+    await wrapper.findAll('.tab-btn').find((button) => button.text() === '流量统计').trigger('click')
+    await nextTick()
+
+    const quotaInput = wrapper.find('input[placeholder="留空表示无限制"]')
+    const unitSelect = wrapper.find('[data-testid="monthly-quota-unit"]')
+    expect(quotaInput.element.value).toBe('1')
+    expect(unitSelect.element.value).toBe('TiB')
+
+    await quotaInput.setValue('1.5')
+    await unitSelect.setValue('GiB')
+    await wrapper.find('.traffic-panel__footer .btn-primary').trigger('click')
+
+    expect(apiCalls.updateTrafficPolicy).toHaveBeenCalledWith('edge-1', expect.objectContaining({
+      monthly_quota_bytes: 1610612736
+    }))
+  })
+
   it('does not normalize invalid traffic policy integers into defaults', async () => {
     const wrapper = await mountPage()
     await wrapper.findAll('.tab-btn').find((button) => button.text() === '流量统计').trigger('click')
