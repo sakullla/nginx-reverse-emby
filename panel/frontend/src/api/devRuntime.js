@@ -3,6 +3,9 @@ export {
   fetchSystemInfo,
   exportBackup,
   importBackup,
+  exportBackupSelective,
+  importBackupPreview,
+  fetchBackupResourceCounts,
   fetchAgents,
   updateAgent,
   fetchAgentStats,
@@ -38,5 +41,11 @@ export {
   fetchVersionPolicies,
   createVersionPolicy,
   updateVersionPolicy,
-  deleteVersionPolicy
+  deleteVersionPolicy,
+  fetchTrafficPolicy,
+  updateTrafficPolicy,
+  fetchTrafficSummary,
+  fetchTrafficTrend,
+  calibrateTraffic,
+  cleanupTraffic
 } from './devMocks/index.js'

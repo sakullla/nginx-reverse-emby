@@ -513,3 +513,38 @@ export async function fetchBackupResourceCounts() {
   const { data } = await api.get('/system/backup/counts')
   return data
 }
+
+export async function fetchTrafficPolicy(agentId) {
+  const { data } = await api.get(`/agents/${encodeURIComponent(agentId)}/traffic-policy`)
+  return data.policy
+}
+
+export async function updateTrafficPolicy(agentId, patch) {
+  const { data } = await api.patch(`/agents/${encodeURIComponent(agentId)}/traffic-policy`, patch)
+  return data.policy
+}
+
+export async function fetchTrafficSummary(agentId) {
+  const { data } = await api.get(`/agents/${encodeURIComponent(agentId)}/traffic-summary`)
+  return data.summary
+}
+
+export async function fetchTrafficTrend(agentId, params = {}) {
+  const query = new URLSearchParams()
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value != null && value !== '') query.set(key, value)
+  })
+  const suffix = query.toString() ? `?${query.toString()}` : ''
+  const { data } = await api.get(`/agents/${encodeURIComponent(agentId)}/traffic-trend${suffix}`)
+  return data.points || []
+}
+
+export async function calibrateTraffic(agentId, payload) {
+  const { data } = await api.post(`/agents/${encodeURIComponent(agentId)}/traffic-calibration`, payload)
+  return data.summary
+}
+
+export async function cleanupTraffic(agentId, payload = {}) {
+  const { data } = await api.post(`/agents/${encodeURIComponent(agentId)}/traffic-cleanup`, payload)
+  return data.result
+}

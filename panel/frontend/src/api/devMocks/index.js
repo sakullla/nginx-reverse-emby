@@ -41,5 +41,11 @@ export {
   fetchVersionPolicies,
   createVersionPolicy,
   updateVersionPolicy,
-  deleteVersionPolicy
+  deleteVersionPolicy,
+  fetchTrafficPolicy,
+  updateTrafficPolicy,
+  fetchTrafficSummary,
+  fetchTrafficTrend,
+  calibrateTraffic,
+  cleanupTraffic
 } from './data.js'

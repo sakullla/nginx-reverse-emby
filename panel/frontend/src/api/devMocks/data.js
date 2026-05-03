@@ -463,6 +463,122 @@ function getMockStats(agentId) {
   }
 }
 
+const mockTrafficPolicies = Object.fromEntries(mockAgents.map((agent) => [
+  agent.id,
+  {
+    agent_id: agent.id,
+    direction: agent.id === 'edge-1' ? 'max' : 'both',
+    cycle_start_day: 1,
+    monthly_quota_bytes: agent.id === 'edge-1' ? 2 * 1024 * 1024 * 1024 * 1024 : null,
+    block_when_exceeded: agent.id === 'edge-1',
+    hourly_retention_days: 90,
+    daily_retention_months: 24,
+    monthly_retention_months: null
+  }
+]))
+
+function trafficAccountedBytes(bucket, direction = 'both') {
+  const rx = Number(bucket?.rx_bytes) || 0
+  const tx = Number(bucket?.tx_bytes) || 0
+  switch (direction) {
+    case 'rx':
+      return rx
+    case 'tx':
+      return tx
+    case 'max':
+      return Math.max(rx, tx)
+    case 'both':
+    default:
+      return rx + tx
+  }
+}
+
+function ensureMockTrafficPolicy(agentId) {
+  const id = String(agentId || 'local')
+  if (!mockTrafficPolicies[id]) {
+    mockTrafficPolicies[id] = {
+      agent_id: id,
+      direction: 'both',
+      cycle_start_day: 1,
+      monthly_quota_bytes: null,
+      block_when_exceeded: false,
+      hourly_retention_days: 90,
+      daily_retention_months: 24,
+      monthly_retention_months: null
+    }
+  }
+  return mockTrafficPolicies[id]
+}
+
+function buildMockTrafficSummary(agentId) {
+  const id = String(agentId || 'local')
+  const policy = ensureMockTrafficPolicy(id)
+  const stats = getMockStats(id)
+  const total = stats.traffic.total
+  const usedBytes = trafficAccountedBytes(total, policy.direction)
+  const quota = policy.monthly_quota_bytes
+  const remainingBytes = quota == null ? null : Math.max(0, quota - usedBytes)
+  const toBreakdown = (scopeType, entries) => Object.entries(entries || {}).map(([scopeID, bucket]) => ({
+    scope_type: scopeType,
+    scope_id: scopeID,
+    rx_bytes: bucket.rx_bytes,
+    tx_bytes: bucket.tx_bytes,
+    accounted_bytes: trafficAccountedBytes(bucket, policy.direction)
+  }))
+  return {
+    agent_id: id,
+    policy: { ...policy },
+    cycle_start: '2026-05-01T00:00:00Z',
+    cycle_end: '2026-06-01T00:00:00Z',
+    rx_bytes: total.rx_bytes,
+    tx_bytes: total.tx_bytes,
+    accounted_bytes: usedBytes,
+    used_bytes: usedBytes,
+    monthly_quota_bytes: quota,
+    quota_percent: quota ? Math.min(100, (usedBytes / quota) * 100) : 0,
+    remaining_bytes: remainingBytes,
+    over_quota: quota != null && usedBytes > quota,
+    blocked: policy.block_when_exceeded && quota != null && usedBytes > quota,
+    aggregates: [
+      { scope_type: 'total', scope_id: 'total', ...total, accounted_bytes: usedBytes },
+      { scope_type: 'http', scope_id: 'http', ...stats.traffic.http, accounted_bytes: trafficAccountedBytes(stats.traffic.http, policy.direction) },
+      { scope_type: 'l4', scope_id: 'l4', ...stats.traffic.l4, accounted_bytes: trafficAccountedBytes(stats.traffic.l4, policy.direction) },
+      { scope_type: 'relay', scope_id: 'relay', ...stats.traffic.relay, accounted_bytes: trafficAccountedBytes(stats.traffic.relay, policy.direction) }
+    ],
+    http_rules: toBreakdown('http_rule', stats.traffic.http_rules),
+    l4_rules: toBreakdown('l4_rule', stats.traffic.l4_rules),
+    relay_listeners: toBreakdown('relay_listener', stats.traffic.relay_listeners)
+  }
+}
+
+function buildMockTrafficTrend(agentId, params = {}) {
+  const policy = ensureMockTrafficPolicy(agentId)
+  const granularity = params.granularity || 'day'
+  const now = new Date('2026-05-03T00:00:00Z')
+  const count = granularity === 'hour' ? 24 : granularity === 'month' ? 6 : 14
+  const stepMs = granularity === 'hour'
+    ? 60 * 60 * 1000
+    : granularity === 'month'
+      ? 30 * 24 * 60 * 60 * 1000
+      : 24 * 60 * 60 * 1000
+  return Array.from({ length: count }, (_, index) => {
+    const scale = index + 1
+    const bucketStart = new Date(now.getTime() - (count - index - 1) * stepMs).toISOString()
+    const point = {
+      agent_id: String(agentId || 'local'),
+      scope_type: params.scope_type || '',
+      scope_id: params.scope_id || '',
+      bucket_start: bucketStart,
+      rx_bytes: scale * 1024 * 1024 * 17,
+      tx_bytes: scale * 1024 * 1024 * 31
+    }
+    return {
+      ...point,
+      accounted_bytes: trafficAccountedBytes(point, policy.direction)
+    }
+  })
+}
+
 export async function verifyToken(token) {
   if (isDev) {
     await sleep()
@@ -637,6 +753,86 @@ export async function fetchAgentStats(agentId) {
   }
   const { data } = await api.get(`/agents/${encodeURIComponent(agentId)}/stats`)
   return data.stats
+}
+
+export async function fetchTrafficPolicy(agentId) {
+  if (isDev) {
+    await sleep()
+    return { ...ensureMockTrafficPolicy(agentId) }
+  }
+  const { data } = await api.get(`/agents/${encodeURIComponent(agentId)}/traffic-policy`)
+  return data.policy
+}
+
+export async function updateTrafficPolicy(agentId, patch = {}) {
+  if (isDev) {
+    await sleep()
+    const current = ensureMockTrafficPolicy(agentId)
+    mockTrafficPolicies[String(agentId || 'local')] = {
+      ...current,
+      ...patch,
+      agent_id: String(agentId || current.agent_id || 'local')
+    }
+    return { ...mockTrafficPolicies[String(agentId || 'local')] }
+  }
+  const { data } = await api.patch(`/agents/${encodeURIComponent(agentId)}/traffic-policy`, patch)
+  return data.policy
+}
+
+export async function fetchTrafficSummary(agentId) {
+  if (isDev) {
+    await sleep()
+    return buildMockTrafficSummary(agentId)
+  }
+  const { data } = await api.get(`/agents/${encodeURIComponent(agentId)}/traffic-summary`)
+  return data.summary
+}
+
+export async function fetchTrafficTrend(agentId, params = {}) {
+  if (isDev) {
+    await sleep()
+    return buildMockTrafficTrend(agentId, params)
+  }
+  const query = new URLSearchParams()
+  Object.entries(params || {}).forEach(([key, value]) => {
+    if (value != null && value !== '') query.set(key, value)
+  })
+  const suffix = query.toString() ? `?${query.toString()}` : ''
+  const { data } = await api.get(`/agents/${encodeURIComponent(agentId)}/traffic-trend${suffix}`)
+  return data.points || []
+}
+
+export async function calibrateTraffic(agentId, payload = {}) {
+  if (isDev) {
+    await sleep()
+    const summary = buildMockTrafficSummary(agentId)
+    const usedBytes = Number(payload.used_bytes)
+    if (Number.isFinite(usedBytes) && usedBytes >= 0) {
+      summary.used_bytes = usedBytes
+      summary.accounted_bytes = usedBytes
+      summary.quota_percent = summary.monthly_quota_bytes ? Math.min(100, (usedBytes / summary.monthly_quota_bytes) * 100) : 0
+      summary.remaining_bytes = summary.monthly_quota_bytes == null ? null : Math.max(0, summary.monthly_quota_bytes - usedBytes)
+      summary.over_quota = summary.monthly_quota_bytes != null && usedBytes > summary.monthly_quota_bytes
+      summary.blocked = summary.policy.block_when_exceeded && summary.over_quota
+    }
+    return summary
+  }
+  const { data } = await api.post(`/agents/${encodeURIComponent(agentId)}/traffic-calibration`, payload)
+  return data.summary
+}
+
+export async function cleanupTraffic(agentId, payload = {}) {
+  if (isDev) {
+    await sleep()
+    return {
+      agent_id: String(agentId || 'local'),
+      deleted_rows: payload.dry_run ? 0 : 42,
+      hourly_before: '2026-02-02T00:00:00Z',
+      daily_before: '2024-05-01T00:00:00Z'
+    }
+  }
+  const { data } = await api.post(`/agents/${encodeURIComponent(agentId)}/traffic-cleanup`, payload)
+  return data.result
 }
 
 export async function fetchRules(agentId) {
