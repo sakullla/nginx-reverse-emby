@@ -27,6 +27,16 @@ export function normalizeTrafficBucket(value) {
   }
 }
 
+export function normalizeTrafficSummaryBucket(value) {
+  const bucket = normalizeTrafficBucket(value)
+  return {
+    ...bucket,
+    accounted_bytes: Number.isFinite(Number(value?.accounted_bytes))
+      ? normalizeBytes(value.accounted_bytes)
+      : bucket.rx_bytes + bucket.tx_bytes
+  }
+}
+
 export function accountedBytes(bytes, direction = 'both') {
   const bucket = normalizeTrafficBucket(bytes)
   switch (String(direction || 'both').toLowerCase()) {
@@ -61,6 +71,12 @@ export function normalizeTrafficPolicy(policy = {}) {
 export function bucketForObject(stats, mapName, id) {
   const key = String(id)
   return normalizeTrafficBucket(stats?.traffic?.[mapName]?.[key])
+}
+
+export function summaryBucketForObject(summary, mapName, id) {
+  const key = String(id)
+  const buckets = Array.isArray(summary?.[mapName]) ? summary[mapName] : []
+  return normalizeTrafficSummaryBucket(buckets.find((bucket) => String(bucket?.scope_id) === key))
 }
 
 export function formatBytes(value) {

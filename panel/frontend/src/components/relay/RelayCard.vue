@@ -72,7 +72,8 @@
       <BaseBadge v-if="listener.allow_self_signed" tone="warning" size="sm">允许自签</BaseBadge>
     </div>
 
-    <div class="traffic-line">
+    <div v-if="hasTraffic" class="traffic-line">
+      <span>用量 {{ formatBytes(normalizedTraffic.accounted_bytes) }}</span>
       <span>入 {{ formatBytes(normalizedTraffic.rx_bytes) }}</span>
       <span>出 {{ formatBytes(normalizedTraffic.tx_bytes) }}</span>
     </div>
@@ -88,11 +89,11 @@ import { computed } from 'vue'
 import BaseListCard from '../base/BaseListCard.vue'
 import BaseBadge from '../base/BaseBadge.vue'
 import BaseIconButton from '../base/BaseIconButton.vue'
-import { formatBytes, normalizeTrafficBucket } from '../../utils/trafficStats.js'
+import { formatBytes, normalizeTrafficSummaryBucket } from '../../utils/trafficStats.js'
 
 const props = defineProps({
   listener: { type: Object, required: true },
-  traffic: { type: Object, default: () => ({ rx_bytes: 0, tx_bytes: 0 }) },
+  traffic: { type: Object, default: null },
 })
 
 defineEmits(['edit', 'delete', 'toggle'])
@@ -152,7 +153,8 @@ const fallbackLabel = computed(() => {
   return '允许回退 TLS/TCP'
 })
 
-const normalizedTraffic = computed(() => normalizeTrafficBucket(props.traffic))
+const hasTraffic = computed(() => props.traffic != null)
+const normalizedTraffic = computed(() => normalizeTrafficSummaryBucket(props.traffic))
 const hasTags = computed(() => Array.isArray(props.listener.tags) && props.listener.tags.length > 0)
 </script>
 

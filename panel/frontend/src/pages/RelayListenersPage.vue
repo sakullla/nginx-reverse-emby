@@ -84,17 +84,19 @@ import { useQuery } from '@tanstack/vue-query'
 import { useAgent } from '../context/AgentContext'
 import { useAgents } from '../hooks/useAgents'
 import { useRelayListeners, useDeleteRelayListener, useUpdateRelayListener } from '../hooks/useRelayListeners'
-import { fetchAgentStats } from '../api'
+import { fetchTrafficSummary } from '../api'
 import RelayListenerForm from '../components/RelayListenerForm.vue'
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
 import BaseModal from '../components/base/BaseModal.vue'
 import AgentPicker from '../components/AgentPicker.vue'
 import RelayCard from '../components/relay/RelayCard.vue'
-import { bucketForObject } from '../utils/trafficStats.js'
+import { summaryBucketForObject } from '../utils/trafficStats.js'
 
 const route = useRoute()
 const router = useRouter()
-const { selectedAgentId } = useAgent()
+const agentContext = useAgent()
+const { selectedAgentId } = agentContext
+const systemInfo = agentContext.systemInfo || ref(null)
 const { data: agentsData } = useAgents()
 const allAgents = computed(() => agentsData.value ?? [])
 
@@ -111,15 +113,18 @@ const deleteRelayListener = useDeleteRelayListener(agentId)
 const updateRelayListener = useUpdateRelayListener(agentId)
 const listeners = computed(() => listenersData.value ?? [])
 
-const { data: agentStatsData } = useQuery({
-  queryKey: ['agent-stats', agentId],
-  queryFn: () => fetchAgentStats(agentId.value),
-  enabled: () => !!agentId.value,
+const trafficStatsEnabled = computed(() => !!systemInfo.value && systemInfo.value.traffic_stats_enabled !== false)
+const { data: trafficSummaryData } = useQuery({
+  queryKey: ['traffic-summary', agentId],
+  queryFn: () => fetchTrafficSummary(agentId.value),
+  enabled: () => !!agentId.value && trafficStatsEnabled.value,
   refetchInterval: 10_000
 })
 
 function trafficForListener(listener) {
-  return bucketForObject(agentStatsData.value, 'relay_listeners', listener?.id)
+  return trafficStatsEnabled.value
+    ? summaryBucketForObject(trafficSummaryData.value, 'relay_listeners', listener?.id)
+    : null
 }
 
 const showAddForm = ref(false)

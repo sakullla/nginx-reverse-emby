@@ -75,7 +75,8 @@
       </BaseBadge>
     </div>
 
-    <div class="traffic-line">
+    <div v-if="hasTraffic" class="traffic-line">
+      <span>用量 {{ formatBytes(normalizedTraffic.accounted_bytes) }}</span>
       <span>入 {{ formatBytes(normalizedTraffic.rx_bytes) }}</span>
       <span>出 {{ formatBytes(normalizedTraffic.tx_bytes) }}</span>
     </div>
@@ -92,12 +93,12 @@ import BaseListCard from '../base/BaseListCard.vue'
 import BaseBadge from '../base/BaseBadge.vue'
 import BaseIconButton from '../base/BaseIconButton.vue'
 import { getRuleEffectiveStatus } from '../../utils/syncStatus'
-import { formatBytes, normalizeTrafficBucket } from '../../utils/trafficStats.js'
+import { formatBytes, normalizeTrafficSummaryBucket } from '../../utils/trafficStats.js'
 
 const props = defineProps({
   rule: { type: Object, required: true },
   agent: { type: Object, default: null },
-  traffic: { type: Object, default: () => ({ rx_bytes: 0, tx_bytes: 0 }) },
+  traffic: { type: Object, default: null },
 })
 defineEmits(['edit', 'delete', 'copy', 'toggle', 'diagnose'])
 
@@ -166,7 +167,8 @@ const tuningTags = computed(() => {
   return tags
 })
 
-const normalizedTraffic = computed(() => normalizeTrafficBucket(props.traffic))
+const hasTraffic = computed(() => props.traffic != null)
+const normalizedTraffic = computed(() => normalizeTrafficSummaryBucket(props.traffic))
 const hasTags = computed(() => Array.isArray(props.rule.tags) && props.rule.tags.length > 0)
 </script>
 
