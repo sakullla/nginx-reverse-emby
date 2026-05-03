@@ -2,6 +2,7 @@ package http
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
@@ -65,9 +66,17 @@ func (d Dependencies) handleAgentTrafficTrend(w http.ResponseWriter, r *http.Req
 		return
 	}
 	query := r.URL.Query()
+	granularity := query.Get("granularity")
+	switch granularity {
+	case "", "hour", "day", "month":
+	default:
+		status, payload := mapServiceError(fmt.Errorf("%w: unsupported traffic granularity %q", service.ErrInvalidArgument, granularity))
+		writeJSON(w, status, payload)
+		return
+	}
 	points, err := d.TrafficService.Trend(r.Context(), service.TrafficTrendQuery{
 		AgentID:     r.PathValue("agentID"),
-		Granularity: query.Get("granularity"),
+		Granularity: granularity,
 		From:        query.Get("from"),
 		To:          query.Get("to"),
 		ScopeType:   query.Get("scope_type"),

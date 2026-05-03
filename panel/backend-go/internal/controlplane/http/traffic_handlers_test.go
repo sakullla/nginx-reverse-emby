@@ -10,6 +10,7 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
 type fakeTrafficService struct {
@@ -182,6 +183,73 @@ func TestTrafficTrendReturnsPoints(t *testing.T) {
 	}
 	if !payload.OK || len(payload.Points) != 1 || payload.Points[0].AccountedBytes != 30 {
 		t.Fatalf("trend payload = %+v", payload)
+	}
+}
+
+func TestTrafficTrendRejectsInvalidGranularity(t *testing.T) {
+	router, err := NewRouter(trafficTestDependencies(fakeTrafficService{}))
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/panel-api/agents/edge-1/traffic-trend?granularity=minute", nil)
+	req.Header.Set("X-Panel-Token", "secret")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("GET traffic-trend invalid granularity = %d body=%s", resp.Code, resp.Body.String())
+	}
+}
+
+func TestTrafficRoutesUseRealServiceWhenCoreDependenciesArePrewired(t *testing.T) {
+	dataDir := t.TempDir()
+	previousOpenConfiguredStore := openConfiguredStore
+	t.Cleanup(func() {
+		openConfiguredStore = previousOpenConfiguredStore
+	})
+	openConfiguredStore = func(gotCfg config.Config) (*storage.GormStore, error) {
+		return storage.NewStore(storage.StoreConfig{
+			Driver:              "sqlite",
+			DataRoot:            dataDir,
+			LocalAgentID:        gotCfg.LocalAgentID,
+			TrafficStatsEnabled: gotCfg.TrafficStatsEnabled,
+		})
+	}
+
+	router, err := NewRouter(Dependencies{
+		Config: config.Config{
+			PanelToken:          "secret",
+			DataDir:             dataDir,
+			LocalAgentID:        "local",
+			TrafficStatsEnabled: true,
+		},
+		SystemService:        fakeSystemService{},
+		AgentService:         fakeAgentService{},
+		RuleService:          fakeRuleService{},
+		L4RuleService:        fakeL4RuleService{},
+		VersionPolicyService: fakeVersionPolicyService{},
+		RelayListenerService: fakeRelayListenerService{},
+		CertificateService:   fakeCertificateService{},
+		TaskService:          fakeTaskService{},
+		BackupService:        fakeBackupService{},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if closer, ok := router.(interface{ Close() error }); ok {
+			_ = closer.Close()
+		}
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/panel-api/agents/edge-1/traffic-policy", nil)
+	req.Header.Set("X-Panel-Token", "secret")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("GET traffic-policy with prewired deps = %d body=%s", resp.Code, resp.Body.String())
 	}
 }
 

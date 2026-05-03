@@ -284,10 +284,12 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 		d.BackupService = unavailableBackupService{}
 	}
 
-	if d.hasCoreServices() && d.TaskService != nil && d.BackupService != nil {
-		if d.TrafficService == nil {
-			d.TrafficService = unavailableTrafficService{}
-		}
+	needsOwnedStore := !d.hasCoreServices() || d.TrafficService == nil
+	if !needsOwnedStore && d.TaskService != nil && d.BackupService != nil {
+		return d, nil
+	}
+	if d.hasCoreServices() && d.TaskService != nil && d.BackupService != nil && d.TrafficService == nil && !d.Config.TrafficStatsEnabled {
+		d.TrafficService = unavailableTrafficService{}
 		return d, nil
 	}
 
