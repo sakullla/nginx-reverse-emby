@@ -26,6 +26,7 @@ type StoreConfig struct {
 	DSN                 string
 	DataRoot            string
 	LocalAgentID        string
+	SkipBootstrapSchema bool
 	TrafficStatsEnabled bool
 }
 
@@ -68,9 +69,11 @@ func NewStore(cfg StoreConfig) (*GormStore, error) {
 		localAgentID: cfg.LocalAgentID,
 		driver:       driver,
 	}
-	if err := BootstrapSchema(context.Background(), db, SchemaOptionsForDriver(driver, cfg.TrafficStatsEnabled)); err != nil {
-		_ = store.Close()
-		return nil, err
+	if !cfg.SkipBootstrapSchema {
+		if err := BootstrapSchema(context.Background(), db, SchemaOptionsForDriver(driver, cfg.TrafficStatsEnabled)); err != nil {
+			_ = store.Close()
+			return nil, err
+		}
 	}
 	return store, nil
 }

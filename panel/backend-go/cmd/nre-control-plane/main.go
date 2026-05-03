@@ -157,7 +157,8 @@ var runMigrateStorageCommand = func(ctx context.Context, cmd migrateStorageComma
 	source, err := openStore(storage.StoreConfig{
 		Driver:              cmd.FromDriver,
 		DSN:                 cmd.FromDSN,
-		TrafficStatsEnabled: true,
+		SkipBootstrapSchema: true,
+		TrafficStatsEnabled: false,
 	})
 	if err != nil {
 		return fmt.Errorf("open source storage: %w", err)

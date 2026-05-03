@@ -43,4 +43,4 @@ services:
       # CF_TOKEN: your-cloudflare-api-token
 
     volumes:
-      - ./data:/opt/nginx-reverse-emby/panel/data
+      - ./data/panel:/opt/nginx-reverse-emby/panel/data

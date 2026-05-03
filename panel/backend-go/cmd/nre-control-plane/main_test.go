@@ -170,6 +170,81 @@ func TestMigrateStorageCommandDoesNotRunOnNormalStartup(t *testing.T) {
 	}
 }
 
+func TestMigrateStorageCommandDoesNotRunControlPlaneFromEnv(t *testing.T) {
+	previousRunMigrateStorageCommand := runMigrateStorageCommand
+	previousRunControlPlaneFromEnv := runControlPlaneFromEnv
+	t.Cleanup(func() {
+		runMigrateStorageCommand = previousRunMigrateStorageCommand
+		runControlPlaneFromEnv = previousRunControlPlaneFromEnv
+	})
+
+	var gotCmd migrateStorageCommand
+	runMigrateStorageCommand = func(_ context.Context, cmd migrateStorageCommand) error {
+		gotCmd = cmd
+		return nil
+	}
+	runControlPlaneFromEnv = func() error {
+		t.Fatal("runControlPlaneFromEnv called for migrate-storage command")
+		return nil
+	}
+
+	err := runMain([]string{
+		"migrate-storage",
+		"--from-driver", "sqlite",
+		"--from-dsn", "./data/panel.db",
+		"--to-driver", "postgres",
+		"--to-dsn", "postgres://nre:nre@postgres:5432/nre?sslmode=disable",
+	})
+	if err != nil {
+		t.Fatalf("runMain(migrate-storage) error = %v", err)
+	}
+	if gotCmd.FromDriver != "sqlite" || gotCmd.ToDriver != "postgres" {
+		t.Fatalf("migrate command = %+v", gotCmd)
+	}
+}
+
+func TestMigrateStorageOpensSourceWithoutBootstrapAndTargetWithMigrations(t *testing.T) {
+	previousOpenStore := openStore
+	t.Cleanup(func() {
+		openStore = previousOpenStore
+	})
+
+	var gotConfigs []storage.StoreConfig
+	openStore = func(cfg storage.StoreConfig) (*storage.GormStore, error) {
+		gotConfigs = append(gotConfigs, cfg)
+		store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+		if err != nil {
+			t.Fatalf("NewSQLiteStore() error = %v", err)
+		}
+		return store, nil
+	}
+
+	err := runMigrateStorageCommand(context.Background(), migrateStorageCommand{
+		FromDriver: "sqlite",
+		FromDSN:    "./data/panel.db",
+		ToDriver:   "postgres",
+		ToDSN:      "postgres://nre:nre@postgres:5432/nre?sslmode=disable",
+	})
+	if err != nil {
+		t.Fatalf("runMigrateStorageCommand() error = %v", err)
+	}
+	if len(gotConfigs) != 2 {
+		t.Fatalf("openStore calls = %d, want 2", len(gotConfigs))
+	}
+	if !gotConfigs[0].SkipBootstrapSchema {
+		t.Fatal("source SkipBootstrapSchema = false, want true")
+	}
+	if gotConfigs[0].TrafficStatsEnabled {
+		t.Fatal("source TrafficStatsEnabled = true, want false")
+	}
+	if gotConfigs[1].SkipBootstrapSchema {
+		t.Fatal("target SkipBootstrapSchema = true, want false")
+	}
+	if !gotConfigs[1].TrafficStatsEnabled {
+		t.Fatal("target TrafficStatsEnabled = false, want true")
+	}
+}
+
 func TestInitializeControlPlaneSkipsLegacySQLiteGuardForPostgres(t *testing.T) {
 	cfg := config.Default()
 	cfg.DatabaseDriver = "postgres"

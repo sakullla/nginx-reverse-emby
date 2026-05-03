@@ -55,7 +55,7 @@
 ```bash
 mkdir -p nginx-reverse-emby && cd nginx-reverse-emby
 curl -O https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/docker-compose.yaml
-mkdir -p data
+mkdir -p data/postgres data/panel
 ```
 
 编辑 `docker-compose.yaml`，修改以下配置：
@@ -79,7 +79,7 @@ NRE_DATABASE_DRIVER=postgres
 NRE_DATABASE_DSN=postgres://nre:nre@postgres:5432/nre?sslmode=disable
 ```
 
-PostgreSQL 数据位于 `./data/postgres`，面板本地文件仍挂载到 `./data:/opt/nginx-reverse-emby/panel/data`。
+PostgreSQL 数据位于宿主机 `./data/postgres`，面板本地文件位于宿主机 `./data/panel`，对应容器内 `/opt/nginx-reverse-emby/panel/data`。
 
 ### 主机模式（deploy.sh）
 
@@ -155,7 +155,7 @@ NRE_DATABASE_DSN=nre:nre@tcp(mysql:3306)/nre?parseTime=true&charset=utf8mb4
 
 # SQLite legacy/dev
 NRE_DATABASE_DRIVER=sqlite
-NRE_DATABASE_DSN=./data/panel.db
+NRE_DATABASE_DSN=/opt/nginx-reverse-emby/panel/data/panel.db
 ```
 
 ### HTTP 传输与流式恢复
@@ -298,7 +298,7 @@ curl -fsSL http://master.example.com:8080/panel-api/public/join-agent.sh | sh -s
 - 导入时自动跳过冲突项并返回详细报告
 - 证书 PEM 和私钥材料一并包含，可从旧版本无感迁移
 
-也可直接备份挂载目录 `./data`（即容器内 `/opt/nginx-reverse-emby/panel/data`）。
+也可直接备份面板挂载目录 `./data/panel`（即容器内 `/opt/nginx-reverse-emby/panel/data`）。PostgreSQL 原始数据位于 `./data/postgres`，不要把它与面板文件目录混在同一个容器挂载路径下。
 
 普通备份默认包含规则、Agent、Relay、证书、版本策略和证书材料，不包含高容量 traffic history（raw cursors、hourly/daily/monthly summaries、events）。
 
@@ -309,12 +309,12 @@ curl -fsSL http://master.example.com:8080/panel-api/public/join-agent.sh | sh -s
 ```bash
 nre-control-plane migrate-storage \
   --from-driver sqlite \
-  --from-dsn ./data/panel.db \
+  --from-dsn /opt/nginx-reverse-emby/panel/data/panel.db \
   --to-driver postgres \
   --to-dsn 'postgres://nre:nre@postgres:5432/nre?sslmode=disable'
 ```
 
-该命令会复制核心配置 rows、traffic policy rows 和 traffic baseline rows，并默认跳过高容量 traffic history 表。source 与 target 的 driver+dsn 完全相同时会被拒绝。
+该命令会复制核心配置 rows、traffic policy rows 和 traffic baseline rows，并默认跳过高容量 traffic history 表。在控制面容器内执行时，SQLite source DSN 使用容器内路径 `/opt/nginx-reverse-emby/panel/data/panel.db`；在宿主机直接执行才使用宿主机路径（例如 `./data/panel/panel.db`）。source 与 target 的 driver+dsn 完全相同时会被拒绝。
 
 ## 版本更新
 
