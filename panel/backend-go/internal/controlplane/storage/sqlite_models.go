@@ -15,6 +15,7 @@ type AgentRow struct {
 	TagsJSON               string `gorm:"column:tags"`
 	CapabilitiesJSON       string `gorm:"column:capabilities"`
 	OutboundProxyURL       string `gorm:"column:outbound_proxy_url;not null;default:''"`
+	TrafficStatsInterval   string `gorm:"column:traffic_stats_interval;not null;default:''"`
 	Mode                   string `gorm:"column:mode"`
 	DesiredRevision        int    `gorm:"column:desired_revision"`
 	CurrentRevision        int    `gorm:"column:current_revision"`

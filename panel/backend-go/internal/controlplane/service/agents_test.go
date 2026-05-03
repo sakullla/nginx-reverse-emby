@@ -459,6 +459,81 @@ func TestAgentServiceUpdatePersistsOutboundProxyURL(t *testing.T) {
 	}
 }
 
+func TestAgentServiceUpdatePersistsTrafficStatsInterval(t *testing.T) {
+	ctx := context.Background()
+	store := &fakeStore{}
+	if err := store.SaveAgent(ctx, storage.AgentRow{
+		ID:                   "edge-a",
+		Name:                 "Edge A",
+		AgentToken:           "token-a",
+		CapabilitiesJSON:     `["http_rules"]`,
+		DesiredRevision:      7,
+		CurrentRevision:      7,
+		LastApplyStatus:      "success",
+		TrafficStatsInterval: "30s",
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+	svc := NewAgentService(config.Config{}, store)
+
+	agent, err := svc.Update(ctx, "edge-a", UpdateAgentRequest{
+		TrafficStatsInterval: stringPtr("  1m  "),
+	})
+	if err != nil {
+		t.Fatalf("Update() error = %v", err)
+	}
+	if agent.TrafficStatsInterval != "1m0s" || store.savedAgent.TrafficStatsInterval != "1m0s" {
+		t.Fatalf("TrafficStatsInterval agent=%q saved=%q", agent.TrafficStatsInterval, store.savedAgent.TrafficStatsInterval)
+	}
+	assertRevisionAboveFloor(t, "saved DesiredRevision", store.savedAgent.DesiredRevision, 7)
+
+	_, err = svc.Update(ctx, "edge-a", UpdateAgentRequest{
+		TrafficStatsInterval: stringPtr("60s"),
+	})
+	if err != nil {
+		t.Fatalf("Update() unchanged canonical error = %v", err)
+	}
+	if store.savedAgent.TrafficStatsInterval != "1m0s" {
+		t.Fatalf("TrafficStatsInterval after unchanged update = %q", store.savedAgent.TrafficStatsInterval)
+	}
+	unchangedRevision := store.savedAgent.DesiredRevision
+
+	_, err = svc.Update(ctx, "edge-a", UpdateAgentRequest{
+		TrafficStatsInterval: stringPtr(" "),
+	})
+	if err != nil {
+		t.Fatalf("Update() clear error = %v", err)
+	}
+	if store.savedAgent.TrafficStatsInterval != "" {
+		t.Fatalf("TrafficStatsInterval after clear = %q", store.savedAgent.TrafficStatsInterval)
+	}
+	assertRevisionAboveFloor(t, "clear DesiredRevision", store.savedAgent.DesiredRevision, unchangedRevision)
+}
+
+func TestAgentServiceUpdateRejectsInvalidTrafficStatsInterval(t *testing.T) {
+	ctx := context.Background()
+	for _, raw := range []string{"bad", "0s", "-1s"} {
+		store := &fakeStore{}
+		if err := store.SaveAgent(ctx, storage.AgentRow{
+			ID:               "edge-a",
+			Name:             "Edge A",
+			AgentToken:       "token-a",
+			CapabilitiesJSON: `["http_rules"]`,
+			LastApplyStatus:  "success",
+		}); err != nil {
+			t.Fatalf("SaveAgent() error = %v", err)
+		}
+		svc := NewAgentService(config.Config{}, store)
+
+		_, err := svc.Update(ctx, "edge-a", UpdateAgentRequest{
+			TrafficStatsInterval: stringPtr(raw),
+		})
+		if err == nil || !strings.Contains(err.Error(), "traffic_stats_interval") {
+			t.Fatalf("Update(%q) error = %v, want traffic_stats_interval validation", raw, err)
+		}
+	}
+}
+
 func TestAgentServiceUpdateBumpsDesiredRevisionWhenOutboundProxyURLChanges(t *testing.T) {
 	ctx := context.Background()
 	store := &fakeStore{

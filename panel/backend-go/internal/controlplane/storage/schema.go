@@ -68,6 +68,7 @@ func BootstrapSQLiteSchema(ctx context.Context, db *gorm.DB) error {
 		sql    string
 	}{
 		{column: "outbound_proxy_url", sql: `ALTER TABLE agents ADD COLUMN outbound_proxy_url TEXT NOT NULL DEFAULT ''`},
+		{column: "traffic_stats_interval", sql: `ALTER TABLE agents ADD COLUMN traffic_stats_interval TEXT NOT NULL DEFAULT ''`},
 	}
 	for _, migration := range agentColumnMigrations {
 		if tx.Migrator().HasColumn(&AgentRow{}, migration.column) {
@@ -133,6 +134,7 @@ func BootstrapSQLiteSchema(ctx context.Context, db *gorm.DB) error {
 		`UPDATE agents SET runtime_package_arch = '' WHERE runtime_package_arch IS NULL`,
 		`UPDATE agents SET runtime_package_sha256 = '' WHERE runtime_package_sha256 IS NULL`,
 		`UPDATE agents SET outbound_proxy_url = '' WHERE outbound_proxy_url IS NULL`,
+		`UPDATE agents SET traffic_stats_interval = '' WHERE traffic_stats_interval IS NULL`,
 		`UPDATE local_agent_state SET desired_version = '' WHERE desired_version IS NULL`,
 		`UPDATE local_agent_state SET last_apply_status = 'success' WHERE last_apply_status IS NULL OR trim(last_apply_status) = ''`,
 		`UPDATE local_agent_state SET last_apply_message = '' WHERE last_apply_message IS NULL`,
