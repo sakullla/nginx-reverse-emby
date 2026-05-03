@@ -1,6 +1,8 @@
 package http
 
 import (
+	"context"
+	"strings"
 	"testing"
 
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
@@ -43,5 +45,41 @@ func TestDependenciesWithDefaultsUsesConfiguredStore(t *testing.T) {
 	}
 	if gotStoreCfg.TrafficStatsEnabled {
 		t.Fatal("TrafficStatsEnabled = true, want false")
+	}
+}
+
+func TestNewRouterReturnsCloseableHandlerForOwnedConfiguredStore(t *testing.T) {
+	cfg := config.Default()
+	cfg.DataDir = t.TempDir()
+	cfg.LocalAgentID = "local"
+
+	previousOpenConfiguredStore := openConfiguredStore
+	t.Cleanup(func() {
+		openConfiguredStore = previousOpenConfiguredStore
+	})
+
+	store, err := storage.NewSQLiteStore(cfg.DataDir, cfg.LocalAgentID)
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	openConfiguredStore = func(config.Config) (*storage.GormStore, error) {
+		return store, nil
+	}
+
+	handler, err := NewRouter(Dependencies{Config: cfg})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+	closeable, ok := handler.(interface{ Close() error })
+	if !ok {
+		t.Fatalf("handler type = %T, want Close method", handler)
+	}
+	if err := closeable.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	_, err = store.ListAgents(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "closed") {
+		t.Fatalf("ListAgents() error = %v, want closed database error", err)
 	}
 }

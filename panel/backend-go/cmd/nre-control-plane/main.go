@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -202,6 +203,7 @@ var newLocalAgentStarter = func(cfg config.Config) (app.LocalAgentStarter, error
 
 	runtime, err := newLocalAgentRuntime(cfg, store)
 	if err != nil {
+		_ = store.Close()
 		return nil, err
 	}
 	return runtime.Start, nil
@@ -213,7 +215,11 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 		if err != nil {
 			return nil, err
 		}
-		return app.New(cfg, handler, logger, nil), nil
+		controlPlaneApp := app.New(cfg, handler, logger, nil)
+		if cleanup, ok := handler.(interface{ Close() error }); ok {
+			controlPlaneApp.SetCleanup(cleanup.Close)
+		}
+		return controlPlaneApp, nil
 	}
 
 	serviceStore, err := openConfiguredStore(cfg)
@@ -231,10 +237,17 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 
 	runtimeStore, err := openConfiguredStore(cfg)
 	if err != nil {
+		_ = serviceStore.Close()
 		return nil, err
+	}
+	closeStores := func() error {
+		runtimeErr := runtimeStore.Close()
+		serviceErr := serviceStore.Close()
+		return errors.Join(runtimeErr, serviceErr)
 	}
 	runtime, err := newLocalAgentRuntime(cfg, runtimeStore)
 	if err != nil {
+		_ = closeStores()
 		return nil, err
 	}
 
@@ -263,17 +276,11 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 		TaskService:          taskSvc,
 	})
 	if err != nil {
+		_ = closeStores()
 		return nil, err
 	}
 
 	controlPlaneApp := app.New(cfg, handler, logger, runtime.Start)
-	controlPlaneApp.SetCleanup(func() error {
-		runtimeErr := runtimeStore.Close()
-		serviceErr := serviceStore.Close()
-		if runtimeErr != nil {
-			return runtimeErr
-		}
-		return serviceErr
-	})
+	controlPlaneApp.SetCleanup(closeStores)
 	return controlPlaneApp, nil
 }

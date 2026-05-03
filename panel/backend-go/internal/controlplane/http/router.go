@@ -91,6 +91,7 @@ type Dependencies struct {
 	CertificateService   CertificateService
 	TaskService          TaskService
 	BackupService        BackupService
+	cleanup              func() error
 }
 
 var openConfiguredStore = storage.NewConfiguredStore
@@ -205,7 +206,22 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 	}
 	mux.Handle("/", resolved.staticHandler())
 
+	if resolved.cleanup != nil {
+		return closeableHandler{Handler: mux, close: resolved.cleanup}, nil
+	}
 	return mux, nil
+}
+
+type closeableHandler struct {
+	http.Handler
+	close func() error
+}
+
+func (h closeableHandler) Close() error {
+	if h.close == nil {
+		return nil
+	}
+	return h.close()
 }
 
 func (d Dependencies) withDefaults() (Dependencies, error) {
@@ -231,6 +247,7 @@ func (d Dependencies) withDefaults() (Dependencies, error) {
 	if err != nil {
 		return Dependencies{}, err
 	}
+	d.cleanup = store.Close
 
 	if d.SystemService == nil {
 		d.SystemService = service.NewSystemService(d.Config)

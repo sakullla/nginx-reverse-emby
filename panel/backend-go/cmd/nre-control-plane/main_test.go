@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"log"
 	"net/http"
 	"os"
@@ -39,6 +40,16 @@ func (s localAgentRuntimeStub) SyncNow(ctx context.Context) error {
 
 func (s localAgentRuntimeStub) DiagnoseSnapshot(context.Context, storage.Snapshot, service.TaskEnvelope) (map[string]any, error) {
 	return map[string]any{}, nil
+}
+
+type closeTrackingHandler struct {
+	http.Handler
+	closed bool
+}
+
+func (h *closeTrackingHandler) Close() error {
+	h.closed = true
+	return nil
 }
 
 func TestNewLocalAgentStarterUsesConfiguredStore(t *testing.T) {
@@ -124,6 +135,118 @@ func TestInitializeControlPlaneSkipsLegacySQLiteGuardForPostgres(t *testing.T) {
 	}
 	if !called {
 		t.Fatal("openConfiguredStore was not called")
+	}
+}
+
+func TestNewControlPlaneAppInstallsNoLocalAgentHandlerCleanup(t *testing.T) {
+	cfg := config.Default()
+	cfg.EnableLocalAgent = false
+
+	previousNewHandler := newHandler
+	t.Cleanup(func() {
+		newHandler = previousNewHandler
+	})
+
+	handler := &closeTrackingHandler{Handler: http.NewServeMux()}
+	newHandler = func(config.Config) (http.Handler, error) {
+		return handler, nil
+	}
+
+	application, err := newControlPlaneApp(cfg, nil)
+	if err != nil {
+		t.Fatalf("newControlPlaneApp() error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := application.Run(ctx); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !handler.closed {
+		t.Fatal("handler cleanup was not called")
+	}
+}
+
+func TestNewControlPlaneAppClosesStoresWhenLocalRuntimeFails(t *testing.T) {
+	cfg := config.Default()
+	cfg.EnableLocalAgent = true
+	cfg.DataDir = t.TempDir()
+
+	previousOpenConfiguredStore := openConfiguredStore
+	previousNewLocalAgentRuntime := newLocalAgentRuntime
+	t.Cleanup(func() {
+		openConfiguredStore = previousOpenConfiguredStore
+		newLocalAgentRuntime = previousNewLocalAgentRuntime
+	})
+
+	var openedStores []*storage.GormStore
+	openConfiguredStore = func(gotCfg config.Config) (*storage.GormStore, error) {
+		store, err := storage.NewSQLiteStore(t.TempDir(), gotCfg.LocalAgentID)
+		if err != nil {
+			t.Fatalf("NewSQLiteStore() error = %v", err)
+		}
+		openedStores = append(openedStores, store)
+		return store, nil
+	}
+	newLocalAgentRuntime = func(config.Config, localagent.Store) (localAgentRuntime, error) {
+		return nil, errors.New("runtime failed")
+	}
+
+	if _, err := newControlPlaneApp(cfg, nil); err == nil {
+		t.Fatal("newControlPlaneApp() error = nil, want runtime failure")
+	}
+	if len(openedStores) != 2 {
+		t.Fatalf("opened stores = %d, want 2", len(openedStores))
+	}
+	for i, store := range openedStores {
+		_, err := store.ListAgents(t.Context())
+		if err == nil || !strings.Contains(err.Error(), "closed") {
+			t.Fatalf("store %d ListAgents() error = %v, want closed database error", i, err)
+		}
+	}
+}
+
+func TestNewControlPlaneAppClosesStoresWhenHandlerBuildFails(t *testing.T) {
+	cfg := config.Default()
+	cfg.EnableLocalAgent = true
+	cfg.DataDir = t.TempDir()
+
+	previousOpenConfiguredStore := openConfiguredStore
+	previousNewHandlerWithDependencies := newHandlerWithDependencies
+	previousNewLocalAgentRuntime := newLocalAgentRuntime
+	t.Cleanup(func() {
+		openConfiguredStore = previousOpenConfiguredStore
+		newHandlerWithDependencies = previousNewHandlerWithDependencies
+		newLocalAgentRuntime = previousNewLocalAgentRuntime
+	})
+
+	var openedStores []*storage.GormStore
+	openConfiguredStore = func(gotCfg config.Config) (*storage.GormStore, error) {
+		store, err := storage.NewSQLiteStore(t.TempDir(), gotCfg.LocalAgentID)
+		if err != nil {
+			t.Fatalf("NewSQLiteStore() error = %v", err)
+		}
+		openedStores = append(openedStores, store)
+		return store, nil
+	}
+	newLocalAgentRuntime = func(config.Config, localagent.Store) (localAgentRuntime, error) {
+		return localAgentRuntimeStub{}, nil
+	}
+	newHandlerWithDependencies = func(config.Config, httpapi.Dependencies) (http.Handler, error) {
+		return nil, errors.New("handler failed")
+	}
+
+	if _, err := newControlPlaneApp(cfg, nil); err == nil {
+		t.Fatal("newControlPlaneApp() error = nil, want handler failure")
+	}
+	if len(openedStores) != 2 {
+		t.Fatalf("opened stores = %d, want 2", len(openedStores))
+	}
+	for i, store := range openedStores {
+		_, err := store.ListAgents(t.Context())
+		if err == nil || !strings.Contains(err.Error(), "closed") {
+			t.Fatalf("store %d ListAgents() error = %v, want closed database error", i, err)
+		}
 	}
 }
 
