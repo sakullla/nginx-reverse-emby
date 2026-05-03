@@ -641,7 +641,7 @@ func (s *Server) udpReadLoop(conn *net.UDPConn, rule model.L4Rule) {
 
 func (s *Server) proxyUDPPacket(listener *net.UDPConn, rule model.L4Rule, payload []byte, peer *net.UDPAddr) {
 	session, err := s.sessionForPeer(rule, listener, peer)
-	if err != nil {
+	if err != nil || session == nil {
 		return
 	}
 	_ = session.upstream.SetWriteDeadline(s.now().Add(s.udpReplyTimeoutForCandidate(l4Candidate{
@@ -739,6 +739,10 @@ func (s *Server) sessionForPeer(rule model.L4Rule, listener *net.UDPConn, peer *
 			return nil, existing.initErr
 		}
 		return existing, nil
+	}
+	if state := s.currentTrafficBlockState(); state.Blocked {
+		s.udpMu.Unlock()
+		return nil, nil
 	}
 
 	session := &udpSession{
