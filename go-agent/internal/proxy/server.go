@@ -1177,6 +1177,7 @@ func copyResponse(w http.ResponseWriter, resp *http.Response, recorder *traffic.
 		trafficWriter := newHTTPResponseTrafficWriter(w, recorder)
 		n, err := io.Copy(trafficWriter, resp.Body)
 		written = n
+		trafficWriter.FlushTraffic()
 		if err != nil {
 			return written, err
 		}
@@ -1285,50 +1286,97 @@ func copySwitchProtocolTraffic(dst io.Writer, src io.Reader, rxDirection bool, r
 	return io.Copy(wrapped, src)
 }
 
-func newHTTPResponseTrafficWriter(dst io.Writer, recorder *traffic.Recorder) httpResponseTrafficWriter {
-	return httpResponseTrafficWriter{
-		dst:      dst,
-		recorder: httpRecorderOrAggregate(recorder),
+const httpResponseTrafficFlushThreshold uint64 = 64 * 1024
+
+func newHTTPResponseTrafficWriter(dst io.Writer, recorder *traffic.Recorder) *httpResponseTrafficWriter {
+	return &httpResponseTrafficWriter{
+		dst:       dst,
+		flusher:   newHTTPResponseTrafficFlusher(recorder),
+		threshold: httpResponseTrafficFlushThreshold,
 	}
 }
 
 type httpResponseTrafficWriter struct {
-	dst      io.Writer
-	recorder *traffic.Recorder
+	dst       io.Writer
+	flusher   *httpResponseTrafficFlusher
+	threshold uint64
 }
 
-func (w httpResponseTrafficWriter) Write(p []byte) (int, error) {
+func (w *httpResponseTrafficWriter) Write(p []byte) (int, error) {
 	n, err := w.dst.Write(p)
 	if n > 0 {
-		w.recorder.Add(0, int64(n))
-		w.recorder.Flush()
+		w.flusher.Add(uint64(n), w.threshold)
 	}
 	return n, err
 }
 
-func newHTTPResponseTrafficResponseWriter(dst http.ResponseWriter, recorder *traffic.Recorder) httpResponseTrafficResponseWriter {
-	return httpResponseTrafficResponseWriter{
+func (w *httpResponseTrafficWriter) FlushTraffic() {
+	w.flusher.Flush()
+}
+
+func newHTTPResponseTrafficResponseWriter(dst http.ResponseWriter, recorder *traffic.Recorder) *httpResponseTrafficResponseWriter {
+	return &httpResponseTrafficResponseWriter{
 		ResponseWriter: dst,
-		recorder:       httpRecorderOrAggregate(recorder),
+		flusher:        newHTTPResponseTrafficFlusher(recorder),
+		threshold:      httpResponseTrafficFlushThreshold,
 	}
 }
 
 type httpResponseTrafficResponseWriter struct {
 	http.ResponseWriter
-	recorder *traffic.Recorder
+	flusher   *httpResponseTrafficFlusher
+	threshold uint64
 }
 
-func (w httpResponseTrafficResponseWriter) Write(p []byte) (int, error) {
+func (w *httpResponseTrafficResponseWriter) Write(p []byte) (int, error) {
 	n, err := w.ResponseWriter.Write(p)
 	if n > 0 {
-		w.recorder.Add(0, int64(n))
-		w.recorder.Flush()
+		w.flusher.Add(uint64(n), w.threshold)
 	}
 	return n, err
 }
 
-func (w httpResponseTrafficResponseWriter) Unwrap() http.ResponseWriter {
+func (w *httpResponseTrafficResponseWriter) Flush() {
+	w.FlushTraffic()
+	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (w *httpResponseTrafficResponseWriter) FlushTraffic() {
+	w.flusher.Flush()
+}
+
+func (w *httpResponseTrafficResponseWriter) Unwrap() http.ResponseWriter {
 	return w.ResponseWriter
+}
+
+type httpResponseTrafficFlusher struct {
+	recorder *traffic.Recorder
+	pending  uint64
+}
+
+func newHTTPResponseTrafficFlusher(recorder *traffic.Recorder) *httpResponseTrafficFlusher {
+	return &httpResponseTrafficFlusher{recorder: httpRecorderOrAggregate(recorder)}
+}
+
+func (f *httpResponseTrafficFlusher) Add(bytes uint64, threshold uint64) {
+	if f == nil || bytes == 0 {
+		return
+	}
+	f.pending += bytes
+	if f.pending >= threshold {
+		f.Flush()
+	}
+}
+
+func (f *httpResponseTrafficFlusher) Flush() {
+	if f == nil || f.pending == 0 {
+		return
+	}
+	f.recorder.Add(0, int64(f.pending))
+	f.recorder.Flush()
+	f.pending = 0
 }
 
 type switchProtocolTrafficWriter struct {

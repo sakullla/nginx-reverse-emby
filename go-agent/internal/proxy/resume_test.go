@@ -686,7 +686,7 @@ func TestCopyResumableResponseRecordsHTTPTrafficWhileStreaming(t *testing.T) {
 	traffic.Reset()
 	defer traffic.Reset()
 
-	payload := []byte("streamed-resumable-response")
+	payload := bytes.Repeat([]byte("x"), int(httpResponseTrafficFlushThreshold))
 	body := newBlockingReadCloser(payload)
 	resp := &http.Response{
 		StatusCode:    http.StatusOK,
@@ -723,8 +723,8 @@ func TestCopyResumableResponseRecordsHTTPTrafficWhileStreaming(t *testing.T) {
 	}()
 
 	recorder.waitForWrite(t)
-	assertHTTPAggregateTraffic(t, 0, uint64(len(payload)))
-	assertHTTPRuleTrafficEventually(t, "99", 0, uint64(len(payload)))
+	assertHTTPAggregateTraffic(t, 0, httpResponseTrafficFlushThreshold)
+	assertHTTPRuleTrafficEventually(t, "99", 0, httpResponseTrafficFlushThreshold)
 
 	body.Close()
 	if err := <-done; err != nil {
