@@ -13,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/upstream"
 )
 
@@ -1295,7 +1296,8 @@ func (s *serverTLSTCPSession) handleStream(listener Listener, stream *tlsTCPLogi
 		return
 	}
 
-	pipeBothWaysWithInitialRelayRX(wrapIdleConn(stream), wrapIdleConn(upstream), int64(len(request.InitialData)))
+	recorder := traffic.NewRelayListenerRecorder(listener.ID)
+	pipeBothWaysWithInitialRelayRX(wrapIdleConn(stream), wrapIdleConn(upstream), int64(len(request.InitialData)), recorder)
 	s.tunnel.removeStream(stream.streamID)
 }
 
@@ -1317,7 +1319,7 @@ func (s *serverTLSTCPSession) handleUDPStream(listener Listener, stream *tlsTCPL
 		return
 	}
 
-	pipeUDPPackets(stream, upstream)
+	pipeUDPPackets(stream, upstream, traffic.NewRelayListenerRecorder(listener.ID))
 	s.tunnel.removeStream(stream.streamID)
 }
 

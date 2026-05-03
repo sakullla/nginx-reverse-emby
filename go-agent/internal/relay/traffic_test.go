@@ -23,7 +23,7 @@ func TestPipeBothWaysRecordsRelayTraffic(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		pipeBothWays(left, right)
+		pipeBothWays(left, right, nil)
 		close(done)
 	}()
 
@@ -55,6 +55,53 @@ func TestPipeBothWaysRecordsRelayTraffic(t *testing.T) {
 	}
 }
 
+func TestPipeBothWaysRecordsRelayListenerTraffic(t *testing.T) {
+	traffic.Reset()
+	traffic.SetEnabled(true)
+	defer traffic.Reset()
+
+	left, clientPeer := net.Pipe()
+	right, upstreamPeer := net.Pipe()
+	defer left.Close()
+	defer clientPeer.Close()
+	defer right.Close()
+	defer upstreamPeer.Close()
+
+	done := make(chan struct{})
+	go func() {
+		pipeBothWays(left, right, traffic.NewRelayListenerRecorder(99))
+		close(done)
+	}()
+
+	if _, err := clientPeer.Write([]byte("relay-inbound")); err != nil {
+		t.Fatalf("client write error: %v", err)
+	}
+	readRelayExact(t, upstreamPeer, len("relay-inbound"))
+
+	if _, err := upstreamPeer.Write([]byte("relay-outbound")); err != nil {
+		t.Fatalf("upstream write error: %v", err)
+	}
+	readRelayExact(t, clientPeer, len("relay-outbound"))
+
+	_ = clientPeer.Close()
+	_ = upstreamPeer.Close()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("pipeBothWays did not exit")
+	}
+
+	stats := traffic.Snapshot()["traffic"].(map[string]any)
+	listeners := stats["relay_listeners"].(map[string]map[string]uint64)
+	got := listeners["99"]
+	if got["rx_bytes"] != uint64(len("relay-inbound")) {
+		t.Fatalf("relay_listeners[99].rx_bytes = %d", got["rx_bytes"])
+	}
+	if got["tx_bytes"] != uint64(len("relay-outbound")) {
+		t.Fatalf("relay_listeners[99].tx_bytes = %d", got["tx_bytes"])
+	}
+}
+
 func TestPipeBothWaysReportsRelayTrafficBeforeStreamsClose(t *testing.T) {
 	traffic.Reset()
 	defer traffic.Reset()
@@ -68,7 +115,7 @@ func TestPipeBothWaysReportsRelayTrafficBeforeStreamsClose(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		pipeBothWays(left, right)
+		pipeBothWays(left, right, nil)
 		close(done)
 	}()
 
@@ -123,7 +170,7 @@ func TestPipeBothWaysIncludesInitialPayloadTraffic(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		pipeBothWaysWithInitialRelayRX(left, right, int64(len(initial)))
+		pipeBothWaysWithInitialRelayRX(left, right, int64(len(initial)), nil)
 		close(done)
 	}()
 
@@ -150,7 +197,7 @@ func TestPipeUDPPacketsFlushesTrafficAfterBothDirectionsFinish(t *testing.T) {
 
 	done := make(chan struct{})
 	go func() {
-		pipeUDPPackets(clientConn, upstream)
+		pipeUDPPackets(clientConn, upstream, nil)
 		close(done)
 	}()
 

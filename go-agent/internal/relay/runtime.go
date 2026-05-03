@@ -919,7 +919,8 @@ func (s *Server) handleQUICStream(conn *quic.Conn, stream *quic.Stream, listener
 	}
 	cancelStream = false
 
-	pipeBothWaysWithInitialRelayRX(wrapIdleConn(clientConn), wrapIdleConn(upstream), int64(len(request.InitialData)))
+	recorder := traffic.NewRelayListenerRecorder(listener.ID)
+	pipeBothWaysWithInitialRelayRX(wrapIdleConn(clientConn), wrapIdleConn(upstream), int64(len(request.InitialData)), recorder)
 }
 
 func listenerUsesEarlyWindowMask(listener Listener) bool {
@@ -948,12 +949,12 @@ func (s *Server) handleUDPRelayStream(clientConn net.Conn, listener Listener, ta
 		relayClientConn = wrapConnWithEarlyWindowMask(clientConn, defaultEarlyWindowMaskConfig())
 	}
 
-	pipeUDPPackets(relayClientConn, upstream)
+	pipeUDPPackets(relayClientConn, upstream, traffic.NewRelayListenerRecorder(listener.ID))
 }
 
-func pipeUDPPackets(clientConn net.Conn, upstream udpPacketPeer) {
+func pipeUDPPackets(clientConn net.Conn, upstream udpPacketPeer, recorder *traffic.Recorder) {
 	done := make(chan struct{}, 2)
-	recorder := traffic.NewRelayRecorder()
+	recorder = relayRecorderOrAggregate(recorder)
 
 	go func() {
 		defer upstream.Close()
@@ -1034,13 +1035,13 @@ func (s *Server) closeQUICConns() {
 	}
 }
 
-func pipeBothWays(left, right net.Conn) {
-	pipeBothWaysWithInitialRelayRX(left, right, 0)
+func pipeBothWays(left, right net.Conn, recorder *traffic.Recorder) {
+	pipeBothWaysWithInitialRelayRX(left, right, 0, recorder)
 }
 
-func pipeBothWaysWithInitialRelayRX(left, right net.Conn, initialRX int64) {
+func pipeBothWaysWithInitialRelayRX(left, right net.Conn, initialRX int64, recorder *traffic.Recorder) {
 	done := make(chan struct{}, 2)
-	recorder := traffic.NewRelayRecorder()
+	recorder = relayRecorderOrAggregate(recorder)
 	recorder.Add(initialRX, 0)
 	recorder.Flush()
 
@@ -1061,6 +1062,13 @@ func pipeBothWaysWithInitialRelayRX(left, right net.Conn, initialRX int64) {
 	<-done
 	<-done
 	recorder.Flush()
+}
+
+func relayRecorderOrAggregate(recorder *traffic.Recorder) *traffic.Recorder {
+	if recorder != nil {
+		return recorder
+	}
+	return traffic.NewRelayRecorder()
 }
 
 func closeWrite(conn net.Conn) {
