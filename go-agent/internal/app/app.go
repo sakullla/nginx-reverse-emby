@@ -320,6 +320,9 @@ func (a *App) Run(ctx context.Context) error {
 	if err := a.runtime.Apply(ctx, Snapshot{}, applied); err != nil {
 		log.Printf("[agent] startup runtime hydration error at revision %d: %v", applied.Revision, err)
 		_ = a.recordRuntimeErrorWithRevision(err, applied.Revision)
+	} else if err := a.persistTrafficStatsInterval(applied.AgentConfig.TrafficStatsInterval); err != nil {
+		log.Printf("[agent] startup traffic stats interval hydration error at revision %d: %v", applied.Revision, err)
+		_ = a.recordRuntimeErrorWithRevision(err, applied.Revision)
 	}
 
 	if err := a.performSync(ctx); err != nil {
@@ -508,6 +511,11 @@ func (a *App) syncOnce(ctx context.Context, req SyncRequest) error {
 		return a.recordPersistedRuntimeErrorWithRevision(err, candidateApplied.Revision)
 	}
 	if err := a.persistRuntimeState(true); err != nil {
+		a.rollbackRuntime(ctx, candidateApplied, previousApplied)
+		_ = a.store.SaveAppliedSnapshot(previousApplied)
+		return a.recordPersistedRuntimeErrorWithRevision(err, candidateApplied.Revision)
+	}
+	if err := a.persistTrafficStatsInterval(candidateApplied.AgentConfig.TrafficStatsInterval); err != nil {
 		a.rollbackRuntime(ctx, candidateApplied, previousApplied)
 		_ = a.store.SaveAppliedSnapshot(previousApplied)
 		return a.recordPersistedRuntimeErrorWithRevision(err, candidateApplied.Revision)
@@ -734,7 +742,7 @@ func (a *App) snapshotActivationHandlers() agentruntime.SnapshotActivationHandle
 				return err
 			}
 			relay.SetOutboundProxyURL(cfg.OutboundProxyURL)
-			return a.persistTrafficStatsInterval(cfg.TrafficStatsInterval)
+			return nil
 		},
 		ActivateManagedCertificates: func(ctx context.Context, bundles []model.ManagedCertificateBundle, policies []model.ManagedCertificatePolicy) error {
 			return a.applyManagedCertificates(ctx, Snapshot{

@@ -2160,9 +2160,8 @@ func TestPerformSyncDoesNotUpdateTrafficStatsReportTimestampOnSyncFailure(t *tes
 	}
 }
 
-func TestRuntimeActivationPersistsTrafficStatsInterval(t *testing.T) {
+func TestPerformSyncPersistsTrafficStatsIntervalAfterSuccessfulApply(t *testing.T) {
 	mem := store.NewInMemory()
-	app := newAppWithDeps(Config{}, mem, newTestSyncClient(nil, syncResponse{}), nil, nil, nil)
 	next := Snapshot{
 		DesiredVersion: "next",
 		Revision:       7,
@@ -2170,9 +2169,11 @@ func TestRuntimeActivationPersistsTrafficStatsInterval(t *testing.T) {
 			TrafficStatsInterval: "30s",
 		},
 	}
+	client := newTestSyncClient(nil, syncResponse{snapshot: next})
+	app := newAppWithDeps(Config{}, mem, client, nil, nil, nil)
 
-	if err := app.runtime.Apply(context.Background(), Snapshot{}, next); err != nil {
-		t.Fatalf("Apply() error = %v", err)
+	if err := app.performSync(context.Background()); err != nil {
+		t.Fatalf("performSync() error = %v", err)
 	}
 
 	state, err := mem.LoadRuntimeState()
@@ -2181,6 +2182,65 @@ func TestRuntimeActivationPersistsTrafficStatsInterval(t *testing.T) {
 	}
 	if state.Metadata[runtimeMetaTrafficStatsInterval] != "30s" {
 		t.Fatalf("traffic_stats_interval = %q, want 30s", state.Metadata[runtimeMetaTrafficStatsInterval])
+	}
+}
+
+func TestPerformSyncKeepsTrafficStatsIntervalWhenLaterActivationFails(t *testing.T) {
+	mem := store.NewInMemory()
+	previous := Snapshot{
+		DesiredVersion: "stable",
+		Revision:       7,
+		AgentConfig: model.AgentConfig{
+			TrafficStatsInterval: "30s",
+		},
+		Rules: []model.HTTPRule{{
+			FrontendURL: "http://stable.example.test:18080",
+			BackendURL:  "http://127.0.0.1:8096",
+			Revision:    1,
+		}},
+	}
+	if err := mem.SaveAppliedSnapshot(previous); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+	if err := mem.SaveRuntimeState(store.RuntimeState{
+		CurrentRevision: previous.Revision,
+		Metadata: map[string]string{
+			"current_revision":              "7",
+			runtimeMetaTrafficStatsInterval: "30s",
+		},
+	}); err != nil {
+		t.Fatalf("failed to seed runtime state: %v", err)
+	}
+
+	next := Snapshot{
+		DesiredVersion: "next",
+		Revision:       9,
+		AgentConfig: model.AgentConfig{
+			TrafficStatsInterval: "5m",
+		},
+		Rules: []model.HTTPRule{{
+			FrontendURL: "http://next.example.test:18080",
+			BackendURL:  "http://127.0.0.1:8096",
+			Revision:    2,
+		}},
+	}
+	client := newTestSyncClient(nil, syncResponse{snapshot: next})
+	httpApplier := &testHTTPApplier{
+		applyErr:   errors.New("http apply failed"),
+		failOnCall: 1,
+	}
+	app := newAppWithHTTPDeps(Config{CurrentVersion: "1.0.0"}, mem, client, httpApplier, nil, nil, nil)
+
+	if err := app.performSync(context.Background()); err == nil || err.Error() != "http apply failed" {
+		t.Fatalf("performSync() error = %v, want http apply failed", err)
+	}
+
+	state, err := mem.LoadRuntimeState()
+	if err != nil {
+		t.Fatalf("failed to load runtime state: %v", err)
+	}
+	if state.Metadata[runtimeMetaTrafficStatsInterval] != "30s" {
+		t.Fatalf("traffic_stats_interval = %q, want previous 30s after failed activation", state.Metadata[runtimeMetaTrafficStatsInterval])
 	}
 }
 
