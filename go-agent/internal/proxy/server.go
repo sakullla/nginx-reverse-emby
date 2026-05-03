@@ -969,8 +969,9 @@ func parseHTTPBackends(rule model.HTTPRule) ([]httpBackend, error) {
 }
 
 type reusableRequestBody struct {
-	buffered []byte
-	stream   io.ReadCloser
+	buffered      []byte
+	stream        io.ReadCloser
+	contentLength int64
 }
 
 func prepareReusableBody(req *http.Request, maxAttempts int) (*reusableRequestBody, error) {
@@ -978,14 +979,14 @@ func prepareReusableBody(req *http.Request, maxAttempts int) (*reusableRequestBo
 		return &reusableRequestBody{}, nil
 	}
 	if maxAttempts <= 1 {
-		return &reusableRequestBody{stream: req.Body}, nil
+		return &reusableRequestBody{stream: req.Body, contentLength: req.ContentLength}, nil
 	}
 	defer req.Body.Close()
 	body, err := io.ReadAll(req.Body)
 	if err != nil {
 		return nil, err
 	}
-	return &reusableRequestBody{buffered: body}, nil
+	return &reusableRequestBody{buffered: body, contentLength: int64(len(body))}, nil
 }
 
 func (b *reusableRequestBody) Open() (io.ReadCloser, int64, func() (io.ReadCloser, error)) {
@@ -1002,7 +1003,7 @@ func (b *reusableRequestBody) Open() (io.ReadCloser, int64, func() (io.ReadClose
 	if b.stream != nil {
 		stream := b.stream
 		b.stream = nil
-		return stream, 0, nil
+		return stream, b.contentLength, nil
 	}
 	return nil, 0, nil
 }
