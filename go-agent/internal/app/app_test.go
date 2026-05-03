@@ -2101,6 +2101,42 @@ func TestPerformSyncStoresTrafficBlockedStateFromAgentConfig(t *testing.T) {
 	}
 }
 
+func TestPerformSyncClearsTrafficBlockedStateFromAgentConfig(t *testing.T) {
+	mem := store.NewInMemory()
+	if err := mem.SaveRuntimeState(store.RuntimeState{
+		Metadata: map[string]string{
+			runtimeMetaTrafficBlocked:     "true",
+			runtimeMetaTrafficBlockReason: "monthly quota exceeded",
+		},
+	}); err != nil {
+		t.Fatalf("failed to seed runtime state: %v", err)
+	}
+	next := Snapshot{
+		DesiredVersion: "next",
+		Revision:       8,
+		AgentConfig: model.AgentConfig{
+			TrafficBlocked: false,
+		},
+	}
+	client := newTestSyncClient(nil, syncResponse{snapshot: next})
+	app := newAppWithDeps(Config{}, mem, client, nil, nil, nil)
+
+	if err := app.performSync(context.Background()); err != nil {
+		t.Fatalf("performSync() error = %v", err)
+	}
+
+	state, err := mem.LoadRuntimeState()
+	if err != nil {
+		t.Fatalf("failed to load runtime state: %v", err)
+	}
+	if state.Metadata[runtimeMetaTrafficBlocked] != "false" {
+		t.Fatalf("traffic_blocked = %q, want false", state.Metadata[runtimeMetaTrafficBlocked])
+	}
+	if state.Metadata[runtimeMetaTrafficBlockReason] != "" {
+		t.Fatalf("traffic_block_reason = %q, want cleared", state.Metadata[runtimeMetaTrafficBlockReason])
+	}
+}
+
 func TestSyncRequestSuppressesStatsBeforeTrafficStatsInterval(t *testing.T) {
 	traffic.Reset()
 	traffic.SetEnabled(true)

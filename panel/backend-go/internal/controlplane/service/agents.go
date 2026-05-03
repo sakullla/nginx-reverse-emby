@@ -764,12 +764,14 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 		row.CapabilitiesJSON = marshalStringArray(normalizeCapabilities(request.Capabilities))
 	}
 	trafficStatsEnabled := s.cfg.TrafficStatsEnabled
-	if request.Stats != nil && trafficStatsEnabled {
-		row.LastReportedStatsJSON = marshalAgentStats(request.Stats)
-		if s.trafficService != nil {
-			if err := s.trafficService.IngestHeartbeat(ctx, row.ID, request.Stats); err != nil {
-				return HeartbeatReply{}, err
+	if request.Stats != nil {
+		if trafficStatsEnabled {
+			row.LastReportedStatsJSON = marshalAgentStats(request.Stats)
+			if s.trafficService != nil {
+				_ = s.trafficService.IngestHeartbeat(ctx, row.ID, request.Stats)
 			}
+		} else {
+			row.LastReportedStatsJSON = ""
 		}
 	}
 	if strings.TrimSpace(request.LastSeenIP) != "" {
@@ -841,7 +843,7 @@ func (s *agentService) heartbeatTrafficBlockState(ctx context.Context, agentID s
 		if errors.Is(err, ErrTrafficStatsDisabled) {
 			return false, "", nil
 		}
-		return false, "", err
+		return false, "", nil
 	}
 	if !summary.Blocked {
 		return false, "", nil

@@ -37,6 +37,7 @@ type fakeStore struct {
 
 type fakeHeartbeatTrafficService struct {
 	ingestCalls []fakeHeartbeatTrafficIngest
+	ingestErr   error
 	summary     TrafficSummary
 	summaryErr  error
 }
@@ -51,6 +52,9 @@ func (f *fakeHeartbeatTrafficService) IngestHeartbeat(_ context.Context, agentID
 		agentID: agentID,
 		stats:   stats,
 	})
+	if f.ingestErr != nil {
+		return f.ingestErr
+	}
 	return nil
 }
 
@@ -1449,14 +1453,52 @@ func TestHeartbeatIgnoresTrafficAndDisablesAgentReportingWhenModuleDisabled(t *t
 	if got := len(trafficSvc.ingestCalls); got != 0 {
 		t.Fatalf("traffic ingest calls = %d, want 0", got)
 	}
-	if store.savedAgent.LastReportedStatsJSON != `{"traffic":{"total":{"rx_bytes":1,"tx_bytes":2}}}` {
-		t.Fatalf("LastReportedStatsJSON = %q, want unchanged", store.savedAgent.LastReportedStatsJSON)
+	if store.savedAgent.LastReportedStatsJSON != "" {
+		t.Fatalf("LastReportedStatsJSON = %q, want cleared", store.savedAgent.LastReportedStatsJSON)
 	}
 	if reply.TrafficStatsEnabled == nil || *reply.TrafficStatsEnabled {
 		t.Fatalf("TrafficStatsEnabled = %v, want false", reply.TrafficStatsEnabled)
 	}
 	if reply.TrafficBlocked {
 		t.Fatal("TrafficBlocked = true, want false when module disabled")
+	}
+}
+
+func TestHeartbeatTrafficErrorsDoNotFailAgentSync(t *testing.T) {
+	store := &fakeStore{
+		agents: []storage.AgentRow{{
+			ID:              "remote-traffic",
+			Name:            "remote-traffic",
+			AgentToken:      "token-remote-traffic",
+			DesiredRevision: 2,
+			CurrentRevision: 1,
+			LastApplyStatus: "success",
+		}},
+		snapshot: storage.Snapshot{DesiredVersion: "3.0.0", Revision: 2},
+	}
+	trafficSvc := &fakeHeartbeatTrafficService{
+		ingestErr:  errors.New("traffic ingest unavailable"),
+		summaryErr: errors.New("traffic summary unavailable"),
+	}
+	svc := NewAgentService(config.Config{TrafficStatsEnabled: true}, store)
+	svc.SetTrafficService(trafficSvc)
+
+	reply, err := svc.Heartbeat(context.Background(), HeartbeatRequest{
+		CurrentRevision: 1,
+		Stats: AgentStats{
+			"traffic": map[string]any{
+				"total": map[string]any{"rx_bytes": float64(123), "tx_bytes": float64(456)},
+			},
+		},
+	}, "token-remote-traffic")
+	if err != nil {
+		t.Fatalf("Heartbeat() error = %v", err)
+	}
+	if store.savedAgent.ID != "remote-traffic" || store.savedAgent.LastSeenAt == "" {
+		t.Fatalf("savedAgent = %+v, want heartbeat persisted", store.savedAgent)
+	}
+	if reply.TrafficBlocked {
+		t.Fatal("TrafficBlocked = true, want false on summary failure")
 	}
 }
 
