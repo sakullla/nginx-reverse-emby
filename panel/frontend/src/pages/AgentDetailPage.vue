@@ -358,8 +358,20 @@ async function saveTrafficStatsInterval() {
 
 async function saveTrafficPolicy() {
   if (!agent.value || !trafficStatsEnabled.value) return
+  if (!isIntegerInRange(trafficPolicyForm.value.cycle_start_day, 1, 28)) {
+    messageStore.warning('月周期起始日必须是 1 到 28 的整数')
+    return
+  }
   if (!isBlankOrFiniteNonNegative(trafficPolicyForm.value.monthly_quota_bytes)) {
     messageStore.warning('月额度必须为空或非负数字')
+    return
+  }
+  if (!isPositiveInteger(trafficPolicyForm.value.hourly_retention_days)) {
+    messageStore.warning('小时保留必须是正整数')
+    return
+  }
+  if (!isPositiveInteger(trafficPolicyForm.value.daily_retention_months)) {
+    messageStore.warning('日保留必须是正整数')
     return
   }
   if (!isBlankOrPositiveInteger(trafficPolicyForm.value.monthly_retention_months)) {
@@ -393,8 +405,17 @@ function isBlankOrFiniteNonNegative(value) {
 
 function isBlankOrPositiveInteger(value) {
   if (value == null || value === '') return true
+  return isPositiveInteger(value)
+}
+
+function isPositiveInteger(value) {
   const number = Number(value)
   return Number.isInteger(number) && number > 0
+}
+
+function isIntegerInRange(value, min, max) {
+  const number = Number(value)
+  return Number.isInteger(number) && number >= min && number <= max
 }
 
 function formatCycle(start, end) {

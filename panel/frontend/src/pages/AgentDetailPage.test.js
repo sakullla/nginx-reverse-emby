@@ -186,6 +186,27 @@ describe('AgentDetailPage', () => {
     expect(apiCalls.updateTrafficPolicy).not.toHaveBeenCalled()
   })
 
+  it('does not normalize invalid traffic policy integers into defaults', async () => {
+    const wrapper = await mountPage()
+    await wrapper.findAll('.tab-btn').find((button) => button.text() === '流量统计').trigger('click')
+    await nextTick()
+
+    const numberInputs = wrapper.findAll('input[type="number"]')
+    await numberInputs[0].setValue('99')
+    await wrapper.find('.traffic-panel__footer .btn-primary').trigger('click')
+    expect(apiCalls.updateTrafficPolicy).not.toHaveBeenCalled()
+
+    await numberInputs[0].setValue('1')
+    await numberInputs[1].setValue('0')
+    await wrapper.find('.traffic-panel__footer .btn-primary').trigger('click')
+    expect(apiCalls.updateTrafficPolicy).not.toHaveBeenCalled()
+
+    await numberInputs[1].setValue('180')
+    await numberInputs[2].setValue('0')
+    await wrapper.find('.traffic-panel__footer .btn-primary').trigger('click')
+    expect(apiCalls.updateTrafficPolicy).not.toHaveBeenCalled()
+  })
+
   it('does not cleanup traffic history when confirmation is cancelled', async () => {
     window.confirm.mockReturnValue(false)
     const wrapper = await mountPage()
