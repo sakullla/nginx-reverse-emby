@@ -86,7 +86,7 @@
               <span>{{ trafficTrendPoints.length }} 天</span>
             </div>
             <div class="traffic-trend">
-              <div v-for="point in trafficTrendPoints" :key="point.bucket_start" class="traffic-trend__item">
+              <div v-for="(point, index) in trafficTrendPoints" :key="trafficTrendKey(point, index)" class="traffic-trend__item">
                 <div class="traffic-trend__bars">
                   <div class="traffic-trend__bar traffic-trend__bar--rx" :style="{ height: trendBarHeight(point.rx_bytes) }"></div>
                   <div class="traffic-trend__bar traffic-trend__bar--tx" :style="{ height: trendBarHeight(point.tx_bytes) }"></div>
@@ -282,13 +282,13 @@ const { data: agentStatsData } = useQuery({
   enabled: () => !!agentId.value,
   refetchInterval: 10_000
 })
-const { data: systemInfoData } = useQuery({
+const { data: systemInfoData, isSuccess: isSystemInfoLoaded } = useQuery({
   queryKey: ['system-info'],
   queryFn: fetchSystemInfo
 })
 const agentStats = computed(() => agentStatsData.value ?? {})
 const systemInfo = computed(() => systemInfoData.value ?? {})
-const trafficStatsEnabled = computed(() => systemInfo.value?.traffic_stats_enabled !== false)
+const trafficStatsEnabled = computed(() => isSystemInfoLoaded.value && systemInfo.value?.traffic_stats_enabled !== false)
 const trafficPolicyQuery = useTrafficPolicy(computed(() => trafficStatsEnabled.value ? agentId.value : null))
 const trafficSummaryQuery = useTrafficSummary(computed(() => trafficStatsEnabled.value ? agentId.value : null))
 const trafficTrendQuery = useTrafficTrend(
@@ -358,6 +358,14 @@ async function saveTrafficStatsInterval() {
 
 async function saveTrafficPolicy() {
   if (!agent.value || !trafficStatsEnabled.value) return
+  if (!isBlankOrFiniteNonNegative(trafficPolicyForm.value.monthly_quota_bytes)) {
+    messageStore.warning('月额度必须为空或非负数字')
+    return
+  }
+  if (!isBlankOrPositiveInteger(trafficPolicyForm.value.monthly_retention_months)) {
+    messageStore.warning('月保留必须为空或正整数')
+    return
+  }
   const payload = normalizeTrafficPolicy({
     ...trafficPolicyForm.value,
     monthly_quota_bytes: trafficPolicyForm.value.monthly_quota_bytes === '' ? null : trafficPolicyForm.value.monthly_quota_bytes
@@ -373,7 +381,20 @@ async function calibrateTrafficSummary() {
 
 async function cleanupTrafficHistory() {
   if (!agent.value || !trafficStatsEnabled.value) return
+  if (typeof window !== 'undefined' && !window.confirm('确认清理当前保留策略之外的流量历史？')) return
   await cleanupTrafficMutation.mutateAsync()
+}
+
+function isBlankOrFiniteNonNegative(value) {
+  if (value == null || value === '') return true
+  const number = Number(value)
+  return Number.isFinite(number) && number >= 0
+}
+
+function isBlankOrPositiveInteger(value) {
+  if (value == null || value === '') return true
+  const number = Number(value)
+  return Number.isInteger(number) && number > 0
 }
 
 function formatCycle(start, end) {
@@ -383,7 +404,13 @@ function formatCycle(start, end) {
 
 function formatTrendLabel(bucketStart) {
   if (!bucketStart) return '—'
-  return new Date(bucketStart).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })
+  const date = new Date(bucketStart)
+  if (Number.isNaN(date.getTime())) return '—'
+  return date.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })
+}
+
+function trafficTrendKey(point, index) {
+  return `${point.bucket_start || 'point'}-${index}`
 }
 
 function trendBarHeight(bytes) {
