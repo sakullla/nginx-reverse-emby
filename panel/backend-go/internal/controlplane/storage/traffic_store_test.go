@@ -432,6 +432,74 @@ func TestDeleteTrafficBeforeRemovesExpiredBuckets(t *testing.T) {
 	}
 }
 
+func TestListTrafficBreakdownGroupsByScopeID(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+	bucket := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
+	for _, delta := range []TrafficDelta{
+		{AgentID: "edge-1", ScopeType: "http_rule", ScopeID: "11", BucketStart: bucket, RXBytes: 100, TXBytes: 200},
+		{AgentID: "edge-1", ScopeType: "http_rule", ScopeID: "11", BucketStart: bucket.Add(30 * time.Minute), RXBytes: 50, TXBytes: 25},
+		{AgentID: "edge-1", ScopeType: "http_rule", ScopeID: "12", BucketStart: bucket, RXBytes: 7, TXBytes: 9},
+		{AgentID: "edge-1", ScopeType: "l4_rule", ScopeID: "99", BucketStart: bucket, RXBytes: 1000, TXBytes: 2000},
+	} {
+		if err := store.IncrementTrafficBuckets(ctx, delta); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rows, err := store.ListTrafficBreakdown(ctx, TrafficTrendQuery{
+		AgentID:     "edge-1",
+		ScopeType:   "http_rule",
+		Granularity: "hour",
+		From:        bucket,
+		To:          bucket.Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("rows = %+v, want two grouped scope IDs", rows)
+	}
+	assertTrafficBucket(t, rows, "http_rule", "11", 150, 225)
+	assertTrafficBucket(t, rows, "http_rule", "12", 7, 9)
+}
+
+func TestSaveTrafficEventPersists(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+
+	if err := store.SaveTrafficEvent(ctx, AgentTrafficEventRow{
+		AgentID:   "edge-1",
+		EventType: "counter_reset",
+		Message:   "traffic counter reset",
+		Payload:   `{"scope_type":"agent_total"}`,
+		CreatedAt: "2026-05-03T08:00:00Z",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	var rows []AgentTrafficEventRow
+	if err := store.db.WithContext(ctx).Where("agent_id = ?", "edge-1").Find(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].EventType != "counter_reset" || rows[0].Payload == "" {
+		t.Fatalf("rows = %+v", rows)
+	}
+}
+
+func assertTrafficBucket(t *testing.T, rows []TrafficBucketRow, scopeType, scopeID string, rx, tx uint64) {
+	t.Helper()
+	for _, row := range rows {
+		if row.ScopeType == scopeType && row.ScopeID == scopeID {
+			if row.RXBytes != rx || row.TXBytes != tx {
+				t.Fatalf("%s/%s = %+v, want rx=%d tx=%d", scopeType, scopeID, row, rx, tx)
+			}
+			return
+		}
+	}
+	t.Fatalf("missing %s/%s in %+v", scopeType, scopeID, rows)
+}
+
 func openTrafficTestGormDB(t *testing.T) *gorm.DB {
 	t.Helper()
 

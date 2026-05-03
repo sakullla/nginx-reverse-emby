@@ -250,6 +250,61 @@ func (s *GormStore) ListTrafficTrend(ctx context.Context, query TrafficTrendQuer
 	}
 }
 
+func (s *GormStore) ListTrafficBreakdown(ctx context.Context, query TrafficTrendQuery) ([]TrafficBucketRow, error) {
+	var err error
+	query.AgentID = s.resolveAgentID(query.AgentID)
+	query.ScopeType, err = normalizeTrafficScopeType(query.ScopeType)
+	if err != nil {
+		return nil, err
+	}
+
+	switch normalizeTrafficGranularity(query.Granularity) {
+	case "hour":
+		var rows []trafficBreakdownRow
+		err := applyTrafficBreakdownQuery(s.db.WithContext(ctx).Model(&AgentTrafficHourlyBucketRow{}), query, "bucket_start").
+			Group("agent_id, scope_type, scope_id").
+			Order("scope_id").
+			Scan(&rows).Error
+		if err != nil {
+			return nil, err
+		}
+		return trafficBreakdownRows(rows)
+	case "day":
+		var rows []trafficBreakdownRow
+		err := applyTrafficBreakdownQuery(s.db.WithContext(ctx).Model(&AgentTrafficDailySummaryRow{}), query, "period_start").
+			Group("agent_id, scope_type, scope_id").
+			Order("scope_id").
+			Scan(&rows).Error
+		if err != nil {
+			return nil, err
+		}
+		return trafficBreakdownRows(rows)
+	case "month":
+		var rows []trafficBreakdownRow
+		err := applyTrafficBreakdownQuery(s.db.WithContext(ctx).Model(&AgentTrafficMonthlySummaryRow{}), query, "period_start").
+			Group("agent_id, scope_type, scope_id").
+			Order("scope_id").
+			Scan(&rows).Error
+		if err != nil {
+			return nil, err
+		}
+		return trafficBreakdownRows(rows)
+	default:
+		return nil, fmt.Errorf("unsupported traffic granularity %q", query.Granularity)
+	}
+}
+
+func (s *GormStore) SaveTrafficEvent(ctx context.Context, row AgentTrafficEventRow) error {
+	row.AgentID = s.resolveAgentID(row.AgentID)
+	if strings.TrimSpace(row.EventType) == "" {
+		return fmt.Errorf("traffic event_type is required")
+	}
+	if row.CreatedAt == "" {
+		row.CreatedAt = nowTrafficTimestamp()
+	}
+	return s.db.WithContext(ctx).Create(&row).Error
+}
+
 func (s *GormStore) DeleteTrafficBefore(ctx context.Context, agentID string, cutoff TrafficCleanupCutoff) (int64, error) {
 	var deleted int64
 	err := s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
@@ -343,6 +398,41 @@ func applyTrafficTrendQuery(tx *gorm.DB, query TrafficTrendQuery, timeColumn str
 		tx = tx.Where(timeColumn+" < ?", formatTrafficTime(query.To.UTC()))
 	}
 	return tx
+}
+
+func applyTrafficBreakdownQuery(tx *gorm.DB, query TrafficTrendQuery, timeColumn string) *gorm.DB {
+	tx = tx.
+		Select("agent_id, scope_type, scope_id, SUM(rx_bytes) AS rx_bytes, SUM(tx_bytes) AS tx_bytes").
+		Where("agent_id = ? AND scope_type = ?", query.AgentID, query.ScopeType)
+	if !query.From.IsZero() {
+		tx = tx.Where(timeColumn+" >= ?", formatTrafficTime(query.From.UTC()))
+	}
+	if !query.To.IsZero() {
+		tx = tx.Where(timeColumn+" < ?", formatTrafficTime(query.To.UTC()))
+	}
+	return tx
+}
+
+type trafficBreakdownRow struct {
+	AgentID   string
+	ScopeType string
+	ScopeID   string
+	RXBytes   uint64
+	TXBytes   uint64
+}
+
+func trafficBreakdownRows(rows []trafficBreakdownRow) ([]TrafficBucketRow, error) {
+	out := make([]TrafficBucketRow, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, TrafficBucketRow{
+			AgentID:   row.AgentID,
+			ScopeType: row.ScopeType,
+			ScopeID:   row.ScopeID,
+			RXBytes:   row.RXBytes,
+			TXBytes:   row.TXBytes,
+		})
+	}
+	return out, nil
 }
 
 func defaultTrafficPolicy(agentID string) AgentTrafficPolicyRow {

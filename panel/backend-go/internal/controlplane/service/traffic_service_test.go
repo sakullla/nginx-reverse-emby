@@ -3,11 +3,14 @@ package service
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/glebarez/sqlite"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
+	"gorm.io/gorm"
 )
 
 func TestAccountedBytesByDirection(t *testing.T) {
@@ -350,6 +353,63 @@ func TestTrafficServiceSummaryIncludesBreakdowns(t *testing.T) {
 	assertSummaryBreakdown(t, summary.RelayListeners, "relay_listener", "33", 4, 6, 6)
 }
 
+func TestTrafficServiceSummaryIncludesObjectBreakdownsWithRealStore(t *testing.T) {
+	dataRoot := filepath.Join(t.TempDir(), "data")
+	store := newTrafficServiceRealStore(t, dataRoot)
+	ctx := context.Background()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	if err := store.SaveTrafficPolicy(ctx, storage.AgentTrafficPolicyRow{
+		AgentID:       "edge-1",
+		Direction:     "max",
+		CycleStartDay: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, delta := range []storage.TrafficDelta{
+		{AgentID: "edge-1", ScopeType: "agent_total", BucketStart: now, RXBytes: 1, TXBytes: 2},
+		{AgentID: "edge-1", ScopeType: "http_rule", ScopeID: "11", BucketStart: now, RXBytes: 10, TXBytes: 40},
+		{AgentID: "edge-1", ScopeType: "http_rule", ScopeID: "12", BucketStart: now, RXBytes: 50, TXBytes: 20},
+		{AgentID: "edge-1", ScopeType: "l4_rule", ScopeID: "22", BucketStart: now, RXBytes: 7, TXBytes: 9},
+		{AgentID: "edge-1", ScopeType: "relay_listener", ScopeID: "33", BucketStart: now, RXBytes: 8, TXBytes: 3},
+	} {
+		if err := store.IncrementTrafficBuckets(ctx, delta); err != nil {
+			t.Fatal(err)
+		}
+	}
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, store)
+
+	summary, err := svc.Summary(ctx, "edge-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertSummaryBreakdown(t, summary.HTTPRules, "http_rule", "11", 10, 40, 40)
+	assertSummaryBreakdown(t, summary.HTTPRules, "http_rule", "12", 50, 20, 50)
+	assertSummaryBreakdown(t, summary.L4Rules, "l4_rule", "22", 7, 9, 9)
+	assertSummaryBreakdown(t, summary.RelayListeners, "relay_listener", "33", 8, 3, 8)
+}
+
+func TestTrafficServiceCounterResetPersistsEventWithRealStore(t *testing.T) {
+	dataRoot := filepath.Join(t.TempDir(), "data")
+	store := newTrafficServiceRealStore(t, dataRoot)
+	ctx := context.Background()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, store)
+	first := AgentStats{"traffic": map[string]any{"total": map[string]any{"rx_bytes": float64(100), "tx_bytes": float64(80)}}}
+	reset := AgentStats{"traffic": map[string]any{"total": map[string]any{"rx_bytes": float64(7), "tx_bytes": float64(9)}}}
+
+	if err := svc.IngestHeartbeat(ctx, "edge-1", first); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.IngestHeartbeat(ctx, "edge-1", reset); err != nil {
+		t.Fatal(err)
+	}
+
+	rows := loadTrafficEventsFromDataRoot(t, dataRoot, "edge-1", "counter_reset")
+	if len(rows) != 1 || !strings.Contains(rows[0].Payload, "previous_rx") {
+		t.Fatalf("events = %+v", rows)
+	}
+}
+
 func assertSummaryBreakdown(t *testing.T, rows []TrafficSummaryBreakdown, scopeType, scopeID string, rx, tx, accounted uint64) {
 	t.Helper()
 	for _, row := range rows {
@@ -566,4 +626,46 @@ func (s *fakeTrafficStore) bucketTX(agentID, scopeType, scopeID string) uint64 {
 
 func cursorKey(agentID, scopeType, scopeID string) string {
 	return agentID + "|" + scopeType + "|" + scopeID
+}
+
+func newTrafficServiceRealStore(t *testing.T, dataRoot ...string) *storage.GormStore {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), "data")
+	if len(dataRoot) > 0 {
+		root = dataRoot[0]
+	}
+	store, err := storage.NewStore(storage.StoreConfig{
+		Driver:              "sqlite",
+		DataRoot:            root,
+		LocalAgentID:        "local",
+		TrafficStatsEnabled: true,
+	})
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("store.Close() error = %v", err)
+		}
+	})
+	return store
+}
+
+func loadTrafficEventsFromDataRoot(t *testing.T, dataRoot, agentID, eventType string) []storage.AgentTrafficEventRow {
+	t.Helper()
+	db, err := gorm.Open(sqlite.Open(filepath.Join(dataRoot, "panel.db")), &gorm.Config{})
+	if err != nil {
+		t.Fatalf("open event verification db error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, err := db.DB()
+		if err == nil {
+			_ = sqlDB.Close()
+		}
+	})
+	var rows []storage.AgentTrafficEventRow
+	if err := db.Where("agent_id = ? AND event_type = ?", agentID, eventType).Find(&rows).Error; err != nil {
+		t.Fatal(err)
+	}
+	return rows
 }
