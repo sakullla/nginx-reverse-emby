@@ -73,8 +73,8 @@
     </div>
 
     <div class="traffic-line">
-      <span>↓ {{ formatBytes(normalizedTraffic.rx_bytes) }}</span>
-      <span>↑ {{ formatBytes(normalizedTraffic.tx_bytes) }}</span>
+      <span>入 {{ formatBytes(normalizedTraffic.rx_bytes) }}</span>
+      <span>出 {{ formatBytes(normalizedTraffic.tx_bytes) }}</span>
     </div>
 
     <template v-if="hasTags" #footer>

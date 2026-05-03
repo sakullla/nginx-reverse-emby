@@ -47,10 +47,11 @@ func TestPipeBothWaysRecordsRelayTraffic(t *testing.T) {
 
 	stats := traffic.Snapshot()["traffic"].(map[string]any)
 	relayStats := stats["relay"].(map[string]uint64)
-	if relayStats["rx_bytes"] != uint64(len("relay-inbound")) {
+	wantTotal := uint64(len("relay-inbound") + len("relay-outbound"))
+	if relayStats["rx_bytes"] != wantTotal {
 		t.Fatalf("relay rx_bytes = %d", relayStats["rx_bytes"])
 	}
-	if relayStats["tx_bytes"] != uint64(len("relay-outbound")) {
+	if relayStats["tx_bytes"] != wantTotal {
 		t.Fatalf("relay tx_bytes = %d", relayStats["tx_bytes"])
 	}
 }
@@ -94,10 +95,11 @@ func TestPipeBothWaysRecordsRelayListenerTraffic(t *testing.T) {
 	stats := traffic.Snapshot()["traffic"].(map[string]any)
 	listeners := stats["relay_listeners"].(map[string]map[string]uint64)
 	got := listeners["99"]
-	if got["rx_bytes"] != uint64(len("relay-inbound")) {
+	wantTotal := uint64(len("relay-inbound") + len("relay-outbound"))
+	if got["rx_bytes"] != wantTotal {
 		t.Fatalf("relay_listeners[99].rx_bytes = %d", got["rx_bytes"])
 	}
-	if got["tx_bytes"] != uint64(len("relay-outbound")) {
+	if got["tx_bytes"] != wantTotal {
 		t.Fatalf("relay_listeners[99].tx_bytes = %d", got["tx_bytes"])
 	}
 }
@@ -129,11 +131,12 @@ func TestPipeBothWaysReportsRelayTrafficBeforeStreamsClose(t *testing.T) {
 	}
 	readRelayExact(t, clientPeer, len("active-outbound"))
 
-	relayStats := waitForRelayTraffic(t, len("active-inbound"), len("active-outbound"))
-	if relayStats["rx_bytes"] != uint64(len("active-inbound")) {
+	total := len("active-inbound") + len("active-outbound")
+	relayStats := waitForRelayTraffic(t, total, total)
+	if relayStats["rx_bytes"] != uint64(total) {
 		t.Fatalf("relay rx_bytes while stream active = %d", relayStats["rx_bytes"])
 	}
-	if relayStats["tx_bytes"] != uint64(len("active-outbound")) {
+	if relayStats["tx_bytes"] != uint64(total) {
 		t.Fatalf("relay tx_bytes while stream active = %d", relayStats["tx_bytes"])
 	}
 
@@ -174,9 +177,12 @@ func TestPipeBothWaysIncludesInitialPayloadTraffic(t *testing.T) {
 		close(done)
 	}()
 
-	relayStats := waitForRelayTraffic(t, len(initial), 0)
+	relayStats := waitForRelayTraffic(t, len(initial), len(initial))
 	if relayStats["rx_bytes"] != uint64(len(initial)) {
 		t.Fatalf("relay rx_bytes with initial payload = %d", relayStats["rx_bytes"])
+	}
+	if relayStats["tx_bytes"] != uint64(len(initial)) {
+		t.Fatalf("relay tx_bytes with initial payload = %d", relayStats["tx_bytes"])
 	}
 
 	_ = clientPeer.Close()
@@ -214,10 +220,11 @@ func TestPipeUDPPacketsFlushesTrafficAfterBothDirectionsFinish(t *testing.T) {
 
 	stats := traffic.Snapshot()["traffic"].(map[string]any)
 	relayStats := stats["relay"].(map[string]uint64)
-	if relayStats["rx_bytes"] != uint64(len("initial-request")) {
+	wantTotal := uint64(len("initial-request") + len("late-final-reply"))
+	if relayStats["rx_bytes"] != wantTotal {
 		t.Fatalf("relay rx_bytes = %d", relayStats["rx_bytes"])
 	}
-	if relayStats["tx_bytes"] != uint64(len("late-final-reply")) {
+	if relayStats["tx_bytes"] != wantTotal {
 		t.Fatalf("relay tx_bytes = %d", relayStats["tx_bytes"])
 	}
 }

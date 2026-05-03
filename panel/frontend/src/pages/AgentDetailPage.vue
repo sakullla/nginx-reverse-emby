@@ -47,8 +47,8 @@
       <div class="traffic-summary__breakdown">
         <div v-for="item in trafficBreakdown" :key="item.key" class="traffic-row">
           <span>{{ item.label }}</span>
-          <span>↓ {{ formatBytes(item.rx_bytes) }}</span>
-          <span>↑ {{ formatBytes(item.tx_bytes) }}</span>
+          <span>入 {{ formatBytes(item.rx_bytes) }}</span>
+          <span>出 {{ formatBytes(item.tx_bytes) }}</span>
         </div>
       </div>
     </section>

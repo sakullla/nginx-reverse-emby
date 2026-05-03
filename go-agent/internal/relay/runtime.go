@@ -969,7 +969,7 @@ func pipeUDPPackets(clientConn net.Conn, upstream udpPacketPeer, recorder *traff
 				done <- struct{}{}
 				return
 			}
-			recorder.Add(int64(len(payload)), 0)
+			recorder.Add(int64(len(payload)), int64(len(payload)))
 		}
 	}()
 
@@ -985,7 +985,7 @@ func pipeUDPPackets(clientConn net.Conn, upstream udpPacketPeer, recorder *traff
 				done <- struct{}{}
 				return
 			}
-			recorder.Add(0, int64(len(payload)))
+			recorder.Add(int64(len(payload)), int64(len(payload)))
 		}
 	}()
 
@@ -1042,7 +1042,7 @@ func pipeBothWays(left, right net.Conn, recorder *traffic.Recorder) {
 func pipeBothWaysWithInitialRelayRX(left, right net.Conn, initialRX int64, recorder *traffic.Recorder) {
 	done := make(chan struct{}, 2)
 	recorder = relayRecorderOrAggregate(recorder)
-	recorder.Add(initialRX, 0)
+	recorder.Add(initialRX, initialRX)
 	recorder.Flush()
 
 	go func() {

@@ -48,10 +48,11 @@ func TestCopyBidirectionalTCPRecordsL4Traffic(t *testing.T) {
 
 	stats := traffic.Snapshot()["traffic"].(map[string]any)
 	l4Stats := stats["l4"].(map[string]uint64)
-	if l4Stats["rx_bytes"] != uint64(len("client-to-upstream")) {
+	wantTotal := uint64(len("client-to-upstream") + len("upstream-to-client"))
+	if l4Stats["rx_bytes"] != wantTotal {
 		t.Fatalf("l4 rx_bytes = %d", l4Stats["rx_bytes"])
 	}
-	if l4Stats["tx_bytes"] != uint64(len("upstream-to-client")) {
+	if l4Stats["tx_bytes"] != wantTotal {
 		t.Fatalf("l4 tx_bytes = %d", l4Stats["tx_bytes"])
 	}
 }
@@ -97,10 +98,11 @@ func TestCopyBidirectionalTCPRecordsL4RuleTraffic(t *testing.T) {
 	stats := traffic.Snapshot()["traffic"].(map[string]any)
 	l4Rules := stats["l4_rules"].(map[string]map[string]uint64)
 	got := l4Rules["42"]
-	if got["rx_bytes"] != uint64(len("client-to-upstream")) {
+	wantTotal := uint64(len("client-to-upstream") + len("upstream-to-client"))
+	if got["rx_bytes"] != wantTotal {
 		t.Fatalf("l4_rules[42].rx_bytes = %d", got["rx_bytes"])
 	}
-	if got["tx_bytes"] != uint64(len("upstream-to-client")) {
+	if got["tx_bytes"] != wantTotal {
 		t.Fatalf("l4_rules[42].tx_bytes = %d", got["tx_bytes"])
 	}
 }
@@ -127,13 +129,14 @@ func TestCopyBidirectionalTCPRecordsL4RuleTrafficBeforeClose(t *testing.T) {
 		t.Fatalf("client write error: %v", err)
 	}
 	readExact(t, backend, len("client-to-upstream"))
-	waitL4RuleTraffic(t, "42", len("client-to-upstream"), 0)
+	waitL4RuleTraffic(t, "42", len("client-to-upstream"), len("client-to-upstream"))
 
 	if _, err := backend.Write([]byte("upstream-to-client")); err != nil {
 		t.Fatalf("backend write error: %v", err)
 	}
 	readExact(t, client, len("upstream-to-client"))
-	waitL4RuleTraffic(t, "42", len("client-to-upstream"), len("upstream-to-client"))
+	total := len("client-to-upstream") + len("upstream-to-client")
+	waitL4RuleTraffic(t, "42", total, total)
 
 	_ = client.Close()
 	_ = downstream.Close()
@@ -144,7 +147,7 @@ func TestCopyBidirectionalTCPRecordsL4RuleTrafficBeforeClose(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("copyBidirectionalTCP did not exit")
 	}
-	assertL4RuleTraffic(t, "42", len("client-to-upstream"), len("upstream-to-client"))
+	assertL4RuleTraffic(t, "42", total, total)
 }
 
 func waitL4RuleTraffic(t *testing.T, ruleID string, rxBytes int, txBytes int) {

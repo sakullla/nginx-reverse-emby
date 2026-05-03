@@ -672,11 +672,17 @@ func TestCopyResumableResponseRecordsHTTPTraffic(t *testing.T) {
 
 	stats := traffic.Snapshot()["traffic"].(map[string]any)
 	httpStats := stats["http"].(map[string]uint64)
+	if httpStats["rx_bytes"] != uint64(len(payload)) {
+		t.Fatalf("http rx_bytes = %d, want %d", httpStats["rx_bytes"], len(payload))
+	}
 	if httpStats["tx_bytes"] != uint64(len(payload)) {
 		t.Fatalf("http tx_bytes = %d, want %d", httpStats["tx_bytes"], len(payload))
 	}
 	httpRules := stats["http_rules"].(map[string]map[string]uint64)
 	got := httpRules["99"]
+	if got["rx_bytes"] != uint64(len(payload)) {
+		t.Fatalf("http_rules[99].rx_bytes = %d, want %d", got["rx_bytes"], len(payload))
+	}
 	if got["tx_bytes"] != uint64(len(payload)) {
 		t.Fatalf("http_rules[99].tx_bytes = %d, want %d", got["tx_bytes"], len(payload))
 	}
@@ -723,8 +729,8 @@ func TestCopyResumableResponseRecordsHTTPTrafficWhileStreaming(t *testing.T) {
 	}()
 
 	recorder.waitForWrite(t)
-	assertHTTPAggregateTraffic(t, 0, httpResponseTrafficFlushThreshold)
-	assertHTTPRuleTrafficEventually(t, "99", 0, httpResponseTrafficFlushThreshold)
+	assertHTTPAggregateTraffic(t, httpResponseTrafficFlushThreshold, httpResponseTrafficFlushThreshold)
+	assertHTTPRuleTrafficEventually(t, "99", httpResponseTrafficFlushThreshold, httpResponseTrafficFlushThreshold)
 
 	body.Close()
 	if err := <-done; err != nil {

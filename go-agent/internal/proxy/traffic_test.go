@@ -31,6 +31,9 @@ func TestCopyResponseRecordsHTTPTraffic(t *testing.T) {
 
 	stats := traffic.Snapshot()["traffic"].(map[string]any)
 	httpStats := stats["http"].(map[string]uint64)
+	if httpStats["rx_bytes"] != uint64(len("response-body")) {
+		t.Fatalf("http rx_bytes = %d, want %d", httpStats["rx_bytes"], len("response-body"))
+	}
 	if httpStats["tx_bytes"] != uint64(len("response-body")) {
 		t.Fatalf("http tx_bytes = %d, want %d", httpStats["tx_bytes"], len("response-body"))
 	}
@@ -55,7 +58,7 @@ func TestCopyResponseRecordsHTTPTrafficWhileStreaming(t *testing.T) {
 	}()
 
 	recorder.waitForWrite(t)
-	assertHTTPAggregateTraffic(t, 0, httpResponseTrafficFlushThreshold)
+	assertHTTPAggregateTraffic(t, httpResponseTrafficFlushThreshold, httpResponseTrafficFlushThreshold)
 
 	body.Close()
 	if err := <-done; err != nil {
@@ -76,7 +79,7 @@ func TestHTTPResponseTrafficWriterBuffersSmallWritesUntilFlush(t *testing.T) {
 	assertHTTPAggregateTrafficNow(t, 0, 0)
 
 	trafficWriter.Flush()
-	assertHTTPAggregateTraffic(t, 0, uint64(len("small")))
+	assertHTTPAggregateTraffic(t, uint64(len("small")), uint64(len("small")))
 }
 
 func TestHTTPResponseTrafficWriterFlushesAtThreshold(t *testing.T) {
@@ -94,7 +97,7 @@ func TestHTTPResponseTrafficWriterFlushesAtThreshold(t *testing.T) {
 	if _, err := trafficWriter.Write([]byte("x")); err != nil {
 		t.Fatalf("Write(second) error = %v", err)
 	}
-	assertHTTPAggregateTraffic(t, 0, httpResponseTrafficFlushThreshold)
+	assertHTTPAggregateTraffic(t, httpResponseTrafficFlushThreshold, httpResponseTrafficFlushThreshold)
 }
 
 func TestRouteEntryRecordsHTTPRuleTraffic(t *testing.T) {
@@ -133,10 +136,11 @@ func TestRouteEntryRecordsHTTPRuleTraffic(t *testing.T) {
 	stats := traffic.Snapshot()["traffic"].(map[string]any)
 	httpRules := stats["http_rules"].(map[string]map[string]uint64)
 	got := httpRules["77"]
-	if got["rx_bytes"] != uint64(len("request-body")) {
+	wantTotal := uint64(len("request-body") + len("response-body"))
+	if got["rx_bytes"] != wantTotal {
 		t.Fatalf("http_rules[77].rx_bytes = %d", got["rx_bytes"])
 	}
-	if got["tx_bytes"] != uint64(len("response-body")) {
+	if got["tx_bytes"] != wantTotal {
 		t.Fatalf("http_rules[77].tx_bytes = %d", got["tx_bytes"])
 	}
 }
@@ -184,19 +188,22 @@ func assertHTTPAggregateTrafficNow(t *testing.T, wantRX, wantTX uint64) {
 	}
 }
 
-func TestPrepareReusableBodyDoesNotRecordBufferedRequestBodyTrafficBeforeRead(t *testing.T) {
+func TestPrepareReusableBodyRecordsBufferedRequestBodyInboundTrafficBeforeUpstreamRead(t *testing.T) {
 	traffic.Reset()
 	defer traffic.Reset()
 
 	req := httptest.NewRequest(http.MethodPost, "https://frontend.example.com/upload", ioNopCloser{Reader: bytes.NewReader([]byte("request-body"))})
-	if _, err := prepareReusableBody(req, 2); err != nil {
+	if _, err := prepareReusableBody(req, 2, nil); err != nil {
 		t.Fatalf("prepareReusableBody() error = %v", err)
 	}
 
 	stats := traffic.Snapshot()["traffic"].(map[string]any)
 	httpStats := stats["http"].(map[string]uint64)
-	if httpStats["rx_bytes"] != 0 {
-		t.Fatalf("http rx_bytes = %d, want 0 before upstream reads", httpStats["rx_bytes"])
+	if httpStats["rx_bytes"] != uint64(len("request-body")) {
+		t.Fatalf("http rx_bytes = %d, want %d after client body buffered", httpStats["rx_bytes"], len("request-body"))
+	}
+	if httpStats["tx_bytes"] != 0 {
+		t.Fatalf("http tx_bytes = %d, want 0 before upstream reads", httpStats["tx_bytes"])
 	}
 }
 
@@ -206,7 +213,7 @@ func TestCloneProxyRequestRecordsBufferedRequestBodyTrafficPerAttemptOnRead(t *t
 
 	const payload = "request-body"
 	req := httptest.NewRequest(http.MethodGet, "https://frontend.example.com/upload", ioNopCloser{Reader: bytes.NewReader([]byte(payload))})
-	body, err := prepareReusableBody(req, 2)
+	body, err := prepareReusableBody(req, 2, nil)
 	if err != nil {
 		t.Fatalf("prepareReusableBody() error = %v", err)
 	}
@@ -223,8 +230,11 @@ func TestCloneProxyRequestRecordsBufferedRequestBodyTrafficPerAttemptOnRead(t *t
 
 	stats := traffic.Snapshot()["traffic"].(map[string]any)
 	httpStats := stats["http"].(map[string]uint64)
-	if httpStats["rx_bytes"] != uint64(len(payload)*2) {
-		t.Fatalf("http rx_bytes = %d, want %d", httpStats["rx_bytes"], len(payload)*2)
+	if httpStats["rx_bytes"] != uint64(len(payload)) {
+		t.Fatalf("http rx_bytes = %d, want %d", httpStats["rx_bytes"], len(payload))
+	}
+	if httpStats["tx_bytes"] != uint64(len(payload)*2) {
+		t.Fatalf("http tx_bytes = %d, want %d", httpStats["tx_bytes"], len(payload)*2)
 	}
 }
 
@@ -233,7 +243,7 @@ func TestCloneProxyRequestRecordsStreamingRequestBodyTrafficOnRead(t *testing.T)
 	defer traffic.Reset()
 
 	req := httptest.NewRequest(http.MethodPost, "https://frontend.example.com/upload", ioNopCloser{Reader: bytes.NewReader([]byte("stream-body"))})
-	body, err := prepareReusableBody(req, 1)
+	body, err := prepareReusableBody(req, 1, nil)
 	if err != nil {
 		t.Fatalf("prepareReusableBody() error = %v", err)
 	}
@@ -250,6 +260,9 @@ func TestCloneProxyRequestRecordsStreamingRequestBodyTrafficOnRead(t *testing.T)
 	httpStats := stats["http"].(map[string]uint64)
 	if httpStats["rx_bytes"] != uint64(len("stream-body")) {
 		t.Fatalf("http rx_bytes = %d, want %d", httpStats["rx_bytes"], len("stream-body"))
+	}
+	if httpStats["tx_bytes"] != uint64(len("stream-body")) {
+		t.Fatalf("http tx_bytes = %d, want %d", httpStats["tx_bytes"], len("stream-body"))
 	}
 }
 

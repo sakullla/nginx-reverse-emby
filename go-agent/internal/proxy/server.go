@@ -321,7 +321,7 @@ func StartWithResourcesAndOptions(
 
 func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 	recorder := traffic.NewHTTPRuleRecorder(e.rule.ID)
-	body, err := prepareReusableBody(req, e.sameBackendRetryMaxAttempts(req))
+	body, err := prepareReusableBody(req, e.sameBackendRetryMaxAttempts(req), recorder)
 	if err != nil {
 		log.Printf("[proxy] read body error for %s: %v", e.rule.FrontendURL, err)
 		return err
@@ -973,9 +973,10 @@ type reusableRequestBody struct {
 	buffered      []byte
 	stream        io.ReadCloser
 	contentLength int64
+	bufferedMode  bool
 }
 
-func prepareReusableBody(req *http.Request, maxAttempts int) (*reusableRequestBody, error) {
+func prepareReusableBody(req *http.Request, maxAttempts int, recorder *traffic.Recorder) (*reusableRequestBody, error) {
 	if req == nil || req.Body == nil {
 		return &reusableRequestBody{}, nil
 	}
@@ -987,7 +988,10 @@ func prepareReusableBody(req *http.Request, maxAttempts int) (*reusableRequestBo
 	if err != nil {
 		return nil, err
 	}
-	return &reusableRequestBody{buffered: body, contentLength: int64(len(body))}, nil
+	trafficRecorder := httpRecorderOrAggregate(recorder)
+	trafficRecorder.Add(int64(len(body)), 0)
+	trafficRecorder.Flush()
+	return &reusableRequestBody{buffered: body, contentLength: int64(len(body)), bufferedMode: true}, nil
 }
 
 func (b *reusableRequestBody) Open() (io.ReadCloser, int64, func() (io.ReadCloser, error)) {
@@ -1049,7 +1053,7 @@ func cloneProxyRequest(req *http.Request, body *reusableRequestBody, candidate h
 	if body != nil {
 		out.Body, out.ContentLength, out.GetBody = body.Open()
 		if out.Body != nil {
-			out.Body = newTrafficReadCloser(out.Body, recorder)
+			out.Body = newTrafficReadCloser(out.Body, recorder, !body.bufferedMode)
 			if out.GetBody != nil {
 				getBody := out.GetBody
 				out.GetBody = func() (io.ReadCloser, error) {
@@ -1057,7 +1061,7 @@ func cloneProxyRequest(req *http.Request, body *reusableRequestBody, candidate h
 					if err != nil {
 						return nil, err
 					}
-					return newTrafficReadCloser(body, recorder), nil
+					return newTrafficReadCloser(body, recorder, false), nil
 				}
 			}
 		}
@@ -1073,13 +1077,15 @@ func cloneProxyRequest(req *http.Request, body *reusableRequestBody, candidate h
 
 type trafficReadCloser struct {
 	io.ReadCloser
-	recorder *traffic.Recorder
+	recorder      *traffic.Recorder
+	recordInbound bool
 }
 
-func newTrafficReadCloser(delegate io.ReadCloser, recorder *traffic.Recorder) io.ReadCloser {
+func newTrafficReadCloser(delegate io.ReadCloser, recorder *traffic.Recorder, recordInbound bool) io.ReadCloser {
 	return &trafficReadCloser{
-		ReadCloser: delegate,
-		recorder:   httpRecorderOrAggregate(recorder),
+		ReadCloser:    delegate,
+		recorder:      httpRecorderOrAggregate(recorder),
+		recordInbound: recordInbound,
 	}
 }
 
@@ -1092,7 +1098,11 @@ func httpRecorderOrAggregate(recorder *traffic.Recorder) *traffic.Recorder {
 
 func (c trafficReadCloser) Read(p []byte) (int, error) {
 	n, err := c.ReadCloser.Read(p)
-	c.recorder.Add(int64(n), 0)
+	if c.recordInbound {
+		c.recorder.Add(int64(n), int64(n))
+	} else {
+		c.recorder.Add(0, int64(n))
+	}
 	if err != nil {
 		c.recorder.Flush()
 	}
@@ -1374,7 +1384,7 @@ func (f *httpResponseTrafficFlusher) Flush() {
 	if f == nil || f.pending == 0 {
 		return
 	}
-	f.recorder.Add(0, int64(f.pending))
+	f.recorder.Add(int64(f.pending), int64(f.pending))
 	f.recorder.Flush()
 	f.pending = 0
 }
@@ -1389,9 +1399,9 @@ func (w switchProtocolTrafficWriter) Write(p []byte) (int, error) {
 	n, err := w.dst.Write(p)
 	if n > 0 {
 		if w.rxDirection {
-			w.recorder.Add(int64(n), 0)
+			w.recorder.Add(int64(n), int64(n))
 		} else {
-			w.recorder.Add(0, int64(n))
+			w.recorder.Add(int64(n), int64(n))
 		}
 		w.recorder.Flush()
 	}

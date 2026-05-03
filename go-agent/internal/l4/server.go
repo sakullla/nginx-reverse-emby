@@ -282,7 +282,7 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 	done := make(chan struct{}, 2)
 	go func() {
 		if len(initialPayload) > 0 {
-			recorder.Add(int64(len(initialPayload)), 0)
+			recorder.Add(int64(len(initialPayload)), int64(len(initialPayload)))
 			recorder.Flush()
 		}
 		_, _ = copyL4TCP(upstream, downstreamSource, true, recorder)
@@ -381,11 +381,7 @@ type l4TrafficWriter struct {
 func (w l4TrafficWriter) Write(p []byte) (int, error) {
 	n, err := w.dst.Write(p)
 	if n > 0 {
-		if w.rxDirection {
-			w.recorder.Add(int64(n), 0)
-		} else {
-			w.recorder.Add(0, int64(n))
-		}
+		w.recorder.Add(int64(n), int64(n))
 		w.recorder.Flush()
 	}
 	return n, err
@@ -642,7 +638,7 @@ func (s *Server) proxyUDPPacket(listener *net.UDPConn, rule model.L4Rule, payloa
 		s.closeUDPSession(session.key)
 		return
 	}
-	session.trafficRecorder.Add(int64(len(payload)), 0)
+	session.trafficRecorder.Add(int64(len(payload)), int64(len(payload)))
 	s.markUDPSessionWrite(session.key)
 }
 
@@ -858,7 +854,7 @@ func (s *Server) pipeUDPReplies(session *udpSession) {
 		if _, err := session.listener.WriteToUDP(payload, session.peer); err != nil {
 			return
 		}
-		session.trafficRecorder.Add(0, int64(len(payload)))
+		session.trafficRecorder.Add(int64(len(payload)), int64(len(payload)))
 	}
 }
 
