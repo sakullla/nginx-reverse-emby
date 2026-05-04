@@ -319,6 +319,8 @@ nre-control-plane migrate-storage \
 
 该命令会复制核心配置 rows、traffic policy rows 和 traffic baseline rows，并默认跳过高容量 traffic history 表。在控制面容器内执行时，SQLite source DSN 使用容器内路径 `/opt/nginx-reverse-emby/panel/data/panel.db`；在宿主机直接执行才使用宿主机路径（例如 `./data/panel/panel.db`）。source 与 target 的 driver+dsn 完全相同时会被拒绝。
 
+迁移会从 SQLite DSN 自动推断面板数据目录，用于复制 `managed_certificates/` 下的证书 PEM 和私钥材料。若 source 或 target 使用 PostgreSQL/MySQL，或证书材料目录不在 SQLite 文件同级目录下，请同时传入 `--from-data-root <old panel data dir>` 和/或 `--to-data-root <new panel data dir>`。
+
 ## 版本更新
 
 `desired_version` 由控制面下发，驱动 Go agent 版本升级：

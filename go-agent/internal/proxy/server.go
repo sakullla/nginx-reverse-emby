@@ -1132,10 +1132,8 @@ func httpRecorderOrAggregate(recorder *traffic.Recorder) *traffic.Recorder {
 
 func (c trafficReadCloser) Read(p []byte) (int, error) {
 	n, err := c.ReadCloser.Read(p)
-	if c.recordInbound {
-		c.recorder.Add(int64(n), int64(n))
-	} else {
-		c.recorder.Add(0, int64(n))
+	if c.recordInbound && n > 0 {
+		c.recorder.Add(int64(n), 0)
 	}
 	if err != nil {
 		c.recorder.Flush()
@@ -1418,7 +1416,7 @@ func (f *httpResponseTrafficFlusher) Flush() {
 	if f == nil || f.pending == 0 {
 		return
 	}
-	f.recorder.Add(int64(f.pending), int64(f.pending))
+	f.recorder.Add(0, int64(f.pending))
 	f.recorder.Flush()
 	f.pending = 0
 }
@@ -1433,9 +1431,9 @@ func (w switchProtocolTrafficWriter) Write(p []byte) (int, error) {
 	n, err := w.dst.Write(p)
 	if n > 0 {
 		if w.rxDirection {
-			w.recorder.Add(int64(n), int64(n))
+			w.recorder.Add(int64(n), 0)
 		} else {
-			w.recorder.Add(int64(n), int64(n))
+			w.recorder.Add(0, int64(n))
 		}
 		w.recorder.Flush()
 	}

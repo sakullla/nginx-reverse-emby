@@ -43,7 +43,11 @@ type relayTrafficWriter struct {
 func (w relayTrafficWriter) Write(p []byte) (int, error) {
 	n, err := w.dst.Write(p)
 	if n > 0 && w.recorder != nil {
-		w.recorder.Add(int64(n), int64(n))
+		if w.rxDirection {
+			w.recorder.Add(int64(n), 0)
+		} else {
+			w.recorder.Add(0, int64(n))
+		}
 		w.recorder.Flush()
 	}
 	return n, err
