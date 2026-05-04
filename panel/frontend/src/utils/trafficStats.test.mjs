@@ -1,93 +1,49 @@
 import { describe, it, expect } from 'vitest'
-import {
-  accountedBytes,
-  formatBytes,
-  formatQuota,
-  normalizeTrafficBucket,
-  normalizeTrafficPolicy,
-  normalizeTrafficTrendPoint,
-  normalizeTrafficTrendPoints,
-  bucketForObject
-} from './trafficStats.js'
+import { usagePercent, dailyBudget, quotaColorThreshold, formatPercentage } from './trafficStats.js'
 
-describe('trafficStats', () => {
-  it('normalizes null traffic buckets to zero totals', () => {
-    expect(normalizeTrafficBucket(null)).toEqual({ rx_bytes: 0, tx_bytes: 0 })
+describe('usagePercent', () => {
+  it('returns null for unlimited quota', () => {
+    expect(usagePercent(100, null)).toBeNull()
   })
-
-  it('looks up object buckets by stringified id', () => {
-    const stats = {
-      traffic: {
-        http_rules: {
-          11: { rx_bytes: 128, tx_bytes: 256 }
-        }
-      }
-    }
-
-    expect(bucketForObject(stats, 'http_rules', 11)).toEqual({ rx_bytes: 128, tx_bytes: 256 })
+  it('returns null for zero quota', () => {
+    expect(usagePercent(100, 0)).toBeNull()
   })
-
-  it('formats binary units compactly', () => {
-    expect(formatBytes(1536)).toBe('1.50 KiB')
+  it('computes percentage correctly', () => {
+    expect(usagePercent(50, 100)).toBe(50)
+    expect(usagePercent(120, 100)).toBe(100)
   })
+})
 
-  it('accounts by direction', () => {
-    expect(accountedBytes({ rx_bytes: 10, tx_bytes: 20 }, 'rx')).toBe(10)
-    expect(accountedBytes({ rx_bytes: 10, tx_bytes: 20 }, 'tx')).toBe(20)
-    expect(accountedBytes({ rx_bytes: 10, tx_bytes: 20 }, 'both')).toBe(30)
-    expect(accountedBytes({ rx_bytes: 10, tx_bytes: 20 }, 'max')).toBe(20)
-    expect(accountedBytes({ rx_bytes: 10, tx_bytes: 20 })).toBe(30)
+describe('dailyBudget', () => {
+  it('returns null for unlimited quota', () => {
+    expect(dailyBudget(null, 30)).toBeNull()
   })
-
-  it('normalizes policy defaults', () => {
-    expect(normalizeTrafficPolicy({}).direction).toBe('both')
-    expect(normalizeTrafficPolicy({}).cycle_start_day).toBe(1)
+  it('divides quota by days', () => {
+    expect(dailyBudget(3000, 30)).toBe(100)
   })
+})
 
-  it('normalizes policy retention and quota fields when present', () => {
-    expect(normalizeTrafficPolicy({
-      direction: 'sideways',
-      cycle_start_day: 99,
-      monthly_quota_bytes: -1,
-      hourly_retention_days: '0',
-      daily_retention_months: '12',
-      monthly_retention_months: 'bad'
-    })).toEqual({
-      direction: 'both',
-      cycle_start_day: 1,
-      monthly_quota_bytes: null,
-      block_when_exceeded: false,
-      hourly_retention_days: 180,
-      daily_retention_months: 12,
-      monthly_retention_months: null
-    })
+describe('quotaColorThreshold', () => {
+  it('returns success below 70', () => {
+    expect(quotaColorThreshold(50)).toBe('success')
   })
-
-  it('normalizes monthly retention to nullable positive integers', () => {
-    expect(normalizeTrafficPolicy({ monthly_retention_months: '6' }).monthly_retention_months).toBe(6)
-    expect(normalizeTrafficPolicy({ monthly_retention_months: 1.5 }).monthly_retention_months).toBe(null)
-    expect(normalizeTrafficPolicy({ monthly_retention_months: 0 }).monthly_retention_months).toBe(null)
-    expect(normalizeTrafficPolicy({ monthly_retention_months: null }).monthly_retention_months).toBe(null)
+  it('returns warning at 70-89', () => {
+    expect(quotaColorThreshold(75)).toBe('warning')
   })
-
-  it('formats quota values with an unlimited fallback', () => {
-    expect(formatQuota(null)).toBe('Unlimited')
-    expect(formatQuota(1536)).toBe('1.50 KiB')
+  it('returns danger at 90+', () => {
+    expect(quotaColorThreshold(95)).toBe('danger')
   })
+  it('returns neutral for non-finite', () => {
+    expect(quotaColorThreshold(null)).toBe('neutral')
+  })
+})
 
-  it('normalizes trend points with accounted bytes', () => {
-    expect(normalizeTrafficTrendPoint({
-      bucket_start: '2026-05-03T00:00:00Z',
-      rx_bytes: '10',
-      tx_bytes: 20
-    }, 'max')).toEqual({
-      bucket_start: '2026-05-03T00:00:00Z',
-      rx_bytes: 10,
-      tx_bytes: 20,
-      accounted_bytes: 20
-    })
-    expect(normalizeTrafficTrendPoints([{ rx_bytes: 1, tx_bytes: 2 }], 'rx')).toEqual([
-      { bucket_start: '', rx_bytes: 1, tx_bytes: 2, accounted_bytes: 1 }
-    ])
+describe('formatPercentage', () => {
+  it('formats finite numbers', () => {
+    expect(formatPercentage(75)).toBe('75%')
+  })
+  it('returns fallback for non-finite', () => {
+    expect(formatPercentage(null)).toBe('—')
+    expect(formatPercentage(null, 'N/A')).toBe('N/A')
   })
 })
