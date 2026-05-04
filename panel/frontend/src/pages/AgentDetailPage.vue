@@ -88,8 +88,8 @@
             :calibrating="calibrateTrafficMutation.isPending.value"
             :cleaning="cleanupTrafficMutation.isPending.value"
             @calibrate="calibrateModalVisible = true"
-            @calibrate-zero="calibrateTrafficToZero"
-            @cleanup="cleanupTrafficHistory"
+            @calibrate-zero="showCalibrateZeroConfirm"
+            @cleanup="showCleanupConfirm"
           />
         </section>
 
@@ -108,6 +108,15 @@
           :cycle-start="trafficSummary.cycle_start ?? ''"
           :cycle-end="trafficSummary.cycle_end ?? ''"
           @confirm="onCalibrateConfirm"
+        />
+        <DeleteConfirmDialog
+          :show="confirmDialog.visible"
+          :title="confirmDialog.title"
+          :message="confirmDialog.message"
+          :confirm-text="confirmDialog.confirmText"
+          :loading="confirmDialog.loading"
+          @confirm="onConfirmDialogConfirm"
+          @cancel="confirmDialog.visible = false"
         />
       </div>
 
@@ -194,6 +203,7 @@ import TrafficBreakdownTable from '../components/traffic/TrafficBreakdownTable.v
 import TrafficPolicyForm from '../components/traffic/TrafficPolicyForm.vue'
 import TrafficHistoryManager from '../components/traffic/TrafficHistoryManager.vue'
 import TrafficCalibrateModal from '../components/traffic/TrafficCalibrateModal.vue'
+import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -279,6 +289,7 @@ const trafficBreakdownTabs = computed(() => [
 const activeTab = ref('http')
 const trendModal = ref({ visible: false, scopeType: '', scopeId: '', scopeLabel: '' })
 const calibrateModalVisible = ref(false)
+const confirmDialog = ref({ visible: false, type: '', title: '', message: '', confirmText: '', loading: false })
 
 function openBreakdownTrendModal(row) {
   trendModal.value = {
@@ -382,15 +393,43 @@ async function calibrateTrafficSummary() {
   calibrateModalVisible.value = true
 }
 
-async function calibrateTrafficToZero() {
+function showCalibrateZeroConfirm() {
   if (!agent.value || !trafficStatsEnabled.value) return
-  await calibrateTrafficMutation.mutateAsync({ used_bytes: 0 })
+  confirmDialog.value = {
+    visible: true,
+    type: 'calibrate-zero',
+    title: '确认归零',
+    message: '将当前计费周期的已用流量重置为零，此操作不可撤销。',
+    confirmText: '确认归零',
+    loading: false
+  }
 }
 
-async function cleanupTrafficHistory() {
+function showCleanupConfirm() {
   if (!agent.value || !trafficStatsEnabled.value) return
-  if (typeof window !== 'undefined' && !window.confirm('确认清理当前保留策略之外的流量历史？')) return
-  await cleanupTrafficMutation.mutateAsync()
+  confirmDialog.value = {
+    visible: true,
+    type: 'cleanup',
+    title: '确认清理',
+    message: '按保留策略清理过期历史数据，此操作不可撤销。',
+    confirmText: '确认清理',
+    loading: false
+  }
+}
+
+async function onConfirmDialogConfirm() {
+  if (!agent.value || !trafficStatsEnabled.value) return
+  confirmDialog.value.loading = true
+  try {
+    if (confirmDialog.value.type === 'calibrate-zero') {
+      await calibrateTrafficMutation.mutateAsync({ used_bytes: 0 })
+    } else if (confirmDialog.value.type === 'cleanup') {
+      await cleanupTrafficMutation.mutateAsync()
+    }
+  } finally {
+    confirmDialog.value.visible = false
+    confirmDialog.value.loading = false
+  }
 }
 
 function normalizeTrafficPolicyForm(policy = {}, trafficStatsInterval = '') {

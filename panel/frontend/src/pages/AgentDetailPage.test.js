@@ -35,6 +35,15 @@ vi.mock('../components/base/BaseModal.vue', () => ({
   }
 }))
 
+vi.mock('../components/DeleteConfirmDialog.vue', () => ({
+  default: {
+    name: 'DeleteConfirmDialog',
+    props: ['show', 'title', 'message', 'confirmText', 'loading'],
+    emits: ['confirm', 'cancel'],
+    template: '<div v-if="show" class="delete-dialog-stub"><div class="delete-dialog-title">{{ title }}</div><button class="delete-dialog-confirm" @click="$emit(\'confirm\')">{{ confirmText }}</button><button class="delete-dialog-cancel" @click="$emit(\'cancel\')">取消</button></div>'
+  }
+}))
+
 vi.mock('../api', () => ({
   fetchAgentStats: vi.fn(async () => ({
     status: '正常',
@@ -312,14 +321,32 @@ describe('AgentDetailPage', () => {
   })
 
   it('does not cleanup traffic history when confirmation is cancelled', async () => {
-    window.confirm.mockReturnValue(false)
     const wrapper = await mountPage()
     await wrapper.findAll('.tab-btn').find((button) => button.text() === '流量统计').trigger('click')
     await nextTick()
 
     await wrapper.findAll('button').find((button) => button.text() === '清理过期数据').trigger('click')
+    await nextTick()
+    expect(wrapper.find('.delete-dialog-stub').exists()).toBe(true)
+
+    await wrapper.find('.delete-dialog-cancel').trigger('click')
+    await nextTick()
 
     expect(apiCalls.cleanupTraffic).not.toHaveBeenCalled()
+  })
+
+  it('cleans up traffic history after confirmation', async () => {
+    const wrapper = await mountPage()
+    await wrapper.findAll('.tab-btn').find((button) => button.text() === '流量统计').trigger('click')
+    await nextTick()
+
+    await wrapper.findAll('button').find((button) => button.text() === '清理过期数据').trigger('click')
+    await nextTick()
+
+    await wrapper.find('.delete-dialog-confirm').trigger('click')
+    await nextTick()
+
+    expect(apiCalls.cleanupTraffic).toHaveBeenCalledWith('edge-1')
   })
 
   it('calibrates traffic via modal', async () => {
@@ -344,12 +371,17 @@ describe('AgentDetailPage', () => {
     })
   })
 
-  it('calibrates traffic current usage to zero', async () => {
+  it('calibrates traffic current usage to zero after confirmation', async () => {
     const wrapper = await mountPage()
     await wrapper.findAll('.tab-btn').find((button) => button.text() === '流量统计').trigger('click')
     await nextTick()
 
     await wrapper.findAll('button').find((button) => button.text() === '从现在归零').trigger('click')
+    await nextTick()
+    expect(wrapper.find('.delete-dialog-stub').exists()).toBe(true)
+
+    await wrapper.find('.delete-dialog-confirm').trigger('click')
+    await nextTick()
 
     expect(apiCalls.calibrateTraffic).toHaveBeenCalledWith('edge-1', {
       used_bytes: 0
