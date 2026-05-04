@@ -26,7 +26,7 @@
       <span class="traffic-breakdown__th">占比</span>
     </div>
     <div
-      v-for="row in sortedRows"
+      v-for="row in paginatedRows"
       :key="rowKey(row)"
       class="traffic-breakdown__row"
       :class="{ 'traffic-breakdown__row--clickable': clickable }"
@@ -39,11 +39,33 @@
       <span class="traffic-breakdown__percent">{{ rowPercent(row) }}</span>
     </div>
     <p v-if="sortedRows.length === 0" class="traffic-breakdown__empty">暂无分项流量</p>
+    <div v-if="totalPages > 1" class="traffic-breakdown__pagination">
+      <button
+        class="traffic-breakdown__page-btn"
+        :disabled="currentPage <= 1"
+        @click="currentPage--"
+      >
+        ←
+      </button>
+      <span class="traffic-breakdown__page-info">{{ currentPage }} / {{ totalPages }}</span>
+      <button
+        class="traffic-breakdown__page-btn"
+        :disabled="currentPage >= totalPages"
+        @click="currentPage++"
+      >
+        →
+      </button>
+      <select v-model="pageSize" class="traffic-breakdown__page-size">
+        <option :value="10">10 条/页</option>
+        <option :value="20">20 条/页</option>
+        <option :value="50">50 条/页</option>
+      </select>
+    </div>
   </div>
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, watch } from 'vue'
 import { formatBytes } from '../../utils/trafficStats.js'
 
 const props = defineProps({
@@ -57,6 +79,8 @@ defineEmits(['click-row'])
 const activeTabId = ref('')
 const sortKey = ref('accounted_bytes')
 const sortAsc = ref(false)
+const currentPage = ref(1)
+const pageSize = ref(10)
 
 const computedTabs = computed(() => {
   if (Array.isArray(props.tabs) && props.tabs.length > 0) {
@@ -88,6 +112,16 @@ const sortedRows = computed(() => {
   })
   return rows
 })
+
+const totalPages = computed(() => Math.max(1, Math.ceil(sortedRows.value.length / pageSize.value)))
+
+const paginatedRows = computed(() => {
+  const start = (currentPage.value - 1) * pageSize.value
+  return sortedRows.value.slice(start, start + pageSize.value)
+})
+
+watch(() => currentTab.value?.id, () => { currentPage.value = 1 })
+watch(() => [sortKey.value, sortAsc.value], () => { currentPage.value = 1 })
 
 function setSort(key) {
   if (sortKey.value === key) {
@@ -197,6 +231,45 @@ function rowPercent(row) {
 .traffic-breakdown__raw { color: var(--color-text-tertiary); font-family: var(--font-mono); font-size: 0.75rem; text-align: right; white-space: nowrap; }
 .traffic-breakdown__percent { color: var(--color-text-muted); font-size: 0.75rem; text-align: right; white-space: nowrap; min-width: 2.5rem; }
 .traffic-breakdown__empty { text-align: center; color: var(--color-text-muted); padding: 1.5rem; font-size: 0.875rem; margin: 0; }
+.traffic-breakdown__pagination {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  padding: 0.5rem 0.65rem;
+  font-size: 0.8125rem;
+}
+.traffic-breakdown__page-btn {
+  padding: 0.3rem 0.55rem;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-surface);
+  color: var(--color-text-primary);
+  font-size: 0.8125rem;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+.traffic-breakdown__page-btn:hover:not(:disabled) { background: var(--color-bg-hover); }
+.traffic-breakdown__page-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.traffic-breakdown__page-info {
+  color: var(--color-text-secondary);
+  font-weight: 600;
+  min-width: 3rem;
+  text-align: center;
+}
+.traffic-breakdown__page-size {
+  padding: 0.25rem 0.5rem;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-bg-surface);
+  color: var(--color-text-primary);
+  font-size: 0.75rem;
+  font-family: inherit;
+  cursor: pointer;
+}
 @media (max-width: 720px) {
   .traffic-breakdown__table-header { display: none; }
   .traffic-breakdown__row { grid-template-columns: 1fr auto; }
