@@ -73,11 +73,14 @@
       <BaseBadge v-if="hasIpForwardDisabled" tone="warning">No IP Forward</BaseBadge>
     </div>
 
-    <div v-if="hasTraffic" class="traffic-line traffic-line--clickable" @click.stop="$emit('traffic-click', rule)">
-      <span>用量 {{ formatBytes(normalizedTraffic.accounted_bytes) }}</span>
-      <span>入 {{ formatBytes(normalizedTraffic.rx_bytes) }}</span>
-      <span>出 {{ formatBytes(normalizedTraffic.tx_bytes) }}</span>
-    </div>
+    <TrafficBar
+      v-if="hasTraffic"
+      :accounted="normalizedTraffic.accounted_bytes"
+      :rx="normalizedTraffic.rx_bytes"
+      :tx="normalizedTraffic.tx_bytes"
+      :node-total="agentNodeTotal"
+      @click="$emit('traffic-click', rule)"
+    />
 
     <template v-if="hasTags" #footer>
       <BaseBadge v-for="tag in rule.tags" :key="tag" tone="primary">{{ tag }}</BaseBadge>
@@ -91,12 +94,14 @@ import BaseListCard from '../base/BaseListCard.vue'
 import BaseBadge from '../base/BaseBadge.vue'
 import BaseIconButton from '../base/BaseIconButton.vue'
 import { getRuleEffectiveStatus } from '../../utils/syncStatus.js'
+import TrafficBar from '../traffic/TrafficBar.vue'
 import { formatBytes, normalizeTrafficSummaryBucket } from '../../utils/trafficStats.js'
 
 const props = defineProps({
   rule: { type: Object, required: true },
   agent: { type: Object, default: null },
   traffic: { type: Object, default: null },
+  agentNodeTotal: { type: Number, default: 0 },
 })
 
 defineEmits(['edit', 'toggle', 'copy', 'diagnose', 'delete', 'traffic-click'])

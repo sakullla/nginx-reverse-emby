@@ -43,6 +43,7 @@
         :key='listener.id'
         :listener='listener'
         :traffic='trafficForListener(listener)'
+        :agent-node-total='agentNodeTotal'
         @edit='startEdit'
         @toggle='toggleListener'
         @delete='startDelete'
@@ -131,6 +132,8 @@ const { data: trafficSummaryData } = useQuery({
   enabled: () => !!agentId.value && trafficStatsEnabled.value,
   refetchInterval: 10_000
 })
+
+const agentNodeTotal = computed(() => trafficSummaryData.value?.used_bytes || 0)
 
 function trafficForListener(listener) {
   return trafficStatsEnabled.value
