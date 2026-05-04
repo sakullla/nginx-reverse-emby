@@ -21,7 +21,7 @@
       <span v-if="dailyBudgetText" class="traffic-summary-card__sub">{{ dailyBudgetText }}</span>
     </div>
     <div class="traffic-summary-card">
-      <span class="traffic-summary-card__label">主机带宽 (24h)</span>
+      <span class="traffic-summary-card__label">主机流量（当前周期）</span>
       <span class="traffic-summary-card__value">{{ hostBandwidthLabel }}</span>
       <span v-if="hostInterfaceText" class="traffic-summary-card__sub">{{ hostInterfaceText }}</span>
     </div>

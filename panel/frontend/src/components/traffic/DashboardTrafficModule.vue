@@ -23,9 +23,9 @@
           </div>
         </div>
         <div class="dashboard-traffic__card">
-          <span class="dashboard-traffic__card-label">主机流量 (24h)</span>
+          <span class="dashboard-traffic__card-label">主机流量（日汇总）</span>
           <span class="dashboard-traffic__card-value">{{ formatBytes(hostTotalAccounted) }}</span>
-          <span class="dashboard-traffic__card-sub">host_total 口径</span>
+          <span class="dashboard-traffic__card-sub">overview 日粒度 host_total</span>
         </div>
         <div class="dashboard-traffic__card" :class="{ 'dashboard-traffic__card--alert': blockedCount > 0 }">
           <span class="dashboard-traffic__card-label">阻断节点</span>
@@ -72,7 +72,6 @@ import { useTrafficOverview } from '../../hooks/useTrafficOverview.js'
 import { fetchSystemInfo, fetchTrafficSummary } from '../../api'
 import TrafficTrendChart from './TrafficTrendChart.vue'
 import { formatBytes, usagePercent, quotaColorThreshold } from '../../utils/trafficStats.js'
-import { hostTotalForLast24h } from './trafficTrendHelpers.mjs'
 
 const { data: systemInfo } = useQuery({
   queryKey: ['system-info'],
@@ -107,7 +106,7 @@ const selectedPercent = computed(() => usagePercent(selectedSummary.value?.used_
 const selectedColor = computed(() => quotaColorThreshold(selectedPercent.value))
 
 const hostTotalAccounted = computed(() => {
-  return hostTotalForLast24h(hostTrendPoints.value)
+  return hostTrendPoints.value.reduce((sum, point) => sum + (point.accounted_bytes || 0), 0)
 })
 
 const blockedCount = computed(() => overviewAgents.value.filter(a => a.blocked).length)
@@ -115,8 +114,12 @@ const blockedCount = computed(() => overviewAgents.value.filter(a => a.blocked).
 const cycleLabel = computed(() => {
   const agents = overviewAgents.value
   if (!agents.length) return '—'
-  const dirs = new Set(agents.map(a => a.direction || 'both'))
-  return dirs.size === 1 ? (agents[0].cycle_start || '—') : '多节点混合'
+  const cycles = new Set(agents.map(a => [
+    a.direction || 'both',
+    a.cycle_start || '',
+    a.cycle_end || ''
+  ].join('|')))
+  return cycles.size === 1 ? (agents[0].cycle_start || '—') : '多节点混合'
 })
 
 const directionLabel = computed(() => {
@@ -159,19 +162,21 @@ const topRulesQuery = useQuery({
       ids.map(id => fetchTrafficSummary(id).catch(() => null))
     )
     const ruleMap = new Map()
-    for (const summary of summaries) {
+    for (const [index, summary] of summaries.entries()) {
       if (!summary) continue
+      const agentId = ids[index]
+      const agentName = overviewAgents.value.find(a => a.agent_id === agentId)?.name || agentId
       for (const list of [summary.http_rules, summary.l4_rules, summary.relay_listeners]) {
         if (!Array.isArray(list)) continue
         for (const row of list) {
-          const key = `${row.scope_type}-${row.scope_id}`
+          const key = `${agentId}-${row.scope_type}-${row.scope_id}`
           const existing = ruleMap.get(key)
           if (existing) {
             existing.accounted_bytes += row.accounted_bytes || 0
             existing.rx_bytes += row.rx_bytes || 0
             existing.tx_bytes += row.tx_bytes || 0
           } else {
-            const label = scopeLabel(row.scope_type, row.scope_id)
+            const label = `${agentName} / ${scopeLabel(row.scope_type, row.scope_id)}`
             ruleMap.set(key, { key, label, accounted_bytes: row.accounted_bytes || 0, rx_bytes: row.rx_bytes || 0, tx_bytes: row.tx_bytes || 0 })
           }
         }

@@ -20,12 +20,12 @@ test('L4 RuleForm exposes proxy entry controls and payload fields', () => {
   assert.match(source, /proxy_egress_url/)
 })
 
-test('Agent detail exposes outbound proxy update control', () => {
-  const source = read('pages/AgentDetailPage.vue')
+test('Agent list edit modal exposes outbound proxy update control', () => {
+  const source = read('pages/AgentsPage.vue')
   assert.match(source, /outbound_proxy_url/)
   assert.match(source, /useUpdateAgent/)
-  assert.match(source, /saveOutboundProxy/)
-  assert.match(source, /v-if="!agent\.is_local"\s+class="agent-setting"/)
+  assert.match(source, /buildOutboundProxyPayload/)
+  assert.match(source, /v-if="!editingAgent\?\.is_local"\s+class="form-group"/)
 })
 
 test('frontend API exposes agent update path', () => {

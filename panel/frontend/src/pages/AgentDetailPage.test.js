@@ -13,7 +13,8 @@ const apiCalls = {
   fetchTrafficTrend: vi.fn(),
   updateTrafficPolicy: vi.fn(),
   calibrateTraffic: vi.fn(),
-  cleanupTraffic: vi.fn()
+  cleanupTraffic: vi.fn(),
+  updateAgent: vi.fn()
 }
 
 vi.mock('vue-router', () => ({
@@ -50,7 +51,7 @@ vi.mock('../hooks/useAgents', async () => {
     }),
     useUpdateAgent: () => ({
       isPending: ref(false),
-      mutateAsync: vi.fn()
+      mutateAsync: (...args) => apiCalls.updateAgent(...args)
     })
   }
 })
@@ -160,13 +161,21 @@ beforeEach(() => {
 })
 
 describe('AgentDetailPage', () => {
-  it('hides outbound proxy editing for embedded local agents', async () => {
+  it('does not expose outbound proxy editing from the system info tab', async () => {
     agentRecord.is_local = true
     const wrapper = await mountPage()
 
     await wrapper.findAll('.tab-btn').find((button) => button.text() === '系统信息').trigger('click')
 
     expect(wrapper.find('#agent-outbound-proxy').exists()).toBe(false)
+
+    agentRecord.outbound_proxy_url = 'socks://127.0.0.1:1080'
+    agentRecord.is_local = false
+    const remoteWrapper = await mountPage()
+
+    await remoteWrapper.findAll('.tab-btn').find((button) => button.text() === '系统信息').trigger('click')
+    expect(remoteWrapper.find('#agent-outbound-proxy').exists()).toBe(false)
+    expect(remoteWrapper.find('[data-test="save-outbound-proxy"]').exists()).toBe(false)
   })
 
   it('renders traffic tab when traffic stats are enabled', async () => {

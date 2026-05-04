@@ -8,6 +8,7 @@ import { fetchSystemInfo, fetchTrafficOverview, fetchTrafficSummary } from '../.
 let trafficStatsEnabled = true
 let hostTrend = []
 let overviewAgents = []
+let trafficSummaries = {}
 let lastQueryClient = null
 
 vi.mock('../../api', () => ({
@@ -17,11 +18,11 @@ vi.mock('../../api', () => ({
     host_trend: hostTrend,
     agents: overviewAgents
   })),
-  fetchTrafficSummary: vi.fn(async (agentId) => ({
+  fetchTrafficSummary: vi.fn(async (agentId) => trafficSummaries[agentId] ?? {
     http_rules: [{ scope_type: 'http_rule', scope_id: agentId, accounted_bytes: agentId === 'edge-3' ? 4096 : 1024 }],
     l4_rules: [],
     relay_listeners: []
-  }))
+  })
 }))
 
 function createQueryClient() {
@@ -68,6 +69,7 @@ describe('DashboardTrafficModule', () => {
         direction: 'both'
       }
     ]
+    trafficSummaries = {}
     vi.clearAllMocks()
     vi.useRealTimers()
   })
@@ -95,9 +97,7 @@ describe('DashboardTrafficModule', () => {
     expect(wrapper.find('.dashboard-traffic').exists()).toBe(false)
   })
 
-  it('shows only last 24h host traffic in dashboard card', async () => {
-    vi.useFakeTimers()
-    vi.setSystemTime(new Date('2026-05-04T12:00:00.000Z'))
+  it('labels host traffic as daily overview data instead of 24h usage', async () => {
     hostTrend = [
       { bucket_start: '2026-05-03T11:00:00.000Z', accounted_bytes: 1024 },
       { bucket_start: '2026-05-04T00:00:00.000Z', accounted_bytes: 2048 }
@@ -106,10 +106,37 @@ describe('DashboardTrafficModule', () => {
     const wrapper = await mountModule()
 
     const hostCard = wrapper.findAll('.dashboard-traffic__card')
-      .find(card => card.text().includes('主机流量 (24h)'))
+      .find(card => card.text().includes('主机流量（日汇总）'))
     expect(hostCard?.exists()).toBe(true)
-    expect(hostCard.text()).toContain('2.00 KiB')
-    expect(hostCard.text()).not.toContain('3.00 KiB')
+    expect(hostCard.text()).toContain('3.00 KiB')
+    expect(hostCard.text()).not.toContain('24h')
+  })
+
+  it('keeps top rules from different agents separate when rule ids overlap', async () => {
+    trafficSummaries = {
+      'edge-1': {
+        http_rules: [{ scope_type: 'http_rule', scope_id: '1', accounted_bytes: 1024 }],
+        l4_rules: [],
+        relay_listeners: []
+      },
+      'edge-2': {
+        http_rules: [{ scope_type: 'http_rule', scope_id: '1', accounted_bytes: 2048 }],
+        l4_rules: [],
+        relay_listeners: []
+      }
+    }
+
+    const wrapper = await mountModule()
+    await vi.waitFor(() => expect(fetchTrafficSummary).toHaveBeenCalledWith('edge-2'))
+
+    const topRulesPanel = wrapper.findAll('.dashboard-traffic__list-panel')
+      .find(panel => panel.text().includes('Top 规则'))
+    expect(topRulesPanel?.exists()).toBe(true)
+    expect(topRulesPanel.text()).toContain('edge-1 / HTTP #1')
+    expect(topRulesPanel.text()).toContain('edge-2 / HTTP #1')
+    expect(topRulesPanel.text()).toContain('1.00 KiB')
+    expect(topRulesPanel.text()).toContain('2.00 KiB')
+    expect(topRulesPanel.findAll('.dashboard-traffic__list-row')).toHaveLength(2)
   })
 
   it('shows zero quotas as real quota progress', async () => {
@@ -175,5 +202,38 @@ describe('DashboardTrafficModule', () => {
     expect(cycleCard?.exists()).toBe(true)
     expect(cycleCard.text()).toContain('2026-05-01')
     expect(cycleCard.text()).toContain('入站')
+  })
+
+  it('shows mixed cycle label when aggregate agents have different cycle windows', async () => {
+    overviewAgents = [
+      {
+        agent_id: 'edge-1',
+        name: 'edge-1',
+        used_bytes: 1024,
+        quota_bytes: null,
+        remaining_bytes: null,
+        direction: 'both',
+        cycle_start: '2026-05-01T00:00:00Z',
+        cycle_end: '2026-06-01T00:00:00Z'
+      },
+      {
+        agent_id: 'edge-2',
+        name: 'edge-2',
+        used_bytes: 2048,
+        quota_bytes: null,
+        remaining_bytes: null,
+        direction: 'both',
+        cycle_start: '2026-05-15T00:00:00Z',
+        cycle_end: '2026-06-15T00:00:00Z'
+      }
+    ]
+
+    const wrapper = await mountModule()
+
+    const cycleCard = wrapper.findAll('.dashboard-traffic__card')
+      .find(card => card.text().includes('计费周期'))
+    expect(cycleCard?.exists()).toBe(true)
+    expect(cycleCard.text()).toContain('多节点混合')
+    expect(cycleCard.text()).not.toContain('2026-05-01')
   })
 })
