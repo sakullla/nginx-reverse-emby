@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -27,6 +28,14 @@ type trafficStore interface {
 	IncrementTrafficBuckets(context.Context, storage.TrafficDelta) error
 	ListTrafficTrend(context.Context, storage.TrafficTrendQuery) ([]storage.TrafficBucketRow, error)
 	DeleteTrafficBefore(context.Context, string, storage.TrafficCleanupCutoff) (int64, error)
+}
+
+type trafficAgentStore interface {
+	ListAgents(context.Context) ([]storage.AgentRow, error)
+}
+
+type trafficAgentIDStore interface {
+	ListTrafficAgentIDs(context.Context) ([]string, error)
 }
 
 type trafficEventStore interface {
@@ -455,14 +464,55 @@ func (s *trafficService) CleanupAll(ctx context.Context) (TrafficCleanupAllResul
 	if err != nil {
 		return TrafficCleanupAllResult{}, err
 	}
-	out := TrafficCleanupAllResult{
-		Results: make([]TrafficCleanupResult, 0, len(policies)),
-	}
+	policyByAgentID := make(map[string]storage.AgentTrafficPolicyRow, len(policies))
 	for _, policy := range policies {
 		agentID := strings.TrimSpace(policy.AgentID)
 		if agentID == "" {
 			continue
 		}
+		policyByAgentID[agentID] = policy
+	}
+	agentIDs := make([]string, 0, len(policyByAgentID))
+	for agentID := range policyByAgentID {
+		agentIDs = append(agentIDs, agentID)
+	}
+	if agentStore, ok := s.store.(trafficAgentStore); ok {
+		rows, err := agentStore.ListAgents(ctx)
+		if err != nil {
+			return TrafficCleanupAllResult{}, err
+		}
+		for _, row := range rows {
+			agentID := strings.TrimSpace(row.ID)
+			if agentID == "" {
+				continue
+			}
+			if _, found := policyByAgentID[agentID]; found {
+				continue
+			}
+			agentIDs = append(agentIDs, agentID)
+		}
+	}
+	if trafficAgentIDs, ok := s.store.(trafficAgentIDStore); ok {
+		rows, err := trafficAgentIDs.ListTrafficAgentIDs(ctx)
+		if err != nil {
+			return TrafficCleanupAllResult{}, err
+		}
+		for _, row := range rows {
+			agentID := strings.TrimSpace(row)
+			if agentID == "" {
+				continue
+			}
+			if slices.Contains(agentIDs, agentID) {
+				continue
+			}
+			agentIDs = append(agentIDs, agentID)
+		}
+	}
+	slices.Sort(agentIDs)
+	out := TrafficCleanupAllResult{
+		Results: make([]TrafficCleanupResult, 0, len(agentIDs)),
+	}
+	for _, agentID := range agentIDs {
 		result, err := s.Cleanup(ctx, agentID)
 		if err != nil {
 			return TrafficCleanupAllResult{}, err

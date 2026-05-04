@@ -4,7 +4,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/glebarez/sqlite"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
+	"gorm.io/gorm"
 )
 
 func TestStoreConfigFromConfigPassesDatabaseSettings(t *testing.T) {
@@ -49,6 +51,53 @@ func TestNewStoreRejectsUnsupportedDriver(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "unsupported database driver") {
 		t.Fatalf("NewStore() error = %v, want unsupported database driver error", err)
 	}
+}
+
+func TestNewStoreAllowsSQLiteDSNWithoutDataRoot(t *testing.T) {
+	dbPath := t.TempDir() + "/panel.db"
+	store, err := NewStore(StoreConfig{
+		Driver:              "sqlite",
+		DSN:                 dbPath,
+		LocalAgentID:        "local",
+		SkipBootstrapSchema: true,
+	})
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+}
+
+func TestNewStoreRequiresDataRootForDefaultSQLiteDSN(t *testing.T) {
+	_, err := NewStore(StoreConfig{
+		Driver:              "sqlite",
+		LocalAgentID:        "local",
+		SkipBootstrapSchema: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "data root is required") {
+		t.Fatalf("NewStore() error = %v, want data root is required", err)
+	}
+}
+
+func TestResolveDialectorAllowsSQLiteDSNWithoutDataRoot(t *testing.T) {
+	dbPath := t.TempDir() + "/panel.db"
+	dialector, err := resolveDialector("sqlite", StoreConfig{DSN: dbPath})
+	if err != nil {
+		t.Fatalf("resolveDialector() error = %v", err)
+	}
+	if _, ok := dialector.(*sqlite.Dialector); !ok {
+		t.Fatalf("dialector type = %T, want sqlite.Dialector", dialector)
+	}
+	db, err := gorm.Open(dialector, &gorm.Config{})
+	if err != nil {
+		t.Fatalf("gorm.Open() error = %v", err)
+	}
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatalf("db.DB() error = %v", err)
+	}
+	_ = sqlDB.Close()
 }
 
 func TestSchemaOptionsForDriverGatesSQLiteLegacyMigrations(t *testing.T) {

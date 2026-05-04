@@ -27,6 +27,7 @@ type cutoverHarness struct {
 	httpClient *http.Client
 
 	panelServer *httptest.Server
+	routerClose func() error
 	httpBackend *httptest.Server
 	stopTCP     func()
 
@@ -164,6 +165,9 @@ func tryStartCutoverHarness(t *testing.T, options cutoverHarnessOptions) (*cutov
 	if err != nil {
 		return nil, fmt.Errorf("http.NewRouter(): %w", err)
 	}
+	if closer, ok := router.(interface{ Close() error }); ok {
+		harness.routerClose = closer.Close
+	}
 	panelServer := httptest.NewServer(router)
 	harness.panelServer = panelServer
 
@@ -221,6 +225,12 @@ func (h *cutoverHarness) closeNoFail() error {
 	if h.panelServer != nil {
 		h.panelServer.Close()
 		h.panelServer = nil
+	}
+	if h.routerClose != nil {
+		if err := h.routerClose(); err != nil {
+			closeErrs = append(closeErrs, fmt.Sprintf("router close: %v", err))
+		}
+		h.routerClose = nil
 	}
 	if h.httpBackend != nil {
 		h.httpBackend.Close()

@@ -441,8 +441,16 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 		_ = closeStores()
 		return nil, err
 	}
+	closeApp := closeStores
+	if cleanup, ok := handler.(interface{ Close() error }); ok {
+		closeApp = func() error {
+			handlerErr := cleanup.Close()
+			storeErr := closeStores()
+			return errors.Join(handlerErr, storeErr)
+		}
+	}
 
 	controlPlaneApp := app.New(cfg, handler, logger, runtime.Start)
-	controlPlaneApp.SetCleanup(closeStores)
+	controlPlaneApp.SetCleanup(closeApp)
 	return controlPlaneApp, nil
 }

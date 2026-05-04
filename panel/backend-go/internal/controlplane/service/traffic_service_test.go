@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -662,6 +663,57 @@ func TestTrafficServiceCleanupAllUsesConfiguredPolicies(t *testing.T) {
 	}
 }
 
+func TestTrafficServiceCleanupAllIncludesAgentsUsingDefaultPolicy(t *testing.T) {
+	fakeStore := newFakeTrafficStore()
+	fakeStore.agents = []storage.AgentRow{
+		{ID: "edge-default", Name: "edge-default"},
+		{ID: "edge-custom", Name: "edge-custom"},
+	}
+	fakeStore.policies = []storage.AgentTrafficPolicyRow{
+		{AgentID: "edge-custom", Direction: "tx", CycleStartDay: 15, HourlyRetentionDays: 30, DailyRetentionMonths: 6},
+	}
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, fakeStore)
+
+	result, err := svc.CleanupAll(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.DeletedRows != 6 || len(result.Results) != 2 {
+		t.Fatalf("CleanupAll() = %+v, want cleanup for default and custom agents", result)
+	}
+	ids := []string{result.Results[0].AgentID, result.Results[1].AgentID}
+	if !slices.Contains(ids, "edge-default") || !slices.Contains(ids, "edge-custom") {
+		t.Fatalf("CleanupAll() result IDs = %+v, want edge-default and edge-custom", ids)
+	}
+}
+
+func TestTrafficServiceCleanupAllIncludesAgentsWithOnlyTrafficData(t *testing.T) {
+	store := newTrafficServiceRealStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	if err := store.IncrementTrafficBuckets(ctx, storage.TrafficDelta{
+		AgentID:     "local",
+		ScopeType:   "agent_total",
+		BucketStart: time.Date(2025, 10, 1, 10, 0, 0, 0, time.UTC),
+		RXBytes:     10,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, store)
+
+	result, err := svc.CleanupAll(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.DeletedRows == 0 || len(result.Results) != 1 {
+		t.Fatalf("CleanupAll() = %+v, want cleanup for traffic data agent", result)
+	}
+	if result.Results[0].AgentID != "local" {
+		t.Fatalf("CleanupAll() result = %+v, want local", result.Results)
+	}
+}
+
 func TestTrafficServiceCleanupPreservesCurrentCycleHourlyRows(t *testing.T) {
 	store := newTrafficServiceRealStore(t)
 	ctx := context.Background()
@@ -708,6 +760,7 @@ func (n jsonNumber) String() string { return string(n) }
 type fakeTrafficStore struct {
 	policy                  storage.AgentTrafficPolicyRow
 	policies                []storage.AgentTrafficPolicyRow
+	agents                  []storage.AgentRow
 	cursors                 map[string]storage.AgentTrafficRawCursorRow
 	buckets                 map[string]storage.TrafficBucketRow
 	baselines               map[string]storage.AgentTrafficBaselineRow
@@ -765,6 +818,10 @@ func (s *fakeTrafficStore) ListTrafficPolicies(context.Context) ([]storage.Agent
 		return append([]storage.AgentTrafficPolicyRow(nil), s.policies...), nil
 	}
 	return []storage.AgentTrafficPolicyRow{s.policy}, nil
+}
+
+func (s *fakeTrafficStore) ListAgents(context.Context) ([]storage.AgentRow, error) {
+	return append([]storage.AgentRow(nil), s.agents...), nil
 }
 
 func (s *fakeTrafficStore) GetTrafficBaseline(_ context.Context, agentID, cycleStart string) (storage.AgentTrafficBaselineRow, bool, error) {
