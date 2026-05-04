@@ -26,6 +26,15 @@ vi.mock('vue-router', () => ({
   }
 }))
 
+vi.mock('../components/base/BaseModal.vue', () => ({
+  default: {
+    name: 'BaseModal',
+    props: ['modelValue', 'title', 'size'],
+    emits: ['update:modelValue', 'confirm'],
+    template: '<div v-if="modelValue" class="modal-stub"><div class="modal-title">{{ title }}</div><slot /></div>'
+  }
+}))
+
 vi.mock('../api', () => ({
   fetchAgentStats: vi.fn(async () => ({
     status: '正常',
@@ -126,9 +135,9 @@ beforeEach(() => {
     cycle_start_day: 1,
     monthly_quota_bytes: 1099511627776,
     block_when_exceeded: true,
-    hourly_retention_days: 180,
-    daily_retention_months: 24,
-    monthly_retention_months: null
+    hourly_retention_days: 30,
+    daily_retention_months: 3,
+    monthly_retention_months: 36
   })
   apiCalls.fetchTrafficSummary.mockResolvedValue({
     used_bytes: 300,
@@ -253,7 +262,6 @@ describe('AgentDetailPage', () => {
   it('does not submit invalid traffic policy values', async () => {
     const wrapper = await mountPage()
     await wrapper.findAll('.tab-btn').find((button) => button.text() === '流量统计').trigger('click')
-    await wrapper.findAll('.collapsible-section__header').find((button) => button.text().includes('策略设置')).trigger('click')
     await nextTick()
 
     const quotaInput = wrapper.find('input[placeholder="留空表示无限制"]')
@@ -266,7 +274,6 @@ describe('AgentDetailPage', () => {
   it('shows monthly quota with units and saves bytes', async () => {
     const wrapper = await mountPage()
     await wrapper.findAll('.tab-btn').find((button) => button.text() === '流量统计').trigger('click')
-    await wrapper.findAll('.collapsible-section__header').find((button) => button.text().includes('策略设置')).trigger('click')
     await nextTick()
 
     const quotaInput = wrapper.find('input[placeholder="留空表示无限制"]')
@@ -286,7 +293,6 @@ describe('AgentDetailPage', () => {
   it('does not normalize invalid traffic policy integers into defaults', async () => {
     const wrapper = await mountPage()
     await wrapper.findAll('.tab-btn').find((button) => button.text() === '流量统计').trigger('click')
-    await wrapper.findAll('.collapsible-section__header').find((button) => button.text().includes('策略设置')).trigger('click')
     await nextTick()
 
     const numberInputs = wrapper.findAll('input[type="number"]')
@@ -299,7 +305,7 @@ describe('AgentDetailPage', () => {
     await wrapper.find('.traffic-policy-form__footer .btn-primary').trigger('click')
     expect(apiCalls.updateTrafficPolicy).not.toHaveBeenCalled()
 
-    await numberInputs[1].setValue('180')
+    await numberInputs[1].setValue('30')
     await numberInputs[2].setValue('0')
     await wrapper.find('.traffic-policy-form__footer .btn-primary').trigger('click')
     expect(apiCalls.updateTrafficPolicy).not.toHaveBeenCalled()
@@ -309,7 +315,6 @@ describe('AgentDetailPage', () => {
     window.confirm.mockReturnValue(false)
     const wrapper = await mountPage()
     await wrapper.findAll('.tab-btn').find((button) => button.text() === '流量统计').trigger('click')
-    await wrapper.findAll('.collapsible-section__header').find((button) => button.text().includes('历史管理')).trigger('click')
     await nextTick()
 
     await wrapper.findAll('button').find((button) => button.text() === '清理过期数据').trigger('click')
@@ -317,14 +322,22 @@ describe('AgentDetailPage', () => {
     expect(apiCalls.cleanupTraffic).not.toHaveBeenCalled()
   })
 
-  it('calibrates traffic to a prompted byte value', async () => {
-    window.prompt.mockReturnValue('1.5 GiB')
+  it('calibrates traffic via modal', async () => {
     const wrapper = await mountPage()
     await wrapper.findAll('.tab-btn').find((button) => button.text() === '流量统计').trigger('click')
-    await wrapper.findAll('.collapsible-section__header').find((button) => button.text().includes('历史管理')).trigger('click')
     await nextTick()
 
-    await wrapper.findAll('button').find((button) => button.text() === '校准').trigger('click')
+    await wrapper.findAll('button').find((button) => button.text() === '校准为指定值').trigger('click')
+    await nextTick()
+
+    expect(wrapper.find('.traffic-calibrate-modal').exists()).toBe(true)
+
+    const modalInput = wrapper.find('.traffic-calibrate-modal__input')
+    await modalInput.setValue('1.5')
+    const modalUnit = wrapper.find('.traffic-calibrate-modal__unit')
+    await modalUnit.setValue('GiB')
+    await wrapper.find('.traffic-calibrate-modal__confirm').trigger('click')
+    await nextTick()
 
     expect(apiCalls.calibrateTraffic).toHaveBeenCalledWith('edge-1', {
       used_bytes: 1610612736
@@ -334,7 +347,6 @@ describe('AgentDetailPage', () => {
   it('calibrates traffic current usage to zero', async () => {
     const wrapper = await mountPage()
     await wrapper.findAll('.tab-btn').find((button) => button.text() === '流量统计').trigger('click')
-    await wrapper.findAll('.collapsible-section__header').find((button) => button.text().includes('历史管理')).trigger('click')
     await nextTick()
 
     await wrapper.findAll('button').find((button) => button.text() === '从现在归零').trigger('click')

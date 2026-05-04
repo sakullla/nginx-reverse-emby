@@ -49,7 +49,8 @@
 
     <div class="agent-detail__tab-content">
       <div v-if="activeTab === 'traffic'" class="tab-panel">
-        <TrafficCollapsibleSection title="概览" :default-expanded="true">
+        <section class="traffic-section">
+          <h3 class="traffic-section__title">概览</h3>
           <TrafficSummaryCards :summary="trafficSummary" :direction="trafficPolicyForm.direction" :host-total="trafficSummary.host_total" />
           <div class="traffic-tab__trend">
             <div class="traffic-tab__trend-header">
@@ -73,21 +74,24 @@
             <span class="traffic-tab__breakdown-title">分项流量（点击查看趋势）</span>
             <TrafficBreakdownTable :tabs="trafficBreakdownTabs" :clickable="true" @click-row="openBreakdownTrendModal" />
           </div>
-        </TrafficCollapsibleSection>
+        </section>
 
-        <TrafficCollapsibleSection title="策略设置" :default-expanded="false">
+        <section class="traffic-section">
+          <h3 class="traffic-section__title">策略设置</h3>
           <TrafficPolicyForm v-model="trafficPolicyForm" :saving="updateTrafficPolicyMutation.isPending.value || updateAgent.isPending.value" @save="saveTrafficPolicy" />
-        </TrafficCollapsibleSection>
+        </section>
 
-        <TrafficCollapsibleSection title="历史管理" :default-expanded="false">
+        <section class="traffic-section">
+          <h3 class="traffic-section__title">历史管理</h3>
           <TrafficHistoryManager
+            :policy="trafficPolicyForm"
             :calibrating="calibrateTrafficMutation.isPending.value"
             :cleaning="cleanupTrafficMutation.isPending.value"
-            @calibrate="calibrateTrafficSummary"
+            @calibrate="calibrateModalVisible = true"
             @calibrate-zero="calibrateTrafficToZero"
             @cleanup="cleanupTrafficHistory"
           />
-        </TrafficCollapsibleSection>
+        </section>
 
         <TrafficTrendModal
           v-model:visible="trendModal.visible"
@@ -96,6 +100,14 @@
           :scope-id="trendModal.scopeId"
           :scope-label="trendModal.scopeLabel"
           :direction="trafficPolicyForm.direction"
+        />
+        <TrafficCalibrateModal
+          v-model:visible="calibrateModalVisible"
+          :agent-id="agentId"
+          :current-used-bytes="trafficSummary.used_bytes ?? 0"
+          :cycle-start="trafficSummary.cycle_start ?? ''"
+          :cycle-end="trafficSummary.cycle_end ?? ''"
+          @confirm="onCalibrateConfirm"
         />
       </div>
 
@@ -181,7 +193,7 @@ import TrafficSummaryCards from '../components/traffic/TrafficSummaryCards.vue'
 import TrafficBreakdownTable from '../components/traffic/TrafficBreakdownTable.vue'
 import TrafficPolicyForm from '../components/traffic/TrafficPolicyForm.vue'
 import TrafficHistoryManager from '../components/traffic/TrafficHistoryManager.vue'
-import TrafficCollapsibleSection from '../components/traffic/TrafficCollapsibleSection.vue'
+import TrafficCalibrateModal from '../components/traffic/TrafficCalibrateModal.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -266,6 +278,7 @@ const trafficBreakdownTabs = computed(() => [
 
 const activeTab = ref('http')
 const trendModal = ref({ visible: false, scopeType: '', scopeId: '', scopeLabel: '' })
+const calibrateModalVisible = ref(false)
 
 function openBreakdownTrendModal(row) {
   trendModal.value = {
@@ -359,18 +372,14 @@ async function saveTrafficPolicy() {
   }
 }
 
+async function onCalibrateConfirm(usedBytes) {
+  if (!agent.value || !trafficStatsEnabled.value) return
+  await calibrateTrafficMutation.mutateAsync({ used_bytes: usedBytes })
+}
+
 async function calibrateTrafficSummary() {
   if (!agent.value || !trafficStatsEnabled.value) return
-  const usedBytes = trafficSummary.value.used_bytes ?? accountedBytes(normalizeTrafficBucket(agentStats.value?.traffic?.total), trafficPolicyForm.value.direction)
-  if (typeof window === 'undefined' || typeof window.prompt !== 'function') return
-  const input = window.prompt('输入要校准为的已用流量，例如 1.5 GiB 或 1610612736', formatBytes(usedBytes))
-  if (input == null) return
-  const calibratedBytes = parseByteInput(input)
-  if (calibratedBytes === undefined) {
-    messageStore.warning('校准流量必须是非负数字，可带 B/KiB/MiB/GiB/TiB 单位')
-    return
-  }
-  await calibrateTrafficMutation.mutateAsync({ used_bytes: calibratedBytes })
+  calibrateModalVisible.value = true
 }
 
 async function calibrateTrafficToZero() {
@@ -682,6 +691,8 @@ function timeAgo(date) {
 .btn-primary { background: var(--gradient-primary); color: white; }
 .btn-secondary { background: var(--color-bg-subtle); color: var(--color-text-primary); border: 1px solid var(--color-border-default); }
 .btn:disabled { opacity: 0.6; cursor: not-allowed; }
+.traffic-section { margin-bottom: 1.5rem; }
+.traffic-section__title { font-size: 1rem; font-weight: 600; color: var(--color-text-primary); margin: 0 0 0.75rem; }
 @media (max-width: 720px) {
   .agent-detail__header,
   .tab-panel__header { flex-direction: column; }
