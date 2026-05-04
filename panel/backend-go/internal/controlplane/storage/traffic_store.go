@@ -288,6 +288,18 @@ func (s *GormStore) IngestTrafficCursorDeltaWithEvent(ctx context.Context, curso
 
 	var result TrafficCursorDeltaResult
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if isHostTrafficScope(cursor.ScopeType) {
+			var existing AgentTrafficRawCursorRow
+			err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+				Where("agent_id = ? AND scope_type = ? AND scope_id = ?", cursor.AgentID, cursor.ScopeType, cursor.ScopeID).
+				First(&existing).Error
+			if err == gorm.ErrRecordNotFound {
+				return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&cursor).Error
+			}
+			if err != nil {
+				return err
+			}
+		}
 		seed := cursor
 		seed.RXBytes = 0
 		seed.TXBytes = 0
@@ -360,6 +372,10 @@ func (s *GormStore) IngestTrafficCursorDeltaWithEvent(ctx context.Context, curso
 		return tx.Create(event).Error
 	})
 	return result, err
+}
+
+func isHostTrafficScope(scopeType string) bool {
+	return scopeType == "host_total" || scopeType == "host_interface"
 }
 
 func trafficCursorMutex(agentID, scopeType, scopeID string) *sync.Mutex {

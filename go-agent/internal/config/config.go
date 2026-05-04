@@ -27,6 +27,7 @@ type Config struct {
 	AgentToken              string
 	MasterURL               string
 	DataDir                 string
+	TrafficInterfaces       []string
 	HeartbeatInterval       time.Duration
 	HTTPTransport           HTTPTransportConfig
 	HTTPResilience          HTTPResilienceConfig
@@ -166,6 +167,9 @@ func loadFromEnvForExecutable(executablePath string) (Config, error) {
 		cfg.TrafficStatsEnabled = enabled
 		cfg.TrafficStatsExplicit = true
 	}
+	if val := strings.TrimSpace(os.Getenv("NRE_TRAFFIC_INTERFACES")); val != "" {
+		cfg.TrafficInterfaces = parseTrafficInterfaces(val)
+	}
 	if val := strings.TrimSpace(os.Getenv("NRE_HTTP_DIAL_TIMEOUT")); val != "" {
 		dur, err := parsePositiveDurationEnv("NRE_HTTP_DIAL_TIMEOUT", val)
 		if err != nil {
@@ -302,6 +306,24 @@ func parsePositiveIntEnv(name, value string) (int, error) {
 		return 0, fmt.Errorf("%s must be positive", name)
 	}
 	return num, nil
+}
+
+func parseTrafficInterfaces(value string) []string {
+	parts := strings.Split(value, ",")
+	out := make([]string, 0, len(parts))
+	seen := map[string]struct{}{}
+	for _, part := range parts {
+		name := strings.TrimSpace(part)
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	return out
 }
 
 func parseNonNegativeIntEnv(name, value string) (int, error) {

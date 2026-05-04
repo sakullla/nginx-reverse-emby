@@ -16,6 +16,7 @@ import (
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/certs"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/diagnostics"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/hosttraffic"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/l4"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	platformlinux "github.com/sakullla/nginx-reverse-emby/go-agent/internal/platform/linux"
@@ -74,6 +75,10 @@ type Updater interface {
 	Activate(stagedPath string, desiredVersion string) error
 }
 
+type hostTrafficCollector interface {
+	Snapshot() (hosttraffic.Snapshot, error)
+}
+
 type App struct {
 	cfg                           Config
 	syncClient                    SyncClient
@@ -88,6 +93,7 @@ type App struct {
 	diagnosticHandler             *agenttask.DiagnosticHandler
 	httpProber                    *diagnostics.HTTPProber
 	tcpProber                     *diagnostics.TCPProber
+	hostTrafficCollector          hostTrafficCollector
 	relayTimeoutReset             func()
 	closeOnce                     sync.Once
 	syncMu                        sync.Mutex
@@ -209,6 +215,7 @@ func New(cfg Config) (*App, error) {
 		taskClient,
 	)
 	app.setDiagnostics(diagnosticHandler, httpProber, tcpProber)
+	app.hostTrafficCollector = hosttraffic.NewCollector(cfg.TrafficInterfaces)
 	app.relayTimeoutReset = resetRelayTimeouts
 	restoreRelayTimeouts = false
 	return app, nil
@@ -410,6 +417,11 @@ func (a *App) syncRequest(ctx context.Context, applied Snapshot) (SyncRequest, e
 		req.StatsPresent = true
 	} else if now := time.Now(); shouldReportTrafficStats(meta, now) {
 		stats := traffic.SnapshotNonZero()
+		if hostStats, err := a.hostTrafficSnapshot(); err != nil {
+			log.Printf("[agent] host traffic snapshot error: %v", err)
+		} else if hostStats != nil {
+			stats = mergeTrafficStats(stats, hostStats)
+		}
 		if stats != nil {
 			req.Stats = stats
 			req.StatsPresent = true
@@ -428,6 +440,56 @@ func (a *App) syncRequest(ctx context.Context, applied Snapshot) (SyncRequest, e
 	}
 
 	return req, nil
+}
+
+func (a *App) hostTrafficSnapshot() (map[string]any, error) {
+	if a.hostTrafficCollector == nil {
+		return nil, nil
+	}
+	snapshot, err := a.hostTrafficCollector.Snapshot()
+	if err != nil {
+		return nil, err
+	}
+	if snapshot.Total.RXBytes == 0 && snapshot.Total.TXBytes == 0 && len(snapshot.Interfaces) == 0 {
+		return nil, nil
+	}
+	interfaces := make(map[string]any, len(snapshot.Interfaces))
+	for name, counters := range snapshot.Interfaces {
+		interfaces[name] = map[string]any{
+			"rx_bytes": counters.RXBytes,
+			"tx_bytes": counters.TXBytes,
+		}
+	}
+	return map[string]any{
+		"traffic": map[string]any{
+			"host": map[string]any{
+				"total": map[string]any{
+					"rx_bytes": snapshot.Total.RXBytes,
+					"tx_bytes": snapshot.Total.TXBytes,
+				},
+				"interfaces": interfaces,
+			},
+		},
+	}, nil
+}
+
+func mergeTrafficStats(base, extra map[string]any) map[string]any {
+	if extra == nil {
+		return base
+	}
+	if base == nil {
+		base = map[string]any{}
+	}
+	baseTraffic, _ := base["traffic"].(map[string]any)
+	if baseTraffic == nil {
+		baseTraffic = map[string]any{}
+		base["traffic"] = baseTraffic
+	}
+	extraTraffic, _ := extra["traffic"].(map[string]any)
+	for key, value := range extraTraffic {
+		baseTraffic[key] = value
+	}
+	return base
 }
 
 func shouldReportTrafficStats(meta map[string]string, now time.Time) bool {

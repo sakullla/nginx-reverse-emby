@@ -94,6 +94,28 @@ func TestNewEmbeddedAppliesTrafficStatsToggle(t *testing.T) {
 	}
 }
 
+func TestNewEmbeddedConfiguresHostTrafficCollector(t *testing.T) {
+	app, err := NewEmbedded(Config{
+		AgentID:              "local",
+		AgentName:            "local",
+		DataDir:              t.TempDir(),
+		TrafficStatsEnabled:  true,
+		TrafficStatsExplicit: true,
+		TrafficInterfaces:    []string{"eth0"},
+	}, store.NewInMemory(), staticSyncClient{})
+	if err != nil {
+		t.Fatalf("NewEmbedded() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := app.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+	if app.hostTrafficCollector == nil {
+		t.Fatal("hostTrafficCollector = nil")
+	}
+}
+
 func TestHTTPRuntimeManagerTask1DefaultsPreserveLegacyBackoffCap(t *testing.T) {
 	manager := newHTTPRuntimeManagerWithConfig(config.Default())
 
