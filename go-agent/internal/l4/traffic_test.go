@@ -261,6 +261,84 @@ func TestL4DropsExistingUDPSessionPacketWhenTrafficBlocked(t *testing.T) {
 	}
 }
 
+func TestL4UDPTrafficBecomesVisibleBeforeSessionCloses(t *testing.T) {
+	traffic.Reset()
+	traffic.SetEnabled(true)
+	defer traffic.Reset()
+
+	upstreamConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("ListenUDP() upstream error = %v", err)
+	}
+	defer upstreamConn.Close()
+
+	go func() {
+		buf := make([]byte, 64)
+		for {
+			_ = upstreamConn.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
+			n, addr, err := upstreamConn.ReadFromUDP(buf)
+			if err != nil {
+				if ne, ok := err.(net.Error); ok && ne.Timeout() {
+					continue
+				}
+				return
+			}
+			_, _ = upstreamConn.WriteToUDP(buf[:n], addr)
+		}
+	}()
+
+	listenConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("ListenUDP() reserve error = %v", err)
+	}
+	listenPort := listenConn.LocalAddr().(*net.UDPAddr).Port
+	if err := listenConn.Close(); err != nil {
+		t.Fatalf("Close() reserve error = %v", err)
+	}
+
+	srv, err := NewServerWithResources(context.Background(), []Rule{{
+		ID:           45,
+		Protocol:     "udp",
+		ListenHost:   "127.0.0.1",
+		ListenPort:   listenPort,
+		UpstreamHost: "127.0.0.1",
+		UpstreamPort: upstreamConn.LocalAddr().(*net.UDPAddr).Port,
+	}}, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("NewServerWithResources() error = %v", err)
+	}
+	defer srv.Close()
+	if len(srv.udpConns) == 0 {
+		t.Fatal("expected udp listener")
+	}
+
+	client, err := net.DialUDP("udp", nil, srv.udpConns[0].LocalAddr().(*net.UDPAddr))
+	if err != nil {
+		t.Fatalf("DialUDP() error = %v", err)
+	}
+	defer client.Close()
+
+	if _, err := client.Write([]byte("udp traffic")); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	reply := make([]byte, 64)
+	if err := client.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline() error = %v", err)
+	}
+	if _, err := client.Read(reply); err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+
+	stats := traffic.SnapshotNonZero()
+	if stats == nil {
+		t.Fatal("SnapshotNonZero() = nil, want visible UDP traffic while session is active")
+	}
+	l4Stats := stats["traffic"].(map[string]any)["l4"].(map[string]uint64)
+	if l4Stats["rx_bytes"] == 0 && l4Stats["tx_bytes"] == 0 {
+		t.Fatal("expected active UDP traffic to be flushed before session closes")
+	}
+}
+
 func TestCopyBidirectionalTCPRecordsL4Traffic(t *testing.T) {
 	traffic.Reset()
 	defer traffic.Reset()

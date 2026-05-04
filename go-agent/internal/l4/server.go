@@ -665,6 +665,7 @@ func (s *Server) proxyUDPPacket(listener *net.UDPConn, rule model.L4Rule, payloa
 		return
 	}
 	session.trafficRecorder.Add(int64(len(payload)), 0)
+	session.trafficRecorder.FlushIfPendingBelow(32 * 1024)
 	s.markUDPSessionWrite(session.key)
 }
 
@@ -893,6 +894,7 @@ func (s *Server) pipeUDPReplies(session *udpSession) {
 			return
 		}
 		session.trafficRecorder.Add(0, int64(len(payload)))
+		session.trafficRecorder.FlushIfPendingBelow(32 * 1024)
 	}
 }
 
