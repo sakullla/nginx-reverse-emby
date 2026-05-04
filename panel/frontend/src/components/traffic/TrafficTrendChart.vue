@@ -13,8 +13,10 @@ Chart.register(...registerables)
 
 const props = defineProps({
   points: { type: Array, default: () => [] },
+  prevPoints: { type: Array, default: null },
   granularity: { type: String, default: 'day' },
-  quotaBytes: { type: Number, default: null }
+  quotaBytes: { type: Number, default: null },
+  budgetBytes: { type: Number, default: null }
 })
 
 const canvasRef = ref(null)
@@ -33,33 +35,88 @@ function formatLabel(bucketStart) {
   return date.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })
 }
 
+function alignPrevData(labels, currentPoints, prevPoints) {
+  if (!Array.isArray(prevPoints) || prevPoints.length === 0) return labels.map(() => null)
+  const map = new Map()
+  for (const p of prevPoints) {
+    const key = String(p.bucket_start || '')
+    if (key) map.set(key, Number(p.accounted_bytes) || 0)
+  }
+  return currentPoints.map(p => map.get(String(p.bucket_start || '')) ?? null)
+}
+
 function buildConfig() {
   const labels = props.points.map(p => formatLabel(p.bucket_start))
+  const accountedData = props.points.map(p => Number(p.accounted_bytes) || 0)
   const rxData = props.points.map(p => Number(p.rx_bytes) || 0)
   const txData = props.points.map(p => Number(p.tx_bytes) || 0)
   const datasets = [
     {
-      label: 'RX',
-      data: rxData,
-      borderColor: 'rgba(99, 102, 241, 0.9)',
-      backgroundColor: 'rgba(99, 102, 241, 0.1)',
+      label: '用量',
+      data: accountedData,
+      borderColor: 'rgba(59, 130, 246, 0.9)',
+      backgroundColor: 'rgba(59, 130, 246, 0.12)',
       fill: true,
       tension: 0.3,
       pointRadius: 2,
-      pointHoverRadius: 4
+      pointHoverRadius: 5,
+      order: 1
+    },
+    {
+      label: 'RX',
+      data: rxData,
+      borderColor: 'rgba(99, 102, 241, 0.6)',
+      backgroundColor: 'rgba(99, 102, 241, 0.05)',
+      fill: false,
+      tension: 0.3,
+      pointRadius: 1,
+      pointHoverRadius: 3,
+      borderWidth: 1.5,
+      order: 2
     },
     {
       label: 'TX',
       data: txData,
-      borderColor: 'rgba(16, 185, 129, 0.9)',
-      backgroundColor: 'rgba(16, 185, 129, 0.1)',
-      fill: true,
+      borderColor: 'rgba(16, 185, 129, 0.6)',
+      backgroundColor: 'rgba(16, 185, 129, 0.05)',
+      fill: false,
       tension: 0.3,
-      pointRadius: 2,
-      pointHoverRadius: 4
+      pointRadius: 1,
+      pointHoverRadius: 3,
+      borderWidth: 1.5,
+      order: 3
     }
   ]
-  if (props.quotaBytes != null && props.quotaBytes > 0) {
+  if (Array.isArray(props.prevPoints) && props.prevPoints.length > 0) {
+    const prevData = alignPrevData(labels, props.points, props.prevPoints)
+    datasets.push({
+      label: '上期',
+      data: prevData,
+      borderColor: 'rgba(156, 163, 175, 0.7)',
+      backgroundColor: 'transparent',
+      borderDash: [4, 4],
+      fill: false,
+      tension: 0.3,
+      pointRadius: 0,
+      pointHoverRadius: 3,
+      borderWidth: 1.5,
+      order: 4,
+      spanGaps: true
+    })
+  }
+  if (props.budgetBytes != null && props.budgetBytes > 0 && props.granularity !== 'month') {
+    datasets.push({
+      label: '日均预算',
+      data: labels.map(() => props.budgetBytes),
+      borderColor: 'rgba(245, 158, 11, 0.6)',
+      borderDash: [6, 3],
+      borderWidth: 1,
+      pointRadius: 0,
+      fill: false,
+      order: 5
+    })
+  }
+  if (props.quotaBytes != null && props.quotaBytes > 0 && props.granularity === 'month') {
     datasets.push({
       label: '月额度',
       data: labels.map(() => props.quotaBytes),
@@ -67,7 +124,8 @@ function buildConfig() {
       borderDash: [6, 4],
       borderWidth: 1,
       pointRadius: 0,
-      fill: false
+      fill: false,
+      order: 6
     })
   }
   return {
@@ -125,7 +183,7 @@ function renderChart() {
 
 onMounted(renderChart)
 
-watch(() => [props.points, props.granularity, props.quotaBytes], renderChart, { deep: true })
+watch(() => [props.points, props.prevPoints, props.granularity, props.quotaBytes, props.budgetBytes], renderChart, { deep: true })
 
 onUnmounted(() => {
   if (chartInstance) {
