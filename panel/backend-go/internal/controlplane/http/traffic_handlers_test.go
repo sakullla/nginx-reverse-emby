@@ -20,6 +20,7 @@ type fakeTrafficService struct {
 	trend      []service.TrafficTrendPoint
 	calibrated service.TrafficSummary
 	cleanup    service.TrafficCleanupResult
+	overview   service.TrafficOverviewResult
 	err        error
 	state      *fakeTrafficServiceState
 }
@@ -98,7 +99,10 @@ func (f fakeTrafficService) Cleanup(_ context.Context, agentID string) (service.
 }
 
 func (f fakeTrafficService) Overview(_ context.Context, _ string, _ map[string]string) (service.TrafficOverviewResult, error) {
-	return service.TrafficOverviewResult{}, nil
+	if f.err != nil {
+		return service.TrafficOverviewResult{}, f.err
+	}
+	return f.overview, nil
 }
 
 func TestTrafficPolicyRoutesRequirePanelToken(t *testing.T) {
@@ -414,6 +418,44 @@ func TestTrafficHandlersForwardPolicySummaryCalibrationAndCleanup(t *testing.T) 
 	}
 	if state.cleanupAgentID != "edge-1" || !cleanupPayload.OK || cleanupPayload.Result.DeletedRows != 4 {
 		t.Fatalf("cleanup state=%+v payload=%+v", state, cleanupPayload)
+	}
+}
+
+func TestTrafficOverviewReturnsHostTrend(t *testing.T) {
+	router, err := NewRouter(trafficTestDependencies(fakeTrafficService{
+		overview: service.TrafficOverviewResult{
+			HostTrend: []service.TrafficTrendPoint{
+				{
+					ScopeType:      "host_total",
+					BucketStart:    "2026-05-19T00:00:00Z",
+					RXBytes:        100,
+					TXBytes:        200,
+					AccountedBytes: 300,
+				},
+			},
+		},
+	}))
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/panel-api/traffic-overview", nil)
+	req.Header.Set("X-Panel-Token", "secret")
+	resp := httptest.NewRecorder()
+	router.ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("GET traffic-overview = %d body=%s", resp.Code, resp.Body.String())
+	}
+	var payload struct {
+		OK        bool                        `json:"ok"`
+		HostTrend []service.TrafficTrendPoint `json:"host_trend"`
+	}
+	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v", err)
+	}
+	if !payload.OK || len(payload.HostTrend) != 1 || payload.HostTrend[0].ScopeType != "host_total" || payload.HostTrend[0].AccountedBytes != 300 {
+		t.Fatalf("overview payload = %+v", payload)
 	}
 }
 

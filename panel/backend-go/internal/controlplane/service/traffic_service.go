@@ -597,7 +597,7 @@ func (s *trafficService) Overview(ctx context.Context, agentFilter string, agent
 			Granularity: "day",
 		})
 	} else {
-		trend = s.aggregateOverviewTrend(ctx, agentIDs)
+		trend = s.aggregateOverviewTrend(ctx, agentIDs, "")
 	}
 	var hostTrend []TrafficTrendPoint
 	if agentFilter != "" {
@@ -606,6 +606,8 @@ func (s *trafficService) Overview(ctx context.Context, agentFilter string, agent
 			ScopeType:   "host_total",
 			Granularity: "day",
 		})
+	} else {
+		hostTrend = s.aggregateOverviewTrend(ctx, agentIDs, "host_total")
 	}
 	return TrafficOverviewResult{
 		Agents:    overviewAgents,
@@ -614,13 +616,17 @@ func (s *trafficService) Overview(ctx context.Context, agentFilter string, agent
 	}, nil
 }
 
-func (s *trafficService) aggregateOverviewTrend(ctx context.Context, agentIDs []string) []TrafficTrendPoint {
+func (s *trafficService) aggregateOverviewTrend(ctx context.Context, agentIDs []string, scopeType string) []TrafficTrendPoint {
 	type bucketKey struct{ bucketStart string }
 	merged := make(map[bucketKey]*TrafficTrendPoint)
 	for _, id := range agentIDs {
+		totalScopeType := scopeType
+		if totalScopeType == "" {
+			totalScopeType = s.defaultTotalScopeType(ctx, id, "day", time.Time{}, time.Time{})
+		}
 		points, err := s.Trend(ctx, TrafficTrendQuery{
 			AgentID:     id,
-			ScopeType:   s.defaultTotalScopeType(ctx, id, "day", time.Time{}, time.Time{}),
+			ScopeType:   totalScopeType,
 			Granularity: "day",
 		})
 		if err != nil {
@@ -741,12 +747,12 @@ func (s *trafficService) defaultTotalScopeType(ctx context.Context, agentID, gra
 }
 
 type trafficSummaryBreakdowns struct {
-	aggregates      []TrafficSummaryBreakdown
-	httpRules       []TrafficSummaryBreakdown
-	l4Rules         []TrafficSummaryBreakdown
-	relayListeners  []TrafficSummaryBreakdown
-	hostTotal       TrafficSummaryBreakdown
-	hostInterfaces  []TrafficSummaryBreakdown
+	aggregates     []TrafficSummaryBreakdown
+	httpRules      []TrafficSummaryBreakdown
+	l4Rules        []TrafficSummaryBreakdown
+	relayListeners []TrafficSummaryBreakdown
+	hostTotal      TrafficSummaryBreakdown
+	hostInterfaces []TrafficSummaryBreakdown
 }
 
 func (s *trafficService) summaryBreakdowns(ctx context.Context, agentID string, policy TrafficPolicy, start, end time.Time) (trafficSummaryBreakdowns, error) {
