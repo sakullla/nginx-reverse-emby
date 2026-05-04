@@ -837,6 +837,22 @@ export async function cleanupTraffic(agentId) {
   return data.result
 }
 
+export async function fetchTrafficOverview(agentId) {
+  if (isDev) {
+    await sleep()
+    return {
+      ok: true,
+      agents: [],
+      trend: []
+    }
+  }
+  const params = new URLSearchParams()
+  if (agentId) params.set('agent_id', agentId)
+  const suffix = params.toString() ? `?${params.toString()}` : ''
+  const { data } = await api.get(`/traffic-overview${suffix}`)
+  return data
+}
+
 export async function fetchRules(agentId) {
   if (isDev) {
     await sleep()

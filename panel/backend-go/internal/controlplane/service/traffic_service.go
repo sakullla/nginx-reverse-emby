@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -27,6 +28,14 @@ type trafficStore interface {
 	IncrementTrafficBuckets(context.Context, storage.TrafficDelta) error
 	ListTrafficTrend(context.Context, storage.TrafficTrendQuery) ([]storage.TrafficBucketRow, error)
 	DeleteTrafficBefore(context.Context, string, storage.TrafficCleanupCutoff) (int64, error)
+}
+
+type trafficAgentStore interface {
+	ListAgents(context.Context) ([]storage.AgentRow, error)
+}
+
+type trafficAgentIDStore interface {
+	ListTrafficAgentIDs(context.Context) ([]string, error)
 }
 
 type trafficEventStore interface {
@@ -169,6 +178,32 @@ func (s *trafficService) Summary(ctx context.Context, agentID string) (TrafficSu
 	if err != nil {
 		return TrafficSummary{}, err
 	}
+	return s.summaryWithPolicy(ctx, agentID, policyRow)
+}
+
+func (s *trafficService) BlockState(ctx context.Context, agentID string) (bool, string, error) {
+	if err := s.requireEnabled(); err != nil {
+		return false, "", err
+	}
+	policyRow, err := s.store.GetTrafficPolicy(ctx, agentID)
+	if err != nil {
+		return false, "", err
+	}
+	policy := trafficPolicyFromRow(policyRow)
+	if !policy.BlockWhenExceeded || policy.MonthlyQuotaBytes == nil {
+		return false, "", nil
+	}
+	summary, err := s.summaryWithPolicy(ctx, agentID, policyRow)
+	if err != nil {
+		return false, "", err
+	}
+	if !summary.Blocked {
+		return false, "", nil
+	}
+	return true, summary.BlockReason, nil
+}
+
+func (s *trafficService) summaryWithPolicy(ctx context.Context, agentID string, policyRow storage.AgentTrafficPolicyRow) (TrafficSummary, error) {
 	policy := trafficPolicyFromRow(policyRow)
 	start, end := monthlyCycleWindow(s.now(), policy.CycleStartDay)
 	stats, err := s.cycleStats(ctx, agentID, policy, start, end)
@@ -429,14 +464,55 @@ func (s *trafficService) CleanupAll(ctx context.Context) (TrafficCleanupAllResul
 	if err != nil {
 		return TrafficCleanupAllResult{}, err
 	}
-	out := TrafficCleanupAllResult{
-		Results: make([]TrafficCleanupResult, 0, len(policies)),
-	}
+	policyByAgentID := make(map[string]storage.AgentTrafficPolicyRow, len(policies))
 	for _, policy := range policies {
 		agentID := strings.TrimSpace(policy.AgentID)
 		if agentID == "" {
 			continue
 		}
+		policyByAgentID[agentID] = policy
+	}
+	agentIDs := make([]string, 0, len(policyByAgentID))
+	for agentID := range policyByAgentID {
+		agentIDs = append(agentIDs, agentID)
+	}
+	if agentStore, ok := s.store.(trafficAgentStore); ok {
+		rows, err := agentStore.ListAgents(ctx)
+		if err != nil {
+			return TrafficCleanupAllResult{}, err
+		}
+		for _, row := range rows {
+			agentID := strings.TrimSpace(row.ID)
+			if agentID == "" {
+				continue
+			}
+			if _, found := policyByAgentID[agentID]; found {
+				continue
+			}
+			agentIDs = append(agentIDs, agentID)
+		}
+	}
+	if trafficAgentIDs, ok := s.store.(trafficAgentIDStore); ok {
+		rows, err := trafficAgentIDs.ListTrafficAgentIDs(ctx)
+		if err != nil {
+			return TrafficCleanupAllResult{}, err
+		}
+		for _, row := range rows {
+			agentID := strings.TrimSpace(row)
+			if agentID == "" {
+				continue
+			}
+			if slices.Contains(agentIDs, agentID) {
+				continue
+			}
+			agentIDs = append(agentIDs, agentID)
+		}
+	}
+	slices.Sort(agentIDs)
+	out := TrafficCleanupAllResult{
+		Results: make([]TrafficCleanupResult, 0, len(agentIDs)),
+	}
+	for _, agentID := range agentIDs {
 		result, err := s.Cleanup(ctx, agentID)
 		if err != nil {
 			return TrafficCleanupAllResult{}, err
@@ -445,6 +521,101 @@ func (s *trafficService) CleanupAll(ctx context.Context) (TrafficCleanupAllResul
 		out.Results = append(out.Results, result)
 	}
 	return out, nil
+}
+
+func (s *trafficService) Overview(ctx context.Context, agentFilter string, agentNames map[string]string) (TrafficOverviewResult, error) {
+	if err := s.requireEnabled(); err != nil {
+		return TrafficOverviewResult{}, err
+	}
+	agentIDStore, ok := s.store.(trafficAgentIDStore)
+	if !ok {
+		return TrafficOverviewResult{}, nil
+	}
+	agentIDs, err := agentIDStore.ListTrafficAgentIDs(ctx)
+	if err != nil {
+		return TrafficOverviewResult{}, err
+	}
+	overviewAgents := make([]TrafficOverviewAgent, 0, len(agentIDs))
+	for _, id := range agentIDs {
+		if agentFilter != "" && id != agentFilter {
+			continue
+		}
+		summary, err := s.Summary(ctx, id)
+		if err != nil {
+			continue
+		}
+		name := id
+		if n, ok := agentNames[id]; ok {
+			name = n
+		}
+		overviewAgents = append(overviewAgents, TrafficOverviewAgent{
+			AgentID:        id,
+			Name:           name,
+			UsedBytes:      summary.UsedBytes,
+			QuotaBytes:     summary.MonthlyQuotaBytes,
+			RemainingBytes: summary.RemainingBytes,
+			Blocked:        summary.Blocked,
+			Direction:      summary.Policy.Direction,
+		})
+	}
+	var trend []TrafficTrendPoint
+	if agentFilter != "" {
+		trend, _ = s.Trend(ctx, TrafficTrendQuery{
+			AgentID:     agentFilter,
+			ScopeType:   "agent_total",
+			Granularity: "day",
+		})
+	} else {
+		trend = s.aggregateOverviewTrend(ctx, agentIDs)
+	}
+	return TrafficOverviewResult{
+		Agents: overviewAgents,
+		Trend:  trend,
+	}, nil
+}
+
+func (s *trafficService) aggregateOverviewTrend(ctx context.Context, agentIDs []string) []TrafficTrendPoint {
+	type bucketKey struct{ bucketStart string }
+	merged := make(map[bucketKey]*TrafficTrendPoint)
+	for _, id := range agentIDs {
+		points, err := s.Trend(ctx, TrafficTrendQuery{
+			AgentID:     id,
+			ScopeType:   "agent_total",
+			Granularity: "day",
+		})
+		if err != nil {
+			continue
+		}
+		for _, p := range points {
+			key := bucketKey{p.BucketStart}
+			if existing, ok := merged[key]; ok {
+				existing.RXBytes += p.RXBytes
+				existing.TXBytes += p.TXBytes
+				existing.AccountedBytes += p.AccountedBytes
+			} else {
+				merged[key] = &TrafficTrendPoint{
+					BucketStart:    p.BucketStart,
+					RXBytes:        p.RXBytes,
+					TXBytes:        p.TXBytes,
+					AccountedBytes: p.AccountedBytes,
+				}
+			}
+		}
+	}
+	result := make([]TrafficTrendPoint, 0, len(merged))
+	for _, p := range merged {
+		result = append(result, *p)
+	}
+	slices.SortFunc(result, func(a, b TrafficTrendPoint) int {
+		if a.BucketStart < b.BucketStart {
+			return -1
+		}
+		if a.BucketStart > b.BucketStart {
+			return 1
+		}
+		return 0
+	})
+	return result
 }
 
 func (s *trafficService) requireEnabled() error {

@@ -574,6 +574,44 @@ func TestBackupServiceImportsLegacyArchiveWithoutTrafficFiles(t *testing.T) {
 	}
 }
 
+func TestBackupServiceExportSkipsTrafficTablesWhenDisabled(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.NewStore(storage.StoreConfig{
+		Driver:              "sqlite",
+		DataRoot:            filepath.Join(t.TempDir(), "disabled-traffic"),
+		LocalAgentID:        "local",
+		TrafficStatsEnabled: false,
+	})
+	if err != nil {
+		t.Fatalf("NewStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+	if err := store.SaveAgent(ctx, storage.AgentRow{
+		ID:         "edge-no-traffic",
+		Name:       "edge-no-traffic",
+		AgentToken: "token-no-traffic",
+	}); err != nil {
+		t.Fatalf("SaveAgent() error = %v", err)
+	}
+
+	archive, _, err := NewBackupService(config.Config{TrafficStatsEnabled: false}, store).Export(ctx)
+	if err != nil {
+		t.Fatalf("Export() error = %v", err)
+	}
+	bundle, err := decodeBackupBundle(archive)
+	if err != nil {
+		t.Fatalf("decodeBackupBundle() error = %v", err)
+	}
+	if len(bundle.TrafficPolicies) != 0 || len(bundle.TrafficBaselines) != 0 {
+		t.Fatalf("traffic payloads = policies %+v baselines %+v, want empty", bundle.TrafficPolicies, bundle.TrafficBaselines)
+	}
+	if bundle.Manifest.Counts.TrafficPolicies != 0 || bundle.Manifest.Counts.TrafficBaselines != 0 {
+		t.Fatalf("traffic counts = %+v, want zero traffic counts", bundle.Manifest.Counts)
+	}
+}
+
 func TestBackupServiceImportPreservesL4ProxyEntryFields(t *testing.T) {
 	ctx := context.Background()
 	cfg := config.Config{EnableLocalAgent: true, LocalAgentID: "local"}

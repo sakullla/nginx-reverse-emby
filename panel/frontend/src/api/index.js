@@ -62,3 +62,4 @@ export const fetchTrafficSummary = (...args) => call('fetchTrafficSummary', ...a
 export const fetchTrafficTrend = (...args) => call('fetchTrafficTrend', ...args)
 export const calibrateTraffic = (...args) => call('calibrateTraffic', ...args)
 export const cleanupTraffic = (...args) => call('cleanupTraffic', ...args)
+export const fetchTrafficOverview = (...args) => call('fetchTrafficOverview', ...args)

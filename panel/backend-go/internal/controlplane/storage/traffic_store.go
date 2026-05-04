@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -63,15 +64,16 @@ func (s *GormStore) GetTrafficPolicy(ctx context.Context, agentID string) (Agent
 	var row AgentTrafficPolicyRow
 	err := s.db.WithContext(ctx).
 		Where("agent_id = ?", agentID).
-		First(&row).Error
-	if err == nil {
-		normalizeTrafficPolicyRow(&row)
-		return row, nil
+		Limit(1).
+		Find(&row).Error
+	if err != nil {
+		return AgentTrafficPolicyRow{}, err
 	}
-	if err == gorm.ErrRecordNotFound {
+	if row.AgentID == "" {
 		return defaultTrafficPolicy(agentID), nil
 	}
-	return AgentTrafficPolicyRow{}, err
+	normalizeTrafficPolicyRow(&row)
+	return row, nil
 }
 
 func (s *GormStore) SaveTrafficPolicy(ctx context.Context, row AgentTrafficPolicyRow) error {
@@ -99,6 +101,9 @@ func (s *GormStore) SaveTrafficPolicy(ctx context.Context, row AgentTrafficPolic
 }
 
 func (s *GormStore) ListTrafficPolicies(ctx context.Context) ([]AgentTrafficPolicyRow, error) {
+	if !s.db.Migrator().HasTable(&AgentTrafficPolicyRow{}) {
+		return []AgentTrafficPolicyRow{}, nil
+	}
 	var rows []AgentTrafficPolicyRow
 	if err := s.db.WithContext(ctx).Order("agent_id").Find(&rows).Error; err != nil {
 		return nil, err
@@ -131,14 +136,15 @@ func (s *GormStore) GetTrafficBaseline(ctx context.Context, agentID, cycleStart 
 	var row AgentTrafficBaselineRow
 	err := s.db.WithContext(ctx).
 		Where("agent_id = ? AND cycle_start = ?", agentID, cycleStart).
-		First(&row).Error
-	if err == nil {
-		return row, true, nil
+		Limit(1).
+		Find(&row).Error
+	if err != nil {
+		return AgentTrafficBaselineRow{}, false, err
 	}
-	if err == gorm.ErrRecordNotFound {
+	if row.AgentID == "" {
 		return AgentTrafficBaselineRow{}, false, nil
 	}
-	return AgentTrafficBaselineRow{}, false, err
+	return row, true, nil
 }
 
 func (s *GormStore) SaveTrafficBaseline(ctx context.Context, row AgentTrafficBaselineRow) error {
@@ -165,11 +171,53 @@ func (s *GormStore) SaveTrafficBaseline(ctx context.Context, row AgentTrafficBas
 }
 
 func (s *GormStore) ListTrafficBaselines(ctx context.Context) ([]AgentTrafficBaselineRow, error) {
+	if !s.db.Migrator().HasTable(&AgentTrafficBaselineRow{}) {
+		return []AgentTrafficBaselineRow{}, nil
+	}
 	var rows []AgentTrafficBaselineRow
 	if err := s.db.WithContext(ctx).Order("agent_id, cycle_start").Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	return rows, nil
+}
+
+func (s *GormStore) ListTrafficAgentIDs(ctx context.Context) ([]string, error) {
+	agentIDs := map[string]struct{}{}
+	collect := func(model any, column string) error {
+		if !s.db.Migrator().HasTable(model) {
+			return nil
+		}
+		var rows []string
+		if err := s.db.WithContext(ctx).Model(model).Distinct(column).Pluck(column, &rows).Error; err != nil {
+			return err
+		}
+		for _, row := range rows {
+			agentID := strings.TrimSpace(row)
+			if agentID != "" {
+				agentIDs[agentID] = struct{}{}
+			}
+		}
+		return nil
+	}
+	for _, source := range []struct {
+		model  any
+		column string
+	}{
+		{model: &AgentTrafficRawCursorRow{}, column: "agent_id"},
+		{model: &AgentTrafficHourlyBucketRow{}, column: "agent_id"},
+		{model: &AgentTrafficDailySummaryRow{}, column: "agent_id"},
+		{model: &AgentTrafficMonthlySummaryRow{}, column: "agent_id"},
+	} {
+		if err := collect(source.model, source.column); err != nil {
+			return nil, err
+		}
+	}
+	out := make([]string, 0, len(agentIDs))
+	for agentID := range agentIDs {
+		out = append(out, agentID)
+	}
+	slices.Sort(out)
+	return out, nil
 }
 
 func (s *GormStore) ReplaceTrafficBaselines(ctx context.Context, rows []AgentTrafficBaselineRow) error {

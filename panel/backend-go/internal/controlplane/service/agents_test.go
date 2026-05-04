@@ -66,6 +66,16 @@ func (f *fakeHeartbeatTrafficService) Summary(context.Context, string) (TrafficS
 	return f.summary, nil
 }
 
+func (f *fakeHeartbeatTrafficService) BlockState(context.Context, string) (bool, string, error) {
+	if f.summaryErr != nil {
+		return false, "", f.summaryErr
+	}
+	if !f.summary.Blocked {
+		return false, "", nil
+	}
+	return true, f.summary.BlockReason, nil
+}
+
 func (f *fakeStore) ListAgents(context.Context) ([]storage.AgentRow, error) {
 	return append([]storage.AgentRow(nil), f.agents...), nil
 }

@@ -97,6 +97,10 @@ func (f fakeTrafficService) Cleanup(_ context.Context, agentID string) (service.
 	return f.cleanup, nil
 }
 
+func (f fakeTrafficService) Overview(_ context.Context, _ string, _ map[string]string) (service.TrafficOverviewResult, error) {
+	return service.TrafficOverviewResult{}, nil
+}
+
 func TestTrafficPolicyRoutesRequirePanelToken(t *testing.T) {
 	router, err := NewRouter(trafficTestDependencies(fakeTrafficService{}))
 	if err != nil {

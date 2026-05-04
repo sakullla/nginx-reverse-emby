@@ -154,3 +154,34 @@ func (d Dependencies) writeTrafficDisabledIfNeeded(w http.ResponseWriter) bool {
 	writeJSON(w, http.StatusNotFound, trafficStatsDisabledPayload())
 	return true
 }
+
+func (d Dependencies) handleTrafficOverview(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.NotFound(w, r)
+		return
+	}
+	if d.writeTrafficDisabledIfNeeded(w) {
+		return
+	}
+	agentFilter := r.URL.Query().Get("agent_id")
+	agents, err := d.AgentService.List(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, errorPayload("failed to list agents"))
+		return
+	}
+	agentNames := make(map[string]string, len(agents))
+	for _, a := range agents {
+		agentNames[a.ID] = a.Name
+	}
+	result, err := d.TrafficService.Overview(r.Context(), agentFilter, agentNames)
+	if err != nil {
+		status, payload := mapServiceError(err)
+		writeJSON(w, status, payload)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":     true,
+		"agents": result.Agents,
+		"trend":  result.Trend,
+	})
+}

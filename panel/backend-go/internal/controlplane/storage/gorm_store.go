@@ -49,7 +49,10 @@ func NewStore(cfg StoreConfig) (*GormStore, error) {
 	if driver == "" {
 		driver = "sqlite"
 	}
-	if driver == "sqlite" {
+	if driver == "sqlite" && strings.TrimSpace(cfg.DSN) == "" {
+		if strings.TrimSpace(cfg.DataRoot) == "" {
+			return nil, fmt.Errorf("data root is required for default sqlite DSN")
+		}
 		if err := os.MkdirAll(cfg.DataRoot, 0o755); err != nil {
 			return nil, err
 		}
@@ -87,6 +90,9 @@ func resolveDialector(driver string, cfg StoreConfig) (gorm.Dialector, error) {
 	case "sqlite":
 		dsn := strings.TrimSpace(cfg.DSN)
 		if dsn == "" {
+			if strings.TrimSpace(cfg.DataRoot) == "" {
+				return nil, fmt.Errorf("data root is required for default sqlite DSN")
+			}
 			dsn = filepath.Join(cfg.DataRoot, "panel.db") + "?_journal_mode=WAL&_busy_timeout=5000"
 		}
 		return sqlite.Open(dsn), nil
