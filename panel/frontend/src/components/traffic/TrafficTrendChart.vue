@@ -14,6 +14,7 @@ Chart.register(...registerables)
 const props = defineProps({
   points: { type: Array, default: () => [] },
   prevPoints: { type: Array, default: null },
+  hostPoints: { type: Array, default: null },
   granularity: { type: String, default: 'day' },
   quotaBytes: { type: Number, default: null },
   budgetBytes: { type: Number, default: null }
@@ -87,6 +88,21 @@ function buildConfig() {
       order: 3
     }
   ]
+  if (Array.isArray(props.hostPoints) && props.hostPoints.length > 0) {
+    const hostData = alignPrevData(labels, props.points, props.hostPoints)
+    datasets.push({
+      label: '主机流量',
+      data: hostData,
+      borderColor: 'rgba(139, 92, 246, 0.8)',
+      backgroundColor: 'rgba(139, 92, 246, 0.08)',
+      fill: true,
+      tension: 0.3,
+      pointRadius: 1,
+      pointHoverRadius: 4,
+      borderWidth: 2,
+      order: 4
+    })
+  }
   if (Array.isArray(props.prevPoints) && props.prevPoints.length > 0) {
     const prevData = alignPrevData(labels, props.points, props.prevPoints)
     datasets.push({
@@ -183,7 +199,7 @@ function renderChart() {
 
 onMounted(renderChart)
 
-watch(() => [props.points, props.prevPoints, props.granularity, props.quotaBytes, props.budgetBytes], renderChart, { deep: true })
+watch(() => [props.points, props.prevPoints, props.hostPoints, props.granularity, props.quotaBytes, props.budgetBytes], renderChart, { deep: true })
 
 onUnmounted(() => {
   if (chartInstance) {
