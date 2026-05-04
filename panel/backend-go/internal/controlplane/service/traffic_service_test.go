@@ -772,6 +772,37 @@ func TestTrafficServiceOverviewAggregatesHostTrend(t *testing.T) {
 	}
 }
 
+func TestTrafficServiceOverviewIncludesCycleWindow(t *testing.T) {
+	fakeStore := newFakeTrafficStore()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	fakeStore.policy = storage.AgentTrafficPolicyRow{
+		AgentID:              "edge-1",
+		Direction:            "rx",
+		CycleStartDay:        15,
+		HourlyRetentionDays:  180,
+		DailyRetentionMonths: 24,
+	}
+	fakeStore.addBucket(storage.TrafficBucketRow{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		BucketStart: time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC),
+		RXBytes:     100,
+		TXBytes:     200,
+	})
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, fakeStore)
+
+	overview, err := svc.Overview(context.Background(), "edge-1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(overview.Agents) != 1 {
+		t.Fatalf("Agents = %+v, want one agent", overview.Agents)
+	}
+	if overview.Agents[0].CycleStart != "2026-05-15T00:00:00Z" || overview.Agents[0].CycleEnd != "2026-06-15T00:00:00Z" {
+		t.Fatalf("overview agent cycle = %q..%q", overview.Agents[0].CycleStart, overview.Agents[0].CycleEnd)
+	}
+}
+
 func TestTrafficServiceCounterResetPersistsEventWithRealStore(t *testing.T) {
 	dataRoot := filepath.Join(t.TempDir(), "data")
 	store := newTrafficServiceRealStore(t, dataRoot)

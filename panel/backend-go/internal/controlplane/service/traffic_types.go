@@ -111,6 +111,8 @@ type TrafficOverviewAgent struct {
 	RemainingBytes *int64  `json:"remaining_bytes"`
 	Blocked        bool    `json:"blocked"`
 	Direction      string  `json:"direction"`
+	CycleStart     string  `json:"cycle_start"`
+	CycleEnd       string  `json:"cycle_end"`
 }
 
 type TrafficOverviewResult struct {

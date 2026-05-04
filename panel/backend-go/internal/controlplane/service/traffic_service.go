@@ -587,6 +587,8 @@ func (s *trafficService) Overview(ctx context.Context, agentFilter string, agent
 			RemainingBytes: summary.RemainingBytes,
 			Blocked:        summary.Blocked,
 			Direction:      summary.Policy.Direction,
+			CycleStart:     summary.CycleStart,
+			CycleEnd:       summary.CycleEnd,
 		})
 	}
 	var trend []TrafficTrendPoint

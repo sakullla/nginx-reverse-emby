@@ -5,8 +5,9 @@ describe('usagePercent', () => {
   it('returns null for unlimited quota', () => {
     expect(usagePercent(100, null)).toBeNull()
   })
-  it('returns null for zero quota', () => {
-    expect(usagePercent(100, 0)).toBeNull()
+  it('treats zero quota as a real quota', () => {
+    expect(usagePercent(0, 0)).toBe(0)
+    expect(usagePercent(100, 0)).toBe(100)
   })
   it('computes percentage correctly', () => {
     expect(usagePercent(50, 100)).toBe(50)

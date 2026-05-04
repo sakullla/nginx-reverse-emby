@@ -104,9 +104,10 @@ const prevParams = computed(() => {
 })
 
 const enabledAgentId = computed(() => props.visible ? props.agentId : null)
+const prevEnabledAgentId = computed(() => props.visible && prevParams.value ? props.agentId : null)
 
 const trendQuery = useTrafficTrend(enabledAgentId, trendParams)
-const prevTrendQuery = useTrafficTrend(enabledAgentId, prevParams)
+const prevTrendQuery = useTrafficTrend(prevEnabledAgentId, prevParams)
 
 const trendPoints = computed(() => normalizeTrafficTrendPoints(trendQuery.data.value ?? [], props.direction))
 const prevTrendPoints = computed(() =>

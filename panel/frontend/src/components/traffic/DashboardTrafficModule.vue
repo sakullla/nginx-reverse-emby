@@ -47,7 +47,7 @@
           <div v-for="agent in topNodes" :key="agent.agent_id" class="dashboard-traffic__list-row">
             <span class="dashboard-traffic__list-name">{{ agent.name || agent.agent_id }}</span>
             <span class="dashboard-traffic__list-value">{{ formatBytes(agent.used_bytes) }}</span>
-            <span v-if="agent.quota_bytes" class="dashboard-traffic__list-percent">{{ Math.round((agent.used_bytes / agent.quota_bytes) * 100) }}%</span>
+            <span v-if="agent.quota_bytes != null" class="dashboard-traffic__list-percent">{{ usagePercent(agent.used_bytes, agent.quota_bytes) }}%</span>
           </div>
           <p v-if="!topNodes.length" class="dashboard-traffic__list-empty">暂无节点数据</p>
         </div>
@@ -147,11 +147,11 @@ const topNodes = computed(() => {
 
 const agentIdsForTopRules = computed(() => {
   if (selectedAgentId.value) return [selectedAgentId.value]
-  return overviewAgents.value.map(a => a.agent_id)
+  return overviewAgents.value.map(a => a.agent_id).filter(Boolean).sort()
 })
 
 const topRulesQuery = useQuery({
-  queryKey: computed(() => ['traffic-top-rules', selectedAgentId.value || 'all']),
+  queryKey: computed(() => ['traffic-top-rules', selectedAgentId.value || 'all', agentIdsForTopRules.value.join(',')]),
   queryFn: async () => {
     const ids = agentIdsForTopRules.value
     if (!ids.length) return []

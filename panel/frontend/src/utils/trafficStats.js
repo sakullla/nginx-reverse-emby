@@ -117,7 +117,8 @@ export function normalizeTrafficTrendPoints(points = [], direction = 'both') {
 export function usagePercent(used, quota) {
   const u = normalizeBytes(used)
   const q = normalizeNullableBytes(quota)
-  if (q == null || q === 0) return null
+  if (q == null) return null
+  if (q === 0) return u > 0 ? 100 : 0
   return Math.min(100, Math.round((u / q) * 100))
 }
 

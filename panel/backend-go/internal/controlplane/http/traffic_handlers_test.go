@@ -424,6 +424,13 @@ func TestTrafficHandlersForwardPolicySummaryCalibrationAndCleanup(t *testing.T) 
 func TestTrafficOverviewReturnsHostTrend(t *testing.T) {
 	router, err := NewRouter(trafficTestDependencies(fakeTrafficService{
 		overview: service.TrafficOverviewResult{
+			Agents: []service.TrafficOverviewAgent{
+				{
+					AgentID:    "edge-1",
+					CycleStart: "2026-05-01T00:00:00Z",
+					CycleEnd:   "2026-06-01T00:00:00Z",
+				},
+			},
 			HostTrend: []service.TrafficTrendPoint{
 				{
 					ScopeType:      "host_total",
@@ -449,6 +456,7 @@ func TestTrafficOverviewReturnsHostTrend(t *testing.T) {
 	}
 	var payload struct {
 		OK        bool                        `json:"ok"`
+		Agents    []service.TrafficOverviewAgent `json:"agents"`
 		HostTrend []service.TrafficTrendPoint `json:"host_trend"`
 	}
 	if err := json.Unmarshal(resp.Body.Bytes(), &payload); err != nil {
@@ -456,6 +464,9 @@ func TestTrafficOverviewReturnsHostTrend(t *testing.T) {
 	}
 	if !payload.OK || len(payload.HostTrend) != 1 || payload.HostTrend[0].ScopeType != "host_total" || payload.HostTrend[0].AccountedBytes != 300 {
 		t.Fatalf("overview payload = %+v", payload)
+	}
+	if len(payload.Agents) != 1 || payload.Agents[0].CycleStart != "2026-05-01T00:00:00Z" || payload.Agents[0].CycleEnd != "2026-06-01T00:00:00Z" {
+		t.Fatalf("overview agents = %+v", payload.Agents)
 	}
 }
 
