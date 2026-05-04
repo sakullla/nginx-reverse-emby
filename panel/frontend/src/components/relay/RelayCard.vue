@@ -196,15 +196,6 @@ const hasTags = computed(() => Array.isArray(props.listener.tags) && props.liste
   gap: 0.25rem;
   flex-wrap: wrap;
 }
-.traffic-line {
-  display: flex;
-  gap: 0.75rem;
-  color: var(--color-text-tertiary);
-  font-size: 0.8125rem;
-  font-variant-numeric: tabular-nums;
-}
-.traffic-line--clickable { cursor: pointer; }
-.traffic-line--clickable:hover { color: var(--color-primary); text-decoration: underline; }
 
 @media (max-width: 640px) {
   :deep(.base-icon-button) {

@@ -77,6 +77,25 @@
 
         <TrafficCollapsibleSection title="策略设置" :default-expanded="false">
           <TrafficPolicyForm v-model="trafficPolicyForm" :saving="updateTrafficPolicyMutation.isPending.value" @save="saveTrafficPolicy" />
+          <div v-if="!agent.is_local" class="agent-setting" style="margin-top: 0.75rem;">
+            <label class="agent-setting__label" for="agent-traffic-stats-interval">流量统计上报周期</label>
+            <div class="agent-setting__control">
+              <input
+                id="agent-traffic-stats-interval"
+                v-model="trafficStatsInterval"
+                class="agent-setting__input"
+                placeholder="例如 30s、1m、5m；留空表示随心跳上报"
+              >
+              <button
+                class="btn btn-primary"
+                type="button"
+                :disabled="updateAgent.isPending.value"
+                @click="saveTrafficStatsInterval"
+              >
+                保存
+              </button>
+            </div>
+          </div>
         </TrafficCollapsibleSection>
 
         <TrafficCollapsibleSection title="历史管理" :default-expanded="false">
@@ -126,44 +145,6 @@
       </div>
 
       <div v-if="activeTab === 'info'" class="tab-panel">
-        <div v-if="!agent.is_local" class="agent-setting">
-          <label class="agent-setting__label" for="agent-outbound-proxy">出网代理</label>
-          <div class="agent-setting__control">
-            <input
-              id="agent-outbound-proxy"
-              v-model="outboundProxyURL"
-              class="agent-setting__input"
-              placeholder="socks://user:pass@127.0.0.1:1080"
-            >
-            <button
-              class="btn btn-primary"
-              type="button"
-              :disabled="updateAgent.isPending.value"
-              @click="saveOutboundProxy"
-            >
-              保存
-            </button>
-          </div>
-        </div>
-        <div v-if="!agent.is_local" class="agent-setting">
-          <label class="agent-setting__label" for="agent-traffic-stats-interval">流量统计上报周期</label>
-          <div class="agent-setting__control">
-            <input
-              id="agent-traffic-stats-interval"
-              v-model="trafficStatsInterval"
-              class="agent-setting__input"
-              placeholder="例如 30s、1m、5m；留空表示随心跳上报"
-            >
-            <button
-              class="btn btn-primary"
-              type="button"
-              :disabled="updateAgent.isPending.value"
-              @click="saveTrafficStatsInterval"
-            >
-              保存
-            </button>
-          </div>
-        </div>
         <div class="info-grid">
           <div class="info-row"><span>版本</span><span>{{ agent.version || agent.runtime_package_version || '—' }}</span></div>
           <div class="info-row"><span>平台</span><span>{{ agent.runtime_package_platform || agent.platform || '—' }}</span></div>
