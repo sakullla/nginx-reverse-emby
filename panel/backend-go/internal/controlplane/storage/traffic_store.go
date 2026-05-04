@@ -701,7 +701,7 @@ func normalizeTrafficPolicyRow(row *AgentTrafficPolicyRow) {
 	if row.DailyRetentionMonths == 0 {
 		row.DailyRetentionMonths = 3
 	}
-	if row.MonthlyRetentionMonths == nil || *row.MonthlyRetentionMonths == 0 {
+	if row.MonthlyRetentionMonths != nil && *row.MonthlyRetentionMonths == 0 {
 		defaultMonthly := 36
 		row.MonthlyRetentionMonths = &defaultMonthly
 	}

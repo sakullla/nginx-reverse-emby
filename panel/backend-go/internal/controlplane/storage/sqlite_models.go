@@ -146,7 +146,7 @@ type AgentTrafficPolicyRow struct {
 	BlockWhenExceeded      bool   `gorm:"column:block_when_exceeded;not null;default:false"`
 	HourlyRetentionDays    int    `gorm:"column:hourly_retention_days;not null;default:30"`
 	DailyRetentionMonths   int    `gorm:"column:daily_retention_months;not null;default:3"`
-	MonthlyRetentionMonths *int   `gorm:"column:monthly_retention_months;default:36"`
+	MonthlyRetentionMonths *int   `gorm:"column:monthly_retention_months"`
 	UpdatedAt              string `gorm:"column:updated_at"`
 	CreatedAt              string `gorm:"column:created_at"`
 }

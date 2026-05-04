@@ -413,6 +413,30 @@ func TestTrafficServiceUpdatePolicyValidatesAndNormalizes(t *testing.T) {
 	}
 }
 
+func TestTrafficServiceUpdatePolicyPreservesNilMonthlyRetention(t *testing.T) {
+	fakeStore := newFakeTrafficStore()
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true}, fakeStore)
+
+	policy, err := svc.UpdatePolicy(context.Background(), "edge-1", TrafficPolicy{
+		Direction:              "both",
+		CycleStartDay:          1,
+		HourlyRetentionDays:    30,
+		DailyRetentionMonths:   3,
+		BlockWhenExceeded:      false,
+		MonthlyQuotaBytes:      nil,
+		MonthlyRetentionMonths: nil,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if policy.MonthlyRetentionMonths != nil {
+		t.Fatalf("policy.MonthlyRetentionMonths = %v, want nil", *policy.MonthlyRetentionMonths)
+	}
+	if fakeStore.policy.MonthlyRetentionMonths != nil {
+		t.Fatalf("stored MonthlyRetentionMonths = %v, want nil", *fakeStore.policy.MonthlyRetentionMonths)
+	}
+}
+
 func TestTrafficServiceUpdatePolicyRecomputesPersistedBlockState(t *testing.T) {
 	fakeStore := newFakeTrafficStore()
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)

@@ -352,7 +352,7 @@ func (s *trafficService) UpdatePolicy(ctx context.Context, agentID string, input
 		BlockWhenExceeded:      input.BlockWhenExceeded,
 		HourlyRetentionDays:    defaultInt(input.HourlyRetentionDays, 30),
 		DailyRetentionMonths:   defaultInt(input.DailyRetentionMonths, 3),
-		MonthlyRetentionMonths: defaultIntPtr(input.MonthlyRetentionMonths, 36),
+		MonthlyRetentionMonths: input.MonthlyRetentionMonths,
 	}
 	if err := s.store.SaveTrafficPolicy(ctx, row); err != nil {
 		return TrafficPolicy{}, err
@@ -1072,13 +1072,6 @@ func parseOptionalTrafficTime(value string) (time.Time, error) {
 func defaultInt(value, fallback int) int {
 	if value == 0 {
 		return fallback
-	}
-	return value
-}
-
-func defaultIntPtr(value *int, fallback int) *int {
-	if value == nil || *value == 0 {
-		return &fallback
 	}
 	return value
 }

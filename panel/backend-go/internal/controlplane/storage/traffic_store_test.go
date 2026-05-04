@@ -58,6 +58,30 @@ func TestTrafficPolicySaveAndReload(t *testing.T) {
 	}
 }
 
+func TestTrafficPolicySaveAndReloadPreservesNilMonthlyRetention(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+
+	if err := store.SaveTrafficPolicy(ctx, AgentTrafficPolicyRow{
+		AgentID:                "edge-1",
+		Direction:              "both",
+		CycleStartDay:          1,
+		HourlyRetentionDays:    30,
+		DailyRetentionMonths:   3,
+		MonthlyRetentionMonths: nil,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	policy, err := store.GetTrafficPolicy(ctx, "edge-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if policy.MonthlyRetentionMonths != nil {
+		t.Fatalf("MonthlyRetentionMonths = %v, want nil", *policy.MonthlyRetentionMonths)
+	}
+}
+
 func TestListTrafficPolicies(t *testing.T) {
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()
