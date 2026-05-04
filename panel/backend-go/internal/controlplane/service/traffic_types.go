@@ -100,3 +100,18 @@ type TrafficCleanupAllResult struct {
 	DeletedRows int64                  `json:"deleted_rows"`
 	Results     []TrafficCleanupResult `json:"results"`
 }
+
+type TrafficOverviewAgent struct {
+	AgentID        string `json:"agent_id"`
+	Name           string  `json:"name"`
+	UsedBytes      uint64  `json:"used_bytes"`
+	QuotaBytes     *int64  `json:"quota_bytes"`
+	RemainingBytes *int64  `json:"remaining_bytes"`
+	Blocked        bool    `json:"blocked"`
+	Direction      string  `json:"direction"`
+}
+
+type TrafficOverviewResult struct {
+	Agents []TrafficOverviewAgent `json:"agents"`
+	Trend  []TrafficTrendPoint    `json:"trend"`
+}

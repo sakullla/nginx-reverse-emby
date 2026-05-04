@@ -34,6 +34,7 @@ type TrafficService interface {
 	Trend(context.Context, service.TrafficTrendQuery) ([]service.TrafficTrendPoint, error)
 	Calibrate(context.Context, string, service.TrafficCalibrationRequest) (service.TrafficSummary, error)
 	Cleanup(context.Context, string) (service.TrafficCleanupResult, error)
+	Overview(ctx context.Context, agentFilter string, agentNames map[string]string) (service.TrafficOverviewResult, error)
 }
 
 type RuleService interface {
@@ -162,6 +163,10 @@ func (unavailableTrafficService) Cleanup(context.Context, string) (service.Traff
 	return service.TrafficCleanupResult{}, trafficStatsDisabledError()
 }
 
+func (unavailableTrafficService) Overview(context.Context, string, map[string]string) (service.TrafficOverviewResult, error) {
+	return service.TrafficOverviewResult{}, trafficStatsDisabledError()
+}
+
 func trafficStatsDisabledError() error {
 	return service.TrafficServiceError{Code: service.ErrCodeTrafficStatsDisabled, Err: service.ErrTrafficStatsDisabled}
 }
@@ -227,6 +232,7 @@ func NewRouter(deps Dependencies) (http.Handler, error) {
 		mux.Handle(prefix+"/agents/{agentID}/traffic-trend", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentTrafficTrend)))
 		mux.Handle(prefix+"/agents/{agentID}/traffic-calibration", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentTrafficCalibration)))
 		mux.Handle(prefix+"/agents/{agentID}/traffic-cleanup", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentTrafficCleanup)))
+		mux.Handle(prefix+"/traffic-overview", resolved.requirePanelToken(http.HandlerFunc(resolved.handleTrafficOverview)))
 		mux.Handle(prefix+"/agents/{agentID}/rules", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentRules)))
 		mux.Handle(prefix+"/agents/{agentID}/rules/{id}", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentRule)))
 		mux.Handle(prefix+"/agents/{agentID}/rules/{id}/diagnose", resolved.requirePanelToken(http.HandlerFunc(resolved.handleAgentRuleDiagnose)))

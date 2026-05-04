@@ -523,6 +523,101 @@ func (s *trafficService) CleanupAll(ctx context.Context) (TrafficCleanupAllResul
 	return out, nil
 }
 
+func (s *trafficService) Overview(ctx context.Context, agentFilter string, agentNames map[string]string) (TrafficOverviewResult, error) {
+	if err := s.requireEnabled(); err != nil {
+		return TrafficOverviewResult{}, err
+	}
+	agentIDStore, ok := s.store.(trafficAgentIDStore)
+	if !ok {
+		return TrafficOverviewResult{}, nil
+	}
+	agentIDs, err := agentIDStore.ListTrafficAgentIDs(ctx)
+	if err != nil {
+		return TrafficOverviewResult{}, err
+	}
+	overviewAgents := make([]TrafficOverviewAgent, 0, len(agentIDs))
+	for _, id := range agentIDs {
+		if agentFilter != "" && id != agentFilter {
+			continue
+		}
+		summary, err := s.Summary(ctx, id)
+		if err != nil {
+			continue
+		}
+		name := id
+		if n, ok := agentNames[id]; ok {
+			name = n
+		}
+		overviewAgents = append(overviewAgents, TrafficOverviewAgent{
+			AgentID:        id,
+			Name:           name,
+			UsedBytes:      summary.UsedBytes,
+			QuotaBytes:     summary.MonthlyQuotaBytes,
+			RemainingBytes: summary.RemainingBytes,
+			Blocked:        summary.Blocked,
+			Direction:      summary.Policy.Direction,
+		})
+	}
+	var trend []TrafficTrendPoint
+	if agentFilter != "" {
+		trend, _ = s.Trend(ctx, TrafficTrendQuery{
+			AgentID:     agentFilter,
+			ScopeType:   "agent_total",
+			Granularity: "day",
+		})
+	} else {
+		trend = s.aggregateOverviewTrend(ctx, agentIDs)
+	}
+	return TrafficOverviewResult{
+		Agents: overviewAgents,
+		Trend:  trend,
+	}, nil
+}
+
+func (s *trafficService) aggregateOverviewTrend(ctx context.Context, agentIDs []string) []TrafficTrendPoint {
+	type bucketKey struct{ bucketStart string }
+	merged := make(map[bucketKey]*TrafficTrendPoint)
+	for _, id := range agentIDs {
+		points, err := s.Trend(ctx, TrafficTrendQuery{
+			AgentID:     id,
+			ScopeType:   "agent_total",
+			Granularity: "day",
+		})
+		if err != nil {
+			continue
+		}
+		for _, p := range points {
+			key := bucketKey{p.BucketStart}
+			if existing, ok := merged[key]; ok {
+				existing.RXBytes += p.RXBytes
+				existing.TXBytes += p.TXBytes
+				existing.AccountedBytes += p.AccountedBytes
+			} else {
+				merged[key] = &TrafficTrendPoint{
+					BucketStart:    p.BucketStart,
+					RXBytes:        p.RXBytes,
+					TXBytes:        p.TXBytes,
+					AccountedBytes: p.AccountedBytes,
+				}
+			}
+		}
+	}
+	result := make([]TrafficTrendPoint, 0, len(merged))
+	for _, p := range merged {
+		result = append(result, *p)
+	}
+	slices.SortFunc(result, func(a, b TrafficTrendPoint) int {
+		if a.BucketStart < b.BucketStart {
+			return -1
+		}
+		if a.BucketStart > b.BucketStart {
+			return 1
+		}
+		return 0
+	})
+	return result
+}
+
 func (s *trafficService) requireEnabled() error {
 	if s.enabled {
 		return nil
