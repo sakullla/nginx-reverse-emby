@@ -769,7 +769,9 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 		if trafficStatsEnabled {
 			row.LastReportedStatsJSON = marshalAgentStats(request.Stats)
 			if s.trafficService != nil {
-				_ = s.trafficService.IngestHeartbeat(ctx, row.ID, request.Stats)
+				if err := s.trafficService.IngestHeartbeat(ctx, row.ID, request.Stats); err != nil {
+					return HeartbeatReply{}, err
+				}
 			}
 		} else {
 			row.LastReportedStatsJSON = ""
