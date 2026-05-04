@@ -319,6 +319,15 @@ func (s *trafficService) UpdatePolicy(ctx context.Context, agentID string, input
 	if input.MonthlyQuotaBytes != nil && *input.MonthlyQuotaBytes < 0 {
 		return TrafficPolicy{}, fmt.Errorf("%w: monthly_quota_bytes must be non-negative", ErrInvalidArgument)
 	}
+	if input.HourlyRetentionDays < 0 {
+		return TrafficPolicy{}, fmt.Errorf("%w: hourly_retention_days must be non-negative", ErrInvalidArgument)
+	}
+	if input.DailyRetentionMonths < 0 {
+		return TrafficPolicy{}, fmt.Errorf("%w: daily_retention_months must be non-negative", ErrInvalidArgument)
+	}
+	if input.MonthlyRetentionMonths != nil && *input.MonthlyRetentionMonths < 0 {
+		return TrafficPolicy{}, fmt.Errorf("%w: monthly_retention_months must be non-negative", ErrInvalidArgument)
+	}
 	row := storage.AgentTrafficPolicyRow{
 		AgentID:                agentID,
 		Direction:              direction,

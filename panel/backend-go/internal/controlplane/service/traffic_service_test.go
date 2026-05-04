@@ -223,6 +223,23 @@ func TestTrafficServiceUpdatePolicyValidatesAndNormalizes(t *testing.T) {
 	if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "cycle_start_day") {
 		t.Fatalf("UpdatePolicy() error = %v, want cycle_start_day validation", err)
 	}
+
+	negativeMonthlyRetention := -1
+	for _, tc := range []struct {
+		name   string
+		policy TrafficPolicy
+	}{
+		{name: "hourly_retention_days", policy: TrafficPolicy{Direction: "rx", CycleStartDay: 1, HourlyRetentionDays: -1}},
+		{name: "daily_retention_months", policy: TrafficPolicy{Direction: "rx", CycleStartDay: 1, DailyRetentionMonths: -1}},
+		{name: "monthly_retention_months", policy: TrafficPolicy{Direction: "rx", CycleStartDay: 1, MonthlyRetentionMonths: &negativeMonthlyRetention}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := svc.UpdatePolicy(context.Background(), "edge-1", tc.policy)
+			if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), tc.name) {
+				t.Fatalf("UpdatePolicy() error = %v, want %s validation", err, tc.name)
+			}
+		})
+	}
 }
 
 func TestTrafficServiceUpdatePolicyRecomputesPersistedBlockState(t *testing.T) {
