@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 )
 
-const recorderFlushThreshold uint64 = 64 * 1024
+const recorderFlushThreshold uint64 = 1024 * 1024
 
 type counters struct {
 	rx atomic.Uint64
@@ -14,10 +14,11 @@ type counters struct {
 }
 
 type Recorder struct {
-	counter *counters
-	scoped  *counters
-	rx      atomic.Uint64
-	tx      atomic.Uint64
+	counter    *counters
+	scoped     *counters
+	rx         atomic.Uint64
+	tx         atomic.Uint64
+	generation atomic.Uint64
 }
 
 type keyedCounters struct {
@@ -33,6 +34,7 @@ var (
 	l4RuleCounters        keyedCounters
 	relayListenerCounters keyedCounters
 	enabled               atomic.Bool
+	resetGeneration       atomic.Uint64
 )
 
 func init() {
@@ -60,33 +62,40 @@ func AddRelay(rxBytes, txBytes int64) {
 }
 
 func NewHTTPRecorder() *Recorder {
-	return &Recorder{counter: &httpCounters}
+	return newRecorder(&httpCounters, nil)
 }
 
 func NewL4Recorder() *Recorder {
-	return &Recorder{counter: &l4Counters}
+	return newRecorder(&l4Counters, nil)
 }
 
 func NewRelayRecorder() *Recorder {
-	return &Recorder{counter: &relayCounters}
+	return newRecorder(&relayCounters, nil)
 }
 
 func NewHTTPRuleRecorder(ruleID int) *Recorder {
-	return &Recorder{counter: &httpCounters, scoped: httpRuleCounters.counterFor(ruleID)}
+	return newRecorder(&httpCounters, httpRuleCounters.counterFor(ruleID))
 }
 
 func NewL4RuleRecorder(ruleID int) *Recorder {
-	return &Recorder{counter: &l4Counters, scoped: l4RuleCounters.counterFor(ruleID)}
+	return newRecorder(&l4Counters, l4RuleCounters.counterFor(ruleID))
 }
 
 func NewRelayListenerRecorder(listenerID int) *Recorder {
-	return &Recorder{counter: &relayCounters, scoped: relayListenerCounters.counterFor(listenerID)}
+	return newRecorder(&relayCounters, relayListenerCounters.counterFor(listenerID))
+}
+
+func newRecorder(counter *counters, scoped *counters) *Recorder {
+	recorder := &Recorder{counter: counter, scoped: scoped}
+	recorder.generation.Store(resetGeneration.Load())
+	return recorder
 }
 
 func (r *Recorder) Add(rxBytes, txBytes int64) {
 	if r == nil || r.counter == nil || !Enabled() {
 		return
 	}
+	r.discardPendingAfterReset()
 	var added uint64
 	if rxBytes > 0 {
 		added += uint64(rxBytes)
@@ -96,9 +105,7 @@ func (r *Recorder) Add(rxBytes, txBytes int64) {
 		added += uint64(txBytes)
 		r.tx.Add(uint64(txBytes))
 	}
-	// Scoped counters are part of heartbeat snapshots, so flush them immediately
-	// instead of waiting for the aggregate recorder threshold.
-	if added > 0 && (r.scoped != nil || r.rx.Load()+r.tx.Load() >= recorderFlushThreshold) {
+	if added > 0 && r.rx.Load()+r.tx.Load() >= recorderFlushThreshold {
 		r.Flush()
 	}
 }
@@ -107,12 +114,33 @@ func (r *Recorder) Flush() {
 	if r == nil || r.counter == nil || !Enabled() {
 		return
 	}
+	r.discardPendingAfterReset()
 	rx := r.rx.Swap(0)
 	tx := r.tx.Swap(0)
 	addUint64(r.counter, rx, tx)
 	if r.scoped != nil {
 		addUint64(r.scoped, rx, tx)
 	}
+}
+
+func (r *Recorder) FlushIfPendingBelow(maxBytes uint64) {
+	if r == nil || r.counter == nil || !Enabled() {
+		return
+	}
+	r.discardPendingAfterReset()
+	if r.rx.Load()+r.tx.Load() <= maxBytes {
+		r.Flush()
+	}
+}
+
+func (r *Recorder) discardPendingAfterReset() {
+	current := resetGeneration.Load()
+	if r.generation.Load() == current {
+		return
+	}
+	r.rx.Store(0)
+	r.tx.Store(0)
+	r.generation.Store(current)
 }
 
 func Snapshot() map[string]any {
@@ -136,6 +164,7 @@ func SnapshotNonZero() map[string]any {
 }
 
 func Reset() {
+	resetGeneration.Add(1)
 	httpCounters.rx.Store(0)
 	httpCounters.tx.Store(0)
 	l4Counters.rx.Store(0)

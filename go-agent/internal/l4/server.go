@@ -289,7 +289,7 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 	go func() {
 		if len(initialPayload) > 0 {
 			recorder.Add(int64(len(initialPayload)), 0)
-			recorder.Flush()
+			recorder.FlushIfPendingBelow(32 * 1024)
 		}
 		_, _ = copyL4TCP(upstream, downstreamSource, true, recorder)
 		closeTCPWrite(upstream)
@@ -304,6 +304,7 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 	}()
 	<-done
 	<-done
+	recorder.Flush()
 }
 
 func (s *Server) currentTrafficBlockState() TrafficBlockState {
@@ -374,6 +375,7 @@ func copyBidirectionalTCP(a net.Conn, b net.Conn, recorder *traffic.Recorder) {
 	}()
 	<-done
 	<-done
+	recorder.Flush()
 }
 
 func l4RecorderOrAggregate(recorder *traffic.Recorder) *traffic.Recorder {
@@ -406,7 +408,7 @@ func (w l4TrafficWriter) Write(p []byte) (int, error) {
 		} else {
 			w.recorder.Add(0, int64(n))
 		}
-		w.recorder.Flush()
+		w.recorder.FlushIfPendingBelow(32 * 1024)
 	}
 	return n, err
 }
