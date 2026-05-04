@@ -548,3 +548,11 @@ export async function cleanupTraffic(agentId) {
   const { data } = await api.post(`/agents/${encodeURIComponent(agentId)}/traffic-cleanup`)
   return data.result
 }
+
+export async function fetchTrafficOverview(agentId) {
+  const params = new URLSearchParams()
+  if (agentId) params.set('agent_id', agentId)
+  const suffix = params.toString() ? `?${params.toString()}` : ''
+  const { data } = await api.get(`/traffic-overview${suffix}`)
+  return data
+}
