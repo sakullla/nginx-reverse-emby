@@ -731,6 +731,14 @@ func (s *Server) sessionForPeer(rule model.L4Rule, listener *net.UDPConn, peer *
 
 	s.udpMu.Lock()
 	if existing := s.udpSessions[key]; existing != nil {
+		if state := s.currentTrafficBlockState(); state.Blocked {
+			delete(s.udpSessions, key)
+			s.udpMu.Unlock()
+			if existing.upstream != nil {
+				_ = existing.upstream.Close()
+			}
+			return nil, nil
+		}
 		ready := existing.ready
 		if ready == nil {
 			existing.lastActive = s.now()

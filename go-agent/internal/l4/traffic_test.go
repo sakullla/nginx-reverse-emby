@@ -159,6 +159,108 @@ func TestL4DropsNewUDPPacketWhenTrafficBlocked(t *testing.T) {
 	}
 }
 
+func TestL4DropsExistingUDPSessionPacketWhenTrafficBlocked(t *testing.T) {
+	traffic.Reset()
+	traffic.SetEnabled(true)
+	defer traffic.Reset()
+
+	upstreamConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("ListenUDP() upstream error = %v", err)
+	}
+	defer upstreamConn.Close()
+
+	var upstreamPackets atomic.Int32
+	upstreamDone := make(chan struct{})
+	go func() {
+		defer close(upstreamDone)
+		buf := make([]byte, 64)
+		for {
+			_ = upstreamConn.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
+			n, addr, err := upstreamConn.ReadFromUDP(buf)
+			if err != nil {
+				if ne, ok := err.(net.Error); ok && ne.Timeout() {
+					continue
+				}
+				return
+			}
+			upstreamPackets.Add(1)
+			_, _ = upstreamConn.WriteToUDP(buf[:n], addr)
+		}
+	}()
+
+	listenConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatalf("ListenUDP() reserve error = %v", err)
+	}
+	listenPort := listenConn.LocalAddr().(*net.UDPAddr).Port
+	if err := listenConn.Close(); err != nil {
+		t.Fatalf("Close() reserve error = %v", err)
+	}
+
+	srv, err := NewServerWithResources(context.Background(), []Rule{{
+		ID:           44,
+		Protocol:     "udp",
+		ListenHost:   "127.0.0.1",
+		ListenPort:   listenPort,
+		UpstreamHost: "127.0.0.1",
+		UpstreamPort: upstreamConn.LocalAddr().(*net.UDPAddr).Port,
+	}}, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("NewServerWithResources() error = %v", err)
+	}
+	defer srv.Close()
+	if len(srv.udpConns) == 0 {
+		t.Fatal("expected udp listener")
+	}
+
+	client, err := net.DialUDP("udp", nil, srv.udpConns[0].LocalAddr().(*net.UDPAddr))
+	if err != nil {
+		t.Fatalf("DialUDP() error = %v", err)
+	}
+	defer client.Close()
+
+	if _, err := client.Write([]byte("allowed udp")); err != nil {
+		t.Fatalf("Write() first packet error = %v", err)
+	}
+	reply := make([]byte, len("allowed udp"))
+	if err := client.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline() first reply error = %v", err)
+	}
+	if _, err := io.ReadFull(client, reply); err != nil {
+		t.Fatalf("Read() first reply error = %v", err)
+	}
+	if string(reply) != "allowed udp" {
+		t.Fatalf("first reply = %q, want allowed udp", reply)
+	}
+	if got := upstreamPackets.Load(); got != 1 {
+		t.Fatalf("upstream packets after first packet = %d, want 1", got)
+	}
+
+	srv.SetTrafficBlockState(TrafficBlockState{Blocked: true, Reason: "monthly quota exceeded"})
+	if _, err := client.Write([]byte("blocked udp")); err != nil {
+		t.Fatalf("Write() blocked packet error = %v", err)
+	}
+	blockedReply := make([]byte, 1)
+	if err := client.SetReadDeadline(time.Now().Add(150 * time.Millisecond)); err != nil {
+		t.Fatalf("SetReadDeadline() blocked reply error = %v", err)
+	}
+	if n, err := client.Read(blockedReply); err == nil || n != 0 {
+		t.Fatalf("Read() blocked reply n=%d err=%v, want dropped packet", n, err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if got := upstreamPackets.Load(); got != 1 {
+		t.Fatalf("upstream packets after blocked packet = %d, want 1", got)
+	}
+
+	_ = upstreamConn.Close()
+	select {
+	case <-upstreamDone:
+	case <-time.After(time.Second):
+		t.Fatal("upstream goroutine did not exit")
+	}
+}
+
 func TestCopyBidirectionalTCPRecordsL4Traffic(t *testing.T) {
 	traffic.Reset()
 	defer traffic.Reset()
