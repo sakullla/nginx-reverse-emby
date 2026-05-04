@@ -8,6 +8,8 @@ import (
 	"strings"
 	"syscall"
 	"unsafe"
+
+	"golang.org/x/sys/unix"
 )
 
 func snapshotFromSystem(allowed []string) (Snapshot, error) {
@@ -66,9 +68,9 @@ func netlinkInterfaceStats(attrs []syscall.NetlinkRouteAttr) (string, Counters, 
 	var hasCounters bool
 	for _, attr := range attrs {
 		switch attr.Attr.Type {
-		case syscall.IFLA_IFNAME:
+		case unix.IFLA_IFNAME:
 			name = strings.TrimRight(string(attr.Value), "\x00")
-		case syscall.IFLA_STATS64:
+		case unix.IFLA_STATS64:
 			var ok bool
 			counters, ok = linkStats64Counters(attr.Value)
 			hasCounters = ok
