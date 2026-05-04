@@ -2,11 +2,11 @@
   <BaseListCard
     :status="listener.enabled ? 'success' : 'neutral'"
     :disabled="!listener.enabled"
-    :title="listener.name"
     @click="$emit('edit', listener)"
   >
     <template #header-left>
       <BaseBadge tone="neutral" subtone="secondary" mono>#{{ listener.id }}</BaseBadge>
+      <span class="relay-card__name">{{ listener.name }}</span>
       <BaseBadge :tone="listener.enabled ? 'success' : 'neutral'" dot>
         {{ listener.enabled ? '启用' : '已禁用' }}
       </BaseBadge>
@@ -72,11 +72,14 @@
       <BaseBadge v-if="listener.allow_self_signed" tone="warning" size="sm">允许自签</BaseBadge>
     </div>
 
-    <div v-if="hasTraffic" class="traffic-line traffic-line--clickable" @click.stop="$emit('traffic-click', listener)">
-      <span>用量 {{ formatBytes(normalizedTraffic.accounted_bytes) }}</span>
-      <span>入 {{ formatBytes(normalizedTraffic.rx_bytes) }}</span>
-      <span>出 {{ formatBytes(normalizedTraffic.tx_bytes) }}</span>
-    </div>
+    <TrafficBar
+      v-if="hasTraffic"
+      :accounted="normalizedTraffic.accounted_bytes"
+      :rx="normalizedTraffic.rx_bytes"
+      :tx="normalizedTraffic.tx_bytes"
+      :node-total="agentNodeTotal"
+      @click="$emit('traffic-click', listener)"
+    />
 
     <template v-if="hasTags" #footer>
       <BaseBadge v-for="tag in listener.tags" :key="tag" tone="primary">{{ tag }}</BaseBadge>
@@ -89,11 +92,13 @@ import { computed } from 'vue'
 import BaseListCard from '../base/BaseListCard.vue'
 import BaseBadge from '../base/BaseBadge.vue'
 import BaseIconButton from '../base/BaseIconButton.vue'
+import TrafficBar from '../traffic/TrafficBar.vue'
 import { formatBytes, normalizeTrafficSummaryBucket } from '../../utils/trafficStats.js'
 
 const props = defineProps({
   listener: { type: Object, required: true },
   traffic: { type: Object, default: null },
+  agentNodeTotal: { type: Number, default: 0 },
 })
 
 defineEmits(['edit', 'delete', 'toggle', 'traffic-click'])
@@ -186,20 +191,20 @@ const hasTags = computed(() => Array.isArray(props.listener.tags) && props.liste
   color: var(--color-text-tertiary);
   flex-shrink: 0;
 }
+.relay-card__name {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
 .relay-card__meta {
   display: flex;
   gap: 0.25rem;
   flex-wrap: wrap;
 }
-.traffic-line {
-  display: flex;
-  gap: 0.75rem;
-  color: var(--color-text-tertiary);
-  font-size: 0.8125rem;
-  font-variant-numeric: tabular-nums;
-}
-.traffic-line--clickable { cursor: pointer; }
-.traffic-line--clickable:hover { color: var(--color-primary); text-decoration: underline; }
 
 @media (max-width: 640px) {
   :deep(.base-icon-button) {

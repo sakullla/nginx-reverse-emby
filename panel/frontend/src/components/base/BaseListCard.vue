@@ -72,10 +72,10 @@ function onKey(e) {
   background: var(--color-bg-surface);
   border: 1.5px solid var(--color-border-default);
   border-radius: var(--radius-xl);
-  padding: 1.125rem 1.25rem;
+  padding: 0.875rem 1rem;
   display: flex;
   flex-direction: column;
-  gap: 0.625rem;
+  gap: 0.5rem;
   overflow: hidden;
   transition: border-color 150ms var(--ease-default, cubic-bezier(0.4, 0, 0.2, 1)),
     transform 150ms var(--ease-default, cubic-bezier(0.4, 0, 0.2, 1)),

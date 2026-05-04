@@ -113,3 +113,34 @@ export function normalizeTrafficTrendPoints(points = [], direction = 'both') {
     ? points.map((point) => normalizeTrafficTrendPoint(point, direction))
     : []
 }
+
+export function usagePercent(used, quota) {
+  const u = normalizeBytes(used)
+  const q = normalizeNullableBytes(quota)
+  if (q == null) return null
+  if (q === 0) return u > 0 ? 100 : 0
+  return Math.min(100, Math.round((u / q) * 100))
+}
+
+export function dailyBudget(quotaBytes, cycleDays) {
+  const q = normalizeNullableBytes(quotaBytes)
+  const days = normalizePositiveInteger(cycleDays, 30)
+  if (q == null || days <= 0) return null
+  return Math.round(q / days)
+}
+
+export function quotaColorThreshold(percent) {
+  if (percent == null) return 'neutral'
+  const p = Number(percent)
+  if (!Number.isFinite(p)) return 'neutral'
+  if (p >= 90) return 'danger'
+  if (p >= 70) return 'warning'
+  return 'success'
+}
+
+export function formatPercentage(value, fallback = '—') {
+  if (value == null) return fallback
+  const p = Number(value)
+  if (!Number.isFinite(p)) return fallback
+  return `${Math.round(p)}%`
+}

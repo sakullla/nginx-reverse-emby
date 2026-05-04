@@ -684,6 +684,8 @@ func TestTrafficServiceSummaryIncludesBreakdowns(t *testing.T) {
 		{AgentID: "edge-1", ScopeType: "http_rule", ScopeID: "11", BucketStart: time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC), RXBytes: 1, TXBytes: 7},
 		{AgentID: "edge-1", ScopeType: "l4_rule", ScopeID: "22", BucketStart: time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC), RXBytes: 8, TXBytes: 3},
 		{AgentID: "edge-1", ScopeType: "relay_listener", ScopeID: "33", BucketStart: time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC), RXBytes: 4, TXBytes: 6},
+		{AgentID: "edge-1", ScopeType: "host_total", BucketStart: time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC), RXBytes: 1000, TXBytes: 700},
+		{AgentID: "edge-1", ScopeType: "host_interface", ScopeID: "eth0", BucketStart: time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC), RXBytes: 900, TXBytes: 650},
 	} {
 		fakeStore.addBucket(row)
 	}
@@ -699,6 +701,10 @@ func TestTrafficServiceSummaryIncludesBreakdowns(t *testing.T) {
 	assertSummaryBreakdown(t, summary.HTTPRules, "http_rule", "11", 1, 7, 7)
 	assertSummaryBreakdown(t, summary.L4Rules, "l4_rule", "22", 8, 3, 8)
 	assertSummaryBreakdown(t, summary.RelayListeners, "relay_listener", "33", 4, 6, 6)
+	if summary.HostTotal.ScopeType != "host_total" || summary.HostTotal.RXBytes != 1000 || summary.HostTotal.TXBytes != 700 || summary.HostTotal.AccountedBytes != 1000 {
+		t.Fatalf("HostTotal = %+v, want host_total rx=1000 tx=700 accounted=1000", summary.HostTotal)
+	}
+	assertSummaryBreakdown(t, summary.HostInterfaces, "host_interface", "eth0", 900, 650, 900)
 }
 
 func TestTrafficServiceSummaryIncludesObjectBreakdownsWithRealStore(t *testing.T) {
@@ -734,6 +740,67 @@ func TestTrafficServiceSummaryIncludesObjectBreakdownsWithRealStore(t *testing.T
 	assertSummaryBreakdown(t, summary.HTTPRules, "http_rule", "12", 50, 20, 50)
 	assertSummaryBreakdown(t, summary.L4Rules, "l4_rule", "22", 7, 9, 9)
 	assertSummaryBreakdown(t, summary.RelayListeners, "relay_listener", "33", 8, 3, 8)
+}
+
+func TestTrafficServiceOverviewAggregatesHostTrend(t *testing.T) {
+	fakeStore := newFakeTrafficStore()
+	fakeStore.policies = []storage.AgentTrafficPolicyRow{
+		{AgentID: "edge-1", Direction: "both", CycleStartDay: 1, HourlyRetentionDays: 180, DailyRetentionMonths: 24},
+		{AgentID: "edge-2", Direction: "both", CycleStartDay: 1, HourlyRetentionDays: 180, DailyRetentionMonths: 24},
+	}
+	firstDay := time.Date(2026, 5, 19, 0, 0, 0, 0, time.UTC)
+	for _, row := range []storage.TrafficBucketRow{
+		{AgentID: "edge-1", ScopeType: "host_total", BucketStart: firstDay, RXBytes: 100, TXBytes: 200},
+		{AgentID: "edge-2", ScopeType: "host_total", BucketStart: firstDay, RXBytes: 50, TXBytes: 75},
+	} {
+		fakeStore.addBucket(row)
+	}
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true}, fakeStore)
+
+	overview, err := svc.Overview(context.Background(), "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(overview.HostTrend) != 1 {
+		t.Fatalf("HostTrend = %+v, want one aggregated host bucket", overview.HostTrend)
+	}
+	if overview.HostTrend[0].BucketStart != "2026-05-19T00:00:00Z" ||
+		overview.HostTrend[0].RXBytes != 150 ||
+		overview.HostTrend[0].TXBytes != 275 ||
+		overview.HostTrend[0].AccountedBytes != 425 {
+		t.Fatalf("HostTrend[0] = %+v, want first day aggregate", overview.HostTrend[0])
+	}
+}
+
+func TestTrafficServiceOverviewIncludesCycleWindow(t *testing.T) {
+	fakeStore := newFakeTrafficStore()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	fakeStore.policy = storage.AgentTrafficPolicyRow{
+		AgentID:              "edge-1",
+		Direction:            "rx",
+		CycleStartDay:        15,
+		HourlyRetentionDays:  180,
+		DailyRetentionMonths: 24,
+	}
+	fakeStore.addBucket(storage.TrafficBucketRow{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		BucketStart: time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC),
+		RXBytes:     100,
+		TXBytes:     200,
+	})
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, fakeStore)
+
+	overview, err := svc.Overview(context.Background(), "edge-1", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(overview.Agents) != 1 {
+		t.Fatalf("Agents = %+v, want one agent", overview.Agents)
+	}
+	if overview.Agents[0].CycleStart != "2026-05-15T00:00:00Z" || overview.Agents[0].CycleEnd != "2026-06-15T00:00:00Z" {
+		t.Fatalf("overview agent cycle = %q..%q", overview.Agents[0].CycleStart, overview.Agents[0].CycleEnd)
+	}
 }
 
 func TestTrafficServiceCounterResetPersistsEventWithRealStore(t *testing.T) {
@@ -1055,6 +1122,32 @@ func (s *fakeTrafficStore) ListTrafficPolicies(context.Context) ([]storage.Agent
 
 func (s *fakeTrafficStore) ListAgents(context.Context) ([]storage.AgentRow, error) {
 	return append([]storage.AgentRow(nil), s.agents...), nil
+}
+
+func (s *fakeTrafficStore) ListTrafficAgentIDs(context.Context) ([]string, error) {
+	seen := map[string]bool{}
+	ids := []string{}
+	add := func(agentID string) {
+		if agentID == "" || seen[agentID] {
+			return
+		}
+		seen[agentID] = true
+		ids = append(ids, agentID)
+	}
+	for _, policy := range s.policies {
+		add(policy.AgentID)
+	}
+	if len(s.policies) == 0 {
+		add(s.policy.AgentID)
+	}
+	for _, agent := range s.agents {
+		add(agent.ID)
+	}
+	for _, row := range s.buckets {
+		add(row.AgentID)
+	}
+	slices.Sort(ids)
+	return ids, nil
 }
 
 func (s *fakeTrafficStore) GetTrafficBaseline(_ context.Context, agentID, cycleStart string) (storage.AgentTrafficBaselineRow, bool, error) {

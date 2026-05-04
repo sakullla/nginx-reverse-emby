@@ -65,6 +65,7 @@
         :rule="rule"
         :agent="selectedAgent"
         :traffic="trafficForRule(rule)"
+        :agent-node-total="agentNodeTotal"
         @edit="startEdit"
         @delete="startDelete"
         @copy="handleCopy"
@@ -180,6 +181,8 @@ const { data: trafficSummaryData } = useQuery({
   enabled: () => !!agentId.value && trafficStatsEnabled.value,
   refetchInterval: 10_000
 })
+
+const agentNodeTotal = computed(() => trafficSummaryData.value?.used_bytes || 0)
 
 function trafficForRule(rule) {
   return trafficStatsEnabled.value

@@ -176,10 +176,10 @@ describe('AgentDetailPage', () => {
     await wrapper.findAll('.tab-btn').find((button) => button.text() === '流量统计').trigger('click')
 
     expect(wrapper.text()).toContain('趋势')
-    expect(wrapper.text()).toContain('月额度')
+    expect(wrapper.text()).toContain('额度')
     expect(wrapper.text()).toContain('策略设置')
     expect(wrapper.text()).toContain('历史管理')
-    expect(wrapper.text()).toContain('计费方向')
+    expect(wrapper.text()).toContain('方向')
     expect(wrapper.text()).toContain('双向')
     expect(apiCalls.fetchTrafficPolicy).toHaveBeenCalledWith('edge-1')
     expect(apiCalls.fetchTrafficSummary).toHaveBeenCalledWith('edge-1')
@@ -194,10 +194,18 @@ describe('AgentDetailPage', () => {
     expect(wrapper.text()).toContain('分项流量')
     expect(wrapper.text()).toContain('HTTP')
     expect(wrapper.text()).toContain('HTTP 规则 #7')
-    expect(wrapper.text()).toContain('L4 规则 #9')
-    expect(wrapper.text()).toContain('Relay 监听 #11')
     expect(wrapper.text()).toContain('12.0 KiB')
+
+    const l4Tab = wrapper.findAll('.traffic-breakdown__tab').find((b) => b.text().includes('L4'))
+    await l4Tab?.trigger('click')
+    await nextTick()
+    expect(wrapper.text()).toContain('L4 规则 #9')
     expect(wrapper.text()).toContain('48.0 KiB')
+
+    const relayTab = wrapper.findAll('.traffic-breakdown__tab').find((b) => b.text().includes('Relay'))
+    await relayTab?.trigger('click')
+    await nextTick()
+    expect(wrapper.text()).toContain('Relay 监听 #11')
     expect(wrapper.text()).toContain('192.0 KiB')
   })
 

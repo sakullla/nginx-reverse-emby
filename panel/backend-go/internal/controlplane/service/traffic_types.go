@@ -55,6 +55,8 @@ type TrafficSummary struct {
 	HTTPRules         []TrafficSummaryBreakdown `json:"http_rules"`
 	L4Rules           []TrafficSummaryBreakdown `json:"l4_rules"`
 	RelayListeners    []TrafficSummaryBreakdown `json:"relay_listeners"`
+	HostTotal         TrafficSummaryBreakdown   `json:"host_total"`
+	HostInterfaces    []TrafficSummaryBreakdown `json:"host_interfaces"`
 }
 
 type TrafficSummaryBreakdown struct {
@@ -109,9 +111,12 @@ type TrafficOverviewAgent struct {
 	RemainingBytes *int64  `json:"remaining_bytes"`
 	Blocked        bool    `json:"blocked"`
 	Direction      string  `json:"direction"`
+	CycleStart     string  `json:"cycle_start"`
+	CycleEnd       string  `json:"cycle_end"`
 }
 
 type TrafficOverviewResult struct {
-	Agents []TrafficOverviewAgent `json:"agents"`
-	Trend  []TrafficTrendPoint    `json:"trend"`
+	Agents    []TrafficOverviewAgent `json:"agents"`
+	Trend     []TrafficTrendPoint    `json:"trend"`
+	HostTrend []TrafficTrendPoint    `json:"host_trend"`
 }

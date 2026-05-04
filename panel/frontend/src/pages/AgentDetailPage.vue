@@ -50,7 +50,7 @@
     <div class="agent-detail__tab-content">
       <div v-if="activeTab === 'traffic'" class="tab-panel">
         <TrafficCollapsibleSection title="概览" :default-expanded="true">
-          <TrafficSummaryCards :summary="trafficSummary" :direction="trafficPolicyForm.direction" />
+          <TrafficSummaryCards :summary="trafficSummary" :direction="trafficPolicyForm.direction" :host-total="trafficSummary.host_total" />
           <div class="traffic-tab__trend">
             <div class="traffic-tab__trend-header">
               <span>趋势</span>
@@ -71,12 +71,12 @@
           </div>
           <div class="traffic-tab__breakdown">
             <span class="traffic-tab__breakdown-title">分项流量（点击查看趋势）</span>
-            <TrafficBreakdownTable :rows="trafficBreakdownRows" :clickable="true" @click-row="openBreakdownTrendModal" />
+            <TrafficBreakdownTable :tabs="trafficBreakdownTabs" :clickable="true" @click-row="openBreakdownTrendModal" />
           </div>
         </TrafficCollapsibleSection>
 
         <TrafficCollapsibleSection title="策略设置" :default-expanded="false">
-          <TrafficPolicyForm v-model="trafficPolicyForm" :saving="updateTrafficPolicyMutation.isPending.value" @save="saveTrafficPolicy" />
+          <TrafficPolicyForm v-model="trafficPolicyForm" :saving="updateTrafficPolicyMutation.isPending.value || updateAgent.isPending.value" @save="saveTrafficPolicy" />
         </TrafficCollapsibleSection>
 
         <TrafficCollapsibleSection title="历史管理" :default-expanded="false">
@@ -126,44 +126,6 @@
       </div>
 
       <div v-if="activeTab === 'info'" class="tab-panel">
-        <div v-if="!agent.is_local" class="agent-setting">
-          <label class="agent-setting__label" for="agent-outbound-proxy">出网代理</label>
-          <div class="agent-setting__control">
-            <input
-              id="agent-outbound-proxy"
-              v-model="outboundProxyURL"
-              class="agent-setting__input"
-              placeholder="socks://user:pass@127.0.0.1:1080"
-            >
-            <button
-              class="btn btn-primary"
-              type="button"
-              :disabled="updateAgent.isPending.value"
-              @click="saveOutboundProxy"
-            >
-              保存
-            </button>
-          </div>
-        </div>
-        <div v-if="!agent.is_local" class="agent-setting">
-          <label class="agent-setting__label" for="agent-traffic-stats-interval">流量统计上报周期</label>
-          <div class="agent-setting__control">
-            <input
-              id="agent-traffic-stats-interval"
-              v-model="trafficStatsInterval"
-              class="agent-setting__input"
-              placeholder="例如 30s、1m、5m；留空表示随心跳上报"
-            >
-            <button
-              class="btn btn-primary"
-              type="button"
-              :disabled="updateAgent.isPending.value"
-              @click="saveTrafficStatsInterval"
-            >
-              保存
-            </button>
-          </div>
-        </div>
         <div class="info-grid">
           <div class="info-row"><span>版本</span><span>{{ agent.version || agent.runtime_package_version || '—' }}</span></div>
           <div class="info-row"><span>平台</span><span>{{ agent.runtime_package_platform || agent.platform || '—' }}</span></div>
@@ -229,7 +191,6 @@ const { data: agentsData, isLoading } = useAgents()
 const agent = computed(() => agentsData.value?.find(a => a.id === agentId.value))
 const updateAgent = useUpdateAgent()
 const outboundProxyURL = ref('')
-const trafficStatsInterval = ref('')
 
 const { data: httpRulesData } = useRules(agentId)
 const httpRules = computed(() => httpRulesData.value ?? [])
@@ -277,12 +238,31 @@ const quotaUnits = [
 const trafficPolicyForm = ref(normalizeTrafficPolicyForm())
 const trafficSummary = computed(() => trafficSummaryQuery.data.value ?? {})
 const trafficTrendPoints = computed(() => normalizeTrafficTrendPoints(trafficTrendQuery.data.value ?? [], trafficPolicyForm.value.direction))
-const trafficBreakdownRows = computed(() => [
-  ...normalizeTrafficBreakdownRows(trafficSummary.value.aggregates),
-  ...normalizeTrafficBreakdownRows(trafficSummary.value.http_rules),
-  ...normalizeTrafficBreakdownRows(trafficSummary.value.l4_rules),
-  ...normalizeTrafficBreakdownRows(trafficSummary.value.relay_listeners)
-])
+const trafficBreakdownTabs = computed(() => [
+  {
+    id: 'http',
+    label: 'HTTP',
+    rows: normalizeTrafficBreakdownRows(trafficSummary.value.http_rules)
+  },
+  {
+    id: 'l4',
+    label: 'L4',
+    rows: normalizeTrafficBreakdownRows(trafficSummary.value.l4_rules)
+  },
+  {
+    id: 'relay',
+    label: 'Relay',
+    rows: normalizeTrafficBreakdownRows(trafficSummary.value.relay_listeners)
+  },
+  {
+    id: 'host',
+    label: '主机接口',
+    rows: normalizeTrafficBreakdownRows([
+      ...(trafficSummary.value.host_total ? [trafficSummary.value.host_total] : []),
+      ...(trafficSummary.value.host_interfaces || [])
+    ])
+  }
+].filter(t => t.rows.length > 0))
 
 const activeTab = ref('http')
 const trendModal = ref({ visible: false, scopeType: '', scopeId: '', scopeLabel: '' })
@@ -305,12 +285,17 @@ const tabs = computed(() => [
 
 watch(agent, (value) => {
   outboundProxyURL.value = value?.outbound_proxy_url || ''
-  trafficStatsInterval.value = value?.traffic_stats_interval || ''
+  if (value) {
+    trafficPolicyForm.value = {
+      ...trafficPolicyForm.value,
+      traffic_stats_interval: value.traffic_stats_interval || ''
+    }
+  }
 }, { immediate: true })
 
 watch([trafficPolicyQuery.data, trafficStatsEnabled], ([policy, enabled]) => {
   if (enabled && policy) {
-    trafficPolicyForm.value = normalizeTrafficPolicyForm(policy)
+    trafficPolicyForm.value = normalizeTrafficPolicyForm(policy, agent.value?.traffic_stats_interval || '')
   }
 }, { immediate: true })
 
@@ -333,16 +318,6 @@ async function saveOutboundProxy() {
   await updateAgent.mutateAsync({
     agentId: agent.value.id,
     payload
-  })
-}
-
-async function saveTrafficStatsInterval() {
-  if (!agent.value || agent.value.is_local) return
-  const nextInterval = trafficStatsInterval.value.trim()
-  if (nextInterval === (agent.value.traffic_stats_interval || '')) return
-  await updateAgent.mutateAsync({
-    agentId: agent.value.id,
-    payload: { traffic_stats_interval: nextInterval }
   })
 }
 
@@ -374,6 +349,14 @@ async function saveTrafficPolicy() {
     monthly_quota_bytes: monthlyQuotaBytes
   })
   await updateTrafficPolicyMutation.mutateAsync(payload)
+
+  const nextInterval = String(trafficPolicyForm.value.traffic_stats_interval || '').trim()
+  if (!agent.value.is_local && nextInterval !== (agent.value.traffic_stats_interval || '')) {
+    await updateAgent.mutateAsync({
+      agentId: agent.value.id,
+      payload: { traffic_stats_interval: nextInterval }
+    })
+  }
 }
 
 async function calibrateTrafficSummary() {
@@ -401,13 +384,14 @@ async function cleanupTrafficHistory() {
   await cleanupTrafficMutation.mutateAsync()
 }
 
-function normalizeTrafficPolicyForm(policy = {}) {
+function normalizeTrafficPolicyForm(policy = {}, trafficStatsInterval = '') {
   const normalized = normalizeTrafficPolicy(policy)
   const quota = bytesToQuotaInput(normalized.monthly_quota_bytes)
   return {
     ...normalized,
     monthly_quota_value: quota.value,
-    monthly_quota_unit: quota.unit
+    monthly_quota_unit: quota.unit,
+    traffic_stats_interval: trafficStatsInterval
   }
 }
 
