@@ -2,11 +2,11 @@
   <BaseListCard
     :status="listener.enabled ? 'success' : 'neutral'"
     :disabled="!listener.enabled"
-    :title="listener.name"
     @click="$emit('edit', listener)"
   >
     <template #header-left>
       <BaseBadge tone="neutral" subtone="secondary" mono>#{{ listener.id }}</BaseBadge>
+      <span class="relay-card__name">{{ listener.name }}</span>
       <BaseBadge :tone="listener.enabled ? 'success' : 'neutral'" dot>
         {{ listener.enabled ? '启用' : '已禁用' }}
       </BaseBadge>
@@ -190,6 +190,15 @@ const hasTags = computed(() => Array.isArray(props.listener.tags) && props.liste
   justify-content: center;
   color: var(--color-text-tertiary);
   flex-shrink: 0;
+}
+.relay-card__name {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
 }
 .relay-card__meta {
   display: flex;

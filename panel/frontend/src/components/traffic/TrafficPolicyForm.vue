@@ -39,6 +39,10 @@
         <span class="traffic-policy-form__label">月保留</span>
         <input :value="modelValue.monthly_retention_months" class="traffic-policy-form__input" type="number" min="1" placeholder="留空表示永久" @input="updateField('monthly_retention_months', $event.target.value)">
       </label>
+      <label class="traffic-policy-form__field">
+        <span class="traffic-policy-form__label">流量统计上报周期</span>
+        <input :value="modelValue.traffic_stats_interval" class="traffic-policy-form__input" type="text" placeholder="例如 30s、1m、5m；留空表示随心跳上报" @input="updateField('traffic_stats_interval', $event.target.value)">
+      </label>
     </div>
     <div class="traffic-policy-form__footer">
       <button class="btn btn-primary" type="button" :disabled="saving" @click="$emit('save')">保存</button>
