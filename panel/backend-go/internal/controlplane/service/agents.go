@@ -212,6 +212,7 @@ type agentService struct {
 type heartbeatTrafficService interface {
 	IngestHeartbeat(context.Context, string, AgentStats) error
 	Summary(context.Context, string) (TrafficSummary, error)
+	BlockState(context.Context, string) (bool, string, error)
 }
 
 type bundledPackageCacheEntry struct {
@@ -884,17 +885,17 @@ func (s *agentService) heartbeatTrafficBlockState(ctx context.Context, agentID s
 	if !enabled || s.trafficService == nil {
 		return false, "", nil
 	}
-	summary, err := s.trafficService.Summary(ctx, agentID)
+	blocked, reason, err := s.trafficService.BlockState(ctx, agentID)
 	if err != nil {
 		if errors.Is(err, ErrTrafficStatsDisabled) {
 			return false, "", nil
 		}
 		return false, "", nil
 	}
-	if !summary.Blocked {
+	if !blocked {
 		return false, "", nil
 	}
-	return true, summary.BlockReason, nil
+	return true, reason, nil
 }
 
 func heartbeatBoolPtr(value bool) *bool {

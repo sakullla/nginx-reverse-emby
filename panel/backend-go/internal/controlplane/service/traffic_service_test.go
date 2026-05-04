@@ -329,6 +329,98 @@ func TestTrafficServiceSummaryRecomputesBaselineForDirectionChange(t *testing.T)
 	}
 }
 
+func TestTrafficServiceBlockStateSkipsSummaryWhenPolicyCannotBlock(t *testing.T) {
+	fakeStore := newFakeTrafficStore()
+	fakeStore.policy = storage.AgentTrafficPolicyRow{
+		AgentID:              "edge-1",
+		Direction:            "both",
+		CycleStartDay:        1,
+		HourlyRetentionDays:  180,
+		DailyRetentionMonths: 24,
+	}
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true}, fakeStore)
+
+	blocked, reason, err := svc.BlockState(context.Background(), "edge-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blocked || reason != "" {
+		t.Fatalf("BlockState() = blocked %v reason %q, want unblocked", blocked, reason)
+	}
+	if fakeStore.baselineReadCount != 0 {
+		t.Fatalf("baseline reads = %d, want 0", fakeStore.baselineReadCount)
+	}
+	if fakeStore.trendReadCount != 0 {
+		t.Fatalf("trend reads = %d, want 0", fakeStore.trendReadCount)
+	}
+}
+
+func TestTrafficServiceBlockStateSkipsSummaryWhenBlockingDisabled(t *testing.T) {
+	fakeStore := newFakeTrafficStore()
+	quota := int64(100)
+	fakeStore.policy = storage.AgentTrafficPolicyRow{
+		AgentID:              "edge-1",
+		Direction:            "both",
+		CycleStartDay:        1,
+		MonthlyQuotaBytes:    &quota,
+		BlockWhenExceeded:    false,
+		HourlyRetentionDays:  180,
+		DailyRetentionMonths: 24,
+	}
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true}, fakeStore)
+
+	blocked, reason, err := svc.BlockState(context.Background(), "edge-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blocked || reason != "" {
+		t.Fatalf("BlockState() = blocked %v reason %q, want unblocked", blocked, reason)
+	}
+	if fakeStore.baselineReadCount != 0 {
+		t.Fatalf("baseline reads = %d, want 0", fakeStore.baselineReadCount)
+	}
+	if fakeStore.trendReadCount != 0 {
+		t.Fatalf("trend reads = %d, want 0", fakeStore.trendReadCount)
+	}
+}
+
+func TestTrafficServiceBlockStateUsesSummaryWhenBlockingCanApply(t *testing.T) {
+	fakeStore := newFakeTrafficStore()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	quota := int64(100)
+	fakeStore.policy = storage.AgentTrafficPolicyRow{
+		AgentID:              "edge-1",
+		Direction:            "both",
+		CycleStartDay:        1,
+		MonthlyQuotaBytes:    &quota,
+		BlockWhenExceeded:    true,
+		HourlyRetentionDays:  180,
+		DailyRetentionMonths: 24,
+	}
+	fakeStore.addBucket(storage.TrafficBucketRow{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		BucketStart: time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC),
+		RXBytes:     80,
+		TXBytes:     30,
+	})
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, fakeStore)
+
+	blocked, reason, err := svc.BlockState(context.Background(), "edge-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !blocked || reason != "monthly quota exceeded" {
+		t.Fatalf("BlockState() = blocked %v reason %q, want monthly quota exceeded", blocked, reason)
+	}
+	if fakeStore.baselineReadCount == 0 {
+		t.Fatal("baseline reads = 0, want summary path to check current cycle baseline")
+	}
+	if fakeStore.trendReadCount == 0 {
+		t.Fatal("trend reads = 0, want summary path to check current usage")
+	}
+}
+
 func TestTrafficServiceSummaryReportsOverQuotaWithoutBlocking(t *testing.T) {
 	fakeStore := newFakeTrafficStore()
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
@@ -623,6 +715,8 @@ type fakeTrafficStore struct {
 	agentTrafficBlocked     map[string]bool
 	agentTrafficBlockReason map[string]string
 	writeCount              int
+	baselineReadCount       int
+	trendReadCount          int
 }
 
 func newFakeTrafficStore() *fakeTrafficStore {
@@ -674,6 +768,7 @@ func (s *fakeTrafficStore) ListTrafficPolicies(context.Context) ([]storage.Agent
 }
 
 func (s *fakeTrafficStore) GetTrafficBaseline(_ context.Context, agentID, cycleStart string) (storage.AgentTrafficBaselineRow, bool, error) {
+	s.baselineReadCount++
 	row, ok := s.baselines[agentID+"|"+cycleStart]
 	return row, ok, nil
 }
@@ -710,6 +805,7 @@ func (s *fakeTrafficStore) IncrementTrafficBuckets(_ context.Context, delta stor
 }
 
 func (s *fakeTrafficStore) ListTrafficTrend(_ context.Context, query storage.TrafficTrendQuery) ([]storage.TrafficBucketRow, error) {
+	s.trendReadCount++
 	rows := []storage.TrafficBucketRow{}
 	for _, row := range s.buckets {
 		if row.AgentID != query.AgentID {

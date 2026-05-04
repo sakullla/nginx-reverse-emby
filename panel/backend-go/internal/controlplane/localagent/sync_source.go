@@ -27,6 +27,7 @@ type SnapshotStore interface {
 
 type trafficSummaryService interface {
 	Summary(context.Context, string) (service.TrafficSummary, error)
+	BlockState(context.Context, string) (bool, string, error)
 }
 
 type SyncSource struct {
@@ -69,14 +70,14 @@ func (s *SyncSource) Sync(ctx context.Context, request SyncRequest) (Snapshot, e
 		snapshot.AgentConfig.TrafficBlockReason = ""
 		return snapshot, nil
 	}
-	summary, err := s.trafficService.Summary(ctx, s.agentID)
+	blocked, reason, err := s.trafficService.BlockState(ctx, s.agentID)
 	if err != nil {
 		snapshot.AgentConfig.TrafficBlocked = false
 		snapshot.AgentConfig.TrafficBlockReason = ""
 		return snapshot, nil
 	}
-	snapshot.AgentConfig.TrafficBlocked = summary.Blocked
-	snapshot.AgentConfig.TrafficBlockReason = summary.BlockReason
+	snapshot.AgentConfig.TrafficBlocked = blocked
+	snapshot.AgentConfig.TrafficBlockReason = reason
 	return snapshot, nil
 }
 

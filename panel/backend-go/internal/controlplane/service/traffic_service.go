@@ -169,6 +169,32 @@ func (s *trafficService) Summary(ctx context.Context, agentID string) (TrafficSu
 	if err != nil {
 		return TrafficSummary{}, err
 	}
+	return s.summaryWithPolicy(ctx, agentID, policyRow)
+}
+
+func (s *trafficService) BlockState(ctx context.Context, agentID string) (bool, string, error) {
+	if err := s.requireEnabled(); err != nil {
+		return false, "", err
+	}
+	policyRow, err := s.store.GetTrafficPolicy(ctx, agentID)
+	if err != nil {
+		return false, "", err
+	}
+	policy := trafficPolicyFromRow(policyRow)
+	if !policy.BlockWhenExceeded || policy.MonthlyQuotaBytes == nil {
+		return false, "", nil
+	}
+	summary, err := s.summaryWithPolicy(ctx, agentID, policyRow)
+	if err != nil {
+		return false, "", err
+	}
+	if !summary.Blocked {
+		return false, "", nil
+	}
+	return true, summary.BlockReason, nil
+}
+
+func (s *trafficService) summaryWithPolicy(ctx context.Context, agentID string, policyRow storage.AgentTrafficPolicyRow) (TrafficSummary, error) {
 	policy := trafficPolicyFromRow(policyRow)
 	start, end := monthlyCycleWindow(s.now(), policy.CycleStartDay)
 	stats, err := s.cycleStats(ctx, agentID, policy, start, end)

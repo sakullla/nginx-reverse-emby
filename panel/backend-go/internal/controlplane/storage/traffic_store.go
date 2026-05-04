@@ -63,15 +63,16 @@ func (s *GormStore) GetTrafficPolicy(ctx context.Context, agentID string) (Agent
 	var row AgentTrafficPolicyRow
 	err := s.db.WithContext(ctx).
 		Where("agent_id = ?", agentID).
-		First(&row).Error
-	if err == nil {
-		normalizeTrafficPolicyRow(&row)
-		return row, nil
+		Limit(1).
+		Find(&row).Error
+	if err != nil {
+		return AgentTrafficPolicyRow{}, err
 	}
-	if err == gorm.ErrRecordNotFound {
+	if row.AgentID == "" {
 		return defaultTrafficPolicy(agentID), nil
 	}
-	return AgentTrafficPolicyRow{}, err
+	normalizeTrafficPolicyRow(&row)
+	return row, nil
 }
 
 func (s *GormStore) SaveTrafficPolicy(ctx context.Context, row AgentTrafficPolicyRow) error {
@@ -131,14 +132,15 @@ func (s *GormStore) GetTrafficBaseline(ctx context.Context, agentID, cycleStart 
 	var row AgentTrafficBaselineRow
 	err := s.db.WithContext(ctx).
 		Where("agent_id = ? AND cycle_start = ?", agentID, cycleStart).
-		First(&row).Error
-	if err == nil {
-		return row, true, nil
+		Limit(1).
+		Find(&row).Error
+	if err != nil {
+		return AgentTrafficBaselineRow{}, false, err
 	}
-	if err == gorm.ErrRecordNotFound {
+	if row.AgentID == "" {
 		return AgentTrafficBaselineRow{}, false, nil
 	}
-	return AgentTrafficBaselineRow{}, false, err
+	return row, true, nil
 }
 
 func (s *GormStore) SaveTrafficBaseline(ctx context.Context, row AgentTrafficBaselineRow) error {

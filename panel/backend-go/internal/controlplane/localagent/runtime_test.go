@@ -42,6 +42,16 @@ func (s localTrafficSummaryStub) Summary(context.Context, string) (service.Traff
 	return s.summary, nil
 }
 
+func (s localTrafficSummaryStub) BlockState(context.Context, string) (bool, string, error) {
+	if s.err != nil {
+		return false, "", s.err
+	}
+	if !s.summary.Blocked {
+		return false, "", nil
+	}
+	return true, s.summary.BlockReason, nil
+}
+
 func (s embeddedRuntimeStub) Run(ctx context.Context) error {
 	if s.start != nil {
 		return s.start(ctx)
