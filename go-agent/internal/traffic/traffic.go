@@ -33,6 +33,7 @@ var (
 	httpRuleCounters      keyedCounters
 	l4RuleCounters        keyedCounters
 	relayListenerCounters keyedCounters
+	recorderRegistry      = recorderSet{recorders: map[*Recorder]struct{}{}}
 	enabled               atomic.Bool
 	resetGeneration       atomic.Uint64
 )
@@ -42,6 +43,9 @@ func init() {
 }
 
 func SetEnabled(value bool) {
+	if !value {
+		Reset()
+	}
 	enabled.Store(value)
 }
 
@@ -107,6 +111,10 @@ func (r *Recorder) Add(rxBytes, txBytes int64) {
 	}
 	if added > 0 && r.rx.Load()+r.tx.Load() >= recorderFlushThreshold {
 		r.Flush()
+		return
+	}
+	if added > 0 {
+		recorderRegistry.add(r)
 	}
 }
 
@@ -115,12 +123,20 @@ func (r *Recorder) Flush() {
 		return
 	}
 	r.discardPendingAfterReset()
+	recorderRegistry.delete(r)
 	rx := r.rx.Swap(0)
 	tx := r.tx.Swap(0)
 	addUint64(r.counter, rx, tx)
 	if r.scoped != nil {
 		addUint64(r.scoped, rx, tx)
 	}
+}
+
+func (r *Recorder) Close() {
+	if r == nil || r.counter == nil {
+		return
+	}
+	r.Flush()
 }
 
 func (r *Recorder) FlushIfPendingBelow(maxBytes uint64) {
@@ -154,6 +170,7 @@ func SnapshotNonZero() map[string]any {
 	if !Enabled() {
 		return nil
 	}
+	recorderRegistry.flushDirty()
 	stats := snapshot()
 	trafficStats := stats["traffic"].(map[string]any)
 	total := trafficStats["total"].(map[string]uint64)
@@ -165,6 +182,7 @@ func SnapshotNonZero() map[string]any {
 
 func Reset() {
 	resetGeneration.Add(1)
+	recorderRegistry.clear()
 	httpCounters.rx.Store(0)
 	httpCounters.tx.Store(0)
 	l4Counters.rx.Store(0)
@@ -174,6 +192,41 @@ func Reset() {
 	httpRuleCounters.reset()
 	l4RuleCounters.reset()
 	relayListenerCounters.reset()
+}
+
+type recorderSet struct {
+	mu        sync.RWMutex
+	recorders map[*Recorder]struct{}
+}
+
+func (s *recorderSet) add(recorder *Recorder) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.recorders[recorder] = struct{}{}
+}
+
+func (s *recorderSet) delete(recorder *Recorder) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.recorders, recorder)
+}
+
+func (s *recorderSet) flushDirty() {
+	s.mu.RLock()
+	recorders := make([]*Recorder, 0, len(s.recorders))
+	for recorder := range s.recorders {
+		recorders = append(recorders, recorder)
+	}
+	s.mu.RUnlock()
+	for _, recorder := range recorders {
+		recorder.Flush()
+	}
+}
+
+func (s *recorderSet) clear() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.recorders = map[*Recorder]struct{}{}
 }
 
 func (k *keyedCounters) counterFor(id int) *counters {
