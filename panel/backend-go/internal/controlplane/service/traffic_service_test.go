@@ -229,6 +229,34 @@ func TestTrafficServiceSummaryUsesHostTotalForQuotaWhenAvailable(t *testing.T) {
 	}
 }
 
+func TestTrafficServiceSummaryPreservesExistingCycleAgentTotalDuringHostRollout(t *testing.T) {
+	fakeStore := newFakeTrafficStore()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	fakeStore.addBucket(storage.TrafficBucketRow{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		BucketStart: time.Date(2026, 5, 10, 10, 0, 0, 0, time.UTC),
+		RXBytes:     100,
+		TXBytes:     200,
+	})
+	fakeStore.addBucket(storage.TrafficBucketRow{
+		AgentID:     "edge-1",
+		ScopeType:   "host_total",
+		BucketStart: time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC),
+		RXBytes:     10,
+		TXBytes:     20,
+	})
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, fakeStore)
+
+	summary, err := svc.Summary(context.Background(), "edge-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.RXBytes != 110 || summary.TXBytes != 220 || summary.UsedBytes != 330 {
+		t.Fatalf("summary uses %+v, want agent_total before host rollout plus host_total after rollout", summary)
+	}
+}
+
 func TestTrafficServiceSummaryFallsBackToAgentTotalWhenHostTotalOnlyOutsideCycle(t *testing.T) {
 	fakeStore := newFakeTrafficStore()
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
@@ -254,6 +282,35 @@ func TestTrafficServiceSummaryFallsBackToAgentTotalWhenHostTotalOnlyOutsideCycle
 	}
 	if summary.RXBytes != 1 || summary.TXBytes != 2 || summary.UsedBytes != 3 {
 		t.Fatalf("summary uses %+v, want current-cycle agent_total fallback", summary)
+	}
+}
+
+func TestTrafficServiceTrendDefaultsToHostTotalAtRequestedGranularity(t *testing.T) {
+	fakeStore := newFakeTrafficStore()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	fakeStore.addBucket(storage.TrafficBucketRow{
+		AgentID:     "edge-1",
+		ScopeType:   "host_total",
+		BucketStart: time.Date(2026, 5, 19, 0, 0, 0, 0, time.UTC),
+		RXBytes:     100,
+		TXBytes:     200,
+	})
+	fakeStore.emptyTrends = []storage.TrafficTrendQuery{{
+		AgentID:     "edge-1",
+		ScopeType:   "host_total",
+		Granularity: "hour",
+	}}
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, fakeStore)
+
+	points, err := svc.Trend(context.Background(), TrafficTrendQuery{
+		AgentID:     "edge-1",
+		Granularity: "day",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(points) != 1 || points[0].ScopeType != "host_total" || points[0].RXBytes != 100 || points[0].TXBytes != 200 {
+		t.Fatalf("Trend() = %+v, want host_total daily row", points)
 	}
 }
 
@@ -942,6 +999,7 @@ type fakeTrafficStore struct {
 	events                  []storage.AgentTrafficEventRow
 	agentTrafficBlocked     map[string]bool
 	agentTrafficBlockReason map[string]string
+	emptyTrends             []storage.TrafficTrendQuery
 	writeCount              int
 	baselineReadCount       int
 	trendReadCount          int
@@ -1038,6 +1096,11 @@ func (s *fakeTrafficStore) IncrementTrafficBuckets(_ context.Context, delta stor
 
 func (s *fakeTrafficStore) ListTrafficTrend(_ context.Context, query storage.TrafficTrendQuery) ([]storage.TrafficBucketRow, error) {
 	s.trendReadCount++
+	for _, emptyQuery := range s.emptyTrends {
+		if trafficTrendQueryMatches(emptyQuery, query) {
+			return []storage.TrafficBucketRow{}, nil
+		}
+	}
 	rows := []storage.TrafficBucketRow{}
 	for _, row := range s.buckets {
 		if row.AgentID != query.AgentID {
@@ -1055,6 +1118,22 @@ func (s *fakeTrafficStore) ListTrafficTrend(_ context.Context, query storage.Tra
 		rows = append(rows, row)
 	}
 	return rows, nil
+}
+
+func trafficTrendQueryMatches(want, got storage.TrafficTrendQuery) bool {
+	if want.AgentID != "" && want.AgentID != got.AgentID {
+		return false
+	}
+	if want.ScopeType != "" && want.ScopeType != got.ScopeType {
+		return false
+	}
+	if want.ScopeID != "" && want.ScopeID != got.ScopeID {
+		return false
+	}
+	if want.Granularity != "" && want.Granularity != got.Granularity {
+		return false
+	}
+	return true
 }
 
 func (s *fakeTrafficStore) ListTrafficBreakdown(_ context.Context, query storage.TrafficTrendQuery) ([]storage.TrafficBucketRow, error) {

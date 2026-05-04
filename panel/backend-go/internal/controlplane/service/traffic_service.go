@@ -283,7 +283,7 @@ func (s *trafficService) Trend(ctx context.Context, query TrafficTrendQuery) ([]
 	}
 	rows, err := s.store.ListTrafficTrend(ctx, storage.TrafficTrendQuery{
 		AgentID:     query.AgentID,
-		ScopeType:   defaultString(query.ScopeType, s.defaultTotalScopeType(ctx, query.AgentID, from, to)),
+		ScopeType:   defaultString(query.ScopeType, s.defaultTotalScopeType(ctx, query.AgentID, defaultString(query.Granularity, "hour"), from, to)),
 		ScopeID:     strings.TrimSpace(query.ScopeID),
 		Granularity: defaultString(query.Granularity, "hour"),
 		From:        from,
@@ -591,7 +591,7 @@ func (s *trafficService) Overview(ctx context.Context, agentFilter string, agent
 	if agentFilter != "" {
 		trend, _ = s.Trend(ctx, TrafficTrendQuery{
 			AgentID:     agentFilter,
-			ScopeType:   s.defaultTotalScopeType(ctx, agentFilter, time.Time{}, time.Time{}),
+			ScopeType:   s.defaultTotalScopeType(ctx, agentFilter, "day", time.Time{}, time.Time{}),
 			Granularity: "day",
 		})
 	} else {
@@ -609,7 +609,7 @@ func (s *trafficService) aggregateOverviewTrend(ctx context.Context, agentIDs []
 	for _, id := range agentIDs {
 		points, err := s.Trend(ctx, TrafficTrendQuery{
 			AgentID:     id,
-			ScopeType:   s.defaultTotalScopeType(ctx, id, time.Time{}, time.Time{}),
+			ScopeType:   s.defaultTotalScopeType(ctx, id, "day", time.Time{}, time.Time{}),
 			Granularity: "day",
 		})
 		if err != nil {
@@ -663,7 +663,7 @@ type cycleTrafficStats struct {
 func (s *trafficService) cycleStats(ctx context.Context, agentID string, policy TrafficPolicy, start, end time.Time) (cycleTrafficStats, error) {
 	rows, err := s.store.ListTrafficTrend(ctx, storage.TrafficTrendQuery{
 		AgentID:     agentID,
-		ScopeType:   s.defaultTotalScopeType(ctx, agentID, start.UTC(), end.UTC()),
+		ScopeType:   "host_total",
 		Granularity: "hour",
 		From:        start.UTC(),
 		To:          end.UTC(),
@@ -672,19 +672,54 @@ func (s *trafficService) cycleStats(ctx context.Context, agentID string, policy 
 		return cycleTrafficStats{}, err
 	}
 	stats := cycleTrafficStats{}
-	for _, row := range rows {
+	hostRows := rows
+	if len(hostRows) == 0 {
+		hostRows, err = s.store.ListTrafficTrend(ctx, storage.TrafficTrendQuery{
+			AgentID:     agentID,
+			ScopeType:   "agent_total",
+			Granularity: "hour",
+			From:        start.UTC(),
+			To:          end.UTC(),
+		})
+		if err != nil {
+			return cycleTrafficStats{}, err
+		}
+	}
+	for _, row := range hostRows {
 		stats.rx += row.RXBytes
 		stats.tx += row.TXBytes
+	}
+	if len(rows) > 0 {
+		firstHostBucket := rows[0].BucketStart
+		for _, row := range rows[1:] {
+			if row.BucketStart.Before(firstHostBucket) {
+				firstHostBucket = row.BucketStart
+			}
+		}
+		agentRows, err := s.store.ListTrafficTrend(ctx, storage.TrafficTrendQuery{
+			AgentID:     agentID,
+			ScopeType:   "agent_total",
+			Granularity: "hour",
+			From:        start.UTC(),
+			To:          firstHostBucket,
+		})
+		if err != nil {
+			return cycleTrafficStats{}, err
+		}
+		for _, row := range agentRows {
+			stats.rx += row.RXBytes
+			stats.tx += row.TXBytes
+		}
 	}
 	stats.accounted = accountedBytes(policy.Direction, stats.rx, stats.tx)
 	return stats, nil
 }
 
-func (s *trafficService) defaultTotalScopeType(ctx context.Context, agentID string, from, to time.Time) string {
+func (s *trafficService) defaultTotalScopeType(ctx context.Context, agentID, granularity string, from, to time.Time) string {
 	rows, err := s.store.ListTrafficTrend(ctx, storage.TrafficTrendQuery{
 		AgentID:     agentID,
 		ScopeType:   "host_total",
-		Granularity: "hour",
+		Granularity: defaultString(granularity, "hour"),
 		From:        from,
 		To:          to,
 	})
