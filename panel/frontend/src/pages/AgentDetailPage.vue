@@ -665,11 +665,6 @@ function timeAgo(date) {
 .traffic-trend__mode--active { background: var(--color-bg-surface); color: var(--color-primary); box-shadow: var(--shadow-sm); }
 .empty-hint { text-align: center; color: var(--color-text-muted); padding: 2rem; font-size: 0.875rem; }
 .info-grid { display: flex; flex-direction: column; gap: 0.5rem; }
-.agent-setting { display: flex; flex-direction: column; gap: 0.5rem; margin-bottom: 1rem; padding: 1rem; background: var(--color-bg-surface); border: 1px solid var(--color-border-subtle); border-radius: var(--radius-lg); }
-.agent-setting__label { color: var(--color-text-secondary); font-size: 0.875rem; font-weight: 500; }
-.agent-setting__control { display: flex; gap: 0.5rem; align-items: center; }
-.agent-setting__input { flex: 1; min-width: 0; padding: 0.5rem 0.75rem; border: 1px solid var(--color-border-default); border-radius: var(--radius-md); background: var(--color-bg-surface); color: var(--color-text-primary); font-size: 0.875rem; font-family: var(--font-mono); box-sizing: border-box; }
-.agent-setting__input:focus { outline: none; border-color: var(--color-primary); box-shadow: var(--shadow-focus); }
 .info-row { display: flex; justify-content: space-between; padding: 0.75rem 1rem; background: var(--color-bg-surface); border-radius: var(--radius-lg); font-size: 0.875rem; }
 .info-row span:first-child { color: var(--color-text-secondary); }
 .info-row span:last-child { color: var(--color-text-primary); font-weight: 500; }
