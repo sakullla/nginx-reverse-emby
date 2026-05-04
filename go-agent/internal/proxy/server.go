@@ -344,7 +344,6 @@ func StartWithResourcesAndOptions(
 
 func (e *routeEntry) serveHTTP(w http.ResponseWriter, req *http.Request) error {
 	recorder := traffic.NewHTTPRuleRecorder(e.rule.ID)
-	recordHTTPRequestHeaderTraffic(req, recorder)
 	body, err := prepareReusableBody(req, e.sameBackendRetryMaxAttempts(req), recorder)
 	if err != nil {
 		log.Printf("[proxy] read body error for %s: %v", e.rule.FrontendURL, err)
@@ -1214,7 +1213,6 @@ func copyResponse(w http.ResponseWriter, resp *http.Response, recorder *traffic.
 		defer resp.Body.Close()
 	}
 	copyProxyResponseHeaders(w.Header(), resp.Header, resp.StatusCode)
-	recordHTTPResponseHeaderTraffic(resp.StatusCode, w.Header(), recorder)
 	w.WriteHeader(resp.StatusCode)
 	var written int64
 	if resp.Body != nil {
@@ -1227,88 +1225,6 @@ func copyResponse(w http.ResponseWriter, resp *http.Response, recorder *traffic.
 		}
 	}
 	return written, nil
-}
-
-func recordHTTPRequestHeaderTraffic(req *http.Request, recorder *traffic.Recorder) {
-	bytes := estimatedHTTPRequestHeaderBytes(req)
-	if bytes == 0 {
-		return
-	}
-	httpRecorderOrAggregate(recorder).Add(int64(bytes), 0)
-}
-
-func recordHTTPResponseHeaderTraffic(statusCode int, header http.Header, recorder *traffic.Recorder) {
-	bytes := estimatedHTTPResponseHeaderBytes(statusCode, header)
-	if bytes == 0 {
-		return
-	}
-	httpRecorderOrAggregate(recorder).Add(0, int64(bytes))
-}
-
-func estimatedHTTPRequestHeaderBytes(req *http.Request) uint64 {
-	if req == nil {
-		return 0
-	}
-	method := req.Method
-	if method == "" {
-		method = http.MethodGet
-	}
-	requestURI := "/"
-	if req.URL != nil {
-		requestURI = req.URL.RequestURI()
-		if requestURI == "" {
-			requestURI = "/"
-		}
-	}
-	proto := req.Proto
-	if proto == "" {
-		proto = "HTTP/1.1"
-	}
-	total := len(method) + 1 + len(requestURI) + 1 + len(proto) + len("\r\n")
-	host := req.Host
-	if host == "" && req.URL != nil {
-		host = req.URL.Host
-	}
-	if host != "" {
-		total += len("Host: ") + len(host) + len("\r\n")
-	}
-	total += estimatedHTTPHeaderBytes(req.Header)
-	if req.ContentLength > 0 && req.Header.Get("Content-Length") == "" {
-		total += len("Content-Length: ") + len(strconv.FormatInt(req.ContentLength, 10)) + len("\r\n")
-	}
-	if len(req.TransferEncoding) > 0 && req.Header.Get("Transfer-Encoding") == "" {
-		total += len("Transfer-Encoding: ") + len(strings.Join(req.TransferEncoding, ", ")) + len("\r\n")
-	}
-	total += len("\r\n")
-	return uint64(total)
-}
-
-func estimatedHTTPResponseHeaderBytes(statusCode int, header http.Header) uint64 {
-	if statusCode == 0 {
-		statusCode = http.StatusOK
-	}
-	statusText := http.StatusText(statusCode)
-	if statusText == "" {
-		statusText = "status"
-	}
-	total := len("HTTP/1.1 ") + 3 + 1 + len(statusText) + len("\r\n")
-	total += estimatedHTTPHeaderBytes(header)
-	total += len("\r\n")
-	return uint64(total)
-}
-
-func estimatedHTTPHeaderBytes(header http.Header) int {
-	total := 0
-	for key, values := range header {
-		key = http.CanonicalHeaderKey(strings.TrimSpace(key))
-		if key == "" {
-			continue
-		}
-		for _, value := range values {
-			total += len(key) + len(": ") + len(value) + len("\r\n")
-		}
-	}
-	return total
 }
 
 func handleUpgradeResponse(w http.ResponseWriter, req *http.Request, resp *http.Response, recorder *traffic.Recorder) error {
