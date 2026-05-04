@@ -168,6 +168,7 @@ type AgentTrafficRawCursorRow struct {
 	ScopeID    string `gorm:"column:scope_id;primaryKey"`
 	RXBytes    uint64 `gorm:"column:rx_bytes"`
 	TXBytes    uint64 `gorm:"column:tx_bytes"`
+	BootID     string `gorm:"column:boot_id"`
 	ObservedAt string `gorm:"column:observed_at"`
 }
 

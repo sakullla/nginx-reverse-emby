@@ -315,13 +315,20 @@ func (s *GormStore) IngestTrafficCursorDeltaWithEvent(ctx context.Context, curso
 		case err == nil:
 			result.Previous = previous
 			result.FoundPrevious = true
-			if cursor.RXBytes >= previous.RXBytes {
+			bootChanged := isHostTrafficScope(cursor.ScopeType) && strings.TrimSpace(previous.BootID) != "" && strings.TrimSpace(cursor.BootID) != "" && previous.BootID != cursor.BootID
+			if bootChanged {
+				result.DeltaRXBytes = cursor.RXBytes
+				result.CounterReset = true
+			} else if cursor.RXBytes >= previous.RXBytes {
 				result.DeltaRXBytes = cursor.RXBytes - previous.RXBytes
 			} else {
 				result.DeltaRXBytes = cursor.RXBytes
 				result.CounterReset = true
 			}
-			if cursor.TXBytes >= previous.TXBytes {
+			if bootChanged {
+				result.DeltaTXBytes = cursor.TXBytes
+				result.CounterReset = true
+			} else if cursor.TXBytes >= previous.TXBytes {
 				result.DeltaTXBytes = cursor.TXBytes - previous.TXBytes
 			} else {
 				result.DeltaTXBytes = cursor.TXBytes
@@ -357,12 +364,14 @@ func (s *GormStore) IngestTrafficCursorDeltaWithEvent(ctx context.Context, curso
 		}
 		if event.Payload == "" {
 			payload, _ := json.Marshal(map[string]any{
-				"scope_type":  cursor.ScopeType,
-				"scope_id":    cursor.ScopeID,
-				"previous_rx": result.Previous.RXBytes,
-				"previous_tx": result.Previous.TXBytes,
-				"current_rx":  cursor.RXBytes,
-				"current_tx":  cursor.TXBytes,
+				"scope_type":       cursor.ScopeType,
+				"scope_id":         cursor.ScopeID,
+				"previous_rx":      result.Previous.RXBytes,
+				"previous_tx":      result.Previous.TXBytes,
+				"current_rx":       cursor.RXBytes,
+				"current_tx":       cursor.TXBytes,
+				"previous_boot_id": result.Previous.BootID,
+				"current_boot_id":  cursor.BootID,
 			})
 			event.Payload = string(payload)
 		}

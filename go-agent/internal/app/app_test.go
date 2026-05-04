@@ -2108,7 +2108,8 @@ func TestPerformSyncIncludesHostTrafficStats(t *testing.T) {
 	app := newAppWithDeps(cfg, mem, client, &testCertificateApplier{}, nil, nil)
 	app.hostTrafficCollector = &stubHostTrafficCollector{
 		snapshot: hosttraffic.Snapshot{
-			Total: hosttraffic.Counters{RXBytes: 1000, TXBytes: 2000},
+			BootID: "boot-123",
+			Total:  hosttraffic.Counters{RXBytes: 1000, TXBytes: 2000},
 			Interfaces: map[string]hosttraffic.Counters{
 				"eth0": {RXBytes: 900, TXBytes: 1800},
 			},
@@ -2134,6 +2135,9 @@ func TestPerformSyncIncludesHostTrafficStats(t *testing.T) {
 	}
 	if total["rx_bytes"] != uint64(1000) || total["tx_bytes"] != uint64(2000) {
 		t.Fatalf("unexpected host total stats: %+v", total)
+	}
+	if host["boot_id"] != "boot-123" {
+		t.Fatalf("host boot_id = %#v, want boot-123", host["boot_id"])
 	}
 	iface, ok := host["interfaces"].(map[string]any)
 	if !ok {

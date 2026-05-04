@@ -677,6 +677,44 @@ func TestIngestTrafficCursorDeltaHostFirstSampleSeedsBaselineOnly(t *testing.T) 
 	}
 }
 
+func TestIngestTrafficCursorDeltaHostBootIDChangeResetsCounter(t *testing.T) {
+	store := newTrafficTestStore(t, true)
+	ctx := context.Background()
+	observedAt := time.Date(2026, 5, 3, 8, 0, 0, 0, time.UTC)
+
+	if _, err := store.IngestTrafficCursorDelta(ctx, AgentTrafficRawCursorRow{
+		AgentID:    "edge-1",
+		ScopeType:  "host_total",
+		RXBytes:    1000,
+		TXBytes:    2000,
+		BootID:     "boot-a",
+		ObservedAt: observedAt.Format(time.RFC3339),
+	}, observedAt); err != nil {
+		t.Fatal(err)
+	}
+	result, err := store.IngestTrafficCursorDelta(ctx, AgentTrafficRawCursorRow{
+		AgentID:    "edge-1",
+		ScopeType:  "host_total",
+		RXBytes:    1200,
+		TXBytes:    2300,
+		BootID:     "boot-b",
+		ObservedAt: observedAt.Add(time.Minute).Format(time.RFC3339),
+	}, observedAt.Add(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.CounterReset || result.DeltaRXBytes != 1200 || result.DeltaTXBytes != 2300 {
+		t.Fatalf("result = %+v, want boot-id reset with current counters", result)
+	}
+	cursor, found, err := store.GetTrafficCursor(ctx, "edge-1", "host_total", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !found || cursor.BootID != "boot-b" {
+		t.Fatalf("cursor found=%v row=%+v, want boot-b", found, cursor)
+	}
+}
+
 func TestIngestTrafficCursorDeltaConcurrentFirstIngestCountsOnce(t *testing.T) {
 	store := newTrafficTestStore(t, true)
 	ctx := context.Background()

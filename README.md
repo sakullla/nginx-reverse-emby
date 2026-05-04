@@ -140,9 +140,9 @@ curl -sSL https://raw.githubusercontent.com/sakullla/nginx-reverse-emby/main/dep
 > 所有 `NRE_` 前缀的环境变量同时作用于 Master 内嵌 local agent 和独立部署的 `go-agent`。
 > 时间类变量使用 Go `time.ParseDuration` 格式（如 `500ms`、`5s`、`2m`）。
 
-流量统计以 Agent 所在主机/网络命名空间的网卡累计计数作为周期总量和额度阻断口径；HTTP 规则、L4 规则和 Relay 监听器的代理侧统计保留为分项分析。Linux Agent 默认读取 `/proc/net/dev`，如果运行在 Docker bridge 网络中，采到的是容器网络命名空间流量；需要 VPS 主机网卡总量时请使用 host network 或显式挂载/部署到主机环境，并可用 `NRE_TRAFFIC_INTERFACES` 限定计入的网卡。
+流量统计以 Agent 所在主机/网络命名空间的网卡累计计数作为周期总量和额度阻断口径；HTTP 规则、L4 规则和 Relay 监听器的代理侧统计保留为分项分析。Linux Agent 优先通过 netlink 读取内核 `rtnl_link_stats64` 网卡计数，失败时回退到 `/proc/net/dev`。如果运行在 Docker bridge 网络中，采到的是容器网络命名空间流量；需要 VPS 主机网卡总量时请使用 host network 或显式挂载/部署到主机环境，并可用 `NRE_TRAFFIC_INTERFACES` 限定计入的网卡。
 
-服务端会持久化 raw cursor、小时桶、日汇总、月汇总、节点策略、校准基线和事件。网卡计数器是系统累计值，服务端按本次累计值减上次累计值入桶；如果遇到系统重启、网卡重建或计数回退，会记录为 counter reset，并把当前值作为新基线，避免产生负数或误扣历史周期。远程节点可在面板中配置 `traffic_stats_interval`，取值为 Go duration 格式（如 `30s`、`1m`、`5m`）。该周期只控制心跳 stats 上报频率，不会重置计数器。
+服务端会持久化 raw cursor、小时桶、日汇总、月汇总、节点策略、校准基线和事件。网卡计数器是系统累计值，服务端按本次累计值减上次累计值入桶；如果遇到系统重启（boot id 变化）、网卡重建或计数回退，会记录为 counter reset，并把当前值作为新基线，避免产生负数或误扣历史周期。远程节点可在面板中配置 `traffic_stats_interval`，取值为 Go duration 格式（如 `30s`、`1m`、`5m`）。该周期只控制心跳 stats 上报频率，不会重置计数器。
 
 节点详情的流量策略支持配置计费方向、每月起始日期、月额度、超额阻断、保留周期、校准当前周期初始值，以及手动清理。月额度在数据库中按 bytes 保存，面板支持以 KiB/MiB/GiB/TiB 等单位录入和展示。主动清理按每个节点自己的保留策略执行，不删除当前 raw cursor、当前周期校准基线或节点策略。
 

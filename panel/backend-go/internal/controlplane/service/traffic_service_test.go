@@ -181,6 +181,26 @@ func TestTrafficServiceIngestHeartbeatParsesHostTrafficStats(t *testing.T) {
 	}
 }
 
+func TestTrafficServiceIngestHeartbeatParsesHostBootID(t *testing.T) {
+	samples := parseHeartbeatTrafficStats(AgentStats{"traffic": map[string]any{
+		"host": map[string]any{
+			"boot_id": "boot-123",
+			"total":   map[string]any{"rx_bytes": uint64(1000), "tx_bytes": uint64(2000)},
+			"interfaces": map[string]any{
+				"eth0": map[string]any{"rx_bytes": uint64(900), "tx_bytes": uint64(1800)},
+			},
+		},
+	}})
+
+	for _, sample := range samples {
+		if sample.scopeType == "host_total" || sample.scopeType == "host_interface" {
+			if sample.bootID != "boot-123" {
+				t.Fatalf("%s bootID = %q, want boot-123", sample.scopeType, sample.bootID)
+			}
+		}
+	}
+}
+
 func TestTrafficServiceSummaryUsesHostTotalForQuotaWhenAvailable(t *testing.T) {
 	fakeStore := newFakeTrafficStore()
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)

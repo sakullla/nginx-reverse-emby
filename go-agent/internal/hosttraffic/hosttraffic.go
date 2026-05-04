@@ -2,6 +2,7 @@ package hosttraffic
 
 import (
 	"bufio"
+	"encoding/binary"
 	"io"
 	"sort"
 	"strconv"
@@ -14,6 +15,7 @@ type Counters struct {
 }
 
 type Snapshot struct {
+	BootID     string
 	Total      Counters
 	Interfaces map[string]Counters
 }
@@ -35,7 +37,11 @@ func NewCollector(interfaces []string) *Collector {
 }
 
 func (c *Collector) Snapshot() (Snapshot, error) {
-	return snapshotFromSystem(c.selectedInterfaces())
+	snapshot, err := snapshotFromSystem(c.selectedInterfaces())
+	if err != nil {
+		return Snapshot{}, err
+	}
+	return snapshot, nil
 }
 
 func (c *Collector) selectedInterfaces() []string {
@@ -50,15 +56,47 @@ func (c *Collector) selectedInterfaces() []string {
 	return names
 }
 
-func parseProcNetDev(r io.Reader, allowed []string) (Snapshot, error) {
-	allowedSet := make(map[string]struct{}, len(allowed))
-	for _, name := range allowed {
-		name = strings.TrimSpace(name)
-		if name == "" {
-			continue
+func (s Snapshot) Payload() map[string]any {
+	interfaces := make(map[string]any, len(s.Interfaces))
+	for name, counters := range s.Interfaces {
+		interfaces[name] = map[string]any{
+			"rx_bytes": counters.RXBytes,
+			"tx_bytes": counters.TXBytes,
 		}
-		allowedSet[name] = struct{}{}
 	}
+	host := map[string]any{
+		"total": map[string]any{
+			"rx_bytes": s.Total.RXBytes,
+			"tx_bytes": s.Total.TXBytes,
+		},
+		"interfaces": interfaces,
+	}
+	if s.BootID != "" {
+		host["boot_id"] = s.BootID
+	}
+	return map[string]any{"traffic": map[string]any{"host": host}}
+}
+
+func parseBootID(r io.Reader) string {
+	payload, err := io.ReadAll(r)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(payload))
+}
+
+func linkStats64Counters(raw []byte) (Counters, bool) {
+	if len(raw) < 32 {
+		return Counters{}, false
+	}
+	return Counters{
+		RXBytes: binary.NativeEndian.Uint64(raw[16:24]),
+		TXBytes: binary.NativeEndian.Uint64(raw[24:32]),
+	}, true
+}
+
+func parseProcNetDev(r io.Reader, allowed []string) (Snapshot, error) {
+	allowedSet := selectedInterfaceSet(allowed)
 	scanner := bufio.NewScanner(r)
 	snapshot := Snapshot{Interfaces: map[string]Counters{}}
 	for scanner.Scan() {
@@ -86,6 +124,18 @@ func parseProcNetDev(r io.Reader, allowed []string) (Snapshot, error) {
 	return snapshot, nil
 }
 
+func selectedInterfaceSet(allowed []string) map[string]struct{} {
+	allowedSet := make(map[string]struct{}, len(allowed))
+	for _, name := range allowed {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		allowedSet[name] = struct{}{}
+	}
+	return allowedSet
+}
+
 func parseProcNetDevLine(line string) (string, Counters, bool) {
 	parts := strings.SplitN(line, ":", 2)
 	if len(parts) != 2 {
@@ -108,9 +158,16 @@ func parseProcNetDevLine(line string) (string, Counters, bool) {
 }
 
 func shouldCollectInterface(name string, allowed map[string]struct{}) bool {
+	return shouldCollectInterfaceWithFlags(name, allowed, 0)
+}
+
+func shouldCollectInterfaceWithFlags(name string, allowed map[string]struct{}, flags uint32) bool {
 	if len(allowed) > 0 {
 		_, ok := allowed[name]
 		return ok
+	}
+	if flags&0x8 != 0 {
+		return false
 	}
 	switch {
 	case name == "lo":

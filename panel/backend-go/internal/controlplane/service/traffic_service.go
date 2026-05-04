@@ -93,6 +93,7 @@ func (s *trafficService) IngestHeartbeat(ctx context.Context, agentID string, st
 			ScopeID:    sample.scopeID,
 			RXBytes:    sample.rx,
 			TXBytes:    sample.tx,
+			BootID:     sample.bootID,
 			ObservedAt: observedAt.Format(time.RFC3339),
 		}
 		if ingestStore, ok := s.store.(trafficCursorDeltaEventStore); ok {
@@ -128,12 +129,19 @@ func (s *trafficService) IngestHeartbeat(ctx context.Context, agentID string, st
 		reset := false
 		firstHostSample := !found && isHostTrafficScope(sample.scopeType)
 		if found {
-			if sample.rx >= cursor.RXBytes {
+			bootChanged := isHostTrafficScope(sample.scopeType) && strings.TrimSpace(cursor.BootID) != "" && strings.TrimSpace(sample.bootID) != "" && cursor.BootID != sample.bootID
+			if bootChanged {
+				deltaRX = sample.rx
+				reset = true
+			} else if sample.rx >= cursor.RXBytes {
 				deltaRX = sample.rx - cursor.RXBytes
 			} else {
 				reset = true
 			}
-			if sample.tx >= cursor.TXBytes {
+			if bootChanged {
+				deltaTX = sample.tx
+				reset = true
+			} else if sample.tx >= cursor.TXBytes {
 				deltaTX = sample.tx - cursor.TXBytes
 			} else {
 				reset = true
@@ -158,6 +166,7 @@ func (s *trafficService) IngestHeartbeat(ctx context.Context, agentID string, st
 			ScopeID:    sample.scopeID,
 			RXBytes:    sample.rx,
 			TXBytes:    sample.tx,
+			BootID:     sample.bootID,
 			ObservedAt: observedAt.Format(time.RFC3339),
 		}); err != nil {
 			return err
@@ -791,12 +800,14 @@ func (s *trafficService) recordTrafficEvent(ctx context.Context, agentID, eventT
 
 func (s *trafficService) counterResetEvent(agentID string, sample trafficSample, cursor storage.AgentTrafficRawCursorRow, observedAt time.Time) *storage.AgentTrafficEventRow {
 	payload, _ := json.Marshal(map[string]any{
-		"scope_type":  sample.scopeType,
-		"scope_id":    sample.scopeID,
-		"previous_rx": cursor.RXBytes,
-		"previous_tx": cursor.TXBytes,
-		"current_rx":  sample.rx,
-		"current_tx":  sample.tx,
+		"scope_type":       sample.scopeType,
+		"scope_id":         sample.scopeID,
+		"previous_rx":      cursor.RXBytes,
+		"previous_tx":      cursor.TXBytes,
+		"current_rx":       sample.rx,
+		"current_tx":       sample.tx,
+		"previous_boot_id": cursor.BootID,
+		"current_boot_id":  sample.bootID,
 	})
 	return &storage.AgentTrafficEventRow{
 		AgentID:   agentID,
@@ -812,6 +823,7 @@ type trafficSample struct {
 	scopeID   string
 	rx        uint64
 	tx        uint64
+	bootID    string
 }
 
 func parseHeartbeatTrafficStats(stats AgentStats) []trafficSample {
@@ -830,10 +842,11 @@ func parseHeartbeatTrafficStats(stats AgentStats) []trafficSample {
 	addAggregate("l4", "l4")
 	addAggregate("relay", "relay")
 	if host, ok := asStringAnyMap(traffic["host"]); ok {
+		bootID := strings.TrimSpace(asString(host["boot_id"]))
 		if counters, ok := parseTrafficCounters(host["total"]); ok {
-			samples = append(samples, trafficSample{scopeType: "host_total", rx: counters.rx, tx: counters.tx})
+			samples = append(samples, trafficSample{scopeType: "host_total", rx: counters.rx, tx: counters.tx, bootID: bootID})
 		}
-		addScopedTrafficSamples(&samples, host["interfaces"], "host_interface")
+		addScopedTrafficSamplesWithBootID(&samples, host["interfaces"], "host_interface", bootID)
 	}
 	addScopedTrafficSamples(&samples, traffic["http_rules"], "http_rule")
 	addScopedTrafficSamples(&samples, traffic["l4_rules"], "l4_rule")
@@ -842,6 +855,10 @@ func parseHeartbeatTrafficStats(stats AgentStats) []trafficSample {
 }
 
 func addScopedTrafficSamples(samples *[]trafficSample, raw any, scopeType string) {
+	addScopedTrafficSamplesWithBootID(samples, raw, scopeType, "")
+}
+
+func addScopedTrafficSamplesWithBootID(samples *[]trafficSample, raw any, scopeType, bootID string) {
 	items, ok := asStringAnyMap(raw)
 	if !ok {
 		return
@@ -856,6 +873,7 @@ func addScopedTrafficSamples(samples *[]trafficSample, raw any, scopeType string
 			scopeID:   strings.TrimSpace(scopeID),
 			rx:        counters.rx,
 			tx:        counters.tx,
+			bootID:    bootID,
 		})
 	}
 }
@@ -876,6 +894,15 @@ func parseTrafficCounters(raw any) (trafficCounters, bool) {
 		return trafficCounters{}, false
 	}
 	return trafficCounters{rx: rx, tx: tx}, true
+}
+
+func asString(raw any) string {
+	switch value := raw.(type) {
+	case string:
+		return value
+	default:
+		return ""
+	}
 }
 
 func asStringAnyMap(raw any) (map[string]any, bool) {

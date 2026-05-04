@@ -453,24 +453,7 @@ func (a *App) hostTrafficSnapshot() (map[string]any, error) {
 	if snapshot.Total.RXBytes == 0 && snapshot.Total.TXBytes == 0 && len(snapshot.Interfaces) == 0 {
 		return nil, nil
 	}
-	interfaces := make(map[string]any, len(snapshot.Interfaces))
-	for name, counters := range snapshot.Interfaces {
-		interfaces[name] = map[string]any{
-			"rx_bytes": counters.RXBytes,
-			"tx_bytes": counters.TXBytes,
-		}
-	}
-	return map[string]any{
-		"traffic": map[string]any{
-			"host": map[string]any{
-				"total": map[string]any{
-					"rx_bytes": snapshot.Total.RXBytes,
-					"tx_bytes": snapshot.Total.TXBytes,
-				},
-				"interfaces": interfaces,
-			},
-		},
-	}, nil
+	return snapshot.Payload(), nil
 }
 
 func mergeTrafficStats(base, extra map[string]any) map[string]any {
