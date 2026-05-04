@@ -75,7 +75,7 @@
       </BaseBadge>
     </div>
 
-    <div v-if="hasTraffic" class="traffic-line">
+    <div v-if="hasTraffic" class="traffic-line traffic-line--clickable" @click.stop="$emit('traffic-click', rule)">
       <span>用量 {{ formatBytes(normalizedTraffic.accounted_bytes) }}</span>
       <span>入 {{ formatBytes(normalizedTraffic.rx_bytes) }}</span>
       <span>出 {{ formatBytes(normalizedTraffic.tx_bytes) }}</span>
@@ -100,7 +100,7 @@ const props = defineProps({
   agent: { type: Object, default: null },
   traffic: { type: Object, default: null },
 })
-defineEmits(['edit', 'delete', 'copy', 'toggle', 'diagnose'])
+defineEmits(['edit', 'delete', 'copy', 'toggle', 'diagnose', 'traffic-click'])
 
 const STATUS_TONE = {
   active: 'success',
@@ -218,4 +218,6 @@ const hasTags = computed(() => Array.isArray(props.rule.tags) && props.rule.tags
   font-size: 0.8125rem;
   font-variant-numeric: tabular-nums;
 }
+.traffic-line--clickable { cursor: pointer; }
+.traffic-line--clickable:hover { color: var(--color-primary); text-decoration: underline; }
 </style>

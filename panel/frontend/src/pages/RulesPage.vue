@@ -71,6 +71,7 @@
         @toggle="toggleRule"
         @copy="handleCopy"
         @diagnose="openDiagnostic"
+        @traffic-click="openTrendModal"
         @delete="startDelete"
       />
     </div>
@@ -123,6 +124,15 @@
       :agent-label="selectedAgentLabel"
       @update:model-value="closeDiagnostic"
     />
+
+    <TrafficTrendModal
+      v-model:visible="trendModal.visible"
+      :agent-id="trendModal.agentId"
+      :scope-type="trendModal.scopeType"
+      :scope-id="trendModal.scopeId"
+      :scope-label="trendModal.scopeLabel"
+      :direction="trafficDirection"
+    />
   </div>
 </template>
 
@@ -140,6 +150,7 @@ import RuleCard from '../components/rules/RuleCard.vue'
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
 import BaseModal from '../components/base/BaseModal.vue'
 import RuleDiagnosticModal from '../components/RuleDiagnosticModal.vue'
+import TrafficTrendModal from '../components/traffic/TrafficTrendModal.vue'
 import AgentPicker from '../components/AgentPicker.vue'
 import { messageStore } from '../stores/messages'
 import { summaryBucketForObject } from '../utils/trafficStats.js'
@@ -245,6 +256,21 @@ const diagnosticTaskId = ref('')
 const initialDiagnosticTask = ref(null)
 const { data: diagnosticTaskData } = useDiagnosticTask(agentId, diagnosticTaskId)
 const diagnosticTask = computed(() => diagnosticTaskData.value?.task || initialDiagnosticTask.value)
+
+const trendModal = ref({ visible: false, agentId: '', scopeType: '', scopeId: '', scopeLabel: '' })
+const trafficDirection = ref('both')
+
+function openTrendModal(rule) {
+  const id = selectedAgentId?.value || rule.agent_id
+  if (!id) return
+  trendModal.value = {
+    visible: true,
+    agentId: id,
+    scopeType: 'http_rule',
+    scopeId: String(rule.id),
+    scopeLabel: `HTTP 规则 #${rule.id}`
+  }
+}
 
 function toggleRule(rule) {
   updateRule.mutate({ id: rule.id, enabled: !rule.enabled })

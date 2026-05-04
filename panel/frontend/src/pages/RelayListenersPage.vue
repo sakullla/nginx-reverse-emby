@@ -46,6 +46,7 @@
         @edit='startEdit'
         @toggle='toggleListener'
         @delete='startDelete'
+        @traffic-click='openTrendModal'
       />
     </div>
 
@@ -74,6 +75,15 @@
       @confirm="confirmDelete"
       @cancel="deletingListener = null"
     />
+
+    <TrafficTrendModal
+      v-model:visible="trendModal.visible"
+      :agent-id="trendModal.agentId"
+      :scope-type="trendModal.scopeType"
+      :scope-id="trendModal.scopeId"
+      :scope-label="trendModal.scopeLabel"
+      :direction="trafficDirection"
+    />
   </div>
 </template>
 
@@ -90,6 +100,7 @@ import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
 import BaseModal from '../components/base/BaseModal.vue'
 import AgentPicker from '../components/AgentPicker.vue'
 import RelayCard from '../components/relay/RelayCard.vue'
+import TrafficTrendModal from '../components/traffic/TrafficTrendModal.vue'
 import { summaryBucketForObject } from '../utils/trafficStats.js'
 
 const route = useRoute()
@@ -131,6 +142,21 @@ const showAddForm = ref(false)
 const editingListener = ref(null)
 const deletingListener = ref(null)
 const deleteError = ref('')
+
+const trendModal = ref({ visible: false, agentId: '', scopeType: '', scopeId: '', scopeLabel: '' })
+const trafficDirection = ref('both')
+
+function openTrendModal(listener) {
+  const id = listener.agent_id || selectedAgentId?.value
+  if (!id) return
+  trendModal.value = {
+    visible: true,
+    agentId: id,
+    scopeType: 'relay_listener',
+    scopeId: String(listener.id),
+    scopeLabel: `Relay 监听 #${listener.id}`
+  }
+}
 
 function handleAgentSelect(agent) {
   router.replace({ query: { ...route.query, agentId: agent.id } })

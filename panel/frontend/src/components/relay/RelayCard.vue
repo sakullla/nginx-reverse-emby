@@ -72,7 +72,7 @@
       <BaseBadge v-if="listener.allow_self_signed" tone="warning" size="sm">允许自签</BaseBadge>
     </div>
 
-    <div v-if="hasTraffic" class="traffic-line">
+    <div v-if="hasTraffic" class="traffic-line traffic-line--clickable" @click.stop="$emit('traffic-click', listener)">
       <span>用量 {{ formatBytes(normalizedTraffic.accounted_bytes) }}</span>
       <span>入 {{ formatBytes(normalizedTraffic.rx_bytes) }}</span>
       <span>出 {{ formatBytes(normalizedTraffic.tx_bytes) }}</span>
@@ -96,7 +96,7 @@ const props = defineProps({
   traffic: { type: Object, default: null },
 })
 
-defineEmits(['edit', 'delete', 'toggle'])
+defineEmits(['edit', 'delete', 'toggle', 'traffic-click'])
 
 function normalizePort(port) {
   const value = Number(port)
@@ -198,6 +198,8 @@ const hasTags = computed(() => Array.isArray(props.listener.tags) && props.liste
   font-size: 0.8125rem;
   font-variant-numeric: tabular-nums;
 }
+.traffic-line--clickable { cursor: pointer; }
+.traffic-line--clickable:hover { color: var(--color-primary); text-decoration: underline; }
 
 @media (max-width: 640px) {
   :deep(.base-icon-button) {

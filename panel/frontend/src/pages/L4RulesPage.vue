@@ -70,6 +70,7 @@
         @copy="handleCopy"
         @toggle="toggleRule"
         @diagnose="openDiagnostic"
+        @traffic-click="openTrendModal"
       />
     </div>
 
@@ -121,6 +122,15 @@
       :agent-label="selectedAgentLabel"
       @update:model-value="closeDiagnostic"
     />
+
+    <TrafficTrendModal
+      v-model:visible="trendModal.visible"
+      :agent-id="trendModal.agentId"
+      :scope-type="trendModal.scopeType"
+      :scope-id="trendModal.scopeId"
+      :scope-label="trendModal.scopeLabel"
+      :direction="trafficDirection"
+    />
   </div>
 </template>
 
@@ -138,6 +148,7 @@ import L4RuleItem from '../components/l4/L4RuleItem.vue'
 import DeleteConfirmDialog from '../components/DeleteConfirmDialog.vue'
 import BaseModal from '../components/base/BaseModal.vue'
 import RuleDiagnosticModal from '../components/RuleDiagnosticModal.vue'
+import TrafficTrendModal from '../components/traffic/TrafficTrendModal.vue'
 import AgentPicker from '../components/AgentPicker.vue'
 import { messageStore } from '../stores/messages'
 import { summaryBucketForObject } from '../utils/trafficStats.js'
@@ -244,6 +255,21 @@ const diagnosticTaskId = ref('')
 const initialDiagnosticTask = ref(null)
 const { data: diagnosticTaskData } = useDiagnosticTask(agentId, diagnosticTaskId)
 const diagnosticTask = computed(() => diagnosticTaskData.value?.task || initialDiagnosticTask.value)
+
+const trendModal = ref({ visible: false, agentId: '', scopeType: '', scopeId: '', scopeLabel: '' })
+const trafficDirection = ref('both')
+
+function openTrendModal(rule) {
+  const id = selectedAgentId?.value || rule.agent_id
+  if (!id) return
+  trendModal.value = {
+    visible: true,
+    agentId: id,
+    scopeType: 'l4_rule',
+    scopeId: String(rule.id),
+    scopeLabel: `L4 规则 #${rule.id}`
+  }
+}
 
 function startEdit(rule) { editingRule.value = rule }
 function handleCopy(rule) { const { id, ...rest } = rule; copyingRule.value = rest; showCopyModal.value = true }
