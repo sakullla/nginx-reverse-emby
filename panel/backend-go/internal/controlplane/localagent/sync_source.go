@@ -26,6 +26,7 @@ type SnapshotStore interface {
 }
 
 type trafficSummaryService interface {
+	IngestHeartbeat(context.Context, string, service.AgentStats) error
 	Summary(context.Context, string) (service.TrafficSummary, error)
 	BlockState(context.Context, string) (bool, string, error)
 }
@@ -69,6 +70,9 @@ func (s *SyncSource) Sync(ctx context.Context, request SyncRequest) (Snapshot, e
 		snapshot.AgentConfig.TrafficBlocked = false
 		snapshot.AgentConfig.TrafficBlockReason = ""
 		return snapshot, nil
+	}
+	if len(request.Stats) > 0 {
+		_ = s.trafficService.IngestHeartbeat(ctx, s.agentID, service.AgentStats(request.Stats))
 	}
 	blocked, reason, err := s.trafficService.BlockState(ctx, s.agentID)
 	if err != nil {
