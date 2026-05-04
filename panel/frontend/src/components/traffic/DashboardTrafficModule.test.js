@@ -203,4 +203,37 @@ describe('DashboardTrafficModule', () => {
     expect(cycleCard.text()).toContain('2026-05-01')
     expect(cycleCard.text()).toContain('入站')
   })
+
+  it('shows mixed cycle label when aggregate agents have different cycle windows', async () => {
+    overviewAgents = [
+      {
+        agent_id: 'edge-1',
+        name: 'edge-1',
+        used_bytes: 1024,
+        quota_bytes: null,
+        remaining_bytes: null,
+        direction: 'both',
+        cycle_start: '2026-05-01T00:00:00Z',
+        cycle_end: '2026-06-01T00:00:00Z'
+      },
+      {
+        agent_id: 'edge-2',
+        name: 'edge-2',
+        used_bytes: 2048,
+        quota_bytes: null,
+        remaining_bytes: null,
+        direction: 'both',
+        cycle_start: '2026-05-15T00:00:00Z',
+        cycle_end: '2026-06-15T00:00:00Z'
+      }
+    ]
+
+    const wrapper = await mountModule()
+
+    const cycleCard = wrapper.findAll('.dashboard-traffic__card')
+      .find(card => card.text().includes('计费周期'))
+    expect(cycleCard?.exists()).toBe(true)
+    expect(cycleCard.text()).toContain('多节点混合')
+    expect(cycleCard.text()).not.toContain('2026-05-01')
+  })
 })

@@ -114,8 +114,12 @@ const blockedCount = computed(() => overviewAgents.value.filter(a => a.blocked).
 const cycleLabel = computed(() => {
   const agents = overviewAgents.value
   if (!agents.length) return '—'
-  const dirs = new Set(agents.map(a => a.direction || 'both'))
-  return dirs.size === 1 ? (agents[0].cycle_start || '—') : '多节点混合'
+  const cycles = new Set(agents.map(a => [
+    a.direction || 'both',
+    a.cycle_start || '',
+    a.cycle_end || ''
+  ].join('|')))
+  return cycles.size === 1 ? (agents[0].cycle_start || '—') : '多节点混合'
 })
 
 const directionLabel = computed(() => {

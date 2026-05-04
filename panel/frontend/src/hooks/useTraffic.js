@@ -7,8 +7,9 @@ function trafficTrendKey(agentId, params = {}) {
   const id = unref(agentId)
   const value = unref(params) || {}
   const granularity = unref(value.granularity) || 'day'
-  const from = unref(value.from) || ''
-  const to = unref(value.to) || ''
+  const range = unref(value.range)
+  const from = (Array.isArray(range) ? unref(range[0]) : unref(value.from)) || ''
+  const to = (Array.isArray(range) ? unref(range[1]) : unref(value.to)) || ''
   const scope = unref(value.scope) || [
     unref(value.scope_type) || '',
     unref(value.scope_id) || ''
