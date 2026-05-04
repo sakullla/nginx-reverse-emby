@@ -29,7 +29,7 @@ func TestTrafficPolicyDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if policy.Direction != "both" || policy.CycleStartDay != 1 || policy.HourlyRetentionDays != 180 || policy.DailyRetentionMonths != 24 {
+	if policy.Direction != "both" || policy.CycleStartDay != 1 || policy.HourlyRetentionDays != 30 || policy.DailyRetentionMonths != 3 || policy.MonthlyRetentionMonths == nil || *policy.MonthlyRetentionMonths != 36 {
 		t.Fatalf("policy defaults = %+v", policy)
 	}
 }

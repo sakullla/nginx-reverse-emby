@@ -677,12 +677,14 @@ func trafficBreakdownRows(rows []trafficBreakdownRow) ([]TrafficBucketRow, error
 }
 
 func defaultTrafficPolicy(agentID string) AgentTrafficPolicyRow {
+	defaultMonthly := 36
 	return AgentTrafficPolicyRow{
-		AgentID:              agentID,
-		Direction:            "both",
-		CycleStartDay:        1,
-		HourlyRetentionDays:  180,
-		DailyRetentionMonths: 24,
+		AgentID:                agentID,
+		Direction:              "both",
+		CycleStartDay:          1,
+		HourlyRetentionDays:    30,
+		DailyRetentionMonths:   3,
+		MonthlyRetentionMonths: &defaultMonthly,
 	}
 }
 
@@ -694,10 +696,14 @@ func normalizeTrafficPolicyRow(row *AgentTrafficPolicyRow) {
 		row.CycleStartDay = 1
 	}
 	if row.HourlyRetentionDays == 0 {
-		row.HourlyRetentionDays = 180
+		row.HourlyRetentionDays = 30
 	}
 	if row.DailyRetentionMonths == 0 {
-		row.DailyRetentionMonths = 24
+		row.DailyRetentionMonths = 3
+	}
+	if row.MonthlyRetentionMonths == nil || *row.MonthlyRetentionMonths == 0 {
+		defaultMonthly := 36
+		row.MonthlyRetentionMonths = &defaultMonthly
 	}
 }
 
