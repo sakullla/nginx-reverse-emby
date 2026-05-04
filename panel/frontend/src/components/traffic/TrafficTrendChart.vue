@@ -8,6 +8,7 @@
 import { ref, watch, onMounted, onUnmounted } from 'vue'
 import { Chart, registerables } from 'chart.js'
 import { formatBytes } from '../../utils/trafficStats.js'
+import { alignSeriesByPosition } from './trafficTrendHelpers.mjs'
 
 Chart.register(...registerables)
 
@@ -37,9 +38,13 @@ function formatLabel(bucketStart) {
 }
 
 function alignPrevData(labels, currentPoints, prevPoints) {
-  if (!Array.isArray(prevPoints) || prevPoints.length === 0) return labels.map(() => null)
+  return alignSeriesByPosition(currentPoints, prevPoints)
+}
+
+function alignByBucketStart(labels, currentPoints, points) {
+  if (!Array.isArray(points) || points.length === 0) return labels.map(() => null)
   const map = new Map()
-  for (const p of prevPoints) {
+  for (const p of points) {
     const key = String(p.bucket_start || '')
     if (key) map.set(key, Number(p.accounted_bytes) || 0)
   }
@@ -89,7 +94,7 @@ function buildConfig() {
     }
   ]
   if (Array.isArray(props.hostPoints) && props.hostPoints.length > 0) {
-    const hostData = alignPrevData(labels, props.points, props.hostPoints)
+    const hostData = alignByBucketStart(labels, props.points, props.hostPoints)
     datasets.push({
       label: '主机流量',
       data: hostData,

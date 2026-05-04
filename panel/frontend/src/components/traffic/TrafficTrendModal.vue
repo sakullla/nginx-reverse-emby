@@ -53,6 +53,7 @@ import BaseModal from '../base/BaseModal.vue'
 import TrafficTrendChart from './TrafficTrendChart.vue'
 import { useTrafficTrend } from '../../hooks/useTraffic.js'
 import { normalizeTrafficTrendPoints, formatBytes, dailyBudget } from '../../utils/trafficStats.js'
+import { dateInputToRFC3339, previousPeriodRange } from './trafficTrendHelpers.mjs'
 
 const props = defineProps({
   visible: { type: Boolean, default: false },
@@ -81,34 +82,17 @@ const dateFrom = ref('')
 const dateTo = ref('')
 const compareEnabled = ref(false)
 
-function toISODate(d) {
-  if (!d) return ''
-  const date = new Date(d)
-  if (Number.isNaN(date.getTime())) return ''
-  return date.toISOString().slice(0, 10)
-}
-
-function prevRange(from, to) {
-  const f = from ? new Date(from) : null
-  const t = to ? new Date(to) : null
-  if (!f || !t) return { from: '', to: '' }
-  const duration = t.getTime() - f.getTime()
-  const prevFrom = new Date(f.getTime() - duration - 1)
-  const prevTo = new Date(f.getTime() - 1)
-  return { from: toISODate(prevFrom), to: toISODate(prevTo) }
-}
-
 const trendParams = computed(() => ({
   granularity: granularity.value,
-  from: dateFrom.value || undefined,
-  to: dateTo.value || undefined,
+  from: dateInputToRFC3339(dateFrom.value) || undefined,
+  to: dateInputToRFC3339(dateTo.value, true) || undefined,
   scope_type: props.scopeType,
   scope_id: String(props.scopeId)
 }))
 
 const prevParams = computed(() => {
   if (!compareEnabled.value) return null
-  const { from, to } = prevRange(dateFrom.value, dateTo.value)
+  const { from, to } = previousPeriodRange(dateFrom.value, dateTo.value)
   if (!from || !to) return null
   return {
     granularity: granularity.value,

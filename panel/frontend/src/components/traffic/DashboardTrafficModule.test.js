@@ -6,11 +6,13 @@ import DashboardTrafficModule from './DashboardTrafficModule.vue'
 import { fetchSystemInfo, fetchTrafficOverview } from '../../api'
 
 let trafficStatsEnabled = true
+let hostTrend = []
 
 vi.mock('../../api', () => ({
   fetchSystemInfo: vi.fn(async () => ({ traffic_stats_enabled: trafficStatsEnabled })),
   fetchTrafficOverview: vi.fn(async () => ({
     trend: [],
+    host_trend: hostTrend,
     agents: [
       {
         agent_id: 'edge-1',
@@ -54,7 +56,9 @@ async function mountModule() {
 describe('DashboardTrafficModule', () => {
   beforeEach(() => {
     trafficStatsEnabled = true
+    hostTrend = []
     vi.clearAllMocks()
+    vi.useRealTimers()
   })
 
   it('shows aggregate business traffic without quota bars when no quota is set', async () => {
@@ -76,5 +80,22 @@ describe('DashboardTrafficModule', () => {
     expect(fetchSystemInfo).toHaveBeenCalled()
     expect(fetchTrafficOverview).not.toHaveBeenCalled()
     expect(wrapper.find('.dashboard-traffic').exists()).toBe(false)
+  })
+
+  it('shows only last 24h host traffic in dashboard card', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-05-04T12:00:00.000Z'))
+    hostTrend = [
+      { bucket_start: '2026-05-03T11:00:00.000Z', accounted_bytes: 1024 },
+      { bucket_start: '2026-05-04T00:00:00.000Z', accounted_bytes: 2048 }
+    ]
+
+    const wrapper = await mountModule()
+
+    const hostCard = wrapper.findAll('.dashboard-traffic__card')
+      .find(card => card.text().includes('主机流量 (24h)'))
+    expect(hostCard?.exists()).toBe(true)
+    expect(hostCard.text()).toContain('2.00 KiB')
+    expect(hostCard.text()).not.toContain('3.00 KiB')
   })
 })

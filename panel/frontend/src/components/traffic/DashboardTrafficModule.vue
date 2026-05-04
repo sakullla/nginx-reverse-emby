@@ -72,6 +72,7 @@ import { useTrafficOverview } from '../../hooks/useTrafficOverview.js'
 import { fetchSystemInfo, fetchTrafficSummary } from '../../api'
 import TrafficTrendChart from './TrafficTrendChart.vue'
 import { formatBytes, usagePercent, quotaColorThreshold } from '../../utils/trafficStats.js'
+import { hostTotalForLast24h } from './trafficTrendHelpers.mjs'
 
 const { data: systemInfo } = useQuery({
   queryKey: ['system-info'],
@@ -106,8 +107,7 @@ const selectedPercent = computed(() => usagePercent(selectedSummary.value?.used_
 const selectedColor = computed(() => quotaColorThreshold(selectedPercent.value))
 
 const hostTotalAccounted = computed(() => {
-  const pts = hostTrendPoints.value
-  return pts.reduce((sum, p) => sum + (p.accounted_bytes || 0), 0)
+  return hostTotalForLast24h(hostTrendPoints.value)
 })
 
 const blockedCount = computed(() => overviewAgents.value.filter(a => a.blocked).length)
