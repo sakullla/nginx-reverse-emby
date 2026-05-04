@@ -9,6 +9,8 @@ services:
       POSTGRES_PASSWORD: nre
     volumes:
       - ./data/postgres:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
 
   nginx-reverse-emby:
     image: ghcr.io/sakullla/nginx-reverse-emby:latest
@@ -16,8 +18,7 @@ services:
     restart: unless-stopped
     depends_on:
       - postgres
-    ports:
-      - "8080:8080"
+    network_mode: host
 
     environment:
       # 面板 / Master 角色
@@ -36,7 +37,7 @@ services:
       NRE_LOCAL_AGENT_ID: local
       NRE_LOCAL_AGENT_NAME: local
       NRE_DATABASE_DRIVER: postgres
-      NRE_DATABASE_DSN: postgres://nre:nre@postgres:5432/nre?sslmode=disable
+      NRE_DATABASE_DSN: postgres://nre:nre@127.0.0.1:5432/nre?sslmode=disable
 
       # DNS 验证示例（按需启用，如 Cloudflare）
       # ACME_DNS_PROVIDER: cf
