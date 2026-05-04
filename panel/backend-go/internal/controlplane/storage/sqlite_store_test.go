@@ -2070,6 +2070,50 @@ func TestStoreLoadAgentSnapshotUsesStoredAgentDesiredRevisionForProxyOnlyConfig(
 	}
 }
 
+func TestStoreLoadAgentSnapshotTreatsLocalAgentAsSpecialRuntimeState(t *testing.T) {
+	dataRoot := t.TempDir()
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.Close()
+	})
+
+	if err := store.SaveLocalRuntimeState(t.Context(), "local", RuntimeState{
+		CurrentRevision: 5,
+		Status:          "active",
+		Metadata:        map[string]string{},
+	}); err != nil {
+		t.Fatalf("SaveLocalRuntimeState() error = %v", err)
+	}
+
+	var agentRevisionLookups int
+	callbackName := "test:count_local_agent_revision_lookup"
+	if err := store.db.Callback().Query().After("gorm:query").Register(callbackName, func(tx *gorm.DB) {
+		if tx.Statement != nil && tx.Statement.Table == "agents" {
+			agentRevisionLookups++
+		}
+	}); err != nil {
+		t.Fatalf("register query callback: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = store.db.Callback().Query().Remove(callbackName)
+	})
+
+	snapshot, err := store.LoadAgentSnapshot(t.Context(), "local", AgentSnapshotInput{})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot() error = %v", err)
+	}
+	if snapshot.Revision != 5 {
+		t.Fatalf("snapshot revision = %d, want local runtime desired revision 5", snapshot.Revision)
+	}
+	if agentRevisionLookups != 0 {
+		t.Fatalf("local snapshot queried agents table %d times", agentRevisionLookups)
+	}
+}
+
 func TestStoreSavesSuccessfulLocalRuntimeStateIntoLocalAgentState(t *testing.T) {
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 

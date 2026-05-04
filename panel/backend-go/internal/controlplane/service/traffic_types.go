@@ -95,3 +95,8 @@ type TrafficCleanupResult struct {
 	DailyBefore   string `json:"daily_before,omitempty"`
 	MonthlyBefore string `json:"monthly_before,omitempty"`
 }
+
+type TrafficCleanupAllResult struct {
+	DeletedRows int64                  `json:"deleted_rows"`
+	Results     []TrafficCleanupResult `json:"results"`
+}

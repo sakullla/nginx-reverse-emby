@@ -56,6 +56,7 @@
           </div>
           <div class="tab-panel__actions">
             <button class="btn btn-secondary" type="button" :disabled="calibrateTrafficMutation.isPending.value" @click="calibrateTrafficSummary">校准</button>
+            <button class="btn btn-secondary" type="button" :disabled="calibrateTrafficMutation.isPending.value" @click="calibrateTrafficToZero">从现在归零</button>
             <button class="btn btn-secondary" type="button" :disabled="cleanupTrafficMutation.isPending.value" @click="cleanupTrafficHistory">清理</button>
           </div>
         </div>
@@ -77,22 +78,53 @@
             <span class="traffic-total__label">周期</span>
             <span class="traffic-total__value">{{ trafficSummary.cycle_start ? formatCycle(trafficSummary.cycle_start, trafficSummary.cycle_end) : '—' }}</span>
           </div>
+          <div class="traffic-total">
+            <span class="traffic-total__label">计费方向</span>
+            <span class="traffic-total__value">{{ trafficDirectionLabel(trafficSummary.policy?.direction || trafficPolicyForm.direction) }}</span>
+          </div>
         </div>
 
         <div class="traffic-panel">
           <div class="traffic-panel__section">
             <div class="traffic-panel__section-header">
               <h3>趋势</h3>
-              <span>{{ trafficTrendPoints.length }} 天</span>
+              <div class="traffic-trend__controls" role="group" aria-label="趋势粒度">
+                <button
+                  v-for="option in trafficTrendGranularityOptions"
+                  :key="option.value"
+                  class="traffic-trend__mode"
+                  :class="{ 'traffic-trend__mode--active': trafficTrendGranularity === option.value }"
+                  :data-testid="`traffic-trend-${option.value}`"
+                  type="button"
+                  @click="trafficTrendGranularity = option.value"
+                >
+                  {{ option.label }}
+                </button>
+              </div>
             </div>
             <div class="traffic-trend">
               <div v-for="(point, index) in trafficTrendPoints" :key="trafficTrendKey(point, index)" class="traffic-trend__item">
                 <div class="traffic-trend__bars">
-                  <div class="traffic-trend__bar traffic-trend__bar--rx" :style="{ height: trendBarHeight(point.rx_bytes) }"></div>
-                  <div class="traffic-trend__bar traffic-trend__bar--tx" :style="{ height: trendBarHeight(point.tx_bytes) }"></div>
+                  <div class="traffic-trend__bar traffic-trend__bar--accounted" :style="{ height: trendBarHeight(point.accounted_bytes) }"></div>
                 </div>
                 <span class="traffic-trend__label">{{ formatTrendLabel(point.bucket_start) }}</span>
               </div>
+            </div>
+            <div v-if="trafficSummary.monthly_quota_bytes != null" class="traffic-trend__quota">月额度参考：{{ formatBytes(trafficSummary.monthly_quota_bytes) }}</div>
+          </div>
+
+          <div class="traffic-panel__section">
+            <div class="traffic-panel__section-header">
+              <h3>分项流量</h3>
+              <span>按当前计费方向统计</span>
+            </div>
+            <div class="traffic-breakdown">
+              <div v-for="row in trafficBreakdownRows" :key="trafficBreakdownKey(row)" class="traffic-breakdown__row">
+                <span class="traffic-breakdown__name">{{ trafficBreakdownLabel(row) }}</span>
+                <span class="traffic-breakdown__value">{{ formatBytes(row.accounted_bytes) }}</span>
+                <span class="traffic-breakdown__raw">RX {{ formatBytes(row.rx_bytes) }} / TX {{ formatBytes(row.tx_bytes) }}</span>
+              </div>
+              <p v-if="trafficBreakdownRows.length === 0" class="empty-hint">暂无分项流量</p>
             </div>
           </div>
 
@@ -117,7 +149,12 @@
               </label>
               <label class="traffic-setting">
                 <span class="traffic-setting__label">月额度</span>
-                <input v-model="trafficPolicyForm.monthly_quota_bytes" class="traffic-setting__input" type="text" placeholder="留空表示无限制">
+                <div class="traffic-setting__quota">
+                  <input v-model="trafficPolicyForm.monthly_quota_value" class="traffic-setting__input" type="text" placeholder="留空表示无限制">
+                  <select v-model="trafficPolicyForm.monthly_quota_unit" class="traffic-setting__input traffic-setting__unit" data-testid="monthly-quota-unit">
+                    <option v-for="unit in quotaUnits" :key="unit.value" :value="unit.value">{{ unit.label }}</option>
+                  </select>
+                </div>
               </label>
               <label class="traffic-setting traffic-setting--switch">
                 <span class="traffic-setting__label">超额阻断</span>
@@ -291,16 +328,35 @@ const systemInfo = computed(() => systemInfoData.value ?? {})
 const trafficStatsEnabled = computed(() => isSystemInfoLoaded.value && systemInfo.value?.traffic_stats_enabled !== false)
 const trafficPolicyQuery = useTrafficPolicy(computed(() => trafficStatsEnabled.value ? agentId.value : null))
 const trafficSummaryQuery = useTrafficSummary(computed(() => trafficStatsEnabled.value ? agentId.value : null))
+const trafficTrendGranularityOptions = [
+  { value: 'hour', label: '小时' },
+  { value: 'day', label: '日' },
+  { value: 'month', label: '月' }
+]
+const trafficTrendGranularity = ref('day')
 const trafficTrendQuery = useTrafficTrend(
   computed(() => trafficStatsEnabled.value ? agentId.value : null),
-  computed(() => ({ granularity: 'day' }))
+  computed(() => ({ granularity: trafficTrendGranularity.value }))
 )
 const updateTrafficPolicyMutation = useUpdateTrafficPolicy(computed(() => agentId.value))
 const calibrateTrafficMutation = useCalibrateTraffic(computed(() => agentId.value))
 const cleanupTrafficMutation = useCleanupTraffic(computed(() => agentId.value))
-const trafficPolicyForm = ref(normalizeTrafficPolicy())
+const quotaUnits = [
+  { value: 'B', label: 'B', factor: 1 },
+  { value: 'KiB', label: 'KiB', factor: 1024 },
+  { value: 'MiB', label: 'MiB', factor: 1024 ** 2 },
+  { value: 'GiB', label: 'GiB', factor: 1024 ** 3 },
+  { value: 'TiB', label: 'TiB', factor: 1024 ** 4 }
+]
+const trafficPolicyForm = ref(normalizeTrafficPolicyForm())
 const trafficSummary = computed(() => trafficSummaryQuery.data.value ?? {})
 const trafficTrendPoints = computed(() => normalizeTrafficTrendPoints(trafficTrendQuery.data.value ?? [], trafficPolicyForm.value.direction))
+const trafficBreakdownRows = computed(() => [
+  ...normalizeTrafficBreakdownRows(trafficSummary.value.aggregates),
+  ...normalizeTrafficBreakdownRows(trafficSummary.value.http_rules),
+  ...normalizeTrafficBreakdownRows(trafficSummary.value.l4_rules),
+  ...normalizeTrafficBreakdownRows(trafficSummary.value.relay_listeners)
+])
 
 const activeTab = ref('http')
 const tabs = computed(() => [
@@ -317,10 +373,7 @@ watch(agent, (value) => {
 
 watch([trafficPolicyQuery.data, trafficStatsEnabled], ([policy, enabled]) => {
   if (enabled && policy) {
-    trafficPolicyForm.value = {
-      ...normalizeTrafficPolicy(policy),
-      monthly_quota_bytes: policy.monthly_quota_bytes == null ? '' : String(policy.monthly_quota_bytes)
-    }
+    trafficPolicyForm.value = normalizeTrafficPolicyForm(policy)
   }
 }, { immediate: true })
 
@@ -362,7 +415,8 @@ async function saveTrafficPolicy() {
     messageStore.warning('月周期起始日必须是 1 到 28 的整数')
     return
   }
-  if (!isBlankOrFiniteNonNegative(trafficPolicyForm.value.monthly_quota_bytes)) {
+  const monthlyQuotaBytes = quotaInputToBytes(trafficPolicyForm.value.monthly_quota_value, trafficPolicyForm.value.monthly_quota_unit)
+  if (monthlyQuotaBytes === undefined) {
     messageStore.warning('月额度必须为空或非负数字')
     return
   }
@@ -380,7 +434,7 @@ async function saveTrafficPolicy() {
   }
   const payload = normalizeTrafficPolicy({
     ...trafficPolicyForm.value,
-    monthly_quota_bytes: trafficPolicyForm.value.monthly_quota_bytes === '' ? null : trafficPolicyForm.value.monthly_quota_bytes
+    monthly_quota_bytes: monthlyQuotaBytes
   })
   await updateTrafficPolicyMutation.mutateAsync(payload)
 }
@@ -388,7 +442,20 @@ async function saveTrafficPolicy() {
 async function calibrateTrafficSummary() {
   if (!agent.value || !trafficStatsEnabled.value) return
   const usedBytes = trafficSummary.value.used_bytes ?? accountedBytes(normalizeTrafficBucket(agentStats.value?.traffic?.total), trafficPolicyForm.value.direction)
-  await calibrateTrafficMutation.mutateAsync({ used_bytes: usedBytes })
+  if (typeof window === 'undefined' || typeof window.prompt !== 'function') return
+  const input = window.prompt('输入要校准为的已用流量，例如 1.5 GiB 或 1610612736', formatBytes(usedBytes))
+  if (input == null) return
+  const calibratedBytes = parseByteInput(input)
+  if (calibratedBytes === undefined) {
+    messageStore.warning('校准流量必须是非负数字，可带 B/KiB/MiB/GiB/TiB 单位')
+    return
+  }
+  await calibrateTrafficMutation.mutateAsync({ used_bytes: calibratedBytes })
+}
+
+async function calibrateTrafficToZero() {
+  if (!agent.value || !trafficStatsEnabled.value) return
+  await calibrateTrafficMutation.mutateAsync({ used_bytes: 0 })
 }
 
 async function cleanupTrafficHistory() {
@@ -397,10 +464,129 @@ async function cleanupTrafficHistory() {
   await cleanupTrafficMutation.mutateAsync()
 }
 
-function isBlankOrFiniteNonNegative(value) {
-  if (value == null || value === '') return true
-  const number = Number(value)
-  return Number.isFinite(number) && number >= 0
+function normalizeTrafficPolicyForm(policy = {}) {
+  const normalized = normalizeTrafficPolicy(policy)
+  const quota = bytesToQuotaInput(normalized.monthly_quota_bytes)
+  return {
+    ...normalized,
+    monthly_quota_value: quota.value,
+    monthly_quota_unit: quota.unit
+  }
+}
+
+function bytesToQuotaInput(bytes) {
+  if (bytes == null) {
+    return { value: '', unit: 'GiB' }
+  }
+  const number = Number(bytes)
+  if (!Number.isFinite(number) || number < 0) {
+    return { value: '', unit: 'GiB' }
+  }
+  let selectedUnit = quotaUnits[0]
+  for (const unit of quotaUnits) {
+    if (number >= unit.factor) {
+      selectedUnit = unit
+    }
+  }
+  const value = number / selectedUnit.factor
+  return {
+    value: Number.isInteger(value) ? String(value) : String(Number(value.toFixed(3))),
+    unit: selectedUnit.value
+  }
+}
+
+function quotaInputToBytes(value, unitValue) {
+  const rawValue = String(value ?? '').trim()
+  if (rawValue === '') return null
+  const number = Number(rawValue)
+  const unit = quotaUnits.find((item) => item.value === unitValue)
+  if (!Number.isFinite(number) || number < 0 || !unit) return undefined
+  const bytes = number * unit.factor
+  if (!Number.isFinite(bytes) || bytes < 0) return undefined
+  return Math.round(bytes)
+}
+
+function parseByteInput(value) {
+  const rawValue = String(value ?? '').trim()
+  if (rawValue === '') return undefined
+  const match = rawValue.match(/^([0-9]+(?:\.[0-9]+)?)\s*([kmgt]?i?b)?$/i)
+  if (!match) return undefined
+  const number = Number(match[1])
+  const unitValue = normalizeByteUnit(match[2] || 'B')
+  const unit = quotaUnits.find((item) => item.value === unitValue)
+  if (!Number.isFinite(number) || number < 0 || !unit) return undefined
+  const bytes = number * unit.factor
+  if (!Number.isFinite(bytes) || bytes < 0) return undefined
+  return Math.round(bytes)
+}
+
+function normalizeByteUnit(value) {
+  switch (String(value || '').trim().toLowerCase()) {
+    case 'b':
+      return 'B'
+    case 'kib':
+    case 'kb':
+      return 'KiB'
+    case 'mib':
+    case 'mb':
+      return 'MiB'
+    case 'gib':
+    case 'gb':
+      return 'GiB'
+    case 'tib':
+    case 'tb':
+      return 'TiB'
+    default:
+      return ''
+  }
+}
+
+function normalizeTrafficBreakdownRows(rows) {
+  if (!Array.isArray(rows)) return []
+  return rows.map((row) => ({
+    scope_type: String(row?.scope_type || ''),
+    scope_id: String(row?.scope_id || ''),
+    rx_bytes: Number(row?.rx_bytes) || 0,
+    tx_bytes: Number(row?.tx_bytes) || 0,
+    accounted_bytes: Number(row?.accounted_bytes) || 0
+  })).filter((row) => row.accounted_bytes > 0 || row.rx_bytes > 0 || row.tx_bytes > 0)
+}
+
+function trafficBreakdownKey(row) {
+  return `${row.scope_type || 'scope'}-${row.scope_id || 'aggregate'}`
+}
+
+function trafficBreakdownLabel(row) {
+  switch (row.scope_type) {
+    case 'http':
+      return 'HTTP'
+    case 'l4':
+      return 'L4'
+    case 'relay':
+      return 'Relay'
+    case 'http_rule':
+      return `HTTP 规则 #${row.scope_id}`
+    case 'l4_rule':
+      return `L4 规则 #${row.scope_id}`
+    case 'relay_listener':
+      return `Relay 监听 #${row.scope_id}`
+    default:
+      return row.scope_id ? `${row.scope_type} #${row.scope_id}` : row.scope_type || '-'
+  }
+}
+
+function trafficDirectionLabel(direction) {
+  switch (String(direction || 'both').toLowerCase()) {
+    case 'rx':
+      return '入站'
+    case 'tx':
+      return '出站'
+    case 'max':
+      return '取最大值'
+    case 'both':
+    default:
+      return '双向'
+  }
 }
 
 function isBlankOrPositiveInteger(value) {
@@ -427,6 +613,12 @@ function formatTrendLabel(bucketStart) {
   if (!bucketStart) return '—'
   const date = new Date(bucketStart)
   if (Number.isNaN(date.getTime())) return '—'
+  if (trafficTrendGranularity.value === 'hour') {
+    return date.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
+  }
+  if (trafficTrendGranularity.value === 'month') {
+    return date.toLocaleDateString('zh-CN', { year: '2-digit', month: 'short' })
+  }
   return date.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })
 }
 
@@ -436,7 +628,7 @@ function trafficTrendKey(point, index) {
 
 function trendBarHeight(bytes) {
   const value = Number(bytes) || 0
-  const max = Math.max(...trafficTrendPoints.value.map((point) => Math.max(point.rx_bytes, point.tx_bytes)), 1)
+  const max = Math.max(...trafficTrendPoints.value.map((point) => point.accounted_bytes), 1)
   const ratio = Math.max(0.08, value / max)
   return `${Math.round(ratio * 100)}%`
 }
@@ -531,7 +723,7 @@ function timeAgo(date) {
 .stat-mini__value { display: block; font-size: 1.5rem; font-weight: 700; color: var(--color-text-primary); }
 .stat-mini__label { font-size: 0.75rem; color: var(--color-text-tertiary); }
 .traffic-summary { margin-bottom: 1.5rem; padding: 1rem; background: var(--color-bg-surface); border: 1px solid var(--color-border-default); border-radius: var(--radius-lg); }
-.traffic-summary__cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.75rem; margin-bottom: 1rem; }
+.traffic-summary__cards { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 0.75rem; margin-bottom: 1rem; }
 .traffic-total { min-width: 0; padding: 0.75rem; background: var(--color-bg-subtle); border-radius: var(--radius-md); }
 .traffic-total__label { display: block; margin-bottom: 0.25rem; color: var(--color-text-tertiary); font-size: 0.75rem; }
 .traffic-total__value { display: block; color: var(--color-text-primary); font-size: 1.25rem; font-weight: 700; font-variant-numeric: tabular-nums; }
@@ -552,19 +744,29 @@ function timeAgo(date) {
 .traffic-panel__section-header { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; margin-bottom: 0.75rem; }
 .traffic-panel__section-header h3 { margin: 0; font-size: 0.9375rem; color: var(--color-text-primary); }
 .traffic-panel__section-header span { color: var(--color-text-tertiary); font-size: 0.8125rem; }
+.traffic-trend__controls { display: inline-flex; gap: 2px; padding: 2px; background: var(--color-bg-subtle); border: 1px solid var(--color-border-default); border-radius: var(--radius-md); }
+.traffic-trend__mode { min-width: 2.75rem; padding: 0.3rem 0.55rem; border: 0; border-radius: var(--radius-sm); background: transparent; color: var(--color-text-tertiary); font-size: 0.75rem; font-weight: 600; cursor: pointer; font-family: inherit; }
+.traffic-trend__mode--active { background: var(--color-bg-surface); color: var(--color-primary); box-shadow: var(--shadow-sm); }
 .traffic-trend { display: grid; grid-template-columns: repeat(14, minmax(0, 1fr)); gap: 0.35rem; align-items: end; min-height: 140px; }
 .traffic-trend__item { display: flex; flex-direction: column; align-items: center; gap: 0.35rem; min-width: 0; }
 .traffic-trend__bars { display: flex; align-items: end; gap: 0.2rem; width: 100%; height: 120px; padding: 0 0.125rem; }
 .traffic-trend__bar { flex: 1; min-height: 6px; border-radius: var(--radius-sm) var(--radius-sm) 0 0; }
-.traffic-trend__bar--rx { background: var(--color-primary-200); }
-.traffic-trend__bar--tx { background: var(--color-primary); }
+.traffic-trend__bar--accounted { background: var(--color-primary); }
 .traffic-trend__label { color: var(--color-text-tertiary); font-size: 0.6875rem; text-align: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; width: 100%; }
+.traffic-trend__quota { margin-top: 0.5rem; color: var(--color-text-tertiary); font-size: 0.75rem; }
+.traffic-breakdown { display: flex; flex-direction: column; gap: 0.35rem; }
+.traffic-breakdown__row { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(10rem, auto); gap: 0.75rem; align-items: center; padding: 0.55rem 0.65rem; background: var(--color-bg-subtle); border-radius: var(--radius-md); font-size: 0.8125rem; }
+.traffic-breakdown__name { min-width: 0; color: var(--color-text-primary); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.traffic-breakdown__value { color: var(--color-text-primary); font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.traffic-breakdown__raw { color: var(--color-text-tertiary); font-family: var(--font-mono); font-size: 0.75rem; text-align: right; white-space: nowrap; }
 .traffic-policy-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.75rem; }
 .traffic-setting { display: flex; flex-direction: column; gap: 0.35rem; min-width: 0; }
 .traffic-setting--switch { flex-direction: row; align-items: center; justify-content: space-between; }
 .traffic-setting__label { color: var(--color-text-secondary); font-size: 0.8125rem; font-weight: 500; }
 .traffic-setting__input { width: 100%; min-width: 0; padding: 0.5rem 0.75rem; border: 1px solid var(--color-border-default); border-radius: var(--radius-md); background: var(--color-bg-surface); color: var(--color-text-primary); font-size: 0.875rem; box-sizing: border-box; }
 .traffic-setting__input:focus { outline: none; border-color: var(--color-primary); box-shadow: var(--shadow-focus); }
+.traffic-setting__quota { display: grid; grid-template-columns: minmax(0, 1fr) 5.5rem; gap: 0.5rem; }
+.traffic-setting__unit { font-family: var(--font-mono); }
 .traffic-panel__footer { display: flex; justify-content: flex-end; margin-top: 0.75rem; }
 .empty-hint { text-align: center; color: var(--color-text-muted); padding: 2rem; font-size: 0.875rem; }
 .info-grid { display: flex; flex-direction: column; gap: 0.5rem; }
@@ -597,5 +799,7 @@ function timeAgo(date) {
   .tab-panel__header { flex-direction: column; }
   .agent-detail__tabs { overflow-x: auto; }
   .tab-btn { flex: 0 0 auto; }
+  .traffic-breakdown__row { grid-template-columns: 1fr auto; }
+  .traffic-breakdown__raw { grid-column: 1 / -1; text-align: left; }
 }
 </style>

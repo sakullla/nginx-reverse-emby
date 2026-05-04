@@ -11,6 +11,7 @@ import (
 	goagentembedded "github.com/sakullla/nginx-reverse-emby/go-agent/embedded"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/app"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/config"
+	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/service"
 	"github.com/sakullla/nginx-reverse-emby/panel/backend-go/internal/controlplane/storage"
 )
 
@@ -27,6 +28,18 @@ type bridgeStoreStub struct {
 
 type embeddedRuntimeStub struct {
 	start func(context.Context) error
+}
+
+type localTrafficSummaryStub struct {
+	summary service.TrafficSummary
+	err     error
+}
+
+func (s localTrafficSummaryStub) Summary(context.Context, string) (service.TrafficSummary, error) {
+	if s.err != nil {
+		return service.TrafficSummary{}, s.err
+	}
+	return s.summary, nil
 }
 
 func (s embeddedRuntimeStub) Run(ctx context.Context) error {
@@ -237,9 +250,42 @@ func TestLocalSyncSourceReturnsSnapshotFromControlPlaneStore(t *testing.T) {
 	}
 }
 
+func TestLocalSyncSourceAddsTrafficAgentConfig(t *testing.T) {
+	store := &bridgeStoreStub{
+		snapshot: Snapshot{
+			DesiredVersion: "1.2.3",
+			Revision:       15,
+		},
+	}
+	source := NewSyncSource(store, "local")
+	source.SetTrafficService(true, localTrafficSummaryStub{summary: service.TrafficSummary{
+		Blocked:     true,
+		BlockReason: "monthly quota exceeded",
+	}})
+
+	got, err := source.Sync(t.Context(), SyncRequest{CurrentRevision: 14})
+	if err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+
+	if got.AgentConfig.TrafficStatsEnabled == nil || !*got.AgentConfig.TrafficStatsEnabled {
+		t.Fatalf("TrafficStatsEnabled = %v, want true", got.AgentConfig.TrafficStatsEnabled)
+	}
+	if !got.AgentConfig.TrafficBlocked || got.AgentConfig.TrafficBlockReason != "monthly quota exceeded" {
+		t.Fatalf("AgentConfig traffic block = %+v", got.AgentConfig)
+	}
+}
+
 func TestToEmbeddedSnapshotPreservesRelayTransportFields(t *testing.T) {
+	trafficStatsEnabled := false
 	snapshot := Snapshot{
 		Revision: 15,
+		AgentConfig: storage.AgentConfig{
+			TrafficStatsEnabled:  &trafficStatsEnabled,
+			TrafficBlocked:       true,
+			TrafficBlockReason:   "monthly quota exceeded",
+			TrafficStatsInterval: "30s",
+		},
 		Rules: []storage.HTTPRule{{
 			ID:          7,
 			FrontendURL: "https://media.example.test",
@@ -291,6 +337,13 @@ func TestToEmbeddedSnapshotPreservesRelayTransportFields(t *testing.T) {
 	}
 
 	embedded := toEmbeddedSnapshot(snapshot)
+
+	if embedded.AgentConfig.TrafficStatsEnabled == nil || *embedded.AgentConfig.TrafficStatsEnabled {
+		t.Fatalf("embedded AgentConfig.TrafficStatsEnabled = %v, want false", embedded.AgentConfig.TrafficStatsEnabled)
+	}
+	if !embedded.AgentConfig.TrafficBlocked || embedded.AgentConfig.TrafficBlockReason != "monthly quota exceeded" || embedded.AgentConfig.TrafficStatsInterval != "30s" {
+		t.Fatalf("embedded AgentConfig = %+v", embedded.AgentConfig)
+	}
 
 	if len(embedded.Rules) != 1 || embedded.Rules[0].ID != 7 {
 		t.Fatalf("embedded HTTP rule IDs = %+v", embedded.Rules)
@@ -548,6 +601,7 @@ func TestMergeRuntimeStateWithSyncRequestPreservesAuthoritativeMetadataApplyOutc
 func TestMergeRuntimeStateWithSyncRequestPersistsStatsMetadata(t *testing.T) {
 	state := RuntimeState{}
 	request := SyncRequest{
+		StatsPresent: true,
 		Stats: map[string]any{
 			"traffic": map[string]any{
 				"total": map[string]any{
@@ -584,6 +638,25 @@ func TestMergeRuntimeStateWithSyncRequestPreservesStatsMetadataWhenStatsOmitted(
 	}
 }
 
+func TestMergeRuntimeStateWithSyncRequestPreservesStatsMetadataWhenStatsMapEmptyButNotPresent(t *testing.T) {
+	const existingStats = `{"traffic":{"total":{"rx_bytes":123,"tx_bytes":456}}}`
+	state := RuntimeState{
+		Metadata: map[string]string{
+			"stats":             existingStats,
+			"last_apply_status": "success",
+		},
+	}
+
+	merged := mergeRuntimeStateWithSyncRequest(state, SyncRequest{
+		StatsPresent: false,
+		Stats:        map[string]any{},
+	})
+
+	if merged.Metadata["stats"] != existingStats {
+		t.Fatalf("merge cleared existing stats metadata unexpectedly: %+v", merged.Metadata)
+	}
+}
+
 func TestMergeRuntimeStateWithSyncRequestClearsStatsMetadataWhenStatsExplicitlyEmpty(t *testing.T) {
 	state := RuntimeState{
 		Metadata: map[string]string{
@@ -592,7 +665,7 @@ func TestMergeRuntimeStateWithSyncRequestClearsStatsMetadataWhenStatsExplicitlyE
 		},
 	}
 
-	merged := mergeRuntimeStateWithSyncRequest(state, SyncRequest{Stats: map[string]any{}})
+	merged := mergeRuntimeStateWithSyncRequest(state, SyncRequest{StatsPresent: true, Stats: map[string]any{}})
 
 	if _, ok := merged.Metadata["stats"]; ok {
 		t.Fatalf("merge retained stale stats metadata: %+v", merged.Metadata)
@@ -620,10 +693,13 @@ func TestFromEmbeddedSyncRequestPreservesExplicitEmptyStats(t *testing.T) {
 
 func TestSyncRequestBridgePreservesExplicitEmptyStats(t *testing.T) {
 	bridge := newSyncRequestBridge()
-	bridge.Store(SyncRequest{Stats: map[string]any{}})
+	bridge.Store(SyncRequest{StatsPresent: true, Stats: map[string]any{}})
 
 	loaded := bridge.Load()
 
+	if !loaded.StatsPresent {
+		t.Fatal("bridge.Load() StatsPresent = false, want true")
+	}
 	if loaded.Stats == nil {
 		t.Fatal("bridge.Load() Stats = nil, want explicit empty map")
 	}
@@ -648,6 +724,9 @@ func TestFromEmbeddedSyncRequestCopiesStats(t *testing.T) {
 
 	if converted.Stats["traffic"] == nil {
 		t.Fatalf("fromEmbeddedSyncRequest() Stats = %+v", converted.Stats)
+	}
+	if !converted.StatsPresent {
+		t.Fatal("fromEmbeddedSyncRequest() StatsPresent = false, want true for non-empty stats")
 	}
 }
 

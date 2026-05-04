@@ -69,6 +69,13 @@ vi.mock('../hooks/useL4Rules', async () => {
   }
 })
 
+vi.mock('../hooks/useRelayListeners', async () => {
+  const { ref } = await import('vue')
+  return {
+    useRelayListeners: () => ({ data: ref([]) })
+  }
+})
+
 function createQueryClient() {
   return new QueryClient({
     defaultOptions: {
@@ -112,6 +119,7 @@ beforeEach(() => {
   vi.restoreAllMocks()
   vi.clearAllMocks()
   vi.spyOn(window, 'confirm').mockReturnValue(true)
+  vi.spyOn(window, 'prompt').mockReturnValue(null)
   apiCalls.fetchTrafficPolicy.mockResolvedValue({
     direction: 'both',
     cycle_start_day: 1,
@@ -123,6 +131,19 @@ beforeEach(() => {
   })
   apiCalls.fetchTrafficSummary.mockResolvedValue({
     used_bytes: 300,
+    policy: { direction: 'both' },
+    aggregates: [
+      { scope_type: 'http', scope_id: '', rx_bytes: 1024, tx_bytes: 2048, accounted_bytes: 3072 }
+    ],
+    http_rules: [
+      { scope_type: 'http_rule', scope_id: '7', rx_bytes: 4096, tx_bytes: 8192, accounted_bytes: 12288 }
+    ],
+    l4_rules: [
+      { scope_type: 'l4_rule', scope_id: '9', rx_bytes: 16384, tx_bytes: 32768, accounted_bytes: 49152 }
+    ],
+    relay_listeners: [
+      { scope_type: 'relay_listener', scope_id: '11', rx_bytes: 65536, tx_bytes: 131072, accounted_bytes: 196608 }
+    ],
     monthly_quota_bytes: 1099511627776,
     remaining_bytes: 1099511627476,
     cycle_start: '2026-05-01T00:00:00Z',
@@ -130,7 +151,8 @@ beforeEach(() => {
     blocked: false
   })
   apiCalls.fetchTrafficTrend.mockResolvedValue([
-    { bucket_start: '2026-05-01T00:00:00Z', rx_bytes: 100, tx_bytes: 200 }
+    { bucket_start: '2026-05-01T00:00:00Z', rx_bytes: 100, tx_bytes: 200, accounted_bytes: 300 },
+    { bucket_start: '2026-05-02T00:00:00Z', rx_bytes: 10000, tx_bytes: 10000, accounted_bytes: 100 }
   ])
   apiCalls.updateTrafficPolicy.mockResolvedValue({})
   apiCalls.calibrateTraffic.mockResolvedValue({})
@@ -157,9 +179,49 @@ describe('AgentDetailPage', () => {
     expect(wrapper.text()).toContain('月额度')
     expect(wrapper.text()).toContain('校准')
     expect(wrapper.text()).toContain('清理')
+    expect(wrapper.text()).toContain('计费方向')
+    expect(wrapper.text()).toContain('双向')
     expect(apiCalls.fetchTrafficPolicy).toHaveBeenCalledWith('edge-1')
     expect(apiCalls.fetchTrafficSummary).toHaveBeenCalledWith('edge-1')
     expect(apiCalls.fetchTrafficTrend).toHaveBeenCalledWith('edge-1', expect.objectContaining({ granularity: 'day' }))
+  })
+
+  it('renders accounted traffic breakdowns in traffic tab', async () => {
+    const wrapper = await mountPage()
+    await wrapper.findAll('.tab-btn').find((button) => button.text() === '流量统计').trigger('click')
+    await nextTick()
+
+    expect(wrapper.text()).toContain('分项流量')
+    expect(wrapper.text()).toContain('HTTP')
+    expect(wrapper.text()).toContain('HTTP 规则 #7')
+    expect(wrapper.text()).toContain('L4 规则 #9')
+    expect(wrapper.text()).toContain('Relay 监听 #11')
+    expect(wrapper.text()).toContain('12.0 KiB')
+    expect(wrapper.text()).toContain('48.0 KiB')
+    expect(wrapper.text()).toContain('192.0 KiB')
+  })
+
+  it('uses accounted bytes as the trend bar height', async () => {
+    const wrapper = await mountPage()
+    await wrapper.findAll('.tab-btn').find((button) => button.text() === '流量统计').trigger('click')
+    await nextTick()
+
+    const bars = wrapper.findAll('.traffic-trend__bar--accounted')
+    expect(bars).toHaveLength(2)
+    expect(bars[0].attributes('style')).toContain('height: 100%')
+    expect(bars[1].attributes('style')).not.toContain('height: 100%')
+  })
+
+  it('switches traffic trend granularity', async () => {
+    const wrapper = await mountPage()
+    await wrapper.findAll('.tab-btn').find((button) => button.text() === '流量统计').trigger('click')
+    await nextTick()
+
+    await wrapper.find('[data-testid="traffic-trend-month"]').trigger('click')
+    await nextTick()
+    await vi.dynamicImportSettled()
+
+    expect(apiCalls.fetchTrafficTrend).toHaveBeenLastCalledWith('edge-1', expect.objectContaining({ granularity: 'month' }))
   })
 
   it('hides traffic tab when traffic stats are disabled', async () => {
@@ -184,6 +246,25 @@ describe('AgentDetailPage', () => {
     await wrapper.find('.traffic-panel__footer .btn-primary').trigger('click')
 
     expect(apiCalls.updateTrafficPolicy).not.toHaveBeenCalled()
+  })
+
+  it('shows monthly quota with units and saves bytes', async () => {
+    const wrapper = await mountPage()
+    await wrapper.findAll('.tab-btn').find((button) => button.text() === '流量统计').trigger('click')
+    await nextTick()
+
+    const quotaInput = wrapper.find('input[placeholder="留空表示无限制"]')
+    const unitSelect = wrapper.find('[data-testid="monthly-quota-unit"]')
+    expect(quotaInput.element.value).toBe('1')
+    expect(unitSelect.element.value).toBe('TiB')
+
+    await quotaInput.setValue('1.5')
+    await unitSelect.setValue('GiB')
+    await wrapper.find('.traffic-panel__footer .btn-primary').trigger('click')
+
+    expect(apiCalls.updateTrafficPolicy).toHaveBeenCalledWith('edge-1', expect.objectContaining({
+      monthly_quota_bytes: 1610612736
+    }))
   })
 
   it('does not normalize invalid traffic policy integers into defaults', async () => {
@@ -216,5 +297,30 @@ describe('AgentDetailPage', () => {
     await wrapper.findAll('button').find((button) => button.text() === '清理').trigger('click')
 
     expect(apiCalls.cleanupTraffic).not.toHaveBeenCalled()
+  })
+
+  it('calibrates traffic to a prompted byte value', async () => {
+    window.prompt.mockReturnValue('1.5 GiB')
+    const wrapper = await mountPage()
+    await wrapper.findAll('.tab-btn').find((button) => button.text() === '流量统计').trigger('click')
+    await nextTick()
+
+    await wrapper.findAll('button').find((button) => button.text() === '校准').trigger('click')
+
+    expect(apiCalls.calibrateTraffic).toHaveBeenCalledWith('edge-1', {
+      used_bytes: 1610612736
+    })
+  })
+
+  it('calibrates traffic current usage to zero', async () => {
+    const wrapper = await mountPage()
+    await wrapper.findAll('.tab-btn').find((button) => button.text() === '流量统计').trigger('click')
+    await nextTick()
+
+    await wrapper.findAll('button').find((button) => button.text() === '从现在归零').trigger('click')
+
+    expect(apiCalls.calibrateTraffic).toHaveBeenCalledWith('edge-1', {
+      used_bytes: 0
+    })
   })
 })

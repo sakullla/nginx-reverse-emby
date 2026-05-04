@@ -23,6 +23,8 @@ type AgentRow struct {
 	LastApplyStatus        string `gorm:"column:last_apply_status"`
 	LastApplyMessage       string `gorm:"column:last_apply_message"`
 	LastReportedStatsJSON  string `gorm:"column:last_reported_stats"`
+	TrafficBlocked         bool   `gorm:"column:traffic_blocked;not null;default:false"`
+	TrafficBlockReason     string `gorm:"column:traffic_block_reason;not null;default:''"`
 	LastSeenAt             string `gorm:"column:last_seen_at"`
 	LastSeenIP             string `gorm:"column:last_seen_ip"`
 	IsLocal                bool   `gorm:"column:is_local"`

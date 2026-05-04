@@ -23,6 +23,7 @@ In scope:
 - Support optional node-wide over-quota blocking, disabled by default.
 - Support calibration by starting from the current raw value as zero, or by setting the current cycle used value.
 - Support configurable retention and active/manual cleanup.
+- Persist the latest node traffic block state so the panel and agent runtime config have a stable source between heartbeats.
 
 Out of scope:
 
@@ -63,8 +64,10 @@ The control plane must not automatically migrate SQLite data on startup.
 The control panel should expose a process-level environment variable:
 
 - `NRE_TRAFFIC_STATS_ENABLED=true|false`
+- `NRE_TRAFFIC_CLEANUP_INTERVAL=<duration|0|off|disabled>`
 
 The default is `true`.
+The default cleanup interval is `24h`. Setting the interval to `0`, `off`, or `disabled` disables scheduled cleanup while keeping manual cleanup available.
 
 When `NRE_TRAFFIC_STATS_ENABLED=false`, the traffic statistics module is disabled globally:
 
@@ -154,6 +157,13 @@ Supported scope types:
 
 `agent_traffic_events` records operational events such as counter resets, quota block transitions, calibration changes, and cleanup runs. It is not the source of accounting truth.
 
+The `agents` table stores the latest quota enforcement state:
+
+- `traffic_blocked`
+- `traffic_block_reason`
+
+This state is the stable latest value used for display and agent runtime config. `agent_traffic_events` only records transitions.
+
 ## Ingestion Flow
 
 Agents report cumulative raw counters in heartbeat payloads. When the global traffic module is enabled, the control plane ingests each reported scope independently:
@@ -168,6 +178,14 @@ Agents report cumulative raw counters in heartbeat payloads. When the global tra
 This cursor model makes repeated heartbeats idempotent when cumulative values have not changed. It also prevents negative deltas after agent restart.
 
 Heartbeat stats may be omitted when reporting is not due. Omitted stats must not clear persisted values. An explicit empty stats object from a disabled stats configuration is the signal to clear latest display state, but historical buckets should remain unless cleanup deletes them.
+
+For the embedded local agent, the bridge must preserve the same presence semantics as JSON heartbeats. A stats payload has three states:
+
+- omitted: preserve existing local runtime stats metadata
+- present and non-empty: update local runtime stats metadata
+- present and empty: clear local runtime stats metadata
+
+The bridge must carry an explicit `StatsPresent` flag because an empty Go map alone cannot distinguish omission from an explicit empty stats object.
 
 ## Accounting Rules
 
@@ -270,9 +288,11 @@ The UI should make clear that `both` is the default accounting direction and tha
 
 ## Over-Quota Blocking
 
-When the global traffic module is enabled, the control plane computes quota state after ingesting traffic and when policy changes. If `block_when_exceeded` is enabled and current cycle used bytes exceed the quota, the control plane marks the node as traffic blocked.
+When the global traffic module is enabled, the control plane computes quota state after ingesting traffic and when policy changes. If `block_when_exceeded` is enabled and current cycle used bytes exceed the quota, the control plane marks the node as traffic blocked and persists that state on the `agents` row.
 
 When the global traffic module is disabled, quota-based blocking is disabled and the control plane always sends `traffic_blocked=false`.
+
+Whenever the persisted block state changes, the control plane records an `agent_traffic_events` row with `event_type=traffic_block_state_changed`.
 
 The agent runtime config should include:
 
@@ -300,9 +320,12 @@ Each node can override retention in its traffic policy.
 Cleanup deletes rows older than the configured retention window for that node. Cleanup should be available as:
 
 - manual cleanup from the node Traffic tab
-- backend service method usable by a future scheduled cleanup job
+- backend service method usable by scheduled cleanup
+- process-level scheduled cleanup controlled by `NRE_TRAFFIC_CLEANUP_INTERVAL`
 
 Cleanup must not delete current raw cursors, current cycle baseline, current traffic policy, or current quota state.
+
+Scheduled cleanup enumerates persisted traffic policies and runs cleanup for each policy's node. Nodes without an explicit traffic policy are still cleanable manually through the node Traffic tab using the default policy.
 
 ## Backup And Restore
 
@@ -357,6 +380,7 @@ Blocking tests:
 - Policy update triggers block state recomputation.
 - Over-quota with blocking disabled does not block.
 - Over-quota with blocking enabled sends `traffic_blocked` to the agent.
+- Heartbeat block-state recomputation persists `traffic_blocked` and records a transition event.
 - Agent HTTP returns `429` while blocked.
 - Agent L4 and Relay reject new traffic while blocked.
 

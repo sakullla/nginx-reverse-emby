@@ -803,6 +803,9 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 	if err != nil {
 		return HeartbeatReply{}, err
 	}
+	if err := s.persistHeartbeatTrafficBlockState(ctx, &row, trafficBlocked, trafficBlockReason); err != nil {
+		return HeartbeatReply{}, err
+	}
 	reply := HeartbeatReply{
 		HasUpdate:            request.CurrentRevision < snapshot.Revision || !strings.EqualFold(strings.TrimSpace(row.LastApplyStatus), "success"),
 		DesiredVersion:       snapshot.DesiredVersion,
@@ -832,6 +835,49 @@ func (s *agentService) Heartbeat(ctx context.Context, request HeartbeatRequest, 
 		reply.CertificatePolicies = nil
 	}
 	return reply, nil
+}
+
+func (s *agentService) persistHeartbeatTrafficBlockState(ctx context.Context, row *storage.AgentRow, blocked bool, reason string) error {
+	if row == nil {
+		return nil
+	}
+	reason = strings.TrimSpace(reason)
+	if row.TrafficBlocked == blocked && row.TrafficBlockReason == reason {
+		return nil
+	}
+	previousBlocked := row.TrafficBlocked
+	previousReason := row.TrafficBlockReason
+	row.TrafficBlocked = blocked
+	row.TrafficBlockReason = reason
+	if err := s.store.SaveAgent(ctx, *row); err != nil {
+		return err
+	}
+	if previousBlocked != blocked || previousReason != reason {
+		if err := s.recordTrafficEvent(ctx, row.ID, "traffic_block_state_changed", "traffic block state changed", map[string]any{
+			"previous_blocked": previousBlocked,
+			"previous_reason":  previousReason,
+			"blocked":          blocked,
+			"reason":           reason,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *agentService) recordTrafficEvent(ctx context.Context, agentID, eventType, message string, payload map[string]any) error {
+	eventStore, ok := s.store.(trafficEventStore)
+	if !ok {
+		return nil
+	}
+	payloadJSON, _ := json.Marshal(payload)
+	return eventStore.SaveTrafficEvent(ctx, storage.AgentTrafficEventRow{
+		AgentID:   agentID,
+		EventType: eventType,
+		Message:   message,
+		Payload:   string(payloadJSON),
+		CreatedAt: s.now().UTC().Format(time.RFC3339),
+	})
 }
 
 func (s *agentService) heartbeatTrafficBlockState(ctx context.Context, agentID string, enabled bool) (bool, string, error) {

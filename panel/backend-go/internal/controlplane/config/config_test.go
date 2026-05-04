@@ -257,6 +257,34 @@ func TestLoadFromEnvParsesDatabaseConfig(t *testing.T) {
 	}
 }
 
+func TestLoadFromEnvParsesTrafficCleanupInterval(t *testing.T) {
+	t.Setenv("NRE_PANEL_TOKEN", "panel")
+	t.Setenv("NRE_REGISTER_TOKEN", "register")
+	t.Setenv("NRE_TRAFFIC_CLEANUP_INTERVAL", "6h")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if cfg.TrafficCleanupInterval != 6*time.Hour {
+		t.Fatalf("TrafficCleanupInterval = %v, want 6h", cfg.TrafficCleanupInterval)
+	}
+}
+
+func TestLoadFromEnvAllowsDisablingTrafficCleanupInterval(t *testing.T) {
+	t.Setenv("NRE_PANEL_TOKEN", "panel")
+	t.Setenv("NRE_REGISTER_TOKEN", "register")
+	t.Setenv("NRE_TRAFFIC_CLEANUP_INTERVAL", "off")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	if cfg.TrafficCleanupInterval != 0 {
+		t.Fatalf("TrafficCleanupInterval = %v, want disabled", cfg.TrafficCleanupInterval)
+	}
+}
+
 func TestLoadFromEnvRejectsInvalidDatabaseDriver(t *testing.T) {
 	t.Setenv("NRE_PANEL_TOKEN", "panel")
 	t.Setenv("NRE_REGISTER_TOKEN", "register")

@@ -138,6 +138,13 @@ func toEmbeddedSnapshot(snapshot Snapshot) goagentembedded.Snapshot {
 	embedded := goagentembedded.Snapshot{
 		DesiredVersion: snapshot.DesiredVersion,
 		Revision:       snapshot.Revision,
+		AgentConfig: goagentembedded.AgentConfig{
+			OutboundProxyURL:     snapshot.AgentConfig.OutboundProxyURL,
+			TrafficStatsInterval: snapshot.AgentConfig.TrafficStatsInterval,
+			TrafficStatsEnabled:  snapshot.AgentConfig.TrafficStatsEnabled,
+			TrafficBlocked:       snapshot.AgentConfig.TrafficBlocked,
+			TrafficBlockReason:   snapshot.AgentConfig.TrafficBlockReason,
+		},
 	}
 	if snapshot.VersionPackage != nil {
 		embedded.VersionPackage = &goagentembedded.VersionPackage{
@@ -280,13 +287,15 @@ func fromEmbeddedRuntimeState(state goagentembedded.RuntimeState) RuntimeState {
 }
 
 func fromEmbeddedSyncRequest(request goagentembedded.SyncRequest) SyncRequest {
+	statsPresent := request.StatsPresent || len(request.Stats) > 0
 	copyValue := SyncRequest{
 		CurrentRevision:   request.CurrentRevision,
 		LastApplyRevision: request.LastApplyRevision,
 		LastApplyStatus:   request.LastApplyStatus,
 		LastApplyMessage:  request.LastApplyMessage,
+		StatsPresent:      statsPresent,
 	}
-	if request.StatsPresent || request.Stats != nil {
+	if statsPresent {
 		if data, err := json.Marshal(request.Stats); err == nil {
 			var stats map[string]any
 			if json.Unmarshal(data, &stats) == nil {

@@ -68,6 +68,7 @@ var runControlPlaneFromEnv = func() error {
 		return err
 	}
 	startManagedCertificateAutoRenewLoop(ctx, cfg, nil)
+	startTrafficCleanupLoop(ctx, cfg, nil)
 
 	application, err := newControlPlaneApp(cfg, nil)
 	if err != nil {
@@ -259,6 +260,7 @@ var runManagedCertificateRenewalPass = func(ctx context.Context, cfg config.Conf
 }
 
 var managedCertificateAutoRenewInitialDelay = 10 * time.Second
+var trafficCleanupInitialDelay = 30 * time.Second
 
 func startManagedCertificateAutoRenewLoop(ctx context.Context, cfg config.Config, logger *log.Logger) {
 	if !cfg.ManagedDNSCertificatesEnabled || cfg.ManagedCertificateRenewInterval <= 0 {
@@ -296,6 +298,55 @@ func startManagedCertificateAutoRenewLoop(ctx context.Context, cfg config.Config
 	}()
 }
 
+var runTrafficCleanupPass = func(ctx context.Context, cfg config.Config) error {
+	store, err := openConfiguredStore(cfg)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = store.Close()
+	}()
+
+	_, err = service.NewTrafficService(service.TrafficServiceConfig{Enabled: cfg.TrafficStatsEnabled}, store).CleanupAll(ctx)
+	return err
+}
+
+func startTrafficCleanupLoop(ctx context.Context, cfg config.Config, logger *log.Logger) {
+	if !cfg.TrafficStatsEnabled || cfg.TrafficCleanupInterval <= 0 {
+		return
+	}
+	if logger == nil {
+		logger = log.Default()
+	}
+
+	go func() {
+		initialTimer := time.NewTimer(trafficCleanupInitialDelay)
+		defer initialTimer.Stop()
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-initialTimer.C:
+			if err := runTrafficCleanupPass(ctx, cfg); err != nil {
+				logger.Printf("[traffic] initial cleanup cycle failed: %v", err)
+			}
+		}
+
+		ticker := time.NewTicker(cfg.TrafficCleanupInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := runTrafficCleanupPass(ctx, cfg); err != nil {
+					logger.Printf("[traffic] cleanup cycle failed: %v", err)
+				}
+			}
+		}
+	}()
+}
+
 var newLocalAgentStarter = func(cfg config.Config) (app.LocalAgentStarter, error) {
 	if !cfg.EnableLocalAgent {
 		return nil, nil
@@ -310,6 +361,9 @@ var newLocalAgentStarter = func(cfg config.Config) (app.LocalAgentStarter, error
 	if err != nil {
 		_ = store.Close()
 		return nil, err
+	}
+	if runtimeWithSource, ok := runtime.(interface{ SyncSource() *localagent.SyncSource }); ok {
+		runtimeWithSource.SyncSource().SetTrafficService(cfg.TrafficStatsEnabled, service.NewTrafficService(service.TrafficServiceConfig{Enabled: cfg.TrafficStatsEnabled}, store))
 	}
 	return runtime.Start, nil
 }
@@ -354,6 +408,9 @@ func newControlPlaneApp(cfg config.Config, logger *log.Logger) (*app.App, error)
 	if err != nil {
 		_ = closeStores()
 		return nil, err
+	}
+	if runtimeWithSource, ok := runtime.(interface{ SyncSource() *localagent.SyncSource }); ok {
+		runtimeWithSource.SyncSource().SetTrafficService(cfg.TrafficStatsEnabled, service.NewTrafficService(service.TrafficServiceConfig{Enabled: cfg.TrafficStatsEnabled}, serviceStore))
 	}
 
 	agentSvc.SetLocalApplyTrigger(runtime.SyncNow)
