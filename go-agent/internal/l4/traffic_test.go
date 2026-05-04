@@ -1,6 +1,7 @@
 package l4
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net"
@@ -8,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
 )
 
@@ -292,6 +295,80 @@ func TestCopyBidirectionalTCPRecordsL4RuleTrafficBeforeClose(t *testing.T) {
 		t.Fatal("copyBidirectionalTCP did not exit")
 	}
 	assertL4RuleTraffic(t, "42", len("client-to-upstream"), len("upstream-to-client"))
+}
+
+func TestRelayTCPInitialPayloadCountsOnlyAsL4RX(t *testing.T) {
+	traffic.Reset()
+	traffic.SetEnabled(true)
+	defer traffic.Reset()
+
+	client, downstream := net.Pipe()
+	defer client.Close()
+	upstream, relayConn := net.Pipe()
+	defer relayConn.Close()
+	dialer := &fakeL4RelayPathDialer{conn: upstream}
+	srv := &Server{
+		ctx:   context.Background(),
+		cache: backends.NewCache(backends.Config{}),
+		now:   time.Now,
+		relayListenersByID: map[int]model.RelayListener{
+			2: {
+				ID:         2,
+				Name:       "two",
+				ListenHost: "127.0.0.1",
+				ListenPort: 9002,
+				Enabled:    true,
+				TLSMode:    "pin_only",
+				PinSet:     []model.RelayPin{{Type: "sha256", Value: "pin2"}},
+			},
+		},
+		relayPathDialer: dialer,
+		tcpConns:        make(map[net.Conn]struct{}),
+	}
+	rule := model.L4Rule{
+		ID:           42,
+		Protocol:     "tcp",
+		ListenHost:   "127.0.0.1",
+		ListenPort:   9443,
+		UpstreamHost: "backend.example",
+		UpstreamPort: 9001,
+		RelayChain:   []int{2},
+		Tuning: model.L4Tuning{
+			ProxyProtocol: model.L4ProxyProtocolTuning{Decode: true},
+		},
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		srv.handleTCPConnection(downstream, rule)
+	}()
+
+	initialPayload := []byte("prefetched-client-bytes")
+	header := "PROXY TCP4 192.0.2.10 198.51.100.20 12345 443\r\n"
+	if _, err := client.Write(append([]byte(header), initialPayload...)); err != nil {
+		t.Fatalf("write initial payload: %v", err)
+	}
+	if !waitForL4RelayPathCalls(dialer, 2) {
+		t.Fatalf("dialed paths = %+v, want path [2]", dialer.calledPaths())
+	}
+	options := dialer.calledOptions()
+	if len(options) == 0 {
+		t.Fatal("expected relay dial options")
+	}
+	if !bytes.Equal(options[0].InitialPayload, initialPayload) {
+		t.Fatalf("relay initial payload = %q, want %q", options[0].InitialPayload, initialPayload)
+	}
+
+	waitL4RuleTraffic(t, "42", len(initialPayload), 0)
+
+	_ = client.Close()
+	_ = relayConn.Close()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("handleTCPConnection did not exit")
+	}
 }
 
 func waitL4RuleTraffic(t *testing.T, ruleID string, rxBytes int, txBytes int) {

@@ -288,7 +288,7 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 	done := make(chan struct{}, 2)
 	go func() {
 		if len(initialPayload) > 0 {
-			recorder.Add(int64(len(initialPayload)), int64(len(initialPayload)))
+			recorder.Add(int64(len(initialPayload)), 0)
 			recorder.Flush()
 		}
 		_, _ = copyL4TCP(upstream, downstreamSource, true, recorder)
