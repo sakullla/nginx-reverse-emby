@@ -75,6 +75,7 @@ services:
       NRE_MASTER_URL: http://perf-control:8080
       NRE_HEARTBEAT_INTERVAL: ${HARNESS_AGENT_HEARTBEAT_INTERVAL:-30s}
       NRE_DATA_DIR: /data
+      NRE_TRAFFIC_STATS_ENABLED: ${NRE_TRAFFIC_STATS_ENABLED:-true}
       NRE_PPROF_ADDR: ${HARNESS_AGENT_A_PPROF_ADDR:-}
     depends_on:
       perf:
@@ -103,6 +104,7 @@ services:
       NRE_MASTER_URL: http://perf-control:8080
       NRE_HEARTBEAT_INTERVAL: ${HARNESS_AGENT_HEARTBEAT_INTERVAL:-30s}
       NRE_DATA_DIR: /data
+      NRE_TRAFFIC_STATS_ENABLED: ${NRE_TRAFFIC_STATS_ENABLED:-true}
     depends_on:
       perf:
         condition: service_healthy
@@ -138,6 +140,7 @@ services:
       NRE_MASTER_URL: http://perf-control:8080
       NRE_HEARTBEAT_INTERVAL: ${HARNESS_AGENT_HEARTBEAT_INTERVAL:-30s}
       NRE_DATA_DIR: /data
+      NRE_TRAFFIC_STATS_ENABLED: ${NRE_TRAFFIC_STATS_ENABLED:-true}
     depends_on:
       perf:
         condition: service_healthy
@@ -173,6 +176,7 @@ services:
       NRE_MASTER_URL: http://perf-control:8080
       NRE_HEARTBEAT_INTERVAL: ${HARNESS_AGENT_HEARTBEAT_INTERVAL:-30s}
       NRE_DATA_DIR: /data
+      NRE_TRAFFIC_STATS_ENABLED: ${NRE_TRAFFIC_STATS_ENABLED:-true}
     depends_on:
       perf:
         condition: service_healthy
@@ -210,6 +214,7 @@ services:
       NRE_MASTER_URL: http://perf-control:8080
       NRE_HEARTBEAT_INTERVAL: ${HARNESS_AGENT_HEARTBEAT_INTERVAL:-30s}
       NRE_DATA_DIR: /data
+      NRE_TRAFFIC_STATS_ENABLED: ${NRE_TRAFFIC_STATS_ENABLED:-true}
     depends_on:
       perf:
         condition: service_healthy
@@ -247,6 +252,7 @@ services:
       NRE_MASTER_URL: http://perf-control:8080
       NRE_HEARTBEAT_INTERVAL: ${HARNESS_AGENT_HEARTBEAT_INTERVAL:-30s}
       NRE_DATA_DIR: /data
+      NRE_TRAFFIC_STATS_ENABLED: ${NRE_TRAFFIC_STATS_ENABLED:-true}
     depends_on:
       perf:
         condition: service_healthy

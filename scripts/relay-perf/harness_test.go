@@ -4,6 +4,8 @@ import (
 	"context"
 	"io"
 	"net"
+	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -93,4 +95,54 @@ func TestTransferForDurationDownloadsUntilDeadline(t *testing.T) {
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("backend connection did not exit after timed transfer")
 	}
+}
+
+func TestRelayPerfComposePassesTrafficStatsToggleToAgents(t *testing.T) {
+	data, err := os.ReadFile("docker-compose.yaml")
+	if err != nil {
+		t.Fatalf("read compose: %v", err)
+	}
+
+	compose := string(data)
+	for _, service := range []string{"agent-a", "relay-a1", "relay-a2", "relay-b3", "relay-b4", "agent-b"} {
+		serviceBlock := yamlTopLevelBlock(t, compose, "  "+service+":")
+		if !strings.Contains(serviceBlock, "NRE_TRAFFIC_STATS_ENABLED: ${NRE_TRAFFIC_STATS_ENABLED:-true}") {
+			t.Fatalf("%s does not pass NRE_TRAFFIC_STATS_ENABLED through", service)
+		}
+	}
+}
+
+func TestRunScriptCollectsStatsForActualRelayContainers(t *testing.T) {
+	data, err := os.ReadFile("run.ps1")
+	if err != nil {
+		t.Fatalf("read run script: %v", err)
+	}
+
+	script := string(data)
+	if strings.Contains(script, "nre-relay-b ") {
+		t.Fatal("run.ps1 still references nonexistent nre-relay-b container")
+	}
+	for _, container := range []string{"nre-relay-a1", "nre-relay-a2", "nre-relay-b3", "nre-relay-b4"} {
+		if !strings.Contains(script, container) {
+			t.Fatalf("run.ps1 does not collect docker stats for %s", container)
+		}
+	}
+}
+
+func yamlTopLevelBlock(t *testing.T, yaml, header string) string {
+	t.Helper()
+
+	start := strings.Index(yaml, header)
+	if start < 0 {
+		t.Fatalf("compose block %q not found", header)
+	}
+	block := yaml[start:]
+	lines := strings.Split(block, "\n")
+	for i := 1; i < len(lines); i++ {
+		line := lines[i]
+		if strings.HasPrefix(line, "  ") && !strings.HasPrefix(line, "    ") && strings.HasSuffix(strings.TrimSpace(line), ":") {
+			return strings.Join(lines[:i], "\n")
+		}
+	}
+	return block
 }
