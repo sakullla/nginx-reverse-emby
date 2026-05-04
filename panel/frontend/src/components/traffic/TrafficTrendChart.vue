@@ -8,7 +8,6 @@
 import { ref, watch, onMounted, onUnmounted } from 'vue'
 import { Chart, registerables } from 'chart.js'
 import { formatBytes } from '../../utils/trafficStats.js'
-import { alignSeriesByPosition } from './trafficTrendHelpers.mjs'
 
 Chart.register(...registerables)
 
@@ -37,25 +36,65 @@ function formatLabel(bucketStart) {
   return date.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })
 }
 
-function alignPrevData(labels, currentPoints, prevPoints) {
-  return alignSeriesByPosition(currentPoints, prevPoints)
+function bucketKey(point) {
+  return String(point?.bucket_start || '')
 }
 
-function alignByBucketStart(labels, currentPoints, points) {
-  if (!Array.isArray(points) || points.length === 0) return labels.map(() => null)
+function uniqueBucketStarts(currentPoints, hostPoints) {
+  const buckets = []
+  for (const points of [currentPoints, hostPoints]) {
+    if (!Array.isArray(points)) continue
+    for (const point of points) {
+      const key = bucketKey(point)
+      if (key) buckets.push(key)
+    }
+  }
+  return [...new Set(buckets)].sort()
+}
+
+function buildValueMap(points) {
   const map = new Map()
+  if (!Array.isArray(points)) return map
   for (const p of points) {
-    const key = String(p.bucket_start || '')
+    const key = bucketKey(p)
     if (key) map.set(key, Number(p.accounted_bytes) || 0)
   }
-  return currentPoints.map(p => map.get(String(p.bucket_start || '')) ?? null)
+  return map
+}
+
+function alignToBuckets(bucketStarts, points) {
+  const map = buildValueMap(points)
+  return bucketStarts.map((bucket) => (map.has(bucket) ? map.get(bucket) : null))
+}
+
+function alignPrevSeries(bucketStarts, currentPoints, prevPoints) {
+  if (!Array.isArray(currentPoints) || currentPoints.length === 0) {
+    return bucketStarts.map(() => null)
+  }
+  const currentIndexByBucket = new Map(bucketStarts.map((bucket, index) => [bucket, index]))
+  const series = bucketStarts.map(() => null)
+  const values = Array.isArray(prevPoints) ? prevPoints.map((point) => Number(point?.accounted_bytes) || 0) : []
+  currentPoints.forEach((point, index) => {
+    const bucket = bucketKey(point)
+    const targetIndex = currentIndexByBucket.get(bucket)
+    if (targetIndex == null || index >= values.length) return
+    series[targetIndex] = values[index]
+  })
+  return series
 }
 
 function buildConfig() {
-  const labels = props.points.map(p => formatLabel(p.bucket_start))
-  const accountedData = props.points.map(p => Number(p.accounted_bytes) || 0)
-  const rxData = props.points.map(p => Number(p.rx_bytes) || 0)
-  const txData = props.points.map(p => Number(p.tx_bytes) || 0)
+  const bucketStarts = uniqueBucketStarts(props.points, props.hostPoints)
+  const labels = bucketStarts.map(formatLabel)
+  const accountedData = alignToBuckets(bucketStarts, props.points)
+  const rxData = bucketStarts.map((bucket) => {
+    const point = Array.isArray(props.points) ? props.points.find((item) => bucketKey(item) === bucket) : null
+    return point ? (Number(point.rx_bytes) || 0) : null
+  })
+  const txData = bucketStarts.map((bucket) => {
+    const point = Array.isArray(props.points) ? props.points.find((item) => bucketKey(item) === bucket) : null
+    return point ? (Number(point.tx_bytes) || 0) : null
+  })
   const datasets = [
     {
       label: '用量',
@@ -94,7 +133,7 @@ function buildConfig() {
     }
   ]
   if (Array.isArray(props.hostPoints) && props.hostPoints.length > 0) {
-    const hostData = alignByBucketStart(labels, props.points, props.hostPoints)
+    const hostData = alignToBuckets(bucketStarts, props.hostPoints)
     datasets.push({
       label: '主机流量',
       data: hostData,
@@ -109,7 +148,7 @@ function buildConfig() {
     })
   }
   if (Array.isArray(props.prevPoints) && props.prevPoints.length > 0) {
-    const prevData = alignPrevData(labels, props.points, props.prevPoints)
+    const prevData = alignPrevSeries(bucketStarts, props.points, props.prevPoints)
     datasets.push({
       label: '上期',
       data: prevData,

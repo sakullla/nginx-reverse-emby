@@ -2,7 +2,6 @@
   <BaseListCard
     :status="statusTone"
     :disabled="!rule.enabled"
-    @click="$emit('edit', rule)"
   >
     <template #header-left>
       <BaseBadge tone="neutral" subtone="secondary" mono>#{{ rule.id }}</BaseBadge>

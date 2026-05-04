@@ -144,9 +144,9 @@ type AgentTrafficPolicyRow struct {
 	CycleStartDay          int    `gorm:"column:cycle_start_day;not null;default:1"`
 	MonthlyQuotaBytes      *int64 `gorm:"column:monthly_quota_bytes"`
 	BlockWhenExceeded      bool   `gorm:"column:block_when_exceeded;not null;default:false"`
-	HourlyRetentionDays    int    `gorm:"column:hourly_retention_days;not null;default:180"`
-	DailyRetentionMonths   int    `gorm:"column:daily_retention_months;not null;default:24"`
-	MonthlyRetentionMonths *int   `gorm:"column:monthly_retention_months"`
+	HourlyRetentionDays    int    `gorm:"column:hourly_retention_days;not null;default:30"`
+	DailyRetentionMonths   int    `gorm:"column:daily_retention_months;not null;default:3"`
+	MonthlyRetentionMonths *int   `gorm:"column:monthly_retention_months;default:36"`
 	UpdatedAt              string `gorm:"column:updated_at"`
 	CreatedAt              string `gorm:"column:created_at"`
 }
