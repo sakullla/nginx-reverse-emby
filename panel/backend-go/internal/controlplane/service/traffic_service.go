@@ -352,6 +352,9 @@ func (s *trafficService) recomputeAgentTrafficBlockState(ctx context.Context, ag
 		return err
 	}
 	reason := strings.TrimSpace(summary.BlockReason)
+	if !found && !summary.Blocked && reason == "" {
+		return nil
+	}
 	if found && previousBlocked == summary.Blocked && previousReason == reason {
 		return nil
 	}
@@ -400,6 +403,9 @@ func (s *trafficService) Calibrate(ctx context.Context, agentID string, request 
 		"raw_accounted_bytes": stats.accounted,
 		"adjust_used_bytes":   adjust,
 	}); err != nil {
+		return TrafficSummary{}, err
+	}
+	if err := s.recomputeAgentTrafficBlockState(ctx, agentID); err != nil {
 		return TrafficSummary{}, err
 	}
 	return s.Summary(ctx, agentID)

@@ -639,6 +639,50 @@ func TestTrafficServiceCalibrateAndCleanup(t *testing.T) {
 	}
 }
 
+func TestTrafficServiceCalibrateRecomputesTrafficBlockState(t *testing.T) {
+	fakeStore := newFakeTrafficStore()
+	quota := int64(500)
+	monthlyRetention := 12
+	fakeStore.policy = storage.AgentTrafficPolicyRow{
+		AgentID:                "edge-1",
+		Direction:              "both",
+		CycleStartDay:          1,
+		MonthlyQuotaBytes:      &quota,
+		BlockWhenExceeded:      true,
+		HourlyRetentionDays:    180,
+		DailyRetentionMonths:   24,
+		MonthlyRetentionMonths: &monthlyRetention,
+	}
+	fakeStore.agentTrafficBlocked["edge-1"] = true
+	fakeStore.agentTrafficBlockReason["edge-1"] = "monthly quota exceeded"
+	fakeStore.addBucket(storage.TrafficBucketRow{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		BucketStart: time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC),
+		RXBytes:     700,
+		TXBytes:     100,
+	})
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, fakeStore)
+
+	summary, err := svc.Calibrate(context.Background(), "edge-1", TrafficCalibrationRequest{UsedBytes: 123})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.Blocked {
+		t.Fatalf("summary.Blocked = true, want false after calibration below quota")
+	}
+	if fakeStore.agentTrafficBlocked["edge-1"] {
+		t.Fatalf("stored traffic block = true, want false")
+	}
+	if fakeStore.agentTrafficBlockReason["edge-1"] != "" {
+		t.Fatalf("stored traffic block reason = %q, want empty", fakeStore.agentTrafficBlockReason["edge-1"])
+	}
+	if len(fakeStore.events) != 2 || fakeStore.events[0].EventType != "calibration" || fakeStore.events[1].EventType != "traffic_block_state_changed" {
+		t.Fatalf("events = %+v, want calibration then block-state event", fakeStore.events)
+	}
+}
+
 func TestTrafficServiceCleanupAllUsesConfiguredPolicies(t *testing.T) {
 	fakeStore := newFakeTrafficStore()
 	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)

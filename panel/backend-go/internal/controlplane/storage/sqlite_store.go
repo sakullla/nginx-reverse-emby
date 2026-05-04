@@ -244,11 +244,11 @@ func (s *GormStore) LoadAgentSnapshot(ctx context.Context, agentID string, input
 		agentRevisionState, err = s.LoadLocalAgentState(ctx)
 	} else {
 		agentRevisionState, err = s.loadAgentRevisionState(ctx, resolvedAgentID)
-		agentConfig, _ = s.loadAgentConfigForSnapshot(ctx, resolvedAgentID)
 	}
 	if err != nil {
 		return Snapshot{}, err
 	}
+	agentConfig, _ = s.loadAgentConfigForSnapshot(ctx, resolvedAgentID)
 	revisionState := LocalAgentStateRow{
 		DesiredRevision: maxInt(input.DesiredRevision, agentRevisionState.DesiredRevision),
 		CurrentRevision: maxInt(input.CurrentRevision, agentRevisionState.CurrentRevision),

@@ -875,6 +875,47 @@ func TestStorePersistsRelayListenersAndManagedCertificates(t *testing.T) {
 	}
 }
 
+func TestLoadAgentSnapshotIncludesLocalAgentConfig(t *testing.T) {
+	dataRoot := seedSQLiteFixtureFromGORM(t)
+
+	store, err := NewSQLiteStore(dataRoot, "local")
+	if err != nil {
+		t.Fatalf("NewSQLiteStore() error = %v", err)
+	}
+	t.Cleanup(func() {
+		sqlDB, dbErr := store.db.DB()
+		if dbErr == nil {
+			_ = sqlDB.Close()
+		}
+	})
+
+	if err := store.SaveAgent(t.Context(), AgentRow{
+		ID:                   "local",
+		Name:                 "local",
+		IsLocal:              true,
+		OutboundProxyURL:     "socks://127.0.0.1:1080",
+		TrafficStatsInterval: "30s",
+		TrafficBlocked:       true,
+		TrafficBlockReason:   "monthly quota exceeded",
+	}); err != nil {
+		t.Fatalf("SaveAgent(local) error = %v", err)
+	}
+
+	snapshot, err := store.LoadAgentSnapshot(t.Context(), "local", AgentSnapshotInput{})
+	if err != nil {
+		t.Fatalf("LoadAgentSnapshot(local) error = %v", err)
+	}
+	if snapshot.AgentConfig.OutboundProxyURL != "socks://127.0.0.1:1080" {
+		t.Fatalf("OutboundProxyURL = %q", snapshot.AgentConfig.OutboundProxyURL)
+	}
+	if snapshot.AgentConfig.TrafficStatsInterval != "30s" {
+		t.Fatalf("TrafficStatsInterval = %q", snapshot.AgentConfig.TrafficStatsInterval)
+	}
+	if !snapshot.AgentConfig.TrafficBlocked || snapshot.AgentConfig.TrafficBlockReason != "monthly quota exceeded" {
+		t.Fatalf("AgentConfig traffic block = %+v", snapshot.AgentConfig)
+	}
+}
+
 func TestStoreSaveManagedCertificatesRemovesMaterialForDeletedDomains(t *testing.T) {
 	dataRoot := seedSQLiteFixtureFromGORM(t)
 
@@ -2092,7 +2133,7 @@ func TestStoreLoadAgentSnapshotTreatsLocalAgentAsSpecialRuntimeState(t *testing.
 	var agentRevisionLookups int
 	callbackName := "test:count_local_agent_revision_lookup"
 	if err := store.db.Callback().Query().After("gorm:query").Register(callbackName, func(tx *gorm.DB) {
-		if tx.Statement != nil && tx.Statement.Table == "agents" {
+		if tx.Statement != nil && tx.Statement.Table == "agents" && tx.Statement.SQL.String() == "SELECT * FROM `agents` WHERE id = ? ORDER BY `agents`.`id` LIMIT 1" {
 			agentRevisionLookups++
 		}
 	}); err != nil {

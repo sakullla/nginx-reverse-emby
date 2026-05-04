@@ -2041,6 +2041,9 @@ func TestPerformSyncIncludesApplyStatusAndManagedCertificateReports(t *testing.T
 	if req.Stats == nil {
 		t.Fatal("expected traffic stats in sync request")
 	}
+	if !req.StatsPresent {
+		t.Fatal("StatsPresent = false, want true when non-empty traffic stats are sent")
+	}
 	trafficStats, ok := req.Stats["traffic"].(map[string]any)
 	if !ok {
 		t.Fatalf("traffic stats missing in sync request: %+v", req.Stats)

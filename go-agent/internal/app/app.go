@@ -412,6 +412,7 @@ func (a *App) syncRequest(ctx context.Context, applied Snapshot) (SyncRequest, e
 		stats := traffic.SnapshotNonZero()
 		if stats != nil {
 			req.Stats = stats
+			req.StatsPresent = true
 			if hasTrafficStatsInterval(meta) {
 				a.pendingTrafficStatsReportUnix = strconv.FormatInt(now.Unix(), 10)
 			}
