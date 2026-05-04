@@ -180,8 +180,9 @@ func (d Dependencies) handleTrafficOverview(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"ok":     true,
-		"agents": result.Agents,
-		"trend":  result.Trend,
+		"ok":         true,
+		"agents":     result.Agents,
+		"trend":      result.Trend,
+		"host_trend": result.HostTrend,
 	})
 }

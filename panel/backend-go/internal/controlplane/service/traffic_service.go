@@ -261,6 +261,8 @@ func (s *trafficService) summaryWithPolicy(ctx context.Context, agentID string, 
 		HTTPRules:         breakdowns.httpRules,
 		L4Rules:           breakdowns.l4Rules,
 		RelayListeners:    breakdowns.relayListeners,
+		HostTotal:         breakdowns.hostTotal,
+		HostInterfaces:    breakdowns.hostInterfaces,
 	}, nil
 }
 
@@ -597,9 +599,18 @@ func (s *trafficService) Overview(ctx context.Context, agentFilter string, agent
 	} else {
 		trend = s.aggregateOverviewTrend(ctx, agentIDs)
 	}
+	var hostTrend []TrafficTrendPoint
+	if agentFilter != "" {
+		hostTrend, _ = s.Trend(ctx, TrafficTrendQuery{
+			AgentID:     agentFilter,
+			ScopeType:   "host_total",
+			Granularity: "day",
+		})
+	}
 	return TrafficOverviewResult{
-		Agents: overviewAgents,
-		Trend:  trend,
+		Agents:    overviewAgents,
+		Trend:     trend,
+		HostTrend: hostTrend,
 	}, nil
 }
 
@@ -730,10 +741,12 @@ func (s *trafficService) defaultTotalScopeType(ctx context.Context, agentID, gra
 }
 
 type trafficSummaryBreakdowns struct {
-	aggregates     []TrafficSummaryBreakdown
-	httpRules      []TrafficSummaryBreakdown
-	l4Rules        []TrafficSummaryBreakdown
-	relayListeners []TrafficSummaryBreakdown
+	aggregates      []TrafficSummaryBreakdown
+	httpRules       []TrafficSummaryBreakdown
+	l4Rules         []TrafficSummaryBreakdown
+	relayListeners  []TrafficSummaryBreakdown
+	hostTotal       TrafficSummaryBreakdown
+	hostInterfaces  []TrafficSummaryBreakdown
 }
 
 func (s *trafficService) summaryBreakdowns(ctx context.Context, agentID string, policy TrafficPolicy, start, end time.Time) (trafficSummaryBreakdowns, error) {
@@ -759,11 +772,24 @@ func (s *trafficService) summaryBreakdowns(ctx context.Context, agentID string, 
 			out.aggregates = append(out.aggregates, summarizeTrafficBreakdownRows(policy.Direction, rows)...)
 		}
 	}
+	hostTotalRows, err := s.store.ListTrafficTrend(ctx, storage.TrafficTrendQuery{
+		AgentID:     agentID,
+		ScopeType:   "host_total",
+		Granularity: "hour",
+		From:        start.UTC(),
+		To:          end.UTC(),
+	})
+	if err == nil {
+		rows := summarizeTrafficBreakdownRows(policy.Direction, hostTotalRows)
+		if len(rows) > 0 {
+			out.hostTotal = rows[0]
+		}
+	}
 	breakdownStore, ok := s.store.(trafficBreakdownStore)
 	if !ok {
 		return out, nil
 	}
-	for _, scopeType := range []string{"http_rule", "l4_rule", "relay_listener"} {
+	for _, scopeType := range []string{"http_rule", "l4_rule", "relay_listener", "host_interface"} {
 		rows, err := breakdownStore.ListTrafficBreakdown(ctx, storage.TrafficTrendQuery{
 			AgentID:     agentID,
 			ScopeType:   scopeType,
@@ -781,6 +807,8 @@ func (s *trafficService) summaryBreakdowns(ctx context.Context, agentID string, 
 			out.l4Rules = summarizeTrafficBreakdownRows(policy.Direction, rows)
 		case "relay_listener":
 			out.relayListeners = summarizeTrafficBreakdownRows(policy.Direction, rows)
+		case "host_interface":
+			out.hostInterfaces = summarizeTrafficBreakdownRows(policy.Direction, rows)
 		}
 	}
 	return out, nil
