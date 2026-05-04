@@ -44,6 +44,8 @@
       </StatCard>
     </div>
 
+    <DashboardTrafficModule />
+
     <div v-if="agents?.length" class="dashboard-section">
       <div class="dashboard-section__header">
         <h2 class="dashboard-section__title">节点状态</h2>
@@ -82,6 +84,7 @@ import { useRouter } from 'vue-router'
 import { useAgents } from '../hooks/useAgents'
 import AgentTable from '../components/AgentTable.vue'
 import StatCard from '../components/base/StatCard.vue'
+import DashboardTrafficModule from '../components/traffic/DashboardTrafficModule.vue'
 
 const router = useRouter()
 const { data: agents, isLoading } = useAgents()

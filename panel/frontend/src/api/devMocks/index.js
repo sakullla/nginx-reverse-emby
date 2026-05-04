@@ -47,5 +47,6 @@ export {
   fetchTrafficSummary,
   fetchTrafficTrend,
   calibrateTraffic,
-  cleanupTraffic
+  cleanupTraffic,
+  fetchTrafficOverview
 } from './data.js'
