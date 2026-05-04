@@ -48,7 +48,7 @@ func (w relayTrafficWriter) Write(p []byte) (int, error) {
 		} else {
 			w.recorder.Add(0, int64(n))
 		}
-		w.recorder.Flush()
+		w.recorder.FlushIfPendingBelow(32 * 1024)
 	}
 	return n, err
 }

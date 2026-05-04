@@ -288,6 +288,18 @@ func (s *GormStore) IngestTrafficCursorDeltaWithEvent(ctx context.Context, curso
 
 	var result TrafficCursorDeltaResult
 	err = s.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if isHostTrafficScope(cursor.ScopeType) {
+			var existing AgentTrafficRawCursorRow
+			err := tx.Clauses(clause.Locking{Strength: "UPDATE"}).
+				Where("agent_id = ? AND scope_type = ? AND scope_id = ?", cursor.AgentID, cursor.ScopeType, cursor.ScopeID).
+				First(&existing).Error
+			if err == gorm.ErrRecordNotFound {
+				return tx.Clauses(clause.OnConflict{DoNothing: true}).Create(&cursor).Error
+			}
+			if err != nil {
+				return err
+			}
+		}
 		seed := cursor
 		seed.RXBytes = 0
 		seed.TXBytes = 0
@@ -303,13 +315,20 @@ func (s *GormStore) IngestTrafficCursorDeltaWithEvent(ctx context.Context, curso
 		case err == nil:
 			result.Previous = previous
 			result.FoundPrevious = true
-			if cursor.RXBytes >= previous.RXBytes {
+			bootChanged := isHostTrafficScope(cursor.ScopeType) && strings.TrimSpace(previous.BootID) != "" && strings.TrimSpace(cursor.BootID) != "" && previous.BootID != cursor.BootID
+			if bootChanged {
+				result.DeltaRXBytes = cursor.RXBytes
+				result.CounterReset = true
+			} else if cursor.RXBytes >= previous.RXBytes {
 				result.DeltaRXBytes = cursor.RXBytes - previous.RXBytes
 			} else {
 				result.DeltaRXBytes = cursor.RXBytes
 				result.CounterReset = true
 			}
-			if cursor.TXBytes >= previous.TXBytes {
+			if bootChanged {
+				result.DeltaTXBytes = cursor.TXBytes
+				result.CounterReset = true
+			} else if cursor.TXBytes >= previous.TXBytes {
 				result.DeltaTXBytes = cursor.TXBytes - previous.TXBytes
 			} else {
 				result.DeltaTXBytes = cursor.TXBytes
@@ -345,12 +364,14 @@ func (s *GormStore) IngestTrafficCursorDeltaWithEvent(ctx context.Context, curso
 		}
 		if event.Payload == "" {
 			payload, _ := json.Marshal(map[string]any{
-				"scope_type":  cursor.ScopeType,
-				"scope_id":    cursor.ScopeID,
-				"previous_rx": result.Previous.RXBytes,
-				"previous_tx": result.Previous.TXBytes,
-				"current_rx":  cursor.RXBytes,
-				"current_tx":  cursor.TXBytes,
+				"scope_type":       cursor.ScopeType,
+				"scope_id":         cursor.ScopeID,
+				"previous_rx":      result.Previous.RXBytes,
+				"previous_tx":      result.Previous.TXBytes,
+				"current_rx":       cursor.RXBytes,
+				"current_tx":       cursor.TXBytes,
+				"previous_boot_id": result.Previous.BootID,
+				"current_boot_id":  cursor.BootID,
 			})
 			event.Payload = string(payload)
 		}
@@ -360,6 +381,10 @@ func (s *GormStore) IngestTrafficCursorDeltaWithEvent(ctx context.Context, curso
 		return tx.Create(event).Error
 	})
 	return result, err
+}
+
+func isHostTrafficScope(scopeType string) bool {
+	return scopeType == "host_total" || scopeType == "host_interface"
 }
 
 func trafficCursorMutex(agentID, scopeType, scopeID string) *sync.Mutex {

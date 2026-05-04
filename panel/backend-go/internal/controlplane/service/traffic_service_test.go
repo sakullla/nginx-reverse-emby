@@ -143,6 +143,120 @@ func TestTrafficServiceIngestHeartbeatParsesCurrentStatsShape(t *testing.T) {
 	assertBucket("relay_listener", "33", 130, 140)
 }
 
+func TestTrafficServiceIngestHeartbeatParsesHostTrafficStats(t *testing.T) {
+	fakeStore := newFakeTrafficStore()
+	fixedNow := time.Date(2026, 5, 3, 12, 34, 0, 0, time.UTC)
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return fixedNow }}, fakeStore)
+	first := AgentStats{"traffic": map[string]any{
+		"host": map[string]any{
+			"total":      map[string]any{"rx_bytes": uint64(1000), "tx_bytes": uint64(2000)},
+			"interfaces": map[string]any{"eth0": map[string]any{"rx_bytes": uint64(900), "tx_bytes": uint64(1800)}},
+		},
+	}}
+	second := AgentStats{"traffic": map[string]any{
+		"host": map[string]any{
+			"total":      map[string]any{"rx_bytes": uint64(1200), "tx_bytes": uint64(2300)},
+			"interfaces": map[string]any{"eth0": map[string]any{"rx_bytes": uint64(950), "tx_bytes": uint64(1850)}},
+		},
+	}}
+
+	if err := svc.IngestHeartbeat(context.Background(), "edge-1", first); err != nil {
+		t.Fatal(err)
+	}
+	if got := fakeStore.bucketRX("edge-1", "host_total", ""); got != 0 {
+		t.Fatalf("first host_total rx = %d, want initial baseline only", got)
+	}
+	if err := svc.IngestHeartbeat(context.Background(), "edge-1", second); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := fakeStore.bucketRX("edge-1", "host_total", ""); got != 200 {
+		t.Fatalf("host_total rx = %d, want 200", got)
+	}
+	if got := fakeStore.bucketTX("edge-1", "host_total", ""); got != 300 {
+		t.Fatalf("host_total tx = %d, want 300", got)
+	}
+	if got := fakeStore.bucketRX("edge-1", "host_interface", "eth0"); got != 50 {
+		t.Fatalf("host_interface eth0 rx = %d, want 50", got)
+	}
+}
+
+func TestTrafficServiceIngestHeartbeatParsesHostBootID(t *testing.T) {
+	samples := parseHeartbeatTrafficStats(AgentStats{"traffic": map[string]any{
+		"host": map[string]any{
+			"boot_id": "boot-123",
+			"total":   map[string]any{"rx_bytes": uint64(1000), "tx_bytes": uint64(2000)},
+			"interfaces": map[string]any{
+				"eth0": map[string]any{"rx_bytes": uint64(900), "tx_bytes": uint64(1800)},
+			},
+		},
+	}})
+
+	for _, sample := range samples {
+		if sample.scopeType == "host_total" || sample.scopeType == "host_interface" {
+			if sample.bootID != "boot-123" {
+				t.Fatalf("%s bootID = %q, want boot-123", sample.scopeType, sample.bootID)
+			}
+		}
+	}
+}
+
+func TestTrafficServiceSummaryUsesHostTotalForQuotaWhenAvailable(t *testing.T) {
+	fakeStore := newFakeTrafficStore()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	fakeStore.addBucket(storage.TrafficBucketRow{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		BucketStart: time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC),
+		RXBytes:     1,
+		TXBytes:     2,
+	})
+	fakeStore.addBucket(storage.TrafficBucketRow{
+		AgentID:     "edge-1",
+		ScopeType:   "host_total",
+		BucketStart: time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC),
+		RXBytes:     100,
+		TXBytes:     200,
+	})
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, fakeStore)
+
+	summary, err := svc.Summary(context.Background(), "edge-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.RXBytes != 100 || summary.TXBytes != 200 || summary.UsedBytes != 300 {
+		t.Fatalf("summary uses %+v, want host_total rx=100 tx=200 used=300", summary)
+	}
+}
+
+func TestTrafficServiceSummaryFallsBackToAgentTotalWhenHostTotalOnlyOutsideCycle(t *testing.T) {
+	fakeStore := newFakeTrafficStore()
+	now := time.Date(2026, 5, 20, 12, 0, 0, 0, time.UTC)
+	fakeStore.addBucket(storage.TrafficBucketRow{
+		AgentID:     "edge-1",
+		ScopeType:   "host_total",
+		BucketStart: time.Date(2026, 4, 20, 10, 0, 0, 0, time.UTC),
+		RXBytes:     100,
+		TXBytes:     200,
+	})
+	fakeStore.addBucket(storage.TrafficBucketRow{
+		AgentID:     "edge-1",
+		ScopeType:   "agent_total",
+		BucketStart: time.Date(2026, 5, 20, 10, 0, 0, 0, time.UTC),
+		RXBytes:     1,
+		TXBytes:     2,
+	})
+	svc := NewTrafficService(TrafficServiceConfig{Enabled: true, Now: func() time.Time { return now }}, fakeStore)
+
+	summary, err := svc.Summary(context.Background(), "edge-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.RXBytes != 1 || summary.TXBytes != 2 || summary.UsedBytes != 3 {
+		t.Fatalf("summary uses %+v, want current-cycle agent_total fallback", summary)
+	}
+}
+
 func TestTrafficServiceIngestHeartbeatCounterResetRecordsNonNegativeDelta(t *testing.T) {
 	fakeStore := newFakeTrafficStore()
 	fixedNow := time.Date(2026, 5, 3, 12, 34, 0, 0, time.UTC)
@@ -222,6 +336,23 @@ func TestTrafficServiceUpdatePolicyValidatesAndNormalizes(t *testing.T) {
 	_, err = svc.UpdatePolicy(context.Background(), "edge-1", TrafficPolicy{Direction: "rx", CycleStartDay: 29})
 	if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), "cycle_start_day") {
 		t.Fatalf("UpdatePolicy() error = %v, want cycle_start_day validation", err)
+	}
+
+	negativeMonthlyRetention := -1
+	for _, tc := range []struct {
+		name   string
+		policy TrafficPolicy
+	}{
+		{name: "hourly_retention_days", policy: TrafficPolicy{Direction: "rx", CycleStartDay: 1, HourlyRetentionDays: -1}},
+		{name: "daily_retention_months", policy: TrafficPolicy{Direction: "rx", CycleStartDay: 1, DailyRetentionMonths: -1}},
+		{name: "monthly_retention_months", policy: TrafficPolicy{Direction: "rx", CycleStartDay: 1, MonthlyRetentionMonths: &negativeMonthlyRetention}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := svc.UpdatePolicy(context.Background(), "edge-1", tc.policy)
+			if !errors.Is(err, ErrInvalidArgument) || !strings.Contains(err.Error(), tc.name) {
+				t.Fatalf("UpdatePolicy() error = %v, want %s validation", err, tc.name)
+			}
+		})
 	}
 }
 

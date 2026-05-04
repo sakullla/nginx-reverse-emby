@@ -1,11 +1,14 @@
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { mount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 import { QueryClient, VueQueryPlugin } from '@tanstack/vue-query'
 import DashboardTrafficModule from './DashboardTrafficModule.vue'
+import { fetchSystemInfo, fetchTrafficOverview } from '../../api'
+
+let trafficStatsEnabled = true
 
 vi.mock('../../api', () => ({
-  fetchSystemInfo: vi.fn(async () => ({ traffic_stats_enabled: true })),
+  fetchSystemInfo: vi.fn(async () => ({ traffic_stats_enabled: trafficStatsEnabled })),
   fetchTrafficOverview: vi.fn(async () => ({
     trend: [],
     agents: [
@@ -49,11 +52,26 @@ async function mountModule() {
 }
 
 describe('DashboardTrafficModule', () => {
+  beforeEach(() => {
+    trafficStatsEnabled = true
+    vi.clearAllMocks()
+  })
+
   it('keeps aggregate remaining unlimited when all selected agents have no quota', async () => {
     const wrapper = await mountModule()
 
     expect(wrapper.text()).toContain('剩余')
     expect(wrapper.text()).toContain('无限制')
     expect(wrapper.text()).not.toContain('0 B')
+  })
+
+  it('does not fetch traffic overview when traffic stats are disabled', async () => {
+    trafficStatsEnabled = false
+
+    const wrapper = await mountModule()
+
+    expect(fetchSystemInfo).toHaveBeenCalled()
+    expect(fetchTrafficOverview).not.toHaveBeenCalled()
+    expect(wrapper.find('.dashboard-traffic').exists()).toBe(false)
   })
 })

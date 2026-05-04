@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -112,6 +113,21 @@ func TestLoadFromEnvTrafficStatsEnabledParsesFalse(t *testing.T) {
 	}
 	if cfg.TrafficStatsEnabled {
 		t.Fatal("expected TrafficStatsEnabled to be false")
+	}
+}
+
+func TestLoadFromEnvParsesTrafficInterfaces(t *testing.T) {
+	t.Setenv("NRE_MASTER_URL", "https://master.example.com")
+	t.Setenv("NRE_AGENT_TOKEN", "secret")
+	t.Setenv("NRE_TRAFFIC_INTERFACES", " eth0,ens3 ,, eth1 ")
+
+	cfg, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("LoadFromEnv() error = %v", err)
+	}
+	want := []string{"eth0", "ens3", "eth1"}
+	if !reflect.DeepEqual(cfg.TrafficInterfaces, want) {
+		t.Fatalf("TrafficInterfaces = %#v, want %#v", cfg.TrafficInterfaces, want)
 	}
 }
 

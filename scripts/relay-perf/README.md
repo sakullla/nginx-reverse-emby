@@ -64,6 +64,7 @@
 
 `run.ps1` 另外支持这些宿主机环境变量：
 
+- `NRE_TRAFFIC_STATS_ENABLED`：传给所有 agent/relay 容器，默认 `true`；设为 `false` 可对比流量统计开销
 - `HARNESS_DELAY_CLI_TO_A_MS`
 - `HARNESS_DELAY_A_TO_RELAY_MS`
 - `HARNESS_NETEM_DELAY_MS`

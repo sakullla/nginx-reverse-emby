@@ -225,6 +225,45 @@ func TestPipeUDPPacketsFlushesTrafficAfterBothDirectionsFinish(t *testing.T) {
 	}
 }
 
+func TestPipeUDPPacketsReportsTrafficBeforePipeCloses(t *testing.T) {
+	traffic.Reset()
+	defer traffic.Reset()
+
+	clientConn := newScriptedUDPRelayConn([]byte("active-request"))
+	upstream := newAsymmetricShutdownUDPPeer([]byte("active-reply"))
+
+	done := make(chan struct{})
+	go func() {
+		pipeUDPPackets(clientConn, upstream, nil)
+		close(done)
+	}()
+
+	upstream.waitForWrite(t, time.Second)
+	upstream.allowFinalReply()
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		stats := traffic.SnapshotNonZero()
+		if stats != nil {
+			relayStats := stats["traffic"].(map[string]any)["relay"].(map[string]uint64)
+			if relayStats["rx_bytes"] == uint64(len("active-request")) {
+				break
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("active UDP relay traffic was not visible before pipe closed")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	clientConn.closeReads()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("pipeUDPPackets did not exit")
+	}
+}
+
 func readRelayExact(t *testing.T, r io.Reader, size int) {
 	t.Helper()
 

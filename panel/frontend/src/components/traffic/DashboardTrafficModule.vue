@@ -47,11 +47,12 @@ const { data: systemInfo } = useQuery({
   queryFn: fetchSystemInfo
 })
 
-const visible = computed(() => systemInfo.value?.traffic_stats_enabled !== false)
+const trafficStatsEnabled = computed(() => !!systemInfo.value && systemInfo.value.traffic_stats_enabled !== false)
+const visible = trafficStatsEnabled
 
 const selectedAgentId = ref('')
 
-const overviewQuery = useTrafficOverview(selectedAgentId)
+const overviewQuery = useTrafficOverview(selectedAgentId, trafficStatsEnabled)
 
 const overviewAgents = computed(() => overviewQuery.data.value?.agents ?? [])
 

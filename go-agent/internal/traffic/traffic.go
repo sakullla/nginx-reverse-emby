@@ -6,7 +6,7 @@ import (
 	"sync/atomic"
 )
 
-const recorderFlushThreshold uint64 = 64 * 1024
+const recorderFlushThreshold uint64 = 1024 * 1024
 
 type counters struct {
 	rx atomic.Uint64
@@ -14,10 +14,11 @@ type counters struct {
 }
 
 type Recorder struct {
-	counter *counters
-	scoped  *counters
-	rx      atomic.Uint64
-	tx      atomic.Uint64
+	counter    *counters
+	scoped     *counters
+	rx         atomic.Uint64
+	tx         atomic.Uint64
+	generation atomic.Uint64
 }
 
 type keyedCounters struct {
@@ -32,7 +33,9 @@ var (
 	httpRuleCounters      keyedCounters
 	l4RuleCounters        keyedCounters
 	relayListenerCounters keyedCounters
+	recorderRegistry      = recorderSet{recorders: map[*Recorder]struct{}{}}
 	enabled               atomic.Bool
+	resetGeneration       atomic.Uint64
 )
 
 func init() {
@@ -40,6 +43,9 @@ func init() {
 }
 
 func SetEnabled(value bool) {
+	if !value {
+		Reset()
+	}
 	enabled.Store(value)
 }
 
@@ -60,33 +66,40 @@ func AddRelay(rxBytes, txBytes int64) {
 }
 
 func NewHTTPRecorder() *Recorder {
-	return &Recorder{counter: &httpCounters}
+	return newRecorder(&httpCounters, nil)
 }
 
 func NewL4Recorder() *Recorder {
-	return &Recorder{counter: &l4Counters}
+	return newRecorder(&l4Counters, nil)
 }
 
 func NewRelayRecorder() *Recorder {
-	return &Recorder{counter: &relayCounters}
+	return newRecorder(&relayCounters, nil)
 }
 
 func NewHTTPRuleRecorder(ruleID int) *Recorder {
-	return &Recorder{counter: &httpCounters, scoped: httpRuleCounters.counterFor(ruleID)}
+	return newRecorder(&httpCounters, httpRuleCounters.counterFor(ruleID))
 }
 
 func NewL4RuleRecorder(ruleID int) *Recorder {
-	return &Recorder{counter: &l4Counters, scoped: l4RuleCounters.counterFor(ruleID)}
+	return newRecorder(&l4Counters, l4RuleCounters.counterFor(ruleID))
 }
 
 func NewRelayListenerRecorder(listenerID int) *Recorder {
-	return &Recorder{counter: &relayCounters, scoped: relayListenerCounters.counterFor(listenerID)}
+	return newRecorder(&relayCounters, relayListenerCounters.counterFor(listenerID))
+}
+
+func newRecorder(counter *counters, scoped *counters) *Recorder {
+	recorder := &Recorder{counter: counter, scoped: scoped}
+	recorder.generation.Store(resetGeneration.Load())
+	return recorder
 }
 
 func (r *Recorder) Add(rxBytes, txBytes int64) {
 	if r == nil || r.counter == nil || !Enabled() {
 		return
 	}
+	r.discardPendingAfterReset()
 	var added uint64
 	if rxBytes > 0 {
 		added += uint64(rxBytes)
@@ -96,10 +109,12 @@ func (r *Recorder) Add(rxBytes, txBytes int64) {
 		added += uint64(txBytes)
 		r.tx.Add(uint64(txBytes))
 	}
-	// Scoped counters are part of heartbeat snapshots, so flush them immediately
-	// instead of waiting for the aggregate recorder threshold.
-	if added > 0 && (r.scoped != nil || r.rx.Load()+r.tx.Load() >= recorderFlushThreshold) {
+	if added > 0 && r.rx.Load()+r.tx.Load() >= recorderFlushThreshold {
 		r.Flush()
+		return
+	}
+	if added > 0 {
+		recorderRegistry.add(r)
 	}
 }
 
@@ -107,12 +122,41 @@ func (r *Recorder) Flush() {
 	if r == nil || r.counter == nil || !Enabled() {
 		return
 	}
+	r.discardPendingAfterReset()
+	recorderRegistry.delete(r)
 	rx := r.rx.Swap(0)
 	tx := r.tx.Swap(0)
 	addUint64(r.counter, rx, tx)
 	if r.scoped != nil {
 		addUint64(r.scoped, rx, tx)
 	}
+}
+
+func (r *Recorder) Close() {
+	if r == nil || r.counter == nil {
+		return
+	}
+	r.Flush()
+}
+
+func (r *Recorder) FlushIfPendingBelow(maxBytes uint64) {
+	if r == nil || r.counter == nil || !Enabled() {
+		return
+	}
+	r.discardPendingAfterReset()
+	if r.rx.Load()+r.tx.Load() <= maxBytes {
+		r.Flush()
+	}
+}
+
+func (r *Recorder) discardPendingAfterReset() {
+	current := resetGeneration.Load()
+	if r.generation.Load() == current {
+		return
+	}
+	r.rx.Store(0)
+	r.tx.Store(0)
+	r.generation.Store(current)
 }
 
 func Snapshot() map[string]any {
@@ -126,6 +170,7 @@ func SnapshotNonZero() map[string]any {
 	if !Enabled() {
 		return nil
 	}
+	recorderRegistry.flushDirty()
 	stats := snapshot()
 	trafficStats := stats["traffic"].(map[string]any)
 	total := trafficStats["total"].(map[string]uint64)
@@ -136,6 +181,8 @@ func SnapshotNonZero() map[string]any {
 }
 
 func Reset() {
+	resetGeneration.Add(1)
+	recorderRegistry.clear()
 	httpCounters.rx.Store(0)
 	httpCounters.tx.Store(0)
 	l4Counters.rx.Store(0)
@@ -145,6 +192,41 @@ func Reset() {
 	httpRuleCounters.reset()
 	l4RuleCounters.reset()
 	relayListenerCounters.reset()
+}
+
+type recorderSet struct {
+	mu        sync.RWMutex
+	recorders map[*Recorder]struct{}
+}
+
+func (s *recorderSet) add(recorder *Recorder) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.recorders[recorder] = struct{}{}
+}
+
+func (s *recorderSet) delete(recorder *Recorder) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.recorders, recorder)
+}
+
+func (s *recorderSet) flushDirty() {
+	s.mu.RLock()
+	recorders := make([]*Recorder, 0, len(s.recorders))
+	for recorder := range s.recorders {
+		recorders = append(recorders, recorder)
+	}
+	s.mu.RUnlock()
+	for _, recorder := range recorders {
+		recorder.Flush()
+	}
+}
+
+func (s *recorderSet) clear() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.recorders = map[*Recorder]struct{}{}
 }
 
 func (k *keyedCounters) counterFor(id int) *counters {
@@ -227,10 +309,7 @@ func snapshot() map[string]any {
 	http := snapshotCounters(&httpCounters)
 	l4 := snapshotCounters(&l4Counters)
 	relay := snapshotCounters(&relayCounters)
-	total := map[string]uint64{
-		"rx_bytes": http["rx_bytes"] + l4["rx_bytes"] + relay["rx_bytes"],
-		"tx_bytes": http["tx_bytes"] + l4["tx_bytes"] + relay["tx_bytes"],
-	}
+	total := businessTotalCounters(http, l4, relay)
 	return map[string]any{
 		"traffic": map[string]any{
 			"total":           total,
@@ -241,5 +320,18 @@ func snapshot() map[string]any {
 			"l4_rules":        snapshotKeyedCounters(&l4RuleCounters),
 			"relay_listeners": snapshotKeyedCounters(&relayListenerCounters),
 		},
+	}
+}
+
+func businessTotalCounters(http, l4, relay map[string]uint64) map[string]uint64 {
+	rx := http["rx_bytes"] + l4["rx_bytes"]
+	tx := http["tx_bytes"] + l4["tx_bytes"]
+	if rx == 0 && tx == 0 {
+		rx = relay["rx_bytes"]
+		tx = relay["tx_bytes"]
+	}
+	return map[string]uint64{
+		"rx_bytes": rx,
+		"tx_bytes": tx,
 	}
 }

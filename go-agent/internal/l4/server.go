@@ -289,7 +289,7 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 	go func() {
 		if len(initialPayload) > 0 {
 			recorder.Add(int64(len(initialPayload)), 0)
-			recorder.Flush()
+			recorder.FlushIfPendingBelow(32 * 1024)
 		}
 		_, _ = copyL4TCP(upstream, downstreamSource, true, recorder)
 		closeTCPWrite(upstream)
@@ -304,6 +304,7 @@ func (s *Server) handleTCPConnection(client net.Conn, rule model.L4Rule) {
 	}()
 	<-done
 	<-done
+	recorder.Flush()
 }
 
 func (s *Server) currentTrafficBlockState() TrafficBlockState {
@@ -374,6 +375,7 @@ func copyBidirectionalTCP(a net.Conn, b net.Conn, recorder *traffic.Recorder) {
 	}()
 	<-done
 	<-done
+	recorder.Flush()
 }
 
 func l4RecorderOrAggregate(recorder *traffic.Recorder) *traffic.Recorder {
@@ -406,7 +408,7 @@ func (w l4TrafficWriter) Write(p []byte) (int, error) {
 		} else {
 			w.recorder.Add(0, int64(n))
 		}
-		w.recorder.Flush()
+		w.recorder.FlushIfPendingBelow(32 * 1024)
 	}
 	return n, err
 }
@@ -663,6 +665,7 @@ func (s *Server) proxyUDPPacket(listener *net.UDPConn, rule model.L4Rule, payloa
 		return
 	}
 	session.trafficRecorder.Add(int64(len(payload)), 0)
+	session.trafficRecorder.FlushIfPendingBelow(32 * 1024)
 	s.markUDPSessionWrite(session.key)
 }
 
@@ -731,6 +734,14 @@ func (s *Server) sessionForPeer(rule model.L4Rule, listener *net.UDPConn, peer *
 
 	s.udpMu.Lock()
 	if existing := s.udpSessions[key]; existing != nil {
+		if state := s.currentTrafficBlockState(); state.Blocked {
+			delete(s.udpSessions, key)
+			s.udpMu.Unlock()
+			if existing.upstream != nil {
+				_ = existing.upstream.Close()
+			}
+			return nil, nil
+		}
 		ready := existing.ready
 		if ready == nil {
 			existing.lastActive = s.now()
@@ -883,6 +894,7 @@ func (s *Server) pipeUDPReplies(session *udpSession) {
 			return
 		}
 		session.trafficRecorder.Add(0, int64(len(payload)))
+		session.trafficRecorder.FlushIfPendingBelow(32 * 1024)
 	}
 }
 

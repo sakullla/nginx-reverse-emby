@@ -4,6 +4,7 @@ import (
 	"errors"
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/certs"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/hosttraffic"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/relay"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/store"
 	agenttask "github.com/sakullla/nginx-reverse-emby/go-agent/internal/task"
@@ -59,6 +60,7 @@ func NewEmbedded(cfg Config, st store.Store, client SyncClient) (*App, error) {
 		nil,
 	)
 	app.setDiagnostics(diagnosticHandler, httpProber, tcpProber)
+	app.hostTrafficCollector = hosttraffic.NewCollector(cfg.TrafficInterfaces)
 	app.relayTimeoutReset = resetRelayTimeouts
 	restoreRelayTimeouts = false
 	return app, nil

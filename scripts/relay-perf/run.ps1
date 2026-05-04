@@ -93,7 +93,7 @@ try {
 
         if (-not $SkipStats) {
             docker stats --no-stream --format '{{.Name}},{{.CPUPerc}},{{.MemUsage}},{{.NetIO}}' `
-                nre-agent-a nre-relay-b nre-agent-b nre-backend-b nre-perf 2>$null |
+                nre-agent-a nre-relay-a1 nre-relay-a2 nre-relay-b3 nre-relay-b4 nre-agent-b nre-backend-b nre-perf 2>$null |
                 ForEach-Object { $statsRows.Add("$(Get-Date -Format o),$_") }
         }
 

@@ -993,6 +993,7 @@ func pipeUDPPackets(clientConn net.Conn, upstream udpPacketPeer, recorder *traff
 				return
 			}
 			recorder.Add(int64(len(payload)), 0)
+			recorder.FlushIfPendingBelow(32 * 1024)
 		}
 	}()
 
@@ -1009,6 +1010,7 @@ func pipeUDPPackets(clientConn net.Conn, upstream udpPacketPeer, recorder *traff
 				return
 			}
 			recorder.Add(0, int64(len(payload)))
+			recorder.FlushIfPendingBelow(32 * 1024)
 		}
 	}()
 

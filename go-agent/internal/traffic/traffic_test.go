@@ -20,7 +20,7 @@ func TestSnapshotAggregatesTrafficByCategory(t *testing.T) {
 	assertTrafficCounters(t, traffic["http"], 100, 200)
 	assertTrafficCounters(t, traffic["l4"], 300, 400)
 	assertTrafficCounters(t, traffic["relay"], 500, 600)
-	assertTrafficCounters(t, traffic["total"], 900, 1200)
+	assertTrafficCounters(t, traffic["total"], 400, 600)
 }
 
 func TestAddIgnoresNegativeValues(t *testing.T) {
@@ -68,6 +68,160 @@ func TestRecorderBatchesTrafficUntilFlush(t *testing.T) {
 	assertTrafficCounters(t, traffic["http"], 40, 60)
 }
 
+func TestScopedRecorderFlushesAfterThresholdWithoutManualFlush(t *testing.T) {
+	Reset()
+
+	recorder := NewHTTPRuleRecorder(11)
+	recorder.Add(int64(recorderFlushThreshold/2), 0)
+
+	stats := Snapshot()["traffic"].(map[string]any)
+	httpRules := stats["http_rules"].(map[string]map[string]uint64)
+	if got := httpRules["11"]; got != nil {
+		t.Fatalf("http_rules[11] = %#v, want no early flush before threshold", got)
+	}
+
+	recorder.Add(int64(recorderFlushThreshold/2), 0)
+
+	stats = Snapshot()["traffic"].(map[string]any)
+	httpRules = stats["http_rules"].(map[string]map[string]uint64)
+	assertTrafficCounters(t, httpRules["11"], recorderFlushThreshold, 0)
+	assertTrafficCounters(t, stats["http"], recorderFlushThreshold, 0)
+}
+
+func TestScopedRecorderBatchesBulkChunksBelowThreshold(t *testing.T) {
+	Reset()
+
+	recorder := NewL4RuleRecorder(42)
+	recorder.Add(64*1024, 0)
+
+	stats := Snapshot()["traffic"].(map[string]any)
+	l4Rules := stats["l4_rules"].(map[string]map[string]uint64)
+	if got := l4Rules["42"]; got != nil {
+		t.Fatalf("l4_rules[42] = %#v, want 64KiB bulk chunk batched below threshold", got)
+	}
+
+	recorder.Flush()
+
+	stats = Snapshot()["traffic"].(map[string]any)
+	l4Rules = stats["l4_rules"].(map[string]map[string]uint64)
+	assertTrafficCounters(t, l4Rules["42"], 64*1024, 0)
+}
+
+func TestSnapshotNonZeroFlushesPendingScopedRecorderTraffic(t *testing.T) {
+	Reset()
+	SetEnabled(true)
+	defer Reset()
+
+	recorder := NewL4RuleRecorder(42)
+	recorder.Add(123, 456)
+
+	stats := SnapshotNonZero()
+	if stats == nil {
+		t.Fatal("SnapshotNonZero() = nil, want pending recorder traffic")
+	}
+	traffic := stats["traffic"].(map[string]any)
+	assertTrafficCounters(t, traffic["total"], 123, 456)
+	assertTrafficCounters(t, traffic["l4"], 123, 456)
+	l4Rules := traffic["l4_rules"].(map[string]map[string]uint64)
+	assertTrafficCounters(t, l4Rules["42"], 123, 456)
+}
+
+func TestSnapshotNonZeroFlushesPendingRecordersOnce(t *testing.T) {
+	Reset()
+	SetEnabled(true)
+	defer Reset()
+
+	recorder := NewRelayListenerRecorder(31)
+	recorder.Add(10, 20)
+
+	first := SnapshotNonZero()["traffic"].(map[string]any)
+	assertTrafficCounters(t, first["total"], 10, 20)
+
+	second := SnapshotNonZero()["traffic"].(map[string]any)
+	assertTrafficCounters(t, second["total"], 10, 20)
+	relayListeners := second["relay_listeners"].(map[string]map[string]uint64)
+	assertTrafficCounters(t, relayListeners["31"], 10, 20)
+}
+
+func TestSnapshotNonZeroDiscardsPendingRecorderTrafficAfterReset(t *testing.T) {
+	Reset()
+	SetEnabled(true)
+	defer Reset()
+
+	recorder := NewHTTPRuleRecorder(11)
+	recorder.Add(100, 200)
+
+	Reset()
+	recorder.Add(7, 9)
+
+	stats := SnapshotNonZero()
+	if stats == nil {
+		t.Fatal("SnapshotNonZero() = nil, want post-reset pending recorder traffic")
+	}
+	traffic := stats["traffic"].(map[string]any)
+	assertTrafficCounters(t, traffic["total"], 7, 9)
+	assertTrafficCounters(t, traffic["http"], 7, 9)
+	httpRules := traffic["http_rules"].(map[string]map[string]uint64)
+	assertTrafficCounters(t, httpRules["11"], 7, 9)
+}
+
+func TestDisablingTrafficStatsDropsPendingRecorderTraffic(t *testing.T) {
+	Reset()
+	SetEnabled(true)
+	t.Cleanup(func() {
+		SetEnabled(true)
+		Reset()
+	})
+
+	recorder := NewHTTPRuleRecorder(11)
+	recorder.Add(100, 200)
+
+	SetEnabled(false)
+	SetEnabled(true)
+	recorder.Add(7, 9)
+
+	stats := SnapshotNonZero()
+	if stats == nil {
+		t.Fatal("SnapshotNonZero() = nil, want traffic recorded after re-enable")
+	}
+	traffic := stats["traffic"].(map[string]any)
+	assertTrafficCounters(t, traffic["total"], 7, 9)
+	assertTrafficCounters(t, traffic["http"], 7, 9)
+	httpRules := traffic["http_rules"].(map[string]map[string]uint64)
+	assertTrafficCounters(t, httpRules["11"], 7, 9)
+}
+
+func TestDisablingTrafficStatsClearsFlushedCounters(t *testing.T) {
+	Reset()
+	SetEnabled(true)
+	t.Cleanup(func() {
+		SetEnabled(true)
+		Reset()
+	})
+
+	recorder := NewHTTPRuleRecorder(11)
+	recorder.Add(100, 200)
+	recorder.Flush()
+
+	SetEnabled(false)
+	SetEnabled(true)
+
+	if stats := SnapshotNonZero(); stats != nil {
+		t.Fatalf("SnapshotNonZero() = %#v, want nil after disabled counters are cleared", stats)
+	}
+
+	recorder.Add(7, 9)
+	stats := SnapshotNonZero()
+	if stats == nil {
+		t.Fatal("SnapshotNonZero() = nil, want traffic recorded after re-enable")
+	}
+	traffic := stats["traffic"].(map[string]any)
+	assertTrafficCounters(t, traffic["total"], 7, 9)
+	assertTrafficCounters(t, traffic["http"], 7, 9)
+	httpRules := traffic["http_rules"].(map[string]map[string]uint64)
+	assertTrafficCounters(t, httpRules["11"], 7, 9)
+}
+
 func TestRecorderCanBeSharedAcrossConcurrentDirections(t *testing.T) {
 	Reset()
 
@@ -99,13 +253,19 @@ func TestScopedRecordersPopulatePerObjectBuckets(t *testing.T) {
 	SetEnabled(true)
 	defer Reset()
 
-	NewHTTPRuleRecorder(11).Add(100, 200)
-	NewL4RuleRecorder(21).Add(300, 400)
-	NewRelayListenerRecorder(31).Add(500, 600)
+	httpRecorder := NewHTTPRuleRecorder(11)
+	l4Recorder := NewL4RuleRecorder(21)
+	relayRecorder := NewRelayListenerRecorder(31)
+	httpRecorder.Add(100, 200)
+	l4Recorder.Add(300, 400)
+	relayRecorder.Add(500, 600)
+	httpRecorder.Flush()
+	l4Recorder.Flush()
+	relayRecorder.Flush()
 
 	stats := Snapshot()["traffic"].(map[string]any)
 	total := stats["total"].(map[string]uint64)
-	if total["rx_bytes"] != 900 || total["tx_bytes"] != 1200 {
+	if total["rx_bytes"] != 400 || total["tx_bytes"] != 600 {
 		t.Fatalf("total = %+v", total)
 	}
 	assertTrafficCounters(t, stats["http"], 100, 200)
@@ -125,6 +285,27 @@ func TestScopedRecordersPopulatePerObjectBuckets(t *testing.T) {
 	}
 }
 
+func TestSnapshotTotalExcludesRelayTransportBreakdown(t *testing.T) {
+	Reset()
+	SetEnabled(true)
+	defer Reset()
+
+	l4Recorder := NewL4RuleRecorder(21)
+	relayRecorder := NewRelayListenerRecorder(31)
+	l4Recorder.Add(100, 200)
+	relayRecorder.Add(100, 200)
+	l4Recorder.Flush()
+	relayRecorder.Flush()
+
+	stats := Snapshot()["traffic"].(map[string]any)
+	total := stats["total"].(map[string]uint64)
+	if total["rx_bytes"] != 100 || total["tx_bytes"] != 200 {
+		t.Fatalf("total = %+v, want business traffic without relay double count", total)
+	}
+	assertTrafficCounters(t, stats["l4"], 100, 200)
+	assertTrafficCounters(t, stats["relay"], 100, 200)
+}
+
 func TestResetKeepsLiveScopedRecorderVisible(t *testing.T) {
 	Reset()
 	SetEnabled(true)
@@ -136,6 +317,7 @@ func TestResetKeepsLiveScopedRecorderVisible(t *testing.T) {
 	Reset()
 
 	recorder.Add(5, 6)
+	recorder.Flush()
 
 	stats := Snapshot()["traffic"].(map[string]any)
 	assertTrafficCounters(t, stats["relay"], 5, 6)
@@ -146,9 +328,15 @@ func TestResetKeepsLiveScopedRecorderVisible(t *testing.T) {
 func TestResetClearsScopedBuckets(t *testing.T) {
 	Reset()
 	SetEnabled(true)
-	NewHTTPRuleRecorder(11).Add(1, 2)
-	NewL4RuleRecorder(21).Add(3, 4)
-	NewRelayListenerRecorder(31).Add(5, 6)
+	httpRecorder := NewHTTPRuleRecorder(11)
+	l4Recorder := NewL4RuleRecorder(21)
+	relayRecorder := NewRelayListenerRecorder(31)
+	httpRecorder.Add(1, 2)
+	l4Recorder.Add(3, 4)
+	relayRecorder.Add(5, 6)
+	httpRecorder.Flush()
+	l4Recorder.Flush()
+	relayRecorder.Flush()
 
 	Reset()
 

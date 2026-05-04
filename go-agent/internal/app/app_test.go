@@ -19,6 +19,7 @@ import (
 
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/config"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/diagnostics"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/hosttraffic"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/l4"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/proxy"
@@ -2086,6 +2087,77 @@ func TestPerformSyncOmitsZeroOnlyTrafficStats(t *testing.T) {
 	if req.Stats != nil {
 		t.Fatalf("Stats = %#v, want nil before traffic is recorded", req.Stats)
 	}
+}
+
+func TestPerformSyncIncludesHostTrafficStats(t *testing.T) {
+	traffic.Reset()
+	traffic.SetEnabled(true)
+	t.Cleanup(func() {
+		traffic.SetEnabled(true)
+		traffic.Reset()
+	})
+
+	cfg := Config{CurrentVersion: "1.0.0", TrafficStatsEnabled: true, TrafficStatsExplicit: true}
+	mem := store.NewInMemory()
+	applied := Snapshot{DesiredVersion: "1.0.0", Revision: 7}
+	if err := mem.SaveAppliedSnapshot(applied); err != nil {
+		t.Fatalf("failed to seed applied snapshot: %v", err)
+	}
+
+	client := newTestSyncClient(nil, syncResponse{snapshot: Snapshot{DesiredVersion: "ok", Revision: 7}})
+	app := newAppWithDeps(cfg, mem, client, &testCertificateApplier{}, nil, nil)
+	app.hostTrafficCollector = &stubHostTrafficCollector{
+		snapshot: hosttraffic.Snapshot{
+			BootID: "boot-123",
+			Total:  hosttraffic.Counters{RXBytes: 1000, TXBytes: 2000},
+			Interfaces: map[string]hosttraffic.Counters{
+				"eth0": {RXBytes: 900, TXBytes: 1800},
+			},
+		},
+	}
+
+	if err := app.performSync(context.Background()); err != nil {
+		t.Fatalf("performSync() error = %v", err)
+	}
+
+	req := waitForRequest(t, client, time.Second)
+	trafficStats, ok := req.Stats["traffic"].(map[string]any)
+	if !ok {
+		t.Fatalf("traffic stats missing in sync request: %+v", req.Stats)
+	}
+	host, ok := trafficStats["host"].(map[string]any)
+	if !ok {
+		t.Fatalf("host traffic stats missing in sync request: %+v", trafficStats)
+	}
+	total, ok := host["total"].(map[string]any)
+	if !ok {
+		t.Fatalf("host total traffic stats missing in sync request: %+v", host)
+	}
+	if total["rx_bytes"] != uint64(1000) || total["tx_bytes"] != uint64(2000) {
+		t.Fatalf("unexpected host total stats: %+v", total)
+	}
+	if host["boot_id"] != "boot-123" {
+		t.Fatalf("host boot_id = %#v, want boot-123", host["boot_id"])
+	}
+	iface, ok := host["interfaces"].(map[string]any)
+	if !ok {
+		t.Fatalf("host interfaces missing in sync request: %+v", host)
+	}
+	eth0, ok := iface["eth0"].(map[string]any)
+	if !ok {
+		t.Fatalf("eth0 host interface missing in sync request: %+v", iface)
+	}
+	if eth0["rx_bytes"] != uint64(900) || eth0["tx_bytes"] != uint64(1800) {
+		t.Fatalf("unexpected eth0 host interface stats: %+v", eth0)
+	}
+}
+
+type stubHostTrafficCollector struct {
+	snapshot hosttraffic.Snapshot
+}
+
+func (s *stubHostTrafficCollector) Snapshot() (hosttraffic.Snapshot, error) {
+	return s.snapshot, nil
 }
 
 func TestPerformSyncOmitsStatsWhenTrafficStatsDisabled(t *testing.T) {
