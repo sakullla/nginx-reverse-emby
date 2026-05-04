@@ -57,12 +57,15 @@ describe('DashboardTrafficModule', () => {
     vi.clearAllMocks()
   })
 
-  it('keeps aggregate remaining unlimited when all selected agents have no quota', async () => {
+  it('shows aggregate business traffic without quota bars when no quota is set', async () => {
     const wrapper = await mountModule()
 
-    expect(wrapper.text()).toContain('剩余')
-    expect(wrapper.text()).toContain('无限制')
-    expect(wrapper.text()).not.toContain('0 B')
+    expect(wrapper.text()).toContain('业务流量')
+    expect(wrapper.text()).toContain('3.00 KiB')
+    expect(wrapper.text()).not.toContain('%')
+    expect(wrapper.text()).toContain('Top 节点')
+    expect(wrapper.text()).toContain('edge-1')
+    expect(wrapper.text()).toContain('edge-2')
   })
 
   it('does not fetch traffic overview when traffic stats are disabled', async () => {

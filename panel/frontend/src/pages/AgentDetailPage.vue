@@ -50,7 +50,7 @@
     <div class="agent-detail__tab-content">
       <div v-if="activeTab === 'traffic'" class="tab-panel">
         <TrafficCollapsibleSection title="概览" :default-expanded="true">
-          <TrafficSummaryCards :summary="trafficSummary" :direction="trafficPolicyForm.direction" />
+          <TrafficSummaryCards :summary="trafficSummary" :direction="trafficPolicyForm.direction" :host-total="trafficSummary.host_total" />
           <div class="traffic-tab__trend">
             <div class="traffic-tab__trend-header">
               <span>趋势</span>
@@ -71,7 +71,7 @@
           </div>
           <div class="traffic-tab__breakdown">
             <span class="traffic-tab__breakdown-title">分项流量（点击查看趋势）</span>
-            <TrafficBreakdownTable :rows="trafficBreakdownRows" :clickable="true" @click-row="openBreakdownTrendModal" />
+            <TrafficBreakdownTable :tabs="trafficBreakdownTabs" :clickable="true" @click-row="openBreakdownTrendModal" />
           </div>
         </TrafficCollapsibleSection>
 
@@ -277,12 +277,31 @@ const quotaUnits = [
 const trafficPolicyForm = ref(normalizeTrafficPolicyForm())
 const trafficSummary = computed(() => trafficSummaryQuery.data.value ?? {})
 const trafficTrendPoints = computed(() => normalizeTrafficTrendPoints(trafficTrendQuery.data.value ?? [], trafficPolicyForm.value.direction))
-const trafficBreakdownRows = computed(() => [
-  ...normalizeTrafficBreakdownRows(trafficSummary.value.aggregates),
-  ...normalizeTrafficBreakdownRows(trafficSummary.value.http_rules),
-  ...normalizeTrafficBreakdownRows(trafficSummary.value.l4_rules),
-  ...normalizeTrafficBreakdownRows(trafficSummary.value.relay_listeners)
-])
+const trafficBreakdownTabs = computed(() => [
+  {
+    id: 'http',
+    label: 'HTTP',
+    rows: normalizeTrafficBreakdownRows(trafficSummary.value.http_rules)
+  },
+  {
+    id: 'l4',
+    label: 'L4',
+    rows: normalizeTrafficBreakdownRows(trafficSummary.value.l4_rules)
+  },
+  {
+    id: 'relay',
+    label: 'Relay',
+    rows: normalizeTrafficBreakdownRows(trafficSummary.value.relay_listeners)
+  },
+  {
+    id: 'host',
+    label: '主机接口',
+    rows: normalizeTrafficBreakdownRows([
+      ...(trafficSummary.value.host_total ? [trafficSummary.value.host_total] : []),
+      ...(trafficSummary.value.host_interfaces || [])
+    ])
+  }
+].filter(t => t.rows.length > 0))
 
 const activeTab = ref('http')
 const trendModal = ref({ visible: false, scopeType: '', scopeId: '', scopeLabel: '' })
