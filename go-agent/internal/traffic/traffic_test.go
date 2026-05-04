@@ -20,7 +20,7 @@ func TestSnapshotAggregatesTrafficByCategory(t *testing.T) {
 	assertTrafficCounters(t, traffic["http"], 100, 200)
 	assertTrafficCounters(t, traffic["l4"], 300, 400)
 	assertTrafficCounters(t, traffic["relay"], 500, 600)
-	assertTrafficCounters(t, traffic["total"], 900, 1200)
+	assertTrafficCounters(t, traffic["total"], 400, 600)
 }
 
 func TestAddIgnoresNegativeValues(t *testing.T) {
@@ -265,7 +265,7 @@ func TestScopedRecordersPopulatePerObjectBuckets(t *testing.T) {
 
 	stats := Snapshot()["traffic"].(map[string]any)
 	total := stats["total"].(map[string]uint64)
-	if total["rx_bytes"] != 900 || total["tx_bytes"] != 1200 {
+	if total["rx_bytes"] != 400 || total["tx_bytes"] != 600 {
 		t.Fatalf("total = %+v", total)
 	}
 	assertTrafficCounters(t, stats["http"], 100, 200)
@@ -283,6 +283,27 @@ func TestScopedRecordersPopulatePerObjectBuckets(t *testing.T) {
 	if relayListeners["31"]["rx_bytes"] != 500 || relayListeners["31"]["tx_bytes"] != 600 {
 		t.Fatalf("relay_listeners[31] = %+v", relayListeners["31"])
 	}
+}
+
+func TestSnapshotTotalExcludesRelayTransportBreakdown(t *testing.T) {
+	Reset()
+	SetEnabled(true)
+	defer Reset()
+
+	l4Recorder := NewL4RuleRecorder(21)
+	relayRecorder := NewRelayListenerRecorder(31)
+	l4Recorder.Add(100, 200)
+	relayRecorder.Add(100, 200)
+	l4Recorder.Flush()
+	relayRecorder.Flush()
+
+	stats := Snapshot()["traffic"].(map[string]any)
+	total := stats["total"].(map[string]uint64)
+	if total["rx_bytes"] != 100 || total["tx_bytes"] != 200 {
+		t.Fatalf("total = %+v, want business traffic without relay double count", total)
+	}
+	assertTrafficCounters(t, stats["l4"], 100, 200)
+	assertTrafficCounters(t, stats["relay"], 100, 200)
 }
 
 func TestResetKeepsLiveScopedRecorderVisible(t *testing.T) {

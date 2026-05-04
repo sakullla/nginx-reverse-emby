@@ -1,8 +1,10 @@
 package proxy
 
 import (
+	"bufio"
 	"bytes"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -160,11 +162,67 @@ func TestRouteEntryRecordsHTTPRuleTraffic(t *testing.T) {
 	stats := traffic.Snapshot()["traffic"].(map[string]any)
 	httpRules := stats["http_rules"].(map[string]map[string]uint64)
 	got := httpRules["77"]
-	if got["rx_bytes"] != uint64(len("request-body")) {
-		t.Fatalf("http_rules[77].rx_bytes = %d, want %d", got["rx_bytes"], len("request-body"))
+	if got["rx_bytes"] <= uint64(len("request-body")) {
+		t.Fatalf("http_rules[77].rx_bytes = %d, want protocol bytes above body size %d", got["rx_bytes"], len("request-body"))
 	}
-	if got["tx_bytes"] != uint64(len("response-body")) {
-		t.Fatalf("http_rules[77].tx_bytes = %d, want %d", got["tx_bytes"], len("response-body"))
+	if got["tx_bytes"] <= uint64(len("response-body")) {
+		t.Fatalf("http_rules[77].tx_bytes = %d, want protocol bytes above body size %d", got["tx_bytes"], len("response-body"))
+	}
+}
+
+func TestRouteEntryRecordsHTTPProtocolBytes(t *testing.T) {
+	traffic.Reset()
+	traffic.SetEnabled(true)
+	defer traffic.Reset()
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := io.ReadAll(r.Body); err != nil {
+			t.Errorf("backend read body: %v", err)
+			return
+		}
+		w.Header().Set("X-Backend", "ok")
+		_, _ = w.Write([]byte("response-body"))
+	}))
+	defer backend.Close()
+
+	server := NewServer(model.HTTPListener{Rules: []model.HTTPRule{{
+		ID:          78,
+		FrontendURL: "http://frontend.example",
+		BackendURL:  backend.URL,
+		Enabled:     true,
+	}}})
+	listener := httptest.NewServer(server)
+	defer listener.Close()
+
+	conn, err := net.Dial("tcp", strings.TrimPrefix(listener.URL, "http://"))
+	if err != nil {
+		t.Fatalf("Dial() error = %v", err)
+	}
+	defer conn.Close()
+
+	request := strings.Join([]string{
+		"POST /upload HTTP/1.1",
+		"Host: frontend.example",
+		"User-Agent: traffic-test",
+		"Content-Length: 12",
+		"",
+		"request-body",
+	}, "\r\n")
+	if _, err := conn.Write([]byte(request)); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	if _, err := http.ReadResponse(bufio.NewReader(conn), nil); err != nil {
+		t.Fatalf("ReadResponse() error = %v", err)
+	}
+
+	stats := traffic.SnapshotNonZero()["traffic"].(map[string]any)
+	httpRules := stats["http_rules"].(map[string]map[string]uint64)
+	got := httpRules["78"]
+	if got["rx_bytes"] <= uint64(len("request-body")) {
+		t.Fatalf("http_rules[78].rx_bytes = %d, want protocol bytes above body size %d", got["rx_bytes"], len("request-body"))
+	}
+	if got["tx_bytes"] <= uint64(len("response-body")) {
+		t.Fatalf("http_rules[78].tx_bytes = %d, want protocol bytes above body size %d", got["tx_bytes"], len("response-body"))
 	}
 }
 
@@ -183,6 +241,23 @@ func assertHTTPRuleTrafficEventually(t *testing.T, ruleID string, wantRX, wantTX
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("http_rules[%s] = %+v, want rx %d tx %d", ruleID, got, wantRX, wantTX)
+}
+
+func assertHTTPRuleTrafficAtLeast(t *testing.T, ruleID string, wantMinRX, wantMinTX uint64) {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	var got map[string]uint64
+	for time.Now().Before(deadline) {
+		stats := traffic.Snapshot()["traffic"].(map[string]any)
+		httpRules := stats["http_rules"].(map[string]map[string]uint64)
+		got = httpRules[ruleID]
+		if got["rx_bytes"] >= wantMinRX && got["tx_bytes"] >= wantMinTX {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("http_rules[%s] = %+v, want at least rx %d tx %d", ruleID, got, wantMinRX, wantMinTX)
 }
 
 func assertHTTPAggregateTraffic(t *testing.T, wantRX, wantTX uint64) {

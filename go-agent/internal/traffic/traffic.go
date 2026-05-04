@@ -309,10 +309,7 @@ func snapshot() map[string]any {
 	http := snapshotCounters(&httpCounters)
 	l4 := snapshotCounters(&l4Counters)
 	relay := snapshotCounters(&relayCounters)
-	total := map[string]uint64{
-		"rx_bytes": http["rx_bytes"] + l4["rx_bytes"] + relay["rx_bytes"],
-		"tx_bytes": http["tx_bytes"] + l4["tx_bytes"] + relay["tx_bytes"],
-	}
+	total := businessTotalCounters(http, l4, relay)
 	return map[string]any{
 		"traffic": map[string]any{
 			"total":           total,
@@ -323,5 +320,18 @@ func snapshot() map[string]any {
 			"l4_rules":        snapshotKeyedCounters(&l4RuleCounters),
 			"relay_listeners": snapshotKeyedCounters(&relayListenerCounters),
 		},
+	}
+}
+
+func businessTotalCounters(http, l4, relay map[string]uint64) map[string]uint64 {
+	rx := http["rx_bytes"] + l4["rx_bytes"]
+	tx := http["tx_bytes"] + l4["tx_bytes"]
+	if rx == 0 && tx == 0 {
+		rx = relay["rx_bytes"]
+		tx = relay["tx_bytes"]
+	}
+	return map[string]uint64{
+		"rx_bytes": rx,
+		"tx_bytes": tx,
 	}
 }

@@ -2079,7 +2079,7 @@ func TestServerRecordsHTTPRuleUpgradeTrafficBeforeTunnelCloses(t *testing.T) {
 		fail("unexpected upgraded payload: got %q want %q", string(reply), payload)
 	}
 
-	assertHTTPRuleTrafficEventually(t, "88", uint64(len(payload)), uint64(len(payload)))
+	assertHTTPRuleTrafficAtLeast(t, "88", uint64(len(payload)), uint64(len(payload)))
 }
 
 func TestNewServerReusesSharedTransportPoolOnRouteEntries(t *testing.T) {
