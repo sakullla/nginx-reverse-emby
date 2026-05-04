@@ -108,11 +108,17 @@ function buildConfig() {
 
 function renderChart() {
   if (!canvasRef.value) return
+  if (typeof navigator !== 'undefined' && /jsdom/i.test(navigator.userAgent || '')) return
   if (chartInstance) {
     chartInstance.destroy()
     chartInstance = null
   }
-  const ctx = canvasRef.value.getContext('2d')
+  let ctx = null
+  try {
+    ctx = typeof canvasRef.value.getContext === 'function' ? canvasRef.value.getContext('2d') : null
+  } catch {
+    ctx = null
+  }
   if (!ctx) return
   chartInstance = new Chart(ctx, buildConfig())
 }

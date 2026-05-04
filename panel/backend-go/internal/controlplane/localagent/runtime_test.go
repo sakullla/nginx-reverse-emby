@@ -35,6 +35,10 @@ type localTrafficSummaryStub struct {
 	err     error
 }
 
+func (s localTrafficSummaryStub) IngestHeartbeat(context.Context, string, service.AgentStats) error {
+	return nil
+}
+
 func (s localTrafficSummaryStub) Summary(context.Context, string) (service.TrafficSummary, error) {
 	if s.err != nil {
 		return service.TrafficSummary{}, s.err
@@ -50,6 +54,27 @@ func (s localTrafficSummaryStub) BlockState(context.Context, string) (bool, stri
 		return false, "", nil
 	}
 	return true, s.summary.BlockReason, nil
+}
+
+type localTrafficIngestStub struct {
+	ingestAgentID       string
+	ingestStats         service.AgentStats
+	blockStateSawIngest bool
+}
+
+func (s *localTrafficIngestStub) IngestHeartbeat(_ context.Context, agentID string, stats service.AgentStats) error {
+	s.ingestAgentID = agentID
+	s.ingestStats = stats
+	return nil
+}
+
+func (s *localTrafficIngestStub) Summary(context.Context, string) (service.TrafficSummary, error) {
+	return service.TrafficSummary{}, nil
+}
+
+func (s *localTrafficIngestStub) BlockState(context.Context, string) (bool, string, error) {
+	s.blockStateSawIngest = s.ingestStats != nil
+	return false, "", nil
 }
 
 func (s embeddedRuntimeStub) Run(ctx context.Context) error {
@@ -283,6 +308,40 @@ func TestLocalSyncSourceAddsTrafficAgentConfig(t *testing.T) {
 	}
 	if !got.AgentConfig.TrafficBlocked || got.AgentConfig.TrafficBlockReason != "monthly quota exceeded" {
 		t.Fatalf("AgentConfig traffic block = %+v", got.AgentConfig)
+	}
+}
+
+func TestLocalSyncSourceIngestsTrafficBeforeBlockState(t *testing.T) {
+	store := &bridgeStoreStub{
+		snapshot: Snapshot{
+			DesiredVersion: "1.2.3",
+			Revision:       15,
+		},
+	}
+	trafficSvc := &localTrafficIngestStub{}
+	source := NewSyncSource(store, "local")
+	source.SetTrafficService(true, trafficSvc)
+	stats := map[string]any{
+		"traffic": map[string]any{
+			"total": map[string]any{
+				"rx_bytes": float64(123),
+				"tx_bytes": float64(456),
+			},
+		},
+	}
+
+	if _, err := source.Sync(t.Context(), SyncRequest{CurrentRevision: 14, StatsPresent: true, Stats: stats}); err != nil {
+		t.Fatalf("Sync() error = %v", err)
+	}
+
+	if trafficSvc.ingestAgentID != "local" {
+		t.Fatalf("IngestHeartbeat() agentID = %q, want local", trafficSvc.ingestAgentID)
+	}
+	if trafficSvc.ingestStats == nil || trafficSvc.ingestStats["traffic"] == nil {
+		t.Fatalf("IngestHeartbeat() stats = %+v", trafficSvc.ingestStats)
+	}
+	if !trafficSvc.blockStateSawIngest {
+		t.Fatal("BlockState() ran before local traffic stats were ingested")
 	}
 }
 

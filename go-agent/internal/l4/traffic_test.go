@@ -1,6 +1,7 @@
 package l4
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"net"
@@ -8,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/backends"
+	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/model"
 	"github.com/sakullla/nginx-reverse-emby/go-agent/internal/traffic"
 )
 
@@ -195,12 +198,11 @@ func TestCopyBidirectionalTCPRecordsL4Traffic(t *testing.T) {
 
 	stats := traffic.Snapshot()["traffic"].(map[string]any)
 	l4Stats := stats["l4"].(map[string]uint64)
-	wantTotal := uint64(len("client-to-upstream") + len("upstream-to-client"))
-	if l4Stats["rx_bytes"] != wantTotal {
-		t.Fatalf("l4 rx_bytes = %d", l4Stats["rx_bytes"])
+	if l4Stats["rx_bytes"] != uint64(len("client-to-upstream")) {
+		t.Fatalf("l4 rx_bytes = %d, want %d", l4Stats["rx_bytes"], len("client-to-upstream"))
 	}
-	if l4Stats["tx_bytes"] != wantTotal {
-		t.Fatalf("l4 tx_bytes = %d", l4Stats["tx_bytes"])
+	if l4Stats["tx_bytes"] != uint64(len("upstream-to-client")) {
+		t.Fatalf("l4 tx_bytes = %d, want %d", l4Stats["tx_bytes"], len("upstream-to-client"))
 	}
 }
 
@@ -245,12 +247,11 @@ func TestCopyBidirectionalTCPRecordsL4RuleTraffic(t *testing.T) {
 	stats := traffic.Snapshot()["traffic"].(map[string]any)
 	l4Rules := stats["l4_rules"].(map[string]map[string]uint64)
 	got := l4Rules["42"]
-	wantTotal := uint64(len("client-to-upstream") + len("upstream-to-client"))
-	if got["rx_bytes"] != wantTotal {
-		t.Fatalf("l4_rules[42].rx_bytes = %d", got["rx_bytes"])
+	if got["rx_bytes"] != uint64(len("client-to-upstream")) {
+		t.Fatalf("l4_rules[42].rx_bytes = %d, want %d", got["rx_bytes"], len("client-to-upstream"))
 	}
-	if got["tx_bytes"] != wantTotal {
-		t.Fatalf("l4_rules[42].tx_bytes = %d", got["tx_bytes"])
+	if got["tx_bytes"] != uint64(len("upstream-to-client")) {
+		t.Fatalf("l4_rules[42].tx_bytes = %d, want %d", got["tx_bytes"], len("upstream-to-client"))
 	}
 }
 
@@ -276,14 +277,13 @@ func TestCopyBidirectionalTCPRecordsL4RuleTrafficBeforeClose(t *testing.T) {
 		t.Fatalf("client write error: %v", err)
 	}
 	readExact(t, backend, len("client-to-upstream"))
-	waitL4RuleTraffic(t, "42", len("client-to-upstream"), len("client-to-upstream"))
+	waitL4RuleTraffic(t, "42", len("client-to-upstream"), 0)
 
 	if _, err := backend.Write([]byte("upstream-to-client")); err != nil {
 		t.Fatalf("backend write error: %v", err)
 	}
 	readExact(t, client, len("upstream-to-client"))
-	total := len("client-to-upstream") + len("upstream-to-client")
-	waitL4RuleTraffic(t, "42", total, total)
+	waitL4RuleTraffic(t, "42", len("client-to-upstream"), len("upstream-to-client"))
 
 	_ = client.Close()
 	_ = downstream.Close()
@@ -294,7 +294,81 @@ func TestCopyBidirectionalTCPRecordsL4RuleTrafficBeforeClose(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("copyBidirectionalTCP did not exit")
 	}
-	assertL4RuleTraffic(t, "42", total, total)
+	assertL4RuleTraffic(t, "42", len("client-to-upstream"), len("upstream-to-client"))
+}
+
+func TestRelayTCPInitialPayloadCountsOnlyAsL4RX(t *testing.T) {
+	traffic.Reset()
+	traffic.SetEnabled(true)
+	defer traffic.Reset()
+
+	client, downstream := net.Pipe()
+	defer client.Close()
+	upstream, relayConn := net.Pipe()
+	defer relayConn.Close()
+	dialer := &fakeL4RelayPathDialer{conn: upstream}
+	srv := &Server{
+		ctx:   context.Background(),
+		cache: backends.NewCache(backends.Config{}),
+		now:   time.Now,
+		relayListenersByID: map[int]model.RelayListener{
+			2: {
+				ID:         2,
+				Name:       "two",
+				ListenHost: "127.0.0.1",
+				ListenPort: 9002,
+				Enabled:    true,
+				TLSMode:    "pin_only",
+				PinSet:     []model.RelayPin{{Type: "sha256", Value: "pin2"}},
+			},
+		},
+		relayPathDialer: dialer,
+		tcpConns:        make(map[net.Conn]struct{}),
+	}
+	rule := model.L4Rule{
+		ID:           42,
+		Protocol:     "tcp",
+		ListenHost:   "127.0.0.1",
+		ListenPort:   9443,
+		UpstreamHost: "backend.example",
+		UpstreamPort: 9001,
+		RelayChain:   []int{2},
+		Tuning: model.L4Tuning{
+			ProxyProtocol: model.L4ProxyProtocolTuning{Decode: true},
+		},
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		srv.handleTCPConnection(downstream, rule)
+	}()
+
+	initialPayload := []byte("prefetched-client-bytes")
+	header := "PROXY TCP4 192.0.2.10 198.51.100.20 12345 443\r\n"
+	if _, err := client.Write(append([]byte(header), initialPayload...)); err != nil {
+		t.Fatalf("write initial payload: %v", err)
+	}
+	if !waitForL4RelayPathCalls(dialer, 2) {
+		t.Fatalf("dialed paths = %+v, want path [2]", dialer.calledPaths())
+	}
+	options := dialer.calledOptions()
+	if len(options) == 0 {
+		t.Fatal("expected relay dial options")
+	}
+	if !bytes.Equal(options[0].InitialPayload, initialPayload) {
+		t.Fatalf("relay initial payload = %q, want %q", options[0].InitialPayload, initialPayload)
+	}
+
+	waitL4RuleTraffic(t, "42", len(initialPayload), 0)
+
+	_ = client.Close()
+	_ = relayConn.Close()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("handleTCPConnection did not exit")
+	}
 }
 
 func waitL4RuleTraffic(t *testing.T, ruleID string, rxBytes int, txBytes int) {

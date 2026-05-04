@@ -203,6 +203,27 @@ func TestMigrateStorageCommandDoesNotRunControlPlaneFromEnv(t *testing.T) {
 	}
 }
 
+func TestMigrateStorageCommandParsesDataRootFlags(t *testing.T) {
+	cmd, err := parseMigrateStorageCommand([]string{
+		"migrate-storage",
+		"--from-driver", "sqlite",
+		"--from-dsn", "./old-data/panel.db",
+		"--from-data-root", "./old-data",
+		"--to-driver", "postgres",
+		"--to-dsn", "postgres://nre:nre@postgres:5432/nre?sslmode=disable",
+		"--to-data-root", "./new-data",
+	})
+	if err != nil {
+		t.Fatalf("parseMigrateStorageCommand() error = %v", err)
+	}
+	if cmd.FromDataRoot != "./old-data" {
+		t.Fatalf("FromDataRoot = %q, want ./old-data", cmd.FromDataRoot)
+	}
+	if cmd.ToDataRoot != "./new-data" {
+		t.Fatalf("ToDataRoot = %q, want ./new-data", cmd.ToDataRoot)
+	}
+}
+
 func TestMigrateStorageOpensSourceWithoutBootstrapAndTargetWithMigrations(t *testing.T) {
 	previousOpenStore := openStore
 	t.Cleanup(func() {
@@ -242,6 +263,81 @@ func TestMigrateStorageOpensSourceWithoutBootstrapAndTargetWithMigrations(t *tes
 	}
 	if !gotConfigs[1].TrafficStatsEnabled {
 		t.Fatal("target TrafficStatsEnabled = false, want true")
+	}
+}
+
+func TestMigrateStorageOpensStoresWithSQLiteDSNDataRoots(t *testing.T) {
+	previousOpenStore := openStore
+	t.Cleanup(func() {
+		openStore = previousOpenStore
+	})
+
+	var gotConfigs []storage.StoreConfig
+	openStore = func(cfg storage.StoreConfig) (*storage.GormStore, error) {
+		gotConfigs = append(gotConfigs, cfg)
+		store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+		if err != nil {
+			t.Fatalf("NewSQLiteStore() error = %v", err)
+		}
+		return store, nil
+	}
+
+	sourceRoot := filepath.Join(t.TempDir(), "source")
+	targetRoot := filepath.Join(t.TempDir(), "target")
+	err := runMigrateStorageCommand(context.Background(), migrateStorageCommand{
+		FromDriver: "sqlite",
+		FromDSN:    filepath.Join(sourceRoot, "panel.db") + "?_journal_mode=WAL",
+		ToDriver:   "sqlite",
+		ToDSN:      filepath.Join(targetRoot, "panel.db"),
+	})
+	if err != nil {
+		t.Fatalf("runMigrateStorageCommand() error = %v", err)
+	}
+	if len(gotConfigs) != 2 {
+		t.Fatalf("openStore calls = %d, want 2", len(gotConfigs))
+	}
+	if gotConfigs[0].DataRoot != sourceRoot {
+		t.Fatalf("source DataRoot = %q, want %q", gotConfigs[0].DataRoot, sourceRoot)
+	}
+	if gotConfigs[1].DataRoot != targetRoot {
+		t.Fatalf("target DataRoot = %q, want %q", gotConfigs[1].DataRoot, targetRoot)
+	}
+}
+
+func TestMigrateStorageDefaultsTargetDataRootToSourceDataRoot(t *testing.T) {
+	previousOpenStore := openStore
+	t.Cleanup(func() {
+		openStore = previousOpenStore
+	})
+
+	var gotConfigs []storage.StoreConfig
+	openStore = func(cfg storage.StoreConfig) (*storage.GormStore, error) {
+		gotConfigs = append(gotConfigs, cfg)
+		store, err := storage.NewSQLiteStore(t.TempDir(), "local")
+		if err != nil {
+			t.Fatalf("NewSQLiteStore() error = %v", err)
+		}
+		return store, nil
+	}
+
+	sourceRoot := filepath.Join(t.TempDir(), "source")
+	err := runMigrateStorageCommand(context.Background(), migrateStorageCommand{
+		FromDriver: "sqlite",
+		FromDSN:    filepath.Join(sourceRoot, "panel.db"),
+		ToDriver:   "postgres",
+		ToDSN:      "postgres://nre:nre@postgres:5432/nre?sslmode=disable",
+	})
+	if err != nil {
+		t.Fatalf("runMigrateStorageCommand() error = %v", err)
+	}
+	if len(gotConfigs) != 2 {
+		t.Fatalf("openStore calls = %d, want 2", len(gotConfigs))
+	}
+	if gotConfigs[0].DataRoot != sourceRoot {
+		t.Fatalf("source DataRoot = %q, want %q", gotConfigs[0].DataRoot, sourceRoot)
+	}
+	if gotConfigs[1].DataRoot != sourceRoot {
+		t.Fatalf("target DataRoot = %q, want source root %q", gotConfigs[1].DataRoot, sourceRoot)
 	}
 }
 

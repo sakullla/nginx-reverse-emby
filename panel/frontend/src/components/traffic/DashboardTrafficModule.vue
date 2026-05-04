@@ -27,7 +27,7 @@
         </div>
         <div class="dashboard-traffic__card">
           <span class="dashboard-traffic__card-label">剩余</span>
-          <span class="dashboard-traffic__card-value">{{ formatBytes(selectedSummary?.remaining_bytes ?? 0) }}</span>
+          <span class="dashboard-traffic__card-value">{{ selectedSummary?.remaining_bytes == null ? '无限制' : formatBytes(selectedSummary.remaining_bytes) }}</span>
         </div>
       </div>
     </template>
@@ -74,7 +74,7 @@ const selectedSummary = computed(() => {
   return {
     used_bytes: agents.reduce((s, a) => s + (a.used_bytes || 0), 0),
     quota_bytes: agents.every(a => a.quota_bytes == null) ? null : agents.reduce((s, a) => s + (a.quota_bytes || 0), 0),
-    remaining_bytes: agents.reduce((s, a) => s + (a.remaining_bytes || 0), 0)
+    remaining_bytes: agents.every(a => a.remaining_bytes == null) ? null : agents.reduce((s, a) => s + (a.remaining_bytes || 0), 0)
   }
 })
 </script>

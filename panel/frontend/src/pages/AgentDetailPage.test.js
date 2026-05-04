@@ -177,8 +177,8 @@ describe('AgentDetailPage', () => {
 
     expect(wrapper.text()).toContain('趋势')
     expect(wrapper.text()).toContain('月额度')
-    expect(wrapper.text()).toContain('校准')
-    expect(wrapper.text()).toContain('清理')
+    expect(wrapper.text()).toContain('策略设置')
+    expect(wrapper.text()).toContain('历史管理')
     expect(wrapper.text()).toContain('计费方向')
     expect(wrapper.text()).toContain('双向')
     expect(apiCalls.fetchTrafficPolicy).toHaveBeenCalledWith('edge-1')
@@ -201,15 +201,12 @@ describe('AgentDetailPage', () => {
     expect(wrapper.text()).toContain('192.0 KiB')
   })
 
-  it('uses accounted bytes as the trend bar height', async () => {
+  it('renders the traffic trend chart canvas', async () => {
     const wrapper = await mountPage()
     await wrapper.findAll('.tab-btn').find((button) => button.text() === '流量统计').trigger('click')
     await nextTick()
 
-    const bars = wrapper.findAll('.traffic-trend__bar--accounted')
-    expect(bars).toHaveLength(2)
-    expect(bars[0].attributes('style')).toContain('height: 100%')
-    expect(bars[1].attributes('style')).not.toContain('height: 100%')
+    expect(wrapper.find('.traffic-trend-chart canvas').exists()).toBe(true)
   })
 
   it('switches traffic trend granularity', async () => {
@@ -217,7 +214,7 @@ describe('AgentDetailPage', () => {
     await wrapper.findAll('.tab-btn').find((button) => button.text() === '流量统计').trigger('click')
     await nextTick()
 
-    await wrapper.find('[data-testid="traffic-trend-month"]').trigger('click')
+    await wrapper.findAll('.traffic-trend__mode').find((button) => button.text() === '月').trigger('click')
     await nextTick()
     await vi.dynamicImportSettled()
 
@@ -239,11 +236,12 @@ describe('AgentDetailPage', () => {
   it('does not submit invalid traffic policy values', async () => {
     const wrapper = await mountPage()
     await wrapper.findAll('.tab-btn').find((button) => button.text() === '流量统计').trigger('click')
+    await wrapper.findAll('.collapsible-section__header').find((button) => button.text().includes('策略设置')).trigger('click')
     await nextTick()
 
     const quotaInput = wrapper.find('input[placeholder="留空表示无限制"]')
     await quotaInput.setValue('not-a-number')
-    await wrapper.find('.traffic-panel__footer .btn-primary').trigger('click')
+    await wrapper.find('.traffic-policy-form__footer .btn-primary').trigger('click')
 
     expect(apiCalls.updateTrafficPolicy).not.toHaveBeenCalled()
   })
@@ -251,16 +249,17 @@ describe('AgentDetailPage', () => {
   it('shows monthly quota with units and saves bytes', async () => {
     const wrapper = await mountPage()
     await wrapper.findAll('.tab-btn').find((button) => button.text() === '流量统计').trigger('click')
+    await wrapper.findAll('.collapsible-section__header').find((button) => button.text().includes('策略设置')).trigger('click')
     await nextTick()
 
     const quotaInput = wrapper.find('input[placeholder="留空表示无限制"]')
-    const unitSelect = wrapper.find('[data-testid="monthly-quota-unit"]')
+    const unitSelect = wrapper.find('.traffic-policy-form__unit')
     expect(quotaInput.element.value).toBe('1')
     expect(unitSelect.element.value).toBe('TiB')
 
     await quotaInput.setValue('1.5')
     await unitSelect.setValue('GiB')
-    await wrapper.find('.traffic-panel__footer .btn-primary').trigger('click')
+    await wrapper.find('.traffic-policy-form__footer .btn-primary').trigger('click')
 
     expect(apiCalls.updateTrafficPolicy).toHaveBeenCalledWith('edge-1', expect.objectContaining({
       monthly_quota_bytes: 1610612736
@@ -270,21 +269,22 @@ describe('AgentDetailPage', () => {
   it('does not normalize invalid traffic policy integers into defaults', async () => {
     const wrapper = await mountPage()
     await wrapper.findAll('.tab-btn').find((button) => button.text() === '流量统计').trigger('click')
+    await wrapper.findAll('.collapsible-section__header').find((button) => button.text().includes('策略设置')).trigger('click')
     await nextTick()
 
     const numberInputs = wrapper.findAll('input[type="number"]')
     await numberInputs[0].setValue('99')
-    await wrapper.find('.traffic-panel__footer .btn-primary').trigger('click')
+    await wrapper.find('.traffic-policy-form__footer .btn-primary').trigger('click')
     expect(apiCalls.updateTrafficPolicy).not.toHaveBeenCalled()
 
     await numberInputs[0].setValue('1')
     await numberInputs[1].setValue('0')
-    await wrapper.find('.traffic-panel__footer .btn-primary').trigger('click')
+    await wrapper.find('.traffic-policy-form__footer .btn-primary').trigger('click')
     expect(apiCalls.updateTrafficPolicy).not.toHaveBeenCalled()
 
     await numberInputs[1].setValue('180')
     await numberInputs[2].setValue('0')
-    await wrapper.find('.traffic-panel__footer .btn-primary').trigger('click')
+    await wrapper.find('.traffic-policy-form__footer .btn-primary').trigger('click')
     expect(apiCalls.updateTrafficPolicy).not.toHaveBeenCalled()
   })
 
@@ -292,9 +292,10 @@ describe('AgentDetailPage', () => {
     window.confirm.mockReturnValue(false)
     const wrapper = await mountPage()
     await wrapper.findAll('.tab-btn').find((button) => button.text() === '流量统计').trigger('click')
+    await wrapper.findAll('.collapsible-section__header').find((button) => button.text().includes('历史管理')).trigger('click')
     await nextTick()
 
-    await wrapper.findAll('button').find((button) => button.text() === '清理').trigger('click')
+    await wrapper.findAll('button').find((button) => button.text() === '清理过期数据').trigger('click')
 
     expect(apiCalls.cleanupTraffic).not.toHaveBeenCalled()
   })
@@ -303,6 +304,7 @@ describe('AgentDetailPage', () => {
     window.prompt.mockReturnValue('1.5 GiB')
     const wrapper = await mountPage()
     await wrapper.findAll('.tab-btn').find((button) => button.text() === '流量统计').trigger('click')
+    await wrapper.findAll('.collapsible-section__header').find((button) => button.text().includes('历史管理')).trigger('click')
     await nextTick()
 
     await wrapper.findAll('button').find((button) => button.text() === '校准').trigger('click')
@@ -315,6 +317,7 @@ describe('AgentDetailPage', () => {
   it('calibrates traffic current usage to zero', async () => {
     const wrapper = await mountPage()
     await wrapper.findAll('.tab-btn').find((button) => button.text() === '流量统计').trigger('click')
+    await wrapper.findAll('.collapsible-section__header').find((button) => button.text().includes('历史管理')).trigger('click')
     await nextTick()
 
     await wrapper.findAll('button').find((button) => button.text() === '从现在归零').trigger('click')

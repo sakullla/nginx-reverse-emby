@@ -81,10 +81,12 @@ var runControlPlaneFromEnv = func() error {
 }
 
 type migrateStorageCommand struct {
-	FromDriver string
-	FromDSN    string
-	ToDriver   string
-	ToDSN      string
+	FromDriver   string
+	FromDSN      string
+	FromDataRoot string
+	ToDriver     string
+	ToDSN        string
+	ToDataRoot   string
 }
 
 func parseMigrateStorageCommand(args []string) (*migrateStorageCommand, error) {
@@ -100,8 +102,10 @@ func parseMigrateStorageCommand(args []string) (*migrateStorageCommand, error) {
 	cmd := migrateStorageCommand{}
 	fs.StringVar(&cmd.FromDriver, "from-driver", "", "source database driver")
 	fs.StringVar(&cmd.FromDSN, "from-dsn", "", "source database DSN")
+	fs.StringVar(&cmd.FromDataRoot, "from-data-root", "", "source panel data root for managed certificate material")
 	fs.StringVar(&cmd.ToDriver, "to-driver", "", "target database driver")
 	fs.StringVar(&cmd.ToDSN, "to-dsn", "", "target database DSN")
+	fs.StringVar(&cmd.ToDataRoot, "to-data-root", "", "target panel data root for managed certificate material")
 	if err := fs.Parse(args[1:]); err != nil {
 		return nil, err
 	}
@@ -121,6 +125,8 @@ func parseMigrateStorageCommand(args []string) (*migrateStorageCommand, error) {
 	cmd.ToDriver = normalizeStorageDriver(cmd.ToDriver)
 	cmd.FromDSN = strings.TrimSpace(cmd.FromDSN)
 	cmd.ToDSN = strings.TrimSpace(cmd.ToDSN)
+	cmd.FromDataRoot = strings.TrimSpace(cmd.FromDataRoot)
+	cmd.ToDataRoot = strings.TrimSpace(cmd.ToDataRoot)
 	if cmd.FromDriver == cmd.ToDriver && cmd.FromDSN == cmd.ToDSN {
 		return nil, fmt.Errorf("source and target storage must be different")
 	}
@@ -155,9 +161,16 @@ var openConfiguredStore = storage.NewConfiguredStore
 var openStore = storage.NewStore
 
 var runMigrateStorageCommand = func(ctx context.Context, cmd migrateStorageCommand) error {
+	sourceDataRoot := migrationStoreDataRoot(cmd.FromDriver, cmd.FromDSN, cmd.FromDataRoot)
+	targetDataRoot := migrationStoreDataRoot(cmd.ToDriver, cmd.ToDSN, cmd.ToDataRoot)
+	if targetDataRoot == "" && strings.TrimSpace(cmd.ToDataRoot) == "" {
+		targetDataRoot = sourceDataRoot
+	}
+
 	source, err := openStore(storage.StoreConfig{
 		Driver:              cmd.FromDriver,
 		DSN:                 cmd.FromDSN,
+		DataRoot:            sourceDataRoot,
 		SkipBootstrapSchema: true,
 		TrafficStatsEnabled: false,
 	})
@@ -171,6 +184,7 @@ var runMigrateStorageCommand = func(ctx context.Context, cmd migrateStorageComma
 	target, err := openStore(storage.StoreConfig{
 		Driver:              cmd.ToDriver,
 		DSN:                 cmd.ToDSN,
+		DataRoot:            targetDataRoot,
 		TrafficStatsEnabled: true,
 	})
 	if err != nil {
@@ -181,6 +195,27 @@ var runMigrateStorageCommand = func(ctx context.Context, cmd migrateStorageComma
 	}()
 
 	return storage.CopyDefaultMigrationRows(ctx, source, target)
+}
+
+func migrationStoreDataRoot(driver, dsn, explicit string) string {
+	if strings.TrimSpace(explicit) != "" {
+		return strings.TrimSpace(explicit)
+	}
+	if !strings.EqualFold(strings.TrimSpace(driver), "sqlite") {
+		return ""
+	}
+	path := strings.TrimSpace(dsn)
+	if idx := strings.IndexAny(path, "?#"); idx >= 0 {
+		path = path[:idx]
+	}
+	if path == "" || path == ":memory:" || strings.HasPrefix(path, "file:") {
+		return ""
+	}
+	dir := filepath.Dir(path)
+	if dir == "." {
+		return ""
+	}
+	return dir
 }
 
 func normalizeStorageDriver(driver string) string {
