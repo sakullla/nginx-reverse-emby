@@ -30,7 +30,7 @@ defineProps({
 
 <style scoped>
 .stat-card {
-  background: var(--gradient-surface, var(--color-bg-surface));
+  background: var(--color-bg-surface);
   border: 1.5px solid var(--color-border-default);
   border-radius: var(--radius-xl);
   padding: var(--space-5);
@@ -57,7 +57,7 @@ defineProps({
 }
 
 .stat-card--primary .stat-card__icon {
-  background: var(--gradient-primary-soft);
+  background: var(--color-primary-subtle);
   color: var(--color-primary);
 }
 
@@ -99,14 +99,14 @@ defineProps({
   left: 0;
   right: 0;
   height: 3px;
-  background: var(--gradient-primary);
+  background: var(--color-primary);
   opacity: 0;
   transition: opacity var(--duration-normal) var(--ease-default);
 }
 
-.stat-card--success::before { background: linear-gradient(90deg, var(--color-success), var(--color-success-glow)); }
-.stat-card--warning::before { background: linear-gradient(90deg, var(--color-warning), var(--color-warning-glow)); }
-.stat-card--danger::before { background: linear-gradient(90deg, var(--color-danger), var(--color-danger-glow)); }
+.stat-card--success::before { background: var(--color-success); }
+.stat-card--warning::before { background: var(--color-warning); }
+.stat-card--danger::before { background: var(--color-danger); }
 
 .stat-card:hover::before {
   opacity: 1;
