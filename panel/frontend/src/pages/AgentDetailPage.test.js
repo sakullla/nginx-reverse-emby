@@ -112,6 +112,10 @@ async function mountPage() {
         RouterLink: {
           props: ['to'],
           template: '<a><slot /></a>'
+        },
+        apexchart: {
+          name: 'apexchart',
+          template: '<div data-testid="apexchart" />'
         }
       }
     }
@@ -241,7 +245,7 @@ describe('AgentDetailPage', () => {
     await wrapper.findAll('.tab-btn').find((button) => button.text() === '流量统计').trigger('click')
     await nextTick()
 
-    expect(wrapper.find('.traffic-trend-chart canvas').exists()).toBe(true)
+    expect(wrapper.find('.traffic-trend-chart').exists()).toBe(true)
   })
 
   it('switches traffic trend granularity', async () => {

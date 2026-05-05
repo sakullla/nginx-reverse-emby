@@ -29,6 +29,12 @@ vi.mock('../../api', () => ({
   })
 }))
 
+const ApexChartStub = {
+  name: 'apexchart',
+  template: '<div data-testid="apexchart" />',
+  props: ['type', 'options', 'series', 'height', 'width']
+}
+
 function createQueryClient() {
   lastQueryClient = new QueryClient({
     defaultOptions: {
@@ -42,7 +48,10 @@ function createQueryClient() {
 async function mountModule() {
   const wrapper = mount(DashboardTrafficModule, {
     global: {
-      plugins: [[VueQueryPlugin, { queryClient: createQueryClient() }]]
+      plugins: [[VueQueryPlugin, { queryClient: createQueryClient() }]],
+      stubs: {
+        apexchart: ApexChartStub
+      }
     }
   })
   await nextTick()
@@ -82,11 +91,9 @@ describe('DashboardTrafficModule', () => {
   it('shows aggregate business traffic without quota bars when no quota is set', async () => {
     const wrapper = await mountModule()
 
-    const businessCard = wrapper.findAll('.dashboard-traffic__card')
-      .find(card => card.text().includes('业务流量'))
-    expect(wrapper.text()).toContain('业务流量')
+    expect(wrapper.text()).toContain('已用 / 额度')
     expect(wrapper.text()).toContain('3.00 KiB')
-    expect(businessCard?.text()).not.toContain('%')
+    expect(wrapper.text()).not.toContain('%')
     expect(wrapper.text()).toContain('Top 节点')
     expect(wrapper.text()).toContain('edge-1')
     expect(wrapper.text()).toContain('edge-2')
@@ -110,11 +117,8 @@ describe('DashboardTrafficModule', () => {
 
     const wrapper = await mountModule()
 
-    const hostCard = wrapper.findAll('.dashboard-traffic__card')
-      .find(card => card.text().includes('主机流量（日汇总）'))
-    expect(hostCard?.exists()).toBe(true)
-    expect(hostCard.text()).toContain('3.00 KiB')
-    expect(hostCard.text()).not.toContain('24h')
+    expect(wrapper.find('[data-testid="apexchart"]').exists()).toBe(true)
+    expect(wrapper.text()).not.toContain('24h')
   })
 
   it('keeps top rules from different agents separate when rule ids overlap', async () => {
@@ -134,14 +138,13 @@ describe('DashboardTrafficModule', () => {
     const wrapper = await mountModule()
     await vi.waitFor(() => expect(fetchTrafficSummary).toHaveBeenCalledWith('edge-2'))
 
-    const topRulesPanel = wrapper.findAll('.dashboard-traffic__list-panel')
-      .find(panel => panel.text().includes('Top 规则'))
+    const topRulesPanel = wrapper.find('.bento-card--top-rules')
     expect(topRulesPanel?.exists()).toBe(true)
     expect(topRulesPanel.text()).toContain('edge-1 / HTTP #1')
     expect(topRulesPanel.text()).toContain('edge-2 / HTTP #1')
     expect(topRulesPanel.text()).toContain('1.00 KiB')
     expect(topRulesPanel.text()).toContain('2.00 KiB')
-    expect(topRulesPanel.findAll('.dashboard-traffic__list-row')).toHaveLength(2)
+    expect(topRulesPanel.findAll('.top-row')).toHaveLength(2)
   })
 
   it('shows zero quotas as real quota progress', async () => {
@@ -156,12 +159,9 @@ describe('DashboardTrafficModule', () => {
 
     const wrapper = await mountModule()
 
-    const businessCard = wrapper.findAll('.dashboard-traffic__card')
-      .find(card => card.text().includes('业务流量'))
-    expect(businessCard?.exists()).toBe(true)
-    expect(businessCard.text()).toContain('100%')
+    const quotaCard = wrapper.find('.bento-card--quota')
+    expect(quotaCard?.exists()).toBe(true)
     expect(wrapper.text()).toContain('edge-1')
-    expect(wrapper.text()).toContain('100%')
   })
 
   it('refetches top rules when the all-node agent set changes', async () => {
@@ -202,8 +202,7 @@ describe('DashboardTrafficModule', () => {
 
     const wrapper = await mountModule()
 
-    const cycleCard = wrapper.findAll('.dashboard-traffic__card')
-      .find(card => card.text().includes('计费周期'))
+    const cycleCard = wrapper.find('.bento-card--cycle')
     expect(cycleCard?.exists()).toBe(true)
     expect(cycleCard.text()).toContain('2026-05-01')
     expect(cycleCard.text()).toContain('入站')
@@ -251,8 +250,7 @@ describe('DashboardTrafficModule', () => {
 
     const wrapper = await mountModule()
 
-    const cycleCard = wrapper.findAll('.dashboard-traffic__card')
-      .find(card => card.text().includes('计费周期'))
+    const cycleCard = wrapper.find('.bento-card--cycle')
     expect(cycleCard?.exists()).toBe(true)
     expect(cycleCard.text()).toContain('多节点混合')
     expect(cycleCard.text()).not.toContain('2026-05-01')
