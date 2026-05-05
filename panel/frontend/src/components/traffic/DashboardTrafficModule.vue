@@ -106,6 +106,7 @@ import { ref, computed } from 'vue'
 import { useRouter } from 'vue-router'
 import { useQuery } from '@tanstack/vue-query'
 import { useTrafficOverview } from '../../hooks/useTrafficOverview.js'
+import { useAgents } from '../../hooks/useAgents.js'
 import { fetchSystemInfo, fetchTrafficSummary } from '../../api'
 import TrafficTrendChart from './TrafficTrendChart.vue'
 import TrafficQuotaRing from './TrafficQuotaRing.vue'
@@ -114,6 +115,18 @@ import AgentPicker from '../../components/AgentPicker.vue'
 import { formatBytes, usagePercent } from '../../utils/trafficStats.js'
 
 const router = useRouter()
+
+const { data: agentsData } = useAgents()
+const globalAgentNameMap = computed(() => {
+  const agents = agentsData.value || []
+  const map = {}
+  for (const agent of agents) {
+    if (agent.id) {
+      map[agent.id] = agent.name?.trim() || null
+    }
+  }
+  return map
+})
 
 const { data: systemInfo } = useQuery({
   queryKey: ['system-info'],
@@ -227,6 +240,14 @@ function topNodePercent(agent) {
   return Math.min(100, usagePercent(agent.used_bytes, agent.quota_bytes))
 }
 
+function getAgentName(agentId) {
+  const overviewAgent = overviewAgents.value.find(a => a.agent_id === agentId)
+  if (overviewAgent?.name?.trim()) return overviewAgent.name.trim()
+  const globalName = globalAgentNameMap.value[agentId]
+  if (globalName) return globalName
+  return null
+}
+
 const agentIdsForTopRules = computed(() => {
   if (selectedAgentId.value) return [selectedAgentId.value]
   return overviewAgents.value.map(a => a.agent_id).filter(Boolean).sort()
@@ -244,7 +265,7 @@ const topRulesQuery = useQuery({
     for (const [index, summary] of summaries.entries()) {
       if (!summary) continue
       const agentId = ids[index]
-      const agentName = overviewAgents.value.find(a => a.agent_id === agentId)?.name || agentId
+      const agentName = getAgentName(agentId)
       for (const list of [summary.http_rules, summary.l4_rules, summary.relay_listeners]) {
         if (!Array.isArray(list)) continue
         for (const row of list) {
@@ -255,8 +276,8 @@ const topRulesQuery = useQuery({
             existing.rx_bytes += row.rx_bytes || 0
             existing.tx_bytes += row.tx_bytes || 0
           } else {
-            const displayName = agentName.length > 12 && !agentName.includes(' ') ? agentName.slice(0, 8) + '…' : agentName
-            const label = `${displayName} / ${scopeLabel(row.scope_type, row.scope_id)}`
+            const scope = scopeLabel(row.scope_type, row.scope_id)
+            const label = agentName ? `${agentName} / ${scope}` : scope
             ruleMap.set(key, { key, agent_id: agentId, label, accounted_bytes: row.accounted_bytes || 0, rx_bytes: row.rx_bytes || 0, tx_bytes: row.tx_bytes || 0 })
           }
         }
