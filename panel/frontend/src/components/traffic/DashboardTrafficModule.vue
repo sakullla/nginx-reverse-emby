@@ -9,56 +9,77 @@
         </select>
       </div>
     </div>
+
     <div v-if="overviewQuery.isLoading.value" class="dashboard-traffic__loading">
       <div class="spinner"></div>
     </div>
+
     <template v-else>
-      <div class="dashboard-traffic__cards">
-        <div class="dashboard-traffic__card">
-          <span class="dashboard-traffic__card-label">业务流量</span>
-          <span class="dashboard-traffic__card-value">{{ formatBytes(selectedSummary?.used_bytes ?? 0) }}</span>
-          <span v-if="selectedPercent != null" class="dashboard-traffic__card-percent" :class="`dashboard-traffic__card-percent--${selectedColor}`">{{ selectedPercent }}%</span>
-          <div v-if="selectedPercent != null" class="dashboard-traffic__card-track">
-            <div class="dashboard-traffic__card-fill" :class="`dashboard-traffic__card-fill--${selectedColor}`" :style="{ width: `${Math.min(100, selectedPercent)}%` }" />
+      <!-- Bento Grid -->
+      <div class="dashboard-traffic__bento">
+        <!-- 趋势图 -->
+        <div class="bento-card bento-card--trend">
+          <TrafficTrendChart
+            :points="trendPoints"
+            :host-points="hostTrendPoints"
+            granularity="day"
+            :quota-bytes="selectedSummary?.quota_bytes ?? null"
+          />
+        </div>
+
+        <!-- 配额环形图 -->
+        <div class="bento-card bento-card--quota">
+          <TrafficQuotaRing
+            :used-bytes="selectedSummary?.used_bytes ?? 0"
+            :quota-bytes="selectedSummary?.quota_bytes ?? null"
+            :remaining-bytes="selectedSummary?.remaining_bytes ?? null"
+          />
+        </div>
+
+        <!-- 实时速率 -->
+        <div class="bento-card bento-card--rate">
+          <TrafficRateSparkline :points="trendPoints" />
+        </div>
+
+        <!-- 阻断节点 -->
+        <div class="bento-card bento-card--blocked" :class="{ 'bento-card--alert': blockedCount > 0 }">
+          <span class="bento-card__label">阻断节点</span>
+          <span class="bento-card__value">{{ blockedCount }} / {{ overviewAgents.length }}</span>
+          <span v-if="blockedCount > 0" class="bento-card__sub bento-card__sub--alert">{{ blockedCount }} 个节点已超额阻断</span>
+          <span v-else class="bento-card__sub">所有节点正常</span>
+        </div>
+
+        <!-- 计费周期 -->
+        <div class="bento-card bento-card--cycle">
+          <span class="bento-card__label">计费周期</span>
+          <span class="bento-card__value">{{ cycleLabel }}</span>
+          <span class="bento-card__sub">方向: {{ directionLabel }}</span>
+        </div>
+
+        <!-- Top 节点 -->
+        <div class="bento-card bento-card--top-nodes">
+          <h3 class="bento-card__title">Top 节点</h3>
+          <div v-for="agent in topNodes" :key="agent.agent_id" class="top-row">
+            <span class="top-row__name">{{ agent.name || agent.agent_id }}</span>
+            <div class="top-row__bar-track">
+              <div class="top-row__bar-fill" :style="{ width: topNodePercent(agent) + '%' }" />
+            </div>
+            <span class="top-row__value">{{ formatBytes(agent.used_bytes) }}</span>
           </div>
+          <p v-if="!topNodes.length" class="bento-card__empty">暂无节点数据</p>
         </div>
-        <div class="dashboard-traffic__card">
-          <span class="dashboard-traffic__card-label">主机流量（日汇总）</span>
-          <span class="dashboard-traffic__card-value">{{ formatBytes(hostTotalAccounted) }}</span>
-          <span class="dashboard-traffic__card-sub">overview 日粒度 host_total</span>
-        </div>
-        <div class="dashboard-traffic__card" :class="{ 'dashboard-traffic__card--alert': blockedCount > 0 }">
-          <span class="dashboard-traffic__card-label">阻断节点</span>
-          <span class="dashboard-traffic__card-value">{{ blockedCount }} / {{ overviewAgents.length }}</span>
-          <span v-if="blockedCount > 0" class="dashboard-traffic__card-sub">{{ blockedCount }} 个节点已超额阻断</span>
-        </div>
-        <div class="dashboard-traffic__card">
-          <span class="dashboard-traffic__card-label">计费周期</span>
-          <span class="dashboard-traffic__card-value">{{ cycleLabel }}</span>
-          <span class="dashboard-traffic__card-sub">方向: {{ directionLabel }}</span>
-        </div>
-      </div>
-      <div class="dashboard-traffic__chart">
-        <TrafficTrendChart :points="trendPoints" :host-points="hostTrendPoints" granularity="day" :quota-bytes="selectedSummary?.quota_bytes ?? null" />
-      </div>
-      <div class="dashboard-traffic__lists">
-        <div class="dashboard-traffic__list-panel">
-          <h3 class="dashboard-traffic__list-title">Top 节点</h3>
-          <div v-for="agent in topNodes" :key="agent.agent_id" class="dashboard-traffic__list-row">
-            <span class="dashboard-traffic__list-name">{{ agent.name || agent.agent_id }}</span>
-            <span class="dashboard-traffic__list-value">{{ formatBytes(agent.used_bytes) }}</span>
-            <span v-if="agent.quota_bytes != null" class="dashboard-traffic__list-percent">{{ usagePercent(agent.used_bytes, agent.quota_bytes) }}%</span>
+
+        <!-- Top 规则 -->
+        <div class="bento-card bento-card--top-rules">
+          <h3 class="bento-card__title">Top 规则</h3>
+          <div v-for="rule in topRules" :key="rule.key" class="top-row">
+            <span class="top-row__name" :title="rule.label">{{ rule.label }}</span>
+            <div class="top-row__bar-track">
+              <div class="top-row__bar-fill" :style="{ width: rule.percent + '%' }" />
+            </div>
+            <span class="top-row__value">{{ formatBytes(rule.accounted_bytes) }}</span>
           </div>
-          <p v-if="!topNodes.length" class="dashboard-traffic__list-empty">暂无节点数据</p>
-        </div>
-        <div class="dashboard-traffic__list-panel">
-          <h3 class="dashboard-traffic__list-title">Top 规则</h3>
-          <div v-for="rule in topRules" :key="rule.key" class="dashboard-traffic__list-row">
-            <span class="dashboard-traffic__list-name" :title="rule.label">{{ rule.label }}</span>
-            <span class="dashboard-traffic__list-value">{{ formatBytes(rule.accounted_bytes) }}</span>
-            <span class="dashboard-traffic__list-percent">{{ rule.percent }}%</span>
-          </div>
-          <p v-if="!topRules.length" class="dashboard-traffic__list-empty">暂无规则数据</p>
+          <p v-if="!topRules.length" class="bento-card__empty">暂无规则数据</p>
         </div>
       </div>
     </template>
@@ -71,7 +92,9 @@ import { useQuery } from '@tanstack/vue-query'
 import { useTrafficOverview } from '../../hooks/useTrafficOverview.js'
 import { fetchSystemInfo, fetchTrafficSummary } from '../../api'
 import TrafficTrendChart from './TrafficTrendChart.vue'
-import { formatBytes, usagePercent, quotaColorThreshold } from '../../utils/trafficStats.js'
+import TrafficQuotaRing from './TrafficQuotaRing.vue'
+import TrafficRateSparkline from './TrafficRateSparkline.vue'
+import { formatBytes, usagePercent } from '../../utils/trafficStats.js'
 
 const { data: systemInfo } = useQuery({
   queryKey: ['system-info'],
@@ -102,13 +125,6 @@ const selectedSummary = computed(() => {
     quota_bytes: agents.every(a => a.quota_bytes == null) ? null : agents.reduce((s, a) => s + (a.quota_bytes || 0), 0),
     remaining_bytes: agents.every(a => a.remaining_bytes == null) ? null : agents.reduce((s, a) => s + (a.remaining_bytes || 0), 0)
   }
-})
-
-const selectedPercent = computed(() => usagePercent(selectedSummary.value?.used_bytes, selectedSummary.value?.quota_bytes))
-const selectedColor = computed(() => quotaColorThreshold(selectedPercent.value))
-
-const hostTotalAccounted = computed(() => {
-  return hostTrendPoints.value.reduce((sum, point) => sum + (point.accounted_bytes || 0), 0)
 })
 
 const blockedCount = computed(() => overviewAgents.value.filter(a => a.blocked).length)
@@ -149,6 +165,14 @@ const topNodes = computed(() => {
   })
   return agents.slice(0, 8)
 })
+
+function topNodePercent(agent) {
+  if (!agent.quota_bytes || agent.quota_bytes <= 0) {
+    const max = Math.max(...topNodes.value.map(a => a.used_bytes), 1)
+    return Math.round((agent.used_bytes / max) * 100)
+  }
+  return Math.min(100, usagePercent(agent.used_bytes, agent.quota_bytes))
+}
 
 const agentIdsForTopRules = computed(() => {
   if (selectedAgentId.value) return [selectedAgentId.value]
@@ -252,120 +276,100 @@ function scopeLabel(scopeType, scopeId) {
   justify-content: center;
   padding: 2rem;
 }
-.dashboard-traffic__cards {
+
+.dashboard-traffic__bento {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 0.75rem;
-  padding: 1rem 1.25rem;
-}
-.dashboard-traffic__card {
-  min-width: 0;
-  padding: 0.75rem;
-  background: var(--color-bg-subtle);
-  border-radius: var(--radius-lg);
-}
-.dashboard-traffic__card--alert {
-  background: var(--color-danger-50);
-}
-.dashboard-traffic__card-label {
-  display: block;
-  color: var(--color-text-tertiary);
-  font-size: 0.75rem;
-  margin-bottom: 0.25rem;
-}
-.dashboard-traffic__card-value {
-  display: block;
-  color: var(--color-text-primary);
-  font-size: 1.125rem;
-  font-weight: 700;
-  font-variant-numeric: tabular-nums;
-}
-.dashboard-traffic__card-percent {
-  display: block;
-  font-size: 0.875rem;
-  font-weight: 600;
-  margin-top: 0.25rem;
-}
-.dashboard-traffic__card-percent--success { color: var(--color-success); }
-.dashboard-traffic__card-percent--warning { color: var(--color-warning); }
-.dashboard-traffic__card-percent--danger { color: var(--color-danger); }
-.dashboard-traffic__card-track {
-  height: 4px;
-  background: var(--color-border-default);
-  border-radius: var(--radius-full);
-  overflow: hidden;
-  margin-top: 0.375rem;
-}
-.dashboard-traffic__card-fill {
-  height: 100%;
-  border-radius: var(--radius-full);
-  transition: width 0.3s;
-}
-.dashboard-traffic__card-fill--success { background: var(--color-success); }
-.dashboard-traffic__card-fill--warning { background: var(--color-warning); }
-.dashboard-traffic__card-fill--danger { background: var(--color-danger); }
-.dashboard-traffic__card-sub {
-  display: block;
-  font-size: 0.75rem;
-  color: var(--color-text-tertiary);
-  margin-top: 0.25rem;
-}
-.dashboard-traffic__chart {
-  padding: 0 1.25rem;
-}
-.dashboard-traffic__lists {
-  display: grid;
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: 280px 120px auto;
+  grid-template-areas:
+    "trend trend quota"
+    "rate blocked cycle"
+    "top-nodes top-nodes top-rules";
   gap: 1rem;
   padding: 1rem 1.25rem 1.25rem;
 }
-.dashboard-traffic__list-panel {
+
+.bento-card {
   background: var(--color-bg-subtle);
   border-radius: var(--radius-lg);
   padding: 0.75rem;
+  min-width: 0;
+  overflow: hidden;
 }
-.dashboard-traffic__list-title {
+.bento-card--trend { grid-area: trend; padding: 0.5rem; }
+.bento-card--quota { grid-area: quota; }
+.bento-card--rate { grid-area: rate; }
+.bento-card--blocked { grid-area: blocked; }
+.bento-card--cycle { grid-area: cycle; }
+.bento-card--top-nodes { grid-area: top-nodes; }
+.bento-card--top-rules { grid-area: top-rules; }
+
+.bento-card--alert {
+  background: var(--color-danger-50);
+  border: 1px solid var(--color-danger-100);
+}
+
+.bento-card__label {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--color-text-tertiary);
+  margin-bottom: 0.25rem;
+}
+.bento-card__value {
+  display: block;
+  font-size: 1.125rem;
+  font-weight: 700;
+  color: var(--color-text-primary);
+  font-variant-numeric: tabular-nums;
+}
+.bento-card__sub {
+  display: block;
+  font-size: 0.75rem;
+  color: var(--color-text-tertiary);
+  margin-top: 0.25rem;
+}
+.bento-card__sub--alert { color: var(--color-danger); }
+.bento-card__title {
   font-size: 0.8125rem;
   font-weight: 600;
   color: var(--color-text-primary);
   margin: 0 0 0.5rem;
 }
-.dashboard-traffic__list-row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
-  gap: 0.5rem;
-  align-items: center;
-  padding: 0.4rem 0;
-  font-size: 0.8125rem;
-  border-bottom: 1px solid var(--color-border-subtle);
-}
-.dashboard-traffic__list-row:last-child { border-bottom: none; }
-.dashboard-traffic__list-name {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--color-text-primary);
-}
-.dashboard-traffic__list-value {
-  color: var(--color-text-primary);
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-}
-.dashboard-traffic__list-percent {
-  color: var(--color-text-muted);
-  font-size: 0.75rem;
-  min-width: 2.5rem;
-  text-align: right;
-}
-.dashboard-traffic__list-empty {
+.bento-card__empty {
   text-align: center;
   color: var(--color-text-muted);
   padding: 1rem;
   font-size: 0.8125rem;
   margin: 0;
 }
+
+.top-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 0.5rem;
+  align-items: center;
+  padding: 0.35rem 0;
+  font-size: 0.8125rem;
+  border-bottom: 1px solid var(--color-border-subtle);
+}
+.top-row:last-child { border-bottom: none; }
+.top-row__name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-primary);
+}
+.top-row__bar-track {
+  display: none;
+}
+.top-row__value {
+  color: var(--color-text-primary);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
 .spinner {
   width: 24px;
   height: 24px;
@@ -375,11 +379,32 @@ function scopeLabel(scopeType, scopeId) {
   animation: spin 1s linear infinite;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
-@media (max-width: 900px) {
-  .dashboard-traffic__cards { grid-template-columns: repeat(2, 1fr); }
-  .dashboard-traffic__lists { grid-template-columns: 1fr; }
+
+@media (max-width: 1023px) {
+  .dashboard-traffic__bento {
+    grid-template-columns: repeat(2, 1fr);
+    grid-template-rows: 260px 260px auto auto;
+    grid-template-areas:
+      "trend trend"
+      "quota rate"
+      "blocked cycle"
+      "top-nodes top-rules";
+  }
 }
-@media (max-width: 640px) {
-  .dashboard-traffic__cards { grid-template-columns: 1fr; }
+
+@media (max-width: 767px) {
+  .dashboard-traffic__bento {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto;
+    grid-template-areas:
+      "trend"
+      "quota"
+      "rate"
+      "blocked"
+      "cycle"
+      "top-nodes"
+      "top-rules";
+  }
+  .bento-card--trend { min-height: 220px; }
 }
 </style>
