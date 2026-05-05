@@ -220,12 +220,10 @@ describe('DashboardTrafficModule', () => {
     await trigger.trigger('click')
     await nextTick()
 
-    // Dropdown is teleported to body; query DOM directly
-    const items = Array.from(document.body.querySelectorAll('.agent-picker__item'))
-      .map(el => wrapper.findComponent ? { text: () => el.textContent, element: el } : { text: () => el.textContent })
+    const items = wrapper.findAll('.agent-picker__item')
     const edge1Item = items.find(item => item.text().includes('edge-1'))
     expect(edge1Item).toBeTruthy()
-    edge1Item.element.click()
+    await edge1Item.trigger('click')
     await nextTick()
 
     await vi.waitFor(() => expect(fetchTrafficOverview).toHaveBeenCalledWith('edge-1', 'hour'))
@@ -234,7 +232,7 @@ describe('DashboardTrafficModule', () => {
     await trigger.trigger('click')
     await nextTick()
 
-    const labels = Array.from(document.body.querySelectorAll('.agent-picker__item')).map(el => el.textContent)
+    const labels = wrapper.findAll('.agent-picker__item').map(item => item.text())
     expect(labels).toContain('全部节点')
     expect(labels).toContain('edge-1')
     expect(labels).toContain('edge-2')
