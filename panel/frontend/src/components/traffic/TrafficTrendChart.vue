@@ -21,7 +21,6 @@ import { formatBytes } from '../../utils/trafficStats.js'
 
 const props = defineProps({
   points: { type: Array, default: () => [] },
-  hostPoints: { type: Array, default: () => [] },
   prevPoints: { type: Array, default: null },
   granularity: { type: String, default: 'day' },
   quotaBytes: { type: Number, default: null },
@@ -29,14 +28,12 @@ const props = defineProps({
 })
 
 const hasData = computed(() => {
-  return (Array.isArray(props.points) && props.points.length > 0) ||
-    (Array.isArray(props.hostPoints) && props.hostPoints.length > 0)
+  return Array.isArray(props.points) && props.points.length > 0
 })
 
 const chartKey = computed(() => {
   const sum = props.points.reduce((s, p) => s + (p.accounted_bytes || 0), 0)
-  const hostSum = props.hostPoints.reduce((s, p) => s + (p.accounted_bytes || 0), 0)
-  return `${props.granularity}-${props.points.length}-${props.hostPoints.length}-${sum}-${hostSum}`
+  return `${props.granularity}-${props.points.length}-${sum}`
 })
 
 function formatLabel(bucketStart) {
@@ -58,12 +55,10 @@ function bucketKey(point) {
 
 function uniqueBucketStarts(currentPoints) {
   const buckets = []
-  for (const points of currentPoints) {
-    if (!Array.isArray(points)) continue
-    for (const point of points) {
-      const key = bucketKey(point)
-      if (key) buckets.push(key)
-    }
+  if (!Array.isArray(currentPoints)) return buckets
+  for (const point of currentPoints) {
+    const key = bucketKey(point)
+    if (key) buckets.push(key)
   }
   return [...new Set(buckets)].sort()
 }
@@ -100,12 +95,12 @@ function alignPrevSeries(bucketStarts, currentPoints, prevPoints) {
 }
 
 const labels = computed(() => {
-  const bucketStarts = uniqueBucketStarts([props.points, props.hostPoints])
+  const bucketStarts = uniqueBucketStarts(props.points)
   return bucketStarts.map(formatLabel)
 })
 
 const series = computed(() => {
-  const bucketStarts = uniqueBucketStarts([props.points, props.hostPoints])
+  const bucketStarts = uniqueBucketStarts(props.points)
   const datasets = []
 
   datasets.push({
@@ -124,13 +119,6 @@ const series = computed(() => {
     return point ? (Number(point.tx_bytes) || 0) : null
   })
   datasets.push({ name: 'TX', data: txData })
-
-  if (Array.isArray(props.hostPoints) && props.hostPoints.length > 0) {
-    datasets.push({
-      name: '主机总计',
-      data: alignToBuckets(bucketStarts, props.hostPoints)
-    })
-  }
 
   if (Array.isArray(props.prevPoints) && props.prevPoints.length > 0) {
     datasets.push({
@@ -163,15 +151,15 @@ const chartOptions = computed(() => ({
     animations: { enabled: false },
     fontFamily: 'inherit'
   },
-  colors: ['#3b82f6', '#6366f1', '#10b981', '#f59e0b', '#8b5cf6', '#9ca3af', '#ef4444'],
+  colors: ['#3b82f6', '#6366f1', '#10b981', '#8b5cf6', '#9ca3af', '#f59e0b', '#ef4444'],
   stroke: {
     curve: 'smooth',
-    width: [2, 1.5, 1.5, 2, 2, 1.5, 1],
-    dashArray: [0, 0, 0, 4, 0, 6, 6]
+    width: [2, 1.5, 1.5, 2, 1.5, 1, 1],
+    dashArray: [0, 0, 0, 0, 4, 6, 6]
   },
   fill: {
-    type: ['solid', 'none', 'none', 'none', 'solid', 'none', 'none'],
-    opacity: [0.12, 0, 0, 0, 0.08, 0, 0]
+    type: ['solid', 'none', 'none', 'solid', 'none', 'none', 'none'],
+    opacity: [0.12, 0, 0, 0.08, 0, 0, 0]
   },
   dataLabels: { enabled: false },
   legend: {

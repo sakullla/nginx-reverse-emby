@@ -51,7 +51,7 @@
       <div v-if="activeTab === 'traffic'" class="tab-panel">
         <section class="traffic-section">
           <h3 class="traffic-section__title">概览</h3>
-          <TrafficSummaryCards :summary="trafficSummary" :direction="trafficPolicyForm.direction" :host-total="trafficSummary.host_total" />
+          <TrafficSummaryCards :summary="trafficSummary" :direction="trafficPolicyForm.direction" />
           <div class="traffic-tab__trend">
             <div class="traffic-tab__trend-header">
               <span>趋势</span>

@@ -166,7 +166,7 @@ describe('DashboardTrafficModule', () => {
     expect(routerPush).toHaveBeenCalledWith('/agents/edge-1')
   })
 
-  it('passes host trend buckets to the dashboard trend chart', async () => {
+  it('does not pass host trend as a separate dashboard chart series', async () => {
     overviewTrend = [
       { bucket_start: '2026-05-01T00:00:00Z', rx_bytes: 10, tx_bytes: 20, accounted_bytes: 30 }
     ]
@@ -177,9 +177,10 @@ describe('DashboardTrafficModule', () => {
     const wrapper = await mountModule()
     const chart = wrapper.findComponent({ name: 'TrafficTrendChart' })
 
-    expect(chart.props('hostPoints')).toEqual([
-      { bucket_start: '2026-05-02T00:00:00Z', rx_bytes: 100, tx_bytes: 200, accounted_bytes: 300 }
+    expect(chart.props('points')).toEqual([
+      { bucket_start: '2026-05-01T00:00:00Z', rx_bytes: 10, tx_bytes: 20, accounted_bytes: 30 }
     ])
+    expect(chart.props()).not.toHaveProperty('hostPoints')
   })
 
   it('shows zero quotas as real quota progress', async () => {

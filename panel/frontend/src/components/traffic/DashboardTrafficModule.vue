@@ -36,7 +36,6 @@
         <div class="bento-card bento-card--trend">
           <TrafficTrendChart
             :points="trendPoints"
-            :host-points="hostTrendPoints"
             :granularity="granularity"
             :quota-bytes="selectedSummary?.quota_bytes ?? null"
           />
@@ -167,7 +166,6 @@ const trendPoints = computed(() => {
   if (import.meta.env.DEV) return normalizePoints(MOCK_TREND)
   return []
 })
-const hostTrendPoints = computed(() => normalizePoints(overviewQuery.data.value?.host_trend))
 
 const selectedSummary = computed(() => {
   const agents = overviewAgents.value

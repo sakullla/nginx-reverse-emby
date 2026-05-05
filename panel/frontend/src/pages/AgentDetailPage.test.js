@@ -217,26 +217,6 @@ describe('AgentDetailPage', () => {
     expect(apiCalls.fetchTrafficTrend).toHaveBeenCalledWith('edge-1', expect.objectContaining({ granularity: 'day' }))
   })
 
-  it('renders host total in the agent traffic summary cards', async () => {
-    apiCalls.fetchTrafficSummary.mockResolvedValue({
-      used_bytes: 300,
-      policy: { direction: 'both' },
-      host_total: { scope_type: 'host_total', scope_id: '', rx_bytes: 4096, tx_bytes: 8192, accounted_bytes: 12288 },
-      monthly_quota_bytes: 1099511627776,
-      remaining_bytes: 1099511627476,
-      cycle_start: '2026-05-01T00:00:00Z',
-      cycle_end: '2026-06-01T00:00:00Z',
-      blocked: false
-    })
-    const wrapper = await mountPage()
-
-    await wrapper.findAll('.tab-btn').find((button) => button.text() === '流量统计').trigger('click')
-    await nextTick()
-
-    expect(wrapper.find('.traffic-summary-cards').text()).toContain('主机总计')
-    expect(wrapper.find('.traffic-summary-cards').text()).toContain('12.0 KiB')
-  })
-
   it('renders accounted traffic breakdowns in traffic tab', async () => {
     const wrapper = await mountPage()
     await wrapper.findAll('.tab-btn').find((button) => button.text() === '流量统计').trigger('click')
