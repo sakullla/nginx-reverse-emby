@@ -190,8 +190,8 @@ const chartOptions = computed(() => ({
     xaxis: { lines: { show: false } }
   },
   markers: {
-    size: [3, 2, 2, 2, 0, 0, 0],
-    hover: { size: 5 }
+    size: 0,
+    hover: { size: 0 }
   }
 }))
 </script>

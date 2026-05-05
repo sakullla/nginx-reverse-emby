@@ -59,7 +59,7 @@
         <!-- Top 节点 -->
         <div class="bento-card bento-card--top-nodes">
           <h3 class="bento-card__title">Top 节点</h3>
-          <div v-for="agent in topNodes" :key="agent.agent_id" class="top-row">
+          <div v-for="agent in topNodes" :key="agent.agent_id" class="top-row top-row--clickable" @click="navigateToAgent(agent)">
             <span class="top-row__name">{{ agent.name || agent.agent_id }}</span>
             <div class="top-row__bar-track">
               <div class="top-row__bar-fill" :style="{ width: topNodePercent(agent) + '%' }" />
@@ -72,7 +72,7 @@
         <!-- Top 规则 -->
         <div class="bento-card bento-card--top-rules">
           <h3 class="bento-card__title">Top 规则</h3>
-          <div v-for="rule in topRules" :key="rule.key" class="top-row">
+          <div v-for="rule in topRules" :key="rule.key" class="top-row top-row--clickable" @click="navigateToAgentByRule(rule)">
             <span class="top-row__name" :title="rule.label">{{ rule.label }}</span>
             <div class="top-row__bar-track">
               <div class="top-row__bar-fill" :style="{ width: rule.percent + '%' }" />
@@ -88,6 +88,7 @@
 
 <script setup>
 import { ref, computed } from 'vue'
+import { useRouter } from 'vue-router'
 import { useQuery } from '@tanstack/vue-query'
 import { useTrafficOverview } from '../../hooks/useTrafficOverview.js'
 import { fetchSystemInfo, fetchTrafficSummary } from '../../api'
@@ -95,6 +96,8 @@ import TrafficTrendChart from './TrafficTrendChart.vue'
 import TrafficQuotaRing from './TrafficQuotaRing.vue'
 import TrafficRateSparkline from './TrafficRateSparkline.vue'
 import { formatBytes, usagePercent } from '../../utils/trafficStats.js'
+
+const router = useRouter()
 
 const { data: systemInfo } = useQuery({
   queryKey: ['system-info'],
@@ -109,10 +112,44 @@ const selectedAgentId = ref('')
 const overviewQuery = useTrafficOverview(selectedAgentId, trafficStatsEnabled)
 const allAgentsQuery = useTrafficOverview('', trafficStatsEnabled)
 
-const overviewAgents = computed(() => overviewQuery.data.value?.agents ?? [])
-const selectableAgents = computed(() => allAgentsQuery.data.value?.agents ?? overviewAgents.value)
-const trendPoints = computed(() => normalizePoints(overviewQuery.data.value?.trend ?? []))
-const hostTrendPoints = computed(() => normalizePoints(overviewQuery.data.value?.host_trend ?? []))
+const MOCK_AGENTS = [
+  { agent_id: 'mock-1', name: '节点-A', used_bytes: 1073741824, quota_bytes: 2147483648, remaining_bytes: 1073741824, direction: 'both', cycle_start: '2026-05-01', cycle_end: '2026-06-01', blocked: false },
+  { agent_id: 'mock-2', name: '节点-B', used_bytes: 536870912, quota_bytes: 1073741824, remaining_bytes: 536870912, direction: 'both', cycle_start: '2026-05-01', cycle_end: '2026-06-01', blocked: false },
+  { agent_id: 'mock-3', name: '节点-C', used_bytes: 3221225472, quota_bytes: 3221225472, remaining_bytes: 0, direction: 'both', cycle_start: '2026-05-01', cycle_end: '2026-06-01', blocked: true }
+]
+
+const MOCK_TREND = Array.from({ length: 30 }, (_, i) => {
+  const day = String(i + 1).padStart(2, '0')
+  return {
+    bucket_start: `2026-05-${day}T00:00:00Z`,
+    rx_bytes: Math.round(Math.random() * 80000000 + 20000000),
+    tx_bytes: Math.round(Math.random() * 60000000 + 10000000),
+    accounted_bytes: Math.round(Math.random() * 100000000 + 50000000)
+  }
+})
+
+const overviewAgents = computed(() => {
+  const agents = overviewQuery.data.value?.agents ?? []
+  if (agents.length) return agents
+  if (!import.meta.env.DEV) return []
+  return MOCK_AGENTS
+})
+const selectableAgents = computed(() => {
+  const agents = allAgentsQuery.data.value?.agents
+  return agents?.length ? agents : overviewAgents.value
+})
+const trendPoints = computed(() => {
+  const pts = overviewQuery.data.value?.trend
+  if (pts?.length) return normalizePoints(pts)
+  if (import.meta.env.DEV) return normalizePoints(MOCK_TREND)
+  return []
+})
+const hostTrendPoints = computed(() => {
+  const pts = overviewQuery.data.value?.host_trend
+  if (pts?.length) return normalizePoints(pts)
+  if (import.meta.env.DEV) return normalizePoints(MOCK_TREND.map(p => ({ ...p, accounted_bytes: Math.round(p.accounted_bytes * 1.2) })))
+  return []
+})
 
 const selectedSummary = computed(() => {
   const agents = overviewAgents.value
@@ -163,7 +200,7 @@ const topNodes = computed(() => {
     const pb = b.quota_bytes ? b.used_bytes / b.quota_bytes : b.used_bytes
     return pb - pa
   })
-  return agents.slice(0, 8)
+  return agents.slice(0, 5)
 })
 
 function topNodePercent(agent) {
@@ -214,12 +251,25 @@ const topRulesQuery = useQuery({
       r.percent = total ? Math.round((r.accounted_bytes / total) * 100) : 0
     }
     rules.sort((a, b) => b.accounted_bytes - a.accounted_bytes)
-    return rules.slice(0, 10)
+    return rules.slice(0, 5)
   },
   enabled: computed(() => overviewAgents.value.length > 0 && visible.value)
 })
 
 const topRules = computed(() => topRulesQuery.data.value ?? [])
+
+function navigateToAgent(agent) {
+  if (agent?.agent_id) {
+    router.push(`/agents/${agent.agent_id}`)
+  }
+}
+
+function navigateToAgentByRule(rule) {
+  const agentId = rule?.key?.split('-')[0]
+  if (agentId) {
+    router.push(`/agents/${agentId}`)
+  }
+}
 
 function normalizePoints(raw) {
   return (raw || []).map(p => ({
@@ -353,6 +403,17 @@ function scopeLabel(scopeType, scopeId) {
   border-bottom: 1px solid var(--color-border-subtle);
 }
 .top-row:last-child { border-bottom: none; }
+.top-row--clickable {
+  cursor: pointer;
+  transition: background 150ms;
+}
+.top-row--clickable:hover {
+  background: var(--color-bg-hover, rgba(0,0,0,0.03));
+  border-radius: var(--radius-sm);
+  margin: 0 -0.25rem;
+  padding-left: 0.25rem;
+  padding-right: 0.25rem;
+}
 .top-row__name {
   min-width: 0;
   overflow: hidden;
